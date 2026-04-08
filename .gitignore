@@ -1,0 +1,4 @@
+node_modules/
+dist/
+.mesh-cli.json
+.env
