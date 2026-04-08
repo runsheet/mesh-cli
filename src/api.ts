@@ -3,7 +3,7 @@ import { loadConfig } from "./config.js";
 async function request<T>(path: string, init: RequestInit): Promise<T> {
   const config = loadConfig();
   if (!config) {
-    throw new Error("mesh-cli is not configured. Run: mesh auth login <baseUrl> <token>");
+    throw new Error("mesh-cli is not configured. Run: mesh auth login <meshApiBaseUrl> <token>");
   }
 
   const res = await fetch(`${config.baseUrl.replace(/\/$/, "")}${path}`, {

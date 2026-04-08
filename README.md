@@ -2,6 +2,8 @@
 
 Machine-authenticated CLI for Project Mesh.
 
+This CLI should target `mesh-api` as its proper backend for Mesh data operations.
+
 This repo exists to give agents and operators a first-class way to work with Mesh data without abusing the gateway connector or stuffing privileged database credentials into random shells.
 
 ## Purpose
@@ -30,7 +32,7 @@ Project Mesh now has two distinct domains:
    - operator workflow
 
 Those data operations should not depend on the gateway connector.
-They deserve their own machine-authenticated interface.
+They should go through `mesh-api`, the dedicated machine-authenticated Mesh application API.
 
 ## v1 goal
 
