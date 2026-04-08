@@ -7,6 +7,8 @@ function printHelp() {
 Usage:
   mesh auth login <baseUrl> <token>
   mesh auth whoami
+  mesh work-item create <title> <sourceAgentId> [scope] [projectId]
+  mesh work-item update <workItemId> <agentId> [status] [currentOwner]
   mesh work-item handoff <workItemId> <fromRole> <toRole> <agentId> [summary]
   mesh work-item review <workItemId> <reviewerRole> <decision> <agentId> [notes]
   mesh work-item learning <workItemId> <agentId> [outcome]\n`);
@@ -33,6 +35,36 @@ async function main() {
     const config = loadConfig();
     if (!config) throw new Error("mesh-cli is not configured");
     console.log(JSON.stringify({ baseUrl: config.baseUrl, configured: true }, null, 2));
+    return;
+  }
+
+  if (group === "work-item" && action === "create") {
+    const [title, sourceAgentId, scope = "project", projectId] = rest;
+    if (!title || !sourceAgentId) {
+      throw new Error("Usage: mesh work-item create <title> <sourceAgentId> [scope] [projectId]");
+    }
+    const result = await post("/work-item/create", {
+      title,
+      sourceAgentId,
+      scope,
+      projectId: scope === "project" ? projectId ?? null : null,
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (group === "work-item" && action === "update") {
+    const [workItemId, agentId, status, currentOwner] = rest;
+    if (!workItemId || !agentId) {
+      throw new Error("Usage: mesh work-item update <workItemId> <agentId> [status] [currentOwner]");
+    }
+    const result = await post("/work-item/update", {
+      workItemId,
+      agentId,
+      ...(status ? { status } : {}),
+      ...(currentOwner ? { currentOwner } : {}),
+    });
+    console.log(JSON.stringify(result, null, 2));
     return;
   }
 
