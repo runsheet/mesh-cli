@@ -36,6 +36,12 @@ async function main() {
     if (!baseUrl) throw new Error("Usage: mesh auth login <baseUrl>");
     const data = await fetchJson(`${baseUrl.replace(/\/$/, "")}/auth/login-start`);
     console.log(JSON.stringify(data, null, 2));
+    if (data?.authProvider === "supabase") {
+      console.log("\nSupabase-oriented login scaffold detected.");
+      if (data.supabaseUrl) console.log(`Supabase URL: ${data.supabaseUrl}`);
+      if (data.supabasePublishableKey) console.log("Publishable key is available from mesh-api.");
+      console.log("Temporary path: obtain a user access token and complete login with token-login.");
+    }
     return;
   }
 
