@@ -1,10 +1,10 @@
 # mesh-cli
 
-Machine-authenticated CLI for Project Mesh.
+End-user CLI for Project Mesh.
 
 This CLI should target `mesh-api` as its proper backend for Mesh data operations.
 
-This repo exists to give agents and operators a first-class way to work with Mesh data without abusing the gateway connector or stuffing privileged database credentials into random shells.
+This repo exists to give operators a first-class way to work with Mesh data without abusing the gateway connector or stuffing privileged database credentials into random shells.
 
 ## Purpose
 
@@ -54,11 +54,11 @@ Build a small CLI and machine-auth layer for Mesh data operations.
 
 ## Auth direction
 
-Recommended v1:
-- machine token auth
-- revocable credentials
-- auditable actor identity
-- no direct Supabase service-role usage in agent shells
+Recommended direction:
+- end-user login/session for CLI use
+- auditable human identity
+- no direct Supabase secret-key usage in operator shells
+- machine auth reserved for non-human services and agents through `mesh-api`
 
 ## Documents
 

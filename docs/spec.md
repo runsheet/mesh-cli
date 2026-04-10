@@ -13,7 +13,7 @@ We need a first-class machine-authenticated interface for Mesh data operations.
 
 ## Goal
 
-Create a new `mesh-cli` repo that becomes the standard machine/operator interface for Mesh application data.
+Create a new `mesh-cli` repo that becomes the standard end-user/operator interface for Mesh application data.
 
 ## Non-goals
 
@@ -33,8 +33,8 @@ Create a new `mesh-cli` repo that becomes the standard machine/operator interfac
 ## Product requirements
 
 ### Auth
-- machine-authenticated requests
-- revocable machine tokens
+- end-user authenticated requests
+- user-scoped permissions
 - actor identity on all writes
 - auditable actions
 
@@ -87,13 +87,14 @@ Create a new `mesh-cli` repo that becomes the standard machine/operator interfac
 ## API direction
 
 Recommended backend architecture:
-- portal-side machine-authenticated API layer
-- CLI talks to that API
+- portal-side application API layer
+- CLI talks to that API as an authenticated end user
 - API performs application-level authorization and persistence
 
 Not recommended:
-- CLI talking directly to Supabase with service-role credentials
+- CLI talking directly to Supabase with secret-key credentials
 - reusing `mesh-connector` as the generic app-write API
+- treating CLI as a machine-secret client
 
 ## Data/actor model
 
@@ -115,7 +116,7 @@ Each write should record:
 
 ## Success criteria
 
-- agents can create/update Mesh data without direct database credentials
+- end users can create/update Mesh data without direct database credentials
 - connector remains focused on gateway integration
 - writes are auditable and actor-attributed
 - Ralph Loop operations become scriptable and repeatable
