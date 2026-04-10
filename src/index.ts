@@ -2,17 +2,19 @@
 import { clearConfig, getConfigPath, loadConfig, saveConfig } from "./config.js";
 import { post } from "./api.js";
 
-async function fetchJson(url: string) {
-  const res = await fetch(url);
+async function fetchJson(url: string, init?: RequestInit) {
+  const res = await fetch(url, init);
   const text = await res.text();
-  return text ? JSON.parse(text) : {};
+  const body = text ? JSON.parse(text) : {};
+  if (!res.ok) throw new Error(body?.error ?? `Request failed (${res.status})`);
+  return body;
 }
 
 function printHelp() {
   console.log(`mesh-cli v0.1.0\n
 Usage:
   mesh auth login <baseUrl>
-  mesh auth token-login <baseUrl> <accessToken> [email]
+  mesh auth token-login <baseUrl> <accessToken>
   mesh auth whoami
   mesh auth logout
   mesh work-item create <title> <sourceAgentId> [scope] [projectId]
@@ -46,18 +48,24 @@ async function main() {
   }
 
   if (group === "auth" && action === "token-login") {
-    const [baseUrl, accessToken, userEmail] = rest;
-    if (!baseUrl || !accessToken) throw new Error("Usage: mesh auth token-login <baseUrl> <accessToken> [email]");
+    const [baseUrl, accessToken] = rest;
+    if (!baseUrl || !accessToken) throw new Error("Usage: mesh auth token-login <baseUrl> <accessToken>");
+    const data = await fetchJson(`${baseUrl.replace(/\/$/, "")}/auth/token-login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ accessToken }),
+    });
     saveConfig({
       baseUrl,
       session: {
         kind: "user",
         baseUrl,
         accessToken,
-        userEmail,
+        userEmail: data?.user?.email ?? undefined,
       },
     });
     console.log(`Saved mesh-cli session to ${getConfigPath()}`);
+    console.log(JSON.stringify(data.user, null, 2));
     return;
   }
 
