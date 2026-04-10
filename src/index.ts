@@ -1,12 +1,14 @@
 #!/usr/bin/env node
-import { saveConfig, loadConfig, getConfigPath } from "./config.js";
+import { clearConfig, getConfigPath, loadConfig, saveConfig } from "./config.js";
 import { post } from "./api.js";
 
 function printHelp() {
   console.log(`mesh-cli v0.1.0\n
 Usage:
-  mesh auth login <baseUrl> <token>
+  mesh auth login <baseUrl>
+  mesh auth token-login <baseUrl> <accessToken> [email]
   mesh auth whoami
+  mesh auth logout
   mesh work-item create <title> <sourceAgentId> [scope] [projectId]
   mesh work-item update <workItemId> <agentId> [status] [currentOwner]
   mesh work-item handoff <workItemId> <fromRole> <toRole> <agentId> [summary]
@@ -24,17 +26,45 @@ async function main() {
   }
 
   if (group === "auth" && action === "login") {
-    const [baseUrl, token] = rest;
-    if (!baseUrl || !token) throw new Error("Usage: mesh auth login <baseUrl> <token>");
-    saveConfig({ baseUrl, token });
-    console.log(`Saved mesh-cli config to ${getConfigPath()}`);
+    const [baseUrl] = rest;
+    if (!baseUrl) throw new Error("Usage: mesh auth login <baseUrl>");
+    console.log("mesh-cli end-user login scaffold");
+    console.log("Next step will be browser/device auth via mesh-api.");
+    console.log(`For now, complete login using: mesh auth token-login ${baseUrl} <accessToken> [email]`);
+    return;
+  }
+
+  if (group === "auth" && action === "token-login") {
+    const [baseUrl, accessToken, userEmail] = rest;
+    if (!baseUrl || !accessToken) throw new Error("Usage: mesh auth token-login <baseUrl> <accessToken> [email]");
+    saveConfig({
+      baseUrl,
+      session: {
+        kind: "user",
+        baseUrl,
+        accessToken,
+        userEmail,
+      },
+    });
+    console.log(`Saved mesh-cli session to ${getConfigPath()}`);
     return;
   }
 
   if (group === "auth" && action === "whoami") {
     const config = loadConfig();
-    if (!config) throw new Error("mesh-cli is not configured");
-    console.log(JSON.stringify({ baseUrl: config.baseUrl, configured: true }, null, 2));
+    if (!config?.session) throw new Error("mesh-cli is not logged in");
+    console.log(JSON.stringify({
+      baseUrl: config.baseUrl,
+      authKind: config.session.kind,
+      userEmail: config.session.userEmail ?? null,
+      configured: true,
+    }, null, 2));
+    return;
+  }
+
+  if (group === "auth" && action === "logout") {
+    clearConfig();
+    console.log("Logged out of mesh-cli");
     return;
   }
 

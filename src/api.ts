@@ -2,15 +2,15 @@ import { loadConfig } from "./config.js";
 
 async function request<T>(path: string, init: RequestInit): Promise<T> {
   const config = loadConfig();
-  if (!config) {
-    throw new Error("mesh-cli is not configured. Run: mesh auth login <meshApiBaseUrl> <token>");
+  if (!config?.session?.accessToken || !config.baseUrl) {
+    throw new Error("mesh-cli is not logged in. Run: mesh auth login <meshApiBaseUrl>");
   }
 
   const res = await fetch(`${config.baseUrl.replace(/\/$/, "")}${path}`, {
     ...init,
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${config.token}`,
+      Authorization: `Bearer ${config.session.accessToken}`,
       ...(init.headers ?? {}),
     },
   });
