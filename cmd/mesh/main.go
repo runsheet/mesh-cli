@@ -13,8 +13,7 @@ func main() {
 		Short: "Mesh CLI - Go Implementation",
 	}
 
-	rootCmd.AddCommand(authCmd)
-	// TODO: Add work-item commands
+	rootCmd.AddCommand(authCmd, workItemCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)
