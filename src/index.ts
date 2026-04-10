@@ -2,6 +2,8 @@
 import { clearConfig, getConfigPath, loadConfig, saveConfig } from "./config.js";
 import { post } from "./api.js";
 
+const DEFAULT_BASE_URL = "https://api.projectmesh.io";
+
 async function fetchJson(url: string, init?: RequestInit) {
   const res = await fetch(url, init);
   const text = await res.text();
@@ -13,8 +15,8 @@ async function fetchJson(url: string, init?: RequestInit) {
 function printHelp() {
   console.log(`mesh-cli v0.1.0\n
 Usage:
-  mesh auth login <baseUrl>
-  mesh auth token-login <baseUrl> <accessToken>
+  mesh auth login [baseUrl]
+  mesh auth token-login [baseUrl] <accessToken>
   mesh auth whoami
   mesh auth logout
   mesh work-item create <title> <sourceAgentId> [scope] [projectId]
@@ -34,8 +36,8 @@ async function main() {
   }
 
   if (group === "auth" && action === "login") {
-    const [baseUrl] = rest;
-    if (!baseUrl) throw new Error("Usage: mesh auth login <baseUrl>");
+    const [rawBaseUrl] = rest;
+    const baseUrl = rawBaseUrl || DEFAULT_BASE_URL;
     const data = await fetchJson(`${baseUrl.replace(/\/$/, "")}/auth/login-start`);
     console.log(JSON.stringify(data, null, 2));
     if (data?.authProvider === "supabase") {
@@ -48,8 +50,10 @@ async function main() {
   }
 
   if (group === "auth" && action === "token-login") {
-    const [baseUrl, accessToken] = rest;
-    if (!baseUrl || !accessToken) throw new Error("Usage: mesh auth token-login <baseUrl> <accessToken>");
+    const [arg1, arg2] = rest;
+    const baseUrl = arg2 ? arg1 : DEFAULT_BASE_URL;
+    const accessToken = arg2 ?? arg1;
+    if (!accessToken) throw new Error("Usage: mesh auth token-login [baseUrl] <accessToken>");
     const data = await fetchJson(`${baseUrl.replace(/\/$/, "")}/auth/token-login`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
