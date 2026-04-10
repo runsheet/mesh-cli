@@ -2,6 +2,12 @@
 import { clearConfig, getConfigPath, loadConfig, saveConfig } from "./config.js";
 import { post } from "./api.js";
 
+async function fetchJson(url: string) {
+  const res = await fetch(url);
+  const text = await res.text();
+  return text ? JSON.parse(text) : {};
+}
+
 function printHelp() {
   console.log(`mesh-cli v0.1.0\n
 Usage:
@@ -28,9 +34,8 @@ async function main() {
   if (group === "auth" && action === "login") {
     const [baseUrl] = rest;
     if (!baseUrl) throw new Error("Usage: mesh auth login <baseUrl>");
-    console.log("mesh-cli end-user login scaffold");
-    console.log("Next step will be browser/device auth via mesh-api.");
-    console.log(`For now, complete login using: mesh auth token-login ${baseUrl} <accessToken> [email]`);
+    const data = await fetchJson(`${baseUrl.replace(/\/$/, "")}/auth/login-start`);
+    console.log(JSON.stringify(data, null, 2));
     return;
   }
 
