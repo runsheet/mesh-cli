@@ -1,0 +1,60 @@
+name: CLI Release
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        platform: [linux/amd64, linux/arm64, darwin/amd64, darwin/arm64, windows/amd64]
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.21'
+
+    - name: Build
+      run: |
+        GOOS=${{ matrix.platform.split('/')[0] }} GOARCH=${{ matrix.platform.split('/')[1] }} \
+        go build -o bin/mesh-${{ matrix.platform }} ./cmd/mesh
+
+    - name: Upload Artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: mesh-${{ matrix.platform }}
+        path: bin/mesh-${{ matrix.platform }}
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+    - name: Download artifacts
+      uses: actions/download-artifact@v3
+      with:
+        name: mesh-* 
+        path: release/
+
+    - name: Create Release
+      id: create_release
+      uses: actions/create-release@v1
+      with:
+        tag_name: ${{ github.ref }}
+        release_name: Release ${{ github.ref }}
+        draft: false
+        prerelease: false
+
+    - name: Upload Release Assets
+      uses: softprops/action-gh-release@v1
+      with:
+        files: release/*
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
