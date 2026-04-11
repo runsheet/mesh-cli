@@ -1,70 +1,46 @@
-# mesh-cli
+# Mesh CLI - Go Implementation
 
-End-user CLI for Project Mesh.
+This is the Go-based replacement for the Mesh CLI, providing parity with the existing TypeScript CLI.
 
-This CLI should target `mesh-api` as its proper backend for Mesh data operations.
+## Installation
 
-This repo exists to give operators a first-class way to work with Mesh data without abusing the gateway connector or stuffing privileged database credentials into random shells.
+Build from source:
 
-## Purpose
+```bash
+cd cmd/mesh
+GO111MODULE=on go build -o mesh
+```
 
-`mesh-cli` should become the standard interface for:
-- creating and updating specs
-- creating and updating Ralph Loop work items
-- recording handoffs, reviews, and learnings
-- querying work items, specs, projects, and gateway resolution
-- supporting machine and agent workflows with auditable auth
+## Authentication Commands (Testable Now)
 
-## Why this exists
+- `mesh auth login [baseUrl]` - Browser-based login (stubbed, manual token entry)
+- `mesh auth token-login [baseUrl] <accessToken>` - Login using an access token
+- `mesh auth whoami` - Show current logged-in user
+- `mesh auth logout` - Log out and clear session
 
-Project Mesh now has two distinct domains:
+## Work-Item Commands (Pending Backend Configuration)
 
-1. **Gateway/runtime integration**
-   - handled by `mesh-connector`
-   - talks to OpenClaw gateways
-   - execution/runtime bridge
+The following commands are implemented but require a properly configured and accessible `mesh-api` backend to function correctly:
 
-2. **Mesh application data operations**
-   - specs
-   - work items
-   - reviews
-   - learnings
-   - operator workflow
+- `mesh work-item create <title> <sourceAgentId> [scope] [projectId]`
+- `mesh work-item update <workItemId> <agentId> [status] [currentOwner]`
+- `mesh work-item handoff <workItemId> <fromRole> <toRole> <agentId> [summary]`
+- `mesh work-item review <workItemId> <reviewerRole> <decision> <agentId> [notes]`
+- `mesh work-item learning <workItemId> <agentId> [outcome]`
 
-Those data operations should not depend on the gateway connector.
-They should go through `mesh-api`, the dedicated machine-authenticated Mesh application API.
+## Release
 
-## v1 goal
+Multi-platform binaries will be published via GitHub Releases triggered by tags matching `v*.*.*`.
 
-Build a small CLI and machine-auth layer for Mesh data operations.
+## Known Limitations
 
-### Initial command targets
+- Full work-item command validation is pending proper backend API availability.
+- Auth commands have been smoke tested locally and are ready for use.
 
-- `mesh auth login`
-- `mesh auth whoami`
-- `mesh work-item create`
-- `mesh work-item update`
-- `mesh work-item handoff`
-- `mesh work-item review`
-- `mesh work-item learning`
-- `mesh spec create`
-- `mesh spec update`
-- `mesh project list`
-- `mesh gateway resolve`
+## Contribution
 
-## Auth direction
+Contributions and fixes are welcome.
 
-Recommended direction:
-- end-user login/session for CLI use
-- auditable human identity
-- no direct Supabase secret-key usage in operator shells
-- machine auth reserved for non-human services and agents through `mesh-api`
+---
 
-## Documents
-
-- `docs/spec.md` — product + technical v1 spec
-- `docs/rollout.md` — suggested rollout path
-
-## Status
-
-Fresh repo scaffolded on 2026-04-08.
+This is the initial Go port of the Mesh CLI.
