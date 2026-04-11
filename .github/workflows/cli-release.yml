@@ -6,57 +6,77 @@ on:
       - main
     tags:
       - 'v*.*.*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        platform: [linux/amd64, linux/arm64, darwin/amd64, darwin/arm64, windows/amd64]
+        include:
+          - goos: linux
+            goarch: amd64
+            asset_name: mesh-linux-amd64
+          - goos: linux
+            goarch: arm64
+            asset_name: mesh-linux-arm64
+          - goos: darwin
+            goarch: amd64
+            asset_name: mesh-darwin-amd64
+          - goos: darwin
+            goarch: arm64
+            asset_name: mesh-darwin-arm64
+          - goos: windows
+            goarch: amd64
+            asset_name: mesh-windows-amd64.exe
 
     steps:
-    - uses: actions/checkout@v3
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    - name: Set up Go
-      uses: actions/setup-go@v4
-      with:
-        go-version: '1.21'
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: cmd/mesh/go.mod
+          cache-dependency-path: cmd/mesh/go.sum
 
-    - name: Build
-      run: |
-        OS=${{ matrix.platform }}
-        OSNAME=${{ env.OS%%/* }}
-        ARCH=${{ env.OS##*/ }}
-        GOOS=$OSNAME GOARCH=$ARCH go build -o bin/mesh-${{ matrix.platform }} ./cmd/mesh
+      - name: Build binary
+        working-directory: cmd/mesh
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          mkdir -p ../../dist
+          go build -trimpath -ldflags="-s -w" -o ../../dist/${{ matrix.asset_name }} .
 
-    - name: Upload Artifacts
-      uses: actions/upload-artifact@v3
-      with:
-        name: mesh-${{ matrix.platform }}
-        path: bin/mesh-${{ matrix.platform }}
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: dist/${{ matrix.asset_name }}
+          if-no-files-found: error
 
   publish:
+    name: Publish GitHub Release assets
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-latest
+
     steps:
-    - name: Download artifacts
-      uses: actions/download-artifact@v3
-      with:
-        name: mesh-* 
-        path: release/
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
 
-    - name: Create Release
-      id: create_release
-      uses: actions/create-release@v1
-      with:
-        tag_name: ${{ github.ref }}
-        release_name: Release ${{ github.ref }}
-        draft: false
-        prerelease: false
-
-    - name: Upload Release Assets
-      uses: softprops/action-gh-release@v1
-      with:
-        files: release/*
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          fail_on_unmatched_files: true
