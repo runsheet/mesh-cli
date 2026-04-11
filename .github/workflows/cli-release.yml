@@ -24,8 +24,10 @@ jobs:
 
     - name: Build
       run: |
-        GOOS=${{ matrix.platform.split('/')[0] }} GOARCH=${{ matrix.platform.split('/')[1] }} \
-        go build -o bin/mesh-${{ matrix.platform }} ./cmd/mesh
+        OS=${{ matrix.platform }}
+        OSNAME=${{ env.OS%%/* }}
+        ARCH=${{ env.OS##*/ }}
+        GOOS=$OSNAME GOARCH=$ARCH go build -o bin/mesh-${{ matrix.platform }} ./cmd/mesh
 
     - name: Upload Artifacts
       uses: actions/upload-artifact@v3
