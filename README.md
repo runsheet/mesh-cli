@@ -44,13 +44,13 @@ This replaces the earlier attempt to force a generic OIDC Authorization Code + P
 
 ## Work-Item Commands
 
-The following commands are implemented but still require a properly configured and accessible `mesh-api` backend to function correctly:
+After `mesh auth login`, the following commands use the saved signed-in user session and call `mesh-api` with the user bearer token:
 
-- `mesh work-item create <title> <sourceAgentId> [scope] [projectId]`
-- `mesh work-item update <workItemId> <agentId> [status] [currentOwner]`
-- `mesh work-item handoff <workItemId> <fromRole> <toRole> <agentId> [summary]`
-- `mesh work-item review <workItemId> <reviewerRole> <decision> <agentId> [notes]`
-- `mesh work-item learning <workItemId> <agentId> [outcome]`
+- `mesh work-item create <title> [scope] [projectId]`
+- `mesh work-item update <workItemId> [status] [currentOwner]`
+- `mesh work-item handoff <workItemId> <fromRole> <toRole> [summary]`
+- `mesh work-item review <workItemId> <reviewerRole> <decision> [notes]`
+- `mesh work-item learning <workItemId> [outcome]`
 
 ## Release
 
@@ -58,9 +58,8 @@ Multi-platform binaries are published via GitHub Releases triggered by tags matc
 
 ## Known Limitations
 
-- Live browser-login testing still depends on the deployed `mesh-portal` and `mesh-api` carrying the matching changes.
+- Live browser-login and work-item testing still depends on the deployed `mesh-portal` and `mesh-api` carrying the matching session-auth changes.
 - Device-flow fallback is not implemented yet.
-- Full work-item command validation is still pending backend API availability.
 
 ## Contribution
 

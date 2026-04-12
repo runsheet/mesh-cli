@@ -1,9 +1,20 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+
 	"github.com/spf13/cobra"
 )
+
+func printJSON(v interface{}) error {
+	body, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(body))
+	return nil
+}
 
 var workItemCmd = &cobra.Command{
 	Use:   "work-item",
@@ -11,9 +22,9 @@ var workItemCmd = &cobra.Command{
 }
 
 var createCmd = &cobra.Command{
-	Use:   "create <title> <sourceAgentId> [scope] [projectId]",
-	Short: "Create a new work item",
-	Args:  cobra.RangeArgs(2, 4),
+	Use:   "create <title> [scope] [projectId]",
+	Short: "Create a new work item using the signed-in user session",
+	Args:  cobra.RangeArgs(1, 3),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		sess, err := RequireSession()
 		if err != nil {
@@ -23,42 +34,37 @@ var createCmd = &cobra.Command{
 		client := NewClient(sess.BaseURL, sess.AccessToken)
 
 		title := args[0]
-		sourceAgentId := args[1]
-		scope := ""
+		scope := "project"
 		projectId := ""
-		if len(args) > 2 {
-			scope = args[2]
+		if len(args) > 1 {
+			scope = args[1]
 		}
-		if len(args) > 3 {
-			projectId = args[3]
+		if len(args) > 2 {
+			projectId = args[2]
 		}
 
 		payload := map[string]interface{}{
-			"title":         title,
-			"sourceAgentId": sourceAgentId,
-		}
-		if scope != "" {
-			payload["scope"] = scope
+			"title": title,
+			"scope": scope,
 		}
 		if projectId != "" {
 			payload["projectId"] = projectId
 		}
 
 		var response map[string]interface{}
-		err = client.doRequest("POST", "/v1/work-items", payload, &response)
+		err = client.doRequest("POST", "/work-item/create", payload, &response)
 		if err != nil {
 			return err
 		}
 
-		fmt.Printf("Work item created: %v\n", response)
-		return nil
+		return printJSON(response)
 	},
 }
 
 var updateCmd = &cobra.Command{
-	Use:   "update <workItemId> <agentId> [status] [currentOwner]",
-	Short: "Update a work item",
-	Args:  cobra.RangeArgs(2, 4),
+	Use:   "update <workItemId> [status] [currentOwner]",
+	Short: "Update a work item using the signed-in user session",
+	Args:  cobra.RangeArgs(1, 3),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		sess, err := RequireSession()
 		if err != nil {
@@ -66,36 +72,32 @@ var updateCmd = &cobra.Command{
 		}
 
 		client := NewClient(sess.BaseURL, sess.AccessToken)
-
 		workItemId := args[0]
-		agentId := args[1]
 
 		payload := map[string]interface{}{
-			"agentId": agentId,
+			"workItemId": workItemId,
 		}
-
+		if len(args) > 1 {
+			payload["status"] = args[1]
+		}
 		if len(args) > 2 {
-			payload["status"] = args[2]
-		}
-		if len(args) > 3 {
-			payload["currentOwner"] = args[3]
+			payload["currentOwner"] = args[2]
 		}
 
 		var response map[string]interface{}
-		err = client.doRequest("PATCH", fmt.Sprintf("/v1/work-items/%s", workItemId), payload, &response)
+		err = client.doRequest("POST", "/work-item/update", payload, &response)
 		if err != nil {
 			return err
 		}
 
-		fmt.Printf("Work item updated: %v\n", response)
-		return nil
+		return printJSON(response)
 	},
 }
 
 var handoffCmd = &cobra.Command{
-	Use:   "handoff <workItemId> <fromRole> <toRole> <agentId> [summary]",
-	Short: "Handoff a work item",
-	Args:  cobra.RangeArgs(4, 5),
+	Use:   "handoff <workItemId> <fromRole> <toRole> [summary]",
+	Short: "Handoff a work item using the signed-in user session",
+	Args:  cobra.RangeArgs(3, 4),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		sess, err := RequireSession()
 		if err != nil {
@@ -104,36 +106,29 @@ var handoffCmd = &cobra.Command{
 
 		client := NewClient(sess.BaseURL, sess.AccessToken)
 
-		workItemId := args[0]
-		fromRole := args[1]
-		toRole := args[2]
-		agentId := args[3]
-
 		payload := map[string]interface{}{
-			"fromRole": fromRole,
-			"toRole":   toRole,
-			"agentId":  agentId,
+			"workItemId": args[0],
+			"fromRole":   args[1],
+			"toRole":     args[2],
 		}
-
-		if len(args) > 4 {
-			payload["summary"] = args[4]
+		if len(args) > 3 {
+			payload["handoffSummary"] = args[3]
 		}
 
 		var response map[string]interface{}
-		err = client.doRequest("POST", fmt.Sprintf("/v1/work-items/%s/handoff", workItemId), payload, &response)
+		err = client.doRequest("POST", "/work-item/handoff", payload, &response)
 		if err != nil {
 			return err
 		}
 
-		fmt.Printf("Work item handoffed: %v\n", response)
-		return nil
+		return printJSON(response)
 	},
 }
 
 var reviewCmd = &cobra.Command{
-	Use:   "review <workItemId> <reviewerRole> <decision> <agentId> [notes]",
-	Short: "Review a work item",
-	Args:  cobra.RangeArgs(4, 5),
+	Use:   "review <workItemId> <reviewerRole> <decision> [notes]",
+	Short: "Review a work item using the signed-in user session",
+	Args:  cobra.RangeArgs(3, 4),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		sess, err := RequireSession()
 		if err != nil {
@@ -142,36 +137,29 @@ var reviewCmd = &cobra.Command{
 
 		client := NewClient(sess.BaseURL, sess.AccessToken)
 
-		workItemId := args[0]
-		reviewerRole := args[1]
-		decision := args[2]
-		agentId := args[3]
-
 		payload := map[string]interface{}{
-			"reviewerRole": reviewerRole,
-			"decision":     decision,
-			"agentId":      agentId,
+			"workItemId":   args[0],
+			"reviewerRole": args[1],
+			"decision":     args[2],
 		}
-
-		if len(args) > 4 {
-			payload["notes"] = args[4]
+		if len(args) > 3 {
+			payload["notes"] = args[3]
 		}
 
 		var response map[string]interface{}
-		err = client.doRequest("POST", fmt.Sprintf("/v1/work-items/%s/review", workItemId), payload, &response)
+		err = client.doRequest("POST", "/work-item/review", payload, &response)
 		if err != nil {
 			return err
 		}
 
-		fmt.Printf("Work item reviewed: %v\n", response)
-		return nil
+		return printJSON(response)
 	},
 }
 
 var learningCmd = &cobra.Command{
-	Use:   "learning <workItemId> <agentId> [outcome]",
-	Short: "Mark learning on a work item",
-	Args:  cobra.RangeArgs(2, 3),
+	Use:   "learning <workItemId> [outcome]",
+	Short: "Mark learning on a work item using the signed-in user session",
+	Args:  cobra.RangeArgs(1, 2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		sess, err := RequireSession()
 		if err != nil {
@@ -180,25 +168,20 @@ var learningCmd = &cobra.Command{
 
 		client := NewClient(sess.BaseURL, sess.AccessToken)
 
-		workItemId := args[0]
-		agentId := args[1]
-
 		payload := map[string]interface{}{
-			"agentId": agentId,
+			"workItemId": args[0],
 		}
-
-		if len(args) > 2 {
-			payload["outcome"] = args[2]
+		if len(args) > 1 {
+			payload["outcome"] = args[1]
 		}
 
 		var response map[string]interface{}
-		err = client.doRequest("POST", fmt.Sprintf("/v1/work-items/%s/learning", workItemId), payload, &response)
+		err = client.doRequest("POST", "/work-item/learning", payload, &response)
 		if err != nil {
 			return err
 		}
 
-		fmt.Printf("Work item learning recorded: %v\n", response)
-		return nil
+		return printJSON(response)
 	},
 }
 
