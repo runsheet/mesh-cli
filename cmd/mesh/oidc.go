@@ -145,12 +145,14 @@ func openBrowser(target string) error {
 	return cmd.Start()
 }
 
+const defaultOAuthClientID = "f5fa1e40-7338-4f0d-86fc-d5ba521c9fad"
+
 func buildAuthorizeURL(cfg *loginStartResponse, redirectURI, state, verifier string) (string, error) {
 	if cfg.AuthorizationEndpoint == "" {
 		return "", errors.New("mesh-api did not provide an authorization endpoint")
 	}
 	if cfg.ClientID == "" {
-		return "", errors.New("mesh-api did not provide an OIDC client ID")
+		cfg.ClientID = defaultOAuthClientID
 	}
 	scopes := cfg.Scopes
 	if len(scopes) == 0 {

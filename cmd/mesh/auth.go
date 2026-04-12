@@ -16,13 +16,17 @@ var (
 	baseURLFlag       string
 	browserTimeoutSec int
 	noBrowserFlag     bool
+	callbackPort      int
 )
+
+const defaultCallbackPort = 21012
 
 func init() {
 	authCmd.AddCommand(authLoginCmd, authTokenLoginCmd, authWhoamiCmd, authLogoutCmd)
 	authLoginCmd.Flags().StringVar(&baseURLFlag, "baseUrl", "https://api.projectmesh.io", "Base URL of the mesh API")
 	authLoginCmd.Flags().IntVar(&browserTimeoutSec, "timeout", 180, "Seconds to wait for the browser login callback")
 	authLoginCmd.Flags().BoolVar(&noBrowserFlag, "no-browser", false, "Print the login URL instead of opening it automatically")
+	authLoginCmd.Flags().IntVar(&callbackPort, "callback-port", defaultCallbackPort, "Local port for the OAuth callback server")
 	authTokenLoginCmd.Flags().StringVar(&baseURLFlag, "baseUrl", "https://api.projectmesh.io", "Base URL of the mesh API")
 }
 
@@ -105,9 +109,10 @@ var authLoginCmd = &cobra.Command{
 		}
 
 		redirectURI, waitForCode, err := func(timeout time.Duration) (string, func() (string, error), error) {
-			listener, err := net.Listen("tcp", "127.0.0.1:0")
+			addr := fmt.Sprintf("127.0.0.1:%d", callbackPort)
+			listener, err := net.Listen("tcp", addr)
 			if err != nil {
-				return "", nil, err
+				return "", nil, fmt.Errorf("could not listen on %s (port may be in use): %w", addr, err)
 			}
 
 			codeCh := make(chan string, 1)
