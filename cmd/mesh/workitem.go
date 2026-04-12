@@ -34,7 +34,7 @@ var createCmd = &cobra.Command{
 		}
 
 		payload := map[string]interface{}{
-			"title":        title,
+			"title":         title,
 			"sourceAgentId": sourceAgentId,
 		}
 		if scope != "" {

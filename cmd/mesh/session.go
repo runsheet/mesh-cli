@@ -9,9 +9,16 @@ import (
 )
 
 type Session struct {
-	AccessToken string    `json:"accessToken"`
-	BaseURL     string    `json:"baseUrl"`
-	CreatedAt   time.Time `json:"createdAt"`
+	Kind         string     `json:"kind,omitempty"`
+	AccessToken  string     `json:"accessToken"`
+	RefreshToken string     `json:"refreshToken,omitempty"`
+	IDToken      string     `json:"idToken,omitempty"`
+	TokenType    string     `json:"tokenType,omitempty"`
+	BaseURL      string     `json:"baseUrl"`
+	UserID       string     `json:"userId,omitempty"`
+	UserEmail    string     `json:"userEmail,omitempty"`
+	ExpiresAt    *time.Time `json:"expiresAt,omitempty"`
+	CreatedAt    time.Time  `json:"createdAt"`
 }
 
 func getSessionFilePath() (string, error) {
@@ -35,6 +42,9 @@ func LoadSession() (*Session, error) {
 	if err := json.Unmarshal(file, &sess); err != nil {
 		return nil, err
 	}
+	if sess.Kind == "" {
+		sess.Kind = "user"
+	}
 	return &sess, nil
 }
 
@@ -42,6 +52,9 @@ func SaveSession(sess *Session) error {
 	path, err := getSessionFilePath()
 	if err != nil {
 		return err
+	}
+	if sess.Kind == "" {
+		sess.Kind = "user"
 	}
 	data, err := json.MarshalIndent(sess, "", "  ")
 	if err != nil {
@@ -55,25 +68,29 @@ func ClearSession() error {
 	if err != nil {
 		return err
 	}
-	return os.Remove(path)
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 func IsSessionValid(sess *Session) bool {
 	if sess == nil || sess.AccessToken == "" {
 		return false
 	}
-	// Could add expiry check if tokens expire
+	if sess.ExpiresAt != nil && time.Now().After(*sess.ExpiresAt) {
+		return false
+	}
 	return true
 }
 
-// Helper to require valid session
 func RequireSession() (*Session, error) {
 	sess, err := LoadSession()
 	if err != nil {
-		return nil, errors.New("No active session found, please login")
+		return nil, errors.New("no active session found, please login")
 	}
 	if !IsSessionValid(sess) {
-		return nil, errors.New("Invalid session, please login")
+		return nil, errors.New("invalid or expired session, please login again")
 	}
 	return sess, nil
 }

@@ -1,6 +1,6 @@
 # Mesh CLI - Go Implementation
 
-This is the Go-based replacement for the Mesh CLI, providing parity with the existing TypeScript CLI.
+This is the Go-based replacement for the Mesh CLI, providing parity with the existing TypeScript CLI and a real browser-based auth flow.
 
 ## Installation
 
@@ -11,16 +11,31 @@ cd cmd/mesh
 GO111MODULE=on go build -o mesh
 ```
 
-## Authentication Commands (Testable Now)
+## Authentication Commands
 
-- `mesh auth login [baseUrl]` - Browser-based login (stubbed, manual token entry)
-- `mesh auth token-login [baseUrl] <accessToken>` - Login using an access token
-- `mesh auth whoami` - Show current logged-in user
-- `mesh auth logout` - Log out and clear session
+- `mesh auth login [baseUrl]` - Browser-based OIDC Authorization Code + PKCE login. Opens your browser, waits for the local callback, exchanges the auth code, and saves the authenticated session locally.
+- `mesh auth login --no-browser [baseUrl]` - Prints the OIDC authorize URL instead of opening it automatically.
+- `mesh auth token-login [baseUrl] <accessToken>` - Explicit fallback. Validates the supplied bearer token against `mesh-api`, then saves the session locally.
+- `mesh auth whoami` - Shows the authenticated identity for the current saved session.
+- `mesh auth logout` - Removes the saved local session.
 
-## Work-Item Commands (Pending Backend Configuration)
+Sessions are stored in `~/.mesh-session.json`.
 
-The following commands are implemented but require a properly configured and accessible `mesh-api` backend to function correctly:
+## Backend Auth Expectations
+
+`mesh auth login` expects `mesh-api` to expose `GET /auth/login-start` with OIDC metadata for the CLI, either directly or via an issuer that supports standard OIDC discovery. The CLI expects enough information to derive:
+
+- issuer or explicit authorization endpoint
+- token endpoint
+- client ID
+- scopes
+- optional userinfo endpoint
+
+`mesh auth whoami` and `mesh auth token-login` use `GET /auth/session` on `mesh-api` to validate the access token and return the current user identity.
+
+## Work-Item Commands
+
+The following commands are implemented but still require a properly configured and accessible `mesh-api` backend to function correctly:
 
 - `mesh work-item create <title> <sourceAgentId> [scope] [projectId]`
 - `mesh work-item update <workItemId> <agentId> [status] [currentOwner]`
@@ -30,17 +45,14 @@ The following commands are implemented but require a properly configured and acc
 
 ## Release
 
-Multi-platform binaries will be published via GitHub Releases triggered by tags matching `v*.*.*`.
+Multi-platform binaries are published via GitHub Releases triggered by tags matching `v*.*.*`.
 
 ## Known Limitations
 
-- Full work-item command validation is pending proper backend API availability.
-- Auth commands have been smoke tested locally and are ready for use.
+- Interactive browser login depends on `mesh-api` exposing real OIDC metadata and token validation.
+- Device-flow fallback is not implemented yet.
+- Full work-item command validation is still pending backend API availability.
 
 ## Contribution
 
 Contributions and fixes are welcome.
-
----
-
-This is the initial Go port of the Mesh CLI.
