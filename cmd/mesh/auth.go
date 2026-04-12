@@ -26,40 +26,47 @@ func init() {
 	authLoginCmd.Flags().StringVar(&baseURLFlag, "baseUrl", "https://api.projectmesh.io", "Base URL of the mesh API")
 	authLoginCmd.Flags().IntVar(&browserTimeoutSec, "timeout", 180, "Seconds to wait for the browser login callback")
 	authLoginCmd.Flags().BoolVar(&noBrowserFlag, "no-browser", false, "Print the login URL instead of opening it automatically")
-	authLoginCmd.Flags().IntVar(&callbackPort, "callback-port", defaultCallbackPort, "Local port for the OAuth callback server")
+	authLoginCmd.Flags().IntVar(&callbackPort, "callback-port", defaultCallbackPort, "Local port for the browser login callback server")
 	authTokenLoginCmd.Flags().StringVar(&baseURLFlag, "baseUrl", "https://api.projectmesh.io", "Base URL of the mesh API")
 }
 
-func listenForAuthCode(timeout time.Duration) (string, string, error) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+func listenForPortalHandoff(timeout time.Duration) (string, func() (*portalHandoffResult, error), error) {
+	addr := fmt.Sprintf("127.0.0.1:%d", callbackPort)
+	listener, err := net.Listen("tcp", addr)
 	if err != nil {
-		return "", "", err
+		return "", nil, fmt.Errorf("could not listen on %s (port may be in use): %w", addr, err)
 	}
 
-	codeCh := make(chan string, 1)
+	resultCh := make(chan *portalHandoffResult, 1)
 	errCh := make(chan error, 1)
 	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if e := r.URL.Query().Get("error"); e != "" {
-			errCh <- fmt.Errorf("oidc login failed: %s", e)
+		query := r.URL.Query()
+		if e := query.Get("error"); e != "" {
+			errCh <- fmt.Errorf("portal login failed: %s", e)
 			w.WriteHeader(http.StatusBadRequest)
 			_, _ = w.Write([]byte("Login failed. You can close this window."))
 			return
 		}
-		code := r.URL.Query().Get("code")
-		if code == "" {
-			errCh <- fmt.Errorf("callback did not include authorization code")
+		accessToken := query.Get("access_token")
+		if accessToken == "" {
+			errCh <- fmt.Errorf("callback did not include access_token")
 			w.WriteHeader(http.StatusBadRequest)
-			_, _ = w.Write([]byte("Missing authorization code. You can close this window."))
+			_, _ = w.Write([]byte("Missing access token. You can close this window."))
 			return
 		}
 		_, _ = w.Write([]byte("mesh-cli login complete. You can close this window."))
-		codeCh <- code
+		resultCh <- &portalHandoffResult{
+			AccessToken:  accessToken,
+			RefreshToken: query.Get("refresh_token"),
+			UserEmail:    query.Get("user_email"),
+			UserID:       query.Get("user_id"),
+			ExpiresAt:    query.Get("expires_at"),
+		}
 	})}
 	go func() {
 		_ = server.Serve(listener)
 	}()
 
-	redirectURI := fmt.Sprintf("http://%s/callback", listener.Addr().String())
 	shutdown := func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
@@ -67,22 +74,22 @@ func listenForAuthCode(timeout time.Duration) (string, string, error) {
 		_ = listener.Close()
 	}
 
-	select {
-	case code := <-codeCh:
-		shutdown()
-		return redirectURI, code, nil
-	case err := <-errCh:
-		shutdown()
-		return redirectURI, "", err
-	case <-time.After(timeout):
-		shutdown()
-		return redirectURI, "", fmt.Errorf("timed out waiting for browser login callback")
-	}
+	return fmt.Sprintf("http://%s/callback", listener.Addr().String()), func() (*portalHandoffResult, error) {
+		defer shutdown()
+		select {
+		case result := <-resultCh:
+			return result, nil
+		case err := <-errCh:
+			return nil, err
+		case <-time.After(timeout):
+			return nil, fmt.Errorf("timed out waiting for browser login callback")
+		}
+	}, nil
 }
 
 var authLoginCmd = &cobra.Command{
 	Use:   "login [baseUrl]",
-	Short: "Login to mesh with browser-based OIDC + PKCE",
+	Short: "Login to mesh with browser-based portal handoff",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		url := baseURLFlag
@@ -95,123 +102,56 @@ var authLoginCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if err := hydrateOIDCConfig(cfg); err != nil {
-			return err
+		if cfg.Mode != "portal-handoff" {
+			return fmt.Errorf("unsupported login mode from mesh-api: %s", cfg.Mode)
 		}
 
-		state, err := randomURLSafe(32)
-		if err != nil {
-			return err
-		}
-		verifier, err := randomURLSafe(48)
+		redirectURI, waitForHandoff, err := listenForPortalHandoff(time.Duration(browserTimeoutSec) * time.Second)
 		if err != nil {
 			return err
 		}
 
-		redirectURI, waitForCode, err := func(timeout time.Duration) (string, func() (string, error), error) {
-			addr := fmt.Sprintf("127.0.0.1:%d", callbackPort)
-			listener, err := net.Listen("tcp", addr)
-			if err != nil {
-				return "", nil, fmt.Errorf("could not listen on %s (port may be in use): %w", addr, err)
-			}
-
-			codeCh := make(chan string, 1)
-			errCh := make(chan error, 1)
-			server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if e := r.URL.Query().Get("error"); e != "" {
-					errCh <- fmt.Errorf("oidc login failed: %s", e)
-					w.WriteHeader(http.StatusBadRequest)
-					_, _ = w.Write([]byte("Login failed. You can close this window."))
-					return
-				}
-				code := r.URL.Query().Get("code")
-				if code == "" {
-					errCh <- fmt.Errorf("callback did not include authorization code")
-					w.WriteHeader(http.StatusBadRequest)
-					_, _ = w.Write([]byte("Missing authorization code. You can close this window."))
-					return
-				}
-				_, _ = w.Write([]byte("mesh-cli login complete. You can close this window."))
-				codeCh <- code
-			})}
-			go func() {
-				_ = server.Serve(listener)
-			}()
-
-			shutdown := func() {
-				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-				defer cancel()
-				_ = server.Shutdown(ctx)
-				_ = listener.Close()
-			}
-
-			return fmt.Sprintf("http://%s/callback", listener.Addr().String()), func() (string, error) {
-				defer shutdown()
-				select {
-				case code := <-codeCh:
-					return code, nil
-				case err := <-errCh:
-					return "", err
-				case <-time.After(timeout):
-					return "", fmt.Errorf("timed out waiting for browser login callback")
-				}
-			}, nil
-		}(time.Duration(browserTimeoutSec) * time.Second)
-		if err != nil {
-			return err
-		}
-
-		authorizeURL, err := buildAuthorizeURL(cfg, redirectURI, state, verifier)
+		loginURL, err := buildPortalLoginURL(cfg, redirectURI, url)
 		if err != nil {
 			return err
 		}
 
 		fmt.Printf("Opening browser for login against %s\n", url)
 		if noBrowserFlag {
-			fmt.Printf("Open this URL to continue login:\n%s\n", authorizeURL)
-		} else if err := openBrowser(authorizeURL); err != nil {
-			fmt.Printf("Could not open a browser automatically. Open this URL manually:\n%s\n", authorizeURL)
+			fmt.Printf("Open this URL to continue login:\n%s\n", loginURL)
+		} else if err := openBrowser(loginURL); err != nil {
+			fmt.Printf("Could not open a browser automatically. Open this URL manually:\n%s\n", loginURL)
 		}
 
-		authCode, err := waitForCode()
+		handoff, err := waitForHandoff()
 		if err != nil {
 			return err
 		}
 
-		tokens, err := exchangeAuthCode(cfg, redirectURI, authCode, verifier)
+		who, err := fetchWhoami(url, handoff.AccessToken)
 		if err != nil {
 			return err
 		}
 
 		sess := &Session{
-			Kind:          "user",
-			AccessToken:   tokens.AccessToken,
-			RefreshToken:  tokens.RefreshToken,
-			IDToken:       tokens.IDToken,
-			TokenType:     tokens.TokenType,
-			BaseURL:       url,
-			TokenEndpoint: cfg.TokenEndpoint,
-			ClientID:      cfg.ClientID,
-			CreatedAt:     time.Now(),
+			Kind:         "user",
+			AccessToken:  handoff.AccessToken,
+			RefreshToken: handoff.RefreshToken,
+			BaseURL:      url,
+			UserID:       who.User.ID,
+			UserEmail:    who.User.Email,
+			CreatedAt:    time.Now(),
 		}
-		if tokens.ExpiresIn > 0 {
-			expiresAt := time.Now().Add(time.Duration(tokens.ExpiresIn) * time.Second)
-			sess.ExpiresAt = &expiresAt
-		}
-
-		if who, err := fetchWhoami(url, tokens.AccessToken); err == nil {
-			sess.UserID = who.User.ID
-			sess.UserEmail = who.User.Email
-			if who.ExpiresAt != "" {
-				if parsed, parseErr := time.Parse(time.RFC3339, who.ExpiresAt); parseErr == nil {
-					sess.ExpiresAt = &parsed
-				}
+		if handoff.ExpiresAt != "" {
+			if ts, parseErr := parseUnixTimestamp(handoff.ExpiresAt); parseErr == nil {
+				sess.ExpiresAt = &ts
 			}
-		} else if userinfo, userinfoErr := fetchUserinfo(cfg.UserinfoEndpoint, tokens.AccessToken); userinfoErr == nil && userinfo != nil {
-			sess.UserID = userinfo.Sub
-			sess.UserEmail = userinfo.Email
 		}
-
+		if who.ExpiresAt != "" {
+			if parsed, parseErr := time.Parse(time.RFC3339, who.ExpiresAt); parseErr == nil {
+				sess.ExpiresAt = &parsed
+			}
+		}
 		if err := SaveSession(sess); err != nil {
 			return err
 		}
@@ -221,6 +161,14 @@ var authLoginCmd = &cobra.Command{
 		}
 		return nil
 	},
+}
+
+func parseUnixTimestamp(value string) (time.Time, error) {
+	seconds, err := time.ParseDuration(value + "s")
+	if err != nil {
+		return time.Time{}, err
+	}
+	return time.Unix(int64(seconds.Seconds()), 0), nil
 }
 
 var authTokenLoginCmd = &cobra.Command{

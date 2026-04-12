@@ -13,25 +13,34 @@ GO111MODULE=on go build -o mesh
 
 ## Authentication Commands
 
-- `mesh auth login [baseUrl]` - Browser-based OIDC Authorization Code + PKCE login. Opens your browser, waits for the local callback, exchanges the auth code, and saves the authenticated session locally.
-- `mesh auth login --no-browser [baseUrl]` - Prints the OIDC authorize URL instead of opening it automatically.
+- `mesh auth login [baseUrl]` - Browser-based portal handoff login. Opens the Mesh portal login page, waits for the local callback, validates the returned session token with `mesh-api`, and saves the authenticated session locally.
+- `mesh auth login --no-browser [baseUrl]` - Prints the browser login URL instead of opening it automatically.
 - `mesh auth token-login [baseUrl] <accessToken>` - Explicit fallback. Validates the supplied bearer token against `mesh-api`, then saves the session locally.
 - `mesh auth whoami` - Shows the authenticated identity for the current saved session.
 - `mesh auth logout` - Removes the saved local session.
 
 Sessions are stored in `~/.mesh-session.json`.
 
-## Backend Auth Expectations
+## Browser Login Architecture
 
-`mesh auth login` expects `mesh-api` to expose `GET /auth/login-start` with OIDC metadata for the CLI, either directly or via an issuer that supports standard OIDC discovery. The CLI expects enough information to derive:
+`mesh auth login` now follows the auth model Mesh already uses:
 
-- issuer or explicit authorization endpoint
-- token endpoint
-- client ID
-- scopes
-- optional userinfo endpoint
+- the portal owns end-user Supabase sign-in
+- the CLI starts a local callback listener
+- the CLI opens the Mesh portal login page with `cli_redirect=<local callback>`
+- after successful sign-in, the portal redirects the browser back to the CLI with the signed-in access token
+- the CLI validates that token with `GET /auth/session` on `mesh-api` before persisting it
 
-`mesh auth whoami` and `mesh auth token-login` use `GET /auth/session` on `mesh-api` to validate the access token and return the current user identity.
+This replaces the earlier attempt to force a generic OIDC Authorization Code + PKCE flow onto a Supabase setup that is not acting as the desired provider boundary for Mesh.
+
+## Backend Expectations
+
+`mesh-api` should expose:
+
+- `GET /auth/login-start` returning browser-login metadata for the CLI
+- `GET /auth/session` validating a bearer token and returning the current user identity
+
+`mesh-portal` should support `GET /login?cli_redirect=<local callback>` and, after successful sign-in, redirect the browser to that local callback with the signed-in session token.
 
 ## Work-Item Commands
 
@@ -49,7 +58,7 @@ Multi-platform binaries are published via GitHub Releases triggered by tags matc
 
 ## Known Limitations
 
-- Interactive browser login depends on `mesh-api` exposing real OIDC metadata and token validation.
+- Live browser-login testing still depends on the deployed `mesh-portal` and `mesh-api` carrying the matching changes.
 - Device-flow fallback is not implemented yet.
 - Full work-item command validation is still pending backend API availability.
 
