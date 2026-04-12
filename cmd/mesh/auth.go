@@ -184,13 +184,15 @@ var authLoginCmd = &cobra.Command{
 		}
 
 		sess := &Session{
-			Kind:         "user",
-			AccessToken:  tokens.AccessToken,
-			RefreshToken: tokens.RefreshToken,
-			IDToken:      tokens.IDToken,
-			TokenType:    tokens.TokenType,
-			BaseURL:      url,
-			CreatedAt:    time.Now(),
+			Kind:          "user",
+			AccessToken:   tokens.AccessToken,
+			RefreshToken:  tokens.RefreshToken,
+			IDToken:       tokens.IDToken,
+			TokenType:     tokens.TokenType,
+			BaseURL:       url,
+			TokenEndpoint: cfg.TokenEndpoint,
+			ClientID:      cfg.ClientID,
+			CreatedAt:     time.Now(),
 		}
 		if tokens.ExpiresIn > 0 {
 			expiresAt := time.Now().Add(time.Duration(tokens.ExpiresIn) * time.Second)

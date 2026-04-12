@@ -201,6 +201,37 @@ func exchangeAuthCode(cfg *loginStartResponse, redirectURI, code, verifier strin
 	return &out, nil
 }
 
+func refreshAccessToken(tokenEndpoint, refreshToken, clientID string) (*tokenResponse, error) {
+	if tokenEndpoint == "" {
+		return nil, errors.New("no token endpoint configured, please login again")
+	}
+	if clientID == "" {
+		clientID = defaultOAuthClientID
+	}
+	form := url.Values{}
+	form.Set("grant_type", "refresh_token")
+	form.Set("refresh_token", refreshToken)
+	form.Set("client_id", clientID)
+
+	resp, err := http.Post(tokenEndpoint, "application/x-www-form-urlencoded", strings.NewReader(form.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("token refresh failed: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+	var out tokenResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	if out.AccessToken == "" {
+		return nil, errors.New("token refresh succeeded but no access_token was returned")
+	}
+	return &out, nil
+}
+
 func fetchWhoami(baseURL, accessToken string) (*whoamiResponse, error) {
 	req, err := http.NewRequest(http.MethodGet, normalizeBaseURL(baseURL)+"/auth/session", nil)
 	if err != nil {
