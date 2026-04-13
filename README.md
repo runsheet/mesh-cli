@@ -47,10 +47,13 @@ This replaces the earlier attempt to force a generic OIDC Authorization Code + P
 After `mesh auth login`, the following commands use the saved signed-in user session and call `mesh-api` with the user bearer token:
 
 - `mesh work-item create <title> [scope] [projectId]`
-- `mesh work-item update <workItemId> [status] [currentOwner]`
-- `mesh work-item handoff <workItemId> <fromRole> <toRole> [summary]`
-- `mesh work-item review <workItemId> <reviewerRole> <decision> [notes]`
-- `mesh work-item learning <workItemId> [outcome]`
+- `mesh work-item update <workItemId> [--title ...] [--status ...] [--priority ...] [--owner-role ...] [--current-owner ...] [--scope ...] [--project-id ...] [--requester ...] [--note ...]`
+- `mesh work-item handoff <workItemId> <fromRole> <toRole> [--summary ...] [--required-outputs ...] [--repo-path ...] [--system-target ...] [--constraints ...] [--test-expectations ...] [--linked-spec-version N] [--note ...]`
+- `mesh work-item review <workItemId> <reviewerRole> <decision> [--notes ...] [--criteria-checklist ...]`
+- `mesh work-item learning <workItemId> [--outcome ...] [--what-worked ...] [--what-failed ...] [--follow-up-needed] [--follow-up-item-id ...] [--note ...]`
+
+`mesh work-item update --status` is validated against the live Ralph Loop state machine values:
+`inbox`, `clarifying`, `spec_ready`, `awaiting_approval`, `ready_for_devlead`, `in_execution`, `blocked`, `in_review`, `changes_requested`, `done`, `archived`.
 
 ## Release
 
