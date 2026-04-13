@@ -21,6 +21,14 @@ type loginStartResponse struct {
 	SuggestedTokenLoginCmd string `json:"suggestedTokenLoginCommand"`
 }
 
+type tokenResponse struct {
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+	IDToken      string `json:"id_token"`
+	TokenType    string `json:"token_type"`
+	ExpiresIn    int64  `json:"expires_in"`
+}
+
 type whoamiResponse struct {
 	OK   bool `json:"ok"`
 	User struct {
@@ -91,6 +99,41 @@ func buildPortalLoginURL(cfg *loginStartResponse, redirectURI, baseURL string) (
 	q.Set("mesh_api_base_url", normalizeBaseURL(baseURL))
 	u.RawQuery = q.Encode()
 	return u.String(), nil
+}
+
+func refreshAccessToken(tokenEndpoint, refreshToken, clientID string) (*tokenResponse, error) {
+	if strings.TrimSpace(tokenEndpoint) == "" {
+		return nil, fmt.Errorf("no token endpoint configured")
+	}
+	if strings.TrimSpace(refreshToken) == "" {
+		return nil, fmt.Errorf("no refresh token configured")
+	}
+
+	form := url.Values{}
+	form.Set("grant_type", "refresh_token")
+	form.Set("refresh_token", refreshToken)
+	if strings.TrimSpace(clientID) != "" {
+		form.Set("client_id", clientID)
+	}
+
+	resp, err := http.Post(tokenEndpoint, "application/x-www-form-urlencoded", strings.NewReader(form.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("token refresh failed: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+
+	var out tokenResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	if out.AccessToken == "" {
+		return nil, fmt.Errorf("token refresh succeeded but no access_token was returned")
+	}
+	return &out, nil
 }
 
 func fetchWhoami(baseURL, accessToken string) (*whoamiResponse, error) {
