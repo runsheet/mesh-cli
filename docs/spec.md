@@ -73,11 +73,11 @@ Create a new `mesh-cli` repo that becomes the standard end-user/operator interfa
 - `mesh spec status`
 
 ### Work items
-- `mesh work-item create`
-- `mesh work-item update`
-- `mesh work-item handoff`
-- `mesh work-item review`
-- `mesh work-item learning`
+- `mesh work-item create` should feel natural for PM, DevLead, and Builder usage
+- `mesh work-item update` should support a quick move-style form for common state transitions and a richer flag form for full edits
+- `mesh work-item handoff` should read like a role-to-role handoff packet, with a simple summary-first shape and richer optional packet fields
+- `mesh work-item review` should accept human-friendly decisions like approve and changes, while normalizing to the canonical backend contract
+- `mesh work-item learning` should support a lightweight outcome-only form plus a fuller learning packet
 - `mesh work-item get`
 - `mesh work-item list`
 

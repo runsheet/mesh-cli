@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -18,22 +19,24 @@ func printJSON(v interface{}) error {
 }
 
 var workItemCmd = &cobra.Command{
-	Use:   "work-item",
-	Short: "Work item management commands",
+	Use:     "work-item",
+	Aliases: []string{"work", "wi"},
+	Short:   "Ralph Loop work item commands",
+	Long:    "Create, move, hand off, review, and learn from Ralph Loop work items using your signed-in Mesh session.",
 }
 
 var allowedWorkItemStatuses = map[string]bool{
-	"inbox":              true,
-	"clarifying":         true,
-	"spec_ready":         true,
-	"awaiting_approval":  true,
-	"ready_for_devlead":  true,
-	"in_execution":       true,
-	"blocked":            true,
-	"in_review":          true,
-	"changes_requested":  true,
-	"done":               true,
-	"archived":           true,
+	"inbox":             true,
+	"clarifying":        true,
+	"spec_ready":        true,
+	"awaiting_approval": true,
+	"ready_for_devlead": true,
+	"in_execution":      true,
+	"blocked":           true,
+	"in_review":         true,
+	"changes_requested": true,
+	"done":              true,
+	"archived":          true,
 }
 
 var allowedOwnerRoles = map[string]bool{
@@ -66,6 +69,32 @@ func normalizeOptional(value string) string {
 	return strings.TrimSpace(value)
 }
 
+func normalizeStatus(value string) string {
+	switch normalizeOptional(value) {
+	case "ready":
+		return "ready_for_devlead"
+	case "executing", "active":
+		return "in_execution"
+	case "review":
+		return "in_review"
+	case "changes", "changes-needed":
+		return "changes_requested"
+	default:
+		return normalizeOptional(value)
+	}
+}
+
+func normalizeDecision(value string) string {
+	switch normalizeOptional(value) {
+	case "approve", "approved":
+		return "accept"
+	case "changes", "request_changes", "request-changes":
+		return "change_request"
+	default:
+		return normalizeOptional(value)
+	}
+}
+
 func validateEnum(name, value string, allowed map[string]bool) error {
 	if value == "" {
 		return nil
@@ -77,50 +106,8 @@ func validateEnum(name, value string, allowed map[string]bool) error {
 	for k := range allowed {
 		choices = append(choices, k)
 	}
+	sort.Strings(choices)
 	return fmt.Errorf("invalid %s %q, expected one of: %s", name, value, strings.Join(choices, ", "))
-}
-
-var createCmd = &cobra.Command{
-	Use:   "create <title> [scope] [projectId]",
-	Short: "Create a new work item using the signed-in user session",
-	Args:  cobra.RangeArgs(1, 3),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		sess, err := RequireSession()
-		if err != nil {
-			return err
-		}
-
-		client := NewClient(sess.BaseURL, sess.AccessToken)
-
-		title := args[0]
-		scope := "project"
-		projectId := ""
-		if len(args) > 1 {
-			scope = args[1]
-		}
-		if len(args) > 2 {
-			projectId = args[2]
-		}
-		if err := validateEnum("scope", scope, allowedScopes); err != nil {
-			return err
-		}
-
-		payload := map[string]interface{}{
-			"title": title,
-			"scope": scope,
-		}
-		if projectId != "" {
-			payload["projectId"] = projectId
-		}
-
-		var response map[string]interface{}
-		err = client.doRequest("POST", "/work-item/create", payload, &response)
-		if err != nil {
-			return err
-		}
-
-		return printJSON(response)
-	},
 }
 
 var (
@@ -146,20 +133,75 @@ var (
 	reviewNotes             string
 	reviewCriteriaChecklist string
 
-	learningOutcome       string
-	learningWhatWorked    string
-	learningWhatFailed    string
-	learningFollowUpNeed  bool
-	learningFollowUpID    string
-	learningNote          string
+	learningOutcome      string
+	learningWhatWorked   string
+	learningWhatFailed   string
+	learningFollowUpNeed bool
+	learningFollowUpID   string
+	learningNote         string
 )
 
-var updateCmd = &cobra.Command{
-	Use:   "update <workItemId>",
-	Short: "Update a work item using the signed-in user session",
-	Args:  cobra.ExactArgs(1),
+var createCmd = &cobra.Command{
+	Use:     "create <title> [scope] [projectId]",
+	Short:   "Create a new Ralph Loop work item",
+	Long:    "Create a Ralph Loop work item as the signed-in user. Use project scope for normal delivery work, personal for operator tasks, and ops for internal operations.",
+	Example: "mesh work-item create \"Investigate deploy flake\" project <project-id>\nmesh work-item create \"Inbox triage\" personal\nmesh work-item create \"Gateway cleanup\" ops",
+	Args:    cobra.RangeArgs(1, 3),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := validateEnum("status", normalizeOptional(updateStatus), allowedWorkItemStatuses); err != nil {
+		sess, err := RequireSession()
+		if err != nil {
+			return err
+		}
+
+		client := NewClient(sess.BaseURL, sess.AccessToken)
+		title := args[0]
+		scope := "project"
+		projectId := ""
+		if len(args) > 1 {
+			scope = args[1]
+		}
+		if len(args) > 2 {
+			projectId = args[2]
+		}
+		if err := validateEnum("scope", scope, allowedScopes); err != nil {
+			return err
+		}
+
+		payload := map[string]interface{}{
+			"title": title,
+			"scope": scope,
+		}
+		if projectId != "" {
+			payload["projectId"] = projectId
+		}
+
+		var response map[string]interface{}
+		if err := client.doRequest("POST", "/work-item/create", payload, &response); err != nil {
+			return err
+		}
+		return printJSON(response)
+	},
+}
+
+var updateCmd = &cobra.Command{
+	Use:     "update <workItemId> [status] [currentOwner]",
+	Aliases: []string{"move"},
+	Short:   "Update work item state or ownership",
+	Long:    "Update a Ralph Loop work item. Use the quick positional form for common moves, or flags for the fuller contract.",
+	Example: "mesh work-item update <id> ready\nmesh work-item update <id> in_review builder\nmesh work-item update <id> --priority high --owner-role devlead --note \"Escalating for review\"",
+	Args:    cobra.RangeArgs(1, 3),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		status := updateStatus
+		currentOwner := updateCurrentOwner
+		if len(args) > 1 && normalizeOptional(status) == "" {
+			status = args[1]
+		}
+		if len(args) > 2 && !cmd.Flags().Changed("current-owner") {
+			currentOwner = args[2]
+		}
+		status = normalizeStatus(status)
+
+		if err := validateEnum("status", normalizeOptional(status), allowedWorkItemStatuses); err != nil {
 			return err
 		}
 		if err := validateEnum("priority", normalizeOptional(updatePriority), allowedPriorities); err != nil {
@@ -177,13 +219,11 @@ var updateCmd = &cobra.Command{
 			return err
 		}
 
-		payload := map[string]interface{}{
-			"workItemId": args[0],
-		}
+		payload := map[string]interface{}{"workItemId": args[0]}
 		if v := normalizeOptional(updateTitle); v != "" {
 			payload["title"] = v
 		}
-		if v := normalizeOptional(updateStatus); v != "" {
+		if v := normalizeOptional(status); v != "" {
 			payload["status"] = v
 		}
 		if v := normalizeOptional(updatePriority); v != "" {
@@ -192,8 +232,8 @@ var updateCmd = &cobra.Command{
 		if v := normalizeOptional(updateOwnerRole); v != "" {
 			payload["ownerRole"] = v
 		}
-		if cmd.Flags().Changed("current-owner") {
-			payload["currentOwner"] = updateCurrentOwner
+		if cmd.Flags().Changed("current-owner") || len(args) > 2 {
+			payload["currentOwner"] = currentOwner
 		}
 		if v := normalizeOptional(updateScope); v != "" {
 			payload["scope"] = v
@@ -221,10 +261,16 @@ var updateCmd = &cobra.Command{
 }
 
 var handoffCmd = &cobra.Command{
-	Use:   "handoff <workItemId> <fromRole> <toRole>",
-	Short: "Record a Ralph Loop handoff using the signed-in user session",
-	Args:  cobra.ExactArgs(3),
+	Use:     "handoff <workItemId> <fromRole> <toRole> [summary]",
+	Short:   "Record a Ralph Loop handoff",
+	Long:    "Record the handoff packet between Ralph Loop roles. Use the optional summary positional arg for the common case, and flags when you want the fuller packet.",
+	Example: "mesh work-item handoff <id> pm devlead \"Spec approved and ready\"\nmesh work-item handoff <id> devlead builder --summary \"Implement portal auth fix\" --required-outputs \"PR plus test notes\" --repo-path /repo/path",
+	Args:    cobra.RangeArgs(3, 4),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		summary := handoffSummary
+		if len(args) > 3 && normalizeOptional(summary) == "" {
+			summary = args[3]
+		}
 		if err := validateEnum("from role", args[1], allowedOwnerRoles); err != nil {
 			return err
 		}
@@ -242,7 +288,7 @@ var handoffCmd = &cobra.Command{
 			"fromRole":   args[1],
 			"toRole":     args[2],
 		}
-		if v := normalizeOptional(handoffSummary); v != "" {
+		if v := normalizeOptional(summary); v != "" {
 			payload["handoffSummary"] = v
 		}
 		if v := normalizeOptional(handoffRequiredOut); v != "" {
@@ -277,14 +323,21 @@ var handoffCmd = &cobra.Command{
 }
 
 var reviewCmd = &cobra.Command{
-	Use:   "review <workItemId> <reviewerRole> <decision>",
-	Short: "Record a Ralph Loop review using the signed-in user session",
-	Args:  cobra.ExactArgs(3),
+	Use:     "review <workItemId> <reviewerRole> <decision> [notes]",
+	Short:   "Record a Ralph Loop review",
+	Long:    "Record the review decision for a work item. Use accept, change_request, or reject. Friendly aliases like approve and changes are also accepted.",
+	Example: "mesh work-item review <id> devlead approve \"Looks good\"\nmesh work-item review <id> human changes --criteria-checklist \"tests, docs\"",
+	Args:    cobra.RangeArgs(3, 4),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		notes := reviewNotes
+		if len(args) > 3 && normalizeOptional(notes) == "" {
+			notes = args[3]
+		}
+		decision := normalizeDecision(args[2])
 		if err := validateEnum("reviewer role", args[1], allowedOwnerRoles); err != nil {
 			return err
 		}
-		if err := validateEnum("decision", args[2], allowedReviewDecisions); err != nil {
+		if err := validateEnum("decision", decision, allowedReviewDecisions); err != nil {
 			return err
 		}
 
@@ -296,9 +349,9 @@ var reviewCmd = &cobra.Command{
 		payload := map[string]interface{}{
 			"workItemId":   args[0],
 			"reviewerRole": args[1],
-			"decision":     args[2],
+			"decision":     decision,
 		}
-		if v := normalizeOptional(reviewNotes); v != "" {
+		if v := normalizeOptional(notes); v != "" {
 			payload["notes"] = v
 		}
 		if v := normalizeOptional(reviewCriteriaChecklist); v != "" {
@@ -315,19 +368,25 @@ var reviewCmd = &cobra.Command{
 }
 
 var learningCmd = &cobra.Command{
-	Use:   "learning <workItemId>",
-	Short: "Record Ralph Loop learning on a work item using the signed-in user session",
-	Args:  cobra.ExactArgs(1),
+	Use:     "learning <workItemId> [outcome]",
+	Aliases: []string{"learn"},
+	Short:   "Record Ralph Loop learning",
+	Long:    "Capture the learning packet for a work item. Use the quick outcome positional arg for the common case, or add structured flags for deeper learnings.",
+	Example: "mesh work-item learning <id> \"Shipped cleanly\"\nmesh work-item learning <id> --what-worked \"Portal handoff login\" --what-failed \"Schema drift\" --follow-up-needed --follow-up-item-id <id>",
+	Args:    cobra.RangeArgs(1, 2),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		outcome := learningOutcome
+		if len(args) > 1 && normalizeOptional(outcome) == "" {
+			outcome = args[1]
+		}
+
 		sess, err := RequireSession()
 		if err != nil {
 			return err
 		}
 
-		payload := map[string]interface{}{
-			"workItemId": args[0],
-		}
-		if v := normalizeOptional(learningOutcome); v != "" {
+		payload := map[string]interface{}{"workItemId": args[0]}
+		if v := normalizeOptional(outcome); v != "" {
 			payload["outcome"] = v
 		}
 		if v := normalizeOptional(learningWhatWorked); v != "" {
@@ -360,7 +419,7 @@ var learningCmd = &cobra.Command{
 
 func init() {
 	updateCmd.Flags().StringVar(&updateTitle, "title", "", "Updated work item title")
-	updateCmd.Flags().StringVar(&updateStatus, "status", "", "Status: inbox, clarifying, spec_ready, awaiting_approval, ready_for_devlead, in_execution, blocked, in_review, changes_requested, done, archived")
+	updateCmd.Flags().StringVar(&updateStatus, "status", "", "Status, for example ready, in_review, blocked, done")
 	updateCmd.Flags().StringVar(&updatePriority, "priority", "", "Priority: low, medium, high, urgent")
 	updateCmd.Flags().StringVar(&updateOwnerRole, "owner-role", "", "Owner role: human, pm, devlead, builder")
 	updateCmd.Flags().StringVar(&updateCurrentOwner, "current-owner", "", "Current owner value, pass empty string to clear")
