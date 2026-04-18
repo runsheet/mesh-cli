@@ -200,11 +200,12 @@ func (r *SessionRegistry) Start(agentID, model, resumeID string) (*PtySession, b
 // environment when provided; WorkingDir, if set, becomes cmd.Dir so the
 // Claude Code session starts in the template's declared workdir.
 type StartOptions struct {
-	AgentID    string
-	Model      string
-	ResumeID   string
-	Env        map[string]string
-	WorkingDir string
+	AgentID                    string
+	Model                      string
+	ResumeID                   string
+	Env                        map[string]string
+	WorkingDir                 string
+	DangerouslySkipPermissions bool
 }
 
 // StartWithOptions is Start but threads env + workdir through to the child.
@@ -223,13 +224,27 @@ func (r *SessionRegistry) StartWithOptions(opts StartOptions) (*PtySession, bool
 
 	args := []string{}
 	if opts.ResumeID != "" {
-		args = append(args, "--resume", opts.ResumeID)
+		// --session-id creates the session with this UUID if it doesn't exist
+		// yet, or resumes it if it does. Mesh pre-generates the UUID so restart
+		// and auto-start on boot land in the same conversation.
+		args = append(args, "--session-id", opts.ResumeID)
 	}
 	if opts.Model != "" {
 		args = append(args, "--model", opts.Model)
 	}
+	if opts.DangerouslySkipPermissions {
+		args = append(args, "--dangerously-skip-permissions")
+	}
 	cmd := exec.Command("claude", args...)
-	if opts.WorkingDir != "" {
+	// Claude always runs in the per-agent workdir (~/.mesh/agents/<name>/) so
+	// it auto-discovers the channel-manager-written .claude/settings.json. The
+	// template's WorkingDir is no longer the claude CWD in v1 — it remains a
+	// hint for future multi-workdir flows.
+	if dir, err := agentWorkdir(agentID); err == nil {
+		cmd.Dir = dir
+	} else if opts.WorkingDir != "" {
+		// Fall back to the template's workdir only if we can't materialize the
+		// per-agent dir (should be rare).
 		cmd.Dir = opts.WorkingDir
 	}
 	if len(opts.Env) > 0 {

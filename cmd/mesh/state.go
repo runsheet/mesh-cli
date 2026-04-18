@@ -26,10 +26,23 @@ type AgentDef struct {
 	// RequiredEnv lists the names (not values) of env vars the template
 	// declared as required at the last successful run. Stored for inspect UX;
 	// the secrets themselves are never persisted.
-	RequiredEnv   []string  `json:"requiredEnv,omitempty"`
-	CreatedAt     time.Time `json:"createdAt"`
-	LastSessionID string    `json:"lastSessionId,omitempty"`
-	CloudAgentID  *string   `json:"cloudAgentId,omitempty"`
+	RequiredEnv     []string  `json:"requiredEnv,omitempty"`
+	CreatedAt       time.Time `json:"createdAt"`
+	LastSessionID   string    `json:"lastSessionId,omitempty"`
+	// ClaudeSessionID is the UUID we pass to `claude --session-id` on every
+	// spawn of this agent. Stable across daemon restarts, so `mesh restart`
+	// and auto-start-on-boot resume the same conversation. Regenerated on
+	// explicit `new-up` to drop the prior context.
+	ClaudeSessionID string `json:"claudeSessionId,omitempty"`
+	// DangerouslySkipPermissions surfaces claude's --dangerously-skip-permissions
+	// flag on every spawn of this agent. Autonomous loops set it via template;
+	// `mesh run --dangerously-skip-permissions` sets it ad-hoc.
+	DangerouslySkipPermissions bool    `json:"dangerouslySkipPermissions,omitempty"`
+	CloudAgentID               *string `json:"cloudAgentId,omitempty"`
+	// Channels materialize the template's channel list at `mesh run` time so
+	// restart / autostart rebuild channel subprocesses without re-reading the
+	// template. Opaque per-type config lives in ChannelSpec.Config.
+	Channels []ChannelSpec `json:"channels,omitempty"`
 }
 
 type LocalState struct {

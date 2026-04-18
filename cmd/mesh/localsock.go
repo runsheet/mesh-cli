@@ -114,10 +114,11 @@ type sessionView struct {
 }
 
 type createSessionRequest struct {
-	Name           string            `json:"name"`
-	TemplateSource string            `json:"templateSource"`
-	Env            map[string]string `json:"env,omitempty"`
-	AutoStart      *bool             `json:"autoStart,omitempty"`
+	Name                       string            `json:"name"`
+	TemplateSource             string            `json:"templateSource"`
+	Env                        map[string]string `json:"env,omitempty"`
+	AutoStart                  *bool             `json:"autoStart,omitempty"`
+	DangerouslySkipPermissions *bool             `json:"dangerouslySkipPermissions,omitempty"`
 }
 
 type createSessionResponse struct {
@@ -269,6 +270,12 @@ func (s *localServer) createSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Effective skip-permissions: CLI override wins; falls back to template.
+	skipPerms := tpl.DangerouslySkipPermissions
+	if req.DangerouslySkipPermissions != nil {
+		skipPerms = *req.DangerouslySkipPermissions
+	}
+
 	def := &AgentDef{
 		Name:              name,
 		TemplateSource:    req.TemplateSource,
@@ -278,6 +285,11 @@ func (s *localServer) createSession(w http.ResponseWriter, r *http.Request) {
 		Model:             tpl.Model,
 		RequiredEnv:       append([]string{}, tpl.RequiredEnv...),
 		CreatedAt:         time.Now().UTC(),
+		// Pre-generate Claude's session UUID so restart and auto-start land in
+		// the same conversation. Regenerated only on explicit new-up.
+		ClaudeSessionID:            uuid.NewString(),
+		DangerouslySkipPermissions: skipPerms,
+		Channels:                   append([]ChannelSpec{}, tpl.Channels...),
 	}
 	if err := AddAgent(def); err != nil {
 		writeError(w, http.StatusConflict, err.Error())
@@ -294,11 +306,22 @@ func (s *localServer) createSession(w http.ResponseWriter, r *http.Request) {
 		if err := writeAgentPromptFile(name, tpl.SystemPrompt); err != nil {
 			fmt.Printf("mesh daemon prompt-file err name=%s: %v\n", name, err)
 		}
+		// Write .claude/settings.json and spawn channel subprocesses BEFORE
+		// claude starts so the first read of settings.json sees the current
+		// mcpServers list.
+		if err := WriteClaudeSettings(name, def.Channels); err != nil {
+			fmt.Printf("mesh daemon claude-settings err name=%s: %v\n", name, err)
+		}
+		if err := ChannelMgr().Spawn(def); err != nil {
+			fmt.Printf("mesh daemon channel spawn err name=%s: %v\n", name, err)
+		}
 		sess, _, err := s.registry.StartWithOptions(StartOptions{
-			AgentID:    name,
-			Model:      tpl.Model,
-			Env:        pickEnv(effectiveEnv, tpl.RequiredEnv),
-			WorkingDir: tpl.WorkingDir,
+			AgentID:                    name,
+			Model:                      tpl.Model,
+			ResumeID:                   def.ClaudeSessionID,
+			Env:                        pickEnv(effectiveEnv, tpl.RequiredEnv),
+			WorkingDir:                 tpl.WorkingDir,
+			DangerouslySkipPermissions: skipPerms,
 		})
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, fmt.Sprintf("start session: %v", err))
@@ -322,14 +345,9 @@ func (s *localServer) inspectSession(w http.ResponseWriter, _ *http.Request, nam
 		return
 	}
 	sum, running := s.registry.Get(name)
-	cloudAgentID := ""
-	if def.CloudAgentID != nil {
-		cloudAgentID = *def.CloudAgentID
-	}
 	out := map[string]any{
-		"definition":   def,
-		"running":      running,
-		"cloudAgentId": cloudAgentID,
+		"definition": def,
+		"running":    running,
 		"template": map[string]any{
 			"source":    def.TemplateSource,
 			"ref":       def.TemplateRef,
@@ -339,17 +357,35 @@ func (s *localServer) inspectSession(w http.ResponseWriter, _ *http.Request, nam
 		},
 		"requiredEnv": def.RequiredEnv,
 	}
-	if running {
-		out["session"] = map[string]any{
-			"sessionId":       sum.SessionID,
-			"claudeSessionId": sum.ClaudeSessionID,
-			"pid":             sum.PID,
-			"state":           stateName(sum.State),
-			"startedAt":       sum.StartedAt.UTC().Format(time.RFC3339),
-			"lastActivityAt":  sum.LastActivity.UTC().Format(time.RFC3339),
-			"cols":            sum.Cols,
-			"rows":            sum.Rows,
+	if def.CloudAgentID != nil && *def.CloudAgentID != "" {
+		out["cloudAgentId"] = *def.CloudAgentID
+	}
+	if len(def.Channels) > 0 {
+		statuses := ChannelMgr().Status(name)
+		if len(statuses) == 0 {
+			// Session isn't running — synthesize status entries from def so the
+			// channel config is still visible in inspect.
+			statuses = make([]ChannelStatus, 0, len(def.Channels))
+			for i, ch := range def.Channels {
+				statuses = append(statuses, ChannelStatus{Type: ch.Type, Index: i})
+			}
 		}
+		out["channels"] = statuses
+	}
+	if running {
+		session := map[string]any{
+			"sessionId":      sum.SessionID,
+			"pid":            sum.PID,
+			"state":          stateName(sum.State),
+			"startedAt":      sum.StartedAt.UTC().Format(time.RFC3339),
+			"lastActivityAt": sum.LastActivity.UTC().Format(time.RFC3339),
+			"cols":           sum.Cols,
+			"rows":           sum.Rows,
+		}
+		if sum.ClaudeSessionID != "" {
+			session["claudeSessionId"] = sum.ClaudeSessionID
+		}
+		out["session"] = session
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -364,6 +400,7 @@ func (s *localServer) removeSession(w http.ResponseWriter, _ *http.Request, name
 		writeError(w, http.StatusNotFound, "agent not found")
 		return
 	}
+	ChannelMgr().Shutdown(name)
 	if _, err := s.registry.Stop(name, true); err != nil {
 		fmt.Printf("mesh daemon rm stop err name=%s: %v\n", name, err)
 	}
@@ -392,6 +429,11 @@ func (s *localServer) restartSession(w http.ResponseWriter, _ *http.Request, nam
 		if t, err := reloadAgentTemplate(def); err == nil {
 			tpl = t
 			_ = writeAgentPromptFile(name, tpl.SystemPrompt)
+			// Merge refreshed channel list back into state so autostart-on-boot
+			// sees the latest shape.
+			updatedChannels := append([]ChannelSpec{}, tpl.Channels...)
+			_ = UpdateAgent(name, func(a *AgentDef) { a.Channels = updatedChannels })
+			def.Channels = updatedChannels
 		}
 	}
 
@@ -407,13 +449,31 @@ func (s *localServer) restartSession(w http.ResponseWriter, _ *http.Request, nam
 		return
 	}
 
+	// Migrate legacy agents that predate pre-generated session IDs so they
+	// start resuming their conversation from now on.
+	if def.ClaudeSessionID == "" {
+		def.ClaudeSessionID = uuid.NewString()
+		_ = UpdateAgent(name, func(a *AgentDef) { a.ClaudeSessionID = def.ClaudeSessionID })
+	}
+
 	opts := StartOptions{
-		AgentID: name,
-		Model:   def.Model,
-		Env:     pickEnv(effectiveEnv, required),
+		AgentID:                    name,
+		Model:                      def.Model,
+		ResumeID:                   def.ClaudeSessionID,
+		Env:                        pickEnv(effectiveEnv, required),
+		DangerouslySkipPermissions: def.DangerouslySkipPermissions,
 	}
 	if tpl != nil {
 		opts.WorkingDir = tpl.WorkingDir
+	}
+
+	// Refresh settings.json + restart channels before claude comes back up so
+	// it re-reads the MCP config on spawn.
+	if err := WriteClaudeSettings(name, def.Channels); err != nil {
+		fmt.Printf("mesh daemon claude-settings err name=%s: %v\n", name, err)
+	}
+	if err := ChannelMgr().Restart(def); err != nil {
+		fmt.Printf("mesh daemon channel restart err name=%s: %v\n", name, err)
 	}
 
 	sess, err := s.registry.NewUpWithOptions(opts)
@@ -483,10 +543,12 @@ func (s *localServer) updateSession(w http.ResponseWriter, _ *http.Request, name
 		a.TemplateSha = newSHA
 		a.TemplateCachePath = tpl.ResolvedPath
 		a.RequiredEnv = append([]string{}, tpl.RequiredEnv...)
+		a.Channels = append([]ChannelSpec{}, tpl.Channels...)
 		if a.Model == "" {
 			a.Model = tpl.Model
 		}
 	})
+	def.Channels = append([]ChannelSpec{}, tpl.Channels...)
 
 	if wasRunning {
 		effectiveEnv := mergeStringMaps(os.Environ(), nil)
@@ -495,6 +557,12 @@ func (s *localServer) updateSession(w http.ResponseWriter, _ *http.Request, name
 			return
 		}
 		_ = writeAgentPromptFile(name, tpl.SystemPrompt)
+		if err := WriteClaudeSettings(name, def.Channels); err != nil {
+			fmt.Printf("mesh daemon claude-settings err name=%s: %v\n", name, err)
+		}
+		if err := ChannelMgr().Restart(def); err != nil {
+			fmt.Printf("mesh daemon channel restart err name=%s: %v\n", name, err)
+		}
 		sess, err := s.registry.NewUpWithOptions(StartOptions{
 			AgentID:    name,
 			Model:      def.Model,

@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/keepalive"
@@ -55,6 +56,11 @@ func RunDaemon(baseURL string, grpcAddr string) error {
 	// the cleaned set.
 	PruneTemplates()
 
+	// One-shot migration from the slice-1 flat prompt file layout
+	// (~/.mesh/agents/<name>.md) to the per-agent dir layout
+	// (~/.mesh/agents/<name>/system_prompt.md). Idempotent.
+	migrateLegacyAgentPromptFiles()
+
 	// Local socket always starts — standalone mode requires it, cluster mode
 	// piggybacks on the same registry.
 	listener, err := StartLocalSocket(ctx, registry)
@@ -62,6 +68,10 @@ func RunDaemon(baseURL string, grpcAddr string) error {
 		return fmt.Errorf("start local socket: %w", err)
 	}
 	defer listener.Close()
+
+	// Auto-start every agent recorded in state.json. Missing env or missing
+	// template caches are skipped with a warning; we never abort boot on them.
+	autoStartAgents(registry)
 
 	token, tokenErr := LoadNodeToken()
 	if tokenErr != nil || strings.TrimSpace(token) == "" {
@@ -74,6 +84,103 @@ func RunDaemon(baseURL string, grpcAddr string) error {
 	}
 
 	return runClusteredDaemon(ctx, baseURL, grpcAddr, token, registry)
+}
+
+// autoStartAgents walks state.json and attempts to spawn every recorded agent.
+// Boot-time restore: if the daemon was stopped while agents were running, they
+// come back automatically. Agents whose template cache is missing or whose
+// requiredEnv can't be satisfied from os.Environ are logged and skipped.
+func autoStartAgents(registry *SessionRegistry) {
+	agents, err := ListAgents()
+	if err != nil {
+		fmt.Printf("mesh autostart: load state: %v\n", err)
+		return
+	}
+	if len(agents) == 0 {
+		return
+	}
+	started, skipped := 0, 0
+	for _, a := range agents {
+		if err := autoStartOne(registry, a); err != nil {
+			fmt.Printf("mesh autostart: skip %s: %v\n", a.Name, err)
+			skipped++
+			continue
+		}
+		fmt.Printf("mesh autostart: started %s\n", a.Name)
+		started++
+	}
+	fmt.Printf("mesh autostart: %d started, %d skipped\n", started, skipped)
+}
+
+func autoStartOne(registry *SessionRegistry, a *AgentDef) error {
+	// Prefer the cached template path (git sources); fall back to re-resolving
+	// the source for local-path templates whose directory hasn't moved.
+	var tplDir string
+	if a.TemplateCachePath != "" {
+		if info, err := os.Stat(a.TemplateCachePath); err == nil && info.IsDir() {
+			tplDir = a.TemplateCachePath
+		}
+	}
+	if tplDir == "" && a.TemplateSource != "" {
+		if src, err := ResolveTemplateSource(a.TemplateSource); err == nil && src.Kind == "local" {
+			if info, err := os.Stat(src.Path); err == nil && info.IsDir() {
+				tplDir = src.Path
+			}
+		}
+	}
+	if tplDir == "" {
+		return fmt.Errorf("template not available (source %q)", a.TemplateSource)
+	}
+	tpl, err := readTemplateFromDir(tplDir)
+	if err != nil {
+		return fmt.Errorf("read template: %w", err)
+	}
+
+	envMap := map[string]string{}
+	var missing []string
+	for _, name := range a.RequiredEnv {
+		v := os.Getenv(name)
+		if v == "" {
+			missing = append(missing, name)
+			continue
+		}
+		envMap[name] = v
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("missing required env: %s", strings.Join(missing, ", "))
+	}
+
+	model := a.Model
+	if model == "" {
+		model = tpl.Model
+	}
+
+	// Migrate agents from before we pre-generated session IDs. Without this,
+	// autostart would land in a fresh conversation every boot.
+	resumeID := a.ClaudeSessionID
+	if resumeID == "" {
+		resumeID = uuid.NewString()
+		_ = UpdateAgent(a.Name, func(d *AgentDef) { d.ClaudeSessionID = resumeID })
+	}
+
+	// Refresh settings.json + spawn channels so the restored claude session
+	// sees the same MCP wiring it had before the daemon restart.
+	if err := WriteClaudeSettings(a.Name, a.Channels); err != nil {
+		fmt.Printf("mesh autostart: settings.json err %s: %v\n", a.Name, err)
+	}
+	if err := ChannelMgr().Spawn(a); err != nil {
+		fmt.Printf("mesh autostart: channel spawn err %s: %v\n", a.Name, err)
+	}
+
+	_, _, err = registry.StartWithOptions(StartOptions{
+		AgentID:                    a.Name,
+		Model:                      model,
+		ResumeID:                   resumeID,
+		Env:                        envMap,
+		WorkingDir:                 tpl.WorkingDir,
+		DangerouslySkipPermissions: a.DangerouslySkipPermissions,
+	})
+	return err
 }
 
 // runClusteredDaemon runs the existing gRPC-side behaviour when a node token
@@ -908,19 +1015,29 @@ func rematerializeLocalPrompts() {
 	}
 }
 
-// writeAgentPromptFile materializes <systemPrompt>\n\n<loopTemplate> to
-// ~/.mesh/agents/<agentId>.md. We drop it in a shared per-user location because
-// nodes in the current pivot don't own a per-agent workdir — users manage repos
-// out-of-band, so ~/.claude/agents/<id>.md may not have a correct anchor.
-// Future work: when `mesh node start` learns about per-agent worktrees, write
-// to <workdir>/.claude/agents/<agentId>.md instead.
-func writeAgentPromptFile(agentID, systemPrompt string) error {
+// agentWorkdir returns ~/.mesh/agents/<agentID>/ and ensures the directory
+// exists. Each agent owns a directory under which we drop system_prompt.md,
+// .claude/settings.json (MCP config), and channels/* (per-channel state). The
+// directory is claude's cmd.Dir so .claude/settings.json auto-loads.
+func agentWorkdir(agentID string) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return err
+		return "", err
 	}
-	dir := filepath.Join(home, ".mesh", "agents")
+	dir := filepath.Join(home, ".mesh", "agents", agentID)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+// writeAgentPromptFile materializes <systemPrompt>\n\n<loopTemplate> to
+// ~/.mesh/agents/<agentId>/system_prompt.md. Claude is spawned with cmd.Dir
+// pointing at the containing directory so .claude/settings.json (written by
+// the channel manager) is auto-discovered.
+func writeAgentPromptFile(agentID, systemPrompt string) error {
+	dir, err := agentWorkdir(agentID)
+	if err != nil {
 		return err
 	}
 
@@ -938,6 +1055,64 @@ func writeAgentPromptFile(agentID, systemPrompt string) error {
 		body.WriteString(loop)
 	}
 
-	path := filepath.Join(dir, agentID+".md")
+	path := filepath.Join(dir, "system_prompt.md")
 	return os.WriteFile(path, []byte(body.String()), 0o600)
+}
+
+// migrateLegacyAgentPromptFiles moves ~/.mesh/agents/<name>.md flat files into
+// ~/.mesh/agents/<name>/system_prompt.md. Idempotent: if the target already
+// exists the legacy file is removed; absent legacy files are skipped silently.
+// Runs once at daemon boot so auto-start sees the new layout.
+func migrateLegacyAgentPromptFiles() {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		fmt.Printf("mesh daemon migrate: home: %v\n", err)
+		return
+	}
+	root := filepath.Join(home, ".mesh", "agents")
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			fmt.Printf("mesh daemon migrate: readdir %s: %v\n", root, err)
+		}
+		return
+	}
+	migrated := 0
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasSuffix(name, ".md") {
+			continue
+		}
+		agentID := strings.TrimSuffix(name, ".md")
+		legacy := filepath.Join(root, name)
+		targetDir := filepath.Join(root, agentID)
+		target := filepath.Join(targetDir, "system_prompt.md")
+
+		if err := os.MkdirAll(targetDir, 0o700); err != nil {
+			fmt.Printf("mesh daemon migrate: mkdir %s: %v\n", targetDir, err)
+			continue
+		}
+		if _, err := os.Stat(target); err == nil {
+			// Target already exists — drop the legacy file and move on.
+			if err := os.Remove(legacy); err != nil {
+				fmt.Printf("mesh daemon migrate: remove legacy %s: %v\n", legacy, err)
+				continue
+			}
+			fmt.Printf("mesh daemon migrate: removed redundant legacy %s\n", legacy)
+			migrated++
+			continue
+		}
+		if err := os.Rename(legacy, target); err != nil {
+			fmt.Printf("mesh daemon migrate: move %s -> %s: %v\n", legacy, target, err)
+			continue
+		}
+		fmt.Printf("mesh daemon migrate: %s -> %s\n", legacy, target)
+		migrated++
+	}
+	if migrated > 0 {
+		fmt.Printf("mesh daemon migrate: %d agent prompt file(s) migrated to per-agent dir\n", migrated)
+	}
 }

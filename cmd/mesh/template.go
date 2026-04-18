@@ -19,13 +19,15 @@ import (
 // Template is the resolved, runnable view of an agent template. Slice 2
 // layers agent.yaml on top of the slice-1 minimal defaults.
 type Template struct {
-	Source       string   // user-supplied --template value
-	ResolvedPath string   // absolute directory on disk
-	SystemPrompt string   // contents of system_prompt.md
-	Model        string
-	Tools        []string
-	RequiredEnv  []string
-	WorkingDir   string
+	Source                     string // user-supplied --template value
+	ResolvedPath               string // absolute directory on disk
+	SystemPrompt               string // contents of system_prompt.md
+	Model                      string
+	Tools                      []string
+	RequiredEnv                []string
+	WorkingDir                 string
+	DangerouslySkipPermissions bool
+	Channels                   []ChannelSpec
 
 	// Git-only metadata (empty for local templates).
 	GitURL string
@@ -92,14 +94,16 @@ type AgentYAMLMeta struct {
 }
 
 type AgentYAMLSpec struct {
-	Description      string   `yaml:"description"`
-	Model            string   `yaml:"model"`
-	Tools            []string `yaml:"tools"`
-	RequiredEnv      []string `yaml:"requiredEnv"`
-	SystemPromptPath string   `yaml:"systemPromptPath"`
-	WorkingDir       string   `yaml:"workingDir"`
-	Subagents        []string `yaml:"subagents"`
-	Skills           []string `yaml:"skills"`
+	Description                string        `yaml:"description"`
+	Model                      string        `yaml:"model"`
+	Tools                      []string      `yaml:"tools"`
+	RequiredEnv                []string      `yaml:"requiredEnv"`
+	SystemPromptPath           string        `yaml:"systemPromptPath"`
+	WorkingDir                 string        `yaml:"workingDir"`
+	Subagents                  []string      `yaml:"subagents"`
+	Skills                     []string      `yaml:"skills"`
+	DangerouslySkipPermissions bool          `yaml:"dangerouslySkipPermissions"`
+	Channels                   []ChannelSpec `yaml:"channels"`
 }
 
 // sha40 matches a 40-char hex commit SHA (full form). We skip ls-remote for
@@ -145,6 +149,16 @@ func ResolveTemplateSource(raw string) (*Source, error) {
 		// what users pasted.
 		cloneURL := "https://" + strings.TrimSuffix(urlPart, ".git") + ".git"
 		return &Source{Kind: "git", URL: cloneURL, Ref: ref}, nil
+	}
+
+	// Last-chance fallback: bare name that happens to be a real directory.
+	// Lets users run `mesh run --template mytemplate` when `mytemplate/` is a
+	// sibling directory. Must be a non-empty dir containing (at least) a
+	// system_prompt.md to avoid swallowing typos as valid paths.
+	if abs, err := expandPath(raw); err == nil {
+		if info, statErr := os.Stat(abs); statErr == nil && info.IsDir() {
+			return &Source{Kind: "local", Path: abs}, nil
+		}
 	}
 
 	return nil, fmt.Errorf("unrecognized template source %q (expected local path, git URL, or host/user/repo shorthand)", raw)
@@ -274,12 +288,14 @@ func readTemplateFromDir(dir string) (*Template, error) {
 	}
 
 	return &Template{
-		ResolvedPath: dir,
-		SystemPrompt: string(promptBytes),
-		Model:        ay.Spec.Model,
-		Tools:        append([]string{}, ay.Spec.Tools...),
-		RequiredEnv:  append([]string{}, ay.Spec.RequiredEnv...),
-		WorkingDir:   workingDir,
+		ResolvedPath:               dir,
+		SystemPrompt:               string(promptBytes),
+		Model:                      ay.Spec.Model,
+		Tools:                      append([]string{}, ay.Spec.Tools...),
+		RequiredEnv:                append([]string{}, ay.Spec.RequiredEnv...),
+		WorkingDir:                 workingDir,
+		DangerouslySkipPermissions: ay.Spec.DangerouslySkipPermissions,
+		Channels:                   append([]ChannelSpec{}, ay.Spec.Channels...),
 	}, nil
 }
 
@@ -309,6 +325,9 @@ func LoadAgentYAML(templateDir string) (*AgentYAML, error) {
 		if !templateToolAllowlist[t] {
 			return nil, fmt.Errorf("agent.yaml tool %q is not in the allow-list", t)
 		}
+	}
+	if err := validateChannelSpecs(ay.Spec.Channels); err != nil {
+		return nil, fmt.Errorf("agent.yaml %w", err)
 	}
 
 	return ay, nil
