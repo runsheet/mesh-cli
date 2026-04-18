@@ -143,6 +143,30 @@ func (c *LocalClient) RestartSession(ctx context.Context, name string) (map[stri
 	return out, nil
 }
 
+func (c *LocalClient) UpdateSession(ctx context.Context, name string) (map[string]any, error) {
+	var out map[string]any
+	if err := c.do(ctx, http.MethodPost, "/sessions/"+url.PathEscape(name)+"/update", nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *LocalClient) ListTemplates(ctx context.Context) ([]TemplateCacheEntry, error) {
+	var out []TemplateCacheEntry
+	if err := c.do(ctx, http.MethodGet, "/templates", nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *LocalClient) PullTemplate(ctx context.Context, source string) (*pullTemplateResponse, error) {
+	var out pullTemplateResponse
+	if err := c.do(ctx, http.MethodPost, "/templates/pull", pullTemplateRequest{Source: source}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 func (c *LocalClient) Logs(ctx context.Context, name string, follow bool, out io.Writer) error {
 	q := ""
 	if follow {

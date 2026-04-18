@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -192,6 +193,23 @@ func (r *SessionRegistry) SetExitHook(fn func(agentID string, err error)) {
 // becomes `claude --resume <id>`; otherwise a fresh `claude` session. Returns
 // the existing session unchanged if one is already live for the agent.
 func (r *SessionRegistry) Start(agentID, model, resumeID string) (*PtySession, bool, error) {
+	return r.StartWithOptions(StartOptions{AgentID: agentID, Model: model, ResumeID: resumeID})
+}
+
+// StartOptions feeds StartWithOptions. Env is overlaid on top of the daemon's
+// environment when provided; WorkingDir, if set, becomes cmd.Dir so the
+// Claude Code session starts in the template's declared workdir.
+type StartOptions struct {
+	AgentID    string
+	Model      string
+	ResumeID   string
+	Env        map[string]string
+	WorkingDir string
+}
+
+// StartWithOptions is Start but threads env + workdir through to the child.
+func (r *SessionRegistry) StartWithOptions(opts StartOptions) (*PtySession, bool, error) {
+	agentID := opts.AgentID
 	if agentID == "" {
 		return nil, false, errors.New("agentID required")
 	}
@@ -204,13 +222,19 @@ func (r *SessionRegistry) Start(agentID, model, resumeID string) (*PtySession, b
 	r.mu.Unlock()
 
 	args := []string{}
-	if resumeID != "" {
-		args = append(args, "--resume", resumeID)
+	if opts.ResumeID != "" {
+		args = append(args, "--resume", opts.ResumeID)
 	}
-	if model != "" {
-		args = append(args, "--model", model)
+	if opts.Model != "" {
+		args = append(args, "--model", opts.Model)
 	}
 	cmd := exec.Command("claude", args...)
+	if opts.WorkingDir != "" {
+		cmd.Dir = opts.WorkingDir
+	}
+	if len(opts.Env) > 0 {
+		cmd.Env = mergeEnv(os.Environ(), opts.Env)
+	}
 
 	ptyFile, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: ptyCols, Rows: ptyRows})
 	if err != nil {
@@ -221,7 +245,7 @@ func (r *SessionRegistry) Start(agentID, model, resumeID string) (*PtySession, b
 	s := &PtySession{
 		AgentID:         agentID,
 		SessionID:       uuid.NewString(),
-		ClaudeSessionID: resumeID,
+		ClaudeSessionID: opts.ResumeID,
 		PTY:             ptyFile,
 		Cmd:             cmd,
 		StartedAt:       now,
@@ -312,13 +336,17 @@ func (r *SessionRegistry) Stop(agentID string, force bool) (bool, error) {
 // fresh one so Claude Code loses its prior conversation state. Intended for
 // prompt changes where replay would be nonsensical.
 func (r *SessionRegistry) NewUp(agentID, model string) (*PtySession, error) {
-	_, _ = r.Stop(agentID, true)
+	return r.NewUpWithOptions(StartOptions{AgentID: agentID, Model: model})
+}
 
-	// Small grace so the wait loop can drop the entry before we re-Start.
+// NewUpWithOptions is NewUp but preserves env + workdir on the new session.
+func (r *SessionRegistry) NewUpWithOptions(opts StartOptions) (*PtySession, error) {
+	_, _ = r.Stop(opts.AgentID, true)
+
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		r.mu.RLock()
-		_, ok := r.sessions[agentID]
+		_, ok := r.sessions[opts.AgentID]
 		r.mu.RUnlock()
 		if !ok {
 			break
@@ -326,8 +354,31 @@ func (r *SessionRegistry) NewUp(agentID, model string) (*PtySession, error) {
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	s, _, err := r.Start(agentID, model, "")
+	s, _, err := r.StartWithOptions(opts)
 	return s, err
+}
+
+// mergeEnv overlays overrides onto base (VAR=VALUE slice form). Later wins.
+func mergeEnv(base []string, overrides map[string]string) []string {
+	if len(overrides) == 0 {
+		return base
+	}
+	idx := map[string]int{}
+	for i, kv := range base {
+		if eq := strings.IndexByte(kv, '='); eq > 0 {
+			idx[kv[:eq]] = i
+		}
+	}
+	out := append([]string{}, base...)
+	for k, v := range overrides {
+		entry := k + "=" + v
+		if i, ok := idx[k]; ok {
+			out[i] = entry
+		} else {
+			out = append(out, entry)
+		}
+	}
+	return out
 }
 
 // List returns a stable-ordered snapshot of all live sessions.

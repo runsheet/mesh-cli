@@ -50,6 +50,11 @@ func RunDaemon(baseURL string, grpcAddr string) error {
 
 	registry := NewSessionRegistry()
 
+	// Best-effort prune of unreferenced template caches older than 30 days.
+	// Runs before the socket opens so the first /templates response reflects
+	// the cleaned set.
+	PruneTemplates()
+
 	// Local socket always starts — standalone mode requires it, cluster mode
 	// piggybacks on the same registry.
 	listener, err := StartLocalSocket(ctx, registry)

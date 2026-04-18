@@ -23,9 +23,13 @@ type AgentDef struct {
 	TemplateSha       string    `json:"templateSha,omitempty"`
 	TemplateCachePath string    `json:"templateCachePath,omitempty"`
 	Model             string    `json:"model,omitempty"`
-	CreatedAt         time.Time `json:"createdAt"`
-	LastSessionID     string    `json:"lastSessionId,omitempty"`
-	CloudAgentID      *string   `json:"cloudAgentId,omitempty"`
+	// RequiredEnv lists the names (not values) of env vars the template
+	// declared as required at the last successful run. Stored for inspect UX;
+	// the secrets themselves are never persisted.
+	RequiredEnv   []string  `json:"requiredEnv,omitempty"`
+	CreatedAt     time.Time `json:"createdAt"`
+	LastSessionID string    `json:"lastSessionId,omitempty"`
+	CloudAgentID  *string   `json:"cloudAgentId,omitempty"`
 }
 
 type LocalState struct {

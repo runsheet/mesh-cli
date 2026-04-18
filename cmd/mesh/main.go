@@ -17,6 +17,7 @@ func main() {
 
 	rootCmd.AddCommand(authCmd, workItemCmd, nodeCmd, agentCmd, sessionCmd)
 	rootCmd.AddCommand(runCmd, psCmd, attachCmd, logsCmd, restartCmd, rmCmd, inspectCmd)
+	rootCmd.AddCommand(pullCmd, imagesCmd, templatesCmd, localUpdateCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)

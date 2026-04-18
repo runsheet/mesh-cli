@@ -182,6 +182,12 @@ func (s *localServer) handleSessionItem(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		s.restartSession(w, r, name)
+	case "update":
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		s.updateSession(w, r, name)
 	default:
 		writeError(w, http.StatusNotFound, "unknown session verb")
 	}
@@ -236,17 +242,32 @@ func (s *localServer) createSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tpl, err := ReadLocalTemplate(req.TemplateSource)
+	src, err := ResolveTemplateSource(req.TemplateSource)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	tpl, err := LoadTemplate(src)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	tpl.Source = req.TemplateSource
+
+	effectiveEnv := mergeStringMaps(os.Environ(), req.Env)
+	if missing := missingRequiredEnv(tpl.RequiredEnv, effectiveEnv); len(missing) > 0 {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("required env not set: %s", strings.Join(missing, ", ")))
 		return
 	}
 
 	def := &AgentDef{
 		Name:              name,
 		TemplateSource:    req.TemplateSource,
+		TemplateRef:       tpl.GitRef,
+		TemplateSha:       tpl.GitSHA,
 		TemplateCachePath: tpl.ResolvedPath,
 		Model:             tpl.Model,
+		RequiredEnv:       append([]string{}, tpl.RequiredEnv...),
 		CreatedAt:         time.Now().UTC(),
 	}
 	if err := AddAgent(def); err != nil {
@@ -261,14 +282,15 @@ func (s *localServer) createSession(w http.ResponseWriter, r *http.Request) {
 
 	resp := createSessionResponse{Name: name, Status: "created"}
 	if autoStart {
-		// Materialize the system prompt so Claude Code picks it up from the
-		// same convention the cluster-mode writer uses (~/.mesh/agents/<id>.md).
-		// Slice 1 doesn't merge the Ralph loop template — that's an explicit
-		// opt-in via cluster mode.
 		if err := writeAgentPromptFile(name, tpl.SystemPrompt); err != nil {
 			fmt.Printf("mesh daemon prompt-file err name=%s: %v\n", name, err)
 		}
-		sess, _, err := s.registry.Start(name, tpl.Model, "")
+		sess, _, err := s.registry.StartWithOptions(StartOptions{
+			AgentID:    name,
+			Model:      tpl.Model,
+			Env:        pickEnv(effectiveEnv, tpl.RequiredEnv),
+			WorkingDir: tpl.WorkingDir,
+		})
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, fmt.Sprintf("start session: %v", err))
 			return
@@ -294,6 +316,14 @@ func (s *localServer) inspectSession(w http.ResponseWriter, _ *http.Request, nam
 	out := map[string]any{
 		"definition": def,
 		"running":    running,
+		"template": map[string]any{
+			"source":    def.TemplateSource,
+			"ref":       def.TemplateRef,
+			"sha":       def.TemplateSha,
+			"shortSha":  ShortSHA(def.TemplateSha),
+			"cachePath": def.TemplateCachePath,
+		},
+		"requiredEnv": def.RequiredEnv,
 	}
 	if running {
 		out["session"] = map[string]any{
@@ -340,14 +370,39 @@ func (s *localServer) restartSession(w http.ResponseWriter, _ *http.Request, nam
 		writeError(w, http.StatusNotFound, "agent not found")
 		return
 	}
-	// Re-read template so prompt file gets freshened in case the user edited
-	// system_prompt.md on disk.
+
+	// Re-read the template (from cache if git) so prompt/requiredEnv reflect
+	// current disk state — user may have edited system_prompt.md.
+	var tpl *Template
 	if def.TemplateSource != "" {
-		if tpl, err := ReadLocalTemplate(def.TemplateSource); err == nil {
+		if t, err := reloadAgentTemplate(def); err == nil {
+			tpl = t
 			_ = writeAgentPromptFile(name, tpl.SystemPrompt)
 		}
 	}
-	sess, err := s.registry.NewUp(name, def.Model)
+
+	effectiveEnv := mergeStringMaps(os.Environ(), nil)
+	var required []string
+	if tpl != nil {
+		required = tpl.RequiredEnv
+	} else {
+		required = def.RequiredEnv
+	}
+	if missing := missingRequiredEnv(required, effectiveEnv); len(missing) > 0 {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("required env not set: %s", strings.Join(missing, ", ")))
+		return
+	}
+
+	opts := StartOptions{
+		AgentID: name,
+		Model:   def.Model,
+		Env:     pickEnv(effectiveEnv, required),
+	}
+	if tpl != nil {
+		opts.WorkingDir = tpl.WorkingDir
+	}
+
+	sess, err := s.registry.NewUpWithOptions(opts)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -358,6 +413,105 @@ func (s *localServer) restartSession(w http.ResponseWriter, _ *http.Request, nam
 		"sessionId": sess.SessionID,
 		"status":    "running",
 	})
+}
+
+func (s *localServer) updateSession(w http.ResponseWriter, _ *http.Request, name string) {
+	def, ok, err := GetAgent(name)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "agent not found")
+		return
+	}
+	if def.TemplateSource == "" {
+		writeError(w, http.StatusBadRequest, "agent has no template source")
+		return
+	}
+
+	src, err := ResolveTemplateSource(def.TemplateSource)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	// Preserve the user's original ref when re-resolving; a missing ref keeps
+	// resolving HEAD so `mesh update` tracks the moving branch.
+	if def.TemplateRef != "" {
+		src.Ref = def.TemplateRef
+	}
+
+	tpl, err := LoadTemplate(src)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	oldSHA := def.TemplateSha
+	newSHA := tpl.GitSHA
+
+	_, wasRunning := s.registry.Get(name)
+
+	resp := map[string]any{
+		"name":     name,
+		"oldSha":   oldSHA,
+		"newSha":   newSHA,
+		"status":   "up-to-date",
+		"restarted": false,
+	}
+
+	if newSHA == oldSHA && oldSHA != "" {
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+
+	_ = UpdateAgent(name, func(a *AgentDef) {
+		a.TemplateSha = newSHA
+		a.TemplateCachePath = tpl.ResolvedPath
+		a.RequiredEnv = append([]string{}, tpl.RequiredEnv...)
+		if a.Model == "" {
+			a.Model = tpl.Model
+		}
+	})
+
+	if wasRunning {
+		effectiveEnv := mergeStringMaps(os.Environ(), nil)
+		if missing := missingRequiredEnv(tpl.RequiredEnv, effectiveEnv); len(missing) > 0 {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("required env not set: %s", strings.Join(missing, ", ")))
+			return
+		}
+		_ = writeAgentPromptFile(name, tpl.SystemPrompt)
+		sess, err := s.registry.NewUpWithOptions(StartOptions{
+			AgentID:    name,
+			Model:      def.Model,
+			Env:        pickEnv(effectiveEnv, tpl.RequiredEnv),
+			WorkingDir: tpl.WorkingDir,
+		})
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		_ = UpdateAgent(name, func(a *AgentDef) { a.LastSessionID = sess.SessionID })
+		resp["restarted"] = true
+		resp["sessionId"] = sess.SessionID
+	}
+	resp["status"] = "updated"
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// reloadAgentTemplate re-materializes the template referenced by def. Git
+// sources use the cached SHA to avoid a network hop; only `mesh update`
+// re-resolves the ref.
+func reloadAgentTemplate(def *AgentDef) (*Template, error) {
+	src, err := ResolveTemplateSource(def.TemplateSource)
+	if err != nil {
+		return nil, err
+	}
+	if src.Kind == "git" && def.TemplateSha != "" {
+		// Pin to the known-good SHA so slow networks don't block restart.
+		src.Ref = def.TemplateSha
+	}
+	return LoadTemplate(src)
 }
 
 func (s *localServer) logsSession(w http.ResponseWriter, r *http.Request, name string) {
@@ -511,8 +665,23 @@ func (s *localServer) handleTemplates(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	// Slice 1: no template cache yet.
-	writeJSON(w, http.StatusOK, []any{})
+	entries, err := ListCachedTemplates()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, entries)
+}
+
+type pullTemplateRequest struct {
+	Source string `json:"source"`
+}
+
+type pullTemplateResponse struct {
+	SHA       string `json:"sha"`
+	CachePath string `json:"cachePath"`
+	Ref       string `json:"ref,omitempty"`
+	URL       string `json:"url,omitempty"`
 }
 
 func (s *localServer) handleTemplatesPull(w http.ResponseWriter, r *http.Request) {
@@ -520,7 +689,74 @@ func (s *localServer) handleTemplatesPull(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	writeError(w, http.StatusNotImplemented, "template pull ships in slice 2")
+	var req pullTemplateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid JSON: %v", err))
+		return
+	}
+	src, err := ResolveTemplateSource(req.Source)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if src.Kind != "git" {
+		writeError(w, http.StatusBadRequest, "only git sources can be pulled; local paths are read in place")
+		return
+	}
+	sha, path, err := FetchGitTemplate(src)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, pullTemplateResponse{
+		SHA:       sha,
+		CachePath: path,
+		Ref:       src.Ref,
+		URL:       src.URL,
+	})
+}
+
+// mergeStringMaps turns base (VAR=VALUE slice) plus overrides into a plain map
+// keyed by variable name. Overrides win; empty-value entries in overrides
+// still overwrite base (so callers can intentionally blank a var).
+func mergeStringMaps(base []string, overrides map[string]string) map[string]string {
+	out := map[string]string{}
+	for _, kv := range base {
+		if eq := strings.IndexByte(kv, '='); eq > 0 {
+			out[kv[:eq]] = kv[eq+1:]
+		}
+	}
+	for k, v := range overrides {
+		out[k] = v
+	}
+	return out
+}
+
+// missingRequiredEnv returns the subset of required var names that are absent
+// or empty in env. Preserves input order so error messages are stable.
+func missingRequiredEnv(required []string, env map[string]string) []string {
+	var missing []string
+	for _, name := range required {
+		if env[name] == "" {
+			missing = append(missing, name)
+		}
+	}
+	return missing
+}
+
+// pickEnv extracts only the requested variable names from env so we don't
+// leak unrelated daemon-process secrets into the Claude child.
+func pickEnv(env map[string]string, names []string) map[string]string {
+	if len(names) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(names))
+	for _, n := range names {
+		if v, ok := env[n]; ok {
+			out[n] = v
+		}
+	}
+	return out
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {

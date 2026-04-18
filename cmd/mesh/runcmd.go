@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -37,6 +38,17 @@ var runCmd = &cobra.Command{
 			env[parts[0]] = parts[1]
 		}
 
+		// Pass bare `--env FOO` as "inherit FOO from my shell" — mirrors
+		// docker run --env semantics and lets `GITHUB_TOKEN=xx mesh run ...`
+		// work without re-typing the value.
+		for _, kv := range runEnvFlag {
+			if !strings.Contains(kv, "=") {
+				if v, ok := os.LookupEnv(kv); ok {
+					env[kv] = v
+				}
+			}
+		}
+
 		client, err := NewLocalClient()
 		if err != nil {
 			return err
@@ -63,8 +75,8 @@ var runCmd = &cobra.Command{
 }
 
 func init() {
-	runCmd.Flags().StringVar(&runTemplateFlag, "template", "", "Template source (local path; git URLs ship in slice 2)")
+	runCmd.Flags().StringVar(&runTemplateFlag, "template", "", "Template source (local path, git URL, or github.com/user/repo[@ref])")
 	runCmd.Flags().StringVar(&runNameFlag, "name", "", "Local agent name")
-	runCmd.Flags().StringArrayVar(&runEnvFlag, "env", nil, "KEY=VALUE pairs to forward into the session (repeatable)")
+	runCmd.Flags().StringArrayVar(&runEnvFlag, "env", nil, "KEY=VALUE or bare KEY (inherits from caller env); repeatable")
 	runCmd.Flags().BoolVar(&runNoStartFlag, "no-start", false, "Register the agent but don't start its session")
 }
