@@ -622,15 +622,42 @@ func ApplyAgentSync(registry *SessionRegistry, sync *meshv1.AgentSync, baseURL, 
 		desired[a.GetAgentId()] = a
 	}
 
+	// Build a reverse map cloudAgentId → localName so we can recognize agents
+	// that were adopted from a local definition (push). The cloud push will
+	// carry an agent whose id matches one we already know locally; we want to
+	// merge definition changes without redundantly restarting a session that's
+	// already running from the local template.
+	adoptedByCloudID := map[string]string{}
+	if locals, err := ListAgents(); err == nil {
+		for _, a := range locals {
+			if a.CloudAgentID != nil && *a.CloudAgentID != "" {
+				adoptedByCloudID[*a.CloudAgentID] = a.Name
+			}
+		}
+	}
+
 	// Snapshot of what's currently running.
 	live := map[string]struct{}{}
 	for _, s := range registry.List() {
 		live[s.AgentID] = struct{}{}
 	}
 
+	// Compute the set of registry keys we intend to retain. For each desired
+	// cloud agent, the registry key is the local name if we've adopted it
+	// (push), else the cloud agent id. This lets adopted agents keep their
+	// local identity while the rest of the node behaves as before.
+	keepKeys := map[string]struct{}{}
+	for cloudID := range desired {
+		if local, ok := adoptedByCloudID[cloudID]; ok {
+			keepKeys[local] = struct{}{}
+		} else {
+			keepKeys[cloudID] = struct{}{}
+		}
+	}
+
 	// 1. Stop anything not in the push.
 	for agentID := range live {
-		if _, keep := desired[agentID]; keep {
+		if _, keep := keepKeys[agentID]; keep {
 			continue
 		}
 		fmt.Printf("mesh node agent_sync stop agent=%s (no longer in pinned set)\n", agentID)
@@ -643,30 +670,44 @@ func ApplyAgentSync(registry *SessionRegistry, sync *meshv1.AgentSync, baseURL, 
 	}
 
 	// 2. Start / restart anything in the push.
-	for agentID, def := range desired {
+	for cloudID, def := range desired {
 		tools := append([]string{}, def.GetTools()...)
 		model := def.GetModel()
 		systemPrompt := def.GetSystemPrompt()
 		restartRequired := def.GetMetadata()["restart_required"] == "true"
 
+		// Pick the local registry key. Adopted agents run under their local
+		// name (from state.json.cloudAgentId); fresh cluster agents run under
+		// the cloud uuid the api assigned.
+		registryKey := cloudID
+		adopted := false
+		if local, ok := adoptedByCloudID[cloudID]; ok {
+			registryKey = local
+			adopted = true
+		}
+
 		lastAppliedMu.Lock()
-		prev, had := lastApplied[agentID]
+		prev, had := lastApplied[registryKey]
 		lastAppliedMu.Unlock()
 
-		_, running := live[agentID]
+		_, running := live[registryKey]
 
 		changed := had && (prev.systemPrompt != systemPrompt ||
 			prev.model != model ||
 			!toolsEqual(prev.tools, tools))
 
 		switch {
+		case adopted && running && !changed && !restartRequired:
+			// Already running from the local definition — merge the cloud view
+			// silently so a future change-detection round can restart.
+			fmt.Printf("mesh node agent_sync: agent %s (cloud=%s) was already adopted locally; merging cloud definition\n", registryKey, cloudID)
 		case !running:
-			if err := writeAgentPromptFile(agentID, systemPrompt); err != nil {
-				fmt.Printf("mesh node agent_sync prompt-file err agent=%s: %v\n", agentID, err)
+			if err := writeAgentPromptFile(registryKey, systemPrompt); err != nil {
+				fmt.Printf("mesh node agent_sync prompt-file err agent=%s: %v\n", registryKey, err)
 			}
-			fmt.Printf("mesh node agent_sync start agent=%s model=%s\n", agentID, model)
-			if _, _, err := registry.Start(agentID, model, ""); err != nil {
-				fmt.Printf("mesh node agent_sync start err agent=%s: %v\n", agentID, err)
+			fmt.Printf("mesh node agent_sync start agent=%s model=%s\n", registryKey, model)
+			if _, _, err := registry.Start(registryKey, model, ""); err != nil {
+				fmt.Printf("mesh node agent_sync start err agent=%s: %v\n", registryKey, err)
 				continue
 			}
 		case restartRequired || changed:
@@ -674,15 +715,15 @@ func ApplyAgentSync(registry *SessionRegistry, sync *meshv1.AgentSync, baseURL, 
 			if restartRequired {
 				reason = "restart_required flag"
 			}
-			if err := writeAgentPromptFile(agentID, systemPrompt); err != nil {
-				fmt.Printf("mesh node agent_sync prompt-file err agent=%s: %v\n", agentID, err)
+			if err := writeAgentPromptFile(registryKey, systemPrompt); err != nil {
+				fmt.Printf("mesh node agent_sync prompt-file err agent=%s: %v\n", registryKey, err)
 			}
-			fmt.Printf("mesh node agent_sync restart agent=%s reason=%s\n", agentID, reason)
-			if _, err := registry.Stop(agentID, true); err != nil {
-				fmt.Printf("mesh node agent_sync stop-before-restart err agent=%s: %v\n", agentID, err)
+			fmt.Printf("mesh node agent_sync restart agent=%s reason=%s\n", registryKey, reason)
+			if _, err := registry.Stop(registryKey, true); err != nil {
+				fmt.Printf("mesh node agent_sync stop-before-restart err agent=%s: %v\n", registryKey, err)
 			}
-			if _, err := registry.NewUp(agentID, model); err != nil {
-				fmt.Printf("mesh node agent_sync restart err agent=%s: %v\n", agentID, err)
+			if _, err := registry.NewUp(registryKey, model); err != nil {
+				fmt.Printf("mesh node agent_sync restart err agent=%s: %v\n", registryKey, err)
 				continue
 			}
 		default:
@@ -690,7 +731,7 @@ func ApplyAgentSync(registry *SessionRegistry, sync *meshv1.AgentSync, baseURL, 
 		}
 
 		lastAppliedMu.Lock()
-		lastApplied[agentID] = appliedAgent{
+		lastApplied[registryKey] = appliedAgent{
 			systemPrompt: systemPrompt,
 			tools:        tools,
 			model:        model,
@@ -823,11 +864,48 @@ func fetchLoopTemplate(baseURL, token string) error {
 	}
 
 	loopTemplateMu.Lock()
+	wasEmpty := loopTemplateBody == ""
 	loopTemplateBody = parsed.Template
 	loopTemplateVersion = parsed.Version
 	loopTemplateMu.Unlock()
 	fmt.Printf("mesh node loop-template cached version=%s len=%d\n", parsed.Version, len(parsed.Template))
+
+	// Carryover from slice 1: daemons that started standalone wrote agent
+	// prompt files without the loop template appended. Once we have it, walk
+	// local agents and re-materialize their prompt files so they stop drifting
+	// from agents adopted after the cluster link. Cloud-sourced locals
+	// (templateSource starts with "cloud:") and adopted agents (cloudAgentId
+	// set) are skipped — those prompt files are authored elsewhere.
+	if wasEmpty {
+		go rematerializeLocalPrompts()
+	}
 	return nil
+}
+
+func rematerializeLocalPrompts() {
+	agents, err := ListAgents()
+	if err != nil {
+		fmt.Printf("mesh node loop-template backfill: list agents: %v\n", err)
+		return
+	}
+	for _, a := range agents {
+		if a.CloudAgentID != nil && *a.CloudAgentID != "" {
+			continue
+		}
+		if strings.HasPrefix(a.TemplateSource, "cloud:") {
+			continue
+		}
+		tpl, err := reloadAgentTemplate(a)
+		if err != nil {
+			fmt.Printf("mesh node loop-template backfill: reload %s: %v\n", a.Name, err)
+			continue
+		}
+		if err := writeAgentPromptFile(a.Name, tpl.SystemPrompt); err != nil {
+			fmt.Printf("mesh node loop-template backfill: write %s: %v\n", a.Name, err)
+			continue
+		}
+		fmt.Printf("mesh node loop-template backfill: rewrote prompt for %s\n", a.Name)
+	}
 }
 
 // writeAgentPromptFile materializes <systemPrompt>\n\n<loopTemplate> to

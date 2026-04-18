@@ -143,6 +143,48 @@ func (c *LocalClient) RestartSession(ctx context.Context, name string) (map[stri
 	return out, nil
 }
 
+// pushAgent calls POST /sessions/<name>/push on the daemon socket. The raw
+// status + body are returned so the CLI can branch on 409 (name collision) and
+// 412 (standalone mode) without losing the structured error payload.
+func (c *LocalClient) pushAgent(ctx context.Context, name string, req pushSessionRequest) (int, []byte, error) {
+	return c.doRaw(ctx, http.MethodPost, "/sessions/"+url.PathEscape(name)+"/push", req)
+}
+
+// pullAgent calls POST /cluster/pull on the daemon socket.
+func (c *LocalClient) pullAgent(ctx context.Context, req pullSessionRequest) (int, []byte, error) {
+	return c.doRaw(ctx, http.MethodPost, "/cluster/pull", req)
+}
+
+// doRaw is like do but returns the raw status + body so callers can parse
+// structured error responses (409 name_taken, already_adopted, etc.).
+func (c *LocalClient) doRaw(ctx context.Context, method, path string, body any) (int, []byte, error) {
+	var reqBody io.Reader
+	if body != nil {
+		data, err := json.Marshal(body)
+		if err != nil {
+			return 0, nil, err
+		}
+		reqBody = bytes.NewReader(data)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.url(path), reqBody)
+	if err != nil {
+		return 0, nil, err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, wrapDialErr(err, c.sock)
+	}
+	defer resp.Body.Close()
+	raw, rerr := io.ReadAll(resp.Body)
+	if rerr != nil {
+		return resp.StatusCode, nil, rerr
+	}
+	return resp.StatusCode, raw, nil
+}
+
 func (c *LocalClient) UpdateSession(ctx context.Context, name string) (map[string]any, error) {
 	var out map[string]any
 	if err := c.do(ctx, http.MethodPost, "/sessions/"+url.PathEscape(name)+"/update", nil, &out); err != nil {

@@ -2,7 +2,10 @@ package main
 
 import (
 	"bufio"
+	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"sort"
 	"strings"
@@ -53,6 +56,12 @@ var (
 	agentUpdateForce        bool
 
 	agentDeleteYes bool
+
+	agentPushProjectID string
+	agentPushAs        string
+	agentPushAll       bool
+
+	agentPullAs string
 )
 
 var agentCmd = &cobra.Command{
@@ -257,6 +266,149 @@ var agentDeleteCmd = &cobra.Command{
 	},
 }
 
+var agentPushCmd = &cobra.Command{
+	Use:   "push [name]",
+	Short: "Adopt a local agent into the cluster (Docker push analog)",
+	Long:  "Push a local agent's definition to the cluster so it becomes a row in mesh-api pinned to this node. Use --all to adopt every local agent that hasn't been adopted yet.",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		lc, err := NewLocalClient()
+		if err != nil {
+			return err
+		}
+
+		if agentPushAll {
+			if len(args) > 0 {
+				return fmt.Errorf("--all cannot be combined with a positional name")
+			}
+			return pushAllAgents(cmd, lc)
+		}
+
+		if len(args) != 1 {
+			return fmt.Errorf("exactly one agent name is required (or pass --all)")
+		}
+		return pushOneAgent(cmd, lc, args[0], agentPushAs)
+	},
+}
+
+var agentPullCmd = &cobra.Command{
+	Use:   "pull <cloud-id>",
+	Short: "Materialize a cloud agent definition as a local agent",
+	Long:  "Pull a cloud agent (by UUID) into the local daemon so it shows up in `mesh ps -a`. Does not start the session — run `mesh restart` to spawn.",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		lc, err := NewLocalClient()
+		if err != nil {
+			return err
+		}
+		return pullOneAgent(cmd, lc, args[0], agentPullAs)
+	},
+}
+
+func pushOneAgent(cmd *cobra.Command, lc *LocalClient, name, asName string) error {
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	reader := bufio.NewReader(os.Stdin)
+
+	for {
+		req := pushSessionRequest{ProjectID: agentPushProjectID, As: asName}
+		status, body, err := lc.pushAgent(ctx, name, req)
+		if err != nil {
+			return err
+		}
+
+		switch status {
+		case http.StatusOK:
+			var resp pushSessionResponse
+			if jerr := json.Unmarshal(body, &resp); jerr != nil {
+				return jerr
+			}
+			project := "personal"
+			if resp.ProjectID != "" {
+				project = resp.ProjectID
+			}
+			fmt.Printf("adopted %s as cloud agent %s in project %s\n", resp.Name, resp.CloudAgentID, project)
+			return nil
+		case http.StatusConflict:
+			var parsed struct {
+				Error            string `json:"error"`
+				CloudAgentID     string `json:"cloudAgentId"`
+				ExistingAgentID  string `json:"existingAgentId"`
+			}
+			_ = json.Unmarshal(body, &parsed)
+			if parsed.Error == "already_adopted" {
+				return fmt.Errorf("agent %q is already adopted (cloudAgentId=%s)", name, parsed.CloudAgentID)
+			}
+			// name_taken: prompt the user for a new name.
+			clashed := asName
+			if clashed == "" {
+				clashed = name
+			}
+			fmt.Printf("name %q already exists in the cluster. Rename? [new name or q]: ", clashed)
+			answer, _ := reader.ReadString('\n')
+			answer = strings.TrimSpace(answer)
+			if answer == "" || answer == "q" || answer == "Q" {
+				return fmt.Errorf("push cancelled: name collision in cluster")
+			}
+			asName = answer
+			continue
+		case http.StatusPreconditionFailed:
+			return fmt.Errorf("daemon is not linked to a cluster; run `mesh node register` first")
+		default:
+			return fmt.Errorf("push failed: %s: %s", http.StatusText(status), strings.TrimSpace(string(body)))
+		}
+	}
+}
+
+func pushAllAgents(cmd *cobra.Command, lc *LocalClient) error {
+	agents, err := ListAgents()
+	if err != nil {
+		return err
+	}
+	adopted := 0
+	skipped := 0
+	for _, a := range agents {
+		if a.CloudAgentID != nil && *a.CloudAgentID != "" {
+			skipped++
+			continue
+		}
+		if err := pushOneAgent(cmd, lc, a.Name, ""); err != nil {
+			fmt.Printf("skipping %s: %v\n", a.Name, err)
+			continue
+		}
+		adopted++
+	}
+	fmt.Printf("push --all: adopted=%d skipped=%d\n", adopted, skipped)
+	return nil
+}
+
+func pullOneAgent(cmd *cobra.Command, lc *LocalClient, cloudID, asName string) error {
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	status, body, err := lc.pullAgent(ctx, pullSessionRequest{CloudAgentID: cloudID, As: asName})
+	if err != nil {
+		return err
+	}
+	switch status {
+	case http.StatusOK:
+		var resp pullSessionResponse
+		if jerr := json.Unmarshal(body, &resp); jerr != nil {
+			return jerr
+		}
+		fmt.Printf("pulled cloud agent %s as local %q (not started; run `mesh restart %s` to spawn)\n", resp.CloudAgentID, resp.Name, resp.Name)
+		return nil
+	case http.StatusConflict:
+		return fmt.Errorf("local name already in use; pass --as <different-name>")
+	case http.StatusPreconditionFailed:
+		return fmt.Errorf("daemon is not linked to a cluster; run `mesh node register` first")
+	default:
+		return fmt.Errorf("pull failed: %s: %s", http.StatusText(status), strings.TrimSpace(string(body)))
+	}
+}
+
 func init() {
 	agentListCmd.Flags().StringVar(&agentListProjectID, "project-id", "", "Filter to a specific project")
 
@@ -280,7 +432,13 @@ func init() {
 
 	agentDeleteCmd.Flags().BoolVarP(&agentDeleteYes, "yes", "y", false, "Skip confirmation")
 
-	agentCmd.AddCommand(agentListCmd, agentCreateCmd, agentUpdateCmd, agentDeleteCmd)
+	agentPushCmd.Flags().StringVar(&agentPushProjectID, "project", "", "Project ID to scope the cloud agent to (omit for personal)")
+	agentPushCmd.Flags().StringVar(&agentPushAs, "as", "", "Rename the agent in the cluster namespace")
+	agentPushCmd.Flags().BoolVar(&agentPushAll, "all", false, "Push every local agent without a cloudAgentId")
+
+	agentPullCmd.Flags().StringVar(&agentPullAs, "as", "", "Local name to pull the cloud agent under")
+
+	agentCmd.AddCommand(agentListCmd, agentCreateCmd, agentUpdateCmd, agentDeleteCmd, agentPushCmd, agentPullCmd)
 }
 
 func promptLine(r *bufio.Reader, prompt string) string {

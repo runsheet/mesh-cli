@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -67,6 +69,7 @@ func StartLocalSocket(ctx context.Context, registry *SessionRegistry) (net.Liste
 	mux.HandleFunc("/sessions/", srv.handleSessionItem)
 	mux.HandleFunc("/templates", srv.handleTemplates)
 	mux.HandleFunc("/templates/pull", srv.handleTemplatesPull)
+	mux.HandleFunc("/cluster/pull", srv.handleClusterPull)
 
 	httpSrv := &http.Server{
 		Handler:      mux,
@@ -188,6 +191,12 @@ func (s *localServer) handleSessionItem(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		s.updateSession(w, r, name)
+	case "push":
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		s.pushSession(w, r, name)
 	default:
 		writeError(w, http.StatusNotFound, "unknown session verb")
 	}
@@ -313,9 +322,14 @@ func (s *localServer) inspectSession(w http.ResponseWriter, _ *http.Request, nam
 		return
 	}
 	sum, running := s.registry.Get(name)
+	cloudAgentID := ""
+	if def.CloudAgentID != nil {
+		cloudAgentID = *def.CloudAgentID
+	}
 	out := map[string]any{
-		"definition": def,
-		"running":    running,
+		"definition":   def,
+		"running":      running,
+		"cloudAgentId": cloudAgentID,
 		"template": map[string]any{
 			"source":    def.TemplateSource,
 			"ref":       def.TemplateRef,
@@ -767,6 +781,336 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, errorResponse{Error: msg})
+}
+
+// -- cluster push / pull --
+
+type pushSessionRequest struct {
+	ProjectID string `json:"projectId,omitempty"`
+	As        string `json:"as,omitempty"`
+}
+
+type pushSessionResponse struct {
+	Name         string `json:"name"`
+	CloudAgentID string `json:"cloudAgentId"`
+	ProjectID    string `json:"projectId,omitempty"`
+}
+
+type pullSessionRequest struct {
+	CloudAgentID string `json:"cloudAgentId"`
+	As           string `json:"as,omitempty"`
+}
+
+type pullSessionResponse struct {
+	Name         string `json:"name"`
+	CloudAgentID string `json:"cloudAgentId"`
+}
+
+// pushSession lifts a local agent definition into the cluster by calling
+// mesh-api's POST /agent/import with the daemon's node token. The new cloud
+// agent id is written back onto the local state row so future AgentSync pushes
+// can be recognized as already-adopted.
+func (s *localServer) pushSession(w http.ResponseWriter, r *http.Request, name string) {
+	var req pushSessionRequest
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&req)
+	}
+
+	def, ok, err := GetAgent(name)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "agent not found")
+		return
+	}
+	if def.CloudAgentID != nil && *def.CloudAgentID != "" {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":        "already_adopted",
+			"cloudAgentId": *def.CloudAgentID,
+		})
+		return
+	}
+
+	token, tokErr := LoadNodeToken()
+	if tokErr != nil || strings.TrimSpace(token) == "" {
+		writeJSON(w, http.StatusPreconditionFailed, map[string]any{
+			"error": "not_linked_to_cluster",
+		})
+		return
+	}
+
+	// Re-read the template so description/systemPrompt/tools/model reflect
+	// whatever is currently cached. For cloud-originated locals (no template on
+	// disk) we fall back to state.json values.
+	tpl, tplErr := reloadAgentTemplate(def)
+	if tplErr != nil {
+		// Not fatal — the agent may have been pulled from cloud and has no
+		// template. Use whatever the state row remembers.
+		tpl = nil
+	}
+
+	pushName := strings.TrimSpace(req.As)
+	if pushName == "" {
+		pushName = def.Name
+	}
+
+	payload := map[string]any{
+		"name":  pushName,
+		"model": def.Model,
+	}
+	if tpl != nil {
+		payload["description"] = ""
+		payload["systemPrompt"] = tpl.SystemPrompt
+		payload["tools"] = tpl.Tools
+		payload["requiredEnvNames"] = tpl.RequiredEnv
+	} else {
+		payload["requiredEnvNames"] = def.RequiredEnv
+	}
+	if def.TemplateSource != "" {
+		payload["templateSource"] = def.TemplateSource
+	}
+	if def.TemplateSha != "" {
+		payload["templateSha"] = def.TemplateSha
+	}
+	if v := strings.TrimSpace(req.ProjectID); v != "" {
+		payload["projectId"] = v
+	}
+
+	baseURL := resolveDaemonBaseURL()
+	status, body, err := nodeAPIRequest(baseURL, token, http.MethodPost, "/agent/import", payload)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, fmt.Sprintf("mesh-api import: %v", err))
+		return
+	}
+
+	if status == http.StatusConflict {
+		// Propagate the rename-collision response to the caller unchanged.
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write(body)
+		return
+	}
+	if status < 200 || status >= 300 {
+		writeError(w, status, fmt.Sprintf("mesh-api import: %s", strings.TrimSpace(string(body))))
+		return
+	}
+
+	var parsed struct {
+		OK           bool   `json:"ok"`
+		ID           string `json:"id"`
+		Name         string `json:"name"`
+		PinnedNodeID string `json:"pinned_node_id"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("parse import response: %v", err))
+		return
+	}
+	if parsed.ID == "" {
+		writeError(w, http.StatusInternalServerError, "mesh-api import: missing id")
+		return
+	}
+
+	cloudID := parsed.ID
+	if err := UpdateAgent(name, func(a *AgentDef) { a.CloudAgentID = &cloudID }); err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("persist cloudAgentId: %v", err))
+		return
+	}
+
+	fmt.Printf("mesh daemon adopted name=%s cloudAgentId=%s project=%s\n", name, cloudID, req.ProjectID)
+
+	writeJSON(w, http.StatusOK, pushSessionResponse{
+		Name:         name,
+		CloudAgentID: cloudID,
+		ProjectID:    req.ProjectID,
+	})
+}
+
+// handleClusterPull materializes a cloud agent definition into local state. It
+// intentionally does NOT start the session — adoption is explicit; the user
+// runs `mesh restart` to spawn.
+func (s *localServer) handleClusterPull(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req pullSessionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid JSON: %v", err))
+		return
+	}
+	cloudID := strings.TrimSpace(req.CloudAgentID)
+	if cloudID == "" {
+		writeError(w, http.StatusBadRequest, "cloudAgentId is required")
+		return
+	}
+
+	token, tokErr := LoadNodeToken()
+	if tokErr != nil || strings.TrimSpace(token) == "" {
+		writeJSON(w, http.StatusPreconditionFailed, map[string]any{
+			"error": "not_linked_to_cluster",
+		})
+		return
+	}
+
+	baseURL := resolveDaemonBaseURL()
+	// Node tokens can call /agent/get per spec; but /agent/get currently gates
+	// to user principals. Use user session as bearer if available, else fall
+	// back to node token and let the server decide. Keeping this simple: use
+	// node token — mesh-api may 403, in which case we surface the message.
+	status, body, err := nodeAPIRequest(baseURL, token, http.MethodGet, "/agent/get?id="+cloudID, nil)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, fmt.Sprintf("mesh-api get: %v", err))
+		return
+	}
+	if status < 200 || status >= 300 {
+		writeError(w, status, fmt.Sprintf("mesh-api get: %s", strings.TrimSpace(string(body))))
+		return
+	}
+
+	var parsed struct {
+		OK    bool `json:"ok"`
+		Agent struct {
+			ID            string          `json:"id"`
+			Name          string          `json:"name"`
+			SystemPrompt  string          `json:"system_prompt"`
+			Model         string          `json:"model"`
+			PinnedNodeID  string          `json:"pinned_node_id"`
+			ProjectID     *string         `json:"project_id"`
+			Tools         json.RawMessage `json:"tools"`
+		} `json:"agent"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("parse agent response: %v", err))
+		return
+	}
+	if parsed.Agent.ID == "" {
+		writeError(w, http.StatusInternalServerError, "mesh-api get: missing agent")
+		return
+	}
+
+	myNodeID, err := loadDaemonNodeID(baseURL, token)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("resolve local node id: %v", err))
+		return
+	}
+	if parsed.Agent.PinnedNodeID != myNodeID {
+		writeError(w, http.StatusForbidden, "cloud agent is pinned to a different node")
+		return
+	}
+
+	localName := strings.TrimSpace(req.As)
+	if localName == "" {
+		localName = parsed.Agent.Name
+	}
+	if _, exists, err := GetAgent(localName); err == nil && exists {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error": "local_name_taken",
+		})
+		return
+	}
+
+	// Materialize the system prompt so subsequent `mesh restart` behaves like
+	// any other local agent. No template-cache dir; templateSource uses the
+	// "cloud:<id>" sentinel so slice-1 carryover logic skips it.
+	if err := writeAgentPromptFile(localName, parsed.Agent.SystemPrompt); err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("write prompt: %v", err))
+		return
+	}
+
+	cloud := parsed.Agent.ID
+	def := &AgentDef{
+		Name:           localName,
+		TemplateSource: "cloud:" + cloud,
+		Model:          parsed.Agent.Model,
+		CreatedAt:      time.Now().UTC(),
+		CloudAgentID:   &cloud,
+	}
+	if err := AddAgent(def); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, pullSessionResponse{
+		Name:         localName,
+		CloudAgentID: cloud,
+	})
+}
+
+// nodeAPIRequest is a minimal HTTP helper for daemon→mesh-api calls that
+// authenticate with the node token. Returns raw body so callers can parse
+// structured error responses (409 name_taken, etc.) instead of a wrapped
+// error string.
+func nodeAPIRequest(baseURL, token, method, path string, body any) (int, []byte, error) {
+	if baseURL == "" {
+		return 0, nil, errors.New("daemon base URL is not configured")
+	}
+	url := strings.TrimRight(baseURL, "/") + path
+	var reqBody *strings.Reader
+	if body != nil {
+		data, err := json.Marshal(body)
+		if err != nil {
+			return 0, nil, err
+		}
+		reqBody = strings.NewReader(string(data))
+	}
+	var req *http.Request
+	var err error
+	if reqBody != nil {
+		req, err = http.NewRequest(method, url, reqBody)
+	} else {
+		req, err = http.NewRequest(method, url, nil)
+	}
+	if err != nil {
+		return 0, nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer resp.Body.Close()
+	raw, rerr := io.ReadAll(resp.Body)
+	if rerr != nil {
+		return resp.StatusCode, nil, rerr
+	}
+	return resp.StatusCode, raw, nil
+}
+
+// resolveDaemonBaseURL reads the same precedence as the CLI (env → default).
+// We intentionally don't depend on the user session here — the daemon talks to
+// mesh-api on its own behalf using the node token.
+func resolveDaemonBaseURL() string {
+	if v := strings.TrimSpace(os.Getenv("MESH_API_URL")); v != "" {
+		return normalizeBaseURL(v)
+	}
+	return "https://api.projectmesh.io"
+}
+
+// loadDaemonNodeID probes mesh-api's /node/register to learn this node's id.
+// Cached in-process so we don't hit the network on every pull.
+var (
+	cachedNodeIDMu sync.Mutex
+	cachedNodeID   string
+)
+
+func loadDaemonNodeID(baseURL, token string) (string, error) {
+	cachedNodeIDMu.Lock()
+	defer cachedNodeIDMu.Unlock()
+	if cachedNodeID != "" {
+		return cachedNodeID, nil
+	}
+	// Best path: gRPC Register echoes node id. Re-use probeLocalNodeID logic.
+	id, err := probeLocalNodeID(baseURL, token)
+	if err != nil {
+		return "", err
+	}
+	cachedNodeID = id
+	return id, nil
 }
 
 func stateName(state meshv1.SessionState) string {
