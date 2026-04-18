@@ -4,12 +4,14 @@ on:
   push:
     branches:
       - main
-    tags:
-      - 'v*.*.*'
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: cli-release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -63,8 +65,7 @@ jobs:
           if-no-files-found: error
 
   publish:
-    name: Publish GitHub Release assets
-    if: startsWith(github.ref, 'refs/tags/v')
+    name: Publish release to projectmesh-io/mesh
     needs: build
     runs-on: ubuntu-latest
 
@@ -75,8 +76,23 @@ jobs:
           path: release
           merge-multiple: true
 
-      - name: Upload release assets
+      - name: Generate SHA256SUMS
+        working-directory: release
+        run: sha256sum * > SHA256SUMS
+
+      - name: Create release on projectmesh-io/mesh
         uses: softprops/action-gh-release@v2
         with:
+          repository: projectmesh-io/mesh
+          token: ${{ secrets.RELEASE_TOKEN }}
+          tag_name: v0.1.${{ github.run_number }}
+          name: v0.1.${{ github.run_number }}
+          body: |
+            Automated release from `mesh-cli` main.
+
+            Source commit: `${{ github.sha }}`
+
+            Install: download the archive for your platform, extract, and put `mesh` on your `$PATH`.
           files: release/*
           fail_on_unmatched_files: true
+          make_latest: true

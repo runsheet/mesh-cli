@@ -15,7 +15,7 @@ func main() {
 		Example: "mesh auth login\nmesh work-item create \"Stabilize release flow\" project <project-id>\nmesh work-item update <id> ready\nmesh work-item handoff <id> pm devlead \"Spec approved\"\nmesh work-item review <id> devlead approve \"Ship it\"\nmesh work-item learning <id> \"Release flow now stable\"",
 	}
 
-	rootCmd.AddCommand(authCmd, workItemCmd)
+	rootCmd.AddCommand(authCmd, workItemCmd, nodeCmd, agentCmd, sessionCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)
