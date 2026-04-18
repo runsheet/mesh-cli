@@ -131,7 +131,9 @@ func autoStartOne(registry *SessionRegistry, a *AgentDef) error {
 	if tplDir == "" {
 		return fmt.Errorf("template not available (source %q)", a.TemplateSource)
 	}
-	tpl, err := readTemplateFromDir(tplDir)
+	// Re-render with stored values so templated agent.yaml (channel configs,
+	// toggles) comes back populated. Static-only templates are a no-op here.
+	tpl, _, err := readTemplateWithValues(tplDir, a.Name, a.Values)
 	if err != nil {
 		return fmt.Errorf("read template: %w", err)
 	}

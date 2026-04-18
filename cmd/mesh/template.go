@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -11,8 +12,10 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"text/template"
 	"time"
 
+	"github.com/Masterminds/sprig/v3"
 	"gopkg.in/yaml.v3"
 )
 
@@ -203,6 +206,34 @@ func looksLikeHostPath(s string) bool {
 	return strings.Contains(parts[0], ".")
 }
 
+// materializeTemplateDir resolves src to an on-disk directory (fetching git
+// sources as needed) and returns (dir, sha, ref). Used by callers that want to
+// layer values.yaml + overrides themselves before rendering.
+func materializeTemplateDir(src *Source) (string, string, string, error) {
+	if src == nil {
+		return "", "", "", errors.New("nil source")
+	}
+	switch src.Kind {
+	case "local":
+		info, err := os.Stat(src.Path)
+		if err != nil {
+			return "", "", "", fmt.Errorf("template path: %w", err)
+		}
+		if !info.IsDir() {
+			return "", "", "", fmt.Errorf("template path %q is not a directory", src.Path)
+		}
+		return src.Path, "", "", nil
+	case "git":
+		sha, cachePath, err := FetchGitTemplate(src)
+		if err != nil {
+			return "", "", "", err
+		}
+		return cachePath, sha, src.Ref, nil
+	default:
+		return "", "", "", fmt.Errorf("unknown source kind %q", src.Kind)
+	}
+}
+
 // LoadTemplate materializes a Source into a Template. Local sources read in
 // place; git sources fetch into ~/.mesh/templates/sha256-<sha>/ if missing.
 func LoadTemplate(src *Source) (*Template, error) {
@@ -266,20 +297,33 @@ func ReadLocalTemplate(src string) (*Template, error) {
 	return tpl, nil
 }
 
+// readTemplateFromDir loads a template from dir, applying default values from
+// <dir>/values.yaml with no caller-provided overrides. Used by auto-start and
+// other code paths that don't re-apply CLI values.
 func readTemplateFromDir(dir string) (*Template, error) {
-	ay, err := LoadAgentYAML(dir)
+	tpl, _, err := readTemplateWithValues(dir, "", nil)
+	return tpl, err
+}
+
+// readTemplateWithValues renders agent.yaml(.tmpl) and system_prompt.md(.tmpl)
+// using the effective values map (values.yaml merged with overrides) and
+// returns both the resolved Template and the merged values map. name feeds
+// `.Name` in templates; an empty name is tolerated.
+func readTemplateWithValues(dir, name string, overrides map[string]any) (*Template, map[string]any, error) {
+	base, err := LoadValues(dir, nil, nil, nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	values := deepMerge(base, overrides)
+
+	agentBytes, promptBytes, err := RenderTemplate(dir, name, values)
+	if err != nil {
+		return nil, nil, err
 	}
 
-	promptRel := ay.Spec.SystemPromptPath
-	if promptRel == "" {
-		promptRel = defaultSystemPromptPath
-	}
-	promptPath := filepath.Join(dir, promptRel)
-	promptBytes, err := os.ReadFile(promptPath)
+	ay, err := parseAgentYAMLBytes(agentBytes)
 	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", promptRel, err)
+		return nil, nil, err
 	}
 
 	workingDir := dir
@@ -296,28 +340,161 @@ func readTemplateFromDir(dir string) (*Template, error) {
 		WorkingDir:                 workingDir,
 		DangerouslySkipPermissions: ay.Spec.DangerouslySkipPermissions,
 		Channels:                   append([]ChannelSpec{}, ay.Spec.Channels...),
-	}, nil
+	}, values, nil
 }
 
-// LoadAgentYAML returns the parsed agent.yaml for templateDir, or a populated
-// zero-value if the file doesn't exist (matches slice 1's implicit-template
-// behavior). Defaults are applied + allow-lists enforced before returning.
-func LoadAgentYAML(templateDir string) (*AgentYAML, error) {
-	path := filepath.Join(templateDir, "agent.yaml")
-	data, err := os.ReadFile(path)
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return nil, fmt.Errorf("read agent.yaml: %w", err)
+// RenderTemplate returns the rendered bytes for agent.yaml and the system
+// prompt. A `.tmpl` variant wins over the static file when present; missing
+// static files for the system prompt fall back gracefully only if the .tmpl
+// exists. Template context is `{ Values, Name, Version }`.
+func RenderTemplate(dir, name string, values map[string]any) ([]byte, []byte, error) {
+	tmplCtx := map[string]any{
+		"Values":  values,
+		"Name":    name,
+		"Version": deriveTemplateVersion(values, dir),
 	}
 
+	agentTmpl := filepath.Join(dir, "agent.yaml.tmpl")
+	agentStatic := filepath.Join(dir, "agent.yaml")
+	agentBytes, err := renderIfTemplate(agentTmpl, agentStatic, "agent.yaml.tmpl", tmplCtx, values)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	promptStaticRel := defaultSystemPromptPath
+	// Honour systemPromptPath from agent.yaml so a template can point elsewhere.
+	if parsed, perr := parseAgentYAMLBytes(agentBytes); perr == nil && parsed.Spec.SystemPromptPath != "" {
+		promptStaticRel = parsed.Spec.SystemPromptPath
+	}
+	promptTmpl := filepath.Join(dir, promptStaticRel+".tmpl")
+	promptStatic := filepath.Join(dir, promptStaticRel)
+	promptBytes, err := renderIfTemplate(promptTmpl, promptStatic, promptStaticRel+".tmpl", tmplCtx, values)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return agentBytes, promptBytes, nil
+}
+
+func renderIfTemplate(tmplPath, staticPath, relLabel string, ctx map[string]any, values map[string]any) ([]byte, error) {
+	data, err := os.ReadFile(tmplPath)
+	if err == nil {
+		return executeTemplate(relLabel, data, ctx, values)
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("read %s: %w", relLabel, err)
+	}
+	static, err := os.ReadFile(staticPath)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", filepath.Base(staticPath), err)
+	}
+	return static, nil
+}
+
+func executeTemplate(relLabel string, body []byte, ctx map[string]any, values map[string]any) ([]byte, error) {
+	// missingkey=error surfaces undefined values as template errors with a
+	// file+line, which normalizeTemplateError turns into the actionable
+	// format spec 13 §7 mandates. Users who want a fallback can gate on
+	// sprig's hasKey / wrap in an if-block.
+	tpl, err := template.New(relLabel).Funcs(sprig.TxtFuncMap()).Option("missingkey=error").Parse(string(body))
+	if err != nil {
+		return nil, normalizeTemplateError(relLabel, err, values)
+	}
+	var buf bytes.Buffer
+	if err := tpl.Execute(&buf, ctx); err != nil {
+		return nil, normalizeTemplateError(relLabel, err, values)
+	}
+	return buf.Bytes(), nil
+}
+
+// templateErrLocation captures `template: file:line:col:` prefixes. Go's
+// text/template surfaces errors with the parser-assigned name we passed in —
+// the relLabel — followed by the line (and optional column).
+var templateErrLocation = regexp.MustCompile(`template: [^:]+:(\d+)(?::\d+)?`)
+
+// templateErrMissingKey extracts the key at the tail of a "map has no entry
+// for key …" / "can't evaluate field … in type" error so we can offer a
+// case-fold hint.
+var (
+	templateErrMissingKey = regexp.MustCompile(`map has no entry for key "([^"]+)"`)
+	templateErrEvalField  = regexp.MustCompile(`can't evaluate field (\S+) in type`)
+)
+
+func normalizeTemplateError(relLabel string, err error, values map[string]any) error {
+	msg := err.Error()
+	line := ""
+	if m := templateErrLocation.FindStringSubmatch(msg); len(m) == 2 {
+		line = m[1]
+	}
+
+	missing := ""
+	if m := templateErrMissingKey.FindStringSubmatch(msg); len(m) == 2 {
+		missing = m[1]
+	} else if m := templateErrEvalField.FindStringSubmatch(msg); len(m) == 2 {
+		missing = strings.TrimSpace(m[1])
+	}
+
+	hint := ""
+	if missing != "" {
+		if suggestion := caseFoldLookup(values, missing); suggestion != "" {
+			hint = fmt.Sprintf(`values.yaml declares %q. Did you mean --set %s=…?`, suggestion, suggestion)
+		}
+	}
+
+	var b strings.Builder
+	b.WriteString("template render error:\n")
+	b.WriteString("  file: ")
+	b.WriteString(relLabel)
+	b.WriteString("\n")
+	if line != "" {
+		b.WriteString("  line: ")
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+	b.WriteString("  error: ")
+	b.WriteString(msg)
+	if hint != "" {
+		b.WriteString("\n  hint: ")
+		b.WriteString(hint)
+	}
+	return errors.New(b.String())
+}
+
+// caseFoldLookup searches values for a key that matches target case-
+// insensitively. Simple key matching — no path walking beyond a single level
+// per spec ("just case-fold"). Returns the canonical key if found.
+func caseFoldLookup(values map[string]any, target string) string {
+	want := strings.ToLower(target)
+	for k := range values {
+		if strings.ToLower(k) == want && k != target {
+			return k
+		}
+	}
+	for _, v := range values {
+		if m, ok := v.(map[string]any); ok {
+			if found := caseFoldLookup(m, target); found != "" {
+				return found
+			}
+		}
+	}
+	return ""
+}
+
+func deriveTemplateVersion(values map[string]any, dir string) string {
+	if v, ok := values["version"].(string); ok && v != "" {
+		return v
+	}
+	return ""
+}
+
+func parseAgentYAMLBytes(data []byte) (*AgentYAML, error) {
 	ay := &AgentYAML{}
 	if len(data) > 0 {
 		if err := yaml.Unmarshal(data, ay); err != nil {
 			return nil, fmt.Errorf("parse agent.yaml: %w", err)
 		}
 	}
-
 	applyAgentYAMLDefaults(ay)
-
 	if !templateModelAllowlist[ay.Spec.Model] {
 		return nil, fmt.Errorf("agent.yaml model %q is not in the allow-list (allowed: claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5)", ay.Spec.Model)
 	}
@@ -329,8 +506,21 @@ func LoadAgentYAML(templateDir string) (*AgentYAML, error) {
 	if err := validateChannelSpecs(ay.Spec.Channels); err != nil {
 		return nil, fmt.Errorf("agent.yaml %w", err)
 	}
-
 	return ay, nil
+}
+
+// LoadAgentYAML returns the parsed agent.yaml for templateDir, or a populated
+// zero-value if the file doesn't exist (matches slice 1's implicit-template
+// behavior). Defaults are applied + allow-lists enforced before returning.
+// For templates using agent.yaml.tmpl this is not the rendered view — callers
+// that need the rendered form go through readTemplateWithValues.
+func LoadAgentYAML(templateDir string) (*AgentYAML, error) {
+	path := filepath.Join(templateDir, "agent.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("read agent.yaml: %w", err)
+	}
+	return parseAgentYAMLBytes(data)
 }
 
 func applyAgentYAMLDefaults(ay *AgentYAML) {
@@ -386,9 +576,9 @@ func FetchGitTemplate(src *Source) (string, string, error) {
 		cleanupTmp()
 		return "", "", err
 	}
-	if _, err := os.Stat(filepath.Join(tmp, defaultSystemPromptPath)); err != nil {
+	if !templateHasPrompt(tmp) {
 		cleanupTmp()
-		return "", "", fmt.Errorf("cloned template missing %s", defaultSystemPromptPath)
+		return "", "", fmt.Errorf("cloned template missing %s or %s.tmpl", defaultSystemPromptPath, defaultSystemPromptPath)
 	}
 
 	if err := os.Rename(tmp, target); err != nil {
@@ -409,10 +599,22 @@ func cacheHit(dir string) (string, bool) {
 	if err != nil || !info.IsDir() {
 		return "", false
 	}
-	if _, err := os.Stat(filepath.Join(dir, defaultSystemPromptPath)); err != nil {
+	if !templateHasPrompt(dir) {
 		return "", false
 	}
 	return dir, true
+}
+
+// templateHasPrompt returns true if dir contains either the static prompt
+// file or its .tmpl variant.
+func templateHasPrompt(dir string) bool {
+	if _, err := os.Stat(filepath.Join(dir, defaultSystemPromptPath)); err == nil {
+		return true
+	}
+	if _, err := os.Stat(filepath.Join(dir, defaultSystemPromptPath+".tmpl")); err == nil {
+		return true
+	}
+	return false
 }
 
 func templateCacheRoot() (string, error) {

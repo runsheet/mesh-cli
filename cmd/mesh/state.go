@@ -43,6 +43,10 @@ type AgentDef struct {
 	// restart / autostart rebuild channel subprocesses without re-reading the
 	// template. Opaque per-type config lives in ChannelSpec.Config.
 	Channels []ChannelSpec `json:"channels,omitempty"`
+	// Values is the merged values map (template defaults + --values + --set)
+	// that produced this agent's rendered agent.yaml / system_prompt. Persisted
+	// so restart and autostart re-render deterministically.
+	Values map[string]any `json:"values,omitempty"`
 }
 
 type LocalState struct {

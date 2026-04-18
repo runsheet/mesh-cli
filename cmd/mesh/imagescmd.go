@@ -20,9 +20,11 @@ var imagesCmd = &cobra.Command{
 
 // templatesCmd is the noun form; `mesh templates ls` is the canonical long
 // spelling, `mesh images` is the Docker-style short alias. Both share output.
+// `template` (singular) is aliased so `mesh template render …` reads naturally.
 var templatesCmd = &cobra.Command{
-	Use:   "templates",
-	Short: "Inspect the local template cache",
+	Use:     "templates",
+	Aliases: []string{"template"},
+	Short:   "Inspect the local template cache",
 }
 
 var templatesLsCmd = &cobra.Command{

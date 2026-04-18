@@ -119,6 +119,9 @@ type createSessionRequest struct {
 	Env                        map[string]string `json:"env,omitempty"`
 	AutoStart                  *bool             `json:"autoStart,omitempty"`
 	DangerouslySkipPermissions *bool             `json:"dangerouslySkipPermissions,omitempty"`
+	// Values is the already-merged (client-side) --values/--set map layered on
+	// top of the template's values.yaml during createSession.
+	Values map[string]any `json:"values,omitempty"`
 }
 
 type createSessionResponse struct {
@@ -257,12 +260,27 @@ func (s *localServer) createSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	tpl, err := LoadTemplate(src)
+
+	// Git templates fetch into the cache; local paths live in place. After this
+	// we need the resolved directory to layer values.yaml on top of the client-
+	// supplied overrides and render.
+	tplDir, gitSHA, gitRef, err := materializeTemplateDir(src)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	tpl, values, err := readTemplateWithValues(tplDir, name, req.Values)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	tpl.Source = req.TemplateSource
+	tpl.GitSHA = gitSHA
+	tpl.GitRef = gitRef
+	if src.Kind == "git" {
+		tpl.GitURL = src.URL
+	}
 
 	effectiveEnv := mergeStringMaps(os.Environ(), req.Env)
 	if missing := missingRequiredEnv(tpl.RequiredEnv, effectiveEnv); len(missing) > 0 {
@@ -290,6 +308,7 @@ func (s *localServer) createSession(w http.ResponseWriter, r *http.Request) {
 		ClaudeSessionID:            uuid.NewString(),
 		DangerouslySkipPermissions: skipPerms,
 		Channels:                   append([]ChannelSpec{}, tpl.Channels...),
+		Values:                     values,
 	}
 	if err := AddAgent(def); err != nil {
 		writeError(w, http.StatusConflict, err.Error())
@@ -415,10 +434,12 @@ func (s *localServer) restartSession(w http.ResponseWriter, _ *http.Request, nam
 	}
 
 	// Re-read the template (from cache if git) so prompt/requiredEnv reflect
-	// current disk state — user may have edited system_prompt.md.
+	// current disk state — user may have edited system_prompt.md. Re-render
+	// with the stored values so templated agent.yaml comes back with the same
+	// shape it had at create time.
 	var tpl *Template
 	if def.TemplateSource != "" {
-		if t, err := reloadAgentTemplate(def); err == nil {
+		if t, err := reloadAgentTemplateWithValues(def); err == nil {
 			tpl = t
 			_ = writeAgentPromptFile(name, tpl.SystemPrompt)
 			// Merge refreshed channel list back into state so autostart-on-boot
@@ -505,10 +526,19 @@ func (s *localServer) updateSession(w http.ResponseWriter, _ *http.Request, name
 		src.Ref = def.TemplateRef
 	}
 
-	tpl, err := LoadTemplate(src)
+	tplDir, gitSHA, _, err := materializeTemplateDir(src)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	tpl, _, err := readTemplateWithValues(tplDir, name, def.Values)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	tpl.GitSHA = gitSHA
+	if src.Kind == "git" {
+		tpl.GitURL = src.URL
 	}
 
 	oldSHA := def.TemplateSha
@@ -570,7 +600,8 @@ func (s *localServer) updateSession(w http.ResponseWriter, _ *http.Request, name
 
 // reloadAgentTemplate re-materializes the template referenced by def. Git
 // sources use the cached SHA to avoid a network hop; only `mesh update`
-// re-resolves the ref.
+// re-resolves the ref. Renders with no stored values — used by flows (push,
+// loop-template backfill) that only need the static prompt/tools shape.
 func reloadAgentTemplate(def *AgentDef) (*Template, error) {
 	src, err := ResolveTemplateSource(def.TemplateSource)
 	if err != nil {
@@ -581,6 +612,34 @@ func reloadAgentTemplate(def *AgentDef) (*Template, error) {
 		src.Ref = def.TemplateSha
 	}
 	return LoadTemplate(src)
+}
+
+// reloadAgentTemplateWithValues mirrors reloadAgentTemplate but re-renders
+// templated agent.yaml / system_prompt with the values stored on the agent def
+// so channel configs and other templated fields come back populated.
+func reloadAgentTemplateWithValues(def *AgentDef) (*Template, error) {
+	src, err := ResolveTemplateSource(def.TemplateSource)
+	if err != nil {
+		return nil, err
+	}
+	if src.Kind == "git" && def.TemplateSha != "" {
+		src.Ref = def.TemplateSha
+	}
+	tplDir, gitSHA, gitRef, err := materializeTemplateDir(src)
+	if err != nil {
+		return nil, err
+	}
+	tpl, _, err := readTemplateWithValues(tplDir, def.Name, def.Values)
+	if err != nil {
+		return nil, err
+	}
+	tpl.Source = def.TemplateSource
+	tpl.GitSHA = gitSHA
+	tpl.GitRef = gitRef
+	if src.Kind == "git" {
+		tpl.GitURL = src.URL
+	}
+	return tpl, nil
 }
 
 func (s *localServer) logsSession(w http.ResponseWriter, r *http.Request, name string) {

@@ -10,10 +10,14 @@ import (
 )
 
 var (
-	runTemplateFlag string
-	runNameFlag     string
-	runEnvFlag      []string
-	runNoStartFlag  bool
+	runTemplateFlag        string
+	runNameFlag            string
+	runEnvFlag             []string
+	runNoStartFlag         bool
+	runSkipPermissionsFlag bool
+	runValuesFlag          []string
+	runSetFlag             []string
+	runSetStringFlag       []string
 )
 
 var runCmd = &cobra.Command{
@@ -49,6 +53,14 @@ var runCmd = &cobra.Command{
 			}
 		}
 
+		// Load values on the client so bad YAML / missing files surface before
+		// we hand off to the daemon. templateDir is empty here — values.yaml
+		// from the template itself is layered on the daemon side.
+		values, err := LoadValues("", runValuesFlag, runSetFlag, runSetStringFlag)
+		if err != nil {
+			return err
+		}
+
 		client, err := NewLocalClient()
 		if err != nil {
 			return err
@@ -60,6 +72,13 @@ var runCmd = &cobra.Command{
 			TemplateSource: template,
 			Env:            env,
 			AutoStart:      &autoStart,
+			Values:         values,
+		}
+		// Only forward the flag if the user passed it — otherwise the template's
+		// agent.yaml value wins on the daemon side.
+		if cmd.Flags().Changed("dangerously-skip-permissions") {
+			v := runSkipPermissionsFlag
+			req.DangerouslySkipPermissions = &v
 		}
 		resp, err := client.CreateSession(context.Background(), req)
 		if err != nil {
@@ -79,4 +98,8 @@ func init() {
 	runCmd.Flags().StringVar(&runNameFlag, "name", "", "Local agent name")
 	runCmd.Flags().StringArrayVar(&runEnvFlag, "env", nil, "KEY=VALUE or bare KEY (inherits from caller env); repeatable")
 	runCmd.Flags().BoolVar(&runNoStartFlag, "no-start", false, "Register the agent but don't start its session")
+	runCmd.Flags().BoolVar(&runSkipPermissionsFlag, "dangerously-skip-permissions", false, "Launch claude with --dangerously-skip-permissions (auto-approve every tool call). Overrides the template's agent.yaml value.")
+	runCmd.Flags().StringArrayVar(&runValuesFlag, "values", nil, "Path to a YAML values file (repeatable; later files override earlier ones)")
+	runCmd.Flags().StringArrayVar(&runSetFlag, "set", nil, "Override a template value, e.g. --set discord.enabled=true (repeatable; YAML-parsed value)")
+	runCmd.Flags().StringArrayVar(&runSetStringFlag, "set-string", nil, "Override a template value, coercing the value to string (repeatable)")
 }
