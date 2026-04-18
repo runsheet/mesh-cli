@@ -1,0 +1,548 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+
+	meshv1 "projectmesh.io/mesh-cli/proto/meshv1"
+)
+
+const daemonSocketName = "daemon.sock"
+
+// DaemonSocketPath is ~/.mesh/daemon.sock. Exported so command code can print
+// nice errors.
+func DaemonSocketPath() (string, error) {
+	dir, err := meshDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, daemonSocketName), nil
+}
+
+// StartLocalSocket starts the Unix-socket HTTP server that serves the local
+// daemon surface (mesh run/ps/attach/logs/...). It takes the same
+// SessionRegistry the cluster-mode gRPC handlers use, so standalone-mode
+// agents and pinned cluster agents share process-local state.
+//
+// Returns the listener so the caller can shut it down; server runs until
+// ctx is cancelled.
+func StartLocalSocket(ctx context.Context, registry *SessionRegistry) (net.Listener, error) {
+	if _, err := ensureMeshDir(); err != nil {
+		return nil, err
+	}
+
+	sockPath, err := DaemonSocketPath()
+	if err != nil {
+		return nil, err
+	}
+
+	// Stale socket cleanup — if the previous daemon crashed we'll leave a dead
+	// file behind. Remove it before bind; ignore "not found".
+	if err := os.Remove(sockPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("clean stale socket: %w", err)
+	}
+
+	listener, err := net.Listen("unix", sockPath)
+	if err != nil {
+		return nil, fmt.Errorf("listen %s: %w", sockPath, err)
+	}
+	if err := os.Chmod(sockPath, 0o600); err != nil {
+		_ = listener.Close()
+		return nil, fmt.Errorf("chmod socket: %w", err)
+	}
+
+	srv := &localServer{registry: registry}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/sessions", srv.handleSessions)
+	mux.HandleFunc("/sessions/", srv.handleSessionItem)
+	mux.HandleFunc("/templates", srv.handleTemplates)
+	mux.HandleFunc("/templates/pull", srv.handleTemplatesPull)
+
+	httpSrv := &http.Server{
+		Handler:      mux,
+		ReadTimeout:  0, // attach hijacks and runs long; no server-side timeout.
+		WriteTimeout: 0,
+	}
+
+	go func() {
+		if err := httpSrv.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
+			fmt.Printf("mesh daemon local socket serve error: %v\n", err)
+		}
+	}()
+	go func() {
+		<-ctx.Done()
+		shutCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = httpSrv.Shutdown(shutCtx)
+	}()
+
+	fmt.Printf("mesh daemon local socket listening at %s (mode 0600)\n", sockPath)
+	return listener, nil
+}
+
+type localServer struct {
+	registry *SessionRegistry
+}
+
+// -- JSON payload shapes (kept here so there's one source of truth for both
+// server and client). --
+
+type sessionView struct {
+	Name            string `json:"name"`
+	TemplateSource  string `json:"templateSource"`
+	TemplateRef     string `json:"templateRef,omitempty"`
+	Status          string `json:"status"`
+	SessionID       string `json:"sessionId,omitempty"`
+	ClaudeSessionID string `json:"claudeSessionId,omitempty"`
+	PID             int    `json:"pid,omitempty"`
+	StartedAt       string `json:"startedAt,omitempty"`
+	LastActivityAt  string `json:"lastActivityAt,omitempty"`
+	Model           string `json:"model,omitempty"`
+}
+
+type createSessionRequest struct {
+	Name           string            `json:"name"`
+	TemplateSource string            `json:"templateSource"`
+	Env            map[string]string `json:"env,omitempty"`
+	AutoStart      *bool             `json:"autoStart,omitempty"`
+}
+
+type createSessionResponse struct {
+	Name      string `json:"name"`
+	Status    string `json:"status"`
+	SessionID string `json:"sessionId,omitempty"`
+}
+
+type errorResponse struct {
+	Error string `json:"error"`
+}
+
+// -- handlers --
+
+func (s *localServer) handleSessions(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.listSessions(w, r)
+	case http.MethodPost:
+		s.createSession(w, r)
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+// handleSessionItem routes /sessions/<name>[/verb].
+func (s *localServer) handleSessionItem(w http.ResponseWriter, r *http.Request) {
+	rest := strings.TrimPrefix(r.URL.Path, "/sessions/")
+	if rest == "" {
+		writeError(w, http.StatusNotFound, "missing session name")
+		return
+	}
+	parts := strings.SplitN(rest, "/", 2)
+	name := parts[0]
+	verb := ""
+	if len(parts) == 2 {
+		verb = parts[1]
+	}
+
+	switch verb {
+	case "":
+		switch r.Method {
+		case http.MethodGet:
+			s.inspectSession(w, r, name)
+		case http.MethodDelete:
+			s.removeSession(w, r, name)
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+	case "attach":
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		s.attachSession(w, r, name)
+	case "logs":
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		s.logsSession(w, r, name)
+	case "restart":
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		s.restartSession(w, r, name)
+	default:
+		writeError(w, http.StatusNotFound, "unknown session verb")
+	}
+}
+
+func (s *localServer) listSessions(w http.ResponseWriter, _ *http.Request) {
+	defs, err := ListAgents()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	live := map[string]PtySessionSummary{}
+	for _, sum := range s.registry.List() {
+		live[sum.AgentID] = sum
+	}
+
+	out := make([]sessionView, 0, len(defs))
+	for _, def := range defs {
+		sv := sessionView{
+			Name:           def.Name,
+			TemplateSource: def.TemplateSource,
+			TemplateRef:    def.TemplateRef,
+			Status:         "stopped",
+			Model:          def.Model,
+		}
+		if sum, ok := live[def.Name]; ok {
+			sv.Status = stateName(sum.State)
+			sv.SessionID = sum.SessionID
+			sv.ClaudeSessionID = sum.ClaudeSessionID
+			sv.PID = sum.PID
+			sv.StartedAt = sum.StartedAt.UTC().Format(time.RFC3339)
+			sv.LastActivityAt = sum.LastActivity.UTC().Format(time.RFC3339)
+		}
+		out = append(out, sv)
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *localServer) createSession(w http.ResponseWriter, r *http.Request) {
+	var req createSessionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid JSON: %v", err))
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	if req.TemplateSource == "" {
+		writeError(w, http.StatusBadRequest, "templateSource is required")
+		return
+	}
+
+	tpl, err := ReadLocalTemplate(req.TemplateSource)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	def := &AgentDef{
+		Name:              name,
+		TemplateSource:    req.TemplateSource,
+		TemplateCachePath: tpl.ResolvedPath,
+		Model:             tpl.Model,
+		CreatedAt:         time.Now().UTC(),
+	}
+	if err := AddAgent(def); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+
+	autoStart := true
+	if req.AutoStart != nil {
+		autoStart = *req.AutoStart
+	}
+
+	resp := createSessionResponse{Name: name, Status: "created"}
+	if autoStart {
+		// Materialize the system prompt so Claude Code picks it up from the
+		// same convention the cluster-mode writer uses (~/.mesh/agents/<id>.md).
+		// Slice 1 doesn't merge the Ralph loop template — that's an explicit
+		// opt-in via cluster mode.
+		if err := writeAgentPromptFile(name, tpl.SystemPrompt); err != nil {
+			fmt.Printf("mesh daemon prompt-file err name=%s: %v\n", name, err)
+		}
+		sess, _, err := s.registry.Start(name, tpl.Model, "")
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("start session: %v", err))
+			return
+		}
+		_ = UpdateAgent(name, func(a *AgentDef) { a.LastSessionID = sess.SessionID })
+		resp.Status = "running"
+		resp.SessionID = sess.SessionID
+	}
+	writeJSON(w, http.StatusCreated, resp)
+}
+
+func (s *localServer) inspectSession(w http.ResponseWriter, _ *http.Request, name string) {
+	def, ok, err := GetAgent(name)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "agent not found")
+		return
+	}
+	sum, running := s.registry.Get(name)
+	out := map[string]any{
+		"definition": def,
+		"running":    running,
+	}
+	if running {
+		out["session"] = map[string]any{
+			"sessionId":       sum.SessionID,
+			"claudeSessionId": sum.ClaudeSessionID,
+			"pid":             sum.PID,
+			"state":           stateName(sum.State),
+			"startedAt":       sum.StartedAt.UTC().Format(time.RFC3339),
+			"lastActivityAt":  sum.LastActivity.UTC().Format(time.RFC3339),
+			"cols":            sum.Cols,
+			"rows":            sum.Rows,
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *localServer) removeSession(w http.ResponseWriter, _ *http.Request, name string) {
+	_, ok, err := GetAgent(name)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "agent not found")
+		return
+	}
+	if _, err := s.registry.Stop(name, true); err != nil {
+		fmt.Printf("mesh daemon rm stop err name=%s: %v\n", name, err)
+	}
+	if _, err := RemoveAgent(name); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"name": name, "status": "removed"})
+}
+
+func (s *localServer) restartSession(w http.ResponseWriter, _ *http.Request, name string) {
+	def, ok, err := GetAgent(name)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "agent not found")
+		return
+	}
+	// Re-read template so prompt file gets freshened in case the user edited
+	// system_prompt.md on disk.
+	if def.TemplateSource != "" {
+		if tpl, err := ReadLocalTemplate(def.TemplateSource); err == nil {
+			_ = writeAgentPromptFile(name, tpl.SystemPrompt)
+		}
+	}
+	sess, err := s.registry.NewUp(name, def.Model)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	_ = UpdateAgent(name, func(a *AgentDef) { a.LastSessionID = sess.SessionID })
+	writeJSON(w, http.StatusOK, map[string]string{
+		"name":      name,
+		"sessionId": sess.SessionID,
+		"status":    "running",
+	})
+}
+
+func (s *localServer) logsSession(w http.ResponseWriter, r *http.Request, name string) {
+	if _, ok := s.registry.Get(name); !ok {
+		writeError(w, http.StatusNotFound, "session not running")
+		return
+	}
+
+	follow := r.URL.Query().Get("follow") == "true"
+	attachID := uuid.NewString()
+	_, frames, dropped, cleanup, err := s.registry.AttachWithID(name, attachID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer cleanup()
+
+	w.Header().Set("Content-Type", "application/octet-stream")
+	if dropped > 0 {
+		w.Header().Set("X-Mesh-Dropped-Bytes", fmt.Sprintf("%d", dropped))
+	}
+	flusher, _ := w.(http.Flusher)
+
+	// The initial snapshot comes through the frame channel (AttachWithID
+	// primes it). For non-follow mode we drain the channel until it stalls
+	// briefly, then return.
+	if follow {
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			case chunk, ok := <-frames:
+				if !ok {
+					return
+				}
+				if _, err := w.Write(chunk); err != nil {
+					return
+				}
+				if flusher != nil {
+					flusher.Flush()
+				}
+			}
+		}
+	}
+
+	// Non-follow: drain what's immediately available and return. A 50 ms
+	// idle window after the last frame is the "nothing more for now" signal.
+	idle := time.NewTimer(50 * time.Millisecond)
+	defer idle.Stop()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case chunk, ok := <-frames:
+			if !ok {
+				return
+			}
+			if _, err := w.Write(chunk); err != nil {
+				return
+			}
+			if !idle.Stop() {
+				<-idle.C
+			}
+			idle.Reset(50 * time.Millisecond)
+		case <-idle.C:
+			return
+		}
+	}
+}
+
+func (s *localServer) attachSession(w http.ResponseWriter, r *http.Request, name string) {
+	if _, ok := s.registry.Get(name); !ok {
+		writeError(w, http.StatusNotFound, "session not running")
+		return
+	}
+
+	hj, ok := w.(http.Hijacker)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "hijack not supported")
+		return
+	}
+
+	conn, brw, err := hj.Hijack()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("hijack: %v", err))
+		return
+	}
+	defer conn.Close()
+
+	// 101 Switching Protocols signals to the client's http.ReadResponse that
+	// the body has no framing — no Content-Length, no chunked transfer — and
+	// the caller owns the raw bytes from here on.
+	if _, err := brw.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: mesh-attach\r\n\r\n"); err != nil {
+		return
+	}
+	if err := brw.Flush(); err != nil {
+		return
+	}
+
+	attachID := uuid.NewString()
+	_, frames, dropped, cleanup, err := s.registry.AttachWithID(name, attachID)
+	if err != nil {
+		return
+	}
+	defer cleanup()
+	_ = dropped // Dropped-bytes marker isn't meaningful mid-stream for interactive attach.
+
+	// PTY → socket
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for chunk := range frames {
+			if _, err := conn.Write(chunk); err != nil {
+				return
+			}
+		}
+	}()
+
+	// socket → PTY
+	readBuf := make([]byte, 4096)
+	// brw.Reader has a small buffer from the HTTP header read; flush it first.
+	if brw.Reader.Buffered() > 0 {
+		leftover, _ := brw.Reader.Peek(brw.Reader.Buffered())
+		if len(leftover) > 0 {
+			_, _ = s.registry.WriteInput(name, leftover)
+			_, _ = brw.Reader.Discard(len(leftover))
+		}
+	}
+	for {
+		n, err := conn.Read(readBuf)
+		if n > 0 {
+			if _, werr := s.registry.WriteInput(name, readBuf[:n]); werr != nil {
+				break
+			}
+		}
+		if err != nil {
+			break
+		}
+	}
+
+	s.registry.DetachAttacher(name, attachID)
+	// Let the PTY→socket goroutine drain naturally when frames closes.
+	select {
+	case <-done:
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func (s *localServer) handleTemplates(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	// Slice 1: no template cache yet.
+	writeJSON(w, http.StatusOK, []any{})
+}
+
+func (s *localServer) handleTemplatesPull(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	writeError(w, http.StatusNotImplemented, "template pull ships in slice 2")
+}
+
+func writeJSON(w http.ResponseWriter, status int, body any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(body)
+}
+
+func writeError(w http.ResponseWriter, status int, msg string) {
+	writeJSON(w, status, errorResponse{Error: msg})
+}
+
+func stateName(state meshv1.SessionState) string {
+	switch state {
+	case meshv1.SessionState_SESSION_STATE_RUNNING:
+		return "running"
+	case meshv1.SessionState_SESSION_STATE_EXITED:
+		return "exited"
+	case meshv1.SessionState_SESSION_STATE_CRASHED:
+		return "crashed"
+	default:
+		return "unknown"
+	}
+}
+

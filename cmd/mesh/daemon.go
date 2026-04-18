@@ -33,23 +33,47 @@ const (
 	nodeStreamKeepaliveTimer = 60 * time.Second
 )
 
-// RunDaemon starts the node daemon loop. baseURL is the mesh-api HTTPS URL
-// (used for the loop-template fetch). grpcAddr is the host:port of the mesh-api
-// gRPC listener (plaintext; TLS passthrough handled by the Fly edge in prod).
+// RunDaemon starts the node daemon. Two surfaces are served:
 //
-// Spec 08 will add `mesh node start`; this function has no CLI wiring yet.
+//   - The local Unix socket (~/.mesh/daemon.sock) — always on, drives
+//     `mesh run`/`ps`/`attach`/...  This is the "standalone" path; no cluster
+//     account required.
+//   - The outbound gRPC stream to mesh-api — only when ~/.mesh/node-token
+//     exists. Adds cluster features (AgentSync, WorkItemPoke, portal session
+//     streaming) alongside the local surface.
+//
+// Both paths share a single SessionRegistry so locally-run and cluster-pinned
+// agents are observable through either surface.
 func RunDaemon(baseURL string, grpcAddr string) error {
-	token, err := LoadNodeToken()
-	if err != nil {
-		return fmt.Errorf("no node token found at ~/.mesh/node-token — run `mesh node register` first: %w", err)
-	}
-	if strings.TrimSpace(token) == "" {
-		return errors.New("node token file is empty")
-	}
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	registry := NewSessionRegistry()
+
+	// Local socket always starts — standalone mode requires it, cluster mode
+	// piggybacks on the same registry.
+	listener, err := StartLocalSocket(ctx, registry)
+	if err != nil {
+		return fmt.Errorf("start local socket: %w", err)
+	}
+	defer listener.Close()
+
+	token, tokenErr := LoadNodeToken()
+	if tokenErr != nil || strings.TrimSpace(token) == "" {
+		if tokenErr != nil && !errors.Is(tokenErr, os.ErrNotExist) {
+			return fmt.Errorf("read node token: %w", tokenErr)
+		}
+		fmt.Println("mesh node daemon running in standalone mode (no node token present; cluster features disabled)")
+		<-ctx.Done()
+		return ctx.Err()
+	}
+
+	return runClusteredDaemon(ctx, baseURL, grpcAddr, token, registry)
+}
+
+// runClusteredDaemon runs the existing gRPC-side behaviour when a node token
+// is present. Extracted so the standalone path can skip it entirely.
+func runClusteredDaemon(ctx context.Context, baseURL, grpcAddr, token string, registry *SessionRegistry) error {
 	conn, err := dialGrpc(grpcAddr)
 	if err != nil {
 		return fmt.Errorf("grpc dial %s: %w", grpcAddr, err)
@@ -74,8 +98,6 @@ func RunDaemon(baseURL string, grpcAddr string) error {
 		}
 	}
 
-	registry := NewSessionRegistry()
-
 	// Heartbeat loop and NodeStream loop run concurrently; both reconnect on
 	// their own timers / errors. The outer RunDaemon returns only on ctx
 	// cancellation or an unrecoverable error.
@@ -83,8 +105,6 @@ func RunDaemon(baseURL string, grpcAddr string) error {
 	go func() { errCh <- heartbeatLoop(ctx, client, token, nodeID, registry) }()
 	go func() { errCh <- nodeStreamLoop(ctx, client, token, registry, baseURL) }()
 
-	// Block until either loop exits (they shouldn't unless ctx is done or an
-	// unrecoverable auth error bubbles up).
 	return <-errCh
 }
 

@@ -53,9 +53,6 @@ var nodeStartCmd = &cobra.Command{
 	Short: "Run the Mesh node daemon in the foreground",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		base := resolveBaseURL(nodeBaseURLFlag)
-		if _, err := LoadNodeToken(); err != nil {
-			return fmt.Errorf("no node token present — run `mesh node register` first: %w", err)
-		}
 		addr := nodeGrpcAddrFlag
 		if strings.TrimSpace(addr) == "" {
 			addr = defaultGrpcAddrFor(base)
