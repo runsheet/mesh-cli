@@ -163,13 +163,13 @@ func autoStartOne(registry *SessionRegistry, a *AgentDef) error {
 		_ = UpdateAgent(a.Name, func(d *AgentDef) { d.ClaudeSessionID = resumeID })
 	}
 
-	// Refresh settings.json + spawn channels so the restored claude session
-	// sees the same MCP wiring it had before the daemon restart.
-	if err := WriteClaudeSettings(a.Name, a.Channels); err != nil {
+	// Refresh settings.json so the restored claude session sees the same MCP
+	// wiring it had before the daemon restart. Model B: claude spawns the
+	// channel-server subprocesses itself on session start; the daemon does
+	// not supervise them.
+	effectiveEnv := mergeStringMaps(os.Environ(), nil)
+	if err := WriteClaudeSettings(a.Name, a.Channels, effectiveEnv); err != nil {
 		fmt.Printf("mesh autostart: settings.json err %s: %v\n", a.Name, err)
-	}
-	if err := ChannelMgr().Spawn(a); err != nil {
-		fmt.Printf("mesh autostart: channel spawn err %s: %v\n", a.Name, err)
 	}
 
 	_, _, err = registry.StartWithOptions(StartOptions{

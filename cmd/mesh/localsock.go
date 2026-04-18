@@ -306,14 +306,11 @@ func (s *localServer) createSession(w http.ResponseWriter, r *http.Request) {
 		if err := writeAgentPromptFile(name, tpl.SystemPrompt); err != nil {
 			fmt.Printf("mesh daemon prompt-file err name=%s: %v\n", name, err)
 		}
-		// Write .claude/settings.json and spawn channel subprocesses BEFORE
-		// claude starts so the first read of settings.json sees the current
-		// mcpServers list.
-		if err := WriteClaudeSettings(name, def.Channels); err != nil {
+		// Model B: write .claude/settings.json so claude spawns the per-channel
+		// MCP servers itself when the session starts. Daemon does NOT spawn
+		// channel subprocesses.
+		if err := WriteClaudeSettings(name, def.Channels, effectiveEnv); err != nil {
 			fmt.Printf("mesh daemon claude-settings err name=%s: %v\n", name, err)
-		}
-		if err := ChannelMgr().Spawn(def); err != nil {
-			fmt.Printf("mesh daemon channel spawn err name=%s: %v\n", name, err)
 		}
 		sess, _, err := s.registry.StartWithOptions(StartOptions{
 			AgentID:                    name,
@@ -361,16 +358,10 @@ func (s *localServer) inspectSession(w http.ResponseWriter, _ *http.Request, nam
 		out["cloudAgentId"] = *def.CloudAgentID
 	}
 	if len(def.Channels) > 0 {
-		statuses := ChannelMgr().Status(name)
-		if len(statuses) == 0 {
-			// Session isn't running — synthesize status entries from def so the
-			// channel config is still visible in inspect.
-			statuses = make([]ChannelStatus, 0, len(def.Channels))
-			for i, ch := range def.Channels {
-				statuses = append(statuses, ChannelStatus{Type: ch.Type, Index: i})
-			}
-		}
-		out["channels"] = statuses
+		// Model B: channel subprocesses are owned by claude, not the daemon, so
+		// we can only surface configured type/index plus whatever status the
+		// channel-server wrote to its side-file. Missing file → status "unknown".
+		out["channels"] = ChannelStatusesForAgent(name, def.Channels)
 	}
 	if running {
 		session := map[string]any{
@@ -400,7 +391,8 @@ func (s *localServer) removeSession(w http.ResponseWriter, _ *http.Request, name
 		writeError(w, http.StatusNotFound, "agent not found")
 		return
 	}
-	ChannelMgr().Shutdown(name)
+	// Model B: no channel subprocesses owned by the daemon to tear down —
+	// claude's exit takes the MCP servers with it.
 	if _, err := s.registry.Stop(name, true); err != nil {
 		fmt.Printf("mesh daemon rm stop err name=%s: %v\n", name, err)
 	}
@@ -467,13 +459,11 @@ func (s *localServer) restartSession(w http.ResponseWriter, _ *http.Request, nam
 		opts.WorkingDir = tpl.WorkingDir
 	}
 
-	// Refresh settings.json + restart channels before claude comes back up so
-	// it re-reads the MCP config on spawn.
-	if err := WriteClaudeSettings(name, def.Channels); err != nil {
+	// Refresh settings.json before claude comes back up so it re-reads the
+	// MCP config on spawn. Model B: daemon does not spawn the channel
+	// subprocesses itself — claude does.
+	if err := WriteClaudeSettings(name, def.Channels, effectiveEnv); err != nil {
 		fmt.Printf("mesh daemon claude-settings err name=%s: %v\n", name, err)
-	}
-	if err := ChannelMgr().Restart(def); err != nil {
-		fmt.Printf("mesh daemon channel restart err name=%s: %v\n", name, err)
 	}
 
 	sess, err := s.registry.NewUpWithOptions(opts)
@@ -557,11 +547,8 @@ func (s *localServer) updateSession(w http.ResponseWriter, _ *http.Request, name
 			return
 		}
 		_ = writeAgentPromptFile(name, tpl.SystemPrompt)
-		if err := WriteClaudeSettings(name, def.Channels); err != nil {
+		if err := WriteClaudeSettings(name, def.Channels, effectiveEnv); err != nil {
 			fmt.Printf("mesh daemon claude-settings err name=%s: %v\n", name, err)
-		}
-		if err := ChannelMgr().Restart(def); err != nil {
-			fmt.Printf("mesh daemon channel restart err name=%s: %v\n", name, err)
 		}
 		sess, err := s.registry.NewUpWithOptions(StartOptions{
 			AgentID:    name,
