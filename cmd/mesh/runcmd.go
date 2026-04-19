@@ -13,6 +13,7 @@ var (
 	runTemplateFlag        string
 	runNameFlag            string
 	runEnvFlag             []string
+	runEnvFileFlag         []string
 	runNoStartFlag         bool
 	runSkipPermissionsFlag bool
 	runValuesFlag          []string
@@ -34,6 +35,17 @@ var runCmd = &cobra.Command{
 		}
 
 		env := map[string]string{}
+		// --env-file files first, in order. Later files override earlier ones.
+		// --env flags process after so they win over whatever was in a file.
+		for _, path := range runEnvFileFlag {
+			loaded, err := LoadEnvFile(path)
+			if err != nil {
+				return err
+			}
+			for k, v := range loaded {
+				env[k] = v
+			}
+		}
 		for _, kv := range runEnvFlag {
 			parts := strings.SplitN(kv, "=", 2)
 			if len(parts) != 2 {
@@ -97,6 +109,7 @@ func init() {
 	runCmd.Flags().StringVar(&runTemplateFlag, "template", "", "Template source (local path, git URL, or github.com/user/repo[@ref])")
 	runCmd.Flags().StringVar(&runNameFlag, "name", "", "Local agent name")
 	runCmd.Flags().StringArrayVar(&runEnvFlag, "env", nil, "KEY=VALUE or bare KEY (inherits from caller env); repeatable")
+	runCmd.Flags().StringArrayVar(&runEnvFileFlag, "env-file", nil, "Path to a .env file (KEY=VALUE per line; repeatable; later files override earlier ones; --env flags override env-files)")
 	runCmd.Flags().BoolVar(&runNoStartFlag, "no-start", false, "Register the agent but don't start its session")
 	runCmd.Flags().BoolVar(&runSkipPermissionsFlag, "dangerously-skip-permissions", false, "Launch claude with --dangerously-skip-permissions (auto-approve every tool call). Overrides the template's agent.yaml value.")
 	runCmd.Flags().StringArrayVar(&runValuesFlag, "values", nil, "Path to a YAML values file (repeatable; later files override earlier ones)")

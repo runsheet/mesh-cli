@@ -2,12 +2,16 @@ package main
 
 import (
 	"context"
+	"io"
 	"os"
 
 	"github.com/spf13/cobra"
 )
 
-var logsFollowFlag bool
+var (
+	logsFollowFlag bool
+	logsRawFlag    bool
+)
 
 var logsCmd = &cobra.Command{
 	Use:   "logs <name>",
@@ -18,10 +22,15 @@ var logsCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		return client.Logs(context.Background(), args[0], logsFollowFlag, os.Stdout)
+		var out io.Writer = os.Stdout
+		if !logsRawFlag {
+			out = newAnsiStripper(os.Stdout)
+		}
+		return client.Logs(context.Background(), args[0], logsFollowFlag, out)
 	},
 }
 
 func init() {
 	logsCmd.Flags().BoolVarP(&logsFollowFlag, "follow", "f", false, "Stream new output as it arrives")
+	logsCmd.Flags().BoolVar(&logsRawFlag, "raw", false, "Preserve ANSI escape sequences (default strips them)")
 }
