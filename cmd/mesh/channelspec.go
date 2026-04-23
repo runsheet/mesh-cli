@@ -43,16 +43,17 @@ func validateChannelSpecs(specs []ChannelSpec) error {
 	return nil
 }
 
-// validateDiscordConfig enforces the minimal shape documented in spec 12 §1:
-// channelId and tokenEnv are required; the rest have permissive defaults.
+// validateDiscordConfig enforces the minimal shape documented in spec 12 §3:
+// account and channelId are required. tokenEnv is gone — bot tokens live in
+// the layer-1 account dir, not in the agent template.
 func validateDiscordConfig(cfg map[string]any) error {
+	acc, _ := cfg["account"].(string)
+	if acc == "" {
+		return fmt.Errorf("config.account is required (reference a paired discord account by name)")
+	}
 	ch, _ := cfg["channelId"].(string)
 	if ch == "" {
 		return fmt.Errorf("config.channelId is required")
-	}
-	tok, _ := cfg["tokenEnv"].(string)
-	if tok == "" {
-		return fmt.Errorf("config.tokenEnv is required")
 	}
 	return nil
 }

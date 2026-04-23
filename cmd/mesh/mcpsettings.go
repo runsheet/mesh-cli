@@ -25,10 +25,9 @@ type claudeSettings struct {
 // with an mcpServers entry per configured channel. Keys are
 // `mesh-channel-<type>-<idx>` so multiple channels of the same type coexist.
 //
-// envSource is the daemon's effective environment — used to hoist secret
-// values (e.g. a bot token named in `tokenEnv`) onto the MCP server's `env`
-// field so Claude passes them to the subprocess at spawn time. Keeping
-// secrets out of the command line matters for `ps`/log hygiene.
+// envSource is retained for interface compatibility but is no longer used to
+// hoist bot tokens — account credentials live in the layer-1 account dir and
+// are read by the gateway, never passed through settings.json.
 //
 // When channels is empty we still write an empty settings.json — simpler than
 // conditionally deleting, and claude tolerates it fine. This also keeps the
@@ -53,13 +52,22 @@ func WriteClaudeSettings(agentName string, channels []ChannelSpec, envSource map
 		return fmt.Errorf("resolve mesh binary path: %w", err)
 	}
 
+	// Count how many discord channels are declared so we can decide whether to
+	// suffix the tool name.
+	discordCount := 0
+	for _, ch := range channels {
+		if ch.Type == "discord" {
+			discordCount++
+		}
+	}
+
 	settings := claudeSettings{MCPServers: map[string]mcpServerEntry{}}
 	for i, ch := range channels {
 		key := fmt.Sprintf("mesh-channel-%s-%d", ch.Type, i)
 		entry := mcpServerEntry{Command: exe}
 		switch ch.Type {
 		case "discord":
-			args, env := discordMCPArgs(agentName, i, ch.Config, envSource)
+			args, env := discordMCPArgs(agentName, i, ch.Config, discordCount)
 			entry.Args = args
 			if len(env) > 0 {
 				entry.Env = env
@@ -78,52 +86,41 @@ func WriteClaudeSettings(agentName string, channels []ChannelSpec, envSource map
 	return os.WriteFile(path, data, 0o600)
 }
 
-// discordMCPArgs composes the `mesh channel-server discord` CLI args from the
-// template's per-channel config blob. Secrets never go on the command line —
-// the bot token is passed via the MCP server's `env` map instead (Claude
-// forwards it to the subprocess at spawn time).
-func discordMCPArgs(agentName string, index int, config map[string]any, envSource map[string]string) ([]string, map[string]string) {
+// discordMCPArgs composes the `mesh channel-server discord-shim` CLI args
+// from the template's per-channel config blob. The bot token lives in the
+// account dir and is read by the gateway — it is never passed via env here.
+//
+// multiTool is true when the agent has more than one discord channel declared,
+// in which case each shim's tool is suffixed by index to avoid collisions.
+func discordMCPArgs(agentName string, index int, config map[string]any, totalDiscordCount int) ([]string, map[string]string) {
+	account, _ := config["account"].(string)
+	channelID, _ := config["channelId"].(string)
+
 	args := []string{
-		"channel-server", "discord",
+		"channel-server", "discord-shim",
 		"--agent", agentName,
 		"--index", fmt.Sprintf("%d", index),
+		"--account", account,
+		"--channel-id", channelID,
 	}
 
-	if v, ok := config["channelId"].(string); ok && v != "" {
-		args = append(args, "--channel-id", v)
-	}
-
-	tokenEnv, _ := config["tokenEnv"].(string)
-	if tokenEnv != "" {
-		args = append(args, "--token-env", tokenEnv)
-	}
-
-	if v, ok := config["inboundPrefix"].(string); ok {
+	if v, ok := config["inboundPrefix"].(string); ok && v != "" {
 		args = append(args, "--inbound-prefix", v)
 	}
-
 	if users := joinSnowflakeList(config["allowedUsers"]); users != "" {
 		args = append(args, "--allowed-users", users)
 	}
 	if roles := joinSnowflakeList(config["allowedRoles"]); roles != "" {
 		args = append(args, "--allowed-roles", roles)
 	}
-
 	if req, _ := config["requireMention"].(bool); req {
 		args = append(args, "--require-mention")
 	}
-
-	// Hoist the bot token into the MCP server's env so it's available to the
-	// subprocess at spawn time but never shows up in the command line, state
-	// file, or logs. Missing values are tolerated — the channel-server will
-	// emit a clear error on startup and exit.
-	env := map[string]string{}
-	if tokenEnv != "" {
-		if v, ok := envSource[tokenEnv]; ok && v != "" {
-			env[tokenEnv] = v
-		}
+	if totalDiscordCount > 1 {
+		args = append(args, "--multi-tool")
 	}
-	return args, env
+
+	return args, nil
 }
 
 // joinSnowflakeList turns the YAML/JSON representation of an ID list (may be
