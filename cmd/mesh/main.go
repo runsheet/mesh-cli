@@ -19,6 +19,7 @@ func main() {
 	rootCmd.AddCommand(runCmd, psCmd, attachCmd, logsCmd, restartCmd, rmCmd, inspectCmd)
 	rootCmd.AddCommand(pullCmd, imagesCmd, templatesCmd, localUpdateCmd)
 	rootCmd.AddCommand(channelServerCmd)
+	rootCmd.AddCommand(discordCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)
