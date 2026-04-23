@@ -205,9 +205,10 @@ var discordListChannelsCmd = &cobra.Command{
 			}
 			var resp struct {
 				Channels []struct {
-					ID   string `json:"id"`
-					Name string `json:"name"`
-					Type int    `json:"type"`
+					ID      string `json:"id"`
+					Name    string `json:"name"`
+					Type    int    `json:"type"`
+					GuildID string `json:"guildId"`
 				} `json:"channels"`
 			}
 			if err := c.do(context.Background(), http.MethodGet, "/discord/list-channels?account="+n, nil, &resp); err != nil {
@@ -221,16 +222,78 @@ var discordListChannelsCmd = &cobra.Command{
 				fmt.Println("  no channels visible to this bot")
 				continue
 			}
+			// Best-effort subscription fetch so we can annotate each channel
+			// with its routing fate ("owned by agent X", "guild default", etc.).
+			// If the status call fails we just skip the annotations.
+			annotations := lookupDiscordChannelAnnotations(c, n)
 			for _, ch := range resp.Channels {
 				typeName := "text"
 				if ch.Type == 2 {
 					typeName = "voice"
 				}
-				fmt.Printf("  %s  %s  (%s)\n", ch.ID, ch.Name, typeName)
+				ann := annotations(ch.ID, ch.GuildID)
+				if ann != "" {
+					fmt.Printf("  %s  %s  (%s)  %s\n", ch.ID, ch.Name, typeName, ann)
+				} else {
+					fmt.Printf("  %s  %s  (%s)\n", ch.ID, ch.Name, typeName)
+				}
 			}
 		}
 		return nil
 	},
+}
+
+// lookupDiscordChannelAnnotations returns a function that maps (channelId,
+// guildId) → a human-readable routing annotation for `discord list-channels`.
+// Best effort: if the status fetch fails the returned function always returns
+// "" so the caller can fall back to unannotated output.
+func lookupDiscordChannelAnnotations(c *LocalClient, account string) func(channelID, guildID string) string {
+	var resp struct {
+		Accounts []DiscordAccountStatus `json:"accounts"`
+	}
+	if err := c.do(context.Background(), http.MethodGet, "/discord/status?account="+account, nil, &resp); err != nil {
+		return func(string, string) string { return "" }
+	}
+	var gw *GatewayStatus
+	for i := range resp.Accounts {
+		if resp.Accounts[i].Account == account && resp.Accounts[i].Gateway != nil {
+			gw = resp.Accounts[i].Gateway
+			break
+		}
+	}
+	if gw == nil {
+		return func(string, string) string { return "" }
+	}
+	type ownerInfo struct {
+		agent string
+		index int
+		kind  string // "channel" | "guild-override" | "guild-default"
+	}
+	channelOwners := map[string]ownerInfo{}
+	guildOwners := map[string]ownerInfo{}
+	for _, s := range gw.Subscriptions {
+		switch s.SubscriptionMode {
+		case "guild":
+			guildOwners[s.RoutingKey] = ownerInfo{s.Agent, s.Index, "guild-default"}
+			for _, cid := range s.Overrides {
+				channelOwners[cid] = ownerInfo{s.Agent, s.Index, "guild-override"}
+			}
+		default: // "channel" or empty (legacy)
+			channelOwners[s.RoutingKey] = ownerInfo{s.Agent, s.Index, "channel"}
+		}
+	}
+	renderOwner := func(o ownerInfo) string {
+		return fmt.Sprintf("→ %s (%s)", o.agent, o.kind)
+	}
+	return func(channelID, guildID string) string {
+		if o, ok := channelOwners[channelID]; ok {
+			return renderOwner(o)
+		}
+		if o, ok := guildOwners[guildID]; ok {
+			return renderOwner(o)
+		}
+		return "→ unrouted"
+	}
 }
 
 func init() {

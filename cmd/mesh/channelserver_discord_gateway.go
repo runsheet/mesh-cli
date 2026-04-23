@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -450,9 +451,10 @@ func (gw *discordGateway) removeShimLocked(s *shimConn) {
 }
 
 type channelInfo struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Type int    `json:"type"`
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Type    int    `json:"type"`
+	GuildID string `json:"guildId,omitempty"`
 }
 
 func (gw *discordGateway) listVisibleChannels() []channelInfo {
@@ -464,7 +466,7 @@ func (gw *discordGateway) listVisibleChannels() []channelInfo {
 	for _, g := range guilds {
 		for _, ch := range g.Channels {
 			if ch.Type == discordgo.ChannelTypeGuildText {
-				out = append(out, channelInfo{ID: ch.ID, Name: ch.Name, Type: int(ch.Type)})
+				out = append(out, channelInfo{ID: ch.ID, Name: ch.Name, Type: int(ch.Type), GuildID: g.ID})
 			}
 		}
 	}
@@ -618,12 +620,18 @@ func (gw *discordGateway) publishStatus(account, botUsername string) {
 			continue
 		}
 		seen[s.routingKey] = true
+		overrideIDs := make([]string, 0, len(s.overrides))
+		for cid := range s.overrides {
+			overrideIDs = append(overrideIDs, cid)
+		}
+		sort.Strings(overrideIDs)
 		subs = append(subs, GatewaySubStatus{
 			Agent:            s.agent,
 			Index:            s.index,
 			RoutingKey:       s.routingKey,
 			SubscriptionMode: "guild",
 			OverrideCount:    len(s.overrides),
+			Overrides:        overrideIDs,
 		})
 	}
 	for _, s := range gw.channelIndex {
