@@ -56,10 +56,31 @@ func gatewayKey(platform, account string) string {
 	return platform + ":" + account
 }
 
-// Sync reconciles the running gateway set against the accounts referenced by
-// all currently-registered agents. Safe to call from multiple goroutines.
+// Sync reconciles the running gateway set against the union of:
+//   - every paired platform account on the node (paired = online; unpair to stop)
+//   - every account referenced by a registered agent's channel config
+//
+// The union rule is deliberate: users expect `mesh discord pair` to bring the
+// bot online immediately so it appears in Discord and `list-channels` works,
+// regardless of whether any agent has been wired up yet. Referenced-only
+// gating led to a chicken-and-egg + a stale-gateway-after-Sync bug.
+// Safe to call from multiple goroutines.
 func (cm *ChannelManager) Sync(agents []*AgentDef) {
 	desired := map[string]struct{ platform, account string }{}
+
+	// Paired accounts (union member 1).
+	if accounts, err := ListDiscordAccounts(); err == nil {
+		for _, acc := range accounts {
+			k := gatewayKey("discord", acc)
+			desired[k] = struct{ platform, account string }{"discord", acc}
+		}
+	}
+	// future platforms: iterate ListWhatsappAccounts() etc.
+
+	// Agent-referenced accounts (union member 2). Currently a subset of paired
+	// accounts in practice, but kept explicit so a reference to an unpaired
+	// account still tries to start a gateway (which will fail loudly) rather
+	// than silently drop the intent.
 	for _, a := range agents {
 		for _, ch := range a.Channels {
 			switch ch.Type {
