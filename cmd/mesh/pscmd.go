@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -24,8 +26,9 @@ var psCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		home, _ := os.UserHomeDir()
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, "NAME\tTEMPLATE\tSTATUS\tUPTIME\tSESSION")
+		fmt.Fprintln(w, "NAME\tDIR\tSTATUS\tUPTIME\tSESSION")
 		for _, s := range sessions {
 			uptime := "-"
 			if s.StartedAt != "" {
@@ -37,7 +40,11 @@ var psCmd = &cobra.Command{
 			if sid == "" {
 				sid = "-"
 			}
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", s.Name, s.TemplateSource, s.Status, uptime, sid)
+			dir := filepath.Join(home, ".mesh", "agents", s.Name)
+			if home != "" && strings.HasPrefix(dir, home) {
+				dir = "~" + strings.TrimPrefix(dir, home)
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", s.Name, dir, s.Status, uptime, sid)
 		}
 		if err := w.Flush(); err != nil {
 			return err
