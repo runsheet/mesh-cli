@@ -512,18 +512,32 @@ func (gw *discordGateway) handleInbound(s *discordgo.Session, m *discordgo.Messa
 	// Require-mention filter.
 	if filter.requireMention {
 		mentioned := false
+		// User mention: <@botUserID>.
 		for _, u := range m.Mentions {
 			if u.ID == botID {
 				mentioned = true
 				break
 			}
 		}
+		// Role mention: <@&roleID> where the role is one the bot holds in the
+		// guild. Covers the common case where a user types @botname and
+		// autocomplete picks a role named after the bot rather than the bot
+		// user itself.
+		if !mentioned && len(m.MentionRoles) > 0 {
+			botRoles := gw.botRolesInGuild(m.GuildID)
+			for _, rid := range m.MentionRoles {
+				if botRoles[rid] {
+					mentioned = true
+					break
+				}
+			}
+		}
 		if !mentioned {
 			gw.mu.Lock()
 			gw.dropped["no-mention"]++
 			gw.mu.Unlock()
-			logf("drop no-mention channelId=%s from=%s content=%q mentions=%d",
-				m.ChannelID, m.Author.Username, m.Content, len(m.Mentions))
+			logf("drop no-mention channelId=%s from=%s content=%q userMentions=%d roleMentions=%d",
+				m.ChannelID, m.Author.Username, m.Content, len(m.Mentions), len(m.MentionRoles))
 			return
 		}
 	}
@@ -566,6 +580,32 @@ func (gw *discordGateway) handleInbound(s *discordgo.Session, m *discordgo.Messa
 		m.Timestamp.UTC().Format("2006-01-02T15:04:05.000Z"),
 		content,
 	))
+}
+
+// botRolesInGuild returns the set of role IDs the bot holds in the given
+// guild. Used by the require-mention filter to accept role mentions that
+// resolve to a role the bot is in (e.g. users typing @larry and picking a
+// bot-named role instead of the bot user).
+func (gw *discordGateway) botRolesInGuild(guildID string) map[string]bool {
+	if gw.session == nil || guildID == "" {
+		return nil
+	}
+	selfID := ""
+	if gw.session.State != nil && gw.session.State.User != nil {
+		selfID = gw.session.State.User.ID
+	}
+	if selfID == "" {
+		return nil
+	}
+	member, err := gw.session.State.Member(guildID, selfID)
+	if err != nil || member == nil {
+		return nil
+	}
+	out := make(map[string]bool, len(member.Roles))
+	for _, r := range member.Roles {
+		out[r] = true
+	}
+	return out
 }
 
 // resolveOwner implements the routing precedence. Returns the owning shim and
