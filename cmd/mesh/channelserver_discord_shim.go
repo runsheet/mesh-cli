@@ -316,12 +316,32 @@ func runDiscordShim(agentName string, index int, account string) error {
 				}
 				logf("inbound routingKey=%s channelId=%s sender=%s content=%q",
 					env.RoutingKey, env.ChannelID, env.Sender, env.Content)
+				// notifications/claude/channel is a Claude Code extension that
+				// injects the message as a user turn (standard MCP
+				// notifications/message is log-only and gets ignored). Matches
+				// the shape used by the official discord plugin.
+				meta := map[string]any{}
+				if env.ChannelID != "" {
+					meta["chat_id"] = env.ChannelID
+				}
+				if env.MessageID != "" {
+					meta["message_id"] = env.MessageID
+				}
+				if env.Sender != "" {
+					meta["user"] = env.Sender
+				}
+				if env.UserID != "" {
+					meta["user_id"] = env.UserID
+				}
+				if env.Timestamp != "" {
+					meta["ts"] = env.Timestamp
+				}
 				params, _ := json.Marshal(map[string]any{
-					"level": "info",
-					"data":  env.Content,
+					"content": env.Content,
+					"meta":    meta,
 				})
 				_ = writeMCP(jsonrpcMessage{
-					Method: "notifications/message",
+					Method: "notifications/claude/channel",
 					Params: params,
 				})
 			}

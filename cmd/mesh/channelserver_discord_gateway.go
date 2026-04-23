@@ -534,7 +534,11 @@ func (gw *discordGateway) handleInbound(s *discordgo.Session, m *discordgo.Messa
 		return
 	}
 
-	content := formatInboundContent(m, filter.inboundPrefix)
+	// Send raw content. The shim now emits notifications/claude/channel with
+	// sender metadata in a structured meta block, so the inboundPrefix
+	// formatting (which was a workaround for the older log-notification
+	// approach) is no longer needed.
+	content := m.Content
 	sender := ""
 	if m.Author != nil {
 		sender = m.Author.Username
@@ -547,7 +551,19 @@ func (gw *discordGateway) handleInbound(s *discordgo.Session, m *discordgo.Messa
 	logf("forward routingKey=%s channelId=%s sender=%s", routingKey, m.ChannelID, sender)
 
 	shimWr := shim.wr
-	_ = shimWr.Write(ipcInboundEnv(routingKey, m.ChannelID, sender, content))
+	var userID string
+	if m.Author != nil {
+		userID = m.Author.ID
+	}
+	_ = shimWr.Write(ipcInboundEnvFull(
+		routingKey,
+		m.ChannelID,
+		sender,
+		m.ID,
+		userID,
+		m.Timestamp.UTC().Format("2006-01-02T15:04:05.000Z"),
+		content,
+	))
 }
 
 // resolveOwner implements the routing precedence. Returns the owning shim and

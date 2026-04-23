@@ -50,7 +50,10 @@ type ipcEnvelope struct {
 	ChannelID string `json:"channelId,omitempty"` // send: optional explicit target (guild mode); inbound: originating channel
 
 	// inbound fields (gateway → shim)
-	Sender string `json:"sender,omitempty"`
+	Sender    string `json:"sender,omitempty"`    // display name (e.g. Discord username)
+	MessageID string `json:"messageId,omitempty"` // platform-specific message id
+	UserID    string `json:"userId,omitempty"`    // platform-specific sender user id
+	Timestamp string `json:"ts,omitempty"`        // ISO-8601 message timestamp
 
 	// error fields (gateway → shim)
 	Reason string `json:"reason,omitempty"`
@@ -171,6 +174,23 @@ func ipcUnsubscribeEnv(routingKey string) ipcEnvelope {
 // ipcAckEnv builds the subscribe-ack the gateway sends back.
 func ipcAckEnv(routingKey string) ipcEnvelope {
 	return ipcEnvelope{V: ipcVersion, Type: "subscribe-ack", RoutingKey: routingKey}
+}
+
+// ipcInboundEnvFull builds the inbound envelope with all metadata fields
+// populated. Used by the discord gateway so the shim can emit Claude Code's
+// `notifications/claude/channel` with a proper meta block.
+func ipcInboundEnvFull(routingKey, channelID, sender, messageID, userID, timestamp, content string) ipcEnvelope {
+	return ipcEnvelope{
+		V:          ipcVersion,
+		Type:       "inbound",
+		RoutingKey: routingKey,
+		ChannelID:  channelID,
+		Sender:     sender,
+		MessageID:  messageID,
+		UserID:     userID,
+		Timestamp:  timestamp,
+		Content:    content,
+	}
 }
 
 // ipcInboundEnv builds the inbound envelope the gateway sends to a shim.
