@@ -47,6 +47,12 @@ type AgentDef struct {
 	// that produced this agent's rendered agent.yaml / system_prompt. Persisted
 	// so restart and autostart re-render deterministically.
 	Values map[string]any `json:"values,omitempty"`
+	// TemplateValues holds the raw --values file paths supplied at run time.
+	// Stored so mesh update can re-resolve from the original source + overrides.
+	TemplateValues []string `json:"templateValues,omitempty"`
+	// TemplateOverrides holds the --set / --set-string key=value pairs supplied
+	// at run time, encoded as "key=value" strings. Stored for mesh update replay.
+	TemplateOverrides []string `json:"templateOverrides,omitempty"`
 }
 
 type LocalState struct {
