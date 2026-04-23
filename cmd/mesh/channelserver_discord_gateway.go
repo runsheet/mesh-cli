@@ -374,7 +374,7 @@ func (gw *discordGateway) handleInbound(s *discordgo.Session, m *discordgo.Messa
 	logf("forward routingKey=%s sender=%s", m.ChannelID, sender)
 
 	shimWr := shim.wr
-	_ = shimWr.Write(ipcInboundEnv(m.ChannelID, sender, content))
+	_ = shimWr.Write(ipcInboundEnv(m.ChannelID, m.ChannelID, sender, content))
 }
 
 // gatewayAllowListPass returns true if the message passes the shim's allow-list.

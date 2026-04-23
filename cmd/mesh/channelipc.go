@@ -13,6 +13,18 @@ import (
 // envelope and closes the connection.
 const ipcVersion = 1
 
+// ipcChannelOverride is the wire representation of a per-channel override
+// within a guild-mode subscribe envelope. Mirrors discordChannelOverride but
+// uses plain bool/string (not pointers) — unset fields are omitted via
+// omitempty so the gateway can tell "override present" from "override absent".
+type ipcChannelOverride struct {
+	ChannelID      string   `json:"channelId"`
+	RequireMention *bool    `json:"requireMention,omitempty"`
+	InboundPrefix  *string  `json:"inboundPrefix,omitempty"`
+	AllowedUsers   []string `json:"allowedUsers,omitempty"`
+	AllowedRoles   []string `json:"allowedRoles,omitempty"`
+}
+
 // ipcEnvelope is the common wire shape for all shim↔gateway messages over the
 // gateway Unix socket. Line-delimited JSON; one envelope per line.
 //
@@ -23,16 +35,19 @@ type ipcEnvelope struct {
 	Type string `json:"type"`
 
 	// subscribe fields (shim → gateway)
-	Agent          string   `json:"agent,omitempty"`
-	Index          int      `json:"index,omitempty"`
-	RoutingKey     string   `json:"routingKey,omitempty"`
-	AllowedUsers   []string `json:"allowedUsers,omitempty"`
-	AllowedRoles   []string `json:"allowedRoles,omitempty"`
-	RequireMention bool     `json:"requireMention,omitempty"`
-	InboundPrefix  string   `json:"inboundPrefix,omitempty"`
+	Agent            string               `json:"agent,omitempty"`
+	Index            int                  `json:"index,omitempty"`
+	RoutingKey       string               `json:"routingKey,omitempty"`
+	SubscriptionMode string               `json:"subscriptionMode,omitempty"` // "channel" (default) or "guild"
+	AllowedUsers     []string             `json:"allowedUsers,omitempty"`
+	AllowedRoles     []string             `json:"allowedRoles,omitempty"`
+	RequireMention   bool                 `json:"requireMention,omitempty"`
+	InboundPrefix    string               `json:"inboundPrefix,omitempty"`
+	ChannelOverrides []ipcChannelOverride `json:"channelOverrides,omitempty"` // guild mode only
 
 	// send fields (shim → gateway)
-	Content string `json:"content,omitempty"`
+	Content   string `json:"content,omitempty"`
+	ChannelID string `json:"channelId,omitempty"` // send: optional explicit target (guild mode); inbound: originating channel
 
 	// inbound fields (gateway → shim)
 	Sender string `json:"sender,omitempty"`
@@ -100,14 +115,16 @@ func dialGateway(sockPath string) (net.Conn, *ipcReader, *ipcWriter, error) {
 	return conn, newIPCReader(conn), newIPCWriter(conn), nil
 }
 
-// ipcSubscribeEnv builds the subscribe envelope a shim sends on connect.
-func ipcSubscribeEnv(agent string, index int, routingKey, inboundPrefix string, allowedUsers, allowedRoles []string, requireMention bool) ipcEnvelope {
+// ipcSubscribeChannelEnv builds the subscribe envelope for channel-mode
+// (subscriptionMode defaults to "channel" so the field is omitted for
+// backward-compat with old gateways).
+func ipcSubscribeChannelEnv(agent string, index int, channelID, inboundPrefix string, allowedUsers, allowedRoles []string, requireMention bool) ipcEnvelope {
 	return ipcEnvelope{
 		V:              ipcVersion,
 		Type:           "subscribe",
 		Agent:          agent,
 		Index:          index,
-		RoutingKey:     routingKey,
+		RoutingKey:     channelID,
 		InboundPrefix:  inboundPrefix,
 		AllowedUsers:   allowedUsers,
 		AllowedRoles:   allowedRoles,
@@ -115,9 +132,35 @@ func ipcSubscribeEnv(agent string, index int, routingKey, inboundPrefix string, 
 	}
 }
 
+// ipcSubscribeGuildEnv builds the subscribe envelope for guild-mode.
+func ipcSubscribeGuildEnv(agent string, index int, guildID, inboundPrefix string, allowedUsers, allowedRoles []string, requireMention bool, overrides []ipcChannelOverride) ipcEnvelope {
+	return ipcEnvelope{
+		V:                ipcVersion,
+		Type:             "subscribe",
+		Agent:            agent,
+		Index:            index,
+		SubscriptionMode: "guild",
+		RoutingKey:       guildID,
+		InboundPrefix:    inboundPrefix,
+		AllowedUsers:     allowedUsers,
+		AllowedRoles:     allowedRoles,
+		RequireMention:   requireMention,
+		ChannelOverrides: overrides,
+	}
+}
+
+// ipcSubscribeEnv is the original helper retained for backward-compat with
+// call sites that predate guild mode. It always produces a channel-mode
+// envelope (subscriptionMode omitted).
+func ipcSubscribeEnv(agent string, index int, routingKey, inboundPrefix string, allowedUsers, allowedRoles []string, requireMention bool) ipcEnvelope {
+	return ipcSubscribeChannelEnv(agent, index, routingKey, inboundPrefix, allowedUsers, allowedRoles, requireMention)
+}
+
 // ipcSendEnv builds the send envelope a shim forwards to the gateway.
-func ipcSendEnv(routingKey, content string) ipcEnvelope {
-	return ipcEnvelope{V: ipcVersion, Type: "send", RoutingKey: routingKey, Content: content}
+// channelID is the explicit destination channel; for channel mode it equals
+// routingKey; for guild mode it may differ from the guildId routingKey.
+func ipcSendEnv(channelID, content string) ipcEnvelope {
+	return ipcEnvelope{V: ipcVersion, Type: "send", ChannelID: channelID, Content: content}
 }
 
 // ipcUnsubscribeEnv builds the unsubscribe envelope.
@@ -131,8 +174,10 @@ func ipcAckEnv(routingKey string) ipcEnvelope {
 }
 
 // ipcInboundEnv builds the inbound envelope the gateway sends to a shim.
-func ipcInboundEnv(routingKey, sender, content string) ipcEnvelope {
-	return ipcEnvelope{V: ipcVersion, Type: "inbound", RoutingKey: routingKey, Sender: sender, Content: content}
+// channelID is the originating Discord channel (important for guild-mode shims
+// that need to know which channel to reply to).
+func ipcInboundEnv(routingKey, channelID, sender, content string) ipcEnvelope {
+	return ipcEnvelope{V: ipcVersion, Type: "inbound", RoutingKey: routingKey, ChannelID: channelID, Sender: sender, Content: content}
 }
 
 // ipcErrorEnv builds an error envelope.
