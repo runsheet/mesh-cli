@@ -182,9 +182,11 @@ type GatewayStatus struct {
 
 // GatewaySubStatus describes one active shim subscription on the gateway.
 type GatewaySubStatus struct {
-	Agent      string `json:"agent"`
-	Index      int    `json:"index"`
-	RoutingKey string `json:"routingKey"`
+	Agent            string `json:"agent"`
+	Index            int    `json:"index"`
+	RoutingKey       string `json:"routingKey"`
+	SubscriptionMode string `json:"subscriptionMode,omitempty"` // "channel" or "guild"
+	OverrideCount    int    `json:"overrideCount,omitempty"`    // guild mode: number of per-channel overrides
 }
 
 // WriteGatewayStatus atomically writes the gateway's status.json.
