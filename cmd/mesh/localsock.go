@@ -278,6 +278,26 @@ func (s *localServer) createSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate systemPromptPath before we do anything persistent.
+	if err := validateSystemPromptPathInDir(tplDir, name, req.Values); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// Render with merged values. agentBytes / promptBytes are the frozen
+	// rendered output that lands in the snapshot.
+	base, err := LoadValues(tplDir, nil, nil, nil)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	mergedValues := deepMerge(base, req.Values)
+	agentBytes, promptBytes, err := RenderTemplate(tplDir, name, mergedValues)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	tpl, values, err := readTemplateWithValues(tplDir, name, req.Values)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -300,6 +320,13 @@ func (s *localServer) createSession(w http.ResponseWriter, r *http.Request) {
 	skipPerms := tpl.DangerouslySkipPermissions
 	if req.DangerouslySkipPermissions != nil {
 		skipPerms = *req.DangerouslySkipPermissions
+	}
+
+	// Write the snapshot before persisting the agent def so a failed snapshot
+	// doesn't leave an orphan state.json entry.
+	if err := snapshotAgent(name, agentBytes, promptBytes); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
 	}
 
 	def := &AgentDef{
@@ -337,6 +364,7 @@ func (s *localServer) createSession(w http.ResponseWriter, r *http.Request) {
 
 	resp := createSessionResponse{Name: name, Status: "created"}
 	if autoStart {
+		// Prompt file is written from the snapshot (no re-render needed).
 		if err := writeAgentPromptFile(name, tpl.SystemPrompt); err != nil {
 			fmt.Printf("mesh daemon prompt-file err name=%s: %v\n", name, err)
 		}
@@ -449,29 +477,36 @@ func (s *localServer) restartSession(w http.ResponseWriter, _ *http.Request, nam
 		return
 	}
 
-	// Re-read the template (from cache if git) so prompt/requiredEnv reflect
-	// current disk state — user may have edited system_prompt.md. Re-render
-	// with the stored values so templated agent.yaml comes back with the same
-	// shape it had at create time.
-	var tpl *Template
-	if def.TemplateSource != "" {
-		if t, err := reloadAgentTemplateWithValues(def); err == nil {
-			tpl = t
-			_ = writeAgentPromptFile(name, tpl.SystemPrompt)
-			// Merge refreshed channel list back into state so autostart-on-boot
-			// sees the latest shape.
-			updatedChannels := append([]ChannelSpec{}, tpl.Channels...)
-			_ = UpdateAgent(name, func(a *AgentDef) { a.Channels = updatedChannels })
-			def.Channels = updatedChannels
-		}
+	// Load runtime config from the snapshot instead of re-resolving the template.
+	// This is the key invariant: deleting the original template dir must not
+	// break restart.
+	if !snapshotExists(name) {
+		writeError(w, http.StatusBadRequest,
+			fmt.Sprintf("agent %q has no snapshot — run `mesh update %s` to rebuild it, or `mesh rm %s` to remove", name, name, name))
+		return
+	}
+	snapshotAY, err := loadSnapshotAgentYAML(name)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("read snapshot: %v", err))
+		return
+	}
+	snapshotPrompt, err := loadSnapshotSystemPrompt(name)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("read snapshot: %v", err))
+		return
 	}
 
+	// Refresh the prompt file (appends loop-template) from the snapshot content.
+	if err := writeAgentPromptFile(name, snapshotPrompt); err != nil {
+		fmt.Printf("mesh daemon prompt-file err name=%s: %v\n", name, err)
+	}
+
+	// Channels come from state.json (set at run/update time) — snapshot doesn't
+	// store them separately.
 	effectiveEnv := mergeStringMaps(os.Environ(), nil)
-	var required []string
-	if tpl != nil {
-		required = tpl.RequiredEnv
-	} else {
-		required = def.RequiredEnv
+	required := def.RequiredEnv
+	if len(snapshotAY.Spec.RequiredEnv) > 0 {
+		required = snapshotAY.Spec.RequiredEnv
 	}
 	if missing := missingRequiredEnv(required, effectiveEnv); len(missing) > 0 {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("required env not set: %s", strings.Join(missing, ", ")))
@@ -485,15 +520,17 @@ func (s *localServer) restartSession(w http.ResponseWriter, _ *http.Request, nam
 		_ = UpdateAgent(name, func(a *AgentDef) { a.ClaudeSessionID = def.ClaudeSessionID })
 	}
 
+	model := def.Model
+	if model == "" {
+		model = snapshotAY.Spec.Model
+	}
+
 	opts := StartOptions{
 		AgentID:                    name,
-		Model:                      def.Model,
+		Model:                      model,
 		ResumeID:                   def.ClaudeSessionID,
 		Env:                        pickEnv(effectiveEnv, required),
 		DangerouslySkipPermissions: def.DangerouslySkipPermissions,
-	}
-	if tpl != nil {
-		opts.WorkingDir = tpl.WorkingDir
 	}
 
 	// Refresh settings.json before claude comes back up so it re-reads the
@@ -547,6 +584,26 @@ func (s *localServer) updateSession(w http.ResponseWriter, _ *http.Request, name
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+
+	// Validate systemPromptPath before making persistent changes.
+	if err := validateSystemPromptPathInDir(tplDir, name, def.Values); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// Render raw bytes for the snapshot.
+	base, err := LoadValues(tplDir, nil, nil, nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	mergedValues := deepMerge(base, def.Values)
+	agentBytes, promptBytes, err := RenderTemplate(tplDir, name, mergedValues)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
 	tpl, _, err := readTemplateWithValues(tplDir, name, def.Values)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -563,15 +620,22 @@ func (s *localServer) updateSession(w http.ResponseWriter, _ *http.Request, name
 	_, wasRunning := s.registry.Get(name)
 
 	resp := map[string]any{
-		"name":     name,
-		"oldSha":   oldSHA,
-		"newSha":   newSHA,
-		"status":   "up-to-date",
+		"name":      name,
+		"oldSha":    oldSHA,
+		"newSha":    newSHA,
+		"status":    "up-to-date",
 		"restarted": false,
 	}
 
-	if newSHA == oldSHA && oldSHA != "" {
+	if newSHA == oldSHA && oldSHA != "" && snapshotExists(name) {
 		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+
+	// Write the new snapshot unconditionally — even if SHA hasn't changed, this
+	// ensures previously-missing snapshots (pre-migration agents) are populated.
+	if err := snapshotAgent(name, agentBytes, promptBytes); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -630,33 +694,6 @@ func reloadAgentTemplate(def *AgentDef) (*Template, error) {
 	return LoadTemplate(src)
 }
 
-// reloadAgentTemplateWithValues mirrors reloadAgentTemplate but re-renders
-// templated agent.yaml / system_prompt with the values stored on the agent def
-// so channel configs and other templated fields come back populated.
-func reloadAgentTemplateWithValues(def *AgentDef) (*Template, error) {
-	src, err := ResolveTemplateSource(def.TemplateSource)
-	if err != nil {
-		return nil, err
-	}
-	if src.Kind == "git" && def.TemplateSha != "" {
-		src.Ref = def.TemplateSha
-	}
-	tplDir, gitSHA, gitRef, err := materializeTemplateDir(src)
-	if err != nil {
-		return nil, err
-	}
-	tpl, _, err := readTemplateWithValues(tplDir, def.Name, def.Values)
-	if err != nil {
-		return nil, err
-	}
-	tpl.Source = def.TemplateSource
-	tpl.GitSHA = gitSHA
-	tpl.GitRef = gitRef
-	if src.Kind == "git" {
-		tpl.GitURL = src.URL
-	}
-	return tpl, nil
-}
 
 func (s *localServer) logsSession(w http.ResponseWriter, r *http.Request, name string) {
 	if _, ok := s.registry.Get(name); !ok {
