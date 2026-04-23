@@ -163,7 +163,11 @@ func runDiscordGateway(account string) error {
 	if err != nil {
 		return fmt.Errorf("discordgo new: %w", err)
 	}
-	dg.Identify.Intents = discordgo.IntentsGuildMessages |
+	// IntentsGuilds is required for discordgo to populate session.State.Guilds
+	// and State.Channels; without it the bot stays connected but sees no
+	// guilds, and list-channels returns empty even for a fully-invited bot.
+	dg.Identify.Intents = discordgo.IntentsGuilds |
+		discordgo.IntentsGuildMessages |
 		discordgo.IntentsMessageContent |
 		discordgo.IntentsDirectMessages
 

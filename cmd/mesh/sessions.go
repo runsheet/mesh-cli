@@ -242,6 +242,10 @@ func (r *SessionRegistry) StartWithOptions(opts StartOptions) (*PtySession, bool
 	// hint for future multi-workdir flows.
 	if dir, err := agentWorkdir(agentID); err == nil {
 		cmd.Dir = dir
+		// Pre-seed Claude's trust-folder state so the first-run dialog doesn't
+		// block an unattended spawn (stdin is wired to the MCP channel, not a
+		// tty — the prompt would hang forever).
+		ensureClaudeFolderTrusted(dir)
 	} else if opts.WorkingDir != "" {
 		// Fall back to the template's workdir only if we can't materialize the
 		// per-agent dir (should be rare).
