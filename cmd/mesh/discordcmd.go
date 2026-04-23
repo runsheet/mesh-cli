@@ -174,42 +174,67 @@ var discordListChannelsAccountFlag string
 var discordListChannelsCmd = &cobra.Command{
 	Use:   "list-channels",
 	Short: "List Discord channels visible to the bot (requires live gateway)",
+	Long:  "Without --account, lists channels for every paired account. Each account's gateway must be live.",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := strings.TrimSpace(discordListChannelsAccountFlag)
-		if name == "" {
-			return fmt.Errorf("--account is required")
+		var names []string
+		if name != "" {
+			names = []string{name}
+		} else {
+			all, err := ListDiscordAccounts()
+			if err != nil {
+				return fmt.Errorf("list accounts: %w", err)
+			}
+			if len(all) == 0 {
+				fmt.Println("no Discord accounts paired")
+				return nil
+			}
+			names = all
 		}
 		c, err := NewLocalClient()
 		if err != nil {
 			return err
 		}
-		var resp struct {
-			Channels []struct {
-				ID   string `json:"id"`
-				Name string `json:"name"`
-				Type int    `json:"type"`
-			} `json:"channels"`
-		}
-		if err := c.do(context.Background(), http.MethodGet, "/discord/list-channels?account="+name, nil, &resp); err != nil {
-			return fmt.Errorf("list-channels: %w", err)
-		}
-		if len(resp.Channels) == 0 {
-			fmt.Println("no channels visible to this bot")
-			return nil
-		}
-		for _, ch := range resp.Channels {
-			typeName := "text"
-			if ch.Type == 2 {
-				typeName = "voice"
+		multi := len(names) > 1
+		for i, n := range names {
+			if multi {
+				if i > 0 {
+					fmt.Println()
+				}
+				fmt.Printf("[%s]\n", n)
 			}
-			fmt.Printf("  %s  %s  (%s)\n", ch.ID, ch.Name, typeName)
+			var resp struct {
+				Channels []struct {
+					ID   string `json:"id"`
+					Name string `json:"name"`
+					Type int    `json:"type"`
+				} `json:"channels"`
+			}
+			if err := c.do(context.Background(), http.MethodGet, "/discord/list-channels?account="+n, nil, &resp); err != nil {
+				if multi {
+					fmt.Printf("  (error: %v)\n", err)
+					continue
+				}
+				return fmt.Errorf("list-channels: %w", err)
+			}
+			if len(resp.Channels) == 0 {
+				fmt.Println("  no channels visible to this bot")
+				continue
+			}
+			for _, ch := range resp.Channels {
+				typeName := "text"
+				if ch.Type == 2 {
+					typeName = "voice"
+				}
+				fmt.Printf("  %s  %s  (%s)\n", ch.ID, ch.Name, typeName)
+			}
 		}
 		return nil
 	},
 }
 
 func init() {
-	discordListChannelsCmd.Flags().StringVar(&discordListChannelsAccountFlag, "account", "", "Account name (required)")
+	discordListChannelsCmd.Flags().StringVar(&discordListChannelsAccountFlag, "account", "", "Account name (omit to list channels for every paired account)")
 }
 
 // -- status --
@@ -219,22 +244,44 @@ var discordStatusAccountFlag string
 var discordStatusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show gateway status for a Discord account",
+	Long:  "Without --account, prints status for every paired account.",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := strings.TrimSpace(discordStatusAccountFlag)
-		if name == "" {
-			return fmt.Errorf("--account is required")
+		var names []string
+		if name != "" {
+			names = []string{name}
+		} else {
+			all, err := ListDiscordAccounts()
+			if err != nil {
+				return fmt.Errorf("list accounts: %w", err)
+			}
+			if len(all) == 0 {
+				fmt.Println("no Discord accounts paired")
+				return nil
+			}
+			names = all
 		}
-		st, err := ReadGatewayStatus("discord", name)
-		if err != nil {
-			return fmt.Errorf("read status: %w", err)
+		multi := len(names) > 1
+		for i, n := range names {
+			if multi && i > 0 {
+				fmt.Println()
+			}
+			st, err := ReadGatewayStatus("discord", n)
+			if err != nil {
+				if multi {
+					fmt.Printf("[%s]\n  (error: %v)\n", n, err)
+					continue
+				}
+				return fmt.Errorf("read status: %w", err)
+			}
+			printDiscordStatus(n, st)
 		}
-		printDiscordStatus(name, st)
 		return nil
 	},
 }
 
 func init() {
-	discordStatusCmd.Flags().StringVar(&discordStatusAccountFlag, "account", "", "Account name (required)")
+	discordStatusCmd.Flags().StringVar(&discordStatusAccountFlag, "account", "", "Account name (omit to print status for every paired account)")
 }
 
 func printDiscordStatus(name string, st GatewayStatus) {
