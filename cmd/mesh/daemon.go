@@ -61,9 +61,21 @@ func RunDaemon(baseURL string, grpcAddr string) error {
 	// (~/.mesh/agents/<name>/system_prompt.md). Idempotent.
 	migrateLegacyAgentPromptFiles()
 
+	// Build the ChannelManager and start gateways before auto-starting agents
+	// so that when agents boot and claude spawns shims, the gateway sockets are
+	// already listening.
+	exe, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve mesh binary: %w", err)
+	}
+	chanMgr := NewChannelManager(exe)
+	agents, _ := ListAgents()
+	chanMgr.Sync(agents)
+	defer chanMgr.StopAll()
+
 	// Local socket always starts — standalone mode requires it, cluster mode
 	// piggybacks on the same registry.
-	listener, err := StartLocalSocket(ctx, registry)
+	listener, err := StartLocalSocket(ctx, registry, chanMgr)
 	if err != nil {
 		return fmt.Errorf("start local socket: %w", err)
 	}

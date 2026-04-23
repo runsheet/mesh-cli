@@ -36,9 +36,12 @@ func DaemonSocketPath() (string, error) {
 // SessionRegistry the cluster-mode gRPC handlers use, so standalone-mode
 // agents and pinned cluster agents share process-local state.
 //
+// chanMgr may be nil (used in tests / standalone contexts that don't need
+// gateway supervision).
+//
 // Returns the listener so the caller can shut it down; server runs until
 // ctx is cancelled.
-func StartLocalSocket(ctx context.Context, registry *SessionRegistry) (net.Listener, error) {
+func StartLocalSocket(ctx context.Context, registry *SessionRegistry, chanMgr *ChannelManager) (net.Listener, error) {
 	if _, err := ensureMeshDir(); err != nil {
 		return nil, err
 	}
@@ -63,13 +66,16 @@ func StartLocalSocket(ctx context.Context, registry *SessionRegistry) (net.Liste
 		return nil, fmt.Errorf("chmod socket: %w", err)
 	}
 
-	srv := &localServer{registry: registry}
+	srv := &localServer{registry: registry, chanMgr: chanMgr}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/sessions", srv.handleSessions)
 	mux.HandleFunc("/sessions/", srv.handleSessionItem)
 	mux.HandleFunc("/templates", srv.handleTemplates)
 	mux.HandleFunc("/templates/pull", srv.handleTemplatesPull)
 	mux.HandleFunc("/cluster/pull", srv.handleClusterPull)
+	mux.HandleFunc("/discord/pair", srv.handleDiscordPair)
+	mux.HandleFunc("/discord/unpair", srv.handleDiscordUnpair)
+	mux.HandleFunc("/discord/list-channels", srv.handleDiscordListChannels)
 
 	httpSrv := &http.Server{
 		Handler:      mux,
@@ -95,6 +101,7 @@ func StartLocalSocket(ctx context.Context, registry *SessionRegistry) (net.Liste
 
 type localServer struct {
 	registry *SessionRegistry
+	chanMgr  *ChannelManager
 }
 
 // -- JSON payload shapes (kept here so there's one source of truth for both
@@ -315,6 +322,13 @@ func (s *localServer) createSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Sync ChannelManager so any newly-referenced accounts get gateways.
+	if s.chanMgr != nil {
+		if all, err := ListAgents(); err == nil {
+			s.chanMgr.Sync(all)
+		}
+	}
+
 	autoStart := true
 	if req.AutoStart != nil {
 		autoStart = *req.AutoStart
@@ -325,9 +339,6 @@ func (s *localServer) createSession(w http.ResponseWriter, r *http.Request) {
 		if err := writeAgentPromptFile(name, tpl.SystemPrompt); err != nil {
 			fmt.Printf("mesh daemon prompt-file err name=%s: %v\n", name, err)
 		}
-		// Model B: write .claude/settings.json so claude spawns the per-channel
-		// MCP servers itself when the session starts. Daemon does NOT spawn
-		// channel subprocesses.
 		if err := WriteClaudeSettings(name, def.Channels, effectiveEnv); err != nil {
 			fmt.Printf("mesh daemon claude-settings err name=%s: %v\n", name, err)
 		}
@@ -410,14 +421,18 @@ func (s *localServer) removeSession(w http.ResponseWriter, _ *http.Request, name
 		writeError(w, http.StatusNotFound, "agent not found")
 		return
 	}
-	// Model B: no channel subprocesses owned by the daemon to tear down —
-	// claude's exit takes the MCP servers with it.
 	if _, err := s.registry.Stop(name, true); err != nil {
 		fmt.Printf("mesh daemon rm stop err name=%s: %v\n", name, err)
 	}
 	if _, err := RemoveAgent(name); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	// Sync ChannelManager so gateways for no-longer-referenced accounts stop.
+	if s.chanMgr != nil {
+		if all, err := ListAgents(); err == nil {
+			s.chanMgr.Sync(all)
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"name": name, "status": "removed"})
 }
@@ -1238,5 +1253,99 @@ func stateName(state meshv1.SessionState) string {
 	default:
 		return "unknown"
 	}
+}
+
+// -- discord daemon handlers --
+
+// handleDiscordPair handles POST /discord/pair from `mesh discord pair`.
+// The account directory must already be written by the CLI; this handler
+// just tells the ChannelManager to start the gateway.
+func (s *localServer) handleDiscordPair(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		Account string `json:"account"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid JSON: %v", err))
+		return
+	}
+	if req.Account == "" {
+		writeError(w, http.StatusBadRequest, "account is required")
+		return
+	}
+	if s.chanMgr != nil {
+		s.chanMgr.StartAccount("discord", req.Account)
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "account": req.Account})
+}
+
+// handleDiscordUnpair handles POST /discord/unpair from `mesh discord unpair`.
+// The CLI verifies agent refs; this handler stops the gateway.
+func (s *localServer) handleDiscordUnpair(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		Account string `json:"account"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid JSON: %v", err))
+		return
+	}
+	if req.Account == "" {
+		writeError(w, http.StatusBadRequest, "account is required")
+		return
+	}
+	if s.chanMgr != nil {
+		s.chanMgr.StopAccount("discord", req.Account)
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "account": req.Account})
+}
+
+// handleDiscordListChannels handles GET /discord/list-channels?account=<name>
+// by proxying to the live gateway over the gateway.sock. The gateway returns a
+// JSON list of visible channels. If the gateway is not running it returns an
+// informative error.
+func (s *localServer) handleDiscordListChannels(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	account := r.URL.Query().Get("account")
+	if account == "" {
+		writeError(w, http.StatusBadRequest, "account query param is required")
+		return
+	}
+	sockPath, err := DiscordGatewaySockPath(account)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	conn, rd, wr, err := dialGateway(sockPath)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, fmt.Sprintf("gateway not running: %v", err))
+		return
+	}
+	defer conn.Close()
+
+	if err := wr.Write(ipcEnvelope{V: ipcVersion, Type: "list-channels"}); err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("gateway write: %v", err))
+		return
+	}
+	env, err := rd.Read()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("gateway read: %v", err))
+		return
+	}
+	if env.Type == "error" {
+		writeError(w, http.StatusBadGateway, env.Reason+": "+env.Detail)
+		return
+	}
+	// Pass the raw content field (JSON array of channel objects) to the client.
+	writeJSON(w, http.StatusOK, map[string]any{"channels": json.RawMessage(env.Content)})
 }
 
