@@ -244,37 +244,47 @@ var discordStatusAccountFlag string
 var discordStatusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show gateway status for a Discord account",
-	Long:  "Without --account, prints status for every paired account.",
+	Long: "Asks the daemon for live supervisor + gateway state. Without --account, " +
+		"prints status for every paired account. If the daemon isn't running, prints " +
+		"'daemon stopped' rather than reading stale on-disk status files.",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := strings.TrimSpace(discordStatusAccountFlag)
-		var names []string
+
+		path := "/discord/status"
 		if name != "" {
-			names = []string{name}
-		} else {
-			all, err := ListDiscordAccounts()
-			if err != nil {
-				return fmt.Errorf("list accounts: %w", err)
-			}
-			if len(all) == 0 {
-				fmt.Println("no Discord accounts paired")
+			path += "?account=" + name
+		}
+		c, err := NewLocalClient()
+		if err != nil {
+			return err
+		}
+		var resp struct {
+			Accounts []DiscordAccountStatus `json:"accounts"`
+		}
+		if err := c.do(context.Background(), http.MethodGet, path, nil, &resp); err != nil {
+			// daemon-not-running surfaces as the canonical message from
+			// wrapDialErr; anything else is a real failure worth bubbling up.
+			if strings.Contains(err.Error(), "daemon not running") {
+				fmt.Println("status: daemon stopped")
+				fmt.Println("  start it with `mesh node start` (or `systemctl --user start mesh-node`)")
 				return nil
 			}
-			names = all
+			return err
 		}
-		multi := len(names) > 1
-		for i, n := range names {
+		if len(resp.Accounts) == 0 {
+			if name != "" {
+				fmt.Printf("discord account %q not paired\n", name)
+				return nil
+			}
+			fmt.Println("no Discord accounts paired")
+			return nil
+		}
+		multi := len(resp.Accounts) > 1
+		for i, st := range resp.Accounts {
 			if multi && i > 0 {
 				fmt.Println()
 			}
-			st, err := ReadGatewayStatus("discord", n)
-			if err != nil {
-				if multi {
-					fmt.Printf("[%s]\n  (error: %v)\n", n, err)
-					continue
-				}
-				return fmt.Errorf("read status: %w", err)
-			}
-			printDiscordStatus(n, st)
+			printDiscordAccountStatus(st)
 		}
 		return nil
 	},
@@ -284,16 +294,30 @@ func init() {
 	discordStatusCmd.Flags().StringVar(&discordStatusAccountFlag, "account", "", "Account name (omit to print status for every paired account)")
 }
 
-func printDiscordStatus(name string, st GatewayStatus) {
-	data, _ := json.MarshalIndent(map[string]any{
-		"account":      name,
-		"status":       st.Status,
-		"botUserId":    st.BotUserID,
-		"botUsername":  st.BotUsername,
-		"messagesIn":   st.MessagesIn,
-		"messagesOut":  st.MessagesOut,
-		"subscriptions": st.Subscriptions,
-		"droppedBy":    st.DroppedBy,
-	}, "", "  ")
+// printDiscordAccountStatus renders one account's status. The render reflects
+// supervisor state + liveness, not the raw status.json (which can be stale
+// after a gateway crash).
+func printDiscordAccountStatus(st DiscordAccountStatus) {
+	out := map[string]any{
+		"account":         st.Account,
+		"supervisorState": st.SupervisorState,
+	}
+	switch {
+	case !st.Supervised:
+		out["status"] = "idle: not referenced by any agent"
+	case st.Supervised && !st.Live:
+		out["status"] = "starting or restarting (gateway not reachable)"
+	case st.Supervised && st.Live && st.Gateway != nil:
+		out["status"] = st.Gateway.Status
+		out["botUserId"] = st.Gateway.BotUserID
+		out["botUsername"] = st.Gateway.BotUsername
+		out["messagesIn"] = st.Gateway.MessagesIn
+		out["messagesOut"] = st.Gateway.MessagesOut
+		out["subscriptions"] = st.Gateway.Subscriptions
+		out["droppedBy"] = st.Gateway.DroppedBy
+	default:
+		out["status"] = "live but no metrics yet"
+	}
+	data, _ := json.MarshalIndent(out, "", "  ")
 	fmt.Println(string(data))
 }

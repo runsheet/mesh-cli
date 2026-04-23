@@ -123,6 +123,17 @@ func (cm *ChannelManager) StopAccount(platform, account string) {
 	delete(cm.gateways, k)
 }
 
+// IsManaging returns true if the ChannelManager currently supervises a
+// gateway for the given (platform, account). Used by the daemon's status
+// handler to distinguish "not referenced by any agent" from "supervised but
+// momentarily down".
+func (cm *ChannelManager) IsManaging(platform, account string) bool {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	_, ok := cm.gateways[gatewayKey(platform, account)]
+	return ok
+}
+
 // StopAll stops all supervised gateways. Called on daemon shutdown.
 func (cm *ChannelManager) StopAll() {
 	cm.mu.Lock()

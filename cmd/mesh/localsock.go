@@ -76,6 +76,7 @@ func StartLocalSocket(ctx context.Context, registry *SessionRegistry, chanMgr *C
 	mux.HandleFunc("/discord/pair", srv.handleDiscordPair)
 	mux.HandleFunc("/discord/unpair", srv.handleDiscordUnpair)
 	mux.HandleFunc("/discord/list-channels", srv.handleDiscordListChannels)
+	mux.HandleFunc("/discord/status", srv.handleDiscordStatus)
 
 	httpSrv := &http.Server{
 		Handler:      mux,
@@ -1347,5 +1348,76 @@ func (s *localServer) handleDiscordListChannels(w http.ResponseWriter, r *http.R
 	}
 	// Pass the raw content field (JSON array of channel objects) to the client.
 	writeJSON(w, http.StatusOK, map[string]any{"channels": json.RawMessage(env.Content)})
+}
+
+// DiscordAccountStatus is the daemon's authoritative view of one Discord
+// account: whether the ChannelManager is supervising it, whether its gateway
+// socket is reachable right now, and the latest gateway-published metrics
+// when reachable.
+type DiscordAccountStatus struct {
+	Account         string         `json:"account"`
+	Supervised      bool           `json:"supervised"`
+	SupervisorState string         `json:"supervisorState"` // "not-referenced" | "supervised"
+	Live            bool           `json:"live"`            // gateway socket reachable now
+	Gateway         *GatewayStatus `json:"gateway,omitempty"`
+}
+
+// handleDiscordStatus handles GET /discord/status[?account=<name>]. The
+// daemon — not a stale on-disk file — is the source of truth here. Without
+// ?account it returns one entry per paired account.
+func (s *localServer) handleDiscordStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	requested := strings.TrimSpace(r.URL.Query().Get("account"))
+
+	var names []string
+	if requested != "" {
+		names = []string{requested}
+	} else {
+		all, err := ListDiscordAccounts()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		names = all
+	}
+
+	out := make([]DiscordAccountStatus, 0, len(names))
+	for _, n := range names {
+		entry := DiscordAccountStatus{Account: n}
+		entry.Supervised = s.chanMgr != nil && s.chanMgr.IsManaging("discord", n)
+		if entry.Supervised {
+			entry.SupervisorState = "supervised"
+		} else {
+			entry.SupervisorState = "not-referenced"
+		}
+		entry.Live = discordGatewayLive(n)
+		if entry.Live {
+			st, err := ReadGatewayStatus("discord", n)
+			if err == nil {
+				entry.Gateway = &st
+			}
+		}
+		out = append(out, entry)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"accounts": out})
+}
+
+// discordGatewayLive returns true if the gateway socket for the given
+// account accepts a connection within ~200ms. Cheap liveness probe — we
+// close immediately without exchanging any IPC frames.
+func discordGatewayLive(account string) bool {
+	sockPath, err := DiscordGatewaySockPath(account)
+	if err != nil {
+		return false
+	}
+	conn, err := net.DialTimeout("unix", sockPath, 200*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
 }
 
