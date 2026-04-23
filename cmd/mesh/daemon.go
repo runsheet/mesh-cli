@@ -125,34 +125,32 @@ func autoStartAgents(registry *SessionRegistry) {
 }
 
 func autoStartOne(registry *SessionRegistry, a *AgentDef) error {
-	// Prefer the cached template path (git sources); fall back to re-resolving
-	// the source for local-path templates whose directory hasn't moved.
-	var tplDir string
-	if a.TemplateCachePath != "" {
-		if info, err := os.Stat(a.TemplateCachePath); err == nil && info.IsDir() {
-			tplDir = a.TemplateCachePath
+	// Load runtime config from the snapshot. If the snapshot is absent,
+	// attempt a one-shot migration: render from the stored template source and
+	// write the snapshot in place. If that also fails, skip with clear guidance.
+	if !snapshotExists(a.Name) {
+		if migErr := migrateAgentSnapshot(a); migErr != nil {
+			// Template source unreachable or corrupt — give the user actionable guidance.
+			return fmt.Errorf("snapshot missing and migration failed (%v) — run `mesh update %s` to rebuild or `mesh rm %s` to remove", migErr, a.Name, a.Name)
 		}
 	}
-	if tplDir == "" && a.TemplateSource != "" {
-		if src, err := ResolveTemplateSource(a.TemplateSource); err == nil && src.Kind == "local" {
-			if info, err := os.Stat(src.Path); err == nil && info.IsDir() {
-				tplDir = src.Path
-			}
-		}
-	}
-	if tplDir == "" {
-		return fmt.Errorf("template not available (source %q)", a.TemplateSource)
-	}
-	// Re-render with stored values so templated agent.yaml (channel configs,
-	// toggles) comes back populated. Static-only templates are a no-op here.
-	tpl, _, err := readTemplateWithValues(tplDir, a.Name, a.Values)
+
+	snapshotAY, err := loadSnapshotAgentYAML(a.Name)
 	if err != nil {
-		return fmt.Errorf("read template: %w", err)
+		return fmt.Errorf("read snapshot agent.yaml: %w", err)
+	}
+	snapshotPrompt, err := loadSnapshotSystemPrompt(a.Name)
+	if err != nil {
+		return fmt.Errorf("read snapshot system_prompt.md: %w", err)
 	}
 
 	envMap := map[string]string{}
 	var missing []string
-	for _, name := range a.RequiredEnv {
+	required := a.RequiredEnv
+	if len(snapshotAY.Spec.RequiredEnv) > 0 {
+		required = snapshotAY.Spec.RequiredEnv
+	}
+	for _, name := range required {
 		v := os.Getenv(name)
 		if v == "" {
 			missing = append(missing, name)
@@ -166,7 +164,7 @@ func autoStartOne(registry *SessionRegistry, a *AgentDef) error {
 
 	model := a.Model
 	if model == "" {
-		model = tpl.Model
+		model = snapshotAY.Spec.Model
 	}
 
 	// Migrate agents from before we pre-generated session IDs. Without this,
@@ -175,6 +173,11 @@ func autoStartOne(registry *SessionRegistry, a *AgentDef) error {
 	if resumeID == "" {
 		resumeID = uuid.NewString()
 		_ = UpdateAgent(a.Name, func(d *AgentDef) { d.ClaudeSessionID = resumeID })
+	}
+
+	// Write the prompt file from the snapshot (appends loop-template suffix).
+	if err := writeAgentPromptFile(a.Name, snapshotPrompt); err != nil {
+		fmt.Printf("mesh autostart: prompt-file err %s: %v\n", a.Name, err)
 	}
 
 	// Refresh settings.json so the restored claude session sees the same MCP
@@ -191,10 +194,44 @@ func autoStartOne(registry *SessionRegistry, a *AgentDef) error {
 		Model:                      model,
 		ResumeID:                   resumeID,
 		Env:                        envMap,
-		WorkingDir:                 tpl.WorkingDir,
 		DangerouslySkipPermissions: a.DangerouslySkipPermissions,
 	})
 	return err
+}
+
+// migrateAgentSnapshot attempts a one-time migration for agents registered
+// before snapshotting was introduced. It re-resolves and re-renders the
+// stored template source and writes the snapshot in place. If the source is
+// unavailable, it returns an error so the caller can skip the agent.
+func migrateAgentSnapshot(a *AgentDef) error {
+	if a.TemplateSource == "" || strings.HasPrefix(a.TemplateSource, "cloud:") {
+		return fmt.Errorf("no local template source")
+	}
+	src, err := ResolveTemplateSource(a.TemplateSource)
+	if err != nil {
+		return err
+	}
+	if src.Kind == "git" && a.TemplateSha != "" {
+		src.Ref = a.TemplateSha
+	}
+	tplDir, _, _, err := materializeTemplateDir(src)
+	if err != nil {
+		return err
+	}
+	base, err := LoadValues(tplDir, nil, nil, nil)
+	if err != nil {
+		return err
+	}
+	mergedValues := deepMerge(base, a.Values)
+	agentBytes, promptBytes, err := RenderTemplate(tplDir, a.Name, mergedValues)
+	if err != nil {
+		return err
+	}
+	if err := snapshotAgent(a.Name, agentBytes, promptBytes); err != nil {
+		return err
+	}
+	fmt.Printf("mesh autostart: migrated snapshot for %s\n", a.Name)
+	return nil
 }
 
 // runClusteredDaemon runs the existing gRPC-side behaviour when a node token
@@ -1016,12 +1053,25 @@ func rematerializeLocalPrompts() {
 		if strings.HasPrefix(a.TemplateSource, "cloud:") {
 			continue
 		}
-		tpl, err := reloadAgentTemplate(a)
-		if err != nil {
-			fmt.Printf("mesh node loop-template backfill: reload %s: %v\n", a.Name, err)
-			continue
+		// Prefer the snapshot so the loop-template suffix is applied without
+		// re-resolving the original template source (which may be gone).
+		var prompt string
+		if snapshotExists(a.Name) {
+			p, err := loadSnapshotSystemPrompt(a.Name)
+			if err != nil {
+				fmt.Printf("mesh node loop-template backfill: read snapshot %s: %v\n", a.Name, err)
+				continue
+			}
+			prompt = p
+		} else {
+			tpl, err := reloadAgentTemplate(a)
+			if err != nil {
+				fmt.Printf("mesh node loop-template backfill: reload %s: %v\n", a.Name, err)
+				continue
+			}
+			prompt = tpl.SystemPrompt
 		}
-		if err := writeAgentPromptFile(a.Name, tpl.SystemPrompt); err != nil {
+		if err := writeAgentPromptFile(a.Name, prompt); err != nil {
 			fmt.Printf("mesh node loop-template backfill: write %s: %v\n", a.Name, err)
 			continue
 		}
