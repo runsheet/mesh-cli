@@ -410,11 +410,20 @@ func handleDiscordShimMCP(
 		}
 		return write(jsonrpcMessage{ID: msg.ID, Result: map[string]any{
 			"protocolVersion": proto,
-			"capabilities":    map[string]any{"tools": map[string]any{}},
+			// experimental.claude/channel is an opt-in capability Claude Code
+			// uses to decide whether notifications/claude/channel injects as a
+			// user turn or is silently ignored. Must be declared here.
+			"capabilities": map[string]any{
+				"tools": map[string]any{},
+				"experimental": map[string]any{
+					"claude/channel": map[string]any{},
+				},
+			},
 			"serverInfo": map[string]any{
 				"name":    "mesh-channel-discord-shim",
 				"version": "0.2.0",
 			},
+			"instructions": "Messages from Discord arrive as <channel source=\"discord\" chat_id=\"...\" message_id=\"...\" user=\"...\" ts=\"...\">content</channel>. Reply using the discord_send_message tool; the sender reads Discord and will only see tool-sent messages. If the message doesn't need a reply (e.g. a bot post you see as a loop guard), stay silent.",
 		}})
 
 	case "tools/list":
