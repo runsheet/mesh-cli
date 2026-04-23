@@ -522,6 +522,8 @@ func (gw *discordGateway) handleInbound(s *discordgo.Session, m *discordgo.Messa
 			gw.mu.Lock()
 			gw.dropped["no-mention"]++
 			gw.mu.Unlock()
+			logf("drop no-mention channelId=%s from=%s content=%q mentions=%d",
+				m.ChannelID, m.Author.Username, m.Content, len(m.Mentions))
 			return
 		}
 	}
