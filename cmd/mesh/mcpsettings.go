@@ -71,8 +71,9 @@ func writeDiscordShimConfig(agentName string, index int, cfg discordShimConfigFi
 	return path, nil
 }
 
-// WriteClaudeSettings materializes ~/.mesh/agents/<agentName>/.claude/settings.json
-// with an mcpServers entry per configured channel. Keys are
+// WriteClaudeSettings materializes the project-scoped MCP config at
+// ~/.mesh/agents/<agentName>/.mcp.json — the file Claude Code actually
+// reads for project-level stdio MCP servers. Keys are
 // `mesh-channel-<type>-<idx>` so multiple channels of the same type coexist.
 //
 // For discord channels it also writes a per-shim config file under
@@ -84,15 +85,14 @@ func writeDiscordShimConfig(agentName string, index int, cfg discordShimConfigFi
 // hoist bot tokens — account credentials live in the layer-1 account dir and
 // are read by the gateway, never passed through settings.json.
 //
-// When channels is empty we still write an empty settings.json — simpler than
+// When channels is empty we still write an empty .mcp.json — simpler than
 // conditionally deleting, and claude tolerates it fine.
+//
+// Also writes a trust entry into ~/.mcp.json approval so Claude Code doesn't
+// prompt the user to approve the mesh-written .mcp.json on first launch.
 func WriteClaudeSettings(agentName string, channels []ChannelSpec, envSource map[string]string) error {
 	dir, err := agentWorkdir(agentName)
 	if err != nil {
-		return err
-	}
-	claudeDir := filepath.Join(dir, ".claude")
-	if err := os.MkdirAll(claudeDir, 0o700); err != nil {
 		return err
 	}
 
@@ -131,7 +131,7 @@ func WriteClaudeSettings(agentName string, channels []ChannelSpec, envSource map
 	if err != nil {
 		return err
 	}
-	path := filepath.Join(claudeDir, "settings.json")
+	path := filepath.Join(dir, ".mcp.json")
 	return os.WriteFile(path, data, 0o600)
 }
 
