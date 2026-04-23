@@ -169,18 +169,36 @@ func runDiscordShim(agentName string, index int, account string) error {
 		cancel()
 	}()
 
-	// Connect to gateway.
+	// Connect to gateway. The daemon starts the gateway subprocess before
+	// autostarting agents, but discordgo needs ~1s to connect to Discord and
+	// bind the gateway socket — so the shim may race ahead of socket bind.
+	// Retry for up to 30s with 200ms intervals before giving up.
 	sockPath, err := DiscordGatewaySockPath(account)
 	if err != nil {
 		return fmt.Errorf("gateway sock path: %w", err)
 	}
-	gwConn, gwRd, gwWr, err := dialGateway(sockPath)
-	if err != nil {
-		metrics.setStatus("error: " + err.Error())
-		publishShimStatus(agentName, index, cfg, metrics)
-		return fmt.Errorf("connect to gateway: %w", err)
+	var (
+		gwConn net.Conn
+		gwRd   *ipcReader
+		gwWr   *ipcWriter
+	)
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		gwConn, gwRd, gwWr, err = dialGateway(sockPath)
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			metrics.setStatus("error: " + err.Error())
+			publishShimStatus(agentName, index, cfg, metrics)
+			logf("gateway dial deadline exceeded: %v", err)
+			return fmt.Errorf("connect to gateway (30s deadline): %w", err)
+		}
+		logf("gateway dial retry: %v", err)
+		time.Sleep(200 * time.Millisecond)
 	}
 	defer gwConn.Close()
+	logf("connected to gateway sock=%s", sockPath)
 
 	// Build and send subscribe envelope.
 	var sub ipcEnvelope
@@ -357,8 +375,20 @@ func handleDiscordShimMCP(
 
 	switch msg.Method {
 	case "initialize":
+		// Echo whatever protocolVersion the client requested; falls back to a
+		// known-good string if the client omits it. MCP spec allows negotiating
+		// a lower version but Claude Code 2.x refuses to use servers that
+		// respond with an older protocol than it asked for.
+		var initParams struct {
+			ProtocolVersion string `json:"protocolVersion"`
+		}
+		_ = json.Unmarshal(msg.Params, &initParams)
+		proto := initParams.ProtocolVersion
+		if proto == "" {
+			proto = "2025-06-18"
+		}
 		return write(jsonrpcMessage{ID: msg.ID, Result: map[string]any{
-			"protocolVersion": "2024-11-05",
+			"protocolVersion": proto,
 			"capabilities":    map[string]any{"tools": map[string]any{}},
 			"serverInfo": map[string]any{
 				"name":    "mesh-channel-discord-shim",
