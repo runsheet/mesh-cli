@@ -341,16 +341,36 @@ func (r *SessionRegistry) StartWithOptions(opts StartOptions) (*PtySession, bool
 // strip those before matching. The marker string Claude uses is split
 // across attribute changes in the raw stream.
 func (r *SessionRegistry) autoAcceptDevChannelsPrompt(s *PtySession) {
-	const marker = "Loading development channels"
-	deadline := time.Now().Add(10 * time.Second)
+	fmt.Printf("mesh auto-accept agent=%s armed (waiting for dev-channels prompt)\n", s.AgentID)
+	deadline := time.Now().Add(15 * time.Second)
+	ticks := 0
 	for time.Now().Before(deadline) {
+		ticks++
 		snap, _ := s.buffer.Snapshot()
-		if bytes.Contains(stripANSI(snap), []byte(marker)) {
-			_, _ = s.PTY.Write([]byte("\r"))
-			return
+		stripped := stripANSI(snap)
+		// Claude renders this prompt's whitespace with CSI Cursor-Forward
+		// (\x1b[1C) instead of actual space characters, so phrases with
+		// spaces don't survive ANSI stripping. Match contiguous strings
+		// unique to the dev-channels prompt — the flag name is both
+		// distinctive and rendered as one token.
+		for _, marker := range []string{
+			"dangerously-load-development-channels",
+			"WARNING:",
+		} {
+			if bytes.Contains(stripped, []byte(marker)) {
+				n, werr := s.PTY.Write([]byte("\r"))
+				fmt.Printf("mesh auto-accept agent=%s matched=%q wrote=%d err=%v ticks=%d\n", s.AgentID, marker, n, werr, ticks)
+				return
+			}
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+	snap, _ := s.buffer.Snapshot()
+	if len(snap) > 512 {
+		snap = snap[len(snap)-512:]
+	}
+	stripped := stripANSI(snap)
+	fmt.Printf("mesh auto-accept agent=%s TIMEOUT ticks=%d tail_stripped=%q\n", s.AgentID, ticks, string(stripped))
 }
 
 // ansiEscapeRE matches CSI (ESC[…), OSC (ESC]…BEL or ESC]…ESC\), and bare
