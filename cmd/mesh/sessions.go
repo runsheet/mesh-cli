@@ -248,6 +248,13 @@ func (r *SessionRegistry) StartWithOptions(opts StartOptions) (*PtySession, bool
 		pluginDir := filepath.Join(dir, "plugin")
 		if _, statErr := os.Stat(filepath.Join(pluginDir, ".claude-plugin", "plugin.json")); statErr == nil {
 			args = append(args, "--plugin-dir", pluginDir)
+			// Pass --dangerously-load-development-channels for each MCP
+			// server we wrote. Hidden from --help but required to bypass
+			// the tengu_harbor allowlist for non-official plugins. Without
+			// this, notifications/claude/channel is silently dropped.
+			for _, name := range readMeshMCPServerNames(pluginDir) {
+				args = append(args, "--dangerously-load-development-channels", "server:"+name)
+			}
 		}
 	}
 	cmd := exec.Command("claude", args...)
