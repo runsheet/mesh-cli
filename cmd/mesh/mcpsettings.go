@@ -78,10 +78,9 @@ func writeDiscordShimConfig(agentName string, index int, cfg discordShimConfigFi
 // project-scope and plugin-scope same-keyed servers conflict, with
 // project-scope winning and plugin-scope getting silently skipped.
 //
-// For discord channels it also writes a per-shim config file under
-// ~/.mesh/agents/<agentName>/channels/discord-<idx>.config.json so the shim
-// can pick up the full configuration (including channelOverrides) without
-// requiring JSON-escaped CLI flags.
+// All channel types are served through a single "mesh" MCP server key
+// backed by the mesh-shim subcommand, which connects to the daemon's
+// per-agent router socket and multiplexes across all platform gateways.
 //
 // envSource is retained for interface compatibility but is no longer used to
 // hoist bot tokens — account credentials live in the layer-1 account dir and
@@ -109,45 +108,15 @@ func WriteClaudeSettings(agentName string, channels []ChannelSpec, envSource map
 		return fmt.Errorf("resolve mesh binary path: %w", err)
 	}
 
-	// Count how many discord channels are declared so we can decide whether to
-	// suffix the tool name.
-	discordCount := 0
-	for _, ch := range channels {
-		if ch.Type == "discord" {
-			discordCount++
-		}
-	}
-
-	settings := claudeSettings{MCPServers: map[string]mcpServerEntry{}}
-	// Track per-type counts so single-channel-of-type gets the bare type name
-	// (e.g. "discord" — matching the official plugin's MCP key, which Claude
-	// Code may gate channel-mode features on) and multi-channel agents get
-	// indexed keys.
-	typeCount := map[string]int{}
-	for _, ch := range channels {
-		typeCount[ch.Type]++
-	}
-	typeIdx := map[string]int{}
-	for i, ch := range channels {
-		var key string
-		if typeCount[ch.Type] == 1 {
-			key = ch.Type
-		} else {
-			key = fmt.Sprintf("%s-%d", ch.Type, typeIdx[ch.Type])
-			typeIdx[ch.Type]++
-		}
-		entry := mcpServerEntry{Command: exe}
-		switch ch.Type {
-		case "discord":
-			args, err := discordMCPArgs(agentName, i, ch.Config, discordCount)
-			if err != nil {
-				return fmt.Errorf("channels[%d]: write shim config: %w", i, err)
-			}
-			entry.Args = args
-		default:
-			entry.Args = []string{"channel-server", ch.Type, "--agent", agentName, "--index", fmt.Sprintf("%d", i)}
-		}
-		settings.MCPServers[key] = entry
+	// Single "mesh" MCP server entry for all channel types. The mesh-shim
+	// connects to the daemon's router socket and multiplexes across platforms.
+	settings := claudeSettings{
+		MCPServers: map[string]mcpServerEntry{
+			"mesh": {
+				Command: exe,
+				Args:    []string{"channel-server", "mesh-shim", "--agent", agentName},
+			},
+		},
 	}
 
 	data, err := json.MarshalIndent(settings, "", "  ")
@@ -155,7 +124,7 @@ func WriteClaudeSettings(agentName string, channels []ChannelSpec, envSource map
 		return err
 	}
 	// .mcp.json lives inside the plugin dir — NOT the agent cwd — so claude
-	// only registers the discord MCP server once (at plugin scope).
+	// only registers the mesh MCP server once (at plugin scope).
 	mcpPath := filepath.Join(pluginDir, ".mcp.json")
 	if err := os.WriteFile(mcpPath, data, 0o600); err != nil {
 		return err
@@ -175,36 +144,4 @@ func WriteClaudeSettings(agentName string, channels []ChannelSpec, envSource map
 	return nil
 }
 
-// discordMCPArgs writes the per-shim config file and returns the slim
-// `mesh channel-server discord-shim` CLI args that reference it.
-// The bot token lives in the account dir and is read by the gateway — it is
-// never passed via env here.
-func discordMCPArgs(agentName string, index int, config map[string]any, totalDiscordCount int) ([]string, error) {
-	dcc := parseDiscordChannelConfig(config)
-
-	shimCfg := discordShimConfigFile{
-		SubscriptionMode: dcc.SubscriptionMode,
-		Account:          dcc.Account,
-		ChannelID:        dcc.ChannelID,
-		GuildID:          dcc.GuildID,
-		RequireMention:   dcc.RequireMention,
-		AllowedUsers:     dcc.AllowedUsers,
-		AllowedRoles:     dcc.AllowedRoles,
-		InboundPrefix:    dcc.InboundPrefix,
-		MultiTool:        totalDiscordCount > 1,
-		ChannelOverrides: dcc.ChannelOverrides,
-	}
-
-	if _, err := writeDiscordShimConfig(agentName, index, shimCfg); err != nil {
-		return nil, err
-	}
-
-	args := []string{
-		"channel-server", "discord-shim",
-		"--agent", agentName,
-		"--index", fmt.Sprintf("%d", index),
-		"--account", dcc.Account,
-	}
-	return args, nil
-}
 
