@@ -16,6 +16,26 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// lastRecv tracks the timestamp of the most recent frame received from claude
+// on stdin. Used by the watchdog goroutine to detect claude ignoring
+// notifications/claude/channel rather than processing it.
+var (
+	lastRecvMu sync.Mutex
+	lastRecv   time.Time
+)
+
+func setLastRecvAt(t time.Time) {
+	lastRecvMu.Lock()
+	lastRecv = t
+	lastRecvMu.Unlock()
+}
+
+func lastRecvAt() time.Time {
+	lastRecvMu.Lock()
+	defer lastRecvMu.Unlock()
+	return lastRecv
+}
+
 var meshShimAgentFlag string
 
 var channelServerMeshShimCmd = &cobra.Command{

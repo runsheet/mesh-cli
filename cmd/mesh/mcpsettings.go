@@ -20,56 +20,6 @@ type claudeSettings struct {
 	MCPServers map[string]mcpServerEntry `json:"mcpServers,omitempty"`
 }
 
-// discordShimConfigFile is the per-shim config written to
-// ~/.mesh/agents/<name>/channels/discord-<idx>.config.json.
-// The shim reads this at startup instead of receiving everything on the CLI,
-// which avoids building a JSON-in-flag escape mess for the overrides list.
-type discordShimConfigFile struct {
-	SubscriptionMode string                  `json:"subscriptionMode"`
-	Account          string                  `json:"account"`
-	ChannelID        string                  `json:"channelId,omitempty"`
-	GuildID          string                  `json:"guildId,omitempty"`
-	RequireMention   bool                    `json:"requireMention"`
-	AllowedUsers     []string                `json:"allowedUsers,omitempty"`
-	AllowedRoles     []string                `json:"allowedRoles,omitempty"`
-	InboundPrefix    string                  `json:"inboundPrefix,omitempty"`
-	MultiTool        bool                    `json:"multiTool"`
-	ChannelOverrides []discordChannelOverride `json:"channelOverrides,omitempty"`
-}
-
-// discordShimConfigFilePath returns the path of the per-shim config file.
-func discordShimConfigFilePath(agentName string, index int) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	dir := filepath.Join(home, ".mesh", "agents", agentName, "channels")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", fmt.Errorf("create channels dir: %w", err)
-	}
-	return filepath.Join(dir, fmt.Sprintf("discord-%d.config.json", index)), nil
-}
-
-// writeDiscordShimConfig writes the per-shim config file and returns its path.
-func writeDiscordShimConfig(agentName string, index int, cfg discordShimConfigFile) (string, error) {
-	path, err := discordShimConfigFilePath(agentName, index)
-	if err != nil {
-		return "", err
-	}
-	data, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		return "", fmt.Errorf("marshal shim config: %w", err)
-	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return "", fmt.Errorf("write shim config: %w", err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		return "", fmt.Errorf("rename shim config: %w", err)
-	}
-	return path, nil
-}
-
 // WriteClaudeSettings materializes the per-agent plugin under
 // ~/.mesh/agents/<agentName>/plugin/. Claude Code is spawned with
 // --plugin-dir pointing at that subdir, so the MCP servers register at
