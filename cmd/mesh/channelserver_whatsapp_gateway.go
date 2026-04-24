@@ -11,16 +11,15 @@ import (
 	"syscall"
 	"time"
 
-	_ "modernc.org/sqlite" // SQLite driver for whatsmeow
-
 	"github.com/spf13/cobra"
-	waProto "go.mau.fi/whatsmeow/binary/proto"
 	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/store/sqlstore"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 	waLog "go.mau.fi/whatsmeow/util/log"
 	"google.golang.org/protobuf/proto"
+	_ "modernc.org/sqlite" // SQLite driver for whatsmeow
 )
 
 var whatsappGatewayAccountFlag string
@@ -45,7 +44,7 @@ func init() {
 	channelServerCmd.AddCommand(channelServerWhatsappGatewayCmd)
 }
 
-// whatsappShimConn represents one router connection (one subscribed JID).
+// whatsappShimConn represents one router connection subscribed to a single JID.
 type whatsappShimConn struct {
 	conn  net.Conn
 	wr    *ipcWriter
@@ -57,13 +56,12 @@ type whatsappShimConn struct {
 type whatsappGateway struct {
 	account string
 
-	mu      sync.Mutex
-	client  *whatsmeow.Client
-	status  string
-	msgIn   int
-	msgOut  int
-	// jidIndex maps chatJid → shimConn (one router per JID)
-	jidIndex map[string]*whatsappShimConn
+	mu       sync.Mutex
+	client   *whatsmeow.Client
+	status   string
+	msgIn    int
+	msgOut   int
+	jidIndex map[string]*whatsappShimConn // chatJid → shimConn
 }
 
 func newWhatsappGateway(account string) *whatsappGateway {
@@ -83,8 +81,7 @@ func runWhatsappGateway(account string) error {
 		return fmt.Errorf("store path: %w", err)
 	}
 
-	dbLog := waLog.Noop
-	container, err := sqlstore.New(context.Background(), "sqlite", "file:"+storePath+"?_foreign_keys=on", dbLog)
+	container, err := sqlstore.New(context.Background(), "sqlite", "file:"+storePath+"?_foreign_keys=on", waLog.Noop)
 	if err != nil {
 		return fmt.Errorf("open whatsapp store: %w", err)
 	}
@@ -95,9 +92,7 @@ func runWhatsappGateway(account string) error {
 	}
 
 	gw := newWhatsappGateway(account)
-
-	clientLog := waLog.Noop
-	client := whatsmeow.NewClient(deviceStore, clientLog)
+	client := whatsmeow.NewClient(deviceStore, waLog.Noop)
 	gw.client = client
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -111,7 +106,6 @@ func runWhatsappGateway(account string) error {
 		cancel()
 	}()
 
-	// Register event handler for inbound messages.
 	client.AddEventHandler(func(evt interface{}) {
 		switch v := evt.(type) {
 		case *events.Message:
@@ -121,11 +115,10 @@ func runWhatsappGateway(account string) error {
 			gw.status = "connected"
 			gw.mu.Unlock()
 			logf("whatsapp connected")
-			meta, _ := LoadWhatsappAccountMeta(account)
 			if client.Store.ID != nil {
-				phone := client.Store.ID.User
+				meta, _ := LoadWhatsappAccountMeta(account)
 				if meta.PhoneNumber == "" {
-					meta.PhoneNumber = phone
+					meta.PhoneNumber = client.Store.ID.User
 					_ = UpdateWhatsappAccountMeta(account, meta)
 				}
 			}
@@ -140,7 +133,7 @@ func runWhatsappGateway(account string) error {
 			gw.mu.Lock()
 			gw.status = "logged-out"
 			gw.mu.Unlock()
-			logf("whatsapp logged-out (device revoked)")
+			logf("whatsapp logged-out (device revoked on phone)")
 			gw.publishStatus(account)
 		}
 	})
@@ -154,7 +147,6 @@ func runWhatsappGateway(account string) error {
 	}
 	defer client.Disconnect()
 
-	// Listen on gateway.sock for router connections.
 	sockPath, err := WhatsappGatewaySockPath(account)
 	if err != nil {
 		return fmt.Errorf("gateway sock path: %w", err)
@@ -173,7 +165,6 @@ func runWhatsappGateway(account string) error {
 	}
 	logf("gateway.sock listening at %s", sockPath)
 
-	// Status publisher goroutine.
 	go func() {
 		ticker := time.NewTicker(10 * time.Second)
 		defer ticker.Stop()
@@ -189,7 +180,6 @@ func runWhatsappGateway(account string) error {
 		}
 	}()
 
-	// Accept router connections.
 	go func() {
 		for {
 			conn, err := listener.Accept()
@@ -209,7 +199,7 @@ func runWhatsappGateway(account string) error {
 	return nil
 }
 
-// handleRouter serves one router connection until it closes or ctx is done.
+// handleRouter serves one router connection until it closes or ctx is cancelled.
 func (gw *whatsappGateway) handleRouter(ctx context.Context, conn net.Conn, account string, logf func(string, ...any)) {
 	defer conn.Close()
 	rd := newIPCReader(conn)
@@ -240,7 +230,6 @@ func (gw *whatsappGateway) handleRouter(ctx context.Context, conn net.Conn, acco
 
 		switch env.Type {
 		case "subscribe":
-			// RoutingKey is the chatJid for WhatsApp.
 			jid := env.RoutingKey
 			if jid == "" {
 				_ = wr.Write(ipcErrorEnv("bad-subscribe", "routingKey (chatJid) is required"))
@@ -274,7 +263,6 @@ func (gw *whatsappGateway) handleRouter(ctx context.Context, conn net.Conn, acco
 			}
 
 		case "send":
-			// ChannelID is the destination JID.
 			targetJID := env.ChannelID
 			if targetJID == "" {
 				targetJID = env.RoutingKey
@@ -283,7 +271,7 @@ func (gw *whatsappGateway) handleRouter(ctx context.Context, conn net.Conn, acco
 				_ = wr.Write(ipcErrorEnv("bad-send", "channelId (target JID) is required"))
 				continue
 			}
-			if err := gw.sendMessage(targetJID, env.Content, logf); err != nil {
+			if err := gw.sendMessage(ctx, targetJID, env.Content, logf); err != nil {
 				logf("send err jid=%s: %v", targetJID, err)
 				_ = wr.Write(ipcErrorEnv("send-failed", err.Error()))
 				continue
@@ -300,13 +288,13 @@ func (gw *whatsappGateway) handleRouter(ctx context.Context, conn net.Conn, acco
 }
 
 // sendMessage sends a text message to the given JID via whatsmeow.
-func (gw *whatsappGateway) sendMessage(jidStr, content string, logf func(string, ...any)) error {
+func (gw *whatsappGateway) sendMessage(ctx context.Context, jidStr, content string, logf func(string, ...any)) error {
 	jid, err := types.ParseJID(jidStr)
 	if err != nil {
 		return fmt.Errorf("parse JID %q: %w", jidStr, err)
 	}
 
-	msg := &waProto.Message{
+	msg := &waE2E.Message{
 		Conversation: proto.String(content),
 	}
 
@@ -317,7 +305,7 @@ func (gw *whatsappGateway) sendMessage(jidStr, content string, logf func(string,
 		return fmt.Errorf("client not connected")
 	}
 
-	_, err = client.SendMessage(context.Background(), jid, msg)
+	_, err = client.SendMessage(ctx, jid, msg)
 	if err != nil {
 		return fmt.Errorf("send: %w", err)
 	}
@@ -326,21 +314,13 @@ func (gw *whatsappGateway) sendMessage(jidStr, content string, logf func(string,
 }
 
 // handleInbound processes an incoming whatsmeow message event and routes it to
-// the subscribed router connection, if any.
+// the subscribed router connection for that JID.
 func (gw *whatsappGateway) handleInbound(evt *events.Message, logf func(string, ...any)) {
-	// Self-filter: drop messages sent by the paired device.
-	gw.mu.Lock()
-	client := gw.client
-	gw.mu.Unlock()
-	if client != nil && client.Store.ID != nil {
-		// Messages from self have IsFromMe set.
-		if evt.Info.IsFromMe {
-			return
-		}
+	// Self-filter: skip messages sent from the paired device.
+	if evt.Info.IsFromMe {
+		return
 	}
 
-	// Determine the chat JID. For groups, use the group JID; for DMs, use the
-	// sender JID in the s.whatsapp.net domain.
 	chatJID := evt.Info.Chat.String()
 
 	gw.mu.Lock()
@@ -351,36 +331,34 @@ func (gw *whatsappGateway) handleInbound(evt *events.Message, logf func(string, 
 		return
 	}
 
-	// Extract text content.
-	content := ""
-	if evt.Message.GetConversation() != "" {
-		content = evt.Message.GetConversation()
-	} else if ext := evt.Message.GetExtendedTextMessage(); ext != nil {
-		content = ext.GetText()
+	// Extract text content; skip non-text in slice 2.
+	content := evt.Message.GetConversation()
+	if content == "" {
+		if ext := evt.Message.GetExtendedTextMessage(); ext != nil {
+			content = ext.GetText()
+		}
 	}
 	if content == "" {
-		return // non-text message; skip in slice 2
+		return
 	}
 
 	sender := evt.Info.Sender.String()
-	pushName := evt.Info.PushName
-	if pushName != "" {
-		sender = pushName
+	if evt.Info.PushName != "" {
+		sender = evt.Info.PushName
 	}
-	msgID := evt.Info.ID
 	ts := evt.Info.Timestamp.UTC().Format("2006-01-02T15:04:05.000Z")
 
 	gw.mu.Lock()
 	gw.msgIn++
 	gw.mu.Unlock()
 
-	logf("inbound chatJid=%s sender=%s msgId=%s", chatJID, sender, msgID)
+	logf("inbound chatJid=%s sender=%s msgId=%s", chatJID, sender, evt.Info.ID)
 
 	env := ipcInboundEnvFull(
 		chatJID,
 		chatJID,
 		sender,
-		msgID,
+		evt.Info.ID,
 		evt.Info.Sender.User,
 		ts,
 		content,
@@ -394,8 +372,9 @@ func (gw *whatsappGateway) handleInbound(evt *events.Message, logf func(string, 
 func (gw *whatsappGateway) publishStatus(account string) {
 	gw.mu.Lock()
 	subs := make([]GatewaySubStatus, 0, len(gw.jidIndex))
-	for jid := range gw.jidIndex {
+	for jid, shim := range gw.jidIndex {
 		subs = append(subs, GatewaySubStatus{
+			Agent:            shim.agent,
 			RoutingKey:       jid,
 			SubscriptionMode: "channel",
 		})
