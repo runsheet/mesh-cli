@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -247,14 +248,16 @@ func (r *SessionRegistry) StartWithOptions(opts StartOptions) (*PtySession, bool
 	if dir, err := agentWorkdir(opts.AgentID); err == nil {
 		pluginDir := filepath.Join(dir, "plugin")
 		if _, statErr := os.Stat(filepath.Join(pluginDir, ".claude-plugin", "plugin.json")); statErr == nil {
-			args = append(args, "--plugin-dir", pluginDir)
-			// Pass --dangerously-load-development-channels for each MCP
-			// server we wrote. Hidden from --help but required to bypass
-			// the tengu_harbor allowlist for non-official plugins. Without
-			// this, notifications/claude/channel is silently dropped.
-			for _, name := range readMeshMCPServerNames(pluginDir) {
-				args = append(args, "--dangerously-load-development-channels", "server:"+name)
-			}
+			// Activate channel-mode via the development flag, bypassing the
+			// tengu_harbor_ledger allowlist (the production --channels flag
+			// requires plugins to be in an Anthropic-controlled GrowthBook
+			// flag, fetched fresh on every session start; local cache edits
+			// don't stick). plugin:<name>@<marketplace> is the identifier
+			// form — server:<name> fails because claude namespaces
+			// plugin-scoped MCP servers as plugin:<pluginName>:<mcpKey>.
+			// Plugin must be user-scope installed via `claude plugin
+			// install` first.
+			args = append(args, "--dangerously-load-development-channels", "plugin:"+opts.AgentID+"@"+meshMarketplaceName)
 		}
 	}
 	cmd := exec.Command("claude", args...)
@@ -336,6 +339,34 @@ func (r *SessionRegistry) waitLoop(s *PtySession) {
 	err := s.Cmd.Wait()
 	_ = s.PTY.Close()
 	s.markExited(err)
+
+	// Debug: capture tail of ring buffer on exit so we can see why claude
+	// died. Runs unconditionally — cheap and makes silent-exit diagnosis
+	// possible.
+	dur := time.Since(s.StartedAt)
+	snap, _ := s.buffer.Snapshot()
+	tail := snap
+	if len(tail) > 1024 {
+		tail = tail[len(tail)-1024:]
+	}
+	exitCode := "?"
+	if s.Cmd.ProcessState != nil {
+		exitCode = fmt.Sprintf("%d", s.Cmd.ProcessState.ExitCode())
+	}
+	fmt.Printf("mesh session-exit agent=%s dur=%s exit=%s err=%v\n", s.AgentID, dur, exitCode, err)
+	if len(tail) > 0 {
+		fmt.Printf("mesh session-exit agent=%s tail=%q\n", s.AgentID, string(tail))
+	}
+
+	// Self-heal: Claude Code occasionally refuses to start with
+	// "Error: Session ID <uuid> is already in use." after an unclean
+	// shutdown leaves the session locked. Clear the stored UUID so the
+	// next restart generates a fresh one — loses conversation continuity
+	// for that agent, but restores the ability to start.
+	if bytes.Contains(tail, []byte("Session ID")) && bytes.Contains(tail, []byte("is already in use")) {
+		_ = UpdateAgent(s.AgentID, func(a *AgentDef) { a.ClaudeSessionID = "" })
+		fmt.Printf("mesh session-exit agent=%s stale-session-id cleared; next restart uses a fresh UUID\n", s.AgentID)
+	}
 
 	r.mu.Lock()
 	delete(r.sessions, s.AgentID)

@@ -123,7 +123,19 @@ type discordGateway struct {
 	msgOut       int
 	dropped      map[string]int // keyed by reason
 	session      *discordgo.Session
+
+	// typingUntil tracks the per-channel deadline for the "bot is typing…"
+	// indicator. Set when an inbound is forwarded to a shim; cleared when
+	// the corresponding outbound send arrives. A background goroutine
+	// refreshes Discord's typing state every 5s until the deadline. Bounded
+	// so a stuck agent doesn't leave the typing indicator on forever.
+	typingUntil map[string]time.Time
 }
+
+const (
+	typingRefreshInterval = 5 * time.Second
+	typingMaxDuration     = 60 * time.Second
+)
 
 func newDiscordGateway(account string) *discordGateway {
 	return &discordGateway{
@@ -132,6 +144,7 @@ func newDiscordGateway(account string) *discordGateway {
 		guildIndex:   map[string]*shimConn{},
 		status:       "connecting",
 		dropped:      map[string]int{},
+		typingUntil:  map[string]time.Time{},
 	}
 }
 
@@ -249,6 +262,11 @@ func runDiscordGateway(account string) error {
 		}
 	}()
 
+	// Background typing-indicator refresher: Discord's typing state auto-
+	// expires in ~10s, so we pulse it every 5s for channels awaiting a
+	// reply. One goroutine per gateway.
+	go gw.runTypingRefresher(ctx)
+
 	<-ctx.Done()
 	logf("discord gateway shutting down")
 	return nil
@@ -328,6 +346,11 @@ func (gw *discordGateway) handleShim(ctx context.Context, conn net.Conn, account
 				targetChannelID = env.RoutingKey
 			}
 			ids, err := sendDiscordMessage(gw.session, targetChannelID, env.Content, nil, logf)
+			// Outbound landed — clear typing indicator for that channel so
+			// we stop pulsing "bot is typing…" now that the real message
+			// is visible. Safe to call even on send error (typing auto-
+			// expires on Discord's side anyway).
+			gw.stopTyping(targetChannelID)
 			if err != nil {
 				logf("send err channelId=%s: %v", targetChannelID, err)
 				_ = wr.Write(ipcErrorEnv("send-failed", err.Error()))
@@ -580,6 +603,70 @@ func (gw *discordGateway) handleInbound(s *discordgo.Session, m *discordgo.Messa
 		m.Timestamp.UTC().Format("2006-01-02T15:04:05.000Z"),
 		content,
 	))
+
+	// Start "bot is typing…" for this channel. The refresh goroutine keeps
+	// it alive until the matching outbound send arrives or the max-duration
+	// deadline hits.
+	gw.startTyping(m.ChannelID)
+}
+
+// startTyping arms the typing indicator for a channel. Safe to call when
+// already armed — it just extends the deadline.
+func (gw *discordGateway) startTyping(channelID string) {
+	if channelID == "" {
+		return
+	}
+	gw.mu.Lock()
+	gw.typingUntil[channelID] = time.Now().Add(typingMaxDuration)
+	gw.mu.Unlock()
+	// Fire an immediate typing pulse so Discord starts showing the
+	// indicator right away; the refresh loop takes over from there.
+	if gw.session != nil {
+		_ = gw.session.ChannelTyping(channelID)
+	}
+}
+
+// stopTyping clears the typing indicator for a channel. Called when an
+// outbound send lands (the actual message replaces the typing indicator
+// naturally, but we still drop the refresh goroutine's interest).
+func (gw *discordGateway) stopTyping(channelID string) {
+	if channelID == "" {
+		return
+	}
+	gw.mu.Lock()
+	delete(gw.typingUntil, channelID)
+	gw.mu.Unlock()
+}
+
+// runTypingRefresher is the background goroutine that pulses Discord's
+// typing state every typingRefreshInterval for each channel still within
+// its deadline. Exits when ctx is cancelled.
+func (gw *discordGateway) runTypingRefresher(ctx context.Context) {
+	t := time.NewTicker(typingRefreshInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-t.C:
+			gw.mu.Lock()
+			var active []string
+			for cid, until := range gw.typingUntil {
+				if now.Before(until) {
+					active = append(active, cid)
+				} else {
+					delete(gw.typingUntil, cid)
+				}
+			}
+			gw.mu.Unlock()
+			if gw.session == nil {
+				continue
+			}
+			for _, cid := range active {
+				_ = gw.session.ChannelTyping(cid)
+			}
+		}
+	}
 }
 
 // botRolesInGuild returns the set of role IDs the bot holds in the given
