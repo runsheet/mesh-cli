@@ -30,11 +30,13 @@ type ipcChannelOverride struct {
 //
 // Shim → gateway types: subscribe, unsubscribe, send
 // Gateway → shim types: subscribe-ack, inbound, error
+// Router → shim types: subscribe-ack, inbound, error (same as gateway)
+// Shim → router types: subscribe, unsubscribe, send (same as shim→gateway)
 type ipcEnvelope struct {
 	V    int    `json:"v"`
 	Type string `json:"type"`
 
-	// subscribe fields (shim → gateway)
+	// subscribe fields (shim → gateway / router)
 	Agent            string               `json:"agent,omitempty"`
 	Index            int                  `json:"index,omitempty"`
 	RoutingKey       string               `json:"routingKey,omitempty"`
@@ -45,11 +47,23 @@ type ipcEnvelope struct {
 	InboundPrefix    string               `json:"inboundPrefix,omitempty"`
 	ChannelOverrides []ipcChannelOverride `json:"channelOverrides,omitempty"` // guild mode only
 
-	// send fields (shim → gateway)
+	// send fields (shim → gateway / router)
 	Content   string `json:"content,omitempty"`
 	ChannelID string `json:"channelId,omitempty"` // send: optional explicit target (guild mode); inbound: originating channel
 
-	// inbound fields (gateway → shim)
+	// Source identifies the backend platform an inbound envelope originated
+	// from. Set by the daemon router when it fans out from a gateway to the
+	// mesh-shim; absent on legacy direct-gateway paths. Values: "discord",
+	// "whatsapp", "peers".
+	Source string `json:"source,omitempty"`
+
+	// Target is the URL-shape destination the mesh-shim supplies on outbound
+	// sends (e.g. "discord://channel/<id>", "discord://dm/<userId>"). The
+	// daemon router parses the scheme and forwards to the right gateway.
+	// Absent on legacy direct-gateway paths.
+	Target string `json:"target,omitempty"`
+
+	// inbound fields (gateway → shim / router)
 	Sender    string `json:"sender,omitempty"`    // display name (e.g. Discord username)
 	MessageID string `json:"messageId,omitempty"` // platform-specific message id
 	UserID    string `json:"userId,omitempty"`    // platform-specific sender user id
