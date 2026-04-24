@@ -77,6 +77,9 @@ func StartLocalSocket(ctx context.Context, registry *SessionRegistry, chanMgr *C
 	mux.HandleFunc("/discord/unpair", srv.handleDiscordUnpair)
 	mux.HandleFunc("/discord/list-channels", srv.handleDiscordListChannels)
 	mux.HandleFunc("/discord/status", srv.handleDiscordStatus)
+	mux.HandleFunc("/whatsapp/pair", srv.handleWhatsappPair)
+	mux.HandleFunc("/whatsapp/unpair", srv.handleWhatsappUnpair)
+	mux.HandleFunc("/whatsapp/status", srv.handleWhatsappStatus)
 	mux.HandleFunc("/peers/list", srv.handlePeersList)
 	mux.HandleFunc("/peers/set-summary", srv.handlePeersSetSummary)
 
@@ -1458,6 +1461,106 @@ func discordGatewayLive(account string) bool {
 	}
 	_ = conn.Close()
 	return true
+}
+
+// -- whatsapp daemon handlers --
+
+// WhatsappAccountStatus is the daemon's authoritative view of one WhatsApp
+// account: whether the ChannelManager supervises it, gateway reachability,
+// and the latest published metrics.
+type WhatsappAccountStatus struct {
+	Account         string         `json:"account"`
+	Supervised      bool           `json:"supervised"`
+	SupervisorState string         `json:"supervisorState"`
+	Live            bool           `json:"live"`
+	Gateway         *GatewayStatus `json:"gateway,omitempty"`
+}
+
+// handleWhatsappPair handles POST /whatsapp/pair.
+func (s *localServer) handleWhatsappPair(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		Account string `json:"account"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid JSON: %v", err))
+		return
+	}
+	if req.Account == "" {
+		writeError(w, http.StatusBadRequest, "account is required")
+		return
+	}
+	if s.chanMgr != nil {
+		s.chanMgr.StartAccount("whatsapp", req.Account)
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "account": req.Account})
+}
+
+// handleWhatsappUnpair handles POST /whatsapp/unpair.
+func (s *localServer) handleWhatsappUnpair(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		Account string `json:"account"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid JSON: %v", err))
+		return
+	}
+	if req.Account == "" {
+		writeError(w, http.StatusBadRequest, "account is required")
+		return
+	}
+	if s.chanMgr != nil {
+		s.chanMgr.StopAccount("whatsapp", req.Account)
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "account": req.Account})
+}
+
+// handleWhatsappStatus handles GET /whatsapp/status[?account=<name>].
+func (s *localServer) handleWhatsappStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	requested := strings.TrimSpace(r.URL.Query().Get("account"))
+
+	var names []string
+	if requested != "" {
+		names = []string{requested}
+	} else {
+		all, err := ListWhatsappAccounts()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		names = all
+	}
+
+	out := make([]WhatsappAccountStatus, 0, len(names))
+	for _, n := range names {
+		entry := WhatsappAccountStatus{Account: n}
+		entry.Supervised = s.chanMgr != nil && s.chanMgr.IsManaging("whatsapp", n)
+		if entry.Supervised {
+			entry.SupervisorState = "supervised"
+		} else {
+			entry.SupervisorState = "not-referenced"
+		}
+		entry.Live = whatsappGatewayLive(n)
+		if entry.Live {
+			st, err := ReadGatewayStatus("whatsapp", n)
+			if err == nil {
+				entry.Gateway = &st
+			}
+		}
+		out = append(out, entry)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"accounts": out})
 }
 
 // -- peers daemon handlers --
