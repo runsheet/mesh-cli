@@ -69,6 +69,11 @@ type ipcEnvelope struct {
 	UserID    string `json:"userId,omitempty"`    // platform-specific sender user id
 	Timestamp string `json:"ts,omitempty"`        // ISO-8601 message timestamp
 
+	// peers inbound fields (broker → router → shim). PeerID is the sending
+	// agent name; Team is set only for team-scoped sends.
+	PeerID string `json:"peerId,omitempty"`
+	Team   string `json:"team,omitempty"`
+
 	// error fields (gateway → shim)
 	Reason string `json:"reason,omitempty"`
 	Detail string `json:"detail,omitempty"`
