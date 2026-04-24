@@ -20,6 +20,23 @@ type ChannelSpec struct {
 var channelTypeRegistry = map[string]bool{
 	"echo":    true,
 	"discord": true,
+	"peers":   true,
+}
+
+// peersChannelConfig is the structured representation of a peers channel
+// config block after parsing from the opaque map.
+type peersChannelConfig struct {
+	Scope string
+	Teams []string
+}
+
+// parsePeersChannelConfig builds a peersChannelConfig from the opaque config
+// map stored in ChannelSpec.Config.
+func parsePeersChannelConfig(cfg map[string]any) peersChannelConfig {
+	return peersChannelConfig{
+		Scope: stringFromMap(cfg, "scope"),
+		Teams: anyToStringSlice(cfg["teams"]),
+	}
 }
 
 // discordChannelOverride is a per-channel override within a guild-mode
@@ -69,6 +86,35 @@ func validateChannelSpecs(specs []ChannelSpec) error {
 		case "discord":
 			if err := validateDiscordConfig(c.Config, i, claimedChannelIDs); err != nil {
 				return fmt.Errorf("channels[%d] (discord): %w", i, err)
+			}
+		case "peers":
+			if err := validatePeersConfig(c.Config, i); err != nil {
+				return fmt.Errorf("channels[%d] (peers): %w", i, err)
+			}
+		}
+	}
+	return nil
+}
+
+// validatePeersConfig enforces the config shape rules from spec 15 §6.
+// Only scope=machine is accepted in slice 3; other scope values are reserved.
+func validatePeersConfig(cfg map[string]any, idx int) error {
+	scope, _ := cfg["scope"].(string)
+	if scope == "" {
+		scope = "machine"
+	}
+	if scope != "machine" {
+		return fmt.Errorf("config.scope %q is not supported in slice 3 — only \"machine\" scope is available", scope)
+	}
+	// teams is optional; validate it's a list of non-empty strings if present.
+	if raw, ok := cfg["teams"]; ok && raw != nil {
+		teams := anyToStringSlice(raw)
+		if teams == nil {
+			return fmt.Errorf("config.teams must be a list of strings")
+		}
+		for i, t := range teams {
+			if t == "" {
+				return fmt.Errorf("config.teams[%d]: team name must not be empty", i)
 			}
 		}
 	}
