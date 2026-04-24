@@ -420,7 +420,10 @@ func handleDiscordShimMCP(
 				},
 			},
 			"serverInfo": map[string]any{
-				"name":    "mesh-channel-discord-shim",
+				// Name kept as "discord" to match the official plugin shape —
+				// Claude Code may gate the channel-injection feature on this
+				// string. Version is mesh's, not the official plugin's.
+				"name":    "discord",
 				"version": "0.2.0",
 			},
 			"instructions": "Messages from Discord arrive as <channel source=\"discord\" chat_id=\"...\" message_id=\"...\" user=\"...\" ts=\"...\">content</channel>. Reply using the discord_send_message tool; the sender reads Discord and will only see tool-sent messages. If the message doesn't need a reply (e.g. a bot post you see as a loop guard), stay silent.",

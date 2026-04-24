@@ -111,8 +111,23 @@ func WriteClaudeSettings(agentName string, channels []ChannelSpec, envSource map
 	}
 
 	settings := claudeSettings{MCPServers: map[string]mcpServerEntry{}}
+	// Track per-type counts so single-channel-of-type gets the bare type name
+	// (e.g. "discord" — matching the official plugin's MCP key, which Claude
+	// Code may gate channel-mode features on) and multi-channel agents get
+	// indexed keys.
+	typeCount := map[string]int{}
+	for _, ch := range channels {
+		typeCount[ch.Type]++
+	}
+	typeIdx := map[string]int{}
 	for i, ch := range channels {
-		key := fmt.Sprintf("mesh-channel-%s-%d", ch.Type, i)
+		var key string
+		if typeCount[ch.Type] == 1 {
+			key = ch.Type
+		} else {
+			key = fmt.Sprintf("%s-%d", ch.Type, typeIdx[ch.Type])
+			typeIdx[ch.Type]++
+		}
 		entry := mcpServerEntry{Command: exe}
 		switch ch.Type {
 		case "discord":
