@@ -75,7 +75,12 @@ func (cm *ChannelManager) Sync(agents []*AgentDef) {
 			desired[k] = struct{ platform, account string }{"discord", acc}
 		}
 	}
-	// future platforms: iterate ListWhatsappAccounts() etc.
+	if accounts, err := ListWhatsappAccounts(); err == nil {
+		for _, acc := range accounts {
+			k := gatewayKey("whatsapp", acc)
+			desired[k] = struct{ platform, account string }{"whatsapp", acc}
+		}
+	}
 
 	// Agent-referenced accounts (union member 2). Currently a subset of paired
 	// accounts in practice, but kept explicit so a reference to an unpaired
@@ -90,7 +95,12 @@ func (cm *ChannelManager) Sync(agents []*AgentDef) {
 					k := gatewayKey("discord", acc)
 					desired[k] = struct{ platform, account string }{"discord", acc}
 				}
-			// future platforms: case "whatsapp": …
+			case "whatsapp":
+				acc, _ := ch.Config["account"].(string)
+				if acc != "" {
+					k := gatewayKey("whatsapp", acc)
+					desired[k] = struct{ platform, account string }{"whatsapp", acc}
+				}
 			}
 		}
 	}

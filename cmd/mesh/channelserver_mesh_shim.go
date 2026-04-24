@@ -84,6 +84,10 @@ func (l *meshLastInbound) replyTarget() (string, string) {
 		if l.channelID != "" {
 			return l.source, "discord://channel/" + l.channelID
 		}
+	case "whatsapp":
+		if l.channelID != "" {
+			return l.source, "whatsapp://chat/" + l.channelID
+		}
 	case "peers":
 		if l.channelID != "" {
 			return l.source, "peers://agent/" + l.channelID
@@ -480,12 +484,12 @@ func handleMeshSend(
 	}
 
 	switch platform {
-	case "discord", "peers":
+	case "discord", "whatsapp", "peers":
 		// valid
 	default:
 		return write(jsonrpcMessage{
 			ID:    id,
-			Error: &jsonrpcError{Code: -32602, Message: "mesh_send: unknown scheme " + platform + " (supported: discord://, peers://)"},
+			Error: &jsonrpcError{Code: -32602, Message: "mesh_send: unknown scheme " + platform + " (supported: discord://, whatsapp://, peers://)"},
 		})
 	}
 
