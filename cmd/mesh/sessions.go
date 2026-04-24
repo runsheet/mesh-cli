@@ -91,6 +91,11 @@ type PtySession struct {
 	StartedAt       time.Time
 	LastActivity    time.Time
 
+	// startOpts is the options the session was spawned with. Kept around
+	// so waitLoop can self-heal + auto-respawn when claude exits on a stale
+	// session-id lock.
+	startOpts StartOptions
+
 	buffer *ringBuffer
 
 	mu        sync.Mutex
@@ -209,6 +214,12 @@ type StartOptions struct {
 	Env                        map[string]string
 	WorkingDir                 string
 	DangerouslySkipPermissions bool
+
+	// retriedStaleLock guards the self-heal respawn path against infinite
+	// loops. Set to true when waitLoop respawns after clearing a stale
+	// claude session-id; waitLoop will not respawn again if this is set.
+	// Internal to the registry — not set by external callers.
+	retriedStaleLock bool
 }
 
 // StartWithOptions is Start but threads env + workdir through to the child.
@@ -295,6 +306,7 @@ func (r *SessionRegistry) StartWithOptions(opts StartOptions) (*PtySession, bool
 		Cmd:             cmd,
 		StartedAt:       now,
 		LastActivity:    now,
+		startOpts:       opts,
 		buffer:          newRingBuffer(sessionRingCap),
 		attachers:       map[string]*attacher{},
 	}
@@ -426,12 +438,24 @@ func (r *SessionRegistry) waitLoop(s *PtySession) {
 
 	// Self-heal: Claude Code occasionally refuses to start with
 	// "Error: Session ID <uuid> is already in use." after an unclean
-	// shutdown leaves the session locked. Clear the stored UUID so the
-	// next restart generates a fresh one — loses conversation continuity
-	// for that agent, but restores the ability to start.
-	if bytes.Contains(tail, []byte("Session ID")) && bytes.Contains(tail, []byte("is already in use")) {
-		_ = UpdateAgent(s.AgentID, func(a *AgentDef) { a.ClaudeSessionID = "" })
-		fmt.Printf("mesh session-exit agent=%s stale-session-id cleared; next restart uses a fresh UUID\n", s.AgentID)
+	// shutdown leaves the session locked. Generate a fresh UUID, persist
+	// it, and automatically respawn so the user doesn't have to manually
+	// restart. One-shot guard (retriedStaleLock) prevents infinite loops
+	// if the new UUID also hits some other failure.
+	if bytes.Contains(tail, []byte("Session ID")) && bytes.Contains(tail, []byte("is already in use")) && !s.startOpts.retriedStaleLock {
+		newUUID := uuid.NewString()
+		_ = UpdateAgent(s.AgentID, func(a *AgentDef) { a.ClaudeSessionID = newUUID })
+		fmt.Printf("mesh session-exit agent=%s stale-session-id cleared; respawning with fresh UUID %s\n", s.AgentID, newUUID)
+		retryOpts := s.startOpts
+		retryOpts.ResumeID = newUUID
+		retryOpts.retriedStaleLock = true
+		// Delay briefly to let the dead process fully release any resources.
+		go func() {
+			time.Sleep(300 * time.Millisecond)
+			if _, err := r.NewUpWithOptions(retryOpts); err != nil {
+				fmt.Printf("mesh session-exit agent=%s auto-respawn err: %v\n", s.AgentID, err)
+			}
+		}()
 	}
 
 	r.mu.Lock()
