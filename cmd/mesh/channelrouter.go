@@ -259,6 +259,8 @@ func (r *agentRouter) handleShimSubscribe(ctx context.Context, env ipcEnvelope, 
 		switch ch.Type {
 		case "discord":
 			r.subscribeDiscordGateway(ctx, ch, env, logf)
+		case "whatsapp":
+			r.subscribeWhatsappGateway(ctx, ch, logf)
 		case "peers":
 			r.subscribePeers(ctx, ch, logf)
 		}
@@ -442,6 +444,8 @@ func (r *agentRouter) handleShimSend(env ipcEnvelope, logf func(string, ...any))
 	switch platform {
 	case "discord":
 		r.routeDiscordSend(env, subtype, id, logf)
+	case "whatsapp":
+		r.routeWhatsappSend(env, subtype, id, logf)
 	case "peers":
 		r.routePeersSend(env, subtype, id, logf)
 	default:
@@ -493,6 +497,128 @@ func (r *agentRouter) routeDiscordSend(env ipcEnvelope, subtype, id string, logf
 		return
 	}
 	logf("routed send to discord account=%s channelId=%s len=%d", gwc.account, channelID, len(env.Content))
+}
+
+// subscribeWhatsappGateway connects this router to the whatsapp gateway for
+// the account referenced by the channel config, sends a subscribe envelope
+// keyed by chatJid, and starts pumping inbound messages to the shim.
+func (r *agentRouter) subscribeWhatsappGateway(ctx context.Context, ch ChannelSpec, logf func(string, ...any)) {
+	wcc := parseWhatsappChannelConfig(ch.Config)
+	if wcc.Account == "" {
+		logf("whatsapp channel missing account")
+		return
+	}
+	gwKey := gatewayKey("whatsapp", wcc.Account)
+
+	r.mu.Lock()
+	_, already := r.gwConns[gwKey]
+	r.mu.Unlock()
+	if already {
+		return
+	}
+
+	sockPath, err := WhatsappGatewaySockPath(wcc.Account)
+	if err != nil {
+		logf("whatsapp gateway sock path: %v", err)
+		return
+	}
+
+	var (
+		gwConn net.Conn
+		gwRd   *ipcReader
+		gwWr   *ipcWriter
+	)
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		gwConn, gwRd, gwWr, err = dialGateway(sockPath)
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			logf("whatsapp gateway dial deadline: %v", err)
+			return
+		}
+		logf("whatsapp gateway dial retry: %v", err)
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	subEnv := ipcSubscribeChannelEnv(r.agentName, 0, wcc.ChatJID, "", nil, nil, false)
+	if err := gwWr.Write(subEnv); err != nil {
+		gwConn.Close()
+		logf("whatsapp gateway subscribe write: %v", err)
+		return
+	}
+	ack, err := gwRd.Read()
+	if err != nil {
+		gwConn.Close()
+		logf("whatsapp gateway ack read: %v", err)
+		return
+	}
+	if ack.Type == "error" {
+		gwConn.Close()
+		logf("whatsapp gateway subscribe error: %s: %s", ack.Reason, ack.Detail)
+		return
+	}
+	if ack.Type != "subscribe-ack" {
+		gwConn.Close()
+		logf("whatsapp gateway unexpected ack type: %s", ack.Type)
+		return
+	}
+
+	gwc := &routerGWConn{
+		platform: "whatsapp",
+		account:  wcc.Account,
+		conn:     gwConn,
+		rd:       gwRd,
+		wr:       gwWr,
+	}
+	r.mu.Lock()
+	r.gwConns[gwKey] = gwc
+	r.mu.Unlock()
+
+	logf("subscribed whatsapp gateway account=%s jid=%s", wcc.Account, wcc.ChatJID)
+	go r.pumpGateway(ctx, gwc, logf)
+}
+
+// routeWhatsappSend routes an outbound send to the whatsapp gateway.
+// subtype must be "chat"; id is the full JID.
+func (r *agentRouter) routeWhatsappSend(env ipcEnvelope, subtype, id string, logf func(string, ...any)) {
+	if subtype != "chat" {
+		msg := "whatsapp://: unsupported namespace " + subtype + " (only chat/<jid> is supported)"
+		logf(msg)
+		r.sendShimError("bad-target", msg)
+		return
+	}
+	if !isValidWhatsappJID(id) {
+		msg := "whatsapp://chat/: invalid JID " + id
+		logf(msg)
+		r.sendShimError("bad-target", msg)
+		return
+	}
+
+	r.mu.Lock()
+	var gwc *routerGWConn
+	for _, gw := range r.gwConns {
+		if gw.platform == "whatsapp" {
+			gwc = gw
+			break
+		}
+	}
+	r.mu.Unlock()
+
+	if gwc == nil {
+		logf("no whatsapp gateway connection for send target=%s", env.Target)
+		r.sendShimError("no-gateway", "no whatsapp gateway connected")
+		return
+	}
+
+	sendEnv := ipcSendEnv(id, env.Content)
+	if err := gwc.wr.Write(sendEnv); err != nil {
+		logf("whatsapp gateway send write: %v", err)
+		r.sendShimError("send-failed", err.Error())
+		return
+	}
+	logf("routed send to whatsapp account=%s jid=%s len=%d", gwc.account, id, len(env.Content))
 }
 
 // subscribePeers registers this agent with the global peers broker and starts
