@@ -100,18 +100,8 @@ func findBoundary(s string, max int) int {
 	return -1
 }
 
-// formatInboundContent applies the inbound-prefix rule:
-//   - empty prefix → "<username>: <content>"
-//   - non-empty    → "<prefix> @<username>: <content>"
-func formatInboundContent(m *discordgo.MessageCreate, prefix string) string {
-	username := m.Author.Username
-	if prefix == "" {
-		return fmt.Sprintf("%s: %s", username, m.Content)
-	}
-	return fmt.Sprintf("%s @%s: %s", prefix, username, m.Content)
-}
-
-// contains returns true if needle is in haystack.
+// contains returns true if needle is in haystack. Used by the gateway's
+// allow-list filter.
 func contains(haystack []string, needle string) bool {
 	for _, h := range haystack {
 		if h == needle {
@@ -119,20 +109,4 @@ func contains(haystack []string, needle string) bool {
 		}
 	}
 	return false
-}
-
-// splitCSV splits a CSV flag value into trimmed, non-empty tokens.
-func splitCSV(s string) []string {
-	if s == "" {
-		return nil
-	}
-	parts := strings.Split(s, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		t := strings.TrimSpace(p)
-		if t != "" {
-			out = append(out, t)
-		}
-	}
-	return out
 }

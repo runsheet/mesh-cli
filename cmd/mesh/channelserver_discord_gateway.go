@@ -664,12 +664,6 @@ func gatewayAllowListPassFilter(m *discordgo.MessageCreate, f discordFilter) boo
 	return false
 }
 
-// gatewayAllowListPass is the old signature kept for any remaining call sites
-// that pass a *shimConn directly (channel-mode only).
-func gatewayAllowListPass(m *discordgo.MessageCreate, shim *shimConn, _ string) bool {
-	return gatewayAllowListPassFilter(m, shim.defaultFilter)
-}
-
 // publishStatus writes the gateway's status.json atomically.
 func (gw *discordGateway) publishStatus(account, botUsername string) {
 	gw.mu.Lock()

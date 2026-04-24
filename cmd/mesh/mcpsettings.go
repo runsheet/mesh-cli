@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 )
 
 // mcpServerEntry is the shape Claude Code expects under mcpServers in
@@ -209,27 +208,3 @@ func discordMCPArgs(agentName string, index int, config map[string]any, totalDis
 	return args, nil
 }
 
-// joinSnowflakeList turns the YAML/JSON representation of an ID list (may be
-// []any of strings, []string, or a single comma-separated string) into a
-// comma-separated string suitable for --allowed-users / --allowed-roles.
-// Returns "" for empty input so callers can decide whether to emit the flag.
-func joinSnowflakeList(v any) string {
-	switch x := v.(type) {
-	case nil:
-		return ""
-	case string:
-		return strings.TrimSpace(x)
-	case []string:
-		return strings.Join(x, ",")
-	case []any:
-		parts := make([]string, 0, len(x))
-		for _, it := range x {
-			if s, ok := it.(string); ok && s != "" {
-				parts = append(parts, s)
-			}
-		}
-		return strings.Join(parts, ",")
-	default:
-		return ""
-	}
-}
