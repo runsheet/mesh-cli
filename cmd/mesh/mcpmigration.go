@@ -10,17 +10,15 @@ import (
 // migrateMCPSettingsToMesh rewrites .mcp.json files that still carry the old
 // per-channel-type MCP server key (e.g. "discord") to the unified "mesh" key.
 //
-// Three locations are checked per agent:
+// Locations checked per agent:
 //  1. ~/.mesh/agents/<name>/plugin/.mcp.json  (agent plugin dir)
-//  2. ~/.mesh/marketplace/plugins/<name>/.mcp.json  (not used in current
-//     layout, but checked for belt-and-suspenders)
-//  3. ~/.claude/plugins/marketplaces/mesh/plugins/<name>/.mcp.json  (the
-//     user-scope installed plugin copy that Claude Code actually loads)
+//  2. ~/.claude/plugins/marketplaces/mesh/plugins/<name>/.mcp.json
+//  3. ~/.claude/plugins/cache/mesh/<name>/<version>/.mcp.json  (installed
+//     user-scope plugin cache — the copy Claude Code actually loads)
 //
-// The migration is idempotent: files that already have "mesh" as the key (or
-// that don't exist) are left untouched. Files with any key other than "mesh"
-// are rewritten to replace the first non-"mesh" MCP server entry with a
-// single "mesh" entry using the new args format.
+// The migration is idempotent: files that already have "mesh" as the only key
+// (or that don't exist) are left untouched. Files with any key other than
+// "mesh" are rewritten to a single "mesh" entry using the new args format.
 func migrateMCPSettingsToMesh() {
 	agents, err := ListAgents()
 	if err != nil {
@@ -46,10 +44,21 @@ func migrateMCPSettingsToMesh() {
 		}
 		newArgs := []string{"channel-server", "mesh-shim", "--agent", a.Name}
 		candidates := []string{
-			// Agent plugin dir.
+			// Agent plugin dir (source of truth written by WriteClaudeSettings).
 			filepath.Join(home, ".mesh", "agents", a.Name, "plugin", ".mcp.json"),
-			// User-scope installed plugin copy.
+			// User-scope installed plugin (marketplace layout).
 			filepath.Join(home, ".claude", "plugins", "marketplaces", "mesh", "plugins", a.Name, ".mcp.json"),
+		}
+		// Claude Code caches installed plugins at
+		// ~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/.mcp.json.
+		// Scan all version dirs for this agent.
+		cacheBase := filepath.Join(home, ".claude", "plugins", "cache", "mesh", a.Name)
+		if entries, err := os.ReadDir(cacheBase); err == nil {
+			for _, e := range entries {
+				if e.IsDir() {
+					candidates = append(candidates, filepath.Join(cacheBase, e.Name(), ".mcp.json"))
+				}
+			}
 		}
 		for _, path := range candidates {
 			migrateMCPFile(path, a.Name, exe, newArgs)
