@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -335,17 +336,30 @@ func (r *SessionRegistry) StartWithOptions(opts StartOptions) (*PtySession, bool
 // development channels" prompt and writes Enter (accepts option 1, which is
 // already highlighted by default). Polls every 100ms for up to 10 seconds;
 // exits when the prompt is accepted or the window expires.
+//
+// The scrollback is ANSI-escape-heavy (colors, cursor moves, etc.), so we
+// strip those before matching. The marker string Claude uses is split
+// across attribute changes in the raw stream.
 func (r *SessionRegistry) autoAcceptDevChannelsPrompt(s *PtySession) {
 	const marker = "Loading development channels"
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		snap, _ := s.buffer.Snapshot()
-		if bytes.Contains(snap, []byte(marker)) {
+		if bytes.Contains(stripANSI(snap), []byte(marker)) {
 			_, _ = s.PTY.Write([]byte("\r"))
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+// ansiEscapeRE matches CSI (ESC[…), OSC (ESC]…BEL or ESC]…ESC\), and bare
+// ESC-letter sequences. Covers the shapes that actually appear in Claude's
+// TUI output; good enough for substring matching against visible text.
+var ansiEscapeRE = regexp.MustCompile(`\x1b\[[0-9;?]*[a-zA-Z]|\x1b\].*?(\x07|\x1b\\)|\x1b[()][A-Za-z0-9]|\x1b[=>78DEHMc]`)
+
+func stripANSI(b []byte) []byte {
+	return ansiEscapeRE.ReplaceAll(b, nil)
 }
 
 func (r *SessionRegistry) readLoop(s *PtySession) {
