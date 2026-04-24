@@ -1,0 +1,227 @@
+package main
+
+import (
+	"testing"
+	"time"
+)
+
+func TestPeersBroker_RegisterUnregister(t *testing.T) {
+	b := newPeersBroker()
+	ch := make(chan ipcEnvelope, 8)
+	b.Register(peerRegistration{PeerID: "alice", NodeID: "local", Teams: []string{"eng"}}, ch)
+
+	peers := b.ListPeers("")
+	if len(peers) != 1 {
+		t.Fatalf("expected 1 peer, got %d", len(peers))
+	}
+	if peers[0].PeerID != "alice" {
+		t.Errorf("peer id: got %q want alice", peers[0].PeerID)
+	}
+
+	b.Unregister("alice")
+	peers = b.ListPeers("")
+	if len(peers) != 0 {
+		t.Errorf("expected 0 peers after unregister, got %d", len(peers))
+	}
+
+	// Channel should be closed.
+	select {
+	case _, open := <-ch:
+		if open {
+			t.Error("delivery channel should be closed after Unregister")
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Error("delivery channel not closed after Unregister")
+	}
+}
+
+func TestPeersBroker_TeamIndex(t *testing.T) {
+	b := newPeersBroker()
+	chA := make(chan ipcEnvelope, 8)
+	chB := make(chan ipcEnvelope, 8)
+	chC := make(chan ipcEnvelope, 8)
+
+	b.Register(peerRegistration{PeerID: "alice", NodeID: "local", Teams: []string{"design", "eng"}}, chA)
+	b.Register(peerRegistration{PeerID: "bob", NodeID: "local", Teams: []string{"design"}}, chB)
+	b.Register(peerRegistration{PeerID: "carol", NodeID: "local", Teams: []string{"eng"}}, chC)
+
+	designPeers := b.ListPeers("design")
+	if len(designPeers) != 2 {
+		t.Errorf("expected 2 design peers, got %d", len(designPeers))
+	}
+
+	engPeers := b.ListPeers("eng")
+	if len(engPeers) != 2 {
+		t.Errorf("expected 2 eng peers, got %d", len(engPeers))
+	}
+}
+
+func TestPeersBroker_SendDirect(t *testing.T) {
+	b := newPeersBroker()
+	chAlice := make(chan ipcEnvelope, 8)
+	b.Register(peerRegistration{PeerID: "alice", NodeID: "local"}, chAlice)
+
+	ok := b.SendDirect("alice", "bob", "hello alice")
+	if !ok {
+		t.Fatal("SendDirect should return true when peer is registered")
+	}
+
+	select {
+	case env := <-chAlice:
+		if env.Content != "hello alice" {
+			t.Errorf("content: got %q want 'hello alice'", env.Content)
+		}
+		if env.PeerID != "bob" {
+			t.Errorf("peer_id: got %q want 'bob'", env.PeerID)
+		}
+		if env.Source != "peers" {
+			t.Errorf("source: got %q want 'peers'", env.Source)
+		}
+		if env.Team != "" {
+			t.Errorf("team should be empty for direct send, got %q", env.Team)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("no message received on alice's channel")
+	}
+
+	// Send to non-existent peer.
+	ok = b.SendDirect("nobody", "bob", "hello")
+	if ok {
+		t.Error("SendDirect to unregistered peer should return false")
+	}
+}
+
+func TestPeersBroker_SendTeam_SelfExclusion(t *testing.T) {
+	b := newPeersBroker()
+	chAlice := make(chan ipcEnvelope, 8)
+	chBob := make(chan ipcEnvelope, 8)
+	chCarol := make(chan ipcEnvelope, 8)
+
+	b.Register(peerRegistration{PeerID: "alice", NodeID: "local", Teams: []string{"design"}}, chAlice)
+	b.Register(peerRegistration{PeerID: "bob", NodeID: "local", Teams: []string{"design"}}, chBob)
+	b.Register(peerRegistration{PeerID: "carol", NodeID: "local", Teams: []string{"design"}}, chCarol)
+
+	// alice sends to team/design — she should NOT receive her own message.
+	n := b.SendTeam("design", "alice", "team message")
+	if n != 2 {
+		t.Errorf("SendTeam should reach 2 members (not sender), got %d", n)
+	}
+
+	// bob and carol should receive it.
+	for _, ch := range []chan ipcEnvelope{chBob, chCarol} {
+		select {
+		case env := <-ch:
+			if env.Content != "team message" {
+				t.Errorf("content: got %q want 'team message'", env.Content)
+			}
+			if env.Team != "design" {
+				t.Errorf("team: got %q want 'design'", env.Team)
+			}
+			if env.PeerID != "alice" {
+				t.Errorf("peer_id: got %q want 'alice'", env.PeerID)
+			}
+		case <-time.After(100 * time.Millisecond):
+			t.Fatal("team member did not receive message")
+		}
+	}
+
+	// alice's channel should be empty.
+	select {
+	case env := <-chAlice:
+		t.Errorf("sender should not receive their own team message, got: %v", env)
+	case <-time.After(20 * time.Millisecond):
+	}
+}
+
+func TestPeersBroker_SendBroadcast_SelfExclusion(t *testing.T) {
+	b := newPeersBroker()
+	chAlice := make(chan ipcEnvelope, 8)
+	chBob := make(chan ipcEnvelope, 8)
+
+	b.Register(peerRegistration{PeerID: "alice", NodeID: "local"}, chAlice)
+	b.Register(peerRegistration{PeerID: "bob", NodeID: "local"}, chBob)
+
+	n := b.SendBroadcast("alice", "broadcast")
+	if n != 1 {
+		t.Errorf("SendBroadcast from alice should reach 1 peer (bob), got %d", n)
+	}
+
+	select {
+	case env := <-chBob:
+		if env.Content != "broadcast" {
+			t.Errorf("bob content: got %q want 'broadcast'", env.Content)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("bob did not receive broadcast")
+	}
+
+	// alice should not receive her own broadcast.
+	select {
+	case env := <-chAlice:
+		t.Errorf("sender should not receive own broadcast, got: %v", env)
+	case <-time.After(20 * time.Millisecond):
+	}
+}
+
+func TestPeersBroker_SetSummary(t *testing.T) {
+	b := newPeersBroker()
+	ch := make(chan ipcEnvelope, 8)
+	b.Register(peerRegistration{PeerID: "alice", NodeID: "local"}, ch)
+
+	ok := b.SetSummary("alice", "I am the design agent")
+	if !ok {
+		t.Fatal("SetSummary should return true for registered peer")
+	}
+	peers := b.ListPeers("")
+	if len(peers) != 1 || peers[0].Summary != "I am the design agent" {
+		t.Errorf("summary not updated: %+v", peers)
+	}
+
+	ok = b.SetSummary("nobody", "ghost")
+	if ok {
+		t.Error("SetSummary should return false for unregistered peer")
+	}
+}
+
+func TestPeersBroker_ReRegister(t *testing.T) {
+	b := newPeersBroker()
+	ch1 := make(chan ipcEnvelope, 8)
+	ch2 := make(chan ipcEnvelope, 8)
+
+	b.Register(peerRegistration{PeerID: "alice", NodeID: "local", Teams: []string{"eng"}}, ch1)
+	// Re-register with new channel (shim reconnect).
+	b.Register(peerRegistration{PeerID: "alice", NodeID: "local", Teams: []string{"eng"}}, ch2)
+
+	b.SendDirect("alice", "bob", "hi")
+
+	select {
+	case <-ch2:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("message not delivered to new channel after re-register")
+	}
+	select {
+	case _, open := <-ch1:
+		// ch1 should have been closed by the second Register.
+		if open {
+			t.Error("old delivery channel should be closed on re-register")
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Error("old delivery channel not closed after re-register")
+	}
+}
+
+func TestPeersBroker_UnregisterCleansTeamIndex(t *testing.T) {
+	b := newPeersBroker()
+	chA := make(chan ipcEnvelope, 8)
+	chB := make(chan ipcEnvelope, 8)
+
+	b.Register(peerRegistration{PeerID: "alice", NodeID: "local", Teams: []string{"design"}}, chA)
+	b.Register(peerRegistration{PeerID: "bob", NodeID: "local", Teams: []string{"design"}}, chB)
+
+	b.Unregister("alice")
+
+	peers := b.ListPeers("design")
+	if len(peers) != 1 || peers[0].PeerID != "bob" {
+		t.Errorf("team index not cleaned after Unregister: %+v", peers)
+	}
+}

@@ -21,6 +21,7 @@ func main() {
 	rootCmd.AddCommand(channelServerCmd)
 	rootCmd.AddCommand(discordCmd)
 	rootCmd.AddCommand(whatsappCmd)
+	rootCmd.AddCommand(peersCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)
