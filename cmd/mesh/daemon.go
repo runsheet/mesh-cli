@@ -73,6 +73,18 @@ func RunDaemon(baseURL string, grpcAddr string) error {
 	chanMgr.Sync(agents)
 	defer chanMgr.StopAll()
 
+	// Migrate any .mcp.json files that still reference the old per-channel-type
+	// MCP server key (e.g. "discord") to the unified "mesh" key. Idempotent.
+	migrateMCPSettingsToMesh()
+
+	// Start per-agent routers. Each router listens on
+	// ~/.mesh/agents/<name>/mesh.sock and fans shim traffic to/from the
+	// per-platform gateway sockets. Routers run after gateways so that the
+	// gateway sockets are already bound when routers subscribe.
+	chanRouter := NewChannelRouter()
+	chanRouter.Sync(agents)
+	defer chanRouter.StopAll()
+
 	// Local socket always starts — standalone mode requires it, cluster mode
 	// piggybacks on the same registry.
 	listener, err := StartLocalSocket(ctx, registry, chanMgr)

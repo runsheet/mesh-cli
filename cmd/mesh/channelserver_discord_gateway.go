@@ -367,6 +367,20 @@ func (gw *discordGateway) handleShim(ctx context.Context, conn net.Conn, account
 			chJSON, _ := json.Marshal(channels)
 			_ = wr.Write(ipcEnvelope{V: ipcVersion, Type: "list-channels-response", Content: string(chJSON)})
 
+		case "dm-open":
+			// dm-open opens (or reuses) a DM channel with the given UserID.
+			// Used by the router to resolve discord://dm/<userId> targets.
+			if gw.session == nil {
+				_ = wr.Write(ipcErrorEnv("not-connected", "discord session not open"))
+				continue
+			}
+			ch, err := gw.session.UserChannelCreate(env.UserID)
+			if err != nil {
+				_ = wr.Write(ipcErrorEnv("dm-open-failed", err.Error()))
+				continue
+			}
+			_ = wr.Write(ipcEnvelope{V: ipcVersion, Type: "dm-open-ack", ChannelID: ch.ID})
+
 		default:
 			_ = wr.Write(ipcErrorEnv("unknown-type", env.Type))
 		}
