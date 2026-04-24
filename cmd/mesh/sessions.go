@@ -236,13 +236,18 @@ func (r *SessionRegistry) StartWithOptions(opts StartOptions) (*PtySession, bool
 	if opts.DangerouslySkipPermissions {
 		args = append(args, "--dangerously-skip-permissions")
 	}
-	// If the agent dir is itself a plugin (has .claude-plugin/plugin.json,
-	// written by WriteClaudeSettings when channels exist), load it via
-	// --plugin-dir so Claude Code activates the channel capability without
-	// requiring a manual /plugin install.
+	// Load the per-agent plugin at ~/.mesh/agents/<name>/plugin/ via
+	// --plugin-dir so the MCP servers register at plugin scope. Plugin scope
+	// is the scope where Claude Code honors experimental.claude/channel —
+	// project-scope servers declaring the same capability are accepted but
+	// the channel-injection feature is gated off. The plugin dir is
+	// deliberately a subdir of the agent cwd so its .mcp.json doesn't also
+	// get registered as project-scope config (same-key servers conflict and
+	// plugin-scope loses).
 	if dir, err := agentWorkdir(opts.AgentID); err == nil {
-		if _, statErr := os.Stat(filepath.Join(dir, ".claude-plugin", "plugin.json")); statErr == nil {
-			args = append(args, "--plugin-dir", dir)
+		pluginDir := filepath.Join(dir, "plugin")
+		if _, statErr := os.Stat(filepath.Join(pluginDir, ".claude-plugin", "plugin.json")); statErr == nil {
+			args = append(args, "--plugin-dir", pluginDir)
 		}
 	}
 	cmd := exec.Command("claude", args...)

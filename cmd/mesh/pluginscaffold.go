@@ -69,16 +69,28 @@ func MeshMarketplaceDir() (string, error) {
 	return filepath.Join(dir, "marketplace"), nil
 }
 
-// writeAgentPluginManifest writes <agent-dir>/.claude-plugin/plugin.json so
-// the agent's working directory can be loaded by Claude Code as a plugin.
-// Called from WriteClaudeSettings whenever an agent has at least one channel.
-func writeAgentPluginManifest(agentName string, channels []ChannelSpec) error {
+// AgentPluginDir returns the directory mesh writes the per-agent plugin into:
+// ~/.mesh/agents/<name>/plugin/. Kept as its own subdir of the agent cwd so
+// claude doesn't pick up the plugin's .mcp.json as project-scope config.
+func AgentPluginDir(agentName string) (string, error) {
 	dir, err := agentWorkdir(agentName)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "plugin"), nil
+}
+
+// writeAgentPluginManifest writes <agent-dir>/plugin/.claude-plugin/plugin.json
+// so the plugin subdirectory can be loaded by Claude Code as a plugin (via
+// --plugin-dir). Called from WriteClaudeSettings whenever an agent has at
+// least one channel.
+func writeAgentPluginManifest(agentName string, channels []ChannelSpec) error {
+	pdir, err := AgentPluginDir(agentName)
 	if err != nil {
 		return err
 	}
-	pluginDir := filepath.Join(dir, ".claude-plugin")
-	if err := os.MkdirAll(pluginDir, 0o700); err != nil {
+	manifestDir := filepath.Join(pdir, ".claude-plugin")
+	if err := os.MkdirAll(manifestDir, 0o700); err != nil {
 		return err
 	}
 	manifest := pluginManifest{
@@ -91,7 +103,7 @@ func writeAgentPluginManifest(agentName string, channels []ChannelSpec) error {
 	if err != nil {
 		return err
 	}
-	return atomicWriteFile(filepath.Join(pluginDir, "plugin.json"), data, 0o600)
+	return atomicWriteFile(filepath.Join(manifestDir, "plugin.json"), data, 0o600)
 }
 
 // agentPluginDescription builds a short, channel-aware description that
@@ -141,12 +153,12 @@ func SyncMeshMarketplace() error {
 			continue
 		}
 		// Source is a path relative to the marketplace dir. Marketplace lives
-		// at ~/.mesh/marketplace; agents live at ~/.mesh/agents/<name>; so the
-		// relative path is "../agents/<name>".
-		agentDir := filepath.Join(homeDir, ".mesh", "agents", a.Name)
-		rel, err := filepath.Rel(mkDir, agentDir)
+		// at ~/.mesh/marketplace; plugin lives at ~/.mesh/agents/<name>/plugin;
+		// so the relative path is "../agents/<name>/plugin".
+		pluginPath := filepath.Join(homeDir, ".mesh", "agents", a.Name, "plugin")
+		rel, err := filepath.Rel(mkDir, pluginPath)
 		if err != nil {
-			rel = agentDir
+			rel = pluginPath
 		}
 		plugins = append(plugins, marketplacePluginRef{
 			Name:        a.Name,

@@ -71,10 +71,13 @@ func writeDiscordShimConfig(agentName string, index int, cfg discordShimConfigFi
 	return path, nil
 }
 
-// WriteClaudeSettings materializes the project-scoped MCP config at
-// ~/.mesh/agents/<agentName>/.mcp.json — the file Claude Code actually
-// reads for project-level stdio MCP servers. Keys are
-// `mesh-channel-<type>-<idx>` so multiple channels of the same type coexist.
+// WriteClaudeSettings materializes the per-agent plugin under
+// ~/.mesh/agents/<agentName>/plugin/. Claude Code is spawned with
+// --plugin-dir pointing at that subdir, so the MCP servers register at
+// plugin scope (which is the scope where experimental.claude/channel is
+// honored). Crucially, no .mcp.json is written to the agent cwd —
+// project-scope and plugin-scope same-keyed servers conflict, with
+// project-scope winning and plugin-scope getting silently skipped.
 //
 // For discord channels it also writes a per-shim config file under
 // ~/.mesh/agents/<agentName>/channels/discord-<idx>.config.json so the shim
@@ -84,17 +87,23 @@ func writeDiscordShimConfig(agentName string, index int, cfg discordShimConfigFi
 // envSource is retained for interface compatibility but is no longer used to
 // hoist bot tokens — account credentials live in the layer-1 account dir and
 // are read by the gateway, never passed through settings.json.
-//
-// When channels is empty we still write an empty .mcp.json — simpler than
-// conditionally deleting, and claude tolerates it fine.
-//
-// Also writes a trust entry into ~/.mcp.json approval so Claude Code doesn't
-// prompt the user to approve the mesh-written .mcp.json on first launch.
 func WriteClaudeSettings(agentName string, channels []ChannelSpec, envSource map[string]string) error {
 	dir, err := agentWorkdir(agentName)
 	if err != nil {
 		return err
 	}
+	pluginDir := filepath.Join(dir, "plugin")
+	pluginManifestDir := filepath.Join(pluginDir, ".claude-plugin")
+	if err := os.MkdirAll(pluginManifestDir, 0o700); err != nil {
+		return fmt.Errorf("create plugin dir: %w", err)
+	}
+	// Migrate away from the legacy layout: pre-fix runs wrote .mcp.json and
+	// .claude-plugin/ at the agent root, which now collides with the plugin's
+	// own .mcp.json (claude registers both, plugin-scope gets skipped).
+	// Best-effort removal — ignore errors so an old layout can't block the
+	// new one.
+	_ = os.Remove(filepath.Join(dir, ".mcp.json"))
+	_ = os.RemoveAll(filepath.Join(dir, ".claude-plugin"))
 
 	exe, err := os.Executable()
 	if err != nil {
@@ -146,16 +155,14 @@ func WriteClaudeSettings(agentName string, channels []ChannelSpec, envSource map
 	if err != nil {
 		return err
 	}
-	path := filepath.Join(dir, ".mcp.json")
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	// .mcp.json lives inside the plugin dir — NOT the agent cwd — so claude
+	// only registers the discord MCP server once (at plugin scope).
+	mcpPath := filepath.Join(pluginDir, ".mcp.json")
+	if err := os.WriteFile(mcpPath, data, 0o600); err != nil {
 		return err
 	}
 
-	// Plugin scaffold: write the per-agent plugin manifest and refresh the
-	// mesh marketplace so this agent is available as a plugin once the user
-	// registers the marketplace with `claude /plugin marketplace add
-	// ~/.mesh/marketplace`. Channel-capable agents only — empty-channel
-	// agents have nothing useful to expose as a plugin.
+	// Plugin scaffold: per-agent plugin manifest at <pluginDir>/.claude-plugin/plugin.json.
 	if len(channels) > 0 {
 		if err := writeAgentPluginManifest(agentName, channels); err != nil {
 			return fmt.Errorf("write plugin manifest: %w", err)
