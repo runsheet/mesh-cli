@@ -80,7 +80,7 @@ func validateChannelSpecs(specs []ChannelSpec) error {
 			return fmt.Errorf("channels[%d]: type is required", i)
 		}
 		if !channelTypeRegistry[c.Type] {
-			return fmt.Errorf("channels[%d]: unknown type %q (known: echo, discord)", i, c.Type)
+			return fmt.Errorf("channels[%d]: unknown type %q (known: echo, discord, peers)", i, c.Type)
 		}
 		switch c.Type {
 		case "discord":

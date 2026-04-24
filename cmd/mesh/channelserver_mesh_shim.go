@@ -84,6 +84,10 @@ func (l *meshLastInbound) replyTarget() (string, string) {
 		if l.channelID != "" {
 			return l.source, "discord://channel/" + l.channelID
 		}
+	case "peers":
+		if l.channelID != "" {
+			return l.source, "peers://agent/" + l.channelID
+		}
 	}
 	return l.source, ""
 }
@@ -261,7 +265,11 @@ func runMeshShim(agentName string) error {
 					source = "unknown"
 				}
 				// Track last inbound for mesh_reply.
-				if env.ChannelID != "" {
+				if source == "peers" {
+					if env.PeerID != "" {
+						last.set(source, env.PeerID)
+					}
+				} else if env.ChannelID != "" {
 					last.set(source, env.ChannelID)
 				} else if env.RoutingKey != "" {
 					last.set(source, env.RoutingKey)
@@ -283,20 +291,34 @@ func runMeshShim(agentName string) error {
 				meta := map[string]any{
 					"source": source,
 				}
-				if env.ChannelID != "" {
-					meta["chat_id"] = env.ChannelID
-				}
-				if env.MessageID != "" {
-					meta["message_id"] = env.MessageID
-				}
-				if env.Sender != "" {
-					meta["user"] = env.Sender
-				}
-				if env.UserID != "" {
-					meta["user_id"] = env.UserID
-				}
-				if env.Timestamp != "" {
-					meta["ts"] = env.Timestamp
+				if source == "peers" {
+					// Peers inbound: omit chat_id/message_id; carry peer_id and
+					// optionally team.
+					if env.PeerID != "" {
+						meta["peer_id"] = env.PeerID
+					}
+					if env.Team != "" {
+						meta["team"] = env.Team
+					}
+					if env.Timestamp != "" {
+						meta["ts"] = env.Timestamp
+					}
+				} else {
+					if env.ChannelID != "" {
+						meta["chat_id"] = env.ChannelID
+					}
+					if env.MessageID != "" {
+						meta["message_id"] = env.MessageID
+					}
+					if env.Sender != "" {
+						meta["user"] = env.Sender
+					}
+					if env.UserID != "" {
+						meta["user_id"] = env.UserID
+					}
+					if env.Timestamp != "" {
+						meta["ts"] = env.Timestamp
+					}
 				}
 				params, _ := json.Marshal(map[string]any{
 					"content": env.Content,
@@ -403,6 +425,10 @@ func handleMeshShimMCP(
 			return handleMeshSend(ctx, msg.ID, params.Arguments, routerWr, metrics, logf, write)
 		case "mesh_reply":
 			return handleMeshReply(ctx, msg.ID, params.Arguments, routerWr, metrics, last, logf, write)
+		case "mesh_list_peers":
+			return handleMeshListPeers(msg.ID, params.Arguments, write)
+		case "mesh_set_summary":
+			return handleMeshSetSummary(msg.ID, params.Arguments, agentName, write, logf)
 		default:
 			return write(jsonrpcMessage{
 				ID:    msg.ID,
@@ -454,12 +480,12 @@ func handleMeshSend(
 	}
 
 	switch platform {
-	case "discord":
+	case "discord", "peers":
 		// valid
 	default:
 		return write(jsonrpcMessage{
 			ID:    id,
-			Error: &jsonrpcError{Code: -32602, Message: "mesh_send: unknown scheme " + platform + " (supported: discord://)"},
+			Error: &jsonrpcError{Code: -32602, Message: "mesh_send: unknown scheme " + platform + " (supported: discord://, peers://)"},
 		})
 	}
 
@@ -522,6 +548,71 @@ func handleMeshReply(
 	return handleMeshSend(ctx, id, map[string]any{"target": target, "content": content}, routerWr, metrics, logf, write)
 }
 
+// handleMeshListPeers handles the mesh_list_peers(team?) tool call. Queries
+// the in-daemon peers broker directly (in-process).
+func handleMeshListPeers(
+	id json.RawMessage,
+	args map[string]any,
+	write func(jsonrpcMessage) error,
+) error {
+	team, _ := args["team"].(string)
+	peers := globalPeersBroker.ListPeers(team)
+
+	items := make([]map[string]any, 0, len(peers))
+	for _, p := range peers {
+		item := map[string]any{
+			"peer_id":      p.PeerID,
+			"node_id":      p.NodeID,
+			"teams":        p.Teams,
+			"last_seen_at": p.LastSeenAt.UTC().Format(time.RFC3339),
+		}
+		if p.Summary != "" {
+			item["summary"] = p.Summary
+		}
+		items = append(items, item)
+	}
+
+	data, _ := json.Marshal(items)
+	return write(jsonrpcMessage{ID: id, Result: map[string]any{
+		"content": []map[string]any{{
+			"type": "text",
+			"text": string(data),
+		}},
+	}})
+}
+
+// handleMeshSetSummary handles the mesh_set_summary(summary) tool call. Updates
+// the calling agent's summary in the peers broker.
+func handleMeshSetSummary(
+	id json.RawMessage,
+	args map[string]any,
+	agentName string,
+	write func(jsonrpcMessage) error,
+	logf func(string, ...any),
+) error {
+	summary, _ := args["summary"].(string)
+	if summary == "" {
+		return write(jsonrpcMessage{
+			ID:    id,
+			Error: &jsonrpcError{Code: -32602, Message: "mesh_set_summary: summary is required"},
+		})
+	}
+	ok := globalPeersBroker.SetSummary(agentName, summary)
+	if !ok {
+		return write(jsonrpcMessage{
+			ID:    id,
+			Error: &jsonrpcError{Code: -32000, Message: "mesh_set_summary: agent not registered with peers broker (add a peers channel to your template)"},
+		})
+	}
+	logf("mesh_set_summary agent=%s len=%d", agentName, len(summary))
+	return write(jsonrpcMessage{ID: id, Result: map[string]any{
+		"content": []map[string]any{{
+			"type": "text",
+			"text": "summary updated",
+		}},
+	}})
+}
+
 // buildMeshShimTools returns the tools/list payload for the mesh shim.
 func buildMeshShimTools() []map[string]any {
 	return []map[string]any{
@@ -529,14 +620,16 @@ func buildMeshShimTools() []map[string]any {
 			"name": "mesh_send",
 			"description": "Send a message to a channel. target is a URL-shape string: " +
 				"discord://channel/<channelId> to send to a Discord channel, " +
-				"discord://dm/<userId> to open or reuse a DM with a user. " +
-				"More schemes (whatsapp://, peers://) will be added in future slices.",
+				"discord://dm/<userId> to open or reuse a DM with a user, " +
+				"peers://agent/<name> to send to a specific peer agent, " +
+				"peers://team/<name> to broadcast to all members of a team (excluding self), " +
+				"peers://broadcast to reach all reachable peers (excluding self).",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"target": map[string]any{
 						"type":        "string",
-						"description": "URL-shape destination, e.g. discord://channel/1234567890",
+						"description": "URL-shape destination, e.g. discord://channel/1234567890 or peers://agent/nova",
 					},
 					"content": map[string]any{
 						"type":        "string",
@@ -558,6 +651,33 @@ func buildMeshShimTools() []map[string]any {
 					},
 				},
 				"required": []string{"content"},
+			},
+		},
+		{
+			"name":        "mesh_list_peers",
+			"description": "List reachable peers registered with this daemon. Optional filter by team.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"team": map[string]any{
+						"type":        "string",
+						"description": "Filter by team name. Omit to list all peers.",
+					},
+				},
+			},
+		},
+		{
+			"name":        "mesh_set_summary",
+			"description": "Publish a short self-description visible to other peers via mesh_list_peers.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"summary": map[string]any{
+						"type":        "string",
+						"description": "Short description of this agent's current focus or capabilities.",
+					},
+				},
+				"required": []string{"summary"},
 			},
 		},
 	}
