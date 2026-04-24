@@ -77,6 +77,8 @@ func StartLocalSocket(ctx context.Context, registry *SessionRegistry, chanMgr *C
 	mux.HandleFunc("/discord/unpair", srv.handleDiscordUnpair)
 	mux.HandleFunc("/discord/list-channels", srv.handleDiscordListChannels)
 	mux.HandleFunc("/discord/status", srv.handleDiscordStatus)
+	mux.HandleFunc("/peers/list", srv.handlePeersList)
+	mux.HandleFunc("/peers/set-summary", srv.handlePeersSetSummary)
 
 	httpSrv := &http.Server{
 		Handler:      mux,
@@ -1458,3 +1460,73 @@ func discordGatewayLive(account string) bool {
 	return true
 }
 
+// -- peers daemon handlers --
+
+// peersListResponse is the shape returned by GET /peers/list.
+type peersListResponse struct {
+	Peers []peerListItem `json:"peers"`
+}
+
+type peerListItem struct {
+	PeerID     string   `json:"peer_id"`
+	NodeID     string   `json:"node_id"`
+	Teams      []string `json:"teams"`
+	Summary    string   `json:"summary,omitempty"`
+	LastSeenAt string   `json:"last_seen_at"`
+}
+
+// handlePeersList handles GET /peers/list[?team=<name>].
+func (s *localServer) handlePeersList(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	team := strings.TrimSpace(r.URL.Query().Get("team"))
+	peers := globalPeersBroker.ListPeers(team)
+
+	items := make([]peerListItem, 0, len(peers))
+	for _, p := range peers {
+		teams := p.Teams
+		if teams == nil {
+			teams = []string{}
+		}
+		items = append(items, peerListItem{
+			PeerID:     p.PeerID,
+			NodeID:     p.NodeID,
+			Teams:      teams,
+			Summary:    p.Summary,
+			LastSeenAt: p.LastSeenAt.UTC().Format(time.RFC3339),
+		})
+	}
+	writeJSON(w, http.StatusOK, peersListResponse{Peers: items})
+}
+
+// handlePeersSetSummary handles POST /peers/set-summary.
+func (s *localServer) handlePeersSetSummary(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		PeerID  string `json:"peer_id"`
+		Summary string `json:"summary"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid JSON: %v", err))
+		return
+	}
+	if req.PeerID == "" {
+		writeError(w, http.StatusBadRequest, "peer_id is required")
+		return
+	}
+	if req.Summary == "" {
+		writeError(w, http.StatusBadRequest, "summary is required")
+		return
+	}
+	ok := globalPeersBroker.SetSummary(req.PeerID, req.Summary)
+	if !ok {
+		writeError(w, http.StatusNotFound, fmt.Sprintf("peer %q not registered", req.PeerID))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "peer_id": req.PeerID})
+}
