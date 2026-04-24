@@ -132,7 +132,26 @@ func WriteClaudeSettings(agentName string, channels []ChannelSpec, envSource map
 		return err
 	}
 	path := filepath.Join(dir, ".mcp.json")
-	return os.WriteFile(path, data, 0o600)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return err
+	}
+
+	// Plugin scaffold: write the per-agent plugin manifest and refresh the
+	// mesh marketplace so this agent is available as a plugin once the user
+	// registers the marketplace with `claude /plugin marketplace add
+	// ~/.mesh/marketplace`. Channel-capable agents only — empty-channel
+	// agents have nothing useful to expose as a plugin.
+	if len(channels) > 0 {
+		if err := writeAgentPluginManifest(agentName, channels); err != nil {
+			return fmt.Errorf("write plugin manifest: %w", err)
+		}
+	}
+	if err := SyncMeshMarketplace(); err != nil {
+		// Marketplace is a convenience surface — failing here shouldn't break
+		// agent start. Log and continue.
+		fmt.Printf("mesh: marketplace sync failed: %v\n", err)
+	}
+	return nil
 }
 
 // discordMCPArgs writes the per-shim config file and returns the slim
