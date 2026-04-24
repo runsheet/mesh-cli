@@ -313,7 +313,39 @@ func (r *SessionRegistry) StartWithOptions(opts StartOptions) (*PtySession, bool
 	go r.readLoop(s)
 	go r.waitLoop(s)
 
+	// Auto-accept the "Loading development channels" prompt when we passed
+	// --dangerously-load-development-channels. Claude Code re-prompts every
+	// spawn (no persistent consent surface), and we own the PTY, so we can
+	// write Enter when we detect the prompt text in the scrollback.
+	hasDevChannels := false
+	for _, a := range args {
+		if a == "--dangerously-load-development-channels" {
+			hasDevChannels = true
+			break
+		}
+	}
+	if hasDevChannels {
+		go r.autoAcceptDevChannelsPrompt(s)
+	}
+
 	return s, true, nil
+}
+
+// autoAcceptDevChannelsPrompt watches the PTY scrollback for the "Loading
+// development channels" prompt and writes Enter (accepts option 1, which is
+// already highlighted by default). Polls every 100ms for up to 10 seconds;
+// exits when the prompt is accepted or the window expires.
+func (r *SessionRegistry) autoAcceptDevChannelsPrompt(s *PtySession) {
+	const marker = "Loading development channels"
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		snap, _ := s.buffer.Snapshot()
+		if bytes.Contains(snap, []byte(marker)) {
+			_, _ = s.PTY.Write([]byte("\r"))
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 func (r *SessionRegistry) readLoop(s *PtySession) {
