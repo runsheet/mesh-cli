@@ -41,6 +41,7 @@ type agentRouter struct {
 	shimConn net.Conn      // single connected shim (nil if none)
 	shimWr   *ipcWriter
 	gwConns  map[string]*routerGWConn // key: "platform:account"
+	brokerCh chan ipcEnvelope          // non-nil when registered with peersBroker
 }
 
 type routerGWConn struct {
@@ -208,7 +209,13 @@ func (r *agentRouter) serveShim(ctx context.Context, conn net.Conn, logf func(st
 			gw.conn.Close()
 		}
 		r.gwConns = map[string]*routerGWConn{}
+		hadBroker := r.brokerCh != nil
+		r.brokerCh = nil
 		r.mu.Unlock()
+
+		if hadBroker {
+			globalPeersBroker.Unregister(r.agentName)
+		}
 	}()
 
 	rd := newIPCReader(conn)
@@ -247,11 +254,15 @@ func (r *agentRouter) serveShim(ctx context.Context, conn net.Conn, logf func(st
 func (r *agentRouter) handleShimSubscribe(ctx context.Context, env ipcEnvelope, logf func(string, ...any)) {
 	logf("subscribe from shim agent=%s", r.agentName)
 
-	// Propagate subscriptions to each discord gateway referenced by the agent.
+	// Propagate subscriptions to each backend referenced by the agent.
 	for _, ch := range r.channels {
 		switch ch.Type {
 		case "discord":
 			r.subscribeDiscordGateway(ctx, ch, env, logf)
+		case "whatsapp":
+			r.subscribeWhatsappGateway(ctx, ch, logf)
+		case "peers":
+			r.subscribePeers(ctx, ch, logf)
 		}
 	}
 
@@ -433,6 +444,10 @@ func (r *agentRouter) handleShimSend(env ipcEnvelope, logf func(string, ...any))
 	switch platform {
 	case "discord":
 		r.routeDiscordSend(env, subtype, id, logf)
+	case "whatsapp":
+		r.routeWhatsappSend(env, subtype, id, logf)
+	case "peers":
+		r.routePeersSend(env, subtype, id, logf)
 	default:
 		msg := "unknown target scheme: " + platform
 		logf(msg)
@@ -484,6 +499,200 @@ func (r *agentRouter) routeDiscordSend(env ipcEnvelope, subtype, id string, logf
 	logf("routed send to discord account=%s channelId=%s len=%d", gwc.account, channelID, len(env.Content))
 }
 
+// subscribeWhatsappGateway connects this router to the whatsapp gateway for
+// the account referenced by the channel config, sends a subscribe envelope
+// keyed by chatJid, and starts pumping inbound messages to the shim.
+func (r *agentRouter) subscribeWhatsappGateway(ctx context.Context, ch ChannelSpec, logf func(string, ...any)) {
+	wcc := parseWhatsappChannelConfig(ch.Config)
+	if wcc.Account == "" {
+		logf("whatsapp channel missing account")
+		return
+	}
+	gwKey := gatewayKey("whatsapp", wcc.Account)
+
+	r.mu.Lock()
+	_, already := r.gwConns[gwKey]
+	r.mu.Unlock()
+	if already {
+		return
+	}
+
+	sockPath, err := WhatsappGatewaySockPath(wcc.Account)
+	if err != nil {
+		logf("whatsapp gateway sock path: %v", err)
+		return
+	}
+
+	var (
+		gwConn net.Conn
+		gwRd   *ipcReader
+		gwWr   *ipcWriter
+	)
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		gwConn, gwRd, gwWr, err = dialGateway(sockPath)
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			logf("whatsapp gateway dial deadline: %v", err)
+			return
+		}
+		logf("whatsapp gateway dial retry: %v", err)
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	subEnv := ipcSubscribeChannelEnv(r.agentName, 0, wcc.ChatJID, "", nil, nil, false)
+	if err := gwWr.Write(subEnv); err != nil {
+		gwConn.Close()
+		logf("whatsapp gateway subscribe write: %v", err)
+		return
+	}
+	ack, err := gwRd.Read()
+	if err != nil {
+		gwConn.Close()
+		logf("whatsapp gateway ack read: %v", err)
+		return
+	}
+	if ack.Type == "error" {
+		gwConn.Close()
+		logf("whatsapp gateway subscribe error: %s: %s", ack.Reason, ack.Detail)
+		return
+	}
+	if ack.Type != "subscribe-ack" {
+		gwConn.Close()
+		logf("whatsapp gateway unexpected ack type: %s", ack.Type)
+		return
+	}
+
+	gwc := &routerGWConn{
+		platform: "whatsapp",
+		account:  wcc.Account,
+		conn:     gwConn,
+		rd:       gwRd,
+		wr:       gwWr,
+	}
+	r.mu.Lock()
+	r.gwConns[gwKey] = gwc
+	r.mu.Unlock()
+
+	logf("subscribed whatsapp gateway account=%s jid=%s", wcc.Account, wcc.ChatJID)
+	go r.pumpGateway(ctx, gwc, logf)
+}
+
+// routeWhatsappSend routes an outbound send to the whatsapp gateway.
+// subtype must be "chat"; id is the full JID.
+func (r *agentRouter) routeWhatsappSend(env ipcEnvelope, subtype, id string, logf func(string, ...any)) {
+	if subtype != "chat" {
+		msg := "whatsapp://: unsupported namespace " + subtype + " (only chat/<jid> is supported)"
+		logf(msg)
+		r.sendShimError("bad-target", msg)
+		return
+	}
+	if !isValidWhatsappJID(id) {
+		msg := "whatsapp://chat/: invalid JID " + id
+		logf(msg)
+		r.sendShimError("bad-target", msg)
+		return
+	}
+
+	r.mu.Lock()
+	var gwc *routerGWConn
+	for _, gw := range r.gwConns {
+		if gw.platform == "whatsapp" {
+			gwc = gw
+			break
+		}
+	}
+	r.mu.Unlock()
+
+	if gwc == nil {
+		logf("no whatsapp gateway connection for send target=%s", env.Target)
+		r.sendShimError("no-gateway", "no whatsapp gateway connected")
+		return
+	}
+
+	sendEnv := ipcSendEnv(id, env.Content)
+	if err := gwc.wr.Write(sendEnv); err != nil {
+		logf("whatsapp gateway send write: %v", err)
+		r.sendShimError("send-failed", err.Error())
+		return
+	}
+	logf("routed send to whatsapp account=%s jid=%s len=%d", gwc.account, id, len(env.Content))
+}
+
+// subscribePeers registers this agent with the global peers broker and starts
+// a goroutine (pumpBroker) that forwards broker deliveries to the shim.
+func (r *agentRouter) subscribePeers(ctx context.Context, ch ChannelSpec, logf func(string, ...any)) {
+	pcc := parsePeersChannelConfig(ch.Config)
+
+	deliverCh := make(chan ipcEnvelope, 64)
+	reg := peerRegistration{
+		PeerID: r.agentName,
+		NodeID: "local",
+		Teams:  pcc.Teams,
+	}
+	globalPeersBroker.Register(reg, deliverCh)
+
+	r.mu.Lock()
+	r.brokerCh = deliverCh
+	r.mu.Unlock()
+
+	logf("registered with peers broker agent=%s teams=%v", r.agentName, pcc.Teams)
+	go r.pumpBroker(ctx, deliverCh, logf)
+}
+
+// pumpBroker reads inbound envelopes from the broker delivery channel and
+// forwards them to the shim.
+func (r *agentRouter) pumpBroker(ctx context.Context, deliverCh chan ipcEnvelope, logf func(string, ...any)) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case env, ok := <-deliverCh:
+			if !ok {
+				// Channel closed — broker unregistered us (shim disconnect or re-register).
+				return
+			}
+			r.mu.Lock()
+			wr := r.shimWr
+			r.mu.Unlock()
+			if wr == nil {
+				return
+			}
+			if err := wr.Write(env); err != nil {
+				logf("peers broker shim write err: %v", err)
+				return
+			}
+		}
+	}
+}
+
+// routePeersSend routes an outbound send from the shim to the peers broker.
+// subtype is "agent", "team", or "broadcast"; id is the name or empty for broadcast.
+func (r *agentRouter) routePeersSend(env ipcEnvelope, subtype, id string, logf func(string, ...any)) {
+	switch subtype {
+	case "agent":
+		if !globalPeersBroker.SendDirect(id, r.agentName, env.Content) {
+			msg := "peers agent not registered: " + id
+			logf(msg)
+			r.sendShimError("peer-not-found", msg)
+		} else {
+			logf("peers send direct from=%s to=%s len=%d", r.agentName, id, len(env.Content))
+		}
+	case "team":
+		n := globalPeersBroker.SendTeam(id, r.agentName, env.Content)
+		logf("peers send team=%s from=%s reached=%d len=%d", id, r.agentName, n, len(env.Content))
+	case "broadcast":
+		n := globalPeersBroker.SendBroadcast(r.agentName, env.Content)
+		logf("peers broadcast from=%s reached=%d len=%d", r.agentName, n, len(env.Content))
+	default:
+		msg := "unknown peers subtype: " + subtype + " (expected agent, team, or broadcast)"
+		logf(msg)
+		r.sendShimError("bad-target", msg)
+	}
+}
+
 // openDiscordDM asks the discord gateway to open (or reuse) a DM channel with
 // the given userID and returns the resulting channelID. We send a synthetic
 // "dm-open" envelope; the gateway responds with a "dm-open-ack" carrying the
@@ -533,24 +742,29 @@ func (r *agentRouter) sendShimError(reason, detail string) {
 // parseTargetURL parses a URL-shape target string into (platform, subtype, id).
 // Returns a non-empty error string on failure.
 //
-// Supported forms (slice 1):
+// Supported forms:
 //
 //	discord://channel/<channelId>
 //	discord://dm/<userId>
+//	peers://agent/<name>          (machine scope; name is bare agent name)
+//	peers://team/<name>           (team fanout)
+//	peers://broadcast             (every reachable peer, no id segment)
+//	peers://agent/<node>/<name>   rejected — cross-node not supported in slice 3
 func parseTargetURL(target string) (platform, subtype, id, errMsg string) {
 	// Minimal URL parse without importing net/url to keep things simple.
-	// Format: <scheme>://<subtype>/<id>
-	var rest string
-	for _, sep := range []string{"://"} {
-		if idx := indexOf(target, sep); idx >= 0 {
-			platform = target[:idx]
-			rest = target[idx+len(sep):]
-			break
-		}
-	}
-	if platform == "" {
+	// Format: <scheme>://<subtype>[/<id>]
+	sepIdx := indexOf(target, "://")
+	if sepIdx < 0 {
 		return "", "", "", "target missing scheme (expected scheme://subtype/id)"
 	}
+	platform = target[:sepIdx]
+	rest := target[sepIdx+3:]
+
+	// peers://broadcast has no id segment.
+	if platform == "peers" && rest == "broadcast" {
+		return platform, "broadcast", "", ""
+	}
+
 	slashIdx := indexOf(rest, "/")
 	if slashIdx < 0 {
 		return "", "", "", "target missing subtype (expected scheme://subtype/id)"
@@ -560,6 +774,12 @@ func parseTargetURL(target string) (platform, subtype, id, errMsg string) {
 	if id == "" {
 		return "", "", "", "target missing id (expected scheme://subtype/id)"
 	}
+
+	// Reject cross-node peers addresses (two or more slashes after the subtype).
+	if platform == "peers" && subtype == "agent" && indexOf(id, "/") >= 0 {
+		return "", "", "", "cross-node peers not supported in scope=machine — use slice 4 (peers://agent/<node>/<name> form rejected)"
+	}
+
 	return platform, subtype, id, ""
 }
 

@@ -18,9 +18,10 @@ type ChannelSpec struct {
 // in-tree avoids an init-time registration dance and makes the allowed set
 // grep-able.
 var channelTypeRegistry = map[string]bool{
-	"echo":    true,
-	"discord": true,
-	"peers":   true,
+	"echo":     true,
+	"discord":  true,
+	"whatsapp": true,
+	"peers":    true,
 }
 
 // peersChannelConfig is the structured representation of a peers channel
@@ -64,6 +65,13 @@ type discordChannelConfig struct {
 	ChannelOverrides []discordChannelOverride // guild mode only
 }
 
+// whatsappChannelConfig is the structured representation of a whatsapp channel
+// config block after parsing from the opaque map.
+type whatsappChannelConfig struct {
+	Account string
+	ChatJID string
+}
+
 // validateChannelSpecs checks that each channel in the slice has a known type
 // and a populated per-type config. Returns the first error encountered so the
 // user fixes them one at a time. Called at template-parse time.
@@ -80,12 +88,16 @@ func validateChannelSpecs(specs []ChannelSpec) error {
 			return fmt.Errorf("channels[%d]: type is required", i)
 		}
 		if !channelTypeRegistry[c.Type] {
-			return fmt.Errorf("channels[%d]: unknown type %q (known: echo, discord)", i, c.Type)
+			return fmt.Errorf("channels[%d]: unknown type %q (known: echo, discord, whatsapp, peers)", i, c.Type)
 		}
 		switch c.Type {
 		case "discord":
 			if err := validateDiscordConfig(c.Config, i, claimedChannelIDs); err != nil {
 				return fmt.Errorf("channels[%d] (discord): %w", i, err)
+			}
+		case "whatsapp":
+			if err := validateWhatsappConfig(c.Config, i); err != nil {
+				return fmt.Errorf("channels[%d] (whatsapp): %w", i, err)
 			}
 		case "peers":
 			if err := validatePeersConfig(c.Config, i); err != nil {
@@ -94,6 +106,53 @@ func validateChannelSpecs(specs []ChannelSpec) error {
 		}
 	}
 	return nil
+}
+
+// validateWhatsappConfig enforces the config shape rules from spec 14 §4.
+// Required: account (name of a paired whatsapp account) and chatJid.
+// JID must match ^\d+@(s\.whatsapp\.net|g\.us)$.
+func validateWhatsappConfig(cfg map[string]any, idx int) error {
+	acc, _ := cfg["account"].(string)
+	if acc == "" {
+		return fmt.Errorf("config.account is required (reference a paired whatsapp account by name)")
+	}
+	jid, _ := cfg["chatJid"].(string)
+	if jid == "" {
+		return fmt.Errorf("config.chatJid is required (JID of the chat, e.g. 123456789@s.whatsapp.net)")
+	}
+	if !isValidWhatsappJID(jid) {
+		return fmt.Errorf("config.chatJid %q is not a valid WhatsApp JID (expected <digits>@s.whatsapp.net or <digits>@g.us)", jid)
+	}
+	return nil
+}
+
+// isValidWhatsappJID returns true if jid matches the pattern used for DM and
+// group JIDs. Format: ^\d+@(s\.whatsapp\.net|g\.us)$
+func isValidWhatsappJID(jid string) bool {
+	at := indexOf(jid, "@")
+	if at < 1 {
+		return false
+	}
+	user := jid[:at]
+	domain := jid[at+1:]
+	if domain != "s.whatsapp.net" && domain != "g.us" {
+		return false
+	}
+	for _, c := range user {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return len(user) > 0
+}
+
+// parseWhatsappChannelConfig builds a whatsappChannelConfig from the opaque
+// config map stored in ChannelSpec.Config.
+func parseWhatsappChannelConfig(cfg map[string]any) whatsappChannelConfig {
+	return whatsappChannelConfig{
+		Account: stringFromMap(cfg, "account"),
+		ChatJID: stringFromMap(cfg, "chatJid"),
+	}
 }
 
 // validatePeersConfig enforces the config shape rules from spec 15 §6.
