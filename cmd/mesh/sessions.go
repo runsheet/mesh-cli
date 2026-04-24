@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -234,6 +235,15 @@ func (r *SessionRegistry) StartWithOptions(opts StartOptions) (*PtySession, bool
 	}
 	if opts.DangerouslySkipPermissions {
 		args = append(args, "--dangerously-skip-permissions")
+	}
+	// If the agent dir is itself a plugin (has .claude-plugin/plugin.json,
+	// written by WriteClaudeSettings when channels exist), load it via
+	// --plugin-dir so Claude Code activates the channel capability without
+	// requiring a manual /plugin install.
+	if dir, err := agentWorkdir(opts.AgentID); err == nil {
+		if _, statErr := os.Stat(filepath.Join(dir, ".claude-plugin", "plugin.json")); statErr == nil {
+			args = append(args, "--plugin-dir", dir)
+		}
 	}
 	cmd := exec.Command("claude", args...)
 	// Claude always runs in the per-agent workdir (~/.mesh/agents/<name>/) so
