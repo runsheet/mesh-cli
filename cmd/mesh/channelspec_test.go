@@ -194,6 +194,44 @@ func TestValidateChannelSpecsGuildOverrideDuplicateWithinAgent(t *testing.T) {
 	}
 }
 
+// -- whatsapp validator tests --
+
+// TestValidateWhatsappConfig covers valid JID formats and required-field errors.
+func TestValidateWhatsappConfig(t *testing.T) {
+	valid := []map[string]any{
+		{"account": "personal", "chatJid": "15551234567@s.whatsapp.net"},
+		{"account": "work", "chatJid": "120363000000000001@g.us"},
+	}
+	for _, cfg := range valid {
+		specs := []ChannelSpec{{Type: "whatsapp", Config: cfg}}
+		if err := validateChannelSpecs(specs); err != nil {
+			t.Errorf("expected valid, got error: %v (cfg=%v)", err, cfg)
+		}
+	}
+
+	cases := []struct {
+		cfg     map[string]any
+		wantErr string
+	}{
+		{map[string]any{"chatJid": "123@s.whatsapp.net"}, "account is required"},
+		{map[string]any{"account": "a"}, "chatJid is required"},
+		{map[string]any{"account": "a", "chatJid": "123@invalid.domain"}, "not a valid WhatsApp JID"},
+		{map[string]any{"account": "a", "chatJid": "abc@s.whatsapp.net"}, "not a valid WhatsApp JID"},
+		{map[string]any{"account": "a", "chatJid": "@s.whatsapp.net"}, "not a valid WhatsApp JID"},
+	}
+	for _, tc := range cases {
+		specs := []ChannelSpec{{Type: "whatsapp", Config: tc.cfg}}
+		err := validateChannelSpecs(specs)
+		if err == nil {
+			t.Errorf("expected error containing %q for cfg %v, got nil", tc.wantErr, tc.cfg)
+			continue
+		}
+		if !strings.Contains(err.Error(), tc.wantErr) {
+			t.Errorf("error %q does not contain %q (cfg=%v)", err.Error(), tc.wantErr, tc.cfg)
+		}
+	}
+}
+
 // TestValidateChannelSpecsOverrideMissingChannelID verifies that override
 // entries without channelId are rejected.
 func TestValidateChannelSpecsOverrideMissingChannelID(t *testing.T) {
