@@ -16,6 +16,26 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// Tracks the timestamp of the most recent frame received from claude on
+// stdin. Used by the watchdog goroutine to detect when claude ignores a
+// notifications/claude/channel rather than silently assuming it worked.
+var (
+	lastRecvMu sync.Mutex
+	lastRecv   time.Time
+)
+
+func setLastRecvAt(t time.Time) {
+	lastRecvMu.Lock()
+	lastRecv = t
+	lastRecvMu.Unlock()
+}
+
+func lastRecvAt() time.Time {
+	lastRecvMu.Lock()
+	defer lastRecvMu.Unlock()
+	return lastRecv
+}
+
 var (
 	discordShimAgentFlag   string
 	discordShimIndexFlag   int
@@ -314,8 +334,21 @@ func runDiscordShim(agentName string, index int, account string) error {
 				if env.ChannelID != "" {
 					last.set(env.ChannelID)
 				}
-				logf("inbound routingKey=%s channelId=%s sender=%s content=%q",
-					env.RoutingKey, env.ChannelID, env.Sender, env.Content)
+				logf("INBOUND from=%s channelId=%s content=%q", env.Sender, env.ChannelID, env.Content)
+
+				// Arm a silence watchdog. If Claude doesn't emit any frame
+				// within 5 seconds of an inbound notification, that's strong
+				// evidence Claude is ignoring notifications/claude/channel
+				// (rather than processing it asynchronously). The shim tracks
+				// when Claude last spoke to us via writeMCP logging.
+				inboundAt := time.Now()
+				lastRecvSnapshot := lastRecvAt()
+				go func() {
+					time.Sleep(5 * time.Second)
+					if lastRecvAt().Equal(lastRecvSnapshot) || lastRecvAt().Before(inboundAt) {
+						logf("WATCHDOG: no claude activity 5s after inbound — claude may be ignoring notifications/claude/channel")
+					}
+				}()
 				// notifications/claude/channel is a Claude Code extension that
 				// injects the message as a user turn (standard MCP
 				// notifications/message is log-only and gets ignored). Matches
@@ -357,6 +390,7 @@ func runDiscordShim(agentName string, index int, account string) error {
 		line, err := reader.ReadBytes('\n')
 		trimmed := bytesTrimSpace(line)
 		if len(trimmed) > 0 {
+			setLastRecvAt(time.Now())
 			logf("recv: %s", string(trimmed))
 			if herr := handleDiscordShimMCP(ctx, trimmed, agentName, index, cfg, toolName, gwWr, metrics, last, writeMCP, logf); herr != nil {
 				logf("handle err: %v", herr)
