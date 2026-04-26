@@ -81,7 +81,7 @@ func runWhatsappGateway(account string) error {
 		return fmt.Errorf("store path: %w", err)
 	}
 
-	container, err := sqlstore.New(context.Background(), "sqlite", "file:"+storePath+"?_foreign_keys=on", waLog.Noop)
+	container, err := sqlstore.New(context.Background(), "sqlite", "file:"+storePath+"?_pragma=foreign_keys(1)", waLog.Noop)
 	if err != nil {
 		return fmt.Errorf("open whatsapp store: %w", err)
 	}
