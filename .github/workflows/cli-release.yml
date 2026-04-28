@@ -54,7 +54,7 @@ jobs:
           CGO_ENABLED: 0
         run: |
           mkdir -p dist
-          go build -trimpath -ldflags="-s -w" -o dist/${{ matrix.asset_name }} ./cmd/mesh/
+          go build -trimpath -ldflags="-s -w -X projectmesh.io/mesh-cli/internal/version.Version=v0.2.${{ github.run_number }}" -o dist/${{ matrix.asset_name }} ./cmd/mesh/
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -84,8 +84,8 @@ jobs:
         with:
           repository: projectmesh-io/mesh
           token: ${{ secrets.RELEASE_TOKEN }}
-          tag_name: v0.1.${{ github.run_number }}
-          name: v0.1.${{ github.run_number }}
+          tag_name: v0.2.${{ github.run_number }}
+          name: v0.2.${{ github.run_number }}
           body: |
             Automated release from `mesh-cli` main.
 

@@ -11,6 +11,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"projectmesh.io/mesh-cli/internal/version"
 )
 
 // RunEchoChannelServer runs the echo MCP channel server on stdin/stdout.
@@ -116,7 +118,7 @@ func handleEchoMessage(raw []byte, write func(JSONRPCMessage) error, logf func(s
 			},
 			"serverInfo": map[string]any{
 				"name":    "mesh-channel-echo",
-				"version": "0.1.0",
+				"version": version.Version,
 			},
 		}
 		return write(JSONRPCMessage{ID: msg.ID, Result: result})

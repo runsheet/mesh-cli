@@ -14,6 +14,7 @@ import (
 
 	"projectmesh.io/mesh-cli/internal/channels"
 	"projectmesh.io/mesh-cli/internal/ipc"
+	"projectmesh.io/mesh-cli/internal/version"
 )
 
 // shimMetrics tracks per-shim counters for the status.json side-file.
@@ -359,7 +360,7 @@ func handleMeshShimMCP(
 			},
 			"serverInfo": map[string]any{
 				"name":    "mesh",
-				"version": "0.2.0",
+				"version": version.Version,
 			},
 			"instructions": "Messages from channels arrive as notifications/claude/channel with meta.source identifying the platform (e.g. \"discord\"). " +
 				"Use mesh_send(target, content) to send a message — target is a URL-shape string like \"discord://channel/<channelId>\" or \"discord://dm/<userId>\". " +
