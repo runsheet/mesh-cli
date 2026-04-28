@@ -1,0 +1,74 @@
+package commands
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"text/tabwriter"
+	"time"
+
+	"github.com/spf13/cobra"
+)
+
+var psAllFlag bool
+
+var psCmd = &cobra.Command{
+	Use:   "ps",
+	Short: "List local agents known to the daemon",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		lc, err := newLocalClient()
+		if err != nil {
+			return err
+		}
+		sessions, err := lc.listSessions(context.Background(), psAllFlag)
+		if err != nil {
+			return err
+		}
+		home, _ := os.UserHomeDir()
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "NAME\tDIR\tSTATUS\tUPTIME\tSESSION")
+		for _, s := range sessions {
+			uptime := "-"
+			if s.StartedAt != "" {
+				if t, err := time.Parse(time.RFC3339, s.StartedAt); err == nil {
+					uptime = shortDuration(time.Since(t))
+				}
+			}
+			sid := s.SessionID
+			if sid == "" {
+				sid = "-"
+			}
+			dir := filepath.Join(home, ".mesh", "agents", s.Name)
+			if home != "" && strings.HasPrefix(dir, home) {
+				dir = "~" + strings.TrimPrefix(dir, home)
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", s.Name, dir, s.Status, uptime, sid)
+		}
+		if err := w.Flush(); err != nil {
+			return err
+		}
+		if len(sessions) == 0 {
+			fmt.Println("No agents defined. Use `mesh run --template <path> --name <name>` to create one.")
+		}
+		return nil
+	},
+}
+
+func init() {
+	psCmd.Flags().BoolVarP(&psAllFlag, "all", "a", false, "Include stopped/archived agents")
+}
+
+func shortDuration(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	}
+	if d < 24*time.Hour {
+		return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
+	}
+	return fmt.Sprintf("%dd%dh", int(d.Hours())/24, int(d.Hours())%24)
+}

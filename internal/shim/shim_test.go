@@ -227,3 +227,21 @@ func TestHandleMeshSendValidImageAttachment(t *testing.T) {
 		t.Errorf("MIMEType: got %q want image/jpeg", env.Attachments[0].MIMEType)
 	}
 }
+
+func TestMeshLastInboundReplyTarget(t *testing.T) {
+	l := &MeshLastInbound{}
+
+	source, target := l.ReplyTarget()
+	if source != "" || target != "" {
+		t.Errorf("expected empty source+target before any inbound, got source=%q target=%q", source, target)
+	}
+
+	l.Set("discord", "123456789")
+	source, target = l.ReplyTarget()
+	if source != "discord" {
+		t.Errorf("source: got %q want discord", source)
+	}
+	if target != "discord://channel/123456789" {
+		t.Errorf("target: got %q want discord://channel/123456789", target)
+	}
+}
