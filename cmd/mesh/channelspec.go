@@ -1,6 +1,9 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // ChannelSpec is the opaque-config representation of a single channel binding
 // on an agent. Type selects the channel implementation; Config is a per-type
@@ -96,11 +99,11 @@ func validateChannelSpecs(specs []ChannelSpec) error {
 				return fmt.Errorf("channels[%d] (discord): %w", i, err)
 			}
 		case "whatsapp":
-			if err := validateWhatsappConfig(c.Config, i); err != nil {
+			if err := validateWhatsappConfig(c.Config); err != nil {
 				return fmt.Errorf("channels[%d] (whatsapp): %w", i, err)
 			}
 		case "peers":
-			if err := validatePeersConfig(c.Config, i); err != nil {
+			if err := validatePeersConfig(c.Config); err != nil {
 				return fmt.Errorf("channels[%d] (peers): %w", i, err)
 			}
 		}
@@ -111,7 +114,7 @@ func validateChannelSpecs(specs []ChannelSpec) error {
 // validateWhatsappConfig enforces the config shape rules from spec 14 §4.
 // Required: account (name of a paired whatsapp account) and chatJid.
 // JID must match ^\d+@(s\.whatsapp\.net|g\.us)$.
-func validateWhatsappConfig(cfg map[string]any, idx int) error {
+func validateWhatsappConfig(cfg map[string]any) error {
 	acc, _ := cfg["account"].(string)
 	if acc == "" {
 		return fmt.Errorf("config.account is required (reference a paired whatsapp account by name)")
@@ -129,7 +132,7 @@ func validateWhatsappConfig(cfg map[string]any, idx int) error {
 // isValidWhatsappJID returns true if jid matches the pattern used for DM and
 // group JIDs. Format: ^\d+@(s\.whatsapp\.net|g\.us)$
 func isValidWhatsappJID(jid string) bool {
-	at := indexOf(jid, "@")
+	at := strings.Index(jid, "@")
 	if at < 1 {
 		return false
 	}
@@ -157,7 +160,7 @@ func parseWhatsappChannelConfig(cfg map[string]any) whatsappChannelConfig {
 
 // validatePeersConfig enforces the config shape rules from spec 15 §6.
 // Only scope=machine is accepted in slice 3; other scope values are reserved.
-func validatePeersConfig(cfg map[string]any, idx int) error {
+func validatePeersConfig(cfg map[string]any) error {
 	scope, _ := cfg["scope"].(string)
 	if scope == "" {
 		scope = "machine"

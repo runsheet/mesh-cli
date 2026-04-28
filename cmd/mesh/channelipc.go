@@ -77,6 +77,20 @@ type ipcEnvelope struct {
 	// error fields (gateway → shim)
 	Reason string `json:"reason,omitempty"`
 	Detail string `json:"detail,omitempty"`
+
+	// Attachments carries downloaded media files attached to an inbound message.
+	// Path is empty and FailReason is set on download failure. omitempty keeps
+	// text-only envelopes wire-identical to pre-v1-media envelopes (no version bump).
+	Attachments []ipcAttachment `json:"attachments,omitempty"`
+}
+
+// ipcAttachment describes a single downloaded media file attached to an
+// inbound message. Path is empty and FailReason is set on download failure.
+type ipcAttachment struct {
+	Type       string `json:"type"`                 // "image" (v1); future: "audio","video","document"
+	Path       string `json:"path,omitempty"`       // absolute local path; empty on failure
+	MIMEType   string `json:"mimeType,omitempty"`   // MIME as reported by whatsmeow
+	FailReason string `json:"failReason,omitempty"` // non-empty on failure
 }
 
 // ipcWriter wraps a net.Conn and serialises ipcEnvelope values as
@@ -185,6 +199,20 @@ func ipcSendEnv(channelID, content string) ipcEnvelope {
 	return ipcEnvelope{V: ipcVersion, Type: "send", ChannelID: channelID, Content: content}
 }
 
+// ipcSendEnvWithAttachments builds a send envelope that carries media
+// attachments. attachments may be nil; omitempty keeps wire format
+// identical to ipcSendEnv for text-only sends.
+func ipcSendEnvWithAttachments(target, channelID, content string, attachments []ipcAttachment) ipcEnvelope {
+	return ipcEnvelope{
+		V:           ipcVersion,
+		Type:        "send",
+		Target:      target,
+		ChannelID:   channelID,
+		Content:     content,
+		Attachments: attachments,
+	}
+}
+
 // ipcUnsubscribeEnv builds the unsubscribe envelope.
 func ipcUnsubscribeEnv(routingKey string) ipcEnvelope {
 	return ipcEnvelope{V: ipcVersion, Type: "unsubscribe", RoutingKey: routingKey}
@@ -196,19 +224,22 @@ func ipcAckEnv(routingKey string) ipcEnvelope {
 }
 
 // ipcInboundEnvFull builds the inbound envelope with all metadata fields
-// populated. Used by the discord gateway so the shim can emit Claude Code's
-// `notifications/claude/channel` with a proper meta block.
-func ipcInboundEnvFull(routingKey, channelID, sender, messageID, userID, timestamp, content string) ipcEnvelope {
+// populated. Used by the discord and whatsapp gateways so the shim can emit
+// Claude Code's `notifications/claude/channel` with a proper meta block.
+// attachments may be nil for text-only messages; omitempty keeps the wire
+// format unchanged for existing text-only senders.
+func ipcInboundEnvFull(routingKey, channelID, sender, messageID, userID, timestamp, content string, attachments []ipcAttachment) ipcEnvelope {
 	return ipcEnvelope{
-		V:          ipcVersion,
-		Type:       "inbound",
-		RoutingKey: routingKey,
-		ChannelID:  channelID,
-		Sender:     sender,
-		MessageID:  messageID,
-		UserID:     userID,
-		Timestamp:  timestamp,
-		Content:    content,
+		V:           ipcVersion,
+		Type:        "inbound",
+		RoutingKey:  routingKey,
+		ChannelID:   channelID,
+		Sender:      sender,
+		MessageID:   messageID,
+		UserID:      userID,
+		Timestamp:   timestamp,
+		Content:     content,
+		Attachments: attachments,
 	}
 }
 
@@ -222,4 +253,62 @@ func ipcInboundEnv(routingKey, channelID, sender, content string) ipcEnvelope {
 // ipcErrorEnv builds an error envelope.
 func ipcErrorEnv(reason, detail string) ipcEnvelope {
 	return ipcEnvelope{V: ipcVersion, Type: "error", Reason: reason, Detail: detail}
+}
+
+// ipcListGroupsEnv builds the list-groups request sent by the CLI to the gateway.
+func ipcListGroupsEnv() ipcEnvelope {
+	return ipcEnvelope{V: ipcVersion, Type: "list-groups"}
+}
+
+// ipcListGroupsRespEnv builds the list-groups-resp the gateway sends back.
+// content is a JSON-encoded []whatsappGroupEntry.
+func ipcListGroupsRespEnv(content string) ipcEnvelope {
+	return ipcEnvelope{V: ipcVersion, Type: "list-groups-resp", Content: content}
+}
+
+// ipcJoinGroupEnv builds the join-group request. routingKey carries the raw
+// invite code (prefix already stripped by the CLI).
+func ipcJoinGroupEnv(code string) ipcEnvelope {
+	return ipcEnvelope{V: ipcVersion, Type: "join-group", RoutingKey: code}
+}
+
+// ipcJoinGroupRespEnv builds the join-group-resp the gateway sends back.
+// routingKey is the resulting group JID; content is the group subject.
+func ipcJoinGroupRespEnv(jid, subject string) ipcEnvelope {
+	return ipcEnvelope{V: ipcVersion, Type: "join-group-resp", RoutingKey: jid, Content: subject}
+}
+
+// peerEntryWire is the JSON shape for one peer in a peers-list-resp envelope.
+// Content on the envelope carries a JSON-encoded []peerEntryWire.
+type peerEntryWire struct {
+	PeerID     string   `json:"peer_id"`
+	NodeID     string   `json:"node_id"`
+	Teams      []string `json:"teams"`
+	LastSeenAt string   `json:"last_seen_at"` // RFC3339
+	Summary    string   `json:"summary,omitempty"`
+}
+
+// ipcPeersListEnv builds the peers-list request the shim sends to the router.
+// team is optional; empty string means "all peers".
+func ipcPeersListEnv(team string) ipcEnvelope {
+	return ipcEnvelope{V: ipcVersion, Type: "peers-list", RoutingKey: team}
+}
+
+// ipcPeersListRespEnv builds the peers-list-resp the router sends back.
+// content is a JSON-encoded []peerEntryWire.
+func ipcPeersListRespEnv(content string) ipcEnvelope {
+	return ipcEnvelope{V: ipcVersion, Type: "peers-list-resp", Content: content}
+}
+
+// ipcPeersSetSummaryEnv builds the peers-set-summary request.
+// content carries the summary string; the router identifies the agent from
+// the agentRouter that owns the connection.
+func ipcPeersSetSummaryEnv(summary string) ipcEnvelope {
+	return ipcEnvelope{V: ipcVersion, Type: "peers-set-summary", Content: summary}
+}
+
+// ipcPeersSetSummaryRespEnv builds the peers-set-summary-resp.
+// On success Reason is empty. On failure Reason carries the error string.
+func ipcPeersSetSummaryRespEnv(errReason string) ipcEnvelope {
+	return ipcEnvelope{V: ipcVersion, Type: "peers-set-summary-resp", Reason: errReason}
 }

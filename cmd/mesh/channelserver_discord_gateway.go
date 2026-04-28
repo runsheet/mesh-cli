@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"sort"
@@ -64,6 +65,7 @@ type shimConnOverride struct {
 // For guild-mode: routingKey == guildId; channelID is empty; overrides is set.
 type shimConn struct {
 	conn             net.Conn
+	writeMu          sync.Mutex // guards wr; concurrent attachment downloads write concurrently
 	wr               *ipcWriter
 	agent            string
 	index            int
@@ -231,6 +233,9 @@ func runDiscordGateway(account string) error {
 	}
 	logf("gateway.sock listening at %s", sockPath)
 
+	// Prune stale media files once at startup (lazy-prune; no background goroutine).
+	pruneDiscordMedia(account)
+
 	// Status publisher.
 	go func() {
 		ticker := time.NewTicker(10 * time.Second)
@@ -345,7 +350,15 @@ func (gw *discordGateway) handleShim(ctx context.Context, conn net.Conn, account
 				// old ipcSendEnv that still set RoutingKey).
 				targetChannelID = env.RoutingKey
 			}
-			ids, err := sendDiscordMessage(gw.session, targetChannelID, env.Content, nil, logf)
+			var (
+				ids []string
+				err error
+			)
+			if len(env.Attachments) > 0 {
+				ids, err = sendDiscordMessageWithAttachment(gw.session, targetChannelID, env.Content, env.Attachments[0], logf)
+			} else {
+				ids, err = sendDiscordMessage(gw.session, targetChannelID, env.Content, nil, logf)
+			}
 			// Outbound landed — clear typing indicator for that channel so
 			// we stop pulsing "bot is typing…" now that the real message
 			// is visible. Safe to call even on send error (typing auto-
@@ -601,14 +614,16 @@ func (gw *discordGateway) handleInbound(s *discordgo.Session, m *discordgo.Messa
 	gw.msgIn++
 	gw.mu.Unlock()
 
-	logf("forward routingKey=%s channelId=%s sender=%s", routingKey, m.ChannelID, sender)
+	logf("forward routingKey=%s channelId=%s sender=%s attachments=%d", routingKey, m.ChannelID, sender, len(m.Attachments))
 
-	shimWr := shim.wr
 	var userID string
 	if m.Author != nil {
 		userID = m.Author.ID
 	}
-	_ = shimWr.Write(ipcInboundEnvFull(
+	attachments := gw.downloadAttachments(m, logf)
+
+	shim.writeMu.Lock()
+	_ = shim.wr.Write(ipcInboundEnvFull(
 		routingKey,
 		m.ChannelID,
 		sender,
@@ -616,7 +631,9 @@ func (gw *discordGateway) handleInbound(s *discordgo.Session, m *discordgo.Messa
 		userID,
 		m.Timestamp.UTC().Format("2006-01-02T15:04:05.000Z"),
 		content,
+		attachments,
 	))
+	shim.writeMu.Unlock()
 
 	// Start "bot is typing…" for this channel. The refresh goroutine keeps
 	// it alive until the matching outbound send arrives or the max-duration
@@ -763,6 +780,95 @@ func gatewayAllowListPassFilter(m *discordgo.MessageCreate, f discordFilter) boo
 		}
 	}
 	return false
+}
+
+// downloadAttachments downloads allowlisted image attachments from a Discord
+// message. One goroutine per qualifying attachment; all share a collective 30 s
+// context. Results are assembled in slice-index order. Non-allowlisted MIME
+// types are silently skipped (no ipcAttachment entry emitted).
+func (gw *discordGateway) downloadAttachments(m *discordgo.MessageCreate, logf func(string, ...any)) []ipcAttachment {
+	type indexedResult struct {
+		idx int
+		att ipcAttachment
+	}
+
+	// Identify qualifying attachments first so we can size our result slice.
+	type candidate struct {
+		idx  int
+		att  *discordgo.MessageAttachment
+		mime string
+	}
+	var candidates []candidate
+	for i, a := range m.Attachments {
+		mime := a.ContentType
+		// Strip MIME parameters (e.g. "image/jpeg; charset=utf-8").
+		if semi := strings.IndexByte(mime, ';'); semi >= 0 {
+			mime = strings.TrimSpace(mime[:semi])
+		}
+		if discordImageMIMEs[mime] {
+			candidates = append(candidates, candidate{idx: i, att: a, mime: mime})
+		}
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	httpClient := &http.Client{}
+	resultCh := make(chan indexedResult, len(candidates))
+
+	for _, c := range candidates {
+		c := c
+		go func() {
+			data, failReason := downloadDiscordAttachment(c.att, httpClient)
+			if failReason != "" {
+				logf("download err msgId=%s idx=%d mime=%s: %s", m.ID, c.idx, c.mime, failReason)
+				resultCh <- indexedResult{c.idx, ipcAttachment{Type: "image", MIMEType: c.mime, FailReason: failReason}}
+				return
+			}
+			// Check ctx before writing (collective timeout may have fired).
+			if ctx.Err() != nil {
+				resultCh <- indexedResult{c.idx, ipcAttachment{Type: "image", MIMEType: c.mime, FailReason: "download timeout after 30s"}}
+				return
+			}
+			path, failReason := writeDiscordAttachment(gw.account, m.ID, c.idx, c.mime, data)
+			if failReason != "" {
+				logf("write err msgId=%s idx=%d: %s", m.ID, c.idx, failReason)
+				resultCh <- indexedResult{c.idx, ipcAttachment{Type: "image", MIMEType: c.mime, FailReason: failReason}}
+				return
+			}
+			logf("download ok path=%s", path)
+			resultCh <- indexedResult{c.idx, ipcAttachment{Type: "image", Path: path, MIMEType: c.mime}}
+		}()
+	}
+
+	// Collect results, honouring collective timeout.
+	byIdx := make(map[int]ipcAttachment, len(candidates))
+	for range candidates {
+		select {
+		case r := <-resultCh:
+			byIdx[r.idx] = r.att
+		case <-ctx.Done():
+			// Mark any remaining candidates as timed out.
+			for _, c := range candidates {
+				if _, done := byIdx[c.idx]; !done {
+					byIdx[c.idx] = ipcAttachment{Type: "image", MIMEType: c.mime, FailReason: "download timeout after 30s"}
+				}
+			}
+			goto assemble
+		}
+	}
+
+assemble:
+	// Emit results in original slice-index order.
+	out := make([]ipcAttachment, 0, len(candidates))
+	for _, c := range candidates {
+		out = append(out, byIdx[c.idx])
+	}
+	pruneDiscordMedia(gw.account)
+	return out
 }
 
 // publishStatus writes the gateway's status.json atomically.

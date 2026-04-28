@@ -39,6 +39,10 @@ type AgentDef struct {
 	// `mesh run --dangerously-skip-permissions` sets it ad-hoc.
 	DangerouslySkipPermissions bool    `json:"dangerouslySkipPermissions,omitempty"`
 	CloudAgentID               *string `json:"cloudAgentId,omitempty"`
+	// Description is the template's spec.description field, persisted so the
+	// peers broker can auto-populate the Summary on registration without
+	// re-reading the snapshot. Overridable at runtime via mesh_set_summary.
+	Description string `json:"description,omitempty"`
 	// Channels materialize the template's channel list at `mesh run` time so
 	// restart / autostart rebuild channel subprocesses without re-reading the
 	// template. Opaque per-type config lives in ChannelSpec.Config.

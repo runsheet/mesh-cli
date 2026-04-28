@@ -30,6 +30,8 @@ func init() {
 	whatsappCmd.AddCommand(whatsappListAccountsCmd)
 	whatsappCmd.AddCommand(whatsappListChatsCmd)
 	whatsappCmd.AddCommand(whatsappStatusCmd)
+	whatsappCmd.AddCommand(whatsappListGroupsCmd)
+	whatsappCmd.AddCommand(whatsappJoinCmd)
 }
 
 // -- pair --
@@ -381,4 +383,143 @@ func printWhatsappAccountStatus(st WhatsappAccountStatus) {
 	}
 	data, _ := json.MarshalIndent(out, "", "  ")
 	fmt.Println(string(data))
+}
+
+// -- list-groups --
+
+var whatsappListGroupsAccountFlag string
+
+var whatsappListGroupsCmd = &cobra.Command{
+	Use:   "list-groups",
+	Short: "List WhatsApp groups the account has joined (requires live gateway)",
+	Long: "list-groups asks the running whatsapp-gateway for the list of joined groups. " +
+		"The gateway must be running (account paired and referenced by an agent, or started manually). " +
+		"If the gateway is not reachable, run `mesh whatsapp status --account <name>` to diagnose.",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		name := strings.TrimSpace(whatsappListGroupsAccountFlag)
+		if name == "" {
+			return fmt.Errorf("--account is required")
+		}
+		return runWhatsappListGroups(name)
+	},
+}
+
+func init() {
+	whatsappListGroupsCmd.Flags().StringVar(&whatsappListGroupsAccountFlag, "account", "", "Account name (required)")
+}
+
+func runWhatsappListGroups(account string) error {
+	sockPath, err := WhatsappGatewaySockPath(account)
+	if err != nil {
+		return fmt.Errorf("gateway sock path: %w", err)
+	}
+	conn, rd, wr, err := dialGateway(sockPath)
+	if err != nil {
+		return fmt.Errorf("cannot reach gateway for account %q: %w\n  is the gateway running? check: mesh whatsapp status --account %s", account, err, account)
+	}
+	defer conn.Close()
+
+	if err := wr.Write(ipcListGroupsEnv()); err != nil {
+		return fmt.Errorf("send list-groups request: %w", err)
+	}
+
+	resp, err := rd.Read()
+	if err != nil {
+		return fmt.Errorf("read list-groups response: %w", err)
+	}
+	if resp.Type == "error" {
+		return fmt.Errorf("gateway error [%s]: %s", resp.Reason, resp.Detail)
+	}
+	if resp.Type != "list-groups-resp" {
+		return fmt.Errorf("unexpected response type %q", resp.Type)
+	}
+
+	var groups []whatsappGroupEntry
+	if err := json.Unmarshal([]byte(resp.Content), &groups); err != nil {
+		return fmt.Errorf("parse list-groups response: %w", err)
+	}
+	if len(groups) == 0 {
+		fmt.Println("no groups found (account has not joined any groups)")
+		return nil
+	}
+	for _, g := range groups {
+		subject := g.Subject
+		if subject == "" {
+			subject = "-"
+		}
+		fmt.Printf("  %s  %s\n", g.JID, subject)
+	}
+	return nil
+}
+
+// -- join --
+
+var whatsappJoinAccountFlag string
+var whatsappJoinInviteFlag string
+
+var whatsappJoinCmd = &cobra.Command{
+	Use:   "join",
+	Short: "Join a WhatsApp group via invite link (requires live gateway)",
+	Long: "join calls JoinGroupWithLink on the live whatsapp-gateway and prints the resulting " +
+		"group JID and subject. Pass either the full URL (https://chat.whatsapp.com/<code>) or " +
+		"just the bare invite code. The gateway must be running; check with " +
+		"`mesh whatsapp status --account <name>` if it is not reachable.",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		name := strings.TrimSpace(whatsappJoinAccountFlag)
+		if name == "" {
+			return fmt.Errorf("--account is required")
+		}
+		invite := strings.TrimSpace(whatsappJoinInviteFlag)
+		if invite == "" {
+			return fmt.Errorf("--invite is required")
+		}
+		return runWhatsappJoin(name, invite)
+	},
+}
+
+func init() {
+	whatsappJoinCmd.Flags().StringVar(&whatsappJoinAccountFlag, "account", "", "Account name (required)")
+	whatsappJoinCmd.Flags().StringVar(&whatsappJoinInviteFlag, "invite", "", "Invite link or bare code (required)")
+}
+
+func runWhatsappJoin(account, invite string) error {
+	// Strip the URL prefix — the gateway also does this, but doing it here
+	// lets us validate that the resulting code is non-empty before the round-trip.
+	const prefix = "https://chat.whatsapp.com/"
+	code := strings.TrimPrefix(invite, prefix)
+	if code == "" {
+		return fmt.Errorf("invite code is empty after stripping URL prefix")
+	}
+
+	sockPath, err := WhatsappGatewaySockPath(account)
+	if err != nil {
+		return fmt.Errorf("gateway sock path: %w", err)
+	}
+	conn, rd, wr, err := dialGateway(sockPath)
+	if err != nil {
+		return fmt.Errorf("cannot reach gateway for account %q: %w\n  is the gateway running? check: mesh whatsapp status --account %s", account, err, account)
+	}
+	defer conn.Close()
+
+	if err := wr.Write(ipcJoinGroupEnv(code)); err != nil {
+		return fmt.Errorf("send join-group request: %w", err)
+	}
+
+	resp, err := rd.Read()
+	if err != nil {
+		return fmt.Errorf("read join-group response: %w", err)
+	}
+	if resp.Type == "error" {
+		return fmt.Errorf("gateway error [%s]: %s", resp.Reason, resp.Detail)
+	}
+	if resp.Type != "join-group-resp" {
+		return fmt.Errorf("unexpected response type %q", resp.Type)
+	}
+
+	subject := resp.Content
+	if subject == "" {
+		subject = "-"
+	}
+	fmt.Printf("joined group\n  jid:     %s\n  subject: %s\n", resp.RoutingKey, subject)
+	return nil
 }

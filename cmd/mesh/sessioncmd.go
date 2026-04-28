@@ -104,7 +104,7 @@ var sessionNewUpCmd = &cobra.Command{
 			}
 		}
 		client := NewClient(sess.BaseURL, sess.AccessToken)
-		var resp map[string]interface{}
+		var resp map[string]any
 		payload := map[string]string{"nodeId": nodeID, "agentId": args[0]}
 		if err := client.doRequest("POST", "/session/new-up", payload, &resp); err != nil {
 			return err

@@ -8,6 +8,8 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"sync"
 	"time"
 )
@@ -34,8 +36,9 @@ func MeshRouterSockPath(agentName string) (string, error) {
 // or gateway state; it dials each gateway on first outbound/subscribe and
 // reconnects when needed. The gateway subprocess is managed by ChannelManager.
 type agentRouter struct {
-	agentName string
-	channels  []ChannelSpec
+	agentName   string
+	description string
+	channels    []ChannelSpec
 
 	mu       sync.Mutex
 	shimConn net.Conn      // single connected shim (nil if none)
@@ -58,16 +61,30 @@ type ChannelRouter struct {
 	mu      sync.Mutex
 	routers map[string]*runningRouter // key: agentName
 	exe     string
+	startFn func(ctx context.Context, agentName, description string, channels []ChannelSpec)
 }
 
 type runningRouter struct {
-	cancel context.CancelFunc
-	done   chan struct{}
+	cancel   context.CancelFunc
+	done     chan struct{}
+	channels []ChannelSpec
 }
 
-// NewChannelRouter creates an empty ChannelRouter.
+// NewChannelRouter creates an empty ChannelRouter backed by the real runAgentRouter.
 func NewChannelRouter() *ChannelRouter {
-	return &ChannelRouter{routers: map[string]*runningRouter{}}
+	return &ChannelRouter{
+		routers: map[string]*runningRouter{},
+		startFn: runAgentRouter,
+	}
+}
+
+// newChannelRouterWithStart creates a ChannelRouter with a custom start function.
+// Used in tests to inject a stub without running real goroutines.
+func newChannelRouterWithStart(fn func(ctx context.Context, agentName, description string, channels []ChannelSpec)) *ChannelRouter {
+	return &ChannelRouter{
+		routers: map[string]*runningRouter{},
+		startFn: fn,
+	}
 }
 
 // Sync reconciles running routers against the provided agent list.
@@ -84,10 +101,18 @@ func (cr *ChannelRouter) Sync(agents []*AgentDef) {
 		}
 	}
 
-	// Start new.
+	// Start new; restart existing if channels changed.
 	for name, a := range desired {
-		if _, running := cr.routers[name]; !running {
-			cr.startRouterLocked(name, a.Channels)
+		rr, running := cr.routers[name]
+		if !running {
+			cr.startRouterLocked(name, a.Description, a.Channels)
+			continue
+		}
+		if !reflect.DeepEqual(rr.channels, a.Channels) {
+			rr.cancel()
+			<-rr.done
+			delete(cr.routers, name)
+			cr.startRouterLocked(name, a.Description, a.Channels)
 		}
 	}
 
@@ -112,19 +137,19 @@ func (cr *ChannelRouter) StopAll() {
 	}
 }
 
-func (cr *ChannelRouter) startRouterLocked(agentName string, channels []ChannelSpec) {
+func (cr *ChannelRouter) startRouterLocked(agentName, description string, channels []ChannelSpec) {
 	ctx, cancel := context.WithCancel(context.Background())
-	rr := &runningRouter{cancel: cancel, done: make(chan struct{})}
+	rr := &runningRouter{cancel: cancel, done: make(chan struct{}), channels: channels}
 	cr.routers[agentName] = rr
 	go func() {
 		defer close(rr.done)
-		runAgentRouter(ctx, agentName, channels)
+		cr.startFn(ctx, agentName, description, channels)
 	}()
 }
 
 // runAgentRouter is the goroutine that owns one agent's mesh.sock listener.
 // It loops: accept a shim connection, serve it until it closes, repeat.
-func runAgentRouter(ctx context.Context, agentName string, channels []ChannelSpec) {
+func runAgentRouter(ctx context.Context, agentName, description string, channels []ChannelSpec) {
 	logf := routerLogf(agentName)
 	sockPath, err := MeshRouterSockPath(agentName)
 	if err != nil {
@@ -177,9 +202,10 @@ func runAgentRouter(ctx context.Context, agentName string, channels []ChannelSpe
 			continue
 		case conn := <-connCh:
 			r := &agentRouter{
-				agentName: agentName,
-				channels:  channels,
-				gwConns:   map[string]*routerGWConn{},
+				agentName:   agentName,
+				description: description,
+				channels:    channels,
+				gwConns:     map[string]*routerGWConn{},
 			}
 			r.serveShim(ctx, conn, logf)
 		}
@@ -235,11 +261,15 @@ func (r *agentRouter) serveShim(ctx context.Context, conn net.Conn, logf func(st
 
 		switch env.Type {
 		case "subscribe":
-			r.handleShimSubscribe(ctx, env, logf)
+			r.handleShimSubscribe(ctx, logf)
 		case "unsubscribe":
 			r.handleShimUnsubscribe(env, logf)
 		case "send":
 			r.handleShimSend(env, logf)
+		case "peers-list":
+			r.handleShimPeersList(env, logf)
+		case "peers-set-summary":
+			r.handleShimPeersSetSummary(env, logf)
 		default:
 			logf("unknown shim envelope type=%s", env.Type)
 		}
@@ -251,14 +281,14 @@ func (r *agentRouter) serveShim(ctx context.Context, conn net.Conn, logf func(st
 // all discord channels. Each gateway gets its own connection; the router
 // goroutine for each gateway pumps inbound messages back to the shim with
 // Source stamped.
-func (r *agentRouter) handleShimSubscribe(ctx context.Context, env ipcEnvelope, logf func(string, ...any)) {
+func (r *agentRouter) handleShimSubscribe(ctx context.Context, logf func(string, ...any)) {
 	logf("subscribe from shim agent=%s", r.agentName)
 
 	// Propagate subscriptions to each backend referenced by the agent.
 	for _, ch := range r.channels {
 		switch ch.Type {
 		case "discord":
-			r.subscribeDiscordGateway(ctx, ch, env, logf)
+			r.subscribeDiscordGateway(ctx, ch, logf)
 		case "whatsapp":
 			r.subscribeWhatsappGateway(ctx, ch, logf)
 		case "peers":
@@ -275,7 +305,7 @@ func (r *agentRouter) handleShimSubscribe(ctx context.Context, env ipcEnvelope, 
 	}
 }
 
-func (r *agentRouter) subscribeDiscordGateway(ctx context.Context, ch ChannelSpec, shimEnv ipcEnvelope, logf func(string, ...any)) {
+func (r *agentRouter) subscribeDiscordGateway(ctx context.Context, ch ChannelSpec, logf func(string, ...any)) {
 	dcc := parseDiscordChannelConfig(ch.Config)
 	if dcc.Account == "" {
 		logf("discord channel missing account")
@@ -415,6 +445,71 @@ func (r *agentRouter) pumpGateway(ctx context.Context, gwc *routerGWConn, logf f
 	}
 }
 
+// filterSelf removes any peer whose PeerID equals self from the slice.
+// Used by handleShimPeersList so an agent does not see itself in mesh_list_peers,
+// consistent with broadcast/team send which already exclude the caller.
+// The broker's ListPeers API is unchanged — CLI commands see everyone.
+func filterSelf(peers []peerRegistration, self string) []peerRegistration {
+	out := peers[:0:0] // same backing array avoided — start fresh at zero cap
+	for _, p := range peers {
+		if p.PeerID != self {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// handleShimPeersList handles a peers-list request from the shim. RoutingKey
+// carries an optional team filter (empty = all peers). Queries globalPeersBroker
+// (in-daemon), drops the calling agent from the result, and responds synchronously
+// on the shim writer.
+func (r *agentRouter) handleShimPeersList(env ipcEnvelope, logf func(string, ...any)) {
+	team := env.RoutingKey
+	peers := filterSelf(globalPeersBroker.ListPeers(team), r.agentName)
+	entries := make([]peerEntryWire, 0, len(peers))
+	for _, p := range peers {
+		entries = append(entries, peerEntryWire{
+			PeerID:     p.PeerID,
+			NodeID:     p.NodeID,
+			Teams:      p.Teams,
+			LastSeenAt: p.LastSeenAt.UTC().Format(time.RFC3339),
+			Summary:    p.Summary,
+		})
+	}
+	data, _ := json.Marshal(entries)
+	r.mu.Lock()
+	wr := r.shimWr
+	r.mu.Unlock()
+	if wr != nil {
+		_ = wr.Write(ipcPeersListRespEnv(string(data)))
+	}
+	logf("peers-list agent=%s team=%q peers=%d", r.agentName, team, len(entries))
+}
+
+// handleShimPeersSetSummary handles a peers-set-summary request from the shim.
+// Content carries the summary string. Uses r.agentName so the shim need not
+// repeat its own name. Responds synchronously on the shim writer.
+func (r *agentRouter) handleShimPeersSetSummary(env ipcEnvelope, logf func(string, ...any)) {
+	summary := env.Content
+	r.mu.Lock()
+	wr := r.shimWr
+	r.mu.Unlock()
+	if wr == nil {
+		return
+	}
+	if summary == "" {
+		_ = wr.Write(ipcPeersSetSummaryRespEnv("summary is required"))
+		return
+	}
+	ok := globalPeersBroker.SetSummary(r.agentName, summary)
+	if !ok {
+		_ = wr.Write(ipcPeersSetSummaryRespEnv("agent not registered with peers broker (add a peers channel to your template)"))
+		return
+	}
+	logf("peers-set-summary agent=%s len=%d", r.agentName, len(summary))
+	_ = wr.Write(ipcPeersSetSummaryRespEnv(""))
+}
+
 // handleShimUnsubscribe propagates an unsubscribe to all gateway connections.
 func (r *agentRouter) handleShimUnsubscribe(env ipcEnvelope, logf func(string, ...any)) {
 	logf("unsubscribe from shim agent=%s", r.agentName)
@@ -490,13 +585,13 @@ func (r *agentRouter) routeDiscordSend(env ipcEnvelope, subtype, id string, logf
 		}
 	}
 
-	sendEnv := ipcSendEnv(channelID, env.Content)
+	sendEnv := ipcSendEnvWithAttachments(env.Target, channelID, env.Content, env.Attachments)
 	if err := gwc.wr.Write(sendEnv); err != nil {
 		logf("discord gateway send write: %v", err)
 		r.sendShimError("send-failed", err.Error())
 		return
 	}
-	logf("routed send to discord account=%s channelId=%s len=%d", gwc.account, channelID, len(env.Content))
+	logf("routed send to discord account=%s channelId=%s len=%d attachments=%d", gwc.account, channelID, len(env.Content), len(env.Attachments))
 }
 
 // subscribeWhatsappGateway connects this router to the whatsapp gateway for
@@ -612,13 +707,13 @@ func (r *agentRouter) routeWhatsappSend(env ipcEnvelope, subtype, id string, log
 		return
 	}
 
-	sendEnv := ipcSendEnv(id, env.Content)
+	sendEnv := ipcSendEnvWithAttachments(env.Target, id, env.Content, env.Attachments)
 	if err := gwc.wr.Write(sendEnv); err != nil {
 		logf("whatsapp gateway send write: %v", err)
 		r.sendShimError("send-failed", err.Error())
 		return
 	}
-	logf("routed send to whatsapp account=%s jid=%s len=%d", gwc.account, id, len(env.Content))
+	logf("routed send to whatsapp account=%s jid=%s len=%d attachments=%d", gwc.account, id, len(env.Content), len(env.Attachments))
 }
 
 // subscribePeers registers this agent with the global peers broker and starts
@@ -628,9 +723,10 @@ func (r *agentRouter) subscribePeers(ctx context.Context, ch ChannelSpec, logf f
 
 	deliverCh := make(chan ipcEnvelope, 64)
 	reg := peerRegistration{
-		PeerID: r.agentName,
-		NodeID: "local",
-		Teams:  pcc.Teams,
+		PeerID:  r.agentName,
+		NodeID:  "local",
+		Teams:   pcc.Teams,
+		Summary: r.description,
 	}
 	globalPeersBroker.Register(reg, deliverCh)
 
@@ -753,43 +849,31 @@ func (r *agentRouter) sendShimError(reason, detail string) {
 func parseTargetURL(target string) (platform, subtype, id, errMsg string) {
 	// Minimal URL parse without importing net/url to keep things simple.
 	// Format: <scheme>://<subtype>[/<id>]
-	sepIdx := indexOf(target, "://")
-	if sepIdx < 0 {
+	var found bool
+	platform, rest, found := strings.Cut(target, "://")
+	if !found {
 		return "", "", "", "target missing scheme (expected scheme://subtype/id)"
 	}
-	platform = target[:sepIdx]
-	rest := target[sepIdx+3:]
 
 	// peers://broadcast has no id segment.
 	if platform == "peers" && rest == "broadcast" {
 		return platform, "broadcast", "", ""
 	}
 
-	slashIdx := indexOf(rest, "/")
-	if slashIdx < 0 {
+	subtype, id, found = strings.Cut(rest, "/")
+	if !found {
 		return "", "", "", "target missing subtype (expected scheme://subtype/id)"
 	}
-	subtype = rest[:slashIdx]
-	id = rest[slashIdx+1:]
 	if id == "" {
 		return "", "", "", "target missing id (expected scheme://subtype/id)"
 	}
 
 	// Reject cross-node peers addresses (two or more slashes after the subtype).
-	if platform == "peers" && subtype == "agent" && indexOf(id, "/") >= 0 {
+	if platform == "peers" && subtype == "agent" && strings.Contains(id, "/") {
 		return "", "", "", "cross-node peers not supported in scope=machine — use slice 4 (peers://agent/<node>/<name> form rejected)"
 	}
 
 	return platform, subtype, id, ""
-}
-
-func indexOf(s, sub string) int {
-	for i := 0; i <= len(s)-len(sub); i++ {
-		if s[i:i+len(sub)] == sub {
-			return i
-		}
-	}
-	return -1
 }
 
 // routerSubsFile is the path of the file the router writes so the shim can

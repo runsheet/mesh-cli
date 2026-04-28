@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"net"
 	"net/http"
 	"os"
@@ -87,7 +86,7 @@ func RunDaemon(baseURL string, grpcAddr string) error {
 
 	// Local socket always starts — standalone mode requires it, cluster mode
 	// piggybacks on the same registry.
-	listener, err := StartLocalSocket(ctx, registry, chanMgr)
+	listener, err := StartLocalSocket(ctx, registry, chanMgr, chanRouter)
 	if err != nil {
 		return fmt.Errorf("start local socket: %w", err)
 	}
@@ -143,7 +142,7 @@ func autoStartOne(registry *SessionRegistry, a *AgentDef) error {
 	if !snapshotExists(a.Name) {
 		if migErr := migrateAgentSnapshot(a); migErr != nil {
 			// Template source unreachable or corrupt — give the user actionable guidance.
-			return fmt.Errorf("snapshot missing and migration failed (%v) — run `mesh update %s` to rebuild or `mesh rm %s` to remove", migErr, a.Name, a.Name)
+			return fmt.Errorf("snapshot missing and migration failed (%w) — run `mesh update %s` to rebuild or `mesh rm %s` to remove", migErr, a.Name, a.Name)
 		}
 	}
 
@@ -258,7 +257,7 @@ func runClusteredDaemon(ctx context.Context, baseURL, grpcAddr, token string, re
 	client := meshv1.NewNodeServiceClient(conn)
 
 	// Register once to validate the token and pick up server epoch.
-	nodeID, err := registerWithSkewLog(ctx, client, token, baseURL)
+	nodeID, err := registerWithSkewLog(ctx, client, token)
 	if err != nil {
 		return err
 	}
@@ -302,7 +301,7 @@ func authContext(ctx context.Context, token string) context.Context {
 	return metadata.NewOutgoingContext(ctx, md)
 }
 
-func registerWithSkewLog(ctx context.Context, client meshv1.NodeServiceClient, token, baseURL string) (string, error) {
+func registerWithSkewLog(ctx context.Context, client meshv1.NodeServiceClient, token string) (string, error) {
 	ctx, cancel := context.WithTimeout(authContext(ctx, token), 15*time.Second)
 	defer cancel()
 
@@ -671,10 +670,7 @@ func runAttach(ctx context.Context, sender *streamSender, registry *SessionRegis
 				return
 			}
 			for start := 0; start < len(chunk); start += attachFrameCap {
-				end := start + attachFrameCap
-				if end > len(chunk) {
-					end = len(chunk)
-				}
+				end := min(start+attachFrameCap, len(chunk))
 				data := &meshv1.SessionAttachData{
 					AttachId:   attachID,
 					Data:       chunk[start:end],
@@ -969,11 +965,7 @@ func apiFrameKind(frame *meshv1.ApiToNode) string {
 }
 
 func nextBackoff(prev time.Duration) time.Duration {
-	next := time.Duration(math.Min(float64(prev)*2, float64(reconnectMaxBackoff)))
-	if next < reconnectInitialBackoff {
-		next = reconnectInitialBackoff
-	}
-	return next
+	return max(min(prev*2, reconnectMaxBackoff), reconnectInitialBackoff)
 }
 
 // Loop-template cache — fetched once from mesh-api and appended to every

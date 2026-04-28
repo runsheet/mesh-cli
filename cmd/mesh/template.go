@@ -25,6 +25,7 @@ type Template struct {
 	Source                     string // user-supplied --template value
 	ResolvedPath               string // absolute directory on disk
 	SystemPrompt               string // contents of system_prompt.md
+	Description                string
 	Model                      string
 	Tools                      []string
 	RequiredEnv                []string
@@ -334,6 +335,7 @@ func readTemplateWithValues(dir, name string, overrides map[string]any) (*Templa
 	return &Template{
 		ResolvedPath:               dir,
 		SystemPrompt:               string(promptBytes),
+		Description:                ay.Spec.Description,
 		Model:                      ay.Spec.Model,
 		Tools:                      append([]string{}, ay.Spec.Tools...),
 		RequiredEnv:                append([]string{}, ay.Spec.RequiredEnv...),
@@ -351,7 +353,7 @@ func RenderTemplate(dir, name string, values map[string]any) ([]byte, []byte, er
 	tmplCtx := map[string]any{
 		"Values":  values,
 		"Name":    name,
-		"Version": deriveTemplateVersion(values, dir),
+		"Version": deriveTemplateVersion(values),
 	}
 
 	agentTmpl := filepath.Join(dir, "agent.yaml.tmpl")
@@ -480,7 +482,7 @@ func caseFoldLookup(values map[string]any, target string) string {
 	return ""
 }
 
-func deriveTemplateVersion(values map[string]any, dir string) string {
+func deriveTemplateVersion(values map[string]any) string {
 	if v, ok := values["version"].(string); ok && v != "" {
 		return v
 	}
@@ -693,7 +695,7 @@ func cloneAndCheckout(url, ref, sha, dst string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), gitOpTimeout)
 	defer cancel()
 	if out, err := exec.CommandContext(ctx, "git", args...).CombinedOutput(); err != nil {
-		return fmt.Errorf("git clone %s: %v: %s", url, err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("git clone %s: %w: %s", url, err, strings.TrimSpace(string(out)))
 	}
 
 	// Always pin to the resolved SHA so shallow clones of a moving branch
@@ -702,7 +704,7 @@ func cloneAndCheckout(url, ref, sha, dst string) error {
 		ctx2, cancel2 := context.WithTimeout(context.Background(), gitOpTimeout)
 		defer cancel2()
 		if out, err := exec.CommandContext(ctx2, "git", "-C", dst, "checkout", "--detach", sha).CombinedOutput(); err != nil {
-			return fmt.Errorf("git checkout %s: %v: %s", sha, err, strings.TrimSpace(string(out)))
+			return fmt.Errorf("git checkout %s: %w: %s", sha, err, strings.TrimSpace(string(out)))
 		}
 	}
 	return nil

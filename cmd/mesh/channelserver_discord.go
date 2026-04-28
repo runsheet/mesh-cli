@@ -2,6 +2,9 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -20,7 +23,7 @@ import (
 func sendDiscordMessage(
 	session *discordgo.Session,
 	channelID, content string,
-	_ interface{}, // kept for call-site compatibility during refactor
+	_ any, // kept for call-site compatibility during refactor
 	logf func(string, ...any),
 ) ([]string, error) {
 	if session == nil {
@@ -49,6 +52,42 @@ func sendDiscordMessage(
 		}
 	}
 	return ids, nil
+}
+
+// sendDiscordMessageWithAttachment posts an image file to channelID as a
+// Discord file attachment with content as the message text (caption).
+// content may be empty; Discord renders the image without a caption.
+// Returns a single-element message-ID slice on success.
+func sendDiscordMessageWithAttachment(
+	session *discordgo.Session,
+	channelID, content string,
+	att ipcAttachment,
+	logf func(string, ...any),
+) ([]string, error) {
+	if session == nil {
+		return nil, fmt.Errorf("discord session not open")
+	}
+	f, err := os.Open(att.Path)
+	if err != nil {
+		return nil, fmt.Errorf("open attachment: %w", err)
+	}
+	defer f.Close()
+
+	msg, err := session.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
+		Content: content,
+		Files: []*discordgo.File{{
+			Name:        filepath.Base(att.Path),
+			ContentType: att.MIMEType,
+			Reader:      f,
+		}},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("discord send with attachment: %w", err)
+	}
+	if logf != nil {
+		logf("sent attachment id=%s channelId=%s mime=%s", msg.ID, channelID, att.MIMEType)
+	}
+	return []string{msg.ID}, nil
 }
 
 // splitDiscordContent splits content into chunks ≤ limit bytes, preferring
@@ -100,13 +139,8 @@ func findBoundary(s string, max int) int {
 	return -1
 }
 
-// contains returns true if needle is in haystack. Used by the gateway's
+// contains reports whether needle is in haystack. Used by the gateway's
 // allow-list filter.
 func contains(haystack []string, needle string) bool {
-	for _, h := range haystack {
-		if h == needle {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(haystack, needle)
 }

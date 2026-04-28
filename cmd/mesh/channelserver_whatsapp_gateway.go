@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -46,22 +47,30 @@ func init() {
 
 // whatsappShimConn represents one router connection subscribed to a single JID.
 type whatsappShimConn struct {
-	conn  net.Conn
-	wr    *ipcWriter
-	jid   string // subscribed chatJid
-	agent string // subscribing agent name (for conflict error messages)
+	conn    net.Conn
+	writeMu sync.Mutex // guards wr; multiple goroutines may write concurrently
+	wr      *ipcWriter
+	jid     string // subscribed chatJid
+	agent   string // subscribing agent name (for conflict error messages)
+}
+
+// whatsappGroupEntry is the wire shape for a single group in a list-groups-resp.
+type whatsappGroupEntry struct {
+	JID     string `json:"jid"`
+	Subject string `json:"subject"`
 }
 
 // whatsappGateway holds runtime state for one WhatsApp gateway process.
 type whatsappGateway struct {
 	account string
 
-	mu       sync.Mutex
-	client   *whatsmeow.Client
-	status   string
-	msgIn    int
-	msgOut   int
-	jidIndex map[string]*whatsappShimConn // chatJid → shimConn
+	mu         sync.Mutex
+	client     *whatsmeow.Client
+	status     string
+	msgIn      int
+	msgOut     int
+	jidIndex   map[string]*whatsappShimConn // chatJid → shimConn
+	downloadFn func(ctx context.Context, client *whatsmeow.Client, msg whatsmeow.DownloadableMessage) ([]byte, error)
 }
 
 func newWhatsappGateway(account string) *whatsappGateway {
@@ -69,6 +78,9 @@ func newWhatsappGateway(account string) *whatsappGateway {
 		account:  account,
 		status:   "connecting",
 		jidIndex: map[string]*whatsappShimConn{},
+		downloadFn: func(ctx context.Context, client *whatsmeow.Client, msg whatsmeow.DownloadableMessage) ([]byte, error) {
+			return client.Download(ctx, msg)
+		},
 	}
 }
 
@@ -106,7 +118,7 @@ func runWhatsappGateway(account string) error {
 		cancel()
 	}()
 
-	client.AddEventHandler(func(evt interface{}) {
+	client.AddEventHandler(func(evt any) {
 		switch v := evt.(type) {
 		case *events.Message:
 			gw.handleInbound(v, logf)
@@ -115,6 +127,17 @@ func runWhatsappGateway(account string) error {
 			gw.status = "connected"
 			gw.mu.Unlock()
 			logf("whatsapp connected")
+			if client.Store.PushName == "" {
+				client.Store.PushName = account
+				if err := client.Store.Save(context.Background()); err != nil {
+					logf("save pushname err: %v", err)
+				}
+			}
+			go func() {
+				if err := client.SendPresence(context.Background(), types.PresenceAvailable); err != nil {
+					logf("send-presence available err: %v", err)
+				}
+			}()
 			if client.Store.ID != nil {
 				meta, _ := LoadWhatsappAccountMeta(account)
 				if meta.PhoneNumber == "" {
@@ -164,6 +187,9 @@ func runWhatsappGateway(account string) error {
 		return fmt.Errorf("chmod gateway.sock: %w", err)
 	}
 	logf("gateway.sock listening at %s", sockPath)
+
+	// Prune stale media files once at startup (lazy-prune; no background goroutine).
+	pruneWhatsappMedia(account)
 
 	go func() {
 		ticker := time.NewTicker(10 * time.Second)
@@ -271,15 +297,80 @@ func (gw *whatsappGateway) handleRouter(ctx context.Context, conn net.Conn, acco
 				_ = wr.Write(ipcErrorEnv("bad-send", "channelId (target JID) is required"))
 				continue
 			}
-			if err := gw.sendMessage(ctx, targetJID, env.Content, logf); err != nil {
-				logf("send err jid=%s: %v", targetJID, err)
-				_ = wr.Write(ipcErrorEnv("send-failed", err.Error()))
+			gw.mu.Lock()
+			client := gw.client
+			gw.mu.Unlock()
+			var sendErr error
+			if len(env.Attachments) > 0 {
+				sendErr = gw.sendMessageWithImage(ctx, targetJID, env.Content, env.Attachments[0], client, logf)
+			} else {
+				sendErr = gw.sendMessage(ctx, targetJID, env.Content, logf)
+			}
+			if sendErr != nil {
+				logf("send err jid=%s: %v", targetJID, sendErr)
+				_ = wr.Write(ipcErrorEnv("send-failed", sendErr.Error()))
 				continue
 			}
 			gw.mu.Lock()
 			gw.msgOut++
 			gw.mu.Unlock()
 			_ = wr.Write(ipcEnvelope{V: ipcVersion, Type: "send-ack", ChannelID: targetJID})
+
+		case "list-groups":
+			gw.mu.Lock()
+			client := gw.client
+			gw.mu.Unlock()
+			if client == nil {
+				_ = wr.Write(ipcErrorEnv("not-connected", "whatsapp client not connected"))
+				continue
+			}
+			listCtx, listCancel := context.WithTimeout(ctx, 10*time.Second)
+			groups, err := client.GetJoinedGroups(listCtx)
+			listCancel()
+			if err != nil {
+				_ = wr.Write(ipcErrorEnv("list-groups-failed", err.Error()+
+					"; websocket may be down — check: mesh whatsapp status --account "+account))
+				continue
+			}
+			entries := make([]whatsappGroupEntry, 0, len(groups))
+			for _, g := range groups {
+				entries = append(entries, whatsappGroupEntry{
+					JID:     g.JID.String(),
+					Subject: g.GroupName.Name,
+				})
+			}
+			data, _ := json.Marshal(entries)
+			_ = wr.Write(ipcListGroupsRespEnv(string(data)))
+
+		case "join-group":
+			code := env.RoutingKey
+			if code == "" {
+				_ = wr.Write(ipcErrorEnv("bad-join-group", "routingKey (invite code) is required"))
+				continue
+			}
+			gw.mu.Lock()
+			client := gw.client
+			gw.mu.Unlock()
+			if client == nil {
+				_ = wr.Write(ipcErrorEnv("not-connected", "whatsapp client not connected"))
+				continue
+			}
+			joinCtx, joinCancel := context.WithTimeout(ctx, 30*time.Second)
+			groupJID, err := client.JoinGroupWithLink(joinCtx, code)
+			joinCancel()
+			if err != nil {
+				_ = wr.Write(ipcErrorEnv("join-group-failed", err.Error()))
+				continue
+			}
+			subject := ""
+			infoCtx, infoCancel := context.WithTimeout(ctx, 10*time.Second)
+			info, infoErr := client.GetGroupInfo(infoCtx, groupJID)
+			infoCancel()
+			if infoErr == nil {
+				subject = info.GroupName.Name
+			}
+			logf("join-group jid=%s subject=%q", groupJID.String(), subject)
+			_ = wr.Write(ipcJoinGroupRespEnv(groupJID.String(), subject))
 
 		default:
 			_ = wr.Write(ipcErrorEnv("unknown-type", env.Type))
@@ -305,11 +396,66 @@ func (gw *whatsappGateway) sendMessage(ctx context.Context, jidStr, content stri
 		return fmt.Errorf("client not connected")
 	}
 
+	// Clear the typing indicator before the message lands.
+	go func() {
+		if err := client.SendChatPresence(
+			context.Background(),
+			jid,
+			types.ChatPresencePaused,
+			types.ChatPresenceMediaText,
+		); err != nil {
+			logf("chat-presence paused err jid=%s: %v", jid, err)
+		}
+	}()
+
 	_, err = client.SendMessage(ctx, jid, msg)
 	if err != nil {
 		return fmt.Errorf("send: %w", err)
 	}
 	logf("sent jid=%s len=%d", jidStr, len(content))
+	return nil
+}
+
+// sendMessageWithImage uploads att to WhatsApp CDN and sends it as a captioned
+// ImageMessage to jidStr. content becomes the caption (may be empty).
+func (gw *whatsappGateway) sendMessageWithImage(ctx context.Context, jidStr, content string, att ipcAttachment, client *whatsmeow.Client, logf func(string, ...any)) error {
+	jid, err := types.ParseJID(jidStr)
+	if err != nil {
+		return fmt.Errorf("parse JID %q: %w", jidStr, err)
+	}
+	if client == nil {
+		return fmt.Errorf("client not connected")
+	}
+
+	fileBytes, err := os.ReadFile(att.Path)
+	if err != nil {
+		return fmt.Errorf("read attachment: %w", err)
+	}
+
+	uploadCtx, uploadCancel := context.WithTimeout(ctx, 60*time.Second)
+	defer uploadCancel()
+	resp, err := client.Upload(uploadCtx, fileBytes, whatsmeow.MediaImage)
+	if err != nil {
+		return fmt.Errorf("whatsapp upload: %w", err)
+	}
+
+	msg := &waE2E.Message{
+		ImageMessage: &waE2E.ImageMessage{
+			URL:           proto.String(resp.URL),
+			DirectPath:    proto.String(resp.DirectPath),
+			MediaKey:      resp.MediaKey,
+			FileEncSHA256: resp.FileEncSHA256,
+			FileSHA256:    resp.FileSHA256,
+			FileLength:    proto.Uint64(uint64(len(fileBytes))),
+			Mimetype:      proto.String(att.MIMEType),
+			Caption:       proto.String(content),
+		},
+	}
+	_, err = client.SendMessage(ctx, jid, msg)
+	if err != nil {
+		return fmt.Errorf("whatsapp send with image: %w", err)
+	}
+	logf("sent image jid=%s mime=%s len=%d caption=%d", jidStr, att.MIMEType, len(fileBytes), len(content))
 	return nil
 }
 
@@ -325,20 +471,44 @@ func (gw *whatsappGateway) handleInbound(evt *events.Message, logf func(string, 
 
 	gw.mu.Lock()
 	shim := gw.jidIndex[chatJID]
+	client := gw.client
 	gw.mu.Unlock()
 
 	if shim == nil {
 		return
 	}
 
-	// Extract text content; skip non-text in slice 2.
-	content := evt.Message.GetConversation()
-	if content == "" {
+	// Extract text/caption content.
+	caption := evt.Message.GetConversation()
+	if caption == "" {
 		if ext := evt.Message.GetExtendedTextMessage(); ext != nil {
-			content = ext.GetText()
+			caption = ext.GetText()
 		}
 	}
-	if content == "" {
+	if caption == "" {
+		if img := evt.Message.GetImageMessage(); img != nil {
+			caption = img.GetCaption()
+		}
+	}
+	if caption == "" {
+		if aud := evt.Message.GetAudioMessage(); aud != nil {
+			caption = "" // audio has no caption field; keep empty
+		}
+	}
+
+	// Attempt media download for supported message types.
+	var attachments []ipcAttachment
+	if img := evt.Message.GetImageMessage(); img != nil {
+		att := gw.downloadImage(evt, img, client, logf)
+		attachments = []ipcAttachment{att}
+	} else if aud := evt.Message.GetAudioMessage(); aud != nil {
+		// spec 16 (audio): voice notes and uploaded audio files.
+		att := gw.downloadAudio(evt, aud, client, logf)
+		attachments = []ipcAttachment{att}
+	}
+
+	// Drop messages with no text and no attachment (e.g. video, sticker).
+	if caption == "" && len(attachments) == 0 {
 		return
 	}
 
@@ -352,7 +522,7 @@ func (gw *whatsappGateway) handleInbound(evt *events.Message, logf func(string, 
 	gw.msgIn++
 	gw.mu.Unlock()
 
-	logf("inbound chatJid=%s sender=%s msgId=%s", chatJID, sender, evt.Info.ID)
+	logf("inbound chatJid=%s sender=%s msgId=%s attachments=%d", chatJID, sender, evt.Info.ID, len(attachments))
 
 	env := ipcInboundEnvFull(
 		chatJID,
@@ -361,11 +531,134 @@ func (gw *whatsappGateway) handleInbound(evt *events.Message, logf func(string, 
 		evt.Info.ID,
 		evt.Info.Sender.User,
 		ts,
-		content,
+		caption,
+		attachments,
 	)
-	if err := shim.wr.Write(env); err != nil {
+
+	shim.writeMu.Lock()
+	err := shim.wr.Write(env)
+	shim.writeMu.Unlock()
+	if err != nil {
 		logf("shim write err jid=%s: %v", chatJID, err)
+		return
 	}
+
+	if client == nil {
+		return
+	}
+
+	// Mark the message read. Fire-and-forget; a slow WS round-trip must not
+	// block inbound dispatch.
+	go func() {
+		if err := client.MarkRead(
+			context.Background(),
+			[]types.MessageID{evt.Info.ID},
+			time.Now(),
+			evt.Info.Chat,
+			evt.Info.Sender,
+		); err != nil {
+			logf("mark-read err jid=%s msgId=%s: %v", chatJID, evt.Info.ID, err)
+		}
+	}()
+
+	// Signal "typing…" so the user sees Claude is composing a reply.
+	// WhatsApp clears the indicator server-side after ~25s; no refresher is
+	// implemented here — acceptable for typical response latencies.
+	go func() {
+		if err := client.SendChatPresence(
+			context.Background(),
+			evt.Info.Chat,
+			types.ChatPresenceComposing,
+			types.ChatPresenceMediaText,
+		); err != nil {
+			logf("chat-presence composing err jid=%s: %v", chatJID, err)
+		}
+	}()
+}
+
+// downloadWhatsappMedia is the shared download path for image and audio
+// attachments. mime must already be normalised (codec parameters stripped).
+// attType is "image" or "audio" and becomes ipcAttachment.Type.
+func (gw *whatsappGateway) downloadWhatsappMedia(
+	evt *events.Message,
+	msg whatsmeow.DownloadableMessage,
+	attType string,
+	mime string,
+	client *whatsmeow.Client,
+	logf func(string, ...any),
+) ipcAttachment {
+	path, err := whatsappMediaPath(gw.account, evt.Info.ID, mime)
+	if err != nil {
+		reason := fmt.Sprintf("unsupported media type %s", mime)
+		logf("%s skip msgId=%s: %s", attType, evt.Info.ID, reason)
+		return ipcAttachment{Type: attType, MIMEType: mime, FailReason: reason}
+	}
+
+	if client == nil {
+		return ipcAttachment{Type: attType, MIMEType: mime, FailReason: "client not connected"}
+	}
+
+	type result struct {
+		data []byte
+		err  error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		dlCtx, dlCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer dlCancel()
+		data, err := gw.downloadFn(dlCtx, client, msg)
+		ch <- result{data, err}
+	}()
+
+	res := <-ch
+	if res.err != nil {
+		reason := res.err.Error()
+		if res.err == context.DeadlineExceeded {
+			reason = "download timeout after 30s"
+		}
+		logf("%s download err msgId=%s mime=%s: %s", attType, evt.Info.ID, mime, reason)
+		return ipcAttachment{Type: attType, MIMEType: mime, FailReason: reason}
+	}
+
+	dir, _ := whatsappMediaDir(gw.account)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		reason := "write failed: " + err.Error()
+		logf("%s mkdir err: %s", attType, reason)
+		return ipcAttachment{Type: attType, MIMEType: mime, FailReason: reason}
+	}
+	if err := os.WriteFile(path, res.data, 0o600); err != nil {
+		reason := "write failed: " + err.Error()
+		logf("%s write err msgId=%s: %s", attType, evt.Info.ID, reason)
+		return ipcAttachment{Type: attType, MIMEType: mime, FailReason: reason}
+	}
+
+	logf("%s download ok path=%s", attType, path)
+	pruneWhatsappMedia(gw.account)
+	return ipcAttachment{Type: attType, Path: path, MIMEType: mime}
+}
+
+// downloadImage downloads an image attachment. whatsmeow's Download is
+// thread-safe (mediaConnLock on the client guards the CDN connection cache),
+// so concurrent downloads from multiple messages need no additional semaphore.
+func (gw *whatsappGateway) downloadImage(evt *events.Message, img *waE2E.ImageMessage, client *whatsmeow.Client, logf func(string, ...any)) ipcAttachment {
+	return gw.downloadWhatsappMedia(evt, img, "image", img.GetMimetype(), client, logf)
+}
+
+// downloadAudio downloads an audio attachment (voice note or uploaded audio).
+// Voice notes arrive with mimetype "audio/ogg; codecs=opus"; the codecs
+// parameter is stripped before the mimeToExt lookup. On failure, rawMime
+// is preserved in att.MIMEType for diagnostics.
+func (gw *whatsappGateway) downloadAudio(evt *events.Message, aud *waE2E.AudioMessage, client *whatsmeow.Client, logf func(string, ...any)) ipcAttachment {
+	rawMime := aud.GetMimetype()
+	mime := rawMime
+	if i := strings.IndexByte(mime, ';'); i >= 0 {
+		mime = strings.TrimSpace(mime[:i])
+	}
+	att := gw.downloadWhatsappMedia(evt, aud, "audio", mime, client, logf)
+	if att.FailReason != "" {
+		att.MIMEType = rawMime
+	}
+	return att
 }
 
 // publishStatus writes the gateway's status.json atomically.

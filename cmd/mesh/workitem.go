@@ -9,7 +9,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func printJSON(v interface{}) error {
+func printJSON(v any) error {
 	body, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return err
@@ -167,7 +167,7 @@ var createCmd = &cobra.Command{
 			return err
 		}
 
-		payload := map[string]interface{}{
+		payload := map[string]any{
 			"title": title,
 			"scope": scope,
 		}
@@ -175,7 +175,7 @@ var createCmd = &cobra.Command{
 			payload["projectId"] = projectId
 		}
 
-		var response map[string]interface{}
+		var response map[string]any
 		if err := client.doRequest("POST", "/work-item/create", payload, &response); err != nil {
 			return err
 		}
@@ -219,7 +219,7 @@ var updateCmd = &cobra.Command{
 			return err
 		}
 
-		payload := map[string]interface{}{"workItemId": args[0]}
+		payload := map[string]any{"workItemId": args[0]}
 		if v := normalizeOptional(updateTitle); v != "" {
 			payload["title"] = v
 		}
@@ -252,7 +252,7 @@ var updateCmd = &cobra.Command{
 		}
 
 		client := NewClient(sess.BaseURL, sess.AccessToken)
-		var response map[string]interface{}
+		var response map[string]any
 		if err := client.doRequest("POST", "/work-item/update", payload, &response); err != nil {
 			return err
 		}
@@ -283,7 +283,7 @@ var handoffCmd = &cobra.Command{
 			return err
 		}
 
-		payload := map[string]interface{}{
+		payload := map[string]any{
 			"workItemId": args[0],
 			"fromRole":   args[1],
 			"toRole":     args[2],
@@ -314,7 +314,7 @@ var handoffCmd = &cobra.Command{
 		}
 
 		client := NewClient(sess.BaseURL, sess.AccessToken)
-		var response map[string]interface{}
+		var response map[string]any
 		if err := client.doRequest("POST", "/work-item/handoff", payload, &response); err != nil {
 			return err
 		}
@@ -346,7 +346,7 @@ var reviewCmd = &cobra.Command{
 			return err
 		}
 
-		payload := map[string]interface{}{
+		payload := map[string]any{
 			"workItemId":   args[0],
 			"reviewerRole": args[1],
 			"decision":     decision,
@@ -359,7 +359,7 @@ var reviewCmd = &cobra.Command{
 		}
 
 		client := NewClient(sess.BaseURL, sess.AccessToken)
-		var response map[string]interface{}
+		var response map[string]any
 		if err := client.doRequest("POST", "/work-item/review", payload, &response); err != nil {
 			return err
 		}
@@ -385,7 +385,7 @@ var learningCmd = &cobra.Command{
 			return err
 		}
 
-		payload := map[string]interface{}{"workItemId": args[0]}
+		payload := map[string]any{"workItemId": args[0]}
 		if v := normalizeOptional(outcome); v != "" {
 			payload["outcome"] = v
 		}
@@ -409,7 +409,7 @@ var learningCmd = &cobra.Command{
 		}
 
 		client := NewClient(sess.BaseURL, sess.AccessToken)
-		var response map[string]interface{}
+		var response map[string]any
 		if err := client.doRequest("POST", "/work-item/learning", payload, &response); err != nil {
 			return err
 		}

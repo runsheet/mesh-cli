@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -85,7 +86,7 @@ func readValuesFile(path string) (map[string]any, error) {
 	return normalized, nil
 }
 
-// normalizeYAML converts yaml.v3's map[interface{}]interface{} shape into
+// normalizeYAML converts yaml.v3's map[any]any shape into
 // map[string]any so template lookups work uniformly. Lists recurse as []any.
 func normalizeYAML(in any) any {
 	switch v := in.(type) {
@@ -116,9 +117,7 @@ func normalizeYAML(in any) any {
 // lists are replaced wholesale; maps recurse.
 func deepMerge(base, override map[string]any) map[string]any {
 	out := make(map[string]any, len(base)+len(override))
-	for k, v := range base {
-		out[k] = v
-	}
+	maps.Copy(out, base)
 	for k, v := range override {
 		if existing, ok := out[k]; ok {
 			if em, ok := existing.(map[string]any); ok {

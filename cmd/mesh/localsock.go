@@ -36,12 +36,12 @@ func DaemonSocketPath() (string, error) {
 // SessionRegistry the cluster-mode gRPC handlers use, so standalone-mode
 // agents and pinned cluster agents share process-local state.
 //
-// chanMgr may be nil (used in tests / standalone contexts that don't need
-// gateway supervision).
+// chanMgr and chanRouter may be nil (used in tests / standalone contexts that
+// don't need gateway supervision).
 //
 // Returns the listener so the caller can shut it down; server runs until
 // ctx is cancelled.
-func StartLocalSocket(ctx context.Context, registry *SessionRegistry, chanMgr *ChannelManager) (net.Listener, error) {
+func StartLocalSocket(ctx context.Context, registry *SessionRegistry, chanMgr *ChannelManager, chanRouter *ChannelRouter) (net.Listener, error) {
 	if _, err := ensureMeshDir(); err != nil {
 		return nil, err
 	}
@@ -66,7 +66,7 @@ func StartLocalSocket(ctx context.Context, registry *SessionRegistry, chanMgr *C
 		return nil, fmt.Errorf("chmod socket: %w", err)
 	}
 
-	srv := &localServer{registry: registry, chanMgr: chanMgr}
+	srv := &localServer{registry: registry, chanMgr: chanMgr, chanRouter: chanRouter}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/sessions", srv.handleSessions)
 	mux.HandleFunc("/sessions/", srv.handleSessionItem)
@@ -106,8 +106,9 @@ func StartLocalSocket(ctx context.Context, registry *SessionRegistry, chanMgr *C
 }
 
 type localServer struct {
-	registry *SessionRegistry
-	chanMgr  *ChannelManager
+	registry   *SessionRegistry
+	chanMgr    *ChannelManager
+	chanRouter *ChannelRouter
 }
 
 // -- JSON payload shapes (kept here so there's one source of truth for both
@@ -340,6 +341,7 @@ func (s *localServer) createSession(w http.ResponseWriter, r *http.Request) {
 		TemplateRef:       tpl.GitRef,
 		TemplateSha:       tpl.GitSHA,
 		TemplateCachePath: tpl.ResolvedPath,
+		Description:       tpl.Description,
 		Model:             tpl.Model,
 		RequiredEnv:       append([]string{}, tpl.RequiredEnv...),
 		CreatedAt:         time.Now().UTC(),
@@ -647,6 +649,7 @@ func (s *localServer) updateSession(w http.ResponseWriter, _ *http.Request, name
 	_ = UpdateAgent(name, func(a *AgentDef) {
 		a.TemplateSha = newSHA
 		a.TemplateCachePath = tpl.ResolvedPath
+		a.Description = tpl.Description
 		a.RequiredEnv = append([]string{}, tpl.RequiredEnv...)
 		a.Channels = append([]ChannelSpec{}, tpl.Channels...)
 		if a.Model == "" {
@@ -654,6 +657,20 @@ func (s *localServer) updateSession(w http.ResponseWriter, _ *http.Request, name
 		}
 	})
 	def.Channels = append([]ChannelSpec{}, tpl.Channels...)
+
+	// Sync channel routers and gateways before restarting the session so the new
+	// router is listening before the shim reconnects. Sync is a no-op when
+	// channels haven't changed.
+	if s.chanMgr != nil {
+		if all, err := ListAgents(); err == nil {
+			s.chanMgr.Sync(all)
+		}
+	}
+	if s.chanRouter != nil {
+		if all, err := ListAgents(); err == nil {
+			s.chanRouter.Sync(all)
+		}
+	}
 
 	if wasRunning {
 		effectiveEnv := mergeStringMaps(os.Environ(), nil)

@@ -3,9 +3,8 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"time"
 )
@@ -24,7 +23,7 @@ func NewClient(baseURL, token string) *MeshClient {
 	}
 }
 
-func (c *MeshClient) doRequest(method, path string, body interface{}, out interface{}) error {
+func (c *MeshClient) doRequest(method, path string, body any, out any) error {
 	url := c.BaseURL + path
 	var reqBody []byte
 	var err error
@@ -50,8 +49,8 @@ func (c *MeshClient) doRequest(method, path string, body interface{}, out interf
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		bodyBytes, _ := ioutil.ReadAll(resp.Body)
-		return errors.New(fmt.Sprintf("API request failed: %s, response: %s", resp.Status, string(bodyBytes)))
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("API request failed: %s, response: %s", resp.Status, string(bodyBytes))
 	}
 
 	if out != nil {

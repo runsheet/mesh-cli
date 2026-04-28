@@ -9,6 +9,8 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -125,6 +127,52 @@ func (m *meshShimMetrics) snapshot() ChannelStatus {
 	}
 }
 
+// parentPluginAgent parses a null-byte-delimited /proc/<pid>/cmdline string and
+// returns the agent name embedded in a --dangerously-load-development-channels
+// flag of the form plugin:<agent>@mesh. Returns "" if the flag is absent or the
+// cmdline is malformed.
+func parentPluginAgent(cmdline string) string {
+	const needle = "plugin:"
+	const suffix = "@mesh"
+	for _, arg := range strings.Split(cmdline, "\x00") {
+		// The flag may appear as a single token
+		// "--dangerously-load-development-channels plugin:<agent>@mesh"
+		// or split across two tokens; handle both.
+		val := arg
+		if strings.HasPrefix(arg, "--dangerously-load-development-channels=") {
+			val = strings.TrimPrefix(arg, "--dangerously-load-development-channels=")
+		}
+		if strings.HasPrefix(val, needle) && strings.HasSuffix(val, suffix) {
+			return val[len(needle) : len(val)-len(suffix)]
+		}
+	}
+	return ""
+}
+
+// checkParentPlugin reads /proc/<ppid>/cmdline and verifies the parent claude
+// process was launched for agentName. If the cmdline cannot be read (macOS,
+// sandbox, permission denied) the check is skipped and true is returned.
+// Returns false only when the cmdline is readable and names a different agent.
+func checkParentPlugin(agentName string, logf func(string, ...any)) bool {
+	ppid := os.Getppid()
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", ppid))
+	if err != nil {
+		// Not Linux, or process already gone — skip check.
+		return true
+	}
+	parentAgent := parentPluginAgent(string(data))
+	if parentAgent == "" {
+		// Flag not present (e.g. parent is a shell or test runner) — skip.
+		return true
+	}
+	if parentAgent != agentName {
+		logf("agent mismatch: shim --agent=%s but parent claude (pid %d) loaded plugin:%s@mesh — exiting to avoid misrouted inbound",
+			agentName, ppid, parentAgent)
+		return false
+	}
+	return true
+}
+
 func runMeshShim(agentName string) error {
 	logFile, err := openChannelLogFile(agentName, "mesh-shim")
 	if err != nil {
@@ -135,7 +183,11 @@ func runMeshShim(agentName string) error {
 		fmt.Fprintf(logFile, "["+time.Now().UTC().Format(time.RFC3339Nano)+"] "+format+"\n", args...)
 	}
 
-	logf("mesh shim start agent=%s pid=%d", agentName, os.Getpid())
+	logf("mesh shim start agent=%s pid=%d ppid=%d", agentName, os.Getpid(), os.Getppid())
+
+	if !checkParentPlugin(agentName, logf) {
+		return fmt.Errorf("agent mismatch: shim --agent=%s spawned under wrong parent claude process; see log for details", agentName)
+	}
 
 	metrics := &meshShimMetrics{status: "connecting"}
 	last := &meshLastInbound{}
@@ -221,6 +273,11 @@ func runMeshShim(agentName string) error {
 		}
 	}()
 
+	// pendingResp carries synchronous router responses to in-flight tool calls
+	// (peers-list-resp, peers-set-summary-resp). MCP tool calls are sequential,
+	// so a single unbuffered channel is sufficient — no correlation ID needed.
+	pendingResp := make(chan ipcEnvelope, 1)
+
 	// Inbound messages from router.
 	inbound := make(chan ipcEnvelope, 64)
 	go func() {
@@ -231,11 +288,18 @@ func runMeshShim(agentName string) error {
 				cancel()
 				return
 			}
-			if env.Type == "inbound" {
+			switch env.Type {
+			case "inbound":
 				select {
 				case inbound <- env:
 				case <-ctx.Done():
 					return
+				}
+			case "peers-list-resp", "peers-set-summary-resp":
+				select {
+				case pendingResp <- env:
+				default:
+					logf("peers resp dropped (no waiter): type=%s", env.Type)
 				}
 			}
 		}
@@ -324,8 +388,12 @@ func runMeshShim(agentName string) error {
 						meta["ts"] = env.Timestamp
 					}
 				}
+				content := formatInboundContent(env.Content, env.Attachments)
+				if content == "" {
+					continue
+				}
 				params, _ := json.Marshal(map[string]any{
-					"content": env.Content,
+					"content": content,
 					"meta":    meta,
 				})
 				_ = writeMCP(jsonrpcMessage{
@@ -347,7 +415,7 @@ func runMeshShim(agentName string) error {
 		if len(trimmed) > 0 {
 			setLastRecvAt(time.Now())
 			logf("recv: %s", string(trimmed))
-			if herr := handleMeshShimMCP(ctx, trimmed, agentName, routerWr, metrics, last, writeMCP, logf); herr != nil {
+			if herr := handleMeshShimMCP(ctx, trimmed, agentName, routerWr, pendingResp, metrics, last, writeMCP, logf); herr != nil {
 				logf("handle err: %v", herr)
 			}
 		}
@@ -367,6 +435,7 @@ func handleMeshShimMCP(
 	raw []byte,
 	agentName string,
 	routerWr *ipcWriter,
+	pendingResp chan ipcEnvelope,
 	metrics *meshShimMetrics,
 	last *meshLastInbound,
 	write func(jsonrpcMessage) error,
@@ -430,9 +499,9 @@ func handleMeshShimMCP(
 		case "mesh_reply":
 			return handleMeshReply(ctx, msg.ID, params.Arguments, routerWr, metrics, last, logf, write)
 		case "mesh_list_peers":
-			return handleMeshListPeers(msg.ID, params.Arguments, write)
+			return handleMeshListPeers(ctx, msg.ID, params.Arguments, routerWr, pendingResp, write, logf)
 		case "mesh_set_summary":
-			return handleMeshSetSummary(msg.ID, params.Arguments, agentName, write, logf)
+			return handleMeshSetSummary(ctx, msg.ID, params.Arguments, routerWr, pendingResp, write, logf)
 		default:
 			return write(jsonrpcMessage{
 				ID:    msg.ID,
@@ -446,6 +515,65 @@ func handleMeshShimMCP(
 			Error: &jsonrpcError{Code: -32601, Message: "method not found: " + msg.Method},
 		})
 	}
+}
+
+// shimAttachment is the parsed form of one entry in the MCP attachments array.
+type shimAttachment struct {
+	Path     string `json:"path"`
+	Type     string `json:"type"`
+	MIMEType string // derived from extension during validation
+}
+
+// parseMeshSendAttachments parses and validates the attachments field from MCP
+// args. agentName is used by validateAttachmentPath. Returns the parsed list
+// (nil if none) or a non-empty error string for the tool response.
+func parseMeshSendAttachments(args map[string]any, agentName string) ([]shimAttachment, string) {
+	raw, ok := args["attachments"]
+	if !ok || raw == nil {
+		return nil, ""
+	}
+	list, ok := raw.([]any)
+	if !ok {
+		return nil, "attachments must be an array"
+	}
+	if len(list) == 0 {
+		return nil, ""
+	}
+	if len(list) > 1 {
+		return nil, "only one attachment supported in v1"
+	}
+
+	item, ok := list[0].(map[string]any)
+	if !ok {
+		return nil, "attachment item must be an object"
+	}
+	attPath, _ := item["path"].(string)
+	attType, _ := item["type"].(string)
+
+	if attType != "image" {
+		return nil, "unsupported attachment type in v1: " + attType
+	}
+
+	// Extension → MIME allowlist.
+	ext := strings.ToLower(filepath.Ext(attPath))
+	mime, ok := outboundImageExts[ext]
+	if !ok {
+		return nil, "unsupported image type: " + ext
+	}
+
+	// Path validation: existence, size, allowed roots.
+	info, err := os.Stat(attPath)
+	if err != nil {
+		return nil, "attachment file not found: " + attPath
+	}
+	if info.Size() > outboundMaxBytes {
+		return nil, fmt.Sprintf("attachment too large: %d bytes (max 8 MB)", info.Size())
+	}
+	if err := validateAttachmentPath(attPath, agentName); err != nil {
+		return nil, err.Error()
+	}
+
+	return []shimAttachment{{Path: attPath, Type: attType, MIMEType: mime}}, ""
 }
 
 // handleMeshSend handles the mesh_send(target, content) tool call.
@@ -465,12 +593,6 @@ func handleMeshSend(
 		return write(jsonrpcMessage{
 			ID:    id,
 			Error: &jsonrpcError{Code: -32602, Message: "mesh_send: target is required"},
-		})
-	}
-	if content == "" {
-		return write(jsonrpcMessage{
-			ID:    id,
-			Error: &jsonrpcError{Code: -32602, Message: "mesh_send: content is required"},
 		})
 	}
 
@@ -493,12 +615,31 @@ func handleMeshSend(
 		})
 	}
 
-	env := ipcEnvelope{
-		V:       ipcVersion,
-		Type:    "send",
-		Target:  target,
-		Content: content,
+	// Parse and validate attachments (agentName not available in this scope;
+	// peers sends cannot carry attachments — attachment support is discord/whatsapp only).
+	// agentName is not threaded through to here; use empty string so the agent
+	// workdir root is not checked (peers:// sends cannot have attachments per spec).
+	shimAtts, attErr := parseMeshSendAttachments(args, "")
+	if attErr != "" {
+		return write(jsonrpcMessage{
+			ID:    id,
+			Error: &jsonrpcError{Code: -32602, Message: "mesh_send: " + attErr},
+		})
 	}
+
+	if content == "" && len(shimAtts) == 0 {
+		return write(jsonrpcMessage{
+			ID:    id,
+			Error: &jsonrpcError{Code: -32602, Message: "mesh_send: content or attachment required"},
+		})
+	}
+
+	var ipcAtts []ipcAttachment
+	for _, a := range shimAtts {
+		ipcAtts = append(ipcAtts, ipcAttachment{Type: a.Type, Path: a.Path, MIMEType: a.MIMEType})
+	}
+
+	env := ipcSendEnvWithAttachments(target, "", content, ipcAtts)
 	if err := routerWr.Write(env); err != nil {
 		return write(jsonrpcMessage{
 			ID:    id,
@@ -506,7 +647,7 @@ func handleMeshSend(
 		})
 	}
 	metrics.incOut()
-	logf("mesh_send target=%s len=%d", target, len(content))
+	logf("mesh_send target=%s len=%d attachments=%d", target, len(content), len(ipcAtts))
 	return write(jsonrpcMessage{ID: id, Result: map[string]any{
 		"content": []map[string]any{{
 			"type": "text",
@@ -529,10 +670,20 @@ func handleMeshReply(
 	write func(jsonrpcMessage) error,
 ) error {
 	content, _ := args["content"].(string)
-	if content == "" {
+
+	// Validate attachments early so we can give a clear error before checking reply target.
+	shimAtts, attErr := parseMeshSendAttachments(args, "")
+	if attErr != "" {
 		return write(jsonrpcMessage{
 			ID:    id,
-			Error: &jsonrpcError{Code: -32602, Message: "mesh_reply: content is required"},
+			Error: &jsonrpcError{Code: -32602, Message: "mesh_reply: " + attErr},
+		})
+	}
+
+	if content == "" && len(shimAtts) == 0 {
+		return write(jsonrpcMessage{
+			ID:    id,
+			Error: &jsonrpcError{Code: -32602, Message: "mesh_reply: content or attachment required"},
 		})
 	}
 
@@ -549,48 +700,61 @@ func handleMeshReply(
 	}
 
 	logf("mesh_reply source=%s target=%s", source, target)
-	return handleMeshSend(ctx, id, map[string]any{"target": target, "content": content}, routerWr, metrics, logf, write)
+	// Forward with attachments preserved.
+	fwdArgs := map[string]any{"target": target, "content": content}
+	if atts, ok := args["attachments"]; ok {
+		fwdArgs["attachments"] = atts
+	}
+	return handleMeshSend(ctx, id, fwdArgs, routerWr, metrics, logf, write)
 }
 
-// handleMeshListPeers handles the mesh_list_peers(team?) tool call. Queries
-// the in-daemon peers broker directly (in-process).
+// handleMeshListPeers handles the mesh_list_peers(team?) tool call.
+// Sends a peers-list request to the router (daemon process) and waits for
+// the peers-list-resp on pendingResp. Block-write-block-read is safe here
+// because MCP tool calls are sequential — only one is in flight at a time.
 func handleMeshListPeers(
+	ctx context.Context,
 	id json.RawMessage,
 	args map[string]any,
+	routerWr *ipcWriter,
+	pendingResp chan ipcEnvelope,
 	write func(jsonrpcMessage) error,
+	logf func(string, ...any),
 ) error {
 	team, _ := args["team"].(string)
-	peers := globalPeersBroker.ListPeers(team)
-
-	items := make([]map[string]any, 0, len(peers))
-	for _, p := range peers {
-		item := map[string]any{
-			"peer_id":      p.PeerID,
-			"node_id":      p.NodeID,
-			"teams":        p.Teams,
-			"last_seen_at": p.LastSeenAt.UTC().Format(time.RFC3339),
-		}
-		if p.Summary != "" {
-			item["summary"] = p.Summary
-		}
-		items = append(items, item)
+	if err := routerWr.Write(ipcPeersListEnv(team)); err != nil {
+		return write(jsonrpcMessage{
+			ID:    id,
+			Error: &jsonrpcError{Code: -32000, Message: "router peers-list: " + err.Error()},
+		})
 	}
-
-	data, _ := json.Marshal(items)
-	return write(jsonrpcMessage{ID: id, Result: map[string]any{
-		"content": []map[string]any{{
-			"type": "text",
-			"text": string(data),
-		}},
-	}})
+	select {
+	case resp := <-pendingResp:
+		logf("mesh_list_peers team=%q resp=%s", team, resp.Content)
+		return write(jsonrpcMessage{ID: id, Result: map[string]any{
+			"content": []map[string]any{{
+				"type": "text",
+				"text": resp.Content,
+			}},
+		}})
+	case <-ctx.Done():
+		return write(jsonrpcMessage{
+			ID:    id,
+			Error: &jsonrpcError{Code: -32000, Message: "mesh_list_peers: context cancelled"},
+		})
+	}
 }
 
-// handleMeshSetSummary handles the mesh_set_summary(summary) tool call. Updates
-// the calling agent's summary in the peers broker.
+// handleMeshSetSummary handles the mesh_set_summary(summary) tool call.
+// Sends a peers-set-summary request to the router (daemon process) and waits
+// for the peers-set-summary-resp on pendingResp. Same sequential-MCP guarantee
+// applies — one request in flight at a time.
 func handleMeshSetSummary(
+	ctx context.Context,
 	id json.RawMessage,
 	args map[string]any,
-	agentName string,
+	routerWr *ipcWriter,
+	pendingResp chan ipcEnvelope,
 	write func(jsonrpcMessage) error,
 	logf func(string, ...any),
 ) error {
@@ -601,20 +765,34 @@ func handleMeshSetSummary(
 			Error: &jsonrpcError{Code: -32602, Message: "mesh_set_summary: summary is required"},
 		})
 	}
-	ok := globalPeersBroker.SetSummary(agentName, summary)
-	if !ok {
+	if err := routerWr.Write(ipcPeersSetSummaryEnv(summary)); err != nil {
 		return write(jsonrpcMessage{
 			ID:    id,
-			Error: &jsonrpcError{Code: -32000, Message: "mesh_set_summary: agent not registered with peers broker (add a peers channel to your template)"},
+			Error: &jsonrpcError{Code: -32000, Message: "router peers-set-summary: " + err.Error()},
 		})
 	}
-	logf("mesh_set_summary agent=%s len=%d", agentName, len(summary))
-	return write(jsonrpcMessage{ID: id, Result: map[string]any{
-		"content": []map[string]any{{
-			"type": "text",
-			"text": "summary updated",
-		}},
-	}})
+	select {
+	case resp := <-pendingResp:
+		if resp.Reason != "" {
+			logf("mesh_set_summary err: %s", resp.Reason)
+			return write(jsonrpcMessage{
+				ID:    id,
+				Error: &jsonrpcError{Code: -32000, Message: "mesh_set_summary: " + resp.Reason},
+			})
+		}
+		logf("mesh_set_summary ok len=%d", len(summary))
+		return write(jsonrpcMessage{ID: id, Result: map[string]any{
+			"content": []map[string]any{{
+				"type": "text",
+				"text": "summary updated",
+			}},
+		}})
+	case <-ctx.Done():
+		return write(jsonrpcMessage{
+			ID:    id,
+			Error: &jsonrpcError{Code: -32000, Message: "mesh_set_summary: context cancelled"},
+		})
+	}
 }
 
 // buildMeshShimTools returns the tools/list payload for the mesh shim.
@@ -622,7 +800,7 @@ func buildMeshShimTools() []map[string]any {
 	return []map[string]any{
 		{
 			"name": "mesh_send",
-			"description": "Send a message to a channel. target is a URL-shape string: " +
+			"description": "Send a message (optionally with an image attachment) to a channel. target is a URL-shape string: " +
 				"discord://channel/<channelId> to send to a Discord channel, " +
 				"discord://dm/<userId> to open or reuse a DM with a user, " +
 				"peers://agent/<name> to send to a specific peer agent, " +
@@ -637,7 +815,27 @@ func buildMeshShimTools() []map[string]any {
 					},
 					"content": map[string]any{
 						"type":        "string",
-						"description": "Text content to send.",
+						"description": "Message text. Becomes the caption when an attachment is present. May be empty if an attachment is supplied.",
+					},
+					"attachments": map[string]any{
+						"type":        "array",
+						"description": "Optional. At most one item in v1.",
+						"maxItems":    1,
+						"items": map[string]any{
+							"type":     "object",
+							"required": []string{"path", "type"},
+							"properties": map[string]any{
+								"path": map[string]any{
+									"type":        "string",
+									"description": "Absolute path to a local image file.",
+								},
+								"type": map[string]any{
+									"type":        "string",
+									"enum":        []string{"image"},
+									"description": "Media kind. Only 'image' is supported in v1.",
+								},
+							},
+						},
 					},
 				},
 				"required": []string{"target", "content"},
@@ -651,7 +849,27 @@ func buildMeshShimTools() []map[string]any {
 				"properties": map[string]any{
 					"content": map[string]any{
 						"type":        "string",
-						"description": "Reply text.",
+						"description": "Reply text. May be empty if an attachment is supplied.",
+					},
+					"attachments": map[string]any{
+						"type":        "array",
+						"description": "Optional. At most one item in v1.",
+						"maxItems":    1,
+						"items": map[string]any{
+							"type":     "object",
+							"required": []string{"path", "type"},
+							"properties": map[string]any{
+								"path": map[string]any{
+									"type":        "string",
+									"description": "Absolute path to a local image file.",
+								},
+								"type": map[string]any{
+									"type":        "string",
+									"enum":        []string{"image"},
+									"description": "Media kind. Only 'image' is supported in v1.",
+								},
+							},
+						},
 					},
 				},
 				"required": []string{"content"},
@@ -685,6 +903,38 @@ func buildMeshShimTools() []map[string]any {
 			},
 		},
 	}
+}
+
+// formatInboundContent builds the final content string sent to Claude.
+// Caption is the raw message text; attachments carry downloaded media.
+//
+// Happy path:  "[<type>: /abs/path]"          e.g. "[image: …]", "[audio: …]"
+// Failure:     "[<type>: download_failed reason=…]"
+// Unknown type uses "image" as the label for back-compat with pre-audio clients.
+// Non-allowlisted MIMEs arrive with FailReason set and Type=="image"; they
+// continue to emit "[image: download_failed …]" unchanged (OQ-3 from spec 16).
+func formatInboundContent(caption string, attachments []ipcAttachment) string {
+	content := caption
+	for _, att := range attachments {
+		label := att.Type
+		if label == "" {
+			label = "image" // back-compat: pre-audio attachments have no Type
+		}
+		var marker string
+		if att.FailReason != "" {
+			marker = "[" + label + ": download_failed reason=" + att.FailReason + "]"
+		} else if att.Path != "" {
+			marker = "[" + label + ": " + att.Path + "]"
+		}
+		if marker == "" {
+			continue
+		}
+		if content != "" {
+			content += "\n"
+		}
+		content += marker
+	}
+	return content
 }
 
 // publishMeshShimStatus writes the shim's current metrics to the status file.

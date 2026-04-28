@@ -161,7 +161,7 @@ var agentCreateCmd = &cobra.Command{
 			return err
 		}
 
-		payload := map[string]interface{}{
+		payload := map[string]any{
 			"name":         name,
 			"model":        model,
 			"pinnedNodeId": nodeID,
@@ -178,7 +178,7 @@ var agentCreateCmd = &cobra.Command{
 		}
 
 		client := NewClient(sess.BaseURL, sess.AccessToken)
-		var resp map[string]interface{}
+		var resp map[string]any
 		if err := client.doRequest("POST", "/agent/create", payload, &resp); err != nil {
 			return err
 		}
@@ -196,7 +196,7 @@ var agentUpdateCmd = &cobra.Command{
 			return err
 		}
 
-		payload := map[string]interface{}{"id": args[0]}
+		payload := map[string]any{"id": args[0]}
 		if cmd.Flags().Changed("name") {
 			payload["name"] = agentUpdateName
 		}
@@ -232,7 +232,7 @@ var agentUpdateCmd = &cobra.Command{
 		}
 
 		client := NewClient(sess.BaseURL, sess.AccessToken)
-		var resp map[string]interface{}
+		var resp map[string]any
 		if err := client.doRequest("POST", "/agent/update", payload, &resp); err != nil {
 			return err
 		}
@@ -258,7 +258,7 @@ var agentDeleteCmd = &cobra.Command{
 			}
 		}
 		client := NewClient(sess.BaseURL, sess.AccessToken)
-		var resp map[string]interface{}
+		var resp map[string]any
 		if err := client.doRequest("POST", "/agent/delete", map[string]string{"id": args[0]}, &resp); err != nil {
 			return err
 		}

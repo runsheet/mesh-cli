@@ -223,7 +223,7 @@ var authWhoamiCmd = &cobra.Command{
 			return err
 		}
 
-		out := map[string]interface{}{
+		out := map[string]any{
 			"baseUrl":    sess.BaseURL,
 			"authKind":   sess.Kind,
 			"userId":     sess.UserID,

@@ -40,6 +40,12 @@ var globalPeersBroker = newPeersBroker()
 // ipcEnvelopes destined for this peer. Calling Register while a peer is
 // already registered replaces the previous delivery channel — this happens
 // when a shim reconnects after a disconnect.
+//
+// Summary preservation: if the incoming reg.Summary is empty but the existing
+// record already has a non-empty summary (set via mesh_set_summary or a
+// previous registration), the existing summary is kept. This means a router
+// restart does not erase a manually published summary, and a template
+// description only seeds the value on first registration.
 func (b *peersBroker) Register(reg peerRegistration, deliver chan ipcEnvelope) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -47,6 +53,14 @@ func (b *peersBroker) Register(reg peerRegistration, deliver chan ipcEnvelope) {
 	// Close the old delivery channel if re-registering (shim reconnect).
 	if old, exists := b.delivery[reg.PeerID]; exists {
 		close(old)
+	}
+
+	// Preserve an existing non-empty summary when the incoming registration
+	// does not supply one (e.g. router restart without a template description).
+	if reg.Summary == "" {
+		if existing, ok := b.peers[reg.PeerID]; ok && existing.Summary != "" {
+			reg.Summary = existing.Summary
+		}
 	}
 
 	reg.LastSeenAt = time.Now().UTC()

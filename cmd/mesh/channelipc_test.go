@@ -151,3 +151,238 @@ func TestIPCInboundCarriesChannelID(t *testing.T) {
 }
 
 func boolPtr(b bool) *bool { return &b }
+
+func TestIPCListGroupsRoundTrip(t *testing.T) {
+	req := ipcListGroupsEnv()
+	if req.Type != "list-groups" {
+		t.Errorf("type: got %q want list-groups", req.Type)
+	}
+	if req.V != ipcVersion {
+		t.Errorf("v: got %d want %d", req.V, ipcVersion)
+	}
+
+	resp := ipcListGroupsRespEnv(`[{"jid":"123@g.us","subject":"Test Group"}]`)
+	if resp.Type != "list-groups-resp" {
+		t.Errorf("type: got %q want list-groups-resp", resp.Type)
+	}
+
+	// Round-trip both through the wire format.
+	var buf bytes.Buffer
+	wr := newIPCWriter(&buf)
+	for _, env := range []ipcEnvelope{req, resp} {
+		if err := wr.Write(env); err != nil {
+			t.Fatalf("write %s: %v", env.Type, err)
+		}
+	}
+	rd := newIPCReader(&buf)
+
+	gotReq, err := rd.Read()
+	if err != nil {
+		t.Fatalf("read req: %v", err)
+	}
+	if gotReq.Type != "list-groups" {
+		t.Errorf("req type: got %q want list-groups", gotReq.Type)
+	}
+
+	gotResp, err := rd.Read()
+	if err != nil {
+		t.Fatalf("read resp: %v", err)
+	}
+	if gotResp.Type != "list-groups-resp" {
+		t.Errorf("resp type: got %q want list-groups-resp", gotResp.Type)
+	}
+	if gotResp.Content != `[{"jid":"123@g.us","subject":"Test Group"}]` {
+		t.Errorf("resp content: got %q", gotResp.Content)
+	}
+}
+
+func TestIPCJoinGroupRoundTrip(t *testing.T) {
+	req := ipcJoinGroupEnv("ABCxyz123inviteCode")
+	if req.Type != "join-group" {
+		t.Errorf("type: got %q want join-group", req.Type)
+	}
+	if req.RoutingKey != "ABCxyz123inviteCode" {
+		t.Errorf("routingKey: got %q want ABCxyz123inviteCode", req.RoutingKey)
+	}
+
+	resp := ipcJoinGroupRespEnv("123456789@g.us", "My Cool Group")
+	if resp.Type != "join-group-resp" {
+		t.Errorf("type: got %q want join-group-resp", resp.Type)
+	}
+	if resp.RoutingKey != "123456789@g.us" {
+		t.Errorf("routingKey: got %q want 123456789@g.us", resp.RoutingKey)
+	}
+	if resp.Content != "My Cool Group" {
+		t.Errorf("content: got %q want My Cool Group", resp.Content)
+	}
+
+	// Round-trip both through the wire format.
+	var buf bytes.Buffer
+	wr := newIPCWriter(&buf)
+	for _, env := range []ipcEnvelope{req, resp} {
+		if err := wr.Write(env); err != nil {
+			t.Fatalf("write %s: %v", env.Type, err)
+		}
+	}
+	rd := newIPCReader(&buf)
+
+	gotReq, err := rd.Read()
+	if err != nil {
+		t.Fatalf("read req: %v", err)
+	}
+	if gotReq.RoutingKey != "ABCxyz123inviteCode" {
+		t.Errorf("req routingKey: got %q", gotReq.RoutingKey)
+	}
+
+	gotResp, err := rd.Read()
+	if err != nil {
+		t.Fatalf("read resp: %v", err)
+	}
+	if gotResp.RoutingKey != "123456789@g.us" {
+		t.Errorf("resp jid: got %q", gotResp.RoutingKey)
+	}
+	if gotResp.Content != "My Cool Group" {
+		t.Errorf("resp subject: got %q", gotResp.Content)
+	}
+}
+
+func TestIPCPeersListRoundTrip(t *testing.T) {
+	// Request with team filter.
+	req := ipcPeersListEnv("eng")
+	if req.Type != "peers-list" {
+		t.Errorf("type: got %q want peers-list", req.Type)
+	}
+	if req.V != ipcVersion {
+		t.Errorf("v: got %d want %d", req.V, ipcVersion)
+	}
+	if req.RoutingKey != "eng" {
+		t.Errorf("routingKey: got %q want eng", req.RoutingKey)
+	}
+
+	// Request with no team (all peers).
+	reqAll := ipcPeersListEnv("")
+	if reqAll.RoutingKey != "" {
+		t.Errorf("empty team: routingKey should be empty, got %q", reqAll.RoutingKey)
+	}
+
+	// Response carries JSON-encoded peer list in Content.
+	const payload = `[{"peer_id":"nova","node_id":"local","teams":["eng"],"last_seen_at":"2026-04-27T00:00:00Z","summary":"orchestrator"}]`
+	resp := ipcPeersListRespEnv(payload)
+	if resp.Type != "peers-list-resp" {
+		t.Errorf("type: got %q want peers-list-resp", resp.Type)
+	}
+	if resp.Content != payload {
+		t.Errorf("content: got %q", resp.Content)
+	}
+
+	// Round-trip all three envelopes through the wire format.
+	var buf bytes.Buffer
+	wr := newIPCWriter(&buf)
+	for _, env := range []ipcEnvelope{req, reqAll, resp} {
+		if err := wr.Write(env); err != nil {
+			t.Fatalf("write %s: %v", env.Type, err)
+		}
+	}
+	rd := newIPCReader(&buf)
+
+	gotReq, err := rd.Read()
+	if err != nil {
+		t.Fatalf("read req: %v", err)
+	}
+	if gotReq.Type != "peers-list" {
+		t.Errorf("req type: got %q want peers-list", gotReq.Type)
+	}
+	if gotReq.RoutingKey != "eng" {
+		t.Errorf("req routingKey: got %q want eng", gotReq.RoutingKey)
+	}
+
+	gotReqAll, err := rd.Read()
+	if err != nil {
+		t.Fatalf("read reqAll: %v", err)
+	}
+	if gotReqAll.RoutingKey != "" {
+		t.Errorf("reqAll routingKey: got %q want empty", gotReqAll.RoutingKey)
+	}
+
+	gotResp, err := rd.Read()
+	if err != nil {
+		t.Fatalf("read resp: %v", err)
+	}
+	if gotResp.Type != "peers-list-resp" {
+		t.Errorf("resp type: got %q want peers-list-resp", gotResp.Type)
+	}
+	if gotResp.Content != payload {
+		t.Errorf("resp content: got %q", gotResp.Content)
+	}
+}
+
+func TestIPCPeersSetSummaryRoundTrip(t *testing.T) {
+	// Request carries the summary in Content.
+	const summary = "orchestrates planning and dispatches tasks to specialists"
+	req := ipcPeersSetSummaryEnv(summary)
+	if req.Type != "peers-set-summary" {
+		t.Errorf("type: got %q want peers-set-summary", req.Type)
+	}
+	if req.V != ipcVersion {
+		t.Errorf("v: got %d want %d", req.V, ipcVersion)
+	}
+	if req.Content != summary {
+		t.Errorf("content: got %q want %q", req.Content, summary)
+	}
+
+	// Success response: Reason is empty.
+	respOK := ipcPeersSetSummaryRespEnv("")
+	if respOK.Type != "peers-set-summary-resp" {
+		t.Errorf("ok resp type: got %q want peers-set-summary-resp", respOK.Type)
+	}
+	if respOK.Reason != "" {
+		t.Errorf("ok resp reason: got %q want empty", respOK.Reason)
+	}
+
+	// Error response: Reason carries the error string.
+	const errMsg = "agent not registered with peers broker"
+	respErr := ipcPeersSetSummaryRespEnv(errMsg)
+	if respErr.Reason != errMsg {
+		t.Errorf("err resp reason: got %q want %q", respErr.Reason, errMsg)
+	}
+
+	// Round-trip all three envelopes through the wire format.
+	var buf bytes.Buffer
+	wr := newIPCWriter(&buf)
+	for _, env := range []ipcEnvelope{req, respOK, respErr} {
+		if err := wr.Write(env); err != nil {
+			t.Fatalf("write %s: %v", env.Type, err)
+		}
+	}
+	rd := newIPCReader(&buf)
+
+	gotReq, err := rd.Read()
+	if err != nil {
+		t.Fatalf("read req: %v", err)
+	}
+	if gotReq.Type != "peers-set-summary" {
+		t.Errorf("req type: got %q want peers-set-summary", gotReq.Type)
+	}
+	if gotReq.Content != summary {
+		t.Errorf("req content: got %q want %q", gotReq.Content, summary)
+	}
+
+	gotRespOK, err := rd.Read()
+	if err != nil {
+		t.Fatalf("read respOK: %v", err)
+	}
+	if gotRespOK.Type != "peers-set-summary-resp" {
+		t.Errorf("respOK type: got %q want peers-set-summary-resp", gotRespOK.Type)
+	}
+	if gotRespOK.Reason != "" {
+		t.Errorf("respOK reason: got %q want empty", gotRespOK.Reason)
+	}
+
+	gotRespErr, err := rd.Read()
+	if err != nil {
+		t.Fatalf("read respErr: %v", err)
+	}
+	if gotRespErr.Reason != errMsg {
+		t.Errorf("respErr reason: got %q want %q", gotRespErr.Reason, errMsg)
+	}
+}

@@ -210,6 +210,48 @@ func TestPeersBroker_ReRegister(t *testing.T) {
 	}
 }
 
+func TestPeersBroker_RegisterSummary(t *testing.T) {
+	b := newPeersBroker()
+	ch := make(chan ipcEnvelope, 8)
+
+	// Register with a non-empty summary (from template description).
+	b.Register(peerRegistration{PeerID: "nova", NodeID: "local", Summary: "hello"}, ch)
+	peers := b.ListPeers("")
+	if len(peers) != 1 || peers[0].Summary != "hello" {
+		t.Fatalf("expected summary=hello after first Register, got %+v", peers)
+	}
+
+	// Re-register with empty Summary (e.g. router restart, no description change
+	// but new delivery channel) — existing summary must be preserved.
+	ch2 := make(chan ipcEnvelope, 8)
+	b.Register(peerRegistration{PeerID: "nova", NodeID: "local", Summary: ""}, ch2)
+	peers = b.ListPeers("")
+	if len(peers) != 1 || peers[0].Summary != "hello" {
+		t.Errorf("expected preserved summary=hello after re-register with empty Summary, got %+v", peers)
+	}
+
+	// SetSummary ("manual") followed by re-register with a template auto-value —
+	// the manual value must survive because it is already non-empty.
+	b.SetSummary("nova", "manual")
+	ch3 := make(chan ipcEnvelope, 8)
+	b.Register(peerRegistration{PeerID: "nova", NodeID: "local", Summary: "auto"}, ch3)
+	peers = b.ListPeers("")
+	if len(peers) != 1 || peers[0].Summary != "auto" {
+		// When incoming Summary is non-empty it wins outright (the template
+		// description supplied at registration time takes effect).
+		t.Errorf("expected summary=auto when re-registering with non-empty Summary, got %+v", peers)
+	}
+
+	// SetSummary to "manual" again; re-register with empty Summary → preserve.
+	b.SetSummary("nova", "manual")
+	ch4 := make(chan ipcEnvelope, 8)
+	b.Register(peerRegistration{PeerID: "nova", NodeID: "local", Summary: ""}, ch4)
+	peers = b.ListPeers("")
+	if len(peers) != 1 || peers[0].Summary != "manual" {
+		t.Errorf("expected preserved summary=manual after re-register with empty Summary, got %+v", peers)
+	}
+}
+
 func TestPeersBroker_UnregisterCleansTeamIndex(t *testing.T) {
 	b := newPeersBroker()
 	chA := make(chan ipcEnvelope, 8)
