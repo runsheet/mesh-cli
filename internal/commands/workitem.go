@@ -492,27 +492,27 @@ var listCmd = &cobra.Command{
 
 		client := newMeshClientForSession(sess)
 		var resp struct {
-			OK        bool `json:"ok"`
-			WorkItems []struct {
+			OK    bool `json:"ok"`
+			Items []struct {
 				ID           string `json:"id"`
 				Title        string `json:"title"`
 				Status       string `json:"status"`
 				CurrentOwner string `json:"current_owner"`
 				UpdatedAt    string `json:"updated_at"`
-			} `json:"workItems"`
+			} `json:"items"`
 		}
 		if err := client.doRequest("GET", path, nil, &resp); err != nil {
 			return err
 		}
 
-		if len(resp.WorkItems) == 0 {
+		if len(resp.Items) == 0 {
 			fmt.Println("no work items found")
 			return nil
 		}
 
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 		fmt.Fprintln(w, "ID\tSTATUS\tOWNER\tUPDATED\tTITLE")
-		for _, wi := range resp.WorkItems {
+		for _, wi := range resp.Items {
 			updated := wi.UpdatedAt
 			if len(updated) > 16 {
 				updated = updated[:16]
@@ -533,8 +533,20 @@ func init() {
 	listCmd.Flags().BoolVar(&listAllFlag, "all", false, "Show all work items, not just those assigned to me")
 }
 
+// testSessionOverride, when non-nil, is returned directly by requireSession
+// instead of loading from disk. Set by tests only.
+var testSessionOverride *auth.Session
+
+// overrideSessionForTest injects a session for unit tests. Pass nil to clear.
+func overrideSessionForTest(s *auth.Session) {
+	testSessionOverride = s
+}
+
 // requireSession is the commands-package version. It calls internal/auth directly
 // and handles token refresh via refreshAccessToken (defined in auth.go).
 func requireSession() (*auth.Session, error) {
+	if testSessionOverride != nil {
+		return testSessionOverride, nil
+	}
 	return requireSessionImpl()
 }
