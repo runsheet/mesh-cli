@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"projectmesh.io/mesh-cli/internal/agentsync"
 	"projectmesh.io/mesh-cli/internal/auth"
 	idaemon "projectmesh.io/mesh-cli/internal/daemon"
 	"projectmesh.io/mesh-cli/internal/node"
@@ -48,6 +49,15 @@ var nodeRegisterCmd = &cobra.Command{
 
 		fmt.Printf("Node registered. nodeId=%s token saved to ~/.mesh/node-token\n", nodeID)
 		fmt.Println("Start the daemon with: mesh node start")
+
+		// Auto-push any un-adopted local agents. Best-effort; failure is logged,
+		// not returned.
+		token, tokErr := auth.LoadNodeToken()
+		if tokErr == nil && token != "" {
+			result := agentsync.SyncAll(base, token)
+			fmt.Println(result.String())
+		}
+
 		return nil
 	},
 }
@@ -78,8 +88,9 @@ var nodeStatusCmd = &cobra.Command{
 		if base == "" {
 			base = sess.BaseURL
 		}
-
-		client := newMeshClient(base, sess.AccessToken)
+		sessCopy := *sess
+		sessCopy.BaseURL = base
+		client := newMeshClientForSession(&sessCopy)
 		var resp struct {
 			OK    bool `json:"ok"`
 			Nodes []struct {

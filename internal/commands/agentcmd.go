@@ -78,7 +78,7 @@ var agentListCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		client := newMeshClient(sess.BaseURL, sess.AccessToken)
+		client := newMeshClientForSession(sess)
 
 		path := "/agent/list"
 		if p := strings.TrimSpace(agentListProjectID); p != "" {
@@ -178,7 +178,7 @@ var agentCreateCmd = &cobra.Command{
 			payload["projectId"] = projectID
 		}
 
-		client := newMeshClient(sess.BaseURL, sess.AccessToken)
+		client := newMeshClientForSession(sess)
 		var resp map[string]any
 		if err := client.doRequest("POST", "/agent/create", payload, &resp); err != nil {
 			return err
@@ -232,7 +232,7 @@ var agentUpdateCmd = &cobra.Command{
 			return fmt.Errorf("no update fields provided")
 		}
 
-		client := newMeshClient(sess.BaseURL, sess.AccessToken)
+		client := newMeshClientForSession(sess)
 		var resp map[string]any
 		if err := client.doRequest("POST", "/agent/update", payload, &resp); err != nil {
 			return err
@@ -258,7 +258,7 @@ var agentDeleteCmd = &cobra.Command{
 				return nil
 			}
 		}
-		client := newMeshClient(sess.BaseURL, sess.AccessToken)
+		client := newMeshClientForSession(sess)
 		var resp map[string]any
 		if err := client.doRequest("POST", "/agent/delete", map[string]string{"id": args[0]}, &resp); err != nil {
 			return err

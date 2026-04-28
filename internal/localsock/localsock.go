@@ -42,6 +42,10 @@ type Deps struct {
 	// ProbeNodeID dials mesh-api to learn this node's registered id. Used by
 	// the cluster-pull handler to verify the cloud agent is pinned here.
 	ProbeNodeID func(baseURL, token string) (string, error)
+
+	// AutoPushAgent is called after a new local agent is created (mesh run).
+	// Best-effort: errors are logged, not returned. May be nil.
+	AutoPushAgent func(agentName string)
 }
 
 // StartLocalSocket starts the Unix-socket HTTP server that serves the local
@@ -353,6 +357,12 @@ func (s *localServer) createSession(w http.ResponseWriter, r *http.Request) {
 	if err := state.AddAgent(def); err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return
+	}
+
+	// Auto-push to cloud on new local agent creation. Best-effort goroutine —
+	// must not block the HTTP response.
+	if s.deps.AutoPushAgent != nil {
+		go s.deps.AutoPushAgent(name)
 	}
 
 	if s.chanMgr != nil {

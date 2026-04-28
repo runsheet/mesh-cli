@@ -157,7 +157,7 @@ var createCmd = &cobra.Command{
 			return err
 		}
 
-		client := newMeshClient(sess.BaseURL, sess.AccessToken)
+		client := newMeshClientForSession(sess)
 		title := args[0]
 		scope := "project"
 		projectId := ""
@@ -255,7 +255,7 @@ var updateCmd = &cobra.Command{
 			return fmt.Errorf("no update fields provided")
 		}
 
-		client := newMeshClient(sess.BaseURL, sess.AccessToken)
+		client := newMeshClientForSession(sess)
 		var response map[string]any
 		if err := client.doRequest("POST", "/work-item/update", payload, &response); err != nil {
 			return err
@@ -317,7 +317,7 @@ var handoffCmd = &cobra.Command{
 			payload["note"] = v
 		}
 
-		client := newMeshClient(sess.BaseURL, sess.AccessToken)
+		client := newMeshClientForSession(sess)
 		var response map[string]any
 		if err := client.doRequest("POST", "/work-item/handoff", payload, &response); err != nil {
 			return err
@@ -362,7 +362,7 @@ var reviewCmd = &cobra.Command{
 			payload["criteriaChecklist"] = v
 		}
 
-		client := newMeshClient(sess.BaseURL, sess.AccessToken)
+		client := newMeshClientForSession(sess)
 		var response map[string]any
 		if err := client.doRequest("POST", "/work-item/review", payload, &response); err != nil {
 			return err
@@ -412,7 +412,7 @@ var learningCmd = &cobra.Command{
 			return fmt.Errorf("no learning fields provided")
 		}
 
-		client := newMeshClient(sess.BaseURL, sess.AccessToken)
+		client := newMeshClientForSession(sess)
 		var response map[string]any
 		if err := client.doRequest("POST", "/work-item/learning", payload, &response); err != nil {
 			return err
@@ -490,7 +490,7 @@ var listCmd = &cobra.Command{
 			path += "?" + q
 		}
 
-		client := newMeshClient(sess.BaseURL, sess.AccessToken)
+		client := newMeshClientForSession(sess)
 		var resp struct {
 			OK        bool `json:"ok"`
 			WorkItems []struct {

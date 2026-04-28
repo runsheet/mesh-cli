@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -42,35 +43,154 @@ func init() {
 	authTokenLoginCmd.Flags().StringVar(&baseURLFlag, "baseUrl", "https://api.projectmesh.io", "Base URL of the mesh API")
 }
 
-// requireSessionImpl loads the saved session and refreshes it if expired.
-func requireSessionImpl() (*auth.Session, error) {
-	sess, err := auth.LoadSession()
+// jwtExp parses the `exp` claim from a JWT without verifying the signature.
+// Returns zero time if the token is malformed.
+func jwtExp(token string) time.Time {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return time.Time{}
+	}
+	// JWT uses raw (unpadded) base64url encoding for the payload.
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return nil, errors.New("no active session found, please login")
+		return time.Time{}
 	}
-	if auth.IsSessionValid(sess) {
-		return sess, nil
+	var claims struct {
+		Exp int64 `json:"exp"`
 	}
-	if sess.RefreshToken == "" {
-		return nil, errors.New("session expired and no refresh token available, please login again")
+	if err := json.Unmarshal(payload, &claims); err != nil || claims.Exp == 0 {
+		return time.Time{}
 	}
-	tokens, err := refreshAccessToken(sess.TokenEndpoint, sess.RefreshToken, sess.ClientID)
+	return time.Unix(claims.Exp, 0)
+}
+
+// sessionNeedsRefresh returns true if the access token has expired or will
+// expire within the next 5 minutes.
+func sessionNeedsRefresh(sess *auth.Session) bool {
+	if sess == nil || sess.AccessToken == "" {
+		return true
+	}
+	// Prefer the JWT exp claim — it's always present in Supabase tokens and
+	// more accurate than the ExpiresAt field which may be missing.
+	exp := jwtExp(sess.AccessToken)
+	if !exp.IsZero() {
+		return time.Now().Add(5 * time.Minute).After(exp)
+	}
+	// Fall back to the stored ExpiresAt field.
+	if sess.ExpiresAt != nil {
+		return time.Now().Add(5 * time.Minute).After(*sess.ExpiresAt)
+	}
+	return false
+}
+
+// meshAPIRefreshResponse is the shape of POST /auth/refresh.
+type meshAPIRefreshResponse struct {
+	OK           bool   `json:"ok"`
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+	ExpiresIn    int64  `json:"expires_in"`
+}
+
+// refreshViaAPI calls POST <baseURL>/auth/refresh with the current refresh
+// token and returns a new tokenResponse on success.
+func refreshViaAPI(baseURL, refreshToken string) (*tokenResponse, error) {
+	endpoint := normalizeBaseURL(baseURL) + "/auth/refresh"
+	body, err := json.Marshal(map[string]string{"refreshToken": refreshToken})
 	if err != nil {
-		return nil, fmt.Errorf("session expired and refresh failed: %w — please login again", err)
+		return nil, err
 	}
+	resp, err := http.Post(endpoint, "application/json", strings.NewReader(string(body)))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("refresh failed (%s): %s", resp.Status, strings.TrimSpace(string(raw)))
+	}
+	var out meshAPIRefreshResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	if !out.OK || out.AccessToken == "" {
+		return nil, fmt.Errorf("refresh response missing access_token")
+	}
+	return &tokenResponse{
+		AccessToken:  out.AccessToken,
+		RefreshToken: out.RefreshToken,
+		ExpiresIn:    out.ExpiresIn,
+	}, nil
+}
+
+// applyRefreshedTokens writes new tokens into sess and persists to disk.
+func applyRefreshedTokens(sess *auth.Session, tokens *tokenResponse) error {
 	sess.AccessToken = tokens.AccessToken
 	if tokens.RefreshToken != "" {
 		sess.RefreshToken = tokens.RefreshToken
-	}
-	if tokens.IDToken != "" {
-		sess.IDToken = tokens.IDToken
 	}
 	if tokens.ExpiresIn > 0 {
 		expiresAt := time.Now().Add(time.Duration(tokens.ExpiresIn) * time.Second)
 		sess.ExpiresAt = &expiresAt
 	}
-	if err := auth.SaveSession(sess); err != nil {
-		return nil, fmt.Errorf("refreshed token but failed to save session: %w", err)
+	return auth.SaveSession(sess)
+}
+
+// newMeshClientForSession returns a meshAPIClient pre-wired with a Layer 2
+// refresh callback. On a 401 it will call refreshViaAPI (or the OIDC endpoint
+// if configured), update the in-memory token, persist to disk, and retry the
+// original request once.
+func newMeshClientForSession(sess *auth.Session) *meshAPIClient {
+	c := newMeshClient(sess.BaseURL, sess.AccessToken)
+	c.withRefresh(func() (string, error) {
+		if sess.RefreshToken == "" {
+			return "", fmt.Errorf("no refresh token — please run `mesh auth login`")
+		}
+		var tokens *tokenResponse
+		var err error
+		if sess.TokenEndpoint != "" {
+			tokens, err = refreshAccessToken(sess.TokenEndpoint, sess.RefreshToken, sess.ClientID)
+		} else {
+			tokens, err = refreshViaAPI(sess.BaseURL, sess.RefreshToken)
+		}
+		if err != nil {
+			return "", fmt.Errorf("token refresh failed: %w — please run `mesh auth login`", err)
+		}
+		if saveErr := applyRefreshedTokens(sess, tokens); saveErr != nil {
+			// Non-fatal: we got a new token, just couldn't persist.
+			fmt.Printf("warning: refreshed token but could not save session: %v\n", saveErr)
+		}
+		return sess.AccessToken, nil
+	})
+	return c
+}
+
+// requireSessionImpl loads the saved session and refreshes it if expired or
+// within 5 minutes of expiry.
+func requireSessionImpl() (*auth.Session, error) {
+	sess, err := auth.LoadSession()
+	if err != nil {
+		return nil, errors.New("no active session found, please login")
+	}
+	if !sessionNeedsRefresh(sess) {
+		return sess, nil
+	}
+	if sess.RefreshToken == "" {
+		return nil, errors.New("session expired and no refresh token available — please run `mesh auth login`")
+	}
+
+	// Prefer the OIDC token endpoint when present (legacy OIDC login path).
+	// For portal-handoff sessions (most users), fall back to the mesh-api proxy.
+	var tokens *tokenResponse
+	if sess.TokenEndpoint != "" {
+		tokens, err = refreshAccessToken(sess.TokenEndpoint, sess.RefreshToken, sess.ClientID)
+	} else {
+		tokens, err = refreshViaAPI(sess.BaseURL, sess.RefreshToken)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("session expired, refresh failed: %w — please run `mesh auth login`", err)
+	}
+	if saveErr := applyRefreshedTokens(sess, tokens); saveErr != nil {
+		return nil, fmt.Errorf("refreshed token but failed to save session: %w", saveErr)
 	}
 	return sess, nil
 }

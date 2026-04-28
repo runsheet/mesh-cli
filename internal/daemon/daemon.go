@@ -4,6 +4,7 @@ package daemon
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,11 +19,13 @@ import (
 
 	"github.com/google/uuid"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"projectmesh.io/mesh-cli/internal/agentsync"
 	"projectmesh.io/mesh-cli/internal/auth"
 	"projectmesh.io/mesh-cli/internal/channels"
 	"projectmesh.io/mesh-cli/internal/claudeconf"
@@ -90,6 +93,15 @@ func RunDaemon(baseURL string, grpcAddr string, writeSettings func(agentName str
 		WritePromptFile: writeAgentPromptFile,
 		WriteSettings:   writeSettings,
 		ProbeNodeID:     probeNodeID,
+		AutoPushAgent: func(agentName string) {
+			tok, err := auth.LoadNodeToken()
+			if err != nil || strings.TrimSpace(tok) == "" {
+				return
+			}
+			if err := agentsync.AdoptOne(baseURL, tok, agentName); err != nil {
+				fmt.Printf("mesh auto-push new agent %s: %v\n", agentName, err)
+			}
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("start local socket: %w", err)
@@ -251,6 +263,15 @@ func runClusteredDaemon(ctx context.Context, baseURL, grpcAddr, token string, re
 		}
 	}
 
+	// Auto-push un-adopted local agents after connecting to the cluster.
+	// Best-effort goroutine — daemon must not block on this.
+	if baseURL != "" {
+		go func() {
+			result := agentsync.SyncAll(baseURL, token)
+			fmt.Println(result.String())
+		}()
+	}
+
 	errCh := make(chan error, 2)
 	go func() { errCh <- heartbeatLoop(ctx, client, token, nodeID, registry) }()
 	go func() { errCh <- nodeStreamLoop(ctx, client, token, registry, baseURL) }()
@@ -258,22 +279,43 @@ func runClusteredDaemon(ctx context.Context, baseURL, grpcAddr, token string, re
 	return <-errCh
 }
 
-// DialGrpc dials a gRPC address with plaintext credentials and keepalive.
+// DialGrpc dials a gRPC address with TLS credentials (system root CAs) for
+// non-local hosts and plaintext for localhost/127.0.0.1, plus keepalive.
 // Exported for use by cmd/mesh callers that probe node id.
 func DialGrpc(addr string) (*grpc.ClientConn, error) {
 	return dialGrpc(addr)
 }
 
 func dialGrpc(addr string) (*grpc.ClientConn, error) {
+	host, _, splitErr := net.SplitHostPort(addr)
+	if splitErr != nil {
+		host = addr
+	}
+	var creds credentials.TransportCredentials
+	if isLocalHost(host) {
+		creds = insecure.NewCredentials()
+	} else {
+		// Fly's edge terminates TLS for tcp services with handlers = ["tls"].
+		// System roots are sufficient for the public hostname's cert chain.
+		creds = credentials.NewTLS(&tls.Config{ServerName: host})
+	}
 	return grpc.NewClient(
 		addr,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithTransportCredentials(creds),
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
 			Time:                30 * time.Second,
 			Timeout:             10 * time.Second,
 			PermitWithoutStream: true,
 		}),
 	)
+}
+
+func isLocalHost(host string) bool {
+	switch host {
+	case "localhost", "127.0.0.1", "::1", "":
+		return true
+	}
+	return false
 }
 
 func authContext(ctx context.Context, token string) context.Context {
@@ -849,9 +891,24 @@ func deliverWorkItemPoke(poke *meshv1.WorkItemPoke) bool {
 	if poke == nil || poke.GetAgentId() == "" {
 		return false
 	}
-	path := fmt.Sprintf("/run/user/%d/mesh/poke-%s.sock", os.Getuid(), poke.GetAgentId())
+	// poke.AgentId is the cloud agent UUID. The session listener creates its
+	// socket under the local agent name (e.g. "larry-pa"). Translate via local
+	// state by scanning for a matching CloudAgentID. Fall back to the raw id
+	// for cases where no local mapping exists yet (rare but possible during a
+	// race between adoption and the first poke).
+	localName := poke.GetAgentId()
+	if agents, err := state.ListAgents(); err == nil {
+		cloudID := poke.GetAgentId()
+		for _, a := range agents {
+			if a.CloudAgentID != nil && *a.CloudAgentID == cloudID {
+				localName = a.Name
+				break
+			}
+		}
+	}
+	path := fmt.Sprintf("/run/user/%d/mesh/poke-%s.sock", os.Getuid(), localName)
 	if _, err := os.Stat(path); err != nil {
-		fmt.Printf("mesh node poke drop agent=%s reason=no-listener\n", poke.GetAgentId())
+		fmt.Printf("mesh node poke drop agent=%s (local=%s) reason=no-listener\n", poke.GetAgentId(), localName)
 		return false
 	}
 	conn, err := net.DialTimeout("unix", path, 500*time.Millisecond)

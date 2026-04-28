@@ -47,7 +47,7 @@ var projectCreateCmd = &cobra.Command{
 		if v := strings.TrimSpace(projectCreateDescription); v != "" {
 			payload["description"] = v
 		}
-		client := newMeshClient(sess.BaseURL, sess.AccessToken)
+		client := newMeshClientForSession(sess)
 		var resp map[string]any
 		if err := client.doRequest("POST", "/project/create", payload, &resp); err != nil {
 			return err
@@ -66,7 +66,7 @@ var projectListCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		client := newMeshClient(sess.BaseURL, sess.AccessToken)
+		client := newMeshClientForSession(sess)
 		var resp struct {
 			OK       bool `json:"ok"`
 			Projects []struct {
@@ -107,7 +107,7 @@ var projectShowCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		client := newMeshClient(sess.BaseURL, sess.AccessToken)
+		client := newMeshClientForSession(sess)
 		var resp map[string]any
 		if err := client.doRequest("GET", "/project/"+args[0], nil, &resp); err != nil {
 			return err
@@ -143,7 +143,7 @@ var projectUpdateCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		client := newMeshClient(sess.BaseURL, sess.AccessToken)
+		client := newMeshClientForSession(sess)
 		var resp map[string]any
 		if err := client.doRequest("POST", "/project/update", payload, &resp); err != nil {
 			return err
@@ -174,7 +174,7 @@ var projectDeleteCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		client := newMeshClient(sess.BaseURL, sess.AccessToken)
+		client := newMeshClientForSession(sess)
 		var resp map[string]any
 		if err := client.doRequest("DELETE", "/project/"+id, nil, &resp); err != nil {
 			return err
@@ -207,7 +207,7 @@ var membersAddCmd = &cobra.Command{
 			"email":     args[1],
 			"role":      role,
 		}
-		client := newMeshClient(sess.BaseURL, sess.AccessToken)
+		client := newMeshClientForSession(sess)
 		var resp map[string]any
 		if err := client.doRequest("POST", "/project/members/add", payload, &resp); err != nil {
 			return err
@@ -227,7 +227,7 @@ var membersListCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		client := newMeshClient(sess.BaseURL, sess.AccessToken)
+		client := newMeshClientForSession(sess)
 		var resp struct {
 			OK      bool `json:"ok"`
 			Members []struct {
@@ -271,7 +271,7 @@ var membersRemoveCmd = &cobra.Command{
 			"projectId": args[0],
 			"userId":    args[1],
 		}
-		client := newMeshClient(sess.BaseURL, sess.AccessToken)
+		client := newMeshClientForSession(sess)
 		var resp map[string]any
 		if err := client.doRequest("POST", "/project/members/remove", payload, &resp); err != nil {
 			return err

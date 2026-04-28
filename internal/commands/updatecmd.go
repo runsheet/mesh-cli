@@ -6,6 +6,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"projectmesh.io/mesh-cli/internal/agentsync"
+	"projectmesh.io/mesh-cli/internal/auth"
 	itpl "projectmesh.io/mesh-cli/internal/template"
 )
 
@@ -36,6 +38,17 @@ var localUpdateCmd = &cobra.Command{
 				fmt.Printf("restarted session %s\n", sid)
 			}
 		}
+
+		// Trigger 4: sync updated agent definition to cloud. Local wins.
+		// Not adopted → adopt; adopted → update cloud row.
+		sess, sessErr := requireSession()
+		if sessErr == nil && sess != nil {
+			nodeToken, _ := auth.LoadNodeToken()
+			if err := agentsync.SyncOneWithUserToken(sess.BaseURL, sess.AccessToken, nodeToken, args[0]); err != nil {
+				fmt.Printf("cloud sync %s: %v\n", args[0], err)
+			}
+		}
+
 		return nil
 	},
 }

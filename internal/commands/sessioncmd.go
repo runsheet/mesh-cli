@@ -41,7 +41,7 @@ var sessionListCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		client := newMeshClient(sess.BaseURL, sess.AccessToken)
+		client := newMeshClientForSession(sess)
 		var resp struct {
 			OK       bool `json:"ok"`
 			Sessions []struct {
@@ -102,7 +102,7 @@ var sessionNewUpCmd = &cobra.Command{
 				return nil
 			}
 		}
-		client := newMeshClient(sess.BaseURL, sess.AccessToken)
+		client := newMeshClientForSession(sess)
 		var resp map[string]any
 		payload := map[string]string{"nodeId": nodeID, "agentId": args[0]}
 		if err := client.doRequest("POST", "/session/new-up", payload, &resp); err != nil {
@@ -163,7 +163,7 @@ func looksLikeUUID(s string) bool {
 }
 
 func lookupNodeBySlug(sess *auth.Session, slug string) (string, error) {
-	client := newMeshClient(sess.BaseURL, sess.AccessToken)
+	client := newMeshClientForSession(sess)
 	var resp struct {
 		OK    bool `json:"ok"`
 		Nodes []struct {
