@@ -849,7 +849,7 @@ func deliverWorkItemPoke(poke *meshv1.WorkItemPoke) bool {
 	if poke == nil || poke.GetAgentId() == "" {
 		return false
 	}
-	path := fmt.Sprintf("/tmp/mesh-agent-poke-%s.sock", poke.GetAgentId())
+	path := fmt.Sprintf("/run/user/%d/mesh/poke-%s.sock", os.Getuid(), poke.GetAgentId())
 	if _, err := os.Stat(path); err != nil {
 		fmt.Printf("mesh node poke drop agent=%s reason=no-listener\n", poke.GetAgentId())
 		return false

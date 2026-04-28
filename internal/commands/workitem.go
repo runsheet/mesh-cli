@@ -3,8 +3,10 @@ package commands
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
+	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
@@ -449,7 +451,86 @@ func init() {
 	learningCmd.Flags().StringVar(&learningFollowUpID, "follow-up-item-id", "", "Follow-up work item ID")
 	learningCmd.Flags().StringVar(&learningNote, "note", "", "Event note for the learning update")
 
-	workItemCmd.AddCommand(createCmd, updateCmd, handoffCmd, reviewCmd, learningCmd)
+	workItemCmd.AddCommand(listCmd, createCmd, updateCmd, handoffCmd, reviewCmd, learningCmd)
+}
+
+var (
+	listStatusFlag    string
+	listProjectIDFlag string
+	listAllFlag       bool
+)
+
+var listCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List Ralph Loop work items",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		sess, err := requireSession()
+		if err != nil {
+			return err
+		}
+
+		q := ""
+		if !listAllFlag {
+			q = "assignedToMe=true"
+		}
+		if v := strings.TrimSpace(listStatusFlag); v != "" {
+			if q != "" {
+				q += "&"
+			}
+			q += "status=" + v
+		}
+		if v := strings.TrimSpace(listProjectIDFlag); v != "" {
+			if q != "" {
+				q += "&"
+			}
+			q += "projectId=" + v
+		}
+		path := "/work-item/list"
+		if q != "" {
+			path += "?" + q
+		}
+
+		client := newMeshClient(sess.BaseURL, sess.AccessToken)
+		var resp struct {
+			OK        bool `json:"ok"`
+			WorkItems []struct {
+				ID           string `json:"id"`
+				Title        string `json:"title"`
+				Status       string `json:"status"`
+				CurrentOwner string `json:"current_owner"`
+				UpdatedAt    string `json:"updated_at"`
+			} `json:"workItems"`
+		}
+		if err := client.doRequest("GET", path, nil, &resp); err != nil {
+			return err
+		}
+
+		if len(resp.WorkItems) == 0 {
+			fmt.Println("no work items found")
+			return nil
+		}
+
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "ID\tSTATUS\tOWNER\tUPDATED\tTITLE")
+		for _, wi := range resp.WorkItems {
+			updated := wi.UpdatedAt
+			if len(updated) > 16 {
+				updated = updated[:16]
+			}
+			owner := wi.CurrentOwner
+			if owner == "" {
+				owner = "-"
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", wi.ID, wi.Status, owner, updated, wi.Title)
+		}
+		return w.Flush()
+	},
+}
+
+func init() {
+	listCmd.Flags().StringVar(&listStatusFlag, "status", "", "Filter by status (e.g. ready_for_devlead,in_execution)")
+	listCmd.Flags().StringVar(&listProjectIDFlag, "project-id", "", "Filter by project ID")
+	listCmd.Flags().BoolVar(&listAllFlag, "all", false, "Show all work items, not just those assigned to me")
 }
 
 // requireSession is the commands-package version. It calls internal/auth directly

@@ -2,9 +2,12 @@
 package sessions
 
 import (
+	"bufio"
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -284,6 +287,7 @@ func (r *SessionRegistry) StartWithOptions(opts StartOptions) (*PtySession, bool
 
 	go r.readLoop(s)
 	go r.waitLoop(s)
+	go r.pokeSocketListener(s)
 
 	hasDevChannels := false
 	for _, a := range args {
@@ -355,6 +359,7 @@ func (r *SessionRegistry) readLoop(s *PtySession) {
 func (r *SessionRegistry) waitLoop(s *PtySession) {
 	err := s.Cmd.Wait()
 	_ = s.PTY.Close()
+	_ = os.Remove(pokeSockPath(s.AgentID))
 	s.markExited(err)
 
 	dur := time.Since(s.StartedAt)
@@ -584,4 +589,70 @@ func (r *SessionRegistry) DetachAttacher(agentID, attachID string) {
 		return
 	}
 	s.removeAttacher(attachID)
+}
+
+// pokeSockPath returns the Unix socket path for poke delivery per spec 04.
+func pokeSockPath(agentID string) string {
+	return fmt.Sprintf("/run/user/%d/mesh/poke-%s.sock", os.Getuid(), agentID)
+}
+
+// pokeSocketListener listens on the agent's poke socket and forwards each
+// poke as a prompt-line written to the PTY. It exits when the session's PTY
+// is closed or the process exits.
+func (r *SessionRegistry) pokeSocketListener(s *PtySession) {
+	dir := fmt.Sprintf("/run/user/%d/mesh", os.Getuid())
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		fmt.Printf("mesh poke-sock agent=%s mkdir err: %v\n", s.AgentID, err)
+		return
+	}
+
+	sockPath := pokeSockPath(s.AgentID)
+	_ = os.Remove(sockPath)
+
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		fmt.Printf("mesh poke-sock agent=%s listen err: %v\n", s.AgentID, err)
+		return
+	}
+	defer func() {
+		ln.Close()
+		_ = os.Remove(sockPath)
+	}()
+
+	if err := os.Chmod(sockPath, 0o600); err != nil {
+		fmt.Printf("mesh poke-sock agent=%s chmod err: %v\n", s.AgentID, err)
+	}
+
+	fmt.Printf("mesh poke-sock agent=%s listening path=%s\n", s.AgentID, sockPath)
+
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			s.mu.Lock()
+			exited := s.exited
+			s.mu.Unlock()
+			if !exited {
+				fmt.Printf("mesh poke-sock agent=%s accept err: %v\n", s.AgentID, err)
+			}
+			return
+		}
+		go func(c net.Conn) {
+			defer c.Close()
+			_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
+			var poke struct {
+				WorkItemID string `json:"work_item_id"`
+				Reason     string `json:"reason"`
+			}
+			if err := json.NewDecoder(bufio.NewReader(c)).Decode(&poke); err != nil {
+				fmt.Printf("mesh poke-sock agent=%s decode err: %v\n", s.AgentID, err)
+				return
+			}
+			line := fmt.Sprintf("mesh:work-item-poke id=%s reason=%s\n", poke.WorkItemID, poke.Reason)
+			if _, err := s.PTY.Write([]byte(line)); err != nil {
+				fmt.Printf("mesh poke-sock agent=%s pty write err: %v\n", s.AgentID, err)
+				return
+			}
+			fmt.Printf("mesh poke-sock agent=%s delivered work_item=%s\n", s.AgentID, poke.WorkItemID)
+		}(conn)
+	}
 }
