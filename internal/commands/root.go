@@ -15,7 +15,7 @@ var rootCmd = &cobra.Command{
 }
 
 func init() {
-	rootCmd.AddCommand(authCmd, workItemCmd, nodeCmd, agentCmd, sessionCmd)
+	rootCmd.AddCommand(authCmd, workItemCmd, projectCmd, nodeCmd, agentCmd, sessionCmd)
 	rootCmd.AddCommand(runCmd, psCmd, attachCmd, logsCmd, restartCmd, rmCmd, inspectCmd)
 	rootCmd.AddCommand(pullCmd, imagesCmd, templatesCmd, localUpdateCmd)
 	rootCmd.AddCommand(channelServerCmd)
