@@ -1,314 +1,101 @@
 package main
 
+// This file is a thin compatibility shim. All IPC types and builders now live
+// in internal/ipc; the aliases and wrappers below let the rest of cmd/mesh/
+// continue to use the old unexported names without change until Phase 9 rewires
+// the final callers directly to internal/ipc.
+
 import (
-	"bufio"
-	"encoding/json"
-	"fmt"
 	"io"
 	"net"
+
+	"projectmesh.io/mesh-cli/internal/ipc"
 )
 
-// ipcVersion is the protocol version embedded in every envelope. A gateway
-// or shim that receives a version it doesn't recognise responds with an error
-// envelope and closes the connection.
-const ipcVersion = 1
+const ipcVersion = ipc.Version
 
-// ipcChannelOverride is the wire representation of a per-channel override
-// within a guild-mode subscribe envelope. Mirrors discordChannelOverride but
-// uses plain bool/string (not pointers) — unset fields are omitted via
-// omitempty so the gateway can tell "override present" from "override absent".
-type ipcChannelOverride struct {
-	ChannelID      string   `json:"channelId"`
-	RequireMention *bool    `json:"requireMention,omitempty"`
-	InboundPrefix  *string  `json:"inboundPrefix,omitempty"`
-	AllowedUsers   []string `json:"allowedUsers,omitempty"`
-	AllowedRoles   []string `json:"allowedRoles,omitempty"`
-}
+type ipcEnvelope = ipc.Envelope
+type ipcAttachment = ipc.Attachment
+type ipcChannelOverride = ipc.ChannelOverride
+type peerEntryWire = ipc.PeerEntryWire
 
-// ipcEnvelope is the common wire shape for all shim↔gateway messages over the
-// gateway Unix socket. Line-delimited JSON; one envelope per line.
-//
-// Shim → gateway types: subscribe, unsubscribe, send
-// Gateway → shim types: subscribe-ack, inbound, error
-// Router → shim types: subscribe-ack, inbound, error (same as gateway)
-// Shim → router types: subscribe, unsubscribe, send (same as shim→gateway)
-type ipcEnvelope struct {
-	V    int    `json:"v"`
-	Type string `json:"type"`
+type ipcWriter = ipc.Writer
+type ipcReader = ipc.Reader
 
-	// subscribe fields (shim → gateway / router)
-	Agent            string               `json:"agent,omitempty"`
-	Index            int                  `json:"index,omitempty"`
-	RoutingKey       string               `json:"routingKey,omitempty"`
-	SubscriptionMode string               `json:"subscriptionMode,omitempty"` // "channel" (default) or "guild"
-	AllowedUsers     []string             `json:"allowedUsers,omitempty"`
-	AllowedRoles     []string             `json:"allowedRoles,omitempty"`
-	RequireMention   bool                 `json:"requireMention,omitempty"`
-	InboundPrefix    string               `json:"inboundPrefix,omitempty"`
-	ChannelOverrides []ipcChannelOverride `json:"channelOverrides,omitempty"` // guild mode only
-
-	// send fields (shim → gateway / router)
-	Content   string `json:"content,omitempty"`
-	ChannelID string `json:"channelId,omitempty"` // send: optional explicit target (guild mode); inbound: originating channel
-
-	// Source identifies the backend platform an inbound envelope originated
-	// from. Set by the daemon router when it fans out from a gateway to the
-	// mesh-shim; absent on legacy direct-gateway paths. Values: "discord",
-	// "whatsapp", "peers".
-	Source string `json:"source,omitempty"`
-
-	// Target is the URL-shape destination the mesh-shim supplies on outbound
-	// sends (e.g. "discord://channel/<id>", "discord://dm/<userId>"). The
-	// daemon router parses the scheme and forwards to the right gateway.
-	// Absent on legacy direct-gateway paths.
-	Target string `json:"target,omitempty"`
-
-	// inbound fields (gateway → shim / router)
-	Sender    string `json:"sender,omitempty"`    // display name (e.g. Discord username)
-	MessageID string `json:"messageId,omitempty"` // platform-specific message id
-	UserID    string `json:"userId,omitempty"`    // platform-specific sender user id
-	Timestamp string `json:"ts,omitempty"`        // ISO-8601 message timestamp
-
-	// peers inbound fields (broker → router → shim). PeerID is the sending
-	// agent name; Team is set only for team-scoped sends.
-	PeerID string `json:"peerId,omitempty"`
-	Team   string `json:"team,omitempty"`
-
-	// error fields (gateway → shim)
-	Reason string `json:"reason,omitempty"`
-	Detail string `json:"detail,omitempty"`
-
-	// Attachments carries downloaded media files attached to an inbound message.
-	// Path is empty and FailReason is set on download failure. omitempty keeps
-	// text-only envelopes wire-identical to pre-v1-media envelopes (no version bump).
-	Attachments []ipcAttachment `json:"attachments,omitempty"`
-}
-
-// ipcAttachment describes a single downloaded media file attached to an
-// inbound message. Path is empty and FailReason is set on download failure.
-type ipcAttachment struct {
-	Type       string `json:"type"`                 // "image" (v1); future: "audio","video","document"
-	Path       string `json:"path,omitempty"`       // absolute local path; empty on failure
-	MIMEType   string `json:"mimeType,omitempty"`   // MIME as reported by whatsmeow
-	FailReason string `json:"failReason,omitempty"` // non-empty on failure
-}
-
-// ipcWriter wraps a net.Conn and serialises ipcEnvelope values as
-// newline-terminated JSON. Safe for single-goroutine use only; callers must
-// coordinate their own locking when writing from multiple goroutines.
-type ipcWriter struct {
-	w io.Writer
-}
-
-func newIPCWriter(w io.Writer) *ipcWriter { return &ipcWriter{w: w} }
-
-func (iw *ipcWriter) Write(env ipcEnvelope) error {
-	data, err := json.Marshal(env)
-	if err != nil {
-		return fmt.Errorf("ipc marshal: %w", err)
-	}
-	data = append(data, '\n')
-	_, err = iw.w.Write(data)
-	return err
-}
-
-// ipcReader wraps a buffered reader and yields one ipcEnvelope per call.
-// Returns io.EOF when the underlying connection closes cleanly.
-type ipcReader struct {
-	s *bufio.Scanner
-}
-
-func newIPCReader(r io.Reader) *ipcReader {
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 64*1024), 64*1024)
-	return &ipcReader{s: sc}
-}
-
-func (ir *ipcReader) Read() (ipcEnvelope, error) {
-	if !ir.s.Scan() {
-		if err := ir.s.Err(); err != nil {
-			return ipcEnvelope{}, err
-		}
-		return ipcEnvelope{}, io.EOF
-	}
-	var env ipcEnvelope
-	if err := json.Unmarshal(ir.s.Bytes(), &env); err != nil {
-		return ipcEnvelope{}, fmt.Errorf("ipc unmarshal: %w", err)
-	}
-	if env.V != ipcVersion {
-		return ipcEnvelope{}, fmt.Errorf("ipc protocol version mismatch: got %d want %d", env.V, ipcVersion)
-	}
-	return env, nil
-}
-
-// dialGateway opens a Unix-socket connection to the gateway socket and returns
-// a reader/writer pair. The caller is responsible for closing the conn.
+func newIPCWriter(w io.Writer) *ipcWriter         { return ipc.NewWriter(w) }
+func newIPCReader(r io.Reader) *ipcReader         { return ipc.NewReader(r) }
 func dialGateway(sockPath string) (net.Conn, *ipcReader, *ipcWriter, error) {
-	conn, err := net.Dial("unix", sockPath)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("dial gateway %s: %w", sockPath, err)
-	}
-	return conn, newIPCReader(conn), newIPCWriter(conn), nil
+	return ipc.DialGateway(sockPath)
 }
 
-// ipcSubscribeChannelEnv builds the subscribe envelope for channel-mode
-// (subscriptionMode defaults to "channel" so the field is omitted for
-// backward-compat with old gateways).
 func ipcSubscribeChannelEnv(agent string, index int, channelID, inboundPrefix string, allowedUsers, allowedRoles []string, requireMention bool) ipcEnvelope {
-	return ipcEnvelope{
-		V:              ipcVersion,
-		Type:           "subscribe",
-		Agent:          agent,
-		Index:          index,
-		RoutingKey:     channelID,
-		InboundPrefix:  inboundPrefix,
-		AllowedUsers:   allowedUsers,
-		AllowedRoles:   allowedRoles,
-		RequireMention: requireMention,
-	}
+	return ipc.SubscribeChannelEnv(agent, index, channelID, inboundPrefix, allowedUsers, allowedRoles, requireMention)
 }
 
-// ipcSubscribeGuildEnv builds the subscribe envelope for guild-mode.
 func ipcSubscribeGuildEnv(agent string, index int, guildID, inboundPrefix string, allowedUsers, allowedRoles []string, requireMention bool, overrides []ipcChannelOverride) ipcEnvelope {
-	return ipcEnvelope{
-		V:                ipcVersion,
-		Type:             "subscribe",
-		Agent:            agent,
-		Index:            index,
-		SubscriptionMode: "guild",
-		RoutingKey:       guildID,
-		InboundPrefix:    inboundPrefix,
-		AllowedUsers:     allowedUsers,
-		AllowedRoles:     allowedRoles,
-		RequireMention:   requireMention,
-		ChannelOverrides: overrides,
-	}
+	return ipc.SubscribeGuildEnv(agent, index, guildID, inboundPrefix, allowedUsers, allowedRoles, requireMention, overrides)
 }
 
-// ipcSubscribeEnv is the original helper retained for backward-compat with
-// call sites that predate guild mode. It always produces a channel-mode
-// envelope (subscriptionMode omitted).
 func ipcSubscribeEnv(agent string, index int, routingKey, inboundPrefix string, allowedUsers, allowedRoles []string, requireMention bool) ipcEnvelope {
-	return ipcSubscribeChannelEnv(agent, index, routingKey, inboundPrefix, allowedUsers, allowedRoles, requireMention)
+	return ipc.SubscribeEnv(agent, index, routingKey, inboundPrefix, allowedUsers, allowedRoles, requireMention)
 }
 
-// ipcSendEnv builds the send envelope a shim forwards to the gateway.
-// channelID is the explicit destination channel; for channel mode it equals
-// routingKey; for guild mode it may differ from the guildId routingKey.
 func ipcSendEnv(channelID, content string) ipcEnvelope {
-	return ipcEnvelope{V: ipcVersion, Type: "send", ChannelID: channelID, Content: content}
+	return ipc.SendEnv(channelID, content)
 }
 
-// ipcSendEnvWithAttachments builds a send envelope that carries media
-// attachments. attachments may be nil; omitempty keeps wire format
-// identical to ipcSendEnv for text-only sends.
 func ipcSendEnvWithAttachments(target, channelID, content string, attachments []ipcAttachment) ipcEnvelope {
-	return ipcEnvelope{
-		V:           ipcVersion,
-		Type:        "send",
-		Target:      target,
-		ChannelID:   channelID,
-		Content:     content,
-		Attachments: attachments,
-	}
+	return ipc.SendEnvWithAttachments(target, channelID, content, attachments)
 }
 
-// ipcUnsubscribeEnv builds the unsubscribe envelope.
 func ipcUnsubscribeEnv(routingKey string) ipcEnvelope {
-	return ipcEnvelope{V: ipcVersion, Type: "unsubscribe", RoutingKey: routingKey}
+	return ipc.UnsubscribeEnv(routingKey)
 }
 
-// ipcAckEnv builds the subscribe-ack the gateway sends back.
 func ipcAckEnv(routingKey string) ipcEnvelope {
-	return ipcEnvelope{V: ipcVersion, Type: "subscribe-ack", RoutingKey: routingKey}
+	return ipc.AckEnv(routingKey)
 }
 
-// ipcInboundEnvFull builds the inbound envelope with all metadata fields
-// populated. Used by the discord and whatsapp gateways so the shim can emit
-// Claude Code's `notifications/claude/channel` with a proper meta block.
-// attachments may be nil for text-only messages; omitempty keeps the wire
-// format unchanged for existing text-only senders.
 func ipcInboundEnvFull(routingKey, channelID, sender, messageID, userID, timestamp, content string, attachments []ipcAttachment) ipcEnvelope {
-	return ipcEnvelope{
-		V:           ipcVersion,
-		Type:        "inbound",
-		RoutingKey:  routingKey,
-		ChannelID:   channelID,
-		Sender:      sender,
-		MessageID:   messageID,
-		UserID:      userID,
-		Timestamp:   timestamp,
-		Content:     content,
-		Attachments: attachments,
-	}
+	return ipc.InboundEnvFull(routingKey, channelID, sender, messageID, userID, timestamp, content, attachments)
 }
 
-// ipcInboundEnv builds the inbound envelope the gateway sends to a shim.
-// channelID is the originating Discord channel (important for guild-mode shims
-// that need to know which channel to reply to).
 func ipcInboundEnv(routingKey, channelID, sender, content string) ipcEnvelope {
-	return ipcEnvelope{V: ipcVersion, Type: "inbound", RoutingKey: routingKey, ChannelID: channelID, Sender: sender, Content: content}
+	return ipc.InboundEnv(routingKey, channelID, sender, content)
 }
 
-// ipcErrorEnv builds an error envelope.
 func ipcErrorEnv(reason, detail string) ipcEnvelope {
-	return ipcEnvelope{V: ipcVersion, Type: "error", Reason: reason, Detail: detail}
+	return ipc.ErrorEnv(reason, detail)
 }
 
-// ipcListGroupsEnv builds the list-groups request sent by the CLI to the gateway.
 func ipcListGroupsEnv() ipcEnvelope {
-	return ipcEnvelope{V: ipcVersion, Type: "list-groups"}
+	return ipc.ListGroupsEnv()
 }
 
-// ipcListGroupsRespEnv builds the list-groups-resp the gateway sends back.
-// content is a JSON-encoded []whatsappGroupEntry.
 func ipcListGroupsRespEnv(content string) ipcEnvelope {
-	return ipcEnvelope{V: ipcVersion, Type: "list-groups-resp", Content: content}
+	return ipc.ListGroupsRespEnv(content)
 }
 
-// ipcJoinGroupEnv builds the join-group request. routingKey carries the raw
-// invite code (prefix already stripped by the CLI).
 func ipcJoinGroupEnv(code string) ipcEnvelope {
-	return ipcEnvelope{V: ipcVersion, Type: "join-group", RoutingKey: code}
+	return ipc.JoinGroupEnv(code)
 }
 
-// ipcJoinGroupRespEnv builds the join-group-resp the gateway sends back.
-// routingKey is the resulting group JID; content is the group subject.
 func ipcJoinGroupRespEnv(jid, subject string) ipcEnvelope {
-	return ipcEnvelope{V: ipcVersion, Type: "join-group-resp", RoutingKey: jid, Content: subject}
+	return ipc.JoinGroupRespEnv(jid, subject)
 }
 
-// peerEntryWire is the JSON shape for one peer in a peers-list-resp envelope.
-// Content on the envelope carries a JSON-encoded []peerEntryWire.
-type peerEntryWire struct {
-	PeerID     string   `json:"peer_id"`
-	NodeID     string   `json:"node_id"`
-	Teams      []string `json:"teams"`
-	LastSeenAt string   `json:"last_seen_at"` // RFC3339
-	Summary    string   `json:"summary,omitempty"`
-}
-
-// ipcPeersListEnv builds the peers-list request the shim sends to the router.
-// team is optional; empty string means "all peers".
 func ipcPeersListEnv(team string) ipcEnvelope {
-	return ipcEnvelope{V: ipcVersion, Type: "peers-list", RoutingKey: team}
+	return ipc.PeersListEnv(team)
 }
 
-// ipcPeersListRespEnv builds the peers-list-resp the router sends back.
-// content is a JSON-encoded []peerEntryWire.
 func ipcPeersListRespEnv(content string) ipcEnvelope {
-	return ipcEnvelope{V: ipcVersion, Type: "peers-list-resp", Content: content}
+	return ipc.PeersListRespEnv(content)
 }
 
-// ipcPeersSetSummaryEnv builds the peers-set-summary request.
-// content carries the summary string; the router identifies the agent from
-// the agentRouter that owns the connection.
 func ipcPeersSetSummaryEnv(summary string) ipcEnvelope {
-	return ipcEnvelope{V: ipcVersion, Type: "peers-set-summary", Content: summary}
+	return ipc.PeersSetSummaryEnv(summary)
 }
 
-// ipcPeersSetSummaryRespEnv builds the peers-set-summary-resp.
-// On success Reason is empty. On failure Reason carries the error string.
 func ipcPeersSetSummaryRespEnv(errReason string) ipcEnvelope {
-	return ipcEnvelope{V: ipcVersion, Type: "peers-set-summary-resp", Reason: errReason}
+	return ipc.PeersSetSummaryRespEnv(errReason)
 }

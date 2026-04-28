@@ -21,6 +21,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"projectmesh.io/mesh-cli/internal/paths"
 	meshv1 "projectmesh.io/mesh-cli/proto/meshv1"
 )
 
@@ -81,7 +82,7 @@ func RunDaemon(baseURL string, grpcAddr string) error {
 	// per-platform gateway sockets. Routers run after gateways so that the
 	// gateway sockets are already bound when routers subscribe.
 	chanRouter := NewChannelRouter()
-	chanRouter.Sync(agents)
+	chanRouter.Sync(agentEntries(agents))
 	defer chanRouter.StopAll()
 
 	// Local socket always starts — standalone mode requires it, cluster mode
@@ -1087,17 +1088,7 @@ func rematerializeLocalPrompts() {
 // exists. Each agent owns a directory under which we drop system_prompt.md,
 // .claude/settings.json (MCP config), and channels/* (per-channel state). The
 // directory is claude's cmd.Dir so .claude/settings.json auto-loads.
-func agentWorkdir(agentID string) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	dir := filepath.Join(home, ".mesh", "agents", agentID)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", err
-	}
-	return dir, nil
-}
+func agentWorkdir(agentID string) (string, error) { return paths.AgentWorkdir(agentID) }
 
 // writeAgentPromptFile materializes <systemPrompt>\n\n<loopTemplate> to
 // ~/.mesh/agents/<agentId>/system_prompt.md. Claude is spawned with cmd.Dir

@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"projectmesh.io/mesh-cli/internal/paths"
 )
 
 // snapshotAgent writes a self-contained snapshot of a rendered template into
@@ -150,15 +152,16 @@ func validateSystemPromptPathInDir(tplDir, agentName string, overrides map[strin
 }
 
 // snapshotExists returns true when both agent.yaml and system_prompt.md are
-// present under ~/.mesh/agents/<name>/.
+// present under ~/.mesh/agents/<name>/. Uses paths.MeshDir (read-only; does
+// not create the directory).
 func snapshotExists(agentName string) bool {
-	home, err := os.UserHomeDir()
+	dir, err := paths.MeshDir()
 	if err != nil {
 		return false
 	}
-	dir := filepath.Join(home, ".mesh", "agents", agentName)
+	agentDir := filepath.Join(dir, "agents", agentName)
 	for _, f := range []string{"agent.yaml", "system_prompt.md"} {
-		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
+		if _, err := os.Stat(filepath.Join(agentDir, f)); err != nil {
 			return false
 		}
 	}
@@ -168,12 +171,12 @@ func snapshotExists(agentName string) bool {
 // loadSnapshotAgentYAML reads and parses the snapshotted agent.yaml from
 // ~/.mesh/agents/<name>/agent.yaml.
 func loadSnapshotAgentYAML(agentName string) (*AgentYAML, error) {
-	home, err := os.UserHomeDir()
+	dir, err := paths.MeshDir()
 	if err != nil {
 		return nil, err
 	}
-	path := filepath.Join(home, ".mesh", "agents", agentName, "agent.yaml")
-	data, err := os.ReadFile(path)
+	p := filepath.Join(dir, "agents", agentName, "agent.yaml")
+	data, err := os.ReadFile(p)
 	if err != nil {
 		return nil, fmt.Errorf("read snapshot agent.yaml: %w", err)
 	}
@@ -183,12 +186,12 @@ func loadSnapshotAgentYAML(agentName string) (*AgentYAML, error) {
 // loadSnapshotSystemPrompt reads the raw system_prompt.md from the agent
 // snapshot dir (no loop-template suffix appended).
 func loadSnapshotSystemPrompt(agentName string) (string, error) {
-	home, err := os.UserHomeDir()
+	dir, err := paths.MeshDir()
 	if err != nil {
 		return "", err
 	}
-	path := filepath.Join(home, ".mesh", "agents", agentName, "system_prompt.md")
-	data, err := os.ReadFile(path)
+	p := filepath.Join(dir, "agents", agentName, "system_prompt.md")
+	data, err := os.ReadFile(p)
 	if err != nil {
 		return "", fmt.Errorf("read snapshot system_prompt.md: %w", err)
 	}

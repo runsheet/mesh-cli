@@ -9,27 +9,19 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 
+	"projectmesh.io/mesh-cli/internal/paths"
 	meshv1 "projectmesh.io/mesh-cli/proto/meshv1"
 )
 
-const daemonSocketName = "daemon.sock"
-
 // DaemonSocketPath is ~/.mesh/daemon.sock. Exported so command code can print
 // nice errors.
-func DaemonSocketPath() (string, error) {
-	dir, err := meshDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, daemonSocketName), nil
-}
+func DaemonSocketPath() (string, error) { return paths.DaemonSocketPath() }
 
 // StartLocalSocket starts the Unix-socket HTTP server that serves the local
 // daemon surface (mesh run/ps/attach/logs/...). It takes the same
@@ -668,7 +660,7 @@ func (s *localServer) updateSession(w http.ResponseWriter, _ *http.Request, name
 	}
 	if s.chanRouter != nil {
 		if all, err := ListAgents(); err == nil {
-			s.chanRouter.Sync(all)
+			s.chanRouter.Sync(agentEntries(all))
 		}
 	}
 
