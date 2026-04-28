@@ -10,7 +10,7 @@ MESH_CLI    := $(abspath ..)
 WORKSPACE   := $(abspath ../..)
 PROTO_FILE  := mesh.proto
 
-GO_OUT      := $(MESH_CLI)/cmd/mesh/proto/meshv1
+GO_OUT      := $(MESH_CLI)/proto/meshv1
 TS_OUT      := $(WORKSPACE)/mesh-api/src/grpc/proto
 TS_PROTO    := $(WORKSPACE)/mesh-api/node_modules/.bin/protoc-gen-ts_proto
 

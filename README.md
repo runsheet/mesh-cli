@@ -7,8 +7,7 @@ This is the Go-based replacement for the Mesh CLI, providing parity with the exi
 Build from source:
 
 ```bash
-cd cmd/mesh
-GO111MODULE=on go build -o mesh
+GO111MODULE=on go build -o mesh ./cmd/mesh/
 ```
 
 ## Authentication Commands

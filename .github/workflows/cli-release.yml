@@ -44,18 +44,17 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: cmd/mesh/go.mod
-          cache-dependency-path: cmd/mesh/go.sum
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
 
       - name: Build binary
-        working-directory: cmd/mesh
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 0
         run: |
-          mkdir -p ../../dist
-          go build -trimpath -ldflags="-s -w" -o ../../dist/${{ matrix.asset_name }} .
+          mkdir -p dist
+          go build -trimpath -ldflags="-s -w" -o dist/${{ matrix.asset_name }} ./cmd/mesh/
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
