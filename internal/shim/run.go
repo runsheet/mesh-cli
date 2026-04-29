@@ -178,11 +178,12 @@ func Run(agentName string) error {
 				case <-ctx.Done():
 					return
 				}
-			case "peers-list-resp", "peers-set-summary-resp":
+			case "peers-list-resp", "peers-set-summary-resp",
+				"work-item-get-resp", "work-item-update-resp", "work-item-handoff-resp":
 				select {
 				case pendingResp <- env:
 				default:
-					logf("peers resp dropped (no waiter): type=%s", env.Type)
+					logf("resp dropped (no waiter): type=%s", env.Type)
 				}
 			}
 		}
@@ -393,6 +394,12 @@ func handleMeshShimMCP(
 			return HandleMeshListPeers(ctx, msg.ID, params.Arguments, routerWr, pendingResp, write, logf)
 		case "mesh_set_summary":
 			return HandleMeshSetSummary(ctx, msg.ID, params.Arguments, routerWr, pendingResp, write, logf)
+		case "mesh_get_work_item":
+			return HandleMeshGetWorkItem(ctx, msg.ID, params.Arguments, routerWr, pendingResp, write, logf)
+		case "mesh_update_work_item":
+			return HandleMeshUpdateWorkItem(ctx, msg.ID, params.Arguments, routerWr, pendingResp, write, logf)
+		case "mesh_handoff_work_item":
+			return HandleMeshHandoffWorkItem(ctx, msg.ID, params.Arguments, routerWr, pendingResp, write, logf)
 		default:
 			return write(JSONRPCMessage{
 				ID:    msg.ID,

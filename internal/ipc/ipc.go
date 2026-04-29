@@ -320,3 +320,39 @@ func PeersSetSummaryEnv(summary string) Envelope {
 func PeersSetSummaryRespEnv(errReason string) Envelope {
 	return Envelope{V: Version, Type: "peers-set-summary-resp", Reason: errReason}
 }
+
+// WorkItemGetEnv builds the work-item-get request the shim sends to the router.
+// RoutingKey carries the work item UUID.
+func WorkItemGetEnv(id string) Envelope {
+	return Envelope{V: Version, Type: "work-item-get", RoutingKey: id}
+}
+
+// WorkItemGetRespEnv builds the work-item-get-resp the router sends back.
+// On success Content holds the JSON-encoded work item. On failure Reason is set.
+func WorkItemGetRespEnv(content, errReason string) Envelope {
+	return Envelope{V: Version, Type: "work-item-get-resp", Content: content, Reason: errReason}
+}
+
+// WorkItemUpdateEnv builds the work-item-update request. Content holds the
+// JSON-encoded update payload (workItemId + any mutable fields).
+func WorkItemUpdateEnv(content string) Envelope {
+	return Envelope{V: Version, Type: "work-item-update", Content: content}
+}
+
+// WorkItemUpdateRespEnv builds the work-item-update-resp. On success Reason is
+// empty; on failure it carries the error string.
+func WorkItemUpdateRespEnv(errReason string) Envelope {
+	return Envelope{V: Version, Type: "work-item-update-resp", Reason: errReason}
+}
+
+// WorkItemHandoffEnv builds the work-item-handoff request. Content holds the
+// JSON-encoded handoff payload (workItemId, fromRole, toRole, ...).
+func WorkItemHandoffEnv(content string) Envelope {
+	return Envelope{V: Version, Type: "work-item-handoff", Content: content}
+}
+
+// WorkItemHandoffRespEnv builds the work-item-handoff-resp. On success Reason
+// is empty; on failure it carries the error string.
+func WorkItemHandoffRespEnv(errReason string) Envelope {
+	return Envelope{V: Version, Type: "work-item-handoff-resp", Reason: errReason}
+}

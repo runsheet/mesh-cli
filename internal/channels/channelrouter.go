@@ -31,6 +31,22 @@ type AgentEntry struct {
 // The router (daemon-side) listens here; the mesh-shim connects to it.
 func MeshRouterSockPath(agentName string) (string, error) { return paths.RouterSockPath(agentName) }
 
+// RouterDeps holds optional callbacks the daemon injects into the router so
+// that shim-initiated work-item operations can reach mesh-api without creating
+// an import cycle (daemon → channels is fine; channels → daemon is not).
+//
+// Any nil field means the corresponding capability is unavailable; the router
+// returns an appropriate error envelope to the shim.
+type RouterDeps struct {
+	// WorkItemGet fetches a single work item by UUID. Returns the raw JSON body
+	// from mesh-api (the full response object) or an error.
+	WorkItemGet func(id string) ([]byte, error)
+	// WorkItemUpdate POSTs to /work-item/update. payload must include workItemId.
+	WorkItemUpdate func(payload map[string]any) ([]byte, error)
+	// WorkItemHandoff POSTs to /work-item/handoff. payload must include workItemId, fromRole, toRole.
+	WorkItemHandoff func(payload map[string]any) ([]byte, error)
+}
+
 // agentRouter is the daemon-side multiplexer for one agent. It:
 //  1. Listens on ~/.mesh/agents/<name>/mesh.sock (the shim connects here).
 //  2. Accepts exactly one shim connection at a time.
@@ -47,6 +63,7 @@ type agentRouter struct {
 	description string
 	channels    []Spec
 	broker      *peers.Broker
+	deps        RouterDeps
 
 	mu       sync.Mutex
 	shimConn net.Conn           // single connected shim (nil if none)
@@ -69,7 +86,8 @@ type ChannelRouter struct {
 	mu      sync.Mutex
 	routers map[string]*runningRouter // key: agentName
 	broker  *peers.Broker
-	startFn func(ctx context.Context, agentName, description string, channels []Spec, broker *peers.Broker)
+	deps    RouterDeps
+	startFn func(ctx context.Context, agentName, description string, channels []Spec, broker *peers.Broker, deps RouterDeps)
 }
 
 type runningRouter struct {
@@ -83,17 +101,28 @@ func NewChannelRouter(broker *peers.Broker) *ChannelRouter {
 	return &ChannelRouter{
 		routers: map[string]*runningRouter{},
 		broker:  broker,
-		startFn: runAgentRouter,
+		startFn: runAgentRouterWithDeps,
 	}
 }
 
+// SetDeps injects optional daemon callbacks (work-item HTTP helpers). Must be
+// called before the first Sync; safe to call once at startup.
+func (cr *ChannelRouter) SetDeps(deps RouterDeps) {
+	cr.mu.Lock()
+	cr.deps = deps
+	cr.mu.Unlock()
+}
+
 // NewChannelRouterWithStart creates a ChannelRouter with a custom start function.
-// Used in tests to inject a stub without running real goroutines.
+// Used in tests to inject a stub without running real goroutines. The stub
+// receives a zero-value RouterDeps; tests that need deps should use SetDeps.
 func NewChannelRouterWithStart(broker *peers.Broker, fn func(ctx context.Context, agentName, description string, channels []Spec, broker *peers.Broker)) *ChannelRouter {
 	return &ChannelRouter{
 		routers: map[string]*runningRouter{},
 		broker:  broker,
-		startFn: fn,
+		startFn: func(ctx context.Context, agentName, description string, channels []Spec, broker *peers.Broker, _ RouterDeps) {
+			fn(ctx, agentName, description, channels, broker)
+		},
 	}
 }
 
@@ -151,14 +180,17 @@ func (cr *ChannelRouter) startRouterLocked(agentName, description string, channe
 	rr := &runningRouter{cancel: cancel, done: make(chan struct{}), channels: channels}
 	cr.routers[agentName] = rr
 	broker := cr.broker
+	deps := cr.deps
+	startFn := cr.startFn
 	go func() {
 		defer close(rr.done)
-		cr.startFn(ctx, agentName, description, channels, broker)
+		startFn(ctx, agentName, description, channels, broker, deps)
 	}()
 }
 
-// runAgentRouter is the goroutine that owns one agent's mesh.sock listener.
-func runAgentRouter(ctx context.Context, agentName, description string, channels []Spec, broker *peers.Broker) {
+// runAgentRouterWithDeps is the goroutine that owns one agent's mesh.sock listener.
+// deps carries optional daemon callbacks; it is zero-value when invoked from tests.
+func runAgentRouterWithDeps(ctx context.Context, agentName, description string, channels []Spec, broker *peers.Broker, deps RouterDeps) {
 	logf := routerLogf(agentName)
 	sockPath, err := MeshRouterSockPath(agentName)
 	if err != nil {
@@ -210,6 +242,7 @@ func runAgentRouter(ctx context.Context, agentName, description string, channels
 				description: description,
 				channels:    channels,
 				broker:      broker,
+				deps:        deps,
 				gwConns:     map[string]*routerGWConn{},
 			}
 			r.serveShim(ctx, conn, logf)
@@ -269,6 +302,12 @@ func (r *agentRouter) serveShim(ctx context.Context, conn net.Conn, logf func(st
 			r.handleShimPeersList(env, logf)
 		case "peers-set-summary":
 			r.handleShimPeersSetSummary(env, logf)
+		case "work-item-get":
+			r.handleShimWorkItemGet(env, logf)
+		case "work-item-update":
+			r.handleShimWorkItemUpdate(env, logf)
+		case "work-item-handoff":
+			r.handleShimWorkItemHandoff(env, logf)
 		default:
 			logf("unknown shim envelope type=%s", env.Type)
 		}
@@ -1006,4 +1045,86 @@ func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+// handleShimWorkItemGet handles a work-item-get request from the shim.
+// RoutingKey carries the work item UUID. Responds with work-item-get-resp.
+func (r *agentRouter) handleShimWorkItemGet(env ipc.Envelope, logf func(string, ...any)) {
+	r.mu.Lock()
+	wr := r.shimWr
+	r.mu.Unlock()
+	if wr == nil {
+		return
+	}
+	if r.deps.WorkItemGet == nil {
+		_ = wr.Write(ipc.WorkItemGetRespEnv("", "work-item-get not available (daemon not connected to mesh-api)"))
+		return
+	}
+	id := env.RoutingKey
+	if id == "" {
+		_ = wr.Write(ipc.WorkItemGetRespEnv("", "work-item-get: id is required"))
+		return
+	}
+	body, err := r.deps.WorkItemGet(id)
+	if err != nil {
+		logf("work-item-get id=%s err=%v", id, err)
+		_ = wr.Write(ipc.WorkItemGetRespEnv("", err.Error()))
+		return
+	}
+	logf("work-item-get id=%s ok", id)
+	_ = wr.Write(ipc.WorkItemGetRespEnv(string(body), ""))
+}
+
+// handleShimWorkItemUpdate handles a work-item-update request from the shim.
+// Content carries the JSON-encoded update payload. Responds with work-item-update-resp.
+func (r *agentRouter) handleShimWorkItemUpdate(env ipc.Envelope, logf func(string, ...any)) {
+	r.mu.Lock()
+	wr := r.shimWr
+	r.mu.Unlock()
+	if wr == nil {
+		return
+	}
+	if r.deps.WorkItemUpdate == nil {
+		_ = wr.Write(ipc.WorkItemUpdateRespEnv("work-item-update not available (daemon not connected to mesh-api)"))
+		return
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(env.Content), &payload); err != nil {
+		_ = wr.Write(ipc.WorkItemUpdateRespEnv("work-item-update: invalid JSON payload: " + err.Error()))
+		return
+	}
+	if _, err := r.deps.WorkItemUpdate(payload); err != nil {
+		logf("work-item-update err=%v", err)
+		_ = wr.Write(ipc.WorkItemUpdateRespEnv(err.Error()))
+		return
+	}
+	logf("work-item-update ok id=%v", payload["workItemId"])
+	_ = wr.Write(ipc.WorkItemUpdateRespEnv(""))
+}
+
+// handleShimWorkItemHandoff handles a work-item-handoff request from the shim.
+// Content carries the JSON-encoded handoff payload. Responds with work-item-handoff-resp.
+func (r *agentRouter) handleShimWorkItemHandoff(env ipc.Envelope, logf func(string, ...any)) {
+	r.mu.Lock()
+	wr := r.shimWr
+	r.mu.Unlock()
+	if wr == nil {
+		return
+	}
+	if r.deps.WorkItemHandoff == nil {
+		_ = wr.Write(ipc.WorkItemHandoffRespEnv("work-item-handoff not available (daemon not connected to mesh-api)"))
+		return
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(env.Content), &payload); err != nil {
+		_ = wr.Write(ipc.WorkItemHandoffRespEnv("work-item-handoff: invalid JSON payload: " + err.Error()))
+		return
+	}
+	if _, err := r.deps.WorkItemHandoff(payload); err != nil {
+		logf("work-item-handoff err=%v", err)
+		_ = wr.Write(ipc.WorkItemHandoffRespEnv(err.Error()))
+		return
+	}
+	logf("work-item-handoff ok id=%v", payload["workItemId"])
+	_ = wr.Write(ipc.WorkItemHandoffRespEnv(""))
 }

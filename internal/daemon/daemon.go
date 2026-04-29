@@ -120,7 +120,62 @@ func RunDaemon(baseURL string, grpcAddr string, writeSettings func(agentName str
 		return ctx.Err()
 	}
 
+	chanRouter.SetDeps(workItemRouterDeps(baseURL, token))
+
 	return runClusteredDaemon(ctx, baseURL, grpcAddr, token, registry)
+}
+
+// workItemRouterDeps builds the RouterDeps struct for work-item HTTP calls
+// using the node token. These are injected into the channel router so that
+// the mesh-shim's MCP work-item tools can round-trip through mesh-api.
+func workItemRouterDeps(baseURL, nodeToken string) channels.RouterDeps {
+	apiDo := func(method, path string, body any) ([]byte, error) {
+		if baseURL == "" {
+			return nil, fmt.Errorf("mesh-api baseURL not configured")
+		}
+		url := strings.TrimRight(baseURL, "/") + path
+		var bodyReader io.Reader
+		if body != nil {
+			data, err := json.Marshal(body)
+			if err != nil {
+				return nil, err
+			}
+			bodyReader = strings.NewReader(string(data))
+		}
+		req, err := http.NewRequest(method, url, bodyReader)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+nodeToken)
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+		raw, rerr := io.ReadAll(resp.Body)
+		if rerr != nil {
+			return nil, rerr
+		}
+		if resp.StatusCode >= 400 {
+			return nil, fmt.Errorf("mesh-api %s %s: %s", method, path, strings.TrimSpace(string(raw)))
+		}
+		return raw, nil
+	}
+
+	return channels.RouterDeps{
+		WorkItemGet: func(id string) ([]byte, error) {
+			return apiDo(http.MethodGet, "/work-item/get/"+id, nil)
+		},
+		WorkItemUpdate: func(payload map[string]any) ([]byte, error) {
+			return apiDo(http.MethodPost, "/work-item/update", payload)
+		},
+		WorkItemHandoff: func(payload map[string]any) ([]byte, error) {
+			return apiDo(http.MethodPost, "/work-item/handoff", payload)
+		},
+	}
 }
 
 func autoStartAgents(registry *sessions.SessionRegistry, writeSettings func(string, []channels.Spec, map[string]string) error) {

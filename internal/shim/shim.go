@@ -333,6 +333,183 @@ func HandleMeshSetSummary(
 	}
 }
 
+// HandleMeshGetWorkItem handles the mesh_get_work_item(id) tool call.
+func HandleMeshGetWorkItem(
+	ctx context.Context,
+	id json.RawMessage,
+	args map[string]any,
+	routerWr *ipc.Writer,
+	pendingResp chan ipc.Envelope,
+	write func(JSONRPCMessage) error,
+	logf func(string, ...any),
+) error {
+	workItemID, _ := args["id"].(string)
+	if workItemID == "" {
+		return write(JSONRPCMessage{
+			ID:    id,
+			Error: &JSONRPCError{Code: -32602, Message: "mesh_get_work_item: id is required"},
+		})
+	}
+	if err := routerWr.Write(ipc.WorkItemGetEnv(workItemID)); err != nil {
+		return write(JSONRPCMessage{
+			ID:    id,
+			Error: &JSONRPCError{Code: -32000, Message: "router work-item-get: " + err.Error()},
+		})
+	}
+	select {
+	case resp := <-pendingResp:
+		if resp.Reason != "" {
+			logf("mesh_get_work_item id=%s err: %s", workItemID, resp.Reason)
+			return write(JSONRPCMessage{
+				ID:    id,
+				Error: &JSONRPCError{Code: -32000, Message: "mesh_get_work_item: " + resp.Reason},
+			})
+		}
+		logf("mesh_get_work_item id=%s ok", workItemID)
+		return write(JSONRPCMessage{ID: id, Result: map[string]any{
+			"content": []map[string]any{{
+				"type": "text",
+				"text": resp.Content,
+			}},
+		}})
+	case <-ctx.Done():
+		return write(JSONRPCMessage{
+			ID:    id,
+			Error: &JSONRPCError{Code: -32000, Message: "mesh_get_work_item: context cancelled"},
+		})
+	}
+}
+
+// HandleMeshUpdateWorkItem handles the mesh_update_work_item(...) tool call.
+func HandleMeshUpdateWorkItem(
+	ctx context.Context,
+	id json.RawMessage,
+	args map[string]any,
+	routerWr *ipc.Writer,
+	pendingResp chan ipc.Envelope,
+	write func(JSONRPCMessage) error,
+	logf func(string, ...any),
+) error {
+	workItemID, _ := args["id"].(string)
+	if workItemID == "" {
+		return write(JSONRPCMessage{
+			ID:    id,
+			Error: &JSONRPCError{Code: -32602, Message: "mesh_update_work_item: id is required"},
+		})
+	}
+	payload := map[string]any{"workItemId": workItemID}
+	for _, field := range []string{"status", "currentOwner", "ownerRole", "note", "priority", "title"} {
+		if v, ok := args[field]; ok && v != nil {
+			payload[field] = v
+		}
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return write(JSONRPCMessage{
+			ID:    id,
+			Error: &JSONRPCError{Code: -32000, Message: "mesh_update_work_item: marshal: " + err.Error()},
+		})
+	}
+	if err := routerWr.Write(ipc.WorkItemUpdateEnv(string(data))); err != nil {
+		return write(JSONRPCMessage{
+			ID:    id,
+			Error: &JSONRPCError{Code: -32000, Message: "router work-item-update: " + err.Error()},
+		})
+	}
+	select {
+	case resp := <-pendingResp:
+		if resp.Reason != "" {
+			logf("mesh_update_work_item id=%s err: %s", workItemID, resp.Reason)
+			return write(JSONRPCMessage{
+				ID:    id,
+				Error: &JSONRPCError{Code: -32000, Message: "mesh_update_work_item: " + resp.Reason},
+			})
+		}
+		logf("mesh_update_work_item id=%s ok", workItemID)
+		return write(JSONRPCMessage{ID: id, Result: map[string]any{
+			"content": []map[string]any{{
+				"type": "text",
+				"text": "work item updated",
+			}},
+		}})
+	case <-ctx.Done():
+		return write(JSONRPCMessage{
+			ID:    id,
+			Error: &JSONRPCError{Code: -32000, Message: "mesh_update_work_item: context cancelled"},
+		})
+	}
+}
+
+// HandleMeshHandoffWorkItem handles the mesh_handoff_work_item(...) tool call.
+func HandleMeshHandoffWorkItem(
+	ctx context.Context,
+	id json.RawMessage,
+	args map[string]any,
+	routerWr *ipc.Writer,
+	pendingResp chan ipc.Envelope,
+	write func(JSONRPCMessage) error,
+	logf func(string, ...any),
+) error {
+	workItemID, _ := args["id"].(string)
+	fromRole, _ := args["fromRole"].(string)
+	toRole, _ := args["toRole"].(string)
+	if workItemID == "" || fromRole == "" || toRole == "" {
+		return write(JSONRPCMessage{
+			ID:    id,
+			Error: &JSONRPCError{Code: -32602, Message: "mesh_handoff_work_item: id, fromRole, and toRole are required"},
+		})
+	}
+	payload := map[string]any{
+		"workItemId": workItemID,
+		"fromRole":   fromRole,
+		"toRole":     toRole,
+	}
+	for _, field := range []string{"summary", "agentId"} {
+		if v, ok := args[field]; ok && v != nil {
+			if field == "summary" {
+				payload["handoffSummary"] = v
+			} else {
+				payload[field] = v
+			}
+		}
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return write(JSONRPCMessage{
+			ID:    id,
+			Error: &JSONRPCError{Code: -32000, Message: "mesh_handoff_work_item: marshal: " + err.Error()},
+		})
+	}
+	if err := routerWr.Write(ipc.WorkItemHandoffEnv(string(data))); err != nil {
+		return write(JSONRPCMessage{
+			ID:    id,
+			Error: &JSONRPCError{Code: -32000, Message: "router work-item-handoff: " + err.Error()},
+		})
+	}
+	select {
+	case resp := <-pendingResp:
+		if resp.Reason != "" {
+			logf("mesh_handoff_work_item id=%s err: %s", workItemID, resp.Reason)
+			return write(JSONRPCMessage{
+				ID:    id,
+				Error: &JSONRPCError{Code: -32000, Message: "mesh_handoff_work_item: " + resp.Reason},
+			})
+		}
+		logf("mesh_handoff_work_item id=%s %s→%s ok", workItemID, fromRole, toRole)
+		return write(JSONRPCMessage{ID: id, Result: map[string]any{
+			"content": []map[string]any{{
+				"type": "text",
+				"text": fmt.Sprintf("handoff recorded: %s → %s", fromRole, toRole),
+			}},
+		}})
+	case <-ctx.Done():
+		return write(JSONRPCMessage{
+			ID:    id,
+			Error: &JSONRPCError{Code: -32000, Message: "mesh_handoff_work_item: context cancelled"},
+		})
+	}
+}
+
 // BuildMeshShimTools returns the tools/list payload for the mesh shim.
 func BuildMeshShimTools() []map[string]any {
 	return []map[string]any{
@@ -438,6 +615,92 @@ func BuildMeshShimTools() []map[string]any {
 					},
 				},
 				"required": []string{"summary"},
+			},
+		},
+		{
+			"name":        "mesh_get_work_item",
+			"description": "Fetch a work item by UUID. Returns the full work item object as JSON.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"id": map[string]any{
+						"type":        "string",
+						"description": "Work item UUID.",
+					},
+				},
+				"required": []string{"id"},
+			},
+		},
+		{
+			"name": "mesh_update_work_item",
+			"description": "Update mutable fields of a work item (status, currentOwner, ownerRole, priority, title, note). " +
+				"All fields except id are optional — only supplied fields are changed. " +
+				"Valid statuses: inbox, clarifying, spec_ready, awaiting_approval, ready_for_devlead, in_execution, blocked, in_review, changes_requested, done, archived.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"id": map[string]any{
+						"type":        "string",
+						"description": "Work item UUID.",
+					},
+					"status": map[string]any{
+						"type":        "string",
+						"description": "New status value.",
+					},
+					"currentOwner": map[string]any{
+						"type":        "string",
+						"description": "Agent name or UUID to assign as current owner.",
+					},
+					"ownerRole": map[string]any{
+						"type":        "string",
+						"description": "Role of the current owner (human, pm, devlead, builder).",
+					},
+					"priority": map[string]any{
+						"type":        "string",
+						"description": "Priority: low, medium, high, urgent.",
+					},
+					"title": map[string]any{
+						"type":        "string",
+						"description": "New title.",
+					},
+					"note": map[string]any{
+						"type":        "string",
+						"description": "Audit note recorded on the event.",
+					},
+				},
+				"required": []string{"id"},
+			},
+		},
+		{
+			"name": "mesh_handoff_work_item",
+			"description": "Record a handoff from one role to another and advance the work item's owner_role. " +
+				"fromRole and toRole must be one of: human, pm, devlead, builder. " +
+				"A handoff to 'devlead' automatically advances status to ready_for_devlead.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"id": map[string]any{
+						"type":        "string",
+						"description": "Work item UUID.",
+					},
+					"fromRole": map[string]any{
+						"type":        "string",
+						"description": "Role handing off (human, pm, devlead, builder).",
+					},
+					"toRole": map[string]any{
+						"type":        "string",
+						"description": "Role receiving the work item.",
+					},
+					"summary": map[string]any{
+						"type":        "string",
+						"description": "Optional handoff summary / context for the receiver.",
+					},
+					"agentId": map[string]any{
+						"type":        "string",
+						"description": "Optional target agent UUID or name to assign as new owner.",
+					},
+				},
+				"required": []string{"id", "fromRole", "toRole"},
 			},
 		},
 	}
