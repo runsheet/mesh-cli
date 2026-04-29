@@ -596,6 +596,30 @@ func pokeSockPath(agentID string) string {
 	return fmt.Sprintf("/run/user/%d/mesh/poke-%s.sock", os.Getuid(), agentID)
 }
 
+// pokeSidecarDir returns the directory where poke sidecar JSON files are written
+// for the claude-code Stop hook to read.
+func pokeSidecarDir() string {
+	return fmt.Sprintf("/run/user/%d/mesh/pokes", os.Getuid())
+}
+
+// writePokeSidecar writes a sidecar JSON file for the given agent so the
+// claude-code Stop hook can inject the poke as context for the next turn.
+// Overwrites any previous pending poke for this agent (latest wins).
+// Non-fatal: errors are logged but do not affect PTY delivery.
+func writePokeSidecar(agentName, workItemID, reason string) {
+	dir := pokeSidecarDir()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		fmt.Printf("mesh poke-sidecar agent=%s mkdir err: %v\n", agentName, err)
+		return
+	}
+	payload := fmt.Sprintf(`{"agent":%q,"work_item_id":%q,"reason":%q}`+"\n",
+		agentName, workItemID, reason)
+	path := filepath.Join(dir, agentName+".json")
+	if err := os.WriteFile(path, []byte(payload), 0o600); err != nil {
+		fmt.Printf("mesh poke-sidecar agent=%s write err: %v\n", agentName, err)
+	}
+}
+
 // pokeSocketListener listens on the agent's poke socket and forwards each
 // poke as a prompt-line written to the PTY. It exits when the session's PTY
 // is closed or the process exits.
@@ -647,11 +671,18 @@ func (r *SessionRegistry) pokeSocketListener(s *PtySession) {
 				fmt.Printf("mesh poke-sock agent=%s decode err: %v\n", s.AgentID, err)
 				return
 			}
+
+			// Primary delivery: write prompt line to PTY (fallback when hook not installed).
 			line := fmt.Sprintf("mesh:work-item-poke id=%s reason=%s\n", poke.WorkItemID, poke.Reason)
 			if _, err := s.PTY.Write([]byte(line)); err != nil {
 				fmt.Printf("mesh poke-sock agent=%s pty write err: %v\n", s.AgentID, err)
 				return
 			}
+
+			// Secondary delivery: write sidecar JSON for the Stop hook to pick up
+			// and inject as context for the next turn, triggering an immediate cycle.
+			writePokeSidecar(s.AgentID, poke.WorkItemID, poke.Reason)
+
 			fmt.Printf("mesh poke-sock agent=%s delivered work_item=%s\n", s.AgentID, poke.WorkItemID)
 		}(conn)
 	}

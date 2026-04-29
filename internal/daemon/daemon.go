@@ -1030,6 +1030,10 @@ type loopTemplateResponse struct {
 		IdleSeconds   int `json:"idleSeconds"`
 		ActiveSeconds int `json:"activeSeconds"`
 	} `json:"cadence"`
+	PokeHook struct {
+		Script  string `json:"script"`
+		Version string `json:"version"`
+	} `json:"pokeHook"`
 }
 
 func warmLoopTemplate(baseURL, token string) error {
@@ -1080,7 +1084,28 @@ func fetchLoopTemplate(baseURL, token string) error {
 	if wasEmpty {
 		go rematerializeLocalPrompts()
 	}
+
+	if parsed.PokeHook.Script != "" {
+		go installPokeHook(parsed.PokeHook.Script)
+	}
+
 	return nil
+}
+
+// installPokeHook writes the poke hook script to ~/.mesh/hooks/mesh-poke.sh
+// and registers it in ~/.claude/settings.json under hooks.Stop. Non-fatal:
+// failure is logged and the daemon continues.
+func installPokeHook(scriptContent string) {
+	scriptPath, err := claudeconf.InstallPokeScript(scriptContent)
+	if err != nil {
+		fmt.Printf("mesh node poke-hook: write script: %v\n", err)
+		return
+	}
+	if err := claudeconf.InstallPokeHook(scriptPath); err != nil {
+		fmt.Printf("mesh node poke-hook: patch settings.json: %v\n", err)
+		return
+	}
+	fmt.Printf("mesh node poke-hook: installed path=%s\n", scriptPath)
 }
 
 func rematerializeLocalPrompts() {
