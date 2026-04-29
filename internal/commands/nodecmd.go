@@ -187,6 +187,14 @@ func defaultGrpcAddrFor(baseURL string) string {
 		return "127.0.0.1:8081"
 	}
 	host := u.Hostname()
+	// The HTTP API is typically served behind a Cloudflare-proxied hostname
+	// (api.<domain>), but Cloudflare doesn't proxy non-HTTP traffic on
+	// non-standard ports. The convention is to expose gRPC at grpc.<domain>
+	// with DNS pointing directly at the origin (no CF proxy), so swap the
+	// prefix here when present. localhost and bare hostnames fall through.
+	if rest, ok := strings.CutPrefix(host, "api."); ok {
+		host = "grpc." + rest
+	}
 	return fmt.Sprintf("%s:8081", host)
 }
 
