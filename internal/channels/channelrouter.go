@@ -45,6 +45,10 @@ type RouterDeps struct {
 	WorkItemUpdate func(payload map[string]any) ([]byte, error)
 	// WorkItemHandoff POSTs to /work-item/handoff. payload must include workItemId, fromRole, toRole.
 	WorkItemHandoff func(payload map[string]any) ([]byte, error)
+	// OnWorkItemActivity is called after a successful work-item-update or
+	// work-item-handoff from the shim. The daemon uses it to mark the agent
+	// active so the poll cadence shortens from 300s to 60s.
+	OnWorkItemActivity func(agentName string)
 }
 
 // agentRouter is the daemon-side multiplexer for one agent. It:
@@ -1099,6 +1103,9 @@ func (r *agentRouter) handleShimWorkItemUpdate(env ipc.Envelope, logf func(strin
 		return
 	}
 	logf("work-item-update ok id=%v", payload["workItemId"])
+	if r.deps.OnWorkItemActivity != nil {
+		r.deps.OnWorkItemActivity(r.agentName)
+	}
 	_ = wr.Write(ipc.WorkItemUpdateRespEnv(""))
 }
 
@@ -1126,5 +1133,8 @@ func (r *agentRouter) handleShimWorkItemHandoff(env ipc.Envelope, logf func(stri
 		return
 	}
 	logf("work-item-handoff ok id=%v", payload["workItemId"])
+	if r.deps.OnWorkItemActivity != nil {
+		r.deps.OnWorkItemActivity(r.agentName)
+	}
 	_ = wr.Write(ipc.WorkItemHandoffRespEnv(""))
 }

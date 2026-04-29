@@ -175,6 +175,7 @@ func workItemRouterDeps(baseURL, nodeToken string) channels.RouterDeps {
 		WorkItemHandoff: func(payload map[string]any) ([]byte, error) {
 			return apiDo(http.MethodPost, "/work-item/handoff", payload)
 		},
+		OnWorkItemActivity: MarkAgentActive,
 	}
 }
 
@@ -330,6 +331,7 @@ func runClusteredDaemon(ctx context.Context, baseURL, grpcAddr, token string, re
 	errCh := make(chan error, 2)
 	go func() { errCh <- heartbeatLoop(ctx, client, token, nodeID, registry) }()
 	go func() { errCh <- nodeStreamLoop(ctx, client, token, registry, baseURL) }()
+	go pollAgents(ctx, baseURL, token)
 
 	return <-errCh
 }
@@ -978,6 +980,7 @@ func deliverWorkItemPoke(poke *meshv1.WorkItemPoke) bool {
 		fmt.Printf("mesh node poke write err agent=%s: %v\n", poke.GetAgentId(), err)
 		return false
 	}
+	MarkAgentActive(localName)
 	return true
 }
 
