@@ -673,7 +673,9 @@ func (r *SessionRegistry) pokeSocketListener(s *PtySession) {
 			}
 
 			// Primary delivery: write prompt line to PTY (fallback when hook not installed).
-			line := fmt.Sprintf("mesh:work-item-poke id=%s reason=%s\n", poke.WorkItemID, poke.Reason)
+			// Use \r (CR) not \n — claude-code's TUI input handler treats \r as Enter,
+			// \n only inserts a newline in the buffer without submitting.
+			line := fmt.Sprintf("mesh:work-item-poke id=%s reason=%s\r", poke.WorkItemID, poke.Reason)
 			if _, err := s.PTY.Write([]byte(line)); err != nil {
 				fmt.Printf("mesh poke-sock agent=%s pty write err: %v\n", s.AgentID, err)
 				return
