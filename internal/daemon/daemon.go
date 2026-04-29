@@ -86,6 +86,21 @@ func RunDaemon(baseURL string, grpcAddr string, writeSettings func(agentName str
 	broker := peers.New()
 
 	chanRouter := channels.NewChannelRouter(broker)
+
+	// Load the node token first so SetDeps can run BEFORE Sync. Routers
+	// capture cr.deps at goroutine-start time, so a later SetDeps wouldn't
+	// reach already-running routers — agent IPC handlers (mesh_get_work_item
+	// etc.) would all see nil closures and surface as "daemon not connected"
+	// to the calling agent.
+	token, tokenErr := auth.LoadNodeToken()
+	clustered := tokenErr == nil && strings.TrimSpace(token) != ""
+	if tokenErr != nil && !errors.Is(tokenErr, os.ErrNotExist) {
+		return fmt.Errorf("read node token: %w", tokenErr)
+	}
+	if clustered {
+		chanRouter.SetDeps(workItemRouterDeps(baseURL, token))
+	}
+
 	chanRouter.Sync(agentEntries(agents))
 	defer chanRouter.StopAll()
 
@@ -110,17 +125,11 @@ func RunDaemon(baseURL string, grpcAddr string, writeSettings func(agentName str
 
 	autoStartAgents(registry, writeSettings)
 
-	token, tokenErr := auth.LoadNodeToken()
-	if tokenErr != nil || strings.TrimSpace(token) == "" {
-		if tokenErr != nil && !errors.Is(tokenErr, os.ErrNotExist) {
-			return fmt.Errorf("read node token: %w", tokenErr)
-		}
+	if !clustered {
 		fmt.Println("mesh node daemon running in standalone mode (no node token present; cluster features disabled)")
 		<-ctx.Done()
 		return ctx.Err()
 	}
-
-	chanRouter.SetDeps(workItemRouterDeps(baseURL, token))
 
 	return runClusteredDaemon(ctx, baseURL, grpcAddr, token, registry)
 }
