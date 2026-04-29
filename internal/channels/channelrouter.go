@@ -283,9 +283,9 @@ func (r *agentRouter) handleShimSubscribe(ctx context.Context, logf func(string,
 	for _, ch := range r.channels {
 		switch ch.Type {
 		case "discord":
-			r.subscribeDiscordGateway(ctx, ch, logf)
+			go r.resubscribeGateway(ctx, ch, logf)
 		case "whatsapp":
-			r.subscribeWhatsappGateway(ctx, ch, logf)
+			go r.resubscribeGateway(ctx, ch, logf)
 		case "peers":
 			r.subscribePeers(ctx, ch, logf)
 		}
@@ -299,11 +299,88 @@ func (r *agentRouter) handleShimSubscribe(ctx context.Context, logf func(string,
 	}
 }
 
-func (r *agentRouter) subscribeDiscordGateway(ctx context.Context, ch Spec, logf func(string, ...any)) {
+const (
+	gwResubscribeInitialDelay = 1 * time.Second
+	gwResubscribeMaxDelay     = 30 * time.Second
+)
+
+// gwAccount extracts the account identifier from a channel spec for logging.
+func gwAccount(ch Spec) string {
+	if a, ok := ch.Config["account"].(string); ok {
+		return a
+	}
+	return "unknown"
+}
+
+// resubscribeGateway is the connect-and-reconnect loop for a single gateway
+// channel. On first call it connects immediately (no sleep). When pumpGateway
+// exits due to a transport error, it sleeps with exponential backoff and
+// retries. Protocol errors (the gateway returns an "error" envelope during the
+// subscribe handshake) are logged once and the loop exits without retrying.
+// The loop exits when ctx is cancelled.
+func (r *agentRouter) resubscribeGateway(ctx context.Context, ch Spec, logf func(string, ...any)) {
+	delay := gwResubscribeInitialDelay
+	reconnect := false // false on the first pass — dial immediately
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+
+		if reconnect {
+			logf("gateway resubscribing platform=%s account=%s delay=%ds",
+				ch.Type, gwAccount(ch), int(delay.Seconds()))
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(delay):
+			}
+			delay *= 2
+			if delay > gwResubscribeMaxDelay {
+				delay = gwResubscribeMaxDelay
+			}
+		}
+
+		var connected, retryable bool
+		switch ch.Type {
+		case "discord":
+			connected, retryable = r.subscribeDiscordGateway(ctx, ch, logf)
+		case "whatsapp":
+			connected, retryable = r.subscribeWhatsappGateway(ctx, ch, logf)
+		default:
+			return
+		}
+
+		if !retryable {
+			// Protocol error — gateway explicitly rejected subscription. Don't retry.
+			return
+		}
+
+		if ctx.Err() != nil {
+			return
+		}
+
+		if connected {
+			// The connection was established and pumpGateway ran until it dropped.
+			// Log and reset backoff — the next attempt starts fresh.
+			logf("gateway connection dropped platform=%s account=%s reconnecting", ch.Type, gwAccount(ch))
+			delay = gwResubscribeInitialDelay
+		}
+		reconnect = true
+	}
+}
+
+// subscribeDiscordGateway dials the discord gateway, performs the subscribe
+// handshake, registers the conn, and blocks in pumpGateway until the conn
+// drops or ctx is cancelled.
+//
+// Returns (connected=true, retryable=true)  — handshake succeeded, pumpGateway ran, then dropped.
+// Returns (connected=false, retryable=true) — transport error before handshake; caller should retry.
+// Returns (connected=false, retryable=false) — protocol error; don't retry.
+func (r *agentRouter) subscribeDiscordGateway(ctx context.Context, ch Spec, logf func(string, ...any)) (connected, retryable bool) {
 	dcc := ParseDiscordChannelConfig(ch.Config)
 	if dcc.Account == "" {
 		logf("discord channel missing account")
-		return
+		return false, false
 	}
 	gwKey := gatewayKey("discord", dcc.Account)
 
@@ -311,13 +388,14 @@ func (r *agentRouter) subscribeDiscordGateway(ctx context.Context, ch Spec, logf
 	_, already := r.gwConns[gwKey]
 	r.mu.Unlock()
 	if already {
-		return
+		// Already connected — pumpGateway is still running.
+		return true, true
 	}
 
 	sockPath, err := paths.DiscordGatewaySockPath(dcc.Account)
 	if err != nil {
 		logf("discord gateway sock path: %v", err)
-		return
+		return false, false
 	}
 
 	var (
@@ -327,13 +405,16 @@ func (r *agentRouter) subscribeDiscordGateway(ctx context.Context, ch Spec, logf
 	)
 	deadline := time.Now().Add(30 * time.Second)
 	for {
+		if ctx.Err() != nil {
+			return false, true
+		}
 		gwConn, gwRd, gwWr, err = ipc.DialGateway(sockPath)
 		if err == nil {
 			break
 		}
 		if time.Now().After(deadline) {
 			logf("discord gateway dial deadline: %v", err)
-			return
+			return false, true
 		}
 		logf("discord gateway dial retry: %v", err)
 		time.Sleep(200 * time.Millisecond)
@@ -366,24 +447,24 @@ func (r *agentRouter) subscribeDiscordGateway(ctx context.Context, ch Spec, logf
 	if err := gwWr.Write(subEnv); err != nil {
 		gwConn.Close()
 		logf("discord gateway subscribe write: %v", err)
-		return
+		return false, true
 	}
 
 	ack, err := gwRd.Read()
 	if err != nil {
 		gwConn.Close()
 		logf("discord gateway ack read: %v", err)
-		return
+		return false, true
 	}
 	if ack.Type == "error" {
 		gwConn.Close()
 		logf("discord gateway subscribe error: %s: %s", ack.Reason, ack.Detail)
-		return
+		return false, false
 	}
 	if ack.Type != "subscribe-ack" {
 		gwConn.Close()
 		logf("discord gateway unexpected ack type: %s", ack.Type)
-		return
+		return false, false
 	}
 
 	gwc := &routerGWConn{
@@ -398,12 +479,33 @@ func (r *agentRouter) subscribeDiscordGateway(ctx context.Context, ch Spec, logf
 	r.mu.Unlock()
 
 	logf("subscribed discord gateway account=%s mode=%s", dcc.Account, dcc.SubscriptionMode)
-	go r.pumpGateway(ctx, gwc, logf)
+	r.pumpGateway(ctx, gwc, gwKey, logf)
+	return true, true
 }
 
 // pumpGateway reads inbound envelopes from a gateway and forwards them to
-// the shim with Source stamped.
-func (r *agentRouter) pumpGateway(ctx context.Context, gwc *routerGWConn, logf func(string, ...any)) {
+// the shim with Source stamped. gwKey is the map key used to remove the stale
+// entry on exit so that resubscribeGateway can dial fresh.
+func (r *agentRouter) pumpGateway(ctx context.Context, gwc *routerGWConn, gwKey string, logf func(string, ...any)) {
+	// Close the conn when ctx is cancelled so that gwc.rd.Read() unblocks.
+	stopClose := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			gwc.conn.Close()
+		case <-stopClose:
+		}
+	}()
+
+	defer func() {
+		close(stopClose)
+		// Remove the stale conn so the next subscribe attempt can re-dial.
+		r.mu.Lock()
+		delete(r.gwConns, gwKey)
+		r.mu.Unlock()
+		gwc.conn.Close()
+	}()
+
 	for {
 		env, err := gwc.rd.Read()
 		if err != nil {
@@ -574,11 +676,12 @@ func (r *agentRouter) routeDiscordSend(env ipc.Envelope, subtype, id string, log
 }
 
 // subscribeWhatsappGateway connects this router to the whatsapp gateway.
-func (r *agentRouter) subscribeWhatsappGateway(ctx context.Context, ch Spec, logf func(string, ...any)) {
+// Returns (connected, retryable) matching the same contract as subscribeDiscordGateway.
+func (r *agentRouter) subscribeWhatsappGateway(ctx context.Context, ch Spec, logf func(string, ...any)) (connected, retryable bool) {
 	wcc := ParseWhatsappChannelConfig(ch.Config)
 	if wcc.Account == "" {
 		logf("whatsapp channel missing account")
-		return
+		return false, false
 	}
 	gwKey := gatewayKey("whatsapp", wcc.Account)
 
@@ -586,13 +689,13 @@ func (r *agentRouter) subscribeWhatsappGateway(ctx context.Context, ch Spec, log
 	_, already := r.gwConns[gwKey]
 	r.mu.Unlock()
 	if already {
-		return
+		return true, true
 	}
 
 	sockPath, err := paths.WhatsappGatewaySockPath(wcc.Account)
 	if err != nil {
 		logf("whatsapp gateway sock path: %v", err)
-		return
+		return false, false
 	}
 
 	var (
@@ -602,13 +705,16 @@ func (r *agentRouter) subscribeWhatsappGateway(ctx context.Context, ch Spec, log
 	)
 	deadline := time.Now().Add(30 * time.Second)
 	for {
+		if ctx.Err() != nil {
+			return false, true
+		}
 		gwConn, gwRd, gwWr, err = ipc.DialGateway(sockPath)
 		if err == nil {
 			break
 		}
 		if time.Now().After(deadline) {
 			logf("whatsapp gateway dial deadline: %v", err)
-			return
+			return false, true
 		}
 		logf("whatsapp gateway dial retry: %v", err)
 		time.Sleep(200 * time.Millisecond)
@@ -618,23 +724,23 @@ func (r *agentRouter) subscribeWhatsappGateway(ctx context.Context, ch Spec, log
 	if err := gwWr.Write(subEnv); err != nil {
 		gwConn.Close()
 		logf("whatsapp gateway subscribe write: %v", err)
-		return
+		return false, true
 	}
 	ack, err := gwRd.Read()
 	if err != nil {
 		gwConn.Close()
 		logf("whatsapp gateway ack read: %v", err)
-		return
+		return false, true
 	}
 	if ack.Type == "error" {
 		gwConn.Close()
 		logf("whatsapp gateway subscribe error: %s: %s", ack.Reason, ack.Detail)
-		return
+		return false, false
 	}
 	if ack.Type != "subscribe-ack" {
 		gwConn.Close()
 		logf("whatsapp gateway unexpected ack type: %s", ack.Type)
-		return
+		return false, false
 	}
 
 	gwc := &routerGWConn{
@@ -649,7 +755,8 @@ func (r *agentRouter) subscribeWhatsappGateway(ctx context.Context, ch Spec, log
 	r.mu.Unlock()
 
 	logf("subscribed whatsapp gateway account=%s jid=%s", wcc.Account, wcc.ChatJID)
-	go r.pumpGateway(ctx, gwc, logf)
+	r.pumpGateway(ctx, gwc, gwKey, logf)
+	return true, true
 }
 
 // routeWhatsappSend routes an outbound send to the whatsapp gateway.
