@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -236,6 +237,14 @@ func (r *SessionRegistry) StartWithOptions(opts StartOptions) (*PtySession, bool
 		return nil, false, fmt.Errorf("write session MCP config for agent %s: %w", opts.AgentID, mcpErr)
 	}
 	args = append(args, "--mcp-config", mcpConfigPath)
+	// Activate the experimental claude/channel capability for the mesh MCP
+	// server so claude-code routes notifications/claude/channel into the
+	// model's context. --mcp-config alone registers the server but does NOT
+	// enable channel reactivity; this flag is what makes inbound channel
+	// messages (Discord, WhatsApp, peers, work-item pokes) actually land in
+	// the agent's context for reaction. server:<name> form binds to the MCP
+	// server registered above by name.
+	args = append(args, "--dangerously-load-development-channels", "server:mesh")
 	cmd := exec.Command("claude", args...)
 	if dir, err := paths.AgentWorkdir(agentID); err == nil {
 		cmd.Dir = dir
@@ -279,7 +288,56 @@ func (r *SessionRegistry) StartWithOptions(opts StartOptions) (*PtySession, bool
 	go r.readLoop(s)
 	go r.waitLoop(s)
 
+	// Re-arm the dev-channels auto-accept prompt watcher whenever we pass
+	// --dangerously-load-development-channels. Claude Code prints a
+	// blocking confirmation prompt for that flag on every spawn; we own
+	// the PTY, so we wait for the prompt and write Enter.
+	hasDevChannels := false
+	for _, a := range args {
+		if a == "--dangerously-load-development-channels" {
+			hasDevChannels = true
+			break
+		}
+	}
+	if hasDevChannels {
+		go r.autoAcceptDevChannelsPrompt(s)
+	}
+
 	return s, true, nil
+}
+
+func (r *SessionRegistry) autoAcceptDevChannelsPrompt(s *PtySession) {
+	fmt.Printf("mesh auto-accept agent=%s armed (waiting for dev-channels prompt)\n", s.AgentID)
+	deadline := time.Now().Add(15 * time.Second)
+	ticks := 0
+	for time.Now().Before(deadline) {
+		ticks++
+		snap, _ := s.buffer.Snapshot()
+		stripped := stripANSI(snap)
+		for _, marker := range []string{
+			"dangerously-load-development-channels",
+			"WARNING:",
+		} {
+			if bytes.Contains(stripped, []byte(marker)) {
+				n, werr := s.PTY.Write([]byte("\r"))
+				fmt.Printf("mesh auto-accept agent=%s matched=%q wrote=%d err=%v ticks=%d\n", s.AgentID, marker, n, werr, ticks)
+				return
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	snap, _ := s.buffer.Snapshot()
+	if len(snap) > 512 {
+		snap = snap[len(snap)-512:]
+	}
+	stripped := stripANSI(snap)
+	fmt.Printf("mesh auto-accept agent=%s TIMEOUT ticks=%d tail_stripped=%q\n", s.AgentID, ticks, string(stripped))
+}
+
+var ansiEscapeRE = regexp.MustCompile(`\x1b\[[0-9;?]*[a-zA-Z]|\x1b\].*?(\x07|\x1b\\)|\x1b[()][A-Za-z0-9]|\x1b[=>78DEHMc]`)
+
+func stripANSI(b []byte) []byte {
+	return ansiEscapeRE.ReplaceAll(b, nil)
 }
 
 func (r *SessionRegistry) readLoop(s *PtySession) {
