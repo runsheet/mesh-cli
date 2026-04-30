@@ -280,6 +280,47 @@ var membersRemoveCmd = &cobra.Command{
 	},
 }
 
+// ── project roles ─────────────────────────────────────────────────────────────
+
+var projectRolesCmd = &cobra.Command{
+	Use:   "roles <project-id>",
+	Short: "Show role-to-agent assignments for a project",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		sess, err := requireSession()
+		if err != nil {
+			return err
+		}
+		client := newMeshClientForSession(sess)
+
+		var resp struct {
+			OK        bool   `json:"ok"`
+			ProjectID string `json:"projectId"`
+			Roles     map[string]*struct {
+				AgentID   string `json:"agentId"`
+				AgentName string `json:"agentName"`
+				NodeID    string `json:"nodeId"`
+			} `json:"roles"`
+		}
+		if err := client.doRequest("GET", "/project/"+args[0]+"/roles", nil, &resp); err != nil {
+			return err
+		}
+
+		loopRoles := []string{"pm", "researcher", "devlead", "builder", "tester"}
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "ROLE\tAGENT NAME\tAGENT ID\tNODE ID")
+		for _, role := range loopRoles {
+			entry := resp.Roles[role]
+			if entry == nil {
+				fmt.Fprintf(w, "%s\t-\t(unassigned)\t\n", role)
+			} else {
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", role, entry.AgentName, entry.AgentID, entry.NodeID)
+			}
+		}
+		return w.Flush()
+	},
+}
+
 func init() {
 	projectCreateCmd.Flags().StringVar(&projectCreateDescription, "description", "", "Project description")
 	projectUpdateCmd.Flags().StringVar(&projectUpdateName, "name", "", "New project name")
@@ -288,5 +329,5 @@ func init() {
 	membersAddCmd.Flags().StringVar(&membersAddRole, "role", "member", "Role to assign: owner, admin, member, viewer")
 
 	membersCmd.AddCommand(membersAddCmd, membersListCmd, membersRemoveCmd)
-	projectCmd.AddCommand(projectCreateCmd, projectListCmd, projectShowCmd, projectUpdateCmd, projectDeleteCmd, membersCmd)
+	projectCmd.AddCommand(projectCreateCmd, projectListCmd, projectShowCmd, projectUpdateCmd, projectDeleteCmd, membersCmd, projectRolesCmd)
 }

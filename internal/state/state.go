@@ -46,6 +46,9 @@ type AgentDef struct {
 	// peers broker can auto-populate the Summary on registration without
 	// re-reading the snapshot.
 	Description string `json:"description,omitempty"`
+	// Role is the template's spec.role field, propagated to mesh-api on adopt/sync
+	// so the agent can be auto-assigned to the matching project role slot.
+	Role string `json:"role,omitempty"`
 	// Channels materialize the template's channel list at `mesh run` time so
 	// restart / autostart rebuild channel subprocesses without re-reading the
 	// template.

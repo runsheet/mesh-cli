@@ -35,6 +35,10 @@ var cliToolAllowlist = map[string]bool{
 	"ExitPlanMode": true,
 }
 
+var validAgentRoles = map[string]bool{
+	"pm": true, "researcher": true, "devlead": true, "builder": true, "tester": true,
+}
+
 var (
 	agentListProjectID string
 
@@ -45,6 +49,7 @@ var (
 	agentCreateModel        string
 	agentCreateProjectID    string
 	agentCreateNodeID       string
+	agentCreateRole         string
 	agentCreateForce        bool
 
 	agentUpdateName         string
@@ -54,6 +59,7 @@ var (
 	agentUpdateModel        string
 	agentUpdateProjectID    string
 	agentUpdateNodeID       string
+	agentUpdateRole         string
 	agentUpdateForce        bool
 
 	agentDeleteYes bool
@@ -162,6 +168,10 @@ var agentCreateCmd = &cobra.Command{
 			return err
 		}
 
+		if role := strings.TrimSpace(agentCreateRole); role != "" && !validAgentRoles[role] {
+			return fmt.Errorf("invalid --role %q: must be one of pm, researcher, devlead, builder, tester", role)
+		}
+
 		payload := map[string]any{
 			"name":         name,
 			"model":        model,
@@ -176,6 +186,9 @@ var agentCreateCmd = &cobra.Command{
 		}
 		if projectID != "" {
 			payload["projectId"] = projectID
+		}
+		if role := strings.TrimSpace(agentCreateRole); role != "" {
+			payload["role"] = role
 		}
 
 		client := newMeshClientForSession(sess)
@@ -228,6 +241,16 @@ var agentUpdateCmd = &cobra.Command{
 			}
 			payload["tools"] = tools
 		}
+		if cmd.Flags().Changed("role") {
+			role := strings.TrimSpace(agentUpdateRole)
+			if role != "" && !validAgentRoles[role] {
+				return fmt.Errorf("invalid --role %q: must be one of pm, researcher, devlead, builder, tester, or empty string to clear", role)
+			}
+			payload["role"] = role // "" sends null (clear) via JSON
+			if agentUpdateForce {
+				payload["force"] = true
+			}
+		}
 		if len(payload) == 1 {
 			return fmt.Errorf("no update fields provided")
 		}
@@ -235,6 +258,10 @@ var agentUpdateCmd = &cobra.Command{
 		client := newMeshClientForSession(sess)
 		var resp map[string]any
 		if err := client.doRequest("POST", "/agent/update", payload, &resp); err != nil {
+			// Detect 409 role_conflict from API and surface a clear message.
+			if strings.Contains(err.Error(), "role_conflict") {
+				return fmt.Errorf("%w\nUse --force to reassign the role from the current holder", err)
+			}
 			return err
 		}
 		return printJSON(resp)
@@ -419,6 +446,7 @@ func init() {
 	agentCreateCmd.Flags().StringVar(&agentCreateModel, "model", "", "Model (claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5)")
 	agentCreateCmd.Flags().StringVar(&agentCreateProjectID, "project-id", "", "Project ID (omit for personal agent)")
 	agentCreateCmd.Flags().StringVar(&agentCreateNodeID, "pinned-node-id", "", "Node ID this agent pins to")
+	agentCreateCmd.Flags().StringVar(&agentCreateRole, "role", "", "Loop role: pm, researcher, devlead, builder, tester")
 	agentCreateCmd.Flags().BoolVar(&agentCreateForce, "force", false, "Skip client-side tool validation")
 
 	agentUpdateCmd.Flags().StringVar(&agentUpdateName, "name", "", "Agent name")
@@ -428,7 +456,8 @@ func init() {
 	agentUpdateCmd.Flags().StringVar(&agentUpdateModel, "model", "", "Model")
 	agentUpdateCmd.Flags().StringVar(&agentUpdateProjectID, "project-id", "", "Project ID (empty string clears)")
 	agentUpdateCmd.Flags().StringVar(&agentUpdateNodeID, "pinned-node-id", "", "Node ID this agent pins to")
-	agentUpdateCmd.Flags().BoolVar(&agentUpdateForce, "force", false, "Skip client-side tool validation")
+	agentUpdateCmd.Flags().StringVar(&agentUpdateRole, "role", "", "Loop role: pm, researcher, devlead, builder, tester, or empty to clear")
+	agentUpdateCmd.Flags().BoolVar(&agentUpdateForce, "force", false, "Force role reassignment from current holder; also skips tool validation")
 
 	agentDeleteCmd.Flags().BoolVarP(&agentDeleteYes, "yes", "y", false, "Skip confirmation")
 

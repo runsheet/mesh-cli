@@ -30,6 +30,7 @@ type Template struct {
 	ResolvedPath               string // absolute directory on disk
 	SystemPrompt               string // contents of system_prompt.md
 	Description                string
+	Role                       string
 	Model                      string
 	Tools                      []string
 	RequiredEnv                []string
@@ -104,6 +105,7 @@ type AgentYAMLMeta struct {
 // AgentYAMLSpec is the spec block of an agent.yaml.
 type AgentYAMLSpec struct {
 	Description                string          `yaml:"description"`
+	Role                       string          `yaml:"role"`
 	Model                      string          `yaml:"model"`
 	Tools                      []string        `yaml:"tools"`
 	RequiredEnv                []string        `yaml:"requiredEnv"`
@@ -312,6 +314,7 @@ func ReadTemplateWithValues(dir, name string, overrides map[string]any) (*Templa
 		ResolvedPath:               dir,
 		SystemPrompt:               string(promptBytes),
 		Description:                ay.Spec.Description,
+		Role:                       ay.Spec.Role,
 		Model:                      ay.Spec.Model,
 		Tools:                      append([]string{}, ay.Spec.Tools...),
 		RequiredEnv:                append([]string{}, ay.Spec.RequiredEnv...),

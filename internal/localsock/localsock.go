@@ -346,6 +346,7 @@ func (s *localServer) createSession(w http.ResponseWriter, r *http.Request) {
 		TemplateSha:       tpl.GitSHA,
 		TemplateCachePath: tpl.ResolvedPath,
 		Description:       tpl.Description,
+		Role:              tpl.Role,
 		Model:             tpl.Model,
 		RequiredEnv:       append([]string{}, tpl.RequiredEnv...),
 		CreatedAt:         time.Now().UTC(),
@@ -643,6 +644,7 @@ func (s *localServer) updateSession(w http.ResponseWriter, _ *http.Request, name
 		a.TemplateSha = newSHA
 		a.TemplateCachePath = tpl.ResolvedPath
 		a.Description = tpl.Description
+		a.Role = tpl.Role
 		a.RequiredEnv = append([]string{}, tpl.RequiredEnv...)
 		a.Channels = append([]channels.Spec{}, tpl.Channels...)
 		if a.Model == "" {

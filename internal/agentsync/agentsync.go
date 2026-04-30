@@ -67,6 +67,9 @@ func AdoptOne(baseURL, nodeToken, agentName string) error {
 	if def.TemplateSha != "" {
 		payload["templateSha"] = def.TemplateSha
 	}
+	if def.Role != "" {
+		payload["role"] = def.Role
+	}
 
 	status, body, err := apiRequest(baseURL, nodeToken, http.MethodPost, "/agent/import", payload)
 	if err != nil {
