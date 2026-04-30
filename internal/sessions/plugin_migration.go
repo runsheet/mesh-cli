@@ -65,9 +65,12 @@ func MigrateAwayFromPluginScaffold() {
 	}
 }
 
-// scrubMeshPluginEntries removes entries whose "name" ends with "@mesh" from
-// the installed_plugins.json file. No-ops if the file is absent or has no
-// @mesh entries.
+// scrubMeshPluginEntries removes keys ending with "@mesh" from the `plugins`
+// map inside installed_plugins.json. The actual file shape is:
+//
+//	{ "version": 2, "plugins": { "larry-pa@mesh": [...], "github@claude-plugins-official": [...] } }
+//
+// No-ops if the file is absent, unparseable, or has no @mesh keys.
 func scrubMeshPluginEntries(path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -77,28 +80,32 @@ func scrubMeshPluginEntries(path string) error {
 		return err
 	}
 
-	var entries []map[string]any
-	if err := json.Unmarshal(data, &entries); err != nil {
-		// File might be an object rather than an array; skip.
+	var doc map[string]any
+	if err := json.Unmarshal(data, &doc); err != nil {
 		return nil
 	}
 
-	filtered := entries[:0]
+	plugins, _ := doc["plugins"].(map[string]any)
+	if plugins == nil {
+		fmt.Printf("mesh migrate-plugin: no @mesh plugins to clean from installed_plugins.json\n")
+		return nil
+	}
+
 	removed := 0
-	for _, e := range entries {
-		name, _ := e["name"].(string)
-		if strings.HasSuffix(name, "@mesh") {
+	for key := range plugins {
+		if strings.HasSuffix(key, "@mesh") {
+			delete(plugins, key)
+			fmt.Printf("mesh migrate-plugin: removed installed_plugins.json entry %s\n", key)
 			removed++
-			continue
 		}
-		filtered = append(filtered, e)
 	}
 
 	if removed == 0 {
+		fmt.Printf("mesh migrate-plugin: no @mesh plugins to clean from installed_plugins.json\n")
 		return nil
 	}
 
-	out, err := json.MarshalIndent(filtered, "", "  ")
+	out, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -106,9 +113,5 @@ func scrubMeshPluginEntries(path string) error {
 	if err := os.WriteFile(tmp, out, 0o600); err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		return err
-	}
-	fmt.Printf("mesh migrate-plugin: removed %d @mesh entries from %s\n", removed, path)
-	return nil
+	return os.Rename(tmp, path)
 }
