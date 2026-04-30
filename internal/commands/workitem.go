@@ -32,22 +32,27 @@ var workItemCmd = &cobra.Command{
 var allowedWorkItemStatuses = map[string]bool{
 	"inbox":             true,
 	"clarifying":        true,
+	"researching":       true,
+	"research_done":     true,
 	"spec_ready":        true,
 	"awaiting_approval": true,
 	"ready_for_devlead": true,
 	"in_execution":      true,
 	"blocked":           true,
 	"in_review":         true,
+	"in_test":           true,
 	"changes_requested": true,
 	"done":              true,
 	"archived":          true,
 }
 
 var allowedOwnerRoles = map[string]bool{
-	"human":   true,
-	"pm":      true,
-	"devlead": true,
-	"builder": true,
+	"human":      true,
+	"pm":         true,
+	"researcher": true,
+	"devlead":    true,
+	"builder":    true,
+	"tester":     true,
 }
 
 var allowedPriorities = map[string]bool{
@@ -83,6 +88,10 @@ func normalizeStatus(value string) string {
 		return "in_review"
 	case "changes", "changes-needed":
 		return "changes_requested"
+	case "research-done":
+		return "research_done"
+	case "in-test":
+		return "in_test"
 	default:
 		return normalizeOptional(value)
 	}
