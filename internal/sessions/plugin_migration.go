@@ -47,6 +47,10 @@ func MigrateAwayFromPluginScaffold() {
 			} else {
 				fmt.Printf("mesh migrate-plugin: removed %s\n", pluginDir)
 			}
+			meshMcp := filepath.Join(dir, ".mesh-mcp.json")
+			if err := os.Remove(meshMcp); err == nil {
+				fmt.Printf("mesh migrate-plugin: removed %s\n", meshMcp)
+			}
 		}
 	}
 

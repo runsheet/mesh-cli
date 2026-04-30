@@ -8,13 +8,14 @@ import (
 
 // EnsureClaudeFolderTrusted pre-seeds ~/.claude.json so Claude Code doesn't
 // prompt "Is this a project you trust?" on first spawn in the agent's working
-// directory, and also pre-approves the project-scoped .mcp.json servers so
-// the second "Approve MCP servers for this project?" dialog is skipped.
+// directory, AND registers the mesh MCP server in the project-scoped
+// mcpServers map. The project-scoped registration is what makes
+// `--dangerously-load-development-channels server:mesh` resolve — the
+// `server:` form looks up MCP servers in ~/.claude.json (same registry
+// `claude mcp add` writes to), not in --mcp-config.
 //
-// The function is best-effort: if the file is missing or malformed we skip
-// silently.
-func EnsureClaudeFolderTrusted(agentWorkdir string) {
-	mcpServerNames := ReadMeshMCPServerNames(agentWorkdir)
+// Best-effort: silently skips on any I/O or parse failure.
+func EnsureClaudeFolderTrusted(agentWorkdir, agentName, exe string) {
 	abs, err := filepath.Abs(agentWorkdir)
 	if err != nil {
 		return
@@ -25,15 +26,24 @@ func EnsureClaudeFolderTrusted(agentWorkdir string) {
 	}
 	cfgPath := filepath.Join(home, ".claude.json")
 
+	meshEntry := map[string]any{
+		"command": exe,
+		"args":    []any{"channel-server", "mesh-shim", "--agent", agentName},
+		"type":    "stdio",
+	}
+
 	data, err := os.ReadFile(cfgPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			entry := map[string]any{"hasTrustDialogAccepted": true}
-			if len(mcpServerNames) > 0 {
-				entry["enabledMcpjsonServers"] = mcpServerNames
-			}
 			minimal := map[string]any{
-				"projects": map[string]any{abs: entry},
+				"projects": map[string]any{
+					abs: map[string]any{
+						"hasTrustDialogAccepted": true,
+						"mcpServers": map[string]any{
+							"mesh": meshEntry,
+						},
+					},
+				},
 			}
 			if b, err := json.MarshalIndent(minimal, "", "  "); err == nil {
 				_ = atomicWriteFile(cfgPath, b, 0o600)
@@ -63,27 +73,18 @@ func EnsureClaudeFolderTrusted(agentWorkdir string) {
 		entry["hasTrustDialogAccepted"] = true
 		changed = true
 	}
-	if len(mcpServerNames) > 0 {
-		existing, _ := entry["enabledMcpjsonServers"].([]any)
-		have := map[string]bool{}
-		for _, s := range existing {
-			if str, ok := s.(string); ok {
-				have[str] = true
-			}
-		}
-		merged := append([]any{}, existing...)
-		mergedChanged := false
-		for _, n := range mcpServerNames {
-			if !have[n] {
-				merged = append(merged, n)
-				mergedChanged = true
-			}
-		}
-		if mergedChanged {
-			entry["enabledMcpjsonServers"] = merged
-			changed = true
-		}
+
+	servers, _ := entry["mcpServers"].(map[string]any)
+	if servers == nil {
+		servers = map[string]any{}
+		entry["mcpServers"] = servers
+		changed = true
 	}
+	if !mcpEntryEqual(servers["mesh"], meshEntry) {
+		servers["mesh"] = meshEntry
+		changed = true
+	}
+
 	if !changed {
 		return
 	}
@@ -95,24 +96,26 @@ func EnsureClaudeFolderTrusted(agentWorkdir string) {
 	_ = atomicWriteFile(cfgPath, b, 0o600)
 }
 
-// ReadMeshMCPServerNames parses ~/.mesh/agents/<agentName>/.mesh-mcp.json and
-// returns the keys under mcpServers. The agentWorkdir argument is
-// ~/.mesh/agents/<agentName> — we derive the filename from it.
-// Best-effort — returns empty on any error (file may not exist yet on first spawn).
-func ReadMeshMCPServerNames(agentWorkdir string) []string {
-	data, err := os.ReadFile(filepath.Join(agentWorkdir, ".mesh-mcp.json"))
-	if err != nil {
-		return nil
+func mcpEntryEqual(existing any, desired map[string]any) bool {
+	em, ok := existing.(map[string]any)
+	if !ok {
+		return false
 	}
-	var wrap struct {
-		MCPServers map[string]any `json:"mcpServers"`
+	if em["command"] != desired["command"] {
+		return false
 	}
-	if err := json.Unmarshal(data, &wrap); err != nil {
-		return nil
+	if em["type"] != desired["type"] {
+		return false
 	}
-	names := make([]string, 0, len(wrap.MCPServers))
-	for k := range wrap.MCPServers {
-		names = append(names, k)
+	ea, _ := em["args"].([]any)
+	da, _ := desired["args"].([]any)
+	if len(ea) != len(da) {
+		return false
 	}
-	return names
+	for i := range ea {
+		if ea[i] != da[i] {
+			return false
+		}
+	}
+	return true
 }

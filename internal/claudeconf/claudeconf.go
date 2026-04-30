@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 
-	"projectmesh.io/mesh-cli/internal/paths"
 	"projectmesh.io/mesh-cli/internal/state"
 )
 
@@ -115,17 +114,6 @@ func MigrateMCPFile(path, agentName, exe string, newArgs []string) {
 		return
 	}
 	fmt.Printf("mesh migrate-mcp: migrated %s (agent=%s) → mcpServers.mesh\n", path, agentName)
-}
-
-// AgentMCPPath returns the canonical per-session MCP config path for the agent.
-// This is the file written by sessions.WriteSessionMCPConfig and passed to
-// claude via --mcp-config on every spawn.
-func AgentMCPPath(agentName string) (string, error) {
-	dir, err := paths.AgentWorkdir(agentName)
-	if err != nil {
-		return "", err
-	}
-	return dir + "/.mesh-mcp.json", nil
 }
 
 // atomicWriteFile writes data to path via tmp+rename so a concurrent reader

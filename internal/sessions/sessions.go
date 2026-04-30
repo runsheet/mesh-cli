@@ -232,23 +232,22 @@ func (r *SessionRegistry) StartWithOptions(opts StartOptions) (*PtySession, bool
 	if opts.DangerouslySkipPermissions {
 		args = append(args, "--dangerously-skip-permissions")
 	}
-	mcpConfigPath, mcpErr := WriteSessionMCPConfig(opts.AgentID)
-	if mcpErr != nil {
-		return nil, false, fmt.Errorf("write session MCP config for agent %s: %w", opts.AgentID, mcpErr)
+	exe, exeErr := os.Executable()
+	if exeErr != nil {
+		return nil, false, fmt.Errorf("resolve mesh binary path: %w", exeErr)
 	}
-	args = append(args, "--mcp-config", mcpConfigPath)
-	// Activate the experimental claude/channel capability for the mesh MCP
-	// server so claude-code routes notifications/claude/channel into the
-	// model's context. --mcp-config alone registers the server but does NOT
-	// enable channel reactivity; this flag is what makes inbound channel
-	// messages (Discord, WhatsApp, peers, work-item pokes) actually land in
-	// the agent's context for reaction. server:<name> form binds to the MCP
-	// server registered above by name.
+	// Register the mesh MCP server in ~/.claude.json's project-scoped
+	// mcpServers map (same registry `claude mcp add --scope local` writes to).
+	// The `server:` form of --dangerously-load-development-channels resolves
+	// against this registry, NOT against --mcp-config files. server:mesh
+	// activates the experimental claude/channel capability so inbound channel
+	// notifications (Discord, WhatsApp, peers, work-item pokes) land in the
+	// agent's context.
 	args = append(args, "--dangerously-load-development-channels", "server:mesh")
 	cmd := exec.Command("claude", args...)
 	if dir, err := paths.AgentWorkdir(agentID); err == nil {
 		cmd.Dir = dir
-		claudeconf.EnsureClaudeFolderTrusted(dir)
+		claudeconf.EnsureClaudeFolderTrusted(dir, agentID, exe)
 	} else if opts.WorkingDir != "" {
 		cmd.Dir = opts.WorkingDir
 	}
