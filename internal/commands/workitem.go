@@ -457,7 +457,7 @@ func init() {
 	learningCmd.Flags().StringVar(&learningFollowUpID, "follow-up-item-id", "", "Follow-up work item ID")
 	learningCmd.Flags().StringVar(&learningNote, "note", "", "Event note for the learning update")
 
-	workItemCmd.AddCommand(listCmd, createCmd, updateCmd, handoffCmd, reviewCmd, learningCmd)
+	workItemCmd.AddCommand(listCmd, getWorkItemCmd, createCmd, updateCmd, handoffCmd, reviewCmd, learningCmd)
 }
 
 var (
@@ -537,6 +537,66 @@ func init() {
 	listCmd.Flags().StringVar(&listStatusFlag, "status", "", "Filter by status (e.g. ready_for_devlead,in_execution)")
 	listCmd.Flags().StringVar(&listProjectIDFlag, "project-id", "", "Filter by project ID")
 	listCmd.Flags().BoolVar(&listAllFlag, "all", false, "Show all work items, not just those assigned to me")
+}
+
+var getWorkItemFetchSpec bool
+
+var getWorkItemCmd = &cobra.Command{
+	Use:     "get <workItemId>",
+	Short:   "Fetch a single work item by ID",
+	Example: "mesh work-item get <id>\nmesh work-item get <id> --fetch-spec",
+	Args:    cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		sess, err := requireSession()
+		if err != nil {
+			return err
+		}
+
+		client := newMeshClientForSession(sess)
+
+		var resp struct {
+			OK   bool           `json:"ok"`
+			Item map[string]any `json:"item"`
+		}
+		if err := client.doRequest("GET", "/work-item/get/"+args[0], nil, &resp); err != nil {
+			return err
+		}
+
+		if err := printJSON(resp); err != nil {
+			return err
+		}
+
+		// --fetch-spec: if the response includes a spec.fetch_url, retrieve and
+		// print the spec content inline.
+		if getWorkItemFetchSpec {
+			specObj, _ := resp.Item["spec"].(map[string]any)
+			fetchURL, _ := specObj["fetch_url"].(string)
+			if fetchURL == "" {
+				fmt.Println("\n[no spec linked to this work item]")
+				return nil
+			}
+
+			var specResp struct {
+				OK      bool   `json:"ok"`
+				Content string `json:"content"`
+				Path    string `json:"path"`
+				SHA     string `json:"sha"`
+			}
+			if err := client.doRequest("GET", fetchURL, nil, &specResp); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not fetch spec: %v\n", err)
+				return nil
+			}
+
+			fmt.Printf("\n── Spec: %s (sha: %s) ──\n\n", specResp.Path, specResp.SHA)
+			fmt.Println(specResp.Content)
+		}
+
+		return nil
+	},
+}
+
+func init() {
+	getWorkItemCmd.Flags().BoolVar(&getWorkItemFetchSpec, "fetch-spec", false, "Fetch and print the linked spec content inline")
 }
 
 // testSessionOverride, when non-nil, is returned directly by requireSession
