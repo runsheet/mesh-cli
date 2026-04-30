@@ -326,6 +326,184 @@ var projectRolesCmd = &cobra.Command{
 	},
 }
 
+// ── project budget ────────────────────────────────────────────────────────────
+
+var budgetCmd = &cobra.Command{
+	Use:   "budget",
+	Short: "Budget management for a project",
+}
+
+var (
+	budgetSetProject    string
+	budgetSetDailyUsd   float64
+	budgetSetAlertAt    int
+	budgetSetPauseLanes string
+)
+
+var budgetSetCmd = &cobra.Command{
+	Use:     "set",
+	Short:   "Set or update the daily USD budget for a project",
+	Example: "mesh project budget set --project <id> --daily-usd 50 --alert-at 80 --pause-lanes ship",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if budgetSetProject == "" {
+			return fmt.Errorf("--project is required")
+		}
+		sess, err := requireSession()
+		if err != nil {
+			return err
+		}
+		payload := map[string]any{
+			"dailyUsd": budgetSetDailyUsd,
+		}
+		if cmd.Flags().Changed("alert-at") {
+			payload["alertAtPct"] = budgetSetAlertAt
+		}
+		if cmd.Flags().Changed("pause-lanes") {
+			var lanes []string
+			for _, l := range strings.Split(budgetSetPauseLanes, ",") {
+				l = strings.TrimSpace(l)
+				if l != "" {
+					lanes = append(lanes, l)
+				}
+			}
+			payload["pauseLanes"] = lanes
+		}
+		client := newMeshClientForSession(sess)
+		var resp map[string]any
+		if err := client.doRequest("POST", "/budget/"+budgetSetProject, payload, &resp); err != nil {
+			return err
+		}
+		return printJSON(resp)
+	},
+}
+
+// ── project digest ────────────────────────────────────────────────────────────
+
+var digestCmd = &cobra.Command{
+	Use:   "digest",
+	Short: "Digest subscription management for a project",
+}
+
+var (
+	digestEnableProject string
+	digestEnableChannel string
+	digestEnableTime    string
+	digestEnableTZ      string
+)
+
+var digestEnableCmd = &cobra.Command{
+	Use:     "enable",
+	Short:   "Create or update a digest subscription",
+	Example: "mesh project digest enable --project <id> --channel discord:dm/<userid> --time 08:00 --timezone America/New_York",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if digestEnableProject == "" || digestEnableChannel == "" {
+			return fmt.Errorf("--project and --channel are required")
+		}
+		channelType, channelTarget, parseErr := parseChannelFlag(digestEnableChannel)
+		if parseErr != nil {
+			return parseErr
+		}
+		sess, err := requireSession()
+		if err != nil {
+			return err
+		}
+		payload := map[string]any{
+			"projectId":     digestEnableProject,
+			"channelType":   channelType,
+			"channelTarget": channelTarget,
+			"sendAtLocal":   digestEnableTime,
+			"timezone":      digestEnableTZ,
+		}
+		client := newMeshClientForSession(sess)
+		var resp map[string]any
+		if err := client.doRequest("POST", "/digest/subscriptions", payload, &resp); err != nil {
+			return err
+		}
+		return printJSON(resp)
+	},
+}
+
+var digestListProject string
+
+var digestListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List digest subscriptions for a project",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if digestListProject == "" {
+			return fmt.Errorf("--project is required")
+		}
+		sess, err := requireSession()
+		if err != nil {
+			return err
+		}
+		client := newMeshClientForSession(sess)
+		var resp struct {
+			OK            bool `json:"ok"`
+			Subscriptions []struct {
+				ID            string `json:"id"`
+				ChannelType   string `json:"channel_type"`
+				ChannelTarget string `json:"channel_target"`
+				SendAtLocal   string `json:"send_at_local"`
+				Timezone      string `json:"timezone"`
+				Enabled       bool   `json:"enabled"`
+			} `json:"subscriptions"`
+		}
+		if err := client.doRequest("GET", "/digest/subscriptions?projectId="+digestListProject, nil, &resp); err != nil {
+			return err
+		}
+		if len(resp.Subscriptions) == 0 {
+			fmt.Println("no subscriptions found")
+			return nil
+		}
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "ID\tCHANNEL_TYPE\tTARGET\tSEND_AT\tTIMEZONE\tENABLED")
+		for _, s := range resp.Subscriptions {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%v\n",
+				s.ID, s.ChannelType, s.ChannelTarget, s.SendAtLocal, s.Timezone, s.Enabled)
+		}
+		return w.Flush()
+	},
+}
+
+var digestDisableID string
+
+var digestDisableCmd = &cobra.Command{
+	Use:   "disable",
+	Short: "Delete a digest subscription by ID",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if digestDisableID == "" {
+			return fmt.Errorf("--id is required")
+		}
+		sess, err := requireSession()
+		if err != nil {
+			return err
+		}
+		client := newMeshClientForSession(sess)
+		var resp map[string]any
+		if err := client.doRequest("DELETE", "/digest/subscriptions/"+digestDisableID, nil, &resp); err != nil {
+			return err
+		}
+		return printJSON(resp)
+	},
+}
+
+// parseChannelFlag parses --channel values like:
+//   discord:dm/<userid>   → channel_type=discord_dm, target=<userid>
+//   whatsapp:<e164>       → channel_type=whatsapp, target=<e164>
+//   email:<addr>          → channel_type=email, target=<addr>
+func parseChannelFlag(ch string) (channelType, channelTarget string, err error) {
+	if strings.HasPrefix(ch, "discord:dm/") {
+		return "discord_dm", strings.TrimPrefix(ch, "discord:dm/"), nil
+	}
+	if strings.HasPrefix(ch, "whatsapp:") {
+		return "whatsapp", strings.TrimPrefix(ch, "whatsapp:"), nil
+	}
+	if strings.HasPrefix(ch, "email:") {
+		return "email", strings.TrimPrefix(ch, "email:"), nil
+	}
+	return "", "", fmt.Errorf("invalid --channel format %q; expected discord:dm/<userid>, whatsapp:<e164>, or email:<addr>", ch)
+}
+
 func init() {
 	projectCreateCmd.Flags().StringVar(&projectCreateDescription, "description", "", "Project description")
 	projectListCmd.Flags().StringVar(&projectListOrg, "org", "", "Org slug to scope the listing (overrides session default)")
@@ -334,6 +512,23 @@ func init() {
 	projectDeleteCmd.Flags().BoolVar(&projectDeleteYes, "yes", false, "Skip confirmation prompt")
 	membersAddCmd.Flags().StringVar(&membersAddRole, "role", "member", "Role to assign: owner, admin, member, viewer")
 
+	budgetSetCmd.Flags().StringVar(&budgetSetProject, "project", "", "Project ID")
+	budgetSetCmd.Flags().Float64Var(&budgetSetDailyUsd, "daily-usd", 0, "Daily budget in USD")
+	budgetSetCmd.Flags().IntVar(&budgetSetAlertAt, "alert-at", 80, "Alert threshold percentage (1–99)")
+	budgetSetCmd.Flags().StringVar(&budgetSetPauseLanes, "pause-lanes", "ship", "Comma-separated lanes to pause at 100%: ship,research,builder")
+	_ = budgetSetCmd.MarkFlagRequired("daily-usd")
+
+	digestEnableCmd.Flags().StringVar(&digestEnableProject, "project", "", "Project ID")
+	digestEnableCmd.Flags().StringVar(&digestEnableChannel, "channel", "", "Channel: discord:dm/<userid>, whatsapp:<e164>, email:<addr>")
+	digestEnableCmd.Flags().StringVar(&digestEnableTime, "time", "08:00", "Local send time (HH:MM)")
+	digestEnableCmd.Flags().StringVar(&digestEnableTZ, "timezone", "UTC", "IANA timezone, e.g. America/New_York")
+
+	digestListCmd.Flags().StringVar(&digestListProject, "project", "", "Project ID")
+	digestDisableCmd.Flags().StringVar(&digestDisableID, "id", "", "Subscription ID to delete")
+
+	digestCmd.AddCommand(digestEnableCmd, digestListCmd, digestDisableCmd)
+	budgetCmd.AddCommand(budgetSetCmd)
+
 	membersCmd.AddCommand(membersAddCmd, membersListCmd, membersRemoveCmd)
-	projectCmd.AddCommand(projectCreateCmd, projectListCmd, projectShowCmd, projectUpdateCmd, projectDeleteCmd, membersCmd, projectRolesCmd)
+	projectCmd.AddCommand(projectCreateCmd, projectListCmd, projectShowCmd, projectUpdateCmd, projectDeleteCmd, membersCmd, projectRolesCmd, budgetCmd, digestCmd)
 }

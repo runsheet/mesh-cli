@@ -518,6 +518,8 @@ func BuildMeshShimToolsForAgent(agentName string) []map[string]any {
 	if strings.HasPrefix(agentName, "shipper") {
 		tools = append(tools, BuildShipperShimTools()...)
 	}
+	// Always include the cost-query tool (any agent may monitor burn rate).
+	tools = append(tools, BuildUsageShimTools()[1]) // mesh_get_project_cost only
 	return tools
 }
 
