@@ -86,6 +86,7 @@ func RunDaemon(baseURL string, grpcAddr string, writeSettings func(agentName str
 	broker := peers.New()
 
 	chanRouter := channels.NewChannelRouter(broker)
+	globalChanRouter = chanRouter
 
 	// Load the node token first so SetDeps can run BEFORE Sync. Routers
 	// capture cr.deps at goroutine-start time, so a later SetDeps wouldn't
@@ -771,6 +772,10 @@ func runAttach(ctx context.Context, sender *streamSender, registry *sessions.Ses
 	}
 }
 
+// globalChanRouter holds the ChannelRouter for the running daemon.
+// Set once in RunDaemon before any poke can arrive; read by deliverWorkItemPoke.
+var globalChanRouter *channels.ChannelRouter
+
 var (
 	attachRegistryMu sync.Mutex
 	attachRegistry   = map[string]string{}
@@ -957,11 +962,9 @@ func deliverWorkItemPoke(poke *meshv1.WorkItemPoke) bool {
 	if poke == nil || poke.GetAgentId() == "" {
 		return false
 	}
-	// poke.AgentId is the cloud agent UUID. The session listener creates its
-	// socket under the local agent name (e.g. "larry-pa"). Translate via local
-	// state by scanning for a matching CloudAgentID. Fall back to the raw id
-	// for cases where no local mapping exists yet (rare but possible during a
-	// race between adoption and the first poke).
+	// poke.AgentId is the cloud agent UUID. Routers run under the local agent
+	// name (e.g. "larry-pa"). Translate via local state, fall back to the raw
+	// UUID for the race window between adoption and first poke.
 	localName := poke.GetAgentId()
 	if agents, err := state.ListAgents(); err == nil {
 		cloudID := poke.GetAgentId()
@@ -972,21 +975,14 @@ func deliverWorkItemPoke(poke *meshv1.WorkItemPoke) bool {
 			}
 		}
 	}
-	path := fmt.Sprintf("/run/user/%d/mesh/poke-%s.sock", os.Getuid(), localName)
-	if _, err := os.Stat(path); err != nil {
-		fmt.Printf("mesh node poke drop agent=%s (local=%s) reason=no-listener\n", poke.GetAgentId(), localName)
+	cr := globalChanRouter
+	if cr == nil {
+		fmt.Printf("mesh node poke drop agent=%s (local=%s) reason=no-router\n", poke.GetAgentId(), localName)
 		return false
 	}
-	conn, err := net.DialTimeout("unix", path, 500*time.Millisecond)
-	if err != nil {
-		fmt.Printf("mesh node poke drop agent=%s reason=dial-%v\n", poke.GetAgentId(), err)
-		return false
-	}
-	defer conn.Close()
-	line := fmt.Sprintf(`{"work_item_id":%q,"reason":%q}`+"\n", poke.GetWorkItemId(), poke.GetReason().String())
-	_ = conn.SetWriteDeadline(time.Now().Add(500 * time.Millisecond))
-	if _, err := conn.Write([]byte(line)); err != nil {
-		fmt.Printf("mesh node poke write err agent=%s: %v\n", poke.GetAgentId(), err)
+	delivered := cr.DeliverPoke(localName, poke.GetWorkItemId(), poke.GetReason().String())
+	if !delivered {
+		fmt.Printf("mesh node poke drop agent=%s (local=%s) reason=no-shim\n", poke.GetAgentId(), localName)
 		return false
 	}
 	MarkAgentActive(localName)
@@ -1042,10 +1038,6 @@ type loopTemplateResponse struct {
 		IdleSeconds   int `json:"idleSeconds"`
 		ActiveSeconds int `json:"activeSeconds"`
 	} `json:"cadence"`
-	PokeHook struct {
-		Script  string `json:"script"`
-		Version string `json:"version"`
-	} `json:"pokeHook"`
 }
 
 func warmLoopTemplate(baseURL, token string) error {
@@ -1097,27 +1089,7 @@ func fetchLoopTemplate(baseURL, token string) error {
 		go rematerializeLocalPrompts()
 	}
 
-	if parsed.PokeHook.Script != "" {
-		go installPokeHook(parsed.PokeHook.Script)
-	}
-
 	return nil
-}
-
-// installPokeHook writes the poke hook script to ~/.mesh/hooks/mesh-poke.sh
-// and registers it in ~/.claude/settings.json under hooks.Stop. Non-fatal:
-// failure is logged and the daemon continues.
-func installPokeHook(scriptContent string) {
-	scriptPath, err := claudeconf.InstallPokeScript(scriptContent)
-	if err != nil {
-		fmt.Printf("mesh node poke-hook: write script: %v\n", err)
-		return
-	}
-	if err := claudeconf.InstallPokeHook(scriptPath); err != nil {
-		fmt.Printf("mesh node poke-hook: patch settings.json: %v\n", err)
-		return
-	}
-	fmt.Printf("mesh node poke-hook: installed path=%s\n", scriptPath)
 }
 
 func rematerializeLocalPrompts() {

@@ -16,9 +16,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -268,24 +266,15 @@ func pollOneAgent(
 	}
 }
 
-// deliverPollPoke delivers a poke to the agent's PTY socket for a poll-surfaced
-// item. Mirrors deliverWorkItemPoke but takes plain strings so it doesn't need
-// to construct a proto.
+// deliverPollPoke delivers a poke via the channel router for a poll-surfaced
+// item. The shim sees it as a notifications/claude/channel notification with
+// meta.source == "mesh-poke", same as a gRPC-triggered poke.
 func deliverPollPoke(localName, workItemID, reason string) {
-	path := fmt.Sprintf("/run/user/%d/mesh/poke-%s.sock", os.Getuid(), localName)
-	if _, err := os.Stat(path); err != nil {
-		// No session running — nothing to wake.
+	cr := globalChanRouter
+	if cr == nil {
 		return
 	}
-	conn, err := net.DialTimeout("unix", path, 500*time.Millisecond)
-	if err != nil {
-		fmt.Printf("mesh poll poke dial agent=%s: %v\n", localName, err)
-		return
-	}
-	defer conn.Close()
-	line := fmt.Sprintf(`{"work_item_id":%q,"reason":%q}`+"\n", workItemID, reason)
-	_ = conn.SetWriteDeadline(time.Now().Add(500 * time.Millisecond))
-	if _, err := conn.Write([]byte(line)); err != nil {
-		fmt.Printf("mesh poll poke write agent=%s: %v\n", localName, err)
+	if !cr.DeliverPoke(localName, workItemID, reason) {
+		fmt.Printf("mesh poll poke drop agent=%s reason=no-shim\n", localName)
 	}
 }

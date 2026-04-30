@@ -49,6 +49,9 @@ type RouterDeps struct {
 	// work-item-handoff from the shim. The daemon uses it to mark the agent
 	// active so the poll cadence shortens from 300s to 60s.
 	OnWorkItemActivity func(agentName string)
+	// Owner is the ChannelRouter that owns this router. Set by startRouterLocked
+	// so serveShim can register/deregister the poke-writer on connect/disconnect.
+	Owner *ChannelRouter
 }
 
 // agentRouter is the daemon-side multiplexer for one agent. It:
@@ -87,11 +90,12 @@ type routerGWConn struct {
 // ChannelRouter manages one agentRouter per agent. The daemon creates a
 // ChannelRouter and calls Sync on every agent-set change.
 type ChannelRouter struct {
-	mu      sync.Mutex
-	routers map[string]*runningRouter // key: agentName
-	broker  *peers.Broker
-	deps    RouterDeps
-	startFn func(ctx context.Context, agentName, description string, channels []Spec, broker *peers.Broker, deps RouterDeps)
+	mu          sync.Mutex
+	routers     map[string]*runningRouter // key: agentName
+	pokeWriters map[string]func(workItemID, reason string) bool
+	broker      *peers.Broker
+	deps        RouterDeps
+	startFn     func(ctx context.Context, agentName, description string, channels []Spec, broker *peers.Broker, deps RouterDeps)
 }
 
 type runningRouter struct {
@@ -103,9 +107,10 @@ type runningRouter struct {
 // NewChannelRouter creates an empty ChannelRouter backed by the real runAgentRouter.
 func NewChannelRouter(broker *peers.Broker) *ChannelRouter {
 	return &ChannelRouter{
-		routers: map[string]*runningRouter{},
-		broker:  broker,
-		startFn: runAgentRouterWithDeps,
+		routers:     map[string]*runningRouter{},
+		pokeWriters: map[string]func(workItemID, reason string) bool{},
+		broker:      broker,
+		startFn:     runAgentRouterWithDeps,
 	}
 }
 
@@ -122,8 +127,9 @@ func (cr *ChannelRouter) SetDeps(deps RouterDeps) {
 // receives a zero-value RouterDeps; tests that need deps should use SetDeps.
 func NewChannelRouterWithStart(broker *peers.Broker, fn func(ctx context.Context, agentName, description string, channels []Spec, broker *peers.Broker)) *ChannelRouter {
 	return &ChannelRouter{
-		routers: map[string]*runningRouter{},
-		broker:  broker,
+		routers:     map[string]*runningRouter{},
+		pokeWriters: map[string]func(workItemID, reason string) bool{},
+		broker:      broker,
 		startFn: func(ctx context.Context, agentName, description string, channels []Spec, broker *peers.Broker, _ RouterDeps) {
 			fn(ctx, agentName, description, channels, broker)
 		},
@@ -168,6 +174,41 @@ func (cr *ChannelRouter) Sync(entries []AgentEntry) {
 	}
 }
 
+// DeliverPoke injects a work-item poke directly into the shim's inbound
+// stream as a notifications/claude/channel notification with
+// meta.source == "mesh-poke". This replaces the old PTY-socket + sidecar
+// delivery path. Returns false when no shim is connected for the agent
+// (caller logs and moves on — same semantics as the old "no listener" path).
+func (cr *ChannelRouter) DeliverPoke(agentName, workItemID, reason string) bool {
+	cr.mu.Lock()
+	fn := cr.pokeWriters[agentName]
+	cr.mu.Unlock()
+	if fn == nil {
+		return false
+	}
+	return fn(workItemID, reason)
+}
+
+// registerPokeWriter is called by agentRouter.serveShim when a shim connects.
+func (cr *ChannelRouter) registerPokeWriter(agentName string, fn func(workItemID, reason string) bool) {
+	if cr == nil {
+		return
+	}
+	cr.mu.Lock()
+	cr.pokeWriters[agentName] = fn
+	cr.mu.Unlock()
+}
+
+// deregisterPokeWriter is called by agentRouter.serveShim when a shim disconnects.
+func (cr *ChannelRouter) deregisterPokeWriter(agentName string) {
+	if cr == nil {
+		return
+	}
+	cr.mu.Lock()
+	delete(cr.pokeWriters, agentName)
+	cr.mu.Unlock()
+}
+
 // StopAll stops all running routers. Called on daemon shutdown.
 func (cr *ChannelRouter) StopAll() {
 	cr.mu.Lock()
@@ -185,6 +226,7 @@ func (cr *ChannelRouter) startRouterLocked(agentName, description string, channe
 	cr.routers[agentName] = rr
 	broker := cr.broker
 	deps := cr.deps
+	deps.Owner = cr
 	startFn := cr.startFn
 	go func() {
 		defer close(rr.done)
@@ -263,7 +305,36 @@ func (r *agentRouter) serveShim(ctx context.Context, conn net.Conn, logf func(st
 	r.shimWr = ipc.NewWriter(conn)
 	r.mu.Unlock()
 
+	// Register a poke-writer so ChannelRouter.DeliverPoke can reach this shim.
+	if r.deps.Owner != nil {
+		r.deps.Owner.registerPokeWriter(r.agentName, func(workItemID, reason string) bool {
+			r.mu.Lock()
+			wr := r.shimWr
+			r.mu.Unlock()
+			if wr == nil {
+				return false
+			}
+			text := fmt.Sprintf("mesh:work-item-poke id=%s reason=%s", workItemID, reason)
+			env := ipc.Envelope{
+				V:       ipc.Version,
+				Type:    "inbound",
+				Source:  "mesh-poke",
+				Content: text,
+			}
+			if err := wr.Write(env); err != nil {
+				logf("poke write err agent=%s: %v", r.agentName, err)
+				return false
+			}
+			logf("poke delivered agent=%s work_item=%s reason=%s", r.agentName, workItemID, reason)
+			return true
+		})
+	}
+
 	defer func() {
+		if r.deps.Owner != nil {
+			r.deps.Owner.deregisterPokeWriter(r.agentName)
+		}
+
 		r.mu.Lock()
 		r.shimConn = nil
 		r.shimWr = nil
