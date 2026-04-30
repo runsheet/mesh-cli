@@ -48,6 +48,7 @@ var allowedWorkItemStatuses = map[string]bool{
 	"shipped":           true,
 	"ship_failed":       true,
 	"archived":          true,
+	"in_progress":       true, // personal workflow (spec 35)
 }
 
 var allowedOwnerRoles = map[string]bool{
@@ -101,6 +102,8 @@ func normalizeStatus(value string) string {
 		return "ready_to_ship"
 	case "ship-failed", "failed":
 		return "ship_failed"
+	case "in-progress": // personal workflow alias (spec 35)
+		return "in_progress"
 	default:
 		return normalizeOptional(value)
 	}
@@ -164,6 +167,7 @@ var (
 )
 
 var createWorkItemOrg string
+var createWorkItemWorkflow string
 
 var createCmd = &cobra.Command{
 	Use:     "create <title> [scope] [projectId]",
@@ -200,6 +204,9 @@ var createCmd = &cobra.Command{
 		}
 		if projectId != "" {
 			payload["projectId"] = projectId
+		}
+		if v := strings.TrimSpace(createWorkItemWorkflow); v != "" {
+			payload["workflowSlug"] = v
 		}
 
 		var response map[string]any
@@ -446,6 +453,7 @@ var learningCmd = &cobra.Command{
 
 func init() {
 	createCmd.Flags().StringVar(&createWorkItemOrg, "org", "", "Org slug to scope the work item (overrides session default)")
+	createCmd.Flags().StringVar(&createWorkItemWorkflow, "workflow", "", "Workflow slug (e.g. full, quick, doc, research, personal); overrides project default")
 	updateCmd.Flags().StringVar(&updateTitle, "title", "", "Updated work item title")
 	updateCmd.Flags().StringVar(&updateStatus, "status", "", "Status, for example ready, in_review, blocked, done")
 	updateCmd.Flags().StringVar(&updatePriority, "priority", "", "Priority: low, medium, high, urgent")
