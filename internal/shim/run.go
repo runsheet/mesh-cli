@@ -400,6 +400,10 @@ func handleMeshShimMCP(
 			return HandleMeshUpdateWorkItem(ctx, msg.ID, params.Arguments, routerWr, pendingResp, write, logf)
 		case "mesh_handoff_work_item":
 			return HandleMeshHandoffWorkItem(ctx, msg.ID, params.Arguments, routerWr, pendingResp, write, logf)
+		case "mesh_recall":
+			return HandleMeshRecall(ctx, msg.ID, params.Arguments, agentName, write, logf)
+		case "mesh_remember":
+			return HandleMeshRemember(ctx, msg.ID, params.Arguments, agentName, write, logf)
 		default:
 			return write(JSONRPCMessage{
 				ID:    msg.ID,

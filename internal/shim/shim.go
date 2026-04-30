@@ -703,6 +703,70 @@ func BuildMeshShimTools() []map[string]any {
 				"required": []string{"id", "fromRole", "toRole"},
 			},
 		},
+		{
+			"name": "mesh_recall",
+			"description": "Semantic recall across project memory. Searches prior decisions, learnings, work-item summaries, and notes for the current project. " +
+				"Use this before starting work to avoid re-discovering known context.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"query": map[string]any{
+						"type":        "string",
+						"description": "Natural-language search query.",
+					},
+					"scope": map[string]any{
+						"type":        "string",
+						"enum":        []string{"agent", "project", "org", "all"},
+						"description": "Memory scope to search. Defaults to 'all' (agent + project + org).",
+					},
+					"kind": map[string]any{
+						"type":        "string",
+						"enum":        []string{"decision", "learning", "work_item_summary", "handoff_summary", "note"},
+						"description": "Optional filter by memory kind.",
+					},
+					"tags": map[string]any{
+						"type":        "array",
+						"description": "Optional tag filter. Returns only records that have all listed tags.",
+						"items":       map[string]any{"type": "string"},
+					},
+					"top_k": map[string]any{
+						"type":        "integer",
+						"description": "Number of results to return (default 5, max 20).",
+					},
+				},
+				"required": []string{"query"},
+			},
+		},
+		{
+			"name": "mesh_remember",
+			"description": "Deposit a memory record for the current project. Use for decisions, learnings, or notes you want other agents or future sessions to recall. " +
+				"Content is indexed asynchronously; expect up to 60 s before it's searchable.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"kind": map[string]any{
+						"type":        "string",
+						"enum":        []string{"decision", "learning", "work_item_summary", "handoff_summary", "note"},
+						"description": "Kind of memory record.",
+					},
+					"content": map[string]any{
+						"type":        "string",
+						"description": "Memory content (max 4000 characters).",
+					},
+					"scope": map[string]any{
+						"type":        "string",
+						"enum":        []string{"agent", "project", "org"},
+						"description": "Scope for the memory. Defaults to 'project' (shared across agents on the same project).",
+					},
+					"tags": map[string]any{
+						"type":        "array",
+						"description": "Optional tags to attach for later filtering.",
+						"items":       map[string]any{"type": "string"},
+					},
+				},
+				"required": []string{"kind", "content"},
+			},
+		},
 	}
 }
 
