@@ -141,6 +141,7 @@ func applyRefreshedTokens(sess *auth.Session, tokens *tokenResponse) error {
 // original request once.
 func newMeshClientForSession(sess *auth.Session) *meshAPIClient {
 	c := newMeshClient(sess.BaseURL, sess.AccessToken)
+	c.OrgSlug = sess.DefaultOrg
 	c.withRefresh(func() (string, error) {
 		if sess.RefreshToken == "" {
 			return "", fmt.Errorf("no refresh token — please run `mesh auth login`")
@@ -344,6 +345,34 @@ func fetchWhoami(baseURL, accessToken string) (*whoamiResponse, error) {
 	return &out, nil
 }
 
+// fetchDefaultOrg calls GET /org/list and returns the slug of the first org.
+// Returns "" on any error — non-fatal; the API falls back to the default org.
+func fetchDefaultOrg(baseURL, accessToken string) string {
+	req, err := http.NewRequest(http.MethodGet, normalizeBaseURL(baseURL)+"/org/list", nil)
+	if err != nil {
+		return ""
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return ""
+	}
+	var out struct {
+		OK   bool `json:"ok"`
+		Orgs []struct {
+			Slug string `json:"slug"`
+		} `json:"orgs"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil || !out.OK || len(out.Orgs) == 0 {
+		return ""
+	}
+	return out.Orgs[0].Slug
+}
+
 func listenForPortalHandoff(timeout time.Duration) (string, func() (*portalHandoffResult, error), error) {
 	addr := fmt.Sprintf("127.0.0.1:%d", callbackPort)
 	listener, err := net.Listen("tcp", addr)
@@ -462,6 +491,7 @@ var authLoginCmd = &cobra.Command{
 			BaseURL:      loginURL,
 			UserID:       who.User.ID,
 			UserEmail:    who.User.Email,
+			DefaultOrg:   fetchDefaultOrg(loginURL, handoff.AccessToken),
 			CreatedAt:    time.Now(),
 		}
 		if handoff.ExpiresAt != "" {
@@ -510,6 +540,7 @@ var authTokenLoginCmd = &cobra.Command{
 			BaseURL:     loginURL,
 			UserID:      who.User.ID,
 			UserEmail:   who.User.Email,
+			DefaultOrg:  fetchDefaultOrg(loginURL, token),
 			CreatedAt:   time.Now(),
 		}
 		if who.ExpiresAt != "" {

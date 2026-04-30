@@ -24,6 +24,7 @@ type Session struct {
 	ClientID      string     `json:"clientId,omitempty"`
 	UserID        string     `json:"userId,omitempty"`
 	UserEmail     string     `json:"userEmail,omitempty"`
+	DefaultOrg    string     `json:"defaultOrg,omitempty"`
 	ExpiresAt     *time.Time `json:"expiresAt,omitempty"`
 	CreatedAt     time.Time  `json:"createdAt"`
 }

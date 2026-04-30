@@ -17,6 +17,7 @@ type RefreshFunc func() (newAccessToken string, err error)
 type meshAPIClient struct {
 	BaseURL     string
 	AccessToken string
+	OrgSlug     string // injected as X-Mesh-Org when non-empty
 	httpClient  *http.Client
 	refreshFn   RefreshFunc // nil means no retry-on-401
 }
@@ -81,6 +82,9 @@ func (c *meshAPIClient) doOnce(method, path string, body any, token string) (int
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
+	if c.OrgSlug != "" {
+		req.Header.Set("X-Mesh-Org", c.OrgSlug)
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

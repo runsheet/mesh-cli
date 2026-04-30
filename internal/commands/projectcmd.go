@@ -58,6 +58,8 @@ var projectCreateCmd = &cobra.Command{
 
 // ── project list ──────────────────────────────────────────────────────────────
 
+var projectListOrg string
+
 var projectListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List projects you are a member of",
@@ -67,13 +69,16 @@ var projectListCmd = &cobra.Command{
 			return err
 		}
 		client := newMeshClientForSession(sess)
+		if cmd.Flags().Changed("org") {
+			client.OrgSlug = projectListOrg
+		}
 		var resp struct {
 			OK       bool `json:"ok"`
 			Projects []struct {
-				ID          string `json:"id"`
-				Name        string `json:"name"`
-				Slug        string `json:"slug"`
-				UpdatedAt   string `json:"updated_at"`
+				ID        string `json:"id"`
+				Name      string `json:"name"`
+				Slug      string `json:"slug"`
+				UpdatedAt string `json:"updated_at"`
 			} `json:"projects"`
 		}
 		if err := client.doRequest("GET", "/project/list", nil, &resp); err != nil {
@@ -323,6 +328,7 @@ var projectRolesCmd = &cobra.Command{
 
 func init() {
 	projectCreateCmd.Flags().StringVar(&projectCreateDescription, "description", "", "Project description")
+	projectListCmd.Flags().StringVar(&projectListOrg, "org", "", "Org slug to scope the listing (overrides session default)")
 	projectUpdateCmd.Flags().StringVar(&projectUpdateName, "name", "", "New project name")
 	projectUpdateCmd.Flags().StringVar(&projectUpdateDescription, "description", "", "New project description")
 	projectDeleteCmd.Flags().BoolVar(&projectDeleteYes, "yes", false, "Skip confirmation prompt")

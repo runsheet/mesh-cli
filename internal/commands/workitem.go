@@ -145,6 +145,8 @@ var (
 	learningNote         string
 )
 
+var createWorkItemOrg string
+
 var createCmd = &cobra.Command{
 	Use:     "create <title> [scope] [projectId]",
 	Short:   "Create a new Ralph Loop work item",
@@ -158,6 +160,9 @@ var createCmd = &cobra.Command{
 		}
 
 		client := newMeshClientForSession(sess)
+		if cmd.Flags().Changed("org") {
+			client.OrgSlug = createWorkItemOrg
+		}
 		title := args[0]
 		scope := "project"
 		projectId := ""
@@ -422,6 +427,7 @@ var learningCmd = &cobra.Command{
 }
 
 func init() {
+	createCmd.Flags().StringVar(&createWorkItemOrg, "org", "", "Org slug to scope the work item (overrides session default)")
 	updateCmd.Flags().StringVar(&updateTitle, "title", "", "Updated work item title")
 	updateCmd.Flags().StringVar(&updateStatus, "status", "", "Status, for example ready, in_review, blocked, done")
 	updateCmd.Flags().StringVar(&updatePriority, "priority", "", "Priority: low, medium, high, urgent")
