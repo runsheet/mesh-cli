@@ -1158,8 +1158,14 @@ func writeAgentPromptFile(agentID, systemPrompt string) error {
 		body.WriteString(loop)
 	}
 
-	path := filepath.Join(dir, "system_prompt.md")
-	return os.WriteFile(path, []byte(body.String()), 0o600)
+	// Write both: CLAUDE.md is what claude-code auto-loads from its cwd as
+	// project instructions, so the agent's system prompt actually reaches the
+	// model. system_prompt.md is the source-of-truth file the snapshot/template
+	// flow reads back; we keep both in sync. Same content, different filenames.
+	if err := os.WriteFile(filepath.Join(dir, "system_prompt.md"), []byte(body.String()), 0o600); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "CLAUDE.md"), []byte(body.String()), 0o600)
 }
 
 func migrateLegacyAgentPromptFiles() {
