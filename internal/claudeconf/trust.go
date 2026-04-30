@@ -95,10 +95,12 @@ func EnsureClaudeFolderTrusted(agentWorkdir string) {
 	_ = atomicWriteFile(cfgPath, b, 0o600)
 }
 
-// ReadMeshMCPServerNames parses <agentWorkdir>/.mcp.json and returns the
-// keys under mcpServers. Best-effort — returns empty on any error.
+// ReadMeshMCPServerNames parses ~/.mesh/agents/<agentName>/.mesh-mcp.json and
+// returns the keys under mcpServers. The agentWorkdir argument is
+// ~/.mesh/agents/<agentName> — we derive the filename from it.
+// Best-effort — returns empty on any error (file may not exist yet on first spawn).
 func ReadMeshMCPServerNames(agentWorkdir string) []string {
-	data, err := os.ReadFile(filepath.Join(agentWorkdir, ".mcp.json"))
+	data, err := os.ReadFile(filepath.Join(agentWorkdir, ".mesh-mcp.json"))
 	if err != nil {
 		return nil
 	}

@@ -59,11 +59,7 @@ const (
 //
 // Both paths share a single SessionRegistry so locally-run and cluster-pinned
 // agents are observable through either surface.
-//
-// writeSettings is a callback for WriteClaudeSettings, which still lives in
-// cmd/mesh because it depends on pluginscaffold. Daemon passes it through to
-// localsock and autoStartOne.
-func RunDaemon(baseURL string, grpcAddr string, writeSettings func(agentName string, ch []channels.Spec, envSource map[string]string) error, probeNodeID func(baseURL, token string) (string, error)) error {
+func RunDaemon(baseURL string, grpcAddr string, probeNodeID func(baseURL, token string) (string, error)) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -71,6 +67,7 @@ func RunDaemon(baseURL string, grpcAddr string, writeSettings func(agentName str
 
 	itpl.PruneTemplates()
 	migrateLegacyAgentPromptFiles()
+	sessions.MigrateAwayFromPluginScaffold()
 
 	exe, err := os.Executable()
 	if err != nil {
@@ -107,7 +104,6 @@ func RunDaemon(baseURL string, grpcAddr string, writeSettings func(agentName str
 
 	listener, err := localsock.StartLocalSocket(ctx, registry, chanMgr, chanRouter, broker, localsock.Deps{
 		WritePromptFile: writeAgentPromptFile,
-		WriteSettings:   writeSettings,
 		ProbeNodeID:     probeNodeID,
 		AutoPushAgent: func(agentName string) {
 			tok, err := auth.LoadNodeToken()
@@ -124,7 +120,7 @@ func RunDaemon(baseURL string, grpcAddr string, writeSettings func(agentName str
 	}
 	defer listener.Close()
 
-	autoStartAgents(registry, writeSettings)
+	autoStartAgents(registry)
 
 	if !clustered {
 		fmt.Println("mesh node daemon running in standalone mode (no node token present; cluster features disabled)")
@@ -189,7 +185,7 @@ func workItemRouterDeps(baseURL, nodeToken string) channels.RouterDeps {
 	}
 }
 
-func autoStartAgents(registry *sessions.SessionRegistry, writeSettings func(string, []channels.Spec, map[string]string) error) {
+func autoStartAgents(registry *sessions.SessionRegistry) {
 	agents, err := state.ListAgents()
 	if err != nil {
 		fmt.Printf("mesh autostart: load state: %v\n", err)
@@ -200,7 +196,7 @@ func autoStartAgents(registry *sessions.SessionRegistry, writeSettings func(stri
 	}
 	started, skipped := 0, 0
 	for _, a := range agents {
-		if err := autoStartOne(registry, a, writeSettings); err != nil {
+		if err := autoStartOne(registry, a); err != nil {
 			fmt.Printf("mesh autostart: skip %s: %v\n", a.Name, err)
 			skipped++
 			continue
@@ -211,7 +207,7 @@ func autoStartAgents(registry *sessions.SessionRegistry, writeSettings func(stri
 	fmt.Printf("mesh autostart: %d started, %d skipped\n", started, skipped)
 }
 
-func autoStartOne(registry *sessions.SessionRegistry, a *state.AgentDef, writeSettings func(string, []channels.Spec, map[string]string) error) error {
+func autoStartOne(registry *sessions.SessionRegistry, a *state.AgentDef) error {
 	if !isnap.Exists(a.Name) {
 		if migErr := migrateAgentSnapshot(a); migErr != nil {
 			return fmt.Errorf("snapshot missing and migration failed (%w) — run `mesh update %s` to rebuild or `mesh rm %s` to remove", migErr, a.Name, a.Name)
@@ -258,13 +254,6 @@ func autoStartOne(registry *sessions.SessionRegistry, a *state.AgentDef, writeSe
 
 	if err := writeAgentPromptFile(a.Name, snapshotPrompt); err != nil {
 		fmt.Printf("mesh autostart: prompt-file err %s: %v\n", a.Name, err)
-	}
-
-	if writeSettings != nil {
-		effectiveEnv := mergeStringMaps(os.Environ(), nil)
-		if err := writeSettings(a.Name, a.Channels, effectiveEnv); err != nil {
-			fmt.Printf("mesh autostart: settings.json err %s: %v\n", a.Name, err)
-		}
 	}
 
 	_, _, err = registry.StartWithOptions(sessions.StartOptions{

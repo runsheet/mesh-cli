@@ -198,10 +198,7 @@ func defaultGrpcAddrFor(baseURL string) string {
 	return fmt.Sprintf("%s:8081", host)
 }
 
-// runDaemon wires WriteClaudeSettings callback and delegates to internal/daemon.
+// runDaemon delegates to internal/daemon.
 func runDaemon(baseURL, grpcAddr string) error {
-	return idaemon.RunDaemon(baseURL, grpcAddr,
-		writeClaudeSettingsForDaemon,
-		probeLocalNodeID,
-	)
+	return idaemon.RunDaemon(baseURL, grpcAddr, probeLocalNodeID)
 }

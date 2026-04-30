@@ -36,9 +36,6 @@ type Deps struct {
 	// the named agent. Daemon owns the loop-template cache.
 	WritePromptFile func(agentID, systemPrompt string) error
 
-	// WriteSettings writes .mcp.json / plugin manifest for the named agent.
-	WriteSettings func(agentName string, ch []channels.Spec, envSource map[string]string) error
-
 	// ProbeNodeID dials mesh-api to learn this node's registered id. Used by
 	// the cluster-pull handler to verify the cloud agent is pinned here.
 	ProbeNodeID func(baseURL, token string) (string, error)
@@ -384,11 +381,6 @@ func (s *localServer) createSession(w http.ResponseWriter, r *http.Request) {
 				fmt.Printf("mesh daemon prompt-file err name=%s: %v\n", name, err)
 			}
 		}
-		if s.deps.WriteSettings != nil {
-			if err := s.deps.WriteSettings(name, def.Channels, effectiveEnv); err != nil {
-				fmt.Printf("mesh daemon claude-settings err name=%s: %v\n", name, err)
-			}
-		}
 		sess, _, err := s.registry.StartWithOptions(sessions.StartOptions{
 			AgentID:                    name,
 			Model:                      tpl.Model,
@@ -541,12 +533,6 @@ func (s *localServer) restartSession(w http.ResponseWriter, _ *http.Request, nam
 		DangerouslySkipPermissions: def.DangerouslySkipPermissions,
 	}
 
-	if s.deps.WriteSettings != nil {
-		if err := s.deps.WriteSettings(name, def.Channels, effectiveEnv); err != nil {
-			fmt.Printf("mesh daemon claude-settings err name=%s: %v\n", name, err)
-		}
-	}
-
 	sess, err := s.registry.NewUpWithOptions(opts)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -672,11 +658,6 @@ func (s *localServer) updateSession(w http.ResponseWriter, _ *http.Request, name
 		}
 		if s.deps.WritePromptFile != nil {
 			_ = s.deps.WritePromptFile(name, tpl.SystemPrompt)
-		}
-		if s.deps.WriteSettings != nil {
-			if err := s.deps.WriteSettings(name, def.Channels, effectiveEnv); err != nil {
-				fmt.Printf("mesh daemon claude-settings err name=%s: %v\n", name, err)
-			}
 		}
 		sess, err := s.registry.NewUpWithOptions(sessions.StartOptions{
 			AgentID:    name,

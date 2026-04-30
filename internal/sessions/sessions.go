@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -23,9 +21,6 @@ import (
 	"projectmesh.io/mesh-cli/internal/state"
 	meshv1 "projectmesh.io/mesh-cli/proto/meshv1"
 )
-
-// meshMarketplaceName is the Claude Code marketplace identifier for the mesh plugin.
-const meshMarketplaceName = "mesh"
 
 // Per spec A.3 / A.4: fixed 120×40 PTY, 4 MB per-session scrollback ring,
 // drop-oldest semantics with a dropped_bytes counter surfaced on the next
@@ -236,12 +231,11 @@ func (r *SessionRegistry) StartWithOptions(opts StartOptions) (*PtySession, bool
 	if opts.DangerouslySkipPermissions {
 		args = append(args, "--dangerously-skip-permissions")
 	}
-	if dir, err := paths.AgentWorkdir(opts.AgentID); err == nil {
-		pluginDir := filepath.Join(dir, "plugin")
-		if _, statErr := os.Stat(filepath.Join(pluginDir, ".claude-plugin", "plugin.json")); statErr == nil {
-			args = append(args, "--dangerously-load-development-channels", "plugin:"+opts.AgentID+"@"+meshMarketplaceName)
-		}
+	mcpConfigPath, mcpErr := WriteSessionMCPConfig(opts.AgentID)
+	if mcpErr != nil {
+		return nil, false, fmt.Errorf("write session MCP config for agent %s: %w", opts.AgentID, mcpErr)
 	}
+	args = append(args, "--mcp-config", mcpConfigPath)
 	cmd := exec.Command("claude", args...)
 	if dir, err := paths.AgentWorkdir(agentID); err == nil {
 		cmd.Dir = dir
@@ -285,52 +279,7 @@ func (r *SessionRegistry) StartWithOptions(opts StartOptions) (*PtySession, bool
 	go r.readLoop(s)
 	go r.waitLoop(s)
 
-	hasDevChannels := false
-	for _, a := range args {
-		if a == "--dangerously-load-development-channels" {
-			hasDevChannels = true
-			break
-		}
-	}
-	if hasDevChannels {
-		go r.autoAcceptDevChannelsPrompt(s)
-	}
-
 	return s, true, nil
-}
-
-func (r *SessionRegistry) autoAcceptDevChannelsPrompt(s *PtySession) {
-	fmt.Printf("mesh auto-accept agent=%s armed (waiting for dev-channels prompt)\n", s.AgentID)
-	deadline := time.Now().Add(15 * time.Second)
-	ticks := 0
-	for time.Now().Before(deadline) {
-		ticks++
-		snap, _ := s.buffer.Snapshot()
-		stripped := stripANSI(snap)
-		for _, marker := range []string{
-			"dangerously-load-development-channels",
-			"WARNING:",
-		} {
-			if bytes.Contains(stripped, []byte(marker)) {
-				n, werr := s.PTY.Write([]byte("\r"))
-				fmt.Printf("mesh auto-accept agent=%s matched=%q wrote=%d err=%v ticks=%d\n", s.AgentID, marker, n, werr, ticks)
-				return
-			}
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	snap, _ := s.buffer.Snapshot()
-	if len(snap) > 512 {
-		snap = snap[len(snap)-512:]
-	}
-	stripped := stripANSI(snap)
-	fmt.Printf("mesh auto-accept agent=%s TIMEOUT ticks=%d tail_stripped=%q\n", s.AgentID, ticks, string(stripped))
-}
-
-var ansiEscapeRE = regexp.MustCompile(`\x1b\[[0-9;?]*[a-zA-Z]|\x1b\].*?(\x07|\x1b\\)|\x1b[()][A-Za-z0-9]|\x1b[=>78DEHMc]`)
-
-func stripANSI(b []byte) []byte {
-	return ansiEscapeRE.ReplaceAll(b, nil)
 }
 
 func (r *SessionRegistry) readLoop(s *PtySession) {
