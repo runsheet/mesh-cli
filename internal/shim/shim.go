@@ -510,6 +510,17 @@ func HandleMeshHandoffWorkItem(
 	}
 }
 
+// BuildMeshShimToolsForAgent returns the tools/list payload for the mesh shim.
+// When agentName identifies a shipper agent (name starts with "shipper"),
+// the six shipper MCP tools are appended.
+func BuildMeshShimToolsForAgent(agentName string) []map[string]any {
+	tools := BuildMeshShimTools()
+	if strings.HasPrefix(agentName, "shipper") {
+		tools = append(tools, BuildShipperShimTools()...)
+	}
+	return tools
+}
+
 // BuildMeshShimTools returns the tools/list payload for the mesh shim.
 func BuildMeshShimTools() []map[string]any {
 	return []map[string]any{

@@ -24,6 +24,7 @@ func init() {
 	rootCmd.AddCommand(whatsappCmd)
 	rootCmd.AddCommand(peersCmd)
 	rootCmd.AddCommand(specCmd)
+	rootCmd.AddCommand(emergencyStopCmd)
 }
 
 // Execute runs the root command.

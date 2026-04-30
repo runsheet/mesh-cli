@@ -43,6 +43,10 @@ var allowedWorkItemStatuses = map[string]bool{
 	"in_test":           true,
 	"changes_requested": true,
 	"done":              true,
+	"ready_to_ship":     true,
+	"shipping":          true,
+	"shipped":           true,
+	"ship_failed":       true,
 	"archived":          true,
 }
 
@@ -53,6 +57,7 @@ var allowedOwnerRoles = map[string]bool{
 	"devlead":    true,
 	"builder":    true,
 	"tester":     true,
+	"shipper":    true,
 }
 
 var allowedPriorities = map[string]bool{
@@ -92,6 +97,10 @@ func normalizeStatus(value string) string {
 		return "research_done"
 	case "in-test":
 		return "in_test"
+	case "ready-to-ship", "rts":
+		return "ready_to_ship"
+	case "ship-failed", "failed":
+		return "ship_failed"
 	default:
 		return normalizeOptional(value)
 	}
