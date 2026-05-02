@@ -146,6 +146,24 @@ func newMeshClientForSession(sess *auth.Session) *meshAPIClient {
 		if sess.RefreshToken == "" {
 			return "", fmt.Errorf("no refresh token — please run `mesh auth login`")
 		}
+		// Serialize with concurrent CLI processes — see requireSessionImpl
+		// comment. Re-read after lock so we use whatever the latest disk
+		// state is (another process may have already refreshed).
+		release, lockErr := auth.LockSession()
+		if lockErr != nil {
+			return "", fmt.Errorf("acquire session lock: %w", lockErr)
+		}
+		defer release()
+		if latest, loadErr := auth.LoadSession(); loadErr == nil && latest.AccessToken != "" {
+			if !sessionNeedsRefresh(latest) {
+				sess.AccessToken = latest.AccessToken
+				sess.RefreshToken = latest.RefreshToken
+				sess.IDToken = latest.IDToken
+				sess.ExpiresAt = latest.ExpiresAt
+				return sess.AccessToken, nil
+			}
+			sess.RefreshToken = latest.RefreshToken
+		}
 		var tokens *tokenResponse
 		var err error
 		if sess.TokenEndpoint != "" {
@@ -167,8 +185,32 @@ func newMeshClientForSession(sess *auth.Session) *meshAPIClient {
 
 // requireSessionImpl loads the saved session and refreshes it if expired or
 // within 5 minutes of expiry.
+//
+// Concurrent invocations are serialized via an exclusive flock on
+// ~/.mesh-session.lock. After acquiring the lock we re-read the session
+// file because another process may have refreshed it while we waited;
+// re-using a refresh token across two concurrent calls causes the API to
+// reject the second with "Invalid Refresh Token: Already Used".
 func requireSessionImpl() (*auth.Session, error) {
 	sess, err := auth.LoadSession()
+	if err != nil {
+		return nil, errors.New("no active session found, please login")
+	}
+	if !sessionNeedsRefresh(sess) {
+		return sess, nil
+	}
+	if sess.RefreshToken == "" {
+		return nil, errors.New("session expired and no refresh token available — please run `mesh auth login`")
+	}
+
+	release, lockErr := auth.LockSession()
+	if lockErr != nil {
+		return nil, fmt.Errorf("acquire session lock: %w", lockErr)
+	}
+	defer release()
+
+	// Re-read under the lock — another process may have refreshed already.
+	sess, err = auth.LoadSession()
 	if err != nil {
 		return nil, errors.New("no active session found, please login")
 	}

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -71,6 +72,34 @@ func SaveSession(sess *Session) error {
 		return err
 	}
 	return os.WriteFile(path, data, 0600)
+}
+
+// LockSession acquires an exclusive flock on ~/.mesh-session.lock. The
+// returned release function unlocks and closes the file. Use this around
+// the read-check-refresh-write sequence in requireSessionImpl so that
+// concurrent CLI invocations don't both burn the same refresh token (which
+// the API rejects with "Invalid Refresh Token: Already Used").
+//
+// The lock blocks until acquired. Callers should keep the critical section
+// small — re-load session, refresh if still needed, save, release.
+func LockSession() (release func(), err error) {
+	path, err := sessionFilePath()
+	if err != nil {
+		return nil, err
+	}
+	lockPath := path + ".lock"
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	return func() {
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = f.Close()
+	}, nil
 }
 
 // ClearSession removes ~/.mesh-session.json. Returns nil if the file doesn't
