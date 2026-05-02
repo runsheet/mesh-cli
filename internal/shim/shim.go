@@ -511,14 +511,9 @@ func HandleMeshHandoffWorkItem(
 }
 
 // BuildMeshShimToolsForAgent returns the tools/list payload for the mesh shim.
-// When agentName identifies a shipper agent (name starts with "shipper"),
-// the six shipper MCP tools are appended.
+// All agents receive the same tool set: the core mesh tools plus mesh_get_project_cost.
 func BuildMeshShimToolsForAgent(agentName string) []map[string]any {
 	tools := BuildMeshShimTools()
-	if strings.HasPrefix(agentName, "shipper") {
-		tools = append(tools, BuildShipperShimTools()...)
-	}
-	// Always include the cost-query tool (any agent may monitor burn rate).
 	tools = append(tools, BuildUsageShimTools()[1]) // mesh_get_project_cost only
 	return tools
 }

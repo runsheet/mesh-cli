@@ -1,41 +1,86 @@
 package commands
 
-// mesh emergency-stop — spec 31 §10.3.
+// mesh emergency-stop — spec 31 §10.3, updated spec 36.
 //
 // Revokes the shipper agent's node token and sets the emergency_stop flag in
-// agents.metadata.shipper_config so the in-flight Shipper session halts on
-// its next phase-transition poll.
+// agents.metadata.shipper_config so the in-flight ship skill halts on its
+// next phase-transition sentinel check.
+//
+// Also writes ~/.mesh/emergency-stop as a local sentinel file that the ship
+// skill reads before each phase transition.
 
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 )
 
 var emergencyStopRepo string
+var emergencyStopClear bool
 
 var emergencyStopCmd = &cobra.Command{
 	Use:   "emergency-stop",
-	Short: "Immediately halt the shipper agent for one or all repos",
-	Long: `Revoke the Shipper agent's node token and set the emergency_stop flag.
+	Short: "Immediately halt any in-flight ship operation",
+	Long: `Write the emergency-stop sentinel and revoke the shipper agent's node token.
 
-Any in-flight ship operation will halt at its next phase-transition checkpoint.
-To resume, rotate the node token (mesh node rotate-token) and clear the flag
-via POST /agent/update with metadata.shipper_config.emergency_stop = false.
+The ship skill reads ~/.mesh/emergency-stop before each phase transition. If the
+file is present and non-empty, it halts immediately and sets the work item to
+ship_failed.
+
+Use --clear to remove the sentinel and re-enable shipping.
 
 The emergency stop does not delete branches or PRs — state remains inspectable.`,
-	Example: "mesh emergency-stop --repo mesh-api\nmesh emergency-stop --repo all",
+	Example: "mesh emergency-stop --repo mesh-api\nmesh emergency-stop --repo all\nmesh emergency-stop --clear",
 	RunE:    runEmergencyStop,
 }
 
 func init() {
 	emergencyStopCmd.Flags().StringVar(&emergencyStopRepo, "repo",
 		"all", "Repo scope: mesh-api | mesh-portal | mesh-cli | all")
+	emergencyStopCmd.Flags().BoolVar(&emergencyStopClear, "clear",
+		false, "Clear the emergency-stop sentinel (re-enables shipping)")
+}
+
+// sentinelPath returns the path to the emergency-stop sentinel file.
+func sentinelPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".mesh", "emergency-stop"), nil
 }
 
 func runEmergencyStop(cmd *cobra.Command, args []string) error {
+	sp, err := sentinelPath()
+	if err != nil {
+		return fmt.Errorf("resolve sentinel path: %w", err)
+	}
+
+	if emergencyStopClear {
+		if err := os.Remove(sp); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove sentinel: %w", err)
+		}
+		fmt.Println("Emergency stop cleared. Sentinel removed.")
+		fmt.Println("Note: API-side emergency_stop flag must be cleared separately via POST /agent/update.")
+		return nil
+	}
+
+	// Write the local sentinel file. The ship skill reads this before each
+	// phase transition and halts if present.
+	if err := os.MkdirAll(filepath.Dir(sp), 0o700); err != nil {
+		return fmt.Errorf("create sentinel dir: %w", err)
+	}
+	sentinelContent := fmt.Sprintf("%s scope=%s\n", time.Now().UTC().Format(time.RFC3339), emergencyStopRepo)
+	if err := os.WriteFile(sp, []byte(sentinelContent), 0o600); err != nil {
+		return fmt.Errorf("write sentinel: %w", err)
+	}
+	fmt.Printf("  [ok]   sentinel written: %s\n", sp)
+
 	sess, err := requireSession()
 	if err != nil {
 		return err
@@ -98,7 +143,6 @@ func runEmergencyStop(cmd *cobra.Command, args []string) error {
 		}
 
 		// 2. Revoke the node token via POST /node/revoke-token.
-		// We look up the node's tokens via the agent's pinned_node_id.
 		if agent.PinnedNodeID != "" {
 			revokeBody := map[string]any{"nodeId": agent.PinnedNodeID}
 			var revokeResp struct {
@@ -146,7 +190,7 @@ func runEmergencyStop(cmd *cobra.Command, args []string) error {
 	if len(halted) > 0 {
 		fmt.Printf("Emergency stop applied to: %s\n", strings.Join(halted, ", "))
 		fmt.Println("In-flight ship operations will halt at the next phase-transition checkpoint.")
-		fmt.Println("To resume: mesh node rotate-token, then clear the flag via POST /agent/update.")
+		fmt.Println("To resume: mesh emergency-stop --clear, then mesh node rotate-token, then clear the API flag via POST /agent/update.")
 	}
 	if len(skipped) > 0 {
 		fmt.Printf("Skipped (not found): %s\n", strings.Join(skipped, ", "))

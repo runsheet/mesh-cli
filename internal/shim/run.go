@@ -404,20 +404,6 @@ func handleMeshShimMCP(
 			return HandleMeshRecall(ctx, msg.ID, params.Arguments, agentName, write, logf)
 		case "mesh_remember":
 			return HandleMeshRemember(ctx, msg.ID, params.Arguments, agentName, write, logf)
-		case "mesh_open_pr":
-			return HandleMeshOpenPR(ctx, msg.ID, params.Arguments, write, logf)
-		case "mesh_check_ci":
-			return HandleMeshCheckCI(ctx, msg.ID, params.Arguments, write, logf)
-		case "mesh_merge_pr":
-			return HandleMeshMergePR(ctx, msg.ID, params.Arguments, write, logf)
-		case "mesh_deploy":
-			return HandleMeshDeploy(ctx, msg.ID, params.Arguments, write, logf)
-		case "mesh_smoke_test":
-			return HandleMeshSmokeTest(ctx, msg.ID, params.Arguments, write, logf)
-		case "mesh_rollback":
-			return HandleMeshRollback(ctx, msg.ID, params.Arguments, write, logf)
-		case "mesh_check_emergency_stop":
-			return HandleMeshCheckEmergencyStop(ctx, msg.ID, params.Arguments, agentName, write, logf)
 		default:
 			return write(JSONRPCMessage{
 				ID:    msg.ID,
