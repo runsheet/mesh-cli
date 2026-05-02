@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -74,7 +73,7 @@ func SaveSession(sess *Session) error {
 	return os.WriteFile(path, data, 0600)
 }
 
-// LockSession acquires an exclusive flock on ~/.mesh-session.lock. The
+// LockSession acquires an exclusive lock on ~/.mesh-session.lock. The
 // returned release function unlocks and closes the file. Use this around
 // the read-check-refresh-write sequence in requireSessionImpl so that
 // concurrent CLI invocations don't both burn the same refresh token (which
@@ -82,6 +81,9 @@ func SaveSession(sess *Session) error {
 //
 // The lock blocks until acquired. Callers should keep the critical section
 // small — re-load session, refresh if still needed, save, release.
+//
+// Implementation lives in lock_unix.go (flock) and lock_windows.go
+// (LockFileEx) per build tag.
 func LockSession() (release func(), err error) {
 	path, err := sessionFilePath()
 	if err != nil {
@@ -92,12 +94,12 @@ func LockSession() (release func(), err error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+	if lockErr := lockFile(f); lockErr != nil {
 		_ = f.Close()
-		return nil, err
+		return nil, lockErr
 	}
 	return func() {
-		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = unlockFile(f)
 		_ = f.Close()
 	}, nil
 }
