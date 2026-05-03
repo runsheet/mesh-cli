@@ -8,10 +8,10 @@ import (
 
 var rootCmd = &cobra.Command{
 	Use:     "mesh",
-	Short:   "Mesh CLI for Ralph Loop operations",
-	Long:    "Mesh CLI is the operator tool for Ralph Loop work. Sign in once, then create, move, hand off, review, and learn from work items with your saved Mesh session.",
+	Short:   "Mesh CLI — AI, orgs, projects, workflows, tasks",
+	Long:    "Mesh CLI is the operator tool for the Mesh control plane. Sign in once, then manage orgs, projects, agents (AI), workflows, and tasks from your saved Mesh session.",
 	Version: version.Version,
-	Example: "mesh auth login\nmesh work-item create \"Stabilize release flow\" project <project-id>\nmesh work-item update <id> ready\nmesh work-item handoff <id> pm devlead \"Spec approved\"\nmesh work-item review <id> devlead approve \"Ship it\"\nmesh work-item learning <id> \"Release flow now stable\"",
+	Example: "mesh auth login\nmesh work-item create \"Stabilize release flow\" project <project-id>\nmesh work-item update <id> ready\nmesh work-item handoff <id> pm devlead \"Ready for review\"\nmesh work-item review <id> devlead approve \"Ship it\"\nmesh work-item learning <id> \"Release flow now stable\"",
 }
 
 func init() {

@@ -152,7 +152,6 @@ var (
 	handoffSystemTarget  string
 	handoffConstraints   string
 	handoffTestExpect    string
-	handoffLinkedSpecVer int
 	handoffNote          string
 
 	reviewNotes             string
@@ -296,9 +295,9 @@ var updateCmd = &cobra.Command{
 
 var handoffCmd = &cobra.Command{
 	Use:     "handoff <workItemId> <fromRole> <toRole> [summary]",
-	Short:   "Record a Ralph Loop handoff",
-	Long:    "Record the handoff packet between Ralph Loop roles. Use the optional summary positional arg for the common case, and flags when you want the fuller packet.",
-	Example: "mesh work-item handoff <id> pm devlead \"Spec approved and ready\"\nmesh work-item handoff <id> devlead builder --summary \"Implement portal auth fix\" --required-outputs \"PR plus test notes\" --repo-path /repo/path",
+	Short:   "Record a workflow handoff",
+	Long:    "Record the handoff packet between workflow roles. Use the optional summary positional arg for the common case, and flags when you want the fuller packet.",
+	Example: "mesh work-item handoff <id> pm devlead \"Ready for review\"\nmesh work-item handoff <id> devlead builder --summary \"Implement portal auth fix\" --required-outputs \"PR plus test notes\" --repo-path /repo/path",
 	Args:    cobra.RangeArgs(3, 4),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		summary := handoffSummary
@@ -339,9 +338,6 @@ var handoffCmd = &cobra.Command{
 		}
 		if v := normalizeOptional(handoffTestExpect); v != "" {
 			payload["testExpectations"] = v
-		}
-		if cmd.Flags().Changed("linked-spec-version") {
-			payload["linkedSpecVersion"] = handoffLinkedSpecVer
 		}
 		if v := normalizeOptional(handoffNote); v != "" {
 			payload["note"] = v
@@ -470,7 +466,6 @@ func init() {
 	handoffCmd.Flags().StringVar(&handoffSystemTarget, "system-target", "", "System or surface being targeted")
 	handoffCmd.Flags().StringVar(&handoffConstraints, "constraints", "", "Constraints for the handoff")
 	handoffCmd.Flags().StringVar(&handoffTestExpect, "test-expectations", "", "Expected verification or tests")
-	handoffCmd.Flags().IntVar(&handoffLinkedSpecVer, "linked-spec-version", 0, "Linked spec version")
 	handoffCmd.Flags().StringVar(&handoffNote, "note", "", "Event note for the handoff")
 
 	reviewCmd.Flags().StringVar(&reviewNotes, "notes", "", "Review notes")
@@ -565,12 +560,10 @@ func init() {
 	listCmd.Flags().BoolVar(&listAllFlag, "all", false, "Show all work items, not just those assigned to me")
 }
 
-var getWorkItemFetchSpec bool
-
 var getWorkItemCmd = &cobra.Command{
 	Use:     "get <workItemId>",
 	Short:   "Fetch a single work item by ID",
-	Example: "mesh work-item get <id>\nmesh work-item get <id> --fetch-spec",
+	Example: "mesh work-item get <id>",
 	Args:    cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		sess, err := requireSession()
@@ -588,41 +581,8 @@ var getWorkItemCmd = &cobra.Command{
 			return err
 		}
 
-		if err := printJSON(resp); err != nil {
-			return err
-		}
-
-		// --fetch-spec: if the response includes a spec.fetch_url, retrieve and
-		// print the spec content inline.
-		if getWorkItemFetchSpec {
-			specObj, _ := resp.Item["spec"].(map[string]any)
-			fetchURL, _ := specObj["fetch_url"].(string)
-			if fetchURL == "" {
-				fmt.Println("\n[no spec linked to this work item]")
-				return nil
-			}
-
-			var specResp struct {
-				OK      bool   `json:"ok"`
-				Content string `json:"content"`
-				Path    string `json:"path"`
-				SHA     string `json:"sha"`
-			}
-			if err := client.doRequest("GET", fetchURL, nil, &specResp); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: could not fetch spec: %v\n", err)
-				return nil
-			}
-
-			fmt.Printf("\n── Spec: %s (sha: %s) ──\n\n", specResp.Path, specResp.SHA)
-			fmt.Println(specResp.Content)
-		}
-
-		return nil
+		return printJSON(resp)
 	},
-}
-
-func init() {
-	getWorkItemCmd.Flags().BoolVar(&getWorkItemFetchSpec, "fetch-spec", false, "Fetch and print the linked spec content inline")
 }
 
 // testSessionOverride, when non-nil, is returned directly by requireSession
