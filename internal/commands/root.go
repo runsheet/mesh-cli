@@ -24,7 +24,6 @@ func init() {
 	rootCmd.AddCommand(discordCmd)
 	rootCmd.AddCommand(whatsappCmd)
 	rootCmd.AddCommand(peersCmd)
-	rootCmd.AddCommand(specCmd)
 	rootCmd.AddCommand(emergencyStopCmd)
 }
 
