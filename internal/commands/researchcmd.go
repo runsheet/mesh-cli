@@ -16,7 +16,7 @@ var researchCmd = &cobra.Command{
 }
 
 var (
-	researchWorkItemID  string
+	researchTaskID  string
 	researchNoteFile    string
 	researchConfidence  string
 	researchProjectID   string
@@ -52,11 +52,11 @@ func parseConfidence(v string) (float64, error) {
 
 var researchRecordCmd = &cobra.Command{
 	Use:     "record",
-	Short:   "Record a research note for a work item",
-	Example: "mesh research record --work-item <id> --note research.md --confidence 0.82\nmesh research record --work-item <id> --note - --confidence 0.75",
+	Short:   "Record a research note for a task",
+	Example: "mesh research record --task <id> --note research.md --confidence 0.82\nmesh research record --task <id> --note - --confidence 0.75",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if researchWorkItemID == "" {
-			return fmt.Errorf("--work-item is required")
+		if researchTaskID == "" {
+			return fmt.Errorf("--task is required")
 		}
 		confidence, err := parseConfidence(researchConfidence)
 		if err != nil {
@@ -76,14 +76,14 @@ var researchRecordCmd = &cobra.Command{
 		}
 
 		payload := map[string]any{
-			"workItemId":      researchWorkItemID,
+			"taskId":      researchTaskID,
 			"noteMarkdown":    noteMarkdown,
 			"confidenceScore": confidence,
 		}
 
 		client := newMeshClientForSession(sess)
 		var response map[string]any
-		if err := client.doRequest("POST", "/work-item/research/record", payload, &response); err != nil {
+		if err := client.doRequest("POST", "/task/research/record", payload, &response); err != nil {
 			return err
 		}
 		return printJSON(response)
@@ -92,11 +92,11 @@ var researchRecordCmd = &cobra.Command{
 
 var researchConfirmCmd = &cobra.Command{
 	Use:     "confirm",
-	Short:   "Confirm a research note for a work item",
-	Example: "mesh research confirm --work-item <id> --confidence 0.75",
+	Short:   "Confirm a research note for a task",
+	Example: "mesh research confirm --task <id> --confidence 0.75",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if researchWorkItemID == "" {
-			return fmt.Errorf("--work-item is required")
+		if researchTaskID == "" {
+			return fmt.Errorf("--task is required")
 		}
 		confidence, err := parseConfidence(researchConfidence)
 		if err != nil {
@@ -109,7 +109,7 @@ var researchConfirmCmd = &cobra.Command{
 		}
 
 		payload := map[string]any{
-			"workItemId":      researchWorkItemID,
+			"taskId":      researchTaskID,
 			"confidenceScore": confidence,
 		}
 		if v := strings.TrimSpace(researchConfirmerRole); v != "" {
@@ -118,7 +118,7 @@ var researchConfirmCmd = &cobra.Command{
 
 		client := newMeshClientForSession(sess)
 		var response map[string]any
-		if err := client.doRequest("POST", "/work-item/research/confirm", payload, &response); err != nil {
+		if err := client.doRequest("POST", "/task/research/confirm", payload, &response); err != nil {
 			return err
 		}
 		return printJSON(response)
@@ -127,7 +127,7 @@ var researchConfirmCmd = &cobra.Command{
 
 var researchListCmd = &cobra.Command{
 	Use:     "list",
-	Short:   "List work items pending research (in researching state)",
+	Short:   "List tasks pending research (in researching state)",
 	Example: "mesh research list\nmesh research list --project <id>",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		sess, err := requireSession()
@@ -135,7 +135,7 @@ var researchListCmd = &cobra.Command{
 			return err
 		}
 
-		path := "/work-item/research/pending"
+		path := "/task/research/pending"
 		if v := strings.TrimSpace(researchProjectID); v != "" {
 			path += "?projectId=" + v
 		}
@@ -150,11 +150,11 @@ var researchListCmd = &cobra.Command{
 }
 
 func init() {
-	researchRecordCmd.Flags().StringVar(&researchWorkItemID, "work-item", "", "Work item ID")
+	researchRecordCmd.Flags().StringVar(&researchTaskID, "task", "", "Work item ID")
 	researchRecordCmd.Flags().StringVar(&researchNoteFile, "note", "", "Path to note file, or - for stdin")
 	researchRecordCmd.Flags().StringVar(&researchConfidence, "confidence", "", "Confidence score 0.0–1.0")
 
-	researchConfirmCmd.Flags().StringVar(&researchWorkItemID, "work-item", "", "Work item ID")
+	researchConfirmCmd.Flags().StringVar(&researchTaskID, "task", "", "Work item ID")
 	researchConfirmCmd.Flags().StringVar(&researchConfidence, "confidence", "", "Confidence score 0.0–1.0")
 	researchConfirmCmd.Flags().StringVar(&researchConfirmerRole, "role", "", "Confirmer role (researcher, devlead, pm)")
 

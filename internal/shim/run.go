@@ -179,7 +179,7 @@ func Run(agentName string) error {
 					return
 				}
 			case "peers-list-resp", "peers-set-summary-resp",
-				"work-item-get-resp", "work-item-update-resp", "work-item-handoff-resp":
+				"task-get-resp", "task-update-resp", "task-handoff-resp":
 				select {
 				case pendingResp <- env:
 				default:
@@ -394,12 +394,12 @@ func handleMeshShimMCP(
 			return HandleMeshListPeers(ctx, msg.ID, params.Arguments, routerWr, pendingResp, write, logf)
 		case "mesh_set_summary":
 			return HandleMeshSetSummary(ctx, msg.ID, params.Arguments, routerWr, pendingResp, write, logf)
-		case "mesh_get_work_item":
-			return HandleMeshGetWorkItem(ctx, msg.ID, params.Arguments, routerWr, pendingResp, write, logf)
-		case "mesh_update_work_item":
-			return HandleMeshUpdateWorkItem(ctx, msg.ID, params.Arguments, routerWr, pendingResp, write, logf)
-		case "mesh_handoff_work_item":
-			return HandleMeshHandoffWorkItem(ctx, msg.ID, params.Arguments, routerWr, pendingResp, write, logf)
+		case "mesh_get_task":
+			return HandleMeshGetTask(ctx, msg.ID, params.Arguments, routerWr, pendingResp, write, logf)
+		case "mesh_update_task":
+			return HandleMeshUpdateTask(ctx, msg.ID, params.Arguments, routerWr, pendingResp, write, logf)
+		case "mesh_handoff_task":
+			return HandleMeshHandoffTask(ctx, msg.ID, params.Arguments, routerWr, pendingResp, write, logf)
 		case "mesh_recall":
 			return HandleMeshRecall(ctx, msg.ID, params.Arguments, agentName, write, logf)
 		case "mesh_remember":

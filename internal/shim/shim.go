@@ -333,8 +333,8 @@ func HandleMeshSetSummary(
 	}
 }
 
-// HandleMeshGetWorkItem handles the mesh_get_work_item(id) tool call.
-func HandleMeshGetWorkItem(
+// HandleMeshGetTask handles the mesh_get_task(id) tool call.
+func HandleMeshGetTask(
 	ctx context.Context,
 	id json.RawMessage,
 	args map[string]any,
@@ -343,29 +343,29 @@ func HandleMeshGetWorkItem(
 	write func(JSONRPCMessage) error,
 	logf func(string, ...any),
 ) error {
-	workItemID, _ := args["id"].(string)
-	if workItemID == "" {
+	taskID, _ := args["id"].(string)
+	if taskID == "" {
 		return write(JSONRPCMessage{
 			ID:    id,
-			Error: &JSONRPCError{Code: -32602, Message: "mesh_get_work_item: id is required"},
+			Error: &JSONRPCError{Code: -32602, Message: "mesh_get_task: id is required"},
 		})
 	}
-	if err := routerWr.Write(ipc.WorkItemGetEnv(workItemID)); err != nil {
+	if err := routerWr.Write(ipc.TaskGetEnv(taskID)); err != nil {
 		return write(JSONRPCMessage{
 			ID:    id,
-			Error: &JSONRPCError{Code: -32000, Message: "router work-item-get: " + err.Error()},
+			Error: &JSONRPCError{Code: -32000, Message: "router task-get: " + err.Error()},
 		})
 	}
 	select {
 	case resp := <-pendingResp:
 		if resp.Reason != "" {
-			logf("mesh_get_work_item id=%s err: %s", workItemID, resp.Reason)
+			logf("mesh_get_task id=%s err: %s", taskID, resp.Reason)
 			return write(JSONRPCMessage{
 				ID:    id,
-				Error: &JSONRPCError{Code: -32000, Message: "mesh_get_work_item: " + resp.Reason},
+				Error: &JSONRPCError{Code: -32000, Message: "mesh_get_task: " + resp.Reason},
 			})
 		}
-		logf("mesh_get_work_item id=%s ok", workItemID)
+		logf("mesh_get_task id=%s ok", taskID)
 		return write(JSONRPCMessage{ID: id, Result: map[string]any{
 			"content": []map[string]any{{
 				"type": "text",
@@ -375,13 +375,13 @@ func HandleMeshGetWorkItem(
 	case <-ctx.Done():
 		return write(JSONRPCMessage{
 			ID:    id,
-			Error: &JSONRPCError{Code: -32000, Message: "mesh_get_work_item: context cancelled"},
+			Error: &JSONRPCError{Code: -32000, Message: "mesh_get_task: context cancelled"},
 		})
 	}
 }
 
-// HandleMeshUpdateWorkItem handles the mesh_update_work_item(...) tool call.
-func HandleMeshUpdateWorkItem(
+// HandleMeshUpdateTask handles the mesh_update_task(...) tool call.
+func HandleMeshUpdateTask(
 	ctx context.Context,
 	id json.RawMessage,
 	args map[string]any,
@@ -390,14 +390,14 @@ func HandleMeshUpdateWorkItem(
 	write func(JSONRPCMessage) error,
 	logf func(string, ...any),
 ) error {
-	workItemID, _ := args["id"].(string)
-	if workItemID == "" {
+	taskID, _ := args["id"].(string)
+	if taskID == "" {
 		return write(JSONRPCMessage{
 			ID:    id,
-			Error: &JSONRPCError{Code: -32602, Message: "mesh_update_work_item: id is required"},
+			Error: &JSONRPCError{Code: -32602, Message: "mesh_update_task: id is required"},
 		})
 	}
-	payload := map[string]any{"workItemId": workItemID}
+	payload := map[string]any{"taskId": taskID}
 	for _, field := range []string{"status", "currentOwner", "ownerRole", "note", "priority", "title"} {
 		if v, ok := args[field]; ok && v != nil {
 			payload[field] = v
@@ -407,41 +407,41 @@ func HandleMeshUpdateWorkItem(
 	if err != nil {
 		return write(JSONRPCMessage{
 			ID:    id,
-			Error: &JSONRPCError{Code: -32000, Message: "mesh_update_work_item: marshal: " + err.Error()},
+			Error: &JSONRPCError{Code: -32000, Message: "mesh_update_task: marshal: " + err.Error()},
 		})
 	}
-	if err := routerWr.Write(ipc.WorkItemUpdateEnv(string(data))); err != nil {
+	if err := routerWr.Write(ipc.TaskUpdateEnv(string(data))); err != nil {
 		return write(JSONRPCMessage{
 			ID:    id,
-			Error: &JSONRPCError{Code: -32000, Message: "router work-item-update: " + err.Error()},
+			Error: &JSONRPCError{Code: -32000, Message: "router task-update: " + err.Error()},
 		})
 	}
 	select {
 	case resp := <-pendingResp:
 		if resp.Reason != "" {
-			logf("mesh_update_work_item id=%s err: %s", workItemID, resp.Reason)
+			logf("mesh_update_task id=%s err: %s", taskID, resp.Reason)
 			return write(JSONRPCMessage{
 				ID:    id,
-				Error: &JSONRPCError{Code: -32000, Message: "mesh_update_work_item: " + resp.Reason},
+				Error: &JSONRPCError{Code: -32000, Message: "mesh_update_task: " + resp.Reason},
 			})
 		}
-		logf("mesh_update_work_item id=%s ok", workItemID)
+		logf("mesh_update_task id=%s ok", taskID)
 		return write(JSONRPCMessage{ID: id, Result: map[string]any{
 			"content": []map[string]any{{
 				"type": "text",
-				"text": "work item updated",
+				"text": "task updated",
 			}},
 		}})
 	case <-ctx.Done():
 		return write(JSONRPCMessage{
 			ID:    id,
-			Error: &JSONRPCError{Code: -32000, Message: "mesh_update_work_item: context cancelled"},
+			Error: &JSONRPCError{Code: -32000, Message: "mesh_update_task: context cancelled"},
 		})
 	}
 }
 
-// HandleMeshHandoffWorkItem handles the mesh_handoff_work_item(...) tool call.
-func HandleMeshHandoffWorkItem(
+// HandleMeshHandoffTask handles the mesh_handoff_task(...) tool call.
+func HandleMeshHandoffTask(
 	ctx context.Context,
 	id json.RawMessage,
 	args map[string]any,
@@ -450,17 +450,17 @@ func HandleMeshHandoffWorkItem(
 	write func(JSONRPCMessage) error,
 	logf func(string, ...any),
 ) error {
-	workItemID, _ := args["id"].(string)
+	taskID, _ := args["id"].(string)
 	fromRole, _ := args["fromRole"].(string)
 	toRole, _ := args["toRole"].(string)
-	if workItemID == "" || fromRole == "" || toRole == "" {
+	if taskID == "" || fromRole == "" || toRole == "" {
 		return write(JSONRPCMessage{
 			ID:    id,
-			Error: &JSONRPCError{Code: -32602, Message: "mesh_handoff_work_item: id, fromRole, and toRole are required"},
+			Error: &JSONRPCError{Code: -32602, Message: "mesh_handoff_task: id, fromRole, and toRole are required"},
 		})
 	}
 	payload := map[string]any{
-		"workItemId": workItemID,
+		"taskId": taskID,
 		"fromRole":   fromRole,
 		"toRole":     toRole,
 	}
@@ -477,25 +477,25 @@ func HandleMeshHandoffWorkItem(
 	if err != nil {
 		return write(JSONRPCMessage{
 			ID:    id,
-			Error: &JSONRPCError{Code: -32000, Message: "mesh_handoff_work_item: marshal: " + err.Error()},
+			Error: &JSONRPCError{Code: -32000, Message: "mesh_handoff_task: marshal: " + err.Error()},
 		})
 	}
-	if err := routerWr.Write(ipc.WorkItemHandoffEnv(string(data))); err != nil {
+	if err := routerWr.Write(ipc.TaskHandoffEnv(string(data))); err != nil {
 		return write(JSONRPCMessage{
 			ID:    id,
-			Error: &JSONRPCError{Code: -32000, Message: "router work-item-handoff: " + err.Error()},
+			Error: &JSONRPCError{Code: -32000, Message: "router task-handoff: " + err.Error()},
 		})
 	}
 	select {
 	case resp := <-pendingResp:
 		if resp.Reason != "" {
-			logf("mesh_handoff_work_item id=%s err: %s", workItemID, resp.Reason)
+			logf("mesh_handoff_task id=%s err: %s", taskID, resp.Reason)
 			return write(JSONRPCMessage{
 				ID:    id,
-				Error: &JSONRPCError{Code: -32000, Message: "mesh_handoff_work_item: " + resp.Reason},
+				Error: &JSONRPCError{Code: -32000, Message: "mesh_handoff_task: " + resp.Reason},
 			})
 		}
-		logf("mesh_handoff_work_item id=%s %s→%s ok", workItemID, fromRole, toRole)
+		logf("mesh_handoff_task id=%s %s→%s ok", taskID, fromRole, toRole)
 		return write(JSONRPCMessage{ID: id, Result: map[string]any{
 			"content": []map[string]any{{
 				"type": "text",
@@ -505,7 +505,7 @@ func HandleMeshHandoffWorkItem(
 	case <-ctx.Done():
 		return write(JSONRPCMessage{
 			ID:    id,
-			Error: &JSONRPCError{Code: -32000, Message: "mesh_handoff_work_item: context cancelled"},
+			Error: &JSONRPCError{Code: -32000, Message: "mesh_handoff_task: context cancelled"},
 		})
 	}
 }
@@ -626,8 +626,8 @@ func BuildMeshShimTools() []map[string]any {
 			},
 		},
 		{
-			"name":        "mesh_get_work_item",
-			"description": "Fetch a work item by UUID. Returns the full work item object as JSON.",
+			"name":        "mesh_get_task",
+			"description": "Fetch a task by UUID. Returns the full task object as JSON.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -640,8 +640,8 @@ func BuildMeshShimTools() []map[string]any {
 			},
 		},
 		{
-			"name": "mesh_update_work_item",
-			"description": "Update mutable fields of a work item (status, currentOwner, ownerRole, priority, title, note). " +
+			"name": "mesh_update_task",
+			"description": "Update mutable fields of a task (status, currentOwner, ownerRole, priority, title, note). " +
 				"All fields except id are optional — only supplied fields are changed. " +
 				"Valid statuses: inbox, clarifying, spec_ready, awaiting_approval, ready_for_devlead, in_execution, blocked, in_review, changes_requested, done, archived.",
 			"inputSchema": map[string]any{
@@ -680,8 +680,8 @@ func BuildMeshShimTools() []map[string]any {
 			},
 		},
 		{
-			"name": "mesh_handoff_work_item",
-			"description": "Record a handoff from one role to another and advance the work item's owner_role. " +
+			"name": "mesh_handoff_task",
+			"description": "Record a handoff from one role to another and advance the task's owner_role. " +
 				"fromRole and toRole must be one of: human, pm, devlead, builder. " +
 				"A handoff to 'devlead' automatically advances status to ready_for_devlead.",
 			"inputSchema": map[string]any{
@@ -697,7 +697,7 @@ func BuildMeshShimTools() []map[string]any {
 					},
 					"toRole": map[string]any{
 						"type":        "string",
-						"description": "Role receiving the work item.",
+						"description": "Role receiving the task.",
 					},
 					"summary": map[string]any{
 						"type":        "string",
@@ -713,7 +713,7 @@ func BuildMeshShimTools() []map[string]any {
 		},
 		{
 			"name": "mesh_recall",
-			"description": "Semantic recall across project memory. Searches prior decisions, learnings, work-item summaries, and notes for the current project. " +
+			"description": "Semantic recall across project memory. Searches prior decisions, learnings, task summaries, and notes for the current project. " +
 				"Use this before starting work to avoid re-discovering known context.",
 			"inputSchema": map[string]any{
 				"type": "object",
@@ -729,7 +729,7 @@ func BuildMeshShimTools() []map[string]any {
 					},
 					"kind": map[string]any{
 						"type":        "string",
-						"enum":        []string{"decision", "learning", "work_item_summary", "handoff_summary", "note"},
+						"enum":        []string{"decision", "learning", "task_summary", "handoff_summary", "note"},
 						"description": "Optional filter by memory kind.",
 					},
 					"tags": map[string]any{
@@ -754,7 +754,7 @@ func BuildMeshShimTools() []map[string]any {
 				"properties": map[string]any{
 					"kind": map[string]any{
 						"type":        "string",
-						"enum":        []string{"decision", "learning", "work_item_summary", "handoff_summary", "note"},
+						"enum":        []string{"decision", "learning", "task_summary", "handoff_summary", "note"},
 						"description": "Kind of memory record.",
 					},
 					"content": map[string]any{

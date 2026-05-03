@@ -75,7 +75,7 @@ enum NodeStatus {
 
 // ApiToNode frames are commands or pushes originated by mesh-api. request_id
 // correlates with NodeToApi.response.request_id for request/response pairs.
-// Server-push frames (agent_sync, work_item_poke) use request_id as a simple
+// Server-push frames (agent_sync, task_poke) use request_id as a simple
 // dedupe/ack handle.
 message ApiToNode {
   string request_id = 1;
@@ -89,7 +89,7 @@ message ApiToNode {
     SessionAttachInput session_attach_input = 15;
     SessionAttachClose session_attach_close = 16;
     AgentSync agent_sync = 20;
-    WorkItemPoke work_item_poke = 21;
+    TaskPoke task_poke = 21;
     StreamHello hello = 30;
   }
 
@@ -109,7 +109,7 @@ message NodeToApi {
     SessionAttachData session_attach_data = 14;
     SessionAttachClosed session_attach_closed = 15;
     AgentSyncAck agent_sync_ack = 20;
-    WorkItemPokeAck work_item_poke_ack = 21;
+    TaskPokeAck task_poke_ack = 21;
     SessionEvent session_event = 30;
     StreamError error = 40;
     StreamHelloAck hello_ack = 50;
@@ -306,28 +306,28 @@ message AgentSyncFailure {
 }
 
 // ---------------------------------------------------------------------------
-// Work-item poke (server push, latency optimization)
+// Task poke (server push, latency optimization)
 // ---------------------------------------------------------------------------
 
-// WorkItemPoke nudges a specific agent's session to check its queue now rather
-// than waiting for the next scheduled Ralph Loop tick. Lost pokes are tolerable.
-message WorkItemPoke {
+// TaskPoke nudges a specific agent's session to check its queue now rather
+// than waiting for the next scheduled tick. Lost pokes are tolerable.
+message TaskPoke {
   string agent_id = 1;
-  string work_item_id = 2;
-  WorkItemPokeReason reason = 3;
+  string task_id = 2;
+  TaskPokeReason reason = 3;
   google.protobuf.Timestamp issued_at = 4;
 }
 
-enum WorkItemPokeReason {
-  WORK_ITEM_POKE_REASON_UNSPECIFIED = 0;
-  WORK_ITEM_POKE_REASON_ASSIGNED = 1;
-  WORK_ITEM_POKE_REASON_HANDOFF = 2;
-  WORK_ITEM_POKE_REASON_REVIEW_REQUESTED = 3;
-  WORK_ITEM_POKE_REASON_UPDATED = 4;
+enum TaskPokeReason {
+  TASK_POKE_REASON_UNSPECIFIED = 0;
+  TASK_POKE_REASON_ASSIGNED = 1;
+  TASK_POKE_REASON_HANDOFF = 2;
+  TASK_POKE_REASON_REVIEW_REQUESTED = 3;
+  TASK_POKE_REASON_UPDATED = 4;
 }
 
-message WorkItemPokeAck {
-  string work_item_id = 1;
+message TaskPokeAck {
+  string task_id = 1;
   bool delivered = 2;
   string detail = 3;
 }

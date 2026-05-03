@@ -29,7 +29,7 @@ var emergencyStopCmd = &cobra.Command{
 	Long: `Write the emergency-stop sentinel and revoke the shipper agent's node token.
 
 The ship skill reads ~/.mesh/emergency-stop before each phase transition. If the
-file is present and non-empty, it halts immediately and sets the work item to
+file is present and non-empty, it halts immediately and sets the task to
 ship_failed.
 
 Use --clear to remove the sentinel and re-enable shipping.

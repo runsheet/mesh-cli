@@ -2,14 +2,14 @@ package daemon
 
 // pollloop.go — spec 04 agent-side polling fallback.
 //
-// When the gRPC poke chain is broken, work items assigned to local agents
+// When the gRPC poke chain is broken, tasks assigned to local agents
 // would never be surfaced. This loop periodically fetches
-// GET /work-item/list?assignedTo=<cloudAgentUUID> for each pinned agent and
+// GET /task/list?assignedTo=<cloudAgentUUID> for each pinned agent and
 // delivers pokes for any items not yet seen.
 //
 // Cadence per spec 04:
 //   - 60s  when the agent is "active" (recently received a poke, completed
-//     work-item-update / handoff, or had a new item surfaced by the poll).
+//     task-update / handoff, or had a new item surfaced by the poll).
 //   - 300s when idle (no activity for >5 minutes).
 
 import (
@@ -46,15 +46,15 @@ const (
 
 // pollActivityCh is a buffered channel the daemon sends agent names into
 // whenever any of the three activity triggers fires:
-//  1. gRPC WorkItemPoke delivered successfully.
-//  2. Shim mesh_update_work_item / mesh_handoff_work_item handled.
+//  1. gRPC TaskPoke delivered successfully.
+//  2. Shim mesh_update_task / mesh_handoff_task handled.
 //  3. Poll itself surfaces a new unseen item.
 //
 // The poll loop drains this channel and resets the active timer.
 var pollActivityCh = make(chan string, 64)
 
-// MarkAgentActive signals that agentName has had recent work-item activity.
-// Called from daemon.go (deliverWorkItemPoke) and from the RouterDeps callback.
+// MarkAgentActive signals that agentName has had recent task activity.
+// Called from daemon.go (deliverTaskPoke) and from the RouterDeps callback.
 // Safe to call from any goroutine.
 func MarkAgentActive(agentName string) {
 	select {
@@ -64,22 +64,22 @@ func MarkAgentActive(agentName string) {
 	}
 }
 
-// workItemListRow is the subset of fields we need from /work-item/list items.
-type workItemListRow struct {
+// taskListRow is the subset of fields we need from /task/list items.
+type taskListRow struct {
 	ID          string `json:"id"`
 	Status      string `json:"status"`
 	UpdatedAt   string `json:"updated_at"`
 	CurrentOwner string `json:"current_owner"`
 }
 
-// workItemListResp is the JSON shape of GET /work-item/list.
-type workItemListResp struct {
+// taskListResp is the JSON shape of GET /task/list.
+type taskListResp struct {
 	OK    bool              `json:"ok"`
-	Items []workItemListRow `json:"items"`
+	Items []taskListRow `json:"items"`
 }
 
-// seenKey identifies a (agent, work-item) pair in the last-seen map.
-type seenKey struct{ agentName, workItemID string }
+// seenKey identifies a (agent, task) pair in the last-seen map.
+type seenKey struct{ agentName, taskID string }
 
 // agentCadenceState tracks per-agent activity timing.
 type agentCadenceState struct {
@@ -192,7 +192,7 @@ var skipPollStatus = map[string]bool{
 	"done": true, "archived": true,
 }
 
-// pollOneAgent fetches /work-item/list for one agent and delivers pokes for
+// pollOneAgent fetches /task/list for one agent and delivers pokes for
 // any items not already seen at their current updatedAt.
 func pollOneAgent(
 	ctx context.Context,
@@ -215,7 +215,7 @@ func pollOneAgent(
 	}
 	mu.Unlock()
 
-	url := strings.TrimRight(baseURL, "/") + "/work-item/list?assignedTo=" + cloudAgentID
+	url := strings.TrimRight(baseURL, "/") + "/task/list?assignedTo=" + cloudAgentID
 	req, err := newNodeRequest(ctx, nodeToken, "GET", url)
 	if err != nil {
 		fmt.Printf("mesh poll agent=%s req err: %v\n", localName, err)
@@ -234,7 +234,7 @@ func pollOneAgent(
 		return
 	}
 
-	var parsed workItemListResp
+	var parsed taskListResp
 	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
 		fmt.Printf("mesh poll agent=%s decode err: %v\n", localName, err)
 		return
@@ -245,7 +245,7 @@ func pollOneAgent(
 			continue
 		}
 
-		k := seenKey{agentName: localName, workItemID: item.ID}
+		k := seenKey{agentName: localName, taskID: item.ID}
 		mu.Lock()
 		prev := lastSeen[k]
 		mu.Unlock()
@@ -261,7 +261,7 @@ func pollOneAgent(
 
 		deliverPollPoke(localName, item.ID, "poll")
 		markActive(localName)
-		fmt.Printf("mesh poll agent=%s work_item=%s surfaced (status=%s)\n",
+		fmt.Printf("mesh poll agent=%s task=%s surfaced (status=%s)\n",
 			localName, item.ID, item.Status)
 	}
 }
@@ -269,12 +269,12 @@ func pollOneAgent(
 // deliverPollPoke delivers a poke via the channel router for a poll-surfaced
 // item. The shim sees it as a notifications/claude/channel notification with
 // meta.source == "mesh-poke", same as a gRPC-triggered poke.
-func deliverPollPoke(localName, workItemID, reason string) {
+func deliverPollPoke(localName, taskID, reason string) {
 	cr := globalChanRouter
 	if cr == nil {
 		return
 	}
-	if !cr.DeliverPoke(localName, workItemID, reason) {
+	if !cr.DeliverPoke(localName, taskID, reason) {
 		fmt.Printf("mesh poll poke drop agent=%s reason=no-shim\n", localName)
 	}
 }

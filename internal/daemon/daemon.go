@@ -54,7 +54,7 @@ const (
 //     `mesh run`/`ps`/`attach`/...  This is the "standalone" path; no cluster
 //     account required.
 //   - The outbound gRPC stream to mesh-api — only when ~/.mesh/node-token
-//     exists. Adds cluster features (AgentSync, WorkItemPoke, portal session
+//     exists. Adds cluster features (AgentSync, TaskPoke, portal session
 //     streaming) alongside the local surface.
 //
 // Both paths share a single SessionRegistry so locally-run and cluster-pinned
@@ -87,7 +87,7 @@ func RunDaemon(baseURL string, grpcAddr string, probeNodeID func(baseURL, token 
 
 	// Load the node token first so SetDeps can run BEFORE Sync. Routers
 	// capture cr.deps at goroutine-start time, so a later SetDeps wouldn't
-	// reach already-running routers — agent IPC handlers (mesh_get_work_item
+	// reach already-running routers — agent IPC handlers (mesh_get_task
 	// etc.) would all see nil closures and surface as "daemon not connected"
 	// to the calling agent.
 	token, tokenErr := auth.LoadNodeToken()
@@ -96,7 +96,7 @@ func RunDaemon(baseURL string, grpcAddr string, probeNodeID func(baseURL, token 
 		return fmt.Errorf("read node token: %w", tokenErr)
 	}
 	if clustered {
-		chanRouter.SetDeps(workItemRouterDeps(baseURL, token))
+		chanRouter.SetDeps(taskRouterDeps(baseURL, token))
 	}
 
 	chanRouter.Sync(agentEntries(agents))
@@ -131,10 +131,10 @@ func RunDaemon(baseURL string, grpcAddr string, probeNodeID func(baseURL, token 
 	return runClusteredDaemon(ctx, baseURL, grpcAddr, token, registry)
 }
 
-// workItemRouterDeps builds the RouterDeps struct for work-item HTTP calls
+// taskRouterDeps builds the RouterDeps struct for task HTTP calls
 // using the node token. These are injected into the channel router so that
-// the mesh-shim's MCP work-item tools can round-trip through mesh-api.
-func workItemRouterDeps(baseURL, nodeToken string) channels.RouterDeps {
+// the mesh-shim's MCP task tools can round-trip through mesh-api.
+func taskRouterDeps(baseURL, nodeToken string) channels.RouterDeps {
 	apiDo := func(method, path string, body any) ([]byte, error) {
 		if baseURL == "" {
 			return nil, fmt.Errorf("mesh-api baseURL not configured")
@@ -172,16 +172,16 @@ func workItemRouterDeps(baseURL, nodeToken string) channels.RouterDeps {
 	}
 
 	return channels.RouterDeps{
-		WorkItemGet: func(id string) ([]byte, error) {
-			return apiDo(http.MethodGet, "/work-item/get/"+id, nil)
+		TaskGet: func(id string) ([]byte, error) {
+			return apiDo(http.MethodGet, "/task/get/"+id, nil)
 		},
-		WorkItemUpdate: func(payload map[string]any) ([]byte, error) {
-			return apiDo(http.MethodPost, "/work-item/update", payload)
+		TaskUpdate: func(payload map[string]any) ([]byte, error) {
+			return apiDo(http.MethodPost, "/task/update", payload)
 		},
-		WorkItemHandoff: func(payload map[string]any) ([]byte, error) {
-			return apiDo(http.MethodPost, "/work-item/handoff", payload)
+		TaskHandoff: func(payload map[string]any) ([]byte, error) {
+			return apiDo(http.MethodPost, "/task/handoff", payload)
 		},
-		OnWorkItemActivity: MarkAgentActive,
+		OnTaskActivity: MarkAgentActive,
 	}
 }
 
@@ -674,13 +674,13 @@ func handleApiFrame(ctx context.Context, sender *streamSender, registry *session
 			},
 		})
 
-	case *meshv1.ApiToNode_WorkItemPoke:
-		delivered := deliverWorkItemPoke(p.WorkItemPoke)
+	case *meshv1.ApiToNode_TaskPoke:
+		delivered := deliverTaskPoke(p.TaskPoke)
 		_ = sender.Send(&meshv1.NodeToApi{
 			RequestId: reqID,
-			Payload: &meshv1.NodeToApi_WorkItemPokeAck{
-				WorkItemPokeAck: &meshv1.WorkItemPokeAck{
-					WorkItemId: p.WorkItemPoke.GetWorkItemId(),
+			Payload: &meshv1.NodeToApi_TaskPokeAck{
+				TaskPokeAck: &meshv1.TaskPokeAck{
+					TaskId: p.TaskPoke.GetTaskId(),
 					Delivered:  delivered,
 				},
 			},
@@ -762,7 +762,7 @@ func runAttach(ctx context.Context, sender *streamSender, registry *sessions.Ses
 }
 
 // globalChanRouter holds the ChannelRouter for the running daemon.
-// Set once in RunDaemon before any poke can arrive; read by deliverWorkItemPoke.
+// Set once in RunDaemon before any poke can arrive; read by deliverTaskPoke.
 var globalChanRouter *channels.ChannelRouter
 
 var (
@@ -947,7 +947,7 @@ func ApplyAgentSync(registry *sessions.SessionRegistry, sync *meshv1.AgentSync, 
 	}
 }
 
-func deliverWorkItemPoke(poke *meshv1.WorkItemPoke) bool {
+func deliverTaskPoke(poke *meshv1.TaskPoke) bool {
 	if poke == nil || poke.GetAgentId() == "" {
 		return false
 	}
@@ -969,7 +969,7 @@ func deliverWorkItemPoke(poke *meshv1.WorkItemPoke) bool {
 		fmt.Printf("mesh node poke drop agent=%s (local=%s) reason=no-router\n", poke.GetAgentId(), localName)
 		return false
 	}
-	delivered := cr.DeliverPoke(localName, poke.GetWorkItemId(), poke.GetReason().String())
+	delivered := cr.DeliverPoke(localName, poke.GetTaskId(), poke.GetReason().String())
 	if !delivered {
 		fmt.Printf("mesh node poke drop agent=%s (local=%s) reason=no-shim\n", poke.GetAgentId(), localName)
 		return false
@@ -999,8 +999,8 @@ func apiFrameKind(frame *meshv1.ApiToNode) string {
 		return "session_attach_close"
 	case *meshv1.ApiToNode_AgentSync:
 		return "agent_sync"
-	case *meshv1.ApiToNode_WorkItemPoke:
-		return "work_item_poke"
+	case *meshv1.ApiToNode_TaskPoke:
+		return "task_poke"
 	case *meshv1.ApiToNode_Hello:
 		return "hello"
 	default:

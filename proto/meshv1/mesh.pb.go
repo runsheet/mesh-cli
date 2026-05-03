@@ -229,58 +229,58 @@ func (AgentLifecycle) EnumDescriptor() ([]byte, []int) {
 	return file_mesh_proto_rawDescGZIP(), []int{3}
 }
 
-type WorkItemPokeReason int32
+type TaskPokeReason int32
 
 const (
-	WorkItemPokeReason_WORK_ITEM_POKE_REASON_UNSPECIFIED      WorkItemPokeReason = 0
-	WorkItemPokeReason_WORK_ITEM_POKE_REASON_ASSIGNED         WorkItemPokeReason = 1
-	WorkItemPokeReason_WORK_ITEM_POKE_REASON_HANDOFF          WorkItemPokeReason = 2
-	WorkItemPokeReason_WORK_ITEM_POKE_REASON_REVIEW_REQUESTED WorkItemPokeReason = 3
-	WorkItemPokeReason_WORK_ITEM_POKE_REASON_UPDATED          WorkItemPokeReason = 4
+	TaskPokeReason_TASK_POKE_REASON_UNSPECIFIED      TaskPokeReason = 0
+	TaskPokeReason_TASK_POKE_REASON_ASSIGNED         TaskPokeReason = 1
+	TaskPokeReason_TASK_POKE_REASON_HANDOFF          TaskPokeReason = 2
+	TaskPokeReason_TASK_POKE_REASON_REVIEW_REQUESTED TaskPokeReason = 3
+	TaskPokeReason_TASK_POKE_REASON_UPDATED          TaskPokeReason = 4
 )
 
-// Enum value maps for WorkItemPokeReason.
+// Enum value maps for TaskPokeReason.
 var (
-	WorkItemPokeReason_name = map[int32]string{
-		0: "WORK_ITEM_POKE_REASON_UNSPECIFIED",
-		1: "WORK_ITEM_POKE_REASON_ASSIGNED",
-		2: "WORK_ITEM_POKE_REASON_HANDOFF",
-		3: "WORK_ITEM_POKE_REASON_REVIEW_REQUESTED",
-		4: "WORK_ITEM_POKE_REASON_UPDATED",
+	TaskPokeReason_name = map[int32]string{
+		0: "TASK_POKE_REASON_UNSPECIFIED",
+		1: "TASK_POKE_REASON_ASSIGNED",
+		2: "TASK_POKE_REASON_HANDOFF",
+		3: "TASK_POKE_REASON_REVIEW_REQUESTED",
+		4: "TASK_POKE_REASON_UPDATED",
 	}
-	WorkItemPokeReason_value = map[string]int32{
-		"WORK_ITEM_POKE_REASON_UNSPECIFIED":      0,
-		"WORK_ITEM_POKE_REASON_ASSIGNED":         1,
-		"WORK_ITEM_POKE_REASON_HANDOFF":          2,
-		"WORK_ITEM_POKE_REASON_REVIEW_REQUESTED": 3,
-		"WORK_ITEM_POKE_REASON_UPDATED":          4,
+	TaskPokeReason_value = map[string]int32{
+		"TASK_POKE_REASON_UNSPECIFIED":      0,
+		"TASK_POKE_REASON_ASSIGNED":         1,
+		"TASK_POKE_REASON_HANDOFF":          2,
+		"TASK_POKE_REASON_REVIEW_REQUESTED": 3,
+		"TASK_POKE_REASON_UPDATED":          4,
 	}
 )
 
-func (x WorkItemPokeReason) Enum() *WorkItemPokeReason {
-	p := new(WorkItemPokeReason)
+func (x TaskPokeReason) Enum() *TaskPokeReason {
+	p := new(TaskPokeReason)
 	*p = x
 	return p
 }
 
-func (x WorkItemPokeReason) String() string {
+func (x TaskPokeReason) String() string {
 	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
 }
 
-func (WorkItemPokeReason) Descriptor() protoreflect.EnumDescriptor {
+func (TaskPokeReason) Descriptor() protoreflect.EnumDescriptor {
 	return file_mesh_proto_enumTypes[4].Descriptor()
 }
 
-func (WorkItemPokeReason) Type() protoreflect.EnumType {
+func (TaskPokeReason) Type() protoreflect.EnumType {
 	return &file_mesh_proto_enumTypes[4]
 }
 
-func (x WorkItemPokeReason) Number() protoreflect.EnumNumber {
+func (x TaskPokeReason) Number() protoreflect.EnumNumber {
 	return protoreflect.EnumNumber(x)
 }
 
-// Deprecated: Use WorkItemPokeReason.Descriptor instead.
-func (WorkItemPokeReason) EnumDescriptor() ([]byte, []int) {
+// Deprecated: Use TaskPokeReason.Descriptor instead.
+func (TaskPokeReason) EnumDescriptor() ([]byte, []int) {
 	return file_mesh_proto_rawDescGZIP(), []int{4}
 }
 
@@ -609,7 +609,7 @@ func (x *NodeCapabilities) GetSupportedModels() []string {
 
 // ApiToNode frames are commands or pushes originated by mesh-api. request_id
 // correlates with NodeToApi.response.request_id for request/response pairs.
-// Server-push frames (agent_sync, work_item_poke) use request_id as a simple
+// Server-push frames (agent_sync, task_poke) use request_id as a simple
 // dedupe/ack handle.
 type ApiToNode struct {
 	state         protoimpl.MessageState
@@ -627,7 +627,7 @@ type ApiToNode struct {
 	//	*ApiToNode_SessionAttachInput
 	//	*ApiToNode_SessionAttachClose
 	//	*ApiToNode_AgentSync
-	//	*ApiToNode_WorkItemPoke
+	//	*ApiToNode_TaskPoke
 	//	*ApiToNode_Hello
 	Payload isApiToNode_Payload `protobuf_oneof:"payload"`
 }
@@ -734,9 +734,9 @@ func (x *ApiToNode) GetAgentSync() *AgentSync {
 	return nil
 }
 
-func (x *ApiToNode) GetWorkItemPoke() *WorkItemPoke {
-	if x, ok := x.GetPayload().(*ApiToNode_WorkItemPoke); ok {
-		return x.WorkItemPoke
+func (x *ApiToNode) GetTaskPoke() *TaskPoke {
+	if x, ok := x.GetPayload().(*ApiToNode_TaskPoke); ok {
+		return x.TaskPoke
 	}
 	return nil
 }
@@ -784,8 +784,8 @@ type ApiToNode_AgentSync struct {
 	AgentSync *AgentSync `protobuf:"bytes,20,opt,name=agent_sync,json=agentSync,proto3,oneof"`
 }
 
-type ApiToNode_WorkItemPoke struct {
-	WorkItemPoke *WorkItemPoke `protobuf:"bytes,21,opt,name=work_item_poke,json=workItemPoke,proto3,oneof"`
+type ApiToNode_TaskPoke struct {
+	TaskPoke *TaskPoke `protobuf:"bytes,21,opt,name=task_poke,json=taskPoke,proto3,oneof"`
 }
 
 type ApiToNode_Hello struct {
@@ -808,7 +808,7 @@ func (*ApiToNode_SessionAttachClose) isApiToNode_Payload() {}
 
 func (*ApiToNode_AgentSync) isApiToNode_Payload() {}
 
-func (*ApiToNode_WorkItemPoke) isApiToNode_Payload() {}
+func (*ApiToNode_TaskPoke) isApiToNode_Payload() {}
 
 func (*ApiToNode_Hello) isApiToNode_Payload() {}
 
@@ -829,7 +829,7 @@ type NodeToApi struct {
 	//	*NodeToApi_SessionAttachData
 	//	*NodeToApi_SessionAttachClosed
 	//	*NodeToApi_AgentSyncAck
-	//	*NodeToApi_WorkItemPokeAck
+	//	*NodeToApi_TaskPokeAck
 	//	*NodeToApi_SessionEvent
 	//	*NodeToApi_Error
 	//	*NodeToApi_HelloAck
@@ -931,9 +931,9 @@ func (x *NodeToApi) GetAgentSyncAck() *AgentSyncAck {
 	return nil
 }
 
-func (x *NodeToApi) GetWorkItemPokeAck() *WorkItemPokeAck {
-	if x, ok := x.GetPayload().(*NodeToApi_WorkItemPokeAck); ok {
-		return x.WorkItemPokeAck
+func (x *NodeToApi) GetTaskPokeAck() *TaskPokeAck {
+	if x, ok := x.GetPayload().(*NodeToApi_TaskPokeAck); ok {
+		return x.TaskPokeAck
 	}
 	return nil
 }
@@ -991,8 +991,8 @@ type NodeToApi_AgentSyncAck struct {
 	AgentSyncAck *AgentSyncAck `protobuf:"bytes,20,opt,name=agent_sync_ack,json=agentSyncAck,proto3,oneof"`
 }
 
-type NodeToApi_WorkItemPokeAck struct {
-	WorkItemPokeAck *WorkItemPokeAck `protobuf:"bytes,21,opt,name=work_item_poke_ack,json=workItemPokeAck,proto3,oneof"`
+type NodeToApi_TaskPokeAck struct {
+	TaskPokeAck *TaskPokeAck `protobuf:"bytes,21,opt,name=task_poke_ack,json=taskPokeAck,proto3,oneof"`
 }
 
 type NodeToApi_SessionEvent struct {
@@ -1021,7 +1021,7 @@ func (*NodeToApi_SessionAttachClosed) isNodeToApi_Payload() {}
 
 func (*NodeToApi_AgentSyncAck) isNodeToApi_Payload() {}
 
-func (*NodeToApi_WorkItemPokeAck) isNodeToApi_Payload() {}
+func (*NodeToApi_TaskPokeAck) isNodeToApi_Payload() {}
 
 func (*NodeToApi_SessionEvent) isNodeToApi_Payload() {}
 
@@ -2460,21 +2460,21 @@ func (x *AgentSyncFailure) GetReason() string {
 	return ""
 }
 
-// WorkItemPoke nudges a specific agent's session to check its queue now rather
+// TaskPoke nudges a specific agent's session to check its queue now rather
 // than waiting for the next scheduled Ralph Loop tick. Lost pokes are tolerable.
-type WorkItemPoke struct {
+type TaskPoke struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
 	unknownFields protoimpl.UnknownFields
 
 	AgentId    string                 `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
-	WorkItemId string                 `protobuf:"bytes,2,opt,name=work_item_id,json=workItemId,proto3" json:"work_item_id,omitempty"`
-	Reason     WorkItemPokeReason     `protobuf:"varint,3,opt,name=reason,proto3,enum=mesh.v1.WorkItemPokeReason" json:"reason,omitempty"`
+	TaskId string                 `protobuf:"bytes,2,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
+	Reason     TaskPokeReason     `protobuf:"varint,3,opt,name=reason,proto3,enum=mesh.v1.TaskPokeReason" json:"reason,omitempty"`
 	IssuedAt   *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=issued_at,json=issuedAt,proto3" json:"issued_at,omitempty"`
 }
 
-func (x *WorkItemPoke) Reset() {
-	*x = WorkItemPoke{}
+func (x *TaskPoke) Reset() {
+	*x = TaskPoke{}
 	if protoimpl.UnsafeEnabled {
 		mi := &file_mesh_proto_msgTypes[30]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -2482,13 +2482,13 @@ func (x *WorkItemPoke) Reset() {
 	}
 }
 
-func (x *WorkItemPoke) String() string {
+func (x *TaskPoke) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*WorkItemPoke) ProtoMessage() {}
+func (*TaskPoke) ProtoMessage() {}
 
-func (x *WorkItemPoke) ProtoReflect() protoreflect.Message {
+func (x *TaskPoke) ProtoReflect() protoreflect.Message {
 	mi := &file_mesh_proto_msgTypes[30]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -2500,51 +2500,51 @@ func (x *WorkItemPoke) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use WorkItemPoke.ProtoReflect.Descriptor instead.
-func (*WorkItemPoke) Descriptor() ([]byte, []int) {
+// Deprecated: Use TaskPoke.ProtoReflect.Descriptor instead.
+func (*TaskPoke) Descriptor() ([]byte, []int) {
 	return file_mesh_proto_rawDescGZIP(), []int{30}
 }
 
-func (x *WorkItemPoke) GetAgentId() string {
+func (x *TaskPoke) GetAgentId() string {
 	if x != nil {
 		return x.AgentId
 	}
 	return ""
 }
 
-func (x *WorkItemPoke) GetWorkItemId() string {
+func (x *TaskPoke) GetTaskId() string {
 	if x != nil {
-		return x.WorkItemId
+		return x.TaskId
 	}
 	return ""
 }
 
-func (x *WorkItemPoke) GetReason() WorkItemPokeReason {
+func (x *TaskPoke) GetReason() TaskPokeReason {
 	if x != nil {
 		return x.Reason
 	}
-	return WorkItemPokeReason_WORK_ITEM_POKE_REASON_UNSPECIFIED
+	return TaskPokeReason_TASK_POKE_REASON_UNSPECIFIED
 }
 
-func (x *WorkItemPoke) GetIssuedAt() *timestamppb.Timestamp {
+func (x *TaskPoke) GetIssuedAt() *timestamppb.Timestamp {
 	if x != nil {
 		return x.IssuedAt
 	}
 	return nil
 }
 
-type WorkItemPokeAck struct {
+type TaskPokeAck struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
 	unknownFields protoimpl.UnknownFields
 
-	WorkItemId string `protobuf:"bytes,1,opt,name=work_item_id,json=workItemId,proto3" json:"work_item_id,omitempty"`
+	TaskId string `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
 	Delivered  bool   `protobuf:"varint,2,opt,name=delivered,proto3" json:"delivered,omitempty"`
 	Detail     string `protobuf:"bytes,3,opt,name=detail,proto3" json:"detail,omitempty"`
 }
 
-func (x *WorkItemPokeAck) Reset() {
-	*x = WorkItemPokeAck{}
+func (x *TaskPokeAck) Reset() {
+	*x = TaskPokeAck{}
 	if protoimpl.UnsafeEnabled {
 		mi := &file_mesh_proto_msgTypes[31]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -2552,13 +2552,13 @@ func (x *WorkItemPokeAck) Reset() {
 	}
 }
 
-func (x *WorkItemPokeAck) String() string {
+func (x *TaskPokeAck) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*WorkItemPokeAck) ProtoMessage() {}
+func (*TaskPokeAck) ProtoMessage() {}
 
-func (x *WorkItemPokeAck) ProtoReflect() protoreflect.Message {
+func (x *TaskPokeAck) ProtoReflect() protoreflect.Message {
 	mi := &file_mesh_proto_msgTypes[31]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -2570,26 +2570,26 @@ func (x *WorkItemPokeAck) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use WorkItemPokeAck.ProtoReflect.Descriptor instead.
-func (*WorkItemPokeAck) Descriptor() ([]byte, []int) {
+// Deprecated: Use TaskPokeAck.ProtoReflect.Descriptor instead.
+func (*TaskPokeAck) Descriptor() ([]byte, []int) {
 	return file_mesh_proto_rawDescGZIP(), []int{31}
 }
 
-func (x *WorkItemPokeAck) GetWorkItemId() string {
+func (x *TaskPokeAck) GetTaskId() string {
 	if x != nil {
-		return x.WorkItemId
+		return x.TaskId
 	}
 	return ""
 }
 
-func (x *WorkItemPokeAck) GetDelivered() bool {
+func (x *TaskPokeAck) GetDelivered() bool {
 	if x != nil {
 		return x.Delivered
 	}
 	return false
 }
 
-func (x *WorkItemPokeAck) GetDetail() string {
+func (x *TaskPokeAck) GetDetail() string {
 	if x != nil {
 		return x.Detail
 	}
@@ -3046,7 +3046,7 @@ var file_mesh_proto_goTypes = []any{
 	(SessionState)(0),             // 1: mesh.v1.SessionState
 	(AgentSyncMode)(0),            // 2: mesh.v1.AgentSyncMode
 	(AgentLifecycle)(0),           // 3: mesh.v1.AgentLifecycle
-	(WorkItemPokeReason)(0),       // 4: mesh.v1.WorkItemPokeReason
+	(TaskPokeReason)(0),       // 4: mesh.v1.TaskPokeReason
 	(*RegisterRequest)(nil),       // 5: mesh.v1.RegisterRequest
 	(*RegisterResponse)(nil),      // 6: mesh.v1.RegisterResponse
 	(*HeartbeatRequest)(nil),      // 7: mesh.v1.HeartbeatRequest
@@ -3077,8 +3077,8 @@ var file_mesh_proto_goTypes = []any{
 	(*AgentDefinition)(nil),       // 32: mesh.v1.AgentDefinition
 	(*AgentSyncAck)(nil),          // 33: mesh.v1.AgentSyncAck
 	(*AgentSyncFailure)(nil),      // 34: mesh.v1.AgentSyncFailure
-	(*WorkItemPoke)(nil),          // 35: mesh.v1.WorkItemPoke
-	(*WorkItemPokeAck)(nil),       // 36: mesh.v1.WorkItemPokeAck
+	(*TaskPoke)(nil),          // 35: mesh.v1.TaskPoke
+	(*TaskPokeAck)(nil),       // 36: mesh.v1.TaskPokeAck
 	nil,                           // 37: mesh.v1.RegisterRequest.MetadataEntry
 	nil,                           // 38: mesh.v1.SessionSpawnOptions.EnvEntry
 	nil,                           // 39: mesh.v1.AgentDefinition.MetadataEntry
@@ -3099,7 +3099,7 @@ var file_mesh_proto_depIdxs = []int32{
 	27, // 11: mesh.v1.ApiToNode.session_attach_input:type_name -> mesh.v1.SessionAttachInput
 	28, // 12: mesh.v1.ApiToNode.session_attach_close:type_name -> mesh.v1.SessionAttachClose
 	31, // 13: mesh.v1.ApiToNode.agent_sync:type_name -> mesh.v1.AgentSync
-	35, // 14: mesh.v1.ApiToNode.work_item_poke:type_name -> mesh.v1.WorkItemPoke
+	35, // 14: mesh.v1.ApiToNode.task_poke:type_name -> mesh.v1.TaskPoke
 	12, // 15: mesh.v1.ApiToNode.hello:type_name -> mesh.v1.StreamHello
 	16, // 16: mesh.v1.NodeToApi.session_list_response:type_name -> mesh.v1.SessionListResponse
 	18, // 17: mesh.v1.NodeToApi.session_start_response:type_name -> mesh.v1.SessionStartResponse
@@ -3108,7 +3108,7 @@ var file_mesh_proto_depIdxs = []int32{
 	29, // 20: mesh.v1.NodeToApi.session_attach_data:type_name -> mesh.v1.SessionAttachData
 	30, // 21: mesh.v1.NodeToApi.session_attach_closed:type_name -> mesh.v1.SessionAttachClosed
 	33, // 22: mesh.v1.NodeToApi.agent_sync_ack:type_name -> mesh.v1.AgentSyncAck
-	36, // 23: mesh.v1.NodeToApi.work_item_poke_ack:type_name -> mesh.v1.WorkItemPokeAck
+	36, // 23: mesh.v1.NodeToApi.task_poke_ack:type_name -> mesh.v1.TaskPokeAck
 	25, // 24: mesh.v1.NodeToApi.session_event:type_name -> mesh.v1.SessionEvent
 	14, // 25: mesh.v1.NodeToApi.error:type_name -> mesh.v1.StreamError
 	13, // 26: mesh.v1.NodeToApi.hello_ack:type_name -> mesh.v1.StreamHelloAck
@@ -3131,8 +3131,8 @@ var file_mesh_proto_depIdxs = []int32{
 	40, // 43: mesh.v1.AgentDefinition.updated_at:type_name -> google.protobuf.Timestamp
 	3,  // 44: mesh.v1.AgentDefinition.lifecycle:type_name -> mesh.v1.AgentLifecycle
 	34, // 45: mesh.v1.AgentSyncAck.failures:type_name -> mesh.v1.AgentSyncFailure
-	4,  // 46: mesh.v1.WorkItemPoke.reason:type_name -> mesh.v1.WorkItemPokeReason
-	40, // 47: mesh.v1.WorkItemPoke.issued_at:type_name -> google.protobuf.Timestamp
+	4,  // 46: mesh.v1.TaskPoke.reason:type_name -> mesh.v1.TaskPokeReason
+	40, // 47: mesh.v1.TaskPoke.issued_at:type_name -> google.protobuf.Timestamp
 	5,  // 48: mesh.v1.NodeService.Register:input_type -> mesh.v1.RegisterRequest
 	7,  // 49: mesh.v1.NodeService.Heartbeat:input_type -> mesh.v1.HeartbeatRequest
 	11, // 50: mesh.v1.NodeService.NodeStream:input_type -> mesh.v1.NodeToApi
@@ -3513,7 +3513,7 @@ func file_mesh_proto_init() {
 			}
 		}
 		file_mesh_proto_msgTypes[30].Exporter = func(v any, i int) any {
-			switch v := v.(*WorkItemPoke); i {
+			switch v := v.(*TaskPoke); i {
 			case 0:
 				return &v.state
 			case 1:
@@ -3525,7 +3525,7 @@ func file_mesh_proto_init() {
 			}
 		}
 		file_mesh_proto_msgTypes[31].Exporter = func(v any, i int) any {
-			switch v := v.(*WorkItemPokeAck); i {
+			switch v := v.(*TaskPokeAck); i {
 			case 0:
 				return &v.state
 			case 1:
@@ -3546,7 +3546,7 @@ func file_mesh_proto_init() {
 		(*ApiToNode_SessionAttachInput)(nil),
 		(*ApiToNode_SessionAttachClose)(nil),
 		(*ApiToNode_AgentSync)(nil),
-		(*ApiToNode_WorkItemPoke)(nil),
+		(*ApiToNode_TaskPoke)(nil),
 		(*ApiToNode_Hello)(nil),
 	}
 	file_mesh_proto_msgTypes[6].OneofWrappers = []any{
@@ -3557,7 +3557,7 @@ func file_mesh_proto_init() {
 		(*NodeToApi_SessionAttachData)(nil),
 		(*NodeToApi_SessionAttachClosed)(nil),
 		(*NodeToApi_AgentSyncAck)(nil),
-		(*NodeToApi_WorkItemPokeAck)(nil),
+		(*NodeToApi_TaskPokeAck)(nil),
 		(*NodeToApi_SessionEvent)(nil),
 		(*NodeToApi_Error)(nil),
 		(*NodeToApi_HelloAck)(nil),

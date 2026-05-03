@@ -11,12 +11,12 @@ import (
 )
 
 // TestUpdateCurrentOwnerPositional verifies that the positional 3rd argument
-// (currentOwner) is included in the POST /work-item/update request body.
+// (currentOwner) is included in the POST /task/update request body.
 func TestUpdateCurrentOwnerPositional(t *testing.T) {
 	var capturedBody map[string]any
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/work-item/update" {
+		if r.URL.Path == "/task/update" {
 			if err := json.NewDecoder(r.Body).Decode(&capturedBody); err != nil {
 				http.Error(w, "bad body", 400)
 				return
@@ -24,7 +24,7 @@ func TestUpdateCurrentOwnerPositional(t *testing.T) {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"ok":         true,
-				"workItemId": "wi-abc",
+				"taskId": "wi-abc",
 				"actor":      map[string]any{"kind": "user"},
 			})
 			return
@@ -42,7 +42,7 @@ func TestUpdateCurrentOwnerPositional(t *testing.T) {
 	overrideSessionForTest(fakeSession)
 	defer overrideSessionForTest(nil)
 
-	rootCmd.SetArgs([]string{"work-item", "update", "wi-abc", "in_review", "larry-pa"})
+	rootCmd.SetArgs([]string{"task", "update", "wi-abc", "in_review", "larry-pa"})
 	buf := &strings.Builder{}
 	rootCmd.SetOut(buf)
 	rootCmd.SetErr(buf)
@@ -77,12 +77,12 @@ func TestUpdateCurrentOwnerFlagPath(t *testing.T) {
 	var capturedBody map[string]any
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/work-item/update" {
+		if r.URL.Path == "/task/update" {
 			_ = json.NewDecoder(r.Body).Decode(&capturedBody)
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"ok":         true,
-				"workItemId": "wi-xyz",
+				"taskId": "wi-xyz",
 				"actor":      map[string]any{"kind": "user"},
 			})
 			return
@@ -99,7 +99,7 @@ func TestUpdateCurrentOwnerFlagPath(t *testing.T) {
 	overrideSessionForTest(fakeSession)
 	defer overrideSessionForTest(nil)
 
-	rootCmd.SetArgs([]string{"work-item", "update", "wi-xyz", "--current-owner", "max-pa", "--status", "in_review"})
+	rootCmd.SetArgs([]string{"task", "update", "wi-xyz", "--current-owner", "max-pa", "--status", "in_review"})
 	buf := &strings.Builder{}
 	rootCmd.SetOut(buf)
 	rootCmd.SetErr(buf)

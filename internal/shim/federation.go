@@ -5,7 +5,7 @@ package shim
 // At shim startup the registry is populated from GET /federation/my-memberships on
 // the partner's own mesh-api. It is refreshed every 5 minutes in the background.
 //
-// When mesh_get_work_item, mesh_list_work_items, or mesh_send (peers:// target)
+// When mesh_get_task, mesh_list_tasks, or mesh_send (peers:// target)
 // resolve a project that is in the federated_projects map, the shim routes the
 // request to the host's mesh-api instead of the local router socket.
 //
@@ -223,8 +223,8 @@ func mintFederationJWT(partnerOrgSlug, agentName, nodeID, hostOrgSlug string) (s
 	return sigInput + "." + sigB64, nil
 }
 
-// FederatedGetWorkItem calls the host's POST /federation/work-item/get.
-func FederatedGetWorkItem(fp FederatedProject, workItemID string) (string, error) {
+// FederatedGetTask calls the host's POST /federation/task/get.
+func FederatedGetTask(fp FederatedProject, taskID string) (string, error) {
 	jwt, err := mintFederationJWT(fp.PartnerOrgSlug, fp.AgentName, fp.PartnerNodeID, fp.HostOrgSlug)
 	if err != nil {
 		return "", fmt.Errorf("mint JWT: %w", err)
@@ -232,11 +232,11 @@ func FederatedGetWorkItem(fp FederatedProject, workItemID string) (string, error
 
 	payload := map[string]any{
 		"project_id":   fp.ProjectID,
-		"work_item_id": workItemID,
+		"task_id": taskID,
 	}
 	body, _ := json.Marshal(payload)
 
-	url := strings.TrimRight(fp.HostAPIURL, "/") + "/federation/work-item/get"
+	url := strings.TrimRight(fp.HostAPIURL, "/") + "/federation/task/get"
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return "", err
@@ -247,13 +247,13 @@ func FederatedGetWorkItem(fp FederatedProject, workItemID string) (string, error
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("federated get-work-item: %w", err)
+		return "", fmt.Errorf("federated get-task: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBytes, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("federated get-work-item returned %d: %s", resp.StatusCode, string(respBytes))
+		return "", fmt.Errorf("federated get-task returned %d: %s", resp.StatusCode, string(respBytes))
 	}
 
 	var out struct {
@@ -267,8 +267,8 @@ func FederatedGetWorkItem(fp FederatedProject, workItemID string) (string, error
 	return string(result), nil
 }
 
-// FederatedListWorkItems calls the host's POST /federation/work-item/list.
-func FederatedListWorkItems(fp FederatedProject, status string, limit, offset int) (string, error) {
+// FederatedListTasks calls the host's POST /federation/task/list.
+func FederatedListTasks(fp FederatedProject, status string, limit, offset int) (string, error) {
 	jwt, err := mintFederationJWT(fp.PartnerOrgSlug, fp.AgentName, fp.PartnerNodeID, fp.HostOrgSlug)
 	if err != nil {
 		return "", fmt.Errorf("mint JWT: %w", err)
@@ -284,7 +284,7 @@ func FederatedListWorkItems(fp FederatedProject, status string, limit, offset in
 	}
 	body, _ := json.Marshal(payload)
 
-	url := strings.TrimRight(fp.HostAPIURL, "/") + "/federation/work-item/list"
+	url := strings.TrimRight(fp.HostAPIURL, "/") + "/federation/task/list"
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return "", err
@@ -295,13 +295,13 @@ func FederatedListWorkItems(fp FederatedProject, status string, limit, offset in
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("federated list-work-items: %w", err)
+		return "", fmt.Errorf("federated list-tasks: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBytes, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("federated list-work-items returned %d: %s", resp.StatusCode, string(respBytes))
+		return "", fmt.Errorf("federated list-tasks returned %d: %s", resp.StatusCode, string(respBytes))
 	}
 
 	var out struct {

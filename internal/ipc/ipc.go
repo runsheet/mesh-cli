@@ -321,38 +321,38 @@ func PeersSetSummaryRespEnv(errReason string) Envelope {
 	return Envelope{V: Version, Type: "peers-set-summary-resp", Reason: errReason}
 }
 
-// WorkItemGetEnv builds the work-item-get request the shim sends to the router.
-// RoutingKey carries the work item UUID.
-func WorkItemGetEnv(id string) Envelope {
-	return Envelope{V: Version, Type: "work-item-get", RoutingKey: id}
+// TaskGetEnv builds the task-get request the shim sends to the router.
+// RoutingKey carries the task UUID.
+func TaskGetEnv(id string) Envelope {
+	return Envelope{V: Version, Type: "task-get", RoutingKey: id}
 }
 
-// WorkItemGetRespEnv builds the work-item-get-resp the router sends back.
-// On success Content holds the JSON-encoded work item. On failure Reason is set.
-func WorkItemGetRespEnv(content, errReason string) Envelope {
-	return Envelope{V: Version, Type: "work-item-get-resp", Content: content, Reason: errReason}
+// TaskGetRespEnv builds the task-get-resp the router sends back.
+// On success Content holds the JSON-encoded task. On failure Reason is set.
+func TaskGetRespEnv(content, errReason string) Envelope {
+	return Envelope{V: Version, Type: "task-get-resp", Content: content, Reason: errReason}
 }
 
-// WorkItemUpdateEnv builds the work-item-update request. Content holds the
-// JSON-encoded update payload (workItemId + any mutable fields).
-func WorkItemUpdateEnv(content string) Envelope {
-	return Envelope{V: Version, Type: "work-item-update", Content: content}
+// TaskUpdateEnv builds the task-update request. Content holds the
+// JSON-encoded update payload (taskId + any mutable fields).
+func TaskUpdateEnv(content string) Envelope {
+	return Envelope{V: Version, Type: "task-update", Content: content}
 }
 
-// WorkItemUpdateRespEnv builds the work-item-update-resp. On success Reason is
+// TaskUpdateRespEnv builds the task-update-resp. On success Reason is
 // empty; on failure it carries the error string.
-func WorkItemUpdateRespEnv(errReason string) Envelope {
-	return Envelope{V: Version, Type: "work-item-update-resp", Reason: errReason}
+func TaskUpdateRespEnv(errReason string) Envelope {
+	return Envelope{V: Version, Type: "task-update-resp", Reason: errReason}
 }
 
-// WorkItemHandoffEnv builds the work-item-handoff request. Content holds the
-// JSON-encoded handoff payload (workItemId, fromRole, toRole, ...).
-func WorkItemHandoffEnv(content string) Envelope {
-	return Envelope{V: Version, Type: "work-item-handoff", Content: content}
+// TaskHandoffEnv builds the task-handoff request. Content holds the
+// JSON-encoded handoff payload (taskId, fromRole, toRole, ...).
+func TaskHandoffEnv(content string) Envelope {
+	return Envelope{V: Version, Type: "task-handoff", Content: content}
 }
 
-// WorkItemHandoffRespEnv builds the work-item-handoff-resp. On success Reason
+// TaskHandoffRespEnv builds the task-handoff-resp. On success Reason
 // is empty; on failure it carries the error string.
-func WorkItemHandoffRespEnv(errReason string) Envelope {
-	return Envelope{V: Version, Type: "work-item-handoff-resp", Reason: errReason}
+func TaskHandoffRespEnv(errReason string) Envelope {
+	return Envelope{V: Version, Type: "task-handoff-resp", Reason: errReason}
 }

@@ -32,23 +32,23 @@ type AgentEntry struct {
 func MeshRouterSockPath(agentName string) (string, error) { return paths.RouterSockPath(agentName) }
 
 // RouterDeps holds optional callbacks the daemon injects into the router so
-// that shim-initiated work-item operations can reach mesh-api without creating
+// that shim-initiated task operations can reach mesh-api without creating
 // an import cycle (daemon → channels is fine; channels → daemon is not).
 //
 // Any nil field means the corresponding capability is unavailable; the router
 // returns an appropriate error envelope to the shim.
 type RouterDeps struct {
-	// WorkItemGet fetches a single work item by UUID. Returns the raw JSON body
+	// TaskGet fetches a single task by UUID. Returns the raw JSON body
 	// from mesh-api (the full response object) or an error.
-	WorkItemGet func(id string) ([]byte, error)
-	// WorkItemUpdate POSTs to /work-item/update. payload must include workItemId.
-	WorkItemUpdate func(payload map[string]any) ([]byte, error)
-	// WorkItemHandoff POSTs to /work-item/handoff. payload must include workItemId, fromRole, toRole.
-	WorkItemHandoff func(payload map[string]any) ([]byte, error)
-	// OnWorkItemActivity is called after a successful work-item-update or
-	// work-item-handoff from the shim. The daemon uses it to mark the agent
+	TaskGet func(id string) ([]byte, error)
+	// TaskUpdate POSTs to /task/update. payload must include taskId.
+	TaskUpdate func(payload map[string]any) ([]byte, error)
+	// TaskHandoff POSTs to /task/handoff. payload must include taskId, fromRole, toRole.
+	TaskHandoff func(payload map[string]any) ([]byte, error)
+	// OnTaskActivity is called after a successful task-update or
+	// task-handoff from the shim. The daemon uses it to mark the agent
 	// active so the poll cadence shortens from 300s to 60s.
-	OnWorkItemActivity func(agentName string)
+	OnTaskActivity func(agentName string)
 	// Owner is the ChannelRouter that owns this router. Set by startRouterLocked
 	// so serveShim can register/deregister the poke-writer on connect/disconnect.
 	Owner *ChannelRouter
@@ -92,7 +92,7 @@ type routerGWConn struct {
 type ChannelRouter struct {
 	mu          sync.Mutex
 	routers     map[string]*runningRouter // key: agentName
-	pokeWriters map[string]func(workItemID, reason string) bool
+	pokeWriters map[string]func(taskID, reason string) bool
 	broker      *peers.Broker
 	deps        RouterDeps
 	startFn     func(ctx context.Context, agentName, description string, channels []Spec, broker *peers.Broker, deps RouterDeps)
@@ -108,13 +108,13 @@ type runningRouter struct {
 func NewChannelRouter(broker *peers.Broker) *ChannelRouter {
 	return &ChannelRouter{
 		routers:     map[string]*runningRouter{},
-		pokeWriters: map[string]func(workItemID, reason string) bool{},
+		pokeWriters: map[string]func(taskID, reason string) bool{},
 		broker:      broker,
 		startFn:     runAgentRouterWithDeps,
 	}
 }
 
-// SetDeps injects optional daemon callbacks (work-item HTTP helpers). Must be
+// SetDeps injects optional daemon callbacks (task HTTP helpers). Must be
 // called before the first Sync; safe to call once at startup.
 func (cr *ChannelRouter) SetDeps(deps RouterDeps) {
 	cr.mu.Lock()
@@ -128,7 +128,7 @@ func (cr *ChannelRouter) SetDeps(deps RouterDeps) {
 func NewChannelRouterWithStart(broker *peers.Broker, fn func(ctx context.Context, agentName, description string, channels []Spec, broker *peers.Broker)) *ChannelRouter {
 	return &ChannelRouter{
 		routers:     map[string]*runningRouter{},
-		pokeWriters: map[string]func(workItemID, reason string) bool{},
+		pokeWriters: map[string]func(taskID, reason string) bool{},
 		broker:      broker,
 		startFn: func(ctx context.Context, agentName, description string, channels []Spec, broker *peers.Broker, _ RouterDeps) {
 			fn(ctx, agentName, description, channels, broker)
@@ -174,23 +174,23 @@ func (cr *ChannelRouter) Sync(entries []AgentEntry) {
 	}
 }
 
-// DeliverPoke injects a work-item poke directly into the shim's inbound
+// DeliverPoke injects a task poke directly into the shim's inbound
 // stream as a notifications/claude/channel notification with
 // meta.source == "mesh-poke". This replaces the old PTY-socket + sidecar
 // delivery path. Returns false when no shim is connected for the agent
 // (caller logs and moves on — same semantics as the old "no listener" path).
-func (cr *ChannelRouter) DeliverPoke(agentName, workItemID, reason string) bool {
+func (cr *ChannelRouter) DeliverPoke(agentName, taskID, reason string) bool {
 	cr.mu.Lock()
 	fn := cr.pokeWriters[agentName]
 	cr.mu.Unlock()
 	if fn == nil {
 		return false
 	}
-	return fn(workItemID, reason)
+	return fn(taskID, reason)
 }
 
 // registerPokeWriter is called by agentRouter.serveShim when a shim connects.
-func (cr *ChannelRouter) registerPokeWriter(agentName string, fn func(workItemID, reason string) bool) {
+func (cr *ChannelRouter) registerPokeWriter(agentName string, fn func(taskID, reason string) bool) {
 	if cr == nil {
 		return
 	}
@@ -307,14 +307,14 @@ func (r *agentRouter) serveShim(ctx context.Context, conn net.Conn, logf func(st
 
 	// Register a poke-writer so ChannelRouter.DeliverPoke can reach this shim.
 	if r.deps.Owner != nil {
-		r.deps.Owner.registerPokeWriter(r.agentName, func(workItemID, reason string) bool {
+		r.deps.Owner.registerPokeWriter(r.agentName, func(taskID, reason string) bool {
 			r.mu.Lock()
 			wr := r.shimWr
 			r.mu.Unlock()
 			if wr == nil {
 				return false
 			}
-			text := fmt.Sprintf("mesh:work-item-poke id=%s reason=%s", workItemID, reason)
+			text := fmt.Sprintf("mesh:task-poke id=%s reason=%s", taskID, reason)
 			env := ipc.Envelope{
 				V:       ipc.Version,
 				Type:    "inbound",
@@ -325,7 +325,7 @@ func (r *agentRouter) serveShim(ctx context.Context, conn net.Conn, logf func(st
 				logf("poke write err agent=%s: %v", r.agentName, err)
 				return false
 			}
-			logf("poke delivered agent=%s work_item=%s reason=%s", r.agentName, workItemID, reason)
+			logf("poke delivered agent=%s task=%s reason=%s", r.agentName, taskID, reason)
 			return true
 		})
 	}
@@ -377,12 +377,12 @@ func (r *agentRouter) serveShim(ctx context.Context, conn net.Conn, logf func(st
 			r.handleShimPeersList(env, logf)
 		case "peers-set-summary":
 			r.handleShimPeersSetSummary(env, logf)
-		case "work-item-get":
-			r.handleShimWorkItemGet(env, logf)
-		case "work-item-update":
-			r.handleShimWorkItemUpdate(env, logf)
-		case "work-item-handoff":
-			r.handleShimWorkItemHandoff(env, logf)
+		case "task-get":
+			r.handleShimTaskGet(env, logf)
+		case "task-update":
+			r.handleShimTaskUpdate(env, logf)
+		case "task-handoff":
+			r.handleShimTaskHandoff(env, logf)
 		default:
 			logf("unknown shim envelope type=%s", env.Type)
 		}
@@ -1122,90 +1122,90 @@ func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 	return os.Rename(tmp, path)
 }
 
-// handleShimWorkItemGet handles a work-item-get request from the shim.
-// RoutingKey carries the work item UUID. Responds with work-item-get-resp.
-func (r *agentRouter) handleShimWorkItemGet(env ipc.Envelope, logf func(string, ...any)) {
+// handleShimTaskGet handles a task-get request from the shim.
+// RoutingKey carries the task UUID. Responds with task-get-resp.
+func (r *agentRouter) handleShimTaskGet(env ipc.Envelope, logf func(string, ...any)) {
 	r.mu.Lock()
 	wr := r.shimWr
 	r.mu.Unlock()
 	if wr == nil {
 		return
 	}
-	if r.deps.WorkItemGet == nil {
-		_ = wr.Write(ipc.WorkItemGetRespEnv("", "work-item-get not available (daemon not connected to mesh-api)"))
+	if r.deps.TaskGet == nil {
+		_ = wr.Write(ipc.TaskGetRespEnv("", "task-get not available (daemon not connected to mesh-api)"))
 		return
 	}
 	id := env.RoutingKey
 	if id == "" {
-		_ = wr.Write(ipc.WorkItemGetRespEnv("", "work-item-get: id is required"))
+		_ = wr.Write(ipc.TaskGetRespEnv("", "task-get: id is required"))
 		return
 	}
-	body, err := r.deps.WorkItemGet(id)
+	body, err := r.deps.TaskGet(id)
 	if err != nil {
-		logf("work-item-get id=%s err=%v", id, err)
-		_ = wr.Write(ipc.WorkItemGetRespEnv("", err.Error()))
+		logf("task-get id=%s err=%v", id, err)
+		_ = wr.Write(ipc.TaskGetRespEnv("", err.Error()))
 		return
 	}
-	logf("work-item-get id=%s ok", id)
-	_ = wr.Write(ipc.WorkItemGetRespEnv(string(body), ""))
+	logf("task-get id=%s ok", id)
+	_ = wr.Write(ipc.TaskGetRespEnv(string(body), ""))
 }
 
-// handleShimWorkItemUpdate handles a work-item-update request from the shim.
-// Content carries the JSON-encoded update payload. Responds with work-item-update-resp.
-func (r *agentRouter) handleShimWorkItemUpdate(env ipc.Envelope, logf func(string, ...any)) {
+// handleShimTaskUpdate handles a task-update request from the shim.
+// Content carries the JSON-encoded update payload. Responds with task-update-resp.
+func (r *agentRouter) handleShimTaskUpdate(env ipc.Envelope, logf func(string, ...any)) {
 	r.mu.Lock()
 	wr := r.shimWr
 	r.mu.Unlock()
 	if wr == nil {
 		return
 	}
-	if r.deps.WorkItemUpdate == nil {
-		_ = wr.Write(ipc.WorkItemUpdateRespEnv("work-item-update not available (daemon not connected to mesh-api)"))
+	if r.deps.TaskUpdate == nil {
+		_ = wr.Write(ipc.TaskUpdateRespEnv("task-update not available (daemon not connected to mesh-api)"))
 		return
 	}
 	var payload map[string]any
 	if err := json.Unmarshal([]byte(env.Content), &payload); err != nil {
-		_ = wr.Write(ipc.WorkItemUpdateRespEnv("work-item-update: invalid JSON payload: " + err.Error()))
+		_ = wr.Write(ipc.TaskUpdateRespEnv("task-update: invalid JSON payload: " + err.Error()))
 		return
 	}
-	if _, err := r.deps.WorkItemUpdate(payload); err != nil {
-		logf("work-item-update err=%v", err)
-		_ = wr.Write(ipc.WorkItemUpdateRespEnv(err.Error()))
+	if _, err := r.deps.TaskUpdate(payload); err != nil {
+		logf("task-update err=%v", err)
+		_ = wr.Write(ipc.TaskUpdateRespEnv(err.Error()))
 		return
 	}
-	logf("work-item-update ok id=%v", payload["workItemId"])
-	if r.deps.OnWorkItemActivity != nil {
-		r.deps.OnWorkItemActivity(r.agentName)
+	logf("task-update ok id=%v", payload["taskId"])
+	if r.deps.OnTaskActivity != nil {
+		r.deps.OnTaskActivity(r.agentName)
 	}
-	_ = wr.Write(ipc.WorkItemUpdateRespEnv(""))
+	_ = wr.Write(ipc.TaskUpdateRespEnv(""))
 }
 
-// handleShimWorkItemHandoff handles a work-item-handoff request from the shim.
-// Content carries the JSON-encoded handoff payload. Responds with work-item-handoff-resp.
-func (r *agentRouter) handleShimWorkItemHandoff(env ipc.Envelope, logf func(string, ...any)) {
+// handleShimTaskHandoff handles a task-handoff request from the shim.
+// Content carries the JSON-encoded handoff payload. Responds with task-handoff-resp.
+func (r *agentRouter) handleShimTaskHandoff(env ipc.Envelope, logf func(string, ...any)) {
 	r.mu.Lock()
 	wr := r.shimWr
 	r.mu.Unlock()
 	if wr == nil {
 		return
 	}
-	if r.deps.WorkItemHandoff == nil {
-		_ = wr.Write(ipc.WorkItemHandoffRespEnv("work-item-handoff not available (daemon not connected to mesh-api)"))
+	if r.deps.TaskHandoff == nil {
+		_ = wr.Write(ipc.TaskHandoffRespEnv("task-handoff not available (daemon not connected to mesh-api)"))
 		return
 	}
 	var payload map[string]any
 	if err := json.Unmarshal([]byte(env.Content), &payload); err != nil {
-		_ = wr.Write(ipc.WorkItemHandoffRespEnv("work-item-handoff: invalid JSON payload: " + err.Error()))
+		_ = wr.Write(ipc.TaskHandoffRespEnv("task-handoff: invalid JSON payload: " + err.Error()))
 		return
 	}
-	if _, err := r.deps.WorkItemHandoff(payload); err != nil {
-		logf("work-item-handoff err=%v", err)
-		_ = wr.Write(ipc.WorkItemHandoffRespEnv(err.Error()))
+	if _, err := r.deps.TaskHandoff(payload); err != nil {
+		logf("task-handoff err=%v", err)
+		_ = wr.Write(ipc.TaskHandoffRespEnv(err.Error()))
 		return
 	}
-	logf("work-item-handoff ok id=%v", payload["workItemId"])
-	if r.deps.OnWorkItemActivity != nil {
-		r.deps.OnWorkItemActivity(r.agentName)
+	logf("task-handoff ok id=%v", payload["taskId"])
+	if r.deps.OnTaskActivity != nil {
+		r.deps.OnTaskActivity(r.agentName)
 	}
-	_ = wr.Write(ipc.WorkItemHandoffRespEnv(""))
+	_ = wr.Write(ipc.TaskHandoffRespEnv(""))
 }

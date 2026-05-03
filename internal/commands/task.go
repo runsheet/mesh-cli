@@ -22,14 +22,14 @@ func printJSON(v any) error {
 	return nil
 }
 
-var workItemCmd = &cobra.Command{
-	Use:     "work-item",
+var taskCmd = &cobra.Command{
+	Use:     "task",
 	Aliases: []string{"work", "wi"},
-	Short:   "Ralph Loop work item commands",
-	Long:    "Create, move, hand off, review, and learn from Ralph Loop work items using your signed-in Mesh session.",
+	Short:   "Ralph Loop task commands",
+	Long:    "Create, move, hand off, review, and learn from Ralph Loop tasks using your signed-in Mesh session.",
 }
 
-var allowedWorkItemStatuses = map[string]bool{
+var allowedTaskStatuses = map[string]bool{
 	"inbox":             true,
 	"clarifying":        true,
 	"researching":       true,
@@ -165,14 +165,14 @@ var (
 	learningNote         string
 )
 
-var createWorkItemOrg string
-var createWorkItemWorkflow string
+var createTaskOrg string
+var createTaskWorkflow string
 
 var createCmd = &cobra.Command{
 	Use:     "create <title> [scope] [projectId]",
-	Short:   "Create a new Ralph Loop work item",
-	Long:    "Create a Ralph Loop work item as the signed-in user. Use project scope for normal delivery work, personal for operator tasks, and ops for internal operations.",
-	Example: "mesh work-item create \"Investigate deploy flake\" project <project-id>\nmesh work-item create \"Inbox triage\" personal\nmesh work-item create \"Gateway cleanup\" ops",
+	Short:   "Create a new Ralph Loop task",
+	Long:    "Create a Ralph Loop task as the signed-in user. Use project scope for normal delivery work, personal for operator tasks, and ops for internal operations.",
+	Example: "mesh task create \"Investigate deploy flake\" project <project-id>\nmesh task create \"Inbox triage\" personal\nmesh task create \"Gateway cleanup\" ops",
 	Args:    cobra.RangeArgs(1, 3),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		sess, err := requireSession()
@@ -182,7 +182,7 @@ var createCmd = &cobra.Command{
 
 		client := newMeshClientForSession(sess)
 		if cmd.Flags().Changed("org") {
-			client.OrgSlug = createWorkItemOrg
+			client.OrgSlug = createTaskOrg
 		}
 		title := args[0]
 		scope := "project"
@@ -204,12 +204,12 @@ var createCmd = &cobra.Command{
 		if projectId != "" {
 			payload["projectId"] = projectId
 		}
-		if v := strings.TrimSpace(createWorkItemWorkflow); v != "" {
+		if v := strings.TrimSpace(createTaskWorkflow); v != "" {
 			payload["workflowSlug"] = v
 		}
 
 		var response map[string]any
-		if err := client.doRequest("POST", "/work-item/create", payload, &response); err != nil {
+		if err := client.doRequest("POST", "/task/create", payload, &response); err != nil {
 			return err
 		}
 		return printJSON(response)
@@ -217,11 +217,11 @@ var createCmd = &cobra.Command{
 }
 
 var updateCmd = &cobra.Command{
-	Use:     "update <workItemId> [status] [currentOwner]",
+	Use:     "update <taskId> [status] [currentOwner]",
 	Aliases: []string{"move"},
-	Short:   "Update work item state or ownership",
-	Long:    "Update a Ralph Loop work item. Use the quick positional form for common moves, or flags for the fuller contract.",
-	Example: "mesh work-item update <id> ready\nmesh work-item update <id> in_review builder\nmesh work-item update <id> --priority high --owner-role devlead --note \"Escalating for review\"",
+	Short:   "Update task state or ownership",
+	Long:    "Update a Ralph Loop task. Use the quick positional form for common moves, or flags for the fuller contract.",
+	Example: "mesh task update <id> ready\nmesh task update <id> in_review builder\nmesh task update <id> --priority high --owner-role devlead --note \"Escalating for review\"",
 	Args:    cobra.RangeArgs(1, 3),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		status := updateStatus
@@ -234,7 +234,7 @@ var updateCmd = &cobra.Command{
 		}
 		status = normalizeStatus(status)
 
-		if err := validateEnum("status", normalizeOptional(status), allowedWorkItemStatuses); err != nil {
+		if err := validateEnum("status", normalizeOptional(status), allowedTaskStatuses); err != nil {
 			return err
 		}
 		if err := validateEnum("priority", normalizeOptional(updatePriority), allowedPriorities); err != nil {
@@ -252,7 +252,7 @@ var updateCmd = &cobra.Command{
 			return err
 		}
 
-		payload := map[string]any{"workItemId": args[0]}
+		payload := map[string]any{"taskId": args[0]}
 		if v := normalizeOptional(updateTitle); v != "" {
 			payload["title"] = v
 		}
@@ -286,7 +286,7 @@ var updateCmd = &cobra.Command{
 
 		client := newMeshClientForSession(sess)
 		var response map[string]any
-		if err := client.doRequest("POST", "/work-item/update", payload, &response); err != nil {
+		if err := client.doRequest("POST", "/task/update", payload, &response); err != nil {
 			return err
 		}
 		return printJSON(response)
@@ -294,10 +294,10 @@ var updateCmd = &cobra.Command{
 }
 
 var handoffCmd = &cobra.Command{
-	Use:     "handoff <workItemId> <fromRole> <toRole> [summary]",
+	Use:     "handoff <taskId> <fromRole> <toRole> [summary]",
 	Short:   "Record a workflow handoff",
 	Long:    "Record the handoff packet between workflow roles. Use the optional summary positional arg for the common case, and flags when you want the fuller packet.",
-	Example: "mesh work-item handoff <id> pm devlead \"Ready for review\"\nmesh work-item handoff <id> devlead builder --summary \"Implement portal auth fix\" --required-outputs \"PR plus test notes\" --repo-path /repo/path",
+	Example: "mesh task handoff <id> pm devlead \"Ready for review\"\nmesh task handoff <id> devlead builder --summary \"Implement portal auth fix\" --required-outputs \"PR plus test notes\" --repo-path /repo/path",
 	Args:    cobra.RangeArgs(3, 4),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		summary := handoffSummary
@@ -317,7 +317,7 @@ var handoffCmd = &cobra.Command{
 		}
 
 		payload := map[string]any{
-			"workItemId": args[0],
+			"taskId": args[0],
 			"fromRole":   args[1],
 			"toRole":     args[2],
 		}
@@ -345,7 +345,7 @@ var handoffCmd = &cobra.Command{
 
 		client := newMeshClientForSession(sess)
 		var response map[string]any
-		if err := client.doRequest("POST", "/work-item/handoff", payload, &response); err != nil {
+		if err := client.doRequest("POST", "/task/handoff", payload, &response); err != nil {
 			return err
 		}
 		return printJSON(response)
@@ -353,10 +353,10 @@ var handoffCmd = &cobra.Command{
 }
 
 var reviewCmd = &cobra.Command{
-	Use:     "review <workItemId> <reviewerRole> <decision> [notes]",
+	Use:     "review <taskId> <reviewerRole> <decision> [notes]",
 	Short:   "Record a Ralph Loop review",
-	Long:    "Record the review decision for a work item. Use accept, change_request, or reject. Friendly aliases like approve and changes are also accepted.",
-	Example: "mesh work-item review <id> devlead approve \"Looks good\"\nmesh work-item review <id> human changes --criteria-checklist \"tests, docs\"",
+	Long:    "Record the review decision for a task. Use accept, change_request, or reject. Friendly aliases like approve and changes are also accepted.",
+	Example: "mesh task review <id> devlead approve \"Looks good\"\nmesh task review <id> human changes --criteria-checklist \"tests, docs\"",
 	Args:    cobra.RangeArgs(3, 4),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		notes := reviewNotes
@@ -377,7 +377,7 @@ var reviewCmd = &cobra.Command{
 		}
 
 		payload := map[string]any{
-			"workItemId":   args[0],
+			"taskId":   args[0],
 			"reviewerRole": args[1],
 			"decision":     decision,
 		}
@@ -390,7 +390,7 @@ var reviewCmd = &cobra.Command{
 
 		client := newMeshClientForSession(sess)
 		var response map[string]any
-		if err := client.doRequest("POST", "/work-item/review", payload, &response); err != nil {
+		if err := client.doRequest("POST", "/task/review", payload, &response); err != nil {
 			return err
 		}
 		return printJSON(response)
@@ -398,11 +398,11 @@ var reviewCmd = &cobra.Command{
 }
 
 var learningCmd = &cobra.Command{
-	Use:     "learning <workItemId> [outcome]",
+	Use:     "learning <taskId> [outcome]",
 	Aliases: []string{"learn"},
 	Short:   "Record Ralph Loop learning",
-	Long:    "Capture the learning packet for a work item. Use the quick outcome positional arg for the common case, or add structured flags for deeper learnings.",
-	Example: "mesh work-item learning <id> \"Shipped cleanly\"\nmesh work-item learning <id> --what-worked \"Portal handoff login\" --what-failed \"Schema drift\" --follow-up-needed --follow-up-item-id <id>",
+	Long:    "Capture the learning packet for a task. Use the quick outcome positional arg for the common case, or add structured flags for deeper learnings.",
+	Example: "mesh task learning <id> \"Shipped cleanly\"\nmesh task learning <id> --what-worked \"Portal handoff login\" --what-failed \"Schema drift\" --follow-up-needed --follow-up-item-id <id>",
 	Args:    cobra.RangeArgs(1, 2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		outcome := learningOutcome
@@ -415,7 +415,7 @@ var learningCmd = &cobra.Command{
 			return err
 		}
 
-		payload := map[string]any{"workItemId": args[0]}
+		payload := map[string]any{"taskId": args[0]}
 		if v := normalizeOptional(outcome); v != "" {
 			payload["outcome"] = v
 		}
@@ -440,7 +440,7 @@ var learningCmd = &cobra.Command{
 
 		client := newMeshClientForSession(sess)
 		var response map[string]any
-		if err := client.doRequest("POST", "/work-item/learning", payload, &response); err != nil {
+		if err := client.doRequest("POST", "/task/learning", payload, &response); err != nil {
 			return err
 		}
 		return printJSON(response)
@@ -448,9 +448,9 @@ var learningCmd = &cobra.Command{
 }
 
 func init() {
-	createCmd.Flags().StringVar(&createWorkItemOrg, "org", "", "Org slug to scope the work item (overrides session default)")
-	createCmd.Flags().StringVar(&createWorkItemWorkflow, "workflow", "", "Workflow slug (e.g. full, quick, doc, research, personal); overrides project default")
-	updateCmd.Flags().StringVar(&updateTitle, "title", "", "Updated work item title")
+	createCmd.Flags().StringVar(&createTaskOrg, "org", "", "Org slug to scope the task (overrides session default)")
+	createCmd.Flags().StringVar(&createTaskWorkflow, "workflow", "", "Workflow slug (e.g. full, quick, doc, research, personal); overrides project default")
+	updateCmd.Flags().StringVar(&updateTitle, "title", "", "Updated task title")
 	updateCmd.Flags().StringVar(&updateStatus, "status", "", "Status, for example ready, in_review, blocked, done")
 	updateCmd.Flags().StringVar(&updatePriority, "priority", "", "Priority: low, medium, high, urgent")
 	updateCmd.Flags().StringVar(&updateOwnerRole, "owner-role", "", "Owner role: human, pm, devlead, builder")
@@ -475,10 +475,10 @@ func init() {
 	learningCmd.Flags().StringVar(&learningWhatWorked, "what-worked", "", "What worked well")
 	learningCmd.Flags().StringVar(&learningWhatFailed, "what-failed", "", "What failed")
 	learningCmd.Flags().BoolVar(&learningFollowUpNeed, "follow-up-needed", false, "Whether follow-up work is needed")
-	learningCmd.Flags().StringVar(&learningFollowUpID, "follow-up-item-id", "", "Follow-up work item ID")
+	learningCmd.Flags().StringVar(&learningFollowUpID, "follow-up-item-id", "", "Follow-up task ID")
 	learningCmd.Flags().StringVar(&learningNote, "note", "", "Event note for the learning update")
 
-	workItemCmd.AddCommand(listCmd, getWorkItemCmd, createCmd, updateCmd, handoffCmd, reviewCmd, learningCmd)
+	taskCmd.AddCommand(listCmd, getTaskCmd, createCmd, updateCmd, handoffCmd, reviewCmd, learningCmd)
 }
 
 var (
@@ -489,7 +489,7 @@ var (
 
 var listCmd = &cobra.Command{
 	Use:   "list",
-	Short: "List Ralph Loop work items",
+	Short: "List Ralph Loop tasks",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		sess, err := requireSession()
 		if err != nil {
@@ -512,7 +512,7 @@ var listCmd = &cobra.Command{
 			}
 			q += "projectId=" + v
 		}
-		path := "/work-item/list"
+		path := "/task/list"
 		if q != "" {
 			path += "?" + q
 		}
@@ -533,7 +533,7 @@ var listCmd = &cobra.Command{
 		}
 
 		if len(resp.Items) == 0 {
-			fmt.Println("no work items found")
+			fmt.Println("no tasks found")
 			return nil
 		}
 
@@ -557,13 +557,13 @@ var listCmd = &cobra.Command{
 func init() {
 	listCmd.Flags().StringVar(&listStatusFlag, "status", "", "Filter by status (e.g. ready_for_devlead,in_execution)")
 	listCmd.Flags().StringVar(&listProjectIDFlag, "project-id", "", "Filter by project ID")
-	listCmd.Flags().BoolVar(&listAllFlag, "all", false, "Show all work items, not just those assigned to me")
+	listCmd.Flags().BoolVar(&listAllFlag, "all", false, "Show all tasks, not just those assigned to me")
 }
 
-var getWorkItemCmd = &cobra.Command{
-	Use:     "get <workItemId>",
-	Short:   "Fetch a single work item by ID",
-	Example: "mesh work-item get <id>",
+var getTaskCmd = &cobra.Command{
+	Use:     "get <taskId>",
+	Short:   "Fetch a single task by ID",
+	Example: "mesh task get <id>",
 	Args:    cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		sess, err := requireSession()
@@ -577,7 +577,7 @@ var getWorkItemCmd = &cobra.Command{
 			OK   bool           `json:"ok"`
 			Item map[string]any `json:"item"`
 		}
-		if err := client.doRequest("GET", "/work-item/get/"+args[0], nil, &resp); err != nil {
+		if err := client.doRequest("GET", "/task/get/"+args[0], nil, &resp); err != nil {
 			return err
 		}
 

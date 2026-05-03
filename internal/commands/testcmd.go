@@ -13,7 +13,7 @@ var testCmd = &cobra.Command{
 }
 
 var (
-	testWorkItemID  string
+	testTaskID  string
 	testStatus      string
 	testLogFile     string
 	testConfidence  string
@@ -21,11 +21,11 @@ var (
 
 var testRecordCmd = &cobra.Command{
 	Use:     "record",
-	Short:   "Record a test result for a work item",
-	Example: "mesh test record --work-item <id> --status pass --confidence 0.91\nmesh test record --work-item <id> --status fail --log test-output.txt --confidence 0.60",
+	Short:   "Record a test result for a task",
+	Example: "mesh test record --task <id> --status pass --confidence 0.91\nmesh test record --task <id> --status fail --log test-output.txt --confidence 0.60",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if testWorkItemID == "" {
-			return fmt.Errorf("--work-item is required")
+		if testTaskID == "" {
+			return fmt.Errorf("--task is required")
 		}
 		if testStatus == "" {
 			return fmt.Errorf("--status is required (pass or fail)")
@@ -44,7 +44,7 @@ var testRecordCmd = &cobra.Command{
 		}
 
 		payload := map[string]any{
-			"workItemId":      testWorkItemID,
+			"taskId":      testTaskID,
 			"status":          testStatus,
 			"confidenceScore": confidence,
 		}
@@ -61,7 +61,7 @@ var testRecordCmd = &cobra.Command{
 
 		client := newMeshClientForSession(sess)
 		var response map[string]any
-		if err := client.doRequest("POST", "/work-item/test/record", payload, &response); err != nil {
+		if err := client.doRequest("POST", "/task/test/record", payload, &response); err != nil {
 			return err
 		}
 		return printJSON(response)
@@ -70,11 +70,11 @@ var testRecordCmd = &cobra.Command{
 
 var testReportCmd = &cobra.Command{
 	Use:     "report",
-	Short:   "Fetch the latest test report for a work item",
-	Example: "mesh test report --work-item <id>",
+	Short:   "Fetch the latest test report for a task",
+	Example: "mesh test report --task <id>",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if testWorkItemID == "" {
-			return fmt.Errorf("--work-item is required")
+		if testTaskID == "" {
+			return fmt.Errorf("--task is required")
 		}
 
 		sess, err := requireSession()
@@ -84,7 +84,7 @@ var testReportCmd = &cobra.Command{
 
 		client := newMeshClientForSession(sess)
 		var response map[string]any
-		if err := client.doRequest("GET", "/work-item/test/report?workItemId="+testWorkItemID, nil, &response); err != nil {
+		if err := client.doRequest("GET", "/task/test/report?taskId="+testTaskID, nil, &response); err != nil {
 			return err
 		}
 		return printJSON(response)
@@ -92,12 +92,12 @@ var testReportCmd = &cobra.Command{
 }
 
 func init() {
-	testRecordCmd.Flags().StringVar(&testWorkItemID, "work-item", "", "Work item ID")
+	testRecordCmd.Flags().StringVar(&testTaskID, "task", "", "Work item ID")
 	testRecordCmd.Flags().StringVar(&testStatus, "status", "", "Test status: pass or fail")
 	testRecordCmd.Flags().StringVar(&testLogFile, "log", "", "Path to log file, or - for stdin")
 	testRecordCmd.Flags().StringVar(&testConfidence, "confidence", "", "Confidence score 0.0–1.0")
 
-	testReportCmd.Flags().StringVar(&testWorkItemID, "work-item", "", "Work item ID")
+	testReportCmd.Flags().StringVar(&testTaskID, "task", "", "Work item ID")
 
 	testCmd.AddCommand(testRecordCmd, testReportCmd)
 }

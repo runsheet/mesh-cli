@@ -241,7 +241,7 @@ func (r *SessionRegistry) StartWithOptions(opts StartOptions) (*PtySession, bool
 	// The `server:` form of --dangerously-load-development-channels resolves
 	// against this registry, NOT against --mcp-config files. server:mesh
 	// activates the experimental claude/channel capability so inbound channel
-	// notifications (Discord, WhatsApp, peers, work-item pokes) land in the
+	// notifications (Discord, WhatsApp, peers, task pokes) land in the
 	// agent's context.
 	args = append(args, "--dangerously-load-development-channels", "server:mesh")
 	cmd := exec.Command("claude", args...)

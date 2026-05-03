@@ -11,11 +11,11 @@ var rootCmd = &cobra.Command{
 	Short:   "Mesh CLI — AI, orgs, projects, workflows, tasks",
 	Long:    "Mesh CLI is the operator tool for the Mesh control plane. Sign in once, then manage orgs, projects, agents (AI), workflows, and tasks from your saved Mesh session.",
 	Version: version.Version,
-	Example: "mesh auth login\nmesh work-item create \"Stabilize release flow\" project <project-id>\nmesh work-item update <id> ready\nmesh work-item handoff <id> pm devlead \"Ready for review\"\nmesh work-item review <id> devlead approve \"Ship it\"\nmesh work-item learning <id> \"Release flow now stable\"",
+	Example: "mesh auth login\nmesh task create \"Stabilize release flow\" project <project-id>\nmesh task update <id> ready\nmesh task handoff <id> pm devlead \"Ready for review\"\nmesh task review <id> devlead approve \"Ship it\"\nmesh task learning <id> \"Release flow now stable\"",
 }
 
 func init() {
-	rootCmd.AddCommand(authCmd, workItemCmd, projectCmd, orgCmd, nodeCmd, agentCmd, sessionCmd)
+	rootCmd.AddCommand(authCmd, taskCmd, projectCmd, orgCmd, nodeCmd, agentCmd, sessionCmd)
 	rootCmd.AddCommand(researchCmd, testCmd)
 	rootCmd.AddCommand(workflowCmd)
 	rootCmd.AddCommand(runCmd, psCmd, attachCmd, logsCmd, restartCmd, rmCmd, inspectCmd)
