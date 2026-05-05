@@ -1,0 +1,78 @@
+name: PR Checks (mesh-cli)
+
+# Phase 0 Plan 07 — wires the INV-02 archival assertions plus the standard
+# Go build/test gates into PR-required CI. Becomes a merge gate once branch
+# protection is enabled per mesh-api/CONTRIBUTING.md "Operator setup" (Plan 06,
+# checklist applies per-repo).
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: gofmt check
+        run: |
+          # gofmt -l prints files needing formatting; non-empty output fails.
+          FMT=$(gofmt -l .)
+          if [ -n "$FMT" ]; then
+            echo "ERROR: the following files are not gofmt-clean:"
+            echo "$FMT"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go build
+        run: go build ./...
+
+      - name: go test
+        run: go test ./...
+
+      - name: Verify archived directories absent (INV-02)
+        # INV-02 archival is permanent. Plans 00-04 + 00-05 deleted these four
+        # directories; recreating any of them must fail CI.
+        # internal/gateways/discord  internal/gateways/whatsapp  — Plan 04
+        # internal/channels          internal/accounts           — Plan 05
+        run: |
+          for d in internal/gateways/discord internal/gateways/whatsapp internal/channels internal/accounts; do
+            if [ -d "$d" ]; then
+              echo "ERROR: directory $d must remain archived per INV-02 (Phase 0)."
+              echo "See .planning/REQUIREMENTS.md INV-02 and"
+              echo ".planning/phases/00-decommission-invariants/00-04-SUMMARY.md"
+              echo ".planning/phases/00-decommission-invariants/00-05-SUMMARY.md"
+              exit 1
+            fi
+          done
+          echo "INV-02 directory archival OK"
+
+      - name: Verify no imports of archived packages (INV-02)
+        # Scoped to QUOTED MODULE-PREFIXED import paths so a doc comment that
+        # mentions e.g. "internal/channels/" by way of historical context
+        # (see internal/ipc/ipc.go's package doc) does not false-positive.
+        # Go imports are always quoted strings of the form
+        #   "projectmesh.io/mesh-cli/internal/<pkg>"
+        # so this regex catches re-introduced imports without catching prose.
+        run: |
+          if grep -rnE '"projectmesh\.io/mesh-cli/internal/(gateways/discord|gateways/whatsapp|channels|accounts)(/[^"]*)?"' \
+              --include="*.go" . ; then
+            echo "ERROR: source still imports archived gateway/channel/accounts packages (INV-02)."
+            echo "See .planning/REQUIREMENTS.md INV-02."
+            exit 1
+          fi
+          echo "INV-02 import-graph OK"
