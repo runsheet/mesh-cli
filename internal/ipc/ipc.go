@@ -1,6 +1,14 @@
-// Package ipc defines the wire protocol used between the daemon router,
-// gateways, and the mesh-shim. All communication is line-delimited JSON over
-// Unix sockets; one Envelope per line.
+// Package ipc defines the wire protocol used between the daemon router and
+// the mesh-shim. All communication is line-delimited JSON over Unix sockets;
+// one Envelope per line.
+//
+// Plan 00-05 removed the channel-routing supervisor (and its Discord /
+// WhatsApp gateway subprocesses) along with the entire internal/channels/
+// package. Only the peers-path consumers of this protocol survive. The
+// guild-mode / channel-mode subscribe helpers and group-listing envelopes
+// remain as dead code intentionally — they are part of the on-disk wire
+// shape and cheap to leave around until the Phase 2 dispatcher rebuild
+// either reuses them or a follow-up cut deletes them.
 package ipc
 
 import (
@@ -17,10 +25,9 @@ import (
 const Version = 1
 
 // ChannelOverride is the wire representation of a per-channel override within
-// a guild-mode subscribe envelope. Mirrors discordChannelOverride in
-// channelspec.go but uses plain bool/string (not pointers) — unset fields are
-// omitted via omitempty so the gateway can tell "override present" from
-// "override absent".
+// a guild-mode subscribe envelope. Predates Plan 00-05's channel-routing cut;
+// retained for wire-shape compatibility but no longer produced by any live
+// code path.
 type ChannelOverride struct {
 	ChannelID      string   `json:"channelId"`
 	RequireMention *bool    `json:"requireMention,omitempty"`
@@ -29,13 +36,13 @@ type ChannelOverride struct {
 	AllowedRoles   []string `json:"allowedRoles,omitempty"`
 }
 
-// Envelope is the common wire shape for all shim↔gateway messages over the
-// gateway Unix socket. Line-delimited JSON; one Envelope per line.
+// Envelope is the common wire shape for all shim↔router messages.
+// Line-delimited JSON; one Envelope per line.
 //
-// Shim → gateway types: subscribe, unsubscribe, send
-// Gateway → shim types: subscribe-ack, inbound, error
-// Router → shim types: subscribe-ack, inbound, error (same as gateway)
-// Shim → router types: subscribe, unsubscribe, send (same as shim→gateway)
+// Shim → router types: subscribe, unsubscribe, send,
+// peers-list, peers-set-summary, task-get, task-update, task-handoff
+// Router → shim types: subscribe-ack, inbound, error,
+// peers-list-resp, peers-set-summary-resp, task-*-resp
 type Envelope struct {
 	V    int    `json:"v"`
 	Type string `json:"type"`
@@ -55,22 +62,23 @@ type Envelope struct {
 	Content   string `json:"content,omitempty"`
 	ChannelID string `json:"channelId,omitempty"` // send: optional explicit target (guild mode); inbound: originating channel
 
-	// Source identifies the backend platform an inbound envelope originated
-	// from. Set by the daemon router when it fans out from a gateway to the
-	// mesh-shim; absent on legacy direct-gateway paths. Values: "discord",
-	// "whatsapp", "peers".
+	// Source identifies where an inbound envelope originated from. Set by
+	// the daemon router when it fans out an event to the mesh-shim. Plan
+	// 00-05 cut down the surviving sources to "peers" only; legacy
+	// values ("discord", "whatsapp") may still appear in archived envelopes
+	// but are no longer produced by any live code path.
 	Source string `json:"source,omitempty"`
 
 	// Target is the URL-shape destination the mesh-shim supplies on outbound
-	// sends (e.g. "discord://channel/<id>", "discord://dm/<userId>"). The
-	// daemon router parses the scheme and forwards to the right gateway.
-	// Absent on legacy direct-gateway paths.
+	// sends (e.g. "peers://agent/<name>"). The daemon router parses the
+	// scheme and forwards to the matching backend. Plan 00-05 reduced the
+	// supported scheme set to peers://; the field shape stays identical.
 	Target string `json:"target,omitempty"`
 
-	// inbound fields (gateway → shim / router)
-	Sender    string `json:"sender,omitempty"`    // display name (e.g. Discord username)
-	MessageID string `json:"messageId,omitempty"` // platform-specific message id
-	UserID    string `json:"userId,omitempty"`    // platform-specific sender user id
+	// inbound fields (router → shim)
+	Sender    string `json:"sender,omitempty"`    // display name of the sender
+	MessageID string `json:"messageId,omitempty"` // source-specific message id
+	UserID    string `json:"userId,omitempty"`    // source-specific sender id
 	Timestamp string `json:"ts,omitempty"`        // ISO-8601 message timestamp
 
 	// peers inbound fields (broker → router → shim). PeerID is the sending
@@ -78,7 +86,7 @@ type Envelope struct {
 	PeerID string `json:"peerId,omitempty"`
 	Team   string `json:"team,omitempty"`
 
-	// error fields (gateway → shim)
+	// error fields (router → shim)
 	Reason string `json:"reason,omitempty"`
 	Detail string `json:"detail,omitempty"`
 
@@ -93,7 +101,7 @@ type Envelope struct {
 type Attachment struct {
 	Type       string `json:"type"`                 // "image" (v1); future: "audio","video","document"
 	Path       string `json:"path,omitempty"`       // absolute local path; empty on failure
-	MIMEType   string `json:"mimeType,omitempty"`   // MIME as reported by whatsmeow
+	MIMEType   string `json:"mimeType,omitempty"`   // MIME as reported by the source
 	FailReason string `json:"failReason,omitempty"` // non-empty on failure
 }
 
@@ -149,8 +157,11 @@ func (ir *Reader) Read() (Envelope, error) {
 	return env, nil
 }
 
-// DialGateway opens a Unix-socket connection to the gateway socket and returns
-// a reader/writer pair. The caller is responsible for closing the conn.
+// DialGateway opens a Unix-socket connection and returns a reader/writer
+// pair. Predates Plan 00-05 — the function name is retained for callers
+// (the mesh-shim dials the daemon's per-agent router socket); no separate
+// gateway process exists since the channel-routing cut. The caller is
+// responsible for closing the conn.
 func DialGateway(sockPath string) (net.Conn, *Reader, *Writer, error) {
 	conn, err := net.Dial("unix", sockPath)
 	if err != nil {
@@ -242,8 +253,8 @@ func AckEnv(routingKey string) Envelope {
 }
 
 // InboundEnvFull builds the inbound envelope with all metadata fields
-// populated. Used by the discord and whatsapp gateways so the shim can emit
-// Claude Code's `notifications/claude/channel` with a proper meta block.
+// populated. Allows producers to emit Claude Code's
+// `notifications/claude/channel` with a proper meta block.
 // attachments may be nil for text-only messages; omitempty keeps the wire
 // format unchanged for existing text-only senders.
 func InboundEnvFull(routingKey, channelID, sender, messageID, userID, timestamp, content string, attachments []Attachment) Envelope {
@@ -261,9 +272,9 @@ func InboundEnvFull(routingKey, channelID, sender, messageID, userID, timestamp,
 	}
 }
 
-// InboundEnv builds the inbound envelope the gateway sends to a shim.
-// channelID is the originating Discord channel (important for guild-mode shims
-// that need to know which channel to reply to).
+// InboundEnv builds the inbound envelope the router sends to a shim.
+// channelID is the originating channel id; predates Plan 00-05 and remains
+// for wire-shape compatibility.
 func InboundEnv(routingKey, channelID, sender, content string) Envelope {
 	return Envelope{V: Version, Type: "inbound", RoutingKey: routingKey, ChannelID: channelID, Sender: sender, Content: content}
 }
@@ -273,13 +284,15 @@ func ErrorEnv(reason, detail string) Envelope {
 	return Envelope{V: Version, Type: "error", Reason: reason, Detail: detail}
 }
 
-// ListGroupsEnv builds the list-groups request sent by the CLI to the gateway.
+// ListGroupsEnv builds the list-groups request. Predates Plan 00-05 and is
+// retained for wire-shape compatibility; no live producer or consumer.
 func ListGroupsEnv() Envelope {
 	return Envelope{V: Version, Type: "list-groups"}
 }
 
-// ListGroupsRespEnv builds the list-groups-resp the gateway sends back.
-// content is a JSON-encoded []whatsappGroupEntry.
+// ListGroupsRespEnv builds the list-groups-resp envelope. Predates Plan
+// 00-05 and is retained for wire-shape compatibility; no live producer or
+// consumer.
 func ListGroupsRespEnv(content string) Envelope {
 	return Envelope{V: Version, Type: "list-groups-resp", Content: content}
 }

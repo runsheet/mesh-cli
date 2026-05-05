@@ -73,48 +73,6 @@ func TestDaemonSocketPath(t *testing.T) {
 	}
 }
 
-func TestPlatformAccountDir(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("HOME", tmp)
-
-	got, err := paths.PlatformAccountDir("discord", "mybot")
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := filepath.Join(tmp, ".mesh", "discord-accounts", "mybot")
-	if got != want {
-		t.Errorf("PlatformAccountDir() = %q, want %q", got, want)
-	}
-}
-
-func TestDiscordGatewaySockPath(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("HOME", tmp)
-
-	got, err := paths.DiscordGatewaySockPath("mybot")
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := filepath.Join(tmp, ".mesh", "discord-accounts", "mybot", "gateway.sock")
-	if got != want {
-		t.Errorf("DiscordGatewaySockPath() = %q, want %q", got, want)
-	}
-}
-
-func TestWhatsappGatewaySockPath(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("HOME", tmp)
-
-	got, err := paths.WhatsappGatewaySockPath("mywa")
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := filepath.Join(tmp, ".mesh", "whatsapp-accounts", "mywa", "gateway.sock")
-	if got != want {
-		t.Errorf("WhatsappGatewaySockPath() = %q, want %q", got, want)
-	}
-}
-
 func TestRouterSockPath(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)

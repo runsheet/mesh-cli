@@ -53,35 +53,6 @@ func DaemonSocketPath() (string, error) {
 	return filepath.Join(dir, "daemon.sock"), nil
 }
 
-// PlatformAccountDir returns ~/.mesh/<platform>-accounts/<account>/
-func PlatformAccountDir(platform, account string) (string, error) {
-	dir, err := MeshDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, platform+"-accounts", account), nil
-}
-
-// DiscordGatewaySockPath returns the gateway socket path for a Discord account:
-// ~/.mesh/discord-accounts/<account>/gateway.sock
-func DiscordGatewaySockPath(account string) (string, error) {
-	dir, err := PlatformAccountDir("discord", account)
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "gateway.sock"), nil
-}
-
-// WhatsappGatewaySockPath returns the gateway socket path for a WhatsApp account:
-// ~/.mesh/whatsapp-accounts/<account>/gateway.sock
-func WhatsappGatewaySockPath(account string) (string, error) {
-	dir, err := PlatformAccountDir("whatsapp", account)
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "gateway.sock"), nil
-}
-
 // RouterSockPath returns the per-agent router socket path:
 // ~/.mesh/agents/<agentID>/mesh.sock
 func RouterSockPath(agentID string) (string, error) {
