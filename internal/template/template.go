@@ -19,7 +19,6 @@ import (
 	"github.com/Masterminds/sprig/v3"
 	"gopkg.in/yaml.v3"
 
-	"projectmesh.io/mesh-cli/internal/channels"
 	"projectmesh.io/mesh-cli/internal/paths"
 	"projectmesh.io/mesh-cli/internal/state"
 )
@@ -36,7 +35,6 @@ type Template struct {
 	RequiredEnv                []string
 	WorkingDir                 string
 	DangerouslySkipPermissions bool
-	Channels                   []channels.Spec
 
 	// Git-only metadata (empty for local templates).
 	GitURL string
@@ -104,17 +102,16 @@ type AgentYAMLMeta struct {
 
 // AgentYAMLSpec is the spec block of an agent.yaml.
 type AgentYAMLSpec struct {
-	Description                string          `yaml:"description"`
-	Role                       string          `yaml:"role"`
-	Model                      string          `yaml:"model"`
-	Tools                      []string        `yaml:"tools"`
-	RequiredEnv                []string        `yaml:"requiredEnv"`
-	SystemPromptPath           string          `yaml:"systemPromptPath"`
-	WorkingDir                 string          `yaml:"workingDir"`
-	Subagents                  []string        `yaml:"subagents"`
-	Skills                     []string        `yaml:"skills"`
-	DangerouslySkipPermissions bool            `yaml:"dangerouslySkipPermissions"`
-	Channels                   []channels.Spec `yaml:"channels"`
+	Description                string   `yaml:"description"`
+	Role                       string   `yaml:"role"`
+	Model                      string   `yaml:"model"`
+	Tools                      []string `yaml:"tools"`
+	RequiredEnv                []string `yaml:"requiredEnv"`
+	SystemPromptPath           string   `yaml:"systemPromptPath"`
+	WorkingDir                 string   `yaml:"workingDir"`
+	Subagents                  []string `yaml:"subagents"`
+	Skills                     []string `yaml:"skills"`
+	DangerouslySkipPermissions bool     `yaml:"dangerouslySkipPermissions"`
 }
 
 // sha40 matches a 40-char hex commit SHA (full form).
@@ -320,7 +317,6 @@ func ReadTemplateWithValues(dir, name string, overrides map[string]any) (*Templa
 		RequiredEnv:                append([]string{}, ay.Spec.RequiredEnv...),
 		WorkingDir:                 workingDir,
 		DangerouslySkipPermissions: ay.Spec.DangerouslySkipPermissions,
-		Channels:                   append([]channels.Spec{}, ay.Spec.Channels...),
 	}, values, nil
 }
 
@@ -453,7 +449,7 @@ func deriveTemplateVersion(values map[string]any) string {
 }
 
 // ParseAgentYAMLBytes parses raw agent.yaml bytes, applies defaults, and
-// validates the model, tool, and channel allow-lists.
+// validates the model and tool allow-lists.
 func ParseAgentYAMLBytes(data []byte) (*AgentYAML, error) {
 	ay := &AgentYAML{}
 	if len(data) > 0 {
@@ -469,9 +465,6 @@ func ParseAgentYAMLBytes(data []byte) (*AgentYAML, error) {
 		if !templateToolAllowlist[t] {
 			return nil, fmt.Errorf("agent.yaml tool %q is not in the allow-list", t)
 		}
-	}
-	if err := channels.ValidateSpecs(ay.Spec.Channels); err != nil {
-		return nil, fmt.Errorf("agent.yaml %w", err)
 	}
 	return ay, nil
 }

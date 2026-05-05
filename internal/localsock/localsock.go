@@ -15,14 +15,11 @@ import (
 
 	"github.com/google/uuid"
 
-	"projectmesh.io/mesh-cli/internal/accounts"
 	"projectmesh.io/mesh-cli/internal/auth"
-	"projectmesh.io/mesh-cli/internal/channels"
-	"projectmesh.io/mesh-cli/internal/ipc"
 	"projectmesh.io/mesh-cli/internal/paths"
 	"projectmesh.io/mesh-cli/internal/peers"
-	isnap "projectmesh.io/mesh-cli/internal/snapshot"
 	"projectmesh.io/mesh-cli/internal/sessions"
+	isnap "projectmesh.io/mesh-cli/internal/snapshot"
 	"projectmesh.io/mesh-cli/internal/state"
 	itpl "projectmesh.io/mesh-cli/internal/template"
 	meshv1 "projectmesh.io/mesh-cli/proto/meshv1"
@@ -50,12 +47,9 @@ type Deps struct {
 // SessionRegistry the cluster-mode gRPC handlers use, so standalone-mode
 // agents and pinned cluster agents share process-local state.
 //
-// chanMgr and chanRouter may be nil (used in tests / standalone contexts that
-// don't need gateway supervision).
-//
 // Returns the listener so the caller can shut it down; server runs until
 // ctx is cancelled.
-func StartLocalSocket(ctx context.Context, registry *sessions.SessionRegistry, chanMgr *channels.ChannelManager, chanRouter *channels.ChannelRouter, broker *peers.Broker, deps Deps) (net.Listener, error) {
+func StartLocalSocket(ctx context.Context, registry *sessions.SessionRegistry, broker *peers.Broker, deps Deps) (net.Listener, error) {
 	if _, err := paths.EnsureMeshDir(); err != nil {
 		return nil, err
 	}
@@ -78,20 +72,13 @@ func StartLocalSocket(ctx context.Context, registry *sessions.SessionRegistry, c
 		return nil, fmt.Errorf("chmod socket: %w", err)
 	}
 
-	srv := &localServer{registry: registry, chanMgr: chanMgr, chanRouter: chanRouter, broker: broker, deps: deps}
+	srv := &localServer{registry: registry, broker: broker, deps: deps}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/sessions", srv.handleSessions)
 	mux.HandleFunc("/sessions/", srv.handleSessionItem)
 	mux.HandleFunc("/templates", srv.handleTemplates)
 	mux.HandleFunc("/templates/pull", srv.handleTemplatesPull)
 	mux.HandleFunc("/cluster/pull", srv.handleClusterPull)
-	mux.HandleFunc("/discord/pair", srv.handleDiscordPair)
-	mux.HandleFunc("/discord/unpair", srv.handleDiscordUnpair)
-	mux.HandleFunc("/discord/list-channels", srv.handleDiscordListChannels)
-	mux.HandleFunc("/discord/status", srv.handleDiscordStatus)
-	mux.HandleFunc("/whatsapp/pair", srv.handleWhatsappPair)
-	mux.HandleFunc("/whatsapp/unpair", srv.handleWhatsappUnpair)
-	mux.HandleFunc("/whatsapp/status", srv.handleWhatsappStatus)
 	mux.HandleFunc("/peers/list", srv.handlePeersList)
 	mux.HandleFunc("/peers/set-summary", srv.handlePeersSetSummary)
 
@@ -118,11 +105,9 @@ func StartLocalSocket(ctx context.Context, registry *sessions.SessionRegistry, c
 }
 
 type localServer struct {
-	registry   *sessions.SessionRegistry
-	chanMgr    *channels.ChannelManager
-	chanRouter *channels.ChannelRouter
-	broker     *peers.Broker
-	deps       Deps
+	registry *sessions.SessionRegistry
+	broker   *peers.Broker
+	deps     Deps
 }
 
 // -- JSON payload shapes --
@@ -337,20 +322,19 @@ func (s *localServer) createSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	def := &state.AgentDef{
-		Name:              name,
-		TemplateSource:    req.TemplateSource,
-		TemplateRef:       tpl.GitRef,
-		TemplateSha:       tpl.GitSHA,
-		TemplateCachePath: tpl.ResolvedPath,
-		Description:       tpl.Description,
-		Role:              tpl.Role,
-		Model:             tpl.Model,
-		RequiredEnv:       append([]string{}, tpl.RequiredEnv...),
-		CreatedAt:         time.Now().UTC(),
-		ClaudeSessionID:   uuid.NewString(),
+		Name:                       name,
+		TemplateSource:             req.TemplateSource,
+		TemplateRef:                tpl.GitRef,
+		TemplateSha:                tpl.GitSHA,
+		TemplateCachePath:          tpl.ResolvedPath,
+		Description:                tpl.Description,
+		Role:                       tpl.Role,
+		Model:                      tpl.Model,
+		RequiredEnv:                append([]string{}, tpl.RequiredEnv...),
+		CreatedAt:                  time.Now().UTC(),
+		ClaudeSessionID:            uuid.NewString(),
 		DangerouslySkipPermissions: skipPerms,
-		Channels:          append([]channels.Spec{}, tpl.Channels...),
-		Values:            values,
+		Values:                     values,
 	}
 	if err := state.AddAgent(def); err != nil {
 		writeError(w, http.StatusConflict, err.Error())
@@ -361,12 +345,6 @@ func (s *localServer) createSession(w http.ResponseWriter, r *http.Request) {
 	// must not block the HTTP response.
 	if s.deps.AutoPushAgent != nil {
 		go s.deps.AutoPushAgent(name)
-	}
-
-	if s.chanMgr != nil {
-		if all, err := state.ListAgents(); err == nil {
-			s.chanMgr.Sync(agentEntries(all))
-		}
 	}
 
 	autoStart := true
@@ -426,9 +404,6 @@ func (s *localServer) inspectSession(w http.ResponseWriter, _ *http.Request, nam
 	if def.CloudAgentID != nil && *def.CloudAgentID != "" {
 		out["cloudAgentId"] = *def.CloudAgentID
 	}
-	if len(def.Channels) > 0 {
-		out["channels"] = channels.ChannelStatusesForAgent(name, def.Channels)
-	}
 	if running {
 		session := map[string]any{
 			"sessionId":      sum.SessionID,
@@ -463,11 +438,6 @@ func (s *localServer) removeSession(w http.ResponseWriter, _ *http.Request, name
 	if _, err := state.RemoveAgent(name); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
-	}
-	if s.chanMgr != nil {
-		if all, err := state.ListAgents(); err == nil {
-			s.chanMgr.Sync(agentEntries(all))
-		}
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"name": name, "status": "removed"})
 }
@@ -632,23 +602,10 @@ func (s *localServer) updateSession(w http.ResponseWriter, _ *http.Request, name
 		a.Description = tpl.Description
 		a.Role = tpl.Role
 		a.RequiredEnv = append([]string{}, tpl.RequiredEnv...)
-		a.Channels = append([]channels.Spec{}, tpl.Channels...)
 		if a.Model == "" {
 			a.Model = tpl.Model
 		}
 	})
-	def.Channels = append([]channels.Spec{}, tpl.Channels...)
-
-	if s.chanMgr != nil {
-		if all, err := state.ListAgents(); err == nil {
-			s.chanMgr.Sync(agentEntries(all))
-		}
-	}
-	if s.chanRouter != nil {
-		if all, err := state.ListAgents(); err == nil {
-			s.chanRouter.Sync(agentEntries(all))
-		}
-	}
 
 	if wasRunning {
 		effectiveEnv := mergeStringMaps(os.Environ(), nil)
@@ -923,29 +880,6 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, ErrorResponse{Error: msg})
-}
-
-// agentEntries converts a []*state.AgentDef slice to []channels.AgentEntry
-// (the cycle-break type). Defined here to avoid the state↔channels import
-// cycle: channels cannot import state.
-func agentEntries(agents []*state.AgentDef) []channels.AgentEntry {
-	out := make([]channels.AgentEntry, 0, len(agents))
-	for _, a := range agents {
-		specs := make([]channels.Spec, 0, len(a.Channels))
-		for _, ch := range a.Channels {
-			cfg := make(map[string]any, len(ch.Config))
-			for k, v := range ch.Config {
-				cfg[k] = v
-			}
-			specs = append(specs, channels.Spec{Type: ch.Type, Config: cfg})
-		}
-		out = append(out, channels.AgentEntry{
-			Name:        a.Name,
-			Description: a.Description,
-			Channels:    specs,
-		})
-	}
-	return out
 }
 
 // -- cluster push / pull --
@@ -1270,258 +1204,6 @@ func stateName(state meshv1.SessionState) string {
 	default:
 		return "unknown"
 	}
-}
-
-// -- discord daemon handlers --
-
-type DiscordAccountStatus struct {
-	Account         string                   `json:"account"`
-	Supervised      bool                     `json:"supervised"`
-	SupervisorState string                   `json:"supervisorState"`
-	Live            bool                     `json:"live"`
-	Gateway         *accounts.GatewayStatus  `json:"gateway,omitempty"`
-}
-
-func (s *localServer) handleDiscordPair(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	var req struct {
-		Account string `json:"account"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid JSON: %v", err))
-		return
-	}
-	if req.Account == "" {
-		writeError(w, http.StatusBadRequest, "account is required")
-		return
-	}
-	if s.chanMgr != nil {
-		s.chanMgr.StartAccount("discord", req.Account)
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "account": req.Account})
-}
-
-func (s *localServer) handleDiscordUnpair(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	var req struct {
-		Account string `json:"account"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid JSON: %v", err))
-		return
-	}
-	if req.Account == "" {
-		writeError(w, http.StatusBadRequest, "account is required")
-		return
-	}
-	if s.chanMgr != nil {
-		s.chanMgr.StopAccount("discord", req.Account)
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "account": req.Account})
-}
-
-func (s *localServer) handleDiscordListChannels(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	account := r.URL.Query().Get("account")
-	if account == "" {
-		writeError(w, http.StatusBadRequest, "account query param is required")
-		return
-	}
-	sockPath, err := paths.DiscordGatewaySockPath(account)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	conn, rd, wr, err := ipc.DialGateway(sockPath)
-	if err != nil {
-		writeError(w, http.StatusServiceUnavailable, fmt.Sprintf("gateway not running: %v", err))
-		return
-	}
-	defer conn.Close()
-
-	if err := wr.Write(ipc.Envelope{V: ipc.Version, Type: "list-channels"}); err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("gateway write: %v", err))
-		return
-	}
-	env, err := rd.Read()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("gateway read: %v", err))
-		return
-	}
-	if env.Type == "error" {
-		writeError(w, http.StatusBadGateway, env.Reason+": "+env.Detail)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"channels": json.RawMessage(env.Content)})
-}
-
-func (s *localServer) handleDiscordStatus(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	requested := strings.TrimSpace(r.URL.Query().Get("account"))
-
-	var names []string
-	if requested != "" {
-		names = []string{requested}
-	} else {
-		all, err := accounts.ListDiscordAccounts()
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		names = all
-	}
-
-	out := make([]DiscordAccountStatus, 0, len(names))
-	for _, n := range names {
-		entry := DiscordAccountStatus{Account: n}
-		entry.Supervised = s.chanMgr != nil && s.chanMgr.IsManaging("discord", n)
-		if entry.Supervised {
-			entry.SupervisorState = "supervised"
-		} else {
-			entry.SupervisorState = "not-referenced"
-		}
-		entry.Live = discordGatewayLive(n)
-		if entry.Live {
-			st, err := accounts.ReadGatewayStatus("discord", n)
-			if err == nil {
-				entry.Gateway = &st
-			}
-		}
-		out = append(out, entry)
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"accounts": out})
-}
-
-func discordGatewayLive(account string) bool {
-	sockPath, err := paths.DiscordGatewaySockPath(account)
-	if err != nil {
-		return false
-	}
-	conn, err := net.DialTimeout("unix", sockPath, 200*time.Millisecond)
-	if err != nil {
-		return false
-	}
-	_ = conn.Close()
-	return true
-}
-
-// -- whatsapp daemon handlers --
-
-type WhatsappAccountStatus struct {
-	Account         string                   `json:"account"`
-	Supervised      bool                     `json:"supervised"`
-	SupervisorState string                   `json:"supervisorState"`
-	Live            bool                     `json:"live"`
-	Gateway         *accounts.GatewayStatus  `json:"gateway,omitempty"`
-}
-
-func (s *localServer) handleWhatsappPair(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	var req struct {
-		Account string `json:"account"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid JSON: %v", err))
-		return
-	}
-	if req.Account == "" {
-		writeError(w, http.StatusBadRequest, "account is required")
-		return
-	}
-	if s.chanMgr != nil {
-		s.chanMgr.StartAccount("whatsapp", req.Account)
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "account": req.Account})
-}
-
-func (s *localServer) handleWhatsappUnpair(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	var req struct {
-		Account string `json:"account"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid JSON: %v", err))
-		return
-	}
-	if req.Account == "" {
-		writeError(w, http.StatusBadRequest, "account is required")
-		return
-	}
-	if s.chanMgr != nil {
-		s.chanMgr.StopAccount("whatsapp", req.Account)
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "account": req.Account})
-}
-
-func (s *localServer) handleWhatsappStatus(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	requested := strings.TrimSpace(r.URL.Query().Get("account"))
-
-	var names []string
-	if requested != "" {
-		names = []string{requested}
-	} else {
-		all, err := accounts.ListWhatsappAccounts()
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		names = all
-	}
-
-	out := make([]WhatsappAccountStatus, 0, len(names))
-	for _, n := range names {
-		entry := WhatsappAccountStatus{Account: n}
-		entry.Supervised = s.chanMgr != nil && s.chanMgr.IsManaging("whatsapp", n)
-		if entry.Supervised {
-			entry.SupervisorState = "supervised"
-		} else {
-			entry.SupervisorState = "not-referenced"
-		}
-		entry.Live = whatsappGatewayLive(n)
-		if entry.Live {
-			st, err := accounts.ReadGatewayStatus("whatsapp", n)
-			if err == nil {
-				entry.Gateway = &st
-			}
-		}
-		out = append(out, entry)
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"accounts": out})
-}
-
-func whatsappGatewayLive(account string) bool {
-	sockPath, err := paths.WhatsappGatewaySockPath(account)
-	if err != nil {
-		return false
-	}
-	conn, err := net.DialTimeout("unix", sockPath, 200*time.Millisecond)
-	if err != nil {
-		return false
-	}
-	_ = conn.Close()
-	return true
 }
 
 // -- peers daemon handlers --

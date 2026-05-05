@@ -20,6 +20,9 @@ func TestParseMeshSendAttachments(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
 
+	// media.ValidateAttachmentPath still allow-lists ~/.mesh/whatsapp-accounts/
+	// (we did not touch internal/media/ in Plan 00-05); use it here as a
+	// stable per-agent media dir for these isolation tests.
 	meshBase := filepath.Join(tmp, ".mesh")
 	waMedia := filepath.Join(meshBase, "whatsapp-accounts", "acc", "media")
 	if err := os.MkdirAll(waMedia, 0o700); err != nil {
@@ -152,7 +155,7 @@ func TestHandleMeshSendEmptyContentNoAttachment(t *testing.T) {
 	routerWr := ipc.NewWriter(&buf)
 
 	err := HandleMeshSend(context.Background(), json.RawMessage(`1`), map[string]any{
-		"target":  "discord://channel/123",
+		"target":  "peers://agent/nova",
 		"content": "",
 	}, routerWr, nil, nopLogf, write)
 
@@ -164,6 +167,37 @@ func TestHandleMeshSendEmptyContentNoAttachment(t *testing.T) {
 	}
 	if !strings.Contains(responses[0].Error.Message, "content or attachment required") {
 		t.Errorf("unexpected error message: %s", responses[0].Error.Message)
+	}
+}
+
+// TestHandleMeshSendRejectsNonPeersScheme covers Plan 00-05's full-cut: the
+// shim no longer accepts discord://, whatsapp://, or any other scheme — only
+// peers://. (Previously this was a happy-path with discord://; now it's the
+// guard.)
+func TestHandleMeshSendRejectsNonPeersScheme(t *testing.T) {
+	var responses []JSONRPCMessage
+	write := func(msg JSONRPCMessage) error {
+		responses = append(responses, msg)
+		return nil
+	}
+	var buf bytes.Buffer
+	routerWr := ipc.NewWriter(&buf)
+
+	for _, target := range []string{"discord://channel/123", "whatsapp://chat/abc", "slack://channel/xyz"} {
+		responses = responses[:0]
+		err := HandleMeshSend(context.Background(), json.RawMessage(`1`), map[string]any{
+			"target":  target,
+			"content": "hi",
+		}, routerWr, nil, nopLogf, write)
+		if err != nil {
+			t.Fatalf("target=%s unexpected err: %v", target, err)
+		}
+		if len(responses) != 1 || responses[0].Error == nil {
+			t.Fatalf("target=%s: expected error response, got %+v", target, responses)
+		}
+		if !strings.Contains(responses[0].Error.Message, "must start with peers://") {
+			t.Errorf("target=%s: unexpected error: %s", target, responses[0].Error.Message)
+		}
 	}
 }
 
@@ -192,7 +226,7 @@ func TestHandleMeshSendValidImageAttachment(t *testing.T) {
 
 	var incOutCalled bool
 	err := HandleMeshSend(context.Background(), json.RawMessage(`1`), map[string]any{
-		"target":  "whatsapp://chat/123@g.us",
+		"target":  "peers://agent/nova",
 		"content": "",
 		"attachments": []any{
 			map[string]any{"path": imgPath, "type": "image"},
@@ -236,12 +270,27 @@ func TestMeshLastInboundReplyTarget(t *testing.T) {
 		t.Errorf("expected empty source+target before any inbound, got source=%q target=%q", source, target)
 	}
 
+	// Plan 00-05 collapsed ReplyTarget to peers-only; discord/whatsapp
+	// sources can still be recorded for telemetry but no longer produce a
+	// constructible reply URL.
+	l.Set("peers", "nova")
+	source, target = l.ReplyTarget()
+	if source != "peers" {
+		t.Errorf("source: got %q want peers", source)
+	}
+	if target != "peers://agent/nova" {
+		t.Errorf("target: got %q want peers://agent/nova", target)
+	}
+
+	// A discord-source inbound returns the source (telemetry preserved) but
+	// an empty target string so HandleMeshReply surfaces the "cannot
+	// construct reply target for source discord" error.
 	l.Set("discord", "123456789")
 	source, target = l.ReplyTarget()
 	if source != "discord" {
 		t.Errorf("source: got %q want discord", source)
 	}
-	if target != "discord://channel/123456789" {
-		t.Errorf("target: got %q want discord://channel/123456789", target)
+	if target != "" {
+		t.Errorf("target: got %q want empty (Plan 00-05 dropped discord:// scheme)", target)
 	}
 }

@@ -12,7 +12,6 @@ import (
 	"strings"
 	"sync"
 
-	"projectmesh.io/mesh-cli/internal/channels"
 	"projectmesh.io/mesh-cli/internal/ipc"
 	"projectmesh.io/mesh-cli/internal/media"
 )
@@ -58,19 +57,8 @@ func (l *MeshLastInbound) ReplyTarget() (string, string) {
 	if l.source == "" {
 		return "", ""
 	}
-	switch l.source {
-	case "discord":
-		if l.channelID != "" {
-			return l.source, "discord://channel/" + l.channelID
-		}
-	case "whatsapp":
-		if l.channelID != "" {
-			return l.source, "whatsapp://chat/" + l.channelID
-		}
-	case "peers":
-		if l.channelID != "" {
-			return l.source, "peers://agent/" + l.channelID
-		}
+	if l.source == "peers" && l.channelID != "" {
+		return l.source, "peers://agent/" + l.channelID
 	}
 	return l.source, ""
 }
@@ -152,21 +140,10 @@ func HandleMeshSend(
 		})
 	}
 
-	platform, _, _, parseErr := channels.ParseTargetURL(target)
-	if parseErr != "" {
+	if !strings.HasPrefix(target, "peers://") {
 		return write(JSONRPCMessage{
 			ID:    id,
-			Error: &JSONRPCError{Code: -32602, Message: "mesh_send: " + parseErr},
-		})
-	}
-
-	switch platform {
-	case "discord", "whatsapp", "peers":
-		// valid
-	default:
-		return write(JSONRPCMessage{
-			ID:    id,
-			Error: &JSONRPCError{Code: -32602, Message: "mesh_send: unknown scheme " + platform + " (supported: discord://, whatsapp://, peers://)"},
+			Error: &JSONRPCError{Code: -32602, Message: "mesh_send: target must start with peers:// (channel routing was removed in Phase 0)"},
 		})
 	}
 
@@ -460,9 +437,9 @@ func HandleMeshHandoffTask(
 		})
 	}
 	payload := map[string]any{
-		"taskId": taskID,
-		"fromRole":   fromRole,
-		"toRole":     toRole,
+		"taskId":   taskID,
+		"fromRole": fromRole,
+		"toRole":   toRole,
 	}
 	for _, field := range []string{"summary", "agentId"} {
 		if v, ok := args[field]; ok && v != nil {
@@ -523,9 +500,7 @@ func BuildMeshShimTools() []map[string]any {
 	return []map[string]any{
 		{
 			"name": "mesh_send",
-			"description": "Send a message (optionally with an image attachment) to a channel. target is a URL-shape string: " +
-				"discord://channel/<channelId> to send to a Discord channel, " +
-				"discord://dm/<userId> to open or reuse a DM with a user, " +
+			"description": "Send a message (optionally with an image attachment) to a peer agent or team. target is a URL-shape string: " +
 				"peers://agent/<name> to send to a specific peer agent, " +
 				"peers://team/<name> to broadcast to all members of a team (excluding self), " +
 				"peers://broadcast to reach all reachable peers (excluding self).",
@@ -534,7 +509,7 @@ func BuildMeshShimTools() []map[string]any {
 				"properties": map[string]any{
 					"target": map[string]any{
 						"type":        "string",
-						"description": "URL-shape destination, e.g. discord://channel/1234567890 or peers://agent/nova",
+						"description": "URL-shape destination, e.g. peers://agent/nova or peers://team/devs",
 					},
 					"content": map[string]any{
 						"type":        "string",

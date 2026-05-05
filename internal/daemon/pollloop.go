@@ -66,15 +66,15 @@ func MarkAgentActive(agentName string) {
 
 // taskListRow is the subset of fields we need from /task/list items.
 type taskListRow struct {
-	ID          string `json:"id"`
-	Status      string `json:"status"`
-	UpdatedAt   string `json:"updated_at"`
+	ID           string `json:"id"`
+	Status       string `json:"status"`
+	UpdatedAt    string `json:"updated_at"`
 	CurrentOwner string `json:"current_owner"`
 }
 
 // taskListResp is the JSON shape of GET /task/list.
 type taskListResp struct {
-	OK    bool              `json:"ok"`
+	OK    bool          `json:"ok"`
 	Items []taskListRow `json:"items"`
 }
 
@@ -105,9 +105,9 @@ func pollAgents(ctx context.Context, baseURL, nodeToken string) {
 	}
 
 	var (
-		mu        sync.Mutex
-		cadence   = map[string]*agentCadenceState{} // agentName → state
-		lastSeen  = map[seenKey]string{}             // → updatedAt string
+		mu       sync.Mutex
+		cadence  = map[string]*agentCadenceState{} // agentName → state
+		lastSeen = map[seenKey]string{}            // → updatedAt string
 	)
 
 	markActive := func(agentName string) {
@@ -171,7 +171,7 @@ func pollAgents(ctx context.Context, baseURL, nodeToken string) {
 		case <-ticker.C:
 			// Drain any pending activity signals before the pass so they're
 			// reflected in the pass's cadence decisions.
-			drainActivity:
+		drainActivity:
 			for {
 				select {
 				case agentName := <-pollActivityCh:
@@ -266,15 +266,11 @@ func pollOneAgent(
 	}
 }
 
-// deliverPollPoke delivers a poke via the channel router for a poll-surfaced
-// item. The shim sees it as a notifications/claude/channel notification with
-// meta.source == "mesh-poke", same as a gRPC-triggered poke.
+// deliverPollPoke is a no-op since Plan 00-05 vacated the channel-routing
+// seat. The Phase 2 dispatcher rebuild (DSP-01..07) will reattach a real
+// delivery path; until then poll-surfaced items are logged but not pushed
+// to the agent.
 func deliverPollPoke(localName, taskID, reason string) {
-	cr := globalChanRouter
-	if cr == nil {
-		return
-	}
-	if !cr.DeliverPoke(localName, taskID, reason) {
-		fmt.Printf("mesh poll poke drop agent=%s reason=no-shim\n", localName)
-	}
+	fmt.Printf("mesh poll poke drop agent=%s task=%s reason=no-dispatcher (Phase 2 will rewire)\n",
+		localName, taskID)
 }

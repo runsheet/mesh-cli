@@ -12,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"projectmesh.io/mesh-cli/internal/channels"
 	"projectmesh.io/mesh-cli/internal/paths"
 )
 
@@ -21,18 +20,18 @@ const localStateVersion = 1
 // AgentDef is the durable definition of a locally-managed agent, persisted in
 // ~/.mesh/state.json. env is intentionally not stored (secret hygiene).
 type AgentDef struct {
-	Name              string    `json:"name"`
-	TemplateSource    string    `json:"templateSource"`
-	TemplateRef       string    `json:"templateRef,omitempty"`
-	TemplateSha       string    `json:"templateSha,omitempty"`
-	TemplateCachePath string    `json:"templateCachePath,omitempty"`
-	Model             string    `json:"model,omitempty"`
+	Name              string `json:"name"`
+	TemplateSource    string `json:"templateSource"`
+	TemplateRef       string `json:"templateRef,omitempty"`
+	TemplateSha       string `json:"templateSha,omitempty"`
+	TemplateCachePath string `json:"templateCachePath,omitempty"`
+	Model             string `json:"model,omitempty"`
 	// RequiredEnv lists the names (not values) of env vars the template
 	// declared as required at the last successful run. Stored for inspect UX;
 	// the secrets themselves are never persisted.
-	RequiredEnv     []string  `json:"requiredEnv,omitempty"`
-	CreatedAt       time.Time `json:"createdAt"`
-	LastSessionID   string    `json:"lastSessionId,omitempty"`
+	RequiredEnv   []string  `json:"requiredEnv,omitempty"`
+	CreatedAt     time.Time `json:"createdAt"`
+	LastSessionID string    `json:"lastSessionId,omitempty"`
 	// ClaudeSessionID is the UUID we pass to `claude --session-id` on every
 	// spawn of this agent. Stable across daemon restarts, so `mesh restart`
 	// and auto-start-on-boot resume the same conversation. Regenerated on
@@ -49,10 +48,6 @@ type AgentDef struct {
 	// Role is the template's spec.role field, propagated to mesh-api on adopt/sync
 	// so the agent can be auto-assigned to the matching project role slot.
 	Role string `json:"role,omitempty"`
-	// Channels materialize the template's channel list at `mesh run` time so
-	// restart / autostart rebuild channel subprocesses without re-reading the
-	// template.
-	Channels []channels.Spec `json:"channels,omitempty"`
 	// Values is the merged values map (template defaults + --values + --set)
 	// that produced this agent's rendered agent.yaml / system_prompt.
 	Values map[string]any `json:"values,omitempty"`
@@ -65,12 +60,12 @@ type AgentDef struct {
 
 // LocalState is the top-level JSON envelope in ~/.mesh/state.json.
 type LocalState struct {
-	Version int                 `json:"version"`
+	Version int                  `json:"version"`
 	Agents  map[string]*AgentDef `json:"agents"`
 }
 
 var (
-	stateMu   sync.RWMutex
+	stateMu sync.RWMutex
 	// statePath is the override path used by tests. Set via SetStatePath.
 	statePath string
 )

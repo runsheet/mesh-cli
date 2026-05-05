@@ -27,13 +27,12 @@ import (
 
 	"projectmesh.io/mesh-cli/internal/agentsync"
 	"projectmesh.io/mesh-cli/internal/auth"
-	"projectmesh.io/mesh-cli/internal/channels"
 	"projectmesh.io/mesh-cli/internal/claudeconf"
 	"projectmesh.io/mesh-cli/internal/localsock"
 	"projectmesh.io/mesh-cli/internal/paths"
 	"projectmesh.io/mesh-cli/internal/peers"
-	isnap "projectmesh.io/mesh-cli/internal/snapshot"
 	"projectmesh.io/mesh-cli/internal/sessions"
+	isnap "projectmesh.io/mesh-cli/internal/snapshot"
 	"projectmesh.io/mesh-cli/internal/state"
 	itpl "projectmesh.io/mesh-cli/internal/template"
 	meshv1 "projectmesh.io/mesh-cli/proto/meshv1"
@@ -73,36 +72,22 @@ func RunDaemon(baseURL string, grpcAddr string, probeNodeID func(baseURL, token 
 	if err != nil {
 		return fmt.Errorf("resolve mesh binary: %w", err)
 	}
-	chanMgr := channels.NewChannelManager(exe)
-	agents, _ := state.ListAgents()
-	chanMgr.Sync(agentEntries(agents))
-	defer chanMgr.StopAll()
 
 	claudeconf.MigrateMCPSettingsToMesh(exe)
 
 	broker := peers.New()
 
-	chanRouter := channels.NewChannelRouter(broker)
-	globalChanRouter = chanRouter
-
-	// Load the node token first so SetDeps can run BEFORE Sync. Routers
-	// capture cr.deps at goroutine-start time, so a later SetDeps wouldn't
-	// reach already-running routers — agent IPC handlers (mesh_get_task
-	// etc.) would all see nil closures and surface as "daemon not connected"
-	// to the calling agent.
+	// Load the node token to decide whether cluster features are enabled.
+	// The Phase 2 dispatcher rebuild (DSP-01..07) is the new wiring point for
+	// per-agent task delivery; the prior channel-routing supervisor was removed
+	// in Plan 00-05 (INV-02 architectural cut).
 	token, tokenErr := auth.LoadNodeToken()
 	clustered := tokenErr == nil && strings.TrimSpace(token) != ""
 	if tokenErr != nil && !errors.Is(tokenErr, os.ErrNotExist) {
 		return fmt.Errorf("read node token: %w", tokenErr)
 	}
-	if clustered {
-		chanRouter.SetDeps(taskRouterDeps(baseURL, token))
-	}
 
-	chanRouter.Sync(agentEntries(agents))
-	defer chanRouter.StopAll()
-
-	listener, err := localsock.StartLocalSocket(ctx, registry, chanMgr, chanRouter, broker, localsock.Deps{
+	listener, err := localsock.StartLocalSocket(ctx, registry, broker, localsock.Deps{
 		WritePromptFile: writeAgentPromptFile,
 		ProbeNodeID:     probeNodeID,
 		AutoPushAgent: func(agentName string) {
@@ -129,60 +114,6 @@ func RunDaemon(baseURL string, grpcAddr string, probeNodeID func(baseURL, token 
 	}
 
 	return runClusteredDaemon(ctx, baseURL, grpcAddr, token, registry)
-}
-
-// taskRouterDeps builds the RouterDeps struct for task HTTP calls
-// using the node token. These are injected into the channel router so that
-// the mesh-shim's MCP task tools can round-trip through mesh-api.
-func taskRouterDeps(baseURL, nodeToken string) channels.RouterDeps {
-	apiDo := func(method, path string, body any) ([]byte, error) {
-		if baseURL == "" {
-			return nil, fmt.Errorf("mesh-api baseURL not configured")
-		}
-		url := strings.TrimRight(baseURL, "/") + path
-		var bodyReader io.Reader
-		if body != nil {
-			data, err := json.Marshal(body)
-			if err != nil {
-				return nil, err
-			}
-			bodyReader = strings.NewReader(string(data))
-		}
-		req, err := http.NewRequest(method, url, bodyReader)
-		if err != nil {
-			return nil, err
-		}
-		req.Header.Set("Authorization", "Bearer "+nodeToken)
-		if body != nil {
-			req.Header.Set("Content-Type", "application/json")
-		}
-		resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
-		if err != nil {
-			return nil, err
-		}
-		defer resp.Body.Close()
-		raw, rerr := io.ReadAll(resp.Body)
-		if rerr != nil {
-			return nil, rerr
-		}
-		if resp.StatusCode >= 400 {
-			return nil, fmt.Errorf("mesh-api %s %s: %s", method, path, strings.TrimSpace(string(raw)))
-		}
-		return raw, nil
-	}
-
-	return channels.RouterDeps{
-		TaskGet: func(id string) ([]byte, error) {
-			return apiDo(http.MethodGet, "/task/get/"+id, nil)
-		},
-		TaskUpdate: func(payload map[string]any) ([]byte, error) {
-			return apiDo(http.MethodPost, "/task/update", payload)
-		},
-		TaskHandoff: func(payload map[string]any) ([]byte, error) {
-			return apiDo(http.MethodPost, "/task/handoff", payload)
-		},
-		OnTaskActivity: MarkAgentActive,
-	}
 }
 
 func autoStartAgents(registry *sessions.SessionRegistry) {
@@ -680,8 +611,8 @@ func handleApiFrame(ctx context.Context, sender *streamSender, registry *session
 			RequestId: reqID,
 			Payload: &meshv1.NodeToApi_TaskPokeAck{
 				TaskPokeAck: &meshv1.TaskPokeAck{
-					TaskId: p.TaskPoke.GetTaskId(),
-					Delivered:  delivered,
+					TaskId:    p.TaskPoke.GetTaskId(),
+					Delivered: delivered,
 				},
 			},
 		})
@@ -760,10 +691,6 @@ func runAttach(ctx context.Context, sender *streamSender, registry *sessions.Ses
 		}
 	}
 }
-
-// globalChanRouter holds the ChannelRouter for the running daemon.
-// Set once in RunDaemon before any poke can arrive; read by deliverTaskPoke.
-var globalChanRouter *channels.ChannelRouter
 
 var (
 	attachRegistryMu sync.Mutex
@@ -947,35 +874,18 @@ func ApplyAgentSync(registry *sessions.SessionRegistry, sync *meshv1.AgentSync, 
 	}
 }
 
+// deliverTaskPoke is a no-op stub since the channel-routing seat was
+// vacated by Plan 00-05. The Phase 2 dispatcher rebuild (DSP-01..07) will
+// reattach a real delivery path here. Until then we acknowledge the gRPC
+// frame with delivered=false so mesh-api knows the node accepted but did
+// not surface the poke.
 func deliverTaskPoke(poke *meshv1.TaskPoke) bool {
 	if poke == nil || poke.GetAgentId() == "" {
 		return false
 	}
-	// poke.AgentId is the cloud agent UUID. Routers run under the local agent
-	// name (e.g. "larry-pa"). Translate via local state, fall back to the raw
-	// UUID for the race window between adoption and first poke.
-	localName := poke.GetAgentId()
-	if agents, err := state.ListAgents(); err == nil {
-		cloudID := poke.GetAgentId()
-		for _, a := range agents {
-			if a.CloudAgentID != nil && *a.CloudAgentID == cloudID {
-				localName = a.Name
-				break
-			}
-		}
-	}
-	cr := globalChanRouter
-	if cr == nil {
-		fmt.Printf("mesh node poke drop agent=%s (local=%s) reason=no-router\n", poke.GetAgentId(), localName)
-		return false
-	}
-	delivered := cr.DeliverPoke(localName, poke.GetTaskId(), poke.GetReason().String())
-	if !delivered {
-		fmt.Printf("mesh node poke drop agent=%s (local=%s) reason=no-shim\n", poke.GetAgentId(), localName)
-		return false
-	}
-	MarkAgentActive(localName)
-	return true
+	fmt.Printf("mesh node poke drop agent=%s task=%s reason=no-dispatcher (Phase 2 will rewire)\n",
+		poke.GetAgentId(), poke.GetTaskId())
+	return false
 }
 
 func apiFrameKind(frame *meshv1.ApiToNode) string {
@@ -1230,28 +1140,6 @@ func mergeStringMaps(base []string, overrides map[string]string) map[string]stri
 	}
 	for k, v := range overrides {
 		out[k] = v
-	}
-	return out
-}
-
-// agentEntries converts []*state.AgentDef to []channels.AgentEntry for
-// ChannelManager.Sync and ChannelRouter.Sync (cycle-break type).
-func agentEntries(agents []*state.AgentDef) []channels.AgentEntry {
-	out := make([]channels.AgentEntry, 0, len(agents))
-	for _, a := range agents {
-		specs := make([]channels.Spec, 0, len(a.Channels))
-		for _, ch := range a.Channels {
-			cfg := make(map[string]any, len(ch.Config))
-			for k, v := range ch.Config {
-				cfg[k] = v
-			}
-			specs = append(specs, channels.Spec{Type: ch.Type, Config: cfg})
-		}
-		out = append(out, channels.AgentEntry{
-			Name:        a.Name,
-			Description: a.Description,
-			Channels:    specs,
-		})
 	}
 	return out
 }

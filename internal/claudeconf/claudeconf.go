@@ -41,9 +41,11 @@ func MigrateMCPSettingsToMesh(exe string) {
 	}
 
 	for _, a := range agents {
-		if len(a.Channels) == 0 {
-			continue
-		}
+		// Plan 00-05 removed AgentDef.Channels along with the channel-routing
+		// surface; the migration now runs unconditionally for every agent so
+		// any legacy .mcp.json with a non-"mesh" key is rewritten to the
+		// unified mesh-shim entry. MigrateMCPFile is a no-op if the file
+		// doesn't exist or already has the canonical shape.
 		newArgs := []string{"channel-server", "mesh-shim", "--agent", a.Name}
 		candidates := []string{
 			home + "/.mesh/agents/" + a.Name + "/plugin/.mcp.json",

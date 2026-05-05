@@ -12,12 +12,17 @@ import (
 	"syscall"
 	"time"
 
-	"projectmesh.io/mesh-cli/internal/channels"
 	"projectmesh.io/mesh-cli/internal/ipc"
+	"projectmesh.io/mesh-cli/internal/paths"
 	"projectmesh.io/mesh-cli/internal/version"
 )
 
-// shimMetrics tracks per-shim counters for the status.json side-file.
+// shimMetrics tracks per-shim counters held in-process. Plan 00-05 removed
+// the per-agent channel-status side-file (and its sole reader,
+// channels.ChannelStatusesForAgent), so these counters are no longer
+// published anywhere — they remain useful for the in-process incOut hook
+// passed to the mesh tool handlers and as future-proofing for the Phase 2
+// dispatcher rebuild.
 type shimMetrics struct {
 	mu          sync.Mutex
 	status      string
@@ -33,18 +38,6 @@ func (m *shimMetrics) setStatus(s string) {
 
 func (m *shimMetrics) incIn()  { m.mu.Lock(); m.messagesIn++; m.mu.Unlock() }
 func (m *shimMetrics) incOut() { m.mu.Lock(); m.messagesOut++; m.mu.Unlock() }
-
-func (m *shimMetrics) snapshot() channels.ChannelStatus {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return channels.ChannelStatus{
-		Type:        "mesh",
-		Index:       0,
-		Status:      m.status,
-		MessagesIn:  m.messagesIn,
-		MessagesOut: m.messagesOut,
-	}
-}
 
 // checkParentPlugin reads /proc/<ppid>/cmdline and verifies the parent claude
 // process was launched for agentName.
@@ -64,11 +57,6 @@ func checkParentPlugin(agentName string, logf func(string, ...any)) bool {
 		return false
 	}
 	return true
-}
-
-func publishShimStatus(agentName string, metrics *shimMetrics) {
-	st := metrics.snapshot()
-	_ = channels.WriteChannelStatusFile(agentName, "mesh", 0, st)
 }
 
 // Run is the mesh-shim entry point. It speaks MCP JSON-RPC on stdio and
@@ -103,7 +91,7 @@ func Run(agentName string) error {
 		cancel()
 	}()
 
-	sockPath, err := channels.MeshRouterSockPath(agentName)
+	sockPath, err := paths.RouterSockPath(agentName)
 	if err != nil {
 		return fmt.Errorf("router sock path: %w", err)
 	}
@@ -144,21 +132,6 @@ func Run(agentName string) error {
 	}
 	logf("subscribed to router agent=%s", agentName)
 	metrics.setStatus("connected")
-
-	go func() {
-		publishShimStatus(agentName, metrics)
-		ticker := time.NewTicker(10 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				publishShimStatus(agentName, metrics)
-				return
-			case <-ticker.C:
-				publishShimStatus(agentName, metrics)
-			}
-		}
-	}()
 
 	pendingResp := make(chan ipc.Envelope, 1)
 
@@ -363,8 +336,8 @@ func handleMeshShimMCP(
 				"name":    "mesh",
 				"version": version.Version,
 			},
-			"instructions": "Messages from channels arrive as notifications/claude/channel with meta.source identifying the platform (e.g. \"discord\"). " +
-				"Use mesh_send(target, content) to send a message — target is a URL-shape string like \"discord://channel/<channelId>\" or \"discord://dm/<userId>\". " +
+			"instructions": "Messages from peers arrive as notifications/claude/channel with meta.source identifying the source (e.g. \"peers\"). " +
+				"Use mesh_send(target, content) to send a message — target is a URL-shape string like \"peers://agent/<name>\" or \"peers://team/<name>\". " +
 				"Use mesh_reply(content) to reply to the most recent inbound message. " +
 				"If a message doesn't need a reply (e.g. a bot post you see as a loop guard), stay silent.",
 		}})
