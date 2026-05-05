@@ -21,9 +21,9 @@ type Registration struct {
 // Broker is the in-daemon peers registry and message bus for scope=machine.
 type Broker struct {
 	mu       sync.Mutex
-	peers    map[string]*Registration        // peer_id → registration
-	teams    map[string]map[string]bool      // team_name → set of peer_ids
-	delivery map[string]chan ipc.Envelope    // peer_id → inbound delivery channel
+	peers    map[string]*Registration     // peer_id → registration
+	teams    map[string]map[string]bool   // team_name → set of peer_ids
+	delivery map[string]chan ipc.Envelope // peer_id → inbound delivery channel
 }
 
 // New creates an empty Broker.

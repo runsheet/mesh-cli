@@ -16,11 +16,11 @@ var researchCmd = &cobra.Command{
 }
 
 var (
-	researchTaskID  string
-	researchNoteFile    string
-	researchConfidence  string
-	researchProjectID   string
-	researchStuck       bool
+	researchTaskID        string
+	researchNoteFile      string
+	researchConfidence    string
+	researchProjectID     string
+	researchStuck         bool
 	researchConfirmerRole string
 )
 
@@ -76,7 +76,7 @@ var researchRecordCmd = &cobra.Command{
 		}
 
 		payload := map[string]any{
-			"taskId":      researchTaskID,
+			"taskId":          researchTaskID,
 			"noteMarkdown":    noteMarkdown,
 			"confidenceScore": confidence,
 		}
@@ -109,7 +109,7 @@ var researchConfirmCmd = &cobra.Command{
 		}
 
 		payload := map[string]any{
-			"taskId":      researchTaskID,
+			"taskId":          researchTaskID,
 			"confidenceScore": confidence,
 		}
 		if v := strings.TrimSpace(researchConfirmerRole); v != "" {

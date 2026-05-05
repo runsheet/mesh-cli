@@ -146,13 +146,13 @@ var (
 	updateRequester    string
 	updateNote         string
 
-	handoffSummary       string
-	handoffRequiredOut   string
-	handoffRepoPath      string
-	handoffSystemTarget  string
-	handoffConstraints   string
-	handoffTestExpect    string
-	handoffNote          string
+	handoffSummary      string
+	handoffRequiredOut  string
+	handoffRepoPath     string
+	handoffSystemTarget string
+	handoffConstraints  string
+	handoffTestExpect   string
+	handoffNote         string
 
 	reviewNotes             string
 	reviewCriteriaChecklist string
@@ -317,9 +317,9 @@ var handoffCmd = &cobra.Command{
 		}
 
 		payload := map[string]any{
-			"taskId": args[0],
-			"fromRole":   args[1],
-			"toRole":     args[2],
+			"taskId":   args[0],
+			"fromRole": args[1],
+			"toRole":   args[2],
 		}
 		if v := normalizeOptional(summary); v != "" {
 			payload["handoffSummary"] = v
@@ -377,7 +377,7 @@ var reviewCmd = &cobra.Command{
 		}
 
 		payload := map[string]any{
-			"taskId":   args[0],
+			"taskId":       args[0],
 			"reviewerRole": args[1],
 			"decision":     decision,
 		}

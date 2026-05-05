@@ -2467,10 +2467,10 @@ type TaskPoke struct {
 	sizeCache     protoimpl.SizeCache
 	unknownFields protoimpl.UnknownFields
 
-	AgentId    string                 `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
-	TaskId string                 `protobuf:"bytes,2,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
-	Reason     TaskPokeReason     `protobuf:"varint,3,opt,name=reason,proto3,enum=mesh.v1.TaskPokeReason" json:"reason,omitempty"`
-	IssuedAt   *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=issued_at,json=issuedAt,proto3" json:"issued_at,omitempty"`
+	AgentId  string                 `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
+	TaskId   string                 `protobuf:"bytes,2,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
+	Reason   TaskPokeReason         `protobuf:"varint,3,opt,name=reason,proto3,enum=mesh.v1.TaskPokeReason" json:"reason,omitempty"`
+	IssuedAt *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=issued_at,json=issuedAt,proto3" json:"issued_at,omitempty"`
 }
 
 func (x *TaskPoke) Reset() {
@@ -2538,9 +2538,9 @@ type TaskPokeAck struct {
 	sizeCache     protoimpl.SizeCache
 	unknownFields protoimpl.UnknownFields
 
-	TaskId string `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
-	Delivered  bool   `protobuf:"varint,2,opt,name=delivered,proto3" json:"delivered,omitempty"`
-	Detail     string `protobuf:"bytes,3,opt,name=detail,proto3" json:"detail,omitempty"`
+	TaskId    string `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
+	Delivered bool   `protobuf:"varint,2,opt,name=delivered,proto3" json:"delivered,omitempty"`
+	Detail    string `protobuf:"bytes,3,opt,name=detail,proto3" json:"detail,omitempty"`
 }
 
 func (x *TaskPokeAck) Reset() {
@@ -3046,7 +3046,7 @@ var file_mesh_proto_goTypes = []any{
 	(SessionState)(0),             // 1: mesh.v1.SessionState
 	(AgentSyncMode)(0),            // 2: mesh.v1.AgentSyncMode
 	(AgentLifecycle)(0),           // 3: mesh.v1.AgentLifecycle
-	(TaskPokeReason)(0),       // 4: mesh.v1.TaskPokeReason
+	(TaskPokeReason)(0),           // 4: mesh.v1.TaskPokeReason
 	(*RegisterRequest)(nil),       // 5: mesh.v1.RegisterRequest
 	(*RegisterResponse)(nil),      // 6: mesh.v1.RegisterResponse
 	(*HeartbeatRequest)(nil),      // 7: mesh.v1.HeartbeatRequest
@@ -3077,8 +3077,8 @@ var file_mesh_proto_goTypes = []any{
 	(*AgentDefinition)(nil),       // 32: mesh.v1.AgentDefinition
 	(*AgentSyncAck)(nil),          // 33: mesh.v1.AgentSyncAck
 	(*AgentSyncFailure)(nil),      // 34: mesh.v1.AgentSyncFailure
-	(*TaskPoke)(nil),          // 35: mesh.v1.TaskPoke
-	(*TaskPokeAck)(nil),       // 36: mesh.v1.TaskPokeAck
+	(*TaskPoke)(nil),              // 35: mesh.v1.TaskPoke
+	(*TaskPokeAck)(nil),           // 36: mesh.v1.TaskPokeAck
 	nil,                           // 37: mesh.v1.RegisterRequest.MetadataEntry
 	nil,                           // 38: mesh.v1.SessionSpawnOptions.EnvEntry
 	nil,                           // 39: mesh.v1.AgentDefinition.MetadataEntry

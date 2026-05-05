@@ -16,8 +16,8 @@ func TestScrubMeshPluginEntries(t *testing.T) {
 			"version": 2,
 			"plugins": map[string]any{
 				"github@claude-plugins-official": []any{map[string]any{"id": "gh"}},
-				"larry-pa@mesh":                 []any{map[string]any{"id": "larry"}},
-				"researcher@mesh":               []any{map[string]any{"id": "res"}},
+				"larry-pa@mesh":                  []any{map[string]any{"id": "larry"}},
+				"researcher@mesh":                []any{map[string]any{"id": "res"}},
 			},
 		}
 		data, _ := json.MarshalIndent(fixture, "", "  ")

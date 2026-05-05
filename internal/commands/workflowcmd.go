@@ -73,14 +73,14 @@ var workflowShowCmd = &cobra.Command{
 		var resp struct {
 			OK       bool `json:"ok"`
 			Workflow struct {
-				Slug          string              `json:"slug"`
-				Name          string              `json:"name"`
-				Description   string              `json:"description"`
-				States        []string            `json:"states"`
-				Transitions   map[string][]string `json:"transitions"`
-				InitialState  string              `json:"initialState"`
-				TerminalStates []string           `json:"terminalStates"`
-				Roles         map[string]string   `json:"roles"`
+				Slug           string              `json:"slug"`
+				Name           string              `json:"name"`
+				Description    string              `json:"description"`
+				States         []string            `json:"states"`
+				Transitions    map[string][]string `json:"transitions"`
+				InitialState   string              `json:"initialState"`
+				TerminalStates []string            `json:"terminalStates"`
+				Roles          map[string]string   `json:"roles"`
 			} `json:"workflow"`
 		}
 		if err := client.doRequest("GET", "/workflows/"+args[0], nil, &resp); err != nil {

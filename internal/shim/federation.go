@@ -32,10 +32,10 @@ import (
 
 // FederatedProject describes one project the partner has read_comment access to.
 type FederatedProject struct {
-	ProjectID    string `json:"project_id"`
-	HostOrgSlug  string `json:"host_org_slug"`
-	HostAPIURL   string `json:"host_api_url"`
-	AgentName    string `json:"agent_name"`
+	ProjectID      string `json:"project_id"`
+	HostOrgSlug    string `json:"host_org_slug"`
+	HostAPIURL     string `json:"host_api_url"`
+	AgentName      string `json:"agent_name"`
 	PartnerOrgSlug string `json:"partner_org_slug"`
 	PartnerNodeID  string `json:"partner_node_id"`
 }
@@ -231,8 +231,8 @@ func FederatedGetTask(fp FederatedProject, taskID string) (string, error) {
 	}
 
 	payload := map[string]any{
-		"project_id":   fp.ProjectID,
-		"task_id": taskID,
+		"project_id": fp.ProjectID,
+		"task_id":    taskID,
 	}
 	body, _ := json.Marshal(payload)
 

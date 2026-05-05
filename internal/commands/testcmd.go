@@ -13,10 +13,10 @@ var testCmd = &cobra.Command{
 }
 
 var (
-	testTaskID  string
-	testStatus      string
-	testLogFile     string
-	testConfidence  string
+	testTaskID     string
+	testStatus     string
+	testLogFile    string
+	testConfidence string
 )
 
 var testRecordCmd = &cobra.Command{
@@ -44,7 +44,7 @@ var testRecordCmd = &cobra.Command{
 		}
 
 		payload := map[string]any{
-			"taskId":      testTaskID,
+			"taskId":          testTaskID,
 			"status":          testStatus,
 			"confidenceScore": confidence,
 		}

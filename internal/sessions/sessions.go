@@ -591,4 +591,3 @@ func (r *SessionRegistry) DetachAttacher(agentID, attachID string) {
 	}
 	s.removeAttacher(attachID)
 }
-

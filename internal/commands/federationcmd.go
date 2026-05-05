@@ -138,11 +138,11 @@ func callPartnerRelay(
 ) (projectID, hostOrgSlug, scope string, err error) {
 	payload := map[string]any{
 		"code":               code,
-		"agent_name":        agentName,
-		"partner_org_slug":  partnerOrgSlug,
-		"partner_node_id":   partnerNodeID,
+		"agent_name":         agentName,
+		"partner_org_slug":   partnerOrgSlug,
+		"partner_node_id":    partnerNodeID,
 		"partner_public_key": publicKeyPEM,
-		"host_url":          hostURL,
+		"host_url":           hostURL,
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

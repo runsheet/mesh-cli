@@ -236,9 +236,9 @@ var membersListCmd = &cobra.Command{
 		var resp struct {
 			OK      bool `json:"ok"`
 			Members []struct {
-				UserID    string `json:"user_id"`
-				Role      string `json:"role"`
-				JoinedAt  string `json:"joined_at"`
+				UserID   string `json:"user_id"`
+				Role     string `json:"role"`
+				JoinedAt string `json:"joined_at"`
 			} `json:"members"`
 		}
 		if err := client.doRequest("GET", "/project/members/list?projectId="+args[0], nil, &resp); err != nil {
@@ -488,9 +488,10 @@ var digestDisableCmd = &cobra.Command{
 }
 
 // parseChannelFlag parses --channel values like:
-//   discord:dm/<userid>   → channel_type=discord_dm, target=<userid>
-//   whatsapp:<e164>       → channel_type=whatsapp, target=<e164>
-//   email:<addr>          → channel_type=email, target=<addr>
+//
+//	discord:dm/<userid>   → channel_type=discord_dm, target=<userid>
+//	whatsapp:<e164>       → channel_type=whatsapp, target=<e164>
+//	email:<addr>          → channel_type=email, target=<addr>
 func parseChannelFlag(ch string) (channelType, channelTarget string, err error) {
 	if strings.HasPrefix(ch, "discord:dm/") {
 		return "discord_dm", strings.TrimPrefix(ch, "discord:dm/"), nil

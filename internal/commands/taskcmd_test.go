@@ -23,9 +23,9 @@ func TestUpdateCurrentOwnerPositional(t *testing.T) {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"ok":         true,
+				"ok":     true,
 				"taskId": "wi-abc",
-				"actor":      map[string]any{"kind": "user"},
+				"actor":  map[string]any{"kind": "user"},
 			})
 			return
 		}
@@ -81,9 +81,9 @@ func TestUpdateCurrentOwnerFlagPath(t *testing.T) {
 			_ = json.NewDecoder(r.Body).Decode(&capturedBody)
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"ok":         true,
+				"ok":     true,
 				"taskId": "wi-xyz",
-				"actor":      map[string]any{"kind": "user"},
+				"actor":  map[string]any{"kind": "user"},
 			})
 			return
 		}

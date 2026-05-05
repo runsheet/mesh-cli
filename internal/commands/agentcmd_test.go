@@ -77,7 +77,7 @@ func TestAgentUpdateRoleClear(t *testing.T) {
 			_ = json.NewDecoder(r.Body).Decode(&capturedBody)
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"ok": true,
+				"ok":    true,
 				"agent": map[string]any{"id": "agent-abc", "name": "my-agent"},
 			})
 			return
