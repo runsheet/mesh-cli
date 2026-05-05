@@ -20,9 +20,6 @@ func init() {
 	rootCmd.AddCommand(workflowCmd)
 	rootCmd.AddCommand(runCmd, psCmd, attachCmd, logsCmd, restartCmd, rmCmd, inspectCmd)
 	rootCmd.AddCommand(pullCmd, imagesCmd, templatesCmd, localUpdateCmd)
-	rootCmd.AddCommand(channelServerCmd)
-	rootCmd.AddCommand(discordCmd)
-	rootCmd.AddCommand(whatsappCmd)
 	rootCmd.AddCommand(peersCmd)
 	rootCmd.AddCommand(emergencyStopCmd)
 }
