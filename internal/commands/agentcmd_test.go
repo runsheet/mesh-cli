@@ -203,24 +203,20 @@ func TestAgentUpdateNoRolesFlagNotSent(t *testing.T) {
 	}
 }
 
-// TestProjectRolesTabwriter verifies that `mesh project roles` renders the
-// five loop roles in tabwriter format with the correct columns. This exercises
-// the projectcmd tabwriter path; the underlying API is now retired (returns
-// 410) but the CLI subcommand remains until a future cleanup pass.
-func TestProjectRolesTabwriter(t *testing.T) {
+// TestProjectRolesRetired locks in the Phase 1 retirement of GET
+// /project/:id/roles (mesh-api routes/project.ts:288-294 returns 410).
+// The CLI subcommand still exists but should surface the API error
+// rather than silently print a tabwriter against a fictional response.
+// If a future change accidentally re-enables the route, this test will
+// flag it.
+func TestProjectRolesRetired(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/roles") {
 			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusGone)
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"ok":        true,
-				"projectId": "proj-abc",
-				"roles": map[string]any{
-					"pm":         map[string]any{"agentId": "agent-pm", "agentName": "ralph-pm", "nodeId": "node-1"},
-					"researcher": nil,
-					"devlead":    map[string]any{"agentId": "agent-dev", "agentName": "ralph-dev", "nodeId": ""},
-					"builder":    nil,
-					"tester":     nil,
-				},
+				"ok":    false,
+				"error": "endpoint_retired",
 			})
 			return
 		}
@@ -237,27 +233,14 @@ func TestProjectRolesTabwriter(t *testing.T) {
 	defer overrideSessionForTest(nil)
 
 	var cmdErr error
-	out := captureStdout(func() {
+	captureStdout(func() {
 		rootCmd.SetArgs([]string{"project", "roles", "proj-abc"})
 		rootCmd.SetErr(io.Discard)
 		cmdErr = rootCmd.Execute()
 		rootCmd.SetArgs(nil)
 	})
 
-	if cmdErr != nil {
-		t.Fatalf("project roles command failed: %v", cmdErr)
-	}
-
-	// Header row
-	if !strings.Contains(out, "ROLE") || !strings.Contains(out, "AGENT NAME") || !strings.Contains(out, "AGENT ID") {
-		t.Errorf("output missing expected header columns, got:\n%s", out)
-	}
-	// Assigned rows
-	if !strings.Contains(out, "pm") || !strings.Contains(out, "ralph-pm") {
-		t.Errorf("output missing pm agent row, got:\n%s", out)
-	}
-	// Unassigned row
-	if !strings.Contains(out, "(unassigned)") {
-		t.Errorf("output missing (unassigned) marker, got:\n%s", out)
+	if cmdErr == nil {
+		t.Fatal("expected project roles command to fail against retired (410) endpoint, got nil error")
 	}
 }
