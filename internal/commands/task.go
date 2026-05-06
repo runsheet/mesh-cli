@@ -94,7 +94,6 @@ func init() {
 var (
 	listStatusFlag    string
 	listProjectIDFlag string
-	listAllFlag       bool
 )
 
 var listCmd = &cobra.Command{
@@ -106,15 +105,13 @@ var listCmd = &cobra.Command{
 			return err
 		}
 
+		// v1 GET /task/list filters: projectId, status, limit. There is no
+		// 'assigned to me' semantic in v1 (no current_owner column); the
+		// route returns every task the caller can see, project-membership
+		// scoped server-side.
 		q := ""
-		if !listAllFlag {
-			q = "assignedToMe=true"
-		}
 		if v := strings.TrimSpace(listStatusFlag); v != "" {
-			if q != "" {
-				q += "&"
-			}
-			q += "status=" + v
+			q = "status=" + v
 		}
 		if v := strings.TrimSpace(listProjectIDFlag); v != "" {
 			if q != "" {
@@ -128,13 +125,15 @@ var listCmd = &cobra.Command{
 		}
 
 		client := newMeshClientForSession(sess)
+		// v1 list response items shape: { id, title, status, createdAt }.
+		// updated_at was dropped in migration 20260506100003_tasks_v1_reshape.sql.
 		var resp struct {
 			OK    bool `json:"ok"`
 			Items []struct {
 				ID        string `json:"id"`
 				Title     string `json:"title"`
 				Status    string `json:"status"`
-				UpdatedAt string `json:"updated_at"`
+				CreatedAt string `json:"createdAt"`
 			} `json:"items"`
 		}
 		if err := client.doRequest("GET", path, nil, &resp); err != nil {
@@ -147,13 +146,13 @@ var listCmd = &cobra.Command{
 		}
 
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, "ID\tSTATUS\tUPDATED\tTITLE")
+		fmt.Fprintln(w, "ID\tSTATUS\tCREATED\tTITLE")
 		for _, wi := range resp.Items {
-			updated := wi.UpdatedAt
-			if len(updated) > 16 {
-				updated = updated[:16]
+			created := wi.CreatedAt
+			if len(created) > 16 {
+				created = created[:16]
 			}
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", wi.ID, wi.Status, updated, wi.Title)
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", wi.ID, wi.Status, created, wi.Title)
 		}
 		return w.Flush()
 	},
@@ -162,7 +161,6 @@ var listCmd = &cobra.Command{
 func init() {
 	listCmd.Flags().StringVar(&listStatusFlag, "status", "", "Filter by status (e.g. pending, active, completed, archived)")
 	listCmd.Flags().StringVar(&listProjectIDFlag, "project-id", "", "Filter by project ID")
-	listCmd.Flags().BoolVar(&listAllFlag, "all", false, "Show all tasks, not just those assigned to me")
 }
 
 var getTaskCmd = &cobra.Command{
