@@ -31,6 +31,9 @@ func TestTaskCreateV1Payload(t *testing.T) {
 
 	var capturedBody map[string]any
 
+	// Mirror the v1 API envelope from mesh-api/src/routes/task.ts:
+	// { ok: true, task: { id, title, workflowId, ... }, workflowRun: {...},
+	//   stepRun: {...}, actor: {...} }
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/task/create" {
 			if err := json.NewDecoder(r.Body).Decode(&capturedBody); err != nil {
@@ -39,8 +42,19 @@ func TestTaskCreateV1Payload(t *testing.T) {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"ok":     true,
-				"taskId": "task-abc",
+				"ok": true,
+				"task": map[string]any{
+					"id":              "task-abc",
+					"title":           "Investigate deploy flake",
+					"workflowId":      "11111111-1111-1111-1111-111111111111",
+					"firstStepInputs": map[string]any{"company": "acme"},
+					"projectId":       nil,
+					"status":          "pending",
+					"createdAt":       "2026-05-07T00:00:00Z",
+				},
+				"workflowRun": map[string]any{"id": "run-1", "status": "pending"},
+				"stepRun":     map[string]any{"id": "step-1", "stepNodeId": "n1", "status": "pending"},
+				"actor":       map[string]any{"kind": "user", "userId": "uid-1"},
 			})
 			return
 		}
@@ -62,11 +76,15 @@ func TestTaskCreateV1Payload(t *testing.T) {
 	buf := &strings.Builder{}
 	rootCmd.SetOut(buf)
 	rootCmd.SetErr(buf)
-	err := rootCmd.Execute()
+	// printJSON writes to os.Stdout, not cmd.OutOrStdout, so capture stdout.
+	var execErr error
+	stdout := captureStdout(func() {
+		execErr = rootCmd.Execute()
+	})
 	rootCmd.SetArgs(nil)
 
-	if err != nil {
-		t.Fatalf("command failed: %v\noutput: %s", err, buf.String())
+	if execErr != nil {
+		t.Fatalf("command failed: %v\noutput: %s", execErr, buf.String())
 	}
 
 	if capturedBody == nil {
@@ -85,6 +103,20 @@ func TestTaskCreateV1Payload(t *testing.T) {
 	}
 	if fsi["company"] != "acme" {
 		t.Errorf("firstStepInputs.company: got %v, want acme", fsi["company"])
+	}
+
+	// Lock in the v1 wire contract: response envelope contains
+	// task.id, not a flat taskId. Decode the printed JSON and assert.
+	var printed map[string]any
+	if err := json.Unmarshal([]byte(stdout), &printed); err != nil {
+		t.Fatalf("printed output is not JSON: %v\noutput: %s", err, stdout)
+	}
+	task, ok := printed["task"].(map[string]any)
+	if !ok {
+		t.Fatalf("response.task is not an object, got: %T (full: %s)", printed["task"], stdout)
+	}
+	if id, _ := task["id"].(string); id != "task-abc" {
+		t.Errorf("response.task.id: got %v, want task-abc", task["id"])
 	}
 }
 
