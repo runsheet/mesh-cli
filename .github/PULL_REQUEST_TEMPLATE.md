@@ -1,8 +1,7 @@
 ## Summary
 
 <!-- One paragraph: what changed, why. Reference any relevant
-     `.planning/REQUIREMENTS.md` IDs (e.g. INV-02, DSP-04, MCP-06) and link
-     to the spec or design doc if applicable. -->
+     `.planning/REQUIREMENTS.md` IDs (e.g. INV-02, DSP-04, MCP-06). -->
 
 ## Compliance with PROJECT.md
 
