@@ -44,8 +44,9 @@ const inboundQueueDepth = 64
 // via `mesh ... mesh-shim --agent <agentID>` (see sessions.StartWithOptions →
 // claudeconf.EnsureClaudeFolderTrusted).
 type Router struct {
-	mu     sync.Mutex
-	agents map[string]*agentConn
+	baseCtx context.Context
+	mu      sync.Mutex
+	agents  map[string]*agentConn
 }
 
 type agentConn struct {
@@ -54,9 +55,11 @@ type agentConn struct {
 	connected bool              // true once the shim has subscribed
 }
 
-// New constructs an empty Router.
-func New() *Router {
-	return &Router{agents: map[string]*agentConn{}}
+// New constructs an empty Router. baseCtx bounds every per-agent socket server's
+// lifetime — pass the DAEMON context (not a gRPC stream context), so a stream
+// reconnect never tears down a live agent's socket or shim connection.
+func New(baseCtx context.Context) *Router {
+	return &Router{baseCtx: baseCtx, agents: map[string]*agentConn{}}
 }
 
 func routerLogf(agent, format string, args ...any) {
@@ -66,13 +69,13 @@ func routerLogf(agent, format string, args ...any) {
 // Start launches the per-agent socket server if not already running. Idempotent.
 // Call it when an agent's session starts, so the socket is listening before
 // claude spawns the shim (which dials with a 30s retry).
-func (r *Router) Start(ctx context.Context, agent string) {
+func (r *Router) Start(agent string) {
 	r.mu.Lock()
 	if _, ok := r.agents[agent]; ok {
 		r.mu.Unlock()
 		return
 	}
-	cctx, cancel := context.WithCancel(ctx)
+	cctx, cancel := context.WithCancel(r.baseCtx)
 	ac := &agentConn{cancel: cancel, queue: make(chan ipc.Envelope, inboundQueueDepth)}
 	r.agents[agent] = ac
 	r.mu.Unlock()

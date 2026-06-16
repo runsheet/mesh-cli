@@ -27,7 +27,9 @@ import (
 
 	"projectmesh.io/mesh-cli/internal/agentsync"
 	"projectmesh.io/mesh-cli/internal/auth"
+	"projectmesh.io/mesh-cli/internal/channels"
 	"projectmesh.io/mesh-cli/internal/claudeconf"
+	"projectmesh.io/mesh-cli/internal/ipc"
 	"projectmesh.io/mesh-cli/internal/localsock"
 	"projectmesh.io/mesh-cli/internal/paths"
 	"projectmesh.io/mesh-cli/internal/peers"
@@ -258,9 +260,14 @@ func runClusteredDaemon(ctx context.Context, baseURL, grpcAddr, token string, re
 		}()
 	}
 
+	// The per-agent channel router serves the mesh-shim sockets and delivers
+	// inbound channel messages. Bound to the daemon ctx (not a stream ctx) so a
+	// NodeStream reconnect never tears down a live agent's socket/shim.
+	router := channels.New(ctx)
+
 	errCh := make(chan error, 2)
 	go func() { errCh <- heartbeatLoop(ctx, client, token, nodeID, registry) }()
-	go func() { errCh <- nodeStreamLoop(ctx, client, token, registry, baseURL) }()
+	go func() { errCh <- nodeStreamLoop(ctx, client, token, registry, router, baseURL) }()
 	go pollAgents(ctx, baseURL, token)
 
 	return <-errCh
@@ -376,10 +383,10 @@ func registrySummariesProto(registry *sessions.SessionRegistry) []*meshv1.Sessio
 	return out
 }
 
-func nodeStreamLoop(ctx context.Context, client meshv1.NodeServiceClient, token string, registry *sessions.SessionRegistry, baseURL string) error {
+func nodeStreamLoop(ctx context.Context, client meshv1.NodeServiceClient, token string, registry *sessions.SessionRegistry, router *channels.Router, baseURL string) error {
 	backoff := reconnectInitialBackoff
 	for {
-		if err := runNodeStream(ctx, client, token, registry, baseURL); err != nil {
+		if err := runNodeStream(ctx, client, token, registry, router, baseURL); err != nil {
 			if errors.Is(err, context.Canceled) {
 				return err
 			}
@@ -407,7 +414,7 @@ func (s *streamSender) Send(frame *meshv1.NodeToApi) error {
 	return s.stream.Send(frame)
 }
 
-func runNodeStream(ctx context.Context, client meshv1.NodeServiceClient, token string, registry *sessions.SessionRegistry, baseURL string) error {
+func runNodeStream(ctx context.Context, client meshv1.NodeServiceClient, token string, registry *sessions.SessionRegistry, router *channels.Router, baseURL string) error {
 	streamCtx, cancel := context.WithCancel(authContext(ctx, token))
 	defer cancel()
 
@@ -454,7 +461,7 @@ func runNodeStream(ctx context.Context, client meshv1.NodeServiceClient, token s
 				recvErr <- err
 				return
 			}
-			handleApiFrame(streamCtx, sender, registry, frame, baseURL, token)
+			handleApiFrame(streamCtx, sender, registry, router, frame, baseURL, token)
 		}
 	}()
 
@@ -479,7 +486,7 @@ func runNodeStream(ctx context.Context, client meshv1.NodeServiceClient, token s
 	}
 }
 
-func handleApiFrame(ctx context.Context, sender *streamSender, registry *sessions.SessionRegistry, frame *meshv1.ApiToNode, baseURL, token string) {
+func handleApiFrame(ctx context.Context, sender *streamSender, registry *sessions.SessionRegistry, router *channels.Router, frame *meshv1.ApiToNode, baseURL, token string) {
 	if frame == nil {
 		return
 	}
@@ -514,6 +521,7 @@ func handleApiFrame(ctx context.Context, sender *streamSender, registry *session
 			})
 			return
 		}
+		router.Start(agentID)
 		summary, _ := registry.Get(sess.AgentID)
 		_ = sender.Send(&meshv1.NodeToApi{
 			RequestId: reqID,
@@ -536,6 +544,7 @@ func handleApiFrame(ctx context.Context, sender *streamSender, registry *session
 			})
 			return
 		}
+		router.Stop(p.SessionStop.GetAgentId())
 		_ = sender.Send(&meshv1.NodeToApi{
 			RequestId: reqID,
 			Payload: &meshv1.NodeToApi_SessionStopResponse{
@@ -556,6 +565,7 @@ func handleApiFrame(ctx context.Context, sender *streamSender, registry *session
 			})
 			return
 		}
+		router.Start(agentID)
 		summary, _ := registry.Get(sess.AgentID)
 		_ = sender.Send(&meshv1.NodeToApi{
 			RequestId: reqID,
@@ -614,6 +624,52 @@ func handleApiFrame(ctx context.Context, sender *streamSender, registry *session
 					TaskId:    p.TaskPoke.GetTaskId(),
 					Delivered: delivered,
 				},
+			},
+		})
+
+	case *meshv1.ApiToNode_ChannelInbound:
+		ci := p.ChannelInbound
+		agentID := ci.GetAgentId()
+		// Ensure the per-agent router socket is listening for the shim.
+		router.Start(agentID)
+
+		// Resume-on-inbound: if no shim is connected (the conversation's PTY is
+		// hibernated or never started), spawn/resume the claude session in the
+		// background so the SERIAL dispatch loop isn't blocked. registry.Start is
+		// idempotent — a no-op when the session is already running. The message is
+		// still enqueued below and the router's queue flushes once the shim subscribes.
+		detail := "delivered"
+		if !router.IsConnected(agentID) {
+			detail = "resuming"
+			go func() {
+				if _, _, err := registry.Start(agentID, "", ci.GetClaudeSessionId()); err != nil {
+					fmt.Printf("mesh node channel_inbound resume agent=%s err=%v\n", agentID, err)
+				}
+			}()
+		}
+
+		// Build the inbound envelope the shim surfaces as notifications/claude/channel.
+		// Source is the platform so meta.source identifies it (whatsapp/discord/web).
+		var sentAt string
+		if ts := ci.GetSentAt(); ts != nil {
+			sentAt = ts.AsTime().Format(time.RFC3339)
+		}
+		env := ipc.InboundEnvFull(
+			"agent:"+agentID,
+			ci.GetExternalId(),
+			ci.GetSender(),
+			ci.GetMessageId(),
+			ci.GetSenderId(),
+			sentAt,
+			ci.GetContent(),
+			nil,
+		)
+		env.Source = ci.GetPlatform()
+		accepted := router.DeliverInbound(agentID, env)
+		_ = sender.Send(&meshv1.NodeToApi{
+			RequestId: reqID,
+			Payload: &meshv1.NodeToApi_ChannelInboundAck{
+				ChannelInboundAck: &meshv1.ChannelInboundAck{Accepted: accepted, Detail: detail},
 			},
 		})
 
@@ -911,6 +967,8 @@ func apiFrameKind(frame *meshv1.ApiToNode) string {
 		return "agent_sync"
 	case *meshv1.ApiToNode_TaskPoke:
 		return "task_poke"
+	case *meshv1.ApiToNode_ChannelInbound:
+		return "channel_inbound"
 	case *meshv1.ApiToNode_Hello:
 		return "hello"
 	default:
