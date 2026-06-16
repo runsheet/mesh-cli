@@ -90,10 +90,11 @@ message ApiToNode {
     SessionAttachClose session_attach_close = 16;
     AgentSync agent_sync = 20;
     TaskPoke task_poke = 21;
+    ChannelInbound channel_inbound = 22;
     StreamHello hello = 30;
   }
 
-  reserved 2 to 9, 17 to 19, 22 to 29, 31 to 49;
+  reserved 2 to 9, 17 to 19, 23 to 29, 31 to 49;
 }
 
 // NodeToApi frames are responses to api requests plus unsolicited stream
@@ -110,12 +111,13 @@ message NodeToApi {
     SessionAttachClosed session_attach_closed = 15;
     AgentSyncAck agent_sync_ack = 20;
     TaskPokeAck task_poke_ack = 21;
+    ChannelInboundAck channel_inbound_ack = 22;
     SessionEvent session_event = 30;
     StreamError error = 40;
     StreamHelloAck hello_ack = 50;
   }
 
-  reserved 2 to 9, 16 to 19, 22 to 29, 31 to 39, 41 to 49;
+  reserved 2 to 9, 16 to 19, 23 to 29, 31 to 39, 41 to 49;
 }
 
 message StreamHello {
@@ -330,4 +332,33 @@ message TaskPokeAck {
   string task_id = 1;
   bool delivered = 2;
   string detail = 3;
+}
+
+// ChannelInbound delivers one inbound channel message (Discord, WhatsApp, web,
+// mobile) to the node that pins the conversation's agent. mesh-api resolves the
+// binding ((platform, external_id) → conversation/agent/node) BEFORE sending, so
+// the node routes by agent_id to that agent's mesh-shim router socket, which
+// surfaces it to the live claude session as a notifications/claude/channel push.
+// Correlated (request_id) — mesh-api awaits ChannelInboundAck, so a lost user
+// message is observable (unlike a best-effort TaskPoke).
+message ChannelInbound {
+  string conversation_id = 1;
+  string agent_id = 2;
+  string platform = 3;              // whatsapp | discord | web
+  string external_id = 4;           // the binding key: group/DM JID or channel id
+  string content = 5;               // message text
+  string sender = 6;                // display name / handle (optional)
+  string sender_id = 7;             // stable upstream sender id (optional)
+  string message_id = 8;            // upstream message id (optional; idempotency)
+  string claude_session_id = 9;     // conversation's claude session to resume (empty until first spawn)
+  string conversation_status = 10;  // active | hibernated | cleared — whether the node must resume the PTY first
+  google.protobuf.Timestamp sent_at = 11;
+}
+
+// ChannelInboundAck reports whether the node accepted the inbound message for
+// delivery. accepted=false + detail lets mesh-api distinguish transient (agent
+// resuming) from terminal (agent_not_pinned_here).
+message ChannelInboundAck {
+  bool accepted = 1;
+  string detail = 2;
 }
