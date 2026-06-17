@@ -112,12 +112,13 @@ message NodeToApi {
     AgentSyncAck agent_sync_ack = 20;
     TaskPokeAck task_poke_ack = 21;
     ChannelInboundAck channel_inbound_ack = 22;
+    ChannelOutbound channel_outbound = 23;
     SessionEvent session_event = 30;
     StreamError error = 40;
     StreamHelloAck hello_ack = 50;
   }
 
-  reserved 2 to 9, 16 to 19, 23 to 29, 31 to 39, 41 to 49;
+  reserved 2 to 9, 16 to 19, 24 to 29, 31 to 39, 41 to 49;
 }
 
 message StreamHello {
@@ -361,4 +362,16 @@ message ChannelInbound {
 message ChannelInboundAck {
   bool accepted = 1;
   string detail = 2;
+}
+
+// ChannelOutbound is an agent→channel message: the agent called mesh_send /
+// mesh_reply with a channel target, and the node forwards it to mesh-api to be
+// delivered by the owning gateway. Fire-and-forget (no request_id correlation,
+// like SessionEvent) — best-effort send, matching the dropped-poke tolerance.
+// mesh-api resolves the conversation from (platform, external_id) when needed.
+message ChannelOutbound {
+  string agent_id = 1;
+  string platform = 2;     // whatsapp | discord | web
+  string external_id = 3;  // target: group/DM JID or channel id
+  string content = 4;
 }
