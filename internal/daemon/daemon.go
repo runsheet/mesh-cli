@@ -465,6 +465,29 @@ func runNodeStream(ctx context.Context, client meshv1.NodeServiceClient, token s
 		}
 	}()
 
+	// Drain the router's agent→channel queue onto this stream as ChannelOutbound
+	// (fire-and-forget). Bound to streamCtx — a reconnect starts a fresh drain;
+	// the queue lives on the router (daemon ctx) so sends survive reconnects.
+	go func() {
+		for {
+			select {
+			case <-streamCtx.Done():
+				return
+			case msg := <-router.Outbound():
+				_ = sender.Send(&meshv1.NodeToApi{
+					Payload: &meshv1.NodeToApi_ChannelOutbound{
+						ChannelOutbound: &meshv1.ChannelOutbound{
+							AgentId:    msg.AgentID,
+							Platform:   msg.Platform,
+							ExternalId: msg.ExternalID,
+							Content:    msg.Content,
+						},
+					},
+				})
+			}
+		}
+	}()
+
 	for {
 		select {
 		case <-streamCtx.Done():

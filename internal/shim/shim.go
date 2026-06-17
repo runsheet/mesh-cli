@@ -60,7 +60,25 @@ func (l *MeshLastInbound) ReplyTarget() (string, string) {
 	if l.source == "peers" && l.channelID != "" {
 		return l.source, "peers://agent/" + l.channelID
 	}
+	if l.channelID != "" {
+		// Channel source (whatsapp/discord/web): the reply target is
+		// <platform>://<external_id>, mirroring the peers:// shape.
+		return l.source, l.source + "://" + l.channelID
+	}
 	return l.source, ""
+}
+
+// isSupportedSendTarget reports whether a mesh_send target is a recognized
+// scheme: peers:// (agent-to-agent mesh) or a channel platform
+// (<platform>://<external_id> for whatsapp/discord/web). The router parses the
+// scheme to route the message (peers → broker; channel → ChannelOutbound).
+func isSupportedSendTarget(target string) bool {
+	for _, scheme := range []string{"peers://", "whatsapp://", "discord://", "web://"} {
+		if strings.HasPrefix(target, scheme) {
+			return true
+		}
+	}
+	return false
 }
 
 // shimAttachment is the parsed form of one entry in the MCP attachments array.
@@ -140,10 +158,10 @@ func HandleMeshSend(
 		})
 	}
 
-	if !strings.HasPrefix(target, "peers://") {
+	if !isSupportedSendTarget(target) {
 		return write(JSONRPCMessage{
 			ID:    id,
-			Error: &JSONRPCError{Code: -32602, Message: "mesh_send: target must start with peers:// (channel routing was removed in Phase 0)"},
+			Error: &JSONRPCError{Code: -32602, Message: "mesh_send: target must be peers://… or a channel target (whatsapp://, discord://, web://)"},
 		})
 	}
 

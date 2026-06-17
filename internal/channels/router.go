@@ -26,6 +26,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -38,15 +39,32 @@ import (
 // drops oldest-style by refusing the newest (DeliverInbound returns false).
 const inboundQueueDepth = 64
 
+// outboundQueueDepth bounds the buffer of agent→channel messages waiting to be
+// emitted on the gRPC stream. Buffers across a NodeStream reconnect; the current
+// stream's drain goroutine consumes it.
+const outboundQueueDepth = 64
+
+// OutboundMsg is one agent→channel message (mesh_send / mesh_reply to a channel
+// target), parsed from the shim's `send` envelope. The daemon's stream drain
+// turns it into a NodeToApi.ChannelOutbound — the router stays import-clean of
+// meshv1.
+type OutboundMsg struct {
+	AgentID    string
+	Platform   string
+	ExternalID string
+	Content    string
+}
+
 // Router serves one Unix socket per agent (paths.RouterSockPath) and buffers
 // inbound messages for the connected shim. The map key is the agent identity
 // RouterSockPath expects — the agentID, the same string the shim is spawned with
 // via `mesh ... mesh-shim --agent <agentID>` (see sessions.StartWithOptions →
 // claudeconf.EnsureClaudeFolderTrusted).
 type Router struct {
-	baseCtx context.Context
-	mu      sync.Mutex
-	agents  map[string]*agentConn
+	baseCtx  context.Context
+	mu       sync.Mutex
+	agents   map[string]*agentConn
+	outbound chan OutboundMsg
 }
 
 type agentConn struct {
@@ -59,7 +77,46 @@ type agentConn struct {
 // lifetime — pass the DAEMON context (not a gRPC stream context), so a stream
 // reconnect never tears down a live agent's socket or shim connection.
 func New(baseCtx context.Context) *Router {
-	return &Router{baseCtx: baseCtx, agents: map[string]*agentConn{}}
+	return &Router{
+		baseCtx:  baseCtx,
+		agents:   map[string]*agentConn{},
+		outbound: make(chan OutboundMsg, outboundQueueDepth),
+	}
+}
+
+// Outbound is the receive end of the agent→channel queue. The daemon's current
+// NodeStream drains it and emits each message as NodeToApi.ChannelOutbound. The
+// channel outlives any single stream, so a message produced during a reconnect
+// is delivered once the next stream's drain starts.
+func (r *Router) Outbound() <-chan OutboundMsg {
+	return r.outbound
+}
+
+// emitOutbound enqueues an agent→channel message (non-blocking; drops on a full
+// queue rather than stalling the shim read loop).
+func (r *Router) emitOutbound(msg OutboundMsg) {
+	select {
+	case r.outbound <- msg:
+	default:
+		routerLogf(msg.AgentID, "outbound queue full — dropping send")
+	}
+}
+
+// parseChannelTarget splits a "<platform>://<external_id>" mesh_send target into
+// its parts for a known channel platform. peers:// and unknown schemes return
+// ok=false (the router does not channel-route them).
+func parseChannelTarget(target string) (platform, externalID string, ok bool) {
+	for _, p := range []string{"whatsapp", "discord", "web"} {
+		prefix := p + "://"
+		if strings.HasPrefix(target, prefix) {
+			ext := strings.TrimPrefix(target, prefix)
+			if ext == "" {
+				return "", "", false
+			}
+			return p, ext, true
+		}
+	}
+	return "", "", false
 }
 
 func routerLogf(agent, format string, args ...any) {
@@ -239,10 +296,20 @@ func (r *Router) serveShim(ctx context.Context, agent string, ac *agentConn, con
 			}
 		case "unsubscribe":
 			routerLogf(agent, "shim unsubscribed routingKey=%s", env.RoutingKey)
+		case "send":
+			// Agent→channel (mesh_send / mesh_reply). Channel targets become a
+			// ChannelOutbound on the gRPC stream; peers:// and task targets are not
+			// channel-routed (peers routing is a separate follow-up).
+			platform, externalID, ok := parseChannelTarget(env.Target)
+			if !ok {
+				routerLogf(agent, "send: non-channel target %q (not routed)", env.Target)
+				break
+			}
+			r.emitOutbound(OutboundMsg{AgentID: agent, Platform: platform, ExternalID: externalID, Content: env.Content})
+			routerLogf(agent, "outbound send platform=%s target=%s len=%d", platform, externalID, len(env.Content))
 		default:
-			// send / mesh_reply / peers-* / task-* — outbound routing (and the
-			// NodeToApi.channel_outbound variant) land in a follow-up increment.
-			routerLogf(agent, "outbound envelope type=%s (not yet routed)", env.Type)
+			// peers-* / task-* — routed elsewhere in a follow-up increment.
+			routerLogf(agent, "shim envelope type=%s (not yet routed)", env.Type)
 		}
 	}
 }
