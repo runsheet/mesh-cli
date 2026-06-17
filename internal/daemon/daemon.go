@@ -268,7 +268,6 @@ func runClusteredDaemon(ctx context.Context, baseURL, grpcAddr, token string, re
 	errCh := make(chan error, 2)
 	go func() { errCh <- heartbeatLoop(ctx, client, token, nodeID, registry) }()
 	go func() { errCh <- nodeStreamLoop(ctx, client, token, registry, router, baseURL) }()
-	go pollAgents(ctx, baseURL, token)
 
 	return <-errCh
 }
