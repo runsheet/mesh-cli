@@ -885,14 +885,12 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 // -- cluster push / pull --
 
 type PushSessionRequest struct {
-	ProjectID string `json:"projectId,omitempty"`
-	As        string `json:"as,omitempty"`
+	As string `json:"as,omitempty"`
 }
 
 type PushSessionResponse struct {
 	Name         string `json:"name"`
 	CloudAgentID string `json:"cloudAgentId"`
-	ProjectID    string `json:"projectId,omitempty"`
 }
 
 type PullSessionRequest struct {
@@ -964,9 +962,6 @@ func (s *localServer) pushSession(w http.ResponseWriter, r *http.Request, name s
 	if def.TemplateSha != "" {
 		payload["templateSha"] = def.TemplateSha
 	}
-	if v := strings.TrimSpace(req.ProjectID); v != "" {
-		payload["projectId"] = v
-	}
 
 	baseURL := resolveDaemonBaseURL()
 	status, body, err := nodeAPIRequest(baseURL, token, http.MethodPost, "/agent/import", payload)
@@ -1007,12 +1002,11 @@ func (s *localServer) pushSession(w http.ResponseWriter, r *http.Request, name s
 		return
 	}
 
-	fmt.Printf("mesh daemon adopted name=%s cloudAgentId=%s project=%s\n", name, cloudID, req.ProjectID)
+	fmt.Printf("mesh daemon adopted name=%s cloudAgentId=%s\n", name, cloudID)
 
 	writeJSON(w, http.StatusOK, PushSessionResponse{
 		Name:         name,
 		CloudAgentID: cloudID,
-		ProjectID:    req.ProjectID,
 	})
 }
 
@@ -1059,7 +1053,6 @@ func (s *localServer) handleClusterPull(w http.ResponseWriter, r *http.Request) 
 			SystemPrompt string          `json:"system_prompt"`
 			Model        string          `json:"model"`
 			PinnedNodeID string          `json:"pinned_node_id"`
-			ProjectID    *string         `json:"project_id"`
 			Tools        json.RawMessage `json:"tools"`
 		} `json:"agent"`
 	}

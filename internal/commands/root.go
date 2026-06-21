@@ -8,15 +8,14 @@ import (
 
 var rootCmd = &cobra.Command{
 	Use:     "mesh",
-	Short:   "Mesh CLI — AI, orgs, projects, workflows, tasks",
-	Long:    "Mesh CLI is the operator tool for the Mesh control plane. Sign in once, then manage orgs, projects, agents (AI), workflows, and tasks from your saved Mesh session.",
+	Short:   "Mesh CLI — AI, orgs, agents, channels",
+	Long:    "Mesh CLI is the operator tool for the Mesh control plane. Sign in once, then manage orgs, agents, and sessions from your saved Mesh session.",
 	Version: version.Version,
-	Example: "mesh auth login\nmesh workflow create --name \"Lead enrichment\" --definition ./graph.json\nmesh task create \"Investigate deploy flake\" --workflow-id <uuid>\nmesh task list --status pending",
+	Example: "mesh auth login\nmesh agent create --name nova --pinned-node-id <node-id> --model claude-sonnet-4-6\nmesh node start",
 }
 
 func init() {
 	rootCmd.AddCommand(authCmd, orgCmd, nodeCmd, agentCmd, sessionCmd)
-	rootCmd.AddCommand(researchCmd, testCmd)
 	rootCmd.AddCommand(runCmd, psCmd, attachCmd, logsCmd, restartCmd, rmCmd, inspectCmd)
 	rootCmd.AddCommand(pullCmd, imagesCmd, templatesCmd, localUpdateCmd)
 	rootCmd.AddCommand(peersCmd)

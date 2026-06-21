@@ -36,14 +36,11 @@ var cliToolAllowlist = map[string]bool{
 }
 
 var (
-	agentListProjectID string
-
 	agentCreateName         string
 	agentCreateDescription  string
 	agentCreateSystemPrompt string
 	agentCreateTools        string
 	agentCreateModel        string
-	agentCreateProjectID    string
 	agentCreateNodeID       string
 	agentCreateRoles        []string
 	agentCreateForce        bool
@@ -53,16 +50,14 @@ var (
 	agentUpdateSystemPrompt string
 	agentUpdateTools        string
 	agentUpdateModel        string
-	agentUpdateProjectID    string
 	agentUpdateNodeID       string
 	agentUpdateRoles        []string
 	agentUpdateForce        bool
 
 	agentDeleteYes bool
 
-	agentPushProjectID string
-	agentPushAs        string
-	agentPushAll       bool
+	agentPushAs  string
+	agentPushAll bool
 
 	agentPullAs string
 )
@@ -82,33 +77,23 @@ var agentListCmd = &cobra.Command{
 		}
 		client := newMeshClientForSession(sess)
 
-		path := "/agent/list"
-		if p := strings.TrimSpace(agentListProjectID); p != "" {
-			path = path + "?projectId=" + p
-		}
-
 		var resp struct {
 			OK     bool `json:"ok"`
 			Agents []struct {
-				ID           string  `json:"id"`
-				Name         string  `json:"name"`
-				Model        string  `json:"model"`
-				ProjectID    *string `json:"project_id"`
-				PinnedNodeID string  `json:"pinned_node_id"`
+				ID           string `json:"id"`
+				Name         string `json:"name"`
+				Model        string `json:"model"`
+				PinnedNodeID string `json:"pinned_node_id"`
 			} `json:"agents"`
 		}
-		if err := client.doRequest("GET", path, nil, &resp); err != nil {
+		if err := client.doRequest("GET", "/agent/list", nil, &resp); err != nil {
 			return err
 		}
 
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, "ID\tNAME\tPROJECT\tPINNED_NODE\tMODEL")
+		fmt.Fprintln(w, "ID\tNAME\tPINNED_NODE\tMODEL")
 		for _, a := range resp.Agents {
-			project := "-"
-			if a.ProjectID != nil {
-				project = *a.ProjectID
-			}
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", a.ID, a.Name, project, a.PinnedNodeID, a.Model)
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", a.ID, a.Name, a.PinnedNodeID, a.Model)
 		}
 		if err := w.Flush(); err != nil {
 			return err
@@ -157,7 +142,6 @@ var agentCreateCmd = &cobra.Command{
 
 		description := agentCreateDescription
 		systemPrompt := agentCreateSystemPrompt
-		projectID := strings.TrimSpace(agentCreateProjectID)
 
 		tools, err := parseTools(agentCreateTools, agentCreateForce)
 		if err != nil {
@@ -181,9 +165,6 @@ var agentCreateCmd = &cobra.Command{
 		}
 		if systemPrompt != "" {
 			payload["systemPrompt"] = systemPrompt
-		}
-		if projectID != "" {
-			payload["projectId"] = projectID
 		}
 
 		client := newMeshClientForSession(sess)
@@ -217,14 +198,6 @@ var agentUpdateCmd = &cobra.Command{
 		}
 		if cmd.Flags().Changed("model") {
 			payload["model"] = agentUpdateModel
-		}
-		if cmd.Flags().Changed("project-id") {
-			v := strings.TrimSpace(agentUpdateProjectID)
-			if v == "" {
-				payload["projectId"] = nil
-			} else {
-				payload["projectId"] = v
-			}
 		}
 		if cmd.Flags().Changed("pinned-node-id") {
 			payload["pinnedNodeId"] = agentUpdateNodeID
@@ -326,7 +299,7 @@ func pushOneAgent(cmd *cobra.Command, lc *localClient, name, asName string) erro
 	reader := bufio.NewReader(os.Stdin)
 
 	for {
-		req := localsock.PushSessionRequest{ProjectID: agentPushProjectID, As: asName}
+		req := localsock.PushSessionRequest{As: asName}
 		status, body, err := lc.pushAgent(ctx, name, req)
 		if err != nil {
 			return err
@@ -338,11 +311,7 @@ func pushOneAgent(cmd *cobra.Command, lc *localClient, name, asName string) erro
 			if jerr := json.Unmarshal(body, &resp); jerr != nil {
 				return jerr
 			}
-			project := "personal"
-			if resp.ProjectID != "" {
-				project = resp.ProjectID
-			}
-			fmt.Printf("adopted %s as cloud agent %s in project %s\n", resp.Name, resp.CloudAgentID, project)
+			fmt.Printf("adopted %s as cloud agent %s\n", resp.Name, resp.CloudAgentID)
 			return nil
 		case http.StatusConflict:
 			var parsed struct {
@@ -423,14 +392,11 @@ func pullOneAgent(cmd *cobra.Command, lc *localClient, cloudID, asName string) e
 }
 
 func init() {
-	agentListCmd.Flags().StringVar(&agentListProjectID, "project-id", "", "Filter to a specific project")
-
 	agentCreateCmd.Flags().StringVar(&agentCreateName, "name", "", "Agent name")
 	agentCreateCmd.Flags().StringVar(&agentCreateDescription, "description", "", "Short description")
 	agentCreateCmd.Flags().StringVar(&agentCreateSystemPrompt, "system-prompt", "", "System prompt body")
 	agentCreateCmd.Flags().StringVar(&agentCreateTools, "tools", "", "Comma-separated tool names")
 	agentCreateCmd.Flags().StringVar(&agentCreateModel, "model", "", "Model (claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5)")
-	agentCreateCmd.Flags().StringVar(&agentCreateProjectID, "project-id", "", "Project ID (omit for personal agent)")
 	agentCreateCmd.Flags().StringVar(&agentCreateNodeID, "pinned-node-id", "", "Node ID this agent pins to")
 	agentCreateCmd.Flags().StringSliceVar(&agentCreateRoles, "roles", []string{}, "Roles assigned to this agent (free-form strings; comma-separated or repeated --roles)")
 	agentCreateCmd.Flags().BoolVar(&agentCreateForce, "force", false, "Skip client-side tool validation")
@@ -440,14 +406,12 @@ func init() {
 	agentUpdateCmd.Flags().StringVar(&agentUpdateSystemPrompt, "system-prompt", "", "System prompt body")
 	agentUpdateCmd.Flags().StringVar(&agentUpdateTools, "tools", "", "Comma-separated tool names")
 	agentUpdateCmd.Flags().StringVar(&agentUpdateModel, "model", "", "Model")
-	agentUpdateCmd.Flags().StringVar(&agentUpdateProjectID, "project-id", "", "Project ID (empty string clears)")
 	agentUpdateCmd.Flags().StringVar(&agentUpdateNodeID, "pinned-node-id", "", "Node ID this agent pins to")
 	agentUpdateCmd.Flags().StringSliceVar(&agentUpdateRoles, "roles", []string{}, "Replace the agent's roles with this list (empty list clears all roles)")
 	agentUpdateCmd.Flags().BoolVar(&agentUpdateForce, "force", false, "Skip client-side tool validation")
 
 	agentDeleteCmd.Flags().BoolVarP(&agentDeleteYes, "yes", "y", false, "Skip confirmation")
 
-	agentPushCmd.Flags().StringVar(&agentPushProjectID, "project", "", "Project ID to scope the cloud agent to (omit for personal)")
 	agentPushCmd.Flags().StringVar(&agentPushAs, "as", "", "Rename the agent in the cluster namespace")
 	agentPushCmd.Flags().BoolVar(&agentPushAll, "all", false, "Push every local agent without a cloudAgentId")
 

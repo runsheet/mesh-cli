@@ -102,7 +102,6 @@ func resetAgentUpdateFlags(t *testing.T) {
 	agentUpdateSystemPrompt = ""
 	agentUpdateTools = ""
 	agentUpdateModel = ""
-	agentUpdateProjectID = ""
 	agentUpdateNodeID = ""
 	agentUpdateForce = false
 	// Reset Changed() state on every flag.
