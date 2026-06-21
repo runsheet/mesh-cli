@@ -39,8 +39,8 @@ var nodeRegisterCmd = &cobra.Command{
 			return fmt.Errorf("request registration code: %w", err)
 		}
 
-		fmt.Printf("Paste this code into the portal at %s/nodes to register this machine:\n\n    %s\n\nWaiting for the portal to redeem the code (up to %d minutes)...\n",
-			portal, code, nodeRegTimeout)
+		fmt.Printf("Open this link to register the machine (code pre-filled):\n\n    %s/nodes?register=%s\n\nOr go to the portal Nodes page and paste the code manually:  %s\n\nWaiting for the portal to redeem the code (up to %d minutes)...\n",
+			portal, code, code, nodeRegTimeout)
 
 		nodeID, err := node.PollAndSaveNodeToken(base, code, time.Duration(nodeRegTimeout)*time.Minute)
 		if err != nil {
