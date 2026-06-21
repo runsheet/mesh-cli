@@ -170,11 +170,11 @@ func TestHandleMeshSendEmptyContentNoAttachment(t *testing.T) {
 	}
 }
 
-// TestHandleMeshSendRejectsNonPeersScheme covers Plan 00-05's full-cut: the
-// shim no longer accepts discord://, whatsapp://, or any other scheme — only
-// peers://. (Previously this was a happy-path with discord://; now it's the
-// guard.)
-func TestHandleMeshSendRejectsNonPeersScheme(t *testing.T) {
+// TestHandleMeshSendChannelSchemes covers the channels-milestone behavior
+// (commit 15ae814 reversed the 00-05 peers-only cut): mesh_send accepts the
+// peers:// mesh scheme and the channel platform schemes (whatsapp://, discord://,
+// web://) and routes them; anything else is rejected.
+func TestHandleMeshSendChannelSchemes(t *testing.T) {
 	var responses []JSONRPCMessage
 	write := func(msg JSONRPCMessage) error {
 		responses = append(responses, msg)
@@ -183,7 +183,23 @@ func TestHandleMeshSendRejectsNonPeersScheme(t *testing.T) {
 	var buf bytes.Buffer
 	routerWr := ipc.NewWriter(&buf)
 
-	for _, target := range []string{"discord://channel/123", "whatsapp://chat/abc", "slack://channel/xyz"} {
+	// Peers + channel schemes are accepted and routed.
+	for _, target := range []string{"peers://agent/nova", "discord://channel/123", "whatsapp://chat/abc", "web://conv/xyz"} {
+		responses = responses[:0]
+		err := HandleMeshSend(context.Background(), json.RawMessage(`1`), map[string]any{
+			"target":  target,
+			"content": "hi",
+		}, routerWr, nil, nopLogf, write)
+		if err != nil {
+			t.Fatalf("target=%s unexpected err: %v", target, err)
+		}
+		if len(responses) != 1 || responses[0].Error != nil {
+			t.Fatalf("target=%s: expected success response, got %+v", target, responses)
+		}
+	}
+
+	// Unknown schemes are rejected.
+	for _, target := range []string{"slack://channel/xyz", "mailto:nope", "nothing"} {
 		responses = responses[:0]
 		err := HandleMeshSend(context.Background(), json.RawMessage(`1`), map[string]any{
 			"target":  target,
@@ -195,7 +211,7 @@ func TestHandleMeshSendRejectsNonPeersScheme(t *testing.T) {
 		if len(responses) != 1 || responses[0].Error == nil {
 			t.Fatalf("target=%s: expected error response, got %+v", target, responses)
 		}
-		if !strings.Contains(responses[0].Error.Message, "must start with peers://") {
+		if !strings.Contains(responses[0].Error.Message, "channel target") {
 			t.Errorf("target=%s: unexpected error: %s", target, responses[0].Error.Message)
 		}
 	}
@@ -270,9 +286,7 @@ func TestMeshLastInboundReplyTarget(t *testing.T) {
 		t.Errorf("expected empty source+target before any inbound, got source=%q target=%q", source, target)
 	}
 
-	// Plan 00-05 collapsed ReplyTarget to peers-only; discord/whatsapp
-	// sources can still be recorded for telemetry but no longer produce a
-	// constructible reply URL.
+	// A peers-source inbound replies over the agent mesh.
 	l.Set("peers", "nova")
 	source, target = l.ReplyTarget()
 	if source != "peers" {
@@ -282,15 +296,23 @@ func TestMeshLastInboundReplyTarget(t *testing.T) {
 		t.Errorf("target: got %q want peers://agent/nova", target)
 	}
 
-	// A discord-source inbound returns the source (telemetry preserved) but
-	// an empty target string so HandleMeshReply surfaces the "cannot
-	// construct reply target for source discord" error.
+	// A channel-source inbound (channels milestone, commit 15ae814) replies on
+	// the same platform: the target is <platform>://<external_id>.
 	l.Set("discord", "123456789")
 	source, target = l.ReplyTarget()
 	if source != "discord" {
 		t.Errorf("source: got %q want discord", source)
 	}
-	if target != "" {
-		t.Errorf("target: got %q want empty (Plan 00-05 dropped discord:// scheme)", target)
+	if target != "discord://123456789" {
+		t.Errorf("target: got %q want discord://123456789", target)
+	}
+
+	l.Set("whatsapp", "15551230000@s.whatsapp.net")
+	source, target = l.ReplyTarget()
+	if source != "whatsapp" {
+		t.Errorf("source: got %q want whatsapp", source)
+	}
+	if target != "whatsapp://15551230000@s.whatsapp.net" {
+		t.Errorf("target: got %q want whatsapp://15551230000@s.whatsapp.net", target)
 	}
 }
