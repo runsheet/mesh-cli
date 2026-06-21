@@ -149,7 +149,7 @@ func init() {
 	nodeRegisterCmd.Flags().IntVar(&nodeRegTimeout, "timeout-minutes", 10, "Minutes to wait for portal to redeem the code")
 
 	nodeStartCmd.Flags().StringVar(&nodeBaseURLFlag, "base-url", "", "Mesh API base URL (defaults to saved session)")
-	nodeStartCmd.Flags().StringVar(&nodeGrpcAddrFlag, "grpc-addr", "", "gRPC host:port (defaults to base-url host with :8081)")
+	nodeStartCmd.Flags().StringVar(&nodeGrpcAddrFlag, "grpc-addr", "", "gRPC host:port (default: grpc.<domain>:443 for an api.<domain> base-url, else host:8081)")
 
 	nodeStatusCmd.Flags().StringVar(&nodeBaseURLFlag, "base-url", "", "Mesh API base URL (defaults to saved session)")
 
@@ -187,14 +187,16 @@ func defaultGrpcAddrFor(baseURL string) string {
 		return "127.0.0.1:8081"
 	}
 	host := u.Hostname()
-	// The HTTP API is typically served behind a Cloudflare-proxied hostname
-	// (api.<domain>), but Cloudflare doesn't proxy non-HTTP traffic on
-	// non-standard ports. The convention is to expose gRPC at grpc.<domain>
-	// with DNS pointing directly at the origin (no CF proxy), so swap the
-	// prefix here when present. localhost and bare hostnames fall through.
+	// Production: the HTTP API is on api.<domain> behind a Cloudflare tunnel, and
+	// gRPC is exposed at grpc.<domain> through the SAME tunnel on the standard
+	// HTTPS port (:443, HTTP/2 origin) — Cloudflare terminates TLS, and dialGrpc
+	// uses system root CAs for the non-local host. So for the api.<domain>
+	// convention, swap the prefix AND use :443.
 	if rest, ok := strings.CutPrefix(host, "api."); ok {
-		host = "grpc." + rest
+		return fmt.Sprintf("grpc.%s:443", rest)
 	}
+	// localhost / bare hostname (dev or a direct origin): mesh-api's gRPC server
+	// listens on :8081 (plaintext h2c for localhost; see dialGrpc).
 	return fmt.Sprintf("%s:8081", host)
 }
 
