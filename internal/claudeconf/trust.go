@@ -16,7 +16,16 @@ import (
 //
 // Best-effort: silently skips on any I/O or parse failure.
 func EnsureClaudeFolderTrusted(agentWorkdir, agentName, exe string) {
-	abs, err := filepath.Abs(agentWorkdir)
+	EnsureMeshServer(agentWorkdir, exe, []string{"channel-server", "mesh-shim", "--agent", agentName})
+}
+
+// EnsureMeshServer registers `exe args...` as the project-scoped "mesh" MCP
+// server for workdir in ~/.claude.json and marks the folder trusted, so a
+// session started there with `--dangerously-load-development-channels
+// server:mesh` finds the server without a consent dialog. Idempotent and
+// best-effort.
+func EnsureMeshServer(workdir, exe string, args []string) {
+	abs, err := filepath.Abs(workdir)
 	if err != nil {
 		return
 	}
@@ -26,9 +35,13 @@ func EnsureClaudeFolderTrusted(agentWorkdir, agentName, exe string) {
 	}
 	cfgPath := filepath.Join(home, ".claude.json")
 
+	argv := make([]any, 0, len(args))
+	for _, a := range args {
+		argv = append(argv, a)
+	}
 	meshEntry := map[string]any{
 		"command": exe,
-		"args":    []any{"channel-server", "mesh-shim", "--agent", agentName},
+		"args":    argv,
 		"type":    "stdio",
 	}
 

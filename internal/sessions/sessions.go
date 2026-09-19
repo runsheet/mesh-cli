@@ -15,12 +15,10 @@ import (
 
 	"github.com/creack/pty"
 	"github.com/google/uuid"
-	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"projectmesh.io/mesh-cli/internal/claudeconf"
 	"projectmesh.io/mesh-cli/internal/paths"
 	"projectmesh.io/mesh-cli/internal/state"
-	meshv1 "projectmesh.io/mesh-cli/proto/meshv1"
 )
 
 // Per spec A.3 / A.4: fixed 120×40 PTY, 4 MB per-session scrollback ring,
@@ -147,29 +145,38 @@ func (s *PtySession) markExited(err error) {
 // PtySessionSummary mirrors the proto SessionSummary but is tied to our
 // in-process state so we can compute it without importing protoc types into
 // every caller.
+// SessionState is a PTY session's liveness.
+type SessionState int
+
+const (
+	SessionStateRunning SessionState = iota + 1
+	SessionStateExited
+	SessionStateCrashed
+)
+
+// String names the state.
+func (s SessionState) String() string {
+	switch s {
+	case SessionStateRunning:
+		return "running"
+	case SessionStateExited:
+		return "exited"
+	case SessionStateCrashed:
+		return "crashed"
+	}
+	return "unknown"
+}
+
 type PtySessionSummary struct {
 	AgentID         string
 	SessionID       string
 	ClaudeSessionID string
 	PID             int
-	State           meshv1.SessionState
+	State           SessionState
 	StartedAt       time.Time
 	LastActivity    time.Time
 	Cols            uint32
 	Rows            uint32
-}
-
-func (s *PtySessionSummary) Proto() *meshv1.SessionSummary {
-	return &meshv1.SessionSummary{
-		AgentId:         s.AgentID,
-		ClaudeSessionId: s.ClaudeSessionID,
-		Pid:             int32(s.PID),
-		State:           s.State,
-		StartedAt:       timestamppb.New(s.StartedAt),
-		LastActivityAt:  timestamppb.New(s.LastActivity),
-		Cols:            s.Cols,
-		Rows:            s.Rows,
-	}
 }
 
 // SessionRegistry owns the set of live PTY sessions keyed by agent id.
@@ -501,15 +508,15 @@ func (r *SessionRegistry) summaryLocked(s *PtySession) PtySessionSummary {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	pid := 0
-	st := meshv1.SessionState_SESSION_STATE_RUNNING
+	st := SessionStateRunning
 	if s.Cmd != nil && s.Cmd.Process != nil {
 		pid = s.Cmd.Process.Pid
 	}
 	if s.exited {
 		if s.exitErr != nil {
-			st = meshv1.SessionState_SESSION_STATE_CRASHED
+			st = SessionStateCrashed
 		} else {
-			st = meshv1.SessionState_SESSION_STATE_EXITED
+			st = SessionStateExited
 		}
 	}
 	return PtySessionSummary{

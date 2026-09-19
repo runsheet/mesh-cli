@@ -2,19 +2,14 @@ package commands
 
 import (
 	"bufio"
-	"context"
 	"fmt"
 	"os"
 	"strings"
 	"text/tabwriter"
-	"time"
 
 	"github.com/spf13/cobra"
-	"google.golang.org/grpc/metadata"
 
 	"projectmesh.io/mesh-cli/internal/auth"
-	idaemon "projectmesh.io/mesh-cli/internal/daemon"
-	meshv1 "projectmesh.io/mesh-cli/proto/meshv1"
 )
 
 var (
@@ -133,15 +128,7 @@ func resolveSessionNode(sess *auth.Session, flag string) (string, error) {
 		return id, nil
 	}
 
-	token, err := auth.LoadNodeToken()
-	if err != nil || strings.TrimSpace(token) == "" {
-		return "", fmt.Errorf("no --node given and no local daemon token found; pass --node <slug>")
-	}
-	id, err := probeLocalNodeID(sess.BaseURL, token)
-	if err != nil {
-		return "", fmt.Errorf("no --node given and local daemon unreachable: %w", err)
-	}
-	return id, nil
+	return "", fmt.Errorf("no --node given; pass --node <slug>")
 }
 
 func looksLikeUUID(s string) bool {
@@ -180,26 +167,4 @@ func lookupNodeBySlug(sess *auth.Session, slug string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("no node with slug %q in your account", slug)
-}
-
-func probeLocalNodeID(baseURL, token string) (string, error) {
-	addr := defaultGrpcAddrFor(baseURL)
-	conn, err := idaemon.DialGrpc(addr)
-	if err != nil {
-		return "", err
-	}
-	defer conn.Close()
-
-	client := meshv1.NewNodeServiceClient(conn)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	ctx = metadata.NewOutgoingContext(ctx, metadata.Pairs("authorization", "Bearer "+token))
-	resp, err := client.Register(ctx, &meshv1.RegisterRequest{Version: "mesh-cli-probe"})
-	if err != nil {
-		return "", err
-	}
-	if resp.GetNodeId() == "" {
-		return "", fmt.Errorf("register returned empty nodeId")
-	}
-	return resp.GetNodeId(), nil
 }

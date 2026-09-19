@@ -1,6 +1,10 @@
 # Mesh CLI - Go Implementation
 
-This is the Go-based replacement for the Mesh CLI, providing parity with the existing TypeScript CLI and a real browser-based auth flow.
+The operator tool for Mesh: this machine becomes a **node** of the runsheet
+platform (`mesh-specs/specs/adr-002-control-plane-on-runsheet`), and goals
+are set and watched from the same token. The node speaks to the platform's
+gateway (`https://api.runsheet.dev/graphql`) as the person whose console
+token it holds — no gRPC, no relay, no per-node secret.
 
 ## Installation
 
@@ -10,7 +14,125 @@ Build from source:
 GO111MODULE=on go build -o mesh ./cmd/mesh/
 ```
 
-## Authentication Commands
+## Node
+
+### Token
+
+Mint a console token under **Settings → Tokens** on the runsheet console
+and save it (stored in `~/.mesh/token`, mode 0600; `MESH_TOKEN` overrides
+it for one process):
+
+```bash
+mesh auth token rs_…        # or: mesh node login rs_…
+```
+
+The token's scope is the node's scope: whatever orgs the person reaches,
+the node reaches. A node that should not see an org is a token that should
+not have been minted.
+
+### Register
+
+```bash
+mesh node register --org acme --name "Chris's laptop" [--slug chris-mbp] [--capacity 2]
+```
+
+Signs in, finds the org among yours, derives the node id from
+`(org, slug)` — registering twice converges on the same node — and writes
+`~/.mesh/node.yaml` (org login and id, slug, node id, capacity).
+`mesh node status` heartbeats once and lists the org's nodes.
+
+### Start
+
+```bash
+mesh node start [--mode channel|poll] [--interval 30s] [--unattended] [--max-budget-usd 10]
+```
+
+Every interval the node heartbeats (`HeartbeatNode`), lists the org's
+`ready` work items and claims up to its free capacity (`ClaimWorkItem`; the
+aggregate refuses a second claimant, so two nodes never run one item).
+What happens to a claimed item depends on the mode.
+
+**Channel mode (default).** One persistent `claude` session runs in
+`~/.mesh/work/<node-slug>` with the Mesh channel attached:
+
+```
+claude -p … --output-format stream-json --dangerously-load-development-channels server:mesh --append-system-prompt …
+```
+
+The daemon serves the channel to Claude Code as a stdio MCP server
+(`mesh channel serve`, registered for that folder in `~/.claude.json`) and
+pushes events into the session:
+
+| Event | When |
+| --- | --- |
+| `work_item.ready` | the daemon claimed an item for this node (attributes: `item_id`, `seq`, `goal_slug`, `repo`, `base_ref`, `branch`, `workspace`; the brief and acceptance as content) |
+| `goal.paused` / `goal.cancelled` / `goal.resumed` | the goal's status changed |
+| `checkpoint` | the goal awaits a person's approval |
+
+The session reports back through the channel's tools, each a thin call on
+the gateway: `mesh_progress {item_id, note, cost_cents}`, `mesh_finish
+{item_id, branch, head_sha}`, `mesh_fail {item_id, error}`, `mesh_evaluate
+{item_id, passed, notes}`, `mesh_context {goal_slug}` (the project's
+Prologue documents: instructions, ADRs, PRD, TRD), `mesh_items {status}`,
+`mesh_record {item_id, summary}` (see below) and `reply`. Its system
+prompt tells it to clone or fetch the repo into
+`~/.mesh/work/<goal-slug>/<seq>`, branch `mesh/<goal-slug>-<seq>` from the
+base ref, read `mesh_context` first, do each item as a fresh subagent,
+run the acceptance, commit, push, then `mesh_finish` — or `mesh_fail`. The
+daemon restarts the session if it exits; the claim stays the daemon's, so
+the lock is held before the event is pushed.
+
+Channels are a Claude Code **research preview**: custom channels load only
+with `--dangerously-load-development-channels`; they need Anthropic
+authentication through claude.ai (Max) or a Console API key and are not
+available on Bedrock, Vertex or Foundry; Team/Enterprise orgs must enable
+`channelsEnabled`. The flag syntax may change.
+
+**Poll mode** (`--mode poll`). Each claimed item runs its own
+`claude -p "<prompt>" --output-format stream-json --verbose --max-budget-usd <budget>`
+in `~/.mesh/work/<goal-slug>/<seq>` (cloned with your `gh`, branch
+`mesh/<goal-slug>-<seq>` from the base ref), with the goal's Prologue
+context written under `.mesh/context/` (excluded from git). The budget is
+the goal's remaining budget, capped by `--max-budget-usd`. The node
+reports progress every minute (`ReportWorkItemProgress` with the cents
+since the last report), pushes the branch with your credentials and
+`FinishWorkItem`s — or `FailWorkItem`s. `--once` runs one tick.
+
+In both modes `--unattended` adds `--dangerously-skip-permissions` so a
+session never waits on a permission prompt — only on a machine you trust
+with that. On SIGTERM the node kills its sessions and leaves claimed items
+for a retry; it never fails an item on its own shutdown.
+
+### The goal's record in the repo
+
+Prologue is read-only over git, so a goal writes itself into the repo:
+`specs/goal-<goal-slug>.md` (frontmatter `title: Goal — …`, `kind: plan`,
+`status: draft` while running / `approved` when done / `superseded` when
+cancelled, `parent:` the project's PRD when Prologue lists one), with the
+statement, the acceptance, an `## Items` table regenerated from the
+gateway's rows and a `## Log` that appends one dated line per call. The
+session calls `mesh_record` after each milestone and before `mesh_finish`
+(poll mode does it for the session); it is committed on the item's branch
+(`docs(mesh): goal <slug> — item <seq>`) and lands with the merge, where
+Prologue indexes it.
+
+## Goals
+
+```bash
+mesh goal set goal.yaml            # slug, title, statement, acceptance, budget_cents, daily_budget_cents, checkpoints, project
+mesh goal plan ship-it plan.yaml   # items: seq, title, brief, acceptance, depends_on: [seq…], repo: owner/name, base_ref
+mesh goal approve ship-it          # the graph checkpoint
+mesh goal pause ship-it --reason "…" / resume / cancel
+mesh goal list
+mesh goal watch ship-it            # polls every 5 s, prints item status changes
+```
+
+`--org <login>` picks the org (default: the registered node's);
+`--gateway` or `MESH_GATEWAY` picks the gateway.
+
+## Legacy commands (mesh-api)
+
+### Authentication Commands
 
 - `mesh auth login [baseUrl]` - Browser-based portal handoff login. Opens the Mesh portal login page, waits for the local callback, validates the returned session token with `mesh-api`, and saves the authenticated session locally.
 - `mesh auth login --no-browser [baseUrl]` - Prints the browser login URL instead of opening it automatically.

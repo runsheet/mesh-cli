@@ -1,0 +1,143 @@
+package node
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"projectmesh.io/mesh-cli/internal/gateway"
+)
+
+// The goal's record in the repo: `specs/goal-<slug>.md`, flat under
+// `specs/` so Prologue's own layout indexes it on the push that merges
+// the item. Prologue is read-only over git — writing to it is committing
+// this file. Frontmatter names the goal; the body carries the statement,
+// the acceptance, the items table (regenerated from the gateway's rows
+// every time) and a log that only ever appends.
+
+// GoalDoc is what the document is rendered from.
+type GoalDoc struct {
+	Slug       string
+	Title      string
+	Statement  string
+	Acceptance string
+	// GoalStatus is the goal's status on the platform; it maps to the
+	// document's status (draft while running, approved when done,
+	// superseded when cancelled).
+	GoalStatus string
+	// Parent is the project's PRD slug when Prologue lists one.
+	Parent string
+	Items  []gateway.WorkItem
+}
+
+// GoalDocPath is where the document lives in a workspace.
+func GoalDocPath(workspace, slug string) string {
+	return filepath.Join(workspace, "specs", "goal-"+slug+".md")
+}
+
+// DocStatus maps a goal status to the document's.
+func DocStatus(goalStatus string) string {
+	switch goalStatus {
+	case "done":
+		return "approved"
+	case "cancelled":
+		return "superseded"
+	default:
+		return "draft"
+	}
+}
+
+// LogLine renders one log entry: `- 2026-09-19 · item 2 · <summary>`.
+func LogLine(at time.Time, seq int, summary string) string {
+	summary = strings.Join(strings.Fields(summary), " ")
+	return fmt.Sprintf("- %s · item %d · %s", at.UTC().Format("2006-01-02"), seq, summary)
+}
+
+const logHeading = "## Log"
+
+// RenderGoalDoc renders the document, keeping the log lines of existing
+// (the file as it is now, or "") and appending logLine unless the log
+// already ends with that exact line.
+func RenderGoalDoc(existing string, d GoalDoc, logLine string) string {
+	logLines := existingLog(existing)
+	logLine = strings.TrimSpace(logLine)
+	if logLine != "" && (len(logLines) == 0 || logLines[len(logLines)-1] != logLine) {
+		logLines = append(logLines, logLine)
+	}
+
+	var b strings.Builder
+	b.WriteString("---\n")
+	fmt.Fprintf(&b, "title: Goal — %s\n", strings.TrimSpace(d.Title))
+	b.WriteString("kind: plan\n")
+	fmt.Fprintf(&b, "status: %s\n", DocStatus(d.GoalStatus))
+	if d.Parent != "" {
+		fmt.Fprintf(&b, "parent: %s\n", d.Parent)
+	}
+	b.WriteString("---\n\n")
+	fmt.Fprintf(&b, "# Goal — %s\n\n", strings.TrimSpace(d.Title))
+	fmt.Fprintf(&b, "Mesh goal `%s`, %s.\n\n", d.Slug, d.GoalStatus)
+	if s := strings.TrimSpace(d.Statement); s != "" {
+		fmt.Fprintf(&b, "## Statement\n\n%s\n\n", s)
+	}
+	if s := strings.TrimSpace(d.Acceptance); s != "" {
+		fmt.Fprintf(&b, "## Acceptance\n\n%s\n\n", s)
+	}
+	b.WriteString("## Items\n\n| Seq | Title | Status | Branch | PR | Cost |\n| --- | --- | --- | --- | --- | --- |\n")
+	for _, it := range d.Items {
+		pr := it.PRURL
+		if pr == "" {
+			pr = "—"
+		}
+		branch := it.Branch
+		if branch == "" {
+			branch = "—"
+		}
+		fmt.Fprintf(&b, "| %d | %s | %s | %s | %s | $%.2f |\n", it.Seq, cell(it.Title), it.Status, cell(branch), cell(pr), float64(it.CostCents)/100)
+	}
+	b.WriteString("\n" + logHeading + "\n\n")
+	for _, l := range logLines {
+		b.WriteString(l + "\n")
+	}
+	return b.String()
+}
+
+func cell(s string) string {
+	return strings.ReplaceAll(strings.Join(strings.Fields(s), " "), "|", "\\|")
+}
+
+// existingLog returns the log lines of a rendered document.
+func existingLog(doc string) []string {
+	_, after, ok := strings.Cut(doc, "\n"+logHeading+"\n")
+	if !ok {
+		return nil
+	}
+	var lines []string
+	for _, l := range strings.Split(after, "\n") {
+		l = strings.TrimRight(l, " \t\r")
+		if strings.HasPrefix(l, "- ") {
+			lines = append(lines, l)
+		}
+	}
+	return lines
+}
+
+// WriteGoalDoc renders and writes the document in workspace. It reports
+// whether the file changed and the path relative to the workspace.
+func WriteGoalDoc(workspace string, d GoalDoc, logLine string) (rel string, changed bool, err error) {
+	path := GoalDocPath(workspace, d.Slug)
+	rel, _ = filepath.Rel(workspace, path)
+	existing, readErr := os.ReadFile(path)
+	if readErr != nil && !os.IsNotExist(readErr) {
+		return rel, false, readErr
+	}
+	out := RenderGoalDoc(string(existing), d, logLine)
+	if string(existing) == out {
+		return rel, false, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return rel, false, err
+	}
+	return rel, true, os.WriteFile(path, []byte(out), 0o644)
+}

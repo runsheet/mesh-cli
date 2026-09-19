@@ -1,206 +1,355 @@
 package commands
 
 import (
+	"context"
+	"errors"
 	"fmt"
-	"net/url"
+	"log"
 	"os"
+	"os/signal"
+	"path/filepath"
 	"strings"
+	"sync"
+	"syscall"
 	"text/tabwriter"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 
-	"projectmesh.io/mesh-cli/internal/agentsync"
 	"projectmesh.io/mesh-cli/internal/auth"
-	idaemon "projectmesh.io/mesh-cli/internal/daemon"
+	"projectmesh.io/mesh-cli/internal/channel"
+	"projectmesh.io/mesh-cli/internal/gateway"
+	"projectmesh.io/mesh-cli/internal/harness"
 	"projectmesh.io/mesh-cli/internal/node"
+	"projectmesh.io/mesh-cli/internal/version"
 )
 
 var (
-	nodeBaseURLFlag  string
-	nodeGrpcAddrFlag string
-	nodeRegTimeout   int
+	nodeOrgFlag       string
+	nodeNameFlag      string
+	nodeSlugFlag      string
+	nodeCapacityFlag  int
+	nodeIntervalFlag  time.Duration
+	nodeMaxBudgetFlag float64
+	nodeModeFlag      string
+	nodeUnattended    bool
+	nodeOnceFlag      bool
 )
 
 var nodeCmd = &cobra.Command{
 	Use:   "node",
-	Short: "Manage the local Mesh node daemon",
+	Short: "Run this machine as a Mesh node on the runsheet platform",
+	Long: `A node runs work items of goals: it heartbeats, claims ready items for
+its org and runs each in a fresh claude session, as the person whose
+console token it holds (~/.mesh/token).`,
+}
+
+var nodeLoginCmd = &cobra.Command{
+	Use:   "login <rs_token>",
+	Short: "Save a runsheet console token (Settings → Tokens) to ~/.mesh/token",
+	Args:  cobra.ExactArgs(1),
+	RunE:  func(cmd *cobra.Command, args []string) error { return saveToken(args[0]) },
+}
+
+func saveToken(tok string) error {
+	if err := auth.SaveToken(tok); err != nil {
+		return err
+	}
+	gw := gateway.New(gatewayURL(), strings.TrimSpace(tok))
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	id, err := gw.SignIn(ctx)
+	if err != nil {
+		return fmt.Errorf("token saved, but the gateway refused it: %w", err)
+	}
+	orgs, _ := gw.MyOrgs(ctx)
+	logins := make([]string, 0, len(orgs))
+	for _, o := range orgs {
+		logins = append(logins, o.Login)
+	}
+	fmt.Printf("Token saved to ~/.mesh/token. You are %s; orgs: %s\n", id, strings.Join(logins, ", "))
+	return nil
 }
 
 var nodeRegisterCmd = &cobra.Command{
 	Use:   "register",
-	Short: "Pair this machine with the Mesh portal and save a node token",
+	Short: "Register this machine as a node of an org (converging on its slug)",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		base := resolveBaseURL(nodeBaseURLFlag)
-		portal := derivePortalURL(base)
-
-		code, err := node.RequestNodeRegistrationCode(base)
-		if err != nil {
-			return fmt.Errorf("request registration code: %w", err)
+		if strings.TrimSpace(nodeOrgFlag) == "" || strings.TrimSpace(nodeNameFlag) == "" {
+			return errors.New("--org <login> and --name <name> are required")
 		}
-
-		fmt.Printf("Open this link to register the machine (code pre-filled):\n\n    %s/nodes?register=%s\n\nOr go to the portal Nodes page and paste the code manually:  %s\n\nWaiting for the portal to redeem the code (up to %d minutes)...\n",
-			portal, code, code, nodeRegTimeout)
-
-		nodeID, err := node.PollAndSaveNodeToken(base, code, time.Duration(nodeRegTimeout)*time.Minute)
+		gw, err := platformClient()
 		if err != nil {
 			return err
 		}
-
-		fmt.Printf("Node registered. nodeId=%s token saved to ~/.mesh/node-token\n", nodeID)
-		fmt.Println("Start the daemon with: mesh node start")
-
-		// Auto-push any un-adopted local agents. Best-effort; failure is logged,
-		// not returned.
-		token, tokErr := auth.LoadNodeToken()
-		if tokErr == nil && token != "" {
-			result := agentsync.SyncAll(base, token)
-			fmt.Println(result.String())
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		me, err := gw.SignIn(ctx)
+		if err != nil {
+			return err
 		}
+		org, err := gw.OrgByLogin(ctx, nodeOrgFlag)
+		if err != nil {
+			return err
+		}
+		slug := strings.TrimSpace(nodeSlugFlag)
+		if slug == "" {
+			slug = node.Slugify(nodeNameFlag)
+		}
+		if slug == "" {
+			return errors.New("--slug (or a --name that makes one) is required")
+		}
+		orgID, err := uuid.Parse(org.ID)
+		if err != nil {
+			return fmt.Errorf("org id %q: %w", org.ID, err)
+		}
+		if nodeCapacityFlag <= 0 {
+			nodeCapacityFlag = 1
+		}
+		cfg := &node.Config{Gateway: gw.BaseURL, OrgLogin: org.Login, OrgID: org.ID, AccountID: org.AccountID, OwnerID: me,
+			Slug: slug, Name: strings.TrimSpace(nodeNameFlag), NodeID: gateway.NodeID(orgID, slug).String(), Capacity: nodeCapacityFlag}
+		if err := gw.RegisterNode(ctx, gateway.RegisterNodeInput{NodeID: cfg.NodeID, OrgID: cfg.OrgID, OwnerID: me, Name: cfg.Name, Slug: slug,
+			Harnesses: []string{"claude-code"}, Capacity: cfg.Capacity, Version: version.Version}); err != nil {
+			return err
+		}
+		if err := cfg.Save(); err != nil {
+			return err
+		}
+		path, _ := node.ConfigPath()
+		fmt.Printf("Registered node %s (%s) for %s: id %s, capacity %d. Saved %s.\nStart it with: mesh node start\n", cfg.Name, slug, org.Login, cfg.NodeID, cfg.Capacity, path)
+		return nil
+	},
+}
 
+var nodeStatusCmd = &cobra.Command{
+	Use:   "status",
+	Short: "Heartbeat once and list the org's nodes",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfg, err := node.LoadConfig()
+		if err != nil {
+			return err
+		}
+		gw, err := platformClient()
+		if err != nil {
+			return err
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := gw.HeartbeatNode(ctx, cfg.NodeID, version.Version, 0); err != nil {
+			return fmt.Errorf("heartbeat: %w", err)
+		}
+		nodes, err := gw.Nodes(ctx, cfg.OrgID)
+		if err != nil {
+			return err
+		}
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "NAME\tSLUG\tSTATUS\tRUNNING\tCAPACITY\tVERSION\tLAST_SEEN")
+		for _, n := range nodes {
+			mark := ""
+			if n.ID == cfg.NodeID {
+				mark = " *"
+			}
+			fmt.Fprintf(w, "%s%s\t%s\t%s\t%d\t%d\t%s\t%s\n", n.Name, mark, n.Slug, n.Status, n.Running, n.Capacity, n.Version, n.LastSeenAt)
+		}
+		return w.Flush()
+	},
+}
+
+var nodeLogoutCmd = &cobra.Command{
+	Use:   "logout",
+	Short: "Remove ~/.mesh/token",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := auth.ClearToken(); err != nil {
+			return err
+		}
+		fmt.Println("Token removed. Revoke it on the console under Settings → Tokens.")
 		return nil
 	},
 }
 
 var nodeStartCmd = &cobra.Command{
 	Use:   "start",
-	Short: "Run the Mesh node daemon in the foreground",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		base := resolveBaseURL(nodeBaseURLFlag)
-		addr := nodeGrpcAddrFlag
-		if strings.TrimSpace(addr) == "" {
-			addr = defaultGrpcAddrFor(base)
-		}
-		fmt.Printf("Starting mesh node daemon baseUrl=%s grpcAddr=%s\n", base, addr)
-		return runDaemon(base, addr)
-	},
-}
+	Short: "Run the node in the foreground (channel mode by default; --mode poll for claude -p per item)",
+	Long: `Every --interval the node heartbeats, lists the org's ready work items and
+claims up to its capacity. In channel mode (the default) one persistent
+claude session runs with the mesh channel attached and each claimed item
+is pushed into it as a work_item.ready event; the session reports back
+through the channel's tools. In poll mode each claimed item runs its own
+"claude -p" session and the node reports, pushes and finishes for it.
 
-var nodeStatusCmd = &cobra.Command{
-	Use:   "status",
-	Short: "List your registered nodes and their last-seen status",
+Channels are a Claude Code research preview: the session is started with
+--dangerously-load-development-channels server:mesh and needs claude.ai
+(Max) or Console auth — not Bedrock/Vertex. --unattended adds
+--dangerously-skip-permissions so the session never waits on a prompt;
+only use it on a machine you trust with that.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		sess, err := requireSession()
+		cfg, err := node.LoadConfig()
 		if err != nil {
 			return err
 		}
-		base := resolveBaseURL(nodeBaseURLFlag)
-		if base == "" {
-			base = sess.BaseURL
-		}
-		sessCopy := *sess
-		sessCopy.BaseURL = base
-		client := newMeshClientForSession(&sessCopy)
-		var resp struct {
-			OK    bool `json:"ok"`
-			Nodes []struct {
-				ID         string  `json:"id"`
-				Name       string  `json:"name"`
-				Slug       string  `json:"slug"`
-				Status     string  `json:"status"`
-				LastSeenAt *string `json:"last_seen_at"`
-				OwnerID    string  `json:"owner_id"`
-				Version    *string `json:"version"`
-			} `json:"nodes"`
-		}
-		if err := client.doRequest("GET", "/node/list", nil, &resp); err != nil {
+		gw, err := platformClient()
+		if err != nil {
 			return err
+		}
+		workRoot, err := node.WorkRoot()
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(workRoot, 0o755); err != nil {
+			return err
+		}
+		logger := log.New(os.Stderr, "mesh node: ", log.LstdFlags)
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+
+		regCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		err = gw.RegisterNode(regCtx, gateway.RegisterNodeInput{NodeID: cfg.NodeID, OrgID: cfg.OrgID, OwnerID: cfg.OwnerID, Name: cfg.Name, Slug: cfg.Slug,
+			Harnesses: []string{"claude-code"}, Capacity: cfg.Capacity, Version: version.Version})
+		cancel()
+		if err != nil {
+			return fmt.Errorf("register node: %w", err)
 		}
 
-		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, "NAME\tSLUG\tSTATUS\tLAST_SEEN")
-		found := 0
-		for _, n := range resp.Nodes {
-			if n.OwnerID != sess.UserID {
-				continue
-			}
-			found++
-			last := "-"
-			if n.LastSeenAt != nil {
-				last = *n.LastSeenAt
-			}
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", n.Name, n.Slug, n.Status, last)
+		loop := &node.Loop{GW: gw, Cfg: cfg, Version: version.Version, Harness: "claude-code", Interval: nodeIntervalFlag, Log: logger}
+		switch nodeModeFlag {
+		case "poll":
+			return runPollMode(ctx, cfg, gw, loop, workRoot, logger)
+		case "channel", "":
+			return runChannelMode(ctx, cfg, gw, loop, workRoot, logger)
+		default:
+			return fmt.Errorf("--mode must be channel or poll")
 		}
-		if err := w.Flush(); err != nil {
-			return err
-		}
-		if found == 0 {
-			fmt.Println("No nodes registered to your account. Run `mesh node register` to pair this machine.")
-		}
-		return nil
 	},
 }
 
-var nodeLogoutCmd = &cobra.Command{
-	Use:   "logout",
-	Short: "Clear the saved node token from this machine",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := auth.ClearNodeToken(); err != nil {
-			return err
-		}
-		fmt.Println("Node token cleared from ~/.mesh/node-token")
-		fmt.Println("To revoke the token server-side, use the portal's node-detail page.")
+func runPollMode(ctx context.Context, cfg *node.Config, gw *gateway.Client, loop *node.Loop, workRoot string, logger *log.Logger) error {
+	h := &harness.ClaudeCode{Stderr: os.Stderr}
+	if nodeUnattended {
+		h.ExtraArgs = []string{"--dangerously-skip-permissions"}
+	}
+	runner := &node.Runner{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, WorkRoot: workRoot, MaxBudgetUSD: nodeMaxBudgetFlag, Log: logger}
+	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) { _ = runner.RunItem(ctx, item) }
+	logger.Printf("poll mode: node %s (%s) for %s, capacity %d, every %s", cfg.Name, cfg.Slug, cfg.OrgLogin, cfg.Capacity, loop.Interval)
+	if nodeOnceFlag {
+		loop.Tick(ctx)
 		return nil
-	},
+	}
+	err := loop.Run(ctx)
+	if errors.Is(err, context.Canceled) {
+		logger.Printf("stopped; running items were left for a retry")
+		return nil
+	}
+	return err
+}
+
+func runChannelMode(ctx context.Context, cfg *node.Config, gw *gateway.Client, loop *node.Loop, workRoot string, logger *log.Logger) error {
+	sock, err := channel.SockPath()
+	if err != nil {
+		return err
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	// each claimed item is a slot held until the session reports it done
+	type slot struct{ done chan string }
+	slots := map[string]*slot{}
+	var mu sync.Mutex
+	hub := &channel.Hub{OnDone: func(itemID, outcome string) {
+		mu.Lock()
+		s := slots[itemID]
+		delete(slots, itemID)
+		mu.Unlock()
+		if s != nil {
+			s.done <- outcome
+		}
+	}}
+	if err := hub.Listen(sock); err != nil {
+		return fmt.Errorf("channel hub: %w", err)
+	}
+	defer hub.Close()
+
+	var sessMu sync.Mutex
+	sessionID := ""
+	push := func(content string, meta map[string]string) {
+		sessMu.Lock()
+		if sessionID != "" {
+			meta["session_id"] = sessionID
+		}
+		sessMu.Unlock()
+		hub.Push(content, meta)
+	}
+
+	ws := &node.Git{Log: os.Stderr}
+	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) {
+		res, err := node.Resolve(ctx, gw, item)
+		if err != nil {
+			logger.Printf("item %s: resolve: %v", item.ID, err)
+			_ = gw.FailWorkItem(ctx, item.ID, "resolve: "+err.Error())
+			return
+		}
+		spec := node.WorkspaceSpec{Root: workRoot, GoalSlug: res.Goal.Slug, Seq: item.Seq, Repo: res.Repo.FullName(), Branch: res.Branch(), BaseRef: res.BaseRef()}
+		dir, err := ws.Prepare(ctx, spec)
+		if err != nil {
+			logger.Printf("item %s: workspace: %v (the session will retry the clone)", item.ID, err)
+			dir = spec.Dir()
+		}
+		s := &slot{done: make(chan string, 1)}
+		mu.Lock()
+		slots[item.ID] = s
+		mu.Unlock()
+		content, meta := channel.ReadyEvent(res, dir)
+		push(content, meta)
+		logger.Printf("item %s/%d pushed to the session", res.Goal.Slug, item.Seq)
+		select {
+		case outcome := <-s.done:
+			logger.Printf("item %s/%d %s", res.Goal.Slug, item.Seq, outcome)
+		case <-ctx.Done():
+		}
+	}
+
+	handlerSession := &channel.Session{Cfg: cfg, WorkDir: filepath.Join(workRoot, cfg.Slug), Exe: exe, SockPath: sock, Unattended: nodeUnattended, Stderr: os.Stderr, Log: logger,
+		OnSessionID: func(id string) { sessMu.Lock(); sessionID = id; sessMu.Unlock() },
+		OnText:      func(t string) { logger.Printf("session: %s", firstLine(t)) }}
+
+	logger.Printf("channel mode: node %s (%s) for %s, capacity %d, every %s; session in %s", cfg.Name, cfg.Slug, cfg.OrgLogin, cfg.Capacity, loop.Interval, handlerSession.WorkDir)
+	go channel.WatchGoals(ctx, gw, cfg.OrgID, loop.Interval, func(kind string, g gateway.Goal) {
+		content, meta := channel.GoalEvent(kind, g)
+		push(content, meta)
+	})
+	go func() { _ = handlerSession.Run(ctx, workRoot) }()
+	err = loop.Run(ctx)
+	if errors.Is(err, context.Canceled) {
+		logger.Printf("stopped; claimed items were left for a retry")
+		return nil
+	}
+	return err
+}
+
+func firstLine(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i] + " …"
+	}
+	if len(s) > 200 {
+		s = s[:199] + "…"
+	}
+	return s
 }
 
 func init() {
-	nodeRegisterCmd.Flags().StringVar(&nodeBaseURLFlag, "base-url", "", "Mesh API base URL (defaults to saved session)")
-	nodeRegisterCmd.Flags().IntVar(&nodeRegTimeout, "timeout-minutes", 10, "Minutes to wait for portal to redeem the code")
-
-	nodeStartCmd.Flags().StringVar(&nodeBaseURLFlag, "base-url", "", "Mesh API base URL (defaults to saved session)")
-	nodeStartCmd.Flags().StringVar(&nodeGrpcAddrFlag, "grpc-addr", "", "gRPC host:port (default: grpc.<domain>:443 for an api.<domain> base-url, else host:8081)")
-
-	nodeStatusCmd.Flags().StringVar(&nodeBaseURLFlag, "base-url", "", "Mesh API base URL (defaults to saved session)")
-
-	nodeCmd.AddCommand(nodeRegisterCmd, nodeStartCmd, nodeStatusCmd, nodeLogoutCmd)
-}
-
-func resolveBaseURL(flag string) string {
-	if v := strings.TrimSpace(flag); v != "" {
-		return normalizeBaseURL(v)
+	for _, c := range []*cobra.Command{nodeLoginCmd, nodeRegisterCmd, nodeStatusCmd, nodeStartCmd} {
+		c.Flags().StringVar(&gatewayFlag, "gateway", "", "platform gateway URL (default "+gateway.DefaultURL+", or MESH_GATEWAY)")
 	}
-	if sess, err := auth.LoadSession(); err == nil && sess.BaseURL != "" {
-		return normalizeBaseURL(sess.BaseURL)
-	}
-	if v := strings.TrimSpace(os.Getenv("MESH_API_URL")); v != "" {
-		return normalizeBaseURL(v)
-	}
-	return "https://api.projectmesh.io"
-}
-
-func derivePortalURL(baseURL string) string {
-	u, err := url.Parse(baseURL)
-	if err != nil || u.Host == "" {
-		return "https://app.projectmesh.io"
-	}
-	host := u.Host
-	if strings.HasPrefix(host, "api.") {
-		host = "app." + strings.TrimPrefix(host, "api.")
-	}
-	return fmt.Sprintf("%s://%s", u.Scheme, host)
-}
-
-func defaultGrpcAddrFor(baseURL string) string {
-	u, err := url.Parse(baseURL)
-	if err != nil || u.Host == "" {
-		return "127.0.0.1:8081"
-	}
-	host := u.Hostname()
-	// Production: the HTTP API is on api.<domain> behind a Cloudflare tunnel, and
-	// gRPC is exposed at grpc.<domain> through the SAME tunnel on the standard
-	// HTTPS port (:443, HTTP/2 origin) — Cloudflare terminates TLS, and dialGrpc
-	// uses system root CAs for the non-local host. So for the api.<domain>
-	// convention, swap the prefix AND use :443.
-	if rest, ok := strings.CutPrefix(host, "api."); ok {
-		return fmt.Sprintf("grpc.%s:443", rest)
-	}
-	// localhost / bare hostname (dev or a direct origin): mesh-api's gRPC server
-	// listens on :8081 (plaintext h2c for localhost; see dialGrpc).
-	return fmt.Sprintf("%s:8081", host)
-}
-
-// runDaemon delegates to internal/daemon.
-func runDaemon(baseURL, grpcAddr string) error {
-	return idaemon.RunDaemon(baseURL, grpcAddr, probeLocalNodeID)
+	nodeRegisterCmd.Flags().StringVar(&nodeOrgFlag, "org", "", "the org's GitHub login")
+	nodeRegisterCmd.Flags().StringVar(&nodeNameFlag, "name", "", "the node's name as the console shows it")
+	nodeRegisterCmd.Flags().StringVar(&nodeSlugFlag, "slug", "", "the node's slug (default: from --name); the node id derives from it")
+	nodeRegisterCmd.Flags().IntVar(&nodeCapacityFlag, "capacity", 1, "concurrent sessions")
+	nodeStartCmd.Flags().DurationVar(&nodeIntervalFlag, "interval", 30*time.Second, "heartbeat and claim interval")
+	nodeStartCmd.Flags().Float64Var(&nodeMaxBudgetFlag, "max-budget-usd", 10, "cap on one session's budget (poll mode), whatever the goal has left")
+	nodeStartCmd.Flags().StringVar(&nodeModeFlag, "mode", "channel", "channel (one persistent session fed by the mesh channel) or poll (claude -p per item)")
+	nodeStartCmd.Flags().BoolVar(&nodeUnattended, "unattended", false, "run sessions with --dangerously-skip-permissions (trusted machines only)")
+	nodeStartCmd.Flags().BoolVar(&nodeOnceFlag, "once", false, "poll mode: one tick, then exit")
+	nodeCmd.AddCommand(nodeLoginCmd, nodeRegisterCmd, nodeStartCmd, nodeStatusCmd, nodeLogoutCmd)
 }

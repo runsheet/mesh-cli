@@ -22,7 +22,6 @@ import (
 	isnap "projectmesh.io/mesh-cli/internal/snapshot"
 	"projectmesh.io/mesh-cli/internal/state"
 	itpl "projectmesh.io/mesh-cli/internal/template"
-	meshv1 "projectmesh.io/mesh-cli/proto/meshv1"
 )
 
 // Deps holds callbacks for helpers that live in internal/daemon (which
@@ -1186,18 +1185,7 @@ func normalizeBaseURL(raw string) string {
 	return strings.TrimRight(strings.TrimSpace(raw), "/")
 }
 
-func stateName(state meshv1.SessionState) string {
-	switch state {
-	case meshv1.SessionState_SESSION_STATE_RUNNING:
-		return "running"
-	case meshv1.SessionState_SESSION_STATE_EXITED:
-		return "exited"
-	case meshv1.SessionState_SESSION_STATE_CRASHED:
-		return "crashed"
-	default:
-		return "unknown"
-	}
-}
+func stateName(state sessions.SessionState) string { return state.String() }
 
 // -- peers daemon handlers --
 

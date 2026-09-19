@@ -18,6 +18,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"projectmesh.io/mesh-cli/internal/auth"
+	"projectmesh.io/mesh-cli/internal/gateway"
 )
 
 var (
@@ -34,8 +35,16 @@ var authCmd = &cobra.Command{
 	Short: "Authentication commands",
 }
 
+var authTokenCmd = &cobra.Command{
+	Use:   "token <rs_token>",
+	Short: "Save a runsheet console token (Settings → Tokens) to ~/.mesh/token — the node's and the goal commands' bearer",
+	Args:  cobra.ExactArgs(1),
+	RunE:  func(cmd *cobra.Command, args []string) error { return saveToken(args[0]) },
+}
+
 func init() {
-	authCmd.AddCommand(authLoginCmd, authTokenLoginCmd, authWhoamiCmd, authLogoutCmd)
+	authTokenCmd.Flags().StringVar(&gatewayFlag, "gateway", "", "platform gateway URL (default "+gateway.DefaultURL+", or MESH_GATEWAY)")
+	authCmd.AddCommand(authTokenCmd, authLoginCmd, authTokenLoginCmd, authWhoamiCmd, authLogoutCmd)
 	authLoginCmd.Flags().StringVar(&baseURLFlag, "baseUrl", "https://api.projectmesh.io", "Base URL of the mesh API")
 	authLoginCmd.Flags().IntVar(&browserTimeoutSec, "timeout", 180, "Seconds to wait for the browser login callback")
 	authLoginCmd.Flags().BoolVar(&noBrowserFlag, "no-browser", false, "Print the login URL instead of opening it automatically")

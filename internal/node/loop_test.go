@@ -1,0 +1,275 @@
+package node
+
+import (
+	"context"
+	"log"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+
+	"projectmesh.io/mesh-cli/internal/gateway"
+	"projectmesh.io/mesh-cli/internal/gateway/gatewaytest"
+	"projectmesh.io/mesh-cli/internal/harness"
+)
+
+const (
+	orgID  = "0f3b8a1e-2c4d-4e6f-8a9b-0c1d2e3f4a5b"
+	acctID = "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+	projID = "bbbbbbbb-1111-4111-8111-bbbbbbbbbbbb"
+	repoID = "cccccccc-1111-4111-8111-cccccccccccc"
+	goalID = "dddddddd-1111-4111-8111-dddddddddddd"
+	item1  = "eeeeeeee-1111-4111-8111-eeeeeeeeeeee"
+	item2  = "ffffffff-1111-4111-8111-ffffffffffff"
+)
+
+// Seed fills a fake with one org, project, repo, goal and two items (the
+// first ready, the second pending).
+func seed(t *testing.T) *gatewaytest.Fake {
+	t.Helper()
+	f := gatewaytest.New("rs_test")
+	f.Orgs = []map[string]any{{"id": orgID, "login": "acme", "accountId": acctID}}
+	f.Accounts[acctID] = map[string]any{"id": acctID, "login": "acme"}
+	f.Projects[projID] = map[string]any{"id": projID, "orgId": orgID, "slug": "mesh", "name": "Mesh"}
+	f.Repos[repoID] = map[string]any{"id": repoID, "accountId": acctID, "name": "widgets", "defaultBranch": "main"}
+	f.Goals[goalID] = map[string]any{"id": goalID, "orgId": orgID, "projectId": projID, "slug": "ship-it", "title": "Ship it",
+		"statement": "Make the thing.", "acceptance": "go test ./... passes", "budgetCents": 1000, "spentCents": 100, "status": "running"}
+	f.WorkItems[item1] = map[string]any{"id": item1, "goalId": goalID, "orgId": orgID, "seq": 1, "title": "Write the failing test",
+		"brief": "A test for the thing.", "acceptance": "the test fails", "repoId": repoID, "baseRef": "main", "status": "ready", "dependsOn": []string{}}
+	f.WorkItems[item2] = map[string]any{"id": item2, "goalId": goalID, "orgId": orgID, "seq": 2, "title": "Make it pass",
+		"brief": "Implement.", "acceptance": "go test passes", "repoId": repoID, "baseRef": "main", "status": "pending", "dependsOn": []string{item1}}
+	f.Documents["acme/mesh"] = []map[string]any{
+		{"slug": "adr-001", "title": "ADR 001", "kind": "adr", "repo": "acme/widgets", "path": "specs/adr-001.md"},
+		{"slug": "prd", "title": "PRD", "kind": "prd", "repo": "acme/widgets", "path": "specs/prd.md"},
+		{"slug": "agents", "title": "AGENTS.md", "kind": "instructions", "repo": "acme/widgets", "path": "AGENTS.md"},
+		{"slug": "notes", "title": "Notes", "kind": "spec", "repo": "acme/widgets", "path": "specs/notes.md"},
+	}
+	f.Bodies["acme/mesh/adr-001"] = "# ADR 001"
+	f.Bodies["acme/mesh/prd"] = "# PRD"
+	f.Bodies["acme/mesh/agents"] = "# AGENTS"
+	t.Cleanup(f.Close)
+	return f
+}
+
+type fakeWS struct {
+	mu       sync.Mutex
+	root     string
+	prepared []WorkspaceSpec
+	pushed   []string
+	commits  []string
+}
+
+func (w *fakeWS) Prepare(_ context.Context, spec WorkspaceSpec) (string, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.prepared = append(w.prepared, spec)
+	dir := spec.Dir()
+	return dir, os.MkdirAll(dir, 0o755)
+}
+
+func (w *fakeWS) Commit(_ context.Context, dir string, paths []string, msg string) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.commits = append(w.commits, msg+" ["+strings.Join(paths, ",")+"]")
+	return nil
+}
+
+func (w *fakeWS) Push(_ context.Context, dir, branch string) (string, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.pushed = append(w.pushed, branch)
+	return "abc123def456", nil
+}
+
+type fakeHarness struct {
+	mu   sync.Mutex
+	jobs []harness.Job
+	fail bool
+}
+
+func (h *fakeHarness) Name() string { return "claude-code" }
+func (h *fakeHarness) Run(ctx context.Context, job harness.Job, on func(harness.Progress)) (harness.Result, error) {
+	h.mu.Lock()
+	h.jobs = append(h.jobs, job)
+	h.mu.Unlock()
+	on(harness.Progress{SessionID: "s-1"})
+	on(harness.Progress{Text: "wrote the test", CostUSD: 0.5})
+	if h.fail {
+		return harness.Result{Success: false, Text: "could not", CostUSD: 0.75, SessionID: "s-1"}, nil
+	}
+	on(harness.Progress{Text: "done", CostUSD: 1.25})
+	return harness.Result{Success: true, Text: "Implemented and tested.", CostUSD: 1.25, SessionID: "s-1"}, nil
+}
+
+func TestLoopClaimsRunsAndFinishes(t *testing.T) {
+	f := seed(t)
+	gw := gateway.New(f.URL(), "rs_test")
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "test-node", NodeID: gateway.NodeID(mustUUID(orgID), "test-node").String(), Capacity: 2}
+	if err := gw.RegisterNode(context.Background(), gateway.RegisterNodeInput{NodeID: cfg.NodeID, OrgID: orgID, OwnerID: f.UserID, Name: "n", Slug: "test-node", Harnesses: []string{"claude-code"}, Capacity: 2, Version: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	ws := &fakeWS{root: t.TempDir()}
+	h := &fakeHarness{}
+	runner := &Runner{GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, MaxBudgetUSD: 5, ProgressEvery: 10 * time.Millisecond, Log: log.New(os.Stderr, "", 0)}
+	loop := &Loop{GW: gw, Cfg: cfg, Version: "test", Harness: "claude-code", Interval: time.Hour, Log: runner.Log,
+		Dispatch: func(ctx context.Context, item gateway.WorkItem) { _ = runner.RunItem(ctx, item) }}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	loop.Tick(ctx)
+	waitFor(t, func() bool { return f.Item(item1)["status"] == "evaluating" })
+
+	row := f.Item(item1)
+	if row["branch"] != "mesh/ship-it-1" || row["headSha"] != "abc123def456" || row["nodeId"] != cfg.NodeID {
+		t.Fatalf("finished row: %v", row)
+	}
+	if got := row["costCents"]; got != 125 {
+		t.Fatalf("cost folded = %v, want 125 (deltas: progress + finish)", got)
+	}
+	if f.Item(item2)["status"] != "pending" {
+		t.Fatal("the pending item must not be claimed")
+	}
+	if hb := f.CallsNamed("heartbeatNode"); len(hb) != 1 || hb[0].Input["running"] != float64(0) {
+		t.Fatalf("heartbeat calls: %+v", hb)
+	}
+	progress := f.CallsNamed("reportWorkItemProgress")
+	if len(progress) < 2 || progress[0].Input["sessionId"] != "" || progress[len(progress)-1].Input["sessionId"] != "s-1" {
+		t.Fatalf("progress calls: %+v", progress)
+	}
+	fin := f.CallsNamed("finishWorkItem")
+	if len(fin) != 1 || fin[0].Input["branch"] != "mesh/ship-it-1" {
+		t.Fatalf("finish calls: %+v", fin)
+	}
+	if len(f.CallsNamed("failWorkItem")) != 0 {
+		t.Fatal("must not fail a finished item")
+	}
+
+	// the workspace, the branch and the budget
+	if len(ws.prepared) != 1 || ws.prepared[0].Repo != "acme/widgets" || ws.prepared[0].Branch != "mesh/ship-it-1" || ws.prepared[0].BaseRef != "main" {
+		t.Fatalf("prepared: %+v", ws.prepared)
+	}
+	if len(ws.pushed) != 1 || ws.pushed[0] != "mesh/ship-it-1" {
+		t.Fatalf("pushed: %v", ws.pushed)
+	}
+	if len(h.jobs) != 1 || h.jobs[0].MaxBudgetUSD != 5 || h.jobs[0].Kind != harness.KindBuild || !strings.Contains(h.jobs[0].Prompt, "Write the failing test") {
+		t.Fatalf("job: %+v", h.jobs)
+	}
+	// the context: instructions, adr and prd written; the spec skipped
+	dir := ws.prepared[0].Dir()
+	entries, _ := os.ReadDir(filepath.Join(dir, ContextDir))
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	if strings.Join(names, ",") != "adr-adr-001.md,instructions-acme-widgets-agents.md,prd-prd.md" {
+		t.Fatalf("context files: %v", names)
+	}
+	if !strings.Contains(h.jobs[0].Prompt, "instructions-acme-widgets-agents.md, adr-adr-001.md, prd-prd.md") {
+		t.Fatalf("prompt must list the context in reading order:\n%s", h.jobs[0].Prompt)
+	}
+	// the goal document, committed on the branch with the PRD as parent
+	doc, err := os.ReadFile(GoalDocPath(dir, "ship-it"))
+	if err != nil || !strings.Contains(string(doc), "parent: prd\n") || !strings.Contains(string(doc), "· item 1 · Implemented and tested.") {
+		t.Fatalf("goal doc: %v\n%s", err, doc)
+	}
+	if len(ws.commits) != 2 || !strings.HasPrefix(ws.commits[0], "docs(mesh): goal ship-it — item 1 [specs/goal-ship-it.md]") {
+		t.Fatalf("commits: %v", ws.commits)
+	}
+	// a second tick claims nothing new and reports nothing running
+	loop.Tick(ctx)
+	if hb := f.CallsNamed("heartbeatNode"); len(hb) != 2 || len(f.CallsNamed("claimWorkItem")) != 1 {
+		t.Fatalf("second tick: heartbeats=%d claims=%d", len(hb), len(f.CallsNamed("claimWorkItem")))
+	}
+}
+
+func TestLoopSkipsRefusedClaim(t *testing.T) {
+	f := seed(t)
+	f.Refuse["claimWorkItem"] = "item is claimed, not ready"
+	gw := gateway.New(f.URL(), "rs_test")
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: 1}
+	_ = gw.RegisterNode(context.Background(), gateway.RegisterNodeInput{NodeID: cfg.NodeID, OrgID: orgID, OwnerID: f.UserID, Name: "n", Slug: "n"})
+	dispatched := 0
+	loop := &Loop{GW: gw, Cfg: cfg, Interval: time.Hour, Dispatch: func(context.Context, gateway.WorkItem) { dispatched++ }}
+	loop.Tick(context.Background())
+	if dispatched != 0 || loop.Running() != 0 {
+		t.Fatalf("a refused claim must not run: dispatched=%d running=%d", dispatched, loop.Running())
+	}
+}
+
+func TestRunnerFailsAnUnsuccessfulSession(t *testing.T) {
+	f := seed(t)
+	gw := gateway.New(f.URL(), "rs_test")
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: 1}
+	if err := gw.ClaimWorkItem(context.Background(), item1, cfg.NodeID, "claude-code"); err != nil {
+		t.Fatal(err)
+	}
+	ws := &fakeWS{root: t.TempDir()}
+	runner := &Runner{GW: gw, Harness: &fakeHarness{fail: true}, WS: ws, Cfg: cfg, WorkRoot: ws.root, ProgressEvery: time.Hour}
+	var item gateway.WorkItem
+	item.ID, item.GoalID, item.RepoID, item.Seq, item.Title = item1, goalID, repoID, 1, "Write the failing test"
+	if err := runner.RunItem(context.Background(), item); err == nil {
+		t.Fatal("expected an error")
+	}
+	if row := f.Item(item1); row["status"] != "failed" || !strings.Contains(row["lastError"].(string), "could not") {
+		t.Fatalf("row: %v", row)
+	}
+	if len(ws.pushed) != 0 {
+		t.Fatal("a failed item must not be pushed")
+	}
+	// the goal's remaining budget bounds the session: (1000-100)/100 = 9
+	if b := runner.Budget(&gateway.Goal{BudgetCents: 1000, SpentCents: 100}); b != 9 {
+		t.Fatalf("budget = %v", b)
+	}
+	runner.MaxBudgetUSD = 2
+	if b := runner.Budget(&gateway.Goal{BudgetCents: 1000, SpentCents: 100}); b != 2 {
+		t.Fatalf("capped budget = %v", b)
+	}
+}
+
+func TestRunnerLeavesItemOnShutdown(t *testing.T) {
+	f := seed(t)
+	gw := gateway.New(f.URL(), "rs_test")
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: 1}
+	_ = gw.ClaimWorkItem(context.Background(), item1, cfg.NodeID, "claude-code")
+	ws := &fakeWS{root: t.TempDir()}
+	ctx, cancel := context.WithCancel(context.Background())
+	blocking := harnessFunc(func(ctx context.Context, job harness.Job, on func(harness.Progress)) (harness.Result, error) {
+		cancel()
+		<-ctx.Done()
+		return harness.Result{}, ctx.Err()
+	})
+	runner := &Runner{GW: gw, Harness: blocking, WS: ws, Cfg: cfg, WorkRoot: ws.root, ProgressEvery: time.Hour}
+	var item gateway.WorkItem
+	item.ID, item.GoalID, item.RepoID, item.Seq = item1, goalID, repoID, 1
+	if err := runner.RunItem(ctx, item); err != context.Canceled {
+		t.Fatalf("err = %v", err)
+	}
+	if row := f.Item(item1); row["status"] == "failed" {
+		t.Fatal("our own shutdown must not fail the item")
+	}
+}
+
+type harnessFunc func(context.Context, harness.Job, func(harness.Progress)) (harness.Result, error)
+
+func (h harnessFunc) Name() string { return "fake" }
+func (h harnessFunc) Run(ctx context.Context, job harness.Job, on func(harness.Progress)) (harness.Result, error) {
+	return h(ctx, job, on)
+}
+
+func waitFor(t *testing.T, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("condition not met in time")
+}
+
+func mustUUID(s string) uuid.UUID { return uuid.MustParse(s) }
