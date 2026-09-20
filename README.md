@@ -56,8 +56,19 @@ What happens to a claimed item depends on the mode.
 `~/.mesh/work/<node-slug>` with the Mesh channel attached:
 
 ```
-claude -p … --output-format stream-json --dangerously-load-development-channels server:mesh --append-system-prompt …
+claude -p --input-format stream-json --output-format stream-json --verbose --dangerously-load-development-channels server:mesh --append-system-prompt …
 ```
+
+A print-mode session ends with its turn and channel events only arrive
+while a session is open, so the session runs in streaming-input mode with
+its stdin held open until the node stops: it waits for user messages, and
+each event is delivered twice — as the channel notification and as a
+`[mesh event …]` user message on stdin, so the item is worked even if the
+notification is missed. A `result` event on the stream is a turn's end
+(logged for cost), not the session's. The daemon restarts the session only
+when the process exits; on its own start and after every session restart
+it takes up every item this node still holds in `claimed`/`running` (those
+with no progress in the last interval) and pushes them again.
 
 The daemon serves the channel to Claude Code as a stdio MCP server
 (`mesh channel serve`, registered for that folder in `~/.claude.json`) and

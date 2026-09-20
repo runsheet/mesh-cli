@@ -252,8 +252,13 @@ func runChannelMode(ctx context.Context, cfg *node.Config, gw *gateway.Client, l
 	if err != nil {
 		return err
 	}
-	// each claimed item is a slot held until the session reports it done
-	type slot struct{ done chan string }
+	// each held item is a slot: its event, kept for a re-push, and the
+	// outcome the session reports through the channel's tools
+	type slot struct {
+		content string
+		meta    map[string]string
+		done    chan string
+	}
 	slots := map[string]*slot{}
 	var mu sync.Mutex
 	hub := &channel.Hub{OnDone: func(itemID, outcome string) {
@@ -270,8 +275,14 @@ func runChannelMode(ctx context.Context, cfg *node.Config, gw *gateway.Client, l
 	}
 	defer hub.Close()
 
+	sess := &channel.Session{Cfg: cfg, WorkDir: filepath.Join(workRoot, cfg.Slug), Exe: exe, SockPath: sock, Unattended: nodeUnattended, Stderr: os.Stderr, Log: logger,
+		OnText: func(t string) { logger.Printf("session: %s", firstLine(t)) }}
 	var sessMu sync.Mutex
 	sessionID := ""
+	sess.OnSessionID = func(id string) { sessMu.Lock(); sessionID = id; sessMu.Unlock() }
+	// an event goes both ways: the channel notification and a user
+	// message on the session's stdin, so it is worked even if the
+	// notification is missed
 	push := func(content string, meta map[string]string) {
 		sessMu.Lock()
 		if sessionID != "" {
@@ -279,6 +290,9 @@ func runChannelMode(ctx context.Context, cfg *node.Config, gw *gateway.Client, l
 		}
 		sessMu.Unlock()
 		hub.Push(content, meta)
+		if err := sess.Send(channel.UserMessage(content, meta)); err != nil {
+			logger.Printf("session stdin: %v (the channel still has it)", err)
+		}
 	}
 
 	ws := &node.Git{Log: os.Stderr}
@@ -295,11 +309,11 @@ func runChannelMode(ctx context.Context, cfg *node.Config, gw *gateway.Client, l
 			logger.Printf("item %s: workspace: %v (the session will retry the clone)", item.ID, err)
 			dir = spec.Dir()
 		}
-		s := &slot{done: make(chan string, 1)}
+		content, meta := channel.ReadyEvent(res, dir)
+		s := &slot{content: content, meta: meta, done: make(chan string, 1)}
 		mu.Lock()
 		slots[item.ID] = s
 		mu.Unlock()
-		content, meta := channel.ReadyEvent(res, dir)
 		push(content, meta)
 		logger.Printf("item %s/%d pushed to the session", res.Goal.Slug, item.Seq)
 		select {
@@ -309,22 +323,78 @@ func runChannelMode(ctx context.Context, cfg *node.Config, gw *gateway.Client, l
 		}
 	}
 
-	handlerSession := &channel.Session{Cfg: cfg, WorkDir: filepath.Join(workRoot, cfg.Slug), Exe: exe, SockPath: sock, Unattended: nodeUnattended, Stderr: os.Stderr, Log: logger,
-		OnSessionID: func(id string) { sessMu.Lock(); sessionID = id; sessMu.Unlock() },
-		OnText:      func(t string) { logger.Printf("session: %s", firstLine(t)) }}
+	// repush takes up every item this node holds on the platform: those
+	// already in a slot are pushed again (a restarted session lost them),
+	// those without one (a restarted daemon) are adopted unless someone
+	// reported progress on them within the last interval.
+	repush := func(ctx context.Context, all bool) {
+		var held []gateway.WorkItem
+		for _, status := range []string{"claimed", "running"} {
+			items, err := gw.OrgWorkItems(ctx, cfg.OrgID, status)
+			if err != nil {
+				logger.Printf("list held items: %v", err)
+				return
+			}
+			for _, it := range items {
+				if it.NodeID == cfg.NodeID {
+					held = append(held, it)
+				}
+			}
+		}
+		for _, it := range held {
+			mu.Lock()
+			s := slots[it.ID]
+			mu.Unlock()
+			if s != nil {
+				if all {
+					push(s.content, s.meta)
+					logger.Printf("item %s re-pushed to the session", it.ID)
+				}
+				continue
+			}
+			if !all && recentProgress(it.HeartbeatAt, loop.Interval) {
+				continue
+			}
+			loop.Adopt(ctx, it)
+		}
+	}
+	sess.OnStart = func() {
+		time.Sleep(2 * time.Second) // let the channel server attach
+		repush(ctx, true)
+	}
+	loop.AfterTick = func(ctx context.Context) { repush(ctx, false) }
 
-	logger.Printf("channel mode: node %s (%s) for %s, capacity %d, every %s; session in %s", cfg.Name, cfg.Slug, cfg.OrgLogin, cfg.Capacity, loop.Interval, handlerSession.WorkDir)
+	logger.Printf("channel mode: node %s (%s) for %s, capacity %d, every %s; session in %s", cfg.Name, cfg.Slug, cfg.OrgLogin, cfg.Capacity, loop.Interval, sess.WorkDir)
 	go channel.WatchGoals(ctx, gw, cfg.OrgID, loop.Interval, func(kind string, g gateway.Goal) {
 		content, meta := channel.GoalEvent(kind, g)
 		push(content, meta)
 	})
-	go func() { _ = handlerSession.Run(ctx, workRoot) }()
+	go func() { _ = sess.Run(ctx, workRoot) }()
 	err = loop.Run(ctx)
 	if errors.Is(err, context.Canceled) {
 		logger.Printf("stopped; claimed items were left for a retry")
 		return nil
 	}
 	return err
+}
+
+// recentProgress reports whether an item's last heartbeat is within the
+// interval — someone is working it.
+func recentProgress(heartbeatAt string, interval time.Duration) bool {
+	if heartbeatAt == "" {
+		return false
+	}
+	t, err := time.Parse(time.RFC3339Nano, heartbeatAt)
+	if err != nil {
+		t, err = time.Parse(time.RFC3339, heartbeatAt)
+	}
+	if err != nil {
+		return false
+	}
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+	return time.Since(t) < interval
 }
 
 func firstLine(s string) string {

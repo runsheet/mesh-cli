@@ -24,6 +24,8 @@ type Loop struct {
 	Dispatch func(ctx context.Context, item gateway.WorkItem)
 	// Release is called after Dispatch returns (optional).
 	Release func(item gateway.WorkItem)
+	// AfterTick runs at the end of every tick (optional).
+	AfterTick func(ctx context.Context)
 
 	mu      sync.Mutex
 	running map[string]bool
@@ -115,23 +117,48 @@ func (l *Loop) Tick(ctx context.Context) {
 		}
 		free--
 		l.logf("claimed item %d %q", item.Seq, item.Title)
-		l.mu.Lock()
-		l.running[item.ID] = true
-		l.mu.Unlock()
-		l.wg.Add(1)
-		go func(item gateway.WorkItem) {
-			defer l.wg.Done()
-			defer func() {
-				l.mu.Lock()
-				delete(l.running, item.ID)
-				l.mu.Unlock()
-				if l.Release != nil {
-					l.Release(item)
-				}
-			}()
-			if l.Dispatch != nil {
-				l.Dispatch(ctx, item)
-			}
-		}(item)
+		l.start(ctx, item)
 	}
+	if l.AfterTick != nil {
+		l.AfterTick(ctx)
+	}
+}
+
+// Adopt runs an item this node already holds on the platform (claimed
+// or running, after a restart) without claiming it again. It reports
+// whether the item was taken up (false when it is already running here).
+func (l *Loop) Adopt(ctx context.Context, item gateway.WorkItem) bool {
+	l.mu.Lock()
+	if l.running == nil {
+		l.running = map[string]bool{}
+	}
+	if l.running[item.ID] {
+		l.mu.Unlock()
+		return false
+	}
+	l.mu.Unlock()
+	l.logf("adopted held item %d %q", item.Seq, item.Title)
+	l.start(ctx, item)
+	return true
+}
+
+func (l *Loop) start(ctx context.Context, item gateway.WorkItem) {
+	l.mu.Lock()
+	l.running[item.ID] = true
+	l.mu.Unlock()
+	l.wg.Add(1)
+	go func() {
+		defer l.wg.Done()
+		defer func() {
+			l.mu.Lock()
+			delete(l.running, item.ID)
+			l.mu.Unlock()
+			if l.Release != nil {
+				l.Release(item)
+			}
+		}()
+		if l.Dispatch != nil {
+			l.Dispatch(ctx, item)
+		}
+	}()
 }

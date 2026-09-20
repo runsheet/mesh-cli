@@ -274,7 +274,7 @@ func TestGoalEventsAndSystemPrompt(t *testing.T) {
 	}
 	s := &Session{Cfg: &node.Config{Slug: "n", OrgLogin: "acme"}, Unattended: true}
 	args := strings.Join(s.Args("/w"), " ")
-	for _, want := range []string{"-p ", "--output-format stream-json", "--dangerously-load-development-channels server:mesh", "--append-system-prompt", "mesh_record(item_id, summary)", "--dangerously-skip-permissions"} {
+	for _, want := range []string{"-p --input-format stream-json", "--output-format stream-json", "--dangerously-load-development-channels server:mesh", "--append-system-prompt", "mesh_record(item_id, summary)", "--dangerously-skip-permissions"} {
 		if !strings.Contains(args, want) {
 			t.Errorf("args lack %q", want)
 		}
@@ -282,6 +282,14 @@ func TestGoalEventsAndSystemPrompt(t *testing.T) {
 	if strings.Contains(strings.Join((&Session{Cfg: s.Cfg}).Args("/w"), " "), "--dangerously-skip-permissions") {
 		t.Error("attended session must not skip permissions")
 	}
+}
+
+func itemFixture() gateway.WorkItem {
+	return gateway.WorkItem{ID: item1, Seq: 1, Title: "Write the failing test", Brief: "A test.", Acceptance: "fails"}
+}
+func goalFixture() *gateway.Goal { return &gateway.Goal{Slug: "ship-it", Title: "Ship it"} }
+func repoFixture() *gateway.Repo {
+	return &gateway.Repo{Name: "widgets", Owner: "acme", DefaultBranch: "main"}
 }
 
 func waitFor(t *testing.T, cond func() bool) {

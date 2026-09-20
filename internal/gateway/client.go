@@ -184,26 +184,27 @@ func (c *Client) OrgByLogin(ctx context.Context, login string) (*Org, error) {
 
 // WorkItem is a WorkItemIndex row.
 type WorkItem struct {
-	ID         string   `json:"id"`
-	GoalID     string   `json:"goalId"`
-	Seq        int      `json:"seq"`
-	Title      string   `json:"title"`
-	Brief      string   `json:"brief"`
-	Acceptance string   `json:"acceptance"`
-	RepoID     string   `json:"repoId"`
-	BaseRef    string   `json:"baseRef"`
-	DependsOn  []string `json:"dependsOn"`
-	Status     string   `json:"status"`
-	NodeID     string   `json:"nodeId"`
-	Branch     string   `json:"branch"`
-	CostCents  int      `json:"costCents"`
-	Attempts   int      `json:"attempts"`
-	LastError  string   `json:"lastError"`
-	LastNote   string   `json:"lastNote"`
-	PRURL      string   `json:"prUrl"`
+	ID          string   `json:"id"`
+	GoalID      string   `json:"goalId"`
+	Seq         int      `json:"seq"`
+	Title       string   `json:"title"`
+	Brief       string   `json:"brief"`
+	Acceptance  string   `json:"acceptance"`
+	RepoID      string   `json:"repoId"`
+	BaseRef     string   `json:"baseRef"`
+	DependsOn   []string `json:"dependsOn"`
+	Status      string   `json:"status"`
+	NodeID      string   `json:"nodeId"`
+	Branch      string   `json:"branch"`
+	CostCents   int      `json:"costCents"`
+	Attempts    int      `json:"attempts"`
+	LastError   string   `json:"lastError"`
+	LastNote    string   `json:"lastNote"`
+	PRURL       string   `json:"prUrl"`
+	HeartbeatAt string   `json:"heartbeatAt"`
 }
 
-const workItemFields = `id goalId seq title brief acceptance repoId baseRef dependsOn status nodeId branch costCents attempts lastError lastNote prUrl`
+const workItemFields = `id goalId seq title brief acceptance repoId baseRef dependsOn status nodeId branch costCents attempts lastError lastNote prUrl heartbeatAt`
 
 func where(field, value string) string {
 	return fmt.Sprintf(`{field: %q, op: EQ, value: %q}`, field, value)
