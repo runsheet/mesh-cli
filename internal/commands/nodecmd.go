@@ -25,18 +25,20 @@ import (
 )
 
 var (
-	nodeOrgsFlag       []string
-	nodeNameFlag       string
-	nodeSlugFlag       string
-	nodeCapacityFlag   int
-	nodeIntervalFlag   time.Duration
-	nodeStallFlag      time.Duration
-	nodeEvalBudgetFlag float64
-	nodePlanBudgetFlag float64
-	nodeMaxBudgetFlag  float64
-	nodeModeFlag       string
-	nodeUnattended     bool
-	nodeOnceFlag       bool
+	nodeOrgsFlag           []string
+	nodeNameFlag           string
+	nodeSlugFlag           string
+	nodeCapacityFlag       int
+	nodeIntervalFlag       time.Duration
+	nodeStallFlag          time.Duration
+	nodeTurnTimeoutFlag    time.Duration
+	nodeSessionTimeoutFlag time.Duration
+	nodeEvalBudgetFlag     float64
+	nodePlanBudgetFlag     float64
+	nodeMaxBudgetFlag      float64
+	nodeModeFlag           string
+	nodeUnattended         bool
+	nodeOnceFlag           bool
 )
 
 var nodeCmd = &cobra.Command{
@@ -367,6 +369,17 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 		idle, _ := sess.Idle()
 		return idle && !recentProgress(it.HeartbeatAt, nodeStallFlag) && time.Since(s.pushedAt) >= nodeStallFlag
 	}
+	// hung: the session is busy and nothing has been reported on the item
+	// for --turn-timeout since it was pushed — a subagent's call that never
+	// returns, a turn that never ends. Killing the session restarts it,
+	// and OnStart re-pushes every held item.
+	hung := func(s *slot, it gateway.WorkItem) bool {
+		if nodeTurnTimeoutFlag <= 0 {
+			return false
+		}
+		idle, _ := sess.Idle()
+		return !idle && !recentProgress(it.HeartbeatAt, nodeTurnTimeoutFlag) && time.Since(s.pushedAt) >= nodeTurnTimeoutFlag
+	}
 	repush := func(ctx context.Context, all bool) {
 		var held []gateway.WorkItem
 		for _, sc := range scopes {
@@ -394,6 +407,11 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 				} else if stalled(s, it) {
 					push(s.content, s.meta)
 					logger.Printf("item %s re-pushed: the session is idle and nothing has been reported on it for %s", it.ID, nodeStallFlag)
+				} else if hung(s, it) {
+					sess.Kill(fmt.Sprintf("item %s: busy, nothing reported for %s", it.ID, nodeTurnTimeoutFlag))
+					mu.Lock()
+					s.pushedAt = time.Now() // the restart re-pushes; count the patience from there
+					mu.Unlock()
 				}
 				continue
 			}
@@ -469,7 +487,7 @@ func oneShotHarness() *harness.ClaudeCode {
 // finished item, in either mode. A failure to reach a verdict is logged
 // and the item is left in evaluating for the next tick.
 func evaluateWith(gw *gateway.Client, h harness.Harness, workRoot string, logger *log.Logger) func(context.Context, gateway.WorkItem) {
-	ev := &node.Evaluator{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, WorkRoot: workRoot, MaxBudgetUSD: nodeEvalBudgetFlag, Log: logger}
+	ev := &node.Evaluator{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, WorkRoot: workRoot, MaxBudgetUSD: nodeEvalBudgetFlag, Timeout: nodeSessionTimeoutFlag, Log: logger}
 	return func(ctx context.Context, item gateway.WorkItem) {
 		if err := ev.Evaluate(ctx, item); err != nil && ctx.Err() == nil {
 			logger.Printf("item %d %q: evaluation: %v", item.Seq, item.Title, err)
@@ -481,7 +499,7 @@ func evaluateWith(gw *gateway.Client, h harness.Harness, workRoot string, logger
 // planning, in either mode. A plan that cannot be handed in is logged
 // and the goal left in planning for the next tick (three tries).
 func planWith(gw *gateway.Client, cfg *node.Config, h harness.Harness, workRoot string, logger *log.Logger) func(context.Context, gateway.Goal, node.Scope) {
-	pl := &node.Planner{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, WorkRoot: workRoot, MaxBudgetUSD: nodePlanBudgetFlag, Log: logger}
+	pl := &node.Planner{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, WorkRoot: workRoot, MaxBudgetUSD: nodePlanBudgetFlag, Timeout: nodeSessionTimeoutFlag, Log: logger}
 	return func(ctx context.Context, goal gateway.Goal, scope node.Scope) {
 		if err := pl.Plan(ctx, goal, scope); err != nil && ctx.Err() == nil {
 			logger.Printf("goal %s: planning: %v", goal.Slug, err)
@@ -529,6 +547,8 @@ func init() {
 	nodeRegisterCmd.Flags().IntVar(&nodeCapacityFlag, "capacity", 1, "concurrent sessions")
 	nodeStartCmd.Flags().DurationVar(&nodeIntervalFlag, "interval", 30*time.Second, "heartbeat and claim interval")
 	nodeStartCmd.Flags().DurationVar(&nodeStallFlag, "stall", 10*time.Minute, "channel mode: re-push a held item the idle session has reported nothing on for this long")
+	nodeStartCmd.Flags().DurationVar(&nodeTurnTimeoutFlag, "turn-timeout", 45*time.Minute, "channel mode: kill and restart a busy session that has reported nothing on its item for this long (0 never)")
+	nodeStartCmd.Flags().DurationVar(&nodeSessionTimeoutFlag, "session-timeout", 40*time.Minute, "cap on one evaluator or planner session's wall clock (0 never)")
 	nodeStartCmd.Flags().Float64Var(&nodeMaxBudgetFlag, "max-budget-usd", 10, "cap on one session's budget (poll mode), whatever the goal has left")
 	nodeStartCmd.Flags().Float64Var(&nodeEvalBudgetFlag, "eval-budget-usd", 3, "cap on one evaluator session's budget")
 	nodeStartCmd.Flags().Float64Var(&nodePlanBudgetFlag, "plan-budget-usd", 5, "cap on one planner session's budget")

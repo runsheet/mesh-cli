@@ -46,6 +46,11 @@ func (c *ClaudeCode) Run(ctx context.Context, job Job, onProgress func(Progress)
 	if _, err := exec.LookPath(bin); err != nil {
 		return Result{}, fmt.Errorf("harness claude-code: %w", err)
 	}
+	if job.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, job.Timeout)
+		defer cancel()
+	}
 	cmd := exec.CommandContext(ctx, bin, c.Args(job)...)
 	cmd.Dir = job.Workspace
 	cmd.Env = append(os.Environ(), job.Env...)

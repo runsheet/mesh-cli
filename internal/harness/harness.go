@@ -4,7 +4,10 @@
 // what it spent and said.
 package harness
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // Kind is what the session is for.
 type Kind string
@@ -31,6 +34,9 @@ type Job struct {
 	Env []string
 	// Label names the job in logs (e.g. "ship-it/2").
 	Label string
+	// Timeout caps the session's wall clock; 0 is none. A session that
+	// runs out is killed and Run returns context.DeadlineExceeded.
+	Timeout time.Duration
 }
 
 // Progress is one observation of a running session.

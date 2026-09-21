@@ -2,10 +2,12 @@ package node
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"math"
 	"strings"
+	"time"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/harness"
@@ -24,7 +26,9 @@ type Evaluator struct {
 	WorkRoot string
 	// MaxBudgetUSD caps the review session (3 by default).
 	MaxBudgetUSD float64
-	Log          *log.Logger
+	// Timeout caps its wall clock (0 none).
+	Timeout time.Duration
+	Log     *log.Logger
 }
 
 func (e *Evaluator) logf(format string, args ...any) {
@@ -64,11 +68,14 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	if budget <= 0 {
 		budget = 3
 	}
-	job := harness.Job{Kind: harness.KindEvaluate, Workspace: dir, Prompt: prompt, MaxBudgetUSD: budget, Label: label + " evaluate"}
+	job := harness.Job{Kind: harness.KindEvaluate, Workspace: dir, Prompt: prompt, MaxBudgetUSD: budget, Label: label + " evaluate", Timeout: e.Timeout}
 	e.logf("item %s: evaluating %s (%d bytes of diff)", label, branch, len(diff))
 	result, err := e.Harness.Run(ctx, job, nil)
 	if ctx.Err() != nil {
 		return ctx.Err()
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("evaluator session ran out of time (%s)", e.Timeout)
 	}
 	if err != nil {
 		return fmt.Errorf("evaluator session: %w", err)

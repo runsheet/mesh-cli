@@ -2,11 +2,13 @@ package node
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/harness"
@@ -26,7 +28,9 @@ type Planner struct {
 	WorkRoot string
 	// MaxBudgetUSD caps the planning session (5 by default).
 	MaxBudgetUSD float64
-	Log          *log.Logger
+	// Timeout caps its wall clock (0 none).
+	Timeout time.Duration
+	Log     *log.Logger
 
 	mu       sync.Mutex
 	attempts map[string]int
@@ -121,11 +125,14 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 	if budget <= 0 {
 		budget = 5
 	}
-	job := harness.Job{Kind: harness.KindPlan, Workspace: dir, Prompt: prompt, MaxBudgetUSD: budget, Label: goal.Slug + " plan"}
+	job := harness.Job{Kind: harness.KindPlan, Workspace: dir, Prompt: prompt, MaxBudgetUSD: budget, Label: goal.Slug + " plan", Timeout: p.Timeout}
 	p.logf("goal %s: planning in %s (%d repos)", goal.Slug, dir, len(repos))
 	result, err := p.Harness.Run(ctx, job, nil)
 	if ctx.Err() != nil {
 		return ctx.Err()
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("planner session ran out of time (%s)", p.Timeout)
 	}
 	if err != nil {
 		return fmt.Errorf("planner session: %w", err)

@@ -89,6 +89,17 @@ func TestSessionStaysAliveAndReceivesEventsOnStdin(t *testing.T) {
 		t.Fatal("a live session must not be restarted")
 	default:
 	}
+	// killed: the process ends, Run restarts it, OnStart fires again
+	s.Kill("test")
+	select {
+	case <-started:
+	case <-time.After(15 * time.Second):
+		t.Fatal("a killed session must be restarted")
+	}
+	if s.Starts() != 2 {
+		t.Fatalf("starts = %d after a kill", s.Starts())
+	}
+	waitFor(t, func() bool { return s.Alive() })
 	cancel()
 	select {
 	case err := <-runErr:

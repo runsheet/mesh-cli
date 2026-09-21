@@ -55,6 +55,7 @@ type Session struct {
 
 	mu     sync.Mutex
 	stdin  io.WriteCloser
+	proc   *os.Process
 	starts int
 	// pending lists the items of the user messages sent whose turn has
 	// not ended, oldest first; the session is idle when it is empty.
@@ -142,6 +143,19 @@ func (s *Session) SendFor(itemID, text string) error {
 		s.pending = append(s.pending, itemID)
 	}
 	return err
+}
+
+// Kill ends the process; Run restarts it and OnStart re-pushes what it
+// held. For a turn that has gone quiet past the node's patience.
+func (s *Session) Kill(why string) {
+	s.mu.Lock()
+	p := s.proc
+	s.mu.Unlock()
+	if p == nil {
+		return
+	}
+	s.logf("session killed: %s", why)
+	_ = p.Kill()
 }
 
 // Idle reports whether the session is up with no turn in flight, and for
@@ -240,6 +254,7 @@ func (s *Session) once(ctx context.Context, bin, workRoot string) error {
 	}
 	s.mu.Lock()
 	s.stdin = stdin
+	s.proc = cmd.Process
 	s.starts++
 	s.pending = nil
 	s.idleSince = time.Now()
@@ -247,6 +262,7 @@ func (s *Session) once(ctx context.Context, bin, workRoot string) error {
 	defer func() {
 		s.mu.Lock()
 		s.stdin = nil
+		s.proc = nil
 		s.pending = nil
 		s.mu.Unlock()
 		_ = stdin.Close()
