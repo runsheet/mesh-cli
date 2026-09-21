@@ -569,6 +569,12 @@ func (c *Client) RequestPlan(ctx context.Context, goalID, by string) error {
 	return c.Mutate(ctx, "requestPlan", goalID, m)
 }
 
+// ClaimPlan is the node's lock on a goal's planning; refused (IsRefusal)
+// while another node holds it.
+func (c *Client) ClaimPlan(ctx context.Context, goalID, nodeID string) error {
+	return c.Mutate(ctx, "claimPlan", goalID, map[string]any{"nodeId": nodeID})
+}
+
 // PlanGoal hands the goal its graph, with the planner session's cost
 // when one drew it.
 func (c *Client) PlanGoal(ctx context.Context, goalID, by string, items []PlannedItem, costCents int) error {

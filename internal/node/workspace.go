@@ -297,6 +297,7 @@ type Gateway interface {
 	EvaluateWorkItem(ctx context.Context, itemID string, passed bool, notes string, costCents int) error
 	Goal(ctx context.Context, id string) (*gateway.Goal, error)
 	Goals(ctx context.Context, orgID string) ([]gateway.Goal, error)
+	ClaimPlan(ctx context.Context, goalID, nodeID string) error
 	PlanGoal(ctx context.Context, goalID, by string, items []gateway.PlannedItem, costCents int) error
 	Project(ctx context.Context, id string) (*gateway.Project, error)
 	Repo(ctx context.Context, id string) (*gateway.Repo, error)

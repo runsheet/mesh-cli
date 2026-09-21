@@ -215,6 +215,18 @@ func (l *Loop) planRequested(ctx context.Context) {
 			}
 			l.planning[g.ID] = true
 			l.mu.Unlock()
+			// the claim is the lock across nodes: refused, another node has it
+			if err := l.GW.ClaimPlan(ctx, g.ID, sc.NodeID); err != nil {
+				l.mu.Lock()
+				delete(l.planning, g.ID)
+				l.mu.Unlock()
+				if gateway.IsRefusal(err) {
+					l.logf("%s: goal %q is being planned elsewhere", sc.Login, g.Slug)
+				} else {
+					l.logf("%s: claim planning of %q: %v", sc.Login, g.Slug, err)
+				}
+				continue
+			}
 			l.logf("%s: planning goal %q", sc.Login, g.Slug)
 			l.wg.Add(1)
 			go func(g gateway.Goal, sc Scope) {

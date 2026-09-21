@@ -39,6 +39,9 @@ func TestLoopPlansRequestedGoals(t *testing.T) {
 	loop.Tick(ctx)
 	loop.wg.Wait()
 
+	if claims := f.CallsNamed("claimPlan"); len(claims) != 1 || claims[0].Input["nodeId"] != cfg.NodeID {
+		t.Fatalf("claim calls: %+v", claims)
+	}
 	calls := f.CallsNamed("planGoal")
 	if len(calls) != 1 || calls[0].Input["aggregateId"] != goal2 || calls[0].Input["by"] != f.UserID || calls[0].Input["costCents"] != float64(125) {
 		t.Fatalf("plan calls: %+v", calls)
@@ -70,6 +73,16 @@ func TestLoopPlansRequestedGoals(t *testing.T) {
 	if len(ws.commits) != 0 || len(ws.pushed) != 0 {
 		t.Fatal("the planner changes nothing")
 	}
+
+	// a goal another node is planning is left alone
+	const goal3 = "dddddddd-4444-4444-8444-dddddddddddd"
+	f.Goals[goal3] = map[string]any{"id": goal3, "orgId": orgID, "projectId": projID, "slug": "theirs", "title": "Theirs", "status": "planning", "plannerNodeId": "33333333-3333-4333-8333-333333333333"}
+	loop.Tick(ctx)
+	loop.wg.Wait()
+	if len(h.jobs) != 1 || len(f.CallsNamed("planGoal")) != 1 {
+		t.Fatalf("a goal claimed elsewhere was planned: jobs=%d", len(h.jobs))
+	}
+	delete(f.Goals, goal3)
 
 	// no graph: nothing handed in; after three tries the planner stops
 	f.Goals[goal2]["status"] = "planning"

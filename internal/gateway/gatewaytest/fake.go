@@ -262,7 +262,7 @@ func (f *Fake) apply(name string, in map[string]any) error {
 		for k, v := range in {
 			row[k] = v
 		}
-	case "pauseGoal", "resumeGoal", "cancelGoal", "approveGraph", "planGoal", "requestPlan":
+	case "pauseGoal", "resumeGoal", "cancelGoal", "approveGraph", "planGoal", "requestPlan", "claimPlan":
 		if f.Goals[id] == nil {
 			return fmt.Errorf("no such goal")
 		}
@@ -280,6 +280,11 @@ func (f *Fake) apply(name string, in map[string]any) error {
 			f.Goals[id]["spentCents"] = toInt(f.Goals[id]["spentCents"]) + toInt(in["costCents"])
 		case "requestPlan":
 			f.Goals[id]["status"] = "planning"
+		case "claimPlan":
+			if held, _ := f.Goals[id]["plannerNodeId"].(string); held != "" && held != in["nodeId"] {
+				return fmt.Errorf("another node is planning it")
+			}
+			f.Goals[id]["plannerNodeId"] = in["nodeId"]
 		}
 	}
 	return nil
