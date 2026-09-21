@@ -32,12 +32,17 @@ type Loop struct {
 	// in which case the next tick offers it again. Optional; nil leaves
 	// evaluation to someone else. It does not count against capacity.
 	Evaluate func(ctx context.Context, item gateway.WorkItem)
+	// Plan compiles a goal in planning (in one of the served orgs) into
+	// its graph and returns when the plan is handed in — or not, in
+	// which case the next tick offers it again. Optional.
+	Plan func(ctx context.Context, goal gateway.Goal, scope Scope)
 	// AfterTick runs at the end of every tick (optional).
 	AfterTick func(ctx context.Context)
 
 	mu         sync.Mutex
 	running    map[string]bool
 	evaluating map[string]bool
+	planning   map[string]bool
 	wg         sync.WaitGroup
 }
 
@@ -100,6 +105,7 @@ func (l *Loop) Tick(ctx context.Context) {
 		}
 	}
 	l.evaluateHeld(ctx)
+	l.planRequested(ctx)
 	free := l.Cfg.Capacity - l.Running()
 	for _, sc := range l.Scopes {
 		if free <= 0 {
@@ -180,6 +186,47 @@ func (l *Loop) evaluateHeld(ctx context.Context) {
 			}()
 			l.Evaluate(ctx, item)
 		}(item)
+	}
+}
+
+// planRequested starts the planner on every goal in planning in the
+// served orgs that no planner here is on.
+func (l *Loop) planRequested(ctx context.Context) {
+	if l.Plan == nil {
+		return
+	}
+	for _, sc := range l.Scopes {
+		goals, err := l.GW.Goals(ctx, sc.ID)
+		if err != nil {
+			l.logf("list goals of %s: %v", sc.Login, err)
+			continue
+		}
+		for _, g := range goals {
+			if g.Status != "planning" {
+				continue
+			}
+			l.mu.Lock()
+			if l.planning == nil {
+				l.planning = map[string]bool{}
+			}
+			if l.planning[g.ID] {
+				l.mu.Unlock()
+				continue
+			}
+			l.planning[g.ID] = true
+			l.mu.Unlock()
+			l.logf("%s: planning goal %q", sc.Login, g.Slug)
+			l.wg.Add(1)
+			go func(g gateway.Goal, sc Scope) {
+				defer l.wg.Done()
+				defer func() {
+					l.mu.Lock()
+					delete(l.planning, g.ID)
+					l.mu.Unlock()
+				}()
+				l.Plan(ctx, g, sc)
+			}(g, sc)
+		}
 	}
 }
 

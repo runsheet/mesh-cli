@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -139,4 +140,150 @@ func ParseVerdict(text string) (passed bool, notes string, ok bool) {
 		}
 	}
 	return false, "", false
+}
+
+// PlanInput is what a planner prompt is made of: the goal, its project's
+// context and repos, and the budget the graph has to fit.
+type PlanInput struct {
+	GoalSlug    string
+	GoalTitle   string
+	Statement   string
+	Acceptance  string
+	BudgetCents int
+	Org         string
+	Project     string
+	// Repos lists the project's repos as owner/name → the directory they
+	// are checked out in, relative to the workspace.
+	Repos map[string]string
+	// ContextDir and ContextFiles: the goal's Prologue documents.
+	ContextDir   string
+	ContextFiles []string
+	// Blocked: on a re-plan, what went wrong the last time.
+	Blocked string
+}
+
+// PlannedSpec is one item of the graph the planner writes: like
+// gateway.PlannedItem but naming the repo (owner/name or name).
+type PlannedSpec struct {
+	Seq        int    `json:"seq"`
+	Title      string `json:"title"`
+	Brief      string `json:"brief"`
+	Acceptance string `json:"acceptance"`
+	DependsOn  []int  `json:"depends_on"`
+	Repo       string `json:"repo"`
+	BaseRef    string `json:"base_ref"`
+}
+
+// PlanPrompt renders the planner's prompt (mesh-specs prd, the planner;
+// trd §5 phase 2): read the context and the repos, then compile the goal
+// into a graph of items — each one fresh session's work with a checkable
+// acceptance — and end with the graph as JSON.
+func PlanPrompt(in PlanInput) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "You are the planner of goal %q (%s) for %s, project %s. You compile the goal into a graph of work items; other sessions, each fresh, do the items one at a time, and an evaluator judges each against its acceptance before a pull request opens.\n\n", in.GoalTitle, in.GoalSlug, in.Org, in.Project)
+	fmt.Fprintf(&b, "# Goal: %s\n\n", in.GoalTitle)
+	if strings.TrimSpace(in.Statement) != "" {
+		fmt.Fprintf(&b, "## Statement\n\n%s\n\n", strings.TrimSpace(in.Statement))
+	}
+	if strings.TrimSpace(in.Acceptance) != "" {
+		fmt.Fprintf(&b, "## Acceptance (the goal)\n\n%s\n\n", strings.TrimSpace(in.Acceptance))
+	}
+	if in.BudgetCents > 0 {
+		fmt.Fprintf(&b, "## Budget\n\n$%.2f for the whole goal, every session included. A build session costs about $3–8, an evaluation $1–3.\n\n", float64(in.BudgetCents)/100)
+	}
+	if strings.TrimSpace(in.Blocked) != "" {
+		fmt.Fprintf(&b, "## The last plan blocked\n\n%s\n\nPlan around it.\n\n", strings.TrimSpace(in.Blocked))
+	}
+	b.WriteString("# The project\n\n")
+	if len(in.Repos) > 0 {
+		b.WriteString("Its repos are checked out here, read-only, at their default branch:\n\n")
+		for _, name := range sortedKeys(in.Repos) {
+			fmt.Fprintf(&b, "- `%s` in `%s/`\n", name, in.Repos[name])
+		}
+		b.WriteString("\n")
+	}
+	if in.ContextDir != "" {
+		fmt.Fprintf(&b, "The project's context is in `%s/`", in.ContextDir)
+		if len(in.ContextFiles) > 0 {
+			fmt.Fprintf(&b, " (%s)", strings.Join(in.ContextFiles, ", "))
+		}
+		b.WriteString(": the instructions and the ADRs are binding, the PRD and TRD are the design. Read them first, then the repos' own AGENTS.md, CLAUDE.md and README.\n\n")
+	} else {
+		b.WriteString("There are no context documents; read each repo's AGENTS.md, CLAUDE.md and README first.\n\n")
+	}
+	b.WriteString("# Rules\n\n")
+	b.WriteString("1. Read before you plan: what exists, what the design says, where the goal's work lands.\n")
+	b.WriteString("2. Each item is one fresh session's work in one repo on one branch: small enough to finish and evaluate in one sitting, large enough to be worth a pull request. Two to eight items.\n")
+	b.WriteString("3. Each item's brief says what to do and where, naming files and functions where it helps; its acceptance is what an evaluator can check — a test that passes, a command's output, a document with named sections — never a feeling.\n")
+	b.WriteString("4. depends_on names earlier seqs whose branches must be merged first; items with no dependency between them run in parallel. Keep the graph shallow.\n")
+	b.WriteString("5. repo is one of the project's repos above, as owner/name. base_ref is its default branch unless the item builds on another item's branch.\n")
+	b.WriteString("6. Change nothing in the repos: you plan, you do not build.\n")
+	b.WriteString("7. End your final message with the graph as a JSON object in a ```json fenced block, and nothing after it:\n\n")
+	b.WriteString("```json\n{\"items\": [{\"seq\": 1, \"title\": \"…\", \"brief\": \"…\", \"acceptance\": \"…\", \"depends_on\": [], \"repo\": \"owner/name\", \"base_ref\": \"main\"}]}\n```\n")
+	return b.String()
+}
+
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	for i := 1; i < len(keys); i++ {
+		for j := i; j > 0 && keys[j] < keys[j-1]; j-- {
+			keys[j], keys[j-1] = keys[j-1], keys[j]
+		}
+	}
+	return keys
+}
+
+// ParsePlan reads the planner's final message: the last ```json block
+// (or the whole text when it is JSON) as {"items": [...]} or a bare
+// array. It checks the graph's shape — seqs, titles, dependencies on
+// other items — but not the repos, which the caller knows.
+func ParsePlan(text string) ([]PlannedSpec, error) {
+	raw := strings.TrimSpace(text)
+	if i := strings.LastIndex(raw, "```json"); i >= 0 {
+		rest := raw[i+len("```json"):]
+		if j := strings.Index(rest, "```"); j >= 0 {
+			raw = strings.TrimSpace(rest[:j])
+		} else {
+			raw = strings.TrimSpace(rest)
+		}
+	} else if i := strings.LastIndex(raw, "```"); i >= 0 {
+		// a fence without a language: take the last block
+		head := raw[:i]
+		if k := strings.LastIndex(head, "```"); k >= 0 {
+			raw = strings.TrimSpace(head[k+3:])
+			if nl := strings.IndexByte(raw, '\n'); nl >= 0 && !strings.HasPrefix(raw, "{") && !strings.HasPrefix(raw, "[") {
+				raw = strings.TrimSpace(raw[nl+1:])
+			}
+		}
+	}
+	var wrapped struct {
+		Items []PlannedSpec `json:"items"`
+	}
+	var items []PlannedSpec
+	if err := json.Unmarshal([]byte(raw), &wrapped); err == nil && len(wrapped.Items) > 0 {
+		items = wrapped.Items
+	} else if err := json.Unmarshal([]byte(raw), &items); err != nil || len(items) == 0 {
+		return nil, fmt.Errorf("no graph in the planner's message")
+	}
+	seqs := map[int]bool{}
+	for _, it := range items {
+		if it.Seq <= 0 || strings.TrimSpace(it.Title) == "" || strings.TrimSpace(it.Repo) == "" {
+			return nil, fmt.Errorf("an item has a positive seq, a title and a repo: %+v", it)
+		}
+		if seqs[it.Seq] {
+			return nil, fmt.Errorf("item seq %d twice", it.Seq)
+		}
+		seqs[it.Seq] = true
+	}
+	for _, it := range items {
+		for _, d := range it.DependsOn {
+			if !seqs[d] || d == it.Seq {
+				return nil, fmt.Errorf("item %d depends on %d, which is not another item", it.Seq, d)
+			}
+		}
+	}
+	return items, nil
 }

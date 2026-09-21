@@ -138,10 +138,27 @@ var goalSetCmd = &cobra.Command{
 }
 
 var goalPlanCmd = &cobra.Command{
-	Use:   "plan <slug> <plan.yaml>",
-	Short: "Hand a goal its graph from a YAML file of items (seq, title, brief, acceptance, depends_on, repo, base_ref)",
-	Args:  cobra.ExactArgs(2),
+	Use:   "plan <slug> [plan.yaml]",
+	Short: "Ask the planner for a goal's graph — or hand one in from a YAML file of items (seq, title, brief, acceptance, depends_on, repo, base_ref)",
+	Args:  cobra.RangeArgs(1, 2),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if len(args) == 1 {
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			s, err := goalContext(ctx)
+			if err != nil {
+				return err
+			}
+			id, err := s.goalID(args[0])
+			if err != nil {
+				return err
+			}
+			if err := s.gw.RequestPlan(ctx, id, s.signIn(ctx)); err != nil {
+				return err
+			}
+			fmt.Printf("Goal %s is planning: a node's planner session will hand in the graph. Watch it with: mesh goal watch %s\n", args[0], args[0])
+			return nil
+		}
 		var items []planItem
 		var wrapped struct {
 			Items []planItem `yaml:"items"`
@@ -190,7 +207,7 @@ var goalPlanCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if err := s.gw.PlanGoal(ctx, id, s.signIn(ctx), planned); err != nil {
+		if err := s.gw.PlanGoal(ctx, id, s.signIn(ctx), planned, 0); err != nil {
 			return err
 		}
 		fmt.Printf("Goal %s planned with %d items.\n", args[0], len(planned))

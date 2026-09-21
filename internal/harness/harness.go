@@ -14,6 +14,8 @@ const (
 	KindBuild Kind = "build"
 	// KindEvaluate reviews a finished branch against the acceptance.
 	KindEvaluate Kind = "evaluate"
+	// KindPlan compiles a goal into its graph of items.
+	KindPlan Kind = "plan"
 )
 
 // Job is one session's brief.

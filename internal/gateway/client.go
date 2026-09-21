@@ -338,9 +338,10 @@ func (c *Client) Goals(ctx context.Context, orgID string) ([]Goal, error) {
 
 // Project is a ProjectIndex row.
 type Project struct {
-	ID   string `json:"id"`
-	Slug string `json:"slug"`
-	Name string `json:"name"`
+	ID      string   `json:"id"`
+	Slug    string   `json:"slug"`
+	Name    string   `json:"name"`
+	RepoIDs []string `json:"repoIds"`
 }
 
 // Project reads one project by id.
@@ -348,7 +349,7 @@ func (c *Client) Project(ctx context.Context, id string) (*Project, error) {
 	var out struct {
 		Project *Project `json:"projectIndex"`
 	}
-	q := fmt.Sprintf(`{ projectIndex(namespace: %q, id: %q) { id slug name } }`, NS, id)
+	q := fmt.Sprintf(`{ projectIndex(namespace: %q, id: %q) { id slug name repoIds } }`, NS, id)
 	if err := c.Query(ctx, q, nil, &out); err != nil {
 		return nil, err
 	}
@@ -363,7 +364,7 @@ func (c *Client) Projects(ctx context.Context, orgID string) ([]Project, error) 
 	var out struct {
 		Projects []Project `json:"projectIndexs"`
 	}
-	q := fmt.Sprintf(`{ projectIndexs(namespace: %q, where: [%s]) { id slug name } }`, NS, where("org_id", orgID))
+	q := fmt.Sprintf(`{ projectIndexs(namespace: %q, where: [%s]) { id slug name repoIds } }`, NS, where("org_id", orgID))
 	if err := c.Query(ctx, q, nil, &out); err != nil {
 		return nil, err
 	}
@@ -558,8 +559,19 @@ type PlannedItem struct {
 	BaseRef    string `json:"baseRef"`
 }
 
-// PlanGoal hands the goal its graph.
-func (c *Client) PlanGoal(ctx context.Context, goalID, by string, items []PlannedItem) error {
+// RequestPlan asks the planner for the goal's graph: the goal waits in
+// planning until a node's planner session hands one in.
+func (c *Client) RequestPlan(ctx context.Context, goalID, by string) error {
+	m := map[string]any{}
+	if by != "" {
+		m["by"] = by
+	}
+	return c.Mutate(ctx, "requestPlan", goalID, m)
+}
+
+// PlanGoal hands the goal its graph, with the planner session's cost
+// when one drew it.
+func (c *Client) PlanGoal(ctx context.Context, goalID, by string, items []PlannedItem, costCents int) error {
 	list := make([]map[string]any, 0, len(items))
 	for _, it := range items {
 		deps := it.DependsOn
@@ -571,7 +583,7 @@ func (c *Client) PlanGoal(ctx context.Context, goalID, by string, items []Planne
 			"dependsOn": deps, "repoId": it.RepoID, "baseRef": it.BaseRef,
 		})
 	}
-	m := map[string]any{"items": list}
+	m := map[string]any{"items": list, "costCents": costCents}
 	if by != "" {
 		m["by"] = by
 	}

@@ -66,6 +66,7 @@ type fakeWS struct {
 func (w *fakeWS) Prepare(context.Context, node.WorkspaceSpec) (string, error) { return "", nil }
 func (w *fakeWS) Push(context.Context, string, string) (string, error)        { return "", nil }
 func (w *fakeWS) Diff(context.Context, string, string) (string, error)        { return "", nil }
+func (w *fakeWS) Fetch(context.Context, string, string) error                 { return nil }
 func (w *fakeWS) Commit(_ context.Context, dir string, paths []string, msg string) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()

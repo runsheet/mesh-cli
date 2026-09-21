@@ -66,6 +66,7 @@ type fakeWS struct {
 	prepared []WorkspaceSpec
 	pushed   []string
 	commits  []string
+	fetched  []string
 }
 
 func (w *fakeWS) Prepare(_ context.Context, spec WorkspaceSpec) (string, error) {
@@ -88,6 +89,13 @@ func (w *fakeWS) Push(_ context.Context, dir, branch string) (string, error) {
 	defer w.mu.Unlock()
 	w.pushed = append(w.pushed, branch)
 	return "abc123def456", nil
+}
+
+func (w *fakeWS) Fetch(_ context.Context, repo, dir string) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.fetched = append(w.fetched, repo+" → "+dir)
+	return os.MkdirAll(dir, 0o755)
 }
 
 func (w *fakeWS) Diff(_ context.Context, dir, base string) (string, error) {

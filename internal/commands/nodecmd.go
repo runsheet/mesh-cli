@@ -32,6 +32,7 @@ var (
 	nodeIntervalFlag   time.Duration
 	nodeStallFlag      time.Duration
 	nodeEvalBudgetFlag float64
+	nodePlanBudgetFlag float64
 	nodeMaxBudgetFlag  float64
 	nodeModeFlag       string
 	nodeUnattended     bool
@@ -250,6 +251,7 @@ func runPollMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *
 	runner := &node.Runner{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, MaxBudgetUSD: nodeMaxBudgetFlag, Log: logger}
 	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) { _ = runner.RunItem(ctx, item) }
 	loop.Evaluate = evaluateWith(gw, h, workRoot, logger)
+	loop.Plan = planWith(gw, cfg, h, workRoot, logger)
 	logger.Printf("poll mode: node %s (%s) for %s, capacity %d, every %s", cfg.Name, cfg.Slug, strings.Join(scopes.Logins(), ", "), cfg.Capacity, loop.Interval)
 	if nodeOnceFlag {
 		loop.Tick(ctx)
@@ -325,6 +327,7 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 
 	ws := &node.Git{Log: os.Stderr}
 	loop.Evaluate = evaluateWith(gw, oneShotHarness(), workRoot, logger)
+	loop.Plan = planWith(gw, cfg, oneShotHarness(), workRoot, logger)
 	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) {
 		res, err := node.Resolve(ctx, gw, item)
 		if err != nil {
@@ -474,6 +477,18 @@ func evaluateWith(gw *gateway.Client, h harness.Harness, workRoot string, logger
 	}
 }
 
+// planWith is the loop's Plan hook: a fresh planner session per goal in
+// planning, in either mode. A plan that cannot be handed in is logged
+// and the goal left in planning for the next tick (three tries).
+func planWith(gw *gateway.Client, cfg *node.Config, h harness.Harness, workRoot string, logger *log.Logger) func(context.Context, gateway.Goal, node.Scope) {
+	pl := &node.Planner{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, WorkRoot: workRoot, MaxBudgetUSD: nodePlanBudgetFlag, Log: logger}
+	return func(ctx context.Context, goal gateway.Goal, scope node.Scope) {
+		if err := pl.Plan(ctx, goal, scope); err != nil && ctx.Err() == nil {
+			logger.Printf("goal %s: planning: %v", goal.Slug, err)
+		}
+	}
+}
+
 // recentProgress reports whether an item's last heartbeat is within the
 // interval — someone is working it.
 func recentProgress(heartbeatAt string, interval time.Duration) bool {
@@ -516,6 +531,7 @@ func init() {
 	nodeStartCmd.Flags().DurationVar(&nodeStallFlag, "stall", 10*time.Minute, "channel mode: re-push a held item the idle session has reported nothing on for this long")
 	nodeStartCmd.Flags().Float64Var(&nodeMaxBudgetFlag, "max-budget-usd", 10, "cap on one session's budget (poll mode), whatever the goal has left")
 	nodeStartCmd.Flags().Float64Var(&nodeEvalBudgetFlag, "eval-budget-usd", 3, "cap on one evaluator session's budget")
+	nodeStartCmd.Flags().Float64Var(&nodePlanBudgetFlag, "plan-budget-usd", 5, "cap on one planner session's budget")
 	nodeStartCmd.Flags().StringVar(&nodeModeFlag, "mode", "channel", "channel (one persistent session fed by the mesh channel) or poll (claude -p per item)")
 	nodeStartCmd.Flags().BoolVar(&nodeUnattended, "unattended", false, "run sessions with --dangerously-skip-permissions (trusted machines only)")
 	nodeStartCmd.Flags().BoolVar(&nodeOnceFlag, "once", false, "poll mode: one tick, then exit")

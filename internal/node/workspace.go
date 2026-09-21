@@ -47,6 +47,9 @@ type Workspacer interface {
 	// Diff renders what the checked-out branch changed since it left
 	// origin/base: the stat, then the patch (the evaluator's evidence).
 	Diff(ctx context.Context, dir, base string) (string, error)
+	// Fetch clones repo (owner/name) into dir, shallow, or refreshes a
+	// clone already there: a read-only copy for the planner.
+	Fetch(ctx context.Context, repo, dir string) error
 }
 
 // Git is the Workspacer over `gh` and `git` with the user's credentials.
@@ -117,6 +120,22 @@ func (g *Git) Diff(ctx context.Context, dir, base string) (string, error) {
 		patch = patch[:MaxDiffBytes] + "\n… (diff truncated; read the branch for the rest)"
 	}
 	return stat + "\n\n" + patch, nil
+}
+
+// Fetch implements Workspacer.
+func (g *Git) Fetch(ctx context.Context, repo, dir string) error {
+	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
+		if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
+			return err
+		}
+		_, err := g.run(ctx, filepath.Dir(dir), "gh", "repo", "clone", repo, dir, "--", "--depth", "1")
+		return err
+	}
+	if _, err := g.run(ctx, dir, "git", "fetch", "--depth", "1", "origin"); err != nil {
+		return err
+	}
+	_, err := g.run(ctx, dir, "git", "reset", "--hard", "FETCH_HEAD")
+	return err
 }
 
 // MaxDiffBytes caps the patch an evaluator is handed inline.
@@ -268,8 +287,10 @@ type Gateway interface {
 	EvaluateWorkItem(ctx context.Context, itemID string, passed bool, notes string, costCents int) error
 	Goal(ctx context.Context, id string) (*gateway.Goal, error)
 	Goals(ctx context.Context, orgID string) ([]gateway.Goal, error)
+	PlanGoal(ctx context.Context, goalID, by string, items []gateway.PlannedItem, costCents int) error
 	Project(ctx context.Context, id string) (*gateway.Project, error)
 	Repo(ctx context.Context, id string) (*gateway.Repo, error)
+	Repos(ctx context.Context, accountID, ownerLogin string) ([]gateway.Repo, error)
 	PrologueDocuments(ctx context.Context, org, project string) ([]gateway.Document, error)
 	PrologueDocument(ctx context.Context, org, project, doc string) (string, error)
 }
