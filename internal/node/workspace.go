@@ -177,21 +177,35 @@ const ContextDir = ".mesh/context"
 // ContextKinds are the Prologue kinds a session reads first.
 var ContextKinds = map[string]bool{"instructions": true, "adr": true, "prd": true, "trd": true}
 
-// Context is the goal's context: the documents by file name, and the
-// project's PRD slug when it lists one.
+// Context is the goal's context: the documents on disk by file name,
+// the whole index of the project (every document, on disk or not), the
+// project (org/slug) and its PRD slug when it lists one.
 type Context struct {
 	Docs    map[string]string
+	Index   []gateway.Document
+	OnDisk  map[string]string // slug → file name, for the index
+	Project string
 	PRDSlug string
 }
 
+// The size budget for design documents on disk: a PRD or TRD past
+// DocBytesMax, or past what is left of ContextBytesMax, is listed in
+// the index and fetched on demand instead. Instructions and ADRs are
+// binding and always on disk.
+const (
+	DocBytesMax     = 60 * 1024
+	ContextBytesMax = 240 * 1024
+)
+
 // FetchContext lists the project's Prologue documents and fetches the
-// bodies of the kinds in ContextKinds.
+// bodies of the kinds in ContextKinds within the size budget.
 func FetchContext(ctx context.Context, gw Gateway, orgLogin, projectSlug string) (*Context, error) {
 	docs, err := gw.PrologueDocuments(ctx, orgLogin, projectSlug)
 	if err != nil {
 		return nil, err
 	}
-	out := &Context{Docs: map[string]string{}}
+	out := &Context{Docs: map[string]string{}, Index: docs, OnDisk: map[string]string{}, Project: orgLogin + "/" + projectSlug}
+	total := 0
 	for _, d := range docs {
 		if d.Kind == "prd" && out.PRDSlug == "" {
 			out.PRDSlug = d.Slug
@@ -203,22 +217,64 @@ func FetchContext(ctx context.Context, gw Gateway, orgLogin, projectSlug string)
 		if err != nil {
 			return nil, fmt.Errorf("fetch %s: %w", d.Slug, err)
 		}
+		binding := d.Kind == "instructions" || d.Kind == "adr"
+		if !binding && (len(body) > DocBytesMax || total+len(body) > ContextBytesMax) {
+			continue // in the index, fetched on demand
+		}
 		name := d.Kind + "-" + Slugify(d.Slug) + ".md"
 		if d.Kind == "instructions" && strings.TrimSpace(d.Repo) != "" {
 			name = d.Kind + "-" + Slugify(d.Repo) + "-" + Slugify(d.Slug) + ".md"
 		}
 		out.Docs[name] = body
+		out.OnDisk[d.Slug] = name
+		total += len(body)
 	}
 	return out, nil
 }
 
-// WriteContext writes docs under <dir>/.mesh/context and excludes .mesh
-// from git via .git/info/exclude. It returns the file names written, in
-// reading order (instructions, adr, prd, trd).
-func WriteContext(dir string, docs map[string]string) ([]string, error) {
-	if len(docs) == 0 {
+// IndexFile is the context directory's index of the whole project.
+const IndexFile = "INDEX.md"
+
+// RenderIndex lists every document of the project: kind, title, slug,
+// where it lives, and whether it is on disk here or fetched on demand.
+func RenderIndex(cx *Context) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# Project %s — every indexed document\n\n", cx.Project)
+	b.WriteString("On disk here: read the file. Not on disk: fetch it with the `prologue_document` tool (project " + fmt.Sprintf("%q", cx.Project) + ", the slug). Search with `prologue_search`.\n\n")
+	b.WriteString("| kind | title | slug | repo/path | here |\n| --- | --- | --- | --- | --- |\n")
+	for _, d := range cx.Index {
+		here := "fetch"
+		if n, ok := cx.OnDisk[d.Slug]; ok {
+			here = "`" + n + "`"
+		}
+		fmt.Fprintf(&b, "| %s | %s | `%s` | %s/%s | %s |\n", d.Kind, strings.ReplaceAll(d.Title, "|", "\\|"), d.Slug, d.Repo, d.Path, here)
+	}
+	return b.String()
+}
+
+// PrologueMCP is the MCP server a session gets for Prologue: the
+// platform's /mcp with the node's own token, so the session reads what
+// the node's operator may.
+func PrologueMCP(gatewayURL, token string) map[string]any {
+	if gatewayURL == "" || token == "" {
+		return nil
+	}
+	return map[string]any{"prologue": map[string]any{
+		"type": "http", "url": strings.TrimRight(gatewayURL, "/") + "/mcp",
+		"headers": map[string]string{"Authorization": "Bearer " + token},
+	}}
+}
+
+// WriteContext writes the context's documents under <dir>/.mesh/context
+// — and INDEX.md, the whole project's listing — and excludes .mesh from
+// git via .git/info/exclude. It returns the document file names written,
+// in reading order (instructions, adr, prd, trd); the index is beside
+// them, not among them.
+func WriteContext(dir string, cx *Context) ([]string, error) {
+	if cx == nil || (len(cx.Docs) == 0 && len(cx.Index) == 0) {
 		return nil, nil
 	}
+	docs := cx.Docs
 	cdir := filepath.Join(dir, ContextDir)
 	if err := os.RemoveAll(cdir); err != nil {
 		return nil, err
@@ -246,6 +302,11 @@ func WriteContext(dir string, docs map[string]string) ([]string, error) {
 	})
 	for _, n := range names {
 		if err := os.WriteFile(filepath.Join(cdir, n), []byte(docs[n]), 0o644); err != nil {
+			return nil, err
+		}
+	}
+	if len(cx.Index) > 0 {
+		if err := os.WriteFile(filepath.Join(cdir, IndexFile), []byte(RenderIndex(cx)), 0o644); err != nil {
 			return nil, err
 		}
 	}

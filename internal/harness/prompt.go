@@ -28,6 +28,21 @@ type PromptInput struct {
 	// evaluation before and what the evaluator said of the last one.
 	Attempts   int
 	Evaluation string
+	// Project is the Prologue project (org/slug) the goal belongs to;
+	// Prologue says the session has Prologue's tools for context on demand.
+	Project  string
+	Prologue bool
+}
+
+// prologueRule is the line every prompt carries when the session has
+// Prologue's tools: the index in the context directory, the tools that
+// fetch the rest, and the other projects within reach.
+func prologueRule(contextDir, project string) string {
+	where := "the project's index"
+	if contextDir != "" {
+		where = "`" + contextDir + "/INDEX.md`"
+	}
+	return fmt.Sprintf("%s lists every document of project %q — specs, decisions, instructions, skills — with what is on disk and what is not; fetch any of the rest with the `prologue_document` tool (project %q, the document's slug), search with `prologue_search`, and read another project's decisions through `prologue_projects` and `prologue_documents` when the work touches it. Prefer reading a document to guessing what it says.", where, project, project)
 }
 
 // BuildPrompt renders the session's whole prompt for a build job: the item
@@ -64,6 +79,9 @@ func BuildPrompt(in PromptInput) string {
 	} else {
 		b.WriteString("1. Read the repository's own instructions (AGENTS.md, CLAUDE.md, README) first.\n")
 	}
+	if in.Prologue {
+		b.WriteString("   " + prologueRule(in.ContextDir, in.Project) + "\n")
+	}
 	fmt.Fprintf(&b, "2. You are in %s on branch `%s` (from `%s`). Work on this branch only; do not switch or create branches.\n", in.Repo, in.Branch, in.BaseRef)
 	b.WriteString("3. Commit as you go with clear, conventional messages that say what changed and why.\n")
 	b.WriteString("4. Before you finish, run the acceptance check above and make it pass; if it cannot, say exactly why in your final message.\n")
@@ -86,6 +104,13 @@ type EvaluateInput struct {
 	Branch         string
 	BaseRef        string
 	Diff           string
+	// ContextDir and ContextFiles: the goal's Prologue documents, the
+	// ADRs and instructions the builder was bound by. Project and
+	// Prologue as on PromptInput.
+	ContextDir   string
+	ContextFiles []string
+	Project      string
+	Prologue     bool
 }
 
 // Verdict lines the evaluator ends with; ParseVerdict reads them.
@@ -116,8 +141,21 @@ func EvaluatePrompt(in EvaluateInput) string {
 	} else {
 		fmt.Fprintf(&b, "```diff\n%s\n```\n\n", strings.TrimSpace(in.Diff))
 	}
+	if in.ContextDir != "" {
+		fmt.Fprintf(&b, "# The context\n\nThe project's instructions and decisions are in `%s/`", in.ContextDir)
+		if len(in.ContextFiles) > 0 {
+			fmt.Fprintf(&b, " (%s)", strings.Join(in.ContextFiles, ", "))
+		}
+		b.WriteString(": the instructions and the ADRs bound the builder; the PRD and TRD are the design.")
+		if in.Prologue {
+			b.WriteString(" " + prologueRule(in.ContextDir, in.Project))
+		}
+		b.WriteString("\n\n")
+	} else if in.Prologue {
+		b.WriteString("# The context\n\n" + prologueRule("", in.Project) + "\n\n")
+	}
 	b.WriteString("# Rules\n\n")
-	b.WriteString("1. Judge the item's acceptance, literally: every clause, against what the diff does — not what its messages claim.\n")
+	b.WriteString("1. Judge the item's acceptance, literally: every clause, against what the diff does — not what its messages claim. A change that goes against an ADR or the instructions fails, whatever the acceptance says.\n")
 	b.WriteString("2. Run the acceptance check yourself when it names one (tests, a build, a command). Read the repository's own instructions (AGENTS.md, CLAUDE.md) for how.\n")
 	b.WriteString("3. Look for what the builder skipped: untested paths, a check made to pass by weakening it, changes outside the brief, secrets or destructive commands.\n")
 	b.WriteString("4. Change nothing: no edits, no commits, no pushes, nothing outside this workspace. You are a reviewer.\n")
@@ -160,6 +198,8 @@ type PlanInput struct {
 	ContextFiles []string
 	// Blocked: on a re-plan, what went wrong the last time.
 	Blocked string
+	// Prologue says the session has Prologue's tools for context on demand.
+	Prologue bool
 	// Existing are the goal's items so far, on a re-plan: merged ones
 	// stay and may be depended on, failed and cancelled ones are the
 	// record, live ones are replaced by this plan. NextSeq is where the
@@ -235,6 +275,9 @@ func PlanPrompt(in PlanInput) string {
 		b.WriteString(": the instructions and the ADRs are binding, the PRD and TRD are the design. Read them first, then the repos' own AGENTS.md, CLAUDE.md and README.\n\n")
 	} else {
 		b.WriteString("There are no context documents; read each repo's AGENTS.md, CLAUDE.md and README first.\n\n")
+	}
+	if in.Prologue {
+		b.WriteString(prologueRule(in.ContextDir, in.Org+"/"+in.Project) + "\n\n")
 	}
 	b.WriteString("# Rules\n\n")
 	b.WriteString("1. Read before you plan: what exists, what the design says, where the goal's work lands.\n")

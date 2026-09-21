@@ -26,6 +26,8 @@ type Planner struct {
 	WS       Workspacer
 	Cfg      *Config
 	WorkRoot string
+	// MCP are the MCP servers the session gets (Prologue).
+	MCP map[string]any
 	// MaxBudgetUSD caps the planning session (5 by default).
 	MaxBudgetUSD float64
 	// Timeout caps its wall clock (0 none).
@@ -109,12 +111,12 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 		p.logf("goal %s: context unavailable: %v", goal.Slug, err)
 		cx = &Context{}
 	}
-	files, err := WriteContext(dir, cx.Docs)
+	files, err := WriteContext(dir, cx)
 	if err != nil {
 		return fmt.Errorf("write context: %w", err)
 	}
 	contextDir := ""
-	if len(files) > 0 {
+	if len(files) > 0 || len(cx.Index) > 0 {
 		contextDir = ContextDir
 	}
 	// a re-plan: the items so far, and where the numbering goes on
@@ -141,13 +143,13 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 	prompt := harness.PlanPrompt(harness.PlanInput{
 		GoalSlug: goal.Slug, GoalTitle: goal.Title, Statement: goal.Statement, Acceptance: goal.Acceptance, BudgetCents: goal.BudgetCents,
 		Org: scope.Login, Project: project.Slug, Repos: dirs, ContextDir: contextDir, ContextFiles: files, Blocked: goal.PausedReason,
-		Existing: existing, NextSeq: nextSeq,
+		Existing: existing, NextSeq: nextSeq, Prologue: len(p.MCP) > 0,
 	})
 	budget := p.MaxBudgetUSD
 	if budget <= 0 {
 		budget = 5
 	}
-	job := harness.Job{Kind: harness.KindPlan, Workspace: dir, Prompt: prompt, MaxBudgetUSD: budget, Label: goal.Slug + " plan", Timeout: p.Timeout}
+	job := harness.Job{Kind: harness.KindPlan, Workspace: dir, Prompt: prompt, MaxBudgetUSD: budget, Label: goal.Slug + " plan", Timeout: p.Timeout, MCPServers: p.MCP}
 	p.logf("goal %s: planning in %s (%d repos)", goal.Slug, dir, len(repos))
 	result, err := p.Harness.Run(ctx, job, nil)
 	if ctx.Err() != nil {

@@ -23,7 +23,10 @@ type Evaluator struct {
 	GW       Gateway
 	Harness  harness.Harness
 	WS       Workspacer
+	Scopes   Scopes
 	WorkRoot string
+	// MCP are the MCP servers the session gets (Prologue).
+	MCP map[string]any
 	// MaxBudgetUSD caps the review session (3 by default).
 	MaxBudgetUSD float64
 	// Timeout caps its wall clock (0 none).
@@ -59,16 +62,32 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	if err != nil {
 		return fmt.Errorf("diff: %w", err)
 	}
+	// the same context the builder had: the ADRs it was bound by
+	orgLogin := e.Scopes.LoginOf(item.OrgID)
+	cx, err := FetchContext(ctx, e.GW, orgLogin, res.Project.Slug)
+	if err != nil {
+		e.logf("item %s: context unavailable: %v", label, err)
+		cx = &Context{}
+	}
+	files, err := WriteContext(dir, cx)
+	if err != nil {
+		return fmt.Errorf("write context: %w", err)
+	}
+	contextDir := ""
+	if len(files) > 0 || len(cx.Index) > 0 {
+		contextDir = ContextDir
+	}
 	prompt := harness.EvaluatePrompt(harness.EvaluateInput{
 		GoalSlug: res.Goal.Slug, GoalTitle: res.Goal.Title, GoalAcceptance: res.Goal.Acceptance,
 		Seq: item.Seq, Title: item.Title, Brief: item.Brief, Acceptance: item.Acceptance,
 		Repo: res.Repo.FullName(), Branch: branch, BaseRef: spec.BaseRef, Diff: diff,
+		ContextDir: contextDir, ContextFiles: files, Project: orgLogin + "/" + res.Project.Slug, Prologue: len(e.MCP) > 0,
 	})
 	budget := e.MaxBudgetUSD
 	if budget <= 0 {
 		budget = 3
 	}
-	job := harness.Job{Kind: harness.KindEvaluate, Workspace: dir, Prompt: prompt, MaxBudgetUSD: budget, Label: label + " evaluate", Timeout: e.Timeout}
+	job := harness.Job{Kind: harness.KindEvaluate, Workspace: dir, Prompt: prompt, MaxBudgetUSD: budget, Label: label + " evaluate", Timeout: e.Timeout, MCPServers: e.MCP}
 	e.logf("item %s: evaluating %s (%d bytes of diff)", label, branch, len(diff))
 	result, err := e.Harness.Run(ctx, job, nil)
 	if ctx.Err() != nil {

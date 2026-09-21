@@ -37,6 +37,9 @@ type Job struct {
 	// Timeout caps the session's wall clock; 0 is none. A session that
 	// runs out is killed and Run returns context.DeadlineExceeded.
 	Timeout time.Duration
+	// MCPServers are MCP servers the session gets (name → config, the
+	// shape of an mcp.json's mcpServers): Prologue, for context on demand.
+	MCPServers map[string]any
 }
 
 // Progress is one observation of a running session.

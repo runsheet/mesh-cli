@@ -29,6 +29,8 @@ type Session struct {
 	Cfg *node.Config
 	// Orgs are the logins the node serves, for the system prompt.
 	Orgs []string
+	// MCP are MCP servers the session gets beside the mesh channel (Prologue).
+	MCP map[string]any
 	// WorkDir is ~/.mesh/work/<node-slug>, the session's cwd.
 	WorkDir string
 	// Exe is this binary, registered as the channel server.
@@ -83,7 +85,7 @@ func SystemPrompt(cfg *node.Config, orgs []string, workRoot string) string {
 You are a Mesh node (%s) for %s, running work items of goals on this machine. Events arrive from the "mesh" channel — and, as a fallback, as user messages that start with [mesh event …]; treat both the same. The channel's tools report back to the platform.
 
 On a work_item.ready event (attributes: item_id, seq, goal_slug, repo, base_ref, branch, workspace):
-1. Call mesh_context(goal_slug) and read it: instructions and ADRs are binding, the PRD/TRD are the design.
+1. Call mesh_context(goal_slug) and read it: instructions and ADRs are binding, the PRD/TRD are the design; it ends with the project's whole index — fetch anything else with the prologue_document tool (search with prologue_search; other projects through prologue_projects) rather than guessing.
 2. Prepare the workspace at the given path (under %s/<goal-slug>/<seq>): "gh repo clone <repo> <workspace>" if it does not exist, else "git fetch --prune origin" there; then "git checkout -B <branch> origin/<branch>" when that remote branch exists (a retry continues the last attempt; the event says what its evaluator found), else "git checkout <branch>" when a local <branch> exists (an attempt interrupted before its push: continue it), else "git checkout -B <branch> origin/<base_ref>".
 3. Do the item as a fresh subagent with clean context (use the Task tool with the item's brief, acceptance and the context; one subagent per item; never carry one item's context into another). Work on that branch only.
 4. Run the item's acceptance check and make it pass. Commit with clear, conventional messages.
@@ -102,6 +104,7 @@ func (s *Session) Args(workRoot string) []string {
 	args := []string{"-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
 		"--dangerously-load-development-channels", "server:" + ServerName,
 		"--append-system-prompt", SystemPrompt(s.Cfg, s.Orgs, workRoot)}
+	args = append(args, harness.MCPArgs(s.MCP)...)
 	if s.Unattended {
 		args = append(args, "--dangerously-skip-permissions")
 	}

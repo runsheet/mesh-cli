@@ -250,11 +250,28 @@ only use it on a machine you trust with that.`,
 
 func runPollMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *gateway.Client, loop *node.Loop, workRoot string, logger *log.Logger) error {
 	h := oneShotHarness()
-	runner := &node.Runner{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, MaxBudgetUSD: nodeMaxBudgetFlag, Log: logger}
+	mcp := node.PrologueMCP(gw.BaseURL, gw.Token)
+	runner := &node.Runner{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, MCP: mcp, MaxBudgetUSD: nodeMaxBudgetFlag, Log: logger}
 	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) { _ = runner.RunItem(ctx, item) }
-	loop.Evaluate = evaluateWith(gw, h, workRoot, logger)
+	loop.Evaluate = evaluateWith(gw, h, scopes, workRoot, logger)
 	loop.Plan = planWith(gw, cfg, h, workRoot, logger)
 	logger.Printf("poll mode: node %s (%s) for %s, capacity %d, every %s", cfg.Name, cfg.Slug, strings.Join(scopes.Logins(), ", "), cfg.Capacity, loop.Interval)
+	// items this node held when it last stopped are taken up again: a
+	// restart mid-build continues them (the workspace keeps the branch)
+	for _, sc := range scopes {
+		for _, status := range []string{"claimed", "running"} {
+			items, err := gw.OrgWorkItems(ctx, sc.ID, status)
+			if err != nil {
+				logger.Printf("list held items of %s: %v", sc.Login, err)
+				continue
+			}
+			for _, it := range items {
+				if it.NodeID == sc.NodeID {
+					loop.Adopt(ctx, it)
+				}
+			}
+		}
+	}
 	if nodeOnceFlag {
 		loop.Tick(ctx)
 		return nil
@@ -300,7 +317,7 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 	}
 	defer hub.Close()
 
-	sess := &channel.Session{Cfg: cfg, Orgs: scopes.Logins(), WorkDir: filepath.Join(workRoot, cfg.Slug), Exe: exe, SockPath: sock, Unattended: nodeUnattended, Stderr: os.Stderr, Log: logger,
+	sess := &channel.Session{Cfg: cfg, Orgs: scopes.Logins(), MCP: node.PrologueMCP(gw.BaseURL, gw.Token), WorkDir: filepath.Join(workRoot, cfg.Slug), Exe: exe, SockPath: sock, Unattended: nodeUnattended, Stderr: os.Stderr, Log: logger,
 		OnText: func(t string) { logger.Printf("session: %s", firstLine(t)) }}
 	var sessMu sync.Mutex
 	sessionID := ""
@@ -328,7 +345,7 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 	}
 
 	ws := &node.Git{Log: os.Stderr}
-	loop.Evaluate = evaluateWith(gw, oneShotHarness(), workRoot, logger)
+	loop.Evaluate = evaluateWith(gw, oneShotHarness(), scopes, workRoot, logger)
 	loop.Plan = planWith(gw, cfg, oneShotHarness(), workRoot, logger)
 	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) {
 		res, err := node.Resolve(ctx, gw, item)
@@ -486,8 +503,8 @@ func oneShotHarness() *harness.ClaudeCode {
 // evaluateWith is the loop's Evaluate hook: a fresh evaluator session per
 // finished item, in either mode. A failure to reach a verdict is logged
 // and the item is left in evaluating for the next tick.
-func evaluateWith(gw *gateway.Client, h harness.Harness, workRoot string, logger *log.Logger) func(context.Context, gateway.WorkItem) {
-	ev := &node.Evaluator{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, WorkRoot: workRoot, MaxBudgetUSD: nodeEvalBudgetFlag, Timeout: nodeSessionTimeoutFlag, Log: logger}
+func evaluateWith(gw *gateway.Client, h harness.Harness, scopes node.Scopes, workRoot string, logger *log.Logger) func(context.Context, gateway.WorkItem) {
+	ev := &node.Evaluator{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Scopes: scopes, WorkRoot: workRoot, MCP: node.PrologueMCP(gw.BaseURL, gw.Token), MaxBudgetUSD: nodeEvalBudgetFlag, Timeout: nodeSessionTimeoutFlag, Log: logger}
 	return func(ctx context.Context, item gateway.WorkItem) {
 		if err := ev.Evaluate(ctx, item); err != nil && ctx.Err() == nil {
 			logger.Printf("item %d %q: evaluation: %v", item.Seq, item.Title, err)
@@ -499,7 +516,7 @@ func evaluateWith(gw *gateway.Client, h harness.Harness, workRoot string, logger
 // planning, in either mode. A plan that cannot be handed in is logged
 // and the goal left in planning for the next tick (three tries).
 func planWith(gw *gateway.Client, cfg *node.Config, h harness.Harness, workRoot string, logger *log.Logger) func(context.Context, gateway.Goal, node.Scope) {
-	pl := &node.Planner{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, WorkRoot: workRoot, MaxBudgetUSD: nodePlanBudgetFlag, Timeout: nodeSessionTimeoutFlag, Log: logger}
+	pl := &node.Planner{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, WorkRoot: workRoot, MCP: node.PrologueMCP(gw.BaseURL, gw.Token), MaxBudgetUSD: nodePlanBudgetFlag, Timeout: nodeSessionTimeoutFlag, Log: logger}
 	return func(ctx context.Context, goal gateway.Goal, scope node.Scope) {
 		if err := pl.Plan(ctx, goal, scope); err != nil && ctx.Err() == nil {
 			logger.Printf("goal %s: planning: %v", goal.Slug, err)

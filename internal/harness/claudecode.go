@@ -3,11 +3,13 @@ package harness
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -33,8 +35,32 @@ func (c *ClaudeCode) Args(job Job) []string {
 	if job.MaxBudgetUSD > 0 {
 		args = append(args, "--max-budget-usd", strconv.FormatFloat(job.MaxBudgetUSD, 'f', 2, 64))
 	}
+	args = append(args, MCPArgs(job.MCPServers)...)
 	args = append(args, c.ExtraArgs...)
 	return args
+}
+
+// MCPArgs is the command line for a set of MCP servers: the config
+// inline, and every server's tools allowed (a print-mode session cannot
+// be asked).
+func MCPArgs(servers map[string]any) []string {
+	if len(servers) == 0 {
+		return nil
+	}
+	cfg, err := json.Marshal(map[string]any{"mcpServers": servers})
+	if err != nil {
+		return nil
+	}
+	names := make([]string, 0, len(servers))
+	for n := range servers {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	allowed := make([]string, 0, len(names))
+	for _, n := range names {
+		allowed = append(allowed, "mcp__"+n+"__*")
+	}
+	return []string{"--mcp-config", string(cfg), "--allowedTools", strings.Join(allowed, ",")}
 }
 
 // Run implements Harness. The process is killed when ctx is cancelled.

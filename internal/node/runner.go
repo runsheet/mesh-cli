@@ -62,6 +62,8 @@ type Runner struct {
 	Cfg      *Config
 	Scopes   Scopes
 	WorkRoot string
+	// MCP are the MCP servers every session gets (Prologue).
+	MCP map[string]any
 	// MaxBudgetUSD caps a session's budget whatever the goal has left.
 	MaxBudgetUSD float64
 	// ProgressEvery is how often progress is reported (60 s).
@@ -144,12 +146,12 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		r.logf("item %s: context unavailable: %v", label, err)
 		cx = &Context{}
 	}
-	files, err := WriteContext(dir, cx.Docs)
+	files, err := WriteContext(dir, cx)
 	if err != nil {
 		return r.fail(ctx, item, fmt.Errorf("write context: %w", err))
 	}
 	contextDir := ""
-	if len(files) > 0 {
+	if len(files) > 0 || len(cx.Index) > 0 {
 		contextDir = ContextDir
 	}
 
@@ -157,9 +159,9 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		GoalSlug: res.Goal.Slug, GoalTitle: res.Goal.Title, GoalStatement: res.Goal.Statement, GoalAcceptance: res.Goal.Acceptance,
 		Seq: item.Seq, Title: item.Title, Brief: item.Brief, Acceptance: item.Acceptance,
 		Repo: res.Repo.FullName(), Branch: spec.Branch, BaseRef: spec.BaseRef, ContextDir: contextDir, ContextFiles: files,
-		Attempts: item.Attempts, Evaluation: item.Evaluation,
+		Attempts: item.Attempts, Evaluation: item.Evaluation, Project: orgLogin + "/" + res.Project.Slug, Prologue: len(r.MCP) > 0,
 	})
-	job := harness.Job{Kind: harness.KindBuild, Workspace: dir, Prompt: prompt, MaxBudgetUSD: r.Budget(res.Goal), Label: label}
+	job := harness.Job{Kind: harness.KindBuild, Workspace: dir, Prompt: prompt, MaxBudgetUSD: r.Budget(res.Goal), Label: label, MCPServers: r.MCP}
 
 	cost := &costReporter{}
 	var mu sync.Mutex

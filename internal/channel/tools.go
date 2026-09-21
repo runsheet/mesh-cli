@@ -178,7 +178,7 @@ func (h *Handler) context(ctx context.Context, args map[string]any) (string, err
 	if err != nil {
 		return "", err
 	}
-	if len(cx.Docs) == 0 {
+	if len(cx.Docs) == 0 && len(cx.Index) == 0 {
 		return fmt.Sprintf("No context documents in project %s.", project.Slug), nil
 	}
 	names := make([]string, 0, len(cx.Docs))
@@ -190,6 +190,9 @@ func (h *Handler) context(ctx context.Context, args map[string]any) (string, err
 	fmt.Fprintf(&b, "# Context for goal %s (project %s)\n\n", slug, project.Slug)
 	for _, n := range names {
 		fmt.Fprintf(&b, "<!-- %s -->\n%s\n\n", n, strings.TrimSpace(cx.Docs[n]))
+	}
+	if len(cx.Index) > 0 {
+		b.WriteString(node.RenderIndex(cx))
 	}
 	return b.String(), nil
 }

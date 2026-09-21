@@ -191,11 +191,22 @@ func TestLoopClaimsRunsAndFinishes(t *testing.T) {
 	for _, e := range entries {
 		names = append(names, e.Name())
 	}
-	if strings.Join(names, ",") != "adr-adr-001.md,instructions-acme-widgets-agents.md,prd-prd.md" {
+	if strings.Join(names, ",") != "INDEX.md,adr-adr-001.md,instructions-acme-widgets-agents.md,prd-prd.md" {
 		t.Fatalf("context files: %v", names)
 	}
 	if !strings.Contains(h.jobs[0].Prompt, "instructions-acme-widgets-agents.md, adr-adr-001.md, prd-prd.md") {
 		t.Fatalf("prompt must list the context in reading order:\n%s", h.jobs[0].Prompt)
+	}
+	// the index lists every document, the spec too, and says which are on disk
+	index, _ := os.ReadFile(filepath.Join(dir, ContextDir, IndexFile))
+	for _, want := range []string{"Project acme/mesh", "| adr | ADR 001 | `adr-001` | acme/widgets/specs/adr-001.md | `adr-adr-001.md` |", "| spec | Notes | `notes` | acme/widgets/specs/notes.md | fetch |"} {
+		if !strings.Contains(string(index), want) {
+			t.Fatalf("index lacks %q:\n%s", want, index)
+		}
+	}
+	// no MCP on this runner: no Prologue rule in the prompt
+	if strings.Contains(h.jobs[0].Prompt, "prologue_document") || h.jobs[0].MCPServers != nil {
+		t.Fatal("no MCP server was given, none should be promised")
 	}
 	// the goal document, committed on the branch with the PRD as parent
 	doc, err := os.ReadFile(GoalDocPath(dir, "ship-it"))
