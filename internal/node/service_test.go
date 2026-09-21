@@ -20,6 +20,9 @@ func TestServiceDefinitions(t *testing.T) {
 	}
 	t.Cleanup(func() { lookPath = execLookPath })
 	t.Setenv("GH_CONFIG_DIR", "/Users/x/.config/gh-personal")
+	for _, k := range []string{"GIT_CONFIG_GLOBAL", "GH_TOKEN", "GITHUB_TOKEN", "CLAUDE_CONFIG_DIR"} {
+		t.Setenv(k, "") // whatever this shell has, the spec takes only what the test sets
+	}
 	spec, err := ServiceSpecFor("/Users/x/bin/mesh", "/Users/x", []string{"--unattended", "--interval=1m"})
 	if err != nil {
 		t.Fatal(err)
