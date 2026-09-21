@@ -50,6 +50,10 @@ type Session struct {
 	mu     sync.Mutex
 	stdin  io.WriteCloser
 	starts int
+	// pending counts user messages sent whose turn has not ended; the
+	// session is idle when it is zero. idleSince is when it last became so.
+	pending   int
+	idleSince time.Time
 }
 
 func (s *Session) logf(format string, args ...any) {
@@ -119,7 +123,33 @@ func (s *Session) Send(text string) error {
 		return err
 	}
 	_, err = s.stdin.Write(append(line, '\n'))
+	if err == nil {
+		s.pending++
+	}
 	return err
+}
+
+// Idle reports whether the session is up with no turn in flight, and for
+// how long. A held item on an idle session is one nobody is working.
+func (s *Session) Idle() (bool, time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.stdin == nil || s.pending > 0 {
+		return false, 0
+	}
+	return true, time.Since(s.idleSince)
+}
+
+// turnEnded is one result event: the turn of the oldest pending message.
+func (s *Session) turnEnded() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.pending > 0 {
+		s.pending--
+	}
+	if s.pending == 0 {
+		s.idleSince = time.Now()
+	}
 }
 
 // Alive reports whether a process is up with stdin open.
@@ -190,10 +220,13 @@ func (s *Session) once(ctx context.Context, bin, workRoot string) error {
 	s.mu.Lock()
 	s.stdin = stdin
 	s.starts++
+	s.pending = 0
+	s.idleSince = time.Now()
 	s.mu.Unlock()
 	defer func() {
 		s.mu.Lock()
 		s.stdin = nil
+		s.pending = 0
 		s.mu.Unlock()
 		_ = stdin.Close()
 	}()
@@ -219,6 +252,7 @@ func (s *Session) once(ctx context.Context, bin, workRoot string) error {
 			}
 		case "result":
 			// a turn ended; the session stays open for the next message
+			s.turnEnded()
 			s.logf("session turn: $%.4f, %d turns, %s", ev.CostUSD, ev.NumTurns, ev.Subtype)
 		}
 	})

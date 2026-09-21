@@ -31,6 +31,7 @@ var (
 	nodeSlugFlag      string
 	nodeCapacityFlag  int
 	nodeIntervalFlag  time.Duration
+	nodeStallFlag     time.Duration
 	nodeMaxBudgetFlag float64
 	nodeModeFlag      string
 	nodeUnattended    bool
@@ -255,9 +256,10 @@ func runChannelMode(ctx context.Context, cfg *node.Config, gw *gateway.Client, l
 	// each held item is a slot: its event, kept for a re-push, and the
 	// outcome the session reports through the channel's tools
 	type slot struct {
-		content string
-		meta    map[string]string
-		done    chan string
+		content  string
+		meta     map[string]string
+		done     chan string
+		pushedAt time.Time
 	}
 	slots := map[string]*slot{}
 	var mu sync.Mutex
@@ -293,6 +295,13 @@ func runChannelMode(ctx context.Context, cfg *node.Config, gw *gateway.Client, l
 		if err := sess.Send(channel.UserMessage(content, meta)); err != nil {
 			logger.Printf("session stdin: %v (the channel still has it)", err)
 		}
+		if id := meta["item_id"]; id != "" {
+			mu.Lock()
+			if s := slots[id]; s != nil {
+				s.pushedAt = time.Now()
+			}
+			mu.Unlock()
+		}
 	}
 
 	ws := &node.Git{Log: os.Stderr}
@@ -324,9 +333,17 @@ func runChannelMode(ctx context.Context, cfg *node.Config, gw *gateway.Client, l
 	}
 
 	// repush takes up every item this node holds on the platform: those
-	// already in a slot are pushed again (a restarted session lost them),
-	// those without one (a restarted daemon) are adopted unless someone
-	// reported progress on them within the last interval.
+	// already in a slot are pushed again when the session restarted (it
+	// lost them) or when it has gone quiet on one — idle, with no progress
+	// reported and no push within the stall window — so an item whose
+	// session gave up mid-way (a hung subagent, an interrupted turn) is
+	// offered again instead of sitting in running for ever; those without
+	// a slot (a restarted daemon) are adopted unless someone reported
+	// progress on them within the last interval.
+	stalled := func(s *slot, it gateway.WorkItem) bool {
+		idle, _ := sess.Idle()
+		return idle && !recentProgress(it.HeartbeatAt, nodeStallFlag) && time.Since(s.pushedAt) >= nodeStallFlag
+	}
 	repush := func(ctx context.Context, all bool) {
 		var held []gateway.WorkItem
 		for _, status := range []string{"claimed", "running"} {
@@ -349,6 +366,9 @@ func runChannelMode(ctx context.Context, cfg *node.Config, gw *gateway.Client, l
 				if all {
 					push(s.content, s.meta)
 					logger.Printf("item %s re-pushed to the session", it.ID)
+				} else if stalled(s, it) {
+					push(s.content, s.meta)
+					logger.Printf("item %s re-pushed: the session is idle and nothing has been reported on it for %s", it.ID, nodeStallFlag)
 				}
 				continue
 			}
@@ -417,6 +437,7 @@ func init() {
 	nodeRegisterCmd.Flags().StringVar(&nodeSlugFlag, "slug", "", "the node's slug (default: from --name); the node id derives from it")
 	nodeRegisterCmd.Flags().IntVar(&nodeCapacityFlag, "capacity", 1, "concurrent sessions")
 	nodeStartCmd.Flags().DurationVar(&nodeIntervalFlag, "interval", 30*time.Second, "heartbeat and claim interval")
+	nodeStartCmd.Flags().DurationVar(&nodeStallFlag, "stall", 10*time.Minute, "channel mode: re-push a held item the idle session has reported nothing on for this long")
 	nodeStartCmd.Flags().Float64Var(&nodeMaxBudgetFlag, "max-budget-usd", 10, "cap on one session's budget (poll mode), whatever the goal has left")
 	nodeStartCmd.Flags().StringVar(&nodeModeFlag, "mode", "channel", "channel (one persistent session fed by the mesh channel) or poll (claude -p per item)")
 	nodeStartCmd.Flags().BoolVar(&nodeUnattended, "unattended", false, "run sessions with --dangerously-skip-permissions (trusted machines only)")

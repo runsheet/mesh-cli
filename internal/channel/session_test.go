@@ -43,9 +43,14 @@ func TestSessionStaysAliveAndReceivesEventsOnStdin(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("session did not start")
 	}
+	// the idle prompt's turn ends with the fake's result: idle until the next message
+	waitFor(t, func() bool { idle, _ := s.Idle(); return idle })
 	content, meta := ReadyEvent(&node.Resolved{Item: itemFixture(), Goal: goalFixture(), Repo: repoFixture()}, "/w/ship-it/1")
 	if err := s.Send(UserMessage(content, meta)); err != nil {
 		t.Fatal(err)
+	}
+	if idle, _ := s.Idle(); idle {
+		t.Fatal("a sent event is a turn in flight: not idle")
 	}
 	waitFor(t, func() bool {
 		b, _ := os.ReadFile(out)
@@ -84,6 +89,9 @@ func TestSessionStaysAliveAndReceivesEventsOnStdin(t *testing.T) {
 	}
 	if s.Alive() {
 		t.Fatal("stdin must close on stop")
+	}
+	if idle, _ := s.Idle(); idle {
+		t.Fatal("a stopped session is not idle, it is gone")
 	}
 	args := strings.Join(s.Args("/w"), " ")
 	if !strings.HasPrefix(args, "-p --input-format stream-json --output-format stream-json --verbose ") {
