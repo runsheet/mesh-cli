@@ -98,6 +98,14 @@ func (g *Git) Prepare(ctx context.Context, spec WorkspaceSpec) (string, error) {
 	if _, err := g.run(ctx, dir, "git", "checkout", "--quiet", "-B", spec.Branch, "origin/"+spec.Branch); err == nil {
 		return dir, nil
 	}
+	// a local branch from an attempt that was interrupted before its push
+	// (the node restarted): continue it, do not reset it onto the base
+	if _, err := g.run(ctx, dir, "git", "rev-parse", "--verify", "--quiet", "refs/heads/"+spec.Branch); err == nil {
+		if _, err := g.run(ctx, dir, "git", "checkout", "--quiet", spec.Branch); err != nil {
+			return "", err
+		}
+		return dir, nil
+	}
 	if _, err := g.run(ctx, dir, "git", "checkout", "--quiet", "-B", spec.Branch, "origin/"+base); err != nil {
 		return "", err
 	}
