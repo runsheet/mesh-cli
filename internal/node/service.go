@@ -1,0 +1,169 @@
+package node
+
+import (
+	"bytes"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"text/template"
+)
+
+// The node as a service of the operator's login session: on macOS a
+// launchd LaunchAgent, on Linux a systemd user unit. Both keep
+// `mesh node start` alive across crashes and logins (KeepAlive /
+// Restart=always), log to ~/.mesh/node.log, and put the tools a session
+// needs — claude, gh, git — on PATH; the node's token and config are
+// read from ~/.mesh as ever.
+
+// ServiceLabel names the service to launchd and systemd.
+const ServiceLabel = "io.projectmesh.mesh-node"
+
+// ServiceSpec is what the service runs.
+type ServiceSpec struct {
+	// Exe is the mesh binary, absolute.
+	Exe string
+	// Args follow `node start`.
+	Args []string
+	// Home is the operator's home; ~/.mesh lives there.
+	Home string
+	// Path is the PATH the session inherits.
+	Path string
+	// Log is the file stdout and stderr go to.
+	Log string
+}
+
+// ServiceLog is ~/.mesh/node.log.
+func ServiceLog(home string) string { return filepath.Join(home, ".mesh", "node.log") }
+
+// ServicePath builds the PATH a service needs: where the tools are now,
+// the usual places, and the operator's own bins — a launchd job starts
+// with almost none.
+func ServicePath(home string) string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(p string) {
+		if p == "" || seen[p] {
+			return
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+	for _, tool := range []string{"claude", "gh", "git", "mesh", "go", "node", "npm"} {
+		if p, err := lookPath(tool); err == nil {
+			add(filepath.Dir(p))
+		}
+	}
+	for _, p := range []string{filepath.Join(home, "bin"), filepath.Join(home, ".local", "bin"), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"} {
+		add(p)
+	}
+	return strings.Join(out, ":")
+}
+
+var lookPath = func(file string) (string, error) { return execLookPath(file) }
+
+// LaunchAgentPath is ~/Library/LaunchAgents/<label>.plist.
+func LaunchAgentPath(home string) string {
+	return filepath.Join(home, "Library", "LaunchAgents", ServiceLabel+".plist")
+}
+
+// SystemdUnitPath is ~/.config/systemd/user/<label>.service.
+func SystemdUnitPath(home string) string {
+	return filepath.Join(home, ".config", "systemd", "user", ServiceLabel+".service")
+}
+
+var launchAgentTmpl = template.Must(template.New("plist").Parse(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>{{.Label}}</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>{{.Exe}}</string>
+		<string>node</string>
+		<string>start</string>
+{{- range .Args}}
+		<string>{{.}}</string>
+{{- end}}
+	</array>
+	<key>WorkingDirectory</key>
+	<string>{{.Home}}</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>{{.Path}}</string>
+		<key>HOME</key>
+		<string>{{.Home}}</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+	<key>StandardOutPath</key>
+	<string>{{.Log}}</string>
+	<key>StandardErrorPath</key>
+	<string>{{.Log}}</string>
+	<key>ProcessType</key>
+	<string>Background</string>
+</dict>
+</plist>
+`))
+
+var systemdTmpl = template.Must(template.New("unit").Parse(`[Unit]
+Description=Mesh node: runs work items of goals on this machine
+After=network-online.target
+
+[Service]
+ExecStart={{.Exe}} node start{{range .Args}} {{.}}{{end}}
+WorkingDirectory={{.Home}}
+Environment=PATH={{.Path}}
+Environment=HOME={{.Home}}
+Restart=always
+RestartSec=10
+StandardOutput=append:{{.Log}}
+StandardError=append:{{.Log}}
+
+[Install]
+WantedBy=default.target
+`))
+
+// RenderLaunchAgent renders the LaunchAgent plist.
+func RenderLaunchAgent(spec ServiceSpec) ([]byte, error) {
+	var b bytes.Buffer
+	err := launchAgentTmpl.Execute(&b, struct {
+		ServiceSpec
+		Label string
+	}{spec, ServiceLabel})
+	return b.Bytes(), err
+}
+
+// RenderSystemdUnit renders the systemd user unit.
+func RenderSystemdUnit(spec ServiceSpec) ([]byte, error) {
+	var b bytes.Buffer
+	err := systemdTmpl.Execute(&b, spec)
+	return b.Bytes(), err
+}
+
+// WriteFile writes a service definition, making its directory.
+func WriteFile(path string, data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o644)
+}
+
+// ServiceSpecFor is the spec for this binary, the operator's home and
+// the start flags given.
+func ServiceSpecFor(exe, home string, args []string) (ServiceSpec, error) {
+	if exe == "" || home == "" {
+		return ServiceSpec{}, fmt.Errorf("the binary and the home are required")
+	}
+	abs, err := filepath.Abs(exe)
+	if err != nil {
+		return ServiceSpec{}, err
+	}
+	return ServiceSpec{Exe: abs, Args: args, Home: home, Path: ServicePath(home), Log: ServiceLog(home)}, nil
+}
