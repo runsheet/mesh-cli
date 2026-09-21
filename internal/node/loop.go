@@ -24,12 +24,18 @@ type Loop struct {
 	Dispatch func(ctx context.Context, item gateway.WorkItem)
 	// Release is called after Dispatch returns (optional).
 	Release func(item gateway.WorkItem)
+	// Evaluate reviews an item this node finished (status evaluating,
+	// node_id ours) and returns when the verdict is recorded — or not,
+	// in which case the next tick offers it again. Optional; nil leaves
+	// evaluation to someone else. It does not count against capacity.
+	Evaluate func(ctx context.Context, item gateway.WorkItem)
 	// AfterTick runs at the end of every tick (optional).
 	AfterTick func(ctx context.Context)
 
-	mu      sync.Mutex
-	running map[string]bool
-	wg      sync.WaitGroup
+	mu         sync.Mutex
+	running    map[string]bool
+	evaluating map[string]bool
+	wg         sync.WaitGroup
 }
 
 func (l *Loop) logf(format string, args ...any) {
@@ -88,6 +94,7 @@ func (l *Loop) Tick(ctx context.Context) {
 	if err := l.GW.HeartbeatNode(ctx, l.Cfg.NodeID, l.Version, l.Running()); err != nil {
 		l.logf("heartbeat: %v", err)
 	}
+	l.evaluateHeld(ctx)
 	free := l.Cfg.Capacity - l.Running()
 	if free <= 0 {
 		return
@@ -121,6 +128,46 @@ func (l *Loop) Tick(ctx context.Context) {
 	}
 	if l.AfterTick != nil {
 		l.AfterTick(ctx)
+	}
+}
+
+// evaluateHeld starts an evaluation of every item this node finished
+// that no evaluation here is running on. The verdict moves the item on;
+// an evaluation that ends without one leaves it here for the next tick.
+func (l *Loop) evaluateHeld(ctx context.Context) {
+	if l.Evaluate == nil {
+		return
+	}
+	items, err := l.GW.OrgWorkItems(ctx, l.Cfg.OrgID, "evaluating")
+	if err != nil {
+		l.logf("list evaluating items: %v", err)
+		return
+	}
+	for _, item := range items {
+		if item.NodeID != l.Cfg.NodeID {
+			continue
+		}
+		l.mu.Lock()
+		if l.evaluating == nil {
+			l.evaluating = map[string]bool{}
+		}
+		if l.evaluating[item.ID] {
+			l.mu.Unlock()
+			continue
+		}
+		l.evaluating[item.ID] = true
+		l.mu.Unlock()
+		l.logf("evaluating item %d %q", item.Seq, item.Title)
+		l.wg.Add(1)
+		go func(item gateway.WorkItem) {
+			defer l.wg.Done()
+			defer func() {
+				l.mu.Lock()
+				delete(l.evaluating, item.ID)
+				l.mu.Unlock()
+			}()
+			l.Evaluate(ctx, item)
+		}(item)
 	}
 }
 

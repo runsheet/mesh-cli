@@ -85,10 +85,16 @@ func (w *fakeWS) Push(_ context.Context, dir, branch string) (string, error) {
 	return "abc123def456", nil
 }
 
+func (w *fakeWS) Diff(_ context.Context, dir, base string) (string, error) {
+	return "+++ b/thing_test.go\n+func TestThing(t *testing.T) {}", nil
+}
+
 type fakeHarness struct {
 	mu   sync.Mutex
 	jobs []harness.Job
 	fail bool
+	// text is the final message when set (an evaluator's verdict).
+	text string
 }
 
 func (h *fakeHarness) Name() string { return "claude-code" }
@@ -96,13 +102,20 @@ func (h *fakeHarness) Run(ctx context.Context, job harness.Job, on func(harness.
 	h.mu.Lock()
 	h.jobs = append(h.jobs, job)
 	h.mu.Unlock()
+	if on == nil {
+		on = func(harness.Progress) {}
+	}
 	on(harness.Progress{SessionID: "s-1"})
 	on(harness.Progress{Text: "wrote the test", CostUSD: 0.5})
 	if h.fail {
 		return harness.Result{Success: false, Text: "could not", CostUSD: 0.75, SessionID: "s-1"}, nil
 	}
 	on(harness.Progress{Text: "done", CostUSD: 1.25})
-	return harness.Result{Success: true, Text: "Implemented and tested.", CostUSD: 1.25, SessionID: "s-1"}, nil
+	text := "Implemented and tested."
+	if h.text != "" {
+		text = h.text
+	}
+	return harness.Result{Success: true, Text: text, CostUSD: 1.25, SessionID: "s-1"}, nil
 }
 
 func TestLoopClaimsRunsAndFinishes(t *testing.T) {

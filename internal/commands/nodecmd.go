@@ -26,16 +26,17 @@ import (
 )
 
 var (
-	nodeOrgFlag       string
-	nodeNameFlag      string
-	nodeSlugFlag      string
-	nodeCapacityFlag  int
-	nodeIntervalFlag  time.Duration
-	nodeStallFlag     time.Duration
-	nodeMaxBudgetFlag float64
-	nodeModeFlag      string
-	nodeUnattended    bool
-	nodeOnceFlag      bool
+	nodeOrgFlag        string
+	nodeNameFlag       string
+	nodeSlugFlag       string
+	nodeCapacityFlag   int
+	nodeIntervalFlag   time.Duration
+	nodeStallFlag      time.Duration
+	nodeEvalBudgetFlag float64
+	nodeMaxBudgetFlag  float64
+	nodeModeFlag       string
+	nodeUnattended     bool
+	nodeOnceFlag       bool
 )
 
 var nodeCmd = &cobra.Command{
@@ -225,12 +226,10 @@ only use it on a machine you trust with that.`,
 }
 
 func runPollMode(ctx context.Context, cfg *node.Config, gw *gateway.Client, loop *node.Loop, workRoot string, logger *log.Logger) error {
-	h := &harness.ClaudeCode{Stderr: os.Stderr}
-	if nodeUnattended {
-		h.ExtraArgs = []string{"--dangerously-skip-permissions"}
-	}
+	h := oneShotHarness()
 	runner := &node.Runner{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, WorkRoot: workRoot, MaxBudgetUSD: nodeMaxBudgetFlag, Log: logger}
 	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) { _ = runner.RunItem(ctx, item) }
+	loop.Evaluate = evaluateWith(gw, h, workRoot, logger)
 	logger.Printf("poll mode: node %s (%s) for %s, capacity %d, every %s", cfg.Name, cfg.Slug, cfg.OrgLogin, cfg.Capacity, loop.Interval)
 	if nodeOnceFlag {
 		loop.Tick(ctx)
@@ -305,6 +304,7 @@ func runChannelMode(ctx context.Context, cfg *node.Config, gw *gateway.Client, l
 	}
 
 	ws := &node.Git{Log: os.Stderr}
+	loop.Evaluate = evaluateWith(gw, oneShotHarness(), workRoot, logger)
 	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) {
 		res, err := node.Resolve(ctx, gw, item)
 		if err != nil {
@@ -398,6 +398,28 @@ func runChannelMode(ctx context.Context, cfg *node.Config, gw *gateway.Client, l
 	return err
 }
 
+// oneShotHarness is `claude -p` for a session that ends with its turn:
+// poll-mode builds and every evaluation.
+func oneShotHarness() *harness.ClaudeCode {
+	h := &harness.ClaudeCode{Stderr: os.Stderr}
+	if nodeUnattended {
+		h.ExtraArgs = []string{"--dangerously-skip-permissions"}
+	}
+	return h
+}
+
+// evaluateWith is the loop's Evaluate hook: a fresh evaluator session per
+// finished item, in either mode. A failure to reach a verdict is logged
+// and the item is left in evaluating for the next tick.
+func evaluateWith(gw *gateway.Client, h harness.Harness, workRoot string, logger *log.Logger) func(context.Context, gateway.WorkItem) {
+	ev := &node.Evaluator{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, WorkRoot: workRoot, MaxBudgetUSD: nodeEvalBudgetFlag, Log: logger}
+	return func(ctx context.Context, item gateway.WorkItem) {
+		if err := ev.Evaluate(ctx, item); err != nil && ctx.Err() == nil {
+			logger.Printf("item %d %q: evaluation: %v", item.Seq, item.Title, err)
+		}
+	}
+}
+
 // recentProgress reports whether an item's last heartbeat is within the
 // interval — someone is working it.
 func recentProgress(heartbeatAt string, interval time.Duration) bool {
@@ -439,6 +461,7 @@ func init() {
 	nodeStartCmd.Flags().DurationVar(&nodeIntervalFlag, "interval", 30*time.Second, "heartbeat and claim interval")
 	nodeStartCmd.Flags().DurationVar(&nodeStallFlag, "stall", 10*time.Minute, "channel mode: re-push a held item the idle session has reported nothing on for this long")
 	nodeStartCmd.Flags().Float64Var(&nodeMaxBudgetFlag, "max-budget-usd", 10, "cap on one session's budget (poll mode), whatever the goal has left")
+	nodeStartCmd.Flags().Float64Var(&nodeEvalBudgetFlag, "eval-budget-usd", 3, "cap on one evaluator session's budget")
 	nodeStartCmd.Flags().StringVar(&nodeModeFlag, "mode", "channel", "channel (one persistent session fed by the mesh channel) or poll (claude -p per item)")
 	nodeStartCmd.Flags().BoolVar(&nodeUnattended, "unattended", false, "run sessions with --dangerously-skip-permissions (trusted machines only)")
 	nodeStartCmd.Flags().BoolVar(&nodeOnceFlag, "once", false, "poll mode: one tick, then exit")

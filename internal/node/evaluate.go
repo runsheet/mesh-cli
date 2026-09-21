@@ -1,0 +1,92 @@
+package node
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"projectmesh.io/mesh-cli/internal/gateway"
+	"projectmesh.io/mesh-cli/internal/harness"
+)
+
+// Evaluator is the second fresh session an item gets on the node
+// (mesh-specs trd §3.4): the finished branch checked out, its diff from
+// the base, the acceptance, an adversarial review — and its verdict
+// recorded with EvaluateWorkItem. The platform opens the pull request on
+// a pass and readies the item again on a fail (with the notes for the
+// next builder), so the evaluator changes nothing itself.
+type Evaluator struct {
+	GW       Gateway
+	Harness  harness.Harness
+	WS       Workspacer
+	WorkRoot string
+	// MaxBudgetUSD caps the review session (3 by default).
+	MaxBudgetUSD float64
+	Log          *log.Logger
+}
+
+func (e *Evaluator) logf(format string, args ...any) {
+	if e.Log != nil {
+		e.Log.Printf(format, args...)
+	}
+}
+
+// Evaluate reviews one item in evaluating and records the verdict. An
+// error means no verdict was recorded: the item stays in evaluating and
+// the next tick tries again.
+func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
+	res, err := Resolve(ctx, e.GW, item)
+	if err != nil {
+		return fmt.Errorf("resolve: %w", err)
+	}
+	label := fmt.Sprintf("%s/%d", res.Goal.Slug, item.Seq)
+	branch := item.Branch
+	if branch == "" {
+		branch = res.Branch()
+	}
+	spec := WorkspaceSpec{Root: e.WorkRoot, GoalSlug: res.Goal.Slug, Seq: item.Seq, Repo: res.Repo.FullName(), Branch: branch, BaseRef: res.BaseRef()}
+	dir, err := e.WS.Prepare(ctx, spec)
+	if err != nil {
+		return fmt.Errorf("workspace: %w", err)
+	}
+	diff, err := e.WS.Diff(ctx, dir, spec.BaseRef)
+	if err != nil {
+		return fmt.Errorf("diff: %w", err)
+	}
+	prompt := harness.EvaluatePrompt(harness.EvaluateInput{
+		GoalSlug: res.Goal.Slug, GoalTitle: res.Goal.Title, GoalAcceptance: res.Goal.Acceptance,
+		Seq: item.Seq, Title: item.Title, Brief: item.Brief, Acceptance: item.Acceptance,
+		Repo: res.Repo.FullName(), Branch: branch, BaseRef: spec.BaseRef, Diff: diff,
+	})
+	budget := e.MaxBudgetUSD
+	if budget <= 0 {
+		budget = 3
+	}
+	job := harness.Job{Kind: harness.KindEvaluate, Workspace: dir, Prompt: prompt, MaxBudgetUSD: budget, Label: label + " evaluate"}
+	e.logf("item %s: evaluating %s (%d bytes of diff)", label, branch, len(diff))
+	result, err := e.Harness.Run(ctx, job, nil)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if err != nil {
+		return fmt.Errorf("evaluator session: %w", err)
+	}
+	passed, notes, ok := harness.ParseVerdict(result.Text)
+	if !ok {
+		return fmt.Errorf("evaluator session reached no verdict (%s): %s", result.SessionID, truncate(result.Text, 300))
+	}
+	verdict := "failed"
+	if passed {
+		verdict = "passed"
+	}
+	notes = strings.TrimSpace(notes)
+	if notes == "" {
+		notes = "(no notes)"
+	}
+	if err := e.GW.EvaluateWorkItem(ctx, item.ID, passed, truncate(notes, 4000)); err != nil {
+		return fmt.Errorf("record verdict: %w", err)
+	}
+	e.logf("item %s: evaluation %s ($%.2f)", label, verdict, result.CostUSD)
+	return nil
+}

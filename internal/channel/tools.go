@@ -269,6 +269,9 @@ func ReadyEvent(res *node.Resolved, workspace string) (string, map[string]string
 	if strings.TrimSpace(res.Goal.Acceptance) != "" {
 		fmt.Fprintf(&b, "The goal's acceptance:\n%s\n\n", strings.TrimSpace(res.Goal.Acceptance))
 	}
+	if it.Attempts > 0 && strings.TrimSpace(it.Evaluation) != "" {
+		fmt.Fprintf(&b, "This is attempt %d: the branch carries the last attempt's commits and an independent evaluator rejected it. Fix what it found first:\n%s\n\n", it.Attempts+1, strings.TrimSpace(it.Evaluation))
+	}
 	fmt.Fprintf(&b, "Repo %s, branch %s from %s, workspace %s. Call mesh_context(goal_slug=%q) first.", res.Repo.FullName(), res.Branch(), res.BaseRef(), workspace, res.Goal.Slug)
 	meta := map[string]string{
 		"kind": "work_item.ready", "item_id": it.ID, "seq": fmt.Sprint(it.Seq), "goal_slug": res.Goal.Slug,

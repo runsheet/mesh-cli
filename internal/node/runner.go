@@ -156,6 +156,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		GoalSlug: res.Goal.Slug, GoalTitle: res.Goal.Title, GoalStatement: res.Goal.Statement, GoalAcceptance: res.Goal.Acceptance,
 		Seq: item.Seq, Title: item.Title, Brief: item.Brief, Acceptance: item.Acceptance,
 		Repo: res.Repo.FullName(), Branch: spec.Branch, BaseRef: spec.BaseRef, ContextDir: contextDir, ContextFiles: files,
+		Attempts: item.Attempts, Evaluation: item.Evaluation,
 	})
 	job := harness.Job{Kind: harness.KindBuild, Workspace: dir, Prompt: prompt, MaxBudgetUSD: r.Budget(res.Goal), Label: label}
 

@@ -44,6 +44,9 @@ type Workspacer interface {
 	Commit(ctx context.Context, dir string, paths []string, msg string) error
 	// Push pushes branch to origin and returns its head sha.
 	Push(ctx context.Context, dir, branch string) (string, error)
+	// Diff renders what the checked-out branch changed since it left
+	// origin/base: the stat, then the patch (the evaluator's evidence).
+	Diff(ctx context.Context, dir, base string) (string, error)
 }
 
 // Git is the Workspacer over `gh` and `git` with the user's credentials.
@@ -86,14 +89,38 @@ func (g *Git) Prepare(ctx context.Context, spec WorkspaceSpec) (string, error) {
 		}
 		base = strings.TrimPrefix(out, "origin/")
 	}
+	// a branch pushed by an earlier attempt (or just finished, for its
+	// evaluation) is continued, not restarted: the evaluator's notes say
+	// what to fix, and the push must fast-forward
+	if _, err := g.run(ctx, dir, "git", "checkout", "--quiet", "-B", spec.Branch, "origin/"+spec.Branch); err == nil {
+		return dir, nil
+	}
 	if _, err := g.run(ctx, dir, "git", "checkout", "--quiet", "-B", spec.Branch, "origin/"+base); err != nil {
-		// a branch pushed by an earlier attempt: continue from it
-		if _, err2 := g.run(ctx, dir, "git", "checkout", "--quiet", "-B", spec.Branch, "origin/"+spec.Branch); err2 != nil {
-			return "", err
-		}
+		return "", err
 	}
 	return dir, nil
 }
+
+// Diff implements Workspacer: the three-dot diff from where the branch
+// forked origin/base, stat first, capped so a prompt stays a prompt.
+func (g *Git) Diff(ctx context.Context, dir, base string) (string, error) {
+	ref := "origin/" + base + "...HEAD"
+	stat, err := g.run(ctx, dir, "git", "diff", "--stat", ref)
+	if err != nil {
+		return "", err
+	}
+	patch, err := g.run(ctx, dir, "git", "diff", ref)
+	if err != nil {
+		return "", err
+	}
+	if len(patch) > MaxDiffBytes {
+		patch = patch[:MaxDiffBytes] + "\n… (diff truncated; read the branch for the rest)"
+	}
+	return stat + "\n\n" + patch, nil
+}
+
+// MaxDiffBytes caps the patch an evaluator is handed inline.
+const MaxDiffBytes = 200 * 1024
 
 // Commit implements Workspacer.
 func (g *Git) Commit(ctx context.Context, dir string, paths []string, msg string) error {

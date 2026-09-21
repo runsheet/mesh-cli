@@ -202,9 +202,14 @@ type WorkItem struct {
 	LastNote    string   `json:"lastNote"`
 	PRURL       string   `json:"prUrl"`
 	HeartbeatAt string   `json:"heartbeatAt"`
+	// Evaluation is the evaluator's notes on the last finished branch;
+	// EvaluationPassed its verdict. A ready item with attempts > 0 and an
+	// evaluation is a retry: the builder reads why the last one failed.
+	Evaluation       string `json:"evaluation"`
+	EvaluationPassed bool   `json:"evaluationPassed"`
 }
 
-const workItemFields = `id goalId seq title brief acceptance repoId baseRef dependsOn status nodeId branch costCents attempts lastError lastNote prUrl heartbeatAt`
+const workItemFields = `id goalId seq title brief acceptance repoId baseRef dependsOn status nodeId branch costCents attempts lastError lastNote prUrl heartbeatAt evaluation evaluationPassed`
 
 func where(field, value string) string {
 	return fmt.Sprintf(`{field: %q, op: EQ, value: %q}`, field, value)
