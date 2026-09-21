@@ -155,7 +155,9 @@ func (g *Git) Commit(ctx context.Context, dir string, paths []string, msg string
 
 // Push implements Workspacer.
 func (g *Git) Push(ctx context.Context, dir, branch string) (string, error) {
-	if _, err := g.run(ctx, dir, "git", "push", "-u", "origin", branch); err != nil {
+	// --force-with-lease: a reworked branch was rebased; a fresh one is
+	// unaffected, and a remote that moved under us still refuses
+	if _, err := g.run(ctx, dir, "git", "push", "-u", "--force-with-lease", "origin", branch); err != nil {
 		return "", err
 	}
 	return g.run(ctx, dir, "git", "rev-parse", "HEAD")
