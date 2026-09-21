@@ -117,9 +117,31 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 	if len(files) > 0 {
 		contextDir = ContextDir
 	}
+	// a re-plan: the items so far, and where the numbering goes on
+	var existing []harness.ExistingItem
+	var merged []int
+	nextSeq := 1
+	if items, err := p.GW.GoalWorkItems(ctx, goal.ID); err == nil {
+		for _, it := range items {
+			note := it.Evaluation
+			if it.LastError != "" {
+				note = it.LastError
+			}
+			existing = append(existing, harness.ExistingItem{Seq: it.Seq, Title: it.Title, Status: it.Status, Note: truncate(note, 300)})
+			if it.Status == "merged" {
+				merged = append(merged, it.Seq)
+			}
+			if it.Seq >= nextSeq {
+				nextSeq = it.Seq + 1
+			}
+		}
+	} else {
+		p.logf("goal %s: items so far unavailable: %v", goal.Slug, err)
+	}
 	prompt := harness.PlanPrompt(harness.PlanInput{
 		GoalSlug: goal.Slug, GoalTitle: goal.Title, Statement: goal.Statement, Acceptance: goal.Acceptance, BudgetCents: goal.BudgetCents,
 		Org: scope.Login, Project: project.Slug, Repos: dirs, ContextDir: contextDir, ContextFiles: files, Blocked: goal.PausedReason,
+		Existing: existing, NextSeq: nextSeq,
 	})
 	budget := p.MaxBudgetUSD
 	if budget <= 0 {
@@ -137,7 +159,7 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 	if err != nil {
 		return fmt.Errorf("planner session: %w", err)
 	}
-	specs, err := harness.ParsePlan(result.Text)
+	specs, err := harness.ParsePlan(result.Text, merged...)
 	if err != nil {
 		return fmt.Errorf("planner session (%s): %w: %s", result.SessionID, err, truncate(result.Text, 300))
 	}

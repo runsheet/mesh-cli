@@ -160,6 +160,20 @@ type PlanInput struct {
 	ContextFiles []string
 	// Blocked: on a re-plan, what went wrong the last time.
 	Blocked string
+	// Existing are the goal's items so far, on a re-plan: merged ones
+	// stay and may be depended on, failed and cancelled ones are the
+	// record, live ones are replaced by this plan. NextSeq is where the
+	// plan's numbering starts.
+	Existing []ExistingItem
+	NextSeq  int
+}
+
+// ExistingItem is one item of the plan before, for the planner.
+type ExistingItem struct {
+	Seq    int
+	Title  string
+	Status string
+	Note   string // the evaluation or error that decided it
 }
 
 // PlannedSpec is one item of the graph the planner writes: like
@@ -193,6 +207,17 @@ func PlanPrompt(in PlanInput) string {
 	}
 	if strings.TrimSpace(in.Blocked) != "" {
 		fmt.Fprintf(&b, "## The last plan blocked\n\n%s\n\nPlan around it.\n\n", strings.TrimSpace(in.Blocked))
+	}
+	if len(in.Existing) > 0 {
+		b.WriteString("## The items so far\n\nMerged items are done and stay: your items may depend on their seqs. Failed and cancelled items stay in the record; do their work again differently if it is still needed. Anything still live is replaced by your plan.\n\n")
+		for _, it := range in.Existing {
+			fmt.Fprintf(&b, "- %d. %s — %s", it.Seq, it.Title, it.Status)
+			if strings.TrimSpace(it.Note) != "" {
+				fmt.Fprintf(&b, ": %s", strings.TrimSpace(it.Note))
+			}
+			b.WriteString("\n")
+		}
+		fmt.Fprintf(&b, "\nNumber your items from %d.\n\n", in.NextSeq)
 	}
 	b.WriteString("# The project\n\n")
 	if len(in.Repos) > 0 {
@@ -239,8 +264,9 @@ func sortedKeys(m map[string]string) []string {
 // ParsePlan reads the planner's final message: the last ```json block
 // (or the whole text when it is JSON) as {"items": [...]} or a bare
 // array. It checks the graph's shape — seqs, titles, dependencies on
-// other items — but not the repos, which the caller knows.
-func ParsePlan(text string) ([]PlannedSpec, error) {
+// other items or on the merged seqs given — but not the repos, which
+// the caller knows.
+func ParsePlan(text string, merged ...int) ([]PlannedSpec, error) {
 	raw := strings.TrimSpace(text)
 	if i := strings.LastIndex(raw, "```json"); i >= 0 {
 		rest := raw[i+len("```json"):]
@@ -278,10 +304,14 @@ func ParsePlan(text string) ([]PlannedSpec, error) {
 		}
 		seqs[it.Seq] = true
 	}
+	done := map[int]bool{}
+	for _, m := range merged {
+		done[m] = true
+	}
 	for _, it := range items {
 		for _, d := range it.DependsOn {
-			if !seqs[d] || d == it.Seq {
-				return nil, fmt.Errorf("item %d depends on %d, which is not another item", it.Seq, d)
+			if (!seqs[d] && !done[d]) || d == it.Seq {
+				return nil, fmt.Errorf("item %d depends on %d, which is neither another item nor merged", it.Seq, d)
 			}
 		}
 	}

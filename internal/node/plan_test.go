@@ -86,11 +86,49 @@ func TestLoopPlansRequestedGoals(t *testing.T) {
 	}
 }
 
+// On a re-plan the prompt lists the items so far, starts the numbering
+// after them, and a dependency on a merged seq is accepted.
+func TestPlannerReplans(t *testing.T) {
+	f := seed(t)
+	f.Goals[goalID]["status"] = "planning"
+	f.Goals[goalID]["pausedReason"] = "item failed: evaluation failed 3 times"
+	f.WorkItems[item1]["status"] = "merged"
+	f.WorkItems[item2]["status"] = "failed"
+	f.WorkItems[item2]["lastError"] = "evaluation failed 3 times"
+	f.Projects[projID]["repoIds"] = []string{repoID}
+	gw := gateway.New(f.URL(), "rs_test")
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: 1, OwnerID: f.UserID}
+	ws := &fakeWS{root: t.TempDir()}
+	h := &fakeHarness{text: "```json\n{\"items\": [{\"seq\": 3, \"title\": \"Make it pass, smaller\", \"brief\": \"Half.\", \"acceptance\": \"half passes\", \"depends_on\": [1], \"repo\": \"acme/widgets\"}]}\n```"}
+	pl := &Planner{GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, Log: log.New(os.Stderr, "", 0)}
+	if err := pl.Plan(context.Background(), gateway.Goal{ID: goalID, Slug: "ship-it", Title: "Ship it", ProjectID: projID, Status: "planning", PausedReason: "item failed: evaluation failed 3 times"}, scopesOf(cfg)[0]); err != nil {
+		t.Fatal(err)
+	}
+	p := h.jobs[0].Prompt
+	for _, want := range []string{"The last plan blocked", "evaluation failed 3 times", "The items so far", "1. Write the failing test — merged", "2. Make it pass — failed: evaluation failed 3 times", "Number your items from 3."} {
+		if !strings.Contains(p, want) {
+			t.Fatalf("re-plan prompt lacks %q:\n%s", want, p)
+		}
+	}
+	calls := f.CallsNamed("planGoal")
+	if len(calls) != 1 {
+		t.Fatalf("plan calls: %+v", calls)
+	}
+	item := calls[0].Input["items"].([]any)[0].(map[string]any)
+	if item["seq"] != float64(3) || item["dependsOn"].([]any)[0] != float64(1) {
+		t.Fatalf("re-planned item: %v", item)
+	}
+}
+
 func TestParsePlan(t *testing.T) {
 	good := "notes\n```json\n{\"items\":[{\"seq\":1,\"title\":\"A\",\"repo\":\"o/r\"},{\"seq\":2,\"title\":\"B\",\"repo\":\"o/r\",\"depends_on\":[1]}]}\n```"
 	items, err := harness.ParsePlan(good)
 	if err != nil || len(items) != 2 || items[1].DependsOn[0] != 1 {
 		t.Fatalf("good: %v %+v", err, items)
+	}
+	onMerged, err := harness.ParsePlan(`[{"seq":3,"title":"C","repo":"o/r","depends_on":[1]}]`, 1)
+	if err != nil || len(onMerged) != 1 {
+		t.Fatalf("on merged: %v", err)
 	}
 	bare, err := harness.ParsePlan(`[{"seq":1,"title":"A","repo":"o/r"}]`)
 	if err != nil || len(bare) != 1 {
