@@ -26,6 +26,7 @@ var nodeServiceCmd = &cobra.Command{
 var (
 	serviceUnattended bool
 	serviceArgs       []string
+	serviceEnv        []string
 )
 
 var nodeServiceInstallCmd = &cobra.Command{
@@ -50,6 +51,10 @@ var nodeServiceInstallCmd = &cobra.Command{
 		spec, err := node.ServiceSpecFor(exe, home, startArgs)
 		if err != nil {
 			return err
+		}
+		spec.Env = append(spec.Env, serviceEnv...)
+		if len(spec.Env) > 0 {
+			fmt.Printf("Environment carried into the service: %s\n", strings.Join(spec.Env, " "))
 		}
 		switch runtime.GOOS {
 		case "darwin":
@@ -174,6 +179,7 @@ func run(name string, args ...string) error {
 func init() {
 	nodeServiceInstallCmd.Flags().BoolVar(&serviceUnattended, "unattended", false, "start with --dangerously-skip-permissions (a machine you trust with that)")
 	nodeServiceInstallCmd.Flags().StringArrayVar(&serviceArgs, "arg", nil, "another flag for node start, e.g. --arg=--interval=1m (repeatable)")
+	nodeServiceInstallCmd.Flags().StringArrayVar(&serviceEnv, "env", nil, "a KEY=VALUE the service's sessions inherit (repeatable); GH_CONFIG_DIR, GIT_CONFIG_GLOBAL, GH_TOKEN, GITHUB_TOKEN and CLAUDE_CONFIG_DIR are taken from this shell when set")
 	nodeServiceCmd.AddCommand(nodeServiceInstallCmd, nodeServiceUninstallCmd, nodeServiceStatusCmd)
 	nodeCmd.AddCommand(nodeServiceCmd)
 }

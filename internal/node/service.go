@@ -31,6 +31,23 @@ type ServiceSpec struct {
 	Path string
 	// Log is the file stdout and stderr go to.
 	Log string
+	// Env are more variables the session inherits (KEY=VALUE): the gh
+	// config dir and token, when the installing shell had them.
+	Env []string
+}
+
+// InheritedEnv is what the service takes from the installing shell when
+// set there: how gh finds its login, and a token if that is how.
+var InheritedEnv = []string{"GH_CONFIG_DIR", "GIT_CONFIG_GLOBAL", "GH_TOKEN", "GITHUB_TOKEN", "CLAUDE_CONFIG_DIR"}
+
+func inheritedEnv() []string {
+	var out []string
+	for _, k := range InheritedEnv {
+		if v := os.Getenv(k); v != "" {
+			out = append(out, k+"="+v)
+		}
+	}
+	return out
 }
 
 // ServiceLog is ~/.mesh/node.log.
@@ -95,6 +112,10 @@ var launchAgentTmpl = template.Must(template.New("plist").Parse(`<?xml version="
 		<string>{{.Path}}</string>
 		<key>HOME</key>
 		<string>{{.Home}}</string>
+{{- range .EnvPairs}}
+		<key>{{.Key}}</key>
+		<string>{{.Value}}</string>
+{{- end}}
 	</dict>
 	<key>RunAtLoad</key>
 	<true/>
@@ -121,6 +142,9 @@ ExecStart={{.Exe}} node start{{range .Args}} {{.}}{{end}}
 WorkingDirectory={{.Home}}
 Environment=PATH={{.Path}}
 Environment=HOME={{.Home}}
+{{- range .EnvPairs}}
+Environment={{.Key}}={{.Value}}
+{{- end}}
 Restart=always
 RestartSec=10
 StandardOutput=append:{{.Log}}
@@ -129,6 +153,19 @@ StandardError=append:{{.Log}}
 [Install]
 WantedBy=default.target
 `))
+
+type envPair struct{ Key, Value string }
+
+// EnvPairs splits Env for the templates.
+func (s ServiceSpec) EnvPairs() []envPair {
+	var out []envPair
+	for _, kv := range s.Env {
+		if k, v, ok := strings.Cut(kv, "="); ok && k != "" {
+			out = append(out, envPair{k, v})
+		}
+	}
+	return out
+}
 
 // RenderLaunchAgent renders the LaunchAgent plist.
 func RenderLaunchAgent(spec ServiceSpec) ([]byte, error) {
@@ -165,5 +202,5 @@ func ServiceSpecFor(exe, home string, args []string) (ServiceSpec, error) {
 	if err != nil {
 		return ServiceSpec{}, err
 	}
-	return ServiceSpec{Exe: abs, Args: args, Home: home, Path: ServicePath(home), Log: ServiceLog(home)}, nil
+	return ServiceSpec{Exe: abs, Args: args, Home: home, Path: ServicePath(home), Log: ServiceLog(home), Env: inheritedEnv()}, nil
 }
