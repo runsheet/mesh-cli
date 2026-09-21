@@ -33,7 +33,7 @@ func TestLoopEvaluatesFinishedItems(t *testing.T) {
 	ws := &fakeWS{root: t.TempDir()}
 	h := &fakeHarness{text: "The test exists and fails for the right reason.\n\nVERDICT: PASS"}
 	ev := &Evaluator{GW: gw, Harness: h, WS: ws, WorkRoot: ws.root, MaxBudgetUSD: 2, Log: log.New(os.Stderr, "", 0)}
-	loop := &Loop{GW: gw, Cfg: cfg, Version: "test", Harness: "claude-code", Interval: time.Hour, Log: ev.Log,
+	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Version: "test", Harness: "claude-code", Interval: time.Hour, Log: ev.Log,
 		Dispatch: func(context.Context, gateway.WorkItem) {},
 		Evaluate: func(ctx context.Context, item gateway.WorkItem) { _ = ev.Evaluate(ctx, item) }}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

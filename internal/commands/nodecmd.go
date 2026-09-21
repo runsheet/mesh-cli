@@ -14,7 +14,6 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 
 	"projectmesh.io/mesh-cli/internal/auth"
@@ -26,7 +25,7 @@ import (
 )
 
 var (
-	nodeOrgFlag        string
+	nodeOrgsFlag       []string
 	nodeNameFlag       string
 	nodeSlugFlag       string
 	nodeCapacityFlag   int
@@ -76,10 +75,10 @@ func saveToken(tok string) error {
 
 var nodeRegisterCmd = &cobra.Command{
 	Use:   "register",
-	Short: "Register this machine as a node of an org (converging on its slug)",
+	Short: "Register this machine as a node of every org you belong to (or only --org ones), converging on its slug",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if strings.TrimSpace(nodeOrgFlag) == "" || strings.TrimSpace(nodeNameFlag) == "" {
-			return errors.New("--org <login> and --name <name> are required")
+		if strings.TrimSpace(nodeNameFlag) == "" {
+			return errors.New("--name <name> is required")
 		}
 		gw, err := platformClient()
 		if err != nil {
@@ -91,10 +90,6 @@ var nodeRegisterCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		org, err := gw.OrgByLogin(ctx, nodeOrgFlag)
-		if err != nil {
-			return err
-		}
 		slug := strings.TrimSpace(nodeSlugFlag)
 		if slug == "" {
 			slug = node.Slugify(nodeNameFlag)
@@ -102,26 +97,36 @@ var nodeRegisterCmd = &cobra.Command{
 		if slug == "" {
 			return errors.New("--slug (or a --name that makes one) is required")
 		}
-		orgID, err := uuid.Parse(org.ID)
-		if err != nil {
-			return fmt.Errorf("org id %q: %w", org.ID, err)
-		}
 		if nodeCapacityFlag <= 0 {
 			nodeCapacityFlag = 1
 		}
-		cfg := &node.Config{Gateway: gw.BaseURL, OrgLogin: org.Login, OrgID: org.ID, AccountID: org.AccountID, OwnerID: me,
-			Slug: slug, Name: strings.TrimSpace(nodeNameFlag), NodeID: gateway.NodeID(orgID, slug).String(), Capacity: nodeCapacityFlag}
-		if err := gw.RegisterNode(ctx, gateway.RegisterNodeInput{NodeID: cfg.NodeID, OrgID: cfg.OrgID, OwnerID: me, Name: cfg.Name, Slug: slug,
-			Harnesses: []string{"claude-code"}, Capacity: cfg.Capacity, Version: version.Version}); err != nil {
+		cfg := &node.Config{Gateway: gw.BaseURL, Orgs: nodeOrgsFlag, OwnerID: me, Slug: slug, Name: strings.TrimSpace(nodeNameFlag), Capacity: nodeCapacityFlag}
+		scopes, err := node.ResolveScopes(ctx, gw, cfg)
+		if err != nil {
+			return err
+		}
+		if err := registerIn(ctx, gw, cfg, scopes); err != nil {
 			return err
 		}
 		if err := cfg.Save(); err != nil {
 			return err
 		}
 		path, _ := node.ConfigPath()
-		fmt.Printf("Registered node %s (%s) for %s: id %s, capacity %d. Saved %s.\nStart it with: mesh node start\n", cfg.Name, slug, org.Login, cfg.NodeID, cfg.Capacity, path)
+		fmt.Printf("Registered node %s (%s) in %s, capacity %d. Saved %s.\nStart it with: mesh node start\n", cfg.Name, slug, strings.Join(scopes.Logins(), ", "), cfg.Capacity, path)
 		return nil
 	},
+}
+
+// registerIn registers the node in every scope (a Node per org, id from
+// (org, slug); registering again is a heartbeat).
+func registerIn(ctx context.Context, gw *gateway.Client, cfg *node.Config, scopes node.Scopes) error {
+	for _, sc := range scopes {
+		if err := gw.RegisterNode(ctx, gateway.RegisterNodeInput{NodeID: sc.NodeID, OrgID: sc.ID, OwnerID: cfg.OwnerID, Name: cfg.Name, Slug: cfg.Slug,
+			Harnesses: []string{"claude-code"}, Capacity: cfg.Capacity, Version: version.Version}); err != nil {
+			return fmt.Errorf("register in %s: %w", sc.Login, err)
+		}
+	}
+	return nil
 }
 
 var nodeStatusCmd = &cobra.Command{
@@ -138,21 +143,27 @@ var nodeStatusCmd = &cobra.Command{
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		if err := gw.HeartbeatNode(ctx, cfg.NodeID, version.Version, 0); err != nil {
-			return fmt.Errorf("heartbeat: %w", err)
-		}
-		nodes, err := gw.Nodes(ctx, cfg.OrgID)
+		scopes, err := node.ResolveScopes(ctx, gw, cfg)
 		if err != nil {
 			return err
 		}
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, "NAME\tSLUG\tSTATUS\tRUNNING\tCAPACITY\tVERSION\tLAST_SEEN")
-		for _, n := range nodes {
-			mark := ""
-			if n.ID == cfg.NodeID {
-				mark = " *"
+		fmt.Fprintln(w, "ORG\tNAME\tSLUG\tSTATUS\tRUNNING\tCAPACITY\tVERSION\tLAST_SEEN")
+		for _, sc := range scopes {
+			if err := gw.HeartbeatNode(ctx, sc.NodeID, version.Version, 0); err != nil {
+				return fmt.Errorf("heartbeat in %s: %w", sc.Login, err)
 			}
-			fmt.Fprintf(w, "%s%s\t%s\t%s\t%d\t%d\t%s\t%s\n", n.Name, mark, n.Slug, n.Status, n.Running, n.Capacity, n.Version, n.LastSeenAt)
+			nodes, err := gw.Nodes(ctx, sc.ID)
+			if err != nil {
+				return err
+			}
+			for _, n := range nodes {
+				mark := ""
+				if n.ID == sc.NodeID {
+					mark = " *"
+				}
+				fmt.Fprintf(w, "%s\t%s%s\t%s\t%s\t%d\t%d\t%s\t%s\n", sc.Login, n.Name, mark, n.Slug, n.Status, n.Running, n.Capacity, n.Version, n.LastSeenAt)
+			}
 		}
 		return w.Flush()
 	},
@@ -206,31 +217,40 @@ only use it on a machine you trust with that.`,
 		defer stop()
 
 		regCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
-		err = gw.RegisterNode(regCtx, gateway.RegisterNodeInput{NodeID: cfg.NodeID, OrgID: cfg.OrgID, OwnerID: cfg.OwnerID, Name: cfg.Name, Slug: cfg.Slug,
-			Harnesses: []string{"claude-code"}, Capacity: cfg.Capacity, Version: version.Version})
+		if cfg.OwnerID == "" {
+			cfg.OwnerID, err = gw.SignIn(regCtx)
+			if err != nil {
+				cancel()
+				return err
+			}
+		}
+		scopes, err := node.ResolveScopes(regCtx, gw, cfg)
+		if err == nil {
+			err = registerIn(regCtx, gw, cfg, scopes)
+		}
 		cancel()
 		if err != nil {
 			return fmt.Errorf("register node: %w", err)
 		}
 
-		loop := &node.Loop{GW: gw, Cfg: cfg, Version: version.Version, Harness: "claude-code", Interval: nodeIntervalFlag, Log: logger}
+		loop := &node.Loop{GW: gw, Cfg: cfg, Scopes: scopes, Version: version.Version, Harness: "claude-code", Interval: nodeIntervalFlag, Log: logger}
 		switch nodeModeFlag {
 		case "poll":
-			return runPollMode(ctx, cfg, gw, loop, workRoot, logger)
+			return runPollMode(ctx, cfg, scopes, gw, loop, workRoot, logger)
 		case "channel", "":
-			return runChannelMode(ctx, cfg, gw, loop, workRoot, logger)
+			return runChannelMode(ctx, cfg, scopes, gw, loop, workRoot, logger)
 		default:
 			return fmt.Errorf("--mode must be channel or poll")
 		}
 	},
 }
 
-func runPollMode(ctx context.Context, cfg *node.Config, gw *gateway.Client, loop *node.Loop, workRoot string, logger *log.Logger) error {
+func runPollMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *gateway.Client, loop *node.Loop, workRoot string, logger *log.Logger) error {
 	h := oneShotHarness()
-	runner := &node.Runner{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, WorkRoot: workRoot, MaxBudgetUSD: nodeMaxBudgetFlag, Log: logger}
+	runner := &node.Runner{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, MaxBudgetUSD: nodeMaxBudgetFlag, Log: logger}
 	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) { _ = runner.RunItem(ctx, item) }
 	loop.Evaluate = evaluateWith(gw, h, workRoot, logger)
-	logger.Printf("poll mode: node %s (%s) for %s, capacity %d, every %s", cfg.Name, cfg.Slug, cfg.OrgLogin, cfg.Capacity, loop.Interval)
+	logger.Printf("poll mode: node %s (%s) for %s, capacity %d, every %s", cfg.Name, cfg.Slug, strings.Join(scopes.Logins(), ", "), cfg.Capacity, loop.Interval)
 	if nodeOnceFlag {
 		loop.Tick(ctx)
 		return nil
@@ -243,7 +263,7 @@ func runPollMode(ctx context.Context, cfg *node.Config, gw *gateway.Client, loop
 	return err
 }
 
-func runChannelMode(ctx context.Context, cfg *node.Config, gw *gateway.Client, loop *node.Loop, workRoot string, logger *log.Logger) error {
+func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *gateway.Client, loop *node.Loop, workRoot string, logger *log.Logger) error {
 	sock, err := channel.SockPath()
 	if err != nil {
 		return err
@@ -276,7 +296,7 @@ func runChannelMode(ctx context.Context, cfg *node.Config, gw *gateway.Client, l
 	}
 	defer hub.Close()
 
-	sess := &channel.Session{Cfg: cfg, WorkDir: filepath.Join(workRoot, cfg.Slug), Exe: exe, SockPath: sock, Unattended: nodeUnattended, Stderr: os.Stderr, Log: logger,
+	sess := &channel.Session{Cfg: cfg, Orgs: scopes.Logins(), WorkDir: filepath.Join(workRoot, cfg.Slug), Exe: exe, SockPath: sock, Unattended: nodeUnattended, Stderr: os.Stderr, Log: logger,
 		OnText: func(t string) { logger.Printf("session: %s", firstLine(t)) }}
 	var sessMu sync.Mutex
 	sessionID := ""
@@ -346,15 +366,17 @@ func runChannelMode(ctx context.Context, cfg *node.Config, gw *gateway.Client, l
 	}
 	repush := func(ctx context.Context, all bool) {
 		var held []gateway.WorkItem
-		for _, status := range []string{"claimed", "running"} {
-			items, err := gw.OrgWorkItems(ctx, cfg.OrgID, status)
-			if err != nil {
-				logger.Printf("list held items: %v", err)
-				return
-			}
-			for _, it := range items {
-				if it.NodeID == cfg.NodeID {
-					held = append(held, it)
+		for _, sc := range scopes {
+			for _, status := range []string{"claimed", "running"} {
+				items, err := gw.OrgWorkItems(ctx, sc.ID, status)
+				if err != nil {
+					logger.Printf("list held items of %s: %v", sc.Login, err)
+					return
+				}
+				for _, it := range items {
+					if it.NodeID == sc.NodeID {
+						held = append(held, it)
+					}
 				}
 			}
 		}
@@ -414,11 +436,13 @@ func runChannelMode(ctx context.Context, cfg *node.Config, gw *gateway.Client, l
 	}
 	loop.AfterTick = func(ctx context.Context) { repush(ctx, false) }
 
-	logger.Printf("channel mode: node %s (%s) for %s, capacity %d, every %s; session in %s", cfg.Name, cfg.Slug, cfg.OrgLogin, cfg.Capacity, loop.Interval, sess.WorkDir)
-	go channel.WatchGoals(ctx, gw, cfg.OrgID, loop.Interval, func(kind string, g gateway.Goal) {
-		content, meta := channel.GoalEvent(kind, g)
-		push(content, meta)
-	})
+	logger.Printf("channel mode: node %s (%s) for %s, capacity %d, every %s; session in %s", cfg.Name, cfg.Slug, strings.Join(scopes.Logins(), ", "), cfg.Capacity, loop.Interval, sess.WorkDir)
+	for _, sc := range scopes {
+		go channel.WatchGoals(ctx, gw, sc.ID, loop.Interval, func(kind string, g gateway.Goal) {
+			content, meta := channel.GoalEvent(kind, g)
+			push(content, meta)
+		})
+	}
 	go func() { _ = sess.Run(ctx, workRoot) }()
 	err = loop.Run(ctx)
 	if errors.Is(err, context.Canceled) {
@@ -484,7 +508,7 @@ func init() {
 	for _, c := range []*cobra.Command{nodeLoginCmd, nodeRegisterCmd, nodeStatusCmd, nodeStartCmd} {
 		c.Flags().StringVar(&gatewayFlag, "gateway", "", "platform gateway URL (default "+gateway.DefaultURL+", or MESH_GATEWAY)")
 	}
-	nodeRegisterCmd.Flags().StringVar(&nodeOrgFlag, "org", "", "the org's GitHub login")
+	nodeRegisterCmd.Flags().StringSliceVar(&nodeOrgsFlag, "org", nil, "serve only these orgs (repeatable; default: every org you belong to)")
 	nodeRegisterCmd.Flags().StringVar(&nodeNameFlag, "name", "", "the node's name as the console shows it")
 	nodeRegisterCmd.Flags().StringVar(&nodeSlugFlag, "slug", "", "the node's slug (default: from --name); the node id derives from it")
 	nodeRegisterCmd.Flags().IntVar(&nodeCapacityFlag, "capacity", 1, "concurrent sessions")

@@ -27,6 +27,8 @@ import (
 // stdin. It is restarted only when the process exits.
 type Session struct {
 	Cfg *node.Config
+	// Orgs are the logins the node serves, for the system prompt.
+	Orgs []string
 	// WorkDir is ~/.mesh/work/<node-slug>, the session's cwd.
 	WorkDir string
 	// Exe is this binary, registered as the channel server.
@@ -71,9 +73,13 @@ func (s *Session) logf(format string, args ...any) {
 const IdlePrompt = "You are a Mesh node session. There is no work yet: wait for mesh events (channel notifications or messages like this one) and act on them as your instructions say. Reply with one short line."
 
 // SystemPrompt is appended to the session's system prompt.
-func SystemPrompt(cfg *node.Config, workRoot string) string {
+func SystemPrompt(cfg *node.Config, orgs []string, workRoot string) string {
+	who := "org " + strings.Join(orgs, ", ")
+	if len(orgs) != 1 {
+		who = "orgs " + strings.Join(orgs, ", ")
+	}
 	return strings.TrimSpace(fmt.Sprintf(`
-You are a Mesh node (%s) for org %s, running work items of goals on this machine. Events arrive from the "mesh" channel — and, as a fallback, as user messages that start with [mesh event …]; treat both the same. The channel's tools report back to the platform.
+You are a Mesh node (%s) for %s, running work items of goals on this machine. Events arrive from the "mesh" channel — and, as a fallback, as user messages that start with [mesh event …]; treat both the same. The channel's tools report back to the platform.
 
 On a work_item.ready event (attributes: item_id, seq, goal_slug, repo, base_ref, branch, workspace):
 1. Call mesh_context(goal_slug) and read it: instructions and ADRs are binding, the PRD/TRD are the design.
@@ -86,7 +92,7 @@ Report mesh_progress(item_id, note, cost_cents) as you go — at least once when
 
 On goal.paused: finish the current step, do not push, stop. On goal.cancelled: stop and drop the goal's items. On goal.resumed: continue. A checkpoint notice needs nothing from you.
 
-Keep every reply to one or two lines; the log is the platform's, not the terminal's. Never open pull requests; never touch anything outside the workspace.`, cfg.Slug, cfg.OrgLogin, workRoot))
+Keep every reply to one or two lines; the log is the platform's, not the terminal's. Never open pull requests; never touch anything outside the workspace.`, cfg.Slug, who, workRoot))
 }
 
 // Args builds the claude command line: print mode with streaming input,
@@ -94,7 +100,7 @@ Keep every reply to one or two lines; the log is the platform's, not the termina
 func (s *Session) Args(workRoot string) []string {
 	args := []string{"-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
 		"--dangerously-load-development-channels", "server:" + ServerName,
-		"--append-system-prompt", SystemPrompt(s.Cfg, workRoot)}
+		"--append-system-prompt", SystemPrompt(s.Cfg, s.Orgs, workRoot)}
 	if s.Unattended {
 		args = append(args, "--dangerously-skip-permissions")
 	}

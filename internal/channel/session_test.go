@@ -34,7 +34,7 @@ func TestSessionStaysAliveAndReceivesEventsOnStdin(t *testing.T) {
 	started := make(chan struct{}, 4)
 	var sessionID string
 	turns := make(chan string, 4)
-	s := &Session{Cfg: &node.Config{Slug: "n", OrgLogin: "acme"}, WorkDir: filepath.Join(dir, "work", "n"), Exe: bin, SockPath: filepath.Join(dir, "node.sock"), Binary: bin,
+	s := &Session{Cfg: &node.Config{Slug: "n"}, Orgs: []string{"acme"}, WorkDir: filepath.Join(dir, "work", "n"), Exe: bin, SockPath: filepath.Join(dir, "node.sock"), Binary: bin,
 		OnStart: func() { started <- struct{}{} }, OnSessionID: func(id string) { sessionID = id },
 		OnTurn: func(item string, cost float64) { turns <- fmt.Sprintf("%q $%.2f", item, cost) }}
 	ctx, cancel := context.WithCancel(context.Background())

@@ -52,7 +52,7 @@ func seed(t *testing.T) (*gatewatestFake, *Handler, *fakeWS) {
 		t.Fatal(err)
 	}
 	ws := &fakeWS{}
-	h := &Handler{GW: gw, Cfg: cfg, WS: ws, WorkRoot: t.TempDir()}
+	h := &Handler{GW: gw, Cfg: cfg, Scopes: node.Scopes{{Login: "acme", ID: orgID, AccountID: acctID, NodeID: cfg.NodeID}}, WS: ws, WorkRoot: t.TempDir()}
 	return &gatewatestFake{f}, h, ws
 }
 

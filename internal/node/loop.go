@@ -13,8 +13,11 @@ import (
 // claim up to capacity − running; hand each claim to Dispatch. The claim
 // is the lock — it is taken here, before anything runs, in both modes.
 type Loop struct {
-	GW       Gateway
-	Cfg      *Config
+	GW  Gateway
+	Cfg *Config
+	// Scopes are the orgs served: each is heartbeaten, listed and
+	// claimed from in turn, under the one capacity.
+	Scopes   Scopes
 	Version  string
 	Harness  string
 	Interval time.Duration
@@ -91,40 +94,44 @@ func (l *Loop) Tick(ctx context.Context) {
 	if l.running == nil {
 		l.running = map[string]bool{}
 	}
-	if err := l.GW.HeartbeatNode(ctx, l.Cfg.NodeID, l.Version, l.Running()); err != nil {
-		l.logf("heartbeat: %v", err)
+	for _, sc := range l.Scopes {
+		if err := l.GW.HeartbeatNode(ctx, sc.NodeID, l.Version, l.Running()); err != nil {
+			l.logf("heartbeat %s: %v", sc.Login, err)
+		}
 	}
 	l.evaluateHeld(ctx)
 	free := l.Cfg.Capacity - l.Running()
-	if free <= 0 {
-		return
-	}
-	items, err := l.GW.ReadyWorkItems(ctx, l.Cfg.OrgID)
-	if err != nil {
-		l.logf("list ready items: %v", err)
-		return
-	}
-	for _, item := range items {
+	for _, sc := range l.Scopes {
 		if free <= 0 {
-			return
+			break
 		}
-		l.mu.Lock()
-		already := l.running[item.ID]
-		l.mu.Unlock()
-		if already {
+		items, err := l.GW.ReadyWorkItems(ctx, sc.ID)
+		if err != nil {
+			l.logf("list ready items of %s: %v", sc.Login, err)
 			continue
 		}
-		if err := l.GW.ClaimWorkItem(ctx, item.ID, l.Cfg.NodeID, l.Harness); err != nil {
-			if gateway.IsRefusal(err) {
-				l.logf("item %d %q: not ours (%v)", item.Seq, item.Title, err)
-			} else {
-				l.logf("claim item %d: %v", item.Seq, err)
+		for _, item := range items {
+			if free <= 0 {
+				break
 			}
-			continue
+			l.mu.Lock()
+			already := l.running[item.ID]
+			l.mu.Unlock()
+			if already {
+				continue
+			}
+			if err := l.GW.ClaimWorkItem(ctx, item.ID, sc.NodeID, l.Harness); err != nil {
+				if gateway.IsRefusal(err) {
+					l.logf("%s item %d %q: not ours (%v)", sc.Login, item.Seq, item.Title, err)
+				} else {
+					l.logf("%s claim item %d: %v", sc.Login, item.Seq, err)
+				}
+				continue
+			}
+			free--
+			l.logf("%s: claimed item %d %q", sc.Login, item.Seq, item.Title)
+			l.start(ctx, item)
 		}
-		free--
-		l.logf("claimed item %d %q", item.Seq, item.Title)
-		l.start(ctx, item)
 	}
 	if l.AfterTick != nil {
 		l.AfterTick(ctx)
@@ -138,15 +145,20 @@ func (l *Loop) evaluateHeld(ctx context.Context) {
 	if l.Evaluate == nil {
 		return
 	}
-	items, err := l.GW.OrgWorkItems(ctx, l.Cfg.OrgID, "evaluating")
-	if err != nil {
-		l.logf("list evaluating items: %v", err)
-		return
-	}
-	for _, item := range items {
-		if item.NodeID != l.Cfg.NodeID {
+	var items []gateway.WorkItem
+	for _, sc := range l.Scopes {
+		rows, err := l.GW.OrgWorkItems(ctx, sc.ID, "evaluating")
+		if err != nil {
+			l.logf("list evaluating items of %s: %v", sc.Login, err)
 			continue
 		}
+		for _, it := range rows {
+			if it.NodeID == sc.NodeID {
+				items = append(items, it)
+			}
+		}
+	}
+	for _, item := range items {
 		l.mu.Lock()
 		if l.evaluating == nil {
 			l.evaluating = map[string]bool{}

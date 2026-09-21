@@ -46,10 +46,19 @@ func resolveOrg(ctx context.Context, gw *gateway.Client, login string) (*gateway
 		if err != nil {
 			return nil, fmt.Errorf("--org required (no registered node to take it from)")
 		}
-		if cfg.OrgID != "" {
-			return &gateway.Org{ID: cfg.OrgID, Login: cfg.OrgLogin, AccountID: cfg.AccountID}, nil
+		switch len(cfg.Orgs) {
+		case 1:
+			login = cfg.Orgs[0]
+		default:
+			orgs, err := gw.MyOrgs(ctx)
+			if err != nil {
+				return nil, err
+			}
+			if len(orgs) == 1 {
+				return &orgs[0], nil
+			}
+			return nil, fmt.Errorf("--org required (this node serves more than one)")
 		}
-		login = cfg.OrgLogin
 	}
 	return gw.OrgByLogin(ctx, login)
 }

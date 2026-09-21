@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -48,7 +49,13 @@ var channelServeCmd = &cobra.Command{
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 
-		h := &channel.Handler{GW: gw, Cfg: cfg, WS: &node.Git{Log: os.Stderr}, WorkRoot: workRoot, Log: logger}
+		scopeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		scopes, err := node.ResolveScopes(scopeCtx, gw, cfg)
+		cancel()
+		if err != nil {
+			return err
+		}
+		h := &channel.Handler{GW: gw, Cfg: cfg, Scopes: scopes, WS: &node.Git{Log: os.Stderr}, WorkRoot: workRoot, Log: logger}
 		srv := &channel.Server{Instructions: channel.Instructions, Tools: h.Tools()}
 		var conn *channel.Conn
 		h.OnDone = func(itemID, outcome string) {

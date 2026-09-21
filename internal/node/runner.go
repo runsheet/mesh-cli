@@ -60,6 +60,7 @@ type Runner struct {
 	Harness  harness.Harness
 	WS       Workspacer
 	Cfg      *Config
+	Scopes   Scopes
 	WorkRoot string
 	// MaxBudgetUSD caps a session's budget whatever the goal has left.
 	MaxBudgetUSD float64
@@ -137,7 +138,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		return r.fail(ctx, item, fmt.Errorf("workspace: %w", err))
 	}
 
-	orgLogin := r.Cfg.OrgLogin
+	orgLogin := r.Scopes.LoginOf(item.OrgID)
 	cx, err := FetchContext(ctx, r.GW, orgLogin, res.Project.Slug)
 	if err != nil {
 		r.logf("item %s: context unavailable: %v", label, err)
@@ -253,7 +254,7 @@ func (r *Runner) record(ctx context.Context, dir string, res *Resolved, summary 
 		goal = res.Goal
 	}
 	parent := ""
-	if cx, err := FetchContext(ctx, r.GW, r.Cfg.OrgLogin, res.Project.Slug); err == nil {
+	if cx, err := FetchContext(ctx, r.GW, r.Scopes.LoginOf(res.Item.OrgID), res.Project.Slug); err == nil {
 		parent = cx.PRDSlug
 	}
 	return RecordGoal(ctx, r.WS, dir, goal, res.Item.Seq, parent, items, summary)

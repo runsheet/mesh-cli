@@ -186,6 +186,7 @@ func (c *Client) OrgByLogin(ctx context.Context, login string) (*Org, error) {
 type WorkItem struct {
 	ID          string   `json:"id"`
 	GoalID      string   `json:"goalId"`
+	OrgID       string   `json:"orgId"`
 	Seq         int      `json:"seq"`
 	Title       string   `json:"title"`
 	Brief       string   `json:"brief"`
@@ -209,7 +210,7 @@ type WorkItem struct {
 	EvaluationPassed bool   `json:"evaluationPassed"`
 }
 
-const workItemFields = `id goalId seq title brief acceptance repoId baseRef dependsOn status nodeId branch costCents attempts lastError lastNote prUrl heartbeatAt evaluation evaluationPassed`
+const workItemFields = `id goalId orgId seq title brief acceptance repoId baseRef dependsOn status nodeId branch costCents attempts lastError lastNote prUrl heartbeatAt evaluation evaluationPassed`
 
 func where(field, value string) string {
 	return fmt.Sprintf(`{field: %q, op: EQ, value: %q}`, field, value)

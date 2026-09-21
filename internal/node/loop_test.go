@@ -55,6 +55,11 @@ func seed(t *testing.T) *gatewaytest.Fake {
 	return f
 }
 
+// scopesOf is the one-org scope an older config describes.
+func scopesOf(cfg *Config) Scopes {
+	return Scopes{{Login: cfg.OrgLogin, ID: cfg.OrgID, AccountID: cfg.AccountID, NodeID: cfg.NodeID}}
+}
+
 type fakeWS struct {
 	mu       sync.Mutex
 	root     string
@@ -127,8 +132,8 @@ func TestLoopClaimsRunsAndFinishes(t *testing.T) {
 	}
 	ws := &fakeWS{root: t.TempDir()}
 	h := &fakeHarness{}
-	runner := &Runner{GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, MaxBudgetUSD: 5, ProgressEvery: 10 * time.Millisecond, Log: log.New(os.Stderr, "", 0)}
-	loop := &Loop{GW: gw, Cfg: cfg, Version: "test", Harness: "claude-code", Interval: time.Hour, Log: runner.Log,
+	runner := &Runner{GW: gw, Harness: h, WS: ws, Cfg: cfg, Scopes: scopesOf(cfg), WorkRoot: ws.root, MaxBudgetUSD: 5, ProgressEvery: 10 * time.Millisecond, Log: log.New(os.Stderr, "", 0)}
+	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Version: "test", Harness: "claude-code", Interval: time.Hour, Log: runner.Log,
 		Dispatch: func(ctx context.Context, item gateway.WorkItem) { _ = runner.RunItem(ctx, item) }}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -206,7 +211,7 @@ func TestLoopSkipsRefusedClaim(t *testing.T) {
 	cfg := &Config{OrgLogin: "acme", OrgID: orgID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: 1}
 	_ = gw.RegisterNode(context.Background(), gateway.RegisterNodeInput{NodeID: cfg.NodeID, OrgID: orgID, OwnerID: f.UserID, Name: "n", Slug: "n"})
 	dispatched := 0
-	loop := &Loop{GW: gw, Cfg: cfg, Interval: time.Hour, Dispatch: func(context.Context, gateway.WorkItem) { dispatched++ }}
+	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Interval: time.Hour, Dispatch: func(context.Context, gateway.WorkItem) { dispatched++ }}
 	loop.Tick(context.Background())
 	if dispatched != 0 || loop.Running() != 0 {
 		t.Fatalf("a refused claim must not run: dispatched=%d running=%d", dispatched, loop.Running())
@@ -255,7 +260,7 @@ func TestRunnerLeavesItemOnShutdown(t *testing.T) {
 		<-ctx.Done()
 		return harness.Result{}, ctx.Err()
 	})
-	runner := &Runner{GW: gw, Harness: blocking, WS: ws, Cfg: cfg, WorkRoot: ws.root, ProgressEvery: time.Hour}
+	runner := &Runner{GW: gw, Harness: blocking, WS: ws, Cfg: cfg, Scopes: scopesOf(cfg), WorkRoot: ws.root, ProgressEvery: time.Hour}
 	var item gateway.WorkItem
 	item.ID, item.GoalID, item.RepoID, item.Seq = item1, goalID, repoID, 1
 	if err := runner.RunItem(ctx, item); err != context.Canceled {
@@ -286,3 +291,55 @@ func waitFor(t *testing.T, cond func() bool) {
 }
 
 func mustUUID(s string) uuid.UUID { return uuid.MustParse(s) }
+
+// One node, two orgs: registered in each, heartbeating each, claiming
+// from either under one capacity; an org the config names that the
+// owner is not in is refused at resolution.
+func TestLoopServesEveryOrgOfItsOwner(t *testing.T) {
+	f := seed(t)
+	const org2, acct2, goal2, item3 = "11111111-2222-4333-8444-555555555555", "aaaaaaaa-2222-4222-8222-aaaaaaaaaaaa", "dddddddd-2222-4222-8222-dddddddddddd", "eeeeeeee-2222-4222-8222-eeeeeeeeeeee"
+	f.Orgs = append(f.Orgs, map[string]any{"id": org2, "login": "globex", "accountId": acct2})
+	f.Accounts[acct2] = map[string]any{"id": acct2, "login": "globex"}
+	f.Goals[goal2] = map[string]any{"id": goal2, "orgId": org2, "projectId": projID, "slug": "other", "title": "Other", "budgetCents": 1000, "status": "running"}
+	f.WorkItems[item3] = map[string]any{"id": item3, "goalId": goal2, "orgId": org2, "seq": 1, "title": "Globex work",
+		"brief": "Do it.", "acceptance": "done", "repoId": repoID, "baseRef": "main", "status": "ready", "dependsOn": []string{}}
+	gw := gateway.New(f.URL(), "rs_test")
+	ctx := context.Background()
+
+	cfg := &Config{Slug: "box", Name: "Box", Capacity: 1}
+	scopes, err := ResolveScopes(ctx, gw, cfg)
+	if err != nil || len(scopes) != 2 || scopes[0].Login != "acme" || scopes[1].Login != "globex" || scopes[0].NodeID == scopes[1].NodeID {
+		t.Fatalf("scopes = %+v, %v", scopes, err)
+	}
+	if _, err := ResolveScopes(ctx, gw, &Config{Slug: "box", Orgs: []string{"acme", "initech"}}); err == nil || !strings.Contains(err.Error(), "initech") {
+		t.Fatalf("an org the owner is not in must refuse: %v", err)
+	}
+	only, err := ResolveScopes(ctx, gw, &Config{Slug: "box", Orgs: []string{"Globex"}})
+	if err != nil || len(only) != 1 || only[0].ID != org2 {
+		t.Fatalf("restricted scopes = %+v, %v", only, err)
+	}
+
+	for _, sc := range scopes {
+		if err := gw.RegisterNode(ctx, gateway.RegisterNodeInput{NodeID: sc.NodeID, OrgID: sc.ID, OwnerID: f.UserID, Name: cfg.Name, Slug: cfg.Slug}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var mu sync.Mutex
+	var ran []string
+	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopes, Interval: time.Hour, Harness: "claude-code",
+		Dispatch: func(_ context.Context, item gateway.WorkItem) { mu.Lock(); ran = append(ran, item.ID); mu.Unlock() }}
+	loop.Tick(ctx)
+	loop.wg.Wait()
+	if hb := f.CallsNamed("heartbeatNode"); len(hb) != 2 || hb[0].Input["aggregateId"] != scopes[0].NodeID || hb[1].Input["aggregateId"] != scopes[1].NodeID {
+		t.Fatalf("heartbeats: %+v", hb)
+	}
+	// capacity 1: acme's item first, globex's waits for the next tick
+	if len(ran) != 1 || ran[0] != item1 || f.Item(item1)["nodeId"] != scopes[0].NodeID || f.Item(item3)["status"] != "ready" {
+		t.Fatalf("first tick ran %v; item3 %v", ran, f.Item(item3)["status"])
+	}
+	loop.Tick(ctx)
+	loop.wg.Wait()
+	if len(ran) != 2 || ran[1] != item3 || f.Item(item3)["nodeId"] != scopes[1].NodeID {
+		t.Fatalf("second tick ran %v; item3 node %v", ran, f.Item(item3)["nodeId"])
+	}
+}

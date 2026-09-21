@@ -19,8 +19,11 @@ import (
 // call on the gateway as the node's operator; the daemon hears about
 // finish/fail through OnDone so the claim's slot is released.
 type Handler struct {
-	GW       node.Gateway
-	Cfg      *node.Config
+	GW  node.Gateway
+	Cfg *node.Config
+	// Scopes are the orgs the node serves: a goal slug is looked up in
+	// each, an item's org names its Prologue project.
+	Scopes   node.Scopes
 	WS       node.Workspacer
 	WorkRoot string
 	Log      *log.Logger
@@ -97,9 +100,9 @@ func (h *Handler) Tools() []Tool {
 			Schema: ObjectSchema(map[string]string{"item_id": "the work item id", "passed": "whether the acceptance holds", "notes": "the review", "cost_cents": "cents the evaluation spent (0 if unknown)"}, "item_id", "passed"),
 			Call:   h.evaluate},
 		{Name: "mesh_context", Description: "The goal's context: the project's instructions, ADRs, PRD and TRD from Prologue. Read it before working on an item.",
-			Schema: ObjectSchema(map[string]string{"goal_slug": "the goal's slug"}, "goal_slug"),
+			Schema: ObjectSchema(map[string]string{"goal_slug": "the goal's slug", "org": "the goal's org login, when the node serves more than one"}, "goal_slug"),
 			Call:   h.context},
-		{Name: "mesh_items", Description: "List the org's work items, optionally in one status (pending, ready, claimed, running, evaluating, review, merged, failed, cancelled).",
+		{Name: "mesh_items", Description: "List the work items of the orgs this node serves, optionally in one status (pending, ready, claimed, running, evaluating, review, merged, failed, cancelled).",
 			Schema: ObjectSchema(map[string]string{"status": "only this status"}),
 			Call:   h.items},
 		{Name: "mesh_record", Description: "Write the goal's record (specs/goal-<slug>.md: statement, acceptance, items table, log) in the item's workspace and commit it on the item's branch.",
@@ -163,7 +166,7 @@ func (h *Handler) context(ctx context.Context, args map[string]any) (string, err
 	if slug == "" {
 		return "", fmt.Errorf("goal_slug required")
 	}
-	goal, err := h.GW.Goal(ctx, gateway.GoalID(uuid.MustParse(h.Cfg.OrgID), slug).String())
+	goal, scope, err := h.goalBySlug(ctx, slug, str(args, "org"))
 	if err != nil {
 		return "", err
 	}
@@ -171,7 +174,7 @@ func (h *Handler) context(ctx context.Context, args map[string]any) (string, err
 	if err != nil {
 		return "", err
 	}
-	cx, err := node.FetchContext(ctx, h.GW, h.Cfg.OrgLogin, project.Slug)
+	cx, err := node.FetchContext(ctx, h.GW, scope.Login, project.Slug)
 	if err != nil {
 		return "", err
 	}
@@ -191,10 +194,36 @@ func (h *Handler) context(ctx context.Context, args map[string]any) (string, err
 	return b.String(), nil
 }
 
+// goalBySlug finds a goal by slug in the org named, else in each org
+// the node serves (the id derives from (org, slug)).
+func (h *Handler) goalBySlug(ctx context.Context, slug, org string) (*gateway.Goal, node.Scope, error) {
+	for _, sc := range h.Scopes {
+		if org != "" && !strings.EqualFold(org, sc.Login) {
+			continue
+		}
+		id, err := uuid.Parse(sc.ID)
+		if err != nil {
+			continue
+		}
+		goal, err := h.GW.Goal(ctx, gateway.GoalID(id, slug).String())
+		if err == nil && goal != nil && goal.Slug == slug {
+			return goal, sc, nil
+		}
+	}
+	if org != "" {
+		return nil, node.Scope{}, fmt.Errorf("no goal %q in %s", slug, org)
+	}
+	return nil, node.Scope{}, fmt.Errorf("no goal %q in %s", slug, strings.Join(h.Scopes.Logins(), ", "))
+}
+
 func (h *Handler) items(ctx context.Context, args map[string]any) (string, error) {
-	items, err := h.GW.OrgWorkItems(ctx, h.Cfg.OrgID, str(args, "status"))
-	if err != nil {
-		return "", err
+	var items []gateway.WorkItem
+	for _, sc := range h.Scopes {
+		rows, err := h.GW.OrgWorkItems(ctx, sc.ID, str(args, "status"))
+		if err != nil {
+			return "", err
+		}
+		items = append(items, rows...)
 	}
 	if len(items) == 0 {
 		return "no items", nil
@@ -202,6 +231,9 @@ func (h *Handler) items(ctx context.Context, args map[string]any) (string, error
 	var b strings.Builder
 	for _, it := range items {
 		fmt.Fprintf(&b, "- %s · seq %d · %s · %s", it.ID, it.Seq, it.Status, it.Title)
+		if len(h.Scopes) > 1 {
+			fmt.Fprintf(&b, " · %s", h.Scopes.LoginOf(it.OrgID))
+		}
 		if it.Branch != "" {
 			fmt.Fprintf(&b, " · %s", it.Branch)
 		}
@@ -229,7 +261,7 @@ func (h *Handler) record(ctx context.Context, args map[string]any) (string, erro
 	}
 	parent := ""
 	if project, err := h.GW.Project(ctx, goal.ProjectID); err == nil {
-		if cx, err := node.FetchContext(ctx, h.GW, h.Cfg.OrgLogin, project.Slug); err == nil {
+		if cx, err := node.FetchContext(ctx, h.GW, h.Scopes.LoginOf(item.OrgID), project.Slug); err == nil {
 			parent = cx.PRDSlug
 		}
 	}
