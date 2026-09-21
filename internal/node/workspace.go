@@ -264,7 +264,7 @@ type Gateway interface {
 	ReportWorkItemProgress(ctx context.Context, itemID, note string, costCents int, sessionID string) error
 	FinishWorkItem(ctx context.Context, itemID, branch, headSha string, costCents int) error
 	FailWorkItem(ctx context.Context, itemID, errMsg string) error
-	EvaluateWorkItem(ctx context.Context, itemID string, passed bool, notes string) error
+	EvaluateWorkItem(ctx context.Context, itemID string, passed bool, notes string, costCents int) error
 	Goal(ctx context.Context, id string) (*gateway.Goal, error)
 	Goals(ctx context.Context, orgID string) ([]gateway.Goal, error)
 	Project(ctx context.Context, id string) (*gateway.Project, error)

@@ -509,9 +509,9 @@ func (c *Client) FailWorkItem(ctx context.Context, itemID, errMsg string) error 
 }
 
 // EvaluateWorkItem records the evaluator's verdict (phase 1's session; the
-// command is here so the console and a person can call it through mesh).
-func (c *Client) EvaluateWorkItem(ctx context.Context, itemID string, passed bool, notes string) error {
-	return c.Mutate(ctx, "evaluateWorkItem", itemID, map[string]any{"passed": passed, "notes": notes})
+// platform readies or reviews the item) and that session's cost.
+func (c *Client) EvaluateWorkItem(ctx context.Context, itemID string, passed bool, notes string, costCents int) error {
+	return c.Mutate(ctx, "evaluateWorkItem", itemID, map[string]any{"passed": passed, "notes": notes, "costCents": costCents})
 }
 
 // SetGoalInput is SetGoal's payload.

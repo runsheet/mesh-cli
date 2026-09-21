@@ -291,7 +291,7 @@ func runChannelMode(ctx context.Context, cfg *node.Config, gw *gateway.Client, l
 		}
 		sessMu.Unlock()
 		hub.Push(content, meta)
-		if err := sess.Send(channel.UserMessage(content, meta)); err != nil {
+		if err := sess.SendFor(meta["item_id"], channel.UserMessage(content, meta)); err != nil {
 			logger.Printf("session stdin: %v (the channel still has it)", err)
 		}
 		if id := meta["item_id"]; id != "" {
@@ -381,6 +381,36 @@ func runChannelMode(ctx context.Context, cfg *node.Config, gw *gateway.Client, l
 	sess.OnStart = func() {
 		time.Sleep(2 * time.Second) // let the channel server attach
 		repush(ctx, true)
+	}
+	// a turn's cost lands on the item its event was for, as the cents
+	// since the last turn: claude's total_cost_usd is the session's
+	// running total (a smaller figure is a fresh process, taken whole).
+	// The report is refused only on a pending item, so it lands however
+	// far the item has moved by the time the turn ends.
+	var costMu sync.Mutex
+	lastCost := 0.0
+	sess.OnTurn = func(itemID string, costUSD float64) {
+		costMu.Lock()
+		delta := costUSD - lastCost
+		if delta < 0 {
+			delta = costUSD
+		}
+		lastCost = costUSD
+		costMu.Unlock()
+		cents := node.Cents(delta)
+		if itemID == "" || cents == 0 {
+			return
+		}
+		sessMu.Lock()
+		sid := sessionID
+		sessMu.Unlock()
+		rctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		if err := gw.ReportWorkItemProgress(rctx, itemID, "", cents, sid); err != nil {
+			logger.Printf("item %s: report $%.2f: %v", itemID, delta, err)
+			return
+		}
+		logger.Printf("item %s: $%.2f reported", itemID, delta)
 	}
 	loop.AfterTick = func(ctx context.Context) { repush(ctx, false) }
 

@@ -42,7 +42,7 @@ func TestLoopEvaluatesFinishedItems(t *testing.T) {
 	waitFor(t, func() bool { return f.Item(item1)["status"] == "review" })
 
 	calls := f.CallsNamed("evaluateWorkItem")
-	if len(calls) != 1 || calls[0].Input["aggregateId"] != item1 || calls[0].Input["passed"] != true || calls[0].Input["notes"] != "The test exists and fails for the right reason." {
+	if len(calls) != 1 || calls[0].Input["aggregateId"] != item1 || calls[0].Input["passed"] != true || calls[0].Input["notes"] != "The test exists and fails for the right reason." || calls[0].Input["costCents"] != float64(125) {
 		t.Fatalf("evaluate calls: %+v", calls)
 	}
 	if f.Item(item2)["status"] != "evaluating" {

@@ -240,6 +240,7 @@ func (f *Fake) apply(name string, in map[string]any) error {
 			item["status"] = "ready"
 		}
 		item["evaluation"] = in["notes"]
+		item["costCents"] = toInt(item["costCents"]) + toInt(in["costCents"])
 	case "registerNode":
 		row := map[string]any{"id": id, "status": "online", "running": 0}
 		for k, v := range in {

@@ -3,6 +3,7 @@ package channel
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,8 +33,10 @@ func TestSessionStaysAliveAndReceivesEventsOnStdin(t *testing.T) {
 	}
 	started := make(chan struct{}, 4)
 	var sessionID string
+	turns := make(chan string, 4)
 	s := &Session{Cfg: &node.Config{Slug: "n", OrgLogin: "acme"}, WorkDir: filepath.Join(dir, "work", "n"), Exe: bin, SockPath: filepath.Join(dir, "node.sock"), Binary: bin,
-		OnStart: func() { started <- struct{}{} }, OnSessionID: func(id string) { sessionID = id }}
+		OnStart: func() { started <- struct{}{} }, OnSessionID: func(id string) { sessionID = id },
+		OnTurn: func(item string, cost float64) { turns <- fmt.Sprintf("%q $%.2f", item, cost) }}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	runErr := make(chan error, 1)
@@ -45,8 +48,16 @@ func TestSessionStaysAliveAndReceivesEventsOnStdin(t *testing.T) {
 	}
 	// the idle prompt's turn ends with the fake's result: idle until the next message
 	waitFor(t, func() bool { idle, _ := s.Idle(); return idle })
+	select {
+	case got := <-turns:
+		if got != `"" $0.01` {
+			t.Fatalf("turn: %s", got)
+		}
+	default:
+		t.Fatal("the idle prompt's turn must be heard")
+	}
 	content, meta := ReadyEvent(&node.Resolved{Item: itemFixture(), Goal: goalFixture(), Repo: repoFixture()}, "/w/ship-it/1")
-	if err := s.Send(UserMessage(content, meta)); err != nil {
+	if err := s.SendFor(meta["item_id"], UserMessage(content, meta)); err != nil {
 		t.Fatal(err)
 	}
 	if idle, _ := s.Idle(); idle {

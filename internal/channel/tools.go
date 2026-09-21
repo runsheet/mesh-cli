@@ -94,7 +94,7 @@ func (h *Handler) Tools() []Tool {
 			Schema: ObjectSchema(map[string]string{"item_id": "the work item id", "error": "what went wrong"}, "item_id", "error"),
 			Call:   h.fail},
 		{Name: "mesh_evaluate", Description: "Record an evaluation verdict on a finished item (the evaluator's).",
-			Schema: ObjectSchema(map[string]string{"item_id": "the work item id", "passed": "whether the acceptance holds", "notes": "the review"}, "item_id", "passed"),
+			Schema: ObjectSchema(map[string]string{"item_id": "the work item id", "passed": "whether the acceptance holds", "notes": "the review", "cost_cents": "cents the evaluation spent (0 if unknown)"}, "item_id", "passed"),
 			Call:   h.evaluate},
 		{Name: "mesh_context", Description: "The goal's context: the project's instructions, ADRs, PRD and TRD from Prologue. Read it before working on an item.",
 			Schema: ObjectSchema(map[string]string{"goal_slug": "the goal's slug"}, "goal_slug"),
@@ -152,7 +152,7 @@ func (h *Handler) evaluate(ctx context.Context, args map[string]any) (string, er
 	if id == "" {
 		return "", fmt.Errorf("item_id required")
 	}
-	if err := h.GW.EvaluateWorkItem(ctx, id, passed, str(args, "notes")); err != nil {
+	if err := h.GW.EvaluateWorkItem(ctx, id, passed, str(args, "notes"), num(args, "cost_cents")); err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("evaluated: passed=%v", passed), nil

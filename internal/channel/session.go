@@ -46,13 +46,18 @@ type Session struct {
 	OnText func(text string)
 	// OnStart runs after each (re)start of the process, once it is alive.
 	OnStart func()
+	// OnTurn hears each turn's end: the item the message that started it
+	// was for ("" for the idle prompt and goal notices) and the session's
+	// cumulative cost as claude reports it.
+	OnTurn func(itemID string, costUSD float64)
 
 	mu     sync.Mutex
 	stdin  io.WriteCloser
 	starts int
-	// pending counts user messages sent whose turn has not ended; the
-	// session is idle when it is zero. idleSince is when it last became so.
-	pending   int
+	// pending lists the items of the user messages sent whose turn has
+	// not ended, oldest first; the session is idle when it is empty.
+	// idleSince is when it last became so.
+	pending   []string
 	idleSince time.Time
 }
 
@@ -112,7 +117,11 @@ func UserMessage(content string, meta map[string]string) string {
 }
 
 // Send writes one user message to the session's stdin.
-func (s *Session) Send(text string) error {
+func (s *Session) Send(text string) error { return s.SendFor("", text) }
+
+// SendFor writes one user message about an item, so the turn it starts
+// is attributed to that item when it ends.
+func (s *Session) SendFor(itemID, text string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.stdin == nil {
@@ -124,7 +133,7 @@ func (s *Session) Send(text string) error {
 	}
 	_, err = s.stdin.Write(append(line, '\n'))
 	if err == nil {
-		s.pending++
+		s.pending = append(s.pending, itemID)
 	}
 	return err
 }
@@ -134,21 +143,27 @@ func (s *Session) Send(text string) error {
 func (s *Session) Idle() (bool, time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.stdin == nil || s.pending > 0 {
+	if s.stdin == nil || len(s.pending) > 0 {
 		return false, 0
 	}
 	return true, time.Since(s.idleSince)
 }
 
 // turnEnded is one result event: the turn of the oldest pending message.
-func (s *Session) turnEnded() {
+func (s *Session) turnEnded(costUSD float64) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.pending > 0 {
-		s.pending--
+	item := ""
+	if len(s.pending) > 0 {
+		item = s.pending[0]
+		s.pending = s.pending[1:]
 	}
-	if s.pending == 0 {
+	if len(s.pending) == 0 {
 		s.idleSince = time.Now()
+	}
+	on := s.OnTurn
+	s.mu.Unlock()
+	if on != nil {
+		on(item, costUSD)
 	}
 }
 
@@ -220,13 +235,13 @@ func (s *Session) once(ctx context.Context, bin, workRoot string) error {
 	s.mu.Lock()
 	s.stdin = stdin
 	s.starts++
-	s.pending = 0
+	s.pending = nil
 	s.idleSince = time.Now()
 	s.mu.Unlock()
 	defer func() {
 		s.mu.Lock()
 		s.stdin = nil
-		s.pending = 0
+		s.pending = nil
 		s.mu.Unlock()
 		_ = stdin.Close()
 	}()
@@ -252,8 +267,8 @@ func (s *Session) once(ctx context.Context, bin, workRoot string) error {
 			}
 		case "result":
 			// a turn ended; the session stays open for the next message
-			s.turnEnded()
 			s.logf("session turn: $%.4f, %d turns, %s", ev.CostUSD, ev.NumTurns, ev.Subtype)
+			s.turnEnded(ev.CostUSD)
 		}
 	})
 	waitErr := cmd.Wait()

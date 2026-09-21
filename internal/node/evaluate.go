@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math"
 	"strings"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
@@ -84,9 +85,17 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	if notes == "" {
 		notes = "(no notes)"
 	}
-	if err := e.GW.EvaluateWorkItem(ctx, item.ID, passed, truncate(notes, 4000)); err != nil {
+	if err := e.GW.EvaluateWorkItem(ctx, item.ID, passed, truncate(notes, 4000), Cents(result.CostUSD)); err != nil {
 		return fmt.Errorf("record verdict: %w", err)
 	}
 	e.logf("item %s: evaluation %s ($%.2f)", label, verdict, result.CostUSD)
 	return nil
+}
+
+// Cents rounds a dollar cost to whole cents.
+func Cents(usd float64) int {
+	if usd <= 0 {
+		return 0
+	}
+	return int(math.Round(usd * 100))
 }
