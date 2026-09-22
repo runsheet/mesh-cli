@@ -233,3 +233,29 @@ func TestNodeLoginWithoutAClientID(t *testing.T) {
 		t.Fatalf("got %v, want a missing-client-id error", err)
 	}
 }
+
+// `mesh node status` opens with the credential this machine runs on:
+// while both shapes are live an operator must be able to tell which one
+// a node holds, and what to revoke in the Latchkey console.
+func TestCredentialLine(t *testing.T) {
+	expires := time.Now().Add(time.Hour)
+	machine := &auth.Credential{Machine: &auth.Session{Kind: auth.MachineKind, AccessToken: "jwt",
+		MachineID: "3f1c9a2e", DefaultOrg: "runsheet", UserID: "9b2e6d41", ExpiresAt: &expires}}
+	line := credentialLine(machine)
+	for _, want := range []string{"Latchkey machine", "3f1c9a2e", "in runsheet", "operator 9b2e6d41", "~/.mesh/token", "refreshed before it expires"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("machine line %q lacks %q", line, want)
+		}
+	}
+	machine.FromEnv = true
+	if !strings.Contains(credentialLine(machine), "MESH_TOKEN") {
+		t.Errorf("a MESH_TOKEN credential must say so: %q", credentialLine(machine))
+	}
+
+	console := credentialLine(&auth.Credential{Console: "rs_console"})
+	for _, want := range []string{"rs_* console token", "the fallback", "mesh node login"} {
+		if !strings.Contains(console, want) {
+			t.Errorf("console line %q lacks %q", console, want)
+		}
+	}
+}

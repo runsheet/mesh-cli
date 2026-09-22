@@ -117,7 +117,10 @@ mesh node register --org acme --name "Chris's laptop" [--slug chris-mbp] [--capa
 Signs in, finds the org among yours, derives the node id from
 `(org, slug)` — registering twice converges on the same node — and writes
 `~/.mesh/node.yaml` (org login and id, slug, node id, capacity).
-`mesh node status` heartbeats once and lists the org's nodes.
+`mesh node status` heartbeats once and lists the org's nodes, above a
+line naming the credential this machine runs on — the machine, its org
+and operator, and when its access token is next refreshed, or the rs_*
+console token it is still on.
 
 ### Start
 

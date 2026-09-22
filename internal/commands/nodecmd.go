@@ -195,16 +195,18 @@ var nodeStatusCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		gw, err := platformClient()
+		src, err := tokenSource()
 		if err != nil {
 			return err
 		}
+		gw := gateway.NewWithSource(gatewayURL(), src)
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		scopes, err := node.ResolveScopes(ctx, gw, cfg)
 		if err != nil {
 			return err
 		}
+		fmt.Println(credentialLine(src.Credential()))
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 		fmt.Fprintln(w, "ORG\tNAME\tSLUG\tSTATUS\tRUNNING\tCAPACITY\tVERSION\tLAST_SEEN")
 		for _, sc := range scopes {
