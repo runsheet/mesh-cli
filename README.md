@@ -41,9 +41,11 @@ mesh node login --client-id <the org's mesh-cli client>
 
 The public client the flow starts from is registered per estate (a
 `mesh-cli` client tagged to the org, device-enabled). Give it with
-`--client-id` or `MESH_LATCHKEY_CLIENT_ID`; a registered node remembers
-it (and the issuer, `--latchkey` / `MESH_LATCHKEY`, default
-`https://auth.latchkey.id`) in `~/.mesh/node.yaml`, so later logins need
+`--client-id` or `MESH_LATCHKEY_CLIENT_ID`; the login writes it (and the
+issuer, `--latchkey` / `MESH_LATCHKEY`, default
+`https://auth.latchkey.id`) into `~/.mesh/node.yaml` — before the
+machine is registered too, since registering is itself done on the
+credential — and `mesh node register` keeps them, so later logins need
 no flags.
 
 Its access token lasts an hour and is refreshed from the stored refresh
