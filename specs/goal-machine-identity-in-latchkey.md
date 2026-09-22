@@ -24,7 +24,7 @@ In Latchkey: a machine credential type with registration by an org member, revoc
 | 2 | Latchkey: machine credentials, tokens and the CLI flows | merged | mesh/machine-identity-in-latchkey-2 | https://github.com/latchkeyid/latchkey/pull/96 | $21.36 |
 | 3 | runsheet: the machine principal at the gateway, terrastore and Prologue | merged | mesh/machine-identity-in-latchkey-3 | https://github.com/runsheet/runsheet/pull/22 | $10.71 |
 | 4 | Latchkey console: list and revoke machine credentials | review | mesh/machine-identity-in-latchkey-4 | https://github.com/latchkeyid/ui/pull/50 | $5.69 |
-| 5 | mesh-cli: node login on the Latchkey credential | claimed | — | — | $0.00 |
+| 5 | mesh-cli: node login on the Latchkey credential | running | — | — | $0.00 |
 
 ## Log
 
