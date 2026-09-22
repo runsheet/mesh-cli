@@ -306,37 +306,77 @@ func sortedKeys(m map[string]string) []string {
 	return keys
 }
 
-// ParsePlan reads the planner's final message: the last ```json block
+// planCandidates is every place the graph might be in the planner's
+// message, best first: each fenced block from the last to the first,
+// then the whole text. Trying them in turn rather than taking the last
+// fence marker is what makes a graph survive an item whose own brief or
+// acceptance mentions a fence — the marker inside the JSON is the last
+// one in the message, and reading from it yields a fragment (seen
+// 2026-09-22: three goals' plans lost that way, each after a five-minute
+// session).
+func planCandidates(text string) []string {
+	raw := strings.TrimSpace(text)
+	const fence = "```"
+	var marks []int
+	for i := 0; ; {
+		j := strings.Index(raw[i:], fence)
+		if j < 0 {
+			break
+		}
+		marks = append(marks, i+j)
+		i += j + len(fence)
+	}
+	trim := func(body string) string {
+		// drop the language tag on the opening line
+		if nl := strings.IndexByte(body, '\n'); nl >= 0 {
+			if head := strings.TrimSpace(body[:nl]); head == "" || !strings.ContainsAny(head, "{[") {
+				body = body[nl+1:]
+			}
+		}
+		return strings.TrimSpace(body)
+	}
+	var out []string
+	// every span between two markers, the latest close first and, for a
+	// given close, the earliest open first — so the whole block wins over
+	// a fragment starting at a fence the JSON itself mentions
+	for j := len(marks) - 1; j >= 1; j-- {
+		for i := 0; i < j; i++ {
+			if body := trim(raw[marks[i]+len(fence) : marks[j]]); body != "" {
+				out = append(out, body)
+			}
+		}
+	}
+	// an unclosed final block: everything after the last marker
+	if n := len(marks); n > 0 {
+		if body := trim(raw[marks[n-1]+len(fence):]); body != "" {
+			out = append(out, body)
+		}
+	}
+	return append(out, raw)
+}
+
+// ParsePlan reads the planner's final message: the graph in a fenced block
 // (or the whole text when it is JSON) as {"items": [...]} or a bare
 // array. It checks the graph's shape — seqs, titles, dependencies on
 // other items or on the merged seqs given — but not the repos, which
 // the caller knows.
 func ParsePlan(text string, merged ...int) ([]PlannedSpec, error) {
-	raw := strings.TrimSpace(text)
-	if i := strings.LastIndex(raw, "```json"); i >= 0 {
-		rest := raw[i+len("```json"):]
-		if j := strings.Index(rest, "```"); j >= 0 {
-			raw = strings.TrimSpace(rest[:j])
-		} else {
-			raw = strings.TrimSpace(rest)
-		}
-	} else if i := strings.LastIndex(raw, "```"); i >= 0 {
-		// a fence without a language: take the last block
-		head := raw[:i]
-		if k := strings.LastIndex(head, "```"); k >= 0 {
-			raw = strings.TrimSpace(head[k+3:])
-			if nl := strings.IndexByte(raw, '\n'); nl >= 0 && !strings.HasPrefix(raw, "{") && !strings.HasPrefix(raw, "[") {
-				raw = strings.TrimSpace(raw[nl+1:])
-			}
-		}
-	}
-	var wrapped struct {
-		Items []PlannedSpec `json:"items"`
-	}
 	var items []PlannedSpec
-	if err := json.Unmarshal([]byte(raw), &wrapped); err == nil && len(wrapped.Items) > 0 {
-		items = wrapped.Items
-	} else if err := json.Unmarshal([]byte(raw), &items); err != nil || len(items) == 0 {
+	for _, raw := range planCandidates(text) {
+		var wrapped struct {
+			Items []PlannedSpec `json:"items"`
+		}
+		if err := json.Unmarshal([]byte(raw), &wrapped); err == nil && len(wrapped.Items) > 0 {
+			items = wrapped.Items
+			break
+		}
+		var bare []PlannedSpec
+		if err := json.Unmarshal([]byte(raw), &bare); err == nil && len(bare) > 0 {
+			items = bare
+			break
+		}
+	}
+	if len(items) == 0 {
 		return nil, fmt.Errorf("no graph in the planner's message")
 	}
 	seqs := map[int]bool{}
