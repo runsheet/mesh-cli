@@ -342,6 +342,14 @@ type Project struct {
 	Slug    string   `json:"slug"`
 	Name    string   `json:"name"`
 	RepoIDs []string `json:"repoIds"`
+	// The director (runsheet trd §6c): the line a person gave the
+	// project, whether it is on, and how many goals it keeps in the air.
+	// The hours are the platform's to judge — the node asks on every
+	// tick and is told to wait — so they are not read here.
+	Direction       string `json:"direction"`
+	DirectorEnabled bool   `json:"directorEnabled"`
+	MaxLiveGoals    int    `json:"maxLiveGoals"`
+	OrgID           string `json:"orgId"`
 }
 
 // Project reads one project by id.
@@ -349,7 +357,7 @@ func (c *Client) Project(ctx context.Context, id string) (*Project, error) {
 	var out struct {
 		Project *Project `json:"projectIndex"`
 	}
-	q := fmt.Sprintf(`{ projectIndex(namespace: %q, id: %q) { id slug name repoIds } }`, NS, id)
+	q := fmt.Sprintf(`{ projectIndex(namespace: %q, id: %q) { id slug name repoIds orgId direction directorEnabled maxLiveGoals } }`, NS, id)
 	if err := c.Query(ctx, q, nil, &out); err != nil {
 		return nil, err
 	}
@@ -364,7 +372,7 @@ func (c *Client) Projects(ctx context.Context, orgID string) ([]Project, error) 
 	var out struct {
 		Projects []Project `json:"projectIndexs"`
 	}
-	q := fmt.Sprintf(`{ projectIndexs(namespace: %q, where: [%s]) { id slug name repoIds } }`, NS, where("org_id", orgID))
+	q := fmt.Sprintf(`{ projectIndexs(namespace: %q, where: [%s]) { id slug name repoIds orgId direction directorEnabled maxLiveGoals } }`, NS, where("org_id", orgID))
 	if err := c.Query(ctx, q, nil, &out); err != nil {
 		return nil, err
 	}
@@ -573,6 +581,47 @@ func (c *Client) RequestPlan(ctx context.Context, goalID, by string) error {
 // while another node holds it.
 func (c *Client) ClaimPlan(ctx context.Context, goalID, nodeID string) error {
 	return c.Mutate(ctx, "claimPlan", goalID, map[string]any{"nodeId": nodeID})
+}
+
+// GoalProposal is one goal a research session proposes (runsheet trd
+// §6c). The platform decides which of them become goals.
+type GoalProposal struct {
+	Slug        string `json:"slug"`
+	Title       string `json:"title"`
+	Statement   string `json:"statement"`
+	Acceptance  string `json:"acceptance"`
+	Why         string `json:"why,omitempty"`
+	BudgetCents int    `json:"budgetCents,omitempty"`
+}
+
+// ClaimResearch takes the project's next research session for this node.
+// Every "not now" is a refusal — the director off, the project paused,
+// the hour outside its window, the gap since the last session — so a
+// refusal is the answer to expect and not an error to shout about.
+func (c *Client) ClaimResearch(ctx context.Context, projectID, nodeID string) error {
+	return c.Mutate(ctx, "claimResearch", projectID, map[string]any{
+		"nodeId": nodeID, "at": time.Now().UTC().Format(time.RFC3339Nano),
+	})
+}
+
+// RecordResearch hands in what the session came to, and the cost
+// whether or not it proposed anything.
+func (c *Client) RecordResearch(ctx context.Context, projectID, nodeID string, proposals []GoalProposal, costCents int, notes string) error {
+	list := make([]map[string]any, 0, len(proposals))
+	for _, p := range proposals {
+		row := map[string]any{"slug": p.Slug, "title": p.Title, "statement": p.Statement, "acceptance": p.Acceptance}
+		if p.Why != "" {
+			row["why"] = p.Why
+		}
+		if p.BudgetCents > 0 {
+			row["budgetCents"] = p.BudgetCents
+		}
+		list = append(list, row)
+	}
+	return c.Mutate(ctx, "recordResearch", projectID, map[string]any{
+		"nodeId": nodeID, "at": time.Now().UTC().Format(time.RFC3339Nano),
+		"proposals": list, "costCents": costCents, "notes": notes,
+	})
 }
 
 // PlanGoal hands the goal its graph, with the planner session's cost

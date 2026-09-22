@@ -402,3 +402,165 @@ func ParsePlan(text string, merged ...int) ([]PlannedSpec, error) {
 	}
 	return items, nil
 }
+
+// ResearchInput is what a research session is given: the project, the
+// direction a person wrote, the goals it has already had, and the room
+// there is for new ones (runsheet trd §6c).
+type ResearchInput struct {
+	Org       string
+	Project   string
+	Direction string
+	// Repos are the project's repos, checked out read-only, by
+	// owner/name → directory.
+	Repos        map[string]string
+	ContextDir   string
+	ContextFiles []string
+	Prologue     bool
+	// Goals are what the project has already taken on, newest first —
+	// what to build on and what not to propose again.
+	Goals []ExistingGoal
+	// Room is how many goals the platform has space for right now; 0
+	// means the session should say so rather than propose.
+	Room int
+	// DefaultBudgetCents is what a goal here usually costs, for the
+	// session to size its proposals against.
+	DefaultBudgetCents int
+}
+
+// ExistingGoal is one goal the project has had.
+type ExistingGoal struct {
+	Slug   string
+	Title  string
+	Status string
+	Note   string
+}
+
+// ProposedSpec is one goal a research session proposes.
+type ProposedSpec struct {
+	Slug        string `json:"slug"`
+	Title       string `json:"title"`
+	Statement   string `json:"statement"`
+	Acceptance  string `json:"acceptance"`
+	Why         string `json:"why"`
+	BudgetCents int    `json:"budget_cents"`
+}
+
+// ResearchPrompt is the director's session (runsheet trd §6c): read the
+// direction, the project and what it has already done, and propose the
+// next goals worth doing. It writes nothing — the goals it proposes are
+// built by other sessions, each of which plans and builds as usual.
+//
+// Its contract line is the JSON block at the end, like the planner's.
+func ResearchPrompt(in ResearchInput) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "You are the director of %s, project %s. Nobody is awake. Your job is to decide what this project should do next and to write the goals for it — other sessions plan each goal into items, build them, and open pull requests that are merged when they pass.\n\n", in.Org, in.Project)
+	b.WriteString("# The direction\n\n")
+	if strings.TrimSpace(in.Direction) != "" {
+		fmt.Fprintf(&b, "%s\n\n", strings.TrimSpace(in.Direction))
+	} else {
+		b.WriteString("None was given. Propose nothing and say so.\n\n")
+	}
+	b.WriteString("This is what the project is for. Everything you propose serves it.\n\n")
+	if len(in.Goals) > 0 {
+		b.WriteString("# What the project has already taken on\n\n")
+		for _, g := range in.Goals {
+			fmt.Fprintf(&b, "- `%s` — %s — %s", g.Slug, g.Title, g.Status)
+			if strings.TrimSpace(g.Note) != "" {
+				fmt.Fprintf(&b, ": %s", strings.TrimSpace(g.Note))
+			}
+			b.WriteString("\n")
+		}
+		b.WriteString("\nBuild on what is done. Do not propose a goal that is live, and do not propose one that was done unless the work plainly remains. A goal that is blocked or paused is waiting for a person — leave it alone.\n\n")
+	}
+	b.WriteString("# The project\n\n")
+	if len(in.Repos) > 0 {
+		b.WriteString("Its repos are checked out here, read-only, at their default branch:\n\n")
+		for _, name := range sortedKeys(in.Repos) {
+			fmt.Fprintf(&b, "- `%s` in `%s/`\n", name, in.Repos[name])
+		}
+		b.WriteString("\n")
+	}
+	if in.ContextDir != "" {
+		fmt.Fprintf(&b, "The project's context is in `%s/`", in.ContextDir)
+		if len(in.ContextFiles) > 0 {
+			fmt.Fprintf(&b, " (%s)", strings.Join(in.ContextFiles, ", "))
+		}
+		b.WriteString(": the instructions and the ADRs are binding, the PRD and TRD are the design. Read them first, then the repos' own AGENTS.md, CLAUDE.md and README, then the code.\n\n")
+	} else {
+		b.WriteString("There are no context documents; read each repo's AGENTS.md, CLAUDE.md and README, then the code.\n\n")
+	}
+	if in.Prologue {
+		b.WriteString(prologueRule(in.ContextDir, in.Org+"/"+in.Project) + "\n\n")
+	}
+	b.WriteString("# Rules\n\n")
+	fmt.Fprintf(&b, "1. Research first. Read the direction, the design documents, the code and the open issues before you propose anything. A goal that duplicates what is there, or that the design already forbids, is worse than none.\n")
+	switch {
+	case in.Room <= 0:
+		b.WriteString("2. There is no room for another goal right now — the project is at its ceiling. Propose nothing, and say in your notes what you would have proposed.\n")
+	case in.Room == 1:
+		b.WriteString("2. Propose at most one goal — there is room for one. Make it the most valuable thing you found, or none if nothing is worth doing.\n")
+	default:
+		fmt.Fprintf(&b, "2. Propose at most %d goals, fewer if fewer are worth doing, none if none is. There is room for %d right now.\n", in.Room, in.Room)
+	}
+	b.WriteString("3. Each goal is a few days' work for one person: several items' worth, one coherent piece of value. Not a task (\"rename the button\") and not a project (\"rewrite the front end\").\n")
+	b.WriteString("4. The statement says what is to be true when it is done, in the words the person who gave the direction would use. The acceptance is what someone can check — a test that passes, a command's output, a page that loads — never a feeling.\n")
+	b.WriteString("5. The why is one sentence on why this is the next thing, given the direction and what is already done. A person reads it in the morning to decide whether you were right.\n")
+	b.WriteString("6. Order them: the most valuable first. The platform may have room for fewer than you propose and takes them in your order.\n")
+	b.WriteString("7. The slug is lowercase, hyphenated and stable — it is the goal's identity, so the same idea proposed twice must carry the same slug rather than making a second goal.\n")
+	b.WriteString("8. Prefer work that can be finished and merged unattended: clear acceptance, tests that exist, no decision a person has to make first. A question for a person is not a goal — say it in your notes instead.\n")
+	b.WriteString("9. Change nothing in the repos: you research and propose, you do not build.\n")
+	if in.DefaultBudgetCents > 0 {
+		fmt.Fprintf(&b, "10. A goal here is usually given $%.2f. Set budget_cents only when a goal plainly needs more or less; leave it out otherwise.\n", float64(in.DefaultBudgetCents)/100)
+	}
+	b.WriteString("\nEnd your final message with your proposals as a JSON object in a ```json fenced block, and nothing after it. An empty list is a valid answer:\n\n")
+	b.WriteString("```json\n{\"goals\": [{\"slug\": \"…\", \"title\": \"…\", \"statement\": \"…\", \"acceptance\": \"…\", \"why\": \"…\"}]}\n```\n")
+	return b.String()
+}
+
+// ParseProposals reads a research session's goals out of its final
+// message. Like ParsePlan it tries every fenced span rather than the
+// last fence marker, so a proposal whose own prose mentions a fence
+// does not cost the session.
+func ParseProposals(text string) ([]ProposedSpec, error) {
+	var goals []ProposedSpec
+	found := false
+	for _, raw := range planCandidates(text) {
+		var wrapped struct {
+			Goals []ProposedSpec `json:"goals"`
+		}
+		if err := json.Unmarshal([]byte(raw), &wrapped); err == nil && len(wrapped.Goals) > 0 {
+			goals, found = wrapped.Goals, true
+			break
+		}
+		var bare []ProposedSpec
+		if err := json.Unmarshal([]byte(raw), &bare); err == nil && len(bare) > 0 {
+			goals, found = bare, true
+			break
+		}
+		// an empty list is an answer: {"goals": []} parses to nothing,
+		// and saying "nothing is worth doing" must not read as a failure
+		if err := json.Unmarshal([]byte(raw), &wrapped); err == nil && wrapped.Goals != nil {
+			found = true
+		}
+	}
+	if !found {
+		return nil, fmt.Errorf("no proposals in the director's message")
+	}
+	slugs := map[string]bool{}
+	out := make([]ProposedSpec, 0, len(goals))
+	for _, g := range goals {
+		g.Slug, g.Title = strings.TrimSpace(g.Slug), strings.TrimSpace(g.Title)
+		if g.Slug == "" || g.Title == "" {
+			return nil, fmt.Errorf("a proposal carries a slug and a title: %+v", g)
+		}
+		if strings.TrimSpace(g.Statement) == "" || strings.TrimSpace(g.Acceptance) == "" {
+			return nil, fmt.Errorf("proposal %q carries a statement and an acceptance", g.Slug)
+		}
+		if slugs[g.Slug] {
+			continue // the same goal twice in one session is one goal
+		}
+		slugs[g.Slug] = true
+		out = append(out, g)
+	}
+	return out, nil
+}

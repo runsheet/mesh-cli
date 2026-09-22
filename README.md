@@ -45,9 +45,29 @@ mesh node model --build ""                       # back to the CLI's default
 Saved in `~/.mesh/node.yaml`; restart the node (or its service) for a
 change to take. `--model`, `--model-build`, `--model-evaluate`,
 `--model-plan` and `--model-channel` on `mesh node start` win over the
-file for that run. A value is an alias the CLI knows (`opus`, `sonnet`,
-`haiku`) or a full id (`claude-opus-5`); unset leaves the CLI's own
-default.
+file for that run (`--model-research` too). A value is an alias the CLI
+knows (`opus`, `sonnet`, `haiku`) or a full id (`claude-opus-5`); unset
+leaves the CLI's own default.
+
+### The director
+
+A project on the platform can carry a line of **direction** — what it is
+for — and the **hours** it may act on it in (runsheet trd §6c). Inside
+those hours a node runs a research session against the direction, the
+project's repos and its context, and proposes the goals worth doing
+next; the platform turns as many of them into goals as the project has
+room for and asks the planner for each. On an `experimental` project
+they need no approval, so the work runs and the integrator merges it.
+
+Nothing is set here: the direction, the hours, the gap between sessions
+and the ceiling on live goals all live on the project, and a node simply
+offers itself every tick. Being refused — outside the hours, inside the
+gap, another node holding it — is the ordinary answer.
+
+```bash
+mesh node model --research opus   # the session that decides what to build
+mesh node start --research-budget-usd 5
+```
 
 ### Register
 

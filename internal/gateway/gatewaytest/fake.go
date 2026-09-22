@@ -262,6 +262,28 @@ func (f *Fake) apply(name string, in map[string]any) error {
 		for k, v := range in {
 			row[k] = v
 		}
+	case "claimResearch", "recordResearch":
+		project := f.Projects[id]
+		if project == nil {
+			return fmt.Errorf("no such project")
+		}
+		if name == "claimResearch" {
+			if enabled, _ := project["directorEnabled"].(bool); !enabled {
+				return fmt.Errorf("the director is off for this project")
+			}
+			if held, _ := project["researchNodeId"].(string); held != "" && held != in["nodeId"] {
+				return fmt.Errorf("node %s has held the research", held)
+			}
+			project["researchNodeId"] = in["nodeId"]
+			return nil
+		}
+		if held, _ := project["researchNodeId"].(string); held != in["nodeId"] {
+			return fmt.Errorf("the research is not node %s's to hand in", in["nodeId"])
+		}
+		project["researchNodeId"] = ""
+		project["proposals"] = in["proposals"]
+		project["researchCostCents"] = toInt(in["costCents"])
+		project["researchNotes"] = in["notes"]
 	case "pauseGoal", "resumeGoal", "cancelGoal", "approveGraph", "planGoal", "requestPlan", "claimPlan":
 		if f.Goals[id] == nil {
 			return fmt.Errorf("no such goal")

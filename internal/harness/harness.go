@@ -19,6 +19,9 @@ const (
 	KindEvaluate Kind = "evaluate"
 	// KindPlan compiles a goal into its graph of items.
 	KindPlan Kind = "plan"
+	// KindResearch decides what a project should do next and proposes
+	// the goals for it (runsheet trd §6c).
+	KindResearch Kind = "research"
 )
 
 // Job is one session's brief.
