@@ -120,3 +120,22 @@ func TestSessionStaysAliveAndReceivesEventsOnStdin(t *testing.T) {
 		t.Fatalf("args: %s", args)
 	}
 }
+
+// A session restarted after its token was refreshed must carry the new
+// bearer: MCPFunc is asked at every start, not once at construction.
+func TestArgsAskMCPFuncEachTime(t *testing.T) {
+	n := 0
+	s := &Session{Cfg: &node.Config{Slug: "mini"}, MCPFunc: func() map[string]any {
+		n++
+		return map[string]any{"prologue": map[string]any{"type": "http", "url": "https://api.test/mcp",
+			"headers": map[string]string{"Authorization": fmt.Sprintf("Bearer access-%d", n)}}}
+	}}
+	first := strings.Join(s.Args("/w"), " ")
+	second := strings.Join(s.Args("/w"), " ")
+	if !strings.Contains(first, "access-1") {
+		t.Fatalf("first args: %s", first)
+	}
+	if !strings.Contains(second, "access-2") {
+		t.Fatalf("second args carry a stale bearer: %s", second)
+	}
+}

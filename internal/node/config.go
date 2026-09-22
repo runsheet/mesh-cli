@@ -41,6 +41,12 @@ type Config struct {
 	// (the runsheet goal `agents-on-the-platform`), and these become
 	// the fallback for a node that cannot reach them.
 	Models Models `yaml:"models,omitempty"`
+	// Latchkey is the issuer `mesh node login` signs in to and
+	// LatchkeyClient the public client it starts the device flow from
+	// (latchkey adr-machine-identity); both are remembered at login so a
+	// later one needs no flags.
+	Latchkey       string `yaml:"latchkey,omitempty"`
+	LatchkeyClient string `yaml:"latchkey_client,omitempty"`
 }
 
 // Models names a model per kind of session: Default when a kind has

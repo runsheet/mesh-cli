@@ -11,7 +11,9 @@ import (
 	"projectmesh.io/mesh-cli/internal/node"
 )
 
-// The platform side of the CLI: one gateway, one token (mesh-specs adr-002).
+// The platform side of the CLI: one gateway, one credential — the node's
+// Latchkey machine token, or the rs_* console token it falls back to
+// (mesh-specs adr-002, latchkey adr-machine-identity).
 
 var gatewayFlag string
 
@@ -29,13 +31,24 @@ func gatewayURL() string {
 	return gateway.DefaultURL
 }
 
-// platformClient is the gateway client for the saved token.
+// platformClient is the gateway client for the saved credential: a
+// Latchkey machine credential (refreshed before expiry) or an rs_*
+// console token.
 func platformClient() (*gateway.Client, error) {
-	tok, err := auth.LoadToken()
+	src, err := tokenSource()
 	if err != nil {
 		return nil, err
 	}
-	return gateway.New(gatewayURL(), tok), nil
+	return gateway.NewWithSource(gatewayURL(), src), nil
+}
+
+// tokenSource loads ~/.mesh/token and wires Latchkey's refresh grant to it.
+func tokenSource() (*auth.Source, error) {
+	cred, err := auth.LoadCredential()
+	if err != nil {
+		return nil, err
+	}
+	return auth.NewSource(cred, refreshMachine), nil
 }
 
 // resolveOrg finds the org by login (--org), else the registered node's.

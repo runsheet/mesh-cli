@@ -14,19 +14,23 @@ import (
 
 // Session is the shape of ~/.mesh-session.json.
 type Session struct {
-	Kind          string     `json:"kind,omitempty"`
-	AccessToken   string     `json:"accessToken"`
-	RefreshToken  string     `json:"refreshToken,omitempty"`
-	IDToken       string     `json:"idToken,omitempty"`
-	TokenType     string     `json:"tokenType,omitempty"`
-	BaseURL       string     `json:"baseUrl"`
-	TokenEndpoint string     `json:"tokenEndpoint,omitempty"`
-	ClientID      string     `json:"clientId,omitempty"`
-	UserID        string     `json:"userId,omitempty"`
-	UserEmail     string     `json:"userEmail,omitempty"`
-	DefaultOrg    string     `json:"defaultOrg,omitempty"`
-	ExpiresAt     *time.Time `json:"expiresAt,omitempty"`
-	CreatedAt     time.Time  `json:"createdAt"`
+	Kind          string `json:"kind,omitempty"`
+	AccessToken   string `json:"accessToken"`
+	RefreshToken  string `json:"refreshToken,omitempty"`
+	IDToken       string `json:"idToken,omitempty"`
+	TokenType     string `json:"tokenType,omitempty"`
+	BaseURL       string `json:"baseUrl"`
+	TokenEndpoint string `json:"tokenEndpoint,omitempty"`
+	ClientID      string `json:"clientId,omitempty"`
+	// MachineID is the Latchkey machine a "machine" credential names
+	// (its token's sub without the machine: prefix); UserID is then the
+	// operator the machine acts for.
+	MachineID  string     `json:"machineId,omitempty"`
+	UserID     string     `json:"userId,omitempty"`
+	UserEmail  string     `json:"userEmail,omitempty"`
+	DefaultOrg string     `json:"defaultOrg,omitempty"`
+	ExpiresAt  *time.Time `json:"expiresAt,omitempty"`
+	CreatedAt  time.Time  `json:"createdAt"`
 }
 
 func sessionFilePath() (string, error) {
