@@ -241,13 +241,14 @@ func RenderIndex(cx *Context) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Project %s — every indexed document\n\n", cx.Project)
 	b.WriteString("On disk here: read the file. Not on disk: fetch it with the `prologue_document` tool (project " + fmt.Sprintf("%q", cx.Project) + ", the slug). Search with `prologue_search`.\n\n")
-	b.WriteString("| kind | title | slug | repo/path | here |\n| --- | --- | --- | --- | --- |\n")
+	b.WriteString("| kind | title | what it says | slug | repo/path | here |\n| --- | --- | --- | --- | --- | --- |\n")
+	cell := func(s string) string { return strings.ReplaceAll(strings.ReplaceAll(s, "\n", " "), "|", "\\|") }
 	for _, d := range cx.Index {
 		here := "fetch"
 		if n, ok := cx.OnDisk[d.Slug]; ok {
 			here = "`" + n + "`"
 		}
-		fmt.Fprintf(&b, "| %s | %s | `%s` | %s/%s | %s |\n", d.Kind, strings.ReplaceAll(d.Title, "|", "\\|"), d.Slug, d.Repo, d.Path, here)
+		fmt.Fprintf(&b, "| %s | %s | %s | `%s` | %s/%s | %s |\n", d.Kind, cell(d.Title), cell(d.Summary), d.Slug, d.Repo, d.Path, here)
 	}
 	return b.String()
 }

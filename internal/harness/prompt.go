@@ -86,7 +86,8 @@ func BuildPrompt(in PromptInput) string {
 	b.WriteString("3. Commit as you go with clear, conventional messages that say what changed and why.\n")
 	b.WriteString("4. Before you finish, run the acceptance check above and make it pass; if it cannot, say exactly why in your final message.\n")
 	b.WriteString("5. Do not push, open pull requests, or touch anything outside this workspace. The node pushes the branch when you are done.\n")
-	b.WriteString("6. End with a short summary of what you did and how the acceptance was checked.\n")
+	b.WriteString("6. Design keeps pace with code: if your change alters an aggregate, a policy, a process, or a public contract (a gateway field, an API, a console route), amend the ADR or TRD section that describes it on this branch; a decision no ADR covers gets a new ADR at the next free number in this repo. A new document carries frontmatter with a one-line `summary:`.\n")
+	b.WriteString("7. End with a short summary of what you did and how the acceptance was checked.\n")
 	return b.String()
 }
 
@@ -286,7 +287,8 @@ func PlanPrompt(in PlanInput) string {
 	b.WriteString("4. depends_on names earlier seqs whose branches must be merged first; items with no dependency between them run in parallel. Keep the graph shallow.\n")
 	b.WriteString("5. repo is one of the project's repos above, as owner/name. base_ref is its default branch unless the item builds on another item's branch.\n")
 	b.WriteString("6. Change nothing in the repos: you plan, you do not build.\n")
-	b.WriteString("7. End your final message with the graph as a JSON object in a ```json fenced block, and nothing after it:\n\n")
+	b.WriteString("7. Design keeps pace with code: an item that changes an aggregate, a policy, a process, or a public contract (a gateway field, an API, a console route) also amends the ADR or TRD section that describes it, in the same item and pull request; a decision no ADR covers gets a new ADR at the next free number in that repo. Say so in the item's brief and acceptance. Every new document carries frontmatter with a one-line `summary:`.\n")
+	b.WriteString("8. End your final message with the graph as a JSON object in a ```json fenced block, and nothing after it:\n\n")
 	b.WriteString("```json\n{\"items\": [{\"seq\": 1, \"title\": \"…\", \"brief\": \"…\", \"acceptance\": \"…\", \"depends_on\": [], \"repo\": \"owner/name\", \"base_ref\": \"main\"}]}\n```\n")
 	return b.String()
 }

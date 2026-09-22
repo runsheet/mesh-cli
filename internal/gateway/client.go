@@ -628,9 +628,10 @@ func (c *Client) CancelGoal(ctx context.Context, goalID, by string) error {
 
 // Document is one row of Prologue's document list.
 type Document struct {
-	Slug   string `json:"slug"`
-	Title  string `json:"title"`
-	Kind   string `json:"kind"`
+	Slug    string `json:"slug"`
+	Title   string `json:"title"`
+	Summary string `json:"summary,omitempty"` // one line from the frontmatter: what the index row says
+	Kind    string `json:"kind"`
 	Status string `json:"status"`
 	Repo   string `json:"repo"`
 	Path   string `json:"path"`
