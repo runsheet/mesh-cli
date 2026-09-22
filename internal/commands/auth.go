@@ -37,7 +37,7 @@ var authCmd = &cobra.Command{
 
 var authTokenCmd = &cobra.Command{
 	Use:   "token <rs_token>",
-	Short: "Save a runsheet console token (Settings → Tokens) to ~/.mesh/token — the node's and the goal commands' bearer",
+	Short: "Save a runsheet console token (Settings → Tokens) to ~/.mesh/token — the fallback bearer; `mesh node login` registers a Latchkey machine credential instead",
 	Args:  cobra.ExactArgs(1),
 	RunE:  func(cmd *cobra.Command, args []string) error { return saveToken(args[0]) },
 }

@@ -1,6 +1,7 @@
 // Package gateway is the node's transport: the runsheet platform's GraphQL
-// gateway, spoken as the person whose console token the node holds
-// (mesh-specs adr-002). Every write is one aggregate command
+// gateway, spoken as the principal the node's credential names — its
+// Latchkey machine, acting for the operator, or the person whose console
+// token it holds (mesh-specs adr-002). Every write is one aggregate command
 // (`mutation($in: XInput!) { x(input: $in) { status } }`); every read is
 // an index list scoped by an EQ `where` the person's policy accepts.
 package gateway
