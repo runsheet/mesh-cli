@@ -40,6 +40,11 @@ type Job struct {
 	// MCPServers are MCP servers the session gets (name → config, the
 	// shape of an mcp.json's mcpServers): Prologue, for context on demand.
 	MCPServers map[string]any
+	// Model is the model this session runs on — an alias the CLI knows
+	// ("opus", "sonnet", "haiku") or a full id ("claude-opus-5"). Empty
+	// leaves the CLI's own default, which is what a node ran on before
+	// models were chosen per kind.
+	Model string
 }
 
 // Progress is one observation of a running session.

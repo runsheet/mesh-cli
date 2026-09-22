@@ -30,6 +30,8 @@ type Planner struct {
 	MCP map[string]any
 	// MaxBudgetUSD caps the planning session (5 by default).
 	MaxBudgetUSD float64
+	// Model is what a planner session runs on ("" the CLI's default).
+	Model string
 	// Timeout caps its wall clock (0 none).
 	Timeout time.Duration
 	Log     *log.Logger
@@ -149,7 +151,7 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 	if budget <= 0 {
 		budget = 5
 	}
-	job := harness.Job{Kind: harness.KindPlan, Workspace: dir, Prompt: prompt, MaxBudgetUSD: budget, Label: goal.Slug + " plan", Timeout: p.Timeout, MCPServers: p.MCP}
+	job := harness.Job{Kind: harness.KindPlan, Workspace: dir, Prompt: prompt, MaxBudgetUSD: budget, Label: goal.Slug + " plan", Timeout: p.Timeout, MCPServers: p.MCP, Model: p.Model}
 	p.logf("goal %s: planning in %s (%d repos)", goal.Slug, dir, len(repos))
 	result, err := p.Harness.Run(ctx, job, nil)
 	if ctx.Err() != nil {

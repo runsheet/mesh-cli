@@ -29,6 +29,8 @@ type Evaluator struct {
 	MCP map[string]any
 	// MaxBudgetUSD caps the review session (3 by default).
 	MaxBudgetUSD float64
+	// Model is what an evaluator session runs on ("" the CLI's default).
+	Model string
 	// Timeout caps its wall clock (0 none).
 	Timeout time.Duration
 	Log     *log.Logger
@@ -87,7 +89,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	if budget <= 0 {
 		budget = 3
 	}
-	job := harness.Job{Kind: harness.KindEvaluate, Workspace: dir, Prompt: prompt, MaxBudgetUSD: budget, Label: label + " evaluate", Timeout: e.Timeout, MCPServers: e.MCP}
+	job := harness.Job{Kind: harness.KindEvaluate, Workspace: dir, Prompt: prompt, MaxBudgetUSD: budget, Label: label + " evaluate", Timeout: e.Timeout, MCPServers: e.MCP, Model: e.Model}
 	e.logf("item %s: evaluating %s (%d bytes of diff)", label, branch, len(diff))
 	result, err := e.Harness.Run(ctx, job, nil)
 	if ctx.Err() != nil {

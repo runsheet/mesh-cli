@@ -30,6 +30,25 @@ The token's scope is the node's scope: whatever orgs the person reaches,
 the node reaches. A node that should not see an org is a token that should
 not have been minted.
 
+### Models
+
+Each kind of session runs on its own model, so the expensive work and
+the cheap work need not share one:
+
+```bash
+mesh node model                                  # what this node uses
+mesh node model --default opus                   # everything on Opus
+mesh node model --plan sonnet --evaluate sonnet  # cheaper planning and review
+mesh node model --build ""                       # back to the CLI's default
+```
+
+Saved in `~/.mesh/node.yaml`; restart the node (or its service) for a
+change to take. `--model`, `--model-build`, `--model-evaluate`,
+`--model-plan` and `--model-channel` on `mesh node start` win over the
+file for that run. A value is an alias the CLI knows (`opus`, `sonnet`,
+`haiku`) or a full id (`claude-opus-5`); unset leaves the CLI's own
+default.
+
 ### Register
 
 ```bash

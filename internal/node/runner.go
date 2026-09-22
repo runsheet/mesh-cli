@@ -66,6 +66,8 @@ type Runner struct {
 	MCP map[string]any
 	// MaxBudgetUSD caps a session's budget whatever the goal has left.
 	MaxBudgetUSD float64
+	// Model is what a build session runs on ("" the CLI's default).
+	Model string
 	// ProgressEvery is how often progress is reported (60 s).
 	ProgressEvery time.Duration
 	Log           *log.Logger
@@ -161,7 +163,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		Repo: res.Repo.FullName(), Branch: spec.Branch, BaseRef: spec.BaseRef, ContextDir: contextDir, ContextFiles: files,
 		Attempts: item.Attempts, Evaluation: item.Evaluation, Project: orgLogin + "/" + res.Project.Slug, Prologue: len(r.MCP) > 0,
 	})
-	job := harness.Job{Kind: harness.KindBuild, Workspace: dir, Prompt: prompt, MaxBudgetUSD: r.Budget(res.Goal), Label: label, MCPServers: r.MCP}
+	job := harness.Job{Kind: harness.KindBuild, Workspace: dir, Prompt: prompt, MaxBudgetUSD: r.Budget(res.Goal), Label: label, MCPServers: r.MCP, Model: r.Model}
 
 	cost := &costReporter{}
 	var mu sync.Mutex

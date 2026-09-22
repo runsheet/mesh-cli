@@ -41,6 +41,8 @@ type Session struct {
 	Unattended bool
 	// Binary is the claude executable ("claude").
 	Binary string
+	// Model is what the channel session runs on ("" the CLI's default).
+	Model string
 	// Stderr receives claude's stderr.
 	Stderr io.Writer
 	Log    *log.Logger
@@ -104,6 +106,9 @@ func (s *Session) Args(workRoot string) []string {
 	args := []string{"-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
 		"--dangerously-load-development-channels", "server:" + ServerName,
 		"--append-system-prompt", SystemPrompt(s.Cfg, s.Orgs, workRoot)}
+	if s.Model != "" {
+		args = append(args, "--model", s.Model)
+	}
 	args = append(args, harness.MCPArgs(s.MCP)...)
 	if s.Unattended {
 		args = append(args, "--dangerously-skip-permissions")

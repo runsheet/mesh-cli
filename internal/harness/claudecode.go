@@ -32,6 +32,9 @@ func (c *ClaudeCode) Name() string { return "claude-code" }
 // Args builds the command line for a job (exposed for tests).
 func (c *ClaudeCode) Args(job Job) []string {
 	args := []string{"-p", job.Prompt, "--output-format", "stream-json", "--verbose"}
+	if job.Model != "" {
+		args = append(args, "--model", job.Model)
+	}
 	if job.MaxBudgetUSD > 0 {
 		args = append(args, "--max-budget-usd", strconv.FormatFloat(job.MaxBudgetUSD, 'f', 2, 64))
 	}

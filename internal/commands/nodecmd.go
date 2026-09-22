@@ -39,7 +39,39 @@ var (
 	nodeModeFlag           string
 	nodeUnattended         bool
 	nodeOnceFlag           bool
+	nodeModelFlag          string
+	nodeModelBuildFlag     string
+	nodeModelEvaluateFlag  string
+	nodeModelPlanFlag      string
+	nodeModelChannelFlag   string
+	// nodeModels is what `node start` resolved for this run: the config
+	// file's models with the flags applied, read by every session.
+	nodeModels node.Models
 )
+
+// modelsFor is the node's models: the config file's, each overridden by
+// a flag when one was given. A kind with none runs on the CLI's own
+// default. (The platform's agent definitions will win over both once
+// they land — the runsheet goal `agents-on-the-platform`.)
+func modelsFor(cmd *cobra.Command, cfg *node.Config) node.Models {
+	m := cfg.Models
+	for _, o := range []struct {
+		flag string
+		val  string
+		set  *string
+	}{
+		{"model", nodeModelFlag, &m.Default},
+		{"model-build", nodeModelBuildFlag, &m.Build},
+		{"model-evaluate", nodeModelEvaluateFlag, &m.Evaluate},
+		{"model-plan", nodeModelPlanFlag, &m.Plan},
+		{"model-channel", nodeModelChannelFlag, &m.Channel},
+	} {
+		if cmd.Flags().Changed(o.flag) {
+			*o.set = o.val
+		}
+	}
+	return m
+}
 
 var nodeCmd = &cobra.Command{
 	Use:   "node",
@@ -204,6 +236,7 @@ only use it on a machine you trust with that.`,
 		if err != nil {
 			return err
 		}
+		nodeModels = modelsFor(cmd, cfg)
 		gw, err := platformClient()
 		if err != nil {
 			return err
@@ -251,7 +284,7 @@ only use it on a machine you trust with that.`,
 func runPollMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *gateway.Client, loop *node.Loop, workRoot string, logger *log.Logger) error {
 	h := oneShotHarness()
 	mcp := node.PrologueMCP(gw.BaseURL, gw.Token)
-	runner := &node.Runner{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, MCP: mcp, MaxBudgetUSD: nodeMaxBudgetFlag, Log: logger}
+	runner := &node.Runner{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, MCP: mcp, MaxBudgetUSD: nodeMaxBudgetFlag, Model: nodeModels.For("build"), Log: logger}
 	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) { _ = runner.RunItem(ctx, item) }
 	loop.Evaluate = evaluateWith(gw, h, scopes, workRoot, logger)
 	loop.Plan = planWith(gw, cfg, h, workRoot, logger)
@@ -317,7 +350,7 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 	}
 	defer hub.Close()
 
-	sess := &channel.Session{Cfg: cfg, Orgs: scopes.Logins(), MCP: node.PrologueMCP(gw.BaseURL, gw.Token), WorkDir: filepath.Join(workRoot, cfg.Slug), Exe: exe, SockPath: sock, Unattended: nodeUnattended, Stderr: os.Stderr, Log: logger,
+	sess := &channel.Session{Cfg: cfg, Orgs: scopes.Logins(), MCP: node.PrologueMCP(gw.BaseURL, gw.Token), WorkDir: filepath.Join(workRoot, cfg.Slug), Exe: exe, SockPath: sock, Unattended: nodeUnattended, Model: nodeModels.For("channel"), Stderr: os.Stderr, Log: logger,
 		OnText: func(t string) { logger.Printf("session: %s", firstLine(t)) }}
 	var sessMu sync.Mutex
 	sessionID := ""
@@ -504,7 +537,7 @@ func oneShotHarness() *harness.ClaudeCode {
 // finished item, in either mode. A failure to reach a verdict is logged
 // and the item is left in evaluating for the next tick.
 func evaluateWith(gw *gateway.Client, h harness.Harness, scopes node.Scopes, workRoot string, logger *log.Logger) func(context.Context, gateway.WorkItem) {
-	ev := &node.Evaluator{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Scopes: scopes, WorkRoot: workRoot, MCP: node.PrologueMCP(gw.BaseURL, gw.Token), MaxBudgetUSD: nodeEvalBudgetFlag, Timeout: nodeSessionTimeoutFlag, Log: logger}
+	ev := &node.Evaluator{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Scopes: scopes, WorkRoot: workRoot, MCP: node.PrologueMCP(gw.BaseURL, gw.Token), MaxBudgetUSD: nodeEvalBudgetFlag, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("evaluate"), Log: logger}
 	return func(ctx context.Context, item gateway.WorkItem) {
 		if err := ev.Evaluate(ctx, item); err != nil && ctx.Err() == nil {
 			logger.Printf("item %d %q: evaluation: %v", item.Seq, item.Title, err)
@@ -516,7 +549,7 @@ func evaluateWith(gw *gateway.Client, h harness.Harness, scopes node.Scopes, wor
 // planning, in either mode. A plan that cannot be handed in is logged
 // and the goal left in planning for the next tick (three tries).
 func planWith(gw *gateway.Client, cfg *node.Config, h harness.Harness, workRoot string, logger *log.Logger) func(context.Context, gateway.Goal, node.Scope) {
-	pl := &node.Planner{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, WorkRoot: workRoot, MCP: node.PrologueMCP(gw.BaseURL, gw.Token), MaxBudgetUSD: nodePlanBudgetFlag, Timeout: nodeSessionTimeoutFlag, Log: logger}
+	pl := &node.Planner{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, WorkRoot: workRoot, MCP: node.PrologueMCP(gw.BaseURL, gw.Token), MaxBudgetUSD: nodePlanBudgetFlag, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("plan"), Log: logger}
 	return func(ctx context.Context, goal gateway.Goal, scope node.Scope) {
 		if err := pl.Plan(ctx, goal, scope); err != nil && ctx.Err() == nil {
 			logger.Printf("goal %s: planning: %v", goal.Slug, err)
@@ -569,8 +602,85 @@ func init() {
 	nodeStartCmd.Flags().Float64Var(&nodeMaxBudgetFlag, "max-budget-usd", 10, "cap on one session's budget (poll mode), whatever the goal has left")
 	nodeStartCmd.Flags().Float64Var(&nodeEvalBudgetFlag, "eval-budget-usd", 3, "cap on one evaluator session's budget")
 	nodeStartCmd.Flags().Float64Var(&nodePlanBudgetFlag, "plan-budget-usd", 5, "cap on one planner session's budget")
+	nodeStartCmd.Flags().StringVar(&nodeModelFlag, "model", "", "model every session runs on when its kind names none (an alias the CLI knows — opus, sonnet, haiku — or a full id); empty is the CLI's default")
+	nodeStartCmd.Flags().StringVar(&nodeModelBuildFlag, "model-build", "", "model for build sessions (overrides --model)")
+	nodeStartCmd.Flags().StringVar(&nodeModelEvaluateFlag, "model-evaluate", "", "model for evaluator sessions (overrides --model)")
+	nodeStartCmd.Flags().StringVar(&nodeModelPlanFlag, "model-plan", "", "model for planner sessions (overrides --model)")
+	nodeStartCmd.Flags().StringVar(&nodeModelChannelFlag, "model-channel", "", "model for the channel-mode session (overrides --model)")
 	nodeStartCmd.Flags().StringVar(&nodeModeFlag, "mode", "channel", "channel (one persistent session fed by the mesh channel) or poll (claude -p per item)")
 	nodeStartCmd.Flags().BoolVar(&nodeUnattended, "unattended", false, "run sessions with --dangerously-skip-permissions (trusted machines only)")
 	nodeStartCmd.Flags().BoolVar(&nodeOnceFlag, "once", false, "poll mode: one tick, then exit")
-	nodeCmd.AddCommand(nodeLoginCmd, nodeRegisterCmd, nodeStartCmd, nodeStatusCmd, nodeLogoutCmd)
+	nodeModelCmd.Flags().StringVar(&nodeModelFlag, "default", "", "model for any kind that names none")
+	nodeModelCmd.Flags().StringVar(&nodeModelBuildFlag, "build", "", "model for build sessions")
+	nodeModelCmd.Flags().StringVar(&nodeModelEvaluateFlag, "evaluate", "", "model for evaluator sessions")
+	nodeModelCmd.Flags().StringVar(&nodeModelPlanFlag, "plan", "", "model for planner sessions")
+	nodeModelCmd.Flags().StringVar(&nodeModelChannelFlag, "channel", "", "model for the channel-mode session")
+	nodeCmd.AddCommand(nodeLoginCmd, nodeRegisterCmd, nodeStartCmd, nodeStatusCmd, nodeLogoutCmd, nodeModelCmd)
+}
+
+// nodeModelCmd reads or writes the models in ~/.mesh/node.yaml, so a
+// node can be moved off a model without editing YAML or passing flags.
+// Restart the node (or its service) for a change to take.
+var nodeModelCmd = &cobra.Command{
+	Use:   "model",
+	Short: "Show or set the model each kind of session runs on",
+	Long: `With no flags, prints the models this node uses. A flag sets one and
+saves it: an alias the CLI knows (opus, sonnet, haiku) or a full id
+(claude-opus-5). "" clears it back to the CLI's default.
+
+  mesh node model                                  # show
+  mesh node model --default opus                   # everything on Opus
+  mesh node model --plan sonnet --evaluate sonnet  # cheaper planning and review
+
+A flag on ` + "`mesh node start`" + ` wins over these for that run.`,
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		cfg, err := node.LoadConfig()
+		if err != nil {
+			return err
+		}
+		changed := false
+		for _, o := range []struct {
+			flag string
+			val  string
+			set  *string
+		}{
+			{"default", nodeModelFlag, &cfg.Models.Default},
+			{"build", nodeModelBuildFlag, &cfg.Models.Build},
+			{"evaluate", nodeModelEvaluateFlag, &cfg.Models.Evaluate},
+			{"plan", nodeModelPlanFlag, &cfg.Models.Plan},
+			{"channel", nodeModelChannelFlag, &cfg.Models.Channel},
+		} {
+			if cmd.Flags().Changed(o.flag) {
+				*o.set = strings.TrimSpace(o.val)
+				changed = true
+			}
+		}
+		if changed {
+			if err := cfg.Save(); err != nil {
+				return err
+			}
+		}
+		shown := func(v string) string {
+			if v == "" {
+				return "(the CLI's default)"
+			}
+			return v
+		}
+		fmt.Printf("default   %s\n", shown(cfg.Models.Default))
+		for _, k := range []struct{ name, val string }{
+			{"build", cfg.Models.Build}, {"evaluate", cfg.Models.Evaluate},
+			{"plan", cfg.Models.Plan}, {"channel", cfg.Models.Channel},
+		} {
+			if k.val != "" {
+				fmt.Printf("%-9s %s\n", k.name, k.val)
+			} else {
+				fmt.Printf("%-9s %s\n", k.name, shown(cfg.Models.Default))
+			}
+		}
+		if changed {
+			fmt.Println("\nsaved; restart the node for it to take (systemctl --user restart io.projectmesh.mesh-node.service)")
+		}
+		return nil
+	},
 }

@@ -35,6 +35,42 @@ type Config struct {
 	Slug      string   `yaml:"slug"`
 	Name      string   `yaml:"name"`
 	Capacity  int      `yaml:"capacity"`
+	// Models is the model each kind of session runs on — "" for the
+	// CLI's default. A flag on `node start` wins over the file; the
+	// platform's agent definitions will win over both once they land
+	// (the runsheet goal `agents-on-the-platform`), and these become
+	// the fallback for a node that cannot reach them.
+	Models Models `yaml:"models,omitempty"`
+}
+
+// Models names a model per kind of session: Default when a kind has
+// none. Values are what the CLI takes — an alias ("opus", "sonnet",
+// "haiku") or a full id ("claude-opus-5").
+type Models struct {
+	Default  string `yaml:"default,omitempty"`
+	Build    string `yaml:"build,omitempty"`
+	Evaluate string `yaml:"evaluate,omitempty"`
+	Plan     string `yaml:"plan,omitempty"`
+	Channel  string `yaml:"channel,omitempty"`
+}
+
+// For is the model of one kind of session, falling back to Default.
+func (m Models) For(kind string) string {
+	var v string
+	switch kind {
+	case "build":
+		v = m.Build
+	case "evaluate":
+		v = m.Evaluate
+	case "plan":
+		v = m.Plan
+	case "channel":
+		v = m.Channel
+	}
+	if v == "" {
+		v = m.Default
+	}
+	return v
 }
 
 // Scope is one org the node serves, with the node's id there.

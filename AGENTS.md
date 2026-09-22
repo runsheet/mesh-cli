@@ -31,6 +31,14 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   the project's context on disk under `.mesh/context/` with `INDEX.md`.
 - Costs: each session's `total_cost_usd` is reported to the platform per
   item (`ReportWorkItemProgress`, `EvaluateWorkItem`, `PlanGoal`).
+- **Models are per kind of session.** `Models` in `~/.mesh/node.yaml`
+  (`default`, `build`, `evaluate`, `plan`, `channel`) or the matching
+  `--model*` flags on `node start`; `mesh node model` shows and sets
+  them. A kind with none takes `default`; no default leaves the CLI's
+  own. The value is an alias the CLI knows (`opus`, `sonnet`, `haiku`)
+  or a full id (`claude-opus-5`). The platform's agent definitions will
+  carry the model once they land (runsheet's `agents-on-the-platform`);
+  these stay as the fallback.
 
 ## Rules
 
