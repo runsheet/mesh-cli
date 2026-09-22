@@ -632,9 +632,9 @@ type Document struct {
 	Title   string `json:"title"`
 	Summary string `json:"summary,omitempty"` // one line from the frontmatter: what the index row says
 	Kind    string `json:"kind"`
-	Status string `json:"status"`
-	Repo   string `json:"repo"`
-	Path   string `json:"path"`
+	Status  string `json:"status"`
+	Repo    string `json:"repo"`
+	Path    string `json:"path"`
 }
 
 func (c *Client) prologueGet(ctx context.Context, path, accept string) ([]byte, error) {
