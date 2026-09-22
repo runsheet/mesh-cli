@@ -36,14 +36,22 @@ type Loop struct {
 	// its graph and returns when the plan is handed in — or not, in
 	// which case the next tick offers it again. Optional.
 	Plan func(ctx context.Context, goal gateway.Goal, scope Scope)
+	// Research decides what a project with a director does next and
+	// proposes its goals (runsheet trd §6c). The claim is taken here,
+	// before it runs; the platform refuses it outside the project's
+	// hours, inside its gap, or when another node holds it, so a refusal
+	// is the ordinary answer. Optional; it does not count against
+	// capacity — it competes for the machine, not for the work.
+	Research func(ctx context.Context, project gateway.Project, scope Scope)
 	// AfterTick runs at the end of every tick (optional).
 	AfterTick func(ctx context.Context)
 
-	mu         sync.Mutex
-	running    map[string]bool
-	evaluating map[string]bool
-	planning   map[string]bool
-	wg         sync.WaitGroup
+	mu          sync.Mutex
+	running     map[string]bool
+	evaluating  map[string]bool
+	planning    map[string]bool
+	researching map[string]bool
+	wg          sync.WaitGroup
 }
 
 func (l *Loop) logf(format string, args ...any) {
@@ -106,6 +114,7 @@ func (l *Loop) Tick(ctx context.Context) {
 	}
 	l.evaluateHeld(ctx)
 	l.planRequested(ctx)
+	l.researchDue(ctx)
 	free := l.Cfg.Capacity - l.Running()
 	for _, sc := range l.Scopes {
 		if free <= 0 {
@@ -238,6 +247,70 @@ func (l *Loop) planRequested(ctx context.Context) {
 				}()
 				l.Plan(ctx, g, sc)
 			}(g, sc)
+		}
+	}
+}
+
+// researchDue offers every directed project of the served orgs to the
+// platform: claiming is asking, and being refused is being told to wait
+// — the hours, the gap and another node's claim are all the platform's
+// to judge (runsheet trd §6c), so a refusal is logged at most once a
+// project and never as an error.
+func (l *Loop) researchDue(ctx context.Context) {
+	if l.Research == nil {
+		return
+	}
+	for _, sc := range l.Scopes {
+		projects, err := l.GW.Projects(ctx, sc.ID)
+		if err != nil {
+			l.logf("list projects of %s: %v", sc.Login, err)
+			continue
+		}
+		// the org's goals once, to see which projects have room: a
+		// session on a project at its ceiling would have every proposal
+		// dropped, and an unattended night should not pay for that
+		goals, err := l.GW.Goals(ctx, sc.ID)
+		if err != nil {
+			l.logf("list goals of %s: %v", sc.Login, err)
+			continue
+		}
+		for _, p := range projects {
+			if !p.DirectorEnabled {
+				continue
+			}
+			if RoomFor(p, goals) <= 0 {
+				continue
+			}
+			l.mu.Lock()
+			if l.researching == nil {
+				l.researching = map[string]bool{}
+			}
+			if l.researching[p.ID] {
+				l.mu.Unlock()
+				continue
+			}
+			l.researching[p.ID] = true
+			l.mu.Unlock()
+			if err := l.GW.ClaimResearch(ctx, p.ID, sc.NodeID); err != nil {
+				l.mu.Lock()
+				delete(l.researching, p.ID)
+				l.mu.Unlock()
+				if !gateway.IsRefusal(err) {
+					l.logf("%s: claim the research of %q: %v", sc.Login, p.Slug, err)
+				}
+				continue
+			}
+			l.logf("%s: researching project %q", sc.Login, p.Slug)
+			l.wg.Add(1)
+			go func(p gateway.Project, sc Scope) {
+				defer l.wg.Done()
+				defer func() {
+					l.mu.Lock()
+					delete(l.researching, p.ID)
+					l.mu.Unlock()
+				}()
+				l.Research(ctx, p, sc)
+			}(p, sc)
 		}
 	}
 }

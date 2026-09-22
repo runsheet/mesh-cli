@@ -52,6 +52,7 @@ type Models struct {
 	Evaluate string `yaml:"evaluate,omitempty"`
 	Plan     string `yaml:"plan,omitempty"`
 	Channel  string `yaml:"channel,omitempty"`
+	Research string `yaml:"research,omitempty"`
 }
 
 // For is the model of one kind of session, falling back to Default.
@@ -66,6 +67,8 @@ func (m Models) For(kind string) string {
 		v = m.Plan
 	case "channel":
 		v = m.Channel
+	case "research":
+		v = m.Research
 	}
 	if v == "" {
 		v = m.Default

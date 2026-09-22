@@ -1,0 +1,218 @@
+package node
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"projectmesh.io/mesh-cli/internal/gateway"
+	"projectmesh.io/mesh-cli/internal/harness"
+)
+
+// Director is the session that decides what a project does next
+// (runsheet trd §6c): the project's repos checked out read-only, its
+// Prologue context, the direction a person gave it and the goals it has
+// already had; a fresh `claude -p` that reads and then writes its
+// proposals as JSON; the proposals handed in with RecordResearch, the
+// session's cost with them.
+//
+// The hours, the gap and the ceiling are the platform's: this asks for
+// the claim on every tick and is told to wait, the way the loop asks
+// for work items. So a refusal here is the normal answer, not an error.
+type Director struct {
+	GW       Gateway
+	Harness  harness.Harness
+	WS       Workspacer
+	Cfg      *Config
+	WorkRoot string
+	// MCP are the MCP servers the session gets (Prologue).
+	MCP map[string]any
+	// MaxBudgetUSD caps the research session (5 by default).
+	MaxBudgetUSD float64
+	// Model is what a research session runs on ("" the CLI's default).
+	Model string
+	// Timeout caps its wall clock (0 none).
+	Timeout time.Duration
+	Log     *log.Logger
+}
+
+func (d *Director) logf(format string, args ...any) {
+	if d.Log != nil {
+		d.Log.Printf(format, args...)
+	}
+}
+
+// ResearchDir is where a project's director works:
+// <root>/<project-slug>/research.
+func ResearchDir(root, projectSlug string) string {
+	return filepath.Join(root, projectSlug, "research")
+}
+
+// Research runs one research session on a project whose claim this node
+// holds, and hands in what it came to. An error means nothing was
+// handed in — the claim goes stale and another tick, or another node,
+// tries again.
+func (d *Director) Research(ctx context.Context, project gateway.Project, scope Scope) error {
+	all, err := d.GW.Repos(ctx, scope.AccountID, scope.Login)
+	if err != nil {
+		return fmt.Errorf("repos: %w", err)
+	}
+	inProject := map[string]bool{}
+	for _, id := range project.RepoIDs {
+		inProject[id] = true
+	}
+	dir := ResearchDir(d.WorkRoot, project.Slug)
+	dirs := map[string]string{}
+	for _, r := range all {
+		if !inProject[r.ID] {
+			continue
+		}
+		sub := filepath.Join("repos", r.Name)
+		if err := d.WS.Fetch(ctx, r.FullName(), filepath.Join(dir, sub)); err != nil {
+			return fmt.Errorf("fetch %s: %w", r.FullName(), err)
+		}
+		dirs[r.FullName()] = sub
+	}
+	if len(dirs) == 0 {
+		return fmt.Errorf("project %s has no repos enrolled; nothing to research", project.Slug)
+	}
+	cx, err := FetchContext(ctx, d.GW, scope.Login, project.Slug)
+	if err != nil {
+		d.logf("project %s: context unavailable: %v", project.Slug, err)
+		cx = &Context{}
+	}
+	files, err := WriteContext(dir, cx)
+	if err != nil {
+		return fmt.Errorf("write context: %w", err)
+	}
+	contextDir := ""
+	if len(files) > 0 || len(cx.Index) > 0 {
+		contextDir = ContextDir
+	}
+	// what the project has already taken on, and the room left: the
+	// platform decides the room for real when the proposals land, but a
+	// session told there is room for one proposes its best one rather
+	// than five that are thrown away
+	goals, err := d.GW.Goals(ctx, scope.ID)
+	if err != nil {
+		d.logf("project %s: goals so far unavailable: %v", project.Slug, err)
+	}
+	var existing []harness.ExistingGoal
+	for _, g := range goals {
+		if g.ProjectID != project.ID {
+			continue
+		}
+		existing = append(existing, harness.ExistingGoal{
+			Slug: g.Slug, Title: g.Title, Status: g.Status, Note: truncate(g.PausedReason, 200),
+		})
+	}
+	room := RoomFor(project, goals)
+	prompt := harness.ResearchPrompt(harness.ResearchInput{
+		Org: scope.Login, Project: project.Slug, Direction: project.Direction,
+		Repos: dirs, ContextDir: contextDir, ContextFiles: files, Prologue: len(d.MCP) > 0,
+		Goals: existing, Room: room,
+	})
+	budget := d.MaxBudgetUSD
+	if budget <= 0 {
+		budget = 5
+	}
+	job := harness.Job{
+		Kind: harness.KindResearch, Workspace: dir, Prompt: prompt, MaxBudgetUSD: budget,
+		Label: project.Slug + " research", Timeout: d.Timeout, MCPServers: d.MCP, Model: d.Model,
+	}
+	d.logf("project %s: researching in %s (%d repos, room for %d)", project.Slug, dir, len(dirs), room)
+	result, err := d.Harness.Run(ctx, job, nil)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("research session ran out of time (%s)", d.Timeout)
+	}
+	if err != nil {
+		return fmt.Errorf("research session: %w", err)
+	}
+	specs, err := harness.ParseProposals(result.Text)
+	if err != nil {
+		// the cost is real and the claim must be let go, so hand in an
+		// empty session rather than leaving the project claimed: a node
+		// that cannot read its own director would otherwise hold it for
+		// 45 minutes and charge for the privilege
+		note := fmt.Sprintf("the session's proposals could not be read (%s): %s", result.SessionID, truncate(result.Text, 300))
+		if hand := d.GW.RecordResearch(ctx, project.ID, scope.NodeID, nil, Cents(result.CostUSD), note); hand != nil {
+			d.logf("project %s: %v (and handing in the empty session failed: %v)", project.Slug, err, hand)
+		}
+		return fmt.Errorf("research session (%s): %w", result.SessionID, err)
+	}
+	proposals := make([]gateway.GoalProposal, 0, len(specs))
+	for _, sp := range specs {
+		proposals = append(proposals, gateway.GoalProposal{
+			Slug: slugify(sp.Slug), Title: strings.TrimSpace(sp.Title),
+			Statement: strings.TrimSpace(sp.Statement), Acceptance: strings.TrimSpace(sp.Acceptance),
+			Why: strings.TrimSpace(sp.Why), BudgetCents: sp.BudgetCents,
+		})
+	}
+	notes := fmt.Sprintf("%d proposed", len(proposals))
+	if err := d.GW.RecordResearch(ctx, project.ID, scope.NodeID, proposals, Cents(result.CostUSD), notes); err != nil {
+		return fmt.Errorf("hand in the research: %w", err)
+	}
+	d.logf("project %s: proposed %d goal(s) ($%.2f)", project.Slug, len(proposals), result.CostUSD)
+	return nil
+}
+
+// RoomFor is how many more goals a project has space for, given the
+// org's goals: its ceiling less what is still live. The platform
+// decides this for real when the proposals land (runsheet trd §6c);
+// the node counts it too, so that it neither claims nor pays for a
+// session whose every proposal would be dropped.
+func RoomFor(project gateway.Project, goals []gateway.Goal) int {
+	ceiling := project.MaxLiveGoals
+	if ceiling <= 0 {
+		ceiling = DefaultMaxLiveGoals
+	}
+	for _, g := range goals {
+		if g.ProjectID == project.ID && isLiveGoal(g.Status) {
+			ceiling--
+		}
+	}
+	return max(ceiling, 0)
+}
+
+// DefaultMaxLiveGoals mirrors the platform's ceiling for a project that
+// named none — the node only uses it to tell the session how much room
+// it has; the platform decides for real.
+const DefaultMaxLiveGoals = 3
+
+// isLiveGoal is the platform's rule (runsheet trd §6c): a goal that is
+// not over takes up the project's room, a paused or blocked one
+// included — it is waiting for a person.
+func isLiveGoal(status string) bool {
+	switch status {
+	case "draft", "planning", "awaiting_approval", "running", "paused", "blocked":
+		return true
+	}
+	return false
+}
+
+// slugify makes a session's slug into the identity the platform keys
+// on: lowercase, hyphens, nothing else.
+func slugify(s string) string {
+	var b strings.Builder
+	last := '-'
+	for _, r := range strings.ToLower(strings.TrimSpace(s)) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+			last = r
+		default:
+			if last != '-' {
+				b.WriteRune('-')
+				last = '-'
+			}
+		}
+	}
+	return strings.Trim(b.String(), "-")
+}

@@ -16,23 +16,35 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
 
 ## How it is shaped
 
-- `internal/harness/prompt.go`: the three prompts — `BuildPrompt`,
-  `EvaluatePrompt`, `PlanPrompt`. Their contract lines are load-bearing:
-  the evaluator ends with `VERDICT: PASS|FAIL`, the planner ends with the
-  JSON graph in a fenced block, the builder never pushes. Change wording
+- `internal/harness/prompt.go`: the four prompts — `BuildPrompt`,
+  `EvaluatePrompt`, `PlanPrompt`, `ResearchPrompt`. Their contract lines
+  are load-bearing: the evaluator ends with `VERDICT: PASS|FAIL`, the
+  planner ends with the JSON graph in a fenced block, the director ends
+  with its proposals in one, the builder never pushes. Change wording
   freely; never the contract. (A later goal moves the guidance onto the
   platform as agent definitions.)
 - `internal/node/`: the loop (`runner`), the workspace and Prologue
   context (`workspace.go`: `FetchContext`, `RenderIndex`, the size budget),
-  evaluate and plan sessions, the service install (`launchd` / `systemd
-  --user`). `internal/gateway/client.go`: the platform client.
+  evaluate, plan and research sessions, the service install (`launchd` /
+  `systemd --user`). `internal/gateway/client.go`: the platform client.
   `internal/channel/`: channel mode (one session per org, turns).
+- **The director** (`internal/node/research.go`, runsheet trd §6c): a
+  project can carry a line of direction and the hours it may act on it.
+  On every tick the loop offers each directed project with room to
+  spare — `ClaimResearch`; the platform refuses it outside the hours,
+  inside the gap, or when another node holds it, so *a refusal is the
+  ordinary answer and is not logged as an error*. A session that wins
+  the claim reads the direction, the repos and the context and proposes
+  goals; `RecordResearch` hands them in with the cost, and the platform
+  decides how many become goals. A session whose output cannot be read
+  hands in an empty research anyway — otherwise the claim holds the
+  project for 45 minutes and the night is lost.
 - Every session gets Prologue as an MCP server with the node's token and
   the project's context on disk under `.mesh/context/` with `INDEX.md`.
 - Costs: each session's `total_cost_usd` is reported to the platform per
   item (`ReportWorkItemProgress`, `EvaluateWorkItem`, `PlanGoal`).
 - **Models are per kind of session.** `Models` in `~/.mesh/node.yaml`
-  (`default`, `build`, `evaluate`, `plan`, `channel`) or the matching
+  (`default`, `build`, `evaluate`, `plan`, `channel`, `research`) or the matching
   `--model*` flags on `node start`; `mesh node model` shows and sets
   them. A kind with none takes `default`; no default leaves the CLI's
   own. The value is an alias the CLI knows (`opus`, `sonnet`, `haiku`)

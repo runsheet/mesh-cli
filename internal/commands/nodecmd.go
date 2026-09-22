@@ -35,6 +35,7 @@ var (
 	nodeSessionTimeoutFlag time.Duration
 	nodeEvalBudgetFlag     float64
 	nodePlanBudgetFlag     float64
+	nodeResearchBudgetFlag float64
 	nodeMaxBudgetFlag      float64
 	nodeModeFlag           string
 	nodeUnattended         bool
@@ -44,6 +45,7 @@ var (
 	nodeModelEvaluateFlag  string
 	nodeModelPlanFlag      string
 	nodeModelChannelFlag   string
+	nodeModelResearchFlag  string
 	// nodeModels is what `node start` resolved for this run: the config
 	// file's models with the flags applied, read by every session.
 	nodeModels node.Models
@@ -288,6 +290,7 @@ func runPollMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *
 	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) { _ = runner.RunItem(ctx, item) }
 	loop.Evaluate = evaluateWith(gw, h, scopes, workRoot, logger)
 	loop.Plan = planWith(gw, cfg, h, workRoot, logger)
+	loop.Research = researchWith(gw, cfg, h, workRoot, logger)
 	logger.Printf("poll mode: node %s (%s) for %s, capacity %d, every %s", cfg.Name, cfg.Slug, strings.Join(scopes.Logins(), ", "), cfg.Capacity, loop.Interval)
 	// items this node held when it last stopped are taken up again: a
 	// restart mid-build continues them (the workspace keeps the branch)
@@ -380,6 +383,7 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 	ws := &node.Git{Log: os.Stderr}
 	loop.Evaluate = evaluateWith(gw, oneShotHarness(), scopes, workRoot, logger)
 	loop.Plan = planWith(gw, cfg, oneShotHarness(), workRoot, logger)
+	loop.Research = researchWith(gw, cfg, oneShotHarness(), workRoot, logger)
 	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) {
 		res, err := node.Resolve(ctx, gw, item)
 		if err != nil {
@@ -557,6 +561,19 @@ func planWith(gw *gateway.Client, cfg *node.Config, h harness.Harness, workRoot 
 	}
 }
 
+// researchWith is the loop's Research hook: a fresh director session
+// per project whose research this node has claimed (runsheet trd §6c).
+// A session that cannot be read hands in an empty research rather than
+// leaving the project claimed, so the next window is not lost.
+func researchWith(gw *gateway.Client, cfg *node.Config, h harness.Harness, workRoot string, logger *log.Logger) func(context.Context, gateway.Project, node.Scope) {
+	dir := &node.Director{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, WorkRoot: workRoot, MCP: node.PrologueMCP(gw.BaseURL, gw.Token), MaxBudgetUSD: nodeResearchBudgetFlag, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("research"), Log: logger}
+	return func(ctx context.Context, project gateway.Project, scope node.Scope) {
+		if err := dir.Research(ctx, project, scope); err != nil && ctx.Err() == nil {
+			logger.Printf("project %s: research: %v", project.Slug, err)
+		}
+	}
+}
+
 // recentProgress reports whether an item's last heartbeat is within the
 // interval — someone is working it.
 func recentProgress(heartbeatAt string, interval time.Duration) bool {
@@ -602,11 +619,13 @@ func init() {
 	nodeStartCmd.Flags().Float64Var(&nodeMaxBudgetFlag, "max-budget-usd", 10, "cap on one session's budget (poll mode), whatever the goal has left")
 	nodeStartCmd.Flags().Float64Var(&nodeEvalBudgetFlag, "eval-budget-usd", 3, "cap on one evaluator session's budget")
 	nodeStartCmd.Flags().Float64Var(&nodePlanBudgetFlag, "plan-budget-usd", 5, "cap on one planner session's budget")
+	nodeStartCmd.Flags().Float64Var(&nodeResearchBudgetFlag, "research-budget-usd", 5, "cap on one director (research) session's budget")
 	nodeStartCmd.Flags().StringVar(&nodeModelFlag, "model", "", "model every session runs on when its kind names none (an alias the CLI knows — opus, sonnet, haiku — or a full id); empty is the CLI's default")
 	nodeStartCmd.Flags().StringVar(&nodeModelBuildFlag, "model-build", "", "model for build sessions (overrides --model)")
 	nodeStartCmd.Flags().StringVar(&nodeModelEvaluateFlag, "model-evaluate", "", "model for evaluator sessions (overrides --model)")
 	nodeStartCmd.Flags().StringVar(&nodeModelPlanFlag, "model-plan", "", "model for planner sessions (overrides --model)")
 	nodeStartCmd.Flags().StringVar(&nodeModelChannelFlag, "model-channel", "", "model for the channel-mode session (overrides --model)")
+	nodeStartCmd.Flags().StringVar(&nodeModelResearchFlag, "model-research", "", "model for director (research) sessions (overrides --model)")
 	nodeStartCmd.Flags().StringVar(&nodeModeFlag, "mode", "channel", "channel (one persistent session fed by the mesh channel) or poll (claude -p per item)")
 	nodeStartCmd.Flags().BoolVar(&nodeUnattended, "unattended", false, "run sessions with --dangerously-skip-permissions (trusted machines only)")
 	nodeStartCmd.Flags().BoolVar(&nodeOnceFlag, "once", false, "poll mode: one tick, then exit")
@@ -615,6 +634,7 @@ func init() {
 	nodeModelCmd.Flags().StringVar(&nodeModelEvaluateFlag, "evaluate", "", "model for evaluator sessions")
 	nodeModelCmd.Flags().StringVar(&nodeModelPlanFlag, "plan", "", "model for planner sessions")
 	nodeModelCmd.Flags().StringVar(&nodeModelChannelFlag, "channel", "", "model for the channel-mode session")
+	nodeModelCmd.Flags().StringVar(&nodeModelResearchFlag, "research", "", "model for director (research) sessions")
 	nodeCmd.AddCommand(nodeLoginCmd, nodeRegisterCmd, nodeStartCmd, nodeStatusCmd, nodeLogoutCmd, nodeModelCmd)
 }
 
@@ -649,6 +669,7 @@ A flag on ` + "`mesh node start`" + ` wins over these for that run.`,
 			{"build", nodeModelBuildFlag, &cfg.Models.Build},
 			{"evaluate", nodeModelEvaluateFlag, &cfg.Models.Evaluate},
 			{"plan", nodeModelPlanFlag, &cfg.Models.Plan},
+			{"research", nodeModelResearchFlag, &cfg.Models.Research},
 			{"channel", nodeModelChannelFlag, &cfg.Models.Channel},
 		} {
 			if cmd.Flags().Changed(o.flag) {
@@ -671,6 +692,7 @@ A flag on ` + "`mesh node start`" + ` wins over these for that run.`,
 		for _, k := range []struct{ name, val string }{
 			{"build", cfg.Models.Build}, {"evaluate", cfg.Models.Evaluate},
 			{"plan", cfg.Models.Plan}, {"channel", cfg.Models.Channel},
+			{"research", cfg.Models.Research},
 		} {
 			if k.val != "" {
 				fmt.Printf("%-9s %s\n", k.name, k.val)
