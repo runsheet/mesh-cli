@@ -15,6 +15,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/auth"
 	"projectmesh.io/mesh-cli/internal/latchkey"
 	"projectmesh.io/mesh-cli/internal/latchkey/latchkeytest"
+	"projectmesh.io/mesh-cli/internal/node"
 )
 
 const (
@@ -152,6 +153,27 @@ func TestNodeLoginRunsTheDeviceFlow(t *testing.T) {
 	bearers := gw.bearers()
 	if len(bearers) == 0 || bearers[0] != sess.AccessToken {
 		t.Fatalf("the gateway saw %v, want the machine's access token", bearers)
+	}
+
+	// The issuer and client are remembered although this machine is not
+	// registered yet — registering is itself done on the credential, so
+	// a login before one must not be the login that needs --client-id.
+	settings, err := node.LoadSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.Latchkey != lk.URL() || settings.LatchkeyClient != testClientID {
+		t.Errorf("node.yaml did not remember the flow: %+v", settings)
+	}
+	registered := *settings // as `mesh node register` writes it, carrying them over
+	registered.Slug, registered.Name, registered.Capacity = "mini", "mini", 1
+	if err := registered.Save(); err != nil {
+		t.Fatal(err)
+	}
+	set(t, &latchkeyClientFlag, "")
+	t.Setenv("MESH_LATCHKEY_CLIENT_ID", "")
+	if got := latchkeyClientID(); got != testClientID {
+		t.Errorf("a second login needs no --client-id: got %q", got)
 	}
 }
 

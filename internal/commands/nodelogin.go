@@ -35,7 +35,7 @@ func latchkeyIssuer() string {
 	if v := strings.TrimSpace(os.Getenv("MESH_LATCHKEY")); v != "" {
 		return v
 	}
-	if cfg, err := node.LoadConfig(); err == nil && cfg.Latchkey != "" {
+	if cfg, err := node.LoadSettings(); err == nil && cfg.Latchkey != "" {
 		return cfg.Latchkey
 	}
 	return latchkey.DefaultIssuer
@@ -52,7 +52,7 @@ func latchkeyClientID() string {
 	if v := strings.TrimSpace(os.Getenv("MESH_LATCHKEY_CLIENT_ID")); v != "" {
 		return v
 	}
-	if cfg, err := node.LoadConfig(); err == nil {
+	if cfg, err := node.LoadSettings(); err == nil {
 		return strings.TrimSpace(cfg.LatchkeyClient)
 	}
 	return ""
@@ -64,7 +64,7 @@ func machineName() string {
 	if v := strings.TrimSpace(machineNameFlag); v != "" {
 		return v
 	}
-	if cfg, err := node.LoadConfig(); err == nil && cfg.Name != "" {
+	if cfg, err := node.LoadSettings(); err == nil && cfg.Name != "" {
 		return cfg.Name
 	}
 	host, err := os.Hostname()
@@ -142,19 +142,11 @@ func describeMachine(claims *latchkey.Claims) {
 	}
 }
 
-// rememberLatchkey keeps the issuer and client on a registered node, so
-// a later `mesh node login` needs no flags. A machine that is not
-// registered yet gets them at `mesh node register` time instead.
+// rememberLatchkey keeps the issuer and client in node.yaml, so a later
+// `mesh node login` needs no flags — before the machine is registered
+// too, since the credential is what `mesh node register` itself runs on.
 func rememberLatchkey(issuer, clientID string) {
-	cfg, err := node.LoadConfig()
-	if err != nil {
-		return
-	}
-	if cfg.Latchkey == issuer && cfg.LatchkeyClient == clientID {
-		return
-	}
-	cfg.Latchkey, cfg.LatchkeyClient = issuer, clientID
-	if err := cfg.Save(); err != nil {
+	if err := node.SaveLatchkey(issuer, clientID); err != nil {
 		fmt.Printf("warning: could not record the Latchkey client in node.yaml: %v\n", err)
 	}
 }

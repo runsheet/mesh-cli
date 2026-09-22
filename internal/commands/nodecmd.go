@@ -159,6 +159,10 @@ var nodeRegisterCmd = &cobra.Command{
 			nodeCapacityFlag = 1
 		}
 		cfg := &node.Config{Gateway: gw.BaseURL, Orgs: nodeOrgsFlag, OwnerID: me, Slug: slug, Name: strings.TrimSpace(nodeNameFlag), Capacity: nodeCapacityFlag}
+		// registering again must not drop what `mesh node login` recorded
+		if prev, err := node.LoadSettings(); err == nil {
+			cfg.Latchkey, cfg.LatchkeyClient = prev.Latchkey, prev.LatchkeyClient
+		}
 		scopes, err := node.ResolveScopes(ctx, gw, cfg)
 		if err != nil {
 			return err

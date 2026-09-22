@@ -199,6 +199,11 @@ func LoadConfig() (*Config, error) {
 		c.Capacity = 1
 	}
 	if c.Slug == "" {
+		if c.Name == "" && c.NodeID == "" && c.OrgLogin == "" && len(c.Orgs) == 0 {
+			// only the settings a `mesh node login` wrote, before the
+			// machine was ever registered
+			return nil, errors.New("this machine is not registered: run `mesh node register --name <name>`")
+		}
 		return nil, fmt.Errorf("%s is incomplete: re-run `mesh node register`", path)
 	}
 	if len(c.Orgs) == 0 && c.OrgLogin != "" {
@@ -208,6 +213,45 @@ func LoadConfig() (*Config, error) {
 }
 
 // Save writes ~/.mesh/node.yaml.
+// LoadSettings reads ~/.mesh/node.yaml as it stands, without insisting
+// on a registration: the Latchkey issuer and client `mesh node login`
+// records live in the same file and are wanted before `mesh node
+// register` has run. A missing file is an empty config.
+func LoadSettings() (*Config, error) {
+	path, err := ConfigPath()
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return &Config{}, nil
+		}
+		return nil, err
+	}
+	var c Config
+	if err := yaml.Unmarshal(data, &c); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+	return &c, nil
+}
+
+// SaveLatchkey records the issuer and the public client the device flow
+// starts from, keeping whatever registration node.yaml already holds —
+// and writing the file when there is none yet, so the first `mesh node
+// login` on a machine is the last that needs --client-id.
+func SaveLatchkey(issuer, clientID string) error {
+	c, err := LoadSettings()
+	if err != nil {
+		return err
+	}
+	if c.Latchkey == issuer && c.LatchkeyClient == clientID {
+		return nil
+	}
+	c.Latchkey, c.LatchkeyClient = issuer, clientID
+	return c.Save()
+}
+
 func (c *Config) Save() error {
 	path, err := ConfigPath()
 	if err != nil {
