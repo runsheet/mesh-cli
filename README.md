@@ -3,8 +3,9 @@
 The operator tool for Mesh: this machine becomes a **node** of the runsheet
 platform (`mesh-specs/specs/adr-002-control-plane-on-runsheet`), and goals
 are set and watched from the same token. The node speaks to the platform's
-gateway (`https://api.runsheet.dev/graphql`) as the person whose console
-token it holds — no gRPC, no relay, no per-node secret.
+gateway (`https://api.runsheet.dev/graphql`) as the machine credential
+Latchkey issued it — or, until the estate has moved over, as the person
+whose console token it holds. No gRPC, no relay, no shared secret.
 
 ## Installation
 
@@ -16,19 +17,59 @@ GO111MODULE=on go build -o mesh ./cmd/mesh/
 
 ## Node
 
-### Token
+### Credential
 
-Mint a console token under **Settings → Tokens** on the runsheet console
-and save it (stored in `~/.mesh/token`, mode 0600; `MESH_TOKEN` overrides
-it for one process):
+The node holds one credential in `~/.mesh/token` (mode 0600; `MESH_TOKEN`
+overrides it for one process). Two kinds work, and the CLI tells them
+apart by what is in the file:
+
+**A Latchkey machine credential (preferred).** `mesh node login` with no
+argument runs Latchkey's device flow (RFC 8628): it prints a code, opens
+the browser, and waits while you sign in and approve. Latchkey registers
+a **machine** for this computer — its own principal, bound to one org,
+with you as its **operator** — and the CLI stores the machine's tokens as
+JSON:
+
+```bash
+mesh node login --client-id <the org's mesh-cli client>
+# Open https://auth.latchkey.id/oauth/device and enter the code:
+#
+#     WXYZ-1234
+#
+# Machine "mini" (3f1c9a2e-…) registered in runsheet for operator 9b2e6d41-…
+```
+
+The public client the flow starts from is registered per estate (a
+`mesh-cli` client tagged to the org, device-enabled). Give it with
+`--client-id` or `MESH_LATCHKEY_CLIENT_ID`; the login writes it (and the
+issuer, `--latchkey` / `MESH_LATCHKEY`, default
+`https://auth.latchkey.id`) into `~/.mesh/node.yaml` — before the
+machine is registered too, since registering is itself done on the
+credential — and `mesh node register` keeps them, so later logins need
+no flags.
+
+Its access token lasts an hour and is refreshed from the stored refresh
+token a minute before it expires — by `mesh node start` and by the goal
+commands alike, under a lock on `~/.mesh/token` so two mesh processes
+never burn one refresh token (Latchkey rotates it on every use). Each
+`claude` session is started with the bearer taken at that moment, so a
+session never begins on a token about to die. Revoke the machine in the
+Latchkey console (Machines) or `mesh node logout` to drop it here; either
+way your own sign-in is untouched.
+
+**An `rs_*` console token (the fallback).** Mint one under **Settings →
+Tokens** on the runsheet console and save it:
 
 ```bash
 mesh auth token rs_…        # or: mesh node login rs_…
 ```
 
 The token's scope is the node's scope: whatever orgs the person reaches,
-the node reaches. A node that should not see an org is a token that should
-not have been minted.
+the node reaches — revoking it revokes the person's own bearer, which is
+why the machine credential exists. It keeps working while the estate
+moves over (latchkey `adr-machine-identity`, rollout phases 1–3); the
+gateway accepts a machine token only once its own phase has landed, and
+`mesh node login` says so when it does not.
 
 ### Models
 
@@ -78,7 +119,10 @@ mesh node register --org acme --name "Chris's laptop" [--slug chris-mbp] [--capa
 Signs in, finds the org among yours, derives the node id from
 `(org, slug)` — registering twice converges on the same node — and writes
 `~/.mesh/node.yaml` (org login and id, slug, node id, capacity).
-`mesh node status` heartbeats once and lists the org's nodes.
+`mesh node status` heartbeats once and lists the org's nodes, above a
+line naming the credential this machine runs on — the machine, its org
+and operator, and when its access token is next refreshed, or the rs_*
+console token it is still on.
 
 ### Start
 
@@ -271,7 +315,7 @@ Multi-platform binaries are published via GitHub Releases triggered by tags matc
 ## Known Limitations
 
 - Live browser-login and work-item testing still depends on the deployed `mesh-portal` and `mesh-api` carrying the matching session-auth changes.
-- Device-flow fallback is not implemented yet.
+- `mesh node login`'s device flow needs the org's public `mesh-cli` client id; there is no built-in default, and the runsheet gateway accepts machine tokens only from its own rollout phase on.
 
 ## Contribution
 

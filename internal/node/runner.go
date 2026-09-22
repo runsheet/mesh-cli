@@ -64,6 +64,11 @@ type Runner struct {
 	WorkRoot string
 	// MCP are the MCP servers every session gets (Prologue).
 	MCP map[string]any
+	// MCPFunc, when set, is asked for them at every item instead: the
+	// node's machine access token expires within the hour, so a build
+	// started long after the node did must carry a bearer taken now
+	// (channel.Session.MCPFunc is the same seam).
+	MCPFunc func(context.Context) map[string]any
 	// MaxBudgetUSD caps a session's budget whatever the goal has left.
 	MaxBudgetUSD float64
 	// Model is what a build session runs on ("" the CLI's default).
@@ -71,6 +76,15 @@ type Runner struct {
 	// ProgressEvery is how often progress is reported (60 s).
 	ProgressEvery time.Duration
 	Log           *log.Logger
+}
+
+// mcp is the session's MCP servers, asked for afresh per item when
+// MCPFunc is set.
+func (r *Runner) mcp(ctx context.Context) map[string]any {
+	if r.MCPFunc != nil {
+		return r.MCPFunc(ctx)
+	}
+	return r.MCP
 }
 
 func (r *Runner) logf(format string, args ...any) {
@@ -157,13 +171,14 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		contextDir = ContextDir
 	}
 
+	mcp := r.mcp(ctx)
 	prompt := harness.BuildPrompt(harness.PromptInput{
 		GoalSlug: res.Goal.Slug, GoalTitle: res.Goal.Title, GoalStatement: res.Goal.Statement, GoalAcceptance: res.Goal.Acceptance,
 		Seq: item.Seq, Title: item.Title, Brief: item.Brief, Acceptance: item.Acceptance,
 		Repo: res.Repo.FullName(), Branch: spec.Branch, BaseRef: spec.BaseRef, ContextDir: contextDir, ContextFiles: files,
-		Attempts: item.Attempts, Evaluation: item.Evaluation, Project: orgLogin + "/" + res.Project.Slug, Prologue: len(r.MCP) > 0,
+		Attempts: item.Attempts, Evaluation: item.Evaluation, Project: orgLogin + "/" + res.Project.Slug, Prologue: len(mcp) > 0,
 	})
-	job := harness.Job{Kind: harness.KindBuild, Workspace: dir, Prompt: prompt, MaxBudgetUSD: r.Budget(res.Goal), Label: label, MCPServers: r.MCP, Model: r.Model}
+	job := harness.Job{Kind: harness.KindBuild, Workspace: dir, Prompt: prompt, MaxBudgetUSD: r.Budget(res.Goal), Label: label, MCPServers: mcp, Model: r.Model}
 
 	cost := &costReporter{}
 	var mu sync.Mutex

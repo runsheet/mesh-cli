@@ -1,6 +1,7 @@
 // Package gateway is the node's transport: the runsheet platform's GraphQL
-// gateway, spoken as the person whose console token the node holds
-// (mesh-specs adr-002). Every write is one aggregate command
+// gateway, spoken as the principal the node's credential names — its
+// Latchkey machine, acting for the operator, or the person whose console
+// token it holds (mesh-specs adr-002). Every write is one aggregate command
 // (`mutation($in: XInput!) { x(input: $in) { status } }`); every read is
 // an index list scoped by an EQ `where` the person's policy accepts.
 package gateway
@@ -24,20 +25,51 @@ const DefaultURL = "https://api.runsheet.dev"
 // NS is the loom namespace every platform aggregate lives in.
 const NS = "runsheet"
 
-// Client speaks GraphQL (and Prologue's JSON) to one gateway with one token.
+// TokenSource yields the bearer for the next request: an rs_* console
+// token as it stands, or a Latchkey machine credential's access token,
+// refreshed before it expires (latchkey adr-machine-identity).
+type TokenSource interface {
+	Token(ctx context.Context) (string, error)
+}
+
+// StaticToken is a TokenSource for one fixed bearer.
+type StaticToken string
+
+// Token returns the bearer.
+func (t StaticToken) Token(context.Context) (string, error) { return string(t), nil }
+
+// Client speaks GraphQL (and Prologue's JSON) to one gateway as one
+// principal.
 type Client struct {
 	BaseURL string
-	Token   string
+	Source  TokenSource
 	HTTP    *http.Client
 }
 
-// New returns a client for baseURL (scheme+host, no trailing slash).
+// New returns a client for baseURL (scheme+host, no trailing slash) with
+// a fixed bearer.
 func New(baseURL, token string) *Client {
+	return NewWithSource(baseURL, StaticToken(strings.TrimSpace(token)))
+}
+
+// NewWithSource returns a client that asks src for its bearer on every
+// request.
+func NewWithSource(baseURL string, src TokenSource) *Client {
 	return &Client{
 		BaseURL: strings.TrimRight(strings.TrimSpace(baseURL), "/"),
-		Token:   strings.TrimSpace(token),
+		Source:  src,
 		HTTP:    &http.Client{Timeout: 60 * time.Second},
 	}
+}
+
+// Bearer is the token the next request would carry — for the Prologue
+// MCP server a session is started with, which takes a header, not a
+// source.
+func (c *Client) Bearer(ctx context.Context) (string, error) {
+	if c.Source == nil {
+		return "", errors.New("gateway: no token source")
+	}
+	return c.Source.Token(ctx)
 }
 
 // Error is a GraphQL error the gateway returned — an aggregate's refusal
@@ -67,7 +99,11 @@ func (c *Client) Query(ctx context.Context, query string, vars map[string]any, o
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.Token)
+	tok, err := c.Bearer(ctx)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return err
@@ -691,7 +727,11 @@ func (c *Client) prologueGet(ctx context.Context, path, accept string) ([]byte, 
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.Token)
+	tok, err := c.Bearer(ctx)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
 	req.Header.Set("Accept", accept)
 	resp, err := c.HTTP.Do(req)
 	if err != nil {

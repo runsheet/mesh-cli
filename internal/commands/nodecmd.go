@@ -20,6 +20,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/channel"
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/harness"
+	"projectmesh.io/mesh-cli/internal/latchkey"
 	"projectmesh.io/mesh-cli/internal/node"
 	"projectmesh.io/mesh-cli/internal/version"
 )
@@ -79,15 +80,34 @@ var nodeCmd = &cobra.Command{
 	Use:   "node",
 	Short: "Run this machine as a Mesh node on the runsheet platform",
 	Long: `A node runs work items of goals: it heartbeats, claims ready items for
-its org and runs each in a fresh claude session, as the person whose
-console token it holds (~/.mesh/token).`,
+its org and runs each in a fresh claude session, on the credential in
+~/.mesh/token — the Latchkey machine credential ` + "`mesh node login`" + ` registers
+for this computer, or the operator's rs_* console token.`,
 }
 
 var nodeLoginCmd = &cobra.Command{
-	Use:   "login <rs_token>",
-	Short: "Save a runsheet console token (Settings → Tokens) to ~/.mesh/token",
-	Args:  cobra.ExactArgs(1),
-	RunE:  func(cmd *cobra.Command, args []string) error { return saveToken(args[0]) },
+	Use:   "login [rs_token]",
+	Short: "Sign this machine in to Latchkey (the device flow) and save its machine credential to ~/.mesh/token",
+	Long: `With no argument this runs Latchkey's device flow: it prints a code,
+opens the browser, and waits while you sign in and approve. Latchkey
+registers a machine credential for this computer with you as its
+operator; the node then runs on the machine's own tokens, refreshed
+before they expire, and you can revoke it in the Latchkey console
+without touching your own.
+
+The public client the flow starts from is per estate: pass --client-id
+(or MESH_LATCHKEY_CLIENT_ID); a registered node remembers it in
+~/.mesh/node.yaml.
+
+With an rs_* argument it saves a runsheet console token instead — the
+fallback while the estate moves to machine credentials.`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if len(args) == 1 {
+			return saveToken(args[0])
+		}
+		return deviceLogin(cmd.Context())
+	},
 }
 
 func saveToken(tok string) error {
@@ -107,6 +127,7 @@ func saveToken(tok string) error {
 		logins = append(logins, o.Login)
 	}
 	fmt.Printf("Token saved to ~/.mesh/token. You are %s; orgs: %s\n", id, strings.Join(logins, ", "))
+	fmt.Println("`mesh node login` with no argument registers a Latchkey machine credential for this computer instead: its own principal, revocable without touching your token.")
 	return nil
 }
 
@@ -138,6 +159,10 @@ var nodeRegisterCmd = &cobra.Command{
 			nodeCapacityFlag = 1
 		}
 		cfg := &node.Config{Gateway: gw.BaseURL, Orgs: nodeOrgsFlag, OwnerID: me, Slug: slug, Name: strings.TrimSpace(nodeNameFlag), Capacity: nodeCapacityFlag}
+		// registering again must not drop what `mesh node login` recorded
+		if prev, err := node.LoadSettings(); err == nil {
+			cfg.Latchkey, cfg.LatchkeyClient = prev.Latchkey, prev.LatchkeyClient
+		}
 		scopes, err := node.ResolveScopes(ctx, gw, cfg)
 		if err != nil {
 			return err
@@ -174,16 +199,18 @@ var nodeStatusCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		gw, err := platformClient()
+		src, err := tokenSource()
 		if err != nil {
 			return err
 		}
+		gw := gateway.NewWithSource(gatewayURL(), src)
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		scopes, err := node.ResolveScopes(ctx, gw, cfg)
 		if err != nil {
 			return err
 		}
+		fmt.Println(credentialLine(src.Credential()))
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 		fmt.Fprintln(w, "ORG\tNAME\tSLUG\tSTATUS\tRUNNING\tCAPACITY\tVERSION\tLAST_SEEN")
 		for _, sc := range scopes {
@@ -213,7 +240,7 @@ var nodeLogoutCmd = &cobra.Command{
 		if err := auth.ClearToken(); err != nil {
 			return err
 		}
-		fmt.Println("Token removed. Revoke it on the console under Settings → Tokens.")
+		fmt.Println("Credential removed from this machine. Revoke it for good in the Latchkey console (Machines) — or, for an rs_ token, under Settings → Tokens on the runsheet console.")
 		return nil
 	},
 }
@@ -285,8 +312,7 @@ only use it on a machine you trust with that.`,
 
 func runPollMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *gateway.Client, loop *node.Loop, workRoot string, logger *log.Logger) error {
 	h := oneShotHarness()
-	mcp := node.PrologueMCP(gw.BaseURL, gw.Token)
-	runner := &node.Runner{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, MCP: mcp, MaxBudgetUSD: nodeMaxBudgetFlag, Model: nodeModels.For("build"), Log: logger}
+	runner := &node.Runner{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, MCPFunc: func(ctx context.Context) map[string]any { return prologueMCP(ctx, gw) }, MaxBudgetUSD: nodeMaxBudgetFlag, Model: nodeModels.For("build"), Log: logger}
 	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) { _ = runner.RunItem(ctx, item) }
 	loop.Evaluate = evaluateWith(gw, h, scopes, workRoot, logger)
 	loop.Plan = planWith(gw, cfg, h, workRoot, logger)
@@ -353,7 +379,7 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 	}
 	defer hub.Close()
 
-	sess := &channel.Session{Cfg: cfg, Orgs: scopes.Logins(), MCP: node.PrologueMCP(gw.BaseURL, gw.Token), WorkDir: filepath.Join(workRoot, cfg.Slug), Exe: exe, SockPath: sock, Unattended: nodeUnattended, Model: nodeModels.For("channel"), Stderr: os.Stderr, Log: logger,
+	sess := &channel.Session{Cfg: cfg, Orgs: scopes.Logins(), MCPFunc: func() map[string]any { return prologueMCP(ctx, gw) }, WorkDir: filepath.Join(workRoot, cfg.Slug), Exe: exe, SockPath: sock, Unattended: nodeUnattended, Model: nodeModels.For("channel"), Stderr: os.Stderr, Log: logger,
 		OnText: func(t string) { logger.Printf("session: %s", firstLine(t)) }}
 	var sessMu sync.Mutex
 	sessionID := ""
@@ -527,6 +553,18 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 	return err
 }
 
+// prologueMCP is the Prologue MCP server a session is started with: the
+// credential's bearer as a header, taken (and refreshed) at that moment,
+// so the session has a whole token lifetime ahead of it. Nil when there
+// is no usable bearer — the session then runs without Prologue.
+func prologueMCP(ctx context.Context, gw *gateway.Client) map[string]any {
+	tok, err := gw.Bearer(ctx)
+	if err != nil {
+		return nil
+	}
+	return node.PrologueMCP(gw.BaseURL, tok)
+}
+
 // oneShotHarness is `claude -p` for a session that ends with its turn:
 // poll-mode builds and every evaluation.
 func oneShotHarness() *harness.ClaudeCode {
@@ -538,11 +576,12 @@ func oneShotHarness() *harness.ClaudeCode {
 }
 
 // evaluateWith is the loop's Evaluate hook: a fresh evaluator session per
-// finished item, in either mode. A failure to reach a verdict is logged
+// finished item, in either mode — and a bearer taken afresh for each, so
+// a session never starts with a machine token about to expire. A failure to reach a verdict is logged
 // and the item is left in evaluating for the next tick.
 func evaluateWith(gw *gateway.Client, h harness.Harness, scopes node.Scopes, workRoot string, logger *log.Logger) func(context.Context, gateway.WorkItem) {
-	ev := &node.Evaluator{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Scopes: scopes, WorkRoot: workRoot, MCP: node.PrologueMCP(gw.BaseURL, gw.Token), MaxBudgetUSD: nodeEvalBudgetFlag, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("evaluate"), Log: logger}
 	return func(ctx context.Context, item gateway.WorkItem) {
+		ev := &node.Evaluator{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Scopes: scopes, WorkRoot: workRoot, MCP: prologueMCP(ctx, gw), MaxBudgetUSD: nodeEvalBudgetFlag, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("evaluate"), Log: logger}
 		if err := ev.Evaluate(ctx, item); err != nil && ctx.Err() == nil {
 			logger.Printf("item %d %q: evaluation: %v", item.Seq, item.Title, err)
 		}
@@ -550,11 +589,11 @@ func evaluateWith(gw *gateway.Client, h harness.Harness, scopes node.Scopes, wor
 }
 
 // planWith is the loop's Plan hook: a fresh planner session per goal in
-// planning, in either mode. A plan that cannot be handed in is logged
+// planning, in either mode, with a bearer taken afresh for each. A plan that cannot be handed in is logged
 // and the goal left in planning for the next tick (three tries).
 func planWith(gw *gateway.Client, cfg *node.Config, h harness.Harness, workRoot string, logger *log.Logger) func(context.Context, gateway.Goal, node.Scope) {
-	pl := &node.Planner{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, WorkRoot: workRoot, MCP: node.PrologueMCP(gw.BaseURL, gw.Token), MaxBudgetUSD: nodePlanBudgetFlag, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("plan"), Log: logger}
 	return func(ctx context.Context, goal gateway.Goal, scope node.Scope) {
+		pl := &node.Planner{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, WorkRoot: workRoot, MCP: prologueMCP(ctx, gw), MaxBudgetUSD: nodePlanBudgetFlag, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("plan"), Log: logger}
 		if err := pl.Plan(ctx, goal, scope); err != nil && ctx.Err() == nil {
 			logger.Printf("goal %s: planning: %v", goal.Slug, err)
 		}
@@ -566,8 +605,8 @@ func planWith(gw *gateway.Client, cfg *node.Config, h harness.Harness, workRoot 
 // A session that cannot be read hands in an empty research rather than
 // leaving the project claimed, so the next window is not lost.
 func researchWith(gw *gateway.Client, cfg *node.Config, h harness.Harness, workRoot string, logger *log.Logger) func(context.Context, gateway.Project, node.Scope) {
-	dir := &node.Director{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, WorkRoot: workRoot, MCP: node.PrologueMCP(gw.BaseURL, gw.Token), MaxBudgetUSD: nodeResearchBudgetFlag, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("research"), Log: logger}
 	return func(ctx context.Context, project gateway.Project, scope node.Scope) {
+		dir := &node.Director{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, WorkRoot: workRoot, MCP: prologueMCP(ctx, gw), MaxBudgetUSD: nodeResearchBudgetFlag, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("research"), Log: logger}
 		if err := dir.Research(ctx, project, scope); err != nil && ctx.Err() == nil {
 			logger.Printf("project %s: research: %v", project.Slug, err)
 		}
@@ -608,6 +647,10 @@ func init() {
 	for _, c := range []*cobra.Command{nodeLoginCmd, nodeRegisterCmd, nodeStatusCmd, nodeStartCmd} {
 		c.Flags().StringVar(&gatewayFlag, "gateway", "", "platform gateway URL (default "+gateway.DefaultURL+", or MESH_GATEWAY)")
 	}
+	nodeLoginCmd.Flags().StringVar(&latchkeyFlag, "latchkey", "", "Latchkey issuer (default "+latchkey.DefaultIssuer+", or MESH_LATCHKEY)")
+	nodeLoginCmd.Flags().StringVar(&latchkeyClientFlag, "client-id", "", "the public Latchkey client the device flow starts from (or MESH_LATCHKEY_CLIENT_ID)")
+	nodeLoginCmd.Flags().StringVar(&machineNameFlag, "name", "", "what to call this machine in the Latchkey console (default: the node's name, else the hostname)")
+	nodeLoginCmd.Flags().BoolVar(&noBrowserFlag, "no-browser", false, "print the sign-in URL instead of opening it")
 	nodeRegisterCmd.Flags().StringSliceVar(&nodeOrgsFlag, "org", nil, "serve only these orgs (repeatable; default: every org you belong to)")
 	nodeRegisterCmd.Flags().StringVar(&nodeNameFlag, "name", "", "the node's name as the console shows it")
 	nodeRegisterCmd.Flags().StringVar(&nodeSlugFlag, "slug", "", "the node's slug (default: from --name); the node id derives from it")

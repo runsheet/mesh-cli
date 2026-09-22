@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -360,5 +361,50 @@ func TestLoopServesEveryOrgOfItsOwner(t *testing.T) {
 	loop.wg.Wait()
 	if len(ran) != 2 || ran[1] != item3 || f.Item(item3)["nodeId"] != scopes[1].NodeID {
 		t.Fatalf("second tick ran %v; item3 node %v", ran, f.Item(item3)["nodeId"])
+	}
+}
+
+// A poll-mode build takes its Prologue bearer per item: the node's
+// machine access token expires within the hour, so the map captured when
+// the node started would hand a long-running node's later sessions a
+// dead token (latchkey adr-machine-identity, rollout phase 2).
+func TestRunnerAsksForItsMCPServersPerItem(t *testing.T) {
+	f := seed(t)
+	gw := gateway.New(f.URL(), "rs_test")
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: 1}
+	ws := &fakeWS{root: t.TempDir()}
+	h := &fakeHarness{}
+	calls := 0
+	runner := &Runner{GW: gw, Harness: h, WS: ws, Cfg: cfg, Scopes: scopesOf(cfg), WorkRoot: ws.root, ProgressEvery: time.Hour,
+		MCP: PrologueMCP(f.URL(), "stale"),
+		MCPFunc: func(context.Context) map[string]any {
+			calls++
+			return PrologueMCP(f.URL(), fmt.Sprintf("machine-token-%d", calls))
+		}}
+
+	f.WorkItems[item2]["status"] = "ready"
+	for seq, id := range []string{item1, item2} {
+		var item gateway.WorkItem
+		item.ID, item.GoalID, item.RepoID, item.Seq, item.Title = id, goalID, repoID, seq+1, "Write the failing test"
+		if err := gw.ClaimWorkItem(context.Background(), id, cfg.NodeID, "claude-code"); err != nil {
+			t.Fatal(err)
+		}
+		if err := runner.RunItem(context.Background(), item); err != nil {
+			t.Fatalf("item %d: %v", seq+1, err)
+		}
+	}
+	if calls != 2 || len(h.jobs) != 2 {
+		t.Fatalf("MCPFunc calls = %d, jobs = %d, want 2 and 2", calls, len(h.jobs))
+	}
+	for i, want := range []string{"Bearer machine-token-1", "Bearer machine-token-2"} {
+		srv, _ := h.jobs[i].MCPServers["prologue"].(map[string]any)
+		headers, _ := srv["headers"].(map[string]string)
+		if headers["Authorization"] != want {
+			t.Fatalf("job %d Authorization = %q, want %q (MCP must not be the map from node start)", i, headers["Authorization"], want)
+		}
+	}
+	// the prompt promises Prologue because MCPFunc gave a server
+	if !strings.Contains(h.jobs[0].Prompt, "prologue_document") {
+		t.Fatal("a session with Prologue must be told about it")
 	}
 }

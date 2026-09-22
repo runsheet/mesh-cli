@@ -31,6 +31,10 @@ type Session struct {
 	Orgs []string
 	// MCP are MCP servers the session gets beside the mesh channel (Prologue).
 	MCP map[string]any
+	// MCPFunc, when set, is asked for them at every session start
+	// instead: a credential that refreshes (the node's machine token)
+	// gives each restarted process a live bearer.
+	MCPFunc func() map[string]any
 	// WorkDir is ~/.mesh/work/<node-slug>, the session's cwd.
 	WorkDir string
 	// Exe is this binary, registered as the channel server.
@@ -109,11 +113,20 @@ func (s *Session) Args(workRoot string) []string {
 	if s.Model != "" {
 		args = append(args, "--model", s.Model)
 	}
-	args = append(args, harness.MCPArgs(s.MCP)...)
+	args = append(args, harness.MCPArgs(s.mcp())...)
 	if s.Unattended {
 		args = append(args, "--dangerously-skip-permissions")
 	}
 	return args
+}
+
+// mcp is the session's MCP servers, asked for afresh at each start when
+// MCPFunc is set.
+func (s *Session) mcp() map[string]any {
+	if s.MCPFunc != nil {
+		return s.MCPFunc()
+	}
+	return s.MCP
 }
 
 // UserMessage renders an event as a stream-json user message for stdin:
