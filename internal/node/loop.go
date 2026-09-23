@@ -298,7 +298,7 @@ func (l *Loop) researchDue(ctx context.Context) {
 			if !ok {
 				continue // archived, or not this node's to see
 			}
-			if RoomFor(d, goals) <= 0 {
+			if RoomFor(d, p, goals) <= 0 {
 				continue
 			}
 			l.mu.Lock()

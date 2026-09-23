@@ -46,7 +46,14 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   goals; `RecordDirectionResearch` hands them in with the cost, and the
   platform decides how many become goals. A session whose output cannot
   be read hands in an empty research anyway — otherwise the claim holds
-  the direction for 45 minutes and the night is lost.
+  the direction for 45 minutes and the night is lost. **Two ceilings
+  hold and `RoomFor` takes the smaller**: the direction's own
+  `maxLiveGoals` less the live goals it set (`Goal.DirectionID`), and
+  the project's `maxLiveGoals` — its total over every direction, on the
+  autonomy policy beside `replanCap` — less every live goal on it. A
+  direction with no room is not offered at all. Each direction works in
+  its own checkout, `ResearchDir(root, project, direction)`, because two
+  of one project may be inside their hours at once.
 - Every session gets Prologue as an MCP server with the node's token and
   the project's context on disk under `.mesh/context/` with `INDEX.md`.
 - Costs: each session's `total_cost_usd` is reported to the platform per
