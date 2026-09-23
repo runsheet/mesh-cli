@@ -601,14 +601,14 @@ func planWith(gw *gateway.Client, cfg *node.Config, h harness.Harness, workRoot 
 }
 
 // researchWith is the loop's Research hook: a fresh director session
-// per project whose research this node has claimed (runsheet trd §6c).
-// A session that cannot be read hands in an empty research rather than
-// leaving the project claimed, so the next window is not lost.
-func researchWith(gw *gateway.Client, cfg *node.Config, h harness.Harness, workRoot string, logger *log.Logger) func(context.Context, gateway.Project, node.Scope) {
-	return func(ctx context.Context, project gateway.Project, scope node.Scope) {
+// per direction whose research this node has claimed (runsheet trd
+// §6c). A session that cannot be read hands in an empty research rather
+// than leaving the direction claimed, so the next window is not lost.
+func researchWith(gw *gateway.Client, cfg *node.Config, h harness.Harness, workRoot string, logger *log.Logger) func(context.Context, gateway.Direction, gateway.Project, node.Scope) {
+	return func(ctx context.Context, direction gateway.Direction, project gateway.Project, scope node.Scope) {
 		dir := &node.Director{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, WorkRoot: workRoot, MCP: prologueMCP(ctx, gw), MaxBudgetUSD: nodeResearchBudgetFlag, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("research"), Log: logger}
-		if err := dir.Research(ctx, project, scope); err != nil && ctx.Err() == nil {
-			logger.Printf("project %s: research: %v", project.Slug, err)
+		if err := dir.Research(ctx, direction, project, scope); err != nil && ctx.Err() == nil {
+			logger.Printf("%s/%s: research: %v", project.Slug, direction.Slug, err)
 		}
 	}
 }

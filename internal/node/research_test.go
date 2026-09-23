@@ -10,26 +10,25 @@ import (
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
+	"projectmesh.io/mesh-cli/internal/gateway/gatewaytest"
 	"projectmesh.io/mesh-cli/internal/harness"
 )
 
-// A project with a director gets a research session on the tick: the
-// claim first, the repos fetched read-only, the context written, and
-// the session's proposals handed in with its cost. A project with the
-// director off is left alone, and so is one another node holds.
+// A live direction gets a research session on the tick: the claim
+// first, the repos of its project fetched read-only, the context
+// written, and the session's proposals handed in against the direction
+// with its cost. A direction switched off is left alone, so is an
+// archived one, and so is a project with no direction at all.
 func TestLoopResearchesDirectedProjects(t *testing.T) {
-	// The platform moved the director onto a Direction of its own on
-	// 2026-09-23 (runsheet trd §6c), so ProjectIndex no longer carries
-	// these fields and the node no longer asks for them. This covers the
-	// loop against the old shape; it comes back when the node is ported
-	// to list directions and claim per direction.
-	t.Skip("the node's director is being ported to DirectionIndex")
-
 	f := seed(t)
 	f.Projects[projID]["repoIds"] = []string{repoID}
-	f.Projects[projID]["directorEnabled"] = true
-	f.Projects[projID]["direction"] = "Mesh is the place goals turn into merged pull requests."
-	f.Projects[projID]["maxLiveGoals"] = 3
+	direction(f, dirID, projID, "overnight", "Mesh is the place goals turn into merged pull requests.", 3)
+	const off = "eeeeeeee-2222-4222-8222-eeeeeeeeeeee"
+	d := direction(f, off, projID, "mornings", "Chores before the day starts.", 3)
+	d["enabled"] = false
+	const gone = "eeeeeeee-3333-4333-8333-eeeeeeeeeeee"
+	d = direction(f, gone, projID, "old-one", "What we used to want.", 3)
+	d["status"] = "archived"
 	const quiet = "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb"
 	f.Projects[quiet] = map[string]any{"id": quiet, "orgId": orgID, "slug": "quiet", "name": "Quiet", "repoIds": []string{repoID}}
 
@@ -40,23 +39,25 @@ func TestLoopResearchesDirectedProjects(t *testing.T) {
 		"{\"slug\": \"One Sign-In!\", \"title\": \"One sign-in\", \"statement\": \"Everyone signs in once.\", \"acceptance\": \"a person signs in once and reaches every service\", \"why\": \"the direction asks for one front door\"}," +
 		"{\"slug\": \"health-board\", \"title\": \"The health board\", \"statement\": \"Every service's health on one page.\", \"acceptance\": \"the page lists every service with its last check\", \"why\": \"nobody can see what is down\", \"budget_cents\": 3000}" +
 		"]}\n```"}
-	d := &Director{GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, MaxBudgetUSD: 4, Log: log.New(os.Stderr, "", 0)}
-	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Interval: time.Hour, Log: d.Log,
+	dir := &Director{GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, MaxBudgetUSD: 4, Log: log.New(os.Stderr, "", 0)}
+	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Interval: time.Hour, Log: dir.Log,
 		Dispatch: func(context.Context, gateway.WorkItem) {},
-		Research: func(ctx context.Context, p gateway.Project, sc Scope) { _ = d.Research(ctx, p, sc) }}
+		Research: func(ctx context.Context, dn gateway.Direction, p gateway.Project, sc Scope) {
+			_ = dir.Research(ctx, dn, p, sc)
+		}}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	loop.Tick(ctx)
 	loop.wg.Wait()
 
-	claims := f.CallsNamed("claimResearch")
-	if len(claims) != 1 || claims[0].Input["aggregateId"] != projID || claims[0].Input["nodeId"] != cfg.NodeID {
-		t.Fatalf("the directed project alone is claimed: %+v", claims)
+	claims := f.CallsNamed("claimDirectionResearch")
+	if len(claims) != 1 || claims[0].Input["aggregateId"] != dirID || claims[0].Input["nodeId"] != cfg.NodeID {
+		t.Fatalf("the live direction alone is claimed: %+v", claims)
 	}
 	if claims[0].Input["at"] == "" {
 		t.Fatal("a claim carries the time it is made")
 	}
-	calls := f.CallsNamed("recordResearch")
+	calls := f.CallsNamed("recordDirectionResearch")
 	if len(calls) != 1 || calls[0].Input["costCents"] != float64(125) {
 		t.Fatalf("hand-in: %+v", calls)
 	}
@@ -98,28 +99,23 @@ func TestLoopResearchesDirectedProjects(t *testing.T) {
 		t.Fatal("the director changes nothing")
 	}
 
+	// the hand-in is against the direction, not the project
+	if calls[0].Input["aggregateId"] != dirID {
+		t.Fatalf("the research belongs to the direction: %v", calls[0].Input["aggregateId"])
+	}
 	// the claim is let go, so the next window is another node's to take
-	if held, _ := f.Projects[projID]["researchNodeId"].(string); held != "" {
+	if held, _ := f.Directions[dirID]["researchNodeId"].(string); held != "" {
 		t.Fatalf("the claim is let go on the hand-in: %q", held)
 	}
 }
 
-// A project already at its ceiling is not claimed at all: a session
-// there would have every proposal dropped, and an unattended night
-// should not pay for that.
+// A direction whose project is already at its ceiling is not claimed at
+// all: a session there would have every proposal dropped, and an
+// unattended night should not pay for that.
 func TestLoopSkipsAFullProject(t *testing.T) {
-	// The platform moved the director onto a Direction of its own on
-	// 2026-09-23 (runsheet trd §6c), so ProjectIndex no longer carries
-	// these fields and the node no longer asks for them. This covers the
-	// loop against the old shape; it comes back when the node is ported
-	// to list directions and claim per direction.
-	t.Skip("the node's director is being ported to DirectionIndex")
-
 	f := seed(t)
 	f.Projects[projID]["repoIds"] = []string{repoID}
-	f.Projects[projID]["directorEnabled"] = true
-	f.Projects[projID]["direction"] = "Go on then."
-	f.Projects[projID]["maxLiveGoals"] = 2
+	direction(f, dirID, projID, "overnight", "Go on then.", 2)
 	const second = "dddddddd-5555-4555-8555-dddddddddddd"
 	f.Goals[second] = map[string]any{"id": second, "orgId": orgID, "projectId": projID, "slug": "blocked-one",
 		"title": "Blocked one", "status": "blocked"}
@@ -128,31 +124,65 @@ func TestLoopSkipsAFullProject(t *testing.T) {
 	ran := 0
 	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Interval: time.Hour, Log: log.New(os.Stderr, "", 0),
 		Dispatch: func(context.Context, gateway.WorkItem) {},
-		Research: func(context.Context, gateway.Project, Scope) { ran++ }}
+		Research: func(context.Context, gateway.Direction, gateway.Project, Scope) { ran++ }}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	loop.Tick(ctx)
 	loop.wg.Wait()
-	if n := len(f.CallsNamed("claimResearch")); n != 0 || ran != 0 {
+	if n := len(f.CallsNamed("claimDirectionResearch")); n != 0 || ran != 0 {
 		t.Fatalf("a running and a blocked goal fill a ceiling of two: %d claims, %d sessions", n, ran)
 	}
 	// with the ceiling raised there is room again
-	f.Projects[projID]["maxLiveGoals"] = 3
+	f.Directions[dirID]["maxLiveGoals"] = 3
 	loop.Tick(ctx)
 	loop.wg.Wait()
-	if n := len(f.CallsNamed("claimResearch")); n != 1 || ran != 1 {
+	if n := len(f.CallsNamed("claimDirectionResearch")); n != 1 || ran != 1 {
 		t.Fatalf("room again: %d claims, %d sessions", n, ran)
 	}
 }
 
+// The platform judges the window, the gap, the claim and whether the
+// direction is on — so being refused is being told to wait, and the
+// node says nothing about it and offers the direction again next tick.
+func TestLoopKeepsQuietOnARefusedDirection(t *testing.T) {
+	f := seed(t)
+	f.Projects[projID]["repoIds"] = []string{repoID}
+	direction(f, dirID, projID, "overnight", "Go on then.", 3)
+	f.Refuse["claimDirectionResearch"] = "the direction is outside its window"
+	gw := gateway.New(f.URL(), "rs_test")
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: 1, OwnerID: f.UserID}
+	var logged strings.Builder
+	ran := 0
+	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Interval: time.Hour, Log: log.New(&logged, "", 0),
+		Dispatch: func(context.Context, gateway.WorkItem) {},
+		Research: func(context.Context, gateway.Direction, gateway.Project, Scope) { ran++ }}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	loop.Tick(ctx)
+	loop.wg.Wait()
+	if ran != 0 {
+		t.Fatalf("a refused claim runs no session: %d", ran)
+	}
+	if strings.Contains(logged.String(), "claim the research") {
+		t.Fatalf("a refusal is the ordinary answer, not an error: %q", logged.String())
+	}
+
+	// and the direction is offered again: the window comes round
+	f.Refuse = map[string]string{}
+	loop.Tick(ctx)
+	loop.wg.Wait()
+	if ran != 1 || len(f.CallsNamed("claimDirectionResearch")) != 1 {
+		t.Fatalf("the next tick offers it again: %d sessions", ran)
+	}
+}
+
 // A session whose proposals cannot be read hands in an empty research
-// rather than leaving the project claimed — the cost is real and the
-// claim would otherwise hold the project for 45 minutes.
+// rather than leaving the direction claimed — the cost is real and the
+// claim would otherwise hold the direction for 45 minutes.
 func TestResearchUnreadableHandsInEmpty(t *testing.T) {
 	f := seed(t)
 	f.Projects[projID]["repoIds"] = []string{repoID}
-	f.Projects[projID]["directorEnabled"] = true
-	f.Projects[projID]["direction"] = "Go on then."
+	direction(f, dirID, projID, "overnight", "Go on then.", 3)
 	gw := gateway.New(f.URL(), "rs_test")
 	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: 1, OwnerID: f.UserID}
 	ws := &fakeWS{root: t.TempDir()}
@@ -161,14 +191,16 @@ func TestResearchUnreadableHandsInEmpty(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	if err := gw.ClaimResearch(ctx, projID, cfg.NodeID); err != nil {
+	if err := gw.ClaimDirectionResearch(ctx, dirID, cfg.NodeID); err != nil {
 		t.Fatal(err)
 	}
-	err := d.Research(ctx, gateway.Project{ID: projID, Slug: "mesh", OrgID: orgID, RepoIDs: []string{repoID}, Direction: "Go on then.", DirectorEnabled: true}, scopesOf(cfg)[0])
+	dn := gateway.Direction{ID: dirID, ProjectID: projID, OrgID: orgID, Slug: "overnight",
+		Direction: "Go on then.", Enabled: true, Status: "active", MaxLiveGoals: 3}
+	err := d.Research(ctx, dn, gateway.Project{ID: projID, Slug: "mesh", OrgID: orgID, RepoIDs: []string{repoID}}, scopesOf(cfg)[0])
 	if err == nil {
 		t.Fatal("an unreadable session is an error")
 	}
-	calls := f.CallsNamed("recordResearch")
+	calls := f.CallsNamed("recordDirectionResearch")
 	if len(calls) != 1 {
 		t.Fatalf("the empty session is handed in anyway: %+v", calls)
 	}
@@ -178,9 +210,26 @@ func TestResearchUnreadableHandsInEmpty(t *testing.T) {
 	if calls[0].Input["costCents"] != float64(125) {
 		t.Fatalf("the cost is real: %v", calls[0].Input["costCents"])
 	}
-	if held, _ := f.Projects[projID]["researchNodeId"].(string); held != "" {
+	if held, _ := f.Directions[dirID]["researchNodeId"].(string); held != "" {
 		t.Fatalf("the claim is let go: %q", held)
 	}
+}
+
+// dirID is the direction seeded on the test project: the platform
+// derives it from (project, slug), and the node only ever reads it off
+// the DirectionIndex row.
+const dirID = "eeeeeeee-1111-4111-8111-eeeeeeeeeeee"
+
+// direction seeds one DirectionIndex row and returns it, so a test can
+// switch it off or archive it.
+func direction(f *gatewaytest.Fake, id, projectID, slug, words string, ceiling int) map[string]any {
+	row := map[string]any{
+		"id": id, "projectId": projectID, "orgId": orgID, "slug": slug, "name": slug,
+		"direction": words, "enabled": true, "fromMinute": 0, "toMinute": 0,
+		"timezone": "UTC", "gapMinutes": 45, "maxLiveGoals": ceiling, "status": "active",
+	}
+	f.Directions[id] = row
+	return row
 }
 
 // The room the session is told about counts what is not over: a paused

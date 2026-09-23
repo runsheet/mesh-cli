@@ -363,8 +363,9 @@ type Gateway interface {
 	PlanGoal(ctx context.Context, goalID, by string, items []gateway.PlannedItem, costCents int) error
 	Project(ctx context.Context, id string) (*gateway.Project, error)
 	Projects(ctx context.Context, orgID string) ([]gateway.Project, error)
-	ClaimResearch(ctx context.Context, projectID, nodeID string) error
-	RecordResearch(ctx context.Context, projectID, nodeID string, proposals []gateway.GoalProposal, costCents int, notes string) error
+	Directions(ctx context.Context, orgID, projectID string) ([]gateway.Direction, error)
+	ClaimDirectionResearch(ctx context.Context, directionID, nodeID string) error
+	RecordDirectionResearch(ctx context.Context, directionID, nodeID string, proposals []gateway.GoalProposal, costCents int, notes string) error
 	Repo(ctx context.Context, id string) (*gateway.Repo, error)
 	Repos(ctx context.Context, accountID, ownerLogin string) ([]gateway.Repo, error)
 	PrologueDocuments(ctx context.Context, org, project string) ([]gateway.Document, error)

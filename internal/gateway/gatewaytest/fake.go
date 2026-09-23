@@ -32,9 +32,11 @@ type Fake struct {
 	WorkItems map[string]map[string]any
 	Goals     map[string]map[string]any
 	Projects  map[string]map[string]any
-	Repos     map[string]map[string]any
-	Accounts  map[string]map[string]any
-	Nodes     map[string]map[string]any
+	// Directions by id, as DirectionIndex rows: one project has several.
+	Directions map[string]map[string]any
+	Repos      map[string]map[string]any
+	Accounts   map[string]map[string]any
+	Nodes      map[string]map[string]any
 	// Documents by "org/project" → list rows; Bodies by "org/project/slug".
 	Documents map[string][]map[string]any
 	Bodies    map[string]string
@@ -50,7 +52,8 @@ func New(token string) *Fake {
 		Token:     token,
 		UserID:    "11111111-1111-4111-8111-111111111111",
 		WorkItems: map[string]map[string]any{}, Goals: map[string]map[string]any{}, Projects: map[string]map[string]any{},
-		Repos: map[string]map[string]any{}, Accounts: map[string]map[string]any{}, Nodes: map[string]map[string]any{},
+		Directions: map[string]map[string]any{},
+		Repos:      map[string]map[string]any{}, Accounts: map[string]map[string]any{}, Nodes: map[string]map[string]any{},
 		Documents: map[string][]map[string]any{}, Bodies: map[string]string{}, Refuse: map[string]string{},
 	}
 	mux := http.NewServeMux()
@@ -176,6 +179,8 @@ func (f *Fake) table(name string) map[string]map[string]any {
 		return f.Goals
 	case "projectIndexs":
 		return f.Projects
+	case "directionIndexs":
+		return f.Directions
 	case "repoIndexs":
 		return f.Repos
 	case "accountIndexs":
@@ -262,28 +267,34 @@ func (f *Fake) apply(name string, in map[string]any) error {
 		for k, v := range in {
 			row[k] = v
 		}
-	case "claimResearch", "recordResearch":
-		project := f.Projects[id]
-		if project == nil {
-			return fmt.Errorf("no such project")
+	case "claimDirectionResearch", "recordDirectionResearch":
+		// the window, the gap and the zone are the real aggregate's to
+		// judge; what a test needs here is the claim itself — on, free,
+		// and let go on the hand-in
+		direction := f.Directions[id]
+		if direction == nil {
+			return fmt.Errorf("no such direction")
 		}
-		if name == "claimResearch" {
-			if enabled, _ := project["directorEnabled"].(bool); !enabled {
-				return fmt.Errorf("the director is off for this project")
+		if name == "claimDirectionResearch" {
+			if enabled, _ := direction["enabled"].(bool); !enabled {
+				return fmt.Errorf("the direction is off")
 			}
-			if held, _ := project["researchNodeId"].(string); held != "" && held != in["nodeId"] {
+			if direction["status"] == "archived" {
+				return fmt.Errorf("the direction is archived")
+			}
+			if held, _ := direction["researchNodeId"].(string); held != "" && held != in["nodeId"] {
 				return fmt.Errorf("node %s has held the research", held)
 			}
-			project["researchNodeId"] = in["nodeId"]
+			direction["researchNodeId"] = in["nodeId"]
 			return nil
 		}
-		if held, _ := project["researchNodeId"].(string); held != in["nodeId"] {
+		if held, _ := direction["researchNodeId"].(string); held != in["nodeId"] {
 			return fmt.Errorf("the research is not node %s's to hand in", in["nodeId"])
 		}
-		project["researchNodeId"] = ""
-		project["proposals"] = in["proposals"]
-		project["researchCostCents"] = toInt(in["costCents"])
-		project["researchNotes"] = in["notes"]
+		direction["researchNodeId"] = ""
+		direction["proposals"] = in["proposals"]
+		direction["researchCostCents"] = toInt(in["costCents"])
+		direction["researchNotes"] = in["notes"]
 	case "pauseGoal", "resumeGoal", "cancelGoal", "approveGraph", "planGoal", "requestPlan", "claimPlan":
 		if f.Goals[id] == nil {
 			return fmt.Errorf("no such goal")
