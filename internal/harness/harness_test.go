@@ -1,6 +1,10 @@
 package harness
 
 import (
+	"context"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -64,14 +68,45 @@ func TestParseStreamNoResult(t *testing.T) {
 func TestClaudeCodeArgs(t *testing.T) {
 	c := &ClaudeCode{ExtraArgs: []string{"--dangerously-skip-permissions"}}
 	args := c.Args(Job{Prompt: "hi", MaxBudgetUSD: 1.5})
-	want := "-p hi --output-format stream-json --verbose --max-budget-usd 1.50 --dangerously-skip-permissions"
+	// the prompt is not an argument: it goes on stdin, because one
+	// argument may not exceed 128KB and an evaluator's carries a diff
+	want := "-p --output-format stream-json --verbose --max-budget-usd 1.50 --dangerously-skip-permissions"
 	if got := strings.Join(args, " "); got != want {
 		t.Fatalf("args = %q, want %q", got, want)
+	}
+	for _, a := range args {
+		if a == "hi" {
+			t.Fatal("the prompt is on stdin, not in the args")
+		}
 	}
 	// with an MCP server: the config inline and its tools allowed
 	with := c.Args(Job{Prompt: "hi", MCPServers: map[string]any{"prologue": map[string]any{"type": "http", "url": "https://api.test/mcp"}}})
 	joined := strings.Join(with, "\x00")
 	if !strings.Contains(joined, "--mcp-config\x00{\"mcpServers\":{\"prologue\":{\"type\":\"http\",\"url\":\"https://api.test/mcp\"}}}\x00--allowedTools\x00mcp__prologue__*\x00--dangerously-skip-permissions") {
 		t.Fatalf("mcp args: %q", with)
+	}
+}
+
+// A prompt larger than Linux's per-argument limit (128KB) must still
+// start: the evaluator's carries the branch's whole diff, and a 159KB
+// one turned every attempt into `fork/exec: argument list too long`,
+// silently, thirty seconds apart, for four hours.
+func TestClaudeCodeHugePromptStarts(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "claude")
+	// it reads the prompt from stdin and reports its size, so the test
+	// proves the whole thing arrived and not merely that exec succeeded
+	script := "#!/bin/sh\nn=$(wc -c)\necho \"{\\\"type\\\":\\\"result\\\",\\\"subtype\\\":\\\"success\\\",\\\"result\\\":\\\"$n\\\",\\\"session_id\\\":\\\"s1\\\",\\\"total_cost_usd\\\":0}\"\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	c := &ClaudeCode{Binary: bin}
+	huge := strings.Repeat("x", 300*1024)
+	res, err := c.Run(context.Background(), Job{Prompt: huge, Workspace: dir}, nil)
+	if err != nil {
+		t.Fatalf("a 300KB prompt must start: %v", err)
+	}
+	if strings.TrimSpace(res.Text) != strconv.Itoa(len(huge)) {
+		t.Fatalf("the session read %q of a %d byte prompt", res.Text, len(huge))
 	}
 }

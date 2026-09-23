@@ -30,8 +30,16 @@ type ClaudeCode struct {
 func (c *ClaudeCode) Name() string { return "claude-code" }
 
 // Args builds the command line for a job (exposed for tests).
+//
+// The prompt is *not* here: it goes on stdin. Linux caps a single
+// argument at 128KB (MAX_ARG_STRLEN) and an evaluator's prompt carries
+// the branch's whole diff — 159KB of it on 2026-09-23, which turned
+// every attempt into `fork/exec: argument list too long` and left the
+// item retrying every thirty seconds for four hours. `claude -p` with
+// no prompt argument reads the prompt from stdin, which has no such
+// limit.
 func (c *ClaudeCode) Args(job Job) []string {
-	args := []string{"-p", job.Prompt, "--output-format", "stream-json", "--verbose"}
+	args := []string{"-p", "--output-format", "stream-json", "--verbose"}
 	if job.Model != "" {
 		args = append(args, "--model", job.Model)
 	}
@@ -83,7 +91,7 @@ func (c *ClaudeCode) Run(ctx context.Context, job Job, onProgress func(Progress)
 	cmd := exec.CommandContext(ctx, bin, c.Args(job)...)
 	cmd.Dir = job.Workspace
 	cmd.Env = append(os.Environ(), job.Env...)
-	cmd.Stdin = nil
+	cmd.Stdin = strings.NewReader(job.Prompt)
 	cmd.WaitDelay = 5 * time.Second
 	var errBuf bytes.Buffer
 	if c.Stderr != nil {
