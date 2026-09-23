@@ -378,13 +378,16 @@ type Project struct {
 	Slug    string   `json:"slug"`
 	Name    string   `json:"name"`
 	RepoIDs []string `json:"repoIds"`
-	// The director (runsheet trd §6c): the line a person gave the
-	// project, whether it is on, and how many goals it keeps in the air.
-	// The hours are the platform's to judge — the node asks on every
-	// tick and is told to wait — so they are not read here.
-	Direction       string `json:"direction"`
-	DirectorEnabled bool   `json:"directorEnabled"`
-	MaxLiveGoals    int    `json:"maxLiveGoals"`
+	// The director moved off the project on 2026-09-23: it is a
+	// `Direction` of its own now, several per project, each with its own
+	// hours (runsheet trd §6c). These stay as zero values until the node
+	// is ported to read DirectionIndex and claim per direction — which
+	// leaves `researchDue` skipping every project, quietly, rather than
+	// asking the gateway for fields it no longer has. Nothing else the
+	// node does touched them.
+	Direction       string `json:"-"`
+	DirectorEnabled bool   `json:"-"`
+	MaxLiveGoals    int    `json:"-"`
 	OrgID           string `json:"orgId"`
 }
 
@@ -393,7 +396,7 @@ func (c *Client) Project(ctx context.Context, id string) (*Project, error) {
 	var out struct {
 		Project *Project `json:"projectIndex"`
 	}
-	q := fmt.Sprintf(`{ projectIndex(namespace: %q, id: %q) { id slug name repoIds orgId direction directorEnabled maxLiveGoals } }`, NS, id)
+	q := fmt.Sprintf(`{ projectIndex(namespace: %q, id: %q) { id slug name repoIds orgId } }`, NS, id)
 	if err := c.Query(ctx, q, nil, &out); err != nil {
 		return nil, err
 	}
@@ -408,7 +411,7 @@ func (c *Client) Projects(ctx context.Context, orgID string) ([]Project, error) 
 	var out struct {
 		Projects []Project `json:"projectIndexs"`
 	}
-	q := fmt.Sprintf(`{ projectIndexs(namespace: %q, where: [%s]) { id slug name repoIds orgId direction directorEnabled maxLiveGoals } }`, NS, where("org_id", orgID))
+	q := fmt.Sprintf(`{ projectIndexs(namespace: %q, where: [%s]) { id slug name repoIds orgId } }`, NS, where("org_id", orgID))
 	if err := c.Query(ctx, q, nil, &out); err != nil {
 		return nil, err
 	}

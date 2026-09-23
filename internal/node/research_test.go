@@ -18,6 +18,13 @@ import (
 // the session's proposals handed in with its cost. A project with the
 // director off is left alone, and so is one another node holds.
 func TestLoopResearchesDirectedProjects(t *testing.T) {
+	// The platform moved the director onto a Direction of its own on
+	// 2026-09-23 (runsheet trd §6c), so ProjectIndex no longer carries
+	// these fields and the node no longer asks for them. This covers the
+	// loop against the old shape; it comes back when the node is ported
+	// to list directions and claim per direction.
+	t.Skip("the node's director is being ported to DirectionIndex")
+
 	f := seed(t)
 	f.Projects[projID]["repoIds"] = []string{repoID}
 	f.Projects[projID]["directorEnabled"] = true
@@ -101,6 +108,13 @@ func TestLoopResearchesDirectedProjects(t *testing.T) {
 // there would have every proposal dropped, and an unattended night
 // should not pay for that.
 func TestLoopSkipsAFullProject(t *testing.T) {
+	// The platform moved the director onto a Direction of its own on
+	// 2026-09-23 (runsheet trd §6c), so ProjectIndex no longer carries
+	// these fields and the node no longer asks for them. This covers the
+	// loop against the old shape; it comes back when the node is ported
+	// to list directions and claim per direction.
+	t.Skip("the node's director is being ported to DirectionIndex")
+
 	f := seed(t)
 	f.Projects[projID]["repoIds"] = []string{repoID}
 	f.Projects[projID]["directorEnabled"] = true
