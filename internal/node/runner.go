@@ -282,7 +282,7 @@ func (r *Runner) record(ctx context.Context, dir string, res *Resolved, summary 
 // RecordGoal writes specs/goal-<slug>.md and commits it on the current
 // branch: `docs(mesh): goal <slug> — item <seq>`.
 func RecordGoal(ctx context.Context, ws Workspacer, dir string, goal *gateway.Goal, seq int, parent string, items []gateway.WorkItem, summary string) error {
-	doc := GoalDoc{Slug: goal.Slug, Title: goal.Title, Statement: goal.Statement, Acceptance: goal.Acceptance, GoalStatus: goal.Status, Parent: parent, Items: items}
+	doc := GoalDoc{Slug: goal.Slug, Title: goal.Title, Statement: goal.Statement, Acceptance: goal.Acceptance, GoalStatus: goal.Status, Parent: parent, SpentCents: goal.SpentCents, Items: items}
 	rel, changed, err := WriteGoalDoc(dir, doc, LogLine(time.Now(), seq, summary))
 	if err != nil || !changed {
 		return err

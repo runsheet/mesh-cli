@@ -29,7 +29,10 @@ type GoalDoc struct {
 	GoalStatus string
 	// Parent is the project's PRD slug when Prologue lists one.
 	Parent string
-	Items  []gateway.WorkItem
+	// SpentCents is the goal's total spend as the platform has it —
+	// the budget guard's own number, not a sum over Items.
+	SpentCents int
+	Items      []gateway.WorkItem
 }
 
 // GoalDocPath is where the document lives in a workspace.
@@ -47,6 +50,41 @@ func DocStatus(goalStatus string) string {
 	default:
 		return "draft"
 	}
+}
+
+// Summary is the document's one-line summary — AGENTS.md asks every
+// document for one. A goal that has ended says how it ended (the items
+// merged and what it cost); one still running says what it is for.
+func Summary(d GoalDoc) string {
+	switch d.GoalStatus {
+	case "done", "cancelled":
+		merged := 0
+		for _, it := range d.Items {
+			if it.Status == "merged" {
+				merged++
+			}
+		}
+		return fmt.Sprintf("%d of %d items merged · $%.2f spent", merged, len(d.Items), float64(d.SpentCents)/100)
+	}
+	if s := firstLine(d.Statement); s != "" {
+		return s
+	}
+	if s := firstLine(d.Title); s != "" {
+		return s
+	}
+	// the line is never empty: a goal with neither is still this goal.
+	return "Mesh goal " + strings.TrimSpace(d.Slug)
+}
+
+// firstLine is the first non-blank line of s, its runs of whitespace
+// collapsed to single spaces.
+func firstLine(s string) string {
+	for _, l := range strings.Split(s, "\n") {
+		if l = strings.Join(strings.Fields(l), " "); l != "" {
+			return l
+		}
+	}
+	return ""
 }
 
 // LogLine renders one log entry: `- 2026-09-19 · item 2 · <summary>`.
@@ -72,12 +110,18 @@ func RenderGoalDoc(existing string, d GoalDoc, logLine string) string {
 	fmt.Fprintf(&b, "title: Goal — %s\n", strings.TrimSpace(d.Title))
 	b.WriteString("kind: plan\n")
 	fmt.Fprintf(&b, "status: %s\n", DocStatus(d.GoalStatus))
+	summary := Summary(d)
+	fmt.Fprintf(&b, "summary: %s\n", summary)
 	if d.Parent != "" {
 		fmt.Fprintf(&b, "parent: %s\n", d.Parent)
 	}
 	b.WriteString("---\n\n")
 	fmt.Fprintf(&b, "# Goal — %s\n\n", strings.TrimSpace(d.Title))
 	fmt.Fprintf(&b, "Mesh goal `%s`, %s.\n\n", d.Slug, d.GoalStatus)
+	if DocStatus(d.GoalStatus) != "draft" {
+		// the goal has ended: the body carries its final state too.
+		fmt.Fprintf(&b, "**%s**\n\n", summary)
+	}
 	if s := strings.TrimSpace(d.Statement); s != "" {
 		fmt.Fprintf(&b, "## Statement\n\n%s\n\n", s)
 	}

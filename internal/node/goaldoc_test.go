@@ -22,7 +22,7 @@ func TestRenderGoalDoc(t *testing.T) {
 	at := time.Date(2026, 9, 19, 10, 0, 0, 0, time.UTC)
 	first := RenderGoalDoc("", d, LogLine(at, 2, "started  the\nimplementation"))
 	for _, want := range []string{
-		"---\ntitle: Goal — Ship it\nkind: plan\nstatus: draft\nparent: prd\n---\n",
+		"---\ntitle: Goal — Ship it\nkind: plan\nstatus: draft\nsummary: Make the thing.\nparent: prd\n---\n",
 		"## Statement\n\nMake the thing.", "## Acceptance\n\ngo test ./... passes",
 		"| 1 | Write the \\| test | merged | mesh/ship-it-1 | https://github.com/acme/w/pull/1 | $3.00 |",
 		"| 2 | Make it pass | running | — | — | $0.00 |",
@@ -58,6 +58,71 @@ func TestRenderGoalDoc(t *testing.T) {
 	if strings.Contains(RenderGoalDoc("", GoalDoc{Slug: "x"}, ""), "parent:") {
 		t.Fatal("no parent must omit the key")
 	}
+}
+
+// every document carries a summary, whatever the goal's status.
+func TestRenderGoalDocAlwaysSummarises(t *testing.T) {
+	for _, status := range []string{"", "running", "paused", "done", "cancelled"} {
+		doc := RenderGoalDoc("", GoalDoc{Slug: "x", GoalStatus: status}, "")
+		line := frontmatterValue(doc, "summary")
+		if line == "" {
+			t.Errorf("status %q: no summary line:\n%s", status, doc)
+		}
+	}
+}
+
+func TestSummaryOfFinishedGoal(t *testing.T) {
+	d := GoalDoc{
+		Slug: "ship-it", Title: "Ship it", GoalStatus: "done", SpentCents: 1234,
+		Items: []gateway.WorkItem{
+			{Seq: 1, Status: "merged"}, {Seq: 2, Status: "merged"}, {Seq: 3, Status: "failed"},
+		},
+	}
+	const want = "2 of 3 items merged · $12.34 spent"
+	if got := Summary(d); got != want {
+		t.Fatalf("Summary = %q, want %q", got, want)
+	}
+	doc := RenderGoalDoc("", d, "")
+	if got := frontmatterValue(doc, "summary"); got != want {
+		t.Errorf("frontmatter summary = %q, want %q", got, want)
+	}
+	if !strings.Contains(doc, "Mesh goal `ship-it`, done.\n\n**"+want+"**\n") {
+		t.Errorf("body lacks the summary sentence:\n%s", doc)
+	}
+}
+
+func TestSummaryOfRunningGoal(t *testing.T) {
+	d := GoalDoc{Slug: "ship-it", Title: "Ship it", GoalStatus: "running", Statement: "Make the thing.\n\nThen make it fast.", SpentCents: 1234}
+	if got := frontmatterValue(RenderGoalDoc("", d, ""), "summary"); got != "Make the thing." {
+		t.Errorf("summary = %q, want the statement's first line", got)
+	}
+	d.GoalStatus = ""
+	if got := frontmatterValue(RenderGoalDoc("", d, ""), "summary"); got != "Make the thing." {
+		t.Errorf("no status: summary = %q, want the statement's first line", got)
+	}
+	d.Statement = ""
+	if got := frontmatterValue(RenderGoalDoc("", d, ""), "summary"); got != "Ship it" {
+		t.Errorf("no statement: summary = %q, want the title", got)
+	}
+	// a goal still running says nothing about how it ended
+	if strings.Contains(RenderGoalDoc("", d, ""), "**Ship it**") {
+		t.Error("a running goal must not carry the summary sentence in the body")
+	}
+}
+
+// frontmatterValue reads one key out of a rendered document's frontmatter.
+func frontmatterValue(doc, key string) string {
+	_, rest, ok := strings.Cut(doc, "---\n")
+	if !ok {
+		return ""
+	}
+	fm, _, _ := strings.Cut(rest, "\n---\n")
+	for _, l := range strings.Split(fm, "\n") {
+		if v, ok := strings.CutPrefix(l, key+": "); ok {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
 }
 
 func TestWriteGoalDoc(t *testing.T) {
