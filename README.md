@@ -92,18 +92,22 @@ leaves the CLI's own default.
 
 ### The director
 
-A project on the platform can carry a line of **direction** — what it is
-for — and the **hours** it may act on it in (runsheet trd §6c). Inside
-those hours a node runs a research session against the direction, the
-project's repos and its context, and proposes the goals worth doing
-next; the platform turns as many of them into goals as the project has
-room for and asks the planner for each. On an `experimental` project
-they need no approval, so the work runs and the integrator merges it.
+A project on the platform carries **directions** — what it is for, in
+words — each with the **hours** it may be acted on in (runsheet trd
+§6c). A project may have several: "features overnight", "chores on
+weekday mornings". Inside its hours a node runs one research session
+against that direction, the project's repos and its context, and
+proposes the goals worth doing next; the platform turns as many of them
+into goals as the direction and its project have room for and asks the
+planner for each. On an `experimental` project they need no approval, so
+the work runs and the integrator merges it.
 
-Nothing is set here: the direction, the hours, the gap between sessions
-and the ceiling on live goals all live on the project, and a node simply
-offers itself every tick. Being refused — outside the hours, inside the
-gap, another node holding it — is the ordinary answer.
+Nothing is set here: the words, the hours, the timezone, the gap between
+sessions and the ceiling on live goals all live on the direction, and a
+node simply offers each one every tick. Being refused — outside the
+hours, inside the gap, the direction switched off, another node holding
+it — is the ordinary answer. Two directions of one project take their
+turns on their own hours, without waiting for each other.
 
 ```bash
 mesh node model --research opus   # the session that decides what to build
