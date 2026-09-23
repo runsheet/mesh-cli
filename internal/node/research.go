@@ -46,10 +46,13 @@ func (d *Director) logf(format string, args ...any) {
 	}
 }
 
-// ResearchDir is where a project's director works:
-// <root>/<project-slug>/research.
-func ResearchDir(root, projectSlug string) string {
-	return filepath.Join(root, projectSlug, "research")
+// ResearchDir is where one direction's research session works:
+// <root>/<project-slug>/research/<direction-slug>. The checkout is the
+// direction's, not the project's: two directions of one project may be
+// inside their hours at once, and a second session fetching over the
+// first one's working tree would pull the ground from under it.
+func ResearchDir(root, projectSlug, directionSlug string) string {
+	return filepath.Join(root, projectSlug, "research", directionSlug)
 }
 
 // Research runs one research session on a direction whose claim this
@@ -65,7 +68,7 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 	for _, id := range project.RepoIDs {
 		inProject[id] = true
 	}
-	dir := ResearchDir(d.WorkRoot, project.Slug)
+	dir := ResearchDir(d.WorkRoot, project.Slug, direction.Slug)
 	dirs := map[string]string{}
 	for _, r := range all {
 		if !inProject[r.ID] {
@@ -110,7 +113,7 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 			Slug: g.Slug, Title: g.Title, Status: g.Status, Note: truncate(g.PausedReason, 200),
 		})
 	}
-	room := RoomFor(direction, goals)
+	room := RoomFor(direction, project, goals)
 	prompt := harness.ResearchPrompt(harness.ResearchInput{
 		Org: scope.Login, Project: project.Slug, Direction: direction.Direction,
 		Repos: dirs, ContextDir: contextDir, ContextFiles: files, Prologue: len(d.MCP) > 0,
@@ -164,27 +167,47 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 }
 
 // RoomFor is how many more goals a direction has space for, given the
-// org's goals: its ceiling less what is still live in its project. The
-// platform decides this for real when the proposals land — the
-// direction's share and the project's total both cap them (runsheet trd
-// §6c); the node counts it too, so that it neither claims nor pays for
-// a session whose every proposal would be dropped.
-func RoomFor(direction gateway.Direction, goals []gateway.Goal) int {
-	ceiling := direction.MaxLiveGoals
-	if ceiling <= 0 {
-		ceiling = DefaultMaxLiveGoals
-	}
+// org's goals. Two ceilings hold and the smaller wins (runsheet trd
+// §6c): the direction's own share, less the live goals that direction
+// set, and the project's total over every direction, less every live
+// goal on it —
+//
+//	room = min(direction.maxLiveGoals - live goals of this direction,
+//	           project.maxLiveGoals   - live goals of the project)
+//
+// The platform works this out for real when the proposals land; the
+// node counts it too, so that it neither claims nor pays for a session
+// whose every proposal would be dropped.
+func RoomFor(direction gateway.Direction, project gateway.Project, goals []gateway.Goal) int {
+	share := ceilingOr(direction.MaxLiveGoals)
+	total := ceilingOr(project.MaxLiveGoals)
 	for _, g := range goals {
-		if g.ProjectID == direction.ProjectID && isLiveGoal(g.Status) {
-			ceiling--
+		if g.ProjectID != direction.ProjectID || !isLiveGoal(g.Status) {
+			continue
+		}
+		total--
+		// a goal a person set carries no direction and spends nobody's
+		// share — it still fills the project
+		if g.DirectionID == direction.ID {
+			share--
 		}
 	}
-	return max(ceiling, 0)
+	return max(min(share, total), 0)
 }
 
-// DefaultMaxLiveGoals mirrors the platform's ceiling for a direction
-// that named none — the node only uses it to tell the session how much
-// room it has; the platform decides for real.
+// ceilingOr is the platform's reading of a ceiling left unset: 0 is
+// DefaultMaxLiveGoals, for a direction and for a project alike.
+func ceilingOr(n int) int {
+	if n <= 0 {
+		return DefaultMaxLiveGoals
+	}
+	return n
+}
+
+// DefaultMaxLiveGoals mirrors the platform's ceiling for a direction or
+// a project that named none — the node only uses it to decide whether
+// to offer a session and to tell it how much room it has; the platform
+// decides for real.
 const DefaultMaxLiveGoals = 3
 
 // isLiveGoal is the platform's rule (runsheet trd §6c): a goal that is

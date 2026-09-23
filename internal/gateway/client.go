@@ -330,12 +330,15 @@ func (c *Client) GoalWorkItems(ctx context.Context, goalID string) ([]WorkItem, 
 
 // Goal is a GoalIndex row.
 type Goal struct {
-	ID           string   `json:"id"`
-	Slug         string   `json:"slug"`
-	Title        string   `json:"title"`
-	Statement    string   `json:"statement"`
-	Acceptance   string   `json:"acceptance"`
-	ProjectID    string   `json:"projectId"`
+	ID         string `json:"id"`
+	Slug       string `json:"slug"`
+	Title      string `json:"title"`
+	Statement  string `json:"statement"`
+	Acceptance string `json:"acceptance"`
+	ProjectID  string `json:"projectId"`
+	// DirectionID is the direction that set this goal, empty when a
+	// person did — the room a direction has left is counted on it.
+	DirectionID  string   `json:"directionId"`
 	BudgetCents  int      `json:"budgetCents"`
 	SpentCents   int      `json:"spentCents"`
 	Status       string   `json:"status"`
@@ -343,7 +346,7 @@ type Goal struct {
 	Checkpoints  []string `json:"checkpoints"`
 }
 
-const goalFields = `id slug title statement acceptance projectId budgetCents spentCents status pausedReason checkpoints`
+const goalFields = `id slug title statement acceptance projectId directionId budgetCents spentCents status pausedReason checkpoints`
 
 // Goal reads one goal by id.
 func (c *Client) Goal(ctx context.Context, id string) (*Goal, error) {
@@ -379,14 +382,22 @@ type Project struct {
 	Name    string   `json:"name"`
 	RepoIDs []string `json:"repoIds"`
 	OrgID   string   `json:"orgId"`
+	// MaxLiveGoals is the project's *total* ceiling on live goals over
+	// every direction on it — it rides on the autonomy policy beside
+	// replanCap (runsheet trd §6c), and caps every direction together
+	// where a direction's own ceiling caps its share. 0 is the
+	// platform's default.
+	MaxLiveGoals int `json:"maxLiveGoals"`
 }
+
+const projectFields = `id slug name repoIds orgId maxLiveGoals`
 
 // Project reads one project by id.
 func (c *Client) Project(ctx context.Context, id string) (*Project, error) {
 	var out struct {
 		Project *Project `json:"projectIndex"`
 	}
-	q := fmt.Sprintf(`{ projectIndex(namespace: %q, id: %q) { id slug name repoIds orgId } }`, NS, id)
+	q := fmt.Sprintf(`{ projectIndex(namespace: %q, id: %q) { %s } }`, NS, id, projectFields)
 	if err := c.Query(ctx, q, nil, &out); err != nil {
 		return nil, err
 	}
@@ -401,7 +412,7 @@ func (c *Client) Projects(ctx context.Context, orgID string) ([]Project, error) 
 	var out struct {
 		Projects []Project `json:"projectIndexs"`
 	}
-	q := fmt.Sprintf(`{ projectIndexs(namespace: %q, where: [%s]) { id slug name repoIds orgId } }`, NS, where("org_id", orgID))
+	q := fmt.Sprintf(`{ projectIndexs(namespace: %q, where: [%s]) { %s } }`, NS, where("org_id", orgID), projectFields)
 	if err := c.Query(ctx, q, nil, &out); err != nil {
 		return nil, err
 	}
