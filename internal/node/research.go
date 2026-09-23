@@ -13,12 +13,12 @@ import (
 	"projectmesh.io/mesh-cli/internal/harness"
 )
 
-// Director is the session that decides what a project does next
+// Director is the session that acts on one direction of a project
 // (runsheet trd §6c): the project's repos checked out read-only, its
-// Prologue context, the direction a person gave it and the goals it has
-// already had; a fresh `claude -p` that reads and then writes its
-// proposals as JSON; the proposals handed in with RecordResearch, the
-// session's cost with them.
+// Prologue context, the words of the direction and the goals the
+// project has already had; a fresh `claude -p` that reads and then
+// writes its proposals as JSON; the proposals handed in against the
+// direction with RecordDirectionResearch, the session's cost with them.
 //
 // The hours, the gap and the ceiling are the platform's: this asks for
 // the claim on every tick and is told to wait, the way the loop asks
@@ -52,11 +52,11 @@ func ResearchDir(root, projectSlug string) string {
 	return filepath.Join(root, projectSlug, "research")
 }
 
-// Research runs one research session on a project whose claim this node
-// holds, and hands in what it came to. An error means nothing was
-// handed in — the claim goes stale and another tick, or another node,
-// tries again.
-func (d *Director) Research(ctx context.Context, project gateway.Project, scope Scope) error {
+// Research runs one research session on a direction whose claim this
+// node holds, and hands in what it came to against that direction. An
+// error means nothing was handed in — the claim goes stale and another
+// tick, or another node, tries again.
+func (d *Director) Research(ctx context.Context, direction gateway.Direction, project gateway.Project, scope Scope) error {
 	all, err := d.GW.Repos(ctx, scope.AccountID, scope.Login)
 	if err != nil {
 		return fmt.Errorf("repos: %w", err)
@@ -110,9 +110,9 @@ func (d *Director) Research(ctx context.Context, project gateway.Project, scope 
 			Slug: g.Slug, Title: g.Title, Status: g.Status, Note: truncate(g.PausedReason, 200),
 		})
 	}
-	room := RoomFor(project, goals)
+	room := RoomFor(direction, goals)
 	prompt := harness.ResearchPrompt(harness.ResearchInput{
-		Org: scope.Login, Project: project.Slug, Direction: project.Direction,
+		Org: scope.Login, Project: project.Slug, Direction: direction.Direction,
 		Repos: dirs, ContextDir: contextDir, ContextFiles: files, Prologue: len(d.MCP) > 0,
 		Goals: existing, Room: room,
 	})
@@ -122,9 +122,9 @@ func (d *Director) Research(ctx context.Context, project gateway.Project, scope 
 	}
 	job := harness.Job{
 		Kind: harness.KindResearch, Workspace: dir, Prompt: prompt, MaxBudgetUSD: budget,
-		Label: project.Slug + " research", Timeout: d.Timeout, MCPServers: d.MCP, Model: d.Model,
+		Label: project.Slug + "/" + direction.Slug + " research", Timeout: d.Timeout, MCPServers: d.MCP, Model: d.Model,
 	}
-	d.logf("project %s: researching in %s (%d repos, room for %d)", project.Slug, dir, len(dirs), room)
+	d.logf("%s/%s: researching in %s (%d repos, room for %d)", project.Slug, direction.Slug, dir, len(dirs), room)
 	result, err := d.Harness.Run(ctx, job, nil)
 	if ctx.Err() != nil {
 		return ctx.Err()
@@ -138,12 +138,12 @@ func (d *Director) Research(ctx context.Context, project gateway.Project, scope 
 	specs, err := harness.ParseProposals(result.Text)
 	if err != nil {
 		// the cost is real and the claim must be let go, so hand in an
-		// empty session rather than leaving the project claimed: a node
-		// that cannot read its own director would otherwise hold it for
-		// 45 minutes and charge for the privilege
+		// empty session rather than leaving the direction claimed: a
+		// node that cannot read its own director would otherwise hold
+		// it for 45 minutes and charge for the privilege
 		note := fmt.Sprintf("the session's proposals could not be read (%s): %s", result.SessionID, truncate(result.Text, 300))
-		if hand := d.GW.RecordResearch(ctx, project.ID, scope.NodeID, nil, Cents(result.CostUSD), note); hand != nil {
-			d.logf("project %s: %v (and handing in the empty session failed: %v)", project.Slug, err, hand)
+		if hand := d.GW.RecordDirectionResearch(ctx, direction.ID, scope.NodeID, nil, Cents(result.CostUSD), note); hand != nil {
+			d.logf("%s/%s: %v (and handing in the empty session failed: %v)", project.Slug, direction.Slug, err, hand)
 		}
 		return fmt.Errorf("research session (%s): %w", result.SessionID, err)
 	}
@@ -156,34 +156,35 @@ func (d *Director) Research(ctx context.Context, project gateway.Project, scope 
 		})
 	}
 	notes := fmt.Sprintf("%d proposed", len(proposals))
-	if err := d.GW.RecordResearch(ctx, project.ID, scope.NodeID, proposals, Cents(result.CostUSD), notes); err != nil {
+	if err := d.GW.RecordDirectionResearch(ctx, direction.ID, scope.NodeID, proposals, Cents(result.CostUSD), notes); err != nil {
 		return fmt.Errorf("hand in the research: %w", err)
 	}
-	d.logf("project %s: proposed %d goal(s) ($%.2f)", project.Slug, len(proposals), result.CostUSD)
+	d.logf("%s/%s: proposed %d goal(s) ($%.2f)", project.Slug, direction.Slug, len(proposals), result.CostUSD)
 	return nil
 }
 
-// RoomFor is how many more goals a project has space for, given the
-// org's goals: its ceiling less what is still live. The platform
-// decides this for real when the proposals land (runsheet trd §6c);
-// the node counts it too, so that it neither claims nor pays for a
-// session whose every proposal would be dropped.
-func RoomFor(project gateway.Project, goals []gateway.Goal) int {
-	ceiling := project.MaxLiveGoals
+// RoomFor is how many more goals a direction has space for, given the
+// org's goals: its ceiling less what is still live in its project. The
+// platform decides this for real when the proposals land — the
+// direction's share and the project's total both cap them (runsheet trd
+// §6c); the node counts it too, so that it neither claims nor pays for
+// a session whose every proposal would be dropped.
+func RoomFor(direction gateway.Direction, goals []gateway.Goal) int {
+	ceiling := direction.MaxLiveGoals
 	if ceiling <= 0 {
 		ceiling = DefaultMaxLiveGoals
 	}
 	for _, g := range goals {
-		if g.ProjectID == project.ID && isLiveGoal(g.Status) {
+		if g.ProjectID == direction.ProjectID && isLiveGoal(g.Status) {
 			ceiling--
 		}
 	}
 	return max(ceiling, 0)
 }
 
-// DefaultMaxLiveGoals mirrors the platform's ceiling for a project that
-// named none — the node only uses it to tell the session how much room
-// it has; the platform decides for real.
+// DefaultMaxLiveGoals mirrors the platform's ceiling for a direction
+// that named none — the node only uses it to tell the session how much
+// room it has; the platform decides for real.
 const DefaultMaxLiveGoals = 3
 
 // isLiveGoal is the platform's rule (runsheet trd §6c): a goal that is

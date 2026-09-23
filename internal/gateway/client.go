@@ -378,17 +378,7 @@ type Project struct {
 	Slug    string   `json:"slug"`
 	Name    string   `json:"name"`
 	RepoIDs []string `json:"repoIds"`
-	// The director moved off the project on 2026-09-23: it is a
-	// `Direction` of its own now, several per project, each with its own
-	// hours (runsheet trd §6c). These stay as zero values until the node
-	// is ported to read DirectionIndex and claim per direction — which
-	// leaves `researchDue` skipping every project, quietly, rather than
-	// asking the gateway for fields it no longer has. Nothing else the
-	// node does touched them.
-	Direction       string `json:"-"`
-	DirectorEnabled bool   `json:"-"`
-	MaxLiveGoals    int    `json:"-"`
-	OrgID           string `json:"orgId"`
+	OrgID   string   `json:"orgId"`
 }
 
 // Project reads one project by id.
@@ -416,6 +406,64 @@ func (c *Client) Projects(ctx context.Context, orgID string) ([]Project, error) 
 		return nil, err
 	}
 	return out.Projects, nil
+}
+
+// Direction is a DirectionIndex row: one direction of one project — the
+// words a person gave it, the hours it may be acted on, the pace it
+// keeps, its share of the project's room and its research claim
+// (runsheet trd §6c). A project has several, each researching on its
+// own hours, and the id is `direction:<project>:<slug>`.
+type Direction struct {
+	ID        string `json:"id"`
+	ProjectID string `json:"projectId"`
+	OrgID     string `json:"orgId"`
+	Slug      string `json:"slug"`
+	Name      string `json:"name"`
+	// Direction is the words themselves — what a research session reads.
+	Direction  string `json:"direction"`
+	Enabled    bool   `json:"enabled"`
+	FromMinute int    `json:"fromMinute"`
+	ToMinute   int    `json:"toMinute"`
+	Timezone   string `json:"timezone"`
+	GapMinutes int    `json:"gapMinutes"`
+	// MaxLiveGoals is this direction's own share of the room; the
+	// project's ceiling still caps every direction together.
+	MaxLiveGoals int    `json:"maxLiveGoals"`
+	Status       string `json:"status"`
+	// The claim, as the platform last folded it: the node holding this
+	// direction's session, when it took it, and when the last session
+	// ended (the gap counts from there).
+	ResearchNodeID    string `json:"researchNodeId"`
+	ResearchClaimedAt string `json:"researchClaimedAt"`
+	ResearchedAt      string `json:"researchedAt"`
+}
+
+const directionFields = `id projectId orgId slug name direction enabled fromMinute toMinute timezone gapMinutes maxLiveGoals status researchNodeId researchClaimedAt researchedAt`
+
+// Active reports whether the direction is one to offer the platform at
+// all: switched on and not archived. Whether it may run *now* — the
+// window, the gap, the claim — is the platform's to judge.
+func (d Direction) Active() bool {
+	return d.Enabled && d.Status != "archived"
+}
+
+// Directions lists an org's directions, or one project's when projectID
+// is given. The gateway scopes DirectionIndex on org_id, so the org is
+// always part of the where and the project only narrows it — the way
+// the console's listDirections(orgId, projectId) does.
+func (c *Client) Directions(ctx context.Context, orgID, projectID string) ([]Direction, error) {
+	var out struct {
+		Directions []Direction `json:"directionIndexs"`
+	}
+	filter := where("org_id", orgID)
+	if projectID != "" {
+		filter += ", " + where("project_id", projectID)
+	}
+	q := fmt.Sprintf(`{ directionIndexs(namespace: %q, where: [%s]) { %s } }`, NS, filter, directionFields)
+	if err := c.Query(ctx, q, nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Directions, nil
 }
 
 // Repo is a RepoIndex row, with the owner login resolved.
@@ -633,19 +681,22 @@ type GoalProposal struct {
 	BudgetCents int    `json:"budgetCents,omitempty"`
 }
 
-// ClaimResearch takes the project's next research session for this node.
-// Every "not now" is a refusal — the director off, the project paused,
-// the hour outside its window, the gap since the last session — so a
-// refusal is the answer to expect and not an error to shout about.
-func (c *Client) ClaimResearch(ctx context.Context, projectID, nodeID string) error {
-	return c.Mutate(ctx, "claimResearch", projectID, map[string]any{
+// ClaimDirectionResearch takes this direction's next research session
+// for the node. Every "not now" is a refusal — the direction off or
+// archived, its project paused, the hour outside the window in the
+// direction's own zone, the gap since its last session, another node
+// holding the claim — so a refusal is the answer to expect and not an
+// error to shout about.
+func (c *Client) ClaimDirectionResearch(ctx context.Context, directionID, nodeID string) error {
+	return c.Mutate(ctx, "claimDirectionResearch", directionID, map[string]any{
 		"nodeId": nodeID, "at": time.Now().UTC().Format(time.RFC3339Nano),
 	})
 }
 
-// RecordResearch hands in what the session came to, and the cost
-// whether or not it proposed anything.
-func (c *Client) RecordResearch(ctx context.Context, projectID, nodeID string, proposals []GoalProposal, costCents int, notes string) error {
+// RecordDirectionResearch hands in what the session came to, and the
+// cost whether or not it proposed anything. It also lets the claim go,
+// so an empty hand-in is how a node gives a direction back.
+func (c *Client) RecordDirectionResearch(ctx context.Context, directionID, nodeID string, proposals []GoalProposal, costCents int, notes string) error {
 	list := make([]map[string]any, 0, len(proposals))
 	for _, p := range proposals {
 		row := map[string]any{"slug": p.Slug, "title": p.Title, "statement": p.Statement, "acceptance": p.Acceptance}
@@ -657,7 +708,7 @@ func (c *Client) RecordResearch(ctx context.Context, projectID, nodeID string, p
 		}
 		list = append(list, row)
 	}
-	return c.Mutate(ctx, "recordResearch", projectID, map[string]any{
+	return c.Mutate(ctx, "recordDirectionResearch", directionID, map[string]any{
 		"nodeId": nodeID, "at": time.Now().UTC().Format(time.RFC3339Nano),
 		"proposals": list, "costCents": costCents, "notes": notes,
 	})

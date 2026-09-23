@@ -36,13 +36,13 @@ type Loop struct {
 	// its graph and returns when the plan is handed in — or not, in
 	// which case the next tick offers it again. Optional.
 	Plan func(ctx context.Context, goal gateway.Goal, scope Scope)
-	// Research decides what a project with a director does next and
-	// proposes its goals (runsheet trd §6c). The claim is taken here,
-	// before it runs; the platform refuses it outside the project's
-	// hours, inside its gap, or when another node holds it, so a refusal
-	// is the ordinary answer. Optional; it does not count against
-	// capacity — it competes for the machine, not for the work.
-	Research func(ctx context.Context, project gateway.Project, scope Scope)
+	// Research reads one direction of a project and proposes the goals
+	// it asks for (runsheet trd §6c). The claim is taken here, before it
+	// runs; the platform refuses it outside the direction's hours,
+	// inside its gap, or when another node holds it, so a refusal is the
+	// ordinary answer. Optional; it does not count against capacity — it
+	// competes for the machine, not for the work.
+	Research func(ctx context.Context, direction gateway.Direction, project gateway.Project, scope Scope)
 	// AfterTick runs at the end of every tick (optional).
 	AfterTick func(ctx context.Context)
 
@@ -251,22 +251,41 @@ func (l *Loop) planRequested(ctx context.Context) {
 	}
 }
 
-// researchDue offers every directed project of the served orgs to the
+// researchDue offers every live direction of the served orgs to the
 // platform: claiming is asking, and being refused is being told to wait
-// — the hours, the gap and another node's claim are all the platform's
-// to judge (runsheet trd §6c), so a refusal is logged at most once a
-// project and never as an error.
+// — the window in the direction's own zone, the gap, and another node's
+// claim are all the platform's to judge (runsheet trd §6c), so a
+// refusal is not logged as an error. Each direction is offered on its
+// own, so two directions of one project take their turns independently.
 func (l *Loop) researchDue(ctx context.Context) {
 	if l.Research == nil {
 		return
 	}
 	for _, sc := range l.Scopes {
+		directions, err := l.GW.Directions(ctx, sc.ID, "")
+		if err != nil {
+			l.logf("list directions of %s: %v", sc.Login, err)
+			continue
+		}
+		live := make([]gateway.Direction, 0, len(directions))
+		for _, d := range directions {
+			if d.Active() {
+				live = append(live, d)
+			}
+		}
+		if len(live) == 0 {
+			continue
+		}
 		projects, err := l.GW.Projects(ctx, sc.ID)
 		if err != nil {
 			l.logf("list projects of %s: %v", sc.Login, err)
 			continue
 		}
-		// the org's goals once, to see which projects have room: a
+		byID := make(map[string]gateway.Project, len(projects))
+		for _, p := range projects {
+			byID[p.ID] = p
+		}
+		// the org's goals once, to see which directions have room: a
 		// session on a project at its ceiling would have every proposal
 		// dropped, and an unattended night should not pay for that
 		goals, err := l.GW.Goals(ctx, sc.ID)
@@ -274,43 +293,44 @@ func (l *Loop) researchDue(ctx context.Context) {
 			l.logf("list goals of %s: %v", sc.Login, err)
 			continue
 		}
-		for _, p := range projects {
-			if !p.DirectorEnabled {
-				continue
+		for _, d := range live {
+			p, ok := byID[d.ProjectID]
+			if !ok {
+				continue // archived, or not this node's to see
 			}
-			if RoomFor(p, goals) <= 0 {
+			if RoomFor(d, goals) <= 0 {
 				continue
 			}
 			l.mu.Lock()
 			if l.researching == nil {
 				l.researching = map[string]bool{}
 			}
-			if l.researching[p.ID] {
+			if l.researching[d.ID] {
 				l.mu.Unlock()
 				continue
 			}
-			l.researching[p.ID] = true
+			l.researching[d.ID] = true
 			l.mu.Unlock()
-			if err := l.GW.ClaimResearch(ctx, p.ID, sc.NodeID); err != nil {
+			if err := l.GW.ClaimDirectionResearch(ctx, d.ID, sc.NodeID); err != nil {
 				l.mu.Lock()
-				delete(l.researching, p.ID)
+				delete(l.researching, d.ID)
 				l.mu.Unlock()
 				if !gateway.IsRefusal(err) {
-					l.logf("%s: claim the research of %q: %v", sc.Login, p.Slug, err)
+					l.logf("%s: claim the research of %q: %v", sc.Login, p.Slug+"/"+d.Slug, err)
 				}
 				continue
 			}
-			l.logf("%s: researching project %q", sc.Login, p.Slug)
+			l.logf("%s: researching %q", sc.Login, p.Slug+"/"+d.Slug)
 			l.wg.Add(1)
-			go func(p gateway.Project, sc Scope) {
+			go func(d gateway.Direction, p gateway.Project, sc Scope) {
 				defer l.wg.Done()
 				defer func() {
 					l.mu.Lock()
-					delete(l.researching, p.ID)
+					delete(l.researching, d.ID)
 					l.mu.Unlock()
 				}()
-				l.Research(ctx, p, sc)
-			}(p, sc)
+				l.Research(ctx, d, p, sc)
+			}(d, p, sc)
 		}
 	}
 }
