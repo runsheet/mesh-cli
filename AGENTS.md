@@ -84,7 +84,11 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   for *anything* else — a held claim waits out the platform's
   15-minute timer. Its heartbeat and its cost are
   `ReportWorkItemProgress`. Like evaluations, rebases do not count
-  against capacity.
+  against capacity. **The platform does not yet issue the item's token
+  to the rebase holder** (runsheet `gateway/itemtoken.go` refuses an
+  item in `review`; ADR-001 asks for it), so until it does every
+  rebase fails at `github token:` and goes to its builder; the fake
+  mirrors that unless a test sets `RebaseTokens`.
 - Every session gets Prologue as an MCP server with the node's token and
   the project's context on disk under `.mesh/context/` with `INDEX.md`:
   the documents, then `## Live goals and items` — each live goal's items

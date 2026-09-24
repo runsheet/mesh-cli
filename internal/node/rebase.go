@@ -203,7 +203,8 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 	}
 	report(ctx, fmt.Sprintf("rebased %s onto %s at %s", branch, spec.BaseRef, short(head)), sid())
 	if err := r.GW.FinishWorkItemRebase(ctx, item.ID, head, out.Files); err != nil {
-		return fmt.Errorf("finish rebase of %s: %w", label, err)
+		// a finish the platform did not take still ends the claim
+		return fail(fmt.Errorf("the rebase landed at %s, but finishing it failed: %w", short(head), err))
 	}
 	r.logf("item %s: rebased %s@%s, resolved %d file(s) ($%.2f)", label, branch, short(head), len(out.Files), result.CostUSD)
 	return nil

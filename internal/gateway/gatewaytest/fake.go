@@ -73,6 +73,11 @@ type Fake struct {
 	// By default the fake follows the contract (trd §1): a node releases
 	// a claimed or running item it holds.
 	RefuseReleases bool
+	// RebaseTokens is the platform half ADR-001 asks for and runsheet
+	// does not serve yet: issueItemRepoToken to the node holding an
+	// item's rebase while it is in review. Off, the fake refuses it as
+	// runsheet's gateway/itemtoken.go does today.
+	RebaseTokens bool
 }
 
 // New starts a fake accepting the given bearer token.
@@ -554,7 +559,7 @@ func (f *Fake) issueItemRepoToken(in map[string]any) (map[string]any, error) {
 	holder := item["nodeId"]
 	switch {
 	case item["status"] == "claimed", item["status"] == "running", item["status"] == "evaluating": // its builder, then its evaluator
-	case item["status"] == "review" && item["rebaseState"] == "claimed": // the node holding its rebase
+	case f.RebaseTokens && item["status"] == "review" && item["rebaseState"] == "claimed": // the node holding its rebase
 		holder = item["rebaseNodeId"]
 	default:
 		return nil, fmt.Errorf("item is %s, not claimed", item["status"])

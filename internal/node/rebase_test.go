@@ -28,6 +28,9 @@ func requestRebase(f *gatewaytest.Fake, id, branch string) {
 // rebaseNode is a node over the seeded org that rebases with h and ws.
 func rebaseNode(t *testing.T, f *gatewaytest.Fake, slug string, h harness.Harness, ws *fakeWS, logs *strings.Builder) (*Loop, *Config) {
 	t.Helper()
+	// the rebase holder's token: the platform half ADR-001 asks for
+	// (TestRebaseTokenRefusedFailsTheRebase is the platform as it is)
+	f.RebaseTokens = true
 	gw := gateway.New(f.URL(), "rs_test")
 	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: slug, NodeID: gateway.NodeID(mustUUID(orgID), slug).String(), Capacity: 1}
 	if err := gw.RegisterNode(context.Background(), gateway.RegisterNodeInput{NodeID: cfg.NodeID, OrgID: orgID, OwnerID: f.UserID, Name: slug, Slug: slug}); err != nil {
@@ -132,6 +135,54 @@ func TestRebaseUnresolvableFailsWithReason(t *testing.T) {
 				t.Fatalf("item: %v", it)
 			}
 		})
+	}
+}
+
+// The platform as it is (runsheet gateway/itemtoken.go) gives an item's
+// token to no one while the item is in review, so the rebase holder is
+// refused it: that fails the rebase with the reason — the item goes to
+// its builder — rather than holding the claim or pushing on the
+// operator's own login, and no session starts.
+func TestRebaseTokenRefusedFailsTheRebase(t *testing.T) {
+	f := seed(t)
+	requestRebase(f, item1, "mesh/ship-it-1")
+	h := &fakeHarness{text: "REBASED: abc123def456\nRESOLVED: main.go"}
+	ws := &fakeWS{root: t.TempDir(), pushedHead: "abc123def456"}
+	loop, _ := rebaseNode(t, f, "test-node", h, ws, nil)
+	f.RebaseTokens = false
+	loop.Tick(context.Background())
+	loop.wg.Wait()
+
+	fails := f.CallsNamed("failWorkItemRebase")
+	if len(fails) != 1 || !strings.HasPrefix(fmt.Sprint(fails[0].Input["reason"]), "github token: ") || !strings.Contains(fmt.Sprint(fails[0].Input["reason"]), "item is review, not claimed") {
+		t.Fatalf("fails: %+v", fails)
+	}
+	if len(h.jobs) != 0 || len(ws.Events()) != 0 || len(f.CallsNamed("finishWorkItemRebase")) != 0 {
+		t.Fatalf("no session, no checkout: jobs %d, workspace %v", len(h.jobs), ws.Events())
+	}
+	if it := f.Item(item1); it["status"] != "ready" || it["rebaseState"] != "none" {
+		t.Fatalf("item: %v", it)
+	}
+}
+
+// A rebase that landed but whose finish the platform did not take is
+// failed with the reason, so the claim is never left held.
+func TestRebaseFinishRefusedFailsTheRebase(t *testing.T) {
+	f := seed(t)
+	requestRebase(f, item1, "mesh/ship-it-1")
+	f.Refuse["finishWorkItemRebase"] = "finishWorkItemRebase: the head is not on the branch"
+	h := &fakeHarness{text: "REBASED: abc123def456\nRESOLVED: main.go"}
+	loop, _ := rebaseNode(t, f, "test-node", h, &fakeWS{root: t.TempDir(), pushedHead: "abc123def4567890"}, nil)
+	loop.Tick(context.Background())
+	loop.wg.Wait()
+
+	fails := f.CallsNamed("failWorkItemRebase")
+	if len(fails) != 1 || !strings.HasPrefix(fmt.Sprint(fails[0].Input["reason"]), "the rebase landed at abc123de, but finishing it failed: ") ||
+		!strings.Contains(fmt.Sprint(fails[0].Input["reason"]), "the head is not on the branch") {
+		t.Fatalf("fails: %+v", fails)
+	}
+	if it := f.Item(item1); it["rebaseState"] != "none" || it["status"] != "ready" {
+		t.Fatalf("item: %v", it)
 	}
 }
 
