@@ -48,6 +48,7 @@ var (
 	nodeModelPlanFlag      string
 	nodeModelChannelFlag   string
 	nodeModelResearchFlag  string
+	nodeModelRebaseFlag    string
 	// nodeModels is what `node start` resolved for this run: the config
 	// file's models with the flags applied, read by every session.
 	nodeModels node.Models
@@ -69,6 +70,8 @@ func modelsFor(cmd *cobra.Command, cfg *node.Config) node.Models {
 		{"model-evaluate", nodeModelEvaluateFlag, &m.Evaluate},
 		{"model-plan", nodeModelPlanFlag, &m.Plan},
 		{"model-channel", nodeModelChannelFlag, &m.Channel},
+		{"model-research", nodeModelResearchFlag, &m.Research},
+		{"model-rebase", nodeModelRebaseFlag, &m.Rebase},
 	} {
 		if cmd.Flags().Changed(o.flag) {
 			*o.set = o.val
@@ -803,6 +806,7 @@ func init() {
 	nodeStartCmd.Flags().StringVar(&nodeModelPlanFlag, "model-plan", "", "model for planner sessions (overrides --model)")
 	nodeStartCmd.Flags().StringVar(&nodeModelChannelFlag, "model-channel", "", "model for the channel-mode session (overrides --model)")
 	nodeStartCmd.Flags().StringVar(&nodeModelResearchFlag, "model-research", "", "model for director (research) sessions (overrides --model)")
+	nodeStartCmd.Flags().StringVar(&nodeModelRebaseFlag, "model-rebase", "", "model for rebase sessions (overrides --model)")
 	nodeStartCmd.Flags().StringVar(&nodeModeFlag, "mode", "channel", "channel (one persistent session fed by the mesh channel) or poll (claude -p per item)")
 	nodeStartCmd.Flags().BoolVar(&nodeUnattended, "unattended", false, "run sessions with --dangerously-skip-permissions (trusted machines only)")
 	nodeStartCmd.Flags().BoolVar(&nodeOnceFlag, "once", false, "poll mode: one tick, then exit")
@@ -812,6 +816,7 @@ func init() {
 	nodeModelCmd.Flags().StringVar(&nodeModelPlanFlag, "plan", "", "model for planner sessions")
 	nodeModelCmd.Flags().StringVar(&nodeModelChannelFlag, "channel", "", "model for the channel-mode session")
 	nodeModelCmd.Flags().StringVar(&nodeModelResearchFlag, "research", "", "model for director (research) sessions")
+	nodeModelCmd.Flags().StringVar(&nodeModelRebaseFlag, "rebase", "", "model for rebase sessions")
 	nodeCmd.AddCommand(nodeLoginCmd, nodeRegisterCmd, nodeStartCmd, nodeStatusCmd, nodeDrainCmd, nodeLogoutCmd, nodeModelCmd)
 }
 
@@ -847,6 +852,7 @@ A flag on ` + "`mesh node start`" + ` wins over these for that run.`,
 			{"evaluate", nodeModelEvaluateFlag, &cfg.Models.Evaluate},
 			{"plan", nodeModelPlanFlag, &cfg.Models.Plan},
 			{"research", nodeModelResearchFlag, &cfg.Models.Research},
+			{"rebase", nodeModelRebaseFlag, &cfg.Models.Rebase},
 			{"channel", nodeModelChannelFlag, &cfg.Models.Channel},
 		} {
 			if cmd.Flags().Changed(o.flag) {
@@ -869,7 +875,7 @@ A flag on ` + "`mesh node start`" + ` wins over these for that run.`,
 		for _, k := range []struct{ name, val string }{
 			{"build", cfg.Models.Build}, {"evaluate", cfg.Models.Evaluate},
 			{"plan", cfg.Models.Plan}, {"channel", cfg.Models.Channel},
-			{"research", cfg.Models.Research},
+			{"research", cfg.Models.Research}, {"rebase", cfg.Models.Rebase},
 		} {
 			if k.val != "" {
 				fmt.Printf("%-9s %s\n", k.name, k.val)
