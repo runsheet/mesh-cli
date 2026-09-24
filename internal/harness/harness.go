@@ -72,6 +72,12 @@ type Result struct {
 	SessionID string
 	// Turns is how many turns the session took, when known.
 	Turns int
+	// EmptyOutput is a session that produced nothing at all: not one
+	// parseable event — no session id, no assistant text, no result.
+	// Set whether or not the exit carried a message; the node counts
+	// these across sessions (two running is the harness's condition,
+	// mesh-specs trd §3).
+	EmptyOutput bool
 }
 
 // Harness runs jobs.
