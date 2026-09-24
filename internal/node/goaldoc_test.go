@@ -140,3 +140,35 @@ func TestWriteGoalDoc(t *testing.T) {
 		t.Fatalf("file:\n%s", b)
 	}
 }
+
+// A section the platform does not write — a builder's outcome, audit or
+// list of secrets — survives every re-render, wherever it sat, whole.
+func TestRenderGoalDocKeepsOtherSections(t *testing.T) {
+	d := GoalDoc{Slug: "ship-it", Title: "Ship it", Statement: "Make the thing.", GoalStatus: "running",
+		Items: []gateway.WorkItem{{Seq: 1, Title: "One", Status: "running"}}}
+	at := time.Date(2026, 9, 24, 10, 0, 0, 0, time.UTC)
+	first := RenderGoalDoc("", d, LogLine(at, 1, "started"))
+	withBuilder := strings.Replace(first, "\n## Log\n", "\n## Secrets a person must add\n\n- `GATEWAY_TOKEN` — read-only\n- `CLOUDFLARE_API_TOKEN`\n  wrapped onto a second line\n\n### Why\n\nBecause.\n\n## Log\n", 1) +
+		"\n## Outcome\n\n- **The five proposals** — moved into\n  the handbook.\n"
+	d.Items[0].Status = "review"
+	again := RenderGoalDoc(withBuilder, d, LogLine(at, 1, "finished"))
+	for _, want := range []string{
+		"## Secrets a person must add\n\n- `GATEWAY_TOKEN` — read-only\n- `CLOUDFLARE_API_TOKEN`\n  wrapped onto a second line\n\n### Why\n\nBecause.\n",
+		"## Outcome\n\n- **The five proposals** — moved into\n  the handbook.\n",
+		"| 1 | One | review |",
+		"## Log\n\n- 2026-09-24 · item 1 · started\n- 2026-09-24 · item 1 · finished\n",
+	} {
+		if !strings.Contains(again, want) {
+			t.Errorf("re-render lost %q:\n%s", want, again)
+		}
+	}
+	if strings.Index(again, "## Outcome") > strings.Index(again, "## Log") {
+		t.Errorf("kept sections go before the log:\n%s", again)
+	}
+	if strings.Count(again, "## Items") != 1 || strings.Count(again, "- 2026-09-24 · item 1 · started") != 1 {
+		t.Errorf("owned sections duplicated:\n%s", again)
+	}
+	if third := RenderGoalDoc(again, d, LogLine(at, 1, "finished")); third != again {
+		t.Errorf("re-render of an unchanged goal is not stable:\n%s\n---\n%s", again, third)
+	}
+}
