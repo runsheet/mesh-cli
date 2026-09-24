@@ -61,6 +61,10 @@ type Fake struct {
 	// Unsupported names mutations the fake answers as a platform that
 	// predates them: the schema's "Cannot query field" error.
 	Unsupported map[string]bool
+	// NoOutcome answers as a platform without the finish outcome (mesh
+	// ADR 003): a work-item read selecting outcome is the schema's
+	// "Cannot query field" error, and a finish carrying one is refused.
+	NoOutcome bool
 }
 
 // New starts a fake accepting the given bearer token.
@@ -135,6 +139,7 @@ var (
 	mutationRe = regexp.MustCompile(`mutation\s*\(\s*\$(?:in|id):\s*(\w+)!\s*\)\s*\{\s*(\w+)\s*\(`)
 	whereRe    = regexp.MustCompile(`\{\s*field:\s*"([a-z_]+)"\s*,\s*op:\s*EQ\s*,\s*value:\s*"([^"]*)"\s*\}`)
 	listRe     = regexp.MustCompile(`\{\s*(\w+Indexs)\s*\(`)
+	outcomeRe  = regexp.MustCompile(`\boutcome\b`)
 	getRe      = regexp.MustCompile(`\{\s*(\w+Index)\s*\(\s*namespace:\s*"runsheet"\s*,\s*id:\s*"([^"]+)"`)
 )
 
@@ -199,6 +204,10 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 		f.Calls = append(f.Calls, Call{Name: m[2], Input: in})
 		writeData(w, map[string]any{m[2]: map[string]any{"status": "ok"}})
 	default:
+		if f.NoOutcome && strings.Contains(q, "workItemIndex") && outcomeRe.MatchString(q) {
+			writeErrors(w, 200, `Cannot query field "outcome" on type "WorkItemIndex".`)
+			return
+		}
 		if m := getRe.FindStringSubmatch(q); m != nil {
 			writeData(w, map[string]any{m[1]: f.table(m[1] + "s")[m[2]]})
 			return
@@ -291,7 +300,27 @@ func (f *Fake) apply(name string, in map[string]any) error {
 		if item["status"] != "claimed" && item["status"] != "running" {
 			return fmt.Errorf("item is %s, not running", item["status"])
 		}
-		item["status"], item["branch"], item["headSha"] = "evaluating", in["branch"], in["headSha"]
+		outcome, _ := in["outcome"].(string)
+		switch {
+		case outcome != "" && f.NoOutcome:
+			return fmt.Errorf(`Field "outcome" is not defined by type "FinishWorkItemInput".`)
+		case outcome == "" || outcome == "built":
+			if in["branch"] == nil || in["branch"] == "" {
+				return fmt.Errorf("a built finish needs a branch")
+			}
+			item["branch"], item["headSha"], item["outcome"] = in["branch"], in["headSha"], "built"
+		case outcome == "already_done":
+			if ev, _ := in["evidence"].(string); ev == "" {
+				return fmt.Errorf("an already_done finish needs evidence")
+			}
+			if in["branch"] != nil {
+				return fmt.Errorf("an already_done finish carries no branch")
+			}
+			item["outcome"], item["evidence"] = outcome, in["evidence"]
+		default:
+			return fmt.Errorf("unknown outcome %q", outcome)
+		}
+		item["status"] = "evaluating"
 		item["costCents"] = toInt(item["costCents"]) + toInt(in["costCents"])
 	case "failWorkItem":
 		if item == nil {

@@ -284,9 +284,54 @@ type WorkItem struct {
 	RebaseFiles    []string `json:"rebaseFiles"`
 	RebaseNodeID   string   `json:"rebaseNodeId"`
 	RebasedHeadSHA string   `json:"rebasedHeadSha"`
+	// Outcome is how the item finished (mesh ADR 003 decision 1):
+	// OutcomeBuilt, a pushed branch, or OutcomeAlreadyDone, main already
+	// held the work and Evidence says where — merged PR URLs and/or
+	// commit SHAs on the base ref, with a line on why. A platform that
+	// does not carry the field yet decodes as built.
+	Outcome  string `json:"outcome"`
+	Evidence string `json:"evidence"`
 }
 
-const workItemFields = `id goalId orgId seq title brief acceptance repoId baseRef dependsOn status nodeId branch costCents attempts lastError lastNote prUrl heartbeatAt evaluation evaluationPassed rebaseState rebaseConflict rebaseFiles rebaseNodeId rebasedHeadSha`
+// The outcomes a WorkItem finishes with (mesh ADR 003 decision 1).
+const (
+	OutcomeBuilt       = "built"
+	OutcomeAlreadyDone = "already_done"
+)
+
+// UnmarshalJSON decodes the row, an empty outcome as built.
+func (w *WorkItem) UnmarshalJSON(b []byte) error {
+	type row WorkItem
+	var r row
+	if err := json.Unmarshal(b, &r); err != nil {
+		return err
+	}
+	if r.Outcome == "" {
+		r.Outcome = OutcomeBuilt
+	}
+	*w = WorkItem(r)
+	return nil
+}
+
+// legacyWorkItemFields is the selection a platform without the finish
+// outcome answers; workItemFields adds outcome and evidence.
+const (
+	legacyWorkItemFields = `id goalId orgId seq title brief acceptance repoId baseRef dependsOn status nodeId branch costCents attempts lastError lastNote prUrl heartbeatAt evaluation evaluationPassed rebaseState rebaseConflict rebaseFiles rebaseNodeId rebasedHeadSha`
+	workItemFields       = legacyWorkItemFields + ` outcome evidence`
+)
+
+// queryItems runs the work-item read q builds from a field selection. A
+// platform older than the finish outcome refuses the selection with
+// "Cannot query field"; the read is asked again without it, and the
+// items decode as built.
+func (c *Client) queryItems(ctx context.Context, q func(fields string) string, out any) error {
+	err := c.Query(ctx, q(workItemFields), nil, out)
+	var ge *Error
+	if errors.As(err, &ge) && (unknownOperation(ge.Message, "outcome") || unknownOperation(ge.Message, "evidence")) {
+		return c.Query(ctx, q(legacyWorkItemFields), nil, out)
+	}
+	return err
+}
 
 func where(field, value string) string {
 	return fmt.Sprintf(`{field: %q, op: EQ, value: %q}`, field, value)
@@ -297,8 +342,10 @@ func (c *Client) ReadyWorkItems(ctx context.Context, orgID string) ([]WorkItem, 
 	var out struct {
 		Items []WorkItem `json:"workItemIndexs"`
 	}
-	q := fmt.Sprintf(`{ workItemIndexs(namespace: %q, where: [%s, %s]) { %s } }`, NS, where("org_id", orgID), where("status", "ready"), workItemFields)
-	if err := c.Query(ctx, q, nil, &out); err != nil {
+	q := func(fields string) string {
+		return fmt.Sprintf(`{ workItemIndexs(namespace: %q, where: [%s, %s]) { %s } }`, NS, where("org_id", orgID), where("status", "ready"), fields)
+	}
+	if err := c.queryItems(ctx, q, &out); err != nil {
 		return nil, err
 	}
 	items := out.Items
@@ -315,8 +362,10 @@ func (c *Client) WorkItem(ctx context.Context, id string) (*WorkItem, error) {
 	var out struct {
 		Item *WorkItem `json:"workItemIndex"`
 	}
-	q := fmt.Sprintf(`{ workItemIndex(namespace: %q, id: %q) { %s } }`, NS, id, workItemFields)
-	if err := c.Query(ctx, q, nil, &out); err != nil {
+	q := func(fields string) string {
+		return fmt.Sprintf(`{ workItemIndex(namespace: %q, id: %q) { %s } }`, NS, id, fields)
+	}
+	if err := c.queryItems(ctx, q, &out); err != nil {
 		return nil, err
 	}
 	if out.Item == nil {
@@ -334,8 +383,10 @@ func (c *Client) OrgWorkItems(ctx context.Context, orgID, status string) ([]Work
 	if status != "" {
 		wh += ", " + where("status", status)
 	}
-	q := fmt.Sprintf(`{ workItemIndexs(namespace: %q, where: [%s]) { %s } }`, NS, wh, workItemFields)
-	if err := c.Query(ctx, q, nil, &out); err != nil {
+	q := func(fields string) string {
+		return fmt.Sprintf(`{ workItemIndexs(namespace: %q, where: [%s]) { %s } }`, NS, wh, fields)
+	}
+	if err := c.queryItems(ctx, q, &out); err != nil {
 		return nil, err
 	}
 	sortBySeq(out.Items)
@@ -349,8 +400,10 @@ func (c *Client) RequestedRebases(ctx context.Context, orgID string) ([]WorkItem
 	var out struct {
 		Items []WorkItem `json:"workItemIndexs"`
 	}
-	q := fmt.Sprintf(`{ workItemIndexs(namespace: %q, where: [%s, %s]) { %s } }`, NS, where("org_id", orgID), where("rebase_state", "requested"), workItemFields)
-	if err := c.Query(ctx, q, nil, &out); err != nil {
+	q := func(fields string) string {
+		return fmt.Sprintf(`{ workItemIndexs(namespace: %q, where: [%s, %s]) { %s } }`, NS, where("org_id", orgID), where("rebase_state", "requested"), fields)
+	}
+	if err := c.queryItems(ctx, q, &out); err != nil {
 		return nil, err
 	}
 	sortBySeq(out.Items)
@@ -370,8 +423,10 @@ func (c *Client) GoalWorkItems(ctx context.Context, goalID string) ([]WorkItem, 
 	var out struct {
 		Items []WorkItem `json:"workItemIndexs"`
 	}
-	q := fmt.Sprintf(`{ workItemIndexs(namespace: %q, where: [%s]) { %s } }`, NS, where("goal_id", goalID), workItemFields)
-	if err := c.Query(ctx, q, nil, &out); err != nil {
+	q := func(fields string) string {
+		return fmt.Sprintf(`{ workItemIndexs(namespace: %q, where: [%s]) { %s } }`, NS, where("goal_id", goalID), fields)
+	}
+	if err := c.queryItems(ctx, q, &out); err != nil {
 		return nil, err
 	}
 	items := out.Items
@@ -704,9 +759,22 @@ func (c *Client) ReportWorkItemProgress(ctx context.Context, itemID, note string
 	return c.Mutate(ctx, "reportWorkItemProgress", itemID, map[string]any{"note": note, "costCents": costCents, "sessionId": sessionID})
 }
 
-// FinishWorkItem records the pushed branch.
+// FinishWorkItem records the pushed branch: the outcome built, which
+// the platform takes as the default, so the input is the one a platform
+// without outcomes knows.
 func (c *Client) FinishWorkItem(ctx context.Context, itemID, branch, headSha string, costCents int) error {
 	return c.Mutate(ctx, "finishWorkItem", itemID, map[string]any{"branch": branch, "headSha": headSha, "costCents": costCents})
+}
+
+// FinishWorkItemAlreadyDone finishes the item with no branch: main
+// already holds its work, and evidence — the merged PR URLs and/or
+// commit SHAs on the base ref, with a line on why — is what the
+// evaluator checks against the acceptance (mesh ADR 003 decision 1).
+func (c *Client) FinishWorkItemAlreadyDone(ctx context.Context, itemID, evidence string, costCents int) error {
+	if strings.TrimSpace(evidence) == "" {
+		return errors.New("gateway: an already_done finish needs evidence")
+	}
+	return c.Mutate(ctx, "finishWorkItem", itemID, map[string]any{"outcome": OutcomeAlreadyDone, "evidence": evidence, "costCents": costCents})
 }
 
 // FailWorkItem records the failure.
