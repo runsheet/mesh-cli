@@ -928,3 +928,124 @@ func TestLoopKeepsTheLastGoodCapacity(t *testing.T) {
 		t.Fatalf("scopes = %v", got)
 	}
 }
+
+// A draining node claims nothing on a tick: no ready item, no plan, no
+// research, no evaluation — but it still heartbeats.
+func TestDrainingLoopClaimsNothing(t *testing.T) {
+	p := newPriorityFake(t)
+	p.addGoal(orgID, "g", "normal")
+	p.addItem(orgID, "g", "ready-1", 1, false)
+	p.addItem(org2, "g", "ready-2", 2, false)
+	p.addPlanning(org2, "plan-me", "urgent")
+	p.addHeld(orgID, "g", "held-3", 3)
+	loop, logs := p.loop(4)
+	for _, sc := range p.scopes {
+		if err := loop.GW.(*gateway.Client).RegisterNode(context.Background(), gateway.RegisterNodeInput{NodeID: sc.NodeID, OrgID: sc.ID, Name: "Box", Slug: "box", Capacity: 4}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	loop.Drain()
+	beats := len(p.CallsNamed("heartbeatNode"))
+	loop.Tick(context.Background())
+	loop.wg.Wait()
+	for _, name := range []string{"claimWorkItem", "claimPlan", "claimDirectionResearch"} {
+		if calls := p.CallsNamed(name); len(calls) != 0 {
+			t.Fatalf("a draining node called %s: %+v", name, calls)
+		}
+	}
+	if got := started(logs.String(), "evaluating item"); len(got) != 0 {
+		t.Fatalf("a draining node started evaluations %v", got)
+	}
+	if got := len(p.CallsNamed("heartbeatNode")) - beats; got != 2 {
+		t.Fatalf("a draining node heartbeat %d times over two orgs\n%s", got, logs)
+	}
+	if p.Item("ready-1")["status"] != "ready" || !loop.Draining() {
+		t.Fatalf("ready-1 %v, draining %v", p.Item("ready-1")["status"], loop.Draining())
+	}
+	if loop.Adopt(context.Background(), gateway.WorkItem{ID: "held-elsewhere"}) {
+		t.Fatal("a draining node adopted a held item")
+	}
+}
+
+// runUntilDrained starts Run on a draining loop and checks it is still
+// running while release has not been called, then that it returns nil
+// once it has.
+func runUntilDrained(t *testing.T, loop *Loop, release func()) {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() { done <- loop.Run(context.Background()) }()
+	loop.Drain()
+	select {
+	case err := <-done:
+		t.Fatalf("Run returned %v with a session still running", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+	release()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("a drained Run returned %v, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return after the last session ended")
+	}
+}
+
+// A draining loop's Run waits for its running item, then returns nil.
+func TestDrainingRunWaitsForTheRunningItem(t *testing.T) {
+	p := newPriorityFake(t)
+	p.addGoal(orgID, "g", "normal")
+	p.addItem(orgID, "g", "long", 1, false)
+	p.addItem(orgID, "g", "next", 2, false)
+	loop, _ := p.loop(1)
+	hold := make(chan struct{})
+	loop.Dispatch = func(context.Context, gateway.WorkItem) { <-hold }
+	loop.Tick(context.Background())
+	if loop.Running() != 1 {
+		t.Fatalf("running %d before the drain", loop.Running())
+	}
+	runUntilDrained(t, loop, func() { close(hold) })
+	if loop.Running() != 0 || p.Item("next")["status"] != "ready" {
+		t.Fatalf("running %d, next %v", loop.Running(), p.Item("next")["status"])
+	}
+}
+
+// A planner holds the exit too, though it does not count against
+// capacity.
+func TestDrainingRunWaitsForAPlanner(t *testing.T) {
+	p := newPriorityFake(t)
+	p.addPlanning(orgID, "plan-me", "normal")
+	loop, _ := p.loop(1)
+	hold := make(chan struct{})
+	loop.Plan = func(context.Context, gateway.Goal, Scope) { <-hold }
+	loop.Tick(context.Background())
+	if loop.Running() != 0 {
+		t.Fatalf("a planner counted as running: %d", loop.Running())
+	}
+	runUntilDrained(t, loop, func() { close(hold) })
+}
+
+// So does an evaluator.
+func TestDrainingRunWaitsForAnEvaluator(t *testing.T) {
+	p := newPriorityFake(t)
+	p.addGoal(orgID, "g", "normal")
+	p.addHeld(orgID, "g", "held-1", 1)
+	loop, _ := p.loop(1)
+	hold := make(chan struct{})
+	loop.Evaluate = func(context.Context, gateway.WorkItem) { <-hold }
+	loop.Tick(context.Background())
+	if loop.Running() != 0 {
+		t.Fatalf("an evaluator counted as running: %d", loop.Running())
+	}
+	runUntilDrained(t, loop, func() { close(hold) })
+}
+
+// A drain with nothing running ends Run straight away.
+func TestDrainingIdleRunReturnsNil(t *testing.T) {
+	p := newPriorityFake(t)
+	loop, _ := p.loop(1)
+	loop.Drain()
+	if err := loop.Run(context.Background()); err != nil {
+		t.Fatalf("Run = %v", err)
+	}
+}
