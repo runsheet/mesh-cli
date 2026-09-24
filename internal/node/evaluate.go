@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"os"
 	"strings"
 	"time"
 
@@ -56,6 +57,11 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 		branch = res.Branch()
 	}
 	spec := WorkspaceSpec{Root: e.WorkRoot, GoalSlug: res.Goal.Slug, Seq: item.Seq, Repo: res.Repo.FullName(), Branch: branch, BaseRef: res.BaseRef()}
+	// the item's own GitHub token, as its builder had
+	cred, err := newItemCred(ctx, e.GW, e.WS, e.Scopes, item, spec, e.logf)
+	if err != nil {
+		return err
+	}
 	dir, err := e.WS.Prepare(ctx, spec)
 	if err != nil {
 		return fmt.Errorf("workspace: %w", err)
@@ -90,6 +96,14 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 		budget = 3
 	}
 	job := harness.Job{Kind: harness.KindEvaluate, Workspace: dir, Prompt: prompt, MaxBudgetUSD: budget, Label: label + " evaluate", Timeout: e.Timeout, MCPServers: e.MCP, Model: e.Model}
+	if tok := cred.token(); tok != nil {
+		ghDir, err := NewGHConfigDir()
+		if err != nil {
+			return fmt.Errorf("gh config dir: %w", err)
+		}
+		defer os.RemoveAll(ghDir)
+		job.Env = SessionEnv(tok, ghDir)
+	}
 	e.logf("item %s: evaluating %s (%d bytes of diff)", label, branch, len(diff))
 	result, err := e.Harness.Run(ctx, job, nil)
 	if ctx.Err() != nil {
