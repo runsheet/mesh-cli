@@ -29,3 +29,11 @@ func TestNodeIDMatchesPlatformDerivation(t *testing.T) {
 		t.Fatalf("ProjectID = %s, want %s", got, want)
 	}
 }
+
+func TestPriorityRank(t *testing.T) {
+	for p, want := range map[string]int{"urgent": 0, "high": 1, "normal": 2, "": 2, "bogus": 2, "low": 3} {
+		if got := PriorityRank(p); got != want {
+			t.Errorf("PriorityRank(%q) = %d, want %d", p, got, want)
+		}
+	}
+}

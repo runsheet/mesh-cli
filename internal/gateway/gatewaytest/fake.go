@@ -41,9 +41,15 @@ type Fake struct {
 	Documents map[string][]map[string]any
 	Bodies    map[string]string
 	Calls     []Call
+	// Reads are the index lists the fake served: Name is the list
+	// (goalIndexs), Input its EQ wheres by field (org_id).
+	Reads []Call
 	// Refuse maps a mutation name to a refusal message (returned as a
 	// GraphQL error) — for tests of "someone else has it".
 	Refuse map[string]string
+	// FailReads maps an index list name (goalIndexs) to an error it
+	// answers with instead of rows.
+	FailReads map[string]string
 }
 
 // New starts a fake accepting the given bearer token.
@@ -54,7 +60,7 @@ func New(token string) *Fake {
 		WorkItems: map[string]map[string]any{}, Goals: map[string]map[string]any{}, Projects: map[string]map[string]any{},
 		Directions: map[string]map[string]any{},
 		Repos:      map[string]map[string]any{}, Accounts: map[string]map[string]any{}, Nodes: map[string]map[string]any{},
-		Documents: map[string][]map[string]any{}, Bodies: map[string]string{}, Refuse: map[string]string{},
+		Documents: map[string][]map[string]any{}, Bodies: map[string]string{}, Refuse: map[string]string{}, FailReads: map[string]string{},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/graphql", f.graphql)
@@ -75,6 +81,19 @@ func (f *Fake) CallsNamed(name string) []Call {
 	defer f.mu.Unlock()
 	var out []Call
 	for _, c := range f.Calls {
+		if c.Name == name {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// ReadsNamed returns the recorded index lists with that name.
+func (f *Fake) ReadsNamed(name string) []Call {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []Call
+	for _, c := range f.Reads {
 		if c.Name == name {
 			out = append(out, c)
 		}
@@ -155,10 +174,20 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 			writeErrors(w, 200, "unknown query")
 			return
 		}
+		wheres := whereRe.FindAllStringSubmatch(q, -1)
+		read := Call{Name: m[1], Input: map[string]any{}}
+		for _, wm := range wheres {
+			read.Input[wm[1]] = wm[2]
+		}
+		f.Reads = append(f.Reads, read)
+		if msg := f.FailReads[m[1]]; msg != "" {
+			writeErrors(w, 200, msg)
+			return
+		}
 		rows := []map[string]any{}
 		for _, row := range f.table(m[1]) {
 			ok := true
-			for _, wm := range whereRe.FindAllStringSubmatch(q, -1) {
+			for _, wm := range wheres {
 				if fmt.Sprint(row[camel(wm[1])]) != wm[2] {
 					ok = false
 				}
