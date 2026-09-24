@@ -139,3 +139,98 @@ func TestArgsAskMCPFuncEachTime(t *testing.T) {
 		t.Fatalf("second args carry a stale bearer: %s", second)
 	}
 }
+
+// A stand-in claude that records its environment and what is in its
+// GH_CONFIG_DIR, then waits on stdin like the real one.
+const envClaude = `#!/bin/sh
+env > "$MESH_TEST_OUT.env"
+ls -A "$GH_CONFIG_DIR" > "$MESH_TEST_OUT.ghdir" 2>&1
+echo '{"type":"system","subtype":"init","session_id":"s-env"}'
+while IFS= read -r line; do :; done
+exit 0
+`
+
+// The shared session is started with a fresh, empty GH_CONFIG_DIR and
+// none of the GitHub tokens the node daemon's own environment carries,
+// so it can never reach the operator's gh login.
+func TestSessionRunsWithoutTheOperatorsGitHub(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	out := filepath.Join(dir, "claude")
+	t.Setenv("MESH_TEST_OUT", out)
+	operatorGH := filepath.Join(dir, "operator-gh")
+	os.MkdirAll(operatorGH, 0o755)
+	os.WriteFile(filepath.Join(operatorGH, "hosts.yml"), []byte("github.com:\n  oauth_token: gho_operator\n"), 0o600)
+	t.Setenv("GH_CONFIG_DIR", operatorGH)
+	t.Setenv("GH_TOKEN", "gho_operator")
+	t.Setenv("GITHUB_TOKEN", "ghp_operator")
+	t.Setenv("GH_ENTERPRISE_TOKEN", "ghe_operator")
+	bin := filepath.Join(dir, "claude-bin")
+	if err := os.WriteFile(bin, []byte(envClaude), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{}, 1)
+	s := &Session{Cfg: &node.Config{Slug: "n"}, Orgs: []string{"acme"}, WorkDir: filepath.Join(dir, "work", "n"), Exe: bin, SockPath: filepath.Join(dir, "node.sock"), Binary: bin,
+		OnStart: func() { started <- struct{}{} }}
+	ctx, cancel := context.WithCancel(context.Background())
+	runErr := make(chan error, 1)
+	go func() { runErr <- s.Run(ctx, filepath.Join(dir, "work")) }()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("session did not start")
+	}
+	var env []string
+	waitFor(t, func() bool {
+		e, _ := os.ReadFile(out + ".env")
+		env = strings.Split(strings.TrimSpace(string(e)), "\n")
+		return len(e) > 0 && fileExists(out+".ghdir")
+	})
+	ghDir := ""
+	for _, kv := range env {
+		k, v, _ := strings.Cut(kv, "=")
+		switch k {
+		case "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN":
+			t.Errorf("the session inherited %s", kv)
+		case "GH_CONFIG_DIR":
+			ghDir = v
+		}
+		if strings.Contains(v, "_operator") {
+			t.Errorf("the operator's credential reached the session: %s", kv)
+		}
+	}
+	if ghDir == "" || ghDir == operatorGH {
+		t.Fatalf("GH_CONFIG_DIR = %q", ghDir)
+	}
+	if b, _ := os.ReadFile(out + ".ghdir"); strings.TrimSpace(string(b)) != "" {
+		t.Fatalf("GH_CONFIG_DIR must start empty, has: %s", b)
+	}
+	if strings.HasPrefix(ghDir, filepath.Join(dir, "work")) {
+		t.Fatalf("GH_CONFIG_DIR %s is in the work root", ghDir)
+	}
+	cancel()
+	select {
+	case <-runErr:
+	case <-time.After(10 * time.Second):
+		t.Fatal("run did not stop")
+	}
+	if _, err := os.Stat(ghDir); !os.IsNotExist(err) {
+		t.Fatalf("GH_CONFIG_DIR %s outlived the session: %v", ghDir, err)
+	}
+}
+
+func fileExists(p string) bool { _, err := os.Stat(p); return err == nil }
+
+// The session is told the node has prepared and credentialed the
+// workspace, and to fail the item rather than clone it for itself.
+func TestSystemPromptLeavesTheCloneToTheNode(t *testing.T) {
+	p := SystemPrompt(&node.Config{Slug: "n"}, []string{"acme"}, "/w")
+	if strings.Contains(p, "gh repo clone") {
+		t.Fatalf("the prompt still tells the session to clone:\n%s", p)
+	}
+	for _, want := range []string{"The node has already cloned it", "never clone", "call mesh_fail(item_id, error)"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("the prompt lacks %q", want)
+		}
+	}
+}
