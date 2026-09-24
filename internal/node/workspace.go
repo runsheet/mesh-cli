@@ -37,6 +37,11 @@ func BranchName(goalSlug string, seq int) string {
 // Workspacer prepares checkouts and pushes branches. Git is the real one;
 // tests substitute a fake.
 type Workspacer interface {
+	// Authorize makes spec's checkout reach GitHub with the item's token
+	// alone — creating the checkout, empty, when there is none yet — so
+	// the Prepare and Push after it use nothing else. Called again with
+	// a renewed token, it replaces the old one.
+	Authorize(ctx context.Context, spec WorkspaceSpec, tok *gateway.GitHubToken) error
 	// Prepare clones (or fetches) the repo into spec.Dir() and checks out
 	// spec.Branch from spec.BaseRef, returning the directory.
 	Prepare(ctx context.Context, spec WorkspaceSpec) (string, error)
@@ -52,9 +57,42 @@ type Workspacer interface {
 	Fetch(ctx context.Context, repo, dir string) error
 }
 
-// Git is the Workspacer over `gh` and `git` with the user's credentials.
+// Git is the Workspacer over `gh` and `git`: an Authorized checkout on
+// its item's token, any other on the operator's own credentials.
 type Git struct {
 	Log io.Writer
+	// GitHubURL is GitHub's base URL (GitHubURL when empty).
+	GitHubURL string
+}
+
+func (g *Git) githubURL() string {
+	if g.GitHubURL != "" {
+		return strings.TrimRight(g.GitHubURL, "/")
+	}
+	return GitHubURL
+}
+
+// Authorize implements Workspacer: origin becomes the repo's https URL
+// (a `gh repo clone` may have left an ssh one, on the operator's key)
+// and the checkout's own credential helper answers with tok.
+func (g *Git) Authorize(ctx context.Context, spec WorkspaceSpec, tok *gateway.GitHubToken) error {
+	dir := spec.Dir()
+	origin := g.githubURL() + "/" + spec.Repo + ".git"
+	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
+		// no clone yet: an empty checkout Prepare fetches into
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+		if _, err := g.run(ctx, dir, "git", "init", "--quiet"); err != nil {
+			return err
+		}
+		if _, err := g.run(ctx, dir, "git", "remote", "add", "origin", origin); err != nil {
+			return err
+		}
+	} else if _, err := g.run(ctx, dir, "git", "remote", "set-url", "origin", origin); err != nil {
+		return err
+	}
+	return WriteCredentialHelper(ctx, dir, g.githubURL(), tok)
 }
 
 func (g *Git) run(ctx context.Context, dir string, name string, args ...string) (string, error) {

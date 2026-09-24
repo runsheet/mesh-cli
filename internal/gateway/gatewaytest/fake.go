@@ -380,7 +380,9 @@ func (f *Fake) issueItemRepoToken(in map[string]any) (map[string]any, error) {
 	if item == nil {
 		return nil, fmt.Errorf("no such item")
 	}
-	if item["status"] != "claimed" && item["status"] != "running" {
+	switch item["status"] {
+	case "claimed", "running", "evaluating": // its builder, then its evaluator
+	default:
 		return nil, fmt.Errorf("item is %s, not claimed", item["status"])
 	}
 	if item["nodeId"] != in["nodeId"] {

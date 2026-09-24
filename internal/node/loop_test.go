@@ -43,6 +43,10 @@ func seed(t *testing.T) *gatewaytest.Fake {
 		"brief": "A test for the thing.", "acceptance": "the test fails", "repoId": repoID, "baseRef": "main", "status": "ready", "dependsOn": []string{}}
 	f.WorkItems[item2] = map[string]any{"id": item2, "goalId": goalID, "orgId": orgID, "seq": 2, "title": "Make it pass",
 		"brief": "Implement.", "acceptance": "go test passes", "repoId": repoID, "baseRef": "main", "status": "pending", "dependsOn": []string{item1}}
+	// each item's own GitHub token, an hour to live
+	exp := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	f.GitHubTokens[item1] = map[string]any{"token": "ghs_item1", "expiresAt": exp, "repository": "acme/widgets"}
+	f.GitHubTokens[item2] = map[string]any{"token": "ghs_item2", "expiresAt": exp, "repository": "acme/widgets"}
 	f.Documents["acme/mesh"] = []map[string]any{
 		{"slug": "adr-001", "title": "ADR 001", "kind": "adr", "repo": "acme/widgets", "path": "specs/adr-001.md"},
 		{"slug": "prd", "title": "PRD", "kind": "prd", "repo": "acme/widgets", "path": "specs/prd.md"},
@@ -68,12 +72,29 @@ type fakeWS struct {
 	pushed   []string
 	commits  []string
 	fetched  []string
+	// events are Authorize (with its token), Prepare, Diff and Push in
+	// the order they came
+	events []string
+}
+
+func (w *fakeWS) Authorize(_ context.Context, spec WorkspaceSpec, tok *gateway.GitHubToken) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.events = append(w.events, "authorize "+tok.Token)
+	return nil
+}
+
+func (w *fakeWS) Events() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]string(nil), w.events...)
 }
 
 func (w *fakeWS) Prepare(_ context.Context, spec WorkspaceSpec) (string, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.prepared = append(w.prepared, spec)
+	w.events = append(w.events, "prepare")
 	dir := spec.Dir()
 	return dir, os.MkdirAll(dir, 0o755)
 }
@@ -89,6 +110,7 @@ func (w *fakeWS) Push(_ context.Context, dir, branch string) (string, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.pushed = append(w.pushed, branch)
+	w.events = append(w.events, "push")
 	return "abc123def456", nil
 }
 
@@ -119,6 +141,9 @@ func assertNoGoalDoc(t *testing.T, ws *fakeWS) {
 }
 
 func (w *fakeWS) Diff(_ context.Context, dir, base string) (string, error) {
+	w.mu.Lock()
+	w.events = append(w.events, "diff")
+	w.mu.Unlock()
 	return "+++ b/thing_test.go\n+func TestThing(t *testing.T) {}", nil
 }
 
@@ -259,9 +284,9 @@ func TestRunnerFailsAnUnsuccessfulSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	ws := &fakeWS{root: t.TempDir()}
-	runner := &Runner{GW: gw, Harness: &fakeHarness{fail: true}, WS: ws, Cfg: cfg, WorkRoot: ws.root, ProgressEvery: time.Hour}
+	runner := &Runner{GW: gw, Harness: &fakeHarness{fail: true}, WS: ws, Cfg: cfg, Scopes: scopesOf(cfg), WorkRoot: ws.root, ProgressEvery: time.Hour}
 	var item gateway.WorkItem
-	item.ID, item.GoalID, item.RepoID, item.Seq, item.Title = item1, goalID, repoID, 1, "Write the failing test"
+	item.ID, item.OrgID, item.GoalID, item.RepoID, item.Seq, item.Title = item1, orgID, goalID, repoID, 1, "Write the failing test"
 	if err := runner.RunItem(context.Background(), item); err == nil {
 		t.Fatal("expected an error")
 	}
@@ -296,7 +321,7 @@ func TestRunnerLeavesItemOnShutdown(t *testing.T) {
 	})
 	runner := &Runner{GW: gw, Harness: blocking, WS: ws, Cfg: cfg, Scopes: scopesOf(cfg), WorkRoot: ws.root, ProgressEvery: time.Hour}
 	var item gateway.WorkItem
-	item.ID, item.GoalID, item.RepoID, item.Seq = item1, goalID, repoID, 1
+	item.ID, item.OrgID, item.GoalID, item.RepoID, item.Seq = item1, orgID, goalID, repoID, 1
 	if err := runner.RunItem(ctx, item); err != context.Canceled {
 		t.Fatalf("err = %v", err)
 	}
@@ -400,7 +425,7 @@ func TestRunnerAsksForItsMCPServersPerItem(t *testing.T) {
 	f.WorkItems[item2]["status"] = "ready"
 	for seq, id := range []string{item1, item2} {
 		var item gateway.WorkItem
-		item.ID, item.GoalID, item.RepoID, item.Seq, item.Title = id, goalID, repoID, seq+1, "Write the failing test"
+		item.ID, item.OrgID, item.GoalID, item.RepoID, item.Seq, item.Title = id, orgID, goalID, repoID, seq+1, "Write the failing test"
 		if err := gw.ClaimWorkItem(context.Background(), id, cfg.NodeID, "claude-code"); err != nil {
 			t.Fatal(err)
 		}
