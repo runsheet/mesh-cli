@@ -452,12 +452,58 @@ func (p *priorityFake) addItem(org, goal, title string, seq int, retry bool) {
 	p.WorkItems[title] = row
 }
 
+// addPlanning adds a goal of that priority to the org, in planning.
+func (p *priorityFake) addPlanning(org, slug, priority string) {
+	p.addGoal(org, slug, priority)
+	p.Goals[slug]["status"] = "planning"
+}
+
+// addHeld adds an item of the goal that this node finished and holds
+// for evaluation; its id is title.
+func (p *priorityFake) addHeld(org, goal, title string, seq int) {
+	p.addItem(org, goal, title, seq, false)
+	node := p.scopes[0].NodeID
+	if org == org2 {
+		node = p.scopes[1].NodeID
+	}
+	p.WorkItems[title]["status"], p.WorkItems[title]["nodeId"] = "evaluating", node
+}
+
+// loop is a node over both orgs with that capacity. It plans and
+// evaluates too, doing nothing, and logs into the returned buffer: the
+// "planning goal" and "evaluating item" lines are written as each
+// session starts, in the order they start.
+func (p *priorityFake) loop(capacity int) (*Loop, *strings.Builder) {
+	var logs strings.Builder
+	return &Loop{GW: gateway.New(p.URL(), "rs_test"), Cfg: &Config{Slug: "box", Capacity: capacity}, Scopes: p.scopes,
+		Interval: time.Hour, Harness: "claude-code", Log: log.New(&logs, "", 0),
+		Dispatch: func(context.Context, gateway.WorkItem) {},
+		Evaluate: func(context.Context, gateway.WorkItem) {},
+		Plan:     func(context.Context, gateway.Goal, Scope) {},
+		Research: func(context.Context, gateway.Direction, gateway.Project, Scope) {},
+	}, &logs
+}
+
+// started lists what the log says was started with that prefix
+// ("planning goal", "evaluating item"), in order: the quoted name.
+func started(logs, prefix string) []string {
+	var out []string
+	for _, line := range strings.Split(logs, "\n") {
+		if i := strings.Index(line, prefix); i >= 0 {
+			rest := line[i+len(prefix):]
+			if q := strings.Index(rest, `"`); q >= 0 {
+				out = append(out, strings.Trim(rest[q:], `"`))
+			}
+		}
+	}
+	return out
+}
+
 // tick runs one tick with that capacity and returns the items claimed,
 // in the order they were claimed.
 func (p *priorityFake) tick(capacity int) []string {
 	p.t.Helper()
-	gw := gateway.New(p.URL(), "rs_test")
-	loop := &Loop{GW: gw, Cfg: &Config{Slug: "box", Capacity: capacity}, Scopes: p.scopes, Interval: time.Hour, Harness: "claude-code",
+	loop := &Loop{GW: gateway.New(p.URL(), "rs_test"), Cfg: &Config{Slug: "box", Capacity: capacity}, Scopes: p.scopes, Interval: time.Hour, Harness: "claude-code",
 		Dispatch: func(context.Context, gateway.WorkItem) {}}
 	before := len(p.CallsNamed("claimWorkItem"))
 	loop.Tick(context.Background())
@@ -583,5 +629,126 @@ func TestClaimOrder(t *testing.T) {
 	}
 	if strings.Join(got, ",") != "unknown,fresh,retry,low" {
 		t.Fatalf("order %v", got)
+	}
+}
+
+// A planner for an urgent goal in globex is claimed and started before
+// one for a normal goal in acme, though acme is listed first.
+func TestLoopPlansAnUrgentGoalFirstAcrossOrgs(t *testing.T) {
+	p := newPriorityFake(t)
+	p.addPlanning(orgID, "steady", "normal")
+	p.addPlanning(org2, "fire", "urgent")
+	loop, logs := p.loop(1)
+	loop.Tick(context.Background())
+	loop.wg.Wait()
+	var claims []string
+	for _, c := range p.CallsNamed("claimPlan") {
+		claims = append(claims, fmt.Sprint(c.Input["aggregateId"]))
+	}
+	if strings.Join(claims, ",") != "fire,steady" {
+		t.Fatalf("plans claimed %v, want fire first", claims)
+	}
+	if got := strings.Join(started(logs.String(), "planning goal"), ","); got != "fire,steady" {
+		t.Fatalf("planners started %s\n%s", got, logs)
+	}
+}
+
+// An evaluation of an urgent goal's item in globex starts before one of
+// a normal goal's older item in acme.
+func TestLoopEvaluatesAnUrgentGoalFirstAcrossOrgs(t *testing.T) {
+	p := newPriorityFake(t)
+	p.addGoal(orgID, "steady", "normal")
+	p.addGoal(org2, "fire", "urgent")
+	p.addHeld(orgID, "steady", "acme-old", 1)
+	p.addHeld(org2, "fire", "globex-urgent", 7)
+	loop, logs := p.loop(1)
+	loop.Tick(context.Background())
+	loop.wg.Wait()
+	if got := strings.Join(started(logs.String(), "evaluating item"), ","); got != "globex-urgent,acme-old" {
+		t.Fatalf("evaluations started %s\n%s", got, logs)
+	}
+}
+
+// Empty priority is normal for plans and evaluations too: after high,
+// before low; evaluations of one rank go by seq.
+func TestLoopPlansAndEvaluatesEmptyPriorityAsNormal(t *testing.T) {
+	p := newPriorityFake(t)
+	p.addPlanning(orgID, "low", "low")
+	p.addPlanning(orgID, "unset", "")
+	p.addPlanning(org2, "high", "high")
+	p.addGoal(orgID, "g-low", "low")
+	p.addGoal(orgID, "g-unset", "")
+	p.addGoal(org2, "g-normal", "normal")
+	p.addGoal(org2, "g-high", "high")
+	p.addHeld(orgID, "g-low", "low-1", 1)
+	p.addHeld(orgID, "g-unset", "unset-3", 3)
+	p.addHeld(org2, "g-normal", "normal-2", 2)
+	p.addHeld(org2, "g-high", "high-9", 9)
+	loop, logs := p.loop(1)
+	loop.Tick(context.Background())
+	loop.wg.Wait()
+	if got := strings.Join(started(logs.String(), "planning goal"), ","); got != "high,unset,low" {
+		t.Fatalf("planners started %s", got)
+	}
+	if got := strings.Join(started(logs.String(), "evaluating item"), ","); got != "high-9,normal-2,unset-3,low-1" {
+		t.Fatalf("evaluations started %s", got)
+	}
+}
+
+// A failed goals read leaves an org's evaluations at normal: still
+// started, ordered by seq among the other normals.
+func TestLoopEvaluatesAsNormalWhenGoalsFail(t *testing.T) {
+	p := newPriorityFake(t)
+	p.addGoal(orgID, "fire", "urgent")
+	p.addGoal(org2, "g", "")
+	p.addHeld(orgID, "fire", "acme-urgent", 5)
+	p.addHeld(org2, "g", "globex-1", 1)
+	p.FailReads["goalIndexs"] = "gateway unavailable"
+	loop, logs := p.loop(1)
+	loop.Tick(context.Background())
+	loop.wg.Wait()
+	if got := strings.Join(started(logs.String(), "evaluating item"), ","); got != "globex-1,acme-urgent" {
+		t.Fatalf("evaluations started %s", got)
+	}
+}
+
+// A whole tick — ready items, goals in planning and held evaluations in
+// both orgs, and the director looking for room — reads each org's goals
+// exactly once.
+func TestLoopTickReadsGoalsOncePerOrg(t *testing.T) {
+	p := newPriorityFake(t)
+	for _, org := range []string{orgID, org2} {
+		g, plan := "run-"+org[:4], "plan-"+org[:4]
+		p.addGoal(org, g, "normal")
+		p.addPlanning(org, plan, "high")
+		p.addItem(org, g, "ready-"+org[:4], 1, false)
+		p.addHeld(org, g, "held-"+org[:4], 2)
+	}
+	// a live direction in each org, with room, so the director reads goals
+	const proj2 = "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb"
+	p.Projects[proj2] = map[string]any{"id": proj2, "orgId": org2, "slug": "other", "name": "Other"}
+	direction(p.Fake, dirID, projID, "nightly", "Tidy up.", 5)
+	direction(p.Fake, "eeeeeeee-2222-4222-8222-eeeeeeeeeeee", proj2, "nightly", "Tidy up.", 5)["orgId"] = org2
+	loop, logs := p.loop(2)
+	loop.Tick(context.Background())
+	loop.wg.Wait()
+	if n := len(started(logs.String(), "planning goal")); n != 2 {
+		t.Fatalf("planners started %d\n%s", n, logs)
+	}
+	if n := len(started(logs.String(), "evaluating item")); n != 2 {
+		t.Fatalf("evaluations started %d\n%s", n, logs)
+	}
+	if n := len(p.CallsNamed("claimWorkItem")); n != 2 {
+		t.Fatalf("claimed %d items", n)
+	}
+	if n := len(p.CallsNamed("claimDirectionResearch")); n != 2 {
+		t.Fatalf("research claimed %d times\n%s", n, logs)
+	}
+	byOrg := map[any]int{}
+	for _, r := range p.ReadsNamed("goalIndexs") {
+		byOrg[r.Input["org_id"]]++
+	}
+	if len(byOrg) != 2 || byOrg[orgID] != 1 || byOrg[org2] != 1 {
+		t.Fatalf("goal reads by org in one tick: %v", byOrg)
 	}
 }
