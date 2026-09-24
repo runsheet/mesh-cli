@@ -60,6 +60,9 @@ type Loop struct {
 	planning    map[string]bool
 	researching map[string]bool
 	wg          sync.WaitGroup
+	// draining stops every new claim — items, plans, research — while
+	// the heartbeat and the evaluation of held items go on (trd §3 Drain).
+	draining bool
 	// capacity is the one in force: Cfg.Capacity until Reload says otherwise.
 	capacity int
 	// tickGoals holds each org's goals as read this tick, so the claim,
@@ -253,20 +256,78 @@ func (l *Loop) Tick(ctx context.Context) {
 	l.tickGoals = map[string]goalsRead{}
 	l.reload(ctx)
 	for _, sc := range l.Scopes {
-		if err := l.GW.HeartbeatNode(ctx, sc.NodeID, l.Version, l.Running()); err != nil {
+		if err := l.GW.HeartbeatNode(ctx, sc.NodeID, l.Version, l.Running(), gateway.HeartbeatExtras{Draining: l.Draining()}); err != nil {
 			l.logf("heartbeat %s: %v", sc.Login, err)
 		}
 	}
+	// an item this node finished is still its own to evaluate, drained or not
 	l.evaluateHeld(ctx)
-	l.planRequested(ctx)
-	l.researchDue(ctx)
-	free := l.Capacity() - l.Running()
-	if free > 0 {
-		l.claimReady(ctx, free)
+	if !l.Draining() {
+		l.planRequested(ctx)
+		l.researchDue(ctx)
+		if free := l.Capacity() - l.Running(); free > 0 {
+			l.claimReady(ctx, free)
+		}
 	}
 	if l.AfterTick != nil {
 		l.AfterTick(ctx)
 	}
+}
+
+// drainPoll is how often Drain looks for the last session to end.
+var drainPoll = 50 * time.Millisecond
+
+// Drain stops the loop claiming anything new — no item, no plan, no
+// research — and returns once every session this node runs has ended
+// (builds, and the evaluations, plans and research in flight), or with
+// ctx.Err() when ctx is done first. Ticks go on meanwhile: the heartbeat
+// reports draining, and items this node finished are still evaluated.
+// The loop stays drained until Resume.
+func (l *Loop) Drain(ctx context.Context) error {
+	l.mu.Lock()
+	was := l.draining
+	l.draining = true
+	l.mu.Unlock()
+	if !was {
+		l.logf("draining: claiming nothing new, %d running", l.Running())
+	}
+	t := time.NewTicker(drainPoll)
+	defer t.Stop()
+	for {
+		if l.sessions() == 0 {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-t.C:
+		}
+	}
+}
+
+// Draining reports whether the loop has stopped claiming.
+func (l *Loop) Draining() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.draining
+}
+
+// Resume undoes Drain: the next tick claims again.
+func (l *Loop) Resume() {
+	l.mu.Lock()
+	was := l.draining
+	l.draining = false
+	l.mu.Unlock()
+	if was {
+		l.logf("resumed: claiming again")
+	}
+}
+
+// sessions counts every session in flight, of any kind.
+func (l *Loop) sessions() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.running) + len(l.evaluating) + len(l.planning) + len(l.researching)
 }
 
 // Capacity is the number of items this node runs at once, as last read.

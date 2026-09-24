@@ -33,6 +33,13 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   evaluate, plan and research sessions, the service install (`launchd` /
   `systemd --user`). `internal/gateway/client.go`: the platform client.
   `internal/channel/`: channel mode (one session per org, turns).
+  **A draining node claims nothing** (`Loop.Drain`, mesh-specs trd §3
+  Drain): no item, no plan, no research. Its ticks still heartbeat —
+  with `draining` set — and still evaluate the items it finished;
+  `Drain` returns once every session of any kind has ended, and
+  `Resume` undoes it. The heartbeat's extras (`gateway.HeartbeatExtras`:
+  `draining`, `updateError`) are sent only when set, because they are
+  fields the platform half (runsheet `update-nodes-from-console`) adds.
 - **The director** (`internal/node/research.go`, runsheet trd §6c): a
   project carries **directions** — several, each its own aggregate with
   its own words, window, timezone, gap, ceiling and research claim

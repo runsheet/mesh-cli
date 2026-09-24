@@ -637,9 +637,32 @@ func (c *Client) RegisterNode(ctx context.Context, in RegisterNodeInput) error {
 	})
 }
 
-// HeartbeatNode reports liveness and the running session count.
-func (c *Client) HeartbeatNode(ctx context.Context, nodeID, version string, running int) error {
-	return c.Mutate(ctx, "heartbeatNode", nodeID, map[string]any{"version": version, "running": running})
+// HeartbeatExtras are what a heartbeat reports beyond liveness. Each is
+// sent only when set: they are fields the platform half adds
+// (update-nodes-from-console), and a platform without them must go on
+// accepting the heartbeat of an ordinary node.
+type HeartbeatExtras struct {
+	// Draining says the node claims nothing new and is letting its
+	// sessions finish.
+	Draining bool
+	// UpdateError says why the last self-update was refused or rolled back.
+	UpdateError string
+}
+
+// HeartbeatNode reports liveness and the running session count, and the
+// extras that are set (at most one struct is read).
+func (c *Client) HeartbeatNode(ctx context.Context, nodeID, version string, running int, extras ...HeartbeatExtras) error {
+	in := map[string]any{"version": version, "running": running}
+	if len(extras) > 0 {
+		x := extras[0]
+		if x.Draining {
+			in["draining"] = true
+		}
+		if x.UpdateError != "" {
+			in["updateError"] = x.UpdateError
+		}
+	}
+	return c.Mutate(ctx, "heartbeatNode", nodeID, in)
 }
 
 // ClaimWorkItem takes the item's lock; a refusal is a gateway.Error.
