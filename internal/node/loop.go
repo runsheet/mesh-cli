@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -46,6 +47,12 @@ type Loop struct {
 	Research func(ctx context.Context, direction gateway.Direction, project gateway.Project, scope Scope)
 	// AfterTick runs at the end of every tick (optional).
 	AfterTick func(ctx context.Context)
+	// Reload is asked at the top of every tick for the capacity and the
+	// orgs served as they stand now (node.yaml and MyOrgs), so neither
+	// needs a restart (optional; Reloader builds it). A capacity of 0 or
+	// nil scopes keep what the loop has; an error is logged, and what
+	// came back with it is still taken.
+	Reload func(ctx context.Context) (capacity int, scopes Scopes, err error)
 
 	mu          sync.Mutex
 	running     map[string]bool
@@ -53,6 +60,8 @@ type Loop struct {
 	planning    map[string]bool
 	researching map[string]bool
 	wg          sync.WaitGroup
+	// capacity is the one in force: Cfg.Capacity until Reload says otherwise.
+	capacity int
 	// tickGoals holds each org's goals as read this tick, so the claim,
 	// the planner and the director share one GoalIndex read per org.
 	tickGoals map[string]goalsRead
@@ -242,6 +251,7 @@ func (l *Loop) Tick(ctx context.Context) {
 		l.running = map[string]bool{}
 	}
 	l.tickGoals = map[string]goalsRead{}
+	l.reload(ctx)
 	for _, sc := range l.Scopes {
 		if err := l.GW.HeartbeatNode(ctx, sc.NodeID, l.Version, l.Running()); err != nil {
 			l.logf("heartbeat %s: %v", sc.Login, err)
@@ -250,13 +260,67 @@ func (l *Loop) Tick(ctx context.Context) {
 	l.evaluateHeld(ctx)
 	l.planRequested(ctx)
 	l.researchDue(ctx)
-	free := l.Cfg.Capacity - l.Running()
+	free := l.Capacity() - l.Running()
 	if free > 0 {
 		l.claimReady(ctx, free)
 	}
 	if l.AfterTick != nil {
 		l.AfterTick(ctx)
 	}
+}
+
+// Capacity is the number of items this node runs at once, as last read.
+func (l *Loop) Capacity() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.capacity > 0 {
+		return l.capacity
+	}
+	return l.Cfg.Capacity
+}
+
+// CurrentScopes are the orgs served, as last read — for the sessions
+// that need an item's org login after the loop has started.
+func (l *Loop) CurrentScopes() Scopes {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.Scopes
+}
+
+// reload takes the capacity and the orgs from Reload, logging a change.
+// Tick is the only writer of Scopes, so its own reads need no lock.
+func (l *Loop) reload(ctx context.Context) {
+	if l.Reload == nil {
+		return
+	}
+	capacity, scopes, err := l.Reload(ctx)
+	if err != nil {
+		l.logf("reload config: %v", err)
+	}
+	if was := l.Capacity(); capacity > 0 && capacity != was {
+		l.logf("capacity %d → %d", was, capacity)
+		l.mu.Lock()
+		l.capacity = capacity
+		l.mu.Unlock()
+	}
+	if scopes != nil && !sameOrgs(scopes, l.Scopes) {
+		l.logf("orgs %s → %s", strings.Join(l.Scopes.Logins(), ", "), strings.Join(scopes.Logins(), ", "))
+		l.mu.Lock()
+		l.Scopes = scopes
+		l.mu.Unlock()
+	}
+}
+
+func sameOrgs(a, b Scopes) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // evaluateHeld starts an evaluation of every item this node finished
