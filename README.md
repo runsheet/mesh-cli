@@ -229,11 +229,13 @@ Prologue is read-only over git, so a goal writes itself into the repo:
 `status: draft` while running / `approved` when done / `superseded` when
 cancelled, `parent:` the project's PRD when Prologue lists one), with the
 statement, the acceptance, an `## Items` table regenerated from the
-gateway's rows and a `## Log` that appends one dated line per call. The
-session calls `mesh_record` after each milestone and before `mesh_finish`
-(poll mode does it for the session); it is committed on the item's branch
+gateway's rows and a `## Log` that appends one dated line per call. In
+channel mode the session calls `mesh_record` after each milestone and
+before `mesh_finish`; it is committed on the item's branch
 (`docs(mesh): goal <slug> — item <seq>`) and lands with the merge, where
-Prologue indexes it.
+Prologue indexes it. Poll mode no longer writes the doc on an item's
+branch: a build's branch carries only its own work, and the doc is written
+once, when the goal ends.
 
 ## Goals
 

@@ -269,8 +269,15 @@ func (h *Handler) record(ctx context.Context, args map[string]any) (string, erro
 		}
 	}
 	dir := node.WorkspaceSpec{Root: h.WorkRoot, GoalSlug: goal.Slug, Seq: item.Seq}.Dir()
-	if err := node.RecordGoal(ctx, h.WS, dir, goal, item.Seq, parent, items, summary); err != nil {
+	doc := node.GoalDoc{Slug: goal.Slug, Title: goal.Title, Statement: goal.Statement, Acceptance: goal.Acceptance, GoalStatus: goal.Status, Parent: parent, SpentCents: goal.SpentCents, Items: items}
+	rel, changed, err := node.WriteGoalDoc(dir, doc, node.LogLine(time.Now(), item.Seq, summary))
+	if err != nil {
 		return "", err
+	}
+	if changed {
+		if err := h.WS.Commit(ctx, dir, []string{rel}, fmt.Sprintf("docs(mesh): goal %s — item %d", goal.Slug, item.Seq)); err != nil {
+			return "", err
+		}
 	}
 	return "recorded specs/goal-" + goal.Slug + ".md on the branch", nil
 }
