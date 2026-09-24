@@ -328,7 +328,58 @@ mesh work-item learning <work-item-id> "Release flow is stable now"
 
 ## Release
 
-Multi-platform binaries are published via GitHub Releases triggered by tags matching `v*.*.*`.
+Nodes update themselves from the GitHub releases of
+`projectmesh-io/mesh-cli`, which `.github/workflows/release-tag.yml` cuts
+from a tag (docs/adr/adr-002-signed-tag-releases.md). To cut one:
+
+```sh
+git tag vX.Y.Z && git push origin vX.Y.Z
+```
+
+Any tag starting `v` runs it; a tag with a `-` (`v0.4.0-test.1`) is
+published as a prerelease. The version is stamped from the tag
+(`internal/version.Version`), so `mesh --version` and the node's
+heartbeat report exactly the tag. There is no manual trigger — tags only.
+
+Each release carries five files, and the names are the contract the
+updater reads:
+
+| Asset | What |
+|---|---|
+| `mesh-linux-amd64` | the node for linux/amd64 (the mini) |
+| `mesh-linux-arm64` | linux/arm64 |
+| `mesh-darwin-arm64` | macOS on Apple silicon |
+| `SHA256SUMS` | `sha256sum mesh-*` over the three binaries |
+| `SHA256SUMS.sigstore.json` | the Sigstore bundle signing `SHA256SUMS` |
+
+`SHA256SUMS` is signed keyless with `cosign sign-blob`: no key exists,
+the signature is bound to the workflow's GitHub OIDC identity and logged
+in Rekor. The node accepts a release only when the bundle verifies
+against exactly
+
+- certificate identity
+  `https://github.com/projectmesh-io/mesh-cli/.github/workflows/release-tag.yml@refs/tags/<tag>`
+- OIDC issuer `https://token.actions.githubusercontent.com`
+
+and the binary's hash matches its line in `SHA256SUMS`. To verify a
+release by hand:
+
+```sh
+TAG=vX.Y.Z
+gh release download "$TAG" -R projectmesh-io/mesh-cli \
+  -p SHA256SUMS -p SHA256SUMS.sigstore.json -p mesh-linux-amd64
+cosign verify-blob \
+  --bundle SHA256SUMS.sigstore.json \
+  --certificate-identity "https://github.com/projectmesh-io/mesh-cli/.github/workflows/release-tag.yml@refs/tags/$TAG" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  SHA256SUMS
+sha256sum --check --ignore-missing SHA256SUMS
+```
+
+`cli-release.yml` is separate: it builds on every push to `main` and
+publishes to the `projectmesh-io/mesh` repo, unsigned. Nodes do not
+update from it. `release.yml` is the Shipper's `workflow_dispatch` stub
+and publishes nothing.
 
 ## Known Limitations
 
