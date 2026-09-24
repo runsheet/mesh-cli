@@ -131,7 +131,7 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 			if it.LastError != "" {
 				note = it.LastError
 			}
-			existing = append(existing, harness.ExistingItem{Seq: it.Seq, Title: it.Title, Status: it.Status, Note: truncate(note, 300)})
+			existing = append(existing, harness.ExistingItem{Seq: it.Seq, Title: it.Title, Status: it.Status, Note: truncate(note, 300), Branch: it.Branch, PRURL: it.PRURL})
 			if it.Status == "merged" {
 				merged = append(merged, it.Seq)
 			}
