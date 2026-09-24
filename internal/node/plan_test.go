@@ -70,7 +70,7 @@ func TestLoopPlansRequestedGoals(t *testing.T) {
 			t.Fatalf("prompt lacks %q:\n%s", want, p)
 		}
 	}
-	if len(ws.commits) != 0 || len(ws.pushed) != 0 {
+	if len(ws.pushed) != 0 {
 		t.Fatal("the planner changes nothing")
 	}
 

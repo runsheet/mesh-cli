@@ -52,7 +52,7 @@ func TestLoopEvaluatesFinishedItems(t *testing.T) {
 	if len(ws.prepared) != 1 || ws.prepared[0].Branch != "mesh/ship-it-1" || ws.prepared[0].BaseRef != "main" {
 		t.Fatalf("prepared: %+v", ws.prepared)
 	}
-	if len(ws.pushed) != 0 || len(ws.commits) != 0 {
+	if len(ws.pushed) != 0 {
 		t.Fatal("the evaluator changes nothing")
 	}
 	if len(h.jobs) != 1 || h.jobs[0].Kind != harness.KindEvaluate || h.jobs[0].MaxBudgetUSD != 2 || h.jobs[0].MCPServers["prologue"] == nil {

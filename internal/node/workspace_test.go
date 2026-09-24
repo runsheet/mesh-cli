@@ -129,9 +129,8 @@ func TestAuthorizedWorkspaceReachesOnlyItsRepo(t *testing.T) {
 		t.Fatal("the token leaked into the global git config")
 	}
 	os.WriteFile(filepath.Join(dir, "b"), []byte("b"), 0o644)
-	if err := g.Commit(ctx, dir, []string{"b"}, "b"); err != nil {
-		t.Fatal(err)
-	}
+	must(dir, "add", "b")
+	must(dir, "commit", "--quiet", "-m", "b")
 	sha, err := g.Push(ctx, dir, spec.Branch)
 	if err != nil {
 		t.Fatalf("push to the item's own repo: %v", err)

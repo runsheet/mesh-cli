@@ -70,7 +70,6 @@ type fakeWS struct {
 	root     string
 	prepared []WorkspaceSpec
 	pushed   []string
-	commits  []string
 	fetched  []string
 	// events are Authorize (with its token), Prepare, Diff and Push in
 	// the order they came
@@ -99,13 +98,6 @@ func (w *fakeWS) Prepare(_ context.Context, spec WorkspaceSpec) (string, error) 
 	return dir, os.MkdirAll(dir, 0o755)
 }
 
-func (w *fakeWS) Commit(_ context.Context, dir string, paths []string, msg string) error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	w.commits = append(w.commits, msg+" ["+strings.Join(paths, ",")+"]")
-	return nil
-}
-
 func (w *fakeWS) Push(_ context.Context, dir, branch string) (string, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -122,17 +114,12 @@ func (w *fakeWS) Fetch(_ context.Context, repo, dir string) error {
 }
 
 // assertNoGoalDoc: an item's own branch carries no goal-doc churn — no
-// `docs(mesh): goal` commit, and no specs/goal-*.md in any workspace the
-// runner prepared.
+// specs/goal-*.md in any workspace the runner prepared (and the
+// Workspacer has no Commit for the runner to make one with).
 func assertNoGoalDoc(t *testing.T, ws *fakeWS) {
 	t.Helper()
 	ws.mu.Lock()
 	defer ws.mu.Unlock()
-	for _, c := range ws.commits {
-		if strings.Contains(c, "docs(mesh): goal") {
-			t.Fatalf("an item's branch must carry no goal-doc commit: %v", ws.commits)
-		}
-	}
 	for _, spec := range ws.prepared {
 		if docs, _ := filepath.Glob(filepath.Join(spec.Dir(), "specs", "goal-*.md")); len(docs) != 0 {
 			t.Fatalf("an item's branch must carry no goal doc: %v", docs)
