@@ -126,7 +126,8 @@ Signs in, finds the org among yours, derives the node id from
 `mesh node status` heartbeats once and lists the org's nodes, above a
 line naming the credential this machine runs on — the machine, its org
 and operator, and when its access token is next refreshed, or the rs_*
-console token it is still on.
+console token it is still on — and a line for the node process on this
+machine: running (its pid), draining, or none (see Drain below).
 
 ### Start
 
@@ -225,6 +226,49 @@ In both modes `--unattended` adds `--dangerously-skip-permissions` so a
 session never waits on a permission prompt — only on a machine you trust
 with that. On SIGTERM the node kills its sessions and leaves claimed items
 for a retry; it never fails an item on its own shutdown.
+
+### Drain: swap the binary without a restart
+
+A restart kills the node's running `claude` sessions (SIGTERM, above): a
+build is left for a retry and what it had not pushed is lost. To put a
+new binary — or a change the tick does not re-read, such as the models —
+in place, drain the node instead:
+
+```bash
+mesh node drain          # or: kill -USR1 "$(cat ~/.mesh/node.pid)"
+```
+
+`mesh node start` writes its pid to `~/.mesh/node.pid` (removed on exit);
+`mesh node drain` sends that process `SIGUSR1`, and says so if no node is
+running. The draining node claims nothing new — no work item, no plan,
+no research, and it starts no evaluation — while every session it has
+running finishes: builds, evaluations, plans and research alike.
+Planners and evaluators do not count against capacity, which is why
+waiting for zero running items never sees an idle node; the drain waits
+for all of them. When the last one ends the node exits 0, and the service
+(`Restart=always` under systemd, `KeepAlive` under launchd) starts it
+again on the binary and config now on disk. An item it held for
+evaluation waits in `evaluating` and is taken up by the node that comes
+up.
+
+While it drains the node leaves `~/.mesh/node.draining`, and `mesh node
+status` shows it (`This machine: node running (pid …), draining`, and
+`draining` beside its row). The platform's node record has no drain
+state — the heartbeat carries only the version and the running count —
+so this is known on the machine alone.
+
+Swapping the binary on the mini:
+
+```bash
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh
+scp mesh-linux mini:bin/mesh.new
+ssh mini 'mv ~/bin/mesh.new ~/bin/mesh && ~/bin/mesh node drain'
+ssh mini 'systemctl --user status io.projectmesh.mesh-node.service'   # a new pid once it has drained
+```
+
+Replacing the file under a running process is safe (the old one keeps
+its inode); the drain is what makes it take. Capacity and the orgs served
+need neither: they are re-read every tick (see Start).
 
 ### The goal's record in the repo
 

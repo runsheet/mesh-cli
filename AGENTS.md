@@ -54,6 +54,15 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   direction with no room is not offered at all. Each direction works in
   its own checkout, `ResearchDir(root, project, direction)`, because two
   of one project may be inside their hours at once.
+- **The drain** (`Loop.Drain`, trd §3 Drain): `SIGUSR1` or `mesh node
+  drain` (which signals the pid in `~/.mesh/node.pid`) stops every new
+  start — items, plans, research, evaluations — and `Run` returns nil
+  once no session of *any* kind is left (planners and evaluators do not
+  count against capacity, so `Running()` is not the exit test); the
+  process exits 0 and its service starts the new binary.
+  `~/.mesh/node.draining` marks it for `mesh node status` — locally
+  only, the heartbeat has no field for it. Capacity and the orgs need
+  no drain: `Reload` re-reads them every tick.
 - Every session gets Prologue as an MCP server with the node's token and
   the project's context on disk under `.mesh/context/` with `INDEX.md`.
 - Costs: each session's `total_cost_usd` is reported to the platform per
@@ -79,6 +88,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   and lines; update them with the change, not around it.
 - Commits carry no Co-Authored-By trailer in this repo.
 - Deploying to the mini is by hand: build for linux/amd64, `scp` to
-  `~/bin/mesh.new`, and swap plus `systemctl --user restart
-  io.projectmesh.mesh-node.service` only when no `claude -p` session is
-  running (a restart re-pushes running items; an unpushed build is lost).
+  `~/bin/mesh.new`, `mv` it over `~/bin/mesh` and `mesh node drain`:
+  the node finishes its sessions, exits, and systemd starts the new
+  binary. Never `systemctl --user restart` it while a `claude -p`
+  session runs (a restart re-pushes running items; an unpushed build is
+  lost).

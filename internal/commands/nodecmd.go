@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -211,6 +212,12 @@ var nodeStatusCmd = &cobra.Command{
 			return err
 		}
 		fmt.Println(credentialLine(src.Credential()))
+		state, err := node.DefaultRunState()
+		if err != nil {
+			return err
+		}
+		local, draining := localNodeState(state)
+		fmt.Println(local)
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 		fmt.Fprintln(w, "ORG\tNAME\tSLUG\tSTATUS\tRUNNING\tCAPACITY\tVERSION\tLAST_SEEN")
 		for _, sc := range scopes {
@@ -222,15 +229,97 @@ var nodeStatusCmd = &cobra.Command{
 				return err
 			}
 			for _, n := range nodes {
-				mark := ""
+				mark, status := "", n.Status
 				if n.ID == sc.NodeID {
 					mark = " *"
+					if draining {
+						status += ",draining"
+					}
 				}
-				fmt.Fprintf(w, "%s\t%s%s\t%s\t%s\t%d\t%d\t%s\t%s\n", sc.Login, n.Name, mark, n.Slug, n.Status, n.Running, n.Capacity, n.Version, n.LastSeenAt)
+				fmt.Fprintf(w, "%s\t%s%s\t%s\t%s\t%d\t%d\t%s\t%s\n", sc.Login, n.Name, mark, n.Slug, status, n.Running, n.Capacity, n.Version, n.LastSeenAt)
 			}
 		}
 		return w.Flush()
 	},
+}
+
+// localNodeState is the line `mesh node status` prints for the node
+// process on this machine, from its pidfile and draining marker, and
+// whether it is draining. The platform's node record carries no drain
+// state (the heartbeat reports only the version and the running count),
+// so this machine is the only place it is known.
+func localNodeState(state node.RunState) (string, bool) {
+	pid, err := state.PID()
+	switch {
+	case errors.Is(err, node.ErrNoNode):
+		return "This machine: no node running.", false
+	case err != nil:
+		return "This machine: " + err.Error(), false
+	case !processAlive(pid):
+		return fmt.Sprintf("This machine: no node running (pid %d in %s is gone).", pid, state.PIDPath()), false
+	case state.Draining():
+		return fmt.Sprintf("This machine: node running (pid %d), draining — it claims nothing new and exits when its sessions end.", pid), true
+	default:
+		return fmt.Sprintf("This machine: node running (pid %d).", pid), false
+	}
+}
+
+var nodeDrainCmd = &cobra.Command{
+	Use:   "drain",
+	Short: "Drain the node running on this machine: it claims nothing new, lets its sessions finish, then exits",
+	Long: `Sends the running node (its pid is in ~/.mesh/node.pid) SIGUSR1 — the
+same as ` + "`kill -USR1 <pid>`" + `. The node stops claiming items, plans, research
+and evaluations, lets every session it has running end, and exits 0;
+under systemd or launchd it is started again, on the binary and config
+now on disk. ` + "`mesh node status`" + ` shows it as draining meanwhile.
+
+Capacity and the orgs served need no drain: the node reads them every
+tick.`,
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		state, err := node.DefaultRunState()
+		if err != nil {
+			return err
+		}
+		return drainNode(state, cmd.OutOrStdout())
+	},
+}
+
+// drainNode signals the node whose pid state holds to drain.
+func drainNode(state node.RunState, out io.Writer) error {
+	pid, err := state.PID()
+	if err != nil {
+		return err
+	}
+	if !processAlive(pid) {
+		return fmt.Errorf("no node is running on this machine: pid %d in %s is gone", pid, state.PIDPath())
+	}
+	if err := signalDrain(pid); err != nil {
+		return fmt.Errorf("signal node (pid %d): %w", pid, err)
+	}
+	fmt.Fprintf(out, "Node (pid %d) is draining: it claims nothing new and exits once its sessions have ended.\n", pid)
+	return nil
+}
+
+// onDrainSignal calls drain on every drain signal until stop is called.
+func onDrainSignal(drain func()) (stop func()) {
+	if drainSignal == nil {
+		return func() {}
+	}
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, drainSignal)
+	done := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-ch:
+				drain()
+			case <-done:
+				return
+			}
+		}
+	}()
+	return func() { signal.Stop(ch); close(done) }
 }
 
 var nodeLogoutCmd = &cobra.Command{
@@ -304,6 +393,24 @@ only use it on a machine you trust with that.`,
 		loop.Reload = node.Reloader(gw, cfg, scopes, nil, func(ctx context.Context, sc node.Scope) error {
 			return registerIn(ctx, gw, cfg, node.Scopes{sc})
 		})
+		// SIGUSR1 (`mesh node drain`) drains: nothing new is claimed and
+		// the loop returns nil once every session has ended, so the
+		// process exits 0 and its service manager starts the new binary
+		state, err := node.DefaultRunState()
+		if err != nil {
+			return err
+		}
+		pid := os.Getpid()
+		if err := state.Started(pid); err != nil {
+			return fmt.Errorf("pidfile: %w", err)
+		}
+		defer state.Stopped(pid)
+		defer onDrainSignal(func() {
+			if err := state.MarkDraining(); err != nil {
+				logger.Printf("draining marker: %v", err)
+			}
+			loop.Drain()
+		})()
 		switch nodeModeFlag {
 		case "poll":
 			return runPollMode(ctx, cfg, scopes, gw, loop, workRoot, logger)
@@ -351,6 +458,9 @@ func runPollMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *
 	if errors.Is(err, context.Canceled) {
 		logger.Printf("stopped; running items were left for a retry")
 		return nil
+	}
+	if err == nil {
+		logger.Printf("drained; exiting")
 	}
 	return err
 }
@@ -569,6 +679,9 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 		logger.Printf("stopped; claimed items were left for a retry")
 		return nil
 	}
+	if err == nil {
+		logger.Printf("drained; exiting")
+	}
 	return err
 }
 
@@ -697,12 +810,12 @@ func init() {
 	nodeModelCmd.Flags().StringVar(&nodeModelPlanFlag, "plan", "", "model for planner sessions")
 	nodeModelCmd.Flags().StringVar(&nodeModelChannelFlag, "channel", "", "model for the channel-mode session")
 	nodeModelCmd.Flags().StringVar(&nodeModelResearchFlag, "research", "", "model for director (research) sessions")
-	nodeCmd.AddCommand(nodeLoginCmd, nodeRegisterCmd, nodeStartCmd, nodeStatusCmd, nodeLogoutCmd, nodeModelCmd)
+	nodeCmd.AddCommand(nodeLoginCmd, nodeRegisterCmd, nodeStartCmd, nodeStatusCmd, nodeDrainCmd, nodeLogoutCmd, nodeModelCmd)
 }
 
 // nodeModelCmd reads or writes the models in ~/.mesh/node.yaml, so a
 // node can be moved off a model without editing YAML or passing flags.
-// Restart the node (or its service) for a change to take.
+// Drain the node (`mesh node drain`) for a change to take.
 var nodeModelCmd = &cobra.Command{
 	Use:   "model",
 	Short: "Show or set the model each kind of session runs on",
@@ -763,7 +876,7 @@ A flag on ` + "`mesh node start`" + ` wins over these for that run.`,
 			}
 		}
 		if changed {
-			fmt.Println("\nsaved; restart the node for it to take (systemctl --user restart io.projectmesh.mesh-node.service)")
+			fmt.Println("\nsaved; drain the node for it to take (mesh node drain): it finishes its sessions and its service starts it again")
 		}
 		return nil
 	},
