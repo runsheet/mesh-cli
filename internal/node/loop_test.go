@@ -45,8 +45,8 @@ func seed(t *testing.T) *gatewaytest.Fake {
 		"brief": "Implement.", "acceptance": "go test passes", "repoId": repoID, "baseRef": "main", "status": "pending", "dependsOn": []string{item1}}
 	// each item's own GitHub token, an hour to live
 	exp := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
-	f.GitHubTokens[item1] = map[string]any{"token": "ghs_item1", "expiresAt": exp, "repository": "acme/widgets"}
-	f.GitHubTokens[item2] = map[string]any{"token": "ghs_item2", "expiresAt": exp, "repository": "acme/widgets"}
+	f.GitHubTokens[item1] = map[string]any{"token": "ghs_item1", "expiresAt": exp, "repo": "acme/widgets"}
+	f.GitHubTokens[item2] = map[string]any{"token": "ghs_item2", "expiresAt": exp, "repo": "acme/widgets"}
 	f.Documents["acme/mesh"] = []map[string]any{
 		{"slug": "adr-001", "title": "ADR 001", "kind": "adr", "repo": "acme/widgets", "path": "specs/adr-001.md"},
 		{"slug": "prd", "title": "PRD", "kind": "prd", "repo": "acme/widgets", "path": "specs/prd.md"},

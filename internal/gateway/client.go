@@ -685,18 +685,21 @@ type GitHubToken struct {
 // the caller falls back to the operator's own GitHub login.
 func (c *Client) IssueItemRepoToken(ctx context.Context, itemID, nodeID string) (*GitHubToken, error) {
 	const field = "issueItemRepoToken"
-	in := map[string]any{"aggregateId": itemID, "namespace": NS, "nodeId": nodeID}
+	// The platform serves issueItemRepoToken(workItemId: UUID!): Map —
+	// {token, expiresAt, repo, access, permissions} — not a command with
+	// an input object; the node's claim is what authorises it, so the
+	// node id is not an argument (runsheet gateway/itemtoken.go).
 	var out struct {
 		IssueItemRepoToken *struct {
-			Token      string `json:"token"`
-			ExpiresAt  string `json:"expiresAt"`
-			Repository string `json:"repository"`
+			Token     string `json:"token"`
+			ExpiresAt string `json:"expiresAt"`
+			Repo      string `json:"repo"`
 		} `json:"issueItemRepoToken"`
 	}
-	q := `mutation($in: IssueItemRepoTokenInput!) { issueItemRepoToken(input: $in) { token expiresAt repository } }`
-	if err := c.Query(ctx, q, map[string]any{"in": in}, &out); err != nil {
+	q := `mutation($id: UUID!) { issueItemRepoToken(workItemId: $id) }`
+	if err := c.Query(ctx, q, map[string]any{"id": itemID}, &out); err != nil {
 		var ge *Error
-		if errors.As(err, &ge) && unknownOperation(ge.Message, field) {
+		if errors.As(err, &ge) && (unknownOperation(ge.Message, field) || schemaMismatch(ge.Message, field)) {
 			return nil, &Error{Message: ge.Message, Unsupported: true}
 		}
 		return nil, err
@@ -709,7 +712,27 @@ func (c *Client) IssueItemRepoToken(ctx context.Context, itemID, nodeID string) 
 	if err != nil {
 		return nil, fmt.Errorf("gateway: %s: expiresAt %q: %w", field, t.ExpiresAt, err)
 	}
-	return &GitHubToken{Token: t.Token, ExpiresAt: exp, Repository: t.Repository}, nil
+	return &GitHubToken{Token: t.Token, ExpiresAt: exp, Repository: t.Repo}, nil
+}
+
+// schemaMismatch is a GraphQL validation error about how the node called
+// an operation — the shape of its arguments or variables — rather than
+// an answer from it. On 2026-09-24 the node called issueItemRepoToken
+// with an input object the platform never had, and every item it claimed
+// failed on "Variable "$in" cannot be non-input type"; a shape the node
+// and the platform disagree on is the platform not supporting the call
+// the node makes, so the caller falls back rather than failing the work.
+func schemaMismatch(msg, field string) bool {
+	typ := strings.ToUpper(field[:1]) + field[1:] + "Input"
+	if !strings.Contains(msg, field) && !strings.Contains(msg, typ) {
+		return false
+	}
+	for _, s := range []string{"cannot be non-input type", "is required but not provided", "Unknown argument", "has invalid value", "of required type"} {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	return false
 }
 
 // SetGoalInput is SetGoal's payload.

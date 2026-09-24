@@ -54,6 +54,10 @@ type Fake struct {
 	// (token, expiresAt, repository); only the node holding the item's
 	// claim is given it.
 	GitHubTokens map[string]map[string]any
+	// TokenNodeID is the node the caller's credential names; the platform
+	// hands an item's token only to the node holding its claim. Empty
+	// skips the check.
+	TokenNodeID string
 	// Unsupported names mutations the fake answers as a platform that
 	// predates them: the schema's "Cannot query field" error.
 	Unsupported map[string]bool
@@ -128,7 +132,7 @@ func copyRow(r map[string]any) map[string]any {
 }
 
 var (
-	mutationRe = regexp.MustCompile(`mutation\s*\(\s*\$in:\s*(\w+)!\s*\)\s*\{\s*(\w+)\s*\(`)
+	mutationRe = regexp.MustCompile(`mutation\s*\(\s*\$(?:in|id):\s*(\w+)!\s*\)\s*\{\s*(\w+)\s*\(`)
 	whereRe    = regexp.MustCompile(`\{\s*field:\s*"([a-z_]+)"\s*,\s*op:\s*EQ\s*,\s*value:\s*"([^"]*)"\s*\}`)
 	listRe     = regexp.MustCompile(`\{\s*(\w+Indexs)\s*\(`)
 	getRe      = regexp.MustCompile(`\{\s*(\w+Index)\s*\(\s*namespace:\s*"runsheet"\s*,\s*id:\s*"([^"]+)"`)
@@ -171,6 +175,14 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if m[2] == "issueItemRepoToken" {
+			// the platform's shape: issueItemRepoToken(workItemId: UUID!): Map
+			// — an input object is the schema error production answered
+			if strings.Contains(q, "IssueItemRepoTokenInput") {
+				writeErrors(w, 200, `Variable "$in" cannot be non-input type "IssueItemRepoTokenInput!".`)
+				return
+			}
+			id, _ := req.Variables["id"].(string)
+			in = map[string]any{"workItemId": id}
 			tok, err := f.issueItemRepoToken(in)
 			if err != nil {
 				writeErrors(w, 200, err.Error())
@@ -375,7 +387,7 @@ func (f *Fake) apply(name string, in map[string]any) error {
 }
 
 func (f *Fake) issueItemRepoToken(in map[string]any) (map[string]any, error) {
-	id, _ := in["aggregateId"].(string)
+	id, _ := in["workItemId"].(string)
 	item := f.WorkItems[id]
 	if item == nil {
 		return nil, fmt.Errorf("no such item")
@@ -385,8 +397,8 @@ func (f *Fake) issueItemRepoToken(in map[string]any) (map[string]any, error) {
 	default:
 		return nil, fmt.Errorf("item is %s, not claimed", item["status"])
 	}
-	if item["nodeId"] != in["nodeId"] {
-		return nil, fmt.Errorf("the item is not node %s's", in["nodeId"])
+	if f.TokenNodeID != "" && item["nodeId"] != f.TokenNodeID {
+		return nil, fmt.Errorf("the item is not node %s's", f.TokenNodeID)
 	}
 	tok := f.GitHubTokens[id]
 	if tok == nil {
