@@ -302,6 +302,11 @@ func (f *Fake) apply(name string, in map[string]any) error {
 		if item == nil {
 			return fmt.Errorf("no such item")
 		}
+		// as the platform: only a claimed or running item, only by the
+		// node that holds it; anything else is accepted and changes nothing
+		if (item["status"] != "claimed" && item["status"] != "running") || item["nodeId"] != in["nodeId"] {
+			break
+		}
 		item["status"], item["nodeId"], item["harness"], item["sessionId"] = "ready", nil, nil, nil
 		item["lastNote"] = in["note"]
 	case "evaluateWorkItem":

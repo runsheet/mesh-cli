@@ -79,15 +79,26 @@ living an hour.
   retried.
 - A `CredentialError` is the node's condition, not the item's (mesh-specs
   trd §1, §3): GitHub refusing the item's token on the first try and on all
-  three re-issues does not fail the item. The builder and the evaluator
-  hand it to `ReleaseOnCredential` (`ghcred.go`), which releases it with
-  `releaseWorkItem { aggregateId, nodeId, note }` (`Client.ReleaseWorkItem`)
-  instead of calling `FailWorkItem`. The item goes back to `ready` with its
-  attempts unchanged and the reason in `last_note`, so its goal spends no
-  re-plan. The reason is `CredentialError.Reason()`: `github credential:
-  <repo> token expiring <RFC 3339> refused 4 times: <git's error>`. It
-  names the repo and the expiry and never the token, and the node logs it
-  too. One repo's credential does not stop the node claiming other work:
+  three re-issues fails the item on neither path. The reason is
+  `CredentialError.Reason()`: `github credential: <repo> token expiring
+  <RFC 3339> refused 4 times: <git's error>`. It names the repo and the
+  expiry and never the token, and the node logs it on both paths.
+  - The builder holds a `claimed` or `running` item, so it hands it to
+    `ReleaseOnCredential` (`ghcred.go`), which releases it with
+    `releaseWorkItem { aggregateId, nodeId, note }`
+    (`Client.ReleaseWorkItem`) instead of calling `FailWorkItem`. The item
+    goes back to `ready` with its attempts unchanged and the reason in
+    `last_note`, so its goal spends no re-plan.
+  - The evaluator's item is in `evaluating`, which the platform's
+    `ReleaseWorkItem` does not accept (only `claimed`/`running`, only from
+    the holding node), and sending a built, pushed branch back to `ready`
+    would build it again. So the evaluator neither releases nor fails it:
+    `Evaluator.Evaluate` logs the reason and returns an error, no verdict
+    is recorded, and the item stays in `evaluating` for a later tick to
+    evaluate on a freshly issued token. A way to hand an evaluation back
+    would be a platform command first.
+
+  One repo's credential does not stop the node claiming other work:
   unlike out-of-credit, it is not a node-wide pause, and the heartbeat
   carries no field for it.
 - Channel mode's one `claude` process runs many items, so its
@@ -102,7 +113,9 @@ living an hour.
   workspace is a `mesh_fail`. Each item's git runs on that checkout's own
   helper. The channel's `repush` bookkeeping renews a held item's token
   near expiry every tick and rewrites the helper. A refusal fails the
-  item, and so does a failed `Prepare`.
+  item, and so does a failed `Prepare` — for now even one that ends in a
+  `CredentialError` after the retries: channel mode does not release it
+  as the builder does.
 - On the old platform the shared session's empty `GH_CONFIG_DIR` would
   also hide the operator's global `gh auth git-credential` from its
   push. So the daemon gives such a checkout its own helper,

@@ -33,3 +33,36 @@ func TestReleaseWorkItem(t *testing.T) {
 		t.Fatalf("item = %+v", it)
 	}
 }
+
+// The platform releases only a claimed or running item, and only for the
+// node that holds it; any other release changes nothing.
+func TestReleaseWorkItemIgnoredUnlessHeldAndRunning(t *testing.T) {
+	const other = "33333333-3333-4333-8333-333333333333"
+	for _, tc := range []struct{ name, status, holder string }{
+		{"evaluating", "evaluating", nodeID},
+		{"another node's", "running", other},
+		{"ready", "ready", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := gatewaytest.New("rs_test")
+			defer f.Close()
+			row := map[string]any{"id": itemID, "orgId": orgID, "seq": 1, "status": tc.status, "attempts": 1}
+			if tc.holder != "" {
+				row["nodeId"] = tc.holder
+			}
+			f.WorkItems[itemID] = row
+			gw := gateway.New(f.URL(), "rs_test")
+			ctx := context.Background()
+			if err := gw.ReleaseWorkItem(ctx, itemID, nodeID, "github credential: acme/widgets"); err != nil {
+				t.Fatal(err)
+			}
+			it, err := gw.WorkItem(ctx, itemID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if it.Status != tc.status || it.NodeID != tc.holder || it.LastNote != "" || it.Attempts != 1 {
+				t.Fatalf("item = %+v", it)
+			}
+		})
+	}
+}

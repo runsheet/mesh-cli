@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -200,20 +201,27 @@ func TestRunnerReleasesAnItemItsTokenIsRefusedFor(t *testing.T) {
 	checkReleased(t, vg, row(item1), attempts)
 }
 
-// The evaluator releases the item the same way.
-func TestEvaluatorReleasesAnItemItsTokenIsRefusedFor(t *testing.T) {
+// The evaluator cannot release an item in evaluating (the platform
+// releases only a claimed or running one), so it neither releases nor
+// fails it: the item stays as it was for a later tick, and the node logs
+// the credential reason — the repo and the expiry, never the token.
+func TestEvaluatorKeepsAnItemItsTokenIsRefusedFor(t *testing.T) {
 	noSleep(t)
 	h := &fakeHarness{text: "Fine.\nVERDICT: PASS"}
 	r, fws, item, row := runnerOn(t, h, nil)
 	if err := r.RunItem(context.Background(), item); err != nil {
 		t.Fatal(err)
 	}
-	attempts := toInt(row(item1)["attempts"])
+	before := map[string]any{}
+	for k, v := range row(item1) {
+		before[k] = v
+	}
 	tg := fourTokens()
 	tg.Gateway = r.GW
 	vg := &verdictGW{Gateway: tg}
 	ws := &refusingWS{fakeWS: fws, refusals: 4, err: notFound("ghs_first")}
-	ev := &Evaluator{GW: vg, Harness: h, WS: ws, Scopes: r.Scopes, WorkRoot: fws.root, Log: r.Log}
+	var logged bytes.Buffer
+	ev := &Evaluator{GW: vg, Harness: h, WS: ws, Scopes: r.Scopes, WorkRoot: fws.root, Log: log.New(&logged, "", 0)}
 	item.Branch = "mesh/ship-it-1"
 	var ce *CredentialError
 	if err := ev.Evaluate(context.Background(), item); !errors.As(err, &ce) {
@@ -222,7 +230,24 @@ func TestEvaluatorReleasesAnItemItsTokenIsRefusedFor(t *testing.T) {
 	if len(h.jobs) != 1 {
 		t.Fatalf("an evaluator session ran: jobs = %d", len(h.jobs))
 	}
-	checkReleased(t, vg, row(item1), attempts)
+	if vg.failed != 0 || len(vg.released) != 0 {
+		t.Fatalf("failed %d, released %v", vg.failed, vg.released)
+	}
+	after := row(item1)
+	if after["status"] != "evaluating" || !reflect.DeepEqual(before, after) {
+		t.Fatalf("row changed: %v -> %v", before, after)
+	}
+	out := logged.String()
+	for _, want := range []string{"not evaluated", "github credential", "acme/widgets", "2036-09-24T11:11:55Z", "refused 4 times"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("log lacks %q: %s", want, out)
+		}
+	}
+	for _, tok := range []string{"ghs_first", "ghs_second", "ghs_third", "ghs_fourth"} {
+		if strings.Contains(out, tok) {
+			t.Fatalf("log carries token %s: %s", tok, out)
+		}
+	}
 }
 
 // A failure that is not GitHub refusing the credential is not retried.
