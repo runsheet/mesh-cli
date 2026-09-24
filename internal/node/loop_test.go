@@ -793,3 +793,138 @@ func TestLoopTickReadsGoalsOncePerOrg(t *testing.T) {
 		t.Fatalf("goal reads by org in one tick: %v", byOrg)
 	}
 }
+
+// liveLoop is a node over acme only whose Reload reads node.yaml from a
+// fresh HOME and MyOrgs from the fake, registering in a new org through
+// the returned list. Items finish as soon as they are dispatched.
+func (p *priorityFake) liveLoop(t *testing.T, yaml string) (*Loop, *[]string, *strings.Builder) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeNodeYAML(t, yaml)
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw := gateway.New(p.URL(), "rs_test")
+	var registered []string
+	var logs strings.Builder
+	start := p.scopes[:1]
+	loop := &Loop{GW: gw, Cfg: cfg, Scopes: start, Interval: time.Hour, Harness: "claude-code", Log: log.New(&logs, "", 0),
+		Dispatch: func(context.Context, gateway.WorkItem) {}}
+	loop.Reload = Reloader(gw, cfg, start, nil, func(_ context.Context, sc Scope) error {
+		registered = append(registered, sc.Login)
+		return nil
+	})
+	return loop, &registered, &logs
+}
+
+func writeNodeYAML(t *testing.T, body string) {
+	t.Helper()
+	path, err := ConfigPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// claimedBy runs one tick and returns the items it claimed.
+func (p *priorityFake) claimedBy(loop *Loop) []string {
+	p.t.Helper()
+	before := len(p.CallsNamed("claimWorkItem"))
+	loop.Tick(context.Background())
+	loop.wg.Wait()
+	var claimed []string
+	for _, c := range p.CallsNamed("claimWorkItem")[before:] {
+		claimed = append(claimed, fmt.Sprint(c.Input["aggregateId"]))
+	}
+	return claimed
+}
+
+// Capacity is read from node.yaml every tick: raised from 1 to 2, the
+// next tick claims two with no restart.
+func TestLoopTakesCapacityFromNodeYAMLEveryTick(t *testing.T) {
+	p := newPriorityFake(t)
+	p.addGoal(orgID, "steady", "normal")
+	for i, id := range []string{"a1", "a2", "a3"} {
+		p.addItem(orgID, "steady", id, i+1, false)
+	}
+	loop, _, logs := p.liveLoop(t, "slug: box\nname: Box\norgs: [acme]\ncapacity: 1\n")
+	if got := p.claimedBy(loop); len(got) != 1 {
+		t.Fatalf("first tick claimed %v, want one", got)
+	}
+	writeNodeYAML(t, "slug: box\nname: Box\norgs: [acme]\ncapacity: 2\n")
+	if got := p.claimedBy(loop); strings.Join(got, ",") != "a2,a3" {
+		t.Fatalf("second tick claimed %v, want a2,a3", got)
+	}
+	if !strings.Contains(logs.String(), "capacity 1 → 2") {
+		t.Fatalf("the change is not logged:\n%s", logs)
+	}
+}
+
+// An org that appears in MyOrgs between two ticks is registered in and
+// its ready items are claimed on the next tick.
+func TestLoopServesANewOrgOnTheNextTick(t *testing.T) {
+	p := newPriorityFake(t)
+	globex := p.Orgs[1]
+	p.Orgs = p.Orgs[:1]
+	p.addGoal(org2, "fire", "normal")
+	p.addItem(org2, "fire", "globex-1", 1, false)
+	loop, registered, logs := p.liveLoop(t, "slug: box\nname: Box\ncapacity: 2\n")
+	if got := p.claimedBy(loop); len(got) != 0 {
+		t.Fatalf("claimed %v from an org the node does not serve", got)
+	}
+	p.Orgs = append(p.Orgs, globex)
+	if got := p.claimedBy(loop); strings.Join(got, ",") != "globex-1" {
+		t.Fatalf("second tick claimed %v, want globex-1", got)
+	}
+	if strings.Join(*registered, ",") != "globex" || p.Item("globex-1")["nodeId"] != p.scopes[1].NodeID {
+		t.Fatalf("registered in %v; globex-1 claimed as %v", *registered, p.Item("globex-1")["nodeId"])
+	}
+	if got := loop.CurrentScopes().Logins(); strings.Join(got, ",") != "acme,globex" {
+		t.Fatalf("scopes = %v", got)
+	}
+	if !strings.Contains(logs.String(), "orgs acme → acme, globex") {
+		t.Fatalf("the change is not logged:\n%s", logs)
+	}
+	// one left, and one outside the node.yaml restriction, are dropped
+	p.Orgs = p.Orgs[1:]
+	p.claimedBy(loop)
+	if got := loop.CurrentScopes().Logins(); strings.Join(got, ",") != "globex" {
+		t.Fatalf("after acme left, scopes = %v", got)
+	}
+	p.Orgs = append(p.Orgs, map[string]any{"id": orgID, "login": "acme", "accountId": acctID})
+	writeNodeYAML(t, "slug: box\nname: Box\norgs: [acme]\ncapacity: 2\n")
+	p.claimedBy(loop)
+	if got := loop.CurrentScopes().Logins(); strings.Join(got, ",") != "acme" {
+		t.Fatalf("restricted to acme, scopes = %v", got)
+	}
+}
+
+// A node.yaml that cannot be read keeps the last good capacity.
+func TestLoopKeepsTheLastGoodCapacity(t *testing.T) {
+	p := newPriorityFake(t)
+	p.addGoal(orgID, "steady", "normal")
+	for i, id := range []string{"a1", "a2", "a3", "a4", "a5"} {
+		p.addItem(orgID, "steady", id, i+1, false)
+	}
+	loop, _, logs := p.liveLoop(t, "slug: box\nname: Box\norgs: [acme]\ncapacity: 2\n")
+	if got := p.claimedBy(loop); len(got) != 2 {
+		t.Fatalf("first tick claimed %v, want two", got)
+	}
+	writeNodeYAML(t, "slug: box\ncapacity: [not a number\n")
+	if got := p.claimedBy(loop); len(got) != 2 || loop.Capacity() != 2 {
+		t.Fatalf("with node.yaml broken, claimed %v at capacity %d; want two at 2", got, loop.Capacity())
+	}
+	if !strings.Contains(logs.String(), "reload config: node.yaml (keeping the last good capacity)") {
+		t.Fatalf("the unreadable file is not logged:\n%s", logs)
+	}
+	if got := loop.CurrentScopes().Logins(); strings.Join(got, ",") != "acme" {
+		t.Fatalf("scopes = %v", got)
+	}
+}

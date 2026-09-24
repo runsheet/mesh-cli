@@ -149,6 +149,15 @@ evaluated by their goal's priority, then seq — on the same one goals read
 per org per tick.
 There is no starvation guard beyond this order: a steady stream of urgent
 work keeps a low goal's items, plans and evaluations waiting.
+Capacity and the orgs served are re-read at the top of every tick, so
+neither needs a restart: `capacity` and `orgs` come from
+`~/.mesh/node.yaml` as it stands (a file that cannot be read is logged and
+the last good capacity kept), and the orgs from the platform's `MyOrgs`
+— an org seen for the first time is registered in and served that tick,
+one no longer listed (or outside `orgs`) is dropped. A change is logged
+(`capacity 3 → 6`, `orgs acme → acme, go-apis`). In channel mode the
+goal watch of an org added this way waits for the next start; its
+planning, items and evaluations do not.
 What happens to a claimed item depends on the mode.
 
 **Channel mode (default).** One persistent `claude` session runs in

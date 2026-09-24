@@ -106,7 +106,10 @@ func (c *ClaudeCode) Run(ctx context.Context, job Job, onProgress func(Progress)
 	if err := cmd.Start(); err != nil {
 		return Result{}, fmt.Errorf("harness claude-code: start: %w", err)
 	}
-	res := ParseStream(stdout, func(ev Event) {
+	// The raw stdout, capped, in case the harness said why it could not
+	// run there rather than on stderr.
+	rawOut := &capBuffer{max: 64 << 10}
+	res := ParseStream(io.TeeReader(stdout, rawOut), func(ev Event) {
 		if onProgress == nil {
 			return
 		}
@@ -136,10 +139,35 @@ func (c *ClaudeCode) Run(ctx context.Context, job Job, onProgress func(Progress)
 			return res, nil
 		}
 		msg := strings.TrimSpace(errBuf.String())
+		if isUnavailable(msg) {
+			return res, &UnavailableError{Reason: msg}
+		}
+		// Stdout is only the harness's own when it held no events; a
+		// session's text may mention a rate limit for its own reasons.
+		if out := strings.TrimSpace(rawOut.String()); res.EmptyOutput && isUnavailable(out) {
+			return res, &UnavailableError{Reason: out}
+		}
 		if msg == "" {
 			msg = waitErr.Error()
 		}
 		return res, fmt.Errorf("harness claude-code: %s", msg)
 	}
 	return res, nil
+}
+
+// capBuffer keeps the first max bytes written to it and drops the rest.
+type capBuffer struct {
+	bytes.Buffer
+	max int
+}
+
+func (b *capBuffer) Write(p []byte) (int, error) {
+	if room := b.max - b.Len(); room > 0 {
+		if len(p) > room {
+			b.Buffer.Write(p[:room])
+		} else {
+			b.Buffer.Write(p)
+		}
+	}
+	return len(p), nil
 }

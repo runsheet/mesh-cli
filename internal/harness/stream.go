@@ -44,13 +44,14 @@ func (e Event) Text() string {
 // returns the Result carried by the final `result` event. Lines that are
 // not JSON (claude's own diagnostics) are skipped. If the stream ends with
 // no result event, Success is false and Text holds the last assistant
-// message.
+// message. A stream with no parseable event at all sets EmptyOutput.
 func ParseStream(r io.Reader, onEvent func(Event)) Result {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 16<<20)
 	var res Result
 	var lastText string
 	sawResult := false
+	events := 0
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		if line == "" || line[0] != '{' {
@@ -60,6 +61,7 @@ func ParseStream(r io.Reader, onEvent func(Event)) Result {
 		if err := json.Unmarshal([]byte(line), &ev); err != nil {
 			continue
 		}
+		events++
 		if ev.SessionID != "" {
 			res.SessionID = ev.SessionID
 		}
@@ -87,5 +89,6 @@ func ParseStream(r io.Reader, onEvent func(Event)) Result {
 	if !sawResult {
 		res.Success = false
 	}
+	res.EmptyOutput = events == 0
 	return res
 }

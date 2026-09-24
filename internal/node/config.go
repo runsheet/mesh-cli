@@ -166,6 +166,67 @@ func ResolveScopes(ctx context.Context, gw Gateway, c *Config) (Scopes, error) {
 	return scopes, nil
 }
 
+// Reloader is Loop.Reload for a node started on cfg and scopes: every
+// tick it reads node.yaml again through load (LoadConfig when nil) for
+// the capacity and the orgs restriction, and asks MyOrgs for the orgs
+// the owner belongs to. An org seen for the first time is registered in
+// through register (a Node there, as start does) before it is served —
+// one that fails to register is tried again next tick; an org no longer
+// listed, or no longer in the restriction, is dropped. A node.yaml that
+// cannot be read keeps the last good capacity and restriction; a MyOrgs
+// that fails, or leaves nothing to serve, keeps the orgs as they were.
+func Reloader(gw Gateway, cfg *Config, scopes Scopes, load func() (*Config, error), register func(context.Context, Scope) error) func(context.Context) (int, Scopes, error) {
+	if load == nil {
+		load = LoadConfig
+	}
+	restrict := cfg.Orgs
+	registered := map[string]bool{}
+	for _, sc := range scopes {
+		registered[sc.NodeID] = true
+	}
+	return func(ctx context.Context) (int, Scopes, error) {
+		var errs []error
+		capacity := 0
+		if c, err := load(); err != nil {
+			errs = append(errs, fmt.Errorf("node.yaml (keeping the last good capacity): %w", err))
+		} else {
+			capacity, restrict = c.Capacity, c.Orgs
+		}
+		orgs, err := gw.MyOrgs(ctx)
+		if err != nil {
+			return capacity, nil, errors.Join(append(errs, fmt.Errorf("my orgs: %w", err))...)
+		}
+		want := map[string]bool{}
+		for _, o := range restrict {
+			want[strings.ToLower(strings.TrimSpace(o))] = true
+		}
+		var served Scopes
+		for _, o := range orgs {
+			if len(want) > 0 && !want[strings.ToLower(o.Login)] {
+				continue
+			}
+			id, err := cfg.NodeIDIn(o.ID)
+			if err != nil {
+				errs = append(errs, err)
+				continue
+			}
+			sc := Scope{Login: o.Login, ID: o.ID, AccountID: o.AccountID, NodeID: id}
+			if !registered[id] && register != nil {
+				if err := register(ctx, sc); err != nil {
+					errs = append(errs, fmt.Errorf("register in %s: %w", o.Login, err))
+					continue
+				}
+			}
+			registered[id] = true
+			served = append(served, sc)
+		}
+		if len(served) == 0 {
+			return capacity, nil, errors.Join(append(errs, errors.New("no org left to serve (keeping the orgs as they were)"))...)
+		}
+		return capacity, served, errors.Join(errs...)
+	}
+}
+
 // ConfigPath is ~/.mesh/node.yaml.
 func ConfigPath() (string, error) {
 	home, err := os.UserHomeDir()
