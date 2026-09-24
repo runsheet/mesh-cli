@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -116,16 +115,20 @@ func TestToolsAgainstGateway(t *testing.T) {
 	if out := call(t, h, "mesh_items", map[string]any{"status": "merged"}); out != "no items" {
 		t.Fatalf("items merged: %q", out)
 	}
+	// mesh_record is a platform-only record: the summary is the item's
+	// note, and nothing is written or committed into git (ADR 003).
 	rec := call(t, h, "mesh_record", map[string]any{"item_id": item1, "summary": "test written"})
-	if rec != "recorded specs/goal-ship-it.md on the branch" {
+	if rec != "recorded on the platform" {
 		t.Fatalf("record: %q", rec)
 	}
-	doc, err := os.ReadFile(filepath.Join(h.WorkRoot, "ship-it", "1", "specs", "goal-ship-it.md"))
-	if err != nil || !strings.Contains(string(doc), "parent: prd\n") || !strings.Contains(string(doc), "· item 1 · test written") {
-		t.Fatalf("goal doc: %v\n%s", err, doc)
+	if row := f.Item(item1); row["lastNote"] != "test written" || row["sessionId"] != "s-9" {
+		t.Fatalf("after record: %v", row)
 	}
-	if len(ws.commits) != 1 || ws.commits[0] != "docs(mesh): goal ship-it — item 1" {
-		t.Fatalf("commits: %v", ws.commits)
+	if len(ws.commits) != 0 {
+		t.Fatalf("mesh_record committed: %v", ws.commits)
+	}
+	if goalDocs, _ := filepath.Glob(filepath.Join(h.WorkRoot, "ship-it", "1", "specs", "goal-*.md")); len(goalDocs) != 0 {
+		t.Fatalf("mesh_record wrote a goal doc: %v", goalDocs)
 	}
 	call(t, h, "mesh_finish", map[string]any{"item_id": item1, "branch": "mesh/ship-it-1", "head_sha": "abc123"})
 	if row := f.Item(item1); row["status"] != "evaluating" || row["headSha"] != "abc123" {

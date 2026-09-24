@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -259,5 +260,71 @@ func TestGitHubTokenNeedsRefresh(t *testing.T) {
 		if got := GitHubTokenNeedsRefresh(c.tok); got != c.want {
 			t.Errorf("%+v: %v, want %v", c.tok, got, c.want)
 		}
+	}
+}
+
+// An item run end to end on a real checkout pushes a branch whose diff
+// from the base carries the session's work and no specs/goal-*.md: the
+// runner writes no goal status table on an item's branch (ADR 003); the
+// goal's doc is written once, when the goal ends, by goaldoc.go.
+func TestRunItemBranchCarriesNoGoalDoc(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	root := t.TempDir()
+	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(root, "gitconfig"))
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	for _, kv := range []string{"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t", "GIT_TERMINAL_PROMPT=0"} {
+		k, v, _ := strings.Cut(kv, "=")
+		t.Setenv(k, v)
+	}
+	git := func(dir string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	srvRoot := filepath.Join(root, "srv")
+	bare := filepath.Join(srvRoot, "acme/widgets.git")
+	git(root, "init", "--quiet", "--bare", "-b", "main", bare)
+	seedDir := filepath.Join(root, "seed")
+	git(root, "init", "--quiet", "-b", "main", seedDir)
+	os.WriteFile(filepath.Join(seedDir, "a"), []byte("a"), 0o644)
+	git(seedDir, "add", "a")
+	git(seedDir, "commit", "--quiet", "-m", "a")
+	git(seedDir, "push", "--quiet", bare, "HEAD:main")
+	srv := githubStandIn(t, srvRoot, map[string]string{"ghs_item1": "acme/widgets"})
+
+	// the session does its work and commits it, as a build does
+	h := harnessFunc(func(ctx context.Context, job harness.Job, on func(harness.Progress)) (harness.Result, error) {
+		os.WriteFile(filepath.Join(job.Workspace, "thing_test.go"), []byte("package thing\n"), 0o644)
+		git(job.Workspace, "add", "thing_test.go")
+		git(job.Workspace, "commit", "--quiet", "-m", "test: the thing")
+		return harness.Result{Success: true, Text: "done", CostUSD: 0.5}, nil
+	})
+	r, _, item, row := runnerOn(t, h, nil)
+	r.WS = &Git{GitHubURL: srv.URL}
+	r.WorkRoot = filepath.Join(root, "work")
+	if err := r.RunItem(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	if got := row(item1); got["status"] != "evaluating" || got["branch"] != "mesh/ship-it-1" {
+		t.Fatalf("row: %v", got)
+	}
+	changed := strings.Fields(git(root, "--git-dir", bare, "diff", "--name-only", "main...mesh/ship-it-1"))
+	if strings.Join(changed, ",") != "thing_test.go" {
+		t.Fatalf("the item's branch changed %v, want only thing_test.go", changed)
+	}
+	for _, f := range changed {
+		if ok, _ := filepath.Match("specs/goal-*.md", f); ok {
+			t.Fatalf("the item's branch carries a goal doc: %s", f)
+		}
+	}
+	if log := git(root, "--git-dir", bare, "log", "--format=%s", "main..mesh/ship-it-1"); strings.Contains(log, "docs(mesh): goal") {
+		t.Fatalf("the item's branch carries a goal-doc commit:\n%s", log)
 	}
 }

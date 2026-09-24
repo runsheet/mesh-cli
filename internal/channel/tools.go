@@ -82,7 +82,7 @@ const Instructions = `Events from the Mesh node arrive as <channel source="mesh"
 	`kind="work_item.ready" carries item_id, seq, goal_slug, repo, base_ref, branch and workspace attributes and the item's brief and acceptance as content: ` +
 	`it is claimed for you — do the work, then call mesh_finish (or mesh_fail). ` +
 	`kind="goal.paused" / "goal.cancelled" / "goal.resumed" and kind="checkpoint" are notices: stop, drop or continue the goal's items accordingly; no reply is needed. ` +
-	`Report with mesh_progress as you go, mesh_record after each milestone and before mesh_finish, and answer a question with reply. Keep every message short.`
+	`Report with mesh_progress as you go, mesh_record after each milestone and before mesh_finish (it logs the summary on the platform; it writes nothing into git), and answer a question with reply. Keep every message short.`
 
 // Tools lists the server's tools over h.
 func (h *Handler) Tools() []Tool {
@@ -105,7 +105,7 @@ func (h *Handler) Tools() []Tool {
 		{Name: "mesh_items", Description: "List the work items of the orgs this node serves, optionally in one status (pending, ready, claimed, running, evaluating, review, merged, failed, cancelled).",
 			Schema: ObjectSchema(map[string]string{"status": "only this status"}),
 			Call:   h.items},
-		{Name: "mesh_record", Description: "Write the goal's record (specs/goal-<slug>.md: statement, acceptance, items table, log) in the item's workspace and commit it on the item's branch.",
+		{Name: "mesh_record", Description: "Record a milestone on the platform: the summary goes to the item's log as a progress note. Writes nothing into git; the goal's status lives on the platform.",
 			Schema: ObjectSchema(map[string]string{"item_id": "the work item id", "summary": "one line for the log"}, "item_id", "summary"),
 			Call:   h.record},
 		{Name: "reply", Description: "Acknowledge an event or answer the platform in a sentence; recorded as a progress note on the item when item_id is given.",
@@ -245,41 +245,20 @@ func (h *Handler) items(ctx context.Context, args map[string]any) (string, error
 	return b.String(), nil
 }
 
+// record is mesh_record: the summary goes to the platform's log as a
+// progress note on the item. It writes nothing into git — status lives
+// on the platform (ADR 003) and the goal's doc is written once, when the
+// goal ends, by goaldoc.go. The name and arguments stay for sessions
+// that still call it.
 func (h *Handler) record(ctx context.Context, args map[string]any) (string, error) {
 	id, summary := str(args, "item_id"), str(args, "summary")
 	if id == "" || summary == "" {
 		return "", fmt.Errorf("item_id and summary required")
 	}
-	item, err := h.GW.WorkItem(ctx, id)
-	if err != nil {
+	if err := h.GW.ReportWorkItemProgress(ctx, id, summary, 0, h.session()); err != nil {
 		return "", err
 	}
-	goal, err := h.GW.Goal(ctx, item.GoalID)
-	if err != nil {
-		return "", err
-	}
-	items, err := h.GW.GoalWorkItems(ctx, goal.ID)
-	if err != nil {
-		return "", err
-	}
-	parent := ""
-	if project, err := h.GW.Project(ctx, goal.ProjectID); err == nil {
-		if cx, err := node.FetchContext(ctx, h.GW, h.Scopes.LoginOf(item.OrgID), project.Slug); err == nil {
-			parent = cx.PRDSlug
-		}
-	}
-	dir := node.WorkspaceSpec{Root: h.WorkRoot, GoalSlug: goal.Slug, Seq: item.Seq}.Dir()
-	doc := node.GoalDoc{Slug: goal.Slug, Title: goal.Title, Statement: goal.Statement, Acceptance: goal.Acceptance, GoalStatus: goal.Status, Parent: parent, SpentCents: goal.SpentCents, Items: items}
-	rel, changed, err := node.WriteGoalDoc(dir, doc, node.LogLine(time.Now(), item.Seq, summary))
-	if err != nil {
-		return "", err
-	}
-	if changed {
-		if err := h.WS.Commit(ctx, dir, []string{rel}, fmt.Sprintf("docs(mesh): goal %s — item %d", goal.Slug, item.Seq)); err != nil {
-			return "", err
-		}
-	}
-	return "recorded specs/goal-" + goal.Slug + ".md on the branch", nil
+	return "recorded on the platform", nil
 }
 
 func (h *Handler) reply(ctx context.Context, args map[string]any) (string, error) {
