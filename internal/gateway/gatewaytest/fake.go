@@ -37,6 +37,8 @@ type Fake struct {
 	Repos      map[string]map[string]any
 	Accounts   map[string]map[string]any
 	Nodes      map[string]map[string]any
+	// Agents by id, as AgentIndex rows (runsheet trd §6e).
+	Agents map[string]map[string]any
 	// Documents by "org/project" → list rows; Bodies by "org/project/slug".
 	Documents map[string][]map[string]any
 	Bodies    map[string]string
@@ -61,6 +63,11 @@ type Fake struct {
 	// Unsupported names mutations the fake answers as a platform that
 	// predates them: the schema's "Cannot query field" error.
 	Unsupported map[string]bool
+	// UnknownFields names fields the fake's schema does not have, as a
+	// platform older than them: a read selecting one is refused with
+	// "Cannot query field", a command whose input (or an item of it)
+	// carries one with "Unknown field".
+	UnknownFields map[string]bool
 }
 
 // New starts a fake accepting the given bearer token.
@@ -73,6 +80,7 @@ func New(token string) *Fake {
 		Repos:      map[string]map[string]any{}, Accounts: map[string]map[string]any{}, Nodes: map[string]map[string]any{},
 		Documents: map[string][]map[string]any{}, Bodies: map[string]string{}, Refuse: map[string]string{}, FailReads: map[string]string{},
 		GitHubTokens: map[string]map[string]any{}, Unsupported: map[string]bool{},
+		Agents: map[string]map[string]any{}, UnknownFields: map[string]bool{},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/graphql", f.graphql)
@@ -170,6 +178,10 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 			writeErrors(w, 200, fmt.Sprintf("Cannot query field %q on type \"Mutation\".", m[2]))
 			return
 		}
+		if field := f.unknownInput(in); field != "" {
+			writeErrors(w, 200, fmt.Sprintf(`Variable "$in" got invalid value; In field %q: Unknown field.`, field))
+			return
+		}
 		if msg := f.Refuse[m[2]]; msg != "" {
 			writeErrors(w, 200, msg)
 			return
@@ -199,8 +211,13 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 		f.Calls = append(f.Calls, Call{Name: m[2], Input: in})
 		writeData(w, map[string]any{m[2]: map[string]any{"status": "ok"}})
 	default:
+		field, typ := f.unknownSelection(q)
 		if m := getRe.FindStringSubmatch(q); m != nil {
-			writeData(w, map[string]any{m[1]: f.table(m[1] + "s")[m[2]]})
+			if field != "" {
+				writeErrors(w, 200, fmt.Sprintf("Cannot query field %q on type %q.", field, typ))
+				return
+			}
+			writeData(w, map[string]any{m[1]: f.known(f.table(m[1] + "s")[m[2]])})
 			return
 		}
 		m := listRe.FindStringSubmatch(q)
@@ -214,6 +231,10 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 			read.Input[wm[1]] = wm[2]
 		}
 		f.Reads = append(f.Reads, read)
+		if field != "" {
+			writeErrors(w, 200, fmt.Sprintf("Cannot query field %q on type %q.", field, typ))
+			return
+		}
 		if msg := f.FailReads[m[1]]; msg != "" {
 			writeErrors(w, 200, msg)
 			return
@@ -227,7 +248,7 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if ok {
-				rows = append(rows, row)
+				rows = append(rows, f.known(row))
 			}
 		}
 		writeData(w, map[string]any{m[1]: rows})
@@ -250,8 +271,67 @@ func (f *Fake) table(name string) map[string]map[string]any {
 		return f.Accounts
 	case "nodeIndexs":
 		return f.Nodes
+	case "agentIndexs":
+		return f.Agents
 	}
 	return map[string]map[string]any{}
+}
+
+// unknownSelection is the first field of the query's selections the
+// fake's schema does not have, and the type it was asked of.
+func (f *Fake) unknownSelection(q string) (string, string) {
+	typ := "Query"
+	if m := listRe.FindStringSubmatch(q); m != nil {
+		typ = strings.TrimSuffix(m[1], "s")
+	} else if m := getRe.FindStringSubmatch(q); m != nil {
+		typ = m[1]
+	}
+	typ = strings.ToUpper(typ[:1]) + typ[1:]
+	i := strings.LastIndex(q, ")")
+	if i < 0 {
+		return "", ""
+	}
+	for _, word := range strings.FieldsFunc(q[i:], func(r rune) bool { return r == ' ' || r == '{' || r == '}' || r == ')' }) {
+		if f.UnknownFields[word] {
+			return word, typ
+		}
+	}
+	return "", ""
+}
+
+// known is the row as the fake's schema serves it: without the fields
+// it does not have.
+func (f *Fake) known(row map[string]any) map[string]any {
+	if row == nil || len(f.UnknownFields) == 0 {
+		return row
+	}
+	out := copyRow(row)
+	for k := range f.UnknownFields {
+		delete(out, k)
+	}
+	return out
+}
+
+// unknownInput is the first key of a command's input, or of a row of a
+// list in it, the fake's schema does not have.
+func (f *Fake) unknownInput(in map[string]any) string {
+	for k, v := range in {
+		if f.UnknownFields[k] {
+			return k
+		}
+		if rows, ok := v.([]any); ok {
+			for _, r := range rows {
+				if row, ok := r.(map[string]any); ok {
+					for rk := range row {
+						if f.UnknownFields[rk] {
+							return rk
+						}
+					}
+				}
+			}
+		}
+	}
+	return ""
 }
 
 func (f *Fake) apply(name string, in map[string]any) error {

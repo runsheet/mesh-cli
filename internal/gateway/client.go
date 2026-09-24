@@ -16,7 +16,10 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // DefaultURL is the platform gateway.
@@ -44,6 +47,11 @@ type Client struct {
 	BaseURL string
 	Source  TokenSource
 	HTTP    *http.Client
+
+	// itemsWithoutModel is set once the gateway has refused the
+	// WorkItemIndex fields items-carry-a-model added (an older
+	// platform): every later item read asks for workItemFields alone.
+	itemsWithoutModel atomic.Bool
 }
 
 // New returns a client for baseURL (scheme+host, no trailing slash) with
@@ -284,9 +292,80 @@ type WorkItem struct {
 	RebaseFiles    []string `json:"rebaseFiles"`
 	RebaseNodeID   string   `json:"rebaseNodeId"`
 	RebasedHeadSHA string   `json:"rebasedHeadSha"`
+	// ProjectID is the Prologue project the item's goal is in: the scope
+	// its agent resolves in (AgentIDs).
+	ProjectID string `json:"projectId"`
+	// AgentSlug names the agent that builds the item (runsheet trd §6c);
+	// empty is the role's resolved definition.
+	AgentSlug string `json:"agentSlug"`
+	// Model is the tier the item is built on (runsheet trd §6a,
+	// items-carry-a-model): the plan's, else its named agent's; empty is
+	// the node's own. EvaluateModel is the tier the platform chose to
+	// evaluate it on. Both are empty from a platform older than the goal.
+	Model         string `json:"model"`
+	EvaluateModel string `json:"evaluateModel"`
+}
+
+// AgentIDs are the Agent aggregate ids the item's AgentSlug may resolve
+// to, most specific first — the project's definition, the org's, the
+// platform's default (runsheet trd §6e, ids.AgentID) — or none when the
+// item names no agent. The first one AgentModel finds a model for wins.
+func (w WorkItem) AgentIDs() []string {
+	if w.AgentSlug == "" {
+		return nil
+	}
+	org, _ := uuid.Parse(w.OrgID)
+	project, _ := uuid.Parse(w.ProjectID)
+	var ids []string
+	if org != uuid.Nil && project != uuid.Nil {
+		ids = append(ids, AgentID(org, project, w.AgentSlug).String())
+	}
+	if org != uuid.Nil {
+		ids = append(ids, AgentID(org, uuid.Nil, w.AgentSlug).String())
+	}
+	return append(ids, AgentID(uuid.Nil, uuid.Nil, w.AgentSlug).String())
 }
 
 const workItemFields = `id goalId orgId seq title brief acceptance repoId baseRef dependsOn status nodeId branch costCents attempts lastError lastNote prUrl heartbeatAt evaluation evaluationPassed rebaseState rebaseConflict rebaseFiles rebaseNodeId rebasedHeadSha`
+
+// workItemModelExtra is what items-carry-a-model put on WorkItemIndex
+// (runsheet trd §6a) and the node reads when the platform has it.
+const workItemModelExtra = `projectId agentSlug model evaluateModel`
+
+// readItems runs one WorkItemIndex read, query being the document with
+// its selection left to fill in. The first read asks for the model
+// fields too; a gateway that does not know one of them is an older
+// platform, and from then on the client asks for the base fields alone.
+func (c *Client) readItems(ctx context.Context, query func(fields string) string, out any) error {
+	if !c.itemsWithoutModel.Load() {
+		err := c.Query(ctx, query(workItemFields+" "+workItemModelExtra), nil, out)
+		var ge *Error
+		if err == nil || !errors.As(err, &ge) || !unknownField(ge.Message, strings.Fields(workItemModelExtra)...) {
+			return err
+		}
+		c.itemsWithoutModel.Store(true)
+	}
+	return c.Query(ctx, query(workItemFields), nil, out)
+}
+
+// unknownField reports whether a GraphQL error message is the schema
+// not knowing one of fields — a selected one ("Cannot query field") or
+// one of an input ("Unknown field", "is not defined by type").
+func unknownField(msg string, fields ...string) bool {
+	known := false
+	for _, s := range []string{"Cannot query field", "Unknown field", "unknown field", "is not defined by type"} {
+		known = known || strings.Contains(msg, s)
+	}
+	if !known {
+		return false
+	}
+	for _, f := range fields {
+		if strings.Contains(msg, `"`+f+`"`) {
+			return true
+		}
+	}
+	return false
+}
 
 func where(field, value string) string {
 	return fmt.Sprintf(`{field: %q, op: EQ, value: %q}`, field, value)
@@ -297,8 +376,10 @@ func (c *Client) ReadyWorkItems(ctx context.Context, orgID string) ([]WorkItem, 
 	var out struct {
 		Items []WorkItem `json:"workItemIndexs"`
 	}
-	q := fmt.Sprintf(`{ workItemIndexs(namespace: %q, where: [%s, %s]) { %s } }`, NS, where("org_id", orgID), where("status", "ready"), workItemFields)
-	if err := c.Query(ctx, q, nil, &out); err != nil {
+	q := func(fields string) string {
+		return fmt.Sprintf(`{ workItemIndexs(namespace: %q, where: [%s, %s]) { %s } }`, NS, where("org_id", orgID), where("status", "ready"), fields)
+	}
+	if err := c.readItems(ctx, q, &out); err != nil {
 		return nil, err
 	}
 	items := out.Items
@@ -315,8 +396,10 @@ func (c *Client) WorkItem(ctx context.Context, id string) (*WorkItem, error) {
 	var out struct {
 		Item *WorkItem `json:"workItemIndex"`
 	}
-	q := fmt.Sprintf(`{ workItemIndex(namespace: %q, id: %q) { %s } }`, NS, id, workItemFields)
-	if err := c.Query(ctx, q, nil, &out); err != nil {
+	q := func(fields string) string {
+		return fmt.Sprintf(`{ workItemIndex(namespace: %q, id: %q) { %s } }`, NS, id, fields)
+	}
+	if err := c.readItems(ctx, q, &out); err != nil {
 		return nil, err
 	}
 	if out.Item == nil {
@@ -334,8 +417,10 @@ func (c *Client) OrgWorkItems(ctx context.Context, orgID, status string) ([]Work
 	if status != "" {
 		wh += ", " + where("status", status)
 	}
-	q := fmt.Sprintf(`{ workItemIndexs(namespace: %q, where: [%s]) { %s } }`, NS, wh, workItemFields)
-	if err := c.Query(ctx, q, nil, &out); err != nil {
+	q := func(fields string) string {
+		return fmt.Sprintf(`{ workItemIndexs(namespace: %q, where: [%s]) { %s } }`, NS, wh, fields)
+	}
+	if err := c.readItems(ctx, q, &out); err != nil {
 		return nil, err
 	}
 	sortBySeq(out.Items)
@@ -349,8 +434,10 @@ func (c *Client) RequestedRebases(ctx context.Context, orgID string) ([]WorkItem
 	var out struct {
 		Items []WorkItem `json:"workItemIndexs"`
 	}
-	q := fmt.Sprintf(`{ workItemIndexs(namespace: %q, where: [%s, %s]) { %s } }`, NS, where("org_id", orgID), where("rebase_state", "requested"), workItemFields)
-	if err := c.Query(ctx, q, nil, &out); err != nil {
+	q := func(fields string) string {
+		return fmt.Sprintf(`{ workItemIndexs(namespace: %q, where: [%s, %s]) { %s } }`, NS, where("org_id", orgID), where("rebase_state", "requested"), fields)
+	}
+	if err := c.readItems(ctx, q, &out); err != nil {
 		return nil, err
 	}
 	sortBySeq(out.Items)
@@ -370,8 +457,10 @@ func (c *Client) GoalWorkItems(ctx context.Context, goalID string) ([]WorkItem, 
 	var out struct {
 		Items []WorkItem `json:"workItemIndexs"`
 	}
-	q := fmt.Sprintf(`{ workItemIndexs(namespace: %q, where: [%s]) { %s } }`, NS, where("goal_id", goalID), workItemFields)
-	if err := c.Query(ctx, q, nil, &out); err != nil {
+	q := func(fields string) string {
+		return fmt.Sprintf(`{ workItemIndexs(namespace: %q, where: [%s]) { %s } }`, NS, where("goal_id", goalID), fields)
+	}
+	if err := c.readItems(ctx, q, &out); err != nil {
 		return nil, err
 	}
 	items := out.Items
@@ -381,6 +470,32 @@ func (c *Client) GoalWorkItems(ctx context.Context, goalID string) ([]WorkItem, 
 		}
 	}
 	return items, nil
+}
+
+// AgentModel is the model an Agent definition names (runsheet trd §6e),
+// by its aggregate id (AgentID, WorkItem.AgentIDs). A definition that
+// does not exist, is retired or names no model is "", and so is a
+// platform without agents or without their model: none of those is an
+// error — the caller falls back to the node's own.
+func (c *Client) AgentModel(ctx context.Context, agentID string) (string, error) {
+	var out struct {
+		Agent *struct {
+			Model  string `json:"model"`
+			Status string `json:"status"`
+		} `json:"agentIndex"`
+	}
+	q := fmt.Sprintf(`{ agentIndex(namespace: %q, id: %q) { model status } }`, NS, agentID)
+	if err := c.Query(ctx, q, nil, &out); err != nil {
+		var ge *Error
+		if errors.As(err, &ge) && unknownField(ge.Message, "agentIndex", "model", "status") {
+			return "", nil
+		}
+		return "", err
+	}
+	if out.Agent == nil || out.Agent.Status == "retired" {
+		return "", nil
+	}
+	return out.Agent.Model, nil
 }
 
 // Goal is a GoalIndex row.
@@ -828,6 +943,9 @@ type PlannedItem struct {
 	DependsOn  []int  `json:"dependsOn"`
 	RepoID     string `json:"repoId"`
 	BaseRef    string `json:"baseRef"`
+	// Model is the tier the planner chose for the item (opus, sonnet,
+	// haiku; runsheet trd §6a); empty leaves it to the node.
+	Model string `json:"model,omitempty"`
 }
 
 // RequestPlan asks the planner for the goal's graph: the goal waits in
@@ -891,24 +1009,38 @@ func (c *Client) RecordDirectionResearch(ctx context.Context, directionID, nodeI
 }
 
 // PlanGoal hands the goal its graph, with the planner session's cost
-// when one drew it.
+// when one drew it. An item's model is sent only when it has one; a
+// platform older than items-carry-a-model refuses the field, and the
+// graph is handed in again without it.
 func (c *Client) PlanGoal(ctx context.Context, goalID, by string, items []PlannedItem, costCents int) error {
-	list := make([]map[string]any, 0, len(items))
-	for _, it := range items {
-		deps := it.DependsOn
-		if deps == nil {
-			deps = []int{} // the input is non-null
+	send := func(withModel bool) error {
+		list := make([]map[string]any, 0, len(items))
+		for _, it := range items {
+			deps := it.DependsOn
+			if deps == nil {
+				deps = []int{} // the input is non-null
+			}
+			row := map[string]any{
+				"seq": it.Seq, "title": it.Title, "brief": it.Brief, "acceptance": it.Acceptance,
+				"dependsOn": deps, "repoId": it.RepoID, "baseRef": it.BaseRef,
+			}
+			if withModel && it.Model != "" {
+				row["model"] = it.Model
+			}
+			list = append(list, row)
 		}
-		list = append(list, map[string]any{
-			"seq": it.Seq, "title": it.Title, "brief": it.Brief, "acceptance": it.Acceptance,
-			"dependsOn": deps, "repoId": it.RepoID, "baseRef": it.BaseRef,
-		})
+		m := map[string]any{"items": list, "costCents": costCents}
+		if by != "" {
+			m["by"] = by
+		}
+		return c.Mutate(ctx, "planGoal", goalID, m)
 	}
-	m := map[string]any{"items": list, "costCents": costCents}
-	if by != "" {
-		m["by"] = by
+	err := send(true)
+	var ge *Error
+	if err != nil && errors.As(err, &ge) && unknownField(ge.Message, "model") {
+		return send(false)
 	}
-	return c.Mutate(ctx, "planGoal", goalID, m)
+	return err
 }
 
 // ApproveGraph approves the pending graph checkpoint.
