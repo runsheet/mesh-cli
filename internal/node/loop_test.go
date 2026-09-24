@@ -72,6 +72,9 @@ type fakeWS struct {
 	prepared []WorkspaceSpec
 	pushed   []string
 	fetched  []string
+	// pushedHead and pushedErr are what PushedHead answers.
+	pushedHead string
+	pushedErr  error
 	// events are Authorize (with its token), Prepare, Diff and Push in
 	// the order they came
 	events []string
@@ -105,6 +108,18 @@ func (w *fakeWS) Push(_ context.Context, dir, branch string) (string, error) {
 	w.pushed = append(w.pushed, branch)
 	w.events = append(w.events, "push")
 	return "abc123def456", nil
+}
+
+// PushedHead reads back what the session pushed: pushedHead when set,
+// else the error pushedErr.
+func (w *fakeWS) PushedHead(_ context.Context, dir, branch, base string) (string, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.events = append(w.events, "pushed-head "+branch)
+	if w.pushedErr != nil {
+		return "", w.pushedErr
+	}
+	return w.pushedHead, nil
 }
 
 func (w *fakeWS) Fetch(_ context.Context, repo, dir string) error {

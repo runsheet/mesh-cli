@@ -358,10 +358,17 @@ func (f *Fake) apply(name string, in map[string]any) error {
 		if item == nil {
 			return fmt.Errorf("no such item")
 		}
-		if item["status"] != "claimed" && item["status"] != "running" {
+		// a claimed rebase's session reports on the item in review: the
+		// rebase's heartbeat (runsheet ADR 008), its cents on the item
+		rebasing := item["status"] == "review" && item["rebaseState"] == "claimed"
+		if item["status"] != "claimed" && item["status"] != "running" && !rebasing {
 			return fmt.Errorf("item is %s, not running", item["status"])
 		}
-		item["status"] = "running"
+		if rebasing {
+			item["rebaseHeartbeats"] = toInt(item["rebaseHeartbeats"]) + 1
+		} else {
+			item["status"] = "running"
+		}
 		item["costCents"] = toInt(item["costCents"]) + toInt(in["costCents"])
 		if n, _ := in["note"].(string); n != "" {
 			item["lastNote"] = n
@@ -544,12 +551,15 @@ func (f *Fake) issueItemRepoToken(in map[string]any) (map[string]any, error) {
 	if item == nil {
 		return nil, fmt.Errorf("no such item")
 	}
-	switch item["status"] {
-	case "claimed", "running", "evaluating": // its builder, then its evaluator
+	holder := item["nodeId"]
+	switch {
+	case item["status"] == "claimed", item["status"] == "running", item["status"] == "evaluating": // its builder, then its evaluator
+	case item["status"] == "review" && item["rebaseState"] == "claimed": // the node holding its rebase
+		holder = item["rebaseNodeId"]
 	default:
 		return nil, fmt.Errorf("item is %s, not claimed", item["status"])
 	}
-	if f.TokenNodeID != "" && item["nodeId"] != f.TokenNodeID {
+	if f.TokenNodeID != "" && holder != f.TokenNodeID {
 		return nil, fmt.Errorf("the item is not node %s's", f.TokenNodeID)
 	}
 	tok := f.GitHubTokens[id]

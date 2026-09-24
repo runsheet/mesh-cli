@@ -38,6 +38,7 @@ var (
 	nodeEvalBudgetFlag     float64
 	nodePlanBudgetFlag     float64
 	nodeResearchBudgetFlag float64
+	nodeRebaseBudgetFlag   float64
 	nodeMaxBudgetFlag      float64
 	nodeModeFlag           string
 	nodeUnattended         bool
@@ -438,6 +439,7 @@ func runPollMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *
 	loop.Evaluate = evaluateWith(gw, h, loop.CurrentScopes, workRoot, fallback, logger)
 	loop.Plan = planWith(gw, cfg, h, workRoot, logger)
 	loop.Research = researchWith(gw, cfg, h, workRoot, logger)
+	loop.Rebase = rebaseWith(gw, h, loop.CurrentScopes, workRoot, logger)
 	logger.Printf("poll mode: node %s (%s) for %s, capacity %d, every %s", cfg.Name, cfg.Slug, strings.Join(scopes.Logins(), ", "), cfg.Capacity, loop.Interval)
 	// items this node held when it last stopped are taken up again: a
 	// restart mid-build continues them (the workspace keeps the branch)
@@ -537,6 +539,7 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 	loop.Evaluate = evaluateWith(gw, oneShotHarness(), loop.CurrentScopes, workRoot, fallback, logger)
 	loop.Plan = planWith(gw, cfg, oneShotHarness(), workRoot, logger)
 	loop.Research = researchWith(gw, cfg, oneShotHarness(), workRoot, logger)
+	loop.Rebase = rebaseWith(gw, oneShotHarness(), loop.CurrentScopes, workRoot, logger)
 	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) {
 		ready, err := readyChannelItem(ctx, gw, ws, loop.CurrentScopes(), item, workRoot, fallback, logger.Printf)
 		if err != nil {
@@ -725,6 +728,20 @@ func evaluateWith(gw *gateway.Client, h harness.Harness, scopes func() node.Scop
 	}
 }
 
+// rebaseWith is the loop's Rebase hook: a fresh session of kind rebase
+// per item whose rebase this node has claimed (runsheet ADR 008), in
+// either mode. However it ends, the rebase is finished or failed on the
+// platform, so a failed one hands the item to its builder at once
+// rather than holding the claim until the platform's stall timer.
+func rebaseWith(gw *gateway.Client, h harness.Harness, scopes func() node.Scopes, workRoot string, logger *log.Logger) func(context.Context, gateway.WorkItem) {
+	return func(ctx context.Context, item gateway.WorkItem) {
+		rb := &node.Rebaser{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Scopes: scopes(), WorkRoot: workRoot, MCP: prologueMCP(ctx, gw), MaxBudgetUSD: nodeRebaseBudgetFlag, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("rebase"), Log: logger}
+		if err := rb.Rebase(ctx, item); err != nil && ctx.Err() == nil {
+			logger.Printf("item %d %q: rebase: %v", item.Seq, item.Title, err)
+		}
+	}
+}
+
 // planWith is the loop's Plan hook: a fresh planner session per goal in
 // planning, in either mode, with a bearer taken afresh for each. A plan that cannot be handed in is logged
 // and the goal left in planning for the next tick (three tries).
@@ -795,11 +812,12 @@ func init() {
 	nodeStartCmd.Flags().DurationVar(&nodeIntervalFlag, "interval", 30*time.Second, "heartbeat and claim interval")
 	nodeStartCmd.Flags().DurationVar(&nodeStallFlag, "stall", 10*time.Minute, "channel mode: re-push a held item the idle session has reported nothing on for this long")
 	nodeStartCmd.Flags().DurationVar(&nodeTurnTimeoutFlag, "turn-timeout", 45*time.Minute, "channel mode: kill and restart a busy session that has reported nothing on its item for this long (0 never)")
-	nodeStartCmd.Flags().DurationVar(&nodeSessionTimeoutFlag, "session-timeout", 40*time.Minute, "cap on one evaluator or planner session's wall clock (0 never)")
+	nodeStartCmd.Flags().DurationVar(&nodeSessionTimeoutFlag, "session-timeout", 40*time.Minute, "cap on one evaluator, planner, director or rebase session's wall clock (0 never)")
 	nodeStartCmd.Flags().Float64Var(&nodeMaxBudgetFlag, "max-budget-usd", 10, "cap on one session's budget (poll mode), whatever the goal has left")
 	nodeStartCmd.Flags().Float64Var(&nodeEvalBudgetFlag, "eval-budget-usd", 3, "cap on one evaluator session's budget")
 	nodeStartCmd.Flags().Float64Var(&nodePlanBudgetFlag, "plan-budget-usd", 5, "cap on one planner session's budget")
 	nodeStartCmd.Flags().Float64Var(&nodeResearchBudgetFlag, "research-budget-usd", 5, "cap on one director (research) session's budget")
+	nodeStartCmd.Flags().Float64Var(&nodeRebaseBudgetFlag, "rebase-budget-usd", 5, "cap on one rebase session's budget")
 	nodeStartCmd.Flags().StringVar(&nodeModelFlag, "model", "", "model every session runs on when its kind names none (an alias the CLI knows — opus, sonnet, haiku — or a full id); empty is the CLI's default")
 	nodeStartCmd.Flags().StringVar(&nodeModelBuildFlag, "model-build", "", "model for build sessions (overrides --model)")
 	nodeStartCmd.Flags().StringVar(&nodeModelEvaluateFlag, "model-evaluate", "", "model for evaluator sessions (overrides --model)")

@@ -209,3 +209,60 @@ func TestFetchCarriesBaseRefHistory(t *testing.T) {
 		t.Fatalf("log:\n%s", log)
 	}
 }
+
+// PushedHead reads back what origin has for the branch after a fetch,
+// and refuses a branch that does not contain the base: a branch pushed
+// without the rebase, or not pushed at all.
+func TestPushedHeadReadsOriginBack(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	root := t.TempDir()
+	origin := filepath.Join(root, "origin.git")
+	git := func(dir string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	commit := func(dir, name string) {
+		os.WriteFile(filepath.Join(dir, name), []byte(name), 0o644)
+		git(dir, "add", name)
+		git(dir, "commit", "-q", "-m", name)
+	}
+	git(root, "init", "--bare", "-b", "main", origin)
+	dir := filepath.Join(root, "ws")
+	git(root, "clone", "-q", origin, dir)
+	commit(dir, "a")
+	git(dir, "push", "-q", "origin", "HEAD:main")
+	git(dir, "checkout", "-q", "-b", "mesh/g-1")
+	commit(dir, "b")
+	git(dir, "push", "-q", "origin", "mesh/g-1")
+	// main moves on: the branch is behind it
+	other := filepath.Join(root, "other")
+	git(root, "clone", "-q", origin, other)
+	commit(other, "c")
+	git(other, "push", "-q", "origin", "HEAD:main")
+
+	g := &Git{}
+	ctx := context.Background()
+	if _, err := g.PushedHead(ctx, dir, "mesh/g-1", "main"); err == nil || !strings.Contains(err.Error(), "does not contain origin/main") {
+		t.Fatalf("a branch not rebased: %v", err)
+	}
+	if _, err := g.PushedHead(ctx, dir, "mesh/g-2", "main"); err == nil {
+		t.Fatal("a branch origin does not have")
+	}
+	git(dir, "fetch", "-q", "origin")
+	git(dir, "rebase", "-q", "origin/main")
+	git(dir, "push", "-q", "--force-with-lease", "origin", "mesh/g-1")
+	want := git(dir, "rev-parse", "HEAD")
+	git(dir, "reset", "-q", "--hard", "HEAD~1") // the local checkout is not what is read
+	if head, err := g.PushedHead(ctx, dir, "mesh/g-1", "main"); err != nil || head != want {
+		t.Fatalf("pushed head = %s, %v; want %s", head, err, want)
+	}
+}
