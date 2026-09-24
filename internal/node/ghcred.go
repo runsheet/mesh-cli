@@ -257,18 +257,29 @@ func (e *CredentialError) Reason() string {
 // ReleaseOnCredential hands an item whose workspace GitHub refused on
 // every re-issued token back to the platform (ReleaseWorkItem, attempts
 // unchanged) instead of failing it: the credential is the node's
-// condition, not the item's (mesh-specs trd §3). It answers the error
+// condition, not the item's (mesh-specs trd §3). A platform that refuses
+// the release — the deployed one takes releaseWorkItem from no node yet —
+// would leave the item held by a node that is not running it, so then the
+// item is failed with the same reason, as before. It answers the error
 // the session ends with.
 func ReleaseOnCredential(ctx context.Context, gw Gateway, scopes Scopes, item gateway.WorkItem, ce *CredentialError, logf func(string, ...any)) error {
 	cause := fmt.Errorf("workspace: %w", ce)
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	reason := ce.Reason()
-	logf("item %s: released, the node's condition: %s", item.ID, reason)
+	reason := truncate(ce.Reason(), 2000)
 	sc, _ := scopes.ByOrg(item.OrgID)
-	if err := gw.ReleaseWorkItem(ctx, item.ID, sc.NodeID, truncate(reason, 2000)); err != nil && !errors.Is(err, context.Canceled) {
-		logf("item %s: release: %v", item.ID, err)
+	err := gw.ReleaseWorkItem(ctx, item.ID, sc.NodeID, reason)
+	if err == nil {
+		logf("item %s: released, the node's condition: %s", item.ID, reason)
+		return cause
+	}
+	if ctx.Err() != nil || errors.Is(err, context.Canceled) {
+		return cause
+	}
+	logf("item %s: release refused (%v); failed instead: %s", item.ID, err, reason)
+	if err := gw.FailWorkItem(ctx, item.ID, reason); err != nil && !errors.Is(err, context.Canceled) {
+		logf("item %s: fail: %v", item.ID, err)
 	}
 	return cause
 }

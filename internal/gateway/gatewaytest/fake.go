@@ -61,6 +61,12 @@ type Fake struct {
 	// Unsupported names mutations the fake answers as a platform that
 	// predates them: the schema's "Cannot query field" error.
 	Unsupported map[string]bool
+	// NodeReleases lets a node release an item it holds
+	// (releaseWorkItem). The deployed platform refuses a node that call
+	// (runsheet's decideMutation has no case for it: only the platform's
+	// own offline-node process releases), so the fake refuses it too
+	// unless a test stands in for the platform once that lands.
+	NodeReleases bool
 }
 
 // New starts a fake accepting the given bearer token.
@@ -302,8 +308,11 @@ func (f *Fake) apply(name string, in map[string]any) error {
 		if item == nil {
 			return fmt.Errorf("no such item")
 		}
-		// as the platform: only a claimed or running item, only by the
-		// node that holds it; anything else is accepted and changes nothing
+		if !f.NodeReleases {
+			return fmt.Errorf("refused")
+		}
+		// only a claimed or running item, only by the node that holds
+		// it; anything else is accepted and changes nothing
 		if (item["status"] != "claimed" && item["status"] != "running") || item["nodeId"] != in["nodeId"] {
 			break
 		}

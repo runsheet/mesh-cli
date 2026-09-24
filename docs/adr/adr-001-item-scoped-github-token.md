@@ -89,6 +89,16 @@ living an hour.
     (`Client.ReleaseWorkItem`) instead of calling `FailWorkItem`. The item
     goes back to `ready` with its attempts unchanged and the reason in
     `last_note`, so its goal spends no re-plan.
+  - **The platform as deployed refuses that call from a node**: runsheet's
+    `decideMutation` has no case for `releaseWorkItem`, which only the
+    platform's own offline-node process issues. A refused release must not
+    leave the item `claimed`/`running` on a node that has stopped working
+    on it, so `ReleaseOnCredential` then fails it with `FailWorkItem`
+    and the same reason, as before this ADR. The release takes effect
+    once runsheet lets a node release an item it holds (a platform change
+    that lands first, per this repo's rules); the node needs no change
+    then. The fake gateway (`gatewaytest.Fake`) refuses a node's release
+    unless a test sets `NodeReleases`, so the tests run against both.
   - The evaluator's item is in `evaluating`, which the platform's
     `ReleaseWorkItem` does not accept (only `claimed`/`running`, only from
     the holding node), and sending a built, pushed branch back to `ready`

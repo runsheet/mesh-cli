@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
+	"projectmesh.io/mesh-cli/internal/gateway/gatewaytest"
 	"projectmesh.io/mesh-cli/internal/harness"
 )
 
@@ -49,7 +50,12 @@ func (g *tokenGW) Issued() int {
 // item to run.
 func runnerOn(t *testing.T, h harness.Harness, wrap func(Gateway) Gateway) (*Runner, *fakeWS, gateway.WorkItem, func(string) map[string]any) {
 	t.Helper()
-	f := seed(t)
+	return runnerOnFake(t, seed(t), h, wrap)
+}
+
+// runnerOnFake is runnerOn against a fake the test has set up.
+func runnerOnFake(t *testing.T, f *gatewaytest.Fake, h harness.Harness, wrap func(Gateway) Gateway) (*Runner, *fakeWS, gateway.WorkItem, func(string) map[string]any) {
+	t.Helper()
 	gw := gateway.New(f.URL(), "rs_test")
 	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: 1}
 	if err := gw.ClaimWorkItem(context.Background(), item1, cfg.NodeID, "claude-code"); err != nil {

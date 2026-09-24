@@ -13,6 +13,7 @@ import (
 func TestReleaseWorkItem(t *testing.T) {
 	f := gatewaytest.New("rs_test")
 	defer f.Close()
+	f.NodeReleases = true
 	f.WorkItems[itemID] = map[string]any{"id": itemID, "orgId": orgID, "seq": 1, "status": "running", "nodeId": nodeID, "attempts": 1}
 	gw := gateway.New(f.URL(), "rs_test")
 	ctx := context.Background()
@@ -34,7 +35,27 @@ func TestReleaseWorkItem(t *testing.T) {
 	}
 }
 
-// The platform releases only a claimed or running item, and only for the
+// The deployed platform refuses a node's release: the item is left as it
+// was and the node is told so.
+func TestReleaseWorkItemRefusedByTheDeployedPlatform(t *testing.T) {
+	f := gatewaytest.New("rs_test")
+	defer f.Close()
+	f.WorkItems[itemID] = map[string]any{"id": itemID, "orgId": orgID, "seq": 1, "status": "running", "nodeId": nodeID, "attempts": 1}
+	gw := gateway.New(f.URL(), "rs_test")
+	ctx := context.Background()
+	if err := gw.ReleaseWorkItem(ctx, itemID, nodeID, "github credential: acme/widgets"); err == nil {
+		t.Fatal("a node's release must be refused")
+	}
+	it, err := gw.WorkItem(ctx, itemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if it.Status != "running" || it.NodeID != nodeID || it.LastNote != "" {
+		t.Fatalf("item = %+v", it)
+	}
+}
+
+// Once the platform lets a node release, it releases only a claimed or running item, and only for the
 // node that holds it; any other release changes nothing.
 func TestReleaseWorkItemIgnoredUnlessHeldAndRunning(t *testing.T) {
 	const other = "33333333-3333-4333-8333-333333333333"
@@ -46,6 +67,7 @@ func TestReleaseWorkItemIgnoredUnlessHeldAndRunning(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := gatewaytest.New("rs_test")
 			defer f.Close()
+			f.NodeReleases = true
 			row := map[string]any{"id": itemID, "orgId": orgID, "seq": 1, "status": tc.status, "attempts": 1}
 			if tc.holder != "" {
 				row["nodeId"] = tc.holder

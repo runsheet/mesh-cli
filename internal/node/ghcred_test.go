@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
+	"projectmesh.io/mesh-cli/internal/gateway/gatewaytest"
 )
 
 // refusingWS is a fakeWS whose first refusals Prepares fail with err.
@@ -147,16 +148,7 @@ func checkReleased(t *testing.T, vg *verdictGW, row map[string]any, attempts int
 		t.Fatalf("ReleaseWorkItem called %d times", len(vg.released))
 	}
 	reason := vg.released[0]
-	for _, want := range []string{"github credential", "acme/widgets", "2036-09-24T11:11:55Z", "refused 4 times", "Repository not found"} {
-		if !strings.Contains(reason, want) {
-			t.Fatalf("reason %q lacks %q", reason, want)
-		}
-	}
-	for _, tok := range []string{"ghs_first", "ghs_second", "ghs_third", "ghs_fourth"} {
-		if strings.Contains(reason, tok) {
-			t.Fatalf("reason carries token %s: %q", tok, reason)
-		}
-	}
+	credentialReasonOK(t, reason)
 	if row["status"] != "ready" || row["nodeId"] != nil || row["lastError"] != nil || row["lastNote"] != reason || toInt(row["attempts"]) != attempts {
 		t.Fatalf("row: %v", row)
 	}
@@ -181,14 +173,31 @@ func fourTokens() *tokenGW {
 	}}
 }
 
-// Refused on the first try and on all three retries, the builder
-// releases the item — the node's condition — and does not fail it.
-func TestRunnerReleasesAnItemItsTokenIsRefusedFor(t *testing.T) {
+// credentialReasonOK asserts the reason names the credential problem, the
+// repo and the expiry and none of the tokens.
+func credentialReasonOK(t *testing.T, reason string) {
+	t.Helper()
+	for _, want := range []string{"github credential", "acme/widgets", "2036-09-24T11:11:55Z", "refused 4 times", "Repository not found"} {
+		if !strings.Contains(reason, want) {
+			t.Fatalf("reason %q lacks %q", reason, want)
+		}
+	}
+	for _, tok := range []string{"ghs_first", "ghs_second", "ghs_third", "ghs_fourth"} {
+		if strings.Contains(reason, tok) {
+			t.Fatalf("reason carries token %s: %q", tok, reason)
+		}
+	}
+}
+
+// refusedFourTimes runs the builder on an item whose fetch GitHub refuses
+// on the first try and on all three re-issued tokens.
+func refusedFourTimes(t *testing.T, f *gatewaytest.Fake) (*verdictGW, func(string) map[string]any, int) {
+	t.Helper()
 	noSleep(t)
 	tg := fourTokens()
 	vg := &verdictGW{Gateway: tg}
 	h := &fakeHarness{}
-	r, fws, item, row := runnerOn(t, h, func(g Gateway) Gateway { tg.Gateway = g; return vg })
+	r, fws, item, row := runnerOnFake(t, f, h, func(g Gateway) Gateway { tg.Gateway = g; return vg })
 	attempts := toInt(row(item1)["attempts"])
 	r.WS = &refusingWS{fakeWS: fws, refusals: 4, err: notFound("ghs_first")}
 	var ce *CredentialError
@@ -198,7 +207,36 @@ func TestRunnerReleasesAnItemItsTokenIsRefusedFor(t *testing.T) {
 	if len(h.jobs) != 0 {
 		t.Fatalf("jobs = %d", len(h.jobs))
 	}
+	return vg, row, attempts
+}
+
+// Refused on the first try and on all three retries, the builder
+// releases the item — the node's condition — and does not fail it, on a
+// platform that lets a node release the item it holds.
+func TestRunnerReleasesAnItemItsTokenIsRefusedFor(t *testing.T) {
+	f := seed(t)
+	f.NodeReleases = true
+	vg, row, attempts := refusedFourTimes(t, f)
 	checkReleased(t, vg, row(item1), attempts)
+}
+
+// The deployed platform refuses a node's release; the builder then fails
+// the item with the credential reason rather than leave it held by a node
+// that is not running it.
+func TestRunnerFailsAnItemWhenTheReleaseIsRefused(t *testing.T) {
+	vg, row, _ := refusedFourTimes(t, seed(t))
+	if len(vg.released) != 1 || vg.failed != 1 {
+		t.Fatalf("released %d, failed %d; want 1 and 1", len(vg.released), vg.failed)
+	}
+	r := row(item1)
+	if r["status"] != "failed" {
+		t.Fatalf("row: %v", r)
+	}
+	reason, _ := r["lastError"].(string)
+	credentialReasonOK(t, reason)
+	if reason != vg.released[0] {
+		t.Fatalf("failed with %q, released with %q", reason, vg.released[0])
+	}
 }
 
 // The evaluator cannot release an item in evaluating (the platform
