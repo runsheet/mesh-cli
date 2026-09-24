@@ -113,12 +113,13 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 		p.logf("goal %s: context unavailable: %v", goal.Slug, err)
 		cx = &Context{}
 	}
+	AddLive(ctx, p.GW, cx, scope.ID, project.ID, p.logf)
 	files, err := WriteContext(dir, cx)
 	if err != nil {
 		return fmt.Errorf("write context: %w", err)
 	}
 	contextDir := ""
-	if len(files) > 0 || len(cx.Index) > 0 {
+	if len(files) > 0 || len(cx.Index) > 0 || len(cx.Live) > 0 {
 		contextDir = ContextDir
 	}
 	// a re-plan: the items so far, and where the numbering goes on

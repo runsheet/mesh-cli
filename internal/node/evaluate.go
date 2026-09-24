@@ -77,12 +77,13 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 		e.logf("item %s: context unavailable: %v", label, err)
 		cx = &Context{}
 	}
+	AddLive(ctx, e.GW, cx, item.OrgID, res.Project.ID, e.logf)
 	files, err := WriteContext(dir, cx)
 	if err != nil {
 		return fmt.Errorf("write context: %w", err)
 	}
 	contextDir := ""
-	if len(files) > 0 || len(cx.Index) > 0 {
+	if len(files) > 0 || len(cx.Index) > 0 || len(cx.Live) > 0 {
 		contextDir = ContextDir
 	}
 	prompt := harness.EvaluatePrompt(harness.EvaluateInput{

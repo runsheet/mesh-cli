@@ -64,7 +64,12 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   only, the heartbeat has no field for it. Capacity and the orgs need
   no drain: `Reload` re-reads them every tick.
 - Every session gets Prologue as an MCP server with the node's token and
-  the project's context on disk under `.mesh/context/` with `INDEX.md`.
+  the project's context on disk under `.mesh/context/` with `INDEX.md`:
+  the documents, then `## Live goals and items` — each live goal's items
+  (seq, title, status, branch, PR) and the finished goals one line each,
+  read per session through the gateway (`AddLive`, adr-003 decision 3).
+  A failed read leaves the documents only, with a warning; `.mesh` is
+  excluded from git, so none of it is ever committed.
 - Costs: each session's `total_cost_usd` is reported to the platform per
   item (`ReportWorkItemProgress`, `EvaluateWorkItem`, `PlanGoal`).
 - **Models are per kind of session.** `Models` in `~/.mesh/node.yaml`

@@ -232,6 +232,57 @@ type Context struct {
 	OnDisk  map[string]string // slug → file name, for the index
 	Project string
 	PRDSlug string
+	// Live is the project's goals and their items as the platform holds
+	// them (adr-003 decision 3), rendered into INDEX.md; nil when the
+	// platform's read failed or found none.
+	Live []LiveGoal
+}
+
+// LiveGoal is one goal of the project with its items; a goal that is
+// over carries none, it is listed as one line.
+type LiveGoal struct {
+	Goal  gateway.Goal
+	Items []gateway.WorkItem
+}
+
+// FetchLive reads the project's goals and, for each live one, its items
+// through the gateway. Any read failing fails the whole: a partial
+// status is worse than none.
+func FetchLive(ctx context.Context, gw Gateway, orgID, projectID string) ([]LiveGoal, error) {
+	goals, err := gw.Goals(ctx, orgID)
+	if err != nil {
+		return nil, err
+	}
+	var out []LiveGoal
+	for _, g := range goals {
+		if g.ProjectID != projectID {
+			continue
+		}
+		lg := LiveGoal{Goal: g}
+		if isLiveGoal(g.Status) {
+			items, err := gw.GoalWorkItems(ctx, g.ID)
+			if err != nil {
+				return nil, fmt.Errorf("items of %s: %w", g.Slug, err)
+			}
+			sort.Slice(items, func(i, j int) bool { return items[i].Seq < items[j].Seq })
+			lg.Items = items
+		}
+		out = append(out, lg)
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Goal.Slug < out[j].Goal.Slug })
+	return out, nil
+}
+
+// AddLive puts the project's live goals and items on cx for INDEX.md.
+// When the platform cannot say (an old platform, a failed read) it logs
+// a warning and cx keeps its documents only.
+func AddLive(ctx context.Context, gw Gateway, cx *Context, orgID, projectID string, logf func(string, ...any)) {
+	live, err := FetchLive(ctx, gw, orgID, projectID)
+	if err != nil {
+		logf("warning: live goals and items unavailable, INDEX.md lists documents only: %v", err)
+		return
+	}
+	cx.Live = live
 }
 
 // The size budget for design documents on disk: a PRD or TRD past
@@ -296,7 +347,50 @@ func RenderIndex(cx *Context) string {
 		}
 		fmt.Fprintf(&b, "| %s | %s | %s | `%s` | %s/%s | %s |\n", d.Kind, cell(d.Title), cell(d.Summary), d.Slug, d.Repo, d.Path, here)
 	}
+	if len(cx.Live) > 0 {
+		renderLive(&b, cx.Live, cell)
+	}
 	return b.String()
+}
+
+// renderLive is INDEX.md's live section: each live goal with a row per
+// item, then the goals that are over, one line each.
+func renderLive(b *strings.Builder, live []LiveGoal, cell func(string) string) {
+	b.WriteString("\n## Live goals and items\n\n")
+	b.WriteString("Read from the platform when this session started — the one place to read status from; no status table in git is current. Not committed.\n")
+	or := func(s string) string {
+		if strings.TrimSpace(s) == "" {
+			return "—"
+		}
+		return s
+	}
+	var over []LiveGoal
+	for _, lg := range live {
+		g := lg.Goal
+		if !isLiveGoal(g.Status) {
+			over = append(over, lg)
+			continue
+		}
+		fmt.Fprintf(b, "\n### `%s` — %s (%s)\n\n", g.Slug, cell(g.Title), g.Status)
+		if len(lg.Items) == 0 {
+			b.WriteString("No items yet.\n")
+			continue
+		}
+		b.WriteString("| seq | title | status | branch | PR |\n| --- | --- | --- | --- | --- |\n")
+		for _, it := range lg.Items {
+			branch := or(it.Branch)
+			if branch != "—" {
+				branch = "`" + branch + "`"
+			}
+			fmt.Fprintf(b, "| %d | %s | %s | %s | %s |\n", it.Seq, cell(it.Title), it.Status, branch, or(it.PRURL))
+		}
+	}
+	if len(over) > 0 {
+		b.WriteString("\n### Finished goals\n\n")
+		for _, lg := range over {
+			fmt.Fprintf(b, "- `%s` — %s (%s)\n", lg.Goal.Slug, cell(lg.Goal.Title), lg.Goal.Status)
+		}
+	}
 }
 
 // PrologueMCP is the MCP server a session gets for Prologue: the
@@ -318,7 +412,7 @@ func PrologueMCP(gatewayURL, token string) map[string]any {
 // in reading order (instructions, adr, prd, trd); the index is beside
 // them, not among them.
 func WriteContext(dir string, cx *Context) ([]string, error) {
-	if cx == nil || (len(cx.Docs) == 0 && len(cx.Index) == 0) {
+	if cx == nil || (len(cx.Docs) == 0 && len(cx.Index) == 0 && len(cx.Live) == 0) {
 		return nil, nil
 	}
 	docs := cx.Docs
@@ -352,7 +446,7 @@ func WriteContext(dir string, cx *Context) ([]string, error) {
 			return nil, err
 		}
 	}
-	if len(cx.Index) > 0 {
+	if len(cx.Index) > 0 || len(cx.Live) > 0 {
 		if err := os.WriteFile(filepath.Join(cdir, IndexFile), []byte(RenderIndex(cx)), 0o644); err != nil {
 			return nil, err
 		}
