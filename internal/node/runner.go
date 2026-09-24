@@ -75,7 +75,9 @@ type Runner struct {
 	Model string
 	// ProgressEvery is how often progress is reported (60 s).
 	ProgressEvery time.Duration
-	Log           *log.Logger
+	// Fallback is the node's one old-platform notice (nil: every item).
+	Fallback *TokenFallback
+	Log      *log.Logger
 }
 
 // mcp is the session's MCP servers, asked for afresh per item when
@@ -152,7 +154,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 
 	spec := WorkspaceSpec{Root: r.WorkRoot, GoalSlug: res.Goal.Slug, Seq: item.Seq, Repo: res.Repo.FullName(), Branch: res.Branch(), BaseRef: res.BaseRef()}
 	// the item's own GitHub token, on the checkout before it is cloned
-	cred, err := NewItemCred(ctx, r.GW, r.WS, r.Scopes, item, spec, r.logf)
+	cred, err := NewItemCred(ctx, r.GW, r.WS, r.Scopes, item, spec, r.Fallback, r.logf)
 	if err != nil {
 		return r.fail(ctx, item, err)
 	}

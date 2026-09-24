@@ -131,6 +131,27 @@ func SessionEnv(tok *gateway.GitHubToken, ghConfigDir string) []string {
 	return []string{"GH_TOKEN=" + tok.Token, "GH_CONFIG_DIR=" + ghConfigDir}
 }
 
+// TokenFallback is the old-platform fallback's one notice, shared by
+// everything a node runs — poll-mode builds, evaluations and channel
+// mode's dispatch — so a node claiming many items against a platform
+// without issueItemRepoToken says so once for its whole run, not once
+// per item. A nil *TokenFallback says it every time.
+type TokenFallback struct {
+	once sync.Once
+}
+
+// Note logs the fallback, the first time only.
+func (f *TokenFallback) Note(itemID string, logf func(string, ...any)) {
+	say := func() {
+		logf("item %s: the platform issues no item GitHub tokens; using the operator's own gh login (said once, for every item this run)", itemID)
+	}
+	if f == nil {
+		say()
+		return
+	}
+	f.once.Do(say)
+}
+
 // ItemCred is an item's GitHub token on its workspace, renewed before it
 // expires. A nil *ItemCred is the old platform's fallback: the
 // operator's own gh and git credentials, as before.
@@ -148,13 +169,13 @@ type ItemCred struct {
 // NewItemCred asks for the item's token and configures the workspace
 // with it, before anything clones, fetches or pushes. An old platform
 // (gateway.IsUnsupported) answers nil, nil: the fallback, not a
-// failure. A refusal is an error — an item the platform will not give a
+// failure, noted once through fb. A refusal is an error — an item the platform will not give a
 // token to is not run on the operator's login instead.
-func NewItemCred(ctx context.Context, gw Gateway, ws Workspacer, scopes Scopes, item gateway.WorkItem, spec WorkspaceSpec, logf func(string, ...any)) (*ItemCred, error) {
+func NewItemCred(ctx context.Context, gw Gateway, ws Workspacer, scopes Scopes, item gateway.WorkItem, spec WorkspaceSpec, fb *TokenFallback, logf func(string, ...any)) (*ItemCred, error) {
 	sc, _ := scopes.ByOrg(item.OrgID)
 	tok, err := gw.IssueItemRepoToken(ctx, item.ID, sc.NodeID)
 	if gateway.IsUnsupported(err) {
-		logf("item %s: the platform issues no item GitHub tokens; using the operator's own gh login", item.ID)
+		fb.Note(item.ID, logf)
 		return nil, nil
 	}
 	if err != nil {

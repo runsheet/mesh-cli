@@ -411,26 +411,28 @@ only use it on a machine you trust with that.`,
 			}
 			loop.Drain()
 		})()
+		// one old-platform notice for the whole run, whatever runs the items
+		fallback := &node.TokenFallback{}
 		switch nodeModeFlag {
 		case "poll":
-			return runPollMode(ctx, cfg, scopes, gw, loop, workRoot, logger)
+			return runPollMode(ctx, cfg, scopes, gw, loop, workRoot, fallback, logger)
 		case "channel", "":
-			return runChannelMode(ctx, cfg, scopes, gw, loop, workRoot, logger)
+			return runChannelMode(ctx, cfg, scopes, gw, loop, workRoot, fallback, logger)
 		default:
 			return fmt.Errorf("--mode must be channel or poll")
 		}
 	},
 }
 
-func runPollMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *gateway.Client, loop *node.Loop, workRoot string, logger *log.Logger) error {
+func runPollMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *gateway.Client, loop *node.Loop, workRoot string, fallback *node.TokenFallback, logger *log.Logger) error {
 	h := oneShotHarness()
-	runner := &node.Runner{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, MCPFunc: func(ctx context.Context) map[string]any { return prologueMCP(ctx, gw) }, MaxBudgetUSD: nodeMaxBudgetFlag, Model: nodeModels.For("build"), Log: logger}
+	runner := &node.Runner{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, MCPFunc: func(ctx context.Context) map[string]any { return prologueMCP(ctx, gw) }, MaxBudgetUSD: nodeMaxBudgetFlag, Model: nodeModels.For("build"), Fallback: fallback, Log: logger}
 	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) {
 		r := *runner
 		r.Scopes = loop.CurrentScopes() // an org served since start is known to its build
 		_ = r.RunItem(ctx, item)
 	}
-	loop.Evaluate = evaluateWith(gw, h, loop.CurrentScopes, workRoot, logger)
+	loop.Evaluate = evaluateWith(gw, h, loop.CurrentScopes, workRoot, fallback, logger)
 	loop.Plan = planWith(gw, cfg, h, workRoot, logger)
 	loop.Research = researchWith(gw, cfg, h, workRoot, logger)
 	logger.Printf("poll mode: node %s (%s) for %s, capacity %d, every %s", cfg.Name, cfg.Slug, strings.Join(scopes.Logins(), ", "), cfg.Capacity, loop.Interval)
@@ -465,7 +467,7 @@ func runPollMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *
 	return err
 }
 
-func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *gateway.Client, loop *node.Loop, workRoot string, logger *log.Logger) error {
+func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *gateway.Client, loop *node.Loop, workRoot string, fallback *node.TokenFallback, logger *log.Logger) error {
 	sock, err := channel.SockPath()
 	if err != nil {
 		return err
@@ -529,11 +531,11 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 	}
 
 	ws := &node.Git{Log: os.Stderr}
-	loop.Evaluate = evaluateWith(gw, oneShotHarness(), loop.CurrentScopes, workRoot, logger)
+	loop.Evaluate = evaluateWith(gw, oneShotHarness(), loop.CurrentScopes, workRoot, fallback, logger)
 	loop.Plan = planWith(gw, cfg, oneShotHarness(), workRoot, logger)
 	loop.Research = researchWith(gw, cfg, oneShotHarness(), workRoot, logger)
 	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) {
-		ready, err := readyChannelItem(ctx, gw, ws, loop.CurrentScopes(), item, workRoot, logger.Printf)
+		ready, err := readyChannelItem(ctx, gw, ws, loop.CurrentScopes(), item, workRoot, fallback, logger.Printf)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
@@ -711,9 +713,9 @@ func oneShotHarness() *harness.ClaudeCode {
 // finished item, in either mode — and a bearer taken afresh for each, so
 // a session never starts with a machine token about to expire. A failure to reach a verdict is logged
 // and the item is left in evaluating for the next tick.
-func evaluateWith(gw *gateway.Client, h harness.Harness, scopes func() node.Scopes, workRoot string, logger *log.Logger) func(context.Context, gateway.WorkItem) {
+func evaluateWith(gw *gateway.Client, h harness.Harness, scopes func() node.Scopes, workRoot string, fallback *node.TokenFallback, logger *log.Logger) func(context.Context, gateway.WorkItem) {
 	return func(ctx context.Context, item gateway.WorkItem) {
-		ev := &node.Evaluator{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Scopes: scopes(), WorkRoot: workRoot, MCP: prologueMCP(ctx, gw), MaxBudgetUSD: nodeEvalBudgetFlag, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("evaluate"), Log: logger}
+		ev := &node.Evaluator{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Scopes: scopes(), WorkRoot: workRoot, MCP: prologueMCP(ctx, gw), MaxBudgetUSD: nodeEvalBudgetFlag, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("evaluate"), Fallback: fallback, Log: logger}
 		if err := ev.Evaluate(ctx, item); err != nil && ctx.Err() == nil {
 			logger.Printf("item %d %q: evaluation: %v", item.Seq, item.Title, err)
 		}
