@@ -344,9 +344,26 @@ type Goal struct {
 	Status       string   `json:"status"`
 	PausedReason string   `json:"pausedReason"`
 	Checkpoints  []string `json:"checkpoints"`
+	// Priority is urgent, high, normal or low; empty reads as normal. The
+	// node claims ready work in this order across every org it serves.
+	Priority string `json:"priority"`
 }
 
-const goalFields = `id slug title statement acceptance projectId directionId budgetCents spentCents status pausedReason checkpoints`
+const goalFields = `id slug title statement acceptance projectId directionId budgetCents spentCents status pausedReason checkpoints priority`
+
+// PriorityRank orders goal priorities, most pressing first: urgent 0,
+// high 1, normal 2, low 3. Empty or unknown reads as normal.
+func PriorityRank(p string) int {
+	switch p {
+	case "urgent":
+		return 0
+	case "high":
+		return 1
+	case "low":
+		return 3
+	}
+	return 2
+}
 
 // Goal reads one goal by id.
 func (c *Client) Goal(ctx context.Context, id string) (*Goal, error) {

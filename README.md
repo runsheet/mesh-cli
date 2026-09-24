@@ -134,9 +134,16 @@ console token it is still on.
 mesh node start [--mode channel|poll] [--interval 30s] [--unattended] [--max-budget-usd 10]
 ```
 
-Every interval the node heartbeats (`HeartbeatNode`), lists the org's
-`ready` work items and claims up to its free capacity (`ClaimWorkItem`; the
-aggregate refuses a second claimant, so two nodes never run one item).
+Every interval the node heartbeats (`HeartbeatNode`), lists the `ready`
+work items of every org it serves and claims up to its free capacity
+(`ClaimWorkItem`; the aggregate refuses a second claimant, so two nodes
+never run one item). It claims them in one order across the orgs: by
+their goal's priority — urgent, high, normal, low; a goal with none is
+normal — then, within a priority, items with no evaluation before
+retries, then oldest seq first. Each org's goals are read once a tick to
+join the priorities; if that read fails, the org's items count as normal.
+There is no starvation guard: a steady stream of urgent work keeps a low
+goal's items waiting.
 What happens to a claimed item depends on the mode.
 
 **Channel mode (default).** One persistent `claude` session runs in

@@ -408,3 +408,180 @@ func TestRunnerAsksForItsMCPServersPerItem(t *testing.T) {
 		t.Fatal("a session with Prologue must be told about it")
 	}
 }
+
+// priorityFake is two orgs, acme and globex, with no goals or items:
+// each test adds its own with addGoal and addItem.
+type priorityFake struct {
+	*gatewaytest.Fake
+	t      *testing.T
+	scopes Scopes
+	n      int
+}
+
+const org2, acct2 = "11111111-2222-4333-8444-555555555555", "aaaaaaaa-2222-4222-8222-aaaaaaaaaaaa"
+
+func newPriorityFake(t *testing.T) *priorityFake {
+	f := seed(t)
+	delete(f.Goals, goalID)
+	delete(f.WorkItems, item1)
+	delete(f.WorkItems, item2)
+	f.Orgs = append(f.Orgs, map[string]any{"id": org2, "login": "globex", "accountId": acct2})
+	f.Accounts[acct2] = map[string]any{"id": acct2, "login": "globex"}
+	gw := gateway.New(f.URL(), "rs_test")
+	scopes, err := ResolveScopes(context.Background(), gw, &Config{Slug: "box", Name: "Box", Capacity: 1})
+	if err != nil || len(scopes) != 2 {
+		t.Fatalf("scopes = %+v, %v", scopes, err)
+	}
+	return &priorityFake{Fake: f, t: t, scopes: scopes}
+}
+
+// addGoal adds a running goal of that priority to the org; its id is slug.
+func (p *priorityFake) addGoal(org, slug, priority string) {
+	p.Goals[slug] = map[string]any{"id": slug, "orgId": org, "projectId": projID, "slug": slug, "title": slug, "budgetCents": 1000, "status": "running", "priority": priority}
+}
+
+// addItem adds a ready item of the goal; its id is title. A retry
+// carries the evaluation of its last attempt.
+func (p *priorityFake) addItem(org, goal, title string, seq int, retry bool) {
+	row := map[string]any{"id": title, "goalId": goal, "orgId": org, "seq": seq, "title": title,
+		"repoId": repoID, "baseRef": "main", "status": "ready", "dependsOn": []string{}}
+	if retry {
+		row["attempts"] = 1
+		row["evaluation"] = "the test does not fail"
+	}
+	p.WorkItems[title] = row
+}
+
+// tick runs one tick with that capacity and returns the items claimed,
+// in the order they were claimed.
+func (p *priorityFake) tick(capacity int) []string {
+	p.t.Helper()
+	gw := gateway.New(p.URL(), "rs_test")
+	loop := &Loop{GW: gw, Cfg: &Config{Slug: "box", Capacity: capacity}, Scopes: p.scopes, Interval: time.Hour, Harness: "claude-code",
+		Dispatch: func(context.Context, gateway.WorkItem) {}}
+	before := len(p.CallsNamed("claimWorkItem"))
+	loop.Tick(context.Background())
+	loop.wg.Wait()
+	var claimed []string
+	for _, c := range p.CallsNamed("claimWorkItem")[before:] {
+		claimed = append(claimed, fmt.Sprint(c.Input["aggregateId"]))
+	}
+	return claimed
+}
+
+// Capacity 1: an urgent goal's item in globex goes before an older item
+// of a normal goal in acme, though acme is listed first.
+func TestLoopClaimsAnUrgentGoalFirstAcrossOrgs(t *testing.T) {
+	p := newPriorityFake(t)
+	p.addGoal(orgID, "steady", "normal")
+	p.addGoal(org2, "fire", "urgent")
+	p.addItem(orgID, "steady", "acme-old", 1, false)
+	p.addItem(org2, "fire", "globex-urgent", 7, false)
+	if got := p.tick(1); strings.Join(got, ",") != "globex-urgent" {
+		t.Fatalf("claimed %v, want the urgent item", got)
+	}
+	if p.Item("acme-old")["status"] != "ready" || p.Item("globex-urgent")["nodeId"] != p.scopes[1].NodeID {
+		t.Fatalf("acme-old %v; globex-urgent claimed as %v", p.Item("acme-old")["status"], p.Item("globex-urgent")["nodeId"])
+	}
+	if got := p.tick(1); strings.Join(got, ",") != "acme-old" {
+		t.Fatalf("second tick claimed %v", got)
+	}
+}
+
+// Empty priority is normal: it ties with normal and breaks on seq, and
+// low goes after it.
+func TestLoopReadsEmptyPriorityAsNormal(t *testing.T) {
+	p := newPriorityFake(t)
+	p.addGoal(orgID, "unset", "")
+	p.addGoal(org2, "normal", "normal")
+	p.addGoal(orgID, "low", "low")
+	p.addItem(orgID, "low", "low-1", 1, false)
+	p.addItem(org2, "normal", "normal-3", 3, false)
+	p.addItem(orgID, "unset", "unset-2", 2, false)
+	p.addItem(org2, "normal", "normal-4", 4, false)
+	if got := strings.Join(p.tick(4), ","); got != "unset-2,normal-3,normal-4,low-1" {
+		t.Fatalf("claimed %s", got)
+	}
+}
+
+// urgent > high > normal > low, whatever the seq and org; within a
+// priority a fresh item goes before a retry, then seq.
+func TestLoopClaimsInPriorityThenFreshThenSeq(t *testing.T) {
+	p := newPriorityFake(t)
+	p.addGoal(orgID, "low", "low")
+	p.addGoal(org2, "normal", "normal")
+	p.addGoal(orgID, "high", "high")
+	p.addGoal(org2, "urgent", "urgent")
+	p.addItem(orgID, "low", "low-1", 1, false)
+	p.addItem(org2, "normal", "normal-2", 2, false)
+	p.addItem(orgID, "high", "high-retry-3", 3, true)
+	p.addItem(orgID, "high", "high-5", 5, false)
+	p.addItem(orgID, "high", "high-4", 4, false)
+	p.addItem(org2, "urgent", "urgent-9", 9, false)
+	want := "urgent-9,high-4,high-5,high-retry-3,normal-2,low-1"
+	if got := strings.Join(p.tick(6), ","); got != want {
+		t.Fatalf("claimed %s, want %s", got, want)
+	}
+}
+
+// The goals are read once per org per tick however many items are
+// ready, and not at all for an org with nothing ready.
+func TestLoopReadsGoalsOncePerOrgPerTick(t *testing.T) {
+	p := newPriorityFake(t)
+	p.addGoal(orgID, "a", "normal")
+	p.addGoal(orgID, "b", "high")
+	for i := 1; i <= 4; i++ {
+		p.addItem(orgID, []string{"a", "b"}[i%2], fmt.Sprintf("item-%d", i), i, false)
+	}
+	if got := p.tick(2); len(got) != 2 || got[0] != "item-1" || got[1] != "item-3" {
+		t.Fatalf("claimed %v", got)
+	}
+	reads := p.ReadsNamed("goalIndexs")
+	if len(reads) != 1 || reads[0].Input["org_id"] != orgID {
+		t.Fatalf("goal reads: %+v", reads)
+	}
+	p.addGoal(org2, "c", "low")
+	p.addItem(org2, "c", "globex-1", 1, false)
+	p.addItem(org2, "c", "globex-2", 2, false)
+	p.tick(1)
+	byOrg := map[any]int{}
+	for _, r := range p.ReadsNamed("goalIndexs") {
+		byOrg[r.Input["org_id"]]++
+	}
+	if byOrg[orgID] != 2 || byOrg[org2] != 1 {
+		t.Fatalf("goal reads by org over two ticks: %v", byOrg)
+	}
+}
+
+// A goal list that fails leaves the org's items at normal: still
+// claimed, after the other org's high item and before its low one.
+func TestLoopClaimsAsNormalWhenGoalsFail(t *testing.T) {
+	p := newPriorityFake(t)
+	p.addGoal(orgID, "fire", "urgent")
+	p.addGoal(org2, "g", "")
+	p.addItem(orgID, "fire", "acme-urgent", 5, false)
+	p.addItem(org2, "g", "globex-1", 1, false)
+	p.FailReads["goalIndexs"] = "gateway unavailable"
+	if got := strings.Join(p.tick(2), ","); got != "globex-1,acme-urgent" {
+		t.Fatalf("claimed %s: unread priorities are normal, then seq", got)
+	}
+}
+
+// claimOrder: unknown and empty priorities rank as normal, a retry
+// goes after a fresh item of the same rank, then seq.
+func TestClaimOrder(t *testing.T) {
+	items := []readyItem{
+		{item: gateway.WorkItem{ID: "low", Seq: 1}, rank: gateway.PriorityRank("low")},
+		{item: gateway.WorkItem{ID: "unknown", Seq: 3}, rank: gateway.PriorityRank("")},
+		{item: gateway.WorkItem{ID: "retry", Seq: 2, Evaluation: "no"}, rank: gateway.PriorityRank("normal")},
+		{item: gateway.WorkItem{ID: "fresh", Seq: 4}, rank: gateway.PriorityRank("bogus")},
+	}
+	claimOrder(items)
+	var got []string
+	for _, r := range items {
+		got = append(got, r.item.ID)
+	}
+	if strings.Join(got, ",") != "unknown,fresh,retry,low" {
+		t.Fatalf("order %v", got)
+	}
+}
