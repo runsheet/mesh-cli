@@ -195,7 +195,6 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 			r.logf("item %s: progress: %v", label, err)
 		}
 	}
-	_ = r.record(ctx, dir, res, "session started")
 	report("session started: " + spec.Branch)
 
 	every := r.ProgressEvery
@@ -248,7 +247,6 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		return r.fail(ctx, item, fmt.Errorf("session ended without success: %s", truncate(result.Text, 500)))
 	}
 	report(result.Text)
-	_ = r.record(ctx, dir, res, result.Text)
 
 	sha, err := r.WS.Push(ctx, dir, spec.Branch)
 	if err != nil {
@@ -259,35 +257,6 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	}
 	r.logf("item %s: finished %s@%s ($%.2f)", label, spec.Branch, short(sha), result.CostUSD)
 	return nil
-}
-
-// record writes the goal document into the workspace and commits it on
-// the item's branch (mesh_record's work, in poll mode).
-func (r *Runner) record(ctx context.Context, dir string, res *Resolved, summary string) error {
-	items, err := r.GW.GoalWorkItems(ctx, res.Goal.ID)
-	if err != nil {
-		return err
-	}
-	goal, err := r.GW.Goal(ctx, res.Goal.ID)
-	if err != nil {
-		goal = res.Goal
-	}
-	parent := ""
-	if cx, err := FetchContext(ctx, r.GW, r.Scopes.LoginOf(res.Item.OrgID), res.Project.Slug); err == nil {
-		parent = cx.PRDSlug
-	}
-	return RecordGoal(ctx, r.WS, dir, goal, res.Item.Seq, parent, items, summary)
-}
-
-// RecordGoal writes specs/goal-<slug>.md and commits it on the current
-// branch: `docs(mesh): goal <slug> — item <seq>`.
-func RecordGoal(ctx context.Context, ws Workspacer, dir string, goal *gateway.Goal, seq int, parent string, items []gateway.WorkItem, summary string) error {
-	doc := GoalDoc{Slug: goal.Slug, Title: goal.Title, Statement: goal.Statement, Acceptance: goal.Acceptance, GoalStatus: goal.Status, Parent: parent, SpentCents: goal.SpentCents, Items: items}
-	rel, changed, err := WriteGoalDoc(dir, doc, LogLine(time.Now(), seq, summary))
-	if err != nil || !changed {
-		return err
-	}
-	return ws.Commit(ctx, dir, []string{rel}, fmt.Sprintf("docs(mesh): goal %s — item %d", goal.Slug, seq))
 }
 
 func (r *Runner) fail(ctx context.Context, item gateway.WorkItem, cause error) error {
