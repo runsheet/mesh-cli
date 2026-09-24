@@ -3,14 +3,15 @@ package node
 import (
 	"context"
 	"log"
+	"sort"
 	"sync"
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
 )
 
-// Loop is trd §3: every Interval, heartbeat; list the org's ready items;
-// claim up to capacity − running; hand each claim to Dispatch. The claim
+// Loop is trd §3: every Interval, heartbeat; list the orgs' ready items;
+// claim up to capacity − running, most urgent goal first; hand each claim to Dispatch. The claim
 // is the lock — it is taken here, before anything runs, in both modes.
 type Loop struct {
 	GW  Gateway
@@ -52,6 +53,139 @@ type Loop struct {
 	planning    map[string]bool
 	researching map[string]bool
 	wg          sync.WaitGroup
+	// tickGoals holds each org's goals as read this tick, so the claim,
+	// the planner and the director share one GoalIndex read per org.
+	tickGoals map[string]goalsRead
+}
+
+type goalsRead struct {
+	goals []gateway.Goal
+	err   error
+}
+
+// goals reads the org's goals once per tick.
+func (l *Loop) goals(ctx context.Context, sc Scope) ([]gateway.Goal, error) {
+	if r, ok := l.tickGoals[sc.ID]; ok {
+		return r.goals, r.err
+	}
+	goals, err := l.GW.Goals(ctx, sc.ID)
+	if l.tickGoals != nil {
+		l.tickGoals[sc.ID] = goalsRead{goals, err}
+	}
+	return goals, err
+}
+
+// readyItem is a ready item with the scope it was listed in and its
+// goal's priority rank.
+type readyItem struct {
+	item  gateway.WorkItem
+	scope Scope
+	rank  int
+}
+
+// claimOrder sorts ready items from every org into the order they are
+// claimed: by the goal's priority (urgent, high, normal, low), then
+// fresh items before retries (a retry carries an evaluation), then seq.
+// The sort is stable, so ties keep the order the orgs were listed in.
+func claimOrder(items []readyItem) {
+	sort.SliceStable(items, func(i, j int) bool {
+		a, b := items[i], items[j]
+		if a.rank != b.rank {
+			return a.rank < b.rank
+		}
+		if ra, rb := a.item.Evaluation != "", b.item.Evaluation != ""; ra != rb {
+			return rb
+		}
+		return a.item.Seq < b.item.Seq
+	})
+}
+
+// goalRanks joins the org's goals to their priority rank through the
+// tick's one GoalIndex read. A goal it does not know — or every goal,
+// when the read fails — ranks as normal; what says what the org's work
+// is then done as normal ("claimed", "evaluated").
+func (l *Loop) goalRanks(ctx context.Context, sc Scope, what string) func(goalID string) int {
+	priority := map[string]string{}
+	goals, err := l.goals(ctx, sc)
+	if err != nil {
+		l.logf("list goals of %s (its items %s as normal): %v", sc.Login, what, err)
+	}
+	for _, g := range goals {
+		priority[g.ID] = g.Priority
+	}
+	return func(goalID string) int { return gateway.PriorityRank(priority[goalID]) }
+}
+
+// evaluateOrder sorts the items held for evaluation from every org by
+// their goal's priority, then seq.
+func evaluateOrder(items []readyItem) {
+	sort.SliceStable(items, func(i, j int) bool {
+		a, b := items[i], items[j]
+		if a.rank != b.rank {
+			return a.rank < b.rank
+		}
+		return a.item.Seq < b.item.Seq
+	})
+}
+
+// planningGoal is a goal in planning with the scope it was listed in.
+type planningGoal struct {
+	goal  gateway.Goal
+	scope Scope
+}
+
+// planOrder sorts the goals in planning from every org by priority. The
+// Goal carries no age, so the sort is stable: ties keep the order the
+// orgs and their goals were listed in.
+func planOrder(goals []planningGoal) {
+	sort.SliceStable(goals, func(i, j int) bool {
+		return gateway.PriorityRank(goals[i].goal.Priority) < gateway.PriorityRank(goals[j].goal.Priority)
+	})
+}
+
+// claimReady lists every served org's ready items, joins each to its
+// goal's priority (one GoalIndex read per org, none for an org with
+// nothing ready) and claims them in claimOrder until free runs out.
+func (l *Loop) claimReady(ctx context.Context, free int) {
+	var ready []readyItem
+	for _, sc := range l.Scopes {
+		items, err := l.GW.ReadyWorkItems(ctx, sc.ID)
+		if err != nil {
+			l.logf("list ready items of %s: %v", sc.Login, err)
+			continue
+		}
+		if len(items) == 0 {
+			continue
+		}
+		rank := l.goalRanks(ctx, sc, "claimed")
+		for _, it := range items {
+			ready = append(ready, readyItem{item: it, scope: sc, rank: rank(it.GoalID)})
+		}
+	}
+	claimOrder(ready)
+	for _, r := range ready {
+		if free <= 0 {
+			break
+		}
+		item, sc := r.item, r.scope
+		l.mu.Lock()
+		already := l.running[item.ID]
+		l.mu.Unlock()
+		if already {
+			continue
+		}
+		if err := l.GW.ClaimWorkItem(ctx, item.ID, sc.NodeID, l.Harness); err != nil {
+			if gateway.IsRefusal(err) {
+				l.logf("%s item %d %q: not ours (%v)", sc.Login, item.Seq, item.Title, err)
+			} else {
+				l.logf("%s claim item %d: %v", sc.Login, item.Seq, err)
+			}
+			continue
+		}
+		free--
+		l.logf("%s: claimed item %d %q", sc.Login, item.Seq, item.Title)
+		l.start(ctx, item)
+	}
 }
 
 func (l *Loop) logf(format string, args ...any) {
@@ -107,6 +241,7 @@ func (l *Loop) Tick(ctx context.Context) {
 	if l.running == nil {
 		l.running = map[string]bool{}
 	}
+	l.tickGoals = map[string]goalsRead{}
 	for _, sc := range l.Scopes {
 		if err := l.GW.HeartbeatNode(ctx, sc.NodeID, l.Version, l.Running()); err != nil {
 			l.logf("heartbeat %s: %v", sc.Login, err)
@@ -116,37 +251,8 @@ func (l *Loop) Tick(ctx context.Context) {
 	l.planRequested(ctx)
 	l.researchDue(ctx)
 	free := l.Cfg.Capacity - l.Running()
-	for _, sc := range l.Scopes {
-		if free <= 0 {
-			break
-		}
-		items, err := l.GW.ReadyWorkItems(ctx, sc.ID)
-		if err != nil {
-			l.logf("list ready items of %s: %v", sc.Login, err)
-			continue
-		}
-		for _, item := range items {
-			if free <= 0 {
-				break
-			}
-			l.mu.Lock()
-			already := l.running[item.ID]
-			l.mu.Unlock()
-			if already {
-				continue
-			}
-			if err := l.GW.ClaimWorkItem(ctx, item.ID, sc.NodeID, l.Harness); err != nil {
-				if gateway.IsRefusal(err) {
-					l.logf("%s item %d %q: not ours (%v)", sc.Login, item.Seq, item.Title, err)
-				} else {
-					l.logf("%s claim item %d: %v", sc.Login, item.Seq, err)
-				}
-				continue
-			}
-			free--
-			l.logf("%s: claimed item %d %q", sc.Login, item.Seq, item.Title)
-			l.start(ctx, item)
-		}
+	if free > 0 {
+		l.claimReady(ctx, free)
 	}
 	if l.AfterTick != nil {
 		l.AfterTick(ctx)
@@ -154,26 +260,35 @@ func (l *Loop) Tick(ctx context.Context) {
 }
 
 // evaluateHeld starts an evaluation of every item this node finished
-// that no evaluation here is running on. The verdict moves the item on;
+// that no evaluation here is running on, most urgent goal first across
+// the orgs (evaluateOrder; the goals are read only for an org holding
+// one). The verdict moves the item on;
 // an evaluation that ends without one leaves it here for the next tick.
 func (l *Loop) evaluateHeld(ctx context.Context) {
 	if l.Evaluate == nil {
 		return
 	}
-	var items []gateway.WorkItem
+	var held []readyItem
 	for _, sc := range l.Scopes {
 		rows, err := l.GW.OrgWorkItems(ctx, sc.ID, "evaluating")
 		if err != nil {
 			l.logf("list evaluating items of %s: %v", sc.Login, err)
 			continue
 		}
+		var rank func(string) int
 		for _, it := range rows {
-			if it.NodeID == sc.NodeID {
-				items = append(items, it)
+			if it.NodeID != sc.NodeID {
+				continue
 			}
+			if rank == nil {
+				rank = l.goalRanks(ctx, sc, "evaluated")
+			}
+			held = append(held, readyItem{item: it, scope: sc, rank: rank(it.GoalID)})
 		}
 	}
-	for _, item := range items {
+	evaluateOrder(held)
+	for _, h := range held {
+		item := h.item
 		l.mu.Lock()
 		if l.evaluating == nil {
 			l.evaluating = map[string]bool{}
@@ -199,55 +314,61 @@ func (l *Loop) evaluateHeld(ctx context.Context) {
 }
 
 // planRequested starts the planner on every goal in planning in the
-// served orgs that no planner here is on.
+// served orgs that no planner here is on, most urgent goal first across
+// the orgs (planOrder).
 func (l *Loop) planRequested(ctx context.Context) {
 	if l.Plan == nil {
 		return
 	}
+	var requested []planningGoal
 	for _, sc := range l.Scopes {
-		goals, err := l.GW.Goals(ctx, sc.ID)
+		goals, err := l.goals(ctx, sc)
 		if err != nil {
 			l.logf("list goals of %s: %v", sc.Login, err)
 			continue
 		}
 		for _, g := range goals {
-			if g.Status != "planning" {
-				continue
+			if g.Status == "planning" {
+				requested = append(requested, planningGoal{goal: g, scope: sc})
 			}
-			l.mu.Lock()
-			if l.planning == nil {
-				l.planning = map[string]bool{}
-			}
-			if l.planning[g.ID] {
-				l.mu.Unlock()
-				continue
-			}
-			l.planning[g.ID] = true
+		}
+	}
+	planOrder(requested)
+	for _, r := range requested {
+		g, sc := r.goal, r.scope
+		l.mu.Lock()
+		if l.planning == nil {
+			l.planning = map[string]bool{}
+		}
+		if l.planning[g.ID] {
 			l.mu.Unlock()
-			// the claim is the lock across nodes: refused, another node has it
-			if err := l.GW.ClaimPlan(ctx, g.ID, sc.NodeID); err != nil {
+			continue
+		}
+		l.planning[g.ID] = true
+		l.mu.Unlock()
+		// the claim is the lock across nodes: refused, another node has it
+		if err := l.GW.ClaimPlan(ctx, g.ID, sc.NodeID); err != nil {
+			l.mu.Lock()
+			delete(l.planning, g.ID)
+			l.mu.Unlock()
+			if gateway.IsRefusal(err) {
+				l.logf("%s: goal %q is being planned elsewhere", sc.Login, g.Slug)
+			} else {
+				l.logf("%s: claim planning of %q: %v", sc.Login, g.Slug, err)
+			}
+			continue
+		}
+		l.logf("%s: planning goal %q", sc.Login, g.Slug)
+		l.wg.Add(1)
+		go func(g gateway.Goal, sc Scope) {
+			defer l.wg.Done()
+			defer func() {
 				l.mu.Lock()
 				delete(l.planning, g.ID)
 				l.mu.Unlock()
-				if gateway.IsRefusal(err) {
-					l.logf("%s: goal %q is being planned elsewhere", sc.Login, g.Slug)
-				} else {
-					l.logf("%s: claim planning of %q: %v", sc.Login, g.Slug, err)
-				}
-				continue
-			}
-			l.logf("%s: planning goal %q", sc.Login, g.Slug)
-			l.wg.Add(1)
-			go func(g gateway.Goal, sc Scope) {
-				defer l.wg.Done()
-				defer func() {
-					l.mu.Lock()
-					delete(l.planning, g.ID)
-					l.mu.Unlock()
-				}()
-				l.Plan(ctx, g, sc)
-			}(g, sc)
-		}
+			}()
+			l.Plan(ctx, g, sc)
+		}(g, sc)
 	}
 }
 
@@ -288,7 +409,7 @@ func (l *Loop) researchDue(ctx context.Context) {
 		// the org's goals once, to see which directions have room: a
 		// session on a project at its ceiling would have every proposal
 		// dropped, and an unattended night should not pay for that
-		goals, err := l.GW.Goals(ctx, sc.ID)
+		goals, err := l.goals(ctx, sc)
 		if err != nil {
 			l.logf("list goals of %s: %v", sc.Login, err)
 			continue
