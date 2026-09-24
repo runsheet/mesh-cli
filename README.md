@@ -71,6 +71,36 @@ moves over (latchkey `adr-machine-identity`, rollout phases 1–3); the
 gateway accepts a machine token only once its own phase has landed, and
 `mesh node login` says so when it does not.
 
+### What a session can reach on GitHub
+
+Not your GitHub login. A session touches GitHub only with its item's own
+token: when the node claims an item it asks the platform for a GitHub
+App installation token (`issueItemRepoToken`), minted through the
+installation of the org that owns the item's repo, restricted to that
+one repository, contents write and pull requests read, living an hour.
+Your personal GitHub access — every org and repo your `gh` login reaches
+— is no longer what a session can reach.
+
+The node puts the token on the checkout's own credential helper (in its
+`.git/config`, clearing the operator's `gh auth git-credential` for
+github.com), so clone, fetch and push use it alone, and a push from
+inside a session to any other repo fails. A poll-mode session gets
+`GH_TOKEN` set to it and `GH_CONFIG_DIR` pointing at a fresh, empty
+directory, so `gh` never reads your `~/.config/gh`; channel mode's shared
+session gets the empty `GH_CONFIG_DIR` and no token at all, since its
+items' checkouts carry their own. A token near its expiry is renewed and
+the helper rewritten, so a long session does not lose its push. A token
+the platform refuses fails the item — it is not run on your login
+instead. The planner and the director, which read a whole project's
+repos rather than one item's, still fetch on the node's own `gh` login.
+
+**The fallback.** A platform that has not yet rolled out the mutation
+(its schema does not know `issueItemRepoToken`) gets the old behaviour:
+the item runs on the operator's own `gh` and `git` credentials, exactly
+as before, and the node logs once per run — not once per item — that
+the platform issues no item GitHub tokens. The rollout is not a flag
+day; once every platform serves the mutation the fallback goes.
+
 ### Models
 
 Each kind of session runs on its own model, so the expensive work and
