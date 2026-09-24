@@ -193,10 +193,14 @@ the gateway: `mesh_progress {item_id, note, cost_cents}`, `mesh_finish
 {item_id, branch, head_sha}`, `mesh_fail {item_id, error}`, `mesh_evaluate
 {item_id, passed, notes}`, `mesh_context {goal_slug}` (the project's
 Prologue documents: instructions, ADRs, PRD, TRD), `mesh_items {status}`,
-`mesh_record {item_id, summary}` (see below) and `reply`. Its system
-prompt tells it to clone or fetch the repo into
-`~/.mesh/work/<goal-slug>/<seq>`, branch `mesh/<goal-slug>-<seq>` from the
-base ref, read `mesh_context` first, do each item as a fresh subagent,
+`mesh_record {item_id, summary}` (see below) and `reply`. The daemon
+has already cloned or fetched the repo into
+`~/.mesh/work/<goal-slug>/<seq>` and checked out `mesh/<goal-slug>-<seq>`
+by the time the event arrives. It did that on the item's own GitHub token,
+which is also the only credential the checkout's git uses. The session
+itself runs with an empty `GH_CONFIG_DIR` and no `GH_TOKEN`, so the
+operator's gh login is out of its reach. Its system prompt tells it to
+read `mesh_context` first, do each item as a fresh subagent,
 run the acceptance, commit, push, then `mesh_finish` — or `mesh_fail`. The
 daemon restarts the session if it exits; the claim stays the daemon's, so
 the lock is held before the event is pushed.
