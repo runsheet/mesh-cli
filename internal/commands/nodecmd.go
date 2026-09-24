@@ -805,7 +805,7 @@ func init() {
 
 // nodeModelCmd reads or writes the models in ~/.mesh/node.yaml, so a
 // node can be moved off a model without editing YAML or passing flags.
-// Restart the node (or its service) for a change to take.
+// Drain the node (`mesh node drain`) for a change to take.
 var nodeModelCmd = &cobra.Command{
 	Use:   "model",
 	Short: "Show or set the model each kind of session runs on",
@@ -866,7 +866,7 @@ A flag on ` + "`mesh node start`" + ` wins over these for that run.`,
 			}
 		}
 		if changed {
-			fmt.Println("\nsaved; restart the node for it to take (systemctl --user restart io.projectmesh.mesh-node.service)")
+			fmt.Println("\nsaved; drain the node for it to take (mesh node drain): it finishes its sessions and its service starts it again")
 		}
 		return nil
 	},
