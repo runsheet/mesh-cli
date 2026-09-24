@@ -99,6 +99,25 @@ func (w *fakeWS) Fetch(_ context.Context, repo, dir string) error {
 	return os.MkdirAll(dir, 0o755)
 }
 
+// assertNoGoalDoc: an item's own branch carries no goal-doc churn — no
+// `docs(mesh): goal` commit, and no specs/goal-*.md in any workspace the
+// runner prepared.
+func assertNoGoalDoc(t *testing.T, ws *fakeWS) {
+	t.Helper()
+	ws.mu.Lock()
+	defer ws.mu.Unlock()
+	for _, c := range ws.commits {
+		if strings.Contains(c, "docs(mesh): goal") {
+			t.Fatalf("an item's branch must carry no goal-doc commit: %v", ws.commits)
+		}
+	}
+	for _, spec := range ws.prepared {
+		if docs, _ := filepath.Glob(filepath.Join(spec.Dir(), "specs", "goal-*.md")); len(docs) != 0 {
+			t.Fatalf("an item's branch must carry no goal doc: %v", docs)
+		}
+	}
+}
+
 func (w *fakeWS) Diff(_ context.Context, dir, base string) (string, error) {
 	return "+++ b/thing_test.go\n+func TestThing(t *testing.T) {}", nil
 }
@@ -209,14 +228,8 @@ func TestLoopClaimsRunsAndFinishes(t *testing.T) {
 	if strings.Contains(h.jobs[0].Prompt, "prologue_document") || h.jobs[0].MCPServers != nil {
 		t.Fatal("no MCP server was given, none should be promised")
 	}
-	// the goal document, committed on the branch with the PRD as parent
-	doc, err := os.ReadFile(GoalDocPath(dir, "ship-it"))
-	if err != nil || !strings.Contains(string(doc), "parent: prd\n") || !strings.Contains(string(doc), "· item 1 · Implemented and tested.") {
-		t.Fatalf("goal doc: %v\n%s", err, doc)
-	}
-	if len(ws.commits) != 2 || !strings.HasPrefix(ws.commits[0], "docs(mesh): goal ship-it — item 1 [specs/goal-ship-it.md]") {
-		t.Fatalf("commits: %v", ws.commits)
-	}
+	// no goal document on the item's branch: not committed, not written
+	assertNoGoalDoc(t, ws)
 	// a second tick claims nothing new and reports nothing running
 	loop.Tick(ctx)
 	if hb := f.CallsNamed("heartbeatNode"); len(hb) != 2 || len(f.CallsNamed("claimWorkItem")) != 1 {
@@ -258,6 +271,7 @@ func TestRunnerFailsAnUnsuccessfulSession(t *testing.T) {
 	if len(ws.pushed) != 0 {
 		t.Fatal("a failed item must not be pushed")
 	}
+	assertNoGoalDoc(t, ws)
 	// the goal's remaining budget bounds the session: (1000-100)/100 = 9
 	if b := runner.Budget(&gateway.Goal{BudgetCents: 1000, SpentCents: 100}); b != 9 {
 		t.Fatalf("budget = %v", b)
@@ -289,6 +303,7 @@ func TestRunnerLeavesItemOnShutdown(t *testing.T) {
 	if row := f.Item(item1); row["status"] == "failed" {
 		t.Fatal("our own shutdown must not fail the item")
 	}
+	assertNoGoalDoc(t, ws)
 }
 
 type harnessFunc func(context.Context, harness.Job, func(harness.Progress)) (harness.Result, error)
@@ -396,6 +411,7 @@ func TestRunnerAsksForItsMCPServersPerItem(t *testing.T) {
 	if calls != 2 || len(h.jobs) != 2 {
 		t.Fatalf("MCPFunc calls = %d, jobs = %d, want 2 and 2", calls, len(h.jobs))
 	}
+	assertNoGoalDoc(t, ws)
 	for i, want := range []string{"Bearer machine-token-1", "Bearer machine-token-2"} {
 		srv, _ := h.jobs[i].MCPServers["prologue"].(map[string]any)
 		headers, _ := srv["headers"].(map[string]string)
