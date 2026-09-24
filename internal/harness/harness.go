@@ -22,6 +22,9 @@ const (
 	// KindResearch decides what a project should do next and proposes
 	// the goals for it (runsheet trd §6c).
 	KindResearch Kind = "research"
+	// KindRebase rebases a finished branch the integrator could not
+	// rebase itself onto its base and pushes it (runsheet ADR 008).
+	KindRebase Kind = "rebase"
 )
 
 // Job is one session's brief.
