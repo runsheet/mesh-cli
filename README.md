@@ -142,8 +142,13 @@ their goal's priority — urgent, high, normal, low; a goal with none is
 normal — then, within a priority, items with no evaluation before
 retries, then oldest seq first. Each org's goals are read once a tick to
 join the priorities; if that read fails, the org's items count as normal.
-There is no starvation guard: a steady stream of urgent work keeps a low
-goal's items waiting.
+Planning and evaluation follow the same order across the orgs: the goals
+in planning are claimed (`ClaimPlan`) and planned urgent, high, normal,
+low (empty is normal), and the items this node holds for evaluation are
+evaluated by their goal's priority, then seq — on the same one goals read
+per org per tick.
+There is no starvation guard beyond this order: a steady stream of urgent
+work keeps a low goal's items, plans and evaluations waiting.
 What happens to a claimed item depends on the mode.
 
 **Channel mode (default).** One persistent `claude` session runs in
