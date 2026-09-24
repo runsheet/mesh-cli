@@ -37,6 +37,17 @@ existing installs download.
   and reported.
 - `cli-release.yml` and `release.yml` stay as they are and are not an
   update source.
+- The updater (`internal/selfupdate`) verifies in-process with
+  `github.com/sigstore/sigstore-go`; the node needs no `cosign`. It
+  requires a transparency-log entry, an observer timestamp and an
+  embedded SCT, chains to Sigstore's public-good trusted root (fetched
+  over TUF from the root embedded in sigstore-go, cached in
+  `~/.mesh/sigstore`), and matches the identity and issuer exactly. The
+  identity prefix and issuer are constants in `ReleasePolicy`; nothing in
+  `node.yaml`, flags or the environment can loosen them. A refusal is one
+  of `ErrMissingAsset`, `ErrSignature`, `ErrIdentity`, `ErrChecksum`
+  with a short reason for the heartbeat; the update's progress and last
+  error live in `~/.mesh/update.json`.
 
 ## Consequences
 

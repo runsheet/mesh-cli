@@ -100,3 +100,31 @@ func TestRouterSubsFilePath(t *testing.T) {
 		t.Errorf("RouterSubsFilePath() = %q, want %q", got, want)
 	}
 }
+
+func TestUpdateStatePath(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+
+	got, err := paths.UpdateStatePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(tmp, ".mesh", "update.json")
+	if got != want {
+		t.Errorf("UpdateStatePath() = %q, want %q", got, want)
+	}
+}
+
+func TestSigstoreCacheDir(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+
+	got, err := paths.SigstoreCacheDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(tmp, ".mesh", "sigstore")
+	if got != want {
+		t.Errorf("SigstoreCacheDir() = %q, want %q", got, want)
+	}
+}
