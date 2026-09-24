@@ -243,7 +243,7 @@ func (l *Loop) Tick(ctx context.Context) {
 	}
 	l.tickGoals = map[string]goalsRead{}
 	for _, sc := range l.Scopes {
-		if err := l.GW.HeartbeatNode(ctx, sc.NodeID, l.Version, l.Running()); err != nil {
+		if err := l.GW.HeartbeatNode(ctx, sc.NodeID, l.Version, l.Running(), "", ""); err != nil {
 			l.logf("heartbeat %s: %v", sc.Login, err)
 		}
 	}

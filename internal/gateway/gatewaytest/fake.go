@@ -264,6 +264,16 @@ func (f *Fake) apply(name string, in map[string]any) error {
 			return fmt.Errorf("no such item")
 		}
 		item["status"], item["lastError"] = "failed", in["error"]
+	case "releaseWorkItem":
+		// the node's condition, not the item's: back to ready, attempts
+		// and lastError as they were, the reason in the last note
+		if item == nil {
+			return fmt.Errorf("no such item")
+		}
+		item["status"], item["lastNote"] = "ready", in["reason"]
+		delete(item, "nodeId")
+		delete(item, "harness")
+		delete(item, "sessionId")
 	case "evaluateWorkItem":
 		if item == nil {
 			return fmt.Errorf("no such item")
@@ -287,6 +297,12 @@ func (f *Fake) apply(name string, in map[string]any) error {
 		}
 		f.Nodes[id]["running"] = in["running"]
 		f.Nodes[id]["version"] = in["version"]
+		// empty status is the ordinary heartbeat: online, and no reason
+		status, _ := in["status"].(string)
+		if status == "" {
+			status = "online"
+		}
+		f.Nodes[id]["status"], f.Nodes[id]["reason"] = status, in["reason"]
 	case "setGoal":
 		row := f.Goals[id]
 		if row == nil {

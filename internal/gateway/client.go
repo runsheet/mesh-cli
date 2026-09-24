@@ -608,9 +608,11 @@ func (c *Client) RegisterNode(ctx context.Context, in RegisterNodeInput) error {
 	})
 }
 
-// HeartbeatNode reports liveness and the running session count.
-func (c *Client) HeartbeatNode(ctx context.Context, nodeID, version string, running int) error {
-	return c.Mutate(ctx, "heartbeatNode", nodeID, map[string]any{"version": version, "running": running})
+// HeartbeatNode reports liveness and the running session count. status
+// empty is the ordinary heartbeat (online); harness_unavailable carries
+// why in reason (trd §1 Node).
+func (c *Client) HeartbeatNode(ctx context.Context, nodeID, version string, running int, status, reason string) error {
+	return c.Mutate(ctx, "heartbeatNode", nodeID, map[string]any{"version": version, "running": running, "status": status, "reason": reason})
 }
 
 // ClaimWorkItem takes the item's lock; a refusal is a gateway.Error.
@@ -631,6 +633,13 @@ func (c *Client) FinishWorkItem(ctx context.Context, itemID, branch, headSha str
 // FailWorkItem records the failure.
 func (c *Client) FailWorkItem(ctx context.Context, itemID, errMsg string) error {
 	return c.Mutate(ctx, "failWorkItem", itemID, map[string]any{"error": errMsg})
+}
+
+// ReleaseWorkItem hands the claim back: the node's harness could not run
+// the session, which is not the item's failure — it goes back to ready
+// with its attempts unchanged and reason in its last note (trd §1).
+func (c *Client) ReleaseWorkItem(ctx context.Context, itemID, reason string) error {
+	return c.Mutate(ctx, "releaseWorkItem", itemID, map[string]any{"reason": reason})
 }
 
 // EvaluateWorkItem records the evaluator's verdict (phase 1's session; the
