@@ -200,3 +200,133 @@ func (c *ItemCred) Refresh(ctx context.Context) error {
 	c.tok = tok
 	return nil
 }
+
+// Reissue asks the platform for a fresh token and rewrites the
+// workspace's credential helper with it, whatever the current token's
+// expiry: unlike Refresh it is for a token git has just refused.
+func (c *ItemCred) Reissue(ctx context.Context) error {
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	tok, err := c.gw.IssueItemRepoToken(ctx, c.itemID, c.nodeID)
+	if err != nil {
+		return fmt.Errorf("reissue github token: %w", err)
+	}
+	if err := c.ws.Authorize(ctx, c.spec, tok); err != nil {
+		return fmt.Errorf("reissue github token: %w", err)
+	}
+	c.tok = tok
+	return nil
+}
+
+// credentialRefusal is what git and gh print when GitHub will not let
+// the credential in: a private repo the token cannot see is "not
+// found", a token it does not honour a 401 or 403.
+var credentialRefusal = regexp.MustCompile(`(?i)repository not found|could not read from remote repository|authentication failed|invalid username or password|(http|error:?|status:?)\s*40[13]\b|\b40[13] (forbidden|unauthorized)|permission to .* denied`)
+
+// IsCredentialRefusal reports whether err is git (or gh) refused by
+// GitHub on its credential rather than any other failure.
+func IsCredentialRefusal(err error) bool {
+	return err != nil && credentialRefusal.MatchString(err.Error())
+}
+
+// CredentialError is a workspace GitHub refused on the item's token
+// after every re-issue: the node's credential problem, not the item's.
+// It names the repo and the token's expiry and never the token.
+type CredentialError struct {
+	Repo    string
+	Expiry  time.Time
+	Retries int
+	Cause   error
+}
+
+func (e *CredentialError) Error() string {
+	return fmt.Sprintf("github refused the item token for %s (expires %s) after %d retries: %v", e.Repo, expiryText(e.Expiry), e.Retries, e.Cause)
+}
+
+func (e *CredentialError) Unwrap() error { return e.Cause }
+
+func expiryText(t time.Time) string {
+	if t.IsZero() {
+		return "unknown"
+	}
+	return t.UTC().Format(time.RFC3339)
+}
+
+// credentialBackoff is the wait before each retry of a refused Prepare,
+// one per retry.
+var credentialBackoff = []time.Duration{time.Second, 2 * time.Second, 4 * time.Second}
+
+// credentialSleep waits d or until ctx ends; tests replace it.
+var credentialSleep = func(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
+// urlUserinfo is the credential part of a URL git may echo.
+var urlUserinfo = regexp.MustCompile(`(https?://)[^/@\s]+@`)
+
+// scrubbed is err with every token it may carry taken out.
+func scrubbed(err error, tokens []string) error {
+	msg := urlUserinfo.ReplaceAllString(err.Error(), "${1}***@")
+	for _, t := range tokens {
+		if t != "" {
+			msg = strings.ReplaceAll(msg, t, "***")
+		}
+	}
+	if msg == err.Error() {
+		return err
+	}
+	return errors.New(msg)
+}
+
+// PrepareWithRetry is ws.Prepare for an item's workspace. When GitHub
+// refuses the item's token (IsCredentialRefusal) it re-issues the token
+// and tries again after a short backoff, up to three times — a freshly
+// minted installation token can be used before GitHub honours it — and
+// then answers a *CredentialError. Any other failure, and the operator
+// login's fallback (cred == nil), is not retried. The log names the
+// token's repo and expiry, never the token.
+func PrepareWithRetry(ctx context.Context, ws Workspacer, spec WorkspaceSpec, cred *ItemCred, logf func(string, ...any)) (string, error) {
+	if cred == nil {
+		return ws.Prepare(ctx, spec)
+	}
+	var seen []string
+	for attempt := 0; ; attempt++ {
+		tok := cred.Token()
+		seen = append(seen, tok.Token)
+		repo := tok.Repository
+		if repo == "" {
+			repo = spec.Repo
+		}
+		dir, err := ws.Prepare(ctx, spec)
+		if err == nil {
+			if attempt > 0 {
+				logf("workspace %s: prepared on a re-issued token for %s (expires %s), attempt %d", spec.Dir(), repo, expiryText(tok.ExpiresAt), attempt+1)
+			}
+			return dir, nil
+		}
+		err = scrubbed(err, seen)
+		if !IsCredentialRefusal(err) || ctx.Err() != nil {
+			return "", err
+		}
+		logf("workspace %s: github refused the token for %s (expires %s), attempt %d: %v", spec.Dir(), repo, expiryText(tok.ExpiresAt), attempt+1, err)
+		if attempt == len(credentialBackoff) {
+			return "", &CredentialError{Repo: repo, Expiry: tok.ExpiresAt, Retries: attempt, Cause: err}
+		}
+		if err := credentialSleep(ctx, credentialBackoff[attempt]); err != nil {
+			return "", err
+		}
+		if err := cred.Reissue(ctx); err != nil {
+			return "", err
+		}
+	}
+}

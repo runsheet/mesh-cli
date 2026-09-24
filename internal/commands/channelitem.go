@@ -43,7 +43,7 @@ func readyChannelItem(ctx context.Context, gw node.Gateway, ws channelWorkspace,
 	if err != nil {
 		return nil, err
 	}
-	dir, err := ws.Prepare(ctx, spec)
+	dir, err := node.PrepareWithRetry(ctx, ws, spec, cred, logf)
 	if err != nil {
 		return nil, fmt.Errorf("workspace: %w", err)
 	}
