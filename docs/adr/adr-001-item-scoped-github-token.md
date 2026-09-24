@@ -60,6 +60,25 @@ living an hour.
   not run on the operator's login instead. Only `IsUnsupported` takes
   the fallback, and that leaves the workspace and environment as they
   were before this ADR.
+- Channel mode's one `claude` process runs many items, so its
+  environment carries no item's token. `Session.once` starts it with
+  `GH_TOKEN`, `GITHUB_TOKEN` and the enterprise tokens removed from the
+  daemon's environment, and `GH_CONFIG_DIR` set to a fresh empty
+  directory for the life of the process (`channel.SessionEnv`), so `gh`
+  in the session reaches nothing. The daemon's `loop.Dispatch`
+  (`readyChannelItem`) resolves the item, gets its token, `Authorize`s
+  the workspace and `Prepare`s it before it pushes `work_item.ready`.
+  The session's system prompt no longer tells it to clone; a missing
+  workspace is a `mesh_fail`. Each item's git runs on that checkout's own
+  helper. The channel's `repush` bookkeeping renews a held item's token
+  near expiry every tick and rewrites the helper. A refusal fails the
+  item, and so does a failed `Prepare`.
+- On the old platform the shared session's empty `GH_CONFIG_DIR` would
+  also hide the operator's global `gh auth git-credential` from its
+  push. So the daemon gives such a checkout its own helper,
+  `!GH_CONFIG_DIR='<the operator's gh config dir>' gh auth
+  git-credential` (`Git.AuthorizeOperator`). That keeps the fallback's
+  reach to that checkout, which is where it was before this ADR.
 - The planner's and the director's `Fetch` read many repos for a whole
   project, not one item, and stay on the node's own credentials.
 

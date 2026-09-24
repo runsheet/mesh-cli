@@ -152,7 +152,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 
 	spec := WorkspaceSpec{Root: r.WorkRoot, GoalSlug: res.Goal.Slug, Seq: item.Seq, Repo: res.Repo.FullName(), Branch: res.Branch(), BaseRef: res.BaseRef()}
 	// the item's own GitHub token, on the checkout before it is cloned
-	cred, err := newItemCred(ctx, r.GW, r.WS, r.Scopes, item, spec, r.logf)
+	cred, err := NewItemCred(ctx, r.GW, r.WS, r.Scopes, item, spec, r.logf)
 	if err != nil {
 		return r.fail(ctx, item, err)
 	}
@@ -184,7 +184,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		Attempts: item.Attempts, Evaluation: item.Evaluation, Project: orgLogin + "/" + res.Project.Slug, Prologue: len(mcp) > 0,
 	})
 	job := harness.Job{Kind: harness.KindBuild, Workspace: dir, Prompt: prompt, MaxBudgetUSD: r.Budget(res.Goal), Label: label, MCPServers: mcp, Model: r.Model}
-	if tok := cred.token(); tok != nil {
+	if tok := cred.Token(); tok != nil {
 		ghDir, err := NewGHConfigDir()
 		if err != nil {
 			return r.fail(ctx, item, fmt.Errorf("gh config dir: %w", err))
@@ -225,7 +225,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 			case <-t.C:
 				report("")
 				// a session may outlive its token's hour
-				if err := cred.refresh(tickCtx); err != nil && tickCtx.Err() == nil {
+				if err := cred.Refresh(tickCtx); err != nil && tickCtx.Err() == nil {
 					r.logf("item %s: %v", label, err)
 				}
 			}
@@ -265,7 +265,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	}
 	report(result.Text)
 
-	if err := cred.refresh(ctx); err != nil {
+	if err := cred.Refresh(ctx); err != nil {
 		r.logf("item %s: %v", label, err) // the token held may yet serve
 	}
 	sha, err := r.WS.Push(ctx, dir, spec.Branch)

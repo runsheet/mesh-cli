@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -55,6 +56,12 @@ func WriteCredentialHelper(ctx context.Context, dir, base string, tok *gateway.G
 	if tok == nil || !tokenShape.MatchString(tok.Token) {
 		return errors.New("github token: missing or malformed")
 	}
+	return writeHelper(ctx, dir, base, credentialHelper(tok.Token))
+}
+
+// writeHelper makes helper the only credential helper the checkout in
+// dir uses for base.
+func writeHelper(ctx context.Context, dir, base, helper string) error {
 	key := "credential." + strings.TrimRight(base, "/") + ".helper"
 	// not through Git.run: its log would carry the token
 	gitConfig := func(args ...string) error {
@@ -75,7 +82,40 @@ func WriteCredentialHelper(ctx context.Context, dir, base string, tok *gateway.G
 	if err := gitConfig("--add", key, ""); err != nil {
 		return err
 	}
-	return gitConfig("--add", key, credentialHelper(tok.Token))
+	return gitConfig("--add", key, helper)
+}
+
+// OperatorGHConfigDir is where the operator's own gh keeps its login,
+// by gh's rules: $GH_CONFIG_DIR, else $XDG_CONFIG_HOME/gh, else
+// ~/.config/gh.
+func OperatorGHConfigDir() (string, error) {
+	if d := os.Getenv("GH_CONFIG_DIR"); d != "" {
+		return d, nil
+	}
+	if d := os.Getenv("XDG_CONFIG_HOME"); d != "" {
+		return filepath.Join(d, "gh"), nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".config", "gh"), nil
+}
+
+// AuthorizeOperator is the old platform's fallback for a checkout whose
+// session runs with an empty GH_CONFIG_DIR (channel mode's shared
+// session): the checkout's own helper asks the operator's gh, at its own
+// config dir, as the operator's global `gh auth git-credential` did
+// before. It reaches no checkout but this one.
+func (g *Git) AuthorizeOperator(ctx context.Context, dir string) error {
+	ghDir, err := OperatorGHConfigDir()
+	if err != nil {
+		return err
+	}
+	if strings.ContainsAny(ghDir, "'\n") {
+		return fmt.Errorf("gh config dir %q cannot be quoted for a credential helper", ghDir)
+	}
+	return writeHelper(ctx, dir, g.githubURL(), "!GH_CONFIG_DIR='"+ghDir+"' gh auth git-credential")
 }
 
 // NewGHConfigDir is a fresh, empty directory for a session's
@@ -91,10 +131,10 @@ func SessionEnv(tok *gateway.GitHubToken, ghConfigDir string) []string {
 	return []string{"GH_TOKEN=" + tok.Token, "GH_CONFIG_DIR=" + ghConfigDir}
 }
 
-// itemCred is an item's GitHub token on its workspace, renewed before it
-// expires. A nil *itemCred is the old platform's fallback: the
+// ItemCred is an item's GitHub token on its workspace, renewed before it
+// expires. A nil *ItemCred is the old platform's fallback: the
 // operator's own gh and git credentials, as before.
-type itemCred struct {
+type ItemCred struct {
 	gw     Gateway
 	ws     Workspacer
 	spec   WorkspaceSpec
@@ -105,12 +145,12 @@ type itemCred struct {
 	tok *gateway.GitHubToken
 }
 
-// newItemCred asks for the item's token and configures the workspace
+// NewItemCred asks for the item's token and configures the workspace
 // with it, before anything clones, fetches or pushes. An old platform
 // (gateway.IsUnsupported) answers nil, nil: the fallback, not a
 // failure. A refusal is an error — an item the platform will not give a
 // token to is not run on the operator's login instead.
-func newItemCred(ctx context.Context, gw Gateway, ws Workspacer, scopes Scopes, item gateway.WorkItem, spec WorkspaceSpec, logf func(string, ...any)) (*itemCred, error) {
+func NewItemCred(ctx context.Context, gw Gateway, ws Workspacer, scopes Scopes, item gateway.WorkItem, spec WorkspaceSpec, logf func(string, ...any)) (*ItemCred, error) {
 	sc, _ := scopes.ByOrg(item.OrgID)
 	tok, err := gw.IssueItemRepoToken(ctx, item.ID, sc.NodeID)
 	if gateway.IsUnsupported(err) {
@@ -126,11 +166,11 @@ func newItemCred(ctx context.Context, gw Gateway, ws Workspacer, scopes Scopes, 
 	if err := ws.Authorize(ctx, spec, tok); err != nil {
 		return nil, fmt.Errorf("github token: %w", err)
 	}
-	return &itemCred{gw: gw, ws: ws, spec: spec, itemID: item.ID, nodeID: sc.NodeID, tok: tok}, nil
+	return &ItemCred{gw: gw, ws: ws, spec: spec, itemID: item.ID, nodeID: sc.NodeID, tok: tok}, nil
 }
 
-// token is the current token (nil on the fallback).
-func (c *itemCred) token() *gateway.GitHubToken {
+// Token is the current token (nil on the fallback).
+func (c *ItemCred) Token() *gateway.GitHubToken {
 	if c == nil {
 		return nil
 	}
@@ -139,9 +179,9 @@ func (c *itemCred) token() *gateway.GitHubToken {
 	return c.tok
 }
 
-// refresh renews the token when it is near expiry and rewrites the
+// Refresh renews the token when it is near expiry and rewrites the
 // workspace's credential helper with the new one.
-func (c *itemCred) refresh(ctx context.Context) error {
+func (c *ItemCred) Refresh(ctx context.Context) error {
 	if c == nil {
 		return nil
 	}

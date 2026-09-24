@@ -199,8 +199,10 @@ func TestRunnerFallsBackOnAnOldPlatform(t *testing.T) {
 // the operator's login instead.
 func TestRunnerFailsWhenTheTokenIsRefused(t *testing.T) {
 	h := &fakeHarness{}
-	r, ws, item, row := runnerOn(t, h, nil)
-	r.Scopes[0].NodeID = "33333333-3333-4333-8333-333333333333" // not the claim's node
+	// the platform refuses a token to any node but the claim's, judging
+	// by the caller's credential; the gateway client is wrapped so its
+	// token call answers that refusal
+	r, ws, item, row := runnerOn(t, h, func(g Gateway) Gateway { return refusingTokenGW{g} })
 	err := r.RunItem(context.Background(), item)
 	var ge *gateway.Error
 	if err == nil || !errors.As(err, &ge) {
@@ -260,4 +262,12 @@ func TestGitHubTokenNeedsRefresh(t *testing.T) {
 			t.Errorf("%+v: %v, want %v", c.tok, got, c.want)
 		}
 	}
+}
+
+// refusingTokenGW is a gateway whose token call is refused the way the
+// platform refuses a node that does not hold the item's claim.
+type refusingTokenGW struct{ Gateway }
+
+func (refusingTokenGW) IssueItemRepoToken(ctx context.Context, itemID, nodeID string) (*gateway.GitHubToken, error) {
+	return nil, &gateway.Error{Message: "issueItemRepoToken: the item is not this node's claim"}
 }

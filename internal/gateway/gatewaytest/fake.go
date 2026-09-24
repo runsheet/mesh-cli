@@ -54,6 +54,10 @@ type Fake struct {
 	// (token, expiresAt, repository); only the node holding the item's
 	// claim is given it.
 	GitHubTokens map[string]map[string]any
+	// TokenNodeID is the node the caller's credential names; the platform
+	// hands an item's token only to the node holding its claim. Empty
+	// skips the check.
+	TokenNodeID string
 	// Unsupported names mutations the fake answers as a platform that
 	// predates them: the schema's "Cannot query field" error.
 	Unsupported map[string]bool
@@ -128,7 +132,7 @@ func copyRow(r map[string]any) map[string]any {
 }
 
 var (
-	mutationRe = regexp.MustCompile(`mutation\s*\(\s*\$in:\s*(\w+)!\s*\)\s*\{\s*(\w+)\s*\(`)
+	mutationRe = regexp.MustCompile(`mutation\s*\(\s*\$(?:in|id):\s*(\w+)!\s*\)\s*\{\s*(\w+)\s*\(`)
 	whereRe    = regexp.MustCompile(`\{\s*field:\s*"([a-z_]+)"\s*,\s*op:\s*EQ\s*,\s*value:\s*"([^"]*)"\s*\}`)
 	listRe     = regexp.MustCompile(`\{\s*(\w+Indexs)\s*\(`)
 	getRe      = regexp.MustCompile(`\{\s*(\w+Index)\s*\(\s*namespace:\s*"runsheet"\s*,\s*id:\s*"([^"]+)"`)
@@ -171,6 +175,14 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if m[2] == "issueItemRepoToken" {
+			// the platform's shape: issueItemRepoToken(workItemId: UUID!): Map
+			// — an input object is the schema error production answered
+			if strings.Contains(q, "IssueItemRepoTokenInput") {
+				writeErrors(w, 200, `Variable "$in" cannot be non-input type "IssueItemRepoTokenInput!".`)
+				return
+			}
+			id, _ := req.Variables["id"].(string)
+			in = map[string]any{"workItemId": id}
 			tok, err := f.issueItemRepoToken(in)
 			if err != nil {
 				writeErrors(w, 200, err.Error())
@@ -297,6 +309,11 @@ func (f *Fake) apply(name string, in map[string]any) error {
 		}
 		item["evaluation"] = in["notes"]
 		item["costCents"] = toInt(item["costCents"]) + toInt(in["costCents"])
+	case "claimWorkItemRebase", "finishWorkItemRebase", "failWorkItemRebase":
+		if item == nil {
+			return fmt.Errorf("no such item")
+		}
+		return applyRebase(name, item, in)
 	case "registerNode":
 		row := map[string]any{"id": id, "status": "online", "running": 0}
 		for k, v := range in {
@@ -374,8 +391,45 @@ func (f *Fake) apply(name string, in map[string]any) error {
 	return nil
 }
 
+// applyRebase is the rebase handshake of runsheet ADR 008 / trd §6a on
+// the item: requested → claimed by one node → rebased, or given up and
+// handed to the builder as a conflict rework (ready, attempts as they
+// were, the reason as its last error, the rebase over).
+func applyRebase(name string, item, in map[string]any) error {
+	state, _ := item["rebaseState"].(string)
+	holder, _ := item["rebaseNodeId"].(string)
+	switch name {
+	case "claimWorkItemRebase":
+		if state == "claimed" && holder == in["nodeId"] {
+			return nil
+		}
+		if state == "claimed" {
+			return fmt.Errorf("node %s has claimed the rebase", holder)
+		}
+		if state != "requested" {
+			return fmt.Errorf("no rebase is requested (rebase_state %q)", state)
+		}
+		item["rebaseState"], item["rebaseNodeId"] = "claimed", in["nodeId"]
+	case "finishWorkItemRebase":
+		if state != "claimed" && state != "requested" {
+			return fmt.Errorf("no rebase is under way (rebase_state %q)", state)
+		}
+		item["rebaseState"], item["rebaseMethod"] = "rebased", in["method"]
+		item["rebasedHeadSha"], item["headSha"] = in["headSha"], in["headSha"]
+		item["rebaseFiles"] = in["files"]
+		item["rebases"] = toInt(item["rebases"]) + 1
+	case "failWorkItemRebase":
+		if state != "claimed" && state != "requested" {
+			return nil // converges on a rebase not under way
+		}
+		item["rebaseConflict"] = in["reason"]
+		item["status"], item["lastError"], item["rebaseState"] = "ready", in["reason"], "none"
+	}
+	return nil
+}
+
 func (f *Fake) issueItemRepoToken(in map[string]any) (map[string]any, error) {
-	id, _ := in["aggregateId"].(string)
+	id, _ := in["workItemId"].(string)
 	item := f.WorkItems[id]
 	if item == nil {
 		return nil, fmt.Errorf("no such item")
@@ -385,8 +439,8 @@ func (f *Fake) issueItemRepoToken(in map[string]any) (map[string]any, error) {
 	default:
 		return nil, fmt.Errorf("item is %s, not claimed", item["status"])
 	}
-	if item["nodeId"] != in["nodeId"] {
-		return nil, fmt.Errorf("the item is not node %s's", in["nodeId"])
+	if f.TokenNodeID != "" && item["nodeId"] != f.TokenNodeID {
+		return nil, fmt.Errorf("the item is not node %s's", f.TokenNodeID)
 	}
 	tok := f.GitHubTokens[id]
 	if tok == nil {

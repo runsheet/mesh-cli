@@ -126,7 +126,8 @@ Signs in, finds the org among yours, derives the node id from
 `mesh node status` heartbeats once and lists the org's nodes, above a
 line naming the credential this machine runs on — the machine, its org
 and operator, and when its access token is next refreshed, or the rs_*
-console token it is still on.
+console token it is still on — and a line for the node process on this
+machine: running (its pid), draining, or none (see Drain below).
 
 ### Start
 
@@ -193,10 +194,14 @@ the gateway: `mesh_progress {item_id, note, cost_cents}`, `mesh_finish
 {item_id, branch, head_sha}`, `mesh_fail {item_id, error}`, `mesh_evaluate
 {item_id, passed, notes}`, `mesh_context {goal_slug}` (the project's
 Prologue documents: instructions, ADRs, PRD, TRD), `mesh_items {status}`,
-`mesh_record {item_id, summary}` (see below) and `reply`. Its system
-prompt tells it to clone or fetch the repo into
-`~/.mesh/work/<goal-slug>/<seq>`, branch `mesh/<goal-slug>-<seq>` from the
-base ref, read `mesh_context` first, do each item as a fresh subagent,
+`mesh_record {item_id, summary}` (see below) and `reply`. The daemon
+has already cloned or fetched the repo into
+`~/.mesh/work/<goal-slug>/<seq>` and checked out `mesh/<goal-slug>-<seq>`
+by the time the event arrives. It did that on the item's own GitHub token,
+which is also the only credential the checkout's git uses. The session
+itself runs with an empty `GH_CONFIG_DIR` and no `GH_TOKEN`, so the
+operator's gh login is out of its reach. Its system prompt tells it to
+read `mesh_context` first, do each item as a fresh subagent,
 run the acceptance, commit, push, then `mesh_finish` — or `mesh_fail`. The
 daemon restarts the session if it exits; the claim stays the daemon's, so
 the lock is held before the event is pushed.
@@ -221,6 +226,50 @@ In both modes `--unattended` adds `--dangerously-skip-permissions` so a
 session never waits on a permission prompt — only on a machine you trust
 with that. On SIGTERM the node kills its sessions and leaves claimed items
 for a retry; it never fails an item on its own shutdown.
+
+### Drain: swap the binary without a restart
+
+A restart kills the node's running `claude` sessions (SIGTERM, above): a
+build is left for a retry and what it had not pushed is lost. To put a
+new binary — or a change the tick does not re-read, such as the models —
+in place, drain the node instead:
+
+```bash
+mesh node drain          # or: kill -USR1 "$(cat ~/.mesh/node.pid)"
+```
+
+`mesh node start` writes its pid to `~/.mesh/node.pid` (removed on exit);
+`mesh node drain` sends that process `SIGUSR1`, and says so if no node is
+running. The draining node claims nothing new — no work item, no plan,
+no research, and it starts no evaluation — while every session it has
+running finishes: builds, evaluations, plans and research alike.
+Planners and evaluators do not count against capacity, which is why
+waiting for zero running items never sees an idle node; the drain waits
+for all of them. When the last one ends the node exits 0, and the service
+(`Restart=always` under systemd, `KeepAlive` under launchd) starts it
+again on the binary and config now on disk. An item it held for
+evaluation waits in `evaluating` and is taken up by the node that comes
+up.
+
+While it drains the node leaves `~/.mesh/node.draining`, and `mesh node
+status` shows it (`This machine: node running (pid …), draining`, and
+`draining` beside its row). Its heartbeat carries `draining: true` as
+well, a field sent only while draining; until the platform's node record
+keeps it (runsheet `update-nodes-from-console`), the drain is known on
+the machine alone.
+
+Swapping the binary on the mini:
+
+```bash
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh
+scp mesh-linux mini:bin/mesh.new
+ssh mini 'mv ~/bin/mesh.new ~/bin/mesh && ~/bin/mesh node drain'
+ssh mini 'systemctl --user status io.projectmesh.mesh-node.service'   # a new pid once it has drained
+```
+
+Replacing the file under a running process is safe (the old one keeps
+its inode); the drain is what makes it take. Capacity and the orgs served
+need neither: they are re-read every tick (see Start).
 
 ### The goal's record in the repo
 
@@ -337,7 +386,58 @@ mesh work-item learning <work-item-id> "Release flow is stable now"
 
 ## Release
 
-Multi-platform binaries are published via GitHub Releases triggered by tags matching `v*.*.*`.
+Nodes update themselves from the GitHub releases of
+`projectmesh-io/mesh-cli`, which `.github/workflows/release-tag.yml` cuts
+from a tag (docs/adr/adr-002-signed-tag-releases.md). To cut one:
+
+```sh
+git tag vX.Y.Z && git push origin vX.Y.Z
+```
+
+Any tag starting `v` runs it; a tag with a `-` (`v0.4.0-test.1`) is
+published as a prerelease. The version is stamped from the tag
+(`internal/version.Version`), so `mesh --version` and the node's
+heartbeat report exactly the tag. There is no manual trigger — tags only.
+
+Each release carries five files, and the names are the contract the
+updater reads:
+
+| Asset | What |
+|---|---|
+| `mesh-linux-amd64` | the node for linux/amd64 (the mini) |
+| `mesh-linux-arm64` | linux/arm64 |
+| `mesh-darwin-arm64` | macOS on Apple silicon |
+| `SHA256SUMS` | `sha256sum mesh-*` over the three binaries |
+| `SHA256SUMS.sigstore.json` | the Sigstore bundle signing `SHA256SUMS` |
+
+`SHA256SUMS` is signed keyless with `cosign sign-blob`: no key exists,
+the signature is bound to the workflow's GitHub OIDC identity and logged
+in Rekor. The node accepts a release only when the bundle verifies
+against exactly
+
+- certificate identity
+  `https://github.com/projectmesh-io/mesh-cli/.github/workflows/release-tag.yml@refs/tags/<tag>`
+- OIDC issuer `https://token.actions.githubusercontent.com`
+
+and the binary's hash matches its line in `SHA256SUMS`. To verify a
+release by hand:
+
+```sh
+TAG=vX.Y.Z
+gh release download "$TAG" -R projectmesh-io/mesh-cli \
+  -p SHA256SUMS -p SHA256SUMS.sigstore.json -p mesh-linux-amd64
+cosign verify-blob \
+  --bundle SHA256SUMS.sigstore.json \
+  --certificate-identity "https://github.com/projectmesh-io/mesh-cli/.github/workflows/release-tag.yml@refs/tags/$TAG" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  SHA256SUMS
+sha256sum --check --ignore-missing SHA256SUMS
+```
+
+`cli-release.yml` is separate: it builds on every push to `main` and
+publishes to the `projectmesh-io/mesh` repo, unsigned. Nodes do not
+update from it. `release.yml` is the Shipper's `workflow_dispatch` stub
+and publishes nothing.
 
 ## Known Limitations
 

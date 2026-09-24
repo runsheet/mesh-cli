@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
@@ -52,10 +53,17 @@ type Workspacer interface {
 	// Diff renders what the checked-out branch changed since it left
 	// origin/base: the stat, then the patch (the evaluator's evidence).
 	Diff(ctx context.Context, dir, base string) (string, error)
-	// Fetch clones repo (owner/name) into dir, shallow, or refreshes a
-	// clone already there: a read-only copy for the planner.
+	// Fetch clones repo (owner/name) into dir, shallow but with the
+	// default branch's last FetchDepth commits, or refreshes a clone
+	// already there: a read-only copy for the planner, whose `git log`
+	// is how it sees what main already holds (adr-003 decision 2).
 	Fetch(ctx context.Context, repo, dir string) error
 }
+
+// FetchDepth is how much of the default branch's history a read-only
+// checkout carries: enough for a planner's `git log` to reach back past
+// the goal's start.
+const FetchDepth = 300
 
 // Git is the Workspacer over `gh` and `git`: an Authorized checkout on
 // its item's token, any other on the operator's own credentials.
@@ -174,10 +182,10 @@ func (g *Git) Fetch(ctx context.Context, repo, dir string) error {
 		if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
 			return err
 		}
-		_, err := g.run(ctx, filepath.Dir(dir), "gh", "repo", "clone", repo, dir, "--", "--depth", "1")
+		_, err := g.run(ctx, filepath.Dir(dir), "gh", "repo", "clone", repo, dir, "--", "--depth", strconv.Itoa(FetchDepth))
 		return err
 	}
-	if _, err := g.run(ctx, dir, "git", "fetch", "--depth", "1", "origin"); err != nil {
+	if _, err := g.run(ctx, dir, "git", "fetch", "--depth", strconv.Itoa(FetchDepth), "origin"); err != nil {
 		return err
 	}
 	_, err := g.run(ctx, dir, "git", "reset", "--hard", "FETCH_HEAD")

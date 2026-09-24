@@ -215,6 +215,10 @@ type ExistingItem struct {
 	Title  string
 	Status string
 	Note   string // the evaluation or error that decided it
+	// Branch and PRURL: where its work went — for a merged item, the
+	// pull request main took it in with.
+	Branch string
+	PRURL  string
 }
 
 // PlannedSpec is one item of the graph the planner writes: like
@@ -250,19 +254,41 @@ func PlanPrompt(in PlanInput) string {
 		fmt.Fprintf(&b, "## The last plan blocked\n\n%s\n\nPlan around it.\n\n", strings.TrimSpace(in.Blocked))
 	}
 	if len(in.Existing) > 0 {
-		b.WriteString("## The items so far\n\nMerged items are done and stay: your items may depend on their seqs. Failed and cancelled items stay in the record; do their work again differently if it is still needed. Anything still live is replaced by your plan.\n\n")
+		b.WriteString("## The items so far\n\nYour plan replaces only the live items; merged items stay. Merged items are done: your items may depend on their seqs. Failed and cancelled items stay in the record; do their work again differently if it is still needed. Anything still live is replaced by your plan.\n\n")
 		for _, it := range in.Existing {
 			fmt.Fprintf(&b, "- %d. %s — %s", it.Seq, it.Title, it.Status)
+			if pr := strings.TrimSpace(it.PRURL); pr != "" {
+				fmt.Fprintf(&b, " (%s)", pr)
+			}
 			if strings.TrimSpace(it.Note) != "" {
 				fmt.Fprintf(&b, ": %s", strings.TrimSpace(it.Note))
 			}
 			b.WriteString("\n")
 		}
 		fmt.Fprintf(&b, "\nNumber your items from %d.\n\n", in.NextSeq)
+		var merged []ExistingItem
+		for _, it := range in.Existing {
+			if it.Status == "merged" {
+				merged = append(merged, it)
+			}
+		}
+		if len(merged) > 0 {
+			b.WriteString("## What main already holds\n\nThese items of the goal merged; their work is on main:\n\n")
+			for _, it := range merged {
+				fmt.Fprintf(&b, "- %d. %s", it.Seq, it.Title)
+				if pr := strings.TrimSpace(it.PRURL); pr != "" {
+					fmt.Fprintf(&b, " — %s", pr)
+				} else if br := strings.TrimSpace(it.Branch); br != "" {
+					fmt.Fprintf(&b, " — branch `%s`", br)
+				}
+				b.WriteString("\n")
+			}
+			b.WriteString("\n")
+		}
 	}
 	b.WriteString("# The project\n\n")
 	if len(in.Repos) > 0 {
-		b.WriteString("Its repos are checked out here, read-only, at their default branch:\n\n")
+		b.WriteString("Its repos are checked out here, read-only, at their default branch, with its recent history:\n\n")
 		for _, name := range sortedKeys(in.Repos) {
 			fmt.Fprintf(&b, "- `%s` in `%s/`\n", name, in.Repos[name])
 		}
@@ -280,8 +306,11 @@ func PlanPrompt(in PlanInput) string {
 	if in.Prologue {
 		b.WriteString(prologueRule(in.ContextDir, in.Org+"/"+in.Project) + "\n\n")
 	}
+	b.WriteString("# Check main first\n\n")
+	fmt.Fprintf(&b, "Before you write a graph, find out what main already holds of this goal's work. For each repo, search its recent merged pull requests and the commits on its default branch since the goal was set — `gh pr list --repo <owner/name> --state merged --limit 50` (add `--search` with the goal's words, and the `mesh/%s-` branches), and `git log --oneline` in its checkout, which carries the default branch's recent history — by title, by the brief's words, and by the files the acceptance names.\n\n", in.GoalSlug)
+	b.WriteString("Leave out work main already has. When main may already hold an item's work but you cannot tell it satisfies the acceptance, keep the item and say in its brief that an already_done check is expected: the builder checks main first and, if the acceptance holds there, finishes it already_done with the merged PRs or commits as evidence instead of building it again.\n\n")
 	b.WriteString("# Rules\n\n")
-	b.WriteString("1. Read before you plan: what exists, what the design says, where the goal's work lands.\n")
+	b.WriteString("1. Read before you plan: what exists, what the design says, where the goal's work lands, and what main already holds (above).\n")
 	b.WriteString("2. Each item is one fresh session's work in one repo on one branch: small enough to finish and evaluate in one sitting, large enough to be worth a pull request. Two to eight items.\n")
 	b.WriteString("3. Each item's brief says what to do and where, naming files and functions where it helps; its acceptance is what an evaluator can check — a test that passes, a command's output, a document with named sections — never a feeling.\n")
 	b.WriteString("4. depends_on names earlier seqs whose branches must be merged first; items with no dependency between them run in parallel. Keep the graph shallow.\n")
@@ -474,7 +503,7 @@ func ResearchPrompt(in ResearchInput) string {
 	}
 	b.WriteString("# The project\n\n")
 	if len(in.Repos) > 0 {
-		b.WriteString("Its repos are checked out here, read-only, at their default branch:\n\n")
+		b.WriteString("Its repos are checked out here, read-only, at their default branch, with its recent history:\n\n")
 		for _, name := range sortedKeys(in.Repos) {
 			fmt.Fprintf(&b, "- `%s` in `%s/`\n", name, in.Repos[name])
 		}

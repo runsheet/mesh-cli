@@ -2,9 +2,6 @@ package node
 
 import (
 	"context"
-	"net/http"
-	"net/http/cgi"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +10,7 @@ import (
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
+	"projectmesh.io/mesh-cli/internal/gateway/gatewaytest"
 )
 
 // Prepare on a clone whose branch exists locally but not on origin — an
@@ -66,40 +64,6 @@ func TestPrepareKeepsAnUnpushedLocalBranch(t *testing.T) {
 	}
 }
 
-// githubStandIn serves bare repos under root over smart HTTP, as GitHub
-// would: a request needs basic auth, and a password reaches only the
-// repos access grants it ("*" every one) — an installation token its
-// one repository, the operator's own login all of them.
-func githubStandIn(t *testing.T, root string, access map[string]string) *httptest.Server {
-	t.Helper()
-	execPath, err := exec.Command("git", "--exec-path").Output()
-	if err != nil {
-		t.Skip("no git exec path")
-	}
-	backend := filepath.Join(strings.TrimSpace(string(execPath)), "git-http-backend")
-	if _, err := os.Stat(backend); err != nil {
-		t.Skip("no git-http-backend")
-	}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		user, pass, ok := r.BasicAuth()
-		if !ok {
-			w.Header().Set("WWW-Authenticate", `Basic realm="github"`)
-			http.Error(w, "auth", http.StatusUnauthorized)
-			return
-		}
-		repo, _, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/"), ".git/")
-		if grant := access[pass]; grant != "*" && grant != repo {
-			http.Error(w, "Write access to repository not granted.", http.StatusForbidden)
-			return
-		}
-		h := &cgi.Handler{Path: backend, Root: "/", InheritEnv: []string{"PATH"},
-			Env: []string{"GIT_PROJECT_ROOT=" + root, "GIT_HTTP_EXPORT_ALL=1", "REMOTE_USER=" + user}}
-		h.ServeHTTP(w, r)
-	}))
-	t.Cleanup(srv.Close)
-	return srv
-}
-
 // A checkout authorized with an item's token pushes to its own repo and
 // cannot push to a second one — though the operator's own credential
 // helper, still in their global git config, would reach it.
@@ -142,7 +106,7 @@ func TestAuthorizedWorkspaceReachesOnlyItsRepo(t *testing.T) {
 		must(seed, "commit", "--quiet", "-m", "a")
 		must(seed, "push", "--quiet", bare, "HEAD:main")
 	}
-	srv := githubStandIn(t, srvRoot, map[string]string{"ghs_item": "acme/widgets", "operator-login": "*"})
+	srv := gatewaytest.GitHub(t, srvRoot, map[string]string{"ghs_item": "acme/widgets", "operator-login": "*"})
 
 	// the stand-in is honest: the operator's login reaches the second repo
 	if out, err := git(root, "ls-remote", srv.URL+"/other/gadgets.git"); err != nil {
@@ -196,5 +160,53 @@ func TestAuthorizedWorkspaceReachesOnlyItsRepo(t *testing.T) {
 	helpers := must(dir, "config", "--local", "--get-all", "credential."+srv.URL+".helper")
 	if strings.Contains(helpers, "ghs_item") || !strings.Contains(helpers, "ghs_renewed") {
 		t.Fatalf("helpers after renewal:\n%s", helpers)
+	}
+}
+
+// Fetch gives the planner's read-only checkout the default branch's
+// recent history, not one commit: its `git log` is how a replan sees
+// what main already holds (adr-003 decision 2).
+func TestFetchCarriesBaseRefHistory(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	root := t.TempDir()
+	origin := filepath.Join(root, "origin.git")
+	git := func(dir string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	git(root, "init", "--bare", "-b", "main", origin)
+	seed := filepath.Join(root, "seed")
+	git(root, "clone", "-q", origin, seed)
+	commit := func(msg string) {
+		os.WriteFile(filepath.Join(seed, "f"), []byte(msg), 0o644)
+		git(seed, "add", "f")
+		git(seed, "commit", "-q", "-m", msg)
+		git(seed, "push", "-q", "origin", "HEAD:main")
+	}
+	commit("first")
+	// the plan checkout as an older node left it: one commit deep
+	dir := filepath.Join(root, "plan", "repos", "widgets")
+	git(root, "clone", "-q", "--depth", "1", "file://"+origin, dir)
+	for _, msg := range []string{"item 1 merged", "item 2 merged", "item 3 merged"} {
+		commit(msg)
+	}
+
+	if err := (&Git{}).Fetch(context.Background(), "acme/widgets", dir); err != nil {
+		t.Fatal(err)
+	}
+	if n := git(dir, "rev-list", "--count", "HEAD"); n != "4" {
+		t.Fatalf("history after fetch = %s commits, want 4", n)
+	}
+	if log := git(dir, "log", "--format=%s"); log != "item 3 merged\nitem 2 merged\nitem 1 merged\nfirst" {
+		t.Fatalf("log:\n%s", log)
 	}
 }

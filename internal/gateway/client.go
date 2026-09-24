@@ -273,9 +273,20 @@ type WorkItem struct {
 	// evaluation is a retry: the builder reads why the last one failed.
 	Evaluation       string `json:"evaluation"`
 	EvaluationPassed bool   `json:"evaluationPassed"`
+	// RebaseState is where a conflict with the base stands (runsheet ADR
+	// 008, trd §6a): none, requested (a node session of kind rebase is
+	// wanted), claimed (RebaseNodeID's session has it), rebased,
+	// unresolved. RebaseConflict is the conflicting regions in git's
+	// markers, RebaseFiles the files; RebasedHeadSHA the head a rebase
+	// pushed.
+	RebaseState    string   `json:"rebaseState"`
+	RebaseConflict string   `json:"rebaseConflict"`
+	RebaseFiles    []string `json:"rebaseFiles"`
+	RebaseNodeID   string   `json:"rebaseNodeId"`
+	RebasedHeadSHA string   `json:"rebasedHeadSha"`
 }
 
-const workItemFields = `id goalId orgId seq title brief acceptance repoId baseRef dependsOn status nodeId branch costCents attempts lastError lastNote prUrl heartbeatAt evaluation evaluationPassed`
+const workItemFields = `id goalId orgId seq title brief acceptance repoId baseRef dependsOn status nodeId branch costCents attempts lastError lastNote prUrl heartbeatAt evaluation evaluationPassed rebaseState rebaseConflict rebaseFiles rebaseNodeId rebasedHeadSha`
 
 func where(field, value string) string {
 	return fmt.Sprintf(`{field: %q, op: EQ, value: %q}`, field, value)
@@ -324,6 +335,21 @@ func (c *Client) OrgWorkItems(ctx context.Context, orgID, status string) ([]Work
 		wh += ", " + where("status", status)
 	}
 	q := fmt.Sprintf(`{ workItemIndexs(namespace: %q, where: [%s]) { %s } }`, NS, wh, workItemFields)
+	if err := c.Query(ctx, q, nil, &out); err != nil {
+		return nil, err
+	}
+	sortBySeq(out.Items)
+	return out.Items, nil
+}
+
+// RequestedRebases lists an org's items whose rebase_state is
+// `requested` — a conflict the integrator could not resolve itself,
+// waiting for a node's session of kind rebase — by seq.
+func (c *Client) RequestedRebases(ctx context.Context, orgID string) ([]WorkItem, error) {
+	var out struct {
+		Items []WorkItem `json:"workItemIndexs"`
+	}
+	q := fmt.Sprintf(`{ workItemIndexs(namespace: %q, where: [%s, %s]) { %s } }`, NS, where("org_id", orgID), where("rebase_state", "requested"), workItemFields)
 	if err := c.Query(ctx, q, nil, &out); err != nil {
 		return nil, err
 	}
@@ -670,6 +696,32 @@ func (c *Client) ClaimWorkItem(ctx context.Context, itemID, nodeID, harness stri
 	return c.Mutate(ctx, "claimWorkItem", itemID, map[string]any{"nodeId": nodeID, "harness": harness})
 }
 
+// ClaimWorkItemRebase takes an item's rebase (runsheet ADR 008): the
+// lock, as ClaimWorkItem's is the item's. The same node again converges;
+// another node, or a rebase not requested, is refused with a
+// gateway.Error.
+func (c *Client) ClaimWorkItemRebase(ctx context.Context, itemID, nodeID string) error {
+	return c.Mutate(ctx, "claimWorkItemRebase", itemID, map[string]any{"nodeId": nodeID})
+}
+
+// FinishWorkItemRebase records a rebase a node's session pushed: the new
+// head and the files it resolved. The item goes back into its repo's
+// merge queue, attempts untouched. The command carries no cost; the
+// session's cents go on ReportWorkItemProgress, the rebase's heartbeat.
+func (c *Client) FinishWorkItemRebase(ctx context.Context, itemID, headSha string, resolvedFiles []string) error {
+	if resolvedFiles == nil {
+		resolvedFiles = []string{}
+	}
+	return c.Mutate(ctx, "finishWorkItemRebase", itemID, map[string]any{"headSha": headSha, "method": "session", "files": resolvedFiles})
+}
+
+// FailWorkItemRebase gives the rebase up: the reason is the conflict as
+// the session found it, which the builder is handed with the item,
+// attempts unchanged.
+func (c *Client) FailWorkItemRebase(ctx context.Context, itemID, reason string) error {
+	return c.Mutate(ctx, "failWorkItemRebase", itemID, map[string]any{"reason": reason})
+}
+
 // ReportWorkItemProgress is the heartbeat: a note and the cents since last.
 func (c *Client) ReportWorkItemProgress(ctx context.Context, itemID, note string, costCents int, sessionID string) error {
 	return c.Mutate(ctx, "reportWorkItemProgress", itemID, map[string]any{"note": note, "costCents": costCents, "sessionId": sessionID})
@@ -708,18 +760,21 @@ type GitHubToken struct {
 // the caller falls back to the operator's own GitHub login.
 func (c *Client) IssueItemRepoToken(ctx context.Context, itemID, nodeID string) (*GitHubToken, error) {
 	const field = "issueItemRepoToken"
-	in := map[string]any{"aggregateId": itemID, "namespace": NS, "nodeId": nodeID}
+	// The platform serves issueItemRepoToken(workItemId: UUID!): Map —
+	// {token, expiresAt, repo, access, permissions} — not a command with
+	// an input object; the node's claim is what authorises it, so the
+	// node id is not an argument (runsheet gateway/itemtoken.go).
 	var out struct {
 		IssueItemRepoToken *struct {
-			Token      string `json:"token"`
-			ExpiresAt  string `json:"expiresAt"`
-			Repository string `json:"repository"`
+			Token     string `json:"token"`
+			ExpiresAt string `json:"expiresAt"`
+			Repo      string `json:"repo"`
 		} `json:"issueItemRepoToken"`
 	}
-	q := `mutation($in: IssueItemRepoTokenInput!) { issueItemRepoToken(input: $in) { token expiresAt repository } }`
-	if err := c.Query(ctx, q, map[string]any{"in": in}, &out); err != nil {
+	q := `mutation($id: UUID!) { issueItemRepoToken(workItemId: $id) }`
+	if err := c.Query(ctx, q, map[string]any{"id": itemID}, &out); err != nil {
 		var ge *Error
-		if errors.As(err, &ge) && unknownOperation(ge.Message, field) {
+		if errors.As(err, &ge) && (unknownOperation(ge.Message, field) || schemaMismatch(ge.Message, field)) {
 			return nil, &Error{Message: ge.Message, Unsupported: true}
 		}
 		return nil, err
@@ -732,7 +787,27 @@ func (c *Client) IssueItemRepoToken(ctx context.Context, itemID, nodeID string) 
 	if err != nil {
 		return nil, fmt.Errorf("gateway: %s: expiresAt %q: %w", field, t.ExpiresAt, err)
 	}
-	return &GitHubToken{Token: t.Token, ExpiresAt: exp, Repository: t.Repository}, nil
+	return &GitHubToken{Token: t.Token, ExpiresAt: exp, Repository: t.Repo}, nil
+}
+
+// schemaMismatch is a GraphQL validation error about how the node called
+// an operation — the shape of its arguments or variables — rather than
+// an answer from it. On 2026-09-24 the node called issueItemRepoToken
+// with an input object the platform never had, and every item it claimed
+// failed on "Variable "$in" cannot be non-input type"; a shape the node
+// and the platform disagree on is the platform not supporting the call
+// the node makes, so the caller falls back rather than failing the work.
+func schemaMismatch(msg, field string) bool {
+	typ := strings.ToUpper(field[:1]) + field[1:] + "Input"
+	if !strings.Contains(msg, field) && !strings.Contains(msg, typ) {
+		return false
+	}
+	for _, s := range []string{"cannot be non-input type", "is required but not provided", "Unknown argument", "has invalid value", "of required type"} {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	return false
 }
 
 // SetGoalInput is SetGoal's payload.

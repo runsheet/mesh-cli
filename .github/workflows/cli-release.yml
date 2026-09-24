@@ -16,7 +16,7 @@ concurrency:
 jobs:
   build:
     name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, mini]
     strategy:
       fail-fast: false
       matrix:
@@ -66,7 +66,7 @@ jobs:
   publish:
     name: Publish release to projectmesh-io/mesh
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, mini]
 
     steps:
       - name: Download artifacts

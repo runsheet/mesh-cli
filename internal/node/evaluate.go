@@ -58,7 +58,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	}
 	spec := WorkspaceSpec{Root: e.WorkRoot, GoalSlug: res.Goal.Slug, Seq: item.Seq, Repo: res.Repo.FullName(), Branch: branch, BaseRef: res.BaseRef()}
 	// the item's own GitHub token, as its builder had
-	cred, err := newItemCred(ctx, e.GW, e.WS, e.Scopes, item, spec, e.logf)
+	cred, err := NewItemCred(ctx, e.GW, e.WS, e.Scopes, item, spec, e.logf)
 	if err != nil {
 		return err
 	}
@@ -96,7 +96,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 		budget = 3
 	}
 	job := harness.Job{Kind: harness.KindEvaluate, Workspace: dir, Prompt: prompt, MaxBudgetUSD: budget, Label: label + " evaluate", Timeout: e.Timeout, MCPServers: e.MCP, Model: e.Model}
-	if tok := cred.token(); tok != nil {
+	if tok := cred.Token(); tok != nil {
 		ghDir, err := NewGHConfigDir()
 		if err != nil {
 			return fmt.Errorf("gh config dir: %w", err)

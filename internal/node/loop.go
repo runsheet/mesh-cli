@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"errors"
 	"log"
 	"sort"
 	"strings"
@@ -60,9 +61,11 @@ type Loop struct {
 	planning    map[string]bool
 	researching map[string]bool
 	wg          sync.WaitGroup
-	// draining stops every new claim — items, plans, research — while
-	// the heartbeat and the evaluation of held items go on (trd §3 Drain).
+	// draining is set by Drain: nothing new is started, and Run returns
+	// once every session of any kind has ended.
 	draining bool
+	// wake tells Run that a session ended or a drain began.
+	wake chan struct{}
 	// capacity is the one in force: Cfg.Capacity until Reload says otherwise.
 	capacity int
 	// tickGoals holds each org's goals as read this tick, so the claim,
@@ -225,34 +228,99 @@ func (l *Loop) RunningIDs() []string {
 }
 
 // Run ticks until ctx is done, then waits for the items in flight (their
-// harnesses are killed by the same ctx).
+// harnesses are killed by the same ctx) and returns ctx's error. Once
+// Drain has been called it returns nil instead, as soon as no session of
+// any kind is left — items, evaluations, plans and research alike, since
+// only the items count against capacity and a node is rarely without
+// the others.
 func (l *Loop) Run(ctx context.Context) error {
+	l.mu.Lock()
 	if l.running == nil {
 		l.running = map[string]bool{}
 	}
+	l.mu.Unlock()
 	interval := l.Interval
 	if interval <= 0 {
 		interval = 30 * time.Second
 	}
+	wake := l.wakeup()
 	l.Tick(ctx)
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
+		if l.drained() {
+			l.wg.Wait() // the last session's Release
+			l.logf("drained: every session has ended")
+			return nil
+		}
 		select {
 		case <-ctx.Done():
 			l.wg.Wait()
 			return ctx.Err()
 		case <-t.C:
 			l.Tick(ctx)
+		case <-wake:
 		}
 	}
 }
 
-// Tick is one round: heartbeat, list, claim, dispatch.
+// Drain stops the node taking anything new — items, evaluations, plans,
+// research — and lets Run return once what is running has ended.
+// Calling it again does nothing.
+func (l *Loop) Drain() {
+	l.mu.Lock()
+	if l.draining {
+		l.mu.Unlock()
+		return
+	}
+	l.draining = true
+	n := len(l.running) + len(l.evaluating) + len(l.planning) + len(l.researching)
+	l.mu.Unlock()
+	l.logf("draining: nothing new is claimed; %d session(s) to finish", n)
+	l.notify()
+}
+
+// Draining reports whether Drain has been called.
+func (l *Loop) Draining() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.draining
+}
+
+// drained is draining with no session of any kind left.
+func (l *Loop) drained() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.draining && len(l.running)+len(l.evaluating)+len(l.planning)+len(l.researching) == 0
+}
+
+func (l *Loop) wakeup() chan struct{} {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.wake == nil {
+		l.wake = make(chan struct{}, 1)
+	}
+	return l.wake
+}
+
+// notify wakes Run without blocking: a session ended, or a drain began.
+func (l *Loop) notify() {
+	select {
+	case l.wakeup() <- struct{}{}:
+	default:
+	}
+}
+
+// Tick is one round: heartbeat, list, claim, dispatch. A draining node
+// only heartbeats — with draining set — (and runs AfterTick): it claims no item, plan or
+// research and starts no evaluation — an item it holds for evaluation
+// waits in evaluating for the node that comes up after it.
 func (l *Loop) Tick(ctx context.Context) {
+	l.mu.Lock()
 	if l.running == nil {
 		l.running = map[string]bool{}
 	}
+	l.mu.Unlock()
 	l.tickGoals = map[string]goalsRead{}
 	l.reload(ctx)
 	for _, sc := range l.Scopes {
@@ -260,9 +328,8 @@ func (l *Loop) Tick(ctx context.Context) {
 			l.logf("heartbeat %s: %v", sc.Login, err)
 		}
 	}
-	// an item this node finished is still its own to evaluate, drained or not
-	l.evaluateHeld(ctx)
 	if !l.Draining() {
+		l.evaluateHeld(ctx)
 		l.planRequested(ctx)
 		l.researchDue(ctx)
 		if free := l.Capacity() - l.Running(); free > 0 {
@@ -274,28 +341,26 @@ func (l *Loop) Tick(ctx context.Context) {
 	}
 }
 
-// drainPoll is how often Drain looks for the last session to end.
+// drainPoll is how often DrainAndWait looks for the last session to end.
 var drainPoll = 50 * time.Millisecond
 
-// Drain stops the loop claiming anything new — no item, no plan, no
-// research — and returns once every session this node runs has ended
-// (builds, and the evaluations, plans and research in flight), or with
-// ctx.Err() when ctx is done first. Ticks go on meanwhile: the heartbeat
-// reports draining, and items this node finished are still evaluated.
-// The loop stays drained until Resume.
-func (l *Loop) Drain(ctx context.Context) error {
-	l.mu.Lock()
-	was := l.draining
-	l.draining = true
-	l.mu.Unlock()
-	if !was {
-		l.logf("draining: claiming nothing new, %d running", l.Running())
-	}
+// errResumed is DrainAndWait's answer when Resume ends the drain first.
+var errResumed = errors.New("drain resumed")
+
+// DrainAndWait drains the loop and returns once no session of any kind
+// is left, with ctx.Err() when ctx is done first, or with an error when
+// Resume ends the drain first. It is the drain a self-update waits on
+// before it swaps the binary; Run still returns on its own meanwhile.
+func (l *Loop) DrainAndWait(ctx context.Context) error {
+	l.Drain()
 	t := time.NewTicker(drainPoll)
 	defer t.Stop()
 	for {
-		if l.sessions() == 0 {
+		if l.drained() {
 			return nil
+		}
+		if !l.Draining() {
+			return errResumed
 		}
 		select {
 		case <-ctx.Done():
@@ -305,14 +370,8 @@ func (l *Loop) Drain(ctx context.Context) error {
 	}
 }
 
-// Draining reports whether the loop has stopped claiming.
-func (l *Loop) Draining() bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.draining
-}
-
-// Resume undoes Drain: the next tick claims again.
+// Resume undoes a drain that has not yet ended Run: the next tick claims
+// again, and the heartbeat stops reporting draining.
 func (l *Loop) Resume() {
 	l.mu.Lock()
 	was := l.draining
@@ -321,13 +380,6 @@ func (l *Loop) Resume() {
 	if was {
 		l.logf("resumed: claiming again")
 	}
-}
-
-// sessions counts every session in flight, of any kind.
-func (l *Loop) sessions() int {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return len(l.running) + len(l.evaluating) + len(l.planning) + len(l.researching)
 }
 
 // Capacity is the number of items this node runs at once, as last read.
@@ -432,6 +484,7 @@ func (l *Loop) evaluateHeld(ctx context.Context) {
 				l.mu.Lock()
 				delete(l.evaluating, item.ID)
 				l.mu.Unlock()
+				l.notify()
 			}()
 			l.Evaluate(ctx, item)
 		}(item)
@@ -491,6 +544,7 @@ func (l *Loop) planRequested(ctx context.Context) {
 				l.mu.Lock()
 				delete(l.planning, g.ID)
 				l.mu.Unlock()
+				l.notify()
 			}()
 			l.Plan(ctx, g, sc)
 		}(g, sc)
@@ -574,6 +628,7 @@ func (l *Loop) researchDue(ctx context.Context) {
 					l.mu.Lock()
 					delete(l.researching, d.ID)
 					l.mu.Unlock()
+					l.notify()
 				}()
 				l.Research(ctx, d, p, sc)
 			}(d, p, sc)
@@ -583,19 +638,21 @@ func (l *Loop) researchDue(ctx context.Context) {
 
 // Adopt runs an item this node already holds on the platform (claimed
 // or running, after a restart) without claiming it again. It reports
-// whether the item was taken up (false when it is already running here).
+// whether the item was taken up (false when it is already running here,
+// or the node is draining — the node after it adopts the item).
 func (l *Loop) Adopt(ctx context.Context, item gateway.WorkItem) bool {
 	l.mu.Lock()
 	if l.running == nil {
 		l.running = map[string]bool{}
 	}
-	if l.running[item.ID] {
+	if l.running[item.ID] || l.draining {
 		l.mu.Unlock()
 		return false
 	}
+	l.running[item.ID] = true
 	l.mu.Unlock()
 	l.logf("adopted held item %d %q", item.Seq, item.Title)
-	l.start(ctx, item)
+	l.run(ctx, item)
 	return true
 }
 
@@ -603,6 +660,11 @@ func (l *Loop) start(ctx context.Context, item gateway.WorkItem) {
 	l.mu.Lock()
 	l.running[item.ID] = true
 	l.mu.Unlock()
+	l.run(ctx, item)
+}
+
+// run dispatches an item already marked running.
+func (l *Loop) run(ctx context.Context, item gateway.WorkItem) {
 	l.wg.Add(1)
 	go func() {
 		defer l.wg.Done()
@@ -613,6 +675,7 @@ func (l *Loop) start(ctx context.Context, item gateway.WorkItem) {
 			if l.Release != nil {
 				l.Release(item)
 			}
+			l.notify()
 		}()
 		if l.Dispatch != nil {
 			l.Dispatch(ctx, item)

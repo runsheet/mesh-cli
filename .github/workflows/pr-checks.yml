@@ -16,13 +16,14 @@ permissions:
 
 jobs:
   lint:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, mini]
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          cache: false   # the mini keeps Go's caches on disk
           cache-dependency-path: go.sum
 
       - name: gofmt check

@@ -95,11 +95,12 @@ func LogLine(at time.Time, seq int, summary string) string {
 
 const logHeading = "## Log"
 
-// RenderGoalDoc renders the document, keeping the log lines of existing
-// (the file as it is now, or "") and appending logLine unless the log
-// already ends with that exact line.
+// RenderGoalDoc renders the document, keeping the log lines and the
+// sections it does not own of existing (the file as it is now, or "")
+// and appending logLine unless the log already ends with that exact
+// line.
 func RenderGoalDoc(existing string, d GoalDoc, logLine string) string {
-	logLines := existingLog(existing)
+	logLines, kept := existingSections(existing)
 	logLine = strings.TrimSpace(logLine)
 	if logLine != "" && (len(logLines) == 0 || logLines[len(logLines)-1] != logLine) {
 		logLines = append(logLines, logLine)
@@ -140,6 +141,9 @@ func RenderGoalDoc(existing string, d GoalDoc, logLine string) string {
 		}
 		fmt.Fprintf(&b, "| %d | %s | %s | %s | %s | $%.2f |\n", it.Seq, cell(it.Title), it.Status, cell(branch), cell(pr), float64(it.CostCents)/100)
 	}
+	for _, sec := range kept {
+		b.WriteString("\n" + sec + "\n")
+	}
 	b.WriteString("\n" + logHeading + "\n\n")
 	for _, l := range logLines {
 		b.WriteString(l + "\n")
@@ -151,20 +155,46 @@ func cell(s string) string {
 	return strings.ReplaceAll(strings.Join(strings.Fields(s), " "), "|", "\\|")
 }
 
-// existingLog returns the log lines of a rendered document.
-func existingLog(doc string) []string {
-	_, after, ok := strings.Cut(doc, "\n"+logHeading+"\n")
-	if !ok {
-		return nil
-	}
-	var lines []string
-	for _, l := range strings.Split(after, "\n") {
-		l = strings.TrimRight(l, " \t\r")
-		if strings.HasPrefix(l, "- ") {
-			lines = append(lines, l)
+// ownHeadings are the sections RenderGoalDoc writes; every other `## `
+// section of an existing document is someone else's and is kept.
+var ownHeadings = map[string]bool{"## Statement": true, "## Acceptance": true, "## Items": true, logHeading: true}
+
+// existingSections returns the log lines of a rendered document and,
+// in order, the `## ` sections it does not own, each trimmed of blank
+// lines at either end. A section after the log is still a section: only
+// the log's own `- ` lines are log lines.
+func existingSections(doc string) (logLines, kept []string) {
+	var heading string
+	var body []string
+	flush := func() {
+		switch {
+		case heading == logHeading:
+			for _, l := range body {
+				if l = strings.TrimRight(l, " \t\r"); strings.HasPrefix(l, "- ") {
+					logLines = append(logLines, l)
+				}
+			}
+		case heading != "" && !ownHeadings[heading]:
+			kept = append(kept, strings.Trim(heading+"\n"+strings.Join(body, "\n"), "\n"))
 		}
 	}
-	return lines
+	inFront := strings.HasPrefix(doc, "---\n")
+	for i, l := range strings.Split(doc, "\n") {
+		if inFront {
+			if i > 0 && l == "---" {
+				inFront = false
+			}
+			continue
+		}
+		if strings.HasPrefix(l, "## ") {
+			flush()
+			heading, body = strings.TrimRight(l, " \t\r"), nil
+			continue
+		}
+		body = append(body, l)
+	}
+	flush()
+	return logLines, kept
 }
 
 // WriteGoalDoc renders and writes the document in workspace. It reports

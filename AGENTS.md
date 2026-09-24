@@ -33,13 +33,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   evaluate, plan and research sessions, the service install (`launchd` /
   `systemd --user`). `internal/gateway/client.go`: the platform client.
   `internal/channel/`: channel mode (one session per org, turns).
-  **A draining node claims nothing** (`Loop.Drain`, mesh-specs trd §3
-  Drain): no item, no plan, no research. Its ticks still heartbeat —
-  with `draining` set — and still evaluate the items it finished;
-  `Drain` returns once every session of any kind has ended, and
-  `Resume` undoes it. The heartbeat's extras (`gateway.HeartbeatExtras`:
-  `draining`, `updateError`) are sent only when set, because they are
-  fields the platform half (runsheet `update-nodes-from-console`) adds.
+  **A draining node claims nothing** (`Loop.Drain`): see the drain
+  below.
 - **The director** (`internal/node/research.go`, runsheet trd §6c): a
   project carries **directions** — several, each its own aggregate with
   its own words, window, timezone, gap, ceiling and research claim
@@ -61,6 +56,19 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   direction with no room is not offered at all. Each direction works in
   its own checkout, `ResearchDir(root, project, direction)`, because two
   of one project may be inside their hours at once.
+- **The drain** (`Loop.Drain`, trd §3 Drain): `SIGUSR1` or `mesh node
+  drain` (which signals the pid in `~/.mesh/node.pid`) stops every new
+  start — items, plans, research, evaluations — and `Run` returns nil
+  once no session of *any* kind is left (planners and evaluators do not
+  count against capacity, so `Running()` is not the exit test); the
+  process exits 0 and its service starts the new binary.
+  `~/.mesh/node.draining` marks it for `mesh node status`, and every
+  heartbeat says `draining`. `DrainAndWait(ctx)` is the drain a
+  self-update blocks on; `Resume` undoes a drain that has not yet ended
+  `Run`. The heartbeat's extras (`gateway.HeartbeatExtras`: `draining`,
+  `updateError`) are sent only when set, because they are fields the
+  platform half (runsheet `update-nodes-from-console`) adds. Capacity
+  and the orgs need no drain: `Reload` re-reads them every tick.
 - Every session gets Prologue as an MCP server with the node's token and
   the project's context on disk under `.mesh/context/` with `INDEX.md`.
 - Costs: each session's `total_cost_usd` is reported to the platform per
@@ -86,6 +94,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   and lines; update them with the change, not around it.
 - Commits carry no Co-Authored-By trailer in this repo.
 - Deploying to the mini is by hand: build for linux/amd64, `scp` to
-  `~/bin/mesh.new`, and swap plus `systemctl --user restart
-  io.projectmesh.mesh-node.service` only when no `claude -p` session is
-  running (a restart re-pushes running items; an unpushed build is lost).
+  `~/bin/mesh.new`, `mv` it over `~/bin/mesh` and `mesh node drain`:
+  the node finishes its sessions, exits, and systemd starts the new
+  binary. Never `systemctl --user restart` it while a `claude -p`
+  session runs (a restart re-pushes running items; an unpushed build is
+  lost).

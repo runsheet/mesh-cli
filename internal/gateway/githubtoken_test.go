@@ -27,7 +27,7 @@ func TestIssueItemRepoToken(t *testing.T) {
 	defer f.Close()
 	claimedItem(f)
 	f.GitHubTokens[itemID] = map[string]any{
-		"token": "ghs_item", "expiresAt": "2026-09-24T04:27:21Z", "repository": "projectmesh-io/mesh-cli",
+		"token": "ghs_item", "expiresAt": "2026-09-24T04:27:21Z", "repo": "projectmesh-io/mesh-cli",
 	}
 	gw := gateway.New(f.URL(), "rs_test")
 
@@ -42,7 +42,7 @@ func TestIssueItemRepoToken(t *testing.T) {
 		t.Fatalf("token = %+v, want %+v", *tok, want)
 	}
 	calls := f.CallsNamed("issueItemRepoToken")
-	if len(calls) != 1 || calls[0].Input["aggregateId"] != itemID || calls[0].Input["nodeId"] != nodeID {
+	if len(calls) != 1 || calls[0].Input["workItemId"] != itemID {
 		t.Fatalf("calls = %+v", calls)
 	}
 }
@@ -67,12 +67,15 @@ func TestIssueItemRepoTokenRefusedIsNotUnsupported(t *testing.T) {
 	f := gatewaytest.New("rs_test")
 	defer f.Close()
 	claimedItem(f)
-	f.GitHubTokens[itemID] = map[string]any{"token": "ghs_item", "expiresAt": "2026-09-24T04:27:21Z", "repository": "o/r"}
+	f.GitHubTokens[itemID] = map[string]any{"token": "ghs_item", "expiresAt": "2026-09-24T04:27:21Z", "repo": "o/r"}
 	gw := gateway.New(f.URL(), "rs_test")
 	ctx := context.Background()
 
-	// another node's item
+	// another node's item: the platform knows the caller's node from its
+	// credential, so the fake is told which node is calling
+	f.TokenNodeID = "someone-else"
 	_, err := gw.IssueItemRepoToken(ctx, itemID, "someone-else")
+	f.TokenNodeID = ""
 	if !gateway.IsRefusal(err) || gateway.IsUnsupported(err) {
 		t.Fatalf("other node: err = %v, want a refusal that is not unsupported", err)
 	}
@@ -90,5 +93,26 @@ func TestIssueItemRepoTokenRefusedIsNotUnsupported(t *testing.T) {
 	}
 	if gateway.IsUnsupported(errors.New(`Cannot query field "issueItemRepoToken"`)) {
 		t.Fatal("a plain error is never unsupported")
+	}
+}
+
+// The call the node made until 2026-09-24 (an input object) is not the
+// platform's shape; production answered it with a variable-type error
+// and every claimed item failed. A shape the platform does not serve is
+// unsupported, so the runner falls back to the operator's login.
+func TestIssueItemRepoTokenShapeMismatchIsUnsupported(t *testing.T) {
+	for _, msg := range []string{
+		`Variable "$in" cannot be non-input type "IssueItemRepoTokenInput!".`,
+		`Unknown argument "input" on field "issueItemRepoToken" of type "Mutation".`,
+		`Field "issueItemRepoToken" argument "workItemId" of type "UUID!" is required but not provided.`,
+	} {
+		f := gatewaytest.New("rs_test")
+		claimedItem(f)
+		f.Refuse["issueItemRepoToken"] = msg
+		_, err := gateway.New(f.URL(), "rs_test").IssueItemRepoToken(context.Background(), itemID, nodeID)
+		f.Close()
+		if !gateway.IsUnsupported(err) {
+			t.Fatalf("%q: err = %v, want unsupported", msg, err)
+		}
 	}
 }

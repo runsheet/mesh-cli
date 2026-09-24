@@ -106,6 +106,8 @@ func TestPlannerReplans(t *testing.T) {
 	f.Goals[goalID]["status"] = "planning"
 	f.Goals[goalID]["pausedReason"] = "item failed: evaluation failed 3 times"
 	f.WorkItems[item1]["status"] = "merged"
+	f.WorkItems[item1]["branch"] = "mesh/ship-it-1"
+	f.WorkItems[item1]["prUrl"] = "https://github.com/acme/widgets/pull/7"
 	f.WorkItems[item2]["status"] = "failed"
 	f.WorkItems[item2]["lastError"] = "evaluation failed 3 times"
 	f.Projects[projID]["repoIds"] = []string{repoID}
@@ -118,10 +120,33 @@ func TestPlannerReplans(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := h.jobs[0].Prompt
-	for _, want := range []string{"The last plan blocked", "evaluation failed 3 times", "The items so far", "1. Write the failing test — merged", "2. Make it pass — failed: evaluation failed 3 times", "Number your items from 3."} {
+	for _, want := range []string{"The last plan blocked", "evaluation failed 3 times", "The items so far", "1. Write the failing test — merged (https://github.com/acme/widgets/pull/7)", "2. Make it pass — failed: evaluation failed 3 times", "Number your items from 3."} {
 		if !strings.Contains(p, want) {
 			t.Fatalf("re-plan prompt lacks %q:\n%s", want, p)
 		}
+	}
+	// it checks main first: the goal's merged items with their PRs, the
+	// search of recent merged PRs and commits, and what to do with work
+	// main already has; the plan replaces only live items
+	for _, want := range []string{
+		"## What main already holds\n\nThese items of the goal merged; their work is on main:\n\n- 1. Write the failing test — https://github.com/acme/widgets/pull/7\n",
+		"# Check main first",
+		"search its recent merged pull requests and the commits on its default branch since the goal was set",
+		"`gh pr list --repo <owner/name> --state merged --limit 50`",
+		"the `mesh/ship-it-` branches",
+		"`git log --oneline` in its checkout",
+		"Leave out work main already has.",
+		"say in its brief that an already_done check is expected",
+		"finishes it already_done with the merged PRs or commits as evidence",
+		"Your plan replaces only the live items; merged items stay.",
+		"read-only, at their default branch, with its recent history",
+	} {
+		if !strings.Contains(p, want) {
+			t.Fatalf("re-plan prompt lacks %q:\n%s", want, p)
+		}
+	}
+	if strings.Contains(p, "- 2. Make it pass — https://") {
+		t.Fatal("a failed item is not on main")
 	}
 	calls := f.CallsNamed("planGoal")
 	if len(calls) != 1 {
