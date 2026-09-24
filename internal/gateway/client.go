@@ -76,6 +76,9 @@ func (c *Client) Bearer(ctx context.Context) (string, error) {
 // ("item is claimed, not ready"), the policy's denial, or a bad query.
 type Error struct {
 	Message string
+	// Unsupported is set when the gateway does not know the operation at
+	// all — a platform older than the node (see IsUnsupported).
+	Unsupported bool
 }
 
 func (e *Error) Error() string { return e.Message }
@@ -85,6 +88,32 @@ func (e *Error) Error() string { return e.Message }
 func IsRefusal(err error) bool {
 	var ge *Error
 	return errors.As(err, &ge)
+}
+
+// IsUnsupported reports whether err is the gateway not knowing the
+// operation it was asked for — an older platform, without the mutation
+// yet — as opposed to refusing it or failing: callers fall back to what
+// they did before the operation existed. Such an error is also a
+// refusal, so check this first.
+func IsUnsupported(err error) bool {
+	var ge *Error
+	return errors.As(err, &ge) && ge.Unsupported
+}
+
+// unknownOperation reports whether a GraphQL error message is the
+// schema's "no such field / no such type" for field or its input type,
+// the way a gateway without that operation answers.
+func unknownOperation(msg, field string) bool {
+	typ := strings.ToUpper(field[:1]) + field[1:] + "Input"
+	if !strings.Contains(msg, field) && !strings.Contains(msg, typ) {
+		return false
+	}
+	for _, s := range []string{"Cannot query field", "Unknown type", "unknown field", "unknown mutation", "Unknown argument"} {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	return false
 }
 
 // Query posts one GraphQL document and decodes `data` into out.
@@ -637,6 +666,50 @@ func (c *Client) FailWorkItem(ctx context.Context, itemID, errMsg string) error 
 // platform readies or reviews the item) and that session's cost.
 func (c *Client) EvaluateWorkItem(ctx context.Context, itemID string, passed bool, notes string, costCents int) error {
 	return c.Mutate(ctx, "evaluateWorkItem", itemID, map[string]any{"passed": passed, "notes": notes, "costCents": costCents})
+}
+
+// GitHubToken is a claimed item's own GitHub credential: an installation
+// token of the GitHub App, minted through the installation of the org
+// that owns the item's repo, restricted to that one repository (contents
+// write, pull requests read) and living about an hour.
+type GitHubToken struct {
+	Token     string
+	ExpiresAt time.Time
+	// Repository is the one repo the token reaches, as owner/name.
+	Repository string
+}
+
+// IssueItemRepoToken asks the platform for the item's GitHub token; only
+// the node holding the item's claim is given one (anything else is a
+// refusal). A platform without the mutation answers IsUnsupported, and
+// the caller falls back to the operator's own GitHub login.
+func (c *Client) IssueItemRepoToken(ctx context.Context, itemID, nodeID string) (*GitHubToken, error) {
+	const field = "issueItemRepoToken"
+	in := map[string]any{"aggregateId": itemID, "namespace": NS, "nodeId": nodeID}
+	var out struct {
+		IssueItemRepoToken *struct {
+			Token      string `json:"token"`
+			ExpiresAt  string `json:"expiresAt"`
+			Repository string `json:"repository"`
+		} `json:"issueItemRepoToken"`
+	}
+	q := `mutation($in: IssueItemRepoTokenInput!) { issueItemRepoToken(input: $in) { token expiresAt repository } }`
+	if err := c.Query(ctx, q, map[string]any{"in": in}, &out); err != nil {
+		var ge *Error
+		if errors.As(err, &ge) && unknownOperation(ge.Message, field) {
+			return nil, &Error{Message: ge.Message, Unsupported: true}
+		}
+		return nil, err
+	}
+	t := out.IssueItemRepoToken
+	if t == nil || t.Token == "" {
+		return nil, fmt.Errorf("gateway: %s: no token for item %s", field, itemID)
+	}
+	exp, err := time.Parse(time.RFC3339Nano, t.ExpiresAt)
+	if err != nil {
+		return nil, fmt.Errorf("gateway: %s: expiresAt %q: %w", field, t.ExpiresAt, err)
+	}
+	return &GitHubToken{Token: t.Token, ExpiresAt: exp, Repository: t.Repository}, nil
 }
 
 // SetGoalInput is SetGoal's payload.

@@ -299,6 +299,11 @@ only use it on a machine you trust with that.`,
 		}
 
 		loop := &node.Loop{GW: gw, Cfg: cfg, Scopes: scopes, Version: version.Version, Harness: "claude-code", Interval: nodeIntervalFlag, Log: logger}
+		// capacity and the orgs are read again every tick, so a changed
+		// node.yaml or a newly claimed org needs no restart
+		loop.Reload = node.Reloader(gw, cfg, scopes, nil, func(ctx context.Context, sc node.Scope) error {
+			return registerIn(ctx, gw, cfg, node.Scopes{sc})
+		})
 		switch nodeModeFlag {
 		case "poll":
 			return runPollMode(ctx, cfg, scopes, gw, loop, workRoot, logger)
@@ -313,8 +318,12 @@ only use it on a machine you trust with that.`,
 func runPollMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *gateway.Client, loop *node.Loop, workRoot string, logger *log.Logger) error {
 	h := oneShotHarness()
 	runner := &node.Runner{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, MCPFunc: func(ctx context.Context) map[string]any { return prologueMCP(ctx, gw) }, MaxBudgetUSD: nodeMaxBudgetFlag, Model: nodeModels.For("build"), Log: logger}
-	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) { _ = runner.RunItem(ctx, item) }
-	loop.Evaluate = evaluateWith(gw, h, scopes, workRoot, logger)
+	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) {
+		r := *runner
+		r.Scopes = loop.CurrentScopes() // an org served since start is known to its build
+		_ = r.RunItem(ctx, item)
+	}
+	loop.Evaluate = evaluateWith(gw, h, loop.CurrentScopes, workRoot, logger)
 	loop.Plan = planWith(gw, cfg, h, workRoot, logger)
 	loop.Research = researchWith(gw, cfg, h, workRoot, logger)
 	logger.Printf("poll mode: node %s (%s) for %s, capacity %d, every %s", cfg.Name, cfg.Slug, strings.Join(scopes.Logins(), ", "), cfg.Capacity, loop.Interval)
@@ -407,7 +416,7 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 	}
 
 	ws := &node.Git{Log: os.Stderr}
-	loop.Evaluate = evaluateWith(gw, oneShotHarness(), scopes, workRoot, logger)
+	loop.Evaluate = evaluateWith(gw, oneShotHarness(), loop.CurrentScopes, workRoot, logger)
 	loop.Plan = planWith(gw, cfg, oneShotHarness(), workRoot, logger)
 	loop.Research = researchWith(gw, cfg, oneShotHarness(), workRoot, logger)
 	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) {
@@ -462,7 +471,7 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 	}
 	repush := func(ctx context.Context, all bool) {
 		var held []gateway.WorkItem
-		for _, sc := range scopes {
+		for _, sc := range loop.CurrentScopes() {
 			for _, status := range []string{"claimed", "running"} {
 				items, err := gw.OrgWorkItems(ctx, sc.ID, status)
 				if err != nil {
@@ -579,9 +588,9 @@ func oneShotHarness() *harness.ClaudeCode {
 // finished item, in either mode — and a bearer taken afresh for each, so
 // a session never starts with a machine token about to expire. A failure to reach a verdict is logged
 // and the item is left in evaluating for the next tick.
-func evaluateWith(gw *gateway.Client, h harness.Harness, scopes node.Scopes, workRoot string, logger *log.Logger) func(context.Context, gateway.WorkItem) {
+func evaluateWith(gw *gateway.Client, h harness.Harness, scopes func() node.Scopes, workRoot string, logger *log.Logger) func(context.Context, gateway.WorkItem) {
 	return func(ctx context.Context, item gateway.WorkItem) {
-		ev := &node.Evaluator{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Scopes: scopes, WorkRoot: workRoot, MCP: prologueMCP(ctx, gw), MaxBudgetUSD: nodeEvalBudgetFlag, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("evaluate"), Log: logger}
+		ev := &node.Evaluator{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Scopes: scopes(), WorkRoot: workRoot, MCP: prologueMCP(ctx, gw), MaxBudgetUSD: nodeEvalBudgetFlag, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("evaluate"), Log: logger}
 		if err := ev.Evaluate(ctx, item); err != nil && ctx.Err() == nil {
 			logger.Printf("item %d %q: evaluation: %v", item.Seq, item.Title, err)
 		}

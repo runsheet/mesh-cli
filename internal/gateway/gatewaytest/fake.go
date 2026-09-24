@@ -50,6 +50,13 @@ type Fake struct {
 	// FailReads maps an index list name (goalIndexs) to an error it
 	// answers with instead of rows.
 	FailReads map[string]string
+	// GitHubTokens maps an item id to the issueItemRepoToken answer
+	// (token, expiresAt, repository); only the node holding the item's
+	// claim is given it.
+	GitHubTokens map[string]map[string]any
+	// Unsupported names mutations the fake answers as a platform that
+	// predates them: the schema's "Cannot query field" error.
+	Unsupported map[string]bool
 }
 
 // New starts a fake accepting the given bearer token.
@@ -61,6 +68,7 @@ func New(token string) *Fake {
 		Directions: map[string]map[string]any{},
 		Repos:      map[string]map[string]any{}, Accounts: map[string]map[string]any{}, Nodes: map[string]map[string]any{},
 		Documents: map[string][]map[string]any{}, Bodies: map[string]string{}, Refuse: map[string]string{}, FailReads: map[string]string{},
+		GitHubTokens: map[string]map[string]any{}, Unsupported: map[string]bool{},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/graphql", f.graphql)
@@ -154,8 +162,22 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		in, _ := req.Variables["in"].(map[string]any)
+		if f.Unsupported[m[2]] {
+			writeErrors(w, 200, fmt.Sprintf("Cannot query field %q on type \"Mutation\".", m[2]))
+			return
+		}
 		if msg := f.Refuse[m[2]]; msg != "" {
 			writeErrors(w, 200, msg)
+			return
+		}
+		if m[2] == "issueItemRepoToken" {
+			tok, err := f.issueItemRepoToken(in)
+			if err != nil {
+				writeErrors(w, 200, err.Error())
+				return
+			}
+			f.Calls = append(f.Calls, Call{Name: m[2], Input: in})
+			writeData(w, map[string]any{m[2]: tok})
 			return
 		}
 		if err := f.apply(m[2], in); err != nil {
@@ -350,6 +372,25 @@ func (f *Fake) apply(name string, in map[string]any) error {
 		}
 	}
 	return nil
+}
+
+func (f *Fake) issueItemRepoToken(in map[string]any) (map[string]any, error) {
+	id, _ := in["aggregateId"].(string)
+	item := f.WorkItems[id]
+	if item == nil {
+		return nil, fmt.Errorf("no such item")
+	}
+	if item["status"] != "claimed" && item["status"] != "running" {
+		return nil, fmt.Errorf("item is %s, not claimed", item["status"])
+	}
+	if item["nodeId"] != in["nodeId"] {
+		return nil, fmt.Errorf("the item is not node %s's", in["nodeId"])
+	}
+	tok := f.GitHubTokens[id]
+	if tok == nil {
+		return nil, fmt.Errorf("no GitHub installation reaches the item's repo")
+	}
+	return copyRow(tok), nil
 }
 
 func toInt(v any) int {
