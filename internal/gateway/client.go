@@ -273,9 +273,20 @@ type WorkItem struct {
 	// evaluation is a retry: the builder reads why the last one failed.
 	Evaluation       string `json:"evaluation"`
 	EvaluationPassed bool   `json:"evaluationPassed"`
+	// RebaseState is where a conflict with the base stands (runsheet ADR
+	// 008, trd §6a): none, requested (a node session of kind rebase is
+	// wanted), claimed (RebaseNodeID's session has it), rebased,
+	// unresolved. RebaseConflict is the conflicting regions in git's
+	// markers, RebaseFiles the files; RebasedHeadSHA the head a rebase
+	// pushed.
+	RebaseState    string   `json:"rebaseState"`
+	RebaseConflict string   `json:"rebaseConflict"`
+	RebaseFiles    []string `json:"rebaseFiles"`
+	RebaseNodeID   string   `json:"rebaseNodeId"`
+	RebasedHeadSHA string   `json:"rebasedHeadSha"`
 }
 
-const workItemFields = `id goalId orgId seq title brief acceptance repoId baseRef dependsOn status nodeId branch costCents attempts lastError lastNote prUrl heartbeatAt evaluation evaluationPassed`
+const workItemFields = `id goalId orgId seq title brief acceptance repoId baseRef dependsOn status nodeId branch costCents attempts lastError lastNote prUrl heartbeatAt evaluation evaluationPassed rebaseState rebaseConflict rebaseFiles rebaseNodeId rebasedHeadSha`
 
 func where(field, value string) string {
 	return fmt.Sprintf(`{field: %q, op: EQ, value: %q}`, field, value)
@@ -324,6 +335,21 @@ func (c *Client) OrgWorkItems(ctx context.Context, orgID, status string) ([]Work
 		wh += ", " + where("status", status)
 	}
 	q := fmt.Sprintf(`{ workItemIndexs(namespace: %q, where: [%s]) { %s } }`, NS, wh, workItemFields)
+	if err := c.Query(ctx, q, nil, &out); err != nil {
+		return nil, err
+	}
+	sortBySeq(out.Items)
+	return out.Items, nil
+}
+
+// RequestedRebases lists an org's items whose rebase_state is
+// `requested` — a conflict the integrator could not resolve itself,
+// waiting for a node's session of kind rebase — by seq.
+func (c *Client) RequestedRebases(ctx context.Context, orgID string) ([]WorkItem, error) {
+	var out struct {
+		Items []WorkItem `json:"workItemIndexs"`
+	}
+	q := fmt.Sprintf(`{ workItemIndexs(namespace: %q, where: [%s, %s]) { %s } }`, NS, where("org_id", orgID), where("rebase_state", "requested"), workItemFields)
 	if err := c.Query(ctx, q, nil, &out); err != nil {
 		return nil, err
 	}
@@ -645,6 +671,32 @@ func (c *Client) HeartbeatNode(ctx context.Context, nodeID, version string, runn
 // ClaimWorkItem takes the item's lock; a refusal is a gateway.Error.
 func (c *Client) ClaimWorkItem(ctx context.Context, itemID, nodeID, harness string) error {
 	return c.Mutate(ctx, "claimWorkItem", itemID, map[string]any{"nodeId": nodeID, "harness": harness})
+}
+
+// ClaimWorkItemRebase takes an item's rebase (runsheet ADR 008): the
+// lock, as ClaimWorkItem's is the item's. The same node again converges;
+// another node, or a rebase not requested, is refused with a
+// gateway.Error.
+func (c *Client) ClaimWorkItemRebase(ctx context.Context, itemID, nodeID string) error {
+	return c.Mutate(ctx, "claimWorkItemRebase", itemID, map[string]any{"nodeId": nodeID})
+}
+
+// FinishWorkItemRebase records a rebase a node's session pushed: the new
+// head and the files it resolved. The item goes back into its repo's
+// merge queue, attempts untouched. The command carries no cost; the
+// session's cents go on ReportWorkItemProgress, the rebase's heartbeat.
+func (c *Client) FinishWorkItemRebase(ctx context.Context, itemID, headSha string, resolvedFiles []string) error {
+	if resolvedFiles == nil {
+		resolvedFiles = []string{}
+	}
+	return c.Mutate(ctx, "finishWorkItemRebase", itemID, map[string]any{"headSha": headSha, "method": "session", "files": resolvedFiles})
+}
+
+// FailWorkItemRebase gives the rebase up: the reason is the conflict as
+// the session found it, which the builder is handed with the item,
+// attempts unchanged.
+func (c *Client) FailWorkItemRebase(ctx context.Context, itemID, reason string) error {
+	return c.Mutate(ctx, "failWorkItemRebase", itemID, map[string]any{"reason": reason})
 }
 
 // ReportWorkItemProgress is the heartbeat: a note and the cents since last.

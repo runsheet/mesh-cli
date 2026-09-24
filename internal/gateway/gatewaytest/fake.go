@@ -297,6 +297,11 @@ func (f *Fake) apply(name string, in map[string]any) error {
 		}
 		item["evaluation"] = in["notes"]
 		item["costCents"] = toInt(item["costCents"]) + toInt(in["costCents"])
+	case "claimWorkItemRebase", "finishWorkItemRebase", "failWorkItemRebase":
+		if item == nil {
+			return fmt.Errorf("no such item")
+		}
+		return applyRebase(name, item, in)
 	case "registerNode":
 		row := map[string]any{"id": id, "status": "online", "running": 0}
 		for k, v := range in {
@@ -370,6 +375,43 @@ func (f *Fake) apply(name string, in map[string]any) error {
 			}
 			f.Goals[id]["plannerNodeId"] = in["nodeId"]
 		}
+	}
+	return nil
+}
+
+// applyRebase is the rebase handshake of runsheet ADR 008 / trd §6a on
+// the item: requested → claimed by one node → rebased, or given up and
+// handed to the builder as a conflict rework (ready, attempts as they
+// were, the reason as its last error, the rebase over).
+func applyRebase(name string, item, in map[string]any) error {
+	state, _ := item["rebaseState"].(string)
+	holder, _ := item["rebaseNodeId"].(string)
+	switch name {
+	case "claimWorkItemRebase":
+		if state == "claimed" && holder == in["nodeId"] {
+			return nil
+		}
+		if state == "claimed" {
+			return fmt.Errorf("node %s has claimed the rebase", holder)
+		}
+		if state != "requested" {
+			return fmt.Errorf("no rebase is requested (rebase_state %q)", state)
+		}
+		item["rebaseState"], item["rebaseNodeId"] = "claimed", in["nodeId"]
+	case "finishWorkItemRebase":
+		if state != "claimed" && state != "requested" {
+			return fmt.Errorf("no rebase is under way (rebase_state %q)", state)
+		}
+		item["rebaseState"], item["rebaseMethod"] = "rebased", in["method"]
+		item["rebasedHeadSha"], item["headSha"] = in["headSha"], in["headSha"]
+		item["rebaseFiles"] = in["files"]
+		item["rebases"] = toInt(item["rebases"]) + 1
+	case "failWorkItemRebase":
+		if state != "claimed" && state != "requested" {
+			return nil // converges on a rebase not under way
+		}
+		item["rebaseConflict"] = in["reason"]
+		item["status"], item["lastError"], item["rebaseState"] = "ready", in["reason"], "none"
 	}
 	return nil
 }
