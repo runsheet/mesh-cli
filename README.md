@@ -193,7 +193,8 @@ the gateway: `mesh_progress {item_id, note, cost_cents}`, `mesh_finish
 {item_id, branch, head_sha}`, `mesh_fail {item_id, error}`, `mesh_evaluate
 {item_id, passed, notes}`, `mesh_context {goal_slug}` (the project's
 Prologue documents: instructions, ADRs, PRD, TRD), `mesh_items {status}`,
-`mesh_record {item_id, summary}` (see below) and `reply`. Its system
+`mesh_record {item_id, summary}` (a platform-only record, see below) and
+`reply`. Its system
 prompt tells it to clone or fetch the repo into
 `~/.mesh/work/<goal-slug>/<seq>`, branch `mesh/<goal-slug>-<seq>` from the
 base ref, read `mesh_context` first, do each item as a fresh subagent,
@@ -222,20 +223,26 @@ session never waits on a permission prompt — only on a machine you trust
 with that. On SIGTERM the node kills its sessions and leaves claimed items
 for a retry; it never fails an item on its own shutdown.
 
-### The goal's record in the repo
+### The goal's record
 
-Prologue is read-only over git, so a goal writes itself into the repo:
-`specs/goal-<goal-slug>.md` (frontmatter `title: Goal — …`, `kind: plan`,
-`status: draft` while running / `approved` when done / `superseded` when
-cancelled, `parent:` the project's PRD when Prologue lists one), with the
-statement, the acceptance, an `## Items` table regenerated from the
-gateway's rows and a `## Log` that appends one dated line per call. In
-channel mode the session calls `mesh_record` after each milestone and
-before `mesh_finish`; it is committed on the item's branch
-(`docs(mesh): goal <slug> — item <seq>`) and lands with the merge, where
-Prologue indexes it. Poll mode no longer writes the doc on an item's
-branch: a build's branch carries only its own work, and the doc is written
-once, when the goal ends.
+A goal's status — its items, their statuses, branches, PRs and costs — is
+the platform's, read through the gateway, the console or a session's
+`.mesh/context/INDEX.md`; no item branch carries a goal status table
+(ADR 003). In channel mode the session calls `mesh_record {item_id,
+summary}` after each milestone and before `mesh_finish`: it is a
+platform-only record — the summary goes to the item's log as a progress
+note (`ReportWorkItemProgress`) — and writes and commits nothing. The
+tool keeps its name and arguments for sessions that still call it. Poll
+mode writes nothing either: a build's branch carries only its own work.
+
+The goal's own document, `specs/goal-<goal-slug>.md` (frontmatter
+`title: Goal — …`, `kind: plan`, `status: approved` when done /
+`superseded` when cancelled, `parent:` the project's PRD when Prologue
+lists one), with the statement, the acceptance and the `## Items` table,
+is rendered by `internal/node/goaldoc.go` alone and is to be written
+once, when the goal ends, in its primary repo, where Prologue indexes it
+(goal `goal-docs-on-finish`). Until that finish-time writer lands, no
+path writes it.
 
 ## Goals
 
