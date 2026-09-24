@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -90,7 +91,7 @@ func TestRunnerCredentialErrorAfterThreeRetries(t *testing.T) {
 	slept := noSleep(t)
 	tg := freshTokens()
 	h := &fakeHarness{}
-	r, fws, item, row := runnerOn(t, h, func(g Gateway) Gateway { tg.Gateway = g; return tg })
+	r, fws, item, _ := runnerOn(t, h, func(g Gateway) Gateway { tg.Gateway = g; return tg })
 	r.WS = &refusingWS{fakeWS: fws, refusals: 4, err: errors.New("git fetch --prune origin: exit status 128: remote: Repository not found.")}
 	err := r.RunItem(context.Background(), item)
 	var ce *CredentialError
@@ -109,10 +110,119 @@ func TestRunnerCredentialErrorAfterThreeRetries(t *testing.T) {
 	if want := []time.Duration{time.Second, 2 * time.Second, 4 * time.Second}; len(*slept) != 3 || (*slept)[0] != want[0] || (*slept)[1] != want[1] || (*slept)[2] != want[2] {
 		t.Fatalf("backoff = %v", *slept)
 	}
-	// item 2 releases it instead; until then it fails
-	if row(item1)["status"] != "failed" {
-		t.Fatalf("row: %v", row(item1))
+}
+
+// verdictGW records the item's releases and failures on its way through.
+type verdictGW struct {
+	Gateway
+	mu       sync.Mutex
+	released []string // reasons
+	failed   int
+}
+
+func (g *verdictGW) ReleaseWorkItem(ctx context.Context, itemID, nodeID, reason string) error {
+	g.mu.Lock()
+	g.released = append(g.released, reason)
+	g.mu.Unlock()
+	return g.Gateway.ReleaseWorkItem(ctx, itemID, nodeID, reason)
+}
+
+func (g *verdictGW) FailWorkItem(ctx context.Context, itemID, errMsg string) error {
+	g.mu.Lock()
+	g.failed++
+	g.mu.Unlock()
+	return g.Gateway.FailWorkItem(ctx, itemID, errMsg)
+}
+
+// checkReleased asserts one release naming the credential problem, the
+// repo and the expiry and none of the tokens, no failure, and the item
+// ready again with its attempts as they were.
+func checkReleased(t *testing.T, vg *verdictGW, row map[string]any, attempts int) {
+	t.Helper()
+	if vg.failed != 0 {
+		t.Fatalf("FailWorkItem called %d times", vg.failed)
 	}
+	if len(vg.released) != 1 {
+		t.Fatalf("ReleaseWorkItem called %d times", len(vg.released))
+	}
+	reason := vg.released[0]
+	for _, want := range []string{"github credential", "acme/widgets", "2036-09-24T11:11:55Z", "refused 4 times", "Repository not found"} {
+		if !strings.Contains(reason, want) {
+			t.Fatalf("reason %q lacks %q", reason, want)
+		}
+	}
+	for _, tok := range []string{"ghs_first", "ghs_second", "ghs_third", "ghs_fourth"} {
+		if strings.Contains(reason, tok) {
+			t.Fatalf("reason carries token %s: %q", tok, reason)
+		}
+	}
+	if row["status"] != "ready" || row["nodeId"] != nil || row["lastError"] != nil || row["lastNote"] != reason || toInt(row["attempts"]) != attempts {
+		t.Fatalf("row: %v", row)
+	}
+}
+
+func toInt(v any) int {
+	switch n := v.(type) {
+	case int:
+		return n
+	case float64:
+		return int(n)
+	}
+	return 0
+}
+
+func fourTokens() *tokenGW {
+	return &tokenGW{tokens: []*gateway.GitHubToken{
+		{Token: "ghs_first", ExpiresAt: tokenExpiry, Repository: "acme/widgets"},
+		{Token: "ghs_second", ExpiresAt: tokenExpiry, Repository: "acme/widgets"},
+		{Token: "ghs_third", ExpiresAt: tokenExpiry, Repository: "acme/widgets"},
+		{Token: "ghs_fourth", ExpiresAt: tokenExpiry, Repository: "acme/widgets"},
+	}}
+}
+
+// Refused on the first try and on all three retries, the builder
+// releases the item — the node's condition — and does not fail it.
+func TestRunnerReleasesAnItemItsTokenIsRefusedFor(t *testing.T) {
+	noSleep(t)
+	tg := fourTokens()
+	vg := &verdictGW{Gateway: tg}
+	h := &fakeHarness{}
+	r, fws, item, row := runnerOn(t, h, func(g Gateway) Gateway { tg.Gateway = g; return vg })
+	attempts := toInt(row(item1)["attempts"])
+	r.WS = &refusingWS{fakeWS: fws, refusals: 4, err: notFound("ghs_first")}
+	var ce *CredentialError
+	if err := r.RunItem(context.Background(), item); !errors.As(err, &ce) {
+		t.Fatalf("err = %v, want a CredentialError", err)
+	}
+	if len(h.jobs) != 0 {
+		t.Fatalf("jobs = %d", len(h.jobs))
+	}
+	checkReleased(t, vg, row(item1), attempts)
+}
+
+// The evaluator releases the item the same way.
+func TestEvaluatorReleasesAnItemItsTokenIsRefusedFor(t *testing.T) {
+	noSleep(t)
+	h := &fakeHarness{text: "Fine.\nVERDICT: PASS"}
+	r, fws, item, row := runnerOn(t, h, nil)
+	if err := r.RunItem(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	attempts := toInt(row(item1)["attempts"])
+	tg := fourTokens()
+	tg.Gateway = r.GW
+	vg := &verdictGW{Gateway: tg}
+	ws := &refusingWS{fakeWS: fws, refusals: 4, err: notFound("ghs_first")}
+	ev := &Evaluator{GW: vg, Harness: h, WS: ws, Scopes: r.Scopes, WorkRoot: fws.root, Log: r.Log}
+	item.Branch = "mesh/ship-it-1"
+	var ce *CredentialError
+	if err := ev.Evaluate(context.Background(), item); !errors.As(err, &ce) {
+		t.Fatalf("err = %v, want a CredentialError", err)
+	}
+	if len(h.jobs) != 1 {
+		t.Fatalf("an evaluator session ran: jobs = %d", len(h.jobs))
+	}
+	checkReleased(t, vg, row(item1), attempts)
 }
 
 // A failure that is not GitHub refusing the credential is not retried.

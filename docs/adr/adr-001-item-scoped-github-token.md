@@ -55,8 +55,8 @@ living an hour.
   renewed, and `Authorize` rewrites the helper. The runner checks on its
   progress ticker and again before it pushes. `GH_TOKEN`, fixed when the
   session started, is not renewed; git's helper is.
-- A refusal fails the item (the evaluator returns the error and retries
-  on the next tick). An item the platform will not give a token to is
+- The platform refusing to issue the token fails the item (the evaluator
+  returns the error and retries on the next tick). An item the platform will not give a token to is
   not run on the operator's login instead. Only `IsUnsupported` takes
   the fallback, and that leaves the workspace and environment as they
   were before this ADR.
@@ -76,9 +76,20 @@ living an hour.
   and git's error. The token itself is never logged: it is scrubbed from
   that error, and from any URL git echoes, before the error is logged or
   wrapped. Any other failure, and the operator login's fallback, is not
-  retried. For now the item still fails on a `CredentialError`. mesh-specs trd §3
-  has the node release it instead, as its own condition, the way it
-  releases an item when it is out of credit.
+  retried.
+- A `CredentialError` is the node's condition, not the item's (mesh-specs
+  trd §1, §3): GitHub refusing the item's token on the first try and on all
+  three re-issues does not fail the item. The builder and the evaluator
+  hand it to `ReleaseOnCredential` (`ghcred.go`), which releases it with
+  `releaseWorkItem { aggregateId, nodeId, note }` (`Client.ReleaseWorkItem`)
+  instead of calling `FailWorkItem`. The item goes back to `ready` with its
+  attempts unchanged and the reason in `last_note`, so its goal spends no
+  re-plan. The reason is `CredentialError.Reason()`: `github credential:
+  <repo> token expiring <RFC 3339> refused 4 times: <git's error>`. It
+  names the repo and the expiry and never the token, and the node logs it
+  too. One repo's credential does not stop the node claiming other work:
+  unlike out-of-credit, it is not a node-wide pause, and the heartbeat
+  carries no field for it.
 - Channel mode's one `claude` process runs many items, so its
   environment carries no item's token. `Session.once` starts it with
   `GH_TOKEN`, `GITHUB_TOKEN` and the enterprise tokens removed from the

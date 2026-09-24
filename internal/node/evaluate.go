@@ -45,7 +45,8 @@ func (e *Evaluator) logf(format string, args ...any) {
 
 // Evaluate reviews one item in evaluating and records the verdict. An
 // error means no verdict was recorded: the item stays in evaluating and
-// the next tick tries again.
+// the next tick tries again — unless GitHub refused the item's token for
+// good, when the item is released (ReleaseOnCredential).
 func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	res, err := Resolve(ctx, e.GW, item)
 	if err != nil {
@@ -63,6 +64,9 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 		return err
 	}
 	dir, err := PrepareWithRetry(ctx, e.WS, spec, cred, e.logf)
+	if ce := (*CredentialError)(nil); errors.As(err, &ce) {
+		return ReleaseOnCredential(ctx, e.GW, e.Scopes, item, ce, e.logf)
+	}
 	if err != nil {
 		return fmt.Errorf("workspace: %w", err)
 	}

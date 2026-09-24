@@ -248,6 +248,31 @@ func (e *CredentialError) Error() string {
 
 func (e *CredentialError) Unwrap() error { return e.Cause }
 
+// Reason is what the item is released with: the repo, the token's
+// expiry and git's (scrubbed) answer — never the token.
+func (e *CredentialError) Reason() string {
+	return fmt.Sprintf("github credential: %s token expiring %s refused %d times: %s", e.Repo, expiryText(e.Expiry), e.Retries+1, truncate(e.Cause.Error(), 500))
+}
+
+// ReleaseOnCredential hands an item whose workspace GitHub refused on
+// every re-issued token back to the platform (ReleaseWorkItem, attempts
+// unchanged) instead of failing it: the credential is the node's
+// condition, not the item's (mesh-specs trd §3). It answers the error
+// the session ends with.
+func ReleaseOnCredential(ctx context.Context, gw Gateway, scopes Scopes, item gateway.WorkItem, ce *CredentialError, logf func(string, ...any)) error {
+	cause := fmt.Errorf("workspace: %w", ce)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	reason := ce.Reason()
+	logf("item %s: released, the node's condition: %s", item.ID, reason)
+	sc, _ := scopes.ByOrg(item.OrgID)
+	if err := gw.ReleaseWorkItem(ctx, item.ID, sc.NodeID, truncate(reason, 2000)); err != nil && !errors.Is(err, context.Canceled) {
+		logf("item %s: release: %v", item.ID, err)
+	}
+	return cause
+}
+
 func expiryText(t time.Time) string {
 	if t.IsZero() {
 		return "unknown"

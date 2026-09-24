@@ -298,6 +298,12 @@ func (f *Fake) apply(name string, in map[string]any) error {
 			return fmt.Errorf("no such item")
 		}
 		item["status"], item["lastError"] = "failed", in["error"]
+	case "releaseWorkItem":
+		if item == nil {
+			return fmt.Errorf("no such item")
+		}
+		item["status"], item["nodeId"], item["harness"], item["sessionId"] = "ready", nil, nil, nil
+		item["lastNote"] = in["note"]
 	case "evaluateWorkItem":
 		if item == nil {
 			return fmt.Errorf("no such item")

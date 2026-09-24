@@ -140,7 +140,8 @@ func (c *costReporter) delta() int {
 }
 
 // RunItem is the whole of one claimed item: resolve, workspace, context,
-// session, progress, push, finish — or fail. A cancelled ctx (the node's
+// session, progress, push, finish — or fail, or release when GitHub
+// refuses the item's token for good (ReleaseOnCredential). A cancelled ctx (the node's
 // own shutdown) leaves the item as it is for a retry.
 func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	res, err := Resolve(ctx, r.GW, item)
@@ -157,6 +158,9 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		return r.fail(ctx, item, err)
 	}
 	dir, err := PrepareWithRetry(ctx, r.WS, spec, cred, r.logf)
+	if ce := (*CredentialError)(nil); errors.As(err, &ce) {
+		return ReleaseOnCredential(ctx, r.GW, r.Scopes, item, ce, r.logf)
+	}
 	if err != nil {
 		return r.fail(ctx, item, fmt.Errorf("workspace: %w", err))
 	}

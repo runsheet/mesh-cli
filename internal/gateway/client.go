@@ -714,6 +714,14 @@ func (c *Client) FailWorkItem(ctx context.Context, itemID, errMsg string) error 
 	return c.Mutate(ctx, "failWorkItem", itemID, map[string]any{"error": errMsg})
 }
 
+// ReleaseWorkItem hands a claimed item back without failing it: the
+// node's condition, not the item's (mesh-specs trd §1 WorkItem). The item
+// is ready again with its node cleared, attempts unchanged, and the
+// reason in last_note, not last_error.
+func (c *Client) ReleaseWorkItem(ctx context.Context, itemID, nodeID, reason string) error {
+	return c.Mutate(ctx, "releaseWorkItem", itemID, map[string]any{"nodeId": nodeID, "note": reason})
+}
+
 // EvaluateWorkItem records the evaluator's verdict (phase 1's session; the
 // platform readies or reviews the item) and that session's cost.
 func (c *Client) EvaluateWorkItem(ctx context.Context, itemID string, passed bool, notes string, costCents int) error {
