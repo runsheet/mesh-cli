@@ -60,6 +60,25 @@ living an hour.
   not run on the operator's login instead. Only `IsUnsupported` takes
   the fallback, and that leaves the workspace and environment as they
   were before this ADR.
+- A token GitHub refuses while the workspace is prepared — `Prepare`'s
+  clone, fetch or checkout answering `Repository not found`, 401 / 403,
+  `Authentication failed` or `Invalid username or password`
+  (`IsCredentialRefusal`) — is re-issued and tried again. A freshly minted
+  installation token can be used before GitHub honours it: on 2026-09-24
+  an item failed at `git fetch` with "Repository not found" minutes after
+  others fetched the same repo on their own tokens. `PrepareWithRetry`
+  (`ghcred.go`), which the builder, the evaluator and channel mode's
+  `readyChannelItem` all prepare through, backs off 1 s, 2 s and 4 s. Before
+  each retry it calls `ItemCred.Reissue`, which, unlike `Refresh`, always
+  asks `issueItemRepoToken` and re-`Authorize`s. After three retries it
+  answers a `*CredentialError{Repo, Expiry, Retries, Cause}`. Every refused
+  attempt is logged with the token's repository, its expiry (RFC 3339)
+  and git's error. The token itself is never logged: it is scrubbed from
+  that error, and from any URL git echoes, before the error is logged or
+  wrapped. Any other failure, and the operator login's fallback, is not
+  retried. For now the item still fails on a `CredentialError`. mesh-specs trd §3
+  has the node release it instead, as its own condition, the way it
+  releases an item when it is out of credit.
 - Channel mode's one `claude` process runs many items, so its
   environment carries no item's token. `Session.once` starts it with
   `GH_TOKEN`, `GITHUB_TOKEN` and the enterprise tokens removed from the

@@ -62,7 +62,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	if err != nil {
 		return err
 	}
-	dir, err := e.WS.Prepare(ctx, spec)
+	dir, err := PrepareWithRetry(ctx, e.WS, spec, cred, e.logf)
 	if err != nil {
 		return fmt.Errorf("workspace: %w", err)
 	}

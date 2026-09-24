@@ -156,7 +156,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	if err != nil {
 		return r.fail(ctx, item, err)
 	}
-	dir, err := r.WS.Prepare(ctx, spec)
+	dir, err := PrepareWithRetry(ctx, r.WS, spec, cred, r.logf)
 	if err != nil {
 		return r.fail(ctx, item, fmt.Errorf("workspace: %w", err))
 	}
