@@ -371,6 +371,9 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 		meta     map[string]string
 		done     chan string
 		pushedAt time.Time
+		// cred is the item's GitHub token on its workspace, renewed by
+		// repush (nil on the old platform's fallback)
+		cred *node.ItemCred
 	}
 	slots := map[string]*slot{}
 	var mu sync.Mutex
@@ -420,20 +423,18 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 	loop.Plan = planWith(gw, cfg, oneShotHarness(), workRoot, logger)
 	loop.Research = researchWith(gw, cfg, oneShotHarness(), workRoot, logger)
 	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) {
-		res, err := node.Resolve(ctx, gw, item)
+		ready, err := readyChannelItem(ctx, gw, ws, loop.CurrentScopes(), item, workRoot, logger.Printf)
 		if err != nil {
-			logger.Printf("item %s: resolve: %v", item.ID, err)
-			_ = gw.FailWorkItem(ctx, item.ID, "resolve: "+err.Error())
+			if ctx.Err() != nil {
+				return
+			}
+			logger.Printf("item %s: failed: %v", item.ID, err)
+			_ = gw.FailWorkItem(ctx, item.ID, err.Error())
 			return
 		}
-		spec := node.WorkspaceSpec{Root: workRoot, GoalSlug: res.Goal.Slug, Seq: item.Seq, Repo: res.Repo.FullName(), Branch: res.Branch(), BaseRef: res.BaseRef()}
-		dir, err := ws.Prepare(ctx, spec)
-		if err != nil {
-			logger.Printf("item %s: workspace: %v (the session will retry the clone)", item.ID, err)
-			dir = spec.Dir()
-		}
-		content, meta := channel.ReadyEvent(res, dir)
-		s := &slot{content: content, meta: meta, done: make(chan string, 1)}
+		res := ready.Res
+		content, meta := ready.Content, ready.Meta
+		s := &slot{content: content, meta: meta, done: make(chan string, 1), cred: ready.Cred}
 		mu.Lock()
 		slots[item.ID] = s
 		mu.Unlock()
@@ -470,6 +471,15 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 		return !idle && !recentProgress(it.HeartbeatAt, nodeTurnTimeoutFlag) && time.Since(s.pushedAt) >= nodeTurnTimeoutFlag
 	}
 	repush := func(ctx context.Context, all bool) {
+		creds := map[string]*node.ItemCred{}
+		mu.Lock()
+		for id, s := range slots {
+			if s.cred != nil {
+				creds[id] = s.cred
+			}
+		}
+		mu.Unlock()
+		refreshItemCreds(ctx, creds, logger.Printf)
 		var held []gateway.WorkItem
 		for _, sc := range loop.CurrentScopes() {
 			for _, status := range []string{"claimed", "running"} {
