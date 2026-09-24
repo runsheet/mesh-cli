@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -29,7 +28,7 @@ const (
 
 var goalID = gateway.GoalID(uuid.MustParse(orgID), "ship-it").String()
 
-func seed(t *testing.T) (*gatewatestFake, *Handler, *fakeWS) {
+func seed(t *testing.T) (*gatewatestFake, *Handler) {
 	t.Helper()
 	f := gatewaytest.New("rs_test")
 	f.Accounts[acctID] = map[string]any{"id": acctID, "login": "acme"}
@@ -51,31 +50,11 @@ func seed(t *testing.T) (*gatewatestFake, *Handler, *fakeWS) {
 	if err := gw.ClaimWorkItem(context.Background(), item1, cfg.NodeID, "claude-code"); err != nil {
 		t.Fatal(err)
 	}
-	ws := &fakeWS{}
-	h := &Handler{GW: gw, Cfg: cfg, Scopes: node.Scopes{{Login: "acme", ID: orgID, AccountID: acctID, NodeID: cfg.NodeID}}, WS: ws, WorkRoot: t.TempDir()}
-	return &gatewatestFake{f}, h, ws
+	h := &Handler{GW: gw, Cfg: cfg, Scopes: node.Scopes{{Login: "acme", ID: orgID, AccountID: acctID, NodeID: cfg.NodeID}}}
+	return &gatewatestFake{f}, h
 }
 
 type gatewatestFake struct{ *gatewaytest.Fake }
-
-type fakeWS struct {
-	mu      sync.Mutex
-	commits []string
-}
-
-func (w *fakeWS) Prepare(context.Context, node.WorkspaceSpec) (string, error) { return "", nil }
-func (w *fakeWS) Push(context.Context, string, string) (string, error)        { return "", nil }
-func (w *fakeWS) Diff(context.Context, string, string) (string, error)        { return "", nil }
-func (w *fakeWS) Fetch(context.Context, string, string) error                 { return nil }
-func (w *fakeWS) Authorize(context.Context, node.WorkspaceSpec, *gateway.GitHubToken) error {
-	return nil
-}
-func (w *fakeWS) Commit(_ context.Context, dir string, paths []string, msg string) error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	w.commits = append(w.commits, msg)
-	return nil
-}
 
 func call(t *testing.T, h *Handler, name string, args map[string]any) string {
 	t.Helper()
@@ -93,7 +72,7 @@ func call(t *testing.T, h *Handler, name string, args map[string]any) string {
 }
 
 func TestToolsAgainstGateway(t *testing.T) {
-	f, h, ws := seed(t)
+	f, h := seed(t)
 	var done []string
 	h.OnDone = func(id, outcome string) { done = append(done, id+":"+outcome) }
 	h.SetSessionID("s-9")
@@ -116,16 +95,8 @@ func TestToolsAgainstGateway(t *testing.T) {
 	if out := call(t, h, "mesh_items", map[string]any{"status": "merged"}); out != "no items" {
 		t.Fatalf("items merged: %q", out)
 	}
-	rec := call(t, h, "mesh_record", map[string]any{"item_id": item1, "summary": "test written"})
-	if rec != "recorded specs/goal-ship-it.md on the branch" {
-		t.Fatalf("record: %q", rec)
-	}
-	doc, err := os.ReadFile(filepath.Join(h.WorkRoot, "ship-it", "1", "specs", "goal-ship-it.md"))
-	if err != nil || !strings.Contains(string(doc), "parent: prd\n") || !strings.Contains(string(doc), "· item 1 · test written") {
-		t.Fatalf("goal doc: %v\n%s", err, doc)
-	}
-	if len(ws.commits) != 1 || ws.commits[0] != "docs(mesh): goal ship-it — item 1" {
-		t.Fatalf("commits: %v", ws.commits)
+	if rec := call(t, h, "mesh_record", map[string]any{"item_id": item1, "summary": "test written"}); rec != "recorded on the platform" || f.Item(item1)["lastNote"] != "test written" {
+		t.Fatalf("record: %q %v", rec, f.Item(item1))
 	}
 	call(t, h, "mesh_finish", map[string]any{"item_id": item1, "branch": "mesh/ship-it-1", "head_sha": "abc123"})
 	if row := f.Item(item1); row["status"] != "evaluating" || row["headSha"] != "abc123" {
@@ -152,7 +123,7 @@ func TestToolsAgainstGateway(t *testing.T) {
 // A fake session: speaks MCP to the server over pipes, receives a pushed
 // event, calls a tool.
 func TestServerWithFakeSession(t *testing.T) {
-	f, h, _ := seed(t)
+	f, h := seed(t)
 	srv := &Server{Instructions: Instructions, Tools: h.Tools()}
 	toServerR, toServerW := io.Pipe()     // session → server
 	fromServerR, fromServerW := io.Pipe() // server → session
