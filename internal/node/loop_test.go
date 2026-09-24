@@ -72,6 +72,8 @@ type fakeWS struct {
 	prepared []WorkspaceSpec
 	pushed   []string
 	fetched  []string
+	// commits are "<msg> [<paths>]" for each Commit
+	commits []string
 	// pushedHead and pushedErr are what PushedHead answers.
 	pushedHead string
 	pushedErr  error
@@ -102,6 +104,14 @@ func (w *fakeWS) Prepare(_ context.Context, spec WorkspaceSpec) (string, error) 
 	return dir, os.MkdirAll(dir, 0o755)
 }
 
+func (w *fakeWS) Commit(_ context.Context, dir string, paths []string, msg string) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.commits = append(w.commits, msg+" ["+strings.Join(paths, ",")+"]")
+	w.events = append(w.events, "commit")
+	return nil
+}
+
 func (w *fakeWS) Push(_ context.Context, dir, branch string) (string, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -130,12 +140,14 @@ func (w *fakeWS) Fetch(_ context.Context, repo, dir string) error {
 }
 
 // assertNoGoalDoc: an item's own branch carries no goal-doc churn — no
-// specs/goal-*.md in any workspace the runner prepared (and the
-// Workspacer has no Commit for the runner to make one with).
+// specs/goal-*.md in any workspace the runner prepared, and no commit.
 func assertNoGoalDoc(t *testing.T, ws *fakeWS) {
 	t.Helper()
 	ws.mu.Lock()
 	defer ws.mu.Unlock()
+	if len(ws.commits) != 0 {
+		t.Fatalf("the runner committed on an item's branch: %v", ws.commits)
+	}
 	for _, spec := range ws.prepared {
 		if docs, _ := filepath.Glob(filepath.Join(spec.Dir(), "specs", "goal-*.md")); len(docs) != 0 {
 			t.Fatalf("an item's branch must carry no goal doc: %v", docs)
@@ -313,6 +325,97 @@ func TestRunnerFailsAnUnsuccessfulSession(t *testing.T) {
 	runner.MaxBudgetUSD = 2
 	if b := runner.Budget(&gateway.Goal{BudgetCents: 1000, SpentCents: 100}); b != 2 {
 		t.Fatalf("capped budget = %v", b)
+	}
+}
+
+// A goal spanning two repos ends with an item in the second: its doc is
+// written once, final, on the default branch of the project's first repo
+// — never on an item's branch, never in the second repo — and a second
+// writer finding the doc already final pushes nothing.
+func TestRunnerWritesEndedGoalDocOnceInPrimaryRepo(t *testing.T) {
+	f := seed(t)
+	const repoID2 = "cccccccc-2222-4222-8222-cccccccccccc"
+	f.Repos[repoID2] = map[string]any{"id": repoID2, "accountId": acctID, "name": "gadgets", "defaultBranch": "trunk"}
+	f.Projects[projID]["repoIds"] = []string{repoID, repoID2}
+	f.WorkItems[item1]["status"] = "merged"
+	f.WorkItems[item2]["repoId"], f.WorkItems[item2]["status"], f.WorkItems[item2]["baseRef"] = repoID2, "ready", "trunk"
+	f.GitHubTokens[item2]["repo"] = "acme/gadgets"
+	// the platform: item 2's finish is the goal's last — it merges and
+	// the goal is done with its spend final
+	f.After = func(name string, in map[string]any) {
+		if name == "finishWorkItem" && in["aggregateId"] == item2 {
+			f.WorkItems[item2]["status"] = "merged"
+			f.Goals[goalID]["status"] = "done"
+			f.Goals[goalID]["spentCents"] = 425
+		}
+	}
+	gw := gateway.New(f.URL(), "rs_test")
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: Fixed(1)}
+	ws := &fakeWS{root: t.TempDir()}
+	runner := &Runner{GW: gw, Harness: &fakeHarness{}, WS: ws, Cfg: cfg, Scopes: scopesOf(cfg), WorkRoot: ws.root, ProgressEvery: time.Hour}
+	ctx := context.Background()
+	if err := gw.ClaimWorkItem(ctx, item2, cfg.NodeID, "claude-code"); err != nil {
+		t.Fatal(err)
+	}
+	var item gateway.WorkItem
+	item.ID, item.GoalID, item.OrgID, item.RepoID, item.Seq, item.BaseRef = item2, goalID, orgID, repoID2, 2, "trunk"
+	if err := runner.RunItem(ctx, item); err != nil {
+		t.Fatal(err)
+	}
+	// another item's finish racing this one sees the same ended goal
+	if err := RecordEndedGoal(ctx, gw, ws, ws.root, "acme", goalID, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// the items ran in gadgets on their own branches; the doc was
+	// prepared, committed and pushed once, in widgets on main
+	var docSpecs []WorkspaceSpec
+	for _, spec := range ws.prepared {
+		switch spec.Repo {
+		case "acme/gadgets":
+			if !strings.HasPrefix(spec.Branch, "mesh/ship-it-") {
+				t.Fatalf("gadgets prepared off an item branch: %+v", spec)
+			}
+			if docs, _ := filepath.Glob(filepath.Join(spec.Dir(), "specs", "goal-*.md")); len(docs) != 0 {
+				t.Fatalf("the second repo must carry no goal doc: %v", docs)
+			}
+		case "acme/widgets":
+			docSpecs = append(docSpecs, spec)
+		default:
+			t.Fatalf("prepared: %+v", spec)
+		}
+	}
+	// the second writer prepares the primary again, but the doc is
+	// already final: nothing to commit, nothing to push
+	if len(docSpecs) != 2 || docSpecs[0].Branch != "main" || docSpecs[0].BaseRef != "main" {
+		t.Fatalf("primary repo prepared: %+v", docSpecs)
+	}
+	var docCommits []string
+	for _, c := range ws.commits {
+		if strings.Contains(c, "docs(mesh): goal") {
+			docCommits = append(docCommits, c)
+		}
+	}
+	if len(docCommits) != 1 || docCommits[0] != "docs(mesh): goal ship-it — finished [specs/goal-ship-it.md]" {
+		t.Fatalf("doc commits: %v", ws.commits)
+	}
+	if strings.Join(ws.pushed, ",") != "mesh/ship-it-2,main" {
+		t.Fatalf("pushed: %v", ws.pushed)
+	}
+	if len(f.CallsNamed("failWorkItem")) != 0 {
+		t.Fatal("no item fails")
+	}
+
+	// the final state: approved, with a summary of items merged and spend
+	body, err := os.ReadFile(GoalDocPath(docSpecs[0].Dir(), "ship-it"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := string(body)
+	for _, want := range []string{"\nstatus: approved\n", "\nsummary: 2 of 2 items merged · $4.25 spent\n", "\nparent: prd\n", "Mesh goal `ship-it`, done."} {
+		if !strings.Contains(doc, want) {
+			t.Fatalf("doc lacks %q:\n%s", want, doc)
+		}
 	}
 }
 

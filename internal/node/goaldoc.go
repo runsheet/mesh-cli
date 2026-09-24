@@ -1,6 +1,7 @@
 package node
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -214,4 +215,67 @@ func WriteGoalDoc(workspace string, d GoalDoc, logLine string) (rel string, chan
 		return rel, false, err
 	}
 	return rel, true, os.WriteFile(path, []byte(out), 0o644)
+}
+
+// RecordEndedGoal writes the goal's document once, when the goal has
+// ended (ADR 003, decision 4): into its primary repo — the project's
+// first — on that repo's default branch, committed and pushed straight,
+// with no item branch and no PR. A goal still live writes nothing. The
+// checkout is its own (seq 0: no item has it), fresh from the default
+// branch, since the primary repo need not be the one an item ran in;
+// like the planner's Fetch it is project-wide, not one item's, so it is
+// on the node's own credentials. No log line is appended: the doc is the
+// goal's final state alone, the same whichever finish writes it, so a
+// second writer finds it unchanged and pushes nothing.
+func RecordEndedGoal(ctx context.Context, gw Gateway, ws Workspacer, root, orgLogin, goalID string, logf func(string, ...any)) error {
+	goal, err := gw.Goal(ctx, goalID)
+	if err != nil {
+		return fmt.Errorf("goal: %w", err)
+	}
+	if isLiveGoal(goal.Status) {
+		return nil
+	}
+	project, err := gw.Project(ctx, goal.ProjectID)
+	if err != nil {
+		return fmt.Errorf("project: %w", err)
+	}
+	if len(project.RepoIDs) == 0 {
+		return fmt.Errorf("project %s has no repos", project.Slug)
+	}
+	primary, err := gw.Repo(ctx, project.RepoIDs[0])
+	if err != nil {
+		return fmt.Errorf("primary repo: %w", err)
+	}
+	base := primary.DefaultBranch
+	if base == "" {
+		base = "main"
+	}
+	dir, err := ws.Prepare(ctx, WorkspaceSpec{Root: root, GoalSlug: goal.Slug, Seq: 0, Repo: primary.FullName(), Branch: base, BaseRef: base})
+	if err != nil {
+		return fmt.Errorf("workspace: %w", err)
+	}
+	items, err := gw.GoalWorkItems(ctx, goal.ID)
+	if err != nil {
+		return fmt.Errorf("items: %w", err)
+	}
+	parent := ""
+	if cx, err := FetchContext(ctx, gw, orgLogin, project.Slug); err == nil {
+		parent = cx.PRDSlug
+	}
+	doc := GoalDoc{Slug: goal.Slug, Title: goal.Title, Statement: goal.Statement, Acceptance: goal.Acceptance,
+		GoalStatus: goal.Status, Parent: parent, SpentCents: goal.SpentCents, Items: items}
+	rel, changed, err := WriteGoalDoc(dir, doc, "")
+	if err != nil || !changed {
+		return err
+	}
+	if err := ws.Commit(ctx, dir, []string{rel}, fmt.Sprintf("docs(mesh): goal %s — finished", goal.Slug)); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+	if _, err := ws.Push(ctx, dir, base); err != nil {
+		return fmt.Errorf("push %s: %w", base, err)
+	}
+	if logf != nil {
+		logf("goal %s: %s; wrote %s to %s@%s", goal.Slug, goal.Status, rel, primary.FullName(), base)
+	}
+	return nil
 }
