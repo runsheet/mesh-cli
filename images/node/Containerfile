@@ -1,0 +1,88 @@
+# The node image: what every sandboxed session runs in (mesh-specs ADR 007).
+#
+# One image carries the toolchains a session may use — git, Go, Node/npm
+# (corepack for pnpm/yarn), Python 3 with pip and uv, make and a C
+# toolchain, gh — and the agent CLIs, claude and codex, at the versions
+# pinned below. It is tagged with the node's version,
+# ghcr.io/projectmesh-io/mesh-node:<version>, built by release-tag.yml on
+# the same tag as the binary, and `mesh node update` pulls it (or builds it
+# from this file, which the binary embeds). No secret is ever baked in: a
+# session is given its token and secrets in its environment at run time.
+#
+# The versions are the release's: bump one here and it ships with the
+# next node release. GO_VERSION follows go.mod's `go` line (a test holds
+# them together); release-tag.yml passes it from go.mod as well.
+
+FROM docker.io/library/debian:trixie-slim
+
+ARG GO_VERSION=1.26.2
+ARG NODE_VERSION=24.21.0
+ARG UV_VERSION=0.12.19
+ARG CLAUDE_CODE_VERSION=2.1.282
+ARG CODEX_VERSION=0.157.0
+ARG MESH_VERSION=dev
+ARG TARGETARCH
+
+LABEL org.opencontainers.image.title="mesh-node" \
+      org.opencontainers.image.description="The sandbox a Mesh node runs each agent session in" \
+      org.opencontainers.image.source="https://github.com/projectmesh-io/mesh-cli" \
+      org.opencontainers.image.version="${MESH_VERSION}" \
+      dev.projectmesh.node.version="${MESH_VERSION}"
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# git, python3 with pip, make and a C toolchain, and what the installs
+# below need; gh from GitHub's own apt repository.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      ca-certificates curl git gnupg openssh-client xz-utils unzip jq \
+      make gcc g++ libc6-dev pkg-config \
+      python3 python3-pip python3-venv \
+      less procps \
+ && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+      -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
+ && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+      > /etc/apt/sources.list.d/github-cli.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends gh \
+ && rm -rf /var/lib/apt/lists/*
+
+# Go, the version go.mod names.
+RUN arch="${TARGETARCH:-$(dpkg --print-architecture)}" \
+ && curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${arch}.tar.gz" | tar -C /usr/local -xz
+
+# Node LTS with npm; corepack provides pnpm and yarn.
+RUN arch="${TARGETARCH:-$(dpkg --print-architecture)}" \
+ && case "$arch" in amd64) arch=x64 ;; esac \
+ && curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${arch}.tar.xz" \
+      | tar -C /usr/local --strip-components=1 -xJ \
+ && corepack enable
+
+# uv (and uvx) for Python projects and tools.
+RUN arch="$(uname -m)" \
+ && curl -fsSL "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-${arch}-unknown-linux-gnu.tar.gz" \
+      | tar -C /usr/local/bin --strip-components=1 -xz
+
+# The agent CLIs, pinned; claude's self-update is off (the image moves
+# with the node, not under it), and codex's update check is off in the
+# per-session config.toml the node writes.
+RUN npm install -g --no-fund --no-audit \
+      "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
+      "@openai/codex@${CODEX_VERSION}" \
+ && npm cache clean --force
+
+ENV PATH=/usr/local/go/bin:/home/mesh/go/bin:/usr/local/bin:/usr/bin:/bin \
+    DISABLE_AUTOUPDATER=1 \
+    LANG=C.UTF-8
+
+# A non-root user; the node runs the pod with --userns=keep-id, so files a
+# session writes in its workspace belong to the operator.
+RUN useradd --create-home --uid 1000 --shell /bin/bash mesh
+USER mesh
+WORKDIR /home/mesh
+
+RUN git --version && go version && node --version && npm --version \
+ && python3 --version && uv --version && gh --version \
+ && claude --version && codex --version
+
+CMD ["bash"]
