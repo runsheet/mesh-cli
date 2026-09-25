@@ -90,6 +90,42 @@ exhausted and work waits.** An API key's normal slots widen the node
 only under that order, and its urgent-only slots only for urgent/high
 work.
 
+In the loop (`internal/node/spending.go`, `Loop.spendable`) the
+accounts `ChooseAccount` sees are first narrowed, for every session:
+
+- an API key at or past its daily or monthly cap (by the ledger) is
+  gone — the hard stop, whatever the priority;
+- an API key inside the reserve (spent ≥ 90% of its daily cap) is gone
+  unless the work is urgent/high;
+- for an **item**, once the scaler has counted slots, an account whose
+  slots its running items fill is gone: a subscription at its `Normal`
+  slots, a key at its `Normal` (its total, for urgent/high work). A
+  subscription with no slot free therefore counts as **exhausted**, so
+  a normal item that waits moves onto a key's normal slots — the burst
+  the capacity promised — and never onto its reserve.
+
+The loop also keeps the capacity's `UrgentOnly` slots from normal and
+low items: they take at most capacity − `UrgentOnly` − running.
+
+### node.yaml and the ledger
+
+node.yaml's `accounts:` (adr-005 accounts on the node) gain, for an api
+account, `daily_cap`, `monthly_cap` (0 or absent: the defaults) and
+`project`; the file gains `project_budgets: {project: dollars}`. They
+hold names and caps only, never a secret, are refused when negative or
+set on a subscription, and are read again every tick (`Reloaded.
+Spending`). A node.yaml without accounts runs ADR-004's `Scaler` and
+chooses as before.
+
+Every one-shot session's list-price cost lands in the **spend ledger**
+(`internal/node/ledger.go`, `ObserveSpend`) under the account its env
+runs on: per account, today and this month in the node's **local
+time**, with the slot-minutes run on it today, kept in
+`~/.mesh/ledger.json` so a restart does not reset the caps. A project's
+spend today is the sum of its keys'. The loop sets the scaler's
+`Location` to the ledger's, so days and months begin at local midnight
+(the scaler alone still defaults to UTC).
+
 ### Money
 
 Every cap and budget counts **list-price dollars** — each session's
@@ -106,8 +142,9 @@ amount, so a cap means the same on every key.
   the last tenth of a key's day is held for the work that matters most.
 - Money is bounded three ways — per key per day, per key per month, per
   project per day.
-- This ADR records the rule only; the loop still runs ADR-004's
-  `Scaler`. Wiring `AccountsScaler` into `Loop.scale` (spend per key
-  from the usage records, slot-minutes per account) and the heartbeat's
-  per-account slots are the goal's later items, and the platform half
-  (runsheet accepting `scaling.accounts[]`) lands first.
+- A ranged node that lists accounts runs `AccountsScaler` in
+  `Loop.scale` on each subscription's windows, each key's spend from the
+  ledger and the slot-minutes run on each account; one without accounts
+  runs ADR-004's `Scaler`. `Loop.AccountSlots` holds each account's
+  slots; the heartbeat's per-account slots are a later item, and the
+  platform half (runsheet accepting `scaling.accounts[]`) lands first.

@@ -113,7 +113,15 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   carries, and `Loop.Scaled` leaves it in `~/.mesh/node.scaling` for
   `mesh node status` (`in-force/min–max (reason)`). A
   plain `capacity: N` runs none of it. The hard stops of the pace stay
-  above it.
+  above it. A ranged node that lists `accounts:` runs the
+  `AccountsScaler` instead (`capacity.go`, `spending.go`, adr-005
+  capacity across accounts): each subscription by its own windows, each
+  api key by its money left under `daily_cap`/`monthly_cap` and the
+  project's `project_budgets`, from the spend ledger
+  (`ledger.go`, `~/.mesh/ledger.json`, local time, fed by
+  `ObserveSpend`); `Loop.spendable` narrows every choice — no key at
+  its cap, the last 10% of a key's day for urgent/high, and for an item
+  only an account with a slot free.
 - **The rebase** (`internal/node/rebase.go`, runsheet ADR 008): an item
   whose pull request conflicts in a way the integrator could not
   resolve itself carries `rebase_state: requested`. Every tick the loop
