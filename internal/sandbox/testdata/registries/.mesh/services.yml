@@ -1,0 +1,13 @@
+services:
+  hub:
+    image: redis:7
+  hub-explicit:
+    image: docker.io/library/redis:7
+  ghcr:
+    image: ghcr.io/example/mock-api:1
+  gar:
+    image: us-docker.pkg.dev/example/images/emulator:latest
+  quay:
+    image: quay.io/minio/minio:latest
+  evil:
+    image: evil.example.com/pg

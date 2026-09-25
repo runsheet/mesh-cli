@@ -1,0 +1,7 @@
+postgres:
+  image: postgres:17
+  ports: ["5432:5432"]
+  env:
+    POSTGRES_PASSWORD: postgres
+  command: ["-c", "max_connections=200"]
+  required: false

