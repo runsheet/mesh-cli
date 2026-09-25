@@ -1,4 +1,6 @@
-package tools
+// An external test: harness imports tools, and these tests check what
+// harness.MCPArgs makes of the rendering.
+package tools_test
 
 import (
 	"encoding/json"
@@ -12,6 +14,7 @@ import (
 	toml "github.com/pelletier/go-toml/v2"
 
 	"projectmesh.io/mesh-cli/internal/harness"
+	. "projectmesh.io/mesh-cli/internal/tools"
 )
 
 const (

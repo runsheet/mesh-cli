@@ -7,6 +7,8 @@ package harness
 import (
 	"context"
 	"time"
+
+	"projectmesh.io/mesh-cli/internal/tools"
 )
 
 // Kind is what the session is for.
@@ -54,6 +56,12 @@ type Job struct {
 	// MCPServers are MCP servers the session gets (name → config, the
 	// shape of an mcp.json's mcpServers): Prologue, for context on demand.
 	MCPServers map[string]any
+	// Tools are the console tools the session gets (trd §3 Tools), their
+	// secrets decrypted: Claude Code's are already in MCPServers, with
+	// their secret values in Env; an adapter with its own format (Codex's
+	// config.toml, tools.WriteCodexConfig into its CODEX_HOME) renders
+	// them itself. Never logged.
+	Tools []tools.Tool
 	// Model is the model this session runs on — an alias the CLI knows
 	// ("opus", "sonnet", "haiku") or a full id ("claude-opus-5"). Empty
 	// leaves the CLI's own default, which is what a node ran on before
