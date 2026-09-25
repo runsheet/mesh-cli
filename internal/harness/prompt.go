@@ -679,7 +679,7 @@ func RebasePrompt(in RebaseInput) string {
 	}
 	fmt.Fprintf(&b, "1. Fetch: `git fetch origin && git checkout -B %s origin/%s`.\n", in.Branch, in.Branch)
 	fmt.Fprintf(&b, "2. Rebase: `git rebase origin/%s`.\n", in.BaseRef)
-	b.WriteString("3. Resolve each conflicting file on its own, reading both sides and why each changed (`git log` of the base since the branch forked, the brief above). Keep both sides' intent: never drop either side's change to make the conflict go away. A goal doc (`specs/goal-*.md`) keeps the base's items table and the union of both sides' log lines, in order. Generated code is regenerated from the merged source, not merged by hand. Then `git add` it and `git rebase --continue`.\n")
+	b.WriteString("3. Resolve each conflicting file on its own, reading both sides and why each changed (`git log` of the base since the branch forked, the brief above). Keep both sides' intent: never drop either side's change to make the conflict go away. Generated code is regenerated from the merged source, not merged by hand. Then `git add` it and `git rebase --continue`.\n")
 	b.WriteString("4. Run the item's acceptance checks on the rebased head (the repository's AGENTS.md or CLAUDE.md says how), and fix only what the rebase broke.\n")
 	fmt.Fprintf(&b, "5. Push: `git push --force-with-lease origin %s`. If the push is refused, the branch moved under you: say so, do not force it.\n\n", in.Branch)
 	b.WriteString("# Rules\n\n")
