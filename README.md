@@ -188,7 +188,7 @@ Until the platform issues an item's token to the node holding its
 rebase (ADR-001 asks for it), every rebase fails at `github token:` and
 the item goes to its builder.
 
-### Claude accounts
+### Several Claude accounts
 
 By default every session runs on the operator's own `claude` login. To
 run on other accounts — several Max subscriptions, or an API key — list
@@ -207,18 +207,62 @@ accounts:
     api_key_env: MESH_ANTHROPIC_KEY
 ```
 
-- **A Max account.** Sign in to that account and run `claude
-  setup-token`; put the token it prints in the file (`chmod 600`).
-- **An API key.** Export it in the node's environment under the name
-  `api_key_env` gives (the service keeps the environment it was
-  installed with).
+**Adding a Max account.** Signed in to that account (in a browser the
+CLI's login opens), run `claude setup-token`; it prints a long-lived
+OAuth token. Save it to a file only you can read, and list the file as
+the account's `token_file`:
 
-Each session gets the account's secret in its environment only
-(`CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`), its own temporary
-`CLAUDE_CONFIG_DIR`, removed after, and none of the operator's own
-Claude variables. For now every session runs on the first account
-listed; the plan limits are kept per label. `mesh node start` refuses
-an account whose token file or variable cannot be read.
+```sh
+mkdir -p ~/.mesh/accounts
+claude setup-token                          # signed in to the Max account
+cat > ~/.mesh/accounts/max-b.token          # paste the token, then Ctrl-D
+chmod 600 ~/.mesh/accounts/max-b.token
+```
+
+**Adding an API key.** Put the key in a variable and name the variable
+as the account's `api_key_env` — never the key itself. The service does
+not read your shell's profile, so export it in the service's
+environment: on Linux with `systemctl --user edit
+io.projectmesh.mesh-node` and
+
+```ini
+[Service]
+Environment=MESH_ANTHROPIC_KEY=sk-ant-...
+```
+
+(on macOS, an `EnvironmentVariables` entry in
+`~/Library/LaunchAgents/io.projectmesh.mesh-node.plist`), then `mesh
+node drain` so the service starts again with it.
+
+**The spending order.** Before every claim — an item, a plan, research,
+a rebase — and before an evaluation, the node picks the account the
+session runs on, by the latest plan limits each account's sessions
+reported (see Near the plan's limits):
+
+1. Subscriptions first: of those with headroom, the one with the most —
+   the lowest use of its five-hour and seven-day windows. An account
+   past `limits.stop`, or whose status is not `allowed`, takes nothing
+   until its window resets; one past `limits.pace_five_hour` takes only
+   urgent and high work. An account no session has run on yet has its
+   full headroom.
+2. An API key only for urgent or high work (before a paced
+   subscription), or when every subscription is stopped and work waits.
+   Research never runs on an API key.
+3. **No account with headroom means the node waits**: the item is not
+   claimed — not failed, not released; it stays ready for the next tick
+   or another node — and the log says so once per tick:
+
+```
+accounts: no account has headroom for 2 item(s), 1 plan(s); left unclaimed until one has
+```
+
+Capacity still bounds how many items run at once. Each session gets its
+account's secret in its environment only (`CLAUDE_CODE_OAUTH_TOKEN` or
+`ANTHROPIC_API_KEY`), its own temporary `CLAUDE_CONFIG_DIR`, removed
+after, and none of the operator's own Claude variables; the plan limits
+are kept per label, so the next choice sees what this session read.
+`mesh node start` refuses an account whose token file or variable
+cannot be read.
 
 ### Register
 
@@ -385,9 +429,13 @@ Every `claude -p` session — build, evaluation, plan, research, rebase and
 the channel session — reports its Claude plan's standing in a
 `rate_limit_event`: a status (`allowed` while sessions may run), and how
 much of the five-hour and the seven-day window is used, with when each
-resets. The node keeps the latest reading per account (the session's
-`CLAUDE_CONFIG_DIR`, or `default`) and paces itself by it, so it slows
-down before the plan runs out rather than failing items once it has:
+resets. The node keeps the latest reading per account (its label from
+`accounts:`, else the session's `CLAUDE_CONFIG_DIR`, or `default`) and
+paces each account by its own, so it slows down before the plan runs
+out rather than failing items once it has. With several accounts, the
+modes below are each account's, and every session goes to an account
+that may take it (see Several Claude accounts); the node as a whole is
+paced or stopped — and logs it — only when every subscription is:
 
 - **Paced** — the five-hour window at `limits.pace_five_hour` (80%) or
   past it: the node claims only items of urgent and high goals, and runs

@@ -75,14 +75,16 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   every tick.
 - **The pace** (`internal/node/limits.go`, trd §3 Pacing by the plan's
   limits): every session's `rate_limit_event` lands in `Loop.Limits`
-  (latest per account — `CLAUDE_CONFIG_DIR` or `default` — fed through
-  `ObserveLimits` around each one-shot harness and the channel
-  session's `OnRateLimit`), and each tick `pace` decides: *paced* at
-  `limits.pace_five_hour` of the five-hour window (urgent/high items and
-  plans only, half the capacity, no research), *stopped* at
-  `limits.stop` of either window or a status not `allowed` (nothing new,
-  sessions finish, the process runs on) until the window's reset. A
-  crossing is logged once.
+  (latest per account — its `MESH_ACCOUNT` label, else
+  `CLAUDE_CONFIG_DIR` or `default` — fed through `ObserveLimits` around
+  each one-shot harness and the channel session's `OnRateLimit`), and
+  `pace` judges each account: *paced* at `limits.pace_five_hour` of the
+  five-hour window (urgent/high work only, no research), *stopped* at
+  `limits.stop` of either window or a status not `allowed` (nothing on
+  it) until the window's reset. Every start picks its account
+  (`ChooseAccount`, below); the node's own mode (`nodePace`, the most
+  lenient subscription) halves the capacity when paced, and a crossing
+  is logged once.
 - **The rebase** (`internal/node/rebase.go`, runsheet ADR 008): an item
   whose pull request conflicts in a way the integrator could not
   resolve itself carries `rebase_state: requested`. Every tick the loop
@@ -108,7 +110,14 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   the secret in its env only, a temp `CLAUDE_CONFIG_DIR` removed by
   `Cleanup`, `Job.Unset` of the inherited auth variables and
   `Job.Secrets` to redact; `MESH_ACCOUNT` makes `Account` key limits by
-  label. Every one-shot session runs on the first account for now.
+  label. **Which account** (`internal/node/select.go`, adr-005): before
+  every claim — item, plan, research, rebase — and every evaluation the
+  loop calls `ChooseAccount` (subscriptions first, the most headroom;
+  an api account only for urgent/high work or when every subscription
+  is stopped and work waits) and hands the choice to the session on its
+  context (`WithAccount` → `OpenAccount`). **No account with headroom
+  means no claim**: the item stays ready, not failed or released, and
+  the tick logs one `accounts: no account has headroom …` line.
 - Every session gets Prologue as an MCP server with the node's token and
   the project's context on disk under `.mesh/context/` with `INDEX.md`:
   the documents, then `## Live goals and items` — each live goal's items
