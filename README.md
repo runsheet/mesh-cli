@@ -440,6 +440,66 @@ limits: back to normal (was stopped)
 and a change to the thresholds in node.yaml as `limits: pace five-hour
 80% → 50%, stop 95% → 95%`.
 
+### Capacity that scales with headroom
+
+`capacity` in `~/.mesh/node.yaml` is a plain number or a range:
+
+```yaml
+capacity: 3              # fixed: always 3 at once, as before
+capacity: {min: 1, max: 4}   # scaling: between 1 and 4 by the plan's windows
+```
+
+Like the rest of node.yaml it is read again every tick: a new number
+or range takes effect without a restart, and a range clamps the
+capacity in force into it at once. A plain `capacity: N` runs none of
+what follows. A ranged node starts at `min` and, once a minute, works
+out a target from the same windows the node reads for its limits:
+
+1. **Burn per slot**, per window: how much that window's utilization
+   rose over the last 30 minutes, divided by the slot-minutes that ran
+   in them (a cautious default before there is data, and a floor so a
+   quiet half hour does not read as endless room).
+2. **Affordable rate**, per window: (target − utilization) / the time
+   to that window's reset. The targets are **0.95 for the seven-day
+   window** — so the week is spread, not spent on day one — and **0.90
+   for the five-hour window**.
+3. **Slots** per window: the affordable rate / the burn per slot.
+4. **The target** is the smaller of the two, clamped to `[min, max]`,
+   and capped by **machine load**: when the 1-minute load average is at
+   or above the CPU count, or free memory is 2 GB or less (CI runs on
+   the same machine), the node grows no further than the sessions it
+   already runs.
+
+The capacity in force moves toward the target **one step at a time, at
+most once every 5 minutes**. A shrink only stops claiming — a running
+session is never stopped; the node claims again once it is under the
+new capacity. **At `min`, only items of urgent and high goals are
+claimed.** Each move is logged once with its reason:
+
+| reason | the target is set by |
+| --- | --- |
+| `max` | both windows afford `max` or more (or nothing has been read yet) |
+| `weekly pace` | the seven-day window |
+| `five-hour pace` | the five-hour window |
+| `machine load` | the machine's load or memory |
+
+```
+capacity 1 → 2: max (target 4, 1 running)
+capacity 3 → 2: weekly pace (target 1, 3 running)
+```
+
+This sits under the hard stops of [Near the plan's
+limits](#near-the-plans-limits), not beside them: *stopped* still means
+nothing new whatever the scaler says, and *paced* still halves the
+capacity in force and claims only urgent and high items. The scaler
+only decides how many sessions run while the plan has room.
+
+A ranged node's heartbeat carries `scaling` — `capacity` (in force),
+`min`, `max` and `reason` — for the console's Nodes page (runsheet
+`limits-on-the-console`); a fixed node's carries none. `mesh node
+status` shows this machine's node as `2/1–4 (weekly pace)` in the
+CAPACITY column when it scales, and the plain number when it does not.
+
 ### Acceptance the evaluator can see
 
 The evaluator is a fresh session that runs before any pull request exists:

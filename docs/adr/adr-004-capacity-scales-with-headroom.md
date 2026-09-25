@@ -119,7 +119,20 @@ only when node.yaml's capacity is a range, the way `draining` is sent
 only when set, so a platform without the field goes on accepting the
 heartbeat of a fixed node. It is the field runsheet goal
 `limits-on-the-console` shows on the console's Nodes page, beside
-`limits`.
+`limits`. On the wire (`gateway.Scaling`) it is camelCase JSON,
+the numbers as integers and the reason as one of the four strings
+above:
+
+```json
+"scaling": {"capacity": 3, "min": 1, "max": 4, "reason": "weekly pace"}
+```
+
+The platform's node record keeps the registered capacity only, so the
+node also leaves its scaling in `~/.mesh/node.scaling` each tick
+(`Loop.Scaled`, `RunState.WriteScaling`; removed when the capacity is
+fixed or the process exits), and `mesh node status` shows its own
+node's capacity as `in-force/min–max (reason)` — `2/1–4 (weekly
+pace)` — and a fixed node's as the number, as before.
 
 ### Built on node-reads-its-limits, not beside it
 
