@@ -83,6 +83,13 @@ type Fake struct {
 	// hands the node (id, label, kind, secret, capDailyUsd, …). A subject
 	// with none gets an empty list.
 	SessionCredentials map[string][]map[string]any
+	// SessionTools maps a session's subject, as SessionCredentials does,
+	// to the tools the claim-time read hands it (name, transport, url,
+	// headers, runtime, command, args, env, secrets, required, roles,
+	// pricePerCallCents). A subject with none gets no `tools` key at all;
+	// UnknownFields["tools"] refuses a read selecting them, as a platform
+	// older than tools-in-the-console.
+	SessionTools map[string][]map[string]any
 	// After, when set, runs once a mutation has applied (under the lock,
 	// on the fake's rows) — for a test whose platform reacts to it, as a
 	// goal ending with its last item.
@@ -100,7 +107,7 @@ func New(token string) *Fake {
 		Documents: map[string][]map[string]any{}, Bodies: map[string]string{}, Refuse: map[string]string{}, FailReads: map[string]string{},
 		GitHubTokens: map[string]map[string]any{}, Unsupported: map[string]bool{},
 		Agents: map[string]map[string]any{}, UnknownFields: map[string]bool{},
-		SessionCredentials: map[string][]map[string]any{},
+		SessionCredentials: map[string][]map[string]any{}, SessionTools: map[string][]map[string]any{},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/graphql", f.graphql)
@@ -231,12 +238,25 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 					subject = v
 				}
 			}
+			selectsTools := strings.Contains(q, "tools {")
+			if selectsTools && f.UnknownFields["tools"] {
+				writeErrors(w, 200, `Cannot query field "tools" on type "SessionCredentialsResult".`)
+				return
+			}
 			creds := []map[string]any{}
 			for _, c := range f.SessionCredentials[subject] {
 				creds = append(creds, copyRow(c))
 			}
+			res := map[string]any{"credentials": creds}
+			if ts := f.SessionTools[subject]; selectsTools && ts != nil {
+				var rows []map[string]any
+				for _, t := range ts {
+					rows = append(rows, copyRow(t))
+				}
+				res["tools"] = rows
+			}
 			f.Calls = append(f.Calls, Call{Name: m[2], Input: in})
-			writeData(w, map[string]any{m[2]: map[string]any{"credentials": creds}})
+			writeData(w, map[string]any{m[2]: res})
 			return
 		}
 		if err := f.apply(m[2], in); err != nil {
@@ -456,6 +476,13 @@ func (f *Fake) apply(name string, in map[string]any) error {
 		}
 		f.Nodes[id]["running"] = in["running"]
 		f.Nodes[id]["version"] = in["version"]
+		// what the node found on the machine this heartbeat; a heartbeat
+		// without them leaves the last ones, as the platform does
+		for _, k := range []string{"runtimes", "adapters"} {
+			if v, ok := in[k]; ok {
+				f.Nodes[id][k] = v
+			}
+		}
 	case "setGoal":
 		row := f.Goals[id]
 		if row == nil {

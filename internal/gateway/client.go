@@ -20,6 +20,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"projectmesh.io/mesh-cli/internal/tools"
 )
 
 // DefaultURL is the platform gateway.
@@ -60,6 +62,10 @@ type Client struct {
 	// NodeIndex.desiredVersion (a platform older than
 	// update-nodes-from-console): every later node read leaves it out.
 	nodesWithoutDesired atomic.Bool
+	// sessionsWithoutTools is set once the gateway has refused the
+	// claim-time read's `tools` (a platform older than
+	// tools-in-the-console): every later read asks for credentials alone.
+	sessionsWithoutTools atomic.Bool
 }
 
 // New returns a client for baseURL (scheme+host, no trailing slash) with
@@ -851,6 +857,12 @@ type HeartbeatExtras struct {
 	// (adr-004); a node with a fixed capacity sends none (runsheet goal
 	// limits-on-the-console).
 	Scaling *Scaling
+	// Runtimes are the local tool runtimes the node can start (npx,
+	// uvx, docker) and Adapters the agent CLIs it has (claude-code,
+	// codex), as probed this tick (trd §1 Node, §3 Tools; runsheet goal
+	// tools-in-the-console).
+	Runtimes []string
+	Adapters []string
 }
 
 // Scaling is what a node whose capacity is a range reports of it: the
@@ -902,6 +914,12 @@ func (c *Client) HeartbeatNode(ctx context.Context, nodeID, version string, runn
 		}
 		if x.Scaling != nil {
 			in["scaling"] = x.Scaling
+		}
+		if len(x.Runtimes) > 0 {
+			in["runtimes"] = x.Runtimes
+		}
+		if len(x.Adapters) > 0 {
+			in["adapters"] = x.Adapters
 		}
 	}
 	// A node can be newer than the platform it reports to: a field the
@@ -1334,12 +1352,36 @@ func (c Credential) String() string {
 // GoString is String, so %#v leaves the secret out too.
 func (c Credential) GoString() string { return c.String() }
 
-// SessionCredentials is the claim-time read: the credentials the session
-// ref names may run on, their secrets decrypted for nodeID, which must
-// hold the session's claim (anything else is a refusal). A platform
-// without the mutation answers IsUnsupported, and the node falls back to
-// node.yaml's accounts. No error, log line or report carries a secret.
+// Session is what the claim-time read hands the node that claimed a
+// session: the credentials it may run on and the tools its project and
+// role give it (trd §3 Tools), their secrets decrypted for this node and
+// this session only. Tools is nil from a platform without the field.
+type Session struct {
+	Credentials []Credential
+	Tools       []tools.Tool
+}
+
+// SessionCredentials is the claim-time read's credentials alone (Session).
 func (c *Client) SessionCredentials(ctx context.Context, ref SessionRef, nodeID string) ([]Credential, error) {
+	s, err := c.Session(ctx, ref, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	return s.Credentials, nil
+}
+
+// sessionToolFields is the selection of a claim-time read's tools;
+// headers, env and secrets are maps.
+const sessionToolFields = `tools { name transport url headers runtime command args env secrets required roles pricePerCallCents }`
+
+// Session is the claim-time read: the credentials the session ref names
+// may run on and its tools, their secrets decrypted for nodeID, which
+// must hold the session's claim (anything else is a refusal). A platform
+// without the mutation answers IsUnsupported, and the node falls back to
+// node.yaml's accounts; one without `tools` is asked for the credentials
+// alone from then on, and the session gets no console tools. No error,
+// log line or report carries a secret.
+func (c *Client) Session(ctx context.Context, ref SessionRef, nodeID string) (*Session, error) {
 	const field = "sessionCredentials"
 	in := map[string]any{"namespace": NS, "kind": ref.Kind, "nodeId": nodeID}
 	for k, v := range map[string]string{"workItemId": ref.ItemID, "goalId": ref.GoalID, "directionId": ref.DirectionID} {
@@ -1359,28 +1401,44 @@ func (c *Client) SessionCredentials(ctx context.Context, ref SessionRef, nodeID 
 				SpentDailyUSD   float64 `json:"spentDailyUsd"`
 				SpentMonthlyUSD float64 `json:"spentMonthlyUsd"`
 			} `json:"credentials"`
+			Tools []tools.Tool `json:"tools"`
 		} `json:"sessionCredentials"`
 	}
-	q := `mutation($in: SessionCredentialsInput!) { sessionCredentials(input: $in) { credentials { id label kind secret capDailyUsd capMonthlyUsd spentDailyUsd spentMonthlyUsd } } }`
-	if err := c.Query(ctx, q, map[string]any{"in": in}, &out); err != nil {
+	q := func(extra string) string {
+		return `mutation($in: SessionCredentialsInput!) { sessionCredentials(input: $in) { credentials { id label kind secret capDailyUsd capMonthlyUsd spentDailyUsd spentMonthlyUsd } ` + extra + `} }`
+	}
+	var err error
+	if !c.sessionsWithoutTools.Load() {
+		err = c.Query(ctx, q(sessionToolFields+" "), map[string]any{"in": in}, &out)
+		var ge *Error
+		if err != nil && errors.As(err, &ge) && unknownField(ge.Message, "tools") {
+			c.sessionsWithoutTools.Store(true)
+		}
+	}
+	if c.sessionsWithoutTools.Load() {
+		err = c.Query(ctx, q(""), map[string]any{"in": in}, &out)
+	}
+	if err != nil {
 		var ge *Error
 		if errors.As(err, &ge) && (unknownOperation(ge.Message, field) || schemaMismatch(ge.Message, field) || unknownField(ge.Message, "credentials", "secret", "capDailyUsd", "capMonthlyUsd", "spentDailyUsd", "spentMonthlyUsd")) {
 			return nil, &Error{Message: ge.Message, Unsupported: true}
 		}
 		return nil, err
 	}
+	s := &Session{}
 	if out.SessionCredentials == nil {
-		return nil, nil
+		return s, nil
 	}
-	creds := make([]Credential, 0, len(out.SessionCredentials.Credentials))
+	s.Credentials = make([]Credential, 0, len(out.SessionCredentials.Credentials))
 	for _, cr := range out.SessionCredentials.Credentials {
-		creds = append(creds, Credential{
+		s.Credentials = append(s.Credentials, Credential{
 			ID: cr.ID, Label: cr.Label, Kind: cr.Kind, Secret: cr.Secret,
 			CapDailyUSD: cr.CapDailyUSD, CapMonthlyUSD: cr.CapMonthlyUSD,
 			SpentDailyUSD: cr.SpentDailyUSD, SpentMonthlyUSD: cr.SpentMonthlyUSD,
 		})
 	}
-	return creds, nil
+	s.Tools = out.SessionCredentials.Tools
+	return s, nil
 }
 
 // UsageWindows is an account's plan standing at one moment — the
