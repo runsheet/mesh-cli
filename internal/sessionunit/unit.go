@@ -23,15 +23,11 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"errors"
-	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -245,7 +241,7 @@ func start(cmd *exec.Cmd, spec Spec, unit string) (Handle, error) {
 	}
 	cmd.Stdout = spec.Stdout
 	cmd.Stderr = spec.Stderr
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	detach(cmd)
 	if err := cmd.Start(); err != nil {
 		return Handle{}, err
 	}
@@ -255,41 +251,4 @@ func start(cmd *exec.Cmd, spec Spec, unit string) (Handle, error) {
 		close(p.done)
 	}()
 	return Handle{PID: cmd.Process.Pid, UnitName: unit, proc: p}, nil
-}
-
-// stopGroup sends SIGTERM to the session's process group, and SIGKILL
-// when it is still there after StopGrace.
-func stopGroup(h Handle) error {
-	if h.PID <= 0 {
-		return errors.New("sessionunit: no pid")
-	}
-	if err := syscall.Kill(-h.PID, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
-		return fmt.Errorf("sessionunit: stop %d: %w", h.PID, err)
-	}
-	deadline := time.Now().Add(StopGrace)
-	for time.Now().Before(deadline) {
-		if h.Exited() {
-			return nil
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	_ = syscall.Kill(-h.PID, syscall.SIGKILL)
-	return nil
-}
-
-// pidAlive is whether pid is a running process (not a zombie).
-func pidAlive(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	if err := syscall.Kill(pid, 0); err != nil && !errors.Is(err, syscall.EPERM) {
-		return false
-	}
-	if st, err := os.ReadFile(filepath.Join("/proc", fmt.Sprint(pid), "stat")); err == nil {
-		// "pid (comm) S ...": the state follows the last ')'
-		if i := strings.LastIndexByte(string(st), ')'); i >= 0 && i+2 < len(st) && st[i+2] == 'Z' {
-			return false
-		}
-	}
-	return true
 }

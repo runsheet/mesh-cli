@@ -41,7 +41,7 @@ type State struct {
 	// Runner is the Unit's Name; PID and Unit where the session runs.
 	Runner    string    `json:"runner"`
 	PID       int       `json:"pid"`
-	Unit      string    `json:"unit,omitempty"`
+	Unit      string    `json:"unit"`
 	Workspace string    `json:"workspace"`
 	StartedAt time.Time `json:"startedAt"`
 	// TimeoutSeconds is the session's wall-clock cap from StartedAt; 0 is
