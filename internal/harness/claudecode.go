@@ -21,8 +21,14 @@ import (
 
 // ClaudeCode runs `claude -p` in the workspace, stream-json out.
 type ClaudeCode struct {
-	// Binary is the claude executable ("claude" on PATH by default).
+	// Binary is the claude executable ("claude" on PATH by default); a
+	// host path, never used in a sandbox.
 	Binary string
+	// SandboxBinary is the agent's executable in the pod: empty is
+	// `claude` on the node image's PATH; else a path inside the pod, such
+	// as one in the workspace, which is mounted at its own path (the
+	// e2e's stub agent).
+	SandboxBinary string
 	// ExtraArgs are appended to every invocation (e.g.
 	// --dangerously-skip-permissions for an unattended node).
 	ExtraArgs []string
@@ -339,13 +345,17 @@ func (c *ClaudeCode) runSandboxed(ctx context.Context, job Job, onProgress func(
 	if c.Stderr != nil {
 		stderr = io.MultiWriter(&redactWriter{w: c.Stderr, secrets: job.Secrets}, &errBuf)
 	}
+	bin := c.SandboxBinary
+	if bin == "" {
+		bin = "claude"
+	}
 	pr, pw := io.Pipe()
 	done := make(chan error, 1)
 	go func() {
 		err := sess.Run(ctx, sandbox.RunSpec{
 			Workspace: job.Workspace,
 			Env:       job.Env,
-			Command:   append([]string{"claude"}, c.SandboxArgs(job, mcpPath)...),
+			Command:   append([]string{bin}, c.SandboxArgs(job, mcpPath)...),
 			Timeout:   job.Timeout,
 			Stdin:     strings.NewReader(job.Prompt),
 			Stdout:    pw,

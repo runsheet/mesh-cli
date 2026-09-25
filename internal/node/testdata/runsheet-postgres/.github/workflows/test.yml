@@ -1,0 +1,33 @@
+# runsheet/runsheet's .github/workflows/test.yml (08d87ab, 2026-09-22),
+# its test job's services: block verbatim, so the e2e resolves the
+# Postgres a runsheet build item gets without a network checkout.
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: mysecret
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go test ./... -count=1
+        env:
+          RUNSHEET_TEST_PG: postgres://postgres:mysecret@localhost:5432/postgres
