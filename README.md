@@ -826,6 +826,12 @@ session unsandboxed on its own.
 
 The probe test runs a real pod: `MESH_SANDBOX_E2E=1
 MESH_SANDBOX_IMAGE=<image> go test ./internal/sandbox -run E2E`.
+`scripts/e2e-sandbox.sh` runs the whole sandbox e2e — the node image
+through `EnsureImage`, then a build and its evaluation on the node's own
+path against runsheet's Postgres and a Redis fixture — and checks
+whether anything still uses `latchkey-e2e-pg`: see
+[docs/e2e-sandbox.md](docs/e2e-sandbox.md) for running it, the live run
+on the mini and retiring that container.
 
 ### Node image
 
