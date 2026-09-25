@@ -1,5 +1,5 @@
 ---
-summary: Nodes update only from tag-cut releases of projectmesh-io/mesh-cli whose SHA256SUMS is signed keyless by release-tag.yml's GitHub OIDC identity; the asset names and that identity are the updater's contract. The same tag pushes and signs the node image ghcr.io/projectmesh-io/mesh-node:<tag>, which the node ensures after each swap.
+summary: Nodes update only from tag-cut releases of projectmesh-io/mesh-cli whose SHA256SUMS is signed keyless by release-tag.yml's GitHub OIDC identity; the asset names and that identity are the updater's contract. The same tag pushes and cosign-signs the node image ghcr.io/projectmesh-io/mesh-node:<tag>, which the node pulls before it drains.
 status: accepted
 ---
 
@@ -127,20 +127,26 @@ image is a second artefact beside it:
 - The tag is the node's version as it is (`internal/version.Version`,
   `v1.2.0` → `mesh-node:v1.2.0`). Renaming the repository or dropping the
   `v` is a contract change made here first.
-- After a successful swap — the loop's self-update and `mesh node update`
-  alike — the node calls `sandbox.EnsureImage` for the new version: pull
-  the tag with podman, else build it from the Containerfile the binary
-  embeds (`images/node`, `nodeimage.Containerfile`), then remove every
-  other `mesh-node` tag. The binary is in place whatever happens there; a
-  failure is logged (the loop) or the command's error (`mesh node
-  update`), and `mesh node update --image` ensures the running version's
-  image again. A machine without podman keeps no image (`sandbox: off`).
-  The node does not yet verify the image's signature on pull; that, and
-  ADR 007's pull-before-drain (an image failure as `updateError`), come
-  with the sandboxed session runner.
+- Once a release is verified and before anything is drained — the
+  loop's self-update and `mesh node update` alike — the node ensures the
+  new version's image (`SandboxConfig.EnsureImage`): `podman pull` of the
+  tag, then every other `mesh-node` tag removed but the running
+  version's, which the node's sessions still use. A pull that fails is
+  the update's error — `updateError` on the heartbeat, the command's
+  exit — with no drain and no swap: the node stays on its binary, and the
+  version waits `updateRetry` as a refused release does. Nothing falls
+  back to a local build on its own; node.yaml's `sandbox.image: build`
+  asks for one (below). `sandbox: off`, or no podman with no mode set,
+  pulls nothing (mesh-cli ADR-007).
+- node.yaml's `sandbox.image`: empty is `mesh-node:<version>`; `build`
+  is that tag built on the node from `images/node/Containerfile`, which
+  the binary embeds (`images/node`, `nodeimage.Containerfile`), with
+  `sandbox.BuildImage`; any other value is used as given.
+- The node does not yet verify the image's cosign signature on pull;
+  the signature is there for when it does.
 - The package is private while the repository is (the release caveat
   above): a pull needs `podman login ghcr.io` with a token that can read
-  it, and without one the node builds the image locally.
+  it, or `sandbox.image: build`.
 
 ## Consequences
 

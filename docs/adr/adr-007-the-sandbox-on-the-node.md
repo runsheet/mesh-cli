@@ -1,5 +1,5 @@
 ---
-summary: How mesh-cli implements mesh-specs ADR 007 — internal/sandbox's Runtime (Podman, a test Fake) runs claude in a per-session pod with two mounts, an allow-listed env passed to podman by name, node.yaml's flat sandbox keys (mode, cpus, memory, pids, services_cpus, services_memory, registries, image), a mode left out following `podman --version` while an explicit on fails closed at start, a limit kill (OOM, pids, the runtime's timeout backstop) released as the node's condition with the heartbeat's reason, service sidecars started and health-checked in the session's pod before the agent (a required one failing releases the claim, an optional one is a note), and channel mode and Codex not yet sandboxed.
+summary: How mesh-cli implements mesh-specs ADR 007 — internal/sandbox's Runtime (Podman, a test Fake) runs claude in a per-session pod with two mounts, an allow-listed env passed to podman by name, node.yaml's flat sandbox keys (mode, cpus, memory, pids, services_cpus, services_memory, registries, image), a mode left out following `podman --version` while an explicit on fails closed at start, a limit kill (OOM, pids, the runtime's timeout backstop) released as the node's condition with the heartbeat's reason, service sidecars started and health-checked in the session's pod before the agent (a required one failing releases the claim, an optional one is a note), the node image (images/node/Containerfile, embedded) pulled for the new version before a self-update or `mesh node update` drains — a failed pull an updateError with no drain and no swap, `sandbox.image: build` building it locally — and channel mode and Codex not yet sandboxed.
 status: accepted
 ---
 
@@ -36,7 +36,7 @@ implementing it that the spec leaves open or that differ in detail.
   Podman's process keeps only what it needs to find its storage
   (`PATH`, `HOME`, `XDG_RUNTIME_DIR`, …); the container's `HOME` wins.
 - **node.yaml keys are flat**: `sandbox.{mode, cpus, memory, pids,
-  services_cpus, services_memory, registries, image}` rather than the
+  services_cpus, services_memory, registries, image, service_timeout}` rather than the
   spec's nested `limits {…}` / `services_budget {…}`; `sandbox: off`
   alone is the mode.
 - **The mode.** `off` never asks the runtime. Left out, it follows the
@@ -65,6 +65,40 @@ implementing it that the spec leaves open or that differ in detail.
   not retake it for `DeclineHold`, and `Loop.NoteCondition` sends the
   reason as the heartbeat's `reason` for an hour while the node stays
   online.
+- **The node image** (`images/node/Containerfile`, embedded in the
+  binary as `nodeimage.Containerfile`; `internal/sandbox/image.go`).
+  Debian with git, Go at go.mod's version (a test holds them together),
+  Node LTS with npm and corepack, Python 3 with pip and uv, make and a C
+  toolchain, gh, nftables, ca-certificates and the claude and codex
+  CLIs, each at a version pinned in the file; a non-root user `mesh`;
+  no secret. Neither agent updates itself: the CLIs are root-owned
+  under `/usr/local`, `DISABLE_AUTOUPDATER=1` is in the image's ENV and
+  — since `--unsetenv-all` drops that — in the sandbox's own `BaseEnv`,
+  and `/etc/codex/config.toml` turns codex's update check off.
+  `release-tag.yml` pushes it per tag (mesh-cli ADR-002 amendment).
+- **Pull before the drain.** A self-update (`Loop.Image`) and `mesh
+  node update` (`nodeUpdate.Image`) call `SandboxConfig.EnsureImage`
+  for the *new* version once its release is verified and before they
+  drain: `sandbox.EnsureImage(ctx, runner, ref, keep…)` pulls the ref
+  and removes every other `ghcr.io/projectmesh-io/mesh-node` tag but the
+  new one and the running version's (its sessions still use it until
+  the drain ends them; the next update removes it). The runner is
+  injected (`sandbox.Runner`; `ExecRunner` in the node). A failed pull
+  is returned: the self-update refuses the version with it as
+  `updateError`, the command exits non-zero, nothing is drained or
+  swapped, and the node stays on its old binary. Nothing falls back to
+  a local build on its own. `sandbox: off` asks nothing; a mode left
+  out on a machine whose `podman --version` fails is skipped the same
+  way; an explicit `on` without podman is the error. The pull does not
+  yet verify the cosign signature.
+- **`sandbox.image`**: empty is `sandbox.DefaultImage(version)`,
+  `ghcr.io/projectmesh-io/mesh-node:<version>` (`:dev` for a dev
+  build); `build` is that same ref built here by `sandbox.BuildImage`
+  from the embedded Containerfile (`--build-arg MESH_VERSION=<version>`)
+  in place of the pull, and the sessions run it; any other value is
+  used as given, pulled the same way. `mesh node update <running
+  version>` ensures the running version's image, which is how a node
+  set to `build` makes its first one.
 - **Heartbeat.** `HeartbeatExtras.Sandbox` → `sandbox {mode, runtime,
   image}` and `HeartbeatExtras.Reason` → `reason`, each only when set;
   the image is the reference, not yet its digest.
