@@ -219,3 +219,17 @@ func (h *spendHarness) Run(ctx context.Context, job harness.Job, onProgress func
 	}
 	return res, err
 }
+
+// Attach implements harness.Attacher when the harness it wraps does: an
+// adopted session's cost lands on the account its state file names.
+func (h *spendHarness) Attach(ctx context.Context, dir string, onProgress func(harness.Progress)) (harness.Result, error) {
+	at, ok := h.Harness.(harness.Attacher)
+	if !ok {
+		return harness.Result{}, errNoAttach
+	}
+	res, err := at.Attach(ctx, dir, onProgress)
+	if rerr := h.ledger.Record(stateAccount(dir), res.CostUSD); rerr != nil && h.logf != nil {
+		h.logf("%v", rerr)
+	}
+	return res, err
+}

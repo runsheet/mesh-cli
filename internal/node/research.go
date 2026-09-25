@@ -139,15 +139,27 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 	if err != nil {
 		return err
 	}
-	defer acct.Cleanup()
+	defer unlessDetached(ctx, acct.Cleanup)
 	acct.Apply(&job)
-	job.Meta = harness.SessionMeta{NodeID: scope.NodeID, DirectionID: direction.ID}
+	job.Meta = harness.SessionMeta{NodeID: scope.NodeID, DirectionID: direction.ID, TempDirs: sessionTempDirs(job, acct)}
 	d.logf("%s/%s: researching in %s (%d repos, room for %d)", project.Slug, direction.Slug, dir, len(dirs), room)
+	// the session outlives this process: a restart adopts it (ADR 009)
+	job.Outlive = true
 	result, err := d.Harness.Run(ctx, job, nil)
 	acct.Finish(ctx, result)
+	return d.handIn(ctx, direction, project, scope, dir, acct, result, err)
+}
+
+// handIn is what follows a research session, however this process came
+// to hold it: its proposals read and handed in — or, unreadable, an
+// empty research, so the claim is let go. A cancelled ctx leaves the
+// session running for the next node to adopt; otherwise its session
+// directory goes.
+func (d *Director) handIn(ctx context.Context, direction gateway.Direction, project gateway.Project, scope Scope, dir string, acct *SessionAccount, result harness.Result, err error) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
+	defer harness.RemoveSession(dir)
 	if errors.Is(err, context.DeadlineExceeded) {
 		return fmt.Errorf("research session ran out of time (%s)", d.Timeout)
 	}
@@ -181,6 +193,21 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 	}
 	d.logf("%s/%s: proposed %d goal(s) ($%.2f)", project.Slug, direction.Slug, len(proposals), result.CostUSD)
 	return nil
+}
+
+// AdoptResearch takes up a research session a node process before this
+// one started (ADR 009): followed to its end, or read from its file when
+// it is gone, and handed in as Research hands in its own.
+func (d *Director) AdoptResearch(ctx context.Context, direction gateway.Direction, project gateway.Project, scope Scope, s FoundSession) error {
+	at, ok := d.Harness.(harness.Attacher)
+	if !ok {
+		s.Stop()
+		harness.RemoveSession(s.State.Workspace)
+		return errNoAttach
+	}
+	d.logf("%s/%s: adopted its %s research session (pid %d)", project.Slug, direction.Slug, s.Liveness(), s.State.PID)
+	result, err := at.Attach(ctx, s.Dir, nil)
+	return d.handIn(ctx, direction, project, scope, s.State.Workspace, nil, result, err)
 }
 
 // RoomFor is how many more goals a direction has space for, given the

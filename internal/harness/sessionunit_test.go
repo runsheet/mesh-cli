@@ -305,3 +305,54 @@ func TestSessionStateRoundTrip(t *testing.T) {
 		t.Fatalf("temporary files left: %v", ents)
 	}
 }
+
+// An Outlive job's session is left running, its directory kept, when the
+// node's ctx is cancelled; Attach then takes it up from the saved offset
+// — reporting only what lies past it — and ends as Run would have.
+func TestClaudeCodeOutliveThenAttach(t *testing.T) {
+	sessionunit.PollInterval = 20 * time.Millisecond
+	ws := t.TempDir()
+	dir := sessionunit.Dir(ws)
+	h := &ClaudeCode{Binary: slowClaude(t), Unit: sessionunit.Detached{}}
+	ctx, cancel := context.WithCancel(context.Background())
+	var st sessionunit.State
+	_, err := h.Run(ctx, Job{Kind: KindBuild, Workspace: ws, Outlive: true, Env: []string{"SLOW_EVENTS=40", "SLOW_SLEEP=0.1"}, Meta: SessionMeta{ItemID: "i"}}, func(p Progress) {
+		if p.Text == "step 2" {
+			st, _ = sessionunit.ReadState(dir)
+			cancel()
+		}
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v", err)
+	}
+	t.Cleanup(func() { syscall.Kill(-st.PID, syscall.SIGKILL) })
+	if !alive(st.PID) {
+		t.Fatalf("an Outlive session was stopped with its node: %+v", st)
+	}
+	var texts []string
+	res, err := h.Attach(context.Background(), dir, func(p Progress) {
+		if p.Text != "" {
+			texts = append(texts, p.Text)
+		}
+	})
+	if err != nil || !res.Success || res.Text != "all done" || res.CostUSD != 0.42 {
+		t.Fatalf("Attach = %+v, %v", res, err)
+	}
+	for _, s := range texts {
+		if s == "step 1" {
+			t.Fatalf("reported again what the first node had: %q", texts)
+		}
+	}
+	if texts[len(texts)-1] != "all done" {
+		t.Fatalf("texts %q", texts)
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("the session dir is the node's to remove: %v", err)
+	}
+	if got, _ := sessionunit.ReadState(dir); got.Offset == 0 || got.Offset <= st.Offset {
+		t.Fatalf("offset %d not advanced past %d", got.Offset, st.Offset)
+	}
+	if err := RemoveSession(ws); err != nil {
+		t.Fatal(err)
+	}
+}

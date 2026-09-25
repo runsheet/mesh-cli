@@ -348,3 +348,25 @@ func pct(f float64) string { return fmt.Sprintf("%.0f%%", f*100) }
 func pacedFree(free, capacity, running int) int {
 	return min(free, max(1, capacity/2)-running)
 }
+
+// Attach implements harness.Attacher when the harness it wraps does: an
+// adopted session's plan standing lands under the account its state
+// file names.
+func (h *limitsHarness) Attach(ctx context.Context, dir string, onProgress func(harness.Progress)) (harness.Result, error) {
+	at, ok := h.Harness.(harness.Attacher)
+	if !ok {
+		return harness.Result{}, errNoAttach
+	}
+	account := h.account
+	if account == "" {
+		account = stateAccount(dir)
+	}
+	res, err := at.Attach(ctx, dir, func(p harness.Progress) {
+		h.store.Observe(account, p.RateLimit)
+		if onProgress != nil {
+			onProgress(p)
+		}
+	})
+	h.store.Observe(account, res.RateLimit)
+	return res, err
+}

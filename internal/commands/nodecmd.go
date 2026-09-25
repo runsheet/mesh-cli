@@ -533,6 +533,9 @@ func runPollMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *
 	loop.Research = researchWith(gw, cfg, h, workRoot, accounts, logger)
 	loop.Rebase = rebaseWith(gw, cfg, h, loop.CurrentScopes, workRoot, fallback, accounts, logger)
 	logger.Printf("poll mode: node %s (%s) for %s, capacity %s, every %s", cfg.Name, cfg.Slug, strings.Join(scopes.Logins(), ", "), cfg.Capacity, loop.Interval)
+	// sessions the process before this one started run on in their own
+	// units: each is taken up where it is, before anything is claimed
+	adoptSessions(ctx, gw, cfg, h, codexSecondOpinion(cfg, loop, logger), loop, runner, workRoot, fallback, accounts, logger)
 	// items this node held when it last stopped are taken up again: a
 	// restart mid-build continues them (the workspace keeps the branch)
 	for _, sc := range scopes {
@@ -689,6 +692,11 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 	}
 
 	ws := &node.Git{Log: os.Stderr}
+	// the one-shot sessions the process before this one started run on
+	// in their own units: each is taken up where it is (a build of a
+	// poll-mode run before this one too), before anything is claimed
+	oneShot := observed(loop, logger)
+	adoptSessions(ctx, gw, cfg, oneShot, codexSecondOpinion(cfg, loop, logger), loop, &node.Runner{GW: gw, Harness: oneShot, WS: ws, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, Fallback: fallback, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Condition: loop.NoteCondition, Log: logger}, workRoot, fallback, accounts, logger)
 	loop.Evaluate = evaluateWith(gw, cfg, observed(loop, logger), codexSecondOpinion(cfg, loop, logger), loop, workRoot, fallback, accounts, logger)
 	loop.Plan = planWith(gw, cfg, observed(loop, logger), workRoot, accounts, logger)
 	loop.Research = researchWith(gw, cfg, observed(loop, logger), workRoot, accounts, logger)
@@ -928,8 +936,7 @@ func codexSecondOpinion(cfg *node.Config, loop *node.Loop, logger *log.Logger) s
 // and the item is left in evaluating for the next tick.
 func evaluateWith(gw *gateway.Client, cfg *node.Config, h harness.Harness, second secondOpinion, loop *node.Loop, workRoot string, fallback *node.TokenFallback, accounts *node.Credentials, logger *log.Logger) func(context.Context, gateway.WorkItem) {
 	return func(ctx context.Context, item gateway.WorkItem) {
-		ev := &node.Evaluator{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Scopes: loop.CurrentScopes(), WorkRoot: workRoot, MCP: prologueMCP(ctx, gw), MaxBudgetUSD: nodeEvalBudgetFlag, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("evaluate"), Fallback: fallback, Accounts: cfg.Accounts, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Sandbox: sessionSandbox, Log: logger,
-			Second: second.h, SecondModel: cfg.Codex.CodexModel(nodeModels.For("evaluate")), SecondAccount: second.account, Limits: second.limits, Thresholds: second.thresholds}
+		ev := evaluator(ctx, gw, cfg, h, second, loop, workRoot, fallback, accounts, logger)
 		if err := ev.Evaluate(ctx, item); err != nil && ctx.Err() == nil {
 			logger.Printf("item %d %q: evaluation: %v", item.Seq, item.Title, err)
 		}
@@ -943,7 +950,7 @@ func evaluateWith(gw *gateway.Client, cfg *node.Config, h harness.Harness, secon
 // rather than holding the claim until the platform's stall timer.
 func rebaseWith(gw *gateway.Client, cfg *node.Config, h harness.Harness, scopes func() node.Scopes, workRoot string, fallback *node.TokenFallback, accounts *node.Credentials, logger *log.Logger) func(context.Context, gateway.WorkItem) {
 	return func(ctx context.Context, item gateway.WorkItem) {
-		rb := &node.Rebaser{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Scopes: scopes(), WorkRoot: workRoot, MCP: prologueMCP(ctx, gw), MaxBudgetUSD: nodeRebaseBudgetFlag, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("rebase"), Fallback: fallback, Accounts: cfg.Accounts, Credentials: accounts, Sandbox: sessionSandbox, Log: logger}
+		rb := rebaser(ctx, gw, cfg, h, scopes, workRoot, fallback, accounts, logger)
 		if err := rb.Rebase(ctx, item); err != nil && ctx.Err() == nil {
 			logger.Printf("item %d %q: rebase: %v", item.Seq, item.Title, err)
 		}
@@ -955,7 +962,7 @@ func rebaseWith(gw *gateway.Client, cfg *node.Config, h harness.Harness, scopes 
 // and the goal left in planning for the next tick (three tries).
 func planWith(gw *gateway.Client, cfg *node.Config, h harness.Harness, workRoot string, accounts *node.Credentials, logger *log.Logger) func(context.Context, gateway.Goal, node.Scope) {
 	return func(ctx context.Context, goal gateway.Goal, scope node.Scope) {
-		pl := &node.Planner{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, WorkRoot: workRoot, MCP: prologueMCP(ctx, gw), MaxBudgetUSD: nodePlanBudgetFlag, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.PlanModel(), Accounts: cfg.Accounts, Credentials: accounts, Log: logger}
+		pl := planner(ctx, gw, cfg, h, workRoot, accounts, logger)
 		if err := pl.Plan(ctx, goal, scope); err != nil && ctx.Err() == nil {
 			logger.Printf("goal %s: planning: %v", goal.Slug, err)
 		}
@@ -968,11 +975,67 @@ func planWith(gw *gateway.Client, cfg *node.Config, h harness.Harness, workRoot 
 // than leaving the direction claimed, so the next window is not lost.
 func researchWith(gw *gateway.Client, cfg *node.Config, h harness.Harness, workRoot string, accounts *node.Credentials, logger *log.Logger) func(context.Context, gateway.Direction, gateway.Project, node.Scope) {
 	return func(ctx context.Context, direction gateway.Direction, project gateway.Project, scope node.Scope) {
-		dir := &node.Director{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, WorkRoot: workRoot, MCP: prologueMCP(ctx, gw), MaxBudgetUSD: nodeResearchBudgetFlag, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("research"), Accounts: cfg.Accounts, Credentials: accounts, Log: logger}
+		dir := director(ctx, gw, cfg, h, workRoot, accounts, logger)
 		if err := dir.Research(ctx, direction, project, scope); err != nil && ctx.Err() == nil {
 			logger.Printf("%s/%s: research: %v", project.Slug, direction.Slug, err)
 		}
 	}
+}
+
+func evaluator(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harness.Harness, second secondOpinion, loop *node.Loop, workRoot string, fallback *node.TokenFallback, accounts *node.Credentials, logger *log.Logger) *node.Evaluator {
+	return &node.Evaluator{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Scopes: loop.CurrentScopes(), WorkRoot: workRoot, MCP: prologueMCP(ctx, gw), MaxBudgetUSD: nodeEvalBudgetFlag, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("evaluate"), Fallback: fallback, Accounts: cfg.Accounts, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Sandbox: sessionSandbox, Log: logger,
+		Second: second.h, SecondModel: cfg.Codex.CodexModel(nodeModels.For("evaluate")), SecondAccount: second.account, Limits: second.limits, Thresholds: second.thresholds}
+}
+
+func rebaser(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harness.Harness, scopes func() node.Scopes, workRoot string, fallback *node.TokenFallback, accounts *node.Credentials, logger *log.Logger) *node.Rebaser {
+	return &node.Rebaser{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Scopes: scopes(), WorkRoot: workRoot, MCP: prologueMCP(ctx, gw), MaxBudgetUSD: nodeRebaseBudgetFlag, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("rebase"), Fallback: fallback, Accounts: cfg.Accounts, Credentials: accounts, Sandbox: sessionSandbox, Log: logger}
+}
+
+func planner(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harness.Harness, workRoot string, accounts *node.Credentials, logger *log.Logger) *node.Planner {
+	return &node.Planner{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, WorkRoot: workRoot, MCP: prologueMCP(ctx, gw), MaxBudgetUSD: nodePlanBudgetFlag, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.PlanModel(), Accounts: cfg.Accounts, Credentials: accounts, Log: logger}
+}
+
+func director(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harness.Harness, workRoot string, accounts *node.Credentials, logger *log.Logger) *node.Director {
+	return &node.Director{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, WorkRoot: workRoot, MCP: prologueMCP(ctx, gw), MaxBudgetUSD: nodeResearchBudgetFlag, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("research"), Accounts: cfg.Accounts, Credentials: accounts, Log: logger}
+}
+
+// adoptSessions takes up, before the first claim, every session under the
+// work root whose state file names one of this node's ids (mesh-cli ADR
+// 009): each kind by the session that would have run it, the item's
+// heartbeat sent at once. The held items Adopt then runs from the start
+// are only those with no session left to take up.
+func adoptSessions(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harness.Harness, second secondOpinion, loop *node.Loop, runner *node.Runner, workRoot string, fallback *node.TokenFallback, accounts *node.Credentials, logger *log.Logger) {
+	ids := make([]string, 0, len(loop.CurrentScopes()))
+	for _, sc := range loop.CurrentScopes() {
+		ids = append(ids, sc.NodeID)
+	}
+	found, err := node.FindSessions(workRoot, ids)
+	if err != nil {
+		logger.Printf("adopt: %v", err)
+	}
+	if len(found) == 0 {
+		return
+	}
+	loop.AdoptSession = node.AdoptWith{GW: gw, Scopes: loop.CurrentScopes, Logf: logger.Printf,
+		Build: func(ctx context.Context, item gateway.WorkItem, s node.FoundSession) error {
+			r := *runner
+			r.Scopes = loop.CurrentScopes()
+			return r.AdoptItem(ctx, item, s)
+		},
+		Evaluate: func(ctx context.Context, item gateway.WorkItem, s node.FoundSession) error {
+			return evaluator(ctx, gw, cfg, h, second, loop, workRoot, fallback, accounts, logger).AdoptEvaluation(ctx, item, s)
+		},
+		Rebase: func(ctx context.Context, item gateway.WorkItem, s node.FoundSession) error {
+			return rebaser(ctx, gw, cfg, h, loop.CurrentScopes, workRoot, fallback, accounts, logger).AdoptRebase(ctx, item, s)
+		},
+		Plan: func(ctx context.Context, goal gateway.Goal, sc node.Scope, s node.FoundSession) error {
+			return planner(ctx, gw, cfg, h, workRoot, accounts, logger).AdoptPlan(ctx, goal, sc, s)
+		},
+		Research: func(ctx context.Context, d gateway.Direction, p gateway.Project, sc node.Scope, s node.FoundSession) error {
+			return director(ctx, gw, cfg, h, workRoot, accounts, logger).AdoptResearch(ctx, d, p, sc, s)
+		},
+	}.Adopt
+	logger.Printf("adopt: %d session(s) of the process before this one taken up", loop.AdoptSessions(ctx, found))
 }
 
 // recentProgress reports whether an item's last heartbeat is within the

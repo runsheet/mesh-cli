@@ -110,6 +110,11 @@ type Loop struct {
 	// Sandbox is the heartbeat's `sandbox` — the mode, runtime and image
 	// sessions run in (OpenSandbox, ADR 007); nil sends none.
 	Sandbox *gateway.SandboxInfo
+	// AdoptSession follows a session a node process before this one
+	// started to its end and runs what its kind runs after a session
+	// (AdoptSessions, mesh-cli ADR 009; AdoptWith is the node's). Nil
+	// adopts nothing.
+	AdoptSession func(ctx context.Context, s FoundSession)
 
 	mu sync.Mutex
 	// condition is the node's latest condition that is not a failure of
@@ -126,7 +131,13 @@ type Loop struct {
 	planning    map[string]bool
 	researching map[string]bool
 	rebasing    map[string]bool
-	wg          sync.WaitGroup
+	// adopted are the sessions taken over from the process before this
+	// one that have not yet ended, by subject: the heartbeat's `adopted`.
+	// adoptedIDs are every subject adopted this run, so Adopt never runs
+	// one of them again from the start.
+	adopted    map[string]gateway.AdoptedSession
+	adoptedIDs map[string]bool
+	wg         sync.WaitGroup
 	// draining is set by Drain: nothing new is started, and Run returns
 	// once every session of any kind has ended.
 	draining bool
@@ -508,7 +519,7 @@ func (l *Loop) Tick(ctx context.Context) {
 	l.probe()
 	l.scale()
 	runtimes, adapters := l.Runtimes()
-	extras := gateway.HeartbeatExtras{Draining: l.Draining(), UpdateError: l.UpdateError(), Limits: l.limitsStore().Heartbeat(), Runtimes: runtimes, Adapters: adapters, Sandbox: l.Sandbox, Reason: l.Condition()}
+	extras := gateway.HeartbeatExtras{Draining: l.Draining(), UpdateError: l.UpdateError(), Limits: l.limitsStore().Heartbeat(), Runtimes: runtimes, Adapters: adapters, Sandbox: l.Sandbox, Reason: l.Condition(), Adopted: l.Adopted()}
 	scaling, ranged := l.Scaling()
 	extras.Scaling = l.heartbeatScaling(scaling, ranged)
 	if l.Scaled != nil {
@@ -1158,15 +1169,17 @@ func (l *Loop) researchDue(ctx context.Context) {
 }
 
 // Adopt runs an item this node already holds on the platform (claimed
-// or running, after a restart) without claiming it again. It reports
-// whether the item was taken up (false when it is already running here,
-// or the node is draining — the node after it adopts the item).
+// or running, after a restart) without claiming it again, from the
+// start: an item whose session is still there is AdoptSessions', which
+// takes the session up instead. It reports whether the item was taken up
+// (false when it is already running here, its session was adopted, or
+// the node is draining — the node after it adopts the item).
 func (l *Loop) Adopt(ctx context.Context, item gateway.WorkItem) bool {
 	l.mu.Lock()
 	if l.running == nil {
 		l.running = map[string]bool{}
 	}
-	if l.running[item.ID] || l.draining {
+	if l.running[item.ID] || l.adoptedIDs[item.ID] || l.draining {
 		l.mu.Unlock()
 		return false
 	}

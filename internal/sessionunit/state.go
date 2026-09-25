@@ -48,6 +48,9 @@ type State struct {
 	// none.
 	TimeoutSeconds int     `json:"timeoutSeconds,omitempty"`
 	MaxBudgetUSD   float64 `json:"maxBudgetUsd,omitempty"`
+	// TempDirs are the session's temporary dirs outside its directory
+	// (its CLAUDE_CONFIG_DIR, GH_CONFIG_DIR), removed with it. Paths only.
+	TempDirs []string `json:"tempDirs,omitempty"`
 	// SessionID is the agent's own session id once it said it.
 	SessionID string `json:"sessionId,omitempty"`
 	// Offset is the byte offset in output.jsonl up to which the node has
