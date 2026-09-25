@@ -791,6 +791,20 @@ type HeartbeatExtras struct {
 	// Limits are the latest Claude plan limits the node has read, one
 	// per account (runsheet goal limits-on-the-console).
 	Limits []Limits
+	// Scaling is a ranged node's capacity in force, its range and why
+	// (adr-004); a node with a fixed capacity sends none (runsheet goal
+	// limits-on-the-console).
+	Scaling *Scaling
+}
+
+// Scaling is what a node whose capacity is a range reports of it: the
+// capacity in force, node.yaml's min and max, and the reason — `max`,
+// `weekly pace`, `five-hour pace` or `machine load`.
+type Scaling struct {
+	Capacity int    `json:"capacity"`
+	Min      int    `json:"min"`
+	Max      int    `json:"max"`
+	Reason   string `json:"reason"`
 }
 
 // Limits is one account's Claude plan limits as the latest session's
@@ -829,6 +843,9 @@ func (c *Client) HeartbeatNode(ctx context.Context, nodeID, version string, runn
 		}
 		if len(x.Limits) > 0 {
 			in["limits"] = x.Limits
+		}
+		if x.Scaling != nil {
+			in["scaling"] = x.Scaling
 		}
 	}
 	return c.Mutate(ctx, "heartbeatNode", nodeID, in)
