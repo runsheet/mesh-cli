@@ -309,6 +309,11 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		return fmt.Errorf("finish %s: %w", label, err)
 	}
 	r.logf("item %s: finished %s@%s ($%.2f)", label, spec.Branch, short(sha), result.CostUSD)
+	// the item is finished and reported: a goal that ended with it gets
+	// its final document, and nothing that goes wrong there fails the item
+	if err := RecordEndedGoal(ctx, r.GW, r.WS, r.WorkRoot, r.Scopes.LoginOf(item.OrgID), res.Goal.ID, r.logf); err != nil {
+		r.logf("item %s: goal doc: %v", label, err)
+	}
 	return nil
 }
 
