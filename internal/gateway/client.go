@@ -788,6 +788,31 @@ type HeartbeatExtras struct {
 	Draining bool
 	// UpdateError says why the last self-update was refused or rolled back.
 	UpdateError string
+	// Limits are the latest Claude plan limits the node has read, one
+	// per account (runsheet goal limits-on-the-console).
+	Limits []Limits
+}
+
+// Limits is one account's Claude plan limits as the latest session's
+// rate_limit_event reported them (mesh-specs trd §1). Times encode as
+// RFC 3339; a zero one is left out.
+type Limits struct {
+	Account        string       `json:"account"`
+	Status         string       `json:"status"`
+	RateLimitType  string       `json:"rateLimitType,omitempty"`
+	ResetsAt       time.Time    `json:"resetsAt,omitzero"`
+	OverageStatus  string       `json:"overageStatus,omitempty"`
+	IsUsingOverage bool         `json:"isUsingOverage"`
+	FiveHour       *LimitWindow `json:"fiveHour,omitempty"`
+	SevenDay       *LimitWindow `json:"sevenDay,omitempty"`
+	ObservedAt     time.Time    `json:"observedAt,omitzero"`
+}
+
+// LimitWindow is one of the plan's windows: how much of it is used, as
+// the session reported it, and when it starts over.
+type LimitWindow struct {
+	Utilization float64   `json:"utilization"`
+	ResetsAt    time.Time `json:"resetsAt,omitzero"`
 }
 
 // HeartbeatNode reports liveness and the running session count, and the
@@ -801,6 +826,9 @@ func (c *Client) HeartbeatNode(ctx context.Context, nodeID, version string, runn
 		}
 		if x.UpdateError != "" {
 			in["updateError"] = x.UpdateError
+		}
+		if len(x.Limits) > 0 {
+			in["limits"] = x.Limits
 		}
 	}
 	return c.Mutate(ctx, "heartbeatNode", nodeID, in)
