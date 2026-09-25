@@ -34,7 +34,9 @@ type Evaluator struct {
 	Model string
 	// Timeout caps its wall clock (0 none).
 	Timeout time.Duration
-	Log     *log.Logger
+	// Fallback is the node's one old-platform notice (nil: every item).
+	Fallback *TokenFallback
+	Log      *log.Logger
 }
 
 func (e *Evaluator) logf(format string, args ...any) {
@@ -58,7 +60,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	}
 	spec := WorkspaceSpec{Root: e.WorkRoot, GoalSlug: res.Goal.Slug, Seq: item.Seq, Repo: res.Repo.FullName(), Branch: branch, BaseRef: res.BaseRef()}
 	// the item's own GitHub token, as its builder had
-	cred, err := NewItemCred(ctx, e.GW, e.WS, e.Scopes, item, spec, e.logf)
+	cred, err := NewItemCred(ctx, e.GW, e.WS, e.Scopes, item, spec, e.Fallback, e.logf)
 	if err != nil {
 		return err
 	}

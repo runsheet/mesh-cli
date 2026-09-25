@@ -32,6 +32,13 @@ living an hour.
   `gateway.IsUnsupported` reports it (the `Error` carries
   `Unsupported`), and the node falls back to the operator's login and
   says so once. The rollout is not a flag day.
+- "Once" is once per run of the node, not once per item: `mesh node
+  start` makes one `node.TokenFallback` (a `sync.Once` around the log
+  line) and hands it to everything that asks for an item's token — the
+  poll-mode `Runner`, every `Evaluator`, and channel mode's
+  `readyChannelItem` — so a node claiming many items against an old
+  platform logs the fallback a single time and runs every item on the
+  operator's credentials as before.
 
 - The builder (`Runner.RunItem`) and the evaluator (`Evaluator.Evaluate`)
   ask for it right after resolving the item and before anything clones,

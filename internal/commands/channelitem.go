@@ -33,13 +33,13 @@ type channelItem struct {
 // it on the workspace's own credential helper, then clone or fetch and
 // check out the branch on it. Only then is there an event to push. Any
 // error fails the item, as it would a poll-mode build.
-func readyChannelItem(ctx context.Context, gw node.Gateway, ws channelWorkspace, scopes node.Scopes, item gateway.WorkItem, workRoot string, logf func(string, ...any)) (*channelItem, error) {
+func readyChannelItem(ctx context.Context, gw node.Gateway, ws channelWorkspace, scopes node.Scopes, item gateway.WorkItem, workRoot string, fb *node.TokenFallback, logf func(string, ...any)) (*channelItem, error) {
 	res, err := node.Resolve(ctx, gw, item)
 	if err != nil {
 		return nil, fmt.Errorf("resolve: %w", err)
 	}
 	spec := node.WorkspaceSpec{Root: workRoot, GoalSlug: res.Goal.Slug, Seq: item.Seq, Repo: res.Repo.FullName(), Branch: res.Branch(), BaseRef: res.BaseRef()}
-	cred, err := node.NewItemCred(ctx, gw, ws, scopes, item, spec, logf)
+	cred, err := node.NewItemCred(ctx, gw, ws, scopes, item, spec, fb, logf)
 	if err != nil {
 		return nil, err
 	}

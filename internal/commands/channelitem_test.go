@@ -105,10 +105,15 @@ func newChannelWorld(t *testing.T, tok map[string]any) *channelWorld {
 
 func (w *channelWorld) ready(t *testing.T, logf func(string, ...any)) *channelItem {
 	t.Helper()
+	return w.readyWith(t, nil, logf)
+}
+
+func (w *channelWorld) readyWith(t *testing.T, fb *node.TokenFallback, logf func(string, ...any)) *channelItem {
+	t.Helper()
 	if logf == nil {
 		logf = t.Logf
 	}
-	ready, err := readyChannelItem(context.Background(), w.gw, w.ws, w.scopes, w.item, filepath.Join(w.root, "work"), logf)
+	ready, err := readyChannelItem(context.Background(), w.gw, w.ws, w.scopes, w.item, filepath.Join(w.root, "work"), fb, logf)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,5 +208,28 @@ func TestChannelDispatchFallsBackOnAnOldPlatform(t *testing.T) {
 	// the empty helper first (trimmed away here) drops the operator's global one
 	if want := "!GH_CONFIG_DIR='" + operatorGH + "' gh auth git-credential"; helpers != want {
 		t.Fatalf("fallback helpers = %q, want %q", helpers, want)
+	}
+}
+
+// Channel mode's dispatch shares the run's one fallback notice: the
+// items it readies after the first say nothing more, and each is still
+// put on the operator's gh.
+func TestChannelDispatchSaysTheFallbackOncePerRun(t *testing.T) {
+	w := newChannelWorld(t, nil)
+	t.Setenv("GH_CONFIG_DIR", filepath.Join(w.root, "operator-gh"))
+	spec := node.WorkspaceSpec{Root: filepath.Join(w.root, "work"), GoalSlug: "ship-it", Seq: 1}
+	if out, err := w.git(w.root, "clone", "--quiet", filepath.Join(w.srvRoot, "acme/widgets.git"), spec.Dir()); err != nil {
+		t.Fatalf("clone: %v: %s", err, out)
+	}
+	fb := &node.TokenFallback{}
+	var logs []string
+	logf := func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) }
+	for i := 0; i < 3; i++ {
+		if ready := w.readyWith(t, fb, logf); ready.Cred != nil {
+			t.Fatalf("an old platform issues no token: %+v", ready.Cred)
+		}
+	}
+	if len(logs) != 1 {
+		t.Fatalf("the fallback must be said once per run: %q", logs)
 	}
 }

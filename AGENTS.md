@@ -85,8 +85,19 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
 ## Rules
 
 - No third-party integrations in this repo (see CONTRIBUTING.md): no
-  Discord, no email, no API keys. GitHub is reached through `gh` and `git`
-  with the operator's own credentials.
+  Discord, no email, no API keys. A session reaches GitHub only with its
+  item's own token: a GitHub App installation token the platform mints
+  per item (`issueItemRepoToken`), scoped to the item's one repo,
+  contents write + pull requests read, an hour, renewed near expiry. The
+  node puts it on the checkout's own git credential helper (clearing the
+  operator's `gh auth git-credential`) and gives the session `GH_TOKEN`
+  and an empty, per-session `GH_CONFIG_DIR`, so the operator's gh login
+  is out of reach (adr-001-item-scoped-github-token). On a platform that
+  does not know the mutation the node falls back to the operator's own
+  `gh`/`git` credentials and logs that once per run (`TokenFallback`) —
+  the rollout is not a flag day; a refused token fails the item instead.
+  The planner's and the director's project-wide fetches stay on the
+  operator's `gh` and `git`.
 - A change to what the node reports or claims changes the platform's
   contract too; land the platform side first (a process reacts only to
   events after its deploy).
