@@ -66,12 +66,12 @@ RUN arch="$(uname -m)" \
 # The agent CLIs, pinned; claude's self-update is off (the image moves
 # with the node, not under it), and codex's update check is off in the
 # per-session config.toml the node writes.
-RUN npm install -g --no-fund --no-audit \
+RUN npm install -g --no-fund --no-audit --allow-scripts=@anthropic-ai/claude-code \
       "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
       "@openai/codex@${CODEX_VERSION}" \
  && npm cache clean --force
 
-ENV PATH=/usr/local/go/bin:/home/mesh/go/bin:/usr/local/bin:/usr/bin:/bin \
+ENV PATH=/usr/local/go/bin:/home/mesh/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     DISABLE_AUTOUPDATER=1 \
     LANG=C.UTF-8
 
