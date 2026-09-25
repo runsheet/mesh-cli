@@ -122,6 +122,10 @@ func (c *ClaudeCode) Run(ctx context.Context, job Job, onProgress func(Progress)
 			if ev.Subtype == "init" && ev.SessionID != "" {
 				onProgress(Progress{SessionID: ev.SessionID})
 			}
+		case "rate_limit_event":
+			if rl := ev.RateLimit(time.Now()); rl != nil {
+				onProgress(Progress{SessionID: ev.SessionID, RateLimit: rl})
+			}
 		case "result":
 			onProgress(Progress{CostUSD: ev.CostUSD, SessionID: ev.SessionID, Text: strings.TrimSpace(ev.Result)})
 		}

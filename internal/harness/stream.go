@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"strings"
+	"time"
 )
 
 // Event is one line of `claude -p --output-format stream-json --verbose`.
@@ -24,6 +25,9 @@ type Event struct {
 			Name string `json:"name"`
 		} `json:"content"`
 	} `json:"message"`
+	// RateLimitInfo is the account's plan standing on a
+	// rate_limit_event (see RateLimit).
+	RateLimitInfo *rateLimitInfo `json:"rate_limit_info"`
 }
 
 // Text returns the assistant text of an event, joined.
@@ -45,6 +49,7 @@ func (e Event) Text() string {
 // not JSON (claude's own diagnostics) are skipped. If the stream ends with
 // no result event, Success is false and Text holds the last assistant
 // message. A stream with no parseable event at all sets EmptyOutput.
+// The latest rate_limit_event, if any, is kept on Result.RateLimit.
 func ParseStream(r io.Reader, onEvent func(Event)) Result {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 16<<20)
@@ -69,6 +74,10 @@ func ParseStream(r io.Reader, onEvent func(Event)) Result {
 		case "assistant":
 			if t := ev.Text(); t != "" {
 				lastText = t
+			}
+		case "rate_limit_event":
+			if rl := ev.RateLimit(time.Now()); rl != nil {
+				res.RateLimit = rl
 			}
 		case "result":
 			sawResult = true

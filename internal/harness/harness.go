@@ -61,6 +61,9 @@ type Progress struct {
 	CostUSD float64
 	// SessionID is the harness's own session id once known.
 	SessionID string
+	// RateLimit is the account's plan standing, when the session has
+	// just reported it.
+	RateLimit *RateLimit
 }
 
 // Result is how the session ended.
@@ -75,6 +78,9 @@ type Result struct {
 	SessionID string
 	// Turns is how many turns the session took, when known.
 	Turns int
+	// RateLimit is the latest plan standing the session reported; nil
+	// when it reported none.
+	RateLimit *RateLimit
 	// EmptyOutput is a session that produced nothing at all: not one
 	// parseable event — no session id, no assistant text, no result.
 	// Set whether or not the exit carried a message; the node counts
