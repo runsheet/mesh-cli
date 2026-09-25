@@ -439,7 +439,7 @@ func runPollMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *
 	loop.Evaluate = evaluateWith(gw, h, loop.CurrentScopes, workRoot, fallback, logger)
 	loop.Plan = planWith(gw, cfg, h, workRoot, logger)
 	loop.Research = researchWith(gw, cfg, h, workRoot, logger)
-	loop.Rebase = rebaseWith(gw, h, loop.CurrentScopes, workRoot, logger)
+	loop.Rebase = rebaseWith(gw, h, loop.CurrentScopes, workRoot, fallback, logger)
 	logger.Printf("poll mode: node %s (%s) for %s, capacity %d, every %s", cfg.Name, cfg.Slug, strings.Join(scopes.Logins(), ", "), cfg.Capacity, loop.Interval)
 	// items this node held when it last stopped are taken up again: a
 	// restart mid-build continues them (the workspace keeps the branch)
@@ -539,7 +539,7 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 	loop.Evaluate = evaluateWith(gw, oneShotHarness(), loop.CurrentScopes, workRoot, fallback, logger)
 	loop.Plan = planWith(gw, cfg, oneShotHarness(), workRoot, logger)
 	loop.Research = researchWith(gw, cfg, oneShotHarness(), workRoot, logger)
-	loop.Rebase = rebaseWith(gw, oneShotHarness(), loop.CurrentScopes, workRoot, logger)
+	loop.Rebase = rebaseWith(gw, oneShotHarness(), loop.CurrentScopes, workRoot, fallback, logger)
 	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) {
 		ready, err := readyChannelItem(ctx, gw, ws, loop.CurrentScopes(), item, workRoot, fallback, logger.Printf)
 		if err != nil {
@@ -733,9 +733,9 @@ func evaluateWith(gw *gateway.Client, h harness.Harness, scopes func() node.Scop
 // either mode. However it ends, the rebase is finished or failed on the
 // platform, so a failed one hands the item to its builder at once
 // rather than holding the claim until the platform's stall timer.
-func rebaseWith(gw *gateway.Client, h harness.Harness, scopes func() node.Scopes, workRoot string, logger *log.Logger) func(context.Context, gateway.WorkItem) {
+func rebaseWith(gw *gateway.Client, h harness.Harness, scopes func() node.Scopes, workRoot string, fallback *node.TokenFallback, logger *log.Logger) func(context.Context, gateway.WorkItem) {
 	return func(ctx context.Context, item gateway.WorkItem) {
-		rb := &node.Rebaser{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Scopes: scopes(), WorkRoot: workRoot, MCP: prologueMCP(ctx, gw), MaxBudgetUSD: nodeRebaseBudgetFlag, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("rebase"), Log: logger}
+		rb := &node.Rebaser{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Scopes: scopes(), WorkRoot: workRoot, MCP: prologueMCP(ctx, gw), MaxBudgetUSD: nodeRebaseBudgetFlag, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("rebase"), Fallback: fallback, Log: logger}
 		if err := rb.Rebase(ctx, item); err != nil && ctx.Err() == nil {
 			logger.Printf("item %d %q: rebase: %v", item.Seq, item.Title, err)
 		}

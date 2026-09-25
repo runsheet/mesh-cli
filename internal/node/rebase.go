@@ -42,7 +42,9 @@ type Rebaser struct {
 	// ReportWorkItemProgress while the rebase is claimed, with the
 	// session's cents since the last one.
 	ProgressEvery time.Duration
-	Log           *log.Logger
+	// Fallback is the node's one old-platform notice (nil: every item).
+	Fallback *TokenFallback
+	Log      *log.Logger
 }
 
 func (r *Rebaser) logf(format string, args ...any) {
@@ -91,7 +93,7 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 	}
 	spec := WorkspaceSpec{Root: r.WorkRoot, GoalSlug: res.Goal.Slug, Seq: item.Seq, Repo: res.Repo.FullName(), Branch: branch, BaseRef: res.BaseRef()}
 	// the item's own GitHub token: the push is the session's whole point
-	cred, err := NewItemCred(ctx, r.GW, r.WS, r.Scopes, item, spec, r.logf)
+	cred, err := NewItemCred(ctx, r.GW, r.WS, r.Scopes, item, spec, r.Fallback, r.logf)
 	if err != nil {
 		return fail(err)
 	}
