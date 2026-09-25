@@ -38,6 +38,14 @@ type Job struct {
 	MaxBudgetUSD float64
 	// Env is appended to the inherited environment (KEY=VALUE).
 	Env []string
+	// Unset are the names of inherited variables the session must not
+	// see: dropped from the node's environment before Env is added, so
+	// the operator's own Claude login never reaches a session that runs
+	// on another account (adr-005).
+	Unset []string
+	// Secrets are values that must never appear in what the adapter
+	// logs, writes to its Stderr or returns as an error (Redact).
+	Secrets []string
 	// Label names the job in logs (e.g. "ship-it/2").
 	Label string
 	// Timeout caps the session's wall clock; 0 is none. A session that

@@ -48,6 +48,11 @@ type Config struct {
 	// Claude plan (LimitsConfig): the defaults when left out, read again
 	// every tick like the capacity.
 	Limits LimitsConfig `yaml:"limits,omitempty"`
+	// Accounts are the Claude accounts the node's sessions run on
+	// (AccountConfig, adr-005) until the platform hands a session its
+	// credential at claim. None is the one implicit account `default`:
+	// the operator's own CLI login, as before.
+	Accounts []AccountConfig `yaml:"accounts,omitempty"`
 	// Latchkey is the issuer `mesh node login` signs in to and
 	// LatchkeyClient the public client it starts the device flow from
 	// (latchkey adr-machine-identity); both are remembered at login so a
@@ -365,6 +370,9 @@ func LoadConfig() (*Config, error) {
 	}
 	if len(c.Orgs) == 0 && c.OrgLogin != "" {
 		c.Orgs = []string{c.OrgLogin} // an older, single-org registration
+	}
+	if err := ValidateAccounts(c.Accounts); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	return &c, nil
 }

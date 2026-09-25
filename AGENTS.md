@@ -101,6 +101,14 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   item in `review`; ADR-001 asks for it), so until it does every
   rebase fails at `github token:` and goes to its builder; the fake
   mirrors that unless a test sets `RebaseTokens`.
+- **Accounts** (`internal/node/accounts.go`, adr-005): node.yaml's
+  `accounts:` ({label, kind subscription|api, token_file|api_key_env})
+  are the Claude accounts sessions run on; none is the operator's own
+  login, unchanged. `OpenAccount` → `PrepareAccount` gives a session
+  the secret in its env only, a temp `CLAUDE_CONFIG_DIR` removed by
+  `Cleanup`, `Job.Unset` of the inherited auth variables and
+  `Job.Secrets` to redact; `MESH_ACCOUNT` makes `Account` key limits by
+  label. Every one-shot session runs on the first account for now.
 - Every session gets Prologue as an MCP server with the node's token and
   the project's context on disk under `.mesh/context/` with `INDEX.md`:
   the documents, then `## Live goals and items` — each live goal's items

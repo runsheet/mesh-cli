@@ -36,6 +36,9 @@ type Rebaser struct {
 	MaxBudgetUSD float64
 	// Model is what a rebase session runs on ("" the CLI's default).
 	Model string
+	// Accounts are the node's Claude accounts (node.yaml); a session runs
+	// on the first, or on the operator's own login when there are none.
+	Accounts []AccountConfig
 	// Timeout caps its wall clock (0 none).
 	Timeout time.Duration
 	// ProgressEvery is how often the rebase's heartbeat is sent (60 s):
@@ -133,6 +136,12 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 		defer os.RemoveAll(ghDir)
 		job.Env = SessionEnv(tok, ghDir)
 	}
+	acct, err := OpenAccount(r.Accounts)
+	if err != nil {
+		return fail(err)
+	}
+	defer acct.Cleanup()
+	acct.Apply(&job)
 
 	var mu sync.Mutex
 	sessionID := ""
@@ -186,8 +195,9 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 	case errors.Is(runErr, context.DeadlineExceeded):
 		return fail(fmt.Errorf("the rebase session ran out of time (%s)", r.Timeout))
 	case runErr != nil:
-		return fail(fmt.Errorf("rebase session: %w", runErr))
+		return fail(fmt.Errorf("rebase session: %w", acct.RedactErr(runErr)))
 	}
+	result.Text = acct.Redact(result.Text)
 	out, ok := harness.ParseRebase(result.Text)
 	if !ok {
 		return fail(fmt.Errorf("the rebase session reached no result (%s): %s", result.SessionID, truncate(result.Text, 1000)))

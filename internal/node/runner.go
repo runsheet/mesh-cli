@@ -73,6 +73,9 @@ type Runner struct {
 	MaxBudgetUSD float64
 	// Model is what a build session runs on ("" the CLI's default).
 	Model string
+	// Accounts are the node's Claude accounts (node.yaml); a session runs
+	// on the first, or on the operator's own login when there are none.
+	Accounts []AccountConfig
 	// ProgressEvery is how often progress is reported (60 s).
 	ProgressEvery time.Duration
 	// Fallback is the node's one old-platform notice (nil: every item).
@@ -200,6 +203,12 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		defer os.RemoveAll(ghDir)
 		job.Env = SessionEnv(tok, ghDir)
 	}
+	acct, err := OpenAccount(r.Accounts)
+	if err != nil {
+		return r.fail(ctx, item, err)
+	}
+	defer acct.Cleanup()
+	acct.Apply(&job)
 
 	cost := &costReporter{}
 	var mu sync.Mutex
@@ -242,7 +251,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	result, runErr := r.Harness.Run(ctx, job, func(p harness.Progress) {
 		mu.Lock()
 		if p.Text != "" {
-			lastText = p.Text
+			lastText = acct.Redact(p.Text)
 		}
 		if p.SessionID != "" {
 			sessionID = p.SessionID
@@ -264,9 +273,11 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		mu.Unlock()
 	}
 	if runErr != nil {
+		runErr = acct.RedactErr(runErr)
 		report("harness error: " + runErr.Error())
 		return r.fail(ctx, item, runErr)
 	}
+	result.Text = acct.Redact(result.Text)
 	if !result.Success {
 		report("session ended without success: " + result.Text)
 		return r.fail(ctx, item, fmt.Errorf("session ended without success: %s", truncate(result.Text, 500)))
