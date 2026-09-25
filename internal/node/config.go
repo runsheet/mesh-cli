@@ -172,6 +172,20 @@ func (m Models) For(kind string) string {
 	return v
 }
 
+// PlanModel is the planner's model: Plan when it is set explicitly,
+// otherwise the strongest of the other kinds configured, otherwise opus.
+// The planner chooses every item's model, so it runs on the strongest
+// there is.
+func (m Models) PlanModel() string {
+	if m.Plan != "" {
+		return m.Plan
+	}
+	if s := Strongest(m.Default, m.Build, m.Evaluate, m.Channel, m.Research); s != "" {
+		return s
+	}
+	return "opus"
+}
+
 // Scope is one org the node serves, with the node's id there.
 type Scope struct {
 	Login     string

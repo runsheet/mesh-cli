@@ -66,3 +66,29 @@ func TestStronger(t *testing.T) {
 		t.Fatalf("Strongest over an empty = %q", got)
 	}
 }
+
+// TestPlanModel: an explicit plan model wins; without one the planner
+// runs on the strongest configured kind; with none at all, on opus.
+func TestPlanModel(t *testing.T) {
+	for _, c := range []struct {
+		m    Models
+		want string
+	}{
+		{Models{Plan: "haiku", Default: "opus"}, "haiku"},
+		{Models{Default: "sonnet", Build: "opus"}, "opus"},
+		{Models{Default: "haiku", Research: "claude-sonnet-5", Rebase: "opus"}, "claude-sonnet-5"},
+		{Models{}, "opus"},
+	} {
+		if got := c.m.PlanModel(); got != c.want {
+			t.Errorf("%+v.PlanModel() = %q, want %q", c.m, got, c.want)
+		}
+	}
+}
+
+func TestPlannableModel(t *testing.T) {
+	for m, want := range map[string]bool{"haiku": true, "Sonnet": true, " opus ": true, "claude-opus-5-5": true, "claude-": false, "gpt-5": false, "fast": false, "": false} {
+		if got := PlannableModel(m); got != want {
+			t.Errorf("PlannableModel(%q) = %v", m, got)
+		}
+	}
+}
