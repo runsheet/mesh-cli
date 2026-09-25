@@ -192,6 +192,13 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case strings.HasPrefix(q, "mutation { signIn"):
 		writeData(w, map[string]any{"signIn": map[string]any{"id": f.UserID}})
+	case strings.Contains(q, "__type("):
+		f.Reads = append(f.Reads, Call{Name: "__type", Input: map[string]any{}})
+		if f.Unsupported["__type"] {
+			writeErrors(w, 200, "GraphQL introspection is not allowed")
+			return
+		}
+		writeData(w, map[string]any{"__type": f.heartbeatInputType()})
 	case strings.Contains(q, "myOrgs"):
 		writeData(w, map[string]any{"myOrgs": f.Orgs})
 	case strings.HasPrefix(q, "mutation"):
@@ -313,6 +320,34 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// heartbeatInputType is HeartbeatNodeInput as introspection answers it:
+// every field a heartbeat may carry, less UnknownFields — `scaling`
+// without `accounts` when that is unknown, as the platform before
+// adr-005's per-account slots. Unsupported["__type"] refuses the probe.
+func (f *Fake) heartbeatInputType() map[string]any {
+	field := func(name string) map[string]any {
+		return map[string]any{"name": name}
+	}
+	var fields []any
+	for _, name := range []string{"aggregateId", "namespace", "version", "running", "draining", "updateError", "limits", "scaling", "runtimes", "adapters"} {
+		if f.UnknownFields[name] {
+			continue
+		}
+		row := map[string]any{"name": name, "type": map[string]any{"kind": "SCALAR"}}
+		if name == "scaling" {
+			var sub []any
+			for _, n := range []string{"capacity", "min", "max", "reason", "accounts"} {
+				if !f.UnknownFields[n] {
+					sub = append(sub, field(n))
+				}
+			}
+			row["type"] = map[string]any{"kind": "INPUT_OBJECT", "inputFields": sub}
+		}
+		fields = append(fields, row)
+	}
+	return map[string]any{"inputFields": fields}
+}
+
 func (f *Fake) table(name string) map[string]map[string]any {
 	switch name {
 	case "workItemIndexs":
@@ -376,6 +411,11 @@ func (f *Fake) unknownInput(in map[string]any) string {
 	for k, v := range in {
 		if f.UnknownFields[k] {
 			return k
+		}
+		if row, ok := v.(map[string]any); ok {
+			if k := f.unknownInput(row); k != "" {
+				return k
+			}
 		}
 		if rows, ok := v.([]any); ok {
 			for _, r := range rows {

@@ -131,6 +131,22 @@ above:
 "scaling": {"capacity": 3, "min": 1, "max": 4, "reason": "weekly pace"}
 ```
 
+*Amended with adr-005-capacity-across-accounts (2026-09-25):* `scaling`
+is also sent by a fixed node on several accounts (its capacity as min
+and max, reason `fixed`), and gains `accounts[]`, each account's slots
+(adr-005 §Heartbeat). And "sent only when" now has a second half: the
+node sends `scaling` only when the gateway's schema takes it. The
+client (`gateway.Client.takesScaling`) introspects
+`HeartbeatNodeInput` once — `__type(name: "HeartbeatNodeInput") {
+inputFields { name type { … inputFields { name } } } }` — keeps the
+answer for `ScalingProbeEvery` (an hour) and asks again after, so a
+platform deploy is picked up without a restart. No `scaling` field, or
+a probe that fails, leaves it out and the heartbeat lands; a `scaling`
+without `accounts` gets the four fields above alone. A heartbeat with
+no `scaling` to send probes nothing and is byte-identical to before.
+The fallback on "got invalid value" (drop every extra for ten minutes)
+stays underneath for the other extras.
+
 The platform's node record keeps the registered capacity only, so the
 node also leaves its scaling in `~/.mesh/node.scaling` each tick
 (`Loop.Scaled`, `RunState.WriteScaling`; removed when the capacity is
@@ -167,7 +183,8 @@ node at its min still offers only urgent/high items to the choice.
   it is.
 - The platform half: runsheet needs the optional `scaling` input on
   `heartbeatNode` and goal `limits-on-the-console` shows it; until it
-  lands the node must not send the field (land the platform side first).
+  lands the node must not send the field (land the platform side
+  first) — which the schema probe above now enforces on its own.
 - **Pending amendment**: projectmesh-io/mesh-specs trd §1 (Node,
   `HeartbeatNode { …, scaling? }`) and §3 (Pacing by the plan's limits:
   capacity as a range and the rule above) need this same amendment once

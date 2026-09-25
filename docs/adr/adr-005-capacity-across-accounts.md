@@ -1,5 +1,5 @@
 ---
-summary: A ranged node's capacity is the sum of what every account it may use can afford — per subscription, adr-004's windows rule on its own measured burn; per API key, its money left today (daily cap $50, monthly cap $1,000, the project's daily budget, list-price dollars) over the hours left today at its measured dollars per slot-hour, with the last 10% of the daily cap for urgent/high work and a hard stop at a cap — clamped to [min, max] and the machine, one step per 5 minutes; generalises ADR-004.
+summary: A ranged node's capacity is the sum of what every account it may use can afford — per subscription, adr-004's windows rule on its own measured burn; per API key, its money left today (daily cap $50, monthly cap $1,000, the project's daily budget, list-price dollars) over the hours left today at its measured dollars per slot-hour, with the last 10% of the daily cap for urgent/high work and a hard stop at a cap — clamped to [min, max] and the machine, one step per 5 minutes; the heartbeat's `scaling` reports capacity, min, max, reason and each account's slots when the gateway's schema takes it; generalises ADR-004.
 status: accepted
 ---
 
@@ -126,6 +126,54 @@ spend today is the sum of its keys'. The loop sets the scaler's
 `Location` to the ledger's, so days and months begin at local midnight
 (the scaler alone still defaults to UTC).
 
+### Heartbeat
+
+The heartbeat's optional `scaling` (ADR-004) carries what this ADR
+computes (`gateway.Scaling`, built by `Loop.heartbeatScaling` from the
+accounts scaler's last target):
+
+| field | what it is |
+|---|---|
+| `capacity` | the capacity in force (int) |
+| `min` | node.yaml's min (a fixed node: its capacity) |
+| `max` | node.yaml's max (a fixed node: its capacity) |
+| `reason` | the binding reason (§Reasons, ADR-004's, or `fixed`) |
+| `accounts[]` | one entry per node.yaml account, once the scaler has counted |
+| `accounts[].name` | the account's label |
+| `accounts[].kind` | `subscription` or `api` |
+| `accounts[].slots` | its slots for any work (`Slots.Normal`) |
+| `accounts[].urgentOnlySlots` | its slots for urgent/high work only (`Slots.UrgentOnly`, an api key's reserve) |
+| `accounts[].reason` | what bound its slots (`weekly pace`, `five-hour pace`, `daily cap`, `monthly cap`, `project budget`) |
+
+```json
+"scaling": {"capacity": 5, "min": 1, "max": 8, "reason": "accounts",
+  "accounts": [
+    {"name": "max-a", "kind": "subscription", "slots": 1, "urgentOnlySlots": 0, "reason": "five-hour pace"},
+    {"name": "key", "kind": "api", "slots": 2, "urgentOnlySlots": 1, "reason": "daily cap"}]}
+```
+
+Names, kinds and numbers only: never a token, a key, `token_file` or
+`api_key_env`.
+
+**When it is sent.** When node.yaml's capacity is a range, or the node
+lists more than one account; a fixed node on several accounts runs no
+scaler, so it sends `{capacity: N, min: N, max: N, reason: "fixed"}`
+without `accounts`. A fixed node on one account (or on the operator's
+own login) sends none, and its heartbeat is byte-identical to before.
+**And only when the gateway takes it**: the client introspects
+`HeartbeatNodeInput` once, keeps the answer an hour
+(`ScalingProbeEvery`) and asks again after; a schema without `scaling`,
+or a probe refused, leaves the field out, and a `scaling` without
+`accounts` gets the four scalar fields alone — the heartbeat always
+lands (ADR-004 §The heartbeat's `scaling`).
+
+**Pending platform change**: runsheet's `heartbeatNode` input needs
+`scaling.accounts: [{name, kind, slots, urgentOnlySlots, reason}]`
+(beside the four fields of ADR-004) and the console's Nodes page to
+show it; until it deploys the probe keeps the node from sending it.
+mesh-specs trd §1 (`HeartbeatNode { …, scaling? }`) needs the same
+amendment.
+
 ### Money
 
 Every cap and budget counts **list-price dollars** — each session's
@@ -146,5 +194,5 @@ amount, so a cap means the same on every key.
   `Loop.scale` on each subscription's windows, each key's spend from the
   ledger and the slot-minutes run on each account; one without accounts
   runs ADR-004's `Scaler`. `Loop.AccountSlots` holds each account's
-  slots; the heartbeat's per-account slots are a later item, and the
-  platform half (runsheet accepting `scaling.accounts[]`) lands first.
+  slots, and the heartbeat carries them (§Heartbeat) once the platform
+  half — runsheet accepting `scaling.accounts[]` — is in its schema.

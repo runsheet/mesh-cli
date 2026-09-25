@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -66,6 +67,12 @@ type Client struct {
 	// claim-time read's `tools` (a platform older than
 	// tools-in-the-console): every later read asks for credentials alone.
 	sessionsWithoutTools atomic.Bool
+
+	// scalingSchema is what the gateway's heartbeat input was last found
+	// to take of `scaling` (see HeartbeatNode); Now is its clock,
+	// time.Now when nil.
+	scalingSchema scalingProbe
+	Now           func() time.Time
 }
 
 // New returns a client for baseURL (scheme+host, no trailing slash) with
@@ -853,9 +860,11 @@ type HeartbeatExtras struct {
 	// Limits are the latest Claude plan limits the node has read, one
 	// per account (runsheet goal limits-on-the-console).
 	Limits []Limits
-	// Scaling is a ranged node's capacity in force, its range and why
-	// (adr-004); a node with a fixed capacity sends none (runsheet goal
-	// limits-on-the-console).
+	// Scaling is the node's capacity in force, its range and why, and
+	// each account's slots (adr-004, adr-005-capacity-across-accounts);
+	// a fixed node on one account sends none (runsheet goal
+	// limits-on-the-console). It is sent only when the gateway's schema
+	// takes it (HeartbeatNode).
 	Scaling *Scaling
 	// Runtimes are the local tool runtimes the node can start (npx,
 	// uvx, docker) and Adapters the agent CLIs it has (claude-code,
@@ -865,14 +874,30 @@ type HeartbeatExtras struct {
 	Adapters []string
 }
 
-// Scaling is what a node whose capacity is a range reports of it: the
-// capacity in force, node.yaml's min and max, and the reason — `max`,
-// `weekly pace`, `five-hour pace` or `machine load`.
+// Scaling is what a node whose capacity is a range, or that runs on
+// several accounts, reports of it: the capacity in force, node.yaml's
+// min and max, the reason (adr-004, adr-005-capacity-across-accounts),
+// and each account's slots as the accounts scaler last counted them —
+// none before it has, or on a platform whose `scaling` has no
+// `accounts`.
 type Scaling struct {
-	Capacity int    `json:"capacity"`
-	Min      int    `json:"min"`
-	Max      int    `json:"max"`
-	Reason   string `json:"reason"`
+	Capacity int              `json:"capacity"`
+	Min      int              `json:"min"`
+	Max      int              `json:"max"`
+	Reason   string           `json:"reason"`
+	Accounts []AccountScaling `json:"accounts,omitempty"`
+}
+
+// AccountScaling is one account's share of the capacity: its label and
+// kind (subscription or api), its slots for any work, the slots only
+// urgent and high work may take, and what bound them. Names only —
+// never a token, a key or the variable or file holding one.
+type AccountScaling struct {
+	Name            string `json:"name"`
+	Kind            string `json:"kind"`
+	Slots           int    `json:"slots"`
+	UrgentOnlySlots int    `json:"urgentOnlySlots"`
+	Reason          string `json:"reason"`
 }
 
 // Limits is one account's Claude plan limits as the latest session's
@@ -913,7 +938,15 @@ func (c *Client) HeartbeatNode(ctx context.Context, nodeID, version string, runn
 			in["limits"] = x.Limits
 		}
 		if x.Scaling != nil {
-			in["scaling"] = x.Scaling
+			switch takes, accounts := c.takesScaling(ctx); {
+			case !takes:
+			case !accounts && len(x.Scaling.Accounts) > 0:
+				bare := *x.Scaling
+				bare.Accounts = nil
+				in["scaling"] = &bare
+			default:
+				in["scaling"] = x.Scaling
+			}
 		}
 		if len(x.Runtimes) > 0 {
 			in["runtimes"] = x.Runtimes
@@ -937,6 +970,87 @@ func (c *Client) HeartbeatNode(ctx context.Context, nodeID, version string, runn
 		return c.Mutate(ctx, "heartbeatNode", nodeID, basicHeartbeat(in))
 	}
 	return err
+}
+
+// ScalingProbeEvery is how long the gateway's answer to whether its
+// heartbeat takes `scaling` is kept before it is asked again: a
+// platform deploy adds the field without the node restarting.
+const ScalingProbeEvery = time.Hour
+
+// scalingProbe is the cached answer: whether heartbeatNode's input has
+// `scaling`, whether that has `accounts`, and when it was asked.
+type scalingProbe struct {
+	mu       sync.Mutex
+	at       time.Time
+	takes    bool
+	accounts bool
+}
+
+func (c *Client) now() time.Time {
+	if c.Now != nil {
+		return c.Now()
+	}
+	return time.Now()
+}
+
+// takesScaling says whether the gateway's HeartbeatNodeInput has a
+// `scaling` field, and whether that takes `accounts` — asked once by
+// introspection and kept for ScalingProbeEvery (ADR-004: the node must
+// not send a field the platform does not accept). A failed probe is a
+// no, kept as long: the heartbeat goes on without the field. A scalar
+// `scaling` (a Map or JSON) takes any shape.
+func (c *Client) takesScaling(ctx context.Context) (bool, bool) {
+	p := &c.scalingSchema
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := c.now()
+	if !p.at.IsZero() && now.Sub(p.at) < ScalingProbeEvery {
+		return p.takes, p.accounts
+	}
+	type typeRef struct {
+		Kind        string `json:"kind"`
+		InputFields []struct {
+			Name string `json:"name"`
+		} `json:"inputFields"`
+		OfType *struct {
+			Kind        string `json:"kind"`
+			InputFields []struct {
+				Name string `json:"name"`
+			} `json:"inputFields"`
+		} `json:"ofType"`
+	}
+	var out struct {
+		Type *struct {
+			InputFields []struct {
+				Name string  `json:"name"`
+				Type typeRef `json:"type"`
+			} `json:"inputFields"`
+		} `json:"__type"`
+	}
+	p.at, p.takes, p.accounts = now, false, false
+	q := `{ __type(name: "HeartbeatNodeInput") { inputFields { name type { kind inputFields { name } ofType { kind inputFields { name } } } } } }`
+	if err := c.Query(ctx, q, nil, &out); err != nil || out.Type == nil {
+		return false, false
+	}
+	for _, f := range out.Type.InputFields {
+		if f.Name != "scaling" {
+			continue
+		}
+		p.takes = true
+		kind, fields := f.Type.Kind, f.Type.InputFields
+		if kind == "NON_NULL" && f.Type.OfType != nil {
+			kind, fields = f.Type.OfType.Kind, f.Type.OfType.InputFields
+		}
+		if kind == "SCALAR" {
+			p.accounts = true
+		}
+		for _, sf := range fields {
+			if sf.Name == "accounts" {
+				p.accounts = true
+			}
+		}
+	}
+	return p.takes, p.accounts
 }
 
 // basicHeartbeat is a heartbeat with only the fields every platform
