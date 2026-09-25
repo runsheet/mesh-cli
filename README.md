@@ -263,7 +263,9 @@ reported (see Near the plan's limits):
    urgent and high work. An account no session has run on yet has its
    full headroom.
 2. An API key only for urgent or high work (before a paced
-   subscription), or when every subscription is stopped and work waits.
+   subscription), or when every subscription is stopped — or, on a
+   ranged node, has no slot free (see Capacity across accounts) — and
+   work waits.
    Research never runs on an API key. Evaluations and rebases finish
    work already built, so a paced subscription takes them at any
    priority (a stopped one still does not).
@@ -566,6 +568,80 @@ A ranged node's heartbeat carries `scaling` — `capacity` (in force),
 `limits-on-the-console`); a fixed node's carries none. `mesh node
 status` shows this machine's node as `2/1–4 (weekly pace)` in the
 CAPACITY column when it scales, and the plain number when it does not.
+
+### Capacity across accounts
+
+A ranged node that lists `accounts:` scales by what **all** of them
+afford together rather than by one plan's windows (adr-005, capacity
+across accounts). node.yaml names the accounts and their caps — never a
+secret — and, like the capacity, is read again every tick:
+
+```yaml
+capacity: {min: 1, max: 8}
+accounts:
+  - {label: max-a, kind: subscription, token_file: ~/.mesh/accounts/max-a.token}
+  - {label: max-b, kind: subscription, token_file: ~/.mesh/accounts/max-b.token}
+  - label: api
+    kind: api
+    api_key_env: MESH_ANTHROPIC_KEY
+    daily_cap: 50        # list-price dollars; the default
+    monthly_cap: 1000    # the default
+    project: mesh-cli    # optional: spends that project's budget
+project_budgets:
+  mesh-cli: 30           # dollars a day, shared by the keys naming it
+```
+
+`kind` is `subscription` or `api`; anything else is refused, as is a
+negative cap or a cap on a subscription. With no `accounts:` the node
+runs on the operator's own login and scales as in [Capacity that scales
+with headroom](#capacity-that-scales-with-headroom) — nothing changes.
+
+**The rule, every minute:**
+
+- **A subscription** affords the smaller over its windows of (target −
+  utilization) ÷ minutes to reset ÷ its burn per slot-minute — the
+  targets 0.90 five-hour and 0.95 seven-day, the burn measured over the
+  last 30 minutes of *its own* sessions.
+- **An API key** affords its money left today ÷ hours left today ÷ its
+  dollars per slot-hour (measured the same way; $10 before there is
+  data). The money left is the least of the daily cap less today's
+  spend, the monthly cap less this month's, and the project's daily
+  budget less what the project's keys spent today. **The last 10% of a
+  daily cap is for urgent and high work only**; a key at either cap
+  affords nothing — the hard stop.
+- **Capacity** is the sum of every account's slots, clamped to `[min,
+  max]` and held at the sessions running when the machine is busy;
+  one step per 5 minutes, a shrink never stops a running session, and
+  at `min` only urgent and high items are claimed.
+
+**Spend** is counted in list-price dollars — each session's
+`total_cost_usd` — per account, today and this month in the node's
+local time, in `~/.mesh/ledger.json`, so a restart does not reset it.
+The ledger also keeps each account's slot-minutes today.
+
+**The spending order**, before every item is claimed: a subscription
+with a slot free first (the most headroom wins); an API key only for
+urgent or high work, or when every subscription is stopped or has no
+slot free and work waits — and then only its normal slots; the reserve
+slots only for urgent and high work; never a key at its cap. The
+chosen account's environment is the session's. Work no account can
+take stays ready, and the tick logs one `accounts: no account has
+headroom …` line.
+
+**Reasons.** The heartbeat's `scaling.reason` (and `mesh node status`)
+says what set the capacity:
+
+| reason | set by |
+| --- | --- |
+| `max` / `min` | the range clamped the sum |
+| `machine load` | the machine's load or memory |
+| `five-hour pace` / `weekly pace` | every account, by that window |
+| `daily cap` / `monthly cap` / `project budget` | every account, by that money |
+| `accounts` | the sum of several different bounds |
+
+Each account's own slots (`Loop.AccountSlots`) are kept for the
+heartbeat's per-account slots, which it carries once the platform
+accepts them.
 
 ### Acceptance the evaluator can see
 
