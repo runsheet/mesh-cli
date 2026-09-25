@@ -34,7 +34,9 @@ type Config struct {
 	OwnerID   string   `yaml:"owner_id,omitempty"`
 	Slug      string   `yaml:"slug"`
 	Name      string   `yaml:"name"`
-	Capacity  int      `yaml:"capacity"`
+	// Capacity is how many items the node runs at once: a plain number
+	// (fixed) or {min, max}, between which the headroom scaler moves it.
+	Capacity Capacity `yaml:"capacity"`
 	// Models is the model each kind of session runs on — "" for the
 	// CLI's default. A flag on `node start` wins over the file; the
 	// platform's agent definitions will win over both once they land
@@ -83,6 +85,84 @@ func (m Models) For(kind string) string {
 		v = m.Default
 	}
 	return v
+}
+
+// Capacity is node.yaml's `capacity`: `capacity: 3` is Min = Max = 3
+// and is written back as the plain number; `capacity: {min: 1, max: 4}`
+// is a range. The zero value is unset, which LoadConfig makes 1.
+type Capacity struct {
+	Min int `yaml:"min"`
+	Max int `yaml:"max"`
+}
+
+// Fixed is a capacity of exactly n.
+func Fixed(n int) Capacity { return Capacity{Min: n, Max: n} }
+
+// IsFixed says there is no range to move in.
+func (c Capacity) IsFixed() bool { return c.Min == c.Max }
+
+// InForce is the capacity the loop uses until the scaler is wired:
+// Max for a fixed capacity, Min for a range.
+func (c Capacity) InForce() int {
+	if c.IsFixed() {
+		return c.Max
+	}
+	return c.Min
+}
+
+// String is the number, or min–max for a range.
+func (c Capacity) String() string {
+	if c.IsFixed() {
+		return fmt.Sprint(c.Max)
+	}
+	return fmt.Sprintf("%d–%d", c.Min, c.Max)
+}
+
+// UnmarshalYAML takes a plain number or {min, max}. A min of 0 or less
+// is 1 and a missing max is the min; a max under the min is refused. A
+// plain number of 0 or less is left unset for LoadConfig's default.
+func (c *Capacity) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind == yaml.ScalarNode {
+		var n int
+		if err := value.Decode(&n); err != nil {
+			return fmt.Errorf("capacity: %w", err)
+		}
+		if n <= 0 {
+			*c = Capacity{}
+			return nil
+		}
+		*c = Fixed(n)
+		return nil
+	}
+	var r struct {
+		Min int `yaml:"min"`
+		Max int `yaml:"max"`
+	}
+	if err := value.Decode(&r); err != nil {
+		return fmt.Errorf("capacity: want a number or {min, max}: %w", err)
+	}
+	if r.Min <= 0 {
+		r.Min = 1
+	}
+	if r.Max <= 0 {
+		r.Max = r.Min
+	}
+	if r.Max < r.Min {
+		return fmt.Errorf("capacity: max %d is under min %d", r.Max, r.Min)
+	}
+	*c = Capacity{Min: r.Min, Max: r.Max}
+	return nil
+}
+
+// MarshalYAML writes a fixed capacity as the plain number.
+func (c Capacity) MarshalYAML() (any, error) {
+	if c.IsFixed() {
+		return c.Max, nil
+	}
+	return struct {
+		Min int `yaml:"min"`
+		Max int `yaml:"max"`
+	}{c.Min, c.Max}, nil
 }
 
 // Scope is one org the node serves, with the node's id there.
@@ -193,7 +273,7 @@ func Reloader(gw Gateway, cfg *Config, scopes Scopes, load func() (*Config, erro
 		if c, err := load(); err != nil {
 			errs = append(errs, fmt.Errorf("node.yaml (keeping the last good capacity): %w", err))
 		} else {
-			capacity, restrict = c.Capacity, c.Orgs
+			capacity, restrict = c.Capacity.InForce(), c.Orgs
 		}
 		orgs, err := gw.MyOrgs(ctx)
 		if err != nil {
@@ -259,8 +339,8 @@ func LoadConfig() (*Config, error) {
 	if c.Gateway == "" {
 		c.Gateway = gateway.DefaultURL
 	}
-	if c.Capacity <= 0 {
-		c.Capacity = 1
+	if c.Capacity.Min <= 0 {
+		c.Capacity = Fixed(1)
 	}
 	if c.Slug == "" {
 		if c.Name == "" && c.NodeID == "" && c.OrgLogin == "" && len(c.Orgs) == 0 {

@@ -73,7 +73,7 @@ type Loop struct {
 	draining bool
 	// wake tells Run that a session ended or a drain began.
 	wake chan struct{}
-	// capacity is the one in force: Cfg.Capacity until Reload says otherwise.
+	// capacity is the one in force: Cfg.Capacity.InForce() until Reload says otherwise.
 	capacity int
 	// tickGoals holds each org's goals as read this tick, so the claim,
 	// the planner and the director share one GoalIndex read per org.
@@ -416,7 +416,7 @@ func (l *Loop) Capacity() int {
 	if l.capacity > 0 {
 		return l.capacity
 	}
-	return l.Cfg.Capacity
+	return l.Cfg.Capacity.InForce()
 }
 
 // CurrentScopes are the orgs served, as last read — for the sessions
