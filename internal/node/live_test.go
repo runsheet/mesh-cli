@@ -160,9 +160,7 @@ func TestIndexIsNeverCommitted(t *testing.T) {
 	if staged := git("diff", "--cached", "--name-only"); staged != "work.go" {
 		t.Fatalf("staged: %q", staged)
 	}
-	if err := (&Git{}).Commit(context.Background(), dir, []string{"."}, "the item's work"); err != nil {
-		t.Fatal(err)
-	}
+	git("commit", "-q", "-m", "the item's work")
 	if committed := git("show", "--name-only", "--format=", "HEAD"); committed != "work.go" {
 		t.Fatalf("committed: %q", committed)
 	}
