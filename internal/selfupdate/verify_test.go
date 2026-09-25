@@ -229,7 +229,7 @@ func TestFetchMissingAsset(t *testing.T) {
 	if !errors.Is(err, ErrMissingAsset) {
 		t.Fatalf("Fetch = %v, want ErrMissingAsset", err)
 	}
-	if r := Reason(err); r != "release v1.2.3 has no SHA256SUMS.sigstore.json" {
+	if r := Reason(err); r != "release v1.2.3 has no SHA256SUMS.sigstore.json on GitHub (404: missing, or the repo is private)" {
 		t.Errorf("Reason = %q", r)
 	}
 
