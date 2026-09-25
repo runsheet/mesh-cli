@@ -13,6 +13,8 @@ import (
 
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/harness"
+	"projectmesh.io/mesh-cli/internal/sandbox"
+	"projectmesh.io/mesh-cli/internal/tools"
 )
 
 // Resolved is a work item with its goal, project and repo read.
@@ -93,7 +95,11 @@ type Runner struct {
 	// runtime the node lacks, so the loop does not take it again (nil:
 	// not remembered).
 	Declines *Declines
-	Log      *log.Logger
+	// Condition is told the node's condition when a session's sandbox
+	// limits kill it (Loop.NoteCondition, the heartbeat's reason); nil
+	// tells no one.
+	Condition func(reason string)
+	Log       *log.Logger
 }
 
 func (r *Runner) runtimes() []string {
@@ -327,6 +333,20 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		mu.Lock()
 		sessionID = result.SessionID
 		mu.Unlock()
+	}
+	if le := (*sandbox.LimitError)(nil); errors.As(runErr, &le) {
+		// the node's condition, not the item's failure (ADR 007 Limits)
+		reason := LimitReason(label, le)
+		report(reason)
+		r.Declines.Record(item.ID, []tools.Omission{{Tool: "sandbox:" + le.Limit, Runtime: le.Value}}, runtimes, time.Now())
+		if r.Condition != nil {
+			r.Condition(reason)
+		}
+		r.logf("item %s: %s", label, reason)
+		if rerr := r.GW.ReleaseWorkItem(ctx, item.ID, reason); rerr != nil {
+			r.logf("item %s: release: %v", label, rerr)
+		}
+		return nil
 	}
 	if runErr != nil {
 		runErr = acct.RedactErr(runErr)

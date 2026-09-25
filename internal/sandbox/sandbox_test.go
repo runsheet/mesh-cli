@@ -1,0 +1,322 @@
+package sandbox
+
+import (
+	"context"
+	"errors"
+	"io"
+	"os"
+	"path/filepath"
+	"slices"
+	"sort"
+	"strings"
+	"testing"
+	"time"
+)
+
+func testSandbox(t *testing.T, rt Runtime) *Sandbox {
+	t.Helper()
+	return &Sandbox{Runtime: rt, TempDir: t.TempDir(), Config: Config{
+		Image:   "ghcr.io/projectmesh-io/mesh-node:v1",
+		Limits:  Limits{CPUs: DefaultCPUs, Memory: DefaultMemory, Pids: DefaultPids},
+		Network: DefaultNetwork(),
+		GitName: "Op", GitEmail: "op@example.com",
+	}}
+}
+
+func runOnce(t *testing.T, f *Fake, env []string) (*Session, AgentSpec, string) {
+	t.Helper()
+	sb := testSandbox(t, f)
+	sess, err := sb.Open("ship-it/2", "build")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws := t.TempDir()
+	if err := sess.Run(context.Background(), RunSpec{Workspace: ws, Env: env, Command: []string{"claude", "-p"}, Stdin: strings.NewReader("prompt")}); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.Agents) != 1 {
+		t.Fatalf("agents: %+v", f.Agents)
+	}
+	return sess, f.Agents[0], ws
+}
+
+// The pod mounts exactly two host paths — the workspace and the
+// session's temporary HOME, both read-write — and never the operator's
+// home, ~/.mesh, a runner's directory or a container socket.
+func TestPodMountsOnlyWorkspaceAndHome(t *testing.T) {
+	f := &Fake{}
+	sess, spec, ws := runOnce(t, f, nil)
+	defer sess.Close()
+	want := []Mount{{Source: ws, Target: ws}, {Source: sess.Home, Target: sess.Home}}
+	if !slices.Equal(spec.Mounts, want) {
+		t.Fatalf("mounts = %+v, want %+v", spec.Mounts, want)
+	}
+	userHome, _ := os.UserHomeDir()
+	args := AgentRunArgs(Pod{Name: "p"}, spec)
+	var vols []string
+	for i, a := range args {
+		if a == "--volume" || a == "-v" || a == "--mount" {
+			vols = append(vols, args[i+1])
+		}
+	}
+	if len(vols) != 2 || vols[0] != ws+":"+ws+":rw" || vols[1] != sess.Home+":"+sess.Home+":rw" {
+		t.Fatalf("volumes = %v", vols)
+	}
+	for _, v := range vols {
+		src, _, _ := strings.Cut(v, ":")
+		for _, bad := range []string{userHome, filepath.Join(userHome, ".mesh"), filepath.Join(userHome, ".config", "gh"), "/var/run/docker.sock", "/run/docker.sock", "actions-runner"} {
+			if src == bad || (bad == "actions-runner" && strings.Contains(src, bad)) {
+				t.Fatalf("mounted %s", src)
+			}
+		}
+		if src == userHome || src == "/" {
+			t.Fatalf("mounted the host home or root: %s", src)
+		}
+	}
+	if strings.HasPrefix(sess.Home, userHome+string(filepath.Separator)) && !strings.HasPrefix(sess.Home, os.TempDir()) {
+		t.Fatalf("the temp HOME %s is inside the operator's home", sess.Home)
+	}
+	for _, a := range args {
+		if strings.Contains(a, "docker.sock") || strings.Contains(a, "podman.sock") || a == "--privileged" || a == "--env-host" {
+			t.Fatalf("agent args carry %q: %v", a, args)
+		}
+	}
+}
+
+// The agent's environment is built from the allow-list: the node's own
+// variables never reach it, nor any job variable outside the list.
+func TestAgentEnvIsTheAllowList(t *testing.T) {
+	t.Setenv("MESH_DECOY", "decoy-from-node")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "aws-secret")
+	t.Setenv("SSH_AUTH_SOCK", "/tmp/agent.sock")
+	t.Setenv("DOCKER_HOST", "unix:///var/run/docker.sock")
+	t.Setenv("GH_TOKEN", "ghp_operator_admin_org")
+	jobEnv := []string{
+		"GH_TOKEN=ghs_item", "GH_CONFIG_DIR=/tmp/host-gh-dir",
+		"CLAUDE_CODE_OAUTH_TOKEN=oauth", "CLAUDE_CONFIG_DIR=/tmp/host-claude",
+		"MESH_ACCOUNT=team", "MESH_TOOL_LINEAR_API_KEY=lin",
+		"MESH_DECOY=decoy-in-job", "HOME=/home/chris", "OPENAI_API_KEY=oa",
+	}
+	f := &Fake{}
+	sess, spec, _ := runOnce(t, f, jobEnv)
+	defer sess.Close()
+	got := map[string]string{}
+	for _, kv := range spec.Env {
+		k, v, _ := strings.Cut(kv, "=")
+		if _, dup := got[k]; dup {
+			t.Fatalf("%s set twice: %v", k, spec.Env)
+		}
+		got[k] = v
+	}
+	names := make([]string, 0, len(got))
+	for k := range got {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	want := []string{"CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CONFIG_DIR", "GH_CONFIG_DIR", "GH_TOKEN", "HOME", "LANG", "MESH_ACCOUNT", "MESH_ITEM", "MESH_SESSION_KIND", "MESH_TOOL_LINEAR_API_KEY", "OPENAI_API_KEY", "PATH", "TERM", "TZ"}
+	if !slices.Equal(names, want) {
+		t.Fatalf("env names = %v\nwant %v", names, want)
+	}
+	if got["GH_TOKEN"] != "ghs_item" || got["HOME"] != sess.Home {
+		t.Fatalf("GH_TOKEN %q HOME %q", got["GH_TOKEN"], got["HOME"])
+	}
+	if got["GH_CONFIG_DIR"] != filepath.Join(sess.Home, ".config", "gh") || got["CLAUDE_CONFIG_DIR"] != filepath.Join(sess.Home, ".claude") {
+		t.Fatalf("config dirs must be under the temp HOME: %v", got)
+	}
+	for _, v := range got {
+		if strings.Contains(v, "decoy") || v == "aws-secret" || v == "ghp_operator_admin_org" {
+			t.Fatalf("a node or decoy value leaked: %v", got)
+		}
+	}
+	// the podman process carries the values; its command line names only
+	args := AgentRunArgs(Pod{Name: "p"}, spec)
+	if !slices.Contains(args, "--unsetenv-all") {
+		t.Fatalf("image defaults must be dropped: %v", args)
+	}
+	for _, a := range args {
+		if strings.Contains(a, "=oauth") || strings.Contains(a, "=ghs_item") || strings.Contains(a, "=lin") {
+			t.Fatalf("a secret is on podman's command line: %v", args)
+		}
+	}
+	penv := podmanEnv(os.Environ(), spec.Env)
+	for _, kv := range penv {
+		k, _, _ := strings.Cut(kv, "=")
+		if k == "MESH_DECOY" || k == "AWS_SECRET_ACCESS_KEY" || k == "SSH_AUTH_SOCK" || k == "DOCKER_HOST" {
+			t.Fatalf("podman's own env passes %s on", k)
+		}
+	}
+	if v, _ := lastValue(penv, "GH_TOKEN"); v != "ghs_item" {
+		t.Fatalf("podman env GH_TOKEN = %q", v)
+	}
+	if v, _ := lastValue(penv, "HOME"); v != sess.Home {
+		t.Fatalf("podman env HOME = %q: the container's must win", v)
+	}
+}
+
+func lastValue(env []string, key string) (string, bool) {
+	v, ok := "", false
+	for _, kv := range env {
+		if k, val, found := strings.Cut(kv, "="); found && k == key {
+			v, ok = val, true
+		}
+	}
+	return v, ok
+}
+
+// The network refuses the three LAN ranges and the host's loopback: the
+// pod's pasta maps neither the gateway nor host loopback, and the rules
+// loaded into it drop the ranges and accept only HTTPS/HTTP out.
+func TestNetworkRefusesTheLAN(t *testing.T) {
+	f := &Fake{}
+	sess, _, _ := runOnce(t, f, nil)
+	defer sess.Close()
+	if len(f.Pods) != 1 {
+		t.Fatalf("pods: %+v", f.Pods)
+	}
+	rules := f.Pods[0].Network.Ruleset()
+	var drop string
+	for _, line := range strings.Split(rules, "\n") {
+		if strings.Contains(line, "ip daddr {") && strings.HasSuffix(line, "drop") {
+			drop = line
+		}
+	}
+	for _, r := range []string{"192.168.0.0/16", "10.0.0.0/8", "172.16.0.0/12", "127.0.0.0/8", "169.254.0.0/16", "100.64.0.0/10"} {
+		if !strings.Contains(drop, r) {
+			t.Fatalf("rules do not drop %s:\n%s", r, rules)
+		}
+	}
+	for _, want := range []string{"policy drop;", "oif \"lo\" accept", "tcp dport { 443, 80 } accept", "ip6 daddr { ::1/128, fc00::/7, fe80::/10"} {
+		if !strings.Contains(rules, want) {
+			t.Fatalf("rules lack %q:\n%s", want, rules)
+		}
+	}
+	// the DNS forwarder is let through before the link-local drop
+	if strings.Index(rules, DNSForward) > strings.Index(rules, "169.254.0.0/16") {
+		t.Fatalf("DNS accept must come before the drop:\n%s", rules)
+	}
+	args := PodCreateArgs(f.Pods[0])
+	net := flagAfter(args, "--network")
+	if !strings.HasPrefix(net, "pasta:") || !strings.Contains(net, "--no-map-gw") || strings.Contains(net, "map-host-loopback") {
+		t.Fatalf("pod network = %q", net)
+	}
+	if !slices.Contains(args, "--no-hosts") || flagAfter(args, "--userns") != "keep-id" {
+		t.Fatalf("pod args = %v", args)
+	}
+	init := NetworkInitArgs(Pod{Name: "p"}, "img")
+	if flagAfter(init, "--cap-add") != "NET_ADMIN" || flagAfter(init, "--cap-drop") != "all" {
+		t.Fatalf("init args = %v", init)
+	}
+	agent := AgentRunArgs(Pod{Name: "p"}, AgentSpec{Name: "a", Image: "img"})
+	if flagAfter(agent, "--cap-drop") != "all" || slices.Contains(agent, "--cap-add") || flagAfter(agent, "--security-opt") != "no-new-privileges" {
+		t.Fatalf("the agent must hold no capability: %v", agent)
+	}
+}
+
+func flagAfter(args []string, flag string) string {
+	for i, a := range args {
+		if a == flag && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	return ""
+}
+
+// The pod is removed when the session ends, and the HOME on Close.
+func TestSessionCleansUp(t *testing.T) {
+	f := &Fake{}
+	sess, _, _ := runOnce(t, f, nil)
+	if len(f.Removed) != 1 || f.Removed[0] != f.Pods[0].Name {
+		t.Fatalf("removed = %v", f.Removed)
+	}
+	for _, rel := range []string{".gitconfig", ".claude", ".config/gh"} {
+		if _, err := os.Stat(filepath.Join(sess.Home, rel)); err != nil {
+			t.Fatalf("home lacks %s: %v", rel, err)
+		}
+	}
+	gc, _ := os.ReadFile(filepath.Join(sess.Home, ".gitconfig"))
+	if !strings.Contains(string(gc), "email = op@example.com") {
+		t.Fatalf(".gitconfig = %s", gc)
+	}
+	if err := sess.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(sess.Home); !os.IsNotExist(err) {
+		t.Fatalf("home outlived its session: %v", err)
+	}
+}
+
+// A kill by a limit is a *LimitError; any other exit an *ExitError.
+func TestLimitKillsAreTyped(t *testing.T) {
+	l := Limits{CPUs: 2, Memory: "6g", Pids: 4096}
+	for _, tc := range []struct {
+		exit    Exit
+		elapsed time.Duration
+		timeout time.Duration
+		stderr  string
+		limit   string
+		code    int
+	}{
+		{exit: Exit{Code: 137, OOMKilled: true}, limit: "memory"},
+		{exit: Exit{Code: 137}, elapsed: time.Minute, timeout: time.Hour, limit: "memory"},
+		{exit: Exit{Code: 137}, elapsed: 2 * time.Hour, timeout: time.Hour, limit: "timeout"},
+		{exit: Exit{Code: 128}, stderr: "bash: fork: retry: Resource temporarily unavailable", limit: "pids"},
+		{exit: Exit{Code: 1}, stderr: "some test failed", code: 1},
+	} {
+		err := classify(tc.exit, tc.elapsed, tc.timeout, l, tc.stderr)
+		var le *LimitError
+		var ee *ExitError
+		switch {
+		case tc.limit != "":
+			if !errors.As(err, &le) || le.Limit != tc.limit {
+				t.Errorf("%+v: err = %v, want limit %s", tc, err, tc.limit)
+			}
+		default:
+			if !errors.As(err, &ee) || ee.Code != tc.code {
+				t.Errorf("%+v: err = %v", tc, err)
+			}
+		}
+	}
+	if classify(Exit{}, 0, 0, l, "") != nil {
+		t.Fatal("exit 0 is no error")
+	}
+}
+
+// A run whose agent the runtime OOM-kills returns the LimitError, and
+// the pod is still removed.
+func TestRunReturnsALimitKill(t *testing.T) {
+	f := &Fake{Agent: func(ctx context.Context, spec AgentSpec) (Exit, error) {
+		_, _ = io.WriteString(spec.Stdout, "{}\n")
+		return Exit{Code: 137, OOMKilled: true}, nil
+	}}
+	sb := testSandbox(t, f)
+	sess, _ := sb.Open("x/1", "build")
+	defer sess.Close()
+	err := sess.Run(context.Background(), RunSpec{Workspace: t.TempDir(), Stdout: io.Discard, Timeout: time.Hour})
+	var le *LimitError
+	if !errors.As(err, &le) || le.Limit != "memory" || le.Value != "6g" {
+		t.Fatalf("err = %v", err)
+	}
+	if len(f.Removed) != 1 {
+		t.Fatalf("pod not removed: %v", f.Calls)
+	}
+	if f.Agents[0].TimeoutSeconds != int((time.Hour+TimeoutGrace)/time.Second) {
+		t.Fatalf("runtime timeout = %d", f.Agents[0].TimeoutSeconds)
+	}
+}
+
+func TestRegistryAllowed(t *testing.T) {
+	for image, want := range map[string]bool{
+		"postgres:16":                       true,
+		"library/redis:7":                   true,
+		"docker.io/library/mysql:8":         true,
+		"ghcr.io/acme/svc:1":                true,
+		"us-docker.pkg.dev/proj/repo/img:1": true,
+		"quay.io/minio/minio":               true,
+		"registry.example.com/x:1":          false,
+		"localhost:5000/x":                  false,
+	} {
+		if got := RegistryAllowed(Registry(image), DefaultRegistries); got != want {
+			t.Errorf("%s: %v, want %v", image, got, want)
+		}
+	}
+}
