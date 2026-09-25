@@ -60,7 +60,10 @@ existing installs download.
   (`Restart=always`) or launchd (`KeepAlive`) starts the new binary. A
   refusal or a failed swap resumes the drain the update began, puts the
   reason on every heartbeat (`updateError`) while that version is still
-  asked for, and leaves that version for an hour.
+  asked for, and leaves that version for an hour. A platform that
+  refuses `updateError` gets the basic heartbeat instead (version,
+  running, draining), and the node offers the field again every ten
+  minutes (`HeartbeatNode`).
 - Every `mesh node start` counts itself against a pending update; the
   third unconfirmed start (the new binary failed to start twice) puts
   `.prev` back, heartbeats the reason as the old version, and exits 0
