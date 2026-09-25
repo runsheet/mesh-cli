@@ -119,7 +119,8 @@ func TestRebaseUnresolvableFailsWithReason(t *testing.T) {
 			requestRebase(f, item1, "mesh/ship-it-1")
 			ws := &fakeWS{root: t.TempDir(), pushedHead: c.pushed, pushedErr: c.pushedErr}
 			h := &fakeHarness{text: c.text}
-			loop, _ := rebaseNode(t, f, "test-node", h, ws, nil)
+			loop, cfg := rebaseNode(t, f, "test-node", h, ws, nil)
+			cfg.Capacity = Fixed(0) // a rebase takes no slot; none lets this tick claim the item it hands back
 			loop.Tick(context.Background())
 			loop.wg.Wait()
 
@@ -148,7 +149,8 @@ func TestRebaseTokenRefusedFailsTheRebase(t *testing.T) {
 	requestRebase(f, item1, "mesh/ship-it-1")
 	h := &fakeHarness{text: "REBASED: abc123def456\nRESOLVED: main.go"}
 	ws := &fakeWS{root: t.TempDir(), pushedHead: "abc123def456"}
-	loop, _ := rebaseNode(t, f, "test-node", h, ws, nil)
+	loop, cfg := rebaseNode(t, f, "test-node", h, ws, nil)
+	cfg.Capacity = Fixed(0) // a rebase takes no slot; none lets this tick claim the item it hands back
 	f.RebaseTokens = false
 	loop.Tick(context.Background())
 	loop.wg.Wait()
@@ -172,7 +174,8 @@ func TestRebaseFinishRefusedFailsTheRebase(t *testing.T) {
 	requestRebase(f, item1, "mesh/ship-it-1")
 	f.Refuse["finishWorkItemRebase"] = "finishWorkItemRebase: the head is not on the branch"
 	h := &fakeHarness{text: "REBASED: abc123def456\nRESOLVED: main.go"}
-	loop, _ := rebaseNode(t, f, "test-node", h, &fakeWS{root: t.TempDir(), pushedHead: "abc123def4567890"}, nil)
+	loop, cfg := rebaseNode(t, f, "test-node", h, &fakeWS{root: t.TempDir(), pushedHead: "abc123def4567890"}, nil)
+	cfg.Capacity = Fixed(0) // a rebase takes no slot; none lets this tick claim the item it hands back
 	loop.Tick(context.Background())
 	loop.wg.Wait()
 
