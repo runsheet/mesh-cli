@@ -96,7 +96,18 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   The loop's `Update` is an interface; tests inject a fake.
   `mesh node update [version]` (`internal/commands/nodeupdate.go`) does
   it by hand on the same `ReleaseUpdater`: verify, drain the pidfile's
-  node, swap; `--verify-only` verifies into a temp dir.
+  node, swap; `--verify-only` verifies into a temp dir. **The node
+  image** (`images/node/Containerfile`, embedded as
+  `nodeimage.Containerfile`; `internal/sandbox/image.go`, mesh-cli
+  ADR-007): both ensure the *new* version's image after the verify and
+  before the drain (`Loop.Image`, `nodeUpdate.Image` →
+  `SandboxConfig.EnsureImage` → `sandbox.EnsureImage`/`BuildImage` on
+  an injected `Runner`): pull `ghcr.io/projectmesh-io/mesh-node:<version>`
+  (node.yaml `sandbox.image`: empty that, `build` built here, else as
+  given), prune older tags but the running one's. A failed pull is an
+  `updateError`: no drain, no swap, never a silent build. `sandbox:
+  off` pulls nothing. release-tag.yml's `image` job pushes and
+  cosign-signs it before `publish`.
 - **The pace** (`internal/node/limits.go`, trd §3 Pacing by the plan's
   limits): every session's `rate_limit_event` lands in `Loop.Limits`
   (latest per account — its `MESH_ACCOUNT` label, else

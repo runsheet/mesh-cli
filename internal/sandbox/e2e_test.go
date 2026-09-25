@@ -20,7 +20,7 @@ import (
 // and the Docker socket cannot be read; the environment holds only the
 // allow-listed names; https://example.com answers; 192.168.1.1 and the
 // host do not. It needs podman and the node image (MESH_SANDBOX_IMAGE,
-// else the latest mesh-node), so it runs only with MESH_SANDBOX_E2E=1.
+// else mesh-node:dev), so it runs only with MESH_SANDBOX_E2E=1.
 func TestProbeSessionE2E(t *testing.T) {
 	if os.Getenv("MESH_SANDBOX_E2E") != "1" {
 		t.Skip("MESH_SANDBOX_E2E=1 runs a real pod")

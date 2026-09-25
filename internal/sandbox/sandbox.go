@@ -33,11 +33,12 @@ const (
 	TimeoutGrace = 30 * time.Second
 )
 
-// DefaultImage is the node image of a node version: its tag, or latest
-// for a dev build.
+// DefaultImage is the node image of a node version: the version is its
+// tag, as it is (v1.2.0 is mesh-node:v1.2.0, a dev build mesh-node:dev,
+// which no release pushes: `sandbox.image: build` makes it locally).
 func DefaultImage(version string) string {
-	if version == "" || version == "dev" {
-		return DefaultImageRepo + ":latest"
+	if version == "" {
+		version = "dev"
 	}
 	return DefaultImageRepo + ":" + version
 }
@@ -58,7 +59,9 @@ var AllowedEnv = []string{
 const ToolEnvPrefix = "MESH_TOOL_"
 
 // BaseEnv are the variables the sandbox sets itself for every session.
-var BaseEnv = []string{"PATH", "HOME", "LANG", "TZ", "TERM", "CLAUDE_CONFIG_DIR", "MESH_ITEM", "MESH_SESSION_KIND"}
+// DISABLE_AUTOUPDATER keeps claude from updating itself: the node image's
+// own ENV says so too, but --unsetenv-all drops the image's variables.
+var BaseEnv = []string{"PATH", "HOME", "LANG", "TZ", "TERM", "CLAUDE_CONFIG_DIR", "MESH_ITEM", "MESH_SESSION_KIND", "DISABLE_AUTOUPDATER"}
 
 // Config is a node's sandbox: the image, the agent's and the services'
 // limits, the registries services may come from, and the network policy.
@@ -179,6 +182,7 @@ func (s *Session) Env(jobEnv []string) []string {
 		"CLAUDE_CONFIG_DIR=" + s.ClaudeConfigDir(),
 		"MESH_ITEM=" + s.Label,
 		"MESH_SESSION_KIND=" + s.Kind,
+		"DISABLE_AUTOUPDATER=1",
 	}
 	for _, kv := range jobEnv {
 		name, _, ok := strings.Cut(kv, "=")
