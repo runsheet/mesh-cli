@@ -28,6 +28,13 @@ existing installs download.
   `mesh-darwin-arm64`, `SHA256SUMS` (`sha256sum mesh-*`) and
   `SHA256SUMS.sigstore.json`, the bundle from
   `cosign sign-blob --yes --bundle SHA256SUMS.sigstore.json SHA256SUMS`.
+  With the cosign 2.x that `sigstore/cosign-installer@v3` installs, that
+  is cosign's legacy bundle JSON (`base64Signature`, `cert`,
+  `rekorBundle`), not the protobuf Sigstore bundle; the updater reads
+  both (`parseBundle` turns the legacy one into a v0.1 bundle whose log
+  entry carries Rekor's SET as its inclusion promise, and verifies it
+  like any other), so adding `--new-bundle-format` to the workflow later
+  needs no node change.
 - Signing is keyless Sigstore: there is no key to hold or leak. The
   updater accepts the bundle only for certificate identity
   `https://github.com/projectmesh-io/mesh-cli/.github/workflows/release-tag.yml@refs/tags/<tag>`
@@ -48,6 +55,15 @@ existing installs download.
   of `ErrMissingAsset`, `ErrSignature`, `ErrIdentity`, `ErrChecksum`
   with a short reason for the heartbeat; the update's progress and last
   error live in `~/.mesh/update.json`.
+- `selfupdate.GitHub` downloads anonymously from
+  `github.com/projectmesh-io/mesh-cli/releases/download/<tag>/<asset>`,
+  which works only while the repo is public. **It is private today**, and
+  those URLs answer 404 even with a token (proven on the reference
+  release, 2026-09-25), so a node cannot yet fetch a release on its own.
+  Either the repo (or a public mirror of its releases) goes public, or
+  the source moves to the authenticated API asset download with a
+  credential the node holds; that choice is open. Until then an operator
+  can `gh release download` and run `mesh node update --from-dir`.
 - The loop follows `NodeIndex.desiredVersion` (the platform half,
   update-nodes-from-console), read after each tick's heartbeat
   (`GetDesiredVersion`; a platform without the field is no update,
@@ -82,8 +98,19 @@ existing installs download.
   drain signal at once: a node with no session exits on it, and its
   service waits 10 seconds (`RestartSec`, `ThrottleInterval`) before
   starting what is by then the new binary. `--verify-only` downloads and
-  verifies into a temporary directory and swaps nothing. It needs no
+  verifies into a temporary directory and swaps nothing. `--from-dir`
+  reads the release's files from a directory (`selfupdate.Dir`) instead
+  of GitHub and verifies them under the same `ReleasePolicy` of the
+  version named, so a directory cannot vouch for itself; it is how an
+  edited `SHA256SUMS` is shown to be refused. It needs no
   platform, so a node the console cannot reach can still be updated.
+- Test tags carry a `-` (`v0.0.0-selfupdate-test.<n>`), so they are
+  prereleases and never the `latest` a node picks up unasked. The
+  reference release, `v0.0.0-selfupdate-test.1`, keeps its `SHA256SUMS`
+  and bundle in `internal/selfupdate/testdata/`, with Sigstore's
+  public-good trusted root of the day, and the package's tests verify
+  them offline against the real identity and refuse them under another
+  tag's or with edited sums.
 
 ## Consequences
 

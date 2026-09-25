@@ -881,6 +881,17 @@ published as a prerelease. The version is stamped from the tag
 (`internal/version.Version`), so `mesh --version` and the node's
 heartbeat report exactly the tag. There is no manual trigger — tags only.
 
+Test tags carry a `-` (`v0.0.0-selfupdate-test.<n>`), so they are
+prereleases, and `mesh node update` with no version never picks one up as
+the latest: a node runs one only when the platform or an operator names it.
+The reference release is **`v0.0.0-selfupdate-test.1`**, cut from main to
+prove the workflow end to end: its `SHA256SUMS` and
+`SHA256SUMS.sigstore.json` are committed under
+`internal/selfupdate/testdata/v0.0.0-selfupdate-test.1/`, and
+`go test ./internal/selfupdate/...` verifies them offline against the real
+`release-tag.yml` identity and refuses them under another tag's identity or
+with an edited `SHA256SUMS`.
+
 Each release carries five files, and the names are the contract the
 updater reads:
 
@@ -892,6 +903,8 @@ updater reads:
 | `SHA256SUMS` | `sha256sum mesh-*` over the three binaries |
 | `SHA256SUMS.sigstore.json` | the Sigstore bundle signing `SHA256SUMS` |
 
+`SHA256SUMS.sigstore.json` is cosign 2.x's `--bundle` JSON (its legacy
+form, not the protobuf Sigstore bundle); the node reads either.
 `SHA256SUMS` is signed keyless with `cosign sign-blob`: no key exists,
 the signature is bound to the workflow's GitHub OIDC identity and logged
 in Rekor. The node accepts a release only when the bundle verifies
@@ -947,6 +960,7 @@ until the platform asks for another.
 mesh node update v0.4.0                  # verify, drain the node, swap
 mesh node update                         # the latest release
 mesh node update v0.4.0 --verify-only    # download and verify into a temp dir; swap nothing
+mesh node update v0.4.0 --verify-only --from-dir ./rel   # the same, from files already downloaded
 ```
 
 It verifies first and refuses anything not signed by `release-tag.yml` on
@@ -960,6 +974,17 @@ once its sessions end and the service starts the new binary, under the
 same two-failed-starts rollback. It needs no platform, so it works when
 the console cannot reach the node — or `mesh node update --verify-only`
 checks a release from any machine.
+
+**The repo is private.** GitHub answers 404 on its release download URLs
+without (and even with) a token, so today neither the node nor `mesh node
+update` can fetch a release by itself (ADR-002). Download it with `gh`
+and verify or install from the directory:
+
+```sh
+TAG=v0.0.0-selfupdate-test.1
+gh release download "$TAG" -R projectmesh-io/mesh-cli -D rel
+mesh node update --verify-only --from-dir rel "$TAG"
+```
 
 ## Known Limitations
 

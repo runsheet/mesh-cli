@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/sigstore/sigstore-go/pkg/bundle"
 	"github.com/sigstore/sigstore-go/pkg/root"
 	"github.com/sigstore/sigstore-go/pkg/tuf"
 	"github.com/sigstore/sigstore-go/pkg/verify"
@@ -100,8 +99,8 @@ func Verify(rel *Release, p Policy) error {
 }
 
 func verifySignature(rel *Release, p Policy) error {
-	var b bundle.Bundle
-	if err := b.UnmarshalJSON(rel.Bundle); err != nil {
+	b, err := parseBundle(rel.Bundle)
+	if err != nil {
 		return refuse(ErrSignature, err, "%s is not a valid Sigstore bundle", BundleAsset)
 	}
 	tm, err := p.TrustedMaterial()
@@ -121,7 +120,7 @@ func verifySignature(rel *Release, p Policy) error {
 	if err != nil {
 		return fmt.Errorf("sigstore identity: %w", err)
 	}
-	_, err = v.Verify(&b, verify.NewPolicy(verify.WithArtifact(bytes.NewReader(rel.Sums)), verify.WithCertificateIdentity(id)))
+	_, err = v.Verify(b, verify.NewPolicy(verify.WithArtifact(bytes.NewReader(rel.Sums)), verify.WithCertificateIdentity(id)))
 	if err == nil {
 		return nil
 	}
