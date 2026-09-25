@@ -1,5 +1,5 @@
 ---
-summary: The node reads an item's model, agent slug and evaluate model off WorkItemIndex, resolves a named agent's model project → org → default by AgentID, hands the planner's per-item model in on planGoal, and falls back without the fields on a platform older than items-carry-a-model.
+summary: The node reads an item's model, agent slug and evaluate model off WorkItemIndex, resolves a named agent's model project → org → default by AgentID, hands the planner's per-item model in on planGoal, runs the planner on the strongest configured model, and falls back without the fields on a platform older than items-carry-a-model.
 status: accepted
 ---
 
@@ -41,6 +41,21 @@ cost an older platform its items.
 - `internal/node/models.go` ranks tiers haiku < sonnet < opus (a full id
   by its family; "" and anything unknown below all three) so the node
   can pick the stronger of two, and never evaluate below the builder.
+
+- The planner runs on `Models.PlanModel()`: node.yaml's `plan` (or
+  `--model-plan`) when set explicitly, else the strongest of `default`,
+  `build`, `evaluate`, `channel` and `research`, else `opus`. It
+  chooses every other item's model, so it is never the weak link.
+- The planner's graph carries `model` and `model_reason` per item
+  (`harness.PlannedSpec`), chosen by the rubric in `PlanPrompt`:
+  `haiku` for mechanical items, `sonnet` for a well-specified change in
+  one package with tests to copy, `opus` for anything cross-cutting,
+  concurrency, migrations, security, a failing item's retry, or when
+  unsure. The node trims the model onto `PlannedItem.Model`; one that
+  is neither an alias nor a `claude-*` id is dropped with a log line —
+  advice, not an error — and the item falls back as if the plan had
+  named none. node.log records each item's model and reason when the
+  plan is handed in. `mesh goal plan` carries a `model` from its YAML.
 
 Which session runs on which model is the rest of the goal and amends
 this ADR when it lands.

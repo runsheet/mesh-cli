@@ -120,6 +120,16 @@ file for that run (`--model-research` and `--model-rebase` too). A value is an a
 knows (`opus`, `sonnet`, `haiku`) or a full id (`claude-opus-5`); unset
 leaves the CLI's own default.
 
+The planner is the exception: it chooses every item's model, so without
+an explicit `plan` it runs on the strongest model configured for any
+kind, and on `opus` when none is. Its graph names a `model` per item
+with a one-line `model_reason` — `haiku` for mechanical items (docs-only,
+a goal-doc section, a version bump, a rename), `sonnet` for a
+well-specified change in one package with tests to copy, `opus` for
+anything cross-cutting, concurrency, migrations, security, a failing
+item's retry, or when unsure — and node.log records each choice when the
+plan is handed in.
+
 ### The director
 
 A project on the platform carries **directions** — what it is for, in
@@ -508,6 +518,41 @@ times, ran out of attempts, and left its goal with nothing to run. Item #4
 asked a console item for a `specs/console-trd.md` diff, in a repository
 its builder does not hold.
 
+### Dependencies: only what an item uses
+
+The node runs up to 6 items at once, and the scheduler readies every item
+whose dependencies have merged. A dependency the item does not need only
+makes it wait. So the planner (and the replanner) follows one rule:
+
+- **An item depends on another only when it uses something that item
+  creates or changes** — a type, command, field, function, file or
+  endpoint — and could not be built against `main` without it.
+- **Sharing a repository or touching the same file is not a dependency.**
+  The merge queue rebases each pull request, and the scheduler's overlap
+  hold covers conflicts.
+- **Order by importance is priority, not dependency.** An item that
+  matters more is not a reason for another to wait on it.
+- **Prefer a wide, shallow graph**, so that as many items as possible are
+  ready at once.
+- **A final docs or goal-doc item depends only on the items whose results
+  it records**, not on every item in the goal.
+
+Each dependency the planner declares carries a one-line reason naming what
+is used:
+
+```json
+"depends_on": [{"seq": 2, "because": "uses the PlannedItem.Because field item 2 adds"}]
+```
+
+The node's plan validation drops any dependency without a `because`, and
+logs it, before `PlanGoal`. The reason stays on the node: it is added to
+the dependent item's brief, and is not sent to the platform, which still
+receives `depends_on` as seqs.
+
+The case that made the rule: in goal `node-plans-from-the-truth`, item #29
+waited on four items it did not use, so it ran only after all of them had
+merged instead of alongside them.
+
 ### The goal's record in the repo
 
 Status lives on the platform, not in git (ADR 003, decision 4). No item's
@@ -529,7 +574,7 @@ Prologue lists one), with the statement, the acceptance and the final
 
 ```bash
 mesh goal set goal.yaml            # slug, title, statement, acceptance, budget_cents, daily_budget_cents, checkpoints, project
-mesh goal plan ship-it plan.yaml   # items: seq, title, brief, acceptance, depends_on: [seq…], repo: owner/name, base_ref
+mesh goal plan ship-it plan.yaml   # items: seq, title, brief, acceptance, depends_on: [seq…], repo: owner/name, base_ref, model
 mesh goal approve ship-it          # the graph checkpoint
 mesh goal pause ship-it --reason "…" / resume / cancel
 mesh goal list

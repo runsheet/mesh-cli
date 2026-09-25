@@ -1,0 +1,5 @@
+{"type":"thread.started","thread_id":"01a0d7ed-81b5-7160-9beb-5cecbe5617bf"}
+{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Code Mode is unavailable because failed to spawn code-mode host /home/user/.local/bin/codex-code-mode-host: host executable was not found. Code mode will fail closed; enable `features.code_mode_host` and install `codex-code-mode-host`."}}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"hello from codex"}}
+{"type":"turn.completed","usage":{"input_tokens":12624,"cached_input_tokens":0,"cache_write_input_tokens":12621,"output_tokens":8,"reasoning_output_tokens":0}}

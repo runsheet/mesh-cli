@@ -95,6 +95,25 @@ type Result struct {
 	// these across sessions (two running is the harness's condition,
 	// mesh-specs trd §3).
 	EmptyOutput bool
+	// Usage is the session's token counts, from a harness that reports
+	// tokens rather than dollars (Codex); nil otherwise.
+	Usage *Usage
+}
+
+// Usage is what a session consumed, in tokens, and the model its cost
+// was computed for.
+type Usage struct {
+	// Model is the model the tokens were priced at.
+	Model string
+	// InputTokens includes CachedInputTokens and CacheWriteInputTokens.
+	InputTokens           int64
+	CachedInputTokens     int64
+	CacheWriteInputTokens int64
+	// OutputTokens includes ReasoningOutputTokens.
+	OutputTokens          int64
+	ReasoningOutputTokens int64
+	// Unpriced is a model with no list price: CostUSD is 0, not free.
+	Unpriced bool
 }
 
 // Harness runs jobs.

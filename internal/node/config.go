@@ -172,6 +172,20 @@ func (m Models) For(kind string) string {
 	return v
 }
 
+// PlanModel is the planner's model: Plan when it is set explicitly,
+// otherwise the strongest of the other kinds configured, otherwise opus.
+// The planner chooses every item's model, so it runs on the strongest
+// there is.
+func (m Models) PlanModel() string {
+	if m.Plan != "" {
+		return m.Plan
+	}
+	if s := Strongest(m.Default, m.Build, m.Evaluate, m.Channel, m.Research); s != "" {
+		return s
+	}
+	return "opus"
+}
+
 // Scope is one org the node serves, with the node's id there.
 type Scope struct {
 	Login     string
@@ -260,7 +274,8 @@ func ResolveScopes(ctx context.Context, gw Gateway, c *Config) (Scopes, error) {
 // the limits thresholds (nil keeps the loop's) and the orgs served (nil
 // keeps the loop's).
 type Reloaded struct {
-	Capacity int
+	// Capacity is node.yaml's, fixed or a range; zero keeps the loop's.
+	Capacity Capacity
 	Limits   *LimitsConfig
 	Scopes   Scopes
 }
@@ -290,7 +305,7 @@ func Reloader(gw Gateway, cfg *Config, scopes Scopes, load func() (*Config, erro
 			errs = append(errs, fmt.Errorf("node.yaml (keeping the last good capacity and limits): %w", err))
 		} else {
 			limits := c.Limits
-			out.Capacity, out.Limits, restrict = c.Capacity.Max, &limits, c.Orgs
+			out.Capacity, out.Limits, restrict = c.Capacity, &limits, c.Orgs
 		}
 		orgs, err := gw.MyOrgs(ctx)
 		if err != nil {

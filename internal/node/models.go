@@ -39,3 +39,14 @@ func Strongest(ms ...string) string {
 	}
 	return best
 }
+
+// PlannableModel reports whether m is a model a plan may name for an
+// item: one of the aliases haiku, sonnet and opus, or a full claude-* id.
+func PlannableModel(m string) bool {
+	m = strings.ToLower(strings.TrimSpace(m))
+	switch m {
+	case "haiku", "sonnet", "opus":
+		return true
+	}
+	return strings.HasPrefix(m, "claude-") && len(m) > len("claude-")
+}

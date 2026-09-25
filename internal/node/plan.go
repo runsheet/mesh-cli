@@ -156,7 +156,7 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 		budget = 5
 	}
 	p.logf("goal %s: planning in %s (%d repos)", goal.Slug, dir, len(repos))
-	items, flags, cost, err := p.ask(ctx, goal, dir, budget, in, repos, merged)
+	items, reasons, flags, cost, err := p.ask(ctx, goal, dir, budget, in, repos, merged)
 	if err != nil {
 		return err
 	}
@@ -166,7 +166,7 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 		p.logf("goal %s: plan names what no evaluator can see; asking again: %s", goal.Slug, strings.Join(flags, " | "))
 		in.Rejected = flags
 		var again float64
-		items, flags, again, err = p.ask(ctx, goal, dir, budget, in, repos, merged)
+		items, reasons, flags, again, err = p.ask(ctx, goal, dir, budget, in, repos, merged)
 		cost += again
 		if err != nil {
 			return err
@@ -185,38 +185,49 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 		return fmt.Errorf("hand in the plan: %w", err)
 	}
 	p.logf("goal %s: planned, %d items ($%.2f)", goal.Slug, len(items), cost)
+	for _, it := range items {
+		model := it.Model
+		if model == "" {
+			model = "none (the node's own)"
+		}
+		if r := reasons[it.Seq]; r != "" {
+			model += ": " + r
+		}
+		p.logf("goal %s: item %d %q: model %s", goal.Slug, it.Seq, it.Title, model)
+	}
 	return nil
 }
 
 // ask runs one planner session on in and reads its graph: the items
-// mapped onto the project's repos, the check's flags on their acceptance
-// (unverifiableAcceptance), and the session's cost. An error means there
-// is no graph to hand in.
-func (p *Planner) ask(ctx context.Context, goal gateway.Goal, dir string, budget float64, in harness.PlanInput, repos map[string]gateway.Repo, merged []int) ([]gateway.PlannedItem, []string, float64, error) {
+// mapped onto the project's repos, each item's model_reason by seq, the
+// check's flags on their acceptance (unverifiableAcceptance), and the
+// session's cost. An error means there is no graph to hand in.
+func (p *Planner) ask(ctx context.Context, goal gateway.Goal, dir string, budget float64, in harness.PlanInput, repos map[string]gateway.Repo, merged []int) ([]gateway.PlannedItem, map[int]string, []string, float64, error) {
 	job := harness.Job{Kind: harness.KindPlan, Workspace: dir, Prompt: harness.PlanPrompt(in), MaxBudgetUSD: budget, Label: goal.Slug + " plan", Timeout: p.Timeout, MCPServers: p.MCP, Model: p.Model}
 	acct, err := OpenAccount(ctx, p.Accounts)
 	if err != nil {
-		return nil, nil, 0, err
+		return nil, nil, nil, 0, err
 	}
 	defer acct.Cleanup()
 	acct.Apply(&job)
 	result, err := p.Harness.Run(ctx, job, nil)
 	if ctx.Err() != nil {
-		return nil, nil, 0, ctx.Err()
+		return nil, nil, nil, 0, ctx.Err()
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
-		return nil, nil, 0, fmt.Errorf("planner session ran out of time (%s)", p.Timeout)
+		return nil, nil, nil, 0, fmt.Errorf("planner session ran out of time (%s)", p.Timeout)
 	}
 	if err != nil {
-		return nil, nil, 0, fmt.Errorf("planner session: %w", acct.RedactErr(err))
+		return nil, nil, nil, 0, fmt.Errorf("planner session: %w", acct.RedactErr(err))
 	}
 	result.Text = acct.Redact(result.Text)
 	specs, err := harness.ParsePlan(result.Text, merged...)
 	if err != nil {
-		return nil, nil, 0, fmt.Errorf("planner session (%s): %w: %s", result.SessionID, err, truncate(result.Text, 300))
+		return nil, nil, nil, 0, fmt.Errorf("planner session (%s): %w: %s", result.SessionID, err, truncate(result.Text, 300))
 	}
 	items := make([]gateway.PlannedItem, 0, len(specs))
 	itemRepo := map[int]gateway.Repo{}
+	reasons := map[int]string{}
 	for _, sp := range specs {
 		r, ok := repos[sp.Repo]
 		if !ok {
@@ -228,18 +239,69 @@ func (p *Planner) ask(ctx context.Context, goal gateway.Goal, dir string, budget
 			}
 		}
 		if !ok {
-			return nil, nil, 0, fmt.Errorf("item %d names repo %q, not one of the project's", sp.Seq, sp.Repo)
+			return nil, nil, nil, 0, fmt.Errorf("item %d names repo %q, not one of the project's", sp.Seq, sp.Repo)
 		}
 		itemRepo[sp.Seq] = r
 		base := strings.TrimSpace(sp.BaseRef)
 		if base == "" {
 			base = r.DefaultBranch
 		}
-		deps := sp.DependsOn
-		if deps == nil {
-			deps = []int{}
+		deps, because := p.explainedDeps(goal.Slug, sp)
+		model := strings.TrimSpace(sp.Model)
+		if model != "" && !PlannableModel(model) {
+			// the planner's choice is advice: an unknown one leaves the
+			// item on the node's own model rather than failing the plan
+			p.logf("goal %s: item %d %q: model %q is not haiku, sonnet, opus or a claude-* id; dropped", goal.Slug, sp.Seq, strings.TrimSpace(sp.Title), model)
+			model = ""
 		}
-		items = append(items, gateway.PlannedItem{Seq: sp.Seq, Title: strings.TrimSpace(sp.Title), Brief: strings.TrimSpace(sp.Brief), Acceptance: strings.TrimSpace(sp.Acceptance), DependsOn: deps, RepoID: r.ID, BaseRef: base})
+		reasons[sp.Seq] = strings.TrimSpace(sp.ModelReason)
+		items = append(items, gateway.PlannedItem{Seq: sp.Seq, Title: strings.TrimSpace(sp.Title), Brief: briefWithDeps(sp.Brief, deps, because), Acceptance: strings.TrimSpace(sp.Acceptance), DependsOn: deps, DependsBecause: because, RepoID: r.ID, BaseRef: base, Model: model})
 	}
-	return items, unverifiableAcceptance(specs, itemRepo, repos), result.CostUSD, nil
+	return items, reasons, unverifiableAcceptance(specs, itemRepo, repos), result.CostUSD, nil
+}
+
+// explainedDeps keeps the item's dependencies that carry a because and
+// drops the rest, logging each (trd §5 phase 2, the dependency rubric):
+// the kept seqs and, by seq, what each one uses.
+func (p *Planner) explainedDeps(goal string, sp harness.PlannedSpec) ([]int, map[int]string) {
+	deps := []int{}
+	var because map[int]string
+	for _, d := range sp.DependsOn {
+		why := strings.TrimSpace(d.Because)
+		if why == "" {
+			p.logf("plan %s: item %d dropped dependency on %d: no because", goal, sp.Seq, d.Seq)
+			continue
+		}
+		if because == nil {
+			because = map[int]string{}
+		}
+		if _, dup := because[d.Seq]; dup {
+			continue
+		}
+		deps = append(deps, d.Seq)
+		because[d.Seq] = why
+	}
+	return deps, because
+}
+
+// briefWithDeps is the item's brief with a line per kept dependency,
+// so the builder sees what it is waiting for.
+func briefWithDeps(brief string, deps []int, because map[int]string) string {
+	brief = strings.TrimSpace(brief)
+	if len(deps) == 0 {
+		return brief
+	}
+	var b strings.Builder
+	b.WriteString(brief)
+	if brief != "" {
+		b.WriteString("\n\n")
+	}
+	for i, d := range deps {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		fmt.Fprintf(&b, "Depends on #%d because %s", d, strings.TrimRight(because[d], "."))
+		b.WriteString(".")
+	}
+	return b.String()
 }

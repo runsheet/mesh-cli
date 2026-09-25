@@ -1007,6 +1007,10 @@ type PlannedItem struct {
 	// Model is the tier the planner chose for the item (opus, sonnet,
 	// haiku; runsheet trd §6a); empty leaves it to the node.
 	Model string `json:"model,omitempty"`
+	// DependsBecause is the planner's one line of what each kept
+	// dependency uses, by seq (trd §1 WorkItem depends_on): the node
+	// keeps it and PlanGoal does not send it to the platform.
+	DependsBecause map[int]string `json:"-"`
 }
 
 // RequestPlan asks the planner for the goal's graph: the goal waits in

@@ -233,14 +233,49 @@ type ExistingItem struct {
 // PlannedSpec is one item of the graph the planner writes: like
 // gateway.PlannedItem but naming the repo (owner/name or name).
 type PlannedSpec struct {
-	Seq        int    `json:"seq"`
-	Title      string `json:"title"`
-	Brief      string `json:"brief"`
-	Acceptance string `json:"acceptance"`
-	DependsOn  []int  `json:"depends_on"`
-	Repo       string `json:"repo"`
-	BaseRef    string `json:"base_ref"`
+	Seq        int          `json:"seq"`
+	Title      string       `json:"title"`
+	Brief      string       `json:"brief"`
+	Acceptance string       `json:"acceptance"`
+	DependsOn  []PlannedDep `json:"depends_on"`
+	Repo       string       `json:"repo"`
+	BaseRef    string       `json:"base_ref"`
+	// Model is the model the planner chose for the item (haiku, sonnet,
+	// opus or a claude-* id), ModelReason its one line of why.
+	Model       string `json:"model"`
+	ModelReason string `json:"model_reason"`
 }
+
+// PlannedDep is one entry of an item's depends_on: the seq it waits on
+// and the one line of what it uses from it (trd §1 WorkItem
+// depends_on). A bare integer, the old shape, reads as a dependency
+// with no because.
+type PlannedDep struct {
+	Seq     int    `json:"seq"`
+	Because string `json:"because,omitempty"`
+}
+
+// UnmarshalJSON reads {"seq": 3, "because": "…"} or a bare 3.
+func (d *PlannedDep) UnmarshalJSON(b []byte) error {
+	var n int
+	if err := json.Unmarshal(b, &n); err == nil {
+		*d = PlannedDep{Seq: n}
+		return nil
+	}
+	var obj struct {
+		Seq     int    `json:"seq"`
+		Because string `json:"because"`
+	}
+	if err := json.Unmarshal(b, &obj); err != nil {
+		return fmt.Errorf("a depends_on entry is a seq or {\"seq\", \"because\"}: %s", b)
+	}
+	*d = PlannedDep(obj)
+	return nil
+}
+
+// planDependencyRule is the planner's dependency rubric (trd §5 phase
+// 2): an item waits for another only when it uses what that one builds.
+const planDependencyRule = "An item depends on another only when it uses something that item creates or changes — a type, command, field, function, file or endpoint — and could not be built against main without it. Sharing a repository or touching the same file is not a dependency: the merge queue rebases, and the scheduler's overlap hold covers conflicts. Order by importance is priority, not dependency. Prefer a wide, shallow graph: the node runs up to 6 items at once and readies every item whose dependencies merged. A final docs or goal-doc item depends only on the items whose results it records. Each dependency carries a one-line `because` naming what is used, as {\"seq\": 3, \"because\": \"uses the Foo type item 3 adds\"}; a dependency without one is dropped."
 
 // planAcceptanceRule is the planner's side of adr-004: an item's
 // acceptance names only what its evaluator can see.
@@ -334,12 +369,17 @@ func PlanPrompt(in PlanInput) string {
 	b.WriteString("2. Each item is one fresh session's work in one repo on one branch: small enough to finish and evaluate in one sitting, large enough to be worth a pull request. Two to eight items.\n")
 	b.WriteString("3. Each item's brief says what to do and where, naming files and functions where it helps; its acceptance is what an evaluator can check — a test that passes, a command's output, a document with named sections — never a feeling.\n")
 	b.WriteString("   " + planAcceptanceRule + "\n")
-	b.WriteString("4. depends_on names earlier seqs whose branches must be merged first; items with no dependency between them run in parallel. Keep the graph shallow.\n")
+	b.WriteString("4. depends_on names earlier seqs whose branches must be merged first; items with no dependency between them run in parallel.\n")
+	b.WriteString("   " + planDependencyRule + "\n")
 	b.WriteString("5. repo is one of the project's repos above, as owner/name. base_ref is its default branch unless the item builds on another item's branch.\n")
 	b.WriteString("6. Change nothing in the repos: you plan, you do not build.\n")
 	b.WriteString("7. Design keeps pace with code: an item that changes an aggregate, a policy, a process, or a public contract (a gateway field, an API, a console route) also amends the ADR or TRD section that describes it, in the same item and pull request; a decision no ADR covers gets a new ADR at the next free number in that repo. Say so in the item's brief and acceptance. Every new document carries frontmatter with a one-line `summary:`.\n")
-	b.WriteString("8. End your final message with the graph as a JSON object in a ```json fenced block, and nothing after it:\n\n")
-	b.WriteString("```json\n{\"items\": [{\"seq\": 1, \"title\": \"…\", \"brief\": \"…\", \"acceptance\": \"…\", \"depends_on\": [], \"repo\": \"owner/name\", \"base_ref\": \"main\"}]}\n```\n")
+	b.WriteString("8. Each item names the model its session runs on, as `model`, with a one-line `model_reason`:\n")
+	b.WriteString("   - `haiku` for mechanical items: docs-only, a goal-doc section, a version bump, a rename.\n")
+	b.WriteString("   - `sonnet` for a well-specified change in one package with tests to copy.\n")
+	b.WriteString("   - `opus` for anything cross-cutting, concurrency, migrations, security, a failing item's retry, or when unsure.\n")
+	b.WriteString("9. End your final message with the graph as a JSON object in a ```json fenced block, and nothing after it:\n\n")
+	b.WriteString("```json\n{\"items\": [{\"seq\": 1, \"title\": \"…\", \"brief\": \"…\", \"acceptance\": \"…\", \"depends_on\": [], \"repo\": \"owner/name\", \"base_ref\": \"main\", \"model\": \"sonnet\", \"model_reason\": \"…\"}, {\"seq\": 2, \"title\": \"…\", \"brief\": \"…\", \"acceptance\": \"…\", \"depends_on\": [{\"seq\": 1, \"because\": \"uses the … item 1 adds\"}], \"repo\": \"owner/name\", \"base_ref\": \"main\", \"model\": \"sonnet\", \"model_reason\": \"…\"}]}\n```\n")
 	return b.String()
 }
 
@@ -444,8 +484,8 @@ func ParsePlan(text string, merged ...int) ([]PlannedSpec, error) {
 		done[m] = true
 	}
 	for _, it := range items {
-		for _, d := range it.DependsOn {
-			if (!seqs[d] && !done[d]) || d == it.Seq {
+		for _, dep := range it.DependsOn {
+			if d := dep.Seq; (!seqs[d] && !done[d]) || d == it.Seq {
 				return nil, fmt.Errorf("item %d depends on %d, which is neither another item nor merged", it.Seq, d)
 			}
 		}
