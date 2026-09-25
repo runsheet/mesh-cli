@@ -188,7 +188,7 @@ func (h *fakeHarness) Run(ctx context.Context, job harness.Job, on func(harness.
 func TestLoopClaimsRunsAndFinishes(t *testing.T) {
 	f := seed(t)
 	gw := gateway.New(f.URL(), "rs_test")
-	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "test-node", NodeID: gateway.NodeID(mustUUID(orgID), "test-node").String(), Capacity: 2}
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "test-node", NodeID: gateway.NodeID(mustUUID(orgID), "test-node").String(), Capacity: Fixed(2)}
 	if err := gw.RegisterNode(context.Background(), gateway.RegisterNodeInput{NodeID: cfg.NodeID, OrgID: orgID, OwnerID: f.UserID, Name: "n", Slug: "test-node", Harnesses: []string{"claude-code"}, Capacity: 2, Version: "test"}); err != nil {
 		t.Fatal(err)
 	}
@@ -275,7 +275,7 @@ func TestLoopSkipsRefusedClaim(t *testing.T) {
 	f := seed(t)
 	f.Refuse["claimWorkItem"] = "item is claimed, not ready"
 	gw := gateway.New(f.URL(), "rs_test")
-	cfg := &Config{OrgLogin: "acme", OrgID: orgID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: 1}
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: Fixed(1)}
 	_ = gw.RegisterNode(context.Background(), gateway.RegisterNodeInput{NodeID: cfg.NodeID, OrgID: orgID, OwnerID: f.UserID, Name: "n", Slug: "n"})
 	dispatched := 0
 	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Interval: time.Hour, Dispatch: func(context.Context, gateway.WorkItem) { dispatched++ }}
@@ -288,7 +288,7 @@ func TestLoopSkipsRefusedClaim(t *testing.T) {
 func TestRunnerFailsAnUnsuccessfulSession(t *testing.T) {
 	f := seed(t)
 	gw := gateway.New(f.URL(), "rs_test")
-	cfg := &Config{OrgLogin: "acme", OrgID: orgID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: 1}
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: Fixed(1)}
 	if err := gw.ClaimWorkItem(context.Background(), item1, cfg.NodeID, "claude-code"); err != nil {
 		t.Fatal(err)
 	}
@@ -319,7 +319,7 @@ func TestRunnerFailsAnUnsuccessfulSession(t *testing.T) {
 func TestRunnerLeavesItemOnShutdown(t *testing.T) {
 	f := seed(t)
 	gw := gateway.New(f.URL(), "rs_test")
-	cfg := &Config{OrgLogin: "acme", OrgID: orgID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: 1}
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: Fixed(1)}
 	_ = gw.ClaimWorkItem(context.Background(), item1, cfg.NodeID, "claude-code")
 	ws := &fakeWS{root: t.TempDir()}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -375,7 +375,7 @@ func TestLoopServesEveryOrgOfItsOwner(t *testing.T) {
 	gw := gateway.New(f.URL(), "rs_test")
 	ctx := context.Background()
 
-	cfg := &Config{Slug: "box", Name: "Box", Capacity: 1}
+	cfg := &Config{Slug: "box", Name: "Box", Capacity: Fixed(1)}
 	scopes, err := ResolveScopes(ctx, gw, cfg)
 	if err != nil || len(scopes) != 2 || scopes[0].Login != "acme" || scopes[1].Login != "globex" || scopes[0].NodeID == scopes[1].NodeID {
 		t.Fatalf("scopes = %+v, %v", scopes, err)
@@ -420,7 +420,7 @@ func TestLoopServesEveryOrgOfItsOwner(t *testing.T) {
 func TestRunnerAsksForItsMCPServersPerItem(t *testing.T) {
 	f := seed(t)
 	gw := gateway.New(f.URL(), "rs_test")
-	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: 1}
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: Fixed(1)}
 	ws := &fakeWS{root: t.TempDir()}
 	h := &fakeHarness{}
 	calls := 0
@@ -478,7 +478,7 @@ func newPriorityFake(t *testing.T) *priorityFake {
 	f.Orgs = append(f.Orgs, map[string]any{"id": org2, "login": "globex", "accountId": acct2})
 	f.Accounts[acct2] = map[string]any{"id": acct2, "login": "globex"}
 	gw := gateway.New(f.URL(), "rs_test")
-	scopes, err := ResolveScopes(context.Background(), gw, &Config{Slug: "box", Name: "Box", Capacity: 1})
+	scopes, err := ResolveScopes(context.Background(), gw, &Config{Slug: "box", Name: "Box", Capacity: Fixed(1)})
 	if err != nil || len(scopes) != 2 {
 		t.Fatalf("scopes = %+v, %v", scopes, err)
 	}
@@ -525,7 +525,7 @@ func (p *priorityFake) addHeld(org, goal, title string, seq int) {
 // session starts, in the order they start.
 func (p *priorityFake) loop(capacity int) (*Loop, *strings.Builder) {
 	var logs strings.Builder
-	return &Loop{GW: gateway.New(p.URL(), "rs_test"), Cfg: &Config{Slug: "box", Capacity: capacity}, Scopes: p.scopes,
+	return &Loop{GW: gateway.New(p.URL(), "rs_test"), Cfg: &Config{Slug: "box", Capacity: Fixed(capacity)}, Scopes: p.scopes,
 		Interval: time.Hour, Harness: "claude-code", Log: log.New(&logs, "", 0),
 		Dispatch: func(context.Context, gateway.WorkItem) {},
 		Evaluate: func(context.Context, gateway.WorkItem) {},
@@ -553,7 +553,7 @@ func started(logs, prefix string) []string {
 // in the order they were claimed.
 func (p *priorityFake) tick(capacity int) []string {
 	p.t.Helper()
-	loop := &Loop{GW: gateway.New(p.URL(), "rs_test"), Cfg: &Config{Slug: "box", Capacity: capacity}, Scopes: p.scopes, Interval: time.Hour, Harness: "claude-code",
+	loop := &Loop{GW: gateway.New(p.URL(), "rs_test"), Cfg: &Config{Slug: "box", Capacity: Fixed(capacity)}, Scopes: p.scopes, Interval: time.Hour, Harness: "claude-code",
 		Dispatch: func(context.Context, gateway.WorkItem) {}}
 	before := len(p.CallsNamed("claimWorkItem"))
 	loop.Tick(context.Background())

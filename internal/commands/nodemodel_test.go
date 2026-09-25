@@ -10,7 +10,7 @@ import (
 // start` wins over the file, and `node model --rebase` saves it.
 func TestModelsRebaseKind(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	cfg := &node.Config{Name: "n", Slug: "n", Capacity: 1, Models: node.Models{Default: "opus", Rebase: "haiku"}}
+	cfg := &node.Config{Name: "n", Slug: "n", Capacity: node.Fixed(1), Models: node.Models{Default: "opus", Rebase: "haiku"}}
 	if err := cfg.Save(); err != nil {
 		t.Fatal(err)
 	}

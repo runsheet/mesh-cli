@@ -166,7 +166,7 @@ func TestNodeLoginRunsTheDeviceFlow(t *testing.T) {
 		t.Errorf("node.yaml did not remember the flow: %+v", settings)
 	}
 	registered := *settings // as `mesh node register` writes it, carrying them over
-	registered.Slug, registered.Name, registered.Capacity = "mini", "mini", 1
+	registered.Slug, registered.Name, registered.Capacity = "mini", "mini", node.Fixed(1)
 	if err := registered.Save(); err != nil {
 		t.Fatal(err)
 	}
