@@ -222,6 +222,7 @@ var nodeStatusCmd = &cobra.Command{
 		}
 		local, draining := localNodeState(state)
 		fmt.Println(local)
+		scaling, scales := localScaling(state)
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 		fmt.Fprintln(w, "ORG\tNAME\tSLUG\tSTATUS\tRUNNING\tCAPACITY\tVERSION\tLAST_SEEN")
 		for _, sc := range scopes {
@@ -233,14 +234,17 @@ var nodeStatusCmd = &cobra.Command{
 				return err
 			}
 			for _, n := range nodes {
-				mark, status := "", n.Status
+				mark, status, capacity := "", n.Status, fmt.Sprint(n.Capacity)
 				if n.ID == sc.NodeID {
 					mark = " *"
 					if draining {
 						status += ",draining"
 					}
+					if scales {
+						capacity = scaling.String()
+					}
 				}
-				fmt.Fprintf(w, "%s\t%s%s\t%s\t%s\t%d\t%d\t%s\t%s\n", sc.Login, n.Name, mark, n.Slug, status, n.Running, n.Capacity, n.Version, n.LastSeenAt)
+				fmt.Fprintf(w, "%s\t%s%s\t%s\t%s\t%d\t%s\t%s\t%s\n", sc.Login, n.Name, mark, n.Slug, status, n.Running, capacity, n.Version, n.LastSeenAt)
 			}
 		}
 		return w.Flush()
@@ -266,6 +270,18 @@ func localNodeState(state node.RunState) (string, bool) {
 	default:
 		return fmt.Sprintf("This machine: node running (pid %d).", pid), false
 	}
+}
+
+// localScaling is the capacity the node on this machine has in force
+// when node.yaml's capacity is a range, as it left it at its last tick,
+// and true; false when it is fixed or no node runs here. The platform's
+// node record carries the registered capacity only.
+func localScaling(state node.RunState) (node.Scaling, bool) {
+	pid, err := state.PID()
+	if err != nil || !processAlive(pid) {
+		return node.Scaling{}, false
+	}
+	return state.Scaling()
 }
 
 var nodeDrainCmd = &cobra.Command{
@@ -421,6 +437,13 @@ only use it on a machine you trust with that.`,
 			return fmt.Errorf("pidfile: %w", err)
 		}
 		defer state.Stopped(pid)
+		// a ranged capacity in force is left beside the pidfile for
+		// `mesh node status`; a fixed one leaves nothing
+		loop.Scaled = func(s node.Scaling, ranged bool) {
+			if err := state.WriteScaling(s, ranged); err != nil {
+				logger.Printf("scaling state: %v", err)
+			}
+		}
 		defer onDrainSignal(func() {
 			if err := state.MarkDraining(); err != nil {
 				logger.Printf("draining marker: %v", err)

@@ -68,8 +68,11 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   heartbeat says `draining`. `DrainAndWait(ctx)` is the drain a
   self-update blocks on; `Resume` undoes a drain that has not yet ended
   `Run`. The heartbeat's extras (`gateway.HeartbeatExtras`: `draining`,
-  `updateError`, and `limits` — the latest Claude plan limits per
-  account, runsheet `limits-on-the-console`) are sent only when set,
+  `updateError`, `limits` — the latest Claude plan limits per
+  account — and `scaling` — a ranged node's `{capacity, min, max,
+  reason}`, the capacity in force, node.yaml's range and why, sent
+  only when the capacity is a range; both of the last two are for
+  runsheet goal `limits-on-the-console`) are sent only when set,
   because they are fields the platform half adds. Capacity, the
   limits thresholds and the orgs need no drain: `Reload` re-reads them
   every tick.
@@ -89,7 +92,9 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   utilization across accounts per window, stepping the capacity in
   force one slot per 5 minutes; a shrink only stops claiming, at min
   only urgent/high items are claimed, and Reload clamps into a new
-  range at once. `Loop.Scaling()` is what the heartbeat carries. A
+  range at once. `Loop.Scaling()` is what the heartbeat's `scaling`
+  carries, and `Loop.Scaled` leaves it in `~/.mesh/node.scaling` for
+  `mesh node status` (`in-force/min–max (reason)`). A
   plain `capacity: N` runs none of it. The hard stops of the pace stay
   above it.
 - **The rebase** (`internal/node/rebase.go`, runsheet ADR 008): an item

@@ -1,8 +1,10 @@
 package node
 
 import (
+	"fmt"
 	"time"
 
+	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/harness"
 )
 
@@ -21,9 +23,25 @@ type WindowSource func() (Windows, bool)
 // Scaling is a ranged node's capacity in force, its range and why it is
 // what it is — what the heartbeat's `scaling` carries.
 type Scaling struct {
-	Capacity int
-	Min, Max int
-	Reason   Reason
+	Capacity int    `json:"capacity"`
+	Min      int    `json:"min"`
+	Max      int    `json:"max"`
+	Reason   Reason `json:"reason"`
+}
+
+// Heartbeat is s as the heartbeat's `scaling` carries it.
+func (s Scaling) Heartbeat() *gateway.Scaling {
+	return &gateway.Scaling{Capacity: s.Capacity, Min: s.Min, Max: s.Max, Reason: string(s.Reason)}
+}
+
+// String is s as `mesh node status` shows it: in-force/min–max (reason).
+// A reason not yet known (the scaler has not run) is left out.
+func (s Scaling) String() string {
+	out := fmt.Sprintf("%d/%d–%d", s.Capacity, s.Min, s.Max)
+	if s.Reason != "" {
+		out += " (" + string(s.Reason) + ")"
+	}
+	return out
 }
 
 // scaleState is the loop's scaler and when it last evaluated and moved.

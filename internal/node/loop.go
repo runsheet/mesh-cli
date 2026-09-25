@@ -52,6 +52,11 @@ type Loop struct {
 	// node's claim is a refusal, the ordinary answer. Optional; like an
 	// evaluation it does not count against capacity.
 	Rebase func(ctx context.Context, item gateway.WorkItem)
+	// Scaled is told each tick, after the scaler, the capacity in force
+	// and its range, and whether node.yaml's capacity is a range at all
+	// (optional: `mesh node start` leaves it in ~/.mesh for `mesh node
+	// status`).
+	Scaled func(s Scaling, ranged bool)
 	// AfterTick runs at the end of every tick (optional).
 	AfterTick func(ctx context.Context)
 	// Reload is asked at the top of every tick for the capacity, the
@@ -383,6 +388,13 @@ func (l *Loop) Tick(ctx context.Context) {
 	l.reload(ctx)
 	l.scale()
 	extras := gateway.HeartbeatExtras{Draining: l.Draining(), Limits: l.limitsStore().Heartbeat()}
+	scaling, ranged := l.Scaling()
+	if ranged {
+		extras.Scaling = scaling.Heartbeat()
+	}
+	if l.Scaled != nil {
+		l.Scaled(scaling, ranged)
+	}
 	for _, sc := range l.Scopes {
 		if err := l.GW.HeartbeatNode(ctx, sc.NodeID, l.Version, l.Running(), extras); err != nil {
 			l.logf("heartbeat %s: %v", sc.Login, err)

@@ -76,3 +76,36 @@ func TestNodeStatusLineWithoutMarker(t *testing.T) {
 		t.Fatalf("status line %q, draining %v", line, draining)
 	}
 }
+
+// A running ranged node's capacity in force is what status shows for
+// it, in-force/min–max (reason); a fixed one, or none running, shows
+// the platform's capacity as before.
+func TestNodeStatusShowsScaling(t *testing.T) {
+	state := node.RunState{Dir: t.TempDir()}
+	pid := os.Getpid()
+	if err := state.Started(pid); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := localScaling(state); ok {
+		t.Fatal("a node that has not ticked shows scaling")
+	}
+	if err := state.WriteScaling(node.Scaling{Capacity: 2, Min: 1, Max: 4, Reason: node.ReasonWeeklyPace}, true); err != nil {
+		t.Fatal(err)
+	}
+	if s, ok := localScaling(state); !ok || s.String() != "2/1–4 (weekly pace)" {
+		t.Fatalf("scaling %q, %v", s, ok)
+	}
+	if err := state.WriteScaling(node.Scaling{}, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := localScaling(state); ok {
+		t.Fatal("a fixed node shows scaling")
+	}
+	if err := state.WriteScaling(node.Scaling{Capacity: 1, Min: 1, Max: 2}, true); err != nil {
+		t.Fatal(err)
+	}
+	state.Stopped(pid)
+	if _, ok := localScaling(state); ok {
+		t.Fatal("a stopped node shows scaling")
+	}
+}
