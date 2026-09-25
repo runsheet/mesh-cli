@@ -393,7 +393,7 @@ func excludeFromGit(dir, pattern string) error {
 // Gateway is what the node needs of the platform; *gateway.Client is one.
 type Gateway interface {
 	MyOrgs(ctx context.Context) ([]gateway.Org, error)
-	HeartbeatNode(ctx context.Context, nodeID, version string, running int) error
+	HeartbeatNode(ctx context.Context, nodeID, version string, running int, extras ...gateway.HeartbeatExtras) error
 	ReadyWorkItems(ctx context.Context, orgID string) ([]gateway.WorkItem, error)
 	GoalWorkItems(ctx context.Context, goalID string) ([]gateway.WorkItem, error)
 	OrgWorkItems(ctx context.Context, orgID, status string) ([]gateway.WorkItem, error)

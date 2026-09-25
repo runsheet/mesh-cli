@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -929,6 +930,181 @@ func TestLoopKeepsTheLastGoodCapacity(t *testing.T) {
 	}
 }
 
+// register registers the node in both orgs, so its heartbeats land.
+func (p *priorityFake) register() {
+	p.t.Helper()
+	gw := gateway.New(p.URL(), "rs_test")
+	for _, sc := range p.scopes {
+		if err := gw.RegisterNode(context.Background(), gateway.RegisterNodeInput{NodeID: sc.NodeID, OrgID: sc.ID, OwnerID: p.UserID, Name: "Box", Slug: "box"}); err != nil {
+			p.t.Fatal(err)
+		}
+	}
+}
+
+// drainLoop is a node over both orgs whose builds block until release
+// is closed.
+func (p *priorityFake) drainLoop(capacity int) (*Loop, chan struct{}) {
+	release := make(chan struct{})
+	loop, _ := p.loop(capacity)
+	loop.Dispatch = func(ctx context.Context, _ gateway.WorkItem) {
+		select {
+		case <-release:
+		case <-ctx.Done():
+		}
+	}
+	return loop, release
+}
+
+// DrainAndWait waits for the running item and returns once it ends.
+func TestLoopDrainAndWaitWaitsForRunning(t *testing.T) {
+	p := newPriorityFake(t)
+	p.addGoal(orgID, "g", "normal")
+	p.addItem(orgID, "g", "long-one", 1, false)
+	loop, release := p.drainLoop(1)
+	loop.Tick(context.Background())
+	if loop.Running() != 1 {
+		t.Fatalf("running = %d, want 1", loop.Running())
+	}
+	done := make(chan error, 1)
+	go func() { done <- loop.DrainAndWait(context.Background()) }()
+	select {
+	case err := <-done:
+		t.Fatalf("DrainAndWait returned (%v) with an item running", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	if !loop.Draining() {
+		t.Fatal("Draining() = false while draining")
+	}
+	close(release)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("DrainAndWait = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("DrainAndWait did not return after the item ended")
+	}
+	if loop.Running() != 0 {
+		t.Fatalf("running = %d after drain", loop.Running())
+	}
+}
+
+// DrainAndWait gives up with ctx.Err() when ctx is done first.
+func TestLoopDrainAndWaitStopsWithContext(t *testing.T) {
+	p := newPriorityFake(t)
+	p.addGoal(orgID, "g", "normal")
+	p.addItem(orgID, "g", "long-one", 1, false)
+	loop, release := p.drainLoop(1)
+	defer close(release)
+	loop.Tick(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- loop.DrainAndWait(ctx) }()
+	cancel()
+	select {
+	case err := <-done:
+		if err != context.Canceled {
+			t.Fatalf("DrainAndWait = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("DrainAndWait did not return on cancel")
+	}
+	if loop.Running() != 1 {
+		t.Fatalf("running = %d, the item must still be running", loop.Running())
+	}
+}
+
+// Resume makes the next tick claim again.
+func TestLoopResumeClaimsAgain(t *testing.T) {
+	p := newPriorityFake(t)
+	p.addGoal(orgID, "g", "normal")
+	p.addItem(orgID, "g", "ready-one", 1, false)
+	p.register()
+	loop, _ := p.loop(1)
+	loop.Drain()
+	loop.Tick(context.Background())
+	if c := p.CallsNamed("claimWorkItem"); len(c) != 0 {
+		t.Fatalf("drained: claimed %+v", c)
+	}
+	loop.Resume()
+	if loop.Draining() {
+		t.Fatal("Draining() = true after Resume")
+	}
+	loop.Tick(context.Background())
+	loop.wg.Wait()
+	if c := p.CallsNamed("claimWorkItem"); len(c) != 1 || c[0].Input["aggregateId"] != "ready-one" {
+		t.Fatalf("resumed: claims %+v", c)
+	}
+	if hb := p.CallsNamed("heartbeatNode"); hb[len(hb)-1].Input["draining"] != nil {
+		t.Fatalf("a resumed node must not report draining: %+v", hb[len(hb)-1].Input)
+	}
+}
+
+// The heartbeat's extras are sent only when set: a platform that
+// does not know them yet still takes an ordinary node's heartbeat.
+func TestHeartbeatSendsExtrasOnlyWhenSet(t *testing.T) {
+	p := newPriorityFake(t)
+	p.register()
+	gw := gateway.New(p.URL(), "rs_test")
+	node := p.scopes[0].NodeID
+	ctx := context.Background()
+	calls := []error{
+		gw.HeartbeatNode(ctx, node, "v1", 0),
+		gw.HeartbeatNode(ctx, node, "v1", 0, gateway.HeartbeatExtras{}),
+		gw.HeartbeatNode(ctx, node, "v1", 1, gateway.HeartbeatExtras{Draining: true}),
+		gw.HeartbeatNode(ctx, node, "v1", 0, gateway.HeartbeatExtras{UpdateError: "signature does not match"}),
+	}
+	for i, err := range calls {
+		if err != nil {
+			t.Fatalf("heartbeat %d: %v", i, err)
+		}
+	}
+	hb := p.CallsNamed("heartbeatNode")
+	if len(hb) != 4 {
+		t.Fatalf("heartbeats: %+v", hb)
+	}
+	for i, want := range []map[string]any{
+		{},
+		{},
+		{"draining": true},
+		{"updateError": "signature does not match"},
+	} {
+		in := hb[i].Input
+		for _, k := range []string{"draining", "updateError"} {
+			if got, ok := in[k]; ok != (want[k] != nil) || (ok && got != want[k]) {
+				t.Fatalf("heartbeat %d: %s = %v (sent %v), want %v", i, k, got, ok, want[k])
+			}
+		}
+		if in["version"] != "v1" || in["aggregateId"] != node {
+			t.Fatalf("heartbeat %d: %+v", i, in)
+		}
+	}
+}
+
+// Resume ends a DrainAndWait that is still waiting, with an error.
+func TestLoopResumeEndsDrainAndWait(t *testing.T) {
+	p := newPriorityFake(t)
+	p.addGoal(orgID, "g", "normal")
+	p.addItem(orgID, "g", "long-one", 1, false)
+	loop, release := p.drainLoop(1)
+	defer close(release)
+	loop.Tick(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- loop.DrainAndWait(context.Background()) }()
+	for !loop.Draining() {
+		time.Sleep(time.Millisecond)
+	}
+	loop.Resume()
+	select {
+	case err := <-done:
+		if !errors.Is(err, errResumed) {
+			t.Fatalf("DrainAndWait = %v, want errResumed", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("DrainAndWait did not return on Resume")
+	}
+}
+
 // A draining node claims nothing on a tick: no ready item, no plan, no
 // research, no evaluation — but it still heartbeats.
 func TestDrainingLoopClaimsNothing(t *testing.T) {
@@ -956,8 +1132,14 @@ func TestDrainingLoopClaimsNothing(t *testing.T) {
 	if got := started(logs.String(), "evaluating item"); len(got) != 0 {
 		t.Fatalf("a draining node started evaluations %v", got)
 	}
-	if got := len(p.CallsNamed("heartbeatNode")) - beats; got != 2 {
+	hb := p.CallsNamed("heartbeatNode")
+	if got := len(hb) - beats; got != 2 {
 		t.Fatalf("a draining node heartbeat %d times over two orgs\n%s", got, logs)
+	}
+	for _, c := range hb[beats:] {
+		if c.Input["draining"] != true {
+			t.Fatalf("a draining node's heartbeat does not say so: %+v", c.Input)
+		}
 	}
 	if p.Item("ready-1")["status"] != "ready" || !loop.Draining() {
 		t.Fatalf("ready-1 %v, draining %v", p.Item("ready-1")["status"], loop.Draining())

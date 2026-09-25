@@ -33,6 +33,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   evaluate, plan and research sessions, the service install (`launchd` /
   `systemd --user`). `internal/gateway/client.go`: the platform client.
   `internal/channel/`: channel mode (one session per org, turns).
+  **A draining node claims nothing** (`Loop.Drain`): see the drain
+  below.
 - **The director** (`internal/node/research.go`, runsheet trd §6c): a
   project carries **directions** — several, each its own aggregate with
   its own words, window, timezone, gap, ceiling and research claim
@@ -60,9 +62,13 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   once no session of *any* kind is left (planners and evaluators do not
   count against capacity, so `Running()` is not the exit test); the
   process exits 0 and its service starts the new binary.
-  `~/.mesh/node.draining` marks it for `mesh node status` — locally
-  only, the heartbeat has no field for it. Capacity and the orgs need
-  no drain: `Reload` re-reads them every tick.
+  `~/.mesh/node.draining` marks it for `mesh node status`, and every
+  heartbeat says `draining`. `DrainAndWait(ctx)` is the drain a
+  self-update blocks on; `Resume` undoes a drain that has not yet ended
+  `Run`. The heartbeat's extras (`gateway.HeartbeatExtras`: `draining`,
+  `updateError`) are sent only when set, because they are fields the
+  platform half (runsheet `update-nodes-from-console`) adds. Capacity
+  and the orgs need no drain: `Reload` re-reads them every tick.
 - Every session gets Prologue as an MCP server with the node's token and
   the project's context on disk under `.mesh/context/` with `INDEX.md`.
 - Costs: each session's `total_cost_usd` is reported to the platform per

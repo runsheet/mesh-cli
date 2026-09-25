@@ -253,9 +253,10 @@ up.
 
 While it drains the node leaves `~/.mesh/node.draining`, and `mesh node
 status` shows it (`This machine: node running (pid …), draining`, and
-`draining` beside its row). The platform's node record has no drain
-state — the heartbeat carries only the version and the running count —
-so this is known on the machine alone.
+`draining` beside its row). Its heartbeat carries `draining: true` as
+well, a field sent only while draining; until the platform's node record
+keeps it (runsheet `update-nodes-from-console`), the drain is known on
+the machine alone.
 
 Swapping the binary on the mini:
 

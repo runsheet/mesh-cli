@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"errors"
 	"log"
 	"sort"
 	"strings"
@@ -311,7 +312,7 @@ func (l *Loop) notify() {
 }
 
 // Tick is one round: heartbeat, list, claim, dispatch. A draining node
-// only heartbeats (and runs AfterTick): it claims no item, plan or
+// only heartbeats — with draining set — (and runs AfterTick): it claims no item, plan or
 // research and starts no evaluation — an item it holds for evaluation
 // waits in evaluating for the node that comes up after it.
 func (l *Loop) Tick(ctx context.Context) {
@@ -323,7 +324,7 @@ func (l *Loop) Tick(ctx context.Context) {
 	l.tickGoals = map[string]goalsRead{}
 	l.reload(ctx)
 	for _, sc := range l.Scopes {
-		if err := l.GW.HeartbeatNode(ctx, sc.NodeID, l.Version, l.Running()); err != nil {
+		if err := l.GW.HeartbeatNode(ctx, sc.NodeID, l.Version, l.Running(), gateway.HeartbeatExtras{Draining: l.Draining()}); err != nil {
 			l.logf("heartbeat %s: %v", sc.Login, err)
 		}
 	}
@@ -337,6 +338,47 @@ func (l *Loop) Tick(ctx context.Context) {
 	}
 	if l.AfterTick != nil {
 		l.AfterTick(ctx)
+	}
+}
+
+// drainPoll is how often DrainAndWait looks for the last session to end.
+var drainPoll = 50 * time.Millisecond
+
+// errResumed is DrainAndWait's answer when Resume ends the drain first.
+var errResumed = errors.New("drain resumed")
+
+// DrainAndWait drains the loop and returns once no session of any kind
+// is left, with ctx.Err() when ctx is done first, or with an error when
+// Resume ends the drain first. It is the drain a self-update waits on
+// before it swaps the binary; Run still returns on its own meanwhile.
+func (l *Loop) DrainAndWait(ctx context.Context) error {
+	l.Drain()
+	t := time.NewTicker(drainPoll)
+	defer t.Stop()
+	for {
+		if l.drained() {
+			return nil
+		}
+		if !l.Draining() {
+			return errResumed
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-t.C:
+		}
+	}
+}
+
+// Resume undoes a drain that has not yet ended Run: the next tick claims
+// again, and the heartbeat stops reporting draining.
+func (l *Loop) Resume() {
+	l.mu.Lock()
+	was := l.draining
+	l.draining = false
+	l.mu.Unlock()
+	if was {
+		l.logf("resumed: claiming again")
 	}
 }
 
