@@ -21,7 +21,8 @@ where the code lives, the variable names, and the rendering per agent.
    the trd's table, plus `secrets`: a header or env key and its value,
    which wins over the same key in `headers`/`env`), the probes
    (`ProbeRuntimes` for npx/uvx/docker, `ProbeAdapters` for
-   claude/codex, both over an injected `lookPath`), `Select`, the two
+   claude-code/codex — found by their CLIs `claude` and `codex` — both
+   over an injected `lookPath`), `Select`, the two
    renderers and `Redact`. It imports nothing from `node` or `gateway`,
    so the loop, the heartbeat and each harness can use it alike.
 2. **Select by role, then by runtime.** A tool whose `roles` leave the
@@ -53,7 +54,17 @@ where the code lives, the variable names, and the rendering per agent.
 6. **Refusals.** A tool name not `[a-z0-9_-]`, named twice, or equal to
    a built-in (`prologue` always) is an error from either renderer, as
    is an unknown transport or runtime. Nothing is written then.
-7. **Redaction.** `Redact(s, env)` masks every value of the returned
+7. **The wiring.** The claim-time read is `gateway.Session` — the
+   `sessionCredentials` mutation's `credentials` and `tools` (headers,
+   env and secrets as maps); `SessionCredentials` is its credentials
+   alone. A gateway that refuses the `tools` selection is asked for the
+   credentials alone from then on, and its sessions get no console
+   tools. `Loop.LookPath` (`exec.LookPath` in `mesh node start`) probes
+   runtimes and adapters every tick, beside the reload, and the
+   heartbeat carries them as `runtimes` and `adapters`
+   (`HeartbeatExtras`), each only when non-empty. The probe is a PATH
+   lookup; it does not run the version command trd §1 names.
+8. **Redaction.** `Redact(s, env)` masks every value of the returned
    env in `s` as `[redacted]`, the longest first; whatever the node logs
    or reports about a tool session passes through it.
 
@@ -66,6 +77,6 @@ where the code lives, the variable names, and the rendering per agent.
 - Codex local secrets are visible to the Codex process itself under
   their own names, not only to the tool; an org sharing one key name
   across two tools with different values cannot run both under Codex.
-- Wiring (the claim-time read's `tools`, the heartbeat's `runtimes` and
-  `adapters`, the decline, priced-call usage) builds on this package in
-  the goal's later items.
+- The rest of the wiring (rendering at claim, the decline, priced-call
+  usage) builds on this package and decision 7 in the goal's later
+  items.

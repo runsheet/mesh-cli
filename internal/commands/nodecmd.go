@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -427,7 +428,9 @@ only use it on a machine you trust with that.`,
 		loop := &node.Loop{GW: gw, Cfg: cfg, Scopes: scopes, Version: version.Version, Harness: "claude-code", Interval: nodeIntervalFlag, Log: logger, Limits: &node.Limits{},
 			// a ranged capacity scales by the plan's windows, capped by this
 			// machine's load and memory (adr-004)
-			Machine: node.HostMachine()}
+			Machine: node.HostMachine(),
+			// every tick reports the tool runtimes and agent CLIs on PATH
+			LookPath: exec.LookPath}
 		// every session's list-price cost lands in the ledger, kept on
 		// disk: the api keys' caps and the project budgets count it
 		// (adr-005-capacity-across-accounts)

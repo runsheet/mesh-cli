@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -1188,6 +1189,60 @@ func TestHeartbeatSendsExtrasOnlyWhenSet(t *testing.T) {
 		}
 		if in["version"] != "v1" || in["aggregateId"] != node {
 			t.Fatalf("heartbeat %d: %+v", i, in)
+		}
+	}
+}
+
+// The heartbeat carries the tool runtimes and agent adapters the node
+// found, probed every tick: one installed while the node runs is on the
+// next heartbeat without a restart (trd §1 Node).
+func TestHeartbeatCarriesProbedRuntimes(t *testing.T) {
+	p := newPriorityFake(t)
+	p.register()
+	loop, logs := p.loop(1)
+	onPath := map[string]bool{"npx": true, "claude": true}
+	loop.LookPath = func(file string) (string, error) {
+		if onPath[file] {
+			return "/usr/bin/" + file, nil
+		}
+		return "", errors.New("not found")
+	}
+	ctx := context.Background()
+	loop.Tick(ctx)
+	onPath["docker"], onPath["codex"] = true, true
+	loop.Tick(ctx)
+	// one heartbeat per org served, per tick
+	orgs := len(p.scopes)
+	hb := p.CallsNamed("heartbeatNode")
+	if len(hb) != 2*orgs {
+		t.Fatalf("heartbeats: %+v", hb)
+	}
+	for i := range hb {
+		want := []struct{ runtimes, adapters []any }{
+			{[]any{"npx"}, []any{"claude-code"}},
+			{[]any{"npx", "docker"}, []any{"claude-code", "codex"}},
+		}[i/orgs]
+		if got := hb[i].Input["runtimes"]; !reflect.DeepEqual(got, want.runtimes) {
+			t.Fatalf("heartbeat %d: runtimes = %#v, want %v", i, got, want.runtimes)
+		}
+		if got := hb[i].Input["adapters"]; !reflect.DeepEqual(got, want.adapters) {
+			t.Fatalf("heartbeat %d: adapters = %#v, want %v", i, got, want.adapters)
+		}
+	}
+	if r, a := loop.Runtimes(); !reflect.DeepEqual(r, []string{"npx", "docker"}) || !reflect.DeepEqual(a, []string{"claude-code", "codex"}) {
+		t.Fatalf("Runtimes() = %v, %v", r, a)
+	}
+	if n := strings.Count(logs.String(), "tools: runtimes"); n != 2 {
+		t.Fatalf("logged the probe %d times, want once per change:\n%s", n, logs)
+	}
+
+	// without a LookPath the node probes nothing and sends neither
+	bare, _ := p.loop(1)
+	bare.Tick(ctx)
+	last := p.CallsNamed("heartbeatNode")[2*orgs].Input
+	for _, k := range []string{"runtimes", "adapters"} {
+		if v, ok := last[k]; ok {
+			t.Fatalf("a node that probed nothing sent %s = %#v", k, v)
 		}
 	}
 }

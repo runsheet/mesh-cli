@@ -71,8 +71,11 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `updateError`, `limits` — the latest Claude plan limits per
   account — and `scaling` — a ranged node's `{capacity, min, max,
   reason}`, the capacity in force, node.yaml's range and why, sent
-  only when the capacity is a range; both of the last two are for
-  runsheet goal `limits-on-the-console`) are sent only when set,
+  only when the capacity is a range; both for runsheet goal
+  `limits-on-the-console` — and `runtimes` and `adapters` — the tool
+  runtimes (npx, uvx, docker) and agent CLIs (claude-code, codex)
+  `Loop.LookPath` finds, probed every tick, for `tools-in-the-console`)
+  are sent only when set,
   because they are fields the platform half adds. Capacity, the
   limits thresholds and the orgs need no drain: `Reload` re-reads them
   every tick.
@@ -179,6 +182,12 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   and `CodexModel` map the Claude tiers to Codex models. Codex has no
   budget flag, so `MaxBudgetUSD` is not enforced. Nothing in the loop
   runs it yet.
+- **Tools** (`internal/tools/`, ADR-006, trd §3 Tools): the
+  claim-time read `gateway.Session` hands a session its credentials and
+  its `tools` (`[]tools.Tool`, secrets decrypted for the claiming
+  node); a platform without `tools` gets none and is asked for
+  credentials alone from then on. `Loop.Runtimes()` is what the last
+  probe found.
 - Every session gets Prologue as an MCP server with the node's token and
   the project's context on disk under `.mesh/context/` with `INDEX.md`:
   the documents, then `## Live goals and items` — each live goal's items
