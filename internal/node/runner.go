@@ -75,7 +75,11 @@ type Runner struct {
 	Model string
 	// Accounts are the node's Claude accounts (node.yaml); a session runs
 	// on the first, or on the operator's own login when there are none.
+	// They are the fallback to the credentials the platform issues.
 	Accounts []AccountConfig
+	// Credentials asks the platform for the session's credentials and
+	// reports its usage record (nil: node.yaml's accounts, no record).
+	Credentials *Credentials
 	// ProgressEvery is how often progress is reported (60 s).
 	ProgressEvery time.Duration
 	// Fallback is the node's one old-platform notice (nil: every item).
@@ -203,7 +207,16 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		defer os.RemoveAll(ghDir)
 		job.Env = SessionEnv(tok, ghDir)
 	}
-	acct, err := OpenAccount(ctx, r.Accounts)
+	sc, _ := r.Scopes.ByOrg(item.OrgID)
+	acct, err := r.Credentials.Open(ctx, gateway.SessionRef{Kind: string(harness.KindBuild), ItemID: item.ID, GoalID: item.GoalID}, sc.NodeID, r.Accounts)
+	if errors.Is(err, ErrNoAccount) {
+		// no issued account has headroom: the item waits, not fails
+		r.logf("item %s: %v; released", label, err)
+		if rerr := r.GW.ReleaseWorkItem(ctx, item.ID, "accounts: "+err.Error()); rerr != nil {
+			r.logf("item %s: release: %v", label, rerr)
+		}
+		return nil
+	}
 	if err != nil {
 		return r.fail(ctx, item, err)
 	}
@@ -262,6 +275,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		}
 	})
 	stopTicker()
+	acct.Finish(ctx, result)
 	if ctx.Err() != nil {
 		r.logf("item %s: node shutting down; left for a retry", label)
 		return ctx.Err()

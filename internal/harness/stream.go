@@ -20,8 +20,8 @@ type Event struct {
 	// Model is the model a system/init event says the session runs on.
 	Model string `json:"model"`
 	// Usage is the session's token counts on the result event.
-	Usage *streamUsage `json:"usage"`
-	Message   *struct {
+	Usage   *streamUsage `json:"usage"`
+	Message *struct {
 		Role    string `json:"role"`
 		Content []struct {
 			Type string `json:"type"`

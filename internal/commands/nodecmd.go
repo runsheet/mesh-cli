@@ -452,29 +452,33 @@ only use it on a machine you trust with that.`,
 		})()
 		// one old-platform notice for the whole run, whatever runs the items
 		fallback := &node.TokenFallback{}
+		// every one-shot session's account comes from the platform's
+		// claim-time read, node.yaml the fallback, and every one reports
+		// its usage record (adr-005); each fallback is said once per run
+		accounts := &node.Credentials{GW: gw, Limits: loop.Limits, Thresholds: loop.Thresholds, Log: logger}
 		switch nodeModeFlag {
 		case "poll":
-			return runPollMode(ctx, cfg, scopes, gw, loop, workRoot, fallback, logger)
+			return runPollMode(ctx, cfg, scopes, gw, loop, workRoot, fallback, accounts, logger)
 		case "channel", "":
-			return runChannelMode(ctx, cfg, scopes, gw, loop, workRoot, fallback, logger)
+			return runChannelMode(ctx, cfg, scopes, gw, loop, workRoot, fallback, accounts, logger)
 		default:
 			return fmt.Errorf("--mode must be channel or poll")
 		}
 	},
 }
 
-func runPollMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *gateway.Client, loop *node.Loop, workRoot string, fallback *node.TokenFallback, logger *log.Logger) error {
+func runPollMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *gateway.Client, loop *node.Loop, workRoot string, fallback *node.TokenFallback, accounts *node.Credentials, logger *log.Logger) error {
 	h := node.ObserveLimits(oneShotHarness(), loop.Limits)
-	runner := &node.Runner{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, MCPFunc: func(ctx context.Context) map[string]any { return prologueMCP(ctx, gw) }, MaxBudgetUSD: nodeMaxBudgetFlag, Model: nodeModels.For("build"), Fallback: fallback, Accounts: cfg.Accounts, Log: logger}
+	runner := &node.Runner{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, MCPFunc: func(ctx context.Context) map[string]any { return prologueMCP(ctx, gw) }, MaxBudgetUSD: nodeMaxBudgetFlag, Model: nodeModels.For("build"), Fallback: fallback, Accounts: cfg.Accounts, Credentials: accounts, Log: logger}
 	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) {
 		r := *runner
 		r.Scopes = loop.CurrentScopes() // an org served since start is known to its build
 		_ = r.RunItem(ctx, item)
 	}
-	loop.Evaluate = evaluateWith(gw, cfg, h, loop.CurrentScopes, workRoot, fallback, logger)
-	loop.Plan = planWith(gw, cfg, h, workRoot, logger)
-	loop.Research = researchWith(gw, cfg, h, workRoot, logger)
-	loop.Rebase = rebaseWith(gw, cfg, h, loop.CurrentScopes, workRoot, fallback, logger)
+	loop.Evaluate = evaluateWith(gw, cfg, h, loop.CurrentScopes, workRoot, fallback, accounts, logger)
+	loop.Plan = planWith(gw, cfg, h, workRoot, accounts, logger)
+	loop.Research = researchWith(gw, cfg, h, workRoot, accounts, logger)
+	loop.Rebase = rebaseWith(gw, cfg, h, loop.CurrentScopes, workRoot, fallback, accounts, logger)
 	logger.Printf("poll mode: node %s (%s) for %s, capacity %s, every %s", cfg.Name, cfg.Slug, strings.Join(scopes.Logins(), ", "), cfg.Capacity, loop.Interval)
 	// items this node held when it last stopped are taken up again: a
 	// restart mid-build continues them (the workspace keeps the branch)
@@ -507,7 +511,7 @@ func runPollMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *
 	return err
 }
 
-func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *gateway.Client, loop *node.Loop, workRoot string, fallback *node.TokenFallback, logger *log.Logger) error {
+func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *gateway.Client, loop *node.Loop, workRoot string, fallback *node.TokenFallback, accounts *node.Credentials, logger *log.Logger) error {
 	sock, err := channel.SockPath()
 	if err != nil {
 		return err
@@ -572,10 +576,10 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 	}
 
 	ws := &node.Git{Log: os.Stderr}
-	loop.Evaluate = evaluateWith(gw, cfg, node.ObserveLimits(oneShotHarness(), loop.Limits), loop.CurrentScopes, workRoot, fallback, logger)
-	loop.Plan = planWith(gw, cfg, node.ObserveLimits(oneShotHarness(), loop.Limits), workRoot, logger)
-	loop.Research = researchWith(gw, cfg, node.ObserveLimits(oneShotHarness(), loop.Limits), workRoot, logger)
-	loop.Rebase = rebaseWith(gw, cfg, node.ObserveLimits(oneShotHarness(), loop.Limits), loop.CurrentScopes, workRoot, fallback, logger)
+	loop.Evaluate = evaluateWith(gw, cfg, node.ObserveLimits(oneShotHarness(), loop.Limits), loop.CurrentScopes, workRoot, fallback, accounts, logger)
+	loop.Plan = planWith(gw, cfg, node.ObserveLimits(oneShotHarness(), loop.Limits), workRoot, accounts, logger)
+	loop.Research = researchWith(gw, cfg, node.ObserveLimits(oneShotHarness(), loop.Limits), workRoot, accounts, logger)
+	loop.Rebase = rebaseWith(gw, cfg, node.ObserveLimits(oneShotHarness(), loop.Limits), loop.CurrentScopes, workRoot, fallback, accounts, logger)
 	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) {
 		ready, err := readyChannelItem(ctx, gw, ws, loop.CurrentScopes(), item, workRoot, fallback, logger.Printf)
 		if err != nil {
@@ -759,9 +763,9 @@ func oneShotHarness() *harness.ClaudeCode {
 // finished item, in either mode — and a bearer taken afresh for each, so
 // a session never starts with a machine token about to expire. A failure to reach a verdict is logged
 // and the item is left in evaluating for the next tick.
-func evaluateWith(gw *gateway.Client, cfg *node.Config, h harness.Harness, scopes func() node.Scopes, workRoot string, fallback *node.TokenFallback, logger *log.Logger) func(context.Context, gateway.WorkItem) {
+func evaluateWith(gw *gateway.Client, cfg *node.Config, h harness.Harness, scopes func() node.Scopes, workRoot string, fallback *node.TokenFallback, accounts *node.Credentials, logger *log.Logger) func(context.Context, gateway.WorkItem) {
 	return func(ctx context.Context, item gateway.WorkItem) {
-		ev := &node.Evaluator{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Scopes: scopes(), WorkRoot: workRoot, MCP: prologueMCP(ctx, gw), MaxBudgetUSD: nodeEvalBudgetFlag, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("evaluate"), Fallback: fallback, Accounts: cfg.Accounts, Log: logger}
+		ev := &node.Evaluator{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Scopes: scopes(), WorkRoot: workRoot, MCP: prologueMCP(ctx, gw), MaxBudgetUSD: nodeEvalBudgetFlag, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("evaluate"), Fallback: fallback, Accounts: cfg.Accounts, Credentials: accounts, Log: logger}
 		if err := ev.Evaluate(ctx, item); err != nil && ctx.Err() == nil {
 			logger.Printf("item %d %q: evaluation: %v", item.Seq, item.Title, err)
 		}
@@ -773,9 +777,9 @@ func evaluateWith(gw *gateway.Client, cfg *node.Config, h harness.Harness, scope
 // either mode. However it ends, the rebase is finished or failed on the
 // platform, so a failed one hands the item to its builder at once
 // rather than holding the claim until the platform's stall timer.
-func rebaseWith(gw *gateway.Client, cfg *node.Config, h harness.Harness, scopes func() node.Scopes, workRoot string, fallback *node.TokenFallback, logger *log.Logger) func(context.Context, gateway.WorkItem) {
+func rebaseWith(gw *gateway.Client, cfg *node.Config, h harness.Harness, scopes func() node.Scopes, workRoot string, fallback *node.TokenFallback, accounts *node.Credentials, logger *log.Logger) func(context.Context, gateway.WorkItem) {
 	return func(ctx context.Context, item gateway.WorkItem) {
-		rb := &node.Rebaser{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Scopes: scopes(), WorkRoot: workRoot, MCP: prologueMCP(ctx, gw), MaxBudgetUSD: nodeRebaseBudgetFlag, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("rebase"), Fallback: fallback, Accounts: cfg.Accounts, Log: logger}
+		rb := &node.Rebaser{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Scopes: scopes(), WorkRoot: workRoot, MCP: prologueMCP(ctx, gw), MaxBudgetUSD: nodeRebaseBudgetFlag, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("rebase"), Fallback: fallback, Accounts: cfg.Accounts, Credentials: accounts, Log: logger}
 		if err := rb.Rebase(ctx, item); err != nil && ctx.Err() == nil {
 			logger.Printf("item %d %q: rebase: %v", item.Seq, item.Title, err)
 		}
@@ -785,9 +789,9 @@ func rebaseWith(gw *gateway.Client, cfg *node.Config, h harness.Harness, scopes 
 // planWith is the loop's Plan hook: a fresh planner session per goal in
 // planning, in either mode, with a bearer taken afresh for each. A plan that cannot be handed in is logged
 // and the goal left in planning for the next tick (three tries).
-func planWith(gw *gateway.Client, cfg *node.Config, h harness.Harness, workRoot string, logger *log.Logger) func(context.Context, gateway.Goal, node.Scope) {
+func planWith(gw *gateway.Client, cfg *node.Config, h harness.Harness, workRoot string, accounts *node.Credentials, logger *log.Logger) func(context.Context, gateway.Goal, node.Scope) {
 	return func(ctx context.Context, goal gateway.Goal, scope node.Scope) {
-		pl := &node.Planner{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, WorkRoot: workRoot, MCP: prologueMCP(ctx, gw), MaxBudgetUSD: nodePlanBudgetFlag, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.PlanModel(), Accounts: cfg.Accounts, Log: logger}
+		pl := &node.Planner{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, WorkRoot: workRoot, MCP: prologueMCP(ctx, gw), MaxBudgetUSD: nodePlanBudgetFlag, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.PlanModel(), Accounts: cfg.Accounts, Credentials: accounts, Log: logger}
 		if err := pl.Plan(ctx, goal, scope); err != nil && ctx.Err() == nil {
 			logger.Printf("goal %s: planning: %v", goal.Slug, err)
 		}
@@ -798,9 +802,9 @@ func planWith(gw *gateway.Client, cfg *node.Config, h harness.Harness, workRoot 
 // per direction whose research this node has claimed (runsheet trd
 // §6c). A session that cannot be read hands in an empty research rather
 // than leaving the direction claimed, so the next window is not lost.
-func researchWith(gw *gateway.Client, cfg *node.Config, h harness.Harness, workRoot string, logger *log.Logger) func(context.Context, gateway.Direction, gateway.Project, node.Scope) {
+func researchWith(gw *gateway.Client, cfg *node.Config, h harness.Harness, workRoot string, accounts *node.Credentials, logger *log.Logger) func(context.Context, gateway.Direction, gateway.Project, node.Scope) {
 	return func(ctx context.Context, direction gateway.Direction, project gateway.Project, scope node.Scope) {
-		dir := &node.Director{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, WorkRoot: workRoot, MCP: prologueMCP(ctx, gw), MaxBudgetUSD: nodeResearchBudgetFlag, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("research"), Accounts: cfg.Accounts, Log: logger}
+		dir := &node.Director{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, WorkRoot: workRoot, MCP: prologueMCP(ctx, gw), MaxBudgetUSD: nodeResearchBudgetFlag, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("research"), Accounts: cfg.Accounts, Credentials: accounts, Log: logger}
 		if err := dir.Research(ctx, direction, project, scope); err != nil && ctx.Err() == nil {
 			logger.Printf("%s/%s: research: %v", project.Slug, direction.Slug, err)
 		}

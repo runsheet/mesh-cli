@@ -37,7 +37,11 @@ type Director struct {
 	Model string
 	// Accounts are the node's Claude accounts (node.yaml); a session runs
 	// on the first, or on the operator's own login when there are none.
+	// They are the fallback to the credentials the platform issues.
 	Accounts []AccountConfig
+	// Credentials asks the platform for the session's credentials and
+	// reports its usage record (nil: node.yaml's accounts, no record).
+	Credentials *Credentials
 	// Timeout caps its wall clock (0 none).
 	Timeout time.Duration
 	Log     *log.Logger
@@ -131,7 +135,7 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 		Kind: harness.KindResearch, Workspace: dir, Prompt: prompt, MaxBudgetUSD: budget,
 		Label: project.Slug + "/" + direction.Slug + " research", Timeout: d.Timeout, MCPServers: d.MCP, Model: d.Model,
 	}
-	acct, err := OpenAccount(ctx, d.Accounts)
+	acct, err := d.Credentials.Open(ctx, gateway.SessionRef{Kind: string(harness.KindResearch), DirectionID: direction.ID}, scope.NodeID, d.Accounts)
 	if err != nil {
 		return err
 	}
@@ -139,6 +143,7 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 	acct.Apply(&job)
 	d.logf("%s/%s: researching in %s (%d repos, room for %d)", project.Slug, direction.Slug, dir, len(dirs), room)
 	result, err := d.Harness.Run(ctx, job, nil)
+	acct.Finish(ctx, result)
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}

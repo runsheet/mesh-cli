@@ -104,3 +104,19 @@ func ChosenAccount(ctx context.Context) (AccountConfig, bool) {
 	a, ok := ctx.Value(accountKey{}).(AccountConfig)
 	return a, ok
 }
+
+type chooserKey struct{}
+
+// withChooser is ctx carrying the rule the loop chose the session's
+// account by — its priority, whether work waits, whether it finishes
+// work already built — bound to the latest readings, so that
+// Credentials.Open applies the same rule among the credentials the
+// platform issues the claimed session.
+func withChooser(ctx context.Context, choose func([]AccountConfig) (AccountConfig, bool)) context.Context {
+	return context.WithValue(ctx, chooserKey{}, choose)
+}
+
+func chooserFrom(ctx context.Context) func([]AccountConfig) (AccountConfig, bool) {
+	f, _ := ctx.Value(chooserKey{}).(func([]AccountConfig) (AccountConfig, bool))
+	return f
+}

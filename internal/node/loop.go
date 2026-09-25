@@ -613,6 +613,9 @@ func (l *Loop) withAccount(ctx context.Context, what string, choose func([]Accou
 		}
 		return ctx, false
 	}
+	ctx = withChooser(ctx, func(issued []AccountConfig) (AccountConfig, bool) {
+		return choose(issued, l.limitsStore().Readings())
+	})
 	if len(l.Cfg.Accounts) == 0 {
 		return ctx, true
 	}

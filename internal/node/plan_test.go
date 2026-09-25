@@ -457,7 +457,7 @@ func TestPlannerDropsUnexplainedDependencies(t *testing.T) {
 
 	// the reason rides on the PlannedItem itself
 	repos := map[string]gateway.Repo{"acme/widgets": {ID: repoID, Name: "widgets", DefaultBranch: "main"}}
-	items, _, _, _, err := pl.ask(context.Background(), goal, t.TempDir(), 0, harness.PlanInput{}, repos, nil)
+	items, _, _, _, err := pl.ask(context.Background(), goal, "", t.TempDir(), 0, harness.PlanInput{}, repos, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
