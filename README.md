@@ -674,6 +674,99 @@ final doc and pushes it straight to that branch (`docs(mesh): goal <slug>
 finish that finds the doc already final pushes nothing. A failure there is
 logged; the item has already finished.
 
+## Codex on a node
+
+A node can run OpenAI's Codex CLI beside Claude Code. The adapter
+(`internal/harness/codex.go`) runs `codex exec --json --sandbox
+workspace-write` in the item's workspace, with the prompt on stdin. It
+is not yet wired into the loop: the first use will be a second opinion
+on evaluations of high/urgent goals (goal `codex-adapter`).
+
+### Install the CLI
+
+Verified with **codex-cli 0.157.0**. With Node.js:
+
+```bash
+npm i -g @openai/codex
+codex --version
+```
+
+Without Node.js, take the `codex-package-<arch>-unknown-linux-musl`
+tarball from the [releases](https://github.com/openai/codex/releases)
+and put its binaries on the node's `PATH`, or name the path as
+`codex.binary`. Keep `codex-code-mode-host` beside `codex`. Without it,
+every session starts with a `Code Mode is unavailable` warning.
+
+The workspace-write sandbox uses bubblewrap. On Ubuntu with
+`kernel.apparmor_restrict_unprivileged_userns = 1` it fails
+(`bwrap: loopback: Failed RTM_NEWADDR`), and every write and command in
+the session is blocked. The session still "succeeds", and its message
+says what it could not do. Give Codex's bwrap an AppArmor profile
+before a Codex session builds anything on such a host.
+
+### Add an account
+
+Each session gets a fresh temporary `CODEX_HOME` under the user cache
+dir (`~/.cache/mesh/codex/home-*`), removed when the session ends. The
+operator's own `CODEX_HOME`, `CODEX_API_KEY` and `OPENAI_API_KEY` never
+reach it. There are two kinds of account.
+
+**A ChatGPT plan** (Plus, Pro, Business). Log it in to its own home,
+once per account:
+
+```bash
+CODEX_HOME=~/.mesh/codex/plus codex login
+```
+
+Each session gets a copy of that home's `auth.json`. When Codex
+refreshes the tokens during the session, the refreshed file is written
+back.
+
+**An API key.** Name the environment variable that holds it, or a file
+(0600) that holds it. The key reaches the session only in its
+environment, as `CODEX_API_KEY` and `OPENAI_API_KEY`. It is never
+logged or written to the workspace or the temporary home. codex-cli
+0.157.0's `exec` reads only `CODEX_API_KEY` and gets a 401 with just
+`OPENAI_API_KEY`, so the node sets both.
+
+Codex has no budget flag, so a job's `MaxBudgetUSD` is **not enforced**
+for a Codex session. The cost is known only at the end, from the token
+usage at list price. Use the session's timeout and the key's own caps
+to bound it.
+
+### node.yaml
+
+```yaml
+codex:
+  binary: codex                 # default: codex on PATH
+  accounts:
+    - name: plus
+      home: ~/.mesh/codex/plus  # a ChatGPT-plan login
+    - name: api
+      api_key_env: OPENAI_API_KEY
+    - name: api-file
+      api_key_file: ~/.mesh/codex/api.key
+  models:                       # the Codex model for each Claude tier
+    opus: gpt-6-astra
+    sonnet: gpt-6-sol
+    haiku: gpt-6-luna
+```
+
+Each account has a `name` and exactly one of `home`, `api_key_env` and
+`api_key_file`. A load that finds anything else is refused.
+
+`models` maps the Claude tiers to Codex models. A session asked for
+`opus`, `sonnet` or `haiku` runs on that tier's Codex model, and so does
+a full id of that family (`claude-opus-5` → `gpt-6-astra`). An empty
+model, one of no tier, or a tier left out of `models` runs on Codex's
+own default.
+
+The session's MCP servers (Prologue) are written to `config.toml` in
+its temporary home. Secrets are named there by variable, never by value
+(mesh-specs ADR 006). What Codex's event stream reports is documented
+in [docs/codex-events.md](docs/codex-events.md): the final message,
+token usage and cost at list price, and no plan rate-limit windows.
+
 ## Goals
 
 ```bash
