@@ -48,6 +48,28 @@ existing installs download.
   of `ErrMissingAsset`, `ErrSignature`, `ErrIdentity`, `ErrChecksum`
   with a short reason for the heartbeat; the update's progress and last
   error live in `~/.mesh/update.json`.
+- The loop follows `NodeIndex.desiredVersion` (the platform half,
+  update-nodes-from-console), read after each tick's heartbeat
+  (`GetDesiredVersion`; a platform without the field is no update,
+  logged once). Empty, the running version, or a `dev` build do
+  nothing. Otherwise the node fetches and verifies *first* — a refused
+  release costs it no work and no drain — then drains (`DrainAndWait`:
+  every session of every kind ends), records the update, swaps the
+  resolved executable (the previous kept as `<path>.prev`) and `Run`
+  returns `ErrRestartForUpdate`: `mesh node start` exits 0 and systemd
+  (`Restart=always`) or launchd (`KeepAlive`) starts the new binary. A
+  refusal or a failed swap resumes the drain the update began, puts the
+  reason on every heartbeat (`updateError`) while that version is still
+  asked for, and leaves that version for an hour. A platform that
+  refuses `updateError` gets the basic heartbeat instead (version,
+  running, draining), and the node offers the field again every ten
+  minutes (`HeartbeatNode`).
+- Every `mesh node start` counts itself against a pending update; the
+  third unconfirmed start (the new binary failed to start twice) puts
+  `.prev` back, heartbeats the reason as the old version, and exits 0
+  for the old binary to start. A rolled-back version is not tried again
+  until the platform asks for another. The first heartbeat that goes
+  through confirms the update.
 
 ## Consequences
 
