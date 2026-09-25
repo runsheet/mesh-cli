@@ -723,6 +723,17 @@ the session is redacted of the values.
   evaluation cannot be released: it records no verdict and waits the
   same way.
 
+**Priced calls are usage.** A tool with a `pricePerCallCents` is
+reported by what the session used of it: the node counts the session's
+calls per MCP server from its stream (Claude Code's `tool_use` blocks
+named `mcp__<name>__…`, Codex's `mcp_tool_call` items) and, after a
+build or evaluation, hands the platform one usage record per priced tool
+called — the item, the session's kind, the tool, the calls and their
+list price in cents (calls × price) — through `recordUsage`, beside the
+session's own usage record. Unpriced tools and Prologue report nothing.
+A platform without `recordUsage` gets none: the node says so once per
+run, logs each record instead, and the item goes on.
+
 A platform that does not hand out `tools` yet costs nothing: sessions
 run on Prologue alone, as before.
 

@@ -348,3 +348,78 @@ func TestToolNamedPrologueIsRefused(t *testing.T) {
 		t.Fatalf("MCPServers = %v, %v", job.MCPServers, err)
 	}
 }
+
+// A build that called a tool priced 3 cents a call twice records one
+// usage record of 6 cents for that tool and item; an unpriced tool and
+// the built-in Prologue record none, however often they were called.
+func TestPricedToolCallsAreUsageRecords(t *testing.T) {
+	f := seed(t)
+	priced := remoteTool()
+	priced["pricePerCallCents"] = 3
+	f.SessionTools[item1] = []map[string]any{priced, localTool()}
+	h := &fakeHarness{toolCalls: map[string]int{"search": 2, "fs-tools": 5, "prologue": 4}}
+	r, item, _ := toolRunner(t, f, h)
+
+	if err := r.RunItem(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.Usage) != 1 {
+		t.Fatalf("usage records = %v, want one", f.Usage)
+	}
+	u := f.Usage[0]
+	if u["workItemId"] != item1 || u["kind"] != "build" || u["tool"] != "search" || u["calls"] != 2.0 || u["listPriceCents"] != 6.0 {
+		t.Fatalf("usage record = %v", u)
+	}
+}
+
+// The evaluator's priced calls are usage records too, of kind evaluate.
+func TestEvaluatorPricedToolCallsAreUsageRecords(t *testing.T) {
+	f := seed(t)
+	gw := gateway.New(f.URL(), "rs_test")
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "test-node", NodeID: "22222222-2222-4222-8222-222222222222"}
+	f.WorkItems[item1]["status"], f.WorkItems[item1]["nodeId"], f.WorkItems[item1]["branch"] = "evaluating", cfg.NodeID, "mesh/ship-it-1"
+	var item gateway.WorkItem
+	item.ID, item.OrgID, item.GoalID, item.RepoID, item.Seq, item.Branch = item1, orgID, goalID, repoID, 1, "mesh/ship-it-1"
+	ws := &fakeWS{root: t.TempDir()}
+	h := &fakeHarness{text: "Fine.\nVERDICT: PASS", toolCalls: map[string]int{"search": 1}}
+	ev := &Evaluator{GW: gw, Harness: h, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, MCP: PrologueMCP(f.URL(), "rs_test"),
+		Credentials: &Credentials{GW: gw}, Runtimes: onlyNpx, Declines: &Declines{}}
+	priced := remoteTool()
+	priced["pricePerCallCents"] = 3
+	f.SessionTools[item1] = []map[string]any{priced}
+	if err := ev.Evaluate(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.Usage) != 1 || f.Usage[0]["kind"] != "evaluate" || f.Usage[0]["listPriceCents"] != 3.0 {
+		t.Fatalf("usage records = %v", f.Usage)
+	}
+}
+
+// An older platform without recordUsage does not fail the item: the
+// build goes on to evaluation, and the node says so once and logs the
+// record instead.
+func TestToolUsageOnAnOlderPlatformDoesNotFailTheItem(t *testing.T) {
+	f := seed(t)
+	f.Unsupported["recordUsage"] = true
+	priced := remoteTool()
+	priced["pricePerCallCents"] = 3
+	f.SessionTools[item1] = []map[string]any{priced}
+	h := &fakeHarness{toolCalls: map[string]int{"search": 2}}
+	r, item, logs := toolRunner(t, f, h)
+
+	if err := r.RunItem(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	if f.Item(item1)["status"] != "evaluating" {
+		t.Fatalf("item: %v", f.Item(item1))
+	}
+	if len(f.Usage) != 0 {
+		t.Fatalf("usage = %v", f.Usage)
+	}
+	if n := strings.Count(logs.String(), "takes no tool usage records"); n != 1 {
+		t.Errorf("fallback said %d times:\n%s", n, logs.String())
+	}
+	if !strings.Contains(logs.String(), "usage: tool search on item "+item1+" (build): 2 calls, 6¢") {
+		t.Errorf("record not logged:\n%s", logs.String())
+	}
+}

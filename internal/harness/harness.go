@@ -160,6 +160,11 @@ type Result struct {
 	// result event's usage, beside CostUSD, and Codex's (which reports
 	// tokens rather than dollars); nil when the session reported none.
 	Usage *Usage
+	// ToolCalls counts the session's MCP tool calls by server — a Claude
+	// session's tool_use blocks named mcp__<server>__…, a Codex session's
+	// completed mcp_tool_call items — for priced tools' usage records
+	// (trd §3 Tools); nil when it made none.
+	ToolCalls map[string]int
 }
 
 // Usage is what a session consumed, in tokens, and the model its cost

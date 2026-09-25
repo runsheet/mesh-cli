@@ -57,6 +57,27 @@ func (e Event) Text() string {
 	return strings.Join(parts, "\n")
 }
 
+// MCPServer is the server of an MCP tool name, mcp__<server>__<tool>
+// ("" for a tool that is not an MCP server's).
+func MCPServer(name string) string {
+	rest, ok := strings.CutPrefix(name, "mcp__")
+	if !ok {
+		return ""
+	}
+	server, _, ok := strings.Cut(rest, "__")
+	if !ok {
+		return ""
+	}
+	return server
+}
+
+func (r *Result) countToolCall(server string) {
+	if r.ToolCalls == nil {
+		r.ToolCalls = map[string]int{}
+	}
+	r.ToolCalls[server]++
+}
+
 // ParseStream reads stream-json lines, calling onEvent for each, and
 // returns the Result carried by the final `result` event. Lines that are
 // not JSON (claude's own diagnostics) are skipped. If the stream ends with
@@ -65,7 +86,8 @@ func (e Event) Text() string {
 // The latest rate_limit_event, if any, is kept on Result.RateLimit, and
 // the result event's token counts on Result.Usage (its InputTokens the
 // cached ones included, as Usage counts them), with the model the
-// system/init event named.
+// system/init event named. Each tool_use of an MCP server's tool is
+// counted on Result.ToolCalls by its server.
 func ParseStream(r io.Reader, onEvent func(Event)) Result {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 16<<20)
@@ -94,6 +116,16 @@ func ParseStream(r io.Reader, onEvent func(Event)) Result {
 		case "assistant":
 			if t := ev.Text(); t != "" {
 				lastText = t
+			}
+			if ev.Message != nil {
+				for _, c := range ev.Message.Content {
+					if c.Type != "tool_use" {
+						continue
+					}
+					if server := MCPServer(c.Name); server != "" {
+						res.countToolCall(server)
+					}
+				}
 			}
 		case "rate_limit_event":
 			if rl := ev.RateLimit(time.Now()); rl != nil {

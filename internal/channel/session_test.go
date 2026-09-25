@@ -254,7 +254,18 @@ echo '{"type":"result"`, 1)
 		OnRateLimit: func(rl *harness.RateLimit) { got <- rl }}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go func() { _ = s.Run(ctx, filepath.Join(dir, "work")) }()
+	runErr := make(chan error, 1)
+	go func() { runErr <- s.Run(ctx, filepath.Join(dir, "work")) }()
+	// The session writes under dir until Run returns; wait for it before
+	// the TempDir is removed.
+	defer func() {
+		cancel()
+		select {
+		case <-runErr:
+		case <-time.After(10 * time.Second):
+			t.Error("run did not stop")
+		}
+	}()
 	select {
 	case rl := <-got:
 		if rl.Status != "allowed" || rl.FiveHour.Utilization != 0.83 || rl.SevenDay.Utilization != 0.41 {

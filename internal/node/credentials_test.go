@@ -331,4 +331,5 @@ func TestCredentialPrintsNoSecret(t *testing.T) {
 	}
 }
 
-func fmtAll(v any) string { return fmt.Sprintf("%v %+v %#v %s", v, v, v, v) }
+func fmtAll(v any) string                                               { return fmt.Sprintf("%v %+v %#v %s", v, v, v, v) }
+func (g *credsGW) RecordUsage(context.Context, gateway.ToolUsage) error { return nil }

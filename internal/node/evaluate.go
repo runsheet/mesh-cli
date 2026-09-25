@@ -181,7 +181,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 		e.Declines.Record(item.ID, st.Missing, runtimes, time.Now())
 		return fmt.Errorf("declined, %s", st.DeclineReason())
 	}
-	if acct.toolEnv, err = st.Apply(&job, e.MCP); err != nil {
+	if err := st.UseTools(&job, e.MCP, acct); err != nil {
 		return fmt.Errorf("tools: %w", err)
 	}
 	if len(st.Use) > 0 {
