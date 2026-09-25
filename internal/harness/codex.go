@@ -123,75 +123,76 @@ func (c *Codex) Name() string { return "codex" }
 // workspace-write` with on-request approval, and exec never asks), so
 // the session is sandboxed to its workspace with `--sandbox
 // workspace-write`. The prompt is not here but on stdin (`-`), for the
-// same reason as ClaudeCode.Args: MAX_ARG_STRLEN. MCP servers go in as
-// `-c mcp_servers.<name>.…` overrides (CodexMCPArgs), never a header's
-// value.
+// same reason as ClaudeCode.Args: MAX_ARG_STRLEN. MCP servers are not
+// here either: they go in the session's CODEX_HOME/config.toml
+// (CodexMCPConfig), as ADR 006 has it.
 func (c *Codex) Args(job Job) []string {
 	args := []string{"exec", "--json", "--sandbox", "workspace-write"}
 	if job.Model != "" {
 		args = append(args, "--model", job.Model)
 	}
-	mcp, _ := CodexMCPArgs(job.MCPServers)
-	args = append(args, mcp...)
 	args = append(args, c.ExtraArgs...)
 	return append(args, "-")
 }
 
-// CodexMCPArgs turns MCP servers (the mcp.json shape Job.MCPServers
-// holds) into Codex config overrides, in name order: an http server's
-// `url`, and each of its headers through `env_http_headers`, which
-// names a variable holding the value; a stdio server's `command`,
-// `args` and `env`. env is those variables (KEY=VALUE), for the
-// session's environment only, so a bearer token never reaches argv
-// where `ps` shows it. A server Codex cannot take — neither shape, or
-// a name that is not [A-Za-z0-9_-]+ — is skipped.
-func CodexMCPArgs(servers map[string]any) (args, env []string) {
+// CodexMCPConfig renders MCP servers (the mcp.json shape Job.MCPServers
+// holds) as Codex's `[mcp_servers.<name>]` tables, in name order, and
+// the environment the session needs for them (mesh-specs ADR 006: a
+// secret is in the environment only, the config holds its name). An
+// http server is its `url` and each header through `env_http_headers`,
+// naming a variable MESH_CODEX_MCP_<n>_TOKEN that holds the value; a
+// stdio server is its `command`, `args`, and each `env` entry set in
+// the session's environment under its own name and passed through by
+// `env_vars`. A server with neither url nor command is skipped.
+func CodexMCPConfig(servers map[string]any) (toml string, env []string) {
 	names := make([]string, 0, len(servers))
 	for n := range servers {
 		names = append(names, n)
 	}
 	sort.Strings(names)
+	var b strings.Builder
 	for _, name := range names {
 		srv, ok := servers[name].(map[string]any)
-		if !ok || !bareKey(name) {
+		if !ok {
 			continue
 		}
-		key := "mcp_servers." + name
-		if url, _ := srv["url"].(string); url != "" {
-			args = append(args, "-c", key+".url="+tomlString(url))
+		url, _ := srv["url"].(string)
+		cmd, _ := srv["command"].(string)
+		if url == "" && cmd == "" {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		fmt.Fprintf(&b, "[mcp_servers.%s]\n", tomlKey(name))
+		if url != "" {
+			fmt.Fprintf(&b, "url = %s\n", tomlString(url))
 			headers := stringMap(srv["headers"])
 			if len(headers) == 0 {
 				continue
 			}
-			hnames := sortedKeys(headers)
-			refs := make([]string, 0, len(hnames))
-			for _, h := range hnames {
+			refs := make([]string, 0, len(headers))
+			for _, h := range sortedKeys(headers) {
 				v := fmt.Sprintf("MESH_CODEX_MCP_%d_TOKEN", len(env))
 				env = append(env, v+"="+headers[h])
-				refs = append(refs, tomlString(h)+"="+tomlString(v))
+				refs = append(refs, tomlString(h)+" = "+tomlString(v))
 			}
-			args = append(args, "-c", key+".env_http_headers={"+strings.Join(refs, ",")+"}")
+			fmt.Fprintf(&b, "env_http_headers = { %s }\n", strings.Join(refs, ", "))
 			continue
 		}
-		if cmd, _ := srv["command"].(string); cmd != "" {
-			args = append(args, "-c", key+".command="+tomlString(cmd))
-			if list := stringList(srv["args"]); len(list) > 0 {
-				quoted := make([]string, len(list))
-				for i, a := range list {
-					quoted[i] = tomlString(a)
-				}
-				args = append(args, "-c", key+".args=["+strings.Join(quoted, ",")+"]")
+		fmt.Fprintf(&b, "command = %s\n", tomlString(cmd))
+		if list := stringList(srv["args"]); len(list) > 0 {
+			fmt.Fprintf(&b, "args = %s\n", tomlList(list))
+		}
+		if vars := stringMap(srv["env"]); len(vars) > 0 {
+			keys := sortedKeys(vars)
+			for _, k := range keys {
+				env = append(env, k+"="+vars[k])
 			}
-			if vars := stringMap(srv["env"]); len(vars) > 0 {
-				kv := make([]string, 0, len(vars))
-				for _, k := range sortedKeys(vars) {
-					kv = append(kv, tomlString(k)+"="+tomlString(vars[k]))
-				}
-				args = append(args, "-c", key+".env={"+strings.Join(kv, ",")+"}")
-			}
+			fmt.Fprintf(&b, "env_vars = %s\n", tomlList(keys))
 		}
 	}
-	return args, env
+	return b.String(), env
 }
 
 // tomlString quotes s as a TOML basic string: JSON's escapes are
@@ -201,15 +202,26 @@ func tomlString(s string) string {
 	return string(b)
 }
 
-// bareKey says name can be a segment of a `-c` dotted path: codex-cli
-// 0.157.0 splits the path on every dot and takes no quoted segment.
-func bareKey(s string) bool {
+func tomlList(l []string) string {
+	q := make([]string, len(l))
+	for i, s := range l {
+		q[i] = tomlString(s)
+	}
+	return "[" + strings.Join(q, ", ") + "]"
+}
+
+// tomlKey is a table-name segment: bare when TOML allows it, else
+// quoted.
+func tomlKey(s string) string {
 	for _, r := range s {
 		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-') {
-			return false
+			return tomlString(s)
 		}
 	}
-	return s != ""
+	if s == "" {
+		return `""`
+	}
+	return s
 }
 
 func stringMap(v any) map[string]string {
@@ -257,12 +269,12 @@ type codexHome struct {
 	orig  []byte
 }
 
-// prepareHome makes the session's CODEX_HOME: a copy of the plan
-// account's auth.json, or for an API-key account nothing on disk and
-// the key in the environment only. codex-cli 0.157.0's exec reads the
+// prepareHome makes the session's CODEX_HOME: the MCP servers'
+// config.toml, which holds no secret, and a copy of the plan account's
+// auth.json, or for an API-key account the key in the environment only. codex-cli 0.157.0's exec reads the
 // key from CODEX_API_KEY — with only OPENAI_API_KEY set it sends no
 // credential and gets a 401 — so both are set.
-func (c *Codex) prepareHome() (*codexHome, error) {
+func (c *Codex) prepareHome(servers map[string]any) (*codexHome, error) {
 	root := c.HomeRoot
 	if root == "" {
 		cache, err := os.UserCacheDir()
@@ -283,13 +295,23 @@ func (c *Codex) prepareHome() (*codexHome, error) {
 		os.RemoveAll(dir)
 		return nil, err
 	}
+	if cfg, env := CodexMCPConfig(servers); cfg != "" {
+		if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(cfg), 0o600); err != nil {
+			return fail(err)
+		}
+		h.env = append(h.env, env...)
+		for _, kv := range env {
+			_, v, _ := strings.Cut(kv, "=")
+			h.secrets = append(h.secrets, v)
+		}
+	}
 	if c.Account.IsAPIKey() {
 		key, err := c.Account.apiKey()
 		if err != nil {
 			return fail(err)
 		}
 		h.env = append(h.env, "CODEX_API_KEY="+key, "OPENAI_API_KEY="+key)
-		h.secrets = []string{key}
+		h.secrets = append(h.secrets, key)
 		return h, nil
 	}
 	login, err := c.Account.loginHome()
@@ -340,7 +362,7 @@ func (c *Codex) Run(ctx context.Context, job Job, onProgress func(Progress)) (Re
 	if _, err := exec.LookPath(bin); err != nil {
 		return Result{}, fmt.Errorf("harness codex: %w", err)
 	}
-	home, err := c.prepareHome()
+	home, err := c.prepareHome(job.MCPServers)
 	if err != nil {
 		return Result{}, fmt.Errorf("harness codex: %s", Redact(err.Error(), job.Secrets...))
 	}
@@ -349,15 +371,10 @@ func (c *Codex) Run(ctx context.Context, job Job, onProgress func(Progress)) (Re
 			fmt.Fprintf(c.Stderr, "harness codex: write back the refreshed login of %q: %v\n", c.Account.Name, err)
 		}
 	}()
-	_, mcpEnv := CodexMCPArgs(job.MCPServers)
 	secrets := append(append([]string{}, job.Secrets...), home.secrets...)
-	for _, kv := range mcpEnv {
-		_, v, _ := strings.Cut(kv, "=")
-		secrets = append(secrets, v)
-	}
 	env := job
 	env.Unset = append(append([]string{}, job.Unset...), codexInherited...)
-	env.Env = append(append(append([]string{}, job.Env...), home.env...), mcpEnv...)
+	env.Env = append(append([]string{}, job.Env...), home.env...)
 
 	if job.Timeout > 0 {
 		var cancel context.CancelFunc

@@ -12,46 +12,59 @@ import (
 	"time"
 )
 
+// testServers are a job's MCP servers: Prologue over http with the
+// node's token, and a local stdio server with a secret in its env.
+func testServers() map[string]any {
+	return map[string]any{
+		"prologue": map[string]any{"type": "http", "url": "https://api.test/mcp",
+			"headers": map[string]string{"Authorization": "Bearer rs_secret"}},
+		"local": map[string]any{"command": "mcp-local", "args": []any{"--root", "."}, "env": map[string]any{"LOCAL_TOKEN": "local-secret"}},
+	}
+}
+
 // The argv for a job with a model and MCP servers: exec in JSON, the
-// workspace-write sandbox, the model, each server as `-c` overrides
-// with its headers named by variable, and `-` for the prompt on stdin.
-// Neither the prompt nor a header's value is on it.
+// workspace-write sandbox, the model and `-` for the prompt on stdin.
+// Neither the prompt nor the servers are on it: those go in the
+// session's CODEX_HOME/config.toml.
 func TestCodexArgs(t *testing.T) {
 	c := &Codex{ExtraArgs: []string{"--skip-git-repo-check"}}
-	job := Job{
-		Prompt: "build the thing",
-		Model:  "gpt-6-sol",
-		MCPServers: map[string]any{
-			"prologue": map[string]any{"type": "http", "url": "https://api.test/mcp",
-				"headers": map[string]string{"Authorization": "Bearer rs_secret"}},
-			"local": map[string]any{"command": "mcp-local", "args": []any{"--root", "."}, "env": map[string]any{"MODE": "ro"}},
-		},
-	}
-	want := []string{
-		"exec", "--json", "--sandbox", "workspace-write",
-		"--model", "gpt-6-sol",
-		"-c", `mcp_servers.local.command="mcp-local"`,
-		"-c", `mcp_servers.local.args=["--root","."]`,
-		"-c", `mcp_servers.local.env={"MODE"="ro"}`,
-		"-c", `mcp_servers.prologue.url="https://api.test/mcp"`,
-		"-c", `mcp_servers.prologue.env_http_headers={"Authorization"="MESH_CODEX_MCP_0_TOKEN"}`,
-		"--skip-git-repo-check",
-		"-",
-	}
+	job := Job{Prompt: "build the thing", Model: "gpt-6-sol", MCPServers: testServers()}
+	want := []string{"exec", "--json", "--sandbox", "workspace-write", "--model", "gpt-6-sol", "--skip-git-repo-check", "-"}
 	got := c.Args(job)
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("args\n got %q\nwant %q", got, want)
 	}
 	for _, a := range got {
-		if strings.Contains(a, "build the thing") || strings.Contains(a, "rs_secret") {
-			t.Fatalf("argv carries the prompt or a header value: %q", a)
+		if strings.Contains(a, "build the thing") || strings.Contains(a, "secret") {
+			t.Fatalf("argv carries the prompt or a secret: %q", a)
 		}
 	}
-	if _, env := CodexMCPArgs(job.MCPServers); !reflect.DeepEqual(env, []string{"MESH_CODEX_MCP_0_TOKEN=Bearer rs_secret"}) {
-		t.Fatalf("mcp env %q", env)
-	}
 	if got := c.Args(Job{Prompt: "hi"}); !reflect.DeepEqual(got, []string{"exec", "--json", "--sandbox", "workspace-write", "--skip-git-repo-check", "-"}) {
-		t.Fatalf("a job with no model or servers: %q", got)
+		t.Fatalf("a job with no model: %q", got)
+	}
+}
+
+// The servers as Codex's config.toml tables: secrets by variable name
+// only (ADR 006), their values in the environment.
+func TestCodexMCPConfig(t *testing.T) {
+	toml, env := CodexMCPConfig(testServers())
+	const want = `[mcp_servers.local]
+command = "mcp-local"
+args = ["--root", "."]
+env_vars = ["LOCAL_TOKEN"]
+
+[mcp_servers.prologue]
+url = "https://api.test/mcp"
+env_http_headers = { "Authorization" = "MESH_CODEX_MCP_1_TOKEN" }
+`
+	if toml != want {
+		t.Fatalf("config.toml\n%s\nwant\n%s", toml, want)
+	}
+	if !reflect.DeepEqual(env, []string{"LOCAL_TOKEN=local-secret", "MESH_CODEX_MCP_1_TOKEN=Bearer rs_secret"}) {
+		t.Fatalf("env %q", env)
+	}
+	if toml, env := CodexMCPConfig(nil); toml != "" || env != nil {
+		t.Fatalf("no servers: %q %q", toml, env)
 	}
 }
 
@@ -70,6 +83,7 @@ func fakeCodex(t *testing.T, out, fixture string) string {
 		"echo \"$CODEX_HOME\" > " + out + "/home\n" +
 		"ls -A \"$CODEX_HOME\" > " + out + "/home.ls\n" +
 		"[ -f \"$CODEX_HOME/auth.json\" ] && cp \"$CODEX_HOME/auth.json\" " + out + "/auth.json\n" +
+		"[ -f \"$CODEX_HOME/config.toml\" ] && cp \"$CODEX_HOME/config.toml\" " + out + "/config.toml\n" +
 		"cat " + abs + "\n"
 	bin := filepath.Join(t.TempDir(), "codex")
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
@@ -111,7 +125,7 @@ func TestCodexRunPlanAccount(t *testing.T) {
 	c := &Codex{Binary: fakeCodex(t, out, "codex_exec_apikey.jsonl"), HomeRoot: root,
 		Account: CodexAccount{Name: "plus", Home: login}}
 	var progress []Progress
-	res, err := c.Run(context.Background(), Job{Workspace: ws, Prompt: "say hello", Model: "gpt-6-astra"},
+	res, err := c.Run(context.Background(), Job{Workspace: ws, Prompt: "say hello", Model: "gpt-6-astra", MCPServers: testServers()},
 		func(p Progress) { progress = append(progress, p) })
 	if err != nil {
 		t.Fatal(err)
@@ -133,13 +147,19 @@ func TestCodexRunPlanAccount(t *testing.T) {
 	if filepath.Dir(home) != root {
 		t.Fatalf("CODEX_HOME %q is not a fresh dir under %q", home, root)
 	}
-	if got := strings.TrimSpace(readFile(t, filepath.Join(out, "home.ls"))); got != "auth.json" {
-		t.Fatalf("CODEX_HOME held %q, want only auth.json", got)
+	if got := strings.Fields(readFile(t, filepath.Join(out, "home.ls"))); !reflect.DeepEqual(got, []string{"auth.json", "config.toml"}) {
+		t.Fatalf("CODEX_HOME held %q, want auth.json and config.toml", got)
+	}
+	if want, _ := CodexMCPConfig(testServers()); readFile(t, filepath.Join(out, "config.toml")) != want {
+		t.Fatalf("config.toml %q", readFile(t, filepath.Join(out, "config.toml")))
 	}
 	if got := readFile(t, filepath.Join(out, "auth.json")); got != auth {
 		t.Fatalf("auth.json %q", got)
 	}
 	env := envOf(t, filepath.Join(out, "env"))
+	if got := env["MESH_CODEX_MCP_1_TOKEN"]; len(got) != 1 || got[0] != "Bearer rs_secret" {
+		t.Fatalf("the MCP header's variable %q", got)
+	}
 	if _, ok := env["OPENAI_API_KEY"]; ok {
 		t.Fatal("a plan session sees the operator's OPENAI_API_KEY")
 	}
