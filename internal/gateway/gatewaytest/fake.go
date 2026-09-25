@@ -518,7 +518,7 @@ func (f *Fake) apply(name string, in map[string]any) error {
 		f.Nodes[id]["version"] = in["version"]
 		// what the node found on the machine this heartbeat; a heartbeat
 		// without them leaves the last ones, as the platform does
-		for _, k := range []string{"runtimes", "adapters"} {
+		for _, k := range []string{"runtimes", "adapters", "sandbox", "reason"} {
 			if v, ok := in[k]; ok {
 				f.Nodes[id][k] = v
 			}
