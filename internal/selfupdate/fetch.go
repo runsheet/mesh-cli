@@ -67,7 +67,9 @@ func (g GitHub) Asset(ctx context.Context, version, name string) ([]byte, error)
 	defer resp.Body.Close()
 	switch {
 	case resp.StatusCode == http.StatusNotFound:
-		return nil, refuse(ErrMissingAsset, nil, "release %s has no %s", version, name)
+		// GitHub answers 404 for a private repo's assets too (ADR-002),
+		// so the reason says both.
+		return nil, refuse(ErrMissingAsset, nil, "release %s has no %s on GitHub (404: missing, or the repo is private)", version, name)
 	case resp.StatusCode != http.StatusOK:
 		return nil, fmt.Errorf("download %s: %s", name, resp.Status)
 	}
