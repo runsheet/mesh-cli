@@ -163,7 +163,7 @@ var nodeRegisterCmd = &cobra.Command{
 		if nodeCapacityFlag <= 0 {
 			nodeCapacityFlag = 1
 		}
-		cfg := &node.Config{Gateway: gw.BaseURL, Orgs: nodeOrgsFlag, OwnerID: me, Slug: slug, Name: strings.TrimSpace(nodeNameFlag), Capacity: nodeCapacityFlag}
+		cfg := &node.Config{Gateway: gw.BaseURL, Orgs: nodeOrgsFlag, OwnerID: me, Slug: slug, Name: strings.TrimSpace(nodeNameFlag), Capacity: node.Fixed(nodeCapacityFlag)}
 		// registering again must not drop what `mesh node login` recorded
 		if prev, err := node.LoadSettings(); err == nil {
 			cfg.Latchkey, cfg.LatchkeyClient = prev.Latchkey, prev.LatchkeyClient
@@ -179,7 +179,7 @@ var nodeRegisterCmd = &cobra.Command{
 			return err
 		}
 		path, _ := node.ConfigPath()
-		fmt.Printf("Registered node %s (%s) in %s, capacity %d. Saved %s.\nStart it with: mesh node start\n", cfg.Name, slug, strings.Join(scopes.Logins(), ", "), cfg.Capacity, path)
+		fmt.Printf("Registered node %s (%s) in %s, capacity %s. Saved %s.\nStart it with: mesh node start\n", cfg.Name, slug, strings.Join(scopes.Logins(), ", "), cfg.Capacity, path)
 		return nil
 	},
 }
@@ -189,7 +189,7 @@ var nodeRegisterCmd = &cobra.Command{
 func registerIn(ctx context.Context, gw *gateway.Client, cfg *node.Config, scopes node.Scopes) error {
 	for _, sc := range scopes {
 		if err := gw.RegisterNode(ctx, gateway.RegisterNodeInput{NodeID: sc.NodeID, OrgID: sc.ID, OwnerID: cfg.OwnerID, Name: cfg.Name, Slug: cfg.Slug,
-			Harnesses: []string{"claude-code"}, Capacity: cfg.Capacity, Version: version.Version}); err != nil {
+			Harnesses: []string{"claude-code"}, Capacity: cfg.Capacity.Max, Version: version.Version}); err != nil {
 			return fmt.Errorf("register in %s: %w", sc.Login, err)
 		}
 	}
@@ -442,7 +442,7 @@ func runPollMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *
 	loop.Plan = planWith(gw, cfg, h, workRoot, logger)
 	loop.Research = researchWith(gw, cfg, h, workRoot, logger)
 	loop.Rebase = rebaseWith(gw, h, loop.CurrentScopes, workRoot, fallback, logger)
-	logger.Printf("poll mode: node %s (%s) for %s, capacity %d, every %s", cfg.Name, cfg.Slug, strings.Join(scopes.Logins(), ", "), cfg.Capacity, loop.Interval)
+	logger.Printf("poll mode: node %s (%s) for %s, capacity %s, every %s", cfg.Name, cfg.Slug, strings.Join(scopes.Logins(), ", "), cfg.Capacity, loop.Interval)
 	// items this node held when it last stopped are taken up again: a
 	// restart mid-build continues them (the workspace keeps the branch)
 	for _, sc := range scopes {

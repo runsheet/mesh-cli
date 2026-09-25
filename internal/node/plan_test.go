@@ -25,7 +25,7 @@ func TestLoopPlansRequestedGoals(t *testing.T) {
 		"statement": "Build the new thing.", "acceptance": "the thing works", "budgetCents": 2000, "spentCents": 0, "status": "planning"}
 	f.Projects[projID]["repoIds"] = []string{repoID}
 	gw := gateway.New(f.URL(), "rs_test")
-	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: 1, OwnerID: f.UserID}
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: Fixed(1), OwnerID: f.UserID}
 	ws := &fakeWS{root: t.TempDir()}
 	h := &fakeHarness{text: "I read the repo and the PRD.\n\n```json\n{\"items\": [" +
 		"{\"seq\": 1, \"title\": \"Write the failing test\", \"brief\": \"A test in widgets.\", \"acceptance\": \"go test fails on TestThing\", \"depends_on\": [], \"repo\": \"acme/widgets\"}," +
@@ -113,7 +113,7 @@ func TestPlannerReplans(t *testing.T) {
 	f.WorkItems[item2]["lastError"] = "evaluation failed 3 times"
 	f.Projects[projID]["repoIds"] = []string{repoID}
 	gw := gateway.New(f.URL(), "rs_test")
-	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: 1, OwnerID: f.UserID}
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: Fixed(1), OwnerID: f.UserID}
 	ws := &fakeWS{root: t.TempDir()}
 	h := &fakeHarness{text: "```json\n{\"items\": [{\"seq\": 3, \"title\": \"Make it pass, smaller\", \"brief\": \"Half.\", \"acceptance\": \"half passes\", \"depends_on\": [1], \"repo\": \"acme/widgets\"}]}\n```"}
 	pl := &Planner{GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, Log: log.New(os.Stderr, "", 0)}
@@ -207,7 +207,7 @@ func planOnce(t *testing.T, answers ...string) (*gatewaytest.Fake, *fakeHarness,
 	f.Repos[repo2] = map[string]any{"id": repo2, "accountId": acctID, "name": "mesh-specs", "defaultBranch": "main"}
 	f.Projects[projID]["repoIds"] = []string{repoID, repo2}
 	gw := gateway.New(f.URL(), "rs_test")
-	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: 1, OwnerID: f.UserID}
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: Fixed(1), OwnerID: f.UserID}
 	ws := &fakeWS{root: t.TempDir()}
 	h := &fakeHarness{texts: answers}
 	pl := &Planner{GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, Log: log.New(os.Stderr, "", 0)}

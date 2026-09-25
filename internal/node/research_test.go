@@ -35,7 +35,7 @@ func TestLoopResearchesDirectedProjects(t *testing.T) {
 	f.Projects[quiet] = map[string]any{"id": quiet, "orgId": orgID, "slug": "quiet", "name": "Quiet", "repoIds": []string{repoID}}
 
 	gw := gateway.New(f.URL(), "rs_test")
-	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: 1, OwnerID: f.UserID}
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: Fixed(1), OwnerID: f.UserID}
 	ws := &fakeWS{root: t.TempDir()}
 	h := &fakeHarness{text: "I read the PRD and the open issues.\n\n```json\n{\"goals\": [" +
 		"{\"slug\": \"One Sign-In!\", \"title\": \"One sign-in\", \"statement\": \"Everyone signs in once.\", \"acceptance\": \"a person signs in once and reaches every service\", \"why\": \"the direction asks for one front door\"}," +
@@ -125,7 +125,7 @@ func TestLoopSkipsAFullProject(t *testing.T) {
 	f.Goals[second] = map[string]any{"id": second, "orgId": orgID, "projectId": projID, "slug": "blocked-one",
 		"title": "Blocked one", "status": "blocked"}
 	gw := gateway.New(f.URL(), "rs_test")
-	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: 1, OwnerID: f.UserID}
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: Fixed(1), OwnerID: f.UserID}
 	ran := 0
 	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Interval: time.Hour, Log: log.New(os.Stderr, "", 0),
 		Dispatch: func(context.Context, gateway.WorkItem) {},
@@ -157,7 +157,7 @@ func TestLoopSkipsADirectionAtItsShare(t *testing.T) {
 	direction(f, dirID, projID, "overnight", "Go on then.", 1)
 	f.Goals[goalID]["directionId"] = dirID // its one goal is still running
 	gw := gateway.New(f.URL(), "rs_test")
-	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: 1, OwnerID: f.UserID}
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: Fixed(1), OwnerID: f.UserID}
 	ran := 0
 	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Interval: time.Hour, Log: log.New(os.Stderr, "", 0),
 		Dispatch: func(context.Context, gateway.WorkItem) {},
@@ -187,7 +187,7 @@ func TestLoopKeepsQuietOnARefusedDirection(t *testing.T) {
 	direction(f, dirID, projID, "overnight", "Go on then.", 3)
 	f.Refuse["claimDirectionResearch"] = "the direction is outside its window"
 	gw := gateway.New(f.URL(), "rs_test")
-	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: 1, OwnerID: f.UserID}
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: Fixed(1), OwnerID: f.UserID}
 	var logged strings.Builder
 	ran := 0
 	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Interval: time.Hour, Log: log.New(&logged, "", 0),
@@ -221,7 +221,7 @@ func TestResearchUnreadableHandsInEmpty(t *testing.T) {
 	f.Projects[projID]["repoIds"] = []string{repoID}
 	direction(f, dirID, projID, "overnight", "Go on then.", 3)
 	gw := gateway.New(f.URL(), "rs_test")
-	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: 1, OwnerID: f.UserID}
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: Fixed(1), OwnerID: f.UserID}
 	ws := &fakeWS{root: t.TempDir()}
 	h := &fakeHarness{text: "I had a good think and decided not to say."}
 	d := &Director{GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, Log: log.New(os.Stderr, "", 0)}
@@ -345,7 +345,7 @@ func TestLoopResearchesTwoDirectionsOfOneProject(t *testing.T) {
 	direction(f, mornings, projID, "mornings", "Chores before the day starts.", 3)
 
 	gw := gateway.New(f.URL(), "rs_test")
-	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: 1, OwnerID: f.UserID}
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: Fixed(1), OwnerID: f.UserID}
 	ws := &fakeWS{root: t.TempDir()}
 	h := &barrierHarness{both: make(chan struct{})}
 	dir := &Director{GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, MaxBudgetUSD: 4, Log: log.New(os.Stderr, "", 0)}

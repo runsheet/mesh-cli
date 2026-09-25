@@ -449,7 +449,7 @@ func (l *Loop) Capacity() int {
 	if l.capacity > 0 {
 		return l.capacity
 	}
-	return l.Cfg.Capacity
+	return l.Cfg.Capacity.Max
 }
 
 // Thresholds are the limits thresholds in force, as last read.

@@ -46,7 +46,7 @@ func seed(t *testing.T) (*gatewatestFake, *Handler) {
 	f.Bodies["acme/mesh/agents"] = "# AGENTS"
 	t.Cleanup(f.Close)
 	gw := gateway.New(f.URL(), "rs_test")
-	cfg := &node.Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: 1}
+	cfg := &node.Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: node.Fixed(1)}
 	if err := gw.ClaimWorkItem(context.Background(), item1, cfg.NodeID, "claude-code"); err != nil {
 		t.Fatal(err)
 	}
