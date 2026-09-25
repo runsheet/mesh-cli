@@ -53,8 +53,19 @@ stream into a `harness.Result`.
   The run still ended in `turn.completed` with exit 0. The tools fixture
   was therefore recorded with `danger-full-access` in the throwaway
   repo. A node that builds on Codex needs an AppArmor profile for
-  Codex's bwrap, or has to run it unsandboxed inside its own. This
-  belongs in the README item.
+  Codex's bwrap, or has to run it unsandboxed inside its own. The
+  README's `## Codex on a node` says so.
+- **An API key in the environment is `CODEX_API_KEY`.** In a
+  `CODEX_HOME` with no `auth.json`, `exec` with only `OPENAI_API_KEY`
+  set sends no credential and fails with a 401 (`Missing bearer or
+  basic authentication`). With `CODEX_API_KEY` set it runs. The
+  adapter (`harness.Codex`) sets both and writes no `auth.json` for an
+  API-key account.
+- **MCP servers from `config.toml`.** `[mcp_servers.<name>]` with `url`
+  and `env_http_headers = { "Authorization" = "<VAR>" }` in the
+  temporary `CODEX_HOME` reached a local test server with the header
+  taken from `$VAR`. `-c mcp_servers.<name>.…` overrides also work, but
+  a dotted `-c` path takes no quoted segment.
 - The only redaction: `/home/chris/` → `/home/user/` in
   `codex_exec_item_error.jsonl`. Ids, request ids and cf-rays are left
   as recorded.

@@ -202,6 +202,25 @@ platform half takes it or amends this section.
   record: the channel session is one long session per org, not a
   session per item. Its evaluations, plans, research and rebases are
   one-shot and do both.
+- **Codex accounts are node.yaml's `codex:` block** (goal
+  `codex-adapter`; `harness.Codex`, not yet wired into the loop). Each
+  is `{name, home | api_key_env | api_key_file}`, exactly one, checked
+  at load. A ChatGPT-plan account is a login in its own home
+  (`CODEX_HOME=~/.mesh/codex/<name> codex login`). Every session gets a
+  fresh temporary `CODEX_HOME` under the user cache dir (Codex refuses
+  its helpers under `/tmp`), removed when it ends. For a plan account
+  it holds a copy of the login's `auth.json`. Codex refreshes a plan's
+  tokens in place and the refresh token rotates, so a copy that changed
+  is written back to the login home. An API-key account puts nothing on
+  disk; the key is in the session's environment only, as
+  `CODEX_API_KEY` (codex-cli 0.157.0's `exec` reads it, and with only
+  `OPENAI_API_KEY` sends no credential) and `OPENAI_API_KEY`, and is
+  redacted like a Claude secret. The operator's own `CODEX_HOME`,
+  `CODEX_API_KEY` and `OPENAI_API_KEY` are stripped. The session's MCP
+  servers are `config.toml` in the same home, secrets by variable name
+  (mesh-specs ADR 006). `codex.models {opus, sonnet, haiku}` maps the
+  Claude tiers to Codex models (`CodexConfig.CodexModel`). Codex has no
+  budget flag, so `MaxBudgetUSD` is not enforced for a Codex session.
 
 ## Consequences
 
@@ -233,6 +252,10 @@ platform half takes it or amends this section.
   session's config dir. Nothing on the node resumes a one-shot session,
   so nothing is lost; channel mode keeps the operator's login until it
   is moved onto accounts.
+- Two Codex sessions on one plan account that both refresh its tokens
+  write back in turn, and the last write wins. If one holds a refresh
+  token the other already rotated, that login has to be signed in
+  again.
 - Redaction is by exact value: a secret split across two stderr writes
   can pass the stderr filter, though not the error, which is redacted
   whole.

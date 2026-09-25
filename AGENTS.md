@@ -143,6 +143,19 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   (`RecordSessionUsage`: credential, tokens, cost, windows before and
   after), or logs it as one `usage: {…}` line on a platform without
   the ledger.
+- **Codex** (`internal/harness/codex.go`, goal `codex-adapter`): the
+  `codex` harness, `codex exec --json --sandbox workspace-write` in the
+  workspace, the prompt on stdin, the stream read by
+  `ParseCodexStream` (`docs/codex-events.md`). Each run gets a fresh
+  temporary `CODEX_HOME`, removed after it: a plan account's
+  `auth.json` copied in (and written back when Codex refreshed it), or
+  an API key in the environment only (`CODEX_API_KEY` and
+  `OPENAI_API_KEY`), plus the MCP servers as `config.toml`, secrets by
+  variable name (mesh-specs ADR 006). node.yaml's `codex:` block
+  (`CodexConfig`: binary, accounts, `models {opus, sonnet, haiku}`)
+  and `CodexModel` map the Claude tiers to Codex models. Codex has no
+  budget flag, so `MaxBudgetUSD` is not enforced. Nothing in the loop
+  runs it yet.
 - Every session gets Prologue as an MCP server with the node's token and
   the project's context on disk under `.mesh/context/` with `INDEX.md`:
   the documents, then `## Live goals and items` — each live goal's items
