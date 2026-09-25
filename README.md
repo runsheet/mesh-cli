@@ -347,6 +347,57 @@ Replacing the file under a running process is safe (the old one keeps
 its inode); the drain is what makes it take. Capacity and the orgs served
 need neither: they are re-read every tick (see Start).
 
+### Near the plan's limits
+
+Every `claude -p` session — build, evaluation, plan, research, rebase and
+the channel session — reports its Claude plan's standing in a
+`rate_limit_event`: a status (`allowed` while sessions may run), and how
+much of the five-hour and the seven-day window is used, with when each
+resets. The node keeps the latest reading per account (the session's
+`CLAUDE_CONFIG_DIR`, or `default`) and paces itself by it, so it slows
+down before the plan runs out rather than failing items once it has:
+
+- **Paced** — the five-hour window at `limits.pace_five_hour` (80%) or
+  past it: the node claims only items of urgent and high goals, and runs
+  at most half its capacity (never less than one) at once; it plans only
+  urgent and high goals and starts no research. Evaluations and rebases
+  go on.
+- **Stopped** — either window at `limits.stop` (95%) or past it, or a
+  status other than `allowed` (`allowed_warning`, `rejected`): nothing
+  new starts — no item, plan, research or rebase, and no evaluation —
+  as in a drain, but the sessions running finish and the process stays
+  up. It lasts until the window that stopped it resets (the event's own
+  `resetsAt` for the status; 15 minutes when it gives none).
+
+Once a window's reset has passed, its reading is stale and the node goes
+back to normal on its next tick. The thresholds are node.yaml's, read
+again every tick like the capacity; left out, they are the defaults (a
+value over 1 is read as a percent):
+
+```yaml
+limits:
+  pace_five_hour: 0.80
+  stop: 0.95
+```
+
+Every heartbeat carries the latest reading of each account as `limits`
+— account, status, rate-limit type, `resetsAt`, overage status, the
+`fiveHour` and `sevenDay` windows (utilization, `resetsAt`) and
+`observedAt` — for the console to show (runsheet
+`limits-on-the-console`); it is left out until a session has reported
+one.
+
+The log says each crossing once, not every tick:
+
+```
+limits: paced until 2026-09-25T15:00:00Z: five-hour window at 85% (pace 80%) — only urgent and high goals are claimed and planned, at most 2 item(s) at once, and no research
+limits: stopped until 2026-09-26T14:00:00Z: seven-day window at 96% (stop 95%) — nothing new is started; 1 session(s) to finish
+limits: back to normal (was stopped)
+```
+
+and a change to the thresholds in node.yaml as `limits: pace five-hour
+80% → 50%, stop 95% → 95%`.
+
 ### Acceptance the evaluator can see
 
 The evaluator is a fresh session that runs before any pull request exists:

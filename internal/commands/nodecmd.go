@@ -391,7 +391,9 @@ only use it on a machine you trust with that.`,
 			return fmt.Errorf("register node: %w", err)
 		}
 
-		loop := &node.Loop{GW: gw, Cfg: cfg, Scopes: scopes, Version: version.Version, Harness: "claude-code", Interval: nodeIntervalFlag, Log: logger}
+		// every session's plan standing lands in Limits: the heartbeat
+		// carries it and the loop paces by it
+		loop := &node.Loop{GW: gw, Cfg: cfg, Scopes: scopes, Version: version.Version, Harness: "claude-code", Interval: nodeIntervalFlag, Log: logger, Limits: &node.Limits{}}
 		// capacity and the orgs are read again every tick, so a changed
 		// node.yaml or a newly claimed org needs no restart
 		loop.Reload = node.Reloader(gw, cfg, scopes, nil, func(ctx context.Context, sc node.Scope) error {
@@ -429,7 +431,7 @@ only use it on a machine you trust with that.`,
 }
 
 func runPollMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *gateway.Client, loop *node.Loop, workRoot string, fallback *node.TokenFallback, logger *log.Logger) error {
-	h := oneShotHarness()
+	h := node.ObserveLimits(oneShotHarness(), loop.Limits)
 	runner := &node.Runner{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, MCPFunc: func(ctx context.Context) map[string]any { return prologueMCP(ctx, gw) }, MaxBudgetUSD: nodeMaxBudgetFlag, Model: nodeModels.For("build"), Fallback: fallback, Log: logger}
 	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) {
 		r := *runner
@@ -509,7 +511,8 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 	defer hub.Close()
 
 	sess := &channel.Session{Cfg: cfg, Orgs: scopes.Logins(), MCPFunc: func() map[string]any { return prologueMCP(ctx, gw) }, WorkDir: filepath.Join(workRoot, cfg.Slug), Exe: exe, SockPath: sock, Unattended: nodeUnattended, Model: nodeModels.For("channel"), Stderr: os.Stderr, Log: logger,
-		OnText: func(t string) { logger.Printf("session: %s", firstLine(t)) }}
+		OnText:      func(t string) { logger.Printf("session: %s", firstLine(t)) },
+		OnRateLimit: func(rl *harness.RateLimit) { loop.Limits.Observe(node.Account(os.Environ()), rl) }}
 	var sessMu sync.Mutex
 	sessionID := ""
 	sess.OnSessionID = func(id string) { sessMu.Lock(); sessionID = id; sessMu.Unlock() }
@@ -536,10 +539,10 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 	}
 
 	ws := &node.Git{Log: os.Stderr}
-	loop.Evaluate = evaluateWith(gw, oneShotHarness(), loop.CurrentScopes, workRoot, fallback, logger)
-	loop.Plan = planWith(gw, cfg, oneShotHarness(), workRoot, logger)
-	loop.Research = researchWith(gw, cfg, oneShotHarness(), workRoot, logger)
-	loop.Rebase = rebaseWith(gw, oneShotHarness(), loop.CurrentScopes, workRoot, fallback, logger)
+	loop.Evaluate = evaluateWith(gw, node.ObserveLimits(oneShotHarness(), loop.Limits), loop.CurrentScopes, workRoot, fallback, logger)
+	loop.Plan = planWith(gw, cfg, node.ObserveLimits(oneShotHarness(), loop.Limits), workRoot, logger)
+	loop.Research = researchWith(gw, cfg, node.ObserveLimits(oneShotHarness(), loop.Limits), workRoot, logger)
+	loop.Rebase = rebaseWith(gw, node.ObserveLimits(oneShotHarness(), loop.Limits), loop.CurrentScopes, workRoot, fallback, logger)
 	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) {
 		ready, err := readyChannelItem(ctx, gw, ws, loop.CurrentScopes(), item, workRoot, fallback, logger.Printf)
 		if err != nil {

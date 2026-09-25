@@ -54,12 +54,18 @@ type Loop struct {
 	Rebase func(ctx context.Context, item gateway.WorkItem)
 	// AfterTick runs at the end of every tick (optional).
 	AfterTick func(ctx context.Context)
-	// Reload is asked at the top of every tick for the capacity and the
-	// orgs served as they stand now (node.yaml and MyOrgs), so neither
-	// needs a restart (optional; Reloader builds it). A capacity of 0 or
-	// nil scopes keep what the loop has; an error is logged, and what
-	// came back with it is still taken.
-	Reload func(ctx context.Context) (capacity int, scopes Scopes, err error)
+	// Reload is asked at the top of every tick for the capacity, the
+	// limits thresholds and the orgs served as they stand now (node.yaml
+	// and MyOrgs), so none needs a restart (optional; Reloader builds
+	// it). A capacity of 0, nil limits or nil scopes keep what the loop
+	// has; an error is logged, and what came back with it is still taken.
+	Reload func(ctx context.Context) (Reloaded, error)
+	// Limits holds the latest Claude plan standing of each account, fed
+	// by every session (ObserveLimits); the heartbeat carries it and the
+	// loop paces by it. Nil until the first tick makes one.
+	Limits *Limits
+	// Now is the clock pacing reads (time.Now when nil).
+	Now func() time.Time
 
 	mu          sync.Mutex
 	running     map[string]bool
@@ -75,6 +81,12 @@ type Loop struct {
 	wake chan struct{}
 	// capacity is the one in force: Cfg.Capacity until Reload says otherwise.
 	capacity int
+	// limits are the thresholds in force: Cfg.Limits until Reload says
+	// otherwise (limitsSet).
+	limits    LimitsConfig
+	limitsSet bool
+	// paced is the pacing mode last logged, so a crossing is logged once.
+	paced paceMode
 	// tickGoals holds each org's goals as read this tick, so the claim,
 	// the planner and the director share one GoalIndex read per org.
 	tickGoals map[string]goalsRead
@@ -181,7 +193,8 @@ func planOrder(goals []planningGoal) {
 // claimReady lists every served org's ready items, joins each to its
 // goal's priority (one GoalIndex read per org, none for an org with
 // nothing ready) and claims them in claimOrder until free runs out.
-func (l *Loop) claimReady(ctx context.Context, free int) {
+// Items of a goal ranked after maxRank are left for later.
+func (l *Loop) claimReady(ctx context.Context, free, maxRank int) {
 	var ready []readyItem
 	for _, sc := range l.Scopes {
 		items, err := l.GW.ReadyWorkItems(ctx, sc.ID)
@@ -194,7 +207,9 @@ func (l *Loop) claimReady(ctx context.Context, free int) {
 		}
 		rank := l.goalRanks(ctx, sc, "claimed")
 		for _, it := range items {
-			ready = append(ready, readyItem{item: it, scope: sc, rank: rank(it.GoalID)})
+			if r := rank(it.GoalID); r <= maxRank {
+				ready = append(ready, readyItem{item: it, scope: sc, rank: r})
+			}
 		}
 	}
 	claimOrder(ready)
@@ -340,7 +355,11 @@ func (l *Loop) notify() {
 // Tick is one round: heartbeat, list, claim, dispatch. A draining node
 // only heartbeats — with draining set — (and runs AfterTick): it claims no
 // item, plan, research or rebase and starts no evaluation — an item it holds for evaluation
-// waits in evaluating for the node that comes up after it.
+// waits in evaluating for the node that comes up after it. Every
+// heartbeat carries the plan limits last read, and the node paces by
+// them (pace): paced near the five-hour window's limit, and stopped —
+// like a drain for new starts, but the process runs on — near either
+// window's end or when the plan no longer allows sessions.
 func (l *Loop) Tick(ctx context.Context) {
 	l.mu.Lock()
 	if l.running == nil {
@@ -349,18 +368,32 @@ func (l *Loop) Tick(ctx context.Context) {
 	l.mu.Unlock()
 	l.tickGoals = map[string]goalsRead{}
 	l.reload(ctx)
+	extras := gateway.HeartbeatExtras{Draining: l.Draining(), Limits: l.limitsStore().Heartbeat()}
 	for _, sc := range l.Scopes {
-		if err := l.GW.HeartbeatNode(ctx, sc.NodeID, l.Version, l.Running(), gateway.HeartbeatExtras{Draining: l.Draining()}); err != nil {
+		if err := l.GW.HeartbeatNode(ctx, sc.NodeID, l.Version, l.Running(), extras); err != nil {
 			l.logf("heartbeat %s: %v", sc.Login, err)
 		}
 	}
-	if !l.Draining() {
+	p := l.pacing()
+	if !l.Draining() && p.mode != paceStopped {
 		l.evaluateHeld(ctx)
 		l.rebaseRequested(ctx)
-		l.planRequested(ctx)
-		l.researchDue(ctx)
-		if free := l.Capacity() - l.Running(); free > 0 {
-			l.claimReady(ctx, free)
+		// paced: only urgent and high goals are planned and built, and
+		// no research is started
+		maxRank := gateway.PriorityRank("low")
+		if p.mode == pacePaced {
+			maxRank = gateway.PriorityRank("high")
+		}
+		l.planRequested(ctx, maxRank)
+		if p.mode == paceNormal {
+			l.researchDue(ctx)
+		}
+		free := l.Capacity() - l.Running()
+		if p.mode == pacePaced {
+			free = pacedFree(free, l.Capacity(), l.Running())
+		}
+		if free > 0 {
+			l.claimReady(ctx, free, maxRank)
 		}
 	}
 	if l.AfterTick != nil {
@@ -419,6 +452,56 @@ func (l *Loop) Capacity() int {
 	return l.Cfg.Capacity
 }
 
+// Thresholds are the limits thresholds in force, as last read.
+func (l *Loop) Thresholds() LimitsConfig {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.limitsSet {
+		return l.limits.Thresholds()
+	}
+	return l.Cfg.Limits.Thresholds()
+}
+
+// limitsStore is Limits, made on first use.
+func (l *Loop) limitsStore() *Limits {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.Limits == nil {
+		l.Limits = &Limits{}
+	}
+	return l.Limits
+}
+
+func (l *Loop) now() time.Time {
+	if l.Now != nil {
+		return l.Now()
+	}
+	return time.Now()
+}
+
+// pacing decides this tick's mode from the readings and logs a
+// crossing into another mode — once, not every tick.
+func (l *Loop) pacing() pacing {
+	p := paceAll(l.now(), l.limitsStore().Readings(), l.Thresholds())
+	l.mu.Lock()
+	was := l.paced
+	l.paced = p.mode
+	n := l.sessions()
+	l.mu.Unlock()
+	if p.mode == was {
+		return p
+	}
+	switch p.mode {
+	case pacePaced:
+		l.logf("limits: paced until %s: %s — only urgent and high goals are claimed and planned, at most %d item(s) at once, and no research", p.resumeAt.UTC().Format(time.RFC3339), p.why, max(1, l.Capacity()/2))
+	case paceStopped:
+		l.logf("limits: stopped until %s: %s — nothing new is started; %d session(s) to finish", p.resumeAt.UTC().Format(time.RFC3339), p.why, n)
+	default:
+		l.logf("limits: back to normal (was %s)", was)
+	}
+	return p
+}
+
 // CurrentScopes are the orgs served, as last read — for the sessions
 // that need an item's org login after the loop has started.
 func (l *Loop) CurrentScopes() Scopes {
@@ -433,7 +516,8 @@ func (l *Loop) reload(ctx context.Context) {
 	if l.Reload == nil {
 		return
 	}
-	capacity, scopes, err := l.Reload(ctx)
+	got, err := l.Reload(ctx)
+	capacity, scopes := got.Capacity, got.Scopes
 	if err != nil {
 		l.logf("reload config: %v", err)
 	}
@@ -441,6 +525,15 @@ func (l *Loop) reload(ctx context.Context) {
 		l.logf("capacity %d → %d", was, capacity)
 		l.mu.Lock()
 		l.capacity = capacity
+		l.mu.Unlock()
+	}
+	if got.Limits != nil {
+		was, now := l.Thresholds(), got.Limits.Thresholds()
+		if now != was {
+			l.logf("limits: pace five-hour %s → %s, stop %s → %s", pct(was.PaceFiveHour), pct(now.PaceFiveHour), pct(was.Stop), pct(now.Stop))
+		}
+		l.mu.Lock()
+		l.limits, l.limitsSet = *got.Limits, true
 		l.mu.Unlock()
 	}
 	if scopes != nil && !sameOrgs(scopes, l.Scopes) {
@@ -584,8 +677,8 @@ func (l *Loop) rebaseRequested(ctx context.Context) {
 
 // planRequested starts the planner on every goal in planning in the
 // served orgs that no planner here is on, most urgent goal first across
-// the orgs (planOrder).
-func (l *Loop) planRequested(ctx context.Context) {
+// the orgs (planOrder). A goal ranked after maxRank is left for later.
+func (l *Loop) planRequested(ctx context.Context, maxRank int) {
 	if l.Plan == nil {
 		return
 	}
@@ -597,7 +690,7 @@ func (l *Loop) planRequested(ctx context.Context) {
 			continue
 		}
 		for _, g := range goals {
-			if g.Status == "planning" {
+			if g.Status == "planning" && gateway.PriorityRank(g.Priority) <= maxRank {
 				requested = append(requested, planningGoal{goal: g, scope: sc})
 			}
 		}

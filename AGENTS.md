@@ -70,8 +70,19 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `Run`. The heartbeat's extras (`gateway.HeartbeatExtras`: `draining`,
   `updateError`, and `limits` — the latest Claude plan limits per
   account, runsheet `limits-on-the-console`) are sent only when set,
-  because they are fields the platform half adds. Capacity
-  and the orgs need no drain: `Reload` re-reads them every tick.
+  because they are fields the platform half adds. Capacity, the
+  limits thresholds and the orgs need no drain: `Reload` re-reads them
+  every tick.
+- **The pace** (`internal/node/limits.go`, trd §3 Pacing by the plan's
+  limits): every session's `rate_limit_event` lands in `Loop.Limits`
+  (latest per account — `CLAUDE_CONFIG_DIR` or `default` — fed through
+  `ObserveLimits` around each one-shot harness and the channel
+  session's `OnRateLimit`), and each tick `pace` decides: *paced* at
+  `limits.pace_five_hour` of the five-hour window (urgent/high items and
+  plans only, half the capacity, no research), *stopped* at
+  `limits.stop` of either window or a status not `allowed` (nothing new,
+  sessions finish, the process runs on) until the window's reset. A
+  crossing is logged once.
 - **The rebase** (`internal/node/rebase.go`, runsheet ADR 008): an item
   whose pull request conflicts in a way the integrator could not
   resolve itself carries `rebase_state: requested`. Every tick the loop

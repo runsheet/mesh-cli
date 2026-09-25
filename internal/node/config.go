@@ -41,6 +41,10 @@ type Config struct {
 	// (the runsheet goal `agents-on-the-platform`), and these become
 	// the fallback for a node that cannot reach them.
 	Models Models `yaml:"models,omitempty"`
+	// Limits are the thresholds the node paces itself by against its
+	// Claude plan (LimitsConfig): the defaults when left out, read again
+	// every tick like the capacity.
+	Limits LimitsConfig `yaml:"limits,omitempty"`
 	// Latchkey is the issuer `mesh node login` signs in to and
 	// LatchkeyClient the public client it starts the device flow from
 	// (latchkey adr-machine-identity); both are remembered at login so a
@@ -169,16 +173,25 @@ func ResolveScopes(ctx context.Context, gw Gateway, c *Config) (Scopes, error) {
 	return scopes, nil
 }
 
+// Reloaded is what Loop.Reload reads: the capacity (0 keeps the loop's),
+// the limits thresholds (nil keeps the loop's) and the orgs served (nil
+// keeps the loop's).
+type Reloaded struct {
+	Capacity int
+	Limits   *LimitsConfig
+	Scopes   Scopes
+}
+
 // Reloader is Loop.Reload for a node started on cfg and scopes: every
 // tick it reads node.yaml again through load (LoadConfig when nil) for
-// the capacity and the orgs restriction, and asks MyOrgs for the orgs
+// the capacity, the limits thresholds and the orgs restriction, and asks MyOrgs for the orgs
 // the owner belongs to. An org seen for the first time is registered in
 // through register (a Node there, as start does) before it is served —
 // one that fails to register is tried again next tick; an org no longer
 // listed, or no longer in the restriction, is dropped. A node.yaml that
 // cannot be read keeps the last good capacity and restriction; a MyOrgs
 // that fails, or leaves nothing to serve, keeps the orgs as they were.
-func Reloader(gw Gateway, cfg *Config, scopes Scopes, load func() (*Config, error), register func(context.Context, Scope) error) func(context.Context) (int, Scopes, error) {
+func Reloader(gw Gateway, cfg *Config, scopes Scopes, load func() (*Config, error), register func(context.Context, Scope) error) func(context.Context) (Reloaded, error) {
 	if load == nil {
 		load = LoadConfig
 	}
@@ -187,17 +200,18 @@ func Reloader(gw Gateway, cfg *Config, scopes Scopes, load func() (*Config, erro
 	for _, sc := range scopes {
 		registered[sc.NodeID] = true
 	}
-	return func(ctx context.Context) (int, Scopes, error) {
+	return func(ctx context.Context) (Reloaded, error) {
 		var errs []error
-		capacity := 0
+		var out Reloaded
 		if c, err := load(); err != nil {
-			errs = append(errs, fmt.Errorf("node.yaml (keeping the last good capacity): %w", err))
+			errs = append(errs, fmt.Errorf("node.yaml (keeping the last good capacity and limits): %w", err))
 		} else {
-			capacity, restrict = c.Capacity, c.Orgs
+			limits := c.Limits
+			out.Capacity, out.Limits, restrict = c.Capacity, &limits, c.Orgs
 		}
 		orgs, err := gw.MyOrgs(ctx)
 		if err != nil {
-			return capacity, nil, errors.Join(append(errs, fmt.Errorf("my orgs: %w", err))...)
+			return out, errors.Join(append(errs, fmt.Errorf("my orgs: %w", err))...)
 		}
 		want := map[string]bool{}
 		for _, o := range restrict {
@@ -224,9 +238,10 @@ func Reloader(gw Gateway, cfg *Config, scopes Scopes, load func() (*Config, erro
 			served = append(served, sc)
 		}
 		if len(served) == 0 {
-			return capacity, nil, errors.Join(append(errs, errors.New("no org left to serve (keeping the orgs as they were)"))...)
+			return out, errors.Join(append(errs, errors.New("no org left to serve (keeping the orgs as they were)"))...)
 		}
-		return capacity, served, errors.Join(errs...)
+		out.Scopes = served
+		return out, errors.Join(errs...)
 	}
 }
 

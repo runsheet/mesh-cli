@@ -930,7 +930,7 @@ func TestLoopKeepsTheLastGoodCapacity(t *testing.T) {
 	if got := p.claimedBy(loop); len(got) != 2 || loop.Capacity() != 2 {
 		t.Fatalf("with node.yaml broken, claimed %v at capacity %d; want two at 2", got, loop.Capacity())
 	}
-	if !strings.Contains(logs.String(), "reload config: node.yaml (keeping the last good capacity)") {
+	if !strings.Contains(logs.String(), "reload config: node.yaml (keeping the last good capacity and limits)") {
 		t.Fatalf("the unreadable file is not logged:\n%s", logs)
 	}
 	if got := loop.CurrentScopes().Logins(); strings.Join(got, ",") != "acme" {
