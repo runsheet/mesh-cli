@@ -37,6 +37,8 @@ func TestLoopEvaluatesFinishedItems(t *testing.T) {
 	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Version: "test", Harness: "claude-code", Interval: time.Hour, Log: ev.Log,
 		Dispatch: func(context.Context, gateway.WorkItem) {},
 		Evaluate: func(ctx context.Context, item gateway.WorkItem) { _ = ev.Evaluate(ctx, item) }}
+	// an evaluation takes no slot; none lets a tick claim the item a FAIL readies
+	cfg.Capacity = Fixed(0)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	loop.Tick(ctx)

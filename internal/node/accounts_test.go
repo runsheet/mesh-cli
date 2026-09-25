@@ -66,7 +66,7 @@ func TestAccountsNone(t *testing.T) {
 	if len(cfg.Accounts) != 0 {
 		t.Fatalf("accounts %+v", cfg.Accounts)
 	}
-	acct, err := OpenAccount(cfg.Accounts)
+	acct, err := OpenAccount(context.Background(), cfg.Accounts)
 	if err != nil || acct != nil {
 		t.Fatalf("OpenAccount with none = %v, %v; want nil, nil", acct, err)
 	}
@@ -267,12 +267,12 @@ func TestSessionsOnDifferentAccounts(t *testing.T) {
 		}
 		accounts = append(accounts, AccountConfig{Label: l, Kind: AccountSubscription, TokenFile: p})
 	}
-	a, err := OpenAccount(accounts[:1])
+	a, err := OpenAccount(context.Background(), accounts[:1])
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer a.Cleanup()
-	b, err := OpenAccount(accounts[1:])
+	b, err := OpenAccount(context.Background(), accounts[1:])
 	if err != nil {
 		t.Fatal(err)
 	}

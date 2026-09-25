@@ -131,7 +131,7 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 		Kind: harness.KindResearch, Workspace: dir, Prompt: prompt, MaxBudgetUSD: budget,
 		Label: project.Slug + "/" + direction.Slug + " research", Timeout: d.Timeout, MCPServers: d.MCP, Model: d.Model,
 	}
-	acct, err := OpenAccount(d.Accounts)
+	acct, err := OpenAccount(ctx, d.Accounts)
 	if err != nil {
 		return err
 	}

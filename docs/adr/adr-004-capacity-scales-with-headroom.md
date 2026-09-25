@@ -146,6 +146,14 @@ the node claims nothing whatever the scaler says, and above
 `pace_five_hour` its half-capacity and urgent/high-only rules apply to
 the capacity in force.
 
+*Amended with adr-005 (accounts, 2026-09-25):* with several accounts,
+the stop and the urgent/high-only rule are each account's, applied when
+the loop chooses the account a session runs on (`ChooseAccount`); the
+node claims nothing only when no account may take the work, and the
+half-capacity rule applies when every subscription is paced. The
+capacity in force still bounds how many items run at once, and a ranged
+node at its min still offers only urgent/high items to the choice.
+
 ## Consequences
 
 - A fixed `capacity: N` node is unchanged: same file, same claims, no

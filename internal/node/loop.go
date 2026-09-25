@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"sort"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
+	"projectmesh.io/mesh-cli/internal/harness"
 )
 
 // Loop is trd §3: every Interval, heartbeat; list the orgs' ready items;
@@ -105,6 +107,9 @@ type Loop struct {
 	limitsSet bool
 	// paced is the pacing mode last logged, so a crossing is logged once.
 	paced paceMode
+	// waiting counts, by kind, the work this tick left unclaimed because
+	// no account had headroom for it: logged once at the tick's end.
+	waiting map[string]int
 	// tickGoals holds each org's goals as read this tick, so the claim,
 	// the planner and the director share one GoalIndex read per org.
 	tickGoals map[string]goalsRead
@@ -210,8 +215,10 @@ func planOrder(goals []planningGoal) {
 
 // claimReady lists every served org's ready items, joins each to its
 // goal's priority (one GoalIndex read per org, none for an org with
-// nothing ready) and claims them in claimOrder until free runs out.
-// Items of a goal ranked after maxRank are left for later.
+// nothing ready) and claims them in claimOrder until free runs out, each
+// on the account chosen for its priority; items of a goal ranked past
+// maxRank are left. An item no account has headroom for is not
+// claimed: it stays ready for a later tick.
 func (l *Loop) claimReady(ctx context.Context, free, maxRank int) {
 	var ready []readyItem
 	for _, sc := range l.Scopes {
@@ -242,6 +249,10 @@ func (l *Loop) claimReady(ctx context.Context, free, maxRank int) {
 		if already {
 			continue
 		}
+		actx, ok := l.accountFor(ctx, priorityName(r.rank), true, "item")
+		if !ok {
+			continue
+		}
 		if err := l.GW.ClaimWorkItem(ctx, item.ID, sc.NodeID, l.Harness); err != nil {
 			if gateway.IsRefusal(err) {
 				l.logf("%s item %d %q: not ours (%v)", sc.Login, item.Seq, item.Title, err)
@@ -252,7 +263,7 @@ func (l *Loop) claimReady(ctx context.Context, free, maxRank int) {
 		}
 		free--
 		l.logf("%s: claimed item %d %q", sc.Login, item.Seq, item.Title)
-		l.start(ctx, item)
+		l.start(actx, item)
 	}
 }
 
@@ -374,10 +385,13 @@ func (l *Loop) notify() {
 // only heartbeats — with draining set — (and runs AfterTick): it claims no
 // item, plan, research or rebase and starts no evaluation — an item it holds for evaluation
 // waits in evaluating for the node that comes up after it. Every
-// heartbeat carries the plan limits last read, and the node paces by
-// them (pace): paced near the five-hour window's limit, and stopped —
-// like a drain for new starts, but the process runs on — near either
-// window's end or when the plan no longer allows sessions.
+// heartbeat carries the plan limits last read, and every start runs on
+// the account ChooseAccount picks by them: an account paced near its
+// five-hour window's limit takes only urgent and high work, one stopped
+// near either window's end takes nothing, and work no account has room
+// for is not claimed — like a drain for new starts, but the process runs
+// on. The node's own mode (nodePace) is logged at each crossing and, when
+// paced, halves the capacity.
 func (l *Loop) Tick(ctx context.Context) {
 	l.mu.Lock()
 	if l.running == nil {
@@ -401,31 +415,27 @@ func (l *Loop) Tick(ctx context.Context) {
 		}
 	}
 	p := l.pacing()
-	if !l.Draining() && p.mode != paceStopped {
+	if !l.Draining() {
+		// every start below first picks its account (accountFor): one
+		// with no account to run on is left for a later tick
+		l.waiting = map[string]int{}
 		l.evaluateHeld(ctx)
 		l.rebaseRequested(ctx)
-		// paced: only urgent and high goals are planned and built, and
-		// no research is started
-		maxRank := gateway.PriorityRank("low")
-		if p.mode == pacePaced {
-			maxRank = gateway.PriorityRank("high")
-		}
-		l.planRequested(ctx, maxRank)
-		if p.mode == paceNormal {
-			l.researchDue(ctx)
-		}
+		l.planRequested(ctx)
+		l.researchDue(ctx)
 		free := l.Capacity() - l.Running()
 		if p.mode == pacePaced {
 			free = pacedFree(free, l.Capacity(), l.Running())
 		}
 		// a ranged node at its min builds only urgent and high goals
-		claimRank := maxRank
+		claimRank := gateway.PriorityRank("low")
 		if l.atMin() {
 			claimRank = min(claimRank, gateway.PriorityRank("high"))
 		}
 		if free > 0 {
 			l.claimReady(ctx, free, claimRank)
 		}
+		l.logWaiting()
 	}
 	if l.AfterTick != nil {
 		l.AfterTick(ctx)
@@ -518,7 +528,8 @@ func (l *Loop) now() time.Time {
 // pacing decides this tick's mode from the readings and logs a
 // crossing into another mode — once, not every tick.
 func (l *Loop) pacing() pacing {
-	p := paceAll(l.now(), l.limitsStore().Readings(), l.Thresholds())
+	accounts, readings := l.accounts()
+	p := nodePace(l.now(), accounts, readings, l.Thresholds())
 	l.mu.Lock()
 	was := l.paced
 	l.paced = p.mode
@@ -531,11 +542,104 @@ func (l *Loop) pacing() pacing {
 	case pacePaced:
 		l.logf("limits: paced until %s: %s — only urgent and high goals are claimed and planned, at most %d item(s) at once, and no research", p.resumeAt.UTC().Format(time.RFC3339), p.why, max(1, l.Capacity()/2))
 	case paceStopped:
-		l.logf("limits: stopped until %s: %s — nothing new is started; %d session(s) to finish", p.resumeAt.UTC().Format(time.RFC3339), p.why, n)
+		also := ""
+		for _, a := range accounts {
+			if a.Kind == AccountAPI {
+				also = " on a subscription (an api account takes urgent and high work, and work that waits)"
+				break
+			}
+		}
+		l.logf("limits: stopped until %s: %s — nothing new is started%s; %d session(s) to finish", p.resumeAt.UTC().Format(time.RFC3339), p.why, also, n)
 	default:
 		l.logf("limits: back to normal (was %s)", was)
 	}
 	return p
+}
+
+// accounts are the accounts the node chooses among and their latest
+// readings by label. With none configured it is the one implicit
+// account, the operator's own login, judged by its strictest reading.
+func (l *Loop) accounts() ([]AccountConfig, map[string]harness.RateLimit) {
+	readings := l.limitsStore().Readings()
+	if len(l.Cfg.Accounts) > 0 {
+		return l.Cfg.Accounts, readings
+	}
+	own := []AccountConfig{{Label: DefaultAccount, Kind: AccountSubscription}}
+	if r, ok := strictest(l.now(), readings, l.Thresholds()); ok {
+		return own, map[string]harness.RateLimit{DefaultAccount: r}
+	}
+	return own, nil
+}
+
+// accountFor picks the account a session of that priority runs on
+// (ChooseAccount) and returns ctx carrying it for OpenAccount — the
+// operator's own login, when none is configured, carries nothing. ok is
+// false when no account has headroom: the session is not started, and
+// a what that is not empty is counted for the tick's one line
+// (logWaiting).
+func (l *Loop) accountFor(ctx context.Context, priority string, workWaits bool, what string) (context.Context, bool) {
+	return l.withAccount(ctx, what, func(accounts []AccountConfig, readings map[string]harness.RateLimit) (AccountConfig, bool) {
+		return ChooseAccount(l.now(), accounts, readings, l.Thresholds(), priority, workWaits)
+	})
+}
+
+// accountToFinish picks the account for an evaluation or a rebase —
+// work already built, which pacing never held back: by the spending
+// order for its priority first, and failing that a paced subscription
+// as if it were pressing. A stopped account still takes nothing, and an
+// api account is still only what its priority or exhausted
+// subscriptions allow.
+func (l *Loop) accountToFinish(ctx context.Context, priority, what string) (context.Context, bool) {
+	return l.withAccount(ctx, what, func(accounts []AccountConfig, readings map[string]harness.RateLimit) (AccountConfig, bool) {
+		if a, ok := ChooseAccount(l.now(), accounts, readings, l.Thresholds(), priority, true); ok {
+			return a, true
+		}
+		var subs []AccountConfig
+		for _, a := range accounts {
+			if a.Kind != AccountAPI {
+				subs = append(subs, a)
+			}
+		}
+		return ChooseAccount(l.now(), subs, readings, l.Thresholds(), "high", true)
+	})
+}
+
+func (l *Loop) withAccount(ctx context.Context, what string, choose func([]AccountConfig, map[string]harness.RateLimit) (AccountConfig, bool)) (context.Context, bool) {
+	accounts, readings := l.accounts()
+	a, ok := choose(accounts, readings)
+	if !ok {
+		if what != "" && l.waiting != nil {
+			l.waiting[what]++
+		}
+		return ctx, false
+	}
+	if len(l.Cfg.Accounts) == 0 {
+		return ctx, true
+	}
+	return WithAccount(ctx, a), true
+}
+
+// logWaiting says once per tick what waits for an account with
+// headroom, not once per item.
+func (l *Loop) logWaiting() {
+	if len(l.waiting) == 0 {
+		return
+	}
+	kinds := make([]string, 0, len(l.waiting))
+	for k := range l.waiting {
+		kinds = append(kinds, k)
+	}
+	sort.Strings(kinds)
+	parts := make([]string, 0, len(kinds))
+	for _, k := range kinds {
+		parts = append(parts, fmt.Sprintf("%d %s(s)", l.waiting[k], k))
+	}
+	l.logf("accounts: no account has headroom for %s; left unclaimed until one has", strings.Join(parts, ", "))
+}
+
+// priorityName is the priority a goal rank stands for.
+func priorityName(rank int) string {
+	return [...]string{"urgent", "high", "normal", "low"}[min(max(rank, 0), 3)]
 }
 
 // CurrentScopes are the orgs served, as last read — for the sessions
@@ -627,11 +731,17 @@ func (l *Loop) evaluateHeld(ctx context.Context) {
 			l.mu.Unlock()
 			continue
 		}
+		l.mu.Unlock()
+		actx, ok := l.accountToFinish(ctx, priorityName(h.rank), "evaluation")
+		if !ok {
+			continue
+		}
+		l.mu.Lock()
 		l.evaluating[item.ID] = true
 		l.mu.Unlock()
 		l.logf("evaluating item %d %q", item.Seq, item.Title)
 		l.wg.Add(1)
-		go func(item gateway.WorkItem) {
+		go func(ctx context.Context, item gateway.WorkItem) {
 			defer l.wg.Done()
 			defer func() {
 				l.mu.Lock()
@@ -640,7 +750,7 @@ func (l *Loop) evaluateHeld(ctx context.Context) {
 				l.notify()
 			}()
 			l.Evaluate(ctx, item)
-		}(item)
+		}(actx, item)
 	}
 }
 
@@ -681,6 +791,12 @@ func (l *Loop) rebaseRequested(ctx context.Context) {
 			l.mu.Unlock()
 			continue
 		}
+		l.mu.Unlock()
+		actx, ok := l.accountToFinish(ctx, priorityName(r.rank), "rebase")
+		if !ok {
+			continue
+		}
+		l.mu.Lock()
 		l.rebasing[item.ID] = true
 		l.mu.Unlock()
 		// the claim is the lock across nodes: refused, another node has it
@@ -695,7 +811,7 @@ func (l *Loop) rebaseRequested(ctx context.Context) {
 		}
 		l.logf("%s: rebasing item %d %q", sc.Login, item.Seq, item.Title)
 		l.wg.Add(1)
-		go func(item gateway.WorkItem) {
+		go func(ctx context.Context, item gateway.WorkItem) {
 			defer l.wg.Done()
 			defer func() {
 				l.mu.Lock()
@@ -704,14 +820,15 @@ func (l *Loop) rebaseRequested(ctx context.Context) {
 				l.notify()
 			}()
 			l.Rebase(ctx, item)
-		}(item)
+		}(actx, item)
 	}
 }
 
 // planRequested starts the planner on every goal in planning in the
 // served orgs that no planner here is on, most urgent goal first across
-// the orgs (planOrder). A goal ranked after maxRank is left for later.
-func (l *Loop) planRequested(ctx context.Context, maxRank int) {
+// the orgs (planOrder), each on the account chosen for its priority. A
+// goal no account has headroom for is left for later.
+func (l *Loop) planRequested(ctx context.Context) {
 	if l.Plan == nil {
 		return
 	}
@@ -723,7 +840,7 @@ func (l *Loop) planRequested(ctx context.Context, maxRank int) {
 			continue
 		}
 		for _, g := range goals {
-			if g.Status == "planning" && gateway.PriorityRank(g.Priority) <= maxRank {
+			if g.Status == "planning" {
 				requested = append(requested, planningGoal{goal: g, scope: sc})
 			}
 		}
@@ -739,6 +856,12 @@ func (l *Loop) planRequested(ctx context.Context, maxRank int) {
 			l.mu.Unlock()
 			continue
 		}
+		l.mu.Unlock()
+		actx, ok := l.accountFor(ctx, priorityName(gateway.PriorityRank(g.Priority)), true, "plan")
+		if !ok {
+			continue
+		}
+		l.mu.Lock()
 		l.planning[g.ID] = true
 		l.mu.Unlock()
 		// the claim is the lock across nodes: refused, another node has it
@@ -755,7 +878,7 @@ func (l *Loop) planRequested(ctx context.Context, maxRank int) {
 		}
 		l.logf("%s: planning goal %q", sc.Login, g.Slug)
 		l.wg.Add(1)
-		go func(g gateway.Goal, sc Scope) {
+		go func(ctx context.Context, g gateway.Goal, sc Scope) {
 			defer l.wg.Done()
 			defer func() {
 				l.mu.Lock()
@@ -764,7 +887,7 @@ func (l *Loop) planRequested(ctx context.Context, maxRank int) {
 				l.notify()
 			}()
 			l.Plan(ctx, g, sc)
-		}(g, sc)
+		}(actx, g, sc)
 	}
 }
 
@@ -818,6 +941,13 @@ func (l *Loop) researchDue(ctx context.Context) {
 			if RoomFor(d, p, goals) <= 0 {
 				continue
 			}
+			// research is not work that waits: it runs only on a
+			// subscription with headroom for normal work, never on an
+			// api account and never on a paced one
+			actx, ok := l.accountFor(ctx, "low", false, "")
+			if !ok {
+				continue
+			}
 			l.mu.Lock()
 			if l.researching == nil {
 				l.researching = map[string]bool{}
@@ -839,7 +969,7 @@ func (l *Loop) researchDue(ctx context.Context) {
 			}
 			l.logf("%s: researching %q", sc.Login, p.Slug+"/"+d.Slug)
 			l.wg.Add(1)
-			go func(d gateway.Direction, p gateway.Project, sc Scope) {
+			go func(ctx context.Context, d gateway.Direction, p gateway.Project, sc Scope) {
 				defer l.wg.Done()
 				defer func() {
 					l.mu.Lock()
@@ -848,7 +978,7 @@ func (l *Loop) researchDue(ctx context.Context) {
 					l.notify()
 				}()
 				l.Research(ctx, d, p, sc)
-			}(d, p, sc)
+			}(actx, d, p, sc)
 		}
 	}
 }
@@ -869,6 +999,11 @@ func (l *Loop) Adopt(ctx context.Context, item gateway.WorkItem) bool {
 	l.running[item.ID] = true
 	l.mu.Unlock()
 	l.logf("adopted held item %d %q", item.Seq, item.Title)
+	// already held: it runs on the account with the most headroom, or on
+	// the first listed when none has any (OpenAccount's fallback)
+	if actx, ok := l.accountFor(ctx, "high", true, ""); ok {
+		ctx = actx
+	}
 	l.run(ctx, item)
 	return true
 }

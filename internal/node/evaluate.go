@@ -117,7 +117,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 		defer os.RemoveAll(ghDir)
 		job.Env = SessionEnv(tok, ghDir)
 	}
-	acct, err := OpenAccount(e.Accounts)
+	acct, err := OpenAccount(ctx, e.Accounts)
 	if err != nil {
 		return err
 	}

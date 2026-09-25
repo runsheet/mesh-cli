@@ -1,5 +1,5 @@
 ---
-summary: A node's sessions run on Claude accounts listed in node.yaml (`accounts:` of {label, kind subscription|api, token_file|api_key_env}) until the platform hands a session its credential at claim; the secret reaches the session in its environment only (CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY), with a temporary CLAUDE_CONFIG_DIR per session removed after, the inherited auth variables stripped, and the secret redacted from every log, error and report.
+summary: A node's sessions run on Claude accounts listed in node.yaml (`accounts:` of {label, kind subscription|api, token_file|api_key_env}) until the platform hands a session its credential at claim; the secret reaches the session in its environment only (CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY), with a temporary CLAUDE_CONFIG_DIR per session removed after, the inherited auth variables stripped, and the secret redacted from every log, error and report; each session runs on the account ChooseAccount picks by headroom and the spending order (subscriptions first, API only for urgent/high work or when subscriptions are stopped and work waits), and no account with headroom means no claim.
 status: accepted
 ---
 
@@ -59,16 +59,68 @@ own may run on the wrong account.
   redacts the session's errors and text before it logs them, reports
   them (`ReportWorkItemProgress`) or hands them in as a failure. The
   heartbeat carries labels only.
-- **Which account.** For now every kind of session — build, evaluate,
-  plan, research, rebase — runs on the first account listed. Selection
-  by headroom and the spending order (subscriptions first; API only for
-  urgent/high work or when subscriptions are exhausted) is the goal's
-  next step and replaces this.
+- **Which account: by headroom and the spending order.** Before every
+  claim — `ClaimWorkItem`, `ClaimPlan`, `ClaimDirectionResearch`,
+  `ClaimWorkItemRebase` — and before an evaluation starts, the loop
+  picks the session's account with `ChooseAccount(now, accounts,
+  readings, limits, priority, workWaits)`, a pure function of the latest
+  reading per label:
+  - each account is judged by `pace` on its own reading and the
+    node.yaml `limits` thresholds: *stopped* (either window at `stop`,
+    or a status not `allowed`, until that window's reset) takes nothing;
+    *paced* (five-hour at `pace_five_hour`) takes only urgent and high
+    work; an account never seen yet has its full headroom;
+  - **subscriptions first**: of those that may take the work, the one
+    with the most headroom — the lowest max of its five-hour and
+    seven-day use, a window past its reset counting as unused; a tie
+    goes to the first listed;
+  - **an api account only for urgent/high work** — before a paced
+    subscription, so the subscription's last room is kept — **or when
+    every subscription is stopped and work waits** (an item, a plan, an
+    evaluation, a rebase; research is not work that waits, so it runs
+    on a subscription that is not paced or not at all);
+  - **evaluations and rebases finish work already built**, which
+    pacing never held back: they take an account by their goal's
+    priority first and, failing that, a paced subscription as urgent
+    and high work would (`accountToFinish`). A stopped account still
+    takes neither, and they reach an api account only as their
+    priority or exhausted subscriptions allow;
+  - **none fits → no claim.** The item is not claimed, failed or
+    released: it stays ready for a later tick or another node, and the
+    tick logs one line of what waits (`accounts: no account has
+    headroom for …`), not one per item.
 
+  The chosen account rides the session's context (`WithAccount`) into
+  `OpenAccount`; the session's reading lands in `Loop.Limits` under its
+  label, so the next choice sees it. A held item adopted after a
+  restart takes the account with most headroom, else the first listed.
+  With no `accounts:` the one implicit account is the operator's login,
+  judged by its strictest reading — the node paces exactly as before.
+- **Capacity and account choice work together.** Capacity (ADR-004:
+  fixed, or `{min, max}` scaled by headroom) bounds how many items run
+  at once; the choice decides whether each one may start and where.
+  An item starts only when both allow it: a free slot *and* an account
+  that may take its priority. The node's own mode (`nodePace`) is the
+  most lenient of its subscriptions' (of every account's when it has no
+  subscription): it is logged at each crossing, and when paced it
+  halves the capacity as before — so a node is paced or stopped only
+  when every subscription is, and one full Max account no longer
+  stops a node that has another with room. Evaluations, plans, research
+  and rebases still do not count against capacity, but each needs an
+  account to start.
 ## Consequences
 
 - Several Max subscriptions work on one node from node.yaml before the
   platform's credentials exist; the operator's own login is untouched.
+- A node with two Max accounts runs on the emptier one and moves to the
+  other as the first fills; money is spent on an API key only where the
+  spending order allows it. When the platform's claim-time read lands
+  it applies the same rule (runsheet ADR 005, capacity across
+  accounts).
+- The choice reads the latest reading, which a session updates only as
+  it runs: sessions started in one tick all go to the account that was
+  emptiest at the tick's start. The per-account slots of runsheet ADR
+  005 (capacity as the sum of the accounts') are a later step.
 - A token file is the operator's to protect (0600); the node reads it at
   each session and never copies it.
 - A session's CLI state (its transcript, `--resume`) dies with the
