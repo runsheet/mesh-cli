@@ -105,7 +105,10 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   it) until the window's reset. Every start picks its account
   (`ChooseAccount`, below); the node's own mode (`nodePace`, the most
   lenient subscription) halves the capacity when paced, and a crossing
-  is logged once.
+  is logged once. A Codex session's readings land under
+  `codex:<account>` (`CodexLimitsAccount`, `ObserveLimitsAs`):
+  `Limits.Readings` leaves them out, so they never pace, stop, choose
+  or scale a Claude session; the heartbeat carries them.
 - **The scale** (`internal/node/headroom.go`, `scaling.go`, adr-004):
   a node.yaml `capacity: {min, max}` runs the `Scaler` once a minute
   inside the tick (`Loop.scale`, by `Loop.Now`) on the highest
@@ -180,8 +183,23 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   variable name (mesh-specs ADR 006). node.yaml's `codex:` block
   (`CodexConfig`: binary, accounts, `models {opus, sonnet, haiku}`)
   and `CodexModel` map the Claude tiers to Codex models. Codex has no
-  budget flag, so `MaxBudgetUSD` is not enforced. Nothing in the loop
-  runs it yet.
+  budget flag, so `MaxBudgetUSD` is not enforced.
+- **The second opinion** (`internal/node/evaluate.go`,
+  `docs/adr/adr-005-codex-second-opinion.md`): `Evaluator.Second` is
+  the Codex harness (`codexSecondOpinion` in `nodecmd.go`: built when
+  node.yaml has a `codex:` block and its binary is found, on its first
+  account; else none and the node evaluates as before) and
+  `SecondModel` is `CodexModel` of the evaluate model. An item of an
+  `urgent` or `high` goal whose Claude verdict passes is evaluated again
+  on it with the same prompt and workspace: both pass is passed, a
+  Codex fail is failed; the notes carry both, `Claude (first
+  evaluation): VERDICT …` and `Codex (second opinion): VERDICT …`,
+  truncated together to 4000, and the cost is the sum — all in the one
+  `EvaluateWorkItem`. A Codex session that errors, times out or reaches
+  no verdict, or whose `codex:<account>` is paced or stopped, keeps the
+  first verdict with `Codex second opinion unavailable: <reason>`. A
+  first fail or a normal/low goal never runs Codex. Builders on Codex
+  come later, behind a per-project setting.
 - **Tools** (`internal/tools/`, ADR-006, trd §3 Tools): the
   claim-time read `gateway.Session` hands a session its credentials and
   its `tools` (`[]tools.Tool`, secrets decrypted for the claiming
