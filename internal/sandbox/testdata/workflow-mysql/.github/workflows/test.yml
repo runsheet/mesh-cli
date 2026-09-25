@@ -1,0 +1,23 @@
+name: Test
+on: push
+env:
+  DB_NAME: app_test
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        mysql: ["8.0", "8.4"]
+    services:
+      mysql:
+        image: mysql:${{ matrix.mysql }}
+        env:
+          MYSQL_ROOT_PASSWORD: ${{ secrets.MYSQL_ROOT_PASSWORD || 'root' }}
+          MYSQL_DATABASE: ${{ env.DB_NAME }}
+          MYSQL_PASSWORD: ${{ secrets.MYSQL_PASSWORD }}
+        ports:
+          - 3306:3306
+        options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=3 --cpus 1
+    steps:
+      - uses: actions/checkout@v4
+      - run: go test ./...

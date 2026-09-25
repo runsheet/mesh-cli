@@ -813,6 +813,65 @@ final doc and pushes it straight to that branch (`docs(mesh): goal <slug>
 finish that finds the doc already final pushes nothing. A failure there is
 logged; the item has already finished.
 
+## Services
+
+A sandboxed session (mesh-specs ADR 007) gets the services its
+repository declares as sidecars in its pod, reachable on `127.0.0.1` at
+their usual ports and removed with the session.
+`sandbox.Resolve(repoDir, allowed)` (`internal/sandbox/services.go`)
+reads the declaration; **the first found wins**:
+
+1. **`.mesh/services.yml`** in the repository.
+2. Else the **`services:` of the CI workflows that run tests**, from
+   `.github/workflows/*.yml`: a job runs tests when a `run:` step runs
+   `go test`, `npm|pnpm|yarn test`, `pytest`, `make test`, `cargo test`,
+   `vitest` or `jest`, or when the job's id or name, or the workflow's
+   name, says `test` or `ci`. The services of every such job are merged
+   by name, first file (in name order) then first job winning. In a
+   value, `${{ matrix.x }}` takes the matrix's first value, `${{ env.X }}`
+   the job's or workflow's literal, `${{ a || 'default' }}` the default;
+   any other expression (`${{ secrets.X }}`) drops the value with a
+   note, and a service whose image cannot be resolved is skipped. These
+   services are not required: reading a workflow is a best effort.
+3. Else **none**.
+
+`.mesh/services.yml` has the shape of an Actions `services:` map — at
+the top level or under a `services:` key, so a block can be copied from
+a workflow as it is:
+
+```yaml
+services:
+  postgres:
+    image: postgres:16            # a bare name is docker.io
+    env:
+      POSTGRES_PASSWORD: postgres
+    ports: ["5432:5432"]
+    options: >-
+      --health-cmd "pg_isready -U postgres"
+      --health-interval 2s --health-timeout 5s --health-retries 30
+    command: []                   # optional: arguments to the image
+    required: true                # default true; a required service that
+                                  # cannot start returns the claim
+    tuning: true                  # default true; see below
+  redis:
+    image: redis:7
+    ports: ["6379:6379"]
+```
+
+- `options`: only `--health-cmd`, `--health-interval`,
+  `--health-timeout`, `--health-retries` and `--health-start-period`
+  are honoured, as the service's health check; any other flag is
+  ignored and noted. `volumes` and `credentials` are not supported.
+- **Test tuning**: a known database with no `command` (and no
+  `tuning: false`) runs with durability off — Postgres (`postgres`,
+  `postgis`) with `-c fsync=off -c synchronous_commit=off -c
+  full_page_writes=off`, MySQL/MariaDB with
+  `--innodb-flush-log-at-trx-commit=0 --sync-binlog=0 --skip-log-bin`.
+- **Registries**: an image's registry (a bare `postgres:16` is
+  `docker.io`) must match the allow-list — by default `docker.io`,
+  `ghcr.io`, `*.pkg.dev`, `quay.io`. A disallowed image is returned as a
+  refused service with a note naming its registry, never pulled.
+
 ## Codex on a node
 
 A node can run OpenAI's Codex CLI beside Claude Code. The adapter
