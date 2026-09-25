@@ -127,3 +127,91 @@ func TestCapacityRangeRejected(t *testing.T) {
 		})
 	}
 }
+
+// A node.yaml with a `codex:` block: the binary, both kinds of account
+// and the tier mapping load, and CodexModel maps each tier — alias or
+// full id — to its Codex model; empty or unmapped is Codex's default.
+func TestLoadConfigCodex(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	writeNodeYAML(t, `slug: mini
+name: mini
+codex:
+  binary: /opt/codex/bin/codex
+  accounts:
+    - name: plus
+      home: ~/.mesh/codex/plus
+    - name: api
+      api_key_env: OPENAI_API_KEY
+    - name: api-file
+      api_key_file: ~/.mesh/codex/api.key
+  models:
+    opus: gpt-6-astra
+    sonnet: gpt-6-sol
+    haiku: gpt-6-luna
+`)
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cx := cfg.Codex
+	if cx.Binary != "/opt/codex/bin/codex" || len(cx.Accounts) != 3 {
+		t.Fatalf("codex %+v", cx)
+	}
+	if a := cx.Accounts[0].Harness(); a.Name != "plus" || a.Home != "~/.mesh/codex/plus" || a.IsAPIKey() {
+		t.Fatalf("plan account %+v", a)
+	}
+	if a := cx.Accounts[1].Harness(); a.APIKeyEnv != "OPENAI_API_KEY" || !a.IsAPIKey() {
+		t.Fatalf("api account %+v", a)
+	}
+	if a := cx.Accounts[2].Harness(); a.APIKeyFile != "~/.mesh/codex/api.key" || !a.IsAPIKey() {
+		t.Fatalf("api-file account %+v", a)
+	}
+	for in, want := range map[string]string{
+		"opus": "gpt-6-astra", "sonnet": "gpt-6-sol", "haiku": "gpt-6-luna",
+		"claude-opus-5": "gpt-6-astra", "claude-sonnet-5": "gpt-6-sol", "claude-haiku-4-5-20251001": "gpt-6-luna",
+		"": "", "gpt-4o": "", "claude-unknown-1": "",
+	} {
+		if got := cx.CodexModel(in); got != want {
+			t.Errorf("CodexModel(%q) = %q, want %q", in, got, want)
+		}
+	}
+	// a tier with no mapping is Codex's default
+	if got := (CodexConfig{Models: CodexModels{Opus: "gpt-6-astra"}}).CodexModel("sonnet"); got != "" {
+		t.Errorf("an unmapped tier gave %q", got)
+	}
+}
+
+// A file with no codex block saves back without one.
+func TestCodexBlockOmittedWhenEmpty(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cfg := &Config{Slug: "mini", Name: "mini", Capacity: Fixed(1)}
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	path, _ := ConfigPath()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "codex") {
+		t.Fatalf("saved an empty codex block:\n%s", data)
+	}
+}
+
+// Codex accounts Codex could not run on are refused at load.
+func TestLoadConfigCodexAccountsRejected(t *testing.T) {
+	for name, block := range map[string]string{
+		"no name":   "    - home: ~/h\n",
+		"twice":     "    - name: a\n      home: ~/h\n    - name: a\n      api_key_env: K\n",
+		"none":      "    - name: a\n",
+		"two kinds": "    - name: a\n      home: ~/h\n      api_key_env: K\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			writeNodeYAML(t, "slug: mini\nname: mini\ncodex:\n  accounts:\n"+block)
+			if _, err := LoadConfig(); err == nil || !strings.Contains(err.Error(), "codex") {
+				t.Fatalf("err = %v, want a codex complaint", err)
+			}
+		})
+	}
+}
