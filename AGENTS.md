@@ -88,6 +88,9 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `~/.mesh/update.json` (`CheckStart`): the third unconfirmed one rolls
   back to `.prev`, reports it and exits 0; the first heartbeat confirms.
   The loop's `Update` is an interface; tests inject a fake.
+  `mesh node update [version]` (`internal/commands/nodeupdate.go`) does
+  it by hand on the same `ReleaseUpdater`: verify, drain the pidfile's
+  node, swap; `--verify-only` verifies into a temp dir.
 - **The pace** (`internal/node/limits.go`, trd §3 Pacing by the plan's
   limits): every session's `rate_limit_event` lands in `Loop.Limits`
   (latest per account — its `MESH_ACCOUNT` label, else

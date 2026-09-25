@@ -40,6 +40,8 @@ type GitHub struct {
 	Client *http.Client
 	// BaseURL overrides ReleaseBaseURL; empty is ReleaseBaseURL.
 	BaseURL string
+	// LatestURL overrides LatestReleaseURL; empty is LatestReleaseURL.
+	LatestURL string
 }
 
 // Asset downloads <base><version>/<name>, following GitHub's redirect to
