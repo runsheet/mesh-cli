@@ -224,6 +224,23 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   Postgres and MySQL/MariaDB, and a disallowed registry returned
   `Refused` with a note. Pure parsing; the fixtures are under
   `internal/sandbox/testdata/` (their `.mesh/` needs `git add -f`).
+- **Session units** (`internal/sessionunit/`, mesh-specs ADR 008,
+  `docs/adr/adr-008-sessions-in-their-own-unit.md`): a host `claude -p`
+  is not the node's child. `ClaudeCode.Run` starts it through a `Unit`
+  (`Start` → `Handle{PID, UnitName}`, `Alive`, `Stop`):
+  `SystemdScope` (`systemd-run --user --scope
+  --unit=mesh-session-<kind>-<subject>-<rand> --collect`, outside the
+  node service's cgroup) when `systemctl --user` answers, else
+  `Detached` (setsid, its own process group); the sandbox's pod becomes
+  a third later. Its stdout goes to `<workdir>.session/output.jsonl`,
+  stderr to `stderr.log`, and `state.json` (`State`, written
+  atomically: node, item/goal/direction, claim, kind, model, account,
+  pid, unit, startedAt, offset — never the prompt or a secret) from
+  `Job.Meta`; the prompt is an unlinked file on stdin. `Follow` tails
+  the output a line per read until the process is gone and the file
+  stops growing, `ParseStream` reads it, and the offset is saved as it
+  goes. A timeout or cancelled ctx `Stop`s the unit; the directory is
+  removed when `Run` returns. Adoption by the next node comes later.
 - **The sandbox** (`internal/sandbox/`, mesh-specs ADR 007,
   `docs/adr/adr-007-the-sandbox-on-the-node.md`): with a sandbox,
   `harness.ClaudeCode` runs `claude` in the session's own rootless
@@ -243,8 +260,23 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   node's condition: the runner releases the item, holds it off
   (`Declines`) and `Loop.NoteCondition` puts the reason on the
   heartbeat for `ConditionHold`; the heartbeat also carries `sandbox
-  {mode, runtime, image}`. Channel-mode sessions, Codex and services
-  are not in the pod yet.
+  {mode, runtime, image}`. Channel-mode sessions and Codex are not in
+  the pod yet.
+- **Sidecars** (`internal/sandbox/sidecars.go`, `internal/node/services.go`,
+  mesh-specs ADR 007 Services): build, evaluate and rebase call
+  `OpenSessionPod` before the agent — `Resolve` the checkout, then
+  `Session.Start`: the pod, each allowed service a sidecar in it
+  (`AddSidecar`, `--pull missing`) under `SplitLimits` of the services
+  budget, then every health check at once (`--health-cmd` by
+  `ExecSidecar`, else `ProbeTCP` on the first port) within
+  `sandbox.service_timeout`; `Run` runs the agent in that pod
+  (`Job.Session`) and the node's `Close` removes it on every path. The
+  prompts' `# Services` section (`ServicesLine`) and
+  `$HOME/.mesh-services` (`ServicesListing`) list them. A missing
+  optional one is a progress note (the verdict's notes for an
+  evaluation); a required one releases a build, declines an evaluation
+  (`Declines`) or fails a rebase, naming it, and no agent starts; a
+  required refused one makes no pod at all.
 - Every session gets Prologue as an MCP server with the node's token and
   the project's context on disk under `.mesh/context/` with `INDEX.md`:
   the documents, then `## Live goals and items` — each live goal's items

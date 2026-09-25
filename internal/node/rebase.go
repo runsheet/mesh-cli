@@ -12,6 +12,7 @@ import (
 
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/harness"
+	"projectmesh.io/mesh-cli/internal/sandbox"
 )
 
 // Rebaser is a node's session of kind rebase (runsheet ADR 008 step 2,
@@ -54,7 +55,11 @@ type Rebaser struct {
 	ProgressEvery time.Duration
 	// Fallback is the node's one old-platform notice (nil: every item).
 	Fallback *TokenFallback
-	Log      *log.Logger
+	// Sandbox, when set, runs the session in its own pod with the
+	// services its checkout declares (as Runner.Sandbox): the acceptance
+	// is re-run on the rebased head.
+	Sandbox *sandbox.Sandbox
+	Log     *log.Logger
 }
 
 func (r *Rebaser) logf(format string, args ...any) {
@@ -125,17 +130,31 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 	if len(files) > 0 || len(cx.Index) > 0 {
 		contextDir = ContextDir
 	}
-	prompt := harness.RebasePrompt(harness.RebaseInput{
+	in := harness.RebaseInput{
 		GoalSlug: res.Goal.Slug, GoalTitle: res.Goal.Title, Seq: item.Seq, Title: item.Title, Brief: item.Brief, Acceptance: item.Acceptance,
 		Repo: res.Repo.FullName(), Branch: branch, BaseRef: spec.BaseRef, Conflict: item.RebaseConflict, Files: item.RebaseFiles,
 		ContextDir: contextDir, ContextFiles: files, Project: orgLogin + "/" + res.Project.Slug, Prologue: len(r.MCP) > 0,
-	})
+	}
 	budget := r.MaxBudgetUSD
 	if budget <= 0 {
 		budget = 5
 	}
 	model := BuildModel(ctx, r.GW, item, r.Model)
-	job := harness.Job{Kind: harness.KindRebase, Workspace: dir, Prompt: prompt, MaxBudgetUSD: budget, Label: label + " rebase", Timeout: r.Timeout, MCPServers: r.MCP, Model: model}
+	job := harness.Job{Kind: harness.KindRebase, Workspace: dir, MaxBudgetUSD: budget, Label: label + " rebase", Timeout: r.Timeout, MCPServers: r.MCP, Model: model}
+	// the checkout's services, started in the session's pod before its
+	// agent; the pod and its sidecars go on every way out. A required one
+	// that does not come up gives the rebase up, naming it.
+	pod, err := OpenSessionPod(ctx, r.Sandbox, dir, job.Label, harness.KindRebase, r.logf)
+	defer pod.Close()
+	if err != nil {
+		return fail(fmt.Errorf("services: %w", err))
+	}
+	if _, failed := pod.RequiredFailure(); failed {
+		return fail(errors.New(pod.ReleaseReason()))
+	}
+	pod.Apply(&job)
+	in.Services = pod.Prompt()
+	job.Prompt = harness.RebasePrompt(in)
 	if tok := cred.Token(); tok != nil {
 		ghDir, err := NewGHConfigDir()
 		if err != nil {
@@ -151,6 +170,7 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 	}
 	defer acct.Cleanup()
 	acct.Apply(&job)
+	job.Meta = harness.SessionMeta{NodeID: sc.NodeID, ItemID: item.ID, GoalID: item.GoalID, Attempt: item.Attempts}
 
 	var mu sync.Mutex
 	sessionID := ""
@@ -161,6 +181,10 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 	}
 	r.logf("item %s: rebase on %s: %s onto %s", label, modelName(model), branch, spec.BaseRef)
 	report(ctx, "rebase session started: "+branch+" onto "+spec.BaseRef+" on "+modelName(model), "")
+	if note := pod.MissingNote(); note != "" {
+		r.logf("item %s: %s", label, note)
+		report(ctx, note, "")
+	}
 	every := r.ProgressEvery
 	if every <= 0 {
 		every = 60 * time.Second

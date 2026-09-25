@@ -214,6 +214,7 @@ func (p *Planner) ask(ctx context.Context, goal gateway.Goal, nodeID, dir string
 	}
 	defer acct.Cleanup()
 	acct.Apply(&job)
+	job.Meta = harness.SessionMeta{NodeID: nodeID, GoalID: goal.ID}
 	result, err := p.Harness.Run(ctx, job, nil)
 	acct.Finish(ctx, result)
 	if ctx.Err() != nil {

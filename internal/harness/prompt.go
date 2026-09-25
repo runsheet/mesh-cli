@@ -33,6 +33,17 @@ type PromptInput struct {
 	// Prologue says the session has Prologue's tools for context on demand.
 	Project  string
 	Prologue bool
+	// Services is what the session's pod runs beside it
+	// (sandbox.ServicesLine): the ready ones on 127.0.0.1 and the
+	// missing ones; empty when there are none.
+	Services string
+}
+
+// servicesSection is the prompt's Services section, when there are any.
+func servicesSection(b *strings.Builder, services string) {
+	if s := strings.TrimSpace(services); s != "" {
+		fmt.Fprintf(b, "# Services\n\n%s\n\n", s)
+	}
 }
 
 // prologueRule is the line every prompt carries when the session has
@@ -70,6 +81,7 @@ func BuildPrompt(in PromptInput) string {
 	if strings.TrimSpace(in.GoalAcceptance) != "" {
 		fmt.Fprintf(&b, "## Acceptance (the goal)\n\n%s\n\n", strings.TrimSpace(in.GoalAcceptance))
 	}
+	servicesSection(&b, in.Services)
 	b.WriteString("# Rules\n\n")
 	if in.ContextDir != "" {
 		fmt.Fprintf(&b, "1. Read the project's context in `%s/` first", in.ContextDir)
@@ -113,6 +125,8 @@ type EvaluateInput struct {
 	ContextFiles []string
 	Project      string
 	Prologue     bool
+	// Services as on PromptInput.
+	Services string
 }
 
 // Verdict lines the evaluator ends with; ParseVerdict reads them.
@@ -160,6 +174,7 @@ func EvaluatePrompt(in EvaluateInput) string {
 	} else if in.Prologue {
 		b.WriteString("# The context\n\n" + prologueRule("", in.Project) + "\n\n")
 	}
+	servicesSection(&b, in.Services)
 	b.WriteString("# Rules\n\n")
 	b.WriteString("1. Judge the item's acceptance, literally: every clause, against what the diff does — not what its messages claim. A change that goes against an ADR or the instructions fails, whatever the acceptance says.\n")
 	b.WriteString("2. Run the acceptance check yourself when it names one (tests, a build, a command). Read the repository's own instructions (AGENTS.md, CLAUDE.md) for how.\n")
@@ -677,6 +692,8 @@ type RebaseInput struct {
 	ContextFiles []string
 	Project      string
 	Prologue     bool
+	// Services as on PromptInput.
+	Services string
 }
 
 // The contract lines a rebase session ends with; ParseRebase reads them.
@@ -731,6 +748,7 @@ func RebasePrompt(in RebaseInput) string {
 	} else if in.Prologue {
 		b.WriteString("# The context\n\n" + prologueRule("", in.Project) + "\n\n")
 	}
+	servicesSection(&b, in.Services)
 	b.WriteString("# The runbook\n\n")
 	if in.Prologue {
 		fmt.Fprintf(&b, "Read the mesh-branch-rebase skill first: `prologue_document` with project %q, slug %q (or the same slug in project %q, if it is indexed there). If neither has it, these steps are the runbook:\n\n", RebaseRunbookProject, RebaseRunbookSlug, in.Project)

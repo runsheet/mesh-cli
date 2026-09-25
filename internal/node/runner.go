@@ -99,7 +99,11 @@ type Runner struct {
 	// limits kill it (Loop.NoteCondition, the heartbeat's reason); nil
 	// tells no one.
 	Condition func(reason string)
-	Log       *log.Logger
+	// Sandbox, when set, runs the session in its own pod with the
+	// services its checkout declares started beside it (ADR 007); nil is
+	// `sandbox: off`, no services.
+	Sandbox *sandbox.Sandbox
+	Log     *log.Logger
 }
 
 func (r *Runner) runtimes() []string {
@@ -217,13 +221,13 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	r.logf("item %s: build on %s", label, modelName(model))
 
 	mcp := r.mcp(ctx)
-	prompt := harness.BuildPrompt(harness.PromptInput{
+	in := harness.PromptInput{
 		GoalSlug: res.Goal.Slug, GoalTitle: res.Goal.Title, GoalStatement: res.Goal.Statement, GoalAcceptance: res.Goal.Acceptance,
 		Seq: item.Seq, Title: item.Title, Brief: item.Brief, Acceptance: item.Acceptance,
 		Repo: res.Repo.FullName(), Branch: spec.Branch, BaseRef: spec.BaseRef, ContextDir: contextDir, ContextFiles: files,
 		Attempts: item.Attempts, Evaluation: item.Evaluation, Project: orgLogin + "/" + res.Project.Slug, Prologue: len(mcp) > 0,
-	})
-	job := harness.Job{Kind: harness.KindBuild, Workspace: dir, Prompt: prompt, MaxBudgetUSD: r.Budget(res.Goal), Label: label, MCPServers: mcp, Model: model}
+	}
+	job := harness.Job{Kind: harness.KindBuild, Workspace: dir, MaxBudgetUSD: r.Budget(res.Goal), Label: label, MCPServers: mcp, Model: model}
 	if tok := cred.Token(); tok != nil {
 		ghDir, err := NewGHConfigDir()
 		if err != nil {
@@ -247,6 +251,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	}
 	defer acct.Cleanup()
 	acct.Apply(&job)
+	job.Meta = harness.SessionMeta{NodeID: sc.NodeID, ItemID: item.ID, GoalID: item.GoalID, Attempt: item.Attempts}
 	// the item's tools, beside the built-in Prologue: a required one this
 	// node cannot start hands the item back for a node that can
 	runtimes := r.runtimes()
@@ -266,6 +271,27 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	if len(st.Use) > 0 {
 		r.logf("item %s: tools %s", label, st.Names())
 	}
+	// the checkout's services, started in the session's pod before its
+	// agent; the pod and its sidecars go on every way out
+	pod, err := OpenSessionPod(ctx, r.Sandbox, dir, label, harness.KindBuild, r.logf)
+	defer pod.Close()
+	if err != nil {
+		return r.fail(ctx, item, fmt.Errorf("services: %w", err))
+	}
+	if _, failed := pod.RequiredFailure(); failed {
+		// a required service that does not come up hands the item back,
+		// and no agent starts
+		reason := pod.ReleaseReason()
+		r.Declines.Record(item.ID, pod.Declined(), runtimes, time.Now())
+		r.logf("item %s: %s; released", label, reason)
+		if rerr := r.GW.ReleaseWorkItem(ctx, item.ID, reason); rerr != nil {
+			r.logf("item %s: release: %v", label, rerr)
+		}
+		return nil
+	}
+	pod.Apply(&job)
+	in.Services = pod.Prompt()
+	job.Prompt = harness.BuildPrompt(in)
 
 	cost := &costReporter{}
 	var mu sync.Mutex
@@ -284,6 +310,10 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	}
 	report("session started: " + spec.Branch + " on " + modelName(model))
 	if note := st.OmittedNote(); note != "" {
+		r.logf("item %s: %s", label, note)
+		report(note)
+	}
+	if note := pod.MissingNote(); note != "" {
 		r.logf("item %s: %s", label, note)
 		report(note)
 	}

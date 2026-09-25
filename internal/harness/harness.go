@@ -8,6 +8,7 @@ import (
 	"context"
 	"time"
 
+	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/tools"
 )
 
@@ -67,6 +68,30 @@ type Job struct {
 	// leaves the CLI's own default, which is what a node ran on before
 	// models were chosen per kind.
 	Model string
+	// Session is the sandbox session the node opened for this job, with
+	// its pod's services started (sandbox.Session.Start): a sandboxed
+	// harness runs the agent in it and leaves closing it to the node.
+	// Nil opens a session of the harness's own.
+	Session *sandbox.Session
+	// Meta is who the session is for, written to its state file beside
+	// the work dir (sessionunit.State) so a later node process can adopt
+	// it. Optional: a job without it still runs, its state file thinner.
+	Meta SessionMeta
+}
+
+// SessionMeta is the prompt-free, secret-free identity of a session.
+type SessionMeta struct {
+	NodeID string
+	// ItemID is a build's, evaluation's or rebase's item; GoalID its goal
+	// (a plan's subject); DirectionID a research session's direction.
+	ItemID      string
+	GoalID      string
+	DirectionID string
+	// Attempt is the item's claim: its attempts when claimed.
+	Attempt int
+	// Account is the account label the session runs on; empty takes the
+	// job's MESH_ACCOUNT.
+	Account string
 }
 
 // Progress is one observation of a running session.

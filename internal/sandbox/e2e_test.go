@@ -151,3 +151,70 @@ func TestProbeSessionE2E(t *testing.T) {
 		t.Errorf("MESH_DECOY reached the pod")
 	}
 }
+
+// TestServicesSidecarsE2E starts the Postgres fixture (.mesh/services.yml)
+// and the Redis fixture (a test workflow's services:) as sidecars in a
+// real pod, waits for their health checks, and connects to
+// 127.0.0.1:5432 and 127.0.0.1:6379 from inside the agent's container;
+// after the session no pod of it is left (`podman pod ls`). It needs
+// podman and the node image, so it runs only with MESH_SANDBOX_E2E=1.
+func TestServicesSidecarsE2E(t *testing.T) {
+	if os.Getenv("MESH_SANDBOX_E2E") != "1" {
+		t.Skip("MESH_SANDBOX_E2E=1 runs a real pod")
+	}
+	image := os.Getenv("MESH_SANDBOX_IMAGE")
+	if image == "" {
+		image = DefaultImage("dev")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	rt := &Podman{}
+	if _, err := rt.Version(ctx); err != nil {
+		t.Fatalf("podman: %v", err)
+	}
+	var svcs []Service
+	for _, fixture := range []string{"file-postgres", "workflow-redis"} {
+		got, err := Resolve(filepath.Join("testdata", fixture), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		svcs = append(svcs, got.Services...)
+	}
+	label := fmt.Sprintf("e2e-services/%d", time.Now().UnixNano())
+	sb := &Sandbox{Runtime: rt, Config: Config{Image: image, Limits: Limits{CPUs: 1, Memory: "1g", Pids: 512},
+		ServicesLimits: Limits{CPUs: 2, Memory: "2g"}, Network: DefaultNetwork()}}
+	sess, err := sb.Open(label, "build")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	sts, err := sess.Start(ctx, svcs, 3*time.Minute)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	for _, st := range sts {
+		if !st.Ready {
+			t.Fatalf("service %s not ready: %s", st.Name, st.Why)
+		}
+	}
+	var out, errb bytes.Buffer
+	script := "for p in 5432 6379; do if timeout 5 bash -c \"exec 3<>/dev/tcp/127.0.0.1/$p\"; then echo \"OK $p\"; else echo \"FAIL $p\"; fi; done\n"
+	if err := sess.Run(ctx, RunSpec{Workspace: t.TempDir(), Command: []string{"bash", "-c", script}, Stdout: &out, Stderr: &errb}); err != nil {
+		t.Fatalf("run: %v\n%s", err, errb.String())
+	}
+	for _, want := range []string{"OK 5432", "OK 6379"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("from the agent's container: want %q, got\n%s", want, out.String())
+		}
+	}
+	if err := sess.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ls, err := rt.output(ctx, []string{"pod", "ls", "-q", "--filter", "label=mesh.session=" + label}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ls != "" {
+		t.Fatalf("podman pod ls after the session: %s", ls)
+	}
+}

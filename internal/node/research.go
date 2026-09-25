@@ -141,6 +141,7 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 	}
 	defer acct.Cleanup()
 	acct.Apply(&job)
+	job.Meta = harness.SessionMeta{NodeID: scope.NodeID, DirectionID: direction.ID}
 	d.logf("%s/%s: researching in %s (%d repos, room for %d)", project.Slug, direction.Slug, dir, len(dirs), room)
 	result, err := d.Harness.Run(ctx, job, nil)
 	acct.Finish(ctx, result)

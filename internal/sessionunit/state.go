@@ -1,0 +1,89 @@
+package sessionunit
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"time"
+)
+
+// The files of a session directory.
+const (
+	OutputFile = "output.jsonl"
+	StderrFile = "stderr.log"
+	StateFile  = "state.json"
+)
+
+// Dir is the session directory of a work dir: its sibling
+// `<workdir>.session`, outside the git checkout.
+func Dir(workdir string) string {
+	return filepath.Clean(workdir) + ".session"
+}
+
+// State is what the next node process needs to adopt a session and
+// resume reporting it. It never holds the prompt, a secret, the item's
+// token or the environment: an adopting node does not need them.
+type State struct {
+	NodeID string `json:"nodeId,omitempty"`
+	// ItemID is the item of a build, evaluate or rebase session; GoalID
+	// the goal (a plan's subject); DirectionID a research session's.
+	ItemID      string `json:"itemId,omitempty"`
+	GoalID      string `json:"goalId,omitempty"`
+	DirectionID string `json:"directionId,omitempty"`
+	// Attempt is the item's claim: how many attempts it had when claimed.
+	Attempt int    `json:"attempt,omitempty"`
+	Kind    string `json:"kind"`
+	Label   string `json:"label,omitempty"`
+	Model   string `json:"model,omitempty"`
+	Account string `json:"account,omitempty"`
+	// Harness is the agent ("claude-code").
+	Harness string `json:"harness,omitempty"`
+	// Runner is the Unit's Name; PID and Unit where the session runs.
+	Runner    string    `json:"runner"`
+	PID       int       `json:"pid"`
+	Unit      string    `json:"unit"`
+	Workspace string    `json:"workspace"`
+	StartedAt time.Time `json:"startedAt"`
+	// TimeoutSeconds is the session's wall-clock cap from StartedAt; 0 is
+	// none.
+	TimeoutSeconds int     `json:"timeoutSeconds,omitempty"`
+	MaxBudgetUSD   float64 `json:"maxBudgetUsd,omitempty"`
+	// SessionID is the agent's own session id once it said it.
+	SessionID string `json:"sessionId,omitempty"`
+	// Offset is the byte offset in output.jsonl up to which the node has
+	// read and reported, always at the end of a line.
+	Offset int64 `json:"offset"`
+}
+
+// WriteState writes st to dir/state.json atomically: a temporary file
+// in dir, then a rename over the old one.
+func WriteState(dir string, st State) error {
+	b, err := json.MarshalIndent(st, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, ".state-*.json")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(append(b, '\n')); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), filepath.Join(dir, StateFile))
+}
+
+// ReadState reads dir/state.json.
+func ReadState(dir string) (State, error) {
+	var st State
+	b, err := os.ReadFile(filepath.Join(dir, StateFile))
+	if err != nil {
+		return st, err
+	}
+	err = json.Unmarshal(b, &st)
+	return st, err
+}

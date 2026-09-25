@@ -1,5 +1,5 @@
 ---
-summary: How mesh-cli implements mesh-specs ADR 007 — internal/sandbox's Runtime (Podman, a test Fake) runs claude in a per-session pod with two mounts, an allow-listed env passed to podman by name, node.yaml's flat sandbox keys (mode, cpus, memory, pids, services_cpus, services_memory, registries, image), a mode left out following `podman --version` while an explicit on fails closed at start, a limit kill (OOM, pids, the runtime's timeout backstop) released as the node's condition with the heartbeat's reason, and channel mode, Codex and services not yet sandboxed.
+summary: How mesh-cli implements mesh-specs ADR 007 — internal/sandbox's Runtime (Podman, a test Fake) runs claude in a per-session pod with two mounts, an allow-listed env passed to podman by name, node.yaml's flat sandbox keys (mode, cpus, memory, pids, services_cpus, services_memory, registries, image), a mode left out following `podman --version` while an explicit on fails closed at start, a limit kill (OOM, pids, the runtime's timeout backstop) released as the node's condition with the heartbeat's reason, service sidecars started and health-checked in the session's pod before the agent (a required one failing releases the claim, an optional one is a note), and channel mode and Codex not yet sandboxed.
 status: accepted
 ---
 
@@ -16,7 +16,8 @@ implementing it that the spec leaves open or that differ in detail.
 ## Decision
 
 - **One package, one interface.** `internal/sandbox` has `Runtime`
-  (`Version`, `CreatePod`, `RunAgent`, `AddSidecar`, `Remove`), a
+  (`Version`, `CreatePod`, `RunAgent`, `AddSidecar`, `ExecSidecar`,
+  `ProbeTCP`, `Remove`), a
   `Podman` that shells out to `podman` one call per step, and a `Fake`
   that records the specs for tests. `Sandbox.Open` makes the session's
   HOME, `Session.Run` creates the pod, runs the agent and removes the
@@ -26,8 +27,8 @@ implementing it that the spec leaves open or that differ in detail.
   `$HOME/mcp.json` (the Prologue bearer on no command line), and runs
   `claude` with the same arguments otherwise in the pod. Every one-shot
   session (poll-mode build, evaluate, plan, research, rebase) goes
-  through it. Channel-mode sessions, Codex and service sidecars are
-  later items of the goal.
+  through it. Channel-mode sessions and Codex are later items of the
+  goal.
 - **Env by name.** The container's variables are given to `podman run`
   as `--env NAME` with the values in podman's own process environment,
   and `--unsetenv-all` drops the image's and podman's defaults, so no
@@ -67,6 +68,49 @@ implementing it that the spec leaves open or that differ in detail.
 - **Heartbeat.** `HeartbeatExtras.Sandbox` → `sandbox {mode, runtime,
   image}` and `HeartbeatExtras.Reason` → `reason`, each only when set;
   the image is the reference, not yet its digest.
+- **Services: the node opens the pod before the agent.** Build,
+  evaluate and rebase sessions call `OpenSessionPod`: it opens the
+  sandbox session itself, `Resolve`s the checkout and `Session.Start`s
+  the pod with the services in it, so the node — not the harness —
+  decides from the outcome whether the agent starts, and puts the
+  result in the prompt. The session goes to the harness on
+  `Job.Session`; `Run` runs the agent in the pod `Start` made, and the
+  node's deferred `Close` removes the pod, its sidecars and the HOME on
+  every way out (Run's own removal covers the agent's end). Plan and
+  research sessions start no services.
+- **Sidecars.** `podman run -d --pod … --pull missing` (the node user's
+  store is the image cache; pruning is later), nothing mounted, env by
+  name, `--name <pod>-<service>`. The services budget
+  (`services_cpus`, `services_memory`) is split evenly between the
+  sidecars, each also capped at 1024 processes. Known databases' data
+  stays in the container's own layer (no tmpfs yet); it goes with the
+  pod. A sidecar listens on its declared *container* port: nothing is
+  published on the host.
+- **Health checks.** The declared `--health-cmd` runs in the sidecar
+  (`podman exec <c> sh -c …`, a leading `CMD-SHELL` dropped); with none,
+  a TCP connect to the first port from a short-lived node-image
+  container in the pod (bash's `/dev/tcp`); with no port, a started
+  service is ready. The spec's per-database default commands are not
+  implemented: the TCP connect stands in for them. Each check runs
+  every `--health-interval` (default 1 s, not Docker's 30 s), times out
+  at `--health-timeout` (5 s), fails after `--health-retries` failures
+  past `--health-start-period`, and all are awaited together within
+  node.yaml's `sandbox.service_timeout` (default 120 s).
+- **Outcomes.** All ready: the agent starts. The prompts (build,
+  evaluate, rebase) get a `# Services` section before their rules, and
+  `$HOME/.mesh-services` lists each service tab-separated — name,
+  image, `127.0.0.1:<port>`s, `ready` or `failed: <why>`. An optional
+  service that fails or is refused is a progress note naming it and
+  why, and the agent is told it is missing. An item in `evaluating`
+  takes no progress (the platform refuses it), so an evaluation puts
+  that note in its verdict's notes. A required one that fails or is
+  refused starts no agent: a build is released (`ReleaseWorkItem`,
+  `services: required service <name> (<image>) did not come up:
+  <why>`) and held off in `Declines`; an evaluation is left unevaluated
+  and held off the same way; a rebase is failed with that reason. A
+  required service refused for its registry makes no pod at all, so
+  nothing is pulled. A `.mesh/services.yml` that cannot be read is a
+  required service that failed.
 - **Git identity.** The session's `.gitconfig` carries the operator's
   `user.name`/`user.email`, read from the host's global git config at
   start, since the session no longer reads the host's.
