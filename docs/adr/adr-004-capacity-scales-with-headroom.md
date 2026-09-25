@@ -99,7 +99,8 @@ heartbeat of a fixed node. It is the field runsheet goal
 ### Built on node-reads-its-limits, not beside it
 
 The scaler reads the windows that goal's parser keeps — the latest
-`rate_limit_event` per account — and does not parse the event itself;
+`rate_limit_event` per account, `Limits.Readings` in
+`internal/node/limits.go` — and does not parse the event itself;
 its `WindowReading` is a local shape the loop fills from that parser, so
 the scaler builds and tests on its own. The hard stops stay that goal's:
 at or above `limits.stop` of either window, or a `status` not `allowed`,
