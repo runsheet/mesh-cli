@@ -75,6 +75,31 @@ session is never stopped, and the node claims again once running falls
 below the capacity. **At min, only items whose goal is `urgent` or
 `high` are claimed.**
 
+### In the loop
+
+`Loop.scale` (`internal/node/scaling.go`) runs inside every tick but
+evaluates at most once a minute (`ScaleEvery`) by the loop's own clock,
+whatever the poll interval. Each evaluation records `Running() ×` the
+minutes since the last as the slot-minutes run, feeds the windows as
+read now (`Loop.Windows`, a `WindowSource`; by default the limits
+store, taking the **highest utilization across accounts per window**),
+and applies `Step` to the capacity in force, which `Loop.Capacity()`
+returns. No reading at all sets no bound: max and the machine decide.
+
+- A ranged node **starts at min**, and the start counts as a step: its
+  first move is 5 minutes after it comes up.
+- The min-only filter applies to **claiming items only** — plans,
+  evaluations and rebases are not capacity-bound and are not filtered by
+  it (pacing near the five-hour limit still filters plans). Below min
+  (held there by the machine) is treated as at min.
+- **Reload** of node.yaml takes a new range at once: the capacity in
+  force is clamped into it on that tick, without waiting for a step; a
+  change to a plain number drops the scaler and runs the fixed path.
+- Each change is logged once with its reason (`capacity 2 → 3: max`,
+  `capacity 3 → 2: clamped into 1–2`). `Loop.Scaling()` gives the
+  capacity in force, min, max and the reason for the heartbeat's
+  `scaling`; a fixed node has none.
+
 ### Reasons
 
 Each target carries why it is what it is:

@@ -64,8 +64,15 @@ type Loop struct {
 	// by every session (ObserveLimits); the heartbeat carries it and the
 	// loop paces by it. Nil until the first tick makes one.
 	Limits *Limits
-	// Now is the clock pacing reads (time.Now when nil).
+	// Now is the clock pacing and scaling read (time.Now when nil).
 	Now func() time.Time
+	// Windows are the plan's windows the scaler paces a ranged capacity
+	// by (adr-004); nil reads them from Limits, the highest utilization
+	// across accounts per window.
+	Windows WindowSource
+	// Machine is the host the scaler caps a ranged capacity by; nil
+	// imposes no cap (HostMachine is this one).
+	Machine MachineProbe
 
 	mu          sync.Mutex
 	running     map[string]bool
@@ -79,8 +86,14 @@ type Loop struct {
 	draining bool
 	// wake tells Run that a session ended or a drain began.
 	wake chan struct{}
-	// capacity is the one in force: Cfg.Capacity until Reload says otherwise.
+	// capacity is the one in force: a fixed node's number, or where a
+	// ranged node's scaler has stepped it to (0 until the first tick).
 	capacity int
+	// capRange is node.yaml's capacity as last read: Cfg.Capacity until
+	// Reload says otherwise (zero).
+	capRange Capacity
+	// scaling is the scaler's state while capRange is a range.
+	scaling scaleState
 	// limits are the thresholds in force: Cfg.Limits until Reload says
 	// otherwise (limitsSet).
 	limits    LimitsConfig
@@ -368,6 +381,7 @@ func (l *Loop) Tick(ctx context.Context) {
 	l.mu.Unlock()
 	l.tickGoals = map[string]goalsRead{}
 	l.reload(ctx)
+	l.scale()
 	extras := gateway.HeartbeatExtras{Draining: l.Draining(), Limits: l.limitsStore().Heartbeat()}
 	for _, sc := range l.Scopes {
 		if err := l.GW.HeartbeatNode(ctx, sc.NodeID, l.Version, l.Running(), extras); err != nil {
@@ -392,8 +406,13 @@ func (l *Loop) Tick(ctx context.Context) {
 		if p.mode == pacePaced {
 			free = pacedFree(free, l.Capacity(), l.Running())
 		}
+		// a ranged node at its min builds only urgent and high goals
+		claimRank := maxRank
+		if l.atMin() {
+			claimRank = min(claimRank, gateway.PriorityRank("high"))
+		}
 		if free > 0 {
-			l.claimReady(ctx, free, maxRank)
+			l.claimReady(ctx, free, claimRank)
 		}
 	}
 	if l.AfterTick != nil {
@@ -442,14 +461,19 @@ func (l *Loop) Resume() {
 	}
 }
 
-// Capacity is the number of items this node runs at once, as last read.
+// Capacity is the number of items this node runs at once: the capacity
+// in force, as last read or scaled. Before the first tick a ranged node
+// has its min; once scaling, a busy machine may hold it below (even 0).
 func (l *Loop) Capacity() int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.capacity > 0 {
+	if l.capacity > 0 || l.scaling.scaler != nil {
 		return l.capacity
 	}
-	return l.Cfg.Capacity.Max
+	if r := l.rangeLocked(); r.IsRange() {
+		return r.Min
+	}
+	return l.rangeLocked().Max
 }
 
 // Thresholds are the limits thresholds in force, as last read.
@@ -510,22 +534,19 @@ func (l *Loop) CurrentScopes() Scopes {
 	return l.Scopes
 }
 
-// reload takes the capacity and the orgs from Reload, logging a change.
+// reload takes the capacity, the limits and the orgs from Reload, logging a change.
 // Tick is the only writer of Scopes, so its own reads need no lock.
 func (l *Loop) reload(ctx context.Context) {
 	if l.Reload == nil {
 		return
 	}
 	got, err := l.Reload(ctx)
-	capacity, scopes := got.Capacity, got.Scopes
+	scopes := got.Scopes
 	if err != nil {
 		l.logf("reload config: %v", err)
 	}
-	if was := l.Capacity(); capacity > 0 && capacity != was {
-		l.logf("capacity %d → %d", was, capacity)
-		l.mu.Lock()
-		l.capacity = capacity
-		l.mu.Unlock()
+	if got.Capacity.Max > 0 {
+		l.setRange(got.Capacity)
 	}
 	if got.Limits != nil {
 		was, now := l.Thresholds(), got.Limits.Thresholds()
