@@ -539,8 +539,35 @@ func (l *Loop) accounts() ([]AccountConfig, map[string]harness.RateLimit) {
 // a what that is not empty is counted for the tick's one line
 // (logWaiting).
 func (l *Loop) accountFor(ctx context.Context, priority string, workWaits bool, what string) (context.Context, bool) {
+	return l.withAccount(ctx, what, func(accounts []AccountConfig, readings map[string]harness.RateLimit) (AccountConfig, bool) {
+		return ChooseAccount(l.now(), accounts, readings, l.Thresholds(), priority, workWaits)
+	})
+}
+
+// accountToFinish picks the account for an evaluation or a rebase —
+// work already built, which pacing never held back: by the spending
+// order for its priority first, and failing that a paced subscription
+// as if it were pressing. A stopped account still takes nothing, and an
+// api account is still only what its priority or exhausted
+// subscriptions allow.
+func (l *Loop) accountToFinish(ctx context.Context, priority, what string) (context.Context, bool) {
+	return l.withAccount(ctx, what, func(accounts []AccountConfig, readings map[string]harness.RateLimit) (AccountConfig, bool) {
+		if a, ok := ChooseAccount(l.now(), accounts, readings, l.Thresholds(), priority, true); ok {
+			return a, true
+		}
+		var subs []AccountConfig
+		for _, a := range accounts {
+			if a.Kind != AccountAPI {
+				subs = append(subs, a)
+			}
+		}
+		return ChooseAccount(l.now(), subs, readings, l.Thresholds(), "high", true)
+	})
+}
+
+func (l *Loop) withAccount(ctx context.Context, what string, choose func([]AccountConfig, map[string]harness.RateLimit) (AccountConfig, bool)) (context.Context, bool) {
 	accounts, readings := l.accounts()
-	a, ok := ChooseAccount(l.now(), accounts, readings, l.Thresholds(), priority, workWaits)
+	a, ok := choose(accounts, readings)
 	if !ok {
 		if what != "" && l.waiting != nil {
 			l.waiting[what]++
@@ -669,7 +696,7 @@ func (l *Loop) evaluateHeld(ctx context.Context) {
 			continue
 		}
 		l.mu.Unlock()
-		actx, ok := l.accountFor(ctx, priorityName(h.rank), true, "evaluation")
+		actx, ok := l.accountToFinish(ctx, priorityName(h.rank), "evaluation")
 		if !ok {
 			continue
 		}
@@ -729,7 +756,7 @@ func (l *Loop) rebaseRequested(ctx context.Context) {
 			continue
 		}
 		l.mu.Unlock()
-		actx, ok := l.accountFor(ctx, priorityName(r.rank), true, "rebase")
+		actx, ok := l.accountToFinish(ctx, priorityName(r.rank), "rebase")
 		if !ok {
 			continue
 		}

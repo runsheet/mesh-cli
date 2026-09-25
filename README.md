@@ -247,7 +247,9 @@ reported (see Near the plan's limits):
    full headroom.
 2. An API key only for urgent or high work (before a paced
    subscription), or when every subscription is stopped and work waits.
-   Research never runs on an API key.
+   Research never runs on an API key. Evaluations and rebases finish
+   work already built, so a paced subscription takes them at any
+   priority (a stopped one still does not).
 3. **No account with headroom means the node waits**: the item is not
    claimed — not failed, not released; it stays ready for the next tick
    or another node — and the log says so once per tick:

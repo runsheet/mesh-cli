@@ -361,3 +361,52 @@ func TestLoopWithoutReadingsIsNormal(t *testing.T) {
 		t.Fatalf("no crossing to log:\n%s", logs)
 	}
 }
+
+// Evaluations and rebases finish work already built: a paced account
+// still takes them at normal priority, as pacing always did, while a
+// stopped one takes neither.
+func TestLoopPacedStillEvaluatesAndRebases(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		rl     *harness.RateLimit
+		starts bool
+	}{
+		{"paced", reading(0.85, 0.3), true},
+		{"stopped", reading(0.3, 0.96), false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			p := newPriorityFake(t)
+			p.addGoal(orgID, "steady", "normal")
+			p.addHeld(orgID, "steady", "held-one", 1)
+			p.addItem(orgID, "steady", "conflicted", 2, false)
+			p.WorkItems["conflicted"]["status"], p.WorkItems["conflicted"]["rebaseState"] = "review", "requested"
+			loop, logs, _ := p.pacedLoop(2, c.rl)
+			var rebased []string
+			var mu sync.Mutex
+			loop.Rebase = func(_ context.Context, it gateway.WorkItem) {
+				mu.Lock()
+				rebased = append(rebased, it.Title)
+				mu.Unlock()
+			}
+			loop.Tick(context.Background())
+			loop.wg.Wait()
+			evaluated := strings.Join(started(logs.String(), "evaluating item"), ",")
+			claims := len(p.CallsNamed("claimWorkItemRebase"))
+			if c.starts {
+				if evaluated != "held-one" || claims != 1 || strings.Join(rebased, ",") != "conflicted" {
+					t.Fatalf("paced: evaluated %q, rebase claims %d, rebased %v\n%s", evaluated, claims, rebased, logs)
+				}
+				if strings.Contains(logs.String(), "accounts: no account has headroom") {
+					t.Fatalf("paced: logged waiting\n%s", logs)
+				}
+				return
+			}
+			if evaluated != "" || claims != 0 || len(rebased) != 0 {
+				t.Fatalf("stopped: evaluated %q, rebase claims %d, rebased %v\n%s", evaluated, claims, rebased, logs)
+			}
+			if !strings.Contains(logs.String(), "accounts: no account has headroom for 1 evaluation(s), 1 rebase(s)") {
+				t.Fatalf("stopped: the wait is not logged\n%s", logs)
+			}
+		})
+	}
+}

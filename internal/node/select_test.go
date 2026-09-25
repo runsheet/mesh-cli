@@ -147,3 +147,35 @@ func TestLoopClaimsNothingWithoutHeadroomThenClaimsOnTheFreedAccount(t *testing.
 		t.Fatalf("a tick with headroom logs no wait:\n%s", logs)
 	}
 }
+
+// An evaluation or a rebase of normal work takes a paced subscription
+// before the api account — finishing work never moves it onto money —
+// and falls to the api account only once every subscription is stopped.
+func TestAccountToFinishKeepsTheSpendingOrder(t *testing.T) {
+	maxA := AccountConfig{Label: "max-a", Kind: AccountSubscription, TokenFile: "/a"}
+	key := AccountConfig{Label: "key", Kind: AccountAPI, APIKeyEnv: "KEY"}
+	for _, c := range []struct {
+		name string
+		rl   *harness.RateLimit
+		want string
+		ok   bool
+	}{
+		{"fresh", reading(0.1, 0.1), "max-a", true},
+		{"paced", reading(0.85, 0.3), "max-a", true},
+		{"stopped", reading(0.3, 0.96), "key", true},
+	} {
+		loop := &Loop{Cfg: &Config{Accounts: []AccountConfig{maxA, key}}, Limits: &Limits{}, Now: func() time.Time { return t0 }}
+		loop.Limits.Observe("max-a", c.rl)
+		ctx, ok := loop.accountToFinish(context.Background(), "normal", "evaluation")
+		a, _ := ChosenAccount(ctx)
+		if ok != c.ok || a.Label != c.want {
+			t.Errorf("%s: chose %q (%v), want %q (%v)", c.name, a.Label, ok, c.want, c.ok)
+		}
+	}
+	// nothing but a stopped subscription: nothing
+	loop := &Loop{Cfg: &Config{Accounts: []AccountConfig{maxA}}, Limits: &Limits{}, Now: func() time.Time { return t0 }}
+	loop.Limits.Observe("max-a", reading(0.3, 0.96))
+	if _, ok := loop.accountToFinish(context.Background(), "normal", "evaluation"); ok {
+		t.Error("a stopped subscription took an evaluation")
+	}
+}

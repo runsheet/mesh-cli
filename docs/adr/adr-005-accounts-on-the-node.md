@@ -79,6 +79,12 @@ own may run on the wrong account.
     every subscription is stopped and work waits** (an item, a plan, an
     evaluation, a rebase; research is not work that waits, so it runs
     on a subscription that is not paced or not at all);
+  - **evaluations and rebases finish work already built**, which
+    pacing never held back: they take an account by their goal's
+    priority first and, failing that, a paced subscription as urgent
+    and high work would (`accountToFinish`). A stopped account still
+    takes neither, and they reach an api account only as their
+    priority or exhausted subscriptions allow;
   - **none fits → no claim.** The item is not claimed, failed or
     released: it stays ready for a later tick or another node, and the
     tick logs one line of what waits (`accounts: no account has
