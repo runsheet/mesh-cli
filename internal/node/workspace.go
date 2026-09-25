@@ -384,6 +384,7 @@ type Gateway interface {
 	GoalWorkItems(ctx context.Context, goalID string) ([]gateway.WorkItem, error)
 	OrgWorkItems(ctx context.Context, orgID, status string) ([]gateway.WorkItem, error)
 	WorkItem(ctx context.Context, id string) (*gateway.WorkItem, error)
+	AgentModel(ctx context.Context, agentID string) (string, error)
 	ClaimWorkItem(ctx context.Context, itemID, nodeID, harness string) error
 	ReportWorkItemProgress(ctx context.Context, itemID, note string, costCents int, sessionID string) error
 	FinishWorkItem(ctx context.Context, itemID, branch, headSha string, costCents int) error
