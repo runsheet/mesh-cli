@@ -83,9 +83,18 @@ type Loop struct {
 	// Update updates the node's own binary to the version the platform
 	// asks for (selfUpdate); nil never updates.
 	Update Updater
+	// Ledger is what each account has spent today and this month
+	// (adr-005-capacity-across-accounts), fed by every session
+	// (ObserveSpend); the accounts scaler and the spending order read
+	// it. Nil until the first use makes one in memory.
+	Ledger *Ledger
 
-	mu          sync.Mutex
-	running     map[string]bool
+	mu      sync.Mutex
+	running map[string]bool
+	// runningOn is the account each running item runs on, by item: the
+	// slot-minutes the accounts scaler counts per account, and the slots
+	// the spending order sees taken.
+	runningOn   map[string]string
 	evaluating  map[string]bool
 	planning    map[string]bool
 	researching map[string]bool
@@ -108,6 +117,10 @@ type Loop struct {
 	// otherwise (limitsSet).
 	limits    LimitsConfig
 	limitsSet bool
+	// spending is node.yaml's accounts and budgets in force: Cfg's until
+	// Reload says otherwise (spendingSet).
+	spending    Spending
+	spendingSet bool
 	// paced is the pacing mode last logged, so a crossing is logged once.
 	paced paceMode
 	// waiting counts, by kind, the work this tick left unclaimed because
@@ -235,9 +248,10 @@ func planOrder(goals []planningGoal) {
 // goal's priority (one GoalIndex read per org, none for an org with
 // nothing ready) and claims them in claimOrder until free runs out, each
 // on the account chosen for its priority; items of a goal ranked past
-// maxRank are left. An item no account has headroom for is not
-// claimed: it stays ready for a later tick.
-func (l *Loop) claimReady(ctx context.Context, free, maxRank int) {
+// maxRank are left, and normal and low items take no more than
+// normalFree of the free slots. An item no account has headroom for is
+// not claimed: it stays ready for a later tick.
+func (l *Loop) claimReady(ctx context.Context, free, normalFree, maxRank int) {
 	var ready []readyItem
 	for _, sc := range l.Scopes {
 		items, err := l.GW.ReadyWorkItems(ctx, sc.ID)
@@ -267,6 +281,10 @@ func (l *Loop) claimReady(ctx context.Context, free, maxRank int) {
 		if already {
 			continue
 		}
+		pressing := r.rank <= gateway.PriorityRank("high")
+		if !pressing && normalFree <= 0 {
+			continue
+		}
 		actx, ok := l.accountFor(ctx, priorityName(r.rank), true, "item")
 		if !ok {
 			continue
@@ -280,6 +298,10 @@ func (l *Loop) claimReady(ctx context.Context, free, maxRank int) {
 			continue
 		}
 		free--
+		if !pressing {
+			normalFree--
+		}
+		normalFree = min(normalFree, free)
 		l.logf("%s: claimed item %d %q", sc.Login, item.Seq, item.Title)
 		l.start(actx, item)
 	}
@@ -463,8 +485,11 @@ func (l *Loop) Tick(ctx context.Context) {
 		if l.atMin() {
 			claimRank = min(claimRank, gateway.PriorityRank("high"))
 		}
+		// the urgent-only slots (the reserve at the end of an api key's
+		// day) are not for normal and low work
+		normalFree := min(free, l.Capacity()-l.urgentOnly()-l.Running())
 		if free > 0 {
-			l.claimReady(ctx, free, claimRank)
+			l.claimReady(ctx, free, normalFree, claimRank)
 		}
 		l.logWaiting()
 	}
@@ -592,8 +617,8 @@ func (l *Loop) pacing() pacing {
 // account, the operator's own login, judged by its strictest reading.
 func (l *Loop) accounts() ([]AccountConfig, map[string]harness.RateLimit) {
 	readings := l.limitsStore().Readings()
-	if len(l.Cfg.Accounts) > 0 {
-		return l.Cfg.Accounts, readings
+	if accounts := l.nodeAccounts(); len(accounts) > 0 {
+		return accounts, readings
 	}
 	own := []AccountConfig{{Label: DefaultAccount, Kind: AccountSubscription}}
 	if r, ok := strictest(l.now(), readings, l.Thresholds()); ok {
@@ -609,7 +634,7 @@ func (l *Loop) accounts() ([]AccountConfig, map[string]harness.RateLimit) {
 // a what that is not empty is counted for the tick's one line
 // (logWaiting).
 func (l *Loop) accountFor(ctx context.Context, priority string, workWaits bool, what string) (context.Context, bool) {
-	return l.withAccount(ctx, what, func(accounts []AccountConfig, readings map[string]harness.RateLimit) (AccountConfig, bool) {
+	return l.withAccount(ctx, what, priority, func(accounts []AccountConfig, readings map[string]harness.RateLimit) (AccountConfig, bool) {
 		return ChooseAccount(l.now(), accounts, readings, l.Thresholds(), priority, workWaits)
 	})
 }
@@ -621,7 +646,7 @@ func (l *Loop) accountFor(ctx context.Context, priority string, workWaits bool, 
 // api account is still only what its priority or exhausted
 // subscriptions allow.
 func (l *Loop) accountToFinish(ctx context.Context, priority, what string) (context.Context, bool) {
-	return l.withAccount(ctx, what, func(accounts []AccountConfig, readings map[string]harness.RateLimit) (AccountConfig, bool) {
+	return l.withAccount(ctx, what, priority, func(accounts []AccountConfig, readings map[string]harness.RateLimit) (AccountConfig, bool) {
 		if a, ok := ChooseAccount(l.now(), accounts, readings, l.Thresholds(), priority, true); ok {
 			return a, true
 		}
@@ -635,9 +660,14 @@ func (l *Loop) accountToFinish(ctx context.Context, priority, what string) (cont
 	})
 }
 
-func (l *Loop) withAccount(ctx context.Context, what string, choose func([]AccountConfig, map[string]harness.RateLimit) (AccountConfig, bool)) (context.Context, bool) {
+// withAccount chooses by choose among the accounts the spending order
+// leaves a session of that priority (spendable): an api key past its
+// cap never, the reserve at the end of its day only for urgent and high
+// work, and for an item (what "item") only an account with a slot free.
+func (l *Loop) withAccount(ctx context.Context, what, priority string, choose func([]AccountConfig, map[string]harness.RateLimit) (AccountConfig, bool)) (context.Context, bool) {
 	accounts, readings := l.accounts()
-	a, ok := choose(accounts, readings)
+	pressing, item := priority == "urgent" || priority == "high", what == "item"
+	a, ok := choose(l.spendable(accounts, pressing, item), readings)
 	if !ok {
 		if what != "" && l.waiting != nil {
 			l.waiting[what]++
@@ -645,9 +675,9 @@ func (l *Loop) withAccount(ctx context.Context, what string, choose func([]Accou
 		return ctx, false
 	}
 	ctx = withChooser(ctx, func(issued []AccountConfig) (AccountConfig, bool) {
-		return choose(issued, l.limitsStore().Readings())
+		return choose(l.spendable(issued, pressing, item), l.limitsStore().Readings())
 	})
-	if len(l.Cfg.Accounts) == 0 {
+	if len(l.nodeAccounts()) == 0 {
 		return ctx, true
 	}
 	return WithAccount(ctx, a), true
@@ -684,7 +714,8 @@ func (l *Loop) CurrentScopes() Scopes {
 	return l.Scopes
 }
 
-// reload takes the capacity, the limits and the orgs from Reload, logging a change.
+// reload takes the capacity, the limits, the accounts and the orgs from
+// Reload, logging a change.
 // Tick is the only writer of Scopes, so its own reads need no lock.
 func (l *Loop) reload(ctx context.Context) {
 	if l.Reload == nil {
@@ -705,6 +736,15 @@ func (l *Loop) reload(ctx context.Context) {
 		}
 		l.mu.Lock()
 		l.limits, l.limitsSet = *got.Limits, true
+		l.mu.Unlock()
+	}
+	if got.Spending != nil {
+		was := l.nodeAccounts()
+		if labels(was) != labels(got.Spending.Accounts) {
+			l.logf("accounts %s → %s", labels(was), labels(got.Spending.Accounts))
+		}
+		l.mu.Lock()
+		l.spending, l.spendingSet = *got.Spending, true
 		l.mu.Unlock()
 	}
 	if scopes != nil && !sameOrgs(scopes, l.Scopes) {
@@ -1049,14 +1089,31 @@ func (l *Loop) start(ctx context.Context, item gateway.WorkItem) {
 	l.run(ctx, item)
 }
 
+// runsOn notes the account an item runs on, from ctx (DefaultAccount
+// when the loop chose none).
+func (l *Loop) runsOn(ctx context.Context, itemID string) {
+	label := DefaultAccount
+	if a, ok := ChosenAccount(ctx); ok {
+		label = a.Label
+	}
+	l.mu.Lock()
+	if l.runningOn == nil {
+		l.runningOn = map[string]string{}
+	}
+	l.runningOn[itemID] = label
+	l.mu.Unlock()
+}
+
 // run dispatches an item already marked running.
 func (l *Loop) run(ctx context.Context, item gateway.WorkItem) {
+	l.runsOn(ctx, item.ID)
 	l.wg.Add(1)
 	go func() {
 		defer l.wg.Done()
 		defer func() {
 			l.mu.Lock()
 			delete(l.running, item.ID)
+			delete(l.runningOn, item.ID)
 			l.mu.Unlock()
 			if l.Release != nil {
 				l.Release(item)

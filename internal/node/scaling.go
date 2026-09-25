@@ -46,7 +46,12 @@ func (s Scaling) String() string {
 
 // scaleState is the loop's scaler and when it last evaluated and moved.
 type scaleState struct {
-	scaler    *Scaler
+	scaler *Scaler
+	// accounts is the accounts scaler, run instead of scaler when
+	// node.yaml lists accounts; target is its last target (targeted).
+	accounts  *AccountsScaler
+	target    AccountsTarget
+	targeted  bool
 	evaluated time.Time
 	stepped   time.Time
 	reason    Reason
@@ -116,7 +121,9 @@ func (l *Loop) setRange(c Capacity) {
 
 // scale runs a ranged node's scaler, at most once every ScaleEvery by
 // the loop's clock: it records the slot-minutes run since the last run
-// (Running × minutes), feeds it the windows as read now, and steps the
+// (Running × minutes), feeds it the windows as read now — or, when
+// node.yaml lists accounts, runs the accounts scaler on each account's
+// windows, spend and slot-minutes (accountsTarget) — and steps the
 // capacity in force toward the target (Step: one at a time, not within
 // StepInterval of the last). A shrink below Running stops claiming and
 // nothing else. The hard stops of pace stay above all of this.
@@ -130,6 +137,7 @@ func (l *Loop) scale() {
 		return
 	}
 	st := &l.scaling
+	accounts := l.nodeAccountsLocked()
 	if st.scaler == nil {
 		// a new ranged node starts at its min; one that was fixed keeps
 		// what it had, clamped (setRange). Either counts as a step.
@@ -138,7 +146,11 @@ func (l *Loop) scale() {
 			l.capacity = r.Min
 		}
 		st.stepped = now
-		l.logf("capacity %s: scaling by the plan's windows from %d", r, l.capacity)
+		if len(accounts) > 0 {
+			l.logf("capacity %s: scaling by what its %d account(s) afford from %d", r, len(accounts), l.capacity)
+		} else {
+			l.logf("capacity %s: scaling by the plan's windows from %d", r, l.capacity)
+		}
 	}
 	st.scaler.Min, st.scaler.Max = r.Min, r.Max
 	if !st.evaluated.IsZero() && now.Sub(st.evaluated) < ScaleEvery {
@@ -147,16 +159,30 @@ func (l *Loop) scale() {
 	}
 	running := len(l.running)
 	var slotMinutes float64
+	perAccount := map[string]float64{}
 	if !st.evaluated.IsZero() {
-		slotMinutes = float64(running) * now.Sub(st.evaluated).Minutes()
+		minutes := now.Sub(st.evaluated).Minutes()
+		slotMinutes = float64(running) * minutes
+		for _, label := range l.runningOn {
+			perAccount[label] += minutes
+		}
 	}
 	st.evaluated = now
 	scaler, current, stepped := st.scaler, l.capacity, st.stepped
 	l.mu.Unlock()
 
-	ws, _ := l.windows()
-	scaler.Observe(ws, slotMinutes)
-	target, reason := scaler.Target(running)
+	var target int
+	var reason Reason
+	if len(accounts) > 0 {
+		target, reason = l.accountsTarget(r, accounts, perAccount, running)
+	} else {
+		ws, _ := l.windows()
+		scaler.Observe(ws, slotMinutes)
+		target, reason = scaler.Target(running)
+		l.mu.Lock()
+		st.accounts, st.targeted = nil, false
+		l.mu.Unlock()
+	}
 	next, moved := Step(current, target, stepped, now)
 
 	l.mu.Lock()
