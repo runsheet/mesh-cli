@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -12,6 +13,7 @@ import (
 
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/harness"
+	"projectmesh.io/mesh-cli/internal/tools"
 )
 
 // Loop is trd §3: every Interval, heartbeat; list the orgs' ready items;
@@ -88,6 +90,12 @@ type Loop struct {
 	// (ObserveSpend); the accounts scaler and the spending order read
 	// it. Nil until the first use makes one in memory.
 	Ledger *Ledger
+	// LookPath finds a program on the node's PATH (exec.LookPath): every
+	// tick probes with it the tool runtimes and agent adapters the node
+	// has (tools.ProbeRuntimes, ProbeAdapters), and the heartbeat carries
+	// them, so one installed while the node runs is reported without a
+	// restart. Nil probes nothing and reports neither.
+	LookPath func(file string) (string, error)
 
 	mu      sync.Mutex
 	running map[string]bool
@@ -144,6 +152,9 @@ type Loop struct {
 	// desiredUnsupported is set once the platform turned out not to
 	// know the desired version (logged once).
 	desiredUnsupported bool
+	// runtimes and adapters are what the last probe found.
+	runtimes []string
+	adapters []string
 }
 
 type goalsRead struct {
@@ -446,8 +457,10 @@ func (l *Loop) Tick(ctx context.Context) {
 	l.mu.Unlock()
 	l.tickGoals = map[string]goalsRead{}
 	l.reload(ctx)
+	l.probe()
 	l.scale()
-	extras := gateway.HeartbeatExtras{Draining: l.Draining(), UpdateError: l.UpdateError(), Limits: l.limitsStore().Heartbeat()}
+	runtimes, adapters := l.Runtimes()
+	extras := gateway.HeartbeatExtras{Draining: l.Draining(), UpdateError: l.UpdateError(), Limits: l.limitsStore().Heartbeat(), Runtimes: runtimes, Adapters: adapters}
 	scaling, ranged := l.Scaling()
 	if ranged {
 		extras.Scaling = scaling.Heartbeat()
@@ -753,6 +766,30 @@ func (l *Loop) reload(ctx context.Context) {
 		l.Scopes = scopes
 		l.mu.Unlock()
 	}
+}
+
+// probe re-reads which tool runtimes and agent adapters the node has
+// (trd §1 Node, `runtimes` and `adapters`), logging a change.
+func (l *Loop) probe() {
+	if l.LookPath == nil {
+		return
+	}
+	runtimes, adapters := tools.ProbeRuntimes(l.LookPath), tools.ProbeAdapters(l.LookPath)
+	l.mu.Lock()
+	wasR, wasA := l.runtimes, l.adapters
+	l.runtimes, l.adapters = runtimes, adapters
+	l.mu.Unlock()
+	if !slices.Equal(wasR, runtimes) || !slices.Equal(wasA, adapters) {
+		l.logf("tools: runtimes [%s], adapters [%s]", strings.Join(runtimes, " "), strings.Join(adapters, " "))
+	}
+}
+
+// Runtimes returns the tool runtimes (npx, uvx, docker) and the agent
+// adapters (claude-code, codex) the last tick found on the node.
+func (l *Loop) Runtimes() (runtimes, adapters []string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return slices.Clone(l.runtimes), slices.Clone(l.adapters)
 }
 
 func sameOrgs(a, b Scopes) bool {

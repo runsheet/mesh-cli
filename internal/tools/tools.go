@@ -25,11 +25,15 @@ const (
 )
 
 // Runtimes are the local runtimes a node can report, in the heartbeat's
-// order; Adapters the agents.
+// order; Adapters the agents, by the names the heartbeat reports them
+// under (trd §1 Node, `adapters`).
 var (
 	Runtimes = []string{Npx, Uvx, Docker}
-	Adapters = []string{"claude", "codex"}
+	Adapters = []string{"claude-code", "codex"}
 )
+
+// adapterBinary is the CLI each adapter runs.
+var adapterBinary = map[string]string{"claude-code": "claude", "codex": "codex"}
 
 // Builtin is the server the node attaches to every session itself; a
 // console tool of that name is a clash (trd §3 Tools, Prologue is built in).
@@ -66,10 +70,16 @@ func ProbeRuntimes(lookPath func(string) (string, error)) []string {
 	return probe(lookPath, Runtimes)
 }
 
-// ProbeAdapters returns which of the agents' CLIs (claude, codex)
-// lookPath finds.
+// ProbeAdapters returns the adapters (claude-code, codex) whose CLI
+// (claude, codex) lookPath finds.
 func ProbeAdapters(lookPath func(string) (string, error)) []string {
-	return probe(lookPath, Adapters)
+	var found []string
+	for _, a := range Adapters {
+		if _, err := lookPath(adapterBinary[a]); err == nil {
+			found = append(found, a)
+		}
+	}
+	return found
 }
 
 func probe(lookPath func(string) (string, error), names []string) []string {

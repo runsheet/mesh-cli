@@ -590,6 +590,13 @@ A ranged node's heartbeat carries `scaling` — `capacity` (in force),
 status` shows this machine's node as `2/1–4 (weekly pace)` in the
 CAPACITY column when it scales, and the plain number when it does not.
 
+Every heartbeat also carries `runtimes` — which of `npx`, `uvx` and
+`docker` are on the node's `PATH` — and `adapters` — `claude-code`
+and `codex`, by their CLIs — so the platform knows which local tools
+the node can start (runsheet `tools-in-the-console`). Both are probed
+every tick, so a runtime installed while the node runs is reported
+without a restart; neither is sent when nothing is found.
+
 ### Capacity across accounts
 
 A ranged node that lists `accounts:` scales by what **all** of them

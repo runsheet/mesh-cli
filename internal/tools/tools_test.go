@@ -252,7 +252,7 @@ func TestProbe(t *testing.T) {
 	if got := ProbeRuntimes(look); !reflect.DeepEqual(got, []string{"npx", "docker"}) {
 		t.Fatalf("runtimes = %v", got)
 	}
-	if got := ProbeAdapters(look); !reflect.DeepEqual(got, []string{"claude"}) {
+	if got := ProbeAdapters(look); !reflect.DeepEqual(got, []string{"claude-code"}) {
 		t.Fatalf("adapters = %v", got)
 	}
 }
