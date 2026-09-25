@@ -234,6 +234,13 @@ one no longer listed (or outside `orgs`) is dropped. A change is logged
 (`capacity 3 → 6`, `orgs acme → acme, go-apis`). In channel mode the
 goal watch of an org added this way waits for the next start; its
 planning, items and evaluations do not.
+
+`capacity` is a plain number — fixed, as it always was — or a range,
+`capacity: {min: 1, max: 4}`: a min under 1 is 1, a missing max is the
+min, and a max under the min is refused. The node will move a range
+between its ends by how much of the plan's five-hour and weekly windows
+is left (the headroom scaler, `internal/node/headroom.go`); until that
+is wired into the loop a range runs at its min.
 What happens to a claimed item depends on the mode.
 
 **Channel mode (default).** One persistent `claude` session runs in
