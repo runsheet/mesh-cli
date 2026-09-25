@@ -271,6 +271,31 @@ Replacing the file under a running process is safe (the old one keeps
 its inode); the drain is what makes it take. Capacity and the orgs served
 need neither: they are re-read every tick (see Start).
 
+### Acceptance the evaluator can see
+
+The evaluator is a fresh session that runs before any pull request exists:
+the integrator opens the PR only after `EvaluateWorkItem` passes. So
+(ADR 004 in mesh-specs, `internal/harness/prompt.go`):
+
+- **The planner** writes an item's acceptance only from what the evaluator
+  can see at evaluation time, on that item's branch, in that item's
+  repository: tests, commands and their output, file contents. Never a CI
+  check on the item's own pull request, a deploy, or a file in another
+  repository. Work like that becomes its own item in the right repo, or
+  goes in the goal's acceptance.
+- **The evaluator** reports a clause it cannot check at evaluation time — a
+  CI check on the item's PR, a deploy, another repository's file — in its
+  review as unverifiable, not failed, and does not fail the item on that
+  clause alone. It passes when every clause it can check holds; a change
+  against an ADR still fails. The verdict lines are unchanged.
+
+The case that made the rule, runsheet's `update-nodes-from-console`: item
+#6 required the `deploy / verify` check to succeed on its own pull
+request, which opens only after evaluation passes. It failed evaluation 3
+times, ran out of attempts, and left its goal with nothing to run. Item #4
+asked a console item for a `specs/console-trd.md` diff, in a repository
+its builder does not hold.
+
 ### The goal's record in the repo
 
 Status lives on the platform, not in git (ADR 003, decision 4). No item's

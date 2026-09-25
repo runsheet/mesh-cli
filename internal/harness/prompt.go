@@ -120,6 +120,10 @@ const (
 	VerdictFail = "VERDICT: FAIL"
 )
 
+// evaluateUnverifiableRule is the evaluator's side of adr-004: a clause
+// it cannot see at evaluation time is unverifiable, not failed.
+const evaluateUnverifiableRule = "A clause you cannot check at evaluation time — a CI check on this item's pull request (it opens only after you pass), a deploy, a file in another repository — is reported in your review as unverifiable, not failed, and the item is not failed on that clause alone. Every clause you can check you still check."
+
 // EvaluatePrompt renders the evaluator's prompt (mesh-specs trd §3.4): a
 // fresh session, the diff and the acceptance, an adversarial review that
 // runs the acceptance check itself and ends with a verdict line.
@@ -160,7 +164,8 @@ func EvaluatePrompt(in EvaluateInput) string {
 	b.WriteString("2. Run the acceptance check yourself when it names one (tests, a build, a command). Read the repository's own instructions (AGENTS.md, CLAUDE.md) for how.\n")
 	b.WriteString("3. Look for what the builder skipped: untested paths, a check made to pass by weakening it, changes outside the brief, secrets or destructive commands.\n")
 	b.WriteString("4. Change nothing: no edits, no commits, no pushes, nothing outside this workspace. You are a reviewer.\n")
-	fmt.Fprintf(&b, "5. End your final message with a short review — what holds, what does not, and exactly what a retry must fix — and then one last line that is either `%s` or `%s`. Pass only when every clause of the acceptance holds.\n", VerdictPass, VerdictFail)
+	b.WriteString("5. " + evaluateUnverifiableRule + "\n")
+	fmt.Fprintf(&b, "6. End your final message with a short review — what holds, what does not, what is unverifiable, and exactly what a retry must fix — and then one last line that is either `%s` or `%s`. Pass only when every clause of the acceptance you can check holds.\n", VerdictPass, VerdictFail)
 	return b.String()
 }
 
@@ -232,6 +237,10 @@ type PlannedSpec struct {
 	Repo       string `json:"repo"`
 	BaseRef    string `json:"base_ref"`
 }
+
+// planAcceptanceRule is the planner's side of adr-004: an item's
+// acceptance names only what its evaluator can see.
+const planAcceptanceRule = "An item's acceptance names only what the evaluator can see at evaluation time, on that item's branch, in that item's repository: tests, commands and their output, file contents. It never names a CI check on the item's own pull request (the pull request opens only after evaluation passes), a deploy, or a file in another repository. Work like that becomes its own item in the right repo, or goes in the goal's acceptance."
 
 // PlanPrompt renders the planner's prompt (mesh-specs prd, the planner;
 // trd §5 phase 2): read the context and the repos, then compile the goal
@@ -313,6 +322,7 @@ func PlanPrompt(in PlanInput) string {
 	b.WriteString("1. Read before you plan: what exists, what the design says, where the goal's work lands, and what main already holds (above).\n")
 	b.WriteString("2. Each item is one fresh session's work in one repo on one branch: small enough to finish and evaluate in one sitting, large enough to be worth a pull request. Two to eight items.\n")
 	b.WriteString("3. Each item's brief says what to do and where, naming files and functions where it helps; its acceptance is what an evaluator can check — a test that passes, a command's output, a document with named sections — never a feeling.\n")
+	b.WriteString("   " + planAcceptanceRule + "\n")
 	b.WriteString("4. depends_on names earlier seqs whose branches must be merged first; items with no dependency between them run in parallel. Keep the graph shallow.\n")
 	b.WriteString("5. repo is one of the project's repos above, as owner/name. base_ref is its default branch unless the item builds on another item's branch.\n")
 	b.WriteString("6. Change nothing in the repos: you plan, you do not build.\n")
