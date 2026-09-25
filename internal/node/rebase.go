@@ -170,6 +170,7 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 	}
 	defer acct.Cleanup()
 	acct.Apply(&job)
+	job.Meta = harness.SessionMeta{NodeID: sc.NodeID, ItemID: item.ID, GoalID: item.GoalID, Attempt: item.Attempts}
 
 	var mu sync.Mutex
 	sessionID := ""

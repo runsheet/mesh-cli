@@ -164,6 +164,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 		return err
 	}
 	defer acct.Cleanup()
+	job.Meta = harness.SessionMeta{NodeID: sc.NodeID, ItemID: item.ID, GoalID: item.GoalID, Attempt: item.Attempts}
 	// the second opinion's job: the same brief, none of the Claude account
 	// and none of the pod's services (Codex runs on the host)
 	second := job

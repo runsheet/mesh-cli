@@ -251,6 +251,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	}
 	defer acct.Cleanup()
 	acct.Apply(&job)
+	job.Meta = harness.SessionMeta{NodeID: sc.NodeID, ItemID: item.ID, GoalID: item.GoalID, Attempt: item.Attempts}
 	// the item's tools, beside the built-in Prologue: a required one this
 	// node cannot start hands the item back for a node that can
 	runtimes := r.runtimes()

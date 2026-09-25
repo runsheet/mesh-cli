@@ -73,6 +73,25 @@ type Job struct {
 	// harness runs the agent in it and leaves closing it to the node.
 	// Nil opens a session of the harness's own.
 	Session *sandbox.Session
+	// Meta is who the session is for, written to its state file beside
+	// the work dir (sessionunit.State) so a later node process can adopt
+	// it. Optional: a job without it still runs, its state file thinner.
+	Meta SessionMeta
+}
+
+// SessionMeta is the prompt-free, secret-free identity of a session.
+type SessionMeta struct {
+	NodeID string
+	// ItemID is a build's, evaluation's or rebase's item; GoalID its goal
+	// (a plan's subject); DirectionID a research session's direction.
+	ItemID      string
+	GoalID      string
+	DirectionID string
+	// Attempt is the item's claim: its attempts when claimed.
+	Attempt int
+	// Account is the account label the session runs on; empty takes the
+	// job's MESH_ACCOUNT.
+	Account string
 }
 
 // Progress is one observation of a running session.
