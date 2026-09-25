@@ -731,8 +731,10 @@ run on Prologue alone, as before.
 Every one-shot session — a poll-mode build, an evaluation, a plan, a
 research or a rebase session — runs in its own rootless **Podman** pod
 (mesh-specs ADR 007; `internal/sandbox/`), created when the session
-starts and removed when it ends. Channel-mode sessions and Codex do not
-run in one yet.
+starts and removed when it ends. Build, evaluate and rebase sessions
+get their repository's services beside them in the pod (see
+[Services](#services)). Channel-mode sessions and Codex do not run in
+one yet.
 
 - **Runtime.** `podman` on the node's `PATH`, rootless (the operator
   needs a subuid/subgid range, and the `cpu`, `memory` and `pids` cgroup
@@ -787,6 +789,7 @@ sandbox:
   services_memory: 4g
   registries: [docker.io, ghcr.io, "*.pkg.dev", quay.io]   # where service images may come from
   image: ghcr.io/projectmesh-io/mesh-node:v1.2.3           # default: the node's version
+  service_timeout: 120s  # how long the services' health checks are waited for
 ```
 
 | key | default | what |
@@ -799,6 +802,7 @@ sandbox:
 | `services_memory` | `4g` | the service sidecars' memory, together |
 | `registries` | `docker.io`, `ghcr.io`, `*.pkg.dev`, `quay.io` | registries service images may come from |
 | `image` | `ghcr.io/projectmesh-io/mesh-node:<version>` | the node image sessions run in |
+| `service_timeout` | `120s` | the bound on the services' health checks before the agent starts |
 
 **`sandbox: off`** runs every session exactly as before: `claude` on
 the host as the node's user, same arguments, same environment. It is
@@ -956,6 +960,53 @@ services:
   `docker.io`) must match the allow-list — by default `docker.io`,
   `ghcr.io`, `*.pkg.dev`, `quay.io`. A disallowed image is returned as a
   refused service with a note naming its registry, never pulled.
+
+### How a session gets them
+
+Before a build, evaluate or rebase session's agent starts, the node
+(`OpenSessionPod`, `internal/node/services.go`) resolves the checkout's
+services and `Session.Start` (`internal/sandbox/sidecars.go`) creates
+the session's pod and, for each allowed service, runs it as a sidecar
+there — `podman run -d --pod … --pull missing`, so an image is pulled
+once and kept in the node user's store — sharing the pod's network, so
+it listens on `127.0.0.1:<its container port>` (the right side of
+`"5432:5432"`; nothing is published on the host). The sidecars share
+`services_cpus`/`services_memory` evenly and get 1024 processes each.
+The node then waits for every service's health check at once — the
+declared `--health-cmd` run in the sidecar (`podman exec … sh -c`),
+else a TCP connect to its first port from a short-lived container of
+the node image, else nothing — each check retried every
+`--health-interval` (1 s by default), failing after `--health-retries`
+failures past `--health-start-period`, and all within
+`sandbox.service_timeout`. Then:
+
+- **All ready**: the agent starts in the same pod. Its prompt gets a
+  `# Services` section before the rules — each service with its image
+  and `127.0.0.1` address — and `$HOME/.mesh-services` lists them, one
+  per line: `name<TAB>image<TAB>127.0.0.1:port<TAB>ready`.
+- **One that is not required fails or is refused**: the item gets a
+  progress note (`services missing (not required; the session goes on
+  without them): redis (redis:7): <why>`), the prompt and
+  `.mesh-services` say it is missing and why, and the session goes on.
+  An evaluation cannot report on its item, so the note goes in its
+  verdict's notes instead.
+- **A required one fails or is refused** (a disallowed registry
+  included — then no pod is made and nothing pulled): no agent starts.
+  A build is released (`ReleaseWorkItem`, the attempt not counted) with
+  `services: required service postgres (postgres:16) did not come up:
+  <why>`, and the node does not claim it again while that holds; an
+  evaluation is left unevaluated and held off the same way; a rebase is
+  given up (`FailWorkItemRebase`) with that reason.
+
+On every way out — success, failure, the timeout, a limit kill, the
+node stopping — the pod and its sidecars are removed (`podman pod rm
+--force`) with the session's HOME. With `sandbox: off` no service is
+started, as before.
+
+The sidecar test runs real pods: `MESH_SANDBOX_E2E=1
+go test ./internal/sandbox -run ServicesSidecarsE2E` reaches the Postgres
+and Redis fixtures on `127.0.0.1:5432` and `:6379` from the agent's
+container and finds no pod left after.
 
 ## Codex on a node
 
