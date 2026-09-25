@@ -208,7 +208,14 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   its `tools` (`[]tools.Tool`, secrets decrypted for the claiming
   node); a platform without `tools` gets none and is asked for
   credentials alone from then on. `Loop.Runtimes()` is what the last
-  probe found.
+  probe found. Build and evaluate sessions get theirs
+  (`SelectTools` by role and runtimes, `SessionTools.Apply`: Prologue
+  plus each tool in `Job.MCPServers`, secret values in `Job.Env` and
+  `Job.Secrets` only, the tools on `Job.Tools` for Codex); a
+  nice-to-have tool the node cannot start is omitted and noted on the
+  item, a required one releases the item and `Declines` keeps the loop
+  off it while the runtimes are unchanged. Plan, research, rebase and
+  channel sessions keep Prologue alone.
 - Every session gets Prologue as an MCP server with the node's token and
   the project's context on disk under `.mesh/context/` with `INDEX.md`:
   the documents, then `## Live goals and items` — each live goal's items
