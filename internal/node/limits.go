@@ -244,21 +244,52 @@ func pace(now time.Time, r harness.RateLimit, cfg LimitsConfig) pacing {
 	return pacing{mode: paceNormal}
 }
 
-// paceAll is the strictest decision over every account's reading; of
-// two in one mode, the one that lasts longer.
-func paceAll(now time.Time, readings map[string]harness.RateLimit, cfg LimitsConfig) pacing {
+// strictest is the reading of the strictest decision among readings;
+// of two in one mode, the one that lasts longer. A node with no accounts
+// configured runs every session on the operator's own login, whatever
+// key its readings landed under, and is judged by this one.
+func strictest(now time.Time, readings map[string]harness.RateLimit, cfg LimitsConfig) (harness.RateLimit, bool) {
 	accounts := make([]string, 0, len(readings))
 	for a := range readings {
 		accounts = append(accounts, a)
 	}
 	sort.Strings(accounts)
-	out := pacing{mode: paceNormal}
-	for _, a := range accounts {
+	var out harness.RateLimit
+	var outPace pacing
+	for i, a := range accounts {
 		p := pace(now, readings[a], cfg)
-		if len(readings) > 1 && p.why != "" {
-			p.why = a + ": " + p.why
+		if i == 0 || p.mode > outPace.mode || (p.mode == outPace.mode && p.resumeAt.After(outPace.resumeAt)) {
+			out, outPace = readings[a], p
 		}
-		if p.mode > out.mode || (p.mode == out.mode && p.resumeAt.After(out.resumeAt)) {
+	}
+	return out, len(accounts) > 0
+}
+
+// nodePace is the node's mode, for its log and its capacity: the most
+// lenient of its subscriptions' (of every account's, when it has no
+// subscription) — the node is stopped only when every one of them is,
+// until the first of them resets. Which account a session runs on is
+// ChooseAccount's.
+func nodePace(now time.Time, accounts []AccountConfig, readings map[string]harness.RateLimit, cfg LimitsConfig) pacing {
+	judged := make([]AccountConfig, 0, len(accounts))
+	for _, a := range accounts {
+		if a.Kind != AccountAPI {
+			judged = append(judged, a)
+		}
+	}
+	if len(judged) == 0 {
+		judged = accounts
+	}
+	var out pacing
+	for i, a := range judged {
+		p := pacing{mode: paceNormal}
+		if r, ok := readings[a.Label]; ok {
+			p = pace(now, r, cfg)
+		}
+		if len(judged) > 1 && p.why != "" {
+			p.why = a.Label + ": " + p.why
+		}
+		if i == 0 || p.mode < out.mode || (p.mode == out.mode && p.resumeAt.Before(out.resumeAt)) {
 			out = p
 		}
 	}

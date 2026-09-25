@@ -194,7 +194,7 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 // is no graph to hand in.
 func (p *Planner) ask(ctx context.Context, goal gateway.Goal, dir string, budget float64, in harness.PlanInput, repos map[string]gateway.Repo, merged []int) ([]gateway.PlannedItem, []string, float64, error) {
 	job := harness.Job{Kind: harness.KindPlan, Workspace: dir, Prompt: harness.PlanPrompt(in), MaxBudgetUSD: budget, Label: goal.Slug + " plan", Timeout: p.Timeout, MCPServers: p.MCP, Model: p.Model}
-	acct, err := OpenAccount(p.Accounts)
+	acct, err := OpenAccount(ctx, p.Accounts)
 	if err != nil {
 		return nil, nil, 0, err
 	}

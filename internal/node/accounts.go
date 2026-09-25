@@ -1,6 +1,7 @@
 package node
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -165,15 +166,17 @@ func PrepareAccount(a AccountConfig, secret string) (*AccountSession, error) {
 	}, nil
 }
 
-// OpenAccount is the account a session runs on: for now the first
-// configured, or nil — the operator's own login — when none is. The
-// selection by headroom and spending order replaces this (the goal's
-// later items).
-func OpenAccount(accounts []AccountConfig) (*AccountSession, error) {
+// OpenAccount is the account a session runs on: the one the loop chose
+// for it (WithAccount, by ChooseAccount), else the first configured, or
+// nil — the operator's own login — when none is.
+func OpenAccount(ctx context.Context, accounts []AccountConfig) (*AccountSession, error) {
 	if len(accounts) == 0 {
 		return nil, nil
 	}
-	a := accounts[0]
+	a, ok := ChosenAccount(ctx)
+	if !ok {
+		a = accounts[0]
+	}
 	secret, err := a.Secret()
 	if err != nil {
 		return nil, err

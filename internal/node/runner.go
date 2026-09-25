@@ -203,7 +203,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		defer os.RemoveAll(ghDir)
 		job.Env = SessionEnv(tok, ghDir)
 	}
-	acct, err := OpenAccount(r.Accounts)
+	acct, err := OpenAccount(ctx, r.Accounts)
 	if err != nil {
 		return r.fail(ctx, item, err)
 	}
