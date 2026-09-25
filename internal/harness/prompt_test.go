@@ -34,3 +34,18 @@ func TestEvaluatePromptUnverifiableClause(t *testing.T) {
 		t.Error("evaluate prompt still passes only when every clause holds, checkable or not")
 	}
 }
+
+func TestPlanPromptRejected(t *testing.T) {
+	if p := PlanPrompt(PlanInput{GoalSlug: "g", GoalTitle: "G", Org: "o", Project: "p"}); strings.Contains(p, "Your last answer") {
+		t.Error("a first ask lists no rejected items")
+	}
+	p := PlanPrompt(PlanInput{GoalSlug: "g", GoalTitle: "G", Org: "o", Project: "p", Rejected: []string{"item 1 (Ship): a check on its own pull request (`deploy / verify`)"}})
+	for _, want := range []string{
+		"## Your last answer asked for what no evaluator can see\n\nThe node checked your graph before handing it in and flagged these items:\n\n- item 1 (Ship): a check on its own pull request (`deploy / verify`)\n\n",
+		"Work like that becomes its own item in the right repo, or goes in the goal's acceptance. Write the whole graph again with those acceptances rewritten; this is the last ask.\n",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("plan prompt lacks %q", want)
+		}
+	}
+}

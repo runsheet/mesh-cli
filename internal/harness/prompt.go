@@ -213,6 +213,9 @@ type PlanInput struct {
 	// plan's numbering starts.
 	Existing []ExistingItem
 	NextSeq  int
+	// Rejected: on the re-ask, the items of the answer before whose
+	// acceptance names what no evaluator can see, each with why (adr-004).
+	Rejected []string
 }
 
 // ExistingItem is one item of the plan before, for the planner.
@@ -262,6 +265,13 @@ func PlanPrompt(in PlanInput) string {
 	}
 	if strings.TrimSpace(in.Blocked) != "" {
 		fmt.Fprintf(&b, "## The last plan blocked\n\n%s\n\nPlan around it.\n\n", strings.TrimSpace(in.Blocked))
+	}
+	if len(in.Rejected) > 0 {
+		b.WriteString("## Your last answer asked for what no evaluator can see\n\nThe node checked your graph before handing it in and flagged these items:\n\n")
+		for _, r := range in.Rejected {
+			fmt.Fprintf(&b, "- %s\n", strings.TrimSpace(r))
+		}
+		b.WriteString("\n" + planAcceptanceRule + " Write the whole graph again with those acceptances rewritten; this is the last ask.\n\n")
 	}
 	if len(in.Existing) > 0 {
 		b.WriteString("## The items so far\n\nYour plan replaces only the live items; merged items stay. Merged items are done: your items may depend on their seqs. Failed and cancelled items stay in the record; do their work again differently if it is still needed. Anything still live is replaced by your plan.\n\n")

@@ -156,12 +156,22 @@ type fakeHarness struct {
 	fail bool
 	// text is the final message when set (an evaluator's verdict).
 	text string
+	// texts, when set, are the final messages of the next runs in turn,
+	// before text.
+	texts []string
 }
 
 func (h *fakeHarness) Name() string { return "claude-code" }
 func (h *fakeHarness) Run(ctx context.Context, job harness.Job, on func(harness.Progress)) (harness.Result, error) {
 	h.mu.Lock()
 	h.jobs = append(h.jobs, job)
+	text := "Implemented and tested."
+	if h.text != "" {
+		text = h.text
+	}
+	if len(h.texts) > 0 {
+		text, h.texts = h.texts[0], h.texts[1:]
+	}
 	h.mu.Unlock()
 	if on == nil {
 		on = func(harness.Progress) {}
@@ -172,10 +182,6 @@ func (h *fakeHarness) Run(ctx context.Context, job harness.Job, on func(harness.
 		return harness.Result{Success: false, Text: "could not", CostUSD: 0.75, SessionID: "s-1"}, nil
 	}
 	on(harness.Progress{Text: "done", CostUSD: 1.25})
-	text := "Implemented and tested."
-	if h.text != "" {
-		text = h.text
-	}
 	return harness.Result{Success: true, Text: text, CostUSD: 1.25, SessionID: "s-1"}, nil
 }
 
