@@ -169,12 +169,13 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		r.logf("item %s: context unavailable: %v", label, err)
 		cx = &Context{}
 	}
+	AddLive(ctx, r.GW, cx, item.OrgID, res.Project.ID, r.logf)
 	files, err := WriteContext(dir, cx)
 	if err != nil {
 		return r.fail(ctx, item, fmt.Errorf("write context: %w", err))
 	}
 	contextDir := ""
-	if len(files) > 0 || len(cx.Index) > 0 {
+	if len(files) > 0 || len(cx.Index) > 0 || len(cx.Live) > 0 {
 		contextDir = ContextDir
 	}
 
