@@ -120,6 +120,16 @@ file for that run (`--model-research` and `--model-rebase` too). A value is an a
 knows (`opus`, `sonnet`, `haiku`) or a full id (`claude-opus-5`); unset
 leaves the CLI's own default.
 
+The planner is the exception: it chooses every item's model, so without
+an explicit `plan` it runs on the strongest model configured for any
+kind, and on `opus` when none is. Its graph names a `model` per item
+with a one-line `model_reason` — `haiku` for mechanical items (docs-only,
+a goal-doc section, a version bump, a rename), `sonnet` for a
+well-specified change in one package with tests to copy, `opus` for
+anything cross-cutting, concurrency, migrations, security, a failing
+item's retry, or when unsure — and node.log records each choice when the
+plan is handed in.
+
 ### The director
 
 A project on the platform carries **directions** — what it is for, in
@@ -479,7 +489,7 @@ Prologue lists one), with the statement, the acceptance and the final
 
 ```bash
 mesh goal set goal.yaml            # slug, title, statement, acceptance, budget_cents, daily_budget_cents, checkpoints, project
-mesh goal plan ship-it plan.yaml   # items: seq, title, brief, acceptance, depends_on: [seq…], repo: owner/name, base_ref
+mesh goal plan ship-it plan.yaml   # items: seq, title, brief, acceptance, depends_on: [seq…], repo: owner/name, base_ref, model
 mesh goal approve ship-it          # the graph checkpoint
 mesh goal pause ship-it --reason "…" / resume / cancel
 mesh goal list

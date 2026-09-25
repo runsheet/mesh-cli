@@ -240,6 +240,10 @@ type PlannedSpec struct {
 	DependsOn  []int  `json:"depends_on"`
 	Repo       string `json:"repo"`
 	BaseRef    string `json:"base_ref"`
+	// Model is the model the planner chose for the item (haiku, sonnet,
+	// opus or a claude-* id), ModelReason its one line of why.
+	Model       string `json:"model"`
+	ModelReason string `json:"model_reason"`
 }
 
 // planAcceptanceRule is the planner's side of adr-004: an item's
@@ -338,8 +342,12 @@ func PlanPrompt(in PlanInput) string {
 	b.WriteString("5. repo is one of the project's repos above, as owner/name. base_ref is its default branch unless the item builds on another item's branch.\n")
 	b.WriteString("6. Change nothing in the repos: you plan, you do not build.\n")
 	b.WriteString("7. Design keeps pace with code: an item that changes an aggregate, a policy, a process, or a public contract (a gateway field, an API, a console route) also amends the ADR or TRD section that describes it, in the same item and pull request; a decision no ADR covers gets a new ADR at the next free number in that repo. Say so in the item's brief and acceptance. Every new document carries frontmatter with a one-line `summary:`.\n")
-	b.WriteString("8. End your final message with the graph as a JSON object in a ```json fenced block, and nothing after it:\n\n")
-	b.WriteString("```json\n{\"items\": [{\"seq\": 1, \"title\": \"…\", \"brief\": \"…\", \"acceptance\": \"…\", \"depends_on\": [], \"repo\": \"owner/name\", \"base_ref\": \"main\"}]}\n```\n")
+	b.WriteString("8. Each item names the model its session runs on, as `model`, with a one-line `model_reason`:\n")
+	b.WriteString("   - `haiku` for mechanical items: docs-only, a goal-doc section, a version bump, a rename.\n")
+	b.WriteString("   - `sonnet` for a well-specified change in one package with tests to copy.\n")
+	b.WriteString("   - `opus` for anything cross-cutting, concurrency, migrations, security, a failing item's retry, or when unsure.\n")
+	b.WriteString("9. End your final message with the graph as a JSON object in a ```json fenced block, and nothing after it:\n\n")
+	b.WriteString("```json\n{\"items\": [{\"seq\": 1, \"title\": \"…\", \"brief\": \"…\", \"acceptance\": \"…\", \"depends_on\": [], \"repo\": \"owner/name\", \"base_ref\": \"main\", \"model\": \"sonnet\", \"model_reason\": \"…\"}]}\n```\n")
 	return b.String()
 }
 

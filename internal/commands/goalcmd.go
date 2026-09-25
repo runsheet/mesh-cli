@@ -50,6 +50,7 @@ type planItem struct {
 	DependsOn  []int  `yaml:"depends_on"`
 	Repo       string `yaml:"repo"`
 	BaseRef    string `yaml:"base_ref"`
+	Model      string `yaml:"model"`
 }
 
 type goalScope struct {
@@ -201,7 +202,7 @@ var goalPlanCmd = &cobra.Command{
 			if deps == nil {
 				deps = []int{}
 			}
-			planned = append(planned, gateway.PlannedItem{Seq: it.Seq, Title: it.Title, Brief: it.Brief, Acceptance: it.Acceptance, DependsOn: deps, RepoID: repoID, BaseRef: it.BaseRef})
+			planned = append(planned, gateway.PlannedItem{Seq: it.Seq, Title: it.Title, Brief: it.Brief, Acceptance: it.Acceptance, DependsOn: deps, RepoID: repoID, BaseRef: it.BaseRef, Model: strings.TrimSpace(it.Model)})
 		}
 		id, err := s.goalID(args[0])
 		if err != nil {
