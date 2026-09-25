@@ -132,6 +132,17 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   context (`WithAccount` → `OpenAccount`). **No account with headroom
   means no claim**: the item stays ready, not failed or released, and
   the tick logs one `accounts: no account has headroom …` line.
+  **The claim-time read** (`internal/node/credentials.go`, adr-005):
+  every one-shot session opens its account through
+  `Credentials.Open`, which asks the platform (`SessionCredentials`)
+  for the claimed session's credentials and chooses among them by the
+  loop's own rule (`withChooser`); an api key at its cap is never
+  chosen, and none left releases a build. A platform without the read
+  or issuing none leaves node.yaml, said once per run. At the end
+  `SessionAccount.Finish` hands in the session's usage record
+  (`RecordSessionUsage`: credential, tokens, cost, windows before and
+  after), or logs it as one `usage: {…}` line on a platform without
+  the ledger.
 - Every session gets Prologue as an MCP server with the node's token and
   the project's context on disk under `.mesh/context/` with `INDEX.md`:
   the documents, then `## Live goals and items` — each live goal's items

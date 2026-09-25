@@ -200,9 +200,15 @@ the item goes to its builder.
 
 ### Several Claude accounts
 
-By default every session runs on the operator's own `claude` login. To
-run on other accounts — several Max subscriptions, or an API key — list
-them in `~/.mesh/node.yaml` (adr-005):
+By default every session runs on the operator's own `claude` login.
+Once the platform issues credentials (the claim-time read, adr-005),
+each session runs on the Claude accounts the org's admins configured
+for its project — handed to the node for that session only — and
+node.yaml's `accounts:` are only the fallback, for a platform that
+does not issue them yet (the node logs `credentials: the platform
+issues no session credentials; sessions run on node.yaml's accounts`
+once per run). Until then, to run on other accounts — several Max
+subscriptions, or an API key — list them in `~/.mesh/node.yaml`:
 
 ```yaml
 accounts:
@@ -273,6 +279,16 @@ account's secret in its environment only (`CLAUDE_CODE_OAUTH_TOKEN` or
 `ANTHROPIC_API_KEY`), its own temporary `CLAUDE_CONFIG_DIR`, removed
 after, and none of the operator's own Claude variables; the plan limits
 are kept per label, so the next choice sees what this session read.
+An API key the platform issues is never chosen once its daily or
+monthly cap ($50 and $1,000 unless an admin set others) is spent, and a
+session on one is held to what the cap leaves.
+
+**Usage.** Every session — build, evaluation, plan, research, rebase —
+reports one usage record: the account (label, and the platform's
+credential id), input, output and cache tokens, the cost, the plan's
+windows before and after, and when it ran. A platform without the usage
+ledger gets it in the node's log instead, one `usage: {…}` JSON line per
+session.
 `mesh node start` refuses an account whose token file or variable
 cannot be read.
 

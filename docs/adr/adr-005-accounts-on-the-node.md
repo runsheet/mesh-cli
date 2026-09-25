@@ -1,5 +1,5 @@
 ---
-summary: A node's sessions run on Claude accounts listed in node.yaml (`accounts:` of {label, kind subscription|api, token_file|api_key_env}) until the platform hands a session its credential at claim; the secret reaches the session in its environment only (CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY), with a temporary CLAUDE_CONFIG_DIR per session removed after, the inherited auth variables stripped, and the secret redacted from every log, error and report; each session runs on the account ChooseAccount picks by headroom and the spending order (subscriptions first, API only for urgent/high work or when subscriptions are stopped and work waits), and no account with headroom means no claim.
+summary: A node's sessions run on the Claude accounts the platform issues the claimed session (the claim-time read, sessionCredentials; an api key at its cap never chosen), with node.yaml's `accounts:` ({label, kind subscription|api, token_file|api_key_env}) the fallback, and every session hands in a usage record (recordSessionUsage, else one log line); the secret reaches the session in its environment only (CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY), with a temporary CLAUDE_CONFIG_DIR per session removed after, the inherited auth variables stripped, and the secret redacted from every log, error and report; each session runs on the account ChooseAccount picks by headroom and the spending order (subscriptions first, API only for urgent/high work or when subscriptions are stopped and work waits), and no account with headroom means no claim.
 status: accepted
 ---
 
@@ -108,10 +108,116 @@ own may run on the wrong account.
   stops a node that has another with room. Evaluations, plans, research
   and rebases still do not count against capacity, but each needs an
   account to start.
+
+## The claim-time read and the usage record
+
+Amended 2026-09-25 (item 3 of `node-runs-on-many-accounts`). runsheet's
+`credentials-sealed-in-loom` (the claim-time read) and `usage-ledger`
+had published no field names when this was written — ADR 018 fixes the
+decisions, not the wire — so the node defines the shape here and the
+platform half takes it or amends this section.
+
+- **The claim-time read.** After a session's claim and before it
+  starts, `Credentials.Open` asks the platform for the credentials that
+  session may run on:
+
+  ```graphql
+  mutation($in: SessionCredentialsInput!) {
+    sessionCredentials(input: $in) {
+      credentials { id label kind secret capDailyUsd capMonthlyUsd spentDailyUsd spentMonthlyUsd }
+    }
+  }
+  ```
+
+  with `in` = `{namespace, kind, nodeId, workItemId | goalId |
+  directionId}` — the session's kind (`build`, `evaluate`, `plan`,
+  `research`, `rebase`), the node holding its claim, and what it works
+  on (the item, and its goal, for a build, an evaluation or a rebase;
+  the goal for a plan; the direction for research). It is a mutation,
+  not a query: handing out a secret is a platform act on a claim (ADR
+  018), refused to any node that does not hold it. `kind` is
+  `subscription` or `api`; the caps are an api key's (0 is the
+  default, $50 a day and $1,000 a month) and the spend is what the
+  ledger has counted against them. `gateway.Credential`'s `String` and
+  `GoString` leave the secret out.
+- **Issued credentials are the session's accounts.** They become
+  `AccountConfig`s (`IssuedAccount`: the label, else the id; the secret
+  held by pointer for this session only, so printing an account prints
+  an address) and the session chooses among them by the same rule the
+  loop chose by before the claim — its priority, whether work waits,
+  whether it finishes built work — which rides the context
+  (`withChooser`) bound to the latest readings. node.yaml is not
+  consulted. The secret reaches the session exactly as before
+  (`PrepareAccount`).
+- **The hard stop at an api key's cap.** A key whose daily or monthly
+  spend has reached its cap is never chosen, and is logged by label
+  with its figures; a key with room holds its session's budget
+  (`--max-budget-usd`) to what the smaller cap leaves, so a session
+  does not continue past it. When no issued credential may take the
+  session it does not start (`ErrNoAccount`): a build releases its item
+  (`ReleaseWorkItem`, not failed), an evaluation stays in evaluating
+  for the next tick, and a plan, research or rebase ends as its own
+  error path does.
+- **node.yaml is the fallback.** A platform without the mutation (the
+  same unknown-operation detection as the item's GitHub token,
+  `gateway.IsUnsupported`), or one that issues an empty list, leaves
+  node.yaml's accounts and the loop's pre-claim choice exactly as
+  above. The first fallback of a run logs once — `credentials: the
+  platform issues no session credentials; sessions run on node.yaml's
+  accounts (said once, for every session this run)` — and every
+  session still asks, so a deploy of the platform half takes effect
+  without a restart. A refusal is an error, as for the GitHub token:
+  a session the platform will not credential does not run on the
+  node's own accounts instead.
+- **A usage record per session.** Every build, evaluation, plan,
+  research and rebase session, however it ended, hands in one record
+  (`SessionAccount.Finish`):
+
+  ```graphql
+  mutation($in: RecordSessionUsageInput!) { recordSessionUsage(input: $in) { status } }
+  ```
+
+  with `in` = `{namespace, kind, workItemId?, goalId?, directionId?,
+  nodeId, sessionId, credentialId?, credentialLabel, credentialKind,
+  model, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens,
+  costUsd, before?, after?, startedAt, endedAt}`. `credentialId` is
+  the platform's credential (empty for a node.yaml account);
+  `credentialLabel` is the label the limits are kept under (`default`
+  for the operator's own login). The tokens are the stream-json result
+  event's `usage` (`harness.Result.Usage`): `inputTokens` counts every
+  input token, the cache reads and writes included, which are also
+  given on their own. `before` and `after` are `{fiveHour, sevenDay}`,
+  each `{utilization, resetsAt}` — the account's latest reading when
+  the session opened, and the session's own last `rate_limit_event`
+  (else the latest reading) when it ended; a window never read is
+  left out. The record carries no secret.
+- **The log is the ledger's fallback.** Against a platform without
+  `recordSessionUsage` the record is written to the node's log as one
+  line, `usage: {…}` — the same fields as JSON — and the first of a run
+  says `usage: the platform keeps no usage ledger; each session's
+  record is logged here instead (said once, for every session this
+  run)`. A record the platform refuses is logged the same way, with the
+  error.
+- **Channel mode's builds** keep the operator's login and send no
+  record: the channel session is one long session per org, not a
+  session per item. Its evaluations, plans, research and rebases are
+  one-shot and do both.
+
 ## Consequences
 
 - Several Max subscriptions work on one node from node.yaml before the
   platform's credentials exist; the operator's own login is untouched.
+- Once the platform issues credentials a node needs none in node.yaml:
+  a new node of a project runs on the project's accounts from its first
+  claim, and node.yaml's `accounts:` only serve a platform that does
+  not (yet) issue them. The pre-claim choice still sees node.yaml's
+  accounts (or the operator's login) and their readings, so a claim can
+  be won that no issued credential may run; such a build is released,
+  not failed. Choosing among the issued credentials before the claim
+  is a later step.
+- The usage ledger sees every one-shot session's tokens, cost and
+  windows whether or not the platform keeps it yet; until it does, the
+  node's log is the record.
 - A node with two Max accounts runs on the emptier one and moves to the
   other as the first fills; money is spent on an API key only where the
   spending order allows it. When the platform's claim-time read lands
