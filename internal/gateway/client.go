@@ -879,6 +879,20 @@ type HeartbeatExtras struct {
 	// session its sandbox's limits killed, naming the limit and the item
 	// (trd §1 Node, `sandbox`).
 	Reason string
+	// Adopted are the sessions a restarted node took over from the process
+	// before it rather than starting them (mesh-specs ADR 008, mesh-cli
+	// ADR 009); none sends no key.
+	Adopted []AdoptedSession
+}
+
+// AdoptedSession is one entry of the heartbeat's `adopted`: the item the
+// session is for (a plan's goal, a research session's direction), its
+// kind (build, evaluate, plan, research, rebase) and when the session
+// started.
+type AdoptedSession struct {
+	ItemID string    `json:"itemId"`
+	Kind   string    `json:"kind"`
+	Since  time.Time `json:"since"`
 }
 
 // SandboxInfo is the heartbeat's `sandbox`: the mode (on or off), the
@@ -974,6 +988,9 @@ func (c *Client) HeartbeatNode(ctx context.Context, nodeID, version string, runn
 		}
 		if x.Reason != "" {
 			in["reason"] = x.Reason
+		}
+		if len(x.Adopted) > 0 {
+			in["adopted"] = x.Adopted
 		}
 	}
 	// A node can be newer than the platform it reports to: a field the

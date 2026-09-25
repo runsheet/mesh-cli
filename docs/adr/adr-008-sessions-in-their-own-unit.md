@@ -59,8 +59,8 @@ come with later items of goal `node-upgrades-keep-sessions`.
   It hands out at most one line per `Read`, so `ParseStream`'s scanner
   has read exactly through the event it is handling and `Offset()` is
   the end of that event's line. `Run` saves that offset into
-  `state.json` when the session id is first seen and then at most once
-  a second, so a later node can resume from a line boundary.
+  `state.json` after every event (ADR-009; at first at most once a
+  second), so a later node can resume from a line boundary.
 - **`ClaudeCode.Run`** starts the unit, writes the state, follows the
   output through `ParseStream` (progress callbacks unchanged) and
   stderr into the redacted `Stderr` writer, waits for the exit, and
@@ -74,9 +74,8 @@ come with later items of goal `node-upgrades-keep-sessions`.
 
 ## Consequences
 
-- Stopping the node process no longer ends a host session; until the
-  adoption lands, such a session runs to its end unread, and its item
-  is re-run as before.
+- Stopping the node process no longer ends a host session; the next
+  node adopts it (ADR-009).
 - A job's work dir gains a sibling while its session runs.
 - Tests of a session's process run on the machine's real default unit
   (a transient scope where a user systemd answers).

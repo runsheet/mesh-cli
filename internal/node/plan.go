@@ -84,14 +84,16 @@ func (p *Planner) Plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 	return err
 }
 
-func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) error {
+// projectRepos reads the goal's project and its enrolled repos, by
+// owner/name.
+func (p *Planner) projectRepos(ctx context.Context, goal gateway.Goal, scope Scope) (*gateway.Project, map[string]gateway.Repo, error) {
 	project, err := p.GW.Project(ctx, goal.ProjectID)
 	if err != nil {
-		return fmt.Errorf("project: %w", err)
+		return nil, nil, fmt.Errorf("project: %w", err)
 	}
 	all, err := p.GW.Repos(ctx, scope.AccountID, scope.Login)
 	if err != nil {
-		return fmt.Errorf("repos: %w", err)
+		return nil, nil, fmt.Errorf("repos: %w", err)
 	}
 	inProject := map[string]bool{}
 	for _, id := range project.RepoIDs {
@@ -104,7 +106,15 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 		}
 	}
 	if len(repos) == 0 {
-		return fmt.Errorf("project %s has no repos enrolled; nothing to plan in", project.Slug)
+		return nil, nil, fmt.Errorf("project %s has no repos enrolled; nothing to plan in", project.Slug)
+	}
+	return project, repos, nil
+}
+
+func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) error {
+	project, repos, err := p.projectRepos(ctx, goal, scope)
+	if err != nil {
+		return err
 	}
 	dir := PlanDir(p.WorkRoot, goal.Slug)
 	dirs := map[string]string{}
@@ -181,6 +191,11 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 			p.logf("goal %s: plan still names what no evaluator can see; handing it in: %s", goal.Slug, strings.Join(flags, " | "))
 		}
 	}
+	return p.handIn(ctx, goal, items, reasons, cost)
+}
+
+// handIn hands the graph in with PlanGoal and logs each item's model.
+func (p *Planner) handIn(ctx context.Context, goal gateway.Goal, items []gateway.PlannedItem, reasons map[int]string, cost float64) error {
 	by := ""
 	if p.Cfg != nil {
 		by = p.Cfg.OwnerID
@@ -212,14 +227,25 @@ func (p *Planner) ask(ctx context.Context, goal gateway.Goal, nodeID, dir string
 	if err != nil {
 		return nil, nil, nil, 0, err
 	}
-	defer acct.Cleanup()
+	defer unlessDetached(ctx, acct.Cleanup)
 	acct.Apply(&job)
-	job.Meta = harness.SessionMeta{NodeID: nodeID, GoalID: goal.ID}
+	job.Meta = harness.SessionMeta{NodeID: nodeID, GoalID: goal.ID, TempDirs: sessionTempDirs(job, acct)}
+	// the session outlives this process: a restart adopts it (ADR 009)
+	job.Outlive = true
 	result, err := p.Harness.Run(ctx, job, nil)
 	acct.Finish(ctx, result)
+	return p.readPlan(ctx, goal, dir, acct, result, err, repos, merged)
+}
+
+// readPlan is what follows a planner session, however this process came
+// to hold it: its graph read and mapped onto the project's repos, as ask
+// describes. A cancelled ctx leaves the session running for the next
+// node to adopt; otherwise its session directory goes.
+func (p *Planner) readPlan(ctx context.Context, goal gateway.Goal, dir string, acct *SessionAccount, result harness.Result, err error, repos map[string]gateway.Repo, merged []int) ([]gateway.PlannedItem, map[int]string, []string, float64, error) {
 	if ctx.Err() != nil {
 		return nil, nil, nil, 0, ctx.Err()
 	}
+	defer harness.RemoveSession(dir)
 	if errors.Is(err, context.DeadlineExceeded) {
 		return nil, nil, nil, 0, fmt.Errorf("planner session ran out of time (%s)", p.Timeout)
 	}
@@ -310,4 +336,46 @@ func briefWithDeps(brief string, deps []int, because map[int]string) string {
 		b.WriteString(".")
 	}
 	return b.String()
+}
+
+// AdoptPlan takes up a planner session a node process before this one
+// started (ADR 009): followed to its end, or read from its file when it
+// is gone, its graph read and handed in. A plan the session left flagged
+// (adr-004) is handed in as it stands: its prompt is not kept to ask
+// again. A goal no longer in planning is not its to plan: the session is
+// stopped and its directory removed.
+func (p *Planner) AdoptPlan(ctx context.Context, goal gateway.Goal, scope Scope, s FoundSession) error {
+	if goal.Status != "planning" {
+		p.logf("goal %s: adopted plan is no longer wanted (%s); stopped", goal.Slug, goal.Status)
+		s.Stop()
+		return harness.RemoveSession(s.State.Workspace)
+	}
+	_, repos, err := p.projectRepos(ctx, goal, scope)
+	if err != nil {
+		return err
+	}
+	var merged []int
+	if items, err := p.GW.GoalWorkItems(ctx, goal.ID); err == nil {
+		for _, it := range items {
+			if it.Status == "merged" {
+				merged = append(merged, it.Seq)
+			}
+		}
+	}
+	at, ok := p.Harness.(harness.Attacher)
+	if !ok {
+		s.Stop()
+		harness.RemoveSession(s.State.Workspace)
+		return errNoAttach
+	}
+	p.logf("goal %s: adopted its %s planner session (pid %d)", goal.Slug, s.Liveness(), s.State.PID)
+	result, err := at.Attach(ctx, s.Dir, nil)
+	items, reasons, flags, cost, err := p.readPlan(ctx, goal, s.State.Workspace, nil, result, err, repos, merged)
+	if err != nil {
+		return err
+	}
+	if len(flags) > 0 {
+		p.logf("goal %s: adopted plan names what no evaluator can see; handing it in: %s", goal.Slug, strings.Join(flags, " | "))
+	}
+	return p.handIn(ctx, goal, items, reasons, cost)
 }

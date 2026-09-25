@@ -71,37 +71,15 @@ func (r *Rebaser) logf(format string, args ...any) {
 // Rebase runs one claimed rebase to its end. The error is what went
 // wrong, already handed in as the rebase's failure when it could be.
 func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
-	cost := &costReporter{}
-	label := item.ID // the goal's slug and the seq once resolved
-	// the session's cents go on the heartbeat: finish and fail carry none
-	report := func(ctx context.Context, note, sessionID string) {
-		if err := r.GW.ReportWorkItemProgress(ctx, item.ID, truncate(note, 2000), cost.delta(), sessionID); err != nil {
-			r.logf("item %s: rebase progress: %v", label, err)
-		}
-	}
-	fail := func(cause error) error {
-		// a node stopping mid-session still hands the rebase back,
-		// rather than holding it until the platform's timer does
-		fctx := ctx
-		if ctx.Err() != nil {
-			var cancel context.CancelFunc
-			fctx, cancel = context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-			defer cancel()
-		}
-		reason := truncate(cause.Error(), 4000)
-		r.logf("item %s: rebase failed: %s", label, reason)
-		report(fctx, "rebase failed", "")
-		if err := r.GW.FailWorkItemRebase(fctx, item.ID, reason); err != nil {
-			r.logf("item %s: fail rebase: %v", label, err)
-		}
-		return cause
-	}
+	rb := &rebaseRun{r: r, item: item, label: item.ID} // the goal's slug and the seq once resolved
+	fail := func(cause error) error { return rb.fail(ctx, cause) }
 
 	res, err := Resolve(ctx, r.GW, item)
 	if err != nil {
 		return fail(fmt.Errorf("resolve: %w", err))
 	}
-	label = fmt.Sprintf("%s/%d", res.Goal.Slug, item.Seq)
+	label := fmt.Sprintf("%s/%d", res.Goal.Slug, item.Seq)
+	rb.label = label
 	branch := item.Branch
 	if branch == "" {
 		branch = res.Branch()
@@ -160,7 +138,9 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 		if err != nil {
 			return fail(fmt.Errorf("gh config dir: %w", err))
 		}
-		defer os.RemoveAll(ghDir)
+		// a session left running for the next node keeps its dirs: the
+		// node that ends it removes them (TempDirs)
+		defer unlessDetached(ctx, func() { os.RemoveAll(ghDir) })
 		job.Env = SessionEnv(tok, ghDir)
 	}
 	sc, _ := r.Scopes.ByOrg(item.OrgID)
@@ -168,28 +148,84 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 	if err != nil {
 		return fail(err)
 	}
-	defer acct.Cleanup()
+	defer unlessDetached(ctx, acct.Cleanup)
 	acct.Apply(&job)
-	job.Meta = harness.SessionMeta{NodeID: sc.NodeID, ItemID: item.ID, GoalID: item.GoalID, Attempt: item.Attempts}
+	job.Meta = harness.SessionMeta{NodeID: sc.NodeID, ItemID: item.ID, GoalID: item.GoalID, Attempt: item.Attempts, TempDirs: sessionTempDirs(job, acct)}
 
-	var mu sync.Mutex
-	sessionID := ""
-	sid := func() string {
-		mu.Lock()
-		defer mu.Unlock()
-		return sessionID
-	}
+	rb.cred, rb.dir, rb.branch, rb.base = cred, dir, branch, spec.BaseRef
 	r.logf("item %s: rebase on %s: %s onto %s", label, modelName(model), branch, spec.BaseRef)
-	report(ctx, "rebase session started: "+branch+" onto "+spec.BaseRef+" on "+modelName(model), "")
+	rb.report(ctx, "rebase session started: "+branch+" onto "+spec.BaseRef+" on "+modelName(model))
 	if note := pod.MissingNote(); note != "" {
 		r.logf("item %s: %s", label, note)
-		report(ctx, note, "")
+		rb.report(ctx, note)
 	}
-	every := r.ProgressEvery
+	// the session outlives this process: a restart adopts it (ADR 009)
+	job.Outlive = true
+	result, runErr := rb.run(ctx, func(onProgress func(harness.Progress)) (harness.Result, error) {
+		return r.Harness.Run(ctx, job, onProgress)
+	})
+	acct.Finish(ctx, result)
+	return r.afterRebase(ctx, rb, acct, result, runErr)
+}
+
+// rebaseRun is one rebase session as its tail needs it, whether this
+// process started it (Rebase) or adopted it (AdoptRebase).
+type rebaseRun struct {
+	r            *Rebaser
+	item         gateway.WorkItem
+	label        string
+	cred         *ItemCred
+	dir          string
+	branch, base string
+	cost         costReporter
+
+	mu        sync.Mutex
+	sessionID string
+}
+
+func (rb *rebaseRun) sid() string {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+	return rb.sessionID
+}
+
+// report is the rebase's heartbeat, with the session's cents since the
+// last one: finish and fail carry none.
+func (rb *rebaseRun) report(ctx context.Context, note string) {
+	if err := rb.r.GW.ReportWorkItemProgress(ctx, rb.item.ID, truncate(note, 2000), rb.cost.delta(), rb.sid()); err != nil {
+		rb.r.logf("item %s: rebase progress: %v", rb.label, err)
+	}
+}
+
+// fail gives the rebase up with the cause, handing the item to its
+// builder.
+func (rb *rebaseRun) fail(ctx context.Context, cause error) error {
+	// a node stopping before the session starts still hands the rebase
+	// back, rather than holding it until the platform's timer does
+	fctx := ctx
+	if ctx.Err() != nil {
+		var cancel context.CancelFunc
+		fctx, cancel = context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cancel()
+	}
+	reason := truncate(cause.Error(), 4000)
+	rb.r.logf("item %s: rebase failed: %s", rb.label, reason)
+	rb.report(fctx, "rebase failed")
+	if err := rb.r.GW.FailWorkItemRebase(fctx, rb.item.ID, reason); err != nil {
+		rb.r.logf("item %s: fail rebase: %v", rb.label, err)
+	}
+	return cause
+}
+
+// run runs the session through start — Harness.Run or Attach — with the
+// rebase's heartbeat every ProgressEvery and its token renewed.
+func (rb *rebaseRun) run(ctx context.Context, start func(onProgress func(harness.Progress)) (harness.Result, error)) (harness.Result, error) {
+	every := rb.r.ProgressEvery
 	if every <= 0 {
 		every = 60 * time.Second
 	}
 	tickCtx, stopTicker := context.WithCancel(ctx)
+	defer stopTicker()
 	go func() {
 		t := time.NewTicker(every)
 		defer t.Stop()
@@ -198,34 +234,45 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 			case <-tickCtx.Done():
 				return
 			case <-t.C:
-				report(tickCtx, "rebasing "+branch, sid())
-				if err := cred.Refresh(tickCtx); err != nil && tickCtx.Err() == nil {
-					r.logf("item %s: %v", label, err)
+				rb.report(tickCtx, "rebasing "+rb.branch)
+				if err := rb.cred.Refresh(tickCtx); err != nil && tickCtx.Err() == nil {
+					rb.r.logf("item %s: %v", rb.label, err)
 				}
 			}
 		}
 	}()
-	result, runErr := r.Harness.Run(ctx, job, func(p harness.Progress) {
+	return start(func(p harness.Progress) {
 		if p.SessionID != "" {
-			mu.Lock()
-			sessionID = p.SessionID
-			mu.Unlock()
+			rb.mu.Lock()
+			rb.sessionID = p.SessionID
+			rb.mu.Unlock()
 		}
 		if p.CostUSD > 0 {
-			cost.observe(p.CostUSD)
+			rb.cost.observe(p.CostUSD)
 		}
 	})
-	stopTicker()
-	acct.Finish(ctx, result)
-	cost.observe(result.CostUSD)
-	if result.SessionID != "" {
-		mu.Lock()
-		sessionID = result.SessionID
-		mu.Unlock()
+}
+
+// afterRebase is what follows a rebase session, however this process
+// came to hold it: the pushed head read back and finished, or the
+// rebase failed with the reason. A cancelled ctx — the node shutting
+// down — leaves the claim and the still-running session for the next
+// node to adopt; otherwise the session directory goes.
+func (r *Rebaser) afterRebase(ctx context.Context, rb *rebaseRun, acct *SessionAccount, result harness.Result, runErr error) error {
+	if ctx.Err() != nil {
+		r.logf("item %s: node shutting down; its rebase session is left for the next node to adopt", rb.label)
+		return ctx.Err()
 	}
+	defer harness.RemoveSession(rb.dir)
+	fail := func(cause error) error { return rb.fail(ctx, cause) }
+	rb.cost.observe(result.CostUSD)
+	if result.SessionID != "" {
+		rb.mu.Lock()
+		rb.sessionID = result.SessionID
+		rb.mu.Unlock()
+	}
+	branch, label := rb.branch, rb.label
 	switch {
-	case ctx.Err() != nil:
-		return fail(errors.New("the node stopped while the rebase session ran"))
 	case errors.Is(runErr, context.DeadlineExceeded):
 		return fail(fmt.Errorf("the rebase session ran out of time (%s)", r.Timeout))
 	case runErr != nil:
@@ -240,18 +287,57 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 		return fail(errors.New(out.Reason))
 	}
 	// what origin has is the head, not what the session says it pushed
-	head, err := r.WS.PushedHead(ctx, dir, branch, spec.BaseRef)
+	head, err := r.WS.PushedHead(ctx, rb.dir, branch, rb.base)
 	if err != nil {
 		return fail(fmt.Errorf("the rebase session said it pushed %s, but: %w", short(out.Head), err))
 	}
 	if !strings.HasPrefix(strings.ToLower(head), out.Head) {
 		return fail(fmt.Errorf("the rebase session said it pushed %s, but origin/%s is at %s: the push did not land", short(out.Head), branch, short(head)))
 	}
-	report(ctx, fmt.Sprintf("rebased %s onto %s at %s", branch, spec.BaseRef, short(head)), sid())
-	if err := r.GW.FinishWorkItemRebase(ctx, item.ID, head, out.Files); err != nil {
+	rb.report(ctx, fmt.Sprintf("rebased %s onto %s at %s", branch, rb.base, short(head)))
+	if err := r.GW.FinishWorkItemRebase(ctx, rb.item.ID, head, out.Files); err != nil {
 		// a finish the platform did not take still ends the claim
 		return fail(fmt.Errorf("the rebase landed at %s, but finishing it failed: %w", short(head), err))
 	}
 	r.logf("item %s: rebased %s@%s, resolved %d file(s) ($%.2f)", label, branch, short(head), len(out.Files), result.CostUSD)
 	return nil
+}
+
+// AdoptRebase takes up a rebase session a node process before this one
+// started (ADR 009): the item's token back on the checkout, the session
+// followed to its end — or read from its file when it is gone — with the
+// rebase's heartbeat, and then afterRebase. A rebase no longer claimed
+// by this node is not its to finish: the session is stopped and its
+// directory removed.
+func (r *Rebaser) AdoptRebase(ctx context.Context, item gateway.WorkItem, s FoundSession) error {
+	if item.RebaseState != "claimed" || item.RebaseNodeID != "" && item.RebaseNodeID != s.State.NodeID {
+		r.logf("item %s: adopted rebase is no longer this node's (%s); stopped", item.ID, item.RebaseState)
+		s.Stop()
+		return harness.RemoveSession(s.State.Workspace)
+	}
+	rb := &rebaseRun{r: r, item: item, label: item.ID, dir: s.State.Workspace, sessionID: s.State.SessionID}
+	res, err := Resolve(ctx, r.GW, item)
+	if err != nil {
+		return rb.fail(ctx, fmt.Errorf("resolve: %w", err))
+	}
+	rb.label = fmt.Sprintf("%s/%d", res.Goal.Slug, item.Seq)
+	rb.branch = item.Branch
+	if rb.branch == "" {
+		rb.branch = res.Branch()
+	}
+	rb.base = res.BaseRef()
+	spec := WorkspaceSpec{Root: r.WorkRoot, GoalSlug: res.Goal.Slug, Seq: item.Seq, Repo: res.Repo.FullName(), Branch: rb.branch, BaseRef: rb.base}
+	if rb.cred, err = NewItemCred(ctx, r.GW, r.WS, r.Scopes, item, spec, r.Fallback, r.logf); err != nil {
+		return rb.fail(ctx, err)
+	}
+	at, ok := r.Harness.(harness.Attacher)
+	if !ok {
+		s.Stop()
+		return rb.fail(ctx, errNoAttach)
+	}
+	r.logf("item %s: adopted its %s rebase session (pid %d)", rb.label, s.Liveness(), s.State.PID)
+	result, runErr := rb.run(ctx, func(onProgress func(harness.Progress)) (harness.Result, error) {
+		return at.Attach(ctx, s.Dir, onProgress)
+	})
+	return r.afterRebase(ctx, rb, nil, result, runErr)
 }
