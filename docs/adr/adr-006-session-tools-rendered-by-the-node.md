@@ -1,5 +1,5 @@
 ---
-summary: The node renders each session's tools (internal/tools) in the agent's own format — Claude Code mcpServers beside the built-in prologue server, allowed by --allowedTools mcp__<name>__*, and Codex [mcp_servers.<name>] tables in a 0600 config.toml under the session's CODEX_HOME — with every secret value in the session's environment only (MESH_TOOL_<NAME>_<KEY>, or the key itself for a Codex local tool's env_vars), the configs carrying variable names, a clash with the built-in refused, and a local tool whose runtime the node lacks omitted when nice-to-have or reported as missing when required.
+summary: The node renders each session's tools (internal/tools) in the agent's own format — Claude Code mcpServers beside the built-in prologue server, allowed by --allowedTools mcp__<name>__*, and Codex [mcp_servers.<name>] tables in a 0600 config.toml under the session's CODEX_HOME — with every secret value in the session's environment only (MESH_TOOL_<NAME>_<KEY>, or the key itself for a Codex local tool's env_vars), the configs carrying variable names, a clash with the built-in refused, and a local tool whose runtime the node lacks omitted when nice-to-have (noted on the item) or declining the build (released, not reclaimed while the node's runtimes are unchanged) when required.
 status: accepted
 ---
 
@@ -64,7 +64,30 @@ where the code lives, the variable names, and the rendering per agent.
    heartbeat carries them as `runtimes` and `adapters`
    (`HeartbeatExtras`), each only when non-empty. The probe is a PATH
    lookup; it does not run the version command trd §1 names.
-8. **Redaction.** `Redact(s, env)` masks every value of the returned
+8. **At claim.** `Credentials.Open` makes the claim-time read and keeps
+   its tools on the `SessionAccount`. The build (`Runner.RunItem`) and
+   the evaluation (`Evaluator.Evaluate`) select them for their role and
+   the node's runtimes (`SelectTools`, which also turns a tool either
+   renderer refuses — a clash with `prologue`, a bad or repeated name —
+   into an omission noted on the item) and render the rest for Claude
+   Code beside the built-in Prologue attachment (`SessionTools.Apply`):
+   `Job.MCPServers`, the values on `Job.Env` and `Job.Secrets`, and the
+   tools themselves on `Job.Tools` for an adapter that writes its own
+   config (Codex, `WriteCodexConfig` into its `CODEX_HOME`). Plan,
+   research, rebase and channel sessions keep the built-in alone.
+9. **Omit and decline.** A nice-to-have omission is a progress note on
+   the item (`tools: …`), or a line of an evaluation's verdict notes. A
+   missing required tool releases a build (`ReleaseWorkItem`, the
+   reason naming each tool and its runtime) and records a `Declines`
+   entry keyed on the item, the missing tools and the runtimes; the loop
+   neither claims nor evaluates that item again while the node's
+   runtimes are unchanged, for `DeclineHold` (an hour) at most, since
+   the item's tools may change in the console meanwhile. An item in
+   `evaluating` cannot be released (the platform releases only a claimed
+   or running item), so an evaluation declined for its tools records no
+   verdict and waits the same way. `Loop.Runtimes` probes once before
+   the first tick, so an item adopted at start sees the node's runtimes.
+10. **Redaction.** `Redact(s, env)` masks every value of the returned
    env in `s` as `[redacted]`, the longest first; whatever the node logs
    or reports about a tool session passes through it.
 
@@ -77,6 +100,7 @@ where the code lives, the variable names, and the rendering per agent.
 - Codex local secrets are visible to the Codex process itself under
   their own names, not only to the tool; an org sharing one key name
   across two tools with different values cannot run both under Codex.
-- The rest of the wiring (rendering at claim, the decline, priced-call
-  usage) builds on this package and decision 7 in the goal's later
-  items.
+- A declined evaluation holds its item on this node until the runtime
+  appears or the hold lapses; handing an evaluation to another node
+  needs a platform mutation that does not exist yet.
+- Priced-call usage builds on this package in the goal's later items.

@@ -245,8 +245,8 @@ type credsGW struct {
 	records []gateway.UsageRecord
 }
 
-func (g *credsGW) SessionCredentials(context.Context, gateway.SessionRef, string) ([]gateway.Credential, error) {
-	return g.issued, nil
+func (g *credsGW) Session(context.Context, gateway.SessionRef, string) (*gateway.Session, error) {
+	return &gateway.Session{Credentials: g.issued}, nil
 }
 func (g *credsGW) RecordSessionUsage(_ context.Context, rec gateway.UsageRecord) error {
 	g.records = append(g.records, rec)

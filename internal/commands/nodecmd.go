@@ -430,7 +430,9 @@ only use it on a machine you trust with that.`,
 			// machine's load and memory (adr-004)
 			Machine: node.HostMachine(),
 			// every tick reports the tool runtimes and agent CLIs on PATH
-			LookPath: exec.LookPath}
+			LookPath: exec.LookPath,
+			// an item declined for a runtime it lacks is not taken again
+			Declines: &node.Declines{}}
 		// every session's list-price cost lands in the ledger, kept on
 		// disk: the api keys' caps and the project budgets count it
 		// (adr-005-capacity-across-accounts)
@@ -504,13 +506,13 @@ func observed(loop *node.Loop, logger *log.Logger) harness.Harness {
 
 func runPollMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *gateway.Client, loop *node.Loop, workRoot string, fallback *node.TokenFallback, accounts *node.Credentials, logger *log.Logger) error {
 	h := observed(loop, logger)
-	runner := &node.Runner{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, MCPFunc: func(ctx context.Context) map[string]any { return prologueMCP(ctx, gw) }, MaxBudgetUSD: nodeMaxBudgetFlag, Model: nodeModels.For("build"), Fallback: fallback, Accounts: cfg.Accounts, Credentials: accounts, Log: logger}
+	runner := &node.Runner{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, MCPFunc: func(ctx context.Context) map[string]any { return prologueMCP(ctx, gw) }, MaxBudgetUSD: nodeMaxBudgetFlag, Model: nodeModels.For("build"), Fallback: fallback, Accounts: cfg.Accounts, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Log: logger}
 	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) {
 		r := *runner
 		r.Scopes = loop.CurrentScopes() // an org served since start is known to its build
 		_ = r.RunItem(ctx, item)
 	}
-	loop.Evaluate = evaluateWith(gw, cfg, h, codexSecondOpinion(cfg, loop, logger), loop.CurrentScopes, workRoot, fallback, accounts, logger)
+	loop.Evaluate = evaluateWith(gw, cfg, h, codexSecondOpinion(cfg, loop, logger), loop, workRoot, fallback, accounts, logger)
 	loop.Plan = planWith(gw, cfg, h, workRoot, accounts, logger)
 	loop.Research = researchWith(gw, cfg, h, workRoot, accounts, logger)
 	loop.Rebase = rebaseWith(gw, cfg, h, loop.CurrentScopes, workRoot, fallback, accounts, logger)
@@ -671,7 +673,7 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 	}
 
 	ws := &node.Git{Log: os.Stderr}
-	loop.Evaluate = evaluateWith(gw, cfg, observed(loop, logger), codexSecondOpinion(cfg, loop, logger), loop.CurrentScopes, workRoot, fallback, accounts, logger)
+	loop.Evaluate = evaluateWith(gw, cfg, observed(loop, logger), codexSecondOpinion(cfg, loop, logger), loop, workRoot, fallback, accounts, logger)
 	loop.Plan = planWith(gw, cfg, observed(loop, logger), workRoot, accounts, logger)
 	loop.Research = researchWith(gw, cfg, observed(loop, logger), workRoot, accounts, logger)
 	loop.Rebase = rebaseWith(gw, cfg, observed(loop, logger), loop.CurrentScopes, workRoot, fallback, accounts, logger)
@@ -891,9 +893,9 @@ func codexSecondOpinion(cfg *node.Config, loop *node.Loop, logger *log.Logger) s
 // finished item, in either mode — and a bearer taken afresh for each, so
 // a session never starts with a machine token about to expire. A failure to reach a verdict is logged
 // and the item is left in evaluating for the next tick.
-func evaluateWith(gw *gateway.Client, cfg *node.Config, h harness.Harness, second secondOpinion, scopes func() node.Scopes, workRoot string, fallback *node.TokenFallback, accounts *node.Credentials, logger *log.Logger) func(context.Context, gateway.WorkItem) {
+func evaluateWith(gw *gateway.Client, cfg *node.Config, h harness.Harness, second secondOpinion, loop *node.Loop, workRoot string, fallback *node.TokenFallback, accounts *node.Credentials, logger *log.Logger) func(context.Context, gateway.WorkItem) {
 	return func(ctx context.Context, item gateway.WorkItem) {
-		ev := &node.Evaluator{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Scopes: scopes(), WorkRoot: workRoot, MCP: prologueMCP(ctx, gw), MaxBudgetUSD: nodeEvalBudgetFlag, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("evaluate"), Fallback: fallback, Accounts: cfg.Accounts, Credentials: accounts, Log: logger,
+		ev := &node.Evaluator{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Scopes: loop.CurrentScopes(), WorkRoot: workRoot, MCP: prologueMCP(ctx, gw), MaxBudgetUSD: nodeEvalBudgetFlag, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("evaluate"), Fallback: fallback, Accounts: cfg.Accounts, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Log: logger,
 			Second: second.h, SecondModel: cfg.Codex.CodexModel(nodeModels.For("evaluate")), SecondAccount: second.account, Limits: second.limits, Thresholds: second.thresholds}
 		if err := ev.Evaluate(ctx, item); err != nil && ctx.Err() == nil {
 			logger.Printf("item %d %q: evaluation: %v", item.Seq, item.Title, err)

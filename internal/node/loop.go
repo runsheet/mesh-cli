@@ -96,6 +96,11 @@ type Loop struct {
 	// them, so one installed while the node runs is reported without a
 	// restart. Nil probes nothing and reports neither.
 	LookPath func(file string) (string, error)
+	// Declines are the items a session here declined for a required tool
+	// whose runtime the node lacks (trd §3 Tools): neither claimed nor
+	// evaluated again while the runtimes are unchanged. The build and
+	// evaluate sessions record into the same one; nil declines nothing.
+	Declines *Declines
 
 	mu      sync.Mutex
 	running map[string]bool
@@ -152,9 +157,11 @@ type Loop struct {
 	// desiredUnsupported is set once the platform turned out not to
 	// know the desired version (logged once).
 	desiredUnsupported bool
-	// runtimes and adapters are what the last probe found.
+	// runtimes and adapters are what the last probe found; probed is
+	// set by the first.
 	runtimes []string
 	adapters []string
+	probed   bool
 }
 
 type goalsRead struct {
@@ -291,6 +298,9 @@ func (l *Loop) claimReady(ctx context.Context, free, normalFree, maxRank int) {
 		l.mu.Unlock()
 		if already {
 			continue
+		}
+		if runtimes, _ := l.Runtimes(); l.Declines.Holds(item.ID, runtimes, time.Now()) {
+			continue // a required tool needs a runtime still missing here
 		}
 		pressing := r.rank <= gateway.PriorityRank("high")
 		if !pressing && normalFree <= 0 {
@@ -775,7 +785,7 @@ func (l *Loop) probe() {
 	runtimes, adapters := tools.ProbeRuntimes(l.LookPath), tools.ProbeAdapters(l.LookPath)
 	l.mu.Lock()
 	wasR, wasA := l.runtimes, l.adapters
-	l.runtimes, l.adapters = runtimes, adapters
+	l.runtimes, l.adapters, l.probed = runtimes, adapters, true
 	l.mu.Unlock()
 	if !slices.Equal(wasR, runtimes) || !slices.Equal(wasA, adapters) {
 		l.logf("tools: runtimes [%s], adapters [%s]", strings.Join(runtimes, " "), strings.Join(adapters, " "))
@@ -783,11 +793,25 @@ func (l *Loop) probe() {
 }
 
 // Runtimes returns the tool runtimes (npx, uvx, docker) and the agent
-// adapters (claude-code, codex) the last tick found on the node.
+// adapters (claude-code, codex) the last tick found on the node — or,
+// before the first tick (an item adopted at start), a probe now.
 func (l *Loop) Runtimes() (runtimes, adapters []string) {
+	l.mu.Lock()
+	probed := l.probed
+	l.mu.Unlock()
+	if !probed {
+		l.probe()
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return slices.Clone(l.runtimes), slices.Clone(l.adapters)
+}
+
+// ToolRuntimes is Runtimes' runtimes alone: what a session's local tools
+// may start on (Runner.Runtimes, Evaluator.Runtimes).
+func (l *Loop) ToolRuntimes() []string {
+	runtimes, _ := l.Runtimes()
+	return runtimes
 }
 
 func sameOrgs(a, b Scopes) bool {
@@ -841,6 +865,9 @@ func (l *Loop) evaluateHeld(ctx context.Context) {
 			continue
 		}
 		l.mu.Unlock()
+		if runtimes, _ := l.Runtimes(); l.Declines.Holds(item.ID, runtimes, time.Now()) {
+			continue
+		}
 		actx, ok := l.accountToFinish(ctx, priorityName(h.rank), "evaluation")
 		if !ok {
 			continue

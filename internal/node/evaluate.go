@@ -61,7 +61,14 @@ type Evaluator struct {
 	// Limits and Thresholds judge SecondAccount (nil: never skipped).
 	Limits     *Limits
 	Thresholds func() LimitsConfig
-	Log        *log.Logger
+	// Runtimes are the tool runtimes the node has now (Loop.Runtimes;
+	// nil: none), which a local tool needs to start.
+	Runtimes func() []string
+	// Declines remembers an item not evaluated for a required tool whose
+	// runtime the node lacks, so the loop does not try it again (nil:
+	// not remembered).
+	Declines *Declines
+	Log      *log.Logger
 }
 
 func (e *Evaluator) logf(format string, args ...any) {
@@ -149,6 +156,28 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	// the second opinion's job: the same brief, none of the Claude account
 	second := job
 	acct.Apply(&job)
+	// the evaluator's tools, beside the built-in Prologue. An item in
+	// evaluating cannot be released (the platform releases a claimed or
+	// running one): a required tool this node cannot start leaves it
+	// unevaluated, and the loop does not try again while that holds.
+	var runtimes []string
+	if e.Runtimes != nil {
+		runtimes = e.Runtimes()
+	}
+	st := SelectTools(e.MCP, acct.Tools, string(harness.KindEvaluate), runtimes)
+	if len(st.Missing) > 0 {
+		e.Declines.Record(item.ID, st.Missing, runtimes, time.Now())
+		return fmt.Errorf("declined, %s", st.DeclineReason())
+	}
+	if acct.toolEnv, err = st.Apply(&job, e.MCP); err != nil {
+		return fmt.Errorf("tools: %w", err)
+	}
+	if len(st.Use) > 0 {
+		e.logf("item %s: evaluate with tools %s", label, st.Names())
+	}
+	if note := st.OmittedNote(); note != "" {
+		e.logf("item %s: %s", label, note)
+	}
 	e.logf("item %s: evaluate on %s: %s (%d bytes of diff)", label, modelName(model), branch, len(diff))
 	result, err := e.Harness.Run(ctx, job, nil)
 	acct.Finish(ctx, result)
@@ -170,6 +199,11 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	if notes == "" {
 		notes = "(no notes)"
 	}
+	// the notes say which tools the evaluator ran without
+	without := ""
+	if note := st.OmittedNote(); note != "" {
+		without = "\n" + truncate(note, 500)
+	}
 	cost := result.CostUSD
 	if passed && e.Second != nil && gateway.PriorityRank(res.Goal.Priority) <= gateway.PriorityRank("high") {
 		op := e.secondOpinion(ctx, label, second)
@@ -180,14 +214,14 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 		if op.unavailable != "" {
 			e.logf("item %s: Codex second opinion unavailable: %s", label, op.unavailable)
 			line := "Codex second opinion unavailable: " + op.unavailable
-			notes = truncate(notes, 4000-200-len(line)) + "\n\n" + line + "\n\n(evaluated on " + modelName(model) + ")"
+			notes = truncate(notes, 4000-200-len(line)-len(without)) + "\n\n" + line + "\n\n(evaluated on " + modelName(model) + ")" + without
 		} else {
 			passed = passed && op.passed
-			notes = bothNotes(notes, op.notes, op.passed, 4000-200) + "\n\n(evaluated on " + modelName(model) + "; second opinion on Codex" + codexModelName(e.SecondModel) + ")"
+			notes = bothNotes(notes, op.notes, op.passed, 4000-200-len(without)) + "\n\n(evaluated on " + modelName(model) + "; second opinion on Codex" + codexModelName(e.SecondModel) + ")" + without
 		}
 	} else {
 		// the item's events say which model judged it
-		notes = truncate(notes, 4000-100) + "\n\n(evaluated on " + modelName(model) + ")"
+		notes = truncate(notes, 4000-100-len(without)) + "\n\n(evaluated on " + modelName(model) + ")" + without
 	}
 	verdict := "failed"
 	if passed {

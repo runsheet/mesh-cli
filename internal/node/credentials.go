@@ -12,6 +12,7 @@ import (
 
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/harness"
+	"projectmesh.io/mesh-cli/internal/tools"
 )
 
 // An api key's caps when the platform names none (runsheet ADR 018 (e)).
@@ -29,7 +30,7 @@ var ErrNoAccount = errors.New("no issued credential has headroom for the session
 // CredentialGateway is what the claim-time read and the usage ledger
 // need of the platform; *gateway.Client is one.
 type CredentialGateway interface {
-	SessionCredentials(ctx context.Context, ref gateway.SessionRef, nodeID string) ([]gateway.Credential, error)
+	Session(ctx context.Context, ref gateway.SessionRef, nodeID string) (*gateway.Session, error)
 	RecordSessionUsage(ctx context.Context, rec gateway.UsageRecord) error
 }
 
@@ -88,6 +89,13 @@ type SessionAccount struct {
 	remaining float64
 	started   time.Time
 	before    *gateway.UsageWindows
+	// Tools are the tools the claim-time read handed the session, their
+	// secrets decrypted (nil from a platform without them); what the
+	// session gets of them is SessionTools'.
+	Tools []tools.Tool
+	// toolEnv is the tool secrets put on the session (ApplyTools), which
+	// Redact takes out too.
+	toolEnv []string
 }
 
 // Open is the account a claimed session runs on. It asks the platform
@@ -107,7 +115,11 @@ func (c *Credentials) Open(ctx context.Context, ref gateway.SessionRef, nodeID s
 		return &SessionAccount{AccountSession: acct}, nil
 	}
 	s := &SessionAccount{creds: c, ref: ref, nodeID: nodeID, started: c.now()}
-	issued, err := c.GW.SessionCredentials(ctx, ref, nodeID)
+	var issued []gateway.Credential
+	read, err := c.GW.Session(ctx, ref, nodeID)
+	if err == nil && read != nil {
+		issued, s.Tools = read.Credentials, read.Tools
+	}
 	switch {
 	case gateway.IsUnsupported(err):
 		c.credOnce.Do(func() {
@@ -231,6 +243,28 @@ func (s *SessionAccount) Apply(job *harness.Job) {
 	if s.remaining > 0 && (job.MaxBudgetUSD <= 0 || job.MaxBudgetUSD > s.remaining) {
 		job.MaxBudgetUSD = s.remaining
 	}
+}
+
+// Redact is text with the account's secret and every tool secret the
+// session carries taken out.
+func (s *SessionAccount) Redact(text string) string {
+	if s == nil {
+		return text
+	}
+	return tools.Redact(s.AccountSession.Redact(text), s.toolEnv)
+}
+
+// RedactErr is err with the account's and the tools' secrets taken out,
+// still wrapping err when there was nothing to take out.
+func (s *SessionAccount) RedactErr(err error) error {
+	if err == nil || s == nil {
+		return err
+	}
+	err = s.AccountSession.RedactErr(err)
+	if msg := err.Error(); tools.Redact(msg, s.toolEnv) != msg {
+		return errors.New(tools.Redact(msg, s.toolEnv))
+	}
+	return err
 }
 
 // Finish reports the session's usage record: its credential, tokens,

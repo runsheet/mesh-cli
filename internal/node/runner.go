@@ -86,7 +86,21 @@ type Runner struct {
 	ProgressEvery time.Duration
 	// Fallback is the node's one old-platform notice (nil: every item).
 	Fallback *TokenFallback
+	// Runtimes are the tool runtimes the node has now (Loop.Runtimes;
+	// nil: none), which a local tool needs to start.
+	Runtimes func() []string
+	// Declines remembers an item released for a required tool whose
+	// runtime the node lacks, so the loop does not take it again (nil:
+	// not remembered).
+	Declines *Declines
 	Log      *log.Logger
+}
+
+func (r *Runner) runtimes() []string {
+	if r.Runtimes == nil {
+		return nil
+	}
+	return r.Runtimes()
 }
 
 // mcp is the session's MCP servers, asked for afresh per item when
@@ -227,6 +241,25 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	}
 	defer acct.Cleanup()
 	acct.Apply(&job)
+	// the item's tools, beside the built-in Prologue: a required one this
+	// node cannot start hands the item back for a node that can
+	runtimes := r.runtimes()
+	st := SelectTools(mcp, acct.Tools, string(harness.KindBuild), runtimes)
+	if len(st.Missing) > 0 {
+		reason := st.DeclineReason()
+		r.Declines.Record(item.ID, st.Missing, runtimes, time.Now())
+		r.logf("item %s: declined, %s; released", label, reason)
+		if rerr := r.GW.ReleaseWorkItem(ctx, item.ID, reason); rerr != nil {
+			r.logf("item %s: release: %v", label, rerr)
+		}
+		return nil
+	}
+	if acct.toolEnv, err = st.Apply(&job, mcp); err != nil {
+		return r.fail(ctx, item, fmt.Errorf("tools: %w", err))
+	}
+	if len(st.Use) > 0 {
+		r.logf("item %s: tools %s", label, st.Names())
+	}
 
 	cost := &costReporter{}
 	var mu sync.Mutex
@@ -244,6 +277,10 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		}
 	}
 	report("session started: " + spec.Branch + " on " + modelName(model))
+	if note := st.OmittedNote(); note != "" {
+		r.logf("item %s: %s", label, note)
+		report(note)
+	}
 
 	every := r.ProgressEvery
 	if every <= 0 {

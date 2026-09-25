@@ -671,6 +671,61 @@ Each account's own slots (`Loop.AccountSlots`) are kept for the
 heartbeat's per-account slots, which it carries once the platform
 accepts them.
 
+### Tools
+
+A session gets the tools its project and role have, configured in the
+console and handed to the node that claimed the session (ADR-006, trd
+§3 Tools). The Prologue MCP server is not one of them: the node attaches
+it to every session itself, and a console tool named `prologue` is
+refused and noted.
+
+**What the node reports.** Every tick the node looks on its `PATH` for
+the tool runtimes it can start — `npx`, `uvx`, `docker` — and the agent
+CLIs it has — `claude` (claude-code) and `codex` — and its heartbeat
+carries them as `runtimes` and `adapters`, so one installed while the
+node runs is reported without a restart.
+
+**How tools reach the session.** At claim the node reads the session's
+credentials and its `tools` (name, remote `url`/`headers` or local
+`runtime`/`command`/`args`/`env`, `required`, `roles`) in one read, and
+keeps the tools whose `roles` include the session's (`build`,
+`evaluate`; plan, research and rebase sessions keep Prologue alone for
+now). Each agent gets them in its own format:
+
+- **Claude Code**: `--mcp-config` with `mcpServers` — Prologue plus one
+  entry per tool, `{type: http, url, headers}` remote or `{command, args,
+  env}` local (`npx -y …`, `uvx …`, `docker run -i --rm -e KEY… image
+  …`) — and `--allowedTools mcp__<name>__*` for each, so a print-mode
+  session can call them.
+- **Codex**: one `[mcp_servers.<name>]` table per tool in a 0600
+  `config.toml` in the session's temporary `CODEX_HOME`, removed with it
+  (`tools.WriteCodexConfig`, from `Job.Tools`).
+
+**Secrets in the environment only.** A secret header or env value is
+written into the config as a variable — `${MESH_TOOL_<NAME>_<KEY>}` for
+Claude Code (a bearer as `Bearer ${…}`), `bearer_token_env_var`,
+`env_http_headers` or `env_vars` for Codex — and its value travels only
+in the session's environment. It is never on the command line, in a
+config file, in the node's log or in anything reported on the item:
+log lines name the tools, and every text the node logs or reports about
+the session is redacted of the values.
+
+**Omit or decline.** A local tool whose runtime the node lacks:
+
+- **nice-to-have** (`required: false`): the session runs without it,
+  and the item gets a note — `tools: tool git-tools omitted: this node
+  lacks uvx` (an evaluation says it in its verdict's notes);
+- **required**: the node declines — the item is released
+  (`ReleaseWorkItem`, attempts unchanged) with the reason `tools:
+  required tool git-tools needs uvx, which this node lacks`, and this
+  node does not claim it again while its runtimes are unchanged (an
+  hour at most), so a node that has the runtime takes it. An item in
+  evaluation cannot be released: it records no verdict and waits the
+  same way.
+
+A platform that does not hand out `tools` yet costs nothing: sessions
+run on Prologue alone, as before.
+
 ### Acceptance the evaluator can see
 
 The evaluator is a fresh session that runs before any pull request exists:
