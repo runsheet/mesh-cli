@@ -461,7 +461,8 @@ well, a field sent only while draining; until the platform's node record
 keeps it (runsheet `update-nodes-from-console`), the drain is known on
 the machine alone.
 
-Swapping the binary on the mini:
+Swapping the binary on the mini (a released version needs none of this:
+`mesh node update`, under Release):
 
 ```bash
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh
@@ -995,6 +996,46 @@ sha256sum --check --ignore-missing SHA256SUMS
 publishes to the `projectmesh-io/mesh` repo, unsigned. Nodes do not
 update from it. `release.yml` is the Shipper's `workflow_dispatch` stub
 and publishes nothing.
+
+### Updating a node
+
+**From the platform.** A node follows the version the platform asks it
+for: after every heartbeat it reads its desired version (the console
+sets it; empty, the version already running, or a `dev` build does
+nothing). For a different one the node downloads that release's binary
+for its OS/arch with `SHA256SUMS` and the Sigstore bundle, and verifies
+them as above *before* anything else — a refused release costs no work,
+its reason goes on every heartbeat (`updateError`) and the version is
+left for an hour. A verified one drains the node (see Drain), swaps the
+executable atomically, keeping the one it replaced as `<path>.prev`, and
+exits 0; systemd (`Restart=always`) or launchd (`KeepAlive`) starts the
+new binary, whose first heartbeat reports the new version and confirms
+the update. `~/.mesh/update.json` counts the starts of a new binary: one
+that fails to start twice is rolled back — the third start puts `.prev`
+back, reports the failure on the heartbeat as the old version and exits
+0 for the old binary to start — and that version is not tried again
+until the platform asks for another.
+
+**By hand.** `mesh node update [version]` does the same on this machine
+(the latest release that is not a prerelease when no version is given):
+
+```sh
+mesh node update v0.4.0                  # verify, drain the node, swap
+mesh node update                         # the latest release
+mesh node update v0.4.0 --verify-only    # download and verify into a temp dir; swap nothing
+```
+
+It verifies first and refuses anything not signed by `release-tag.yml` on
+`refs/tags/<version>` with issuer `https://token.actions.githubusercontent.com`,
+or whose hash does not match, printing the reason and exiting non-zero
+with the executable and `.prev` untouched. A verified release drains the
+node running here (`~/.mesh/node.pid`, as `mesh node drain`; with none
+running there is nothing to drain), swaps the executable keeping
+`<path>.prev`, and says how the service will start it: the node exits
+once its sessions end and the service starts the new binary, under the
+same two-failed-starts rollback. It needs no platform, so it works when
+the console cannot reach the node — or `mesh node update --verify-only`
+checks a release from any machine.
 
 ## Known Limitations
 
