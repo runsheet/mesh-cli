@@ -180,7 +180,7 @@ func TestContainerfileToolchains(t *testing.T) {
 	}
 	s := string(cf)
 	for _, want := range []string{"git", "go.dev/dl/go", "nodejs.org/dist", "npm install -g", "python3", "python3-pip", "astral-sh/uv",
-		"@anthropic-ai/claude-code@", "@openai/codex@", "ca-certificates", "useradd", "USER mesh"} {
+		"@anthropic-ai/claude-code@", "@openai/codex@", "ca-certificates", "nftables", "nft --version", "useradd", "USER mesh"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("Containerfile has no %q", want)
 		}
