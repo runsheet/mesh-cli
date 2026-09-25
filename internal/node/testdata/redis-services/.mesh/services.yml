@@ -1,0 +1,7 @@
+# A fixture repository that declares Redis in .mesh/services.yml: the
+# e2e's agent PINGs it on 127.0.0.1:6379.
+services:
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    options: --health-cmd "redis-cli ping" --health-interval 1s --health-timeout 5s --health-retries 30
