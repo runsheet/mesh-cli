@@ -54,6 +54,9 @@ type Session struct {
 	OnSessionID func(id string)
 	// OnText hears what the session says.
 	OnText func(text string)
+	// OnRateLimit hears the account's plan standing each time the
+	// stream reports it (a rate_limit_event).
+	OnRateLimit func(rl *harness.RateLimit)
 	// OnStart runs after each (re)start of the process, once it is alive.
 	OnStart func()
 	// OnTurn hears each turn's end: the item the message that started it
@@ -324,6 +327,9 @@ func (s *Session) once(ctx context.Context, bin, workRoot string) error {
 	harness.ParseStream(stdout, func(ev harness.Event) {
 		if ev.SessionID != "" && s.OnSessionID != nil {
 			s.OnSessionID(ev.SessionID)
+		}
+		if rl := ev.RateLimit(time.Now()); rl != nil && s.OnRateLimit != nil {
+			s.OnRateLimit(rl)
 		}
 		switch ev.Type {
 		case "assistant":

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"projectmesh.io/mesh-cli/internal/harness"
 	"projectmesh.io/mesh-cli/internal/node"
 )
 
@@ -232,5 +233,34 @@ func TestSystemPromptLeavesTheCloneToTheNode(t *testing.T) {
 		if !strings.Contains(p, want) {
 			t.Errorf("the prompt lacks %q", want)
 		}
+	}
+}
+
+// The channel session feeds the node's limits too: each rate_limit_event
+// on its stream is handed to OnRateLimit.
+func TestSessionHandsOnItsRateLimit(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("MESH_TEST_OUT", filepath.Join(dir, "stdin.log"))
+	bin := filepath.Join(dir, "claude")
+	script := strings.Replace(fakeClaude, "echo '{\"type\":\"result\"",
+		`echo '{"type":"rate_limit_event","session_id":"s-fake","rate_limit_info":{"status":"allowed","resetsAt":1790330400,"rateLimitType":"five_hour","unifiedWindows":{"five_hour":{"utilization":0.83,"resetsAt":1790330400},"seven_day":{"utilization":0.41,"resetsAt":1790330400}}}}'
+echo '{"type":"result"`, 1)
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got := make(chan *harness.RateLimit, 1)
+	s := &Session{Cfg: &node.Config{Slug: "n"}, Orgs: []string{"acme"}, WorkDir: filepath.Join(dir, "work", "n"), Exe: bin, SockPath: filepath.Join(dir, "node.sock"), Binary: bin,
+		OnRateLimit: func(rl *harness.RateLimit) { got <- rl }}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = s.Run(ctx, filepath.Join(dir, "work")) }()
+	select {
+	case rl := <-got:
+		if rl.Status != "allowed" || rl.FiveHour.Utilization != 0.83 || rl.SevenDay.Utilization != 0.41 {
+			t.Fatalf("rate limit = %+v", rl)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the rate_limit_event was not handed on")
 	}
 }
