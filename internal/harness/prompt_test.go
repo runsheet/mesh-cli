@@ -12,7 +12,7 @@ func TestPlanPromptAcceptanceTheEvaluatorCanSee(t *testing.T) {
 		"   An item's acceptance names only what the evaluator can see at evaluation time, on that item's branch, in that item's repository: tests, commands and their output, file contents. It never names a CI check on the item's own pull request (the pull request opens only after evaluation passes), a deploy, or a file in another repository. Work like that becomes its own item in the right repo, or goes in the goal's acceptance.\n",
 		"4. depends_on names earlier seqs",
 		"9. End your final message with the graph as a JSON object in a ```json fenced block, and nothing after it:\n",
-		"```json\n{\"items\": [{\"seq\": 1, \"title\": \"…\", \"brief\": \"…\", \"acceptance\": \"…\", \"depends_on\": [], \"repo\": \"owner/name\", \"base_ref\": \"main\", \"model\": \"sonnet\", \"model_reason\": \"…\"}]}\n```\n",
+		"```json\n{\"items\": [{\"seq\": 1, \"title\": \"…\", \"brief\": \"…\", \"acceptance\": \"…\", \"depends_on\": [], \"repo\": \"owner/name\", \"base_ref\": \"main\", \"model\": \"sonnet\", \"model_reason\": \"…\"}, {\"seq\": 2, \"title\": \"…\", \"brief\": \"…\", \"acceptance\": \"…\", \"depends_on\": [{\"seq\": 1, \"because\": \"uses the … item 1 adds\"}], \"repo\": \"owner/name\", \"base_ref\": \"main\", \"model\": \"sonnet\", \"model_reason\": \"…\"}]}\n```\n",
 	} {
 		if !strings.Contains(p, want) {
 			t.Errorf("plan prompt lacks %q", want)
@@ -36,6 +36,55 @@ func TestPlanPromptModelRubric(t *testing.T) {
 	}
 	if !strings.HasSuffix(p, "\"model\": \"sonnet\", \"model_reason\": \"…\"}]}\n```\n") {
 		t.Error("the plan prompt no longer ends with the JSON example")
+	}
+}
+
+// The dependency rubric is in the rules of a first plan, a replan and
+// the re-ask alike (trd §5 phase 2).
+func TestPlanPromptDependencyRubric(t *testing.T) {
+	for name, in := range map[string]PlanInput{
+		"first":  {GoalSlug: "g", GoalTitle: "G", Org: "o", Project: "p"},
+		"replan": {GoalSlug: "g", GoalTitle: "G", Org: "o", Project: "p", NextSeq: 3, Existing: []ExistingItem{{Seq: 1, Title: "A", Status: "merged"}, {Seq: 2, Title: "B", Status: "failed"}}},
+		"re-ask": {GoalSlug: "g", GoalTitle: "G", Org: "o", Project: "p", Rejected: []string{"item 1 (Ship): a deploy"}},
+	} {
+		p := PlanPrompt(in)
+		for _, want := range []string{
+			"4. depends_on names earlier seqs whose branches must be merged first; items with no dependency between them run in parallel.\n   " + planDependencyRule + "\n",
+			"An item depends on another only when it uses something that item creates or changes — a type, command, field, function, file or endpoint — and could not be built against main without it.",
+			"Sharing a repository or touching the same file is not a dependency",
+			"Order by importance is priority, not dependency.",
+			"Prefer a wide, shallow graph",
+			"A final docs or goal-doc item depends only on the items whose results it records.",
+			"Each dependency carries a one-line `because` naming what is used",
+			"a dependency without one is dropped.",
+			`"depends_on": [{"seq": 1, "because": `,
+		} {
+			if !strings.Contains(p, want) {
+				t.Errorf("%s: plan prompt lacks %q", name, want)
+			}
+		}
+	}
+}
+
+// A depends_on entry is {"seq", "because"}, or a bare seq with no because.
+func TestParsePlanDependencyShapes(t *testing.T) {
+	items, err := ParsePlan("```json\n{\"items\": [" +
+		`{"seq": 1, "title": "A", "repo": "o/r"},` +
+		`{"seq": 2, "title": "B", "repo": "o/r"},` +
+		`{"seq": 3, "title": "C", "repo": "o/r", "depends_on": [{"seq": 1, "because": "uses the Foo type item 1 adds"}, 2]}` +
+		"]}\n```")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []PlannedDep{{Seq: 1, Because: "uses the Foo type item 1 adds"}, {Seq: 2}}
+	if got := items[2].DependsOn; len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("depends_on = %+v, want %+v", got, want)
+	}
+	if _, err := ParsePlan(`[{"seq": 1, "title": "A", "repo": "o/r", "depends_on": [{"seq": 4, "because": "x"}]}]`); err == nil {
+		t.Error("a dependency on no item parsed")
+	}
+	if _, err := ParsePlan(`[{"seq": 2, "title": "B", "repo": "o/r", "depends_on": [{"seq": 1, "because": "x"}]}]`, 1); err != nil {
+		t.Errorf("a dependency on a merged seq: %v", err)
 	}
 }
 

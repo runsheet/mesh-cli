@@ -246,10 +246,7 @@ func (p *Planner) ask(ctx context.Context, goal gateway.Goal, dir string, budget
 		if base == "" {
 			base = r.DefaultBranch
 		}
-		deps := sp.DependsOn
-		if deps == nil {
-			deps = []int{}
-		}
+		deps, because := p.explainedDeps(goal.Slug, sp)
 		model := strings.TrimSpace(sp.Model)
 		if model != "" && !PlannableModel(model) {
 			// the planner's choice is advice: an unknown one leaves the
@@ -258,7 +255,53 @@ func (p *Planner) ask(ctx context.Context, goal gateway.Goal, dir string, budget
 			model = ""
 		}
 		reasons[sp.Seq] = strings.TrimSpace(sp.ModelReason)
-		items = append(items, gateway.PlannedItem{Seq: sp.Seq, Title: strings.TrimSpace(sp.Title), Brief: strings.TrimSpace(sp.Brief), Acceptance: strings.TrimSpace(sp.Acceptance), DependsOn: deps, RepoID: r.ID, BaseRef: base, Model: model})
+		items = append(items, gateway.PlannedItem{Seq: sp.Seq, Title: strings.TrimSpace(sp.Title), Brief: briefWithDeps(sp.Brief, deps, because), Acceptance: strings.TrimSpace(sp.Acceptance), DependsOn: deps, DependsBecause: because, RepoID: r.ID, BaseRef: base, Model: model})
 	}
 	return items, reasons, unverifiableAcceptance(specs, itemRepo, repos), result.CostUSD, nil
+}
+
+// explainedDeps keeps the item's dependencies that carry a because and
+// drops the rest, logging each (trd §5 phase 2, the dependency rubric):
+// the kept seqs and, by seq, what each one uses.
+func (p *Planner) explainedDeps(goal string, sp harness.PlannedSpec) ([]int, map[int]string) {
+	deps := []int{}
+	var because map[int]string
+	for _, d := range sp.DependsOn {
+		why := strings.TrimSpace(d.Because)
+		if why == "" {
+			p.logf("plan %s: item %d dropped dependency on %d: no because", goal, sp.Seq, d.Seq)
+			continue
+		}
+		if because == nil {
+			because = map[int]string{}
+		}
+		if _, dup := because[d.Seq]; dup {
+			continue
+		}
+		deps = append(deps, d.Seq)
+		because[d.Seq] = why
+	}
+	return deps, because
+}
+
+// briefWithDeps is the item's brief with a line per kept dependency,
+// so the builder sees what it is waiting for.
+func briefWithDeps(brief string, deps []int, because map[int]string) string {
+	brief = strings.TrimSpace(brief)
+	if len(deps) == 0 {
+		return brief
+	}
+	var b strings.Builder
+	b.WriteString(brief)
+	if brief != "" {
+		b.WriteString("\n\n")
+	}
+	for i, d := range deps {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		fmt.Fprintf(&b, "Depends on #%d because %s", d, strings.TrimRight(because[d], "."))
+		b.WriteString(".")
+	}
+	return b.String()
 }
