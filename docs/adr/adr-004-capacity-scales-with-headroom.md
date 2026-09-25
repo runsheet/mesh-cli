@@ -5,6 +5,10 @@ status: accepted
 
 # ADR-004: Capacity scales with the headroom of the plan's windows
 
+*Generalised by [ADR-005: Capacity across accounts](adr-005-capacity-across-accounts.md):
+a node's capacity is the sum of what every subscription and API key it
+may use can afford; this ADR's rule is its one-subscription case.*
+
 ## Context
 
 A node's capacity has been one number in `~/.mesh/node.yaml`, re-read
