@@ -32,7 +32,9 @@ type channelItem struct {
 // not do for itself: resolve the item, ask for its GitHub token and put
 // it on the workspace's own credential helper, then clone or fetch and
 // check out the branch on it. Only then is there an event to push. Any
-// error fails the item, as it would a poll-mode build.
+// error fails the item, as it would a poll-mode build, except a
+// *node.CredentialError, on which the dispatch releases it
+// (node.ReleaseOnCredential).
 func readyChannelItem(ctx context.Context, gw node.Gateway, ws channelWorkspace, scopes node.Scopes, item gateway.WorkItem, workRoot string, fb *node.TokenFallback, logf func(string, ...any)) (*channelItem, error) {
 	res, err := node.Resolve(ctx, gw, item)
 	if err != nil {

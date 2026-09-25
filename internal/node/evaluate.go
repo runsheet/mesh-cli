@@ -47,7 +47,10 @@ func (e *Evaluator) logf(format string, args ...any) {
 
 // Evaluate reviews one item in evaluating and records the verdict. An
 // error means no verdict was recorded: the item stays in evaluating and
-// the next tick tries again.
+// the next tick tries again. That holds when GitHub refused the item's
+// token through every retry too: the item is neither failed nor released
+// (the platform releases only a claimed or running item), the node logs
+// the credential reason and a later tick evaluates it on a fresh token.
 func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	res, err := Resolve(ctx, e.GW, item)
 	if err != nil {
@@ -65,6 +68,10 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 		return err
 	}
 	dir, err := PrepareWithRetry(ctx, e.WS, spec, cred, e.logf)
+	if ce := (*CredentialError)(nil); errors.As(err, &ce) {
+		e.logf("item %s: not evaluated, the node's condition: %s", label, ce.Reason())
+		return fmt.Errorf("workspace: %w", ce)
+	}
 	if err != nil {
 		return fmt.Errorf("workspace: %w", err)
 	}

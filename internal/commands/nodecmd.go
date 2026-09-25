@@ -546,6 +546,10 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 			if ctx.Err() != nil {
 				return
 			}
+			if ce := (*node.CredentialError)(nil); errors.As(err, &ce) {
+				_ = node.ReleaseOnCredential(ctx, gw, item.ID, ce, logger.Printf)
+				return
+			}
 			logger.Printf("item %s: failed: %v", item.ID, err)
 			_ = gw.FailWorkItem(ctx, item.ID, err.Error())
 			return

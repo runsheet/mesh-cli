@@ -502,6 +502,7 @@ type Gateway interface {
 	ReportWorkItemProgress(ctx context.Context, itemID, note string, costCents int, sessionID string) error
 	FinishWorkItem(ctx context.Context, itemID, branch, headSha string, costCents int) error
 	FailWorkItem(ctx context.Context, itemID, errMsg string) error
+	ReleaseWorkItem(ctx context.Context, itemID, reason string) error
 	IssueItemRepoToken(ctx context.Context, itemID, nodeID string) (*gateway.GitHubToken, error)
 	EvaluateWorkItem(ctx context.Context, itemID string, passed bool, notes string, costCents int) error
 	Goal(ctx context.Context, id string) (*gateway.Goal, error)

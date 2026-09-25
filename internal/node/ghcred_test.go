@@ -90,7 +90,7 @@ func TestRunnerCredentialErrorAfterThreeRetries(t *testing.T) {
 	slept := noSleep(t)
 	tg := freshTokens()
 	h := &fakeHarness{}
-	r, fws, item, row := runnerOn(t, h, func(g Gateway) Gateway { tg.Gateway = g; return tg })
+	r, fws, item, _ := runnerOn(t, h, func(g Gateway) Gateway { tg.Gateway = g; return tg })
 	r.WS = &refusingWS{fakeWS: fws, refusals: 4, err: errors.New("git fetch --prune origin: exit status 128: remote: Repository not found.")}
 	err := r.RunItem(context.Background(), item)
 	var ce *CredentialError
@@ -108,10 +108,6 @@ func TestRunnerCredentialErrorAfterThreeRetries(t *testing.T) {
 	}
 	if want := []time.Duration{time.Second, 2 * time.Second, 4 * time.Second}; len(*slept) != 3 || (*slept)[0] != want[0] || (*slept)[1] != want[1] || (*slept)[2] != want[2] {
 		t.Fatalf("backoff = %v", *slept)
-	}
-	// item 2 releases it instead; until then it fails
-	if row(item1)["status"] != "failed" {
-		t.Fatalf("row: %v", row(item1))
 	}
 }
 

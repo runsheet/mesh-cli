@@ -99,16 +99,27 @@ living an hour.
   and git's error. The token itself is never logged: it is scrubbed from
   that error, and from any URL git echoes, before the error is logged or
   wrapped. Any other failure, and the operator login's fallback, is not
-  retried. For now the item still fails on a `CredentialError`. mesh-specs trd §3
-  has the node release it instead, as its own condition, the way it
-  releases an item when it is out of credit. The command for that
-  credential release is `ReleaseWorkItem { reason }` (trd §1, §3;
-  `Client.ReleaseWorkItem(ctx, itemID, reason)`, the `releaseWorkItem`
-  mutation): the platform takes it only for a `claimed` or `running` item
-  the calling node holds, and puts the item back to `ready` with its
-  node, harness and session cleared, `attempts` unchanged, and the
-  reason — repo and expiry, never the token — in `last_note`, not
-  `last_error`. The fake gateway (`gatewaytest.Fake`) honours it so;
+  retried. On a `CredentialError` the node releases the item, as its own
+  condition, the way it releases an item when it is out of credit
+  (mesh-specs trd §3): `ReleaseOnCredential` (`ghcred.go`) sends
+  `ReleaseWorkItem { reason }` (trd §1; `Client.ReleaseWorkItem(ctx,
+  itemID, reason)`, the `releaseWorkItem` mutation) with the reason
+  `github credential: <repo> token expiring <RFC 3339 expiry> refused <n>
+  times: <git's error>`, where n counts the first try and the retries and
+  git's error is the scrubbed one, so the reason carries no token. The
+  platform takes it only for a `claimed` or `running` item the calling
+  node holds, and puts the item back to `ready` with its node, harness
+  and session cleared, `attempts` unchanged, and the reason in
+  `last_note`, not `last_error`. The node logs the release with the
+  reason. If the platform refuses the release, the node logs the refusal
+  and fails the item (`FailWorkItem`) with the same reason, so an item is
+  never left claimed on a node that has stopped working on it. The
+  builder (`Runner.RunItem`) and channel mode's dispatch release so. The
+  evaluator's item is in `evaluating`, which the platform does not
+  release, so `Evaluate` neither releases nor fails it: it logs the
+  reason and returns, the item stays as it was, and a later tick
+  evaluates it on a fresh token. Any other workspace error fails the item
+  as before. The fake gateway (`gatewaytest.Fake`) honours the release;
   `RefuseReleases` makes it refuse, as a platform that does not take a
   node's release.
 - Channel mode's one `claude` process runs many items, so its
@@ -123,7 +134,8 @@ living an hour.
   workspace is a `mesh_fail`. Each item's git runs on that checkout's own
   helper. The channel's `repush` bookkeeping renews a held item's token
   near expiry every tick and rewrites the helper. A refusal fails the
-  item, and so does a failed `Prepare`.
+  item, and so does a failed `Prepare`, except a `CredentialError`, which
+  releases it as above.
 - On the old platform the shared session's empty `GH_CONFIG_DIR` would
   also hide the operator's global `gh auth git-credential` from its
   push. So the daemon gives such a checkout its own helper,
