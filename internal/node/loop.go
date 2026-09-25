@@ -107,9 +107,17 @@ type Loop struct {
 	// evaluated again while the runtimes are unchanged. The build and
 	// evaluate sessions record into the same one; nil declines nothing.
 	Declines *Declines
+	// Sandbox is the heartbeat's `sandbox` — the mode, runtime and image
+	// sessions run in (OpenSandbox, ADR 007); nil sends none.
+	Sandbox *gateway.SandboxInfo
 
-	mu      sync.Mutex
-	running map[string]bool
+	mu sync.Mutex
+	// condition is the node's latest condition that is not a failure of
+	// its own — a session its sandbox's limits killed — and conditionAt
+	// when it was noted: the heartbeat's reason for ConditionHold.
+	condition   string
+	conditionAt time.Time
+	running     map[string]bool
 	// runningOn is the account each running item runs on, by item: the
 	// slot-minutes the accounts scaler counts per account, and the slots
 	// the spending order sees taken.
@@ -454,6 +462,30 @@ func (l *Loop) notify() {
 	}
 }
 
+// ConditionHold is how long a noted condition stays the heartbeat's
+// reason.
+const ConditionHold = time.Hour
+
+// NoteCondition makes reason the heartbeat's until ConditionHold passes
+// or another is noted: a session killed by its sandbox's limits is the
+// node's condition, shown on the Nodes page while the node stays online
+// (trd §1 Node, `sandbox`).
+func (l *Loop) NoteCondition(reason string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.condition, l.conditionAt = reason, time.Now()
+}
+
+// Condition is the heartbeat's reason now, "" when none holds.
+func (l *Loop) Condition() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.condition == "" || time.Since(l.conditionAt) >= ConditionHold {
+		return ""
+	}
+	return l.condition
+}
+
 // Tick is one round: heartbeat, self-update, list, claim, dispatch. A draining node
 // only heartbeats — with draining set — (and runs AfterTick): it claims no
 // item, plan, research or rebase and starts no evaluation — an item it holds for evaluation
@@ -476,7 +508,7 @@ func (l *Loop) Tick(ctx context.Context) {
 	l.probe()
 	l.scale()
 	runtimes, adapters := l.Runtimes()
-	extras := gateway.HeartbeatExtras{Draining: l.Draining(), UpdateError: l.UpdateError(), Limits: l.limitsStore().Heartbeat(), Runtimes: runtimes, Adapters: adapters}
+	extras := gateway.HeartbeatExtras{Draining: l.Draining(), UpdateError: l.UpdateError(), Limits: l.limitsStore().Heartbeat(), Runtimes: runtimes, Adapters: adapters, Sandbox: l.Sandbox, Reason: l.Condition()}
 	scaling, ranged := l.Scaling()
 	extras.Scaling = l.heartbeatScaling(scaling, ranged)
 	if l.Scaled != nil {

@@ -726,6 +726,91 @@ the session is redacted of the values.
 A platform that does not hand out `tools` yet costs nothing: sessions
 run on Prologue alone, as before.
 
+### Sandbox
+
+Every one-shot session — a poll-mode build, an evaluation, a plan, a
+research or a rebase session — runs in its own rootless **Podman** pod
+(mesh-specs ADR 007; `internal/sandbox/`), created when the session
+starts and removed when it ends. Channel-mode sessions and Codex do not
+run in one yet.
+
+- **Runtime.** `podman` on the node's `PATH`, rootless (the operator
+  needs a subuid/subgid range, and the `cpu`, `memory` and `pids` cgroup
+  controllers delegated to their systemd user slice for the limits to
+  bite). The network is pasta. No daemon, no socket.
+- **Node image.** `claude` runs from the node image,
+  `ghcr.io/projectmesh-io/mesh-node:<node version>` (`:latest` on a
+  dev build), which carries the toolchains and the agent CLIs;
+  `sandbox.image` names another. Its `PATH` is
+  `/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`
+  and it must carry `nft` for the network rules.
+- **Mounts.** Exactly two: the item's workspace, read-write at its own
+  path, and a fresh temporary HOME (removed after the session) holding
+  the `--mcp-config` file, `CLAUDE_CONFIG_DIR` (`$HOME/.claude`), an
+  empty `GH_CONFIG_DIR` (`$HOME/.config/gh`) and a `.gitconfig` with the
+  operator's commit identity. Never the operator's home, `~/.mesh`, a
+  runner's directory or a container socket.
+- **Environment.** Built from an allow-list, never inherited:
+  `PATH`, `HOME`, `LANG`, `TZ`, `TERM`, `CLAUDE_CONFIG_DIR`,
+  `MESH_ITEM`, `MESH_SESSION_KIND`, and of what the node gave the
+  session: `GH_TOKEN`, `GH_CONFIG_DIR`, `CLAUDE_CODE_OAUTH_TOKEN` or
+  `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `CODEX_API_KEY`,
+  `MESH_ACCOUNT` and the tool secrets `MESH_TOOL_*`. Values reach
+  podman through its own environment (`--env NAME`), never its command
+  line. A sandboxed session has no operator login to fall back on: it
+  runs on the account the platform or node.yaml gives it.
+- **Network.** Outbound TCP 443 and 80 and DNS through pasta's
+  forwarder; `192.168.0.0/16`, `10.0.0.0/8`, `172.16.0.0/12`, loopback
+  beyond the pod's own, link-local, CGNAT, IPv6 ULA and link-local, and
+  the host's public addresses are dropped by an nftables table an init
+  container loads into the pod's own network namespace; the agent runs
+  with every capability dropped and `no-new-privileges`.
+- **Limits.** `--cpus`, `--memory` (swap the same) and `--pids-limit`
+  on the agent's container, and the session timeout (the runtime's own
+  `--timeout` is a backstop 30 s after the node's). A session killed by
+  a limit — OOM, the pids cap, the runtime's timeout — is the node's
+  condition, not the item's failure: the item is released
+  (`ReleaseWorkItem`, attempt not counted) with the reason, the
+  heartbeat's `reason` names the limit and the item for an hour, and
+  the node does not claim the item again for that hour.
+- **The heartbeat** carries `sandbox {mode, runtime, image}`.
+
+node.yaml's `sandbox:` — every key optional:
+
+```yaml
+sandbox:
+  mode: on             # on | off; left out: on when `podman --version` answers, else off
+  cpus: 2              # the agent's --cpus
+  memory: 6g           # the agent's --memory (and --memory-swap)
+  pids: 4096           # the agent's --pids-limit
+  services_cpus: 2     # the services' budget together
+  services_memory: 4g
+  registries: [docker.io, ghcr.io, "*.pkg.dev", quay.io]   # where service images may come from
+  image: ghcr.io/projectmesh-io/mesh-node:v1.2.3           # default: the node's version
+```
+
+| key | default | what |
+|-----|---------|------|
+| `mode` | on if podman answers, else off | `sandbox: off` (or `on`) alone is the mode |
+| `cpus` | `2` | the agent container's CPUs |
+| `memory` | `6g` | the agent container's memory, swap included |
+| `pids` | `4096` | the agent container's process cap |
+| `services_cpus` | `2` | the service sidecars' CPUs, together |
+| `services_memory` | `4g` | the service sidecars' memory, together |
+| `registries` | `docker.io`, `ghcr.io`, `*.pkg.dev`, `quay.io` | registries service images may come from |
+| `image` | `ghcr.io/projectmesh-io/mesh-node:<version>` | the node image sessions run in |
+
+**`sandbox: off`** runs every session exactly as before: `claude` on
+the host as the node's user, same arguments, same environment. It is
+for a machine that cannot run rootless containers. With the mode left
+out and no podman the node says `sandbox: off — the runtime does not
+answer …` once at start and runs as before; with an explicit `mode:
+on` and no podman `mesh node start` refuses to start — it never runs a
+session unsandboxed on its own.
+
+The probe test runs a real pod: `MESH_SANDBOX_E2E=1
+MESH_SANDBOX_IMAGE=<image> go test ./internal/sandbox -run E2E`.
+
 ### Acceptance the evaluator can see
 
 The evaluator is a fresh session that runs before any pull request exists:
@@ -812,6 +897,65 @@ final doc and pushes it straight to that branch (`docs(mesh): goal <slug>
 — finished`). No other repo the goal touched gets a copy, and a second
 finish that finds the doc already final pushes nothing. A failure there is
 logged; the item has already finished.
+
+## Services
+
+A sandboxed session (mesh-specs ADR 007) gets the services its
+repository declares as sidecars in its pod, reachable on `127.0.0.1` at
+their usual ports and removed with the session.
+`sandbox.Resolve(repoDir, allowed)` (`internal/sandbox/services.go`)
+reads the declaration; **the first found wins**:
+
+1. **`.mesh/services.yml`** in the repository.
+2. Else the **`services:` of the CI workflows that run tests**, from
+   `.github/workflows/*.yml`: a job runs tests when a `run:` step runs
+   `go test`, `npm|pnpm|yarn test`, `pytest`, `make test`, `cargo test`,
+   `vitest` or `jest`, or when the job's id or name, or the workflow's
+   name, says `test` or `ci`. The services of every such job are merged
+   by name, first file (in name order) then first job winning. In a
+   value, `${{ matrix.x }}` takes the matrix's first value, `${{ env.X }}`
+   the job's or workflow's literal, `${{ a || 'default' }}` the default;
+   any other expression (`${{ secrets.X }}`) drops the value with a
+   note, and a service whose image cannot be resolved is skipped. These
+   services are not required: reading a workflow is a best effort.
+3. Else **none**.
+
+`.mesh/services.yml` has the shape of an Actions `services:` map — at
+the top level or under a `services:` key, so a block can be copied from
+a workflow as it is:
+
+```yaml
+services:
+  postgres:
+    image: postgres:16            # a bare name is docker.io
+    env:
+      POSTGRES_PASSWORD: postgres
+    ports: ["5432:5432"]
+    options: >-
+      --health-cmd "pg_isready -U postgres"
+      --health-interval 2s --health-timeout 5s --health-retries 30
+    command: []                   # optional: arguments to the image
+    required: true                # default true; a required service that
+                                  # cannot start returns the claim
+    tuning: true                  # default true; see below
+  redis:
+    image: redis:7
+    ports: ["6379:6379"]
+```
+
+- `options`: only `--health-cmd`, `--health-interval`,
+  `--health-timeout`, `--health-retries` and `--health-start-period`
+  are honoured, as the service's health check; any other flag is
+  ignored and noted. `volumes` and `credentials` are not supported.
+- **Test tuning**: a known database with no `command` (and no
+  `tuning: false`) runs with durability off — Postgres (`postgres`,
+  `postgis`) with `-c fsync=off -c synchronous_commit=off -c
+  full_page_writes=off`, MySQL/MariaDB with
+  `--innodb-flush-log-at-trx-commit=0 --sync-binlog=0 --skip-log-bin`.
+- **Registries**: an image's registry (a bare `postgres:16` is
+  `docker.io`) must match the allow-list — by default `docker.io`,
+  `ghcr.io`, `*.pkg.dev`, `quay.io`. A disallowed image is returned as a
+  refused service with a note naming its registry, never pulled.
 
 ## Codex on a node
 

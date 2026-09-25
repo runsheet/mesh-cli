@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"projectmesh.io/mesh-cli/internal/sandbox"
 )
 
 // ClaudeCode runs `claude -p` in the workspace, stream-json out.
@@ -24,6 +26,11 @@ type ClaudeCode struct {
 	ExtraArgs []string
 	// Stderr receives the process's stderr (nil discards it).
 	Stderr io.Writer
+	// Sandbox, when set, runs every session in its own pod (ADR 007):
+	// `claude` from the node image, the workspace and a temporary HOME
+	// the only host paths, the environment the job's allow-listed
+	// variables. Nil is `sandbox: off`: the process on the host, as ever.
+	Sandbox *sandbox.Sandbox
 }
 
 // Name implements Harness.
@@ -55,12 +62,22 @@ func (c *ClaudeCode) Args(job Job) []string {
 // inline, and every server's tools allowed (a print-mode session cannot
 // be asked).
 func MCPArgs(servers map[string]any) []string {
-	if len(servers) == 0 {
+	cfg, allowed, ok := mcpConfig(servers)
+	if !ok {
 		return nil
+	}
+	return []string{"--mcp-config", string(cfg), "--allowedTools", allowed}
+}
+
+// mcpConfig is the servers' mcp.json and the --allowedTools that lets
+// every one of their tools run; ok is false when there are none.
+func mcpConfig(servers map[string]any) ([]byte, string, bool) {
+	if len(servers) == 0 {
+		return nil, "", false
 	}
 	cfg, err := json.Marshal(map[string]any{"mcpServers": servers})
 	if err != nil {
-		return nil
+		return nil, "", false
 	}
 	names := make([]string, 0, len(servers))
 	for n := range servers {
@@ -71,11 +88,30 @@ func MCPArgs(servers map[string]any) []string {
 	for _, n := range names {
 		allowed = append(allowed, "mcp__"+n+"__*")
 	}
-	return []string{"--mcp-config", string(cfg), "--allowedTools", strings.Join(allowed, ",")}
+	return cfg, strings.Join(allowed, ","), true
+}
+
+// SandboxArgs is Args for a session in a pod: the same, but the MCP
+// config is the file at mcpPath (under the session's HOME) rather than
+// inline, so the Prologue bearer is on no command line.
+func (c *ClaudeCode) SandboxArgs(job Job, mcpPath string) []string {
+	servers := job.MCPServers
+	job.MCPServers = nil
+	args := c.Args(job)
+	if _, allowed, ok := mcpConfig(servers); ok {
+		// the MCP flags go where Args puts them, before ExtraArgs
+		at := len(args) - len(c.ExtraArgs)
+		mcp := []string{"--mcp-config", mcpPath, "--allowedTools", allowed}
+		args = append(args[:at:at], append(mcp, args[at:]...)...)
+	}
+	return args
 }
 
 // Run implements Harness. The process is killed when ctx is cancelled.
 func (c *ClaudeCode) Run(ctx context.Context, job Job, onProgress func(Progress)) (Result, error) {
+	if c.Sandbox != nil {
+		return c.runSandboxed(ctx, job, onProgress)
+	}
 	bin := c.Binary
 	if bin == "" {
 		bin = "claude"
@@ -109,7 +145,65 @@ func (c *ClaudeCode) Run(ctx context.Context, job Job, onProgress func(Progress)
 	// The raw stdout, capped, in case the harness said why it could not
 	// run there rather than on stderr.
 	rawOut := &capBuffer{max: 64 << 10}
-	res := ParseStream(io.TeeReader(stdout, rawOut), func(ev Event) {
+	res := parseClaude(io.TeeReader(stdout, rawOut), onProgress)
+	waitErr := cmd.Wait()
+	return finishClaude(ctx, job, res, waitErr, &errBuf, rawOut)
+}
+
+// runSandboxed is Run in the session's own pod: the MCP config written
+// under its temporary HOME, `claude` run from the node image with the
+// prompt on stdin, the stream read as on the host. A kill by the pod's
+// limits is returned as the *sandbox.LimitError it is.
+func (c *ClaudeCode) runSandboxed(ctx context.Context, job Job, onProgress func(Progress)) (Result, error) {
+	sess, err := c.Sandbox.Open(job.Label, string(job.Kind))
+	if err != nil {
+		return Result{}, fmt.Errorf("harness claude-code: %w", err)
+	}
+	defer sess.Close()
+	mcpPath := ""
+	if cfg, _, ok := mcpConfig(job.MCPServers); ok {
+		if mcpPath, err = sess.WriteFile("mcp.json", cfg); err != nil {
+			return Result{}, fmt.Errorf("harness claude-code: mcp config: %w", err)
+		}
+	}
+	if job.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, job.Timeout)
+		defer cancel()
+	}
+	var errBuf bytes.Buffer
+	var stderr io.Writer = &errBuf
+	if c.Stderr != nil {
+		stderr = io.MultiWriter(&redactWriter{w: c.Stderr, secrets: job.Secrets}, &errBuf)
+	}
+	pr, pw := io.Pipe()
+	done := make(chan error, 1)
+	go func() {
+		err := sess.Run(ctx, sandbox.RunSpec{
+			Workspace: job.Workspace,
+			Env:       job.Env,
+			Command:   append([]string{"claude"}, c.SandboxArgs(job, mcpPath)...),
+			Timeout:   job.Timeout,
+			Stdin:     strings.NewReader(job.Prompt),
+			Stdout:    pw,
+			Stderr:    stderr,
+		})
+		pw.Close()
+		done <- err
+	}()
+	rawOut := &capBuffer{max: 64 << 10}
+	res := parseClaude(io.TeeReader(pr, rawOut), onProgress)
+	_, _ = io.Copy(io.Discard, pr) // a stream the parser gave up on still drains
+	waitErr := <-done
+	if le := (*sandbox.LimitError)(nil); errors.As(waitErr, &le) && ctx.Err() == nil {
+		return res, le
+	}
+	return finishClaude(ctx, job, res, waitErr, &errBuf, rawOut)
+}
+
+// parseClaude reads a session's stream-json, passing what it says on.
+func parseClaude(stdout io.Reader, onProgress func(Progress)) Result {
+	return ParseStream(stdout, func(ev Event) {
 		if onProgress == nil {
 			return
 		}
@@ -130,13 +224,18 @@ func (c *ClaudeCode) Run(ctx context.Context, job Job, onProgress func(Progress)
 			onProgress(Progress{CostUSD: ev.CostUSD, SessionID: ev.SessionID, Text: strings.TrimSpace(ev.Result)})
 		}
 	})
-	waitErr := cmd.Wait()
+}
+
+// finishClaude is how a session ended: its Result, or the error its
+// exit, its stderr or its stdout said.
+func finishClaude(ctx context.Context, job Job, res Result, waitErr error, errBuf *bytes.Buffer, rawOut *capBuffer) (Result, error) {
 	if ctx.Err() != nil {
 		return res, ctx.Err()
 	}
 	if waitErr != nil {
 		var exitErr *exec.ExitError
-		if errors.As(waitErr, &exitErr) && res.SessionID != "" && res.Text != "" {
+		var sbExit *sandbox.ExitError
+		if (errors.As(waitErr, &exitErr) || errors.As(waitErr, &sbExit)) && res.SessionID != "" && res.Text != "" {
 			// claude exits non-zero on a budget stop or an error result but
 			// still wrote its result event; the Result carries the story.
 			res.Success = false

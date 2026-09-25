@@ -223,6 +223,35 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   item, a required one releases the item and `Declines` keeps the loop
   off it while the runtimes are unchanged. Plan, research, rebase and
   channel sessions keep Prologue alone.
+- **Services** (`internal/sandbox/services.go`, mesh-specs ADR 007):
+  `Resolve(repoDir, allowed)` reads what a repository declares, first
+  found wins — `.mesh/services.yml`, else the `services:` of its
+  workflows' test jobs (merged by name, not required), else none — into
+  one `Service` shape with a parsed `HealthCheck`, test tuning for
+  Postgres and MySQL/MariaDB, and a disallowed registry returned
+  `Refused` with a note. Pure parsing; the fixtures are under
+  `internal/sandbox/testdata/` (their `.mesh/` needs `git add -f`).
+- **The sandbox** (`internal/sandbox/`, mesh-specs ADR 007,
+  `docs/adr/adr-007-the-sandbox-on-the-node.md`): with a sandbox,
+  `harness.ClaudeCode` runs `claude` in the session's own rootless
+  Podman pod (`Sandbox.Open` → `Session.Run` → `Close`) from the node
+  image: mounts only the workspace and a temporary HOME (the MCP config
+  file, `CLAUDE_CONFIG_DIR`, `GH_CONFIG_DIR`, `.gitconfig`), an env
+  from the allow-list (`AllowedEnv`, `MESH_TOOL_*`, `BaseEnv`; never
+  the node's), `--cpus/--memory/--pids-limit` from node.yaml
+  `sandbox:` (`SandboxConfig.Settings`), and nftables rules an init
+  container loads (`NetworkPolicy.Ruleset`: the LAN, the host and the
+  special ranges refused, 443/80 out). `Runtime` is `Podman` or the
+  test `Fake`. `OpenSandbox` decides at start: `sandbox: off` is nil
+  and today's exec path byte-for-byte; the mode left out is on when
+  `podman --version` answers, else off with a log line; an explicit
+  `on` without podman refuses to start. A limit kill
+  (`*sandbox.LimitError`: OOM, pids, the runtime's timeout) is the
+  node's condition: the runner releases the item, holds it off
+  (`Declines`) and `Loop.NoteCondition` puts the reason on the
+  heartbeat for `ConditionHold`; the heartbeat also carries `sandbox
+  {mode, runtime, image}`. Channel-mode sessions, Codex and services
+  are not in the pod yet.
 - Every session gets Prologue as an MCP server with the node's token and
   the project's context on disk under `.mesh/context/` with `INDEX.md`:
   the documents, then `## Live goals and items` — each live goal's items
