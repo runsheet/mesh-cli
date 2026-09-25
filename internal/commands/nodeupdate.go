@@ -18,7 +18,10 @@ import (
 	"projectmesh.io/mesh-cli/internal/version"
 )
 
-var nodeUpdateVerifyOnly bool
+var (
+	nodeUpdateVerifyOnly bool
+	nodeUpdateFromDir    string
+)
 
 var nodeUpdateCmd = &cobra.Command{
 	Use:   "update [version]",
@@ -42,13 +45,21 @@ starts the new binary; one that fails to start twice is rolled back to
 .prev.
 
 --verify-only downloads and verifies into a temporary directory and swaps
-nothing.`,
+nothing.
+
+--from-dir reads the release's files from a directory instead of GitHub
+(the binary for this OS/arch, SHA256SUMS, SHA256SUMS.sigstore.json) and
+verifies them the same way, against the version's release identity: for
+checking a downloaded release, or showing that an edited one is refused.`,
 	Args:         cobra.MaximumNArgs(1),
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		u, err := defaultNodeUpdate(cmd.OutOrStdout())
 		if err != nil {
 			return err
+		}
+		if nodeUpdateFromDir != "" {
+			u.Updater.Source = selfupdate.Dir(nodeUpdateFromDir)
 		}
 		want := ""
 		if len(args) == 1 {
@@ -215,5 +226,6 @@ func drainIfRunning(state node.RunState, out io.Writer) (bool, error) {
 
 func init() {
 	nodeUpdateCmd.Flags().BoolVar(&nodeUpdateVerifyOnly, "verify-only", false, "download and verify into a temporary directory; swap nothing")
+	nodeUpdateCmd.Flags().StringVar(&nodeUpdateFromDir, "from-dir", "", "read the release's files from this directory instead of GitHub; verified the same way")
 	nodeCmd.AddCommand(nodeUpdateCmd)
 }
