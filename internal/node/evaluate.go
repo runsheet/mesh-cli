@@ -34,7 +34,11 @@ type Evaluator struct {
 	Model string
 	// Accounts are the node's Claude accounts (node.yaml); a session runs
 	// on the first, or on the operator's own login when there are none.
+	// They are the fallback to the credentials the platform issues.
 	Accounts []AccountConfig
+	// Credentials asks the platform for the session's credentials and
+	// reports its usage record (nil: node.yaml's accounts, no record).
+	Credentials *Credentials
 	// Timeout caps its wall clock (0 none).
 	Timeout time.Duration
 	// Fallback is the node's one old-platform notice (nil: every item).
@@ -117,7 +121,8 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 		defer os.RemoveAll(ghDir)
 		job.Env = SessionEnv(tok, ghDir)
 	}
-	acct, err := OpenAccount(ctx, e.Accounts)
+	sc, _ := e.Scopes.ByOrg(item.OrgID)
+	acct, err := e.Credentials.Open(ctx, gateway.SessionRef{Kind: string(harness.KindEvaluate), ItemID: item.ID, GoalID: item.GoalID}, sc.NodeID, e.Accounts)
 	if err != nil {
 		return err
 	}
@@ -125,6 +130,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	acct.Apply(&job)
 	e.logf("item %s: evaluating %s (%d bytes of diff)", label, branch, len(diff))
 	result, err := e.Harness.Run(ctx, job, nil)
+	acct.Finish(ctx, result)
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}

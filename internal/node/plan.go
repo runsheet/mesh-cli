@@ -34,7 +34,11 @@ type Planner struct {
 	Model string
 	// Accounts are the node's Claude accounts (node.yaml); a session runs
 	// on the first, or on the operator's own login when there are none.
+	// They are the fallback to the credentials the platform issues.
 	Accounts []AccountConfig
+	// Credentials asks the platform for the session's credentials and
+	// reports its usage record (nil: node.yaml's accounts, no record).
+	Credentials *Credentials
 	// Timeout caps its wall clock (0 none).
 	Timeout time.Duration
 	Log     *log.Logger
@@ -156,7 +160,7 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 		budget = 5
 	}
 	p.logf("goal %s: planning in %s (%d repos)", goal.Slug, dir, len(repos))
-	items, reasons, flags, cost, err := p.ask(ctx, goal, dir, budget, in, repos, merged)
+	items, reasons, flags, cost, err := p.ask(ctx, goal, scope.NodeID, dir, budget, in, repos, merged)
 	if err != nil {
 		return err
 	}
@@ -166,7 +170,7 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 		p.logf("goal %s: plan names what no evaluator can see; asking again: %s", goal.Slug, strings.Join(flags, " | "))
 		in.Rejected = flags
 		var again float64
-		items, reasons, flags, again, err = p.ask(ctx, goal, dir, budget, in, repos, merged)
+		items, reasons, flags, again, err = p.ask(ctx, goal, scope.NodeID, dir, budget, in, repos, merged)
 		cost += again
 		if err != nil {
 			return err
@@ -202,15 +206,16 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 // mapped onto the project's repos, each item's model_reason by seq, the
 // check's flags on their acceptance (unverifiableAcceptance), and the
 // session's cost. An error means there is no graph to hand in.
-func (p *Planner) ask(ctx context.Context, goal gateway.Goal, dir string, budget float64, in harness.PlanInput, repos map[string]gateway.Repo, merged []int) ([]gateway.PlannedItem, map[int]string, []string, float64, error) {
+func (p *Planner) ask(ctx context.Context, goal gateway.Goal, nodeID, dir string, budget float64, in harness.PlanInput, repos map[string]gateway.Repo, merged []int) ([]gateway.PlannedItem, map[int]string, []string, float64, error) {
 	job := harness.Job{Kind: harness.KindPlan, Workspace: dir, Prompt: harness.PlanPrompt(in), MaxBudgetUSD: budget, Label: goal.Slug + " plan", Timeout: p.Timeout, MCPServers: p.MCP, Model: p.Model}
-	acct, err := OpenAccount(ctx, p.Accounts)
+	acct, err := p.Credentials.Open(ctx, gateway.SessionRef{Kind: string(harness.KindPlan), GoalID: goal.ID}, nodeID, p.Accounts)
 	if err != nil {
 		return nil, nil, nil, 0, err
 	}
 	defer acct.Cleanup()
 	acct.Apply(&job)
 	result, err := p.Harness.Run(ctx, job, nil)
+	acct.Finish(ctx, result)
 	if ctx.Err() != nil {
 		return nil, nil, nil, 0, ctx.Err()
 	}

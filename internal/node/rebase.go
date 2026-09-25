@@ -38,7 +38,11 @@ type Rebaser struct {
 	Model string
 	// Accounts are the node's Claude accounts (node.yaml); a session runs
 	// on the first, or on the operator's own login when there are none.
+	// They are the fallback to the credentials the platform issues.
 	Accounts []AccountConfig
+	// Credentials asks the platform for the session's credentials and
+	// reports its usage record (nil: node.yaml's accounts, no record).
+	Credentials *Credentials
 	// Timeout caps its wall clock (0 none).
 	Timeout time.Duration
 	// ProgressEvery is how often the rebase's heartbeat is sent (60 s):
@@ -136,7 +140,8 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 		defer os.RemoveAll(ghDir)
 		job.Env = SessionEnv(tok, ghDir)
 	}
-	acct, err := OpenAccount(ctx, r.Accounts)
+	sc, _ := r.Scopes.ByOrg(item.OrgID)
+	acct, err := r.Credentials.Open(ctx, gateway.SessionRef{Kind: string(harness.KindRebase), ItemID: item.ID, GoalID: item.GoalID}, sc.NodeID, r.Accounts)
 	if err != nil {
 		return fail(err)
 	}
@@ -183,6 +188,7 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 		}
 	})
 	stopTicker()
+	acct.Finish(ctx, result)
 	cost.observe(result.CostUSD)
 	if result.SessionID != "" {
 		mu.Lock()

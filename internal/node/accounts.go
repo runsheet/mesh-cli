@@ -44,6 +44,13 @@ type AccountConfig struct {
 	TokenFile string `yaml:"token_file,omitempty"`
 	// APIKeyEnv is the name of the variable holding the API key (api).
 	APIKeyEnv string `yaml:"api_key_env,omitempty"`
+	// ID is a platform credential's id (IssuedAccount); node.yaml's
+	// accounts have none.
+	ID string `yaml:"-"`
+	// issued is a platform credential's secret, held in memory for the
+	// one session it was issued for; a pointer, so printing the account
+	// prints an address, never the secret.
+	issued *string
 }
 
 // ValidateAccounts refuses a list the node could not run sessions on:
@@ -93,6 +100,12 @@ func (a AccountConfig) TokenPath() (string, error) {
 // trimmed, or the API key variable's value. The error never carries the
 // secret.
 func (a AccountConfig) Secret() (string, error) {
+	if a.issued != nil {
+		if *a.issued == "" {
+			return "", fmt.Errorf("account %s: the platform issued no secret", a.Label)
+		}
+		return *a.issued, nil
+	}
 	switch a.Kind {
 	case AccountSubscription:
 		path, err := a.TokenPath()

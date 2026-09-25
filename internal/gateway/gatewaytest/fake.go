@@ -78,6 +78,11 @@ type Fake struct {
 	// item's rebase while it is in review. Off, the fake refuses it as
 	// runsheet's gateway/itemtoken.go does today.
 	RebaseTokens bool
+	// SessionCredentials maps a session's subject — its workItemId, else
+	// goalId, else directionId — to the credentials sessionCredentials
+	// hands the node (id, label, kind, secret, capDailyUsd, …). A subject
+	// with none gets an empty list.
+	SessionCredentials map[string][]map[string]any
 }
 
 // New starts a fake accepting the given bearer token.
@@ -91,6 +96,7 @@ func New(token string) *Fake {
 		Documents: map[string][]map[string]any{}, Bodies: map[string]string{}, Refuse: map[string]string{}, FailReads: map[string]string{},
 		GitHubTokens: map[string]map[string]any{}, Unsupported: map[string]bool{},
 		Agents: map[string]map[string]any{}, UnknownFields: map[string]bool{},
+		SessionCredentials: map[string][]map[string]any{},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/graphql", f.graphql)
@@ -212,6 +218,21 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 			}
 			f.Calls = append(f.Calls, Call{Name: m[2], Input: in})
 			writeData(w, map[string]any{m[2]: tok})
+			return
+		}
+		if m[2] == "sessionCredentials" {
+			subject := ""
+			for _, k := range []string{"workItemId", "goalId", "directionId"} {
+				if v, _ := in[k].(string); v != "" && subject == "" {
+					subject = v
+				}
+			}
+			creds := []map[string]any{}
+			for _, c := range f.SessionCredentials[subject] {
+				creds = append(creds, copyRow(c))
+			}
+			f.Calls = append(f.Calls, Call{Name: m[2], Input: in})
+			writeData(w, map[string]any{m[2]: map[string]any{"credentials": creds}})
 			return
 		}
 		if err := f.apply(m[2], in); err != nil {
