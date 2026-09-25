@@ -1212,3 +1212,154 @@ func (c *Client) PrologueDocument(ctx context.Context, org, project, doc string)
 	}
 	return string(raw), nil
 }
+
+// ---- credentials and usage (runsheet credentials-sealed-in-loom, usage-ledger) ----
+
+// SessionRef names the session a credential read or a usage record is
+// for: its kind (build, evaluate, plan, research, rebase) and what it
+// works on — the item for a build, an evaluation or a rebase (and its
+// goal), the goal for a plan, the direction for research.
+type SessionRef struct {
+	Kind        string
+	ItemID      string
+	GoalID      string
+	DirectionID string
+}
+
+// Credential is one Claude account the platform hands the node that
+// claimed a session (the claim-time read, adr-005): a subscription's
+// `claude setup-token` token or an API key, decrypted for this node and
+// this session only. Secret is never logged: String and GoString leave
+// it out, and nothing the node reports carries it.
+type Credential struct {
+	ID    string
+	Label string
+	// Kind is "subscription" or "api".
+	Kind   string
+	Secret string
+	// CapDailyUSD and CapMonthlyUSD are an api key's caps (0: the
+	// platform's default, $50 and $1,000); SpentDailyUSD and
+	// SpentMonthlyUSD what the ledger has counted against them so far.
+	CapDailyUSD     float64
+	CapMonthlyUSD   float64
+	SpentDailyUSD   float64
+	SpentMonthlyUSD float64
+}
+
+// String is the credential without its secret.
+func (c Credential) String() string {
+	return fmt.Sprintf("credential %s (%s, %s)", c.Label, c.Kind, c.ID)
+}
+
+// GoString is String, so %#v leaves the secret out too.
+func (c Credential) GoString() string { return c.String() }
+
+// SessionCredentials is the claim-time read: the credentials the session
+// ref names may run on, their secrets decrypted for nodeID, which must
+// hold the session's claim (anything else is a refusal). A platform
+// without the mutation answers IsUnsupported, and the node falls back to
+// node.yaml's accounts. No error, log line or report carries a secret.
+func (c *Client) SessionCredentials(ctx context.Context, ref SessionRef, nodeID string) ([]Credential, error) {
+	const field = "sessionCredentials"
+	in := map[string]any{"namespace": NS, "kind": ref.Kind, "nodeId": nodeID}
+	for k, v := range map[string]string{"workItemId": ref.ItemID, "goalId": ref.GoalID, "directionId": ref.DirectionID} {
+		if v != "" {
+			in[k] = v
+		}
+	}
+	var out struct {
+		SessionCredentials *struct {
+			Credentials []struct {
+				ID              string  `json:"id"`
+				Label           string  `json:"label"`
+				Kind            string  `json:"kind"`
+				Secret          string  `json:"secret"`
+				CapDailyUSD     float64 `json:"capDailyUsd"`
+				CapMonthlyUSD   float64 `json:"capMonthlyUsd"`
+				SpentDailyUSD   float64 `json:"spentDailyUsd"`
+				SpentMonthlyUSD float64 `json:"spentMonthlyUsd"`
+			} `json:"credentials"`
+		} `json:"sessionCredentials"`
+	}
+	q := `mutation($in: SessionCredentialsInput!) { sessionCredentials(input: $in) { credentials { id label kind secret capDailyUsd capMonthlyUsd spentDailyUsd spentMonthlyUsd } } }`
+	if err := c.Query(ctx, q, map[string]any{"in": in}, &out); err != nil {
+		var ge *Error
+		if errors.As(err, &ge) && (unknownOperation(ge.Message, field) || schemaMismatch(ge.Message, field) || unknownField(ge.Message, "credentials", "secret", "capDailyUsd", "capMonthlyUsd", "spentDailyUsd", "spentMonthlyUsd")) {
+			return nil, &Error{Message: ge.Message, Unsupported: true}
+		}
+		return nil, err
+	}
+	if out.SessionCredentials == nil {
+		return nil, nil
+	}
+	creds := make([]Credential, 0, len(out.SessionCredentials.Credentials))
+	for _, cr := range out.SessionCredentials.Credentials {
+		creds = append(creds, Credential{
+			ID: cr.ID, Label: cr.Label, Kind: cr.Kind, Secret: cr.Secret,
+			CapDailyUSD: cr.CapDailyUSD, CapMonthlyUSD: cr.CapMonthlyUSD,
+			SpentDailyUSD: cr.SpentDailyUSD, SpentMonthlyUSD: cr.SpentMonthlyUSD,
+		})
+	}
+	return creds, nil
+}
+
+// UsageWindows is an account's plan standing at one moment — the
+// five-hour and seven-day windows' utilization (0–1) and resets — as
+// the latest rate_limit_event read it; a window never read is nil.
+type UsageWindows struct {
+	FiveHour *LimitWindow `json:"fiveHour,omitempty"`
+	SevenDay *LimitWindow `json:"sevenDay,omitempty"`
+}
+
+// UsageRecord is one session's line in the platform's usage ledger: what
+// it was for, the credential it ran on (id when the platform issued it,
+// label always), what it consumed and cost, and its account's windows
+// before and after. InputTokens counts every input token, the cached
+// ones (CacheReadTokens, CacheWriteTokens) included. It never carries
+// a secret.
+type UsageRecord struct {
+	Kind             string        `json:"kind"`
+	ItemID           string        `json:"workItemId,omitempty"`
+	GoalID           string        `json:"goalId,omitempty"`
+	DirectionID      string        `json:"directionId,omitempty"`
+	NodeID           string        `json:"nodeId,omitempty"`
+	SessionID        string        `json:"sessionId,omitempty"`
+	CredentialID     string        `json:"credentialId,omitempty"`
+	CredentialLabel  string        `json:"credentialLabel"`
+	CredentialKind   string        `json:"credentialKind,omitempty"`
+	Model            string        `json:"model,omitempty"`
+	InputTokens      int64         `json:"inputTokens"`
+	OutputTokens     int64         `json:"outputTokens"`
+	CacheReadTokens  int64         `json:"cacheReadTokens"`
+	CacheWriteTokens int64         `json:"cacheWriteTokens"`
+	CostUSD          float64       `json:"costUsd"`
+	Before           *UsageWindows `json:"before,omitempty"`
+	After            *UsageWindows `json:"after,omitempty"`
+	StartedAt        time.Time     `json:"startedAt"`
+	EndedAt          time.Time     `json:"endedAt"`
+}
+
+// RecordSessionUsage hands one session's usage record to the ledger. A
+// platform without the mutation answers IsUnsupported, and the node
+// writes the record to its log instead.
+func (c *Client) RecordSessionUsage(ctx context.Context, rec UsageRecord) error {
+	const field = "recordSessionUsage"
+	data, err := json.Marshal(rec)
+	if err != nil {
+		return err
+	}
+	in := map[string]any{}
+	if err := json.Unmarshal(data, &in); err != nil {
+		return err
+	}
+	in["namespace"] = NS
+	q := `mutation($in: RecordSessionUsageInput!) { recordSessionUsage(input: $in) { status } }`
+	if err := c.Query(ctx, q, map[string]any{"in": in}, nil); err != nil {
+		var ge *Error
+		if errors.As(err, &ge) && (unknownOperation(ge.Message, field) || schemaMismatch(ge.Message, field)) {
+			return &Error{Message: ge.Message, Unsupported: true}
+		}
+		return err
+	}
+	return nil
+}

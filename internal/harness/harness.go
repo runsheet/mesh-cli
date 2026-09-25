@@ -95,8 +95,9 @@ type Result struct {
 	// these across sessions (two running is the harness's condition,
 	// mesh-specs trd §3).
 	EmptyOutput bool
-	// Usage is the session's token counts, from a harness that reports
-	// tokens rather than dollars (Codex); nil otherwise.
+	// Usage is the session's token counts: a Claude session's from its
+	// result event's usage, beside CostUSD, and Codex's (which reports
+	// tokens rather than dollars); nil when the session reported none.
 	Usage *Usage
 }
 
