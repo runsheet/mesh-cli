@@ -51,8 +51,8 @@ func (f *fakeRuntime) run(_ context.Context, name string, args ...string) ([]byt
 	return nil, nil
 }
 
-func (f *fakeRuntime) runtime(t *testing.T) Runtime {
-	return Runtime{Binary: "podman", Run: f.run, TempDir: t.TempDir()}
+func (f *fakeRuntime) runtime(t *testing.T) ImageRuntime {
+	return ImageRuntime{Binary: "podman", Run: f.run, TempDir: t.TempDir()}
 }
 
 func (f *fakeRuntime) called(sub string) []string {

@@ -225,7 +225,7 @@ func (u *nodeUpdate) image(ctx context.Context, version string) error {
 
 // ensureNodeImage is sandbox.EnsureImage on podman from PATH.
 func ensureNodeImage(ctx context.Context, version string) (sandbox.Image, error) {
-	rt, err := sandbox.DefaultRuntime()
+	rt, err := sandbox.DefaultImageRuntime()
 	if err != nil {
 		return sandbox.Image{}, err
 	}

@@ -739,8 +739,9 @@ run in one yet.
   controllers delegated to their systemd user slice for the limits to
   bite). The network is pasta. No daemon, no socket.
 - **Node image.** `claude` runs from the node image,
-  `ghcr.io/projectmesh-io/mesh-node:<node version>` (`:latest` on a
-  dev build), which carries the toolchains and the agent CLIs;
+  `ghcr.io/projectmesh-io/mesh-node:<node version>` (`:dev` on a
+  dev build, built by `mesh node update --image`), which carries the
+  toolchains and the agent CLIs;
   `sandbox.image` names another. Its `PATH` is
   `/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`
   and it must carry `nft` for the network rules.

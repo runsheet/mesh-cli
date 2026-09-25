@@ -20,7 +20,7 @@ import (
 
 // Repository is where release-tag.yml pushes the node image; the tag is
 // the node's version (internal/version).
-const Repository = "ghcr.io/projectmesh-io/mesh-node"
+const Repository = DefaultImageRepo
 
 // ErrNoRuntime is EnsureImage on a machine without the container runtime:
 // a node there runs with `sandbox: off` and needs no image.
@@ -30,8 +30,10 @@ var ErrNoRuntime = errors.New("no container runtime")
 // it wrote (stdout and stderr together); tests inject a fake.
 type Runner func(ctx context.Context, name string, args ...string) ([]byte, error)
 
-// Runtime is the container runtime the node image is kept in.
-type Runtime struct {
+// ImageRuntime is the container runtime the node image is kept in: the
+// podman binary run as a command, apart from the pod Runtime sessions run
+// on, so tests can fake the command.
+type ImageRuntime struct {
 	// Binary is the runtime's command, "podman" (ADR 007).
 	Binary string
 	// Run runs it; nil is exec.
@@ -44,13 +46,13 @@ type Runtime struct {
 	TempDir string
 }
 
-// DefaultRuntime is podman from PATH, or ErrNoRuntime.
-func DefaultRuntime() (Runtime, error) {
+// DefaultImageRuntime is podman from PATH, or ErrNoRuntime.
+func DefaultImageRuntime() (ImageRuntime, error) {
 	bin, err := exec.LookPath("podman")
 	if err != nil {
-		return Runtime{}, fmt.Errorf("%w: podman is not on PATH", ErrNoRuntime)
+		return ImageRuntime{}, fmt.Errorf("%w: podman is not on PATH", ErrNoRuntime)
 	}
-	return Runtime{Binary: bin}, nil
+	return ImageRuntime{Binary: bin}, nil
 }
 
 // Image is what EnsureImage did.
@@ -103,7 +105,7 @@ func Ref(version string) (string, error) {
 // from the Containerfile; then it removes every other mesh-node tag. A
 // failed build is the error; a tag that cannot be removed is kept and
 // said on Image.Kept.
-func EnsureImage(ctx context.Context, rt Runtime, version string) (Image, error) {
+func EnsureImage(ctx context.Context, rt ImageRuntime, version string) (Image, error) {
 	ref, err := Ref(version)
 	if err != nil {
 		return Image{}, err
@@ -123,7 +125,7 @@ func EnsureImage(ctx context.Context, rt Runtime, version string) (Image, error)
 }
 
 // build builds ref from the Containerfile in a temporary context.
-func (rt Runtime) build(ctx context.Context, ref, version string) error {
+func (rt ImageRuntime) build(ctx context.Context, ref, version string) error {
 	dir, err := os.MkdirTemp(rt.TempDir, "mesh-node-image-")
 	if err != nil {
 		return err
@@ -146,7 +148,7 @@ func (rt Runtime) build(ctx context.Context, ref, version string) error {
 }
 
 // prune removes every mesh-node tag but keep.
-func (rt Runtime) prune(ctx context.Context, keep string) (removed, kept []string) {
+func (rt ImageRuntime) prune(ctx context.Context, keep string) (removed, kept []string) {
 	out, err := rt.run(ctx, "images", "--filter", "reference="+Repository, "--format", "{{.Repository}}:{{.Tag}}")
 	if err != nil {
 		return nil, []string{"list " + Repository + ": " + why(out, err)}
@@ -165,7 +167,7 @@ func (rt Runtime) prune(ctx context.Context, keep string) (removed, kept []strin
 	return removed, kept
 }
 
-func (rt Runtime) run(ctx context.Context, args ...string) ([]byte, error) {
+func (rt ImageRuntime) run(ctx context.Context, args ...string) ([]byte, error) {
 	bin := rt.Binary
 	if bin == "" {
 		bin = "podman"

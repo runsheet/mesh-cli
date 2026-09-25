@@ -33,11 +33,12 @@ const (
 	TimeoutGrace = 30 * time.Second
 )
 
-// DefaultImage is the node image of a node version: its tag, or latest
-// for a dev build.
+// DefaultImage is the node image of a node version: its tag, the one
+// EnsureImage pulls or builds (a dev build's is mesh-node:dev, built
+// locally by `mesh node update --image`).
 func DefaultImage(version string) string {
-	if version == "" || version == "dev" {
-		return DefaultImageRepo + ":latest"
+	if version == "" {
+		version = "dev"
 	}
 	return DefaultImageRepo + ":" + version
 }
