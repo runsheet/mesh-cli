@@ -29,7 +29,7 @@ func TestLoopPlansRequestedGoals(t *testing.T) {
 	ws := &fakeWS{root: t.TempDir()}
 	h := &fakeHarness{text: "I read the repo and the PRD.\n\n```json\n{\"items\": [" +
 		"{\"seq\": 1, \"title\": \"Write the failing test\", \"brief\": \"A test in widgets.\", \"acceptance\": \"go test fails on TestThing\", \"depends_on\": [], \"repo\": \"acme/widgets\"}," +
-		"{\"seq\": 2, \"title\": \"Make it pass\", \"brief\": \"Implement Thing.\", \"acceptance\": \"go test ./... passes\", \"depends_on\": [1], \"repo\": \"widgets\", \"base_ref\": \"main\"}" +
+		"{\"seq\": 2, \"title\": \"Make it pass\", \"brief\": \"Implement Thing.\", \"acceptance\": \"go test ./... passes\", \"depends_on\": [{\"seq\": 1, \"because\": \"uses TestThing item 1 adds\"}], \"repo\": \"widgets\", \"base_ref\": \"main\"}" +
 		"]}\n```"}
 	pl := &Planner{GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, MaxBudgetUSD: 4, Log: log.New(os.Stderr, "", 0)}
 	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Interval: time.Hour, Log: pl.Log,
@@ -115,7 +115,7 @@ func TestPlannerReplans(t *testing.T) {
 	gw := gateway.New(f.URL(), "rs_test")
 	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: Fixed(1), OwnerID: f.UserID}
 	ws := &fakeWS{root: t.TempDir()}
-	h := &fakeHarness{text: "```json\n{\"items\": [{\"seq\": 3, \"title\": \"Make it pass, smaller\", \"brief\": \"Half.\", \"acceptance\": \"half passes\", \"depends_on\": [1], \"repo\": \"acme/widgets\"}]}\n```"}
+	h := &fakeHarness{text: "```json\n{\"items\": [{\"seq\": 3, \"title\": \"Make it pass, smaller\", \"brief\": \"Half.\", \"acceptance\": \"half passes\", \"depends_on\": [{\"seq\": 1, \"because\": \"uses the test item 1 merged\"}], \"repo\": \"acme/widgets\"}]}\n```"}
 	pl := &Planner{GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, Log: log.New(os.Stderr, "", 0)}
 	if err := pl.Plan(context.Background(), gateway.Goal{ID: goalID, Slug: "ship-it", Title: "Ship it", ProjectID: projID, Status: "planning", PausedReason: "item failed: evaluation failed 3 times"}, scopesOf(cfg)[0]); err != nil {
 		t.Fatal(err)
@@ -162,7 +162,7 @@ func TestPlannerReplans(t *testing.T) {
 func TestParsePlan(t *testing.T) {
 	good := "notes\n```json\n{\"items\":[{\"seq\":1,\"title\":\"A\",\"repo\":\"o/r\"},{\"seq\":2,\"title\":\"B\",\"repo\":\"o/r\",\"depends_on\":[1]}]}\n```"
 	items, err := harness.ParsePlan(good)
-	if err != nil || len(items) != 2 || items[1].DependsOn[0] != 1 {
+	if err != nil || len(items) != 2 || items[1].DependsOn[0].Seq != 1 {
 		t.Fatalf("good: %v %+v", err, items)
 	}
 	onMerged, err := harness.ParsePlan(`[{"seq":3,"title":"C","repo":"o/r","depends_on":[1]}]`, 1)
@@ -396,5 +396,75 @@ func TestUnverifiableAcceptance(t *testing.T) {
 	// the same path is the item's own when the item is in mesh-specs
 	if flags := check("a specs/console-trd.md diff in mesh-specs", specs); len(flags) != 0 {
 		t.Errorf("own repo flagged: %q", flags)
+	}
+}
+
+// trd §5 phase 2: a dependency without a because is dropped and
+// logged; one with a because is kept, its reason on the PlannedItem
+// (never sent to the platform) and in a line of the item's brief.
+func TestPlannerDropsUnexplainedDependencies(t *testing.T) {
+	f := seed(t)
+	f.Goals[goalID]["status"] = "planning"
+	f.Projects[projID]["repoIds"] = []string{repoID}
+	gw := gateway.New(f.URL(), "rs_test")
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: Fixed(1), OwnerID: f.UserID}
+	ws := &fakeWS{root: t.TempDir()}
+	h := &fakeHarness{text: "```json\n{\"items\": [" +
+		`{"seq": 1, "title": "Foo type", "brief": "Add Foo.", "acceptance": "go test ./... passes", "repo": "acme/widgets"},` +
+		`{"seq": 2, "title": "Same file", "brief": "Touch foo.go too.", "acceptance": "go test ./... passes", "repo": "acme/widgets"},` +
+		`{"seq": 3, "title": "Use Foo", "brief": "Call Foo.", "acceptance": "go test ./... passes", "repo": "acme/widgets", "depends_on": [{"seq": 1, "because": "uses the Foo type item 1 adds"}, {"seq": 2, "because": "  "}]},` +
+		`{"seq": 4, "title": "Docs", "brief": "Record it.", "acceptance": "README has a Foo section", "repo": "acme/widgets", "depends_on": [2]}` +
+		"]}\n```"}
+	var logged strings.Builder
+	pl := &Planner{GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, Log: log.New(&logged, "", 0)}
+	goal := gateway.Goal{ID: goalID, Slug: "ship-it", Title: "Ship it", ProjectID: projID, Status: "planning"}
+	if err := pl.Plan(context.Background(), goal, scopesOf(cfg)[0]); err != nil {
+		t.Fatal(err)
+	}
+	calls := f.CallsNamed("planGoal")
+	if len(calls) != 1 {
+		t.Fatalf("plan calls: %+v", calls)
+	}
+	rows := calls[0].Input["items"].([]any)
+	third, fourth := rows[2].(map[string]any), rows[3].(map[string]any)
+	if deps := third["dependsOn"].([]any); len(deps) != 1 || deps[0] != float64(1) {
+		t.Fatalf("item 3 dependsOn = %v, want [1]", deps)
+	}
+	if deps := fourth["dependsOn"].([]any); len(deps) != 0 {
+		t.Fatalf("item 4 dependsOn = %v, want none", deps)
+	}
+	if third["brief"] != "Call Foo.\n\nDepends on #1 because uses the Foo type item 1 adds." || fourth["brief"] != "Record it." {
+		t.Fatalf("briefs: %q, %q", third["brief"], fourth["brief"])
+	}
+	for _, row := range rows {
+		for k := range row.(map[string]any) {
+			if strings.Contains(strings.ToLower(k), "because") {
+				t.Fatalf("the reason went to the platform: %v", row)
+			}
+		}
+	}
+	for _, want := range []string{
+		"plan ship-it: item 3 dropped dependency on 2: no because\n",
+		"plan ship-it: item 4 dropped dependency on 2: no because\n",
+	} {
+		if !strings.Contains(logged.String(), want) {
+			t.Errorf("log lacks %q:\n%s", want, logged.String())
+		}
+	}
+	if strings.Contains(logged.String(), "dependency on 1") {
+		t.Errorf("the explained dependency was dropped:\n%s", logged.String())
+	}
+
+	// the reason rides on the PlannedItem itself
+	repos := map[string]gateway.Repo{"acme/widgets": {ID: repoID, Name: "widgets", DefaultBranch: "main"}}
+	items, _, _, _, err := pl.ask(context.Background(), goal, t.TempDir(), 0, harness.PlanInput{}, repos, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := items[2]; len(got.DependsOn) != 1 || got.DependsOn[0] != 1 || len(got.DependsBecause) != 1 || got.DependsBecause[1] != "uses the Foo type item 1 adds" {
+		t.Fatalf("item 3: %+v", got)
+	}
+	if got := items[3]; len(got.DependsOn) != 0 || got.DependsBecause != nil {
+		t.Fatalf("item 4: %+v", got)
 	}
 }
