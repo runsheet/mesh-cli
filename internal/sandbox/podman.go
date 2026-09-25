@@ -124,10 +124,17 @@ func AgentRunArgs(pod Pod, spec AgentSpec) []string {
 	return append(args, spec.Command...)
 }
 
+// SidecarName is the container name of a service in a pod.
+func SidecarName(pod Pod, service string) string {
+	return pod.Name + "-" + strings.Trim(unsafeName.ReplaceAllString(strings.ToLower(service), "-"), "-")
+}
+
 // SidecarRunArgs is `podman run -d` for a service in the pod: nothing
-// mounted from the host, its env by name as the agent's is.
+// mounted from the host, its env by name as the agent's is. --pull
+// missing keeps a pulled image in the node user's store, so the next
+// session's is not pulled again.
 func SidecarRunArgs(pod Pod, spec SidecarSpec) []string {
-	args := []string{"run", "-d", "--pod", pod.Name, "--name", pod.Name + "-" + spec.Name,
+	args := []string{"run", "-d", "--pod", pod.Name, "--name", SidecarName(pod, spec.Name),
 		"--security-opt", "no-new-privileges", "--pull", "missing"}
 	args = append(args, LimitArgs(spec.Limits)...)
 	for _, kv := range spec.Env {
@@ -224,6 +231,28 @@ func (p *Podman) AddSidecar(ctx context.Context, pod Pod, spec SidecarSpec) erro
 		return fmt.Errorf("podman run %s: %s", spec.Name, strings.TrimSpace(errb.String()))
 	}
 	return nil
+}
+
+// ExecSidecar implements Runtime: `podman exec` in the service's
+// container, which has the service's own env.
+func (p *Podman) ExecSidecar(ctx context.Context, pod Pod, sidecar string, cmd []string) error {
+	_, err := p.output(ctx, append([]string{"exec", SidecarName(pod, sidecar)}, cmd...), nil)
+	return err
+}
+
+// ProbeTCPArgs is the short-lived container that connects to
+// 127.0.0.1:port in the pod's network (bash's /dev/tcp, from the node
+// image), with every capability dropped.
+func ProbeTCPArgs(pod Pod, image string, port int) []string {
+	return []string{"run", "--rm", "--pod", pod.Name, "--cap-drop", "all",
+		"--security-opt", "no-new-privileges", "--pull", "missing", "--unsetenv-all",
+		image, "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/" + strconv.Itoa(port)}
+}
+
+// ProbeTCP implements Runtime.
+func (p *Podman) ProbeTCP(ctx context.Context, pod Pod, image string, port int) error {
+	_, err := p.output(ctx, ProbeTCPArgs(pod, image, port), nil)
+	return err
 }
 
 // Remove implements Runtime: the pod and all its containers, forced.

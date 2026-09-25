@@ -12,6 +12,7 @@ import (
 
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/harness"
+	"projectmesh.io/mesh-cli/internal/sandbox"
 )
 
 // Evaluator is the second fresh session an item gets on the node
@@ -68,12 +69,30 @@ type Evaluator struct {
 	// runtime the node lacks, so the loop does not try it again (nil:
 	// not remembered).
 	Declines *Declines
-	Log      *log.Logger
+	// Sandbox, when set, runs the session in its own pod with the
+	// services its checkout declares (as Runner.Sandbox).
+	Sandbox *sandbox.Sandbox
+	Log     *log.Logger
 }
 
 func (e *Evaluator) logf(format string, args ...any) {
 	if e.Log != nil {
 		e.Log.Printf(format, args...)
+	}
+}
+
+func (e *Evaluator) runtimes() []string {
+	if e.Runtimes == nil {
+		return nil
+	}
+	return e.Runtimes()
+}
+
+// progress puts a note on the item's events; a platform that refuses it
+// for an item in evaluating is logged, not an error.
+func (e *Evaluator) progress(ctx context.Context, itemID, label, note string) {
+	if err := e.GW.ReportWorkItemProgress(ctx, itemID, truncate(note, 2000), 0, ""); err != nil {
+		e.logf("item %s: progress: %v", label, err)
 	}
 }
 
@@ -127,18 +146,18 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	if len(files) > 0 || len(cx.Index) > 0 || len(cx.Live) > 0 {
 		contextDir = ContextDir
 	}
-	prompt := harness.EvaluatePrompt(harness.EvaluateInput{
+	in := harness.EvaluateInput{
 		GoalSlug: res.Goal.Slug, GoalTitle: res.Goal.Title, GoalAcceptance: res.Goal.Acceptance,
 		Seq: item.Seq, Title: item.Title, Brief: item.Brief, Acceptance: item.Acceptance,
 		Repo: res.Repo.FullName(), Branch: branch, BaseRef: spec.BaseRef, Diff: diff,
 		ContextDir: contextDir, ContextFiles: files, Project: orgLogin + "/" + res.Project.Slug, Prologue: len(e.MCP) > 0,
-	})
+	}
 	budget := e.MaxBudgetUSD
 	if budget <= 0 {
 		budget = 3
 	}
 	model := EvaluateModel(ctx, e.GW, item, e.Model)
-	job := harness.Job{Kind: harness.KindEvaluate, Workspace: dir, Prompt: prompt, MaxBudgetUSD: budget, Label: label + " evaluate", Timeout: e.Timeout, MCPServers: e.MCP, Model: model}
+	job := harness.Job{Kind: harness.KindEvaluate, Workspace: dir, Prompt: harness.EvaluatePrompt(in), MaxBudgetUSD: budget, Label: label + " evaluate", Timeout: e.Timeout, MCPServers: e.MCP, Model: model}
 	if tok := cred.Token(); tok != nil {
 		ghDir, err := NewGHConfigDir()
 		if err != nil {
@@ -154,16 +173,14 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	}
 	defer acct.Cleanup()
 	// the second opinion's job: the same brief, none of the Claude account
+	// and none of the pod's services (Codex runs on the host)
 	second := job
 	acct.Apply(&job)
 	// the evaluator's tools, beside the built-in Prologue. An item in
 	// evaluating cannot be released (the platform releases a claimed or
 	// running one): a required tool this node cannot start leaves it
 	// unevaluated, and the loop does not try again while that holds.
-	var runtimes []string
-	if e.Runtimes != nil {
-		runtimes = e.Runtimes()
-	}
+	runtimes := e.runtimes()
 	st := SelectTools(e.MCP, acct.Tools, string(harness.KindEvaluate), runtimes)
 	if len(st.Missing) > 0 {
 		e.Declines.Record(item.ID, st.Missing, runtimes, time.Now())
@@ -178,6 +195,29 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	if note := st.OmittedNote(); note != "" {
 		e.logf("item %s: %s", label, note)
 	}
+	// the checkout's services, started in the session's pod before the
+	// evaluator; the pod and its sidecars go on every way out. An item
+	// in evaluating cannot be released: a required service that does not
+	// come up leaves it unevaluated, and the loop does not try again
+	// while that holds.
+	pod, err := OpenSessionPod(ctx, e.Sandbox, dir, job.Label, harness.KindEvaluate, e.logf)
+	defer pod.Close()
+	if err != nil {
+		return fmt.Errorf("services: %w", err)
+	}
+	if _, failed := pod.RequiredFailure(); failed {
+		reason := pod.ReleaseReason()
+		e.Declines.Record(item.ID, pod.Declined(), runtimes, time.Now())
+		e.progress(ctx, item.ID, label, reason)
+		return fmt.Errorf("not evaluated, %s", reason)
+	}
+	if note := pod.MissingNote(); note != "" {
+		e.logf("item %s: %s", label, note)
+		e.progress(ctx, item.ID, label, note)
+	}
+	pod.Apply(&job)
+	in.Services = pod.Prompt()
+	job.Prompt = harness.EvaluatePrompt(in)
 	e.logf("item %s: evaluate on %s: %s (%d bytes of diff)", label, modelName(model), branch, len(diff))
 	result, err := e.Harness.Run(ctx, job, nil)
 	acct.Finish(ctx, result)

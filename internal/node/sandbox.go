@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -40,6 +41,9 @@ type SandboxConfig struct {
 	// Image is the node image; empty is ghcr.io/projectmesh-io/mesh-node
 	// at the node's version.
 	Image string `yaml:"image,omitempty"`
+	// ServiceTimeout bounds the wait for a session's services' health
+	// checks before its agent starts (default 120s).
+	ServiceTimeout time.Duration `yaml:"service_timeout,omitempty"`
 }
 
 // UnmarshalYAML takes `sandbox: on|off` or the mapping.
@@ -63,7 +67,7 @@ func (c *SandboxConfig) UnmarshalYAML(n *yaml.Node) error {
 
 // IsZero leaves an unset block out of a saved node.yaml.
 func (c SandboxConfig) IsZero() bool {
-	return c.Mode == "" && c.CPUs == 0 && c.Memory == "" && c.Pids == 0 && c.ServicesCPUs == 0 && c.ServicesMemory == "" && len(c.Registries) == 0 && c.Image == ""
+	return c.Mode == "" && c.CPUs == 0 && c.Memory == "" && c.Pids == 0 && c.ServicesCPUs == 0 && c.ServicesMemory == "" && len(c.Registries) == 0 && c.Image == "" && c.ServiceTimeout == 0
 }
 
 // Validate refuses a mode other than on or off and negative limits.
@@ -73,8 +77,8 @@ func (c SandboxConfig) Validate() error {
 	default:
 		return fmt.Errorf("sandbox.mode %q: want on or off", c.Mode)
 	}
-	if c.CPUs < 0 || c.ServicesCPUs < 0 || c.Pids < 0 {
-		return errors.New("sandbox: cpus, services_cpus and pids cannot be negative")
+	if c.CPUs < 0 || c.ServicesCPUs < 0 || c.Pids < 0 || c.ServiceTimeout < 0 {
+		return errors.New("sandbox: cpus, services_cpus, pids and service_timeout cannot be negative")
 	}
 	return nil
 }
@@ -88,6 +92,7 @@ func (c SandboxConfig) Settings(version string) sandbox.Config {
 		ServicesLimits: sandbox.Limits{CPUs: c.ServicesCPUs, Memory: c.ServicesMemory},
 		Registries:     c.Registries,
 		Network:        sandbox.DefaultNetwork(),
+		ServiceTimeout: c.ServiceTimeout,
 	}
 	if s.Image == "" {
 		s.Image = sandbox.DefaultImage(version)
@@ -109,6 +114,9 @@ func (c SandboxConfig) Settings(version string) sandbox.Config {
 	}
 	if len(s.Registries) == 0 {
 		s.Registries = append([]string(nil), sandbox.DefaultRegistries...)
+	}
+	if s.ServiceTimeout == 0 {
+		s.ServiceTimeout = sandbox.DefaultServiceTimeout
 	}
 	return s
 }
