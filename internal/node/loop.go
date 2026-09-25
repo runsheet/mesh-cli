@@ -462,9 +462,7 @@ func (l *Loop) Tick(ctx context.Context) {
 	runtimes, adapters := l.Runtimes()
 	extras := gateway.HeartbeatExtras{Draining: l.Draining(), UpdateError: l.UpdateError(), Limits: l.limitsStore().Heartbeat(), Runtimes: runtimes, Adapters: adapters}
 	scaling, ranged := l.Scaling()
-	if ranged {
-		extras.Scaling = scaling.Heartbeat()
-	}
+	extras.Scaling = l.heartbeatScaling(scaling, ranged)
 	if l.Scaled != nil {
 		l.Scaled(scaling, ranged)
 	}
