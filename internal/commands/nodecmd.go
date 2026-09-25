@@ -428,6 +428,16 @@ only use it on a machine you trust with that.`,
 			// a ranged capacity scales by the plan's windows, capped by this
 			// machine's load and memory (adr-004)
 			Machine: node.HostMachine()}
+		// every session's list-price cost lands in the ledger, kept on
+		// disk: the api keys' caps and the project budgets count it
+		// (adr-005-capacity-across-accounts)
+		ledgerPath, err := node.LedgerPath()
+		if err != nil {
+			return err
+		}
+		if loop.Ledger, err = node.OpenLedger(ledgerPath, nil); err != nil {
+			return err
+		}
 		// the node follows the version the platform asks for (adr-002);
 		// --once is one tick, too short for an update to finish
 		if updates != nil && !nodeOnceFlag {
@@ -483,8 +493,14 @@ only use it on a machine you trust with that.`,
 	},
 }
 
+// observed is a one-shot harness whose sessions report their plan
+// standing into the loop's Limits and their cost into its Ledger.
+func observed(loop *node.Loop, logger *log.Logger) harness.Harness {
+	return node.ObserveSpend(node.ObserveLimits(oneShotHarness(), loop.Limits), loop.Ledger, logger.Printf)
+}
+
 func runPollMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *gateway.Client, loop *node.Loop, workRoot string, fallback *node.TokenFallback, accounts *node.Credentials, logger *log.Logger) error {
-	h := node.ObserveLimits(oneShotHarness(), loop.Limits)
+	h := observed(loop, logger)
 	runner := &node.Runner{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, MCPFunc: func(ctx context.Context) map[string]any { return prologueMCP(ctx, gw) }, MaxBudgetUSD: nodeMaxBudgetFlag, Model: nodeModels.For("build"), Fallback: fallback, Accounts: cfg.Accounts, Credentials: accounts, Log: logger}
 	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) {
 		r := *runner
@@ -652,10 +668,10 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 	}
 
 	ws := &node.Git{Log: os.Stderr}
-	loop.Evaluate = evaluateWith(gw, cfg, node.ObserveLimits(oneShotHarness(), loop.Limits), loop.CurrentScopes, workRoot, fallback, accounts, logger)
-	loop.Plan = planWith(gw, cfg, node.ObserveLimits(oneShotHarness(), loop.Limits), workRoot, accounts, logger)
-	loop.Research = researchWith(gw, cfg, node.ObserveLimits(oneShotHarness(), loop.Limits), workRoot, accounts, logger)
-	loop.Rebase = rebaseWith(gw, cfg, node.ObserveLimits(oneShotHarness(), loop.Limits), loop.CurrentScopes, workRoot, fallback, accounts, logger)
+	loop.Evaluate = evaluateWith(gw, cfg, observed(loop, logger), loop.CurrentScopes, workRoot, fallback, accounts, logger)
+	loop.Plan = planWith(gw, cfg, observed(loop, logger), workRoot, accounts, logger)
+	loop.Research = researchWith(gw, cfg, observed(loop, logger), workRoot, accounts, logger)
+	loop.Rebase = rebaseWith(gw, cfg, observed(loop, logger), loop.CurrentScopes, workRoot, fallback, accounts, logger)
 	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) {
 		ready, err := readyChannelItem(ctx, gw, ws, loop.CurrentScopes(), item, workRoot, fallback, logger.Printf)
 		if err != nil {

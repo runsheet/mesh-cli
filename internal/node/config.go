@@ -54,6 +54,10 @@ type Config struct {
 	// credential at claim. None is the one implicit account `default`:
 	// the operator's own CLI login, as before.
 	Accounts []AccountConfig `yaml:"accounts,omitempty"`
+	// ProjectBudgets is each project's daily budget in list-price
+	// dollars, shared by the api accounts naming that project
+	// (adr-005-capacity-across-accounts); a project not listed has none.
+	ProjectBudgets map[string]float64 `yaml:"project_budgets,omitempty"`
 	// Codex is OpenAI's Codex CLI on this node (CodexConfig): its
 	// binary, its accounts and the Codex model for each Claude tier.
 	// Nothing runs on it yet.
@@ -362,11 +366,22 @@ type Reloaded struct {
 	Capacity Capacity
 	Limits   *LimitsConfig
 	Scopes   Scopes
+	// Spending is node.yaml's accounts and project budgets; nil keeps
+	// the loop's.
+	Spending *Spending
+}
+
+// Spending is what the node may spend on: node.yaml's accounts and
+// project budgets, read again every tick like the capacity.
+type Spending struct {
+	Accounts       []AccountConfig
+	ProjectBudgets map[string]float64
 }
 
 // Reloader is Loop.Reload for a node started on cfg and scopes: every
 // tick it reads node.yaml again through load (LoadConfig when nil) for
-// the capacity, the limits thresholds and the orgs restriction, and asks MyOrgs for the orgs
+// the capacity, the limits thresholds, the accounts and project budgets
+// and the orgs restriction, and asks MyOrgs for the orgs
 // the owner belongs to. An org seen for the first time is registered in
 // through register (a Node there, as start does) before it is served —
 // one that fails to register is tried again next tick; an org no longer
@@ -390,6 +405,7 @@ func Reloader(gw Gateway, cfg *Config, scopes Scopes, load func() (*Config, erro
 		} else {
 			limits := c.Limits
 			out.Capacity, out.Limits, restrict = c.Capacity, &limits, c.Orgs
+			out.Spending = &Spending{Accounts: c.Accounts, ProjectBudgets: c.ProjectBudgets}
 		}
 		orgs, err := gw.MyOrgs(ctx)
 		if err != nil {
@@ -472,6 +488,11 @@ func LoadConfig() (*Config, error) {
 	}
 	if err := ValidateAccounts(c.Accounts); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	for p, b := range c.ProjectBudgets {
+		if b < 0 {
+			return nil, fmt.Errorf("%s: project_budgets[%s]: a budget cannot be negative", path, p)
+		}
 	}
 	if err := c.Codex.Validate(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)

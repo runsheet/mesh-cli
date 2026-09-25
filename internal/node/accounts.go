@@ -44,6 +44,14 @@ type AccountConfig struct {
 	TokenFile string `yaml:"token_file,omitempty"`
 	// APIKeyEnv is the name of the variable holding the API key (api).
 	APIKeyEnv string `yaml:"api_key_env,omitempty"`
+	// DailyCapUSD and MonthlyCapUSD are an api key's caps in list-price
+	// dollars (adr-005-capacity-across-accounts); 0 is the default,
+	// DefaultDailyCapUSD and DefaultMonthlyCapUSD. A subscription has none.
+	DailyCapUSD   float64 `yaml:"daily_cap,omitempty"`
+	MonthlyCapUSD float64 `yaml:"monthly_cap,omitempty"`
+	// Project is the project whose daily budget (Config.ProjectBudgets)
+	// an api key spends; empty is none.
+	Project string `yaml:"project,omitempty"`
 	// ID is a platform credential's id (IssuedAccount); node.yaml's
 	// accounts have none.
 	ID string `yaml:"-"`
@@ -79,8 +87,32 @@ func ValidateAccounts(accounts []AccountConfig) error {
 		default:
 			return fmt.Errorf("account %q: kind %q is not %s or %s", label, a.Kind, AccountSubscription, AccountAPI)
 		}
+		if a.DailyCapUSD < 0 || a.MonthlyCapUSD < 0 {
+			return fmt.Errorf("account %q: a cap cannot be negative", label)
+		}
+		if a.Kind == AccountSubscription && (a.DailyCapUSD > 0 || a.MonthlyCapUSD > 0 || a.Project != "") {
+			return fmt.Errorf("account %q: caps and project are for an api account, not a subscription", label)
+		}
 	}
 	return nil
+}
+
+// Caps are an api key's daily and monthly caps, the defaults where
+// node.yaml names none.
+func (a AccountConfig) Caps() (daily, monthly float64) {
+	c := CapacityAccount{DailyCapUSD: a.DailyCapUSD, MonthlyCapUSD: a.MonthlyCapUSD}
+	return c.dailyCap(), c.monthlyCap()
+}
+
+// capacity is the account as the accounts scaler sees it, with its
+// project's daily budget from budgets.
+func (a AccountConfig) capacity(budgets map[string]float64) CapacityAccount {
+	c := CapacityAccount{Name: a.Label, Kind: a.Kind}
+	if a.Kind == AccountAPI {
+		c.DailyCapUSD, c.MonthlyCapUSD = a.Caps()
+		c.Project, c.ProjectDailyBudgetUSD = a.Project, budgets[a.Project]
+	}
+	return c
 }
 
 // TokenPath is TokenFile with a leading ~ expanded.

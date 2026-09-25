@@ -78,13 +78,54 @@ func TestAccountsNone(t *testing.T) {
 	}
 }
 
+// An api key's caps default to $50 a day and $1,000 a month; set, they
+// are its own. A project's budget is shared by the keys naming it.
+func TestAccountsCapsAndBudgets(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	writeNodeYAML(t, `slug: mini
+name: mini
+capacity: {min: 1, max: 6}
+accounts:
+  - {label: max-a, kind: subscription, token_file: /t}
+  - {label: key, kind: api, api_key_env: K}
+  - {label: big, kind: api, api_key_env: B, daily_cap: 200, monthly_cap: 3000, project: mesh-cli}
+project_budgets:
+  mesh-cli: 120
+`)
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		i          int
+		day, month float64
+		project    string
+		budget     float64
+	}{{1, 50, 1000, "", 0}, {2, 200, 3000, "mesh-cli", 120}} {
+		a := cfg.Accounts[c.i]
+		if d, m := a.Caps(); d != c.day || m != c.month {
+			t.Errorf("%s caps %v/%v, want %v/%v", a.Label, d, m, c.day, c.month)
+		}
+		got := a.capacity(cfg.ProjectBudgets)
+		want := CapacityAccount{Name: a.Label, Kind: AccountAPI, DailyCapUSD: c.day, MonthlyCapUSD: c.month, Project: c.project, ProjectDailyBudgetUSD: c.budget}
+		if got != want {
+			t.Errorf("%s as the scaler sees it: %+v, want %+v", a.Label, got, want)
+		}
+	}
+	if got := cfg.Accounts[0].capacity(cfg.ProjectBudgets); got != (CapacityAccount{Name: "max-a", Kind: AccountSubscription}) {
+		t.Errorf("subscription as the scaler sees it: %+v", got)
+	}
+}
+
 func TestAccountsRejected(t *testing.T) {
 	for name, entries := range map[string]string{
-		"duplicate label": "  - {label: a, kind: subscription, token_file: /t}\n  - {label: a, kind: api, api_key_env: K}\n",
-		"no label":        "  - {kind: subscription, token_file: /t}\n",
-		"unknown kind":    "  - {label: a, kind: team, token_file: /t}\n",
-		"no token_file":   "  - {label: a, kind: subscription}\n",
-		"no api_key_env":  "  - {label: a, kind: api}\n",
+		"duplicate label":  "  - {label: a, kind: subscription, token_file: /t}\n  - {label: a, kind: api, api_key_env: K}\n",
+		"no label":         "  - {kind: subscription, token_file: /t}\n",
+		"unknown kind":     "  - {label: a, kind: team, token_file: /t}\n",
+		"no token_file":    "  - {label: a, kind: subscription}\n",
+		"no api_key_env":   "  - {label: a, kind: api}\n",
+		"negative cap":     "  - {label: a, kind: api, api_key_env: K, daily_cap: -1}\n",
+		"subscription cap": "  - {label: a, kind: subscription, token_file: /t, monthly_cap: 10}\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
