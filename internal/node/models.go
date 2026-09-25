@@ -1,6 +1,11 @@
 package node
 
-import "strings"
+import (
+	"context"
+	"strings"
+
+	"projectmesh.io/mesh-cli/internal/gateway"
+)
 
 // ModelRank orders the model tiers a session may run on, weakest first:
 // haiku 1, sonnet 2, opus 3. A full id (claude-opus-5-5, claude-sonnet-5)
@@ -49,4 +54,59 @@ func PlannableModel(m string) bool {
 		return true
 	}
 	return strings.HasPrefix(m, "claude-") && len(m) > len("claude-")
+}
+
+// ItemModel is the model the item itself asks to be built on (runsheet
+// trd §6a, items-carry-a-model): the plan's Model, else the model of
+// the agent it names — the most specific definition that has one
+// (WorkItem.AgentIDs). "" when it asks for none: an item from an older
+// platform, one with no agent, or an agent that names no model or
+// cannot be read (the caller then falls back to the node's own).
+func ItemModel(ctx context.Context, gw Gateway, item gateway.WorkItem) string {
+	if item.Model != "" {
+		return item.Model
+	}
+	for _, id := range item.AgentIDs() {
+		m, err := gw.AgentModel(ctx, id)
+		if err != nil {
+			return ""
+		}
+		if m != "" {
+			return m
+		}
+	}
+	return ""
+}
+
+// BuildModel is what a session that works on the item's branch — the
+// build, and a rebase once the node runs one — runs on: the item's
+// model, then its agent's, then nodeDefault (node.yaml build/default;
+// "" the CLI's own).
+func BuildModel(ctx context.Context, gw Gateway, item gateway.WorkItem, nodeDefault string) string {
+	if m := ItemModel(ctx, gw, item); m != "" {
+		return m
+	}
+	return nodeDefault
+}
+
+// EvaluateModel is what the item's evaluator runs on: never below the
+// builder and never below sonnet — the strongest of the node's own
+// evaluate model, the item's build model, the tier the platform chose
+// to evaluate it on, and sonnet. An item that asks for no model (an
+// older platform) evaluates on nodeDefault as it always has.
+func EvaluateModel(ctx context.Context, gw Gateway, item gateway.WorkItem, nodeDefault string) string {
+	build := ItemModel(ctx, gw, item)
+	if build == "" && item.EvaluateModel == "" {
+		return nodeDefault
+	}
+	// nodeDefault first: of two that tie, the operator's own id wins
+	return Strongest(nodeDefault, build, item.EvaluateModel, "sonnet")
+}
+
+// modelName is how a log line or a note names a session's model.
+func modelName(m string) string {
+	if m == "" {
+		return "the CLI's default model"
+	}
+	return m
 }

@@ -187,7 +187,8 @@ and leaves it for a node.
   and its cost go in with `ReportWorkItemProgress`.
 - **Model.** The `rebase` key under `models` in `~/.mesh/node.yaml`,
   `mesh node model --rebase`, or `--model-rebase` on `mesh node start`;
-  unset, it takes `default`.
+  unset, it takes `default`. That is the fallback: a rebase runs on the
+  model its builder did — the item's, else its agent's — like the build.
 
 ```bash
 mesh node model --rebase sonnet

@@ -45,7 +45,7 @@ func TestLoopEvaluatesFinishedItems(t *testing.T) {
 	waitFor(t, func() bool { return f.Item(item1)["status"] == "review" })
 
 	calls := f.CallsNamed("evaluateWorkItem")
-	if len(calls) != 1 || calls[0].Input["aggregateId"] != item1 || calls[0].Input["passed"] != true || calls[0].Input["notes"] != "The test exists and fails for the right reason." || calls[0].Input["costCents"] != float64(125) {
+	if len(calls) != 1 || calls[0].Input["aggregateId"] != item1 || calls[0].Input["passed"] != true || calls[0].Input["notes"] != "The test exists and fails for the right reason.\n\n(evaluated on the CLI's default model)" || calls[0].Input["costCents"] != float64(125) {
 		t.Fatalf("evaluate calls: %+v", calls)
 	}
 	if f.Item(item2)["status"] != "evaluating" {
@@ -82,7 +82,7 @@ func TestLoopEvaluatesFinishedItems(t *testing.T) {
 	h.text = "The test passes already, so it proves nothing.\nVERDICT: FAIL"
 	loop.Tick(ctx)
 	waitFor(t, func() bool { return f.Item(item1)["status"] == "ready" })
-	if f.Item(item1)["evaluation"] != "The test passes already, so it proves nothing." {
+	if f.Item(item1)["evaluation"] != "The test passes already, so it proves nothing.\n\n(evaluated on the CLI's default model)" {
 		t.Fatalf("notes: %v", f.Item(item1)["evaluation"])
 	}
 	f.WorkItems[item1]["status"] = "evaluating"
