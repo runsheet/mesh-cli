@@ -187,9 +187,11 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   planner names a `model` per item by the rubric in `PlanPrompt`; the
   node drops one outside haiku/sonnet/opus/`claude-*` with a log line
   and hands the rest in on `PlannedItem.Model`. The value is an alias the CLI knows (`opus`, `sonnet`, `haiku`)
-  or a full id (`claude-opus-5`). The platform's agent definitions will
-  carry the model once they land (runsheet's `agents-on-the-platform`);
-  these stay as the fallback.
+  or a full id (`claude-opus-5`). An item's build and rebase run on
+  the item's own `model`, then its agent's, then node.yaml's `build`
+  (or `default`) (`BuildModel`); the evaluator on the stronger of that
+  and `sonnet` (`EvaluateModel`); node.yaml is the fallback. The model
+  used is in node.log and on the item's events.
 
 ## Rules
 
