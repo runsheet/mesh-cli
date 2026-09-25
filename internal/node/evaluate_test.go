@@ -2,14 +2,18 @@ package node
 
 import (
 	"context"
+	"errors"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
+	"projectmesh.io/mesh-cli/internal/gateway/gatewaytest"
 	"projectmesh.io/mesh-cli/internal/harness"
 )
 
@@ -123,5 +127,238 @@ func TestBuildPromptOnRetry(t *testing.T) {
 	}
 	if strings.Contains(harness.BuildPrompt(harness.PromptInput{GoalTitle: "Ship it", Seq: 1, Title: "T"}), "Previous attempt") {
 		t.Fatal("a first attempt has no previous one")
+	}
+}
+
+// fakeCodexH is a second-opinion harness: its final message, or its
+// error, and a plan reading it reports.
+type fakeCodexH struct {
+	mu   sync.Mutex
+	jobs []harness.Job
+	text string
+	err  error
+	cost float64
+	rl   *harness.RateLimit
+}
+
+func (h *fakeCodexH) Name() string { return "codex" }
+func (h *fakeCodexH) Run(ctx context.Context, job harness.Job, on func(harness.Progress)) (harness.Result, error) {
+	h.mu.Lock()
+	h.jobs = append(h.jobs, job)
+	h.mu.Unlock()
+	return harness.Result{Success: h.err == nil, Text: h.text, CostUSD: h.cost, RateLimit: h.rl}, h.err
+}
+
+func (h *fakeCodexH) runs() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(h.jobs)
+}
+
+// secondFixture is an evaluator on item 1 of a goal of that priority,
+// with Claude saying first and second as the second opinion; the
+// second's readings land in the returned Limits under codex:plan.
+func secondFixture(t *testing.T, priority, first string, second harness.Harness) (*gatewaytest.Fake, *Evaluator, *fakeHarness, *Limits) {
+	t.Helper()
+	f := seed(t)
+	f.Goals[goalID]["priority"] = priority
+	f.WorkItems[item1]["status"] = "evaluating"
+	f.WorkItems[item1]["branch"] = "mesh/ship-it-1"
+	gw := gateway.New(f.URL(), "rs_test")
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "test-node", NodeID: gateway.NodeID(mustUUID(orgID), "test-node").String(), Capacity: Fixed(1)}
+	f.WorkItems[item1]["nodeId"] = cfg.NodeID
+	ws := &fakeWS{root: t.TempDir()}
+	claude := &fakeHarness{text: first}
+	limits := &Limits{}
+	account := CodexLimitsAccount("plan")
+	ev := &Evaluator{GW: gw, Harness: claude, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, Model: "sonnet",
+		Second: ObserveLimitsAs(second, limits, account), SecondModel: "gpt-6-astra", SecondAccount: account, Limits: limits,
+		Thresholds: func() LimitsConfig { return LimitsConfig{} }, Log: log.New(io.Discard, "", 0)}
+	return f, ev, claude, limits
+}
+
+func evaluateItem1(t *testing.T, f *gatewaytest.Fake, ev *Evaluator) map[string]any {
+	t.Helper()
+	item, err := ev.GW.WorkItem(context.Background(), item1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ev.Evaluate(context.Background(), *item); err != nil {
+		t.Fatal(err)
+	}
+	calls := f.CallsNamed("evaluateWorkItem")
+	if len(calls) != 1 {
+		t.Fatalf("evaluate calls: %+v", calls)
+	}
+	return calls[0].Input
+}
+
+// A high goal whose evaluation passes is evaluated again on Codex, with
+// the same prompt in the same workspace; both pass, so it passes, with
+// both verdicts labelled and the cost of both.
+func TestSecondOpinionBothPass(t *testing.T) {
+	codex := &fakeCodexH{text: "The test fails for the right reason.\nVERDICT: PASS", cost: 0.40,
+		rl: &harness.RateLimit{Status: "allowed", ObservedAt: time.Now()}}
+	f, ev, claude, limits := secondFixture(t, "high", "Holds.\n\nVERDICT: PASS", codex)
+	in := evaluateItem1(t, f, ev)
+	want := "Claude (first evaluation): VERDICT: PASS\nHolds.\n\nCodex (second opinion): VERDICT: PASS\nThe test fails for the right reason.\n\n(evaluated on sonnet; second opinion on Codex gpt-6-astra)"
+	if in["passed"] != true || in["notes"] != want || in["costCents"] != float64(165) {
+		t.Fatalf("recorded %+v\nwant notes %q", in, want)
+	}
+	if len(codex.jobs) != 1 || len(claude.jobs) != 1 {
+		t.Fatalf("runs: claude %d, codex %d", len(claude.jobs), len(codex.jobs))
+	}
+	cj, xj := claude.jobs[0], codex.jobs[0]
+	if xj.Prompt != cj.Prompt || xj.Workspace != cj.Workspace || xj.Kind != harness.KindEvaluate || xj.Model != "gpt-6-astra" {
+		t.Fatalf("codex job %+v", xj)
+	}
+	// its reading is kept under its own key, apart from Claude's
+	if _, ok := limits.Reading("codex:plan"); !ok {
+		t.Fatal("the Codex reading is not kept under codex:plan")
+	}
+	if len(limits.Readings()) != 0 {
+		t.Fatalf("a Codex reading is among Claude's: %+v", limits.Readings())
+	}
+}
+
+// An urgent goal: Claude passes, Codex fails — a disagreement fails the
+// evaluation, with both notes for the builder. Codex is replayed from
+// the recorded stream, its final message a failing verdict.
+func TestSecondOpinionDisagreementFails(t *testing.T) {
+	codex := replayCodex(t, "Nothing asserts the error path.\\nVERDICT: FAIL")
+	f, ev, _, _ := secondFixture(t, "urgent", "Holds.\n\nVERDICT: PASS", codex)
+	in := evaluateItem1(t, f, ev)
+	notes, _ := in["notes"].(string)
+	if in["passed"] != false || !strings.Contains(notes, "Claude (first evaluation): VERDICT: PASS\nHolds.") ||
+		!strings.Contains(notes, "Codex (second opinion): VERDICT: FAIL\nNothing asserts the error path.") {
+		t.Fatalf("recorded %+v", in)
+	}
+	// the cost is Claude's and Codex's, at gpt-6-astra's list price
+	want := Cents(1.25 + replayedCost(t))
+	if in["costCents"] != float64(want) || want <= 125 {
+		t.Fatalf("cost %v, want %d", in["costCents"], want)
+	}
+	if f.Item(item1)["status"] != "ready" {
+		t.Fatalf("a failed evaluation readies the item: %v", f.Item(item1)["status"])
+	}
+}
+
+// A first fail, or a normal or low goal, never runs Codex.
+func TestSecondOpinionNotRun(t *testing.T) {
+	for _, c := range []struct{ priority, first string }{
+		{"high", "Broken.\nVERDICT: FAIL"},
+		{"normal", "Holds.\nVERDICT: PASS"},
+		{"", "Holds.\nVERDICT: PASS"},
+		{"low", "Holds.\nVERDICT: PASS"},
+	} {
+		codex := &fakeCodexH{text: "VERDICT: FAIL"}
+		f, ev, _, _ := secondFixture(t, c.priority, c.first, codex)
+		in := evaluateItem1(t, f, ev)
+		if codex.runs() != 0 {
+			t.Errorf("%q %q: Codex ran", c.priority, c.first)
+		}
+		notes, _ := in["notes"].(string)
+		if strings.Contains(notes, "Codex") || in["costCents"] != float64(125) || in["passed"] != strings.HasSuffix(c.first, "PASS") {
+			t.Errorf("%q: recorded %+v", c.priority, in)
+		}
+	}
+}
+
+// A second opinion that errors or reaches no verdict keeps the first
+// verdict and says so. The no-verdict one is the recorded stream as it
+// is ("hello from codex").
+func TestSecondOpinionUnavailable(t *testing.T) {
+	for name, c := range map[string]struct {
+		h    harness.Harness
+		want string
+	}{
+		"error":      {&fakeCodexH{err: errors.New("harness codex: stream disconnected"), cost: 0.1}, "Codex second opinion unavailable: harness codex: stream disconnected"},
+		"no verdict": {replayCodex(t, ""), "Codex second opinion unavailable: no verdict: hello from codex"},
+	} {
+		f, ev, _, _ := secondFixture(t, "high", "Holds.\n\nVERDICT: PASS", c.h)
+		in := evaluateItem1(t, f, ev)
+		want := "Holds.\n\n" + c.want + "\n\n(evaluated on sonnet)"
+		if in["passed"] != true || in["notes"] != want {
+			t.Errorf("%s: recorded %+v\nwant notes %q", name, in, want)
+		}
+	}
+}
+
+// A Codex account that is stopped skips the second opinion, which the
+// notes say — and never paces or stops a Claude session: the node's own
+// pace and its choice of account read Claude's readings only.
+func TestSecondOpinionAccountStopped(t *testing.T) {
+	codex := &fakeCodexH{text: "VERDICT: FAIL"}
+	f, ev, _, limits := secondFixture(t, "urgent", "Holds.\n\nVERDICT: PASS", codex)
+	now := time.Now()
+	limits.Observe("codex:plan", &harness.RateLimit{Status: "rejected", ResetsAt: now.Add(time.Hour), ObservedAt: now,
+		FiveHour: harness.RateLimitWindow{Utilization: 1, ResetsAt: now.Add(time.Hour)}})
+	in := evaluateItem1(t, f, ev)
+	notes, _ := in["notes"].(string)
+	if codex.runs() != 0 || in["passed"] != true || !strings.Contains(notes, "Codex second opinion unavailable: account codex:plan is stopped until") {
+		t.Fatalf("codex runs %d, recorded %+v", codex.runs(), in)
+	}
+	// the loop — no Claude accounts configured, and so judged by its
+	// strictest reading — is not paced by Codex's
+	loop := &Loop{Cfg: &Config{}, Limits: limits}
+	if p := loop.pacing(); p.mode != paceNormal {
+		t.Fatalf("Claude paced by the Codex account: %+v", p)
+	}
+	if _, ok := loop.accountFor(context.Background(), "normal", false, ""); !ok {
+		t.Fatal("no Claude account for normal work while only Codex is stopped")
+	}
+	// and on the heartbeat all the same
+	if hb := limits.Heartbeat(); len(hb) != 1 || hb[0].Account != "codex:plan" {
+		t.Fatalf("heartbeat %+v", hb)
+	}
+}
+
+// replayCodex is the real Codex adapter on a `codex` that replays the
+// recorded API-key stream (internal/harness/testdata), its final message
+// replaced by text when text is not empty (JSON-escaped).
+func replayCodex(t *testing.T, text string) harness.Harness {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("..", "harness", "testdata", "codex_exec_apikey.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text != "" {
+		data = []byte(strings.Replace(string(data), `"text":"hello from codex"`, `"text":"`+text+`"`, 1))
+	}
+	dir := t.TempDir()
+	fixture := filepath.Join(dir, "stream.jsonl")
+	if err := os.WriteFile(fixture, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(dir, "codex")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\ncat > /dev/null\ncat "+fixture+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MESH_TEST_CODEX_KEY", "sk-test")
+	return &harness.Codex{Binary: bin, HomeRoot: t.TempDir(), Account: harness.CodexAccount{Name: "plan", APIKeyEnv: "MESH_TEST_CODEX_KEY"}}
+}
+
+// replayedCost is the recorded stream's cost at gpt-6-astra.
+func replayedCost(t *testing.T) float64 {
+	t.Helper()
+	fh, err := os.Open(filepath.Join("..", "harness", "testdata", "codex_exec_apikey.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fh.Close()
+	return harness.ParseCodexStream(fh, "gpt-6-astra", nil).CostUSD
+}
+
+// Two long notes are truncated together: neither is cut out, and a
+// short one leaves its room to the other.
+func TestBothNotesTruncatedTogether(t *testing.T) {
+	long := strings.Repeat("a", 5000)
+	got := bothNotes(long, strings.Repeat("b", 5000), false, 3800)
+	if len(got) > 3800 || strings.Count(got, "a") < 1800 || strings.Count(got, "b") < 1800 || !strings.Contains(got, "Codex (second opinion): VERDICT: FAIL\nbbb") {
+		t.Fatalf("len %d, a %d, b %d", len(got), strings.Count(got, "a"), strings.Count(got, "b"))
+	}
+	got = bothNotes(long, "short", true, 3800)
+	if len(got) > 3800 || strings.Count(got, "a") < 3600 || !strings.HasSuffix(got, "VERDICT: PASS\nshort") {
+		t.Fatalf("len %d: %q", len(got), got[len(got)-60:])
 	}
 }

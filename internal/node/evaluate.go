@@ -46,7 +46,22 @@ type Evaluator struct {
 	Timeout time.Duration
 	// Fallback is the node's one old-platform notice (nil: every item).
 	Fallback *TokenFallback
-	Log      *log.Logger
+	// Second is the second opinion's harness (Codex; nil: none). An
+	// item of an urgent or high goal whose first verdict passes is
+	// evaluated again on it, with the same prompt in the same workspace
+	// (docs/adr/adr-005-codex-second-opinion.md).
+	Second harness.Harness
+	// SecondModel is the second opinion's model (CodexModel of the
+	// evaluate model; "" Codex's own default).
+	SecondModel string
+	// SecondAccount is the Limits key of Second's account
+	// (CodexLimitsAccount): a reading there that paces or stops it skips
+	// the second opinion, and nothing else.
+	SecondAccount string
+	// Limits and Thresholds judge SecondAccount (nil: never skipped).
+	Limits     *Limits
+	Thresholds func() LimitsConfig
+	Log        *log.Logger
 }
 
 func (e *Evaluator) logf(format string, args ...any) {
@@ -131,6 +146,8 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 		return err
 	}
 	defer acct.Cleanup()
+	// the second opinion's job: the same brief, none of the Claude account
+	second := job
 	acct.Apply(&job)
 	e.logf("item %s: evaluate on %s: %s (%d bytes of diff)", label, modelName(model), branch, len(diff))
 	result, err := e.Harness.Run(ctx, job, nil)
@@ -149,21 +166,121 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	if !ok {
 		return fmt.Errorf("evaluator session reached no verdict (%s): %s", result.SessionID, truncate(result.Text, 300))
 	}
-	verdict := "failed"
-	if passed {
-		verdict = "passed"
-	}
 	notes = strings.TrimSpace(notes)
 	if notes == "" {
 		notes = "(no notes)"
 	}
-	// the item's events say which model judged it
-	notes = truncate(notes, 4000-100) + "\n\n(evaluated on " + modelName(model) + ")"
-	if err := e.GW.EvaluateWorkItem(ctx, item.ID, passed, notes, Cents(result.CostUSD)); err != nil {
+	cost := result.CostUSD
+	if passed && e.Second != nil && gateway.PriorityRank(res.Goal.Priority) <= gateway.PriorityRank("high") {
+		op := e.secondOpinion(ctx, label, second)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		cost += op.cost
+		if op.unavailable != "" {
+			e.logf("item %s: Codex second opinion unavailable: %s", label, op.unavailable)
+			line := "Codex second opinion unavailable: " + op.unavailable
+			notes = truncate(notes, 4000-200-len(line)) + "\n\n" + line + "\n\n(evaluated on " + modelName(model) + ")"
+		} else {
+			passed = passed && op.passed
+			notes = bothNotes(notes, op.notes, op.passed, 4000-200) + "\n\n(evaluated on " + modelName(model) + "; second opinion on Codex" + codexModelName(e.SecondModel) + ")"
+		}
+	} else {
+		// the item's events say which model judged it
+		notes = truncate(notes, 4000-100) + "\n\n(evaluated on " + modelName(model) + ")"
+	}
+	verdict := "failed"
+	if passed {
+		verdict = "passed"
+	}
+	if err := e.GW.EvaluateWorkItem(ctx, item.ID, passed, notes, Cents(cost)); err != nil {
 		return fmt.Errorf("record verdict: %w", err)
 	}
-	e.logf("item %s: evaluation %s ($%.2f)", label, verdict, result.CostUSD)
+	e.logf("item %s: evaluation %s ($%.2f)", label, verdict, cost)
 	return nil
+}
+
+// opinion is the second evaluation's outcome: its verdict and notes, or
+// why there is none (unavailable), and what it cost either way.
+type opinion struct {
+	passed      bool
+	notes       string
+	cost        float64
+	unavailable string
+}
+
+// secondOpinion runs the evaluation's job on Second, unless its account
+// is paced or stopped. A session that errors, times out or reaches no
+// verdict is unavailable, and the first verdict stands.
+func (e *Evaluator) secondOpinion(ctx context.Context, label string, job harness.Job) opinion {
+	if e.Limits != nil && e.SecondAccount != "" {
+		if r, ok := e.Limits.Reading(e.SecondAccount); ok {
+			var cfg LimitsConfig
+			if e.Thresholds != nil {
+				cfg = e.Thresholds()
+			}
+			if p := pace(time.Now(), r, cfg); p.mode != paceNormal {
+				return opinion{unavailable: fmt.Sprintf("account %s is %s until %s: %s", e.SecondAccount, p.mode, p.resumeAt.UTC().Format(time.RFC3339), p.why)}
+			}
+		}
+	}
+	job.Model = e.SecondModel
+	job.Label = label + " second opinion"
+	e.logf("item %s: second opinion on Codex%s", label, codexModelName(e.SecondModel))
+	result, err := e.Second.Run(ctx, job, nil)
+	op := opinion{cost: result.CostUSD}
+	switch {
+	case ctx.Err() != nil:
+		op.unavailable = ctx.Err().Error()
+	case errors.Is(err, context.DeadlineExceeded):
+		op.unavailable = fmt.Sprintf("the session ran out of time (%s)", e.Timeout)
+	case err != nil:
+		op.unavailable = truncate(harness.Redact(err.Error(), job.Secrets...), 300)
+	default:
+		passed, notes, ok := harness.ParseVerdict(result.Text)
+		if !ok {
+			op.unavailable = "no verdict: " + truncate(harness.Redact(result.Text, job.Secrets...), 300)
+			break
+		}
+		op.passed = passed
+		op.notes = strings.TrimSpace(harness.Redact(notes, job.Secrets...))
+		if op.notes == "" {
+			op.notes = "(no notes)"
+		}
+	}
+	return op
+}
+
+// bothNotes labels the two verdicts, Claude's first, so a builder sees
+// both, truncated together to n: each gets half, and one shorter than
+// its half leaves the rest to the other, so neither is cut out.
+func bothNotes(first, second string, secondPassed bool, n int) string {
+	firstHead := "Claude (first evaluation): " + harness.VerdictPass + "\n"
+	secondHead := "Codex (second opinion): " + verdictLine(secondPassed) + "\n"
+	// the blank line between them, and the two bytes more truncate's
+	// "…" takes than the byte it replaces, in each
+	room := n - len(firstHead) - len(secondHead) - 2 - 4
+	a, b := room/2, room-room/2
+	if len(first) < a {
+		b += a - len(first)
+	} else if len(second) < b {
+		a += b - len(second)
+	}
+	return firstHead + truncate(first, a) + "\n\n" + secondHead + truncate(second, b)
+}
+
+func verdictLine(passed bool) string {
+	if passed {
+		return harness.VerdictPass
+	}
+	return harness.VerdictFail
+}
+
+func codexModelName(m string) string {
+	if m == "" {
+		return " (its default model)"
+	}
+	return " " + m
 }
 
 // Cents rounds a dollar cost to whole cents.
