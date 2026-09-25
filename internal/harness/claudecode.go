@@ -9,12 +9,14 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/sandbox"
+	"projectmesh.io/mesh-cli/internal/sessionunit"
 )
 
 // ClaudeCode runs `claude -p` in the workspace, stream-json out.
@@ -29,8 +31,11 @@ type ClaudeCode struct {
 	// Sandbox, when set, runs every session in its own pod (ADR 007):
 	// `claude` from the node image, the workspace and a temporary HOME
 	// the only host paths, the environment the job's allow-listed
-	// variables. Nil is `sandbox: off`: the process on the host, as ever.
+	// variables. Nil is `sandbox: off`: the process on the host, in Unit.
 	Sandbox *sandbox.Sandbox
+	// Unit runs a host session outside the node process (ADR 008); nil is
+	// sessionunit.Default() — a systemd user scope, else detached.
+	Unit sessionunit.Unit
 }
 
 // Name implements Harness.
@@ -107,47 +112,199 @@ func (c *ClaudeCode) SandboxArgs(job Job, mcpPath string) []string {
 	return args
 }
 
-// Run implements Harness. The process is killed when ctx is cancelled.
+// Run implements Harness. The session runs in its own unit
+// (sessionunit), not as the node's child: its stream-json goes to
+// `<workdir>.session/output.jsonl`, read back as it grows, and its
+// state to `state.json` beside it, so the node's exit does not end it.
+// A cancelled ctx or the job's Timeout stops the unit.
 func (c *ClaudeCode) Run(ctx context.Context, job Job, onProgress func(Progress)) (Result, error) {
 	if c.Sandbox != nil || job.Session != nil {
+		// the pod is the unit once sandboxed-sessions adopts it (ADR 008)
 		return c.runSandboxed(ctx, job, onProgress)
 	}
 	bin := c.Binary
 	if bin == "" {
 		bin = "claude"
 	}
-	if _, err := exec.LookPath(bin); err != nil {
+	path, err := exec.LookPath(bin)
+	if err != nil {
 		return Result{}, fmt.Errorf("harness claude-code: %w", err)
+	}
+	if abs, err := filepath.Abs(path); err == nil {
+		path = abs // the unit may search another PATH
 	}
 	if job.Timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, job.Timeout)
 		defer cancel()
 	}
-	cmd := exec.CommandContext(ctx, bin, c.Args(job)...)
-	cmd.Dir = job.Workspace
-	cmd.Env = SessionEnviron(os.Environ(), job)
-	cmd.Stdin = strings.NewReader(job.Prompt)
-	cmd.WaitDelay = 5 * time.Second
-	var errBuf bytes.Buffer
-	if c.Stderr != nil {
-		cmd.Stderr = io.MultiWriter(&redactWriter{w: c.Stderr, secrets: job.Secrets}, &errBuf)
-	} else {
-		cmd.Stderr = &errBuf
+	unit := c.Unit
+	if unit == nil {
+		unit = sessionunit.Default()
 	}
-	stdout, err := cmd.StdoutPipe()
+	dir, files, err := openSessionDir(job)
 	if err != nil {
-		return Result{}, err
+		return Result{}, fmt.Errorf("harness claude-code: session dir: %w", err)
 	}
-	if err := cmd.Start(); err != nil {
+	// the session is handled when Run returns: its files go with it
+	defer os.RemoveAll(dir)
+	h, err := unit.Start(sessionunit.Spec{
+		Kind: string(job.Kind), Subject: job.Meta.subject(job.Label),
+		Binary: path, Args: c.Args(job), Dir: job.Workspace,
+		Env:   SessionEnviron(os.Environ(), job),
+		Stdin: files.prompt, Stdout: files.out, Stderr: files.err,
+	})
+	files.close()
+	if err != nil {
 		return Result{}, fmt.Errorf("harness claude-code: start: %w", err)
 	}
+	st := job.state(unit, h, c.Name())
+	if err := sessionunit.WriteState(dir, st); err != nil {
+		unit.Stop(h)
+		return Result{}, fmt.Errorf("harness claude-code: state: %w", err)
+	}
+	// a cancelled ctx or the timeout stops the unit; the reading below
+	// then ends with the process, as it did with a pipe
+	ended := make(chan struct{})
+	defer close(ended)
+	go func() {
+		select {
+		case <-ctx.Done():
+			unit.Stop(h)
+		case <-ended:
+		}
+	}()
+	alive := func() bool { return unit.Alive(h) }
+
+	var errBuf bytes.Buffer
+	var stderr io.Writer = &errBuf
+	if c.Stderr != nil {
+		stderr = io.MultiWriter(&redactWriter{w: c.Stderr, secrets: job.Secrets}, &errBuf)
+	}
+	errFollow, err := sessionunit.Follow(context.Background(), filepath.Join(dir, sessionunit.StderrFile), 0, alive)
+	if err != nil {
+		unit.Stop(h)
+		return Result{}, fmt.Errorf("harness claude-code: stderr: %w", err)
+	}
+	defer errFollow.Close()
+	errDone := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(stderr, errFollow)
+		close(errDone)
+	}()
+	out, err := sessionunit.Follow(context.Background(), filepath.Join(dir, sessionunit.OutputFile), 0, alive)
+	if err != nil {
+		unit.Stop(h)
+		return Result{}, fmt.Errorf("harness claude-code: output: %w", err)
+	}
+	defer out.Close()
 	// The raw stdout, capped, in case the harness said why it could not
 	// run there rather than on stderr.
 	rawOut := &capBuffer{max: 64 << 10}
-	res := parseClaude(io.TeeReader(stdout, rawOut), onProgress)
-	waitErr := cmd.Wait()
+	saved := time.Now()
+	res := parseClaude(io.TeeReader(out, rawOut), onProgress, func(ev Event) {
+		// the offset read and reported so far, for a node that adopts
+		if ev.SessionID != "" && st.SessionID == "" {
+			st.SessionID = ev.SessionID
+		} else if time.Since(saved) < time.Second {
+			return
+		}
+		st.Offset, saved = out.Offset(), time.Now()
+		_ = sessionunit.WriteState(dir, st)
+	})
+	waitErr := h.Wait(context.Background())
+	<-errDone
 	return finishClaude(ctx, job, res, waitErr, &errBuf, rawOut)
+}
+
+// sessionFiles are the files a session is started on: the prompt (on
+// stdin, already unlinked) and the output and stderr it writes.
+type sessionFiles struct{ prompt, out, err *os.File }
+
+func (f sessionFiles) close() {
+	for _, fh := range []*os.File{f.prompt, f.out, f.err} {
+		if fh != nil {
+			fh.Close()
+		}
+	}
+}
+
+// openSessionDir makes the job's session directory, `<workdir>.session`
+// (a temporary one for a job with no work dir), fresh: the output and
+// stderr files empty, and the prompt in a file unlinked at once, which
+// the session reads on stdin — never on a pipe the node's exit would
+// break, and never left on disk.
+func openSessionDir(job Job) (string, sessionFiles, error) {
+	var f sessionFiles
+	var dir string
+	if job.Workspace == "" {
+		d, err := os.MkdirTemp("", "mesh-session-*")
+		if err != nil {
+			return "", f, err
+		}
+		dir = d
+	} else {
+		dir = sessionunit.Dir(job.Workspace)
+		// a session before this one on the same work dir is done with
+		if err := os.RemoveAll(dir); err != nil {
+			return "", f, err
+		}
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return "", f, err
+		}
+	}
+	fail := func(err error) (string, sessionFiles, error) {
+		f.close()
+		os.RemoveAll(dir)
+		return "", sessionFiles{}, err
+	}
+	var err error
+	if f.prompt, err = os.CreateTemp(dir, ".prompt-*"); err != nil {
+		return fail(err)
+	}
+	os.Remove(f.prompt.Name())
+	if _, err = io.WriteString(f.prompt, job.Prompt); err != nil {
+		return fail(err)
+	}
+	if _, err = f.prompt.Seek(0, io.SeekStart); err != nil {
+		return fail(err)
+	}
+	if f.out, err = os.OpenFile(filepath.Join(dir, sessionunit.OutputFile), os.O_CREATE|os.O_TRUNC|os.O_WRONLY|os.O_APPEND, 0o600); err != nil {
+		return fail(err)
+	}
+	if f.err, err = os.OpenFile(filepath.Join(dir, sessionunit.StderrFile), os.O_CREATE|os.O_TRUNC|os.O_WRONLY|os.O_APPEND, 0o600); err != nil {
+		return fail(err)
+	}
+	return dir, f, nil
+}
+
+// subject is what a session is for, in its unit's name.
+func (m SessionMeta) subject(label string) string {
+	for _, s := range []string{m.ItemID, m.GoalID, m.DirectionID, label} {
+		if s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+// state is the job's state file on its start: identity, unit and
+// limits, and nothing of its prompt, environment or secrets.
+func (job Job) state(unit sessionunit.Unit, h sessionunit.Handle, harness string) sessionunit.State {
+	acct := job.Meta.Account
+	if acct == "" {
+		for _, kv := range job.Env {
+			if v, ok := strings.CutPrefix(kv, "MESH_ACCOUNT="); ok {
+				acct = v
+			}
+		}
+	}
+	return sessionunit.State{
+		NodeID: job.Meta.NodeID, ItemID: job.Meta.ItemID, GoalID: job.Meta.GoalID, DirectionID: job.Meta.DirectionID,
+		Attempt: job.Meta.Attempt, Kind: string(job.Kind), Label: job.Label, Model: job.Model, Account: acct,
+		Harness: harness, Runner: unit.Name(), PID: h.PID, Unit: h.UnitName, Workspace: job.Workspace,
+		StartedAt: time.Now().UTC(), TimeoutSeconds: int(job.Timeout / time.Second), MaxBudgetUSD: job.MaxBudgetUSD,
+	}
 }
 
 // runSandboxed is Run in the session's own pod: the MCP config written
@@ -198,7 +355,7 @@ func (c *ClaudeCode) runSandboxed(ctx context.Context, job Job, onProgress func(
 		done <- err
 	}()
 	rawOut := &capBuffer{max: 64 << 10}
-	res := parseClaude(io.TeeReader(pr, rawOut), onProgress)
+	res := parseClaude(io.TeeReader(pr, rawOut), onProgress, nil)
 	_, _ = io.Copy(io.Discard, pr) // a stream the parser gave up on still drains
 	waitErr := <-done
 	if le := (*sandbox.LimitError)(nil); errors.As(waitErr, &le) && ctx.Err() == nil {
@@ -207,9 +364,13 @@ func (c *ClaudeCode) runSandboxed(ctx context.Context, job Job, onProgress func(
 	return finishClaude(ctx, job, res, waitErr, &errBuf, rawOut)
 }
 
-// parseClaude reads a session's stream-json, passing what it says on.
-func parseClaude(stdout io.Reader, onProgress func(Progress)) Result {
+// parseClaude reads a session's stream-json, passing what it says on;
+// after, when set, sees every event once it has been passed on.
+func parseClaude(stdout io.Reader, onProgress func(Progress), after func(Event)) Result {
 	return ParseStream(stdout, func(ev Event) {
+		if after != nil {
+			defer after(ev)
+		}
 		if onProgress == nil {
 			return
 		}

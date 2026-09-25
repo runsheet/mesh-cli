@@ -224,6 +224,23 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   Postgres and MySQL/MariaDB, and a disallowed registry returned
   `Refused` with a note. Pure parsing; the fixtures are under
   `internal/sandbox/testdata/` (their `.mesh/` needs `git add -f`).
+- **Session units** (`internal/sessionunit/`, mesh-specs ADR 008,
+  `docs/adr/adr-008-sessions-in-their-own-unit.md`): a host `claude -p`
+  is not the node's child. `ClaudeCode.Run` starts it through a `Unit`
+  (`Start` → `Handle{PID, UnitName}`, `Alive`, `Stop`):
+  `SystemdScope` (`systemd-run --user --scope
+  --unit=mesh-session-<kind>-<subject>-<rand> --collect`, outside the
+  node service's cgroup) when `systemctl --user` answers, else
+  `Detached` (setsid, its own process group); the sandbox's pod becomes
+  a third later. Its stdout goes to `<workdir>.session/output.jsonl`,
+  stderr to `stderr.log`, and `state.json` (`State`, written
+  atomically: node, item/goal/direction, claim, kind, model, account,
+  pid, unit, startedAt, offset — never the prompt or a secret) from
+  `Job.Meta`; the prompt is an unlinked file on stdin. `Follow` tails
+  the output a line per read until the process is gone and the file
+  stops growing, `ParseStream` reads it, and the offset is saved as it
+  goes. A timeout or cancelled ctx `Stop`s the unit; the directory is
+  removed when `Run` returns. Adoption by the next node comes later.
 - **The sandbox** (`internal/sandbox/`, mesh-specs ADR 007,
   `docs/adr/adr-007-the-sandbox-on-the-node.md`): with a sandbox,
   `harness.ClaudeCode` runs `claude` in the session's own rootless
