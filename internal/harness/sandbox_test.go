@@ -88,3 +88,22 @@ func flagAt(args []string, flag string) string {
 	}
 	return ""
 }
+
+// SandboxBinary replaces `claude` as the agent's command in the pod (the
+// e2e's stub agent, in the workspace); the host Binary still does not.
+func TestClaudeCodeSandboxBinary(t *testing.T) {
+	f := &sandbox.Fake{Agent: func(ctx context.Context, spec sandbox.AgentSpec) (sandbox.Exit, error) {
+		io.WriteString(spec.Stdout, `{"type":"result","subtype":"success","is_error":false,"result":"done","session_id":"s1"}`+"\n")
+		return sandbox.Exit{}, nil
+	}}
+	sb := &sandbox.Sandbox{Runtime: f, TempDir: t.TempDir(), Config: sandbox.Config{Image: "img"}}
+	ws := t.TempDir()
+	stub := filepath.Join(ws, ".mesh-e2e-agent")
+	c := &ClaudeCode{Binary: "/nonexistent/claude", SandboxBinary: stub, Sandbox: sb}
+	if _, err := c.Run(context.Background(), Job{Kind: KindBuild, Label: "g/1", Workspace: ws, Prompt: "p"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.Agents[0].Command[0]; got != stub {
+		t.Fatalf("command = %s, want %s", got, stub)
+	}
+}
