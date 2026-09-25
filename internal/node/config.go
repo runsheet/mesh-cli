@@ -274,7 +274,8 @@ func ResolveScopes(ctx context.Context, gw Gateway, c *Config) (Scopes, error) {
 // the limits thresholds (nil keeps the loop's) and the orgs served (nil
 // keeps the loop's).
 type Reloaded struct {
-	Capacity int
+	// Capacity is node.yaml's, fixed or a range; zero keeps the loop's.
+	Capacity Capacity
 	Limits   *LimitsConfig
 	Scopes   Scopes
 }
@@ -304,7 +305,7 @@ func Reloader(gw Gateway, cfg *Config, scopes Scopes, load func() (*Config, erro
 			errs = append(errs, fmt.Errorf("node.yaml (keeping the last good capacity and limits): %w", err))
 		} else {
 			limits := c.Limits
-			out.Capacity, out.Limits, restrict = c.Capacity.Max, &limits, c.Orgs
+			out.Capacity, out.Limits, restrict = c.Capacity, &limits, c.Orgs
 		}
 		orgs, err := gw.MyOrgs(ctx)
 		if err != nil {

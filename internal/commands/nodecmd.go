@@ -400,7 +400,10 @@ only use it on a machine you trust with that.`,
 
 		// every session's plan standing lands in Limits: the heartbeat
 		// carries it and the loop paces by it
-		loop := &node.Loop{GW: gw, Cfg: cfg, Scopes: scopes, Version: version.Version, Harness: "claude-code", Interval: nodeIntervalFlag, Log: logger, Limits: &node.Limits{}}
+		loop := &node.Loop{GW: gw, Cfg: cfg, Scopes: scopes, Version: version.Version, Harness: "claude-code", Interval: nodeIntervalFlag, Log: logger, Limits: &node.Limits{},
+			// a ranged capacity scales by the plan's windows, capped by this
+			// machine's load and memory (adr-004)
+			Machine: node.HostMachine()}
 		// capacity and the orgs are read again every tick, so a changed
 		// node.yaml or a newly claimed org needs no restart
 		loop.Reload = node.Reloader(gw, cfg, scopes, nil, func(ctx context.Context, sc node.Scope) error {
@@ -688,7 +691,7 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 	}
 	loop.AfterTick = func(ctx context.Context) { repush(ctx, false) }
 
-	logger.Printf("channel mode: node %s (%s) for %s, capacity %d, every %s; session in %s", cfg.Name, cfg.Slug, strings.Join(scopes.Logins(), ", "), cfg.Capacity, loop.Interval, sess.WorkDir)
+	logger.Printf("channel mode: node %s (%s) for %s, capacity %s, every %s; session in %s", cfg.Name, cfg.Slug, strings.Join(scopes.Logins(), ", "), cfg.Capacity, loop.Interval, sess.WorkDir)
 	for _, sc := range scopes {
 		go channel.WatchGoals(ctx, gw, sc.ID, loop.Interval, func(kind string, g gateway.Goal) {
 			content, meta := channel.GoalEvent(kind, g)

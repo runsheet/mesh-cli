@@ -83,6 +83,15 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `limits.stop` of either window or a status not `allowed` (nothing new,
   sessions finish, the process runs on) until the window's reset. A
   crossing is logged once.
+- **The scale** (`internal/node/headroom.go`, `scaling.go`, adr-004):
+  a node.yaml `capacity: {min, max}` runs the `Scaler` once a minute
+  inside the tick (`Loop.scale`, by `Loop.Now`) on the highest
+  utilization across accounts per window, stepping the capacity in
+  force one slot per 5 minutes; a shrink only stops claiming, at min
+  only urgent/high items are claimed, and Reload clamps into a new
+  range at once. `Loop.Scaling()` is what the heartbeat carries. A
+  plain `capacity: N` runs none of it. The hard stops of the pace stay
+  above it.
 - **The rebase** (`internal/node/rebase.go`, runsheet ADR 008): an item
   whose pull request conflicts in a way the integrator could not
   resolve itself carries `rebase_state: requested`. Every tick the loop
