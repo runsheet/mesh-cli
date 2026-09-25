@@ -1615,3 +1615,35 @@ func (c *Client) RecordSessionUsage(ctx context.Context, rec UsageRecord) error 
 	}
 	return nil
 }
+
+// ToolUsage is a priced tool's calls in one session (trd §3 Tools,
+// priced calls are usage): the item and the session's kind, the tool's
+// name, how many calls and their list price in cents (calls × the
+// tool's pricePerCallCents). It lies beside the session's UsageRecord.
+type ToolUsage struct {
+	ItemID         string `json:"workItemId"`
+	Kind           string `json:"kind"`
+	Tool           string `json:"tool"`
+	Calls          int    `json:"calls"`
+	ListPriceCents int    `json:"listPriceCents"`
+}
+
+// RecordUsage hands one priced tool's usage record to the platform. A
+// platform without the mutation answers IsUnsupported, and the node
+// carries on without it.
+func (c *Client) RecordUsage(ctx context.Context, u ToolUsage) error {
+	const field = "recordUsage"
+	in := map[string]any{
+		"namespace": NS, "workItemId": u.ItemID, "kind": u.Kind, "tool": u.Tool,
+		"calls": u.Calls, "listPriceCents": u.ListPriceCents,
+	}
+	q := `mutation($in: RecordUsageInput!) { recordUsage(input: $in) { status } }`
+	if err := c.Query(ctx, q, map[string]any{"in": in}, nil); err != nil {
+		var ge *Error
+		if errors.As(err, &ge) && (unknownOperation(ge.Message, field) || schemaMismatch(ge.Message, field)) {
+			return &Error{Message: ge.Message, Unsupported: true}
+		}
+		return err
+	}
+	return nil
+}

@@ -90,6 +90,10 @@ type Fake struct {
 	// UnknownFields["tools"] refuses a read selecting them, as a platform
 	// older than tools-in-the-console.
 	SessionTools map[string][]map[string]any
+	// Usage are the priced tools' usage records the fake was handed
+	// (recordUsage), in order: workItemId, kind, tool, calls,
+	// listPriceCents.
+	Usage []map[string]any
 	// After, when set, runs once a mutation has applied (under the lock,
 	// on the fake's rows) — for a test whose platform reacts to it, as a
 	// goal ending with its last item.
@@ -436,6 +440,9 @@ func (f *Fake) apply(name string, in map[string]any) error {
 	id, _ := in["aggregateId"].(string)
 	item := f.WorkItems[id]
 	switch name {
+	case "recordUsage":
+		f.Usage = append(f.Usage, copyRow(in))
+		return nil
 	case "claimWorkItem":
 		if item == nil {
 			return fmt.Errorf("no such item")

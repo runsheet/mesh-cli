@@ -254,7 +254,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		}
 		return nil
 	}
-	if acct.toolEnv, err = st.Apply(&job, mcp); err != nil {
+	if err := st.UseTools(&job, mcp, acct); err != nil {
 		return r.fail(ctx, item, fmt.Errorf("tools: %w", err))
 	}
 	if len(st.Use) > 0 {

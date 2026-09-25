@@ -103,6 +103,18 @@ func (st SessionTools) Apply(job *harness.Job, builtin map[string]any) ([]string
 	return env, nil
 }
 
+// UseTools is Apply for acct's session: the tools go on the job, their
+// secrets on acct for Redact, and acct remembers the tools so Finish
+// reports their priced calls.
+func (st SessionTools) UseTools(job *harness.Job, builtin map[string]any, acct *SessionAccount) error {
+	env, err := st.Apply(job, builtin)
+	if err != nil {
+		return err
+	}
+	acct.toolEnv, acct.used = env, st.Use
+	return nil
+}
+
 // Declines are the items this node declined for a required tool whose
 // runtime it lacks (trd §3 Tools): the loop does not claim one again
 // while the node's runtimes are those it declined on, for DeclineHold at

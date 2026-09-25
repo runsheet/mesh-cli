@@ -32,6 +32,7 @@ var ErrNoAccount = errors.New("no issued credential has headroom for the session
 type CredentialGateway interface {
 	Session(ctx context.Context, ref gateway.SessionRef, nodeID string) (*gateway.Session, error)
 	RecordSessionUsage(ctx context.Context, rec gateway.UsageRecord) error
+	RecordUsage(ctx context.Context, u gateway.ToolUsage) error
 }
 
 // Credentials is where every session's account comes from and where its
@@ -53,7 +54,7 @@ type Credentials struct {
 	Now func() time.Time
 	Log *log.Logger
 
-	credOnce, usageOnce sync.Once
+	credOnce, usageOnce, toolUsageOnce sync.Once
 }
 
 func (c *Credentials) now() time.Time {
@@ -96,6 +97,9 @@ type SessionAccount struct {
 	// toolEnv is the tool secrets put on the session (ApplyTools), which
 	// Redact takes out too.
 	toolEnv []string
+	// used are the tools rendered for the session (SessionTools.Use), whose
+	// priced calls Finish reports.
+	used []tools.Tool
 }
 
 // Open is the account a claimed session runs on. It asks the platform
@@ -271,10 +275,13 @@ func (s *SessionAccount) RedactErr(err error) error {
 // cost, the windows before and after, and when it ran — to the
 // platform's ledger, or as one `usage: {…}` log line on a platform
 // without it. It is called once a session has run, however it ended.
+// Each tool the session was given with a price per call and called is
+// reported too (reportToolUsage).
 func (s *SessionAccount) Finish(ctx context.Context, res harness.Result) {
 	if s == nil || s.creds == nil {
 		return
 	}
+	s.reportToolUsage(ctx, res)
 	c := s.creds
 	rec := gateway.UsageRecord{
 		Kind: s.ref.Kind, ItemID: s.ref.ItemID, GoalID: s.ref.GoalID, DirectionID: s.ref.DirectionID,
@@ -311,6 +318,38 @@ func (s *SessionAccount) Finish(ctx context.Context, res harness.Result) {
 	}
 	line, _ := json.Marshal(rec)
 	c.logf("usage: %s", s.Redact(string(line)))
+}
+
+// reportToolUsage hands the platform one usage record per priced tool
+// the session called (trd §3 Tools, priced calls are usage): the item,
+// the session's kind, the tool, its calls and calls × pricePerCallCents.
+// An unpriced tool, one not called and a built-in server (Prologue) are
+// none. A platform without recordUsage is said once per run and the
+// session goes on; a failed record is logged, never the item's failure.
+func (s *SessionAccount) reportToolUsage(ctx context.Context, res harness.Result) {
+	c := s.creds
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	for _, t := range s.used {
+		calls := res.ToolCalls[t.Name]
+		if t.PricePerCallCents <= 0 || calls == 0 {
+			continue
+		}
+		u := gateway.ToolUsage{ItemID: s.ref.ItemID, Kind: s.ref.Kind, Tool: t.Name, Calls: calls, ListPriceCents: calls * t.PricePerCallCents}
+		err := c.GW.RecordUsage(rctx, u)
+		switch {
+		case err == nil:
+		case gateway.IsUnsupported(err):
+			c.toolUsageOnce.Do(func() {
+				c.logf("usage: the platform takes no tool usage records; priced tool calls are logged here instead (said once, for every session this run)")
+			})
+		default:
+			c.logf("usage: tool %s: %v", t.Name, s.RedactErr(err))
+		}
+		if err != nil {
+			c.logf("usage: tool %s on item %s (%s): %d calls, %d¢", u.Tool, u.ItemID, u.Kind, u.Calls, u.ListPriceCents)
+		}
+	}
 }
 
 func usageWindows(r *harness.RateLimit) *gateway.UsageWindows {
