@@ -169,6 +169,13 @@ func TestParsePlan(t *testing.T) {
 	if err != nil || len(onMerged) != 1 {
 		t.Fatalf("on merged: %v", err)
 	}
+	if items[0].Model != "" || items[0].ModelReason != "" {
+		t.Fatalf("no model: %+v", items[0])
+	}
+	withModel, err := harness.ParsePlan("```json\n[{\"seq\":1,\"title\":\"A\",\"repo\":\"o/r\",\"model\":\"haiku\",\"model_reason\":\"a rename\"}]\n```")
+	if err != nil || withModel[0].Model != "haiku" || withModel[0].ModelReason != "a rename" {
+		t.Fatalf("with model: %v %+v", err, withModel)
+	}
 	bare, err := harness.ParsePlan(`[{"seq":1,"title":"A","repo":"o/r"}]`)
 	if err != nil || len(bare) != 1 {
 		t.Fatalf("bare: %v %+v", err, bare)
@@ -183,6 +190,53 @@ func TestParsePlan(t *testing.T) {
 	} {
 		if _, err := harness.ParsePlan(bad); err == nil {
 			t.Errorf("%s: parsed", name)
+		}
+	}
+}
+
+// Each item's model is parsed from the graph and handed in on its
+// PlannedItem; an item without one, or with one no CLI knows, carries
+// none. The planner itself runs on the strongest configured model.
+func TestPlannerCarriesEachItemsModel(t *testing.T) {
+	f := seed(t)
+	f.Goals[goalID]["status"] = "planning"
+	f.Projects[projID]["repoIds"] = []string{repoID}
+	gw := gateway.New(f.URL(), "rs_test")
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: Fixed(1), OwnerID: f.UserID}
+	ws := &fakeWS{root: t.TempDir()}
+	h := &fakeHarness{text: "```json\n{\"items\": [" +
+		"{\"seq\": 1, \"title\": \"Docs\", \"acceptance\": \"README has a Models section\", \"repo\": \"acme/widgets\", \"model\": \" haiku \", \"model_reason\": \"docs-only\"}," +
+		"{\"seq\": 2, \"title\": \"Scheduler\", \"acceptance\": \"go test ./... passes\", \"repo\": \"acme/widgets\", \"model\": \"claude-opus-5-5\", \"model_reason\": \"concurrency\"}," +
+		"{\"seq\": 3, \"title\": \"Plain\", \"acceptance\": \"go test ./... passes\", \"repo\": \"acme/widgets\"}," +
+		"{\"seq\": 4, \"title\": \"Odd\", \"acceptance\": \"go test ./... passes\", \"repo\": \"acme/widgets\", \"model\": \"gpt-5\"}" +
+		"]}\n```"}
+	var logged strings.Builder
+	models := Models{Default: "sonnet", Build: "opus"}
+	pl := &Planner{GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, Model: models.PlanModel(), Log: log.New(&logged, "", 0)}
+	if err := pl.Plan(context.Background(), gateway.Goal{ID: goalID, Slug: "ship-it", Title: "Ship it", ProjectID: projID, Status: "planning"}, scopesOf(cfg)[0]); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.jobs) != 1 || h.jobs[0].Model != "opus" {
+		t.Fatalf("planner job model: %+v", h.jobs)
+	}
+	calls := f.CallsNamed("planGoal")
+	if len(calls) != 1 {
+		t.Fatalf("plan calls: %+v", calls)
+	}
+	items := calls[0].Input["items"].([]any)
+	for i, want := range []any{"haiku", "claude-opus-5-5", nil, nil} {
+		if got := items[i].(map[string]any)["model"]; got != want {
+			t.Errorf("item %d model = %v, want %v", i+1, got, want)
+		}
+	}
+	for _, want := range []string{
+		`item 4 "Odd": model "gpt-5" is not haiku, sonnet, opus or a claude-* id; dropped`,
+		`goal ship-it: item 1 "Docs": model haiku: docs-only`,
+		`goal ship-it: item 2 "Scheduler": model claude-opus-5-5: concurrency`,
+		"goal ship-it: item 3 \"Plain\": model none (the node's own)\n",
+	} {
+		if !strings.Contains(logged.String(), want) {
+			t.Errorf("log lacks %q:\n%s", want, logged.String())
 		}
 	}
 }

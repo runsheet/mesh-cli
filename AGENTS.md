@@ -123,7 +123,11 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `rebase`) or the matching
   `--model*` flags on `node start`; `mesh node model` shows and sets
   them. A kind with none takes `default`; no default leaves the CLI's
-  own. The value is an alias the CLI knows (`opus`, `sonnet`, `haiku`)
+  own — except the planner, which without an explicit `plan` runs on
+  the strongest configured (`Models.PlanModel`), else `opus`. The
+  planner names a `model` per item by the rubric in `PlanPrompt`; the
+  node drops one outside haiku/sonnet/opus/`claude-*` with a log line
+  and hands the rest in on `PlannedItem.Model`. The value is an alias the CLI knows (`opus`, `sonnet`, `haiku`)
   or a full id (`claude-opus-5`). The platform's agent definitions will
   carry the model once they land (runsheet's `agents-on-the-platform`);
   these stay as the fallback.
