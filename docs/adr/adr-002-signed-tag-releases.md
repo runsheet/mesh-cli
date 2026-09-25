@@ -70,6 +70,20 @@ existing installs download.
   for the old binary to start. A rolled-back version is not tried again
   until the platform asks for another. The first heartbeat that goes
   through confirms the update.
+- `mesh node update [version]` does the same by hand, with the same
+  `ReleaseUpdater` and `selfupdate.GitHub`: no version is the latest
+  release that is not a prerelease (GitHub's `releases/latest`). It
+  fetches and verifies first under `ReleasePolicy` — a refusal prints
+  its reason, exits non-zero and changes nothing, not even
+  `update.json` — then drains the node running on the machine (the
+  pidfile's `SIGUSR1`, as `mesh node drain`; none running is nothing to
+  drain), records the update and swaps keeping `<path>.prev`, so the
+  start count and rollback above hold for it too. The swap follows the
+  drain signal at once: a node with no session exits on it, and its
+  service waits 10 seconds (`RestartSec`, `ThrottleInterval`) before
+  starting what is by then the new binary. `--verify-only` downloads and
+  verifies into a temporary directory and swaps nothing. It needs no
+  platform, so a node the console cannot reach can still be updated.
 
 ## Consequences
 
