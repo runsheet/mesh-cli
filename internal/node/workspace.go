@@ -56,6 +56,10 @@ type Workspacer interface {
 	// already there: a read-only copy for the planner, whose `git log`
 	// is how it sees what main already holds (adr-003 decision 2).
 	Fetch(ctx context.Context, repo, dir string) error
+	// PushedHead fetches origin and returns the head of origin/branch —
+	// what a session pushed, read back — or an error when origin/base is
+	// not in its history (the branch was not rebased onto it).
+	PushedHead(ctx context.Context, dir, branch, base string) (string, error)
 }
 
 // FetchDepth is how much of the default branch's history a read-only
@@ -201,6 +205,21 @@ func (g *Git) Push(ctx context.Context, dir, branch string) (string, error) {
 		return "", err
 	}
 	return g.run(ctx, dir, "git", "rev-parse", "HEAD")
+}
+
+// PushedHead implements Workspacer.
+func (g *Git) PushedHead(ctx context.Context, dir, branch, base string) (string, error) {
+	if _, err := g.run(ctx, dir, "git", "fetch", "--prune", "origin"); err != nil {
+		return "", err
+	}
+	head, err := g.run(ctx, dir, "git", "rev-parse", "refs/remotes/origin/"+branch)
+	if err != nil {
+		return "", fmt.Errorf("origin has no %s: %w", branch, err)
+	}
+	if _, err := g.run(ctx, dir, "git", "merge-base", "--is-ancestor", "refs/remotes/origin/"+base, head); err != nil {
+		return "", fmt.Errorf("origin/%s at %s does not contain origin/%s", branch, short(head), base)
+	}
+	return head, nil
 }
 
 // ContextDir is where the goal's Prologue documents land in a workspace.
@@ -493,6 +512,10 @@ type Gateway interface {
 	Projects(ctx context.Context, orgID string) ([]gateway.Project, error)
 	Directions(ctx context.Context, orgID, projectID string) ([]gateway.Direction, error)
 	ClaimDirectionResearch(ctx context.Context, directionID, nodeID string) error
+	RequestedRebases(ctx context.Context, orgID string) ([]gateway.WorkItem, error)
+	ClaimWorkItemRebase(ctx context.Context, itemID, nodeID string) error
+	FinishWorkItemRebase(ctx context.Context, itemID, headSha string, resolvedFiles []string) error
+	FailWorkItemRebase(ctx context.Context, itemID, reason string) error
 	RecordDirectionResearch(ctx context.Context, directionID, nodeID string, proposals []gateway.GoalProposal, costCents int, notes string) error
 	Repo(ctx context.Context, id string) (*gateway.Repo, error)
 	Repos(ctx context.Context, accountID, ownerLogin string) ([]gateway.Repo, error)

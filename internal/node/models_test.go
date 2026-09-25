@@ -6,15 +6,15 @@ import "testing"
 // CLI's own (empty).
 func TestModelsFor(t *testing.T) {
 	var none Models
-	for _, k := range []string{"build", "evaluate", "plan", "channel", "unknown"} {
+	for _, k := range []string{"build", "evaluate", "plan", "channel", "research", "rebase", "unknown"} {
 		if got := none.For(k); got != "" {
 			t.Fatalf("%s with nothing set: %q", k, got)
 		}
 	}
-	m := Models{Default: "opus", Plan: "sonnet", Evaluate: "haiku"}
+	m := Models{Default: "opus", Plan: "sonnet", Evaluate: "haiku", Rebase: "sonnet"}
 	for _, c := range []struct{ kind, want string }{
 		{"build", "opus"}, {"channel", "opus"}, {"unknown", "opus"},
-		{"plan", "sonnet"}, {"evaluate", "haiku"},
+		{"plan", "sonnet"}, {"evaluate", "haiku"}, {"rebase", "sonnet"}, {"research", "opus"},
 	} {
 		if got := m.For(c.kind); got != c.want {
 			t.Fatalf("%s: got %q want %q", c.kind, got, c.want)

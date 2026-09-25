@@ -46,6 +46,12 @@ type Loop struct {
 	// ordinary answer. Optional; it does not count against capacity — it
 	// competes for the machine, not for the work.
 	Research func(ctx context.Context, direction gateway.Direction, project gateway.Project, scope Scope)
+	// Rebase runs a session of kind rebase on an item whose rebase this
+	// node has claimed (runsheet ADR 008) and returns when the rebase is
+	// finished or failed. The claim is taken here, before it runs; another
+	// node's claim is a refusal, the ordinary answer. Optional; like an
+	// evaluation it does not count against capacity.
+	Rebase func(ctx context.Context, item gateway.WorkItem)
 	// AfterTick runs at the end of every tick (optional).
 	AfterTick func(ctx context.Context)
 	// Reload is asked at the top of every tick for the capacity and the
@@ -60,6 +66,7 @@ type Loop struct {
 	evaluating  map[string]bool
 	planning    map[string]bool
 	researching map[string]bool
+	rebasing    map[string]bool
 	wg          sync.WaitGroup
 	// draining is set by Drain: nothing new is started, and Run returns
 	// once every session of any kind has ended.
@@ -143,6 +150,19 @@ func evaluateOrder(items []readyItem) {
 	})
 }
 
+// rebaseOrder sorts the items whose rebase is requested from every org
+// by their goal's priority, then seq: the order they are claimed in,
+// as the rest of the node's work is.
+func rebaseOrder(items []readyItem) {
+	sort.SliceStable(items, func(i, j int) bool {
+		a, b := items[i], items[j]
+		if a.rank != b.rank {
+			return a.rank < b.rank
+		}
+		return a.item.Seq < b.item.Seq
+	})
+}
+
 // planningGoal is a goal in planning with the scope it was listed in.
 type planningGoal struct {
 	goal  gateway.Goal
@@ -209,7 +229,8 @@ func (l *Loop) logf(format string, args ...any) {
 	}
 }
 
-// Running is the number of items this node is running.
+// Running is the number of items this node is building: what counts
+// against capacity. Evaluations, plans, research and rebases do not.
 func (l *Loop) Running() int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -230,7 +251,7 @@ func (l *Loop) RunningIDs() []string {
 // Run ticks until ctx is done, then waits for the items in flight (their
 // harnesses are killed by the same ctx) and returns ctx's error. Once
 // Drain has been called it returns nil instead, as soon as no session of
-// any kind is left — items, evaluations, plans and research alike, since
+// any kind is left — items, evaluations, plans, research and rebases alike, since
 // only the items count against capacity and a node is rarely without
 // the others.
 func (l *Loop) Run(ctx context.Context) error {
@@ -265,7 +286,7 @@ func (l *Loop) Run(ctx context.Context) error {
 }
 
 // Drain stops the node taking anything new — items, evaluations, plans,
-// research — and lets Run return once what is running has ended.
+// research, rebases — and lets Run return once what is running has ended.
 // Calling it again does nothing.
 func (l *Loop) Drain() {
 	l.mu.Lock()
@@ -274,7 +295,7 @@ func (l *Loop) Drain() {
 		return
 	}
 	l.draining = true
-	n := len(l.running) + len(l.evaluating) + len(l.planning) + len(l.researching)
+	n := l.sessions()
 	l.mu.Unlock()
 	l.logf("draining: nothing new is claimed; %d session(s) to finish", n)
 	l.notify()
@@ -291,7 +312,12 @@ func (l *Loop) Draining() bool {
 func (l *Loop) drained() bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return l.draining && len(l.running)+len(l.evaluating)+len(l.planning)+len(l.researching) == 0
+	return l.draining && l.sessions() == 0
+}
+
+// sessions counts every session in flight, of any kind; l.mu is held.
+func (l *Loop) sessions() int {
+	return len(l.running) + len(l.evaluating) + len(l.planning) + len(l.researching) + len(l.rebasing)
 }
 
 func (l *Loop) wakeup() chan struct{} {
@@ -312,8 +338,8 @@ func (l *Loop) notify() {
 }
 
 // Tick is one round: heartbeat, list, claim, dispatch. A draining node
-// only heartbeats — with draining set — (and runs AfterTick): it claims no item, plan or
-// research and starts no evaluation — an item it holds for evaluation
+// only heartbeats — with draining set — (and runs AfterTick): it claims no
+// item, plan, research or rebase and starts no evaluation — an item it holds for evaluation
 // waits in evaluating for the node that comes up after it.
 func (l *Loop) Tick(ctx context.Context) {
 	l.mu.Lock()
@@ -330,6 +356,7 @@ func (l *Loop) Tick(ctx context.Context) {
 	}
 	if !l.Draining() {
 		l.evaluateHeld(ctx)
+		l.rebaseRequested(ctx)
 		l.planRequested(ctx)
 		l.researchDue(ctx)
 		if free := l.Capacity() - l.Running(); free > 0 {
@@ -487,6 +514,70 @@ func (l *Loop) evaluateHeld(ctx context.Context) {
 				l.notify()
 			}()
 			l.Evaluate(ctx, item)
+		}(item)
+	}
+}
+
+// rebaseRequested claims every item in the served orgs whose rebase is
+// requested and that no rebase here is on, most urgent goal first across
+// the orgs (rebaseOrder; the goals are read only for an org with one),
+// and starts a session of kind rebase on each claim it wins. Not gated
+// by capacity: a rebase finishes work already done. A refusal — another
+// node holds it, or it is no longer requested — is the ordinary answer
+// and is not logged as an error.
+func (l *Loop) rebaseRequested(ctx context.Context) {
+	if l.Rebase == nil {
+		return
+	}
+	var requested []readyItem
+	for _, sc := range l.Scopes {
+		rows, err := l.GW.RequestedRebases(ctx, sc.ID)
+		if err != nil {
+			l.logf("list requested rebases of %s: %v", sc.Login, err)
+			continue
+		}
+		if len(rows) == 0 {
+			continue
+		}
+		rank := l.goalRanks(ctx, sc, "rebased")
+		for _, it := range rows {
+			requested = append(requested, readyItem{item: it, scope: sc, rank: rank(it.GoalID)})
+		}
+	}
+	rebaseOrder(requested)
+	for _, r := range requested {
+		item, sc := r.item, r.scope
+		l.mu.Lock()
+		if l.rebasing == nil {
+			l.rebasing = map[string]bool{}
+		}
+		if l.rebasing[item.ID] {
+			l.mu.Unlock()
+			continue
+		}
+		l.rebasing[item.ID] = true
+		l.mu.Unlock()
+		// the claim is the lock across nodes: refused, another node has it
+		if err := l.GW.ClaimWorkItemRebase(ctx, item.ID, sc.NodeID); err != nil {
+			l.mu.Lock()
+			delete(l.rebasing, item.ID)
+			l.mu.Unlock()
+			if !gateway.IsRefusal(err) {
+				l.logf("%s: claim the rebase of item %d: %v", sc.Login, item.Seq, err)
+			}
+			continue
+		}
+		l.logf("%s: rebasing item %d %q", sc.Login, item.Seq, item.Title)
+		l.wg.Add(1)
+		go func(item gateway.WorkItem) {
+			defer l.wg.Done()
+			defer func() {
+				l.mu.Lock()
+				delete(l.rebasing, item.ID)
+				l.mu.Unlock()
+				l.notify()
+			}()
+			l.Rebase(ctx, item)
 		}(item)
 	}
 }

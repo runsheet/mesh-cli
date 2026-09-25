@@ -45,6 +45,22 @@ living an hour.
   fetches, diffs or pushes. So the platform must issue it to the node
   holding the item while it is `claimed`, `running` **or `evaluating`**
   (the evaluator is the same node, on the same claim).
+- A session of kind rebase (`Rebaser.Rebase`, runsheet ADR 008) asks
+  for it the same way, after `ClaimWorkItemRebase` and before its
+  checkout is prepared: it pushes the rebased branch, so it needs
+  contents write on the item's repo. The item is then in `review`, and
+  the node holding it is the one its `rebase_node_id` names, which need
+  not be the node that built it. **So the platform must also issue the
+  token to the node holding an item's rebase while `rebase_state` is
+  `claimed`** (amended 2026-09-24, goal `node-runs-rebase-sessions`;
+  the platform half is runsheet's `gateway/itemtoken.go`, which as of
+  runsheet `ac30584` still refuses an item in `review`). Until it does,
+  the refusal fails the rebase with the reason — the item goes to its
+  builder, as the platform's own stall timer would have sent it — and
+  the operator's login is not used instead. The fake gateway mirrors the
+  platform as it is: it refuses that token unless a test sets
+  `RebaseTokens`, which stands for the platform half not yet landed
+  (`TestRebaseTokenRefusedFailsTheRebase` is today's behaviour).
 - The workspace uses the token through `Workspacer.Authorize(spec, tok)`
   (`internal/node/ghcred.go`, `workspace.go`). This sets `origin` to
   `https://github.com/<owner>/<name>.git`, since a `gh repo clone` may

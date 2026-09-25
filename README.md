@@ -116,7 +116,7 @@ mesh node model --build ""                       # back to the CLI's default
 Saved in `~/.mesh/node.yaml`; restart the node (or its service) for a
 change to take. `--model`, `--model-build`, `--model-evaluate`,
 `--model-plan` and `--model-channel` on `mesh node start` win over the
-file for that run (`--model-research` too). A value is an alias the CLI
+file for that run (`--model-research` and `--model-rebase` too). A value is an alias the CLI
 knows (`opus`, `sonnet`, `haiku`) or a full id (`claude-opus-5`); unset
 leaves the CLI's own default.
 
@@ -180,6 +180,19 @@ evaluated by their goal's priority, then seq — on the same one goals read
 per org per tick.
 There is no starvation guard beyond this order: a steady stream of urgent
 work keeps a low goal's items, plans and evaluations waiting.
+Rebases follow it too. When the integrator cannot resolve a pull
+request's conflict itself it asks for a **rebase** (`rebase_state:
+requested`); every tick the node lists those in each org it serves,
+urgent goals first, then seq, and claims each with `ClaimWorkItemRebase`
+— another node holding it is the ordinary refusal. The rebase session
+works in the item's own checkout: it rebases the branch onto its base,
+resolves each conflict keeping both sides' intent, re-runs the item's
+acceptance, pushes with `--force-with-lease` and ends with `REBASED:
+<sha>` and `RESOLVED: <files>` or `REBASE FAILED: <why>`. The node reads
+the pushed head back and hands it in with `FinishWorkItemRebase`, or
+`FailWorkItemRebase` with the reason for anything else, which returns
+the item to its builder. Like evaluations, rebases do not count against
+capacity (`--rebase-budget-usd` caps each one).
 Capacity and the orgs served are re-read at the top of every tick, so
 neither needs a restart: `capacity` and `orgs` come from
 `~/.mesh/node.yaml` as it stands (a file that cannot be read is logged and
@@ -271,8 +284,9 @@ mesh node drain          # or: kill -USR1 "$(cat ~/.mesh/node.pid)"
 `mesh node start` writes its pid to `~/.mesh/node.pid` (removed on exit);
 `mesh node drain` sends that process `SIGUSR1`, and says so if no node is
 running. The draining node claims nothing new — no work item, no plan,
-no research, and it starts no evaluation — while every session it has
-running finishes: builds, evaluations, plans and research alike.
+no research, no rebase, and it starts no evaluation — while every
+session it has running finishes: builds, evaluations, plans, research
+and rebases alike.
 Planners and evaluators do not count against capacity, which is why
 waiting for zero running items never sees an idle node; the drain waits
 for all of them. When the last one ends the node exits 0, and the service

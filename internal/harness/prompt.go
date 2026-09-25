@@ -3,6 +3,7 @@ package harness
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -602,4 +603,163 @@ func ParseProposals(text string) ([]ProposedSpec, error) {
 		out = append(out, g)
 	}
 	return out, nil
+}
+
+// RebaseInput is what a rebase prompt is made of: the item whose pull
+// request conflicts with its base, the conflict as the integrator found
+// it, and the item's acceptance to re-check on the rebased head.
+type RebaseInput struct {
+	GoalSlug   string
+	GoalTitle  string
+	Seq        int
+	Title      string
+	Brief      string
+	Acceptance string
+	Repo       string
+	Branch     string
+	BaseRef    string
+	// Conflict is the conflicting regions in git's markers and Files the
+	// files, as RequestWorkItemRebase gave them (either may be empty).
+	Conflict string
+	Files    []string
+	// ContextDir, ContextFiles, Project and Prologue as on EvaluateInput.
+	ContextDir   string
+	ContextFiles []string
+	Project      string
+	Prologue     bool
+}
+
+// The contract lines a rebase session ends with; ParseRebase reads them.
+// A rebase that landed ends with RebasedLine and its pushed head, then
+// ResolvedLine and the files it resolved; one that did not, with
+// RebaseFailedLine and why.
+const (
+	RebasedLine      = "REBASED:"
+	ResolvedLine     = "RESOLVED:"
+	RebaseFailedLine = "REBASE FAILED:"
+)
+
+// RebaseRunbook is the mesh-branch-rebase skill in runsheet/runsheet,
+// the runbook a rebase session follows.
+const (
+	RebaseRunbookProject = "runsheet/runsheet"
+	RebaseRunbookSlug    = "skill-mesh-branch-rebase"
+)
+
+// RebasePrompt renders the prompt of a session of kind rebase (runsheet
+// ADR 008 step 2): its whole job is to rebase the item's branch onto its
+// base keeping both sides' intent, re-run the acceptance, push with
+// --force-with-lease and say what it did in the contract lines.
+func RebasePrompt(in RebaseInput) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "You are a Mesh node session of kind rebase for item %d of goal %q (%s). The item's pull request passed evaluation, then its base moved and it conflicts; the integrator could not resolve it itself. Your whole job is to rebase the branch onto its base, keeping the intent of both sides, and push it. You do not change what the item does.\n\n", in.Seq, in.GoalTitle, in.GoalSlug)
+	fmt.Fprintf(&b, "# Item %d: %s\n\n", in.Seq, in.Title)
+	if strings.TrimSpace(in.Brief) != "" {
+		fmt.Fprintf(&b, "## Brief\n\n%s\n\n", strings.TrimSpace(in.Brief))
+	}
+	if strings.TrimSpace(in.Acceptance) != "" {
+		fmt.Fprintf(&b, "## Acceptance (this item)\n\n%s\n\n", strings.TrimSpace(in.Acceptance))
+	}
+	fmt.Fprintf(&b, "# The conflict\n\nYou are in %s with `%s` checked out at the head the builder pushed. It conflicts with `origin/%s`.", in.Repo, in.Branch, in.BaseRef)
+	if len(in.Files) > 0 {
+		fmt.Fprintf(&b, " The files: %s.", strings.Join(in.Files, ", "))
+	}
+	b.WriteString("\n\n")
+	if strings.TrimSpace(in.Conflict) != "" {
+		fmt.Fprintf(&b, "As the integrator found it:\n\n```\n%s\n```\n\n", strings.TrimSpace(in.Conflict))
+	}
+	if in.ContextDir != "" {
+		fmt.Fprintf(&b, "# The context\n\nThe project's instructions and decisions are in `%s/`", in.ContextDir)
+		if len(in.ContextFiles) > 0 {
+			fmt.Fprintf(&b, " (%s)", strings.Join(in.ContextFiles, ", "))
+		}
+		b.WriteString(": the resolved branch must still keep to them.")
+		if in.Prologue {
+			b.WriteString(" " + prologueRule(in.ContextDir, in.Project))
+		}
+		b.WriteString("\n\n")
+	} else if in.Prologue {
+		b.WriteString("# The context\n\n" + prologueRule("", in.Project) + "\n\n")
+	}
+	b.WriteString("# The runbook\n\n")
+	if in.Prologue {
+		fmt.Fprintf(&b, "Read the mesh-branch-rebase skill first: `prologue_document` with project %q, slug %q (or the same slug in project %q, if it is indexed there). If neither has it, these steps are the runbook:\n\n", RebaseRunbookProject, RebaseRunbookSlug, in.Project)
+	} else {
+		b.WriteString("The mesh-branch-rebase skill's steps:\n\n")
+	}
+	fmt.Fprintf(&b, "1. Fetch: `git fetch origin && git checkout -B %s origin/%s`.\n", in.Branch, in.Branch)
+	fmt.Fprintf(&b, "2. Rebase: `git rebase origin/%s`.\n", in.BaseRef)
+	b.WriteString("3. Resolve each conflicting file on its own, reading both sides and why each changed (`git log` of the base since the branch forked, the brief above). Keep both sides' intent: never drop either side's change to make the conflict go away. Generated code is regenerated from the merged source, not merged by hand. Then `git add` it and `git rebase --continue`.\n")
+	b.WriteString("4. Run the item's acceptance checks on the rebased head (the repository's AGENTS.md or CLAUDE.md says how), and fix only what the rebase broke.\n")
+	fmt.Fprintf(&b, "5. Push: `git push --force-with-lease origin %s`. If the push is refused, the branch moved under you: say so, do not force it.\n\n", in.Branch)
+	b.WriteString("# Rules\n\n")
+	b.WriteString("1. Rebase, resolve, check, push: nothing else. No new features, no refactors, no pull requests, nothing outside this workspace.\n")
+	b.WriteString("2. If a conflict cannot be resolved without dropping one side's intent, or the acceptance fails on the rebased head for a reason the rebase cannot fix, give up: `git rebase --abort`, push nothing, and say exactly why — which file, which change on each side. The builder is handed the item with your words.\n")
+	fmt.Fprintf(&b, "3. End your final message with a short account of what you resolved and how, then the contract lines, exactly and last:\n\n")
+	fmt.Fprintf(&b, "   On success, two lines — the head you pushed (`git rev-parse HEAD`) and the files you resolved by hand, comma-separated (`(none)` when the rebase needed none):\n\n   ```\n   %s <sha>\n   %s <file>, <file>\n   ```\n\n", RebasedLine, ResolvedLine)
+	fmt.Fprintf(&b, "   Otherwise one line with the reason:\n\n   ```\n   %s <why>\n   ```\n", RebaseFailedLine)
+	return b.String()
+}
+
+// RebaseResult is what a rebase session's contract lines say.
+type RebaseResult struct {
+	// Rebased: the session pushed Head, having resolved Files.
+	Rebased bool
+	Head    string
+	Files   []string
+	// Reason is why it did not, when Rebased is false.
+	Reason string
+}
+
+var shaShape = regexp.MustCompile(`^[0-9a-fA-F]{7,64}$`)
+
+// ParseRebase reads a rebase session's final message: the last contract
+// line decides. ok is false when there is none, or a REBASED line with
+// no sha — a session that cannot be read has not rebased.
+func ParseRebase(text string) (RebaseResult, bool) {
+	lines := strings.Split(strings.TrimSpace(text), "\n")
+	var files []string
+	var sawResolved bool
+	for i := len(lines) - 1; i >= 0; i-- {
+		l := strings.TrimSpace(strings.Trim(strings.TrimSpace(lines[i]), "`*_"))
+		upper := strings.ToUpper(l)
+		switch {
+		case strings.HasPrefix(upper, ResolvedLine) && !sawResolved:
+			sawResolved = true
+			files = splitFiles(l[len(ResolvedLine):])
+		case strings.HasPrefix(upper, RebaseFailedLine):
+			reason := strings.TrimSpace(l[len(RebaseFailedLine):])
+			if reason == "" {
+				reason = strings.TrimSpace(strings.Join(lines[:i], "\n"))
+			}
+			if reason == "" {
+				reason = "the rebase session gave up and did not say why"
+			}
+			return RebaseResult{Reason: reason}, true
+		case strings.HasPrefix(upper, RebasedLine):
+			head := strings.Trim(strings.TrimSpace(l[len(RebasedLine):]), "`*_ ")
+			if !shaShape.MatchString(head) {
+				return RebaseResult{}, false
+			}
+			if files == nil {
+				files = []string{}
+			}
+			return RebaseResult{Rebased: true, Head: strings.ToLower(head), Files: files}, true
+		}
+	}
+	return RebaseResult{}, false
+}
+
+// splitFiles reads a RESOLVED line's files: comma- or space-separated,
+// "(none)" or "none" for no file.
+func splitFiles(s string) []string {
+	files := []string{}
+	for _, f := range strings.FieldsFunc(s, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' }) {
+		f = strings.Trim(f, "`*_")
+		if f == "" || strings.EqualFold(f, "(none)") || strings.EqualFold(f, "none") {
+			continue
+		}
+		files = append(files, f)
+	}
+	return files
 }

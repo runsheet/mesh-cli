@@ -17,11 +17,13 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
 
 ## How it is shaped
 
-- `internal/harness/prompt.go`: the four prompts — `BuildPrompt`,
-  `EvaluatePrompt`, `PlanPrompt`, `ResearchPrompt`. Their contract lines
-  are load-bearing: the evaluator ends with `VERDICT: PASS|FAIL`, the
-  planner ends with the JSON graph in a fenced block, the director ends
-  with its proposals in one, the builder never pushes. Change wording
+- `internal/harness/prompt.go`: the five prompts — `BuildPrompt`,
+  `EvaluatePrompt`, `PlanPrompt`, `ResearchPrompt`, `RebasePrompt`. Their
+  contract lines are load-bearing: the evaluator ends with
+  `VERDICT: PASS|FAIL`, the planner ends with the JSON graph in a fenced
+  block, the director ends with its proposals in one, the rebase session
+  ends with `REBASED: <sha>` and `RESOLVED: <files>` or
+  `REBASE FAILED: <why>`, the builder never pushes. Change wording
   freely; never the contract. (A later goal moves the guidance onto the
   platform as agent definitions.)
 - `internal/latchkey/` + `internal/auth/token.go`: the machine
@@ -58,7 +60,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   of one project may be inside their hours at once.
 - **The drain** (`Loop.Drain`, trd §3 Drain): `SIGUSR1` or `mesh node
   drain` (which signals the pid in `~/.mesh/node.pid`) stops every new
-  start — items, plans, research, evaluations — and `Run` returns nil
+  start — items, plans, research, evaluations, rebases — and `Run` returns nil
   once no session of *any* kind is left (planners and evaluators do not
   count against capacity, so `Running()` is not the exit test); the
   process exits 0 and its service starts the new binary.
@@ -69,6 +71,24 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `updateError`) are sent only when set, because they are fields the
   platform half (runsheet `update-nodes-from-console`) adds. Capacity
   and the orgs need no drain: `Reload` re-reads them every tick.
+- **The rebase** (`internal/node/rebase.go`, runsheet ADR 008): an item
+  whose pull request conflicts in a way the integrator could not
+  resolve itself carries `rebase_state: requested`. Every tick the loop
+  lists them in each served org (`RequestedRebases`), in goal priority
+  then seq (`rebaseOrder`), and claims each with `ClaimWorkItemRebase`
+  — a refusal is the ordinary answer, not an error. The session works
+  in the item's own checkout on its token, rebases onto the base,
+  re-runs the acceptance and pushes with `--force-with-lease`; the node
+  reads the pushed head back (`Workspacer.PushedHead`) and hands it in
+  with `FinishWorkItemRebase`, or `FailWorkItemRebase` with the reason
+  for *anything* else — a held claim waits out the platform's
+  15-minute timer. Its heartbeat and its cost are
+  `ReportWorkItemProgress`. Like evaluations, rebases do not count
+  against capacity. **The platform does not yet issue the item's token
+  to the rebase holder** (runsheet `gateway/itemtoken.go` refuses an
+  item in `review`; ADR-001 asks for it), so until it does every
+  rebase fails at `github token:` and goes to its builder; the fake
+  mirrors that unless a test sets `RebaseTokens`.
 - Every session gets Prologue as an MCP server with the node's token and
   the project's context on disk under `.mesh/context/` with `INDEX.md`:
   the documents, then `## Live goals and items` — each live goal's items
@@ -79,7 +99,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
 - Costs: each session's `total_cost_usd` is reported to the platform per
   item (`ReportWorkItemProgress`, `EvaluateWorkItem`, `PlanGoal`).
 - **Models are per kind of session.** `Models` in `~/.mesh/node.yaml`
-  (`default`, `build`, `evaluate`, `plan`, `channel`, `research`) or the matching
+  (`default`, `build`, `evaluate`, `plan`, `channel`, `research`,
+  `rebase`) or the matching
   `--model*` flags on `node start`; `mesh node model` shows and sets
   them. A kind with none takes `default`; no default leaves the CLI's
   own. The value is an alias the CLI knows (`opus`, `sonnet`, `haiku`)
