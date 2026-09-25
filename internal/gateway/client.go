@@ -52,6 +52,10 @@ type Client struct {
 	// WorkItemIndex fields items-carry-a-model added (an older
 	// platform): every later item read asks for workItemFields alone.
 	itemsWithoutModel atomic.Bool
+
+	// heartbeatBasicUntil (unix nanoseconds) is when the heartbeat next
+	// offers the fields the gateway refused (see HeartbeatNode).
+	heartbeatBasicUntil atomic.Int64
 }
 
 // New returns a client for baseURL (scheme+host, no trailing slash) with
@@ -848,7 +852,31 @@ func (c *Client) HeartbeatNode(ctx context.Context, nodeID, version string, runn
 			in["scaling"] = x.Scaling
 		}
 	}
-	return c.Mutate(ctx, "heartbeatNode", nodeID, in)
+	// A node can be newer than the platform it reports to: a field the
+	// gateway does not know yet makes GraphQL refuse the whole heartbeat,
+	// and a node whose heartbeats never land is marked offline while it
+	// works (2026-09-25: limits and scaling shipped before the platform
+	// took them). So the extra fields are dropped for a while when they
+	// are refused, and offered again every ten minutes.
+	if len(in) > 2 && time.Now().UnixNano() < c.heartbeatBasicUntil.Load() {
+		in = basicHeartbeat(in)
+	}
+	err := c.Mutate(ctx, "heartbeatNode", nodeID, in)
+	if err != nil && len(in) > 2 && strings.Contains(err.Error(), "got invalid value") {
+		c.heartbeatBasicUntil.Store(time.Now().Add(10 * time.Minute).UnixNano())
+		return c.Mutate(ctx, "heartbeatNode", nodeID, basicHeartbeat(in))
+	}
+	return err
+}
+
+// basicHeartbeat is a heartbeat with only the fields every platform
+// since node drains takes: version, running and draining.
+func basicHeartbeat(in map[string]any) map[string]any {
+	out := map[string]any{"version": in["version"], "running": in["running"]}
+	if d, ok := in["draining"]; ok {
+		out["draining"] = d
+	}
+	return out
 }
 
 // ClaimWorkItem takes the item's lock; a refusal is a gateway.Error.
