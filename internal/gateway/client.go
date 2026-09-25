@@ -52,6 +52,10 @@ type Client struct {
 	// WorkItemIndex fields items-carry-a-model added (an older
 	// platform): every later item read asks for workItemFields alone.
 	itemsWithoutModel atomic.Bool
+	// nodesWithoutDesired is set once the gateway has refused
+	// NodeIndex.desiredVersion (a platform older than
+	// update-nodes-from-console): every later node read leaves it out.
+	nodesWithoutDesired atomic.Bool
 }
 
 // New returns a client for baseURL (scheme+host, no trailing slash) with
@@ -738,6 +742,29 @@ type Node struct {
 	Capacity   int    `json:"capacity"`
 	Version    string `json:"version"`
 	LastSeenAt string `json:"lastSeenAt"`
+	// DesiredVersion is the version the platform asks the node to run
+	// (update-nodes-from-console); empty leaves it be, and so does a
+	// platform older than the field.
+	DesiredVersion string `json:"desiredVersion"`
+}
+
+const nodeFields = `id name slug status running capacity version lastSeenAt`
+
+// readNodes runs one NodeIndex read, query being the document with its
+// selection left to fill in. It asks for desiredVersion too; a gateway
+// that does not know it is a platform older than the field, and from
+// then on the client asks for nodeFields alone. It reports whether the
+// field was read.
+func (c *Client) readNodes(ctx context.Context, query func(fields string) string, out any) (bool, error) {
+	if !c.nodesWithoutDesired.Load() {
+		err := c.Query(ctx, query(nodeFields+" desiredVersion"), nil, out)
+		var ge *Error
+		if err == nil || !errors.As(err, &ge) || !unknownField(ge.Message, "desiredVersion") {
+			return true, err
+		}
+		c.nodesWithoutDesired.Store(true)
+	}
+	return false, c.Query(ctx, query(nodeFields), nil, out)
 }
 
 // Nodes lists an org's nodes.
@@ -745,11 +772,36 @@ func (c *Client) Nodes(ctx context.Context, orgID string) ([]Node, error) {
 	var out struct {
 		Nodes []Node `json:"nodeIndexs"`
 	}
-	q := fmt.Sprintf(`{ nodeIndexs(namespace: %q, where: [%s]) { id name slug status running capacity version lastSeenAt } }`, NS, where("org_id", orgID))
-	if err := c.Query(ctx, q, nil, &out); err != nil {
+	q := func(fields string) string {
+		return fmt.Sprintf(`{ nodeIndexs(namespace: %q, where: [%s]) { %s } }`, NS, where("org_id", orgID), fields)
+	}
+	if _, err := c.readNodes(ctx, q, &out); err != nil {
 		return nil, err
 	}
 	return out.Nodes, nil
+}
+
+// GetDesiredVersion reads the version the platform asks node nodeID to
+// run; empty leaves it be. A platform that does not know the field
+// answers "" with an error IsUnsupported says is one, every time, so the
+// caller can note it once and carry on as if nothing were asked.
+func (c *Client) GetDesiredVersion(ctx context.Context, nodeID string) (string, error) {
+	var out struct {
+		Node *Node `json:"nodeIndex"`
+	}
+	q := func(fields string) string {
+		return fmt.Sprintf(`{ nodeIndex(namespace: %q, id: %q) { %s } }`, NS, nodeID, fields)
+	}
+	read, err := c.readNodes(ctx, q, &out)
+	switch {
+	case err != nil:
+		return "", err
+	case !read:
+		return "", &Error{Message: "the platform has no NodeIndex.desiredVersion", Unsupported: true}
+	case out.Node == nil:
+		return "", fmt.Errorf("node %s not found", nodeID)
+	}
+	return out.Node.DesiredVersion, nil
 }
 
 // ---- commands ---------------------------------------------------------------

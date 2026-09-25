@@ -493,6 +493,7 @@ func excludeFromGit(dir, pattern string) error {
 type Gateway interface {
 	MyOrgs(ctx context.Context) ([]gateway.Org, error)
 	HeartbeatNode(ctx context.Context, nodeID, version string, running int, extras ...gateway.HeartbeatExtras) error
+	GetDesiredVersion(ctx context.Context, nodeID string) (string, error)
 	ReadyWorkItems(ctx context.Context, orgID string) ([]gateway.WorkItem, error)
 	GoalWorkItems(ctx context.Context, goalID string) ([]gateway.WorkItem, error)
 	OrgWorkItems(ctx context.Context, orgID, status string) ([]gateway.WorkItem, error)

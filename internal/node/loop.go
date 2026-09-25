@@ -66,6 +66,9 @@ type Loop struct {
 	Limits *Limits
 	// Now is the clock pacing reads (time.Now when nil).
 	Now func() time.Time
+	// Update updates the node's own binary to the version the platform
+	// asks for (selfUpdate); nil never updates.
+	Update Updater
 
 	mu          sync.Mutex
 	running     map[string]bool
@@ -90,6 +93,21 @@ type Loop struct {
 	// tickGoals holds each org's goals as read this tick, so the claim,
 	// the planner and the director share one GoalIndex read per org.
 	tickGoals map[string]goalsRead
+	// updating is set while a self-update runs; restart once its binary
+	// is in place, when Run returns ErrRestartForUpdate. updateWG waits
+	// for the update to end (tests).
+	updating bool
+	restart  bool
+	updateWG sync.WaitGroup
+	// failed is the last update that failed and updateErr its reason, as
+	// the heartbeat carries it.
+	failed    updateFailure
+	updateErr string
+	// confirmed is set once the first heartbeat has gone through.
+	confirmed bool
+	// desiredUnsupported is set once the platform turned out not to
+	// know the desired version (logged once).
+	desiredUnsupported bool
 }
 
 type goalsRead struct {
@@ -268,7 +286,8 @@ func (l *Loop) RunningIDs() []string {
 // Drain has been called it returns nil instead, as soon as no session of
 // any kind is left — items, evaluations, plans, research and rebases alike, since
 // only the items count against capacity and a node is rarely without
-// the others.
+// the others. A drain a self-update waits out ends in
+// ErrRestartForUpdate instead, once the new binary is in place.
 func (l *Loop) Run(ctx context.Context) error {
 	l.mu.Lock()
 	if l.running == nil {
@@ -284,7 +303,11 @@ func (l *Loop) Run(ctx context.Context) error {
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
-		if l.drained() {
+		if l.restartRequested() {
+			l.wg.Wait()
+			return ErrRestartForUpdate
+		}
+		if l.drained() && !l.updatingNow() {
 			l.wg.Wait() // the last session's Release
 			l.logf("drained: every session has ended")
 			return nil
@@ -292,6 +315,7 @@ func (l *Loop) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			l.wg.Wait()
+			l.updateWG.Wait()
 			return ctx.Err()
 		case <-t.C:
 			l.Tick(ctx)
@@ -352,7 +376,7 @@ func (l *Loop) notify() {
 	}
 }
 
-// Tick is one round: heartbeat, list, claim, dispatch. A draining node
+// Tick is one round: heartbeat, self-update, list, claim, dispatch. A draining node
 // only heartbeats — with draining set — (and runs AfterTick): it claims no
 // item, plan, research or rebase and starts no evaluation — an item it holds for evaluation
 // waits in evaluating for the node that comes up after it. Every
@@ -368,12 +392,19 @@ func (l *Loop) Tick(ctx context.Context) {
 	l.mu.Unlock()
 	l.tickGoals = map[string]goalsRead{}
 	l.reload(ctx)
-	extras := gateway.HeartbeatExtras{Draining: l.Draining(), Limits: l.limitsStore().Heartbeat()}
+	extras := gateway.HeartbeatExtras{Draining: l.Draining(), UpdateError: l.UpdateError(), Limits: l.limitsStore().Heartbeat()}
+	beat := false
 	for _, sc := range l.Scopes {
 		if err := l.GW.HeartbeatNode(ctx, sc.NodeID, l.Version, l.Running(), extras); err != nil {
 			l.logf("heartbeat %s: %v", sc.Login, err)
+		} else {
+			beat = true
 		}
 	}
+	if beat {
+		l.confirmUpdate()
+	}
+	l.selfUpdate(ctx)
 	p := l.pacing()
 	if !l.Draining() && p.mode != paceStopped {
 		l.evaluateHeld(ctx)
