@@ -188,6 +188,38 @@ Until the platform issues an item's token to the node holding its
 rebase (ADR-001 asks for it), every rebase fails at `github token:` and
 the item goes to its builder.
 
+### Claude accounts
+
+By default every session runs on the operator's own `claude` login. To
+run on other accounts — several Max subscriptions, or an API key — list
+them in `~/.mesh/node.yaml` (adr-005):
+
+```yaml
+accounts:
+  - label: max-a
+    kind: subscription
+    token_file: ~/.mesh/accounts/max-a.token
+  - label: max-b
+    kind: subscription
+    token_file: ~/.mesh/accounts/max-b.token
+  - label: api
+    kind: api
+    api_key_env: MESH_ANTHROPIC_KEY
+```
+
+- **A Max account.** Sign in to that account and run `claude
+  setup-token`; put the token it prints in the file (`chmod 600`).
+- **An API key.** Export it in the node's environment under the name
+  `api_key_env` gives (the service keeps the environment it was
+  installed with).
+
+Each session gets the account's secret in its environment only
+(`CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`), its own temporary
+`CLAUDE_CONFIG_DIR`, removed after, and none of the operator's own
+Claude variables. For now every session runs on the first account
+listed; the plan limits are kept per label. `mesh node start` refuses
+an account whose token file or variable cannot be read.
+
 ### Register
 
 ```bash
