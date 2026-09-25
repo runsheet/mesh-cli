@@ -68,8 +68,9 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   heartbeat says `draining`. `DrainAndWait(ctx)` is the drain a
   self-update blocks on; `Resume` undoes a drain that has not yet ended
   `Run`. The heartbeat's extras (`gateway.HeartbeatExtras`: `draining`,
-  `updateError`) are sent only when set, because they are fields the
-  platform half (runsheet `update-nodes-from-console`) adds. Capacity
+  `updateError`, and `limits` — the latest Claude plan limits per
+  account, runsheet `limits-on-the-console`) are sent only when set,
+  because they are fields the platform half adds. Capacity
   and the orgs need no drain: `Reload` re-reads them every tick.
 - **The rebase** (`internal/node/rebase.go`, runsheet ADR 008): an item
   whose pull request conflicts in a way the integrator could not
