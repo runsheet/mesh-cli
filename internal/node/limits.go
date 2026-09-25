@@ -95,8 +95,42 @@ func (s *Limits) Observe(account string, rl *harness.RateLimit) {
 	s.accounts[account] = *rl
 }
 
-// Readings are the latest reading of every account, by account.
+// CodexAccountPrefix keys a Codex account's readings in Limits
+// (CodexLimitsAccount): kept apart from the Claude accounts', they are
+// on the heartbeat but never pace, stop or scale a Claude session
+// (docs/adr/adr-005-codex-second-opinion.md).
+const CodexAccountPrefix = "codex:"
+
+// CodexLimitsAccount is the key a Codex account's readings land under.
+func CodexLimitsAccount(name string) string {
+	if name == "" {
+		name = DefaultAccount
+	}
+	return CodexAccountPrefix + name
+}
+
+// Readings are the latest reading of every Claude account, by account:
+// what the node paces, chooses and scales by. A Codex account's are not
+// among them (Reading).
 func (s *Limits) Readings() map[string]harness.RateLimit {
+	out := s.all()
+	for a := range out {
+		if strings.HasPrefix(a, CodexAccountPrefix) {
+			delete(out, a)
+		}
+	}
+	return out
+}
+
+// Reading is the latest reading of one account, of any kind.
+func (s *Limits) Reading(account string) (harness.RateLimit, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rl, ok := s.accounts[account]
+	return rl, ok
+}
+
+func (s *Limits) all() map[string]harness.RateLimit {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make(map[string]harness.RateLimit, len(s.accounts))
@@ -106,9 +140,10 @@ func (s *Limits) Readings() map[string]harness.RateLimit {
 	return out
 }
 
-// Heartbeat is the readings as the heartbeat carries them, by account.
+// Heartbeat is the readings of every account, Codex's too, as the
+// heartbeat carries them, by account.
 func (s *Limits) Heartbeat() []gateway.Limits {
-	readings := s.Readings()
+	readings := s.all()
 	accounts := make([]string, 0, len(readings))
 	for a := range readings {
 		accounts = append(accounts, a)
@@ -141,13 +176,23 @@ func ObserveLimits(h harness.Harness, store *Limits) harness.Harness {
 	return &limitsHarness{Harness: h, store: store}
 }
 
+// ObserveLimitsAs is ObserveLimits under one fixed account key: a Codex
+// harness's, CodexLimitsAccount of its account.
+func ObserveLimitsAs(h harness.Harness, store *Limits, account string) harness.Harness {
+	return &limitsHarness{Harness: h, store: store, account: account}
+}
+
 type limitsHarness struct {
 	harness.Harness
-	store *Limits
+	store   *Limits
+	account string
 }
 
 func (h *limitsHarness) Run(ctx context.Context, job harness.Job, onProgress func(harness.Progress)) (harness.Result, error) {
-	account := Account(job.Env)
+	account := h.account
+	if account == "" {
+		account = Account(job.Env)
+	}
 	res, err := h.Harness.Run(ctx, job, func(p harness.Progress) {
 		h.store.Observe(account, p.RateLimit)
 		if onProgress != nil {

@@ -510,7 +510,7 @@ func runPollMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *
 		r.Scopes = loop.CurrentScopes() // an org served since start is known to its build
 		_ = r.RunItem(ctx, item)
 	}
-	loop.Evaluate = evaluateWith(gw, cfg, h, loop.CurrentScopes, workRoot, fallback, accounts, logger)
+	loop.Evaluate = evaluateWith(gw, cfg, h, codexSecondOpinion(cfg, loop, logger), loop.CurrentScopes, workRoot, fallback, accounts, logger)
 	loop.Plan = planWith(gw, cfg, h, workRoot, accounts, logger)
 	loop.Research = researchWith(gw, cfg, h, workRoot, accounts, logger)
 	loop.Rebase = rebaseWith(gw, cfg, h, loop.CurrentScopes, workRoot, fallback, accounts, logger)
@@ -671,7 +671,7 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 	}
 
 	ws := &node.Git{Log: os.Stderr}
-	loop.Evaluate = evaluateWith(gw, cfg, observed(loop, logger), loop.CurrentScopes, workRoot, fallback, accounts, logger)
+	loop.Evaluate = evaluateWith(gw, cfg, observed(loop, logger), codexSecondOpinion(cfg, loop, logger), loop.CurrentScopes, workRoot, fallback, accounts, logger)
 	loop.Plan = planWith(gw, cfg, observed(loop, logger), workRoot, accounts, logger)
 	loop.Research = researchWith(gw, cfg, observed(loop, logger), workRoot, accounts, logger)
 	loop.Rebase = rebaseWith(gw, cfg, observed(loop, logger), loop.CurrentScopes, workRoot, fallback, accounts, logger)
@@ -851,13 +851,50 @@ func oneShotHarness() *harness.ClaudeCode {
 	return h
 }
 
+// secondOpinion is the evaluator's Codex harness and how its account's
+// limits are kept; the zero value is no second opinion.
+type secondOpinion struct {
+	h          harness.Harness
+	account    string
+	limits     *node.Limits
+	thresholds func() node.LimitsConfig
+}
+
+// codexSecondOpinion builds the Codex harness for the evaluator's second
+// opinion (docs/adr/adr-005-codex-second-opinion.md): when node.yaml has
+// a `codex:` block and its binary is found, on the block's first account
+// (none: the operator's own Codex login). Its readings land in the
+// loop's Limits under codex:<account>. Otherwise none, and the node
+// evaluates as before.
+func codexSecondOpinion(cfg *node.Config, loop *node.Loop, logger *log.Logger) secondOpinion {
+	if cfg.Codex.IsZero() {
+		return secondOpinion{}
+	}
+	bin := cfg.Codex.Binary
+	if bin == "" {
+		bin = "codex"
+	}
+	if _, err := exec.LookPath(bin); err != nil {
+		logger.Printf("codex: no second opinion: %v", err)
+		return secondOpinion{}
+	}
+	c := &harness.Codex{Binary: bin, Stderr: os.Stderr}
+	if len(cfg.Codex.Accounts) > 0 {
+		c.Account = cfg.Codex.Accounts[0].Harness()
+	}
+	account := node.CodexLimitsAccount(c.Account.Name)
+	logger.Printf("codex: second opinion on urgent and high goals, account %s", account)
+	return secondOpinion{h: node.ObserveLimitsAs(c, loop.Limits, account), account: account, limits: loop.Limits, thresholds: loop.Thresholds}
+}
+
 // evaluateWith is the loop's Evaluate hook: a fresh evaluator session per
 // finished item, in either mode — and a bearer taken afresh for each, so
 // a session never starts with a machine token about to expire. A failure to reach a verdict is logged
 // and the item is left in evaluating for the next tick.
-func evaluateWith(gw *gateway.Client, cfg *node.Config, h harness.Harness, scopes func() node.Scopes, workRoot string, fallback *node.TokenFallback, accounts *node.Credentials, logger *log.Logger) func(context.Context, gateway.WorkItem) {
+func evaluateWith(gw *gateway.Client, cfg *node.Config, h harness.Harness, second secondOpinion, scopes func() node.Scopes, workRoot string, fallback *node.TokenFallback, accounts *node.Credentials, logger *log.Logger) func(context.Context, gateway.WorkItem) {
 	return func(ctx context.Context, item gateway.WorkItem) {
-		ev := &node.Evaluator{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Scopes: scopes(), WorkRoot: workRoot, MCP: prologueMCP(ctx, gw), MaxBudgetUSD: nodeEvalBudgetFlag, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("evaluate"), Fallback: fallback, Accounts: cfg.Accounts, Credentials: accounts, Log: logger}
+		ev := &node.Evaluator{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Scopes: scopes(), WorkRoot: workRoot, MCP: prologueMCP(ctx, gw), MaxBudgetUSD: nodeEvalBudgetFlag, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("evaluate"), Fallback: fallback, Accounts: cfg.Accounts, Credentials: accounts, Log: logger,
+			Second: second.h, SecondModel: cfg.Codex.CodexModel(nodeModels.For("evaluate")), SecondAccount: second.account, Limits: second.limits, Thresholds: second.thresholds}
 		if err := ev.Evaluate(ctx, item); err != nil && ctx.Err() == nil {
 			logger.Printf("item %d %q: evaluation: %v", item.Seq, item.Title, err)
 		}
