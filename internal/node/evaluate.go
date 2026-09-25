@@ -30,7 +30,10 @@ type Evaluator struct {
 	MCP map[string]any
 	// MaxBudgetUSD caps the review session (3 by default).
 	MaxBudgetUSD float64
-	// Model is what an evaluator session runs on ("" the CLI's default).
+	// Model is the node's own evaluate model (node.yaml evaluate, else
+	// default; "" the CLI's default). An item that names a model or an
+	// agent with one evaluates on the strongest of this, its build model
+	// and sonnet (EvaluateModel); one that names none, on this alone.
 	Model string
 	// Accounts are the node's Claude accounts (node.yaml); a session runs
 	// on the first, or on the operator's own login when there are none.
@@ -112,7 +115,8 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	if budget <= 0 {
 		budget = 3
 	}
-	job := harness.Job{Kind: harness.KindEvaluate, Workspace: dir, Prompt: prompt, MaxBudgetUSD: budget, Label: label + " evaluate", Timeout: e.Timeout, MCPServers: e.MCP, Model: e.Model}
+	model := EvaluateModel(ctx, e.GW, item, e.Model)
+	job := harness.Job{Kind: harness.KindEvaluate, Workspace: dir, Prompt: prompt, MaxBudgetUSD: budget, Label: label + " evaluate", Timeout: e.Timeout, MCPServers: e.MCP, Model: model}
 	if tok := cred.Token(); tok != nil {
 		ghDir, err := NewGHConfigDir()
 		if err != nil {
@@ -128,7 +132,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	}
 	defer acct.Cleanup()
 	acct.Apply(&job)
-	e.logf("item %s: evaluating %s (%d bytes of diff)", label, branch, len(diff))
+	e.logf("item %s: evaluate on %s: %s (%d bytes of diff)", label, modelName(model), branch, len(diff))
 	result, err := e.Harness.Run(ctx, job, nil)
 	acct.Finish(ctx, result)
 	if ctx.Err() != nil {
@@ -153,7 +157,9 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	if notes == "" {
 		notes = "(no notes)"
 	}
-	if err := e.GW.EvaluateWorkItem(ctx, item.ID, passed, truncate(notes, 4000), Cents(result.CostUSD)); err != nil {
+	// the item's events say which model judged it
+	notes = truncate(notes, 4000-100) + "\n\n(evaluated on " + modelName(model) + ")"
+	if err := e.GW.EvaluateWorkItem(ctx, item.ID, passed, notes, Cents(result.CostUSD)); err != nil {
 		return fmt.Errorf("record verdict: %w", err)
 	}
 	e.logf("item %s: evaluation %s ($%.2f)", label, verdict, result.CostUSD)

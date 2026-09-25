@@ -34,7 +34,10 @@ type Rebaser struct {
 	MCP map[string]any
 	// MaxBudgetUSD caps the session (5 by default).
 	MaxBudgetUSD float64
-	// Model is what a rebase session runs on ("" the CLI's default).
+	// Model is the node's own rebase model (node.yaml rebase, else
+	// default; "" the CLI's default): what a rebase session runs on when
+	// the item names no model and its agent none (BuildModel, the
+	// builder's choice).
 	Model string
 	// Accounts are the node's Claude accounts (node.yaml); a session runs
 	// on the first, or on the operator's own login when there are none.
@@ -131,7 +134,8 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 	if budget <= 0 {
 		budget = 5
 	}
-	job := harness.Job{Kind: harness.KindRebase, Workspace: dir, Prompt: prompt, MaxBudgetUSD: budget, Label: label + " rebase", Timeout: r.Timeout, MCPServers: r.MCP, Model: r.Model}
+	model := BuildModel(ctx, r.GW, item, r.Model)
+	job := harness.Job{Kind: harness.KindRebase, Workspace: dir, Prompt: prompt, MaxBudgetUSD: budget, Label: label + " rebase", Timeout: r.Timeout, MCPServers: r.MCP, Model: model}
 	if tok := cred.Token(); tok != nil {
 		ghDir, err := NewGHConfigDir()
 		if err != nil {
@@ -155,8 +159,8 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 		defer mu.Unlock()
 		return sessionID
 	}
-	r.logf("item %s: rebasing %s onto %s", label, branch, spec.BaseRef)
-	report(ctx, "rebase session started: "+branch+" onto "+spec.BaseRef, "")
+	r.logf("item %s: rebase on %s: %s onto %s", label, modelName(model), branch, spec.BaseRef)
+	report(ctx, "rebase session started: "+branch+" onto "+spec.BaseRef+" on "+modelName(model), "")
 	every := r.ProgressEvery
 	if every <= 0 {
 		every = 60 * time.Second

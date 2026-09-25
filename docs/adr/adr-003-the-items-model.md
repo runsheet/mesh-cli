@@ -1,5 +1,5 @@
 ---
-summary: The node reads an item's model, agent slug and evaluate model off WorkItemIndex, resolves a named agent's model project → org → default by AgentID, hands the planner's per-item model in on planGoal, runs the planner on the strongest configured model, and falls back without the fields on a platform older than items-carry-a-model.
+summary: The node reads an item's model, agent slug and evaluate model off WorkItemIndex, resolves a named agent's model project → org → default by AgentID, hands the planner's per-item model in on planGoal, runs the planner on the strongest configured model, builds and rebases on the item's model (else its agent's, else node.yaml) and evaluates on the stronger of it and sonnet, and falls back without the fields on a platform older than items-carry-a-model.
 status: accepted
 ---
 
@@ -41,7 +41,6 @@ cost an older platform its items.
 - `internal/node/models.go` ranks tiers haiku < sonnet < opus (a full id
   by its family; "" and anything unknown below all three) so the node
   can pick the stronger of two, and never evaluate below the builder.
-
 - The planner runs on `Models.PlanModel()`: node.yaml's `plan` (or
   `--model-plan`) when set explicitly, else the strongest of `default`,
   `build`, `evaluate`, `channel` and `research`, else `opus`. It
@@ -57,8 +56,28 @@ cost an older platform its items.
   named none. node.log records each item's model and reason when the
   plan is handed in. `mesh goal plan` carries a `model` from its YAML.
 
-Which session runs on which model is the rest of the goal and amends
-this ADR when it lands.
+### Which session runs on which model
+
+- A build and a rebase run on `BuildModel(item, node)`: the item's
+  `model`, else its agent's (`AgentIDs` in order, the first with a
+  model), else the node's own (node.yaml `build` or `rebase`, else
+  `default`; "" the CLI's). A rebase works on the builder's branch, so
+  it takes the builder's choice. An agent lookup that fails is treated
+  as no model: the node's own.
+- The evaluator runs on `EvaluateModel(item, node)`: the strongest of
+  the node's own evaluate model, the item's model (as above, without
+  the node fallback), the platform's `evaluateModel` and `sonnet` — never
+  below the builder. An item that names none of them (an older platform,
+  an item without an agent, an agent without a model) evaluates on the
+  node's own evaluate model exactly as before. Of two that tie, the
+  node's own id wins, so an operator's `claude-opus-5-5` is not traded
+  for the alias `opus`.
+- The model is recorded where the item's history is read: node.log
+  says `item <goal>/<seq>: build on <model>`, `evaluate on <model>` and
+  `rebase on <model>`; the build's first progress note is `session
+  started: <branch> on <model>` (a rebase's `rebase session started:
+  <branch> onto <base> on <model>`); the evaluation's notes end
+  `(evaluated on <model>)`.
 
 ## Consequences
 

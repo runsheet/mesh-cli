@@ -71,7 +71,9 @@ type Runner struct {
 	MCPFunc func(context.Context) map[string]any
 	// MaxBudgetUSD caps a session's budget whatever the goal has left.
 	MaxBudgetUSD float64
-	// Model is what a build session runs on ("" the CLI's default).
+	// Model is the node's own build model (node.yaml build, else
+	// default; "" the CLI's default): what a build session runs on when
+	// the item names no model and its agent none (BuildModel).
 	Model string
 	// Accounts are the node's Claude accounts (node.yaml); a session runs
 	// on the first, or on the operator's own login when there are none.
@@ -191,6 +193,9 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		contextDir = ContextDir
 	}
 
+	model := BuildModel(ctx, r.GW, item, r.Model)
+	r.logf("item %s: build on %s", label, modelName(model))
+
 	mcp := r.mcp(ctx)
 	prompt := harness.BuildPrompt(harness.PromptInput{
 		GoalSlug: res.Goal.Slug, GoalTitle: res.Goal.Title, GoalStatement: res.Goal.Statement, GoalAcceptance: res.Goal.Acceptance,
@@ -198,7 +203,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		Repo: res.Repo.FullName(), Branch: spec.Branch, BaseRef: spec.BaseRef, ContextDir: contextDir, ContextFiles: files,
 		Attempts: item.Attempts, Evaluation: item.Evaluation, Project: orgLogin + "/" + res.Project.Slug, Prologue: len(mcp) > 0,
 	})
-	job := harness.Job{Kind: harness.KindBuild, Workspace: dir, Prompt: prompt, MaxBudgetUSD: r.Budget(res.Goal), Label: label, MCPServers: mcp, Model: r.Model}
+	job := harness.Job{Kind: harness.KindBuild, Workspace: dir, Prompt: prompt, MaxBudgetUSD: r.Budget(res.Goal), Label: label, MCPServers: mcp, Model: model}
 	if tok := cred.Token(); tok != nil {
 		ghDir, err := NewGHConfigDir()
 		if err != nil {
@@ -238,7 +243,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 			r.logf("item %s: progress: %v", label, err)
 		}
 	}
-	report("session started: " + spec.Branch)
+	report("session started: " + spec.Branch + " on " + modelName(model))
 
 	every := r.ProgressEvery
 	if every <= 0 {
