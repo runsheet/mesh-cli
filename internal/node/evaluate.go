@@ -88,14 +88,6 @@ func (e *Evaluator) runtimes() []string {
 	return e.Runtimes()
 }
 
-// progress puts a note on the item's events; a platform that refuses it
-// for an item in evaluating is logged, not an error.
-func (e *Evaluator) progress(ctx context.Context, itemID, label, note string) {
-	if err := e.GW.ReportWorkItemProgress(ctx, itemID, truncate(note, 2000), 0, ""); err != nil {
-		e.logf("item %s: progress: %v", label, err)
-	}
-}
-
 // Evaluate reviews one item in evaluating and records the verdict. An
 // error means no verdict was recorded: the item stays in evaluating and
 // the next tick tries again. That holds when GitHub refused the item's
@@ -197,9 +189,10 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	}
 	// the checkout's services, started in the session's pod before the
 	// evaluator; the pod and its sidecars go on every way out. An item
-	// in evaluating cannot be released: a required service that does not
-	// come up leaves it unevaluated, and the loop does not try again
-	// while that holds.
+	// in evaluating can be neither released nor reported on: a required
+	// service that does not come up leaves it unevaluated, and the loop
+	// does not try again while that holds; a missing optional one is in
+	// the verdict's notes.
 	pod, err := OpenSessionPod(ctx, e.Sandbox, dir, job.Label, harness.KindEvaluate, e.logf)
 	defer pod.Close()
 	if err != nil {
@@ -208,12 +201,11 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	if _, failed := pod.RequiredFailure(); failed {
 		reason := pod.ReleaseReason()
 		e.Declines.Record(item.ID, pod.Declined(), runtimes, time.Now())
-		e.progress(ctx, item.ID, label, reason)
+		e.logf("item %s: not evaluated, %s", label, reason)
 		return fmt.Errorf("not evaluated, %s", reason)
 	}
 	if note := pod.MissingNote(); note != "" {
 		e.logf("item %s: %s", label, note)
-		e.progress(ctx, item.ID, label, note)
 	}
 	pod.Apply(&job)
 	in.Services = pod.Prompt()
@@ -239,10 +231,13 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	if notes == "" {
 		notes = "(no notes)"
 	}
-	// the notes say which tools the evaluator ran without
+	// the notes say which tools and services the evaluator ran without
 	without := ""
 	if note := st.OmittedNote(); note != "" {
 		without = "\n" + truncate(note, 500)
+	}
+	if note := pod.MissingNote(); note != "" {
+		without += "\n" + truncate(note, 500)
 	}
 	cost := result.CostUSD
 	if passed && e.Second != nil && gateway.PriorityRank(res.Goal.Priority) <= gateway.PriorityRank("high") {

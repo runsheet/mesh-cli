@@ -117,3 +117,34 @@ func TestPlanPromptRejected(t *testing.T) {
 		}
 	}
 }
+
+// The services line is its own section before the rules, in the build,
+// evaluate and rebase prompts; none is written when there are none, and
+// no contract line moves.
+func TestPromptsCarryTheServicesLine(t *testing.T) {
+	const line = "The services this repository declares run beside you and are ready on 127.0.0.1 (also listed in `$HOME/.mesh-services`): postgres (postgres:16) at 127.0.0.1:5432."
+	build := BuildPrompt(PromptInput{GoalSlug: "g", GoalTitle: "G", Seq: 1, Title: "T", Repo: "o/r", Branch: "b", BaseRef: "main", GoalAcceptance: "tests pass", Services: line})
+	if want := "## Acceptance (the goal)\n\ntests pass\n\n# Services\n\n" + line + "\n\n# Rules\n\n1. Read the repository's own instructions"; !strings.Contains(build, want) {
+		t.Errorf("build prompt lacks\n%s\n---\n%s", want, build)
+	}
+	eval := EvaluatePrompt(EvaluateInput{GoalSlug: "g", GoalTitle: "G", Seq: 1, Title: "T", Repo: "o/r", Branch: "b", BaseRef: "main", Services: line})
+	if want := "The diff is empty: the branch changed nothing.\n\n# Services\n\n" + line + "\n\n# Rules\n\n1. Judge"; !strings.Contains(eval, want) {
+		t.Errorf("evaluate prompt lacks\n%s\n---\n%s", want, eval)
+	}
+	if !strings.HasSuffix(strings.TrimSpace(eval), "Pass only when every clause of the acceptance you can check holds.") || !strings.Contains(eval, "`"+VerdictPass+"` or `"+VerdictFail+"`") {
+		t.Error("the verdict contract line moved")
+	}
+	rebase := RebasePrompt(RebaseInput{GoalSlug: "g", GoalTitle: "G", Seq: 1, Title: "T", Repo: "o/r", Branch: "b", BaseRef: "main", Services: line})
+	if want := "# Services\n\n" + line + "\n\n# The runbook\n\n"; !strings.Contains(rebase, want) {
+		t.Errorf("rebase prompt lacks\n%s\n---\n%s", want, rebase)
+	}
+	for _, p := range []string{
+		BuildPrompt(PromptInput{Title: "x"}),
+		EvaluatePrompt(EvaluateInput{Title: "x"}),
+		RebasePrompt(RebaseInput{Title: "x"}),
+	} {
+		if strings.Contains(p, "# Services") {
+			t.Errorf("no services, no section:\n%s", p)
+		}
+	}
+}
