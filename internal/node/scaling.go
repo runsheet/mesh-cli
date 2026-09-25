@@ -34,6 +34,36 @@ func (s Scaling) Heartbeat() *gateway.Scaling {
 	return &gateway.Scaling{Capacity: s.Capacity, Min: s.Min, Max: s.Max, Reason: string(s.Reason)}
 }
 
+// ReasonFixed is a fixed capacity's reason, which the heartbeat's
+// `scaling` carries only for a fixed node on several accounts.
+const ReasonFixed Reason = "fixed"
+
+// heartbeatScaling is the heartbeat's `scaling` (adr-004,
+// adr-005-capacity-across-accounts): s for a ranged node, and each
+// account's slots once the accounts scaler has counted them; for a
+// fixed node on several accounts its capacity as min and max, reason
+// `fixed`; for a fixed node on one account (or the operator's own
+// login) nil, so its heartbeat is what it always was. The gateway sends
+// it only when its schema takes it. Names and kinds only — never a
+// token file or a key's variable.
+func (l *Loop) heartbeatScaling(s Scaling, ranged bool) *gateway.Scaling {
+	if !ranged {
+		if len(l.nodeAccounts()) < 2 {
+			return nil
+		}
+		c := l.Capacity()
+		s = Scaling{Capacity: c, Min: c, Max: c, Reason: ReasonFixed}
+	}
+	out := s.Heartbeat()
+	slots, _ := l.AccountSlots()
+	for _, a := range slots {
+		out.Accounts = append(out.Accounts, gateway.AccountScaling{
+			Name: a.Name, Kind: a.Kind, Slots: a.Slots.Normal, UrgentOnlySlots: a.Slots.UrgentOnly, Reason: string(a.Reason),
+		})
+	}
+	return out
+}
+
 // String is s as `mesh node status` shows it: in-force/min–max (reason).
 // A reason not yet known (the scaler has not run) is left out.
 func (s Scaling) String() string {

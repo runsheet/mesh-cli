@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"sync"
 	"testing"
@@ -234,5 +235,96 @@ func TestSpendableWithoutAccounts(t *testing.T) {
 	own := []AccountConfig{{Label: DefaultAccount, Kind: AccountSubscription}}
 	if got := l.spendable(own, false, true); len(got) != 1 {
 		t.Fatalf("spendable = %+v", got)
+	}
+}
+
+// lastScaling is the last heartbeat's scaling, and whether it had one.
+func lastScaling(t *testing.T, s *scaled) (map[string]any, bool) {
+	t.Helper()
+	hb := s.CallsNamed("heartbeatNode")
+	if len(hb) == 0 {
+		t.Fatal("no heartbeat")
+	}
+	v, ok := hb[len(hb)-1].Input["scaling"]
+	m, _ := v.(map[string]any)
+	return m, ok
+}
+
+// A ranged node on accounts heartbeats its capacity, range and reason
+// and one entry per account with its slots and reason — names and
+// kinds, never a token file or a key's variable. A gateway whose schema
+// lacks scaling gets none, and the heartbeat still lands.
+func TestAccountsNodeHeartbeatsEachAccountsSlots(t *testing.T) {
+	n := newAccountsNode(t, Capacity{Min: 1, Max: 8})
+	n.subscriptions(oneSlot, 0)
+	n.capacityEvery(0, 25*time.Minute)
+	s, ok := lastScaling(t, n.scaled)
+	if !ok || s["capacity"] != 5.0 || s["min"] != 1.0 || s["max"] != 8.0 || s["reason"] != "accounts" {
+		t.Fatalf("scaling = %#v, %v", s, ok)
+	}
+	accounts, _ := s["accounts"].([]any)
+	want := []map[string]any{
+		{"name": "max-a", "kind": "subscription", "slots": 1.0, "urgentOnlySlots": 0.0, "reason": "five-hour pace"},
+		{"name": "max-b", "kind": "subscription", "slots": 1.0, "urgentOnlySlots": 0.0, "reason": "five-hour pace"},
+		{"name": "key", "kind": "api", "slots": 2.0, "urgentOnlySlots": 1.0, "reason": "daily cap"},
+	}
+	if len(accounts) != len(want) {
+		t.Fatalf("scaling.accounts = %#v", s["accounts"])
+	}
+	for i, w := range want {
+		a, _ := accounts[i].(map[string]any)
+		if len(a) != len(w) {
+			t.Fatalf("accounts[%d] = %#v, want %#v", i, a, w)
+		}
+		for k, v := range w {
+			if a[k] != v {
+				t.Fatalf("accounts[%d].%s = %#v, want %#v", i, k, a[k], v)
+			}
+		}
+	}
+	hb := n.CallsNamed("heartbeatNode")
+	raw, _ := json.Marshal(hb[len(hb)-1].Input)
+	for _, secret := range []string{`"/a"`, `"/b"`, "KEY", "token_file", "api_key_env", "tokenFile", "apiKeyEnv"} {
+		if strings.Contains(string(raw), secret) {
+			t.Fatalf("heartbeat carries %s: %s", secret, raw)
+		}
+	}
+
+	old := newAccountsNode(t, Capacity{Min: 1, Max: 8})
+	old.UnknownFields["scaling"] = true
+	old.subscriptions(oneSlot, 0)
+	old.at(0)
+	old.at(time.Minute)
+	if len(old.CallsNamed("heartbeatNode")) != 4 { // two ticks, two orgs
+		t.Fatalf("heartbeats landed: %d, want 4", len(old.CallsNamed("heartbeatNode")))
+	}
+	if s, ok := lastScaling(t, old.scaled); ok {
+		t.Fatalf("scaling sent to a schema without it: %#v", s)
+	}
+}
+
+// A fixed node on several accounts heartbeats its capacity as its min
+// and max, reason `fixed` — no scaler counts its accounts' slots; a
+// fixed node on one account heartbeats none, as before.
+func TestFixedNodeHeartbeatsScalingOnlyOnSeveralAccounts(t *testing.T) {
+	two := newScaled(t, Fixed(3), false)
+	two.loop.Cfg.Accounts = []AccountConfig{
+		{Label: "max-a", Kind: AccountSubscription, TokenFile: "/a"},
+		{Label: "max-b", Kind: AccountSubscription, TokenFile: "/b"},
+	}
+	two.at(0)
+	s, ok := lastScaling(t, two)
+	if !ok || len(s) != 4 || s["capacity"] != 3.0 || s["min"] != 3.0 || s["max"] != 3.0 || s["reason"] != "fixed" {
+		t.Fatalf("fixed node on two accounts: scaling = %#v, %v", s, ok)
+	}
+
+	one := newScaled(t, Fixed(3), false)
+	one.loop.Cfg.Accounts = []AccountConfig{{Label: "max-a", Kind: AccountSubscription, TokenFile: "/a"}}
+	one.at(0)
+	if s, ok := lastScaling(t, one); ok {
+		t.Fatalf("fixed node on one account sent scaling = %#v", s)
+	}
+	if n := len(one.ReadsNamed("__type")); n != 0 {
+		t.Fatalf("fixed node on one account probed the schema %d times", n)
 	}
 }
