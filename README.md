@@ -144,6 +144,50 @@ mesh node model --research opus   # the session that decides what to build
 mesh node start --research-budget-usd 5
 ```
 
+### The rebase session
+
+A session of kind **rebase** (runsheet ADR 008, trd §6a) takes a pull
+request the integrator could not rebase itself. When a conflict is more
+than mechanical, the integrator marks the item `rebase_state: requested`
+and leaves it for a node.
+
+- **Listing.** Every tick the node lists the requested rebases in each
+  org it serves (`RequestedRebases`) and orders them with the rest of
+  its work: by their goal's priority — urgent, high, normal, low; a goal
+  with none is normal — then oldest seq first.
+- **Claim.** It claims each with `ClaimWorkItemRebase`. The aggregate
+  refuses a second claimant, so two nodes never run one rebase; a
+  refusal is the ordinary answer and is not logged as an error. A
+  draining node claims none.
+- **The session.** It works in the item's own checkout on the item's
+  token: it checks out the branch, rebases it onto its base, resolves
+  each conflict keeping both sides' intent, re-runs the item's
+  acceptance and pushes with `--force-with-lease`. The runbook is the
+  mesh-branch-rebase skill in runsheet/runsheet
+  (`skill-mesh-branch-rebase`, read through Prologue); the prompt
+  carries its steps for when it cannot be fetched. The session ends with
+  `REBASED: <sha>` and `RESOLVED: <files>`, or `REBASE FAILED: <why>`.
+- **Finish.** The node reads the pushed head back from the remote and
+  hands it in with the resolved files through `FinishWorkItemRebase`.
+- **Fail.** Anything else — no token, a failed checkout, a session that
+  gives up, a head that was not pushed — is `FailWorkItemRebase` with
+  the reason, which hands the item to its builder with those words.
+- **Capacity.** Like evaluations, rebases do not count against the
+  node's capacity. `--rebase-budget-usd` caps each one; its heartbeat
+  and its cost go in with `ReportWorkItemProgress`.
+- **Model.** The `rebase` key under `models` in `~/.mesh/node.yaml`,
+  `mesh node model --rebase`, or `--model-rebase` on `mesh node start`;
+  unset, it takes `default`.
+
+```bash
+mesh node model --rebase sonnet
+mesh node start --rebase-budget-usd 3
+```
+
+Until the platform issues an item's token to the node holding its
+rebase (ADR-001 asks for it), every rebase fails at `github token:` and
+the item goes to its builder.
+
 ### Register
 
 ```bash
@@ -180,19 +224,7 @@ evaluated by their goal's priority, then seq — on the same one goals read
 per org per tick.
 There is no starvation guard beyond this order: a steady stream of urgent
 work keeps a low goal's items, plans and evaluations waiting.
-Rebases follow it too. When the integrator cannot resolve a pull
-request's conflict itself it asks for a **rebase** (`rebase_state:
-requested`); every tick the node lists those in each org it serves,
-urgent goals first, then seq, and claims each with `ClaimWorkItemRebase`
-— another node holding it is the ordinary refusal. The rebase session
-works in the item's own checkout: it rebases the branch onto its base,
-resolves each conflict keeping both sides' intent, re-runs the item's
-acceptance, pushes with `--force-with-lease` and ends with `REBASED:
-<sha>` and `RESOLVED: <files>` or `REBASE FAILED: <why>`. The node reads
-the pushed head back and hands it in with `FinishWorkItemRebase`, or
-`FailWorkItemRebase` with the reason for anything else, which returns
-the item to its builder. Like evaluations, rebases do not count against
-capacity (`--rebase-budget-usd` caps each one).
+Rebases follow it too (see The rebase session below).
 Capacity and the orgs served are re-read at the top of every tick, so
 neither needs a restart: `capacity` and `orgs` come from
 `~/.mesh/node.yaml` as it stands (a file that cannot be read is logged and
