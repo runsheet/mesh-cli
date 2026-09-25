@@ -31,7 +31,7 @@ concurrency:
 jobs:
   build:
     name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, mini]
     permissions:
       contents: read
     strategy:
@@ -80,7 +80,7 @@ jobs:
   publish:
     name: Sign and publish ${{ github.ref_name }}
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, mini]
     permissions:
       contents: write
       id-token: write

@@ -9,9 +9,12 @@ on:
 permissions:
   contents: read
 
+# a newer push to main supersedes a build still running: only the latest
+# main is worth publishing, and five builds per merge queued on the mini's
+# two org runners held the PR checks behind them for up to 36 minutes
 concurrency:
   group: cli-release-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   build:
