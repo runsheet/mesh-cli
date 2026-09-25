@@ -1,0 +1,15 @@
+{"type":"thread.started","thread_id":"01a0d7ee-6b27-7e52-9336-294cf68a6cf8"}
+{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Model metadata for `no-such-model` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."}}
+{"type":"turn.started"}
+{"type":"error","message":"Reconnecting... 2/5 (unexpected status 404 Not Found: The model `no-such-model` does not exist or you do not have access to it.)"}
+{"type":"error","message":"Reconnecting... 3/5 (unexpected status 404 Not Found: The model `no-such-model` does not exist or you do not have access to it.)"}
+{"type":"error","message":"Reconnecting... 4/5 (unexpected status 404 Not Found: The model `no-such-model` does not exist or you do not have access to it.)"}
+{"type":"error","message":"Reconnecting... 5/5 (unexpected status 404 Not Found: The model `no-such-model` does not exist or you do not have access to it.)"}
+{"type":"item.completed","item":{"id":"item_1","type":"error","message":"Falling back from WebSockets to HTTPS transport. unexpected status 404 Not Found: The model `no-such-model` does not exist or you do not have access to it."}}
+{"type":"error","message":"Reconnecting... 1/5 (unexpected status 404 Not Found: The model `no-such-model` does not exist or you do not have access to it., url: https://api.openai.com/v1/responses, cf-ray: a4090f4bbb2a99a7-SYD, request id: req_dd2e4e1e45cf4948ad05264aad3b5682)"}
+{"type":"error","message":"Reconnecting... 2/5 (unexpected status 404 Not Found: The model `no-such-model` does not exist or you do not have access to it., url: https://api.openai.com/v1/responses, cf-ray: a4090f6e9c442ffe-SYD, request id: req_220dd500ca4a4376954073c694030e3a)"}
+{"type":"error","message":"Reconnecting... 3/5 (unexpected status 404 Not Found: The model `no-such-model` does not exist or you do not have access to it., url: https://api.openai.com/v1/responses, cf-ray: a4090f929a0c17cb-SYD, request id: req_6c2e2215a4554a1da60dbd5586bacb9f)"}
+{"type":"error","message":"Reconnecting... 4/5 (unexpected status 404 Not Found: The model `no-such-model` does not exist or you do not have access to it., url: https://api.openai.com/v1/responses, cf-ray: a4090f9a5ed31544-SYD, request id: req_e05d94afca084f568ba2a241726e48c8)"}
+{"type":"error","message":"Reconnecting... 5/5 (unexpected status 404 Not Found: The model `no-such-model` does not exist or you do not have access to it., url: https://api.openai.com/v1/responses, cf-ray: a4090fa6dc00d367-SYD, request id: req_5543fe5b01284502aaff6e3345e0f189)"}
+{"type":"error","message":"unexpected status 404 Not Found: The model `no-such-model` does not exist or you do not have access to it., url: https://api.openai.com/v1/responses, cf-ray: a4090fdbdad4022e-SYD, request id: req_6a877c12de814860b4ab7808b844d121"}
+{"type":"turn.failed","error":{"message":"unexpected status 404 Not Found: The model `no-such-model` does not exist or you do not have access to it., url: https://api.openai.com/v1/responses, cf-ray: a4090fdbdad4022e-SYD, request id: req_6a877c12de814860b4ab7808b844d121"}}
