@@ -85,7 +85,16 @@ living an hour.
   wrapped. Any other failure, and the operator login's fallback, is not
   retried. For now the item still fails on a `CredentialError`. mesh-specs trd §3
   has the node release it instead, as its own condition, the way it
-  releases an item when it is out of credit.
+  releases an item when it is out of credit. The command for that
+  credential release is `ReleaseWorkItem { reason }` (trd §1, §3;
+  `Client.ReleaseWorkItem(ctx, itemID, reason)`, the `releaseWorkItem`
+  mutation): the platform takes it only for a `claimed` or `running` item
+  the calling node holds, and puts the item back to `ready` with its
+  node, harness and session cleared, `attempts` unchanged, and the
+  reason — repo and expiry, never the token — in `last_note`, not
+  `last_error`. The fake gateway (`gatewaytest.Fake`) honours it so;
+  `RefuseReleases` makes it refuse, as a platform that does not take a
+  node's release.
 - Channel mode's one `claude` process runs many items, so its
   environment carries no item's token. `Session.once` starts it with
   `GH_TOKEN`, `GITHUB_TOKEN` and the enterprise tokens removed from the

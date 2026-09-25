@@ -68,6 +68,11 @@ type Fake struct {
 	// "Cannot query field", a command whose input (or an item of it)
 	// carries one with "Unknown field".
 	UnknownFields map[string]bool
+	// RefuseReleases answers every releaseWorkItem with a refusal and
+	// changes nothing, as a platform that will not take a node's release.
+	// By default the fake follows the contract (trd §1): a node releases
+	// a claimed or running item it holds.
+	RefuseReleases bool
 }
 
 // New starts a fake accepting the given bearer token.
@@ -378,6 +383,11 @@ func (f *Fake) apply(name string, in map[string]any) error {
 			return fmt.Errorf("no such item")
 		}
 		item["status"], item["lastError"] = "failed", in["error"]
+	case "releaseWorkItem":
+		if item == nil {
+			return fmt.Errorf("no such item")
+		}
+		return f.release(item, in)
 	case "evaluateWorkItem":
 		if item == nil {
 			return fmt.Errorf("no such item")
@@ -468,6 +478,26 @@ func (f *Fake) apply(name string, in map[string]any) error {
 			f.Goals[id]["plannerNodeId"] = in["nodeId"]
 		}
 	}
+	return nil
+}
+
+// release is ReleaseWorkItem of trd §1: only a claimed or running item,
+// only by the node holding it — the caller's credential, TokenNodeID
+// (empty skips the check) — back to ready with its node, harness and
+// session cleared, attempts unchanged, the reason its last note and not
+// its last error. Anything else is refused and changes nothing.
+func (f *Fake) release(item, in map[string]any) error {
+	if f.RefuseReleases {
+		return fmt.Errorf("releaseWorkItem is refused")
+	}
+	if item["status"] != "claimed" && item["status"] != "running" {
+		return fmt.Errorf("item is %s, not claimed or running", item["status"])
+	}
+	if f.TokenNodeID != "" && item["nodeId"] != f.TokenNodeID {
+		return fmt.Errorf("the item is not node %s's", f.TokenNodeID)
+	}
+	item["status"], item["nodeId"], item["harness"], item["sessionId"] = "ready", nil, nil, nil
+	item["lastNote"] = in["reason"]
 	return nil
 }
 
