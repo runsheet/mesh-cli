@@ -645,7 +645,14 @@ repo once, when it ends: `specs/goal-<goal-slug>.md` (frontmatter
 `title: Goal — …`, `kind: plan`, `status: approved` when done /
 `superseded` when cancelled, `summary:`, `parent:` the project's PRD when
 Prologue lists one), with the statement, the acceptance and the final
-`## Items` table. `internal/node/goaldoc.go` is its only writer.
+`## Items` table. `internal/node/goaldoc.go` is its only writer. The node
+writes it after an item finishes: it re-reads the goal, and if the goal
+has ended (`done` or `cancelled`) it checks out the project's primary repo
+— the first of its `repoIds` — fresh at its default branch, writes the
+final doc and pushes it straight to that branch (`docs(mesh): goal <slug>
+— finished`). No other repo the goal touched gets a copy, and a second
+finish that finds the doc already final pushes nothing. A failure there is
+logged; the item has already finished.
 
 ## Goals
 

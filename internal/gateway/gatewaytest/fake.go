@@ -83,6 +83,10 @@ type Fake struct {
 	// hands the node (id, label, kind, secret, capDailyUsd, …). A subject
 	// with none gets an empty list.
 	SessionCredentials map[string][]map[string]any
+	// After, when set, runs once a mutation has applied (under the lock,
+	// on the fake's rows) — for a test whose platform reacts to it, as a
+	// goal ending with its last item.
+	After func(name string, in map[string]any)
 }
 
 // New starts a fake accepting the given bearer token.
@@ -238,6 +242,9 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 		if err := f.apply(m[2], in); err != nil {
 			writeErrors(w, 200, err.Error())
 			return
+		}
+		if f.After != nil {
+			f.After(m[2], in)
 		}
 		f.Calls = append(f.Calls, Call{Name: m[2], Input: in})
 		writeData(w, map[string]any{m[2]: map[string]any{"status": "ok"}})
