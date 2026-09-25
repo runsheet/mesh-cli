@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/gateway/gatewaytest"
 	"projectmesh.io/mesh-cli/internal/harness"
@@ -365,5 +367,106 @@ func TestOldPlatformFallbackIsLoggedOnceAcrossARun(t *testing.T) {
 	}
 	if len(ws.pushed) != len(items) || len(h.jobs) != 2*len(items) {
 		t.Fatalf("pushed %v, %d sessions", ws.pushed, len(h.jobs))
+	}
+}
+
+// modelGW answers AgentModel from a table and records the progress notes.
+type modelGW struct {
+	Gateway
+	mu     sync.Mutex
+	agents map[string]string
+	notes  []string
+}
+
+func (g *modelGW) AgentModel(_ context.Context, agentID string) (string, error) {
+	return g.agents[agentID], nil
+}
+
+func (g *modelGW) ReportWorkItemProgress(ctx context.Context, itemID, note string, costCents int, sessionID string) error {
+	g.mu.Lock()
+	g.notes = append(g.notes, note)
+	g.mu.Unlock()
+	return g.Gateway.ReportWorkItemProgress(ctx, itemID, note, costCents, sessionID)
+}
+
+// The build runs on the item's model, then its agent's, then the node's
+// own; the evaluator on the strongest of the node's, the builder's and
+// sonnet; a rebase on the builder's choice — and an item that names
+// neither (an older platform) runs all three exactly as before.
+func TestSessionsRunOnTheItemsModel(t *testing.T) {
+	agent := gateway.AgentID(mustUUID(orgID), uuid.Nil, "fast-builder").String()
+	for _, c := range []struct {
+		name                         string
+		model, agentSlug             string
+		agentModel                   string
+		nodeBuild, nodeEval          string
+		wantBuild, wantEval, wantLog string
+	}{
+		{name: "item haiku", model: "haiku", nodeBuild: "opus", wantBuild: "haiku", wantEval: "sonnet"},
+		{name: "older gateway", nodeBuild: "sonnet", nodeEval: "haiku", wantBuild: "sonnet", wantEval: "haiku"},
+		{name: "older gateway, CLI default", wantBuild: "", wantEval: "", wantLog: "the CLI's default model"},
+		{name: "agent only", agentSlug: "fast-builder", agentModel: "opus", nodeBuild: "haiku", wantBuild: "opus", wantEval: "opus"},
+		{name: "item beats agent", model: "haiku", agentSlug: "fast-builder", agentModel: "opus", wantBuild: "haiku", wantEval: "sonnet"},
+		{name: "agent without a model", agentSlug: "fast-builder", nodeBuild: "sonnet", nodeEval: "haiku", wantBuild: "sonnet", wantEval: "haiku"},
+		{name: "item opus", model: "opus", nodeEval: "sonnet", wantBuild: "opus", wantEval: "opus"},
+		{name: "node evaluate stronger", model: "haiku", nodeEval: "claude-opus-5-5", wantBuild: "haiku", wantEval: "claude-opus-5-5"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := &fakeHarness{text: "Fine.\nVERDICT: PASS"}
+			mg := &modelGW{agents: map[string]string{}}
+			if c.agentModel != "" {
+				mg.agents[agent] = c.agentModel
+			}
+			f := seed(t)
+			r, ws, item, row := runnerOnFake(t, f, h, func(g Gateway) Gateway { mg.Gateway = g; return mg })
+			var logs strings.Builder
+			r.Log = log.New(&logs, "", 0)
+			r.Model = c.nodeBuild
+			item.Model, item.AgentSlug = c.model, c.agentSlug
+			if err := r.RunItem(context.Background(), item); err != nil {
+				t.Fatal(err)
+			}
+			ev := &Evaluator{GW: mg, Harness: h, WS: ws, Scopes: r.Scopes, WorkRoot: ws.root, Model: c.nodeEval, Log: r.Log}
+			item.Branch = "mesh/ship-it-1"
+			if err := ev.Evaluate(context.Background(), item); err != nil {
+				t.Fatal(err)
+			}
+			if len(h.jobs) != 2 || h.jobs[0].Kind != harness.KindBuild || h.jobs[1].Kind != harness.KindEvaluate {
+				t.Fatalf("jobs: %+v", h.jobs)
+			}
+			if h.jobs[0].Model != c.wantBuild {
+				t.Fatalf("build Model = %q, want %q", h.jobs[0].Model, c.wantBuild)
+			}
+			if h.jobs[1].Model != c.wantEval {
+				t.Fatalf("evaluate Model = %q, want %q", h.jobs[1].Model, c.wantEval)
+			}
+			build, eval := c.wantBuild, c.wantEval
+			if c.wantLog != "" {
+				build, eval = c.wantLog, c.wantLog
+			}
+			for _, want := range []string{"item ship-it/1: build on " + build + "\n", "item ship-it/1: evaluate on " + eval + ": mesh/ship-it-1"} {
+				if !strings.Contains(logs.String(), want) {
+					t.Fatalf("node.log lacks %q:\n%s", want, logs.String())
+				}
+			}
+			if len(mg.notes) == 0 || mg.notes[0] != "session started: mesh/ship-it-1 on "+build {
+				t.Fatalf("first progress note: %q", mg.notes)
+			}
+			if got := row(item1)["evaluation"]; got != "Fine.\n\n(evaluated on "+eval+")" {
+				t.Fatalf("evaluation = %q", got)
+			}
+
+			// a rebase works on the builder's branch, so on its model
+			f.RebaseTokens = true
+			f.WorkItems[item1]["status"], f.WorkItems[item1]["rebaseState"] = "review", "claimed"
+			rb := &Rebaser{GW: mg, Harness: h, WS: ws, Scopes: r.Scopes, WorkRoot: ws.root, Model: c.nodeBuild, ProgressEvery: time.Hour, Log: r.Log}
+			_ = rb.Rebase(context.Background(), item) // the job is what is checked
+			if len(h.jobs) != 3 || h.jobs[2].Kind != harness.KindRebase || h.jobs[2].Model != c.wantBuild {
+				t.Fatalf("rebase job: %+v\n%s", h.jobs[len(h.jobs)-1], logs.String())
+			}
+			if want := "item ship-it/1: rebase on " + build + ": mesh/ship-it-1 onto main"; !strings.Contains(logs.String(), want) {
+				t.Fatalf("node.log lacks %q:\n%s", want, logs.String())
+			}
+		})
 	}
 }

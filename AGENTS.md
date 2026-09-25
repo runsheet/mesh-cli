@@ -76,6 +76,18 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   because they are fields the platform half adds. Capacity, the
   limits thresholds and the orgs need no drain: `Reload` re-reads them
   every tick.
+- **Self-update** (`internal/node/selfupdate.go`, `internal/selfupdate/`,
+  adr-002): after each heartbeat the loop reads the node's desired
+  version (`GetDesiredVersion`; empty, the running one or `dev` does
+  nothing). A different one is fetched and verified (the signed
+  `SHA256SUMS` of the tag release) *before* the drain, then the node
+  drains, swaps its resolved executable keeping `<path>.prev`, and `Run`
+  returns `ErrRestartForUpdate` so the process exits 0 for its service
+  to start the new binary. A refusal resumes, heartbeats `updateError`
+  and waits an hour on that version. `mesh node start` counts starts in
+  `~/.mesh/update.json` (`CheckStart`): the third unconfirmed one rolls
+  back to `.prev`, reports it and exits 0; the first heartbeat confirms.
+  The loop's `Update` is an interface; tests inject a fake.
 - **The pace** (`internal/node/limits.go`, trd §3 Pacing by the plan's
   limits): every session's `rate_limit_event` lands in `Loop.Limits`
   (latest per account — its `MESH_ACCOUNT` label, else

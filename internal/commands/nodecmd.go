@@ -23,6 +23,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/harness"
 	"projectmesh.io/mesh-cli/internal/latchkey"
 	"projectmesh.io/mesh-cli/internal/node"
+	"projectmesh.io/mesh-cli/internal/selfupdate"
 	"projectmesh.io/mesh-cli/internal/version"
 )
 
@@ -370,6 +371,14 @@ Channels are a Claude Code research preview: the session is started with
 --dangerously-skip-permissions so the session never waits on a prompt;
 only use it on a machine you trust with that.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		logger := log.New(os.Stderr, "mesh node: ", log.LstdFlags)
+		// a new binary that has failed to start twice is rolled back
+		// first, before anything else in it can fail again
+		updates, exe, check := startUpdates(logger)
+		if check.RolledBack {
+			reportRollback(check, logger)
+			return nil
+		}
 		cfg, err := node.LoadConfig()
 		if err != nil {
 			return err
@@ -393,7 +402,6 @@ only use it on a machine you trust with that.`,
 		if err := os.MkdirAll(workRoot, 0o755); err != nil {
 			return err
 		}
-		logger := log.New(os.Stderr, "mesh node: ", log.LstdFlags)
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 
@@ -420,6 +428,14 @@ only use it on a machine you trust with that.`,
 			// a ranged capacity scales by the plan's windows, capped by this
 			// machine's load and memory (adr-004)
 			Machine: node.HostMachine()}
+		// the node follows the version the platform asks for (adr-002);
+		// --once is one tick, too short for an update to finish
+		if updates != nil && !nodeOnceFlag {
+			loop.Update = &node.ReleaseUpdater{Source: selfupdate.GitHub{}, State: updates, Exe: exe}
+			if check.Failed != "" {
+				loop.NoteUpdateFailure(check.Failed, check.Reason, check.Final)
+			}
+		}
 		// capacity and the orgs are read again every tick, so a changed
 		// node.yaml or a newly claimed org needs no restart
 		loop.Reload = node.Reloader(gw, cfg, scopes, nil, func(ctx context.Context, sc node.Scope) error {
@@ -505,8 +521,68 @@ func runPollMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *
 		logger.Printf("stopped; running items were left for a retry")
 		return nil
 	}
+	return endRun(err, logger)
+}
+
+// startUpdates counts this start against a pending self-update and rolls
+// the binary back when it is the third unconfirmed one. A state file or
+// executable it cannot read leaves the node running without updates.
+func startUpdates(logger *log.Logger) (*selfupdate.StateFile, string, node.StartCheck) {
+	f, err := selfupdate.DefaultStateFile()
 	if err == nil {
+		var exe string
+		if exe, err = node.Executable(); err == nil {
+			var check node.StartCheck
+			if check, err = node.CheckStart(f, exe); err == nil {
+				if line := check.String(); line != "" {
+					logger.Print(line)
+				}
+				return f, exe, check
+			}
+		}
+	}
+	logger.Printf("self-update: %v; not updating this run", err)
+	return nil, "", node.StartCheck{}
+}
+
+// reportRollback puts a rollback's reason on one heartbeat of each of the
+// node's orgs, as the version rolled back to, before the process exits
+// for that version to start. It does what it can: the exit follows.
+func reportRollback(check node.StartCheck, logger *log.Logger) {
+	cfg, err := node.LoadConfig()
+	if err != nil {
+		logger.Printf("self-update: report rollback: %v", err)
+		return
+	}
+	gw, err := platformClient()
+	if err != nil {
+		logger.Printf("self-update: report rollback: %v", err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	scopes, err := node.ResolveScopes(ctx, gw, cfg)
+	if err != nil {
+		logger.Printf("self-update: report rollback: %v", err)
+		return
+	}
+	for _, sc := range scopes {
+		if err := gw.HeartbeatNode(ctx, sc.NodeID, check.From, 0, gateway.HeartbeatExtras{UpdateError: check.Reason}); err != nil {
+			logger.Printf("self-update: report rollback to %s: %v", sc.Login, err)
+		}
+	}
+}
+
+// endRun is how the node's process ends when Run returns: 0 on a drain
+// and on a self-update's restart, which the service manager answers by
+// starting the binary now in place.
+func endRun(err error, logger *log.Logger) error {
+	switch {
+	case err == nil:
 		logger.Printf("drained; exiting")
+	case errors.Is(err, node.ErrRestartForUpdate):
+		logger.Printf("updated; exiting for the service manager to start the new binary")
+		return nil
 	}
 	return err
 }
@@ -731,10 +807,7 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 		logger.Printf("stopped; claimed items were left for a retry")
 		return nil
 	}
-	if err == nil {
-		logger.Printf("drained; exiting")
-	}
-	return err
+	return endRun(err, logger)
 }
 
 // prologueMCP is the Prologue MCP server a session is started with: the

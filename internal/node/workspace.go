@@ -46,6 +46,11 @@ type Workspacer interface {
 	// Prepare clones (or fetches) the repo into spec.Dir() and checks out
 	// spec.Branch from spec.BaseRef, returning the directory.
 	Prepare(ctx context.Context, spec WorkspaceSpec) (string, error)
+	// Commit stages paths and commits them with msg when anything
+	// changed. Only the goal's document at the goal's end uses it
+	// (RecordEndedGoal, on the default branch); a build's branch is
+	// committed by its session.
+	Commit(ctx context.Context, dir string, paths []string, msg string) error
 	// Push pushes branch to origin and returns its head sha.
 	Push(ctx context.Context, dir, branch string) (string, error)
 	// Diff renders what the checked-out branch changed since it left
@@ -196,6 +201,18 @@ func (g *Git) Fetch(ctx context.Context, repo, dir string) error {
 
 // MaxDiffBytes caps the patch an evaluator is handed inline.
 const MaxDiffBytes = 200 * 1024
+
+// Commit implements Workspacer.
+func (g *Git) Commit(ctx context.Context, dir string, paths []string, msg string) error {
+	if _, err := g.run(ctx, dir, "git", append([]string{"add", "--"}, paths...)...); err != nil {
+		return err
+	}
+	if _, err := g.run(ctx, dir, "git", "diff", "--cached", "--quiet"); err == nil {
+		return nil // nothing staged
+	}
+	_, err := g.run(ctx, dir, "git", "commit", "--quiet", "-m", msg)
+	return err
+}
 
 // Push implements Workspacer.
 func (g *Git) Push(ctx context.Context, dir, branch string) (string, error) {
@@ -493,6 +510,7 @@ func excludeFromGit(dir, pattern string) error {
 type Gateway interface {
 	MyOrgs(ctx context.Context) ([]gateway.Org, error)
 	HeartbeatNode(ctx context.Context, nodeID, version string, running int, extras ...gateway.HeartbeatExtras) error
+	GetDesiredVersion(ctx context.Context, nodeID string) (string, error)
 	ReadyWorkItems(ctx context.Context, orgID string) ([]gateway.WorkItem, error)
 	GoalWorkItems(ctx context.Context, goalID string) ([]gateway.WorkItem, error)
 	OrgWorkItems(ctx context.Context, orgID, status string) ([]gateway.WorkItem, error)

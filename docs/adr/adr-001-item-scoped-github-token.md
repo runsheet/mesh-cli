@@ -144,6 +144,12 @@ living an hour.
   reach to that checkout, which is where it was before this ADR.
 - The planner's and the director's `Fetch` read many repos for a whole
   project, not one item, and stay on the node's own credentials.
+- The goal's document at the goal's end (`RecordEndedGoal`, ADR 003 of
+  mesh-specs, decision 4) is likewise the goal's, not one item's: it is
+  committed and pushed to the default branch of the project's primary
+  repo, which need not be the finishing item's repo, from a checkout of
+  its own that is never `Authorize`d — so it too stays on the node's own
+  credentials. No session runs in that checkout.
 
 ## Consequences
 
