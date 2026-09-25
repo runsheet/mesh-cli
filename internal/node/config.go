@@ -17,6 +17,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
+	"projectmesh.io/mesh-cli/internal/harness"
 )
 
 // Config is ~/.mesh/node.yaml, written by `mesh node register`. A node
@@ -53,6 +54,10 @@ type Config struct {
 	// credential at claim. None is the one implicit account `default`:
 	// the operator's own CLI login, as before.
 	Accounts []AccountConfig `yaml:"accounts,omitempty"`
+	// Codex is OpenAI's Codex CLI on this node (CodexConfig): its
+	// binary, its accounts and the Codex model for each Claude tier.
+	// Nothing runs on it yet.
+	Codex CodexConfig `yaml:"codex,omitempty"`
 	// Latchkey is the issuer `mesh node login` signs in to and
 	// LatchkeyClient the public client it starts the device flow from
 	// (latchkey adr-machine-identity); both are remembered at login so a
@@ -184,6 +189,85 @@ func (m Models) PlanModel() string {
 		return s
 	}
 	return "opus"
+}
+
+// CodexConfig is node.yaml's `codex:` block.
+type CodexConfig struct {
+	// Binary is the codex executable; empty is "codex" on PATH.
+	Binary string `yaml:"binary,omitempty"`
+	// Accounts are the OpenAI accounts Codex sessions run on.
+	Accounts []CodexAccountConfig `yaml:"accounts,omitempty"`
+	// Models maps the Claude tiers to Codex models (CodexModel).
+	Models CodexModels `yaml:"models,omitempty"`
+}
+
+// CodexAccountConfig is one Codex account: a ChatGPT-plan login in its
+// own Home (`CODEX_HOME=<home> codex login`), or an API key in the
+// variable APIKeyEnv names or the file APIKeyFile names. Exactly one.
+type CodexAccountConfig struct {
+	Name       string `yaml:"name"`
+	Home       string `yaml:"home,omitempty"`
+	APIKeyEnv  string `yaml:"api_key_env,omitempty"`
+	APIKeyFile string `yaml:"api_key_file,omitempty"`
+}
+
+// Harness is the account as the Codex adapter takes it.
+func (a CodexAccountConfig) Harness() harness.CodexAccount {
+	return harness.CodexAccount{Name: a.Name, Home: a.Home, APIKeyEnv: a.APIKeyEnv, APIKeyFile: a.APIKeyFile}
+}
+
+// CodexModels is the Codex model for each Claude tier.
+type CodexModels struct {
+	Opus   string `yaml:"opus,omitempty"`
+	Sonnet string `yaml:"sonnet,omitempty"`
+	Haiku  string `yaml:"haiku,omitempty"`
+}
+
+// IsZero leaves an empty block out of a saved node.yaml.
+func (c CodexConfig) IsZero() bool {
+	return c.Binary == "" && len(c.Accounts) == 0 && c.Models == CodexModels{}
+}
+
+// Validate refuses accounts Codex could not run on: a name missing or
+// used twice, or not exactly one of home, api_key_env and api_key_file.
+func (c CodexConfig) Validate() error {
+	seen := map[string]bool{}
+	for i, a := range c.Accounts {
+		name := strings.TrimSpace(a.Name)
+		if name == "" {
+			return fmt.Errorf("codex.accounts[%d]: a name is required", i)
+		}
+		if seen[name] {
+			return fmt.Errorf("codex.accounts[%d]: name %q is used twice", i, name)
+		}
+		seen[name] = true
+		n := 0
+		for _, v := range []string{a.Home, a.APIKeyEnv, a.APIKeyFile} {
+			if strings.TrimSpace(v) != "" {
+				n++
+			}
+		}
+		if n != 1 {
+			return fmt.Errorf("codex account %q: want exactly one of home, api_key_env and api_key_file", name)
+		}
+	}
+	return nil
+}
+
+// CodexModel is the Codex model for a Claude model: an alias or a full
+// id naming opus, sonnet or haiku (by ModelRank) takes that tier's
+// model from Models. Empty, a model of no tier, or a tier with no
+// mapping is "": Codex's own default.
+func (c CodexConfig) CodexModel(claudeModel string) string {
+	switch ModelRank(claudeModel) {
+	case 3:
+		return c.Models.Opus
+	case 2:
+		return c.Models.Sonnet
+	case 1:
+		return c.Models.Haiku
+	}
+	return ""
 }
 
 // Scope is one org the node serves, with the node's id there.
@@ -387,6 +471,9 @@ func LoadConfig() (*Config, error) {
 		c.Orgs = []string{c.OrgLogin} // an older, single-org registration
 	}
 	if err := ValidateAccounts(c.Accounts); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	if err := c.Codex.Validate(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	return &c, nil
