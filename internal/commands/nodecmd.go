@@ -971,6 +971,15 @@ func init() {
 	nodeCmd.AddCommand(nodeLoginCmd, nodeRegisterCmd, nodeStartCmd, nodeStatusCmd, nodeDrainCmd, nodeLogoutCmd, nodeModelCmd)
 }
 
+// modelPrecedenceNote follows the table of `mesh node model`: the rows
+// are node.yaml's, and an item's own model comes before them.
+const modelPrecedenceNote = `
+build and rebase sessions run on the item's model, then its agent's, then
+node.yaml's build (or default). The evaluator runs on the stronger of the
+builder's model and sonnet. The planner runs on plan if set, else the
+strongest model configured (opus when none is).
+`
+
 // nodeModelCmd reads or writes the models in ~/.mesh/node.yaml, so a
 // node can be moved off a model without editing YAML or passing flags.
 // Drain the node (`mesh node drain`) for a change to take.
@@ -1028,12 +1037,17 @@ A flag on ` + "`mesh node start`" + ` wins over these for that run.`,
 			{"plan", cfg.Models.Plan}, {"channel", cfg.Models.Channel},
 			{"research", cfg.Models.Research}, {"rebase", cfg.Models.Rebase},
 		} {
-			if k.val != "" {
+			switch {
+			case k.val != "":
 				fmt.Printf("%-9s %s\n", k.name, k.val)
-			} else {
+			case k.name == "plan":
+				// the planner runs on the strongest configured, not default
+				fmt.Printf("%-9s %s (the strongest configured)\n", k.name, cfg.Models.PlanModel())
+			default:
 				fmt.Printf("%-9s %s\n", k.name, shown(cfg.Models.Default))
 			}
 		}
+		fmt.Print(modelPrecedenceNote)
 		if changed {
 			fmt.Println("\nsaved; drain the node for it to take (mesh node drain): it finishes its sessions and its service starts it again")
 		}

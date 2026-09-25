@@ -120,15 +120,35 @@ file for that run (`--model-research` and `--model-rebase` too). A value is an a
 knows (`opus`, `sonnet`, `haiku`) or a full id (`claude-opus-5`); unset
 leaves the CLI's own default.
 
-The planner is the exception: it chooses every item's model, so without
-an explicit `plan` it runs on the strongest model configured for any
-kind, and on `opus` when none is. Its graph names a `model` per item
-with a one-line `model_reason` — `haiku` for mechanical items (docs-only,
-a goal-doc section, a version bump, a rename), `sonnet` for a
-well-specified change in one package with tests to copy, `opus` for
-anything cross-cutting, concurrency, migrations, security, a failing
-item's retry, or when unsure — and node.log records each choice when the
-plan is handed in.
+These are the node's own models. An item's build and rebase sessions
+run on the first model that names one, in this order:
+
+1. the **item**'s own `model`, the one its plan chose;
+2. its **agent**'s model, when the item names only an agent;
+3. **node.yaml**'s `build` (or `default`); none leaves the CLI's own.
+
+The evaluator runs on the stronger of the builder's model and `sonnet`,
+so an item is never judged by a weaker model than the one that built
+it (a node.yaml `evaluate` stronger than both wins). An item from an
+older platform that carries no model builds and evaluates on node.yaml
+as before.
+
+The planner chooses every item's model, so without an explicit `plan`
+it runs on the strongest model configured for any kind, and on `opus`
+when none is; `mesh node model` shows the one it will use. Its graph
+names a `model` per item with a one-line `model_reason`, by this rubric:
+
+- `haiku` — mechanical items: docs-only, a goal-doc section, a version
+  bump, a rename.
+- `sonnet` — a well-specified change in one package with tests to copy.
+- `opus` — anything cross-cutting, concurrency, migrations, security, a
+  failing item's retry, or when unsure.
+
+The model a session ran on is in `node.log` (`item <goal>/<seq>: build
+on haiku`, `evaluate on sonnet`, `rebase on …`) and on the item's events
+(`session started: <branch> on haiku`, and the evaluator's notes end
+`(evaluated on sonnet)`); node.log also records each model the planner
+chose when the plan is handed in.
 
 ### The director
 
