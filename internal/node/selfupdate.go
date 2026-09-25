@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
+	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/selfupdate"
 )
 
@@ -186,12 +187,33 @@ func (l *Loop) update(ctx context.Context, from, to string) {
 		l.updateFailed(ctx, from, to, err, ours)
 		return
 	}
+	l.ensureImage(ctx, to)
 	l.mu.Lock()
 	l.updating = false
 	l.restart = true
 	l.mu.Unlock()
 	l.logf("self-update: %s is in place; exiting for the service to start it", to)
 	l.notify()
+}
+
+// ensureImage makes the node image of version the one on this machine,
+// after the swap: the binary is in place whatever happens here, and an
+// image that cannot be had is logged for the operator's `mesh node
+// update`. A machine without a container runtime runs `sandbox: off`
+// and keeps no image.
+func (l *Loop) ensureImage(ctx context.Context, version string) {
+	if l.Image == nil {
+		return
+	}
+	img, err := l.Image(ctx, version)
+	switch {
+	case errors.Is(err, sandbox.ErrNoRuntime):
+		l.logf("self-update: %v; no node image kept", err)
+	case err != nil:
+		l.logf("self-update: %v; run `mesh node update` once it can be had", err)
+	default:
+		l.logf("self-update: node image %s", img.Summary())
+	}
 }
 
 // updateFailed records a failed update: the state file and the heartbeat

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
+	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/selfupdate"
 )
 
@@ -22,6 +23,7 @@ type fakeUpdater struct {
 	events   []string
 	fetchErr error
 	swapErr  error
+	imageErr error
 	pending  bool
 }
 
@@ -88,6 +90,13 @@ func (p *priorityFake) updateLoop(desired string) (*Loop, *fakeUpdater, chan str
 	loop.Version = "v1.0.0"
 	u := &fakeUpdater{loop: loop}
 	loop.Update = u
+	loop.Image = func(_ context.Context, version string) (sandbox.Image, error) {
+		u.add("image " + version)
+		if u.imageErr != nil {
+			return sandbox.Image{}, u.imageErr
+		}
+		return sandbox.Image{Ref: sandbox.Repository + ":" + version, Pulled: true}, nil
+	}
 	return loop, u, release, logs
 }
 
@@ -137,9 +146,42 @@ func TestSelfUpdateDrainsThenSwapsThenRestarts(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("Run did not return after the update")
 	}
-	want := []string{"confirm", "fetch v1.1.0", "begin v1.0.0 v1.1.0", "swap mesh v1.1.0 drained"}
+	// the node image follows the binary: EnsureImage of the new version,
+	// once it is in place
+	want := []string{"confirm", "fetch v1.1.0", "begin v1.0.0 v1.1.0", "swap mesh v1.1.0 drained", "image v1.1.0"}
 	if got := u.Events(); strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("events %q, want %q", got, want)
+	}
+}
+
+// After a successful swap the node image of the new version is ensured;
+// an image that cannot be had is logged and the update still restarts
+// into the new binary. A failed swap ensures no image.
+func TestSelfUpdateEnsuresImageAfterSwap(t *testing.T) {
+	p := newPriorityFake(t)
+	loop, u, _, logs := p.updateLoop("v1.1.0")
+	u.imageErr = errors.New("node image ghcr.io/projectmesh-io/mesh-node:v1.1.0: pull failed (unauthorized); build failed: no space")
+	err := loop.Run(context.Background())
+	if !errors.Is(err, ErrRestartForUpdate) {
+		t.Fatalf("Run = %v, want ErrRestartForUpdate", err)
+	}
+	want := []string{"confirm", "fetch v1.1.0", "begin v1.0.0 v1.1.0", "swap mesh v1.1.0 drained", "image v1.1.0"}
+	if got := u.Events(); strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("events %q, want %q", got, want)
+	}
+	if !strings.Contains(logs.String(), "build failed: no space; run `mesh node update`") {
+		t.Errorf("image failure not logged:\n%s", logs)
+	}
+
+	p2 := newPriorityFake(t)
+	loop2, u2, _, _ := p2.updateLoop("v1.1.0")
+	u2.swapErr = errors.New("swap: install new: denied")
+	loop2.Tick(context.Background())
+	loop2.updateWG.Wait()
+	for _, e := range u2.Events() {
+		if strings.HasPrefix(e, "image") {
+			t.Fatalf("image ensured after a failed swap: %q", u2.Events())
+		}
 	}
 }
 

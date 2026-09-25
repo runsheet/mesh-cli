@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"projectmesh.io/mesh-cli/internal/node"
+	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/selfupdate"
 	"projectmesh.io/mesh-cli/internal/version"
 )
@@ -21,11 +22,12 @@ import (
 var (
 	nodeUpdateVerifyOnly bool
 	nodeUpdateFromDir    string
+	nodeUpdateImageOnly  bool
 )
 
 var nodeUpdateCmd = &cobra.Command{
 	Use:   "update [version]",
-	Short: "Update this machine's mesh to a signed release by hand: verify, drain the node, swap the binary",
+	Short: "Update this machine's mesh to a signed release by hand: verify, drain the node, swap the binary, pull its node image",
 	Long: `Does by hand what a node does when the platform asks it for a version
 (adr-002). With no version it takes the latest release that is not a
 prerelease.
@@ -44,6 +46,15 @@ exits when its sessions end and its service (systemd --user, launchd)
 starts the new binary; one that fails to start twice is rolled back to
 .prev.
 
+The node image follows the binary (mesh-specs ADR 007): once the new
+binary is in place, and when the version asked for is already running,
+ghcr.io/projectmesh-io/mesh-node:<version> is pulled with podman — built
+from the Containerfile this binary embeds when the pull fails — every
+older mesh-node tag is removed, and the image in use is printed. Without
+podman there is no image to keep (a node with sandbox: off).
+
+--image does only that, for the running version: no release is fetched.
+
 --verify-only downloads and verifies into a temporary directory and swaps
 nothing.
 
@@ -60,6 +71,9 @@ checking a downloaded release, or showing that an edited one is refused.`,
 		}
 		if nodeUpdateFromDir != "" {
 			u.Updater.Source = selfupdate.Dir(nodeUpdateFromDir)
+		}
+		if nodeUpdateImageOnly {
+			return u.image(cmd.Context(), u.Running)
 		}
 		want := ""
 		if len(args) == 1 {
@@ -84,6 +98,9 @@ type nodeUpdate struct {
 	// Drain drains the node Run names, reporting whether one was running;
 	// nil is drainIfRunning.
 	Drain func(node.RunState, io.Writer) (bool, error)
+	// Image makes the node image of a version the one on this machine
+	// (sandbox.EnsureImage); nil keeps none.
+	Image func(context.Context, string) (sandbox.Image, error)
 	// TempDir is where --verify-only writes the binary; empty is os.TempDir.
 	TempDir string
 	Out     io.Writer
@@ -108,6 +125,7 @@ func defaultNodeUpdate(out io.Writer) (*nodeUpdate, error) {
 		Latest:  gh.Latest,
 		Running: version.Version,
 		Run:     run,
+		Image:   ensureNodeImage,
 		Out:     out,
 	}, nil
 }
@@ -132,7 +150,7 @@ func (u *nodeUpdate) run(ctx context.Context, want string, verifyOnly bool) erro
 	}
 	if !verifyOnly && want == u.Running {
 		fmt.Fprintf(u.Out, "mesh %s is already running here; nothing to update.\n", want)
-		return nil
+		return u.image(ctx, want)
 	}
 	asset := selfupdate.AssetName(u.goos(), u.goarch())
 	fmt.Fprintf(u.Out, "Fetching %s of %s and verifying it…\n", asset, want)
@@ -176,7 +194,42 @@ func (u *nodeUpdate) run(ctx context.Context, want string, verifyOnly bool) erro
 		fmt.Fprintf(u.Out, "No node is running on this machine: the next `mesh node start`, or its service, runs %s.\n", want)
 	}
 	fmt.Fprintf(u.Out, "A %s that fails to start twice is rolled back to %s.\n", want, selfupdate.PrevPath(exe))
+	return u.image(ctx, want)
+}
+
+// image makes the node image of version the one on this machine and says
+// which it is. No container runtime is no image, not an error.
+func (u *nodeUpdate) image(ctx context.Context, version string) error {
+	if u.Image == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ref, err := sandbox.Ref(version)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(u.Out, "Pulling the node image %s…\n", ref)
+	img, err := u.Image(ctx, version)
+	if errors.Is(err, sandbox.ErrNoRuntime) {
+		fmt.Fprintf(u.Out, "No node image: %v (a node here runs with sandbox: off).\n", err)
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(u.Out, "Node image in use: %s\n", img.Summary())
 	return nil
+}
+
+// ensureNodeImage is sandbox.EnsureImage on podman from PATH.
+func ensureNodeImage(ctx context.Context, version string) (sandbox.Image, error) {
+	rt, err := sandbox.DefaultRuntime()
+	if err != nil {
+		return sandbox.Image{}, err
+	}
+	return sandbox.EnsureImage(ctx, rt, version)
 }
 
 // keep writes a verified binary into a new temporary directory for
@@ -226,6 +279,7 @@ func drainIfRunning(state node.RunState, out io.Writer) (bool, error) {
 
 func init() {
 	nodeUpdateCmd.Flags().BoolVar(&nodeUpdateVerifyOnly, "verify-only", false, "download and verify into a temporary directory; swap nothing")
+	nodeUpdateCmd.Flags().BoolVar(&nodeUpdateImageOnly, "image", false, "only pull (or build) the node image of the running version and prune older ones; fetch no release")
 	nodeUpdateCmd.Flags().StringVar(&nodeUpdateFromDir, "from-dir", "", "read the release's files from this directory instead of GitHub; verified the same way")
 	nodeCmd.AddCommand(nodeUpdateCmd)
 }

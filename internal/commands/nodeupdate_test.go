@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"github.com/sigstore/sigstore-go/pkg/testing/ca"
 
 	"projectmesh.io/mesh-cli/internal/node"
+	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/selfupdate"
 	"projectmesh.io/mesh-cli/internal/selfupdate/selfupdatetest"
 )
@@ -44,6 +46,9 @@ type updateFixture struct {
 	bin    []byte
 	out    *bytes.Buffer
 	drains int
+	// images are the versions whose node image was ensured, in order
+	images   []string
+	imageErr error
 }
 
 func newUpdateFixture(t *testing.T) *updateFixture {
@@ -90,6 +95,14 @@ func newUpdateFixture(t *testing.T) *updateFixture {
 		Drain: func(node.RunState, io.Writer) (bool, error) {
 			f.drains++
 			return true, nil
+		},
+		Image: func(_ context.Context, v string) (sandbox.Image, error) {
+			f.images = append(f.images, v)
+			if f.imageErr != nil {
+				return sandbox.Image{}, f.imageErr
+			}
+			return sandbox.Image{Ref: sandbox.Repository + ":" + v, Pulled: true,
+				Removed: []string{sandbox.Repository + ":v1.1.0"}}, nil
 		},
 		TempDir: t.TempDir(),
 		Out:     f.out,
@@ -147,6 +160,58 @@ func TestNodeUpdateDrainsBeforeItSwaps(t *testing.T) {
 	}
 	if out := f.out.String(); !strings.Contains(out, "its service (systemd --user or launchd) starts "+updateTo) {
 		t.Fatalf("output does not say how the service restarts:\n%s", out)
+	}
+	// the node image follows the binary
+	if strings.Join(f.images, ",") != updateTo {
+		t.Fatalf("images ensured = %q, want %s", f.images, updateTo)
+	}
+	if out := f.out.String(); !strings.Contains(out, "Node image in use: ghcr.io/projectmesh-io/mesh-node:"+updateTo+" (pulled); removed ghcr.io/projectmesh-io/mesh-node:v1.1.0") {
+		t.Fatalf("output does not name the image in use:\n%s", out)
+	}
+}
+
+// The version already running ensures its image; --image does only that;
+// a refused release or --verify-only ensures none; without podman there
+// is no image and no error; an image that cannot be had is the error.
+func TestNodeUpdateImage(t *testing.T) {
+	f := newUpdateFixture(t)
+	f.u.Running = updateTo
+	if err := f.u.run(context.Background(), updateTo, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.u.image(context.Background(), updateTo); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(f.images, ",") != updateTo+","+updateTo {
+		t.Fatalf("images = %q", f.images)
+	}
+	if err := f.u.run(context.Background(), updateTo, true); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.images) != 2 {
+		t.Fatalf("--verify-only ensured an image: %q", f.images)
+	}
+
+	f = newUpdateFixture(t)
+	f.src["mesh-linux-amd64"] = []byte("tampered")
+	if err := f.u.run(context.Background(), updateTo, false); err == nil {
+		t.Fatal("tampered release not refused")
+	}
+	if len(f.images) != 0 {
+		t.Fatalf("a refused release ensured an image: %q", f.images)
+	}
+
+	f = newUpdateFixture(t)
+	f.imageErr = fmt.Errorf("%w: podman is not on PATH", sandbox.ErrNoRuntime)
+	if err := f.u.image(context.Background(), "v1.1.0"); err != nil {
+		t.Fatalf("no runtime = %v, want no error", err)
+	}
+	if !strings.Contains(f.out.String(), "No node image: no container runtime: podman is not on PATH") {
+		t.Fatalf("output:\n%s", f.out)
+	}
+	f.imageErr = errors.New("build failed")
+	if err := f.u.image(context.Background(), "v1.1.0"); err == nil {
+		t.Fatal("a failed image is not an error")
 	}
 }
 
@@ -284,7 +349,7 @@ func TestNodeUpdateHelp(t *testing.T) {
 	if err := rootCmd.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"mesh node update [version]", "--verify-only"} {
+	for _, want := range []string{"mesh node update [version]", "--verify-only", "--image", "ghcr.io/projectmesh-io/mesh-node:<version>"} {
 		if !strings.Contains(buf.String(), want) {
 			t.Errorf("help lacks %q:\n%s", want, buf)
 		}

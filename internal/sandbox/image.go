@@ -67,6 +67,25 @@ type Image struct {
 	Kept    []string
 }
 
+// Summary is the image in use and how it came, as one line.
+func (img Image) Summary() string {
+	var b strings.Builder
+	b.WriteString(img.Ref)
+	switch {
+	case img.Pulled:
+		b.WriteString(" (pulled)")
+	case img.Built:
+		fmt.Fprintf(&b, " (built from the Containerfile; the pull failed: %s)", img.PullError)
+	}
+	if len(img.Removed) > 0 {
+		fmt.Fprintf(&b, "; removed %s", strings.Join(img.Removed, ", "))
+	}
+	if len(img.Kept) > 0 {
+		fmt.Fprintf(&b, "; not removed: %s", strings.Join(img.Kept, "; "))
+	}
+	return b.String()
+}
+
 // tagRE is an OCI tag.
 var tagRE = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$`)
 
