@@ -62,6 +62,9 @@ type Config struct {
 	// binary, its accounts and the Codex model for each Claude tier.
 	// Nothing runs on it yet.
 	Codex CodexConfig `yaml:"codex,omitempty"`
+	// Sandbox is whether and how sessions run in their own pods
+	// (SandboxConfig, ADR 007).
+	Sandbox SandboxConfig `yaml:"sandbox,omitempty"`
 	// Latchkey is the issuer `mesh node login` signs in to and
 	// LatchkeyClient the public client it starts the device flow from
 	// (latchkey adr-machine-identity); both are remembered at login so a

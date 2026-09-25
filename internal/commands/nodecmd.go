@@ -24,6 +24,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/harness"
 	"projectmesh.io/mesh-cli/internal/latchkey"
 	"projectmesh.io/mesh-cli/internal/node"
+	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/selfupdate"
 	"projectmesh.io/mesh-cli/internal/version"
 )
@@ -483,6 +484,18 @@ only use it on a machine you trust with that.`,
 		})()
 		// one old-platform notice for the whole run, whatever runs the items
 		fallback := &node.TokenFallback{}
+		// every one-shot session runs in its own pod unless node.yaml
+		// says `sandbox: off` or, leaving it out, podman does not answer;
+		// an explicit `sandbox: on` without podman refuses to start (ADR 007)
+		sb, sbInfo, err := node.OpenSandbox(ctx, cfg.Sandbox, &sandbox.Podman{}, version.Version, logger.Printf)
+		if err != nil {
+			return err
+		}
+		if sb != nil {
+			sb.Config.GitName, sb.Config.GitEmail = gitIdentity(ctx)
+			sb.Config.TZ = os.Getenv("TZ")
+		}
+		sessionSandbox, loop.Sandbox = sb, sbInfo
 		// every one-shot session's account comes from the platform's
 		// claim-time read, node.yaml the fallback, and every one reports
 		// its usage record (adr-005); each fallback is said once per run
@@ -506,7 +519,7 @@ func observed(loop *node.Loop, logger *log.Logger) harness.Harness {
 
 func runPollMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *gateway.Client, loop *node.Loop, workRoot string, fallback *node.TokenFallback, accounts *node.Credentials, logger *log.Logger) error {
 	h := observed(loop, logger)
-	runner := &node.Runner{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, MCPFunc: func(ctx context.Context) map[string]any { return prologueMCP(ctx, gw) }, MaxBudgetUSD: nodeMaxBudgetFlag, Model: nodeModels.For("build"), Fallback: fallback, Accounts: cfg.Accounts, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Log: logger}
+	runner := &node.Runner{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, MCPFunc: func(ctx context.Context) map[string]any { return prologueMCP(ctx, gw) }, MaxBudgetUSD: nodeMaxBudgetFlag, Model: nodeModels.For("build"), Fallback: fallback, Accounts: cfg.Accounts, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Condition: loop.NoteCondition, Log: logger}
 	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) {
 		r := *runner
 		r.Scopes = loop.CurrentScopes() // an org served since start is known to its build
@@ -843,10 +856,27 @@ func prologueMCP(ctx context.Context, gw *gateway.Client) map[string]any {
 	return node.PrologueMCP(gw.BaseURL, tok)
 }
 
+// sessionSandbox is the pod every one-shot session runs in (OpenSandbox);
+// nil runs it on the host, as `sandbox: off` does.
+var sessionSandbox *sandbox.Sandbox
+
+// gitIdentity is the operator's commit identity, which a sandboxed
+// session gets in its own .gitconfig instead of reading the host's.
+func gitIdentity(ctx context.Context) (name, email string) {
+	get := func(key string) string {
+		out, err := exec.CommandContext(ctx, "git", "config", "--global", key).Output()
+		if err != nil {
+			return ""
+		}
+		return strings.TrimSpace(string(out))
+	}
+	return get("user.name"), get("user.email")
+}
+
 // oneShotHarness is `claude -p` for a session that ends with its turn:
 // poll-mode builds and every evaluation.
 func oneShotHarness() *harness.ClaudeCode {
-	h := &harness.ClaudeCode{Stderr: os.Stderr}
+	h := &harness.ClaudeCode{Stderr: os.Stderr, Sandbox: sessionSandbox}
 	if nodeUnattended {
 		h.ExtraArgs = []string{"--dangerously-skip-permissions"}
 	}

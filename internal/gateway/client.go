@@ -872,6 +872,21 @@ type HeartbeatExtras struct {
 	// tools-in-the-console).
 	Runtimes []string
 	Adapters []string
+	// Sandbox is whether the node's sessions run in their own pods, on
+	// which runtime and image (trd §1 Node, ADR 007); nil sends none.
+	Sandbox *SandboxInfo
+	// Reason is a condition of the node's while it stays online: a
+	// session its sandbox's limits killed, naming the limit and the item
+	// (trd §1 Node, `sandbox`).
+	Reason string
+}
+
+// SandboxInfo is the heartbeat's `sandbox`: the mode (on or off), the
+// container runtime and its version, and the node image.
+type SandboxInfo struct {
+	Mode    string `json:"mode"`
+	Runtime string `json:"runtime,omitempty"`
+	Image   string `json:"image,omitempty"`
 }
 
 // Scaling is what a node whose capacity is a range, or that runs on
@@ -953,6 +968,12 @@ func (c *Client) HeartbeatNode(ctx context.Context, nodeID, version string, runn
 		}
 		if len(x.Adapters) > 0 {
 			in["adapters"] = x.Adapters
+		}
+		if x.Sandbox != nil {
+			in["sandbox"] = x.Sandbox
+		}
+		if x.Reason != "" {
+			in["reason"] = x.Reason
 		}
 	}
 	// A node can be newer than the platform it reports to: a field the

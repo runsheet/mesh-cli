@@ -1,0 +1,103 @@
+package sandbox
+
+import (
+	"fmt"
+	"net"
+	"strings"
+)
+
+// LANRanges are the private IPv4 ranges a session never reaches (ADR 007
+// Network).
+var LANRanges = []string{"192.168.0.0/16", "10.0.0.0/8", "172.16.0.0/12"}
+
+// OtherRefused are the other ranges refused beside the LAN: loopback
+// beyond the pod's own interface (the host's, through the user-mode
+// network), link-local, CGNAT/tailnet, and IPv6 loopback, ULA and
+// link-local.
+var OtherRefused = []string{"127.0.0.0/8", "169.254.0.0/16", "100.64.0.0/10"}
+
+// OtherRefused6 are the IPv6 ranges refused.
+var OtherRefused6 = []string{"::1/128", "fc00::/7", "fe80::/10"}
+
+// DNSForward is the address the pod's user-mode network answers DNS on
+// (pasta's --dns-forward): the one link-local address the rules let a
+// session reach, on port 53 only.
+const DNSForward = "169.254.1.1"
+
+// NetworkPolicy is what a pod may reach: outbound Ports to public
+// addresses and DNS through DNSForward; never Refused, Refused6 or the
+// host's own addresses in HostAddrs.
+type NetworkPolicy struct {
+	Ports     []int
+	Refused   []string
+	Refused6  []string
+	HostAddrs []string
+}
+
+// DefaultNetwork is ADR 007's policy: HTTPS and HTTP out, the LAN, the
+// host and the special ranges refused. The host's own addresses are
+// those of its interfaces.
+func DefaultNetwork() NetworkPolicy {
+	return NetworkPolicy{
+		Ports:     []int{443, 80},
+		Refused:   append(append([]string{}, LANRanges...), OtherRefused...),
+		Refused6:  append([]string{}, OtherRefused6...),
+		HostAddrs: hostAddrs(),
+	}
+}
+
+// hostAddrs are the host's global unicast addresses: a public one is not
+// in any refused range, and the host's services listen on it too.
+func hostAddrs() []string {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, a := range addrs {
+		ipn, ok := a.(*net.IPNet)
+		if !ok || !ipn.IP.IsGlobalUnicast() || ipn.IP.IsPrivate() {
+			continue
+		}
+		out = append(out, ipn.IP.String())
+	}
+	return out
+}
+
+// Ruleset is the nftables table the pod's init container loads into the
+// pod's own network namespace: loopback (the pod's sidecars) and the DNS
+// forwarder accepted, the refused ranges and the host dropped, the
+// allowed ports accepted, everything else dropped.
+func (p NetworkPolicy) Ruleset() string {
+	var b strings.Builder
+	b.WriteString("table inet mesh_sandbox {\n")
+	b.WriteString("\tchain output {\n")
+	b.WriteString("\t\ttype filter hook output priority 0; policy drop;\n")
+	b.WriteString("\t\toif \"lo\" accept\n")
+	b.WriteString("\t\tct state established,related accept\n")
+	fmt.Fprintf(&b, "\t\tip daddr %s meta l4proto { tcp, udp } th dport 53 accept\n", DNSForward)
+	var v4, v6 []string
+	for _, a := range p.HostAddrs {
+		if strings.Contains(a, ":") {
+			v6 = append(v6, a)
+		} else {
+			v4 = append(v4, a)
+		}
+	}
+	if r := append(append([]string{}, p.Refused...), v4...); len(r) > 0 {
+		fmt.Fprintf(&b, "\t\tip daddr { %s } drop\n", strings.Join(r, ", "))
+	}
+	if r := append(append([]string{}, p.Refused6...), v6...); len(r) > 0 {
+		fmt.Fprintf(&b, "\t\tip6 daddr { %s } drop\n", strings.Join(r, ", "))
+	}
+	if len(p.Ports) > 0 {
+		ports := make([]string, len(p.Ports))
+		for i, n := range p.Ports {
+			ports[i] = fmt.Sprint(n)
+		}
+		fmt.Fprintf(&b, "\t\ttcp dport { %s } accept\n", strings.Join(ports, ", "))
+	}
+	b.WriteString("\t}\n")
+	b.WriteString("}\n")
+	return b.String()
+}
