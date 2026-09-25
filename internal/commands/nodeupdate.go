@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"projectmesh.io/mesh-cli/internal/node"
+	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/selfupdate"
 	"projectmesh.io/mesh-cli/internal/version"
 )
@@ -25,7 +26,7 @@ var (
 
 var nodeUpdateCmd = &cobra.Command{
 	Use:   "update [version]",
-	Short: "Update this machine's mesh to a signed release by hand: verify, drain the node, swap the binary",
+	Short: "Update this machine's mesh to a signed release by hand: verify, pull its node image, drain the node, swap the binary",
 	Long: `Does by hand what a node does when the platform asks it for a version
 (adr-002). With no version it takes the latest release that is not a
 prerelease.
@@ -37,7 +38,18 @@ by https://token.actions.githubusercontent.com, and the binary's sha256 must
 be its line in the sums. Anything else is refused with the reason and a
 non-zero exit, and nothing on disk changes.
 
-Once verified, the node running on this machine (its pid is in
+Once verified, the release's node image (mesh-specs ADR 007),
+ghcr.io/projectmesh-io/mesh-node:<version>, is pulled with podman before
+anything is drained, and every older mesh-node tag but the running
+node's is removed. node.yaml's sandbox.image chooses it: empty is that
+reference, any other value is used as given, and ` + "`build`" + ` builds that tag
+here from the Containerfile the binary embeds instead of pulling. A pull
+or build that fails is the error: nothing is drained or swapped and the
+node stays on its binary. With ` + "`sandbox: off`" + `, or no podman and no mode
+set, no image is pulled. Asked for the version already running, the
+command ensures its image and nothing else.
+
+Then the node running on this machine (its pid is in
 ~/.mesh/node.pid) is drained as by ` + "`mesh node drain`" + `, and the executable
 is swapped atomically, the previous one kept as <path>.prev. The node
 exits when its sessions end and its service (systemd --user, launchd)
@@ -84,6 +96,9 @@ type nodeUpdate struct {
 	// Drain drains the node Run names, reporting whether one was running;
 	// nil is drainIfRunning.
 	Drain func(node.RunState, io.Writer) (bool, error)
+	// Image makes the node image of a version present on this machine
+	// (SandboxConfig.EnsureImage); nil ensures none.
+	Image func(context.Context, string) (sandbox.Image, error)
 	// TempDir is where --verify-only writes the binary; empty is os.TempDir.
 	TempDir string
 	Out     io.Writer
@@ -108,13 +123,15 @@ func defaultNodeUpdate(out io.Writer) (*nodeUpdate, error) {
 		Latest:  gh.Latest,
 		Running: version.Version,
 		Run:     run,
+		Image:   ensureNodeImage,
 		Out:     out,
 	}, nil
 }
 
 // run updates to want (the latest release when empty). The release is
-// verified before anything else happens, so a refusal changes nothing;
-// then the node is drained and the binary swapped. The swap follows the
+// verified and its node image ensured before anything else happens, so a
+// refusal or a failed pull changes nothing; then the node is drained and
+// the binary swapped. The swap follows the
 // drain signal at once: a node with no sessions exits on it, and its
 // service waits 10 seconds (RestartSec, ThrottleInterval) before starting
 // what is then the new binary.
@@ -132,7 +149,7 @@ func (u *nodeUpdate) run(ctx context.Context, want string, verifyOnly bool) erro
 	}
 	if !verifyOnly && want == u.Running {
 		fmt.Fprintf(u.Out, "mesh %s is already running here; nothing to update.\n", want)
-		return nil
+		return u.image(ctx, want)
 	}
 	asset := selfupdate.AssetName(u.goos(), u.goarch())
 	fmt.Fprintf(u.Out, "Fetching %s of %s and verifying it…\n", asset, want)
@@ -145,6 +162,12 @@ func (u *nodeUpdate) run(ctx context.Context, want string, verifyOnly bool) erro
 		asset, hex.EncodeToString(sum[:]), want)
 	if verifyOnly {
 		return u.keep(asset, bin)
+	}
+	if err := u.image(ctx, want); err != nil {
+		if rerr := u.Updater.Refuse(u.Running, want, err.Error()); rerr != nil {
+			fmt.Fprintf(u.Out, "record the failed update: %v\n", rerr)
+		}
+		return fmt.Errorf("not updated: %w; nothing drained, %s stays in place", err, u.Running)
 	}
 
 	drain := u.Drain
@@ -177,6 +200,31 @@ func (u *nodeUpdate) run(ctx context.Context, want string, verifyOnly bool) erro
 	}
 	fmt.Fprintf(u.Out, "A %s that fails to start twice is rolled back to %s.\n", want, selfupdate.PrevPath(exe))
 	return nil
+}
+
+// image ensures the node image of version and says which it is.
+func (u *nodeUpdate) image(ctx context.Context, version string) error {
+	if u.Image == nil {
+		return nil
+	}
+	fmt.Fprintf(u.Out, "Ensuring the node image of %s…\n", version)
+	img, err := u.Image(ctx, version)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(u.Out, "Node image: %s\n", img.Summary())
+	return nil
+}
+
+// ensureNodeImage is SandboxConfig.EnsureImage on this machine: node.yaml
+// as it stands now, podman run as a command, the running version's image
+// kept.
+func ensureNodeImage(ctx context.Context, want string) (sandbox.Image, error) {
+	cfg, err := node.LoadSettings()
+	if err != nil {
+		return sandbox.Image{}, err
+	}
+	return cfg.Sandbox.EnsureImage(ctx, sandbox.ExecRunner, want, version.Version)
 }
 
 // keep writes a verified binary into a new temporary directory for

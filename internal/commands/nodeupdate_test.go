@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"github.com/sigstore/sigstore-go/pkg/testing/ca"
 
 	"projectmesh.io/mesh-cli/internal/node"
+	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/selfupdate"
 	"projectmesh.io/mesh-cli/internal/selfupdate/selfupdatetest"
 )
@@ -44,6 +46,10 @@ type updateFixture struct {
 	bin    []byte
 	out    *bytes.Buffer
 	drains int
+	// images are the versions whose node image was ensured, each with
+	// the drains asked before it
+	images   []string
+	imageErr error
 }
 
 func newUpdateFixture(t *testing.T) *updateFixture {
@@ -90,6 +96,14 @@ func newUpdateFixture(t *testing.T) *updateFixture {
 		Drain: func(node.RunState, io.Writer) (bool, error) {
 			f.drains++
 			return true, nil
+		},
+		Image: func(_ context.Context, v string) (sandbox.Image, error) {
+			f.images = append(f.images, fmt.Sprintf("%s after %d drains", v, f.drains))
+			if f.imageErr != nil {
+				return sandbox.Image{}, f.imageErr
+			}
+			return sandbox.Image{Ref: sandbox.DefaultImage(v), Pulled: true,
+				Removed: []string{sandbox.DefaultImage("v1.0.0")}}, nil
 		},
 		TempDir: t.TempDir(),
 		Out:     f.out,
@@ -147,6 +161,50 @@ func TestNodeUpdateDrainsBeforeItSwaps(t *testing.T) {
 	}
 	if out := f.out.String(); !strings.Contains(out, "its service (systemd --user or launchd) starts "+updateTo) {
 		t.Fatalf("output does not say how the service restarts:\n%s", out)
+	}
+	// the new version's node image was pulled before the drain
+	if want := updateTo + " after 0 drains"; strings.Join(f.images, ",") != want {
+		t.Fatalf("images ensured = %q, want %q", f.images, want)
+	}
+	if out := f.out.String(); !strings.Contains(out, "Node image: ghcr.io/projectmesh-io/mesh-node:"+updateTo+" (pulled); removed ghcr.io/projectmesh-io/mesh-node:v1.0.0") {
+		t.Fatalf("output does not name the node image:\n%s", out)
+	}
+}
+
+// A node image that cannot be pulled is the command's error: nothing is
+// drained or swapped, and the refusal is recorded.
+func TestNodeUpdateFailedImagePullChangesNothing(t *testing.T) {
+	f := newUpdateFixture(t)
+	f.imageErr = errors.New("node image ghcr.io/projectmesh-io/mesh-node:" + updateTo + ": pull failed: Error: initializing source: unauthorized")
+	err := f.u.run(context.Background(), updateTo, false)
+	if err == nil || !strings.Contains(err.Error(), "pull failed") || !strings.Contains(err.Error(), "not updated") {
+		t.Fatalf("update = %v; want the pull's failure", err)
+	}
+	if f.drains != 0 {
+		t.Fatal("drained after a failed pull")
+	}
+	f.unchanged(t)
+	s, lerr := f.state.Load()
+	if lerr != nil || s.Pending() || !strings.Contains(s.LastError, "pull failed") {
+		t.Fatalf("update state = %+v, %v; want the failure recorded, nothing pending", s, lerr)
+	}
+}
+
+// With node.yaml's `sandbox: off` the command's image step pulls nothing
+// (it would need podman to).
+func TestNodeUpdateSandboxOffPullsNothing(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("PATH", t.TempDir()) // no podman to call
+	if err := os.MkdirAll(filepath.Join(home, ".mesh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".mesh", "node.yaml"), []byte("sandbox: off\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	img, err := ensureNodeImage(context.Background(), updateTo)
+	if err != nil || img.Skipped != "sandbox: off" || img.Ref != "" {
+		t.Fatalf("image = %+v, %v; want skipped for sandbox: off", img, err)
 	}
 }
 
@@ -235,6 +293,9 @@ func TestNodeUpdateVerifyOnly(t *testing.T) {
 	if !strings.Contains(f.out.String(), "nothing swapped") {
 		t.Fatalf("output:\n%s", f.out)
 	}
+	if len(f.images) != 0 {
+		t.Fatalf("--verify-only ensured an image: %q", f.images)
+	}
 
 	// and a bad release is refused the same way
 	f.src["mesh-linux-amd64"] = []byte("tampered")
@@ -255,6 +316,10 @@ func TestNodeUpdateAlreadyRunning(t *testing.T) {
 		t.Fatal("drained for the running version")
 	}
 	f.unchanged(t)
+	// the running version's image is ensured all the same
+	if want := updateTo + " after 0 drains"; strings.Join(f.images, ",") != want {
+		t.Fatalf("images = %q, want %q", f.images, want)
+	}
 }
 
 // With no node running there is nothing to drain; the update goes ahead.
@@ -284,7 +349,7 @@ func TestNodeUpdateHelp(t *testing.T) {
 	if err := rootCmd.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"mesh node update [version]", "--verify-only"} {
+	for _, want := range []string{"mesh node update [version]", "--verify-only", "node image", "ghcr.io/projectmesh-io/mesh-node:<version>", "sandbox.image", "build"} {
 		if !strings.Contains(buf.String(), want) {
 			t.Errorf("help lacks %q:\n%s", want, buf)
 		}

@@ -1,5 +1,5 @@
 ---
-summary: Nodes update only from tag-cut releases of projectmesh-io/mesh-cli whose SHA256SUMS is signed keyless by release-tag.yml's GitHub OIDC identity; the asset names and that identity are the updater's contract.
+summary: Nodes update only from tag-cut releases of projectmesh-io/mesh-cli whose SHA256SUMS is signed keyless by release-tag.yml's GitHub OIDC identity; the asset names and that identity are the updater's contract. The same tag pushes and cosign-signs the node image ghcr.io/projectmesh-io/mesh-node:<tag>, which the node pulls before it drains.
 status: accepted
 ---
 
@@ -112,6 +112,42 @@ existing installs download.
   them offline against the real identity and refuse them under another
   tag's or with edited sums.
 
+## Amendment: the node image (goal `sandboxed-sessions`, 2026-09-25)
+
+The same tag also ships the node image every sandboxed session runs in
+(mesh-specs ADR 007). The binary's contract above is unchanged — the same
+five assets, the same `SHA256SUMS` signature, the same identity — and the
+image is a second artefact beside it:
+
+- `release-tag.yml`'s `image` job builds `images/node/Containerfile` for
+  linux/amd64 and linux/arm64 (Go at go.mod's version, `MESH_VERSION`
+  the tag), pushes `ghcr.io/projectmesh-io/mesh-node:<tag>` and signs its
+  digest keyless with `cosign sign`, under the same workflow identity.
+  `publish` needs it, so no release exists without its image.
+- The tag is the node's version as it is (`internal/version.Version`,
+  `v1.2.0` → `mesh-node:v1.2.0`). Renaming the repository or dropping the
+  `v` is a contract change made here first.
+- Once a release is verified and before anything is drained — the
+  loop's self-update and `mesh node update` alike — the node ensures the
+  new version's image (`SandboxConfig.EnsureImage`): `podman pull` of the
+  tag, then every other `mesh-node` tag removed but the running
+  version's, which the node's sessions still use. A pull that fails is
+  the update's error — `updateError` on the heartbeat, the command's
+  exit — with no drain and no swap: the node stays on its binary, and the
+  version waits `updateRetry` as a refused release does. Nothing falls
+  back to a local build on its own; node.yaml's `sandbox.image: build`
+  asks for one (below). `sandbox: off`, or no podman with no mode set,
+  pulls nothing (mesh-cli ADR-007).
+- node.yaml's `sandbox.image`: empty is `mesh-node:<version>`; `build`
+  is that tag built on the node from `images/node/Containerfile`, which
+  the binary embeds (`images/node`, `nodeimage.Containerfile`), with
+  `sandbox.BuildImage`; any other value is used as given.
+- The node does not yet verify the image's cosign signature on pull;
+  the signature is there for when it does.
+- The package is private while the repository is (the release caveat
+  above): a pull needs `podman login ghcr.io` with a token that can read
+  it, or `sandbox.image: build`.
+
 ## Consequences
 
 - Renaming an asset, the workflow file, or the repo breaks every
@@ -120,3 +156,5 @@ existing installs download.
   `v*` tags is who may ship to nodes.
 - darwin/amd64 and windows are not release targets; a node there cannot
   self-update.
+- A tag that cannot build its image publishes no release: a toolchain
+  bump in the Containerfile is tested by the tag like the binary is.

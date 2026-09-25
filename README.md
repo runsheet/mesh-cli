@@ -752,9 +752,10 @@ one yet.
   controllers delegated to their systemd user slice for the limits to
   bite). The network is pasta. No daemon, no socket.
 - **Node image.** `claude` runs from the node image,
-  `ghcr.io/projectmesh-io/mesh-node:<node version>` (`:latest` on a
-  dev build), which carries the toolchains and the agent CLIs;
-  `sandbox.image` names another. Its `PATH` is
+  `ghcr.io/projectmesh-io/mesh-node:<node version>` (`:dev` on a dev
+  build), which carries the toolchains and the agent CLIs;
+  `sandbox.image` names another or `build`s it here (see
+  [Node image](#node-image)). Its `PATH` is
   `/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`
   and it must carry `nft` for the network rules.
 - **Mounts.** Exactly two: the item's workspace, read-write at its own
@@ -765,7 +766,7 @@ one yet.
   runner's directory or a container socket.
 - **Environment.** Built from an allow-list, never inherited:
   `PATH`, `HOME`, `LANG`, `TZ`, `TERM`, `CLAUDE_CONFIG_DIR`,
-  `MESH_ITEM`, `MESH_SESSION_KIND`, and of what the node gave the
+  `MESH_ITEM`, `MESH_SESSION_KIND`, `DISABLE_AUTOUPDATER=1`, and of what the node gave the
   session: `GH_TOKEN`, `GH_CONFIG_DIR`, `CLAUDE_CODE_OAUTH_TOKEN` or
   `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `CODEX_API_KEY`,
   `MESH_ACCOUNT` and the tool secrets `MESH_TOOL_*`. Values reach
@@ -799,7 +800,7 @@ sandbox:
   services_cpus: 2     # the services' budget together
   services_memory: 4g
   registries: [docker.io, ghcr.io, "*.pkg.dev", quay.io]   # where service images may come from
-  image: ghcr.io/projectmesh-io/mesh-node:v1.2.3           # default: the node's version
+  image: build         # default (empty): ghcr.io/projectmesh-io/mesh-node:<version>; build: that tag built here; else as given
   service_timeout: 120s  # how long the services' health checks are waited for
 ```
 
@@ -812,7 +813,7 @@ sandbox:
 | `services_cpus` | `2` | the service sidecars' CPUs, together |
 | `services_memory` | `4g` | the service sidecars' memory, together |
 | `registries` | `docker.io`, `ghcr.io`, `*.pkg.dev`, `quay.io` | registries service images may come from |
-| `image` | `ghcr.io/projectmesh-io/mesh-node:<version>` | the node image sessions run in |
+| `image` | `ghcr.io/projectmesh-io/mesh-node:<version>` | the node image sessions run in; `build` builds that tag here from the embedded Containerfile, any other value is used as given |
 | `service_timeout` | `120s` | the bound on the services' health checks before the agent starts |
 
 **`sandbox: off`** runs every session exactly as before: `claude` on
@@ -825,6 +826,64 @@ session unsandboxed on its own.
 
 The probe test runs a real pod: `MESH_SANDBOX_E2E=1
 MESH_SANDBOX_IMAGE=<image> go test ./internal/sandbox -run E2E`.
+
+### Node image
+
+Every sandboxed session runs one image, versioned with the node:
+
+```
+ghcr.io/projectmesh-io/mesh-node:<version>     # e.g. ghcr.io/projectmesh-io/mesh-node:v0.4.0
+```
+
+It is built from [`images/node/Containerfile`](images/node/Containerfile),
+which the binary embeds: Debian with `git`, Go at go.mod's version, Node
+LTS with `npm` and corepack, Python 3 with `pip` and `uv`, `make` and a C
+toolchain, `gh`, `nftables`, `ca-certificates`, and the `claude` and
+`codex` CLIs, each at a version pinned in the file. The agents do not
+update themselves (`DISABLE_AUTOUPDATER=1`, codex's
+`check_for_update_on_startup = false`, and a root-owned install), the
+user is the non-root `mesh`, and no secret is in it: a session is given
+its token and secrets in its environment when it starts. A toolchain
+bump is an edit to the file's `ARG`s, shipped with the next release.
+
+`release-tag.yml`'s `image` job builds it for linux/amd64 and
+linux/arm64 on every `v*` tag, pushes it and signs its digest keyless
+with `cosign`; `publish` waits for it, so no release exists without its
+image (ADR-002 amendment).
+
+**It is pulled before the drain.** `mesh node update` and the node's own
+self-update pull the *new* version's image once the release is verified
+and before anything is drained, then remove every older `mesh-node` tag
+but the running version's:
+
+```
+Ensuring the node image of v0.4.0…
+Node image: ghcr.io/projectmesh-io/mesh-node:v0.4.0 (pulled); removed ghcr.io/projectmesh-io/mesh-node:v0.3.1
+```
+
+A pull that fails stops the update there: no drain, no swap, the node
+stays on its binary — the command exits non-zero, a self-update puts the
+reason on the heartbeat (`updateError`) and waits an hour on that
+version. Nothing is built in its place unless node.yaml says so.
+`sandbox: off` (or no podman and no mode set) pulls nothing.
+
+**`sandbox.image`** in node.yaml:
+
+| value | image |
+|-------|-------|
+| left out | `ghcr.io/projectmesh-io/mesh-node:<version>`, pulled |
+| `build` | that same tag, built on this machine from the embedded Containerfile instead of pulled |
+| anything else | used as given, pulled |
+
+`mesh node update <the running version>` ensures the running version's
+image and nothing else — how a node set to `build` makes its first one.
+While the repository is private so is the package: `podman login
+ghcr.io` with a token that can read it, or `sandbox.image: build`. To
+build it by hand:
+
+```sh
+podman build -t ghcr.io/projectmesh-io/mesh-node:dev -f images/node/Containerfile images/node
+```
 
 ### Acceptance the evaluator can see
 
@@ -1285,7 +1344,8 @@ for: after every heartbeat it reads its desired version (the console
 sets it; empty, the version already running, or a `dev` build does
 nothing). For a different one the node downloads that release's binary
 for its OS/arch with `SHA256SUMS` and the Sigstore bundle, and verifies
-them as above *before* anything else — a refused release costs no work,
+them as above, and pulls its [node image](#node-image), *before*
+anything else — a refused release or a failed pull costs no work,
 its reason goes on every heartbeat (`updateError`) and the version is
 left for an hour. A verified one drains the node (see Drain), swaps the
 executable atomically, keeping the one it replaced as `<path>.prev`, and
@@ -1301,7 +1361,7 @@ until the platform asks for another.
 (the latest release that is not a prerelease when no version is given):
 
 ```sh
-mesh node update v0.4.0                  # verify, drain the node, swap
+mesh node update v0.4.0                  # verify, pull mesh-node:v0.4.0, drain the node, swap
 mesh node update                         # the latest release
 mesh node update v0.4.0 --verify-only    # download and verify into a temp dir; swap nothing
 mesh node update v0.4.0 --verify-only --from-dir ./rel   # the same, from files already downloaded
@@ -1310,7 +1370,9 @@ mesh node update v0.4.0 --verify-only --from-dir ./rel   # the same, from files 
 It verifies first and refuses anything not signed by `release-tag.yml` on
 `refs/tags/<version>` with issuer `https://token.actions.githubusercontent.com`,
 or whose hash does not match, printing the reason and exiting non-zero
-with the executable and `.prev` untouched. A verified release drains the
+with the executable and `.prev` untouched. It then pulls the release's
+[node image](#node-image) — a failed pull is refused the same way. A
+verified release drains the
 node running here (`~/.mesh/node.pid`, as `mesh node drain`; with none
 running there is nothing to drain), swaps the executable keeping
 `<path>.prev`, and says how the service will start it: the node exits

@@ -156,10 +156,12 @@ func (l *Loop) desiredVersion(ctx context.Context) (string, bool) {
 	return "", ok
 }
 
-// update fetches and verifies to, and only then drains — a refused
-// release costs the node no work — waits for every session to end, and
-// swaps the binary in. Run then returns ErrRestartForUpdate. A failure
-// resumes a drain the update began and is reported on the heartbeat.
+// update fetches and verifies to and ensures its node image, and only
+// then drains — a refused release or an image that cannot be had costs
+// the node no work and leaves it on its binary — waits for every session
+// to end, and swaps the binary in. Run then returns ErrRestartForUpdate.
+// A failure resumes a drain the update began and is reported on the
+// heartbeat.
 func (l *Loop) update(ctx context.Context, from, to string) {
 	defer l.updateWG.Done()
 	l.logf("self-update: %s → %s: fetching", from, to)
@@ -167,6 +169,14 @@ func (l *Loop) update(ctx context.Context, from, to string) {
 	if err != nil {
 		l.updateFailed(ctx, from, to, err, false)
 		return
+	}
+	if l.Image != nil {
+		img, err := l.Image(ctx, to)
+		if err != nil {
+			l.updateFailed(ctx, from, to, err, false)
+			return
+		}
+		l.logf("self-update: %s", img.Summary())
 	}
 	ours := !l.Draining()
 	l.logf("self-update: %s verified; draining", to)

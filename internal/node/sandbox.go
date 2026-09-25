@@ -39,7 +39,8 @@ type SandboxConfig struct {
 	// docker.io, ghcr.io, *.pkg.dev, quay.io).
 	Registries []string `yaml:"registries,omitempty"`
 	// Image is the node image; empty is ghcr.io/projectmesh-io/mesh-node
-	// at the node's version.
+	// at the node's version, `build` that same tag built on this machine
+	// from the embedded Containerfile, anything else used as given.
 	Image string `yaml:"image,omitempty"`
 	// ServiceTimeout bounds the wait for a session's services' health
 	// checks before its agent starts (default 120s).
@@ -86,16 +87,17 @@ func (c SandboxConfig) Validate() error {
 // Settings is the sandbox's configuration with the defaults filled in,
 // for a node at version.
 func (c SandboxConfig) Settings(version string) sandbox.Config {
+	image, _, err := sandbox.ImageRef(c.Image, version)
+	if err != nil {
+		image = sandbox.DefaultImage(version)
+	}
 	s := sandbox.Config{
-		Image:          c.Image,
+		Image:          image,
 		Limits:         sandbox.Limits{CPUs: c.CPUs, Memory: c.Memory, Pids: c.Pids},
 		ServicesLimits: sandbox.Limits{CPUs: c.ServicesCPUs, Memory: c.ServicesMemory},
 		Registries:     c.Registries,
 		Network:        sandbox.DefaultNetwork(),
 		ServiceTimeout: c.ServiceTimeout,
-	}
-	if s.Image == "" {
-		s.Image = sandbox.DefaultImage(version)
 	}
 	if s.Limits.CPUs == 0 {
 		s.Limits.CPUs = sandbox.DefaultCPUs
@@ -146,6 +148,44 @@ func OpenSandbox(ctx context.Context, c SandboxConfig, rt sandbox.Runtime, versi
 		logf("sandbox: on — %s, image %s, agent %g cpus / %s / %d pids", ver, cfg.Image, cfg.Limits.CPUs, cfg.Limits.Memory, cfg.Limits.Pids)
 	}
 	return &sandbox.Sandbox{Runtime: rt, Config: cfg}, &gateway.SandboxInfo{Mode: SandboxOn, Runtime: ver, Image: cfg.Image}, nil
+}
+
+// EnsureImage makes the node image of version — the one node.yaml's
+// `sandbox.image` names for it — present on this machine, before the
+// node drains onto that version (mesh-specs ADR 007): pulled, or with
+// `sandbox.image: build` built from the embedded Containerfile; the image
+// of running, which the node's sessions still use, is kept, and every
+// other mesh-node tag removed. `sandbox: off` asks nothing, nor does a
+// mode left out on a machine whose runtime does not answer (the node
+// there runs off); both are Image.Skipped. Every other failure is the
+// error: the update does not go ahead on it.
+func (c SandboxConfig) EnsureImage(ctx context.Context, run sandbox.Runner, version, running string) (sandbox.Image, error) {
+	mode := strings.ToLower(c.Mode)
+	if mode == SandboxOff {
+		return sandbox.Image{Skipped: "sandbox: off"}, nil
+	}
+	if out, err := run(ctx, "podman", "--version"); err != nil {
+		reason := strings.TrimSpace(string(out))
+		if reason == "" {
+			reason = err.Error()
+		}
+		if mode == SandboxOn {
+			return sandbox.Image{}, fmt.Errorf("sandbox: on, but the runtime does not answer (%s)", reason)
+		}
+		return sandbox.Image{Skipped: "the runtime does not answer (" + reason + "); the sandbox is off"}, nil
+	}
+	ref, build, err := sandbox.ImageRef(c.Image, version)
+	if err != nil {
+		return sandbox.Image{}, err
+	}
+	var keep []string
+	if running != "" {
+		keep = append(keep, c.Settings(running).Image)
+	}
+	if build {
+		return sandbox.BuildImage(ctx, run, ref, version, keep...)
+	}
+	return sandbox.EnsureImage(ctx, run, ref, keep...)
 }
 
 // LimitReason is what a session killed by its sandbox's limits is

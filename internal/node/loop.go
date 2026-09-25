@@ -13,6 +13,7 @@ import (
 
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/harness"
+	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/tools"
 )
 
@@ -85,6 +86,11 @@ type Loop struct {
 	// Update updates the node's own binary to the version the platform
 	// asks for (selfUpdate); nil never updates.
 	Update Updater
+	// Image makes the node image of a version present on this machine
+	// (SandboxConfig.EnsureImage, mesh-specs ADR 007): a self-update
+	// calls it once the release is verified and before it drains, and a
+	// failure is the update's error. nil ensures none.
+	Image func(ctx context.Context, version string) (sandbox.Image, error)
 	// Ledger is what each account has spent today and this month
 	// (adr-005-capacity-across-accounts), fed by every session
 	// (ObserveSpend); the accounts scaler and the spending order read
