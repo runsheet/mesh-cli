@@ -358,7 +358,10 @@ the integrator opens the PR only after `EvaluateWorkItem` passes. So
   repository: tests, commands and their output, file contents. Never a CI
   check on the item's own pull request, a deploy, or a file in another
   repository. Work like that becomes its own item in the right repo, or
-  goes in the goal's acceptance.
+  goes in the goal's acceptance. The node checks every plan for such
+  clauses before `PlanGoal` (`internal/node/plan_check.go`) and re-asks the
+  planner once with what it flagged; a second plan still flagged is handed in
+  as it stands, with its flags logged.
 - **The evaluator** reports a clause it cannot check at evaluation time — a
   CI check on the item's PR, a deploy, another repository's file — in its
   review as unverifiable, not failed, and does not fail the item on that

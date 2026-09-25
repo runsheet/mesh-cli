@@ -143,32 +143,70 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 	} else {
 		p.logf("goal %s: items so far unavailable: %v", goal.Slug, err)
 	}
-	prompt := harness.PlanPrompt(harness.PlanInput{
+	in := harness.PlanInput{
 		GoalSlug: goal.Slug, GoalTitle: goal.Title, Statement: goal.Statement, Acceptance: goal.Acceptance, BudgetCents: goal.BudgetCents,
 		Org: scope.Login, Project: project.Slug, Repos: dirs, ContextDir: contextDir, ContextFiles: files, Blocked: goal.PausedReason,
 		Existing: existing, NextSeq: nextSeq, Prologue: len(p.MCP) > 0,
-	})
+	}
 	budget := p.MaxBudgetUSD
 	if budget <= 0 {
 		budget = 5
 	}
-	job := harness.Job{Kind: harness.KindPlan, Workspace: dir, Prompt: prompt, MaxBudgetUSD: budget, Label: goal.Slug + " plan", Timeout: p.Timeout, MCPServers: p.MCP, Model: p.Model}
 	p.logf("goal %s: planning in %s (%d repos)", goal.Slug, dir, len(repos))
+	items, flags, cost, err := p.ask(ctx, goal, dir, budget, in, repos, merged)
+	if err != nil {
+		return err
+	}
+	if len(flags) > 0 {
+		// adr-004: an acceptance no evaluator can see is the plan's error;
+		// the planner is asked once more with what was flagged
+		p.logf("goal %s: plan names what no evaluator can see; asking again: %s", goal.Slug, strings.Join(flags, " | "))
+		in.Rejected = flags
+		var again float64
+		items, flags, again, err = p.ask(ctx, goal, dir, budget, in, repos, merged)
+		cost += again
+		if err != nil {
+			return err
+		}
+		if len(flags) > 0 {
+			// adr-004: the second plan is handed in as it stands; the
+			// evaluator's unverifiable-clause rule is the backstop
+			p.logf("goal %s: plan still names what no evaluator can see; handing it in: %s", goal.Slug, strings.Join(flags, " | "))
+		}
+	}
+	by := ""
+	if p.Cfg != nil {
+		by = p.Cfg.OwnerID
+	}
+	if err := p.GW.PlanGoal(ctx, goal.ID, by, items, Cents(cost)); err != nil {
+		return fmt.Errorf("hand in the plan: %w", err)
+	}
+	p.logf("goal %s: planned, %d items ($%.2f)", goal.Slug, len(items), cost)
+	return nil
+}
+
+// ask runs one planner session on in and reads its graph: the items
+// mapped onto the project's repos, the check's flags on their acceptance
+// (unverifiableAcceptance), and the session's cost. An error means there
+// is no graph to hand in.
+func (p *Planner) ask(ctx context.Context, goal gateway.Goal, dir string, budget float64, in harness.PlanInput, repos map[string]gateway.Repo, merged []int) ([]gateway.PlannedItem, []string, float64, error) {
+	job := harness.Job{Kind: harness.KindPlan, Workspace: dir, Prompt: harness.PlanPrompt(in), MaxBudgetUSD: budget, Label: goal.Slug + " plan", Timeout: p.Timeout, MCPServers: p.MCP, Model: p.Model}
 	result, err := p.Harness.Run(ctx, job, nil)
 	if ctx.Err() != nil {
-		return ctx.Err()
+		return nil, nil, 0, ctx.Err()
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
-		return fmt.Errorf("planner session ran out of time (%s)", p.Timeout)
+		return nil, nil, 0, fmt.Errorf("planner session ran out of time (%s)", p.Timeout)
 	}
 	if err != nil {
-		return fmt.Errorf("planner session: %w", err)
+		return nil, nil, 0, fmt.Errorf("planner session: %w", err)
 	}
 	specs, err := harness.ParsePlan(result.Text, merged...)
 	if err != nil {
-		return fmt.Errorf("planner session (%s): %w: %s", result.SessionID, err, truncate(result.Text, 300))
+		return nil, nil, 0, fmt.Errorf("planner session (%s): %w: %s", result.SessionID, err, truncate(result.Text, 300))
 	}
 	items := make([]gateway.PlannedItem, 0, len(specs))
+	itemRepo := map[int]gateway.Repo{}
 	for _, sp := range specs {
 		r, ok := repos[sp.Repo]
 		if !ok {
@@ -180,8 +218,9 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 			}
 		}
 		if !ok {
-			return fmt.Errorf("item %d names repo %q, not one of the project's", sp.Seq, sp.Repo)
+			return nil, nil, 0, fmt.Errorf("item %d names repo %q, not one of the project's", sp.Seq, sp.Repo)
 		}
+		itemRepo[sp.Seq] = r
 		base := strings.TrimSpace(sp.BaseRef)
 		if base == "" {
 			base = r.DefaultBranch
@@ -192,13 +231,5 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 		}
 		items = append(items, gateway.PlannedItem{Seq: sp.Seq, Title: strings.TrimSpace(sp.Title), Brief: strings.TrimSpace(sp.Brief), Acceptance: strings.TrimSpace(sp.Acceptance), DependsOn: deps, RepoID: r.ID, BaseRef: base})
 	}
-	by := ""
-	if p.Cfg != nil {
-		by = p.Cfg.OwnerID
-	}
-	if err := p.GW.PlanGoal(ctx, goal.ID, by, items, Cents(result.CostUSD)); err != nil {
-		return fmt.Errorf("hand in the plan: %w", err)
-	}
-	p.logf("goal %s: planned, %d items ($%.2f)", goal.Slug, len(items), result.CostUSD)
-	return nil
+	return items, unverifiableAcceptance(specs, itemRepo, repos), result.CostUSD, nil
 }
