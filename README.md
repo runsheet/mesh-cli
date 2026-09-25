@@ -1124,6 +1124,54 @@ gh release download "$TAG" -R projectmesh-io/mesh-cli -D rel
 mesh node update --verify-only --from-dir rel "$TAG"
 ```
 
+### Node image
+
+Sessions are moving into per-session sandboxes (mesh-specs ADR 007), and
+every sandbox runs one image, versioned with the node:
+
+```
+ghcr.io/projectmesh-io/mesh-node:<version>     # e.g. ghcr.io/projectmesh-io/mesh-node:v0.4.0
+```
+
+It is built from `images/node/Containerfile` — Debian with `git`, Go at
+go.mod's version, Node LTS with npm (and corepack), Python 3 with `pip`
+and `uv`, `make` and a C toolchain, `gh`, `ca-certificates`, and the
+`claude` and `codex` CLIs at pinned versions (their self-update off), run
+as the non-root user `mesh`. No secret is in it: a session is given its
+token and secrets in its environment when it starts. A toolchain bump is
+an edit to the Containerfile's `ARG`s, shipped with the next release.
+
+`release-tag.yml` builds it for linux/amd64 and linux/arm64 on every `v*`
+tag, pushes it and signs its digest keyless (`cosign sign`, the same
+workflow identity as `SHA256SUMS`), before it publishes the release.
+
+The image follows the binary. After a successful swap — the node's own
+self-update, or `mesh node update` — the node pulls the new version's
+image with podman; when the pull fails it builds that tag locally from the
+Containerfile the binary embeds; then it removes every older `mesh-node`
+tag and says which image is in use:
+
+```sh
+mesh node update v0.4.0     # verify, drain, swap — then pull (or build) mesh-node:v0.4.0
+mesh node update --image    # only the running version's image: pull or build, prune, print
+```
+
+```
+Pulling the node image ghcr.io/projectmesh-io/mesh-node:v0.4.0…
+Node image in use: ghcr.io/projectmesh-io/mesh-node:v0.4.0 (pulled); removed ghcr.io/projectmesh-io/mesh-node:v0.3.2
+```
+
+The binary stays in place whether or not the image can be had: the node
+logs the failure and `mesh node update --image` tries again. A machine
+without `podman` keeps no image (it runs with `sandbox: off`). While the
+repository is private so is the package: `podman login ghcr.io` with a
+token that can read it, or let the node build the image (a few minutes,
+once per version). To build it by hand:
+
+```sh
+podman build -t ghcr.io/projectmesh-io/mesh-node:dev -f images/node/Containerfile images/node
+```
+
 ## Known Limitations
 
 - Live browser-login and work-item testing still depends on the deployed `mesh-portal` and `mesh-api` carrying the matching session-auth changes.
