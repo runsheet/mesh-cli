@@ -10,6 +10,13 @@
 #   identity: https://github.com/projectmesh-io/mesh-cli/.github/workflows/release-tag.yml@refs/tags/<tag>
 #   issuer:   https://token.actions.githubusercontent.com
 #
+# The same tag builds the node image (mesh-specs ADR 007) from
+# images/node/Containerfile for linux/amd64 and linux/arm64, pushes it as
+# ghcr.io/projectmesh-io/mesh-node:<tag> and signs its digest keyless with
+# the same identity. The release is published only after the image is
+# pushed, so a node that can fetch a release can pull its image; the five
+# release assets and their signature are unchanged.
+#
 # cli-release.yml (main pushes, released to projectmesh-io/mesh) is
 # separate and is not what nodes update from.
 
@@ -77,9 +84,59 @@ jobs:
           path: dist/${{ matrix.asset_name }}
           if-no-files-found: error
 
+  image:
+    name: Node image ${{ github.ref_name }}
+    runs-on: [self-hosted, mini]
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Go version from go.mod
+        id: go
+        run: echo "version=$(awk '$1 == "go" { print $2 }' go.mod)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push ghcr.io/projectmesh-io/mesh-node:${{ github.ref_name }}
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: images/node
+          file: images/node/Containerfile
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            GO_VERSION=${{ steps.go.outputs.version }}
+            MESH_VERSION=${{ github.ref_name }}
+          tags: ghcr.io/projectmesh-io/mesh-node:${{ github.ref_name }}
+          push: true
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign the image (keyless)
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: cosign sign --yes "ghcr.io/projectmesh-io/mesh-node@${DIGEST}"
+
   publish:
     name: Sign and publish ${{ github.ref_name }}
-    needs: build
+    needs: [build, image]
     runs-on: [self-hosted, mini]
     permissions:
       contents: write

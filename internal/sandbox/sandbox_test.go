@@ -113,7 +113,7 @@ func TestAgentEnvIsTheAllowList(t *testing.T) {
 		names = append(names, k)
 	}
 	sort.Strings(names)
-	want := []string{"CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CONFIG_DIR", "GH_CONFIG_DIR", "GH_TOKEN", "HOME", "LANG", "MESH_ACCOUNT", "MESH_ITEM", "MESH_SESSION_KIND", "MESH_TOOL_LINEAR_API_KEY", "OPENAI_API_KEY", "PATH", "TERM", "TZ"}
+	want := []string{"CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CONFIG_DIR", "DISABLE_AUTOUPDATER", "GH_CONFIG_DIR", "GH_TOKEN", "HOME", "LANG", "MESH_ACCOUNT", "MESH_ITEM", "MESH_SESSION_KIND", "MESH_TOOL_LINEAR_API_KEY", "OPENAI_API_KEY", "PATH", "TERM", "TZ"}
 	if !slices.Equal(names, want) {
 		t.Fatalf("env names = %v\nwant %v", names, want)
 	}
