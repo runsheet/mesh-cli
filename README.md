@@ -194,7 +194,7 @@ the gateway: `mesh_progress {item_id, note, cost_cents}`, `mesh_finish
 {item_id, branch, head_sha}`, `mesh_fail {item_id, error}`, `mesh_evaluate
 {item_id, passed, notes}`, `mesh_context {goal_slug}` (the project's
 Prologue documents: instructions, ADRs, PRD, TRD), `mesh_items {status}`,
-`mesh_record {item_id, summary}` (see below) and `reply`. The daemon
+`mesh_record {item_id, summary}` (a milestone note to the platform; see below) and `reply`. The daemon
 has already cloned or fetched the repo into
 `~/.mesh/work/<goal-slug>/<seq>` and checked out `mesh/<goal-slug>-<seq>`
 by the time the event arrives. It did that on the item's own GitHub token,
@@ -273,18 +273,20 @@ need neither: they are re-read every tick (see Start).
 
 ### The goal's record in the repo
 
-Prologue is read-only over git, so a goal writes itself into the repo:
-`specs/goal-<goal-slug>.md` (frontmatter `title: Goal — …`, `kind: plan`,
-`status: draft` while running / `approved` when done / `superseded` when
-cancelled, `parent:` the project's PRD when Prologue lists one), with the
-statement, the acceptance, an `## Items` table regenerated from the
-gateway's rows and a `## Log` that appends one dated line per call. In
-channel mode the session calls `mesh_record` after each milestone and
-before `mesh_finish`; it is committed on the item's branch
-(`docs(mesh): goal <slug> — item <seq>`) and lands with the merge, where
-Prologue indexes it. Poll mode no longer writes the doc on an item's
-branch: a build's branch carries only its own work, and the doc is written
-once, when the goal ends.
+Status lives on the platform, not in git (ADR 003, decision 4). No item's
+branch writes a goal status table: in channel mode `mesh_record` hands its
+summary to the platform as a progress note on the item
+(`ReportWorkItemProgress`, like `mesh_progress`) and writes no file, and
+poll mode writes nothing either — a build's branch carries only its own
+work. A session reads live status from `.mesh/context/INDEX.md` or the
+platform.
+
+Prologue is read-only over git, so a goal still writes itself into the
+repo once, when it ends: `specs/goal-<goal-slug>.md` (frontmatter
+`title: Goal — …`, `kind: plan`, `status: approved` when done /
+`superseded` when cancelled, `summary:`, `parent:` the project's PRD when
+Prologue lists one), with the statement, the acceptance and the final
+`## Items` table. `internal/node/goaldoc.go` is its only writer.
 
 ## Goals
 

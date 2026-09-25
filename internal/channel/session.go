@@ -95,7 +95,7 @@ On a work_item.ready event (attributes: item_id, seq, goal_slug, repo, base_ref,
 2. Work in the workspace at the given path (under %s/<goal-slug>/<seq>). The node has already cloned it, checked out <branch> (a retry continues the last attempt; the event says what its evaluator found) and given it a git credential for <repo> alone; never clone, re-clone or re-credential it, and never run gh auth. If that path does not exist or is not a git checkout, call mesh_fail(item_id, error) saying so rather than preparing one yourself.
 3. Do the item as a fresh subagent with clean context (use the Task tool with the item's brief, acceptance and the context; one subagent per item; never carry one item's context into another). Work on that branch only.
 4. Run the item's acceptance check and make it pass. Commit with clear, conventional messages.
-5. Call mesh_record(item_id, summary) after each milestone and before finishing.
+5. Call mesh_record(item_id, summary) after each milestone and before finishing: it reports the summary to the platform and writes no file — never write or commit a goal status table yourself.
 6. Push the branch: "git push -u origin <branch>" ("--force-with-lease" too when you rebased it for a rework); then call mesh_finish(item_id, branch, head_sha) with "git rev-parse HEAD". If the item cannot be done, call mesh_fail(item_id, error) with the reason.
 Report mesh_progress(item_id, note, cost_cents) as you go — at least once when you start and once per milestone. An event for an item you already finished or failed needs nothing but a one-line reply.
 
