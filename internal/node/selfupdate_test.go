@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
+	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/selfupdate"
 )
 
@@ -22,7 +23,22 @@ type fakeUpdater struct {
 	events   []string
 	fetchErr error
 	swapErr  error
+	imageErr error
 	pending  bool
+}
+
+// Image is the loop's Image: it records the version and whether the loop
+// was draining when the image was ensured.
+func (u *fakeUpdater) Image(_ context.Context, version string) (sandbox.Image, error) {
+	state := "running"
+	if u.loop.Draining() {
+		state = "draining"
+	}
+	u.add("image " + version + " " + state)
+	if u.imageErr != nil {
+		return sandbox.Image{}, u.imageErr
+	}
+	return sandbox.Image{Ref: sandbox.DefaultImage(version), Pulled: true}, nil
 }
 
 func (u *fakeUpdater) add(e string) {
@@ -88,6 +104,7 @@ func (p *priorityFake) updateLoop(desired string) (*Loop, *fakeUpdater, chan str
 	loop.Version = "v1.0.0"
 	u := &fakeUpdater{loop: loop}
 	loop.Update = u
+	loop.Image = u.Image
 	return loop, u, release, logs
 }
 
@@ -137,9 +154,39 @@ func TestSelfUpdateDrainsThenSwapsThenRestarts(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("Run did not return after the update")
 	}
-	want := []string{"confirm", "fetch v1.1.0", "begin v1.0.0 v1.1.0", "swap mesh v1.1.0 drained"}
+	// the new version's node image is pulled before the drain begins
+	want := []string{"confirm", "fetch v1.1.0", "image v1.1.0 running", "begin v1.0.0 v1.1.0", "swap mesh v1.1.0 drained"}
 	if got := u.Events(); strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("events %q, want %q", got, want)
+	}
+}
+
+// A node image that cannot be pulled is the update's error: no drain, no
+// swap, the node stays on its binary and claims as before, and the
+// heartbeat carries it as updateError.
+func TestSelfUpdateFailedImagePullIsAnUpdateError(t *testing.T) {
+	p := newPriorityFake(t)
+	p.addGoal(orgID, "g", "normal")
+	loop, u, release, _ := p.updateLoop("v1.1.0")
+	defer close(release)
+	u.imageErr = errors.New("node image ghcr.io/projectmesh-io/mesh-node:v1.1.0: pull failed: Error: initializing source: unauthorized")
+	loop.Tick(context.Background())
+	loop.updateWG.Wait()
+	want := []string{"confirm", "fetch v1.1.0", "image v1.1.0 running", "refuse v1.1.0: " + u.imageErr.Error()}
+	if got := u.Events(); strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("events %q, want %q", got, want)
+	}
+	if loop.Draining() || loop.restartRequested() {
+		t.Fatalf("draining %v, restart %v after a failed pull", loop.Draining(), loop.restartRequested())
+	}
+	p.addItem(orgID, "g", "after", 1, false)
+	loop.Tick(context.Background())
+	loop.updateWG.Wait()
+	if c := p.CallsNamed("claimWorkItem"); len(c) != 1 || c[0].Input["aggregateId"] != "after" {
+		t.Fatalf("claims after the failed pull: %+v", c)
+	}
+	if got := p.lastHeartbeat()["updateError"]; got != u.imageErr.Error() {
+		t.Fatalf("heartbeat updateError = %v", got)
 	}
 }
 

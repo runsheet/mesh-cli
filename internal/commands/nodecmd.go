@@ -448,6 +448,9 @@ only use it on a machine you trust with that.`,
 		// --once is one tick, too short for an update to finish
 		if updates != nil && !nodeOnceFlag {
 			loop.Update = &node.ReleaseUpdater{Source: selfupdate.GitHub{}, State: updates, Exe: exe}
+			// and the new version's node image is pulled before the
+			// drain (mesh-specs ADR 007)
+			loop.Image = ensureNodeImage
 			if check.Failed != "" {
 				loop.NoteUpdateFailure(check.Failed, check.Reason, check.Final)
 			}

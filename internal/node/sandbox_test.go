@@ -249,3 +249,95 @@ func TestSandboxServiceTimeout(t *testing.T) {
 		t.Fatalf("saved: %s %v", out, err)
 	}
 }
+
+// imageRunner is the injected command runner of the image tests: podman
+// answers or not, and every call is recorded; a build keeps the
+// Containerfile it was given.
+type imageRunner struct {
+	calls    []string
+	noPodman bool
+	built    []byte
+}
+
+func (r *imageRunner) run(_ context.Context, name string, args ...string) ([]byte, error) {
+	r.calls = append(r.calls, name+" "+strings.Join(args, " "))
+	if r.noPodman {
+		return nil, errors.New(`exec: "podman": executable file not found in $PATH`)
+	}
+	if args[0] == "build" {
+		for i, a := range args {
+			if a == "--file" {
+				r.built, _ = os.ReadFile(args[i+1])
+			}
+		}
+	}
+	return nil, nil
+}
+
+func (r *imageRunner) sub(s string) []string {
+	var out []string
+	for _, c := range r.calls {
+		if strings.HasPrefix(c, "podman "+s+" ") {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// node.yaml's sandbox.image decides what an update ensures: empty pulls
+// mesh-node:<the new version> and keeps the running one's; `build` builds
+// that tag from images/node/Containerfile and pulls nothing; `sandbox:
+// off` asks nothing; a mode left out without podman skips; `on` without
+// podman is the error.
+func TestSandboxEnsureImage(t *testing.T) {
+	ctx := context.Background()
+
+	r := &imageRunner{}
+	img, err := sandboxOf(t, "sandbox: {}\n").EnsureImage(ctx, r.run, "v1.1.0", "v1.0.0")
+	if err != nil || img.Ref != "ghcr.io/projectmesh-io/mesh-node:v1.1.0" || !img.Pulled {
+		t.Fatalf("default = %+v, %v", img, err)
+	}
+	if p := r.sub("pull"); len(p) != 1 || p[0] != "podman pull ghcr.io/projectmesh-io/mesh-node:v1.1.0" {
+		t.Fatalf("pulls = %q", p)
+	}
+
+	r = &imageRunner{}
+	img, err = sandboxOf(t, "sandbox:\n  image: build\n").EnsureImage(ctx, r.run, "v1.1.0", "v1.0.0")
+	if err != nil || img.Ref != "ghcr.io/projectmesh-io/mesh-node:v1.1.0" || !img.Built {
+		t.Fatalf("build = %+v, %v", img, err)
+	}
+	if len(r.sub("pull")) != 0 || len(r.sub("build")) != 1 {
+		t.Fatalf("calls = %q; want one build, no pull", r.calls)
+	}
+	want, err := os.ReadFile("../../images/node/Containerfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(r.built) != string(want) {
+		t.Fatal("sandbox.image: build did not build images/node/Containerfile")
+	}
+	if got := sandboxOf(t, "sandbox:\n  image: build\n").Settings("v1.1.0").Image; got != "ghcr.io/projectmesh-io/mesh-node:v1.1.0" {
+		t.Fatalf("sessions of sandbox.image: build run %q", got)
+	}
+
+	r = &imageRunner{}
+	img, err = sandboxOf(t, "sandbox:\n  image: registry.example.com/node:7\n").EnsureImage(ctx, r.run, "v1.1.0", "v1.0.0")
+	if err != nil || img.Ref != "registry.example.com/node:7" {
+		t.Fatalf("given = %+v, %v", img, err)
+	}
+
+	r = &imageRunner{}
+	img, err = sandboxOf(t, "sandbox: off\n").EnsureImage(ctx, r.run, "v1.1.0", "v1.0.0")
+	if err != nil || img.Skipped != "sandbox: off" || len(r.calls) != 0 {
+		t.Fatalf("off = %+v, %v, calls %q; want nothing asked", img, err, r.calls)
+	}
+
+	r = &imageRunner{noPodman: true}
+	img, err = sandboxOf(t, "sandbox: {}\n").EnsureImage(ctx, r.run, "v1.1.0", "v1.0.0")
+	if err != nil || img.Skipped == "" || len(r.sub("pull")) != 0 {
+		t.Fatalf("no podman = %+v, %v", img, err)
+	}
+	if _, err := sandboxOf(t, "sandbox: on\n").EnsureImage(ctx, r.run, "v1.1.0", "v1.0.0"); err == nil {
+		t.Fatal("sandbox: on without podman ensured no image and no error")
+	}
+}
