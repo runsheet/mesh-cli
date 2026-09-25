@@ -12,12 +12,15 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Call is one mutation the fake received.
 type Call struct {
 	Name  string
 	Input map[string]any
+	// At is when the fake received it: an item's heartbeats over time.
+	At time.Time
 }
 
 // Fake is the server and its state. Rows are maps with camelCase keys,
@@ -234,7 +237,7 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 				writeErrors(w, 200, err.Error())
 				return
 			}
-			f.Calls = append(f.Calls, Call{Name: m[2], Input: in})
+			f.Calls = append(f.Calls, Call{Name: m[2], Input: in, At: time.Now()})
 			writeData(w, map[string]any{m[2]: tok})
 			return
 		}
@@ -262,7 +265,7 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 				}
 				res["tools"] = rows
 			}
-			f.Calls = append(f.Calls, Call{Name: m[2], Input: in})
+			f.Calls = append(f.Calls, Call{Name: m[2], Input: in, At: time.Now()})
 			writeData(w, map[string]any{m[2]: res})
 			return
 		}
@@ -273,7 +276,7 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 		if f.After != nil {
 			f.After(m[2], in)
 		}
-		f.Calls = append(f.Calls, Call{Name: m[2], Input: in})
+		f.Calls = append(f.Calls, Call{Name: m[2], Input: in, At: time.Now()})
 		writeData(w, map[string]any{m[2]: map[string]any{"status": "ok"}})
 	default:
 		field, typ := f.unknownSelection(q)

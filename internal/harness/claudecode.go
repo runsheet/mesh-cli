@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/sandbox"
@@ -139,6 +140,7 @@ func (c *ClaudeCode) Run(ctx context.Context, job Job, onProgress func(Progress)
 	if abs, err := filepath.Abs(path); err == nil {
 		path = abs // the unit may search another PATH
 	}
+	parent := ctx
 	if job.Timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, job.Timeout)
@@ -152,8 +154,15 @@ func (c *ClaudeCode) Run(ctx context.Context, job Job, onProgress func(Progress)
 	if err != nil {
 		return Result{}, fmt.Errorf("harness claude-code: session dir: %w", err)
 	}
-	// the session is handled when Run returns: its files go with it
-	defer os.RemoveAll(dir)
+	// the session is handled when Run returns: its files go with it —
+	// unless it outlives the node, when the node removes them once it has
+	// handled the end, or the next node does
+	keep := false
+	defer func() {
+		if !keep {
+			os.RemoveAll(dir)
+		}
+	}()
 	h, err := unit.Start(sessionunit.Spec{
 		Kind: string(job.Kind), Subject: job.Meta.subject(job.Label),
 		Binary: path, Args: c.Args(job), Dir: job.Workspace,
@@ -169,6 +178,69 @@ func (c *ClaudeCode) Run(ctx context.Context, job Job, onProgress func(Progress)
 		unit.Stop(h)
 		return Result{}, fmt.Errorf("harness claude-code: state: %w", err)
 	}
+	keep = job.Outlive && job.Workspace != ""
+	res, detached, waitErr, errBuf, rawOut := c.follow(ctx, parent, job.Outlive, unit, h, dir, &st, 0, job.Secrets, onProgress)
+	if detached {
+		return res, parent.Err()
+	}
+	return finishClaude(ctx, job, res, waitErr, errBuf, rawOut)
+}
+
+// Attach implements Attacher.
+func (c *ClaudeCode) Attach(ctx context.Context, dir string, onProgress func(Progress)) (Result, error) {
+	st, err := sessionunit.ReadState(dir)
+	if err != nil {
+		return Result{}, fmt.Errorf("harness claude-code: attach: %w", err)
+	}
+	var unit sessionunit.Unit = sessionunit.Detached{}
+	if st.Runner == (sessionunit.SystemdScope{}).Name() {
+		unit = sessionunit.SystemdScope{}
+	}
+	if c.Unit != nil && c.Unit.Name() == st.Runner {
+		unit = c.Unit
+	}
+	h := sessionunit.Handle{PID: st.PID, UnitName: st.Unit}
+	parent := ctx
+	if st.TimeoutSeconds > 0 {
+		// the session's own wall clock, from when it started
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, st.StartedAt.Add(time.Duration(st.TimeoutSeconds)*time.Second))
+		defer cancel()
+	}
+	res, detached, waitErr, errBuf, rawOut := c.follow(ctx, parent, true, unit, h, dir, &st, st.Offset, nil, onProgress)
+	if detached {
+		return res, parent.Err()
+	}
+	return finishClaude(ctx, Job{Timeout: time.Duration(st.TimeoutSeconds) * time.Second}, res, waitErr, errBuf, rawOut)
+}
+
+// RemoveSession removes a work dir's session directory, and the
+// temporary dirs its state names: the node calls it once it has handled
+// the end of a session that outlives it.
+func RemoveSession(workdir string) error {
+	if workdir == "" {
+		return nil
+	}
+	dir := sessionunit.Dir(workdir)
+	if st, err := sessionunit.ReadState(dir); err == nil {
+		for _, d := range st.TempDirs {
+			os.RemoveAll(d)
+		}
+	}
+	return os.RemoveAll(dir)
+}
+
+// follow reads a running (or ended) session in dir to its end: stderr
+// into a buffer (and c.Stderr), the output through the stream parser,
+// progress passed on only for the events past from, and the offset
+// saved into st as it advances. ctx done stops the unit — unless
+// outlive and parent is done too (the node shutting down), when the
+// reading stops and the session is left running: detached.
+func (c *ClaudeCode) follow(ctx, parent context.Context, outlive bool, unit sessionunit.Unit, h sessionunit.Handle, dir string, st *sessionunit.State, from int64, secrets []string, onProgress func(Progress)) (res Result, detached bool, waitErr error, errBuf *bytes.Buffer, rawOut *capBuffer) {
+	errBuf, rawOut = &bytes.Buffer{}, &capBuffer{max: 64 << 10}
+	readCtx, stopReading := context.WithCancel(context.Background())
+	defer stopReading()
+	var detach atomic.Bool
 	// a cancelled ctx or the timeout stops the unit; the reading below
 	// then ends with the process, as it did with a pipe
 	ended := make(chan struct{})
@@ -176,51 +248,73 @@ func (c *ClaudeCode) Run(ctx context.Context, job Job, onProgress func(Progress)
 	go func() {
 		select {
 		case <-ctx.Done():
+			if outlive && parent.Err() != nil {
+				detach.Store(true)
+				stopReading()
+				return
+			}
 			unit.Stop(h)
 		case <-ended:
 		}
 	}()
 	alive := func() bool { return unit.Alive(h) }
 
-	var errBuf bytes.Buffer
-	var stderr io.Writer = &errBuf
+	var stderr io.Writer = errBuf
 	if c.Stderr != nil {
-		stderr = io.MultiWriter(&redactWriter{w: c.Stderr, secrets: job.Secrets}, &errBuf)
+		stderr = io.MultiWriter(&redactWriter{w: c.Stderr, secrets: secrets}, errBuf)
 	}
-	errFollow, err := sessionunit.Follow(context.Background(), filepath.Join(dir, sessionunit.StderrFile), 0, alive)
-	if err != nil {
-		unit.Stop(h)
-		return Result{}, fmt.Errorf("harness claude-code: stderr: %w", err)
-	}
-	defer errFollow.Close()
 	errDone := make(chan struct{})
-	go func() {
-		_, _ = io.Copy(stderr, errFollow)
+	if errFollow, err := sessionunit.Follow(readCtx, filepath.Join(dir, sessionunit.StderrFile), 0, alive); err == nil {
+		defer errFollow.Close()
+		go func() {
+			_, _ = io.Copy(stderr, errFollow)
+			close(errDone)
+		}()
+	} else {
 		close(errDone)
-	}()
-	out, err := sessionunit.Follow(context.Background(), filepath.Join(dir, sessionunit.OutputFile), 0, alive)
+	}
+	out, err := sessionunit.Follow(readCtx, filepath.Join(dir, sessionunit.OutputFile), 0, alive)
 	if err != nil {
 		unit.Stop(h)
-		return Result{}, fmt.Errorf("harness claude-code: output: %w", err)
+		<-errDone
+		return Result{}, false, fmt.Errorf("output: %w", err), errBuf, rawOut
 	}
 	defer out.Close()
-	// The raw stdout, capped, in case the harness said why it could not
-	// run there rather than on stderr.
-	rawOut := &capBuffer{max: 64 << 10}
-	saved := time.Now()
-	res := parseClaude(io.TeeReader(out, rawOut), onProgress, func(ev Event) {
-		// the offset read and reported so far, for a node that adopts
-		if ev.SessionID != "" && st.SessionID == "" {
-			st.SessionID = ev.SessionID
-		} else if time.Since(saved) < time.Second {
+	progress := onProgress
+	if onProgress != nil && from > 0 {
+		// what lies before the saved offset was reported by the node
+		// that started the session
+		progress = func(p Progress) {
+			if out.Offset() > from {
+				onProgress(p)
+			}
+		}
+	}
+	res = parseClaude(io.TeeReader(out, rawOut), progress, func(ev Event) {
+		if out.Offset() <= st.Offset {
 			return
 		}
-		st.Offset, saved = out.Offset(), time.Now()
-		_ = sessionunit.WriteState(dir, st)
+		// the offset read and reported so far, after every event, so a
+		// node that adopts reports nothing twice
+		if ev.SessionID != "" && st.SessionID == "" {
+			st.SessionID = ev.SessionID
+		}
+		st.Offset = out.Offset()
+		_ = sessionunit.WriteState(dir, *st)
 	})
-	waitErr := h.Wait(context.Background())
+	if detach.Load() {
+		<-errDone
+		return res, true, nil, errBuf, rawOut
+	}
+	waitErr = h.Wait(context.Background())
 	<-errDone
-	return finishClaude(ctx, job, res, waitErr, &errBuf, rawOut)
+	// the whole output is read: a node that adopts after this reports
+	// nothing twice
+	if st.Offset < out.Offset() {
+		st.Offset = out.Offset()
+		_ = sessionunit.WriteState(dir, *st)
+	}
+	return res, false, waitErr, errBuf, rawOut
 }
 
 // sessionFiles are the files a session is started on: the prompt (on
@@ -310,6 +404,7 @@ func (job Job) state(unit sessionunit.Unit, h sessionunit.Handle, harness string
 		Attempt: job.Meta.Attempt, Kind: string(job.Kind), Label: job.Label, Model: job.Model, Account: acct,
 		Harness: harness, Runner: unit.Name(), PID: h.PID, Unit: h.UnitName, Workspace: job.Workspace,
 		StartedAt: time.Now().UTC(), TimeoutSeconds: int(job.Timeout / time.Second), MaxBudgetUSD: job.MaxBudgetUSD,
+		TempDirs: job.Meta.TempDirs,
 	}
 }
 

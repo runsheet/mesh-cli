@@ -78,10 +78,33 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `limits-on-the-console` — and `runtimes` and `adapters` — the tool
   runtimes (npx, uvx, docker) and agent CLIs (claude-code, codex)
   `Loop.LookPath` finds, probed every tick, for `tools-in-the-console`)
-  are sent only when set,
+  and `adopted` (below) are sent only when set,
   because they are fields the platform half adds. Capacity, the
   limits thresholds and the orgs need no drain: `Reload` re-reads them
   every tick.
+- **Adoption** (`internal/node/adopt.go`, mesh-cli ADR-009, mesh-specs
+  ADR 008): a session's unit and output file own it, not the node
+  process. Build, evaluate, plan, research and rebase jobs are
+  `Job.Outlive`: a node shutting down detaches (the unit runs on, its
+  `<workdir>.session` and temp dirs stay) and only the job's own
+  timeout stops it. On `mesh node start`, before the first tick,
+  `FindSessions` walks the work root for `state.json` naming one of the
+  node's ids and `Loop.AdoptSessions` takes each up: marked as the
+  loop's own (a build in `Running()`, every kind in the drain's
+  `sessions()`, never claimed or started again, and `Loop.Adopt` skips
+  it), the item heartbeated at once so the stall window never elapses,
+  then `AdoptWith` → `Runner.AdoptItem`, `Evaluator.AdoptEvaluation`,
+  `Planner.AdoptPlan`, `Director.AdoptResearch`, `Rebaser.AdoptRebase`:
+  `ClaudeCode.Attach` follows `output.jsonl` from the saved offset (the
+  offset is saved after every event) with the usual heartbeat ticker,
+  and the end goes through the *same* tail as a live session —
+  `afterBuild`, `afterEvaluate`, `readPlan`/`handIn`, the director's
+  `handIn`, `afterRebase`. A session whose pid is gone is read from its
+  file: a result finishes it, none fails it with its last text. The
+  session dir goes (`harness.RemoveSession`) only once the end is
+  handled. The heartbeat's optional `adopted [{itemId, kind, since}]`
+  lists them while they run. Sandboxed and Codex sessions still end
+  with the node.
 - **Self-update** (`internal/node/selfupdate.go`, `internal/selfupdate/`,
   adr-002): after each heartbeat the loop reads the node's desired
   version (`GetDesiredVersion`; empty, the running one or `dev` does
@@ -251,7 +274,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   the output a line per read until the process is gone and the file
   stops growing, `ParseStream` reads it, and the offset is saved as it
   goes. A timeout or cancelled ctx `Stop`s the unit; the directory is
-  removed when `Run` returns. Adoption by the next node comes later.
+  removed when `Run` returns — unless the job is `Outlive`: see the
+  adoption.
 - **The sandbox** (`internal/sandbox/`, mesh-specs ADR 007,
   `docs/adr/adr-007-the-sandbox-on-the-node.md`): with a sandbox,
   `harness.ClaudeCode` runs `claude` in the session's own rootless

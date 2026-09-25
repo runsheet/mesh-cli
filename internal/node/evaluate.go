@@ -155,7 +155,9 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 		if err != nil {
 			return fmt.Errorf("gh config dir: %w", err)
 		}
-		defer os.RemoveAll(ghDir)
+		// a session left running for the next node keeps its dirs: the
+		// node that ends it removes them (TempDirs)
+		defer unlessDetached(ctx, func() { os.RemoveAll(ghDir) })
 		job.Env = SessionEnv(tok, ghDir)
 	}
 	sc, _ := e.Scopes.ByOrg(item.OrgID)
@@ -163,8 +165,8 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	if err != nil {
 		return err
 	}
-	defer acct.Cleanup()
-	job.Meta = harness.SessionMeta{NodeID: sc.NodeID, ItemID: item.ID, GoalID: item.GoalID, Attempt: item.Attempts}
+	defer unlessDetached(ctx, acct.Cleanup)
+	job.Meta = harness.SessionMeta{NodeID: sc.NodeID, ItemID: item.ID, GoalID: item.GoalID, Attempt: item.Attempts, TempDirs: sessionTempDirs(job, acct)}
 	// the second opinion's job: the same brief, none of the Claude account
 	// and none of the pod's services (Codex runs on the host)
 	second := job
@@ -212,11 +214,39 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	in.Services = pod.Prompt()
 	job.Prompt = harness.EvaluatePrompt(in)
 	e.logf("item %s: evaluate on %s: %s (%d bytes of diff)", label, modelName(model), branch, len(diff))
+	// the session outlives this process: a restart adopts it (ADR 009)
+	job.Outlive = true
 	result, err := e.Harness.Run(ctx, job, nil)
 	acct.Finish(ctx, result)
+	return e.afterEvaluate(ctx, evalRun{item: item, res: res, label: label, model: model, dir: dir, acct: acct, second: &second, omitted: st.OmittedNote(), missing: pod.MissingNote()}, result, err)
+}
+
+// evalRun is one evaluation session as its tail needs it, whether this
+// process started it (Evaluate) or adopted it (AdoptEvaluation).
+type evalRun struct {
+	item  gateway.WorkItem
+	res   *Resolved
+	label string
+	model string
+	dir   string
+	acct  *SessionAccount // nil for an adopted session
+	// second is the second opinion's job; nil for an adopted session,
+	// whose prompt is not kept
+	second           *harness.Job
+	omitted, missing string
+}
+
+// afterEvaluate is what follows an evaluation session, however this
+// process came to hold it: the verdict read, the second opinion asked
+// for an urgent or high goal's pass, and the verdict recorded. An error
+// means none was recorded. A cancelled ctx leaves the session running
+// for the next node to adopt.
+func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harness.Result, err error) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
+	defer harness.RemoveSession(ev.dir)
+	item, label, acct := ev.item, ev.label, ev.acct
 	if errors.Is(err, context.DeadlineExceeded) {
 		return fmt.Errorf("evaluator session ran out of time (%s)", e.Timeout)
 	}
@@ -234,15 +264,18 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	}
 	// the notes say which tools and services the evaluator ran without
 	without := ""
-	if note := st.OmittedNote(); note != "" {
-		without = "\n" + truncate(note, 500)
+	if ev.omitted != "" {
+		without = "\n" + truncate(ev.omitted, 500)
 	}
-	if note := pod.MissingNote(); note != "" {
-		without += "\n" + truncate(note, 500)
+	if ev.missing != "" {
+		without += "\n" + truncate(ev.missing, 500)
 	}
 	cost := result.CostUSD
-	if passed && e.Second != nil && gateway.PriorityRank(res.Goal.Priority) <= gateway.PriorityRank("high") {
-		op := e.secondOpinion(ctx, label, second)
+	if passed && e.Second != nil && gateway.PriorityRank(ev.res.Goal.Priority) <= gateway.PriorityRank("high") {
+		op := opinion{unavailable: "the evaluation was adopted after a restart, and its prompt is not kept"}
+		if ev.second != nil {
+			op = e.secondOpinion(ctx, label, *ev.second)
+		}
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -250,14 +283,14 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 		if op.unavailable != "" {
 			e.logf("item %s: Codex second opinion unavailable: %s", label, op.unavailable)
 			line := "Codex second opinion unavailable: " + op.unavailable
-			notes = truncate(notes, 4000-200-len(line)-len(without)) + "\n\n" + line + "\n\n(evaluated on " + modelName(model) + ")" + without
+			notes = truncate(notes, 4000-200-len(line)-len(without)) + "\n\n" + line + "\n\n(evaluated on " + modelName(ev.model) + ")" + without
 		} else {
 			passed = passed && op.passed
-			notes = bothNotes(notes, op.notes, op.passed, 4000-200-len(without)) + "\n\n(evaluated on " + modelName(model) + "; second opinion on Codex" + codexModelName(e.SecondModel) + ")" + without
+			notes = bothNotes(notes, op.notes, op.passed, 4000-200-len(without)) + "\n\n(evaluated on " + modelName(ev.model) + "; second opinion on Codex" + codexModelName(e.SecondModel) + ")" + without
 		}
 	} else {
 		// the item's events say which model judged it
-		notes = truncate(notes, 4000-100-len(without)) + "\n\n(evaluated on " + modelName(model) + ")" + without
+		notes = truncate(notes, 4000-100-len(without)) + "\n\n(evaluated on " + modelName(ev.model) + ")" + without
 	}
 	verdict := "failed"
 	if passed {
@@ -268,6 +301,33 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	}
 	e.logf("item %s: evaluation %s ($%.2f)", label, verdict, cost)
 	return nil
+}
+
+// AdoptEvaluation takes up an evaluation session a node process before
+// this one started (ADR 009): followed to its end, or read from its
+// file when it is gone, and its verdict recorded by afterEvaluate. An
+// item no longer in evaluating on this node is not its to judge: the
+// session is stopped and its directory removed.
+func (e *Evaluator) AdoptEvaluation(ctx context.Context, item gateway.WorkItem, s FoundSession) error {
+	if item.Status != "evaluating" || item.NodeID != s.State.NodeID {
+		e.logf("item %s: adopted evaluation is no longer this node's (%s); stopped", item.ID, item.Status)
+		s.Stop()
+		return harness.RemoveSession(s.State.Workspace)
+	}
+	res, err := Resolve(ctx, e.GW, item)
+	if err != nil {
+		return fmt.Errorf("resolve: %w", err)
+	}
+	at, ok := e.Harness.(harness.Attacher)
+	if !ok {
+		s.Stop()
+		harness.RemoveSession(s.State.Workspace)
+		return errNoAttach
+	}
+	label := fmt.Sprintf("%s/%d", res.Goal.Slug, item.Seq)
+	e.logf("item %s: adopted its %s evaluation (pid %d)", label, s.Liveness(), s.State.PID)
+	result, err := at.Attach(ctx, s.Dir, nil)
+	return e.afterEvaluate(ctx, evalRun{item: item, res: res, label: label, model: s.State.Model, dir: s.State.Workspace}, result, err)
 }
 
 // opinion is the second evaluation's outcome: its verdict and notes, or

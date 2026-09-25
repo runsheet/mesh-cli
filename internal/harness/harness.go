@@ -77,6 +77,30 @@ type Job struct {
 	// the work dir (sessionunit.State) so a later node process can adopt
 	// it. Optional: a job without it still runs, its state file thinner.
 	Meta SessionMeta
+	// Outlive makes the session outlast the node process (mesh-cli ADR
+	// 009): a cancelled ctx — the node shutting down — leaves the unit
+	// running and its session directory in place for the next node to
+	// adopt, and Run returns ctx.Err() at once; only the job's own
+	// Timeout stops it. The session directory is also left when the
+	// session ends, for the node to remove (RemoveSession) once it has
+	// handled the end. A host Claude session only: a sandboxed or Codex
+	// one still ends with its ctx.
+	Outlive bool
+}
+
+// Attacher is a harness that can take up a session a node process
+// before this one started (mesh-cli ADR 009): Attach reads the session
+// directory's state.json, follows its output.jsonl from the start —
+// passing on only what lies past the saved offset, so nothing is
+// reported twice — while the session runs, saves the offset as it
+// goes, and returns how the session ended as Run would. A session whose
+// process is already gone is read to the end of its file: its result
+// event, or, with none, an unsuccessful Result carrying the last text.
+// A cancelled ctx leaves the session running and returns ctx.Err(); the
+// state's timeout from its startedAt stops it. The directory is left for
+// the node to remove.
+type Attacher interface {
+	Attach(ctx context.Context, dir string, onProgress func(Progress)) (Result, error)
 }
 
 // SessionMeta is the prompt-free, secret-free identity of a session.
@@ -92,6 +116,10 @@ type SessionMeta struct {
 	// Account is the account label the session runs on; empty takes the
 	// job's MESH_ACCOUNT.
 	Account string
+	// TempDirs are the temporary dirs the session runs in (its
+	// CLAUDE_CONFIG_DIR, GH_CONFIG_DIR): RemoveSession removes them with
+	// the session directory, whichever node process ends it.
+	TempDirs []string
 }
 
 // Progress is one observation of a running session.
