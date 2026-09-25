@@ -216,6 +216,14 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   item, a required one releases the item and `Declines` keeps the loop
   off it while the runtimes are unchanged. Plan, research, rebase and
   channel sessions keep Prologue alone.
+- **Services** (`internal/sandbox/services.go`, mesh-specs ADR 007):
+  `Resolve(repoDir, allowed)` reads what a repository declares, first
+  found wins — `.mesh/services.yml`, else the `services:` of its
+  workflows' test jobs (merged by name, not required), else none — into
+  one `Service` shape with a parsed `HealthCheck`, test tuning for
+  Postgres and MySQL/MariaDB, and a disallowed registry returned
+  `Refused` with a note. Pure parsing; the fixtures are under
+  `internal/sandbox/testdata/` (their `.mesh/` needs `git add -f`).
 - Every session gets Prologue as an MCP server with the node's token and
   the project's context on disk under `.mesh/context/` with `INDEX.md`:
   the documents, then `## Live goals and items` — each live goal's items
