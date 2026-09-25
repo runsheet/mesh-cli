@@ -93,7 +93,15 @@ type Runtime interface {
 	// RunAgent runs the agent's container to its end. A non-zero exit is
 	// in Exit, not the error; the error is the runtime failing.
 	RunAgent(ctx context.Context, pod Pod, spec AgentSpec) (Exit, error)
+	// AddSidecar starts a service in the pod, pulling its image when the
+	// node does not have it yet (and keeping it: the pull is cached).
 	AddSidecar(ctx context.Context, pod Pod, spec SidecarSpec) error
+	// ExecSidecar runs cmd in a started sidecar (its health check); an
+	// error is a check that did not pass.
+	ExecSidecar(ctx context.Context, pod Pod, sidecar string, cmd []string) error
+	// ProbeTCP connects to 127.0.0.1:port inside the pod, from a
+	// short-lived container of image; an error is nothing listening.
+	ProbeTCP(ctx context.Context, pod Pod, image string, port int) error
 	// Remove removes the pod and every container in it.
 	Remove(ctx context.Context, pod Pod) error
 }

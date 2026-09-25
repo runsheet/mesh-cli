@@ -109,7 +109,7 @@ func (c *ClaudeCode) SandboxArgs(job Job, mcpPath string) []string {
 
 // Run implements Harness. The process is killed when ctx is cancelled.
 func (c *ClaudeCode) Run(ctx context.Context, job Job, onProgress func(Progress)) (Result, error) {
-	if c.Sandbox != nil {
+	if c.Sandbox != nil || job.Session != nil {
 		return c.runSandboxed(ctx, job, onProgress)
 	}
 	bin := c.Binary
@@ -153,13 +153,19 @@ func (c *ClaudeCode) Run(ctx context.Context, job Job, onProgress func(Progress)
 // runSandboxed is Run in the session's own pod: the MCP config written
 // under its temporary HOME, `claude` run from the node image with the
 // prompt on stdin, the stream read as on the host. A kill by the pod's
-// limits is returned as the *sandbox.LimitError it is.
+// limits is returned as the *sandbox.LimitError it is. The job's own
+// Session (its services started by the node) is used and left open;
+// without one the harness opens and closes its own.
 func (c *ClaudeCode) runSandboxed(ctx context.Context, job Job, onProgress func(Progress)) (Result, error) {
-	sess, err := c.Sandbox.Open(job.Label, string(job.Kind))
-	if err != nil {
-		return Result{}, fmt.Errorf("harness claude-code: %w", err)
+	sess := job.Session
+	if sess == nil {
+		var err error
+		if sess, err = c.Sandbox.Open(job.Label, string(job.Kind)); err != nil {
+			return Result{}, fmt.Errorf("harness claude-code: %w", err)
+		}
+		defer sess.Close()
 	}
-	defer sess.Close()
+	var err error
 	mcpPath := ""
 	if cfg, _, ok := mcpConfig(job.MCPServers); ok {
 		if mcpPath, err = sess.WriteFile("mcp.json", cfg); err != nil {

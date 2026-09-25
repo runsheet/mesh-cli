@@ -233,3 +233,19 @@ func TestRunnerFailsAnOrdinaryExit(t *testing.T) {
 		t.Fatalf("row: %v", row(item1))
 	}
 }
+
+// sandbox.service_timeout bounds the services' health checks: 120s
+// unless node.yaml says otherwise, and it survives a save.
+func TestSandboxServiceTimeout(t *testing.T) {
+	if got := sandboxOf(t, "slug: n\n").Settings("v1").ServiceTimeout; got != 120*time.Second {
+		t.Fatalf("default = %s", got)
+	}
+	c := sandboxOf(t, "slug: n\nsandbox:\n  service_timeout: 45s\n")
+	if got := c.Settings("v1").ServiceTimeout; got != 45*time.Second {
+		t.Fatalf("service_timeout = %s", got)
+	}
+	out, err := yaml.Marshal(&Config{Slug: "n", Sandbox: c})
+	if err != nil || !strings.Contains(string(out), "service_timeout: 45s") {
+		t.Fatalf("saved: %s %v", out, err)
+	}
+}

@@ -75,6 +75,9 @@ type Config struct {
 	GitEmail string
 	// TZ is the session's time zone ("" is UTC).
 	TZ string
+	// ServiceTimeout bounds the wait for the services' health checks
+	// (DefaultServiceTimeout when 0).
+	ServiceTimeout time.Duration
 }
 
 // Sandbox opens sessions on a runtime.
@@ -95,6 +98,8 @@ type Session struct {
 	name  string
 	mu    sync.Mutex
 	pods  []Pod
+	// started is the pod Start made, which the next Run runs in.
+	started *Pod
 }
 
 var unsafeName = regexp.MustCompile(`[^a-z0-9-]+`)
@@ -226,28 +231,27 @@ type RunSpec struct {
 // pids cap.
 var pidsExhausted = regexp.MustCompile(`(?i)fork: (retry: )?resource temporarily unavailable|cannot fork|pthread_create failed|EAGAIN.*(fork|clone|spawn)`)
 
-// Run creates the session's pod, runs the command in the agent's
-// container to its end and removes the pod. A cancelled ctx returns
-// ctx.Err(); a kill by a limit a *LimitError; any other non-zero exit an
-// *ExitError.
+// Run runs the command in the agent's container of the session's pod —
+// the one Start made with its services, else a new one — to its end and
+// removes the pod. A cancelled ctx returns ctx.Err(); a kill by a limit
+// a *LimitError; any other non-zero exit an *ExitError.
 func (s *Session) Run(ctx context.Context, spec RunSpec) error {
 	cfg := s.sb.Config
 	s.mu.Lock()
-	name := fmt.Sprintf("%s-%d", s.name, len(s.pods))
+	started := s.started
+	s.started = nil
 	s.mu.Unlock()
-	pod, err := s.sb.Runtime.CreatePod(ctx, PodSpec{
-		Name:    name,
-		Labels:  map[string]string{"mesh.session": s.Label, "mesh.kind": s.Kind},
-		Image:   cfg.Image,
-		Network: cfg.Network,
-	})
-	if err != nil {
-		return fmt.Errorf("sandbox: pod: %w", err)
+	var pod Pod
+	if started != nil {
+		pod = *started
+	} else {
+		var err error
+		if pod, err = s.createPod(ctx); err != nil {
+			return err
+		}
 	}
-	s.mu.Lock()
-	s.pods = append(s.pods, pod)
-	s.mu.Unlock()
 	defer s.remove(ctx, pod)
+	name := pod.Name
 
 	timeout := 0
 	if spec.Timeout > 0 {
@@ -279,6 +283,28 @@ func (s *Session) Run(ctx context.Context, spec RunSpec) error {
 		return fmt.Errorf("sandbox: run: %w", err)
 	}
 	return classify(exit, time.Since(start), spec.Timeout, cfg.Limits, tail.String())
+}
+
+// createPod makes the session's next pod and its network rules, kept
+// for Close until it is removed.
+func (s *Session) createPod(ctx context.Context) (Pod, error) {
+	cfg := s.sb.Config
+	s.mu.Lock()
+	name := fmt.Sprintf("%s-%d", s.name, len(s.pods))
+	s.mu.Unlock()
+	pod, err := s.sb.Runtime.CreatePod(ctx, PodSpec{
+		Name:    name,
+		Labels:  map[string]string{"mesh.session": s.Label, "mesh.kind": s.Kind},
+		Image:   cfg.Image,
+		Network: cfg.Network,
+	})
+	if err != nil {
+		return Pod{}, fmt.Errorf("sandbox: pod: %w", err)
+	}
+	s.mu.Lock()
+	s.pods = append(s.pods, pod)
+	s.mu.Unlock()
+	return pod, nil
 }
 
 // classify turns the agent's exit into the session's error: nil, a

@@ -2,7 +2,9 @@ package sandbox
 
 import (
 	"context"
+	"fmt"
 	"io"
+	"strings"
 	"sync"
 )
 
@@ -22,6 +24,12 @@ type Fake struct {
 	// Agent is the agent's container: it gets the spec and returns the
 	// exit (nil: exit 0, nothing written).
 	Agent func(ctx context.Context, spec AgentSpec) (Exit, error)
+	// SidecarErr fails AddSidecar for the named services (a pull or a
+	// start that did not work).
+	SidecarErr map[string]error
+	// Health answers a sidecar's health check: its command (nil for a
+	// TCP probe) or the port probed. Nil passes every check.
+	Health func(sidecar string, cmd []string, port int) error
 }
 
 func (f *Fake) call(name string) {
@@ -68,9 +76,48 @@ func (f *Fake) RunAgent(ctx context.Context, pod Pod, spec AgentSpec) (Exit, err
 func (f *Fake) AddSidecar(_ context.Context, pod Pod, spec SidecarSpec) error {
 	f.call("sidecar " + pod.Name + " " + spec.Name)
 	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.SidecarErr[spec.Name]; err != nil {
+		return err
+	}
 	f.Sidecars = append(f.Sidecars, spec)
-	f.mu.Unlock()
 	return nil
+}
+
+// ExecSidecar implements Runtime.
+func (f *Fake) ExecSidecar(_ context.Context, pod Pod, sidecar string, cmd []string) error {
+	f.call("health " + pod.Name + " " + sidecar)
+	f.mu.Lock()
+	h := f.Health
+	f.mu.Unlock()
+	if h == nil {
+		return nil
+	}
+	return h(sidecar, cmd, 0)
+}
+
+// ProbeTCP implements Runtime.
+func (f *Fake) ProbeTCP(_ context.Context, pod Pod, _ string, port int) error {
+	f.call(fmt.Sprintf("probe %s %d", pod.Name, port))
+	f.mu.Lock()
+	h := f.Health
+	f.mu.Unlock()
+	if h == nil {
+		return nil
+	}
+	return h("", nil, port)
+}
+
+// Called reports whether a call was recorded, and its index in Calls.
+func (f *Fake) Called(prefix string) (int, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i, c := range f.Calls {
+		if strings.HasPrefix(c, prefix) {
+			return i, true
+		}
+	}
+	return -1, false
 }
 
 // Remove implements Runtime.

@@ -8,6 +8,7 @@ import (
 	"context"
 	"time"
 
+	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/tools"
 )
 
@@ -67,6 +68,11 @@ type Job struct {
 	// leaves the CLI's own default, which is what a node ran on before
 	// models were chosen per kind.
 	Model string
+	// Session is the sandbox session the node opened for this job, with
+	// its pod's services started (sandbox.Session.Start): a sandboxed
+	// harness runs the agent in it and leaves closing it to the node.
+	// Nil opens a session of the harness's own.
+	Session *sandbox.Session
 }
 
 // Progress is one observation of a running session.
