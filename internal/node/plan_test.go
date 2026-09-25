@@ -258,17 +258,23 @@ func TestPlannerReasksOnAnotherRepoFile(t *testing.T) {
 	}
 }
 
-// A plan still flagged after the re-ask hands in nothing.
-func TestPlannerStillFlaggedHandsInNothing(t *testing.T) {
+// A plan still flagged after the re-ask is handed in as it stands, its
+// flags logged; the node does not loop on the planner (adr-004).
+func TestPlannerStillFlaggedHandsInTheSecond(t *testing.T) {
 	f, h, err := planOnce(t, prCheckPlan, otherRepoPlan)
-	if err == nil || !strings.Contains(err.Error(), "no evaluator can see") {
-		t.Fatalf("err = %v", err)
+	if err != nil {
+		t.Fatal(err)
 	}
 	if len(h.jobs) != 2 {
 		t.Fatalf("planner sessions = %d, want 2 (one re-ask, no more)", len(h.jobs))
 	}
-	if calls := f.CallsNamed("planGoal"); len(calls) != 0 {
+	calls := f.CallsNamed("planGoal")
+	if len(calls) != 1 || calls[0].Input["costCents"] != float64(250) {
 		t.Fatalf("plan calls: %+v", calls)
+	}
+	items := calls[0].Input["items"].([]any)
+	if len(items) != 1 || items[0].(map[string]any)["title"] != "Console route" {
+		t.Fatalf("handed in: %v, want the second plan as it stands", items)
 	}
 }
 
@@ -324,6 +330,10 @@ func TestUnverifiableAcceptance(t *testing.T) {
 		"own path":      "specs/console-trd.md has a Nodes section",
 		"deploy code":   "go test ./internal/deploy/... passes and deploy.go reads the tag",
 		"in the item's": "mesh-specs is named in no file; go test passes",
+		"fixture words": "Tests in internal/node/plan_test.go show a pull request check fixture is flagged",
+		"ci config":     "the CI workflow .github/workflows/ci.yml cancels older runs",
+		"check in docs": "The check on the PR is described in README.md",
+		"spec ref":      "per mesh-specs trd §3, internal/node/drain.go drains before exit",
 	} {
 		if flags := check(acc, widgets); len(flags) != 0 {
 			t.Errorf("%s: %q flagged: %q", name, acc, flags)

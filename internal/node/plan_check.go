@@ -17,18 +17,23 @@ import (
 // misses.
 var (
 	// a check on the item's own pull request, which opens only after
-	// evaluation passes
-	prCheckPatterns = []*regexp.Regexp{
+	// evaluation passes: a check that concludes names one outright; the
+	// weaker phrases only in a sentence that also asks it to pass, so
+	// "the CI workflow" or "a pull request check fixture" is not one
+	prCheckStrong = []*regexp.Regexp{
 		regexp.MustCompile(`(?i)\bchecks? (?:concludes?|concluding)\b`),
 		regexp.MustCompile(`(?i)\bconclud(?:es?|ing) (?:with )?(?:success|green)\b`),
+	}
+	prCheckWeak = []*regexp.Regexp{
 		regexp.MustCompile(`\bCI\b`),
 		regexp.MustCompile(`(?i)\bon (?:the|its|this|the item's)(?: own)? (?:PR|pull request)\b`),
 		regexp.MustCompile(`(?i)\b(?:PR|pull request)(?:'s)? (?:[^.;]* )?checks?\b`),
 		regexp.MustCompile(`(?i)\bchecks? (?:[^.;]* )?on (?:[^.;]* )?(?:PR|pull request)\b`),
+		// a backticked `workflow / job` check name
+		regexp.MustCompile("`[^`\n]+ / [^`\n]+`"),
 	}
-	// a backticked `workflow / job` check name, with success or pass
-	checkNamePattern = regexp.MustCompile("`[^`\n]+ / [^`\n]+`")
 	checkPassPattern = regexp.MustCompile(`(?i)\b(?:success|succeed|succeeds|successful|pass|passes|passing|green)\b`)
+	sentenceEnd      = regexp.MustCompile(`[.;!?](?:\s|$)|\n`)
 	// a deploy
 	deployPatterns = []*regexp.Regexp{
 		regexp.MustCompile(`(?i)\bdeployed\b`),
@@ -84,13 +89,20 @@ func unverifiableAcceptance(specs []harness.PlannedSpec, itemRepo map[int]gatewa
 // prCheck is the phrase that names a check on the item's pull request,
 // or "".
 func prCheck(acc string) string {
-	for _, re := range prCheckPatterns {
+	for _, re := range prCheckStrong {
 		if m := re.FindString(acc); m != "" {
 			return m
 		}
 	}
-	if m := checkNamePattern.FindString(acc); m != "" && checkPassPattern.MatchString(acc) {
-		return m
+	for _, sentence := range sentenceEnd.Split(acc, -1) {
+		if !checkPassPattern.MatchString(sentence) {
+			continue
+		}
+		for _, re := range prCheckWeak {
+			if m := re.FindString(sentence); m != "" {
+				return m
+			}
+		}
 	}
 	return ""
 }
@@ -135,6 +147,9 @@ func otherRepoPath(acc string, other, own gateway.Repo) string {
 				}
 				continue // a bare name that is itself a path's first segment
 			}
+			if !placesAFile(lower[:start], lower[end:]) {
+				continue // "mesh-specs trd §3": the name, not where a file is
+			}
 			lo, hi := max(0, start-otherRepoWindow), min(len(acc), end+otherRepoWindow)
 			for _, p := range pathPattern.FindAllStringIndex(acc[lo:hi], -1) {
 				ps, pe := lo+p[0], lo+p[1]
@@ -149,6 +164,18 @@ func otherRepoPath(acc string, other, own gateway.Repo) string {
 		}
 	}
 	return ""
+}
+
+// A repo's name places a file when it is where the file is — "in
+// mesh-specs", "mesh-specs has", "mesh-specs' …" — rather than a word
+// before something else, as in a spec reference ("per runsheet trd §3").
+var (
+	placedBefore = regexp.MustCompile(`\b(?:in|of|to|from|into|inside|within|under|on)\s+(?:the\s+)?$`)
+	placedAfter  = regexp.MustCompile(`^(?:'s?|’s?|:|\s+(?:has|have|holds|contains|gets|repo|repository|checkout)\b)`)
+)
+
+func placesAFile(before, after string) bool {
+	return placedBefore.MatchString(before) || placedAfter.MatchString(after)
 }
 
 // isRepoName says a path-shaped token is an owner/name rather than a

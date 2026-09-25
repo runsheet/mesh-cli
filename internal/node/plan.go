@@ -169,7 +169,9 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 			return err
 		}
 		if len(flags) > 0 {
-			return fmt.Errorf("plan still names what no evaluator can see after the re-ask ($%.2f spent): %s", cost, strings.Join(flags, " | "))
+			// adr-004: the second plan is handed in as it stands; the
+			// evaluator's unverifiable-clause rule is the backstop
+			p.logf("goal %s: plan still names what no evaluator can see; handing it in: %s", goal.Slug, strings.Join(flags, " | "))
 		}
 	}
 	by := ""
