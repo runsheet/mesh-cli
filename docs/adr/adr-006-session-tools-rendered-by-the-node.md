@@ -1,5 +1,5 @@
 ---
-summary: The node renders each session's tools (internal/tools) in the agent's own format — Claude Code mcpServers beside the built-in prologue server, allowed by --allowedTools mcp__<name>__*, and Codex [mcp_servers.<name>] tables in a 0600 config.toml under the session's CODEX_HOME — with every secret value in the session's environment only (MESH_TOOL_<NAME>_<KEY>, or the key itself for a Codex local tool's env_vars), the configs carrying variable names, a clash with the built-in refused, and a local tool whose runtime the node lacks omitted when nice-to-have (noted on the item) or declining the build (released, not reclaimed while the node's runtimes are unchanged) when required.
+summary: The node renders each session's tools (internal/tools) in the agent's own format — Claude Code mcpServers beside the built-in prologue server, allowed by --allowedTools mcp__<name>__*, and Codex [mcp_servers.<name>] tables in a 0600 config.toml under the session's CODEX_HOME — with every secret value in the session's environment only (MESH_TOOL_<NAME>_<KEY>, or the key itself for a Codex local tool's env_vars), the configs carrying variable names, a clash with the built-in refused, and a local tool whose runtime the node lacks omitted when nice-to-have (noted on the item) or declining the build (released, not reclaimed while the node's runtimes are unchanged) when required; priced tool calls, counted per MCP server from the stream, go to the platform as recordUsage records (calls × pricePerCallCents) after a build or evaluation.
 status: accepted
 ---
 
@@ -91,6 +91,19 @@ where the code lives, the variable names, and the rendering per agent.
    env in `s` as `[redacted]`, the longest first; whatever the node logs
    or reports about a tool session passes through it.
 
+11. **Priced calls.** The harness counts a session's MCP calls per
+   server on `harness.Result.ToolCalls` (Claude Code's `tool_use`
+   named `mcp__<server>__…`, Codex's completed `mcp_tool_call` by its
+   `server`). The build and the evaluation hand their rendered tools to
+   the `SessionAccount` (`SessionTools.UseTools`), and its `Finish`
+   calls `RecordUsage` — mutation `recordUsage`, input `workItemId`,
+   `kind`, `tool`, `calls`, `listPriceCents` (calls ×
+   `pricePerCallCents`) — once per tool priced above zero and called.
+   Prologue and unpriced tools are never reported. A gateway without
+   the mutation (`IsUnsupported`) is said once per run and each record
+   logged as a `usage: tool …` line; any error is logged, never the
+   item's failure.
+
 ## Consequences
 
 - No secret value is on argv (`--mcp-config` carries names), in the
@@ -103,4 +116,5 @@ where the code lives, the variable names, and the rendering per agent.
 - A declined evaluation holds its item on this node until the runtime
   appears or the hold lapses; handing an evaluation to another node
   needs a platform mutation that does not exist yet.
-- Priced-call usage builds on this package in the goal's later items.
+- A priced call's cost is its list price as the console states it; the
+  node does not know what the tool's provider actually charged.

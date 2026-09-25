@@ -225,6 +225,16 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   excluded from git, so none of it is ever committed.
 - Costs: each session's `total_cost_usd` is reported to the platform per
   item (`ReportWorkItemProgress`, `EvaluateWorkItem`, `PlanGoal`).
+  Priced tool calls are tool usage records: the harness counts each
+  session's MCP calls per server (`Result.ToolCalls` — Claude's
+  `tool_use` named `mcp__<server>__…`, Codex's completed
+  `mcp_tool_call`), and after a build or evaluate session
+  `SessionAccount.Finish` hands in one `RecordUsage`
+  (`gateway.ToolUsage{ItemID, Kind, Tool, Calls, ListPriceCents}`,
+  mutation `recordUsage`) per rendered tool with `pricePerCallCents > 0`
+  that was called — calls × price; Prologue and unpriced tools are none.
+  A platform without `recordUsage` is said once per run and each record
+  logged instead; it never fails the item.
 - **Models are per kind of session.** `Models` in `~/.mesh/node.yaml`
   (`default`, `build`, `evaluate`, `plan`, `channel`, `research`,
   `rebase`) or the matching
