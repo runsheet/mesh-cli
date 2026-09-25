@@ -49,10 +49,16 @@ func (c LimitsConfig) Thresholds() LimitsConfig {
 // CLI's own config directory.
 const DefaultAccount = "default"
 
-// Account is the Claude account a session with that env runs on: its
-// CLAUDE_CONFIG_DIR (the job's own when it sets one, else the node's),
-// or DefaultAccount.
+// Account is the Claude account a session with that env runs on: the
+// label of the configured account it runs on (AccountEnv, adr-005), else
+// its CLAUDE_CONFIG_DIR (the job's own when it sets one, else the
+// node's), or DefaultAccount.
 func Account(env []string) string {
+	for i := len(env) - 1; i >= 0; i-- {
+		if v, ok := strings.CutPrefix(env[i], AccountEnv+"="); ok && v != "" {
+			return v
+		}
+	}
 	for i := len(env) - 1; i >= 0; i-- {
 		if v, ok := strings.CutPrefix(env[i], "CLAUDE_CONFIG_DIR="); ok && v != "" {
 			return v

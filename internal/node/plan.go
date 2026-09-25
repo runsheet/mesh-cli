@@ -32,6 +32,9 @@ type Planner struct {
 	MaxBudgetUSD float64
 	// Model is what a planner session runs on ("" the CLI's default).
 	Model string
+	// Accounts are the node's Claude accounts (node.yaml); a session runs
+	// on the first, or on the operator's own login when there are none.
+	Accounts []AccountConfig
 	// Timeout caps its wall clock (0 none).
 	Timeout time.Duration
 	Log     *log.Logger
@@ -191,6 +194,12 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 // is no graph to hand in.
 func (p *Planner) ask(ctx context.Context, goal gateway.Goal, dir string, budget float64, in harness.PlanInput, repos map[string]gateway.Repo, merged []int) ([]gateway.PlannedItem, []string, float64, error) {
 	job := harness.Job{Kind: harness.KindPlan, Workspace: dir, Prompt: harness.PlanPrompt(in), MaxBudgetUSD: budget, Label: goal.Slug + " plan", Timeout: p.Timeout, MCPServers: p.MCP, Model: p.Model}
+	acct, err := OpenAccount(p.Accounts)
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	defer acct.Cleanup()
+	acct.Apply(&job)
 	result, err := p.Harness.Run(ctx, job, nil)
 	if ctx.Err() != nil {
 		return nil, nil, 0, ctx.Err()
@@ -199,8 +208,9 @@ func (p *Planner) ask(ctx context.Context, goal gateway.Goal, dir string, budget
 		return nil, nil, 0, fmt.Errorf("planner session ran out of time (%s)", p.Timeout)
 	}
 	if err != nil {
-		return nil, nil, 0, fmt.Errorf("planner session: %w", err)
+		return nil, nil, 0, fmt.Errorf("planner session: %w", acct.RedactErr(err))
 	}
+	result.Text = acct.Redact(result.Text)
 	specs, err := harness.ParsePlan(result.Text, merged...)
 	if err != nil {
 		return nil, nil, 0, fmt.Errorf("planner session (%s): %w: %s", result.SessionID, err, truncate(result.Text, 300))

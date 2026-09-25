@@ -32,6 +32,9 @@ type Evaluator struct {
 	MaxBudgetUSD float64
 	// Model is what an evaluator session runs on ("" the CLI's default).
 	Model string
+	// Accounts are the node's Claude accounts (node.yaml); a session runs
+	// on the first, or on the operator's own login when there are none.
+	Accounts []AccountConfig
 	// Timeout caps its wall clock (0 none).
 	Timeout time.Duration
 	// Fallback is the node's one old-platform notice (nil: every item).
@@ -114,6 +117,12 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 		defer os.RemoveAll(ghDir)
 		job.Env = SessionEnv(tok, ghDir)
 	}
+	acct, err := OpenAccount(e.Accounts)
+	if err != nil {
+		return err
+	}
+	defer acct.Cleanup()
+	acct.Apply(&job)
 	e.logf("item %s: evaluating %s (%d bytes of diff)", label, branch, len(diff))
 	result, err := e.Harness.Run(ctx, job, nil)
 	if ctx.Err() != nil {
@@ -123,8 +132,9 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 		return fmt.Errorf("evaluator session ran out of time (%s)", e.Timeout)
 	}
 	if err != nil {
-		return fmt.Errorf("evaluator session: %w", err)
+		return fmt.Errorf("evaluator session: %w", acct.RedactErr(err))
 	}
+	result.Text = acct.Redact(result.Text)
 	passed, notes, ok := harness.ParseVerdict(result.Text)
 	if !ok {
 		return fmt.Errorf("evaluator session reached no verdict (%s): %s", result.SessionID, truncate(result.Text, 300))

@@ -35,6 +35,9 @@ type Director struct {
 	MaxBudgetUSD float64
 	// Model is what a research session runs on ("" the CLI's default).
 	Model string
+	// Accounts are the node's Claude accounts (node.yaml); a session runs
+	// on the first, or on the operator's own login when there are none.
+	Accounts []AccountConfig
 	// Timeout caps its wall clock (0 none).
 	Timeout time.Duration
 	Log     *log.Logger
@@ -128,6 +131,12 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 		Kind: harness.KindResearch, Workspace: dir, Prompt: prompt, MaxBudgetUSD: budget,
 		Label: project.Slug + "/" + direction.Slug + " research", Timeout: d.Timeout, MCPServers: d.MCP, Model: d.Model,
 	}
+	acct, err := OpenAccount(d.Accounts)
+	if err != nil {
+		return err
+	}
+	defer acct.Cleanup()
+	acct.Apply(&job)
 	d.logf("%s/%s: researching in %s (%d repos, room for %d)", project.Slug, direction.Slug, dir, len(dirs), room)
 	result, err := d.Harness.Run(ctx, job, nil)
 	if ctx.Err() != nil {
@@ -137,8 +146,9 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 		return fmt.Errorf("research session ran out of time (%s)", d.Timeout)
 	}
 	if err != nil {
-		return fmt.Errorf("research session: %w", err)
+		return fmt.Errorf("research session: %w", acct.RedactErr(err))
 	}
+	result.Text = acct.Redact(result.Text)
 	specs, err := harness.ParseProposals(result.Text)
 	if err != nil {
 		// the cost is real and the claim must be let go, so hand in an

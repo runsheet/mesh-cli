@@ -90,12 +90,12 @@ func (c *ClaudeCode) Run(ctx context.Context, job Job, onProgress func(Progress)
 	}
 	cmd := exec.CommandContext(ctx, bin, c.Args(job)...)
 	cmd.Dir = job.Workspace
-	cmd.Env = append(os.Environ(), job.Env...)
+	cmd.Env = SessionEnviron(os.Environ(), job)
 	cmd.Stdin = strings.NewReader(job.Prompt)
 	cmd.WaitDelay = 5 * time.Second
 	var errBuf bytes.Buffer
 	if c.Stderr != nil {
-		cmd.Stderr = io.MultiWriter(c.Stderr, &errBuf)
+		cmd.Stderr = io.MultiWriter(&redactWriter{w: c.Stderr, secrets: job.Secrets}, &errBuf)
 	} else {
 		cmd.Stderr = &errBuf
 	}
@@ -142,21 +142,73 @@ func (c *ClaudeCode) Run(ctx context.Context, job Job, onProgress func(Progress)
 			res.Success = false
 			return res, nil
 		}
-		msg := strings.TrimSpace(errBuf.String())
+		msg := Redact(strings.TrimSpace(errBuf.String()), job.Secrets...)
 		if isUnavailable(msg) {
 			return res, &UnavailableError{Reason: msg}
 		}
 		// Stdout is only the harness's own when it held no events; a
 		// session's text may mention a rate limit for its own reasons.
-		if out := strings.TrimSpace(rawOut.String()); res.EmptyOutput && isUnavailable(out) {
+		if out := Redact(strings.TrimSpace(rawOut.String()), job.Secrets...); res.EmptyOutput && isUnavailable(out) {
 			return res, &UnavailableError{Reason: out}
 		}
 		if msg == "" {
-			msg = waitErr.Error()
+			msg = Redact(waitErr.Error(), job.Secrets...)
 		}
 		return res, fmt.Errorf("harness claude-code: %s", msg)
 	}
 	return res, nil
+}
+
+// SessionEnviron is the environment a job's process runs in: environ
+// without the variables the job unsets, then the job's own Env.
+func SessionEnviron(environ []string, job Job) []string {
+	out := make([]string, 0, len(environ)+len(job.Env))
+	for _, kv := range environ {
+		name, _, _ := strings.Cut(kv, "=")
+		drop := false
+		for _, u := range job.Unset {
+			if name == u {
+				drop = true
+				break
+			}
+		}
+		if !drop {
+			out = append(out, kv)
+		}
+	}
+	return append(out, job.Env...)
+}
+
+// Redacted is what a secret is replaced with wherever it would be shown.
+const Redacted = "[redacted]"
+
+// Redact replaces every secret in s with Redacted. Empty secrets are
+// ignored.
+func Redact(s string, secrets ...string) string {
+	for _, sec := range secrets {
+		if sec != "" {
+			s = strings.ReplaceAll(s, sec, Redacted)
+		}
+	}
+	return s
+}
+
+// redactWriter passes writes on with the secrets redacted. A secret
+// split across two writes is not caught; claude writes its stderr a
+// line at a time.
+type redactWriter struct {
+	w       io.Writer
+	secrets []string
+}
+
+func (r *redactWriter) Write(p []byte) (int, error) {
+	if len(r.secrets) == 0 {
+		return r.w.Write(p)
+	}
+	if _, err := io.WriteString(r.w, Redact(string(p), r.secrets...)); err != nil {
+		return 0, err
+	}
+	return len(p), nil
 }
 
 // capBuffer keeps the first max bytes written to it and drops the rest.
