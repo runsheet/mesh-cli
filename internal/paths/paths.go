@@ -81,3 +81,22 @@ func AgentChannelsDir(agentID string) (string, error) {
 	}
 	return filepath.Join(dir, "channels"), nil
 }
+
+// UpdateStatePath returns the self-update state file: ~/.mesh/update.json
+func UpdateStatePath() (string, error) {
+	dir, err := MeshDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "update.json"), nil
+}
+
+// SigstoreCacheDir returns the directory the self-updater caches Sigstore's
+// TUF metadata in: ~/.mesh/sigstore (not created).
+func SigstoreCacheDir() (string, error) {
+	dir, err := MeshDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "sigstore"), nil
+}
