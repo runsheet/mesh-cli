@@ -235,6 +235,51 @@ func TestSelfUpdateRefusedKeepsRunning(t *testing.T) {
 	}
 }
 
+// A release whose signature does not verify, run through the real
+// ReleaseUpdater, is refused before any drain: the executable on disk is
+// unchanged, no .prev is written, and the heartbeat carries the reason.
+func TestSelfUpdateBadSignatureLeavesTheExecutable(t *testing.T) {
+	p := newPriorityFake(t)
+	p.addGoal(orgID, "g", "normal")
+	loop, _, release, _ := p.updateLoop("v1.1.0")
+	defer close(release)
+	state, exe := updateState(t)
+	bin := []byte("mesh v1.1.0")
+	loop.Update = &ReleaseUpdater{
+		Source: assetSource{
+			selfupdate.SumsAsset:   []byte("0000  mesh-linux-amd64\n"),
+			selfupdate.BundleAsset: []byte("not a bundle"),
+			"mesh-linux-amd64":     bin,
+		},
+		State: state, Exe: exe, GOOS: "linux", GOARCH: "amd64",
+	}
+	loop.Tick(context.Background())
+	loop.updateWG.Wait()
+	if loop.Draining() {
+		t.Fatal("draining after a refused update")
+	}
+	if b, err := os.ReadFile(exe); err != nil || string(b) != "v1.0.0" {
+		t.Fatalf("executable = %q, %v; want it unchanged", b, err)
+	}
+	if _, err := os.Stat(exe + ".prev"); !os.IsNotExist(err) {
+		t.Fatalf(".prev written on a refusal: %v", err)
+	}
+	loop.Tick(context.Background())
+	want := "SHA256SUMS.sigstore.json is not a valid Sigstore bundle"
+	if got := p.lastHeartbeat()["updateError"]; got != want {
+		t.Fatalf("heartbeat updateError = %v, want %q", got, want)
+	}
+}
+
+type assetSource map[string][]byte
+
+func (s assetSource) Asset(_ context.Context, version, name string) ([]byte, error) {
+	if b, ok := s[name]; ok {
+		return b, nil
+	}
+	return nil, &selfupdate.Error{Kind: selfupdate.ErrMissingAsset, Reason: "release " + version + " has no " + name}
+}
+
 // A swap that fails after the drain resumes the node and reports why.
 func TestSelfUpdateFailedSwapResumes(t *testing.T) {
 	p := newPriorityFake(t)
@@ -400,15 +445,9 @@ func TestFailedHeartbeatDoesNotConfirm(t *testing.T) {
 // ReleaseUpdater refuses a release with an asset missing, and never swaps.
 func TestReleaseUpdaterRefusesAMissingAsset(t *testing.T) {
 	_, exe := updateState(t)
-	u := &ReleaseUpdater{Source: missingSource{}, Exe: exe, GOOS: "linux", GOARCH: "amd64"}
+	u := &ReleaseUpdater{Source: assetSource{}, Exe: exe, GOOS: "linux", GOARCH: "amd64"}
 	_, err := u.Fetch(context.Background(), "v1.1.0")
 	if !errors.Is(err, selfupdate.ErrMissingAsset) {
 		t.Fatalf("Fetch = %v, want ErrMissingAsset", err)
 	}
-}
-
-type missingSource struct{}
-
-func (missingSource) Asset(_ context.Context, version, name string) ([]byte, error) {
-	return nil, &selfupdate.Error{Kind: selfupdate.ErrMissingAsset, Reason: "release " + version + " has no " + name}
 }
