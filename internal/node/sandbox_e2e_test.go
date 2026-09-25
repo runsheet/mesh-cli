@@ -167,6 +167,48 @@ func TestSandboxedSessionsE2E(t *testing.T) {
 	}
 }
 
+// TestEnsureImageE2E makes the e2e's node image present the way a node
+// does before its drain (SandboxConfig.EnsureImage, mesh-specs ADR 007):
+// MESH_SANDBOX_ENSURE=build builds MESH_SANDBOX_IMAGE (else mesh-node at
+// dev) from the embedded Containerfile — `sandbox.image: build` — and
+// =pull pulls it. Like a node's update it then removes every other
+// mesh-node tag but that of MESH_SANDBOX_KEEP_VERSION, the running
+// node's version (`none` keeps no other), so it runs only when scripts/e2e-sandbox.sh asks.
+func TestEnsureImageE2E(t *testing.T) {
+	how := os.Getenv("MESH_SANDBOX_ENSURE")
+	if os.Getenv("MESH_SANDBOX_E2E") != "1" || how == "" {
+		t.Skip("MESH_SANDBOX_E2E=1 MESH_SANDBOX_ENSURE=build|pull builds or pulls the node image")
+	}
+	cfg := SandboxConfig{Mode: SandboxOn, Image: os.Getenv("MESH_SANDBOX_IMAGE")}
+	switch how {
+	case "build":
+		if cfg.Image != "" && cfg.Image != sandbox.DefaultImage("dev") {
+			t.Fatalf("MESH_SANDBOX_ENSURE=build builds %s; MESH_SANDBOX_IMAGE=%s is pulled", sandbox.DefaultImage("dev"), cfg.Image)
+		}
+		cfg.Image = "build"
+	case "pull":
+	default:
+		t.Fatalf("MESH_SANDBOX_ENSURE=%s: want build or pull", how)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+	keep := os.Getenv("MESH_SANDBOX_KEEP_VERSION")
+	switch keep {
+	case "":
+		t.Fatal("MESH_SANDBOX_KEEP_VERSION: the running node's version (`mesh --version`), whose image is kept, or none")
+	case "none":
+		keep = ""
+	}
+	img, err := cfg.EnsureImage(ctx, sandbox.ExecRunner, "dev", keep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if img.Skipped != "" {
+		t.Fatalf("skipped: %s", img.Skipped)
+	}
+	t.Logf("node image %s (built %v); removed %v; kept %v", img.Ref, img.Built, img.Removed, img.Kept)
+}
+
 // copyFixture copies a testdata repository into the item's checkout.
 func copyFixture(t *testing.T, from, to string) {
 	t.Helper()
