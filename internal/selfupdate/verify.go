@@ -57,6 +57,14 @@ func ReleasePolicy(version string) Policy {
 	}
 }
 
+// WithoutSCTs is p without the embedded-SCT requirement, for tests in
+// other packages that sign releases on a virtual Sigstore (whose leaf
+// certificates carry no SCTs; Fulcio's do). Production never calls it.
+func (p Policy) WithoutSCTs() Policy {
+	p.withoutSCTs = true
+	return p
+}
+
 func publicGoodRoot() (root.TrustedMaterial, error) {
 	opts := tuf.DefaultOptions()
 	if dir, err := paths.SigstoreCacheDir(); err == nil {
