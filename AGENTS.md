@@ -7,7 +7,7 @@ machine credential `mesh node login` registers for this computer, or the
 operator's `rs_*` console token — claims work items, builds each in a fresh `claude -p`
 session, evaluates it in a second, plans goals in a third. The platform
 side (goals, items, nodes, the scheduler, the integrator) is
-`runsheet/runsheet`; the design is `projectmesh-io/mesh-specs` (prd, trd,
+`runsheet/runsheet`; the design is `runsheet/mesh-specs` (prd, trd,
 adr-001, adr-002) and it is binding.
 
 ```sh
