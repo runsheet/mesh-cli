@@ -89,9 +89,12 @@ func (h *Handler) Tools() []Tool {
 		{Name: "mesh_progress", Description: "Report progress on a work item: a short note and the cents spent since the last report.",
 			Schema: ObjectSchema(map[string]string{"item_id": "the work item id", "note": "what happened, one line", "cost_cents": "cents spent since the last report (0 if unknown)"}, "item_id", "note"),
 			Call:   h.progress},
-		{Name: "mesh_finish", Description: "The item's branch is pushed: record it and end the item. Push first.",
-			Schema: ObjectSchema(map[string]string{"item_id": "the work item id", "branch": "the pushed branch", "head_sha": "its head commit"}, "item_id", "branch"),
-			Call:   h.finish},
+		{Name: "mesh_finish", Description: "The item's branch is pushed: record it and end the item. Push first. " +
+			"If main already holds the item's work, finish with outcome already_done and the evidence instead: no branch.",
+			Schema: ObjectSchema(map[string]string{"item_id": "the work item id", "branch": "the pushed branch (outcome built)", "head_sha": "its head commit (outcome built)",
+				"outcome":  "built (the default: a branch was pushed) or already_done (main already holds the work)",
+				"evidence": "for already_done: the merged PR URLs and/or commit SHAs on the base ref that satisfy the acceptance, with a line on why"}, "item_id"),
+			Call: h.finish},
 		{Name: "mesh_fail", Description: "The item cannot be done: record why and end it.",
 			Schema: ObjectSchema(map[string]string{"item_id": "the work item id", "error": "what went wrong"}, "item_id", "error"),
 			Call:   h.fail},
@@ -126,6 +129,21 @@ func (h *Handler) progress(ctx context.Context, args map[string]any) (string, er
 
 func (h *Handler) finish(ctx context.Context, args map[string]any) (string, error) {
 	id, branch := str(args, "item_id"), str(args, "branch")
+	switch outcome := str(args, "outcome"); outcome {
+	case "", gateway.OutcomeBuilt:
+	case gateway.OutcomeAlreadyDone:
+		evidence := str(args, "evidence")
+		if id == "" || evidence == "" {
+			return "", fmt.Errorf("item_id and evidence required for outcome already_done")
+		}
+		if err := h.GW.FinishWorkItemAlreadyDone(ctx, id, evidence, num(args, "cost_cents")); err != nil {
+			return "", err
+		}
+		h.done(id, "finished")
+		return "finished: already done", nil
+	default:
+		return "", fmt.Errorf("outcome must be built or already_done, not %q", outcome)
+	}
 	if id == "" || branch == "" {
 		return "", fmt.Errorf("item_id and branch required")
 	}

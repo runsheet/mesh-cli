@@ -393,7 +393,10 @@ pushes events into the session:
 
 The session reports back through the channel's tools, each a thin call on
 the gateway: `mesh_progress {item_id, note, cost_cents}`, `mesh_finish
-{item_id, branch, head_sha}`, `mesh_fail {item_id, error}`, `mesh_evaluate
+{item_id, branch, head_sha}` — or `mesh_finish {item_id, outcome:
+already_done, evidence}` with no branch, when main already holds the
+item's work (the merged PRs or commits that satisfy its acceptance; the
+evaluator checks them, mesh-specs ADR 003) — `mesh_fail {item_id, error}`, `mesh_evaluate
 {item_id, passed, notes}`, `mesh_context {goal_slug}` (the project's
 Prologue documents: instructions, ADRs, PRD, TRD), `mesh_items {status}`,
 `mesh_record {item_id, summary}` (a milestone note to the platform; see below) and `reply`. The daemon

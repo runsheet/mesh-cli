@@ -279,3 +279,45 @@ func waitFor(t *testing.T, cond func() bool) {
 	}
 	t.Fatal("condition not met in time")
 }
+
+// mesh_finish with outcome already_done needs evidence, not a branch
+// (mesh ADR 003 decision 1); an outcome it does not know is refused.
+func TestFinishAlreadyDone(t *testing.T) {
+	f, h := seed(t)
+	var done []string
+	h.OnDone = func(id, outcome string) { done = append(done, id+":"+outcome) }
+	var finish Tool
+	for _, tool := range h.Tools() {
+		if tool.Name == "mesh_finish" {
+			finish = tool
+		}
+	}
+	ctx := context.Background()
+	if _, err := finish.Call(ctx, map[string]any{"item_id": item1, "outcome": "already_done", "evidence": " "}); err == nil || !strings.Contains(err.Error(), "evidence") {
+		t.Fatalf("already_done without evidence: %v", err)
+	}
+	if _, err := finish.Call(ctx, map[string]any{"item_id": item1, "outcome": "skipped", "evidence": "x"}); err == nil {
+		t.Fatal("an unknown outcome must be refused")
+	}
+	if _, err := finish.Call(ctx, map[string]any{"item_id": item1}); err == nil || !strings.Contains(err.Error(), "branch") {
+		t.Fatalf("a built finish still needs its branch: %v", err)
+	}
+	if len(f.CallsNamed("finishWorkItem")) != 0 || len(done) != 0 {
+		t.Fatalf("a refused finish reached the gateway: %+v %v", f.CallsNamed("finishWorkItem"), done)
+	}
+	ev := "https://github.com/acme/widgets/pull/3 already holds the failing test"
+	out := call(t, h, "mesh_finish", map[string]any{"item_id": item1, "outcome": "already_done", "evidence": ev, "cost_cents": float64(25)})
+	if out != "finished: already done" {
+		t.Fatalf("out = %q", out)
+	}
+	calls := f.CallsNamed("finishWorkItem")
+	if len(calls) != 1 || calls[0].Input["outcome"] != "already_done" || calls[0].Input["evidence"] != ev || calls[0].Input["branch"] != nil {
+		t.Fatalf("calls = %+v", calls)
+	}
+	if row := f.Item(item1); row["status"] != "evaluating" || row["outcome"] != "already_done" {
+		t.Fatalf("row = %v", row)
+	}
+	if strings.Join(done, ",") != item1+":finished" {
+		t.Fatalf("done = %v", done)
+	}
+}
