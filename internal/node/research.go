@@ -24,11 +24,16 @@ import (
 // the claim on every tick and is told to wait, the way the loop asks
 // for work items. So a refusal here is the normal answer, not an error.
 type Director struct {
-	GW       Gateway
-	Harness  harness.Harness
-	WS       Workspacer
-	Cfg      *Config
-	WorkRoot string
+	GW      Gateway
+	Harness harness.Harness
+	// Availability is the node's harness condition, shared with the loop:
+	// a session ending on the harness's out-of-credit or rate-limit
+	// message, or the second silent one running, trips it (trd §3); nil
+	// notes nothing.
+	Availability *Availability
+	WS           Workspacer
+	Cfg          *Config
+	WorkRoot     string
 	// MCP are the MCP servers the session gets (Prologue).
 	MCP map[string]any
 	// MaxBudgetUSD caps the research session (5 by default).
@@ -160,6 +165,9 @@ func (d *Director) handIn(ctx context.Context, direction gateway.Direction, proj
 		return ctx.Err()
 	}
 	defer harness.RemoveSession(dir)
+	if tripped, why := d.Availability.Observe(result, err); tripped {
+		return fmt.Errorf("%w: %s", ErrHarnessUnavailable, acct.Redact(why))
+	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return fmt.Errorf("research session ran out of time (%s)", d.Timeout)
 	}

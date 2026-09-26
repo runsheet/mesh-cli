@@ -88,6 +88,19 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   because they are fields the platform half adds. Capacity, the
   limits thresholds and the orgs need no drain: `Reload` re-reads them
   every tick.
+- **The harness's condition** (`internal/node/availability.go`, trd §3):
+  one `Availability`, shared by the loop and every
+  `Runner`, `Evaluator`, `Planner` and `Director`, is tripped when a
+  session ends on `harness.UnavailableError` (the harness's
+  out-of-credit or rate-limit message) or is the second `EmptyOutput`
+  running (`Availability.Observe`). A tripped build is released
+  (`ReleaseWorkItem`, attempts uncounted) rather than failed; a tripped
+  plan is `ErrHarnessUnavailable` and not one of its goal's tries. While
+  tripped `Tick` heartbeats `status: harness_unavailable` with the
+  reason and starts nothing of any kind, and every `ProbeEvery` (ten
+  minutes, from the trip) runs `Loop.Probe` — `ProbeHarness`, one
+  minimal session in a scratch directory — whose success clears it and
+  resumes claiming in the same tick.
 - **Adoption** (`internal/node/adopt.go`, mesh-cli ADR-009, mesh-specs
   ADR 008): a session's unit and output file own it, not the node
   process. Build, evaluate, plan, research and rebase jobs are

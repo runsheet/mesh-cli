@@ -1399,3 +1399,182 @@ func TestDrainingIdleRunReturnsNil(t *testing.T) {
 		t.Fatalf("Run = %v", err)
 	}
 }
+
+// spendLimit is the incident's own message (2026-09-23).
+const spendLimit = "You've hit your monthly spend limit · raise it at claude.ai/settings/usage"
+
+// unavailableHarness ends every session on the spend limit, before any
+// output, as the harness did for three hours on 2026-09-23.
+var unavailableHarness = harnessFunc(func(context.Context, harness.Job, func(harness.Progress)) (harness.Result, error) {
+	return harness.Result{EmptyOutput: true}, &harness.UnavailableError{Reason: spendLimit}
+})
+
+func claimedItem1(t *testing.T, gw *gateway.Client, nodeID string) gateway.WorkItem {
+	t.Helper()
+	if err := gw.ClaimWorkItem(context.Background(), item1, nodeID, "claude-code"); err != nil {
+		t.Fatal(err)
+	}
+	var item gateway.WorkItem
+	item.ID, item.OrgID, item.GoalID, item.RepoID, item.Seq, item.Title = item1, orgID, goalID, repoID, 1, "Write the failing test"
+	return item
+}
+
+// A build session ending on the spend limit is the node's condition, not
+// the item's failure (trd §3): the item is released back to ready, its
+// last error and attempts untouched, and the node is harness_unavailable.
+func TestRunnerReleasesOnAnUnavailableHarness(t *testing.T) {
+	f := seed(t)
+	gw := gateway.New(f.URL(), "rs_test")
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: Fixed(1)}
+	item := claimedItem1(t, gw, cfg.NodeID)
+	before := f.Item(item1)["attempts"]
+	ws := &fakeWS{root: t.TempDir()}
+	avail := &Availability{}
+	runner := &Runner{GW: gw, Harness: unavailableHarness, WS: ws, Cfg: cfg, Scopes: scopesOf(cfg), WorkRoot: ws.root, ProgressEvery: time.Hour, Availability: avail}
+	if err := runner.RunItem(context.Background(), item); err != nil {
+		t.Fatalf("a released item is not an error: %v", err)
+	}
+	row := f.Item(item1)
+	if row["status"] != "ready" || row["lastError"] != nil || row["attempts"] != before {
+		t.Fatalf("row after an unavailable harness: %v", row)
+	}
+	if n := len(f.CallsNamed("failWorkItem")); n != 0 {
+		t.Fatalf("failWorkItem calls = %d, want none", n)
+	}
+	if rel := f.CallsNamed("releaseWorkItem"); len(rel) != 1 || !strings.Contains(rel[0].Input["reason"].(string), "monthly spend limit") {
+		t.Fatalf("release calls: %+v", rel)
+	}
+	if down, why := avail.Status(); !down || why != spendLimit {
+		t.Fatalf("availability = %v %q, want tripped on the spend limit", down, why)
+	}
+}
+
+// Two sessions running that produce no output trip the node: the first
+// is the item's own failure, the second is released.
+func TestRunnerTripsOnTwoSilentSessions(t *testing.T) {
+	f := seed(t)
+	gw := gateway.New(f.URL(), "rs_test")
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: Fixed(1)}
+	silent := harnessFunc(func(context.Context, harness.Job, func(harness.Progress)) (harness.Result, error) {
+		return harness.Result{EmptyOutput: true}, errors.New("harness claude-code: exit status 1")
+	})
+	ws := &fakeWS{root: t.TempDir()}
+	avail := &Availability{}
+	runner := &Runner{GW: gw, Harness: silent, WS: ws, Cfg: cfg, Scopes: scopesOf(cfg), WorkRoot: ws.root, ProgressEvery: time.Hour, Availability: avail}
+	if err := runner.RunItem(context.Background(), claimedItem1(t, gw, cfg.NodeID)); err == nil {
+		t.Fatal("the first silent session is the item's failure")
+	}
+	if down, _ := avail.Status(); down || f.Item(item1)["status"] != "failed" {
+		t.Fatalf("after one silent session: tripped=%v row=%v", down, f.Item(item1))
+	}
+	f.WorkItems[item1]["status"] = "ready"
+	if err := runner.RunItem(context.Background(), claimedItem1(t, gw, cfg.NodeID)); err != nil {
+		t.Fatalf("the second silent session is released: %v", err)
+	}
+	if down, why := avail.Status(); !down || why != emptyExitReason || f.Item(item1)["status"] != "ready" {
+		t.Fatalf("after two silent sessions: tripped=%v %q row=%v", down, why, f.Item(item1))
+	}
+}
+
+// A planner session the harness could not run is not one of the goal's
+// tries.
+func TestPlannerDoesNotCountAnUnavailableHarness(t *testing.T) {
+	f := seed(t)
+	f.Goals[goalID]["status"] = "planning"
+	f.Projects[projID]["repoIds"] = []string{repoID}
+	gw := gateway.New(f.URL(), "rs_test")
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: Fixed(1), OwnerID: f.UserID}
+	ws := &fakeWS{root: t.TempDir()}
+	avail := &Availability{}
+	pl := &Planner{GW: gw, Harness: unavailableHarness, WS: ws, Cfg: cfg, WorkRoot: ws.root, Availability: avail}
+	goal := gateway.Goal{ID: goalID, Slug: "ship-it", Title: "Ship it", ProjectID: projID, Status: "planning"}
+	for i := 0; i < MaxPlanAttempts+1; i++ {
+		if err := pl.Plan(context.Background(), goal, scopesOf(cfg)[0]); !errors.Is(err, ErrHarnessUnavailable) {
+			t.Fatalf("plan %d: %v, want ErrHarnessUnavailable", i, err)
+		}
+	}
+	if pl.attempts[goalID] != 0 {
+		t.Fatalf("attempts = %d, want 0", pl.attempts[goalID])
+	}
+	if down, _ := avail.Status(); !down {
+		t.Fatal("the planner's session must trip the node")
+	}
+}
+
+// While its harness is unavailable the node claims nothing, heartbeats
+// harness_unavailable with the reason, and probes every ten minutes; a
+// probe that succeeds clears it, and claiming resumes (trd §3).
+func TestLoopStopsWhileTheHarnessIsUnavailable(t *testing.T) {
+	f := seed(t)
+	gw := gateway.New(f.URL(), "rs_test")
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "test-node", NodeID: gateway.NodeID(mustUUID(orgID), "test-node").String(), Capacity: Fixed(2)}
+	if err := gw.RegisterNode(context.Background(), gateway.RegisterNodeInput{NodeID: cfg.NodeID, OrgID: orgID, OwnerID: f.UserID, Name: "n", Slug: "test-node", Harnesses: []string{"claude-code"}, Capacity: 2, Version: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	avail := &Availability{}
+	avail.Trip(spendLimit)
+	now := time.Date(2026, 9, 23, 18, 10, 0, 0, time.UTC)
+	probes, probeErr := 0, errors.New("still out of credit")
+	var dispatched []string
+	var logs strings.Builder
+	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Version: "test", Harness: "claude-code", Interval: time.Hour, Log: log.New(&logs, "", 0),
+		Availability: avail, Now: func() time.Time { return now },
+		Probe:    func(context.Context) error { probes++; return probeErr },
+		Dispatch: func(_ context.Context, item gateway.WorkItem) { dispatched = append(dispatched, item.ID) }}
+	ctx := context.Background()
+
+	loop.Tick(ctx)
+	if n := len(f.CallsNamed("claimWorkItem")); n != 0 || len(dispatched) != 0 {
+		t.Fatalf("claims while unavailable = %d, dispatched %v", n, dispatched)
+	}
+	if node := f.Nodes[cfg.NodeID]; node["status"] != StatusHarnessUnavailable || node["reason"] != spendLimit {
+		t.Fatalf("node while unavailable: %+v", node)
+	}
+	hb := f.CallsNamed("heartbeatNode")
+	if last := hb[len(hb)-1].Input; last["status"] != StatusHarnessUnavailable || last["reason"] == "" {
+		t.Fatalf("heartbeat while unavailable: %+v", last)
+	}
+	if probes != 0 {
+		t.Fatal("the first probe waits ten minutes from the trip")
+	}
+
+	// nine minutes on: no probe yet; ten: one, which fails
+	now = now.Add(9 * time.Minute)
+	loop.Tick(ctx)
+	if probes != 0 {
+		t.Fatalf("probes after nine minutes = %d", probes)
+	}
+	now = now.Add(time.Minute)
+	loop.Tick(ctx)
+	if probes != 1 || len(f.CallsNamed("claimWorkItem")) != 0 {
+		t.Fatalf("after a failed probe: probes=%d claims=%d", probes, len(f.CallsNamed("claimWorkItem")))
+	}
+	if down, _ := avail.Status(); !down {
+		t.Fatal("a failed probe must leave the node unavailable")
+	}
+	loop.Tick(ctx)
+	if probes != 1 {
+		t.Fatalf("a failed probe waits ten minutes for the next: probes=%d", probes)
+	}
+
+	// ten more: the probe succeeds, and the node claims again
+	probeErr = nil
+	now = now.Add(10 * time.Minute)
+	loop.Tick(ctx)
+	if probes != 2 {
+		t.Fatalf("probes = %d, want 2", probes)
+	}
+	if down, why := avail.Status(); down || why != "" {
+		t.Fatalf("availability after a good probe = %v %q", down, why)
+	}
+	loop.Tick(ctx)
+	if n := len(f.CallsNamed("claimWorkItem")); n != 1 || f.Item(item1)["status"] != "claimed" && f.Item(item1)["status"] != "running" {
+		t.Fatalf("after resuming: claims=%d row=%v", n, f.Item(item1))
+	}
+	if node := f.Nodes[cfg.NodeID]; node["status"] != "online" {
+		t.Fatalf("node after resuming: %+v", node)
+	}
+	if !strings.Contains(logs.String(), "available again") {
+		t.Fatalf("log lacks the resume:\n%s", logs.String())
+	}
+}

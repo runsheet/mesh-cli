@@ -21,11 +21,16 @@ import (
 // graph handed in with PlanGoal, the session's cost with it. A goal
 // whose plan cannot be read three times is left in planning and said so.
 type Planner struct {
-	GW       Gateway
-	Harness  harness.Harness
-	WS       Workspacer
-	Cfg      *Config
-	WorkRoot string
+	GW      Gateway
+	Harness harness.Harness
+	// Availability is the node's harness condition, shared with the loop:
+	// a session ending on the harness's out-of-credit or rate-limit
+	// message, or the second silent one running, trips it (trd §3); nil
+	// notes nothing.
+	Availability *Availability
+	WS           Workspacer
+	Cfg          *Config
+	WorkRoot     string
 	// MCP are the MCP servers the session gets (Prologue).
 	MCP map[string]any
 	// MaxBudgetUSD caps the planning session (5 by default).
@@ -73,7 +78,9 @@ func (p *Planner) Plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 		return nil // said so already
 	}
 	err := p.plan(ctx, goal, scope)
-	if err != nil && ctx.Err() == nil {
+	// a session the harness could not run is the node's condition, not
+	// the goal's try (trd §3)
+	if err != nil && ctx.Err() == nil && !errors.Is(err, ErrHarnessUnavailable) {
 		p.mu.Lock()
 		p.attempts[goal.ID] = tries + 1
 		p.mu.Unlock()
@@ -246,6 +253,9 @@ func (p *Planner) readPlan(ctx context.Context, goal gateway.Goal, dir string, a
 		return nil, nil, nil, 0, ctx.Err()
 	}
 	defer harness.RemoveSession(dir)
+	if tripped, why := p.Availability.Observe(result, err); tripped {
+		return nil, nil, nil, 0, fmt.Errorf("%w: %s", ErrHarnessUnavailable, acct.Redact(why))
+	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return nil, nil, nil, 0, fmt.Errorf("planner session ran out of time (%s)", p.Timeout)
 	}
