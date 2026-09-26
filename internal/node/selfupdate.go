@@ -262,7 +262,7 @@ func (l *Loop) restartRequested() bool {
 	return l.restart
 }
 
-// ReleaseUpdater updates from signed tag releases of projectmesh-io/mesh-cli
+// ReleaseUpdater updates from signed tag releases of runsheet/mesh-cli
 // (adr-002), recording each step in the update state file.
 type ReleaseUpdater struct {
 	Source selfupdate.Source

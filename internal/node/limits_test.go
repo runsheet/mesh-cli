@@ -145,7 +145,7 @@ func TestPaceDecides(t *testing.T) {
 		{"five-hour at 80%", *reading(0.80, 0.5), LimitsConfig{}, t0, pacePaced, fiveOver},
 		{"five-hour at 95%", *reading(0.95, 0.5), LimitsConfig{}, t0, paceStopped, fiveOver},
 		{"seven-day at 96%", *reading(0.85, 0.96), LimitsConfig{}, t0, paceStopped, weekOver},
-		{"allowed_warning", status("allowed_warning"), LimitsConfig{}, t0, paceStopped, t0.Add(30 * time.Minute)},
+		{"allowed_warning", status("allowed_warning"), LimitsConfig{}, t0, pacePaced, t0.Add(30 * time.Minute)},
 		{"rejected", status("rejected"), LimitsConfig{}, t0, paceStopped, t0.Add(30 * time.Minute)},
 		{"paced past its reset", *reading(0.85, 0.5), LimitsConfig{}, fiveOver, paceNormal, time.Time{}},
 		{"seven-day past its reset", *reading(0.1, 0.99), LimitsConfig{}, weekOver, paceNormal, time.Time{}},
@@ -206,9 +206,8 @@ func TestLoopPacedClaimsUrgentAndHighAtHalfCapacity(t *testing.T) {
 // uncancelled. Once the clock passes the reset it claims again.
 func TestLoopStoppedStartsNothingAndResumesAtReset(t *testing.T) {
 	stoppers := map[string]func() *harness.RateLimit{
-		"seven-day 96%":   func() *harness.RateLimit { return reading(0.3, 0.96) },
-		"allowed_warning": func() *harness.RateLimit { r := reading(0.3, 0.3); r.Status = "allowed_warning"; return r },
-		"rejected":        func() *harness.RateLimit { r := reading(0.3, 0.3); r.Status = "rejected"; return r },
+		"seven-day 96%": func() *harness.RateLimit { return reading(0.3, 0.96) },
+		"rejected":      func() *harness.RateLimit { r := reading(0.3, 0.3); r.Status = "rejected"; return r },
 	}
 	for name, stopper := range stoppers {
 		t.Run(name, func(t *testing.T) {
@@ -418,8 +417,8 @@ func TestPaceAllowedWarningIsNotAStop(t *testing.T) {
 	r := harness.RateLimit{Status: "allowed_warning", ObservedAt: now,
 		FiveHour: harness.RateLimitWindow{Utilization: 0.05, ResetsAt: now.Add(4 * time.Hour)},
 		SevenDay: harness.RateLimitWindow{Utilization: 0.77, ResetsAt: now.Add(56 * time.Hour)}}
-	if p := pace(now, r, LimitsConfig{}); p.mode != paceNormal {
-		t.Fatalf("allowed_warning at 5%%/77%% paced as %v (%s), want normal", p.mode, p.why)
+	if p := pace(now, r, LimitsConfig{}); p.mode != pacePaced {
+		t.Fatalf("allowed_warning at 5%%/77%% decided %v (%s), want paced", p.mode, p.why)
 	}
 	r.Status = "rejected"
 	if p := pace(now, r, LimitsConfig{}); p.mode != paceStopped {

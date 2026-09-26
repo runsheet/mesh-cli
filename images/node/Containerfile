@@ -4,7 +4,7 @@
 # (corepack for pnpm/yarn), Python 3 with pip and uv, make and a C
 # toolchain, gh — and the agent CLIs, claude and codex, at the versions
 # pinned below. It is tagged with the node's version,
-# ghcr.io/projectmesh-io/mesh-node:<version>, built by release-tag.yml on
+# ghcr.io/runsheet/mesh-node:<version>, built by release-tag.yml on
 # the same tag as the binary, and `mesh node update` and the node's
 # self-update pull it before they drain. `sandbox.image: build` in
 # node.yaml builds it locally from this file instead, which the binary
@@ -27,7 +27,7 @@ ARG TARGETARCH
 
 LABEL org.opencontainers.image.title="mesh-node" \
       org.opencontainers.image.description="The sandbox a Mesh node runs each agent session in" \
-      org.opencontainers.image.source="https://github.com/projectmesh-io/mesh-cli" \
+      org.opencontainers.image.source="https://github.com/runsheet/mesh-cli" \
       org.opencontainers.image.version="${MESH_VERSION}" \
       dev.projectmesh.node.version="${MESH_VERSION}"
 
@@ -88,8 +88,11 @@ RUN useradd --create-home --uid 1000 --shell /bin/bash mesh
 USER mesh
 WORKDIR /home/mesh
 
+# nftables is checked by its package, not `nft --version`: nft opens a
+# netlink socket even for that, and the arm64 build runs under qemu-user,
+# which has no netlink (release-tag.yml's image job failed on it).
 RUN git --version && go version && node --version && npm --version \
- && python3 --version && uv --version && gh --version && nft --version \
+ && python3 --version && uv --version && gh --version && dpkg-query -W nftables \
  && claude --version && codex --version
 
 CMD ["bash"]

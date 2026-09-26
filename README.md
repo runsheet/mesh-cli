@@ -841,7 +841,7 @@ one yet.
   controllers delegated to their systemd user slice for the limits to
   bite). The network is pasta. No daemon, no socket.
 - **Node image.** `claude` runs from the node image,
-  `ghcr.io/projectmesh-io/mesh-node:<node version>` (`:dev` on a dev
+  `ghcr.io/runsheet/mesh-node:<node version>` (`:dev` on a dev
   build), which carries the toolchains and the agent CLIs;
   `sandbox.image` names another or `build`s it here (see
   [Node image](#node-image)). Its `PATH` is
@@ -889,7 +889,7 @@ sandbox:
   services_cpus: 2     # the services' budget together
   services_memory: 4g
   registries: [docker.io, ghcr.io, "*.pkg.dev", quay.io]   # where service images may come from
-  image: build         # default (empty): ghcr.io/projectmesh-io/mesh-node:<version>; build: that tag built here; else as given
+  image: build         # default (empty): ghcr.io/runsheet/mesh-node:<version>; build: that tag built here; else as given
   service_timeout: 120s  # how long the services' health checks are waited for
 ```
 
@@ -902,7 +902,7 @@ sandbox:
 | `services_cpus` | `2` | the service sidecars' CPUs, together |
 | `services_memory` | `4g` | the service sidecars' memory, together |
 | `registries` | `docker.io`, `ghcr.io`, `*.pkg.dev`, `quay.io` | registries service images may come from |
-| `image` | `ghcr.io/projectmesh-io/mesh-node:<version>` | the node image sessions run in; `build` builds that tag here from the embedded Containerfile, any other value is used as given |
+| `image` | `ghcr.io/runsheet/mesh-node:<version>` | the node image sessions run in; `build` builds that tag here from the embedded Containerfile, any other value is used as given |
 | `service_timeout` | `120s` | the bound on the services' health checks before the agent starts |
 
 **`sandbox: off`** runs every session exactly as before: `claude` on
@@ -927,7 +927,7 @@ on the mini and retiring that container.
 Every sandboxed session runs one image, versioned with the node:
 
 ```
-ghcr.io/projectmesh-io/mesh-node:<version>     # e.g. ghcr.io/projectmesh-io/mesh-node:v0.4.0
+ghcr.io/runsheet/mesh-node:<version>     # e.g. ghcr.io/runsheet/mesh-node:v0.4.0
 ```
 
 It is built from [`images/node/Containerfile`](images/node/Containerfile),
@@ -953,7 +953,7 @@ but the running version's:
 
 ```
 Ensuring the node image of v0.4.0…
-Node image: ghcr.io/projectmesh-io/mesh-node:v0.4.0 (pulled); removed ghcr.io/projectmesh-io/mesh-node:v0.3.1
+Node image: ghcr.io/runsheet/mesh-node:v0.4.0 (pulled); removed ghcr.io/runsheet/mesh-node:v0.3.1
 ```
 
 A pull that fails stops the update there: no drain, no swap, the node
@@ -966,7 +966,7 @@ version. Nothing is built in its place unless node.yaml says so.
 
 | value | image |
 |-------|-------|
-| left out | `ghcr.io/projectmesh-io/mesh-node:<version>`, pulled |
+| left out | `ghcr.io/runsheet/mesh-node:<version>`, pulled |
 | `build` | that same tag, built on this machine from the embedded Containerfile instead of pulled |
 | anything else | used as given, pulled |
 
@@ -977,7 +977,7 @@ ghcr.io` with a token that can read it, or `sandbox.image: build`. To
 build it by hand:
 
 ```sh
-podman build -t ghcr.io/projectmesh-io/mesh-node:dev -f images/node/Containerfile images/node
+podman build -t ghcr.io/runsheet/mesh-node:dev -f images/node/Containerfile images/node
 ```
 
 ### Acceptance the evaluator can see
@@ -1409,7 +1409,7 @@ run by hand) does, and opens or updates the PR on `bot/schema-refresh`.
 ## Release
 
 Nodes update themselves from the GitHub releases of
-`projectmesh-io/mesh-cli`, which `.github/workflows/release-tag.yml` cuts
+`runsheet/mesh-cli`, which `.github/workflows/release-tag.yml` cuts
 from a tag (docs/adr/adr-002-signed-tag-releases.md). To cut one:
 
 ```sh
@@ -1451,7 +1451,7 @@ in Rekor. The node accepts a release only when the bundle verifies
 against exactly
 
 - certificate identity
-  `https://github.com/projectmesh-io/mesh-cli/.github/workflows/release-tag.yml@refs/tags/<tag>`
+  `https://github.com/runsheet/mesh-cli/.github/workflows/release-tag.yml@refs/tags/<tag>`
 - OIDC issuer `https://token.actions.githubusercontent.com`
 
 and the binary's hash matches its line in `SHA256SUMS`. To verify a
@@ -1459,19 +1459,19 @@ release by hand:
 
 ```sh
 TAG=vX.Y.Z
-gh release download "$TAG" -R projectmesh-io/mesh-cli \
+gh release download "$TAG" -R runsheet/mesh-cli \
   -p SHA256SUMS -p SHA256SUMS.sigstore.json -p mesh-linux-amd64
 cosign verify-blob \
   --bundle SHA256SUMS.sigstore.json \
-  --certificate-identity "https://github.com/projectmesh-io/mesh-cli/.github/workflows/release-tag.yml@refs/tags/$TAG" \
+  --certificate-identity "https://github.com/runsheet/mesh-cli/.github/workflows/release-tag.yml@refs/tags/$TAG" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   SHA256SUMS
 sha256sum --check --ignore-missing SHA256SUMS
 ```
 
-`cli-release.yml` is separate: it builds on every push to `main` and
-publishes to the `projectmesh-io/mesh` repo, unsigned. Nodes do not
-update from it. `release.yml` is the Shipper's `workflow_dispatch` stub
+There is no other release channel: `cli-release.yml` (main builds,
+published unsigned to another repo) was dropped when the repo moved to
+the runsheet org. `release.yml` is the Shipper's `workflow_dispatch` stub
 and publishes nothing.
 
 ### Updating a node
@@ -1531,7 +1531,7 @@ and verify or install from the directory:
 
 ```sh
 TAG=v0.0.0-selfupdate-test.1
-gh release download "$TAG" -R projectmesh-io/mesh-cli -D rel
+gh release download "$TAG" -R runsheet/mesh-cli -D rel
 mesh node update --verify-only --from-dir rel "$TAG"
 ```
 

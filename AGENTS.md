@@ -7,7 +7,7 @@ machine credential `mesh node login` registers for this computer, or the
 operator's `rs_*` console token — claims work items, builds each in a fresh `claude -p`
 session, evaluates it in a second, plans goals in a third. The platform
 side (goals, items, nodes, the scheduler, the integrator) is
-`runsheet/runsheet`; the design is `projectmesh-io/mesh-specs` (prd, trd,
+`runsheet/runsheet`; the design is `runsheet/mesh-specs` (prd, trd,
 adr-001, adr-002) and it is binding.
 
 ```sh
@@ -147,7 +147,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   ADR-007): both ensure the *new* version's image after the verify and
   before the drain (`Loop.Image`, `nodeUpdate.Image` →
   `SandboxConfig.EnsureImage` → `sandbox.EnsureImage`/`BuildImage` on
-  an injected `Runner`): pull `ghcr.io/projectmesh-io/mesh-node:<version>`
+  an injected `Runner`): pull `ghcr.io/runsheet/mesh-node:<version>`
   (node.yaml `sandbox.image`: empty that, `build` built here, else as
   given), prune older tags but the running one's. A failed pull is an
   `updateError`: no drain, no swap, never a silent build. `sandbox:

@@ -284,6 +284,14 @@ func pace(now time.Time, r harness.RateLimit, cfg LimitsConfig) pacing {
 	if stop.mode == paceStopped {
 		return stop
 	}
+	// allowed_warning — the CLI's nudge that a window is filling — paces
+	// the node rather than stopping it: urgent and high work at half
+	// capacity until that window resets.
+	if strings.HasPrefix(r.Status, "allowed") && r.Status != "allowed" {
+		if at := until(r.ResetsAt); now.Before(at) {
+			return pacing{mode: pacePaced, resumeAt: at, why: fmt.Sprintf("status %s (pace)", r.Status)}
+		}
+	}
 	if r.FiveHour.Utilization >= cfg.PaceFiveHour {
 		if at := until(r.FiveHour.ResetsAt); now.Before(at) {
 			return pacing{mode: pacePaced, resumeAt: at,

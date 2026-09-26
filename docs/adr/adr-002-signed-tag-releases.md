@@ -1,5 +1,5 @@
 ---
-summary: Nodes update only from tag-cut releases of projectmesh-io/mesh-cli whose SHA256SUMS is signed keyless by release-tag.yml's GitHub OIDC identity; the asset names and that identity are the updater's contract. The same tag pushes and cosign-signs the node image ghcr.io/projectmesh-io/mesh-node:<tag>, which the node pulls before it swaps. An upgrade swaps and restarts the node at once, and the new process adopts the sessions the old one left running; a sandboxed node alone still drains first.
+summary: Nodes update only from tag-cut releases of runsheet/mesh-cli whose SHA256SUMS is signed keyless by runsheet/mesh-cli release-tag.yml's GitHub OIDC identity (tags released before the repo left projectmesh-io also under the old identity); the asset names and that identity are the updater's contract. The same tag pushes and cosign-signs the node image ghcr.io/runsheet/mesh-node:<tag>, which the node pulls before it swaps. An upgrade swaps and restarts the node at once, and the new process adopts the sessions the old one left running; a sandboxed node alone still drains first.
 status: accepted
 ---
 
@@ -11,10 +11,10 @@ Goal `node-self-update`: a node replaces its own executable with the
 version the platform asks for. Whatever it downloads runs with the
 node's credential and its operator's `gh`, so it must be able to prove,
 with nothing but the release itself, that the binary was built by this
-repo's workflow from that tag. `cli-release.yml` already publishes on
-every push to `main`, but to another repo (`projectmesh-io/mesh`), with
-a run-number version and unsigned sums; changing it would change what
-existing installs download.
+repo's workflow from that tag. `cli-release.yml` used to publish on
+every push to `main`, to another repo (`projectmesh-io/mesh`), with a
+run-number version and unsigned sums; it was dropped (see the amendment
+below).
 
 ## Decision
 
@@ -22,7 +22,7 @@ existing installs download.
   tag `v*` and nothing else (no `workflow_dispatch`: a release is a tag).
   It builds linux/amd64, linux/arm64 and darwin/arm64 with
   `CGO_ENABLED=0 -trimpath` and `internal/version.Version` set to the
-  tag, and publishes a GitHub release on `projectmesh-io/mesh-cli` (a
+  tag, and publishes a GitHub release on `runsheet/mesh-cli` (a
   prerelease when the tag has a `-`).
 - The release carries exactly `mesh-linux-amd64`, `mesh-linux-arm64`,
   `mesh-darwin-arm64`, `SHA256SUMS` (`sha256sum mesh-*`) and
@@ -37,13 +37,19 @@ existing installs download.
   needs no node change.
 - Signing is keyless Sigstore: there is no key to hold or leak. The
   updater accepts the bundle only for certificate identity
-  `https://github.com/projectmesh-io/mesh-cli/.github/workflows/release-tag.yml@refs/tags/<tag>`
+  `https://github.com/runsheet/mesh-cli/.github/workflows/release-tag.yml@refs/tags/<tag>`
+  (and, for the tags released before the transfer only, the
+  `projectmesh-io/mesh-cli` identity: see the transfer amendment below)
   and issuer `https://token.actions.githubusercontent.com`, where
   `<tag>` is the version it asked for; then the binary for its own
   OS/arch must match its line in `SHA256SUMS`. Anything else is refused
   and reported.
-- `cli-release.yml` and `release.yml` stay as they are and are not an
-  update source.
+- `release.yml` stays as it is and is not an update source.
+  `cli-release.yml` was dropped when the repo moved to the runsheet org
+  (2026-09-26): its `GITHUB_TOKEN` cannot publish cross-org, and
+  publishing main builds to this repo's releases would make them
+  `latest` and break `LatestReleaseURL`. Nodes update only from
+  `release-tag.yml`.
 - The updater (`internal/selfupdate`) verifies in-process with
   `github.com/sigstore/sigstore-go`; the node needs no `cosign`. It
   requires a transparency-log entry, an observer timestamp and an
@@ -56,7 +62,7 @@ existing installs download.
   with a short reason for the heartbeat; the update's progress and last
   error live in `~/.mesh/update.json`.
 - `selfupdate.GitHub` downloads anonymously from
-  `github.com/projectmesh-io/mesh-cli/releases/download/<tag>/<asset>`,
+  `github.com/runsheet/mesh-cli/releases/download/<tag>/<asset>`,
   which works only while the repo is public. **It is private today**, and
   those URLs answer 404 even with a token (proven on the reference
   release, 2026-09-25), so a node cannot yet fetch a release on its own.
@@ -124,7 +130,7 @@ image is a second artefact beside it:
 
 - `release-tag.yml`'s `image` job builds `images/node/Containerfile` for
   linux/amd64 and linux/arm64 (Go at go.mod's version, `MESH_VERSION`
-  the tag), pushes `ghcr.io/projectmesh-io/mesh-node:<tag>` and signs its
+  the tag), pushes `ghcr.io/runsheet/mesh-node:<tag>` and signs its
   digest keyless with `cosign sign`, under the same workflow identity.
   `publish` needs it, so no release exists without its image.
 - The tag is the node's version as it is (`internal/version.Version`,
@@ -195,6 +201,79 @@ ensure the image, swap, restart at once, adopt.**
 - `mesh node update` still drains before its swap, and `mesh node
   drain` (`SIGUSR1`) is unchanged: draining is for taking a machine out
   of service.
+
+## Amendment: the repository moved to runsheet (goal `mesh-cli-lives-in-runsheet`, 2026-09-26)
+
+On 2026-09-26 12:40Z mesh-cli was transferred from `projectmesh-io` to
+the `runsheet` GitHub organisation. GitHub redirects the old URLs, but a
+workflow's OIDC identity names the repository it runs in, so every tag
+released after the transfer is signed by
+`https://github.com/runsheet/mesh-cli/.github/workflows/release-tag.yml@refs/tags/<tag>`,
+which a verifier pinned to the old owner refuses. The contract above
+(the identity and the URLs) is changed here first:
+
+- `IdentityPrefix`, `ReleaseBaseURL` and `LatestReleaseURL` name
+  `runsheet/mesh-cli`. The node image is `ghcr.io/runsheet/mesh-node:<tag>`:
+  packages do not move with a repository, so it is published anew there
+  by the moved repo's `release-tag.yml`, and `sandbox.DefaultImageRepo`
+  follows once it is (a change of its own in the same goal).
+- `Policy` carries a list of accepted identities, each an exact SAN
+  match. `ReleasePolicy(tag)` always accepts the runsheet identity and
+  adds `PreTransferIdentityPrefix` +
+  tag — `https://github.com/projectmesh-io/mesh-cli/.github/workflows/release-tag.yml@refs/tags/<tag>`
+  — only for a tag in the constant set of tags released before the
+  transfer. That set is closed and, like the prefixes, is a constant:
+  nothing in `node.yaml`, flags or the environment reaches it. The tags
+  it holds:
+  - `v0.0.0-selfupdate-test.1` (commit `97fb5fb`, released 2026-09-25),
+    the last and only tag released under `projectmesh-io`.
+- Why keep the old identity at all: those releases were signed before
+  the move and cannot be re-signed without re-tagging, and the reference
+  release's committed bundle (`internal/selfupdate/testdata/`) is one of
+  them. Why only for those tags: after the transfer no one can run a
+  workflow as `projectmesh-io/mesh-cli` unless the name is taken again —
+  anyone who creates a repository there could then mint that identity
+  for any new tag. Limiting it to tags that already exist means a
+  recreated `projectmesh-io/mesh-cli` can sign nothing a node accepts.
+
+### Transfer fixes
+
+The first tags cut from `runsheet/mesh-cli` (`v0.0.0-runsheet-test.1`
+to `.4`) failed in `release-tag.yml` for reasons that had nothing to do
+with the identity; the first green run is `v0.0.0-runsheet-test.5`,
+run 36247714213. Four changes, none to the contract above:
+
+- **The image checks nftables by its package.** `nft --version` opens
+  a netlink socket, which the linux/arm64 half built under qemu-user
+  has not got (exit 3, `.1`); `images/node/Containerfile` runs
+  `dpkg-query -W nftables` instead.
+- **Publish downloads only the binaries.** build-push-action uploads
+  the image's `.dockerbuild` build record as an artifact, which
+  download-artifact could not fetch (`.2`); publish downloads with
+  `pattern: mesh-*`.
+- **The image job verifies what it signed.** After `cosign sign` it
+  runs `cosign verify ghcr.io/runsheet/mesh-node@<digest>` against this
+  identity and issuer, logged in to ghcr with `GITHUB_TOKEN`, so the
+  package verifies while it is private.
+- **Each image job has a docker config of its own.** `.4` (run
+  36245651812) failed at `cosign sign` with `UNAUTHORIZED` though `.3`
+  signed: the mini's runners share one `$HOME`, and `.3`'s
+  docker/login-action post-step `docker logout ghcr.io` (13:53:49)
+  removed the credential from `~/.docker/config.json` while `.4` was
+  still building; its sign (13:55:18) asked ghcr anonymously. Not the
+  login's scope and not signing by tag — it signed by digest. The job
+  now sets `DOCKER_CONFIG` to `$RUNNER_TEMP/docker`, the buildx plugin
+  linked in, so concurrent tags no longer log each other out.
+
+The first tag cut from main with all four fixes is
+`v0.0.0-runsheet-test.6` (`184011c`, run 36249480345, green, its image
+`cosign verify`ed under the runsheet identity). `mesh node update
+--verify-only` accepts it and the pre-transfer `v0.0.0-selfupdate-test.1`.
+The stale `.1` to `.5` tags and releases are gone.
+[releases-after-transfer.md](../releases-after-transfer.md) is the
+record. `ghcr.io/runsheet/mesh-node` refuses anonymous pulls, as the
+`projectmesh-io` package did: a sandboxed node pulls it only once logged
+in to ghcr, or once the operator makes it public.
 
 ## Consequences
 

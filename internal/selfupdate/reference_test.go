@@ -61,10 +61,10 @@ func TestReferenceReleaseRefused(t *testing.T) {
 	}{
 		{"another tag's identity", func(rel *Release, p *Policy) {
 			other := ReleasePolicy("v0.0.0-selfupdate-test.2")
-			p.Identity = other.Identity
+			p.Identities = other.Identities
 		}, ErrIdentity, "not signed by release-tag.yml"},
 		{"another workflow's identity", func(rel *Release, p *Policy) {
-			p.Identity = "https://github.com/projectmesh-io/mesh-cli/.github/workflows/cli-release.yml@refs/tags/" + referenceTag
+			p.Identities = []string{strings.Replace(PreTransferIdentityPrefix, "release-tag.yml", "cli-release.yml", 1) + referenceTag}
 		}, ErrIdentity, "not signed by release-tag.yml"},
 		{"another issuer", func(rel *Release, p *Policy) {
 			p.Issuer = "https://accounts.google.com"

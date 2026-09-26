@@ -80,7 +80,7 @@ implementing it that the spec leaves open or that differ in detail.
   node update` (`nodeUpdate.Image`) call `SandboxConfig.EnsureImage`
   for the *new* version once its release is verified and before they
   drain: `sandbox.EnsureImage(ctx, runner, ref, keep…)` pulls the ref
-  and removes every other `ghcr.io/projectmesh-io/mesh-node` tag but the
+  and removes every other `ghcr.io/runsheet/mesh-node` tag but the
   new one and the running version's (its sessions still use it until
   the drain ends them; the next update removes it). The runner is
   injected (`sandbox.Runner`; `ExecRunner` in the node). A failed pull
@@ -92,7 +92,7 @@ implementing it that the spec leaves open or that differ in detail.
   way; an explicit `on` without podman is the error. The pull does not
   yet verify the cosign signature.
 - **`sandbox.image`**: empty is `sandbox.DefaultImage(version)`,
-  `ghcr.io/projectmesh-io/mesh-node:<version>` (`:dev` for a dev
+  `ghcr.io/runsheet/mesh-node:<version>` (`:dev` for a dev
   build); `build` is that same ref built here by `sandbox.BuildImage`
   from the embedded Containerfile (`--build-arg MESH_VERSION=<version>`)
   in place of the pull, and the sessions run it; any other value is

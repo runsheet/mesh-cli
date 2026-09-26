@@ -185,7 +185,7 @@ node at its min still offers only urgent/high items to the choice.
   `heartbeatNode` and goal `limits-on-the-console` shows it; until it
   lands the node must not send the field (land the platform side
   first) — which the schema probe above now enforces on its own.
-- **Pending amendment**: projectmesh-io/mesh-specs trd §1 (Node,
+- **Pending amendment**: runsheet/mesh-specs trd §1 (Node,
   `HeartbeatNode { …, scaling? }`) and §3 (Pacing by the plan's limits:
   capacity as a range and the rule above) need this same amendment once
   that repo can be reached from a goal's items.

@@ -16,7 +16,7 @@ import (
 func testSandbox(t *testing.T, rt Runtime) *Sandbox {
 	t.Helper()
 	return &Sandbox{Runtime: rt, TempDir: t.TempDir(), Config: Config{
-		Image:   "ghcr.io/projectmesh-io/mesh-node:v1",
+		Image:   "ghcr.io/runsheet/mesh-node:v1",
 		Limits:  Limits{CPUs: DefaultCPUs, Memory: DefaultMemory, Pids: DefaultPids},
 		Network: DefaultNetwork(),
 		GitName: "Op", GitEmail: "op@example.com",
