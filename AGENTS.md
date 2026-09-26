@@ -65,9 +65,15 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   count against capacity, so `Running()` is not the exit test); the
   process exits 0 and its service starts the new binary.
   `~/.mesh/node.draining` marks it for `mesh node status`, and every
-  heartbeat says `draining`. `DrainAndWait(ctx)` is the drain a
-  self-update blocks on; `Resume` undoes a drain that has not yet ended
-  `Run`. The heartbeat's extras (`gateway.HeartbeatExtras`: `draining`,
+  heartbeat says `draining`. Drain is for taking a machine out of
+  service, not for upgrades: **an upgrade restarts at once and adopts**
+  (`Loop.Restart`, adr-002's amendment) — `SIGHUP` or `mesh node
+  upgrade` cancels every context the node runs sessions in
+  (`Loop.Context`), each `Job.Outlive` session detaches, `Run` returns
+  `ErrRestart` without waiting and `mesh node start` execs its binary
+  again; the new process adopts. `DrainAndWait(ctx)` is the drain only a
+  sandboxed node's self-update still blocks on; `Resume` undoes a drain
+  that has not yet ended `Run`. The heartbeat's extras (`gateway.HeartbeatExtras`: `draining`,
   `updateError`, `limits` — the latest Claude plan limits per
   account — and `scaling` — a ranged node's `{capacity, min, max,
   reason, accounts}`, the capacity in force, node.yaml's range, why
@@ -109,17 +115,26 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   adr-002): after each heartbeat the loop reads the node's desired
   version (`GetDesiredVersion`; empty, the running one or `dev` does
   nothing). A different one is fetched and verified (the signed
-  `SHA256SUMS` of the tag release) *before* the drain, then the node
-  drains, swaps its resolved executable keeping `<path>.prev`, and `Run`
-  returns `ErrRestartForUpdate` so the process exits 0 for its service
-  to start the new binary. A refusal resumes, heartbeats `updateError`
+  `SHA256SUMS` of the tag release) first, then the node swaps its
+  resolved executable keeping `<path>.prev` and `Run` returns
+  `ErrRestartForUpdate` at once — no drain, its sessions left for the
+  new binary to adopt — so the process exits 0 for its service to start
+  it (a sandboxed node drains before the swap: its pods end with it). A refusal resumes, heartbeats `updateError`
   and waits an hour on that version. `mesh node start` counts starts in
   `~/.mesh/update.json` (`CheckStart`): the third unconfirmed one rolls
   back to `.prev`, reports it and exits 0; the first heartbeat confirms.
   The loop's `Update` is an interface; tests inject a fake.
   `mesh node update [version]` (`internal/commands/nodeupdate.go`) does
   it by hand on the same `ReleaseUpdater`: verify, drain the pidfile's
-  node, swap; `--verify-only` verifies into a temp dir. **The node
+  node, swap; `--verify-only` verifies into a temp dir. `mesh node
+  upgrade` (`internal/commands/nodeupgrade.go`) is the upgrade without
+  a drain: `--version`, the latest release, or `--binary <path>` (once
+  `<path> version` answers), swapped keeping `.prev` for the rollback,
+  then `systemctl --user restart` of the unit, `launchctl kickstart -k`,
+  or `SIGHUP` to the pidfile's node; a sandboxed node only with
+  `--force`. The systemd unit's `KillMode=process` and the
+  LaunchAgent's `AbandonProcessGroup` keep a service stop off the
+  sessions. **The node
   image** (`images/node/Containerfile`, embedded as
   `nodeimage.Containerfile`; `internal/sandbox/image.go`, mesh-cli
   ADR-007): both ensure the *new* version's image after the verify and
@@ -370,8 +385,9 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   and lines; update them with the change, not around it.
 - Commits carry no Co-Authored-By trailer in this repo.
 - Deploying to the mini is by hand: build for linux/amd64, `scp` to
-  `~/bin/mesh.new`, `mv` it over `~/bin/mesh` and `mesh node drain`:
-  the node finishes its sessions, exits, and systemd starts the new
-  binary. Never `systemctl --user restart` it while a `claude -p`
-  session runs (a restart re-pushes running items; an unpushed build is
-  lost).
+  `~/bin/mesh.new` and `mesh node upgrade --binary ~/bin/mesh.new`: the
+  binary is swapped (`.prev` kept), the node restarts at once and
+  adopts its running `claude -p` sessions (README, "Upgrading a node
+  without ending sessions"). A channel-mode session and a sandboxed
+  one still end with the node: for those, `mv` it over `~/bin/mesh`
+  and `mesh node drain` instead.

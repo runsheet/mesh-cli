@@ -156,12 +156,15 @@ func (l *Loop) desiredVersion(ctx context.Context) (string, bool) {
 	return "", ok
 }
 
-// update fetches and verifies to and ensures its node image, and only
-// then drains — a refused release or an image that cannot be had costs
-// the node no work and leaves it on its binary — waits for every session
-// to end, and swaps the binary in. Run then returns ErrRestartForUpdate.
-// A failure resumes a drain the update began and is reported on the
-// heartbeat.
+// update fetches and verifies to and ensures its node image — a refused
+// release or an image that cannot be had costs the node no work and
+// leaves it on its binary — then swaps the binary in and restarts at
+// once: every session that outlives the node runs on in its own unit,
+// and the new process adopts it (adr-009, adr-002). Run then returns
+// ErrRestartForUpdate. A sandboxed node's sessions end with it (their
+// pod is not yet their unit), so it still drains first and swaps once
+// they have ended. A failure resumes a drain the update began and is
+// reported on the heartbeat.
 func (l *Loop) update(ctx context.Context, from, to string) {
 	defer l.updateWG.Done()
 	l.logf("self-update: %s → %s: fetching", from, to)
@@ -178,15 +181,20 @@ func (l *Loop) update(ctx context.Context, from, to string) {
 		}
 		l.logf("self-update: %s", img.Summary())
 	}
-	ours := !l.Draining()
-	l.logf("self-update: %s verified; draining", to)
-	if err := l.DrainAndWait(ctx); err != nil {
-		l.mu.Lock()
-		l.updating = false
-		l.mu.Unlock()
-		l.logf("self-update to %s: %v; not updated", to, err)
-		l.notify()
-		return
+	ours := false
+	if l.sandboxed() {
+		ours = !l.Draining()
+		l.logf("self-update: %s verified; draining (sandboxed sessions end with the node)", to)
+		if err := l.DrainAndWait(ctx); err != nil {
+			l.mu.Lock()
+			l.updating = false
+			l.mu.Unlock()
+			l.logf("self-update to %s: %v; not updated", to, err)
+			l.notify()
+			return
+		}
+	} else {
+		l.logf("self-update: %s verified; swapping and restarting, sessions left running", to)
 	}
 	err = l.Update.Begin(from, to)
 	if err == nil {
@@ -199,9 +207,17 @@ func (l *Loop) update(ctx context.Context, from, to string) {
 	l.mu.Lock()
 	l.updating = false
 	l.restart = true
+	n := l.sessions()
 	l.mu.Unlock()
-	l.logf("self-update: %s is in place; exiting for the service to start it", to)
+	l.logf("self-update: %s is in place; exiting for the service to start it, %d session(s) left for it to adopt", to, n)
+	l.detach()
 	l.notify()
+}
+
+// sandboxed reports whether the node runs its sessions in pods, which
+// end with the node: a self-update then drains before it swaps.
+func (l *Loop) sandboxed() bool {
+	return l.Sandbox != nil && l.Sandbox.Mode == SandboxOn
 }
 
 // updateFailed records a failed update: the state file and the heartbeat

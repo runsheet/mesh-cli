@@ -15,6 +15,15 @@ import (
 // Restart=always), log to ~/.mesh/node.log, and put the tools a session
 // needs — claude, gh, git — on PATH; the node's token and config are
 // read from ~/.mesh as ever.
+//
+// Neither reaches the node's sessions when it stops or restarts the
+// node (adr-009, `mesh node upgrade`): a session runs in its own
+// transient systemd scope — a unit and a cgroup of its own, not the
+// service's — or, without a user systemd, detached in a session and
+// process group of its own. The unit's KillMode=process signals the
+// node's main process alone, so even a detached session left in the
+// service's cgroup is not killed with it; the LaunchAgent's
+// AbandonProcessGroup does the same under launchd.
 
 // ServiceLabel names the service to launchd and systemd.
 const ServiceLabel = "io.projectmesh.mesh-node"
@@ -129,6 +138,8 @@ var launchAgentTmpl = template.Must(template.New("plist").Parse(`<?xml version="
 	<string>{{.Log}}</string>
 	<key>ProcessType</key>
 	<string>Background</string>
+	<key>AbandonProcessGroup</key>
+	<true/>
 </dict>
 </plist>
 `))
@@ -147,6 +158,7 @@ Environment={{.Key}}={{.Value}}
 {{- end}}
 Restart=always
 RestartSec=10
+KillMode=process
 StandardOutput=append:{{.Log}}
 StandardError=append:{{.Log}}
 

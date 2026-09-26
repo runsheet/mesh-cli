@@ -192,6 +192,72 @@ func TestAdoptedBuildFinishesAcrossARestart(t *testing.T) {
 	}
 }
 
+// Restart (SIGHUP, `mesh node upgrade`) makes Run return ErrRestart at
+// once while a build session runs — no drain, no wait — and the session
+// is still alive afterwards; a new loop on the same root adopts it and
+// finishes the item.
+func TestRestartExitsAtOnceAndTheSessionIsAdopted(t *testing.T) {
+	sessionunit.PollInterval = 20 * time.Millisecond
+	t.Setenv("SLOW_EVENTS", "30")
+	t.Setenv("SLOW_SLEEP", "0.1")
+	f := seed(t)
+	cfg := registeredNode(t, f)
+	root := t.TempDir()
+	claude := &countedClaude{ClaudeCode: &harness.ClaudeCode{Binary: slowClaudeScript(t), Unit: sessionunit.Detached{}}}
+
+	loop1, _ := adoptNode(t, f, cfg, root, claude)
+	ran1 := make(chan error, 1)
+	go func() { ran1 <- loop1.Run(context.Background()) }()
+	var found []FoundSession
+	waitFor(t, func() bool {
+		found, _ = FindSessions(root, []string{cfg.NodeID})
+		return len(found) == 1 && found[0].State.Offset > 0
+	})
+	pid := found[0].State.PID
+	t.Cleanup(func() { syscall.Kill(-pid, syscall.SIGKILL) })
+	asked := time.Now()
+	loop1.Restart()
+	select {
+	case err := <-ran1:
+		if err != ErrRestart {
+			t.Fatalf("Run = %v, want ErrRestart", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return promptly after Restart")
+	}
+	if took := time.Since(asked); took > time.Second {
+		t.Fatalf("Run took %s to return", took)
+	}
+	if loop1.Draining() {
+		t.Fatal("Restart drained")
+	}
+	if syscall.Kill(pid, 0) != nil {
+		t.Fatalf("the session (pid %d) died with its node", pid)
+	}
+	if n := len(f.CallsNamed("finishWorkItem")); n != 0 {
+		t.Fatalf("finished before the restart: %d", n)
+	}
+
+	loop2, _ := adoptNode(t, f, cfg, root, claude)
+	found, err := FindSessions(root, []string{cfg.NodeID})
+	if err != nil || len(found) != 1 || found[0].State.PID != pid || !found[0].Alive() {
+		t.Fatalf("found %+v, %v", found, err)
+	}
+	ctx2, stop2 := context.WithTimeout(context.Background(), 20*time.Second)
+	defer stop2()
+	if n := loop2.AdoptSessions(ctx2, found); n != 1 {
+		t.Fatalf("adopted %d", n)
+	}
+	waitFor(t, func() bool { return f.Item(item1)["status"] == "evaluating" })
+	loop2.wg.Wait()
+	if n := len(f.CallsNamed("finishWorkItem")); n != 1 {
+		t.Fatalf("finishWorkItem calls = %d, want 1", n)
+	}
+	if n := claude.starts.Load(); n != 1 {
+		t.Fatalf("claude started %d times", n)
+	}
+}
+
 // deadPID is the pid of a process that has ended.
 func deadPID(t *testing.T) int {
 	t.Helper()

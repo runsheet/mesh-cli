@@ -426,15 +426,20 @@ since the last report), pushes the branch with your credentials and
 
 In both modes `--unattended` adds `--dangerously-skip-permissions` so a
 session never waits on a permission prompt — only on a machine you trust
-with that. On SIGTERM the node kills its sessions and leaves claimed items
-for a retry; it never fails an item on its own shutdown.
+with that. On SIGTERM the node exits leaving its host `claude -p`
+sessions running in their own units, for the next `mesh node start` to
+adopt; a channel-mode or sandboxed session ends with it and its claimed
+item is left for a retry. It never fails an item on its own shutdown.
+SIGHUP does the same and execs the binary again at once.
 
-### Drain: swap the binary without a restart
+### Drain: take a machine out of service
 
-A restart kills the node's running `claude` sessions (SIGTERM, above): a
-build is left for a retry and what it had not pushed is lost. To put a
-new binary — or a change the tick does not re-read, such as the models —
-in place, drain the node instead:
+A node's host `claude -p` sessions run in their own units and outlive a
+restart — the next process adopts them (see [Upgrading a node without
+ending sessions](#upgrading-a-node-without-ending-sessions), which is how
+a new binary goes in). A channel-mode session and a sandboxed one still
+end with the node. To take a machine out of service — or to restart a
+node whose sessions would end with it — drain it:
 
 ```bash
 mesh node drain          # or: kill -USR1 "$(cat ~/.mesh/node.pid)"
@@ -461,8 +466,10 @@ well, a field sent only while draining; until the platform's node record
 keeps it (runsheet `update-nodes-from-console`), the drain is known on
 the machine alone.
 
-Swapping the binary on the mini (a released version needs none of this:
-`mesh node update`, under Release):
+Swapping the binary on the mini by a drain — for a sandboxed or a
+channel-mode node, whose sessions do not outlive it (anything else:
+`mesh node upgrade`, next section; a released version: `mesh node
+update`, under Release):
 
 ```bash
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh
@@ -474,6 +481,85 @@ ssh mini 'systemctl --user status io.projectmesh.mesh-node.service'   # a new pi
 Replacing the file under a running process is safe (the old one keeps
 its inode); the drain is what makes it take. Capacity and the orgs served
 need neither: they are re-read every tick (see Start).
+
+### Upgrading a node without ending sessions
+
+`mesh node upgrade` installs a new binary and restarts the node **at
+once, without a drain**: every session the node runs — builds,
+evaluations, plans, research, rebases — is its own unit (a transient
+`systemd --user` scope named `mesh-session-<kind>-<subject>-<rand>`, or on
+macOS a detached process group), so the node's exit does not end it,
+and the new process adopts each one on start: it heartbeats the item at
+once (the platform never sees it stall), follows the session's
+`output.jsonl` from its saved offset and finishes the item as if nothing
+had happened. The heartbeat lists them as `adopted` while they run.
+
+```sh
+mesh node upgrade                          # the latest release: verify, pull its image, swap, restart
+mesh node upgrade --version v0.5.0         # that release
+mesh node upgrade --binary ./mesh-linux    # a local build, once `./mesh-linux version` answers
+```
+
+A release is verified exactly as by `mesh node update` (signed
+`SHA256SUMS`, its node image pulled); a local build must answer
+`<path> version` with `mesh <version>`. Either replaces the executable
+keeping the old one as `<path>.prev`, and a new binary that fails to
+start twice is rolled back to it. Then the node is restarted:
+
+- under systemd: `systemctl --user restart io.projectmesh.mesh-node.service`.
+  The unit's `KillMode=process` signals the node alone; a unit installed
+  before it has the default, which still spares the scopes (another
+  cgroup) — `mesh node service install` writes the new one;
+- under launchd: `launchctl kickstart -k gui/<uid>/io.projectmesh.mesh-node`
+  (the agent has `AbandonProcessGroup`);
+- with no service: `SIGHUP` to the pid in `~/.mesh/node.pid`, and the node
+  execs the new binary in place (same pid). `kill -HUP "$(cat
+  ~/.mesh/node.pid)"` does the same by hand, for a binary already in place.
+
+A node whose sandbox is on is refused (its sessions' pods end with it;
+`--force` restarts it anyway): use `mesh node update`, which drains
+first. A platform-driven self-update takes the same path as `upgrade`:
+verify, swap, exit at once, adopt.
+
+**On the mini.** Build, copy, upgrade, and watch the sessions carry on:
+
+```sh
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh
+scp mesh-linux mini:bin/mesh.new
+
+# before
+ssh mini 'mesh node status; systemctl --user list-units "mesh-session-*"'
+#   This machine: node running (pid 41210).
+#   UNIT                                              LOAD   ACTIVE SUB     DESCRIPTION
+#   mesh-session-build-<item id>-3fa1c2d0.scope       loaded active running /home/chris/.local/bin/claude …
+#   mesh-session-evaluate-<item id>-9b27e4aa.scope    loaded active running /home/chris/.local/bin/claude …
+
+ssh mini 'mesh node upgrade --binary ~/bin/mesh.new'
+#   /home/chris/bin/mesh.new answers `version` with v0.5.0.
+#   v0.5.0 is in place at /home/chris/bin/mesh; the previous binary is kept at /home/chris/bin/mesh.prev.
+#   Restarted io.projectmesh.mesh-node.service: the new process adopts the sessions the old one left running …
+
+# after: a new pid, the same scopes still running
+ssh mini 'mesh node status; systemctl --user list-units "mesh-session-*"'
+#   This machine: node running (pid 41877).
+#   mesh-session-build-<item id>-3fa1c2d0.scope       loaded active running …
+#   mesh-session-evaluate-<item id>-9b27e4aa.scope    loaded active running …
+ssh mini 'grep -E "adopted|restarting" ~/.mesh/node.log | tail'
+#   adopted a build session of <item id> (pid …, running)
+#   item <goal>/<seq>: adopted its running session (pid …, from byte …)
+```
+
+The scopes are the same units before and after — no session is started
+again — and each item goes on to `evaluating` as usual when its session
+ends; `mesh node status` in the console's Nodes page shows the new
+version and the adopted sessions.
+
+<!-- RECORDED MANUAL RUN: replace this block with the run on the mini —
+     date, the versions from → to, the `mesh node status` and
+     `systemctl --user list-units 'mesh-session-*'` output before and
+     after, and the node.log lines of the adoption. -->
+> **Recorded manual run on the mini:** _not yet recorded — to be filled
+> in from the first `mesh node upgrade` there._
 
 ### Near the plan's limits
 
@@ -1353,18 +1439,24 @@ for its OS/arch with `SHA256SUMS` and the Sigstore bundle, and verifies
 them as above, and pulls its [node image](#node-image), *before*
 anything else — a refused release or a failed pull costs no work,
 its reason goes on every heartbeat (`updateError`) and the version is
-left for an hour. A verified one drains the node (see Drain), swaps the
-executable atomically, keeping the one it replaced as `<path>.prev`, and
-exits 0; systemd (`Restart=always`) or launchd (`KeepAlive`) starts the
-new binary, whose first heartbeat reports the new version and confirms
-the update. `~/.mesh/update.json` counts the starts of a new binary: one
+left for an hour. A verified one swaps the executable atomically,
+keeping the one it replaced as `<path>.prev`, and exits 0 at once — no
+drain: its sessions run on and the new process adopts them (see
+[Upgrading a node without ending sessions](#upgrading-a-node-without-ending-sessions);
+a sandboxed node drains first). systemd (`Restart=always`) or launchd
+(`KeepAlive`) starts the new binary, whose first heartbeat reports the
+new version and confirms the update. `~/.mesh/update.json` counts the starts of a new binary: one
 that fails to start twice is rolled back — the third start puts `.prev`
 back, reports the failure on the heartbeat as the old version and exits
 0 for the old binary to start — and that version is not tried again
 until the platform asks for another.
 
-**By hand.** `mesh node update [version]` does the same on this machine
-(the latest release that is not a prerelease when no version is given):
+**By hand.** `mesh node upgrade` installs a release (or a local build)
+and restarts at once, as the platform's update does (see [Upgrading a
+node without ending sessions](#upgrading-a-node-without-ending-sessions)).
+`mesh node update [version]` is the draining variant, for a node whose
+sessions would end with it (the latest release that is not a prerelease
+when no version is given):
 
 ```sh
 mesh node update v0.4.0                  # verify, pull mesh-node:v0.4.0, drain the node, swap
