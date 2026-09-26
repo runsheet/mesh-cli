@@ -1,6 +1,7 @@
 package node
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -95,11 +96,12 @@ func LogLine(at time.Time, seq int, summary string) string {
 
 const logHeading = "## Log"
 
-// RenderGoalDoc renders the document, keeping the log lines of existing
-// (the file as it is now, or "") and appending logLine unless the log
-// already ends with that exact line.
+// RenderGoalDoc renders the document, keeping the log lines and the
+// sections it does not own of existing (the file as it is now, or "")
+// and appending logLine unless the log already ends with that exact
+// line.
 func RenderGoalDoc(existing string, d GoalDoc, logLine string) string {
-	logLines := existingLog(existing)
+	logLines, kept := existingSections(existing)
 	logLine = strings.TrimSpace(logLine)
 	if logLine != "" && (len(logLines) == 0 || logLines[len(logLines)-1] != logLine) {
 		logLines = append(logLines, logLine)
@@ -140,6 +142,9 @@ func RenderGoalDoc(existing string, d GoalDoc, logLine string) string {
 		}
 		fmt.Fprintf(&b, "| %d | %s | %s | %s | %s | $%.2f |\n", it.Seq, cell(it.Title), it.Status, cell(branch), cell(pr), float64(it.CostCents)/100)
 	}
+	for _, sec := range kept {
+		b.WriteString("\n" + sec + "\n")
+	}
 	b.WriteString("\n" + logHeading + "\n\n")
 	for _, l := range logLines {
 		b.WriteString(l + "\n")
@@ -151,20 +156,46 @@ func cell(s string) string {
 	return strings.ReplaceAll(strings.Join(strings.Fields(s), " "), "|", "\\|")
 }
 
-// existingLog returns the log lines of a rendered document.
-func existingLog(doc string) []string {
-	_, after, ok := strings.Cut(doc, "\n"+logHeading+"\n")
-	if !ok {
-		return nil
-	}
-	var lines []string
-	for _, l := range strings.Split(after, "\n") {
-		l = strings.TrimRight(l, " \t\r")
-		if strings.HasPrefix(l, "- ") {
-			lines = append(lines, l)
+// ownHeadings are the sections RenderGoalDoc writes; every other `## `
+// section of an existing document is someone else's and is kept.
+var ownHeadings = map[string]bool{"## Statement": true, "## Acceptance": true, "## Items": true, logHeading: true}
+
+// existingSections returns the log lines of a rendered document and,
+// in order, the `## ` sections it does not own, each trimmed of blank
+// lines at either end. A section after the log is still a section: only
+// the log's own `- ` lines are log lines.
+func existingSections(doc string) (logLines, kept []string) {
+	var heading string
+	var body []string
+	flush := func() {
+		switch {
+		case heading == logHeading:
+			for _, l := range body {
+				if l = strings.TrimRight(l, " \t\r"); strings.HasPrefix(l, "- ") {
+					logLines = append(logLines, l)
+				}
+			}
+		case heading != "" && !ownHeadings[heading]:
+			kept = append(kept, strings.Trim(heading+"\n"+strings.Join(body, "\n"), "\n"))
 		}
 	}
-	return lines
+	inFront := strings.HasPrefix(doc, "---\n")
+	for i, l := range strings.Split(doc, "\n") {
+		if inFront {
+			if i > 0 && l == "---" {
+				inFront = false
+			}
+			continue
+		}
+		if strings.HasPrefix(l, "## ") {
+			flush()
+			heading, body = strings.TrimRight(l, " \t\r"), nil
+			continue
+		}
+		body = append(body, l)
+	}
+	flush()
+	return logLines, kept
 }
 
 // WriteGoalDoc renders and writes the document in workspace. It reports
@@ -184,4 +215,67 @@ func WriteGoalDoc(workspace string, d GoalDoc, logLine string) (rel string, chan
 		return rel, false, err
 	}
 	return rel, true, os.WriteFile(path, []byte(out), 0o644)
+}
+
+// RecordEndedGoal writes the goal's document once, when the goal has
+// ended (ADR 003, decision 4): into its primary repo — the project's
+// first — on that repo's default branch, committed and pushed straight,
+// with no item branch and no PR. A goal still live writes nothing. The
+// checkout is its own (seq 0: no item has it), fresh from the default
+// branch, since the primary repo need not be the one an item ran in;
+// like the planner's Fetch it is project-wide, not one item's, so it is
+// on the node's own credentials. No log line is appended: the doc is the
+// goal's final state alone, the same whichever finish writes it, so a
+// second writer finds it unchanged and pushes nothing.
+func RecordEndedGoal(ctx context.Context, gw Gateway, ws Workspacer, root, orgLogin, goalID string, logf func(string, ...any)) error {
+	goal, err := gw.Goal(ctx, goalID)
+	if err != nil {
+		return fmt.Errorf("goal: %w", err)
+	}
+	if isLiveGoal(goal.Status) {
+		return nil
+	}
+	project, err := gw.Project(ctx, goal.ProjectID)
+	if err != nil {
+		return fmt.Errorf("project: %w", err)
+	}
+	if len(project.RepoIDs) == 0 {
+		return fmt.Errorf("project %s has no repos", project.Slug)
+	}
+	primary, err := gw.Repo(ctx, project.RepoIDs[0])
+	if err != nil {
+		return fmt.Errorf("primary repo: %w", err)
+	}
+	base := primary.DefaultBranch
+	if base == "" {
+		base = "main"
+	}
+	dir, err := ws.Prepare(ctx, WorkspaceSpec{Root: root, GoalSlug: goal.Slug, Seq: 0, Repo: primary.FullName(), Branch: base, BaseRef: base})
+	if err != nil {
+		return fmt.Errorf("workspace: %w", err)
+	}
+	items, err := gw.GoalWorkItems(ctx, goal.ID)
+	if err != nil {
+		return fmt.Errorf("items: %w", err)
+	}
+	parent := ""
+	if cx, err := FetchContext(ctx, gw, orgLogin, project.Slug); err == nil {
+		parent = cx.PRDSlug
+	}
+	doc := GoalDoc{Slug: goal.Slug, Title: goal.Title, Statement: goal.Statement, Acceptance: goal.Acceptance,
+		GoalStatus: goal.Status, Parent: parent, SpentCents: goal.SpentCents, Items: items}
+	rel, changed, err := WriteGoalDoc(dir, doc, "")
+	if err != nil || !changed {
+		return err
+	}
+	if err := ws.Commit(ctx, dir, []string{rel}, fmt.Sprintf("docs(mesh): goal %s — finished", goal.Slug)); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+	if _, err := ws.Push(ctx, dir, base); err != nil {
+		return fmt.Errorf("push %s: %w", base, err)
+	}
+	if logf != nil {
+		logf("goal %s: %s; wrote %s to %s@%s", goal.Slug, goal.Status, rel, primary.FullName(), base)
+	}
+	return nil
 }

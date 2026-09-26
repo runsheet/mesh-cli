@@ -9,14 +9,17 @@ on:
 permissions:
   contents: read
 
+# a newer push to main supersedes a build still running: only the latest
+# main is worth publishing, and five builds per merge queued on the mini's
+# two org runners held the PR checks behind them for up to 36 minutes
 concurrency:
   group: cli-release-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   build:
     name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, mini]
     strategy:
       fail-fast: false
       matrix:
@@ -66,7 +69,7 @@ jobs:
   publish:
     name: Publish release to projectmesh-io/mesh
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, mini]
 
     steps:
       - name: Download artifacts

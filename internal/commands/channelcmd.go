@@ -35,10 +35,6 @@ var channelServeCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		workRoot, err := node.WorkRoot()
-		if err != nil {
-			return err
-		}
 		sock := channelSockFlag
 		if sock == "" {
 			if sock, err = channel.SockPath(); err != nil {
@@ -55,7 +51,7 @@ var channelServeCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		h := &channel.Handler{GW: gw, Cfg: cfg, Scopes: scopes, WS: &node.Git{Log: os.Stderr}, WorkRoot: workRoot, Log: logger}
+		h := &channel.Handler{GW: gw, Cfg: cfg, Scopes: scopes, Log: logger}
 		srv := &channel.Server{Instructions: channel.Instructions, Tools: h.Tools()}
 		var conn *channel.Conn
 		h.OnDone = func(itemID, outcome string) {

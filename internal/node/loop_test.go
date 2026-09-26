@@ -2,10 +2,12 @@ package node
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -43,6 +45,10 @@ func seed(t *testing.T) *gatewaytest.Fake {
 		"brief": "A test for the thing.", "acceptance": "the test fails", "repoId": repoID, "baseRef": "main", "status": "ready", "dependsOn": []string{}}
 	f.WorkItems[item2] = map[string]any{"id": item2, "goalId": goalID, "orgId": orgID, "seq": 2, "title": "Make it pass",
 		"brief": "Implement.", "acceptance": "go test passes", "repoId": repoID, "baseRef": "main", "status": "pending", "dependsOn": []string{item1}}
+	// each item's own GitHub token, an hour to live
+	exp := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	f.GitHubTokens[item1] = map[string]any{"token": "ghs_item1", "expiresAt": exp, "repo": "acme/widgets"}
+	f.GitHubTokens[item2] = map[string]any{"token": "ghs_item2", "expiresAt": exp, "repo": "acme/widgets"}
 	f.Documents["acme/mesh"] = []map[string]any{
 		{"slug": "adr-001", "title": "ADR 001", "kind": "adr", "repo": "acme/widgets", "path": "specs/adr-001.md"},
 		{"slug": "prd", "title": "PRD", "kind": "prd", "repo": "acme/widgets", "path": "specs/prd.md"},
@@ -66,14 +72,35 @@ type fakeWS struct {
 	root     string
 	prepared []WorkspaceSpec
 	pushed   []string
-	commits  []string
 	fetched  []string
+	// commits are "<msg> [<paths>]" for each Commit
+	commits []string
+	// pushedHead and pushedErr are what PushedHead answers.
+	pushedHead string
+	pushedErr  error
+	// events are Authorize (with its token), Prepare, Diff and Push in
+	// the order they came
+	events []string
+}
+
+func (w *fakeWS) Authorize(_ context.Context, spec WorkspaceSpec, tok *gateway.GitHubToken) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.events = append(w.events, "authorize "+tok.Token)
+	return nil
+}
+
+func (w *fakeWS) Events() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]string(nil), w.events...)
 }
 
 func (w *fakeWS) Prepare(_ context.Context, spec WorkspaceSpec) (string, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.prepared = append(w.prepared, spec)
+	w.events = append(w.events, "prepare")
 	dir := spec.Dir()
 	return dir, os.MkdirAll(dir, 0o755)
 }
@@ -82,6 +109,7 @@ func (w *fakeWS) Commit(_ context.Context, dir string, paths []string, msg strin
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.commits = append(w.commits, msg+" ["+strings.Join(paths, ",")+"]")
+	w.events = append(w.events, "commit")
 	return nil
 }
 
@@ -89,7 +117,20 @@ func (w *fakeWS) Push(_ context.Context, dir, branch string) (string, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.pushed = append(w.pushed, branch)
+	w.events = append(w.events, "push")
 	return "abc123def456", nil
+}
+
+// PushedHead reads back what the session pushed: pushedHead when set,
+// else the error pushedErr.
+func (w *fakeWS) PushedHead(_ context.Context, dir, branch, base string) (string, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.events = append(w.events, "pushed-head "+branch)
+	if w.pushedErr != nil {
+		return "", w.pushedErr
+	}
+	return w.pushedHead, nil
 }
 
 func (w *fakeWS) Fetch(_ context.Context, repo, dir string) error {
@@ -100,16 +141,13 @@ func (w *fakeWS) Fetch(_ context.Context, repo, dir string) error {
 }
 
 // assertNoGoalDoc: an item's own branch carries no goal-doc churn — no
-// `docs(mesh): goal` commit, and no specs/goal-*.md in any workspace the
-// runner prepared.
+// specs/goal-*.md in any workspace the runner prepared, and no commit.
 func assertNoGoalDoc(t *testing.T, ws *fakeWS) {
 	t.Helper()
 	ws.mu.Lock()
 	defer ws.mu.Unlock()
-	for _, c := range ws.commits {
-		if strings.Contains(c, "docs(mesh): goal") {
-			t.Fatalf("an item's branch must carry no goal-doc commit: %v", ws.commits)
-		}
+	if len(ws.commits) != 0 {
+		t.Fatalf("the runner committed on an item's branch: %v", ws.commits)
 	}
 	for _, spec := range ws.prepared {
 		if docs, _ := filepath.Glob(filepath.Join(spec.Dir(), "specs", "goal-*.md")); len(docs) != 0 {
@@ -119,6 +157,9 @@ func assertNoGoalDoc(t *testing.T, ws *fakeWS) {
 }
 
 func (w *fakeWS) Diff(_ context.Context, dir, base string) (string, error) {
+	w.mu.Lock()
+	w.events = append(w.events, "diff")
+	w.mu.Unlock()
 	return "+++ b/thing_test.go\n+func TestThing(t *testing.T) {}", nil
 }
 
@@ -128,12 +169,24 @@ type fakeHarness struct {
 	fail bool
 	// text is the final message when set (an evaluator's verdict).
 	text string
+	// texts, when set, are the final messages of the next runs in turn,
+	// before text.
+	texts []string
+	// toolCalls are the MCP calls by server a run reports.
+	toolCalls map[string]int
 }
 
 func (h *fakeHarness) Name() string { return "claude-code" }
 func (h *fakeHarness) Run(ctx context.Context, job harness.Job, on func(harness.Progress)) (harness.Result, error) {
 	h.mu.Lock()
 	h.jobs = append(h.jobs, job)
+	text := "Implemented and tested."
+	if h.text != "" {
+		text = h.text
+	}
+	if len(h.texts) > 0 {
+		text, h.texts = h.texts[0], h.texts[1:]
+	}
 	h.mu.Unlock()
 	if on == nil {
 		on = func(harness.Progress) {}
@@ -144,17 +197,13 @@ func (h *fakeHarness) Run(ctx context.Context, job harness.Job, on func(harness.
 		return harness.Result{Success: false, Text: "could not", CostUSD: 0.75, SessionID: "s-1"}, nil
 	}
 	on(harness.Progress{Text: "done", CostUSD: 1.25})
-	text := "Implemented and tested."
-	if h.text != "" {
-		text = h.text
-	}
-	return harness.Result{Success: true, Text: text, CostUSD: 1.25, SessionID: "s-1"}, nil
+	return harness.Result{Success: true, Text: text, CostUSD: 1.25, SessionID: "s-1", ToolCalls: h.toolCalls}, nil
 }
 
 func TestLoopClaimsRunsAndFinishes(t *testing.T) {
 	f := seed(t)
 	gw := gateway.New(f.URL(), "rs_test")
-	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "test-node", NodeID: gateway.NodeID(mustUUID(orgID), "test-node").String(), Capacity: 2}
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "test-node", NodeID: gateway.NodeID(mustUUID(orgID), "test-node").String(), Capacity: Fixed(2)}
 	if err := gw.RegisterNode(context.Background(), gateway.RegisterNodeInput{NodeID: cfg.NodeID, OrgID: orgID, OwnerID: f.UserID, Name: "n", Slug: "test-node", Harnesses: []string{"claude-code"}, Capacity: 2, Version: "test"}); err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +290,7 @@ func TestLoopSkipsRefusedClaim(t *testing.T) {
 	f := seed(t)
 	f.Refuse["claimWorkItem"] = "item is claimed, not ready"
 	gw := gateway.New(f.URL(), "rs_test")
-	cfg := &Config{OrgLogin: "acme", OrgID: orgID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: 1}
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: Fixed(1)}
 	_ = gw.RegisterNode(context.Background(), gateway.RegisterNodeInput{NodeID: cfg.NodeID, OrgID: orgID, OwnerID: f.UserID, Name: "n", Slug: "n"})
 	dispatched := 0
 	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Interval: time.Hour, Dispatch: func(context.Context, gateway.WorkItem) { dispatched++ }}
@@ -254,14 +303,14 @@ func TestLoopSkipsRefusedClaim(t *testing.T) {
 func TestRunnerFailsAnUnsuccessfulSession(t *testing.T) {
 	f := seed(t)
 	gw := gateway.New(f.URL(), "rs_test")
-	cfg := &Config{OrgLogin: "acme", OrgID: orgID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: 1}
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: Fixed(1)}
 	if err := gw.ClaimWorkItem(context.Background(), item1, cfg.NodeID, "claude-code"); err != nil {
 		t.Fatal(err)
 	}
 	ws := &fakeWS{root: t.TempDir()}
-	runner := &Runner{GW: gw, Harness: &fakeHarness{fail: true}, WS: ws, Cfg: cfg, WorkRoot: ws.root, ProgressEvery: time.Hour}
+	runner := &Runner{GW: gw, Harness: &fakeHarness{fail: true}, WS: ws, Cfg: cfg, Scopes: scopesOf(cfg), WorkRoot: ws.root, ProgressEvery: time.Hour}
 	var item gateway.WorkItem
-	item.ID, item.GoalID, item.RepoID, item.Seq, item.Title = item1, goalID, repoID, 1, "Write the failing test"
+	item.ID, item.OrgID, item.GoalID, item.RepoID, item.Seq, item.Title = item1, orgID, goalID, repoID, 1, "Write the failing test"
 	if err := runner.RunItem(context.Background(), item); err == nil {
 		t.Fatal("expected an error")
 	}
@@ -282,10 +331,101 @@ func TestRunnerFailsAnUnsuccessfulSession(t *testing.T) {
 	}
 }
 
+// A goal spanning two repos ends with an item in the second: its doc is
+// written once, final, on the default branch of the project's first repo
+// — never on an item's branch, never in the second repo — and a second
+// writer finding the doc already final pushes nothing.
+func TestRunnerWritesEndedGoalDocOnceInPrimaryRepo(t *testing.T) {
+	f := seed(t)
+	const repoID2 = "cccccccc-2222-4222-8222-cccccccccccc"
+	f.Repos[repoID2] = map[string]any{"id": repoID2, "accountId": acctID, "name": "gadgets", "defaultBranch": "trunk"}
+	f.Projects[projID]["repoIds"] = []string{repoID, repoID2}
+	f.WorkItems[item1]["status"] = "merged"
+	f.WorkItems[item2]["repoId"], f.WorkItems[item2]["status"], f.WorkItems[item2]["baseRef"] = repoID2, "ready", "trunk"
+	f.GitHubTokens[item2]["repo"] = "acme/gadgets"
+	// the platform: item 2's finish is the goal's last — it merges and
+	// the goal is done with its spend final
+	f.After = func(name string, in map[string]any) {
+		if name == "finishWorkItem" && in["aggregateId"] == item2 {
+			f.WorkItems[item2]["status"] = "merged"
+			f.Goals[goalID]["status"] = "done"
+			f.Goals[goalID]["spentCents"] = 425
+		}
+	}
+	gw := gateway.New(f.URL(), "rs_test")
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: Fixed(1)}
+	ws := &fakeWS{root: t.TempDir()}
+	runner := &Runner{GW: gw, Harness: &fakeHarness{}, WS: ws, Cfg: cfg, Scopes: scopesOf(cfg), WorkRoot: ws.root, ProgressEvery: time.Hour}
+	ctx := context.Background()
+	if err := gw.ClaimWorkItem(ctx, item2, cfg.NodeID, "claude-code"); err != nil {
+		t.Fatal(err)
+	}
+	var item gateway.WorkItem
+	item.ID, item.GoalID, item.OrgID, item.RepoID, item.Seq, item.BaseRef = item2, goalID, orgID, repoID2, 2, "trunk"
+	if err := runner.RunItem(ctx, item); err != nil {
+		t.Fatal(err)
+	}
+	// another item's finish racing this one sees the same ended goal
+	if err := RecordEndedGoal(ctx, gw, ws, ws.root, "acme", goalID, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// the items ran in gadgets on their own branches; the doc was
+	// prepared, committed and pushed once, in widgets on main
+	var docSpecs []WorkspaceSpec
+	for _, spec := range ws.prepared {
+		switch spec.Repo {
+		case "acme/gadgets":
+			if !strings.HasPrefix(spec.Branch, "mesh/ship-it-") {
+				t.Fatalf("gadgets prepared off an item branch: %+v", spec)
+			}
+			if docs, _ := filepath.Glob(filepath.Join(spec.Dir(), "specs", "goal-*.md")); len(docs) != 0 {
+				t.Fatalf("the second repo must carry no goal doc: %v", docs)
+			}
+		case "acme/widgets":
+			docSpecs = append(docSpecs, spec)
+		default:
+			t.Fatalf("prepared: %+v", spec)
+		}
+	}
+	// the second writer prepares the primary again, but the doc is
+	// already final: nothing to commit, nothing to push
+	if len(docSpecs) != 2 || docSpecs[0].Branch != "main" || docSpecs[0].BaseRef != "main" {
+		t.Fatalf("primary repo prepared: %+v", docSpecs)
+	}
+	var docCommits []string
+	for _, c := range ws.commits {
+		if strings.Contains(c, "docs(mesh): goal") {
+			docCommits = append(docCommits, c)
+		}
+	}
+	if len(docCommits) != 1 || docCommits[0] != "docs(mesh): goal ship-it — finished [specs/goal-ship-it.md]" {
+		t.Fatalf("doc commits: %v", ws.commits)
+	}
+	if strings.Join(ws.pushed, ",") != "mesh/ship-it-2,main" {
+		t.Fatalf("pushed: %v", ws.pushed)
+	}
+	if len(f.CallsNamed("failWorkItem")) != 0 {
+		t.Fatal("no item fails")
+	}
+
+	// the final state: approved, with a summary of items merged and spend
+	body, err := os.ReadFile(GoalDocPath(docSpecs[0].Dir(), "ship-it"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := string(body)
+	for _, want := range []string{"\nstatus: approved\n", "\nsummary: 2 of 2 items merged · $4.25 spent\n", "\nparent: prd\n", "Mesh goal `ship-it`, done."} {
+		if !strings.Contains(doc, want) {
+			t.Fatalf("doc lacks %q:\n%s", want, doc)
+		}
+	}
+}
+
 func TestRunnerLeavesItemOnShutdown(t *testing.T) {
 	f := seed(t)
 	gw := gateway.New(f.URL(), "rs_test")
-	cfg := &Config{OrgLogin: "acme", OrgID: orgID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: 1}
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: Fixed(1)}
 	_ = gw.ClaimWorkItem(context.Background(), item1, cfg.NodeID, "claude-code")
 	ws := &fakeWS{root: t.TempDir()}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -296,7 +436,7 @@ func TestRunnerLeavesItemOnShutdown(t *testing.T) {
 	})
 	runner := &Runner{GW: gw, Harness: blocking, WS: ws, Cfg: cfg, Scopes: scopesOf(cfg), WorkRoot: ws.root, ProgressEvery: time.Hour}
 	var item gateway.WorkItem
-	item.ID, item.GoalID, item.RepoID, item.Seq = item1, goalID, repoID, 1
+	item.ID, item.OrgID, item.GoalID, item.RepoID, item.Seq = item1, orgID, goalID, repoID, 1
 	if err := runner.RunItem(ctx, item); err != context.Canceled {
 		t.Fatalf("err = %v", err)
 	}
@@ -341,7 +481,7 @@ func TestLoopServesEveryOrgOfItsOwner(t *testing.T) {
 	gw := gateway.New(f.URL(), "rs_test")
 	ctx := context.Background()
 
-	cfg := &Config{Slug: "box", Name: "Box", Capacity: 1}
+	cfg := &Config{Slug: "box", Name: "Box", Capacity: Fixed(1)}
 	scopes, err := ResolveScopes(ctx, gw, cfg)
 	if err != nil || len(scopes) != 2 || scopes[0].Login != "acme" || scopes[1].Login != "globex" || scopes[0].NodeID == scopes[1].NodeID {
 		t.Fatalf("scopes = %+v, %v", scopes, err)
@@ -386,7 +526,7 @@ func TestLoopServesEveryOrgOfItsOwner(t *testing.T) {
 func TestRunnerAsksForItsMCPServersPerItem(t *testing.T) {
 	f := seed(t)
 	gw := gateway.New(f.URL(), "rs_test")
-	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: 1}
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: Fixed(1)}
 	ws := &fakeWS{root: t.TempDir()}
 	h := &fakeHarness{}
 	calls := 0
@@ -400,7 +540,7 @@ func TestRunnerAsksForItsMCPServersPerItem(t *testing.T) {
 	f.WorkItems[item2]["status"] = "ready"
 	for seq, id := range []string{item1, item2} {
 		var item gateway.WorkItem
-		item.ID, item.GoalID, item.RepoID, item.Seq, item.Title = id, goalID, repoID, seq+1, "Write the failing test"
+		item.ID, item.OrgID, item.GoalID, item.RepoID, item.Seq, item.Title = id, orgID, goalID, repoID, seq+1, "Write the failing test"
 		if err := gw.ClaimWorkItem(context.Background(), id, cfg.NodeID, "claude-code"); err != nil {
 			t.Fatal(err)
 		}
@@ -444,7 +584,7 @@ func newPriorityFake(t *testing.T) *priorityFake {
 	f.Orgs = append(f.Orgs, map[string]any{"id": org2, "login": "globex", "accountId": acct2})
 	f.Accounts[acct2] = map[string]any{"id": acct2, "login": "globex"}
 	gw := gateway.New(f.URL(), "rs_test")
-	scopes, err := ResolveScopes(context.Background(), gw, &Config{Slug: "box", Name: "Box", Capacity: 1})
+	scopes, err := ResolveScopes(context.Background(), gw, &Config{Slug: "box", Name: "Box", Capacity: Fixed(1)})
 	if err != nil || len(scopes) != 2 {
 		t.Fatalf("scopes = %+v, %v", scopes, err)
 	}
@@ -491,7 +631,7 @@ func (p *priorityFake) addHeld(org, goal, title string, seq int) {
 // session starts, in the order they start.
 func (p *priorityFake) loop(capacity int) (*Loop, *strings.Builder) {
 	var logs strings.Builder
-	return &Loop{GW: gateway.New(p.URL(), "rs_test"), Cfg: &Config{Slug: "box", Capacity: capacity}, Scopes: p.scopes,
+	return &Loop{GW: gateway.New(p.URL(), "rs_test"), Cfg: &Config{Slug: "box", Capacity: Fixed(capacity)}, Scopes: p.scopes,
 		Interval: time.Hour, Harness: "claude-code", Log: log.New(&logs, "", 0),
 		Dispatch: func(context.Context, gateway.WorkItem) {},
 		Evaluate: func(context.Context, gateway.WorkItem) {},
@@ -519,7 +659,7 @@ func started(logs, prefix string) []string {
 // in the order they were claimed.
 func (p *priorityFake) tick(capacity int) []string {
 	p.t.Helper()
-	loop := &Loop{GW: gateway.New(p.URL(), "rs_test"), Cfg: &Config{Slug: "box", Capacity: capacity}, Scopes: p.scopes, Interval: time.Hour, Harness: "claude-code",
+	loop := &Loop{GW: gateway.New(p.URL(), "rs_test"), Cfg: &Config{Slug: "box", Capacity: Fixed(capacity)}, Scopes: p.scopes, Interval: time.Hour, Harness: "claude-code",
 		Dispatch: func(context.Context, gateway.WorkItem) {}}
 	before := len(p.CallsNamed("claimWorkItem"))
 	loop.Tick(context.Background())
@@ -766,5 +906,496 @@ func TestLoopTickReadsGoalsOncePerOrg(t *testing.T) {
 	}
 	if len(byOrg) != 2 || byOrg[orgID] != 1 || byOrg[org2] != 1 {
 		t.Fatalf("goal reads by org in one tick: %v", byOrg)
+	}
+}
+
+// liveLoop is a node over acme only whose Reload reads node.yaml from a
+// fresh HOME and MyOrgs from the fake, registering in a new org through
+// the returned list. Items finish as soon as they are dispatched.
+func (p *priorityFake) liveLoop(t *testing.T, yaml string) (*Loop, *[]string, *strings.Builder) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeNodeYAML(t, yaml)
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw := gateway.New(p.URL(), "rs_test")
+	var registered []string
+	var logs strings.Builder
+	start := p.scopes[:1]
+	loop := &Loop{GW: gw, Cfg: cfg, Scopes: start, Interval: time.Hour, Harness: "claude-code", Log: log.New(&logs, "", 0),
+		Dispatch: func(context.Context, gateway.WorkItem) {}}
+	loop.Reload = Reloader(gw, cfg, start, nil, func(_ context.Context, sc Scope) error {
+		registered = append(registered, sc.Login)
+		return nil
+	})
+	return loop, &registered, &logs
+}
+
+func writeNodeYAML(t *testing.T, body string) {
+	t.Helper()
+	path, err := ConfigPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// claimedBy runs one tick and returns the items it claimed.
+func (p *priorityFake) claimedBy(loop *Loop) []string {
+	p.t.Helper()
+	before := len(p.CallsNamed("claimWorkItem"))
+	loop.Tick(context.Background())
+	loop.wg.Wait()
+	var claimed []string
+	for _, c := range p.CallsNamed("claimWorkItem")[before:] {
+		claimed = append(claimed, fmt.Sprint(c.Input["aggregateId"]))
+	}
+	return claimed
+}
+
+// Capacity is read from node.yaml every tick: raised from 1 to 2, the
+// next tick claims two with no restart.
+func TestLoopTakesCapacityFromNodeYAMLEveryTick(t *testing.T) {
+	p := newPriorityFake(t)
+	p.addGoal(orgID, "steady", "normal")
+	for i, id := range []string{"a1", "a2", "a3"} {
+		p.addItem(orgID, "steady", id, i+1, false)
+	}
+	loop, _, logs := p.liveLoop(t, "slug: box\nname: Box\norgs: [acme]\ncapacity: 1\n")
+	if got := p.claimedBy(loop); len(got) != 1 {
+		t.Fatalf("first tick claimed %v, want one", got)
+	}
+	writeNodeYAML(t, "slug: box\nname: Box\norgs: [acme]\ncapacity: 2\n")
+	if got := p.claimedBy(loop); strings.Join(got, ",") != "a2,a3" {
+		t.Fatalf("second tick claimed %v, want a2,a3", got)
+	}
+	if !strings.Contains(logs.String(), "capacity 1 → 2") {
+		t.Fatalf("the change is not logged:\n%s", logs)
+	}
+}
+
+// An org that appears in MyOrgs between two ticks is registered in and
+// its ready items are claimed on the next tick.
+func TestLoopServesANewOrgOnTheNextTick(t *testing.T) {
+	p := newPriorityFake(t)
+	globex := p.Orgs[1]
+	p.Orgs = p.Orgs[:1]
+	p.addGoal(org2, "fire", "normal")
+	p.addItem(org2, "fire", "globex-1", 1, false)
+	loop, registered, logs := p.liveLoop(t, "slug: box\nname: Box\ncapacity: 2\n")
+	if got := p.claimedBy(loop); len(got) != 0 {
+		t.Fatalf("claimed %v from an org the node does not serve", got)
+	}
+	p.Orgs = append(p.Orgs, globex)
+	if got := p.claimedBy(loop); strings.Join(got, ",") != "globex-1" {
+		t.Fatalf("second tick claimed %v, want globex-1", got)
+	}
+	if strings.Join(*registered, ",") != "globex" || p.Item("globex-1")["nodeId"] != p.scopes[1].NodeID {
+		t.Fatalf("registered in %v; globex-1 claimed as %v", *registered, p.Item("globex-1")["nodeId"])
+	}
+	if got := loop.CurrentScopes().Logins(); strings.Join(got, ",") != "acme,globex" {
+		t.Fatalf("scopes = %v", got)
+	}
+	if !strings.Contains(logs.String(), "orgs acme → acme, globex") {
+		t.Fatalf("the change is not logged:\n%s", logs)
+	}
+	// one left, and one outside the node.yaml restriction, are dropped
+	p.Orgs = p.Orgs[1:]
+	p.claimedBy(loop)
+	if got := loop.CurrentScopes().Logins(); strings.Join(got, ",") != "globex" {
+		t.Fatalf("after acme left, scopes = %v", got)
+	}
+	p.Orgs = append(p.Orgs, map[string]any{"id": orgID, "login": "acme", "accountId": acctID})
+	writeNodeYAML(t, "slug: box\nname: Box\norgs: [acme]\ncapacity: 2\n")
+	p.claimedBy(loop)
+	if got := loop.CurrentScopes().Logins(); strings.Join(got, ",") != "acme" {
+		t.Fatalf("restricted to acme, scopes = %v", got)
+	}
+}
+
+// A node.yaml that cannot be read keeps the last good capacity.
+func TestLoopKeepsTheLastGoodCapacity(t *testing.T) {
+	p := newPriorityFake(t)
+	p.addGoal(orgID, "steady", "normal")
+	for i, id := range []string{"a1", "a2", "a3", "a4", "a5"} {
+		p.addItem(orgID, "steady", id, i+1, false)
+	}
+	loop, _, logs := p.liveLoop(t, "slug: box\nname: Box\norgs: [acme]\ncapacity: 2\n")
+	if got := p.claimedBy(loop); len(got) != 2 {
+		t.Fatalf("first tick claimed %v, want two", got)
+	}
+	writeNodeYAML(t, "slug: box\ncapacity: [not a number\n")
+	if got := p.claimedBy(loop); len(got) != 2 || loop.Capacity() != 2 {
+		t.Fatalf("with node.yaml broken, claimed %v at capacity %d; want two at 2", got, loop.Capacity())
+	}
+	if !strings.Contains(logs.String(), "reload config: node.yaml (keeping the last good capacity and limits)") {
+		t.Fatalf("the unreadable file is not logged:\n%s", logs)
+	}
+	if got := loop.CurrentScopes().Logins(); strings.Join(got, ",") != "acme" {
+		t.Fatalf("scopes = %v", got)
+	}
+}
+
+// register registers the node in both orgs, so its heartbeats land.
+func (p *priorityFake) register() {
+	p.t.Helper()
+	gw := gateway.New(p.URL(), "rs_test")
+	for _, sc := range p.scopes {
+		if err := gw.RegisterNode(context.Background(), gateway.RegisterNodeInput{NodeID: sc.NodeID, OrgID: sc.ID, OwnerID: p.UserID, Name: "Box", Slug: "box"}); err != nil {
+			p.t.Fatal(err)
+		}
+	}
+}
+
+// drainLoop is a node over both orgs whose builds block until release
+// is closed.
+func (p *priorityFake) drainLoop(capacity int) (*Loop, chan struct{}) {
+	release := make(chan struct{})
+	loop, _ := p.loop(capacity)
+	loop.Dispatch = func(ctx context.Context, _ gateway.WorkItem) {
+		select {
+		case <-release:
+		case <-ctx.Done():
+		}
+	}
+	return loop, release
+}
+
+// DrainAndWait waits for the running item and returns once it ends.
+func TestLoopDrainAndWaitWaitsForRunning(t *testing.T) {
+	p := newPriorityFake(t)
+	p.addGoal(orgID, "g", "normal")
+	p.addItem(orgID, "g", "long-one", 1, false)
+	loop, release := p.drainLoop(1)
+	loop.Tick(context.Background())
+	if loop.Running() != 1 {
+		t.Fatalf("running = %d, want 1", loop.Running())
+	}
+	done := make(chan error, 1)
+	go func() { done <- loop.DrainAndWait(context.Background()) }()
+	select {
+	case err := <-done:
+		t.Fatalf("DrainAndWait returned (%v) with an item running", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	if !loop.Draining() {
+		t.Fatal("Draining() = false while draining")
+	}
+	close(release)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("DrainAndWait = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("DrainAndWait did not return after the item ended")
+	}
+	if loop.Running() != 0 {
+		t.Fatalf("running = %d after drain", loop.Running())
+	}
+}
+
+// DrainAndWait gives up with ctx.Err() when ctx is done first.
+func TestLoopDrainAndWaitStopsWithContext(t *testing.T) {
+	p := newPriorityFake(t)
+	p.addGoal(orgID, "g", "normal")
+	p.addItem(orgID, "g", "long-one", 1, false)
+	loop, release := p.drainLoop(1)
+	defer close(release)
+	loop.Tick(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- loop.DrainAndWait(ctx) }()
+	cancel()
+	select {
+	case err := <-done:
+		if err != context.Canceled {
+			t.Fatalf("DrainAndWait = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("DrainAndWait did not return on cancel")
+	}
+	if loop.Running() != 1 {
+		t.Fatalf("running = %d, the item must still be running", loop.Running())
+	}
+}
+
+// Resume makes the next tick claim again.
+func TestLoopResumeClaimsAgain(t *testing.T) {
+	p := newPriorityFake(t)
+	p.addGoal(orgID, "g", "normal")
+	p.addItem(orgID, "g", "ready-one", 1, false)
+	p.register()
+	loop, _ := p.loop(1)
+	loop.Drain()
+	loop.Tick(context.Background())
+	if c := p.CallsNamed("claimWorkItem"); len(c) != 0 {
+		t.Fatalf("drained: claimed %+v", c)
+	}
+	loop.Resume()
+	if loop.Draining() {
+		t.Fatal("Draining() = true after Resume")
+	}
+	loop.Tick(context.Background())
+	loop.wg.Wait()
+	if c := p.CallsNamed("claimWorkItem"); len(c) != 1 || c[0].Input["aggregateId"] != "ready-one" {
+		t.Fatalf("resumed: claims %+v", c)
+	}
+	if hb := p.CallsNamed("heartbeatNode"); hb[len(hb)-1].Input["draining"] != nil {
+		t.Fatalf("a resumed node must not report draining: %+v", hb[len(hb)-1].Input)
+	}
+}
+
+// The heartbeat's extras are sent only when set: a platform that
+// does not know them yet still takes an ordinary node's heartbeat.
+func TestHeartbeatSendsExtrasOnlyWhenSet(t *testing.T) {
+	p := newPriorityFake(t)
+	p.register()
+	gw := gateway.New(p.URL(), "rs_test")
+	node := p.scopes[0].NodeID
+	ctx := context.Background()
+	calls := []error{
+		gw.HeartbeatNode(ctx, node, "v1", 0),
+		gw.HeartbeatNode(ctx, node, "v1", 0, gateway.HeartbeatExtras{}),
+		gw.HeartbeatNode(ctx, node, "v1", 1, gateway.HeartbeatExtras{Draining: true}),
+		gw.HeartbeatNode(ctx, node, "v1", 0, gateway.HeartbeatExtras{UpdateError: "signature does not match"}),
+	}
+	for i, err := range calls {
+		if err != nil {
+			t.Fatalf("heartbeat %d: %v", i, err)
+		}
+	}
+	hb := p.CallsNamed("heartbeatNode")
+	if len(hb) != 4 {
+		t.Fatalf("heartbeats: %+v", hb)
+	}
+	for i, want := range []map[string]any{
+		{},
+		{},
+		{"draining": true},
+		{"updateError": "signature does not match"},
+	} {
+		in := hb[i].Input
+		for _, k := range []string{"draining", "updateError"} {
+			if got, ok := in[k]; ok != (want[k] != nil) || (ok && got != want[k]) {
+				t.Fatalf("heartbeat %d: %s = %v (sent %v), want %v", i, k, got, ok, want[k])
+			}
+		}
+		if in["version"] != "v1" || in["aggregateId"] != node {
+			t.Fatalf("heartbeat %d: %+v", i, in)
+		}
+	}
+}
+
+// The heartbeat carries the tool runtimes and agent adapters the node
+// found, probed every tick: one installed while the node runs is on the
+// next heartbeat without a restart (trd §1 Node).
+func TestHeartbeatCarriesProbedRuntimes(t *testing.T) {
+	p := newPriorityFake(t)
+	p.register()
+	loop, logs := p.loop(1)
+	onPath := map[string]bool{"npx": true, "claude": true}
+	loop.LookPath = func(file string) (string, error) {
+		if onPath[file] {
+			return "/usr/bin/" + file, nil
+		}
+		return "", errors.New("not found")
+	}
+	ctx := context.Background()
+	loop.Tick(ctx)
+	onPath["docker"], onPath["codex"] = true, true
+	loop.Tick(ctx)
+	// one heartbeat per org served, per tick
+	orgs := len(p.scopes)
+	hb := p.CallsNamed("heartbeatNode")
+	if len(hb) != 2*orgs {
+		t.Fatalf("heartbeats: %+v", hb)
+	}
+	for i := range hb {
+		want := []struct{ runtimes, adapters []any }{
+			{[]any{"npx"}, []any{"claude-code"}},
+			{[]any{"npx", "docker"}, []any{"claude-code", "codex"}},
+		}[i/orgs]
+		if got := hb[i].Input["runtimes"]; !reflect.DeepEqual(got, want.runtimes) {
+			t.Fatalf("heartbeat %d: runtimes = %#v, want %v", i, got, want.runtimes)
+		}
+		if got := hb[i].Input["adapters"]; !reflect.DeepEqual(got, want.adapters) {
+			t.Fatalf("heartbeat %d: adapters = %#v, want %v", i, got, want.adapters)
+		}
+	}
+	if r, a := loop.Runtimes(); !reflect.DeepEqual(r, []string{"npx", "docker"}) || !reflect.DeepEqual(a, []string{"claude-code", "codex"}) {
+		t.Fatalf("Runtimes() = %v, %v", r, a)
+	}
+	if n := strings.Count(logs.String(), "tools: runtimes"); n != 2 {
+		t.Fatalf("logged the probe %d times, want once per change:\n%s", n, logs)
+	}
+
+	// without a LookPath the node probes nothing and sends neither
+	bare, _ := p.loop(1)
+	bare.Tick(ctx)
+	last := p.CallsNamed("heartbeatNode")[2*orgs].Input
+	for _, k := range []string{"runtimes", "adapters"} {
+		if v, ok := last[k]; ok {
+			t.Fatalf("a node that probed nothing sent %s = %#v", k, v)
+		}
+	}
+}
+
+// Resume ends a DrainAndWait that is still waiting, with an error.
+func TestLoopResumeEndsDrainAndWait(t *testing.T) {
+	p := newPriorityFake(t)
+	p.addGoal(orgID, "g", "normal")
+	p.addItem(orgID, "g", "long-one", 1, false)
+	loop, release := p.drainLoop(1)
+	defer close(release)
+	loop.Tick(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- loop.DrainAndWait(context.Background()) }()
+	for !loop.Draining() {
+		time.Sleep(time.Millisecond)
+	}
+	loop.Resume()
+	select {
+	case err := <-done:
+		if !errors.Is(err, errResumed) {
+			t.Fatalf("DrainAndWait = %v, want errResumed", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("DrainAndWait did not return on Resume")
+	}
+}
+
+// A draining node claims nothing on a tick: no ready item, no plan, no
+// research, no evaluation — but it still heartbeats.
+func TestDrainingLoopClaimsNothing(t *testing.T) {
+	p := newPriorityFake(t)
+	p.addGoal(orgID, "g", "normal")
+	p.addItem(orgID, "g", "ready-1", 1, false)
+	p.addItem(org2, "g", "ready-2", 2, false)
+	p.addPlanning(org2, "plan-me", "urgent")
+	p.addHeld(orgID, "g", "held-3", 3)
+	loop, logs := p.loop(4)
+	for _, sc := range p.scopes {
+		if err := loop.GW.(*gateway.Client).RegisterNode(context.Background(), gateway.RegisterNodeInput{NodeID: sc.NodeID, OrgID: sc.ID, Name: "Box", Slug: "box", Capacity: 4}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	loop.Drain()
+	beats := len(p.CallsNamed("heartbeatNode"))
+	loop.Tick(context.Background())
+	loop.wg.Wait()
+	for _, name := range []string{"claimWorkItem", "claimPlan", "claimDirectionResearch"} {
+		if calls := p.CallsNamed(name); len(calls) != 0 {
+			t.Fatalf("a draining node called %s: %+v", name, calls)
+		}
+	}
+	if got := started(logs.String(), "evaluating item"); len(got) != 0 {
+		t.Fatalf("a draining node started evaluations %v", got)
+	}
+	hb := p.CallsNamed("heartbeatNode")
+	if got := len(hb) - beats; got != 2 {
+		t.Fatalf("a draining node heartbeat %d times over two orgs\n%s", got, logs)
+	}
+	for _, c := range hb[beats:] {
+		if c.Input["draining"] != true {
+			t.Fatalf("a draining node's heartbeat does not say so: %+v", c.Input)
+		}
+	}
+	if p.Item("ready-1")["status"] != "ready" || !loop.Draining() {
+		t.Fatalf("ready-1 %v, draining %v", p.Item("ready-1")["status"], loop.Draining())
+	}
+	if loop.Adopt(context.Background(), gateway.WorkItem{ID: "held-elsewhere"}) {
+		t.Fatal("a draining node adopted a held item")
+	}
+}
+
+// runUntilDrained starts Run on a draining loop and checks it is still
+// running while release has not been called, then that it returns nil
+// once it has.
+func runUntilDrained(t *testing.T, loop *Loop, release func()) {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() { done <- loop.Run(context.Background()) }()
+	loop.Drain()
+	select {
+	case err := <-done:
+		t.Fatalf("Run returned %v with a session still running", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+	release()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("a drained Run returned %v, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return after the last session ended")
+	}
+}
+
+// A draining loop's Run waits for its running item, then returns nil.
+func TestDrainingRunWaitsForTheRunningItem(t *testing.T) {
+	p := newPriorityFake(t)
+	p.addGoal(orgID, "g", "normal")
+	p.addItem(orgID, "g", "long", 1, false)
+	p.addItem(orgID, "g", "next", 2, false)
+	loop, _ := p.loop(1)
+	hold := make(chan struct{})
+	loop.Dispatch = func(context.Context, gateway.WorkItem) { <-hold }
+	loop.Tick(context.Background())
+	if loop.Running() != 1 {
+		t.Fatalf("running %d before the drain", loop.Running())
+	}
+	runUntilDrained(t, loop, func() { close(hold) })
+	if loop.Running() != 0 || p.Item("next")["status"] != "ready" {
+		t.Fatalf("running %d, next %v", loop.Running(), p.Item("next")["status"])
+	}
+}
+
+// A planner holds the exit too, though it does not count against
+// capacity.
+func TestDrainingRunWaitsForAPlanner(t *testing.T) {
+	p := newPriorityFake(t)
+	p.addPlanning(orgID, "plan-me", "normal")
+	loop, _ := p.loop(1)
+	hold := make(chan struct{})
+	loop.Plan = func(context.Context, gateway.Goal, Scope) { <-hold }
+	loop.Tick(context.Background())
+	if loop.Running() != 0 {
+		t.Fatalf("a planner counted as running: %d", loop.Running())
+	}
+	runUntilDrained(t, loop, func() { close(hold) })
+}
+
+// So does an evaluator.
+func TestDrainingRunWaitsForAnEvaluator(t *testing.T) {
+	p := newPriorityFake(t)
+	p.addGoal(orgID, "g", "normal")
+	p.addHeld(orgID, "g", "held-1", 1)
+	loop, _ := p.loop(1)
+	hold := make(chan struct{})
+	loop.Evaluate = func(context.Context, gateway.WorkItem) { <-hold }
+	loop.Tick(context.Background())
+	if loop.Running() != 0 {
+		t.Fatalf("an evaluator counted as running: %d", loop.Running())
+	}
+	runUntilDrained(t, loop, func() { close(hold) })
+}
+
+// A drain with nothing running ends Run straight away.
+func TestDrainingIdleRunReturnsNil(t *testing.T) {
+	p := newPriorityFake(t)
+	loop, _ := p.loop(1)
+	loop.Drain()
+	if err := loop.Run(context.Background()); err != nil {
+		t.Fatalf("Run = %v", err)
 	}
 }

@@ -1,0 +1,4 @@
+{"type":"system","subtype":"init","session_id":"s-rl","model":"claude-opus-5-5","tools":[]}
+{"type":"rate_limit_event","session_id":"s-rl","rate_limit_info":{"status":"allowed","resetsAt":1790330400,"rateLimitType":"five_hour","overageStatus":"rejected","isUsingOverage":false,"unifiedWindows":{"five_hour":{"utilization":0.83,"resetsAt":1790330400},"seven_day":{"utilization":0.41,"resetsAt":"2026-09-30T08:00:00Z"}}}}
+{"type":"assistant","session_id":"s-rl","message":{"role":"assistant","content":[{"type":"text","text":"Done."}]}}
+{"type":"result","subtype":"success","is_error":false,"result":"Done.","session_id":"s-rl","total_cost_usd":0.12,"num_turns":2}

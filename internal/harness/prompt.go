@@ -3,6 +3,7 @@ package harness
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -32,6 +33,17 @@ type PromptInput struct {
 	// Prologue says the session has Prologue's tools for context on demand.
 	Project  string
 	Prologue bool
+	// Services is what the session's pod runs beside it
+	// (sandbox.ServicesLine): the ready ones on 127.0.0.1 and the
+	// missing ones; empty when there are none.
+	Services string
+}
+
+// servicesSection is the prompt's Services section, when there are any.
+func servicesSection(b *strings.Builder, services string) {
+	if s := strings.TrimSpace(services); s != "" {
+		fmt.Fprintf(b, "# Services\n\n%s\n\n", s)
+	}
 }
 
 // prologueRule is the line every prompt carries when the session has
@@ -69,6 +81,7 @@ func BuildPrompt(in PromptInput) string {
 	if strings.TrimSpace(in.GoalAcceptance) != "" {
 		fmt.Fprintf(&b, "## Acceptance (the goal)\n\n%s\n\n", strings.TrimSpace(in.GoalAcceptance))
 	}
+	servicesSection(&b, in.Services)
 	b.WriteString("# Rules\n\n")
 	if in.ContextDir != "" {
 		fmt.Fprintf(&b, "1. Read the project's context in `%s/` first", in.ContextDir)
@@ -112,6 +125,8 @@ type EvaluateInput struct {
 	ContextFiles []string
 	Project      string
 	Prologue     bool
+	// Services as on PromptInput.
+	Services string
 }
 
 // Verdict lines the evaluator ends with; ParseVerdict reads them.
@@ -119,6 +134,10 @@ const (
 	VerdictPass = "VERDICT: PASS"
 	VerdictFail = "VERDICT: FAIL"
 )
+
+// evaluateUnverifiableRule is the evaluator's side of adr-004: a clause
+// it cannot see at evaluation time is unverifiable, not failed.
+const evaluateUnverifiableRule = "A clause you cannot check at evaluation time — a CI check on this item's pull request (it opens only after you pass), a deploy, a file in another repository — is reported in your review as unverifiable, not failed, and the item is not failed on that clause alone. Every clause you can check you still check."
 
 // EvaluatePrompt renders the evaluator's prompt (mesh-specs trd §3.4): a
 // fresh session, the diff and the acceptance, an adversarial review that
@@ -155,12 +174,14 @@ func EvaluatePrompt(in EvaluateInput) string {
 	} else if in.Prologue {
 		b.WriteString("# The context\n\n" + prologueRule("", in.Project) + "\n\n")
 	}
+	servicesSection(&b, in.Services)
 	b.WriteString("# Rules\n\n")
 	b.WriteString("1. Judge the item's acceptance, literally: every clause, against what the diff does — not what its messages claim. A change that goes against an ADR or the instructions fails, whatever the acceptance says.\n")
 	b.WriteString("2. Run the acceptance check yourself when it names one (tests, a build, a command). Read the repository's own instructions (AGENTS.md, CLAUDE.md) for how.\n")
 	b.WriteString("3. Look for what the builder skipped: untested paths, a check made to pass by weakening it, changes outside the brief, secrets or destructive commands.\n")
 	b.WriteString("4. Change nothing: no edits, no commits, no pushes, nothing outside this workspace. You are a reviewer.\n")
-	fmt.Fprintf(&b, "5. End your final message with a short review — what holds, what does not, and exactly what a retry must fix — and then one last line that is either `%s` or `%s`. Pass only when every clause of the acceptance holds.\n", VerdictPass, VerdictFail)
+	b.WriteString("5. " + evaluateUnverifiableRule + "\n")
+	fmt.Fprintf(&b, "6. End your final message with a short review — what holds, what does not, what is unverifiable, and exactly what a retry must fix — and then one last line that is either `%s` or `%s`. Pass only when every clause of the acceptance you can check holds.\n", VerdictPass, VerdictFail)
 	return b.String()
 }
 
@@ -207,6 +228,9 @@ type PlanInput struct {
 	// plan's numbering starts.
 	Existing []ExistingItem
 	NextSeq  int
+	// Rejected: on the re-ask, the items of the answer before whose
+	// acceptance names what no evaluator can see, each with why (adr-004).
+	Rejected []string
 }
 
 // ExistingItem is one item of the plan before, for the planner.
@@ -215,19 +239,62 @@ type ExistingItem struct {
 	Title  string
 	Status string
 	Note   string // the evaluation or error that decided it
+	// Branch and PRURL: where its work went — for a merged item, the
+	// pull request main took it in with.
+	Branch string
+	PRURL  string
 }
 
 // PlannedSpec is one item of the graph the planner writes: like
 // gateway.PlannedItem but naming the repo (owner/name or name).
 type PlannedSpec struct {
-	Seq        int    `json:"seq"`
-	Title      string `json:"title"`
-	Brief      string `json:"brief"`
-	Acceptance string `json:"acceptance"`
-	DependsOn  []int  `json:"depends_on"`
-	Repo       string `json:"repo"`
-	BaseRef    string `json:"base_ref"`
+	Seq        int          `json:"seq"`
+	Title      string       `json:"title"`
+	Brief      string       `json:"brief"`
+	Acceptance string       `json:"acceptance"`
+	DependsOn  []PlannedDep `json:"depends_on"`
+	Repo       string       `json:"repo"`
+	BaseRef    string       `json:"base_ref"`
+	// Model is the model the planner chose for the item (haiku, sonnet,
+	// opus or a claude-* id), ModelReason its one line of why.
+	Model       string `json:"model"`
+	ModelReason string `json:"model_reason"`
 }
+
+// PlannedDep is one entry of an item's depends_on: the seq it waits on
+// and the one line of what it uses from it (trd §1 WorkItem
+// depends_on). A bare integer, the old shape, reads as a dependency
+// with no because.
+type PlannedDep struct {
+	Seq     int    `json:"seq"`
+	Because string `json:"because,omitempty"`
+}
+
+// UnmarshalJSON reads {"seq": 3, "because": "…"} or a bare 3.
+func (d *PlannedDep) UnmarshalJSON(b []byte) error {
+	var n int
+	if err := json.Unmarshal(b, &n); err == nil {
+		*d = PlannedDep{Seq: n}
+		return nil
+	}
+	var obj struct {
+		Seq     int    `json:"seq"`
+		Because string `json:"because"`
+	}
+	if err := json.Unmarshal(b, &obj); err != nil {
+		return fmt.Errorf("a depends_on entry is a seq or {\"seq\", \"because\"}: %s", b)
+	}
+	*d = PlannedDep(obj)
+	return nil
+}
+
+// planDependencyRule is the planner's dependency rubric (trd §5 phase
+// 2): an item waits for another only when it uses what that one builds.
+const planDependencyRule = "An item depends on another only when it uses something that item creates or changes — a type, command, field, function, file or endpoint — and could not be built against main without it. Sharing a repository or touching the same file is not a dependency: the merge queue rebases, and the scheduler's overlap hold covers conflicts. Order by importance is priority, not dependency. Prefer a wide, shallow graph: the node runs up to 6 items at once and readies every item whose dependencies merged. A final docs or goal-doc item depends only on the items whose results it records. Each dependency carries a one-line `because` naming what is used, as {\"seq\": 3, \"because\": \"uses the Foo type item 3 adds\"}; a dependency without one is dropped."
+
+// planAcceptanceRule is the planner's side of adr-004: an item's
+// acceptance names only what its evaluator can see.
+const planAcceptanceRule = "An item's acceptance names only what the evaluator can see at evaluation time, on that item's branch, in that item's repository: tests, commands and their output, file contents. It never names a CI check on the item's own pull request (the pull request opens only after evaluation passes), a deploy, or a file in another repository. Work like that becomes its own item in the right repo, or goes in the goal's acceptance."
 
 // PlanPrompt renders the planner's prompt (mesh-specs prd, the planner;
 // trd §5 phase 2): read the context and the repos, then compile the goal
@@ -249,20 +316,49 @@ func PlanPrompt(in PlanInput) string {
 	if strings.TrimSpace(in.Blocked) != "" {
 		fmt.Fprintf(&b, "## The last plan blocked\n\n%s\n\nPlan around it.\n\n", strings.TrimSpace(in.Blocked))
 	}
+	if len(in.Rejected) > 0 {
+		b.WriteString("## Your last answer asked for what no evaluator can see\n\nThe node checked your graph before handing it in and flagged these items:\n\n")
+		for _, r := range in.Rejected {
+			fmt.Fprintf(&b, "- %s\n", strings.TrimSpace(r))
+		}
+		b.WriteString("\n" + planAcceptanceRule + " Write the whole graph again with those acceptances rewritten; this is the last ask.\n\n")
+	}
 	if len(in.Existing) > 0 {
-		b.WriteString("## The items so far\n\nMerged items are done and stay: your items may depend on their seqs. Failed and cancelled items stay in the record; do their work again differently if it is still needed. Anything still live is replaced by your plan.\n\n")
+		b.WriteString("## The items so far\n\nYour plan replaces only the live items; merged items stay. Merged items are done: your items may depend on their seqs. Failed and cancelled items stay in the record; do their work again differently if it is still needed. Anything still live is replaced by your plan.\n\n")
 		for _, it := range in.Existing {
 			fmt.Fprintf(&b, "- %d. %s — %s", it.Seq, it.Title, it.Status)
+			if pr := strings.TrimSpace(it.PRURL); pr != "" {
+				fmt.Fprintf(&b, " (%s)", pr)
+			}
 			if strings.TrimSpace(it.Note) != "" {
 				fmt.Fprintf(&b, ": %s", strings.TrimSpace(it.Note))
 			}
 			b.WriteString("\n")
 		}
 		fmt.Fprintf(&b, "\nNumber your items from %d.\n\n", in.NextSeq)
+		var merged []ExistingItem
+		for _, it := range in.Existing {
+			if it.Status == "merged" {
+				merged = append(merged, it)
+			}
+		}
+		if len(merged) > 0 {
+			b.WriteString("## What main already holds\n\nThese items of the goal merged; their work is on main:\n\n")
+			for _, it := range merged {
+				fmt.Fprintf(&b, "- %d. %s", it.Seq, it.Title)
+				if pr := strings.TrimSpace(it.PRURL); pr != "" {
+					fmt.Fprintf(&b, " — %s", pr)
+				} else if br := strings.TrimSpace(it.Branch); br != "" {
+					fmt.Fprintf(&b, " — branch `%s`", br)
+				}
+				b.WriteString("\n")
+			}
+			b.WriteString("\n")
+		}
 	}
 	b.WriteString("# The project\n\n")
 	if len(in.Repos) > 0 {
-		b.WriteString("Its repos are checked out here, read-only, at their default branch:\n\n")
+		b.WriteString("Its repos are checked out here, read-only, at their default branch, with its recent history:\n\n")
 		for _, name := range sortedKeys(in.Repos) {
 			fmt.Fprintf(&b, "- `%s` in `%s/`\n", name, in.Repos[name])
 		}
@@ -280,16 +376,25 @@ func PlanPrompt(in PlanInput) string {
 	if in.Prologue {
 		b.WriteString(prologueRule(in.ContextDir, in.Org+"/"+in.Project) + "\n\n")
 	}
+	b.WriteString("# Check main first\n\n")
+	fmt.Fprintf(&b, "Before you write a graph, find out what main already holds of this goal's work. For each repo, search its recent merged pull requests and the commits on its default branch since the goal was set — `gh pr list --repo <owner/name> --state merged --limit 50` (add `--search` with the goal's words, and the `mesh/%s-` branches), and `git log --oneline` in its checkout, which carries the default branch's recent history — by title, by the brief's words, and by the files the acceptance names.\n\n", in.GoalSlug)
+	b.WriteString("Leave out work main already has. When main may already hold an item's work but you cannot tell it satisfies the acceptance, keep the item and say in its brief that an already_done check is expected: the builder checks main first and, if the acceptance holds there, finishes it already_done with the merged PRs or commits as evidence instead of building it again.\n\n")
 	b.WriteString("# Rules\n\n")
-	b.WriteString("1. Read before you plan: what exists, what the design says, where the goal's work lands.\n")
+	b.WriteString("1. Read before you plan: what exists, what the design says, where the goal's work lands, and what main already holds (above).\n")
 	b.WriteString("2. Each item is one fresh session's work in one repo on one branch: small enough to finish and evaluate in one sitting, large enough to be worth a pull request. Two to eight items.\n")
 	b.WriteString("3. Each item's brief says what to do and where, naming files and functions where it helps; its acceptance is what an evaluator can check — a test that passes, a command's output, a document with named sections — never a feeling.\n")
-	b.WriteString("4. depends_on names earlier seqs whose branches must be merged first; items with no dependency between them run in parallel. Keep the graph shallow.\n")
+	b.WriteString("   " + planAcceptanceRule + "\n")
+	b.WriteString("4. depends_on names earlier seqs whose branches must be merged first; items with no dependency between them run in parallel.\n")
+	b.WriteString("   " + planDependencyRule + "\n")
 	b.WriteString("5. repo is one of the project's repos above, as owner/name. base_ref is its default branch unless the item builds on another item's branch.\n")
 	b.WriteString("6. Change nothing in the repos: you plan, you do not build.\n")
 	b.WriteString("7. Design keeps pace with code: an item that changes an aggregate, a policy, a process, or a public contract (a gateway field, an API, a console route) also amends the ADR or TRD section that describes it, in the same item and pull request; a decision no ADR covers gets a new ADR at the next free number in that repo. Say so in the item's brief and acceptance. Every new document carries frontmatter with a one-line `summary:`.\n")
-	b.WriteString("8. End your final message with the graph as a JSON object in a ```json fenced block, and nothing after it:\n\n")
-	b.WriteString("```json\n{\"items\": [{\"seq\": 1, \"title\": \"…\", \"brief\": \"…\", \"acceptance\": \"…\", \"depends_on\": [], \"repo\": \"owner/name\", \"base_ref\": \"main\"}]}\n```\n")
+	b.WriteString("8. Each item names the model its session runs on, as `model`, with a one-line `model_reason`:\n")
+	b.WriteString("   - `haiku` for mechanical items: docs-only, a goal-doc section, a version bump, a rename.\n")
+	b.WriteString("   - `sonnet` for a well-specified change in one package with tests to copy.\n")
+	b.WriteString("   - `opus` for anything cross-cutting, concurrency, migrations, security, a failing item's retry, or when unsure.\n")
+	b.WriteString("9. End your final message with the graph as a JSON object in a ```json fenced block, and nothing after it:\n\n")
+	b.WriteString("```json\n{\"items\": [{\"seq\": 1, \"title\": \"…\", \"brief\": \"…\", \"acceptance\": \"…\", \"depends_on\": [], \"repo\": \"owner/name\", \"base_ref\": \"main\", \"model\": \"sonnet\", \"model_reason\": \"…\"}, {\"seq\": 2, \"title\": \"…\", \"brief\": \"…\", \"acceptance\": \"…\", \"depends_on\": [{\"seq\": 1, \"because\": \"uses the … item 1 adds\"}], \"repo\": \"owner/name\", \"base_ref\": \"main\", \"model\": \"sonnet\", \"model_reason\": \"…\"}]}\n```\n")
 	return b.String()
 }
 
@@ -394,8 +499,8 @@ func ParsePlan(text string, merged ...int) ([]PlannedSpec, error) {
 		done[m] = true
 	}
 	for _, it := range items {
-		for _, d := range it.DependsOn {
-			if (!seqs[d] && !done[d]) || d == it.Seq {
+		for _, dep := range it.DependsOn {
+			if d := dep.Seq; (!seqs[d] && !done[d]) || d == it.Seq {
 				return nil, fmt.Errorf("item %d depends on %d, which is neither another item nor merged", it.Seq, d)
 			}
 		}
@@ -474,7 +579,7 @@ func ResearchPrompt(in ResearchInput) string {
 	}
 	b.WriteString("# The project\n\n")
 	if len(in.Repos) > 0 {
-		b.WriteString("Its repos are checked out here, read-only, at their default branch:\n\n")
+		b.WriteString("Its repos are checked out here, read-only, at their default branch, with its recent history:\n\n")
 		for _, name := range sortedKeys(in.Repos) {
 			fmt.Fprintf(&b, "- `%s` in `%s/`\n", name, in.Repos[name])
 		}
@@ -563,4 +668,166 @@ func ParseProposals(text string) ([]ProposedSpec, error) {
 		out = append(out, g)
 	}
 	return out, nil
+}
+
+// RebaseInput is what a rebase prompt is made of: the item whose pull
+// request conflicts with its base, the conflict as the integrator found
+// it, and the item's acceptance to re-check on the rebased head.
+type RebaseInput struct {
+	GoalSlug   string
+	GoalTitle  string
+	Seq        int
+	Title      string
+	Brief      string
+	Acceptance string
+	Repo       string
+	Branch     string
+	BaseRef    string
+	// Conflict is the conflicting regions in git's markers and Files the
+	// files, as RequestWorkItemRebase gave them (either may be empty).
+	Conflict string
+	Files    []string
+	// ContextDir, ContextFiles, Project and Prologue as on EvaluateInput.
+	ContextDir   string
+	ContextFiles []string
+	Project      string
+	Prologue     bool
+	// Services as on PromptInput.
+	Services string
+}
+
+// The contract lines a rebase session ends with; ParseRebase reads them.
+// A rebase that landed ends with RebasedLine and its pushed head, then
+// ResolvedLine and the files it resolved; one that did not, with
+// RebaseFailedLine and why.
+const (
+	RebasedLine      = "REBASED:"
+	ResolvedLine     = "RESOLVED:"
+	RebaseFailedLine = "REBASE FAILED:"
+)
+
+// RebaseRunbook is the mesh-branch-rebase skill in runsheet/runsheet,
+// the runbook a rebase session follows.
+const (
+	RebaseRunbookProject = "runsheet/runsheet"
+	RebaseRunbookSlug    = "skill-mesh-branch-rebase"
+)
+
+// RebasePrompt renders the prompt of a session of kind rebase (runsheet
+// ADR 008 step 2): its whole job is to rebase the item's branch onto its
+// base keeping both sides' intent, re-run the acceptance, push with
+// --force-with-lease and say what it did in the contract lines.
+func RebasePrompt(in RebaseInput) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "You are a Mesh node session of kind rebase for item %d of goal %q (%s). The item's pull request passed evaluation, then its base moved and it conflicts; the integrator could not resolve it itself. Your whole job is to rebase the branch onto its base, keeping the intent of both sides, and push it. You do not change what the item does.\n\n", in.Seq, in.GoalTitle, in.GoalSlug)
+	fmt.Fprintf(&b, "# Item %d: %s\n\n", in.Seq, in.Title)
+	if strings.TrimSpace(in.Brief) != "" {
+		fmt.Fprintf(&b, "## Brief\n\n%s\n\n", strings.TrimSpace(in.Brief))
+	}
+	if strings.TrimSpace(in.Acceptance) != "" {
+		fmt.Fprintf(&b, "## Acceptance (this item)\n\n%s\n\n", strings.TrimSpace(in.Acceptance))
+	}
+	fmt.Fprintf(&b, "# The conflict\n\nYou are in %s with `%s` checked out at the head the builder pushed. It conflicts with `origin/%s`.", in.Repo, in.Branch, in.BaseRef)
+	if len(in.Files) > 0 {
+		fmt.Fprintf(&b, " The files: %s.", strings.Join(in.Files, ", "))
+	}
+	b.WriteString("\n\n")
+	if strings.TrimSpace(in.Conflict) != "" {
+		fmt.Fprintf(&b, "As the integrator found it:\n\n```\n%s\n```\n\n", strings.TrimSpace(in.Conflict))
+	}
+	if in.ContextDir != "" {
+		fmt.Fprintf(&b, "# The context\n\nThe project's instructions and decisions are in `%s/`", in.ContextDir)
+		if len(in.ContextFiles) > 0 {
+			fmt.Fprintf(&b, " (%s)", strings.Join(in.ContextFiles, ", "))
+		}
+		b.WriteString(": the resolved branch must still keep to them.")
+		if in.Prologue {
+			b.WriteString(" " + prologueRule(in.ContextDir, in.Project))
+		}
+		b.WriteString("\n\n")
+	} else if in.Prologue {
+		b.WriteString("# The context\n\n" + prologueRule("", in.Project) + "\n\n")
+	}
+	servicesSection(&b, in.Services)
+	b.WriteString("# The runbook\n\n")
+	if in.Prologue {
+		fmt.Fprintf(&b, "Read the mesh-branch-rebase skill first: `prologue_document` with project %q, slug %q (or the same slug in project %q, if it is indexed there). If neither has it, these steps are the runbook:\n\n", RebaseRunbookProject, RebaseRunbookSlug, in.Project)
+	} else {
+		b.WriteString("The mesh-branch-rebase skill's steps:\n\n")
+	}
+	fmt.Fprintf(&b, "1. Fetch: `git fetch origin && git checkout -B %s origin/%s`.\n", in.Branch, in.Branch)
+	fmt.Fprintf(&b, "2. Rebase: `git rebase origin/%s`.\n", in.BaseRef)
+	b.WriteString("3. Resolve each conflicting file on its own, reading both sides and why each changed (`git log` of the base since the branch forked, the brief above). Keep both sides' intent: never drop either side's change to make the conflict go away. Generated code is regenerated from the merged source, not merged by hand. Then `git add` it and `git rebase --continue`.\n")
+	b.WriteString("4. Run the item's acceptance checks on the rebased head (the repository's AGENTS.md or CLAUDE.md says how), and fix only what the rebase broke.\n")
+	fmt.Fprintf(&b, "5. Push: `git push --force-with-lease origin %s`. If the push is refused, the branch moved under you: say so, do not force it.\n\n", in.Branch)
+	b.WriteString("# Rules\n\n")
+	b.WriteString("1. Rebase, resolve, check, push: nothing else. No new features, no refactors, no pull requests, nothing outside this workspace.\n")
+	b.WriteString("2. If a conflict cannot be resolved without dropping one side's intent, or the acceptance fails on the rebased head for a reason the rebase cannot fix, give up: `git rebase --abort`, push nothing, and say exactly why — which file, which change on each side. The builder is handed the item with your words.\n")
+	fmt.Fprintf(&b, "3. End your final message with a short account of what you resolved and how, then the contract lines, exactly and last:\n\n")
+	fmt.Fprintf(&b, "   On success, two lines — the head you pushed (`git rev-parse HEAD`) and the files you resolved by hand, comma-separated (`(none)` when the rebase needed none):\n\n   ```\n   %s <sha>\n   %s <file>, <file>\n   ```\n\n", RebasedLine, ResolvedLine)
+	fmt.Fprintf(&b, "   Otherwise one line with the reason:\n\n   ```\n   %s <why>\n   ```\n", RebaseFailedLine)
+	return b.String()
+}
+
+// RebaseResult is what a rebase session's contract lines say.
+type RebaseResult struct {
+	// Rebased: the session pushed Head, having resolved Files.
+	Rebased bool
+	Head    string
+	Files   []string
+	// Reason is why it did not, when Rebased is false.
+	Reason string
+}
+
+var shaShape = regexp.MustCompile(`^[0-9a-fA-F]{7,64}$`)
+
+// ParseRebase reads a rebase session's final message: the last contract
+// line decides. ok is false when there is none, or a REBASED line with
+// no sha — a session that cannot be read has not rebased.
+func ParseRebase(text string) (RebaseResult, bool) {
+	lines := strings.Split(strings.TrimSpace(text), "\n")
+	var files []string
+	var sawResolved bool
+	for i := len(lines) - 1; i >= 0; i-- {
+		l := strings.TrimSpace(strings.Trim(strings.TrimSpace(lines[i]), "`*_"))
+		upper := strings.ToUpper(l)
+		switch {
+		case strings.HasPrefix(upper, ResolvedLine) && !sawResolved:
+			sawResolved = true
+			files = splitFiles(l[len(ResolvedLine):])
+		case strings.HasPrefix(upper, RebaseFailedLine):
+			reason := strings.TrimSpace(l[len(RebaseFailedLine):])
+			if reason == "" {
+				reason = strings.TrimSpace(strings.Join(lines[:i], "\n"))
+			}
+			if reason == "" {
+				reason = "the rebase session gave up and did not say why"
+			}
+			return RebaseResult{Reason: reason}, true
+		case strings.HasPrefix(upper, RebasedLine):
+			head := strings.Trim(strings.TrimSpace(l[len(RebasedLine):]), "`*_ ")
+			if !shaShape.MatchString(head) {
+				return RebaseResult{}, false
+			}
+			if files == nil {
+				files = []string{}
+			}
+			return RebaseResult{Rebased: true, Head: strings.ToLower(head), Files: files}, true
+		}
+	}
+	return RebaseResult{}, false
+}
+
+// splitFiles reads a RESOLVED line's files: comma- or space-separated,
+// "(none)" or "none" for no file.
+func splitFiles(s string) []string {
+	files := []string{}
+	for _, f := range strings.FieldsFunc(s, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' }) {
+		f = strings.Trim(f, "`*_")
+		if f == "" || strings.EqualFold(f, "(none)") || strings.EqualFold(f, "none") {
+			continue
+		}
+		files = append(files, f)
+	}
+	return files
 }

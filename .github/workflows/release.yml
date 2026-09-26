@@ -21,7 +21,7 @@ permissions:
 jobs:
   release:
     name: Trigger CLI Release
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, mini]
     steps:
       - name: Checkout
         uses: actions/checkout@v4

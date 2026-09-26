@@ -54,6 +54,9 @@ type Session struct {
 	OnSessionID func(id string)
 	// OnText hears what the session says.
 	OnText func(text string)
+	// OnRateLimit hears the account's plan standing each time the
+	// stream reports it (a rate_limit_event).
+	OnRateLimit func(rl *harness.RateLimit)
 	// OnStart runs after each (re)start of the process, once it is alive.
 	OnStart func()
 	// OnTurn hears each turn's end: the item the message that started it
@@ -92,10 +95,10 @@ You are a Mesh node (%s) for %s, running work items of goals on this machine. Ev
 
 On a work_item.ready event (attributes: item_id, seq, goal_slug, repo, base_ref, branch, workspace):
 1. Call mesh_context(goal_slug) and read it: instructions and ADRs are binding, the PRD/TRD are the design; it ends with the project's whole index — fetch anything else with the prologue_document tool (search with prologue_search; other projects through prologue_projects) rather than guessing.
-2. Prepare the workspace at the given path (under %s/<goal-slug>/<seq>): "gh repo clone <repo> <workspace>" if it does not exist, else "git fetch --prune origin" there; then "git checkout -B <branch> origin/<branch>" when that remote branch exists (a retry continues the last attempt; the event says what its evaluator found), else "git checkout <branch>" when a local <branch> exists (an attempt interrupted before its push: continue it), else "git checkout -B <branch> origin/<base_ref>".
+2. Work in the workspace at the given path (under %s/<goal-slug>/<seq>). The node has already cloned it, checked out <branch> (a retry continues the last attempt; the event says what its evaluator found) and given it a git credential for <repo> alone; never clone, re-clone or re-credential it, and never run gh auth. If that path does not exist or is not a git checkout, call mesh_fail(item_id, error) saying so rather than preparing one yourself.
 3. Do the item as a fresh subagent with clean context (use the Task tool with the item's brief, acceptance and the context; one subagent per item; never carry one item's context into another). Work on that branch only.
 4. Run the item's acceptance check and make it pass. Commit with clear, conventional messages.
-5. Call mesh_record(item_id, summary) after each milestone and before finishing.
+5. Call mesh_record(item_id, summary) after each milestone and before finishing: it reports the summary to the platform and writes no file — never write or commit a goal status table yourself.
 6. Push the branch: "git push -u origin <branch>" ("--force-with-lease" too when you rebased it for a rework); then call mesh_finish(item_id, branch, head_sha) with "git rev-parse HEAD". If the item cannot be done, call mesh_fail(item_id, error) with the reason.
 Report mesh_progress(item_id, note, cost_cents) as you go — at least once when you start and once per milestone. An event for an item you already finished or failed needs nothing but a one-line reply.
 
@@ -254,10 +257,35 @@ func (s *Session) Run(ctx context.Context, workRoot string) error {
 	}
 }
 
+// operatorGitHubEnv is what the node daemon's environment may carry of
+// the operator's own GitHub access, none of which the session inherits.
+var operatorGitHubEnv = map[string]bool{"GH_TOKEN": true, "GITHUB_TOKEN": true, "GH_ENTERPRISE_TOKEN": true, "GITHUB_ENTERPRISE_TOKEN": true, "GH_CONFIG_DIR": true}
+
+// SessionEnv is the shared session's environment: the daemon's own
+// (environ) less every GitHub token and gh config dir it carries, with
+// GH_CONFIG_DIR a fresh, empty directory for the process's life. The
+// session runs many items, so no one item's GH_TOKEN goes here either;
+// each item's git reaches GitHub through its own workspace's credential
+// helper, and gh reaches nothing.
+func SessionEnv(environ []string, ghConfigDir string) []string {
+	env := make([]string, 0, len(environ)+1)
+	for _, kv := range environ {
+		if k, _, _ := strings.Cut(kv, "="); !operatorGitHubEnv[k] {
+			env = append(env, kv)
+		}
+	}
+	return append(env, "GH_CONFIG_DIR="+ghConfigDir)
+}
+
 func (s *Session) once(ctx context.Context, bin, workRoot string) error {
 	cmd := exec.CommandContext(ctx, bin, s.Args(workRoot)...)
 	cmd.Dir = s.WorkDir
-	cmd.Env = os.Environ()
+	ghDir, err := node.NewGHConfigDir()
+	if err != nil {
+		return fmt.Errorf("gh config dir: %w", err)
+	}
+	defer os.RemoveAll(ghDir)
+	cmd.Env = SessionEnv(os.Environ(), ghDir)
 	cmd.WaitDelay = 5 * time.Second
 	if s.Stderr != nil {
 		cmd.Stderr = s.Stderr
@@ -299,6 +327,9 @@ func (s *Session) once(ctx context.Context, bin, workRoot string) error {
 	harness.ParseStream(stdout, func(ev harness.Event) {
 		if ev.SessionID != "" && s.OnSessionID != nil {
 			s.OnSessionID(ev.SessionID)
+		}
+		if rl := ev.RateLimit(time.Now()); rl != nil && s.OnRateLimit != nil {
+			s.OnRateLimit(rl)
 		}
 		switch ev.Type {
 		case "assistant":

@@ -1,0 +1,195 @@
+# Tag-triggered release: the one nodes update themselves from.
+#
+# A tag v* builds the node for linux/amd64, linux/arm64 and darwin/arm64,
+# writes SHA256SUMS over them, signs it keyless with Sigstore (this
+# workflow's GitHub OIDC identity) and publishes all five files as a
+# GitHub release on projectmesh-io/mesh-cli. The asset names and the
+# signing identity are the contract `mesh node update` verifies
+# (docs/adr/adr-002-signed-tag-releases.md):
+#
+#   identity: https://github.com/projectmesh-io/mesh-cli/.github/workflows/release-tag.yml@refs/tags/<tag>
+#   issuer:   https://token.actions.githubusercontent.com
+#
+# The same tag builds the node image (mesh-specs ADR 007) from
+# images/node/Containerfile for linux/amd64 and linux/arm64, pushes it as
+# ghcr.io/projectmesh-io/mesh-node:<tag> and signs its digest keyless with
+# the same identity. The release is published only after the image is
+# pushed, so a node that can fetch a release can pull its image; the five
+# release assets and their signature are unchanged.
+#
+# cli-release.yml (main pushes, released to projectmesh-io/mesh) is
+# separate and is not what nodes update from.
+
+name: Release (tag)
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  id-token: write
+
+concurrency:
+  group: release-tag-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: [self-hosted, mini]
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            asset_name: mesh-linux-amd64
+          - goos: linux
+            goarch: arm64
+            asset_name: mesh-linux-arm64
+          - goos: darwin
+            goarch: arm64
+            asset_name: mesh-darwin-arm64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Build binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+          ASSET: ${{ matrix.asset_name }}
+        run: |
+          mkdir -p dist
+          go build -trimpath \
+            -ldflags "-s -w -X projectmesh.io/mesh-cli/internal/version.Version=${GITHUB_REF_NAME}" \
+            -o "dist/${ASSET}" ./cmd/mesh/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: dist/${{ matrix.asset_name }}
+          if-no-files-found: error
+
+  image:
+    name: Node image ${{ github.ref_name }}
+    runs-on: [self-hosted, mini]
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Go version from go.mod
+        id: go
+        run: echo "version=$(awk '$1 == "go" { print $2 }' go.mod)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push ghcr.io/projectmesh-io/mesh-node:${{ github.ref_name }}
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: images/node
+          file: images/node/Containerfile
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            GO_VERSION=${{ steps.go.outputs.version }}
+            MESH_VERSION=${{ github.ref_name }}
+          tags: ghcr.io/projectmesh-io/mesh-node:${{ github.ref_name }}
+          push: true
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign the image (keyless)
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: cosign sign --yes "ghcr.io/projectmesh-io/mesh-node@${DIGEST}"
+
+  publish:
+    name: Sign and publish ${{ github.ref_name }}
+    needs: [build, image]
+    runs-on: [self-hosted, mini]
+    permissions:
+      contents: write
+      id-token: write
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+
+      - name: Check the three assets
+        working-directory: release
+        run: |
+          for f in mesh-linux-amd64 mesh-linux-arm64 mesh-darwin-arm64; do
+            test -f "$f" || { echo "missing $f"; exit 1; }
+          done
+
+      - name: Generate SHA256SUMS
+        working-directory: release
+        run: sha256sum mesh-* > SHA256SUMS && cat SHA256SUMS
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign SHA256SUMS (keyless)
+        working-directory: release
+        run: cosign sign-blob --yes --bundle SHA256SUMS.sigstore.json SHA256SUMS
+
+      - name: Verify the signature against the release identity
+        working-directory: release
+        run: |
+          cosign verify-blob \
+            --bundle SHA256SUMS.sigstore.json \
+            --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release-tag.yml@${GITHUB_REF}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            SHA256SUMS
+
+      - name: Create release on projectmesh-io/mesh-cli
+        working-directory: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          flags=()
+          case "$TAG" in *-*) flags+=(--prerelease) ;; esac
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --notes "Release ${TAG} from \`${SHA}\`. SHA256SUMS is signed keyless with Sigstore by .github/workflows/release-tag.yml; see the README's Release section to verify." \
+            --verify-tag \
+            "${flags[@]}" \
+            mesh-linux-amd64 mesh-linux-arm64 mesh-darwin-arm64 \
+            SHA256SUMS SHA256SUMS.sigstore.json
