@@ -550,7 +550,12 @@ func (f *Fake) apply(name string, in map[string]any) error {
 		if item == nil {
 			return fmt.Errorf("no such item")
 		}
-		if in["passed"] == true {
+		// a confirmed already_done item is merged with no pull request
+		// (mesh ADR 003 decision 1); a built one goes to review, where
+		// the platform opens its pull request
+		if in["passed"] == true && item["outcome"] == "already_done" {
+			item["status"] = "merged"
+		} else if in["passed"] == true {
 			item["status"] = "review"
 		} else {
 			item["status"] = "ready"

@@ -44,7 +44,9 @@ type Workspacer interface {
 	// a renewed token, it replaces the old one.
 	Authorize(ctx context.Context, spec WorkspaceSpec, tok *gateway.GitHubToken) error
 	// Prepare clones (or fetches) the repo into spec.Dir() and checks out
-	// spec.Branch from spec.BaseRef, returning the directory.
+	// spec.Branch from spec.BaseRef, returning the directory. An empty
+	// spec.Branch leaves it on origin/<base>, detached, with the base's
+	// full history (an already_done item's evaluation).
 	Prepare(ctx context.Context, spec WorkspaceSpec) (string, error)
 	// Commit stages paths and commits them with msg when anything
 	// changed. Only the goal's document at the goal's end uses it
@@ -145,6 +147,9 @@ func (g *Git) Prepare(ctx context.Context, spec WorkspaceSpec) (string, error) {
 		}
 		base = strings.TrimPrefix(out, "origin/")
 	}
+	if spec.Branch == "" {
+		return dir, g.CheckoutBase(ctx, dir, base)
+	}
 	// a branch pushed by an earlier attempt (or just finished, for its
 	// evaluation) is continued, not restarted: the evaluator's notes say
 	// what to fix, and the push must fast-forward
@@ -163,6 +168,24 @@ func (g *Git) Prepare(ctx context.Context, spec WorkspaceSpec) (string, error) {
 		return "", err
 	}
 	return dir, nil
+}
+
+// CheckoutBase leaves dir on origin/<base>, detached, with the base's
+// full history: what an already_done item's evaluator checks its
+// evidence on (mesh ADR 003 decision 1). A single-branch clone is
+// fetched the base explicitly and a shallow one unshallowed, so every
+// cited SHA can be looked up.
+func (g *Git) CheckoutBase(ctx context.Context, dir, base string) error {
+	refspec := "+refs/heads/" + base + ":refs/remotes/origin/" + base
+	args := []string{"fetch", "--quiet", "origin", refspec}
+	if out, err := g.run(ctx, dir, "git", "rev-parse", "--is-shallow-repository"); err == nil && out == "true" {
+		args = []string{"fetch", "--quiet", "--unshallow", "origin", refspec}
+	}
+	if _, err := g.run(ctx, dir, "git", args...); err != nil {
+		return err
+	}
+	_, err := g.run(ctx, dir, "git", "checkout", "--quiet", "--detach", "origin/"+base)
+	return err
 }
 
 // Diff implements Workspacer: the three-dot diff from where the branch

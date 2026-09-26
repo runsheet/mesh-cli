@@ -20,7 +20,11 @@ import (
 // the base, the acceptance, an adversarial review — and its verdict
 // recorded with EvaluateWorkItem. The platform opens the pull request on
 // a pass and readies the item again on a fail (with the notes for the
-// next builder), so the evaluator changes nothing itself.
+// next builder), so the evaluator changes nothing itself. An item
+// finished already_done (mesh ADR 003 decision 1) is checked on the base
+// ref instead — its evidence and acceptance, no branch and no diff — and
+// the same EvaluateWorkItem confirms it (the platform marks it merged,
+// with no pull request) or readies it again.
 type Evaluator struct {
 	GW       Gateway
 	Harness  harness.Harness
@@ -121,8 +125,14 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 		return fmt.Errorf("resolve: %w", err)
 	}
 	label := fmt.Sprintf("%s/%d", res.Goal.Slug, item.Seq)
+	// an already_done item has no branch: the evaluator checks its
+	// evidence on the base ref, with its history, and there is no diff
+	// (mesh ADR 003 decision 1)
+	alreadyDone := item.Outcome == gateway.OutcomeAlreadyDone
 	branch := item.Branch
-	if branch == "" {
+	if alreadyDone {
+		branch = ""
+	} else if branch == "" {
 		branch = res.Branch()
 	}
 	spec := WorkspaceSpec{Root: e.WorkRoot, GoalSlug: res.Goal.Slug, Seq: item.Seq, Repo: res.Repo.FullName(), Branch: branch, BaseRef: res.BaseRef()}
@@ -139,12 +149,15 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	if err != nil {
 		return fmt.Errorf("workspace: %w", err)
 	}
-	diff, err := e.WS.Diff(ctx, dir, spec.BaseRef)
-	if err != nil {
-		if ctx.Err() != nil {
-			return fmt.Errorf("diff: %w", err)
+	var diff string
+	if !alreadyDone {
+		diff, err = e.WS.Diff(ctx, dir, spec.BaseRef)
+		if err != nil {
+			if ctx.Err() != nil {
+				return fmt.Errorf("diff: %w", err)
+			}
+			return e.failDiff(ctx, item, label, spec.BaseRef, branch, err)
 		}
-		return e.failDiff(ctx, item, label, spec.BaseRef, branch, err)
 	}
 	// the same context the builder had: the ADRs it was bound by
 	orgLogin := e.Scopes.LoginOf(item.OrgID)
@@ -167,6 +180,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 		Seq: item.Seq, Title: item.Title, Brief: item.Brief, Acceptance: item.Acceptance,
 		Repo: res.Repo.FullName(), Branch: branch, BaseRef: spec.BaseRef, Diff: diff,
 		ContextDir: contextDir, ContextFiles: files, Project: orgLogin + "/" + res.Project.Slug, Prologue: len(e.MCP) > 0,
+		AlreadyDone: alreadyDone, Evidence: item.Evidence,
 	}
 	budget := e.MaxBudgetUSD
 	if budget <= 0 {
@@ -237,7 +251,11 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	pod.Apply(&job)
 	in.Services = pod.Prompt()
 	job.Prompt = harness.EvaluatePrompt(in)
-	e.logf("item %s: evaluate on %s: %s (%d bytes of diff)", label, modelName(model), branch, len(diff))
+	if alreadyDone {
+		e.logf("item %s: evaluate on %s: the already_done claim on %s", label, modelName(model), spec.BaseRef)
+	} else {
+		e.logf("item %s: evaluate on %s: %s (%d bytes of diff)", label, modelName(model), branch, len(diff))
+	}
 	// the session outlives this process: a restart adopts it (ADR 009)
 	job.Outlive = true
 	result, err := e.Harness.Run(ctx, job, nil)

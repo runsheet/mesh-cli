@@ -127,6 +127,13 @@ type EvaluateInput struct {
 	Prologue     bool
 	// Services as on PromptInput.
 	Services string
+	// AlreadyDone is the second shape (mesh ADR 003 decision 1): the
+	// builder finished the item already_done, with no branch, and
+	// Evidence says where main holds the work — merged PR URLs and/or
+	// commit SHAs. The session is on BaseRef, not a branch, and has no
+	// Diff: it checks the evidence and the acceptance there.
+	AlreadyDone bool
+	Evidence    string
 }
 
 // Verdict lines the evaluator ends with; ParseVerdict reads them.
@@ -141,10 +148,17 @@ const evaluateUnverifiableRule = "A clause you cannot check at evaluation time �
 
 // EvaluatePrompt renders the evaluator's prompt (mesh-specs trd §3.4): a
 // fresh session, the diff and the acceptance, an adversarial review that
-// runs the acceptance check itself and ends with a verdict line.
+// runs the acceptance check itself and ends with a verdict line. An
+// already_done item (AlreadyDone) gets the evidence and the acceptance
+// to check on the base ref instead of a diff, under the same ADRs and
+// with the same verdict line (mesh ADR 003 decision 1).
 func EvaluatePrompt(in EvaluateInput) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "You are the evaluator of item %d of goal %q (%s), reviewing a branch another session built. You did not write it; assume it is wrong until the evidence says otherwise.\n\n", in.Seq, in.GoalTitle, in.GoalSlug)
+	if in.AlreadyDone {
+		fmt.Fprintf(&b, "You are the evaluator of item %d of goal %q (%s), checking another session's claim that the item is already done: that %s already holds its work, so nothing was built. You did not make the claim; assume it is wrong until the evidence says otherwise.\n\n", in.Seq, in.GoalTitle, in.GoalSlug, in.BaseRef)
+	} else {
+		fmt.Fprintf(&b, "You are the evaluator of item %d of goal %q (%s), reviewing a branch another session built. You did not write it; assume it is wrong until the evidence says otherwise.\n\n", in.Seq, in.GoalTitle, in.GoalSlug)
+	}
 	fmt.Fprintf(&b, "# Item %d: %s\n\n", in.Seq, in.Title)
 	if strings.TrimSpace(in.Brief) != "" {
 		fmt.Fprintf(&b, "## Brief\n\n%s\n\n", strings.TrimSpace(in.Brief))
@@ -155,11 +169,21 @@ func EvaluatePrompt(in EvaluateInput) string {
 	if strings.TrimSpace(in.GoalAcceptance) != "" {
 		fmt.Fprintf(&b, "## Acceptance (the goal)\n\n%s\n\n", strings.TrimSpace(in.GoalAcceptance))
 	}
-	fmt.Fprintf(&b, "# The branch\n\nYou are in %s with `%s` checked out at the commit the builder pushed; the diff below is `git diff origin/%s...HEAD`.\n\n", in.Repo, in.Branch, in.BaseRef)
-	if strings.TrimSpace(in.Diff) == "" {
-		b.WriteString("The diff is empty: the branch changed nothing.\n\n")
+	if in.AlreadyDone {
+		fmt.Fprintf(&b, "# The claim\n\nThe builder pushed no branch: it finished the item already_done, saying %s already satisfies the acceptance. Its evidence:\n\n", in.BaseRef)
+		if ev := strings.TrimSpace(in.Evidence); ev != "" {
+			fmt.Fprintf(&b, "```\n%s\n```\n\n", ev)
+		} else {
+			b.WriteString("(none given — a claim without evidence cannot be confirmed)\n\n")
+		}
+		fmt.Fprintf(&b, "You are in %s with `origin/%s` checked out (detached) and its full history. There is no diff: check the claim on %s.\n\n", in.Repo, in.BaseRef, in.BaseRef)
 	} else {
-		fmt.Fprintf(&b, "```diff\n%s\n```\n\n", strings.TrimSpace(in.Diff))
+		fmt.Fprintf(&b, "# The branch\n\nYou are in %s with `%s` checked out at the commit the builder pushed; the diff below is `git diff origin/%s...HEAD`.\n\n", in.Repo, in.Branch, in.BaseRef)
+		if strings.TrimSpace(in.Diff) == "" {
+			b.WriteString("The diff is empty: the branch changed nothing.\n\n")
+		} else {
+			fmt.Fprintf(&b, "```diff\n%s\n```\n\n", strings.TrimSpace(in.Diff))
+		}
 	}
 	if in.ContextDir != "" {
 		fmt.Fprintf(&b, "# The context\n\nThe project's instructions and decisions are in `%s/`", in.ContextDir)
@@ -176,9 +200,15 @@ func EvaluatePrompt(in EvaluateInput) string {
 	}
 	servicesSection(&b, in.Services)
 	b.WriteString("# Rules\n\n")
-	b.WriteString("1. Judge the item's acceptance, literally: every clause, against what the diff does — not what its messages claim. A change that goes against an ADR or the instructions fails, whatever the acceptance says.\n")
-	b.WriteString("2. Run the acceptance check yourself when it names one (tests, a build, a command). Read the repository's own instructions (AGENTS.md, CLAUDE.md) for how.\n")
-	b.WriteString("3. Look for what the builder skipped: untested paths, a check made to pass by weakening it, changes outside the brief, secrets or destructive commands.\n")
+	if in.AlreadyDone {
+		fmt.Fprintf(&b, "1. Check the evidence on %[1]s: every cited pull request is merged into %[1]s (`gh pr view <url> --json state,mergeCommit,baseRefName`) and every cited SHA is on it (`git merge-base --is-ancestor <sha> origin/%[1]s`). A citation that is not on %[1]s, or evidence that cites nothing, fails the claim.\n", in.BaseRef)
+		fmt.Fprintf(&b, "2. Judge the item's acceptance, literally, every clause, against what %[1]s holds now — not what the evidence or a commit message claims — and run the acceptance check yourself on %[1]s when it names one (tests, a build, a command). Read the repository's own instructions (AGENTS.md, CLAUDE.md) for how. Work on %[1]s that goes against an ADR or the instructions does not satisfy the item, whatever the acceptance says.\n", in.BaseRef)
+		b.WriteString("3. Look for what the claim skips: a clause of the brief or the acceptance no cited change covers, work that was later reverted, a check that passes only because it tests nothing. When you fail it, say exactly what is missing on " + in.BaseRef + ", so the next builder builds that.\n")
+	} else {
+		b.WriteString("1. Judge the item's acceptance, literally: every clause, against what the diff does — not what its messages claim. A change that goes against an ADR or the instructions fails, whatever the acceptance says.\n")
+		b.WriteString("2. Run the acceptance check yourself when it names one (tests, a build, a command). Read the repository's own instructions (AGENTS.md, CLAUDE.md) for how.\n")
+		b.WriteString("3. Look for what the builder skipped: untested paths, a check made to pass by weakening it, changes outside the brief, secrets or destructive commands.\n")
+	}
 	b.WriteString("4. Change nothing: no edits, no commits, no pushes, nothing outside this workspace. You are a reviewer.\n")
 	b.WriteString("5. " + evaluateUnverifiableRule + "\n")
 	fmt.Fprintf(&b, "6. End your final message with a short review — what holds, what does not, what is unverifiable, and exactly what a retry must fix — and then one last line that is either `%s` or `%s`. Pass only when every clause of the acceptance you can check holds.\n", VerdictPass, VerdictFail)
