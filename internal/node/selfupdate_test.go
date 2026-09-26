@@ -206,7 +206,7 @@ func TestSelfUpdateFailedImagePullIsAnUpdateError(t *testing.T) {
 	p.addGoal(orgID, "g", "normal")
 	loop, u, release, _ := p.updateLoop("v1.1.0")
 	defer close(release)
-	u.imageErr = errors.New("node image ghcr.io/projectmesh-io/mesh-node:v1.1.0: pull failed: Error: initializing source: unauthorized")
+	u.imageErr = errors.New("node image ghcr.io/runsheet/mesh-node:v1.1.0: pull failed: Error: initializing source: unauthorized")
 	loop.Tick(context.Background())
 	loop.updateWG.Wait()
 	want := []string{"confirm", "fetch v1.1.0", "image v1.1.0 running", "refuse v1.1.0: " + u.imageErr.Error()}

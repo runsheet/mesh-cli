@@ -166,7 +166,7 @@ func TestNodeUpdateDrainsBeforeItSwaps(t *testing.T) {
 	if want := updateTo + " after 0 drains"; strings.Join(f.images, ",") != want {
 		t.Fatalf("images ensured = %q, want %q", f.images, want)
 	}
-	if out := f.out.String(); !strings.Contains(out, "Node image: ghcr.io/projectmesh-io/mesh-node:"+updateTo+" (pulled); removed ghcr.io/projectmesh-io/mesh-node:v1.0.0") {
+	if out := f.out.String(); !strings.Contains(out, "Node image: ghcr.io/runsheet/mesh-node:"+updateTo+" (pulled); removed ghcr.io/runsheet/mesh-node:v1.0.0") {
 		t.Fatalf("output does not name the node image:\n%s", out)
 	}
 }
@@ -175,7 +175,7 @@ func TestNodeUpdateDrainsBeforeItSwaps(t *testing.T) {
 // drained or swapped, and the refusal is recorded.
 func TestNodeUpdateFailedImagePullChangesNothing(t *testing.T) {
 	f := newUpdateFixture(t)
-	f.imageErr = errors.New("node image ghcr.io/projectmesh-io/mesh-node:" + updateTo + ": pull failed: Error: initializing source: unauthorized")
+	f.imageErr = errors.New("node image ghcr.io/runsheet/mesh-node:" + updateTo + ": pull failed: Error: initializing source: unauthorized")
 	err := f.u.run(context.Background(), updateTo, false)
 	if err == nil || !strings.Contains(err.Error(), "pull failed") || !strings.Contains(err.Error(), "not updated") {
 		t.Fatalf("update = %v; want the pull's failure", err)
@@ -240,7 +240,7 @@ func TestNodeUpdateRefuses(t *testing.T) {
 		{
 			name: "another workflow's signature",
 			tamper: func(f *updateFixture, t *testing.T) {
-				id := "https://github.com/projectmesh-io/mesh-cli/.github/workflows/ci.yml@refs/tags/" + updateTo
+				id := "https://github.com/runsheet/mesh-cli/.github/workflows/ci.yml@refs/tags/" + updateTo
 				f.src[selfupdate.BundleAsset] = selfupdatetest.SignSums(t, f.vs, id, selfupdate.Issuer, f.src[selfupdate.SumsAsset])
 			},
 			reason: "SHA256SUMS is not signed by release-tag.yml on " + updateTo,
@@ -349,7 +349,7 @@ func TestNodeUpdateHelp(t *testing.T) {
 	if err := rootCmd.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"mesh node update [version]", "--verify-only", "node image", "ghcr.io/projectmesh-io/mesh-node:<version>", "sandbox.image", "build"} {
+	for _, want := range []string{"mesh node update [version]", "--verify-only", "node image", "ghcr.io/runsheet/mesh-node:<version>", "sandbox.image", "build"} {
 		if !strings.Contains(buf.String(), want) {
 			t.Errorf("help lacks %q:\n%s", want, buf)
 		}

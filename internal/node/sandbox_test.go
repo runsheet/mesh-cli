@@ -61,7 +61,7 @@ func TestSandboxLimitsFromNodeYAML(t *testing.T) {
 		if flagValue(svc, "--cpus") != tc.svcCPUs || flagValue(svc, "--memory") != tc.svcMem {
 			t.Errorf("%q: services budget = %v", tc.doc, svc)
 		}
-		if s.Image != "ghcr.io/projectmesh-io/mesh-node:v1.2.3" {
+		if s.Image != "ghcr.io/runsheet/mesh-node:v1.2.3" {
 			t.Errorf("image = %s", s.Image)
 		}
 		if !reflect.DeepEqual(s.Registries, []string{"docker.io", "ghcr.io", "*.pkg.dev", "quay.io"}) {
@@ -115,7 +115,7 @@ func TestOpenSandboxModes(t *testing.T) {
 		t.Fatal("an explicit on without a runtime must refuse to start")
 	}
 	sb, info, err = OpenSandbox(ctx, SandboxConfig{}, &sandbox.Fake{}, "v1", logf)
-	if err != nil || sb == nil || *info != (gateway.SandboxInfo{Mode: "on", Runtime: "fake 1.0", Image: "ghcr.io/projectmesh-io/mesh-node:v1"}) {
+	if err != nil || sb == nil || *info != (gateway.SandboxInfo{Mode: "on", Runtime: "fake 1.0", Image: "ghcr.io/runsheet/mesh-node:v1"}) {
 		t.Fatalf("unset with a runtime: %v %+v %v", sb, info, err)
 	}
 }
@@ -176,7 +176,7 @@ func TestRunnerReleasesALimitKill(t *testing.T) {
 	gw := gateway.New(f.URL(), "rs_test")
 	_ = gw.RegisterNode(context.Background(), gateway.RegisterNodeInput{NodeID: r.Cfg.NodeID, OrgID: orgID, OwnerID: f.UserID, Name: "n", Slug: "n"})
 	loop := &Loop{GW: gw, Cfg: r.Cfg, Scopes: scopesOf(r.Cfg), Interval: time.Hour, Declines: r.Declines,
-		Sandbox: &gateway.SandboxInfo{Mode: "on", Runtime: "podman 5.2.1", Image: "ghcr.io/projectmesh-io/mesh-node:v1"},
+		Sandbox: &gateway.SandboxInfo{Mode: "on", Runtime: "podman 5.2.1", Image: "ghcr.io/runsheet/mesh-node:v1"},
 		Dispatch: func(context.Context, gateway.WorkItem) {
 			t.Error("a released limit kill must not be taken again at once")
 		}}
@@ -294,16 +294,16 @@ func TestSandboxEnsureImage(t *testing.T) {
 
 	r := &imageRunner{}
 	img, err := sandboxOf(t, "sandbox: {}\n").EnsureImage(ctx, r.run, "v1.1.0", "v1.0.0")
-	if err != nil || img.Ref != "ghcr.io/projectmesh-io/mesh-node:v1.1.0" || !img.Pulled {
+	if err != nil || img.Ref != "ghcr.io/runsheet/mesh-node:v1.1.0" || !img.Pulled {
 		t.Fatalf("default = %+v, %v", img, err)
 	}
-	if p := r.sub("pull"); len(p) != 1 || p[0] != "podman pull ghcr.io/projectmesh-io/mesh-node:v1.1.0" {
+	if p := r.sub("pull"); len(p) != 1 || p[0] != "podman pull ghcr.io/runsheet/mesh-node:v1.1.0" {
 		t.Fatalf("pulls = %q", p)
 	}
 
 	r = &imageRunner{}
 	img, err = sandboxOf(t, "sandbox:\n  image: build\n").EnsureImage(ctx, r.run, "v1.1.0", "v1.0.0")
-	if err != nil || img.Ref != "ghcr.io/projectmesh-io/mesh-node:v1.1.0" || !img.Built {
+	if err != nil || img.Ref != "ghcr.io/runsheet/mesh-node:v1.1.0" || !img.Built {
 		t.Fatalf("build = %+v, %v", img, err)
 	}
 	if len(r.sub("pull")) != 0 || len(r.sub("build")) != 1 {
@@ -316,7 +316,7 @@ func TestSandboxEnsureImage(t *testing.T) {
 	if string(r.built) != string(want) {
 		t.Fatal("sandbox.image: build did not build images/node/Containerfile")
 	}
-	if got := sandboxOf(t, "sandbox:\n  image: build\n").Settings("v1.1.0").Image; got != "ghcr.io/projectmesh-io/mesh-node:v1.1.0" {
+	if got := sandboxOf(t, "sandbox:\n  image: build\n").Settings("v1.1.0").Image; got != "ghcr.io/runsheet/mesh-node:v1.1.0" {
 		t.Fatalf("sessions of sandbox.image: build run %q", got)
 	}
 

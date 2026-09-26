@@ -38,7 +38,7 @@ type SandboxConfig struct {
 	// Registries are where service images may come from (default
 	// docker.io, ghcr.io, *.pkg.dev, quay.io).
 	Registries []string `yaml:"registries,omitempty"`
-	// Image is the node image; empty is ghcr.io/projectmesh-io/mesh-node
+	// Image is the node image; empty is ghcr.io/runsheet/mesh-node
 	// at the node's version, `build` that same tag built on this machine
 	// from the embedded Containerfile, anything else used as given.
 	Image string `yaml:"image,omitempty"`

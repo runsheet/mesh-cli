@@ -11,7 +11,7 @@ import (
 
 // ReleaseBaseURL is where tag releases are downloaded from; the version and
 // the asset name follow it.
-const ReleaseBaseURL = "https://github.com/projectmesh-io/mesh-cli/releases/download/"
+const ReleaseBaseURL = "https://github.com/runsheet/mesh-cli/releases/download/"
 
 // The release's signed files, beside the binaries (adr-002).
 const (
@@ -33,7 +33,7 @@ type Source interface {
 	Asset(ctx context.Context, version, name string) ([]byte, error)
 }
 
-// GitHub is the Source of tag releases on projectmesh-io/mesh-cli.
+// GitHub is the Source of tag releases on runsheet/mesh-cli.
 type GitHub struct {
 	// Client makes the requests; nil is http.DefaultClient. Tests give it
 	// a Transport that never touches the network.

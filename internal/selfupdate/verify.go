@@ -22,17 +22,29 @@ import (
 // node.yaml, flags or the environment reaches it.
 const (
 	// IdentityPrefix + the tag is the certificate's SAN: release-tag.yml
-	// running on that tag of projectmesh-io/mesh-cli.
-	IdentityPrefix = "https://github.com/projectmesh-io/mesh-cli/.github/workflows/release-tag.yml@refs/tags/"
+	// running on that tag of runsheet/mesh-cli.
+	IdentityPrefix = "https://github.com/runsheet/mesh-cli/.github/workflows/release-tag.yml@refs/tags/"
+	// PreTransferIdentityPrefix + the tag is the SAN of a release cut
+	// before the repo moved from projectmesh-io to runsheet (2026-09-26
+	// 12:40Z): accepted only for the tags in preTransferTags.
+	PreTransferIdentityPrefix = "https://github.com/projectmesh-io/mesh-cli/.github/workflows/release-tag.yml@refs/tags/"
 	// Issuer is GitHub Actions' OIDC issuer.
 	Issuer = "https://token.actions.githubusercontent.com"
 )
 
+// preTransferTags are the tags released under the old owner, signed by
+// PreTransferIdentityPrefix. The set is closed: every tag after the
+// transfer is signed by IdentityPrefix alone.
+var preTransferTags = map[string]bool{
+	"v0.0.0-selfupdate-test.1": true, // 97fb5fb, released 2026-09-25
+}
+
 // Policy is what Verify requires of a release's signature. Production uses
 // ReleasePolicy; tests build one around a virtual Sigstore.
 type Policy struct {
-	// Identity is the exact certificate SAN required.
-	Identity string
+	// Identities are the certificate SANs accepted; the SAN must equal
+	// one of them exactly.
+	Identities []string
 	// Issuer is the exact OIDC issuer required.
 	Issuer string
 	// TrustedMaterial yields the Sigstore roots (Fulcio, Rekor, CT logs,
@@ -44,13 +56,18 @@ type Policy struct {
 	withoutSCTs bool
 }
 
-// ReleasePolicy is the policy for version: signed by release-tag.yml on
-// the tag version, issued to GitHub Actions, chained to Sigstore's public
-// good instance (its trusted root fetched over TUF from the root embedded
-// in sigstore-go, cached under ~/.mesh/sigstore).
+// ReleasePolicy is the policy for version: signed by runsheet/mesh-cli's
+// release-tag.yml on the tag version (or, for a tag released before the
+// transfer, the old owner's: PreTransferIdentityPrefix), issued to GitHub Actions, chained
+// to Sigstore's public good instance (its trusted root fetched over TUF
+// from the root embedded in sigstore-go, cached under ~/.mesh/sigstore).
 func ReleasePolicy(version string) Policy {
+	ids := []string{IdentityPrefix + version}
+	if preTransferTags[version] {
+		ids = append(ids, PreTransferIdentityPrefix+version)
+	}
 	return Policy{
-		Identity:        IdentityPrefix + version,
+		Identities:      ids,
 		Issuer:          Issuer,
 		TrustedMaterial: publicGoodRoot,
 	}
@@ -89,7 +106,7 @@ func Verify(rel *Release, p Policy) error {
 			return refuse(ErrMissingAsset, nil, "release %s has no %s", rel.Version, a.name)
 		}
 	}
-	if p.Identity == "" || p.Issuer == "" || p.TrustedMaterial == nil {
+	if len(p.Identities) == 0 || p.Issuer == "" || p.TrustedMaterial == nil {
 		return refuse(ErrSignature, nil, "no signing policy")
 	}
 	if err := verifySignature(rel, p); err != nil {
@@ -116,11 +133,19 @@ func verifySignature(rel *Release, p Policy) error {
 	if err != nil {
 		return fmt.Errorf("sigstore verifier: %w", err)
 	}
-	id, err := verify.NewShortCertificateIdentity(p.Issuer, "", p.Identity, "")
-	if err != nil {
-		return fmt.Errorf("sigstore identity: %w", err)
+	// Each identity is an exact SAN; the certificate must match one.
+	popts := []verify.PolicyOption{}
+	for _, san := range p.Identities {
+		if san == "" {
+			return refuse(ErrSignature, nil, "no signing policy")
+		}
+		id, err := verify.NewShortCertificateIdentity(p.Issuer, "", san, "")
+		if err != nil {
+			return fmt.Errorf("sigstore identity: %w", err)
+		}
+		popts = append(popts, verify.WithCertificateIdentity(id))
 	}
-	_, err = v.Verify(b, verify.NewPolicy(verify.WithArtifact(bytes.NewReader(rel.Sums)), verify.WithCertificateIdentity(id)))
+	_, err = v.Verify(b, verify.NewPolicy(verify.WithArtifact(bytes.NewReader(rel.Sums)), popts...))
 	if err == nil {
 		return nil
 	}

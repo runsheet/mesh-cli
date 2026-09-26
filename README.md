@@ -1469,9 +1469,9 @@ cosign verify-blob \
 sha256sum --check --ignore-missing SHA256SUMS
 ```
 
-`cli-release.yml` is separate: it builds on every push to `main` and
-publishes to the `projectmesh-io/mesh` repo, unsigned. Nodes do not
-update from it. `release.yml` is the Shipper's `workflow_dispatch` stub
+There is no other release channel: `cli-release.yml` (main builds,
+published unsigned to another repo) was dropped when the repo moved to
+the runsheet org. `release.yml` is the Shipper's `workflow_dispatch` stub
 and publishes nothing.
 
 ### Updating a node

@@ -24,7 +24,7 @@ const (
 	DefaultServicesCPUs   = 2.0
 	DefaultServicesMemory = "4g"
 	// DefaultImageRepo is the node image; its tag is the node's version.
-	DefaultImageRepo = "ghcr.io/projectmesh-io/mesh-node"
+	DefaultImageRepo = "ghcr.io/runsheet/mesh-node"
 	// DefaultPath is the agent's PATH in the node image.
 	DefaultPath = "/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 	// TimeoutGrace is how much longer than the session's own timeout the
