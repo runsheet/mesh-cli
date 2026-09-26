@@ -432,6 +432,40 @@ adopt; a channel-mode or sandboxed session ends with it and its claimed
 item is left for a retry. It never fails an item on its own shutdown.
 SIGHUP does the same and execs the binary again at once.
 
+### When the harness can't run
+
+A node whose Claude account is out of credit or rate-limited cannot run
+any session, and a node that treated each one as the item's failure
+would fail every item it touched (on 2026-09-23 the mini did so 8,813
+times in three hours). So the node watches for the harness's own
+out-of-credit and rate-limit messages — "You've hit your monthly spend
+limit · raise it at claude.ai/settings/usage" and the like — and for two
+sessions in a row that exit with no output at all, and takes either as
+**its** condition, not the item's.
+
+What you see:
+
+- The node's heartbeat carries `status: harness_unavailable` and the
+  harness's message as its `reason`; the platform turns that into one
+  **needs-a-person** row naming the node, however many sessions ended
+  on it.
+- The item it was building is **returned to `ready`** with the reason
+  as its note: not failed, its attempts not counted, its goal's re-plan
+  not spent. A plan, an evaluation or a research session that hit it is
+  left for later the same way, not counted as a try.
+- The node claims nothing new of any kind — items, evaluations, plans,
+  research, rebases — while it stays unavailable, and node.log says
+  `harness unavailable, claiming nothing; probing every 10m0s: …`.
+
+What you do: fix the cause — raise the spend limit at
+claude.ai/settings/usage, add credit to the api key, or wait out the
+rate limit's window. Nothing on the node needs touching: every ten
+minutes it probes on its own with one minimal session ("Reply with the
+single word OK.", a few cents' budget, no repository), and the first
+probe that completes clears the condition — the heartbeat reads
+`online` again, the needs-a-person row resolves, and the node resumes
+claiming, all within ten minutes of the fix and without a restart.
+
 ### Drain: take a machine out of service
 
 A node's host `claude -p` sessions run in their own units and outlive a

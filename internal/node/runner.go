@@ -58,12 +58,17 @@ func Resolve(ctx context.Context, gw Gateway, item gateway.WorkItem) (*Resolved,
 
 // Runner runs one claimed item to its end (poll mode: `claude -p`).
 type Runner struct {
-	GW       Gateway
-	Harness  harness.Harness
-	WS       Workspacer
-	Cfg      *Config
-	Scopes   Scopes
-	WorkRoot string
+	GW      Gateway
+	Harness harness.Harness
+	// Availability is the node's harness condition, shared with the loop:
+	// a session ending on the harness's out-of-credit or rate-limit
+	// message, or the second silent one running, trips it (trd §3); nil
+	// notes nothing.
+	Availability *Availability
+	WS           Workspacer
+	Cfg          *Config
+	Scopes       Scopes
+	WorkRoot     string
 	// MCP are the MCP servers every session gets (Prologue).
 	MCP map[string]any
 	// MCPFunc, when set, is asked for them at every item instead: the
@@ -416,6 +421,16 @@ func (r *Runner) afterBuild(ctx context.Context, b *buildRun, result harness.Res
 		}
 		r.logf("item %s: %s", label, reason)
 		if rerr := r.GW.ReleaseWorkItem(ctx, item.ID, reason); rerr != nil {
+			r.logf("item %s: release: %v", label, rerr)
+		}
+		return nil
+	}
+	if tripped, why := r.Availability.Observe(result, runErr); tripped {
+		// the node's condition, not the item's failure (trd §3): the
+		// item goes back to ready, its attempt not counted
+		reason := "harness unavailable: " + b.acct.Redact(why)
+		r.logf("item %s: %s; released", label, reason)
+		if rerr := r.GW.ReleaseWorkItem(ctx, item.ID, truncate(reason, 2000)); rerr != nil {
 			r.logf("item %s: release: %v", label, rerr)
 		}
 		return nil

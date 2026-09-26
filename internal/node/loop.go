@@ -57,6 +57,15 @@ type Loop struct {
 	// node's claim is a refusal, the ordinary answer. Optional; like an
 	// evaluation it does not count against capacity.
 	Rebase func(ctx context.Context, item gateway.WorkItem)
+	// Availability is the node's harness condition, shared with every
+	// session runner (trd §3): while it is tripped the loop claims and
+	// starts nothing, heartbeats harness_unavailable with the reason, and
+	// probes every ProbeEvery. Nil is always available.
+	Availability *Availability
+	// Probe runs one minimal harness session and returns nil when it
+	// completed, clearing Availability; optional (nil: the node stays
+	// unavailable until it restarts).
+	Probe func(ctx context.Context) error
 	// Scaled is told each tick, after the scaler, the capacity in force
 	// and its range, and whether node.yaml's capacity is a range at all
 	// (optional: `mesh node start` leaves it in ~/.mesh for `mesh node
@@ -115,6 +124,11 @@ type Loop struct {
 	// (AdoptSessions, mesh-cli ADR 009; AdoptWith is the node's). Nil
 	// adopts nothing.
 	AdoptSession func(ctx context.Context, s FoundSession)
+
+	// probeAt is when the next Probe of an unavailable harness is due:
+	// ProbeEvery after the loop first saw it tripped, then after each
+	// probe that failed; zero while the harness is available.
+	probeAt time.Time
 
 	mu sync.Mutex
 	// condition is the node's latest condition that is not a failure of
@@ -592,6 +606,10 @@ func (l *Loop) Tick(ctx context.Context) {
 	l.scale()
 	runtimes, adapters := l.Runtimes()
 	extras := gateway.HeartbeatExtras{Draining: l.Draining(), UpdateError: l.UpdateError(), Limits: l.limitsStore().Heartbeat(), Runtimes: runtimes, Adapters: adapters, Sandbox: l.Sandbox, Reason: l.Condition(), Adopted: l.Adopted()}
+	unavailable, why := l.Availability.Status()
+	if unavailable {
+		extras.Status, extras.Reason = StatusHarnessUnavailable, why
+	}
 	scaling, ranged := l.Scaling()
 	extras.Scaling = l.heartbeatScaling(scaling, ranged)
 	if l.Scaled != nil {
@@ -609,8 +627,13 @@ func (l *Loop) Tick(ctx context.Context) {
 		l.confirmUpdate()
 	}
 	l.selfUpdate(ctx)
+	if unavailable {
+		unavailable = !l.probeHarness(ctx, why)
+	} else {
+		l.probeAt = time.Time{}
+	}
 	p := l.pacing()
-	if !l.Draining() {
+	if !l.Draining() && !unavailable {
 		// every start below first picks its account (accountFor): one
 		// with no account to run on is left for a later tick
 		l.waiting = map[string]int{}
@@ -638,6 +661,34 @@ func (l *Loop) Tick(ctx context.Context) {
 	if l.AfterTick != nil {
 		l.AfterTick(ctx)
 	}
+}
+
+// ProbeEvery is how often an unavailable harness is probed (trd §3).
+var ProbeEvery = 10 * time.Minute
+
+// probeHarness runs Probe once ProbeEvery has passed since the loop saw
+// the harness unavailable or last probed it, and reports whether the
+// harness is available again. Until then, or on a failed probe, the node
+// stays harness_unavailable and claims nothing.
+func (l *Loop) probeHarness(ctx context.Context, why string) bool {
+	now := l.now()
+	if l.probeAt.IsZero() {
+		l.probeAt = now.Add(ProbeEvery)
+		l.logf("harness unavailable, claiming nothing; probing every %s: %s", ProbeEvery, why)
+		return false
+	}
+	if now.Before(l.probeAt) || l.Probe == nil {
+		return false
+	}
+	l.probeAt = now.Add(ProbeEvery)
+	if err := l.Probe(ctx); err != nil {
+		l.logf("harness probe: still unavailable, next in %s: %v", ProbeEvery, err)
+		return false
+	}
+	l.Availability.Clear()
+	l.probeAt = time.Time{}
+	l.logf("harness probe: available again; resuming")
+	return true
 }
 
 // drainPoll is how often DrainAndWait looks for the last session to end.

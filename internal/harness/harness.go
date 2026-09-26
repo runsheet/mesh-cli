@@ -28,6 +28,9 @@ const (
 	// KindRebase rebases a finished branch the integrator could not
 	// rebase itself onto its base and pushes it (runsheet ADR 008).
 	KindRebase Kind = "rebase"
+	// KindProbe is the minimal session a node whose harness is
+	// unavailable runs to learn whether it can run one again (trd §3).
+	KindProbe Kind = "probe"
 )
 
 // Job is one session's brief.
