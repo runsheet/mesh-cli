@@ -1383,8 +1383,9 @@ per entity a `<entity>Required` and `<entity>Optional` list, one quoted
 field per line, and the selections `<entity>Fields` and
 `<entity>OptionalFields` the client uses. It fails, naming the field,
 when an allow-listed field is not in `schema.json`, and when a list is
-out of order. **`fields_gen.go` is never edited by hand**; CI runs the
-generator and fails on any diff.
+out of order. **`fields_gen.go` is never edited by hand**; the PR check
+`generated gateway fields are current` runs `scripts/check-generated.sh`,
+which regenerates and fails on any diff.
 
 To add a field: add its line, in order, to `fields/<Type>.txt` (with
 `?` if a platform the node still supports may not have it), add it to
@@ -1398,7 +1399,9 @@ cd internal/gateway && go run ./internal/genfields -refresh && go generate .
 
 `-refresh` introspects `https://api.runsheet.dev/graphql` (the schema is
 public: no token) and rewrites `schema.json`; commit it with the
-regenerated file. CI never reads the live gateway.
+regenerated file. CI never reads the live gateway; the daily
+`schema-refresh` workflow (`.github/workflows/schema-refresh.yml`, also
+run by hand) does, and opens or updates the PR on `bot/schema-refresh`.
 
 ## Release
 
