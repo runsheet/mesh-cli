@@ -51,6 +51,13 @@ type fixture struct {
 
 func newFixture(t *testing.T) fixture {
 	t.Helper()
+	return newFixtureFor(t, testVersion)
+}
+
+// newFixtureFor is a release of version signed on a virtual Sigstore by
+// release-tag.yml of runsheet/mesh-cli on that tag, under ReleasePolicy.
+func newFixtureFor(t *testing.T, testVersion string) fixture {
+	t.Helper()
 	vs, err := ca.NewVirtualSigstore()
 	if err != nil {
 		t.Fatal(err)
@@ -79,14 +86,67 @@ func newFixture(t *testing.T) fixture {
 
 func TestReleasePolicyIsTheWorkflowIdentity(t *testing.T) {
 	p := ReleasePolicy("v0.9.0")
-	if want := "https://github.com/projectmesh-io/mesh-cli/.github/workflows/release-tag.yml@refs/tags/v0.9.0"; p.Identity != want {
-		t.Errorf("Identity = %q, want %q", p.Identity, want)
+	if want := []string{"https://github.com/runsheet/mesh-cli/.github/workflows/release-tag.yml@refs/tags/v0.9.0"}; strings.Join(p.Identities, " ") != strings.Join(want, " ") {
+		t.Errorf("Identities = %q, want %q", p.Identities, want)
 	}
 	if p.Issuer != "https://token.actions.githubusercontent.com" {
 		t.Errorf("Issuer = %q", p.Issuer)
 	}
 	if p.TrustedMaterial == nil || p.withoutSCTs {
 		t.Error("the release policy must use the public-good root and require SCTs")
+	}
+}
+
+// A tag released before the transfer is accepted under either owner's
+// release-tag.yml; every other tag under runsheet's alone.
+func TestReleasePolicyPreTransferTags(t *testing.T) {
+	p := ReleasePolicy("v0.0.0-selfupdate-test.1")
+	want := []string{
+		"https://github.com/runsheet/mesh-cli/.github/workflows/release-tag.yml@refs/tags/v0.0.0-selfupdate-test.1",
+		PreTransferIdentityPrefix + "v0.0.0-selfupdate-test.1",
+	}
+	if strings.Join(p.Identities, " ") != strings.Join(want, " ") {
+		t.Errorf("Identities = %q, want %q", p.Identities, want)
+	}
+	if got := ReleasePolicy("v0.0.0-selfupdate-test.2").Identities; len(got) != 1 || got[0] != IdentityPrefix+"v0.0.0-selfupdate-test.2" {
+		t.Errorf("a tag outside the pre-transfer set: Identities = %q", got)
+	}
+}
+
+// (1) A new tag signed by runsheet/mesh-cli's release-tag.yml verifies.
+func TestVerifyRunsheetIdentity(t *testing.T) {
+	f := newFixtureFor(t, "v1.3.0")
+	f.rel.Bundle = signSums(t, f.vs, "https://github.com/runsheet/mesh-cli/.github/workflows/release-tag.yml@refs/tags/v1.3.0", f.rel.Sums)
+	if err := Verify(f.rel, f.policy); err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+}
+
+// (2) The last tag released before the transfer, signed by
+// the old owner's release-tag.yml (PreTransferIdentityPrefix), still
+// verifies.
+func TestVerifyPreTransferTagUnderTheOldIdentity(t *testing.T) {
+	const tag = "v0.0.0-selfupdate-test.1"
+	f := newFixtureFor(t, tag)
+	f.rel.Bundle = signSums(t, f.vs, PreTransferIdentityPrefix+tag, f.rel.Sums)
+	if err := Verify(f.rel, f.policy); err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+}
+
+// (3) A tag not released before the transfer, signed by the old identity,
+// is refused.
+func TestVerifyNewTagUnderTheOldIdentityRefused(t *testing.T) {
+	for _, tag := range []string{"v1.3.0", "v0.0.0-selfupdate-test.2"} {
+		f := newFixtureFor(t, tag)
+		f.rel.Bundle = signSums(t, f.vs, PreTransferIdentityPrefix+tag, f.rel.Sums)
+		err := Verify(f.rel, f.policy)
+		if !errors.Is(err, ErrIdentity) {
+			t.Fatalf("%s: Verify = %v, want ErrIdentity", tag, err)
+		}
+		if r := Reason(err); !strings.Contains(r, "not signed by release-tag.yml on "+tag) {
+			t.Errorf("%s: Reason = %q", tag, r)
+		}
 	}
 }
 
@@ -100,7 +160,7 @@ func TestVerifyGoodRelease(t *testing.T) {
 func TestVerifyBinaryModeSums(t *testing.T) {
 	f := newFixture(t)
 	f.rel.Sums = bytes.ReplaceAll(f.rel.Sums, []byte("  mesh-"), []byte(" *mesh-"))
-	f.rel.Bundle = signSums(t, f.vs, f.policy.Identity, f.rel.Sums)
+	f.rel.Bundle = signSums(t, f.vs, f.policy.Identities[0], f.rel.Sums)
 	if err := Verify(f.rel, f.policy); err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
@@ -130,14 +190,14 @@ func TestVerifyRefuses(t *testing.T) {
 			f.rel.Bundle = signSums(t, f.vs, IdentityPrefix+"v1.2.2", f.rel.Sums)
 		}, ErrIdentity, "not signed by release-tag.yml"},
 		{"bundle from another issuer", func(t *testing.T, f *fixture) {
-			f.rel.Bundle = signSumsIssuer(t, f.vs, f.policy.Identity, "https://accounts.google.com", f.rel.Sums)
+			f.rel.Bundle = signSumsIssuer(t, f.vs, f.policy.Identities[0], "https://accounts.google.com", f.rel.Sums)
 		}, ErrIdentity, "not signed by release-tag.yml"},
 		{"bundle from an untrusted Sigstore", func(t *testing.T, f *fixture) {
 			other, err := ca.NewVirtualSigstore()
 			if err != nil {
 				t.Fatal(err)
 			}
-			f.rel.Bundle = signSums(t, other, f.policy.Identity, f.rel.Sums)
+			f.rel.Bundle = signSums(t, other, f.policy.Identities[0], f.rel.Sums)
 		}, ErrSignature, "signature does not verify"},
 		{"bundle is not a bundle", func(t *testing.T, f *fixture) {
 			f.rel.Bundle = []byte(`{"mediaType":"nope"}`)
@@ -191,7 +251,7 @@ func (ft *fakeTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 }
 
 func serve(rel *Release) *fakeTransport {
-	dir := "/projectmesh-io/mesh-cli/releases/download/" + rel.Version + "/"
+	dir := "/runsheet/mesh-cli/releases/download/" + rel.Version + "/"
 	return &fakeTransport{files: map[string][]byte{
 		dir + rel.Asset:   rel.Binary,
 		dir + SumsAsset:   rel.Sums,
@@ -215,7 +275,7 @@ func TestFetchThenVerify(t *testing.T) {
 		t.Fatalf("Verify: %v", err)
 	}
 	for _, u := range ft.seen {
-		if !strings.HasPrefix(u, "https://github.com/projectmesh-io/mesh-cli/releases/download/v1.2.3/") {
+		if !strings.HasPrefix(u, "https://github.com/runsheet/mesh-cli/releases/download/v1.2.3/") {
 			t.Errorf("fetched %s, outside the release", u)
 		}
 	}
@@ -224,7 +284,7 @@ func TestFetchThenVerify(t *testing.T) {
 func TestFetchMissingAsset(t *testing.T) {
 	f := newFixture(t)
 	ft := serve(f.rel)
-	delete(ft.files, "/projectmesh-io/mesh-cli/releases/download/v1.2.3/SHA256SUMS.sigstore.json")
+	delete(ft.files, "/runsheet/mesh-cli/releases/download/v1.2.3/SHA256SUMS.sigstore.json")
 	_, err := Fetch(context.Background(), GitHub{Client: &http.Client{Transport: ft}}, testVersion, "linux", "amd64")
 	if !errors.Is(err, ErrMissingAsset) {
 		t.Fatalf("Fetch = %v, want ErrMissingAsset", err)

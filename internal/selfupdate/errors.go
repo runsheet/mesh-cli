@@ -1,5 +1,5 @@
 // Package selfupdate replaces the node's own executable with a signed tag
-// release of projectmesh-io/mesh-cli (docs/adr/adr-002-signed-tag-releases.md):
+// release of runsheet/mesh-cli (docs/adr/adr-002-signed-tag-releases.md):
 // Fetch downloads the binary for this OS/arch with SHA256SUMS and its
 // Sigstore bundle, Verify refuses anything not signed by release-tag.yml for
 // that tag or whose sum does not match, Swap puts it in place keeping the

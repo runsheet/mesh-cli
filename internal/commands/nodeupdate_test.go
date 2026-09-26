@@ -240,7 +240,7 @@ func TestNodeUpdateRefuses(t *testing.T) {
 		{
 			name: "another workflow's signature",
 			tamper: func(f *updateFixture, t *testing.T) {
-				id := "https://github.com/projectmesh-io/mesh-cli/.github/workflows/ci.yml@refs/tags/" + updateTo
+				id := "https://github.com/runsheet/mesh-cli/.github/workflows/ci.yml@refs/tags/" + updateTo
 				f.src[selfupdate.BundleAsset] = selfupdatetest.SignSums(t, f.vs, id, selfupdate.Issuer, f.src[selfupdate.SumsAsset])
 			},
 			reason: "SHA256SUMS is not signed by release-tag.yml on " + updateTo,
