@@ -236,6 +236,35 @@ which a verifier pinned to the old owner refuses. The contract above
   for any new tag. Limiting it to tags that already exist means a
   recreated `projectmesh-io/mesh-cli` can sign nothing a node accepts.
 
+### Transfer fixes
+
+The first tags cut from `runsheet/mesh-cli` (`v0.0.0-runsheet-test.1`
+to `.4`) failed in `release-tag.yml` for reasons that had nothing to do
+with the identity; the first green run is `v0.0.0-runsheet-test.5`,
+run 36247714213. Four changes, none to the contract above:
+
+- **The image checks nftables by its package.** `nft --version` opens
+  a netlink socket, which the linux/arm64 half built under qemu-user
+  has not got (exit 3, `.1`); `images/node/Containerfile` runs
+  `dpkg-query -W nftables` instead.
+- **Publish downloads only the binaries.** build-push-action uploads
+  the image's `.dockerbuild` build record as an artifact, which
+  download-artifact could not fetch (`.2`); publish downloads with
+  `pattern: mesh-*`.
+- **The image job verifies what it signed.** After `cosign sign` it
+  runs `cosign verify ghcr.io/runsheet/mesh-node@<digest>` against this
+  identity and issuer, logged in to ghcr with `GITHUB_TOKEN`, so the
+  package verifies while it is private.
+- **Each image job has a docker config of its own.** `.4` (run
+  36245651812) failed at `cosign sign` with `UNAUTHORIZED` though `.3`
+  signed: the mini's runners share one `$HOME`, and `.3`'s
+  docker/login-action post-step `docker logout ghcr.io` (13:53:49)
+  removed the credential from `~/.docker/config.json` while `.4` was
+  still building; its sign (13:55:18) asked ghcr anonymously. Not the
+  login's scope and not signing by tag — it signed by digest. The job
+  now sets `DOCKER_CONFIG` to `$RUNNER_TEMP/docker`, the buildx plugin
+  linked in, so concurrent tags no longer log each other out.
+
 ## Consequences
 
 - Renaming an asset, the workflow file, or the repo breaks every

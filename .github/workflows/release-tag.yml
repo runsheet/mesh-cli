@@ -100,6 +100,20 @@ jobs:
         id: go
         run: echo "version=$(awk '$1 == "go" { print $2 }' go.mod)" >> "$GITHUB_OUTPUT"
 
+      # The mini's runners share one $HOME, so a job that logs in to
+      # ghcr.io in ~/.docker/config.json is logged out by any other job's
+      # post-step `docker logout ghcr.io`: v0.0.0-runsheet-test.3's
+      # logout at 13:53:49 left .4 (run 36245651812) signing at 13:55:18
+      # with no credentials — UNAUTHORIZED. Each job logs in to a config
+      # of its own under $RUNNER_TEMP, with the buildx plugin linked in.
+      - name: A docker config of this job's own
+        run: |
+          mkdir -p "${RUNNER_TEMP}/docker/cli-plugins"
+          for p in "${HOME}"/.docker/cli-plugins/*; do
+            if [ -e "$p" ]; then ln -sf "$p" "${RUNNER_TEMP}/docker/cli-plugins/"; fi
+          done
+          echo "DOCKER_CONFIG=${RUNNER_TEMP}/docker" >> "$GITHUB_ENV"
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
@@ -134,6 +148,14 @@ jobs:
           DIGEST: ${{ steps.push.outputs.digest }}
         run: cosign sign --yes "ghcr.io/runsheet/mesh-node@${DIGEST}"
 
+      - name: Verify the image's signature against the release identity
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          cosign verify "ghcr.io/runsheet/mesh-node@${DIGEST}" \
+            --certificate-identity "https://github.com/runsheet/mesh-cli/.github/workflows/release-tag.yml@${GITHUB_REF}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com
+
   publish:
     name: Sign and publish ${{ github.ref_name }}
     needs: [build, image]
@@ -146,6 +168,10 @@ jobs:
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
+          # Only the binaries: build-push-action also uploads the image's
+          # build record (<repo>~<id>.dockerbuild), which this action
+          # cannot download (v0.0.0-runsheet-test.2, run 36244616825).
+          pattern: mesh-*
           path: release
           merge-multiple: true
 

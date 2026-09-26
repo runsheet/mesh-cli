@@ -88,8 +88,11 @@ RUN useradd --create-home --uid 1000 --shell /bin/bash mesh
 USER mesh
 WORKDIR /home/mesh
 
+# nftables is checked by its package, not `nft --version`: nft opens a
+# netlink socket even for that, and the arm64 build runs under qemu-user,
+# which has no netlink (release-tag.yml's image job failed on it).
 RUN git --version && go version && node --version && npm --version \
- && python3 --version && uv --version && gh --version && nft --version \
+ && python3 --version && uv --version && gh --version && dpkg-query -W nftables \
  && claude --version && codex --version
 
 CMD ["bash"]
