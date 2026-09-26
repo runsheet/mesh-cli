@@ -88,9 +88,30 @@ func (e *Evaluator) runtimes() []string {
 	return e.Runtimes()
 }
 
+// failDiff records a diff the node cannot compute as the item's failed
+// evaluation, with the reason for its next builder: no session starts and
+// no account is charged. Retrying would fail the same way forever.
+func (e *Evaluator) failDiff(ctx context.Context, item gateway.WorkItem, label, base, branch string, diffErr error) error {
+	var notes string
+	if nm := (*NoMergeBaseError)(nil); errors.As(diffErr, &nm) {
+		notes = fmt.Sprintf("The branch %s shares no history with origin/%s: it was rebuilt from scratch or from an unrelated root, so there is nothing to diff or review. Rebuild it on origin/%s (start from the base, not a new root).", branch, base, base)
+	} else {
+		notes = fmt.Sprintf("the evaluation could not diff the branch against origin/%s: %v", base, diffErr)
+	}
+	notes = truncate(notes, 4000)
+	e.logf("item %s: not evaluated, failed: %s", label, notes)
+	if err := e.GW.EvaluateWorkItem(ctx, item.ID, false, notes, 0); err != nil {
+		return fmt.Errorf("record verdict: %w", err)
+	}
+	return nil
+}
+
 // Evaluate reviews one item in evaluating and records the verdict. An
 // error means no verdict was recorded: the item stays in evaluating and
-// the next tick tries again. That holds when GitHub refused the item's
+// the next tick tries again. A diff the node cannot compute is the
+// exception: it is recorded as a failed evaluation with the reason (no
+// session, no cost) and Evaluate returns nil, so it is never retried
+// without end. That holds when GitHub refused the item's
 // token through every retry too: the item is neither failed nor released
 // (the platform releases only a claimed or running item), the node logs
 // the credential reason and a later tick evaluates it on a fresh token.
@@ -120,7 +141,10 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	}
 	diff, err := e.WS.Diff(ctx, dir, spec.BaseRef)
 	if err != nil {
-		return fmt.Errorf("diff: %w", err)
+		if ctx.Err() != nil {
+			return fmt.Errorf("diff: %w", err)
+		}
+		return e.failDiff(ctx, item, label, spec.BaseRef, branch, err)
 	}
 	// the same context the builder had: the ADRs it was bound by
 	orgLogin := e.Scopes.LoginOf(item.OrgID)
