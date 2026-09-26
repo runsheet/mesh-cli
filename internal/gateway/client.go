@@ -347,21 +347,17 @@ func (w WorkItem) AgentIDs() []string {
 	return append(ids, AgentID(uuid.Nil, uuid.Nil, w.AgentSlug).String())
 }
 
-const workItemFields = `id goalId orgId seq title brief acceptance repoId baseRef dependsOn status nodeId branch costCents attempts lastError lastNote prUrl heartbeatAt evaluation evaluationPassed rebaseState rebaseConflict rebaseFiles rebaseNodeId rebasedHeadSha`
-
-// workItemModelExtra is what items-carry-a-model put on WorkItemIndex
-// (runsheet trd §6a) and the node reads when the platform has it.
-const workItemModelExtra = `projectId agentSlug model evaluateModel`
-
 // readItems runs one WorkItemIndex read, query being the document with
-// its selection left to fill in. The first read asks for the model
-// fields too; a gateway that does not know one of them is an older
-// platform, and from then on the client asks for the base fields alone.
+// its selection left to fill in. The first read asks for the optional
+// fields too (fields/WorkItemIndex.txt's `?`: what items-carry-a-model
+// put on WorkItemIndex, runsheet trd §6a); a gateway that does not know
+// one of them is an older platform, and from then on the client asks
+// for the base fields alone.
 func (c *Client) readItems(ctx context.Context, query func(fields string) string, out any) error {
 	if !c.itemsWithoutModel.Load() {
-		err := c.Query(ctx, query(workItemFields+" "+workItemModelExtra), nil, out)
+		err := c.Query(ctx, query(workItemFields+" "+workItemOptionalFields), nil, out)
 		var ge *Error
-		if err == nil || !errors.As(err, &ge) || !unknownField(ge.Message, strings.Fields(workItemModelExtra)...) {
+		if err == nil || !errors.As(err, &ge) || !unknownField(ge.Message, workItemOptional...) {
 			return err
 		}
 		c.itemsWithoutModel.Store(true)
@@ -540,8 +536,6 @@ type Goal struct {
 	Priority string `json:"priority"`
 }
 
-const goalFields = `id slug title statement acceptance projectId directionId budgetCents spentCents status pausedReason checkpoints priority`
-
 // PriorityRank orders goal priorities, most pressing first: urgent 0,
 // high 1, normal 2, low 3. Empty or unknown reads as normal.
 func PriorityRank(p string) int {
@@ -597,8 +591,6 @@ type Project struct {
 	// platform's default.
 	MaxLiveGoals int `json:"maxLiveGoals"`
 }
-
-const projectFields = `id slug name repoIds orgId maxLiveGoals`
 
 // Project reads one project by id.
 func (c *Client) Project(ctx context.Context, id string) (*Project, error) {
@@ -656,8 +648,6 @@ type Direction struct {
 	ResearchClaimedAt string `json:"researchClaimedAt"`
 	ResearchedAt      string `json:"researchedAt"`
 }
-
-const directionFields = `id projectId orgId slug name direction enabled fromMinute toMinute timezone gapMinutes maxLiveGoals status researchNodeId researchClaimedAt researchedAt`
 
 // Active reports whether the direction is one to offer the platform at
 // all: switched on and not archived. Whether it may run *now* — the
@@ -765,18 +755,16 @@ type Node struct {
 	DesiredVersion string `json:"desiredVersion"`
 }
 
-const nodeFields = `id name slug status running capacity version lastSeenAt`
-
 // readNodes runs one NodeIndex read, query being the document with its
 // selection left to fill in. It asks for desiredVersion too; a gateway
 // that does not know it is a platform older than the field, and from
-// then on the client asks for nodeFields alone. It reports whether the
-// field was read.
+// then on the client asks for nodeFields alone (both generated from
+// fields/NodeIndex.txt). It reports whether the field was read.
 func (c *Client) readNodes(ctx context.Context, query func(fields string) string, out any) (bool, error) {
 	if !c.nodesWithoutDesired.Load() {
-		err := c.Query(ctx, query(nodeFields+" desiredVersion"), nil, out)
+		err := c.Query(ctx, query(nodeFields+" "+nodeOptionalFields), nil, out)
 		var ge *Error
-		if err == nil || !errors.As(err, &ge) || !unknownField(ge.Message, "desiredVersion") {
+		if err == nil || !errors.As(err, &ge) || !unknownField(ge.Message, nodeOptional...) {
 			return true, err
 		}
 		c.nodesWithoutDesired.Store(true)

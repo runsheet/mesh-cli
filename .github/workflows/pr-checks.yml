@@ -36,6 +36,11 @@ jobs:
             exit 1
           fi
 
+      - name: generated gateway fields are current
+        # fields_gen.go is generated from the committed schema.json and
+        # internal/gateway/fields/*.txt (docs/adr/adr-010); never the live gateway.
+        run: scripts/check-generated.sh
+
       - name: go vet
         run: go vet ./...
 

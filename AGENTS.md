@@ -34,6 +34,10 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   context (`workspace.go`: `FetchContext`, `RenderIndex`, the size budget),
   evaluate, plan and research sessions, the service install (`launchd` /
   `systemd --user`). `internal/gateway/client.go`: the platform client.
+  Its entity selections are generated (`fields_gen.go`, never hand-edited)
+  from `schema.json` and `fields/<Type>.txt` (one name per line, sorted,
+  `?` for optional): add a line, `go generate ./internal/gateway/...`
+  (mesh-cli ADR-010).
   `internal/channel/`: channel mode (one session per org, turns).
   **A draining node claims nothing** (`Loop.Drain`): see the drain
   below.
