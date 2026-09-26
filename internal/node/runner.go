@@ -389,7 +389,8 @@ func (b *buildRun) run(ctx context.Context, start func(onProgress func(harness.P
 
 // afterBuild is what follows a build session, however this process came
 // to hold it: the item released on a sandbox limit, failed on an error
-// or an unsuccessful end, or pushed and finished. A cancelled ctx — the
+// or an unsuccessful end, finished already done (no push: main holds the
+// work), or pushed and finished. A cancelled ctx — the
 // node shutting down — leaves the item and its still-running session
 // for the next node to adopt. Once the item is finished or failed the
 // session directory goes.
@@ -432,6 +433,16 @@ func (r *Runner) afterBuild(ctx context.Context, b *buildRun, result harness.Res
 	}
 	b.report(ctx, result.Text)
 
+	if evidence, ok := harness.ParseAlreadyDone(result.Text); ok {
+		// main already holds the work (adr-003): no push, no branch, and
+		// the evaluator checks the evidence on the base ref
+		if err := r.GW.FinishWorkItemAlreadyDone(ctx, item.ID, truncate(evidence, 4000), b.cost.delta()); err != nil {
+			return fmt.Errorf("finish %s: %w", label, err)
+		}
+		r.logf("item %s: finished already done ($%.2f): %s", label, result.CostUSD, truncate(evidence, 200))
+		b.endGoal(ctx)
+		return nil
+	}
 	if err := b.cred.Refresh(ctx); err != nil {
 		r.logf("item %s: %v", label, err) // the token held may yet serve
 	}
@@ -443,12 +454,17 @@ func (r *Runner) afterBuild(ctx context.Context, b *buildRun, result harness.Res
 		return fmt.Errorf("finish %s: %w", label, err)
 	}
 	r.logf("item %s: finished %s@%s ($%.2f)", label, b.spec.Branch, short(sha), result.CostUSD)
-	// the item is finished and reported: a goal that ended with it gets
-	// its final document, and nothing that goes wrong there fails the item
-	if err := RecordEndedGoal(ctx, r.GW, r.WS, r.WorkRoot, r.Scopes.LoginOf(item.OrgID), b.res.Goal.ID, r.logf); err != nil {
-		r.logf("item %s: goal doc: %v", label, err)
-	}
+	b.endGoal(ctx)
 	return nil
+}
+
+// endGoal follows a finish: a goal that ended with the item gets its
+// final document, and nothing that goes wrong there fails the item.
+func (b *buildRun) endGoal(ctx context.Context) {
+	r := b.r
+	if err := RecordEndedGoal(ctx, r.GW, r.WS, r.WorkRoot, r.Scopes.LoginOf(b.item.OrgID), b.res.Goal.ID, r.logf); err != nil {
+		r.logf("item %s: goal doc: %v", b.label, err)
+	}
 }
 
 // AdoptItem takes up a build session a node process before this one

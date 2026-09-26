@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -376,5 +377,55 @@ func TestCheckoutBaseHasTheHistory(t *testing.T) {
 	}
 	if err := exec.Command("git", "-C", dir, "merge-base", "--is-ancestor", strings.TrimSpace(string(first)), "origin/main").Run(); err != nil {
 		t.Fatalf("main's first commit is not reachable: %v", err)
+	}
+}
+
+// Prepare on a shallow, single-branch checkout gives the build session
+// the base ref's history (adr-003 decision 2: the builder checks main
+// first with `git log origin/<base>`).
+func TestPrepareGivesTheBaseRefsHistory(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	root := t.TempDir()
+	origin := filepath.Join(root, "origin.git")
+	git := func(dir string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	git(root, "init", "-q", "--bare", "-b", "main", origin)
+	seed := filepath.Join(root, "seed")
+	git(root, "clone", "-q", origin, seed)
+	for i := 1; i <= 12; i++ {
+		os.WriteFile(filepath.Join(seed, "f"), []byte(strings.Repeat("x", i)), 0o644)
+		git(seed, "add", "f")
+		git(seed, "commit", "-q", "-m", "item "+strconv.Itoa(i)+" merged")
+	}
+	git(seed, "push", "-q", "origin", "main")
+	git(seed, "checkout", "-q", "-b", "other")
+	git(seed, "push", "-q", "origin", "other")
+
+	// the item's checkout, one commit deep on another branch alone
+	spec := WorkspaceSpec{Root: root, GoalSlug: "g", Seq: 7, Repo: origin, Branch: "mesh/g-7", BaseRef: "main"}
+	dir := spec.Dir()
+	git(root, "clone", "-q", "--no-local", "--depth", "1", "--single-branch", "--branch", "other", "file://"+origin, dir)
+	if _, err := (&Git{}).Prepare(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if n := git(dir, "rev-list", "--count", "origin/main"); n != "12" {
+		t.Fatalf("origin/main history = %s commits, want 12", n)
+	}
+	if log := git(dir, "log", "--format=%s", "origin/main"); !strings.Contains(log, "item 3 merged") || !strings.Contains(log, "item 1 merged") {
+		t.Fatalf("log origin/main:\n%s", log)
+	}
+	if branch := git(dir, "branch", "--show-current"); branch != "mesh/g-7" {
+		t.Fatalf("branch = %s", branch)
 	}
 }

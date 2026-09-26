@@ -236,6 +236,23 @@ func TestSystemPromptLeavesTheCloneToTheNode(t *testing.T) {
 	}
 }
 
+// A channel session checks main before building and may finish an item
+// already done with evidence instead (adr-003 decision 2).
+func TestSystemPromptChecksMainFirst(t *testing.T) {
+	p := SystemPrompt(&node.Config{Slug: "n"}, []string{"acme"}, "/w")
+	for _, want := range []string{
+		"3. Check main first, before writing any code",
+		`"gh pr list --state merged --search"`,
+		"call mesh_finish(item_id, outcome=already_done, evidence)",
+		"4. Do the item as a fresh subagent",
+		"7. Push the branch",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("the prompt lacks %q", want)
+		}
+	}
+}
+
 // The channel session feeds the node's limits too: each rate_limit_event
 // on its stream is handed to OnRateLimit.
 func TestSessionHandsOnItsRateLimit(t *testing.T) {

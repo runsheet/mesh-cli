@@ -23,7 +23,10 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `VERDICT: PASS|FAIL`, the planner ends with the JSON graph in a fenced
   block, the director ends with its proposals in one, the rebase session
   ends with `REBASED: <sha>` and `RESOLVED: <files>` or
-  `REBASE FAILED: <why>`, the builder never pushes. Change wording
+  `REBASE FAILED: <why>`, the builder never pushes and checks main
+  first, ending with `ALREADY DONE: <evidence>` when the acceptance
+  already holds there (`ParseAlreadyDone`; the runner then finishes the
+  item `already_done` with no push, adr-003). Change wording
   freely; never the contract. (A later goal moves the guidance onto the
   platform as agent definitions.)
 - `internal/latchkey/` + `internal/auth/token.go`: the machine
