@@ -146,6 +146,10 @@ jobs:
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
+          # Only the binaries: build-push-action also uploads the image's
+          # build record (<repo>~<id>.dockerbuild), which this action
+          # cannot download (v0.0.0-runsheet-test.2, run 36244616825).
+          pattern: mesh-*
           path: release
           merge-multiple: true
 
