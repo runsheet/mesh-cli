@@ -325,18 +325,26 @@ func drainNode(state node.RunState, out io.Writer) error {
 }
 
 // onDrainSignal calls drain on every drain signal until stop is called.
-func onDrainSignal(drain func()) (stop func()) {
-	if drainSignal == nil {
+func onDrainSignal(drain func()) (stop func()) { return onSignal(drainSignal, drain) }
+
+// onRestartSignal calls restart on every restart signal (SIGHUP) until
+// stop is called.
+func onRestartSignal(restart func()) (stop func()) { return onSignal(restartSignal, restart) }
+
+// onSignal calls fn on every sig until stop is called; a nil sig (not
+// on this OS) never calls it.
+func onSignal(sig os.Signal, fn func()) (stop func()) {
+	if sig == nil {
 		return func() {}
 	}
 	ch := make(chan os.Signal, 1)
-	signal.Notify(ch, drainSignal)
+	signal.Notify(ch, sig)
 	done := make(chan struct{})
 	go func() {
 		for {
 			select {
 			case <-ch:
-				drain()
+				fn()
 			case <-done:
 				return
 			}
@@ -373,145 +381,170 @@ Channels are a Claude Code research preview: the session is started with
 --dangerously-skip-permissions so the session never waits on a prompt;
 only use it on a machine you trust with that.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		logger := log.New(os.Stderr, "mesh node: ", log.LstdFlags)
-		// a new binary that has failed to start twice is rolled back
-		// first, before anything else in it can fail again
-		updates, exe, check := startUpdates(logger)
-		if check.RolledBack {
-			reportRollback(check, logger)
-			return nil
-		}
-		cfg, err := node.LoadConfig()
-		if err != nil {
+		// the executable as it is now: a restart (SIGHUP, `mesh node
+		// upgrade`) execs this path, which by then holds the new binary
+		exe, exeErr := node.Executable()
+		err := nodeStart(cmd, args)
+		if !errors.Is(err, node.ErrRestart) {
 			return err
 		}
-		nodeModels = modelsFor(cmd, cfg)
-		// an account whose secret cannot be read would fail every
-		// session it ran: refuse to start on it (adr-005)
-		for _, a := range cfg.Accounts {
-			if _, err := a.Secret(); err != nil {
-				return err
-			}
+		if exeErr != nil {
+			return fmt.Errorf("restart: %w", exeErr)
 		}
-		gw, err := platformClient()
-		if err != nil {
-			return err
-		}
-		workRoot, err := node.WorkRoot()
-		if err != nil {
-			return err
-		}
-		if err := os.MkdirAll(workRoot, 0o755); err != nil {
-			return err
-		}
-		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-		defer stop()
-
-		regCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
-		if cfg.OwnerID == "" {
-			cfg.OwnerID, err = gw.SignIn(regCtx)
-			if err != nil {
-				cancel()
-				return err
-			}
-		}
-		scopes, err := node.ResolveScopes(regCtx, gw, cfg)
-		if err == nil {
-			err = registerIn(regCtx, gw, cfg, scopes)
-		}
-		cancel()
-		if err != nil {
-			return fmt.Errorf("register node: %w", err)
-		}
-
-		// every session's plan standing lands in Limits: the heartbeat
-		// carries it and the loop paces by it
-		loop := &node.Loop{GW: gw, Cfg: cfg, Scopes: scopes, Version: version.Version, Harness: "claude-code", Interval: nodeIntervalFlag, Log: logger, Limits: &node.Limits{},
-			// a ranged capacity scales by the plan's windows, capped by this
-			// machine's load and memory (adr-004)
-			Machine: node.HostMachine(),
-			// every tick reports the tool runtimes and agent CLIs on PATH
-			LookPath: exec.LookPath,
-			// an item declined for a runtime it lacks is not taken again
-			Declines: &node.Declines{}}
-		// every session's list-price cost lands in the ledger, kept on
-		// disk: the api keys' caps and the project budgets count it
-		// (adr-005-capacity-across-accounts)
-		ledgerPath, err := node.LedgerPath()
-		if err != nil {
-			return err
-		}
-		if loop.Ledger, err = node.OpenLedger(ledgerPath, nil); err != nil {
-			return err
-		}
-		// the node follows the version the platform asks for (adr-002);
-		// --once is one tick, too short for an update to finish
-		if updates != nil && !nodeOnceFlag {
-			loop.Update = &node.ReleaseUpdater{Source: selfupdate.GitHub{}, State: updates, Exe: exe}
-			// and the new version's node image is pulled before the
-			// drain (mesh-specs ADR 007)
-			loop.Image = ensureNodeImage
-			if check.Failed != "" {
-				loop.NoteUpdateFailure(check.Failed, check.Reason, check.Final)
-			}
-		}
-		// capacity and the orgs are read again every tick, so a changed
-		// node.yaml or a newly claimed org needs no restart
-		loop.Reload = node.Reloader(gw, cfg, scopes, nil, func(ctx context.Context, sc node.Scope) error {
-			return registerIn(ctx, gw, cfg, node.Scopes{sc})
-		})
-		// SIGUSR1 (`mesh node drain`) drains: nothing new is claimed and
-		// the loop returns nil once every session has ended, so the
-		// process exits 0 and its service manager starts the new binary
-		state, err := node.DefaultRunState()
-		if err != nil {
-			return err
-		}
-		pid := os.Getpid()
-		if err := state.Started(pid); err != nil {
-			return fmt.Errorf("pidfile: %w", err)
-		}
-		defer state.Stopped(pid)
-		// a ranged capacity in force is left beside the pidfile for
-		// `mesh node status`; a fixed one leaves nothing
-		loop.Scaled = func(s node.Scaling, ranged bool) {
-			if err := state.WriteScaling(s, ranged); err != nil {
-				logger.Printf("scaling state: %v", err)
-			}
-		}
-		defer onDrainSignal(func() {
-			if err := state.MarkDraining(); err != nil {
-				logger.Printf("draining marker: %v", err)
-			}
-			loop.Drain()
-		})()
-		// one old-platform notice for the whole run, whatever runs the items
-		fallback := &node.TokenFallback{}
-		// every one-shot session runs in its own pod unless node.yaml
-		// says `sandbox: off` or, leaving it out, podman does not answer;
-		// an explicit `sandbox: on` without podman refuses to start (ADR 007)
-		sb, sbInfo, err := node.OpenSandbox(ctx, cfg.Sandbox, &sandbox.Podman{}, version.Version, logger.Printf)
-		if err != nil {
-			return err
-		}
-		if sb != nil {
-			sb.Config.GitName, sb.Config.GitEmail = gitIdentity(ctx)
-			sb.Config.TZ = os.Getenv("TZ")
-		}
-		sessionSandbox, loop.Sandbox = sb, sbInfo
-		// every one-shot session's account comes from the platform's
-		// claim-time read, node.yaml the fallback, and every one reports
-		// its usage record (adr-005); each fallback is said once per run
-		accounts := &node.Credentials{GW: gw, Limits: loop.Limits, Thresholds: loop.Thresholds, Log: logger}
-		switch nodeModeFlag {
-		case "poll":
-			return runPollMode(ctx, cfg, scopes, gw, loop, workRoot, fallback, accounts, logger)
-		case "channel", "":
-			return runChannelMode(ctx, cfg, scopes, gw, loop, workRoot, fallback, accounts, logger)
-		default:
-			return fmt.Errorf("--mode must be channel or poll")
-		}
+		log.New(os.Stderr, "mesh node: ", log.LstdFlags).Printf("restarting: exec %s", exe)
+		return execSelf(exe)
 	},
+}
+
+// nodeStart is `mesh node start` up to Run's end; node.ErrRestart asks
+// its caller to exec the binary again, once the pidfile and the signal
+// handlers are gone.
+func nodeStart(cmd *cobra.Command, args []string) error {
+	logger := log.New(os.Stderr, "mesh node: ", log.LstdFlags)
+	// a new binary that has failed to start twice is rolled back
+	// first, before anything else in it can fail again
+	updates, exe, check := startUpdates(logger)
+	if check.RolledBack {
+		reportRollback(check, logger)
+		return nil
+	}
+	cfg, err := node.LoadConfig()
+	if err != nil {
+		return err
+	}
+	nodeModels = modelsFor(cmd, cfg)
+	// an account whose secret cannot be read would fail every
+	// session it ran: refuse to start on it (adr-005)
+	for _, a := range cfg.Accounts {
+		if _, err := a.Secret(); err != nil {
+			return err
+		}
+	}
+	gw, err := platformClient()
+	if err != nil {
+		return err
+	}
+	workRoot, err := node.WorkRoot()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(workRoot, 0o755); err != nil {
+		return err
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	regCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	if cfg.OwnerID == "" {
+		cfg.OwnerID, err = gw.SignIn(regCtx)
+		if err != nil {
+			cancel()
+			return err
+		}
+	}
+	scopes, err := node.ResolveScopes(regCtx, gw, cfg)
+	if err == nil {
+		err = registerIn(regCtx, gw, cfg, scopes)
+	}
+	cancel()
+	if err != nil {
+		return fmt.Errorf("register node: %w", err)
+	}
+
+	// every session's plan standing lands in Limits: the heartbeat
+	// carries it and the loop paces by it
+	loop := &node.Loop{GW: gw, Cfg: cfg, Scopes: scopes, Version: version.Version, Harness: "claude-code", Interval: nodeIntervalFlag, Log: logger, Limits: &node.Limits{},
+		// a ranged capacity scales by the plan's windows, capped by this
+		// machine's load and memory (adr-004)
+		Machine: node.HostMachine(),
+		// every tick reports the tool runtimes and agent CLIs on PATH
+		LookPath: exec.LookPath,
+		// an item declined for a runtime it lacks is not taken again
+		Declines: &node.Declines{}}
+	// every session's list-price cost lands in the ledger, kept on
+	// disk: the api keys' caps and the project budgets count it
+	// (adr-005-capacity-across-accounts)
+	ledgerPath, err := node.LedgerPath()
+	if err != nil {
+		return err
+	}
+	if loop.Ledger, err = node.OpenLedger(ledgerPath, nil); err != nil {
+		return err
+	}
+	// the node follows the version the platform asks for (adr-002);
+	// --once is one tick, too short for an update to finish
+	if updates != nil && !nodeOnceFlag {
+		loop.Update = &node.ReleaseUpdater{Source: selfupdate.GitHub{}, State: updates, Exe: exe}
+		// and the new version's node image is pulled before the
+		// drain (mesh-specs ADR 007)
+		loop.Image = ensureNodeImage
+		if check.Failed != "" {
+			loop.NoteUpdateFailure(check.Failed, check.Reason, check.Final)
+		}
+	}
+	// capacity and the orgs are read again every tick, so a changed
+	// node.yaml or a newly claimed org needs no restart
+	loop.Reload = node.Reloader(gw, cfg, scopes, nil, func(ctx context.Context, sc node.Scope) error {
+		return registerIn(ctx, gw, cfg, node.Scopes{sc})
+	})
+	// SIGUSR1 (`mesh node drain`) drains: nothing new is claimed and
+	// the loop returns nil once every session has ended, so the
+	// process exits 0 and its service manager starts the new binary
+	state, err := node.DefaultRunState()
+	if err != nil {
+		return err
+	}
+	pid := os.Getpid()
+	if err := state.Started(pid); err != nil {
+		return fmt.Errorf("pidfile: %w", err)
+	}
+	defer state.Stopped(pid)
+	// a ranged capacity in force is left beside the pidfile for
+	// `mesh node status`; a fixed one leaves nothing
+	loop.Scaled = func(s node.Scaling, ranged bool) {
+		if err := state.WriteScaling(s, ranged); err != nil {
+			logger.Printf("scaling state: %v", err)
+		}
+	}
+	defer onDrainSignal(func() {
+		if err := state.MarkDraining(); err != nil {
+			logger.Printf("draining marker: %v", err)
+		}
+		loop.Drain()
+	})()
+	// SIGHUP (`mesh node upgrade` on a node no service runs) restarts
+	// at once: every session is left running in its own unit, the
+	// process execs its binary again, and the new one adopts them
+	// (adr-009). A service's own restart (SIGTERM) leaves them the
+	// same way: everything below runs in the loop's context.
+	ctx = loop.Context(ctx)
+	defer onRestartSignal(loop.Restart)()
+	// one old-platform notice for the whole run, whatever runs the items
+	fallback := &node.TokenFallback{}
+	// every one-shot session runs in its own pod unless node.yaml
+	// says `sandbox: off` or, leaving it out, podman does not answer;
+	// an explicit `sandbox: on` without podman refuses to start (ADR 007)
+	sb, sbInfo, err := node.OpenSandbox(ctx, cfg.Sandbox, &sandbox.Podman{}, version.Version, logger.Printf)
+	if err != nil {
+		return err
+	}
+	if sb != nil {
+		sb.Config.GitName, sb.Config.GitEmail = gitIdentity(ctx)
+		sb.Config.TZ = os.Getenv("TZ")
+	}
+	sessionSandbox, loop.Sandbox = sb, sbInfo
+	// every one-shot session's account comes from the platform's
+	// claim-time read, node.yaml the fallback, and every one reports
+	// its usage record (adr-005); each fallback is said once per run
+	accounts := &node.Credentials{GW: gw, Limits: loop.Limits, Thresholds: loop.Thresholds, Log: logger}
+	switch nodeModeFlag {
+	case "poll":
+		return runPollMode(ctx, cfg, scopes, gw, loop, workRoot, fallback, accounts, logger)
+	case "channel", "":
+		return runChannelMode(ctx, cfg, scopes, gw, loop, workRoot, fallback, accounts, logger)
+	default:
+		return fmt.Errorf("--mode must be channel or poll")
+	}
 }
 
 // observed is a one-shot harness whose sessions report their plan
@@ -621,8 +654,10 @@ func endRun(err error, logger *log.Logger) error {
 	case err == nil:
 		logger.Printf("drained; exiting")
 	case errors.Is(err, node.ErrRestartForUpdate):
-		logger.Printf("updated; exiting for the service manager to start the new binary")
+		logger.Printf("updated; exiting for the service manager to start the new binary; its sessions are left for it to adopt")
 		return nil
+	case errors.Is(err, node.ErrRestart):
+		logger.Printf("restarting; its sessions are left for the new process to adopt")
 	}
 	return err
 }
@@ -1106,7 +1141,7 @@ func init() {
 	nodeModelCmd.Flags().StringVar(&nodeModelChannelFlag, "channel", "", "model for the channel-mode session")
 	nodeModelCmd.Flags().StringVar(&nodeModelResearchFlag, "research", "", "model for director (research) sessions")
 	nodeModelCmd.Flags().StringVar(&nodeModelRebaseFlag, "rebase", "", "model for rebase sessions")
-	nodeCmd.AddCommand(nodeLoginCmd, nodeRegisterCmd, nodeStartCmd, nodeStatusCmd, nodeDrainCmd, nodeLogoutCmd, nodeModelCmd)
+	nodeCmd.AddCommand(nodeLoginCmd, nodeRegisterCmd, nodeStartCmd, nodeStatusCmd, nodeDrainCmd, nodeUpgradeCmd, nodeLogoutCmd, nodeModelCmd)
 }
 
 // modelPrecedenceNote follows the table of `mesh node model`: the rows

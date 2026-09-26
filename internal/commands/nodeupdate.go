@@ -56,6 +56,9 @@ exits when its sessions end and its service (systemd --user, launchd)
 starts the new binary; one that fails to start twice is rolled back to
 .prev.
 
+To upgrade without waiting for the sessions — the node restarts at once
+and the new process adopts them — use ` + "`mesh node upgrade`" + `.
+
 --verify-only downloads and verifies into a temporary directory and swaps
 nothing.
 
