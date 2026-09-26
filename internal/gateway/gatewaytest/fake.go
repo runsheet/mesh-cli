@@ -10,9 +10,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
+
+	"projectmesh.io/mesh-cli/internal/gateway"
 )
 
 // Call is one mutation the fake received.
@@ -289,7 +292,7 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 				writeErrors(w, 200, fmt.Sprintf("Cannot query field %q on type %q.", field, typ))
 				return
 			}
-			writeData(w, map[string]any{m[1]: f.known(f.table(m[1] + "s")[m[2]])})
+			writeData(w, map[string]any{m[1]: f.known(m[1], f.table(m[1] + "s")[m[2]])})
 			return
 		}
 		m := listRe.FindStringSubmatch(q)
@@ -320,7 +323,7 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if ok {
-				rows = append(rows, f.known(row))
+				rows = append(rows, f.known(typeOf(m[1]), row))
 			}
 		}
 		writeData(w, map[string]any{m[1]: rows})
@@ -392,20 +395,47 @@ func (f *Fake) unknownSelection(q string) (string, string) {
 		return "", ""
 	}
 	for _, word := range strings.FieldsFunc(q[i:], func(r rune) bool { return r == ' ' || r == '{' || r == '}' || r == ')' }) {
-		if f.UnknownFields[word] {
+		if f.UnknownFields[word] || !selectable(typ, word) {
 			return word, typ
 		}
 	}
 	return "", ""
 }
 
-// known is the row as the fake's schema serves it: without the fields
-// it does not have.
-func (f *Fake) known(row map[string]any) map[string]any {
-	if row == nil || len(f.UnknownFields) == 0 {
+// typeOf is the schema type of an index list or get (workItemIndexs,
+// workItemIndex → WorkItemIndex).
+func typeOf(name string) string {
+	name = strings.TrimSuffix(name, "s")
+	return strings.ToUpper(name[:1]) + name[1:]
+}
+
+// selectable is whether the real gateway serves the field on the type:
+// any field of an entity without a generated list, else one of its
+// generated required or optional fields.
+func selectable(typ, field string) bool {
+	req, opt := gateway.Fields(typ), gateway.OptionalFields(typ)
+	if req == nil && opt == nil {
+		return true
+	}
+	return slices.Contains(req, field) || slices.Contains(opt, field)
+}
+
+// known is the row of a type as the fake's schema serves it: every
+// generated field of the entity, nil where the row sets none, and
+// without the fields UnknownFields says it does not have.
+func (f *Fake) known(typ string, row map[string]any) map[string]any {
+	if row == nil {
 		return row
 	}
+	typ = typeOf(typ)
 	out := copyRow(row)
+	for _, names := range [][]string{gateway.Fields(typ), gateway.OptionalFields(typ)} {
+		for _, k := range names {
+			if _, ok := out[k]; !ok {
+				out[k] = nil
+			}
+		}
+	}
 	for k := range f.UnknownFields {
 		delete(out, k)
 	}
