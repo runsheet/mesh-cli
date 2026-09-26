@@ -563,6 +563,12 @@ func (f *Fake) apply(name string, in map[string]any) error {
 				f.Nodes[id][k] = v
 			}
 		}
+		// an empty status is the ordinary heartbeat: online again
+		if status, _ := in["status"].(string); status != "" {
+			f.Nodes[id]["status"] = status
+		} else {
+			f.Nodes[id]["status"] = "online"
+		}
 	case "setGoal":
 		row := f.Goals[id]
 		if row == nil {
