@@ -14,7 +14,7 @@ import (
 func TestHeartbeatSandbox(t *testing.T) {
 	f, gw := registeredFake(t)
 	ctx := context.Background()
-	sb := &gateway.SandboxInfo{Mode: "on", Runtime: "podman 5.2.1", Image: "ghcr.io/projectmesh-io/mesh-node:v1"}
+	sb := &gateway.SandboxInfo{Mode: "on", Runtime: "podman 5.2.1", Image: "ghcr.io/runsheet/mesh-node:v1"}
 	if err := gw.HeartbeatNode(ctx, limitsNode, "v1", 1, gateway.HeartbeatExtras{Sandbox: sb, Reason: "sandbox limit: item x/1 killed by its memory limit (6g)"}); err != nil {
 		t.Fatal(err)
 	}
@@ -25,7 +25,7 @@ func TestHeartbeatSandbox(t *testing.T) {
 	if len(hb) != 2 {
 		t.Fatalf("heartbeats: %+v", hb)
 	}
-	want := map[string]any{"mode": "on", "runtime": "podman 5.2.1", "image": "ghcr.io/projectmesh-io/mesh-node:v1"}
+	want := map[string]any{"mode": "on", "runtime": "podman 5.2.1", "image": "ghcr.io/runsheet/mesh-node:v1"}
 	if got := hb[0].Input["sandbox"]; !reflect.DeepEqual(got, want) {
 		t.Fatalf("sandbox = %#v", got)
 	}

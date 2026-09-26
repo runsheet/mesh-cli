@@ -39,7 +39,7 @@ be its line in the sums. Anything else is refused with the reason and a
 non-zero exit, and nothing on disk changes.
 
 Once verified, the release's node image (mesh-specs ADR 007),
-ghcr.io/projectmesh-io/mesh-node:<version>, is pulled with podman before
+ghcr.io/runsheet/mesh-node:<version>, is pulled with podman before
 anything is drained, and every older mesh-node tag but the running
 node's is removed. node.yaml's sandbox.image chooses it: empty is that
 reference, any other value is used as given, and ` + "`build`" + ` builds that tag

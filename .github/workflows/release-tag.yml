@@ -3,22 +3,22 @@
 # A tag v* builds the node for linux/amd64, linux/arm64 and darwin/arm64,
 # writes SHA256SUMS over them, signs it keyless with Sigstore (this
 # workflow's GitHub OIDC identity) and publishes all five files as a
-# GitHub release on projectmesh-io/mesh-cli. The asset names and the
+# GitHub release on runsheet/mesh-cli. The asset names and the
 # signing identity are the contract `mesh node update` verifies
 # (docs/adr/adr-002-signed-tag-releases.md):
 #
-#   identity: https://github.com/projectmesh-io/mesh-cli/.github/workflows/release-tag.yml@refs/tags/<tag>
+#   identity: https://github.com/runsheet/mesh-cli/.github/workflows/release-tag.yml@refs/tags/<tag>
 #   issuer:   https://token.actions.githubusercontent.com
 #
 # The same tag builds the node image (mesh-specs ADR 007) from
 # images/node/Containerfile for linux/amd64 and linux/arm64, pushes it as
-# ghcr.io/projectmesh-io/mesh-node:<tag> and signs its digest keyless with
+# ghcr.io/runsheet/mesh-node:<tag> and signs its digest keyless with
 # the same identity. The release is published only after the image is
 # pushed, so a node that can fetch a release can pull its image; the five
 # release assets and their signature are unchanged.
 #
-# cli-release.yml (main pushes, released to projectmesh-io/mesh) is
-# separate and is not what nodes update from.
+# There is no other release channel: cli-release.yml (main builds) was
+# dropped when the repo moved to the runsheet org (adr-002).
 
 name: Release (tag)
 
@@ -113,7 +113,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push ghcr.io/projectmesh-io/mesh-node:${{ github.ref_name }}
+      - name: Build and push ghcr.io/runsheet/mesh-node:${{ github.ref_name }}
         id: push
         uses: docker/build-push-action@v6
         with:
@@ -123,7 +123,7 @@ jobs:
           build-args: |
             GO_VERSION=${{ steps.go.outputs.version }}
             MESH_VERSION=${{ github.ref_name }}
-          tags: ghcr.io/projectmesh-io/mesh-node:${{ github.ref_name }}
+          tags: ghcr.io/runsheet/mesh-node:${{ github.ref_name }}
           push: true
 
       - name: Install cosign
@@ -132,7 +132,7 @@ jobs:
       - name: Sign the image (keyless)
         env:
           DIGEST: ${{ steps.push.outputs.digest }}
-        run: cosign sign --yes "ghcr.io/projectmesh-io/mesh-node@${DIGEST}"
+        run: cosign sign --yes "ghcr.io/runsheet/mesh-node@${DIGEST}"
 
   publish:
     name: Sign and publish ${{ github.ref_name }}
@@ -176,7 +176,7 @@ jobs:
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             SHA256SUMS
 
-      - name: Create release on projectmesh-io/mesh-cli
+      - name: Create release on runsheet/mesh-cli
         working-directory: release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

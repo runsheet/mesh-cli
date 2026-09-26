@@ -64,17 +64,17 @@ func (f *fakeRuntime) called(sub string) []string {
 	return out
 }
 
-// (a) The image is ghcr.io/projectmesh-io/mesh-node:<node version>; the
+// (a) The image is ghcr.io/runsheet/mesh-node:<node version>; the
 // setting `build` is that same tag, built; any other is used as given.
 func TestImageRefIsTheNodeVersion(t *testing.T) {
 	for _, c := range []struct {
 		setting, version, want string
 		build                  bool
 	}{
-		{"", "v1.2.0", "ghcr.io/projectmesh-io/mesh-node:v1.2.0", false},
-		{"", "v0.0.0-selfupdate-test.1", "ghcr.io/projectmesh-io/mesh-node:v0.0.0-selfupdate-test.1", false},
-		{"", "dev", "ghcr.io/projectmesh-io/mesh-node:dev", false},
-		{"build", "v1.2.0", "ghcr.io/projectmesh-io/mesh-node:v1.2.0", true},
+		{"", "v1.2.0", "ghcr.io/runsheet/mesh-node:v1.2.0", false},
+		{"", "v0.0.0-selfupdate-test.1", "ghcr.io/runsheet/mesh-node:v0.0.0-selfupdate-test.1", false},
+		{"", "dev", "ghcr.io/runsheet/mesh-node:dev", false},
+		{"build", "v1.2.0", "ghcr.io/runsheet/mesh-node:v1.2.0", true},
 		{"registry.example.com/team/node:7", "v1.2.0", "registry.example.com/team/node:7", false},
 	} {
 		ref, build, err := ImageRef(c.setting, c.version)
@@ -90,21 +90,21 @@ func TestImageRefIsTheNodeVersion(t *testing.T) {
 }
 
 func TestEnsureImagePulls(t *testing.T) {
-	f := &fakeRuntime{images: []string{"ghcr.io/projectmesh-io/mesh-node:v1.2.0"}}
-	img, err := EnsureImage(context.Background(), f.run, "ghcr.io/projectmesh-io/mesh-node:v1.2.0")
+	f := &fakeRuntime{images: []string{"ghcr.io/runsheet/mesh-node:v1.2.0"}}
+	img, err := EnsureImage(context.Background(), f.run, "ghcr.io/runsheet/mesh-node:v1.2.0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if img.Ref != "ghcr.io/projectmesh-io/mesh-node:v1.2.0" || !img.Pulled || img.Built {
+	if img.Ref != "ghcr.io/runsheet/mesh-node:v1.2.0" || !img.Pulled || img.Built {
 		t.Errorf("image = %+v; want pulled v1.2.0", img)
 	}
-	if p := f.called("pull"); len(p) != 1 || p[0] != "podman pull ghcr.io/projectmesh-io/mesh-node:v1.2.0" {
+	if p := f.called("pull"); len(p) != 1 || p[0] != "podman pull ghcr.io/runsheet/mesh-node:v1.2.0" {
 		t.Errorf("pulls = %q", p)
 	}
 	if len(f.called("build")) != 0 || len(f.called("rmi")) != 0 {
 		t.Errorf("built or removed: %q", f.calls)
 	}
-	if got := img.Summary(); got != "ghcr.io/projectmesh-io/mesh-node:v1.2.0 (pulled)" {
+	if got := img.Summary(); got != "ghcr.io/runsheet/mesh-node:v1.2.0 (pulled)" {
 		t.Errorf("summary = %q", got)
 	}
 }
@@ -112,8 +112,8 @@ func TestEnsureImagePulls(t *testing.T) {
 // (b) A failed pull is the error: nothing is built in its place and
 // nothing is pruned.
 func TestEnsureImageFailedPullIsTheError(t *testing.T) {
-	f := &fakeRuntime{pullErr: true, images: []string{"ghcr.io/projectmesh-io/mesh-node:v1.1.0"}}
-	_, err := EnsureImage(context.Background(), f.run, "ghcr.io/projectmesh-io/mesh-node:v1.2.0")
+	f := &fakeRuntime{pullErr: true, images: []string{"ghcr.io/runsheet/mesh-node:v1.1.0"}}
+	_, err := EnsureImage(context.Background(), f.run, "ghcr.io/runsheet/mesh-node:v1.2.0")
 	if err == nil || !strings.Contains(err.Error(), "pull failed: Error: initializing source: unauthorized") {
 		t.Fatalf("err = %v; want the pull's reason", err)
 	}
@@ -129,7 +129,7 @@ func TestEnsureImageFailedPullIsTheError(t *testing.T) {
 // is images/node/Containerfile byte for byte, and pulls nothing.
 func TestBuildImageFromTheContainerfile(t *testing.T) {
 	f := &fakeRuntime{}
-	img, err := BuildImage(context.Background(), f.run, "ghcr.io/projectmesh-io/mesh-node:v1.2.0", "v1.2.0")
+	img, err := BuildImage(context.Background(), f.run, "ghcr.io/runsheet/mesh-node:v1.2.0", "v1.2.0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +137,7 @@ func TestBuildImageFromTheContainerfile(t *testing.T) {
 		t.Errorf("image = %+v, calls %q; want built, no pull", img, f.calls)
 	}
 	b := f.called("build")
-	if len(b) != 1 || !regexp.MustCompile(`^podman build --tag ghcr.io/projectmesh-io/mesh-node:v1.2.0 --file \S+/Containerfile --build-arg MESH_VERSION=v1.2.0 \S+$`).MatchString(b[0]) {
+	if len(b) != 1 || !regexp.MustCompile(`^podman build --tag ghcr.io/runsheet/mesh-node:v1.2.0 --file \S+/Containerfile --build-arg MESH_VERSION=v1.2.0 \S+$`).MatchString(b[0]) {
 		t.Fatalf("builds = %q", b)
 	}
 	want, err := os.ReadFile("../../images/node/Containerfile")
@@ -149,7 +149,7 @@ func TestBuildImageFromTheContainerfile(t *testing.T) {
 	}
 
 	f = &fakeRuntime{buildErr: true}
-	if _, err := BuildImage(context.Background(), f.run, "ghcr.io/projectmesh-io/mesh-node:v1.2.0", "v1.2.0"); err == nil || !strings.Contains(err.Error(), "no space left") {
+	if _, err := BuildImage(context.Background(), f.run, "ghcr.io/runsheet/mesh-node:v1.2.0", "v1.2.0"); err == nil || !strings.Contains(err.Error(), "no space left") {
 		t.Fatalf("err = %v; want the build's reason", err)
 	}
 }
@@ -159,22 +159,22 @@ func TestBuildImageFromTheContainerfile(t *testing.T) {
 func TestEnsureImagePrunesOlderTags(t *testing.T) {
 	f := &fakeRuntime{
 		images: []string{
-			"ghcr.io/projectmesh-io/mesh-node:v1.0.0",
-			"ghcr.io/projectmesh-io/mesh-node:v1.1.0",
-			"ghcr.io/projectmesh-io/mesh-node:v1.2.0",
-			"ghcr.io/projectmesh-io/mesh-node:<none>",
-			"ghcr.io/projectmesh-io/mesh-node:dev",
+			"ghcr.io/runsheet/mesh-node:v1.0.0",
+			"ghcr.io/runsheet/mesh-node:v1.1.0",
+			"ghcr.io/runsheet/mesh-node:v1.2.0",
+			"ghcr.io/runsheet/mesh-node:<none>",
+			"ghcr.io/runsheet/mesh-node:dev",
 		},
-		rmiFail: map[string]bool{"ghcr.io/projectmesh-io/mesh-node:dev": true},
+		rmiFail: map[string]bool{"ghcr.io/runsheet/mesh-node:dev": true},
 	}
-	img, err := EnsureImage(context.Background(), f.run, "ghcr.io/projectmesh-io/mesh-node:v1.2.0", "ghcr.io/projectmesh-io/mesh-node:v1.1.0")
+	img, err := EnsureImage(context.Background(), f.run, "ghcr.io/runsheet/mesh-node:v1.2.0", "ghcr.io/runsheet/mesh-node:v1.1.0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"ghcr.io/projectmesh-io/mesh-node:v1.0.0"}; strings.Join(img.Removed, ",") != strings.Join(want, ",") {
+	if want := []string{"ghcr.io/runsheet/mesh-node:v1.0.0"}; strings.Join(img.Removed, ",") != strings.Join(want, ",") {
 		t.Errorf("removed = %q; want %q", img.Removed, want)
 	}
-	if len(img.Kept) != 1 || !strings.HasPrefix(img.Kept[0], "ghcr.io/projectmesh-io/mesh-node:dev: ") {
+	if len(img.Kept) != 1 || !strings.HasPrefix(img.Kept[0], "ghcr.io/runsheet/mesh-node:dev: ") {
 		t.Errorf("kept = %q; want dev, in use", img.Kept)
 	}
 	for _, c := range f.called("rmi") {
@@ -182,7 +182,7 @@ func TestEnsureImagePrunesOlderTags(t *testing.T) {
 			t.Errorf("removed %q", c)
 		}
 	}
-	if l := f.called("images"); len(l) != 1 || !strings.Contains(l[0], "--filter reference=ghcr.io/projectmesh-io/mesh-node") {
+	if l := f.called("images"); len(l) != 1 || !strings.Contains(l[0], "--filter reference=ghcr.io/runsheet/mesh-node") {
 		t.Errorf("list = %q", l)
 	}
 }
