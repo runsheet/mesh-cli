@@ -265,6 +265,16 @@ run 36247714213. Four changes, none to the contract above:
   now sets `DOCKER_CONFIG` to `$RUNNER_TEMP/docker`, the buildx plugin
   linked in, so concurrent tags no longer log each other out.
 
+The first tag cut from main with all four fixes is
+`v0.0.0-runsheet-test.6` (`184011c`, run 36249480345, green, its image
+`cosign verify`ed under the runsheet identity). `mesh node update
+--verify-only` accepts it and the pre-transfer `v0.0.0-selfupdate-test.1`.
+The stale `.1` to `.5` tags and releases are gone.
+[releases-after-transfer.md](../releases-after-transfer.md) is the
+record. `ghcr.io/runsheet/mesh-node` refuses anonymous pulls, as the
+`projectmesh-io` package did: a sandboxed node pulls it only once logged
+in to ghcr, or once the operator makes it public.
+
 ## Consequences
 
 - Renaming an asset, the workflow file, or the repo breaks every
