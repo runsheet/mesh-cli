@@ -1,5 +1,5 @@
 ---
-summary: Nodes update only from tag-cut releases of projectmesh-io/mesh-cli whose SHA256SUMS is signed keyless by release-tag.yml's GitHub OIDC identity; the asset names and that identity are the updater's contract. The same tag pushes and cosign-signs the node image ghcr.io/projectmesh-io/mesh-node:<tag>, which the node pulls before it drains.
+summary: Nodes update only from tag-cut releases of projectmesh-io/mesh-cli whose SHA256SUMS is signed keyless by release-tag.yml's GitHub OIDC identity; the asset names and that identity are the updater's contract. The same tag pushes and cosign-signs the node image ghcr.io/projectmesh-io/mesh-node:<tag>, which the node pulls before it swaps. An upgrade swaps and restarts the node at once, and the new process adopts the sessions the old one left running; a sandboxed node alone still drains first.
 status: accepted
 ---
 
@@ -69,12 +69,15 @@ existing installs download.
   (`GetDesiredVersion`; a platform without the field is no update,
   logged once). Empty, the running version, or a `dev` build do
   nothing. Otherwise the node fetches and verifies *first* — a refused
-  release costs it no work and no drain — then drains (`DrainAndWait`:
-  every session of every kind ends), records the update, swaps the
+  release costs it no work — then records the update, swaps the
   resolved executable (the previous kept as `<path>.prev`) and `Run`
-  returns `ErrRestartForUpdate`: `mesh node start` exits 0 and systemd
-  (`Restart=always`) or launchd (`KeepAlive`) starts the new binary. A
-  refusal or a failed swap resumes the drain the update began, puts the
+  returns `ErrRestartForUpdate` at once, without a drain: the sessions
+  it has running are left in their own units and the new process
+  adopts them (restart and adopt, below). `mesh node start` exits 0 and
+  systemd (`Restart=always`) or launchd (`KeepAlive`) starts the new
+  binary. A sandboxed node still drains first (`DrainAndWait`: every
+  session of every kind ends), since its sessions' pods end with it. A
+  refusal or a failed swap resumes a drain the update began, puts the
   reason on every heartbeat (`updateError`) while that version is still
   asked for, and leaves that version for an hour. A platform that
   refuses `updateError` gets the basic heartbeat instead (version,
@@ -147,6 +150,51 @@ image is a second artefact beside it:
 - The package is private while the repository is (the release caveat
   above): a pull needs `podman login ghcr.io` with a token that can read
   it, or `sandbox.image: build`.
+
+## Amendment: restart and adopt instead of drain (goal `node-upgrades-keep-sessions`, 2026-09-26)
+
+Draining for an upgrade waited for the longest session — hours for a
+build — or, when the operator restarted instead, killed every one.
+Since mesh-cli ADR-008 and ADR-009 a host session runs in its own unit
+and a starting node adopts every session whose state file names it, so
+an upgrade no longer needs either. **The update process is now: verify,
+ensure the image, swap, restart at once, adopt.**
+
+- **The loop's self-update** swaps as soon as the release is verified
+  and its image ensured, then `Loop.detach` cancels every context the
+  node runs sessions in (`Loop.Context`): each `Job.Outlive` session
+  detaches, its unit and `<workdir>.session/` left in place, and `Run`
+  returns `ErrRestartForUpdate` without waiting for any of them. The
+  service starts the new binary, whose `FindSessions` →
+  `AdoptSessions` heartbeats each item at once and follows it to its
+  end. The start count and the rollback after two failed starts are
+  unchanged: `Begin` is recorded before the swap and the first
+  heartbeat confirms. A node whose sandbox is on (`Loop.Sandbox.Mode`)
+  drains first as before: its pods are not yet their sessions' unit.
+- **`mesh node upgrade`** (`internal/commands/nodeupgrade.go`) is the
+  by-hand path: `--version vX.Y.Z` or, with neither flag, the latest
+  release, fetched and verified on the same `ReleaseUpdater` and its
+  image ensured; or `--binary <path>`, a local build installed once
+  `<path> version` answers `mesh <version>`. Either is swapped keeping
+  `.prev` and recorded for the rollback, then the node is restarted at
+  once: `systemctl --user restart io.projectmesh.mesh-node.service`
+  when that unit is active, `launchctl kickstart -k
+  gui/<uid>/io.projectmesh.mesh-node` when the agent is loaded, else
+  `SIGHUP` to the pidfile's node. It never drains. A sandboxed node is
+  refused unless `--force`.
+- **SIGHUP** makes a running node restart at once (`Loop.Restart`):
+  every session detached as above, `Run` returns `ErrRestart`, and
+  `mesh node start` execs its own resolved executable — by then the new
+  binary — with the same arguments, keeping its pid.
+- **The service never reaches a session.** The systemd unit carries
+  `KillMode=process`, so a stop or restart signals the node's main
+  process alone (a session's scope is another unit and cgroup anyway;
+  a detached session in the service's cgroup is spared too), and the
+  LaunchAgent carries `AbandonProcessGroup`. An installed unit takes
+  them on `mesh node service install`.
+- `mesh node update` still drains before its swap, and `mesh node
+  drain` (`SIGUSR1`) is unchanged: draining is for taking a machine out
+  of service.
 
 ## Consequences
 

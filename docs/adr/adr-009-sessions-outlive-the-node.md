@@ -104,8 +104,9 @@ process that started it is only its first reader.**
 
 - A node restart kills no host session and loses no finished work; the
   item's heartbeat goes on across it.
-- `mesh node upgrade` can restart at once instead of draining (the next
-  item of the goal).
+- `mesh node upgrade` and the self-update restart at once instead of
+  draining, and `SIGHUP` restarts a node in place (adr-002, amendment
+  of 2026-09-26).
 - Stopping a node no longer fails a claimed rebase; the next node
   finishes it.
 - Test fakes record each call's time (`gatewaytest.Call.At`).
