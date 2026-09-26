@@ -235,6 +235,12 @@ which a verifier pinned to the old owner refuses. The contract above
   anyone who creates a repository there could then mint that identity
   for any new tag. Limiting it to tags that already exist means a
   recreated `projectmesh-io/mesh-cli` can sign nothing a node accepts.
+- The first release after the transfer, `v0.0.0-runsheet-test.3`, its
+  image under `ghcr.io/runsheet/mesh-node` and the verifier accepting it
+  and `v0.0.0-selfupdate-test.1` are recorded in
+  [releases after the transfer](../releases-after-transfer.md), with
+  what is still open: a tag from main once the release fixes merge, and
+  `cosign verify` of the private package with a token that can read it.
 
 ## Consequences
 
