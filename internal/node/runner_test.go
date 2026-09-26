@@ -470,3 +470,43 @@ func TestSessionsRunOnTheItemsModel(t *testing.T) {
 		})
 	}
 }
+
+// A build session that finds the item's work on main hands it back
+// already done (adr-003): the node pushes nothing, fails nothing, and
+// finishes the item once with the evidence and no branch — on to its
+// evaluation, with no pull request to open.
+func TestBuildFinishesAlreadyDoneWithoutAPush(t *testing.T) {
+	ev := "https://github.com/acme/widgets/pull/3 (abc1234): main's TestThing already covers the acceptance."
+	h := &fakeHarness{text: "Checked main first: the work merged with item 3.\n\nALREADY DONE: " + ev}
+	f := seed(t)
+	r, ws, item, row := runnerOnFake(t, f, h, nil)
+	if err := r.RunItem(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	if len(ws.pushed) != 0 {
+		t.Fatalf("an already_done finish pushed %v", ws.pushed)
+	}
+	if got := strings.Join(ws.Events(), ","); strings.Contains(got, "push") {
+		t.Fatalf("workspace events = %s", got)
+	}
+	finishes := f.CallsNamed("finishWorkItem")
+	if len(finishes) != 1 {
+		t.Fatalf("finishWorkItem calls = %d, want 1", len(finishes))
+	}
+	in := finishes[0].Input
+	if in["outcome"] != "already_done" || in["evidence"] != ev || in["branch"] != nil || in["headSha"] != nil {
+		t.Fatalf("finish = %v", in)
+	}
+	if n := len(f.CallsNamed("failWorkItem")); n != 0 {
+		t.Fatalf("failWorkItem called %d times", n)
+	}
+	if n := len(f.CallsNamed("openPullRequest")); n != 0 {
+		t.Fatalf("openPullRequest called %d times", n)
+	}
+	if got := row(item1); got["status"] != "evaluating" || got["outcome"] != "already_done" || got["branch"] != nil {
+		t.Fatalf("row: %v", got)
+	}
+	if len(h.jobs) != 1 || !strings.Contains(h.jobs[0].Prompt, "mesh_finish outcome=already_done") {
+		t.Fatal("the build session's prompt must carry the check of main first")
+	}
+}

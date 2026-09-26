@@ -110,3 +110,44 @@ func TestClaudeCodeHugePromptStarts(t *testing.T) {
 		t.Fatalf("the session read %q of a %d byte prompt", res.Text, len(huge))
 	}
 }
+
+// The builder checks the base ref for the item's work before building,
+// and hands it back already done with evidence (adr-003 decision 2).
+func TestBuildPromptChecksMainFirst(t *testing.T) {
+	p := BuildPrompt(PromptInput{Title: "Make it pass", Repo: "acme/widgets", Branch: "mesh/ship-it-2", BaseRef: "main"})
+	for _, want := range []string{
+		"# Check main first",
+		"Before you write any code, look for this item's work on `origin/main`",
+		"`git log origin/main` since the goal was set",
+		"`gh pr list --repo acme/widgets --state merged --search",
+		"the files and tests the acceptance names",
+		"finish the item as mesh_finish outcome=already_done with the evidence",
+		"starts `ALREADY DONE:`",
+		"merged PR URLs and/or commit SHAs",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("prompt lacks %q:\n%s", want, p)
+		}
+	}
+	if strings.Index(p, "# Check main first") > strings.Index(p, "# Rules") {
+		t.Error("the check of main comes before the rules")
+	}
+}
+
+func TestParseAlreadyDone(t *testing.T) {
+	for _, c := range []struct {
+		text, want string
+		ok         bool
+	}{
+		{"Built it; tests pass.", "", false},
+		{"Summary.\nALREADY DONE: PR #3 merged it.\nabc1234 is the commit.", "PR #3 merged it.\nabc1234 is the commit.", true},
+		{"**ALREADY DONE:** https://github.com/a/b/pull/3 — the test exists", "https://github.com/a/b/pull/3 — the test exists", true},
+		{"ALREADY DONE:   ", "", false},
+		{"I did not find it; not ALREADY DONE: building.", "", false},
+	} {
+		got, ok := ParseAlreadyDone(c.text)
+		if got != c.want || ok != c.ok {
+			t.Errorf("ParseAlreadyDone(%q) = %q, %v; want %q, %v", c.text, got, ok, c.want, c.ok)
+		}
+	}
+}

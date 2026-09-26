@@ -59,6 +59,7 @@ func prologueRule(contextDir, project string) string {
 
 // BuildPrompt renders the session's whole prompt for a build job: the item
 // (title, brief, acceptance), the goal it serves (statement, acceptance)
+// the check of main before any building (and the already_done hand-back)
 // and the rules of the road — read the context first, stay on the branch,
 // commit clearly, run the acceptance check, never push.
 func BuildPrompt(in PromptInput) string {
@@ -81,6 +82,7 @@ func BuildPrompt(in PromptInput) string {
 	if strings.TrimSpace(in.GoalAcceptance) != "" {
 		fmt.Fprintf(&b, "## Acceptance (the goal)\n\n%s\n\n", strings.TrimSpace(in.GoalAcceptance))
 	}
+	checkMainFirst(&b, in)
 	servicesSection(&b, in.Services)
 	b.WriteString("# Rules\n\n")
 	if in.ContextDir != "" {
@@ -102,6 +104,47 @@ func BuildPrompt(in PromptInput) string {
 	b.WriteString("6. Design keeps pace with code: if your change alters an aggregate, a policy, a process, or a public contract (a gateway field, an API, a console route), amend the ADR or TRD section that describes it on this branch; a decision no ADR covers gets a new ADR at the next free number in this repo. A new document carries frontmatter with a one-line `summary:`.\n")
 	b.WriteString("7. End with a short summary of what you did and how the acceptance was checked.\n")
 	return b.String()
+}
+
+// AlreadyDoneLine starts the line a build session ends with when main
+// already holds the item's work (adr-003 decisions 1 and 2): the rest of
+// the message from it is the evidence, which the node hands in as
+// mesh_finish outcome=already_done. ParseAlreadyDone reads it.
+const AlreadyDoneLine = "ALREADY DONE:"
+
+// checkMainFirst is the builder's first step (adr-003 decision 2): look
+// on the base ref for the item's work before writing any, and hand the
+// item back already done, with evidence, when the acceptance holds there.
+func checkMainFirst(b *strings.Builder, in PromptInput) {
+	base := in.BaseRef
+	if base == "" {
+		base = "main"
+	}
+	b.WriteString("# Check main first\n\n")
+	fmt.Fprintf(b, "Before you write any code, look for this item's work on `origin/%s` — it may have merged already, under this goal or another:\n\n", base)
+	fmt.Fprintf(b, "- `git log origin/%s` since the goal was set (the checkout carries the base ref's history; `git fetch origin %s` if it looks short), by the item's title and the brief's keywords;\n", base, base)
+	fmt.Fprintf(b, "- `gh pr list --repo %s --state merged --search \"<the title's or the brief's keywords>\"`;\n", in.Repo)
+	fmt.Fprintf(b, "- the files and tests the acceptance names, as they are on `origin/%s`.\n\n", base)
+	fmt.Fprintf(b, "If the acceptance already holds on `origin/%s`, do not build it again: finish the item as mesh_finish outcome=already_done with the evidence instead. Commit nothing; end your final message with a line that starts `%s` followed by the evidence — the merged PR URLs and/or commit SHAs on `%s` that satisfy the acceptance, and one line on why. The node pushes nothing and hands it in; an evaluator checks the evidence against the acceptance on `%s`. If only part of it is there, build the rest.\n\n", base, AlreadyDoneLine, base, base)
+}
+
+// ParseAlreadyDone reads a build session's final message for its
+// already_done hand-back: the text from the last line that starts
+// AlreadyDoneLine (markdown emphasis allowed) to the end. ok is false
+// when there is none or it names no evidence.
+func ParseAlreadyDone(text string) (evidence string, ok bool) {
+	lines := strings.Split(text, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimLeft(strings.TrimSpace(lines[i]), "*_`#> ")
+		rest, found := strings.CutPrefix(line, AlreadyDoneLine)
+		if !found {
+			continue
+		}
+		rest = strings.TrimLeft(rest, "*_` ")
+		ev := strings.TrimSpace(strings.Join(append([]string{rest}, lines[i+1:]...), "\n"))
+		return ev, ev != ""
+	}
+	return "", false
 }
 
 // EvaluateInput is what an evaluation prompt is made of: the item, the

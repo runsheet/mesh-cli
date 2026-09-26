@@ -124,7 +124,10 @@ func TestPlanPromptRejected(t *testing.T) {
 func TestPromptsCarryTheServicesLine(t *testing.T) {
 	const line = "The services this repository declares run beside you and are ready on 127.0.0.1 (also listed in `$HOME/.mesh-services`): postgres (postgres:16) at 127.0.0.1:5432."
 	build := BuildPrompt(PromptInput{GoalSlug: "g", GoalTitle: "G", Seq: 1, Title: "T", Repo: "o/r", Branch: "b", BaseRef: "main", GoalAcceptance: "tests pass", Services: line})
-	if want := "## Acceptance (the goal)\n\ntests pass\n\n# Services\n\n" + line + "\n\n# Rules\n\n1. Read the repository's own instructions"; !strings.Contains(build, want) {
+	if want := "## Acceptance (the goal)\n\ntests pass\n\n# Check main first\n\n"; !strings.Contains(build, want) {
+		t.Errorf("build prompt lacks\n%s\n---\n%s", want, build)
+	}
+	if want := "If only part of it is there, build the rest.\n\n# Services\n\n" + line + "\n\n# Rules\n\n1. Read the repository's own instructions"; !strings.Contains(build, want) {
 		t.Errorf("build prompt lacks\n%s\n---\n%s", want, build)
 	}
 	eval := EvaluatePrompt(EvaluateInput{GoalSlug: "g", GoalTitle: "G", Seq: 1, Title: "T", Repo: "o/r", Branch: "b", BaseRef: "main", Services: line})

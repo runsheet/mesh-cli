@@ -44,9 +44,11 @@ type Workspacer interface {
 	// a renewed token, it replaces the old one.
 	Authorize(ctx context.Context, spec WorkspaceSpec, tok *gateway.GitHubToken) error
 	// Prepare clones (or fetches) the repo into spec.Dir() and checks out
-	// spec.Branch from spec.BaseRef, returning the directory. An empty
-	// spec.Branch leaves it on origin/<base>, detached, with the base's
-	// full history (an already_done item's evaluation).
+	// spec.Branch from spec.BaseRef, returning the directory. The checkout
+	// carries origin/<base> with its history, deepened to FetchDepth
+	// commits when shallow: the builder checks main first (adr-003). An
+	// empty spec.Branch leaves it on origin/<base>, detached, with the
+	// base's full history (an already_done item's evaluation).
 	Prepare(ctx context.Context, spec WorkspaceSpec) (string, error)
 	// Commit stages paths and commits them with msg when anything
 	// changed. Only the goal's document at the goal's end uses it
@@ -150,6 +152,9 @@ func (g *Git) Prepare(ctx context.Context, spec WorkspaceSpec) (string, error) {
 	if spec.Branch == "" {
 		return dir, g.CheckoutBase(ctx, dir, base)
 	}
+	if err := g.baseHistory(ctx, dir, base); err != nil {
+		return "", err
+	}
 	// a branch pushed by an earlier attempt (or just finished, for its
 	// evaluation) is continued, not restarted: the evaluator's notes say
 	// what to fix, and the push must fast-forward
@@ -185,6 +190,28 @@ func (g *Git) CheckoutBase(ctx context.Context, dir, base string) error {
 		return err
 	}
 	_, err := g.run(ctx, dir, "git", "checkout", "--quiet", "--detach", "origin/"+base)
+	return err
+}
+
+// baseHistory gives the checkout origin/<base> with its history, the
+// builder's evidence of what main already holds (adr-003 decision 2): the
+// base branch fetched by name (a single-branch clone lacks it) and, in a
+// shallow checkout, its last FetchDepth commits when it has fewer (never
+// shortened: a deeper history an evaluation fetched stays).
+func (g *Git) baseHistory(ctx context.Context, dir, base string) error {
+	refspec := "+refs/heads/" + base + ":refs/remotes/origin/" + base
+	if _, err := g.run(ctx, dir, "git", "fetch", "--quiet", "origin", refspec); err != nil {
+		return err
+	}
+	if out, err := g.run(ctx, dir, "git", "rev-parse", "--is-shallow-repository"); err != nil || out != "true" {
+		return nil
+	}
+	if out, err := g.run(ctx, dir, "git", "rev-list", "--count", "origin/"+base); err == nil {
+		if n, err := strconv.Atoi(out); err == nil && n >= FetchDepth {
+			return nil
+		}
+	}
+	_, err := g.run(ctx, dir, "git", "fetch", "--quiet", "--depth="+strconv.Itoa(FetchDepth), "origin", refspec)
 	return err
 }
 
