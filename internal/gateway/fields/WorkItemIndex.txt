@@ -1,0 +1,35 @@
+# The WorkItemIndex fields the gateway client selects: one name per line, sorted.
+# A trailing ? marks a field an older platform may lack; the client asks
+# for those first and drops them once the gateway refuses one.
+# Edit, then run `go generate ./internal/gateway/...` (README, "Gateway
+# fields are generated").
+acceptance
+agentSlug?
+attempts
+baseRef
+branch
+brief
+costCents
+dependsOn
+evaluateModel?
+evaluation
+evaluationPassed
+goalId
+heartbeatAt
+id
+lastError
+lastNote
+model?
+nodeId
+orgId
+prUrl
+projectId?
+rebaseConflict
+rebaseFiles
+rebaseNodeId
+rebaseState
+rebasedHeadSha
+repoId
+seq
+status
+title

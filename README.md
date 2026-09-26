@@ -1361,6 +1361,45 @@ mesh work-item learning <work-item-id> "Release flow is stable now"
 `mesh work-item update --status` is validated against the live Ralph Loop state machine values:
 `inbox`, `clarifying`, `spec_ready`, `awaiting_approval`, `ready_for_devlead`, `in_execution`, `blocked`, `in_review`, `changes_requested`, `done`, `archived`.
 
+## Gateway fields are generated
+
+What the node selects on each platform entity — `WorkItemIndex`,
+`GoalIndex`, `ProjectIndex`, `DirectionIndex`, `NodeIndex` — is not
+written by hand in `internal/gateway/client.go`. It comes from two
+committed inputs (docs/adr/adr-010-generated-gateway-fields.md):
+
+- `internal/gateway/schema.json`: the gateway's schema, every object
+  and input type with its fields, sorted, one field per line.
+- `internal/gateway/fields/<Type>.txt`: the allow-list of what the node
+  selects on that type, one name per line, sorted (`#` starts a
+  comment). A trailing `?` marks a field an older platform may lack:
+  the client asks for the optional fields first and, once the gateway
+  refuses one, reads the required ones alone (`itemsWithoutModel`,
+  `nodesWithoutDesired`).
+
+`go generate ./internal/gateway/...` runs `internal/gateway/internal/genfields`,
+which reads only those files and writes `internal/gateway/fields_gen.go`:
+per entity a `<entity>Required` and `<entity>Optional` list, one quoted
+field per line, and the selections `<entity>Fields` and
+`<entity>OptionalFields` the client uses. It fails, naming the field,
+when an allow-listed field is not in `schema.json`, and when a list is
+out of order. **`fields_gen.go` is never edited by hand**; CI runs the
+generator and fails on any diff.
+
+To add a field: add its line, in order, to `fields/<Type>.txt` (with
+`?` if a platform the node still supports may not have it), add it to
+the Go struct, and run `go generate ./internal/gateway/...`. If the
+generator says the field is not in `schema.json`, the platform half has
+not landed yet, or `schema.json` is stale — refresh it:
+
+```sh
+cd internal/gateway && go run ./internal/genfields -refresh && go generate .
+```
+
+`-refresh` introspects `https://api.runsheet.dev/graphql` (the schema is
+public: no token) and rewrites `schema.json`; commit it with the
+regenerated file. CI never reads the live gateway.
+
 ## Release
 
 Nodes update themselves from the GitHub releases of
