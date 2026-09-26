@@ -64,5 +64,11 @@ hand-written.
   schema.json is refreshed with it — the rule that the platform half
   lands first, enforced by the generator.
 - Selections are now sent in sorted order; GraphQL does not care.
-- `gatewaytest/fake.go` can build its rows from the same generated
-  lists (the goal's next item).
+- `gatewaytest/fake.go` derives from the same lists
+  (`gateway.Fields`, `gateway.OptionalFields`, `gateway.Entities`): a row
+  is served with every generated field (nil where unset), and a selection
+  naming a field in neither list is refused as the gateway would. Its
+  hand list of `HeartbeatNodeInput` stays: the public schema.json does not
+  yet carry `limits`, `scaling`, `runtimes` or `adapters` (the platform
+  half is not deployed), and the fake simulates platforms with and without
+  them.
