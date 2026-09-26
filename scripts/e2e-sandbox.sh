@@ -12,7 +12,7 @@
 #
 # Environment:
 #   MESH_SANDBOX_ENSURE        build (default), pull, or skip
-#   MESH_SANDBOX_IMAGE         the image (default ghcr.io/projectmesh-io/mesh-node:dev)
+#   MESH_SANDBOX_IMAGE         the image (default ghcr.io/runsheet/mesh-node:dev)
 #   MESH_SANDBOX_KEEP_VERSION  the running node's version, whose image the
 #                              prune keeps (default: `mesh --version`, else none)
 #   MESH_HOME                  the node's directory (default ~/.mesh)
@@ -24,7 +24,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 ensure=${MESH_SANDBOX_ENSURE:-build}
-image=${MESH_SANDBOX_IMAGE:-ghcr.io/projectmesh-io/mesh-node:dev}
+image=${MESH_SANDBOX_IMAGE:-ghcr.io/runsheet/mesh-node:dev}
 mesh_home=${MESH_HOME:-$HOME/.mesh}
 legacy=latchkey-e2e-pg
 

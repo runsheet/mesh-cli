@@ -93,7 +93,7 @@ func (img Image) Summary() string {
 }
 
 // EnsureImage pulls ref and then removes every other
-// ghcr.io/projectmesh-io/mesh-node tag on this machine but ref and keep
+// ghcr.io/runsheet/mesh-node tag on this machine but ref and keep
 // (the image the running node's sessions are still using). A failed pull
 // is the error, and nothing is built in its place or removed.
 func EnsureImage(ctx context.Context, run Runner, ref string, keep ...string) (Image, error) {

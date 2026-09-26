@@ -1,5 +1,5 @@
 ---
-summary: Nodes update only from tag-cut releases of projectmesh-io/mesh-cli whose SHA256SUMS is signed keyless by release-tag.yml's GitHub OIDC identity; the asset names and that identity are the updater's contract. The same tag pushes and cosign-signs the node image ghcr.io/projectmesh-io/mesh-node:<tag>, which the node pulls before it swaps. An upgrade swaps and restarts the node at once, and the new process adopts the sessions the old one left running; a sandboxed node alone still drains first.
+summary: Nodes update only from tag-cut releases of projectmesh-io/mesh-cli whose SHA256SUMS is signed keyless by release-tag.yml's GitHub OIDC identity; the asset names and that identity are the updater's contract. The same tag pushes and cosign-signs the node image ghcr.io/runsheet/mesh-node:<tag>, which the node pulls before it swaps. An upgrade swaps and restarts the node at once, and the new process adopts the sessions the old one left running; a sandboxed node alone still drains first.
 status: accepted
 ---
 
@@ -11,10 +11,10 @@ Goal `node-self-update`: a node replaces its own executable with the
 version the platform asks for. Whatever it downloads runs with the
 node's credential and its operator's `gh`, so it must be able to prove,
 with nothing but the release itself, that the binary was built by this
-repo's workflow from that tag. `cli-release.yml` already publishes on
-every push to `main`, but to another repo (`projectmesh-io/mesh`), with
-a run-number version and unsigned sums; changing it would change what
-existing installs download.
+repo's workflow from that tag. `cli-release.yml` used to publish on
+every push to `main`, to another repo (`projectmesh-io/mesh`), with a
+run-number version and unsigned sums; it was dropped (see the amendment
+below).
 
 ## Decision
 
@@ -42,8 +42,12 @@ existing installs download.
   `<tag>` is the version it asked for; then the binary for its own
   OS/arch must match its line in `SHA256SUMS`. Anything else is refused
   and reported.
-- `cli-release.yml` and `release.yml` stay as they are and are not an
-  update source.
+- `release.yml` stays as it is and is not an update source.
+  `cli-release.yml` was dropped when the repo moved to the runsheet org
+  (2026-09-26): its `GITHUB_TOKEN` cannot publish cross-org, and
+  publishing main builds to this repo's releases would make them
+  `latest` and break `LatestReleaseURL`. Nodes update only from
+  `release-tag.yml`.
 - The updater (`internal/selfupdate`) verifies in-process with
   `github.com/sigstore/sigstore-go`; the node needs no `cosign`. It
   requires a transparency-log entry, an observer timestamp and an
@@ -124,7 +128,7 @@ image is a second artefact beside it:
 
 - `release-tag.yml`'s `image` job builds `images/node/Containerfile` for
   linux/amd64 and linux/arm64 (Go at go.mod's version, `MESH_VERSION`
-  the tag), pushes `ghcr.io/projectmesh-io/mesh-node:<tag>` and signs its
+  the tag), pushes `ghcr.io/runsheet/mesh-node:<tag>` and signs its
   digest keyless with `cosign sign`, under the same workflow identity.
   `publish` needs it, so no release exists without its image.
 - The tag is the node's version as it is (`internal/version.Version`,

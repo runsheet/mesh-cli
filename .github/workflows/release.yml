@@ -2,7 +2,7 @@
 # The Shipper calls `gh workflow run release.yml --field version=<semver>`
 # to trigger a mesh-cli release when shipping a work item.
 #
-# This delegates to the canonical cli-release.yml build pipeline.
+# It builds the same targets as release-tag.yml, unsigned, as run artifacts.
 # The version input is recorded in the release notes for traceability.
 
 name: Release (Shipper Trigger)

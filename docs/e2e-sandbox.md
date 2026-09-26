@@ -20,7 +20,7 @@ uses it. The design is mesh-specs ADR 007 and
   `podman unshare` works: `/etc/subuid` and `/etc/subgid` carry the
   user). The node's own sandbox uses the same runtime.
 - The node image. By default the script builds
-  `ghcr.io/projectmesh-io/mesh-node:dev` here from the embedded
+  `ghcr.io/runsheet/mesh-node:dev` here from the embedded
   Containerfile, exactly as `sandbox.image: build` does
   (`SandboxConfig.EnsureImage`); `MESH_SANDBOX_ENSURE=pull` pulls it
   instead (`podman login ghcr.io` first while the package is private),
@@ -32,7 +32,7 @@ uses it. The design is mesh-specs ADR 007 and
 
 ```sh
 scripts/e2e-sandbox.sh
-# or: MESH_SANDBOX_ENSURE=pull MESH_SANDBOX_IMAGE=ghcr.io/projectmesh-io/mesh-node:v0.5.0 scripts/e2e-sandbox.sh
+# or: MESH_SANDBOX_ENSURE=pull MESH_SANDBOX_IMAGE=ghcr.io/runsheet/mesh-node:v0.5.0 scripts/e2e-sandbox.sh
 ```
 
 Like a node's update, ensuring the image prunes every other `mesh-node`
