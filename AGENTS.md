@@ -144,7 +144,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   ADR-007): both ensure the *new* version's image after the verify and
   before the drain (`Loop.Image`, `nodeUpdate.Image` →
   `SandboxConfig.EnsureImage` → `sandbox.EnsureImage`/`BuildImage` on
-  an injected `Runner`): pull `ghcr.io/projectmesh-io/mesh-node:<version>`
+  an injected `Runner`): pull `ghcr.io/runsheet/mesh-node:<version>`
   (node.yaml `sandbox.image`: empty that, `build` built here, else as
   given), prune older tags but the running one's. A failed pull is an
   `updateError`: no drain, no swap, never a silent build. `sandbox:
