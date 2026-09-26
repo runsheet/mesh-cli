@@ -362,3 +362,78 @@ func TestBothNotesTruncatedTogether(t *testing.T) {
 		t.Fatalf("len %d: %q", len(got), got[len(got)-60:])
 	}
 }
+
+// diffWS is a workspace whose Diff answers err.
+type diffWS struct {
+	*fakeWS
+	err error
+}
+
+func (w *diffWS) Diff(context.Context, string, string) (string, error) { return "", w.err }
+
+func diffFailFixture(t *testing.T, err error) (*gatewaytest.Fake, *Evaluator, *fakeHarness) {
+	t.Helper()
+	f, ev, h, _ := secondFixture(t, "normal", "VERDICT: PASS", &fakeCodexH{})
+	ev.WS = &diffWS{fakeWS: ev.WS.(*fakeWS), err: err}
+	return f, ev, h
+}
+
+// A branch sharing no history with the base is the item's failure: one
+// verdict, the reason in its notes, no session, and an Evaluate that
+// returns rather than loops.
+func TestEvaluateNoMergeBaseFailsTheItem(t *testing.T) {
+	f, ev, h := diffFailFixture(t, &NoMergeBaseError{Base: "main", Branch: "mesh/ship-it-1"})
+	in := evaluateItem1(t, f, ev)
+	notes, _ := in["notes"].(string)
+	if in["passed"] != false || in["costCents"] != float64(0) || !strings.Contains(notes, "shares no history with origin/main") || !strings.Contains(notes, "rebuilt from scratch") || !strings.Contains(notes, "Rebuild it on origin/main") {
+		t.Fatalf("verdict: %+v", in)
+	}
+	if len(h.jobs) != 0 {
+		t.Fatalf("no evaluator session: %d jobs", len(h.jobs))
+	}
+	// a second call records one more verdict and returns; nothing loops inside
+	f.WorkItems[item1]["status"] = "evaluating"
+	item, _ := ev.GW.WorkItem(context.Background(), item1)
+	if err := ev.Evaluate(context.Background(), *item); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(f.CallsNamed("evaluateWorkItem")); n != 2 {
+		t.Fatalf("evaluate calls = %d, want 1 per Evaluate", n)
+	}
+}
+
+func TestEvaluateOtherDiffErrorFailsTheItem(t *testing.T) {
+	f, ev, h := diffFailFixture(t, errors.New("git diff: exit status 128: bad object"))
+	in := evaluateItem1(t, f, ev)
+	if in["passed"] != false || in["notes"] != "the evaluation could not diff the branch against origin/main: git diff: exit status 128: bad object" {
+		t.Fatalf("verdict: %+v", in)
+	}
+	if len(h.jobs) != 0 {
+		t.Fatal("no evaluator session")
+	}
+}
+
+// The console case: a branch forked from main, a shallow single-branch
+// workspace. Prepare's checkout is as the node does it; the evaluator is
+// handed the diff after the deepening.
+func TestEvaluateConsoleCaseShallowSingleBranch(t *testing.T) {
+	dir := mergeBaseFixture(t, false)
+	f, ev, h, _ := secondFixture(t, "normal", "ok\nVERDICT: PASS", &fakeCodexH{})
+	ws := ev.WS.(*fakeWS)
+	ev.WS = &gitDiffWS{fakeWS: ws, dir: dir}
+	f.WorkItems[item1]["branch"] = "mesh/merges-dont-wait-in-line-9"
+	evaluateItem1(t, f, ev)
+	if len(h.jobs) != 1 || !strings.Contains(h.jobs[0].Prompt, "the branch's change") {
+		t.Fatalf("the evaluator got no diff: %d jobs", len(h.jobs))
+	}
+}
+
+// gitDiffWS computes Diff with real git in a prepared checkout.
+type gitDiffWS struct {
+	*fakeWS
+	dir string
+}
+
+func (w *gitDiffWS) Diff(ctx context.Context, _, base string) (string, error) {
+	return (&Git{}).Diff(ctx, w.dir, base)
+}
