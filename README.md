@@ -1409,7 +1409,7 @@ run by hand) does, and opens or updates the PR on `bot/schema-refresh`.
 ## Release
 
 Nodes update themselves from the GitHub releases of
-`projectmesh-io/mesh-cli`, which `.github/workflows/release-tag.yml` cuts
+`runsheet/mesh-cli`, which `.github/workflows/release-tag.yml` cuts
 from a tag (docs/adr/adr-002-signed-tag-releases.md). To cut one:
 
 ```sh
@@ -1451,7 +1451,7 @@ in Rekor. The node accepts a release only when the bundle verifies
 against exactly
 
 - certificate identity
-  `https://github.com/projectmesh-io/mesh-cli/.github/workflows/release-tag.yml@refs/tags/<tag>`
+  `https://github.com/runsheet/mesh-cli/.github/workflows/release-tag.yml@refs/tags/<tag>`
 - OIDC issuer `https://token.actions.githubusercontent.com`
 
 and the binary's hash matches its line in `SHA256SUMS`. To verify a
@@ -1459,11 +1459,11 @@ release by hand:
 
 ```sh
 TAG=vX.Y.Z
-gh release download "$TAG" -R projectmesh-io/mesh-cli \
+gh release download "$TAG" -R runsheet/mesh-cli \
   -p SHA256SUMS -p SHA256SUMS.sigstore.json -p mesh-linux-amd64
 cosign verify-blob \
   --bundle SHA256SUMS.sigstore.json \
-  --certificate-identity "https://github.com/projectmesh-io/mesh-cli/.github/workflows/release-tag.yml@refs/tags/$TAG" \
+  --certificate-identity "https://github.com/runsheet/mesh-cli/.github/workflows/release-tag.yml@refs/tags/$TAG" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   SHA256SUMS
 sha256sum --check --ignore-missing SHA256SUMS
@@ -1531,7 +1531,7 @@ and verify or install from the directory:
 
 ```sh
 TAG=v0.0.0-selfupdate-test.1
-gh release download "$TAG" -R projectmesh-io/mesh-cli -D rel
+gh release download "$TAG" -R runsheet/mesh-cli -D rel
 mesh node update --verify-only --from-dir rel "$TAG"
 ```
 

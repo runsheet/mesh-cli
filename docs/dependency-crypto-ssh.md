@@ -45,7 +45,7 @@ other module changed. No code changes were needed:
 
 ## Dependabot alerts
 
-GitHub reports 13 open Dependabot alerts on projectmesh-io/mesh-cli for
+GitHub reports 13 open Dependabot alerts on runsheet/mesh-cli for
 `golang.org/x/crypto` (7 critical, 2 high, 4 moderate). All of them are
 in the `ssh` package: agent and key constraints not enforced, `@revoked`
 not honoured, deadlocks and panics. As the Finding shows, the node never

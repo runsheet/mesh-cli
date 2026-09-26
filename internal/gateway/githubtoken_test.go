@@ -27,7 +27,7 @@ func TestIssueItemRepoToken(t *testing.T) {
 	defer f.Close()
 	claimedItem(f)
 	f.GitHubTokens[itemID] = map[string]any{
-		"token": "ghs_item", "expiresAt": "2026-09-24T04:27:21Z", "repo": "projectmesh-io/mesh-cli",
+		"token": "ghs_item", "expiresAt": "2026-09-24T04:27:21Z", "repo": "runsheet/mesh-cli",
 	}
 	gw := gateway.New(f.URL(), "rs_test")
 
@@ -36,7 +36,7 @@ func TestIssueItemRepoToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := gateway.GitHubToken{
-		Token: "ghs_item", ExpiresAt: time.Date(2026, 9, 24, 4, 27, 21, 0, time.UTC), Repository: "projectmesh-io/mesh-cli",
+		Token: "ghs_item", ExpiresAt: time.Date(2026, 9, 24, 4, 27, 21, 0, time.UTC), Repository: "runsheet/mesh-cli",
 	}
 	if tok.Token != want.Token || !tok.ExpiresAt.Equal(want.ExpiresAt) || tok.Repository != want.Repository {
 		t.Fatalf("token = %+v, want %+v", *tok, want)
