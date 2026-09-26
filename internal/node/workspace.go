@@ -168,6 +168,9 @@ func (g *Git) Prepare(ctx context.Context, spec WorkspaceSpec) (string, error) {
 // Diff implements Workspacer: the three-dot diff from where the branch
 // forked origin/base, stat first, capped so a prompt stays a prompt.
 func (g *Git) Diff(ctx context.Context, dir, base string) (string, error) {
+	if err := g.EnsureMergeBase(ctx, dir, base); err != nil {
+		return "", err
+	}
 	ref := "origin/" + base + "...HEAD"
 	stat, err := g.run(ctx, dir, "git", "diff", "--stat", ref)
 	if err != nil {
@@ -181,6 +184,64 @@ func (g *Git) Diff(ctx context.Context, dir, base string) (string, error) {
 		patch = patch[:MaxDiffBytes] + "\n… (diff truncated; read the branch for the rest)"
 	}
 	return stat + "\n\n" + patch, nil
+}
+
+// NoMergeBaseError says the checked-out branch shares no history with
+// origin/<Base>: it is the item's problem (rebuilt from scratch or from an
+// unrelated root), not the node's.
+type NoMergeBaseError struct {
+	Base, Branch string
+}
+
+func (e *NoMergeBaseError) Error() string {
+	return fmt.Sprintf("branch %s shares no history with origin/%s: it was rebuilt from scratch or from an unrelated root, so there is nothing to diff it against", e.Branch, e.Base)
+}
+
+// deepenRounds bounds EnsureMergeBase: this many `--deepen` fetches (the
+// step doubling from FetchDepth), then one `--unshallow`.
+const deepenRounds = 3
+
+// EnsureMergeBase makes origin/<base> and HEAD share a merge base in dir,
+// fetching the base branch explicitly (a single-branch clone lacks it) and
+// deepening a shallow checkout in a fixed number of steps. A branch that
+// still shares none yields a *NoMergeBaseError.
+func (g *Git) EnsureMergeBase(ctx context.Context, dir, base string) error {
+	remote := "refs/remotes/origin/" + base
+	if _, err := g.run(ctx, dir, "git", "fetch", "--quiet", "origin", "+refs/heads/"+base+":"+remote); err != nil {
+		return err
+	}
+	has := func() bool {
+		_, err := g.run(ctx, dir, "git", "merge-base", remote, "HEAD")
+		return err == nil
+	}
+	if has() {
+		return nil
+	}
+	shallow := func() bool {
+		out, err := g.run(ctx, dir, "git", "rev-parse", "--is-shallow-repository")
+		return err == nil && out == "true"
+	}
+	step := FetchDepth
+	for i := 0; i < deepenRounds && shallow(); i++ {
+		if _, err := g.run(ctx, dir, "git", "fetch", "--quiet", "--deepen="+strconv.Itoa(step), "origin"); err != nil {
+			return err
+		}
+		if has() {
+			return nil
+		}
+		step *= 2
+	}
+	// a repository the deepening completed is no longer shallow: nothing to unshallow
+	if shallow() {
+		if _, err := g.run(ctx, dir, "git", "fetch", "--quiet", "--unshallow", "origin"); err != nil {
+			return err
+		}
+		if has() {
+			return nil
+		}
+	}
+	branch, _ := g.run(ctx, dir, "git", "rev-parse", "--abbrev-ref", "HEAD")
+	return &NoMergeBaseError{Base: base, Branch: branch}
 }
 
 // Fetch implements Workspacer.
