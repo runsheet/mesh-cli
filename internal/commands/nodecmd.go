@@ -229,7 +229,7 @@ var nodeStatusCmd = &cobra.Command{
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 		fmt.Fprintln(w, "ORG\tNAME\tSLUG\tSTATUS\tRUNNING\tCAPACITY\tVERSION\tLAST_SEEN")
 		for _, sc := range scopes {
-			if err := gw.HeartbeatNode(ctx, sc.NodeID, version.Version, 0, "", ""); err != nil {
+			if err := gw.HeartbeatNode(ctx, sc.NodeID, version.Version, 0); err != nil {
 				return fmt.Errorf("heartbeat in %s: %w", sc.Login, err)
 			}
 			nodes, err := gw.Nodes(ctx, sc.ID)

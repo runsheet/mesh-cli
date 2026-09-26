@@ -103,3 +103,28 @@ func TestReleaseWorkItemRefusedByThePlatform(t *testing.T) {
 		t.Fatalf("item changed: %+v, was %+v", after, before)
 	}
 }
+
+// The heartbeat carries the node's harness_unavailable status and why
+// (trd §1 Node); an ordinary heartbeat after it sends no status and
+// reads as online again.
+func TestHeartbeatNodeStatus(t *testing.T) {
+	f, gw := registeredFake(t)
+	ctx := context.Background()
+	reason := "You've hit your monthly spend limit · raise it at claude.ai/settings/usage"
+	if err := gw.HeartbeatNode(ctx, limitsNode, "v1", 0, gateway.HeartbeatExtras{Status: "harness_unavailable", Reason: reason}); err != nil {
+		t.Fatal(err)
+	}
+	if n := f.Nodes[limitsNode]; n["status"] != "harness_unavailable" || n["reason"] != reason {
+		t.Fatalf("node after harness_unavailable: %+v", n)
+	}
+	if err := gw.HeartbeatNode(ctx, limitsNode, "v1", 0); err != nil {
+		t.Fatal(err)
+	}
+	hb := f.CallsNamed("heartbeatNode")
+	if _, ok := hb[len(hb)-1].Input["status"]; ok {
+		t.Fatalf("an ordinary heartbeat sent a status: %#v", hb[len(hb)-1].Input)
+	}
+	if n := f.Nodes[limitsNode]; n["status"] != "online" {
+		t.Fatalf("node after an ordinary heartbeat: %+v", n)
+	}
+}

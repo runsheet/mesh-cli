@@ -875,9 +875,15 @@ type HeartbeatExtras struct {
 	// Sandbox is whether the node's sessions run in their own pods, on
 	// which runtime and image (trd §1 Node, ADR 007); nil sends none.
 	Sandbox *SandboxInfo
+	// Status is the node's liveness when it is not the ordinary one:
+	// harness_unavailable — alive, but its harness cannot run a session
+	// (out of credit, rate-limited; trd §1 Node, §3), with why in Reason,
+	// which the platform turns into one needs_person row. Empty is the
+	// ordinary heartbeat (online) and sends no key.
+	Status string
 	// Reason is a condition of the node's while it stays online: a
 	// session its sandbox's limits killed, naming the limit and the item
-	// (trd §1 Node, `sandbox`).
+	// (trd §1 Node, `sandbox`); or why the node is Status.
 	Reason string
 	// Adopted are the sessions a restarted node took over from the process
 	// before it rather than starting them (mesh-specs ADR 008, mesh-cli
@@ -985,6 +991,9 @@ func (c *Client) HeartbeatNode(ctx context.Context, nodeID, version string, runn
 		}
 		if x.Sandbox != nil {
 			in["sandbox"] = x.Sandbox
+		}
+		if x.Status != "" {
+			in["status"] = x.Status
 		}
 		if x.Reason != "" {
 			in["reason"] = x.Reason
