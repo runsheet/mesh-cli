@@ -410,3 +410,19 @@ func TestLoopPacedStillEvaluatesAndRebases(t *testing.T) {
 		})
 	}
 }
+
+// allowed_warning is the CLI saying a window is filling, not a refusal:
+// the node keeps running on it.
+func TestPaceAllowedWarningIsNotAStop(t *testing.T) {
+	now := time.Date(2026, 9, 26, 10, 0, 0, 0, time.UTC)
+	r := harness.RateLimit{Status: "allowed_warning", ObservedAt: now,
+		FiveHour: harness.RateLimitWindow{Utilization: 0.05, ResetsAt: now.Add(4 * time.Hour)},
+		SevenDay: harness.RateLimitWindow{Utilization: 0.77, ResetsAt: now.Add(56 * time.Hour)}}
+	if p := pace(now, r, LimitsConfig{}); p.mode != paceNormal {
+		t.Fatalf("allowed_warning at 5%%/77%% paced as %v (%s), want normal", p.mode, p.why)
+	}
+	r.Status = "rejected"
+	if p := pace(now, r, LimitsConfig{}); p.mode != paceStopped {
+		t.Fatalf("a rejected status did not stop: %v", p.mode)
+	}
+}

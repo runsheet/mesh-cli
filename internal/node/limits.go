@@ -274,7 +274,11 @@ func pace(now time.Time, r harness.RateLimit, cfg LimitsConfig) pacing {
 	if r.SevenDay.Utilization >= cfg.Stop {
 		trigger(fmt.Sprintf("seven-day window at %s (stop %s)", pct(r.SevenDay.Utilization), pct(cfg.Stop)), r.SevenDay.ResetsAt)
 	}
-	if r.Status != "" && r.Status != "allowed" {
+	// "allowed" and "allowed_warning" (a window filling, the CLI's own
+	// nudge) both mean sessions may run; only a refusal stops the node.
+	// 2026-09-26: allowed_warning at 77% of the week read as a stop and
+	// the mini sat idle with 14 items ready.
+	if r.Status != "" && !strings.HasPrefix(r.Status, "allowed") {
 		trigger(fmt.Sprintf("status %s", r.Status), r.ResetsAt)
 	}
 	if stop.mode == paceStopped {
