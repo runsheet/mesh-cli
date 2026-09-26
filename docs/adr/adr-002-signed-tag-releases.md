@@ -1,5 +1,5 @@
 ---
-summary: Nodes update only from tag-cut releases of projectmesh-io/mesh-cli whose SHA256SUMS is signed keyless by release-tag.yml's GitHub OIDC identity; the asset names and that identity are the updater's contract. The same tag pushes and cosign-signs the node image ghcr.io/runsheet/mesh-node:<tag>, which the node pulls before it swaps. An upgrade swaps and restarts the node at once, and the new process adopts the sessions the old one left running; a sandboxed node alone still drains first.
+summary: Nodes update only from tag-cut releases of runsheet/mesh-cli whose SHA256SUMS is signed keyless by runsheet/mesh-cli release-tag.yml's GitHub OIDC identity (tags released before the repo left projectmesh-io also under the old identity); the asset names and that identity are the updater's contract. The same tag pushes and cosign-signs the node image ghcr.io/runsheet/mesh-node:<tag>, which the node pulls before it swaps. An upgrade swaps and restarts the node at once, and the new process adopts the sessions the old one left running; a sandboxed node alone still drains first.
 status: accepted
 ---
 
@@ -22,7 +22,7 @@ below).
   tag `v*` and nothing else (no `workflow_dispatch`: a release is a tag).
   It builds linux/amd64, linux/arm64 and darwin/arm64 with
   `CGO_ENABLED=0 -trimpath` and `internal/version.Version` set to the
-  tag, and publishes a GitHub release on `projectmesh-io/mesh-cli` (a
+  tag, and publishes a GitHub release on `runsheet/mesh-cli` (a
   prerelease when the tag has a `-`).
 - The release carries exactly `mesh-linux-amd64`, `mesh-linux-arm64`,
   `mesh-darwin-arm64`, `SHA256SUMS` (`sha256sum mesh-*`) and
@@ -37,7 +37,9 @@ below).
   needs no node change.
 - Signing is keyless Sigstore: there is no key to hold or leak. The
   updater accepts the bundle only for certificate identity
-  `https://github.com/projectmesh-io/mesh-cli/.github/workflows/release-tag.yml@refs/tags/<tag>`
+  `https://github.com/runsheet/mesh-cli/.github/workflows/release-tag.yml@refs/tags/<tag>`
+  (and, for the tags released before the transfer only, the
+  `projectmesh-io/mesh-cli` identity: see the transfer amendment below)
   and issuer `https://token.actions.githubusercontent.com`, where
   `<tag>` is the version it asked for; then the binary for its own
   OS/arch must match its line in `SHA256SUMS`. Anything else is refused
@@ -60,7 +62,7 @@ below).
   with a short reason for the heartbeat; the update's progress and last
   error live in `~/.mesh/update.json`.
 - `selfupdate.GitHub` downloads anonymously from
-  `github.com/projectmesh-io/mesh-cli/releases/download/<tag>/<asset>`,
+  `github.com/runsheet/mesh-cli/releases/download/<tag>/<asset>`,
   which works only while the repo is public. **It is private today**, and
   those URLs answer 404 even with a token (proven on the reference
   release, 2026-09-25), so a node cannot yet fetch a release on its own.
@@ -199,6 +201,40 @@ ensure the image, swap, restart at once, adopt.**
 - `mesh node update` still drains before its swap, and `mesh node
   drain` (`SIGUSR1`) is unchanged: draining is for taking a machine out
   of service.
+
+## Amendment: the repository moved to runsheet (goal `mesh-cli-lives-in-runsheet`, 2026-09-26)
+
+On 2026-09-26 12:40Z mesh-cli was transferred from `projectmesh-io` to
+the `runsheet` GitHub organisation. GitHub redirects the old URLs, but a
+workflow's OIDC identity names the repository it runs in, so every tag
+released after the transfer is signed by
+`https://github.com/runsheet/mesh-cli/.github/workflows/release-tag.yml@refs/tags/<tag>`,
+which a verifier pinned to the old owner refuses. The contract above
+(the identity and the URLs) is changed here first:
+
+- `IdentityPrefix`, `ReleaseBaseURL` and `LatestReleaseURL` name
+  `runsheet/mesh-cli`. The node image is `ghcr.io/runsheet/mesh-node:<tag>`:
+  packages do not move with a repository, so it is published anew there
+  by the moved repo's `release-tag.yml`, and `sandbox.DefaultImageRepo`
+  follows once it is (a change of its own in the same goal).
+- `Policy` carries a list of accepted identities, each an exact SAN
+  match. `ReleasePolicy(tag)` always accepts the runsheet identity and
+  adds `PreTransferIdentityPrefix` +
+  tag — `https://github.com/projectmesh-io/mesh-cli/.github/workflows/release-tag.yml@refs/tags/<tag>`
+  — only for a tag in the constant set of tags released before the
+  transfer. That set is closed and, like the prefixes, is a constant:
+  nothing in `node.yaml`, flags or the environment reaches it. The tags
+  it holds:
+  - `v0.0.0-selfupdate-test.1` (commit `97fb5fb`, released 2026-09-25),
+    the last and only tag released under `projectmesh-io`.
+- Why keep the old identity at all: those releases were signed before
+  the move and cannot be re-signed without re-tagging, and the reference
+  release's committed bundle (`internal/selfupdate/testdata/`) is one of
+  them. Why only for those tags: after the transfer no one can run a
+  workflow as `projectmesh-io/mesh-cli` unless the name is taken again —
+  anyone who creates a repository there could then mint that identity
+  for any new tag. Limiting it to tags that already exist means a
+  recreated `projectmesh-io/mesh-cli` can sign nothing a node accepts.
 
 ## Consequences
 

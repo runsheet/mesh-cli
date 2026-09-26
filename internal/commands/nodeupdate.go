@@ -33,7 +33,7 @@ prerelease.
 
 The release's binary for this OS/arch is downloaded with SHA256SUMS and its
 Sigstore bundle, and verified: the bundle must be signed by
-release-tag.yml on refs/tags/<version> of projectmesh-io/mesh-cli, issued
+release-tag.yml on refs/tags/<version> of runsheet/mesh-cli, issued
 by https://token.actions.githubusercontent.com, and the binary's sha256 must
 be its line in the sums. Anything else is refused with the reason and a
 non-zero exit, and nothing on disk changes.
