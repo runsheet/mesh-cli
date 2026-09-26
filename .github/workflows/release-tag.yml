@@ -134,6 +134,12 @@ jobs:
           DIGEST: ${{ steps.push.outputs.digest }}
         run: cosign sign --yes "ghcr.io/runsheet/mesh-node@${DIGEST}"
 
+      - name: Verify the image's signature against the release identity
+        run: |
+          cosign verify "ghcr.io/runsheet/mesh-node:${GITHUB_REF_NAME}" \
+            --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release-tag.yml@${GITHUB_REF}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com
+
   publish:
     name: Sign and publish ${{ github.ref_name }}
     needs: [build, image]
