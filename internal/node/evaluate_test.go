@@ -3,9 +3,11 @@ package node
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -417,11 +419,12 @@ func TestEvaluateOtherDiffErrorFailsTheItem(t *testing.T) {
 // workspace. Prepare's checkout is as the node does it; the evaluator is
 // handed the diff after the deepening.
 func TestEvaluateConsoleCaseShallowSingleBranch(t *testing.T) {
-	dir := mergeBaseFixture(t, false)
+	const branch = "mesh/merges-dont-wait-in-line-9"
+	dir := mergeBaseFixtureBranch(t, false, branch)
 	f, ev, h, _ := secondFixture(t, "normal", "ok\nVERDICT: PASS", &fakeCodexH{})
 	ws := ev.WS.(*fakeWS)
-	ev.WS = &gitDiffWS{fakeWS: ws, dir: dir}
-	f.WorkItems[item1]["branch"] = "mesh/merges-dont-wait-in-line-9"
+	ev.WS = &gitDiffWS{fakeWS: ws, dir: dir, branch: branch}
+	f.WorkItems[item1]["branch"] = branch
 	evaluateItem1(t, f, ev)
 	if len(h.jobs) != 1 || !strings.Contains(h.jobs[0].Prompt, "the branch's change") {
 		t.Fatalf("the evaluator got no diff: %d jobs", len(h.jobs))
@@ -432,8 +435,16 @@ func TestEvaluateConsoleCaseShallowSingleBranch(t *testing.T) {
 type gitDiffWS struct {
 	*fakeWS
 	dir string
+	// branch is the item's branch; the checkout must be on it.
+	branch string
 }
 
 func (w *gitDiffWS) Diff(ctx context.Context, _, base string) (string, error) {
+	if w.branch != "" {
+		out, err := exec.Command("git", "-C", w.dir, "rev-parse", "--abbrev-ref", "HEAD").Output()
+		if err != nil || strings.TrimSpace(string(out)) != w.branch {
+			return "", fmt.Errorf("checkout is on %q, the item's branch is %q", strings.TrimSpace(string(out)), w.branch)
+		}
+	}
 	return (&Git{}).Diff(ctx, w.dir, base)
 }

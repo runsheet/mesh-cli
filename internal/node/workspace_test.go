@@ -273,6 +273,12 @@ func TestPushedHeadReadsOriginBack(t *testing.T) {
 // well back from main's tip (or an orphan), and checked out as Prepare does.
 func mergeBaseFixture(t *testing.T, orphan bool) (dir string) {
 	t.Helper()
+	return mergeBaseFixtureBranch(t, orphan, "mesh/g-1")
+}
+
+// mergeBaseFixtureBranch is mergeBaseFixture with the item branch named.
+func mergeBaseFixtureBranch(t *testing.T, orphan bool, branch string) (dir string) {
+	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("no git")
 	}
@@ -297,7 +303,7 @@ func mergeBaseFixture(t *testing.T, orphan bool) (dir string) {
 		git(seed, "add", "n")
 		git(seed, "commit", "-q", "-m", "c")
 		if i == 5 && !orphan {
-			git(seed, "checkout", "-q", "-b", "mesh/g-1")
+			git(seed, "checkout", "-q", "-b", branch)
 			os.WriteFile(filepath.Join(seed, "feature"), []byte("the branch's change\n"), 0o644)
 			git(seed, "add", "feature")
 			git(seed, "commit", "-q", "-m", "feature")
@@ -305,18 +311,18 @@ func mergeBaseFixture(t *testing.T, orphan bool) (dir string) {
 		}
 	}
 	if orphan {
-		git(seed, "checkout", "-q", "--orphan", "mesh/g-1")
+		git(seed, "checkout", "-q", "--orphan", branch)
 		os.WriteFile(filepath.Join(seed, "feature"), []byte("the branch's change\n"), 0o644)
 		git(seed, "add", "feature")
 		git(seed, "commit", "-q", "-m", "feature")
 		git(seed, "checkout", "-q", "main")
 	}
-	git(seed, "push", "-q", "origin", "main", "mesh/g-1")
+	git(seed, "push", "-q", "origin", "main", branch)
 
 	dir = filepath.Join(root, "ws")
 	git(root, "clone", "-q", "--no-local", "--depth", "1", "--single-branch", "--branch", "main", "file://"+origin, dir)
-	git(dir, "fetch", "-q", "origin", "+refs/heads/mesh/g-1:refs/remotes/origin/mesh/g-1")
-	git(dir, "checkout", "-q", "-B", "mesh/g-1", "origin/mesh/g-1")
+	git(dir, "fetch", "-q", "origin", "+refs/heads/"+branch+":refs/remotes/origin/"+branch)
+	git(dir, "checkout", "-q", "-B", branch, "origin/"+branch)
 	return dir
 }
 
