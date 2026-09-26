@@ -448,3 +448,91 @@ func (w *gitDiffWS) Diff(ctx context.Context, _, base string) (string, error) {
 	}
 	return (&Git{}).Diff(ctx, w.dir, base)
 }
+
+// alreadyDoneItem1 is item 1 finished already_done with evidence, as
+// the builder hands it in (mesh ADR 003 decision 1): no branch.
+func alreadyDoneItem1(t *testing.T, f *gatewaytest.Fake, ev *Evaluator) gateway.WorkItem {
+	t.Helper()
+	delete(f.WorkItems[item1], "branch")
+	f.WorkItems[item1]["outcome"] = gateway.OutcomeAlreadyDone
+	f.WorkItems[item1]["evidence"] = "https://github.com/acme/mesh/pull/41 (merged as 9f8e7d6) holds TestThing"
+	item, err := ev.GW.WorkItem(context.Background(), item1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// the platform's reads carry outcome and evidence once schema.json
+	// does (ADR 010); the node judges the row it is handed
+	item.Outcome, item.Evidence = gateway.OutcomeAlreadyDone, "https://github.com/acme/mesh/pull/41 (merged as 9f8e7d6) holds TestThing"
+	return *item
+}
+
+// An already_done item's evaluator is given the evidence and the
+// acceptance to check on main, on main's checkout with no branch, and
+// no diff; its pass is recorded with EvaluateWorkItem and nothing opens
+// a pull request: the platform marks the item merged.
+func TestEvaluateAlreadyDoneConfirmed(t *testing.T) {
+	f, ev, h, _ := secondFixture(t, "normal", "PR 41 is on main and go test ./... passes there.\n\nVERDICT: PASS", &fakeCodexH{})
+	ws := ev.WS.(*fakeWS)
+	if err := ev.Evaluate(context.Background(), alreadyDoneItem1(t, f, ev)); err != nil {
+		t.Fatal(err)
+	}
+	if len(ws.prepared) != 1 || ws.prepared[0].Branch != "" || ws.prepared[0].BaseRef != "main" {
+		t.Fatalf("prepared %+v: want main, no branch", ws.prepared)
+	}
+	for _, e := range ws.Events() {
+		if e == "diff" {
+			t.Fatal("an already_done item has no diff to compute")
+		}
+	}
+	if len(h.jobs) != 1 {
+		t.Fatalf("jobs: %d", len(h.jobs))
+	}
+	p := h.jobs[0].Prompt
+	for _, want := range []string{
+		"checking another session's claim that the item is already done",
+		"# The claim",
+		"https://github.com/acme/mesh/pull/41 (merged as 9f8e7d6) holds TestThing",
+		"## Acceptance (this item)\n\nthe test fails",
+		"`origin/main` checked out (detached) and its full history. There is no diff: check the claim on main.",
+		"every cited pull request is merged into main",
+		"every cited SHA is on it (`git merge-base --is-ancestor <sha> origin/main`)",
+		"run the acceptance check yourself on main",
+		"goes against an ADR", ".mesh/context/", harness.VerdictPass, harness.VerdictFail, "Change nothing",
+	} {
+		if !strings.Contains(p, want) {
+			t.Fatalf("prompt lacks %q:\n%s", want, p)
+		}
+	}
+	for _, not := range []string{"```diff", "+func TestThing", "origin/main...HEAD", "# The branch", "mesh/ship-it-1"} {
+		if strings.Contains(p, not) {
+			t.Fatalf("prompt has %q:\n%s", not, p)
+		}
+	}
+	calls := f.CallsNamed("evaluateWorkItem")
+	if len(calls) != 1 || calls[0].Input["passed"] != true || calls[0].Input["notes"] != "PR 41 is on main and go test ./... passes there.\n\n(evaluated on sonnet)" {
+		t.Fatalf("evaluate calls: %+v", calls)
+	}
+	if n := len(f.CallsNamed("openPullRequest")); n != 0 || len(ws.pushed) != 0 {
+		t.Fatalf("an already_done item opens no pull request: %d calls, pushed %v", n, ws.pushed)
+	}
+	if f.Item(item1)["status"] != "merged" {
+		t.Fatalf("a confirmed already_done item is merged: %v", f.Item(item1)["status"])
+	}
+}
+
+// A rejected claim goes back to ready through the ordinary failed
+// evaluation, the notes saying what is missing on main.
+func TestEvaluateAlreadyDoneRejected(t *testing.T) {
+	f, ev, h, _ := secondFixture(t, "normal", "PR 41 is on main but TestThing is not: the acceptance does not hold there.\n\nVERDICT: FAIL", &fakeCodexH{})
+	if err := ev.Evaluate(context.Background(), alreadyDoneItem1(t, f, ev)); err != nil {
+		t.Fatal(err)
+	}
+	calls := f.CallsNamed("evaluateWorkItem")
+	want := "PR 41 is on main but TestThing is not: the acceptance does not hold there.\n\n(evaluated on sonnet)"
+	if len(calls) != 1 || calls[0].Input["aggregateId"] != item1 || calls[0].Input["passed"] != false || calls[0].Input["notes"] != want || calls[0].Input["costCents"] != float64(125) {
+		t.Fatalf("evaluate calls: %+v", calls)
+	}
+	if f.Item(item1)["status"] != "ready" || len(h.jobs) != 1 {
+		t.Fatalf("a rejected claim readies the item: %v", f.Item(item1)["status"])
+	}
+}

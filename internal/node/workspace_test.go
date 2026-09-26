@@ -348,3 +348,33 @@ func TestDiffWithNoMergeBaseIsTheItemsProblem(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// An already_done item's evaluation has no branch: Prepare's base
+// checkout leaves a shallow single-branch clone on origin/main,
+// detached, with main's whole history to look a cited SHA up in.
+func TestCheckoutBaseHasTheHistory(t *testing.T) {
+	dir := mergeBaseFixtureBranch(t, false, "mesh/ship-it-1")
+	first, err := exec.Command("git", "-C", filepath.Join(filepath.Dir(dir), "seed"), "rev-list", "--max-parents=0", "main").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := (&Git{}).CheckoutBase(context.Background(), dir, "main"); err != nil {
+		t.Fatal(err)
+	}
+	git := func(args ...string) string {
+		out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).Output()
+		if err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	if got := git("rev-parse", "--is-shallow-repository"); got != "false" {
+		t.Fatalf("still shallow: %s", got)
+	}
+	if git("rev-parse", "HEAD") != git("rev-parse", "origin/main") || git("rev-parse", "--abbrev-ref", "HEAD") != "HEAD" {
+		t.Fatal("not on origin/main, detached")
+	}
+	if err := exec.Command("git", "-C", dir, "merge-base", "--is-ancestor", strings.TrimSpace(string(first)), "origin/main").Run(); err != nil {
+		t.Fatalf("main's first commit is not reachable: %v", err)
+	}
+}
