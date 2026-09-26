@@ -173,6 +173,10 @@ type Loop struct {
 	updating bool
 	restart  bool
 	updateWG sync.WaitGroup
+	// letGo cancels every context Context derived: the sessions detach
+	// and Run returns. exiting is set by Restart.
+	letGo   []context.CancelFunc
+	exiting bool
 	// failed is the last update that failed and updateErr its reason, as
 	// the heartbeat carries it.
 	failed    updateFailure
@@ -378,19 +382,22 @@ func (l *Loop) RunningIDs() []string {
 	return ids
 }
 
-// Run ticks until ctx is done, then waits for the items in flight (their
-// harnesses are killed by the same ctx) and returns ctx's error. Once
+// Run ticks until ctx is done, then waits for the items in flight and
+// returns ctx's error: a session that outlives the node (Job.Outlive)
+// detaches at once, anything else is killed by the same ctx. Once
 // Drain has been called it returns nil instead, as soon as no session of
 // any kind is left — items, evaluations, plans, research and rebases alike, since
 // only the items count against capacity and a node is rarely without
-// the others. A drain a self-update waits out ends in
-// ErrRestartForUpdate instead, once the new binary is in place.
+// the others. After Restart it returns ErrRestart at once, its sessions
+// left running for the next process to adopt; after a self-update has
+// put the new binary in place, ErrRestartForUpdate, the same way.
 func (l *Loop) Run(ctx context.Context) error {
 	l.mu.Lock()
 	if l.running == nil {
 		l.running = map[string]bool{}
 	}
 	l.mu.Unlock()
+	ctx = l.Context(ctx)
 	interval := l.Interval
 	if interval <= 0 {
 		interval = 30 * time.Second
@@ -401,8 +408,14 @@ func (l *Loop) Run(ctx context.Context) error {
 	defer t.Stop()
 	for {
 		if l.restartRequested() {
+			l.detach()
 			l.wg.Wait()
 			return ErrRestartForUpdate
+		}
+		if l.exitingNow() {
+			l.wg.Wait()
+			l.updateWG.Wait()
+			return ErrRestart
 		}
 		if l.drained() && !l.updatingNow() {
 			l.wg.Wait() // the last session's Release
@@ -413,12 +426,71 @@ func (l *Loop) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			l.wg.Wait()
 			l.updateWG.Wait()
+			if l.restartRequested() {
+				return ErrRestartForUpdate
+			}
+			if l.exitingNow() {
+				return ErrRestart
+			}
 			return ctx.Err()
 		case <-t.C:
 			l.Tick(ctx)
 		case <-wake:
 		}
 	}
+}
+
+// ErrRestart is what Run returns after Restart: `mesh node start` execs
+// its binary again (or its service starts it), and the new process
+// adopts the sessions this one left running (adr-009).
+var ErrRestart = errors.New("restart")
+
+// Context derives from parent a context Restart cancels. Run derives
+// its own; the node's other work on the loop's behalf — the sessions it
+// adopts before the first tick — runs in one too, so a restart lets go
+// of every session at once.
+func (l *Loop) Context(parent context.Context) context.Context {
+	ctx, cancel := context.WithCancel(parent)
+	l.mu.Lock()
+	l.letGo = append(l.letGo, cancel)
+	gone := l.exiting || l.restart
+	l.mu.Unlock()
+	if gone {
+		cancel()
+	}
+	return ctx
+}
+
+// Restart makes Run return ErrRestart at once — no drain, no wait for
+// any session: every context Context derived is cancelled, so each
+// session that outlives the node (Job.Outlive) detaches and runs on in
+// its own unit, for the next process to adopt (`mesh node upgrade`,
+// SIGHUP). A sandboxed or Codex session still ends with the node.
+func (l *Loop) Restart() {
+	l.mu.Lock()
+	l.exiting = true
+	n := l.sessions()
+	l.mu.Unlock()
+	l.logf("restarting: %d session(s) left running for the next process to adopt", n)
+	l.detach()
+	l.notify()
+}
+
+// detach cancels every context Context derived.
+func (l *Loop) detach() {
+	l.mu.Lock()
+	cancels := append([]context.CancelFunc(nil), l.letGo...)
+	l.mu.Unlock()
+	for _, cancel := range cancels {
+		cancel()
+	}
+}
+
+// exitingNow reports whether Restart has been called.
+func (l *Loop) exitingNow() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.exiting
 }
 
 // Drain stops the node taking anything new — items, evaluations, plans,

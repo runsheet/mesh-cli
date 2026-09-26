@@ -127,10 +127,11 @@ var StopGrace = 5 * time.Second
 
 // Detached runs the session as a process in a session (setsid) and
 // process group of its own, so a signal to the node's group or the
-// node's exit does not reach it. On a service manager that kills the
-// whole cgroup (systemd's default KillMode) it does not survive a
-// `systemctl stop`; SystemdScope does. launchd's AbandonProcessGroup
-// keeps it on macOS.
+// node's exit does not reach it. A service manager that kills the
+// whole cgroup (systemd's default KillMode=control-group) would kill it
+// on a `systemctl stop`: the node's unit says KillMode=process, and on
+// such a machine SystemdScope is used anyway. The LaunchAgent's
+// AbandonProcessGroup keeps it on macOS.
 type Detached struct{}
 
 // Name implements Unit.

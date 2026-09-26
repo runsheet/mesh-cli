@@ -117,14 +117,51 @@ func (p *priorityFake) lastHeartbeat() map[string]any {
 	return hb[len(hb)-1].Input
 }
 
-// (a) A desired version other than the running one is fetched, the node
-// drains — the running build finishes first — then the binary is swapped
-// and Run returns ErrRestartForUpdate.
-func TestSelfUpdateDrainsThenSwapsThenRestarts(t *testing.T) {
+// (a) A desired version other than the running one is fetched and its
+// image ensured, the binary is swapped with a build still running, and
+// Run returns ErrRestartForUpdate at once — no drain: the build's
+// context is cancelled, so its session detaches for the next process to
+// adopt (adr-009).
+func TestSelfUpdateSwapsAndExitsWithoutWaiting(t *testing.T) {
 	p := newPriorityFake(t)
 	p.addGoal(orgID, "g", "normal")
 	p.addItem(orgID, "g", "long-one", 1, false)
 	loop, u, release, _ := p.updateLoop("")
+	defer close(release)
+	// the build runs in the node's context, as every session Run starts
+	loop.Tick(loop.Context(context.Background()))
+	if loop.Running() != 1 {
+		t.Fatalf("running = %d, want 1", loop.Running())
+	}
+	p.Nodes[p.scopes[0].NodeID]["desiredVersion"] = "v1.1.0"
+	done := make(chan error, 1)
+	go func() { done <- loop.Run(context.Background()) }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrRestartForUpdate) {
+			t.Fatalf("Run = %v, want ErrRestartForUpdate", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run waited for the running build")
+	}
+	if loop.Draining() {
+		t.Fatal("the update drained")
+	}
+	want := []string{"confirm", "fetch v1.1.0", "image v1.1.0 running", "begin v1.0.0 v1.1.0", "swap mesh v1.1.0 running"}
+	if got := u.Events(); strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("events %q, want %q", got, want)
+	}
+}
+
+// A sandboxed node's sessions end with it (their pod is not yet their
+// unit): its update still drains — the running build finishes first —
+// then swaps and restarts.
+func TestSelfUpdateSandboxedDrainsThenSwapsThenRestarts(t *testing.T) {
+	p := newPriorityFake(t)
+	p.addGoal(orgID, "g", "normal")
+	p.addItem(orgID, "g", "long-one", 1, false)
+	loop, u, release, _ := p.updateLoop("")
+	loop.Sandbox = &gateway.SandboxInfo{Mode: SandboxOn}
 	loop.Tick(context.Background())
 	if loop.Running() != 1 {
 		t.Fatalf("running = %d, want 1", loop.Running())
@@ -209,7 +246,8 @@ func TestSelfUpdateEmptyDesiredDoesNothing(t *testing.T) {
 	p.addItem(orgID, "g", "one", 1, false)
 	loop, u, release, _ := p.updateLoop("")
 	defer close(release)
-	loop.Tick(context.Background())
+	// the build runs in the node's context, as every session Run starts
+	loop.Tick(loop.Context(context.Background()))
 	loop.updateWG.Wait()
 	if got := u.Events(); strings.Join(got, "|") != "confirm" || loop.Draining() || loop.Running() != 1 {
 		t.Fatalf("events %q, draining %v, running %d", got, loop.Draining(), loop.Running())
