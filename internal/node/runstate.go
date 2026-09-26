@@ -1,6 +1,7 @@
 package node
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -10,10 +11,10 @@ import (
 )
 
 // RunState is what a running node leaves beside its config for the
-// other commands on the machine: its pid (`mesh node drain` signals it)
-// and, once it drains, a marker (`mesh node status` shows it). Both
-// live only as long as the process: the heartbeat carries neither, so
-// the draining state is known on this machine alone.
+// other commands on the machine: its pid (`mesh node drain` signals it),
+// once it drains a marker, and when its capacity is a range the
+// capacity in force (`mesh node status` shows both). All live only as
+// long as the process.
 type RunState struct {
 	// Dir is where the files live: ~/.mesh.
 	Dir string
@@ -34,6 +35,9 @@ func (s RunState) PIDPath() string { return filepath.Join(s.Dir, "node.pid") }
 // DrainingPath is the draining marker: node.draining.
 func (s RunState) DrainingPath() string { return filepath.Join(s.Dir, "node.draining") }
 
+// ScalingPath is a ranged node's capacity in force: node.scaling.
+func (s RunState) ScalingPath() string { return filepath.Join(s.Dir, "node.scaling") }
+
 // Started records pid as the running node, clearing a marker a node
 // that died draining left behind.
 func (s RunState) Started(pid int) error {
@@ -41,6 +45,7 @@ func (s RunState) Started(pid int) error {
 		return err
 	}
 	_ = os.Remove(s.DrainingPath())
+	_ = os.Remove(s.ScalingPath())
 	return os.WriteFile(s.PIDPath(), []byte(strconv.Itoa(pid)+"\n"), 0o600)
 }
 
@@ -57,6 +62,41 @@ func (s RunState) Stopped(pid int) {
 		_ = os.Remove(s.PIDPath())
 	}
 	_ = os.Remove(s.DrainingPath())
+	_ = os.Remove(s.ScalingPath())
+}
+
+// WriteScaling leaves a ranged node's capacity in force for `mesh node
+// status`; a fixed one (ranged false) removes it.
+func (s RunState) WriteScaling(sc Scaling, ranged bool) error {
+	if !ranged {
+		if err := os.Remove(s.ScalingPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
+	data, err := json.Marshal(sc)
+	if err != nil {
+		return err
+	}
+	tmp := s.ScalingPath() + ".tmp"
+	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, s.ScalingPath())
+}
+
+// Scaling reads what WriteScaling left: false when the node's capacity
+// is fixed, or nothing readable is there.
+func (s RunState) Scaling() (Scaling, bool) {
+	data, err := os.ReadFile(s.ScalingPath())
+	if err != nil {
+		return Scaling{}, false
+	}
+	var sc Scaling
+	if json.Unmarshal(data, &sc) != nil || sc.Max <= 0 {
+		return Scaling{}, false
+	}
+	return sc, true
 }
 
 // ErrNoNode is PID's answer when no pidfile is there.

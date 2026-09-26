@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -129,9 +130,8 @@ func TestAuthorizedWorkspaceReachesOnlyItsRepo(t *testing.T) {
 		t.Fatal("the token leaked into the global git config")
 	}
 	os.WriteFile(filepath.Join(dir, "b"), []byte("b"), 0o644)
-	if err := g.Commit(ctx, dir, []string{"b"}, "b"); err != nil {
-		t.Fatal(err)
-	}
+	must(dir, "add", "b")
+	must(dir, "commit", "--quiet", "-m", "b")
 	sha, err := g.Push(ctx, dir, spec.Branch)
 	if err != nil {
 		t.Fatalf("push to the item's own repo: %v", err)
@@ -208,5 +208,143 @@ func TestFetchCarriesBaseRefHistory(t *testing.T) {
 	}
 	if log := git(dir, "log", "--format=%s"); log != "item 3 merged\nitem 2 merged\nitem 1 merged\nfirst" {
 		t.Fatalf("log:\n%s", log)
+	}
+}
+
+// PushedHead reads back what origin has for the branch after a fetch,
+// and refuses a branch that does not contain the base: a branch pushed
+// without the rebase, or not pushed at all.
+func TestPushedHeadReadsOriginBack(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	root := t.TempDir()
+	origin := filepath.Join(root, "origin.git")
+	git := func(dir string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	commit := func(dir, name string) {
+		os.WriteFile(filepath.Join(dir, name), []byte(name), 0o644)
+		git(dir, "add", name)
+		git(dir, "commit", "-q", "-m", name)
+	}
+	git(root, "init", "--bare", "-b", "main", origin)
+	dir := filepath.Join(root, "ws")
+	git(root, "clone", "-q", origin, dir)
+	commit(dir, "a")
+	git(dir, "push", "-q", "origin", "HEAD:main")
+	git(dir, "checkout", "-q", "-b", "mesh/g-1")
+	commit(dir, "b")
+	git(dir, "push", "-q", "origin", "mesh/g-1")
+	// main moves on: the branch is behind it
+	other := filepath.Join(root, "other")
+	git(root, "clone", "-q", origin, other)
+	commit(other, "c")
+	git(other, "push", "-q", "origin", "HEAD:main")
+
+	g := &Git{}
+	ctx := context.Background()
+	if _, err := g.PushedHead(ctx, dir, "mesh/g-1", "main"); err == nil || !strings.Contains(err.Error(), "does not contain origin/main") {
+		t.Fatalf("a branch not rebased: %v", err)
+	}
+	if _, err := g.PushedHead(ctx, dir, "mesh/g-2", "main"); err == nil {
+		t.Fatal("a branch origin does not have")
+	}
+	git(dir, "fetch", "-q", "origin")
+	git(dir, "rebase", "-q", "origin/main")
+	git(dir, "push", "-q", "--force-with-lease", "origin", "mesh/g-1")
+	want := git(dir, "rev-parse", "HEAD")
+	git(dir, "reset", "-q", "--hard", "HEAD~1") // the local checkout is not what is read
+	if head, err := g.PushedHead(ctx, dir, "mesh/g-1", "main"); err != nil || head != want {
+		t.Fatalf("pushed head = %s, %v; want %s", head, err, want)
+	}
+}
+
+// mergeBaseFixture builds an origin whose main has 40 commits and clones it
+// depth 1, single-branch; the item branch is pushed to origin, forked
+// well back from main's tip (or an orphan), and checked out as Prepare does.
+func mergeBaseFixture(t *testing.T, orphan bool) (dir string) {
+	t.Helper()
+	return mergeBaseFixtureBranch(t, orphan, "mesh/g-1")
+}
+
+// mergeBaseFixtureBranch is mergeBaseFixture with the item branch named.
+func mergeBaseFixtureBranch(t *testing.T, orphan bool, branch string) (dir string) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	root := t.TempDir()
+	origin := filepath.Join(root, "origin.git")
+	git := func(dir string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	git(root, "init", "-q", "--bare", "-b", "main", origin)
+	seed := filepath.Join(root, "seed")
+	git(root, "clone", "-q", origin, seed)
+	for i := 0; i < 40; i++ {
+		os.WriteFile(filepath.Join(seed, "n"), []byte(strings.Repeat("x", i+1)), 0o644)
+		git(seed, "add", "n")
+		git(seed, "commit", "-q", "-m", "c")
+		if i == 5 && !orphan {
+			git(seed, "checkout", "-q", "-b", branch)
+			os.WriteFile(filepath.Join(seed, "feature"), []byte("the branch's change\n"), 0o644)
+			git(seed, "add", "feature")
+			git(seed, "commit", "-q", "-m", "feature")
+			git(seed, "checkout", "-q", "main")
+		}
+	}
+	if orphan {
+		git(seed, "checkout", "-q", "--orphan", branch)
+		os.WriteFile(filepath.Join(seed, "feature"), []byte("the branch's change\n"), 0o644)
+		git(seed, "add", "feature")
+		git(seed, "commit", "-q", "-m", "feature")
+		git(seed, "checkout", "-q", "main")
+	}
+	git(seed, "push", "-q", "origin", "main", branch)
+
+	dir = filepath.Join(root, "ws")
+	git(root, "clone", "-q", "--no-local", "--depth", "1", "--single-branch", "--branch", "main", "file://"+origin, dir)
+	git(dir, "fetch", "-q", "origin", "+refs/heads/"+branch+":refs/remotes/origin/"+branch)
+	git(dir, "checkout", "-q", "-B", branch, "origin/"+branch)
+	return dir
+}
+
+func TestDiffDeepensAShallowCheckoutToTheMergeBase(t *testing.T) {
+	dir := mergeBaseFixture(t, false)
+	out, err := (&Git{}).Diff(context.Background(), dir, "main")
+	if err != nil {
+		t.Fatalf("diff: %v", err)
+	}
+	if !strings.Contains(out, "feature") || !strings.Contains(out, "the branch's change") {
+		t.Fatalf("diff lacks the branch's change:\n%s", out)
+	}
+}
+
+func TestDiffWithNoMergeBaseIsTheItemsProblem(t *testing.T) {
+	dir := mergeBaseFixture(t, true)
+	_, err := (&Git{}).Diff(context.Background(), dir, "main")
+	var nm *NoMergeBaseError
+	if !errors.As(err, &nm) {
+		t.Fatalf("err = %v, want *NoMergeBaseError", err)
+	}
+	if nm.Base != "main" || nm.Branch != "mesh/g-1" || !strings.Contains(err.Error(), "shares no history with origin/main") {
+		t.Fatalf("err = %v", err)
 	}
 }

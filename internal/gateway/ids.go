@@ -22,3 +22,10 @@ func GoalID(orgID uuid.UUID, slug string) uuid.UUID {
 func ProjectID(orgID uuid.UUID, slug string) uuid.UUID {
 	return uuid.NewSHA1(idNamespace, []byte("project:"+orgID.String()+":"+slug))
 }
+
+// AgentID is the Agent aggregate id for one definition of a slug in one
+// scope: the platform's defaults (both ids uuid.Nil), an org's (the org
+// alone) or a Prologue project's (both).
+func AgentID(orgID, projectID uuid.UUID, slug string) uuid.UUID {
+	return uuid.NewSHA1(idNamespace, []byte("agent:"+orgID.String()+":"+projectID.String()+":"+slug))
+}

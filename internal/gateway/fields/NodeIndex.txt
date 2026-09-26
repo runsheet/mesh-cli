@@ -1,0 +1,14 @@
+# The NodeIndex fields the gateway client selects: one name per line, sorted.
+# A trailing ? marks a field an older platform may lack; the client asks
+# for those first and drops them once the gateway refuses one.
+# Edit, then run `go generate ./internal/gateway/...` (README, "Gateway
+# fields are generated").
+capacity
+desiredVersion?
+id
+lastSeenAt
+name
+running
+slug
+status
+version

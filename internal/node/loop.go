@@ -2,13 +2,19 @@ package node
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
+	"projectmesh.io/mesh-cli/internal/harness"
+	"projectmesh.io/mesh-cli/internal/sandbox"
+	"projectmesh.io/mesh-cli/internal/tools"
 )
 
 // Loop is trd §3: every Interval, heartbeat; list the orgs' ready items;
@@ -45,31 +51,146 @@ type Loop struct {
 	// ordinary answer. Optional; it does not count against capacity — it
 	// competes for the machine, not for the work.
 	Research func(ctx context.Context, direction gateway.Direction, project gateway.Project, scope Scope)
+	// Rebase runs a session of kind rebase on an item whose rebase this
+	// node has claimed (runsheet ADR 008) and returns when the rebase is
+	// finished or failed. The claim is taken here, before it runs; another
+	// node's claim is a refusal, the ordinary answer. Optional; like an
+	// evaluation it does not count against capacity.
+	Rebase func(ctx context.Context, item gateway.WorkItem)
+	// Scaled is told each tick, after the scaler, the capacity in force
+	// and its range, and whether node.yaml's capacity is a range at all
+	// (optional: `mesh node start` leaves it in ~/.mesh for `mesh node
+	// status`).
+	Scaled func(s Scaling, ranged bool)
 	// AfterTick runs at the end of every tick (optional).
 	AfterTick func(ctx context.Context)
-	// Reload is asked at the top of every tick for the capacity and the
-	// orgs served as they stand now (node.yaml and MyOrgs), so neither
-	// needs a restart (optional; Reloader builds it). A capacity of 0 or
-	// nil scopes keep what the loop has; an error is logged, and what
-	// came back with it is still taken.
-	Reload func(ctx context.Context) (capacity int, scopes Scopes, err error)
+	// Reload is asked at the top of every tick for the capacity, the
+	// limits thresholds and the orgs served as they stand now (node.yaml
+	// and MyOrgs), so none needs a restart (optional; Reloader builds
+	// it). A capacity of 0, nil limits or nil scopes keep what the loop
+	// has; an error is logged, and what came back with it is still taken.
+	Reload func(ctx context.Context) (Reloaded, error)
+	// Limits holds the latest Claude plan standing of each account, fed
+	// by every session (ObserveLimits); the heartbeat carries it and the
+	// loop paces by it. Nil until the first tick makes one.
+	Limits *Limits
+	// Now is the clock pacing and scaling read (time.Now when nil).
+	Now func() time.Time
+	// Windows are the plan's windows the scaler paces a ranged capacity
+	// by (adr-004); nil reads them from Limits, the highest utilization
+	// across accounts per window.
+	Windows WindowSource
+	// Machine is the host the scaler caps a ranged capacity by; nil
+	// imposes no cap (HostMachine is this one).
+	Machine MachineProbe
+	// Update updates the node's own binary to the version the platform
+	// asks for (selfUpdate); nil never updates.
+	Update Updater
+	// Image makes the node image of a version present on this machine
+	// (SandboxConfig.EnsureImage, mesh-specs ADR 007): a self-update
+	// calls it once the release is verified and before it drains, and a
+	// failure is the update's error. nil ensures none.
+	Image func(ctx context.Context, version string) (sandbox.Image, error)
+	// Ledger is what each account has spent today and this month
+	// (adr-005-capacity-across-accounts), fed by every session
+	// (ObserveSpend); the accounts scaler and the spending order read
+	// it. Nil until the first use makes one in memory.
+	Ledger *Ledger
+	// LookPath finds a program on the node's PATH (exec.LookPath): every
+	// tick probes with it the tool runtimes and agent adapters the node
+	// has (tools.ProbeRuntimes, ProbeAdapters), and the heartbeat carries
+	// them, so one installed while the node runs is reported without a
+	// restart. Nil probes nothing and reports neither.
+	LookPath func(file string) (string, error)
+	// Declines are the items a session here declined for a required tool
+	// whose runtime the node lacks (trd §3 Tools): neither claimed nor
+	// evaluated again while the runtimes are unchanged. The build and
+	// evaluate sessions record into the same one; nil declines nothing.
+	Declines *Declines
+	// Sandbox is the heartbeat's `sandbox` — the mode, runtime and image
+	// sessions run in (OpenSandbox, ADR 007); nil sends none.
+	Sandbox *gateway.SandboxInfo
+	// AdoptSession follows a session a node process before this one
+	// started to its end and runs what its kind runs after a session
+	// (AdoptSessions, mesh-cli ADR 009; AdoptWith is the node's). Nil
+	// adopts nothing.
+	AdoptSession func(ctx context.Context, s FoundSession)
 
-	mu          sync.Mutex
+	mu sync.Mutex
+	// condition is the node's latest condition that is not a failure of
+	// its own — a session its sandbox's limits killed — and conditionAt
+	// when it was noted: the heartbeat's reason for ConditionHold.
+	condition   string
+	conditionAt time.Time
 	running     map[string]bool
+	// runningOn is the account each running item runs on, by item: the
+	// slot-minutes the accounts scaler counts per account, and the slots
+	// the spending order sees taken.
+	runningOn   map[string]string
 	evaluating  map[string]bool
 	planning    map[string]bool
 	researching map[string]bool
-	wg          sync.WaitGroup
+	rebasing    map[string]bool
+	// adopted are the sessions taken over from the process before this
+	// one that have not yet ended, by subject: the heartbeat's `adopted`.
+	// adoptedIDs are every subject adopted this run, so Adopt never runs
+	// one of them again from the start.
+	adopted    map[string]gateway.AdoptedSession
+	adoptedIDs map[string]bool
+	wg         sync.WaitGroup
 	// draining is set by Drain: nothing new is started, and Run returns
 	// once every session of any kind has ended.
 	draining bool
 	// wake tells Run that a session ended or a drain began.
 	wake chan struct{}
-	// capacity is the one in force: Cfg.Capacity until Reload says otherwise.
+	// capacity is the one in force: a fixed node's number, or where a
+	// ranged node's scaler has stepped it to (0 until the first tick).
 	capacity int
+	// capRange is node.yaml's capacity as last read: Cfg.Capacity until
+	// Reload says otherwise (zero).
+	capRange Capacity
+	// scaling is the scaler's state while capRange is a range.
+	scaling scaleState
+	// limits are the thresholds in force: Cfg.Limits until Reload says
+	// otherwise (limitsSet).
+	limits    LimitsConfig
+	limitsSet bool
+	// spending is node.yaml's accounts and budgets in force: Cfg's until
+	// Reload says otherwise (spendingSet).
+	spending    Spending
+	spendingSet bool
+	// paced is the pacing mode last logged, so a crossing is logged once.
+	paced paceMode
+	// waiting counts, by kind, the work this tick left unclaimed because
+	// no account had headroom for it: logged once at the tick's end.
+	waiting map[string]int
 	// tickGoals holds each org's goals as read this tick, so the claim,
 	// the planner and the director share one GoalIndex read per org.
 	tickGoals map[string]goalsRead
+	// updating is set while a self-update runs; restart once its binary
+	// is in place, when Run returns ErrRestartForUpdate. updateWG waits
+	// for the update to end (tests).
+	updating bool
+	restart  bool
+	updateWG sync.WaitGroup
+	// letGo cancels every context Context derived: the sessions detach
+	// and Run returns. exiting is set by Restart.
+	letGo   []context.CancelFunc
+	exiting bool
+	// failed is the last update that failed and updateErr its reason, as
+	// the heartbeat carries it.
+	failed    updateFailure
+	updateErr string
+	// confirmed is set once the first heartbeat has gone through.
+	confirmed bool
+	// desiredUnsupported is set once the platform turned out not to
+	// know the desired version (logged once).
+	desiredUnsupported bool
+	// runtimes and adapters are what the last probe found; probed is
+	// set by the first.
+	runtimes []string
+	adapters []string
+	probed   bool
 }
 
 type goalsRead struct {
@@ -142,6 +263,19 @@ func evaluateOrder(items []readyItem) {
 	})
 }
 
+// rebaseOrder sorts the items whose rebase is requested from every org
+// by their goal's priority, then seq: the order they are claimed in,
+// as the rest of the node's work is.
+func rebaseOrder(items []readyItem) {
+	sort.SliceStable(items, func(i, j int) bool {
+		a, b := items[i], items[j]
+		if a.rank != b.rank {
+			return a.rank < b.rank
+		}
+		return a.item.Seq < b.item.Seq
+	})
+}
+
 // planningGoal is a goal in planning with the scope it was listed in.
 type planningGoal struct {
 	goal  gateway.Goal
@@ -159,8 +293,12 @@ func planOrder(goals []planningGoal) {
 
 // claimReady lists every served org's ready items, joins each to its
 // goal's priority (one GoalIndex read per org, none for an org with
-// nothing ready) and claims them in claimOrder until free runs out.
-func (l *Loop) claimReady(ctx context.Context, free int) {
+// nothing ready) and claims them in claimOrder until free runs out, each
+// on the account chosen for its priority; items of a goal ranked past
+// maxRank are left, and normal and low items take no more than
+// normalFree of the free slots. An item no account has headroom for is
+// not claimed: it stays ready for a later tick.
+func (l *Loop) claimReady(ctx context.Context, free, normalFree, maxRank int) {
 	var ready []readyItem
 	for _, sc := range l.Scopes {
 		items, err := l.GW.ReadyWorkItems(ctx, sc.ID)
@@ -173,7 +311,9 @@ func (l *Loop) claimReady(ctx context.Context, free int) {
 		}
 		rank := l.goalRanks(ctx, sc, "claimed")
 		for _, it := range items {
-			ready = append(ready, readyItem{item: it, scope: sc, rank: rank(it.GoalID)})
+			if r := rank(it.GoalID); r <= maxRank {
+				ready = append(ready, readyItem{item: it, scope: sc, rank: r})
+			}
 		}
 	}
 	claimOrder(ready)
@@ -188,6 +328,17 @@ func (l *Loop) claimReady(ctx context.Context, free int) {
 		if already {
 			continue
 		}
+		if runtimes, _ := l.Runtimes(); l.Declines.Holds(item.ID, runtimes, time.Now()) {
+			continue // a required tool needs a runtime still missing here
+		}
+		pressing := r.rank <= gateway.PriorityRank("high")
+		if !pressing && normalFree <= 0 {
+			continue
+		}
+		actx, ok := l.accountFor(ctx, priorityName(r.rank), true, "item")
+		if !ok {
+			continue
+		}
 		if err := l.GW.ClaimWorkItem(ctx, item.ID, sc.NodeID, l.Harness); err != nil {
 			if gateway.IsRefusal(err) {
 				l.logf("%s item %d %q: not ours (%v)", sc.Login, item.Seq, item.Title, err)
@@ -197,8 +348,12 @@ func (l *Loop) claimReady(ctx context.Context, free int) {
 			continue
 		}
 		free--
+		if !pressing {
+			normalFree--
+		}
+		normalFree = min(normalFree, free)
 		l.logf("%s: claimed item %d %q", sc.Login, item.Seq, item.Title)
-		l.start(ctx, item)
+		l.start(actx, item)
 	}
 }
 
@@ -208,7 +363,8 @@ func (l *Loop) logf(format string, args ...any) {
 	}
 }
 
-// Running is the number of items this node is running.
+// Running is the number of items this node is building: what counts
+// against capacity. Evaluations, plans, research and rebases do not.
 func (l *Loop) Running() int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -226,18 +382,22 @@ func (l *Loop) RunningIDs() []string {
 	return ids
 }
 
-// Run ticks until ctx is done, then waits for the items in flight (their
-// harnesses are killed by the same ctx) and returns ctx's error. Once
+// Run ticks until ctx is done, then waits for the items in flight and
+// returns ctx's error: a session that outlives the node (Job.Outlive)
+// detaches at once, anything else is killed by the same ctx. Once
 // Drain has been called it returns nil instead, as soon as no session of
-// any kind is left — items, evaluations, plans and research alike, since
+// any kind is left — items, evaluations, plans, research and rebases alike, since
 // only the items count against capacity and a node is rarely without
-// the others.
+// the others. After Restart it returns ErrRestart at once, its sessions
+// left running for the next process to adopt; after a self-update has
+// put the new binary in place, ErrRestartForUpdate, the same way.
 func (l *Loop) Run(ctx context.Context) error {
 	l.mu.Lock()
 	if l.running == nil {
 		l.running = map[string]bool{}
 	}
 	l.mu.Unlock()
+	ctx = l.Context(ctx)
 	interval := l.Interval
 	if interval <= 0 {
 		interval = 30 * time.Second
@@ -247,7 +407,17 @@ func (l *Loop) Run(ctx context.Context) error {
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
-		if l.drained() {
+		if l.restartRequested() {
+			l.detach()
+			l.wg.Wait()
+			return ErrRestartForUpdate
+		}
+		if l.exitingNow() {
+			l.wg.Wait()
+			l.updateWG.Wait()
+			return ErrRestart
+		}
+		if l.drained() && !l.updatingNow() {
 			l.wg.Wait() // the last session's Release
 			l.logf("drained: every session has ended")
 			return nil
@@ -255,6 +425,13 @@ func (l *Loop) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			l.wg.Wait()
+			l.updateWG.Wait()
+			if l.restartRequested() {
+				return ErrRestartForUpdate
+			}
+			if l.exitingNow() {
+				return ErrRestart
+			}
 			return ctx.Err()
 		case <-t.C:
 			l.Tick(ctx)
@@ -263,8 +440,61 @@ func (l *Loop) Run(ctx context.Context) error {
 	}
 }
 
+// ErrRestart is what Run returns after Restart: `mesh node start` execs
+// its binary again (or its service starts it), and the new process
+// adopts the sessions this one left running (adr-009).
+var ErrRestart = errors.New("restart")
+
+// Context derives from parent a context Restart cancels. Run derives
+// its own; the node's other work on the loop's behalf — the sessions it
+// adopts before the first tick — runs in one too, so a restart lets go
+// of every session at once.
+func (l *Loop) Context(parent context.Context) context.Context {
+	ctx, cancel := context.WithCancel(parent)
+	l.mu.Lock()
+	l.letGo = append(l.letGo, cancel)
+	gone := l.exiting || l.restart
+	l.mu.Unlock()
+	if gone {
+		cancel()
+	}
+	return ctx
+}
+
+// Restart makes Run return ErrRestart at once — no drain, no wait for
+// any session: every context Context derived is cancelled, so each
+// session that outlives the node (Job.Outlive) detaches and runs on in
+// its own unit, for the next process to adopt (`mesh node upgrade`,
+// SIGHUP). A sandboxed or Codex session still ends with the node.
+func (l *Loop) Restart() {
+	l.mu.Lock()
+	l.exiting = true
+	n := l.sessions()
+	l.mu.Unlock()
+	l.logf("restarting: %d session(s) left running for the next process to adopt", n)
+	l.detach()
+	l.notify()
+}
+
+// detach cancels every context Context derived.
+func (l *Loop) detach() {
+	l.mu.Lock()
+	cancels := append([]context.CancelFunc(nil), l.letGo...)
+	l.mu.Unlock()
+	for _, cancel := range cancels {
+		cancel()
+	}
+}
+
+// exitingNow reports whether Restart has been called.
+func (l *Loop) exitingNow() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.exiting
+}
+
 // Drain stops the node taking anything new — items, evaluations, plans,
-// research — and lets Run return once what is running has ended.
+// research, rebases — and lets Run return once what is running has ended.
 // Calling it again does nothing.
 func (l *Loop) Drain() {
 	l.mu.Lock()
@@ -273,7 +503,7 @@ func (l *Loop) Drain() {
 		return
 	}
 	l.draining = true
-	n := len(l.running) + len(l.evaluating) + len(l.planning) + len(l.researching)
+	n := l.sessions()
 	l.mu.Unlock()
 	l.logf("draining: nothing new is claimed; %d session(s) to finish", n)
 	l.notify()
@@ -290,7 +520,12 @@ func (l *Loop) Draining() bool {
 func (l *Loop) drained() bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return l.draining && len(l.running)+len(l.evaluating)+len(l.planning)+len(l.researching) == 0
+	return l.draining && l.sessions() == 0
+}
+
+// sessions counts every session in flight, of any kind; l.mu is held.
+func (l *Loop) sessions() int {
+	return len(l.running) + len(l.evaluating) + len(l.planning) + len(l.researching) + len(l.rebasing)
 }
 
 func (l *Loop) wakeup() chan struct{} {
@@ -310,10 +545,41 @@ func (l *Loop) notify() {
 	}
 }
 
-// Tick is one round: heartbeat, list, claim, dispatch. A draining node
-// only heartbeats (and runs AfterTick): it claims no item, plan or
-// research and starts no evaluation — an item it holds for evaluation
-// waits in evaluating for the node that comes up after it.
+// ConditionHold is how long a noted condition stays the heartbeat's
+// reason.
+const ConditionHold = time.Hour
+
+// NoteCondition makes reason the heartbeat's until ConditionHold passes
+// or another is noted: a session killed by its sandbox's limits is the
+// node's condition, shown on the Nodes page while the node stays online
+// (trd §1 Node, `sandbox`).
+func (l *Loop) NoteCondition(reason string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.condition, l.conditionAt = reason, time.Now()
+}
+
+// Condition is the heartbeat's reason now, "" when none holds.
+func (l *Loop) Condition() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.condition == "" || time.Since(l.conditionAt) >= ConditionHold {
+		return ""
+	}
+	return l.condition
+}
+
+// Tick is one round: heartbeat, self-update, list, claim, dispatch. A draining node
+// only heartbeats — with draining set — (and runs AfterTick): it claims no
+// item, plan, research or rebase and starts no evaluation — an item it holds for evaluation
+// waits in evaluating for the node that comes up after it. Every
+// heartbeat carries the plan limits last read, and every start runs on
+// the account ChooseAccount picks by them: an account paced near its
+// five-hour window's limit takes only urgent and high work, one stopped
+// near either window's end takes nothing, and work no account has room
+// for is not claimed — like a drain for new starts, but the process runs
+// on. The node's own mode (nodePace) is logged at each crossing and, when
+// paced, halves the capacity.
 func (l *Loop) Tick(ctx context.Context) {
 	l.mu.Lock()
 	if l.running == nil {
@@ -322,32 +588,264 @@ func (l *Loop) Tick(ctx context.Context) {
 	l.mu.Unlock()
 	l.tickGoals = map[string]goalsRead{}
 	l.reload(ctx)
+	l.probe()
+	l.scale()
+	runtimes, adapters := l.Runtimes()
+	extras := gateway.HeartbeatExtras{Draining: l.Draining(), UpdateError: l.UpdateError(), Limits: l.limitsStore().Heartbeat(), Runtimes: runtimes, Adapters: adapters, Sandbox: l.Sandbox, Reason: l.Condition(), Adopted: l.Adopted()}
+	scaling, ranged := l.Scaling()
+	extras.Scaling = l.heartbeatScaling(scaling, ranged)
+	if l.Scaled != nil {
+		l.Scaled(scaling, ranged)
+	}
+	beat := false
 	for _, sc := range l.Scopes {
-		if err := l.GW.HeartbeatNode(ctx, sc.NodeID, l.Version, l.Running()); err != nil {
+		if err := l.GW.HeartbeatNode(ctx, sc.NodeID, l.Version, l.Running(), extras); err != nil {
 			l.logf("heartbeat %s: %v", sc.Login, err)
+		} else {
+			beat = true
 		}
 	}
+	if beat {
+		l.confirmUpdate()
+	}
+	l.selfUpdate(ctx)
+	p := l.pacing()
 	if !l.Draining() {
+		// every start below first picks its account (accountFor): one
+		// with no account to run on is left for a later tick
+		l.waiting = map[string]int{}
 		l.evaluateHeld(ctx)
+		l.rebaseRequested(ctx)
 		l.planRequested(ctx)
 		l.researchDue(ctx)
-		if free := l.Capacity() - l.Running(); free > 0 {
-			l.claimReady(ctx, free)
+		free := l.Capacity() - l.Running()
+		if p.mode == pacePaced {
+			free = pacedFree(free, l.Capacity(), l.Running())
 		}
+		// a ranged node at its min builds only urgent and high goals
+		claimRank := gateway.PriorityRank("low")
+		if l.atMin() {
+			claimRank = min(claimRank, gateway.PriorityRank("high"))
+		}
+		// the urgent-only slots (the reserve at the end of an api key's
+		// day) are not for normal and low work
+		normalFree := min(free, l.Capacity()-l.urgentOnly()-l.Running())
+		if free > 0 {
+			l.claimReady(ctx, free, normalFree, claimRank)
+		}
+		l.logWaiting()
 	}
 	if l.AfterTick != nil {
 		l.AfterTick(ctx)
 	}
 }
 
-// Capacity is the number of items this node runs at once, as last read.
+// drainPoll is how often DrainAndWait looks for the last session to end.
+var drainPoll = 50 * time.Millisecond
+
+// errResumed is DrainAndWait's answer when Resume ends the drain first.
+var errResumed = errors.New("drain resumed")
+
+// DrainAndWait drains the loop and returns once no session of any kind
+// is left, with ctx.Err() when ctx is done first, or with an error when
+// Resume ends the drain first. It is the drain a self-update waits on
+// before it swaps the binary; Run still returns on its own meanwhile.
+func (l *Loop) DrainAndWait(ctx context.Context) error {
+	l.Drain()
+	t := time.NewTicker(drainPoll)
+	defer t.Stop()
+	for {
+		if l.drained() {
+			return nil
+		}
+		if !l.Draining() {
+			return errResumed
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-t.C:
+		}
+	}
+}
+
+// Resume undoes a drain that has not yet ended Run: the next tick claims
+// again, and the heartbeat stops reporting draining.
+func (l *Loop) Resume() {
+	l.mu.Lock()
+	was := l.draining
+	l.draining = false
+	l.mu.Unlock()
+	if was {
+		l.logf("resumed: claiming again")
+	}
+}
+
+// Capacity is the number of items this node runs at once: the capacity
+// in force, as last read or scaled. Before the first tick a ranged node
+// has its min; once scaling, a busy machine may hold it below (even 0).
 func (l *Loop) Capacity() int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.capacity > 0 {
+	if l.capacity > 0 || l.scaling.scaler != nil {
 		return l.capacity
 	}
-	return l.Cfg.Capacity
+	if r := l.rangeLocked(); r.IsRange() {
+		return r.Min
+	}
+	return l.rangeLocked().Max
+}
+
+// Thresholds are the limits thresholds in force, as last read.
+func (l *Loop) Thresholds() LimitsConfig {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.limitsSet {
+		return l.limits.Thresholds()
+	}
+	return l.Cfg.Limits.Thresholds()
+}
+
+// limitsStore is Limits, made on first use.
+func (l *Loop) limitsStore() *Limits {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.Limits == nil {
+		l.Limits = &Limits{}
+	}
+	return l.Limits
+}
+
+func (l *Loop) now() time.Time {
+	if l.Now != nil {
+		return l.Now()
+	}
+	return time.Now()
+}
+
+// pacing decides this tick's mode from the readings and logs a
+// crossing into another mode — once, not every tick.
+func (l *Loop) pacing() pacing {
+	accounts, readings := l.accounts()
+	p := nodePace(l.now(), accounts, readings, l.Thresholds())
+	l.mu.Lock()
+	was := l.paced
+	l.paced = p.mode
+	n := l.sessions()
+	l.mu.Unlock()
+	if p.mode == was {
+		return p
+	}
+	switch p.mode {
+	case pacePaced:
+		l.logf("limits: paced until %s: %s — only urgent and high goals are claimed and planned, at most %d item(s) at once, and no research", p.resumeAt.UTC().Format(time.RFC3339), p.why, max(1, l.Capacity()/2))
+	case paceStopped:
+		also := ""
+		for _, a := range accounts {
+			if a.Kind == AccountAPI {
+				also = " on a subscription (an api account takes urgent and high work, and work that waits)"
+				break
+			}
+		}
+		l.logf("limits: stopped until %s: %s — nothing new is started%s; %d session(s) to finish", p.resumeAt.UTC().Format(time.RFC3339), p.why, also, n)
+	default:
+		l.logf("limits: back to normal (was %s)", was)
+	}
+	return p
+}
+
+// accounts are the accounts the node chooses among and their latest
+// readings by label. With none configured it is the one implicit
+// account, the operator's own login, judged by its strictest reading.
+func (l *Loop) accounts() ([]AccountConfig, map[string]harness.RateLimit) {
+	readings := l.limitsStore().Readings()
+	if accounts := l.nodeAccounts(); len(accounts) > 0 {
+		return accounts, readings
+	}
+	own := []AccountConfig{{Label: DefaultAccount, Kind: AccountSubscription}}
+	if r, ok := strictest(l.now(), readings, l.Thresholds()); ok {
+		return own, map[string]harness.RateLimit{DefaultAccount: r}
+	}
+	return own, nil
+}
+
+// accountFor picks the account a session of that priority runs on
+// (ChooseAccount) and returns ctx carrying it for OpenAccount — the
+// operator's own login, when none is configured, carries nothing. ok is
+// false when no account has headroom: the session is not started, and
+// a what that is not empty is counted for the tick's one line
+// (logWaiting).
+func (l *Loop) accountFor(ctx context.Context, priority string, workWaits bool, what string) (context.Context, bool) {
+	return l.withAccount(ctx, what, priority, func(accounts []AccountConfig, readings map[string]harness.RateLimit) (AccountConfig, bool) {
+		return ChooseAccount(l.now(), accounts, readings, l.Thresholds(), priority, workWaits)
+	})
+}
+
+// accountToFinish picks the account for an evaluation or a rebase —
+// work already built, which pacing never held back: by the spending
+// order for its priority first, and failing that a paced subscription
+// as if it were pressing. A stopped account still takes nothing, and an
+// api account is still only what its priority or exhausted
+// subscriptions allow.
+func (l *Loop) accountToFinish(ctx context.Context, priority, what string) (context.Context, bool) {
+	return l.withAccount(ctx, what, priority, func(accounts []AccountConfig, readings map[string]harness.RateLimit) (AccountConfig, bool) {
+		if a, ok := ChooseAccount(l.now(), accounts, readings, l.Thresholds(), priority, true); ok {
+			return a, true
+		}
+		var subs []AccountConfig
+		for _, a := range accounts {
+			if a.Kind != AccountAPI {
+				subs = append(subs, a)
+			}
+		}
+		return ChooseAccount(l.now(), subs, readings, l.Thresholds(), "high", true)
+	})
+}
+
+// withAccount chooses by choose among the accounts the spending order
+// leaves a session of that priority (spendable): an api key past its
+// cap never, the reserve at the end of its day only for urgent and high
+// work, and for an item (what "item") only an account with a slot free.
+func (l *Loop) withAccount(ctx context.Context, what, priority string, choose func([]AccountConfig, map[string]harness.RateLimit) (AccountConfig, bool)) (context.Context, bool) {
+	accounts, readings := l.accounts()
+	pressing, item := priority == "urgent" || priority == "high", what == "item"
+	a, ok := choose(l.spendable(accounts, pressing, item), readings)
+	if !ok {
+		if what != "" && l.waiting != nil {
+			l.waiting[what]++
+		}
+		return ctx, false
+	}
+	ctx = withChooser(ctx, func(issued []AccountConfig) (AccountConfig, bool) {
+		return choose(l.spendable(issued, pressing, item), l.limitsStore().Readings())
+	})
+	if len(l.nodeAccounts()) == 0 {
+		return ctx, true
+	}
+	return WithAccount(ctx, a), true
+}
+
+// logWaiting says once per tick what waits for an account with
+// headroom, not once per item.
+func (l *Loop) logWaiting() {
+	if len(l.waiting) == 0 {
+		return
+	}
+	kinds := make([]string, 0, len(l.waiting))
+	for k := range l.waiting {
+		kinds = append(kinds, k)
+	}
+	sort.Strings(kinds)
+	parts := make([]string, 0, len(kinds))
+	for _, k := range kinds {
+		parts = append(parts, fmt.Sprintf("%d %s(s)", l.waiting[k], k))
+	}
+	l.logf("accounts: no account has headroom for %s; left unclaimed until one has", strings.Join(parts, ", "))
+}
+
+// priorityName is the priority a goal rank stands for.
+func priorityName(rank int) string {
+	return [...]string{"urgent", "high", "normal", "low"}[min(max(rank, 0), 3)]
 }
 
 // CurrentScopes are the orgs served, as last read — for the sessions
@@ -358,20 +856,37 @@ func (l *Loop) CurrentScopes() Scopes {
 	return l.Scopes
 }
 
-// reload takes the capacity and the orgs from Reload, logging a change.
+// reload takes the capacity, the limits, the accounts and the orgs from
+// Reload, logging a change.
 // Tick is the only writer of Scopes, so its own reads need no lock.
 func (l *Loop) reload(ctx context.Context) {
 	if l.Reload == nil {
 		return
 	}
-	capacity, scopes, err := l.Reload(ctx)
+	got, err := l.Reload(ctx)
+	scopes := got.Scopes
 	if err != nil {
 		l.logf("reload config: %v", err)
 	}
-	if was := l.Capacity(); capacity > 0 && capacity != was {
-		l.logf("capacity %d → %d", was, capacity)
+	if got.Capacity.Max > 0 {
+		l.setRange(got.Capacity)
+	}
+	if got.Limits != nil {
+		was, now := l.Thresholds(), got.Limits.Thresholds()
+		if now != was {
+			l.logf("limits: pace five-hour %s → %s, stop %s → %s", pct(was.PaceFiveHour), pct(now.PaceFiveHour), pct(was.Stop), pct(now.Stop))
+		}
 		l.mu.Lock()
-		l.capacity = capacity
+		l.limits, l.limitsSet = *got.Limits, true
+		l.mu.Unlock()
+	}
+	if got.Spending != nil {
+		was := l.nodeAccounts()
+		if labels(was) != labels(got.Spending.Accounts) {
+			l.logf("accounts %s → %s", labels(was), labels(got.Spending.Accounts))
+		}
+		l.mu.Lock()
+		l.spending, l.spendingSet = *got.Spending, true
 		l.mu.Unlock()
 	}
 	if scopes != nil && !sameOrgs(scopes, l.Scopes) {
@@ -380,6 +895,44 @@ func (l *Loop) reload(ctx context.Context) {
 		l.Scopes = scopes
 		l.mu.Unlock()
 	}
+}
+
+// probe re-reads which tool runtimes and agent adapters the node has
+// (trd §1 Node, `runtimes` and `adapters`), logging a change.
+func (l *Loop) probe() {
+	if l.LookPath == nil {
+		return
+	}
+	runtimes, adapters := tools.ProbeRuntimes(l.LookPath), tools.ProbeAdapters(l.LookPath)
+	l.mu.Lock()
+	wasR, wasA := l.runtimes, l.adapters
+	l.runtimes, l.adapters, l.probed = runtimes, adapters, true
+	l.mu.Unlock()
+	if !slices.Equal(wasR, runtimes) || !slices.Equal(wasA, adapters) {
+		l.logf("tools: runtimes [%s], adapters [%s]", strings.Join(runtimes, " "), strings.Join(adapters, " "))
+	}
+}
+
+// Runtimes returns the tool runtimes (npx, uvx, docker) and the agent
+// adapters (claude-code, codex) the last tick found on the node — or,
+// before the first tick (an item adopted at start), a probe now.
+func (l *Loop) Runtimes() (runtimes, adapters []string) {
+	l.mu.Lock()
+	probed := l.probed
+	l.mu.Unlock()
+	if !probed {
+		l.probe()
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return slices.Clone(l.runtimes), slices.Clone(l.adapters)
+}
+
+// ToolRuntimes is Runtimes' runtimes alone: what a session's local tools
+// may start on (Runner.Runtimes, Evaluator.Runtimes).
+func (l *Loop) ToolRuntimes() []string {
+	runtimes, _ := l.Runtimes()
+	return runtimes
 }
 
 func sameOrgs(a, b Scopes) bool {
@@ -432,11 +985,20 @@ func (l *Loop) evaluateHeld(ctx context.Context) {
 			l.mu.Unlock()
 			continue
 		}
+		l.mu.Unlock()
+		if runtimes, _ := l.Runtimes(); l.Declines.Holds(item.ID, runtimes, time.Now()) {
+			continue
+		}
+		actx, ok := l.accountToFinish(ctx, priorityName(h.rank), "evaluation")
+		if !ok {
+			continue
+		}
+		l.mu.Lock()
 		l.evaluating[item.ID] = true
 		l.mu.Unlock()
 		l.logf("evaluating item %d %q", item.Seq, item.Title)
 		l.wg.Add(1)
-		go func(item gateway.WorkItem) {
+		go func(ctx context.Context, item gateway.WorkItem) {
 			defer l.wg.Done()
 			defer func() {
 				l.mu.Lock()
@@ -445,13 +1007,84 @@ func (l *Loop) evaluateHeld(ctx context.Context) {
 				l.notify()
 			}()
 			l.Evaluate(ctx, item)
-		}(item)
+		}(actx, item)
+	}
+}
+
+// rebaseRequested claims every item in the served orgs whose rebase is
+// requested and that no rebase here is on, most urgent goal first across
+// the orgs (rebaseOrder; the goals are read only for an org with one),
+// and starts a session of kind rebase on each claim it wins. Not gated
+// by capacity: a rebase finishes work already done. A refusal — another
+// node holds it, or it is no longer requested — is the ordinary answer
+// and is not logged as an error.
+func (l *Loop) rebaseRequested(ctx context.Context) {
+	if l.Rebase == nil {
+		return
+	}
+	var requested []readyItem
+	for _, sc := range l.Scopes {
+		rows, err := l.GW.RequestedRebases(ctx, sc.ID)
+		if err != nil {
+			l.logf("list requested rebases of %s: %v", sc.Login, err)
+			continue
+		}
+		if len(rows) == 0 {
+			continue
+		}
+		rank := l.goalRanks(ctx, sc, "rebased")
+		for _, it := range rows {
+			requested = append(requested, readyItem{item: it, scope: sc, rank: rank(it.GoalID)})
+		}
+	}
+	rebaseOrder(requested)
+	for _, r := range requested {
+		item, sc := r.item, r.scope
+		l.mu.Lock()
+		if l.rebasing == nil {
+			l.rebasing = map[string]bool{}
+		}
+		if l.rebasing[item.ID] {
+			l.mu.Unlock()
+			continue
+		}
+		l.mu.Unlock()
+		actx, ok := l.accountToFinish(ctx, priorityName(r.rank), "rebase")
+		if !ok {
+			continue
+		}
+		l.mu.Lock()
+		l.rebasing[item.ID] = true
+		l.mu.Unlock()
+		// the claim is the lock across nodes: refused, another node has it
+		if err := l.GW.ClaimWorkItemRebase(ctx, item.ID, sc.NodeID); err != nil {
+			l.mu.Lock()
+			delete(l.rebasing, item.ID)
+			l.mu.Unlock()
+			if !gateway.IsRefusal(err) {
+				l.logf("%s: claim the rebase of item %d: %v", sc.Login, item.Seq, err)
+			}
+			continue
+		}
+		l.logf("%s: rebasing item %d %q", sc.Login, item.Seq, item.Title)
+		l.wg.Add(1)
+		go func(ctx context.Context, item gateway.WorkItem) {
+			defer l.wg.Done()
+			defer func() {
+				l.mu.Lock()
+				delete(l.rebasing, item.ID)
+				l.mu.Unlock()
+				l.notify()
+			}()
+			l.Rebase(ctx, item)
+		}(actx, item)
 	}
 }
 
 // planRequested starts the planner on every goal in planning in the
 // served orgs that no planner here is on, most urgent goal first across
-// the orgs (planOrder).
+// the orgs (planOrder), each on the account chosen for its priority. A
+// goal no account has headroom for is left for later.
 func (l *Loop) planRequested(ctx context.Context) {
 	if l.Plan == nil {
 		return
@@ -480,6 +1113,12 @@ func (l *Loop) planRequested(ctx context.Context) {
 			l.mu.Unlock()
 			continue
 		}
+		l.mu.Unlock()
+		actx, ok := l.accountFor(ctx, priorityName(gateway.PriorityRank(g.Priority)), true, "plan")
+		if !ok {
+			continue
+		}
+		l.mu.Lock()
 		l.planning[g.ID] = true
 		l.mu.Unlock()
 		// the claim is the lock across nodes: refused, another node has it
@@ -496,7 +1135,7 @@ func (l *Loop) planRequested(ctx context.Context) {
 		}
 		l.logf("%s: planning goal %q", sc.Login, g.Slug)
 		l.wg.Add(1)
-		go func(g gateway.Goal, sc Scope) {
+		go func(ctx context.Context, g gateway.Goal, sc Scope) {
 			defer l.wg.Done()
 			defer func() {
 				l.mu.Lock()
@@ -505,7 +1144,7 @@ func (l *Loop) planRequested(ctx context.Context) {
 				l.notify()
 			}()
 			l.Plan(ctx, g, sc)
-		}(g, sc)
+		}(actx, g, sc)
 	}
 }
 
@@ -559,6 +1198,13 @@ func (l *Loop) researchDue(ctx context.Context) {
 			if RoomFor(d, p, goals) <= 0 {
 				continue
 			}
+			// research is not work that waits: it runs only on a
+			// subscription with headroom for normal work, never on an
+			// api account and never on a paced one
+			actx, ok := l.accountFor(ctx, "low", false, "")
+			if !ok {
+				continue
+			}
 			l.mu.Lock()
 			if l.researching == nil {
 				l.researching = map[string]bool{}
@@ -580,7 +1226,7 @@ func (l *Loop) researchDue(ctx context.Context) {
 			}
 			l.logf("%s: researching %q", sc.Login, p.Slug+"/"+d.Slug)
 			l.wg.Add(1)
-			go func(d gateway.Direction, p gateway.Project, sc Scope) {
+			go func(ctx context.Context, d gateway.Direction, p gateway.Project, sc Scope) {
 				defer l.wg.Done()
 				defer func() {
 					l.mu.Lock()
@@ -589,27 +1235,34 @@ func (l *Loop) researchDue(ctx context.Context) {
 					l.notify()
 				}()
 				l.Research(ctx, d, p, sc)
-			}(d, p, sc)
+			}(actx, d, p, sc)
 		}
 	}
 }
 
 // Adopt runs an item this node already holds on the platform (claimed
-// or running, after a restart) without claiming it again. It reports
-// whether the item was taken up (false when it is already running here,
-// or the node is draining — the node after it adopts the item).
+// or running, after a restart) without claiming it again, from the
+// start: an item whose session is still there is AdoptSessions', which
+// takes the session up instead. It reports whether the item was taken up
+// (false when it is already running here, its session was adopted, or
+// the node is draining — the node after it adopts the item).
 func (l *Loop) Adopt(ctx context.Context, item gateway.WorkItem) bool {
 	l.mu.Lock()
 	if l.running == nil {
 		l.running = map[string]bool{}
 	}
-	if l.running[item.ID] || l.draining {
+	if l.running[item.ID] || l.adoptedIDs[item.ID] || l.draining {
 		l.mu.Unlock()
 		return false
 	}
 	l.running[item.ID] = true
 	l.mu.Unlock()
 	l.logf("adopted held item %d %q", item.Seq, item.Title)
+	// already held: it runs on the account with the most headroom, or on
+	// the first listed when none has any (OpenAccount's fallback)
+	if actx, ok := l.accountFor(ctx, "high", true, ""); ok {
+		ctx = actx
+	}
 	l.run(ctx, item)
 	return true
 }
@@ -621,14 +1274,31 @@ func (l *Loop) start(ctx context.Context, item gateway.WorkItem) {
 	l.run(ctx, item)
 }
 
+// runsOn notes the account an item runs on, from ctx (DefaultAccount
+// when the loop chose none).
+func (l *Loop) runsOn(ctx context.Context, itemID string) {
+	label := DefaultAccount
+	if a, ok := ChosenAccount(ctx); ok {
+		label = a.Label
+	}
+	l.mu.Lock()
+	if l.runningOn == nil {
+		l.runningOn = map[string]string{}
+	}
+	l.runningOn[itemID] = label
+	l.mu.Unlock()
+}
+
 // run dispatches an item already marked running.
 func (l *Loop) run(ctx context.Context, item gateway.WorkItem) {
+	l.runsOn(ctx, item.ID)
 	l.wg.Add(1)
 	go func() {
 		defer l.wg.Done()
 		defer func() {
 			l.mu.Lock()
 			delete(l.running, item.ID)
+			delete(l.runningOn, item.ID)
 			l.mu.Unlock()
 			if l.Release != nil {
 				l.Release(item)

@@ -11,7 +11,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"projectmesh.io/mesh-cli/internal/gateway"
+	"projectmesh.io/mesh-cli/internal/gateway/gatewaytest"
 	"projectmesh.io/mesh-cli/internal/harness"
 )
 
@@ -49,9 +52,14 @@ func (g *tokenGW) Issued() int {
 // item to run.
 func runnerOn(t *testing.T, h harness.Harness, wrap func(Gateway) Gateway) (*Runner, *fakeWS, gateway.WorkItem, func(string) map[string]any) {
 	t.Helper()
-	f := seed(t)
+	return runnerOnFake(t, seed(t), h, wrap)
+}
+
+// runnerOnFake is runnerOn against a fake the test has set up.
+func runnerOnFake(t *testing.T, f *gatewaytest.Fake, h harness.Harness, wrap func(Gateway) Gateway) (*Runner, *fakeWS, gateway.WorkItem, func(string) map[string]any) {
+	t.Helper()
 	gw := gateway.New(f.URL(), "rs_test")
-	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: 1}
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: Fixed(1)}
 	if err := gw.ClaimWorkItem(context.Background(), item1, cfg.NodeID, "claude-code"); err != nil {
 		t.Fatal(err)
 	}
@@ -270,4 +278,195 @@ type refusingTokenGW struct{ Gateway }
 
 func (refusingTokenGW) IssueItemRepoToken(ctx context.Context, itemID, nodeID string) (*gateway.GitHubToken, error) {
 	return nil, &gateway.Error{Message: "issueItemRepoToken: the item is not this node's claim"}
+}
+
+// syncBuf is a log sink several sessions write at once.
+type syncBuf struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (s *syncBuf) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuf) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
+// A node claiming a batch of items against a platform without the
+// mutation says so once for the run — its builds and its evaluations
+// share the notice — and every item still runs on the operator's own
+// credentials to its end.
+func TestOldPlatformFallbackIsLoggedOnceAcrossARun(t *testing.T) {
+	f := seed(t)
+	f.Unsupported["issueItemRepoToken"] = true
+	f.WorkItems[item2]["status"] = "ready"
+	f.WorkItems[item2]["dependsOn"] = []string{}
+	items := []string{item1, item2}
+	for i, id := range []string{"99999999-1111-4111-8111-999999999991", "99999999-1111-4111-8111-999999999992"} {
+		f.WorkItems[id] = map[string]any{"id": id, "goalId": goalID, "orgId": orgID, "seq": 3 + i, "title": "More",
+			"brief": "More.", "acceptance": "go test passes", "repoId": repoID, "baseRef": "main", "status": "ready", "dependsOn": []string{}}
+		items = append(items, id)
+	}
+	gw := gateway.New(f.URL(), "rs_test")
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "test-node", NodeID: gateway.NodeID(mustUUID(orgID), "test-node").String(), Capacity: Fixed(len(items))}
+	if err := gw.RegisterNode(context.Background(), gateway.RegisterNodeInput{NodeID: cfg.NodeID, OrgID: orgID, OwnerID: f.UserID, Name: "n", Slug: "test-node", Harnesses: []string{"claude-code"}, Capacity: cfg.Capacity.Max, Version: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	var out syncBuf
+	logger := log.New(&out, "", 0)
+	fallback := &TokenFallback{}
+	ws := &fakeWS{root: t.TempDir()}
+	h := &fakeHarness{text: "Fine.\nVERDICT: PASS"}
+	runner := &Runner{GW: gw, Harness: h, WS: ws, Cfg: cfg, Scopes: scopesOf(cfg), WorkRoot: ws.root, ProgressEvery: time.Hour, Fallback: fallback, Log: logger}
+	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Version: "test", Harness: "claude-code", Interval: time.Hour, Log: logger,
+		Dispatch: func(ctx context.Context, item gateway.WorkItem) { _ = runner.RunItem(ctx, item) }}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	loop.Tick(ctx)
+	waitFor(t, func() bool {
+		for _, id := range items {
+			if f.Item(id)["status"] != "evaluating" {
+				return false
+			}
+		}
+		return true
+	})
+	for _, id := range items {
+		row := f.Item(id)
+		ev := &Evaluator{GW: gw, Harness: h, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, Fallback: fallback, Log: logger}
+		it := gateway.WorkItem{ID: id, OrgID: orgID, GoalID: goalID, RepoID: repoID, Seq: row["seq"].(int), Title: row["title"].(string), Branch: row["branch"].(string)}
+		if err := ev.Evaluate(ctx, it); err != nil {
+			t.Fatal(err)
+		}
+		if f.Item(id)["status"] != "review" {
+			t.Fatalf("item %s: %v", id, f.Item(id))
+		}
+	}
+	if n := len(f.CallsNamed("failWorkItem")); n != 0 {
+		t.Fatalf("%d items failed on the fallback", n)
+	}
+	if got := strings.Count(out.String(), "the platform issues no item GitHub tokens"); got != 1 {
+		t.Fatalf("fallback said %d times, want once:\n%s", got, out.String())
+	}
+	for _, e := range ws.Events() {
+		if strings.HasPrefix(e, "authorize") {
+			t.Fatalf("a fallback workspace must stay on the operator's credentials: %v", ws.Events())
+		}
+	}
+	for _, j := range h.jobs {
+		if j.Env != nil {
+			t.Fatalf("a fallback session's env must be the operator's: %v", j.Env)
+		}
+	}
+	if len(ws.pushed) != len(items) || len(h.jobs) != 2*len(items) {
+		t.Fatalf("pushed %v, %d sessions", ws.pushed, len(h.jobs))
+	}
+}
+
+// modelGW answers AgentModel from a table and records the progress notes.
+type modelGW struct {
+	Gateway
+	mu     sync.Mutex
+	agents map[string]string
+	notes  []string
+}
+
+func (g *modelGW) AgentModel(_ context.Context, agentID string) (string, error) {
+	return g.agents[agentID], nil
+}
+
+func (g *modelGW) ReportWorkItemProgress(ctx context.Context, itemID, note string, costCents int, sessionID string) error {
+	g.mu.Lock()
+	g.notes = append(g.notes, note)
+	g.mu.Unlock()
+	return g.Gateway.ReportWorkItemProgress(ctx, itemID, note, costCents, sessionID)
+}
+
+// The build runs on the item's model, then its agent's, then the node's
+// own; the evaluator on the strongest of the node's, the builder's and
+// sonnet; a rebase on the builder's choice — and an item that names
+// neither (an older platform) runs all three exactly as before.
+func TestSessionsRunOnTheItemsModel(t *testing.T) {
+	agent := gateway.AgentID(mustUUID(orgID), uuid.Nil, "fast-builder").String()
+	for _, c := range []struct {
+		name                         string
+		model, agentSlug             string
+		agentModel                   string
+		nodeBuild, nodeEval          string
+		wantBuild, wantEval, wantLog string
+	}{
+		{name: "item haiku", model: "haiku", nodeBuild: "opus", wantBuild: "haiku", wantEval: "sonnet"},
+		{name: "older gateway", nodeBuild: "sonnet", nodeEval: "haiku", wantBuild: "sonnet", wantEval: "haiku"},
+		{name: "older gateway, CLI default", wantBuild: "", wantEval: "", wantLog: "the CLI's default model"},
+		{name: "agent only", agentSlug: "fast-builder", agentModel: "opus", nodeBuild: "haiku", wantBuild: "opus", wantEval: "opus"},
+		{name: "item beats agent", model: "haiku", agentSlug: "fast-builder", agentModel: "opus", wantBuild: "haiku", wantEval: "sonnet"},
+		{name: "agent without a model", agentSlug: "fast-builder", nodeBuild: "sonnet", nodeEval: "haiku", wantBuild: "sonnet", wantEval: "haiku"},
+		{name: "item opus", model: "opus", nodeEval: "sonnet", wantBuild: "opus", wantEval: "opus"},
+		{name: "node evaluate stronger", model: "haiku", nodeEval: "claude-opus-5-5", wantBuild: "haiku", wantEval: "claude-opus-5-5"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := &fakeHarness{text: "Fine.\nVERDICT: PASS"}
+			mg := &modelGW{agents: map[string]string{}}
+			if c.agentModel != "" {
+				mg.agents[agent] = c.agentModel
+			}
+			f := seed(t)
+			r, ws, item, row := runnerOnFake(t, f, h, func(g Gateway) Gateway { mg.Gateway = g; return mg })
+			var logs strings.Builder
+			r.Log = log.New(&logs, "", 0)
+			r.Model = c.nodeBuild
+			item.Model, item.AgentSlug = c.model, c.agentSlug
+			if err := r.RunItem(context.Background(), item); err != nil {
+				t.Fatal(err)
+			}
+			ev := &Evaluator{GW: mg, Harness: h, WS: ws, Scopes: r.Scopes, WorkRoot: ws.root, Model: c.nodeEval, Log: r.Log}
+			item.Branch = "mesh/ship-it-1"
+			if err := ev.Evaluate(context.Background(), item); err != nil {
+				t.Fatal(err)
+			}
+			if len(h.jobs) != 2 || h.jobs[0].Kind != harness.KindBuild || h.jobs[1].Kind != harness.KindEvaluate {
+				t.Fatalf("jobs: %+v", h.jobs)
+			}
+			if h.jobs[0].Model != c.wantBuild {
+				t.Fatalf("build Model = %q, want %q", h.jobs[0].Model, c.wantBuild)
+			}
+			if h.jobs[1].Model != c.wantEval {
+				t.Fatalf("evaluate Model = %q, want %q", h.jobs[1].Model, c.wantEval)
+			}
+			build, eval := c.wantBuild, c.wantEval
+			if c.wantLog != "" {
+				build, eval = c.wantLog, c.wantLog
+			}
+			for _, want := range []string{"item ship-it/1: build on " + build + "\n", "item ship-it/1: evaluate on " + eval + ": mesh/ship-it-1"} {
+				if !strings.Contains(logs.String(), want) {
+					t.Fatalf("node.log lacks %q:\n%s", want, logs.String())
+				}
+			}
+			if len(mg.notes) == 0 || mg.notes[0] != "session started: mesh/ship-it-1 on "+build {
+				t.Fatalf("first progress note: %q", mg.notes)
+			}
+			if got := row(item1)["evaluation"]; got != "Fine.\n\n(evaluated on "+eval+")" {
+				t.Fatalf("evaluation = %q", got)
+			}
+
+			// a rebase works on the builder's branch, so on its model
+			f.RebaseTokens = true
+			f.WorkItems[item1]["status"], f.WorkItems[item1]["rebaseState"] = "review", "claimed"
+			rb := &Rebaser{GW: mg, Harness: h, WS: ws, Scopes: r.Scopes, WorkRoot: ws.root, Model: c.nodeBuild, ProgressEvery: time.Hour, Log: r.Log}
+			_ = rb.Rebase(context.Background(), item) // the job is what is checked
+			if len(h.jobs) != 3 || h.jobs[2].Kind != harness.KindRebase || h.jobs[2].Model != c.wantBuild {
+				t.Fatalf("rebase job: %+v\n%s", h.jobs[len(h.jobs)-1], logs.String())
+			}
+			if want := "item ship-it/1: rebase on " + build + ": mesh/ship-it-1 onto main"; !strings.Contains(logs.String(), want) {
+				t.Fatalf("node.log lacks %q:\n%s", want, logs.String())
+			}
+		})
+	}
 }

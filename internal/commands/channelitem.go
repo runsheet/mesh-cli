@@ -32,18 +32,20 @@ type channelItem struct {
 // not do for itself: resolve the item, ask for its GitHub token and put
 // it on the workspace's own credential helper, then clone or fetch and
 // check out the branch on it. Only then is there an event to push. Any
-// error fails the item, as it would a poll-mode build.
-func readyChannelItem(ctx context.Context, gw node.Gateway, ws channelWorkspace, scopes node.Scopes, item gateway.WorkItem, workRoot string, logf func(string, ...any)) (*channelItem, error) {
+// error fails the item, as it would a poll-mode build, except a
+// *node.CredentialError, on which the dispatch releases it
+// (node.ReleaseOnCredential).
+func readyChannelItem(ctx context.Context, gw node.Gateway, ws channelWorkspace, scopes node.Scopes, item gateway.WorkItem, workRoot string, fb *node.TokenFallback, logf func(string, ...any)) (*channelItem, error) {
 	res, err := node.Resolve(ctx, gw, item)
 	if err != nil {
 		return nil, fmt.Errorf("resolve: %w", err)
 	}
 	spec := node.WorkspaceSpec{Root: workRoot, GoalSlug: res.Goal.Slug, Seq: item.Seq, Repo: res.Repo.FullName(), Branch: res.Branch(), BaseRef: res.BaseRef()}
-	cred, err := node.NewItemCred(ctx, gw, ws, scopes, item, spec, logf)
+	cred, err := node.NewItemCred(ctx, gw, ws, scopes, item, spec, fb, logf)
 	if err != nil {
 		return nil, err
 	}
-	dir, err := ws.Prepare(ctx, spec)
+	dir, err := node.PrepareWithRetry(ctx, ws, spec, cred, logf)
 	if err != nil {
 		return nil, fmt.Errorf("workspace: %w", err)
 	}

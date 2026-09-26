@@ -32,12 +32,35 @@ living an hour.
   `gateway.IsUnsupported` reports it (the `Error` carries
   `Unsupported`), and the node falls back to the operator's login and
   says so once. The rollout is not a flag day.
+- "Once" is once per run of the node, not once per item: `mesh node
+  start` makes one `node.TokenFallback` (a `sync.Once` around the log
+  line) and hands it to everything that asks for an item's token — the
+  poll-mode `Runner`, every `Evaluator`, and channel mode's
+  `readyChannelItem` — so a node claiming many items against an old
+  platform logs the fallback a single time and runs every item on the
+  operator's credentials as before.
 
 - The builder (`Runner.RunItem`) and the evaluator (`Evaluator.Evaluate`)
   ask for it right after resolving the item and before anything clones,
   fetches, diffs or pushes. So the platform must issue it to the node
   holding the item while it is `claimed`, `running` **or `evaluating`**
   (the evaluator is the same node, on the same claim).
+- A session of kind rebase (`Rebaser.Rebase`, runsheet ADR 008) asks
+  for it the same way, after `ClaimWorkItemRebase` and before its
+  checkout is prepared: it pushes the rebased branch, so it needs
+  contents write on the item's repo. The item is then in `review`, and
+  the node holding it is the one its `rebase_node_id` names, which need
+  not be the node that built it. **So the platform must also issue the
+  token to the node holding an item's rebase while `rebase_state` is
+  `claimed`** (amended 2026-09-24, goal `node-runs-rebase-sessions`;
+  the platform half is runsheet's `gateway/itemtoken.go`, which as of
+  runsheet `ac30584` still refuses an item in `review`). Until it does,
+  the refusal fails the rebase with the reason — the item goes to its
+  builder, as the platform's own stall timer would have sent it — and
+  the operator's login is not used instead. The fake gateway mirrors the
+  platform as it is: it refuses that token unless a test sets
+  `RebaseTokens`, which stands for the platform half not yet landed
+  (`TestRebaseTokenRefusedFailsTheRebase` is today's behaviour).
 - The workspace uses the token through `Workspacer.Authorize(spec, tok)`
   (`internal/node/ghcred.go`, `workspace.go`). This sets `origin` to
   `https://github.com/<owner>/<name>.git`, since a `gh repo clone` may
@@ -60,6 +83,45 @@ living an hour.
   not run on the operator's login instead. Only `IsUnsupported` takes
   the fallback, and that leaves the workspace and environment as they
   were before this ADR.
+- A token GitHub refuses while the workspace is prepared — `Prepare`'s
+  clone, fetch or checkout answering `Repository not found`, 401 / 403,
+  `Authentication failed` or `Invalid username or password`
+  (`IsCredentialRefusal`) — is re-issued and tried again. A freshly minted
+  installation token can be used before GitHub honours it: on 2026-09-24
+  an item failed at `git fetch` with "Repository not found" minutes after
+  others fetched the same repo on their own tokens. `PrepareWithRetry`
+  (`ghcred.go`), which the builder, the evaluator and channel mode's
+  `readyChannelItem` all prepare through, backs off 1 s, 2 s and 4 s. Before
+  each retry it calls `ItemCred.Reissue`, which, unlike `Refresh`, always
+  asks `issueItemRepoToken` and re-`Authorize`s. After three retries it
+  answers a `*CredentialError{Repo, Expiry, Retries, Cause}`. Every refused
+  attempt is logged with the token's repository, its expiry (RFC 3339)
+  and git's error. The token itself is never logged: it is scrubbed from
+  that error, and from any URL git echoes, before the error is logged or
+  wrapped. Any other failure, and the operator login's fallback, is not
+  retried. On a `CredentialError` the node releases the item, as its own
+  condition, the way it releases an item when it is out of credit
+  (mesh-specs trd §3): `ReleaseOnCredential` (`ghcred.go`) sends
+  `ReleaseWorkItem { reason }` (trd §1; `Client.ReleaseWorkItem(ctx,
+  itemID, reason)`, the `releaseWorkItem` mutation) with the reason
+  `github credential: <repo> token expiring <RFC 3339 expiry> refused <n>
+  times: <git's error>`, where n counts the first try and the retries and
+  git's error is the scrubbed one, so the reason carries no token. The
+  platform takes it only for a `claimed` or `running` item the calling
+  node holds, and puts the item back to `ready` with its node, harness
+  and session cleared, `attempts` unchanged, and the reason in
+  `last_note`, not `last_error`. The node logs the release with the
+  reason. If the platform refuses the release, the node logs the refusal
+  and fails the item (`FailWorkItem`) with the same reason, so an item is
+  never left claimed on a node that has stopped working on it. The
+  builder (`Runner.RunItem`) and channel mode's dispatch release so. The
+  evaluator's item is in `evaluating`, which the platform does not
+  release, so `Evaluate` neither releases nor fails it: it logs the
+  reason and returns, the item stays as it was, and a later tick
+  evaluates it on a fresh token. Any other workspace error fails the item
+  as before. The fake gateway (`gatewaytest.Fake`) honours the release;
+  `RefuseReleases` makes it refuse, as a platform that does not take a
+  node's release.
 - Channel mode's one `claude` process runs many items, so its
   environment carries no item's token. `Session.once` starts it with
   `GH_TOKEN`, `GITHUB_TOKEN` and the enterprise tokens removed from the
@@ -72,7 +134,8 @@ living an hour.
   workspace is a `mesh_fail`. Each item's git runs on that checkout's own
   helper. The channel's `repush` bookkeeping renews a held item's token
   near expiry every tick and rewrites the helper. A refusal fails the
-  item, and so does a failed `Prepare`.
+  item, and so does a failed `Prepare`, except a `CredentialError`, which
+  releases it as above.
 - On the old platform the shared session's empty `GH_CONFIG_DIR` would
   also hide the operator's global `gh auth git-credential` from its
   push. So the daemon gives such a checkout its own helper,
@@ -81,6 +144,12 @@ living an hour.
   reach to that checkout, which is where it was before this ADR.
 - The planner's and the director's `Fetch` read many repos for a whole
   project, not one item, and stay on the node's own credentials.
+- The goal's document at the goal's end (`RecordEndedGoal`, ADR 003 of
+  mesh-specs, decision 4) is likewise the goal's, not one item's: it is
+  committed and pushed to the default branch of the project's primary
+  repo, which need not be the finishing item's repo, from a checkout of
+  its own that is never `Authorize`d — so it too stays on the node's own
+  credentials. No session runs in that checkout.
 
 ## Consequences
 

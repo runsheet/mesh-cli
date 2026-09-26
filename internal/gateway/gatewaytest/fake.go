@@ -10,14 +10,20 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
+	"time"
+
+	"projectmesh.io/mesh-cli/internal/gateway"
 )
 
 // Call is one mutation the fake received.
 type Call struct {
 	Name  string
 	Input map[string]any
+	// At is when the fake received it: an item's heartbeats over time.
+	At time.Time
 }
 
 // Fake is the server and its state. Rows are maps with camelCase keys,
@@ -37,6 +43,8 @@ type Fake struct {
 	Repos      map[string]map[string]any
 	Accounts   map[string]map[string]any
 	Nodes      map[string]map[string]any
+	// Agents by id, as AgentIndex rows (runsheet trd §6e).
+	Agents map[string]map[string]any
 	// Documents by "org/project" → list rows; Bodies by "org/project/slug".
 	Documents map[string][]map[string]any
 	Bodies    map[string]string
@@ -61,10 +69,41 @@ type Fake struct {
 	// Unsupported names mutations the fake answers as a platform that
 	// predates them: the schema's "Cannot query field" error.
 	Unsupported map[string]bool
-	// NoOutcome answers as a platform without the finish outcome (mesh
-	// ADR 003): a work-item read selecting outcome is the schema's
-	// "Cannot query field" error, and a finish carrying one is refused.
-	NoOutcome bool
+	// UnknownFields names fields the fake's schema does not have, as a
+	// platform older than them: a read selecting one is refused with
+	// "Cannot query field", a command whose input (or an item of it)
+	// carries one with "Unknown field".
+	UnknownFields map[string]bool
+	// RefuseReleases answers every releaseWorkItem with a refusal and
+	// changes nothing, as a platform that will not take a node's release.
+	// By default the fake follows the contract (trd §1): a node releases
+	// a claimed or running item it holds.
+	RefuseReleases bool
+	// RebaseTokens is the platform half ADR-001 asks for and runsheet
+	// does not serve yet: issueItemRepoToken to the node holding an
+	// item's rebase while it is in review. Off, the fake refuses it as
+	// runsheet's gateway/itemtoken.go does today.
+	RebaseTokens bool
+	// SessionCredentials maps a session's subject — its workItemId, else
+	// goalId, else directionId — to the credentials sessionCredentials
+	// hands the node (id, label, kind, secret, capDailyUsd, …). A subject
+	// with none gets an empty list.
+	SessionCredentials map[string][]map[string]any
+	// SessionTools maps a session's subject, as SessionCredentials does,
+	// to the tools the claim-time read hands it (name, transport, url,
+	// headers, runtime, command, args, env, secrets, required, roles,
+	// pricePerCallCents). A subject with none gets no `tools` key at all;
+	// UnknownFields["tools"] refuses a read selecting them, as a platform
+	// older than tools-in-the-console.
+	SessionTools map[string][]map[string]any
+	// Usage are the priced tools' usage records the fake was handed
+	// (recordUsage), in order: workItemId, kind, tool, calls,
+	// listPriceCents.
+	Usage []map[string]any
+	// After, when set, runs once a mutation has applied (under the lock,
+	// on the fake's rows) — for a test whose platform reacts to it, as a
+	// goal ending with its last item.
+	After func(name string, in map[string]any)
 }
 
 // New starts a fake accepting the given bearer token.
@@ -77,6 +116,8 @@ func New(token string) *Fake {
 		Repos:      map[string]map[string]any{}, Accounts: map[string]map[string]any{}, Nodes: map[string]map[string]any{},
 		Documents: map[string][]map[string]any{}, Bodies: map[string]string{}, Refuse: map[string]string{}, FailReads: map[string]string{},
 		GitHubTokens: map[string]map[string]any{}, Unsupported: map[string]bool{},
+		Agents: map[string]map[string]any{}, UnknownFields: map[string]bool{},
+		SessionCredentials: map[string][]map[string]any{}, SessionTools: map[string][]map[string]any{},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/graphql", f.graphql)
@@ -139,7 +180,6 @@ var (
 	mutationRe = regexp.MustCompile(`mutation\s*\(\s*\$(?:in|id):\s*(\w+)!\s*\)\s*\{\s*(\w+)\s*\(`)
 	whereRe    = regexp.MustCompile(`\{\s*field:\s*"([a-z_]+)"\s*,\s*op:\s*EQ\s*,\s*value:\s*"([^"]*)"\s*\}`)
 	listRe     = regexp.MustCompile(`\{\s*(\w+Indexs)\s*\(`)
-	outcomeRe  = regexp.MustCompile(`\boutcome\b`)
 	getRe      = regexp.MustCompile(`\{\s*(\w+Index)\s*\(\s*namespace:\s*"runsheet"\s*,\s*id:\s*"([^"]+)"`)
 )
 
@@ -162,6 +202,13 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case strings.HasPrefix(q, "mutation { signIn"):
 		writeData(w, map[string]any{"signIn": map[string]any{"id": f.UserID}})
+	case strings.Contains(q, "__type("):
+		f.Reads = append(f.Reads, Call{Name: "__type", Input: map[string]any{}})
+		if f.Unsupported["__type"] {
+			writeErrors(w, 200, "GraphQL introspection is not allowed")
+			return
+		}
+		writeData(w, map[string]any{"__type": f.heartbeatInputType()})
 	case strings.Contains(q, "myOrgs"):
 		writeData(w, map[string]any{"myOrgs": f.Orgs})
 	case strings.HasPrefix(q, "mutation"):
@@ -173,6 +220,10 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 		in, _ := req.Variables["in"].(map[string]any)
 		if f.Unsupported[m[2]] {
 			writeErrors(w, 200, fmt.Sprintf("Cannot query field %q on type \"Mutation\".", m[2]))
+			return
+		}
+		if field := f.unknownInput(in); field != "" {
+			writeErrors(w, 200, fmt.Sprintf(`Variable "$in" got invalid value; In field %q: Unknown field.`, field))
 			return
 		}
 		if msg := f.Refuse[m[2]]; msg != "" {
@@ -193,23 +244,55 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 				writeErrors(w, 200, err.Error())
 				return
 			}
-			f.Calls = append(f.Calls, Call{Name: m[2], Input: in})
+			f.Calls = append(f.Calls, Call{Name: m[2], Input: in, At: time.Now()})
 			writeData(w, map[string]any{m[2]: tok})
+			return
+		}
+		if m[2] == "sessionCredentials" {
+			subject := ""
+			for _, k := range []string{"workItemId", "goalId", "directionId"} {
+				if v, _ := in[k].(string); v != "" && subject == "" {
+					subject = v
+				}
+			}
+			selectsTools := strings.Contains(q, "tools {")
+			if selectsTools && f.UnknownFields["tools"] {
+				writeErrors(w, 200, `Cannot query field "tools" on type "SessionCredentialsResult".`)
+				return
+			}
+			creds := []map[string]any{}
+			for _, c := range f.SessionCredentials[subject] {
+				creds = append(creds, copyRow(c))
+			}
+			res := map[string]any{"credentials": creds}
+			if ts := f.SessionTools[subject]; selectsTools && ts != nil {
+				var rows []map[string]any
+				for _, t := range ts {
+					rows = append(rows, copyRow(t))
+				}
+				res["tools"] = rows
+			}
+			f.Calls = append(f.Calls, Call{Name: m[2], Input: in, At: time.Now()})
+			writeData(w, map[string]any{m[2]: res})
 			return
 		}
 		if err := f.apply(m[2], in); err != nil {
 			writeErrors(w, 200, err.Error())
 			return
 		}
-		f.Calls = append(f.Calls, Call{Name: m[2], Input: in})
+		if f.After != nil {
+			f.After(m[2], in)
+		}
+		f.Calls = append(f.Calls, Call{Name: m[2], Input: in, At: time.Now()})
 		writeData(w, map[string]any{m[2]: map[string]any{"status": "ok"}})
 	default:
-		if f.NoOutcome && strings.Contains(q, "workItemIndex") && outcomeRe.MatchString(q) {
-			writeErrors(w, 200, `Cannot query field "outcome" on type "WorkItemIndex".`)
-			return
-		}
+		field, typ := f.unknownSelection(q)
 		if m := getRe.FindStringSubmatch(q); m != nil {
-			writeData(w, map[string]any{m[1]: f.table(m[1] + "s")[m[2]]})
+			if field != "" {
+				writeErrors(w, 200, fmt.Sprintf("Cannot query field %q on type %q.", field, typ))
+				return
+			}
+			writeData(w, map[string]any{m[1]: f.known(m[1], f.table(m[1] + "s")[m[2]])})
 			return
 		}
 		m := listRe.FindStringSubmatch(q)
@@ -223,6 +306,10 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 			read.Input[wm[1]] = wm[2]
 		}
 		f.Reads = append(f.Reads, read)
+		if field != "" {
+			writeErrors(w, 200, fmt.Sprintf("Cannot query field %q on type %q.", field, typ))
+			return
+		}
 		if msg := f.FailReads[m[1]]; msg != "" {
 			writeErrors(w, 200, msg)
 			return
@@ -236,11 +323,39 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if ok {
-				rows = append(rows, row)
+				rows = append(rows, f.known(typeOf(m[1]), row))
 			}
 		}
 		writeData(w, map[string]any{m[1]: rows})
 	}
+}
+
+// heartbeatInputType is HeartbeatNodeInput as introspection answers it:
+// every field a heartbeat may carry, less UnknownFields — `scaling`
+// without `accounts` when that is unknown, as the platform before
+// adr-005's per-account slots. Unsupported["__type"] refuses the probe.
+func (f *Fake) heartbeatInputType() map[string]any {
+	field := func(name string) map[string]any {
+		return map[string]any{"name": name}
+	}
+	var fields []any
+	for _, name := range []string{"aggregateId", "namespace", "version", "running", "draining", "updateError", "limits", "scaling", "runtimes", "adapters"} {
+		if f.UnknownFields[name] {
+			continue
+		}
+		row := map[string]any{"name": name, "type": map[string]any{"kind": "SCALAR"}}
+		if name == "scaling" {
+			var sub []any
+			for _, n := range []string{"capacity", "min", "max", "reason", "accounts"} {
+				if !f.UnknownFields[n] {
+					sub = append(sub, field(n))
+				}
+			}
+			row["type"] = map[string]any{"kind": "INPUT_OBJECT", "inputFields": sub}
+		}
+		fields = append(fields, row)
+	}
+	return map[string]any{"inputFields": fields}
 }
 
 func (f *Fake) table(name string) map[string]map[string]any {
@@ -259,14 +374,108 @@ func (f *Fake) table(name string) map[string]map[string]any {
 		return f.Accounts
 	case "nodeIndexs":
 		return f.Nodes
+	case "agentIndexs":
+		return f.Agents
 	}
 	return map[string]map[string]any{}
+}
+
+// unknownSelection is the first field of the query's selections the
+// fake's schema does not have, and the type it was asked of.
+func (f *Fake) unknownSelection(q string) (string, string) {
+	typ := "Query"
+	if m := listRe.FindStringSubmatch(q); m != nil {
+		typ = strings.TrimSuffix(m[1], "s")
+	} else if m := getRe.FindStringSubmatch(q); m != nil {
+		typ = m[1]
+	}
+	typ = strings.ToUpper(typ[:1]) + typ[1:]
+	i := strings.LastIndex(q, ")")
+	if i < 0 {
+		return "", ""
+	}
+	for _, word := range strings.FieldsFunc(q[i:], func(r rune) bool { return r == ' ' || r == '{' || r == '}' || r == ')' }) {
+		if f.UnknownFields[word] || !selectable(typ, word) {
+			return word, typ
+		}
+	}
+	return "", ""
+}
+
+// typeOf is the schema type of an index list or get (workItemIndexs,
+// workItemIndex → WorkItemIndex).
+func typeOf(name string) string {
+	name = strings.TrimSuffix(name, "s")
+	return strings.ToUpper(name[:1]) + name[1:]
+}
+
+// selectable is whether the real gateway serves the field on the type:
+// any field of an entity without a generated list, else one of its
+// generated required or optional fields.
+func selectable(typ, field string) bool {
+	req, opt := gateway.Fields(typ), gateway.OptionalFields(typ)
+	if req == nil && opt == nil {
+		return true
+	}
+	return slices.Contains(req, field) || slices.Contains(opt, field)
+}
+
+// known is the row of a type as the fake's schema serves it: every
+// generated field of the entity, nil where the row sets none, and
+// without the fields UnknownFields says it does not have.
+func (f *Fake) known(typ string, row map[string]any) map[string]any {
+	if row == nil {
+		return row
+	}
+	typ = typeOf(typ)
+	out := copyRow(row)
+	for _, names := range [][]string{gateway.Fields(typ), gateway.OptionalFields(typ)} {
+		for _, k := range names {
+			if _, ok := out[k]; !ok {
+				out[k] = nil
+			}
+		}
+	}
+	for k := range f.UnknownFields {
+		delete(out, k)
+	}
+	return out
+}
+
+// unknownInput is the first key of a command's input, or of a row of a
+// list in it, the fake's schema does not have.
+func (f *Fake) unknownInput(in map[string]any) string {
+	for k, v := range in {
+		if f.UnknownFields[k] {
+			return k
+		}
+		if row, ok := v.(map[string]any); ok {
+			if k := f.unknownInput(row); k != "" {
+				return k
+			}
+		}
+		if rows, ok := v.([]any); ok {
+			for _, r := range rows {
+				if row, ok := r.(map[string]any); ok {
+					for rk := range row {
+						if f.UnknownFields[rk] {
+							return rk
+						}
+					}
+				}
+			}
+		}
+	}
+	return ""
 }
 
 func (f *Fake) apply(name string, in map[string]any) error {
 	id, _ := in["aggregateId"].(string)
 	item := f.WorkItems[id]
 	switch name {
+	case "recordUsage":
+		f.Usage = append(f.Usage, copyRow(in))
+		return nil
 	case "claimWorkItem":
 		if item == nil {
 			return fmt.Errorf("no such item")
@@ -282,10 +491,17 @@ func (f *Fake) apply(name string, in map[string]any) error {
 		if item == nil {
 			return fmt.Errorf("no such item")
 		}
-		if item["status"] != "claimed" && item["status"] != "running" {
+		// a claimed rebase's session reports on the item in review: the
+		// rebase's heartbeat (runsheet ADR 008), its cents on the item
+		rebasing := item["status"] == "review" && item["rebaseState"] == "claimed"
+		if item["status"] != "claimed" && item["status"] != "running" && !rebasing {
 			return fmt.Errorf("item is %s, not running", item["status"])
 		}
-		item["status"] = "running"
+		if rebasing {
+			item["rebaseHeartbeats"] = toInt(item["rebaseHeartbeats"]) + 1
+		} else {
+			item["status"] = "running"
+		}
 		item["costCents"] = toInt(item["costCents"]) + toInt(in["costCents"])
 		if n, _ := in["note"].(string); n != "" {
 			item["lastNote"] = n
@@ -302,8 +518,6 @@ func (f *Fake) apply(name string, in map[string]any) error {
 		}
 		outcome, _ := in["outcome"].(string)
 		switch {
-		case outcome != "" && f.NoOutcome:
-			return fmt.Errorf(`Field "outcome" is not defined by type "FinishWorkItemInput".`)
 		case outcome == "" || outcome == "built":
 			if in["branch"] == nil || in["branch"] == "" {
 				return fmt.Errorf("a built finish needs a branch")
@@ -327,6 +541,11 @@ func (f *Fake) apply(name string, in map[string]any) error {
 			return fmt.Errorf("no such item")
 		}
 		item["status"], item["lastError"] = "failed", in["error"]
+	case "releaseWorkItem":
+		if item == nil {
+			return fmt.Errorf("no such item")
+		}
+		return f.release(item, in)
 	case "evaluateWorkItem":
 		if item == nil {
 			return fmt.Errorf("no such item")
@@ -355,6 +574,19 @@ func (f *Fake) apply(name string, in map[string]any) error {
 		}
 		f.Nodes[id]["running"] = in["running"]
 		f.Nodes[id]["version"] = in["version"]
+		// what the node found on the machine this heartbeat; a heartbeat
+		// without them leaves the last ones, as the platform does
+		for _, k := range []string{"runtimes", "adapters", "sandbox", "reason"} {
+			if v, ok := in[k]; ok {
+				f.Nodes[id][k] = v
+			}
+		}
+		// an empty status is the ordinary heartbeat: online again
+		if status, _ := in["status"].(string); status != "" {
+			f.Nodes[id]["status"] = status
+		} else {
+			f.Nodes[id]["status"] = "online"
+		}
 	case "setGoal":
 		row := f.Goals[id]
 		if row == nil {
@@ -420,6 +652,26 @@ func (f *Fake) apply(name string, in map[string]any) error {
 	return nil
 }
 
+// release is ReleaseWorkItem of trd §1: only a claimed or running item,
+// only by the node holding it — the caller's credential, TokenNodeID
+// (empty skips the check) — back to ready with its node, harness and
+// session cleared, attempts unchanged, the reason its last note and not
+// its last error. Anything else is refused and changes nothing.
+func (f *Fake) release(item, in map[string]any) error {
+	if f.RefuseReleases {
+		return fmt.Errorf("releaseWorkItem is refused")
+	}
+	if item["status"] != "claimed" && item["status"] != "running" {
+		return fmt.Errorf("item is %s, not claimed or running", item["status"])
+	}
+	if f.TokenNodeID != "" && item["nodeId"] != f.TokenNodeID {
+		return fmt.Errorf("the item is not node %s's", f.TokenNodeID)
+	}
+	item["status"], item["nodeId"], item["harness"], item["sessionId"] = "ready", nil, nil, nil
+	item["lastNote"] = in["reason"]
+	return nil
+}
+
 // applyRebase is the rebase handshake of runsheet ADR 008 / trd §6a on
 // the item: requested → claimed by one node → rebased, or given up and
 // handed to the builder as a conflict rework (ready, attempts as they
@@ -463,12 +715,15 @@ func (f *Fake) issueItemRepoToken(in map[string]any) (map[string]any, error) {
 	if item == nil {
 		return nil, fmt.Errorf("no such item")
 	}
-	switch item["status"] {
-	case "claimed", "running", "evaluating": // its builder, then its evaluator
+	holder := item["nodeId"]
+	switch {
+	case item["status"] == "claimed", item["status"] == "running", item["status"] == "evaluating": // its builder, then its evaluator
+	case f.RebaseTokens && item["status"] == "review" && item["rebaseState"] == "claimed": // the node holding its rebase
+		holder = item["rebaseNodeId"]
 	default:
 		return nil, fmt.Errorf("item is %s, not claimed", item["status"])
 	}
-	if f.TokenNodeID != "" && item["nodeId"] != f.TokenNodeID {
+	if f.TokenNodeID != "" && holder != f.TokenNodeID {
 		return nil, fmt.Errorf("the item is not node %s's", f.TokenNodeID)
 	}
 	tok := f.GitHubTokens[id]

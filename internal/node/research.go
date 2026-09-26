@@ -35,6 +35,13 @@ type Director struct {
 	MaxBudgetUSD float64
 	// Model is what a research session runs on ("" the CLI's default).
 	Model string
+	// Accounts are the node's Claude accounts (node.yaml); a session runs
+	// on the first, or on the operator's own login when there are none.
+	// They are the fallback to the credentials the platform issues.
+	Accounts []AccountConfig
+	// Credentials asks the platform for the session's credentials and
+	// reports its usage record (nil: node.yaml's accounts, no record).
+	Credentials *Credentials
 	// Timeout caps its wall clock (0 none).
 	Timeout time.Duration
 	Log     *log.Logger
@@ -88,12 +95,13 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 		d.logf("project %s: context unavailable: %v", project.Slug, err)
 		cx = &Context{}
 	}
+	AddLive(ctx, d.GW, cx, scope.ID, project.ID, d.logf)
 	files, err := WriteContext(dir, cx)
 	if err != nil {
 		return fmt.Errorf("write context: %w", err)
 	}
 	contextDir := ""
-	if len(files) > 0 || len(cx.Index) > 0 {
+	if len(files) > 0 || len(cx.Index) > 0 || len(cx.Live) > 0 {
 		contextDir = ContextDir
 	}
 	// what the project has already taken on, and the room left: the
@@ -127,17 +135,38 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 		Kind: harness.KindResearch, Workspace: dir, Prompt: prompt, MaxBudgetUSD: budget,
 		Label: project.Slug + "/" + direction.Slug + " research", Timeout: d.Timeout, MCPServers: d.MCP, Model: d.Model,
 	}
+	acct, err := d.Credentials.Open(ctx, gateway.SessionRef{Kind: string(harness.KindResearch), DirectionID: direction.ID}, scope.NodeID, d.Accounts)
+	if err != nil {
+		return err
+	}
+	defer unlessDetached(ctx, acct.Cleanup)
+	acct.Apply(&job)
+	job.Meta = harness.SessionMeta{NodeID: scope.NodeID, DirectionID: direction.ID, TempDirs: sessionTempDirs(job, acct)}
 	d.logf("%s/%s: researching in %s (%d repos, room for %d)", project.Slug, direction.Slug, dir, len(dirs), room)
+	// the session outlives this process: a restart adopts it (ADR 009)
+	job.Outlive = true
 	result, err := d.Harness.Run(ctx, job, nil)
+	acct.Finish(ctx, result)
+	return d.handIn(ctx, direction, project, scope, dir, acct, result, err)
+}
+
+// handIn is what follows a research session, however this process came
+// to hold it: its proposals read and handed in — or, unreadable, an
+// empty research, so the claim is let go. A cancelled ctx leaves the
+// session running for the next node to adopt; otherwise its session
+// directory goes.
+func (d *Director) handIn(ctx context.Context, direction gateway.Direction, project gateway.Project, scope Scope, dir string, acct *SessionAccount, result harness.Result, err error) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
+	defer harness.RemoveSession(dir)
 	if errors.Is(err, context.DeadlineExceeded) {
 		return fmt.Errorf("research session ran out of time (%s)", d.Timeout)
 	}
 	if err != nil {
-		return fmt.Errorf("research session: %w", err)
+		return fmt.Errorf("research session: %w", acct.RedactErr(err))
 	}
+	result.Text = acct.Redact(result.Text)
 	specs, err := harness.ParseProposals(result.Text)
 	if err != nil {
 		// the cost is real and the claim must be let go, so hand in an
@@ -164,6 +193,21 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 	}
 	d.logf("%s/%s: proposed %d goal(s) ($%.2f)", project.Slug, direction.Slug, len(proposals), result.CostUSD)
 	return nil
+}
+
+// AdoptResearch takes up a research session a node process before this
+// one started (ADR 009): followed to its end, or read from its file when
+// it is gone, and handed in as Research hands in its own.
+func (d *Director) AdoptResearch(ctx context.Context, direction gateway.Direction, project gateway.Project, scope Scope, s FoundSession) error {
+	at, ok := d.Harness.(harness.Attacher)
+	if !ok {
+		s.Stop()
+		harness.RemoveSession(s.State.Workspace)
+		return errNoAttach
+	}
+	d.logf("%s/%s: adopted its %s research session (pid %d)", project.Slug, direction.Slug, s.Liveness(), s.State.PID)
+	result, err := at.Attach(ctx, s.Dir, nil)
+	return d.handIn(ctx, direction, project, scope, s.State.Workspace, nil, result, err)
 }
 
 // RoomFor is how many more goals a direction has space for, given the

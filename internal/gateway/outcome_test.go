@@ -2,6 +2,7 @@ package gateway_test
 
 import (
 	"context"
+	"encoding/json"
 	"reflect"
 	"testing"
 
@@ -53,7 +54,7 @@ func TestFinishWorkItemAlreadyDone(t *testing.T) {
 func TestFinishWorkItemBuiltUnchanged(t *testing.T) {
 	f := gatewaytest.New("rs_test")
 	defer f.Close()
-	f.NoOutcome = true
+	f.UnknownFields = map[string]bool{"outcome": true, "evidence": true}
 	runningItem(f)
 	gw := gateway.New(f.URL(), "rs_test")
 
@@ -70,41 +71,34 @@ func TestFinishWorkItemBuiltUnchanged(t *testing.T) {
 	}
 }
 
-// A WorkItem decodes its outcome and evidence; one without them — or
-// from a platform that cannot select them — is built.
+// A WorkItem decodes its outcome and evidence; one without them is
+// built. The reads do not select them until schema.json carries them
+// (ADR 010), so an item read from today's platform is built.
 func TestWorkItemOutcomeDecodes(t *testing.T) {
-	ctx := context.Background()
-	for _, old := range []bool{false, true} {
-		f := gatewaytest.New("rs_test")
-		f.NoOutcome = old
-		f.WorkItems["item-1"] = map[string]any{"id": "item-1", "orgId": orgID, "goalId": "g", "seq": 1, "status": "merged"}
-		f.WorkItems["item-2"] = map[string]any{"id": "item-2", "orgId": orgID, "goalId": "g", "seq": 2, "status": "merged"}
-		if !old {
-			f.WorkItems["item-2"]["outcome"], f.WorkItems["item-2"]["evidence"] = "already_done", "PR #3"
-		}
-		gw := gateway.New(f.URL(), "rs_test")
+	var done gateway.WorkItem
+	if err := json.Unmarshal([]byte(`{"id":"item-2","outcome":"already_done","evidence":"PR #3"}`), &done); err != nil {
+		t.Fatal(err)
+	}
+	if done.Outcome != gateway.OutcomeAlreadyDone || done.Evidence != "PR #3" {
+		t.Fatalf("item-2 = %+v", done)
+	}
+	var built gateway.WorkItem
+	if err := json.Unmarshal([]byte(`{"id":"item-1","seq":1,"status":"merged"}`), &built); err != nil {
+		t.Fatal(err)
+	}
+	if built.Outcome != gateway.OutcomeBuilt || built.Evidence != "" || built.Seq != 1 || built.Status != "merged" {
+		t.Fatalf("item-1 = %+v", built)
+	}
 
-		items, err := gw.GoalWorkItems(ctx, "g")
-		if err != nil {
-			t.Fatalf("old=%v: %v", old, err)
-		}
-		if len(items) != 2 || items[0].Outcome != gateway.OutcomeBuilt || items[0].Evidence != "" {
-			t.Fatalf("old=%v: items = %+v", old, items)
-		}
-		want2 := gateway.OutcomeAlreadyDone
-		if old {
-			want2 = gateway.OutcomeBuilt // the read is asked again without the fields
-		}
-		if items[1].Outcome != want2 {
-			t.Fatalf("old=%v: item 2 outcome = %q, want %q", old, items[1].Outcome, want2)
-		}
-		one, err := gw.WorkItem(ctx, "item-2")
-		if err != nil {
-			t.Fatalf("old=%v: %v", old, err)
-		}
-		if !old && (one.Outcome != gateway.OutcomeAlreadyDone || one.Evidence != "PR #3") {
-			t.Fatalf("item-2 = %+v", one)
-		}
-		f.Close()
+	f := gatewaytest.New("rs_test")
+	defer f.Close()
+	f.UnknownFields = map[string]bool{"outcome": true, "evidence": true}
+	f.WorkItems["item-1"] = map[string]any{"id": "item-1", "orgId": orgID, "goalId": "g", "seq": 1, "status": "merged"}
+	items, err := gateway.New(f.URL(), "rs_test").GoalWorkItems(context.Background(), "g")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Outcome != gateway.OutcomeBuilt {
+		t.Fatalf("items = %+v", items)
 	}
 }

@@ -16,7 +16,13 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/google/uuid"
+
+	"projectmesh.io/mesh-cli/internal/tools"
 )
 
 // DefaultURL is the platform gateway.
@@ -44,6 +50,29 @@ type Client struct {
 	BaseURL string
 	Source  TokenSource
 	HTTP    *http.Client
+
+	// itemsWithoutModel is set once the gateway has refused the
+	// WorkItemIndex fields items-carry-a-model added (an older
+	// platform): every later item read asks for workItemFields alone.
+	itemsWithoutModel atomic.Bool
+
+	// heartbeatBasicUntil (unix nanoseconds) is when the heartbeat next
+	// offers the fields the gateway refused (see HeartbeatNode).
+	heartbeatBasicUntil atomic.Int64
+	// nodesWithoutDesired is set once the gateway has refused
+	// NodeIndex.desiredVersion (a platform older than
+	// update-nodes-from-console): every later node read leaves it out.
+	nodesWithoutDesired atomic.Bool
+	// sessionsWithoutTools is set once the gateway has refused the
+	// claim-time read's `tools` (a platform older than
+	// tools-in-the-console): every later read asks for credentials alone.
+	sessionsWithoutTools atomic.Bool
+
+	// scalingSchema is what the gateway's heartbeat input was last found
+	// to take of `scaling` (see HeartbeatNode); Now is its clock,
+	// time.Now when nil.
+	scalingSchema scalingProbe
+	Now           func() time.Time
 }
 
 // New returns a client for baseURL (scheme+host, no trailing slash) with
@@ -284,11 +313,25 @@ type WorkItem struct {
 	RebaseFiles    []string `json:"rebaseFiles"`
 	RebaseNodeID   string   `json:"rebaseNodeId"`
 	RebasedHeadSHA string   `json:"rebasedHeadSha"`
+	// ProjectID is the Prologue project the item's goal is in: the scope
+	// its agent resolves in (AgentIDs).
+	ProjectID string `json:"projectId"`
+	// AgentSlug names the agent that builds the item (runsheet trd §6c);
+	// empty is the role's resolved definition.
+	AgentSlug string `json:"agentSlug"`
+	// Model is the tier the item is built on (runsheet trd §6a,
+	// items-carry-a-model): the plan's, else its named agent's; empty is
+	// the node's own. EvaluateModel is the tier the platform chose to
+	// evaluate it on. Both are empty from a platform older than the goal.
+	Model         string `json:"model"`
+	EvaluateModel string `json:"evaluateModel"`
 	// Outcome is how the item finished (mesh ADR 003 decision 1):
 	// OutcomeBuilt, a pushed branch, or OutcomeAlreadyDone, main already
 	// held the work and Evidence says where — merged PR URLs and/or
-	// commit SHAs on the base ref, with a line on why. A platform that
-	// does not carry the field yet decodes as built.
+	// commit SHAs on the base ref, with a line on why. Empty decodes as
+	// built. The reads select them once schema.json carries them (ADR
+	// 010: `evidence?` and `outcome?` in fields/WorkItemIndex.txt); until
+	// the platform serves them every item reads as built.
 	Outcome  string `json:"outcome"`
 	Evidence string `json:"evidence"`
 }
@@ -313,24 +356,61 @@ func (w *WorkItem) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-// legacyWorkItemFields is the selection a platform without the finish
-// outcome answers; workItemFields adds outcome and evidence.
-const (
-	legacyWorkItemFields = `id goalId orgId seq title brief acceptance repoId baseRef dependsOn status nodeId branch costCents attempts lastError lastNote prUrl heartbeatAt evaluation evaluationPassed rebaseState rebaseConflict rebaseFiles rebaseNodeId rebasedHeadSha`
-	workItemFields       = legacyWorkItemFields + ` outcome evidence`
-)
-
-// queryItems runs the work-item read q builds from a field selection. A
-// platform older than the finish outcome refuses the selection with
-// "Cannot query field"; the read is asked again without it, and the
-// items decode as built.
-func (c *Client) queryItems(ctx context.Context, q func(fields string) string, out any) error {
-	err := c.Query(ctx, q(workItemFields), nil, out)
-	var ge *Error
-	if errors.As(err, &ge) && (unknownOperation(ge.Message, "outcome") || unknownOperation(ge.Message, "evidence")) {
-		return c.Query(ctx, q(legacyWorkItemFields), nil, out)
+// AgentIDs are the Agent aggregate ids the item's AgentSlug may resolve
+// to, most specific first — the project's definition, the org's, the
+// platform's default (runsheet trd §6e, ids.AgentID) — or none when the
+// item names no agent. The first one AgentModel finds a model for wins.
+func (w WorkItem) AgentIDs() []string {
+	if w.AgentSlug == "" {
+		return nil
 	}
-	return err
+	org, _ := uuid.Parse(w.OrgID)
+	project, _ := uuid.Parse(w.ProjectID)
+	var ids []string
+	if org != uuid.Nil && project != uuid.Nil {
+		ids = append(ids, AgentID(org, project, w.AgentSlug).String())
+	}
+	if org != uuid.Nil {
+		ids = append(ids, AgentID(org, uuid.Nil, w.AgentSlug).String())
+	}
+	return append(ids, AgentID(uuid.Nil, uuid.Nil, w.AgentSlug).String())
+}
+
+// readItems runs one WorkItemIndex read, query being the document with
+// its selection left to fill in. The first read asks for the optional
+// fields too (fields/WorkItemIndex.txt's `?`: what items-carry-a-model
+// put on WorkItemIndex, runsheet trd §6a); a gateway that does not know
+// one of them is an older platform, and from then on the client asks
+// for the base fields alone.
+func (c *Client) readItems(ctx context.Context, query func(fields string) string, out any) error {
+	if !c.itemsWithoutModel.Load() {
+		err := c.Query(ctx, query(workItemFields+" "+workItemOptionalFields), nil, out)
+		var ge *Error
+		if err == nil || !errors.As(err, &ge) || !unknownField(ge.Message, workItemOptional...) {
+			return err
+		}
+		c.itemsWithoutModel.Store(true)
+	}
+	return c.Query(ctx, query(workItemFields), nil, out)
+}
+
+// unknownField reports whether a GraphQL error message is the schema
+// not knowing one of fields — a selected one ("Cannot query field") or
+// one of an input ("Unknown field", "is not defined by type").
+func unknownField(msg string, fields ...string) bool {
+	known := false
+	for _, s := range []string{"Cannot query field", "Unknown field", "unknown field", "is not defined by type"} {
+		known = known || strings.Contains(msg, s)
+	}
+	if !known {
+		return false
+	}
+	for _, f := range fields {
+		if strings.Contains(msg, `"`+f+`"`) {
+			return true
+		}
+	}
+	return false
 }
 
 func where(field, value string) string {
@@ -345,7 +425,7 @@ func (c *Client) ReadyWorkItems(ctx context.Context, orgID string) ([]WorkItem, 
 	q := func(fields string) string {
 		return fmt.Sprintf(`{ workItemIndexs(namespace: %q, where: [%s, %s]) { %s } }`, NS, where("org_id", orgID), where("status", "ready"), fields)
 	}
-	if err := c.queryItems(ctx, q, &out); err != nil {
+	if err := c.readItems(ctx, q, &out); err != nil {
 		return nil, err
 	}
 	items := out.Items
@@ -365,7 +445,7 @@ func (c *Client) WorkItem(ctx context.Context, id string) (*WorkItem, error) {
 	q := func(fields string) string {
 		return fmt.Sprintf(`{ workItemIndex(namespace: %q, id: %q) { %s } }`, NS, id, fields)
 	}
-	if err := c.queryItems(ctx, q, &out); err != nil {
+	if err := c.readItems(ctx, q, &out); err != nil {
 		return nil, err
 	}
 	if out.Item == nil {
@@ -386,7 +466,7 @@ func (c *Client) OrgWorkItems(ctx context.Context, orgID, status string) ([]Work
 	q := func(fields string) string {
 		return fmt.Sprintf(`{ workItemIndexs(namespace: %q, where: [%s]) { %s } }`, NS, wh, fields)
 	}
-	if err := c.queryItems(ctx, q, &out); err != nil {
+	if err := c.readItems(ctx, q, &out); err != nil {
 		return nil, err
 	}
 	sortBySeq(out.Items)
@@ -403,7 +483,7 @@ func (c *Client) RequestedRebases(ctx context.Context, orgID string) ([]WorkItem
 	q := func(fields string) string {
 		return fmt.Sprintf(`{ workItemIndexs(namespace: %q, where: [%s, %s]) { %s } }`, NS, where("org_id", orgID), where("rebase_state", "requested"), fields)
 	}
-	if err := c.queryItems(ctx, q, &out); err != nil {
+	if err := c.readItems(ctx, q, &out); err != nil {
 		return nil, err
 	}
 	sortBySeq(out.Items)
@@ -426,7 +506,7 @@ func (c *Client) GoalWorkItems(ctx context.Context, goalID string) ([]WorkItem, 
 	q := func(fields string) string {
 		return fmt.Sprintf(`{ workItemIndexs(namespace: %q, where: [%s]) { %s } }`, NS, where("goal_id", goalID), fields)
 	}
-	if err := c.queryItems(ctx, q, &out); err != nil {
+	if err := c.readItems(ctx, q, &out); err != nil {
 		return nil, err
 	}
 	items := out.Items
@@ -436,6 +516,32 @@ func (c *Client) GoalWorkItems(ctx context.Context, goalID string) ([]WorkItem, 
 		}
 	}
 	return items, nil
+}
+
+// AgentModel is the model an Agent definition names (runsheet trd §6e),
+// by its aggregate id (AgentID, WorkItem.AgentIDs). A definition that
+// does not exist, is retired or names no model is "", and so is a
+// platform without agents or without their model: none of those is an
+// error — the caller falls back to the node's own.
+func (c *Client) AgentModel(ctx context.Context, agentID string) (string, error) {
+	var out struct {
+		Agent *struct {
+			Model  string `json:"model"`
+			Status string `json:"status"`
+		} `json:"agentIndex"`
+	}
+	q := fmt.Sprintf(`{ agentIndex(namespace: %q, id: %q) { model status } }`, NS, agentID)
+	if err := c.Query(ctx, q, nil, &out); err != nil {
+		var ge *Error
+		if errors.As(err, &ge) && unknownField(ge.Message, "agentIndex", "model", "status") {
+			return "", nil
+		}
+		return "", err
+	}
+	if out.Agent == nil || out.Agent.Status == "retired" {
+		return "", nil
+	}
+	return out.Agent.Model, nil
 }
 
 // Goal is a GoalIndex row.
@@ -458,8 +564,6 @@ type Goal struct {
 	// node claims ready work in this order across every org it serves.
 	Priority string `json:"priority"`
 }
-
-const goalFields = `id slug title statement acceptance projectId directionId budgetCents spentCents status pausedReason checkpoints priority`
 
 // PriorityRank orders goal priorities, most pressing first: urgent 0,
 // high 1, normal 2, low 3. Empty or unknown reads as normal.
@@ -517,8 +621,6 @@ type Project struct {
 	MaxLiveGoals int `json:"maxLiveGoals"`
 }
 
-const projectFields = `id slug name repoIds orgId maxLiveGoals`
-
 // Project reads one project by id.
 func (c *Client) Project(ctx context.Context, id string) (*Project, error) {
 	var out struct {
@@ -575,8 +677,6 @@ type Direction struct {
 	ResearchClaimedAt string `json:"researchClaimedAt"`
 	ResearchedAt      string `json:"researchedAt"`
 }
-
-const directionFields = `id projectId orgId slug name direction enabled fromMinute toMinute timezone gapMinutes maxLiveGoals status researchNodeId researchClaimedAt researchedAt`
 
 // Active reports whether the direction is one to offer the platform at
 // all: switched on and not archived. Whether it may run *now* — the
@@ -678,6 +778,27 @@ type Node struct {
 	Capacity   int    `json:"capacity"`
 	Version    string `json:"version"`
 	LastSeenAt string `json:"lastSeenAt"`
+	// DesiredVersion is the version the platform asks the node to run
+	// (update-nodes-from-console); empty leaves it be, and so does a
+	// platform older than the field.
+	DesiredVersion string `json:"desiredVersion"`
+}
+
+// readNodes runs one NodeIndex read, query being the document with its
+// selection left to fill in. It asks for desiredVersion too; a gateway
+// that does not know it is a platform older than the field, and from
+// then on the client asks for nodeFields alone (both generated from
+// fields/NodeIndex.txt). It reports whether the field was read.
+func (c *Client) readNodes(ctx context.Context, query func(fields string) string, out any) (bool, error) {
+	if !c.nodesWithoutDesired.Load() {
+		err := c.Query(ctx, query(nodeFields+" "+nodeOptionalFields), nil, out)
+		var ge *Error
+		if err == nil || !errors.As(err, &ge) || !unknownField(ge.Message, nodeOptional...) {
+			return true, err
+		}
+		c.nodesWithoutDesired.Store(true)
+	}
+	return false, c.Query(ctx, query(nodeFields), nil, out)
 }
 
 // Nodes lists an org's nodes.
@@ -685,11 +806,36 @@ func (c *Client) Nodes(ctx context.Context, orgID string) ([]Node, error) {
 	var out struct {
 		Nodes []Node `json:"nodeIndexs"`
 	}
-	q := fmt.Sprintf(`{ nodeIndexs(namespace: %q, where: [%s]) { id name slug status running capacity version lastSeenAt } }`, NS, where("org_id", orgID))
-	if err := c.Query(ctx, q, nil, &out); err != nil {
+	q := func(fields string) string {
+		return fmt.Sprintf(`{ nodeIndexs(namespace: %q, where: [%s]) { %s } }`, NS, where("org_id", orgID), fields)
+	}
+	if _, err := c.readNodes(ctx, q, &out); err != nil {
 		return nil, err
 	}
 	return out.Nodes, nil
+}
+
+// GetDesiredVersion reads the version the platform asks node nodeID to
+// run; empty leaves it be. A platform that does not know the field
+// answers "" with an error IsUnsupported says is one, every time, so the
+// caller can note it once and carry on as if nothing were asked.
+func (c *Client) GetDesiredVersion(ctx context.Context, nodeID string) (string, error) {
+	var out struct {
+		Node *Node `json:"nodeIndex"`
+	}
+	q := func(fields string) string {
+		return fmt.Sprintf(`{ nodeIndex(namespace: %q, id: %q) { %s } }`, NS, nodeID, fields)
+	}
+	read, err := c.readNodes(ctx, q, &out)
+	switch {
+	case err != nil:
+		return "", err
+	case !read:
+		return "", &Error{Message: "the platform has no NodeIndex.desiredVersion", Unsupported: true}
+	case out.Node == nil:
+		return "", fmt.Errorf("node %s not found", nodeID)
+	}
+	return out.Node.DesiredVersion, nil
 }
 
 // ---- commands ---------------------------------------------------------------
@@ -718,9 +864,267 @@ func (c *Client) RegisterNode(ctx context.Context, in RegisterNodeInput) error {
 	})
 }
 
-// HeartbeatNode reports liveness and the running session count.
-func (c *Client) HeartbeatNode(ctx context.Context, nodeID, version string, running int) error {
-	return c.Mutate(ctx, "heartbeatNode", nodeID, map[string]any{"version": version, "running": running})
+// HeartbeatExtras are what a heartbeat reports beyond liveness. Each is
+// sent only when set: they are fields the platform half adds
+// (update-nodes-from-console), and a platform without them must go on
+// accepting the heartbeat of an ordinary node.
+type HeartbeatExtras struct {
+	// Draining says the node claims nothing new and is letting its
+	// sessions finish.
+	Draining bool
+	// UpdateError says why the last self-update was refused or rolled back.
+	UpdateError string
+	// Limits are the latest Claude plan limits the node has read, one
+	// per account (runsheet goal limits-on-the-console).
+	Limits []Limits
+	// Scaling is the node's capacity in force, its range and why, and
+	// each account's slots (adr-004, adr-005-capacity-across-accounts);
+	// a fixed node on one account sends none (runsheet goal
+	// limits-on-the-console). It is sent only when the gateway's schema
+	// takes it (HeartbeatNode).
+	Scaling *Scaling
+	// Runtimes are the local tool runtimes the node can start (npx,
+	// uvx, docker) and Adapters the agent CLIs it has (claude-code,
+	// codex), as probed this tick (trd §1 Node, §3 Tools; runsheet goal
+	// tools-in-the-console).
+	Runtimes []string
+	Adapters []string
+	// Sandbox is whether the node's sessions run in their own pods, on
+	// which runtime and image (trd §1 Node, ADR 007); nil sends none.
+	Sandbox *SandboxInfo
+	// Status is the node's liveness when it is not the ordinary one:
+	// harness_unavailable — alive, but its harness cannot run a session
+	// (out of credit, rate-limited; trd §1 Node, §3), with why in Reason,
+	// which the platform turns into one needs_person row. Empty is the
+	// ordinary heartbeat (online) and sends no key.
+	Status string
+	// Reason is a condition of the node's while it stays online: a
+	// session its sandbox's limits killed, naming the limit and the item
+	// (trd §1 Node, `sandbox`); or why the node is Status.
+	Reason string
+	// Adopted are the sessions a restarted node took over from the process
+	// before it rather than starting them (mesh-specs ADR 008, mesh-cli
+	// ADR 009); none sends no key.
+	Adopted []AdoptedSession
+}
+
+// AdoptedSession is one entry of the heartbeat's `adopted`: the item the
+// session is for (a plan's goal, a research session's direction), its
+// kind (build, evaluate, plan, research, rebase) and when the session
+// started.
+type AdoptedSession struct {
+	ItemID string    `json:"itemId"`
+	Kind   string    `json:"kind"`
+	Since  time.Time `json:"since"`
+}
+
+// SandboxInfo is the heartbeat's `sandbox`: the mode (on or off), the
+// container runtime and its version, and the node image.
+type SandboxInfo struct {
+	Mode    string `json:"mode"`
+	Runtime string `json:"runtime,omitempty"`
+	Image   string `json:"image,omitempty"`
+}
+
+// Scaling is what a node whose capacity is a range, or that runs on
+// several accounts, reports of it: the capacity in force, node.yaml's
+// min and max, the reason (adr-004, adr-005-capacity-across-accounts),
+// and each account's slots as the accounts scaler last counted them —
+// none before it has, or on a platform whose `scaling` has no
+// `accounts`.
+type Scaling struct {
+	Capacity int              `json:"capacity"`
+	Min      int              `json:"min"`
+	Max      int              `json:"max"`
+	Reason   string           `json:"reason"`
+	Accounts []AccountScaling `json:"accounts,omitempty"`
+}
+
+// AccountScaling is one account's share of the capacity: its label and
+// kind (subscription or api), its slots for any work, the slots only
+// urgent and high work may take, and what bound them. Names only —
+// never a token, a key or the variable or file holding one.
+type AccountScaling struct {
+	Name            string `json:"name"`
+	Kind            string `json:"kind"`
+	Slots           int    `json:"slots"`
+	UrgentOnlySlots int    `json:"urgentOnlySlots"`
+	Reason          string `json:"reason"`
+}
+
+// Limits is one account's Claude plan limits as the latest session's
+// rate_limit_event reported them (mesh-specs trd §1). Times encode as
+// RFC 3339; a zero one is left out.
+type Limits struct {
+	Account        string       `json:"account"`
+	Status         string       `json:"status"`
+	RateLimitType  string       `json:"rateLimitType,omitempty"`
+	ResetsAt       time.Time    `json:"resetsAt,omitzero"`
+	OverageStatus  string       `json:"overageStatus,omitempty"`
+	IsUsingOverage bool         `json:"isUsingOverage"`
+	FiveHour       *LimitWindow `json:"fiveHour,omitempty"`
+	SevenDay       *LimitWindow `json:"sevenDay,omitempty"`
+	ObservedAt     time.Time    `json:"observedAt,omitzero"`
+}
+
+// LimitWindow is one of the plan's windows: how much of it is used, as
+// the session reported it, and when it starts over.
+type LimitWindow struct {
+	Utilization float64   `json:"utilization"`
+	ResetsAt    time.Time `json:"resetsAt,omitzero"`
+}
+
+// HeartbeatNode reports liveness and the running session count, and the
+// extras that are set (at most one struct is read).
+func (c *Client) HeartbeatNode(ctx context.Context, nodeID, version string, running int, extras ...HeartbeatExtras) error {
+	in := map[string]any{"version": version, "running": running}
+	if len(extras) > 0 {
+		x := extras[0]
+		if x.Draining {
+			in["draining"] = true
+		}
+		if x.UpdateError != "" {
+			in["updateError"] = x.UpdateError
+		}
+		if len(x.Limits) > 0 {
+			in["limits"] = x.Limits
+		}
+		if x.Scaling != nil {
+			switch takes, accounts := c.takesScaling(ctx); {
+			case !takes:
+			case !accounts && len(x.Scaling.Accounts) > 0:
+				bare := *x.Scaling
+				bare.Accounts = nil
+				in["scaling"] = &bare
+			default:
+				in["scaling"] = x.Scaling
+			}
+		}
+		if len(x.Runtimes) > 0 {
+			in["runtimes"] = x.Runtimes
+		}
+		if len(x.Adapters) > 0 {
+			in["adapters"] = x.Adapters
+		}
+		if x.Sandbox != nil {
+			in["sandbox"] = x.Sandbox
+		}
+		if x.Status != "" {
+			in["status"] = x.Status
+		}
+		if x.Reason != "" {
+			in["reason"] = x.Reason
+		}
+		if len(x.Adopted) > 0 {
+			in["adopted"] = x.Adopted
+		}
+	}
+	// A node can be newer than the platform it reports to: a field the
+	// gateway does not know yet makes GraphQL refuse the whole heartbeat,
+	// and a node whose heartbeats never land is marked offline while it
+	// works (2026-09-25: limits and scaling shipped before the platform
+	// took them). So the extra fields are dropped for a while when they
+	// are refused, and offered again every ten minutes.
+	if len(in) > 2 && time.Now().UnixNano() < c.heartbeatBasicUntil.Load() {
+		in = basicHeartbeat(in)
+	}
+	err := c.Mutate(ctx, "heartbeatNode", nodeID, in)
+	if err != nil && len(in) > 2 && strings.Contains(err.Error(), "got invalid value") {
+		c.heartbeatBasicUntil.Store(time.Now().Add(10 * time.Minute).UnixNano())
+		return c.Mutate(ctx, "heartbeatNode", nodeID, basicHeartbeat(in))
+	}
+	return err
+}
+
+// ScalingProbeEvery is how long the gateway's answer to whether its
+// heartbeat takes `scaling` is kept before it is asked again: a
+// platform deploy adds the field without the node restarting.
+const ScalingProbeEvery = time.Hour
+
+// scalingProbe is the cached answer: whether heartbeatNode's input has
+// `scaling`, whether that has `accounts`, and when it was asked.
+type scalingProbe struct {
+	mu       sync.Mutex
+	at       time.Time
+	takes    bool
+	accounts bool
+}
+
+func (c *Client) now() time.Time {
+	if c.Now != nil {
+		return c.Now()
+	}
+	return time.Now()
+}
+
+// takesScaling says whether the gateway's HeartbeatNodeInput has a
+// `scaling` field, and whether that takes `accounts` — asked once by
+// introspection and kept for ScalingProbeEvery (ADR-004: the node must
+// not send a field the platform does not accept). A failed probe is a
+// no, kept as long: the heartbeat goes on without the field. A scalar
+// `scaling` (a Map or JSON) takes any shape.
+func (c *Client) takesScaling(ctx context.Context) (bool, bool) {
+	p := &c.scalingSchema
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := c.now()
+	if !p.at.IsZero() && now.Sub(p.at) < ScalingProbeEvery {
+		return p.takes, p.accounts
+	}
+	type typeRef struct {
+		Kind        string `json:"kind"`
+		InputFields []struct {
+			Name string `json:"name"`
+		} `json:"inputFields"`
+		OfType *struct {
+			Kind        string `json:"kind"`
+			InputFields []struct {
+				Name string `json:"name"`
+			} `json:"inputFields"`
+		} `json:"ofType"`
+	}
+	var out struct {
+		Type *struct {
+			InputFields []struct {
+				Name string  `json:"name"`
+				Type typeRef `json:"type"`
+			} `json:"inputFields"`
+		} `json:"__type"`
+	}
+	p.at, p.takes, p.accounts = now, false, false
+	q := `{ __type(name: "HeartbeatNodeInput") { inputFields { name type { kind inputFields { name } ofType { kind inputFields { name } } } } } }`
+	if err := c.Query(ctx, q, nil, &out); err != nil || out.Type == nil {
+		return false, false
+	}
+	for _, f := range out.Type.InputFields {
+		if f.Name != "scaling" {
+			continue
+		}
+		p.takes = true
+		kind, fields := f.Type.Kind, f.Type.InputFields
+		if kind == "NON_NULL" && f.Type.OfType != nil {
+			kind, fields = f.Type.OfType.Kind, f.Type.OfType.InputFields
+		}
+		if kind == "SCALAR" {
+			p.accounts = true
+		}
+		for _, sf := range fields {
+			if sf.Name == "accounts" {
+				p.accounts = true
+			}
+		}
+	}
+	return p.takes, p.accounts
+}
+
+// basicHeartbeat is a heartbeat with only the fields every platform
+// since node drains takes: version, running and draining.
+func basicHeartbeat(in map[string]any) map[string]any {
+	out := map[string]any{"version": in["version"], "running": in["running"]}
+	if d, ok := in["draining"]; ok {
+		out["draining"] = d
+	}
+	return out
 }
 
 // ClaimWorkItem takes the item's lock; a refusal is a gateway.Error.
@@ -780,6 +1184,16 @@ func (c *Client) FinishWorkItemAlreadyDone(ctx context.Context, itemID, evidence
 // FailWorkItem records the failure.
 func (c *Client) FailWorkItem(ctx context.Context, itemID, errMsg string) error {
 	return c.Mutate(ctx, "failWorkItem", itemID, map[string]any{"error": errMsg})
+}
+
+// ReleaseWorkItem hands back an item this node holds without failing it:
+// the node's condition, not the item's (mesh-specs trd §1, §3) — its
+// harness could not run, or GitHub refused the item's token through every
+// retry. The platform takes it only for a claimed or running item held by
+// the calling node; the item is ready again with its node cleared,
+// attempts unchanged, and the reason in last_note, not last_error.
+func (c *Client) ReleaseWorkItem(ctx context.Context, itemID, reason string) error {
+	return c.Mutate(ctx, "releaseWorkItem", itemID, map[string]any{"reason": reason})
 }
 
 // EvaluateWorkItem records the evaluator's verdict (phase 1's session; the
@@ -896,6 +1310,13 @@ type PlannedItem struct {
 	DependsOn  []int  `json:"dependsOn"`
 	RepoID     string `json:"repoId"`
 	BaseRef    string `json:"baseRef"`
+	// Model is the tier the planner chose for the item (opus, sonnet,
+	// haiku; runsheet trd §6a); empty leaves it to the node.
+	Model string `json:"model,omitempty"`
+	// DependsBecause is the planner's one line of what each kept
+	// dependency uses, by seq (trd §1 WorkItem depends_on): the node
+	// keeps it and PlanGoal does not send it to the platform.
+	DependsBecause map[int]string `json:"-"`
 }
 
 // RequestPlan asks the planner for the goal's graph: the goal waits in
@@ -959,24 +1380,38 @@ func (c *Client) RecordDirectionResearch(ctx context.Context, directionID, nodeI
 }
 
 // PlanGoal hands the goal its graph, with the planner session's cost
-// when one drew it.
+// when one drew it. An item's model is sent only when it has one; a
+// platform older than items-carry-a-model refuses the field, and the
+// graph is handed in again without it.
 func (c *Client) PlanGoal(ctx context.Context, goalID, by string, items []PlannedItem, costCents int) error {
-	list := make([]map[string]any, 0, len(items))
-	for _, it := range items {
-		deps := it.DependsOn
-		if deps == nil {
-			deps = []int{} // the input is non-null
+	send := func(withModel bool) error {
+		list := make([]map[string]any, 0, len(items))
+		for _, it := range items {
+			deps := it.DependsOn
+			if deps == nil {
+				deps = []int{} // the input is non-null
+			}
+			row := map[string]any{
+				"seq": it.Seq, "title": it.Title, "brief": it.Brief, "acceptance": it.Acceptance,
+				"dependsOn": deps, "repoId": it.RepoID, "baseRef": it.BaseRef,
+			}
+			if withModel && it.Model != "" {
+				row["model"] = it.Model
+			}
+			list = append(list, row)
 		}
-		list = append(list, map[string]any{
-			"seq": it.Seq, "title": it.Title, "brief": it.Brief, "acceptance": it.Acceptance,
-			"dependsOn": deps, "repoId": it.RepoID, "baseRef": it.BaseRef,
-		})
+		m := map[string]any{"items": list, "costCents": costCents}
+		if by != "" {
+			m["by"] = by
+		}
+		return c.Mutate(ctx, "planGoal", goalID, m)
 	}
-	m := map[string]any{"items": list, "costCents": costCents}
-	if by != "" {
-		m["by"] = by
+	err := send(true)
+	var ge *Error
+	if err != nil && errors.As(err, &ge) && unknownField(ge.Message, "model") {
+		return send(false)
 	}
-	return c.Mutate(ctx, "planGoal", goalID, m)
+	return err
 }
 
 // ApproveGraph approves the pending graph checkpoint.
@@ -1065,4 +1500,227 @@ func (c *Client) PrologueDocument(ctx context.Context, org, project, doc string)
 		return "", err
 	}
 	return string(raw), nil
+}
+
+// ---- credentials and usage (runsheet credentials-sealed-in-loom, usage-ledger) ----
+
+// SessionRef names the session a credential read or a usage record is
+// for: its kind (build, evaluate, plan, research, rebase) and what it
+// works on — the item for a build, an evaluation or a rebase (and its
+// goal), the goal for a plan, the direction for research.
+type SessionRef struct {
+	Kind        string
+	ItemID      string
+	GoalID      string
+	DirectionID string
+}
+
+// Credential is one Claude account the platform hands the node that
+// claimed a session (the claim-time read, adr-005): a subscription's
+// `claude setup-token` token or an API key, decrypted for this node and
+// this session only. Secret is never logged: String and GoString leave
+// it out, and nothing the node reports carries it.
+type Credential struct {
+	ID    string
+	Label string
+	// Kind is "subscription" or "api".
+	Kind   string
+	Secret string
+	// CapDailyUSD and CapMonthlyUSD are an api key's caps (0: the
+	// platform's default, $50 and $1,000); SpentDailyUSD and
+	// SpentMonthlyUSD what the ledger has counted against them so far.
+	CapDailyUSD     float64
+	CapMonthlyUSD   float64
+	SpentDailyUSD   float64
+	SpentMonthlyUSD float64
+}
+
+// String is the credential without its secret.
+func (c Credential) String() string {
+	return fmt.Sprintf("credential %s (%s, %s)", c.Label, c.Kind, c.ID)
+}
+
+// GoString is String, so %#v leaves the secret out too.
+func (c Credential) GoString() string { return c.String() }
+
+// Session is what the claim-time read hands the node that claimed a
+// session: the credentials it may run on and the tools its project and
+// role give it (trd §3 Tools), their secrets decrypted for this node and
+// this session only. Tools is nil from a platform without the field.
+type Session struct {
+	Credentials []Credential
+	Tools       []tools.Tool
+}
+
+// SessionCredentials is the claim-time read's credentials alone (Session).
+func (c *Client) SessionCredentials(ctx context.Context, ref SessionRef, nodeID string) ([]Credential, error) {
+	s, err := c.Session(ctx, ref, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	return s.Credentials, nil
+}
+
+// sessionToolFields is the selection of a claim-time read's tools;
+// headers, env and secrets are maps.
+const sessionToolFields = `tools { name transport url headers runtime command args env secrets required roles pricePerCallCents }`
+
+// Session is the claim-time read: the credentials the session ref names
+// may run on and its tools, their secrets decrypted for nodeID, which
+// must hold the session's claim (anything else is a refusal). A platform
+// without the mutation answers IsUnsupported, and the node falls back to
+// node.yaml's accounts; one without `tools` is asked for the credentials
+// alone from then on, and the session gets no console tools. No error,
+// log line or report carries a secret.
+func (c *Client) Session(ctx context.Context, ref SessionRef, nodeID string) (*Session, error) {
+	const field = "sessionCredentials"
+	in := map[string]any{"namespace": NS, "kind": ref.Kind, "nodeId": nodeID}
+	for k, v := range map[string]string{"workItemId": ref.ItemID, "goalId": ref.GoalID, "directionId": ref.DirectionID} {
+		if v != "" {
+			in[k] = v
+		}
+	}
+	var out struct {
+		SessionCredentials *struct {
+			Credentials []struct {
+				ID              string  `json:"id"`
+				Label           string  `json:"label"`
+				Kind            string  `json:"kind"`
+				Secret          string  `json:"secret"`
+				CapDailyUSD     float64 `json:"capDailyUsd"`
+				CapMonthlyUSD   float64 `json:"capMonthlyUsd"`
+				SpentDailyUSD   float64 `json:"spentDailyUsd"`
+				SpentMonthlyUSD float64 `json:"spentMonthlyUsd"`
+			} `json:"credentials"`
+			Tools []tools.Tool `json:"tools"`
+		} `json:"sessionCredentials"`
+	}
+	q := func(extra string) string {
+		return `mutation($in: SessionCredentialsInput!) { sessionCredentials(input: $in) { credentials { id label kind secret capDailyUsd capMonthlyUsd spentDailyUsd spentMonthlyUsd } ` + extra + `} }`
+	}
+	var err error
+	if !c.sessionsWithoutTools.Load() {
+		err = c.Query(ctx, q(sessionToolFields+" "), map[string]any{"in": in}, &out)
+		var ge *Error
+		if err != nil && errors.As(err, &ge) && unknownField(ge.Message, "tools") {
+			c.sessionsWithoutTools.Store(true)
+		}
+	}
+	if c.sessionsWithoutTools.Load() {
+		err = c.Query(ctx, q(""), map[string]any{"in": in}, &out)
+	}
+	if err != nil {
+		var ge *Error
+		if errors.As(err, &ge) && (unknownOperation(ge.Message, field) || schemaMismatch(ge.Message, field) || unknownField(ge.Message, "credentials", "secret", "capDailyUsd", "capMonthlyUsd", "spentDailyUsd", "spentMonthlyUsd")) {
+			return nil, &Error{Message: ge.Message, Unsupported: true}
+		}
+		return nil, err
+	}
+	s := &Session{}
+	if out.SessionCredentials == nil {
+		return s, nil
+	}
+	s.Credentials = make([]Credential, 0, len(out.SessionCredentials.Credentials))
+	for _, cr := range out.SessionCredentials.Credentials {
+		s.Credentials = append(s.Credentials, Credential{
+			ID: cr.ID, Label: cr.Label, Kind: cr.Kind, Secret: cr.Secret,
+			CapDailyUSD: cr.CapDailyUSD, CapMonthlyUSD: cr.CapMonthlyUSD,
+			SpentDailyUSD: cr.SpentDailyUSD, SpentMonthlyUSD: cr.SpentMonthlyUSD,
+		})
+	}
+	s.Tools = out.SessionCredentials.Tools
+	return s, nil
+}
+
+// UsageWindows is an account's plan standing at one moment — the
+// five-hour and seven-day windows' utilization (0–1) and resets — as
+// the latest rate_limit_event read it; a window never read is nil.
+type UsageWindows struct {
+	FiveHour *LimitWindow `json:"fiveHour,omitempty"`
+	SevenDay *LimitWindow `json:"sevenDay,omitempty"`
+}
+
+// UsageRecord is one session's line in the platform's usage ledger: what
+// it was for, the credential it ran on (id when the platform issued it,
+// label always), what it consumed and cost, and its account's windows
+// before and after. InputTokens counts every input token, the cached
+// ones (CacheReadTokens, CacheWriteTokens) included. It never carries
+// a secret.
+type UsageRecord struct {
+	Kind             string        `json:"kind"`
+	ItemID           string        `json:"workItemId,omitempty"`
+	GoalID           string        `json:"goalId,omitempty"`
+	DirectionID      string        `json:"directionId,omitempty"`
+	NodeID           string        `json:"nodeId,omitempty"`
+	SessionID        string        `json:"sessionId,omitempty"`
+	CredentialID     string        `json:"credentialId,omitempty"`
+	CredentialLabel  string        `json:"credentialLabel"`
+	CredentialKind   string        `json:"credentialKind,omitempty"`
+	Model            string        `json:"model,omitempty"`
+	InputTokens      int64         `json:"inputTokens"`
+	OutputTokens     int64         `json:"outputTokens"`
+	CacheReadTokens  int64         `json:"cacheReadTokens"`
+	CacheWriteTokens int64         `json:"cacheWriteTokens"`
+	CostUSD          float64       `json:"costUsd"`
+	Before           *UsageWindows `json:"before,omitempty"`
+	After            *UsageWindows `json:"after,omitempty"`
+	StartedAt        time.Time     `json:"startedAt"`
+	EndedAt          time.Time     `json:"endedAt"`
+}
+
+// RecordSessionUsage hands one session's usage record to the ledger. A
+// platform without the mutation answers IsUnsupported, and the node
+// writes the record to its log instead.
+func (c *Client) RecordSessionUsage(ctx context.Context, rec UsageRecord) error {
+	const field = "recordSessionUsage"
+	data, err := json.Marshal(rec)
+	if err != nil {
+		return err
+	}
+	in := map[string]any{}
+	if err := json.Unmarshal(data, &in); err != nil {
+		return err
+	}
+	in["namespace"] = NS
+	q := `mutation($in: RecordSessionUsageInput!) { recordSessionUsage(input: $in) { status } }`
+	if err := c.Query(ctx, q, map[string]any{"in": in}, nil); err != nil {
+		var ge *Error
+		if errors.As(err, &ge) && (unknownOperation(ge.Message, field) || schemaMismatch(ge.Message, field)) {
+			return &Error{Message: ge.Message, Unsupported: true}
+		}
+		return err
+	}
+	return nil
+}
+
+// ToolUsage is a priced tool's calls in one session (trd §3 Tools,
+// priced calls are usage): the item and the session's kind, the tool's
+// name, how many calls and their list price in cents (calls × the
+// tool's pricePerCallCents). It lies beside the session's UsageRecord.
+type ToolUsage struct {
+	ItemID         string `json:"workItemId"`
+	Kind           string `json:"kind"`
+	Tool           string `json:"tool"`
+	Calls          int    `json:"calls"`
+	ListPriceCents int    `json:"listPriceCents"`
+}
+
+// RecordUsage hands one priced tool's usage record to the platform. A
+// platform without the mutation answers IsUnsupported, and the node
+// carries on without it.
+func (c *Client) RecordUsage(ctx context.Context, u ToolUsage) error {
+	const field = "recordUsage"
+	in := map[string]any{
+		"namespace": NS, "workItemId": u.ItemID, "kind": u.Kind, "tool": u.Tool,
+		"calls": u.Calls, "listPriceCents": u.ListPriceCents,
+	}
+	q := `mutation($in: RecordUsageInput!) { recordUsage(input: $in) { status } }`
+	if err := c.Query(ctx, q, map[string]any{"in": in}, nil); err != nil {
+		var ge *Error
+		if errors.As(err, &ge) && (unknownOperation(ge.Message, field) || schemaMismatch(ge.Message, field)) {
+			return &Error{Message: ge.Message, Unsupported: true}
+		}
+		return err
+	}
+	return nil
 }

@@ -32,6 +32,13 @@ type Planner struct {
 	MaxBudgetUSD float64
 	// Model is what a planner session runs on ("" the CLI's default).
 	Model string
+	// Accounts are the node's Claude accounts (node.yaml); a session runs
+	// on the first, or on the operator's own login when there are none.
+	// They are the fallback to the credentials the platform issues.
+	Accounts []AccountConfig
+	// Credentials asks the platform for the session's credentials and
+	// reports its usage record (nil: node.yaml's accounts, no record).
+	Credentials *Credentials
 	// Timeout caps its wall clock (0 none).
 	Timeout time.Duration
 	Log     *log.Logger
@@ -77,14 +84,16 @@ func (p *Planner) Plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 	return err
 }
 
-func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) error {
+// projectRepos reads the goal's project and its enrolled repos, by
+// owner/name.
+func (p *Planner) projectRepos(ctx context.Context, goal gateway.Goal, scope Scope) (*gateway.Project, map[string]gateway.Repo, error) {
 	project, err := p.GW.Project(ctx, goal.ProjectID)
 	if err != nil {
-		return fmt.Errorf("project: %w", err)
+		return nil, nil, fmt.Errorf("project: %w", err)
 	}
 	all, err := p.GW.Repos(ctx, scope.AccountID, scope.Login)
 	if err != nil {
-		return fmt.Errorf("repos: %w", err)
+		return nil, nil, fmt.Errorf("repos: %w", err)
 	}
 	inProject := map[string]bool{}
 	for _, id := range project.RepoIDs {
@@ -97,7 +106,15 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 		}
 	}
 	if len(repos) == 0 {
-		return fmt.Errorf("project %s has no repos enrolled; nothing to plan in", project.Slug)
+		return nil, nil, fmt.Errorf("project %s has no repos enrolled; nothing to plan in", project.Slug)
+	}
+	return project, repos, nil
+}
+
+func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) error {
+	project, repos, err := p.projectRepos(ctx, goal, scope)
+	if err != nil {
+		return err
 	}
 	dir := PlanDir(p.WorkRoot, goal.Slug)
 	dirs := map[string]string{}
@@ -113,12 +130,13 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 		p.logf("goal %s: context unavailable: %v", goal.Slug, err)
 		cx = &Context{}
 	}
+	AddLive(ctx, p.GW, cx, scope.ID, project.ID, p.logf)
 	files, err := WriteContext(dir, cx)
 	if err != nil {
 		return fmt.Errorf("write context: %w", err)
 	}
 	contextDir := ""
-	if len(files) > 0 || len(cx.Index) > 0 {
+	if len(files) > 0 || len(cx.Index) > 0 || len(cx.Live) > 0 {
 		contextDir = ContextDir
 	}
 	// a re-plan: the items so far, and where the numbering goes on
@@ -142,32 +160,106 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 	} else {
 		p.logf("goal %s: items so far unavailable: %v", goal.Slug, err)
 	}
-	prompt := harness.PlanPrompt(harness.PlanInput{
+	in := harness.PlanInput{
 		GoalSlug: goal.Slug, GoalTitle: goal.Title, Statement: goal.Statement, Acceptance: goal.Acceptance, BudgetCents: goal.BudgetCents,
 		Org: scope.Login, Project: project.Slug, Repos: dirs, ContextDir: contextDir, ContextFiles: files, Blocked: goal.PausedReason,
 		Existing: existing, NextSeq: nextSeq, Prologue: len(p.MCP) > 0,
-	})
+	}
 	budget := p.MaxBudgetUSD
 	if budget <= 0 {
 		budget = 5
 	}
-	job := harness.Job{Kind: harness.KindPlan, Workspace: dir, Prompt: prompt, MaxBudgetUSD: budget, Label: goal.Slug + " plan", Timeout: p.Timeout, MCPServers: p.MCP, Model: p.Model}
 	p.logf("goal %s: planning in %s (%d repos)", goal.Slug, dir, len(repos))
-	result, err := p.Harness.Run(ctx, job, nil)
-	if ctx.Err() != nil {
-		return ctx.Err()
+	items, reasons, flags, cost, err := p.ask(ctx, goal, scope.NodeID, dir, budget, in, repos, merged)
+	if err != nil {
+		return err
 	}
+	if len(flags) > 0 {
+		// adr-004: an acceptance no evaluator can see is the plan's error;
+		// the planner is asked once more with what was flagged
+		p.logf("goal %s: plan names what no evaluator can see; asking again: %s", goal.Slug, strings.Join(flags, " | "))
+		in.Rejected = flags
+		var again float64
+		items, reasons, flags, again, err = p.ask(ctx, goal, scope.NodeID, dir, budget, in, repos, merged)
+		cost += again
+		if err != nil {
+			return err
+		}
+		if len(flags) > 0 {
+			// adr-004: the second plan is handed in as it stands; the
+			// evaluator's unverifiable-clause rule is the backstop
+			p.logf("goal %s: plan still names what no evaluator can see; handing it in: %s", goal.Slug, strings.Join(flags, " | "))
+		}
+	}
+	return p.handIn(ctx, goal, items, reasons, cost)
+}
+
+// handIn hands the graph in with PlanGoal and logs each item's model.
+func (p *Planner) handIn(ctx context.Context, goal gateway.Goal, items []gateway.PlannedItem, reasons map[int]string, cost float64) error {
+	by := ""
+	if p.Cfg != nil {
+		by = p.Cfg.OwnerID
+	}
+	if err := p.GW.PlanGoal(ctx, goal.ID, by, items, Cents(cost)); err != nil {
+		return fmt.Errorf("hand in the plan: %w", err)
+	}
+	p.logf("goal %s: planned, %d items ($%.2f)", goal.Slug, len(items), cost)
+	for _, it := range items {
+		model := it.Model
+		if model == "" {
+			model = "none (the node's own)"
+		}
+		if r := reasons[it.Seq]; r != "" {
+			model += ": " + r
+		}
+		p.logf("goal %s: item %d %q: model %s", goal.Slug, it.Seq, it.Title, model)
+	}
+	return nil
+}
+
+// ask runs one planner session on in and reads its graph: the items
+// mapped onto the project's repos, each item's model_reason by seq, the
+// check's flags on their acceptance (unverifiableAcceptance), and the
+// session's cost. An error means there is no graph to hand in.
+func (p *Planner) ask(ctx context.Context, goal gateway.Goal, nodeID, dir string, budget float64, in harness.PlanInput, repos map[string]gateway.Repo, merged []int) ([]gateway.PlannedItem, map[int]string, []string, float64, error) {
+	job := harness.Job{Kind: harness.KindPlan, Workspace: dir, Prompt: harness.PlanPrompt(in), MaxBudgetUSD: budget, Label: goal.Slug + " plan", Timeout: p.Timeout, MCPServers: p.MCP, Model: p.Model}
+	acct, err := p.Credentials.Open(ctx, gateway.SessionRef{Kind: string(harness.KindPlan), GoalID: goal.ID}, nodeID, p.Accounts)
+	if err != nil {
+		return nil, nil, nil, 0, err
+	}
+	defer unlessDetached(ctx, acct.Cleanup)
+	acct.Apply(&job)
+	job.Meta = harness.SessionMeta{NodeID: nodeID, GoalID: goal.ID, TempDirs: sessionTempDirs(job, acct)}
+	// the session outlives this process: a restart adopts it (ADR 009)
+	job.Outlive = true
+	result, err := p.Harness.Run(ctx, job, nil)
+	acct.Finish(ctx, result)
+	return p.readPlan(ctx, goal, dir, acct, result, err, repos, merged)
+}
+
+// readPlan is what follows a planner session, however this process came
+// to hold it: its graph read and mapped onto the project's repos, as ask
+// describes. A cancelled ctx leaves the session running for the next
+// node to adopt; otherwise its session directory goes.
+func (p *Planner) readPlan(ctx context.Context, goal gateway.Goal, dir string, acct *SessionAccount, result harness.Result, err error, repos map[string]gateway.Repo, merged []int) ([]gateway.PlannedItem, map[int]string, []string, float64, error) {
+	if ctx.Err() != nil {
+		return nil, nil, nil, 0, ctx.Err()
+	}
+	defer harness.RemoveSession(dir)
 	if errors.Is(err, context.DeadlineExceeded) {
-		return fmt.Errorf("planner session ran out of time (%s)", p.Timeout)
+		return nil, nil, nil, 0, fmt.Errorf("planner session ran out of time (%s)", p.Timeout)
 	}
 	if err != nil {
-		return fmt.Errorf("planner session: %w", err)
+		return nil, nil, nil, 0, fmt.Errorf("planner session: %w", acct.RedactErr(err))
 	}
+	result.Text = acct.Redact(result.Text)
 	specs, err := harness.ParsePlan(result.Text, merged...)
 	if err != nil {
-		return fmt.Errorf("planner session (%s): %w: %s", result.SessionID, err, truncate(result.Text, 300))
+		return nil, nil, nil, 0, fmt.Errorf("planner session (%s): %w: %s", result.SessionID, err, truncate(result.Text, 300))
 	}
 	items := make([]gateway.PlannedItem, 0, len(specs))
+	itemRepo := map[int]gateway.Repo{}
+	reasons := map[int]string{}
 	for _, sp := range specs {
 		r, ok := repos[sp.Repo]
 		if !ok {
@@ -179,25 +271,111 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 			}
 		}
 		if !ok {
-			return fmt.Errorf("item %d names repo %q, not one of the project's", sp.Seq, sp.Repo)
+			return nil, nil, nil, 0, fmt.Errorf("item %d names repo %q, not one of the project's", sp.Seq, sp.Repo)
 		}
+		itemRepo[sp.Seq] = r
 		base := strings.TrimSpace(sp.BaseRef)
 		if base == "" {
 			base = r.DefaultBranch
 		}
-		deps := sp.DependsOn
-		if deps == nil {
-			deps = []int{}
+		deps, because := p.explainedDeps(goal.Slug, sp)
+		model := strings.TrimSpace(sp.Model)
+		if model != "" && !PlannableModel(model) {
+			// the planner's choice is advice: an unknown one leaves the
+			// item on the node's own model rather than failing the plan
+			p.logf("goal %s: item %d %q: model %q is not haiku, sonnet, opus or a claude-* id; dropped", goal.Slug, sp.Seq, strings.TrimSpace(sp.Title), model)
+			model = ""
 		}
-		items = append(items, gateway.PlannedItem{Seq: sp.Seq, Title: strings.TrimSpace(sp.Title), Brief: strings.TrimSpace(sp.Brief), Acceptance: strings.TrimSpace(sp.Acceptance), DependsOn: deps, RepoID: r.ID, BaseRef: base})
+		reasons[sp.Seq] = strings.TrimSpace(sp.ModelReason)
+		items = append(items, gateway.PlannedItem{Seq: sp.Seq, Title: strings.TrimSpace(sp.Title), Brief: briefWithDeps(sp.Brief, deps, because), Acceptance: strings.TrimSpace(sp.Acceptance), DependsOn: deps, DependsBecause: because, RepoID: r.ID, BaseRef: base, Model: model})
 	}
-	by := ""
-	if p.Cfg != nil {
-		by = p.Cfg.OwnerID
+	return items, reasons, unverifiableAcceptance(specs, itemRepo, repos), result.CostUSD, nil
+}
+
+// explainedDeps keeps the item's dependencies that carry a because and
+// drops the rest, logging each (trd §5 phase 2, the dependency rubric):
+// the kept seqs and, by seq, what each one uses.
+func (p *Planner) explainedDeps(goal string, sp harness.PlannedSpec) ([]int, map[int]string) {
+	deps := []int{}
+	var because map[int]string
+	for _, d := range sp.DependsOn {
+		why := strings.TrimSpace(d.Because)
+		if why == "" {
+			p.logf("plan %s: item %d dropped dependency on %d: no because", goal, sp.Seq, d.Seq)
+			continue
+		}
+		if because == nil {
+			because = map[int]string{}
+		}
+		if _, dup := because[d.Seq]; dup {
+			continue
+		}
+		deps = append(deps, d.Seq)
+		because[d.Seq] = why
 	}
-	if err := p.GW.PlanGoal(ctx, goal.ID, by, items, Cents(result.CostUSD)); err != nil {
-		return fmt.Errorf("hand in the plan: %w", err)
+	return deps, because
+}
+
+// briefWithDeps is the item's brief with a line per kept dependency,
+// so the builder sees what it is waiting for.
+func briefWithDeps(brief string, deps []int, because map[int]string) string {
+	brief = strings.TrimSpace(brief)
+	if len(deps) == 0 {
+		return brief
 	}
-	p.logf("goal %s: planned, %d items ($%.2f)", goal.Slug, len(items), result.CostUSD)
-	return nil
+	var b strings.Builder
+	b.WriteString(brief)
+	if brief != "" {
+		b.WriteString("\n\n")
+	}
+	for i, d := range deps {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		fmt.Fprintf(&b, "Depends on #%d because %s", d, strings.TrimRight(because[d], "."))
+		b.WriteString(".")
+	}
+	return b.String()
+}
+
+// AdoptPlan takes up a planner session a node process before this one
+// started (ADR 009): followed to its end, or read from its file when it
+// is gone, its graph read and handed in. A plan the session left flagged
+// (adr-004) is handed in as it stands: its prompt is not kept to ask
+// again. A goal no longer in planning is not its to plan: the session is
+// stopped and its directory removed.
+func (p *Planner) AdoptPlan(ctx context.Context, goal gateway.Goal, scope Scope, s FoundSession) error {
+	if goal.Status != "planning" {
+		p.logf("goal %s: adopted plan is no longer wanted (%s); stopped", goal.Slug, goal.Status)
+		s.Stop()
+		return harness.RemoveSession(s.State.Workspace)
+	}
+	_, repos, err := p.projectRepos(ctx, goal, scope)
+	if err != nil {
+		return err
+	}
+	var merged []int
+	if items, err := p.GW.GoalWorkItems(ctx, goal.ID); err == nil {
+		for _, it := range items {
+			if it.Status == "merged" {
+				merged = append(merged, it.Seq)
+			}
+		}
+	}
+	at, ok := p.Harness.(harness.Attacher)
+	if !ok {
+		s.Stop()
+		harness.RemoveSession(s.State.Workspace)
+		return errNoAttach
+	}
+	p.logf("goal %s: adopted its %s planner session (pid %d)", goal.Slug, s.Liveness(), s.State.PID)
+	result, err := at.Attach(ctx, s.Dir, nil)
+	items, reasons, flags, cost, err := p.readPlan(ctx, goal, s.State.Workspace, nil, result, err, repos, merged)
+	if err != nil {
+		return err
+	}
+	if len(flags) > 0 {
+		p.logf("goal %s: adopted plan names what no evaluator can see; handing it in: %s", goal.Slug, strings.Join(flags, " | "))
+	}
+	return p.handIn(ctx, goal, items, reasons, cost)
 }

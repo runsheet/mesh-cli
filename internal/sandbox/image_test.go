@@ -1,0 +1,240 @@
+package sandbox
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"os"
+	"regexp"
+	"strings"
+	"testing"
+
+	nodeimage "projectmesh.io/mesh-cli/images/node"
+)
+
+// fakeRuntime is the injected Runner: it answers podman's subcommands
+// from a script and records every call; a build records the
+// Containerfile it was given.
+type fakeRuntime struct {
+	calls    []string
+	pullErr  bool
+	buildErr bool
+	rmiFail  map[string]bool
+	images   []string
+	built    []byte
+}
+
+func (f *fakeRuntime) run(_ context.Context, name string, args ...string) ([]byte, error) {
+	f.calls = append(f.calls, name+" "+strings.Join(args, " "))
+	switch args[0] {
+	case "pull":
+		if f.pullErr {
+			return []byte("Trying to pull...\nError: initializing source: unauthorized"), errors.New("exit status 125")
+		}
+	case "build":
+		for i, a := range args {
+			if a == "--file" {
+				b, err := os.ReadFile(args[i+1])
+				if err != nil {
+					return nil, err
+				}
+				f.built = b
+			}
+		}
+		if f.buildErr {
+			return []byte("Error: no space left on device"), errors.New("exit status 1")
+		}
+	case "images":
+		return []byte(strings.Join(f.images, "\n") + "\n"), nil
+	case "rmi":
+		if f.rmiFail[args[1]] {
+			return []byte("Error: image used by container abc"), errors.New("exit status 2")
+		}
+	}
+	return nil, nil
+}
+
+func (f *fakeRuntime) called(sub string) []string {
+	var out []string
+	for _, c := range f.calls {
+		if strings.HasPrefix(c, "podman "+sub+" ") {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// (a) The image is ghcr.io/projectmesh-io/mesh-node:<node version>; the
+// setting `build` is that same tag, built; any other is used as given.
+func TestImageRefIsTheNodeVersion(t *testing.T) {
+	for _, c := range []struct {
+		setting, version, want string
+		build                  bool
+	}{
+		{"", "v1.2.0", "ghcr.io/projectmesh-io/mesh-node:v1.2.0", false},
+		{"", "v0.0.0-selfupdate-test.1", "ghcr.io/projectmesh-io/mesh-node:v0.0.0-selfupdate-test.1", false},
+		{"", "dev", "ghcr.io/projectmesh-io/mesh-node:dev", false},
+		{"build", "v1.2.0", "ghcr.io/projectmesh-io/mesh-node:v1.2.0", true},
+		{"registry.example.com/team/node:7", "v1.2.0", "registry.example.com/team/node:7", false},
+	} {
+		ref, build, err := ImageRef(c.setting, c.version)
+		if err != nil || ref != c.want || build != c.build {
+			t.Errorf("ImageRef(%q, %q) = %q, %v, %v; want %q, %v", c.setting, c.version, ref, build, err, c.want, c.build)
+		}
+	}
+	for _, v := range []string{"v1.2.0+meta", "../x", ".v1"} {
+		if _, _, err := ImageRef("", v); err == nil {
+			t.Errorf("ImageRef(%q): no error", v)
+		}
+	}
+}
+
+func TestEnsureImagePulls(t *testing.T) {
+	f := &fakeRuntime{images: []string{"ghcr.io/projectmesh-io/mesh-node:v1.2.0"}}
+	img, err := EnsureImage(context.Background(), f.run, "ghcr.io/projectmesh-io/mesh-node:v1.2.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if img.Ref != "ghcr.io/projectmesh-io/mesh-node:v1.2.0" || !img.Pulled || img.Built {
+		t.Errorf("image = %+v; want pulled v1.2.0", img)
+	}
+	if p := f.called("pull"); len(p) != 1 || p[0] != "podman pull ghcr.io/projectmesh-io/mesh-node:v1.2.0" {
+		t.Errorf("pulls = %q", p)
+	}
+	if len(f.called("build")) != 0 || len(f.called("rmi")) != 0 {
+		t.Errorf("built or removed: %q", f.calls)
+	}
+	if got := img.Summary(); got != "ghcr.io/projectmesh-io/mesh-node:v1.2.0 (pulled)" {
+		t.Errorf("summary = %q", got)
+	}
+}
+
+// (b) A failed pull is the error: nothing is built in its place and
+// nothing is pruned.
+func TestEnsureImageFailedPullIsTheError(t *testing.T) {
+	f := &fakeRuntime{pullErr: true, images: []string{"ghcr.io/projectmesh-io/mesh-node:v1.1.0"}}
+	_, err := EnsureImage(context.Background(), f.run, "ghcr.io/projectmesh-io/mesh-node:v1.2.0")
+	if err == nil || !strings.Contains(err.Error(), "pull failed: Error: initializing source: unauthorized") {
+		t.Fatalf("err = %v; want the pull's reason", err)
+	}
+	if len(f.called("build")) != 0 {
+		t.Errorf("built after a failed pull: %q", f.calls)
+	}
+	if len(f.called("images")) != 0 || len(f.called("rmi")) != 0 {
+		t.Errorf("pruned after a failed pull: %q", f.calls)
+	}
+}
+
+// (c) BuildImage builds from the Containerfile the binary embeds, which
+// is images/node/Containerfile byte for byte, and pulls nothing.
+func TestBuildImageFromTheContainerfile(t *testing.T) {
+	f := &fakeRuntime{}
+	img, err := BuildImage(context.Background(), f.run, "ghcr.io/projectmesh-io/mesh-node:v1.2.0", "v1.2.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !img.Built || img.Pulled || len(f.called("pull")) != 0 {
+		t.Errorf("image = %+v, calls %q; want built, no pull", img, f.calls)
+	}
+	b := f.called("build")
+	if len(b) != 1 || !regexp.MustCompile(`^podman build --tag ghcr.io/projectmesh-io/mesh-node:v1.2.0 --file \S+/Containerfile --build-arg MESH_VERSION=v1.2.0 \S+$`).MatchString(b[0]) {
+		t.Fatalf("builds = %q", b)
+	}
+	want, err := os.ReadFile("../../images/node/Containerfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(f.built, want) {
+		t.Error("the build's Containerfile is not images/node/Containerfile")
+	}
+
+	f = &fakeRuntime{buildErr: true}
+	if _, err := BuildImage(context.Background(), f.run, "ghcr.io/projectmesh-io/mesh-node:v1.2.0", "v1.2.0"); err == nil || !strings.Contains(err.Error(), "no space left") {
+		t.Fatalf("err = %v; want the build's reason", err)
+	}
+}
+
+// (d) Older mesh-node tags are removed; the new one and the one the
+// running node still uses are kept; one a container holds is said.
+func TestEnsureImagePrunesOlderTags(t *testing.T) {
+	f := &fakeRuntime{
+		images: []string{
+			"ghcr.io/projectmesh-io/mesh-node:v1.0.0",
+			"ghcr.io/projectmesh-io/mesh-node:v1.1.0",
+			"ghcr.io/projectmesh-io/mesh-node:v1.2.0",
+			"ghcr.io/projectmesh-io/mesh-node:<none>",
+			"ghcr.io/projectmesh-io/mesh-node:dev",
+		},
+		rmiFail: map[string]bool{"ghcr.io/projectmesh-io/mesh-node:dev": true},
+	}
+	img, err := EnsureImage(context.Background(), f.run, "ghcr.io/projectmesh-io/mesh-node:v1.2.0", "ghcr.io/projectmesh-io/mesh-node:v1.1.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"ghcr.io/projectmesh-io/mesh-node:v1.0.0"}; strings.Join(img.Removed, ",") != strings.Join(want, ",") {
+		t.Errorf("removed = %q; want %q", img.Removed, want)
+	}
+	if len(img.Kept) != 1 || !strings.HasPrefix(img.Kept[0], "ghcr.io/projectmesh-io/mesh-node:dev: ") {
+		t.Errorf("kept = %q; want dev, in use", img.Kept)
+	}
+	for _, c := range f.called("rmi") {
+		if strings.HasSuffix(c, ":v1.2.0") || strings.HasSuffix(c, ":v1.1.0") || strings.HasSuffix(c, "<none>") {
+			t.Errorf("removed %q", c)
+		}
+	}
+	if l := f.called("images"); len(l) != 1 || !strings.Contains(l[0], "--filter reference=ghcr.io/projectmesh-io/mesh-node") {
+		t.Errorf("list = %q", l)
+	}
+}
+
+// The binary embeds images/node/Containerfile as it is.
+func TestContainerfileIsEmbedded(t *testing.T) {
+	want, err := os.ReadFile("../../images/node/Containerfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(nodeimage.Containerfile, want) {
+		t.Error("nodeimage.Containerfile is not images/node/Containerfile")
+	}
+}
+
+// The Containerfile installs what ADR 007 names, on the go.mod toolchain.
+func TestContainerfileToolchains(t *testing.T) {
+	cf, err := os.ReadFile("../../images/node/Containerfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(cf)
+	for _, want := range []string{"git", "go.dev/dl/go", "nodejs.org/dist", "npm install -g", "python3", "python3-pip", "astral-sh/uv",
+		"corepack enable", "make", "gcc", " gh", "gh --version",
+		"@anthropic-ai/claude-code@", "@openai/codex@", "DISABLE_AUTOUPDATER=1", "check_for_update_on_startup = false",
+		"ca-certificates", "nftables", "nft --version", "useradd", "USER mesh"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("Containerfile has no %q", want)
+		}
+	}
+	mod, err := os.ReadFile("../../go.mod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`(?m)^go (\S+)$`).FindSubmatch(mod)
+	if m == nil {
+		t.Fatal("go.mod has no go line")
+	}
+	if !strings.Contains(s, "ARG GO_VERSION="+string(m[1])+"\n") {
+		t.Errorf("Containerfile's GO_VERSION is not go.mod's go %s", m[1])
+	}
+}
+
+// No secret is baked into the image.
+func TestContainerfileHasNoSecrets(t *testing.T) {
+	cf, err := os.ReadFile("../../images/node/Containerfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{"GH_TOKEN", "GITHUB_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "--mount=type=secret"} {
+		if bytes.Contains(cf, []byte(bad)) {
+			t.Errorf("Containerfile mentions %s", bad)
+		}
+	}
+}

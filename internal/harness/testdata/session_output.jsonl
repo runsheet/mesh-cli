@@ -1,0 +1,5 @@
+{"type":"system","subtype":"init","session_id":"s-file","model":"claude-opus-5"}
+{"type":"assistant","session_id":"s-file","message":{"role":"assistant","content":[{"type":"text","text":"reading the brief"}]}}
+{"type":"assistant","session_id":"s-file","message":{"role":"assistant","content":[{"type":"text","text":"writing the code"}]}}
+{"type":"assistant","session_id":"s-file","message":{"role":"assistant","content":[{"type":"text","text":"running the tests"}]}}
+{"type":"result","subtype":"success","session_id":"s-file","result":"done","total_cost_usd":1.25,"num_turns":4,"usage":{"input_tokens":10,"output_tokens":20,"cache_read_input_tokens":30,"cache_creation_input_tokens":40}}

@@ -46,7 +46,10 @@ type Workspacer interface {
 	// Prepare clones (or fetches) the repo into spec.Dir() and checks out
 	// spec.Branch from spec.BaseRef, returning the directory.
 	Prepare(ctx context.Context, spec WorkspaceSpec) (string, error)
-	// Commit stages paths and commits them with msg when anything changed.
+	// Commit stages paths and commits them with msg when anything
+	// changed. Only the goal's document at the goal's end uses it
+	// (RecordEndedGoal, on the default branch); a build's branch is
+	// committed by its session.
 	Commit(ctx context.Context, dir string, paths []string, msg string) error
 	// Push pushes branch to origin and returns its head sha.
 	Push(ctx context.Context, dir, branch string) (string, error)
@@ -58,6 +61,10 @@ type Workspacer interface {
 	// already there: a read-only copy for the planner, whose `git log`
 	// is how it sees what main already holds (adr-003 decision 2).
 	Fetch(ctx context.Context, repo, dir string) error
+	// PushedHead fetches origin and returns the head of origin/branch —
+	// what a session pushed, read back — or an error when origin/base is
+	// not in its history (the branch was not rebased onto it).
+	PushedHead(ctx context.Context, dir, branch, base string) (string, error)
 }
 
 // FetchDepth is how much of the default branch's history a read-only
@@ -161,6 +168,9 @@ func (g *Git) Prepare(ctx context.Context, spec WorkspaceSpec) (string, error) {
 // Diff implements Workspacer: the three-dot diff from where the branch
 // forked origin/base, stat first, capped so a prompt stays a prompt.
 func (g *Git) Diff(ctx context.Context, dir, base string) (string, error) {
+	if err := g.EnsureMergeBase(ctx, dir, base); err != nil {
+		return "", err
+	}
 	ref := "origin/" + base + "...HEAD"
 	stat, err := g.run(ctx, dir, "git", "diff", "--stat", ref)
 	if err != nil {
@@ -174,6 +184,64 @@ func (g *Git) Diff(ctx context.Context, dir, base string) (string, error) {
 		patch = patch[:MaxDiffBytes] + "\n… (diff truncated; read the branch for the rest)"
 	}
 	return stat + "\n\n" + patch, nil
+}
+
+// NoMergeBaseError says the checked-out branch shares no history with
+// origin/<Base>: it is the item's problem (rebuilt from scratch or from an
+// unrelated root), not the node's.
+type NoMergeBaseError struct {
+	Base, Branch string
+}
+
+func (e *NoMergeBaseError) Error() string {
+	return fmt.Sprintf("branch %s shares no history with origin/%s: it was rebuilt from scratch or from an unrelated root, so there is nothing to diff it against", e.Branch, e.Base)
+}
+
+// deepenRounds bounds EnsureMergeBase: this many `--deepen` fetches (the
+// step doubling from FetchDepth), then one `--unshallow`.
+const deepenRounds = 3
+
+// EnsureMergeBase makes origin/<base> and HEAD share a merge base in dir,
+// fetching the base branch explicitly (a single-branch clone lacks it) and
+// deepening a shallow checkout in a fixed number of steps. A branch that
+// still shares none yields a *NoMergeBaseError.
+func (g *Git) EnsureMergeBase(ctx context.Context, dir, base string) error {
+	remote := "refs/remotes/origin/" + base
+	if _, err := g.run(ctx, dir, "git", "fetch", "--quiet", "origin", "+refs/heads/"+base+":"+remote); err != nil {
+		return err
+	}
+	has := func() bool {
+		_, err := g.run(ctx, dir, "git", "merge-base", remote, "HEAD")
+		return err == nil
+	}
+	if has() {
+		return nil
+	}
+	shallow := func() bool {
+		out, err := g.run(ctx, dir, "git", "rev-parse", "--is-shallow-repository")
+		return err == nil && out == "true"
+	}
+	step := FetchDepth
+	for i := 0; i < deepenRounds && shallow(); i++ {
+		if _, err := g.run(ctx, dir, "git", "fetch", "--quiet", "--deepen="+strconv.Itoa(step), "origin"); err != nil {
+			return err
+		}
+		if has() {
+			return nil
+		}
+		step *= 2
+	}
+	// a repository the deepening completed is no longer shallow: nothing to unshallow
+	if shallow() {
+		if _, err := g.run(ctx, dir, "git", "fetch", "--quiet", "--unshallow", "origin"); err != nil {
+			return err
+		}
+		if has() {
+			return nil
+		}
+	}
+	branch, _ := g.run(ctx, dir, "git", "rev-parse", "--abbrev-ref", "HEAD")
+	return &NoMergeBaseError{Base: base, Branch: branch}
 }
 
 // Fetch implements Workspacer.
@@ -217,6 +285,21 @@ func (g *Git) Push(ctx context.Context, dir, branch string) (string, error) {
 	return g.run(ctx, dir, "git", "rev-parse", "HEAD")
 }
 
+// PushedHead implements Workspacer.
+func (g *Git) PushedHead(ctx context.Context, dir, branch, base string) (string, error) {
+	if _, err := g.run(ctx, dir, "git", "fetch", "--prune", "origin"); err != nil {
+		return "", err
+	}
+	head, err := g.run(ctx, dir, "git", "rev-parse", "refs/remotes/origin/"+branch)
+	if err != nil {
+		return "", fmt.Errorf("origin has no %s: %w", branch, err)
+	}
+	if _, err := g.run(ctx, dir, "git", "merge-base", "--is-ancestor", "refs/remotes/origin/"+base, head); err != nil {
+		return "", fmt.Errorf("origin/%s at %s does not contain origin/%s", branch, short(head), base)
+	}
+	return head, nil
+}
+
 // ContextDir is where the goal's Prologue documents land in a workspace.
 const ContextDir = ".mesh/context"
 
@@ -232,6 +315,57 @@ type Context struct {
 	OnDisk  map[string]string // slug → file name, for the index
 	Project string
 	PRDSlug string
+	// Live is the project's goals and their items as the platform holds
+	// them (adr-003 decision 3), rendered into INDEX.md; nil when the
+	// platform's read failed or found none.
+	Live []LiveGoal
+}
+
+// LiveGoal is one goal of the project with its items; a goal that is
+// over carries none, it is listed as one line.
+type LiveGoal struct {
+	Goal  gateway.Goal
+	Items []gateway.WorkItem
+}
+
+// FetchLive reads the project's goals and, for each live one, its items
+// through the gateway. Any read failing fails the whole: a partial
+// status is worse than none.
+func FetchLive(ctx context.Context, gw Gateway, orgID, projectID string) ([]LiveGoal, error) {
+	goals, err := gw.Goals(ctx, orgID)
+	if err != nil {
+		return nil, err
+	}
+	var out []LiveGoal
+	for _, g := range goals {
+		if g.ProjectID != projectID {
+			continue
+		}
+		lg := LiveGoal{Goal: g}
+		if isLiveGoal(g.Status) {
+			items, err := gw.GoalWorkItems(ctx, g.ID)
+			if err != nil {
+				return nil, fmt.Errorf("items of %s: %w", g.Slug, err)
+			}
+			sort.Slice(items, func(i, j int) bool { return items[i].Seq < items[j].Seq })
+			lg.Items = items
+		}
+		out = append(out, lg)
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Goal.Slug < out[j].Goal.Slug })
+	return out, nil
+}
+
+// AddLive puts the project's live goals and items on cx for INDEX.md.
+// When the platform cannot say (an old platform, a failed read) it logs
+// a warning and cx keeps its documents only.
+func AddLive(ctx context.Context, gw Gateway, cx *Context, orgID, projectID string, logf func(string, ...any)) {
+	live, err := FetchLive(ctx, gw, orgID, projectID)
+	if err != nil {
+		logf("warning: live goals and items unavailable, INDEX.md lists documents only: %v", err)
+		return
+	}
+	cx.Live = live
 }
 
 // The size budget for design documents on disk: a PRD or TRD past
@@ -296,7 +430,50 @@ func RenderIndex(cx *Context) string {
 		}
 		fmt.Fprintf(&b, "| %s | %s | %s | `%s` | %s/%s | %s |\n", d.Kind, cell(d.Title), cell(d.Summary), d.Slug, d.Repo, d.Path, here)
 	}
+	if len(cx.Live) > 0 {
+		renderLive(&b, cx.Live, cell)
+	}
 	return b.String()
+}
+
+// renderLive is INDEX.md's live section: each live goal with a row per
+// item, then the goals that are over, one line each.
+func renderLive(b *strings.Builder, live []LiveGoal, cell func(string) string) {
+	b.WriteString("\n## Live goals and items\n\n")
+	b.WriteString("Read from the platform when this session started — the one place to read status from; no status table in git is current. Not committed.\n")
+	or := func(s string) string {
+		if strings.TrimSpace(s) == "" {
+			return "—"
+		}
+		return s
+	}
+	var over []LiveGoal
+	for _, lg := range live {
+		g := lg.Goal
+		if !isLiveGoal(g.Status) {
+			over = append(over, lg)
+			continue
+		}
+		fmt.Fprintf(b, "\n### `%s` — %s (%s)\n\n", g.Slug, cell(g.Title), g.Status)
+		if len(lg.Items) == 0 {
+			b.WriteString("No items yet.\n")
+			continue
+		}
+		b.WriteString("| seq | title | status | branch | PR |\n| --- | --- | --- | --- | --- |\n")
+		for _, it := range lg.Items {
+			branch := or(it.Branch)
+			if branch != "—" {
+				branch = "`" + branch + "`"
+			}
+			fmt.Fprintf(b, "| %d | %s | %s | %s | %s |\n", it.Seq, cell(it.Title), it.Status, branch, or(it.PRURL))
+		}
+	}
+	if len(over) > 0 {
+		b.WriteString("\n### Finished goals\n\n")
+		for _, lg := range over {
+			fmt.Fprintf(b, "- `%s` — %s (%s)\n", lg.Goal.Slug, cell(lg.Goal.Title), lg.Goal.Status)
+		}
+	}
 }
 
 // PrologueMCP is the MCP server a session gets for Prologue: the
@@ -318,7 +495,7 @@ func PrologueMCP(gatewayURL, token string) map[string]any {
 // in reading order (instructions, adr, prd, trd); the index is beside
 // them, not among them.
 func WriteContext(dir string, cx *Context) ([]string, error) {
-	if cx == nil || (len(cx.Docs) == 0 && len(cx.Index) == 0) {
+	if cx == nil || (len(cx.Docs) == 0 && len(cx.Index) == 0 && len(cx.Live) == 0) {
 		return nil, nil
 	}
 	docs := cx.Docs
@@ -352,7 +529,7 @@ func WriteContext(dir string, cx *Context) ([]string, error) {
 			return nil, err
 		}
 	}
-	if len(cx.Index) > 0 {
+	if len(cx.Index) > 0 || len(cx.Live) > 0 {
 		if err := os.WriteFile(filepath.Join(cdir, IndexFile), []byte(RenderIndex(cx)), 0o644); err != nil {
 			return nil, err
 		}
@@ -393,16 +570,19 @@ func excludeFromGit(dir, pattern string) error {
 // Gateway is what the node needs of the platform; *gateway.Client is one.
 type Gateway interface {
 	MyOrgs(ctx context.Context) ([]gateway.Org, error)
-	HeartbeatNode(ctx context.Context, nodeID, version string, running int) error
+	HeartbeatNode(ctx context.Context, nodeID, version string, running int, extras ...gateway.HeartbeatExtras) error
+	GetDesiredVersion(ctx context.Context, nodeID string) (string, error)
 	ReadyWorkItems(ctx context.Context, orgID string) ([]gateway.WorkItem, error)
 	GoalWorkItems(ctx context.Context, goalID string) ([]gateway.WorkItem, error)
 	OrgWorkItems(ctx context.Context, orgID, status string) ([]gateway.WorkItem, error)
 	WorkItem(ctx context.Context, id string) (*gateway.WorkItem, error)
+	AgentModel(ctx context.Context, agentID string) (string, error)
 	ClaimWorkItem(ctx context.Context, itemID, nodeID, harness string) error
 	ReportWorkItemProgress(ctx context.Context, itemID, note string, costCents int, sessionID string) error
 	FinishWorkItem(ctx context.Context, itemID, branch, headSha string, costCents int) error
 	FinishWorkItemAlreadyDone(ctx context.Context, itemID, evidence string, costCents int) error
 	FailWorkItem(ctx context.Context, itemID, errMsg string) error
+	ReleaseWorkItem(ctx context.Context, itemID, reason string) error
 	IssueItemRepoToken(ctx context.Context, itemID, nodeID string) (*gateway.GitHubToken, error)
 	EvaluateWorkItem(ctx context.Context, itemID string, passed bool, notes string, costCents int) error
 	Goal(ctx context.Context, id string) (*gateway.Goal, error)
@@ -413,6 +593,10 @@ type Gateway interface {
 	Projects(ctx context.Context, orgID string) ([]gateway.Project, error)
 	Directions(ctx context.Context, orgID, projectID string) ([]gateway.Direction, error)
 	ClaimDirectionResearch(ctx context.Context, directionID, nodeID string) error
+	RequestedRebases(ctx context.Context, orgID string) ([]gateway.WorkItem, error)
+	ClaimWorkItemRebase(ctx context.Context, itemID, nodeID string) error
+	FinishWorkItemRebase(ctx context.Context, itemID, headSha string, resolvedFiles []string) error
+	FailWorkItemRebase(ctx context.Context, itemID, reason string) error
 	RecordDirectionResearch(ctx context.Context, directionID, nodeID string, proposals []gateway.GoalProposal, costCents int, notes string) error
 	Repo(ctx context.Context, id string) (*gateway.Repo, error)
 	Repos(ctx context.Context, accountID, ownerLogin string) ([]gateway.Repo, error)
