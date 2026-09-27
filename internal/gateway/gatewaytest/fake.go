@@ -101,10 +101,6 @@ type Fake struct {
 	// empty list; UnknownFields[<field>] refuses a read selecting it, as
 	// a platform older than tools-in-the-console.
 	SessionTools map[string][]map[string]any
-	// Usage are the priced tools' usage records the fake was handed
-	// (recordUsage), in order: workItemId, kind, tool, calls,
-	// listPriceCents.
-	Usage []map[string]any
 	// SessionUsage is every `usage` report the fake was handed on
 	// FinishWorkItem, FinishWorkItemAlreadyDone, EvaluateWorkItem,
 	// PlanGoal, FinishWorkItemRebase and RecordDirectionResearch, in
@@ -234,6 +230,22 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		in, _ := req.Variables["in"].(map[string]any)
+		// the two old usage mutations are refused as the platform refuses
+		// them, and the attempt recorded, so CallsNamed finds any caller
+		switch m[2] {
+		case "recordSessionUsage":
+			// never a field of the platform's schema: a session's usage
+			// rides the command that ends it (`usage`)
+			f.Calls = append(f.Calls, Call{Name: m[2], Input: in, At: time.Now()})
+			writeErrors(w, 200, `Cannot query field "recordSessionUsage" on type "Mutation".`)
+			return
+		case "recordUsage":
+			// RegisterPlatformOnly on runsheet: the platform's own, never a
+			// node's (priced tool calls go to recordToolUsage)
+			f.Calls = append(f.Calls, Call{Name: m[2], Input: in, At: time.Now()})
+			writeErrors(w, 200, "recordUsage: permission denied: the field is the platform's own, not a node's")
+			return
+		}
 		if f.Unsupported[m[2]] {
 			writeErrors(w, 200, fmt.Sprintf("Cannot query field %q on type \"Mutation\".", m[2]))
 			return
@@ -510,9 +522,6 @@ func (f *Fake) apply(name string, in map[string]any) error {
 	id, _ := in["aggregateId"].(string)
 	item := f.WorkItems[id]
 	switch name {
-	case "recordUsage":
-		f.Usage = append(f.Usage, copyRow(in))
-		return nil
 	case "recordToolUsage":
 		f.ToolUsage = append(f.ToolUsage, copyRow(in))
 		return nil

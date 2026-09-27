@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -457,7 +458,7 @@ func TestPlannerDropsUnexplainedDependencies(t *testing.T) {
 
 	// the reason rides on the PlannedItem itself
 	repos := map[string]gateway.Repo{"acme/widgets": {ID: repoID, Name: "widgets", DefaultBranch: "main"}}
-	items, _, _, _, err := pl.ask(context.Background(), goal, "", t.TempDir(), 0, harness.PlanInput{}, repos, nil)
+	items, _, _, _, _, err := pl.ask(context.Background(), goal, "", t.TempDir(), 0, harness.PlanInput{}, repos, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -466,5 +467,60 @@ func TestPlannerDropsUnexplainedDependencies(t *testing.T) {
 	}
 	if got := items[3]; len(got.DependsOn) != 0 || got.DependsBecause != nil {
 		t.Fatalf("item 4: %+v", got)
+	}
+}
+
+// A plan handed in carries its session's usage report on planGoal: the
+// credential the platform issued for the goal, the stream's tokens and
+// cost, and the windows before and after.
+func TestPlanReportsUsage(t *testing.T) {
+	f := seed(t)
+	f.Goals[goalID]["status"] = "planning"
+	f.Projects[projID]["repoIds"] = []string{repoID}
+	issueCredential(f, goalID)
+	gw := gateway.New(f.URL(), "rs_test")
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: Fixed(1), OwnerID: f.UserID}
+	ws := &fakeWS{root: t.TempDir()}
+	h := &streamHarness{file: usageStream(), text: cleanPlan}
+	l := log.New(io.Discard, "", 0)
+	pl := &Planner{GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, Credentials: usageCredentials(gw, l), Log: l}
+	if err := pl.Plan(context.Background(), gateway.Goal{ID: goalID, Slug: "ship-it", Title: "Ship it", ProjectID: projID, Status: "planning"}, scopesOf(cfg)[0]); err != nil {
+		t.Fatal(err)
+	}
+	if reads := f.CallsNamed("planCredentials"); len(reads) != 1 {
+		t.Fatalf("planCredentials: %+v", reads)
+	}
+	checkSessionUsage(t, f, "planGoal")
+}
+
+// A plan asked twice hands in one report for both sessions: their
+// tokens and costs summed, as the plan's cost is.
+func TestReplanReportsBothSessionsOnce(t *testing.T) {
+	f := seed(t)
+	f.Goals[goalID]["status"] = "planning"
+	f.Projects[projID]["repoIds"] = []string{repoID}
+	issueCredential(f, goalID)
+	gw := gateway.New(f.URL(), "rs_test")
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: Fixed(1), OwnerID: f.UserID}
+	ws := &fakeWS{root: t.TempDir()}
+	h := &streamHarness{file: usageStream(), texts: []string{prCheckPlan, cleanPlan}}
+	var logs strings.Builder
+	l := log.New(&logs, "", 0)
+	pl := &Planner{GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, Credentials: usageCredentials(gw, l), Log: l}
+	if err := pl.Plan(context.Background(), gateway.Goal{ID: goalID, Slug: "ship-it", Title: "Ship it", ProjectID: projID, Status: "planning"}, scopesOf(cfg)[0]); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.Jobs()) != 2 {
+		t.Fatalf("%d sessions", len(h.Jobs()))
+	}
+	if len(f.SessionUsage) != 1 || f.SessionUsage[0].Name != "planGoal" {
+		t.Fatalf("usage: %+v", f.SessionUsage)
+	}
+	in := f.SessionUsage[0].Input
+	if in["inputTokens"] != float64(2*60600) || in["listCostCents"] != float64(86) || in["credentialId"] != "cred-1" {
+		t.Fatalf("usage: %v", in)
+	}
+	if strings.Contains(logs.String(), "usage: {") {
+		t.Errorf("a carried report is logged too:\n%s", logs.String())
 	}
 }

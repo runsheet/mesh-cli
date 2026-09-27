@@ -207,3 +207,26 @@ func TestRecordToolUsageUnsupported(t *testing.T) {
 		t.Fatalf("tool usage = %+v", f.ToolUsage)
 	}
 }
+
+// The fake refuses the two old usage mutations as the platform does:
+// recordSessionUsage is no field of the schema, and recordUsage is the
+// platform's own (RegisterPlatformOnly), a permission error naming it.
+// Either call is recorded, so a test's CallsNamed finds any caller.
+func TestFakeRefusesTheOldUsageMutations(t *testing.T) {
+	f := gatewaytest.New("rs_test")
+	defer f.Close()
+	gw := gateway.New(f.URL(), "rs_test")
+	ctx := context.Background()
+	in := map[string]any{"in": map[string]any{"namespace": gateway.NS}}
+	err := gw.Query(ctx, `mutation($in: RecordSessionUsageInput!) { recordSessionUsage(input: $in) { status } }`, in, nil)
+	if err == nil || !strings.Contains(err.Error(), `Cannot query field "recordSessionUsage" on type "Mutation"`) {
+		t.Fatalf("recordSessionUsage = %v", err)
+	}
+	err = gw.Query(ctx, `mutation($in: RecordUsageInput!) { recordUsage(input: $in) { status } }`, in, nil)
+	if err == nil || !strings.Contains(err.Error(), "recordUsage: permission denied") || strings.Contains(err.Error(), "Cannot query field") {
+		t.Fatalf("recordUsage = %v", err)
+	}
+	if len(f.CallsNamed("recordSessionUsage")) != 1 || len(f.CallsNamed("recordUsage")) != 1 {
+		t.Fatalf("calls: %+v", f.Calls)
+	}
+}

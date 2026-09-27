@@ -31,8 +31,7 @@ var ErrNoAccount = errors.New("no issued credential has headroom for the session
 // need of the platform; *gateway.Client is one.
 type CredentialGateway interface {
 	Session(ctx context.Context, ref gateway.SessionRef, nodeID string) (*gateway.Session, error)
-	RecordSessionUsage(ctx context.Context, rec gateway.UsageRecord) error
-	RecordUsage(ctx context.Context, u gateway.ToolUsage) error
+	RecordToolUsage(ctx context.Context, itemID, toolCallID, tool string, usage gateway.UsageReport) error
 }
 
 // Credentials is where every session's account comes from and where its
@@ -40,8 +39,9 @@ type CredentialGateway interface {
 // the claimed session (itemCredentials, planCredentials or
 // researchCredentials, with its tools) first, node.yaml's
 // accounts when the platform does not know the read or issues none; a
-// usage record per session to recordSessionUsage, or one structured log
-// line on a platform without it. Each fallback is said once per run.
+// usage report per session on the command that ends it (Report,
+// Carried), or one structured log line when that command has nowhere to
+// put it (Finish). Each fallback is said once per run.
 // A nil *Credentials is the node before the platform half: node.yaml's
 // accounts and no usage record.
 type Credentials struct {
@@ -90,7 +90,18 @@ type SessionAccount struct {
 	// remaining is an api credential's room under its caps (0: none known).
 	remaining float64
 	started   time.Time
-	before    *gateway.UsageWindows
+	before    *harness.RateLimit
+	// Adapter is the harness the session runs on, as its report names
+	// it ("claude-code" when empty; Adapter).
+	Adapter string
+	// report is the session's usage report once built (Report), res the
+	// result it was built from; handedIn and noLedger are what its
+	// finishing command made of it (Carried), and into the session whose
+	// report carries this one's (Carries).
+	report             *gateway.UsageReport
+	res                harness.Result
+	handedIn, noLedger bool
+	into               *SessionAccount
 	// Tools are the tools the claim-time read handed the session, their
 	// secrets decrypted (nil from a platform without them); what the
 	// session gets of them is SessionTools'.
@@ -177,7 +188,7 @@ func (c *Credentials) Open(ctx context.Context, ref gateway.SessionRef, nodeID s
 		s.AccountSession, s.account, s.remaining = acct, a, room[a.Label]
 	}
 	if r, ok := c.readings()[s.label()]; ok {
-		s.before = usageWindows(&r)
+		s.before = &r
 	}
 	return s, nil
 }
@@ -272,91 +283,208 @@ func (s *SessionAccount) RedactErr(err error) error {
 	return err
 }
 
-// Finish reports the session's usage record: its credential, tokens,
-// cost, the windows before and after, and when it ran — to the
-// platform's ledger, or as one `usage: {…}` log line on a platform
-// without it. It is called once a session has run, however it ended.
-// Each tool the session was given with a price per call and called is
-// reported too (reportToolUsage).
+// Adapter is the report's adapter for a harness: "codex" for the Codex
+// harness, "claude-code" for everything else.
+func Adapter(h harness.Harness) string {
+	if h != nil && h.Name() == "codex" {
+		return "codex"
+	}
+	return "claude-code"
+}
+
+// Report is the session's usage report, the one its finishing command
+// carries as `usage` (adr-005, the claim-time read and the usage
+// record): the session, its adapter and model, the credential the
+// platform issued it (its id, sent only when set) and its kind, tokens,
+// tool calls, wall time, the list cost and — on an api credential — the
+// actual cost in cents, and the account's windows before and after, each
+// left out when never read. Never the secret. The first call builds it
+// (the session's end); later calls, and Add, work on that one. Nil when
+// the session had no account (an adopted one) or the node has no
+// Credentials.
+func (s *SessionAccount) Report(res harness.Result) *gateway.UsageReport {
+	if s == nil || s.creds == nil {
+		return nil
+	}
+	if s.report != nil {
+		return s.report
+	}
+	c := s.creds
+	s.res = res
+	kind := gateway.CredentialUnset
+	switch s.account.Kind {
+	case AccountSubscription:
+		kind = gateway.CredentialSubscription
+	case AccountAPI:
+		kind = gateway.CredentialAPI
+	}
+	adapter := s.Adapter
+	if adapter == "" {
+		adapter = "claude-code"
+	}
+	r := &gateway.UsageReport{
+		SessionID: res.SessionID, Adapter: adapter,
+		CredentialID: s.account.ID, CredentialKind: kind,
+		WallMs: c.now().Sub(s.started).Milliseconds(),
+	}
+	if r.WallMs < 0 {
+		r.WallMs = 0
+	}
+	s.report = r
+	s.Add(res)
+	if s.before != nil {
+		r.FiveHourBefore, r.FiveHourResetsAtBefore = reportWindow(s.before.FiveHour)
+		r.SevenDayBefore, r.SevenDayResetsAtBefore = reportWindow(s.before.SevenDay)
+	}
+	after := res.RateLimit
+	if after == nil {
+		if rl, ok := c.readings()[s.label()]; ok {
+			after = &rl
+		}
+	}
+	if after != nil {
+		r.FiveHourAfter, r.FiveHourResetsAtAfter = reportWindow(after.FiveHour)
+		r.SevenDayAfter, r.SevenDayResetsAtAfter = reportWindow(after.SevenDay)
+	}
+	return r
+}
+
+// Add puts another session's tokens, tool calls and cost into the
+// session's report, for a finishing command that ends more than one
+// session: the evaluation's Codex second opinion, a plan asked twice.
+// The model is the first one read. Nothing before Report.
+func (s *SessionAccount) Add(res harness.Result) {
+	if s == nil || s.report == nil {
+		return
+	}
+	r := s.report
+	if u := res.Usage; u != nil {
+		if r.Model == "" {
+			r.Model = u.Model
+		}
+		r.InputTokens += u.InputTokens
+		r.OutputTokens += u.OutputTokens
+		r.CacheReadTokens += u.CachedInputTokens
+		r.CacheWriteTokens += u.CacheWriteInputTokens
+	}
+	for _, n := range res.ToolCalls {
+		r.ToolCalls += int64(n)
+	}
+	cents := int64(Cents(res.CostUSD))
+	r.ListCostCents += cents
+	if r.CredentialKind == gateway.CredentialAPI {
+		r.ActualCostCents += cents
+	}
+}
+
+// Carries is another session whose report is folded into this one's
+// (Add) and handed in on this one's finishing command: its Finish still
+// reports its priced tool calls, and leaves the record to this one's.
+func (s *SessionAccount) Carries(other *SessionAccount) {
+	if s == nil || other == nil || other == s {
+		return
+	}
+	other.Report(other.res)
+	s.Add(other.res)
+	other.into = s
+}
+
+// Carried is the finishing command's answer to the report it carried
+// (err from FinishWorkItem, EvaluateWorkItem, PlanGoal,
+// FinishWorkItemRebase or RecordDirectionResearch). ErrNoUsageLedger is
+// a command that landed without it: nil to the caller, and Finish logs
+// the record. Anything else is the command's own error.
+func (s *SessionAccount) Carried(err error) error {
+	noLedger := errors.Is(err, gateway.ErrNoUsageLedger)
+	if s != nil && s.report != nil {
+		switch {
+		case err == nil:
+			s.handedIn = true
+		case noLedger:
+			s.noLedger = true
+		}
+	}
+	if noLedger {
+		return nil
+	}
+	return err
+}
+
+// Finish is the once-per-session end, called however the session
+// ended: each call of a priced tool it made goes to recordToolUsage
+// (reportToolUsage), and a report its finishing command did not carry —
+// a failed item or rebase, a plan or research error, or a platform
+// whose command takes no `usage` (ErrNoUsageLedger, said once per run)
+// — is logged as one `usage: {…}` line: the session spent, and its
+// record must exist somewhere.
 func (s *SessionAccount) Finish(ctx context.Context, res harness.Result) {
 	if s == nil || s.creds == nil {
 		return
 	}
-	s.reportToolUsage(ctx, res)
 	c := s.creds
-	rec := gateway.UsageRecord{
-		Kind: s.ref.Kind, ItemID: s.ref.ItemID, GoalID: s.ref.GoalID, DirectionID: s.ref.DirectionID,
-		NodeID: s.nodeID, SessionID: res.SessionID,
-		CredentialID: s.account.ID, CredentialLabel: s.label(), CredentialKind: s.account.Kind,
-		CostUSD: res.CostUSD, Before: s.before, StartedAt: s.started.UTC(), EndedAt: c.now().UTC(),
-	}
-	if rec.CredentialKind == "" {
-		rec.CredentialKind = AccountSubscription // the operator's own login
-	}
-	if u := res.Usage; u != nil {
-		rec.Model = u.Model
-		rec.InputTokens, rec.OutputTokens = u.InputTokens, u.OutputTokens
-		rec.CacheReadTokens, rec.CacheWriteTokens = u.CachedInputTokens, u.CacheWriteInputTokens
-	}
-	if res.RateLimit != nil {
-		rec.After = usageWindows(res.RateLimit)
-	} else if r, ok := c.readings()[s.label()]; ok {
-		rec.After = usageWindows(&r)
-	}
-	// the session has run and spent: its record outlives a shutdown
-	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-	defer cancel()
-	err := c.GW.RecordSessionUsage(rctx, rec)
-	if err == nil {
+	rep := s.Report(res)
+	s.reportToolUsage(ctx)
+	if s.handedIn || s.into != nil {
 		return
 	}
-	if gateway.IsUnsupported(err) {
+	if s.noLedger {
 		c.usageOnce.Do(func() {
-			c.logf("usage: the platform keeps no usage ledger; each session's record is logged here instead (said once, for every session this run)")
+			c.logf("usage: the platform's finishing command takes no usage report; each session's record is logged here instead (said once, for every session this run)")
 		})
-	} else {
-		c.logf("usage: record: %v", s.RedactErr(err))
 	}
-	line, _ := json.Marshal(rec)
+	line, _ := json.Marshal(rep)
 	c.logf("usage: %s", s.Redact(string(line)))
 }
 
-// reportToolUsage hands the platform one usage record per priced tool
-// the session called (trd §3 Tools, priced calls are usage): the item,
-// the session's kind, the tool, its calls and calls × pricePerCallCents.
-// An unpriced tool, one not called and a built-in server (Prologue) are
-// none. A platform without recordUsage is said once per run and the
-// session goes on; a failed record is logged, never the item's failure.
-func (s *SessionAccount) reportToolUsage(ctx context.Context, res harness.Result) {
+// reportToolUsage hands the platform one recordToolUsage per call of a
+// priced tool the session made (trd §3 Tools, priced calls are usage),
+// by the call's id: a copy of the session's report with the tool's price
+// per call as its list cost, no actual cost and no tokens. An unpriced
+// tool, one not called and a built-in server (Prologue) are none. A
+// platform without recordToolUsage is said once per run and each call
+// logged; a failed record is logged, never the item's failure.
+func (s *SessionAccount) reportToolUsage(ctx context.Context) {
 	c := s.creds
+	if s.report == nil {
+		return
+	}
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
 	for _, t := range s.used {
-		calls := res.ToolCalls[t.Name]
-		if t.PricePerCallCents <= 0 || calls == 0 {
+		if t.PricePerCallCents <= 0 {
 			continue
 		}
-		u := gateway.ToolUsage{ItemID: s.ref.ItemID, Kind: s.ref.Kind, Tool: t.Name, Calls: calls, ListPriceCents: calls * t.PricePerCallCents}
-		err := c.GW.RecordUsage(rctx, u)
-		switch {
-		case err == nil:
-		case gateway.IsUnsupported(err):
-			c.toolUsageOnce.Do(func() {
-				c.logf("usage: the platform takes no tool usage records; priced tool calls are logged here instead (said once, for every session this run)")
-			})
-		default:
-			c.logf("usage: tool %s: %v", t.Name, s.RedactErr(err))
-		}
-		if err != nil {
-			c.logf("usage: tool %s on item %s (%s): %d calls, %d¢", u.Tool, u.ItemID, u.Kind, u.Calls, u.ListPriceCents)
+		for _, id := range s.res.ToolCallIDs[t.Name] {
+			u := *s.report
+			u.ListCostCents, u.ActualCostCents = int64(t.PricePerCallCents), 0
+			u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheWriteTokens = 0, 0, 0, 0
+			u.ToolCalls = 1
+			err := c.GW.RecordToolUsage(rctx, s.ref.ItemID, id, t.Name, u)
+			switch {
+			case err == nil:
+				continue
+			case gateway.IsUnsupported(err):
+				c.toolUsageOnce.Do(func() {
+					c.logf("usage: the platform takes no tool usage records; priced tool calls are logged here instead (said once, for every session this run)")
+				})
+			default:
+				c.logf("usage: tool %s: %v", t.Name, s.RedactErr(err))
+			}
+			c.logf("usage: tool %s on item %s (%s): call %s, %d¢", t.Name, s.ref.ItemID, s.ref.Kind, id, t.PricePerCallCents)
 		}
 	}
 }
 
-func usageWindows(r *harness.RateLimit) *gateway.UsageWindows {
-	w := &gateway.UsageWindows{FiveHour: limitWindow(r.FiveHour), SevenDay: limitWindow(r.SevenDay)}
-	if w.FiveHour == nil && w.SevenDay == nil {
-		return nil
+// reportWindow is one window's utilization and reset as a report's fields;
+// nil for a window never read, and a reset only when one was given.
+func reportWindow(w harness.RateLimitWindow) (*float64, *time.Time) {
+	if w == (harness.RateLimitWindow{}) {
+		return nil, nil
 	}
-	return w
+	u := w.Utilization
+	if w.ResetsAt.IsZero() {
+		return &u, nil
+	}
+	at := w.ResetsAt.UTC()
+	return &u, &at
 }

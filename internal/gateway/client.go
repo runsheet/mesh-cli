@@ -244,8 +244,7 @@ func (c *Client) mutateWithUsage(ctx context.Context, field, aggregateID string,
 }
 
 // usageInput is a UsageReport as a map for a command's `usage` key: its
-// JSON shape, decoded back into map[string]any (as RecordSessionUsage's
-// map already is).
+// JSON shape, decoded back into map[string]any.
 func usageInput(u *UsageReport) (map[string]any, error) {
 	data, err := json.Marshal(u)
 	if err != nil {
@@ -1615,42 +1614,6 @@ type Session struct {
 	Tools       []tools.Tool
 }
 
-// UsageWindows is an account's plan standing at one moment — the
-// five-hour and seven-day windows' utilization (0–1) and resets — as
-// the latest rate_limit_event read it; a window never read is nil.
-type UsageWindows struct {
-	FiveHour *LimitWindow `json:"fiveHour,omitempty"`
-	SevenDay *LimitWindow `json:"sevenDay,omitempty"`
-}
-
-// UsageRecord is one session's line in the platform's usage ledger: what
-// it was for, the credential it ran on (id when the platform issued it,
-// label always), what it consumed and cost, and its account's windows
-// before and after. InputTokens counts every input token, the cached
-// ones (CacheReadTokens, CacheWriteTokens) included. It never carries
-// a secret.
-type UsageRecord struct {
-	Kind             string        `json:"kind"`
-	ItemID           string        `json:"workItemId,omitempty"`
-	GoalID           string        `json:"goalId,omitempty"`
-	DirectionID      string        `json:"directionId,omitempty"`
-	NodeID           string        `json:"nodeId,omitempty"`
-	SessionID        string        `json:"sessionId,omitempty"`
-	CredentialID     string        `json:"credentialId,omitempty"`
-	CredentialLabel  string        `json:"credentialLabel"`
-	CredentialKind   string        `json:"credentialKind,omitempty"`
-	Model            string        `json:"model,omitempty"`
-	InputTokens      int64         `json:"inputTokens"`
-	OutputTokens     int64         `json:"outputTokens"`
-	CacheReadTokens  int64         `json:"cacheReadTokens"`
-	CacheWriteTokens int64         `json:"cacheWriteTokens"`
-	CostUSD          float64       `json:"costUsd"`
-	Before           *UsageWindows `json:"before,omitempty"`
-	After            *UsageWindows `json:"after,omitempty"`
-	StartedAt        time.Time     `json:"startedAt"`
-	EndedAt          time.Time     `json:"endedAt"`
-}
-
 // UsageReport is the platform's UsageReportInput (runsheet trd §6a,
 // ADR 018 (e)(f), ADR 019): one session's usage, carried as `usage` on
 // the command that ends it — FinishWorkItem, FinishWorkItemAlreadyDone,
@@ -1708,63 +1671,6 @@ func (c *Client) RecordToolUsage(ctx context.Context, itemID, toolCallID, tool s
 		"aggregateId": itemID, "namespace": NS, "tool": tool, "toolCallId": toolCallID, "usage": um,
 	}
 	q := `mutation($in: RecordToolUsageInput!) { recordToolUsage(input: $in) { status } }`
-	if err := c.Query(ctx, q, map[string]any{"in": in}, nil); err != nil {
-		var ge *Error
-		if errors.As(err, &ge) && (unknownOperation(ge.Message, field) || schemaMismatch(ge.Message, field)) {
-			return &Error{Message: ge.Message, Unsupported: true}
-		}
-		return err
-	}
-	return nil
-}
-
-// RecordSessionUsage hands one session's usage record to the ledger. A
-// platform without the mutation answers IsUnsupported, and the node
-// writes the record to its log instead.
-func (c *Client) RecordSessionUsage(ctx context.Context, rec UsageRecord) error {
-	const field = "recordSessionUsage"
-	data, err := json.Marshal(rec)
-	if err != nil {
-		return err
-	}
-	in := map[string]any{}
-	if err := json.Unmarshal(data, &in); err != nil {
-		return err
-	}
-	in["namespace"] = NS
-	q := `mutation($in: RecordSessionUsageInput!) { recordSessionUsage(input: $in) { status } }`
-	if err := c.Query(ctx, q, map[string]any{"in": in}, nil); err != nil {
-		var ge *Error
-		if errors.As(err, &ge) && (unknownOperation(ge.Message, field) || schemaMismatch(ge.Message, field)) {
-			return &Error{Message: ge.Message, Unsupported: true}
-		}
-		return err
-	}
-	return nil
-}
-
-// ToolUsage is a priced tool's calls in one session (trd §3 Tools,
-// priced calls are usage): the item and the session's kind, the tool's
-// name, how many calls and their list price in cents (calls × the
-// tool's pricePerCallCents). It lies beside the session's UsageRecord.
-type ToolUsage struct {
-	ItemID         string `json:"workItemId"`
-	Kind           string `json:"kind"`
-	Tool           string `json:"tool"`
-	Calls          int    `json:"calls"`
-	ListPriceCents int    `json:"listPriceCents"`
-}
-
-// RecordUsage hands one priced tool's usage record to the platform. A
-// platform without the mutation answers IsUnsupported, and the node
-// carries on without it.
-func (c *Client) RecordUsage(ctx context.Context, u ToolUsage) error {
-	const field = "recordUsage"
-	in := map[string]any{
-		"namespace": NS, "workItemId": u.ItemID, "kind": u.Kind, "tool": u.Tool,
-		"calls": u.Calls, "listPriceCents": u.ListPriceCents,
-	}
-	q := `mutation($in: RecordUsageInput!) { recordUsage(input: $in) { status } }`
 	if err := c.Query(ctx, q, map[string]any{"in": in}, nil); err != nil {
 		var ge *Error
 		if errors.As(err, &ge) && (unknownOperation(ge.Message, field) || schemaMismatch(ge.Message, field)) {

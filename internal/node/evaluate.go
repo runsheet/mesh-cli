@@ -258,8 +258,11 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	}
 	// the session outlives this process: a restart adopts it (ADR 009)
 	job.Outlive = true
+	acct.Adapter = Adapter(e.Harness)
 	result, err := e.Harness.Run(ctx, job, nil)
-	acct.Finish(ctx, result)
+	// the usage report rides the verdict (afterEvaluate); Finish logs it
+	// when nothing carried it
+	defer acct.Finish(ctx, result)
 	return e.afterEvaluate(ctx, evalRun{item: item, res: res, label: label, model: model, dir: dir, acct: acct, second: &second, omitted: st.OmittedNote(), missing: pod.MissingNote()}, result, err)
 }
 
@@ -313,6 +316,7 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 		without += "\n" + truncate(ev.missing, 500)
 	}
 	cost := result.CostUSD
+	usage := acct.Report(result)
 	if passed && e.Second != nil && gateway.PriorityRank(ev.res.Goal.Priority) <= gateway.PriorityRank("high") {
 		op := opinion{unavailable: "the evaluation was adopted after a restart, and its prompt is not kept"}
 		if ev.second != nil {
@@ -322,6 +326,8 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 			return ctx.Err()
 		}
 		cost += op.cost
+		// one report for the whole evaluation, as its cost is one
+		acct.Add(op.result)
 		if op.unavailable != "" {
 			e.logf("item %s: Codex second opinion unavailable: %s", label, op.unavailable)
 			line := "Codex second opinion unavailable: " + op.unavailable
@@ -338,7 +344,7 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 	if passed {
 		verdict = "passed"
 	}
-	if err := e.GW.EvaluateWorkItem(ctx, item.ID, passed, notes, Cents(cost), nil); err != nil {
+	if err := acct.Carried(e.GW.EvaluateWorkItem(ctx, item.ID, passed, notes, Cents(cost), usage)); err != nil {
 		return fmt.Errorf("record verdict: %w", err)
 	}
 	e.logf("item %s: evaluation %s ($%.2f)", label, verdict, cost)
@@ -379,6 +385,8 @@ type opinion struct {
 	notes       string
 	cost        float64
 	unavailable string
+	// result is the session's, for its tokens in the evaluation's report
+	result harness.Result
 }
 
 // secondOpinion runs the evaluation's job on Second, unless its account
@@ -400,7 +408,7 @@ func (e *Evaluator) secondOpinion(ctx context.Context, label string, job harness
 	job.Label = label + " second opinion"
 	e.logf("item %s: second opinion on Codex%s", label, codexModelName(e.SecondModel))
 	result, err := e.Second.Run(ctx, job, nil)
-	op := opinion{cost: result.CostUSD}
+	op := opinion{cost: result.CostUSD, result: result}
 	switch {
 	case ctx.Err() != nil:
 		op.unavailable = ctx.Err().Error()

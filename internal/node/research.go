@@ -145,8 +145,11 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 	d.logf("%s/%s: researching in %s (%d repos, room for %d)", project.Slug, direction.Slug, dir, len(dirs), room)
 	// the session outlives this process: a restart adopts it (ADR 009)
 	job.Outlive = true
+	acct.Adapter = Adapter(d.Harness)
 	result, err := d.Harness.Run(ctx, job, nil)
-	acct.Finish(ctx, result)
+	// the usage report rides the hand-in; Finish logs it when nothing
+	// carried it
+	defer acct.Finish(ctx, result)
 	return d.handIn(ctx, direction, project, scope, dir, acct, result, err)
 }
 
@@ -174,7 +177,7 @@ func (d *Director) handIn(ctx context.Context, direction gateway.Direction, proj
 		// node that cannot read its own director would otherwise hold
 		// it for 45 minutes and charge for the privilege
 		note := fmt.Sprintf("the session's proposals could not be read (%s): %s", result.SessionID, truncate(result.Text, 300))
-		if hand := d.GW.RecordDirectionResearch(ctx, direction.ID, scope.NodeID, nil, Cents(result.CostUSD), note, nil); hand != nil {
+		if hand := acct.Carried(d.GW.RecordDirectionResearch(ctx, direction.ID, scope.NodeID, nil, Cents(result.CostUSD), note, acct.Report(result))); hand != nil {
 			d.logf("%s/%s: %v (and handing in the empty session failed: %v)", project.Slug, direction.Slug, err, hand)
 		}
 		return fmt.Errorf("research session (%s): %w", result.SessionID, err)
@@ -188,7 +191,7 @@ func (d *Director) handIn(ctx context.Context, direction gateway.Direction, proj
 		})
 	}
 	notes := fmt.Sprintf("%d proposed", len(proposals))
-	if err := d.GW.RecordDirectionResearch(ctx, direction.ID, scope.NodeID, proposals, Cents(result.CostUSD), notes, nil); err != nil {
+	if err := acct.Carried(d.GW.RecordDirectionResearch(ctx, direction.ID, scope.NodeID, proposals, Cents(result.CostUSD), notes, acct.Report(result))); err != nil {
 		return fmt.Errorf("hand in the research: %w", err)
 	}
 	d.logf("%s/%s: proposed %d goal(s) ($%.2f)", project.Slug, direction.Slug, len(proposals), result.CostUSD)

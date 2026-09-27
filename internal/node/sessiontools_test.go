@@ -358,9 +358,11 @@ func TestToolNamedPrologueIsRefused(t *testing.T) {
 	}
 }
 
-// A build that called a tool priced 3 cents a call twice records one
-// usage record of 6 cents for that tool and item; an unpriced tool and
-// the built-in Prologue record none, however often they were called.
+// A build that called a tool priced 3 cents a call twice records two
+// recordToolUsage calls, one per call by its id, each a copy of the
+// session's report at the tool's price with no tokens and no actual
+// cost; an unpriced tool and the built-in Prologue record none, however
+// often they were called.
 func TestPricedToolCallsAreUsageRecords(t *testing.T) {
 	f := seed(t)
 	priced := remoteTool()
@@ -372,16 +374,29 @@ func TestPricedToolCallsAreUsageRecords(t *testing.T) {
 	if err := r.RunItem(context.Background(), item); err != nil {
 		t.Fatal(err)
 	}
-	if len(f.Usage) != 1 {
-		t.Fatalf("usage records = %v, want one", f.Usage)
+	if len(f.ToolUsage) != 2 {
+		t.Fatalf("tool usage = %v, want two", f.ToolUsage)
 	}
-	u := f.Usage[0]
-	if u["workItemId"] != item1 || u["kind"] != "build" || u["tool"] != "search" || u["calls"] != 2.0 || u["listPriceCents"] != 6.0 {
-		t.Fatalf("usage record = %v", u)
+	ids := map[any]bool{}
+	for _, u := range f.ToolUsage {
+		rep, _ := u["usage"].(map[string]any)
+		if u["aggregateId"] != item1 || u["tool"] != "search" || rep["listCostCents"] != 3.0 || rep["actualCostCents"] != 0.0 ||
+			rep["inputTokens"] != 0.0 || rep["outputTokens"] != 0.0 || rep["sessionId"] != "s-1" {
+			t.Fatalf("tool usage = %v", u)
+		}
+		ids[u["toolCallId"]] = true
 	}
+	if len(ids) != 2 || !ids["toolu_search_1"] || !ids["toolu_search_2"] {
+		t.Fatalf("toolCallIds = %v", ids)
+	}
+	// the session's own report rides its finish, all eleven calls counted
+	if len(f.SessionUsage) != 1 || f.SessionUsage[0].Name != "finishWorkItem" || f.SessionUsage[0].Input["toolCalls"] != 11.0 {
+		t.Fatalf("session usage = %+v", f.SessionUsage)
+	}
+	checkNoOldUsage(t, f)
 }
 
-// The evaluator's priced calls are usage records too, of kind evaluate.
+// The evaluator's priced calls are tool usage records too.
 func TestEvaluatorPricedToolCallsAreUsageRecords(t *testing.T) {
 	f := seed(t)
 	gw := gateway.New(f.URL(), "rs_test")
@@ -399,17 +414,18 @@ func TestEvaluatorPricedToolCallsAreUsageRecords(t *testing.T) {
 	if err := ev.Evaluate(context.Background(), item); err != nil {
 		t.Fatal(err)
 	}
-	if len(f.Usage) != 1 || f.Usage[0]["kind"] != "evaluate" || f.Usage[0]["listPriceCents"] != 3.0 {
-		t.Fatalf("usage records = %v", f.Usage)
+	if len(f.ToolUsage) != 1 || f.ToolUsage[0]["toolCallId"] != "toolu_search_1" || f.ToolUsage[0]["usage"].(map[string]any)["listCostCents"] != 3.0 {
+		t.Fatalf("tool usage = %v", f.ToolUsage)
 	}
+	checkNoOldUsage(t, f)
 }
 
-// An older platform without recordUsage does not fail the item: the
-// build goes on to evaluation, and the node says so once and logs the
-// record instead.
+// An older platform without recordToolUsage does not fail the item: the
+// build goes on to evaluation, and the node says so once and logs each
+// call instead.
 func TestToolUsageOnAnOlderPlatformDoesNotFailTheItem(t *testing.T) {
 	f := seed(t)
-	f.Unsupported["recordUsage"] = true
+	f.Unsupported["recordToolUsage"] = true
 	priced := remoteTool()
 	priced["pricePerCallCents"] = 3
 	f.SessionTools[item1] = []map[string]any{priced}
@@ -422,13 +438,15 @@ func TestToolUsageOnAnOlderPlatformDoesNotFailTheItem(t *testing.T) {
 	if f.Item(item1)["status"] != "evaluating" {
 		t.Fatalf("item: %v", f.Item(item1))
 	}
-	if len(f.Usage) != 0 {
-		t.Fatalf("usage = %v", f.Usage)
+	if len(f.ToolUsage) != 0 {
+		t.Fatalf("tool usage = %v", f.ToolUsage)
 	}
 	if n := strings.Count(logs.String(), "takes no tool usage records"); n != 1 {
 		t.Errorf("fallback said %d times:\n%s", n, logs.String())
 	}
-	if !strings.Contains(logs.String(), "usage: tool search on item "+item1+" (build): 2 calls, 6¢") {
-		t.Errorf("record not logged:\n%s", logs.String())
+	for _, id := range []string{"toolu_search_1", "toolu_search_2"} {
+		if !strings.Contains(logs.String(), "usage: tool search on item "+item1+" (build): call "+id+", 3¢") {
+			t.Errorf("call %s not logged:\n%s", id, logs.String())
+		}
 	}
 }

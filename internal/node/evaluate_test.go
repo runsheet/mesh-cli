@@ -139,8 +139,9 @@ type fakeCodexH struct {
 	jobs []harness.Job
 	text string
 	err  error
-	cost float64
-	rl   *harness.RateLimit
+	cost  float64
+	rl    *harness.RateLimit
+	usage *harness.Usage
 }
 
 func (h *fakeCodexH) Name() string { return "codex" }
@@ -148,7 +149,7 @@ func (h *fakeCodexH) Run(ctx context.Context, job harness.Job, on func(harness.P
 	h.mu.Lock()
 	h.jobs = append(h.jobs, job)
 	h.mu.Unlock()
-	return harness.Result{Success: h.err == nil, Text: h.text, CostUSD: h.cost, RateLimit: h.rl}, h.err
+	return harness.Result{Success: h.err == nil, Text: h.text, CostUSD: h.cost, RateLimit: h.rl, Usage: h.usage}, h.err
 }
 
 func (h *fakeCodexH) runs() int {
@@ -535,4 +536,26 @@ func TestEvaluateAlreadyDoneRejected(t *testing.T) {
 	if f.Item(item1)["status"] != "ready" || len(h.jobs) != 1 {
 		t.Fatalf("a rejected claim readies the item: %v", f.Item(item1)["status"])
 	}
+}
+
+// An evaluation whose Codex second opinion also ran hands in one report
+// for both: Codex's tokens and cost added to Claude's, as the cost is.
+func TestSecondOpinionUsageInTheOneReport(t *testing.T) {
+	codex := &fakeCodexH{text: "Holds.\nVERDICT: PASS", cost: 0.40,
+		usage: &harness.Usage{Model: "gpt-6-astra", InputTokens: 1000, CachedInputTokens: 200, OutputTokens: 50}}
+	f, ev, _, _ := secondFixture(t, "high", "Holds.\n\nVERDICT: PASS", codex)
+	ev.Credentials = &Credentials{GW: ev.GW.(*gateway.Client), Limits: &Limits{}, Log: log.New(io.Discard, "", 0)}
+	in := evaluateItem1(t, f, ev)
+	if in["costCents"] != float64(165) {
+		t.Fatalf("recorded %+v", in)
+	}
+	if len(f.SessionUsage) != 1 || f.SessionUsage[0].Name != "evaluateWorkItem" {
+		t.Fatalf("usage: %+v", f.SessionUsage)
+	}
+	u := f.SessionUsage[0].Input
+	if u["listCostCents"] != float64(165) || u["inputTokens"] != float64(1000) || u["cacheReadTokens"] != float64(200) ||
+		u["outputTokens"] != float64(50) || u["adapter"] != "claude-code" || u["credentialKind"] != "unset" || u["actualCostCents"] != float64(0) {
+		t.Fatalf("usage: %v", u)
+	}
+	checkNoOldUsage(t, f)
 }

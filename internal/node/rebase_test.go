@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"reflect"
@@ -391,4 +392,28 @@ func (h *blockingHarness) Run(ctx context.Context, job harness.Job, on func(harn
 	h.mu.Unlock()
 	<-h.release
 	return h.fakeHarness.Run(ctx, job, on)
+}
+
+// A rebase that lands carries its session's usage report on
+// finishWorkItemRebase, on the credential the platform issued the item.
+func TestRebaseReportsUsage(t *testing.T) {
+	f := seed(t)
+	requestRebase(f, item1, "mesh/ship-it-1")
+	issueCredential(f, item1)
+	ws := &fakeWS{root: t.TempDir(), pushedHead: "abc123def4567890"}
+	h := &streamHarness{file: usageStream(), text: "Kept both.\n\nREBASED: abc123def456\nRESOLVED: main.go"}
+	loop, cfg := rebaseNode(t, f, "test-node", h, ws, nil)
+	gw := loop.GW.(*gateway.Client)
+	rb := &Rebaser{GW: gw, Harness: h, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, ProgressEvery: time.Hour,
+		Credentials: usageCredentials(gw, log.New(io.Discard, "", 0)), Log: log.New(io.Discard, "", 0)}
+	loop.Rebase = func(ctx context.Context, item gateway.WorkItem) { _ = rb.Rebase(ctx, item) }
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	loop.Tick(ctx)
+	loop.wg.Wait()
+
+	if finishes := f.CallsNamed("finishWorkItemRebase"); len(finishes) != 1 || finishes[0].Input["headSha"] != "abc123def4567890" {
+		t.Fatalf("finishes: %+v", finishes)
+	}
+	checkSessionUsage(t, f, "finishWorkItemRebase")
 }
