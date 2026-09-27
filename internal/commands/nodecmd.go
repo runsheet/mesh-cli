@@ -471,6 +471,16 @@ func nodeStart(cmd *cobra.Command, args []string) error {
 	if loop.Ledger, err = node.OpenLedger(ledgerPath, nil); err != nil {
 		return err
 	}
+	// the accounts the platform's claim-time read has issued lately,
+	// remembered across a restart (goal loop-schedules-on-issued-accounts)
+	knownPath, err := node.KnownAccountsPath()
+	if err != nil {
+		return err
+	}
+	known, err := node.OpenKnownAccounts(knownPath, nil)
+	if err != nil {
+		return err
+	}
 	// the node follows the version the platform asks for (adr-002);
 	// --once is one tick, too short for an update to finish
 	if updates != nil && !nodeOnceFlag {
@@ -536,7 +546,7 @@ func nodeStart(cmd *cobra.Command, args []string) error {
 	// every one-shot session's account comes from the platform's
 	// claim-time read, node.yaml the fallback, and every one reports
 	// its usage record (adr-005); each fallback is said once per run
-	accounts := &node.Credentials{GW: gw, Limits: loop.Limits, Thresholds: loop.Thresholds, Log: logger}
+	accounts := &node.Credentials{GW: gw, Limits: loop.Limits, Thresholds: loop.Thresholds, Known: known, Log: logger}
 	switch nodeModeFlag {
 	case "poll":
 		return runPollMode(ctx, cfg, scopes, gw, loop, workRoot, fallback, accounts, logger)
