@@ -135,10 +135,10 @@ func TestBuildPromptOnRetry(t *testing.T) {
 // fakeCodexH is a second-opinion harness: its final message, or its
 // error, and a plan reading it reports.
 type fakeCodexH struct {
-	mu   sync.Mutex
-	jobs []harness.Job
-	text string
-	err  error
+	mu    sync.Mutex
+	jobs  []harness.Job
+	text  string
+	err   error
 	cost  float64
 	rl    *harness.RateLimit
 	usage *harness.Usage
