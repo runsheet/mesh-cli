@@ -100,6 +100,11 @@ An `item` is `{id: "item_N", type, …}`, where `type` is one of:
 | `web_search` | `id`, `query`, `action`, `results` | source only |
 | `todo_list` | `items: [{text, completed}]` | source only |
 
+A completed `mcp_tool_call`'s own `id` (the item's `id`, above) is kept
+on `harness.Result.ToolCallIDs[server]` in call order, alongside its
+count on `ToolCalls[server]`, for `recordToolUsage`'s `toolCallId`; an
+item with no id gets one synthesised (`<sessionId>:<server>:<n>`).
+
 **No event names the model.** The model shows up only in Codex's own
 state (`$CODEX_HOME/state_5.sqlite`, the session file under
 `$CODEX_HOME/sessions/`). So `ParseCodexStream` takes the model the

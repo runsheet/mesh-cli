@@ -165,6 +165,13 @@ type Result struct {
 	// completed mcp_tool_call items — for priced tools' usage records
 	// (trd §3 Tools); nil when it made none.
 	ToolCalls map[string]int
+	// ToolCallIDs is each server's calls' ids, in stream order — a
+	// Claude tool_use block's id (toolu_…), a Codex mcp_tool_call item's
+	// id — so recordToolUsage can report one call at a time by its
+	// toolCallId. An event with no id gets one synthesised
+	// (<sessionId>:<server>:<n>), so len(ToolCallIDs[s]) always equals
+	// ToolCalls[s]. Nil exactly when ToolCalls is.
+	ToolCallIDs map[string][]string
 }
 
 // Usage is what a session consumed, in tokens, and the model its cost

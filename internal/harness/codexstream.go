@@ -106,7 +106,8 @@ func (p CodexPrice) Cost(u CodexUsage) float64 {
 // A stream with no parseable event sets EmptyOutput. Codex's exec
 // stream carries no plan limits (docs/codex-events.md), so RateLimit
 // stays nil. Each completed mcp_tool_call is counted on ToolCalls by
-// its server. Lines that are not JSON and unknown types are skipped.
+// its server, its item id (empty ones synthesised) kept on
+// ToolCallIDs. Lines that are not JSON and unknown types are skipped.
 func ParseCodexStream(r io.Reader, model string, onEvent func(CodexEvent)) Result {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 16<<20)
@@ -134,7 +135,7 @@ func ParseCodexStream(r io.Reader, model string, onEvent func(CodexEvent)) Resul
 				break
 			}
 			if ev.Item.Type == "mcp_tool_call" && ev.Item.Server != "" {
-				res.countToolCall(ev.Item.Server)
+				res.countToolCall(ev.Item.Server, ev.Item.ID)
 			}
 			if ev.Item.Type == "agent_message" {
 				if t := strings.TrimSpace(ev.Item.Text); t != "" {
