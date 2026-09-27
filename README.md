@@ -274,7 +274,9 @@ node drain` so the service starts again with it.
 **The spending order.** Before every claim — an item, a plan, research,
 a rebase — and before an evaluation, the node picks the account the
 session runs on, by the latest plan limits each account's sessions
-reported (see Near the plan's limits):
+reported (see Near the plan's limits). The accounts are the union of
+node.yaml's `accounts:` and any credentials the platform issues; a
+platform that issues none uses node.yaml only:
 
 1. Subscriptions first: of those with headroom, the one with the most —
    the lowest use of its five-hour and seven-day windows. An account
