@@ -136,7 +136,7 @@ func (h *Handler) finish(ctx context.Context, args map[string]any) (string, erro
 		if id == "" || evidence == "" {
 			return "", fmt.Errorf("item_id and evidence required for outcome already_done")
 		}
-		if err := h.GW.FinishWorkItemAlreadyDone(ctx, id, evidence, num(args, "cost_cents")); err != nil {
+		if err := h.GW.FinishWorkItemAlreadyDone(ctx, id, evidence, num(args, "cost_cents"), nil); err != nil {
 			return "", err
 		}
 		h.done(id, "finished")
@@ -147,7 +147,7 @@ func (h *Handler) finish(ctx context.Context, args map[string]any) (string, erro
 	if id == "" || branch == "" {
 		return "", fmt.Errorf("item_id and branch required")
 	}
-	if err := h.GW.FinishWorkItem(ctx, id, branch, str(args, "head_sha"), num(args, "cost_cents")); err != nil {
+	if err := h.GW.FinishWorkItem(ctx, id, branch, str(args, "head_sha"), num(args, "cost_cents"), nil); err != nil {
 		return "", err
 	}
 	h.done(id, "finished")
@@ -172,7 +172,7 @@ func (h *Handler) evaluate(ctx context.Context, args map[string]any) (string, er
 	if id == "" {
 		return "", fmt.Errorf("item_id required")
 	}
-	if err := h.GW.EvaluateWorkItem(ctx, id, passed, str(args, "notes"), num(args, "cost_cents")); err != nil {
+	if err := h.GW.EvaluateWorkItem(ctx, id, passed, str(args, "notes"), num(args, "cost_cents"), nil); err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("evaluated: passed=%v", passed), nil

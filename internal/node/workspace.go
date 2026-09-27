@@ -629,25 +629,25 @@ type Gateway interface {
 	AgentModel(ctx context.Context, agentID string) (string, error)
 	ClaimWorkItem(ctx context.Context, itemID, nodeID, harness string) error
 	ReportWorkItemProgress(ctx context.Context, itemID, note string, costCents int, sessionID string) error
-	FinishWorkItem(ctx context.Context, itemID, branch, headSha string, costCents int) error
-	FinishWorkItemAlreadyDone(ctx context.Context, itemID, evidence string, costCents int) error
+	FinishWorkItem(ctx context.Context, itemID, branch, headSha string, costCents int, usage *gateway.UsageReport) error
+	FinishWorkItemAlreadyDone(ctx context.Context, itemID, evidence string, costCents int, usage *gateway.UsageReport) error
 	FailWorkItem(ctx context.Context, itemID, errMsg string) error
 	ReleaseWorkItem(ctx context.Context, itemID, reason string) error
 	IssueItemRepoToken(ctx context.Context, itemID, nodeID string) (*gateway.GitHubToken, error)
-	EvaluateWorkItem(ctx context.Context, itemID string, passed bool, notes string, costCents int) error
+	EvaluateWorkItem(ctx context.Context, itemID string, passed bool, notes string, costCents int, usage *gateway.UsageReport) error
 	Goal(ctx context.Context, id string) (*gateway.Goal, error)
 	Goals(ctx context.Context, orgID string) ([]gateway.Goal, error)
 	ClaimPlan(ctx context.Context, goalID, nodeID string) error
-	PlanGoal(ctx context.Context, goalID, by string, items []gateway.PlannedItem, costCents int) error
+	PlanGoal(ctx context.Context, goalID, by string, items []gateway.PlannedItem, costCents int, usage *gateway.UsageReport) error
 	Project(ctx context.Context, id string) (*gateway.Project, error)
 	Projects(ctx context.Context, orgID string) ([]gateway.Project, error)
 	Directions(ctx context.Context, orgID, projectID string) ([]gateway.Direction, error)
 	ClaimDirectionResearch(ctx context.Context, directionID, nodeID string) error
 	RequestedRebases(ctx context.Context, orgID string) ([]gateway.WorkItem, error)
 	ClaimWorkItemRebase(ctx context.Context, itemID, nodeID string) error
-	FinishWorkItemRebase(ctx context.Context, itemID, headSha string, resolvedFiles []string) error
+	FinishWorkItemRebase(ctx context.Context, itemID, headSha string, resolvedFiles []string, usage *gateway.UsageReport) error
 	FailWorkItemRebase(ctx context.Context, itemID, reason string) error
-	RecordDirectionResearch(ctx context.Context, directionID, nodeID string, proposals []gateway.GoalProposal, costCents int, notes string) error
+	RecordDirectionResearch(ctx context.Context, directionID, nodeID string, proposals []gateway.GoalProposal, costCents int, notes string, usage *gateway.UsageReport) error
 	Repo(ctx context.Context, id string) (*gateway.Repo, error)
 	Repos(ctx context.Context, accountID, ownerLogin string) ([]gateway.Repo, error)
 	PrologueDocuments(ctx context.Context, org, project string) ([]gateway.Document, error)

@@ -295,7 +295,7 @@ func (r *Rebaser) afterRebase(ctx context.Context, rb *rebaseRun, acct *SessionA
 		return fail(fmt.Errorf("the rebase session said it pushed %s, but origin/%s is at %s: the push did not land", short(out.Head), branch, short(head)))
 	}
 	rb.report(ctx, fmt.Sprintf("rebased %s onto %s at %s", branch, rb.base, short(head)))
-	if err := r.GW.FinishWorkItemRebase(ctx, rb.item.ID, head, out.Files); err != nil {
+	if err := r.GW.FinishWorkItemRebase(ctx, rb.item.ID, head, out.Files, nil); err != nil {
 		// a finish the platform did not take still ends the claim
 		return fail(fmt.Errorf("the rebase landed at %s, but finishing it failed: %w", short(head), err))
 	}

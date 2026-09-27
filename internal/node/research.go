@@ -174,7 +174,7 @@ func (d *Director) handIn(ctx context.Context, direction gateway.Direction, proj
 		// node that cannot read its own director would otherwise hold
 		// it for 45 minutes and charge for the privilege
 		note := fmt.Sprintf("the session's proposals could not be read (%s): %s", result.SessionID, truncate(result.Text, 300))
-		if hand := d.GW.RecordDirectionResearch(ctx, direction.ID, scope.NodeID, nil, Cents(result.CostUSD), note); hand != nil {
+		if hand := d.GW.RecordDirectionResearch(ctx, direction.ID, scope.NodeID, nil, Cents(result.CostUSD), note, nil); hand != nil {
 			d.logf("%s/%s: %v (and handing in the empty session failed: %v)", project.Slug, direction.Slug, err, hand)
 		}
 		return fmt.Errorf("research session (%s): %w", result.SessionID, err)
@@ -188,7 +188,7 @@ func (d *Director) handIn(ctx context.Context, direction gateway.Direction, proj
 		})
 	}
 	notes := fmt.Sprintf("%d proposed", len(proposals))
-	if err := d.GW.RecordDirectionResearch(ctx, direction.ID, scope.NodeID, proposals, Cents(result.CostUSD), notes); err != nil {
+	if err := d.GW.RecordDirectionResearch(ctx, direction.ID, scope.NodeID, proposals, Cents(result.CostUSD), notes, nil); err != nil {
 		return fmt.Errorf("hand in the research: %w", err)
 	}
 	d.logf("%s/%s: proposed %d goal(s) ($%.2f)", project.Slug, direction.Slug, len(proposals), result.CostUSD)

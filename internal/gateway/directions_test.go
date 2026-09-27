@@ -101,7 +101,7 @@ func TestDirectionResearchClaimAndRecord(t *testing.T) {
 		{Slug: "one-sign-in", Title: "One sign-in", Statement: "Everyone signs in once.",
 			Acceptance: "a person signs in once", Why: "the direction asks for it", BudgetCents: 3000},
 	}
-	if err := gw.RecordDirectionResearch(ctx, "d1", nodeID, proposals, 125, "1 proposed"); err != nil {
+	if err := gw.RecordDirectionResearch(ctx, "d1", nodeID, proposals, 125, "1 proposed", nil); err != nil {
 		t.Fatal(err)
 	}
 	rec := f.CallsNamed("recordDirectionResearch")

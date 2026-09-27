@@ -200,7 +200,7 @@ func (p *Planner) handIn(ctx context.Context, goal gateway.Goal, items []gateway
 	if p.Cfg != nil {
 		by = p.Cfg.OwnerID
 	}
-	if err := p.GW.PlanGoal(ctx, goal.ID, by, items, Cents(cost)); err != nil {
+	if err := p.GW.PlanGoal(ctx, goal.ID, by, items, Cents(cost), nil); err != nil {
 		return fmt.Errorf("hand in the plan: %w", err)
 	}
 	p.logf("goal %s: planned, %d items ($%.2f)", goal.Slug, len(items), cost)

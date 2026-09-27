@@ -206,6 +206,58 @@ func (c *Client) Mutate(ctx context.Context, field, aggregateID string, input ma
 	return c.Query(ctx, q, map[string]any{"in": in}, nil)
 }
 
+// ErrNoUsageLedger is what a finishing command returns when it carried a
+// non-nil usage report but the gateway's input has no `usage` field (a
+// platform older than the usage ledger, runsheet trd §6a): the command
+// itself landed, sent again without the report, so the caller's item,
+// evaluation, plan, rebase or research still finishes — only the usage
+// report did not, and the caller falls back to its own log line. Any
+// other error from the command is returned as is. errors.Is-able.
+var ErrNoUsageLedger = errors.New("gateway: the platform keeps no usage ledger")
+
+// mutateWithUsage sends field's command with input, plus usage's report
+// on the `usage` key when usage is non-nil. A platform whose input has
+// no `usage` (unknownField on "usage") gets the command again without
+// it: the command lands, and ErrNoUsageLedger says the report did not.
+func (c *Client) mutateWithUsage(ctx context.Context, field, aggregateID string, input map[string]any, usage *UsageReport) error {
+	if usage == nil {
+		return c.Mutate(ctx, field, aggregateID, input)
+	}
+	um, err := usageInput(usage)
+	if err != nil {
+		return err
+	}
+	withUsage := make(map[string]any, len(input)+1)
+	for k, v := range input {
+		withUsage[k] = v
+	}
+	withUsage["usage"] = um
+	err = c.Mutate(ctx, field, aggregateID, withUsage)
+	var ge *Error
+	if err != nil && errors.As(err, &ge) && unknownField(ge.Message, "usage") {
+		if err2 := c.Mutate(ctx, field, aggregateID, input); err2 != nil {
+			return err2
+		}
+		return ErrNoUsageLedger
+	}
+	return err
+}
+
+// usageInput is a UsageReport as a map for a command's `usage` key: its
+// JSON shape, decoded back into map[string]any (as RecordSessionUsage's
+// map already is).
+func usageInput(u *UsageReport) (map[string]any, error) {
+	data, err := json.Marshal(u)
+	if err != nil {
+		return nil, err
+	}
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
 // ---- identity ---------------------------------------------------------------
 
 // SignIn returns the person's user id — the node's ownerId.
@@ -1145,11 +1197,13 @@ func (c *Client) ClaimWorkItemRebase(ctx context.Context, itemID, nodeID string)
 // head and the files it resolved. The item goes back into its repo's
 // merge queue, attempts untouched. The command carries no cost; the
 // session's cents go on ReportWorkItemProgress, the rebase's heartbeat.
-func (c *Client) FinishWorkItemRebase(ctx context.Context, itemID, headSha string, resolvedFiles []string) error {
+// usage is the session's usage report, carried as `usage` when non-nil
+// (see UsageReport, ErrNoUsageLedger).
+func (c *Client) FinishWorkItemRebase(ctx context.Context, itemID, headSha string, resolvedFiles []string, usage *UsageReport) error {
 	if resolvedFiles == nil {
 		resolvedFiles = []string{}
 	}
-	return c.Mutate(ctx, "finishWorkItemRebase", itemID, map[string]any{"headSha": headSha, "method": "session", "files": resolvedFiles})
+	return c.mutateWithUsage(ctx, "finishWorkItemRebase", itemID, map[string]any{"headSha": headSha, "method": "session", "files": resolvedFiles}, usage)
 }
 
 // FailWorkItemRebase gives the rebase up: the reason is the conflict as
@@ -1166,20 +1220,22 @@ func (c *Client) ReportWorkItemProgress(ctx context.Context, itemID, note string
 
 // FinishWorkItem records the pushed branch: the outcome built, which
 // the platform takes as the default, so the input is the one a platform
-// without outcomes knows.
-func (c *Client) FinishWorkItem(ctx context.Context, itemID, branch, headSha string, costCents int) error {
-	return c.Mutate(ctx, "finishWorkItem", itemID, map[string]any{"branch": branch, "headSha": headSha, "costCents": costCents})
+// without outcomes knows. usage is the build session's usage report,
+// carried as `usage` when non-nil (see UsageReport, ErrNoUsageLedger).
+func (c *Client) FinishWorkItem(ctx context.Context, itemID, branch, headSha string, costCents int, usage *UsageReport) error {
+	return c.mutateWithUsage(ctx, "finishWorkItem", itemID, map[string]any{"branch": branch, "headSha": headSha, "costCents": costCents}, usage)
 }
 
 // FinishWorkItemAlreadyDone finishes the item with no branch: main
 // already holds its work, and evidence — the merged PR URLs and/or
 // commit SHAs on the base ref, with a line on why — is what the
 // evaluator checks against the acceptance (mesh ADR 003 decision 1).
-func (c *Client) FinishWorkItemAlreadyDone(ctx context.Context, itemID, evidence string, costCents int) error {
+// usage is the build session's usage report, as FinishWorkItem's.
+func (c *Client) FinishWorkItemAlreadyDone(ctx context.Context, itemID, evidence string, costCents int, usage *UsageReport) error {
 	if strings.TrimSpace(evidence) == "" {
 		return errors.New("gateway: an already_done finish needs evidence")
 	}
-	return c.Mutate(ctx, "finishWorkItem", itemID, map[string]any{"outcome": OutcomeAlreadyDone, "evidence": evidence, "costCents": costCents})
+	return c.mutateWithUsage(ctx, "finishWorkItem", itemID, map[string]any{"outcome": OutcomeAlreadyDone, "evidence": evidence, "costCents": costCents}, usage)
 }
 
 // FailWorkItem records the failure.
@@ -1198,9 +1254,11 @@ func (c *Client) ReleaseWorkItem(ctx context.Context, itemID, reason string) err
 }
 
 // EvaluateWorkItem records the evaluator's verdict (phase 1's session; the
-// platform readies or reviews the item) and that session's cost.
-func (c *Client) EvaluateWorkItem(ctx context.Context, itemID string, passed bool, notes string, costCents int) error {
-	return c.Mutate(ctx, "evaluateWorkItem", itemID, map[string]any{"passed": passed, "notes": notes, "costCents": costCents})
+// platform readies or reviews the item) and that session's cost. usage
+// is that session's usage report, carried as `usage` when non-nil (see
+// UsageReport, ErrNoUsageLedger).
+func (c *Client) EvaluateWorkItem(ctx context.Context, itemID string, passed bool, notes string, costCents int, usage *UsageReport) error {
+	return c.mutateWithUsage(ctx, "evaluateWorkItem", itemID, map[string]any{"passed": passed, "notes": notes, "costCents": costCents}, usage)
 }
 
 // GitHubToken is a claimed item's own GitHub credential: an installation
@@ -1361,8 +1419,10 @@ func (c *Client) ClaimDirectionResearch(ctx context.Context, directionID, nodeID
 
 // RecordDirectionResearch hands in what the session came to, and the
 // cost whether or not it proposed anything. It also lets the claim go,
-// so an empty hand-in is how a node gives a direction back.
-func (c *Client) RecordDirectionResearch(ctx context.Context, directionID, nodeID string, proposals []GoalProposal, costCents int, notes string) error {
+// so an empty hand-in is how a node gives a direction back. usage is
+// the research session's usage report, carried as `usage` when non-nil
+// (see UsageReport, ErrNoUsageLedger).
+func (c *Client) RecordDirectionResearch(ctx context.Context, directionID, nodeID string, proposals []GoalProposal, costCents int, notes string, usage *UsageReport) error {
 	list := make([]map[string]any, 0, len(proposals))
 	for _, p := range proposals {
 		row := map[string]any{"slug": p.Slug, "title": p.Title, "statement": p.Statement, "acceptance": p.Acceptance}
@@ -1374,17 +1434,19 @@ func (c *Client) RecordDirectionResearch(ctx context.Context, directionID, nodeI
 		}
 		list = append(list, row)
 	}
-	return c.Mutate(ctx, "recordDirectionResearch", directionID, map[string]any{
+	return c.mutateWithUsage(ctx, "recordDirectionResearch", directionID, map[string]any{
 		"nodeId": nodeID, "at": time.Now().UTC().Format(time.RFC3339Nano),
 		"proposals": list, "costCents": costCents, "notes": notes,
-	})
+	}, usage)
 }
 
 // PlanGoal hands the goal its graph, with the planner session's cost
-// when one drew it. An item's model is sent only when it has one; a
-// platform older than items-carry-a-model refuses the field, and the
-// graph is handed in again without it.
-func (c *Client) PlanGoal(ctx context.Context, goalID, by string, items []PlannedItem, costCents int) error {
+// when one drew it, and usage its usage report (carried as `usage`
+// when non-nil: see UsageReport, ErrNoUsageLedger). An item's model is
+// sent only when it has one; a platform older than
+// items-carry-a-model refuses the field, and the graph is handed in
+// again without it.
+func (c *Client) PlanGoal(ctx context.Context, goalID, by string, items []PlannedItem, costCents int, usage *UsageReport) error {
 	send := func(withModel bool) error {
 		list := make([]map[string]any, 0, len(items))
 		for _, it := range items {
@@ -1405,7 +1467,7 @@ func (c *Client) PlanGoal(ctx context.Context, goalID, by string, items []Planne
 		if by != "" {
 			m["by"] = by
 		}
-		return c.Mutate(ctx, "planGoal", goalID, m)
+		return c.mutateWithUsage(ctx, "planGoal", goalID, m, usage)
 	}
 	err := send(true)
 	var ge *Error
@@ -1587,6 +1649,73 @@ type UsageRecord struct {
 	After            *UsageWindows `json:"after,omitempty"`
 	StartedAt        time.Time     `json:"startedAt"`
 	EndedAt          time.Time     `json:"endedAt"`
+}
+
+// UsageReport is the platform's UsageReportInput (runsheet trd §6a,
+// ADR 018 (e)(f), ADR 019): one session's usage, carried as `usage` on
+// the command that ends it — FinishWorkItem, FinishWorkItemAlreadyDone,
+// EvaluateWorkItem, PlanGoal, FinishWorkItemRebase,
+// RecordDirectionResearch — or on RecordToolUsage for one priced tool
+// call. CredentialID is the credential the session ran on (a UUID),
+// left out when the platform issued none; CredentialKind is
+// "subscription", "api" or "unset". The four window fields (0..1) and
+// their *ResetsAt (RFC 3339) are left out for a window the session
+// never read. It never carries a secret.
+type UsageReport struct {
+	SessionID        string `json:"sessionId"`
+	Adapter          string `json:"adapter"`
+	Model            string `json:"model"`
+	CredentialID     string `json:"credentialId,omitempty"`
+	CredentialKind   string `json:"credentialKind"`
+	InputTokens      int64  `json:"inputTokens"`
+	OutputTokens     int64  `json:"outputTokens"`
+	CacheReadTokens  int64  `json:"cacheReadTokens"`
+	CacheWriteTokens int64  `json:"cacheWriteTokens"`
+	ToolCalls        int64  `json:"toolCalls"`
+	WallMs           int64  `json:"wallMs"`
+	ListCostCents    int64  `json:"listCostCents"`
+	ActualCostCents  int64  `json:"actualCostCents"`
+
+	FiveHourBefore *float64 `json:"fiveHourBefore,omitempty"`
+	FiveHourAfter  *float64 `json:"fiveHourAfter,omitempty"`
+	SevenDayBefore *float64 `json:"sevenDayBefore,omitempty"`
+	SevenDayAfter  *float64 `json:"sevenDayAfter,omitempty"`
+
+	FiveHourResetsAtBefore *time.Time `json:"fiveHourResetsAtBefore,omitempty"`
+	FiveHourResetsAtAfter  *time.Time `json:"fiveHourResetsAtAfter,omitempty"`
+	SevenDayResetsAtBefore *time.Time `json:"sevenDayResetsAtBefore,omitempty"`
+	SevenDayResetsAtAfter  *time.Time `json:"sevenDayResetsAtAfter,omitempty"`
+}
+
+// The kinds a UsageReport's CredentialKind takes.
+const (
+	CredentialSubscription = "subscription"
+	CredentialAPI          = "api"
+	CredentialUnset        = "unset"
+)
+
+// RecordToolUsage hands the platform one priced tool call's usage
+// report against the item (aggregateId), naming the tool and its
+// tool_call_id (runsheet trd §6a, ADR 019). An older platform without
+// the mutation answers IsUnsupported.
+func (c *Client) RecordToolUsage(ctx context.Context, itemID, toolCallID, tool string, usage UsageReport) error {
+	const field = "recordToolUsage"
+	um, err := usageInput(&usage)
+	if err != nil {
+		return err
+	}
+	in := map[string]any{
+		"aggregateId": itemID, "namespace": NS, "tool": tool, "toolCallId": toolCallID, "usage": um,
+	}
+	q := `mutation($in: RecordToolUsageInput!) { recordToolUsage(input: $in) { status } }`
+	if err := c.Query(ctx, q, map[string]any{"in": in}, nil); err != nil {
+		var ge *Error
+		if errors.As(err, &ge) && (unknownOperation(ge.Message, field) || schemaMismatch(ge.Message, field)) {
+			return &Error{Message: ge.Message, Unsupported: true}
+		}
+		return err
+	}
+	return nil
 }
 
 // RecordSessionUsage hands one session's usage record to the ledger. A

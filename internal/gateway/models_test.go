@@ -135,7 +135,7 @@ func TestPlanGoalSendsModel(t *testing.T) {
 	err := gw.PlanGoal(context.Background(), "goal-1", "", []gateway.PlannedItem{
 		{Seq: 1, Title: "docs", Model: "haiku"},
 		{Seq: 2, Title: "the rest"},
-	}, 0)
+	}, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +157,7 @@ func TestPlanGoalWithoutModelOnAnOlderPlatform(t *testing.T) {
 	f.Goals["goal-1"] = map[string]any{"id": "goal-1", "status": "planning"}
 	gw := gateway.New(f.URL(), "rs_test")
 
-	err := gw.PlanGoal(context.Background(), "goal-1", "", []gateway.PlannedItem{{Seq: 1, Title: "docs", Model: "haiku"}}, 0)
+	err := gw.PlanGoal(context.Background(), "goal-1", "", []gateway.PlannedItem{{Seq: 1, Title: "docs", Model: "haiku"}}, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
