@@ -22,20 +22,29 @@ const (
 )
 
 // remoteTool, localTool and uvxTool are the claim-time read's rows (the
-// gateway's JSON), as the platform hands them to the claiming node.
+// gateway's JSON), as the platform hands them to the claiming node
+// (itemTools, runsheet ADR 020): a tool served through an account has
+// its settings as that account's secrets.
 func remoteTool() map[string]any {
-	return map[string]any{"name": "search", "transport": "remote", "url": "https://search.example/mcp",
-		"headers": map[string]any{"X-Region": "au"}, "secrets": map[string]any{"Authorization": "Bearer " + searchSecret}, "required": true}
+	return map[string]any{"id": "t-search", "slug": "search", "name": "Search", "kind": "remote_mcp", "need": "required", "url": "https://search.example/mcp",
+		"account": map[string]any{"id": "a-search", "label": "search-team"},
+		"headers": []any{map[string]any{"name": "X-Region", "value": "au"}, map[string]any{"name": "Authorization", "value": "Bearer " + searchSecret}}, "env": []any{}}
 }
 
 func localTool() map[string]any {
-	return map[string]any{"name": "fs-tools", "transport": "local", "runtime": "npx", "command": "@example/fs-mcp",
-		"args": []any{"--root", "."}, "secrets": map[string]any{"FS_API_KEY": fsSecret}, "required": false}
+	return map[string]any{"id": "t-fs", "slug": "fs-tools", "name": "FS tools", "kind": "local_mcp", "need": "nice_to_have", "runtime": "npx", "command": "@example/fs-mcp",
+		"args": []any{"--root", "."}, "account": map[string]any{"id": "a-fs", "label": "fs"},
+		"headers": []any{}, "env": []any{map[string]any{"name": "FS_API_KEY", "value": fsSecret}}}
 }
 
 func uvxTool(required bool) map[string]any {
-	return map[string]any{"name": "git-tools", "transport": "local", "runtime": "uvx", "command": "mcp-server-git",
-		"secrets": map[string]any{"GIT_KEY": gitSecret}, "required": required}
+	need := "nice_to_have"
+	if required {
+		need = "required"
+	}
+	return map[string]any{"id": "t-git", "slug": "git-tools", "name": "Git tools", "kind": "local_mcp", "need": need, "runtime": "uvx", "command": "mcp-server-git",
+		"account": map[string]any{"id": "a-git", "label": "git"},
+		"headers": []any{}, "env": []any{map[string]any{"name": "GIT_KEY", "value": gitSecret}}}
 }
 
 func onlyNpx() []string { return []string{"npx"} }

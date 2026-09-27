@@ -36,8 +36,9 @@ type CredentialGateway interface {
 }
 
 // Credentials is where every session's account comes from and where its
-// usage goes (adr-005, the claim-time read): the platform's
-// sessionCredentials for the claimed session first, node.yaml's
+// usage goes (adr-005, the claim-time read): the platform's read for
+// the claimed session (itemCredentials, planCredentials or
+// researchCredentials, with its tools) first, node.yaml's
 // accounts when the platform does not know the read or issues none; a
 // usage record per session to recordSessionUsage, or one structured log
 // line on a platform without it. Each fallback is said once per run.
