@@ -307,10 +307,13 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		r.logf("item %s: %s", label, note)
 		b.report(ctx, note)
 	}
+	acct.Adapter = Adapter(r.Harness)
 	result, runErr := b.run(ctx, func(onProgress func(harness.Progress)) (harness.Result, error) {
 		return r.Harness.Run(ctx, job, onProgress)
 	})
-	acct.Finish(ctx, result)
+	// the usage report rides the finish (afterBuild); Finish logs it when
+	// nothing carried it
+	defer acct.Finish(ctx, result)
 	return r.afterBuild(ctx, b, result, runErr)
 }
 
@@ -436,7 +439,7 @@ func (r *Runner) afterBuild(ctx context.Context, b *buildRun, result harness.Res
 	if evidence, ok := harness.ParseAlreadyDone(result.Text); ok {
 		// main already holds the work (adr-003): no push, no branch, and
 		// the evaluator checks the evidence on the base ref
-		if err := r.GW.FinishWorkItemAlreadyDone(ctx, item.ID, truncate(evidence, 4000), b.cost.delta(), nil); err != nil {
+		if err := b.acct.Carried(r.GW.FinishWorkItemAlreadyDone(ctx, item.ID, truncate(evidence, 4000), b.cost.delta(), b.acct.Report(result))); err != nil {
 			return fmt.Errorf("finish %s: %w", label, err)
 		}
 		r.logf("item %s: finished already done ($%.2f): %s", label, result.CostUSD, truncate(evidence, 200))
@@ -450,7 +453,7 @@ func (r *Runner) afterBuild(ctx context.Context, b *buildRun, result harness.Res
 	if err != nil {
 		return r.fail(ctx, item, fmt.Errorf("push: %w", err))
 	}
-	if err := r.GW.FinishWorkItem(ctx, item.ID, b.spec.Branch, sha, b.cost.delta(), nil); err != nil {
+	if err := b.acct.Carried(r.GW.FinishWorkItem(ctx, item.ID, b.spec.Branch, sha, b.cost.delta(), b.acct.Report(result))); err != nil {
 		return fmt.Errorf("finish %s: %w", label, err)
 	}
 	r.logf("item %s: finished %s@%s ($%.2f)", label, b.spec.Branch, short(sha), result.CostUSD)

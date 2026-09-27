@@ -114,11 +114,14 @@ where the code lives, the variable names, and the rendering per agent.
    named `mcp__<server>__…`, Codex's completed `mcp_tool_call` by its
    `server`). The build and the evaluation hand their rendered tools to
    the `SessionAccount` (`SessionTools.UseTools`), and its `Finish`
-   calls `RecordUsage` — mutation `recordUsage`, input `workItemId`,
-   `kind`, `tool`, `calls`, `listPriceCents` (calls ×
-   `pricePerCallCents`) — once per tool priced above zero and called.
+   calls `RecordToolUsage` — mutation `recordToolUsage`, input
+   `aggregateId` (the item), `toolCallId` (from
+   `Result.ToolCallIDs`), `tool` and `usage` (the session's report,
+   ADR-005, at the tool's `pricePerCallCents`, no tokens) — once per
+   call of a tool priced above zero. (Amended 2026-09-27: it called
+   `recordUsage` once per tool, a field only the platform may call.)
    Prologue and unpriced tools are never reported. A gateway without
-   the mutation (`IsUnsupported`) is said once per run and each record
+   the mutation (`IsUnsupported`) is said once per run and each call
    logged as a `usage: tool …` line; any error is logged, never the
    item's failure.
 

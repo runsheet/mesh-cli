@@ -197,7 +197,16 @@ func (h *fakeHarness) Run(ctx context.Context, job harness.Job, on func(harness.
 		return harness.Result{Success: false, Text: "could not", CostUSD: 0.75, SessionID: "s-1"}, nil
 	}
 	on(harness.Progress{Text: "done", CostUSD: 1.25})
-	return harness.Result{Success: true, Text: text, CostUSD: 1.25, SessionID: "s-1", ToolCalls: h.toolCalls}, nil
+	var ids map[string][]string
+	for server, n := range h.toolCalls {
+		if ids == nil {
+			ids = map[string][]string{}
+		}
+		for i := 0; i < n; i++ {
+			ids[server] = append(ids[server], fmt.Sprintf("toolu_%s_%d", server, i+1))
+		}
+	}
+	return harness.Result{Success: true, Text: text, CostUSD: 1.25, SessionID: "s-1", ToolCalls: h.toolCalls, ToolCallIDs: ids}, nil
 }
 
 func TestLoopClaimsRunsAndFinishes(t *testing.T) {

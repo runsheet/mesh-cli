@@ -406,3 +406,47 @@ func TestLoopResearchesTwoDirectionsOfOneProject(t *testing.T) {
 		}
 	}
 }
+
+// researchWithUsage runs one research session on the seeded direction,
+// its credential issued by the platform, the stream fixture's usage and
+// text as its final message.
+func researchWithUsage(t *testing.T, text string) (*gatewaytest.Fake, error) {
+	t.Helper()
+	f := seed(t)
+	f.Projects[projID]["repoIds"] = []string{repoID}
+	direction(f, dirID, projID, "overnight", "Go on then.", 3)
+	issueCredential(f, dirID)
+	gw := gateway.New(f.URL(), "rs_test")
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: Fixed(1), OwnerID: f.UserID}
+	ws := &fakeWS{root: t.TempDir()}
+	h := &streamHarness{file: usageStream(), text: text}
+	l := log.New(os.Stderr, "", 0)
+	d := &Director{GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, Credentials: usageCredentials(gw, l), Log: l}
+	ctx := context.Background()
+	if err := gw.ClaimDirectionResearch(ctx, dirID, cfg.NodeID); err != nil {
+		t.Fatal(err)
+	}
+	dn := gateway.Direction{ID: dirID, ProjectID: projID, OrgID: orgID, Slug: "overnight",
+		Direction: "Go on then.", Enabled: true, Status: "active", MaxLiveGoals: 3}
+	err := d.Research(ctx, dn, gateway.Project{ID: projID, Slug: "mesh", OrgID: orgID, RepoIDs: []string{repoID}}, scopesOf(cfg)[0])
+	if reads := f.CallsNamed("researchCredentials"); len(reads) != 1 {
+		t.Fatalf("researchCredentials: %+v", reads)
+	}
+	return f, err
+}
+
+// Research hands its usage report in on recordDirectionResearch — and
+// so does the empty hand-in of a session whose proposals cannot be read.
+func TestResearchReportsUsage(t *testing.T) {
+	f, err := researchWithUsage(t, "```json\n{\"goals\": [{\"slug\": \"health-board\", \"title\": \"The health board\", \"statement\": \"Every service's health on one page.\", \"acceptance\": \"the page lists every service\", \"why\": \"nobody can see what is down\"}]}\n```")
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkSessionUsage(t, f, "recordDirectionResearch")
+
+	f, err = researchWithUsage(t, "I had a good think and decided not to say.")
+	if err == nil {
+		t.Fatal("an unreadable session is an error")
+	}
+	checkSessionUsage(t, f, "recordDirectionResearch")
+}

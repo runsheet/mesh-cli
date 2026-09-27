@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
+	"projectmesh.io/mesh-cli/internal/gateway/gatewaytest"
 	"projectmesh.io/mesh-cli/internal/harness"
 )
 
@@ -26,12 +28,19 @@ type streamHarness struct {
 	jobs []harness.Job
 	file string
 	text string
+	// texts, when set, are the final messages of the next runs in turn,
+	// before text.
+	texts []string
 }
 
 func (h *streamHarness) Name() string { return "claude-code" }
 func (h *streamHarness) Run(_ context.Context, job harness.Job, on func(harness.Progress)) (harness.Result, error) {
 	h.mu.Lock()
 	h.jobs = append(h.jobs, job)
+	text := h.text
+	if len(h.texts) > 0 {
+		text, h.texts = h.texts[0], h.texts[1:]
+	}
 	h.mu.Unlock()
 	f, err := os.Open(h.file)
 	if err != nil {
@@ -39,8 +48,8 @@ func (h *streamHarness) Run(_ context.Context, job harness.Job, on func(harness.
 	}
 	defer f.Close()
 	res := harness.ParseStream(f, nil)
-	if h.text != "" {
-		res.Text = h.text
+	if text != "" {
+		res.Text = text
 	}
 	return res, nil
 }
@@ -53,14 +62,80 @@ func (h *streamHarness) Jobs() []harness.Job {
 
 func usageStream() string { return filepath.Join("..", "harness", "testdata", "stream_usage.jsonl") }
 
+// issueCredential has the platform issue the subscription credential
+// cred-1 (label max-cloud) for a session's subject: an item, a goal or
+// a direction.
+func issueCredential(f *gatewaytest.Fake, subject string) {
+	f.SessionCredentials[subject] = []map[string]any{{"id": "cred-1", "label": "max-cloud", "vendor": "anthropic", "kind": "subscription", "serves": []any{"claude-code"}, "secret": issuedSecret}}
+}
+
+// usageCredentials is the node's Credentials with max-cloud's windows
+// read before the session: five-hour at 20%, seven-day at 10%.
+func usageCredentials(gw CredentialGateway, l *log.Logger) *Credentials {
+	limits := &Limits{}
+	limits.Observe("max-cloud", &harness.RateLimit{Status: "allowed",
+		FiveHour: harness.RateLimitWindow{Utilization: 0.2, ResetsAt: time.Unix(1790330400, 0).UTC()},
+		SevenDay: harness.RateLimitWindow{Utilization: 0.1, ResetsAt: time.Date(2026, 9, 30, 8, 0, 0, 0, time.UTC)}})
+	return &Credentials{GW: gw, Limits: limits, Log: l}
+}
+
+// checkSessionUsage is the one usage report the fake was handed, on
+// mutation: the session of the stream fixture on cred-1 — its tokens,
+// its cost in cents (list; none actual on a subscription) and the
+// windows before (the node's reading) and after (the session's last
+// rate_limit_event), each with its reset. Neither old usage mutation
+// was called, and no recorded input carries the issued secret.
+func checkSessionUsage(t *testing.T, f *gatewaytest.Fake, mutation string) map[string]any {
+	t.Helper()
+	if len(f.SessionUsage) != 1 || f.SessionUsage[0].Name != mutation {
+		t.Fatalf("usage reports: %+v, want one on %s", f.SessionUsage, mutation)
+	}
+	in := f.SessionUsage[0].Input
+	for k, want := range map[string]any{
+		"sessionId": "s-usage", "adapter": "claude-code", "model": "claude-sonnet-5",
+		"credentialId": "cred-1", "credentialKind": "subscription",
+		"inputTokens": float64(60600), "outputTokens": float64(789), "cacheReadTokens": float64(56000), "cacheWriteTokens": float64(3400),
+		"listCostCents": float64(43), "actualCostCents": float64(0), "toolCalls": float64(0),
+		"fiveHourBefore": 0.2, "sevenDayBefore": 0.1, "fiveHourAfter": 0.52, "sevenDayAfter": 0.31,
+		"fiveHourResetsAtBefore": "2026-09-25T10:00:00Z", "sevenDayResetsAtBefore": "2026-09-30T08:00:00Z",
+		"fiveHourResetsAtAfter": "2026-09-25T10:00:00Z", "sevenDayResetsAtAfter": "2026-09-30T08:00:00Z",
+	} {
+		if in[k] != want {
+			t.Errorf("usage %s = %v, want %v", k, in[k], want)
+		}
+	}
+	if _, ok := in["wallMs"].(float64); !ok {
+		t.Errorf("no wallMs: %v", in)
+	}
+	checkNoOldUsage(t, f)
+	for _, c := range f.Calls {
+		b, _ := json.Marshal(c)
+		if strings.Contains(string(b), issuedSecret) {
+			t.Errorf("the secret is in %s's payload: %s", c.Name, b)
+		}
+	}
+	return in
+}
+
+// checkNoOldUsage: no code path calls recordSessionUsage or recordUsage.
+func checkNoOldUsage(t *testing.T, f *gatewaytest.Fake) {
+	t.Helper()
+	for _, old := range []string{"recordSessionUsage", "recordUsage"} {
+		if calls := f.CallsNamed(old); len(calls) != 0 {
+			t.Errorf("%s called: %+v", old, calls)
+		}
+	}
+}
+
 // When the platform issues a subscription credential for the claimed
 // item, the build runs on it — CLAUDE_CODE_OAUTH_TOKEN from the platform,
-// node.yaml not consulted — and one recordSessionUsage carries its id and
-// label, the tokens and cost the stream reported and the windows before
-// and after; the secret is in the session's env and nowhere else.
-func TestBuildRunsOnAnIssuedCredentialAndRecordsUsage(t *testing.T) {
+// node.yaml not consulted — and finishWorkItem carries its usage report:
+// the credential's id, the tokens and cost the stream reported and the
+// windows before and after; the secret is in the session's env and
+// nowhere else.
+func TestBuildRunsOnAnIssuedCredentialAndReportsUsage(t *testing.T) {
 	f := seed(t)
-	f.SessionCredentials[item1] = []map[string]any{{"id": "cred-1", "label": "max-cloud", "vendor": "anthropic", "kind": "subscription", "serves": []any{"claude-code"}, "secret": issuedSecret}}
+	issueCredential(f, item1)
 	h := &streamHarness{file: usageStream()}
 	r, _, item, row := runnerOnFake(t, f, h, nil)
 	var logs syncBuf
@@ -68,11 +143,7 @@ func TestBuildRunsOnAnIssuedCredentialAndRecordsUsage(t *testing.T) {
 	// node.yaml names an account whose token file does not exist: if it
 	// were consulted the session could not open
 	r.Accounts = []AccountConfig{{Label: "max-local", Kind: AccountSubscription, TokenFile: "/nope/token"}}
-	limits := &Limits{}
-	limits.Observe("max-cloud", &harness.RateLimit{Status: "allowed",
-		FiveHour: harness.RateLimitWindow{Utilization: 0.2, ResetsAt: time.Unix(1790330400, 0).UTC()},
-		SevenDay: harness.RateLimitWindow{Utilization: 0.1, ResetsAt: time.Date(2026, 9, 30, 8, 0, 0, 0, time.UTC)}})
-	r.Credentials = &Credentials{GW: r.GW.(CredentialGateway), Limits: limits, Log: r.Log}
+	r.Credentials = usageCredentials(r.GW.(CredentialGateway), r.Log)
 
 	if err := r.RunItem(context.Background(), item); err != nil {
 		t.Fatal(err)
@@ -93,43 +164,9 @@ func TestBuildRunsOnAnIssuedCredentialAndRecordsUsage(t *testing.T) {
 	if row(item1)["status"] != "evaluating" {
 		t.Fatalf("item: %v", row(item1))
 	}
-
-	usage := f.CallsNamed("recordSessionUsage")
-	if len(usage) != 1 {
-		t.Fatalf("recordSessionUsage calls: %+v", usage)
-	}
-	in := usage[0].Input
-	for k, want := range map[string]any{
-		"kind": "build", "workItemId": item1, "goalId": goalID, "nodeId": r.Cfg.NodeID, "sessionId": "s-usage",
-		"credentialId": "cred-1", "credentialLabel": "max-cloud", "credentialKind": "subscription", "model": "claude-sonnet-5",
-		"inputTokens": float64(60600), "outputTokens": float64(789), "cacheReadTokens": float64(56000), "cacheWriteTokens": float64(3400),
-		"costUsd": 0.4321,
-	} {
-		if in[k] != want {
-			t.Errorf("usage %s = %v, want %v", k, in[k], want)
-		}
-	}
-	window := func(side, w string) any {
-		m, _ := in[side].(map[string]any)
-		win, _ := m[w].(map[string]any)
-		return win["utilization"]
-	}
-	if window("before", "fiveHour") != 0.2 || window("before", "sevenDay") != 0.1 {
-		t.Errorf("before = %v", in["before"])
-	}
-	if window("after", "fiveHour") != 0.52 || window("after", "sevenDay") != 0.31 {
-		t.Errorf("after = %v", in["after"])
-	}
-	if in["startedAt"] == nil || in["endedAt"] == nil {
-		t.Errorf("no times: %v", in)
-	}
-
-	// the secret is in the session's env and nowhere else
-	for _, c := range f.Calls {
-		b, _ := json.Marshal(c)
-		if strings.Contains(string(b), issuedSecret) {
-			t.Errorf("the secret is in %s's payload: %s", c.Name, b)
-		}
+	checkSessionUsage(t, f, "finishWorkItem")
+	if strings.Contains(logs.String(), "usage: {") {
+		t.Errorf("a report the finish carried is logged too:\n%s", logs.String())
 	}
 	for what, s := range map[string]string{"log": logs.String(), "lastNote": toString(row(item1)["lastNote"]), "lastError": toString(row(item1)["lastError"])} {
 		if strings.Contains(s, issuedSecret) {
@@ -138,10 +175,49 @@ func TestBuildRunsOnAnIssuedCredentialAndRecordsUsage(t *testing.T) {
 	}
 }
 
-// Against a platform without the claim-time read or the ledger, a node
-// running several items uses node.yaml's accounts, says each fallback
-// once for the run, and writes each session's usage record as one log
-// line; the secret is in no log line.
+// An already-done build carries its report on the same finishWorkItem.
+func TestAlreadyDoneBuildReportsUsage(t *testing.T) {
+	f := seed(t)
+	issueCredential(f, item1)
+	h := &streamHarness{file: usageStream(), text: "Main has it.\n\nALREADY DONE: https://github.com/acme/widgets/pull/9 holds it"}
+	r, _, item, _ := runnerOnFake(t, f, h, nil)
+	r.Credentials = usageCredentials(r.GW.(CredentialGateway), r.Log)
+	if err := r.RunItem(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	in := checkSessionUsage(t, f, "finishWorkItem")
+	if calls := f.CallsNamed("finishWorkItem"); len(calls) != 1 || calls[0].Input["outcome"] != gateway.OutcomeAlreadyDone {
+		t.Fatalf("finish calls: %+v (usage %v)", calls, in)
+	}
+}
+
+// An evaluation's verdict carries its report, on the issued credential.
+func TestEvaluationReportsUsage(t *testing.T) {
+	f := seed(t)
+	issueCredential(f, item1)
+	gw := gateway.New(f.URL(), "rs_test")
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "test-node", NodeID: "22222222-2222-4222-8222-222222222222"}
+	f.WorkItems[item1]["status"], f.WorkItems[item1]["nodeId"], f.WorkItems[item1]["branch"] = "evaluating", cfg.NodeID, "mesh/ship-it-1"
+	var item gateway.WorkItem
+	item.ID, item.OrgID, item.GoalID, item.RepoID, item.Seq, item.Branch = item1, orgID, goalID, repoID, 1, "mesh/ship-it-1"
+	ws := &fakeWS{root: t.TempDir()}
+	h := &streamHarness{file: usageStream(), text: "Fine.\nVERDICT: PASS"}
+	ev := &Evaluator{GW: gw, Harness: h, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, Credentials: usageCredentials(gw, log.New(io.Discard, "", 0))}
+	if err := ev.Evaluate(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	if calls := f.CallsNamed("evaluateWorkItem"); len(calls) != 1 || calls[0].Input["passed"] != true {
+		t.Fatalf("verdicts: %+v", calls)
+	}
+	checkSessionUsage(t, f, "evaluateWorkItem")
+}
+
+// Against a platform without the claim-time read, and whose finishing
+// commands take no `usage`, a node running several sessions uses
+// node.yaml's accounts, finishes every one — the builds reach
+// evaluating, the verdict lands — says each fallback once for the run,
+// and writes each session's usage report as one log line; the secret
+// is in no log line.
 func TestCredentialsFallBackToNodeYAMLOncePerRun(t *testing.T) {
 	const local = "sk-ant-oat01-LOCAL-token-file"
 	tokFile := filepath.Join(t.TempDir(), "tok")
@@ -150,9 +226,9 @@ func TestCredentialsFallBackToNodeYAMLOncePerRun(t *testing.T) {
 	}
 	f := seed(t)
 	f.Unsupported["itemCredentials"] = true
-	f.Unsupported["recordSessionUsage"] = true
+	f.UnknownFields["usage"] = true
 	h := &streamHarness{file: usageStream()}
-	r, _, item, row := runnerOnFake(t, f, h, nil)
+	r, ws, item, row := runnerOnFake(t, f, h, nil)
 	var logs syncBuf
 	r.Log = log.New(&logs, "", 0)
 	r.Accounts = []AccountConfig{{Label: "max-a", Kind: AccountSubscription, TokenFile: tokFile}}
@@ -175,6 +251,17 @@ func TestCredentialsFallBackToNodeYAMLOncePerRun(t *testing.T) {
 			t.Fatalf("item %s: %v", it.ID, row(it.ID))
 		}
 	}
+	// and an evaluation: its verdict lands without the report
+	h.text = "Fine.\nVERDICT: PASS"
+	ev := &Evaluator{GW: r.GW, Harness: h, WS: ws, Scopes: r.Scopes, WorkRoot: ws.root, Accounts: r.Accounts, Credentials: r.Credentials, Log: r.Log}
+	evItem := item
+	evItem.Branch = "mesh/ship-it-1"
+	if err := ev.Evaluate(context.Background(), evItem); err != nil {
+		t.Fatal(err)
+	}
+	if calls := f.CallsNamed("evaluateWorkItem"); len(calls) != 1 || calls[0].Input["passed"] != true {
+		t.Fatalf("verdicts: %+v", calls)
+	}
 	for _, job := range h.Jobs() {
 		if v, _ := envOf(job.Env, "CLAUDE_CODE_OAUTH_TOKEN"); v != local || Account(job.Env) != "max-a" {
 			t.Fatalf("session not on node.yaml's account: %v", job.Env)
@@ -184,72 +271,89 @@ func TestCredentialsFallBackToNodeYAMLOncePerRun(t *testing.T) {
 	if n := strings.Count(out, "the platform issues no session credentials"); n != 1 {
 		t.Errorf("credential fallback said %d times:\n%s", n, out)
 	}
-	if n := strings.Count(out, "the platform keeps no usage ledger"); n != 1 {
+	if n := strings.Count(out, "usage: the platform's finishing command takes no usage report; each session's record is logged here instead (said once, for every session this run)"); n != 1 {
 		t.Errorf("ledger fallback said %d times:\n%s", n, out)
 	}
-	var records []gateway.UsageRecord
+	var reports []gateway.UsageReport
 	for _, line := range strings.Split(out, "\n") {
 		if js, ok := strings.CutPrefix(line, "usage: {"); ok {
-			var rec gateway.UsageRecord
-			if err := json.Unmarshal([]byte("{"+js), &rec); err != nil {
-				t.Fatalf("usage line is not one JSON record: %q: %v", line, err)
+			var rep gateway.UsageReport
+			if err := json.Unmarshal([]byte("{"+js), &rep); err != nil {
+				t.Fatalf("usage line is not one JSON report: %q: %v", line, err)
 			}
-			records = append(records, rec)
+			reports = append(reports, rep)
 		}
 	}
-	if len(records) != len(items) {
-		t.Fatalf("%d usage lines for %d sessions:\n%s", len(records), len(items), out)
+	if len(reports) != len(items)+1 {
+		t.Fatalf("%d usage lines for %d sessions:\n%s", len(reports), len(items)+1, out)
 	}
-	for i, rec := range records {
-		if rec.Kind != "build" || rec.ItemID != items[i].ID || rec.CredentialLabel != "max-a" || rec.CredentialID != "" ||
-			rec.InputTokens != 60600 || rec.OutputTokens != 789 || rec.CostUSD != 0.4321 || rec.After == nil || rec.After.FiveHour.Utilization != 0.52 {
-			t.Errorf("record %d = %+v", i, rec)
+	for i, rep := range reports {
+		if rep.SessionID != "s-usage" || rep.CredentialID != "" || rep.CredentialKind != "subscription" ||
+			rep.InputTokens != 60600 || rep.OutputTokens != 789 || rep.ListCostCents != 43 || rep.FiveHourAfter == nil || *rep.FiveHourAfter != 0.52 {
+			t.Errorf("report %d = %+v", i, rep)
 		}
 	}
 	if strings.Contains(out, local) {
 		t.Errorf("the secret is in the log:\n%s", out)
 	}
-	if len(f.CallsNamed("recordSessionUsage")) != 0 {
-		t.Error("an unsupported mutation was recorded")
+	if len(f.SessionUsage) != 0 {
+		t.Errorf("a refused usage was recorded: %+v", f.SessionUsage)
 	}
+	checkNoOldUsage(t, f)
 }
 
-// An evaluation reports its usage record too, as kind evaluate.
-func TestEvaluationRecordsUsage(t *testing.T) {
+// A build that ends in failWorkItem has nowhere to carry its report: the
+// record is in the log, without the once-per-run line (the platform has
+// the ledger; the fail command just takes no usage).
+func TestFailedBuildLogsItsUsage(t *testing.T) {
 	f := seed(t)
-	h := &streamHarness{file: usageStream()}
-	r, ws, item, _ := runnerOnFake(t, f, h, nil)
-	creds := &Credentials{GW: r.GW.(CredentialGateway), Limits: &Limits{}, Log: r.Log}
-	r.Credentials = creds
-	if err := r.RunItem(context.Background(), item); err != nil {
-		t.Fatal(err)
+	issueCredential(f, item1)
+	h := &fakeHarness{fail: true}
+	r, _, item, row := runnerOnFake(t, f, h, nil)
+	var logs syncBuf
+	r.Log = log.New(&logs, "", 0)
+	r.Credentials = usageCredentials(r.GW.(CredentialGateway), r.Log)
+	if err := r.RunItem(context.Background(), item); err == nil {
+		t.Fatal("a failed session is an error")
 	}
-	h.text = "Fine.\nVERDICT: PASS"
-	ev := &Evaluator{GW: r.GW, Harness: h, WS: ws, Scopes: r.Scopes, WorkRoot: ws.root, Credentials: creds, Log: r.Log}
-	item.Branch = "mesh/ship-it-1"
-	if err := ev.Evaluate(context.Background(), item); err != nil {
-		t.Fatal(err)
+	if len(f.CallsNamed("failWorkItem")) != 1 {
+		t.Fatalf("item: %v", row(item1))
 	}
-	usage := f.CallsNamed("recordSessionUsage")
-	if len(usage) != 2 || usage[0].Input["kind"] != "build" || usage[1].Input["kind"] != "evaluate" || usage[1].Input["workItemId"] != item1 {
-		t.Fatalf("usage records: %+v", usage)
+	out := logs.String()
+	var line string
+	for _, l := range strings.Split(out, "\n") {
+		if strings.HasPrefix(l, "usage: {") {
+			if line != "" {
+				t.Fatalf("two usage lines:\n%s", out)
+			}
+			line = l
+		}
 	}
-	if usage[1].Input["credentialLabel"] != DefaultAccount {
-		t.Errorf("the operator's own login records as %v, want %s", usage[1].Input["credentialLabel"], DefaultAccount)
+	var rep gateway.UsageReport
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "usage: ")), &rep); err != nil {
+		t.Fatalf("no usage record in the log (%v):\n%s", err, out)
 	}
+	if rep.CredentialID != "cred-1" || rep.SessionID != "s-1" || rep.ListCostCents != 75 {
+		t.Errorf("record = %+v", rep)
+	}
+	if strings.Contains(out, "takes no usage report") || strings.Contains(out, issuedSecret) {
+		t.Errorf("log:\n%s", out)
+	}
+	if len(f.SessionUsage) != 0 {
+		t.Errorf("usage = %+v", f.SessionUsage)
+	}
+	checkNoOldUsage(t, f)
 }
 
 // credsGW answers the claim-time read with a fixed list.
 type credsGW struct {
-	issued  []gateway.Credential
-	records []gateway.UsageRecord
+	issued []gateway.Credential
 }
 
 func (g *credsGW) Session(context.Context, gateway.SessionRef, string) (*gateway.Session, error) {
 	return &gateway.Session{Credentials: g.issued}, nil
 }
-func (g *credsGW) RecordSessionUsage(_ context.Context, rec gateway.UsageRecord) error {
-	g.records = append(g.records, rec)
+func (g *credsGW) RecordToolUsage(context.Context, string, string, string, gateway.UsageReport) error {
 	return nil
 }
 
@@ -338,5 +442,4 @@ func TestCredentialPrintsNoSecret(t *testing.T) {
 	}
 }
 
-func fmtAll(v any) string                                               { return fmt.Sprintf("%v %+v %#v %s", v, v, v, v) }
-func (g *credsGW) RecordUsage(context.Context, gateway.ToolUsage) error { return nil }
+func fmtAll(v any) string { return fmt.Sprintf("%v %+v %#v %s", v, v, v, v) }
