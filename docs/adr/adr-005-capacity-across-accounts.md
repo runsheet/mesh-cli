@@ -72,6 +72,14 @@ keeps its own 30-minute history (`BurnWindow`).
    claiming; at min only `urgent`/`high` items are claimed (ADR-004,
    unchanged).
 
+*Amended 2026-09-27 (goal `loop-schedules-on-issued-accounts`):* the
+accounts summed are the union the loop schedules on — node.yaml's
+`accounts:` and the issued accounts the node knows (`Loop.Known`,
+adr-005-accounts-on-the-node) — so a ranged node with no node.yaml
+accounts runs the accounts scaler over the platform's subscriptions and
+keys, keyed by their labels (`runningOn`, `AccountSlots`). Only with
+neither does it scale on the plan's windows alone, as ADR-004 does.
+
 ### Reasons
 
 The target's reason is `max` or `min` when it is clamped, `machine

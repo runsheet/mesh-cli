@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"projectmesh.io/mesh-cli/internal/harness"
@@ -216,20 +217,37 @@ func PrepareAccount(a AccountConfig, secret string) (*AccountSession, error) {
 
 // OpenAccount is the account a session runs on: the one the loop chose
 // for it (WithAccount, by ChooseAccount), else the first configured, or
-// nil — the operator's own login — when none is.
+// nil — the operator's own login — when none is. A chosen account the
+// platform issued (its ID set) that is not among accounts is only the
+// loop's prediction: its secret comes at the claim, never from here, so
+// it is passed over for the first configured.
 func OpenAccount(ctx context.Context, accounts []AccountConfig) (*AccountSession, error) {
 	if len(accounts) == 0 {
 		return nil, nil
 	}
-	a, ok := ChosenAccount(ctx)
-	if !ok {
-		a = accounts[0]
-	}
+	a := chosenAmong(ctx, accounts)
 	secret, err := a.Secret()
 	if err != nil {
 		return nil, err
 	}
 	return PrepareAccount(a, secret)
+}
+
+// chosenAmong is the account ctx carries — as accounts has it, when an
+// issued one shares its label — else the first of accounts; an issued
+// one accounts does not have is the first too. accounts is not empty.
+func chosenAmong(ctx context.Context, accounts []AccountConfig) AccountConfig {
+	a, ok := ChosenAccount(ctx)
+	if !ok {
+		return accounts[0]
+	}
+	if a.ID == "" {
+		return a
+	}
+	if i := slices.IndexFunc(accounts, func(b AccountConfig) bool { return b.Label == a.Label }); i >= 0 {
+		return accounts[i]
+	}
+	return accounts[0]
 }
 
 // Apply puts the account on a job: the inherited auth variables unset,

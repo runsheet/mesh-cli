@@ -120,7 +120,7 @@ func TestLoopClaimsNothingWithoutHeadroomThenClaimsOnTheFreedAccount(t *testing.
 			t.Fatalf("%s = %v, want ready", id, s)
 		}
 	}
-	const line = "accounts: no account has headroom for 2 item(s), 1 plan(s); left unclaimed until one has"
+	const line = "accounts: no account has headroom for 2 item(s), 1 plan(s); judged max-a, max-b; left unclaimed until one has"
 	if n := strings.Count(logs.String(), line); n != 2 {
 		t.Fatalf("want the line once per tick (2), got %d:\n%s", n, logs)
 	}

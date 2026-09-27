@@ -96,6 +96,11 @@ type Loop struct {
 	// (ObserveSpend); the accounts scaler and the spending order read
 	// it. Nil until the first use makes one in memory.
 	Ledger *Ledger
+	// Known is the accounts the platform's claim-time read has issued
+	// lately (the same store as Credentials.Known): the loop paces,
+	// chooses and scales on them beside node.yaml's (goal
+	// loop-schedules-on-issued-accounts). Nil: none.
+	Known *KnownAccounts
 	// LookPath finds a program on the node's PATH (exec.LookPath): every
 	// tick probes with it the tool runtimes and agent adapters the node
 	// has (tools.ProbeRuntimes, ProbeAdapters), and the heartbeat carries
@@ -755,11 +760,12 @@ func (l *Loop) pacing() pacing {
 }
 
 // accounts are the accounts the node chooses among and their latest
-// readings by label. With none configured it is the one implicit
-// account, the operator's own login, judged by its strictest reading.
+// readings by label: node.yaml's and the issued ones it knows
+// (scheduled). With neither it is the one implicit account, the
+// operator's own login, judged by its strictest reading.
 func (l *Loop) accounts() ([]AccountConfig, map[string]harness.RateLimit) {
 	readings := l.limitsStore().Readings()
-	if accounts := l.nodeAccounts(); len(accounts) > 0 {
+	if accounts := l.scheduled(); len(accounts) > 0 {
 		return accounts, readings
 	}
 	own := []AccountConfig{{Label: DefaultAccount, Kind: AccountSubscription}}
@@ -767,6 +773,25 @@ func (l *Loop) accounts() ([]AccountConfig, map[string]harness.RateLimit) {
 		return own, map[string]harness.RateLimit{DefaultAccount: r}
 	}
 	return own, nil
+}
+
+// scheduled is the union the loop schedules on: node.yaml's accounts
+// first, then each issued account Known holds whose label node.yaml
+// does not already have. None of either is none — the operator's own
+// login.
+func (l *Loop) scheduled() []AccountConfig {
+	accounts := l.nodeAccounts()
+	issued := l.Known.Accounts(l.now())
+	if len(issued) == 0 {
+		return accounts
+	}
+	out := slices.Clone(accounts)
+	for _, a := range issued {
+		if !slices.ContainsFunc(out, func(b AccountConfig) bool { return b.Label == a.Label }) {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 // accountFor picks the account a session of that priority runs on
@@ -819,9 +844,11 @@ func (l *Loop) withAccount(ctx context.Context, what, priority string, choose fu
 	ctx = withChooser(ctx, func(issued []AccountConfig) (AccountConfig, bool) {
 		return choose(l.spendable(issued, pressing, item), l.limitsStore().Readings())
 	})
-	if len(l.nodeAccounts()) == 0 {
+	if len(l.scheduled()) == 0 {
 		return ctx, true
 	}
+	// an issued account rides ctx for its label alone (runsOn, the
+	// heartbeat's slots): OpenAccount never opens one it does not hold
 	return WithAccount(ctx, a), true
 }
 
@@ -840,7 +867,8 @@ func (l *Loop) logWaiting() {
 	for _, k := range kinds {
 		parts = append(parts, fmt.Sprintf("%d %s(s)", l.waiting[k], k))
 	}
-	l.logf("accounts: no account has headroom for %s; left unclaimed until one has", strings.Join(parts, ", "))
+	judged, _ := l.accounts()
+	l.logf("accounts: no account has headroom for %s; judged %s; left unclaimed until one has", strings.Join(parts, ", "), labels(judged))
 }
 
 // priorityName is the priority a goal rank stands for.

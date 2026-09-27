@@ -525,3 +525,29 @@ func TestCredentialPrintsNoSecret(t *testing.T) {
 }
 
 func fmtAll(v any) string { return fmt.Sprintf("%v %+v %#v %s", v, v, v, v) }
+
+// A chosen account the platform issued, which node.yaml does not have,
+// is the loop's prediction only: OpenAccount never asks it for a secret
+// and opens node.yaml's first instead.
+func TestOpenAccountPassesOverAChosenIssuedAccount(t *testing.T) {
+	tok := filepath.Join(t.TempDir(), "tok")
+	if err := os.WriteFile(tok, []byte("tok-own"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fallback := []AccountConfig{{Label: "own", Kind: AccountSubscription, TokenFile: tok}}
+	ctx := WithAccount(context.Background(), AccountConfig{Label: "max20", Kind: AccountSubscription, ID: "cred-1"})
+	acct, err := OpenAccount(ctx, fallback)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer acct.Cleanup()
+	if acct.Label != "own" {
+		t.Fatalf("opened %q, want own", acct.Label)
+	}
+	if a := openedAccount(ctx, fallback); a.Label != "own" {
+		t.Fatalf("openedAccount = %q, want own", a.Label)
+	}
+	if acct, err := OpenAccount(ctx, nil); err != nil || acct != nil {
+		t.Fatalf("with no node.yaml accounts: %v, %v; want the operator's own login", acct, err)
+	}
+}

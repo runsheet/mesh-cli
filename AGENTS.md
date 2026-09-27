@@ -91,7 +91,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   account — and `scaling` — a ranged node's `{capacity, min, max,
   reason, accounts}`, the capacity in force, node.yaml's range, why
   and each account's slots, sent only when the capacity is a range
-  or the node has several accounts, and only when the gateway's
+  or the node has several accounts (node.yaml's and the issued ones it
+  knows, `Loop.Known`), and only when the gateway's
   schema has the field (introspected, kept an hour: adr-005
   §Heartbeat); both for runsheet goal
   `limits-on-the-console` — and `runtimes` and `adapters` — the tool

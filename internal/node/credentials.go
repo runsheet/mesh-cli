@@ -213,10 +213,7 @@ func openedAccount(ctx context.Context, accounts []AccountConfig) AccountConfig 
 	if len(accounts) == 0 {
 		return AccountConfig{}
 	}
-	if a, ok := ChosenAccount(ctx); ok {
-		return a
-	}
-	return accounts[0]
+	return chosenAmong(ctx, accounts)
 }
 
 // IssuedAccount is a platform credential as an account a session may

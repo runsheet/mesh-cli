@@ -48,7 +48,7 @@ const ReasonFixed Reason = "fixed"
 // token file or a key's variable.
 func (l *Loop) heartbeatScaling(s Scaling, ranged bool) *gateway.Scaling {
 	if !ranged {
-		if len(l.nodeAccounts()) < 2 {
+		if len(l.scheduled()) < 2 {
 			return nil
 		}
 		c := l.Capacity()
@@ -167,7 +167,11 @@ func (l *Loop) scale() {
 		return
 	}
 	st := &l.scaling
-	accounts := l.nodeAccountsLocked()
+	l.mu.Unlock()
+	// node.yaml's accounts and the issued ones known (scheduled), read
+	// outside l.mu: the store keeps its own lock
+	accounts := l.scheduled()
+	l.mu.Lock()
 	if st.scaler == nil {
 		// a new ranged node starts at its min; one that was fixed keeps
 		// what it had, clamped (setRange). Either counts as a step.

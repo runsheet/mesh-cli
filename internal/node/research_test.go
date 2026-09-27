@@ -549,3 +549,25 @@ func TestResearchReportsUsage(t *testing.T) {
 	}
 	checkSessionUsage(t, f, "recordDirectionResearch")
 }
+
+// Research runs on an issued subscription with headroom — a stale
+// `default` reading aside — and waits while every issued one is paced.
+func TestResearchClaimsOnAnIssuedSubscriptionWithHeadroom(t *testing.T) {
+	for _, c := range []struct {
+		name       string
+		shhemail   float64
+		wantClaims int
+	}{{"one fresh", 0.1, 1}, {"both paced", 0.85, 0}} {
+		p := newPriorityFake(t)
+		direction(p.Fake, dirID, projID, "nightly", "Tidy up.", 5)
+		loop, _, _ := p.pacedLoop(2, reading(0.2, 0.97))
+		loop.Known = issuedPair(t, "")
+		loop.Limits.Observe("max20", reading(0.85, 0.2))
+		loop.Limits.Observe("shhemail", reading(c.shhemail, 0.2))
+		loop.Tick(context.Background())
+		loop.wg.Wait()
+		if n := len(p.CallsNamed("claimDirectionResearch")); n != c.wantClaims {
+			t.Fatalf("%s: claimed research %d time(s), want %d", c.name, n, c.wantClaims)
+		}
+	}
+}
