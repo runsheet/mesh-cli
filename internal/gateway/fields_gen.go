@@ -25,7 +25,9 @@ var directionRequired = []string{
 }
 
 // directionOptional are the DirectionIndex fields an older platform may lack (a `?` in fields/DirectionIndex.txt).
-var directionOptional = []string{}
+var directionOptional = []string{
+	"mode",
+}
 
 // directionFields is the selection of directionRequired.
 var directionFields = strings.Join(directionRequired, " ")

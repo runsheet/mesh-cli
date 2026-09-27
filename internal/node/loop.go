@@ -1183,8 +1183,13 @@ func (l *Loop) researchDue(ctx context.Context) {
 			byID[p.ID] = p
 		}
 		// the org's goals once, to see which directions have room: a
-		// session on a project at its ceiling would have every proposal
-		// dropped, and an unattended night should not pay for that
+		// set direction's session on a project at its ceiling would have
+		// every proposal dropped, and an unattended night should not pay
+		// for that (runsheet ADR 022). A propose direction is offered
+		// whatever the room: its output is pitches (runsheet goal
+		// pitches) or, on an older platform, GoalProposals a person
+		// accepts, neither taking a live-goal slot — its session is told
+		// the room as information.
 		goals, err := l.goals(ctx, sc)
 		if err != nil {
 			l.logf("list goals of %s: %v", sc.Login, err)
@@ -1195,7 +1200,7 @@ func (l *Loop) researchDue(ctx context.Context) {
 			if !ok {
 				continue // archived, or not this node's to see
 			}
-			if RoomFor(d, p, goals) <= 0 {
+			if !d.Proposes() && RoomFor(d, p, goals) <= 0 {
 				continue
 			}
 			// research is not work that waits: it runs only on a

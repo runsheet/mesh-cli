@@ -63,6 +63,10 @@ type Client struct {
 	// NodeIndex.desiredVersion (a platform older than
 	// update-nodes-from-console): every later node read leaves it out.
 	nodesWithoutDesired atomic.Bool
+	// directionsWithoutMode is set once the gateway has refused
+	// DirectionIndex.mode (a platform older than runsheet ADR 022):
+	// every later direction read asks for directionFields alone.
+	directionsWithoutMode atomic.Bool
 	// toolsUnknown holds each claim-time tools field (itemTools,
 	// planTools, researchTools) the gateway has refused — a platform
 	// older than tools-in-the-console, or without that session kind's
@@ -722,6 +726,14 @@ type Direction struct {
 	// project's ceiling still caps every direction together.
 	MaxLiveGoals int    `json:"maxLiveGoals"`
 	Status       string `json:"status"`
+	// Mode is what the direction's research does with its proposals
+	// (runsheet ADR 022, adr-022-a-direction-sets-or-proposes):
+	// `propose` — they wait for a person (pitches, or GoalProposals on
+	// an older platform) and set no goal; `set` — goals are set up to
+	// the room. Empty — a platform older than the field, or a direction
+	// left to the project's level, which the node does not read — is
+	// treated as set: guarded by the room.
+	Mode string `json:"mode"`
 	// The claim, as the platform last folded it: the node holding this
 	// direction's session, when it took it, and when the last session
 	// ended (the gap counts from there).
@@ -737,6 +749,11 @@ func (d Direction) Active() bool {
 	return d.Enabled && d.Status != "archived"
 }
 
+// Proposes reports whether the direction's research only proposes —
+// pitches or proposals a person accepts, none taking a live-goal slot —
+// rather than setting goals (runsheet ADR 022).
+func (d Direction) Proposes() bool { return d.Mode == "propose" }
+
 // Directions lists an org's directions, or one project's when projectID
 // is given. The gateway scopes DirectionIndex on org_id, so the org is
 // always part of the where and the project only narrows it — the way
@@ -749,11 +766,31 @@ func (c *Client) Directions(ctx context.Context, orgID, projectID string) ([]Dir
 	if projectID != "" {
 		filter += ", " + where("project_id", projectID)
 	}
-	q := fmt.Sprintf(`{ directionIndexs(namespace: %q, where: [%s]) { %s } }`, NS, filter, directionFields)
-	if err := c.Query(ctx, q, nil, &out); err != nil {
+	q := func(fields string) string {
+		return fmt.Sprintf(`{ directionIndexs(namespace: %q, where: [%s]) { %s } }`, NS, filter, fields)
+	}
+	if err := c.readDirections(ctx, q, &out); err != nil {
 		return nil, err
 	}
 	return out.Directions, nil
+}
+
+// readDirections runs one DirectionIndex read, query being the document
+// with its selection left to fill in. It asks for the optional fields
+// too (fields/DirectionIndex.txt's `?`: mode, runsheet ADR 022); a
+// gateway that does not know one is an older platform, and from then on
+// the client asks for directionFields alone — every direction reads as
+// mode-less, guarded by the room.
+func (c *Client) readDirections(ctx context.Context, query func(fields string) string, out any) error {
+	if !c.directionsWithoutMode.Load() {
+		err := c.Query(ctx, query(directionFields+" "+directionOptionalFields), nil, out)
+		var ge *Error
+		if err == nil || !errors.As(err, &ge) || !unknownField(ge.Message, directionOptional...) {
+			return err
+		}
+		c.directionsWithoutMode.Store(true)
+	}
+	return c.Query(ctx, query(directionFields), nil, out)
 }
 
 // Repo is a RepoIndex row, with the owner login resolved.
