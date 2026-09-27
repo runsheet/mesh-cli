@@ -96,6 +96,26 @@ own may run on the wrong account.
   restart takes the account with most headroom, else the first listed.
   With no `accounts:` the one implicit account is the operator's login,
   judged by its strictest reading — the node paces exactly as before.
+
+  *Amended 2026-09-27 (goal `loop-schedules-on-issued-accounts`):* the
+  accounts chosen among are the union `Loop.accounts()` returns —
+  node.yaml's `accounts:` first, then each issued account the node
+  knows (`Loop.Known`, the same `KnownAccounts` store `Credentials.Open`
+  notes into) whose label node.yaml does not already have — each
+  judged by its own reading, which already lands under its label. The
+  implicit `default`, judged by the strictest reading, is judged only
+  when neither exists, so a platform that issues none paces as before.
+  The chosen issued account rides the context on `WithAccount` like
+  node.yaml's, for its label alone — `runsOn`, the per-account slots
+  and the heartbeat's `scaling.accounts` name it — and `OpenAccount`
+  never reads its secret: a chosen account whose `ID` is set and which
+  is not among node.yaml's is passed over for node.yaml's first (or
+  none, the operator's login). The secret comes only from the
+  claim-time read, where `Credentials.Open` chooses among what the
+  platform actually issues by the same rule (`withChooser`): the
+  pre-claim choice is the loop's prediction, the claim-time read the
+  truth. The `no account has headroom` line names the accounts judged
+  (`…; judged max20, shhemail; left unclaimed until one has`).
 - **Capacity and account choice work together.** Capacity (ADR-004:
   fixed, or `{min, max}` scaled by headroom) bounds how many items run
   at once; the choice decides whether each one may start and where.
@@ -108,6 +128,14 @@ own may run on the wrong account.
   stops a node that has another with room. Evaluations, plans, research
   and rebases still do not count against capacity, but each needs an
   account to start.
+
+  *Amended 2026-09-27 (goal `loop-schedules-on-issued-accounts`):*
+  `nodePace`, the spending order (`spendable`) and the scale judge the
+  same union — node.yaml's accounts and the issued ones known —
+  and `default` only when neither exists. The pacing line names the
+  account that paces whenever the accounts judged are not the lone
+  `default` (`limits: paced until …: max20: five-hour window at 85%
+  …`), so a node on one issued subscription says which.
 
 ## The claim-time read and the usage record
 
@@ -236,8 +264,8 @@ this section describes them.
   key is still known. It is kept in `~/.mesh/accounts.json`, beside
   `ledger.json`, one entry per label; a label the platform has not
   issued for 24h (`KnownFor`) is forgotten. `Credentials` itself does
-  not schedule on these accounts (`Known` is a field the loop wires;
-  the loop's own use of them is a later item of the same goal).
+  not schedule on these accounts; the loop does, from the same store
+  (`Loop.Known`, wired in `nodecmd.go`; see "Which account" above).
 - **Channel mode's builds** keep the operator's login and send no
   record: the channel session is one long session per org, not a
   session per item. Its evaluations, plans, research and rebases are
@@ -283,8 +311,17 @@ and their client methods are gone.
   not (yet) issue them. The pre-claim choice still sees node.yaml's
   accounts (or the operator's login) and their readings, so a claim can
   be won that no issued credential may run; such a build is released,
-  not failed. Choosing among the issued credentials before the claim
-  is a later step.
+  not failed. *Amended 2026-09-27 (goal
+  `loop-schedules-on-issued-accounts`):* the pre-claim choice now
+  sees the issued credentials too: the loop chooses, paces and scales
+  on the union of node.yaml's accounts and the issued ones it knows
+  (remembered 24h in `~/.mesh/accounts.json`, so a restart knows them
+  before its first claim), and judges the implicit `default` only
+  when neither exists — a stale `default` reading from an earlier
+  session no longer holds back research or normal work that fresh
+  issued subscriptions could run. A claim can still be won that the
+  claim-time read then refuses (an account issued an hour ago and not
+  now); such a build is still released.
 - The usage ledger sees every one-shot session's tokens, cost and
   windows on the command that ends it; a platform without the `usage`
   field, and a session that ends in a failure, leave the record in the

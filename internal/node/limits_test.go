@@ -2,6 +2,8 @@ package node
 
 import (
 	"context"
+	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -423,5 +425,148 @@ func TestPaceAllowedWarningIsNotAStop(t *testing.T) {
 	r.Status = "rejected"
 	if p := pace(now, r, LimitsConfig{}); p.mode != paceStopped {
 		t.Fatalf("a rejected status did not stop: %v", p.mode)
+	}
+}
+
+// issuedPair is a store that knows the two subscriptions the platform
+// issued the mini, max20 and shhemail, noted at t0.
+func issuedPair(t *testing.T, path string) *KnownAccounts {
+	t.Helper()
+	known := &KnownAccounts{Path: path}
+	for i, label := range []string{"max20", "shhemail"} {
+		if err := known.Note(AccountConfig{Label: label, Kind: AccountSubscription, ID: fmt.Sprintf("cred-%d", i+1)}, t0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return known
+}
+
+// With no node.yaml accounts and two issued subscriptions known, an
+// exhausted reading under `default` from an earlier session paces
+// nothing: the node is judged on the two it runs on, and a normal item
+// is claimed on one of them.
+func TestLoopPacesOnIssuedAccountsNotDefault(t *testing.T) {
+	p := newPriorityFake(t)
+	p.addGoal(orgID, "steady", "normal")
+	p.addItem(orgID, "steady", "normal-1", 1, false)
+	loop, logs, _ := p.pacedLoop(2, reading(0.2, 0.97))
+	loop.Known = issuedPair(t, "")
+	loop.Limits.Observe("max20", reading(0.1, 0.2))
+	loop.Limits.Observe("shhemail", reading(0.1, 0.2))
+	var mu sync.Mutex
+	var on []string
+	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) {
+		a, _ := ChosenAccount(ctx)
+		mu.Lock()
+		on = append(on, a.Label)
+		mu.Unlock()
+	}
+
+	if m := loop.pacing().mode; m != paceNormal {
+		t.Fatalf("pacing = %v, want normal", m)
+	}
+	if claimed := p.claimedBy(loop); strings.Join(claimed, ",") != "normal-1" {
+		t.Fatalf("claimed %v, want normal-1\n%s", claimed, logs)
+	}
+	if len(on) != 1 || (on[0] != "max20" && on[0] != "shhemail") {
+		t.Fatalf("the item runs on %v, want an issued label", on)
+	}
+	if strings.Contains(logs.String(), "limits: stopped") {
+		t.Fatalf("default's reading stopped the node:\n%s", logs)
+	}
+}
+
+// The loop chooses between the issued accounts by their readings: the
+// paced one is passed over for normal work, and with both stopped the
+// tick's line names both.
+func TestLoopChoosesAmongIssuedAccounts(t *testing.T) {
+	p := newPriorityFake(t)
+	p.addGoal(orgID, "steady", "normal")
+	p.addItem(orgID, "steady", "normal-1", 1, false)
+	loop, logs, _ := p.pacedLoop(2, nil)
+	loop.Known = issuedPair(t, "")
+	loop.Limits.Observe("max20", reading(0.85, 0.2))
+	loop.Limits.Observe("shhemail", reading(0.1, 0.2))
+
+	ctx, ok := loop.accountFor(context.Background(), "normal", true, "item")
+	a, chosen := ChosenAccount(ctx)
+	if !ok || !chosen || a.Label != "shhemail" {
+		t.Fatalf("chose %+v (ok=%v, chosen=%v), want shhemail", a, ok, chosen)
+	}
+
+	stopped := reading(0.97, 0.2)
+	stopped.ObservedAt = t0.Add(time.Minute)
+	loop.Limits.Observe("max20", stopped)
+	loop.Limits.Observe("shhemail", stopped)
+	if claimed := p.claimedBy(loop); len(claimed) != 0 {
+		t.Fatalf("both stopped, claimed %v", claimed)
+	}
+	const line = "accounts: no account has headroom for 1 item(s); judged max20, shhemail; left unclaimed until one has"
+	if !strings.Contains(logs.String(), line) {
+		t.Fatalf("want %q in:\n%s", line, logs)
+	}
+}
+
+// A restart knows the labels an earlier store saved before any claim
+// has run: its first tick schedules on them.
+func TestLoopSchedulesOnKnownLabelsAfterRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "accounts.json")
+	issuedPair(t, path)
+	known, err := OpenKnownAccounts(path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	p := newPriorityFake(t)
+	p.addGoal(orgID, "steady", "normal")
+	p.addItem(orgID, "steady", "normal-1", 1, false)
+	loop, _, _ := p.pacedLoop(2, reading(0.2, 0.97))
+	loop.Known = known
+	loop.Limits.Observe("max20", reading(0.97, 0.2))
+	loop.Limits.Observe("shhemail", reading(0.1, 0.2))
+	var on string
+	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) {
+		a, _ := ChosenAccount(ctx)
+		on = a.Label
+	}
+	if accounts, _ := loop.accounts(); labels(accounts) != "max20, shhemail" {
+		t.Fatalf("accounts = %s", labels(accounts))
+	}
+	if claimed := p.claimedBy(loop); strings.Join(claimed, ",") != "normal-1" || on != "shhemail" {
+		t.Fatalf("claimed %v on %q, want normal-1 on shhemail", claimed, on)
+	}
+}
+
+// With no issued account known and none in node.yaml the loop is what
+// it was: the one `default`, judged by the strictest reading.
+func TestLoopWithoutIssuedAccountsJudgesDefault(t *testing.T) {
+	for name, known := range map[string]*KnownAccounts{"nil": nil, "empty": {}} {
+		p := newPriorityFake(t)
+		loop, _, _ := p.pacedLoop(2, reading(0.2, 0.3))
+		loop.Known = known
+		loop.Limits.Observe("/home/mini/.claude", reading(0.2, 0.97))
+		accounts, readings := loop.accounts()
+		if labels(accounts) != DefaultAccount || len(readings) != 1 || readings[DefaultAccount].SevenDay.Utilization != 0.97 {
+			t.Fatalf("%s: accounts %s, readings %+v", name, labels(accounts), readings)
+		}
+		if m := loop.pacing().mode; m != paceStopped {
+			t.Fatalf("%s: pacing = %v, want stopped", name, m)
+		}
+	}
+}
+
+// The pacing line names the account that paces once it is not the
+// lone `default`.
+func TestPacedLineNamesTheIssuedAccount(t *testing.T) {
+	p := newPriorityFake(t)
+	loop, logs, _ := p.pacedLoop(2, nil)
+	loop.Known = &KnownAccounts{}
+	if err := loop.Known.Note(AccountConfig{Label: "max20", Kind: AccountSubscription, ID: "cred-1"}, t0); err != nil {
+		t.Fatal(err)
+	}
+	loop.Limits.Observe("max20", reading(0.85, 0.2))
+	loop.pacing()
+	if !strings.Contains(logs.String(), "limits: paced until 2026-09-25T15:00:00Z: max20: five-hour window at 85% (pace 80%)") {
+		t.Fatalf("the pacing line does not name max20:\n%s", logs)
 	}
 }
