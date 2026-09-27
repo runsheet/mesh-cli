@@ -25,8 +25,8 @@ mesh-cli tests: with no node.yaml accounts and the platform issuing two subscrip
 | Seq | Title | Status | Branch | PR | Cost |
 | --- | --- | --- | --- | --- | --- |
 | 1 | Credentials remembers every issued account, secret-free, and keeps the labels in ~/.mesh/accounts.json for 24h | merged | mesh/loop-schedules-on-issued-accounts-1 | https://github.com/runsheet/mesh-cli/pull/224 | $1.20 |
-| 2 | The loop paces, claims, researches and scales on the union of node.yaml's accounts and the issued accounts it knows | open | mesh/loop-schedules-on-issued-accounts-2 | https://github.com/runsheet/mesh-cli/pull/225 | $2.40 |
-| 3 | mesh-specs: adr-005 amendments — the loop schedules on the union of node.yaml's and the known issued accounts | merged | main | https://github.com/runsheet/mesh-specs/pull/46 | $0.36 |
+| 2 | The loop paces, claims, researches and scales on the union of node.yaml's accounts and the issued accounts it knows | merged | mesh/loop-schedules-on-issued-accounts-2 | https://github.com/runsheet/mesh-cli/pull/225 | $2.40 |
+| 3 | AGENTS.md and adr-005 amendments — the loop schedules on the union of node.yaml's and the known issued accounts | merged | mesh/loop-schedules-on-issued-accounts-3 | (documentation) | $0.00 |
 | 4 | Goal doc: loop-schedules-on-issued-accounts, with the mini's by-hand binary upgrade after merge | — | mesh/loop-schedules-on-issued-accounts-4 | — | $0.00 |
 
 ## Upgrade
