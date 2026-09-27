@@ -228,6 +228,16 @@ this section describes them.
   without that line: the session spent, and its record must exist
   somewhere. An adopted session (ADR-009) has no account in the new
   process and carries none.
+- **The node remembers what the platform issues.** Amended 2026-09-27
+  (goal `loop-schedules-on-issued-accounts`): `Credentials.Open` notes
+  every anthropic/claude-code credential the read hands it — label,
+  kind, id, caps; never the secret — in `KnownAccounts`
+  (`internal/node/known.go`), before the api-cap filter, so a capped
+  key is still known. It is kept in `~/.mesh/accounts.json`, beside
+  `ledger.json`, one entry per label; a label the platform has not
+  issued for 24h (`KnownFor`) is forgotten. `Credentials` itself does
+  not schedule on these accounts (`Known` is a field the loop wires;
+  the loop's own use of them is a later item of the same goal).
 - **Channel mode's builds** keep the operator's login and send no
   record: the channel session is one long session per org, not a
   session per item. Its evaluations, plans, research and rebases are
@@ -294,6 +304,9 @@ and their client methods are gone.
   session's config dir. Nothing on the node resumes a one-shot session,
   so nothing is lost; channel mode keeps the operator's login until it
   is moved onto accounts.
+- A restart's `KnownAccounts` reloads `~/.mesh/accounts.json` before the
+  node's first claim, so it knows the accounts the platform issued
+  before this run without waiting for a session to be claimed again.
 - Two Codex sessions on one plan account that both refresh its tokens
   write back in turn, and the last write wins. If one holds a refresh
   token the other already rotated, that login has to be signed in

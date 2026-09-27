@@ -51,6 +51,10 @@ type Credentials struct {
 	Limits *Limits
 	// Thresholds are node.yaml's limits (nil: the defaults).
 	Thresholds func() LimitsConfig
+	// Known remembers every account the claim-time read hands a session
+	// (label, kind, id, caps; never the secret), so the loop can learn
+	// which accounts the platform issues (nil: not remembered here).
+	Known *KnownAccounts
 	// Now is the clock (nil: time.Now).
 	Now func() time.Time
 	Log *log.Logger
@@ -157,6 +161,9 @@ func (c *Credentials) Open(ctx context.Context, ref gateway.SessionRef, nodeID s
 		room := map[string]float64{}
 		for _, cr := range issued {
 			a := IssuedAccount(cr)
+			if err := c.Known.Note(a, c.now()); err != nil {
+				c.logf("known accounts: %v", err)
+			}
 			if a.Kind == AccountAPI {
 				left := CapRoom(cr)
 				if left <= 0 {
@@ -213,15 +220,15 @@ func openedAccount(ctx context.Context, accounts []AccountConfig) AccountConfig 
 }
 
 // IssuedAccount is a platform credential as an account a session may
-// run on: its label (its id when it has none), kind and id, its secret
-// held in memory for this session only.
+// run on: its label (its id when it has none), kind, id and caps, its
+// secret held in memory for this session only.
 func IssuedAccount(cr gateway.Credential) AccountConfig {
 	label := cr.Label
 	if label == "" {
 		label = cr.ID
 	}
 	secret := cr.Secret
-	return AccountConfig{Label: label, Kind: cr.Kind, ID: cr.ID, issued: &secret}
+	return AccountConfig{Label: label, Kind: cr.Kind, ID: cr.ID, DailyCapUSD: cr.CapDailyUSD, MonthlyCapUSD: cr.CapMonthlyUSD, issued: &secret}
 }
 
 // CapRoom is how many dollars an api credential may still spend: the

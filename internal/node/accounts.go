@@ -138,6 +138,9 @@ func (a AccountConfig) Secret() (string, error) {
 		}
 		return *a.issued, nil
 	}
+	if a.ID != "" && a.TokenFile == "" && a.APIKeyEnv == "" {
+		return "", fmt.Errorf("account %s: the platform issues its secret at claim only", a.Label)
+	}
 	switch a.Kind {
 	case AccountSubscription:
 		path, err := a.TokenPath()

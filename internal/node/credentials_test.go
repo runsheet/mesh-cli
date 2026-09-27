@@ -426,6 +426,88 @@ func TestBuildWithNoIssuedHeadroomIsReleased(t *testing.T) {
 	}
 }
 
+// Every anthropic/claude-code credential the claim-time read hands a
+// session is remembered in Known — label, kind, id, first-issued first —
+// before the api-cap filter, so a capped key is still known; Secret()
+// on a known account always errors, since only the claim-time read ever
+// holds the secret.
+func TestOpenRemembersEveryIssuedCredential(t *testing.T) {
+	gw := &credsGW{issued: []gateway.Credential{
+		{ID: "cred-a", Label: "max20", Kind: AccountSubscription, Secret: "sk-ant-oat01-MAX20"},
+		{ID: "cred-b", Label: "shhemail", Kind: AccountSubscription, Secret: "sk-ant-oat01-SHHEMAIL"},
+		{ID: "cred-c", Label: "key-1", Kind: AccountAPI, Secret: "sk-ant-api-KEY1", CapDailyUSD: 20, SpentDailyUSD: 20},
+	}}
+	known, err := OpenKnownAccounts(filepath.Join(t.TempDir(), "accounts.json"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
+	c := &Credentials{GW: gw, Known: known, Now: func() time.Time { return now }, Log: log.New(io.Discard, "", 0)}
+	ref := gateway.SessionRef{Kind: "build", ItemID: item1}
+
+	// key-1 is at its cap, so Open still runs (on one of the two
+	// subscriptions), but all three land in Known.
+	s, err := c.Open(context.Background(), ref, "n", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Cleanup()
+
+	accts := known.Accounts(now)
+	want := []struct{ label, kind, id string }{
+		{"max20", AccountSubscription, "cred-a"},
+		{"shhemail", AccountSubscription, "cred-b"},
+		{"key-1", AccountAPI, "cred-c"},
+	}
+	if len(accts) != len(want) {
+		t.Fatalf("known accounts = %+v, want %d", accts, len(want))
+	}
+	for i, w := range want {
+		if accts[i].Label != w.label || accts[i].Kind != w.kind || accts[i].ID != w.id {
+			t.Errorf("account %d = %+v, want %+v", i, accts[i], w)
+		}
+		if _, err := accts[i].Secret(); err == nil {
+			t.Errorf("account %d (%s): Secret() = nil error, want one", i, accts[i].Label)
+		}
+	}
+}
+
+// The store's file on disk, after an Open that issued a secret, never
+// carries that secret.
+func TestKnownAccountsFileHasNoSecret(t *testing.T) {
+	const secret = "sk-ant-oat01-SECRET-VALUE"
+	gw := &credsGW{issued: []gateway.Credential{{ID: "cred-a", Label: "max20", Kind: AccountSubscription, Secret: secret}}}
+	path := filepath.Join(t.TempDir(), "accounts.json")
+	known, err := OpenKnownAccounts(path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &Credentials{GW: gw, Known: known, Log: log.New(io.Discard, "", 0)}
+	ref := gateway.SessionRef{Kind: "build", ItemID: item1}
+	s, err := c.Open(context.Background(), ref, "n", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Cleanup()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), secret) {
+		t.Errorf("the secret is in the store's file:\n%s", data)
+	}
+	var file struct {
+		Accounts []map[string]any `json:"accounts"`
+	}
+	if err := json.Unmarshal(data, &file); err != nil {
+		t.Fatal(err)
+	}
+	if len(file.Accounts) != 1 || file.Accounts[0]["label"] != "max20" {
+		t.Fatalf("file = %+v", file.Accounts)
+	}
+}
+
 // A credential printed any way leaves its secret out.
 func TestCredentialPrintsNoSecret(t *testing.T) {
 	cr := gateway.Credential{ID: "c", Label: "max", Kind: AccountSubscription, Secret: issuedSecret}
