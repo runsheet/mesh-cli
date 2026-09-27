@@ -3,6 +3,7 @@ package harness
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"io"
 	"strings"
 	"time"
@@ -27,6 +28,9 @@ type Event struct {
 			Type string `json:"type"`
 			Text string `json:"text"`
 			Name string `json:"name"`
+			// ID is a tool_use block's id (toolu_…), kept on
+			// Result.ToolCallIDs for recordToolUsage.
+			ID string `json:"id"`
 		} `json:"content"`
 	} `json:"message"`
 	// RateLimitInfo is the account's plan standing on a
@@ -71,11 +75,22 @@ func MCPServer(name string) string {
 	return server
 }
 
-func (r *Result) countToolCall(server string) {
+// countToolCall counts one call to server, keeping its id on
+// ToolCallIDs; an empty id (an event that carried none) is synthesised
+// from the session id, the server and the call's place in it, so the
+// count and the id list always agree.
+func (r *Result) countToolCall(server, id string) {
 	if r.ToolCalls == nil {
 		r.ToolCalls = map[string]int{}
 	}
 	r.ToolCalls[server]++
+	if id == "" {
+		id = fmt.Sprintf("%s:%s:%d", r.SessionID, server, r.ToolCalls[server])
+	}
+	if r.ToolCallIDs == nil {
+		r.ToolCallIDs = map[string][]string{}
+	}
+	r.ToolCallIDs[server] = append(r.ToolCallIDs[server], id)
 }
 
 // ParseStream reads stream-json lines, calling onEvent for each, and
@@ -87,7 +102,8 @@ func (r *Result) countToolCall(server string) {
 // the result event's token counts on Result.Usage (its InputTokens the
 // cached ones included, as Usage counts them), with the model the
 // system/init event named. Each tool_use of an MCP server's tool is
-// counted on Result.ToolCalls by its server.
+// counted on Result.ToolCalls by its server, its id (empty ones
+// synthesised) kept on Result.ToolCallIDs.
 func ParseStream(r io.Reader, onEvent func(Event)) Result {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 16<<20)
@@ -123,7 +139,7 @@ func ParseStream(r io.Reader, onEvent func(Event)) Result {
 						continue
 					}
 					if server := MCPServer(c.Name); server != "" {
-						res.countToolCall(server)
+						res.countToolCall(server, c.ID)
 					}
 				}
 			}
