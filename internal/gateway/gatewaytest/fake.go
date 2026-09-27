@@ -84,17 +84,22 @@ type Fake struct {
 	// item's rebase while it is in review. Off, the fake refuses it as
 	// runsheet's gateway/itemtoken.go does today.
 	RebaseTokens bool
-	// SessionCredentials maps a session's subject — its workItemId, else
-	// goalId, else directionId — to the credentials sessionCredentials
-	// hands the node (id, label, kind, secret, capDailyUsd, …). A subject
-	// with none gets an empty list.
+	// SessionCredentials maps a session's subject — its item, else its
+	// goal, else its direction — to the rows the claim-time read
+	// (itemCredentials, planCredentials, researchCredentials) hands the
+	// node, in the platform's shape: id, label, vendor, kind
+	// (subscription | api_key | oauth_token), serves, dailyCap,
+	// monthlyCap, capUnit, secret. A subject with none gets an empty
+	// list. Unsupported[<field>] refuses the field, as a platform
+	// without that read.
 	SessionCredentials map[string][]map[string]any
 	// SessionTools maps a session's subject, as SessionCredentials does,
-	// to the tools the claim-time read hands it (name, transport, url,
-	// headers, runtime, command, args, env, secrets, required, roles,
-	// pricePerCallCents). A subject with none gets no `tools` key at all;
-	// UnknownFields["tools"] refuses a read selecting them, as a platform
-	// older than tools-in-the-console.
+	// to the rows itemTools (planTools, researchTools) hands it: id,
+	// slug, name, kind (remote_mcp | local_mcp | builtin), need, url,
+	// command, args, runtime, builtIn, account, headers and env as
+	// [{name, value} | {name, source}]. A subject with none gets an
+	// empty list; UnknownFields[<field>] refuses a read selecting it, as
+	// a platform older than tools-in-the-console.
 	SessionTools map[string][]map[string]any
 	// Usage are the priced tools' usage records the fake was handed
 	// (recordUsage), in order: workItemId, kind, tool, calls,
@@ -180,7 +185,9 @@ var (
 	mutationRe = regexp.MustCompile(`mutation\s*\(\s*\$(?:in|id):\s*(\w+)!\s*\)\s*\{\s*(\w+)\s*\(`)
 	whereRe    = regexp.MustCompile(`\{\s*field:\s*"([a-z_]+)"\s*,\s*op:\s*EQ\s*,\s*value:\s*"([^"]*)"\s*\}`)
 	listRe     = regexp.MustCompile(`\{\s*(\w+Indexs)\s*\(`)
-	getRe      = regexp.MustCompile(`\{\s*(\w+Index)\s*\(\s*namespace:\s*"runsheet"\s*,\s*id:\s*"([^"]+)"`)
+	// the claim-time read: query($id: UUID!) { <x>Credentials(<arg>: $id) [<x>Tools(<arg>: $id)] }
+	sessionReadRe = regexp.MustCompile(`\{\s*(\w+Credentials)\s*\(\s*(\w+):\s*\$id\s*\)(?:\s*(\w+Tools)\s*\(\s*\w+:\s*\$id\s*\))?\s*\}`)
+	getRe         = regexp.MustCompile(`\{\s*(\w+Index)\s*\(\s*namespace:\s*"runsheet"\s*,\s*id:\s*"([^"]+)"`)
 )
 
 func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
@@ -248,34 +255,6 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 			writeData(w, map[string]any{m[2]: tok})
 			return
 		}
-		if m[2] == "sessionCredentials" {
-			subject := ""
-			for _, k := range []string{"workItemId", "goalId", "directionId"} {
-				if v, _ := in[k].(string); v != "" && subject == "" {
-					subject = v
-				}
-			}
-			selectsTools := strings.Contains(q, "tools {")
-			if selectsTools && f.UnknownFields["tools"] {
-				writeErrors(w, 200, `Cannot query field "tools" on type "SessionCredentialsResult".`)
-				return
-			}
-			creds := []map[string]any{}
-			for _, c := range f.SessionCredentials[subject] {
-				creds = append(creds, copyRow(c))
-			}
-			res := map[string]any{"credentials": creds}
-			if ts := f.SessionTools[subject]; selectsTools && ts != nil {
-				var rows []map[string]any
-				for _, t := range ts {
-					rows = append(rows, copyRow(t))
-				}
-				res["tools"] = rows
-			}
-			f.Calls = append(f.Calls, Call{Name: m[2], Input: in, At: time.Now()})
-			writeData(w, map[string]any{m[2]: res})
-			return
-		}
 		if err := f.apply(m[2], in); err != nil {
 			writeErrors(w, 200, err.Error())
 			return
@@ -286,6 +265,10 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 		f.Calls = append(f.Calls, Call{Name: m[2], Input: in, At: time.Now()})
 		writeData(w, map[string]any{m[2]: map[string]any{"status": "ok"}})
 	default:
+		if m := sessionReadRe.FindStringSubmatch(q); m != nil {
+			f.sessionRead(w, m[1], m[2], m[3], req.Variables)
+			return
+		}
 		field, typ := f.unknownSelection(q)
 		if m := getRe.FindStringSubmatch(q); m != nil {
 			if field != "" {
@@ -328,6 +311,41 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 		}
 		writeData(w, map[string]any{m[1]: rows})
 	}
+}
+
+// sessionRead answers the claim-time read of one session subject: the
+// credentials field and, when selected, the tools field, each recorded
+// as a call named by the field with the argument it was given.
+func (f *Fake) sessionRead(w http.ResponseWriter, credField, arg, toolsField string, vars map[string]any) {
+	id, _ := vars["id"].(string)
+	in := map[string]any{arg: id}
+	if f.Unsupported[credField] {
+		writeErrors(w, 200, fmt.Sprintf("Cannot query field %q on type \"Query\".", credField))
+		return
+	}
+	if toolsField != "" && (f.UnknownFields[toolsField] || f.Unsupported[toolsField]) {
+		writeErrors(w, 200, fmt.Sprintf("Cannot query field %q on type \"Query\".", toolsField))
+		return
+	}
+	if msg := f.Refuse[credField]; msg != "" {
+		writeErrors(w, 200, msg)
+		return
+	}
+	creds := []map[string]any{}
+	for _, c := range f.SessionCredentials[id] {
+		creds = append(creds, copyRow(c))
+	}
+	data := map[string]any{credField: creds}
+	f.Calls = append(f.Calls, Call{Name: credField, Input: in, At: time.Now()})
+	if toolsField != "" {
+		rows := []map[string]any{}
+		for _, t := range f.SessionTools[id] {
+			rows = append(rows, copyRow(t))
+		}
+		data[toolsField] = rows
+		f.Calls = append(f.Calls, Call{Name: toolsField, Input: in, At: time.Now()})
+	}
+	writeData(w, data)
 }
 
 // heartbeatInputType is HeartbeatNodeInput as introspection answers it:

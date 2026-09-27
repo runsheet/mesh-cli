@@ -55,15 +55,33 @@ where the code lives, the variable names, and the rendering per agent.
    a built-in (`prologue` always) is an error from either renderer, as
    is an unknown transport or runtime. Nothing is written then.
 7. **The wiring.** The claim-time read is `gateway.Session` — the
-   `sessionCredentials` mutation's `credentials` and `tools` (headers,
-   env and secrets as maps); `SessionCredentials` is its credentials
-   alone. A gateway that refuses the `tools` selection is asked for the
-   credentials alone from then on, and its sessions get no console
-   tools. `Loop.LookPath` (`exec.LookPath` in `mesh node start`) probes
-   runtimes and adapters every tick, beside the reload, and the
-   heartbeat carries them as `runtimes` and `adapters`
-   (`HeartbeatExtras`), each only when non-empty. The probe is a PATH
-   lookup; it does not run the version command trd §1 names.
+   platform's `itemTools(itemId)` (`planTools(goalId)`,
+   `researchTools(directionId)`) beside the credentials field of the
+   same subject (ADR-005). Amended 2026-09-27: the platform serves each
+   tool as runsheet ADR 020 fixes it — `{id, slug, name, kind
+   remote_mcp|local_mcp|builtin, need required|nice_to_have, url,
+   command, args, runtime, builtin, builtIn, account {id, label} |
+   null, headers, env}` with headers and env as `[{name, value} |
+   {name, source: "item_github_token"}]` — and the node maps it to its
+   `Tool`: the slug is the name, `remote_mcp` is remote and `local_mcp`
+   local, `need` gives `required`; the platform's own built-in
+   (`builtIn`, mesh-context, which the node attaches itself as
+   prologue) and a builtin switch are not tools of the read, nor is a
+   row whose slug no renderer takes. Every setting of a tool served
+   through an account is a secret (it may be that account's; a plain
+   header travelling as a variable costs nothing), a tool served with
+   none has plain headers and env, and a setting sourced from the
+   item's GitHub token reads `${GH_TOKEN}`, which the session's
+   environment carries (ghcred.go) and both agents expand. A
+   `pricePerCallCents` is taken when the platform serves one.
+   `SessionCredentials` is the read's credentials alone. A gateway that
+   refuses the tools field is asked for the credentials alone from then
+   on (per field), and its sessions get no console tools. `Loop.LookPath`
+   (`exec.LookPath` in `mesh node start`) probes runtimes and adapters
+   every tick, beside the reload, and the heartbeat carries them as
+   `runtimes` and `adapters` (`HeartbeatExtras`), each only when
+   non-empty. The probe is a PATH lookup; it does not run the version
+   command trd §1 names.
 8. **At claim.** `Credentials.Open` makes the claim-time read and keeps
    its tools on the `SessionAccount`. The build (`Runner.RunItem`) and
    the evaluation (`Evaluator.Evaluate`) select them for their role and

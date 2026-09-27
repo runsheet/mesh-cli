@@ -60,7 +60,7 @@ func usageStream() string { return filepath.Join("..", "harness", "testdata", "s
 // and after; the secret is in the session's env and nowhere else.
 func TestBuildRunsOnAnIssuedCredentialAndRecordsUsage(t *testing.T) {
 	f := seed(t)
-	f.SessionCredentials[item1] = []map[string]any{{"id": "cred-1", "label": "max-cloud", "kind": "subscription", "secret": issuedSecret}}
+	f.SessionCredentials[item1] = []map[string]any{{"id": "cred-1", "label": "max-cloud", "vendor": "anthropic", "kind": "subscription", "serves": []any{"claude-code"}, "secret": issuedSecret}}
 	h := &streamHarness{file: usageStream()}
 	r, _, item, row := runnerOnFake(t, f, h, nil)
 	var logs syncBuf
@@ -87,8 +87,8 @@ func TestBuildRunsOnAnIssuedCredentialAndRecordsUsage(t *testing.T) {
 	if Account(jobs[0].Env) != "max-cloud" {
 		t.Errorf("Account = %q, want max-cloud", Account(jobs[0].Env))
 	}
-	if reads := f.CallsNamed("sessionCredentials"); len(reads) != 1 || reads[0].Input["workItemId"] != item1 || reads[0].Input["kind"] != "build" || reads[0].Input["nodeId"] != r.Cfg.NodeID {
-		t.Fatalf("sessionCredentials calls: %+v", reads)
+	if reads := f.CallsNamed("itemCredentials"); len(reads) != 1 || reads[0].Input["itemId"] != item1 {
+		t.Fatalf("itemCredentials calls: %+v", reads)
 	}
 	if row(item1)["status"] != "evaluating" {
 		t.Fatalf("item: %v", row(item1))
@@ -149,7 +149,7 @@ func TestCredentialsFallBackToNodeYAMLOncePerRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	f := seed(t)
-	f.Unsupported["sessionCredentials"] = true
+	f.Unsupported["itemCredentials"] = true
 	f.Unsupported["recordSessionUsage"] = true
 	h := &streamHarness{file: usageStream()}
 	r, _, item, row := runnerOnFake(t, f, h, nil)
@@ -297,18 +297,25 @@ func TestSpentAPICapIsNotChosen(t *testing.T) {
 }
 
 // A build none of whose issued credentials has room is released, not
-// failed: it waits for a later tick or another node.
+// failed: it waits for a later tick or another node. The platform leaves
+// an api key at its cap out of the read (runsheet ADR 019), so room is
+// the node's own reading: here the one issued subscription is stopped
+// until its window resets.
 func TestBuildWithNoIssuedHeadroomIsReleased(t *testing.T) {
 	f := seed(t)
-	f.SessionCredentials[item1] = []map[string]any{{"id": "k1", "label": "key", "kind": "api", "secret": "sk-ant-api-SPENT", "capDailyUsd": 10.0, "spentDailyUsd": 10.0}}
+	f.SessionCredentials[item1] = []map[string]any{{"id": "c1", "label": "max-stopped", "vendor": "anthropic", "kind": "subscription", "serves": []any{"claude-code"}, "secret": "sk-ant-oat01-STOPPED"}}
 	h := &streamHarness{file: usageStream()}
 	r, _, item, row := runnerOnFake(t, f, h, nil)
-	r.Credentials = &Credentials{GW: r.GW.(CredentialGateway), Log: r.Log}
+	limits := &Limits{}
+	limits.Observe("max-stopped", &harness.RateLimit{Status: "rejected",
+		FiveHour: harness.RateLimitWindow{Utilization: 1, ResetsAt: time.Now().Add(time.Hour)},
+		SevenDay: harness.RateLimitWindow{Utilization: 0.9, ResetsAt: time.Now().Add(48 * time.Hour)}})
+	r.Credentials = &Credentials{GW: r.GW.(CredentialGateway), Limits: limits, Log: r.Log}
 	if err := r.RunItem(context.Background(), item); err != nil {
 		t.Fatal(err)
 	}
 	if len(h.Jobs()) != 0 {
-		t.Fatal("a session ran on a spent key")
+		t.Fatal("a session ran on a stopped account")
 	}
 	if row(item1)["status"] != "ready" || len(f.CallsNamed("failWorkItem")) != 0 {
 		t.Fatalf("item: %v, fails %d", row(item1), len(f.CallsNamed("failWorkItem")))

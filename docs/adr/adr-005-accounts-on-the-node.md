@@ -1,5 +1,5 @@
 ---
-summary: A node's sessions run on the Claude accounts the platform issues the claimed session (the claim-time read, sessionCredentials; an api key at its cap never chosen), with node.yaml's `accounts:` ({label, kind subscription|api, token_file|api_key_env}) the fallback, and every session hands in a usage record (recordSessionUsage, else one log line); the secret reaches the session in its environment only (CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY), with a temporary CLAUDE_CONFIG_DIR per session removed after, the inherited auth variables stripped, and the secret redacted from every log, error and report; each session runs on the account ChooseAccount picks by headroom and the spending order (subscriptions first, API only for urgent/high work or when subscriptions are stopped and work waits), and no account with headroom means no claim.
+summary: A node's sessions run on the Claude accounts the platform issues the claimed session (the claim-time read: itemCredentials, planCredentials, researchCredentials; an api key at its cap never chosen), with node.yaml's `accounts:` ({label, kind subscription|api, token_file|api_key_env}) the fallback, and every session hands in a usage record (recordSessionUsage, else one log line); the secret reaches the session in its environment only (CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY), with a temporary CLAUDE_CONFIG_DIR per session removed after, the inherited auth variables stripped, and the secret redacted from every log, error and report; each session runs on the account ChooseAccount picks by headroom and the spending order (subscriptions first, API only for urgent/high work or when subscriptions are stopped and work waits), and no account with headroom means no claim.
 status: accepted
 ---
 
@@ -111,35 +111,42 @@ own may run on the wrong account.
 
 ## The claim-time read and the usage record
 
-Amended 2026-09-25 (item 3 of `node-runs-on-many-accounts`). runsheet's
-`credentials-sealed-in-loom` (the claim-time read) and `usage-ledger`
-had published no field names when this was written — ADR 018 fixes the
-decisions, not the wire — so the node defines the shape here and the
-platform half takes it or amends this section.
+Amended 2026-09-25 (item 3 of `node-runs-on-many-accounts`), when
+runsheet's `credentials-sealed-in-loom` had published no field names
+and the node defined a `sessionCredentials` mutation here. Amended
+again 2026-09-27: the platform never took that shape — it serves the
+read as runsheet ADR 019 and ADR 020 fix it, and no platform ever knew
+`sessionCredentials` — so the node reads the platform's fields, and
+this section describes them.
 
 - **The claim-time read.** After a session's claim and before it
-  starts, `Credentials.Open` asks the platform for the credentials that
-  session may run on:
+  starts, `Credentials.Open` (`gateway.Session`) asks the platform for
+  the credentials that session may run on and its tools, one pair of
+  query fields per session subject, each a JSON list (a `Map` scalar,
+  selected bare):
 
-  ```graphql
-  mutation($in: SessionCredentialsInput!) {
-    sessionCredentials(input: $in) {
-      credentials { id label kind secret capDailyUsd capMonthlyUsd spentDailyUsd spentMonthlyUsd }
-    }
-  }
-  ```
+  | session | credentials | tools |
+  |---|---|---|
+  | build, evaluate, rebase (an item) | `itemCredentials(itemId)` | `itemTools(itemId)` |
+  | plan (a goal) | `planCredentials(goalId)` | `planTools(goalId)` |
+  | research (a direction) | `researchCredentials(directionId)` | `researchTools(directionId)` |
 
-  with `in` = `{namespace, kind, nodeId, workItemId | goalId |
-  directionId}` — the session's kind (`build`, `evaluate`, `plan`,
-  `research`, `rebase`), the node holding its claim, and what it works
-  on (the item, and its goal, for a build, an evaluation or a rebase;
-  the goal for a plan; the direction for research). It is a mutation,
-  not a query: handing out a secret is a platform act on a claim (ADR
-  018), refused to any node that does not hold it. `kind` is
-  `subscription` or `api`; the caps are an api key's (0 is the
-  default, $50 a day and $1,000 a month) and the spend is what the
-  ledger has counted against them. `gateway.Credential`'s `String` and
-  `GoString` leave the secret out.
+  The node is not named: the platform knows it from the bearer, and
+  answers only the node holding the claim (runsheet's `claimRead` —
+  `WorkItem.node_id`, `Goal.planner_node_id`,
+  `Direction.research_node_id`); anyone else is refused with the
+  reason and no secret. A credential row is `{id, label, vendor, kind,
+  serves, plan, windowTargets, dailyCap, monthlyCap, capUnit,
+  secretVersion, secret}`. The node keeps the rows whose `vendor` is
+  `anthropic` and whose `serves` is empty or names `claude-code` —
+  any other vendor is a tool's account (ADR-006), not a session's —
+  and maps `kind` `subscription` or `oauth_token` to `subscription`,
+  `api_key` to `api`, with `dailyCap`/`monthlyCap` (dollars) as the
+  key's caps when `capUnit` is `dollars` (0 is the default, $50 a day
+  and $1,000 a month). Spend is not carried: the platform leaves a
+  key at its cap out of the read (ADR 019, trd §6b), so room among the
+  issued is the node's own readings (§3 Pacing). `gateway.Credential`'s
+  `String` and `GoString` leave the secret out.
 - **Issued credentials are the session's accounts.** They become
   `AccountConfig`s (`IssuedAccount`: the label, else the id; the secret
   held by pointer for this session only, so printing an account prints
@@ -158,9 +165,10 @@ platform half takes it or amends this section.
   (`ReleaseWorkItem`, not failed), an evaluation stays in evaluating
   for the next tick, and a plan, research or rebase ends as its own
   error path does.
-- **node.yaml is the fallback.** A platform without the mutation (the
-  same unknown-operation detection as the item's GitHub token,
-  `gateway.IsUnsupported`), or one that issues an empty list, leaves
+- **node.yaml is the fallback.** A platform without the credentials
+  field for that session's subject (`Cannot query field`, the same
+  detection as the item's GitHub token, `gateway.IsUnsupported`), or
+  one that issues an empty list, leaves
   node.yaml's accounts and the loop's pre-claim choice exactly as
   above. The first fallback of a run logs once — `credentials: the
   platform issues no session credentials; sessions run on node.yaml's

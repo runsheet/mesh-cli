@@ -63,10 +63,11 @@ type Client struct {
 	// NodeIndex.desiredVersion (a platform older than
 	// update-nodes-from-console): every later node read leaves it out.
 	nodesWithoutDesired atomic.Bool
-	// sessionsWithoutTools is set once the gateway has refused the
-	// claim-time read's `tools` (a platform older than
-	// tools-in-the-console): every later read asks for credentials alone.
-	sessionsWithoutTools atomic.Bool
+	// toolsUnknown holds each claim-time tools field (itemTools,
+	// planTools, researchTools) the gateway has refused — a platform
+	// older than tools-in-the-console, or without that session kind's
+	// read: every later read of that kind asks for credentials alone.
+	toolsUnknown sync.Map
 
 	// scalingSchema is what the gateway's heartbeat input was last found
 	// to take of `scaling` (see HeartbeatNode); Now is its clock,
@@ -1550,86 +1551,6 @@ func (c Credential) GoString() string { return c.String() }
 type Session struct {
 	Credentials []Credential
 	Tools       []tools.Tool
-}
-
-// SessionCredentials is the claim-time read's credentials alone (Session).
-func (c *Client) SessionCredentials(ctx context.Context, ref SessionRef, nodeID string) ([]Credential, error) {
-	s, err := c.Session(ctx, ref, nodeID)
-	if err != nil {
-		return nil, err
-	}
-	return s.Credentials, nil
-}
-
-// sessionToolFields is the selection of a claim-time read's tools;
-// headers, env and secrets are maps.
-const sessionToolFields = `tools { name transport url headers runtime command args env secrets required roles pricePerCallCents }`
-
-// Session is the claim-time read: the credentials the session ref names
-// may run on and its tools, their secrets decrypted for nodeID, which
-// must hold the session's claim (anything else is a refusal). A platform
-// without the mutation answers IsUnsupported, and the node falls back to
-// node.yaml's accounts; one without `tools` is asked for the credentials
-// alone from then on, and the session gets no console tools. No error,
-// log line or report carries a secret.
-func (c *Client) Session(ctx context.Context, ref SessionRef, nodeID string) (*Session, error) {
-	const field = "sessionCredentials"
-	in := map[string]any{"namespace": NS, "kind": ref.Kind, "nodeId": nodeID}
-	for k, v := range map[string]string{"workItemId": ref.ItemID, "goalId": ref.GoalID, "directionId": ref.DirectionID} {
-		if v != "" {
-			in[k] = v
-		}
-	}
-	var out struct {
-		SessionCredentials *struct {
-			Credentials []struct {
-				ID              string  `json:"id"`
-				Label           string  `json:"label"`
-				Kind            string  `json:"kind"`
-				Secret          string  `json:"secret"`
-				CapDailyUSD     float64 `json:"capDailyUsd"`
-				CapMonthlyUSD   float64 `json:"capMonthlyUsd"`
-				SpentDailyUSD   float64 `json:"spentDailyUsd"`
-				SpentMonthlyUSD float64 `json:"spentMonthlyUsd"`
-			} `json:"credentials"`
-			Tools []tools.Tool `json:"tools"`
-		} `json:"sessionCredentials"`
-	}
-	q := func(extra string) string {
-		return `mutation($in: SessionCredentialsInput!) { sessionCredentials(input: $in) { credentials { id label kind secret capDailyUsd capMonthlyUsd spentDailyUsd spentMonthlyUsd } ` + extra + `} }`
-	}
-	var err error
-	if !c.sessionsWithoutTools.Load() {
-		err = c.Query(ctx, q(sessionToolFields+" "), map[string]any{"in": in}, &out)
-		var ge *Error
-		if err != nil && errors.As(err, &ge) && unknownField(ge.Message, "tools") {
-			c.sessionsWithoutTools.Store(true)
-		}
-	}
-	if c.sessionsWithoutTools.Load() {
-		err = c.Query(ctx, q(""), map[string]any{"in": in}, &out)
-	}
-	if err != nil {
-		var ge *Error
-		if errors.As(err, &ge) && (unknownOperation(ge.Message, field) || schemaMismatch(ge.Message, field) || unknownField(ge.Message, "credentials", "secret", "capDailyUsd", "capMonthlyUsd", "spentDailyUsd", "spentMonthlyUsd")) {
-			return nil, &Error{Message: ge.Message, Unsupported: true}
-		}
-		return nil, err
-	}
-	s := &Session{}
-	if out.SessionCredentials == nil {
-		return s, nil
-	}
-	s.Credentials = make([]Credential, 0, len(out.SessionCredentials.Credentials))
-	for _, cr := range out.SessionCredentials.Credentials {
-		s.Credentials = append(s.Credentials, Credential{
-			ID: cr.ID, Label: cr.Label, Kind: cr.Kind, Secret: cr.Secret,
-			CapDailyUSD: cr.CapDailyUSD, CapMonthlyUSD: cr.CapMonthlyUSD,
-			SpentDailyUSD: cr.SpentDailyUSD, SpentMonthlyUSD: cr.SpentMonthlyUSD,
-		})
-	}
-	s.Tools = out.SessionCredentials.Tools
-	return s, nil
 }
 
 // UsageWindows is an account's plan standing at one moment — the
