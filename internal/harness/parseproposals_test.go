@@ -103,3 +103,27 @@ func TestResearchPromptContract(t *testing.T) {
 		t.Fatalf("room for one:\n%s", one)
 	}
 }
+
+// A direction that proposes rather than sets (runsheet ADR 022) is told
+// the room as information: a full project still hears the figure, and
+// is not told to propose nothing. A set direction keeps the cap.
+func TestResearchPromptProposeMode(t *testing.T) {
+	p := ResearchPrompt(ResearchInput{Org: "acme", Project: "mesh", Direction: "d", Room: 0, Proposes: true})
+	for _, want := range []string{
+		"This direction proposes rather than sets",
+		"the room is information, not a cap",
+		"The project has room for 0 right now.",
+		"a proposal that would wait for room should say so in its why",
+	} {
+		if !strings.Contains(p, want) {
+			t.Fatalf("prompt lacks %q:\n%s", want, p)
+		}
+	}
+	if strings.Contains(p, "Propose nothing") {
+		t.Fatalf("a propose direction is not capped by the room:\n%s", p)
+	}
+	set := ResearchPrompt(ResearchInput{Org: "acme", Project: "mesh", Direction: "d", Room: 0})
+	if !strings.Contains(set, "Propose nothing, and say in your notes what you would have proposed.") || strings.Contains(set, "proposes rather than sets") {
+		t.Fatalf("a set direction at its ceiling:\n%s", set)
+	}
+}

@@ -598,8 +598,13 @@ type ResearchInput struct {
 	// what to build on and what not to propose again.
 	Goals []ExistingGoal
 	// Room is how many goals the platform has space for right now; 0
-	// means the session should say so rather than propose.
+	// means the session should say so rather than propose — unless it
+	// Proposes, when the room is information and not a cap.
 	Room int
+	// Proposes is a direction in mode propose (runsheet ADR 022): what
+	// the session proposes waits for a person and sets no goal, so it
+	// takes no live-goal slot and the room does not limit it.
+	Proposes bool
 	// DefaultBudgetCents is what a goal here usually costs, for the
 	// session to size its proposals against.
 	DefaultBudgetCents int
@@ -673,6 +678,12 @@ func ResearchPrompt(in ResearchInput) string {
 	b.WriteString("# Rules\n\n")
 	fmt.Fprintf(&b, "1. Research first. Read the direction, the design documents, the code and the open issues before you propose anything. A goal that duplicates what is there, or that the design already forbids, is worse than none.\n")
 	switch {
+	case in.Proposes:
+		room := in.Room
+		if room < 0 {
+			room = 0
+		}
+		fmt.Fprintf(&b, "2. This direction proposes rather than sets: nothing you propose becomes a goal until a person accepts it, so the room is information, not a cap. The project has room for %d right now. Propose what is worth doing, fewer if fewer are, none if none is; a proposal that would wait for room should say so in its why.\n", room)
 	case in.Room <= 0:
 		b.WriteString("2. There is no room for another goal right now — the project is at its ceiling. Propose nothing, and say in your notes what you would have proposed.\n")
 	case in.Room == 1:

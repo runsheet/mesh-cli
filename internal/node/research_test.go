@@ -146,6 +146,105 @@ func TestLoopSkipsAFullProject(t *testing.T) {
 	}
 }
 
+// fullProjectForDirection is TestLoopSkipsAFullProject's fixture — a
+// project whose maxLiveGoals is 2 with two live goals on it — with the
+// direction in mode (none when empty), a loop whose sessions run through
+// a Director on a fake harness, and the harness.
+func fullProjectForDirection(t *testing.T, mode string) (*gatewaytest.Fake, *Loop, *fakeHarness) {
+	t.Helper()
+	f := seed(t)
+	f.Projects[projID]["repoIds"] = []string{repoID}
+	f.Projects[projID]["maxLiveGoals"] = 2
+	d := direction(f, dirID, projID, "scout", "Go on then.", 5) // its own share is free
+	if mode != "" {
+		d["mode"] = mode
+	}
+	const second = "dddddddd-5555-4555-8555-dddddddddddd"
+	f.Goals[second] = map[string]any{"id": second, "orgId": orgID, "projectId": projID, "slug": "blocked-one",
+		"title": "Blocked one", "status": "blocked"}
+	gw := gateway.New(f.URL(), "rs_test")
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: Fixed(1), OwnerID: f.UserID}
+	ws := &fakeWS{root: t.TempDir()}
+	h := &fakeHarness{text: "Nothing worth pitching tonight.\n\n```json\n{\"goals\": []}\n```"}
+	dir := &Director{GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, MaxBudgetUSD: 4, Log: log.New(os.Stderr, "", 0)}
+	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Interval: time.Hour, Log: dir.Log,
+		Dispatch: func(context.Context, gateway.WorkItem) {},
+		Research: func(ctx context.Context, dn gateway.Direction, p gateway.Project, sc Scope) {
+			_ = dir.Research(ctx, dn, p, sc)
+		}}
+	return f, loop, h
+}
+
+// A propose-mode direction is offered whatever the project's ceiling
+// says (runsheet ADR 022): what it proposes waits for a person and takes
+// no live-goal slot. The room still reaches its session, as information.
+func TestLoopResearchesAProposeDirectionOnAFullProject(t *testing.T) {
+	f, loop, h := fullProjectForDirection(t, "propose")
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	loop.Tick(ctx)
+	loop.wg.Wait()
+	if n := len(f.CallsNamed("claimDirectionResearch")); n != 1 || len(h.jobs) != 1 {
+		t.Fatalf("a propose direction on a full project: %d claims, %d sessions", n, len(h.jobs))
+	}
+	p := h.jobs[0].Prompt
+	for _, want := range []string{
+		"This direction proposes rather than sets",
+		"the room is information, not a cap",
+		"The project has room for 0 right now",
+		"a proposal that would wait for room should say so in its why",
+	} {
+		if !strings.Contains(p, want) {
+			t.Fatalf("prompt lacks %q:\n%s", want, p)
+		}
+	}
+	if strings.Contains(p, "Propose nothing") {
+		t.Fatalf("a propose direction is not told to propose nothing:\n%s", p)
+	}
+	if n := len(f.CallsNamed("recordDirectionResearch")); n != 1 {
+		t.Fatalf("the research is handed in: %d", n)
+	}
+}
+
+// A set-mode direction on the same full project keeps the guard: every
+// goal it set would be dropped, so it is not offered at all.
+func TestLoopSkipsASetDirectionOnAFullProject(t *testing.T) {
+	f, loop, h := fullProjectForDirection(t, "set")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	loop.Tick(ctx)
+	loop.wg.Wait()
+	if n := len(f.CallsNamed("claimDirectionResearch")); n != 0 || len(h.jobs) != 0 {
+		t.Fatalf("a set direction on a full project: %d claims, %d sessions", n, len(h.jobs))
+	}
+}
+
+// A platform older than ADR 022 refuses mode: the directions are still
+// listed, the read retried without it, and a direction whose row says
+// propose reads as mode-less — guarded by the room.
+func TestLoopGuardsDirectionsOnAPlatformWithoutMode(t *testing.T) {
+	f, loop, h := fullProjectForDirection(t, "propose")
+	f.UnknownFields["mode"] = true
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	loop.Tick(ctx)
+	loop.wg.Wait()
+	reads := f.ReadsNamed("directionIndexs")
+	if len(reads) < 2 {
+		t.Fatalf("the read is retried without mode: %d reads", len(reads))
+	}
+	if n := len(f.CallsNamed("claimDirectionResearch")); n != 0 || len(h.jobs) != 0 {
+		t.Fatalf("a mode-less direction on a full project: %d claims, %d sessions", n, len(h.jobs))
+	}
+	// the same platform with room: the direction was listed, and is offered
+	f.Projects[projID]["maxLiveGoals"] = 3
+	loop.Tick(ctx)
+	loop.wg.Wait()
+	if n := len(f.CallsNamed("claimDirectionResearch")); n != 1 {
+		t.Fatalf("with room the listed direction is claimed: %d claims", n)
+	}
+}
+
 // A direction at its own share is not claimed either, though its
 // project has room to spare — and the share is counted per stream, so a
 // goal another direction set spends that direction's share, not this
