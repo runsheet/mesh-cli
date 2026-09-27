@@ -104,7 +104,7 @@ func (e *Evaluator) failDiff(ctx context.Context, item gateway.WorkItem, label, 
 	}
 	notes = truncate(notes, 4000)
 	e.logf("item %s: not evaluated, failed: %s", label, notes)
-	if err := e.GW.EvaluateWorkItem(ctx, item.ID, false, notes, 0); err != nil {
+	if err := e.GW.EvaluateWorkItem(ctx, item.ID, false, notes, 0, nil); err != nil {
 		return fmt.Errorf("record verdict: %w", err)
 	}
 	return nil
@@ -338,7 +338,7 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 	if passed {
 		verdict = "passed"
 	}
-	if err := e.GW.EvaluateWorkItem(ctx, item.ID, passed, notes, Cents(cost)); err != nil {
+	if err := e.GW.EvaluateWorkItem(ctx, item.ID, passed, notes, Cents(cost), nil); err != nil {
 		return fmt.Errorf("record verdict: %w", err)
 	}
 	e.logf("item %s: evaluation %s ($%.2f)", label, verdict, cost)

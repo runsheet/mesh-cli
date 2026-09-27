@@ -208,7 +208,7 @@ var goalPlanCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if err := s.gw.PlanGoal(ctx, id, s.signIn(ctx), planned, 0); err != nil {
+		if err := s.gw.PlanGoal(ctx, id, s.signIn(ctx), planned, 0, nil); err != nil {
 			return err
 		}
 		fmt.Printf("Goal %s planned with %d items.\n", args[0], len(planned))

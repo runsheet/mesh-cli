@@ -105,6 +105,15 @@ type Fake struct {
 	// (recordUsage), in order: workItemId, kind, tool, calls,
 	// listPriceCents.
 	Usage []map[string]any
+	// SessionUsage is every `usage` report the fake was handed on
+	// FinishWorkItem, FinishWorkItemAlreadyDone, EvaluateWorkItem,
+	// PlanGoal, FinishWorkItemRebase and RecordDirectionResearch, in
+	// order: the mutation name and the report as a map. A command
+	// carrying no usage (nil) adds no row.
+	SessionUsage []Call
+	// ToolUsage is every recordToolUsage the fake was handed, in order:
+	// aggregateId, tool, toolCallId and usage.
+	ToolUsage []map[string]any
 	// After, when set, runs once a mutation has applied (under the lock,
 	// on the fake's rows) — for a test whose platform reacts to it, as a
 	// goal ending with its last item.
@@ -263,6 +272,9 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 			f.After(m[2], in)
 		}
 		f.Calls = append(f.Calls, Call{Name: m[2], Input: in, At: time.Now()})
+		if usage, ok := in["usage"].(map[string]any); ok && finishingMutations[m[2]] {
+			f.SessionUsage = append(f.SessionUsage, Call{Name: m[2], Input: copyRow(usage), At: time.Now()})
+		}
 		writeData(w, map[string]any{m[2]: map[string]any{"status": "ok"}})
 	default:
 		if m := sessionReadRe.FindStringSubmatch(q); m != nil {
@@ -487,12 +499,22 @@ func (f *Fake) unknownInput(in map[string]any) string {
 	return ""
 }
 
+// finishingMutations are the commands whose input may carry a `usage`
+// report (runsheet trd §6a): the ones that end a session.
+var finishingMutations = map[string]bool{
+	"finishWorkItem": true, "evaluateWorkItem": true, "planGoal": true,
+	"finishWorkItemRebase": true, "recordDirectionResearch": true,
+}
+
 func (f *Fake) apply(name string, in map[string]any) error {
 	id, _ := in["aggregateId"].(string)
 	item := f.WorkItems[id]
 	switch name {
 	case "recordUsage":
 		f.Usage = append(f.Usage, copyRow(in))
+		return nil
+	case "recordToolUsage":
+		f.ToolUsage = append(f.ToolUsage, copyRow(in))
 		return nil
 	case "claimWorkItem":
 		if item == nil {

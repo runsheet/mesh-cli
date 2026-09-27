@@ -107,7 +107,7 @@ func TestFinishWorkItemRebase(t *testing.T) {
 	f.WorkItems[itemID]["rebaseNodeId"] = nodeID
 	gw := gateway.New(f.URL(), "rs_test")
 
-	if err := gw.FinishWorkItemRebase(context.Background(), itemID, "abc123", []string{"main.go", "go.sum"}); err != nil {
+	if err := gw.FinishWorkItemRebase(context.Background(), itemID, "abc123", []string{"main.go", "go.sum"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	calls := f.CallsNamed("finishWorkItemRebase")

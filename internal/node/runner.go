@@ -436,7 +436,7 @@ func (r *Runner) afterBuild(ctx context.Context, b *buildRun, result harness.Res
 	if evidence, ok := harness.ParseAlreadyDone(result.Text); ok {
 		// main already holds the work (adr-003): no push, no branch, and
 		// the evaluator checks the evidence on the base ref
-		if err := r.GW.FinishWorkItemAlreadyDone(ctx, item.ID, truncate(evidence, 4000), b.cost.delta()); err != nil {
+		if err := r.GW.FinishWorkItemAlreadyDone(ctx, item.ID, truncate(evidence, 4000), b.cost.delta(), nil); err != nil {
 			return fmt.Errorf("finish %s: %w", label, err)
 		}
 		r.logf("item %s: finished already done ($%.2f): %s", label, result.CostUSD, truncate(evidence, 200))
@@ -450,7 +450,7 @@ func (r *Runner) afterBuild(ctx context.Context, b *buildRun, result harness.Res
 	if err != nil {
 		return r.fail(ctx, item, fmt.Errorf("push: %w", err))
 	}
-	if err := r.GW.FinishWorkItem(ctx, item.ID, b.spec.Branch, sha, b.cost.delta()); err != nil {
+	if err := r.GW.FinishWorkItem(ctx, item.ID, b.spec.Branch, sha, b.cost.delta(), nil); err != nil {
 		return fmt.Errorf("finish %s: %w", label, err)
 	}
 	r.logf("item %s: finished %s@%s ($%.2f)", label, b.spec.Branch, short(sha), result.CostUSD)
