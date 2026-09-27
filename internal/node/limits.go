@@ -343,7 +343,7 @@ func nodePace(now time.Time, accounts []AccountConfig, readings map[string]harne
 		if r, ok := readings[a.Label]; ok {
 			p = pace(now, r, cfg)
 		}
-		if len(judged) > 1 && p.why != "" {
+		if (len(judged) > 1 || a.Label != DefaultAccount) && p.why != "" {
 			p.why = a.Label + ": " + p.why
 		}
 		if i == 0 || p.mode < out.mode || (p.mode == out.mode && p.resumeAt.Before(out.resumeAt)) {

@@ -472,7 +472,9 @@ func nodeStart(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	// the accounts the platform's claim-time read has issued lately,
-	// remembered across a restart (goal loop-schedules-on-issued-accounts)
+	// remembered across a restart (goal loop-schedules-on-issued-accounts):
+	// the loop paces, chooses and scales on them from its first tick,
+	// and Credentials notes each one it is issued into the same store
 	knownPath, err := node.KnownAccountsPath()
 	if err != nil {
 		return err
@@ -481,6 +483,7 @@ func nodeStart(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	loop.Known = known
 	// the node follows the version the platform asks for (adr-002);
 	// --once is one tick, too short for an update to finish
 	if updates != nil && !nodeOnceFlag {

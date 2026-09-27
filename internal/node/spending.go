@@ -145,8 +145,8 @@ func (l *Loop) urgentOnly() int {
 }
 
 // spendable is the accounts the spending order leaves a session: with
-// node.yaml's accounts (none leaves the operator's own login, as it
-// was), an api key at or past its daily or monthly cap is dropped —
+// node.yaml's accounts or known issued ones (neither leaves the
+// operator's own login, as it was), an api key at or past its daily or monthly cap is dropped —
 // the hard stop — and one inside the reserve at the end of its day
 // (UrgentReserve) unless the work is pressing. For an item, once the
 // accounts scaler has counted slots, an account with none free is
@@ -155,7 +155,7 @@ func (l *Loop) urgentOnly() int {
 // A subscription dropped for its slots counts as exhausted, so that
 // ChooseAccount moves waiting work onto an api key.
 func (l *Loop) spendable(accounts []AccountConfig, pressing, item bool) []AccountConfig {
-	if len(l.nodeAccounts()) == 0 {
+	if len(l.scheduled()) == 0 {
 		return accounts
 	}
 	ledger := l.ledger()
