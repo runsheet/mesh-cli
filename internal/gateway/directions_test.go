@@ -128,3 +128,59 @@ func TestDirectionResearchClaimAndRecord(t *testing.T) {
 		t.Fatalf("a refused claim is a refusal, not a failure: %v", err)
 	}
 }
+
+// A direction's mode rides the row (runsheet ADR 022): propose is one
+// whose research only proposes; set, or none, is guarded by the room.
+func TestDirectionsReadTheMode(t *testing.T) {
+	f := gatewaytest.New("rs_test")
+	defer f.Close()
+	f.Directions["d1"] = directionRow("d1", projID, "scout")
+	f.Directions["d1"]["mode"] = "propose"
+	f.Directions["d2"] = directionRow("d2", projID, "overnight")
+	f.Directions["d2"]["mode"] = "set"
+	gw := gateway.New(f.URL(), "rs_test")
+
+	got, err := gw.Directions(context.Background(), orgID, projID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	modes := map[string]gateway.Direction{}
+	for _, d := range got {
+		modes[d.Slug] = d
+	}
+	if d := modes["scout"]; d.Mode != "propose" || !d.Proposes() {
+		t.Fatalf("a propose direction: %+v", d)
+	}
+	if d := modes["overnight"]; d.Mode != "set" || d.Proposes() {
+		t.Fatalf("a set direction: %+v", d)
+	}
+	if (gateway.Direction{}).Proposes() {
+		t.Fatal("a direction with no mode is guarded, not proposing")
+	}
+}
+
+// A platform older than ADR 022 refuses mode: the read falls back to
+// the required fields, still returns the rows — with no mode, so
+// guarded — and stops asking for it.
+func TestDirectionsWithoutModeOnAnOlderPlatform(t *testing.T) {
+	f := gatewaytest.New("rs_test")
+	defer f.Close()
+	f.UnknownFields["mode"] = true
+	f.Directions["d1"] = directionRow("d1", projID, "scout")
+	gw := gateway.New(f.URL(), "rs_test")
+	ctx := context.Background()
+
+	for i := 0; i < 2; i++ {
+		got, err := gw.Directions(ctx, orgID, projID)
+		if err != nil {
+			t.Fatalf("read %d: %v", i, err)
+		}
+		if len(got) != 1 || got[0].ID != "d1" || got[0].Mode != "" || got[0].Proposes() {
+			t.Fatalf("read %d: %+v", i, got)
+		}
+	}
+	// the first read tried mode once; every read after asks without
+	if n := len(f.ReadsNamed("directionIndexs")); n != 3 {
+		t.Fatalf("directionIndexs read %d times, want 3", n)
+	}
+}

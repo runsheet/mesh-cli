@@ -61,8 +61,14 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   hold and `RoomFor` takes the smaller**: the direction's own
   `maxLiveGoals` less the live goals it set (`Goal.DirectionID`), and
   the project's `maxLiveGoals` — its total over every direction, on the
-  autonomy policy beside `replanCap` — less every live goal on it. A
-  direction with no room is not offered at all. Each direction works in
+  autonomy policy beside `replanCap` — less every live goal on it. The
+  guard is by the direction's `mode` (runsheet ADR 022,
+  `Direction.Proposes`): a `set` direction — or one with no mode, as an
+  older platform serves it — with no room is not offered at all, since
+  every goal it set would be dropped; a `propose` direction is offered
+  whatever the room, since its pitches (or proposals) wait for a person
+  and take no live-goal slot, and its session is told the room as
+  information (`ResearchInput.Proposes`). Each direction works in
   its own checkout, `ResearchDir(root, project, direction)`, because two
   of one project may be inside their hours at once.
 - **The drain** (`Loop.Drain`, trd §3 Drain): `SIGUSR1` or `mesh node

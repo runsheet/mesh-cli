@@ -125,7 +125,7 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 	prompt := harness.ResearchPrompt(harness.ResearchInput{
 		Org: scope.Login, Project: project.Slug, Direction: direction.Direction,
 		Repos: dirs, ContextDir: contextDir, ContextFiles: files, Prologue: len(d.MCP) > 0,
-		Goals: existing, Room: room,
+		Goals: existing, Room: room, Proposes: direction.Proposes(),
 	})
 	budget := d.MaxBudgetUSD
 	if budget <= 0 {

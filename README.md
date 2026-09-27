@@ -169,6 +169,14 @@ hours, inside the gap, the direction switched off, another node holding
 it — is the ordinary answer. Two directions of one project take their
 turns on their own hours, without waiting for each other.
 
+A direction's **mode** is its own (runsheet ADR 022). A `set` direction
+turns its proposals into goals up to the room, so a node does not offer
+it while its project or its share is at the ceiling. A `propose`
+direction sets nothing — its pitches wait for a person and take no
+live-goal slot — so it is offered whatever the room, and its session is
+told the room only as information: a pitch that would wait for room says
+so.
+
 ```bash
 mesh node model --research opus   # the session that decides what to build
 mesh node start --research-budget-usd 5

@@ -9,6 +9,7 @@ fromMinute
 gapMinutes
 id
 maxLiveGoals
+mode?
 name
 orgId
 projectId
