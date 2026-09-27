@@ -307,11 +307,14 @@ monthly cap ($50 and $1,000 unless an admin set others) is spent, and a
 session on one is held to what the cap leaves.
 
 **Usage.** Every session — build, evaluation, plan, research, rebase —
-reports one usage record: the account (label, and the platform's
-credential id), input, output and cache tokens, the cost, the plan's
-windows before and after, and when it ran. A platform without the usage
-ledger gets it in the node's log instead, one `usage: {…}` JSON line per
-session.
+reports its usage on the command that ends it (`usage` on
+`finishWorkItem`, `evaluateWorkItem`, `planGoal`,
+`finishWorkItemRebase` or `recordDirectionResearch`): the platform's
+credential id and its kind, input, output and cache tokens, tool calls,
+wall time, the list cost in cents (and the actual cost, on an API key),
+and the plan's windows before and after. A platform whose finishing
+command takes no `usage`, and a session that ends in a failure, leave it
+in the node's log instead, one `usage: {…}` JSON line per session.
 `mesh node start` refuses an account whose token file or variable
 cannot be read.
 
@@ -816,12 +819,12 @@ the session is redacted of the values.
 reported by what the session used of it: the node counts the session's
 calls per MCP server from its stream (Claude Code's `tool_use` blocks
 named `mcp__<name>__…`, Codex's `mcp_tool_call` items) and, after a
-build or evaluation, hands the platform one usage record per priced tool
-called — the item, the session's kind, the tool, the calls and their
-list price in cents (calls × price) — through `recordUsage`, beside the
-session's own usage record. Unpriced tools and Prologue report nothing.
-A platform without `recordUsage` gets none: the node says so once per
-run, logs each record instead, and the item goes on.
+build or evaluation, hands the platform one `recordToolUsage` per call
+of a priced tool — the item, the call's id, the tool, and the session's
+usage report at the tool's price per call — beside the session's own
+report on its finish. Unpriced tools and Prologue report nothing.
+A platform without `recordToolUsage` gets none: the node says so once
+per run, logs each call instead, and the item goes on.
 
 A platform that does not hand out `tools` yet costs nothing: sessions
 run on Prologue alone, as before.

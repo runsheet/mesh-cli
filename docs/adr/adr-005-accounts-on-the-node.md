@@ -1,5 +1,5 @@
 ---
-summary: A node's sessions run on the Claude accounts the platform issues the claimed session (the claim-time read: itemCredentials, planCredentials, researchCredentials; an api key at its cap never chosen), with node.yaml's `accounts:` ({label, kind subscription|api, token_file|api_key_env}) the fallback, and every session hands in a usage record (recordSessionUsage, else one log line); the secret reaches the session in its environment only (CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY), with a temporary CLAUDE_CONFIG_DIR per session removed after, the inherited auth variables stripped, and the secret redacted from every log, error and report; each session runs on the account ChooseAccount picks by headroom and the spending order (subscriptions first, API only for urgent/high work or when subscriptions are stopped and work waits), and no account with headroom means no claim.
+summary: A node's sessions run on the Claude accounts the platform issues the claimed session (the claim-time read: itemCredentials, planCredentials, researchCredentials; an api key at its cap never chosen), with node.yaml's `accounts:` ({label, kind subscription|api, token_file|api_key_env}) the fallback, and every session's usage report rides the command that ends it (`usage` on finishWorkItem, evaluateWorkItem, planGoal, finishWorkItemRebase, recordDirectionResearch; each priced tool call on recordToolUsage; else one log line); the secret reaches the session in its environment only (CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY), with a temporary CLAUDE_CONFIG_DIR per session removed after, the inherited auth variables stripped, and the secret redacted from every log, error and report; each session runs on the account ChooseAccount picks by headroom and the spending order (subscriptions first, API only for urgent/high work or when subscriptions are stopped and work waits), and no account with headroom means no claim.
 status: accepted
 ---
 
@@ -177,35 +177,57 @@ this section describes them.
   without a restart. A refusal is an error, as for the GitHub token:
   a session the platform will not credential does not run on the
   node's own accounts instead.
-- **A usage record per session.** Every build, evaluation, plan,
-  research and rebase session, however it ended, hands in one record
-  (`SessionAccount.Finish`):
-
-  ```graphql
-  mutation($in: RecordSessionUsageInput!) { recordSessionUsage(input: $in) { status } }
-  ```
-
-  with `in` = `{namespace, kind, workItemId?, goalId?, directionId?,
-  nodeId, sessionId, credentialId?, credentialLabel, credentialKind,
-  model, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens,
-  costUsd, before?, after?, startedAt, endedAt}`. `credentialId` is
-  the platform's credential (empty for a node.yaml account);
-  `credentialLabel` is the label the limits are kept under (`default`
-  for the operator's own login). The tokens are the stream-json result
-  event's `usage` (`harness.Result.Usage`): `inputTokens` counts every
-  input token, the cache reads and writes included, which are also
-  given on their own. `before` and `after` are `{fiveHour, sevenDay}`,
-  each `{utilization, resetsAt}` — the account's latest reading when
-  the session opened, and the session's own last `rate_limit_event`
-  (else the latest reading) when it ended; a window never read is
-  left out. The record carries no secret.
-- **The log is the ledger's fallback.** Against a platform without
-  `recordSessionUsage` the record is written to the node's log as one
-  line, `usage: {…}` — the same fields as JSON — and the first of a run
-  says `usage: the platform keeps no usage ledger; each session's
-  record is logged here instead (said once, for every session this
-  run)`. A record the platform refuses is logged the same way, with the
-  error.
+- **A usage report per session, on the command that ends it.** Every
+  build, evaluation, plan, research and rebase session carries one
+  report (`SessionAccount.Report`, runsheet trd §6a, ADR 018 (e)(f),
+  ADR 019) as the optional `usage: UsageReportInput` of its finishing
+  command: `finishWorkItem` (a build, built or already done),
+  `evaluateWorkItem`, `planGoal`, `finishWorkItemRebase` and
+  `recordDirectionResearch` (the empty hand-in of an unreadable session
+  too). The report (`gateway.UsageReport`) is `{sessionId, adapter
+  (claude-code|codex), model, credentialId?, credentialKind
+  (subscription|api|unset), inputTokens, outputTokens,
+  cacheReadTokens, cacheWriteTokens, toolCalls, wallMs, listCostCents,
+  actualCostCents, fiveHourBefore?, fiveHourAfter?, sevenDayBefore?,
+  sevenDayAfter?, fiveHourResetsAtBefore?, fiveHourResetsAtAfter?,
+  sevenDayResetsAtBefore?, sevenDayResetsAtAfter?}`. `credentialId` is
+  the id the claim-time read handed the session, left out for a
+  node.yaml account or the operator's own login (`unset` then when it
+  has no kind). The tokens are the stream's result `usage`
+  (`harness.Result.Usage`): `inputTokens` counts every input token, the
+  cache reads and writes included, which are also given on their own.
+  `listCostCents` is the session's `total_cost_usd` in cents;
+  `actualCostCents` the same on an api credential and 0 on a
+  subscription. The windows are utilizations (0..1), each reset on its
+  own field: before is the account's latest reading when the session
+  opened, after the session's own last `rate_limit_event` (else the
+  latest reading) when it ended; a window never read is left out. One
+  command, one report: an evaluation whose Codex second opinion ran
+  adds Codex's tokens and cost into it (as its `costCents` already
+  sums them), and a plan asked twice hands in both sessions' in one.
+  The report carries no secret.
+- **Priced tool calls go to `recordToolUsage`.** For each call of a tool
+  rendered for a build or evaluation with `pricePerCallCents > 0`,
+  `Finish` sends `recordToolUsage {aggregateId: the item, toolCallId,
+  tool, usage}` — the call's id from the stream
+  (`Result.ToolCallIDs`), the usage a copy of the session's report with
+  `listCostCents` the tool's price per call, `actualCostCents` 0 and no
+  tokens. Prologue and unpriced tools send none. A platform without the
+  mutation is said once per run and each call logged; a failed record
+  is logged, never the item's failure.
+- **The log is the fallback.** `SessionAccount.Finish` is each
+  session's once-per-session end. A report its finishing command did
+  not carry is written to the node's log as one line, `usage: {…}` —
+  the report as JSON: against a platform whose command has no `usage`
+  field (`gateway.ErrNoUsageLedger`: the command lands without it) the
+  first of a run says `usage: the platform's finishing command takes no
+  usage report; each session's record is logged here instead (said
+  once, for every session this run)`; a session that ends another way —
+  `failWorkItem`, `failWorkItemRebase`, a plan or research error, a
+  finish the platform refused — has nowhere to carry it, and is logged
+  without that line: the session spent, and its record must exist
+  somewhere. An adopted session (ADR-009) has no account in the new
+  process and carries none.
 - **Channel mode's builds** keep the operator's login and send no
   record: the channel session is one long session per org, not a
   session per item. Its evaluations, plans, research and rebases are
@@ -230,6 +252,17 @@ this section describes them.
   Claude tiers to Codex models (`CodexConfig.CodexModel`). Codex has no
   budget flag, so `MaxBudgetUSD` is not enforced for a Codex session.
 
+*Amended 2026-09-27 (goal `node-reports-usage-on-the-finish`):* until
+this date the node handed each session's record to a
+`recordSessionUsage(input: RecordSessionUsageInput!)` mutation, and each
+priced tool's calls to `recordUsage`. Neither was a field a node may
+call: `recordSessionUsage` never existed on runsheet's gateway and
+`recordUsage` is RegisterPlatformOnly, so every session logged "the
+platform keeps no usage ledger" and the ledger saw nothing from the
+node. The platform's ledger takes the report on the finishing command
+and each paid call on `recordToolUsage`, as above; both old mutations
+and their client methods are gone.
+
 ## Consequences
 
 - Several Max subscriptions work on one node from node.yaml before the
@@ -243,8 +276,9 @@ this section describes them.
   not failed. Choosing among the issued credentials before the claim
   is a later step.
 - The usage ledger sees every one-shot session's tokens, cost and
-  windows whether or not the platform keeps it yet; until it does, the
-  node's log is the record.
+  windows on the command that ends it; a platform without the `usage`
+  field, and a session that ends in a failure, leave the record in the
+  node's log.
 - A node with two Max accounts runs on the emptier one and moves to the
   other as the first fills; money is spent on an API key only where the
   spending order allows it. When the platform's claim-time read lands

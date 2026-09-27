@@ -229,10 +229,14 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   loop's own rule (`withChooser`); an api key at its cap is never
   chosen, and none left releases a build. A platform without the read
   or issuing none leaves node.yaml, said once per run. At the end
-  `SessionAccount.Finish` hands in the session's usage record
-  (`RecordSessionUsage`: credential, tokens, cost, windows before and
-  after), or logs it as one `usage: {…}` line on a platform without
-  the ledger.
+  the session's `SessionAccount.Report` (`gateway.UsageReport`:
+  credential id and kind, tokens, tool calls, wall time, list and
+  actual cents, windows before and after) rides its finishing command
+  as `usage` — `FinishWorkItem`/`FinishWorkItemAlreadyDone`,
+  `EvaluateWorkItem` (the Codex second opinion folded in), `PlanGoal`,
+  `FinishWorkItemRebase`, `RecordDirectionResearch` — and
+  `SessionAccount.Finish` logs it as one `usage: {…}` line when nothing
+  carried it (a fail path, or `ErrNoUsageLedger`, said once per run).
 - **Codex** (`internal/harness/codex.go`, goal `codex-adapter`): the
   `codex` harness, `codex exec --json --sandbox workspace-write` in the
   workspace, the prompt on stdin, the stream read by
@@ -348,13 +352,14 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   Priced tool calls are tool usage records: the harness counts each
   session's MCP calls per server (`Result.ToolCalls` — Claude's
   `tool_use` named `mcp__<server>__…`, Codex's completed
-  `mcp_tool_call`), and after a build or evaluate session
-  `SessionAccount.Finish` hands in one `RecordUsage`
-  (`gateway.ToolUsage{ItemID, Kind, Tool, Calls, ListPriceCents}`,
-  mutation `recordUsage`) per rendered tool with `pricePerCallCents > 0`
-  that was called — calls × price; Prologue and unpriced tools are none.
-  A platform without `recordUsage` is said once per run and each record
-  logged instead; it never fails the item.
+  `mcp_tool_call`, each call's id on `Result.ToolCallIDs`), and after a
+  build or evaluate session `SessionAccount.Finish` sends one
+  `RecordToolUsage(itemID, toolCallId, tool, report)` (mutation
+  `recordToolUsage`) per call of a rendered tool with
+  `pricePerCallCents > 0` — the session's report at the tool's price,
+  no tokens, no actual cost; Prologue and unpriced tools are none.
+  A platform without `recordToolUsage` is said once per run and each
+  call logged instead; it never fails the item.
 - **Models are per kind of session.** `Models` in `~/.mesh/node.yaml`
   (`default`, `build`, `evaluate`, `plan`, `channel`, `research`,
   `rebase`) or the matching
