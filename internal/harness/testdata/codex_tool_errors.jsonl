@@ -1,0 +1,4 @@
+{"type":"thread.started","thread_id":"th-errors"}
+{"type":"item.started","item":{"id":"i1","type":"mcp_tool_call","server":"brave","tool":"search","status":"in_progress"}}
+{"type":"item.completed","item":{"id":"i1","type":"mcp_tool_call","server":"brave","tool":"search","status":"failed"}}
+{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}

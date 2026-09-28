@@ -105,6 +105,20 @@ on `harness.Result.ToolCallIDs[server]` in call order, alongside its
 count on `ToolCalls[server]`, for `recordToolUsage`'s `toolCallId`; an
 item with no id gets one synthesised (`<sessionId>:<server>:<n>`).
 
+**Errors and wall time land on `Result.Tools[server]`** (a
+`harness.ToolStat`), read from `Result.ToolReport()`: `item.started`
+opens the clock for the call (keyed on its id, falling back to the
+server when the item carries none) and `item.completed` closes it,
+adding the elapsed time to `Wall`. The call is counted on `Calls`
+whatever its `status` — `in_progress`/`completed`/`failed`/`declined`,
+as `command_execution` uses them too, since only `completed` has been
+seen for `mcp_tool_call` items so far — but a `status` of `failed`
+also counts an `Errors` and, when it is the server's first, keeps the
+status string as `FirstError` (capped at 300 characters). No
+`item.started` before the matching `item.completed` (the fixtures
+here never miss one, but a real stream might) leaves that call's own
+share of `Wall` at zero.
+
 **No event names the model.** The model shows up only in Codex's own
 state (`$CODEX_HOME/state_5.sqlite`, the session file under
 `$CODEX_HOME/sessions/`). So `ParseCodexStream` takes the model the
