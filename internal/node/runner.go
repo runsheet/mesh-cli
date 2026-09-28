@@ -99,6 +99,10 @@ type Runner struct {
 	// limits kill it (Loop.NoteCondition, the heartbeat's reason); nil
 	// tells no one.
 	Condition func(reason string)
+	// Budgets is node.yaml's `budgets:` in force, read live (ADR 012,
+	// Loop.KindModelBudget); nil falls back to Cfg's own, read once at
+	// start.
+	Budgets func(kind, model string) (amount float64, source string)
 	// Sandbox, when set, runs the session in its own pod with the
 	// services its checkout declares started beside it (ADR 007); nil is
 	// `sandbox: off`, no services.
@@ -150,21 +154,28 @@ func (r *Runner) logf(format string, args ...any) {
 	}
 }
 
-// Budget is the session's cap: the goal's remaining budget in dollars,
-// capped by MaxBudgetUSD (either 0 means "the other one").
-func (r *Runner) Budget(goal *gateway.Goal) float64 {
-	remaining := 0.0
-	if goal.BudgetCents > 0 {
-		remaining = math.Max(0, float64(goal.BudgetCents-goal.SpentCents)/100)
+// kindModelBudget is node.yaml's budgets: figure for kind and model —
+// live, through r.Budgets, when set; else Cfg's own, read once at start.
+func (r *Runner) kindModelBudget(kind, model string) (float64, string) {
+	if r.Budgets != nil {
+		return r.Budgets(kind, model)
 	}
-	switch {
-	case remaining > 0 && r.MaxBudgetUSD > 0:
-		return math.Min(remaining, r.MaxBudgetUSD)
-	case remaining > 0:
-		return remaining
-	default:
-		return r.MaxBudgetUSD
-	}
+	return r.Cfg.KindModelBudget(kind, model)
+}
+
+// budgetWithSource is Budget with where the figure came from, for the
+// session's starting log line.
+func (r *Runner) budgetWithSource(goal *gateway.Goal, kind, model string) (float64, string) {
+	kindBudget, kindSource := r.kindModelBudget(kind, model)
+	return SessionBudget(kindBudget, kindSource, goal, r.MaxBudgetUSD)
+}
+
+// Budget is the session's cap (ADR 012): the smallest of the goal's
+// remaining budget, node.yaml's budgets: figure for kind and model, and
+// MaxBudgetUSD (0 in any of these means "the other one" wins).
+func (r *Runner) Budget(goal *gateway.Goal, kind, model string) float64 {
+	amount, _ := r.budgetWithSource(goal, kind, model)
+	return amount
 }
 
 // costReporter turns cumulative dollars into the cents-since-last-report
@@ -240,7 +251,8 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	}
 
 	model := BuildModel(ctx, r.GW, item, r.Model)
-	r.logf("item %s: build on %s", label, modelName(model))
+	budget, budgetSource := r.budgetWithSource(res.Goal, "build", model)
+	r.logf("item %s: build on %s, budget $%.2f (%s)", label, modelName(model), budget, budgetSource)
 
 	mcp := r.mcp(ctx)
 	in := harness.PromptInput{
@@ -249,7 +261,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		Repo: res.Repo.FullName(), Branch: spec.Branch, BaseRef: spec.BaseRef, ContextDir: contextDir, ContextFiles: files,
 		Attempts: item.Attempts, Evaluation: item.Evaluation, Project: orgLogin + "/" + res.Project.Slug, Prologue: len(mcp) > 0,
 	}
-	job := harness.Job{Kind: harness.KindBuild, Workspace: dir, MaxBudgetUSD: r.Budget(res.Goal), Label: label, MCPServers: mcp, Model: model}
+	job := harness.Job{Kind: harness.KindBuild, Workspace: dir, MaxBudgetUSD: budget, Label: label, MCPServers: mcp, Model: model}
 	if tok := cred.Token(); tok != nil {
 		ghDir, err := NewGHConfigDir()
 		if err != nil {

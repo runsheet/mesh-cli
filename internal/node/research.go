@@ -40,6 +40,10 @@ type Director struct {
 	MCP map[string]any
 	// MaxBudgetUSD caps the research session (5 by default).
 	MaxBudgetUSD float64
+	// Budgets is node.yaml's `budgets:` in force, read live (ADR 012,
+	// Loop.KindModelBudget); nil falls back to Cfg's own, read once at
+	// start.
+	Budgets func(kind, model string) (amount float64, source string)
 	// Model is what a research session runs on ("" the CLI's default).
 	Model string
 	// Accounts are the node's Claude accounts (node.yaml); a session runs
@@ -62,6 +66,26 @@ func (d *Director) logf(format string, args ...any) {
 	if d.Log != nil {
 		d.Log.Printf(format, args...)
 	}
+}
+
+// kindModelBudget is node.yaml's budgets: figure for kind and model —
+// live, through d.Budgets, when set; else Cfg's own, read once at start.
+func (d *Director) kindModelBudget(kind, model string) (float64, string) {
+	if d.Budgets != nil {
+		return d.Budgets(kind, model)
+	}
+	return d.Cfg.KindModelBudget(kind, model)
+}
+
+// budgetWithSource is the research session's cost cap (ADR 012) and
+// where it came from, for the session's starting log line.
+func (d *Director) budgetWithSource() (float64, string) {
+	kindBudget, kindSource := d.kindModelBudget("research", d.Model)
+	fallback := d.MaxBudgetUSD
+	if fallback <= 0 {
+		fallback = 5
+	}
+	return SessionBudget(kindBudget, kindSource, nil, fallback)
 }
 
 // ResearchDir is where one direction's research session works:
@@ -138,10 +162,7 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 		Repos: dirs, ContextDir: contextDir, ContextFiles: files, Prologue: len(d.MCP) > 0,
 		Goals: existing, Room: room, Proposes: direction.Proposes(),
 	})
-	budget := d.MaxBudgetUSD
-	if budget <= 0 {
-		budget = 5
-	}
+	budget, budgetSource := d.budgetWithSource()
 	job := harness.Job{
 		Kind: harness.KindResearch, Workspace: dir, Prompt: prompt, MaxBudgetUSD: budget,
 		Label: project.Slug + "/" + direction.Slug + " research", Timeout: d.Timeout, MCPServers: d.MCP, Model: d.Model,
@@ -153,7 +174,7 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 	defer unlessDetached(ctx, acct.Cleanup)
 	acct.Apply(&job)
 	job.Meta = harness.SessionMeta{NodeID: scope.NodeID, DirectionID: direction.ID, TempDirs: sessionTempDirs(job, acct)}
-	d.logf("%s/%s: researching in %s (%d repos, room for %d)", project.Slug, direction.Slug, dir, len(dirs), room)
+	d.logf("%s/%s: researching in %s (%d repos, room for %d), budget $%.2f (%s)", project.Slug, direction.Slug, dir, len(dirs), room, budget, budgetSource)
 	// the session outlives this process: a restart adopts it (ADR 009)
 	job.Outlive = true
 	result, err := d.Harness.Run(ctx, job, nil)

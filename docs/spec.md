@@ -170,3 +170,18 @@ section for the full contract.
 - connector remains focused on gateway integration
 - writes are auditable and actor-attributed
 - Ralph Loop operations become scriptable and repeatable
+
+## Node session budgets
+
+A node's session budget is capped per kind of session (build, evaluate,
+plan, rebase, research) and then per the model tier it runs on. Set in
+`~/.mesh/node.yaml`'s `budgets:` (`docs/adr/adr-012-session-budgets-by-kind-and-model.md`);
+a kind or tier left unset takes its default — only `build` has one:
+
+```yaml
+budgets:
+  build:
+    haiku: 2
+    sonnet: 4
+    opus: 10
+```

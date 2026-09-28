@@ -46,6 +46,20 @@ func (l *Loop) projectBudgets() map[string]float64 {
 	return l.Cfg.ProjectBudgets
 }
 
+// sessionBudgets are node.yaml's per-kind, per-model session budgets in
+// force (ADR 012): as last reloaded, else Cfg's.
+func (l *Loop) sessionBudgets() map[string]map[string]float64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.spendingSet {
+		return l.spending.Budgets
+	}
+	if l.Cfg == nil {
+		return nil
+	}
+	return l.Cfg.Budgets
+}
+
 // ledger is Ledger, made in memory on first use.
 func (l *Loop) ledger() *Ledger {
 	l.mu.Lock()
