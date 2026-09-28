@@ -97,6 +97,24 @@ func (a AccountConfig) AdapterOf() string {
 // IsCodex says the account is a Codex one.
 func (a AccountConfig) IsCodex() bool { return a.Adapter == AdapterCodex }
 
+// CodexOwnAccount is the Codex harness's own account (node.yaml's
+// codex: account, or the operator's own Codex login) as an account an
+// evaluation is chosen onto: its name (DefaultAccount when none), the
+// label its readings are kept under (CodexLimitsAccount), a ChatGPT
+// login a subscription and a key an api account. It has no ID: its
+// session is opened by the harness, not by an issued credential.
+func CodexOwnAccount(a harness.CodexAccount) AccountConfig {
+	label := a.Name
+	if label == "" {
+		label = DefaultAccount
+	}
+	kind := AccountSubscription
+	if a.IsAPIKey() {
+		kind = AccountAPI
+	}
+	return AccountConfig{Label: label, Kind: kind, Adapter: AdapterCodex}
+}
+
 // ValidateAccounts refuses a list the node could not run sessions on:
 // a label missing or used twice, a kind it does not know, a
 // subscription with no token_file, an api account with no api_key_env.

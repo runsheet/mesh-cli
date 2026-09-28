@@ -175,9 +175,11 @@ codex:
 			t.Errorf("CodexModel(%q) = %q, want %q", in, got, want)
 		}
 	}
-	// a tier with no mapping is Codex's default
-	if got := (CodexConfig{Models: CodexModels{Opus: "gpt-6-astra"}}).CodexModel("sonnet"); got != "" {
-		t.Errorf("an unmapped tier gave %q", got)
+	// a tier with no mapping takes its default: astra, sol, luna
+	for in, want := range map[string]string{"opus": "gpt-6-o", "sonnet": "gpt-6-sol", "haiku": "gpt-6-luna", "": ""} {
+		if got := (CodexConfig{Models: CodexModels{Opus: "gpt-6-o"}}).CodexModel(in); got != want {
+			t.Errorf("CodexModel(%q) with only opus mapped = %q, want %q", in, got, want)
+		}
 	}
 }
 
