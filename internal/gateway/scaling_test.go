@@ -38,8 +38,10 @@ func TestHeartbeatCarriesScaling(t *testing.T) {
 			t.Fatalf("scaling.%s = %#v, want %#v", k, s[k], want)
 		}
 	}
-	if len(s) != 4 {
-		t.Fatalf("scaling = %#v, want the four fields only", s)
+	// accounts rides as an empty list when the node names none: the
+	// platform's nested input is non-null (2026-09-28)
+	if accts, ok := s["accounts"].([]any); len(s) != 5 || !ok || len(accts) != 0 {
+		t.Fatalf("scaling = %#v, want the four fields and accounts: []", s)
 	}
 }
 
