@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"strings"
+	"time"
 )
 
 // CodexEvent is one line of `codex exec --json` (codex-cli 0.157.0,
@@ -107,7 +108,11 @@ func (p CodexPrice) Cost(u CodexUsage) float64 {
 // stream carries no plan limits (docs/codex-events.md), so RateLimit
 // stays nil. Each completed mcp_tool_call is counted on ToolCalls by
 // its server, its item id (empty ones synthesised) kept on
-// ToolCallIDs. Lines that are not JSON and unknown types are skipped.
+// ToolCallIDs, and on Result.Tools: its wall time is item.started to
+// item.completed, and a completed status of "failed" counts an error,
+// its status kept as the server's FirstError — the call still counts
+// on ToolCalls and Tools whatever its status. Lines that are not JSON
+// and unknown types are skipped.
 func ParseCodexStream(r io.Reader, model string, onEvent func(CodexEvent)) Result {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 16<<20)
@@ -115,6 +120,7 @@ func ParseCodexStream(r io.Reader, model string, onEvent func(CodexEvent)) Resul
 	var usage *CodexUsage
 	completed, failed := false, false
 	events := 0
+	pending := map[string]time.Time{}
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		if line == "" || line[0] != '{' {
@@ -130,12 +136,37 @@ func ParseCodexStream(r io.Reader, model string, onEvent func(CodexEvent)) Resul
 			if ev.ThreadID != "" {
 				res.SessionID = ev.ThreadID
 			}
+		case "item.started":
+			if ev.Item != nil && ev.Item.Type == "mcp_tool_call" && ev.Item.Server != "" {
+				key := ev.Item.ID
+				if key == "" {
+					key = ev.Item.Server
+				}
+				pending[key] = now()
+			}
 		case "item.completed":
 			if ev.Item == nil {
 				break
 			}
 			if ev.Item.Type == "mcp_tool_call" && ev.Item.Server != "" {
-				res.countToolCall(ev.Item.Server, ev.Item.ID)
+				server := ev.Item.Server
+				res.countToolCall(server, ev.Item.ID)
+				stat := res.toolStat(server)
+				stat.Calls++
+				key := ev.Item.ID
+				if key == "" {
+					key = server
+				}
+				if start, ok := pending[key]; ok {
+					delete(pending, key)
+					stat.Wall += now().Sub(start)
+				}
+				if ev.Item.Status == "failed" {
+					stat.Errors++
+					if stat.FirstError == "" {
+						stat.FirstError = capText(ev.Item.Status, 300)
+					}
+				}
 			}
 			if ev.Item.Type == "agent_message" {
 				if t := strings.TrimSpace(ev.Item.Text); t != "" {
