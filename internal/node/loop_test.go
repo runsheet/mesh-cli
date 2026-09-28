@@ -172,8 +172,10 @@ type fakeHarness struct {
 	// texts, when set, are the final messages of the next runs in turn,
 	// before text.
 	texts []string
-	// toolCalls are the MCP calls by server a run reports.
+	// toolCalls are the MCP calls by server a run reports; tools, when
+	// set, each server's calls, errors and wall time (Result.Tools).
 	toolCalls map[string]int
+	tools     map[string]*harness.ToolStat
 }
 
 func (h *fakeHarness) Name() string { return "claude-code" }
@@ -206,7 +208,7 @@ func (h *fakeHarness) Run(ctx context.Context, job harness.Job, on func(harness.
 			ids[server] = append(ids[server], fmt.Sprintf("toolu_%s_%d", server, i+1))
 		}
 	}
-	return harness.Result{Success: true, Text: text, CostUSD: 1.25, SessionID: "s-1", ToolCalls: h.toolCalls, ToolCallIDs: ids}, nil
+	return harness.Result{Success: true, Text: text, CostUSD: 1.25, SessionID: "s-1", ToolCalls: h.toolCalls, ToolCallIDs: ids, Tools: h.tools}, nil
 }
 
 func TestLoopClaimsRunsAndFinishes(t *testing.T) {
@@ -282,8 +284,8 @@ func TestLoopClaimsRunsAndFinishes(t *testing.T) {
 			t.Fatalf("index lacks %q:\n%s", want, index)
 		}
 	}
-	// no MCP on this runner: no Prologue rule in the prompt
-	if strings.Contains(h.jobs[0].Prompt, "prologue_document") || h.jobs[0].MCPServers != nil {
+	// no MCP on this runner: no context rule in the prompt
+	if strings.Contains(h.jobs[0].Prompt, "mesh_document") || h.jobs[0].MCPServers != nil {
 		t.Fatal("no MCP server was given, none should be promised")
 	}
 	// no goal document on the item's branch: not committed, not written
@@ -568,9 +570,9 @@ func TestRunnerAsksForItsMCPServersPerItem(t *testing.T) {
 			t.Fatalf("job %d Authorization = %q, want %q (MCP must not be the map from node start)", i, headers["Authorization"], want)
 		}
 	}
-	// the prompt promises Prologue because MCPFunc gave a server
-	if !strings.Contains(h.jobs[0].Prompt, "prologue_document") {
-		t.Fatal("a session with Prologue must be told about it")
+	// the prompt promises mesh-context because MCPFunc gave a server
+	if !strings.Contains(h.jobs[0].Prompt, "mesh_document") {
+		t.Fatal("a session with mesh-context must be told about it")
 	}
 }
 

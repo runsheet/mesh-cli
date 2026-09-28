@@ -2,7 +2,7 @@
 
 The operator tool for Mesh. `mesh node start` makes this machine a node of
 the runsheet platform: it speaks to the gateway (`api.runsheet.dev/graphql`,
-`/prologue/v1`, `/mcp`) on the credential in `~/.mesh/token` — the Latchkey
+`/mesh/v1`, `/mcp`) on the credential in `~/.mesh/token` — the Latchkey
 machine credential `mesh node login` registers for this computer, or the
 operator's `rs_*` console token — claims work items, builds each in a fresh `claude -p`
 session, evaluates it in a second, plans goals in a third. The platform
@@ -34,7 +34,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   credential — Latchkey's device flow, the rotating refresh grant, and
   the `~/.mesh/token` that holds either shape behind one `TokenSource`
   (latchkey `adr-machine-identity`).
-- `internal/node/`: the loop (`runner`), the workspace and Prologue
+- `internal/node/`: the loop (`runner`), the workspace and the project's
   context (`workspace.go`: `FetchContext`, `RenderIndex`, the size budget),
   evaluate, plan and research sessions, the service install (`launchd` /
   `systemd --user`). `internal/gateway/client.go`: the platform client.
@@ -447,6 +447,13 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   no tokens, no actual cost; Prologue and unpriced tools are none.
   A platform without `recordToolUsage` is said once per run and each
   call logged instead; it never fails the item.
+  Every server's calls, errors and ms (`Result.ToolReport()`) ride the
+  usage report as `tools` beside the total (`SessionAccount.Add` merges
+  carried sessions' rows); a platform without the field gets it resent
+  without (`ErrNoToolUsage`, said once, the list logged). A served
+  console tool never called, or whose first call errored, is named by
+  `SessionTools.UseNote` — a build's progress note, the evaluation's
+  notes, a plan's or research's log line (ADR-006 amendment 2026-09-28).
 - **Models are per kind of session.** `Models` in `~/.mesh/node.yaml`
   (`default`, `build`, `evaluate`, `plan`, `channel`, `research`,
   `rebase`) or the matching
