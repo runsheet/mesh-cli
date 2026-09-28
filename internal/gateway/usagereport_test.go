@@ -315,3 +315,63 @@ func TestFakeRefusesTheOldUsageMutations(t *testing.T) {
 		t.Fatalf("calls: %+v", f.Calls)
 	}
 }
+
+// A tools entry's error rides the usage report when the gateway's
+// UsageReportInput takes it, and is stripped when it does not: the
+// report lands first time either way, with the list, and never goes to
+// the no-tools resend (ErrNoToolUsage). The schema is asked once.
+func TestUsageReportToolErrorFollowsTheSchema(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		noToolError bool
+		wantError   bool
+	}{
+		{"takes error", false, true},
+		{"no error field", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := gatewaytest.New("rs_test")
+			defer f.Close()
+			f.NoToolError = tc.noToolError
+			runningItem(f)
+			gw := gateway.New(f.URL(), "rs_test")
+			for range 2 {
+				u := sampleUsageReport()
+				u.Tools[0].Error = "tool call failed: 401 Unauthorized"
+				if err := gw.EvaluateWorkItem(context.Background(), finishItem, true, "looks good", 30, u); err != nil {
+					t.Fatalf("err = %v, want nil (no ErrNoToolUsage)", err)
+				}
+			}
+			calls := f.CallsNamed("evaluateWorkItem")
+			if len(calls) != 2 {
+				t.Fatalf("calls = %+v, want each landed first time", calls)
+			}
+			for _, c := range calls {
+				usage, _ := c.Input["usage"].(map[string]any)
+				assertToolsRow(t, usage)
+				row := usage["tools"].([]any)[0].(map[string]any)
+				got, has := row["error"]
+				if has != tc.wantError || (has && got != "tool call failed: 401 Unauthorized") {
+					t.Fatalf("tools row = %#v, want error sent: %v", row, tc.wantError)
+				}
+			}
+			if n := len(f.ReadsNamed("__type UsageReportInput")); n != 1 {
+				t.Fatalf("schema probed %d times, want once", n)
+			}
+		})
+	}
+}
+
+// A report whose tools carry no error asks the schema nothing.
+func TestUsageReportWithoutToolErrorProbesNothing(t *testing.T) {
+	f := gatewaytest.New("rs_test")
+	defer f.Close()
+	runningItem(f)
+	gw := gateway.New(f.URL(), "rs_test")
+	if err := gw.EvaluateWorkItem(context.Background(), finishItem, true, "ok", 30, sampleUsageReport()); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(f.ReadsNamed("__type UsageReportInput")); n != 0 {
+		t.Fatalf("schema probed %d times, want none", n)
+	}
+}
