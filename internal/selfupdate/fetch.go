@@ -9,9 +9,10 @@ import (
 	"net/url"
 )
 
-// ReleaseBaseURL is where tag releases are downloaded from; the version and
-// the asset name follow it.
-const ReleaseBaseURL = "https://github.com/runsheet/mesh-cli/releases/download/"
+// ReleaseBaseURL is where tag releases are downloaded from: the public
+// mirror runsheet/mesh, anonymous, no token; the version and the asset name
+// follow it.
+const ReleaseBaseURL = "https://github.com/runsheet/mesh/releases/download/"
 
 // The release's signed files, beside the binaries (adr-002).
 const (
@@ -33,7 +34,8 @@ type Source interface {
 	Asset(ctx context.Context, version, name string) ([]byte, error)
 }
 
-// GitHub is the Source of tag releases on runsheet/mesh-cli.
+// GitHub is the Source of the mirror's releases: runsheet/mesh, the public
+// download channel for tags signed on runsheet/mesh-cli.
 type GitHub struct {
 	// Client makes the requests; nil is http.DefaultClient. Tests give it
 	// a Transport that never touches the network.
@@ -67,9 +69,7 @@ func (g GitHub) Asset(ctx context.Context, version, name string) ([]byte, error)
 	defer resp.Body.Close()
 	switch {
 	case resp.StatusCode == http.StatusNotFound:
-		// GitHub answers 404 for a private repo's assets too (ADR-002),
-		// so the reason says both.
-		return nil, refuse(ErrMissingAsset, nil, "release %s has no %s on GitHub (404: missing, or the repo is private)", version, name)
+		return nil, refuse(ErrMissingAsset, nil, "release %s has no %s on runsheet/mesh (404: not published there, or not a signed release)", version, name)
 	case resp.StatusCode != http.StatusOK:
 		return nil, fmt.Errorf("download %s: %s", name, resp.Status)
 	}
