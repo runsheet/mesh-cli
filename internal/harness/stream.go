@@ -23,7 +23,11 @@ type Event struct {
 	// Usage is the session's token counts on the result event.
 	Usage   *streamUsage `json:"usage"`
 	Message *struct {
-		Role    string `json:"role"`
+		Role string `json:"role"`
+		// ID is the assistant message's own id (msg_…): the CLI can send
+		// more than one event for the same message (a content block
+		// each), so ParseStream counts a turn once per id, not per event.
+		ID      string `json:"id"`
 		Content []struct {
 			Type string `json:"type"`
 			Text string `json:"text"`
@@ -41,6 +45,9 @@ type Event struct {
 			// toolResultText.
 			ResultContent json.RawMessage `json:"content"`
 		} `json:"content"`
+		// Usage is an assistant event's own turn's token counts (its
+		// share, not the session's running total).
+		Usage *streamUsage `json:"usage"`
 	} `json:"message"`
 	// RateLimitInfo is the account's plan standing on a
 	// rate_limit_event (see RateLimit).
@@ -167,6 +174,16 @@ func capText(s string, n int) string {
 // 300 chars) kept as the server's FirstError. A system/init event's
 // mcp_servers names each server whose status is not "connected" as an
 // error too, that status as FirstError, even with zero calls.
+//
+// Every assistant event's own message.usage (input + cache_read +
+// cache_creation) is that turn's input tokens, counted once per
+// message.id (more than one event can carry the same id — a content
+// block each — and only the first counts the turn); Result.InputPerTurnMean
+// and InputPerTurnMax are computed across every turn that carried one.
+// Every tool_result block's content (toolResultText) keeps its byte
+// length among Result.LargestToolResults, by the matching tool_use
+// block's own name (Bash, mcp__server__tool, …) — the five largest,
+// largest first.
 func ParseStream(r io.Reader, onEvent func(Event)) Result {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 16<<20)
@@ -174,6 +191,10 @@ func ParseStream(r io.Reader, onEvent func(Event)) Result {
 	var lastText, model string
 	sawResult := false
 	events := 0
+	var turnInputSum, turnInputMax int64
+	turnCount := 0
+	seenTurnIDs := map[string]bool{}
+	toolUseNames := map[string]string{}
 	type pendingCall struct {
 		server string
 		start  time.Time
@@ -212,9 +233,23 @@ func ParseStream(r io.Reader, onEvent func(Event)) Result {
 				lastText = t
 			}
 			if ev.Message != nil {
+				if u := ev.Message.Usage; u != nil && !(ev.Message.ID != "" && seenTurnIDs[ev.Message.ID]) {
+					if ev.Message.ID != "" {
+						seenTurnIDs[ev.Message.ID] = true
+					}
+					turnCount++
+					turn := u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens
+					turnInputSum += turn
+					if turn > turnInputMax {
+						turnInputMax = turn
+					}
+				}
 				for _, c := range ev.Message.Content {
 					if c.Type != "tool_use" {
 						continue
+					}
+					if c.ID != "" {
+						toolUseNames[c.ID] = c.Name
 					}
 					if server := MCPServer(c.Name); server != "" {
 						id := res.countToolCall(server, c.ID)
@@ -230,6 +265,10 @@ func ParseStream(r io.Reader, onEvent func(Event)) Result {
 			for _, c := range ev.Message.Content {
 				if c.Type != "tool_result" {
 					continue
+				}
+				if name, ok := toolUseNames[c.ToolUseID]; ok {
+					delete(toolUseNames, c.ToolUseID)
+					res.addToolResultSize(name, len(toolResultText(c.ResultContent)))
 				}
 				pc, ok := pending[c.ToolUseID]
 				if !ok {
@@ -272,6 +311,10 @@ func ParseStream(r io.Reader, onEvent func(Event)) Result {
 	}
 	if res.Usage != nil {
 		res.Usage.Model = model
+	}
+	if turnCount > 0 {
+		res.InputPerTurnMean = turnInputSum / int64(turnCount)
+		res.InputPerTurnMax = turnInputMax
 	}
 	if res.Text == "" {
 		res.Text = lastText

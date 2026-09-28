@@ -216,7 +216,8 @@ this section describes them.
   (claude-code|codex), model, credentialId?, credentialKind
   (subscription|api|unset), inputTokens, outputTokens,
   cacheReadTokens, cacheWriteTokens, toolCalls, wallMs, listCostCents,
-  actualCostCents, fiveHourBefore?, fiveHourAfter?, sevenDayBefore?,
+  actualCostCents, turns?, inputPerTurnMean?, inputPerTurnMax?,
+  largestToolResults?, fiveHourBefore?, fiveHourAfter?, sevenDayBefore?,
   sevenDayAfter?, fiveHourResetsAtBefore?, fiveHourResetsAtAfter?,
   sevenDayResetsAtBefore?, sevenDayResetsAtAfter?}`. `credentialId` is
   the id the claim-time read handed the session, left out for a
@@ -234,15 +235,49 @@ this section describes them.
   adds Codex's tokens and cost into it (as its `costCents` already
   sums them), and a plan asked twice hands in both sessions' in one.
   The report carries no secret.
+- **Per-turn input and the largest tool results**
+  (`mesh-spends-less-per-item`, goal "Mesh spends less per merged
+  item"): `turns` is the session's turn count (a Claude session's
+  result event `num_turns`, a Codex session's count of
+  `turn.completed`s); `inputPerTurnMean` and `inputPerTurnMax` are its
+  per-turn input tokens (each assistant turn's own share — input +
+  cache read + cache creation for Claude, the delta between successive
+  `turn.completed` cumulative totals for Codex), mean and largest
+  across its turns; `largestToolResults` is its five largest tool
+  results by content byte length, largest first, each `{tool, bytes}`
+  (`gateway.ToolResultSize`) — `tool` the tool_use block's own name
+  (`Bash`, `mcp__server__tool`), not just its MCP server. All four are
+  `harness.Result`'s fields of the same names (`ParseStream`,
+  `ParseCodexStream`), left off the report when zero or empty, added
+  into a report more than one session carries (`SessionAccount.Add`:
+  `Turns` and the tool-result list summed/merged, the means recombined
+  weighted by each session's own turn count, the maxes taken). A
+  platform whose `UsageReportInput` has none of these four fields
+  (`unknownField` on one of them, distinct from no `usage` field at
+  all) gets the report again without them: the rest of the usage and
+  the command land, `gateway.ErrNoUsageDetail` says the detail did not,
+  and `Carried` treats it as landed — the once-per-run notice is
+  `usage: the platform's usage report carries no turns or tool-result
+  detail; sent without them (said once, for every session this run)`.
+  Every session, whatever became of its report, also gets one
+  unconditional node.log line from the stream it actually saw: `usage:
+  turns=N input/turn mean=M max=X largest=Tool:bytes,…`.
 - **Priced tool calls go to `recordToolUsage`.** For each call of a tool
   rendered for a build or evaluation with `pricePerCallCents > 0`,
   `Finish` sends `recordToolUsage {aggregateId: the item, toolCallId,
   tool, usage}` — the call's id from the stream
   (`Result.ToolCallIDs`), the usage a copy of the session's report with
-  `listCostCents` the tool's price per call, `actualCostCents` 0 and no
-  tokens. Prologue and unpriced tools send none. A platform without the
-  mutation is said once per run and each call logged; a failed record
-  is logged, never the item's failure.
+  `listCostCents` the tool's price per call, `actualCostCents` 0, no
+  tokens and none of the turn or tool-result detail (`Turns`,
+  `InputPerTurnMean`, `InputPerTurnMax`, `LargestToolResults`): those
+  are the whole session's figures, not this one call's, and are cleared
+  on the per-call copy so a platform summing them is not counting the
+  same session once per priced call. Prologue and unpriced tools send
+  none. A platform without the mutation is said once per run and each
+  call logged; `RecordToolUsage` takes the same detail-field fallback as
+  the finishing commands (`ErrNoUsageDetail`: the call still lands,
+  without those fields); a failed record is logged, never the item's
+  failure.
 - **The log is the fallback.** `SessionAccount.Finish` is each
   session's once-per-session end. A report its finishing command did
   not carry is written to the node's log as one line, `usage: {…}` —

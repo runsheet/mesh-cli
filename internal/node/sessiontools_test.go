@@ -396,6 +396,69 @@ func TestPricedToolCallsAreUsageRecords(t *testing.T) {
 	checkNoOldUsage(t, f)
 }
 
+// A priced tool call's record carries none of the session's turn or
+// tool-result detail (Turns, InputPerTurnMean, InputPerTurnMax,
+// LargestToolResults): those are the whole session's figures, and a
+// platform summing them per record — not per session — would count the
+// same session several times over. The session's own finish still
+// carries them all.
+func TestPricedToolUsageCarriesNoSessionDetail(t *testing.T) {
+	f := seed(t)
+	priced := remoteTool()
+	priced["pricePerCallCents"] = 3
+	f.SessionTools[item1] = []map[string]any{priced}
+	h := &fakeHarness{toolCalls: map[string]int{"search": 1}, turns: 3, inputPerTurnMean: 166, inputPerTurnMax: 300,
+		largestToolResults: []harness.ToolResultSize{{Tool: "mcp__search__query", Bytes: 500}}}
+	r, item, _ := toolRunner(t, f, h)
+
+	if err := r.RunItem(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.ToolUsage) != 1 {
+		t.Fatalf("tool usage = %v, want one", f.ToolUsage)
+	}
+	usage, _ := f.ToolUsage[0]["usage"].(map[string]any)
+	for _, field := range []string{"turns", "inputPerTurnMean", "inputPerTurnMax", "largestToolResults"} {
+		if _, ok := usage[field]; ok {
+			t.Errorf("the priced call's record still carries %q: %+v", field, usage)
+		}
+	}
+	if len(f.SessionUsage) != 1 || f.SessionUsage[0].Input["turns"] != 3.0 || f.SessionUsage[0].Input["inputPerTurnMean"] != 166.0 {
+		t.Fatalf("the session's own report lost its turn detail: %+v", f.SessionUsage)
+	}
+	checkNoOldUsage(t, f)
+}
+
+// A platform whose recordToolUsage input lacks the turn and tool-result
+// detail fields still takes the priced call: the record lands without
+// them (ErrNoUsageDetail folded into the once-per-run notice the
+// session's own finish already gives), and the item still reaches
+// evaluation.
+func TestPricedToolUsageOnAPlatformWithoutDetailFieldsStillLands(t *testing.T) {
+	f := seed(t)
+	f.UnknownFields["turns"] = true
+	f.UnknownFields["inputPerTurnMean"] = true
+	f.UnknownFields["inputPerTurnMax"] = true
+	f.UnknownFields["largestToolResults"] = true
+	priced := remoteTool()
+	priced["pricePerCallCents"] = 3
+	f.SessionTools[item1] = []map[string]any{priced}
+	h := &fakeHarness{toolCalls: map[string]int{"search": 1}, turns: 3, inputPerTurnMean: 166, inputPerTurnMax: 300,
+		largestToolResults: []harness.ToolResultSize{{Tool: "mcp__search__query", Bytes: 500}}}
+	r, item, _ := toolRunner(t, f, h)
+
+	if err := r.RunItem(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.ToolUsage) != 1 {
+		t.Fatalf("tool usage = %v, want one landed record", f.ToolUsage)
+	}
+	if f.Item(item1)["status"] != "evaluating" {
+		t.Fatalf("item: %v", f.Item(item1))
+	}
+	checkNoOldUsage(t, f)
+}
+
 // The evaluator's priced calls are tool usage records too.
 func TestEvaluatorPricedToolCallsAreUsageRecords(t *testing.T) {
 	f := seed(t)

@@ -176,6 +176,12 @@ type fakeHarness struct {
 	// set, each server's calls, errors and wall time (Result.Tools).
 	toolCalls map[string]int
 	tools     map[string]*harness.ToolStat
+	// turns, inputPerTurnMean, inputPerTurnMax and largestToolResults,
+	// when turns is set, are the run's per-turn input and largest tool
+	// results (mesh-spends-less-per-item), same shape as a real stream's.
+	turns                             int
+	inputPerTurnMean, inputPerTurnMax int64
+	largestToolResults                []harness.ToolResultSize
 }
 
 func (h *fakeHarness) Name() string { return "claude-code" }
@@ -208,7 +214,11 @@ func (h *fakeHarness) Run(ctx context.Context, job harness.Job, on func(harness.
 			ids[server] = append(ids[server], fmt.Sprintf("toolu_%s_%d", server, i+1))
 		}
 	}
-	return harness.Result{Success: true, Text: text, CostUSD: 1.25, SessionID: "s-1", ToolCalls: h.toolCalls, ToolCallIDs: ids, Tools: h.tools}, nil
+	res := harness.Result{Success: true, Text: text, CostUSD: 1.25, SessionID: "s-1", ToolCalls: h.toolCalls, ToolCallIDs: ids, Tools: h.tools}
+	if h.turns > 0 {
+		res.Turns, res.InputPerTurnMean, res.InputPerTurnMax, res.LargestToolResults = h.turns, h.inputPerTurnMean, h.inputPerTurnMax, h.largestToolResults
+	}
+	return res, nil
 }
 
 func TestLoopClaimsRunsAndFinishes(t *testing.T) {
