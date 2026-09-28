@@ -1,5 +1,5 @@
 ---
-summary: The node renders each session's tools (internal/tools) in the agent's own format — Claude Code mcpServers beside the built-in prologue server, allowed by --allowedTools mcp__<name>__*, and Codex [mcp_servers.<name>] tables in a 0600 config.toml under the session's CODEX_HOME (console tools by tools.CodexConfig, the built-in by CodexMCPConfig with any ${VAR} resolved or refused, every server's tools approved for exec's workspace-write sandbox) — with every secret value in the session's environment only (MESH_TOOL_<NAME>_<KEY>, or the key itself for a Codex local tool's env_vars), the configs carrying variable names, a clash with the built-in refused, and a local tool whose runtime the node lacks omitted when nice-to-have (noted on the item) or declining the build (released, not reclaimed while the node's runtimes are unchanged) when required; priced tool calls, counted per MCP server from the stream, go to the platform as recordUsage records (calls × pricePerCallCents) after a build or evaluation.
+summary: The node renders each session's tools (internal/tools) in the agent's own format — Claude Code mcpServers beside the built-in mesh-context server, allowed by --allowedTools mcp__<name>__*, and Codex [mcp_servers.<name>] tables in a 0600 config.toml under the session's CODEX_HOME (console tools by tools.CodexConfig, the built-in by CodexMCPConfig with any ${VAR} resolved or refused, every server's tools approved for exec's workspace-write sandbox) — with every secret value in the session's environment only (MESH_TOOL_<NAME>_<KEY>, or the key itself for a Codex local tool's env_vars), the configs carrying variable names, a clash with the built-in refused, and a local tool whose runtime the node lacks omitted when nice-to-have (noted on the item) or declining the build (released, not reclaimed while the node's runtimes are unchanged) when required; priced tool calls, counted per MCP server from the stream, go to the platform as recordUsage records (calls × pricePerCallCents) after a build or evaluation.
 status: accepted
 ---
 
@@ -135,6 +135,21 @@ harness's `prepareHome` writes the tools' `config.toml` into that same
 home — secrets still by variable name in it, their values on the env —
 and leaves the directory to the account's `Cleanup`. The tools are
 rendered no differently.
+
+*Amended 2026-09-28 (goal `builtin-is-mesh-context`, item 5):* the
+built-in is `mesh-context` (`tools.Builtin`), not `prologue` — the
+product's own rename (prologue-becomes-mesh) reached the node's own
+attachment. `ClaudeCode` renders it under the key `mesh-context`,
+`harness.MCPArgs` allows `mcp__mesh-context__*`, and a console tool
+named `mesh-context` is now the clash `check` refuses; one named
+`prologue` no longer clashes and is rendered like any other console
+tool. `gateway.servedTool` still leaves the platform's `builtIn: true`
+row out of the read regardless of its slug, so the built-in is never
+rendered twice either way. For one release, a session adopted from an
+older node (ADR-009) may still carry an MCP config naming `prologue`
+and call `mcp__prologue__*`; the node's priced-usage accounting
+(`SessionAccount.reportToolUsage`) treats both names as the built-in
+(unpriced) until this note goes, 2026-10-28.
 
 ## Consequences
 

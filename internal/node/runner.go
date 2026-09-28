@@ -64,7 +64,7 @@ type Runner struct {
 	Cfg      *Config
 	Scopes   Scopes
 	WorkRoot string
-	// MCP are the MCP servers every session gets (Prologue).
+	// MCP are the MCP servers every session gets (mesh-context).
 	MCP map[string]any
 	// MCPFunc, when set, is asked for them at every item instead: the
 	// node's machine access token expires within the hour, so a build
@@ -308,7 +308,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	defer unlessDetached(ctx, acct.Cleanup)
 	acct.Apply(&job)
 	job.Meta = harness.SessionMeta{NodeID: sc.NodeID, ItemID: item.ID, GoalID: item.GoalID, Attempt: item.Attempts, TempDirs: sessionTempDirs(job, acct)}
-	// the item's tools, beside the built-in Prologue: a required one this
+	// the item's tools, beside the built-in mesh-context: a required one this
 	// node cannot start hands the item back for a node that can
 	runtimes := r.runtimes()
 	st := SelectTools(mcp, acct.Tools, string(harness.KindBuild), runtimes)

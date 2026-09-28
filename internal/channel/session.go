@@ -29,7 +29,7 @@ type Session struct {
 	Cfg *node.Config
 	// Orgs are the logins the node serves, for the system prompt.
 	Orgs []string
-	// MCP are MCP servers the session gets beside the mesh channel (Prologue).
+	// MCP are MCP servers the session gets beside the mesh channel (mesh-context).
 	MCP map[string]any
 	// MCPFunc, when set, is asked for them at every session start
 	// instead: a credential that refreshes (the node's machine token)

@@ -540,7 +540,7 @@ func TestLoopServesEveryOrgOfItsOwner(t *testing.T) {
 	}
 }
 
-// A poll-mode build takes its Prologue bearer per item: the node's
+// A poll-mode build takes its mesh-context bearer per item: the node's
 // machine access token expires within the hour, so the map captured when
 // the node started would hand a long-running node's later sessions a
 // dead token (latchkey adr-machine-identity, rollout phase 2).
@@ -552,10 +552,10 @@ func TestRunnerAsksForItsMCPServersPerItem(t *testing.T) {
 	h := &fakeHarness{}
 	calls := 0
 	runner := &Runner{GW: gw, Harness: h, WS: ws, Cfg: cfg, Scopes: scopesOf(cfg), WorkRoot: ws.root, ProgressEvery: time.Hour,
-		MCP: PrologueMCP(f.URL(), "stale"),
+		MCP: MeshContextMCP(f.URL(), "stale"),
 		MCPFunc: func(context.Context) map[string]any {
 			calls++
-			return PrologueMCP(f.URL(), fmt.Sprintf("machine-token-%d", calls))
+			return MeshContextMCP(f.URL(), fmt.Sprintf("machine-token-%d", calls))
 		}}
 
 	f.WorkItems[item2]["status"] = "ready"
@@ -574,7 +574,7 @@ func TestRunnerAsksForItsMCPServersPerItem(t *testing.T) {
 	}
 	assertNoGoalDoc(t, ws)
 	for i, want := range []string{"Bearer machine-token-1", "Bearer machine-token-2"} {
-		srv, _ := h.jobs[i].MCPServers["prologue"].(map[string]any)
+		srv, _ := h.jobs[i].MCPServers["mesh-context"].(map[string]any)
 		headers, _ := srv["headers"].(map[string]string)
 		if headers["Authorization"] != want {
 			t.Fatalf("job %d Authorization = %q, want %q (MCP must not be the map from node start)", i, headers["Authorization"], want)

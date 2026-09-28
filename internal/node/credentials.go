@@ -655,11 +655,16 @@ func turnUsageSummary(res harness.Result) string {
 // InputPerTurnMax, LargestToolResults) — those are the whole session's
 // figures, not this one call's, and would be summed as if every priced
 // call were its own session. An unpriced tool, one not called and a
-// built-in server (Prologue) are none. A platform without
-// recordToolUsage is said once per run and each call logged; a platform
-// whose usage input lacks the detail fields still takes the call
-// (ErrNoUsageDetail, folded into the once-per-run notice Finish already
-// gives); a failed record is logged, never the item's failure.
+// built-in server (mesh-context) are none: the loop is over s.used, the
+// rendered console tools, which never holds the built-in whatever it is
+// named — 2026-09-28, a session adopted from an older node (ADR-009) may
+// still call mcp__prologue__*, and that is unpriced here too for the same
+// reason; this note goes 2026-10-28, with the last node old enough to
+// matter. A platform without recordToolUsage is said once per run and
+// each call logged; a platform whose usage input lacks the detail fields
+// still takes the call (ErrNoUsageDetail, folded into the once-per-run
+// notice Finish already gives); a failed record is logged, never the
+// item's failure.
 func (s *SessionAccount) reportToolUsage(ctx context.Context) {
 	c := s.creds
 	if s.report == nil {

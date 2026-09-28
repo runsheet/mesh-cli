@@ -211,11 +211,11 @@ var toolName = regexp.MustCompile(`^[a-z0-9_-]+$`)
 // servedTool is the platform's tool row as the node's Tool: a remote or
 // local MCP server named by its slug. A builtin switch and the
 // platform's own built-in (mesh-context, which the node attaches itself
-// as prologue) are not tools of the read. A setting is a secret when the
-// tool is served through an account — its value may be that account's
-// — else a plain header or env; one sourced from the item's GitHub token
-// reads the session's variable. A row with a name no renderer takes is
-// left out.
+// under that name too, tools.Builtin) are not tools of the read. A
+// setting is a secret when the tool is served through an account — its
+// value may be that account's — else a plain header or env; one sourced
+// from the item's GitHub token reads the session's variable. A row with
+// a name no renderer takes is left out.
 func servedTool(row map[string]any) (tools.Tool, bool) {
 	if b, _ := row["builtIn"].(bool); b || str(row, "kind") == "builtin" {
 		return tools.Tool{}, false

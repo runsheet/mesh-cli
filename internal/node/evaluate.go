@@ -35,7 +35,7 @@ type Evaluator struct {
 	Cfg      *Config
 	Scopes   Scopes
 	WorkRoot string
-	// MCP are the MCP servers the session gets (Prologue).
+	// MCP are the MCP servers the session gets (mesh-context).
 	MCP map[string]any
 	// MaxBudgetUSD caps the review session (3 by default).
 	MaxBudgetUSD float64
@@ -277,7 +277,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 		second = job
 		second.Env = slices.Clone(job.Env)
 		acct.Apply(&job)
-		// the evaluator's tools, beside the built-in Prologue. An item in
+		// the evaluator's tools, beside the built-in mesh-context. An item in
 		// evaluating cannot be released (the platform releases a claimed or
 		// running one): a required tool this node cannot start leaves it
 		// unevaluated, and the loop does not try again while that holds.
