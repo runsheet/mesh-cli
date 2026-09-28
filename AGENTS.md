@@ -21,7 +21,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `EvaluatePrompt`, `PlanPrompt`, `ResearchPrompt`, `RebasePrompt`. Their
   contract lines are load-bearing: the evaluator ends with
   `VERDICT: PASS|FAIL`, the planner ends with the JSON graph in a fenced
-  block, the director ends with its proposals in one, the rebase session
+  block, the director ends with its pitches and answers in one for a
+  propose-mode direction, its proposals in one for a set-mode one, the rebase session
   ends with `REBASED: <sha>` and `RESOLVED: <files>` or
   `REBASE FAILED: <why>`, the builder never pushes and checks main
   first, ending with `ALREADY DONE: <evidence>` when the acceptance

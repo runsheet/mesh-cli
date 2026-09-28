@@ -608,6 +608,10 @@ type ResearchInput struct {
 	// DefaultBudgetCents is what a goal here usually costs, for the
 	// session to size its proposals against.
 	DefaultBudgetCents int
+	// Bets are the project's strategy bets — the slug H2 headings of
+	// the home repo's specs/strategy.md, in order; empty when the file
+	// has none. A propose-mode pitch names one of these in its bet.
+	Bets []string
 }
 
 // ExistingGoal is one goal the project has had.
@@ -626,6 +630,81 @@ type ProposedSpec struct {
 	Acceptance  string `json:"acceptance"`
 	Why         string `json:"why"`
 	BudgetCents int    `json:"budget_cents"`
+}
+
+// PitchSpec is one pitch a propose-mode research session hands in
+// (runsheet ADR 026, trd §6c Pitches): the same idea as a proposal, but
+// a record — problem and evidence, the strategy bet it serves, the
+// goal or initiative it would set, an estimate, risks, alternatives
+// and the signal it expects to move.
+type PitchSpec struct {
+	Slug         string         `json:"slug"`
+	Title        string         `json:"title"`
+	Problem      string         `json:"problem"`
+	Evidence     []EvidenceSpec `json:"evidence"`
+	Bet          string         `json:"bet"`
+	Scope        ScopeSpec      `json:"scope"`
+	Estimate     EstimateSpec   `json:"estimate"`
+	Risks        []string       `json:"risks"`
+	Alternatives []string       `json:"alternatives"`
+	Signal       SignalSpec     `json:"signal"`
+}
+
+// EvidenceSpec is one piece of evidence behind a pitch: ref is a URL or
+// a platform reference (a research note's path, a scorecard metric, a
+// goal or an incident), note is what it shows.
+type EvidenceSpec struct {
+	Kind string `json:"kind"` // research_note | metric | incident | user_signal
+	Ref  string `json:"ref"`
+	Note string `json:"note"`
+}
+
+// ScopeSpec is what a pitch would set: kind "goal" is exactly one draft
+// goal, kind "initiative" is one or more.
+type ScopeSpec struct {
+	Kind  string          `json:"kind"` // goal | initiative
+	Goals []ScopeGoalSpec `json:"goals"`
+}
+
+// ScopeGoalSpec is one draft goal of a pitch's scope — a ProposedSpec
+// without the why, which is the pitch's problem.
+type ScopeGoalSpec struct {
+	Slug        string `json:"slug"`
+	Title       string `json:"title"`
+	Statement   string `json:"statement"`
+	Acceptance  string `json:"acceptance"`
+	BudgetCents int    `json:"budget_cents,omitempty"`
+}
+
+// EstimateSpec sizes a pitch: basis is what the figures were drawn
+// from — the project's goal_history, for one worth trusting.
+type EstimateSpec struct {
+	CostCents int     `json:"cost_cents"`
+	Days      float64 `json:"days"`
+	Basis     string  `json:"basis"`
+}
+
+// SignalSpec is the one scorecard metric a pitch expects to move: a
+// direction of "up" or "down", over window_days after the goal ships.
+type SignalSpec struct {
+	Metric      string `json:"metric"`
+	HowMeasured string `json:"how_measured"`
+	Direction   string `json:"direction"`
+	WindowDays  int    `json:"window_days"`
+}
+
+// PitchAnswerSpec answers an open question the platform's
+// pitch_feedback asked of an earlier pitch of this direction's.
+type PitchAnswerSpec struct {
+	Pitch string `json:"pitch"`
+	Text  string `json:"text"`
+}
+
+// PitchOutput is what ParsePitches reads from a propose-mode research
+// session's final message.
+type PitchOutput struct {
+	Pitches []PitchSpec       `json:"pitches"`
+	Answers []PitchAnswerSpec `json:"answers"`
 }
 
 // ResearchPrompt is the director's session (runsheet trd §6c): read the
@@ -677,19 +756,25 @@ func ResearchPrompt(in ResearchInput) string {
 	}
 	b.WriteString("# Rules\n\n")
 	fmt.Fprintf(&b, "1. Research first. Read the direction, the design documents, the code and the open issues before you propose anything. A goal that duplicates what is there, or that the design already forbids, is worse than none.\n")
+	if in.Proposes {
+		researchPitchRules(&b, in)
+	} else {
+		researchGoalRules(&b, in)
+	}
+	return b.String()
+}
+
+// researchGoalRules writes a set-mode direction's rules and its JSON
+// contract (runsheet trd §6c): the goals shape, unchanged so a
+// platform and a session both read it exactly as before.
+func researchGoalRules(b *strings.Builder, in ResearchInput) {
 	switch {
-	case in.Proposes:
-		room := in.Room
-		if room < 0 {
-			room = 0
-		}
-		fmt.Fprintf(&b, "2. This direction proposes rather than sets: nothing you propose becomes a goal until a person accepts it, so the room is information, not a cap. The project has room for %d right now. Propose what is worth doing, fewer if fewer are, none if none is; a proposal that would wait for room should say so in its why.\n", room)
 	case in.Room <= 0:
 		b.WriteString("2. There is no room for another goal right now — the project is at its ceiling. Propose nothing, and say in your notes what you would have proposed.\n")
 	case in.Room == 1:
 		b.WriteString("2. Propose at most one goal — there is room for one. Make it the most valuable thing you found, or none if nothing is worth doing.\n")
 	default:
-		fmt.Fprintf(&b, "2. Propose at most %d goals, fewer if fewer are worth doing, none if none is. There is room for %d right now.\n", in.Room, in.Room)
+		fmt.Fprintf(b, "2. Propose at most %d goals, fewer if fewer are worth doing, none if none is. There is room for %d right now.\n", in.Room, in.Room)
 	}
 	b.WriteString("3. Each goal is a few days' work for one person: several items' worth, one coherent piece of value. Not a task (\"rename the button\") and not a project (\"rewrite the front end\").\n")
 	b.WriteString("4. The statement says what is to be true when it is done, in the words the person who gave the direction would use. The acceptance is what someone can check — a test that passes, a command's output, a page that loads — never a feeling.\n")
@@ -699,11 +784,54 @@ func ResearchPrompt(in ResearchInput) string {
 	b.WriteString("8. Prefer work that can be finished and merged unattended: clear acceptance, tests that exist, no decision a person has to make first. A question for a person is not a goal — say it in your notes instead.\n")
 	b.WriteString("9. Change nothing in the repos: you research and propose, you do not build.\n")
 	if in.DefaultBudgetCents > 0 {
-		fmt.Fprintf(&b, "10. A goal here is usually given $%.2f. Set budget_cents only when a goal plainly needs more or less; leave it out otherwise.\n", float64(in.DefaultBudgetCents)/100)
+		fmt.Fprintf(b, "10. A goal here is usually given $%.2f. Set budget_cents only when a goal plainly needs more or less; leave it out otherwise.\n", float64(in.DefaultBudgetCents)/100)
 	}
 	b.WriteString("\nEnd your final message with your proposals as a JSON object in a ```json fenced block, and nothing after it. An empty list is a valid answer:\n\n")
 	b.WriteString("```json\n{\"goals\": [{\"slug\": \"…\", \"title\": \"…\", \"statement\": \"…\", \"acceptance\": \"…\", \"why\": \"…\"}]}\n```\n")
-	return b.String()
+}
+
+// researchPitchRules writes a propose-mode direction's rules and its
+// JSON contract (runsheet ADR 026, trd §6c Pitches): a pitch argues a
+// strategy bet with evidence, scopes it to a goal or an initiative,
+// sizes and risks it, and names the signal it should move — not a bare
+// goal proposal. The platform hands the direction's earlier pitches'
+// feedback back through Prologue's mesh_projects read, so the session
+// answers it before pitching again, never re-pitches a declined idea,
+// and grounds its bet and its estimate in what the project already
+// knows.
+func researchPitchRules(b *strings.Builder, in ResearchInput) {
+	room := in.Room
+	if room < 0 {
+		room = 0
+	}
+	fmt.Fprintf(b, "2. This direction proposes rather than sets: nothing you propose becomes a goal until a person accepts it, so the room is information, not a cap. The project has room for %d right now. Propose what is worth doing, fewer if fewer are, none if none is; a proposal that would wait for room should say so in its why.\n", room)
+	fmt.Fprintf(b, "3. Before you pitch, call `mesh_projects` for this project (`mesh_projects { project: %q }`) and read your own direction's `pitch_feedback`, `bets` and `goal_history`: answer every open question of `open_questions` in your `answers`, never pitch a slug `declined` carries again, name each pitch's `bet` from `bets`, and size each `estimate` against `goal_history`.\n", in.Org+"/"+in.Project)
+	bet := "a strategy bet slug (the project's `bets`)"
+	if len(in.Bets) > 0 {
+		bet = fmt.Sprintf("a strategy bet slug — one of %s", strings.Join(quoteAll(in.Bets), ", "))
+	}
+	fmt.Fprintf(b, "4. `bet` is %s, or \"\" when the project has none.\n", bet)
+	b.WriteString("5. `problem` is what is broken or missing, in the direction's own words. `evidence` is a list of at least one entry — `{\"kind\": \"research_note\"|\"metric\"|\"incident\"|\"user_signal\", \"ref\", \"note\"}` — `ref` a URL or a platform reference to what you read, `note` what it shows. A pitch with no evidence is not ready to pitch.\n")
+	b.WriteString("6. `scope` is `{\"kind\": \"goal\"|\"initiative\", \"goals\": [...]}`: kind `goal` is exactly one goal — a single piece of value — kind `initiative` is one or more. Each goal names `slug`, `title`, `statement` and `acceptance`, and `budget_cents` only when it plainly needs more or less than usual.\n")
+	b.WriteString("7. `estimate` is `{\"cost_cents\", \"days\", \"basis\"}`: size it against `goal_history`'s median cost and days for goals like it, and say so in `basis`.\n")
+	b.WriteString("8. `risks` and `alternatives` are lists: what could go wrong, and what else you considered instead of this pitch.\n")
+	b.WriteString("9. `signal` is `{\"metric\", \"how_measured\", \"direction\", \"window_days\"}`: the one scorecard metric this should move (`merged`, `mergedWithoutRewrite`, `costCents`, `conflictReworksPer100Merges`, `shareSettledWithoutSession`, or one like them), how you would measure it, `\"up\"` or `\"down\"`, and the window in days after the goal ships.\n")
+	b.WriteString("10. The slug is lowercase, hyphenated and stable — it is the pitch's identity: the same idea pitched twice must carry the same slug rather than making a second pitch.\n")
+	b.WriteString("11. Change nothing in the repos: you research and pitch, you do not build.\n")
+	if in.DefaultBudgetCents > 0 {
+		fmt.Fprintf(b, "12. A goal here is usually given $%.2f. Set a scope goal's budget_cents only when it plainly needs more or less; leave it out otherwise.\n", float64(in.DefaultBudgetCents)/100)
+	}
+	b.WriteString("\nEnd your final message with your pitches as a JSON object in a ```json fenced block, and nothing after it. An empty list is a valid answer, and so is an empty `answers` list:\n\n")
+	b.WriteString("```json\n{\"pitches\": [{\"slug\": \"…\", \"title\": \"…\", \"problem\": \"…\", \"evidence\": [{\"kind\": \"research_note\", \"ref\": \"…\", \"note\": \"…\"}], \"bet\": \"…\", \"scope\": {\"kind\": \"goal\", \"goals\": [{\"slug\": \"…\", \"title\": \"…\", \"statement\": \"…\", \"acceptance\": \"…\"}]}, \"estimate\": {\"cost_cents\": 400000, \"days\": 3, \"basis\": \"…\"}, \"risks\": [\"…\"], \"alternatives\": [\"…\"], \"signal\": {\"metric\": \"merged\", \"how_measured\": \"…\", \"direction\": \"up\", \"window_days\": 30}}], \"answers\": [{\"pitch\": \"<slug>\", \"text\": \"…\"}]}\n```\n")
+}
+
+// quoteAll backtick-quotes each string, for a list read in prose.
+func quoteAll(ss []string) []string {
+	out := make([]string, len(ss))
+	for i, s := range ss {
+		out[i] = "`" + s + "`"
+	}
+	return out
 }
 
 // ParseProposals reads a research session's goals out of its final
@@ -752,6 +880,70 @@ func ParseProposals(text string) ([]ProposedSpec, error) {
 		out = append(out, g)
 	}
 	return out, nil
+}
+
+// ParsePitches reads a propose-mode research session's pitches and
+// answers out of its final message, in ParseProposals's own style
+// (planCandidates, a nested fence, a bare list, an empty list an
+// answer): a pitch without a slug, a title, a problem or a scope
+// naming a goal is refused, so is a goal scope of two goals or an
+// evidence entry with no ref, the same slug twice is one pitch (the
+// first wins), and an answer naming no pitch or no text is dropped.
+func ParsePitches(text string) (PitchOutput, error) {
+	var pitches []PitchSpec
+	var answers []PitchAnswerSpec
+	found := false
+	for _, raw := range planCandidates(text) {
+		var wrapped struct {
+			Pitches []PitchSpec       `json:"pitches"`
+			Answers []PitchAnswerSpec `json:"answers"`
+		}
+		if err := json.Unmarshal([]byte(raw), &wrapped); err == nil && wrapped.Pitches != nil {
+			pitches, answers, found = wrapped.Pitches, wrapped.Answers, true
+			break
+		}
+		var bare []PitchSpec
+		if err := json.Unmarshal([]byte(raw), &bare); err == nil && len(bare) > 0 {
+			pitches, found = bare, true
+			break
+		}
+	}
+	if !found {
+		return PitchOutput{}, fmt.Errorf("no pitches in the director's message")
+	}
+	slugs := map[string]bool{}
+	out := make([]PitchSpec, 0, len(pitches))
+	for _, p := range pitches {
+		p.Slug, p.Title, p.Problem = strings.TrimSpace(p.Slug), strings.TrimSpace(p.Title), strings.TrimSpace(p.Problem)
+		if p.Slug == "" || p.Title == "" || p.Problem == "" {
+			return PitchOutput{}, fmt.Errorf("a pitch carries a slug, a title and a problem: %+v", p)
+		}
+		if p.Scope.Kind == "goal" && len(p.Scope.Goals) != 1 {
+			return PitchOutput{}, fmt.Errorf("pitch %q has a goal scope with %d goals, not one", p.Slug, len(p.Scope.Goals))
+		}
+		if len(p.Scope.Goals) == 0 {
+			return PitchOutput{}, fmt.Errorf("pitch %q carries no goal in its scope", p.Slug)
+		}
+		for _, ev := range p.Evidence {
+			if strings.TrimSpace(ev.Ref) == "" {
+				return PitchOutput{}, fmt.Errorf("pitch %q has an evidence entry with no ref", p.Slug)
+			}
+		}
+		if slugs[p.Slug] {
+			continue // the same idea pitched twice in one session is one pitch
+		}
+		slugs[p.Slug] = true
+		out = append(out, p)
+	}
+	answered := make([]PitchAnswerSpec, 0, len(answers))
+	for _, a := range answers {
+		a.Pitch, a.Text = strings.TrimSpace(a.Pitch), strings.TrimSpace(a.Text)
+		if a.Pitch == "" || a.Text == "" {
+			continue
+		}
+		answered = append(answered, a)
+	}
+	return PitchOutput{Pitches: out, Answers: answered}, nil
 }
 
 // RebaseInput is what a rebase prompt is made of: the item whose pull
