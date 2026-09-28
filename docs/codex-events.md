@@ -264,6 +264,19 @@ list-price cost is a measure of use, not money spent
 (`harness.CodexPrices`); the rate-limit reading above is what paces a
 plan account, not what it costs.
 
+## The stream, kept
+
+With `Codex.WorkRoot` set, `Codex.Run` writes this whole stream — every
+line above, secrets redacted — to `output.jsonl`, and the process's
+stderr to `stderr.log`, under
+`<WorkRoot>/kept-sessions/<name>-<unix time>/`, beside a small
+`state.json`-like note (kind, item/goal, model, started at). They are
+kept for `harness.KeepSessionOutput` (24 hours; `SweepKeptSessions`
+removes an older one on the next Codex session's start) — the only way
+to see what a Codex session actually said once it has ended, since
+nothing here is echoed to the platform ([ADR-005
+here](adr/adr-005-codex-second-opinion.md)).
+
 ## Errors
 
 - **Unknown or inaccessible model** (`codex_exec_error.jsonl`, exit 1):

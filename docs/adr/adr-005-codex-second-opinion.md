@@ -139,3 +139,61 @@ among by headroom.
 
 **Builders on Codex come later** still holds for builders; evaluators
 no longer wait for it.
+
+## Amendment, 2026-09-28: the stream is kept 24 hours
+
+Goal `codex-sessions-reach-the-context-tool` (item 2). A Claude
+session's `output.jsonl` and `stderr.log` sit in
+`sessionunit.Dir(job.Workspace)` until `harness.RemoveSession`; `Codex.Run`
+tee'd both into a 64KB in-memory buffer alone, so once a session ended
+nothing of what Codex said, or its own diagnostics, survived it — the
+gap this initiative's statement found itself blocked by (Codex's
+`prologue` calls failing with no evidence of why left on disk anywhere).
+
+**`Codex.WorkRoot` keeps the whole stream.** Set (`node.WorkRoot()`, by
+`codexSecondOpinion` in `internal/commands/nodecmd.go`), `Codex.Run`
+writes the whole `codex exec --json` stream and stderr — secrets
+redacted through the existing `redactWriter`, exactly as `c.Stderr`
+is — to `output.jsonl` and `stderr.log` under
+`<WorkRoot>/kept-sessions/<name>-<unix time>/`, beside a small
+`state.json`-like note (`keptSessionNote`: kind, item/goal from
+`job.Meta`, model, started at — never the prompt, never a secret).
+`<name>` is the job's label up to its first space, slashes turned to
+dashes (an evaluate job's `goalslug/seq evaluate` gives
+`goalslug-seq`), so the goal, then a slug, then the seq item lands
+readably in the directory name; the unix time keeps two sessions of
+the same item apart. The directory lives outside
+`sessionunit.Dir(job.Workspace)` entirely — a Codex session never had
+one of those (it is not `Outlive`, adr-009) — so `harness.RemoveSession`
+on the job's own work dir never touches it: nothing more had to change
+there. `Result.KeptSessionDir` carries the path back to the node, empty
+when `WorkRoot` is unset (every existing Codex test): the session's
+stream then lives only in the 64KB buffer, exactly as before.
+
+**`harness.KeepSessionOutput` is 24 hours**, and
+`harness.SweepKeptSessions(root, now)` removes a kept directory once its
+note's `startedAt` is older than that, leaving a younger one (a note
+that cannot be read falls back to the directory's own modification
+time). `Codex.Run` sweeps `WorkRoot` at the start of every session, so
+the node need wire nothing into its tick for this alone — "each Codex
+start" of the brief's two options, not "each tick".
+
+**The node names the kept path when it has something to blame.** In
+`internal/node/evaluate.go`, `afterEvaluate` appends
+`" kept at <dir>"` (`keptAt`) to a Codex evaluation's session error and
+its no-verdict error, and logs `"a tool errored kept at <dir>"`
+(`hasToolError`, over `Result.Tools`) beside the existing served-tools
+note when the verdict was read but some MCP server's calls — Prologue's
+included, unlike `SessionTools.UseNote`, which only ever names a
+session's own `Use` tools — carried an error. A Claude session names
+nothing here: `Result.KeptSessionDir` is empty for it.
+
+A Codex evaluation's stream and stderr now outlive the process for a
+day, so the next investigation into a Codex tooling failure has raw
+evidence on disk instead of a guess; `kept-sessions` grows by one
+directory per Codex session and is swept on the next Codex start, so a
+node that stops running Codex sessions stops sweeping too and leaves an
+old directory past its day — acceptable, since nothing runs Codex there
+to make more. The 64KB `capBuffer` a Codex session's error paths already
+read from is unchanged: `KeptSessionDir` is additional, not a
+replacement.

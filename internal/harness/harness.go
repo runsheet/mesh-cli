@@ -200,6 +200,10 @@ type Result struct {
 	// its message. Nil when the session made no MCP call and named no unconnected
 	// server. See ToolReport.
 	Tools map[string]*ToolStat
+	// KeptSessionDir is where a Codex session's whole event stream and
+	// stderr are kept for KeepSessionOutput after it ends ("" when the
+	// harness kept nothing: Codex.WorkRoot unset, or another harness).
+	KeptSessionDir string
 }
 
 // ToolStat is one MCP server's calls in a session.
