@@ -942,40 +942,59 @@ func oneShotHarness() *harness.ClaudeCode {
 	return h
 }
 
-// secondOpinion is the evaluator's Codex harness and how its account's
-// limits are kept; the zero value is no second opinion.
+// secondOpinion is the evaluator's Codex harness and how its accounts'
+// limits are kept; the zero value is no Codex at all.
 type secondOpinion struct {
 	h          harness.Harness
 	account    string
 	limits     *node.Limits
 	thresholds func() node.LimitsConfig
+	// accounts are the Codex accounts an evaluation may run on first
+	// (Loop.CodexCandidates)
+	accounts func() []node.AccountConfig
+	// waits says a Codex-pinned item's wait once per item
+	waits *node.OncePer
 }
 
-// codexSecondOpinion builds the Codex harness for the evaluator's second
-// opinion (docs/adr/adr-005-codex-second-opinion.md): when node.yaml has
-// a `codex:` block and its binary is found, on the block's first account
-// (none: the operator's own Codex login). Its readings land in the
-// loop's Limits under codex:<account>. Otherwise none, and the node
+// codexSecondOpinion builds the evaluator's Codex harness whenever its
+// binary is found, with or without a `codex:` block — an issued OpenAI
+// credential serving codex supplies the login — on the block's first
+// account (none: the operator's own Codex login, used only when the
+// block is there). An evaluation runs on Codex when one of the issued
+// Codex accounts or the block's has headroom for the item's priority,
+// else on Claude, and the second opinion runs on the other family
+// (docs/adr/adr-011-evaluations-run-on-the-family-with-headroom.md).
+// Its readings land in the loop's Limits under codex:<account>. No
+// binary, or neither a block nor an issued Codex account: the node
 // evaluates as before.
 func codexSecondOpinion(cfg *node.Config, loop *node.Loop, logger *log.Logger) secondOpinion {
-	if cfg.Codex.IsZero() {
-		return secondOpinion{}
-	}
 	bin := cfg.Codex.Binary
 	if bin == "" {
 		bin = "codex"
 	}
 	if _, err := exec.LookPath(bin); err != nil {
-		logger.Printf("codex: no second opinion: %v", err)
+		if !cfg.Codex.IsZero() {
+			logger.Printf("codex: no Codex evaluations: %v", err)
+		}
 		return secondOpinion{}
 	}
 	c := &harness.Codex{Binary: bin, Stderr: os.Stderr}
-	if len(cfg.Codex.Accounts) > 0 {
-		c.Account = cfg.Codex.Accounts[0].Harness()
+	loop.CodexOwn = nil
+	if !cfg.Codex.IsZero() {
+		if len(cfg.Codex.Accounts) > 0 {
+			c.Account = cfg.Codex.Accounts[0].Harness()
+		}
+		loop.CodexOwn = []node.AccountConfig{node.CodexOwnAccount(c.Account)}
 	}
 	account := node.CodexLimitsAccount(c.Account.Name)
-	logger.Printf("codex: second opinion on urgent and high goals, account %s", account)
-	return secondOpinion{h: node.ObserveLimitsAs(c, loop.Limits, account), account: account, limits: loop.Limits, thresholds: loop.Thresholds}
+	if loop.CodexOwn != nil {
+		logger.Printf("codex: evaluations on Codex when an account has headroom (node.yaml's %s, and the issued ones), else on Claude; the second opinion on the other family", account)
+	} else {
+		logger.Printf("codex: evaluations on Codex when an issued Codex account has headroom, else on Claude; the second opinion on the other family")
+	}
+	h := node.ObserveLimitsAs(c, loop.Limits, account)
+	loop.CodexRoom = (&node.Evaluator{Codex: h, CodexAccounts: loop.CodexCandidates, Limits: loop.Limits, Thresholds: loop.Thresholds}).CodexHeadroom
+	return secondOpinion{h: h, account: account, limits: loop.Limits, thresholds: loop.Thresholds, accounts: loop.CodexCandidates, waits: &node.OncePer{}}
 }
 
 // evaluateWith is the loop's Evaluate hook: a fresh evaluator session per
@@ -985,7 +1004,9 @@ func codexSecondOpinion(cfg *node.Config, loop *node.Loop, logger *log.Logger) s
 func evaluateWith(gw *gateway.Client, cfg *node.Config, h harness.Harness, second secondOpinion, loop *node.Loop, workRoot string, fallback *node.TokenFallback, accounts *node.Credentials, logger *log.Logger) func(context.Context, gateway.WorkItem) {
 	return func(ctx context.Context, item gateway.WorkItem) {
 		ev := evaluator(ctx, gw, cfg, h, second, loop, workRoot, fallback, accounts, logger)
-		if err := ev.Evaluate(ctx, item); err != nil && ctx.Err() == nil {
+		// a Codex-pinned item waiting for headroom is said once, by the
+		// evaluator
+		if err := ev.Evaluate(ctx, item); err != nil && ctx.Err() == nil && !errors.Is(err, node.ErrFamilyWaits) {
 			logger.Printf("item %d %q: evaluation: %v", item.Seq, item.Title, err)
 		}
 	}
@@ -1032,7 +1053,7 @@ func researchWith(gw *gateway.Client, cfg *node.Config, h harness.Harness, workR
 
 func evaluator(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harness.Harness, second secondOpinion, loop *node.Loop, workRoot string, fallback *node.TokenFallback, accounts *node.Credentials, logger *log.Logger) *node.Evaluator {
 	return &node.Evaluator{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Scopes: loop.CurrentScopes(), WorkRoot: workRoot, MCP: prologueMCP(ctx, gw), MaxBudgetUSD: nodeEvalBudgetFlag, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("evaluate"), Fallback: fallback, Accounts: cfg.Accounts, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Sandbox: sessionSandbox, Log: logger,
-		Second: second.h, SecondModel: cfg.Codex.CodexModel(nodeModels.For("evaluate")), SecondAccount: second.account, Limits: second.limits, Thresholds: second.thresholds}
+		Codex: second.h, CodexModel: cfg.Codex.CodexModel, CodexAccount: second.account, CodexAccounts: second.accounts, Waits: second.waits, Limits: second.limits, Thresholds: second.thresholds}
 }
 
 func rebaser(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harness.Harness, scopes func() node.Scopes, workRoot string, fallback *node.TokenFallback, accounts *node.Credentials, logger *log.Logger) *node.Rebaser {

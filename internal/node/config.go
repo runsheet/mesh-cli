@@ -5,6 +5,7 @@
 package node
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -261,18 +262,27 @@ func (c CodexConfig) Validate() error {
 	return nil
 }
 
+// The Codex model each Claude tier maps to when node.yaml's codex:
+// models names none (https://learn.chatgpt.com/docs/models).
+const (
+	DefaultCodexOpus   = "gpt-6-astra"
+	DefaultCodexSonnet = "gpt-6-sol"
+	DefaultCodexHaiku  = "gpt-6-luna"
+)
+
 // CodexModel is the Codex model for a Claude model: an alias or a full
 // id naming opus, sonnet or haiku (by ModelRank) takes that tier's
-// model from Models. Empty, a model of no tier, or a tier with no
-// mapping is "": Codex's own default.
+// model from Models, else the tier's default (gpt-6-astra, gpt-6-sol,
+// gpt-6-luna). Empty, or a model of no tier, is "": Codex's own
+// default.
 func (c CodexConfig) CodexModel(claudeModel string) string {
 	switch ModelRank(claudeModel) {
 	case 3:
-		return c.Models.Opus
+		return cmp.Or(c.Models.Opus, DefaultCodexOpus)
 	case 2:
-		return c.Models.Sonnet
+		return cmp.Or(c.Models.Sonnet, DefaultCodexSonnet)
 	case 1:
-		return c.Models.Haiku
+		return cmp.Or(c.Models.Haiku, DefaultCodexHaiku)
 	}
 	return ""
 }

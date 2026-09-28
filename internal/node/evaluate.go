@@ -7,7 +7,9 @@ import (
 	"log"
 	"math"
 	"os"
+	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
@@ -51,19 +53,31 @@ type Evaluator struct {
 	Timeout time.Duration
 	// Fallback is the node's one old-platform notice (nil: every item).
 	Fallback *TokenFallback
-	// Second is the second opinion's harness (Codex; nil: none). An
-	// item of an urgent or high goal whose first verdict passes is
-	// evaluated again on it, with the same prompt in the same workspace
-	// (docs/adr/adr-005-codex-second-opinion.md).
-	Second harness.Harness
-	// SecondModel is the second opinion's model (CodexModel of the
-	// evaluate model; "" Codex's own default).
-	SecondModel string
-	// SecondAccount is the Limits key of Second's account
-	// (CodexLimitsAccount): a reading there that paces or stops it skips
-	// the second opinion, and nothing else.
-	SecondAccount string
-	// Limits and Thresholds judge SecondAccount (nil: never skipped).
+	// Codex is the Codex harness (nil: none). An evaluation runs on it
+	// when one of CodexAccounts has headroom for the item's priority, or
+	// the item pins it; and an item of an urgent or high goal whose first
+	// verdict passes is evaluated again on the other family, with the
+	// same prompt in the same workspace
+	// (docs/adr/adr-005-codex-second-opinion.md,
+	// docs/adr/adr-011-evaluations-run-on-the-family-with-headroom.md).
+	Codex harness.Harness
+	// CodexModel maps the Claude evaluate model to Codex's
+	// (CodexConfig.CodexModel; nil: Codex's own default).
+	CodexModel func(claudeModel string) string
+	// CodexAccount is the Limits key of the Codex harness's own account
+	// (CodexLimitsAccount of node.yaml's codex: account): a reading there
+	// that paces or stops it skips a second opinion on it.
+	CodexAccount string
+	// CodexAccounts are the Codex accounts an evaluation may run on
+	// first (Loop.CodexCandidates: the issued ones Known holds, and
+	// node.yaml's codex: account, which has no ID). Nil: Codex is only
+	// the second opinion, on its own account.
+	CodexAccounts func() []AccountConfig
+	// Waits says once per item that an item pinned to a family with no
+	// headroom waits in evaluating (nil: every time).
+	Waits *OncePer
+	// Limits and Thresholds judge the Codex accounts (nil: never
+	// skipped, every account with its full headroom).
 	Limits     *Limits
 	Thresholds func() LimitsConfig
 	// Runtimes are the tool runtimes the node has now (Loop.Runtimes;
@@ -125,6 +139,12 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 		return fmt.Errorf("resolve: %w", err)
 	}
 	label := fmt.Sprintf("%s/%d", res.Goal.Slug, item.Seq)
+	// the family it runs on, before anything is prepared: a pinned
+	// family with no headroom waits in evaluating (ADR 011)
+	fam, err := e.family(ctx, item, res.Goal.Priority, label)
+	if err != nil {
+		return err
+	}
 	// an already_done item has no branch: the evaluator checks its
 	// evidence on the base ref, with its history, and there is no diff
 	// (mesh ADR 003 decision 1)
@@ -186,7 +206,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	if budget <= 0 {
 		budget = 3
 	}
-	model := EvaluateModel(ctx, e.GW, item, e.Model)
+	model := fam.model
 	job := harness.Job{Kind: harness.KindEvaluate, Workspace: dir, Prompt: harness.EvaluatePrompt(in), MaxBudgetUSD: budget, Label: label + " evaluate", Timeout: e.Timeout, MCPServers: e.MCP, Model: model}
 	if tok := cred.Token(); tok != nil {
 		ghDir, err := NewGHConfigDir()
@@ -199,14 +219,17 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 		job.Env = SessionEnv(tok, ghDir)
 	}
 	sc, _ := e.Scopes.ByOrg(item.OrgID)
-	acct, err := e.Credentials.Open(ctx, gateway.SessionRef{Kind: string(harness.KindEvaluate), ItemID: item.ID, GoalID: item.GoalID}, sc.NodeID, e.Accounts, Adapter(e.Harness))
+	ref := gateway.SessionRef{Kind: string(harness.KindEvaluate), ItemID: item.ID, GoalID: item.GoalID}
+	acct, fam, err := e.openFamily(ctx, ref, sc.NodeID, fam, label)
 	if err != nil {
 		return err
 	}
+	model, job.Model = fam.model, fam.model
 	defer unlessDetached(ctx, acct.Cleanup)
 	job.Meta = harness.SessionMeta{NodeID: sc.NodeID, ItemID: item.ID, GoalID: item.GoalID, Attempt: item.Attempts, TempDirs: sessionTempDirs(job, acct)}
-	// the second opinion's job: the same brief, none of the Claude account
-	// and none of the pod's services (Codex runs on the host)
+	// the second opinion's job: the same brief, none of the first
+	// session's account and none of the pod's services (Codex runs on the
+	// host; a Claude second opinion opens its own account)
 	second := job
 	acct.Apply(&job)
 	// the evaluator's tools, beside the built-in Prologue. An item in
@@ -252,17 +275,23 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	in.Services = pod.Prompt()
 	job.Prompt = harness.EvaluatePrompt(in)
 	if alreadyDone {
-		e.logf("item %s: evaluate on %s: the already_done claim on %s", label, modelName(model), spec.BaseRef)
+		e.logf("item %s: evaluate on %s: the already_done claim on %s", label, fam.logName(), spec.BaseRef)
 	} else {
-		e.logf("item %s: evaluate on %s: %s (%d bytes of diff)", label, modelName(model), branch, len(diff))
+		e.logf("item %s: evaluate on %s: %s (%d bytes of diff)", label, fam.logName(), branch, len(diff))
 	}
-	// the session outlives this process: a restart adopts it (ADR 009)
-	job.Outlive = true
-	result, err := e.Harness.Run(ctx, job, nil)
+	h := e.Harness
+	if fam.codex {
+		// a Codex session still ends with the node
+		h = e.Codex
+	} else {
+		// the session outlives this process: a restart adopts it (ADR 009)
+		job.Outlive = true
+	}
+	result, err := h.Run(ctx, job, nil)
 	// the usage report rides the verdict (afterEvaluate); Finish logs it
 	// when nothing carried it
 	defer acct.Finish(ctx, result)
-	return e.afterEvaluate(ctx, evalRun{item: item, res: res, label: label, model: model, dir: dir, acct: acct, second: &second, omitted: st.OmittedNote(), missing: pod.MissingNote()}, result, err)
+	return e.afterEvaluate(ctx, evalRun{item: item, res: res, label: label, model: model, fam: fam, dir: dir, acct: acct, second: &second, omitted: st.OmittedNote(), missing: pod.MissingNote()}, result, err)
 }
 
 // evalRun is one evaluation session as its tail needs it, whether this
@@ -272,8 +301,10 @@ type evalRun struct {
 	res   *Resolved
 	label string
 	model string
-	dir   string
-	acct  *SessionAccount // nil for an adopted session
+	// fam is the family the session ran on (Claude for an adopted one)
+	fam  family
+	dir  string
+	acct *SessionAccount // nil for an adopted session
 	// second is the second opinion's job; nil for an adopted session,
 	// whose prompt is not kept
 	second           *harness.Job
@@ -320,29 +351,39 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 		without += "\n" + truncate(note, 500)
 	}
 	cost := result.CostUSD
+	if ev.fam.codex && acct != nil {
+		acct.Model = ev.fam.model
+	}
 	usage := acct.Report(result)
-	if passed && e.Second != nil && gateway.PriorityRank(ev.res.Goal.Priority) <= gateway.PriorityRank("high") {
+	// the item's events say which family and model judged it
+	evaluatedOn := ev.fam.logName()
+	if passed && (ev.fam.codex || e.hasCodex()) && gateway.PriorityRank(ev.res.Goal.Priority) <= gateway.PriorityRank("high") {
+		other := ev.fam.other(e)
 		op := opinion{unavailable: "the evaluation was adopted after a restart, and its prompt is not kept"}
 		if ev.second != nil {
-			op = e.secondOpinion(ctx, label, *ev.second)
+			op = e.secondOpinion(ctx, ev, other, *ev.second)
 		}
+		defer op.acct.Finish(ctx, op.result)
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		cost += op.cost
 		// one report for the whole evaluation, as its cost is one
-		acct.Add(op.result)
+		if op.acct != nil {
+			acct.Carries(op.acct)
+		} else {
+			acct.Add(op.result)
+		}
 		if op.unavailable != "" {
-			e.logf("item %s: Codex second opinion unavailable: %s", label, op.unavailable)
-			line := "Codex second opinion unavailable: " + op.unavailable
-			notes = truncate(notes, 4000-200-len(line)-len(without)) + "\n\n" + line + "\n\n(evaluated on " + modelName(ev.model) + ")" + without
+			e.logf("item %s: %s second opinion unavailable: %s", label, other.name(), op.unavailable)
+			line := other.name() + " second opinion unavailable: " + op.unavailable
+			notes = truncate(notes, 4000-200-len(line)-len(without)) + "\n\n" + line + "\n\n(evaluated on " + evaluatedOn + ")" + without
 		} else {
 			passed = passed && op.passed
-			notes = bothNotes(notes, op.notes, op.passed, 4000-200-len(without)) + "\n\n(evaluated on " + modelName(ev.model) + "; second opinion on Codex" + codexModelName(e.SecondModel) + ")" + without
+			notes = bothNotes(ev.fam, notes, other, op.notes, op.passed, 4000-200-len(without)) + "\n\n(evaluated on " + evaluatedOn + "; second opinion on " + other.fullName() + ")" + without
 		}
 	} else {
-		// the item's events say which model judged it
-		notes = truncate(notes, 4000-100-len(without)) + "\n\n(evaluated on " + modelName(ev.model) + ")" + without
+		notes = truncate(notes, 4000-100-len(without)) + "\n\n(evaluated on " + evaluatedOn + ")" + without
 	}
 	verdict := "failed"
 	if passed {
@@ -351,7 +392,7 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 	if err := acct.Carried(e.GW.EvaluateWorkItem(ctx, item.ID, passed, notes, Cents(cost), usage)); err != nil {
 		return fmt.Errorf("record verdict: %w", err)
 	}
-	e.logf("item %s: evaluation %s ($%.2f)", label, verdict, cost)
+	e.logf("item %s: evaluation %s on %s ($%.2f)", label, verdict, ev.fam.fullName(), cost)
 	return nil
 }
 
@@ -379,7 +420,7 @@ func (e *Evaluator) AdoptEvaluation(ctx context.Context, item gateway.WorkItem, 
 	label := fmt.Sprintf("%s/%d", res.Goal.Slug, item.Seq)
 	e.logf("item %s: adopted its %s evaluation (pid %d)", label, s.Liveness(), s.State.PID)
 	result, err := at.Attach(ctx, s.Dir, nil)
-	return e.afterEvaluate(ctx, evalRun{item: item, res: res, label: label, model: s.State.Model, dir: s.State.Workspace}, result, err)
+	return e.afterEvaluate(ctx, evalRun{item: item, res: res, label: label, model: s.State.Model, fam: family{model: s.State.Model, claude: s.State.Model}, dir: s.State.Workspace}, result, err)
 }
 
 // opinion is the second evaluation's outcome: its verdict and notes, or
@@ -391,39 +432,72 @@ type opinion struct {
 	unavailable string
 	// result is the session's, for its tokens in the evaluation's report
 	result harness.Result
+	// acct is a Claude second opinion's own account, whose report the
+	// evaluation's carries (nil: a Codex one, on the harness's account)
+	acct *SessionAccount
 }
 
-// secondOpinion runs the evaluation's job on Second, unless its account
-// is paced or stopped. A session that errors, times out or reaches no
-// verdict is unavailable, and the first verdict stands.
-func (e *Evaluator) secondOpinion(ctx context.Context, label string, job harness.Job) opinion {
-	if e.Limits != nil && e.SecondAccount != "" {
-		if r, ok := e.Limits.Reading(e.SecondAccount); ok {
-			var cfg LimitsConfig
-			if e.Thresholds != nil {
-				cfg = e.Thresholds()
-			}
-			if p := pace(time.Now(), r, cfg); p.mode != paceNormal {
-				return opinion{unavailable: fmt.Sprintf("account %s is %s until %s: %s", e.SecondAccount, p.mode, p.resumeAt.UTC().Format(time.RFC3339), p.why)}
+// secondOpinion runs the evaluation's job on the other family (on):
+// Codex after Claude, unless its account is paced or stopped; Claude
+// after Codex, on an account of its own. A session that errors, times
+// out or reaches no verdict is unavailable, and the first verdict
+// stands.
+func (e *Evaluator) secondOpinion(ctx context.Context, ev evalRun, on family, job harness.Job) opinion {
+	label := ev.label
+	h := e.Harness
+	var acct *SessionAccount
+	sc, _ := e.Scopes.ByOrg(ev.item.OrgID)
+	ref := gateway.SessionRef{Kind: string(harness.KindEvaluate), ItemID: ev.item.ID, GoalID: ev.item.GoalID}
+	var open func() (*SessionAccount, error)
+	if on.codex {
+		a, why, ok := e.codexForSecond(ev.res.Goal.Priority)
+		if !ok {
+			return opinion{unavailable: why}
+		}
+		h = e.Codex
+		if a.ID != "" {
+			// an issued Codex account: opened as a first Codex
+			// evaluation's is; the harness's own needs nothing opened
+			open = func() (*SessionAccount, error) {
+				return e.Credentials.Open(withChooser(ctx, e.codexChooser(ev.res.Goal.Priority, false)), ref, sc.NodeID, nil, AdapterCodex)
 			}
 		}
+	} else {
+		open = func() (*SessionAccount, error) {
+			return e.Credentials.Open(ctx, ref, sc.NodeID, e.Accounts, AdapterClaudeCode)
+		}
 	}
-	job.Model = e.SecondModel
+	if open != nil {
+		a, err := open()
+		if err != nil {
+			return opinion{unavailable: truncate(harness.Redact(err.Error(), job.Secrets...), 300)}
+		}
+		defer a.Cleanup()
+		if on.codex {
+			a.Model = on.model
+		}
+		a.Apply(&job)
+		acct = a
+	}
+	job.Model = on.model
 	job.Label = label + " second opinion"
-	e.logf("item %s: second opinion on Codex%s", label, codexModelName(e.SecondModel))
-	result, err := e.Second.Run(ctx, job, nil)
-	op := opinion{cost: result.CostUSD, result: result}
+	e.logf("item %s: second opinion on %s", label, on.logName())
+	result, err := h.Run(ctx, job, nil)
+	op := opinion{cost: result.CostUSD, result: result, acct: acct}
+	if acct != nil {
+		acct.Report(result)
+	}
 	switch {
 	case ctx.Err() != nil:
 		op.unavailable = ctx.Err().Error()
 	case errors.Is(err, context.DeadlineExceeded):
 		op.unavailable = fmt.Sprintf("the session ran out of time (%s)", e.Timeout)
 	case err != nil:
-		op.unavailable = truncate(harness.Redact(err.Error(), job.Secrets...), 300)
+		op.unavailable = truncate(acct.Redact(harness.Redact(err.Error(), job.Secrets...)), 300)
 	default:
-		passed, notes, ok := harness.ParseVerdict(result.Text)
+		passed, notes, ok := harness.ParseVerdict(acct.Redact(result.Text))
 		if !ok {
-			op.unavailable = "no verdict: " + truncate(harness.Redact(result.Text, job.Secrets...), 300)
+			op.unavailable = "no verdict: " + truncate(acct.Redact(harness.Redact(result.Text, job.Secrets...)), 300)
 			break
 		}
 		op.passed = passed
@@ -435,12 +509,35 @@ func (e *Evaluator) secondOpinion(ctx context.Context, label string, job harness
 	return op
 }
 
-// bothNotes labels the two verdicts, Claude's first, so a builder sees
-// both, truncated together to n: each gets half, and one shorter than
-// its half leaves the rest to the other, so neither is cut out.
-func bothNotes(first, second string, secondPassed bool, n int) string {
-	firstHead := "Claude (first evaluation): " + harness.VerdictPass + "\n"
-	secondHead := "Codex (second opinion): " + verdictLine(secondPassed) + "\n"
+// codexForSecond is the Codex account a second opinion for a goal of
+// that priority runs on, or why there is none: none of CodexAccounts
+// has headroom, or — with no CodexAccounts — the harness's own account
+// (CodexAccount) is paced or stopped.
+func (e *Evaluator) codexForSecond(priority string) (AccountConfig, string, bool) {
+	if e.CodexAccounts != nil {
+		a, ok := e.chooseCodex(priority, false)
+		if !ok {
+			return AccountConfig{}, "no Codex account has headroom", false
+		}
+		return a, "", true
+	}
+	if e.Limits != nil && e.CodexAccount != "" {
+		if r, ok := e.Limits.Reading(e.CodexAccount); ok {
+			if p := pace(time.Now(), r, e.thresholds()); p.mode != paceNormal {
+				return AccountConfig{}, fmt.Sprintf("account %s is %s until %s: %s", e.CodexAccount, p.mode, p.resumeAt.UTC().Format(time.RFC3339), p.why), false
+			}
+		}
+	}
+	return AccountConfig{}, "", true
+}
+
+// bothNotes labels the two verdicts, the first family's first, each by
+// its family and model, so a builder sees both, truncated together to
+// n: each gets half, and one shorter than its half leaves the rest to
+// the other, so neither is cut out.
+func bothNotes(firstOn family, first string, secondOn family, second string, secondPassed bool, n int) string {
+	firstHead := firstOn.name() + " (first evaluation, " + firstOn.shortModel() + "): " + harness.VerdictPass + "\n"
+	secondHead := secondOn.name() + " (second opinion, " + secondOn.shortModel() + "): " + verdictLine(secondPassed) + "\n"
 	// the blank line between them, and the two bytes more truncate's
 	// "…" takes than the byte it replaces, in each
 	room := n - len(firstHead) - len(secondHead) - 2 - 4
@@ -465,6 +562,257 @@ func codexModelName(m string) string {
 		return " (its default model)"
 	}
 	return " " + m
+}
+
+// family is the model family an evaluation session runs on, Codex or
+// Claude, and its model (ADR 011).
+type family struct {
+	codex bool
+	// pinned: the item named the family (EvaluatorPin); it waits rather
+	// than fall back to the other
+	pinned bool
+	// model is the session's; claude is the item's Claude evaluate model
+	// (EvaluateModel) whichever family runs, which a Codex one maps from
+	// and a Claude second opinion runs on
+	model, claude string
+	// account is a Codex session's: an issued one (its ID set) or the
+	// harness's own (node.yaml's codex:, no ID)
+	account  AccountConfig
+	priority string
+}
+
+func (f family) name() string {
+	if f.codex {
+		return "Codex"
+	}
+	return "Claude"
+}
+
+// logName is how node.log and the notes' last line name the session:
+// Codex and its model, or the Claude model as it always has.
+func (f family) logName() string {
+	if f.codex {
+		return "Codex" + codexModelName(f.model)
+	}
+	return modelName(f.model)
+}
+
+// fullName is the family and its model: "Codex gpt-6-sol", "Claude
+// sonnet".
+func (f family) fullName() string {
+	if f.codex {
+		return f.logName()
+	}
+	return "Claude " + modelName(f.model)
+}
+
+// shortModel is the model in a verdict's label.
+func (f family) shortModel() string {
+	switch {
+	case f.model != "":
+		return f.model
+	case f.codex:
+		return "its default model"
+	}
+	return "the CLI's default model"
+}
+
+// other is the family a second opinion runs on: Claude after Codex, on
+// the item's Claude evaluate model; Codex after Claude, on its mapping.
+func (f family) other(e *Evaluator) family {
+	if f.codex {
+		return family{model: f.claude, claude: f.claude, priority: f.priority}
+	}
+	return family{codex: true, model: e.codexModel(f.claude), claude: f.claude, priority: f.priority}
+}
+
+// ErrFamilyWaits is an item pinned to a family none of whose accounts
+// has headroom: not evaluated, it waits in evaluating for a later tick
+// (ADR 011 decision 2), and is said once per item (Evaluator.Waits).
+var ErrFamilyWaits = errors.New("the evaluator's pinned family has no account with headroom")
+
+// IsCodexModel says a model names a Codex (OpenAI) model: gpt-….
+func IsCodexModel(m string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(m)), "gpt-")
+}
+
+// EvaluatorPin is the family an item pins its evaluator to (ADR 011
+// decision 2), by the first of its evaluate model and its own or its
+// agent's model (ItemModel) that names one by a full id: gpt-… pins
+// Codex (and is the model), claude-… pins Claude. A bare tier (haiku,
+// sonnet, opus) is a strength, not a family — the platform names one
+// for nearly every item — so it pins nothing and maps to Codex's tier
+// (CodexModel). "" is no pin.
+func EvaluatorPin(ctx context.Context, gw Gateway, item gateway.WorkItem) (adapter, model string) {
+	for _, m := range []string{item.EvaluateModel, ItemModel(ctx, gw, item)} {
+		m = strings.TrimSpace(m)
+		switch {
+		case IsCodexModel(m):
+			return AdapterCodex, m
+		case strings.HasPrefix(strings.ToLower(m), "claude-"):
+			return AdapterClaudeCode, ""
+		}
+	}
+	return "", ""
+}
+
+// family chooses the family the item's evaluation runs on: its pin,
+// else Codex when a Codex account has headroom for the goal's priority
+// (chooseCodex), else Claude. A Codex pin with no Codex headroom is
+// ErrFamilyWaits.
+func (e *Evaluator) family(ctx context.Context, item gateway.WorkItem, priority, label string) (family, error) {
+	claude := EvaluateModel(ctx, e.GW, item, e.Model)
+	fam := family{model: claude, claude: claude, priority: priority}
+	switch pin, model := EvaluatorPin(ctx, e.GW, item); pin {
+	case AdapterClaudeCode:
+		return fam, nil
+	case AdapterCodex:
+		a, ok := e.chooseCodex(priority, true)
+		if !ok {
+			return fam, e.waits(item.ID, label, model)
+		}
+		return family{codex: true, pinned: true, model: model, claude: claude, account: a, priority: priority}, nil
+	}
+	if a, ok := e.chooseCodex(priority, false); ok {
+		return family{codex: true, model: e.codexModel(claude), claude: claude, account: a, priority: priority}, nil
+	}
+	return fam, nil
+}
+
+// waits is ErrFamilyWaits for an item pinned to Codex, said once for
+// the item until it is evaluated.
+func (e *Evaluator) waits(itemID, label, model string) error {
+	if e.Waits.First(itemID) {
+		e.logf("item %s: pinned to Codex %s, and no Codex account has headroom: it waits in evaluating for a later tick (said once for the item)", label, model)
+	}
+	return ErrFamilyWaits
+}
+
+// openFamily opens the session's account on its family: a Codex one on
+// the chosen issued credential (by the same rule, among those the
+// claim-time read issues) or on the harness's own; a Claude one as
+// ever. An unpinned Codex evaluation none of whose issued credentials
+// has headroom after all runs on Claude instead; a pinned one waits.
+func (e *Evaluator) openFamily(ctx context.Context, ref gateway.SessionRef, nodeID string, fam family, label string) (*SessionAccount, family, error) {
+	if fam.codex {
+		var acct *SessionAccount
+		var err error
+		if fam.account.ID == "" {
+			acct, err = e.Credentials.OpenOwn(ctx, ref, nodeID, fam.account)
+		} else {
+			acct, err = e.Credentials.Open(withChooser(ctx, e.codexChooser(fam.priority, fam.pinned)), ref, nodeID, nil, AdapterCodex)
+		}
+		switch {
+		case err == nil:
+			e.Waits.Forget(ref.ItemID)
+			acct.Model = fam.model
+			return acct, fam, nil
+		case !errors.Is(err, ErrNoAccount):
+			return nil, fam, err
+		case fam.pinned:
+			return nil, fam, e.waits(ref.ItemID, label, fam.model)
+		}
+		e.logf("item %s: no issued Codex credential has headroom after all; evaluating on Claude", label)
+		fam = family{model: fam.claude, claude: fam.claude, priority: fam.priority}
+	}
+	acct, err := e.Credentials.Open(ctx, ref, nodeID, e.Accounts, AdapterClaudeCode)
+	return acct, fam, err
+}
+
+// CodexHeadroom says whether a Codex account has headroom for an
+// unpinned evaluation of that priority (chooseCodex).
+func (e *Evaluator) CodexHeadroom(priority string) bool {
+	_, ok := e.chooseCodex(priority, false)
+	return ok
+}
+
+// hasCodex says the evaluator has Codex to run on at all: its harness,
+// and an account — any of CodexAccounts, or (nil CodexAccounts) the
+// harness's own.
+func (e *Evaluator) hasCodex() bool {
+	return e.Codex != nil && (e.CodexAccounts == nil || len(e.CodexAccounts()) > 0)
+}
+
+// chooseCodex is the Codex account an evaluation of that priority runs
+// on (codexChooser over CodexAccounts); none without a Codex harness or
+// any Codex account.
+func (e *Evaluator) chooseCodex(priority string, pinned bool) (AccountConfig, bool) {
+	if e.Codex == nil || e.CodexAccounts == nil {
+		return AccountConfig{}, false
+	}
+	accounts := e.CodexAccounts()
+	if len(accounts) == 0 {
+		return AccountConfig{}, false
+	}
+	return e.codexChooser(priority, pinned)(accounts)
+}
+
+// codexChooser judges Codex accounts by their readings under codex:
+// and the node's thresholds, as ChooseAccount judges Claude's for the
+// priority: a paced account takes only urgent and high work, a stopped
+// one nothing. A pinned evaluation — work already built with nowhere
+// else to go — also takes a paced subscription, as accountToFinish does.
+func (e *Evaluator) codexChooser(priority string, pinned bool) func([]AccountConfig) (AccountConfig, bool) {
+	return func(accounts []AccountConfig) (AccountConfig, bool) {
+		var readings map[string]harness.RateLimit
+		if e.Limits != nil {
+			readings = e.Limits.CodexReadings()
+		}
+		now, cfg := time.Now(), e.thresholds()
+		if a, ok := ChooseAccount(now, accounts, readings, cfg, priority, true); ok || !pinned {
+			return a, ok
+		}
+		subs := slices.DeleteFunc(slices.Clone(accounts), func(a AccountConfig) bool { return a.Kind == AccountAPI })
+		return ChooseAccount(now, subs, readings, cfg, "high", true)
+	}
+}
+
+func (e *Evaluator) codexModel(claude string) string {
+	if e.CodexModel != nil {
+		return e.CodexModel(claude)
+	}
+	return CodexConfig{}.CodexModel(claude)
+}
+
+func (e *Evaluator) thresholds() LimitsConfig {
+	if e.Thresholds != nil {
+		return e.Thresholds()
+	}
+	return LimitsConfig{}
+}
+
+// OncePer remembers what has been said once, by key; a nil one
+// remembers nothing (First is always true).
+type OncePer struct {
+	mu   sync.Mutex
+	seen map[string]bool
+}
+
+// First says whether key is new, and remembers it.
+func (o *OncePer) First(key string) bool {
+	if o == nil {
+		return true
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.seen[key] {
+		return false
+	}
+	if o.seen == nil {
+		o.seen = map[string]bool{}
+	}
+	o.seen[key] = true
+	return true
+}
+
+// Forget lets key be said again.
+func (o *OncePer) Forget(key string) {
+	if o == nil {
+		return
+	}
+	o.mu.Lock()
+	delete(o.seen, key)
+	o.mu.Unlock()
 }
 
 // Cents rounds a dollar cost to whole cents.

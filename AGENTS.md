@@ -270,22 +270,37 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   kept at `CodexLoginCache` per id and secret version), a key as
   `CODEX_API_KEY`/`OPENAI_API_KEY`, and the harness writes only
   `config.toml` into a home the job names.
-- **The second opinion** (`internal/node/evaluate.go`,
-  `docs/adr/adr-005-codex-second-opinion.md`): `Evaluator.Second` is
-  the Codex harness (`codexSecondOpinion` in `nodecmd.go`: built when
-  node.yaml has a `codex:` block and its binary is found, on its first
-  account; else none and the node evaluates as before) and
-  `SecondModel` is `CodexModel` of the evaluate model. An item of an
-  `urgent` or `high` goal whose Claude verdict passes is evaluated again
-  on it with the same prompt and workspace: both pass is passed, a
-  Codex fail is failed; the notes carry both, `Claude (first
-  evaluation): VERDICT …` and `Codex (second opinion): VERDICT …`,
-  truncated together to 4000, and the cost is the sum — all in the one
-  `EvaluateWorkItem`. A Codex session that errors, times out or reaches
-  no verdict, or whose `codex:<account>` is paced or stopped, keeps the
-  first verdict with `Codex second opinion unavailable: <reason>`. A
-  first fail or a normal/low goal never runs Codex. Builders on Codex
-  come later, behind a per-project setting.
+- **The evaluator's family** (`internal/node/evaluate.go`,
+  `docs/adr/adr-011-evaluations-run-on-the-family-with-headroom.md`,
+  amending `adr-005-codex-second-opinion.md`): `Evaluator.Codex` is the
+  Codex harness (`codexSecondOpinion` in `nodecmd.go`: built whenever
+  the codex binary is found, with or without a `codex:` block, on the
+  block's first account) and `CodexAccounts` is
+  `Loop.CodexCandidates` — the issued Codex accounts `Known` holds and
+  node.yaml's (`CodexOwnAccount`, no ID). Before an evaluation starts
+  the evaluator judges them with `ChooseAccount` over
+  `Limits.CodexReadings` for the goal's priority: one with headroom
+  makes it a Codex session on `CodexModel` of the evaluate model
+  (defaults gpt-6-astra/sol/luna), opened by `Credentials.Open`
+  (adapter codex) or `OpenOwn`; else Claude as before. A full `gpt-…`
+  evaluate/item/agent model pins Codex (`EvaluatorPin`; no headroom is
+  `ErrFamilyWaits`, the item stays in evaluating, said once per item by
+  `Waits`), a `claude-…` one pins Claude; a bare tier pins nothing. The
+  loop starts an evaluation on Codex room (`Loop.CodexRoom`) when no
+  Claude account has any. An item of an `urgent` or `high` goal whose
+  first verdict passes is evaluated again on the other family with the
+  same prompt and workspace: both pass is passed, a second fail is
+  failed; the notes carry both, `Codex (first evaluation, gpt-6-astra):
+  VERDICT …` and `Claude (second opinion, opus): VERDICT …` (or Claude
+  first, Codex second), truncated together to 4000, and the cost and
+  tokens are the sum — all in the one `EvaluateWorkItem`, whose usage
+  names `adapter: codex` and the gpt-6 model for a Codex evaluation. A
+  second session that errors, times out or reaches no verdict, or no
+  Codex account with headroom, keeps the first verdict with `<Family>
+  second opinion unavailable: <reason>`. A first fail or a normal/low
+  goal never runs a second opinion. With neither a `codex:` block nor
+  an issued Codex account the node evaluates as before. Builders on
+  Codex come later, behind a per-project setting.
 - **Tools** (`internal/tools/`, ADR-006, trd §3 Tools): the
   claim-time read `gateway.Session` hands a session its credentials and
   its `tools` (`[]tools.Tool`, secrets decrypted for the claiming
