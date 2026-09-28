@@ -1,6 +1,6 @@
 {"type":"thread.started","thread_id":"th-mcp-error"}
 {"type":"turn.started"}
-{"type":"item.started","item":{"id":"item_1","type":"mcp_tool_call","server":"prologue","tool":"mesh_document","arguments":{"project":"runsheet/mesh","slug":"trd"},"result":null,"error":null,"status":"in_progress"}}
-{"type":"item.completed","item":{"id":"item_1","type":"mcp_tool_call","server":"prologue","tool":"mesh_document","arguments":{"project":"runsheet/mesh","slug":"trd"},"result":null,"error":{"message":"tool call failed for `prologue/mesh_document`: HTTP status client error (401 Unauthorized) for url (https://api.runsheet.dev/mcp)"},"status":"failed"}}
+{"type":"item.started","item":{"id":"item_1","type":"mcp_tool_call","server":"mesh-context","tool":"mesh_document","arguments":{"project":"runsheet/mesh","slug":"trd"},"result":null,"error":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_1","type":"mcp_tool_call","server":"mesh-context","tool":"mesh_document","arguments":{"project":"runsheet/mesh","slug":"trd"},"result":null,"error":{"message":"tool call failed for `mesh-context/mesh_document`: HTTP status client error (401 Unauthorized) for url (https://api.runsheet.dev/mcp)"},"status":"failed"}}
 {"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"VERDICT: PASS"}}
 {"type":"turn.completed","usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":5}}

@@ -123,6 +123,9 @@ func TestClaudeCodeRefusesClashWithBuiltin(t *testing.T) {
 	}
 }
 
+// prologue is the built-in's old name, a read-side alias until
+// 2026-10-28 (IsBuiltin) and never the clash: a console tool named that
+// is an ordinary tool.
 func TestToolNamedPrologueIsRendered(t *testing.T) {
 	servers, _, err := ClaudeCode(meshContext(), []Tool{{Name: "prologue", Transport: Remote, URL: "https://x"}})
 	if err != nil {
@@ -291,6 +294,16 @@ func TestRedact(t *testing.T) {
 	}
 	if got := Redact("abcdef and abc", []string{"A=abc", "B=abcdef", "C="}); got != "[redacted] and [redacted]" {
 		t.Fatalf("longest first: %q", got)
+	}
+}
+
+// IsBuiltin knows the built-in by its name and, until 2026-10-28, its
+// old one, prologue.
+func TestIsBuiltin(t *testing.T) {
+	for name, want := range map[string]bool{"mesh-context": true, "prologue": true, "search": false, "": false} {
+		if got := IsBuiltin(name); got != want {
+			t.Errorf("IsBuiltin(%q) = %v, want %v", name, got, want)
+		}
 	}
 }
 
