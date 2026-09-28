@@ -127,7 +127,7 @@ for the goal's priority, else on Claude; a full `gpt-…` evaluate or
 agent model pins Codex (the item waits in evaluating without headroom),
 a `claude-…` one pins Claude. The second opinion on an urgent or high
 pass runs on the *other* family — Claude after Codex — and the labels
-name family and model: `Codex (first evaluation, gpt-6-astra): VERDICT:
+name family and model: `Codex (first evaluation, gpt-6-sol): VERDICT:
 PASS`, `Claude (second opinion, opus): VERDICT …`. The `Evaluator`'s
 `Second`, `SecondModel` and `SecondAccount` are now `Codex`,
 `CodexModel` and `CodexAccount`, beside `CodexAccounts`. `mesh node

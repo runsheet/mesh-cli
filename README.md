@@ -1341,8 +1341,8 @@ codex:
     - name: api-file
       api_key_file: ~/.mesh/codex/api.key
   models:                       # the Codex model for each Claude tier
-    opus: gpt-6-astra           # default for Opus
-    sonnet: gpt-6-sol           # default for Sonnet
+    opus: gpt-6-astra           # override — default for Opus is gpt-6-sol
+    sonnet: gpt-6-sol           # override — default for Sonnet is gpt-6-luna
     haiku: gpt-6-luna           # default for Haiku
 ```
 
@@ -1350,9 +1350,12 @@ Each account has a `name` and exactly one of `home`, `api_key_env` and
 `api_key_file`. A load that finds anything else is refused.
 
 **Default model mappings:** when a planner or agent model names a bare tier
-(`opus`, `sonnet`, `haiku`) for a Codex evaluator, the node maps it using the
-defaults above. Full model ids (`gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`) pass
-through unchanged. Defaults may be overridden in the `models:` block.
+(`opus`, `sonnet`, `haiku`) for a Codex evaluator, the node maps it to
+`gpt-6-sol` for Opus and `gpt-6-luna` for Sonnet and Haiku unless the
+`models:` block overrides it. `gpt-6-astra` costs about three times what
+`gpt-6-sol` does for one evaluation, so it never runs unless an item pins
+it or `models:` names it. Full model ids (`gpt-6-astra`, `gpt-6-sol`,
+`gpt-6-luna`) pass through unchanged.
 
 **Issued credentials:** An OpenAI credential added in the console and serving
 `codex` is handed to the claimed session by the claim-time read. A ChatGPT
@@ -1364,10 +1367,10 @@ environment only (docs/adr/adr-005-accounts-on-the-node.md).
 
 `models` maps the Claude tiers to Codex models. A session asked for
 `opus`, `sonnet` or `haiku` runs on that tier's Codex model, and so does
-a full id of that family (`claude-opus-5` → `gpt-6-astra`). A tier left
-out of `models` takes its default: `gpt-6-astra`, `gpt-6-sol`,
-`gpt-6-luna`. An empty model, or one of no tier, runs on Codex's own
-default.
+a full id of that family (`claude-opus-5` → `gpt-6-sol`). A tier left
+out of `models` takes its default: `gpt-6-sol` for Opus, `gpt-6-luna`
+for Sonnet and Haiku. An empty model, or one of no tier, runs on
+Codex's own default.
 
 The session's MCP servers (Prologue) are written to `config.toml` in
 its temporary home. Secrets are named there by variable, never by value
