@@ -1,0 +1,4 @@
+{"timestamp":"2026-09-25T10:15:00.000Z","type":"session_meta","payload":{"id":"01a0c8f0-9e21-71b6-8b3f-1c9f0a2b3c4d","timestamp":"2026-09-25T10:15:00.000Z","cwd":"/home/user/work","originator":"codex_cli_rs","cli_version":"0.157.0"}}
+{"timestamp":"2026-09-25T10:15:02.000Z","type":"event_msg","payload":{"type":"task_started","model_context_window":258400}}
+{"timestamp":"2026-09-25T10:15:07.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":25133,"cached_input_tokens":12481,"cache_write_input_tokens":12646,"output_tokens":78,"reasoning_output_tokens":0},"last_token_usage":{"input_tokens":25133,"cached_input_tokens":12481,"cache_write_input_tokens":12646,"output_tokens":78,"reasoning_output_tokens":0},"model_context_window":258400},"rate_limits":null}}
+{"timestamp":"2026-09-25T10:15:08.000Z","type":"event_msg","payload":{"type":"agent_message","text":"hello from codex"}}

@@ -174,6 +174,88 @@ func TestCodexRunPlanAccount(t *testing.T) {
 	}
 }
 
+// A session whose job.Env carries CODEX_HOME=<dir> runs there: the
+// harness writes only config.toml into it, an auth.json already there
+// (the node's own issued login) is untouched, no CODEX_HOME of the
+// harness's own reaches the process (the job's wins), and the directory
+// is still there — with its auth.json unwritten-back — after Run
+// returns: the session that made it owns it, not the harness.
+func TestCodexRunJobCodexHome(t *testing.T) {
+	out, ws, home := t.TempDir(), t.TempDir(), t.TempDir()
+	const auth = `{"auth_mode":"chatgpt","tokens":{"refresh_token":"issued"}}`
+	if err := os.WriteFile(filepath.Join(home, "auth.json"), []byte(auth), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c := &Codex{Binary: fakeCodex(t, out, "codex_exec_apikey.jsonl"), HomeRoot: t.TempDir(),
+		Account: CodexAccount{Name: "plus"}}
+	res, err := c.Run(context.Background(), Job{Workspace: ws, Prompt: "say hello", Model: "gpt-6-astra",
+		MCPServers: testServers(), Env: []string{"CODEX_HOME=" + home}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Success || res.Text != "hello from codex" {
+		t.Fatalf("result %+v", res)
+	}
+	if got := strings.TrimSpace(readFile(t, filepath.Join(out, "home"))); got != home {
+		t.Fatalf("CODEX_HOME %q, want the job's %q", got, home)
+	}
+	if want, _ := CodexMCPConfig(testServers()); readFile(t, filepath.Join(out, "config.toml")) != want {
+		t.Fatalf("config.toml %q", readFile(t, filepath.Join(out, "config.toml")))
+	}
+	if got := readFile(t, filepath.Join(home, "auth.json")); got != auth {
+		t.Fatalf("the job's own auth.json was touched: %q", got)
+	}
+	if _, err := os.Stat(home); err != nil {
+		t.Fatalf("CODEX_HOME %s is gone after Run, want it left for its own AccountSession: %v", home, err)
+	}
+	env := envOf(t, filepath.Join(out, "env"))
+	if got := env["CODEX_HOME"]; len(got) != 1 || got[0] != home {
+		t.Fatalf("CODEX_HOME in env %q, want exactly the job's", got)
+	}
+}
+
+// The newest session file under CODEX_HOME/sessions carries the plan's
+// rate-limit standing, and Run sets Result.RateLimit from it since the
+// exec stream carries none.
+func TestCodexRunReadsSessionRateLimits(t *testing.T) {
+	root, ws := t.TempDir(), t.TempDir()
+	fixture, err := filepath.Abs(filepath.Join("testdata", "codex_session_ratelimits.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := filepath.Abs(filepath.Join("testdata", "codex_exec_apikey.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\n" +
+		"cat >/dev/null\n" +
+		"mkdir -p \"$CODEX_HOME/sessions/2026/09/28\"\n" +
+		"cp " + fixture + " \"$CODEX_HOME/sessions/2026/09/28/rollout-2026-09-28T14-02-01-01a0d802.jsonl\"\n" +
+		"cat " + stream + "\n"
+	bin := filepath.Join(t.TempDir(), "codex")
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MESH_TEST_CODEX_KEY", "sk-x")
+	c := &Codex{Binary: bin, HomeRoot: root, Account: CodexAccount{Name: "api", APIKeyEnv: "MESH_TEST_CODEX_KEY"}}
+	res, err := c.Run(context.Background(), Job{Workspace: ws, Prompt: "hi", Model: "gpt-6-astra"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.RateLimit == nil {
+		t.Fatal("Result.RateLimit is nil, want the session file's reading")
+	}
+	if res.RateLimit.Status != "allowed" {
+		t.Fatalf("status %q, want allowed", res.RateLimit.Status)
+	}
+	if got := res.RateLimit.FiveHour.Utilization; got != 0.415 {
+		t.Fatalf("five-hour utilization %v, want 0.415", got)
+	}
+	if got := res.RateLimit.SevenDay.Utilization; got != 0.1275 {
+		t.Fatalf("seven-day utilization %v, want 0.1275", got)
+	}
+}
+
 // Codex refreshes a plan's tokens in its home, and the refresh token
 // rotates: a changed auth.json is written back to the login home.
 func TestCodexRunWritesBackRefreshedLogin(t *testing.T) {

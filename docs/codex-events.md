@@ -191,23 +191,42 @@ hand when OpenAI's prices change.
 
 **`codex exec --json` carries no rate-limit information, on any
 login.** The exec event schema has no field for it (`exec_events.rs`
-at 0.157.0). The session file Codex writes under `$CODEX_HOME/sessions/`
-has an `event_msg` / `token_count` with a `rate_limits` field. On this
-API-key login it was `null`. On a ChatGPT-plan login the source says
-it is a `RateLimitSnapshot`: `primary` and `secondary` windows of
+at 0.157.0), so `ParseCodexStream` leaves `Result.RateLimit` nil. The
+session file Codex writes under `$CODEX_HOME/sessions/` (nested by
+date, `rollout-*.jsonl`) has it instead: an `event_msg` / `token_count`
+line's `rate_limits` field. On an API-key login it is `null`
+(`codex_session_ratelimits_null.jsonl`). On a ChatGPT-plan login it is a
+`RateLimitSnapshot`: `primary` and `secondary` windows of
 `{used_percent 0–100, window_minutes, resets_at (epoch s)}`, plus
-`plan_type`, `credits` and `limit_id`. That would map onto
-`harness.RateLimit` with `primary` (300 minutes) → `FiveHour` and
-`secondary` (10080 minutes) → `SevenDay`, choosing each window by its
-`window_minutes`. **None of that is verified**: no plan login exists on
-this machine and it is not in the stream the adapter reads.
+`plan_type`, `credits` and `limit_id`.
 
-So `ParseCodexStream` leaves `Result.RateLimit` nil, and **only API
-dollars are counted for Codex.** A plan session's list-price cost is a
-measure of use, not money spent. Feeding plan windows to the headroom
-logic needs a plan fixture first, read from the session file or from
-`codex app-server`'s rate-limit notifications. It is a follow-up, not
-part of this parser.
+**`harness.ParseCodexSessionLimits(home string) (*harness.RateLimit,
+error)`** (`internal/harness/codexlimits.go`) reads it: the newest
+`*.jsonl` under `home/sessions`, its last line carrying a non-null
+`rate_limits`, `primary`/`secondary` placed onto `RateLimit.FiveHour`/
+`SevenDay` by each window's own `window_minutes` (300 → `FiveHour`,
+10080 → `SevenDay`; `plan_type` is not mapped onto `RateLimit` today),
+`used_percent` become each window's `Utilization` (0–1), and `Status`
+is `"allowed"` — a snapshot exists only while sessions may run. No
+sessions directory, no `.jsonl` file, or none carrying a snapshot is
+`(nil, nil)`, not an error. `Codex.Run` calls it after the exec ends
+and sets `Result.RateLimit` from it when the stream carried none (which
+it always does today), so a Codex session paces itself as a Claude one
+does (`internal/node/limits.go`).
+
+**The shape is from codex-cli 0.157.0's source
+(`codex-rs/protocol/src/protocol.rs`'s `RateLimitSnapshot`), unverified
+on a live ChatGPT-plan login as of 2026-09-28**: this machine still has
+none, so `internal/harness/testdata/codex_session_ratelimits.jsonl` (a
+plan snapshot) and `codex_session_ratelimits_null.jsonl` (the null
+case, matching the API-key run above) are modelled on the source and
+the doc above, not captured from a run. The first live plan run should
+replace them and update this note.
+
+**Only API dollars are counted for Codex** regardless: a plan session's
+list-price cost is a measure of use, not money spent
+(`harness.CodexPrices`); the rate-limit reading above is what paces a
+plan account, not what it costs.
 
 ## Errors
 

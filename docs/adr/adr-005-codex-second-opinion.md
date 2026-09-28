@@ -84,3 +84,33 @@ and what a first-pass rate on Codex would be.
   its tokens at list price (`CodexPrices`).
 - Only the first `codex:` account is used; choosing among several Codex
   accounts by headroom waits for a platform-issued Codex credential.
+
+## Amendment, 2026-09-28: limits from the session file, a session in a home the node prepared
+
+Goal `evaluations-run-on-codex` (item 1) changes both things this ADR
+said were missing.
+
+**Codex's exec stream carries no plan limits today** stands — the exec
+event schema still has none — but the session file under
+`$CODEX_HOME/sessions/` does: `harness.ParseCodexSessionLimits(home)`
+reads the newest one's last `rate_limits` snapshot and maps it onto
+`harness.RateLimit` (`docs/codex-events.md` "Plan rate limits"), and
+`Codex.Run` sets `Result.RateLimit` from it when the stream carried
+none — every time, until the exec schema grows the field itself. A
+Codex account's readings still land under `codex:<account>`
+(`CodexLimitsAccount`) and still never pace or stop a Claude session;
+what changes is that they are no longer always empty. The shape is
+modelled on codex-cli 0.157.0's source, unverified on a live
+ChatGPT-plan login as of this date (no plan login exists on the node
+that verified it) — the first live plan run should confirm it and
+update the doc's note.
+
+**A session may run in a home the node prepared.** `Codex.prepareHome`
+now honours `job.Env`'s own `CODEX_HOME=<dir>` when the caller sets
+one: it writes only the MCP config into that directory, copies no login
+from `Account`, and `close` neither removes the directory nor writes a
+login back — the `AccountSession` that made it (an issued `openai`
+credential landing an oauth login there, the goal's item 2) owns its
+lifetime, not the harness. Without a `job.Env` `CODEX_HOME`, behaviour
+is unchanged: a fresh temporary home per run, made and removed by the
+harness as before.
