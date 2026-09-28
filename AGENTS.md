@@ -171,8 +171,23 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `update.confirm_within` (`Config.Update.ConfirmWithin`,
   `Config.ConfirmWithin()`) is how long a new process keeps trying to
   confirm before giving up — default 5 minutes
-  (`selfupdate.DefaultConfirmWithin`); a later goal wires the loop's own
-  heartbeat retry to it.
+  (`selfupdate.DefaultConfirmWithin`). **The confirm window** opens at
+  process start (`Loop.Started`): while an update is pending
+  (`Loop.Confirming` = `StartCheck.To`), `registerNode` retries a failed
+  registration (60 s per attempt) on the heartbeat interval
+  (`confirmWindow.retry`) and the loop keeps heartbeating, each failure
+  logged `'self-update: confirming <to>: heartbeat <org>: <err>; retrying
+  for <left> more'` (a timeout adds `(the platform is slow)`,
+  `PlatformSlow`) and recorded by `Updater.NoteConfirmError`. The first
+  heartbeat through confirms. The window elapsing with none through is
+  `ErrUnconfirmed` (`*UnconfirmedError`, naming the last error) from
+  `registerNode` or `Run`; `endRun` logs `'self-update: <to> did not
+  confirm within <window>: <err>; exiting for the service to start it
+  again'` and the process exits 1 — the start count rolls back on the
+  third, naming that error. Only a failure to *run* (`NoteStartFailure`)
+  is "did not start"; a slow platform never is. With no update pending
+  a failed heartbeat or registration is as before. `mesh node upgrade`
+  prints the window and `~/.mesh/node.log` after the restart.
   `mesh node update [version]` (`internal/commands/nodeupdate.go`) does
   it by hand on the same `ReleaseUpdater`: verify, drain the pidfile's
   node, swap; `--verify-only` verifies into a temp dir. `mesh node
@@ -432,13 +447,19 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   no tokens, no actual cost; Prologue and unpriced tools are none.
   A platform without `recordToolUsage` is said once per run and each
   call logged instead; it never fails the item.
-  Every server's calls, errors and ms (`Result.ToolReport()`) ride the
-  usage report as `tools` beside the total (`SessionAccount.Add` merges
-  carried sessions' rows); a platform without the field gets it resent
-  without (`ErrNoToolUsage`, said once, the list logged). A served
-  console tool never called, or whose first call errored, is named by
+  Every server's calls, errors, ms and first error's text (200 chars,
+  redacted; `Result.ToolReport()`) ride the usage report as `tools`
+  beside the total (`SessionAccount.Add` merges carried sessions' rows,
+  the first error kept); a platform without the field gets it resent
+  without (`ErrNoToolUsage`, said once, the list logged), and an entry's
+  `error` goes only when the introspected `UsageReportInput` takes it
+  (kept an hour). A Codex call's error is its `error.message`, and a
+  server Codex says failed to start is an error with no call. A served
+  console tool never called, or whose first call errored, and any other
+  server that errored — the built-in `prologue` first — is named by
   `SessionTools.UseNote` — a build's progress note, the evaluation's
-  notes, a plan's or research's log line (ADR-006 amendment 2026-09-28).
+  notes, a plan's or research's log line (ADR-006 amendments
+  2026-09-28).
 - **Models are per kind of session.** `Models` in `~/.mesh/node.yaml`
   (`default`, `build`, `evaluate`, `plan`, `channel`, `research`,
   `rebase`) or the matching

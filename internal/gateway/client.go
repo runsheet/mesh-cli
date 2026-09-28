@@ -82,7 +82,10 @@ type Client struct {
 	// to take of `scaling` (see HeartbeatNode); Now is its clock,
 	// time.Now when nil.
 	scalingSchema scalingProbe
-	Now           func() time.Time
+	// toolErrorSchema is whether the gateway's usage report's `tools`
+	// entry was last found to take `error` (see takesToolError).
+	toolErrorSchema toolErrorProbe
+	Now             func() time.Time
 }
 
 // New returns a client for baseURL (scheme+host, no trailing slash) with
@@ -257,6 +260,13 @@ func (c *Client) mutateWithUsage(ctx context.Context, field, aggregateID string,
 	if withTools && c.usageWithoutTools.Load() {
 		delete(um, "tools")
 	}
+	if rows, ok := um["tools"].([]any); ok && toolRowsCarry(rows, "error") && !c.takesToolError(ctx) {
+		for _, r := range rows {
+			if row, ok := r.(map[string]any); ok {
+				delete(row, "error")
+			}
+		}
+	}
 	err = c.Mutate(ctx, field, aggregateID, withUsage)
 	var ge *Error
 	if err != nil && errors.As(err, &ge) && unknownField(ge.Message, "tools") {
@@ -276,6 +286,81 @@ func (c *Client) mutateWithUsage(ctx context.Context, field, aggregateID string,
 		return ErrNoToolUsage
 	}
 	return err
+}
+
+// toolRowsCarry says whether any of a usage map's tools rows has key.
+func toolRowsCarry(rows []any, key string) bool {
+	for _, r := range rows {
+		if row, ok := r.(map[string]any); ok {
+			if _, ok := row[key]; ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// toolErrorProbe is the cached answer to whether UsageReportInput's
+// `tools` entry takes `error`, and when it was asked.
+type toolErrorProbe struct {
+	mu    sync.Mutex
+	at    time.Time
+	takes bool
+}
+
+// takesToolError says whether the gateway's UsageReportInput has a
+// `tools` whose entry takes `error` — asked by introspection only when
+// a report carries one, and kept for ScalingProbeEvery, as the
+// heartbeat's `scaling` is: a platform older than the field would
+// refuse the whole list, and the report would lose it to the no-tools
+// resend. A failed probe is a no, kept as long; a scalar `tools` takes
+// any shape.
+func (c *Client) takesToolError(ctx context.Context) bool {
+	p := &c.toolErrorSchema
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := c.now()
+	if !p.at.IsZero() && now.Sub(p.at) < ScalingProbeEvery {
+		return p.takes
+	}
+	type typeRef struct {
+		Kind        string `json:"kind"`
+		InputFields []struct {
+			Name string `json:"name"`
+		} `json:"inputFields"`
+		OfType *typeRef `json:"ofType"`
+	}
+	var out struct {
+		Type *struct {
+			InputFields []struct {
+				Name string  `json:"name"`
+				Type typeRef `json:"type"`
+			} `json:"inputFields"`
+		} `json:"__type"`
+	}
+	p.at, p.takes = now, false
+	q := `{ __type(name: "UsageReportInput") { inputFields { name type { kind inputFields { name } ofType { kind inputFields { name } ofType { kind inputFields { name } ofType { kind inputFields { name } } } } } } } }`
+	if err := c.Query(ctx, q, nil, &out); err != nil || out.Type == nil {
+		return false
+	}
+	for _, f := range out.Type.InputFields {
+		if f.Name != "tools" {
+			continue
+		}
+		t := &f.Type
+		for (t.Kind == "NON_NULL" || t.Kind == "LIST") && t.OfType != nil {
+			t = t.OfType
+		}
+		if t.Kind == "SCALAR" {
+			p.takes = true
+		}
+		for _, sf := range t.InputFields {
+			if sf.Name == "error" {
+				p.takes = true
+			}
+		}
+	}
+	return p.takes
 }
 
 // usageInput is a UsageReport as a map for a command's `usage` key: its
@@ -1998,12 +2083,16 @@ type UsageReport struct {
 }
 
 // ToolCallReport is one MCP server's calls in a session's UsageReport:
-// how many, how many errored, and their wall time in milliseconds.
+// how many, how many errored, their wall time in milliseconds, and the
+// first error's text (at most 200 characters, redacted by the harness).
+// Error is sent only to a gateway whose input takes it
+// (takesToolError).
 type ToolCallReport struct {
 	Tool   string `json:"tool"`
 	Calls  int64  `json:"calls"`
 	Errors int64  `json:"errors"`
 	Ms     int64  `json:"ms"`
+	Error  string `json:"error,omitempty"`
 }
 
 // The kinds a UsageReport's CredentialKind takes.

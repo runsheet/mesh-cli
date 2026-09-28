@@ -513,3 +513,20 @@ func TestSweepKeptSessions(t *testing.T) {
 		t.Fatalf("young kept dir was removed: %v", err)
 	}
 }
+
+// A tool's error text is redacted of the job's secrets before it
+// leaves Run: it rides the usage report and the item's note.
+func TestCodexRunRedactsToolErrors(t *testing.T) {
+	t.Setenv("MESH_TEST_CODEX_KEY", "sk-x")
+	c := &Codex{Binary: fakeCodex(t, t.TempDir(), "codex_mcp_call_error.jsonl"), HomeRoot: t.TempDir(),
+		Account: CodexAccount{Name: "api", APIKeyEnv: "MESH_TEST_CODEX_KEY"}}
+	res, err := c.Run(context.Background(), Job{Workspace: t.TempDir(), Prompt: "hi", Model: "gpt-6-sol",
+		Secrets: []string{"api.runsheet.dev"}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := res.Tools["prologue"].FirstError
+	if strings.Contains(got, "api.runsheet.dev") || !strings.Contains(got, Redacted) {
+		t.Fatalf("FirstError = %q, want the secret redacted", got)
+	}
+}

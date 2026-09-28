@@ -86,6 +86,10 @@ type Fake struct {
 	// per-tool calls) with "Unknown field", as a platform older than
 	// tools-show-their-use whose UsageReportInput has only the total.
 	NoUsageTools bool
+	// NoToolError refuses a usage report whose `tools` entry carries
+	// `error`, and introspection answers the entry without it, as a
+	// platform older than the tool entry's error text.
+	NoToolError bool
 	// RefuseReleases answers every releaseWorkItem with a refusal and
 	// changes nothing, as a platform that will not take a node's release.
 	// By default the fake follows the contract (trd §1): a node releases
@@ -234,6 +238,13 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case strings.HasPrefix(q, "mutation { signIn"):
 		writeData(w, map[string]any{"signIn": map[string]any{"id": f.UserID}})
+	case strings.Contains(q, `__type(name: "UsageReportInput")`):
+		f.Reads = append(f.Reads, Call{Name: "__type UsageReportInput", Input: map[string]any{}})
+		if f.Unsupported["__type"] {
+			writeErrors(w, 200, "GraphQL introspection is not allowed")
+			return
+		}
+		writeData(w, map[string]any{"__type": f.usageReportInputType()})
 	case strings.Contains(q, "__type("):
 		f.Reads = append(f.Reads, Call{Name: "__type", Input: map[string]any{}})
 		if f.Unsupported["__type"] {
@@ -274,6 +285,17 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 			if _, ok := usage["tools"]; ok {
 				writeErrors(w, 200, `Variable "$in" got invalid value; In field "usage": In field "tools": Unknown field "tools" is not defined by type "UsageReportInput".`)
 				return
+			}
+		}
+		if usage, ok := in["usage"].(map[string]any); ok && f.NoToolError {
+			rows, _ := usage["tools"].([]any)
+			for _, r := range rows {
+				if row, _ := r.(map[string]any); row != nil {
+					if _, ok := row["error"]; ok {
+						writeErrors(w, 200, `Variable "$in" got invalid value; In field "usage": In field "tools": In element #0: Unknown field "error" is not defined by type "ToolCallReportInput".`)
+						return
+					}
+				}
 			}
 		}
 		if field := f.unknownInput(in); field != "" {
@@ -436,6 +458,29 @@ func (f *Fake) heartbeatInputType() map[string]any {
 			row["type"] = map[string]any{"kind": "INPUT_OBJECT", "inputFields": sub}
 		}
 		fields = append(fields, row)
+	}
+	return map[string]any{"inputFields": fields}
+}
+
+// usageReportInputType is UsageReportInput as introspection answers
+// it: `tools` a non-null list of ToolCallReportInput, whose entry has
+// `error` unless NoToolError; no `tools` at all when NoUsageTools.
+func (f *Fake) usageReportInputType() map[string]any {
+	fields := []any{}
+	for _, name := range []string{"sessionId", "adapter", "model", "credentialId", "credentialKind", "inputTokens", "outputTokens", "toolCalls", "wallMs"} {
+		fields = append(fields, map[string]any{"name": name, "type": map[string]any{"kind": "SCALAR"}})
+	}
+	if !f.NoUsageTools {
+		var sub []any
+		for _, n := range []string{"tool", "calls", "errors", "ms", "error"} {
+			if n == "error" && f.NoToolError {
+				continue
+			}
+			sub = append(sub, map[string]any{"name": n})
+		}
+		fields = append(fields, map[string]any{"name": "tools", "type": map[string]any{
+			"kind": "LIST", "ofType": map[string]any{
+				"kind": "NON_NULL", "ofType": map[string]any{"kind": "INPUT_OBJECT", "inputFields": sub}}}})
 	}
 	return map[string]any{"inputFields": fields}
 }

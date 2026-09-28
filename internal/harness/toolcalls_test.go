@@ -2,6 +2,7 @@ package harness
 
 import (
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -199,6 +200,84 @@ func TestMCPServer(t *testing.T) {
 	} {
 		if got := MCPServer(name); got != want {
 			t.Errorf("MCPServer(%q) = %q, want %q", name, got, want)
+		}
+	}
+}
+
+// A Codex mcp_tool_call that fails carrying an error keeps the error's
+// text as FirstError, not the status, and the report's Error is its
+// first 200 characters.
+func TestParseCodexStreamKeepsTheCallsErrorText(t *testing.T) {
+	fakeClock(t)
+	f, err := os.Open("testdata/codex_mcp_call_error.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	res := ParseCodexStream(f, "gpt-6-sol", nil)
+	want := "tool call failed for `prologue/mesh_document`: HTTP status client error (401 Unauthorized) for url (https://api.runsheet.dev/mcp)"
+	stat := res.Tools["prologue"]
+	if stat == nil || stat.FirstError != want || stat.Errors != 1 || stat.Calls != 1 {
+		t.Fatalf("Tools[prologue] = %+v, want 1 call, 1 error, FirstError %q", stat, want)
+	}
+	report := res.ToolReport()
+	if len(report) != 1 || report[0].Error != capText(want, 200) {
+		t.Fatalf("ToolReport() = %+v, want Error %q", report, capText(want, 200))
+	}
+}
+
+// A failed call with no error but a result falls back to the result's
+// text; a long error is capped at 300 on FirstError and 200 on the
+// report.
+func TestParseCodexStreamCallErrorFallbacks(t *testing.T) {
+	long := strings.Repeat("x", 400)
+	stream := `{"type":"item.completed","item":{"id":"a","type":"mcp_tool_call","server":"s1","status":"failed","result":{"content":[{"type":"text","text":"no such document"}]}}}
+{"type":"item.completed","item":{"id":"b","type":"mcp_tool_call","server":"s2","status":"failed","error":"` + long + `"}}
+{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}`
+	res := ParseCodexStream(strings.NewReader(stream), "gpt-6-sol", nil)
+	if got := res.Tools["s1"].FirstError; got != "no such document" {
+		t.Fatalf("s1 FirstError = %q", got)
+	}
+	if got := res.Tools["s2"].FirstError; len(got) != 300 {
+		t.Fatalf("s2 FirstError is %d chars, want 300", len(got))
+	}
+	if report := res.ToolReport(); len(report[1].Error) != 200 {
+		t.Fatalf("s2 report Error is %d chars, want 200", len(report[1].Error))
+	}
+}
+
+// A Codex error item saying the built-in server failed at startup gives
+// that server an error with the message and zero calls.
+func TestParseCodexStreamMCPStartupError(t *testing.T) {
+	f, err := os.Open("testdata/codex_mcp_startup_error.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	res := ParseCodexStream(f, "gpt-6-sol", nil)
+	want := "MCP client for `prologue` failed to start: Auth required during MCP startup"
+	stat := res.Tools["prologue"]
+	if stat == nil || stat.Calls != 0 || stat.Errors != 1 || stat.FirstError != want {
+		t.Fatalf("Tools[prologue] = %+v, want 0 calls, 1 error, FirstError %q", stat, want)
+	}
+	if res.ToolCalls["prologue"] != 0 {
+		t.Fatalf("ToolCalls = %+v", res.ToolCalls)
+	}
+	if report := res.ToolReport(); len(report) != 1 || report[0].Error != want {
+		t.Fatalf("ToolReport() = %+v", report)
+	}
+}
+
+func TestMCPStartupServers(t *testing.T) {
+	for msg, want := range map[string][]string{
+		"MCP client for `prologue` failed to start: Auth required during MCP startup": {"prologue"},
+		"The prologue MCP server is not logged in. Run `codex mcp login prologue`.":   {"prologue"},
+		"MCP startup incomplete (failed: prologue, codex_apps)":                       {"prologue", "codex_apps"},
+		"Code Mode is unavailable: codex-code-mode-host not found":                    nil,
+		"model rerouted: gpt-6-astra -> gpt-6-sol (capacity)":                         nil,
+	} {
+		if got := mcpStartupServers(msg); !slices.Equal(got, want) {
+			t.Errorf("mcpStartupServers(%q) = %v, want %v", msg, got, want)
 		}
 	}
 }

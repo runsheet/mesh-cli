@@ -442,7 +442,9 @@ func (s *SessionAccount) Report(res harness.Result) *gateway.UsageReport {
 // session's report, for a finishing command that ends more than one
 // session: the evaluation's Codex second opinion, a plan asked twice.
 // The model is the first one read; the per-tool rows (Tools) are merged
-// by tool, their calls, errors and ms summed. Nothing before Report.
+// by tool, their calls, errors and ms summed and the first error kept,
+// redacted of the account's and the served tools' secrets. Nothing
+// before Report.
 func (s *SessionAccount) Add(res harness.Result) {
 	if s == nil || s.report == nil {
 		return
@@ -460,7 +462,13 @@ func (s *SessionAccount) Add(res harness.Result) {
 	for _, n := range res.ToolCalls {
 		r.ToolCalls += int64(n)
 	}
-	r.Tools = mergeToolCalls(r.Tools, res.ToolReport())
+	rows := res.ToolReport()
+	for i := range rows {
+		if rows[i].Error != "" {
+			rows[i].Error = capRunes(SessionTools{Use: s.used}.redactAllValues(s.Redact(rows[i].Error)), 200)
+		}
+	}
+	r.Tools = mergeToolCalls(r.Tools, rows)
 	cents := int64(Cents(res.CostUSD))
 	r.ListCostCents += cents
 	if r.CredentialKind == gateway.CredentialAPI {
@@ -518,7 +526,8 @@ func (s *SessionAccount) UseNote(res harness.Result) string {
 }
 
 // mergeToolCalls is rows with more folded in by tool — calls, errors
-// and ms summed — sorted by tool; nil when both are empty.
+// and ms summed, the first non-empty error kept — sorted by tool; nil
+// when both are empty.
 func mergeToolCalls(rows []gateway.ToolCallReport, more []harness.ToolCall) []gateway.ToolCallReport {
 	for _, c := range more {
 		i := slices.IndexFunc(rows, func(r gateway.ToolCallReport) bool { return r.Tool == c.Tool })
@@ -529,9 +538,20 @@ func mergeToolCalls(rows []gateway.ToolCallReport, more []harness.ToolCall) []ga
 		rows[i].Calls += int64(c.Calls)
 		rows[i].Errors += int64(c.Errors)
 		rows[i].Ms += c.Ms
+		if rows[i].Error == "" {
+			rows[i].Error = c.Error
+		}
 	}
 	slices.SortFunc(rows, func(a, b gateway.ToolCallReport) int { return strings.Compare(a.Tool, b.Tool) })
 	return rows
+}
+
+// capRunes is s cut to at most n characters.
+func capRunes(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n])
+	}
+	return s
 }
 
 // Finish is the once-per-session end, called however the session
