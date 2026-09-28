@@ -23,7 +23,11 @@ type Event struct {
 	// Usage is the session's token counts on the result event.
 	Usage   *streamUsage `json:"usage"`
 	Message *struct {
-		Role    string `json:"role"`
+		Role string `json:"role"`
+		// ID is the assistant message's own id (msg_…): the CLI can send
+		// more than one event for the same message (a content block
+		// each), so ParseStream counts a turn once per id, not per event.
+		ID      string `json:"id"`
 		Content []struct {
 			Type string `json:"type"`
 			Text string `json:"text"`
@@ -172,7 +176,9 @@ func capText(s string, n int) string {
 // error too, that status as FirstError, even with zero calls.
 //
 // Every assistant event's own message.usage (input + cache_read +
-// cache_creation) is that turn's input tokens; Result.InputPerTurnMean
+// cache_creation) is that turn's input tokens, counted once per
+// message.id (more than one event can carry the same id — a content
+// block each — and only the first counts the turn); Result.InputPerTurnMean
 // and InputPerTurnMax are computed across every turn that carried one.
 // Every tool_result block's content (toolResultText) keeps its byte
 // length among Result.LargestToolResults, by the matching tool_use
@@ -187,6 +193,7 @@ func ParseStream(r io.Reader, onEvent func(Event)) Result {
 	events := 0
 	var turnInputSum, turnInputMax int64
 	turnCount := 0
+	seenTurnIDs := map[string]bool{}
 	toolUseNames := map[string]string{}
 	type pendingCall struct {
 		server string
@@ -226,7 +233,10 @@ func ParseStream(r io.Reader, onEvent func(Event)) Result {
 				lastText = t
 			}
 			if ev.Message != nil {
-				if u := ev.Message.Usage; u != nil {
+				if u := ev.Message.Usage; u != nil && !(ev.Message.ID != "" && seenTurnIDs[ev.Message.ID]) {
+					if ev.Message.ID != "" {
+						seenTurnIDs[ev.Message.ID] = true
+					}
 					turnCount++
 					turn := u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens
 					turnInputSum += turn

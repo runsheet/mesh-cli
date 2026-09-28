@@ -267,10 +267,17 @@ this section describes them.
   `Finish` sends `recordToolUsage {aggregateId: the item, toolCallId,
   tool, usage}` — the call's id from the stream
   (`Result.ToolCallIDs`), the usage a copy of the session's report with
-  `listCostCents` the tool's price per call, `actualCostCents` 0 and no
-  tokens. Prologue and unpriced tools send none. A platform without the
-  mutation is said once per run and each call logged; a failed record
-  is logged, never the item's failure.
+  `listCostCents` the tool's price per call, `actualCostCents` 0, no
+  tokens and none of the turn or tool-result detail (`Turns`,
+  `InputPerTurnMean`, `InputPerTurnMax`, `LargestToolResults`): those
+  are the whole session's figures, not this one call's, and are cleared
+  on the per-call copy so a platform summing them is not counting the
+  same session once per priced call. Prologue and unpriced tools send
+  none. A platform without the mutation is said once per run and each
+  call logged; `RecordToolUsage` takes the same detail-field fallback as
+  the finishing commands (`ErrNoUsageDetail`: the call still lands,
+  without those fields); a failed record is logged, never the item's
+  failure.
 - **The log is the fallback.** `SessionAccount.Finish` is each
   session's once-per-session end. A report its finishing command did
   not carry is written to the node's log as one line, `usage: {…}` —

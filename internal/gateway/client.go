@@ -2152,7 +2152,12 @@ const (
 // RecordToolUsage hands the platform one priced tool call's usage
 // report against the item (aggregateId), naming the tool and its
 // tool_call_id (runsheet trd §6a, ADR 019). An older platform without
-// the mutation answers IsUnsupported.
+// the mutation answers IsUnsupported. A platform whose usage input
+// lacks only the turn or tool-result detail fields (unknownField on one
+// of usageDetailFields) gets the report again without those alone: the
+// call still lands, and ErrNoUsageDetail says the detail did not —
+// following mutateWithUsage's fallback for the commands that end a
+// session.
 func (c *Client) RecordToolUsage(ctx context.Context, itemID, toolCallID, tool string, usage UsageReport) error {
 	const field = "recordToolUsage"
 	usage.Tools = nil // one call's record needs no per-tool list
@@ -2164,12 +2169,27 @@ func (c *Client) RecordToolUsage(ctx context.Context, itemID, toolCallID, tool s
 		"aggregateId": itemID, "namespace": NS, "tool": tool, "toolCallId": toolCallID, "usage": um,
 	}
 	q := `mutation($in: RecordToolUsageInput!) { recordToolUsage(input: $in) { status } }`
-	if err := c.Query(ctx, q, map[string]any{"in": in}, nil); err != nil {
-		var ge *Error
-		if errors.As(err, &ge) && (unknownOperation(ge.Message, field) || schemaMismatch(ge.Message, field)) {
-			return &Error{Message: ge.Message, Unsupported: true}
-		}
-		return err
+	err = c.Query(ctx, q, map[string]any{"in": in}, nil)
+	if err == nil {
+		return nil
 	}
-	return nil
+	var ge *Error
+	if errors.As(err, &ge) && (unknownOperation(ge.Message, field) || schemaMismatch(ge.Message, field)) {
+		return &Error{Message: ge.Message, Unsupported: true}
+	}
+	if errors.As(err, &ge) && unknownField(ge.Message, usageDetailFields...) {
+		trimmed := make(map[string]any, len(um))
+		for k, v := range um {
+			trimmed[k] = v
+		}
+		for _, f := range usageDetailFields {
+			delete(trimmed, f)
+		}
+		in["usage"] = trimmed
+		if err2 := c.Query(ctx, q, map[string]any{"in": in}, nil); err2 != nil {
+			return err2
+		}
+		return ErrNoUsageDetail
+	}
+	return err
 }

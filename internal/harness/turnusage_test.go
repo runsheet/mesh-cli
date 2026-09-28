@@ -43,6 +43,28 @@ func TestParseStreamTurnUsage(t *testing.T) {
 	}
 }
 
+// Two assistant events that share one message.id — a content block
+// each, as a CLI streaming partial messages could send — count as one
+// turn, not two: the second event's usage does not add to the mean or
+// the max. A third event with no id, or a different one, still counts.
+func TestParseStreamCountsATurnOncePerMessageID(t *testing.T) {
+	stream := strings.Join([]string{
+		`{"type":"system","subtype":"init","session_id":"s-dup","model":"claude-sonnet-5"}`,
+		`{"type":"assistant","session_id":"s-dup","message":{"id":"msg_1","role":"assistant","content":[{"type":"text","text":"Looking."}],"usage":{"input_tokens":100,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":5}}}`,
+		`{"type":"assistant","session_id":"s-dup","message":{"id":"msg_1","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{}}],"usage":{"input_tokens":100,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":5}}}`,
+		`{"type":"user","session_id":"s-dup","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"x"}]}}`,
+		`{"type":"assistant","session_id":"s-dup","message":{"id":"msg_2","role":"assistant","content":[{"type":"text","text":"Done."}],"usage":{"input_tokens":300,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":5}}}`,
+		`{"type":"result","subtype":"success","session_id":"s-dup","is_error":false,"result":"Done.","total_cost_usd":0.1,"num_turns":2}`,
+	}, "\n")
+	res := ParseStream(strings.NewReader(stream), nil)
+	if res.InputPerTurnMean != 200 {
+		t.Errorf("InputPerTurnMean = %d, want 200 ((100+300)/2, msg_1's second event not double-counted)", res.InputPerTurnMean)
+	}
+	if res.InputPerTurnMax != 300 {
+		t.Errorf("InputPerTurnMax = %d, want 300", res.InputPerTurnMax)
+	}
+}
+
 // turn.completed's usage is the thread's running total: two turns'
 // input_tokens of 1000 then 1500 give shares of 1000 and 500, so
 // InputPerTurnMean is 750 and InputPerTurnMax 1000. The mcp_tool_call's

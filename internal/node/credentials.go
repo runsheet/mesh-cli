@@ -650,10 +650,16 @@ func turnUsageSummary(res harness.Result) string {
 // reportToolUsage hands the platform one recordToolUsage per call of a
 // priced tool the session made (trd §3 Tools, priced calls are usage),
 // by the call's id: a copy of the session's report with the tool's price
-// per call as its list cost, no actual cost and no tokens. An unpriced
-// tool, one not called and a built-in server (Prologue) are none. A
-// platform without recordToolUsage is said once per run and each call
-// logged; a failed record is logged, never the item's failure.
+// per call as its list cost, no actual cost, no tokens and none of the
+// session's turn or tool-result detail (Turns, InputPerTurnMean,
+// InputPerTurnMax, LargestToolResults) — those are the whole session's
+// figures, not this one call's, and would be summed as if every priced
+// call were its own session. An unpriced tool, one not called and a
+// built-in server (Prologue) are none. A platform without
+// recordToolUsage is said once per run and each call logged; a platform
+// whose usage input lacks the detail fields still takes the call
+// (ErrNoUsageDetail, folded into the once-per-run notice Finish already
+// gives); a failed record is logged, never the item's failure.
 func (s *SessionAccount) reportToolUsage(ctx context.Context) {
 	c := s.creds
 	if s.report == nil {
@@ -670,9 +676,10 @@ func (s *SessionAccount) reportToolUsage(ctx context.Context) {
 			u.ListCostCents, u.ActualCostCents = int64(t.PricePerCallCents), 0
 			u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheWriteTokens = 0, 0, 0, 0
 			u.ToolCalls = 1
+			u.Turns, u.InputPerTurnMean, u.InputPerTurnMax, u.LargestToolResults = 0, 0, 0, nil
 			err := c.GW.RecordToolUsage(rctx, s.ref.ItemID, id, t.Name, u)
 			switch {
-			case err == nil:
+			case err == nil, errors.Is(err, gateway.ErrNoUsageDetail):
 				continue
 			case gateway.IsUnsupported(err):
 				c.toolUsageOnce.Do(func() {

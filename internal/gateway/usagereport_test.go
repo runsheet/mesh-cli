@@ -339,6 +339,40 @@ func TestRecordToolUsage(t *testing.T) {
 	}
 }
 
+// A gateway whose usage input has no turns, inputPerTurnMean,
+// inputPerTurnMax or largestToolResults still takes the priced tool
+// call — a report the fields on lands without them, same as the five
+// finishing commands — and the caller is told the detail did not land,
+// with ErrNoUsageDetail.
+func TestRecordToolUsageWithoutUsageDetail(t *testing.T) {
+	f := gatewaytest.New("rs_test")
+	defer f.Close()
+	f.UnknownFields = map[string]bool{
+		"turns": true, "inputPerTurnMean": true, "inputPerTurnMax": true, "largestToolResults": true,
+	}
+	gw := gateway.New(f.URL(), "rs_test")
+
+	err := gw.RecordToolUsage(context.Background(), itemID, "call-1", "search", *sampleUsageReport())
+	if !errors.Is(err, gateway.ErrNoUsageDetail) {
+		t.Fatalf("err = %v, want ErrNoUsageDetail", err)
+	}
+	if len(f.ToolUsage) != 1 {
+		t.Fatalf("tool usage = %+v", f.ToolUsage)
+	}
+	usage, ok := f.ToolUsage[0]["usage"].(map[string]any)
+	if !ok {
+		t.Fatalf("the landed call carried no usage: %+v", f.ToolUsage[0])
+	}
+	for _, field := range []string{"turns", "inputPerTurnMean", "inputPerTurnMax", "largestToolResults"} {
+		if _, ok := usage[field]; ok {
+			t.Fatalf("usage still carried %q: %+v", field, usage)
+		}
+	}
+	if usage["sessionId"] == nil {
+		t.Fatalf("usage lost the rest of the report: %+v", usage)
+	}
+}
+
 // An older platform without recordToolUsage answers IsUnsupported.
 func TestRecordToolUsageUnsupported(t *testing.T) {
 	f := gatewaytest.New("rs_test")
