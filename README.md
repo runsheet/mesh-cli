@@ -543,6 +543,17 @@ A node whose sandbox is on is refused (its sessions' pods end with it;
 first. A platform-driven self-update takes the same path as `upgrade`:
 verify, swap, exit at once, adopt.
 
+**The confirm window.** When an update is pending, the new process logs its
+version and update state to `~/.mesh/node.log` **before** it tries to
+register or heartbeat — a start that dies during registration is never
+silent. The new process then keeps trying to heartbeat for a confirm window
+(default 5 min, node.yaml `update.confirm_within`) to complete the update.
+Each failed heartbeat is logged with the error and time remaining. If the
+platform is slow (timeouts or high latency), the process will keep retrying
+and confirm once the gateway responds. Only a failure to *run* (a panic, a
+config it cannot read, an exit) counts as 'did not start'; `mesh node upgrade`
+prints the confirm window and the log path to watch while the update settles.
+
 **On the mini.** Build, copy, upgrade, and watch the sessions carry on:
 
 ```sh

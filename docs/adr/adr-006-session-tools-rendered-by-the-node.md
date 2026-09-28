@@ -1,5 +1,5 @@
 ---
-summary: The node renders each session's tools (internal/tools) in the agent's own format — Claude Code mcpServers beside the built-in prologue server, allowed by --allowedTools mcp__<name>__*, and Codex [mcp_servers.<name>] tables in a 0600 config.toml under the session's CODEX_HOME — with every secret value in the session's environment only (MESH_TOOL_<NAME>_<KEY>, or the key itself for a Codex local tool's env_vars), the configs carrying variable names, a clash with the built-in refused, and a local tool whose runtime the node lacks omitted when nice-to-have (noted on the item) or declining the build (released, not reclaimed while the node's runtimes are unchanged) when required; priced tool calls, counted per MCP server from the stream, go to the platform as recordUsage records (calls × pricePerCallCents) after a build or evaluation.
+summary: The node renders each session's tools (internal/tools) in the agent's own format — Claude Code mcpServers beside the built-in prologue server, allowed by --allowedTools mcp__<name>__*, and Codex [mcp_servers.<name>] tables in a 0600 config.toml under the session's CODEX_HOME (console tools by tools.CodexConfig, the built-in by CodexMCPConfig with any ${VAR} resolved or refused, every server's tools approved for exec's workspace-write sandbox) — with every secret value in the session's environment only (MESH_TOOL_<NAME>_<KEY>, or the key itself for a Codex local tool's env_vars), the configs carrying variable names, a clash with the built-in refused, and a local tool whose runtime the node lacks omitted when nice-to-have (noted on the item) or declining the build (released, not reclaimed while the node's runtimes are unchanged) when required; priced tool calls, counted per MCP server from the stream, go to the platform as recordUsage records (calls × pricePerCallCents) after a build or evaluation.
 status: accepted
 ---
 
@@ -91,7 +91,8 @@ where the code lives, the variable names, and the rendering per agent.
    Code beside the built-in Prologue attachment (`SessionTools.Apply`):
    `Job.MCPServers`, the values on `Job.Env` and `Job.Secrets`, and the
    tools themselves on `Job.Tools` for an adapter that writes its own
-   config (Codex, `WriteCodexConfig` into its `CODEX_HOME`). Plan,
+   config (Codex, `tools.CodexConfig` into its `CODEX_HOME`; see the
+   item 4 amendment below). Plan,
    research, rebase and channel sessions keep the built-in alone.
 9. **Omit and decline.** A nice-to-have omission is a progress note on
    the item (`tools: …`), or a line of an evaluation's verdict notes. A
@@ -218,3 +219,42 @@ tool that mattered. Both change.
   start, redacted and capped as above. A built-in called cleanly is
   still never named. The evaluation's notes and a build's progress
   note so say why the session could not read the project.
+
+## Amendment — 2026-09-28 (goal codex-sessions-reach-the-context-tool, item 4)
+
+Codex sessions got the tools rendered for Claude Code. `SessionTools.Apply`
+puts every console tool on `Job.MCPServers` with its secrets as
+`${MESH_TOOL_<NAME>_<KEY>}`. The Codex harness fed that map to
+`CodexMCPConfig`, and `WriteCodexConfig` (decision 4), the renderer
+meant for Codex, was never called. Codex expands no `${VAR}`, so a
+console tool's secret header went out as the literal text. Separately,
+every call to the built-in was refused before it left the process:
+`codex exec` runs with approval policy `never`, and under `--sandbox
+workspace-write` an MCP call needs approval (`docs/codex-events.md`,
+"Why the context tool failed in Codex", records the run on the mini).
+So the Codex half of decision 4 now works like this:
+
+- **The Codex renderer renders console tools.** The harness's
+  `codexConfig(job)` writes the session's `config.toml` in two parts.
+  First come the job's own servers, the built-in Prologue: every server
+  on `Job.MCPServers` that no `Job.Tools` entry names, by
+  `CodexMCPConfig`, each header value in a `MESH_CODEX_MCP_<n>_TOKEN`
+  variable. Then come the console tools, `Job.Tools`, by
+  `tools.CodexConfig` (what `WriteCodexConfig` writes, now also
+  returned as text): a bearer `Authorization` goes by
+  `bearer_token_env_var`, other secret headers by `env_http_headers`,
+  a local tool's secrets by `env_vars`. The values are in the
+  session's environment only. Their Claude Code entries on
+  `Job.MCPServers` are not used for Codex. Both the harness-owned home
+  and an issued account's home (the 2026-09-28 amendment above) take
+  this path.
+- **No `${` reaches Codex.** `CodexMCPConfig(servers, jobEnv)` resolves
+  every `${VAR}` in a url, header, command, arg or env value from the
+  job's environment. A reference the environment does not set is an
+  error, and the session does not start, rather than a literal header.
+- **The node's servers are approved.** Every `[mcp_servers.<name>]`
+  either renderer writes carries `default_tools_approval_mode =
+  "approve"` (`tools.CodexApproval`). The node chose the servers, and
+  a session that cannot call them judges blind. The sandbox stays
+  `workspace-write`. Codex's own `codex_apps` is not rendered by the
+  node and is not approved by it.

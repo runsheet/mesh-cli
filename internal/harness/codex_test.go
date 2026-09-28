@@ -3,6 +3,7 @@ package harness
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"projectmesh.io/mesh-cli/internal/sessionunit"
 )
 
 // testServers are a job's MCP servers: Prologue over http with the
@@ -45,17 +48,24 @@ func TestCodexArgs(t *testing.T) {
 }
 
 // The servers as Codex's config.toml tables: secrets by variable name
-// only (ADR 006), their values in the environment.
+// only (ADR 006), their values in the environment, and every server's
+// tools approved — `codex exec` refuses an unapproved MCP call under
+// workspace-write.
 func TestCodexMCPConfig(t *testing.T) {
-	toml, env := CodexMCPConfig(testServers())
+	toml, env, err := CodexMCPConfig(testServers(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	const want = `[mcp_servers.local]
 command = "mcp-local"
 args = ["--root", "."]
 env_vars = ["LOCAL_TOKEN"]
+default_tools_approval_mode = "approve"
 
 [mcp_servers.prologue]
 url = "https://api.test/mcp"
 env_http_headers = { "Authorization" = "MESH_CODEX_MCP_1_TOKEN" }
+default_tools_approval_mode = "approve"
 `
 	if toml != want {
 		t.Fatalf("config.toml\n%s\nwant\n%s", toml, want)
@@ -63,9 +73,61 @@ env_http_headers = { "Authorization" = "MESH_CODEX_MCP_1_TOKEN" }
 	if !reflect.DeepEqual(env, []string{"LOCAL_TOKEN=local-secret", "MESH_CODEX_MCP_1_TOKEN=Bearer rs_secret"}) {
 		t.Fatalf("env %q", env)
 	}
-	if toml, env := CodexMCPConfig(nil); toml != "" || env != nil {
-		t.Fatalf("no servers: %q %q", toml, env)
+	if toml, env, err := CodexMCPConfig(nil, nil); toml != "" || env != nil || err != nil {
+		t.Fatalf("no servers: %q %q %v", toml, env, err)
 	}
+}
+
+// Codex expands no ${VAR}: a server rendered for Claude Code (a console
+// tool's secret as ${MESH_TOOL_…}) has each reference resolved from the
+// job's environment, and one the environment does not set is refused —
+// never written for Codex to send as a literal header.
+func TestCodexMCPConfigResolvesOrRefusesRefs(t *testing.T) {
+	servers := map[string]any{
+		"search": map[string]any{"type": "http", "url": "https://search.test/mcp",
+			"headers": map[string]string{"Authorization": "Bearer ${MESH_TOOL_SEARCH_AUTHORIZATION}"}},
+		"fs": map[string]any{"command": "npx", "args": []any{"-y", "fs-mcp"},
+			"env": map[string]any{"FS_API_KEY": "${MESH_TOOL_FS_FS_API_KEY}"}},
+	}
+	jobEnv := []string{"MESH_TOOL_SEARCH_AUTHORIZATION=tok-search", "MESH_TOOL_FS_FS_API_KEY=key-fs"}
+	toml, env, err := CodexMCPConfig(servers, jobEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(env, []string{"FS_API_KEY=key-fs", "MESH_CODEX_MCP_1_TOKEN=Bearer tok-search"}) {
+		t.Fatalf("env %q", env)
+	}
+	for _, text := range append([]string{toml}, env...) {
+		if strings.Contains(text, "${") {
+			t.Fatalf("an unexpanded reference reaches Codex: %q", text)
+		}
+	}
+	if strings.Contains(toml, "tok-search") || strings.Contains(toml, "key-fs") {
+		t.Fatalf("a secret value in config.toml:\n%s", toml)
+	}
+	for _, drop := range jobEnv {
+		var partial []string
+		for _, kv := range jobEnv {
+			if kv != drop {
+				partial = append(partial, kv)
+			}
+		}
+		name, _, _ := strings.Cut(drop, "=")
+		_, _, err := CodexMCPConfig(servers, partial)
+		if err == nil || !strings.Contains(err.Error(), "${"+name+"}") {
+			t.Fatalf("without %s: err %v, want a refusal naming it", name, err)
+		}
+	}
+}
+
+// mustCodexConfig is CodexMCPConfig's config.toml of servers.
+func mustCodexConfig(t *testing.T, servers map[string]any) string {
+	t.Helper()
+	toml, _, err := CodexMCPConfig(servers, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return toml
 }
 
 // fakeCodex is a `codex` that records its stdin, environment and
@@ -150,7 +212,7 @@ func TestCodexRunPlanAccount(t *testing.T) {
 	if got := strings.Fields(readFile(t, filepath.Join(out, "home.ls"))); !reflect.DeepEqual(got, []string{"auth.json", "config.toml"}) {
 		t.Fatalf("CODEX_HOME held %q, want auth.json and config.toml", got)
 	}
-	if want, _ := CodexMCPConfig(testServers()); readFile(t, filepath.Join(out, "config.toml")) != want {
+	if want := mustCodexConfig(t, testServers()); readFile(t, filepath.Join(out, "config.toml")) != want {
 		t.Fatalf("config.toml %q", readFile(t, filepath.Join(out, "config.toml")))
 	}
 	if got := readFile(t, filepath.Join(out, "auth.json")); got != auth {
@@ -199,7 +261,7 @@ func TestCodexRunJobCodexHome(t *testing.T) {
 	if got := strings.TrimSpace(readFile(t, filepath.Join(out, "home"))); got != home {
 		t.Fatalf("CODEX_HOME %q, want the job's %q", got, home)
 	}
-	if want, _ := CodexMCPConfig(testServers()); readFile(t, filepath.Join(out, "config.toml")) != want {
+	if want := mustCodexConfig(t, testServers()); readFile(t, filepath.Join(out, "config.toml")) != want {
 		t.Fatalf("config.toml %q", readFile(t, filepath.Join(out, "config.toml")))
 	}
 	if got := readFile(t, filepath.Join(home, "auth.json")); got != auth {
@@ -379,6 +441,135 @@ func TestCodexJobTimeout(t *testing.T) {
 	}
 	if left, _ := os.ReadDir(root); len(left) != 0 {
 		t.Fatalf("a home was left behind: %v", left)
+	}
+}
+
+// codexEchoSecret is a `codex` that emits a known stdout stream and
+// stderr line, both carrying a value job.Secrets should redact.
+func codexEchoSecret(t *testing.T) string {
+	t.Helper()
+	script := "#!/bin/sh\n" +
+		"cat >/dev/null\n" +
+		"echo '{\"type\":\"thread.started\",\"thread_id\":\"t1\"}'\n" +
+		"echo '{\"type\":\"item.completed\",\"item\":{\"id\":\"item_1\",\"type\":\"agent_message\",\"text\":\"the key is SEKRIT123\"}}'\n" +
+		"echo '{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":1,\"cached_input_tokens\":0,\"cache_write_input_tokens\":0,\"output_tokens\":1,\"reasoning_output_tokens\":0}}'\n" +
+		"echo \"warning: SEKRIT123 nearly leaked\" >&2\n"
+	bin := filepath.Join(t.TempDir(), "codex")
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return bin
+}
+
+// With Codex.WorkRoot set, Run keeps the session's whole event stream
+// and stderr under WorkRoot/kept-sessions/<name>/ — output.jsonl with
+// every event line, stderr.log with its stderr, and a state.json-like
+// note naming the job's kind, item and goal, model and started-at —
+// with every job.Secrets value redacted from both, and never appearing
+// at all.
+func TestCodexRunKeepsSessionOutput(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MESH_TEST_CODEX_KEY", "sk-x")
+	c := &Codex{Binary: codexEchoSecret(t), HomeRoot: t.TempDir(), WorkRoot: root,
+		Account: CodexAccount{Name: "api", APIKeyEnv: "MESH_TEST_CODEX_KEY"}}
+	job := Job{
+		Kind: KindEvaluate, Workspace: t.TempDir(), Prompt: "review it", Model: "gpt-6-sol",
+		Secrets: []string{"SEKRIT123"}, Label: "my-goal/3 evaluate",
+		Meta: SessionMeta{ItemID: "item-9", GoalID: "goal-9"},
+	}
+	res, err := c.Run(context.Background(), job, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Success || res.Text != "the key is SEKRIT123" {
+		t.Fatalf("result %+v", res)
+	}
+	if res.KeptSessionDir == "" {
+		t.Fatal("Result.KeptSessionDir is empty, want the kept directory")
+	}
+	if dir := filepath.Dir(res.KeptSessionDir); dir != filepath.Join(root, "kept-sessions") {
+		t.Fatalf("kept dir %s is not under %s/kept-sessions", res.KeptSessionDir, root)
+	}
+	out := readFile(t, filepath.Join(res.KeptSessionDir, sessionunit.OutputFile))
+	if !strings.Contains(out, `"thread.started"`) || !strings.Contains(out, `"turn.completed"`) {
+		t.Fatalf("output.jsonl %q does not carry the fake's event lines", out)
+	}
+	if strings.Contains(out, "SEKRIT123") {
+		t.Fatalf("output.jsonl carries the secret: %q", out)
+	}
+	if !strings.Contains(out, Redacted) {
+		t.Fatalf("output.jsonl was not redacted: %q", out)
+	}
+	errLog := readFile(t, filepath.Join(res.KeptSessionDir, sessionunit.StderrFile))
+	if !strings.Contains(errLog, "nearly leaked") {
+		t.Fatalf("stderr.log %q does not carry the fake's stderr", errLog)
+	}
+	if strings.Contains(errLog, "SEKRIT123") {
+		t.Fatalf("stderr.log carries the secret: %q", errLog)
+	}
+	var note keptSessionNote
+	if err := json.Unmarshal([]byte(readFile(t, filepath.Join(res.KeptSessionDir, sessionunit.StateFile))), &note); err != nil {
+		t.Fatalf("state.json: %v", err)
+	}
+	if note.Kind != string(KindEvaluate) || note.ItemID != "item-9" || note.GoalID != "goal-9" || note.Model != "gpt-6-sol" || note.StartedAt.IsZero() {
+		t.Fatalf("note %+v", note)
+	}
+}
+
+// harness.RemoveSession on the job's own work dir never touches the
+// kept files: they live under WorkRoot/kept-sessions, not
+// sessionunit.Dir(job.Workspace).
+func TestCodexRemoveSessionLeavesKeptFilesInPlace(t *testing.T) {
+	root, ws := t.TempDir(), t.TempDir()
+	t.Setenv("MESH_TEST_CODEX_KEY", "sk-x")
+	c := &Codex{Binary: codexEchoSecret(t), HomeRoot: t.TempDir(), WorkRoot: root,
+		Account: CodexAccount{Name: "api", APIKeyEnv: "MESH_TEST_CODEX_KEY"}}
+	res, err := c.Run(context.Background(), Job{Workspace: ws, Prompt: "review it", Model: "gpt-6-sol"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := RemoveSession(ws); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{sessionunit.OutputFile, sessionunit.StderrFile, sessionunit.StateFile} {
+		if _, err := os.Stat(filepath.Join(res.KeptSessionDir, f)); err != nil {
+			t.Fatalf("%s gone after RemoveSession: %v", f, err)
+		}
+	}
+}
+
+// SweepKeptSessions removes a kept directory whose note is older than
+// KeepSessionOutput and leaves a younger one.
+func TestSweepKeptSessions(t *testing.T) {
+	root := t.TempDir()
+	now := time.Now()
+	mkKept := func(name string, started time.Time) string {
+		dir := filepath.Join(root, keptSessionsDir, name)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		b, err := json.Marshal(keptSessionNote{Kind: "evaluate", StartedAt: started})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, sessionunit.StateFile), b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, sessionunit.OutputFile), []byte("{}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	old := mkKept("old-1", now.Add(-25*time.Hour))
+	young := mkKept("young-1", now.Add(-1*time.Hour))
+	if err := SweepKeptSessions(root, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Fatalf("old kept dir still exists (err %v)", err)
+	}
+	if _, err := os.Stat(young); err != nil {
+		t.Fatalf("young kept dir was removed: %v", err)
 	}
 }
 
