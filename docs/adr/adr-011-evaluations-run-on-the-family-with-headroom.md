@@ -206,6 +206,9 @@ to `ready`, a rework each.
   node.log says why once per item (`Evaluator.Blind`, as `Waits`):
   `…saw no context (…); not a verdict, and <Family> cannot evaluate it:
   <why>; it stays in evaluating for a later tick (said once for the
-  item)`. The item never goes back to `ready` on a tool error.
+  item)`. `Blind` is one per node, Codex binary or not, shared by the
+  evaluator every tick builds afresh and the adopted ones; the loop's
+  own `evaluation:` error line leaves `ErrNoContext` to it, as it does
+  `ErrFamilyWaits`. The item never goes back to `ready` on a tool error.
 - A second opinion that is tool-broken is unavailable (`saw no context
   (<tool>: <error>)`), and the first verdict stands.
