@@ -1,5 +1,5 @@
 ---
-summary: How mesh-cli starts implementing mesh-specs ADR 008 — internal/sessionunit runs a host claude session in a unit of its own (a transient `systemd-run --user --scope`, else a detached setsid process group; the sandbox's pod is the unit later), its stream-json in `<workdir>.session/output.jsonl`, its stderr in `stderr.log`, and a secret-free `state.json` (node, item/goal/direction, claim, kind, model, account, pid, unit, startedAt, offset) written atomically, read back by a Follower that tails the file line by line; ClaudeCode.Run keeps its result and error semantics, and a cancelled context or timeout stops the unit.
+summary: How mesh-cli starts implementing mesh-specs ADR 008 — internal/sessionunit runs a host claude session in a unit of its own (a transient `systemd-run --user --scope`, else a detached setsid process group; the sandbox's pod is the unit later), its stream-json in `<workdir>.session/output.jsonl`, its stderr in `stderr.log`, and a secret-free `state.json` (node, item/goal/direction, claim, kind, model, account, pid, unit, startedAt, offset) written atomically, read back by a Follower that tails the file line by line; ClaudeCode.Run keeps its result and error semantics, and a cancelled context or timeout stops the unit. A stop (`Unit.Kill`) ends the whole unit, not its leader: a scope's cgroup processes are listed, SIGTERM then SIGKILL go to the cgroup, `systemctl --user stop` stops the scope (KillMode=control-group), the node waits until it is gone, and every process found besides the session's own pid is returned to the caller as what the agent left running; `SystemdScope.Systemctl` is injectable, and `ParseUnitName` reads a scope's kind and subject back.
 status: accepted
 ---
 
@@ -33,9 +33,7 @@ come with later items of goal `node-upgrades-keep-sessions`.
     `AbandonProcessGroup`) and a Linux without a user systemd.
   `Default()` picks the scope when `systemd-run` is on PATH and
   `systemctl --user show-environment` answers. Both are process groups
-  of their own; `Stop` sends SIGTERM to the group and SIGKILL after
-  `StopGrace` (5s), and the scope is killed through `systemctl --user
-  kill` if anything of it is left. The sandbox's pod (ADR 007) is the
+  of their own; stopping one ends the whole unit (below). The sandbox's pod (ADR 007) is the
   third unit, added by `sandboxed-sessions` behind the same interface;
   sandboxed sessions still run through `runSandboxed` as before.
 - **The session directory** is the work dir's sibling,
@@ -71,6 +69,50 @@ come with later items of goal `node-upgrades-keep-sessions`.
   explicitly. The session directory is removed when `Run` returns: the
   session has been handled. A node that dies mid-`Run` leaves it for
   the adopting node.
+
+## Stop and Kill
+
+Amended 2026-09-28 (goal `a-finished-session-leaves-no-process`). A
+session's scope once outlived it by 36 hours on the mini, holding a
+`go run ./cmd/runsheet -addr :18211` and its bash the agent had
+backgrounded: the old `Stop` signalled claude's process group and asked
+`systemctl --user kill` only while claude's own pid was alive, so
+whatever was left in the cgroup after claude exited stayed.
+
+- **`Unit.Kill(h) (killed []Process, err error)`** ends the unit, not
+  the leader; `Stop(h)` is `Kill` without the report. `Process` is
+  `{PID, Comm, Cmdline}`, named from `/proc/<pid>/comm` and `cmdline`
+  (cut to 200 bytes).
+- **A scope** is stopped as a unit. `systemctl --user show -p
+  LoadState,ActiveState` first: a scope not found, inactive or failed —
+  the ordinary case after a clean exit, `--collect` having unloaded
+  it — is nothing to do, no error and nothing killed. Otherwise its
+  `ControlGroup` is read and `/sys/fs/cgroup<ControlGroup>/cgroup.procs`
+  listed; `systemctl --user kill --signal=SIGTERM` goes to the whole
+  cgroup, `--signal=SIGKILL` once `StopGrace` (5s) has passed with any
+  process left, then `systemctl --user stop <unit>.scope` — a transient
+  scope's KillMode is control-group (the mini: `KillMode=control-group`,
+  `SendSIGKILL=yes`, `TimeoutStopUSec=90s`), and the SIGKILL before it
+  means a process ignoring SIGTERM never makes the node wait the 90s.
+  Kill then **waits until the unit is gone** (not-found, inactive or
+  failed) for `StopGrace` plus 3s; a unit still there is an error
+  naming it.
+- **The report**: `killed` is every process that was in the cgroup
+  besides the session's own pid — what the agent should have cleaned
+  up. The caller logs it (the session's end, the start-up sweep: later
+  items of the goal).
+- **A detached session** is its process group as before: its members
+  are listed from `/proc` (a `stat` whose pgrp is the session's pid;
+  none on macOS) and reported the same way, SIGTERM to the group, and
+  SIGKILL after `StopGrace` while the session or any of its group is
+  left.
+- **`SystemdScope.Systemctl`** is the `Systemctl` interface — `Show`,
+  `Kill`, `Stop`, `ListScopes` (`systemctl --user list-units
+  'mesh-session-*' --plain --no-legend --all`, for the start-up sweep)
+  and `Processes(cgroup)` — `HostSystemctl` by default, a fake in the
+  tests. `ParseUnitName` is `UnitName`'s inverse: kind and subject of
+  `mesh-session-<kind>-<subject>-<8 hex>`, the subject as it is in the
+  name (`:` and `/` already `_`).
 
 ## Consequences
 
