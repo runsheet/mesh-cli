@@ -568,7 +568,7 @@ func observed(loop *node.Loop, logger *log.Logger) harness.Harness {
 
 func runPollMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *gateway.Client, loop *node.Loop, workRoot string, fallback *node.TokenFallback, accounts *node.Credentials, logger *log.Logger) error {
 	h := observed(loop, logger)
-	runner := &node.Runner{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, MCPFunc: func(ctx context.Context) map[string]any { return prologueMCP(ctx, gw) }, MaxBudgetUSD: nodeMaxBudgetFlag, Model: nodeModels.For("build"), Fallback: fallback, Accounts: cfg.Accounts, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Condition: loop.NoteCondition, Sandbox: sessionSandbox, Log: logger}
+	runner := &node.Runner{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, MCPFunc: func(ctx context.Context) map[string]any { return prologueMCP(ctx, gw) }, MaxBudgetUSD: nodeMaxBudgetFlag, Model: nodeModels.For("build"), Fallback: fallback, Accounts: cfg.Accounts, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Condition: loop.NoteCondition, Sandbox: sessionSandbox, MeshBinary: meshBinary(), Log: logger}
 	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) {
 		r := *runner
 		r.Scopes = loop.CurrentScopes() // an org served since start is known to its build

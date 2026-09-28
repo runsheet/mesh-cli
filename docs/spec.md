@@ -84,6 +84,25 @@ Create a new `mesh-cli` repo that becomes the standard end-user/operator interfa
 ### Routing
 - `mesh gateway resolve`
 
+### Tool results on a node
+
+`tool_results.max_kb` in `~/.mesh/node.yaml` (default 16, `0` off) caps
+what one tool result may put into a node session's context. A build
+session on the host gets a Claude Code `PreToolUse` hook on `Bash` in
+the settings the node renders beside its MCP config (trd §3 Tools):
+`mesh tool-trim --max-kb N --hook` answers with `updatedInput` whose
+command is `( <cmd>\n) 2>&1 | mesh tool-trim --max-kb N`, skipping a
+command that already pipes to `tool-trim` and one run in the
+background. `mesh tool-trim` (`harness.TrimToolResult`) returns output
+under the cap unchanged and anything over it as the first 60% and the
+last 40% of the cap, cut at line boundaries, with
+`[mesh: trimmed N KB of M KB; run the command again with a narrower filter if the middle matters]`
+between. The session's environment also carries `BASH_MAX_OUTPUT_LENGTH`
+(the cap in characters) and `MAX_MCP_OUTPUT_TOKENS` (the cap / 4), so
+MCP results and anything the hook misses are bounded by the CLI too. A
+sandboxed session gets the environment only; channel-mode sessions get
+neither.
+
 ## API direction
 
 Recommended backend architecture:

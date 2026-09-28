@@ -314,6 +314,14 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   item, a required one releases the item and `Declines` keeps the loop
   off it while the runtimes are unchanged. Plan, research, rebase and
   channel sessions keep Prologue alone.
+- **Tool results** (`internal/harness/trim.go`, node.yaml
+  `tool_results.max_kb`, default 16, 0 off): a host build session gets
+  a `PreToolUse` hook on `Bash` in its `--settings` (`Job.Settings`,
+  `ToolTrimSettings`) — `mesh tool-trim --max-kb N --hook` rewrites the
+  command to `( <cmd>\n) 2>&1 | mesh tool-trim --max-kb N`, which keeps
+  the first 60% and last 40% of the cap (`TrimToolResult`) — and every
+  build session `MAX_MCP_OUTPUT_TOKENS` and `BASH_MAX_OUTPUT_LENGTH`
+  (`ToolResultsEnv`). Channel mode gets neither; a sandboxed one the env.
 - **Services** (`internal/sandbox/services.go`, mesh-specs ADR 007):
   `Resolve(repoDir, allowed)` reads what a repository declares, first
   found wins — `.mesh/services.yml`, else the `services:` of its
@@ -396,6 +404,13 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   no tokens, no actual cost; Prologue and unpriced tools are none.
   A platform without `recordToolUsage` is said once per run and each
   call logged instead; it never fails the item.
+  Every server's calls, errors and ms (`Result.ToolReport()`) ride the
+  usage report as `tools` beside the total (`SessionAccount.Add` merges
+  carried sessions' rows); a platform without the field gets it resent
+  without (`ErrNoToolUsage`, said once, the list logged). A served
+  console tool never called, or whose first call errored, is named by
+  `SessionTools.UseNote` — a build's progress note, the evaluation's
+  notes, a plan's or research's log line (ADR-006 amendment 2026-09-28).
 - **Models are per kind of session.** `Models` in `~/.mesh/node.yaml`
   (`default`, `build`, `evaluate`, `plan`, `channel`, `research`,
   `rebase`) or the matching

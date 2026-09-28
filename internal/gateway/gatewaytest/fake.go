@@ -74,6 +74,10 @@ type Fake struct {
 	// "Cannot query field", a command whose input (or an item of it)
 	// carries one with "Unknown field".
 	UnknownFields map[string]bool
+	// NoUsageTools refuses a `usage` report carrying `tools` (the
+	// per-tool calls) with "Unknown field", as a platform older than
+	// tools-show-their-use whose UsageReportInput has only the total.
+	NoUsageTools bool
 	// RefuseReleases answers every releaseWorkItem with a refusal and
 	// changes nothing, as a platform that will not take a node's release.
 	// By default the fake follows the contract (trd §1): a node releases
@@ -256,6 +260,12 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 		if f.Unsupported[m[2]] {
 			writeErrors(w, 200, fmt.Sprintf("Cannot query field %q on type \"Mutation\".", m[2]))
 			return
+		}
+		if usage, ok := in["usage"].(map[string]any); ok && f.NoUsageTools {
+			if _, ok := usage["tools"]; ok {
+				writeErrors(w, 200, `Variable "$in" got invalid value; In field "usage": In field "tools": Unknown field "tools" is not defined by type "UsageReportInput".`)
+				return
+			}
 		}
 		if field := f.unknownInput(in); field != "" {
 			typ := strings.ToUpper(m[2][:1]) + m[2][1:] + "Input"

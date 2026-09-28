@@ -309,7 +309,7 @@ func TestEvaluatorTools(t *testing.T) {
 		t.Fatalf("jobs: %+v", h.jobs)
 	}
 	notes := f.CallsNamed("evaluateWorkItem")[0].Input["notes"]
-	if notes != "Fine.\n\n(evaluated on the CLI's default model)\ntools: tool git-tools omitted: this node lacks uvx" {
+	if notes != "Fine.\n\n(evaluated on the CLI's default model)\ntools: tool git-tools omitted: this node lacks uvx\ntools: search served, never called" {
 		t.Fatalf("notes = %q", notes)
 	}
 	if strings.Contains(logs.String(), searchSecret) {

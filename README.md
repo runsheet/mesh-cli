@@ -325,8 +325,9 @@ session on one is held to what the cap leaves.
 reports its usage on the command that ends it (`usage` on
 `finishWorkItem`, `evaluateWorkItem`, `planGoal`,
 `finishWorkItemRebase` or `recordDirectionResearch`): the platform's
-credential id and its kind, input, output and cache tokens, tool calls,
-wall time, the list cost in cents (and the actual cost, on an API key),
+credential id and its kind, input, output and cache tokens, tool calls
+(the total, and every MCP call counted per tool as `tools: [{tool,
+calls, errors, ms}]`), wall time, the list cost in cents (and the actual cost, on an API key),
 and the plan's windows before and after. A platform whose finishing
 command takes no `usage`, and a session that ends in a failure, leave it
 in the node's log instead, one `usage: {…}` JSON line per session.
@@ -853,8 +854,45 @@ report on its finish. Unpriced tools and Prologue report nothing.
 A platform without `recordToolUsage` gets none: the node says so once
 per run, logs each call instead, and the item goes on.
 
+**Every call is counted.** Priced or not, each MCP server's calls,
+errors and wall time ride the session's usage report as `tools` (ADR-006,
+amendment 2026-09-28), and the item says how the session used what it
+was served: `tools: brave served, never called` for a tool it never
+called, `tools: perplexity: first call errored: …` (redacted, 200
+characters at most) for one whose calls failed — a build in its
+progress notes, an evaluation in its verdict's notes; a plan or research
+session logs it. A platform whose usage report takes no `tools` gets the
+total alone: the node says so once per run and logs each session's list.
+
 A platform that does not hand out `tools` yet costs nothing: sessions
 run on Prologue alone, as before.
+
+### Tool results
+
+One `go test ./...` log or file dump can put 100 KB into a session's
+context, and every later turn pays for it again. node.yaml's
+`tool_results.max_kb` caps what one tool result may put there:
+
+```yaml
+tool_results:
+  max_kb: 16   # the default; 0 turns the cap off
+```
+
+A build session on the host gets a Claude Code `PreToolUse` hook on
+`Bash` in its `--settings`, `mesh tool-trim --max-kb 16 --hook`, which
+rewrites each command to `( <cmd>\n) 2>&1 | mesh tool-trim --max-kb 16`
+(a command that already pipes to `tool-trim` or runs in the background
+is left as it is). Output over the cap comes back as its first 60% and
+last 40%, cut at line boundaries, with
+`[mesh: trimmed N KB of M KB; run the command again with a narrower filter if the middle matters]`
+between. The pipeline's exit status is the trim's, so a failure shows in
+the output, not the status. The session's environment also carries
+`BASH_MAX_OUTPUT_LENGTH` (the cap in characters) and
+`MAX_MCP_OUTPUT_TOKENS` (the cap at four bytes a token), so MCP results
+and whatever the hook misses are bounded by the CLI itself. A sandboxed
+session gets the environment but not the hook (the pod has no `mesh`),
+and channel-mode sessions get neither. `mesh tool-trim --max-kb N`
+works by hand too: it trims stdin to stdout.
 
 ### Sandbox
 

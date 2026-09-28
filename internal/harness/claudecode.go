@@ -65,6 +65,11 @@ func (c *ClaudeCode) Args(job Job) []string {
 	if job.MaxBudgetUSD > 0 {
 		args = append(args, "--max-budget-usd", strconv.FormatFloat(job.MaxBudgetUSD, 'f', 2, 64))
 	}
+	if len(job.Settings) > 0 {
+		if cfg, err := json.Marshal(job.Settings); err == nil {
+			args = append(args, "--settings", string(cfg))
+		}
+	}
 	args = append(args, MCPArgs(job.MCPServers)...)
 	args = append(args, c.ExtraArgs...)
 	return args

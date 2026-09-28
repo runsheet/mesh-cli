@@ -314,7 +314,8 @@ func TestFixedNodeHeartbeatsScalingOnlyOnSeveralAccounts(t *testing.T) {
 	}
 	two.at(0)
 	s, ok := lastScaling(t, two)
-	if !ok || len(s) != 4 || s["capacity"] != 3.0 || s["min"] != 3.0 || s["max"] != 3.0 || s["reason"] != "fixed" {
+	// accounts rides as [] (the platform refuses a null list, 2026-09-28)
+	if accts, _ := s["accounts"].([]any); !ok || len(s) != 5 || s["capacity"] != 3.0 || s["min"] != 3.0 || s["max"] != 3.0 || s["reason"] != "fixed" || accts == nil || len(accts) != 0 {
 		t.Fatalf("fixed node on two accounts: scaling = %#v, %v", s, ok)
 	}
 

@@ -66,12 +66,36 @@ type Config struct {
 	// Sandbox is whether and how sessions run in their own pods
 	// (SandboxConfig, ADR 007).
 	Sandbox SandboxConfig `yaml:"sandbox,omitempty"`
+	// ToolResults caps what one tool result can put into a session's
+	// context (ToolResults, trd §3 Tool results).
+	ToolResults ToolResults `yaml:"tool_results,omitempty"`
 	// Latchkey is the issuer `mesh node login` signs in to and
 	// LatchkeyClient the public client it starts the device flow from
 	// (latchkey adr-machine-identity); both are remembered at login so a
 	// later one needs no flags.
 	Latchkey       string `yaml:"latchkey,omitempty"`
 	LatchkeyClient string `yaml:"latchkey_client,omitempty"`
+}
+
+// DefaultToolResultsKB is the tool result cap when node.yaml names none.
+const DefaultToolResultsKB = 16
+
+// ToolResults is node.yaml's `tool_results`: MaxKB is the most a tool
+// result may put into a session's context, in KB — left out,
+// DefaultToolResultsKB; 0 turns the cap off. A build session's Bash
+// output over it is trimmed to head and tail by its PreToolUse hook
+// (`mesh tool-trim`), and the CLI's own MCP and Bash output limits are
+// set from it (ToolResultsEnv).
+type ToolResults struct {
+	MaxKB *int `yaml:"max_kb,omitempty"`
+}
+
+// KB is the cap in force: MaxKB, else the default; never negative.
+func (t ToolResults) KB() int {
+	if t.MaxKB == nil {
+		return DefaultToolResultsKB
+	}
+	return max(*t.MaxKB, 0)
 }
 
 // Capacity is node.yaml's `capacity`: a plain N is Min = Max = N, the

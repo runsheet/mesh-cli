@@ -103,7 +103,29 @@ type Runner struct {
 	// services its checkout declares started beside it (ADR 007); nil is
 	// `sandbox: off`, no services.
 	Sandbox *sandbox.Sandbox
-	Log     *log.Logger
+	// MeshBinary is the mesh executable a session's tool-trim hook runs
+	// ("" is `mesh` on the session's PATH).
+	MeshBinary string
+	Log        *log.Logger
+}
+
+// toolResults bounds the job's tool results by node.yaml's
+// tool_results (trd §3 Tool results): the CLI's limits on its env and,
+// for a session on the host, the Bash hook in its settings — the pod has
+// no mesh binary to run it.
+func (r *Runner) toolResults(job *harness.Job) {
+	kb := DefaultToolResultsKB
+	if r.Cfg != nil {
+		kb = r.Cfg.ToolResults.KB()
+	}
+	job.Env = append(job.Env, ToolResultsEnv(kb)...)
+	if r.Sandbox == nil && job.Session == nil {
+		bin := r.MeshBinary
+		if bin == "" {
+			bin = "mesh"
+		}
+		job.Settings = ToolTrimSettings(bin, kb)
+	}
 }
 
 func (r *Runner) runtimes() []string {
@@ -292,6 +314,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		return nil
 	}
 	pod.Apply(&job)
+	r.toolResults(&job)
 	in.Services = pod.Prompt()
 	job.Prompt = harness.BuildPrompt(in)
 
@@ -346,6 +369,16 @@ func (b *buildRun) report(ctx context.Context, note string) {
 	b.mu.Unlock()
 	if err := b.r.GW.ReportWorkItemProgress(ctx, b.item.ID, truncate(n, 2000), b.cost.delta(), sid); err != nil {
 		b.r.logf("item %s: progress: %v", b.label, err)
+	}
+}
+
+// reportToolUse notes on the item the served tools the session never
+// called or whose calls errored (SessionAccount.UseNote); nothing when
+// each was called cleanly, or for an adopted session.
+func (b *buildRun) reportToolUse(ctx context.Context, result harness.Result) {
+	if note := b.acct.UseNote(result); note != "" {
+		b.r.logf("item %s: %s", b.label, note)
+		b.report(ctx, note)
 	}
 }
 
@@ -431,9 +464,11 @@ func (r *Runner) afterBuild(ctx context.Context, b *buildRun, result harness.Res
 	result.Text = b.acct.Redact(result.Text)
 	if !result.Success {
 		b.report(ctx, "session ended without success: "+result.Text)
+		b.reportToolUse(ctx, result)
 		return r.fail(ctx, item, fmt.Errorf("session ended without success: %s", truncate(result.Text, 500)))
 	}
 	b.report(ctx, result.Text)
+	b.reportToolUse(ctx, result)
 
 	if evidence, ok := harness.ParseAlreadyDone(result.Text); ok {
 		// main already holds the work (adr-003): no push, no branch, and

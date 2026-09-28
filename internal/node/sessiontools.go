@@ -67,6 +67,69 @@ func (st SessionTools) OmittedNote() string {
 	return "tools: " + strings.Join(notes, "; ")
 }
 
+// UseNote is the item note for how the session used the tools it was
+// served (goal tools-show-their-use): every tool in Use it never called
+// ("tools: brave served, never called") and every one whose calls
+// errored, by its first error ("tools: perplexity: first call errored:
+// …"), in Use's order; "" when every served tool was called cleanly.
+// The built-in Prologue is never in Use, so never named. The error
+// text goes through redact (the account's Redact) and has every value
+// of the tool's own secrets, headers and env taken out too, so no key
+// or header can leak, and is capped at 200 characters.
+func (st SessionTools) UseNote(res harness.Result, redact func(string) string) string {
+	var notes []string
+	for _, t := range st.Use {
+		stat := res.Tools[t.Name]
+		calls := res.ToolCalls[t.Name]
+		switch {
+		case stat != nil && stat.FirstError != "":
+			msg := stat.FirstError
+			if redact != nil {
+				msg = redact(msg)
+			}
+			msg = truncate(redactToolValues(msg, t), 200)
+			if calls == 0 {
+				notes = append(notes, fmt.Sprintf("%s served, never called: %s", t.Name, msg))
+				continue
+			}
+			notes = append(notes, fmt.Sprintf("%s: first call errored: %s", t.Name, msg))
+		case calls == 0:
+			notes = append(notes, t.Name+" served, never called")
+		}
+	}
+	if len(notes) == 0 {
+		return ""
+	}
+	return "tools: " + strings.Join(notes, "; ")
+}
+
+// redactToolValues is s with every value of t's secrets and headers
+// replaced, longest first, and a bearer header's token as well; a
+// header value under four characters is no key and is left.
+func redactToolValues(s string, t tools.Tool) string {
+	var vals []string
+	add := func(v string, min int) {
+		if v = strings.TrimSpace(v); len(v) < min {
+			return
+		}
+		vals = append(vals, v)
+		if tok, ok := strings.CutPrefix(v, "Bearer "); ok && strings.TrimSpace(tok) != "" {
+			vals = append(vals, strings.TrimSpace(tok))
+		}
+	}
+	for _, v := range t.Secrets {
+		add(v, 1)
+	}
+	for _, v := range t.Headers {
+		add(v, 4)
+	}
+	sort.Slice(vals, func(i, j int) bool { return len(vals[i]) > len(vals[j]) })
+	for _, v := range vals {
+		s = strings.ReplaceAll(s, v, "[redacted]")
+	}
+	return s
+}
+
 // Names are the rendered tools' names, for a log line: names only, never
 // a config or a value.
 func (st SessionTools) Names() string {
@@ -175,4 +238,39 @@ func (d *Declines) Holds(itemID string, runtimes []string, now time.Time) bool {
 		return false
 	}
 	return true
+}
+
+// ToolTrimSettings are the Claude Code settings beside a session's MCP
+// config that bound its Bash output to maxKB (trd §3 Tool results): a
+// PreToolUse hook on Bash, `<bin> tool-trim --max-kb N --hook`, which
+// rewrites the command to pipe through `<bin> tool-trim --max-kb N`
+// (harness.TrimHook). nil for a cap of 0.
+func ToolTrimSettings(bin string, maxKB int) map[string]any {
+	if maxKB <= 0 {
+		return nil
+	}
+	return map[string]any{"hooks": map[string]any{
+		"PreToolUse": []any{map[string]any{
+			"matcher": "Bash",
+			"hooks": []any{map[string]any{
+				"type":    "command",
+				"command": harness.ToolTrimCommand(bin, maxKB) + " --hook",
+				"timeout": 10,
+			}},
+		}},
+	}}
+}
+
+// ToolResultsEnv is what the session's environment carries for a cap
+// of maxKB, so what the hook does not see is bounded by the CLI too:
+// BASH_MAX_OUTPUT_LENGTH in characters (the cap), MAX_MCP_OUTPUT_TOKENS
+// at four bytes a token. None for a cap of 0.
+func ToolResultsEnv(maxKB int) []string {
+	if maxKB <= 0 {
+		return nil
+	}
+	return []string{
+		fmt.Sprintf("MAX_MCP_OUTPUT_TOKENS=%d", maxKB*1024/4),
+		fmt.Sprintf("BASH_MAX_OUTPUT_LENGTH=%d", maxKB*1024),
+	}
 }
