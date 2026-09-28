@@ -199,7 +199,8 @@ func TestEvaluationNotesItsToolUse(t *testing.T) {
 
 // An evaluation whose built-in context tool errored — no console tool
 // served at all — names it and its error text in the notes, and the
-// report's prologue row carries that error.
+// report's prologue row carries that error. (One call answered: a
+// session whose every call errored is no verdict, ADR 011.)
 func TestEvaluationNotesTheBuiltinsError(t *testing.T) {
 	f := seed(t)
 	gw := gateway.New(f.URL(), "rs_test")
@@ -210,7 +211,7 @@ func TestEvaluationNotesTheBuiltinsError(t *testing.T) {
 	ws := &fakeWS{root: t.TempDir()}
 	const msg = "tool call failed for `prologue/mesh_document`: 401 Unauthorized"
 	h := &fakeHarness{text: "Fine.\nVERDICT: PASS", toolCalls: map[string]int{"prologue": 3},
-		tools: map[string]*harness.ToolStat{"prologue": {Calls: 3, Errors: 3, Wall: 90 * time.Millisecond, FirstError: msg}}}
+		tools: map[string]*harness.ToolStat{"prologue": {Calls: 3, Errors: 2, Wall: 90 * time.Millisecond, FirstError: msg}}}
 	ev := &Evaluator{GW: gw, Harness: h, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, MCP: PrologueMCP(f.URL(), "rs_test"),
 		Credentials: &Credentials{GW: gw}, Runtimes: onlyNpx, Declines: &Declines{}, Log: log.New(&syncBuf{}, "", 0)}
 
