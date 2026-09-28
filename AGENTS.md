@@ -351,7 +351,14 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   second session that errors, times out or reaches no verdict, or no
   Codex account with headroom, keeps the first verdict with `<Family>
   second opinion unavailable: <reason>`. A first fail or a normal/low
-  goal never runs a second opinion. With neither a `codex:` block nor
+  goal never runs a second opinion. **A tool failure is never a
+  verdict** (`toolBroken`): a session whose context server (or a
+  required console tool) errored on every call, or never connected,
+  has its verdict discarded and the same job runs on the other family
+  as the evaluation proper, its notes opening `<Family> (first attempt,
+  <model>): no verdict — <tool>: <error>`; with no other family it
+  records nothing (`ErrNoContext`), the item stays in evaluating, said
+  once per item (`Blind`). With neither a `codex:` block nor
   an issued Codex account the node evaluates as before. Builders on
   Codex come later, behind a per-project setting.
 - **Tools** (`internal/tools/`, ADR-006, trd §3 Tools): the
