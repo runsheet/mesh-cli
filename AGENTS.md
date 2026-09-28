@@ -287,7 +287,11 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `auth.json` copied in (and written back when Codex refreshed it), or
   an API key in the environment only (`CODEX_API_KEY` and
   `OPENAI_API_KEY`), plus the MCP servers as `config.toml`, secrets by
-  variable name (mesh-specs ADR 006). node.yaml's `codex:` block
+  variable name (mesh-specs ADR 006): the built-in by `CodexMCPConfig`
+  (a `${VAR}` resolved from the job's env or refused), console tools by
+  `tools.CodexConfig`, every table `default_tools_approval_mode =
+  "approve"` — `exec` under `workspace-write` refuses an unapproved
+  MCP call (docs/codex-events.md, "Why the context tool failed"). node.yaml's `codex:` block
   (`CodexConfig`: binary, accounts, `models {opus, sonnet, haiku}`)
   and `CodexModel` map the Claude tiers to Codex models. Codex has no
   budget flag, so `MaxBudgetUSD` is not enforced. An issued openai
