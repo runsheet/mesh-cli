@@ -103,7 +103,29 @@ type Runner struct {
 	// services its checkout declares started beside it (ADR 007); nil is
 	// `sandbox: off`, no services.
 	Sandbox *sandbox.Sandbox
-	Log     *log.Logger
+	// MeshBinary is the mesh executable a session's tool-trim hook runs
+	// ("" is `mesh` on the session's PATH).
+	MeshBinary string
+	Log        *log.Logger
+}
+
+// toolResults bounds the job's tool results by node.yaml's
+// tool_results (trd §3 Tool results): the CLI's limits on its env and,
+// for a session on the host, the Bash hook in its settings — the pod has
+// no mesh binary to run it.
+func (r *Runner) toolResults(job *harness.Job) {
+	kb := DefaultToolResultsKB
+	if r.Cfg != nil {
+		kb = r.Cfg.ToolResults.KB()
+	}
+	job.Env = append(job.Env, ToolResultsEnv(kb)...)
+	if r.Sandbox == nil && job.Session == nil {
+		bin := r.MeshBinary
+		if bin == "" {
+			bin = "mesh"
+		}
+		job.Settings = ToolTrimSettings(bin, kb)
+	}
 }
 
 func (r *Runner) runtimes() []string {
@@ -292,6 +314,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		return nil
 	}
 	pod.Apply(&job)
+	r.toolResults(&job)
 	in.Services = pod.Prompt()
 	job.Prompt = harness.BuildPrompt(in)
 
