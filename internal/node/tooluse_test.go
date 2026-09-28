@@ -181,7 +181,7 @@ func TestEvaluationNotesItsToolUse(t *testing.T) {
 	calls, stats := braveErrored()
 	h := &fakeHarness{text: "Fine.\nVERDICT: PASS", toolCalls: calls, tools: stats}
 	logs := &syncBuf{}
-	ev := &Evaluator{GW: gw, Harness: h, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, MCP: PrologueMCP(f.URL(), "rs_test"),
+	ev := &Evaluator{GW: gw, Harness: h, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, MCP: MeshContextMCP(f.URL(), "rs_test"),
 		Credentials: &Credentials{GW: gw}, Runtimes: onlyNpx, Declines: &Declines{}, Log: log.New(logs, "", 0)}
 	f.SessionTools[item1] = []map[string]any{braveTool(), perplexityTool()}
 
@@ -212,7 +212,7 @@ func TestEvaluationNotesTheBuiltinsError(t *testing.T) {
 	const msg = "tool call failed for `prologue/mesh_document`: 401 Unauthorized"
 	h := &fakeHarness{text: "Fine.\nVERDICT: PASS", toolCalls: map[string]int{"prologue": 3},
 		tools: map[string]*harness.ToolStat{"prologue": {Calls: 3, Errors: 2, Wall: 90 * time.Millisecond, FirstError: msg}}}
-	ev := &Evaluator{GW: gw, Harness: h, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, MCP: PrologueMCP(f.URL(), "rs_test"),
+	ev := &Evaluator{GW: gw, Harness: h, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, MCP: MeshContextMCP(f.URL(), "rs_test"),
 		Credentials: &Credentials{GW: gw}, Runtimes: onlyNpx, Declines: &Declines{}, Log: log.New(&syncBuf{}, "", 0)}
 
 	if err := ev.Evaluate(context.Background(), item); err != nil {
