@@ -131,6 +131,40 @@ func TestEvaluatePromptUnverifiableClause(t *testing.T) {
 	}
 }
 
+// A session with mesh-context's tools is told to use mesh_document and
+// mesh_search, not the prologue_* names — in both shapes of the
+// evaluator's context section (with and without a ContextDir).
+func TestEvaluatePromptContextTools(t *testing.T) {
+	withDir := EvaluatePrompt(EvaluateInput{GoalSlug: "g", GoalTitle: "G", Seq: 1, Title: "T", Repo: "o/r", Branch: "b", BaseRef: "main",
+		ContextDir: ".mesh/context", Project: "acme/mesh", Prologue: true})
+	noDir := EvaluatePrompt(EvaluateInput{GoalSlug: "g", GoalTitle: "G", Seq: 1, Title: "T", Repo: "o/r", Branch: "b", BaseRef: "main",
+		Project: "acme/mesh", Prologue: true})
+	for _, p := range []string{withDir, noDir} {
+		for _, want := range []string{"mesh_document", "mesh_search"} {
+			if !strings.Contains(p, want) {
+				t.Errorf("evaluate prompt lacks %q:\n%s", want, p)
+			}
+		}
+		if strings.Contains(p, "prologue_") {
+			t.Errorf("evaluate prompt still names a prologue_ tool:\n%s", p)
+		}
+	}
+}
+
+// The planner is told to use mesh_document and mesh_search when the
+// session has mesh-context's tools.
+func TestPlanPromptContextTools(t *testing.T) {
+	p := PlanPrompt(PlanInput{GoalSlug: "g", GoalTitle: "G", Org: "o", Project: "p", ContextDir: ".mesh/context", Prologue: true})
+	for _, want := range []string{"mesh_document", "mesh_search"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("plan prompt lacks %q:\n%s", want, p)
+		}
+	}
+	if strings.Contains(p, "prologue_") {
+		t.Errorf("plan prompt still names a prologue_ tool:\n%s", p)
+	}
+}
+
 func TestPlanPromptRejected(t *testing.T) {
 	if p := PlanPrompt(PlanInput{GoalSlug: "g", GoalTitle: "G", Org: "o", Project: "p"}); strings.Contains(p, "Your last answer") {
 		t.Error("a first ask lists no rejected items")

@@ -23,6 +23,8 @@ func TestRebasePromptContract(t *testing.T) {
 		"<<<<<<< main.go",
 		"The files: main.go.",
 		`project "runsheet/runsheet", slug "skill-mesh-branch-rebase"`,
+		"mesh_document",
+		"mesh_search",
 		"adr-001.md",
 	} {
 		if !strings.Contains(p, want) {
@@ -33,8 +35,8 @@ func TestRebasePromptContract(t *testing.T) {
 		t.Fatal("the contract lines changed")
 	}
 	// without Prologue the steps are the runbook, and no tool is named
-	if q := RebasePrompt(RebaseInput{Branch: "b", BaseRef: "main"}); strings.Contains(q, "prologue_document") || !strings.Contains(q, "mesh-branch-rebase skill's steps") {
-		t.Fatalf("no-prologue prompt:\n%s", q)
+	if q := RebasePrompt(RebaseInput{Branch: "b", BaseRef: "main"}); strings.Contains(q, "mesh_document") || !strings.Contains(q, "mesh-branch-rebase skill's steps") {
+		t.Fatalf("no-context prompt:\n%s", q)
 	}
 }
 
