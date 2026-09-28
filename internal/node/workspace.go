@@ -689,7 +689,7 @@ type Gateway interface {
 	FailWorkItemRebase(ctx context.Context, itemID, reason string) error
 	RecordDirectionResearch(ctx context.Context, directionID, nodeID string, research gateway.Research, costCents int, notes string, usage *gateway.UsageReport) error
 	Repo(ctx context.Context, id string) (*gateway.Repo, error)
-	Repos(ctx context.Context, accountID, ownerLogin string) ([]gateway.Repo, error)
+	ProjectRepos(ctx context.Context, repoIDs []string) ([]gateway.Repo, error)
 	ContextDocuments(ctx context.Context, org, project string) ([]gateway.Document, error)
 	ContextDocument(ctx context.Context, org, project, doc string) (string, error)
 	Scorecard(ctx context.Context, org, project string) (map[string]any, error)

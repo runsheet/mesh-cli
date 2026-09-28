@@ -108,29 +108,25 @@ func (p *Planner) Plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 	return err
 }
 
-// projectRepos reads the goal's project and its enrolled repos, by
-// owner/name.
-func (p *Planner) projectRepos(ctx context.Context, goal gateway.Goal, scope Scope) (*gateway.Project, map[string]gateway.Repo, error) {
+// projectRepoMap reads the goal's project and its enrolled repos, by
+// owner/name: the project's repoIds, each owned by its own account's
+// login — a repo under another account the org links is the project's
+// as much as one under the org's own.
+func (p *Planner) projectRepoMap(ctx context.Context, goal gateway.Goal, scope Scope) (*gateway.Project, map[string]gateway.Repo, error) {
 	project, err := p.GW.Project(ctx, goal.ProjectID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("project: %w", err)
 	}
-	all, err := p.GW.Repos(ctx, scope.AccountID, scope.Login)
+	if len(project.RepoIDs) == 0 {
+		return nil, nil, fmt.Errorf("project %s has no repos enrolled; nothing to plan in", project.Slug)
+	}
+	all, err := p.GW.ProjectRepos(ctx, project.RepoIDs)
 	if err != nil {
 		return nil, nil, fmt.Errorf("repos: %w", err)
 	}
-	inProject := map[string]bool{}
-	for _, id := range project.RepoIDs {
-		inProject[id] = true
-	}
 	repos := map[string]gateway.Repo{} // owner/name → repo
 	for _, r := range all {
-		if inProject[r.ID] {
-			repos[r.FullName()] = r
-		}
-	}
-	if len(repos) == 0 {
-		return nil, nil, fmt.Errorf("project %s has no repos enrolled; nothing to plan in", project.Slug)
+		repos[r.FullName()] = r
 	}
 	return project, repos, nil
 }
@@ -297,7 +293,7 @@ func numberFieldOr(row map[string]any, def float64, keys ...string) float64 {
 }
 
 func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) error {
-	project, repos, err := p.projectRepos(ctx, goal, scope)
+	project, repos, err := p.projectRepoMap(ctx, goal, scope)
 	if err != nil {
 		return err
 	}
@@ -549,7 +545,7 @@ func (p *Planner) AdoptPlan(ctx context.Context, goal gateway.Goal, scope Scope,
 		s.Stop()
 		return harness.RemoveSession(s.State.Workspace)
 	}
-	project, repos, err := p.projectRepos(ctx, goal, scope)
+	project, repos, err := p.projectRepoMap(ctx, goal, scope)
 	if err != nil {
 		return err
 	}
