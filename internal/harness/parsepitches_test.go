@@ -116,7 +116,7 @@ func TestParsePitchesRefusals(t *testing.T) {
 	}
 	for what, text := range map[string]string{
 		"no json at all": "I had a think and decided not to say.",
-		"no problem": pitchJSON(withField(`"problem": "p", `, "")),
+		"no problem":     pitchJSON(withField(`"problem": "p", `, "")),
 		"goal scope with two goals": pitchJSON(withField(
 			validScope,
 			`"scope": {"kind": "goal", "goals": [{"slug": "g1", "title": "G1", "statement": "s", "acceptance": "a"}, {"slug": "g2", "title": "G2", "statement": "s", "acceptance": "a"}]}`,
