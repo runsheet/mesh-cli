@@ -1284,6 +1284,15 @@ codex:
 Each account has a `name` and exactly one of `home`, `api_key_env` and
 `api_key_file`. A load that finds anything else is refused.
 
+These are not the only Codex accounts. An OpenAI credential added in
+the console and serving `codex` is handed to the claimed session by the
+claim-time read. A ChatGPT login (the `auth.json` from `codex login`,
+pasted as the secret) is written into the session's own temporary
+`CODEX_HOME/auth.json` and removed with it. A login Codex refreshed is
+kept under `<user cache dir>/mesh/codex/logins/` for the next session on
+the same secret version. An OpenAI key goes in the environment only
+(docs/adr/adr-005-accounts-on-the-node.md).
+
 `models` maps the Claude tiers to Codex models. A session asked for
 `opus`, `sonnet` or `haiku` runs on that tier's Codex model, and so does
 a full id of that family (`claude-opus-5` → `gpt-6-astra`). An empty

@@ -125,6 +125,16 @@ where the code lives, the variable names, and the rendering per agent.
    logged as a `usage: tool …` line; any error is logged, never the
    item's failure.
 
+*Amended 2026-09-28 (goal `evaluations-run-on-codex`, item 2):* a
+Codex session's `CODEX_HOME` may be its account's rather than the
+harness's own: when the claim-time read issues an openai credential
+serving codex, `PrepareCodexAccount` (ADR-005) makes the home, puts the
+login's `auth.json` in it and names it on `Job.Env`, and the Codex
+harness's `prepareHome` writes the tools' `config.toml` into that same
+home — secrets still by variable name in it, their values on the env —
+and leaves the directory to the account's `Cleanup`. The tools are
+rendered no differently.
+
 ## Consequences
 
 - No secret value is on argv (`--mcp-config` carries names), in the

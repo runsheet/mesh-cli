@@ -271,7 +271,9 @@ this section describes them.
   session per item. Its evaluations, plans, research and rebases are
   one-shot and do both.
 - **Codex accounts are node.yaml's `codex:` block** (goal
-  `codex-adapter`; `harness.Codex`, not yet wired into the loop). Each
+  `codex-adapter`; `harness.Codex`, not yet wired into the loop) — and,
+  since 2026-09-28, the platform's openai credentials serving codex
+  (above). Each
   is `{name, home | api_key_env | api_key_file}`, exactly one, checked
   at load. A ChatGPT-plan account is a login in its own home
   (`CODEX_HOME=~/.mesh/codex/<name> codex login`). Every session gets a
@@ -289,6 +291,57 @@ this section describes them.
   (mesh-specs ADR 006). `codex.models {opus, sonnet, haiku}` maps the
   Claude tiers to Codex models (`CodexConfig.CodexModel`). Codex has no
   budget flag, so `MaxBudgetUSD` is not enforced for a Codex session.
+
+- **Issued Codex accounts.** *Amended 2026-09-28 (goal
+  `evaluations-run-on-codex`, item 2):* the claim-time read also hands
+  a session an OpenAI account. `issuedCredential` keeps a row whose
+  `vendor` is `openai` and whose `serves` names `codex` beside the
+  anthropic/claude-code ones; `gateway.Credential` carries its
+  `Adapter` (`claude-code` | `codex`) and `SecretVersion`. `kind`
+  `oauth_token` is a subscription (the secret is the `auth.json`
+  `codex login` writes), `api_key` an api key with the same cap
+  handling as an Anthropic key. Any other vendor, and an openai row
+  not serving codex, is still a tool's account (ADR-006).
+  `IssuedAccount` carries the adapter onto `AccountConfig.Adapter`
+  (empty is claude-code; node.yaml's `accounts:` are Claude's, its
+  Codex ones the `codex:` block's). `Credentials.Open` takes the
+  session's adapter (`node.Adapter` of its harness) and chooses only
+  among the issued accounts of it, by the same `withChooser` rule
+  judged by that adapter's readings; a read that issues none of it is
+  `ErrNoAccount` (a codex-only read for a Claude session, and the
+  reverse). A Codex session with no read, or an empty one, runs on the
+  Codex harness's own account, never on node.yaml's Claude ones.
+  `PrepareCodexAccount` (from `PrepareAccount`) makes a 0700 home under
+  `CodexHomeRoot` (`<user cache dir>/mesh/codex`, as `harness.Codex`
+  does — not `/tmp`) and puts `CODEX_HOME=<home>` and
+  `MESH_ACCOUNT=<label>` on the env; the harness, seeing the job's own
+  `CODEX_HOME`, writes only `config.toml` into it (item 1). **The one
+  exception to env-only:** a subscription's secret is written verbatim
+  as `<home>/auth.json` at 0600, since Codex reads its login from
+  nothing else; a secret that is not a JSON object is refused without
+  echoing it. An api key goes on the env as `CODEX_API_KEY` and
+  `OPENAI_API_KEY` and nothing is written. `Cleanup` removes the home.
+  `Apply` strips the operator's `CODEX_HOME`, `CODEX_API_KEY` and
+  `OPENAI_API_KEY` (`CodexAuthEnv`) and puts the secret, the auth.json
+  bytes and each token in them on `Job.Secrets`; nothing logs them.
+  **The refreshed-login cache:** Codex rotates the refresh token in
+  place, so before `Cleanup` removes the home a changed `auth.json` is
+  kept at `CodexLoginCache` — `<root>/logins/<credentialId>.<secretVersion>.json`,
+  0600 — and preferred over the issued secret when the same id and
+  version is issued again; a new `secretVersion` (a login pasted or
+  rotated on the platform) discards the old file. The node does not
+  hand the refreshed login back to the platform. A Codex session's
+  readings land under `CodexLimitsAccount(label)` (`ObserveLimits` keys
+  a codex harness's session by its env's label), stay out of
+  `Limits.Readings()` and are `Limits.CodexReadings()` by label;
+  `KnownAccounts` notes a Codex account with its `adapter` (no
+  secret), `Loop.scheduled` leaves it out of the Claude accounts the
+  capacity is counted on and `Loop.CodexAccounts` judges it apart. The
+  heartbeat's `limits` rows are typed (`NodeAccountLimitsInput`), so a
+  Codex account's row is marked by its `codex:` account prefix rather
+  than an `adapter` field; `scaling.accounts` carries Claude accounts
+  only. Its usage report names `adapter: codex`, the issued
+  `credentialId` and its `credentialKind`.
 
 *Amended 2026-09-27 (goal `node-reports-usage-on-the-finish`):* until
 this date the node handed each session's record to a
