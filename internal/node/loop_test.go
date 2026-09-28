@@ -333,11 +333,11 @@ func TestRunnerFailsAnUnsuccessfulSession(t *testing.T) {
 	}
 	assertNoGoalDoc(t, ws)
 	// the goal's remaining budget bounds the session: (1000-100)/100 = 9
-	if b := runner.Budget(&gateway.Goal{BudgetCents: 1000, SpentCents: 100}); b != 9 {
+	if b := runner.Budget(&gateway.Goal{BudgetCents: 1000, SpentCents: 100}, "build", ""); b != 9 {
 		t.Fatalf("budget = %v", b)
 	}
 	runner.MaxBudgetUSD = 2
-	if b := runner.Budget(&gateway.Goal{BudgetCents: 1000, SpentCents: 100}); b != 2 {
+	if b := runner.Budget(&gateway.Goal{BudgetCents: 1000, SpentCents: 100}, "build", ""); b != 2 {
 		t.Fatalf("capped budget = %v", b)
 	}
 }

@@ -30,6 +30,10 @@ type Planner struct {
 	MCP map[string]any
 	// MaxBudgetUSD caps the planning session (5 by default).
 	MaxBudgetUSD float64
+	// Budgets is node.yaml's `budgets:` in force, read live (ADR 012,
+	// Loop.KindModelBudget); nil falls back to Cfg's own, read once at
+	// start.
+	Budgets func(kind, model string) (amount float64, source string)
 	// Model is what a planner session runs on ("" the CLI's default).
 	Model string
 	// Accounts are the node's Claude accounts (node.yaml); a session runs
@@ -55,6 +59,26 @@ func (p *Planner) logf(format string, args ...any) {
 	if p.Log != nil {
 		p.Log.Printf(format, args...)
 	}
+}
+
+// kindModelBudget is node.yaml's budgets: figure for kind and model —
+// live, through p.Budgets, when set; else Cfg's own, read once at start.
+func (p *Planner) kindModelBudget(kind, model string) (float64, string) {
+	if p.Budgets != nil {
+		return p.Budgets(kind, model)
+	}
+	return p.Cfg.KindModelBudget(kind, model)
+}
+
+// budgetWithSource is the plan's cost cap (ADR 012) and where it came
+// from, for the session's starting log line.
+func (p *Planner) budgetWithSource(goal *gateway.Goal) (float64, string) {
+	kindBudget, kindSource := p.kindModelBudget("plan", p.Model)
+	fallback := p.MaxBudgetUSD
+	if fallback <= 0 {
+		fallback = 5
+	}
+	return SessionBudget(kindBudget, kindSource, goal, fallback)
 }
 
 // PlanDir is where a goal's planner works: <root>/<goal-slug>/plan.
@@ -326,11 +350,8 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 		Org: scope.Login, Project: project.Slug, Repos: dirs, ContextDir: contextDir, ContextFiles: files, Blocked: goal.PausedReason,
 		Existing: existing, NextSeq: nextSeq, Prologue: len(p.MCP) > 0, Evidence: p.evidence(ctx, goal.Slug, scope, project),
 	}
-	budget := p.MaxBudgetUSD
-	if budget <= 0 {
-		budget = 5
-	}
-	p.logf("goal %s: planning in %s (%d repos)", goal.Slug, dir, len(repos))
+	budget, budgetSource := p.budgetWithSource(&goal)
+	p.logf("goal %s: planning in %s (%d repos), budget $%.2f (%s)", goal.Slug, dir, len(repos), budget, budgetSource)
 	items, reasons, flags, cost, acct, err := p.ask(ctx, goal, scope.NodeID, dir, budget, in, repos, merged)
 	// the session's usage report rides the plan's hand-in; Finish logs it
 	// when nothing carried it (its report was built as it ended, in ask)

@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -452,7 +453,12 @@ func TestSessionsRunOnTheItemsModel(t *testing.T) {
 			if c.wantLog != "" {
 				build, eval = c.wantLog, c.wantLog
 			}
-			for _, want := range []string{"item ship-it/1: build on " + build + "\n", "item ship-it/1: evaluate on " + eval + ": mesh/ship-it-1"} {
+			// the fixture goal has $9.00 left (budgetCents 1000, spentCents
+			// 100): it binds whenever the model's own default is above it
+			kindBudget, kindSource := kindModelBudget(nil, "build", c.wantBuild)
+			amount, source := SessionBudget(kindBudget, kindSource, goalWith(900), 0)
+			buildBudget := fmt.Sprintf("$%.2f (%s)", amount, source)
+			for _, want := range []string{"item ship-it/1: build on " + build + ", budget " + buildBudget + "\n", "item ship-it/1: evaluate on " + eval + ": mesh/ship-it-1"} {
 				if !strings.Contains(logs.String(), want) {
 					t.Fatalf("node.log lacks %q:\n%s", want, logs.String())
 				}

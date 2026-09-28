@@ -61,6 +61,16 @@ type Config struct {
 	// dollars, shared by the api accounts naming that project
 	// (adr-005-capacity-across-accounts); a project not listed has none.
 	ProjectBudgets map[string]float64 `yaml:"project_budgets,omitempty"`
+	// Budgets caps one session's cost by kind (build, evaluate, plan,
+	// rebase, research) and then by the model tier it runs on (haiku,
+	// sonnet, opus — a claude-* id resolves to its tier via
+	// Config.KindModelBudget/ModelTier), read live like Limits (ADR
+	// 012). A kind or tier left out takes its default: build haiku 2,
+	// sonnet 4, opus 10; the other kinds keep their historical flat
+	// fallback. The platform is meant to override this per claimed item
+	// or project once schema.json carries a `budgets` field; it does
+	// not yet.
+	Budgets map[string]map[string]float64 `yaml:"budgets,omitempty"`
 	// Codex is OpenAI's Codex CLI on this node (CodexConfig): its
 	// binary, its accounts and the Codex model for each Claude tier.
 	// Nothing runs on it yet.
@@ -432,11 +442,14 @@ type Reloaded struct {
 	Spending *Spending
 }
 
-// Spending is what the node may spend on: node.yaml's accounts and
-// project budgets, read again every tick like the capacity.
+// Spending is what the node may spend on: node.yaml's accounts,
+// project budgets and per-kind, per-model session budgets, read again
+// every tick like the capacity.
 type Spending struct {
 	Accounts       []AccountConfig
 	ProjectBudgets map[string]float64
+	// Budgets is node.yaml's `budgets:` (ADR 012).
+	Budgets map[string]map[string]float64
 }
 
 // Reloader is Loop.Reload for a node started on cfg and scopes: every
@@ -466,7 +479,7 @@ func Reloader(gw Gateway, cfg *Config, scopes Scopes, load func() (*Config, erro
 		} else {
 			limits := c.Limits
 			out.Capacity, out.Limits, restrict = c.Capacity, &limits, c.Orgs
-			out.Spending = &Spending{Accounts: c.Accounts, ProjectBudgets: c.ProjectBudgets}
+			out.Spending = &Spending{Accounts: c.Accounts, ProjectBudgets: c.ProjectBudgets, Budgets: c.Budgets}
 		}
 		orgs, err := gw.MyOrgs(ctx)
 		if err != nil {

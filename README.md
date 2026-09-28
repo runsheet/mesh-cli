@@ -145,10 +145,40 @@ names a `model` per item with a one-line `model_reason`, by this rubric:
   failing item's retry, or when unsure.
 
 The model a session ran on is in `node.log` (`item <goal>/<seq>: build
-on haiku`, `evaluate on sonnet`, `rebase on …`) and on the item's events
-(`session started: <branch> on haiku`, and the evaluator's notes end
-`(evaluated on sonnet)`); node.log also records each model the planner
-chose when the plan is handed in.
+on haiku, budget $2.00 (the default for build/haiku)`, `evaluate on
+sonnet`, `rebase on …`) and on the item's events (`session started:
+<branch> on haiku`, and the evaluator's notes end `(evaluated on
+sonnet)`); node.log also records each model the planner chose when the
+plan is handed in.
+
+### Session budgets
+
+A session's budget is capped by kind — build, evaluate, plan, rebase,
+research — and then by the model tier it runs on: `haiku`, `sonnet` or
+`opus` (a full `claude-*` id resolves to its tier). `~/.mesh/node.yaml`'s
+`budgets:` names the figures; a kind or tier it leaves out takes its
+default — only `build` has one (sonnet build sessions are where spend
+runs away): `haiku` $2, `sonnet` $4, `opus` $10. The other kinds keep
+their historical flat cap (`--eval-budget-usd` 3, `--plan-budget-usd`,
+`--research-budget-usd` and `--rebase-budget-usd` 5) until `budgets:`
+names one for them too.
+
+```yaml
+budgets:
+  build:
+    haiku: 2
+    sonnet: 4
+    opus: 10
+```
+
+The session's actual cap is the smallest of the goal's own remaining
+budget, this figure and the kind's `--*-budget-usd` flag (a session with
+no goal, such as research, or a flag left at 0, drops out of the
+comparison). Read live like the accounts and project budgets — a change
+takes on the next tick, no restart needed. The platform is meant to
+override this per claimed item or project once its schema carries a
+`budgets` field (ADR 012); it does not yet, so node.yaml is the only
+source.
 
 ### The director
 
@@ -441,7 +471,9 @@ available on Bedrock, Vertex or Foundry; Team/Enterprise orgs must enable
 in `~/.mesh/work/<goal-slug>/<seq>` (cloned with your `gh`, branch
 `mesh/<goal-slug>-<seq>` from the base ref), with the goal's Prologue
 context written under `.mesh/context/` (excluded from git). The budget is
-the goal's remaining budget, capped by `--max-budget-usd`. The node
+the smallest of the goal's remaining budget, node.yaml's `budgets:` for
+build and the item's model (see "Session budgets" above), and
+`--max-budget-usd`. The node
 reports progress every minute (`ReportWorkItemProgress` with the cents
 since the last report), pushes the branch with your credentials and
 `FinishWorkItem`s — or `FailWorkItem`s. `--once` runs one tick.
