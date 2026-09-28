@@ -517,6 +517,37 @@ console offers it.**
   `workflow_dispatch` with `dry_run` (the default) prints the next tag
   for its ref's head and pushes nothing.
 
+## Amendment: version is tag-or-sha, and the heartbeat carries commit (goal `node-releases-on-merge`, 2026-09-28)
+
+Every node-changing merge to main is now a release (mesh-specs ADR 013),
+and the console shows which one a node runs and how far behind it is.
+A binary built outside release-tag.yml reported `dev`, which says
+nothing about what it is; the mini ran 72ff910 for a day with the
+console none the wiser.
+
+- `internal/version` gains `Commit` (an ldflag, like `Version`) and
+  `BuildCommit()`: that ldflag, else the Go toolchain's `vcs.revision`
+  cut to 7 characters with `-dirty` when `vcs.modified`, else empty.
+  `String()` is what the node reports itself as everywhere — register,
+  heartbeat, node.log's start lines, `mesh node update`/`upgrade`'s
+  running version, the channel MCP server's `serverInfo`, `mesh
+  --version`: `Version` when it is a tag, else the commit, else `dev`.
+  `mesh version` prints both: `mesh v0.2.188 (commit 0895d40)`, or
+  `mesh 0895d40 (dev build)`.
+- release-tag.yml sets `-X …/internal/version.Commit=${GITHUB_SHA::7}`
+  beside `Version=${GITHUB_REF_NAME}`, so a release knows its commit
+  even under `-trimpath` or with vcs stamping off.
+- The heartbeat carries `commit` (`HeartbeatExtras.Commit`, filled from
+  `Loop.Commit`) beside `version`, sent only when set and only when the
+  gateway's `HeartbeatNodeInput` has the field — introspected and kept
+  for an hour exactly as `scaling` is. A platform without it gets the
+  heartbeat it always did.
+- Self-update is unchanged in effect: only a node reporting a release
+  (`version.Release`: `v` then a digit) follows `desiredVersion`. A
+  sha-versioned dev build was put there by hand from a checkout and is
+  left alone, as `dev` always was; a desired version equal to the
+  running tag still does nothing.
+
 ## Consequences
 
 - Renaming an asset, the workflow file, or the repo breaks every
