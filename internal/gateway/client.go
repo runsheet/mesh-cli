@@ -631,6 +631,31 @@ func (c *Client) AgentModel(ctx context.Context, agentID string) (string, error)
 	return out.Agent.Model, nil
 }
 
+// Scorecard reads the org's scorecard (runsheet trd §6a, a Map field
+// like planCredentials or directionResearch, no F.* selection to send)
+// and returns project's own entry from its `projects` list — a nil map,
+// no error, on an older platform without the query or a project the
+// scorecard does not name.
+func (c *Client) Scorecard(ctx context.Context, org, project string) (map[string]any, error) {
+	var out struct {
+		Scorecard map[string]any `json:"scorecard"`
+	}
+	q := fmt.Sprintf(`{ scorecard(orgId: %q) }`, org)
+	if err := c.Query(ctx, q, nil, &out); err != nil {
+		var ge *Error
+		if errors.As(err, &ge) && unknownField(ge.Message, "scorecard") {
+			return nil, nil
+		}
+		return nil, err
+	}
+	for _, row := range rowsOf(out.Scorecard["projects"]) {
+		if str(row, "projectId") == project || strings.EqualFold(str(row, "projectName"), project) {
+			return row, nil
+		}
+	}
+	return nil, nil
+}
+
 // Goal is a GoalIndex row.
 type Goal struct {
 	ID         string `json:"id"`
