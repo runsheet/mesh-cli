@@ -149,6 +149,17 @@ implementing it that the spec leaves open or that differ in detail.
   `user.name`/`user.email`, read from the host's global git config at
   start, since the session no longer reads the host's.
 
+### Amendment 2026-09-28: a build's validation runs in the session's pod
+
+A build's declared validation ([ADR-014](adr-014-a-build-validates-before-it-pushes.md))
+runs each step as one `Session.Run` of the build's own session — a
+fresh pod of it, since the agent's went with the agent — with the
+workspace mounted and the same allow-listed env; the attestation names
+the node image by digest (`sandbox.ImageDigest`) and says `sandboxed:
+true`. A limit kill there is the step's failure, not the node's
+condition. With `sandbox: off` the steps run on the host and the
+attestation says `host:<hostname>`.
+
 ## Consequences
 
 - A sandboxed node needs accounts: the operator's own `~/.claude` login

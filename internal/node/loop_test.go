@@ -78,6 +78,8 @@ type fakeWS struct {
 	// pushedHead and pushedErr are what PushedHead answers.
 	pushedHead string
 	pushedErr  error
+	// changed are what ChangedPaths answers.
+	changed []string
 	// events are Authorize (with its token), Prepare, Diff and Push in
 	// the order they came
 	events []string
@@ -154,6 +156,13 @@ func assertNoGoalDoc(t *testing.T, ws *fakeWS) {
 			t.Fatalf("an item's branch must carry no goal doc: %v", docs)
 		}
 	}
+}
+
+// ChangedPaths answers changed.
+func (w *fakeWS) ChangedPaths(_ context.Context, dir, base string) ([]string, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]string(nil), w.changed...), nil
 }
 
 func (w *fakeWS) Diff(_ context.Context, dir, base string) (string, error) {
