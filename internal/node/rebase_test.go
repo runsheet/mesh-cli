@@ -41,7 +41,7 @@ func rebaseNode(t *testing.T, f *gatewaytest.Fake, slug string, h harness.Harnes
 	if logs != nil {
 		w = log.New(logs, "", 0)
 	}
-	rb := &Rebaser{GW: gw, Harness: h, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, MCP: PrologueMCP(f.URL(), "rs_test"), MaxBudgetUSD: 4, ProgressEvery: time.Hour, Log: w}
+	rb := &Rebaser{GW: gw, Harness: h, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, MCP: MeshContextMCP(f.URL(), "rs_test"), MaxBudgetUSD: 4, ProgressEvery: time.Hour, Log: w}
 	return &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Version: "test", Harness: "claude-code", Interval: time.Hour, Log: w,
 		Dispatch: func(context.Context, gateway.WorkItem) {},
 		Rebase:   func(ctx context.Context, item gateway.WorkItem) { _ = rb.Rebase(ctx, item) }}, cfg
@@ -68,7 +68,7 @@ func TestRebaseClaimedOnceAndFinishedWithPushedHead(t *testing.T) {
 	if len(claims) != 1 || claims[0].Input["aggregateId"] != item1 || claims[0].Input["nodeId"] != cfg.NodeID {
 		t.Fatalf("claims: %+v", claims)
 	}
-	if len(h.jobs) != 1 || h.jobs[0].Kind != harness.KindRebase || h.jobs[0].MaxBudgetUSD != 4 || h.jobs[0].MCPServers["prologue"] == nil {
+	if len(h.jobs) != 1 || h.jobs[0].Kind != harness.KindRebase || h.jobs[0].MaxBudgetUSD != 4 || h.jobs[0].MCPServers["mesh-context"] == nil {
 		t.Fatalf("jobs: %+v", h.jobs)
 	}
 	p := h.jobs[0].Prompt

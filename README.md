@@ -794,9 +794,10 @@ accepts them.
 
 A session gets the tools its project and role have, configured in the
 console and handed to the node that claimed the session (ADR-006, trd
-§3 Tools). The Prologue MCP server is not one of them: the node attaches
-it to every session itself, and a console tool named `prologue` is
-refused and noted.
+§3 Tools). The mesh-context MCP server is not one of them: the node
+attaches it to every session itself, and a console tool named
+`mesh-context` is refused and noted (`prologue`, the built-in's old
+name, is accepted as an ordinary tool for one release).
 
 **What the node reports.** Every tick the node looks on its `PATH` for
 the tool runtimes it can start — `npx`, `uvx`, `docker` — and the agent
@@ -808,10 +809,10 @@ node runs is reported without a restart.
 credentials and its `tools` (name, remote `url`/`headers` or local
 `runtime`/`command`/`args`/`env`, `required`, `roles`) in one read, and
 keeps the tools whose `roles` include the session's (`build`,
-`evaluate`; plan, research and rebase sessions keep Prologue alone for
-now). Each agent gets them in its own format:
+`evaluate`; plan, research and rebase sessions keep mesh-context alone
+for now). Each agent gets them in its own format:
 
-- **Claude Code**: `--mcp-config` with `mcpServers` — Prologue plus one
+- **Claude Code**: `--mcp-config` with `mcpServers` — mesh-context plus one
   entry per tool, `{type: http, url, headers}` remote or `{command, args,
   env}` local (`npx -y …`, `uvx …`, `docker run -i --rm -e KEY… image
   …`) — and `--allowedTools mcp__<name>__*` for each, so a print-mode
@@ -849,12 +850,12 @@ named `mcp__<name>__…`, Codex's `mcp_tool_call` items) and, after a
 build or evaluation, hands the platform one `recordToolUsage` per call
 of a priced tool — the item, the call's id, the tool, and the session's
 usage report at the tool's price per call — beside the session's own
-report on its finish. Unpriced tools and Prologue report nothing.
+report on its finish. Unpriced tools and mesh-context report nothing.
 A platform without `recordToolUsage` gets none: the node says so once
 per run, logs each call instead, and the item goes on.
 
 A platform that does not hand out `tools` yet costs nothing: sessions
-run on Prologue alone, as before.
+run on mesh-context alone, as before.
 
 ### Sandbox
 
@@ -1299,7 +1300,7 @@ a full id of that family (`claude-opus-5` → `gpt-6-astra`). An empty
 model, one of no tier, or a tier left out of `models` runs on Codex's
 own default.
 
-The session's MCP servers (Prologue) are written to `config.toml` in
+The session's MCP servers (mesh-context) are written to `config.toml` in
 its temporary home. Secrets are named there by variable, never by value
 (mesh-specs ADR 006). What Codex's event stream reports is documented
 in [docs/codex-events.md](docs/codex-events.md): the final message,

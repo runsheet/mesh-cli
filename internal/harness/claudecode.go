@@ -105,7 +105,7 @@ func mcpConfig(servers map[string]any) ([]byte, string, bool) {
 
 // SandboxArgs is Args for a session in a pod: the same, but the MCP
 // config is the file at mcpPath (under the session's HOME) rather than
-// inline, so the Prologue bearer is on no command line.
+// inline, so the mesh-context bearer is on no command line.
 func (c *ClaudeCode) SandboxArgs(job Job, mcpPath string) []string {
 	servers := job.MCPServers
 	job.MCPServers = nil
