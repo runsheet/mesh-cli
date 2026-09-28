@@ -175,7 +175,12 @@ it while its project or its share is at the ceiling. A `propose`
 direction sets nothing — its pitches wait for a person and take no
 live-goal slot — so it is offered whatever the room, and its session is
 told the room only as information: a pitch that would wait for room says
-so.
+so. Its session hands in pitches — the problem, the evidence, the
+strategy bet, the goal or initiative it would set, an estimate, risks,
+alternatives and the signal it expects to move — and its answers to
+open questions on earlier pitches; a `set` direction's session hands in
+goal proposals. A platform older than pitches is handed them as
+proposals instead, and the node logs that once.
 
 ```bash
 mesh node model --research opus   # the session that decides what to build
