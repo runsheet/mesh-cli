@@ -44,8 +44,11 @@ downloaded and verified as ` + "`mesh node update`" + ` does (SHA256SUMS signed 
 release-tag.yml on the tag), and its node image ensured. With --binary
 <path> a local build is installed instead, once ` + "`<path> version`" + ` answers.
 Either way the executable is swapped atomically, the previous one kept as
-<path>.prev, and a new binary that fails to start twice is rolled back to
-it.
+<path>.prev. The new process confirms the upgrade with its first
+heartbeat, retried for node.yaml's update.confirm_within (5m by default)
+while the platform is slow; one that cannot run, or cannot confirm inside
+the window on three starts, is rolled back to it, and ~/.mesh/update.json
+says why. Watch ~/.mesh/node.log.
 
 The restart: under systemd --user, ` + "`systemctl --user restart " + node.ServiceLabel + "`" + `
 (the unit's KillMode=process signals the node alone); under launchd,
@@ -94,7 +97,10 @@ type nodeUpgrade struct {
 	Sandboxed func() bool
 	// Service restarts the node.
 	Service nodeRestarter
-	Out     io.Writer
+	// ConfirmWithin is node.yaml's update.confirm_within, as the output
+	// names it; zero is selfupdate.DefaultConfirmWithin.
+	ConfirmWithin time.Duration
+	Out           io.Writer
 }
 
 func defaultNodeUpgrade(out io.Writer) (*nodeUpgrade, error) {
@@ -111,16 +117,21 @@ func defaultNodeUpgrade(out io.Writer) (*nodeUpgrade, error) {
 		return nil, err
 	}
 	gh := selfupdate.GitHub{}
+	within := selfupdate.DefaultConfirmWithin
+	if cfg, err := node.LoadSettings(); err == nil {
+		within = cfg.ConfirmWithin()
+	}
 	return &nodeUpgrade{
-		Updater:   &node.ReleaseUpdater{Source: gh, State: state, Exe: exe},
-		Latest:    gh.Latest,
-		Running:   version.Version,
-		Run:       run,
-		Version:   binaryVersion,
-		Image:     ensureNodeImage,
-		Sandboxed: nodeSandboxed,
-		Service:   hostService{},
-		Out:       out,
+		ConfirmWithin: within,
+		Updater:       &node.ReleaseUpdater{Source: gh, State: state, Exe: exe},
+		Latest:        gh.Latest,
+		Running:       version.Version,
+		Run:           run,
+		Version:       binaryVersion,
+		Image:         ensureNodeImage,
+		Sandboxed:     nodeSandboxed,
+		Service:       hostService{},
+		Out:           out,
 	}, nil
 }
 
@@ -196,7 +207,13 @@ func (u *nodeUpgrade) run(ctx context.Context, want, binary string, force bool) 
 	if err := u.Service.Restart(ctx, u.Run, u.Out); err != nil {
 		return fmt.Errorf("%s is in place, but the node was not restarted: %w", want, err)
 	}
-	fmt.Fprintf(u.Out, "A %s that fails to start twice is rolled back to %s.\n", want, selfupdate.PrevPath(exe))
+	within := u.ConfirmWithin
+	if within <= 0 {
+		within = selfupdate.DefaultConfirmWithin
+	}
+	fmt.Fprintf(u.Out, "The new process confirms the upgrade with its first heartbeat, within %s (node.yaml update.confirm_within); watch %s. "+
+		"A binary that cannot run, or cannot confirm inside the window on %d starts, is rolled back to %s and ~/.mesh/update.json says why.\n",
+		within, node.ServiceLog("~"), selfupdate.MaxStarts, selfupdate.PrevPath(exe))
 	return nil
 }
 

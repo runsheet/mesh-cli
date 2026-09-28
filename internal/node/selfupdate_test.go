@@ -25,6 +25,8 @@ type fakeUpdater struct {
 	swapErr  error
 	imageErr error
 	pending  bool
+	// confirmErrs is every NoteConfirmError reason, in order
+	confirmErrs []string
 }
 
 // Image is the loop's Image: it records the version and whether the loop
@@ -78,6 +80,19 @@ func (u *fakeUpdater) Swap(bin []byte) error {
 func (u *fakeUpdater) Refuse(from, to, reason string) error {
 	u.add("refuse " + to + ": " + reason)
 	return nil
+}
+
+func (u *fakeUpdater) NoteConfirmError(reason string) error {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.confirmErrs = append(u.confirmErrs, reason)
+	return nil
+}
+
+func (u *fakeUpdater) ConfirmErrs() []string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return append([]string(nil), u.confirmErrs...)
 }
 
 func (u *fakeUpdater) Confirm() (bool, error) {
@@ -445,12 +460,12 @@ func TestCheckStartRollsBackAfterTwoFailedStarts(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 2 {
-		c, err := CheckStart(f, exe)
+		c, err := CheckStart(f, exe, selfupdate.DefaultConfirmWithin)
 		if err != nil || c.RolledBack || c.Failed != "" {
 			t.Fatalf("start: %+v, %v", c, err)
 		}
 	}
-	c, err := CheckStart(f, exe)
+	c, err := CheckStart(f, exe, selfupdate.DefaultConfirmWithin)
 	if err != nil || !c.RolledBack || c.From != "v1.0.0" || c.To != "v1.1.0" {
 		t.Fatalf("third start: %+v, %v", c, err)
 	}
@@ -463,7 +478,7 @@ func TestCheckStartRollsBackAfterTwoFailedStarts(t *testing.T) {
 	}
 
 	// the previous binary starts: it reports the rollback and leaves v1.1.0 be
-	c, err = CheckStart(f, exe)
+	c, err = CheckStart(f, exe, selfupdate.DefaultConfirmWithin)
 	if err != nil || c.RolledBack || c.Failed != "v1.1.0" || !c.Final || c.Reason != reason {
 		t.Fatalf("restart after rollback: %+v, %v", c, err)
 	}
@@ -491,7 +506,7 @@ func TestFirstHeartbeatConfirmsTheUpdate(t *testing.T) {
 	if err := f.BeginUpdate("v1.0.0", "v1.1.0"); err != nil {
 		t.Fatal(err)
 	}
-	if c, err := CheckStart(f, exe); err != nil || c.RolledBack {
+	if c, err := CheckStart(f, exe, selfupdate.DefaultConfirmWithin); err != nil || c.RolledBack {
 		t.Fatalf("start: %+v, %v", c, err)
 	}
 	p := newPriorityFake(t)
@@ -524,6 +539,217 @@ func TestFailedHeartbeatDoesNotConfirm(t *testing.T) {
 	loop.Tick(context.Background())
 	if got := u.Events(); len(got) != 0 {
 		t.Fatalf("events %q", got)
+	}
+}
+
+// slowGateway is a platform whose heartbeats time out until up: the
+// mini at load 200 (goal upgrades-survive-a-slow-platform).
+type slowGateway struct {
+	Gateway
+	mu    sync.Mutex
+	up    bool
+	beats int
+}
+
+func (g *slowGateway) HeartbeatNode(ctx context.Context, nodeID, version string, running int, extras ...gateway.HeartbeatExtras) error {
+	g.mu.Lock()
+	up := g.up
+	g.beats++
+	g.mu.Unlock()
+	if !up {
+		return context.DeadlineExceeded
+	}
+	return g.Gateway.HeartbeatNode(ctx, nodeID, version, running, extras...)
+}
+
+func (g *slowGateway) setUp() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.up = true
+}
+
+// confirmClock is a clock tests move by hand, safe beside Run.
+type confirmClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func (c *confirmClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *confirmClock) Add(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.t = c.t.Add(d)
+}
+
+// slowConfirmLoop is updateLoop's loop confirming v1.1.0 inside window,
+// on a platform whose heartbeats time out, with a fake clock.
+func (p *priorityFake) slowConfirmLoop(window time.Duration) (*Loop, *fakeUpdater, *slowGateway, *confirmClock, *strings.Builder) {
+	loop, u, _, logs := p.updateLoop("")
+	loop.Version = "v1.1.0"
+	loop.Confirming = "v1.1.0"
+	loop.ConfirmWithin = window
+	u.pending = true
+	gw := &slowGateway{Gateway: loop.GW}
+	loop.GW = gw
+	clock := &confirmClock{t: time.Date(2026, 9, 28, 5, 53, 0, 0, time.UTC)}
+	loop.Now = clock.Now
+	loop.Started = clock.Now()
+	return loop, u, gw, clock, logs
+}
+
+// A pending update whose heartbeats time out for two minutes, inside a
+// five-minute window, keeps trying — each failure logged with its error
+// and recorded — and confirms once with the first heartbeat through:
+// a slow platform is not a binary that failed.
+func TestSlowPlatformConfirmsInsideTheWindow(t *testing.T) {
+	p := newPriorityFake(t)
+	loop, u, gw, clock, logs := p.slowConfirmLoop(5 * time.Minute)
+	for range 4 { // two fake minutes of timeouts, a tick each 30 s
+		loop.Tick(context.Background())
+		if err := loop.unconfirmedNow(); err != nil {
+			t.Fatalf("at %s: %v", clock.Now().Sub(loop.Started), err)
+		}
+		clock.Add(30 * time.Second)
+	}
+	if got := u.Events(); len(got) != 0 {
+		t.Fatalf("events while the platform is slow: %q", got)
+	}
+	errs := u.ConfirmErrs()
+	if len(errs) == 0 || len(errs) != gw.beats {
+		t.Fatalf("NoteConfirmError %q: want one per failed heartbeat", errs)
+	}
+	for _, e := range errs {
+		if e != "context deadline exceeded" {
+			t.Fatalf("NoteConfirmError %q", errs)
+		}
+	}
+	failed := 0
+	for _, line := range strings.Split(logs.String(), "\n") {
+		if strings.Contains(line, "self-update: confirming v1.1.0: heartbeat") {
+			failed++
+			if !strings.Contains(line, "context deadline exceeded (the platform is slow); retrying for") {
+				t.Fatalf("failed attempt logged as %q", line)
+			}
+		}
+	}
+	if failed != gw.beats || !strings.Contains(logs.String(), "retrying for 3m30s more") {
+		t.Fatalf("%d failed attempts logged:\n%s", failed, logs)
+	}
+	gw.setUp()
+	// Run ticks at once: the heartbeat goes through and confirms
+	loop.Interval = time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- loop.Run(ctx) }()
+	deadline := time.After(5 * time.Second)
+	for !strings.Contains(strings.Join(u.Events(), "|"), "confirm") {
+		select {
+		case err := <-done:
+			t.Fatalf("Run returned %v before confirming", err)
+		case <-deadline:
+			t.Fatal("no confirm")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	// the window elapses later: a confirmed update never ends Run
+	clock.Add(10 * time.Minute)
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	if err := <-done; errors.Is(err, ErrUnconfirmed) {
+		t.Fatalf("Run = %v after a confirm", err)
+	}
+	confirms := 0
+	for _, e := range u.Events() {
+		if e == "confirm" {
+			confirms++
+		}
+	}
+	if confirms != 1 {
+		t.Fatalf("events %q: want Confirm exactly once", u.Events())
+	}
+	if !strings.Contains(logs.String(), "v1.1.0 is up; update confirmed") {
+		t.Fatalf("logs:\n%s", logs)
+	}
+}
+
+// A window that elapses with every heartbeat timing out ends Run with
+// ErrUnconfirmed naming the last error, which NoteConfirmError holds.
+func TestSlowPlatformPastTheWindowIsUnconfirmed(t *testing.T) {
+	p := newPriorityFake(t)
+	loop, u, _, clock, _ := p.slowConfirmLoop(time.Minute)
+	loop.Interval = time.Millisecond
+	loop.Now = func() time.Time { // each read 10 fake seconds on
+		clock.Add(10 * time.Second)
+		return clock.Now()
+	}
+	done := make(chan error, 1)
+	go func() { done <- loop.Run(context.Background()) }()
+	var err error
+	select {
+	case err = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not end when the window elapsed")
+	}
+	var ue *UnconfirmedError
+	if !errors.Is(err, ErrUnconfirmed) || !errors.As(err, &ue) {
+		t.Fatalf("Run = %v, want ErrUnconfirmed", err)
+	}
+	if !strings.Contains(err.Error(), "v1.1.0 did not confirm within 1m0s: context deadline exceeded") {
+		t.Fatalf("Run = %q", err)
+	}
+	errs := u.ConfirmErrs()
+	if len(errs) == 0 || errs[len(errs)-1] != "context deadline exceeded" {
+		t.Fatalf("NoteConfirmError %q", errs)
+	}
+	for _, e := range u.Events() {
+		if e == "confirm" {
+			t.Fatalf("confirmed without a heartbeat: %q", u.Events())
+		}
+	}
+}
+
+// With no update pending a failed heartbeat is only logged: no
+// NoteConfirmError, no Confirm, and no window ends Run.
+func TestFailedHeartbeatWithNoPendingUpdate(t *testing.T) {
+	p := newPriorityFake(t)
+	loop, u, _, clock, logs := p.slowConfirmLoop(time.Minute)
+	loop.Confirming = ""
+	u.pending = false
+	loop.Tick(context.Background())
+	clock.Add(time.Hour)
+	loop.Tick(context.Background())
+	if got := u.ConfirmErrs(); len(got) != 0 {
+		t.Fatalf("NoteConfirmError %q", got)
+	}
+	if got := u.Events(); len(got) != 0 {
+		t.Fatalf("events %q", got)
+	}
+	if err := loop.unconfirmedNow(); err != nil {
+		t.Fatalf("unconfirmed with nothing pending: %v", err)
+	}
+	if !strings.Contains(logs.String(), "heartbeat acme: context deadline exceeded") {
+		t.Fatalf("logs:\n%s", logs)
+	}
+}
+
+// ReleaseUpdater.NoteConfirmError lands in update.json for a rollback to
+// name.
+func TestReleaseUpdaterNotesConfirmError(t *testing.T) {
+	f, exe := updateState(t)
+	if err := f.BeginUpdate("v1.0.0", "v1.1.0"); err != nil {
+		t.Fatal(err)
+	}
+	u := &ReleaseUpdater{State: f, Exe: exe}
+	if err := u.NoteConfirmError("context deadline exceeded"); err != nil {
+		t.Fatal(err)
+	}
+	if s, err := f.Load(); err != nil || s.ConfirmError != "context deadline exceeded" {
+		t.Fatalf("state %+v, %v", s, err)
 	}
 }
 
