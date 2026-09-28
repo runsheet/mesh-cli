@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
@@ -17,8 +19,13 @@ import (
 // (runsheet trd §6c): the project's repos checked out read-only, its
 // Prologue context, the words of the direction and the goals the
 // project has already had; a fresh `claude -p` that reads and then
-// writes its proposals as JSON; the proposals handed in against the
-// direction with RecordDirectionResearch, the session's cost with them.
+// writes what it came to as JSON, handed in against the direction with
+// RecordDirectionResearch, the session's cost with it. A propose-mode
+// direction pitches (runsheet ADR 026): its pitches — problem,
+// evidence, bet, scope, estimate, risks, alternatives, signal — and its
+// answers to open questions on earlier ones; a set-mode one proposes
+// goals. A platform older than pitches gets the pitches as proposals,
+// and the node says so once.
 //
 // The hours, the gap and the ceiling are the platform's: this asks for
 // the claim on every tick and is told to wait, the way the loop asks
@@ -45,6 +52,10 @@ type Director struct {
 	// Timeout caps its wall clock (0 none).
 	Timeout time.Duration
 	Log     *log.Logger
+
+	// noPitches says once per Director that the platform takes no
+	// pitches (gateway.ErrNoPitches), however many sessions hand in.
+	noPitches sync.Once
 }
 
 func (d *Director) logf(format string, args ...any) {
@@ -170,32 +181,138 @@ func (d *Director) handIn(ctx context.Context, direction gateway.Direction, proj
 		return fmt.Errorf("research session: %w", acct.RedactErr(err))
 	}
 	result.Text = acct.Redact(result.Text)
-	specs, err := harness.ParseProposals(result.Text)
+	research, notes, err := readResearch(direction, result.Text)
 	if err != nil {
 		// the cost is real and the claim must be let go, so hand in an
 		// empty session rather than leaving the direction claimed: a
 		// node that cannot read its own director would otherwise hold
 		// it for 45 minutes and charge for the privilege
-		note := fmt.Sprintf("the session's proposals could not be read (%s): %s", result.SessionID, truncate(result.Text, 300))
-		if hand := acct.Carried(d.GW.RecordDirectionResearch(ctx, direction.ID, scope.NodeID, gateway.Research{}, Cents(result.CostUSD), note, acct.Report(result))); hand != nil {
+		what := "proposals"
+		if direction.Proposes() {
+			what = "pitches"
+		}
+		note := fmt.Sprintf("the session's %s could not be read (%s): %s", what, result.SessionID, truncate(result.Text, 300))
+		if hand := acct.Carried(d.pitchFallback(d.GW.RecordDirectionResearch(ctx, direction.ID, scope.NodeID, gateway.Research{}, Cents(result.CostUSD), note, acct.Report(result)))); hand != nil {
 			d.logf("%s/%s: %v (and handing in the empty session failed: %v)", project.Slug, direction.Slug, err, hand)
 		}
 		return fmt.Errorf("research session (%s): %w", result.SessionID, err)
 	}
-	proposals := make([]gateway.GoalProposal, 0, len(specs))
-	for _, sp := range specs {
-		proposals = append(proposals, gateway.GoalProposal{
-			Slug: slugify(sp.Slug), Title: strings.TrimSpace(sp.Title),
-			Statement: strings.TrimSpace(sp.Statement), Acceptance: strings.TrimSpace(sp.Acceptance),
-			Why: strings.TrimSpace(sp.Why), BudgetCents: sp.BudgetCents,
-		})
-	}
-	notes := fmt.Sprintf("%d proposed", len(proposals))
-	if err := acct.Carried(d.GW.RecordDirectionResearch(ctx, direction.ID, scope.NodeID, gateway.Research{Proposals: proposals}, Cents(result.CostUSD), notes, acct.Report(result))); err != nil {
+	if err := acct.Carried(d.pitchFallback(d.GW.RecordDirectionResearch(ctx, direction.ID, scope.NodeID, research, Cents(result.CostUSD), notes, acct.Report(result)))); err != nil {
 		return fmt.Errorf("hand in the research: %w", err)
 	}
-	d.logf("%s/%s: proposed %d goal(s) ($%.2f)", project.Slug, direction.Slug, len(proposals), result.CostUSD)
+	if direction.Proposes() {
+		d.logf("%s/%s: pitched %d, answered %d ($%.2f)", project.Slug, direction.Slug, len(research.Pitches), len(research.Answers), result.CostUSD)
+		return nil
+	}
+	d.logf("%s/%s: proposed %d goal(s) ($%.2f)", project.Slug, direction.Slug, len(research.Proposals), result.CostUSD)
 	return nil
+}
+
+// pitchFallback is the hand-in's answer with gateway.ErrNoPitches taken
+// out: a platform older than runsheet trd §6c's pitches was handed the
+// pitches as proposals, and that landed — the research is in, so it is
+// no error, and the node says so once for its run. A report the
+// fallback landed without stays ErrNoUsageLedger, for Carried.
+func (d *Director) pitchFallback(err error) error {
+	if !errors.Is(err, gateway.ErrNoPitches) {
+		return err
+	}
+	d.noPitches.Do(func() {
+		d.logf("pitches: the platform takes no pitches; handed in as proposals (said once, for every direction this run)")
+	})
+	if errors.Is(err, gateway.ErrNoUsageLedger) {
+		return gateway.ErrNoUsageLedger
+	}
+	return nil
+}
+
+// readResearch reads a session's final message by its direction's mode
+// (runsheet ADR 022): a propose direction's pitches and answers
+// (harness.ParsePitches), a set one's — or a mode-less one's — goal
+// proposals (harness.ParseProposals); with the notes the hand-in says.
+func readResearch(direction gateway.Direction, text string) (gateway.Research, string, error) {
+	if !direction.Proposes() {
+		specs, err := harness.ParseProposals(text)
+		if err != nil {
+			return gateway.Research{}, "", err
+		}
+		proposals := make([]gateway.GoalProposal, 0, len(specs))
+		for _, sp := range specs {
+			proposals = append(proposals, gateway.GoalProposal{
+				Slug: slugify(sp.Slug), Title: strings.TrimSpace(sp.Title),
+				Statement: strings.TrimSpace(sp.Statement), Acceptance: strings.TrimSpace(sp.Acceptance),
+				Why: strings.TrimSpace(sp.Why), BudgetCents: sp.BudgetCents,
+			})
+		}
+		return gateway.Research{Proposals: proposals}, fmt.Sprintf("%d proposed", len(proposals)), nil
+	}
+	out, err := harness.ParsePitches(text)
+	if err != nil {
+		return gateway.Research{}, "", err
+	}
+	research := gateway.Research{
+		Pitches: make([]gateway.PitchDraft, 0, len(out.Pitches)),
+		Answers: make([]gateway.PitchAnswerDraft, 0, len(out.Answers)),
+	}
+	for _, p := range out.Pitches {
+		research.Pitches = append(research.Pitches, pitchDraft(p))
+	}
+	for _, a := range out.Answers {
+		research.Answers = append(research.Answers, gateway.PitchAnswerDraft{
+			PitchSlug: slugify(a.Pitch), Text: strings.TrimSpace(a.Text),
+		})
+	}
+	return research, fmt.Sprintf("%d pitched, %d answered", len(research.Pitches), len(research.Answers)), nil
+}
+
+// pitchDraft is one parsed pitch in the gateway's shape: every slug the
+// platform keys on slugified, an estimate or a signal left out when the
+// session gave none, and an estimate's days rounded up to whole ones.
+func pitchDraft(p harness.PitchSpec) gateway.PitchDraft {
+	draft := gateway.PitchDraft{
+		Slug: slugify(p.Slug), Title: strings.TrimSpace(p.Title), Problem: strings.TrimSpace(p.Problem),
+		Evidence: make([]gateway.PitchEvidence, 0, len(p.Evidence)),
+		Bet:      strings.TrimSpace(p.Bet),
+		Scope: gateway.PitchScope{
+			Kind:  strings.TrimSpace(p.Scope.Kind),
+			Goals: make([]gateway.PitchGoal, 0, len(p.Scope.Goals)),
+		},
+		Risks:        trimAll(p.Risks),
+		Alternatives: trimAll(p.Alternatives),
+	}
+	for _, e := range p.Evidence {
+		draft.Evidence = append(draft.Evidence, gateway.PitchEvidence{
+			Kind: strings.TrimSpace(e.Kind), Ref: strings.TrimSpace(e.Ref), Note: strings.TrimSpace(e.Note),
+		})
+	}
+	for _, g := range p.Scope.Goals {
+		draft.Scope.Goals = append(draft.Scope.Goals, gateway.PitchGoal{
+			Slug: slugify(g.Slug), Title: strings.TrimSpace(g.Title),
+			Statement: strings.TrimSpace(g.Statement), Acceptance: strings.TrimSpace(g.Acceptance),
+			BudgetCents: g.BudgetCents,
+		})
+	}
+	if e := p.Estimate; e.CostCents > 0 || e.Days > 0 || strings.TrimSpace(e.Basis) != "" {
+		draft.Estimate = &gateway.PitchEstimate{CostCents: e.CostCents, Days: int(math.Ceil(e.Days)), Basis: strings.TrimSpace(e.Basis)}
+	}
+	if s := p.Signal; strings.TrimSpace(s.Metric) != "" {
+		draft.Signal = &gateway.PitchSignal{
+			Metric: strings.TrimSpace(s.Metric), HowMeasured: strings.TrimSpace(s.HowMeasured),
+			Direction: strings.TrimSpace(s.Direction), WindowDays: s.WindowDays,
+		}
+	}
+	return draft
+}
+
+// trimAll is a list of strings trimmed, the empty ones dropped.
+func trimAll(list []string) []string {
+	out := make([]string, 0, len(list))
+	for _, s := range list {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // AdoptResearch takes up a research session a node process before this

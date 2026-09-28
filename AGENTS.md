@@ -54,9 +54,15 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   refuses it outside the hours, inside the gap, when the direction is
   off or archived, or when another node holds it, so *a refusal is the
   ordinary answer and is not logged as an error*. A session that wins
-  the claim reads the direction, the repos and the context and proposes
-  goals; `RecordDirectionResearch` hands them in with the cost, and the
-  platform decides how many become goals. A session whose output cannot
+  the claim reads the direction, the repos and the context; a `propose`
+  direction's session pitches and answers (`ParsePitches`: problem,
+  evidence, bet, scope, estimate, risks, alternatives, signal, and its
+  answers to open questions on earlier pitches) and a `set` one
+  proposes goals (`ParseProposals`); `RecordDirectionResearch` hands
+  them in with the cost — `pitches` and `answers`, or `proposals` — and
+  the platform decides what becomes of them. An older platform without
+  `pitches` gets the pitches as proposals (`ErrNoPitches`), no error,
+  said once per run (`takes no pitches`). A session whose output cannot
   be read hands in an empty research anyway — otherwise the claim holds
   the direction for 45 minutes and the night is lost. **Two ceilings
   hold and `RoomFor` takes the smaller**: the direction's own
