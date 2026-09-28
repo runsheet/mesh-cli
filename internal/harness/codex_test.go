@@ -3,6 +3,7 @@ package harness
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"projectmesh.io/mesh-cli/internal/sessionunit"
 )
 
 // testServers are a job's MCP servers: Prologue over http with the
@@ -379,6 +382,135 @@ func TestCodexJobTimeout(t *testing.T) {
 	}
 	if left, _ := os.ReadDir(root); len(left) != 0 {
 		t.Fatalf("a home was left behind: %v", left)
+	}
+}
+
+// codexEchoSecret is a `codex` that emits a known stdout stream and
+// stderr line, both carrying a value job.Secrets should redact.
+func codexEchoSecret(t *testing.T) string {
+	t.Helper()
+	script := "#!/bin/sh\n" +
+		"cat >/dev/null\n" +
+		"echo '{\"type\":\"thread.started\",\"thread_id\":\"t1\"}'\n" +
+		"echo '{\"type\":\"item.completed\",\"item\":{\"id\":\"item_1\",\"type\":\"agent_message\",\"text\":\"the key is SEKRIT123\"}}'\n" +
+		"echo '{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":1,\"cached_input_tokens\":0,\"cache_write_input_tokens\":0,\"output_tokens\":1,\"reasoning_output_tokens\":0}}'\n" +
+		"echo \"warning: SEKRIT123 nearly leaked\" >&2\n"
+	bin := filepath.Join(t.TempDir(), "codex")
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return bin
+}
+
+// With Codex.WorkRoot set, Run keeps the session's whole event stream
+// and stderr under WorkRoot/kept-sessions/<name>/ — output.jsonl with
+// every event line, stderr.log with its stderr, and a state.json-like
+// note naming the job's kind, item and goal, model and started-at —
+// with every job.Secrets value redacted from both, and never appearing
+// at all.
+func TestCodexRunKeepsSessionOutput(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MESH_TEST_CODEX_KEY", "sk-x")
+	c := &Codex{Binary: codexEchoSecret(t), HomeRoot: t.TempDir(), WorkRoot: root,
+		Account: CodexAccount{Name: "api", APIKeyEnv: "MESH_TEST_CODEX_KEY"}}
+	job := Job{
+		Kind: KindEvaluate, Workspace: t.TempDir(), Prompt: "review it", Model: "gpt-6-sol",
+		Secrets: []string{"SEKRIT123"}, Label: "my-goal/3 evaluate",
+		Meta: SessionMeta{ItemID: "item-9", GoalID: "goal-9"},
+	}
+	res, err := c.Run(context.Background(), job, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Success || res.Text != "the key is SEKRIT123" {
+		t.Fatalf("result %+v", res)
+	}
+	if res.KeptSessionDir == "" {
+		t.Fatal("Result.KeptSessionDir is empty, want the kept directory")
+	}
+	if dir := filepath.Dir(res.KeptSessionDir); dir != filepath.Join(root, "kept-sessions") {
+		t.Fatalf("kept dir %s is not under %s/kept-sessions", res.KeptSessionDir, root)
+	}
+	out := readFile(t, filepath.Join(res.KeptSessionDir, sessionunit.OutputFile))
+	if !strings.Contains(out, `"thread.started"`) || !strings.Contains(out, `"turn.completed"`) {
+		t.Fatalf("output.jsonl %q does not carry the fake's event lines", out)
+	}
+	if strings.Contains(out, "SEKRIT123") {
+		t.Fatalf("output.jsonl carries the secret: %q", out)
+	}
+	if !strings.Contains(out, Redacted) {
+		t.Fatalf("output.jsonl was not redacted: %q", out)
+	}
+	errLog := readFile(t, filepath.Join(res.KeptSessionDir, sessionunit.StderrFile))
+	if !strings.Contains(errLog, "nearly leaked") {
+		t.Fatalf("stderr.log %q does not carry the fake's stderr", errLog)
+	}
+	if strings.Contains(errLog, "SEKRIT123") {
+		t.Fatalf("stderr.log carries the secret: %q", errLog)
+	}
+	var note keptSessionNote
+	if err := json.Unmarshal([]byte(readFile(t, filepath.Join(res.KeptSessionDir, sessionunit.StateFile))), &note); err != nil {
+		t.Fatalf("state.json: %v", err)
+	}
+	if note.Kind != string(KindEvaluate) || note.ItemID != "item-9" || note.GoalID != "goal-9" || note.Model != "gpt-6-sol" || note.StartedAt.IsZero() {
+		t.Fatalf("note %+v", note)
+	}
+}
+
+// harness.RemoveSession on the job's own work dir never touches the
+// kept files: they live under WorkRoot/kept-sessions, not
+// sessionunit.Dir(job.Workspace).
+func TestCodexRemoveSessionLeavesKeptFilesInPlace(t *testing.T) {
+	root, ws := t.TempDir(), t.TempDir()
+	t.Setenv("MESH_TEST_CODEX_KEY", "sk-x")
+	c := &Codex{Binary: codexEchoSecret(t), HomeRoot: t.TempDir(), WorkRoot: root,
+		Account: CodexAccount{Name: "api", APIKeyEnv: "MESH_TEST_CODEX_KEY"}}
+	res, err := c.Run(context.Background(), Job{Workspace: ws, Prompt: "review it", Model: "gpt-6-sol"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := RemoveSession(ws); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{sessionunit.OutputFile, sessionunit.StderrFile, sessionunit.StateFile} {
+		if _, err := os.Stat(filepath.Join(res.KeptSessionDir, f)); err != nil {
+			t.Fatalf("%s gone after RemoveSession: %v", f, err)
+		}
+	}
+}
+
+// SweepKeptSessions removes a kept directory whose note is older than
+// KeepSessionOutput and leaves a younger one.
+func TestSweepKeptSessions(t *testing.T) {
+	root := t.TempDir()
+	now := time.Now()
+	mkKept := func(name string, started time.Time) string {
+		dir := filepath.Join(root, keptSessionsDir, name)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		b, err := json.Marshal(keptSessionNote{Kind: "evaluate", StartedAt: started})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, sessionunit.StateFile), b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, sessionunit.OutputFile), []byte("{}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	old := mkKept("old-1", now.Add(-25*time.Hour))
+	young := mkKept("young-1", now.Add(-1*time.Hour))
+	if err := SweepKeptSessions(root, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Fatalf("old kept dir still exists (err %v)", err)
+	}
+	if _, err := os.Stat(young); err != nil {
+		t.Fatalf("young kept dir was removed: %v", err)
 	}
 }
 
