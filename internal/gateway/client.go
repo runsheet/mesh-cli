@@ -60,6 +60,10 @@ type Client struct {
 	// report's `tools` (ErrNoToolUsage): every later report goes
 	// without the list.
 	usageWithoutTools atomic.Bool
+	// usageWithoutValidation is set once the gateway has refused a usage
+	// report's `validation` (ErrNoValidationUsage, node-attests-its-validation):
+	// every later report goes without the list.
+	usageWithoutValidation atomic.Bool
 
 	// heartbeatBasicUntil (unix nanoseconds) is when the heartbeat next
 	// offers the fields the gateway refused (see HeartbeatNode).
@@ -102,6 +106,18 @@ func NewWithSource(baseURL string, src TokenSource) *Client {
 		Source:  src,
 		HTTP:    &http.Client{Timeout: 60 * time.Second},
 	}
+}
+
+// WithItemToken returns a client that speaks to the same gateway on tok
+// rather than c's own bearer — an item's claim-time token
+// (node-attests-its-validation), scoped the way IssueItemRepoToken's
+// GitHub token is (adr-001-item-scoped-github-token), for
+// RecordValidationAttestation. It is a fresh Client of the transport
+// alone (BaseURL, HTTP, Now): none of c's schema-probe caches
+// (itemsWithoutModel and the rest) carry over, since they answer for a
+// long-lived node client, not a request or two on a borrowed token.
+func (c *Client) WithItemToken(tok string) *Client {
+	return &Client{BaseURL: c.BaseURL, Source: StaticToken(tok), HTTP: c.HTTP, Now: c.Now}
 }
 
 // Bearer is the token the next request would carry — for the Prologue
@@ -189,7 +205,7 @@ func (c *Client) Query(ctx context.Context, query string, vars map[string]any, o
 	}
 	if jsonErr := json.Unmarshal(raw, &env); jsonErr != nil {
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			return fmt.Errorf("gateway: %s: %s", resp.Status, strings.TrimSpace(string(raw)))
+			return &httpError{Status: resp.StatusCode, Text: resp.Status, Body: strings.TrimSpace(string(raw))}
 		}
 		return fmt.Errorf("gateway: decode response: %w", jsonErr)
 	}
@@ -197,12 +213,29 @@ func (c *Client) Query(ctx context.Context, query string, vars map[string]any, o
 		return &Error{Message: env.Errors[0].Message}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("gateway: %s", resp.Status)
+		return &httpError{Status: resp.StatusCode, Text: resp.Status}
 	}
 	if out != nil && len(env.Data) > 0 {
 		return json.Unmarshal(env.Data, out)
 	}
 	return nil
+}
+
+// httpError is a non-2xx HTTP answer with no GraphQL error body — a
+// proxy's 502/503/504, or any status Query could not decode as GraphQL
+// at all. isTransient treats a 5xx one as worth another try, as it does
+// a transport failure that never reached the gateway.
+type httpError struct {
+	Status int
+	Text   string
+	Body   string
+}
+
+func (e *httpError) Error() string {
+	if e.Body == "" {
+		return "gateway: " + e.Text
+	}
+	return fmt.Sprintf("gateway: %s: %s", e.Text, e.Body)
 }
 
 // Mutate sends one aggregate command: field is the mutation name
@@ -243,6 +276,13 @@ var ErrNoToolUsage = errors.New("gateway: the platform takes no per-tool calls o
 // only the per-turn and tool-result figures did not. errors.Is-able.
 var ErrNoUsageDetail = errors.New("gateway: the platform's usage report carries no turn or tool-result detail")
 
+// ErrNoValidationUsage is what a finishing command returns when its
+// usage report carried per-step validation minutes but the platform's
+// UsageReportInput has no `validation` (a platform older than
+// node-attests-its-validation): the command and the rest of the report
+// land without it, and the caller logs the minutes instead. errors.Is-able.
+var ErrNoValidationUsage = errors.New("gateway: the platform takes no per-step validation minutes on the usage report")
+
 // usageDetailFields are UsageReport's fields a platform before
 // mesh-spends-less-per-item may not know (ErrNoUsageDetail).
 var usageDetailFields = []string{"turns", "inputPerTurnMean", "inputPerTurnMax", "largestToolResults"}
@@ -258,7 +298,11 @@ var usageDetailFields = []string{"turns", "inputPerTurnMean", "inputPerTurnMax",
 // or tool-result detail fields (unknownField on one of
 // usageDetailFields) gets the report again without those alone: the
 // rest of the report and the command land, and ErrNoUsageDetail says
-// the detail did not.
+// the detail did not. A platform whose report has no `validation`
+// (unknownField on "validation") gets it again without the per-step
+// minutes, and every later report goes without them: the command lands
+// with the rest of the report, and ErrNoValidationUsage says the
+// minutes did not.
 func (c *Client) mutateWithUsage(ctx context.Context, field, aggregateID string, input map[string]any, usage *UsageReport) error {
 	if usage == nil {
 		return c.Mutate(ctx, field, aggregateID, input)
@@ -276,6 +320,10 @@ func (c *Client) mutateWithUsage(ctx context.Context, field, aggregateID string,
 	if withTools && c.usageWithoutTools.Load() {
 		delete(um, "tools")
 	}
+	_, withValidation := um["validation"]
+	if withValidation && c.usageWithoutValidation.Load() {
+		delete(um, "validation")
+	}
 	if rows, ok := um["tools"].([]any); ok && toolRowsCarry(rows, "error") && !c.takesToolError(ctx) {
 		for _, r := range rows {
 			if row, ok := r.(map[string]any); ok {
@@ -289,6 +337,13 @@ func (c *Client) mutateWithUsage(ctx context.Context, field, aggregateID string,
 		if _, sent := um["tools"]; sent {
 			c.usageWithoutTools.Store(true)
 			delete(um, "tools")
+			err = c.Mutate(ctx, field, aggregateID, withUsage)
+		}
+	}
+	if err != nil && errors.As(err, &ge) && unknownField(ge.Message, "validation") {
+		if _, sent := um["validation"]; sent {
+			c.usageWithoutValidation.Store(true)
+			delete(um, "validation")
 			err = c.Mutate(ctx, field, aggregateID, withUsage)
 		}
 	}
@@ -314,6 +369,9 @@ func (c *Client) mutateWithUsage(ctx context.Context, field, aggregateID string,
 	}
 	if err == nil && withTools && c.usageWithoutTools.Load() {
 		return ErrNoToolUsage
+	}
+	if err == nil && withValidation && c.usageWithoutValidation.Load() {
+		return ErrNoValidationUsage
 	}
 	return err
 }
@@ -2086,7 +2144,8 @@ type Session struct {
 // per-turn input and largest tool results (harness.Result's fields of
 // the same names), left out when zero or empty — a platform whose
 // UsageReportInput lacks them gets the report again without them
-// (ErrNoUsageDetail). It never carries a secret.
+// (ErrNoUsageDetail). Validation (node-attests-its-validation) is a
+// build's validation minutes, per step. It never carries a secret.
 type UsageReport struct {
 	SessionID        string `json:"sessionId"`
 	Adapter          string `json:"adapter"`
@@ -2110,6 +2169,13 @@ type UsageReport struct {
 	InputPerTurnMean   int64            `json:"inputPerTurnMean,omitempty"`
 	InputPerTurnMax    int64            `json:"inputPerTurnMax,omitempty"`
 	LargestToolResults []ToolResultSize `json:"largestToolResults,omitempty"`
+
+	// Validation is the build's validation run, per step (goal
+	// node-attests-its-validation): the scorecard's "CI minutes saved"
+	// counterpart, "validation minutes spent". Left out when the session
+	// ran no validation, and by mutateWithUsage for a platform without
+	// the field (ErrNoValidationUsage).
+	Validation []ValidationMinutes `json:"validation,omitempty"`
 
 	FiveHourBefore *float64 `json:"fiveHourBefore,omitempty"`
 	FiveHourAfter  *float64 `json:"fiveHourAfter,omitempty"`
@@ -2192,4 +2258,182 @@ func (c *Client) RecordToolUsage(ctx context.Context, itemID, toolCallID, tool s
 		return ErrNoUsageDetail
 	}
 	return err
+}
+
+// ---- validation attestation (node-attests-its-validation, runsheet ADR 032) ----
+
+// ValidationAttestation is what a build session's validation run
+// produces, uploaded through RecordValidationAttestation: the commit and
+// tree it ran against, the runner's image digest (or "host:<hostname>"
+// when it ran unsandboxed), whether it ran sandboxed, each step's
+// result, the node and session that ran it, the item it is for, when,
+// and the same per-step minutes the usage report carries
+// (UsageReport.Validation) so the attestation stands on its own. Its
+// json tags are item 1's Attestation shape (internal/validate, not yet
+// landed on this branch) so a later item can convert one into the other,
+// field for field.
+type ValidationAttestation struct {
+	Commit      string                 `json:"commit"`
+	Tree        string                 `json:"tree"`
+	RunnerImage string                 `json:"runnerImage"`
+	Sandboxed   bool                   `json:"sandboxed"`
+	Steps       []ValidationStepResult `json:"steps"`
+	NodeID      string                 `json:"nodeId"`
+	SessionID   string                 `json:"sessionId"`
+	ItemID      string                 `json:"itemId"`
+	At          time.Time              `json:"at"`
+	Validation  []ValidationMinutes    `json:"validation,omitempty"`
+}
+
+// ValidationStepResult is one named step of .runsheet/validate.yml as it
+// ran: its command, the hash of the suite it covered, its exit code, how
+// long it took, tests parsed from its output (Go test JSON or JUnit) —
+// left out when the step reports none — and any artifacts' digests.
+type ValidationStepResult struct {
+	Step        string   `json:"step"`
+	Command     string   `json:"command"`
+	SuiteHash   string   `json:"suiteHash"`
+	ExitCode    int      `json:"exitCode"`
+	Ms          int64    `json:"ms"`
+	TestsRun    int      `json:"testsRun,omitempty"`
+	TestsPassed int      `json:"testsPassed,omitempty"`
+	TestsFailed int      `json:"testsFailed,omitempty"`
+	Artifacts   []string `json:"artifacts,omitempty"`
+}
+
+// ValidationMinutes is one step's cost for the usage record and the
+// attestation alike: the scorecard's "validation minutes spent"
+// counterpart to CI's "CI minutes saved".
+type ValidationMinutes struct {
+	Step     string `json:"step"`
+	Ms       int64  `json:"ms"`
+	ExitCode int    `json:"exitCode"`
+}
+
+// AttestationBackoff is the wait between RecordValidationAttestation's
+// retries of a transport failure or a 5xx answer (retryOnTransient) —
+// one entry per retry, so up to len(AttestationBackoff) retries beyond
+// the first attempt. A test shortens it to run fast.
+var AttestationBackoff = []time.Duration{2 * time.Second, 10 * time.Second, 30 * time.Second}
+
+// retryOnTransient calls fn, retrying on a transport error or a 5xx
+// answer (isTransient) up to len(AttestationBackoff) more times with
+// that backoff between attempts; a refusal, an unsupported operation, or
+// success returns at once — the gateway's considered answer is not
+// retried, only its absence.
+func retryOnTransient(ctx context.Context, fn func() error) error {
+	var err error
+	for attempt := 0; ; attempt++ {
+		err = fn()
+		if err == nil || !isTransient(err) || attempt >= len(AttestationBackoff) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(AttestationBackoff[attempt]):
+		}
+	}
+}
+
+// isTransient reports whether err is worth retrying: a transport failure
+// that never reached the gateway, or a 5xx one that did (httpError). A
+// GraphQL *Error — a refusal, an unsupported operation, a validation
+// error the schema itself raised — is the gateway's considered answer,
+// not a blip, and is never retried.
+func isTransient(err error) bool {
+	var ge *Error
+	if errors.As(err, &ge) {
+		return false
+	}
+	var he *httpError
+	if errors.As(err, &he) {
+		return he.Status >= 500
+	}
+	return true
+}
+
+// RecordValidationAttestation uploads one build's validation run
+// (runsheet ADR 032, the goal ci-uploads-test-evidence's attestation
+// endpoint). Call it on WithItemToken's client, so the request carries
+// the item's claim-time token rather than the node's. It tries the
+// mutation
+// recordValidationAttestation(input: RecordValidationAttestationInput!)
+// { status }, carrying aggregateId (itemID), namespace and the
+// attestation; nothing says the endpoint has landed yet (checked
+// 2026-09-28: neither the mutation nor a
+// specs/contracts/recordValidationAttestation.json fixture exist on the
+// running platform — /contracts/index.json, the gateway's introspected
+// Mutation type), so this is built to the shape ADR 032 describes, named
+// here as an assumption for the platform side to confirm or correct. An
+// unknownOperation or schemaMismatch answer falls back to
+// POST /mesh/v1/items/<itemId>/attestation with the attestation as the
+// JSON body; refused the same way (404), the caller gets
+// &Error{Unsupported: true} — log it once per run and keep the
+// attestation at <workdir>.session/attestation.json. A transport failure
+// or a 5xx answer from either path retries (retryOnTransient,
+// AttestationBackoff) before giving up.
+func (c *Client) RecordValidationAttestation(ctx context.Context, itemID string, att ValidationAttestation) error {
+	const field = "recordValidationAttestation"
+	body, err := json.Marshal(att)
+	if err != nil {
+		return err
+	}
+	var am map[string]any
+	if err := json.Unmarshal(body, &am); err != nil {
+		return err
+	}
+	return retryOnTransient(ctx, func() error {
+		in := map[string]any{"aggregateId": itemID, "namespace": NS, "attestation": am}
+		q := `mutation($in: RecordValidationAttestationInput!) { recordValidationAttestation(input: $in) { status } }`
+		err := c.Query(ctx, q, map[string]any{"in": in}, nil)
+		if err == nil {
+			return nil
+		}
+		var ge *Error
+		if !errors.As(err, &ge) || (!unknownOperation(ge.Message, field) && !schemaMismatch(ge.Message, field)) {
+			return err
+		}
+		restErr := c.postAttestation(ctx, itemID, body)
+		if restErr == nil {
+			return nil
+		}
+		if isNotFound(restErr) {
+			return &Error{Message: fmt.Sprintf("gateway: neither %s nor its REST fallback exist: %v", field, restErr), Unsupported: true}
+		}
+		return restErr
+	})
+}
+
+// postAttestation is RecordValidationAttestation's fallback for a
+// platform whose schema does not yet have the mutation: the same
+// attestation, as ci-uploads-test-evidence's REST path would carry it.
+func (c *Client) postAttestation(ctx context.Context, itemID string, body []byte) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/mesh/v1/items/"+url.PathEscape(itemID)+"/attestation", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	tok, err := c.Bearer(ctx)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	return &httpError{Status: resp.StatusCode, Text: resp.Status, Body: strings.TrimSpace(string(raw))}
+}
+
+// isNotFound reports whether err is postAttestation's 404 — the REST
+// fallback does not exist either.
+func isNotFound(err error) bool {
+	var he *httpError
+	return errors.As(err, &he) && he.Status == http.StatusNotFound
 }

@@ -86,6 +86,11 @@ type Fake struct {
 	// per-tool calls) with "Unknown field", as a platform older than
 	// tools-show-their-use whose UsageReportInput has only the total.
 	NoUsageTools bool
+	// NoValidationUsage refuses a `usage` report carrying `validation`
+	// (per-step validation minutes) with "Unknown field", as a platform
+	// older than node-attests-its-validation whose UsageReportInput has
+	// no such field.
+	NoValidationUsage bool
 	// NoToolError refuses a usage report whose `tools` entry carries
 	// `error`, and introspection answers the entry without it, as a
 	// platform older than the tool entry's error text.
@@ -292,6 +297,12 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		if usage, ok := in["usage"].(map[string]any); ok && f.NoValidationUsage {
+			if _, ok := usage["validation"]; ok {
+				writeErrors(w, 200, `Variable "$in" got invalid value; In field "usage": Unknown field "validation" is not defined by type "UsageReportInput".`)
+				return
+			}
+		}
 		if usage, ok := in["usage"].(map[string]any); ok && f.NoToolError {
 			rows, _ := usage["tools"].([]any)
 			for _, r := range rows {
@@ -469,11 +480,15 @@ func (f *Fake) heartbeatInputType() map[string]any {
 
 // usageReportInputType is UsageReportInput as introspection answers
 // it: `tools` a non-null list of ToolCallReportInput, whose entry has
-// `error` unless NoToolError; no `tools` at all when NoUsageTools.
+// `error` unless NoToolError; no `tools` at all when NoUsageTools; no
+// `validation` at all when NoValidationUsage.
 func (f *Fake) usageReportInputType() map[string]any {
 	fields := []any{}
 	for _, name := range []string{"sessionId", "adapter", "model", "credentialId", "credentialKind", "inputTokens", "outputTokens", "toolCalls", "wallMs"} {
 		fields = append(fields, map[string]any{"name": name, "type": map[string]any{"kind": "SCALAR"}})
+	}
+	if !f.NoValidationUsage {
+		fields = append(fields, map[string]any{"name": "validation", "type": map[string]any{"kind": "SCALAR"}})
 	}
 	if !f.NoUsageTools {
 		var sub []any
