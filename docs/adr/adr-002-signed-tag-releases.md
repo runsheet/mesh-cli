@@ -317,13 +317,53 @@ platform call:
 - node.yaml's new `update.confirm_within` (`Config.Update.ConfirmWithin`,
   read through `Config.ConfirmWithin()`) is how long a new process keeps
   trying to confirm an update before it gives up; left out, it defaults
-  to 5 minutes (`selfupdate.DefaultConfirmWithin`). This item wires the
-  data model and the config key alone — the loop's own heartbeat retry
+  to 5 minutes (`selfupdate.DefaultConfirmWithin`). This amendment wires
+  the data model and the config key alone — the loop's own heartbeat retry
   against the window, and `NoteConfirmError`'s call site, are a later
   item of the same goal (`upgrades-survive-a-slow-platform`): only a
   failure to *run* counts as "did not start" once that lands; a
   heartbeat that times out within the window is retried, not rolled
   back on.
+
+## Amendment: the confirm window retries (goal `upgrades-survive-a-slow-platform`, 2026-09-28)
+
+The window the amendment above configures is now in force. It opens at
+process start, and it is the only thing a slow platform can exhaust:
+
+- **Registration retries.** While an update is pending
+  (`StartCheck.Pending`), `nodeStart`'s registration (sign-in,
+  `ResolveScopes`, `registerIn`, 60 s per attempt as before) is retried
+  on the heartbeat interval until the window elapses. Each failure is
+  logged `'self-update: confirming <to>: register node: <err>; retrying
+  for <left> more'` and recorded with `NoteConfirmError` — not
+  `NoteStartFailure`: a registration that times out is the platform
+  being slow, and the log says so (`(the platform is slow)` after a
+  timeout or deadline). With no update pending registration fails at
+  once, as before.
+- **Heartbeats retry.** The loop knows the update it is confirming
+  (`Loop.Confirming`, `ConfirmWithin`, `Started`). Until a heartbeat goes
+  through, each `HeartbeatNode` failure is logged `'self-update:
+  confirming <to>: heartbeat <org>: <err>; retrying for <left> more'`
+  and recorded with `Updater.NoteConfirmError` (`ReleaseUpdater`
+  delegates to the state file). The first heartbeat through confirms,
+  as before.
+- **An elapsed window is `ErrUnconfirmed`.** With no heartbeat through by
+  `Started + ConfirmWithin`, `Run` (or the registration) returns an
+  `*UnconfirmedError` naming the version, the window and the last error;
+  `endRun` logs `'self-update: <to> did not confirm within <window>:
+  <err>; exiting for the service to start it again'` and the process
+  exits 1, its sessions left to adopt. The service starts it again; the
+  third such start rolls back, and `update.json`'s `lastError` is
+  `'<to> did not confirm within <window>: <err>'` (`CheckStart` passes
+  node.yaml's window, when it reads, to `Rollback`).
+- **What counts as "did not start"** is a failure to run: a config it
+  cannot read, an account secret it cannot read, a panic, an exit before
+  the window — `NoteStartFailure`. A refused or timed-out platform call
+  inside the window is never one.
+- `mesh node upgrade` prints, after the restart, the window
+  (`update.confirm_within`), the log to watch (`~/.mesh/node.log`) and
+  that a binary that cannot run, or cannot confirm on three starts, is
+  rolled back with `~/.mesh/update.json` saying why.
 
 ## Consequences
 
