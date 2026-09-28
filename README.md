@@ -1207,9 +1207,14 @@ container and finds no pod left after.
 
 A node can run OpenAI's Codex CLI beside Claude Code. The adapter
 (`internal/harness/codex.go`) runs `codex exec --json --sandbox
-workspace-write` in the item's workspace, with the prompt on stdin. It
-is not yet wired into the loop: the first use will be a second opinion
-on evaluations of high/urgent goals (goal `codex-adapter`).
+workspace-write` in the item's workspace, with the prompt on stdin.
+Evaluations run on it: `mesh node start` builds it whenever `codex` is
+on `PATH`, and an evaluation runs on Codex when a Codex account (one
+the console issues, or node.yaml's `codex:` account) has headroom for
+the goal's priority, else on Claude. A `gpt-…` evaluate or agent model
+pins Codex, a `claude-…` one Claude. An urgent or high pass gets a
+second opinion on the other family
+(docs/adr/adr-011-evaluations-run-on-the-family-with-headroom.md).
 
 ### Install the CLI
 
@@ -1295,9 +1300,10 @@ the same secret version. An OpenAI key goes in the environment only
 
 `models` maps the Claude tiers to Codex models. A session asked for
 `opus`, `sonnet` or `haiku` runs on that tier's Codex model, and so does
-a full id of that family (`claude-opus-5` → `gpt-6-astra`). An empty
-model, one of no tier, or a tier left out of `models` runs on Codex's
-own default.
+a full id of that family (`claude-opus-5` → `gpt-6-astra`). A tier left
+out of `models` takes its default: `gpt-6-astra`, `gpt-6-sol`,
+`gpt-6-luna`. An empty model, or one of no tier, runs on Codex's own
+default.
 
 The session's MCP servers (Prologue) are written to `config.toml` in
 its temporary home. Secrets are named there by variable, never by value
