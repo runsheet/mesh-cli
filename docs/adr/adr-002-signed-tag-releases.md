@@ -275,6 +275,56 @@ record. `ghcr.io/runsheet/mesh-node` refuses anonymous pulls, as the
 `projectmesh-io` package did: a sandboxed node pulls it only once logged
 in to ghcr, or once the operator makes it public.
 
+## Amendment: update.json names why a start or a confirm failed (goal `upgrades-survive-a-slow-platform`, 2026-09-28)
+
+On 2026-09-28 the mini's update to `0a04088` rolled back with `update.json`
+saying only `'0a04088 did not start; rolled back to 72ff910'`, and
+node.log had nothing of the new process's own: the platform was slow (a
+load of 200, every gateway call timing out) and `nodeStart`'s 60-second
+registration timeout (`regCtx`) made the process exit before it ever
+reached the loop or logged a line. A busy box or a platform blip
+therefore looked exactly like a binary that could not run, and there was
+nothing in the logs to tell them apart. Two changes, both local, no
+platform call:
+
+- **`selfupdate.State` gains `startError` and `confirmError`.**
+  `StateFile.NoteStartFailure(reason)` records why the last start of the
+  pending update ended before it could run — a config it could not read,
+  a panic, an exited process; `NoteConfirmError(reason)` records the
+  last error a heartbeat hit while the update is unconfirmed — a refusal
+  or a timeout. Neither ends the pending update or changes `Pending()`:
+  the next start gets its own chance. `Confirm` clears both.
+  `Rollback(exePath, reason string, window time.Duration)` now takes the
+  confirm window as a parameter and, when `reason` is empty, names the
+  real cause: `'<to> did not start: <startError>'` when a start error was
+  recorded, `'<to> did not confirm within <window>: <confirmError>'` when
+  a confirm error was, else the original bare wording. `node.CheckStart`'s
+  `StartCheck` carries `Pending` and `Attempts` so a caller can say which
+  start this is.
+- **node.log's first lines can no longer be silent.** `node.StartLines`
+  logs the version, the pid and the config path (not the config itself —
+  it may be what fails to load) and either `'confirming update <from> →
+  <to>: start <n> of 3, rolls back on the third'` or `'no update
+  pending'`, immediately after `startUpdates` and before `LoadConfig`,
+  `platformClient` or any other platform call. `nodecmd.go`'s
+  `registerNode` is everything a start needs before the loop exists
+  (load node.yaml, check the accounts' secrets, the platform client, the
+  work root, registration); an error there, or a panic, while an update
+  is pending is recorded with `NoteStartFailure` before it is returned
+  (a panic is re-raised after recording) — the 60-second registration
+  timeout above is exactly such an error, and now names itself instead
+  of vanishing.
+- node.yaml's new `update.confirm_within` (`Config.Update.ConfirmWithin`,
+  read through `Config.ConfirmWithin()`) is how long a new process keeps
+  trying to confirm an update before it gives up; left out, it defaults
+  to 5 minutes (`selfupdate.DefaultConfirmWithin`). This item wires the
+  data model and the config key alone — the loop's own heartbeat retry
+  against the window, and `NoteConfirmError`'s call site, are a later
+  item of the same goal (`upgrades-survive-a-slow-platform`): only a
+  failure to *run* counts as "did not start" once that lands; a
+  heartbeat that times out within the window is retried, not rolled
+  back on.
+
 ## Consequences
 
 - Renaming an asset, the workflow file, or the repo breaks every

@@ -1594,6 +1594,23 @@ back, reports the failure on the heartbeat as the old version and exits
 0 for the old binary to start — and that version is not tried again
 until the platform asks for another.
 
+The new process's first log lines — before it loads `node.yaml`, builds
+a platform client or signs in — name its version, its pid, its config
+path and whether an update is pending, so a start that dies before it
+can do anything else is never silent. If it does die there, or panics,
+while an update is pending, `update.json`'s `lastError` (after the third
+start) says why instead of the bare "did not start": `'<to> did not
+start: <the error>'`. `update.confirm_within` in `node.yaml` (below) is
+how long a new process is meant to keep trying to confirm before it
+gives up — default 5 minutes — so a platform blip does not by itself
+roll an upgrade back; when it is exhausted, `update.json` names it
+`'<to> did not confirm within <window>: <the heartbeat error>'`.
+
+```yaml
+update:
+  confirm_within: 5m   # how long a new process keeps trying to confirm; default 5m
+```
+
 **By hand.** `mesh node upgrade` installs a release (or a local build)
 and restarts at once, as the platform's update does (see [Upgrading a
 node without ending sessions](#upgrading-a-node-without-ending-sessions)).

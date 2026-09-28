@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The Latchkey issuer and client `mesh node login` records live in
@@ -125,6 +126,32 @@ func TestCapacityRangeRejected(t *testing.T) {
 				t.Fatalf("capacity %s loaded as %+v, want an error", c, cfg.Capacity)
 			}
 		})
+	}
+}
+
+// node.yaml's `update.confirm_within` parses as a duration and
+// ConfirmWithin defaults to 5 minutes when it is left out.
+func TestUpdateConfirmWithin(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	writeNodeYAML(t, "slug: mini\nname: mini\nupdate:\n  confirm_within: 2m\n")
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Update.ConfirmWithin != 2*time.Minute || cfg.ConfirmWithin() != 2*time.Minute {
+		t.Fatalf("confirm_within = %v, ConfirmWithin() = %v, want 2m", cfg.Update.ConfirmWithin, cfg.ConfirmWithin())
+	}
+}
+
+func TestUpdateConfirmWithinDefault(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	writeNodeYAML(t, "slug: mini\nname: mini\n")
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Update.ConfirmWithin != 0 || cfg.ConfirmWithin() != 5*time.Minute {
+		t.Fatalf("with no update block: confirm_within = %v, ConfirmWithin() = %v, want 0 and 5m", cfg.Update.ConfirmWithin, cfg.ConfirmWithin())
 	}
 }
 

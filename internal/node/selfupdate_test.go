@@ -527,6 +527,29 @@ func TestFailedHeartbeatDoesNotConfirm(t *testing.T) {
 	}
 }
 
+// StartLines names the version, the config path and, for a pending
+// update, which start this is — the lines node.log gets before anything
+// that can block on the platform.
+func TestStartLines(t *testing.T) {
+	check := StartCheck{From: "72ff910", To: "0a04088", Pending: true, Attempts: 1}
+	lines := StartLines("v1.2.3", "/home/mini/.mesh/node.yaml", check)
+	joined := strings.Join(lines, "\n")
+	for _, want := range []string{"v1.2.3", "/home/mini/.mesh/node.yaml", "confirming update 72ff910 → 0a04088"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("StartLines = %q, want it to contain %q", lines, want)
+		}
+	}
+}
+
+// With no update pending, StartLines says so instead.
+func TestStartLinesNoUpdatePending(t *testing.T) {
+	lines := StartLines("v1.2.3", "/home/mini/.mesh/node.yaml", StartCheck{})
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, "no update pending") {
+		t.Fatalf("StartLines = %q, want \"no update pending\"", lines)
+	}
+}
+
 // ReleaseUpdater refuses a release with an asset missing, and never swaps.
 func TestReleaseUpdaterRefusesAMissingAsset(t *testing.T) {
 	_, exe := updateState(t)
