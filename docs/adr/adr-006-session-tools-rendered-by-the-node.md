@@ -149,3 +149,37 @@ rendered no differently.
   needs a platform mutation that does not exist yet.
 - A priced call's cost is its list price as the console states it; the
   node does not know what the tool's provider actually charged.
+
+## Amendment — 2026-09-28 (goal tools-show-their-use)
+
+Nobody could tell from the console whether a served tool was working:
+only priced calls were recorded, and none is priced. Every MCP call is
+now counted per tool, and a tool that is served but unused or failing
+says so on the item.
+
+- **`tools` on the usage report.** The harness counts each MCP server's
+  calls, errors (a `tool_result` with `is_error`, a failed Codex
+  `mcp_tool_call`, a server the init event names as not connected) and
+  wall time (`Result.ToolReport()`). `gateway.UsageReport` carries them
+  as `tools: [{tool, calls, errors, ms}]` beside the total `toolCalls`,
+  on every finishing command's `usage`; `SessionAccount.Add` merges the
+  rows by tool across the sessions one command carries (the Codex second
+  opinion), summing calls, errors and ms. Prologue is a row like any
+  other server. `recordToolUsage`'s per-call record sends no list.
+- **The fallback.** A platform whose `UsageReportInput` has no `tools`
+  refuses the field: `mutateWithUsage` sends the command again with the
+  list taken out and the total kept, remembers that for the client's
+  later reports, and returns `ErrNoToolUsage`. `SessionAccount.Carried`
+  takes that as a landed command; `Finish` says once per run `usage:
+  the platform takes no per-tool calls yet; they are logged here
+  instead` and logs each session's list.
+- **The two notes.** `SessionTools.UseNote` names, from the console
+  tools rendered for the session (never the built-in Prologue), each one
+  served but never called — `tools: brave served, never called` — and
+  each whose calls errored, by its first error — `tools: perplexity:
+  first call errored: <text>` — the text redacted by the account and of
+  the tool's own secret and header values, capped at 200 characters;
+  empty when every served tool was called cleanly. A build sends it on
+  the item through `ReportWorkItemProgress` after its final note, an
+  evaluation adds it to its verdict's notes beside the omitted tools,
+  and a plan or research session, with no item to note it on, logs it.

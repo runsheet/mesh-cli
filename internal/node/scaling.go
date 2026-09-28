@@ -31,7 +31,8 @@ type Scaling struct {
 
 // Heartbeat is s as the heartbeat's `scaling` carries it.
 func (s Scaling) Heartbeat() *gateway.Scaling {
-	return &gateway.Scaling{Capacity: s.Capacity, Min: s.Min, Max: s.Max, Reason: string(s.Reason)}
+	// Accounts is [] rather than nil: the platform refuses a null list
+	return &gateway.Scaling{Capacity: s.Capacity, Min: s.Min, Max: s.Max, Reason: string(s.Reason), Accounts: []gateway.AccountScaling{}}
 }
 
 // ReasonFixed is a fixed capacity's reason, which the heartbeat's

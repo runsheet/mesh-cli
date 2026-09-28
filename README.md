@@ -325,8 +325,9 @@ session on one is held to what the cap leaves.
 reports its usage on the command that ends it (`usage` on
 `finishWorkItem`, `evaluateWorkItem`, `planGoal`,
 `finishWorkItemRebase` or `recordDirectionResearch`): the platform's
-credential id and its kind, input, output and cache tokens, tool calls,
-wall time, the list cost in cents (and the actual cost, on an API key),
+credential id and its kind, input, output and cache tokens, tool calls
+(the total, and every MCP call counted per tool as `tools: [{tool,
+calls, errors, ms}]`), wall time, the list cost in cents (and the actual cost, on an API key),
 and the plan's windows before and after. A platform whose finishing
 command takes no `usage`, and a session that ends in a failure, leave it
 in the node's log instead, one `usage: {…}` JSON line per session.
@@ -852,6 +853,16 @@ usage report at the tool's price per call — beside the session's own
 report on its finish. Unpriced tools and Prologue report nothing.
 A platform without `recordToolUsage` gets none: the node says so once
 per run, logs each call instead, and the item goes on.
+
+**Every call is counted.** Priced or not, each MCP server's calls,
+errors and wall time ride the session's usage report as `tools` (ADR-006,
+amendment 2026-09-28), and the item says how the session used what it
+was served: `tools: brave served, never called` for a tool it never
+called, `tools: perplexity: first call errored: …` (redacted, 200
+characters at most) for one whose calls failed — a build in its
+progress notes, an evaluation in its verdict's notes; a plan or research
+session logs it. A platform whose usage report takes no `tools` gets the
+total alone: the node says so once per run and logs each session's list.
 
 A platform that does not hand out `tools` yet costs nothing: sessions
 run on Prologue alone, as before.
