@@ -100,6 +100,11 @@ type Fake struct {
 	// item's rebase while it is in review. Off, the fake refuses it as
 	// runsheet's gateway/itemtoken.go does today.
 	RebaseTokens bool
+	// EmptyHeads are head shas that carry nothing past their base: a
+	// built finish on one takes runsheet's empty-finish route
+	// (empties-go-back-to-the-builder) — back to ready, attempts+1,
+	// its node and claim cleared — rather than to evaluating.
+	EmptyHeads map[string]bool
 	// SessionCredentials maps a session's subject — its item, else its
 	// goal, else its direction — to the rows the claim-time read
 	// (itemCredentials, planCredentials, researchCredentials) hands the
@@ -655,6 +660,12 @@ func (f *Fake) apply(name string, in map[string]any) error {
 		case outcome == "" || outcome == "built":
 			if in["branch"] == nil || in["branch"] == "" {
 				return fmt.Errorf("a built finish needs a branch")
+			}
+			if sha, _ := in["headSha"].(string); f.EmptyHeads[sha] {
+				item["status"], item["nodeId"], item["attempts"] = "ready", nil, toInt(item["attempts"])+1
+				item["lastNote"] = "empty finish: no commits past the base"
+				item["costCents"] = toInt(item["costCents"]) + toInt(in["costCents"])
+				return nil
 			}
 			item["branch"], item["headSha"], item["outcome"] = in["branch"], in["headSha"], "built"
 		case outcome == "already_done":

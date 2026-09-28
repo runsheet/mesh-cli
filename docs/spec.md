@@ -185,3 +185,21 @@ budgets:
     sonnet: 4
     opus: 10
 ```
+
+### Hand-back
+
+A build on the host is watched as it runs: each turn's usage is priced
+by its model tier's list price (`internal/harness/handback.go`,
+`listPrices`, dated), since the CLI's `total_cost_usd` arrives only at
+the end. When the running cost passes 60% of the session's budget
+(`harness.DefaultHandBackAt`) and the branch has no commit past
+`origin/<base>` (`git rev-list --count`), the session is stopped and
+resumed once with `--resume <session>` on the budget left, told to
+commit what works, run the tests once and finish. A hand-back that
+commits finishes as usual; one that still has no commit is finished
+empty, and the platform sends the item back to `ready`. What the first
+run spent on — cost, turns, input per turn, its largest and most-called
+tools — is noted on the item and kept in
+`~/.mesh/items/<item>.last-session`, and the item's next build prompt
+names it under "The last session on this item". Sandboxed, adopted and
+Codex sessions do not hand back; their budget caps them alone.

@@ -107,6 +107,13 @@ type Runner struct {
 	// services its checkout declares started beside it (ADR 007); nil is
 	// `sandbox: off`, no services.
 	Sandbox *sandbox.Sandbox
+	// State keeps what an item's handed-back build spent its budget on
+	// for the item's next claim (ADR 012 Hand-back); nil keeps nothing.
+	State *RunState
+	// HasCommit says whether dir's branch has a commit past origin/base
+	// (nil: `git rev-list --count origin/<base>..HEAD`, HasCommitSince),
+	// the harness's hand-back test.
+	HasCommit func(dir, base string) bool
 	// MeshBinary is the mesh executable a session's tool-trim hook runs
 	// ("" is `mesh` on the session's PATH).
 	MeshBinary string
@@ -176,6 +183,14 @@ func (r *Runner) budgetWithSource(goal *gateway.Goal, kind, model string) (float
 func (r *Runner) Budget(goal *gateway.Goal, kind, model string) float64 {
 	amount, _ := r.budgetWithSource(goal, kind, model)
 	return amount
+}
+
+// hasCommit is the job's HasCommit for dir's branch against base.
+func (r *Runner) hasCommit(dir, base string) func() bool {
+	if r.HasCommit != nil {
+		return func() bool { return r.HasCommit(dir, base) }
+	}
+	return HasCommitSince(dir, base)
 }
 
 // costReporter turns cumulative dollars into the cents-since-last-report
@@ -260,8 +275,13 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		Seq: item.Seq, Title: item.Title, Brief: item.Brief, Acceptance: item.Acceptance,
 		Repo: res.Repo.FullName(), Branch: spec.Branch, BaseRef: spec.BaseRef, ContextDir: contextDir, ContextFiles: files,
 		Attempts: item.Attempts, Evaluation: item.Evaluation, Project: orgLogin + "/" + res.Project.Slug, Prologue: len(mcp) > 0,
+		LastSession: r.State.LastSession(item.ID),
 	}
 	job := harness.Job{Kind: harness.KindBuild, Workspace: dir, MaxBudgetUSD: budget, Label: label, MCPServers: mcp, Model: model}
+	// past 60% of its budget with nothing committed the session is handed
+	// back for one commit-and-finish turn (ADR 012 Hand-back)
+	job.HandBackAt = harness.DefaultHandBackAt
+	job.HasCommit = r.hasCommit(dir, spec.BaseRef)
 	if tok := cred.Token(); tok != nil {
 		ghDir, err := NewGHConfigDir()
 		if err != nil {
@@ -474,6 +494,7 @@ func (r *Runner) afterBuild(ctx context.Context, b *buildRun, result harness.Res
 		return r.fail(ctx, item, runErr)
 	}
 	result.Text = b.acct.Redact(result.Text)
+	b.handedBack(ctx, result)
 	if !result.Success {
 		b.report(ctx, "session ended without success: "+result.Text)
 		b.reportToolUse(ctx, result)
@@ -505,6 +526,29 @@ func (r *Runner) afterBuild(ctx context.Context, b *buildRun, result harness.Res
 	r.logf("item %s: finished %s@%s ($%.2f)", label, b.spec.Branch, short(sha), result.CostUSD)
 	b.endGoal(ctx)
 	return nil
+}
+
+// handedBack records what a handed-back session spent its budget on
+// under the item, for its next claim's prompt, and notes it on the item
+// before the finish (ADR 012 Hand-back); a session that ran to its end
+// clears the record. A handed-back build that committed finishes as any
+// other; one that still did not is pushed and finished empty, which
+// the platform routes back to ready (empties-go-back-to-the-builder).
+func (b *buildRun) handedBack(ctx context.Context, result harness.Result) {
+	r := b.r
+	if !result.HandedBack {
+		if result.Success {
+			r.State.ClearLastSession(b.item.ID)
+		}
+		return
+	}
+	spent := b.acct.Redact(result.SpentOn)
+	if err := r.State.RecordLastSession(b.item.ID, spent); err != nil {
+		r.logf("item %s: last session: %v", b.label, err)
+	}
+	note := "handed back with nothing committed: " + spent
+	r.logf("item %s: %s", b.label, note)
+	b.report(ctx, note)
 }
 
 // endGoal follows a finish: a goal that ended with the item gets its
