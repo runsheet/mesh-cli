@@ -275,6 +275,16 @@ func TestSelfUpdateEmptyDesiredDoesNothing(t *testing.T) {
 	if got := u.Events(); len(got) != 1 || loop.Draining() {
 		t.Fatalf("dev build: events %q, draining %v", got, loop.Draining())
 	}
+	// a dev build reports its commit rather than dev (version.String): it
+	// still does not follow desiredVersion
+	for _, v := range []string{"0895d40", "0895d40-dirty"} {
+		loop.Version = v
+		loop.Tick(context.Background())
+		loop.updateWG.Wait()
+		if got := u.Events(); len(got) != 1 || loop.Draining() {
+			t.Fatalf("sha build %s: events %q, draining %v", v, got, loop.Draining())
+		}
+	}
 }
 
 // (d) A refused release is never swapped in: the node goes on claiming,

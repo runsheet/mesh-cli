@@ -192,7 +192,7 @@ var nodeRegisterCmd = &cobra.Command{
 func registerIn(ctx context.Context, gw *gateway.Client, cfg *node.Config, scopes node.Scopes) error {
 	for _, sc := range scopes {
 		if err := gw.RegisterNode(ctx, gateway.RegisterNodeInput{NodeID: sc.NodeID, OrgID: sc.ID, OwnerID: cfg.OwnerID, Name: cfg.Name, Slug: cfg.Slug,
-			Harnesses: []string{"claude-code"}, Capacity: cfg.Capacity.Max, Version: version.Version}); err != nil {
+			Harnesses: []string{"claude-code"}, Capacity: cfg.Capacity.Max, Version: version.String()}); err != nil {
 			return fmt.Errorf("register in %s: %w", sc.Login, err)
 		}
 	}
@@ -229,7 +229,7 @@ var nodeStatusCmd = &cobra.Command{
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 		fmt.Fprintln(w, "ORG\tNAME\tSLUG\tSTATUS\tRUNNING\tCAPACITY\tVERSION\tLAST_SEEN")
 		for _, sc := range scopes {
-			if err := gw.HeartbeatNode(ctx, sc.NodeID, version.Version, 0); err != nil {
+			if err := gw.HeartbeatNode(ctx, sc.NodeID, version.String(), 0); err != nil {
 				return fmt.Errorf("heartbeat in %s: %w", sc.Login, err)
 			}
 			nodes, err := gw.Nodes(ctx, sc.ID)
@@ -413,7 +413,7 @@ func nodeStart(cmd *cobra.Command, args []string) error {
 	// node.log's first lines, before anything that can block on the
 	// platform: a silent exit before this point can never happen again
 	cfgPath, _ := node.ConfigPath()
-	for _, line := range node.StartLines(version.Version, cfgPath, check) {
+	for _, line := range node.StartLines(version.String(), cfgPath, check) {
 		logger.Print(line)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -429,7 +429,7 @@ func nodeStart(cmd *cobra.Command, args []string) error {
 
 	// every session's plan standing lands in Limits: the heartbeat
 	// carries it and the loop paces by it
-	loop := &node.Loop{GW: gw, Cfg: cfg, Scopes: scopes, Version: version.Version, Harness: "claude-code", Interval: nodeIntervalFlag, Log: logger, Limits: &node.Limits{},
+	loop := &node.Loop{GW: gw, Cfg: cfg, Scopes: scopes, Version: version.String(), Commit: version.BuildCommit(), Harness: "claude-code", Interval: nodeIntervalFlag, Log: logger, Limits: &node.Limits{},
 		// a ranged capacity scales by the plan's windows, capped by this
 		// machine's load and memory (adr-004)
 		Machine: node.HostMachine(),
@@ -518,7 +518,7 @@ func nodeStart(cmd *cobra.Command, args []string) error {
 	// every one-shot session runs in its own pod unless node.yaml
 	// says `sandbox: off` or, leaving it out, podman does not answer;
 	// an explicit `sandbox: on` without podman refuses to start (ADR 007)
-	sb, sbInfo, err := node.OpenSandbox(ctx, cfg.Sandbox, &sandbox.Podman{}, version.Version, logger.Printf)
+	sb, sbInfo, err := node.OpenSandbox(ctx, cfg.Sandbox, &sandbox.Podman{}, version.String(), logger.Printf)
 	if err != nil {
 		return err
 	}
