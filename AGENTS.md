@@ -37,7 +37,11 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
 - `internal/node/`: the loop (`runner`), the workspace and the project's
   context (`workspace.go`: `FetchContext`, `RenderIndex`, the size budget),
   evaluate, plan and research sessions, the service install (`launchd` /
-  `systemd --user`). `internal/gateway/client.go`: the platform client.
+  `systemd --user`). A project's repos — for the planner, the director
+  and `mesh goal plan` — are read from `project.repoIds` through
+  `ProjectRepos`, each owned by its own account's login, never the
+  org's account: an org links several GitHub accounts (the runsheet
+  org's loom project lives at go-apis/loom). `internal/gateway/client.go`: the platform client.
   Its entity selections are generated (`fields_gen.go`, never hand-edited)
   from `schema.json` and `fields/<Type>.txt` (one name per line, sorted,
   `?` for optional): add a line, `go generate ./internal/gateway/...`

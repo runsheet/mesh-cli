@@ -1057,19 +1057,41 @@ func (c *Client) Repo(ctx context.Context, id string) (*Repo, error) {
 	return out.Repo, nil
 }
 
-// Repos lists the repos of one account (an org's accountId), owner set.
-func (c *Client) Repos(ctx context.Context, accountID, ownerLogin string) ([]Repo, error) {
-	var out struct {
-		Repos []Repo `json:"repoIndexs"`
+// ProjectRepos reads a project's repos by id, in order, each with its
+// own account's login as Owner — never the org's. The schema has no
+// project-repos read with owner logins and RepoIndex carries no login,
+// so this composes it from repoIndex and accountIndex, reading each
+// distinct account once even when several repos share it.
+func (c *Client) ProjectRepos(ctx context.Context, repoIDs []string) ([]Repo, error) {
+	if len(repoIDs) == 0 {
+		return []Repo{}, nil
 	}
-	q := fmt.Sprintf(`{ repoIndexs(namespace: %q, where: [%s]) { id name accountId defaultBranch } }`, NS, where("account_id", accountID))
-	if err := c.Query(ctx, q, nil, &out); err != nil {
-		return nil, err
+	logins := map[string]string{}
+	out := make([]Repo, 0, len(repoIDs))
+	for _, id := range repoIDs {
+		var res struct {
+			Repo *Repo `json:"repoIndex"`
+		}
+		q := fmt.Sprintf(`{ repoIndex(namespace: %q, id: %q) { id name accountId defaultBranch } }`, NS, id)
+		if err := c.Query(ctx, q, nil, &res); err != nil {
+			return nil, err
+		}
+		if res.Repo == nil {
+			return nil, fmt.Errorf("repo %s not found", id)
+		}
+		login, ok := logins[res.Repo.AccountID]
+		if !ok {
+			var err error
+			login, err = c.AccountLogin(ctx, res.Repo.AccountID)
+			if err != nil {
+				return nil, err
+			}
+			logins[res.Repo.AccountID] = login
+		}
+		res.Repo.Owner = login
+		out = append(out, *res.Repo)
 	}
-	for i := range out.Repos {
-		out.Repos[i].Owner = ownerLogin
-	}
-	return out.Repos, nil
+	return out, nil
 }
 
 // AccountLogin reads an account's GitHub login.

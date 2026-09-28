@@ -57,8 +57,9 @@ type Fake struct {
 	// received, for a test to prove which one a read actually used.
 	MeshV1Hits, PrologueV1Hits int
 	Calls                      []Call
-	// Reads are the index lists the fake served: Name is the list
-	// (goalIndexs), Input its EQ wheres by field (org_id).
+	// Reads are the index lists and get-by-id reads the fake served:
+	// Name is the list (goalIndexs) or the get (repoIndex), Input its EQ
+	// wheres by field (org_id) or, for a get, {"id": id}.
 	Reads []Call
 	// Refuse maps a mutation name to a refusal message (returned as a
 	// GraphQL error) — for tests of "someone else has it".
@@ -373,6 +374,7 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 		}
 		field, typ := f.unknownSelection(q)
 		if m := getRe.FindStringSubmatch(q); m != nil {
+			f.Reads = append(f.Reads, Call{Name: m[1], Input: map[string]any{"id": m[2]}})
 			if field != "" {
 				writeErrors(w, 200, fmt.Sprintf("Cannot query field %q on type %q.", field, typ))
 				return

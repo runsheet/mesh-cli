@@ -1552,14 +1552,14 @@ run by hand) does, and opens or updates the PR on `bot/schema-refresh`.
 
 ## Release
 
-Nodes update themselves from the GitHub releases of
-`runsheet/mesh-cli`, which `.github/workflows/release-tag.yml` cuts
-from a tag (docs/adr/adr-002-signed-tag-releases.md). The same tag is
-also published, identical, on the public mirror `runsheet/mesh` — same
-tag, title, notes and five assets, via `scripts/mirror-release.sh` and
-the `RELEASE_TOKEN` secret (`GITHUB_TOKEN` cannot write another repo);
-see the amendment "the public mirror on runsheet/mesh" for why and how
-it is checked. To cut one, the next number one above the latest on the
+Nodes update themselves from the GitHub releases of the public mirror
+`runsheet/mesh`: `.github/workflows/release-tag.yml` cuts a release
+from a tag on `runsheet/mesh-cli` (docs/adr/adr-002-signed-tag-releases.md),
+and the same tag is published, identical, on the mirror — same tag,
+title, notes and five assets, via `scripts/mirror-release.sh` and the
+`RELEASE_TOKEN` secret (`GITHUB_TOKEN` cannot write another repo); see
+the amendment "the public mirror on runsheet/mesh" for why and how it
+is checked. To cut one, the next number one above the latest on the
 mirror (`gh release list -R runsheet/mesh`, `v0.2.x` — the public line
 `cli-release.yml` began):
 
@@ -1571,6 +1571,15 @@ Any tag starting `v` runs it; a tag with a `-` (`v0.4.0-test.1`) is
 published as a prerelease. The version is stamped from the tag
 (`internal/version.Version`), so `mesh --version` and the node's
 heartbeat report exactly the tag. There is no manual trigger — tags only.
+
+The release notes are the PRs merged since the previous plain
+`vX.Y.Z` tag, grouped by goal slug — `scripts/release-notes.sh
+<previous-tag> <tag>` reads each PR's title and branch (`gh pr view`)
+and, for a `mesh/<slug>-<seq>` branch, prints a `### <slug>` section
+with the goal doc's link and one bullet per PR in merge order; a PR
+from any other branch lands under `### Other`, and a commit with no PR
+under `### Commits`. The publish job writes them to `release/NOTES.md`
+and `gh release create` publishes it with `--notes-file`.
 
 Test tags carry a `-` (`v0.0.0-selfupdate-test.<n>`), so they are
 prereleases, and `mesh node update` with no version never picks one up as
@@ -1610,7 +1619,7 @@ release by hand:
 
 ```sh
 TAG=vX.Y.Z
-gh release download "$TAG" -R runsheet/mesh-cli \
+gh release download "$TAG" -R runsheet/mesh \
   -p SHA256SUMS -p SHA256SUMS.sigstore.json -p mesh-linux-amd64
 cosign verify-blob \
   --bundle SHA256SUMS.sigstore.json \
@@ -1684,8 +1693,9 @@ mesh node update v0.4.0 --verify-only    # download and verify into a temp dir; 
 mesh node update v0.4.0 --verify-only --from-dir ./rel   # the same, from files already downloaded
 ```
 
-It verifies first and refuses anything not signed by `release-tag.yml` on
-`refs/tags/<version>` with issuer `https://token.actions.githubusercontent.com`,
+It verifies first and refuses anything not signed by `runsheet/mesh-cli`'s
+`release-tag.yml` on `refs/tags/<version>` with issuer
+`https://token.actions.githubusercontent.com`,
 or whose hash does not match, printing the reason and exiting non-zero
 with the executable and `.prev` untouched. It then pulls the release's
 [node image](#node-image) — a failed pull is refused the same way. A
@@ -1698,14 +1708,18 @@ same two-failed-starts rollback. It needs no platform, so it works when
 the console cannot reach the node — or `mesh node update --verify-only`
 checks a release from any machine.
 
-**The repo is private.** GitHub answers 404 on its release download URLs
-without (and even with) a token, so today neither the node nor `mesh node
-update` can fetch a release by itself (ADR-002). Download it with `gh`
-and verify or install from the directory:
+**The mirror is catching up.** The node and `mesh node update` fetch
+anonymously from `runsheet/mesh`, no token needed (ADR-002's amendment).
+Until `v0.2.187` is published there, its latest release is still
+`v0.2.186`, an unsigned main build from before signed releases — it has
+no `SHA256SUMS` signed by `runsheet/mesh-cli`'s `release-tag.yml`, so
+`mesh node update` (with no version) refuses it
+rather than silently accepting it; ask for a signed tag by name in the
+meantime, or download and check one by hand:
 
 ```sh
 TAG=v0.0.0-selfupdate-test.1
-gh release download "$TAG" -R runsheet/mesh-cli -D rel
+gh release download "$TAG" -R runsheet/mesh -D rel
 mesh node update --verify-only --from-dir rel "$TAG"
 ```
 
