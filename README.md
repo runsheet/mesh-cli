@@ -1552,14 +1552,14 @@ run by hand) does, and opens or updates the PR on `bot/schema-refresh`.
 
 ## Release
 
-Nodes update themselves from the GitHub releases of
-`runsheet/mesh-cli`, which `.github/workflows/release-tag.yml` cuts
-from a tag (docs/adr/adr-002-signed-tag-releases.md). The same tag is
-also published, identical, on the public mirror `runsheet/mesh` — same
-tag, title, notes and five assets, via `scripts/mirror-release.sh` and
-the `RELEASE_TOKEN` secret (`GITHUB_TOKEN` cannot write another repo);
-see the amendment "the public mirror on runsheet/mesh" for why and how
-it is checked. To cut one, the next number one above the latest on the
+Nodes update themselves from the GitHub releases of the public mirror
+`runsheet/mesh`: `.github/workflows/release-tag.yml` cuts a release
+from a tag on `runsheet/mesh-cli` (docs/adr/adr-002-signed-tag-releases.md),
+and the same tag is published, identical, on the mirror — same tag,
+title, notes and five assets, via `scripts/mirror-release.sh` and the
+`RELEASE_TOKEN` secret (`GITHUB_TOKEN` cannot write another repo); see
+the amendment "the public mirror on runsheet/mesh" for why and how it
+is checked. To cut one, the next number one above the latest on the
 mirror (`gh release list -R runsheet/mesh`, `v0.2.x` — the public line
 `cli-release.yml` began):
 
@@ -1619,7 +1619,7 @@ release by hand:
 
 ```sh
 TAG=vX.Y.Z
-gh release download "$TAG" -R runsheet/mesh-cli \
+gh release download "$TAG" -R runsheet/mesh \
   -p SHA256SUMS -p SHA256SUMS.sigstore.json -p mesh-linux-amd64
 cosign verify-blob \
   --bundle SHA256SUMS.sigstore.json \
@@ -1707,14 +1707,17 @@ same two-failed-starts rollback. It needs no platform, so it works when
 the console cannot reach the node — or `mesh node update --verify-only`
 checks a release from any machine.
 
-**The repo is private.** GitHub answers 404 on its release download URLs
-without (and even with) a token, so today neither the node nor `mesh node
-update` can fetch a release by itself (ADR-002). Download it with `gh`
-and verify or install from the directory:
+**The mirror is catching up.** The node and `mesh node update` fetch
+anonymously from `runsheet/mesh`, no token needed (ADR-002's amendment).
+Until `v0.2.187` is published there, its latest release is still
+`v0.2.186`, an unsigned main build from before signed releases — it has
+no `SHA256SUMS`, so `mesh node update` (with no version) refuses it
+rather than silently accepting it; ask for a signed tag by name in the
+meantime, or download and check one by hand:
 
 ```sh
 TAG=v0.0.0-selfupdate-test.1
-gh release download "$TAG" -R runsheet/mesh-cli -D rel
+gh release download "$TAG" -R runsheet/mesh -D rel
 mesh node update --verify-only --from-dir rel "$TAG"
 ```
 
