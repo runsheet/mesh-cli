@@ -1026,7 +1026,11 @@ type Scaling struct {
 	Min      int              `json:"min"`
 	Max      int              `json:"max"`
 	Reason   string           `json:"reason"`
-	Accounts []AccountScaling `json:"accounts,omitempty"`
+	// Accounts is always a list on the wire, [] when there are none: the
+	// platform's nested input makes it non-null whatever its schema says
+	// (go-apis/loom nested-optional-lists-are-nullable), and an omitted or
+	// null list had the whole heartbeat refused (2026-09-28).
+	Accounts []AccountScaling `json:"accounts"`
 }
 
 // AccountScaling is one account's share of the capacity: its label and
@@ -1083,7 +1087,7 @@ func (c *Client) HeartbeatNode(ctx context.Context, nodeID, version string, runn
 			case !takes:
 			case !accounts && len(x.Scaling.Accounts) > 0:
 				bare := *x.Scaling
-				bare.Accounts = nil
+				bare.Accounts = []AccountScaling{}
 				in["scaling"] = &bare
 			default:
 				in["scaling"] = x.Scaling

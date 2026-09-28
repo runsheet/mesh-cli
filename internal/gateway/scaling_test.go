@@ -3,8 +3,10 @@ package gateway_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -222,5 +224,28 @@ func TestHeartbeatOfAFixedNodeIsUnchanged(t *testing.T) {
 	}
 	if n := len(f.ReadsNamed("__type")); n != 0 {
 		t.Fatalf("a fixed node probed the schema %d times", n)
+	}
+}
+
+// A heartbeat's scaling always carries `accounts` as a list, [] when the
+// node has none to name: the platform's nested input is non-null
+// (2026-09-28), and an omitted or null list had the whole heartbeat
+// refused, so no limits ever landed.
+func TestScalingAccountsAreAlwaysAList(t *testing.T) {
+	f, gw := registeredFake(t)
+	sc := &gateway.Scaling{Capacity: 1, Min: 1, Max: 1, Reason: "fixed"}
+	if err := gw.HeartbeatNode(context.Background(), limitsNode, "v3", 0, gateway.HeartbeatExtras{Scaling: sc}); err != nil {
+		t.Fatal(err)
+	}
+	hb := f.CallsNamed("heartbeatNode")
+	s, _ := hb[len(hb)-1].Input["scaling"].(map[string]any)
+	accounts, ok := s["accounts"].([]any)
+	if !ok || accounts == nil || len(accounts) != 0 {
+		t.Fatalf("scaling.accounts = %#v, want an empty list", s["accounts"])
+	}
+	// and a bare scaling (the platform without `accounts`) is a list too
+	b, _ := json.Marshal(gateway.Scaling{Capacity: 1, Min: 1, Max: 1})
+	if !strings.Contains(string(b), `"accounts":null`) && !strings.Contains(string(b), `"accounts":[]`) {
+		t.Fatalf("marshalled scaling: %s", b)
 	}
 }
