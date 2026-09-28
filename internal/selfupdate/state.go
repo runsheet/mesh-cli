@@ -17,6 +17,11 @@ import (
 // to start twice.
 const MaxStarts = 3
 
+// DefaultConfirmWithin is how long a new process keeps trying to
+// heartbeat before it gives up on confirming, when node.yaml names none
+// (node.UpdateConfig.ConfirmWithin).
+const DefaultConfirmWithin = 5 * time.Minute
+
 // State is ~/.mesh/update.json: the update in flight (or the last one) and
 // how it went. An update is pending from BeginUpdate until Confirm or
 // Rollback.
@@ -27,6 +32,15 @@ type State struct {
 	ConfirmedAt  *time.Time `json:"confirmedAt,omitempty"`
 	RolledBackAt *time.Time `json:"rolledBackAt,omitempty"`
 	LastError    string     `json:"lastError,omitempty"`
+	// StartError is why the last start of the pending update ended
+	// before it could confirm — a config it could not read, a panic, an
+	// exited process — set by NoteStartFailure. It does not end the
+	// pending update: the next start gets its own chance.
+	StartError string `json:"startError,omitempty"`
+	// ConfirmError is the last error a heartbeat hit while this update
+	// is unconfirmed — the platform refused it or it timed out — set by
+	// NoteConfirmError.
+	ConfirmError string `json:"confirmError,omitempty"`
 }
 
 // Pending is true between BeginUpdate and Confirm or Rollback. A refused
@@ -122,6 +136,40 @@ func (f *StateFile) ShouldRollback() (bool, error) {
 	return s.Pending() && s.Attempts >= MaxStarts, nil
 }
 
+// NoteStartFailure records why the last start of a pending update ended
+// before it could confirm: a config it could not read, a panic, an
+// exited process. Neither it nor NoteConfirmError ends the pending
+// update or affects Pending() — the next start gets its own chance, and
+// Rollback (after MaxStarts of them) names the reason instead of the
+// bare "did not start". A start with no update pending records nothing.
+func (f *StateFile) NoteStartFailure(reason string) error {
+	s, err := f.Load()
+	if err != nil {
+		return err
+	}
+	if !s.Pending() {
+		return nil
+	}
+	s.StartError = reason
+	return f.save(s)
+}
+
+// NoteConfirmError records the last error a heartbeat hit while this
+// update is unconfirmed — the platform refused it or it timed out — so a
+// rollback can say the platform was slow rather than that the binary
+// failed to start. A start with no update pending records nothing.
+func (f *StateFile) NoteConfirmError(reason string) error {
+	s, err := f.Load()
+	if err != nil {
+		return err
+	}
+	if !s.Pending() {
+		return nil
+	}
+	s.ConfirmError = reason
+	return f.save(s)
+}
+
 // Confirm records that the new binary is up and working, ending the
 // pending update.
 func (f *StateFile) Confirm() error {
@@ -136,13 +184,19 @@ func (f *StateFile) Confirm() error {
 	s.Attempts = 0
 	s.ConfirmedAt = &t
 	s.LastError = ""
+	s.StartError = ""
+	s.ConfirmError = ""
 	return f.save(s)
 }
 
 // Rollback puts <exePath>.prev back over exePath and records reason as the
-// update's lastError, ending the pending update. The caller exits so the
-// service manager starts the previous binary.
-func (f *StateFile) Rollback(exePath, reason string) error {
+// update's lastError, ending the pending update. An empty reason is
+// filled in from what NoteStartFailure or NoteConfirmError last
+// recorded — a start error names the binary as never having run, a
+// confirm error names window as how long it was given to reach the
+// platform — else the old bare wording. The caller exits so the service
+// manager starts the previous binary.
+func (f *StateFile) Rollback(exePath, reason string, window time.Duration) error {
 	s, err := f.Load()
 	if err != nil {
 		return err
@@ -154,8 +208,17 @@ func (f *StateFile) Rollback(exePath, reason string) error {
 	s.Attempts = 0
 	s.RolledBackAt = &t
 	if reason == "" {
-		reason = fmt.Sprintf("%s did not start; rolled back to %s", s.To, s.From)
+		switch {
+		case s.StartError != "":
+			reason = fmt.Sprintf("%s did not start: %s", s.To, s.StartError)
+		case s.ConfirmError != "":
+			reason = fmt.Sprintf("%s did not confirm within %s: %s", s.To, window, s.ConfirmError)
+		default:
+			reason = fmt.Sprintf("%s did not start; rolled back to %s", s.To, s.From)
+		}
 	}
 	s.LastError = reason
+	s.StartError = ""
+	s.ConfirmError = ""
 	return f.save(s)
 }

@@ -336,13 +336,20 @@ type StartCheck struct {
 	Failed string
 	Reason string
 	Final  bool
+	// Pending is whether an update is still awaiting confirmation after
+	// this start (never true alongside RolledBack).
+	Pending bool
+	// Attempts is this start's count against the pending update (1 on
+	// the first, up to selfupdate.MaxStarts).
+	Attempts int
 }
 
 // CheckStart counts this start of a pending update and rolls back to
 // <exe>.prev when the new binary has failed to start twice
 // (selfupdate.MaxStarts); otherwise it hands on the last failure, if any.
 func CheckStart(f *selfupdate.StateFile, exe string) (StartCheck, error) {
-	if _, err := f.NoteStart(); err != nil {
+	attempts, err := f.NoteStart()
+	if err != nil {
 		return StartCheck{}, err
 	}
 	roll, err := f.ShouldRollback()
@@ -350,7 +357,7 @@ func CheckStart(f *selfupdate.StateFile, exe string) (StartCheck, error) {
 		return StartCheck{}, err
 	}
 	if roll {
-		if err := f.Rollback(exe, ""); err != nil {
+		if err := f.Rollback(exe, "", selfupdate.DefaultConfirmWithin); err != nil {
 			return StartCheck{}, err
 		}
 	}
@@ -358,11 +365,28 @@ func CheckStart(f *selfupdate.StateFile, exe string) (StartCheck, error) {
 	if err != nil {
 		return StartCheck{}, err
 	}
-	c := StartCheck{RolledBack: roll, From: s.From, To: s.To}
+	c := StartCheck{RolledBack: roll, From: s.From, To: s.To, Pending: s.Pending(), Attempts: attempts}
 	if s.LastError != "" && s.To != "" {
 		c.Failed, c.Reason, c.Final = s.To, s.LastError, s.RolledBackAt != nil
 	}
 	return c, nil
+}
+
+// StartLines are node.log's first lines on every start, logged before
+// anything that can block on the platform: the version, the pid and the
+// config path so a start that exits before it can log anything else is
+// never silent, and whether an update is pending so a slow confirm is
+// never mistaken for a crash.
+func StartLines(version, cfgPath string, check StartCheck) []string {
+	lines := []string{
+		fmt.Sprintf("mesh node %s, pid %d, config %s", version, os.Getpid(), cfgPath),
+	}
+	if check.Pending {
+		lines = append(lines, fmt.Sprintf("confirming update %s → %s: start %d of %d, rolls back on the third", check.From, check.To, check.Attempts, selfupdate.MaxStarts))
+	} else {
+		lines = append(lines, "no update pending")
+	}
+	return lines
 }
 
 // String is the start check as a log line.

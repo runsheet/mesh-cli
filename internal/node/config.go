@@ -13,12 +13,14 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/harness"
+	"projectmesh.io/mesh-cli/internal/selfupdate"
 )
 
 // Config is ~/.mesh/node.yaml, written by `mesh node register`. A node
@@ -75,6 +77,28 @@ type Config struct {
 	// later one needs no flags.
 	Latchkey       string `yaml:"latchkey,omitempty"`
 	LatchkeyClient string `yaml:"latchkey_client,omitempty"`
+	// Update is node.yaml's `update:` block (UpdateConfig): how long a
+	// new process keeps trying to confirm an update before it gives up.
+	Update UpdateConfig `yaml:"update,omitempty"`
+}
+
+// UpdateConfig is node.yaml's `update:` block.
+type UpdateConfig struct {
+	// ConfirmWithin is how long a new process keeps retrying its
+	// heartbeat to confirm a pending update before it gives up on
+	// confirming; empty is Config.ConfirmWithin's default of 5 minutes.
+	// A platform blip or a busy box within the window is not a failed
+	// start.
+	ConfirmWithin time.Duration `yaml:"confirm_within,omitempty"`
+}
+
+// ConfirmWithin is the confirm window in force: node.yaml's
+// update.confirm_within, or 5 minutes when it names none.
+func (c *Config) ConfirmWithin() time.Duration {
+	if c.Update.ConfirmWithin > 0 {
+		return c.Update.ConfirmWithin
+	}
+	return selfupdate.DefaultConfirmWithin
 }
 
 // DefaultToolResultsKB is the tool result cap when node.yaml names none.

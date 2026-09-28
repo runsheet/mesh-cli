@@ -145,6 +145,34 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `~/.mesh/update.json` (`CheckStart`): the third unconfirmed one rolls
   back to `.prev`, reports it and exits 0; the first heartbeat confirms.
   The loop's `Update` is an interface; tests inject a fake.
+  **`update.json`'s `State` carries why, not just that**: `startError`
+  (`NoteStartFailure`) is why the last start of the pending update ended
+  before it could confirm — a config it could not read, a panic, an
+  exited process — and `confirmError` (`NoteConfirmError`) is the last
+  error a heartbeat hit while unconfirmed — a refusal or a timeout, the
+  platform being slow rather than the binary failing to start. Neither
+  affects `Pending()`, and `Confirm` clears both. `Rollback` takes the
+  confirm window as a parameter and names the real cause when one is
+  recorded — `'<to> did not start: <startError>'`, or `'<to> did not
+  confirm within <window>: <confirmError>'` — falling back to the old
+  `'<to> did not start; rolled back to <from>'` when neither is set.
+  `node.StartCheck` (from `CheckStart`) carries `Pending` and `Attempts`
+  so the caller can say what it is confirming: node.log's first lines,
+  logged by `node.StartLines` immediately after `startUpdates` and
+  before `LoadConfig`, `platformClient` or any platform call, name the
+  version, the pid, the config path and either `'confirming update <from>
+  → <to>: start <n> of 3, rolls back on the third'` or `'no update
+  pending'` — so a silent exit before registration can never happen
+  again. `internal/commands/nodecmd.go`'s `registerNode` is everything a
+  start needs before the loop exists (`LoadConfig`, the accounts'
+  secrets, `platformClient`, the work root, registration); an error or a
+  panic there while an update is pending is recorded with
+  `NoteStartFailure` (a panic is re-raised after recording). node.yaml's
+  `update.confirm_within` (`Config.Update.ConfirmWithin`,
+  `Config.ConfirmWithin()`) is how long a new process keeps trying to
+  confirm before giving up — default 5 minutes
+  (`selfupdate.DefaultConfirmWithin`); a later goal wires the loop's own
+  heartbeat retry to it.
   `mesh node update [version]` (`internal/commands/nodeupdate.go`) does
   it by hand on the same `ReleaseUpdater`: verify, drain the pidfile's
   node, swap; `--verify-only` verifies into a temp dir. `mesh node

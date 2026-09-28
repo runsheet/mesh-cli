@@ -3,6 +3,7 @@ package selfupdate
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -104,7 +105,7 @@ func TestStateRollbackRestoresPrev(t *testing.T) {
 	if !mustRollback(t, f) {
 		t.Fatal("want rollback")
 	}
-	if err := f.Rollback(exe, ""); err != nil {
+	if err := f.Rollback(exe, "", DefaultConfirmWithin); err != nil {
 		t.Fatalf("Rollback: %v", err)
 	}
 	if got := readFile(t, exe); got != "v1.0.0" {
@@ -132,12 +133,112 @@ func TestStateRollbackWithoutPrev(t *testing.T) {
 	if err := f.BeginUpdate("v1.0.0", "v1.1.0"); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.Rollback(exe, "x"); err == nil {
+	if err := f.Rollback(exe, "x", DefaultConfirmWithin); err == nil {
 		t.Fatal("Rollback with no .prev succeeded")
 	}
 	if got := readFile(t, exe); got != "v1.1.0" {
 		t.Errorf("exe = %q", got)
 	}
+}
+
+func TestStateStartFailureRollsBackWithReason(t *testing.T) {
+	f := newStateFile(t)
+	exe := filepath.Join(t.TempDir(), "mesh")
+	writeExe(t, exe, "72ff910")
+	if err := f.BeginUpdate("72ff910", "0a04088"); err != nil {
+		t.Fatal(err)
+	}
+	if err := Swap(exe, []byte("0a04088")); err != nil {
+		t.Fatal(err)
+	}
+	const why = "exit status 1: load config: open node.yaml: permission denied"
+	for range MaxStarts {
+		start(t, f)
+		if err := f.NoteStartFailure(why); err != nil {
+			t.Fatal(err)
+		}
+		if !f.mustPending(t) {
+			t.Fatal("NoteStartFailure ended the pending update")
+		}
+	}
+	if !mustRollback(t, f) {
+		t.Fatal("want rollback")
+	}
+	if err := f.Rollback(exe, "", DefaultConfirmWithin); err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+	s, err := f.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = "0a04088 did not start: exit status 1: load config"
+	if s.RolledBackAt == nil || !strings.Contains(s.LastError, want) {
+		t.Fatalf("after Rollback: %+v, want lastError containing %q", s, want)
+	}
+}
+
+func TestStateConfirmErrorRollsBackWithReason(t *testing.T) {
+	f := newStateFile(t)
+	exe := filepath.Join(t.TempDir(), "mesh")
+	writeExe(t, exe, "72ff910")
+	if err := f.BeginUpdate("72ff910", "0a04088"); err != nil {
+		t.Fatal(err)
+	}
+	if err := Swap(exe, []byte("0a04088")); err != nil {
+		t.Fatal(err)
+	}
+	const why = "heartbeat: context deadline exceeded"
+	if err := f.NoteConfirmError(why); err != nil {
+		t.Fatal(err)
+	}
+	if !f.mustPending(t) {
+		t.Fatal("NoteConfirmError ended the pending update")
+	}
+	if err := f.Rollback(exe, "", 5*time.Minute); err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+	s, err := f.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.RolledBackAt == nil || !strings.Contains(s.LastError, "did not confirm within") || !strings.Contains(s.LastError, why) {
+		t.Fatalf("after Rollback: %+v", s)
+	}
+}
+
+func TestStateConfirmClearsStartAndConfirmErrors(t *testing.T) {
+	f := newStateFile(t)
+	if err := f.BeginUpdate("v1.0.0", "v1.1.0"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.NoteStartFailure("exit status 1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.NoteConfirmError("heartbeat: context deadline exceeded"); err != nil {
+		t.Fatal(err)
+	}
+	if !f.mustPending(t) {
+		t.Fatal("Note calls ended the pending update")
+	}
+	if err := f.Confirm(); err != nil {
+		t.Fatal(err)
+	}
+	s, err := f.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.StartError != "" || s.ConfirmError != "" {
+		t.Fatalf("after Confirm: %+v", s)
+	}
+}
+
+func (f *StateFile) mustPending(t *testing.T) bool {
+	t.Helper()
+	s, err := f.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s.Pending()
 }
 
 func TestStateRefuseRecordsWhy(t *testing.T) {

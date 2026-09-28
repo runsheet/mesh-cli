@@ -408,47 +408,18 @@ func nodeStart(cmd *cobra.Command, args []string) error {
 		reportRollback(check, logger)
 		return nil
 	}
-	cfg, err := node.LoadConfig()
-	if err != nil {
-		return err
-	}
-	nodeModels = modelsFor(cmd, cfg)
-	// an account whose secret cannot be read would fail every
-	// session it ran: refuse to start on it (adr-005)
-	for _, a := range cfg.Accounts {
-		if _, err := a.Secret(); err != nil {
-			return err
-		}
-	}
-	gw, err := platformClient()
-	if err != nil {
-		return err
-	}
-	workRoot, err := node.WorkRoot()
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(workRoot, 0o755); err != nil {
-		return err
+	// node.log's first lines, before anything that can block on the
+	// platform: a silent exit before this point can never happen again
+	cfgPath, _ := node.ConfigPath()
+	for _, line := range node.StartLines(version.Version, cfgPath, check) {
+		logger.Print(line)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	regCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
-	if cfg.OwnerID == "" {
-		cfg.OwnerID, err = gw.SignIn(regCtx)
-		if err != nil {
-			cancel()
-			return err
-		}
-	}
-	scopes, err := node.ResolveScopes(regCtx, gw, cfg)
-	if err == nil {
-		err = registerIn(regCtx, gw, cfg, scopes)
-	}
-	cancel()
+	cfg, gw, scopes, workRoot, err := registerNode(ctx, cmd, logger, updates, check)
 	if err != nil {
-		return fmt.Errorf("register node: %w", err)
+		return err
 	}
 
 	// every session's plan standing lands in Limits: the heartbeat
@@ -608,6 +579,80 @@ func runPollMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *
 		return nil
 	}
 	return endRun(err, logger)
+}
+
+// registerNode loads node.yaml, refuses to start on an account whose
+// secret cannot be read, makes the work root and registers the node with
+// the platform: everything a start needs before the loop exists. While
+// an update is unconfirmed, an error here — or a panic — is recorded
+// (noteStartFailure) so a rollback names the real cause instead of the
+// bare "did not start": this is the same 60-second registration timeout
+// that once left node.log silent when the platform was slow.
+func registerNode(ctx context.Context, cmd *cobra.Command, logger *log.Logger, updates *selfupdate.StateFile, check node.StartCheck) (cfg *node.Config, gw *gateway.Client, scopes node.Scopes, workRoot string, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			noteStartFailure(updates, check, fmt.Sprintf("panic: %v", r), logger)
+			panic(r)
+		}
+		if err != nil {
+			noteStartFailure(updates, check, err.Error(), logger)
+		}
+	}()
+	cfg, err = node.LoadConfig()
+	if err != nil {
+		return
+	}
+	nodeModels = modelsFor(cmd, cfg)
+	// an account whose secret cannot be read would fail every
+	// session it ran: refuse to start on it (adr-005)
+	for _, a := range cfg.Accounts {
+		if _, serr := a.Secret(); serr != nil {
+			err = serr
+			return
+		}
+	}
+	gw, err = platformClient()
+	if err != nil {
+		return
+	}
+	workRoot, err = node.WorkRoot()
+	if err != nil {
+		return
+	}
+	if err = os.MkdirAll(workRoot, 0o755); err != nil {
+		return
+	}
+
+	regCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	if cfg.OwnerID == "" {
+		cfg.OwnerID, err = gw.SignIn(regCtx)
+		if err != nil {
+			return
+		}
+	}
+	scopes, err = node.ResolveScopes(regCtx, gw, cfg)
+	if err == nil {
+		err = registerIn(regCtx, gw, cfg, scopes)
+	}
+	if err != nil {
+		err = fmt.Errorf("register node: %w", err)
+	}
+	return
+}
+
+// noteStartFailure records why a start of a pending update ended before
+// it could confirm, so Rollback (after MaxStarts of them) names the real
+// cause. A start with no update pending, or a state file that cannot
+// record it, is logged and nothing more.
+func noteStartFailure(updates *selfupdate.StateFile, check node.StartCheck, reason string, logger *log.Logger) {
+	if updates == nil || !check.Pending {
+		return
+	}
+	logger.Printf("self-update: %s", reason)
+	if err := updates.NoteStartFailure(reason); err != nil {
+		logger.Printf("self-update: record start failure: %v", err)
+	}
 }
 
 // startUpdates counts this start against a pending self-update and rolls
