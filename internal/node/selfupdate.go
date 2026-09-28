@@ -11,6 +11,7 @@ import (
 
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/selfupdate"
+	"projectmesh.io/mesh-cli/internal/version"
 )
 
 // ErrRestartForUpdate is what Run returns once a self-update has put the
@@ -190,11 +191,15 @@ func (l *Loop) confirmUpdate() {
 
 // selfUpdate follows the version the platform asks for (after the
 // heartbeat, every tick). An empty one, the running one, a dev build, a
-// draining node or an update already under way do nothing; a version
-// that failed is left for updateRetry (for good after a rollback) unless
-// the platform asks for another. The update itself runs beside the loop.
+// draining node or an update already under way do nothing. A dev build is
+// any not reporting a release tag — "dev" or the commit it was built from
+// (version.String) — and keeps today's behaviour: it was put there by
+// hand, from a checkout, and a release the platform asks for would
+// replace it unasked; a node follows desiredVersion only from a release.
+// A version that failed is left for updateRetry (for good after a
+// rollback) unless the platform asks for another. The update itself runs beside the loop.
 func (l *Loop) selfUpdate(ctx context.Context) {
-	if l.Update == nil || l.Version == "" || l.Version == "dev" || l.Draining() {
+	if l.Update == nil || !version.Release(l.Version) || l.Draining() {
 		return
 	}
 	l.mu.Lock()

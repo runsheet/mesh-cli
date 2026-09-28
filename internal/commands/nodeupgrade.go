@@ -126,7 +126,7 @@ func defaultNodeUpgrade(out io.Writer) (*nodeUpgrade, error) {
 		ConfirmWithin: within,
 		Updater:       &node.ReleaseUpdater{Source: gh, State: state, Exe: exe},
 		Latest:        gh.Latest,
-		Running:       version.Version,
+		Running:       version.String(),
 		Run:           run,
 		Version:       binaryVersion,
 		Image:         ensureNodeImage,
@@ -334,10 +334,10 @@ func (s hostService) Restart(ctx context.Context, state node.RunState, out io.Wr
 
 var versionCmd = &cobra.Command{
 	Use:   "version",
-	Short: "Print this binary's version: mesh <version>",
+	Short: "Print this binary's version and commit: mesh <tag> (commit <sha>), or mesh <sha> (dev build)",
 	Args:  cobra.NoArgs,
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Fprintf(cmd.OutOrStdout(), "mesh %s\n", version.Version)
+		fmt.Fprintln(cmd.OutOrStdout(), version.Long())
 	},
 }
 

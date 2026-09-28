@@ -1197,14 +1197,22 @@ func TestHeartbeatSendsExtrasOnlyWhenSet(t *testing.T) {
 		gw.HeartbeatNode(ctx, node, "v1", 0, gateway.HeartbeatExtras{}),
 		gw.HeartbeatNode(ctx, node, "v1", 1, gateway.HeartbeatExtras{Draining: true}),
 		gw.HeartbeatNode(ctx, node, "v1", 0, gateway.HeartbeatExtras{UpdateError: "signature does not match"}),
+		// the fake's HeartbeatNodeInput takes commit: sent when set
+		gw.HeartbeatNode(ctx, node, "v1", 0, gateway.HeartbeatExtras{Commit: "0895d40"}),
 	}
 	for i, err := range calls {
 		if err != nil {
 			t.Fatalf("heartbeat %d: %v", i, err)
 		}
 	}
+	// a platform whose HeartbeatNodeInput has no commit is sent none; a
+	// new client, since the schema's answer is kept for an hour
+	p.UnknownFields["commit"] = true
+	if err := gateway.New(p.URL(), "rs_test").HeartbeatNode(ctx, node, "v1", 0, gateway.HeartbeatExtras{Commit: "0895d40"}); err != nil {
+		t.Fatalf("heartbeat without commit in the schema: %v", err)
+	}
 	hb := p.CallsNamed("heartbeatNode")
-	if len(hb) != 4 {
+	if len(hb) != 6 {
 		t.Fatalf("heartbeats: %+v", hb)
 	}
 	for i, want := range []map[string]any{
@@ -1212,9 +1220,11 @@ func TestHeartbeatSendsExtrasOnlyWhenSet(t *testing.T) {
 		{},
 		{"draining": true},
 		{"updateError": "signature does not match"},
+		{"commit": "0895d40"},
+		{},
 	} {
 		in := hb[i].Input
-		for _, k := range []string{"draining", "updateError"} {
+		for _, k := range []string{"draining", "updateError", "commit"} {
 			if got, ok := in[k]; ok != (want[k] != nil) || (ok && got != want[k]) {
 				t.Fatalf("heartbeat %d: %s = %v (sent %v), want %v", i, k, got, ok, want[k])
 			}
@@ -1427,5 +1437,31 @@ func TestDrainingIdleRunReturnsNil(t *testing.T) {
 	loop.Drain()
 	if err := loop.Run(context.Background()); err != nil {
 		t.Fatalf("Run = %v", err)
+	}
+}
+
+// The loop's heartbeat carries Loop.Commit beside Loop.Version (mesh-specs
+// ADR 013, trd §1 Node); a loop with none sends no key.
+func TestHeartbeatCarriesLoopCommit(t *testing.T) {
+	p := newPriorityFake(t)
+	p.register()
+	loop, _ := p.loop(1)
+	loop.Version, loop.Commit = "v0.2.188", "0895d40"
+	loop.Tick(context.Background())
+	loop.Commit = ""
+	loop.Tick(context.Background())
+	orgs := len(p.scopes)
+	hb := p.CallsNamed("heartbeatNode")
+	if len(hb) != 2*orgs {
+		t.Fatalf("heartbeats: %d, want %d", len(hb), 2*orgs)
+	}
+	for i, c := range hb {
+		got, ok := c.Input["commit"]
+		if want := i < orgs; ok != want || (want && got != "0895d40") {
+			t.Fatalf("heartbeat %d: commit = %#v (sent %v)", i, got, ok)
+		}
+		if c.Input["version"] != "v0.2.188" {
+			t.Fatalf("heartbeat %d: version = %#v", i, c.Input["version"])
+		}
 	}
 }
