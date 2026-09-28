@@ -324,7 +324,9 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   the evaluator judges them with `ChooseAccount` over
   `Limits.CodexReadings` for the goal's priority: one with headroom
   makes it a Codex session on `CodexModel` of the evaluate model
-  (defaults gpt-6-astra/sol/luna), opened by `Credentials.Open`
+  (defaults gpt-6-sol for opus, gpt-6-luna for sonnet and haiku — astra
+  costs $1.29 for one evaluation where sol costs about $0.45, so it
+  runs only when pinned), opened by `Credentials.Open`
   (adapter codex) or `OpenOwn`; else Claude as before. A full `gpt-…`
   evaluate/item/agent model pins Codex (`EvaluatorPin`; no headroom is
   `ErrFamilyWaits`, the item stays in evaluating, said once per item by
@@ -339,7 +341,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   opinion `unavailable: preflight …`. An item of an `urgent` or `high` goal whose
   first verdict passes is evaluated again on the other family with the
   same prompt and workspace: both pass is passed, a second fail is
-  failed; the notes carry both, `Codex (first evaluation, gpt-6-astra):
+  failed; the notes carry both, `Codex (first evaluation, gpt-6-sol):
   VERDICT …` and `Claude (second opinion, opus): VERDICT …` (or Claude
   first, Codex second), truncated together to 4000, and the cost and
   tokens are the sum — all in the one `EvaluateWorkItem`, whose usage
