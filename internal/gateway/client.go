@@ -56,6 +56,11 @@ type Client struct {
 	// platform): every later item read asks for workItemFields alone.
 	itemsWithoutModel atomic.Bool
 
+	// usageWithoutTools is set once the gateway has refused a usage
+	// report's `tools` (ErrNoToolUsage): every later report goes
+	// without the list.
+	usageWithoutTools atomic.Bool
+
 	// heartbeatBasicUntil (unix nanoseconds) is when the heartbeat next
 	// offers the fields the gateway refused (see HeartbeatNode).
 	heartbeatBasicUntil atomic.Int64
@@ -219,10 +224,22 @@ func (c *Client) Mutate(ctx context.Context, field, aggregateID string, input ma
 // other error from the command is returned as is. errors.Is-able.
 var ErrNoUsageLedger = errors.New("gateway: the platform keeps no usage ledger")
 
+// ErrNoToolUsage is what a finishing command returns when its usage
+// report carried a per-tool `tools` list but the platform's
+// UsageReportInput has no `tools` (a platform older than
+// tools-show-their-use): the command and the report landed, the
+// report's total `toolCalls` kept, without the list — the caller logs
+// the list instead. errors.Is-able.
+var ErrNoToolUsage = errors.New("gateway: the platform takes no per-tool calls on the usage report")
+
 // mutateWithUsage sends field's command with input, plus usage's report
 // on the `usage` key when usage is non-nil. A platform whose input has
 // no `usage` (unknownField on "usage") gets the command again without
 // it: the command lands, and ErrNoUsageLedger says the report did not.
+// A platform whose report has no `tools` (unknownField on "tools") gets
+// it again without the list, and every later report goes without it:
+// the command lands with the total, and ErrNoToolUsage says the list
+// did not.
 func (c *Client) mutateWithUsage(ctx context.Context, field, aggregateID string, input map[string]any, usage *UsageReport) error {
 	if usage == nil {
 		return c.Mutate(ctx, field, aggregateID, input)
@@ -236,13 +253,27 @@ func (c *Client) mutateWithUsage(ctx context.Context, field, aggregateID string,
 		withUsage[k] = v
 	}
 	withUsage["usage"] = um
+	_, withTools := um["tools"]
+	if withTools && c.usageWithoutTools.Load() {
+		delete(um, "tools")
+	}
 	err = c.Mutate(ctx, field, aggregateID, withUsage)
 	var ge *Error
+	if err != nil && errors.As(err, &ge) && unknownField(ge.Message, "tools") {
+		if _, sent := um["tools"]; sent {
+			c.usageWithoutTools.Store(true)
+			delete(um, "tools")
+			err = c.Mutate(ctx, field, aggregateID, withUsage)
+		}
+	}
 	if err != nil && errors.As(err, &ge) && unknownField(ge.Message, "usage") {
 		if err2 := c.Mutate(ctx, field, aggregateID, input); err2 != nil {
 			return err2
 		}
 		return ErrNoUsageLedger
+	}
+	if err == nil && withTools && c.usageWithoutTools.Load() {
+		return ErrNoToolUsage
 	}
 	return err
 }
@@ -1022,11 +1053,15 @@ type SandboxInfo struct {
 // none before it has, or on a platform whose `scaling` has no
 // `accounts`.
 type Scaling struct {
-	Capacity int              `json:"capacity"`
-	Min      int              `json:"min"`
-	Max      int              `json:"max"`
-	Reason   string           `json:"reason"`
-	Accounts []AccountScaling `json:"accounts,omitempty"`
+	Capacity int    `json:"capacity"`
+	Min      int    `json:"min"`
+	Max      int    `json:"max"`
+	Reason   string `json:"reason"`
+	// Accounts is always a list on the wire, [] when there are none: the
+	// platform's nested input makes it non-null whatever its schema says
+	// (go-apis/loom nested-optional-lists-are-nullable), and an omitted or
+	// null list had the whole heartbeat refused (2026-09-28).
+	Accounts []AccountScaling `json:"accounts"`
 }
 
 // AccountScaling is one account's share of the capacity: its label and
@@ -1081,12 +1116,18 @@ func (c *Client) HeartbeatNode(ctx context.Context, nodeID, version string, runn
 		if x.Scaling != nil {
 			switch takes, accounts := c.takesScaling(ctx); {
 			case !takes:
-			case !accounts && len(x.Scaling.Accounts) > 0:
-				bare := *x.Scaling
-				bare.Accounts = nil
-				in["scaling"] = &bare
+			case !accounts:
+				// a platform whose scaling has no accounts field refuses the
+				// key: the four fields only
+				in["scaling"] = map[string]any{"capacity": x.Scaling.Capacity, "min": x.Scaling.Min, "max": x.Scaling.Max, "reason": x.Scaling.Reason}
 			default:
-				in["scaling"] = x.Scaling
+				// accounts is [] rather than null when the node names none:
+				// the platform's nested input is non-null
+				sc := *x.Scaling
+				if sc.Accounts == nil {
+					sc.Accounts = []AccountScaling{}
+				}
+				in["scaling"] = &sc
 			}
 		}
 		if len(x.Runtimes) > 0 {
@@ -1682,11 +1723,11 @@ func (c *Client) RecordDirectionResearch(ctx context.Context, directionID, nodeI
 		"nodeId": nodeID, "at": at,
 		"proposals": proposalRows(fallback), "costCents": costCents, "notes": notes,
 	}, usage)
-	if retryErr != nil && !errors.Is(retryErr, ErrNoUsageLedger) {
+	if retryErr != nil && !errors.Is(retryErr, ErrNoUsageLedger) && !errors.Is(retryErr, ErrNoToolUsage) {
 		return retryErr
 	}
-	if errors.Is(retryErr, ErrNoUsageLedger) {
-		return fmt.Errorf("%w: %w", ErrNoPitches, ErrNoUsageLedger)
+	if retryErr != nil {
+		return fmt.Errorf("%w: %w", ErrNoPitches, retryErr)
 	}
 	return ErrNoPitches
 }
@@ -1912,9 +1953,13 @@ type UsageReport struct {
 	CacheReadTokens  int64  `json:"cacheReadTokens"`
 	CacheWriteTokens int64  `json:"cacheWriteTokens"`
 	ToolCalls        int64  `json:"toolCalls"`
-	WallMs           int64  `json:"wallMs"`
-	ListCostCents    int64  `json:"listCostCents"`
-	ActualCostCents  int64  `json:"actualCostCents"`
+	// Tools is ToolCalls per MCP server, with each one's errors and wall
+	// time (goal tools-show-their-use); left out when the session called
+	// none, and by mutateWithUsage for a platform without the field.
+	Tools           []ToolCallReport `json:"tools,omitempty"`
+	WallMs          int64            `json:"wallMs"`
+	ListCostCents   int64            `json:"listCostCents"`
+	ActualCostCents int64            `json:"actualCostCents"`
 
 	FiveHourBefore *float64 `json:"fiveHourBefore,omitempty"`
 	FiveHourAfter  *float64 `json:"fiveHourAfter,omitempty"`
@@ -1925,6 +1970,15 @@ type UsageReport struct {
 	FiveHourResetsAtAfter  *time.Time `json:"fiveHourResetsAtAfter,omitempty"`
 	SevenDayResetsAtBefore *time.Time `json:"sevenDayResetsAtBefore,omitempty"`
 	SevenDayResetsAtAfter  *time.Time `json:"sevenDayResetsAtAfter,omitempty"`
+}
+
+// ToolCallReport is one MCP server's calls in a session's UsageReport:
+// how many, how many errored, and their wall time in milliseconds.
+type ToolCallReport struct {
+	Tool   string `json:"tool"`
+	Calls  int64  `json:"calls"`
+	Errors int64  `json:"errors"`
+	Ms     int64  `json:"ms"`
 }
 
 // The kinds a UsageReport's CredentialKind takes.
@@ -1940,6 +1994,7 @@ const (
 // the mutation answers IsUnsupported.
 func (c *Client) RecordToolUsage(ctx context.Context, itemID, toolCallID, tool string, usage UsageReport) error {
 	const field = "recordToolUsage"
+	usage.Tools = nil // one call's record needs no per-tool list
 	um, err := usageInput(&usage)
 	if err != nil {
 		return err

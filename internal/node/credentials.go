@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -59,7 +61,7 @@ type Credentials struct {
 	Now func() time.Time
 	Log *log.Logger
 
-	credOnce, usageOnce, toolUsageOnce sync.Once
+	credOnce, usageOnce, toolUsageOnce, toolListOnce sync.Once
 }
 
 func (c *Credentials) now() time.Time {
@@ -104,11 +106,13 @@ type SessionAccount struct {
 	// report is the session's usage report once built (Report), res the
 	// result it was built from; handedIn and noLedger are what its
 	// finishing command made of it (Carried), and into the session whose
-	// report carries this one's (Carries).
-	report             *gateway.UsageReport
-	res                harness.Result
-	handedIn, noLedger bool
-	into               *SessionAccount
+	// report carries this one's (Carries). noToolList is a report that
+	// landed without its per-tool list (ErrNoToolUsage), which Finish
+	// logs instead.
+	report                         *gateway.UsageReport
+	res                            harness.Result
+	handedIn, noLedger, noToolList bool
+	into                           *SessionAccount
 	// Tools are the tools the claim-time read handed the session, their
 	// secrets decrypted (nil from a platform without them); what the
 	// session gets of them is SessionTools'.
@@ -437,7 +441,8 @@ func (s *SessionAccount) Report(res harness.Result) *gateway.UsageReport {
 // Add puts another session's tokens, tool calls and cost into the
 // session's report, for a finishing command that ends more than one
 // session: the evaluation's Codex second opinion, a plan asked twice.
-// The model is the first one read. Nothing before Report.
+// The model is the first one read; the per-tool rows (Tools) are merged
+// by tool, their calls, errors and ms summed. Nothing before Report.
 func (s *SessionAccount) Add(res harness.Result) {
 	if s == nil || s.report == nil {
 		return
@@ -455,6 +460,7 @@ func (s *SessionAccount) Add(res harness.Result) {
 	for _, n := range res.ToolCalls {
 		r.ToolCalls += int64(n)
 	}
+	r.Tools = mergeToolCalls(r.Tools, res.ToolReport())
 	cents := int64(Cents(res.CostUSD))
 	r.ListCostCents += cents
 	if r.CredentialKind == gateway.CredentialAPI {
@@ -479,20 +485,53 @@ func (s *SessionAccount) Carries(other *SessionAccount) {
 // FinishWorkItemRebase or RecordDirectionResearch). ErrNoUsageLedger is
 // a command that landed without it: nil to the caller, and Finish logs
 // the record. Anything else is the command's own error.
+//
+// ErrNoToolUsage is a command that landed with the report but without
+// its per-tool list: nil to the caller too, and Finish logs the list.
 func (s *SessionAccount) Carried(err error) error {
 	noLedger := errors.Is(err, gateway.ErrNoUsageLedger)
+	noToolList := !noLedger && errors.Is(err, gateway.ErrNoToolUsage)
 	if s != nil && s.report != nil {
 		switch {
 		case err == nil:
 			s.handedIn = true
 		case noLedger:
 			s.noLedger = true
+		case noToolList:
+			s.handedIn, s.noToolList = true, true
 		}
 	}
-	if noLedger {
+	if noLedger || noToolList {
 		return nil
 	}
 	return err
+}
+
+// UseNote is SessionTools.UseNote for the tools rendered for the session
+// (UseTools), redacted by the account: "" when there were none, or
+// every one was called cleanly, or s is nil (an adopted session).
+func (s *SessionAccount) UseNote(res harness.Result) string {
+	if s == nil {
+		return ""
+	}
+	return SessionTools{Use: s.used}.UseNote(res, s.Redact)
+}
+
+// mergeToolCalls is rows with more folded in by tool — calls, errors
+// and ms summed — sorted by tool; nil when both are empty.
+func mergeToolCalls(rows []gateway.ToolCallReport, more []harness.ToolCall) []gateway.ToolCallReport {
+	for _, c := range more {
+		i := slices.IndexFunc(rows, func(r gateway.ToolCallReport) bool { return r.Tool == c.Tool })
+		if i < 0 {
+			rows = append(rows, gateway.ToolCallReport{Tool: c.Tool})
+			i = len(rows) - 1
+		}
+		rows[i].Calls += int64(c.Calls)
+		rows[i].Errors += int64(c.Errors)
+		rows[i].Ms += c.Ms
+	}
+	slices.SortFunc(rows, func(a, b gateway.ToolCallReport) int { return strings.Compare(a.Tool, b.Tool) })
+	return rows
 }
 
 // Finish is the once-per-session end, called however the session
@@ -509,6 +548,19 @@ func (s *SessionAccount) Finish(ctx context.Context, res harness.Result) {
 	c := s.creds
 	rep := s.Report(res)
 	s.reportToolUsage(ctx)
+	if s.ref.ItemID == "" {
+		// a plan or research session has no item to note its tools on
+		if note := s.UseNote(s.res); note != "" {
+			c.logf("%s", note)
+		}
+	}
+	if s.noToolList && len(rep.Tools) > 0 {
+		c.toolListOnce.Do(func() {
+			c.logf("usage: the platform takes no per-tool calls yet; they are logged here instead (said once, for every session this run)")
+		})
+		line, _ := json.Marshal(rep.Tools)
+		c.logf("usage: session %s tools: %s", rep.SessionID, s.Redact(string(line)))
+	}
 	if s.handedIn || s.into != nil {
 		return
 	}

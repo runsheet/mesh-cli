@@ -211,7 +211,8 @@ func (d *Director) handIn(ctx context.Context, direction gateway.Direction, proj
 // out: a platform older than runsheet trd §6c's pitches was handed the
 // pitches as proposals, and that landed — the research is in, so it is
 // no error, and the node says so once for its run. A report the
-// fallback landed without stays ErrNoUsageLedger, for Carried.
+// fallback landed without stays ErrNoUsageLedger (its per-tool list,
+// ErrNoToolUsage), for Carried.
 func (d *Director) pitchFallback(err error) error {
 	if !errors.Is(err, gateway.ErrNoPitches) {
 		return err
@@ -221,6 +222,9 @@ func (d *Director) pitchFallback(err error) error {
 	})
 	if errors.Is(err, gateway.ErrNoUsageLedger) {
 		return gateway.ErrNoUsageLedger
+	}
+	if errors.Is(err, gateway.ErrNoToolUsage) {
+		return gateway.ErrNoToolUsage
 	}
 	return nil
 }
