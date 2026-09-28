@@ -38,7 +38,7 @@ After this goal merges, mesh-cli has no deploy and the mini's binary must be upg
 
 ## How to add the ChatGPT Pro account
 
-1. On any machine with `codex` installed, run `codex login`. It prompts for username and password, stores credentials in `~/.codex/auth.json` (mode 0600).
+1. On any machine with `codex` installed, run `codex login`. It opens a browser for interactive authentication, stores credentials in `~/.codex/auth.json` (mode 0600).
 2. Read the file: `cat ~/.codex/auth.json`. Copy the entire JSON.
 3. Go to the runsheet console's **Settings → Credentials**. Click **Add credential**.
 4. Fill the form:
@@ -57,23 +57,23 @@ This goal could not carry the runsheet-side pieces because they live outside run
 
 - **runsheet/console:** Credential form wording for openai vendor. The form's `Kind` dropdown and `Secret` label should explain what to paste for oauth_token (the auth.json from `codex login`) and api_key (an OpenAI API key). The form's `Serves` field should name `codex` in a note. A credential with vendor openai and `serves: codex` is served to evaluation sessions.
 - **runsheet/gateway:** scorecard.go reads the usage ledger's `adapter` and `model` columns and computes first-pass rate and evaluator false-pass rate per model family. The `usage` record on `EvaluateWorkItem` (`gateway/mutations.go`) carries `adapter: "codex" | "claude-code"` and the model it ran on. The integration is per-model-family, not per-model — `gpt-6-astra`, `gpt-6-sol` and `gpt-6-luna` roll up to family `codex`, and `claude-opus-…`, `claude-sonnet-…`, `claude-haiku-…` roll up to family `claude`.
-- **runsheet/mesh-portal:** Nodes page shows the OpenAI account's rate-limit windows beside the Claude ones. The node's heartbeat carries the usage report `limits` per account (subscription windows or API key budget windows; `adapter` field names the vendor). A Codex account sends `adapter: codex` and windows under the same schema as Claude's `adapter: claude`.
+- **runsheet/console:** Nodes page shows the OpenAI account's rate-limit windows beside the Claude ones. The node's heartbeat carries the `limits` per account (subscription windows or API key budget windows), keyed by account name with the `codex:` prefix for Codex accounts (e.g., `codex:plus` for a ChatGPT Pro account named `plus`). A Codex account's readings land under `limits` keyed `codex:<account>`, distinguished from Claude accounts by the prefix.
 
 ## Design
 
 This goal amends mesh-specs' `trd` §1 WorkItem (second-opinion paragraph) and §3 (Which model a session runs on, The Codex adapter, Accounts), and adds mesh-cli ADR-011 `evaluations-run-on-the-family-with-headroom`. See item 4's PR and the `.mesh/context/` copies of both.
 
-The evaluator's family choice: before an evaluation starts, the node judges headroom across all Codex accounts (by Codex-specific limits read from Codex's output) and all Claude accounts (by their subscription windows or API key budgets). It prefers **Codex when a Codex account has headroom** for the item's priority, and runs on **Claude otherwise**. A planner may pin an item's evaluator to a family by naming an agent model starting `gpt-` (Codex pin) or `claude-` / bare tier (Claude pin); a pinned family with no headroom waits (not claimed, not failed), never falling back.
+The evaluator's family choice: before an evaluation starts, the node judges headroom across all Codex accounts (by Codex-specific limits read from Codex's output) and all Claude accounts (by their subscription windows or API key budgets). It prefers **Codex when a Codex account has headroom** for the item's priority, and runs on **Claude otherwise**. A planner may pin an item's evaluator to a family by naming an agent model starting `gpt-` (Codex pin) or `claude-` (Claude pin); a full model id pins its family, a bare tier (e.g., `opus`, `sonnet`) pins nothing and lets the dynamic choice decide. A pinned family with no headroom waits (not claimed, not failed), never falling back.
 
-An item of an urgent or high goal whose first evaluation passes is evaluated again on the other family with the same prompt and workspace (trd §1 WorkItem); both passes is passed, a second fail is failed, notes carry both verdicts labelled by family and adapter, and the usage report's `adapter` and `model` name the first family. A second opinion that errors, times out, reaches no verdict, or has no account with headroom keeps the first verdict with a note.
+An item of an urgent or high goal whose first evaluation passes is evaluated again on the other family with the same prompt and workspace (trd §1 WorkItem); both passes is passed, a second fail is failed, notes carry both verdicts labelled by family and adapter, and the usage report's `adapter` and `model` name the family it evaluated on (e.g., `adapter: codex` with the Codex model for a Codex evaluation). A second opinion that errors, times out, reaches no verdict, or has no account with headroom keeps the first verdict with a note.
 
 ## Node.yaml: the codex: block
 
-The `codex:` block in node.yaml is now **optional**. It gives the node its own Codex account (before `--prepare-account` time, outside the claim-time read); an issued openai credential is a Codex account too (the node discovers it via claim-time reads). With neither, evaluations run on Claude (the second opinion, if any, also runs on Claude, making it redundant — but harmless — on a node without Codex headroom).
+The `codex:` block in node.yaml is now **optional**. It gives the node its own Codex account (available from startup); an issued openai credential is a Codex account too (the node discovers it via claim-time reads). With neither, evaluations run on Claude (the second opinion, if any, also runs on Claude, making it redundant — but harmless — on a node without Codex headroom).
 
 **Default model mappings** (unchanged from item 2's Codex work, but worth restating):
-- `gpt-6-astra` (the live model as of 2026-09-28)
-- `gpt-6-sol` and `gpt-6-luna` (the astra replacements)
-- `gpt-6` (alias to `gpt-6-astra`, the default when a planner names bare `gpt-6`)
+- `opus` → `gpt-6-astra`
+- `sonnet` → `gpt-6-sol`
+- `haiku` → `gpt-6-luna`
 
-Analogous to Claude's `claude-opus-5-5` / `claude-sonnet-5` / `claude-haiku-4-5-20251001` and bare-tier names `opus`, `sonnet`, `haiku`.
+Analogous to Claude's bare-tier names `opus`, `sonnet`, `haiku`, which map to `claude-opus-5-5`, `claude-sonnet-5`, `claude-haiku-4-5-20251001` respectively.
