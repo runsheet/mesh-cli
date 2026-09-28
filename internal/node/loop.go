@@ -101,6 +101,15 @@ type Loop struct {
 	// chooses and scales on them beside node.yaml's (goal
 	// loop-schedules-on-issued-accounts). Nil: none.
 	Known *KnownAccounts
+	// CodexOwn is node.yaml's codex: account the Codex harness runs on
+	// (CodexOwnAccount; nil: no codex: block), a Codex account an
+	// evaluation may run on beside the issued ones (CodexCandidates).
+	CodexOwn []AccountConfig
+	// CodexRoom says whether a Codex account has headroom for an
+	// evaluation of that priority (Evaluator.CodexHeadroom; nil: none
+	// ever): an evaluation no Claude account has room for starts on it
+	// (ADR 011).
+	CodexRoom func(priority string) bool
 	// LookPath finds a program on the node's PATH (exec.LookPath): every
 	// tick probes with it the tool runtimes and agent adapters the node
 	// has (tools.ProbeRuntimes, ProbeAdapters), and the heartbeat carries
@@ -788,6 +797,19 @@ func (l *Loop) CodexAccounts() ([]AccountConfig, map[string]harness.RateLimit) {
 	return codex, l.limitsStore().CodexReadings()
 }
 
+// CodexCandidates are the Codex accounts an evaluation may run on
+// first (ADR 011): the issued ones Known holds, then node.yaml's
+// codex: account (CodexOwn) unless an issued one has its label.
+func (l *Loop) CodexCandidates() []AccountConfig {
+	out, _ := l.CodexAccounts()
+	for _, a := range l.CodexOwn {
+		if !slices.ContainsFunc(out, func(b AccountConfig) bool { return b.Label == a.Label }) {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
 // scheduled is the union the loop schedules on: node.yaml's accounts
 // first, then each issued Claude account Known holds whose label
 // node.yaml does not already have. None of either is none — the
@@ -1038,8 +1060,16 @@ func (l *Loop) evaluateHeld(ctx context.Context) {
 		if runtimes, _ := l.Runtimes(); l.Declines.Holds(item.ID, runtimes, time.Now()) {
 			continue
 		}
-		actx, ok := l.accountToFinish(ctx, priorityName(h.rank), "evaluation")
+		// no Claude account with room: a Codex account with room for it
+		// still evaluates it (ADR 011)
+		actx, ok := l.accountToFinish(ctx, priorityName(h.rank), "")
+		if !ok && l.CodexRoom != nil && l.CodexRoom(priorityName(h.rank)) {
+			actx, ok = ctx, true
+		}
 		if !ok {
+			if l.waiting != nil {
+				l.waiting["evaluation"]++
+			}
 			continue
 		}
 		l.mu.Lock()

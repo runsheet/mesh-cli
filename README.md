@@ -1213,9 +1213,21 @@ container and finds no pod left after.
 
 A node can run OpenAI's Codex CLI beside Claude Code. The adapter
 (`internal/harness/codex.go`) runs `codex exec --json --sandbox
-workspace-write` in the item's workspace, with the prompt on stdin. It
-is not yet wired into the loop: the first use will be a second opinion
-on evaluations of high/urgent goals (goal `codex-adapter`).
+workspace-write` in the item's workspace, with the prompt on stdin.
+Evaluations run on it: `mesh node start` builds it whenever `codex` is
+on `PATH`, and an evaluation runs on Codex when a Codex account (one
+the console issues, or node.yaml's `codex:` account) has headroom for
+the goal's priority, else on Claude. A `gpt-…` evaluate or agent model
+pins Codex, a `claude-…` one Claude. An urgent or high pass gets a
+second opinion on the other family
+(docs/adr/adr-011-evaluations-run-on-the-family-with-headroom.md).
+
+**The node's family choice** (ADR-011): before an evaluation starts, the node
+judges headroom across all Codex accounts and all Claude accounts and
+prefers Codex when a Codex account has headroom for the item's priority.
+A planner may pin an item's evaluator to a family through the agent model;
+a pinned family with no headroom waits (not claimed, not failed). An urgent or
+high goal's first evaluation on one family gets a second opinion on the other.
 
 ### Install the CLI
 
@@ -1271,6 +1283,10 @@ to bound it.
 
 ### node.yaml
 
+The `codex:` block is **optional**. If present, the node's own Codex account
+lives in it; if absent, the node uses only the accounts the platform issues
+through the claim-time read. With neither, evaluations run on Claude.
+
 ```yaml
 codex:
   binary: codex                 # default: codex on PATH
@@ -1282,28 +1298,33 @@ codex:
     - name: api-file
       api_key_file: ~/.mesh/codex/api.key
   models:                       # the Codex model for each Claude tier
-    opus: gpt-6-astra
-    sonnet: gpt-6-sol
-    haiku: gpt-6-luna
+    opus: gpt-6-astra           # default for Opus
+    sonnet: gpt-6-sol           # default for Sonnet
+    haiku: gpt-6-luna           # default for Haiku
 ```
 
 Each account has a `name` and exactly one of `home`, `api_key_env` and
 `api_key_file`. A load that finds anything else is refused.
 
-These are not the only Codex accounts. An OpenAI credential added in
-the console and serving `codex` is handed to the claimed session by the
-claim-time read. A ChatGPT login (the `auth.json` from `codex login`,
-pasted as the secret) is written into the session's own temporary
-`CODEX_HOME/auth.json` and removed with it. A login Codex refreshed is
-kept under `<user cache dir>/mesh/codex/logins/` for the next session on
-the same secret version. An OpenAI key goes in the environment only
-(docs/adr/adr-005-accounts-on-the-node.md).
+**Default model mappings:** when a planner or agent model names a bare tier
+(`opus`, `sonnet`, `haiku`) for a Codex evaluator, the node maps it using the
+defaults above. Full model ids (`gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`) pass
+through unchanged. Defaults may be overridden in the `models:` block.
+
+**Issued credentials:** An OpenAI credential added in the console and serving
+`codex` is handed to the claimed session by the claim-time read. A ChatGPT
+login (the `auth.json` from `codex login`, pasted as the secret) is written
+into the session's own temporary `CODEX_HOME/auth.json` and removed with it.
+A login Codex refreshed is kept under `<user cache dir>/mesh/codex/logins/`
+for the next session on the same secret version. An OpenAI key goes in the
+environment only (docs/adr/adr-005-accounts-on-the-node.md).
 
 `models` maps the Claude tiers to Codex models. A session asked for
 `opus`, `sonnet` or `haiku` runs on that tier's Codex model, and so does
-a full id of that family (`claude-opus-5` → `gpt-6-astra`). An empty
-model, one of no tier, or a tier left out of `models` runs on Codex's
-own default.
+a full id of that family (`claude-opus-5` → `gpt-6-astra`). A tier left
+out of `models` takes its default: `gpt-6-astra`, `gpt-6-sol`,
+`gpt-6-luna`. An empty model, or one of no tier, runs on Codex's own
+default.
 
 The session's MCP servers (mesh-context) are written to `config.toml` in
 its temporary home. Secrets are named there by variable, never by value

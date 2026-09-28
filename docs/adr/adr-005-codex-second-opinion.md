@@ -114,3 +114,28 @@ credential landing an oauth login there, the goal's item 2) owns its
 lifetime, not the harness. Without a `job.Env` `CODEX_HOME`, behaviour
 is unchanged: a fresh temporary home per run, made and removed by the
 harness as before.
+
+## Amendment, 2026-09-28: the family is chosen per session
+
+Goal `evaluations-run-on-codex` (item 3) changes **When it runs** and
+**Builders on Codex come later**; the decision is
+[ADR-011](adr-011-evaluations-run-on-the-family-with-headroom.md).
+
+**When it runs**, now: an evaluation runs *first* on Codex when a Codex
+account — an issued one, or node.yaml's `codex:` account — has headroom
+for the goal's priority, else on Claude; a full `gpt-…` evaluate or
+agent model pins Codex (the item waits in evaluating without headroom),
+a `claude-…` one pins Claude. The second opinion on an urgent or high
+pass runs on the *other* family — Claude after Codex — and the labels
+name family and model: `Codex (first evaluation, gpt-6-astra): VERDICT:
+PASS`, `Claude (second opinion, opus): VERDICT …`. The `Evaluator`'s
+`Second`, `SecondModel` and `SecondAccount` are now `Codex`,
+`CodexModel` and `CodexAccount`, beside `CodexAccounts`. `mesh node
+start` builds the Codex harness whenever the binary is found, with or
+without a `codex:` block; with neither a block nor an issued Codex
+account the node evaluates as before. "Only the first `codex:` account
+is used" still holds for node.yaml; issued Codex accounts are chosen
+among by headroom.
+
+**Builders on Codex come later** still holds for builders; evaluators
+no longer wait for it.

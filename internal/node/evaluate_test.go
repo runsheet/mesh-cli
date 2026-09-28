@@ -175,7 +175,7 @@ func secondFixture(t *testing.T, priority, first string, second harness.Harness)
 	limits := &Limits{}
 	account := CodexLimitsAccount("plan")
 	ev := &Evaluator{GW: gw, Harness: claude, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, Model: "sonnet",
-		Second: ObserveLimitsAs(second, limits, account), SecondModel: "gpt-6-astra", SecondAccount: account, Limits: limits,
+		Codex: ObserveLimitsAs(second, limits, account), CodexModel: func(string) string { return "gpt-6-astra" }, CodexAccount: account, Limits: limits,
 		Thresholds: func() LimitsConfig { return LimitsConfig{} }, Log: log.New(io.Discard, "", 0)}
 	return f, ev, claude, limits
 }
@@ -204,7 +204,7 @@ func TestSecondOpinionBothPass(t *testing.T) {
 		rl: &harness.RateLimit{Status: "allowed", ObservedAt: time.Now()}}
 	f, ev, claude, limits := secondFixture(t, "high", "Holds.\n\nVERDICT: PASS", codex)
 	in := evaluateItem1(t, f, ev)
-	want := "Claude (first evaluation): VERDICT: PASS\nHolds.\n\nCodex (second opinion): VERDICT: PASS\nThe test fails for the right reason.\n\n(evaluated on sonnet; second opinion on Codex gpt-6-astra)"
+	want := "Claude (first evaluation, sonnet): VERDICT: PASS\nHolds.\n\nCodex (second opinion, gpt-6-astra): VERDICT: PASS\nThe test fails for the right reason.\n\n(evaluated on sonnet; second opinion on Codex gpt-6-astra)"
 	if in["passed"] != true || in["notes"] != want || in["costCents"] != float64(165) {
 		t.Fatalf("recorded %+v\nwant notes %q", in, want)
 	}
@@ -232,8 +232,8 @@ func TestSecondOpinionDisagreementFails(t *testing.T) {
 	f, ev, _, _ := secondFixture(t, "urgent", "Holds.\n\nVERDICT: PASS", codex)
 	in := evaluateItem1(t, f, ev)
 	notes, _ := in["notes"].(string)
-	if in["passed"] != false || !strings.Contains(notes, "Claude (first evaluation): VERDICT: PASS\nHolds.") ||
-		!strings.Contains(notes, "Codex (second opinion): VERDICT: FAIL\nNothing asserts the error path.") {
+	if in["passed"] != false || !strings.Contains(notes, "Claude (first evaluation, sonnet): VERDICT: PASS\nHolds.") ||
+		!strings.Contains(notes, "Codex (second opinion, gpt-6-astra): VERDICT: FAIL\nNothing asserts the error path.") {
 		t.Fatalf("recorded %+v", in)
 	}
 	// the cost is Claude's and Codex's, at gpt-6-astra's list price
@@ -356,11 +356,12 @@ func replayedCost(t *testing.T) float64 {
 // short one leaves its room to the other.
 func TestBothNotesTruncatedTogether(t *testing.T) {
 	long := strings.Repeat("a", 5000)
-	got := bothNotes(long, strings.Repeat("b", 5000), false, 3800)
-	if len(got) > 3800 || strings.Count(got, "a") < 1800 || strings.Count(got, "b") < 1800 || !strings.Contains(got, "Codex (second opinion): VERDICT: FAIL\nbbb") {
+	claude, codex := family{model: "sonnet"}, family{codex: true, model: "gpt-6-astra"}
+	got := bothNotes(claude, long, codex, strings.Repeat("b", 5000), false, 3800)
+	if len(got) > 3800 || strings.Count(got, "a") < 1800 || strings.Count(got, "b") < 1800 || !strings.Contains(got, "Codex (second opinion, gpt-6-astra): VERDICT: FAIL\nbbb") {
 		t.Fatalf("len %d, a %d, b %d", len(got), strings.Count(got, "a"), strings.Count(got, "b"))
 	}
-	got = bothNotes(long, "short", true, 3800)
+	got = bothNotes(claude, long, codex, "short", true, 3800)
 	if len(got) > 3800 || strings.Count(got, "a") < 3600 || !strings.HasSuffix(got, "VERDICT: PASS\nshort") {
 		t.Fatalf("len %d: %q", len(got), got[len(got)-60:])
 	}
