@@ -2,6 +2,7 @@ package node
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
@@ -9,8 +10,8 @@ import (
 )
 
 // Unclaimed is one goal's ready work the node passed over this pass for
-// lack of account headroom — the loop's own accounting (item 2 of
-// node-says-why-work-waits fills it in; HoldingReport only folds it into
+// lack of account headroom — the loop's own accounting (Loop.passOver
+// fills it in, one per goal and kind; HoldingReport only folds it into
 // the report).
 type Unclaimed struct {
 	GoalID string
@@ -44,29 +45,12 @@ func HoldingReport(now time.Time, accounts []AccountConfig, readings map[string]
 		}
 	}
 
-	for _, a := range accounts {
-		status := "unknown"
-		var resetsAt time.Time
-		if r, seen := readings[a.Label]; seen {
-			ap := pace(now, r, cfg)
-			switch ap.mode {
-			case paceNormal:
-				status = "ok"
-			case pacePaced:
-				status = "paced"
-			case paceStopped:
-				status = "exhausted"
-			}
-			resetsAt = ap.resumeAt
-		}
-		if status != "exhausted" {
+	out.Accounts = holdingAccounts(now, accounts, readings, cfg, capacity)
+	for _, a := range out.Accounts {
+		if a.Status != "exhausted" {
 			allExhausted = false
 		}
-		holds(resetsAt)
-		out.Accounts = append(out.Accounts, gateway.HoldingAccount{
-			Account: a.Label, Kind: holdingKind(a.Kind), Status: status, ResetsAt: resetsAt,
-			Takes: holdingTakes(status, a.Kind, capacity),
-		})
+		holds(a.ResetsAt)
 	}
 	out.Until = until
 
@@ -97,6 +81,66 @@ func HoldingReport(now time.Time, accounts []AccountConfig, readings map[string]
 		out.Summary += fmt.Sprintf("; %d item(s) and %d plan(s) left unclaimed", items, plans)
 	}
 	return out
+}
+
+// holdingAccounts is each account's row of the report: its status by
+// pace on its latest reading (ok, paced, exhausted, or unknown with
+// none), when it resumes and what the node still takes on it.
+func holdingAccounts(now time.Time, accounts []AccountConfig, readings map[string]harness.RateLimit, cfg LimitsConfig, capacity int) []gateway.HoldingAccount {
+	out := []gateway.HoldingAccount{}
+	for _, a := range accounts {
+		status := "unknown"
+		var resetsAt time.Time
+		if r, seen := readings[a.Label]; seen {
+			ap := pace(now, r, cfg)
+			switch ap.mode {
+			case paceNormal:
+				status = "ok"
+			case pacePaced:
+				status = "paced"
+			case paceStopped:
+				status = "exhausted"
+			}
+			resetsAt = ap.resumeAt
+		}
+		out = append(out, gateway.HoldingAccount{
+			Account: a.Label, Kind: holdingKind(a.Kind), Status: status, ResetsAt: resetsAt,
+			Takes: holdingTakes(status, a.Kind, capacity),
+		})
+	}
+	return out
+}
+
+// heldReason is an Unclaimed's reason: one sentence naming the goal's
+// priority and what held it — held when the loop says (the urgent-only
+// reserve, a ranged node at its min), else every account's standing
+// from its row of the report, e.g. "normal priority; only urgent and
+// high while paced (mesh - max20 until 2026-09-28T18:00:00Z); claude -
+// shhemail exhausted until 2026-10-03T03:00:00Z".
+func heldReason(priority, held string, rows []gateway.HoldingAccount) string {
+	parts := []string{priority + " priority"}
+	if held != "" {
+		parts = append(parts, held)
+	}
+	for _, a := range rows {
+		until := ""
+		if !a.ResetsAt.IsZero() {
+			until = " until " + a.ResetsAt.UTC().Format(time.RFC3339)
+		}
+		switch a.Status {
+		case "paced":
+			parts = append(parts, fmt.Sprintf("only urgent and high while paced (%s%s)", a.Account, until))
+		case "exhausted":
+			parts = append(parts, fmt.Sprintf("%s exhausted%s", a.Account, until))
+		case "ok":
+			if held == "" {
+				// headroom by its window, but no room by its spending:
+				// an api key at its cap or its reserve, or no slot free
+				parts = append(parts, a.Account+" has no room for it (its cap, its reserve or its slots)")
+			}
+		}
+	}
+	return strings.Join(parts, "; ")
 }
 
 // holdingKind renders an AccountConfig.Kind as the heartbeat's holding
