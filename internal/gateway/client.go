@@ -1797,9 +1797,9 @@ func (c *Client) CancelGoal(ctx context.Context, goalID, by string) error {
 	return c.Mutate(ctx, "cancelGoal", goalID, m)
 }
 
-// ---- Prologue ---------------------------------------------------------------
+// ---- mesh-context -------------------------------------------------------
 
-// Document is one row of Prologue's document list.
+// Document is one row of mesh-context's document list.
 type Document struct {
 	Slug    string `json:"slug"`
 	Title   string `json:"title"`
@@ -1810,32 +1810,50 @@ type Document struct {
 	Path    string `json:"path"`
 }
 
-func (c *Client) prologueGet(ctx context.Context, path, accept string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/prologue/v1"+path, nil)
+// contextGet reads a mesh-context path under /mesh/v1, falling back to
+// the same path under /prologue/v1 only when /mesh/v1 answers 404 — an
+// older platform that serves the alias alone. Drop the fallback after
+// 2026-10-28, a month after /mesh/v1 went live (mesh-specs trd §6c).
+func (c *Client) contextGet(ctx context.Context, path, accept string) ([]byte, error) {
+	raw, status, statusText, err := c.contextGetAt(ctx, "/mesh/v1"+path, accept)
 	if err != nil {
 		return nil, err
 	}
+	if status == http.StatusNotFound {
+		raw, status, statusText, err = c.contextGetAt(ctx, "/prologue/v1"+path, accept)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if status < 200 || status >= 300 {
+		return nil, fmt.Errorf("context: %s: %s", statusText, strings.TrimSpace(string(raw)))
+	}
+	return raw, nil
+}
+
+func (c *Client) contextGetAt(ctx context.Context, path, accept string) (raw []byte, status int, statusText string, err error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+path, nil)
+	if err != nil {
+		return nil, 0, "", err
+	}
 	tok, err := c.Bearer(ctx)
 	if err != nil {
-		return nil, err
+		return nil, 0, "", err
 	}
 	req.Header.Set("Authorization", "Bearer "+tok)
 	req.Header.Set("Accept", accept)
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, 0, "", err
 	}
 	defer resp.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("prologue: %s: %s", resp.Status, strings.TrimSpace(string(raw)))
-	}
-	return raw, nil
+	raw, _ = io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	return raw, resp.StatusCode, resp.Status, nil
 }
 
-// ProlougeDocuments lists a project's documents (org login + project slug).
-func (c *Client) PrologueDocuments(ctx context.Context, org, project string) ([]Document, error) {
-	raw, err := c.prologueGet(ctx, "/projects/"+url.PathEscape(org)+"/"+url.PathEscape(project)+"/documents", "application/json")
+// ContextDocuments lists a project's documents (org login + project slug).
+func (c *Client) ContextDocuments(ctx context.Context, org, project string) ([]Document, error) {
+	raw, err := c.contextGet(ctx, "/projects/"+url.PathEscape(org)+"/"+url.PathEscape(project)+"/documents", "application/json")
 	if err != nil {
 		return nil, err
 	}
@@ -1843,14 +1861,14 @@ func (c *Client) PrologueDocuments(ctx context.Context, org, project string) ([]
 		Documents []Document `json:"documents"`
 	}
 	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, fmt.Errorf("prologue: decode documents: %w", err)
+		return nil, fmt.Errorf("context: decode documents: %w", err)
 	}
 	return out.Documents, nil
 }
 
-// PrologueDocument fetches one document's body as markdown.
-func (c *Client) PrologueDocument(ctx context.Context, org, project, doc string) (string, error) {
-	raw, err := c.prologueGet(ctx, "/projects/"+url.PathEscape(org)+"/"+url.PathEscape(project)+"/documents/"+url.PathEscape(doc), "text/markdown")
+// ContextDocument fetches one document's body as markdown.
+func (c *Client) ContextDocument(ctx context.Context, org, project, doc string) (string, error) {
+	raw, err := c.contextGet(ctx, "/projects/"+url.PathEscape(org)+"/"+url.PathEscape(project)+"/documents/"+url.PathEscape(doc), "text/markdown")
 	if err != nil {
 		return "", err
 	}

@@ -40,7 +40,7 @@ func TestContextSizeBudget(t *testing.T) {
 		t.Fatalf("written: %v", names)
 	}
 	index, _ := os.ReadFile(filepath.Join(dir, ContextDir, IndexFile))
-	if !strings.Contains(string(index), "| trd | TRD |  | `trd` | acme/widgets/specs/trd.md | fetch |") || !strings.Contains(string(index), "`prologue_document`") {
+	if !strings.Contains(string(index), "| trd | TRD |  | `trd` | acme/widgets/specs/trd.md | fetch |") || !strings.Contains(string(index), "`mesh_document`") {
 		t.Fatalf("index:\n%s", index)
 	}
 	mcp := PrologueMCP("https://api.test/", "rs_x")
