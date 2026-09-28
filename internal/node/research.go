@@ -146,7 +146,7 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 		Kind: harness.KindResearch, Workspace: dir, Prompt: prompt, MaxBudgetUSD: budget,
 		Label: project.Slug + "/" + direction.Slug + " research", Timeout: d.Timeout, MCPServers: d.MCP, Model: d.Model,
 	}
-	acct, err := d.Credentials.Open(ctx, gateway.SessionRef{Kind: string(harness.KindResearch), DirectionID: direction.ID}, scope.NodeID, d.Accounts)
+	acct, err := d.Credentials.Open(ctx, gateway.SessionRef{Kind: string(harness.KindResearch), DirectionID: direction.ID}, scope.NodeID, d.Accounts, Adapter(d.Harness))
 	if err != nil {
 		return err
 	}
@@ -156,7 +156,6 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 	d.logf("%s/%s: researching in %s (%d repos, room for %d)", project.Slug, direction.Slug, dir, len(dirs), room)
 	// the session outlives this process: a restart adopts it (ADR 009)
 	job.Outlive = true
-	acct.Adapter = Adapter(d.Harness)
 	result, err := d.Harness.Run(ctx, job, nil)
 	// the usage report rides the hand-in; Finish logs it when nothing
 	// carried it

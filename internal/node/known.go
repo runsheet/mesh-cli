@@ -29,6 +29,7 @@ type knownAccount struct {
 	Label         string    `json:"label"`
 	Kind          string    `json:"kind"`
 	ID            string    `json:"id"`
+	Adapter       string    `json:"adapter,omitempty"`
 	CapDailyUSD   float64   `json:"capDailyUSD,omitempty"`
 	CapMonthlyUSD float64   `json:"capMonthlyUSD,omitempty"`
 	IssuedAt      time.Time `json:"issuedAt"`
@@ -36,8 +37,9 @@ type knownAccount struct {
 
 // KnownAccounts is every account the platform's claim-time read has
 // issued the node lately (adr-005, "The node remembers what the platform
-// issues"): the label, its kind, its platform id and its caps, never the
-// secret. The zero value keeps it in memory.
+// issues"): the label, its kind, its platform id, its adapter (empty for
+// Claude, codex for an OpenAI credential serving Codex) and its caps,
+// never the secret. The zero value keeps it in memory.
 type KnownAccounts struct {
 	// Path is the file it is kept in; "" keeps it in memory only.
 	Path string
@@ -100,7 +102,7 @@ func (k *KnownAccounts) loadLocked() error {
 	return nil
 }
 
-// Note adds or refreshes the label's entry — kind, id and caps from a,
+// Note adds or refreshes the label's entry — kind, id, adapter and caps from a,
 // issuedAt set to now — and saves. A label the platform has not issued
 // for KnownFor is dropped as part of the save. A nil *KnownAccounts or
 // an account with no label notes nothing.
@@ -119,7 +121,7 @@ func (k *KnownAccounts) Note(a AccountConfig, now time.Time) error {
 		k.accounts[a.Label] = e
 		k.order = append(k.order, a.Label)
 	}
-	e.Kind, e.ID = a.Kind, a.ID
+	e.Kind, e.ID, e.Adapter = a.Kind, a.ID, a.Adapter
 	e.CapDailyUSD, e.CapMonthlyUSD = a.DailyCapUSD, a.MonthlyCapUSD
 	e.IssuedAt = now
 	k.pruneLocked(now)
@@ -161,7 +163,7 @@ func (k *KnownAccounts) Accounts(now time.Time) []AccountConfig {
 			continue
 		}
 		out = append(out, AccountConfig{
-			Label: e.Label, Kind: e.Kind, ID: e.ID,
+			Label: e.Label, Kind: e.Kind, ID: e.ID, Adapter: e.Adapter,
 			DailyCapUSD: e.CapDailyUSD, MonthlyCapUSD: e.CapMonthlyUSD,
 		})
 	}

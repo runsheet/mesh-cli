@@ -144,7 +144,7 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 		job.Env = SessionEnv(tok, ghDir)
 	}
 	sc, _ := r.Scopes.ByOrg(item.OrgID)
-	acct, err := r.Credentials.Open(ctx, gateway.SessionRef{Kind: string(harness.KindRebase), ItemID: item.ID, GoalID: item.GoalID}, sc.NodeID, r.Accounts)
+	acct, err := r.Credentials.Open(ctx, gateway.SessionRef{Kind: string(harness.KindRebase), ItemID: item.ID, GoalID: item.GoalID}, sc.NodeID, r.Accounts, Adapter(r.Harness))
 	if err != nil {
 		return fail(err)
 	}
@@ -161,7 +161,6 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 	}
 	// the session outlives this process: a restart adopts it (ADR 009)
 	job.Outlive = true
-	acct.Adapter = Adapter(r.Harness)
 	result, runErr := rb.run(ctx, func(onProgress func(harness.Progress)) (harness.Result, error) {
 		return r.Harness.Run(ctx, job, onProgress)
 	})

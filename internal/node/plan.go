@@ -237,7 +237,7 @@ func (p *Planner) handIn(ctx context.Context, goal gateway.Goal, items []gateway
 // there is no graph to hand in.
 func (p *Planner) ask(ctx context.Context, goal gateway.Goal, nodeID, dir string, budget float64, in harness.PlanInput, repos map[string]gateway.Repo, merged []int) ([]gateway.PlannedItem, map[int]string, []string, float64, *SessionAccount, error) {
 	job := harness.Job{Kind: harness.KindPlan, Workspace: dir, Prompt: harness.PlanPrompt(in), MaxBudgetUSD: budget, Label: goal.Slug + " plan", Timeout: p.Timeout, MCPServers: p.MCP, Model: p.Model}
-	acct, err := p.Credentials.Open(ctx, gateway.SessionRef{Kind: string(harness.KindPlan), GoalID: goal.ID}, nodeID, p.Accounts)
+	acct, err := p.Credentials.Open(ctx, gateway.SessionRef{Kind: string(harness.KindPlan), GoalID: goal.ID}, nodeID, p.Accounts, Adapter(p.Harness))
 	if err != nil {
 		return nil, nil, nil, 0, nil, err
 	}
@@ -246,7 +246,6 @@ func (p *Planner) ask(ctx context.Context, goal gateway.Goal, nodeID, dir string
 	job.Meta = harness.SessionMeta{NodeID: nodeID, GoalID: goal.ID, TempDirs: sessionTempDirs(job, acct)}
 	// the session outlives this process: a restart adopts it (ADR 009)
 	job.Outlive = true
-	acct.Adapter = Adapter(p.Harness)
 	result, err := p.Harness.Run(ctx, job, nil)
 	acct.Report(result)
 	items, reasons, flags, cost, err := p.readPlan(ctx, goal, dir, acct, result, err, repos, merged)
