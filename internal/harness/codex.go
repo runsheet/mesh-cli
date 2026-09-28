@@ -10,10 +10,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"projectmesh.io/mesh-cli/internal/tools"
 )
 
 // Codex runs OpenAI's Codex CLI, `codex exec --json`, in the workspace
@@ -125,7 +128,7 @@ func (c *Codex) Name() string { return "codex" }
 // workspace-write`. The prompt is not here but on stdin (`-`), for the
 // same reason as ClaudeCode.Args: MAX_ARG_STRLEN. MCP servers are not
 // here either: they go in the session's CODEX_HOME/config.toml
-// (CodexMCPConfig), as ADR 006 has it.
+// (codexConfig), as ADR 006 has it.
 func (c *Codex) Args(job Job) []string {
 	args := []string{"exec", "--json", "--sandbox", "workspace-write"}
 	if job.Model != "" {
@@ -143,18 +146,39 @@ func (c *Codex) Args(job Job) []string {
 // naming a variable MESH_CODEX_MCP_<n>_TOKEN that holds the value; a
 // stdio server is its `command`, `args`, and each `env` entry set in
 // the session's environment under its own name and passed through by
-// `env_vars`. A server with neither url nor command is skipped.
-func CodexMCPConfig(servers map[string]any) (toml string, env []string) {
+// `env_vars`. Every table approves its tools (tools.CodexApproval):
+// `codex exec` refuses an unapproved MCP call under workspace-write. A
+// server with neither url nor command is skipped.
+//
+// Codex expands no `${VAR}`: a value holding one (Claude Code's
+// rendering of a console tool's secret, tools.ClaudeCode) is resolved
+// from jobEnv, the job's own environment, and a reference jobEnv does
+// not set is an error — never passed through for Codex to send as a
+// literal header.
+func CodexMCPConfig(servers map[string]any, jobEnv []string) (toml string, env []string, err error) {
 	names := make([]string, 0, len(servers))
 	for n := range servers {
 		names = append(names, n)
 	}
 	sort.Strings(names)
+	vars := map[string]string{}
+	for _, kv := range jobEnv {
+		if k, v, ok := strings.Cut(kv, "="); ok {
+			vars[k] = v
+		}
+	}
 	var b strings.Builder
 	for _, name := range names {
 		srv, ok := servers[name].(map[string]any)
 		if !ok {
 			continue
+		}
+		resolve := func(what, v string) (string, error) {
+			out, missing := expandRefs(v, vars)
+			if missing != "" {
+				return "", fmt.Errorf("mcp server %s: %s names ${%s}, which the session's environment does not set", name, what, missing)
+			}
+			return out, nil
 		}
 		url, _ := srv["url"].(string)
 		cmd, _ := srv["command"].(string)
@@ -166,33 +190,102 @@ func CodexMCPConfig(servers map[string]any) (toml string, env []string) {
 		}
 		fmt.Fprintf(&b, "[mcp_servers.%s]\n", tomlKey(name))
 		if url != "" {
+			if url, err = resolve("its url", url); err != nil {
+				return "", nil, err
+			}
 			fmt.Fprintf(&b, "url = %s\n", tomlString(url))
 			headers := stringMap(srv["headers"])
-			if len(headers) == 0 {
-				continue
-			}
 			refs := make([]string, 0, len(headers))
 			for _, h := range sortedKeys(headers) {
+				val, err := resolve("header "+h, headers[h])
+				if err != nil {
+					return "", nil, err
+				}
 				v := fmt.Sprintf("MESH_CODEX_MCP_%d_TOKEN", len(env))
-				env = append(env, v+"="+headers[h])
+				env = append(env, v+"="+val)
 				refs = append(refs, tomlString(h)+" = "+tomlString(v))
 			}
-			fmt.Fprintf(&b, "env_http_headers = { %s }\n", strings.Join(refs, ", "))
+			if len(refs) > 0 {
+				fmt.Fprintf(&b, "env_http_headers = { %s }\n", strings.Join(refs, ", "))
+			}
+			fmt.Fprintf(&b, "default_tools_approval_mode = %s\n", tomlString(tools.CodexApproval))
 			continue
+		}
+		if cmd, err = resolve("its command", cmd); err != nil {
+			return "", nil, err
 		}
 		fmt.Fprintf(&b, "command = %s\n", tomlString(cmd))
 		if list := stringList(srv["args"]); len(list) > 0 {
-			fmt.Fprintf(&b, "args = %s\n", tomlList(list))
+			args := make([]string, len(list))
+			for i, a := range list {
+				if args[i], err = resolve("an arg", a); err != nil {
+					return "", nil, err
+				}
+			}
+			fmt.Fprintf(&b, "args = %s\n", tomlList(args))
 		}
-		if vars := stringMap(srv["env"]); len(vars) > 0 {
-			keys := sortedKeys(vars)
+		if vs := stringMap(srv["env"]); len(vs) > 0 {
+			keys := sortedKeys(vs)
 			for _, k := range keys {
-				env = append(env, k+"="+vars[k])
+				val, err := resolve("env "+k, vs[k])
+				if err != nil {
+					return "", nil, err
+				}
+				env = append(env, k+"="+val)
 			}
 			fmt.Fprintf(&b, "env_vars = %s\n", tomlList(keys))
 		}
+		fmt.Fprintf(&b, "default_tools_approval_mode = %s\n", tomlString(tools.CodexApproval))
 	}
-	return b.String(), env
+	return b.String(), env, nil
+}
+
+// envRef is a `${NAME}` reference, as Claude Code expands them.
+var envRef = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
+
+// expandRefs is s with every ${NAME} replaced by vars[NAME], and the
+// first name vars does not hold ("" when every one resolved).
+func expandRefs(s string, vars map[string]string) (out, missing string) {
+	out = envRef.ReplaceAllStringFunc(s, func(ref string) string {
+		name := ref[2 : len(ref)-1]
+		v, ok := vars[name]
+		if !ok && missing == "" {
+			missing = name
+		}
+		return v
+	})
+	return out, missing
+}
+
+// codexConfig is the session's config.toml and the environment it
+// needs: the job's own servers (the built-in Prologue) by
+// CodexMCPConfig, then its console tools (job.Tools) by the Codex
+// renderer, tools.CodexConfig — bearer_token_env_var and
+// env_http_headers naming MESH_TOOL_* variables, never Claude Code's
+// `${…}` rendering of them that job.MCPServers also carries.
+func codexConfig(job Job) (string, []string, error) {
+	own := make(map[string]any, len(job.MCPServers))
+	for name, srv := range job.MCPServers {
+		own[name] = srv
+	}
+	for _, t := range job.Tools {
+		delete(own, t.Name)
+	}
+	cfg, env, err := CodexMCPConfig(own, job.Env)
+	if err != nil {
+		return "", nil, err
+	}
+	if len(job.Tools) == 0 {
+		return cfg, env, nil
+	}
+	tcfg, tenv, err := tools.CodexConfig(job.Tools)
+	if err != nil {
+		return "", nil, err
+	}
+	if cfg != "" {
+		cfg += "\n"
+	}
+	return cfg + tcfg, append(env, tenv...), nil
 }
 
 // tomlString quotes s as a TOML basic string: JSON's escapes are
@@ -291,7 +384,11 @@ type codexHome struct {
 func (c *Codex) prepareHome(job Job) (*codexHome, error) {
 	if dir := jobCodexHome(job.Env); dir != "" {
 		h := &codexHome{dir: dir}
-		if cfg, env := CodexMCPConfig(job.MCPServers); cfg != "" {
+		cfg, env, err := codexConfig(job)
+		if err != nil {
+			return nil, err
+		}
+		if cfg != "" {
 			if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(cfg), 0o600); err != nil {
 				return nil, err
 			}
@@ -324,7 +421,11 @@ func (c *Codex) prepareHome(job Job) (*codexHome, error) {
 		os.RemoveAll(dir)
 		return nil, err
 	}
-	if cfg, env := CodexMCPConfig(job.MCPServers); cfg != "" {
+	cfg, env, err := codexConfig(job)
+	if err != nil {
+		return fail(err)
+	}
+	if cfg != "" {
 		if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(cfg), 0o600); err != nil {
 			return fail(err)
 		}

@@ -177,7 +177,8 @@ func (st SessionTools) Names() string {
 // Prologue attachment) onto the job: MCPServers holds the built-in and
 // every tool, Env gains the secret values (the config names them only),
 // Secrets gains them so the harness redacts them, and Tools carries the
-// tools for an adapter that renders its own (Codex's config.toml). It
+// tools for an adapter that renders its own: Codex's config.toml takes
+// them by tools.CodexConfig, since Codex expands no ${…}. It
 // returns the secret env, for the caller's own redaction.
 func (st SessionTools) Apply(job *harness.Job, builtin map[string]any) ([]string, error) {
 	if len(st.Use) == 0 {

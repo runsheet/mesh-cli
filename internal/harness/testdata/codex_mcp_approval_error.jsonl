@@ -1,0 +1,7 @@
+{"type":"thread.started","thread_id":"01a0e706-c791-7992-9905-a0c4f080263e"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"I’ll locate the `mesh_documents` tool and call it for `runsheet/mesh`, then report its count or exact error."}}
+{"type":"item.started","item":{"id":"item_1","type":"mcp_tool_call","server":"prologue","tool":"mesh_documents","arguments":{"project":"runsheet/mesh"},"result":null,"error":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_1","type":"mcp_tool_call","server":"prologue","tool":"mesh_documents","arguments":{"project":"runsheet/mesh"},"result":null,"error":{"message":"MCP tool call requires approval, but approval policy is never"},"status":"failed"}}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"MCP tool call failed: `MCP tool call requires approval, but approval policy is never`"}}
+{"type":"turn.completed","usage":{"input_tokens":46116,"cached_input_tokens":39168,"cache_write_input_tokens":0,"output_tokens":194,"reasoning_output_tokens":0}}

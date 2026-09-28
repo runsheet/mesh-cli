@@ -45,17 +45,24 @@ func TestCodexArgs(t *testing.T) {
 }
 
 // The servers as Codex's config.toml tables: secrets by variable name
-// only (ADR 006), their values in the environment.
+// only (ADR 006), their values in the environment, and every server's
+// tools approved — `codex exec` refuses an unapproved MCP call under
+// workspace-write.
 func TestCodexMCPConfig(t *testing.T) {
-	toml, env := CodexMCPConfig(testServers())
+	toml, env, err := CodexMCPConfig(testServers(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	const want = `[mcp_servers.local]
 command = "mcp-local"
 args = ["--root", "."]
 env_vars = ["LOCAL_TOKEN"]
+default_tools_approval_mode = "approve"
 
 [mcp_servers.prologue]
 url = "https://api.test/mcp"
 env_http_headers = { "Authorization" = "MESH_CODEX_MCP_1_TOKEN" }
+default_tools_approval_mode = "approve"
 `
 	if toml != want {
 		t.Fatalf("config.toml\n%s\nwant\n%s", toml, want)
@@ -63,9 +70,61 @@ env_http_headers = { "Authorization" = "MESH_CODEX_MCP_1_TOKEN" }
 	if !reflect.DeepEqual(env, []string{"LOCAL_TOKEN=local-secret", "MESH_CODEX_MCP_1_TOKEN=Bearer rs_secret"}) {
 		t.Fatalf("env %q", env)
 	}
-	if toml, env := CodexMCPConfig(nil); toml != "" || env != nil {
-		t.Fatalf("no servers: %q %q", toml, env)
+	if toml, env, err := CodexMCPConfig(nil, nil); toml != "" || env != nil || err != nil {
+		t.Fatalf("no servers: %q %q %v", toml, env, err)
 	}
+}
+
+// Codex expands no ${VAR}: a server rendered for Claude Code (a console
+// tool's secret as ${MESH_TOOL_…}) has each reference resolved from the
+// job's environment, and one the environment does not set is refused —
+// never written for Codex to send as a literal header.
+func TestCodexMCPConfigResolvesOrRefusesRefs(t *testing.T) {
+	servers := map[string]any{
+		"search": map[string]any{"type": "http", "url": "https://search.test/mcp",
+			"headers": map[string]string{"Authorization": "Bearer ${MESH_TOOL_SEARCH_AUTHORIZATION}"}},
+		"fs": map[string]any{"command": "npx", "args": []any{"-y", "fs-mcp"},
+			"env": map[string]any{"FS_API_KEY": "${MESH_TOOL_FS_FS_API_KEY}"}},
+	}
+	jobEnv := []string{"MESH_TOOL_SEARCH_AUTHORIZATION=tok-search", "MESH_TOOL_FS_FS_API_KEY=key-fs"}
+	toml, env, err := CodexMCPConfig(servers, jobEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(env, []string{"FS_API_KEY=key-fs", "MESH_CODEX_MCP_1_TOKEN=Bearer tok-search"}) {
+		t.Fatalf("env %q", env)
+	}
+	for _, text := range append([]string{toml}, env...) {
+		if strings.Contains(text, "${") {
+			t.Fatalf("an unexpanded reference reaches Codex: %q", text)
+		}
+	}
+	if strings.Contains(toml, "tok-search") || strings.Contains(toml, "key-fs") {
+		t.Fatalf("a secret value in config.toml:\n%s", toml)
+	}
+	for _, drop := range jobEnv {
+		var partial []string
+		for _, kv := range jobEnv {
+			if kv != drop {
+				partial = append(partial, kv)
+			}
+		}
+		name, _, _ := strings.Cut(drop, "=")
+		_, _, err := CodexMCPConfig(servers, partial)
+		if err == nil || !strings.Contains(err.Error(), "${"+name+"}") {
+			t.Fatalf("without %s: err %v, want a refusal naming it", name, err)
+		}
+	}
+}
+
+// mustCodexConfig is CodexMCPConfig's config.toml of servers.
+func mustCodexConfig(t *testing.T, servers map[string]any) string {
+	t.Helper()
+	toml, _, err := CodexMCPConfig(servers, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return toml
 }
 
 // fakeCodex is a `codex` that records its stdin, environment and
@@ -150,7 +209,7 @@ func TestCodexRunPlanAccount(t *testing.T) {
 	if got := strings.Fields(readFile(t, filepath.Join(out, "home.ls"))); !reflect.DeepEqual(got, []string{"auth.json", "config.toml"}) {
 		t.Fatalf("CODEX_HOME held %q, want auth.json and config.toml", got)
 	}
-	if want, _ := CodexMCPConfig(testServers()); readFile(t, filepath.Join(out, "config.toml")) != want {
+	if want := mustCodexConfig(t, testServers()); readFile(t, filepath.Join(out, "config.toml")) != want {
 		t.Fatalf("config.toml %q", readFile(t, filepath.Join(out, "config.toml")))
 	}
 	if got := readFile(t, filepath.Join(out, "auth.json")); got != auth {
@@ -199,7 +258,7 @@ func TestCodexRunJobCodexHome(t *testing.T) {
 	if got := strings.TrimSpace(readFile(t, filepath.Join(out, "home"))); got != home {
 		t.Fatalf("CODEX_HOME %q, want the job's %q", got, home)
 	}
-	if want, _ := CodexMCPConfig(testServers()); readFile(t, filepath.Join(out, "config.toml")) != want {
+	if want := mustCodexConfig(t, testServers()); readFile(t, filepath.Join(out, "config.toml")) != want {
 		t.Fatalf("config.toml %q", readFile(t, filepath.Join(out, "config.toml")))
 	}
 	if got := readFile(t, filepath.Join(home, "auth.json")); got != auth {
