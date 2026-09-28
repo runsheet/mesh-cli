@@ -404,6 +404,7 @@ again and current.
   `runsheet/mesh` plus one, not `runsheet/mesh-cli`'s own tags: the
   mirror is the public line's record.
   `docs/releases-after-transfer.md` carries the detail.
+  v0.2.187 was cut 2026-09-28; docs/releases-after-transfer.md records it.
 - The mirror's `README.md` is a source file here,
   `dist/mirror/README.md`, published verbatim: what the repo is, how to
   install, and how to verify a download against the
