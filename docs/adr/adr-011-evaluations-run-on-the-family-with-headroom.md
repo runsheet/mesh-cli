@@ -1,5 +1,5 @@
 ---
-summary: Before an evaluation starts the node chooses its family per session — Codex when a Codex account (issued or node.yaml's) has headroom for the goal's priority, else Claude; a full gpt-… id pins Codex and waits in evaluating without headroom, a claude-… id pins Claude; the urgent/high second opinion runs on the other family, labelled by family and model; the one usage report names adapter codex and the gpt-6 model of a Codex evaluation; before any Codex session starts the node preflights the built-in context server in the session's own home and env (`codex mcp get` and a tools/list handshake), and a failure moves an unpinned evaluation to Claude, keeps a pinned one waiting and makes a Codex second opinion unavailable.
+summary: Before an evaluation starts the node chooses its family per session — Codex when a Codex account (issued or node.yaml's) has headroom for the goal's priority, else Claude; a full gpt-… id pins Codex and waits in evaluating without headroom, a claude-… id pins Claude; the urgent/high second opinion runs on the other family, labelled by family and model; the one usage report names adapter codex and the gpt-6 model of a Codex evaluation; before any Codex session starts the node preflights the built-in context server in the session's own home and env (`codex mcp get` and a tools/list handshake), and a failure moves an unpinned evaluation to Claude, keeps a pinned one waiting and makes a Codex second opinion unavailable. Amended: an unpinned Codex evaluation defaults to gpt-6-sol (opus tier) or gpt-6-luna (sonnet, haiku), astra only when pinned; and a tool failure is never a verdict — a session that saw no context is evaluated again on the other family, or the item waits in evaluating.
 status: accepted
 ---
 
@@ -169,3 +169,43 @@ override first, so a project or operator who wants Astra sets it there;
 (`CodexPrices` keeps Astra's rate). Nothing else in this ADR changes:
 the family choice, the pin rule and the second-opinion labelling are
 per-session as above, just naming Sol where the examples said Astra.
+
+## Amendment 2026-09-28: a tool failure is never a verdict
+
+Goal `codex-sessions-reach-the-context-tool` (item 6). Two Codex
+evaluations on the mini judged blind — every call to the built-in
+context server failed — and their FAIL verdicts sent their items back
+to `ready`, a rework each.
+
+- **A session that saw no context gives no verdict.** Before a verdict
+  is read, the evaluator judges the session's tools from `Result.Tools`
+  (`Evaluator.toolBroken`): it is *tool-broken* when a built-in server
+  of its MCP map (the context server, `prologue`) or a required console
+  tool it was served has calls and every one errored, or has an error
+  and no call at all (not connected at startup). One clean call is
+  enough: 3 calls and 1 error is a verdict as before. A tool-broken
+  session's verdict is discarded, whatever it said.
+- **It is evaluated on the other family.** node.log says `item <label>:
+  evaluation on <family model> saw no context (<tool>: <first error, 200
+  chars>); not a verdict, evaluating on <other family model>`, and the
+  same job — the same prompt and workspace — runs on the other family
+  as the evaluation proper, not a second opinion: Claude on an account
+  of its own after Codex, Codex with headroom for the goal's priority
+  after Claude. Its verdict is the verdict. The notes open with the
+  attempt that gave none — `<Family> (first attempt, <model>): no
+  verdict — <tool>: <error>` — then the verdict's notes and `(evaluated
+  on <the family that gave it>)`; the one usage report folds both
+  sessions' cost, tokens and per-tool rows. The urgent/high second
+  opinion still applies to a pass, on the family that gave no verdict.
+- **Or it waits.** When the other family cannot run — the item pins its
+  family, the node has no Codex harness or account, no Codex account
+  has headroom, the session was adopted after a restart (its prompt is
+  not kept), or the other session errors, reaches no verdict or is
+  tool-broken too — nothing is recorded: `Evaluate` returns
+  `ErrNoContext` and the item stays in `evaluating` for a later tick.
+  node.log says why once per item (`Evaluator.Blind`, as `Waits`):
+  `…saw no context (…); not a verdict, and <Family> cannot evaluate it:
+  <why>; it stays in evaluating for a later tick (said once for the
+  item)`. The item never goes back to `ready` on a tool error.
+- A second opinion that is tool-broken is unavailable (`saw no context
+  (<tool>: <error>)`), and the first verdict stands.
