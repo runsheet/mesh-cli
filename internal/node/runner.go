@@ -225,7 +225,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		GoalSlug: res.Goal.Slug, GoalTitle: res.Goal.Title, GoalStatement: res.Goal.Statement, GoalAcceptance: res.Goal.Acceptance,
 		Seq: item.Seq, Title: item.Title, Brief: item.Brief, Acceptance: item.Acceptance,
 		Repo: res.Repo.FullName(), Branch: spec.Branch, BaseRef: spec.BaseRef, ContextDir: contextDir, ContextFiles: files,
-		Attempts: item.Attempts, Evaluation: item.Evaluation, Project: orgLogin + "/" + res.Project.Slug, Prologue: len(mcp) > 0,
+		Attempts: item.Attempts, Evaluation: item.Evaluation, Project: orgLogin + "/" + res.Project.Slug, MeshContext: len(mcp) > 0,
 	}
 	job := harness.Job{Kind: harness.KindBuild, Workspace: dir, MaxBudgetUSD: r.Budget(res.Goal), Label: label, MCPServers: mcp, Model: model}
 	if tok := cred.Token(); tok != nil {

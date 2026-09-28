@@ -2,7 +2,7 @@
 
 The operator tool for Mesh. `mesh node start` makes this machine a node of
 the runsheet platform: it speaks to the gateway (`api.runsheet.dev/graphql`,
-`/prologue/v1`, `/mcp`) on the credential in `~/.mesh/token` — the Latchkey
+`/mesh/v1`, `/mcp`) on the credential in `~/.mesh/token` — the Latchkey
 machine credential `mesh node login` registers for this computer, or the
 operator's `rs_*` console token — claims work items, builds each in a fresh `claude -p`
 session, evaluates it in a second, plans goals in a third. The platform

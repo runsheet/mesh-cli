@@ -44,7 +44,7 @@ type StaticToken string
 // Token returns the bearer.
 func (t StaticToken) Token(context.Context) (string, error) { return string(t), nil }
 
-// Client speaks GraphQL (and Prologue's JSON) to one gateway as one
+// Client speaks GraphQL (and mesh-context's JSON) to one gateway as one
 // principal.
 type Client struct {
 	BaseURL string
@@ -78,6 +78,12 @@ type Client struct {
 	// time.Now when nil.
 	scalingSchema scalingProbe
 	Now           func() time.Time
+
+	// contextOnPrologueV1 is set once /mesh/v1 has answered a context
+	// read with 404 (a platform old enough to serve mesh-context only
+	// under its dated alias): every later contextGet asks /prologue/v1
+	// first instead of trying /mesh/v1 again.
+	contextOnPrologueV1 atomic.Bool
 }
 
 // New returns a client for baseURL (scheme+host, no trailing slash) with
@@ -96,9 +102,9 @@ func NewWithSource(baseURL string, src TokenSource) *Client {
 	}
 }
 
-// Bearer is the token the next request would carry — for the Prologue
-// MCP server a session is started with, which takes a header, not a
-// source.
+// Bearer is the token the next request would carry — for the
+// mesh-context MCP server a session is started with, which takes a
+// header, not a source.
 func (c *Client) Bearer(ctx context.Context) (string, error) {
 	if c.Source == nil {
 		return "", errors.New("gateway: no token source")
@@ -369,7 +375,7 @@ type WorkItem struct {
 	RebaseFiles    []string `json:"rebaseFiles"`
 	RebaseNodeID   string   `json:"rebaseNodeId"`
 	RebasedHeadSHA string   `json:"rebasedHeadSha"`
-	// ProjectID is the Prologue project the item's goal is in: the scope
+	// ProjectID is the mesh-context project the item's goal is in: the scope
 	// its agent resolves in (AgentIDs).
 	ProjectID string `json:"projectId"`
 	// AgentSlug names the agent that builds the item (runsheet trd §6c);
@@ -1756,9 +1762,9 @@ func (c *Client) CancelGoal(ctx context.Context, goalID, by string) error {
 	return c.Mutate(ctx, "cancelGoal", goalID, m)
 }
 
-// ---- Prologue ---------------------------------------------------------------
+// ---- mesh-context -------------------------------------------------------
 
-// Document is one row of Prologue's document list.
+// Document is one row of mesh-context's document list.
 type Document struct {
 	Slug    string `json:"slug"`
 	Title   string `json:"title"`
@@ -1769,32 +1775,59 @@ type Document struct {
 	Path    string `json:"path"`
 }
 
-func (c *Client) prologueGet(ctx context.Context, path, accept string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/prologue/v1"+path, nil)
+// contextRequest does one GET, returning the body and status whatever
+// the status is — only a transport failure is an error. contextGet
+// turns a non-2xx status into one.
+func (c *Client) contextRequest(ctx context.Context, base, path, accept string) ([]byte, int, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+base+path, nil)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	tok, err := c.Bearer(ctx)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	req.Header.Set("Authorization", "Bearer "+tok)
 	req.Header.Set("Accept", accept)
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("prologue: %s: %s", resp.Status, strings.TrimSpace(string(raw)))
+	return raw, resp.StatusCode, nil
+}
+
+// contextGet fetches path from the mesh-context server: /mesh/v1, and on
+// a 404 there — an older platform that still serves the dated alias —
+// once more under /prologue/v1, remembering the choice for the rest of
+// the client's life (the pattern takesScaling and itemsWithoutModel
+// use, adr-006).
+func (c *Client) contextGet(ctx context.Context, path, accept string) ([]byte, error) {
+	base := "/mesh/v1"
+	if c.contextOnPrologueV1.Load() {
+		base = "/prologue/v1"
+	}
+	raw, status, err := c.contextRequest(ctx, base, path, accept)
+	if err != nil {
+		return nil, err
+	}
+	if status == http.StatusNotFound && base == "/mesh/v1" {
+		c.contextOnPrologueV1.Store(true)
+		raw, status, err = c.contextRequest(ctx, "/prologue/v1", path, accept)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if status < 200 || status >= 300 {
+		return nil, fmt.Errorf("mesh-context: %d: %s", status, strings.TrimSpace(string(raw)))
 	}
 	return raw, nil
 }
 
-// ProlougeDocuments lists a project's documents (org login + project slug).
-func (c *Client) PrologueDocuments(ctx context.Context, org, project string) ([]Document, error) {
-	raw, err := c.prologueGet(ctx, "/projects/"+url.PathEscape(org)+"/"+url.PathEscape(project)+"/documents", "application/json")
+// Documents lists a project's documents (org login + project slug).
+func (c *Client) Documents(ctx context.Context, org, project string) ([]Document, error) {
+	raw, err := c.contextGet(ctx, "/projects/"+url.PathEscape(org)+"/"+url.PathEscape(project)+"/documents", "application/json")
 	if err != nil {
 		return nil, err
 	}
@@ -1802,14 +1835,14 @@ func (c *Client) PrologueDocuments(ctx context.Context, org, project string) ([]
 		Documents []Document `json:"documents"`
 	}
 	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, fmt.Errorf("prologue: decode documents: %w", err)
+		return nil, fmt.Errorf("mesh-context: decode documents: %w", err)
 	}
 	return out.Documents, nil
 }
 
-// PrologueDocument fetches one document's body as markdown.
-func (c *Client) PrologueDocument(ctx context.Context, org, project, doc string) (string, error) {
-	raw, err := c.prologueGet(ctx, "/projects/"+url.PathEscape(org)+"/"+url.PathEscape(project)+"/documents/"+url.PathEscape(doc), "text/markdown")
+// Document fetches one document's body as markdown.
+func (c *Client) Document(ctx context.Context, org, project, doc string) (string, error) {
+	raw, err := c.contextGet(ctx, "/projects/"+url.PathEscape(org)+"/"+url.PathEscape(project)+"/documents/"+url.PathEscape(doc), "text/markdown")
 	if err != nil {
 		return "", err
 	}

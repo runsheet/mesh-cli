@@ -48,6 +48,14 @@ type Fake struct {
 	// Documents by "org/project" → list rows; Bodies by "org/project/slug".
 	Documents map[string][]map[string]any
 	Bodies    map[string]string
+	// NoMeshV1 answers every /mesh/v1 context request with 404, as a
+	// platform old enough to serve mesh-context only under its dated
+	// alias /prologue/v1 — for a test of the client's fallback.
+	NoMeshV1 bool
+	// ContextPaths is every path meshContext was asked for, in order —
+	// for a test to see which of /mesh/v1 or /prologue/v1 the client
+	// actually hit.
+	ContextPaths []string
 	Calls     []Call
 	// Reads are the index lists the fake served: Name is the list
 	// (goalIndexs), Input its EQ wheres by field (org_id).
@@ -131,7 +139,8 @@ func New(token string) *Fake {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/graphql", f.graphql)
-	mux.HandleFunc("/prologue/v1/", f.prologue)
+	mux.HandleFunc("/mesh/v1/", f.meshContext)
+	mux.HandleFunc("/prologue/v1/", f.meshContext)
 	f.Server = httptest.NewServer(mux)
 	return f
 }
@@ -813,13 +822,31 @@ func camel(s string) string {
 	return strings.Join(parts, "")
 }
 
-func (f *Fake) prologue(w http.ResponseWriter, r *http.Request) {
+// meshContext serves both /mesh/v1 and its dated alias /prologue/v1 —
+// the same rows and bodies, so a test only sets Documents and Bodies
+// once. NoMeshV1 answers the former with 404, as an older platform that
+// knows only the alias, for a test of the client's fallback.
+func (f *Fake) meshContext(w http.ResponseWriter, r *http.Request) {
 	if r.Header.Get("Authorization") != "Bearer "+f.Token {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	// /prologue/v1/projects/{org}/{slug}/documents[/{doc}]
-	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/prologue/v1/projects/"), "/")
+	f.mu.Lock()
+	f.ContextPaths = append(f.ContextPaths, r.URL.Path)
+	f.mu.Unlock()
+	var prefix string
+	switch {
+	case strings.HasPrefix(r.URL.Path, "/mesh/v1/projects/"):
+		if f.NoMeshV1 {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		prefix = "/mesh/v1/projects/"
+	case strings.HasPrefix(r.URL.Path, "/prologue/v1/projects/"):
+		prefix = "/prologue/v1/projects/"
+	}
+	// {prefix}{org}/{slug}/documents[/{doc}]
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, prefix), "/")
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	switch {

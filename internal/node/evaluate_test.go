@@ -71,7 +71,7 @@ func TestLoopEvaluatesFinishedItems(t *testing.T) {
 	}
 	p := h.jobs[0].Prompt
 	for _, want := range []string{"Write the failing test", "the test fails", "go test ./... passes", "+func TestThing", "origin/main...HEAD", harness.VerdictPass, harness.VerdictFail, "Change nothing",
-		".mesh/context/", "adr-adr-001.md", "goes against an ADR", "prologue_document", `project "acme/mesh"`} {
+		".mesh/context/", "adr-adr-001.md", "goes against an ADR", "mesh_document", `project "acme/mesh"`} {
 		if !strings.Contains(p, want) {
 			t.Fatalf("prompt lacks %q:\n%s", want, p)
 		}

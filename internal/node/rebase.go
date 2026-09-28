@@ -111,7 +111,7 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 	in := harness.RebaseInput{
 		GoalSlug: res.Goal.Slug, GoalTitle: res.Goal.Title, Seq: item.Seq, Title: item.Title, Brief: item.Brief, Acceptance: item.Acceptance,
 		Repo: res.Repo.FullName(), Branch: branch, BaseRef: spec.BaseRef, Conflict: item.RebaseConflict, Files: item.RebaseFiles,
-		ContextDir: contextDir, ContextFiles: files, Project: orgLogin + "/" + res.Project.Slug, Prologue: len(r.MCP) > 0,
+		ContextDir: contextDir, ContextFiles: files, Project: orgLogin + "/" + res.Project.Slug, MeshContext: len(r.MCP) > 0,
 	}
 	budget := r.MaxBudgetUSD
 	if budget <= 0 {

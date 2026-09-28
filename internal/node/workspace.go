@@ -427,10 +427,10 @@ const (
 	ContextBytesMax = 240 * 1024
 )
 
-// FetchContext lists the project's Prologue documents and fetches the
-// bodies of the kinds in ContextKinds within the size budget.
+// FetchContext lists the project's mesh-context documents and fetches
+// the bodies of the kinds in ContextKinds within the size budget.
 func FetchContext(ctx context.Context, gw Gateway, orgLogin, projectSlug string) (*Context, error) {
-	docs, err := gw.PrologueDocuments(ctx, orgLogin, projectSlug)
+	docs, err := gw.Documents(ctx, orgLogin, projectSlug)
 	if err != nil {
 		return nil, err
 	}
@@ -443,7 +443,7 @@ func FetchContext(ctx context.Context, gw Gateway, orgLogin, projectSlug string)
 		if !ContextKinds[d.Kind] {
 			continue
 		}
-		body, err := gw.PrologueDocument(ctx, orgLogin, projectSlug, d.Slug)
+		body, err := gw.Document(ctx, orgLogin, projectSlug, d.Slug)
 		if err != nil {
 			return nil, fmt.Errorf("fetch %s: %w", d.Slug, err)
 		}
@@ -470,7 +470,7 @@ const IndexFile = "INDEX.md"
 func RenderIndex(cx *Context) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Project %s — every indexed document\n\n", cx.Project)
-	b.WriteString("On disk here: read the file. Not on disk: fetch it with the `prologue_document` tool (project " + fmt.Sprintf("%q", cx.Project) + ", the slug). Search with `prologue_search`.\n\n")
+	b.WriteString("On disk here: read the file. Not on disk: fetch it with the `mesh_document` tool (project " + fmt.Sprintf("%q", cx.Project) + ", the slug). Search with `mesh_search`.\n\n")
 	b.WriteString("| kind | title | what it says | slug | repo/path | here |\n| --- | --- | --- | --- | --- | --- |\n")
 	cell := func(s string) string { return strings.ReplaceAll(strings.ReplaceAll(s, "\n", " "), "|", "\\|") }
 	for _, d := range cx.Index {
@@ -650,6 +650,6 @@ type Gateway interface {
 	RecordDirectionResearch(ctx context.Context, directionID, nodeID string, research gateway.Research, costCents int, notes string, usage *gateway.UsageReport) error
 	Repo(ctx context.Context, id string) (*gateway.Repo, error)
 	Repos(ctx context.Context, accountID, ownerLogin string) ([]gateway.Repo, error)
-	PrologueDocuments(ctx context.Context, org, project string) ([]gateway.Document, error)
-	PrologueDocument(ctx context.Context, org, project, doc string) (string, error)
+	Documents(ctx context.Context, org, project string) ([]gateway.Document, error)
+	Document(ctx context.Context, org, project, doc string) (string, error)
 }

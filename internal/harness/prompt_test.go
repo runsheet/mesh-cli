@@ -5,6 +5,32 @@ import (
 	"testing"
 )
 
+// Every prompt that carries the context rule (MeshContext set) names the
+// platform's mesh_document and mesh_search tools on the mesh-context
+// server, never a tool on its dated alias (whose names all still start
+// with the old product's name).
+func TestPromptsNameMeshContext(t *testing.T) {
+	oldName := "prologue" // built up so this file itself doesn't read as a leftover reference
+	prompts := map[string]string{
+		"build":    BuildPrompt(PromptInput{GoalSlug: "g", GoalTitle: "G", Seq: 1, Title: "T", Repo: "o/r", Branch: "b", BaseRef: "main", Project: "acme/mesh", MeshContext: true}),
+		"evaluate": EvaluatePrompt(EvaluateInput{GoalSlug: "g", GoalTitle: "G", Seq: 1, Title: "T", Repo: "o/r", Branch: "b", BaseRef: "main", Project: "acme/mesh", MeshContext: true}),
+		"plan":     PlanPrompt(PlanInput{GoalSlug: "g", GoalTitle: "G", Org: "o", Project: "p", MeshContext: true}),
+		"research": ResearchPrompt(ResearchInput{Org: "o", Project: "p", Direction: "grow", MeshContext: true}),
+		"rebase":   RebasePrompt(RebaseInput{GoalSlug: "g", GoalTitle: "G", Seq: 1, Title: "T", Repo: "o/r", Branch: "b", BaseRef: "main", Project: "acme/mesh", MeshContext: true}),
+	}
+	for name, p := range prompts {
+		if !strings.Contains(p, "mesh_document") {
+			t.Errorf("%s prompt lacks mesh_document:\n%s", name, p)
+		}
+		if !strings.Contains(p, "mesh_search") {
+			t.Errorf("%s prompt lacks mesh_search:\n%s", name, p)
+		}
+		if strings.Contains(p, oldName) {
+			t.Errorf("%s prompt still names an old-product tool:\n%s", name, p)
+		}
+	}
+}
+
 func TestPlanPromptAcceptanceTheEvaluatorCanSee(t *testing.T) {
 	p := PlanPrompt(PlanInput{GoalSlug: "g", GoalTitle: "G", Org: "o", Project: "p"})
 	for _, want := range []string{

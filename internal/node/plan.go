@@ -163,7 +163,7 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 	in := harness.PlanInput{
 		GoalSlug: goal.Slug, GoalTitle: goal.Title, Statement: goal.Statement, Acceptance: goal.Acceptance, BudgetCents: goal.BudgetCents,
 		Org: scope.Login, Project: project.Slug, Repos: dirs, ContextDir: contextDir, ContextFiles: files, Blocked: goal.PausedReason,
-		Existing: existing, NextSeq: nextSeq, Prologue: len(p.MCP) > 0,
+		Existing: existing, NextSeq: nextSeq, MeshContext: len(p.MCP) > 0,
 	}
 	budget := p.MaxBudgetUSD
 	if budget <= 0 {

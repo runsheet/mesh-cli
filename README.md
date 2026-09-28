@@ -3,9 +3,10 @@
 The operator tool for Mesh: this machine becomes a **node** of the runsheet
 platform (`mesh-specs/specs/adr-002-control-plane-on-runsheet`), and goals
 are set and watched from the same token. The node speaks to the platform's
-gateway (`https://api.runsheet.dev/graphql`) as the machine credential
-Latchkey issued it — or, until the estate has moved over, as the person
-whose console token it holds. No gRPC, no relay, no shared secret.
+gateway (`https://api.runsheet.dev/graphql`, `/mesh/v1` for mesh-context,
+`/mcp`) as the machine credential Latchkey issued it — or, until the
+estate has moved over, as the person whose console token it holds. No
+gRPC, no relay, no shared secret.
 
 ## Installation
 
@@ -796,7 +797,10 @@ A session gets the tools its project and role have, configured in the
 console and handed to the node that claimed the session (ADR-006, trd
 §3 Tools). The Prologue MCP server is not one of them: the node attaches
 it to every session itself, and a console tool named `prologue` is
-refused and noted.
+refused and noted. It is how a session calls `mesh_document` (a
+project's slug, the document's slug) and `mesh_search` to fetch context
+on demand beyond what the index put on disk, and `mesh_projects` /
+`mesh_documents` to read another project's.
 
 **What the node reports.** Every tick the node looks on its `PATH` for
 the tool runtimes it can start — `npx`, `uvx`, `docker` — and the agent

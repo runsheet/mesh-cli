@@ -179,7 +179,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 		GoalSlug: res.Goal.Slug, GoalTitle: res.Goal.Title, GoalAcceptance: res.Goal.Acceptance,
 		Seq: item.Seq, Title: item.Title, Brief: item.Brief, Acceptance: item.Acceptance,
 		Repo: res.Repo.FullName(), Branch: branch, BaseRef: spec.BaseRef, Diff: diff,
-		ContextDir: contextDir, ContextFiles: files, Project: orgLogin + "/" + res.Project.Slug, Prologue: len(e.MCP) > 0,
+		ContextDir: contextDir, ContextFiles: files, Project: orgLogin + "/" + res.Project.Slug, MeshContext: len(e.MCP) > 0,
 		AlreadyDone: alreadyDone, Evidence: item.Evidence,
 	}
 	budget := e.MaxBudgetUSD
