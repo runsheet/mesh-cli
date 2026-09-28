@@ -400,6 +400,8 @@ only use it on a machine you trust with that.`,
 // its caller to exec the binary again, once the pidfile and the signal
 // handlers are gone.
 func nodeStart(cmd *cobra.Command, args []string) error {
+	// a pending update's confirm window opens here, at process start
+	started := time.Now()
 	logger := log.New(os.Stderr, "mesh node: ", log.LstdFlags)
 	// a new binary that has failed to start twice is rolled back
 	// first, before anything else in it can fail again
@@ -417,7 +419,10 @@ func nodeStart(cmd *cobra.Command, args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	cfg, gw, scopes, workRoot, err := registerNode(ctx, cmd, logger, updates, check)
+	cfg, gw, scopes, workRoot, err := registerNode(ctx, cmd, logger, updates, check, started)
+	if errors.Is(err, node.ErrUnconfirmed) {
+		return endRun(err, logger)
+	}
 	if err != nil {
 		return err
 	}
@@ -464,6 +469,11 @@ func nodeStart(cmd *cobra.Command, args []string) error {
 		loop.Image = ensureNodeImage
 		if check.Failed != "" {
 			loop.NoteUpdateFailure(check.Failed, check.Reason, check.Final)
+		}
+		// a pending update is confirmed by the first heartbeat through,
+		// retried for node.yaml's update.confirm_within from start
+		if check.Pending {
+			loop.Confirming, loop.ConfirmWithin, loop.Started = check.To, cfg.ConfirmWithin(), started
 		}
 	}
 	// capacity and the orgs are read again every tick, so a changed
@@ -588,13 +598,15 @@ func runPollMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *
 // (noteStartFailure) so a rollback names the real cause instead of the
 // bare "did not start": this is the same 60-second registration timeout
 // that once left node.log silent when the platform was slow.
-func registerNode(ctx context.Context, cmd *cobra.Command, logger *log.Logger, updates *selfupdate.StateFile, check node.StartCheck) (cfg *node.Config, gw *gateway.Client, scopes node.Scopes, workRoot string, err error) {
+func registerNode(ctx context.Context, cmd *cobra.Command, logger *log.Logger, updates *selfupdate.StateFile, check node.StartCheck, started time.Time) (cfg *node.Config, gw *gateway.Client, scopes node.Scopes, workRoot string, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			noteStartFailure(updates, check, fmt.Sprintf("panic: %v", r), logger)
 			panic(r)
 		}
-		if err != nil {
+		// a platform that could not be reached inside the confirm window
+		// is slow, not a start that failed: its error is already recorded
+		if err != nil && !errors.Is(err, node.ErrUnconfirmed) {
 			noteStartFailure(updates, check, err.Error(), logger)
 		}
 	}()
@@ -623,22 +635,101 @@ func registerNode(ctx context.Context, cmd *cobra.Command, logger *log.Logger, u
 		return
 	}
 
-	regCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
-	defer cancel()
-	if cfg.OwnerID == "" {
-		cfg.OwnerID, err = gw.SignIn(regCtx)
-		if err != nil {
-			return
+	register := func(ctx context.Context) error {
+		regCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		defer cancel()
+		if cfg.OwnerID == "" {
+			owner, err := gw.SignIn(regCtx)
+			if err != nil {
+				return err
+			}
+			cfg.OwnerID = owner
+		}
+		var err error
+		if scopes, err = node.ResolveScopes(regCtx, gw, cfg); err != nil {
+			return err
+		}
+		return registerIn(regCtx, gw, cfg, scopes)
+	}
+	if updates == nil || !check.Pending {
+		if err = register(ctx); err != nil {
+			err = fmt.Errorf("register node: %w", err)
+		}
+		return
+	}
+	// a pending update: the platform being slow is not the binary
+	// failing, so registration is retried inside the confirm window
+	w := confirmWindow{To: check.To, Started: started, Within: cfg.ConfirmWithin(), Every: nodeIntervalFlag, Note: updates.NoteConfirmError, Log: logger}
+	err = w.retry(ctx, register)
+	return
+}
+
+// confirmWindow retries what a pending update's new process must reach
+// the platform for — its registration — until the window from Started
+// elapses (node.yaml update.confirm_within). Now and Sleep are replaced
+// in tests.
+type confirmWindow struct {
+	To      string
+	Started time.Time
+	Within  time.Duration
+	// Every is the wait between attempts: the heartbeat interval.
+	Every time.Duration
+	// Note records a failed attempt's error in update.json.
+	Note  func(reason string) error
+	Log   *log.Logger
+	Now   func() time.Time
+	Sleep func(context.Context, time.Duration) error
+}
+
+// retry runs attempt until it goes through, logging and recording each
+// failure with its error; the window elapsing ends it with an
+// *node.UnconfirmedError naming the last error, and a cancelled ctx with
+// ctx's error.
+func (w confirmWindow) retry(ctx context.Context, attempt func(context.Context) error) error {
+	now, sleep := w.Now, w.Sleep
+	if now == nil {
+		now = time.Now
+	}
+	if sleep == nil {
+		sleep = sleepCtx
+	}
+	every := w.Every
+	if every <= 0 {
+		every = 30 * time.Second
+	}
+	deadline := w.Started.Add(w.Within)
+	for {
+		err := attempt(ctx)
+		if err == nil {
+			return nil
+		}
+		if ctx.Err() != nil {
+			return fmt.Errorf("register node: %w", err)
+		}
+		if nerr := w.Note(err.Error()); nerr != nil {
+			w.Log.Printf("self-update: record confirm error: %v", nerr)
+		}
+		left := deadline.Sub(now())
+		if left <= 0 {
+			return &node.UnconfirmedError{Version: w.To, Window: w.Within, Last: fmt.Errorf("register node: %w", err)}
+		}
+		w.Log.Printf("self-update: confirming %s: register node: %s; retrying for %s more", w.To, node.PlatformSlow(err), left.Round(time.Second))
+		if err := sleep(ctx, min(every, left)); err != nil {
+			return err
 		}
 	}
-	scopes, err = node.ResolveScopes(regCtx, gw, cfg)
-	if err == nil {
-		err = registerIn(regCtx, gw, cfg, scopes)
+}
+
+// sleepCtx waits d, or less when ctx ends first.
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
-	if err != nil {
-		err = fmt.Errorf("register node: %w", err)
-	}
-	return
 }
 
 // noteStartFailure records why a start of a pending update ended before
@@ -664,7 +755,13 @@ func startUpdates(logger *log.Logger) (*selfupdate.StateFile, string, node.Start
 		var exe string
 		if exe, err = node.Executable(); err == nil {
 			var check node.StartCheck
-			if check, err = node.CheckStart(f, exe); err == nil {
+			// the window a rollback names: node.yaml's when it reads,
+			// though it may be what this start fails on
+			window := selfupdate.DefaultConfirmWithin
+			if cfg, cerr := node.LoadSettings(); cerr == nil {
+				window = cfg.ConfirmWithin()
+			}
+			if check, err = node.CheckStart(f, exe, window); err == nil {
 				if line := check.String(); line != "" {
 					logger.Print(line)
 				}
@@ -706,7 +803,8 @@ func reportRollback(check node.StartCheck, logger *log.Logger) {
 
 // endRun is how the node's process ends when Run returns: 0 on a drain
 // and on a self-update's restart, which the service manager answers by
-// starting the binary now in place.
+// starting the binary now in place; 1 on a pending update that could not
+// confirm inside its window (node.ErrUnconfirmed).
 func endRun(err error, logger *log.Logger) error {
 	switch {
 	case err == nil:
@@ -716,6 +814,10 @@ func endRun(err error, logger *log.Logger) error {
 		return nil
 	case errors.Is(err, node.ErrRestart):
 		logger.Printf("restarting; its sessions are left for the new process to adopt")
+	case errors.Is(err, node.ErrUnconfirmed):
+		// exit 1: the service starts it again, and the third such start
+		// rolls back naming this error
+		logger.Printf("self-update: %v; exiting for the service to start it again", err)
 	}
 	return err
 }

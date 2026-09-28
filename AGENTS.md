@@ -171,8 +171,23 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `update.confirm_within` (`Config.Update.ConfirmWithin`,
   `Config.ConfirmWithin()`) is how long a new process keeps trying to
   confirm before giving up — default 5 minutes
-  (`selfupdate.DefaultConfirmWithin`); a later goal wires the loop's own
-  heartbeat retry to it.
+  (`selfupdate.DefaultConfirmWithin`). **The confirm window** opens at
+  process start (`Loop.Started`): while an update is pending
+  (`Loop.Confirming` = `StartCheck.To`), `registerNode` retries a failed
+  registration (60 s per attempt) on the heartbeat interval
+  (`confirmWindow.retry`) and the loop keeps heartbeating, each failure
+  logged `'self-update: confirming <to>: heartbeat <org>: <err>; retrying
+  for <left> more'` (a timeout adds `(the platform is slow)`,
+  `PlatformSlow`) and recorded by `Updater.NoteConfirmError`. The first
+  heartbeat through confirms. The window elapsing with none through is
+  `ErrUnconfirmed` (`*UnconfirmedError`, naming the last error) from
+  `registerNode` or `Run`; `endRun` logs `'self-update: <to> did not
+  confirm within <window>: <err>; exiting for the service to start it
+  again'` and the process exits 1 — the start count rolls back on the
+  third, naming that error. Only a failure to *run* (`NoteStartFailure`)
+  is "did not start"; a slow platform never is. With no update pending
+  a failed heartbeat or registration is as before. `mesh node upgrade`
+  prints the window and `~/.mesh/node.log` after the restart.
   `mesh node update [version]` (`internal/commands/nodeupdate.go`) does
   it by hand on the same `ReleaseUpdater`: verify, drain the pidfile's
   node, swap; `--verify-only` verifies into a temp dir. `mesh node

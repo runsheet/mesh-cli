@@ -1601,10 +1601,14 @@ can do anything else is never silent. If it does die there, or panics,
 while an update is pending, `update.json`'s `lastError` (after the third
 start) says why instead of the bare "did not start": `'<to> did not
 start: <the error>'`. `update.confirm_within` in `node.yaml` (below) is
-how long a new process is meant to keep trying to confirm before it
-gives up — default 5 minutes — so a platform blip does not by itself
-roll an upgrade back; when it is exhausted, `update.json` names it
-`'<to> did not confirm within <window>: <the heartbeat error>'`.
+how long a new process keeps trying to confirm, from its start — default
+5 minutes — so a platform blip does not by itself roll an upgrade back:
+a registration or heartbeat that fails is logged with its error (`self-update:
+confirming <to>: … retrying for <left> more`) and tried again. When the
+window runs out the process logs `<to> did not confirm within <window>:
+<the error>` and exits 1 for its service to start it again; on the third
+such start `update.json` names it `'<to> did not confirm within
+<window>: <the heartbeat error>'`.
 
 ```yaml
 update:
