@@ -229,3 +229,31 @@ runsheet/mesh-cli. Its next self-update would get the 404 that v0.1.0
 got, and the goal's live check (`setNodeDesiredVersion v0.2.187` with
 no by-hand copy) could not pass on the version it is named for. #316
 has to be rebased onto `main` and merged first.
+
+### Precondition re-checked, 2026-09-28 22:30Z (attempt 3)
+
+Unchanged: item 2 is still not on `main`, so nothing was cut, pushed or
+edited this time either.
+
+```
+$ git log origin/main --oneline -1
+74455ac release-tag.yml: release notes are the merged PR titles since the last tag, grouped by goal slug (#317)
+$ git merge-base --is-ancestor 22170a7 origin/main || echo notonmain
+notonmain
+$ gh pr view 316 -R runsheet/mesh-cli --json state,mergeable,mergeStateStatus
+{"mergeStateStatus":"DIRTY","mergeable":"CONFLICTING","state":"OPEN"}
+$ git merge-tree --write-tree origin/main origin/mesh/signed-releases-on-runsheet-mesh-2 | grep CONFLICT
+CONFLICT (content): Merge conflict in README.md
+CONFLICT (content): Merge conflict in docs/adr/adr-002-signed-tag-releases.md
+$ gh release view v0.2.187 -R runsheet/mesh
+release not found
+$ gh release view v0.1.0 -R runsheet/mesh-cli --json isPrerelease -q .isPrerelease
+false
+$ gh api repos/runsheet/mesh/readme -q .content | base64 -d | grep '^## '
+(none: the one-line README; release-tag.yml publishes the new one with the first tag)
+```
+
+A build session cannot do what unblocks this: #316 needs its rebase
+onto `main` (conflicts in `README.md` and ADR 002) and its merge, which
+is the integrator's or its builder's work, not a push from this
+branch. Once #316 is merged, this item runs the brief as written.
