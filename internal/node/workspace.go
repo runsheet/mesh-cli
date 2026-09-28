@@ -647,7 +647,7 @@ type Gateway interface {
 	ClaimWorkItemRebase(ctx context.Context, itemID, nodeID string) error
 	FinishWorkItemRebase(ctx context.Context, itemID, headSha string, resolvedFiles []string, usage *gateway.UsageReport) error
 	FailWorkItemRebase(ctx context.Context, itemID, reason string) error
-	RecordDirectionResearch(ctx context.Context, directionID, nodeID string, proposals []gateway.GoalProposal, costCents int, notes string, usage *gateway.UsageReport) error
+	RecordDirectionResearch(ctx context.Context, directionID, nodeID string, research gateway.Research, costCents int, notes string, usage *gateway.UsageReport) error
 	Repo(ctx context.Context, id string) (*gateway.Repo, error)
 	Repos(ctx context.Context, accountID, ownerLogin string) ([]gateway.Repo, error)
 	PrologueDocuments(ctx context.Context, org, project string) ([]gateway.Document, error)

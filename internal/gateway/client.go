@@ -1441,6 +1441,106 @@ type GoalProposal struct {
 	BudgetCents int    `json:"budgetCents,omitempty"`
 }
 
+// PitchEvidence is one piece of evidence a pitch cites for its problem
+// (runsheet trd §6c, ADR 026): a research note, a metric, an incident
+// or a user signal, a reference to it and the note explaining it.
+type PitchEvidence struct {
+	Kind string `json:"kind"`
+	Ref  string `json:"ref"`
+	Note string `json:"note"`
+}
+
+// The kinds a PitchEvidence's Kind takes.
+const (
+	PitchEvidenceResearchNote = "research_note"
+	PitchEvidenceMetric       = "metric"
+	PitchEvidenceIncident     = "incident"
+	PitchEvidenceUserSignal   = "user_signal"
+)
+
+// PitchGoal is one goal a pitch's scope would set if it is approved —
+// the whole of a "goal"-scoped pitch, or one of an "initiative"-scoped
+// one's several.
+type PitchGoal struct {
+	Slug        string `json:"slug"`
+	Title       string `json:"title"`
+	Statement   string `json:"statement"`
+	Acceptance  string `json:"acceptance"`
+	BudgetCents int    `json:"budgetCents,omitempty"`
+}
+
+// PitchScope is what a pitch would set if a person approves it: one
+// goal, or an initiative of several.
+type PitchScope struct {
+	Kind  string      `json:"kind"`
+	Goals []PitchGoal `json:"goals"`
+}
+
+// The kinds a PitchScope's Kind takes.
+const (
+	PitchScopeGoal       = "goal"
+	PitchScopeInitiative = "initiative"
+)
+
+// PitchEstimate is a pitch's cost and time estimate and the basis it
+// is drawn from.
+type PitchEstimate struct {
+	CostCents int    `json:"costCents"`
+	Days      int    `json:"days"`
+	Basis     string `json:"basis"`
+}
+
+// PitchSignal is the metric a pitch expects to move: how it is
+// measured, which way and over what window.
+type PitchSignal struct {
+	Metric      string `json:"metric"`
+	HowMeasured string `json:"howMeasured"`
+	Direction   string `json:"direction,omitempty"`
+	WindowDays  int    `json:"windowDays,omitempty"`
+}
+
+// The directions a PitchSignal's Direction takes.
+const (
+	PitchSignalUp   = "up"
+	PitchSignalDown = "down"
+)
+
+// PitchDraft is one pitch a propose-mode research session hands in
+// (runsheet trd §6c, ADR 026): the problem, the evidence for it, the
+// strategy bet it serves, the scope it would set if approved, an
+// estimate, its risks and alternatives, and the signal it expects to
+// move. The platform decides whether it becomes a pitch a person sees.
+type PitchDraft struct {
+	Slug         string          `json:"slug"`
+	Title        string          `json:"title"`
+	Problem      string          `json:"problem"`
+	Evidence     []PitchEvidence `json:"evidence"`
+	Bet          string          `json:"bet"`
+	Scope        PitchScope      `json:"scope"`
+	Estimate     *PitchEstimate  `json:"estimate,omitempty"`
+	Risks        []string        `json:"risks"`
+	Alternatives []string        `json:"alternatives"`
+	Signal       *PitchSignal    `json:"signal,omitempty"`
+}
+
+// PitchAnswerDraft is a research session's answer to an open question
+// on one of its project's earlier pitches, read off the research brief
+// (runsheet trd §6c).
+type PitchAnswerDraft struct {
+	PitchSlug string `json:"pitchSlug"`
+	Text      string `json:"text"`
+}
+
+// Research is what a research session hands in to
+// RecordDirectionResearch: a set-mode direction's GoalProposals, or a
+// propose-mode direction's PitchDrafts and its answers to open
+// questions on its project's earlier pitches.
+type Research struct {
+	Proposals []GoalProposal
+	Pitches   []PitchDraft
+	Answers   []PitchAnswerDraft
+}
+
 // ClaimDirectionResearch takes this direction's next research session
 // for the node. Every "not now" is a refusal — the direction off or
 // archived, its project paused, the hour outside the window in the
@@ -1453,12 +1553,16 @@ func (c *Client) ClaimDirectionResearch(ctx context.Context, directionID, nodeID
 	})
 }
 
-// RecordDirectionResearch hands in what the session came to, and the
-// cost whether or not it proposed anything. It also lets the claim go,
-// so an empty hand-in is how a node gives a direction back. usage is
-// the research session's usage report, carried as `usage` when non-nil
-// (see UsageReport, ErrNoUsageLedger).
-func (c *Client) RecordDirectionResearch(ctx context.Context, directionID, nodeID string, proposals []GoalProposal, costCents int, notes string, usage *UsageReport) error {
+// ErrNoPitches is what RecordDirectionResearch returns when it carried
+// pitches or answers but the gateway's input has neither field (a
+// platform older than runsheet trd §6c's pitches): the pitches are
+// re-sent as proposals — one GoalProposal per goal of each pitch's
+// scope, its problem as the proposal's why — and that hand-in lands;
+// only the pitches and answers themselves did not. errors.Is-able.
+var ErrNoPitches = errors.New("gateway: the platform does not record pitches")
+
+// proposalRows is a []GoalProposal in the mutation's shape.
+func proposalRows(proposals []GoalProposal) []map[string]any {
 	list := make([]map[string]any, 0, len(proposals))
 	for _, p := range proposals {
 		row := map[string]any{"slug": p.Slug, "title": p.Title, "statement": p.Statement, "acceptance": p.Acceptance}
@@ -1470,10 +1574,121 @@ func (c *Client) RecordDirectionResearch(ctx context.Context, directionID, nodeI
 		}
 		list = append(list, row)
 	}
-	return c.mutateWithUsage(ctx, "recordDirectionResearch", directionID, map[string]any{
-		"nodeId": nodeID, "at": time.Now().UTC().Format(time.RFC3339Nano),
-		"proposals": list, "costCents": costCents, "notes": notes,
+	return list
+}
+
+// pitchGoalRows is a []PitchGoal in the mutation's shape: a required
+// list, sent as `[]` when empty, never omitted.
+func pitchGoalRows(goals []PitchGoal) []map[string]any {
+	list := make([]map[string]any, 0, len(goals))
+	for _, g := range goals {
+		row := map[string]any{"slug": g.Slug, "title": g.Title, "statement": g.Statement, "acceptance": g.Acceptance}
+		if g.BudgetCents > 0 {
+			row["budgetCents"] = g.BudgetCents
+		}
+		list = append(list, row)
+	}
+	return list
+}
+
+// pitchRows is a []PitchDraft in the mutation's shape: evidence, risks,
+// alternatives and scope.goals always sent, `[]` when empty; bet always
+// sent, "" allowed; estimate and signal left out when nil.
+func pitchRows(pitches []PitchDraft) []map[string]any {
+	list := make([]map[string]any, 0, len(pitches))
+	for _, p := range pitches {
+		evidence := make([]map[string]any, 0, len(p.Evidence))
+		for _, e := range p.Evidence {
+			evidence = append(evidence, map[string]any{"kind": e.Kind, "ref": e.Ref, "note": e.Note})
+		}
+		risks := make([]string, 0, len(p.Risks))
+		risks = append(risks, p.Risks...)
+		alternatives := make([]string, 0, len(p.Alternatives))
+		alternatives = append(alternatives, p.Alternatives...)
+		row := map[string]any{
+			"slug": p.Slug, "title": p.Title, "problem": p.Problem,
+			"evidence": evidence, "bet": p.Bet,
+			"scope":        map[string]any{"kind": p.Scope.Kind, "goals": pitchGoalRows(p.Scope.Goals)},
+			"risks":        risks,
+			"alternatives": alternatives,
+		}
+		if p.Estimate != nil {
+			row["estimate"] = map[string]any{"costCents": p.Estimate.CostCents, "days": p.Estimate.Days, "basis": p.Estimate.Basis}
+		}
+		if p.Signal != nil {
+			sig := map[string]any{"metric": p.Signal.Metric, "howMeasured": p.Signal.HowMeasured}
+			if p.Signal.Direction != "" {
+				sig["direction"] = p.Signal.Direction
+			}
+			if p.Signal.WindowDays > 0 {
+				sig["windowDays"] = p.Signal.WindowDays
+			}
+			row["signal"] = sig
+		}
+		list = append(list, row)
+	}
+	return list
+}
+
+// answerRows is a []PitchAnswerDraft in the mutation's shape.
+func answerRows(answers []PitchAnswerDraft) []map[string]any {
+	list := make([]map[string]any, 0, len(answers))
+	for _, a := range answers {
+		list = append(list, map[string]any{"pitchSlug": a.PitchSlug, "text": a.Text})
+	}
+	return list
+}
+
+// RecordDirectionResearch hands in what the session came to, and the
+// cost whether or not it proposed anything. It also lets the claim go,
+// so an empty hand-in is how a node gives a direction back. usage is
+// the research session's usage report, carried as `usage` when non-nil
+// (see UsageReport, ErrNoUsageLedger).
+//
+// research.Pitches and research.Answers are sent as `pitches` and
+// `answers` only when non-empty. Against a platform old enough to
+// refuse them (unknownField on "pitches" or "answers"), the command is
+// re-sent with research.Proposals plus one GoalProposal per goal of
+// every pitch's scope and no pitches or answers; once that lands,
+// ErrNoPitches says the pitches themselves did not, so the caller can
+// say so once.
+func (c *Client) RecordDirectionResearch(ctx context.Context, directionID, nodeID string, research Research, costCents int, notes string, usage *UsageReport) error {
+	at := time.Now().UTC().Format(time.RFC3339Nano)
+	input := map[string]any{
+		"nodeId": nodeID, "at": at,
+		"proposals": proposalRows(research.Proposals), "costCents": costCents, "notes": notes,
+	}
+	if len(research.Pitches) > 0 {
+		input["pitches"] = pitchRows(research.Pitches)
+	}
+	if len(research.Answers) > 0 {
+		input["answers"] = answerRows(research.Answers)
+	}
+	err := c.mutateWithUsage(ctx, "recordDirectionResearch", directionID, input, usage)
+	var ge *Error
+	if err == nil || !errors.As(err, &ge) || !unknownField(ge.Message, "pitches", "answers") {
+		return err
+	}
+	fallback := append([]GoalProposal{}, research.Proposals...)
+	for _, p := range research.Pitches {
+		for _, g := range p.Scope.Goals {
+			fallback = append(fallback, GoalProposal{
+				Slug: g.Slug, Title: g.Title, Statement: g.Statement,
+				Acceptance: g.Acceptance, Why: p.Problem, BudgetCents: g.BudgetCents,
+			})
+		}
+	}
+	retryErr := c.mutateWithUsage(ctx, "recordDirectionResearch", directionID, map[string]any{
+		"nodeId": nodeID, "at": at,
+		"proposals": proposalRows(fallback), "costCents": costCents, "notes": notes,
 	}, usage)
+	if retryErr != nil && !errors.Is(retryErr, ErrNoUsageLedger) {
+		return retryErr
+	}
+	if errors.Is(retryErr, ErrNoUsageLedger) {
+		return fmt.Errorf("%w: %w", ErrNoPitches, ErrNoUsageLedger)
+	}
+	return ErrNoPitches
 }
 
 // PlanGoal hands the goal its graph, with the planner session's cost

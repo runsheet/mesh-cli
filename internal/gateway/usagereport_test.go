@@ -83,7 +83,7 @@ func usageCases() []usageCase {
 				f.Directions["d1"]["researchNodeId"] = nodeID
 			},
 			send: func(gw *gateway.Client, u *gateway.UsageReport) error {
-				return gw.RecordDirectionResearch(context.Background(), "d1", nodeID, nil, 50, "0 proposed", u)
+				return gw.RecordDirectionResearch(context.Background(), "d1", nodeID, gateway.Research{}, 50, "0 proposed", u)
 			},
 		},
 	}

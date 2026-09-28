@@ -1,6 +1,23 @@
 {
   "types": [
     {
+      "name": "AbandonPlaybookSetupInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "aggregateId", "type": "UUID!"},
+        {"name": "namespace", "type": "Namespace!"}
+      ]
+    },
+    {
+      "name": "AcceptPlaybookUpdateInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "aggregateId", "type": "UUID!"},
+        {"name": "by", "type": "UUID"},
+        {"name": "namespace", "type": "Namespace!"}
+      ]
+    },
+    {
       "name": "Account",
       "kind": "OBJECT",
       "fields": [
@@ -24,6 +41,14 @@
         {"name": "namespace", "type": "Namespace"},
         {"name": "type", "type": "AccountType"},
         {"name": "updatedAt", "type": "Time"}
+      ]
+    },
+    {
+      "name": "ActivatePlaybookSetupInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "aggregateId", "type": "UUID!"},
+        {"name": "namespace", "type": "Namespace!"}
       ]
     },
     {
@@ -119,11 +144,33 @@
       ]
     },
     {
+      "name": "AnswerPitchInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "aggregateId", "type": "UUID!"},
+        {"name": "at", "type": "Time"},
+        {"name": "namespace", "type": "Namespace!"},
+        {"name": "nodeId", "type": "UUID!"},
+        {"name": "text", "type": "String!"}
+      ]
+    },
+    {
       "name": "ApproveGraphInput",
       "kind": "INPUT_OBJECT",
       "fields": [
         {"name": "aggregateId", "type": "UUID!"},
         {"name": "by", "type": "UUID"},
+        {"name": "namespace", "type": "Namespace!"}
+      ]
+    },
+    {
+      "name": "ApprovePitchInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "aggregateId", "type": "UUID!"},
+        {"name": "at", "type": "Time"},
+        {"name": "by", "type": "UUID!"},
+        {"name": "edits", "type": "[PitchGoalInput!]"},
         {"name": "namespace", "type": "Namespace!"}
       ]
     },
@@ -141,6 +188,17 @@
       "fields": [
         {"name": "aggregateId", "type": "UUID!"},
         {"name": "namespace", "type": "Namespace!"}
+      ]
+    },
+    {
+      "name": "AskPitchInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "aggregateId", "type": "UUID!"},
+        {"name": "at", "type": "Time"},
+        {"name": "by", "type": "UUID!"},
+        {"name": "namespace", "type": "Namespace!"},
+        {"name": "question", "type": "String!"}
       ]
     },
     {
@@ -764,6 +822,26 @@
       ]
     },
     {
+      "name": "DeclinePlaybookUpdateInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "aggregateId", "type": "UUID!"},
+        {"name": "by", "type": "UUID"},
+        {"name": "namespace", "type": "Namespace!"}
+      ]
+    },
+    {
+      "name": "DeferPitchInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "aggregateId", "type": "UUID!"},
+        {"name": "at", "type": "Time"},
+        {"name": "by", "type": "UUID!"},
+        {"name": "namespace", "type": "Namespace!"},
+        {"name": "until", "type": "Time!"}
+      ]
+    },
+    {
       "name": "DeferWorkItemEvaluationToRebaseInput",
       "kind": "INPUT_OBJECT",
       "fields": [
@@ -905,6 +983,7 @@
       "fields": [
         {"name": "createdAt", "type": "Time"},
         {"name": "createdBy", "type": "UUID"},
+        {"name": "dailyBudgetCents", "type": "Long"},
         {"name": "direction", "type": "String"},
         {"name": "enabled", "type": "Boolean"},
         {"name": "fromMinute", "type": "Long"},
@@ -915,6 +994,10 @@
         {"name": "name", "type": "String"},
         {"name": "namespace", "type": "Namespace"},
         {"name": "orgId", "type": "UUID"},
+        {"name": "pitchesApproved", "type": "Long"},
+        {"name": "pitchesHit", "type": "Long"},
+        {"name": "pitchesMeasured", "type": "Long"},
+        {"name": "pitchesTallied", "type": "[DirectionPitch!]"},
         {"name": "priority", "type": "Priority"},
         {"name": "projectId", "type": "UUID"},
         {"name": "researchClaimedAt", "type": "Time"},
@@ -924,6 +1007,7 @@
         {"name": "status", "type": "DirectionStatus"},
         {"name": "timezone", "type": "String"},
         {"name": "toMinute", "type": "Long"},
+        {"name": "tools", "type": "[String!]"},
         {"name": "updatedAt", "type": "Time"}
       ]
     },
@@ -933,6 +1017,7 @@
       "fields": [
         {"name": "createdAt", "type": "Time"},
         {"name": "createdBy", "type": "UUID"},
+        {"name": "dailyBudgetCents", "type": "Long"},
         {"name": "direction", "type": "String"},
         {"name": "enabled", "type": "Boolean"},
         {"name": "fromMinute", "type": "Long"},
@@ -944,6 +1029,9 @@
         {"name": "namespace", "type": "Namespace"},
         {"name": "org", "type": "OrgIndex"},
         {"name": "orgId", "type": "UUID"},
+        {"name": "pitchesApproved", "type": "Long"},
+        {"name": "pitchesHit", "type": "Long"},
+        {"name": "pitchesMeasured", "type": "Long"},
         {"name": "priority", "type": "Priority"},
         {"name": "project", "type": "ProjectIndex"},
         {"name": "projectId", "type": "UUID"},
@@ -954,7 +1042,17 @@
         {"name": "status", "type": "DirectionStatus"},
         {"name": "timezone", "type": "String"},
         {"name": "toMinute", "type": "Long"},
+        {"name": "tools", "type": "[String!]"},
         {"name": "updatedAt", "type": "Time"}
+      ]
+    },
+    {
+      "name": "DirectionPitch",
+      "kind": "OBJECT",
+      "fields": [
+        {"name": "hit", "type": "Boolean!"},
+        {"name": "measured", "type": "Boolean!"},
+        {"name": "pitchId", "type": "UUID!"}
       ]
     },
     {
@@ -1118,6 +1216,7 @@
       "name": "EnableGithubProjectsSyncInput",
       "kind": "INPUT_OBJECT",
       "fields": [
+        {"name": "accountId", "type": "UUID"},
         {"name": "aggregateId", "type": "UUID!"},
         {"name": "by", "type": "UUID"},
         {"name": "namespace", "type": "Namespace!"}
@@ -1284,6 +1383,7 @@
         {"name": "aggregateId", "type": "UUID!"},
         {"name": "baseSha", "type": "String"},
         {"name": "costCents", "type": "Long"},
+        {"name": "kind", "type": "RebaseFailureKind"},
         {"name": "namespace", "type": "Namespace!"},
         {"name": "reason", "type": "String!"}
       ]
@@ -1378,6 +1478,7 @@
         {"name": "rebaseNeeded", "type": "Boolean"},
         {"name": "sessionMs", "type": "Long"},
         {"name": "turns", "type": "Long"},
+        {"name": "uncommittedFiles", "type": "Long"},
         {"name": "usage", "type": "UsageReportInput"}
       ]
     },
@@ -1432,8 +1533,10 @@
       "kind": "INPUT_OBJECT",
       "fields": [
         {"name": "aggregateId", "type": "UUID!"},
+        {"name": "headSha", "type": "String"},
         {"name": "mergeableState", "type": "String!"},
-        {"name": "namespace", "type": "Namespace!"}
+        {"name": "namespace", "type": "Namespace!"},
+        {"name": "nextLookAt", "type": "Time!"}
       ]
     },
     {
@@ -1465,6 +1568,7 @@
         {"name": "priority", "type": "Priority"},
         {"name": "priorityDefaulted", "type": "Boolean"},
         {"name": "projectId", "type": "UUID"},
+        {"name": "replacementItemIds", "type": "[UUID!]"},
         {"name": "replacingItemId", "type": "UUID"},
         {"name": "replanCap", "type": "Long"},
         {"name": "replans", "type": "Long"},
@@ -1578,6 +1682,7 @@
       "fields": [
         {"name": "aggregateId", "type": "UUID!"},
         {"name": "draining", "type": "Boolean"},
+        {"name": "limits", "type": "[NodeAccountLimitsInput!]"},
         {"name": "namespace", "type": "Namespace!"},
         {"name": "planFiveHourPct", "type": "Float"},
         {"name": "planFiveHourResetsAt", "type": "Time"},
@@ -1586,6 +1691,7 @@
         {"name": "planSevenDayResetsAt", "type": "Time"},
         {"name": "planStatus", "type": "String"},
         {"name": "running", "type": "Long"},
+        {"name": "scaling", "type": "NodeScalingInput"},
         {"name": "version", "type": "String"}
       ]
     },
@@ -1802,6 +1908,16 @@
       ]
     },
     {
+      "name": "KeepWorkItemMergeInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "aggregateId", "type": "UUID!"},
+        {"name": "mergeSha", "type": "String!"},
+        {"name": "namespace", "type": "Namespace!"},
+        {"name": "reason", "type": "String!"}
+      ]
+    },
+    {
       "name": "LimitCredentialNodesInput",
       "kind": "INPUT_OBJECT",
       "fields": [
@@ -1822,6 +1938,16 @@
         {"name": "login", "type": "String!"},
         {"name": "namespace", "type": "Namespace!"},
         {"name": "orgId", "type": "UUID!"}
+      ]
+    },
+    {
+      "name": "LinkPitchGoalInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "aggregateId", "type": "UUID!"},
+        {"name": "goalId", "type": "UUID"},
+        {"name": "initiativeId", "type": "UUID"},
+        {"name": "namespace", "type": "Namespace!"}
       ]
     },
     {
@@ -1903,6 +2029,7 @@
       "name": "MarkNodePlanWindowResetInput",
       "kind": "INPUT_OBJECT",
       "fields": [
+        {"name": "account", "type": "String"},
         {"name": "aggregateId", "type": "UUID!"},
         {"name": "namespace", "type": "Namespace!"},
         {"name": "resetsAt", "type": "Time!"},
@@ -1945,6 +2072,14 @@
     },
     {
       "name": "MarkWorkItemStalledInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "aggregateId", "type": "UUID!"},
+        {"name": "namespace", "type": "Namespace!"}
+      ]
+    },
+    {
+      "name": "MeasurePitchSignalInput",
       "kind": "INPUT_OBJECT",
       "fields": [
         {"name": "aggregateId", "type": "UUID!"},
@@ -2148,13 +2283,19 @@
       "name": "Mutation",
       "kind": "OBJECT",
       "fields": [
+        {"name": "abandonPlaybookSetup", "type": "DispatchResult!"},
+        {"name": "acceptPlaybookUpdate", "type": "DispatchResult!"},
+        {"name": "activatePlaybookSetup", "type": "DispatchResult!"},
         {"name": "addCredential", "type": "Map"},
         {"name": "addInstallationRepos", "type": "DispatchResult!"},
         {"name": "addToolAccount", "type": "DispatchResult!"},
         {"name": "announceStateVersion", "type": "DispatchResult!"},
+        {"name": "answerPitch", "type": "DispatchResult!"},
         {"name": "approveGraph", "type": "DispatchResult!"},
+        {"name": "approvePitch", "type": "DispatchResult!"},
         {"name": "archiveDirection", "type": "DispatchResult!"},
         {"name": "archiveProject", "type": "DispatchResult!"},
+        {"name": "askPitch", "type": "DispatchResult!"},
         {"name": "attachCredentialProjects", "type": "DispatchResult!"},
         {"name": "attachOrgBilling", "type": "DispatchResult!"},
         {"name": "attachOrgToEnterprise", "type": "DispatchResult!"},
@@ -2191,6 +2332,8 @@
         {"name": "createProject", "type": "DispatchResult!"},
         {"name": "deactivateBillingProfile", "type": "DispatchResult!"},
         {"name": "declareHome", "type": "DispatchResult!"},
+        {"name": "declinePlaybookUpdate", "type": "DispatchResult!"},
+        {"name": "deferPitch", "type": "DispatchResult!"},
         {"name": "deferWorkItemEvaluationToRebase", "type": "DispatchResult!"},
         {"name": "defineAgent", "type": "DispatchResult!"},
         {"name": "definePlaybook", "type": "DispatchResult!"},
@@ -2226,8 +2369,10 @@
         {"name": "indexDocument", "type": "DispatchResult!"},
         {"name": "issueAuthzCode", "type": "DispatchResult!"},
         {"name": "issueItemRepoToken", "type": "Map"},
+        {"name": "keepWorkItemMerge", "type": "DispatchResult!"},
         {"name": "limitCredentialNodes", "type": "DispatchResult!"},
         {"name": "linkOrgGithubAccount", "type": "DispatchResult!"},
+        {"name": "linkPitchGoal", "type": "DispatchResult!"},
         {"name": "listLoomBump", "type": "DispatchResult!"},
         {"name": "lockWorkspace", "type": "DispatchResult!"},
         {"name": "markAllNotificationsRead", "type": "Int"},
@@ -2238,6 +2383,7 @@
         {"name": "markProjectCapacityIdle", "type": "DispatchResult!"},
         {"name": "markWorkItemRebaseStalled", "type": "DispatchResult!"},
         {"name": "markWorkItemStalled", "type": "DispatchResult!"},
+        {"name": "measurePitchSignal", "type": "DispatchResult!"},
         {"name": "mergeWorkItem", "type": "DispatchResult!"},
         {"name": "mintToken", "type": "String"},
         {"name": "mintUserToken", "type": "DispatchResult!"},
@@ -2264,6 +2410,7 @@
         {"name": "observeUser", "type": "DispatchResult!"},
         {"name": "observeUserGrants", "type": "DispatchResult!"},
         {"name": "observeUserInstallations", "type": "DispatchResult!"},
+        {"name": "offerPlaybookUpdate", "type": "DispatchResult!"},
         {"name": "openWorkspace", "type": "DispatchResult!"},
         {"name": "pauseGoal", "type": "DispatchResult!"},
         {"name": "planGoal", "type": "DispatchResult!"},
@@ -2276,6 +2423,7 @@
         {"name": "raiseNotification", "type": "DispatchResult!"},
         {"name": "rankWorkItem", "type": "DispatchResult!"},
         {"name": "readyWorkItem", "type": "DispatchResult!"},
+        {"name": "rearmIntegration", "type": "DispatchResult!"},
         {"name": "recheckWorkItemHold", "type": "DispatchResult!"},
         {"name": "recomputeWorkItemEvaluateModel", "type": "DispatchResult!"},
         {"name": "recordCloudProjectCreated", "type": "DispatchResult!"},
@@ -2293,6 +2441,10 @@
         {"name": "recordIssue", "type": "DispatchResult!"},
         {"name": "recordLoomBumpOutcome", "type": "DispatchResult!"},
         {"name": "recordLoomBumpPR", "type": "DispatchResult!"},
+        {"name": "recordPitch", "type": "DispatchResult!"},
+        {"name": "recordPitchOutcome", "type": "DispatchResult!"},
+        {"name": "recordPlaybookSetupDirections", "type": "DispatchResult!"},
+        {"name": "recordPlaybookSetupPR", "type": "DispatchResult!"},
         {"name": "recordProjectSpend", "type": "DispatchResult!"},
         {"name": "recordPullRequest", "type": "DispatchResult!"},
         {"name": "recordQuantitySync", "type": "DispatchResult!"},
@@ -2311,6 +2463,7 @@
         {"name": "recordWorkItemHumanPush", "type": "DispatchResult!"},
         {"name": "recordWorkItemIssue", "type": "DispatchResult!"},
         {"name": "recordWorkItemKeptCurrent", "type": "DispatchResult!"},
+        {"name": "recordWorkItemMainGuardRerun", "type": "DispatchResult!"},
         {"name": "recordWorkItemPR", "type": "DispatchResult!"},
         {"name": "recordWorkItemPRClosed", "type": "DispatchResult!"},
         {"name": "recordWorkItemProtectedFiles", "type": "DispatchResult!"},
@@ -2330,8 +2483,10 @@
         {"name": "rehomePullRequest", "type": "DispatchResult!"},
         {"name": "rehomeSpecChange", "type": "DispatchResult!"},
         {"name": "rehomeWorkspace", "type": "DispatchResult!"},
+        {"name": "rejectPitch", "type": "DispatchResult!"},
         {"name": "rejoinWorkItemQueue", "type": "DispatchResult!"},
         {"name": "releaseOrg", "type": "DispatchResult!"},
+        {"name": "releaseStalledWorkItem", "type": "DispatchResult!"},
         {"name": "releaseWorkItem", "type": "DispatchResult!"},
         {"name": "removeDocument", "type": "DispatchResult!"},
         {"name": "removeInstallation", "type": "DispatchResult!"},
@@ -2355,6 +2510,7 @@
         {"name": "resumeGoal", "type": "DispatchResult!"},
         {"name": "resumeIntegration", "type": "DispatchResult!"},
         {"name": "resumeWorkItemEvaluation", "type": "DispatchResult!"},
+        {"name": "resurfacePitch", "type": "DispatchResult!"},
         {"name": "retargetWorkItemBase", "type": "DispatchResult!"},
         {"name": "retireAgent", "type": "DispatchResult!"},
         {"name": "retireHome", "type": "DispatchResult!"},
@@ -2368,7 +2524,9 @@
         {"name": "reworkWorkItem", "type": "DispatchResult!"},
         {"name": "rotateCredential", "type": "Map"},
         {"name": "saveCheckpoint", "type": "DispatchResult!"},
+        {"name": "scheduleDigest", "type": "DispatchResult!"},
         {"name": "seeUser", "type": "DispatchResult!"},
+        {"name": "sendDigest", "type": "DispatchResult!"},
         {"name": "setCollectionMethod", "type": "DispatchResult!"},
         {"name": "setCredentialStatus", "type": "DispatchResult!"},
         {"name": "setDirection", "type": "DispatchResult!"},
@@ -2388,10 +2546,14 @@
         {"name": "setRepoDeployCheck", "type": "DispatchResult!"},
         {"name": "setStripeCustomer", "type": "DispatchResult!"},
         {"name": "setWorkItemModel", "type": "DispatchResult!"},
+        {"name": "shipPitch", "type": "DispatchResult!"},
         {"name": "signIn", "type": "UserIndex"},
         {"name": "startGoal", "type": "DispatchResult!"},
+        {"name": "startPlaybookSetup", "type": "DispatchResult!"},
         {"name": "stepAsideWorkItem", "type": "DispatchResult!"},
+        {"name": "supersedeWorkItem", "type": "DispatchResult!"},
         {"name": "suspendInstallation", "type": "DispatchResult!"},
+        {"name": "tallyDirectionPitch", "type": "DispatchResult!"},
         {"name": "tickFlowWatch", "type": "DispatchResult!"},
         {"name": "tickPlatformWatch", "type": "DispatchResult!"},
         {"name": "touchUserToken", "type": "DispatchResult!"},
@@ -2429,6 +2591,7 @@
         {"name": "namespace", "type": "Namespace"},
         {"name": "orgId", "type": "UUID"},
         {"name": "ownerId", "type": "UUID"},
+        {"name": "planAccountWarnings", "type": "[NodePlanAccountWarning!]"},
         {"name": "planFiveHourPct", "type": "Float"},
         {"name": "planFiveHourResetsAt", "type": "Time"},
         {"name": "planFiveHourWarnedPct", "type": "Long"},
@@ -2441,10 +2604,31 @@
         {"name": "planSevenDayWarnedResetsAt", "type": "Time"},
         {"name": "planStatus", "type": "String"},
         {"name": "running", "type": "Long"},
+        {"name": "scalingAccounts", "type": "[NodeScalingAccount!]"},
+        {"name": "scalingCapacity", "type": "Long"},
+        {"name": "scalingMax", "type": "Long"},
+        {"name": "scalingMin", "type": "Long"},
+        {"name": "scalingReason", "type": "String"},
+        {"name": "scalingSeenAt", "type": "Time"},
         {"name": "slug", "type": "String"},
         {"name": "status", "type": "NodeStatus"},
         {"name": "updatedAt", "type": "Time"},
         {"name": "version", "type": "String"}
+      ]
+    },
+    {
+      "name": "NodeAccountLimitsInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "account", "type": "String!"},
+        {"name": "fiveHour", "type": "NodeLimitWindowInput"},
+        {"name": "isUsingOverage", "type": "Boolean"},
+        {"name": "observedAt", "type": "Time"},
+        {"name": "overageStatus", "type": "String"},
+        {"name": "rateLimitType", "type": "String"},
+        {"name": "resetsAt", "type": "Time"},
+        {"name": "sevenDay", "type": "NodeLimitWindowInput"},
+        {"name": "status", "type": "String"}
       ]
     },
     {
@@ -2474,6 +2658,12 @@
         {"name": "planSevenDayResetsAt", "type": "Time"},
         {"name": "planStatus", "type": "String"},
         {"name": "running", "type": "Long"},
+        {"name": "scalingAccounts", "type": "[NodeScalingAccount!]"},
+        {"name": "scalingCapacity", "type": "Long"},
+        {"name": "scalingMax", "type": "Long"},
+        {"name": "scalingMin", "type": "Long"},
+        {"name": "scalingReason", "type": "String"},
+        {"name": "scalingSeenAt", "type": "Time"},
         {"name": "slug", "type": "String"},
         {"name": "status", "type": "NodeStatus"},
         {"name": "updatedAt", "type": "Time"},
@@ -2481,22 +2671,78 @@
       ]
     },
     {
+      "name": "NodeLimitWindowInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "resetsAt", "type": "Time"},
+        {"name": "utilization", "type": "Float"}
+      ]
+    },
+    {
+      "name": "NodePlanAccountWarning",
+      "kind": "OBJECT",
+      "fields": [
+        {"name": "account", "type": "String!"},
+        {"name": "resetsAt", "type": "Time!"},
+        {"name": "threshold", "type": "Long!"},
+        {"name": "window", "type": "String!"}
+      ]
+    },
+    {
       "name": "NodePlanUsageIndex",
       "kind": "OBJECT",
       "fields": [
+        {"name": "account", "type": "String"},
         {"name": "bucketAt", "type": "Time"},
         {"name": "fiveHourPct", "type": "Float"},
         {"name": "fiveHourResetsAt", "type": "Time"},
         {"name": "id", "type": "UUID"},
+        {"name": "isUsingOverage", "type": "Boolean"},
         {"name": "namespace", "type": "Namespace"},
         {"name": "node", "type": "NodeIndex"},
         {"name": "nodeId", "type": "UUID"},
+        {"name": "observedAt", "type": "Time"},
         {"name": "orgId", "type": "UUID"},
+        {"name": "overageStatus", "type": "String"},
+        {"name": "rateLimitType", "type": "String"},
         {"name": "seenAt", "type": "Time"},
         {"name": "sevenDayPct", "type": "Float"},
         {"name": "sevenDayResetsAt", "type": "Time"},
         {"name": "status", "type": "String"},
         {"name": "updatedAt", "type": "Time"}
+      ]
+    },
+    {
+      "name": "NodeScalingAccount",
+      "kind": "OBJECT",
+      "fields": [
+        {"name": "kind", "type": "String"},
+        {"name": "name", "type": "String!"},
+        {"name": "reason", "type": "String"},
+        {"name": "slots", "type": "Long!"},
+        {"name": "urgentOnlySlots", "type": "Long!"}
+      ]
+    },
+    {
+      "name": "NodeScalingAccountInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "kind", "type": "String"},
+        {"name": "name", "type": "String!"},
+        {"name": "reason", "type": "String"},
+        {"name": "slots", "type": "Long!"},
+        {"name": "urgentOnlySlots", "type": "Long!"}
+      ]
+    },
+    {
+      "name": "NodeScalingInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "accounts", "type": "[NodeScalingAccountInput!]!"},
+        {"name": "capacity", "type": "Long!"},
+        {"name": "max", "type": "Long!"},
+        {"name": "min", "type": "Long!"},
+        {"name": "reason", "type": "String"}
       ]
     },
     {
@@ -2522,6 +2768,7 @@
         {"name": "namespace", "type": "Namespace"},
         {"name": "nodeId", "type": "UUID"},
         {"name": "orgId", "type": "UUID"},
+        {"name": "payload", "type": "String"},
         {"name": "projectId", "type": "UUID"},
         {"name": "readAt", "type": "Time"},
         {"name": "resolvedAt", "type": "Time"},
@@ -2551,6 +2798,7 @@
         {"name": "needsPerson", "type": "Boolean"},
         {"name": "nodeId", "type": "UUID"},
         {"name": "orgId", "type": "UUID"},
+        {"name": "payload", "type": "String"},
         {"name": "projectId", "type": "UUID"},
         {"name": "readAt", "type": "Time"},
         {"name": "resolvedAt", "type": "Time"},
@@ -2743,6 +2991,16 @@
       ]
     },
     {
+      "name": "OfferPlaybookUpdateInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "aggregateId", "type": "UUID!"},
+        {"name": "content", "type": "PlaybookContentInput!"},
+        {"name": "namespace", "type": "Namespace!"},
+        {"name": "version", "type": "Long!"}
+      ]
+    },
+    {
       "name": "OpenWorkspaceInput",
       "kind": "INPUT_OBJECT",
       "fields": [
@@ -2861,14 +3119,20 @@
       "fields": [
         {"name": "base", "type": "PlaybookContent"},
         {"name": "baseVersion", "type": "Long"},
+        {"name": "conflicts", "type": "[PlaybookConflict!]"},
         {"name": "content", "type": "PlaybookContent"},
         {"name": "copiedAt", "type": "Time"},
+        {"name": "declinedVersion", "type": "Long"},
         {"name": "editedAt", "type": "Time"},
         {"name": "id", "type": "UUID"},
         {"name": "namespace", "type": "Namespace"},
+        {"name": "offered", "type": "PlaybookContent"},
+        {"name": "offeredAt", "type": "Time"},
+        {"name": "offeredVersion", "type": "Long"},
         {"name": "orgId", "type": "UUID"},
         {"name": "playbookId", "type": "UUID"},
         {"name": "slug", "type": "String"},
+        {"name": "status", "type": "OrgPlaybookStatus"},
         {"name": "updatedAt", "type": "Time"}
       ]
     },
@@ -2876,18 +3140,25 @@
       "name": "OrgPlaybookIndex",
       "kind": "OBJECT",
       "fields": [
+        {"name": "acceptedAt", "type": "Time"},
         {"name": "base", "type": "PlaybookContent"},
         {"name": "baseVersion", "type": "Long"},
+        {"name": "conflicts", "type": "[PlaybookConflict!]"},
         {"name": "content", "type": "PlaybookContent"},
         {"name": "copiedAt", "type": "Time"},
+        {"name": "declinedAt", "type": "Time"},
         {"name": "editedAt", "type": "Time"},
         {"name": "id", "type": "UUID"},
         {"name": "namespace", "type": "Namespace"},
+        {"name": "offered", "type": "PlaybookContent"},
+        {"name": "offeredAt", "type": "Time"},
+        {"name": "offeredVersion", "type": "Long"},
         {"name": "org", "type": "OrgIndex"},
         {"name": "orgId", "type": "UUID"},
         {"name": "playbook", "type": "PlaybookIndex"},
         {"name": "playbookId", "type": "UUID"},
         {"name": "slug", "type": "String"},
+        {"name": "status", "type": "OrgPlaybookStatus"},
         {"name": "updatedAt", "type": "Time"}
       ]
     },
@@ -2912,6 +3183,218 @@
         {"name": "serial", "type": "Long!"},
         {"name": "size", "type": "Long!"},
         {"name": "token", "type": "String!"}
+      ]
+    },
+    {
+      "name": "Pitch",
+      "kind": "OBJECT",
+      "fields": [
+        {"name": "alternatives", "type": "[String!]"},
+        {"name": "bet", "type": "String"},
+        {"name": "decidedAt", "type": "Time"},
+        {"name": "decidedBy", "type": "UUID"},
+        {"name": "deferUntil", "type": "Time"},
+        {"name": "directionId", "type": "UUID"},
+        {"name": "estimate", "type": "PitchEstimate"},
+        {"name": "evidence", "type": "[PitchEvidence!]"},
+        {"name": "goalId", "type": "UUID"},
+        {"name": "goalSetAt", "type": "Time"},
+        {"name": "id", "type": "UUID"},
+        {"name": "initiativeId", "type": "UUID"},
+        {"name": "measureDueAt", "type": "Time"},
+        {"name": "measureWindowDays", "type": "Long"},
+        {"name": "namespace", "type": "Namespace"},
+        {"name": "orgId", "type": "UUID"},
+        {"name": "outcome", "type": "PitchOutcome"},
+        {"name": "problem", "type": "String"},
+        {"name": "projectId", "type": "UUID"},
+        {"name": "recordedAt", "type": "Time"},
+        {"name": "recordedByNodeId", "type": "UUID"},
+        {"name": "rejectReason", "type": "String"},
+        {"name": "risks", "type": "[String!]"},
+        {"name": "scope", "type": "PitchScope"},
+        {"name": "shippedAt", "type": "Time"},
+        {"name": "signal", "type": "PitchSignal"},
+        {"name": "slug", "type": "String"},
+        {"name": "status", "type": "PitchStatus"},
+        {"name": "thread", "type": "[PitchThreadEntry!]"},
+        {"name": "title", "type": "String"},
+        {"name": "updatedAt", "type": "Time"}
+      ]
+    },
+    {
+      "name": "PitchAnswerDraftInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "pitchSlug", "type": "String!"},
+        {"name": "text", "type": "String!"}
+      ]
+    },
+    {
+      "name": "PitchDigest",
+      "kind": "OBJECT",
+      "fields": [
+        {"name": "id", "type": "UUID"},
+        {"name": "lastSentAt", "type": "Time"},
+        {"name": "namespace", "type": "Namespace"},
+        {"name": "nextAt", "type": "Time"},
+        {"name": "orgId", "type": "UUID"},
+        {"name": "updatedAt", "type": "Time"}
+      ]
+    },
+    {
+      "name": "PitchDraftInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "alternatives", "type": "[String!]!"},
+        {"name": "bet", "type": "String!"},
+        {"name": "estimate", "type": "PitchEstimateInput"},
+        {"name": "evidence", "type": "[PitchEvidenceInput!]!"},
+        {"name": "problem", "type": "String!"},
+        {"name": "risks", "type": "[String!]!"},
+        {"name": "scope", "type": "PitchScopeInput!"},
+        {"name": "signal", "type": "PitchSignalInput"},
+        {"name": "slug", "type": "String!"},
+        {"name": "title", "type": "String!"}
+      ]
+    },
+    {
+      "name": "PitchEstimate",
+      "kind": "OBJECT",
+      "fields": [
+        {"name": "basis", "type": "String!"},
+        {"name": "costCents", "type": "Long!"},
+        {"name": "days", "type": "Long!"}
+      ]
+    },
+    {
+      "name": "PitchEstimateInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "basis", "type": "String!"},
+        {"name": "costCents", "type": "Long!"},
+        {"name": "days", "type": "Long!"}
+      ]
+    },
+    {
+      "name": "PitchEvidence",
+      "kind": "OBJECT",
+      "fields": [
+        {"name": "kind", "type": "PitchEvidenceKind!"},
+        {"name": "note", "type": "String!"},
+        {"name": "ref", "type": "String!"}
+      ]
+    },
+    {
+      "name": "PitchEvidenceInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "kind", "type": "PitchEvidenceKind!"},
+        {"name": "note", "type": "String!"},
+        {"name": "ref", "type": "String!"}
+      ]
+    },
+    {
+      "name": "PitchGoal",
+      "kind": "OBJECT",
+      "fields": [
+        {"name": "acceptance", "type": "String!"},
+        {"name": "budgetCents", "type": "Long"},
+        {"name": "slug", "type": "String!"},
+        {"name": "statement", "type": "String!"},
+        {"name": "title", "type": "String!"}
+      ]
+    },
+    {
+      "name": "PitchGoalInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "acceptance", "type": "String!"},
+        {"name": "budgetCents", "type": "Long"},
+        {"name": "slug", "type": "String!"},
+        {"name": "statement", "type": "String!"},
+        {"name": "title", "type": "String!"}
+      ]
+    },
+    {
+      "name": "PitchIndex",
+      "kind": "OBJECT",
+      "fields": [
+        {"name": "bet", "type": "String"},
+        {"name": "decidedAt", "type": "Time"},
+        {"name": "deferUntil", "type": "Time"},
+        {"name": "directionId", "type": "UUID"},
+        {"name": "evidenceCount", "type": "Long"},
+        {"name": "goalId", "type": "UUID"},
+        {"name": "id", "type": "UUID"},
+        {"name": "initiativeId", "type": "UUID"},
+        {"name": "namespace", "type": "Namespace"},
+        {"name": "orgId", "type": "UUID"},
+        {"name": "outcome", "type": "PitchOutcome"},
+        {"name": "projectId", "type": "UUID"},
+        {"name": "recordedAt", "type": "Time"},
+        {"name": "shippedAt", "type": "Time"},
+        {"name": "slug", "type": "String"},
+        {"name": "status", "type": "PitchStatus"},
+        {"name": "title", "type": "String"},
+        {"name": "updatedAt", "type": "Time"}
+      ]
+    },
+    {
+      "name": "PitchOutcome",
+      "kind": "OBJECT",
+      "fields": [
+        {"name": "measuredAt", "type": "Time!"},
+        {"name": "moved", "type": "Boolean!"},
+        {"name": "note", "type": "String!"},
+        {"name": "signalAfter", "type": "Float"},
+        {"name": "signalBefore", "type": "Float"}
+      ]
+    },
+    {
+      "name": "PitchScope",
+      "kind": "OBJECT",
+      "fields": [
+        {"name": "goals", "type": "[PitchGoal!]!"},
+        {"name": "kind", "type": "PitchScopeKind!"}
+      ]
+    },
+    {
+      "name": "PitchScopeInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "goals", "type": "[PitchGoalInput!]!"},
+        {"name": "kind", "type": "PitchScopeKind!"}
+      ]
+    },
+    {
+      "name": "PitchSignal",
+      "kind": "OBJECT",
+      "fields": [
+        {"name": "direction", "type": "PitchSignalDirection"},
+        {"name": "howMeasured", "type": "String!"},
+        {"name": "metric", "type": "String!"},
+        {"name": "windowDays", "type": "Long"}
+      ]
+    },
+    {
+      "name": "PitchSignalInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "direction", "type": "PitchSignalDirection"},
+        {"name": "howMeasured", "type": "String!"},
+        {"name": "metric", "type": "String!"},
+        {"name": "windowDays", "type": "Long"}
+      ]
+    },
+    {
+      "name": "PitchThreadEntry",
+      "kind": "OBJECT",
+      "fields": [
+        {"name": "at", "type": "Time!"},
+        {"name": "by", "type": "UUID"},
+        {"name": "kind", "type": "PitchThreadKind!"},
+        {"name": "text", "type": "String!"}
       ]
     },
     {
@@ -3005,6 +3488,16 @@
       ]
     },
     {
+      "name": "PlaybookConflict",
+      "kind": "OBJECT",
+      "fields": [
+        {"name": "direction", "type": "String!"},
+        {"name": "field", "type": "String!"},
+        {"name": "ours", "type": "String!"},
+        {"name": "theirs", "type": "String!"}
+      ]
+    },
+    {
       "name": "PlaybookContent",
       "kind": "OBJECT",
       "fields": [
@@ -3072,6 +3565,87 @@
         {"name": "slug", "type": "String"},
         {"name": "updatedAt", "type": "Time"},
         {"name": "version", "type": "Long"}
+      ]
+    },
+    {
+      "name": "PlaybookSetup",
+      "kind": "OBJECT",
+      "fields": [
+        {"name": "answers", "type": "PlaybookSetupAnswers"},
+        {"name": "body", "type": "String"},
+        {"name": "branch", "type": "String"},
+        {"name": "createdDirections", "type": "[String!]"},
+        {"name": "directions", "type": "[PlaybookDirection!]"},
+        {"name": "homeRepoId", "type": "UUID"},
+        {"name": "id", "type": "UUID"},
+        {"name": "namespace", "type": "Namespace"},
+        {"name": "orgId", "type": "UUID"},
+        {"name": "orgPlaybookId", "type": "UUID"},
+        {"name": "path", "type": "String"},
+        {"name": "prNumber", "type": "Long"},
+        {"name": "prOpenedAt", "type": "Time"},
+        {"name": "prUrl", "type": "String"},
+        {"name": "projectId", "type": "UUID"},
+        {"name": "settledAt", "type": "Time"},
+        {"name": "slug", "type": "String"},
+        {"name": "startedAt", "type": "Time"},
+        {"name": "startedBy", "type": "UUID"},
+        {"name": "status", "type": "PlaybookSetupStatus"},
+        {"name": "strategy", "type": "String"},
+        {"name": "title", "type": "String"},
+        {"name": "updatedAt", "type": "Time"}
+      ]
+    },
+    {
+      "name": "PlaybookSetupAnswers",
+      "kind": "OBJECT",
+      "fields": [
+        {"name": "approve", "type": "[String!]!"},
+        {"name": "bets", "type": "[PlaybookBet!]!"},
+        {"name": "dailySpendCents", "type": "Long!"},
+        {"name": "nonGoals", "type": "[String!]!"},
+        {"name": "product", "type": "String!"},
+        {"name": "users", "type": "String!"}
+      ]
+    },
+    {
+      "name": "PlaybookSetupAnswersInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "approve", "type": "[String!]!"},
+        {"name": "bets", "type": "[PlaybookBetInput!]!"},
+        {"name": "dailySpendCents", "type": "Long!"},
+        {"name": "nonGoals", "type": "[String!]!"},
+        {"name": "product", "type": "String!"},
+        {"name": "users", "type": "String!"}
+      ]
+    },
+    {
+      "name": "PlaybookSetupIndex",
+      "kind": "OBJECT",
+      "fields": [
+        {"name": "answers", "type": "PlaybookSetupAnswers"},
+        {"name": "branch", "type": "String"},
+        {"name": "createdDirections", "type": "[String!]"},
+        {"name": "directions", "type": "[PlaybookDirection!]"},
+        {"name": "homeRepoId", "type": "UUID"},
+        {"name": "id", "type": "UUID"},
+        {"name": "namespace", "type": "Namespace"},
+        {"name": "orgId", "type": "UUID"},
+        {"name": "orgPlaybookId", "type": "UUID"},
+        {"name": "org_playbook", "type": "OrgPlaybookIndex"},
+        {"name": "path", "type": "String"},
+        {"name": "prNumber", "type": "Long"},
+        {"name": "prOpenedAt", "type": "Time"},
+        {"name": "prUrl", "type": "String"},
+        {"name": "project", "type": "ProjectIndex"},
+        {"name": "projectId", "type": "UUID"},
+        {"name": "settledAt", "type": "Time"},
+        {"name": "slug", "type": "String"},
+        {"name": "startedAt", "type": "Time"},
+        {"name": "startedBy", "type": "UUID"},
+        {"name": "status", "type": "PlaybookSetupStatus"},
+        {"name": "updatedAt", "type": "Time"}
       ]
     },
     {
@@ -3146,6 +3720,7 @@
         {"name": "dailyBudgetCents", "type": "Long"},
         {"name": "daySpentCents", "type": "Long"},
         {"name": "defaultBudgetCents", "type": "Long"},
+        {"name": "githubProjectAccountId", "type": "UUID"},
         {"name": "githubProjectConsoleFieldId", "type": "String"},
         {"name": "githubProjectCostFieldId", "type": "String"},
         {"name": "githubProjectGoalFieldId", "type": "String"},
@@ -3191,6 +3766,7 @@
         {"name": "defaultBudgetCents", "type": "Long"},
         {"name": "directions", "type": "[DirectionIndex!]"},
         {"name": "documents", "type": "[DocumentIndex!]"},
+        {"name": "githubProjectAccountId", "type": "UUID"},
         {"name": "githubProjectConsoleFieldId", "type": "String"},
         {"name": "githubProjectCostFieldId", "type": "String"},
         {"name": "githubProjectGoalFieldId", "type": "String"},
@@ -3312,6 +3888,7 @@
         {"name": "direction", "type": "Direction"},
         {"name": "directionIndex", "type": "DirectionIndex"},
         {"name": "directionIndexs", "type": "[DirectionIndex!]!"},
+        {"name": "directions", "type": "[Map!]"},
         {"name": "document", "type": "Document"},
         {"name": "documentIndex", "type": "DocumentIndex"},
         {"name": "documentIndexs", "type": "[DocumentIndex!]!"},
@@ -3381,6 +3958,11 @@
         {"name": "orgPlaybook", "type": "OrgPlaybook"},
         {"name": "orgPlaybookIndex", "type": "OrgPlaybookIndex"},
         {"name": "orgPlaybookIndexs", "type": "[OrgPlaybookIndex!]!"},
+        {"name": "pitch", "type": "Pitch"},
+        {"name": "pitchDigest", "type": "PitchDigest"},
+        {"name": "pitchIndex", "type": "PitchIndex"},
+        {"name": "pitchIndexs", "type": "[PitchIndex!]!"},
+        {"name": "pitches", "type": "[PitchIndex!]"},
         {"name": "planCredentials", "type": "[Map!]"},
         {"name": "planScorecard", "type": "Map"},
         {"name": "planTools", "type": "[Map!]"},
@@ -3388,6 +3970,9 @@
         {"name": "playbook", "type": "Playbook"},
         {"name": "playbookIndex", "type": "PlaybookIndex"},
         {"name": "playbookIndexs", "type": "[PlaybookIndex!]!"},
+        {"name": "playbookSetup", "type": "PlaybookSetup"},
+        {"name": "playbookSetupIndex", "type": "PlaybookSetupIndex"},
+        {"name": "playbookSetupIndexs", "type": "[PlaybookSetupIndex!]!"},
         {"name": "pricingPlan", "type": "PricingPlan"},
         {"name": "pricingPlanIndex", "type": "PricingPlanIndex"},
         {"name": "pricingPlanIndexs", "type": "[PricingPlanIndex!]!"},
@@ -3466,6 +4051,7 @@
         {"name": "namespace", "type": "Namespace!"},
         {"name": "nodeId", "type": "UUID"},
         {"name": "orgId", "type": "UUID!"},
+        {"name": "payload", "type": "String"},
         {"name": "projectId", "type": "UUID"},
         {"name": "source", "type": "String"},
         {"name": "summary", "type": "String"},
@@ -3496,6 +4082,16 @@
         {"name": "namespace", "type": "Namespace!"},
         {"name": "releasedReason", "type": "String"},
         {"name": "toolsOmitted", "type": "[String!]"}
+      ]
+    },
+    {
+      "name": "RearmIntegrationInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "aggregateId", "type": "UUID!"},
+        {"name": "namespace", "type": "Namespace!"},
+        {"name": "observedState", "type": "String!"},
+        {"name": "reason", "type": "String!"}
       ]
     },
     {
@@ -3587,11 +4183,13 @@
       "kind": "INPUT_OBJECT",
       "fields": [
         {"name": "aggregateId", "type": "UUID!"},
+        {"name": "answers", "type": "[PitchAnswerDraftInput!]"},
         {"name": "at", "type": "Time!"},
         {"name": "costCents", "type": "Long"},
         {"name": "namespace", "type": "Namespace!"},
         {"name": "nodeId", "type": "UUID!"},
         {"name": "notes", "type": "String"},
+        {"name": "pitches", "type": "[PitchDraftInput!]"},
         {"name": "proposals", "type": "[GoalProposalInput!]"},
         {"name": "usage", "type": "UsageReportInput"}
       ]
@@ -3720,6 +4318,59 @@
         {"name": "namespace", "type": "Namespace!"},
         {"name": "prNumber", "type": "Long!"},
         {"name": "prUrl", "type": "String!"}
+      ]
+    },
+    {
+      "name": "RecordPitchInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "aggregateId", "type": "UUID!"},
+        {"name": "alternatives", "type": "[String!]"},
+        {"name": "at", "type": "Time"},
+        {"name": "bet", "type": "String"},
+        {"name": "directionId", "type": "UUID!"},
+        {"name": "estimate", "type": "PitchEstimateInput"},
+        {"name": "evidence", "type": "[PitchEvidenceInput!]"},
+        {"name": "namespace", "type": "Namespace!"},
+        {"name": "nodeId", "type": "UUID"},
+        {"name": "problem", "type": "String!"},
+        {"name": "risks", "type": "[String!]"},
+        {"name": "scope", "type": "PitchScopeInput!"},
+        {"name": "signal", "type": "PitchSignalInput"},
+        {"name": "slug", "type": "String!"},
+        {"name": "title", "type": "String!"}
+      ]
+    },
+    {
+      "name": "RecordPitchOutcomeInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "aggregateId", "type": "UUID!"},
+        {"name": "measuredAt", "type": "Time!"},
+        {"name": "moved", "type": "Boolean!"},
+        {"name": "namespace", "type": "Namespace!"},
+        {"name": "note", "type": "String"},
+        {"name": "signalAfter", "type": "Float"},
+        {"name": "signalBefore", "type": "Float"}
+      ]
+    },
+    {
+      "name": "RecordPlaybookSetupDirectionsInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "aggregateId", "type": "UUID!"},
+        {"name": "directions", "type": "[String!]"},
+        {"name": "namespace", "type": "Namespace!"}
+      ]
+    },
+    {
+      "name": "RecordPlaybookSetupPRInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "aggregateId", "type": "UUID!"},
+        {"name": "namespace", "type": "Namespace!"},
+        {"name": "prNumber", "type": "Long!"},
+        {"name": "prUrl", "type": "String"}
       ]
     },
     {
@@ -3956,6 +4607,19 @@
       ]
     },
     {
+      "name": "RecordWorkItemMainGuardRerunInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "aggregateId", "type": "UUID!"},
+        {"name": "check", "type": "String!"},
+        {"name": "job", "type": "String!"},
+        {"name": "mergeSha", "type": "String!"},
+        {"name": "namespace", "type": "Namespace!"},
+        {"name": "runId", "type": "Long!"},
+        {"name": "tests", "type": "[FailingTestInput!]"}
+      ]
+    },
+    {
       "name": "RecordWorkItemPRClosedInput",
       "kind": "INPUT_OBJECT",
       "fields": [
@@ -4159,6 +4823,17 @@
       ]
     },
     {
+      "name": "RejectPitchInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "aggregateId", "type": "UUID!"},
+        {"name": "at", "type": "Time"},
+        {"name": "by", "type": "UUID!"},
+        {"name": "namespace", "type": "Namespace!"},
+        {"name": "reason", "type": "String!"}
+      ]
+    },
+    {
       "name": "RejoinWorkItemQueueInput",
       "kind": "INPUT_OBJECT",
       "fields": [
@@ -4190,6 +4865,14 @@
       "fields": [
         {"name": "aggregateId", "type": "UUID!"},
         {"name": "by", "type": "UUID"},
+        {"name": "namespace", "type": "Namespace!"}
+      ]
+    },
+    {
+      "name": "ReleaseStalledWorkItemInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "aggregateId", "type": "UUID!"},
         {"name": "namespace", "type": "Namespace!"}
       ]
     },
@@ -4500,6 +5183,15 @@
       ]
     },
     {
+      "name": "ResurfacePitchInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "aggregateId", "type": "UUID!"},
+        {"name": "at", "type": "Time!"},
+        {"name": "namespace", "type": "Namespace!"}
+      ]
+    },
+    {
       "name": "RetargetWorkItemBaseInput",
       "kind": "INPUT_OBJECT",
       "fields": [
@@ -4617,10 +5309,29 @@
       ]
     },
     {
+      "name": "ScheduleDigestInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "aggregateId", "type": "UUID!"},
+        {"name": "at", "type": "Time!"},
+        {"name": "namespace", "type": "Namespace!"},
+        {"name": "orgId", "type": "UUID!"}
+      ]
+    },
+    {
       "name": "SeeUserInput",
       "kind": "INPUT_OBJECT",
       "fields": [
         {"name": "aggregateId", "type": "UUID!"},
+        {"name": "namespace", "type": "Namespace!"}
+      ]
+    },
+    {
+      "name": "SendDigestInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "aggregateId", "type": "UUID!"},
+        {"name": "at", "type": "Time!"},
         {"name": "namespace", "type": "Namespace!"}
       ]
     },
@@ -4673,6 +5384,7 @@
       "fields": [
         {"name": "aggregateId", "type": "UUID!"},
         {"name": "by", "type": "UUID"},
+        {"name": "dailyBudgetCents", "type": "Long"},
         {"name": "direction", "type": "String!"},
         {"name": "enabled", "type": "Boolean!"},
         {"name": "fromMinute", "type": "Long!"},
@@ -4683,7 +5395,8 @@
         {"name": "namespace", "type": "Namespace!"},
         {"name": "priority", "type": "Priority"},
         {"name": "timezone", "type": "String!"},
-        {"name": "toMinute", "type": "Long!"}
+        {"name": "toMinute", "type": "Long!"},
+        {"name": "tools", "type": "[String!]"}
       ]
     },
     {
@@ -4864,6 +5577,16 @@
       ]
     },
     {
+      "name": "ShipPitchInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "aggregateId", "type": "UUID!"},
+        {"name": "doneAt", "type": "Time!"},
+        {"name": "goalSetAt", "type": "Time"},
+        {"name": "namespace", "type": "Namespace!"}
+      ]
+    },
+    {
       "name": "SpecChange",
       "kind": "OBJECT",
       "fields": [
@@ -4921,6 +5644,18 @@
         {"name": "aggregateId", "type": "UUID!"},
         {"name": "namespace", "type": "Namespace!"},
         {"name": "overflow", "type": "Boolean"}
+      ]
+    },
+    {
+      "name": "StartPlaybookSetupInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "aggregateId", "type": "UUID!"},
+        {"name": "answers", "type": "PlaybookSetupAnswersInput!"},
+        {"name": "by", "type": "UUID"},
+        {"name": "namespace", "type": "Namespace!"},
+        {"name": "projectId", "type": "UUID!"},
+        {"name": "slug", "type": "String!"}
       ]
     },
     {
@@ -5037,10 +5772,17 @@
         {"name": "orgPlaybookChanged", "type": "OrgPlaybook!"},
         {"name": "orgPlaybookIndexChanged", "type": "OrgPlaybookIndex!"},
         {"name": "orgPlaybookIndexsChanged", "type": "[OrgPlaybookIndex!]!"},
+        {"name": "pitchChanged", "type": "Pitch!"},
+        {"name": "pitchDigestChanged", "type": "PitchDigest!"},
+        {"name": "pitchIndexChanged", "type": "PitchIndex!"},
+        {"name": "pitchIndexsChanged", "type": "[PitchIndex!]!"},
         {"name": "platformWatchChanged", "type": "PlatformWatch!"},
         {"name": "playbookChanged", "type": "Playbook!"},
         {"name": "playbookIndexChanged", "type": "PlaybookIndex!"},
         {"name": "playbookIndexsChanged", "type": "[PlaybookIndex!]!"},
+        {"name": "playbookSetupChanged", "type": "PlaybookSetup!"},
+        {"name": "playbookSetupIndexChanged", "type": "PlaybookSetupIndex!"},
+        {"name": "playbookSetupIndexsChanged", "type": "[PlaybookSetupIndex!]!"},
         {"name": "pricingPlanChanged", "type": "PricingPlan!"},
         {"name": "pricingPlanIndexChanged", "type": "PricingPlanIndex!"},
         {"name": "pricingPlanIndexsChanged", "type": "[PricingPlanIndex!]!"},
@@ -5089,11 +5831,31 @@
       ]
     },
     {
+      "name": "SupersedeWorkItemInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "aggregateId", "type": "UUID!"},
+        {"name": "namespace", "type": "Namespace!"},
+        {"name": "supersededBy", "type": "[Long!]!"}
+      ]
+    },
+    {
       "name": "SuspendInstallationInput",
       "kind": "INPUT_OBJECT",
       "fields": [
         {"name": "aggregateId", "type": "UUID!"},
         {"name": "namespace", "type": "Namespace!"}
+      ]
+    },
+    {
+      "name": "TallyDirectionPitchInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "aggregateId", "type": "UUID!"},
+        {"name": "hit", "type": "Boolean"},
+        {"name": "measured", "type": "Boolean"},
+        {"name": "namespace", "type": "Namespace!"},
+        {"name": "pitchId", "type": "UUID!"}
       ]
     },
     {
@@ -5609,6 +6371,7 @@
         {"name": "deployState", "type": "DeployState"},
         {"name": "deployedAt", "type": "Time"},
         {"name": "dirtyHeadSha", "type": "String"},
+        {"name": "emptyFinishRefusals", "type": "Long"},
         {"name": "evalCacheReadTokens", "type": "Long"},
         {"name": "evalCacheWriteTokens", "type": "Long"},
         {"name": "evalInputTokens", "type": "Long"},
@@ -5624,6 +6387,7 @@
         {"name": "evaluations", "type": "[EvaluationRecord!]"},
         {"name": "evaluatorNodeId", "type": "UUID"},
         {"name": "failedStep", "type": "String"},
+        {"name": "finishRefusedEmpty", "type": "Boolean"},
         {"name": "finishedAt", "type": "Time"},
         {"name": "finishedSince", "type": "Time"},
         {"name": "firstClaimedAt", "type": "Time"},
@@ -5646,7 +6410,10 @@
         {"name": "holdReleasedReason", "type": "String"},
         {"name": "holdSince", "type": "Time"},
         {"name": "id", "type": "UUID"},
+        {"name": "integrationGaveUpAt", "type": "Time"},
+        {"name": "integrationGaveUpHeadSha", "type": "String"},
         {"name": "integrationGaveUpState", "type": "String"},
+        {"name": "integrationNextLookAt", "type": "Time"},
         {"name": "integrationPolls", "type": "Long"},
         {"name": "issueId", "type": "UUID"},
         {"name": "issueNumber", "type": "Long"},
@@ -5658,6 +6425,12 @@
         {"name": "lastError", "type": "String"},
         {"name": "lastNote", "type": "String"},
         {"name": "mainGuardPolls", "type": "Long"},
+        {"name": "mainGuardRerunCheck", "type": "String"},
+        {"name": "mainGuardRerunJob", "type": "String"},
+        {"name": "mainGuardRerunMergeSha", "type": "String"},
+        {"name": "mainGuardRerunRunId", "type": "Long"},
+        {"name": "mainGuardRerunTests", "type": "[FailingTest!]"},
+        {"name": "mergeKeptReason", "type": "String"},
         {"name": "mergeQueuePosition", "type": "Long"},
         {"name": "mergeQueuedBehindPr", "type": "Long"},
         {"name": "mergeRefusedHead", "type": "String"},
@@ -5729,10 +6502,12 @@
         {"name": "sessionToolsNodeId", "type": "UUID"},
         {"name": "sharpened", "type": "Boolean"},
         {"name": "stalled", "type": "Boolean"},
+        {"name": "stalledSince", "type": "Time"},
         {"name": "status", "type": "WorkItemStatus"},
         {"name": "steppedAsideAt", "type": "Time"},
         {"name": "steppedAsideDetail", "type": "String"},
         {"name": "steppedAsideReason", "type": "StepAsideReason"},
+        {"name": "supersededBy", "type": "[Long!]"},
         {"name": "testFailing", "type": "[FailingTest!]"},
         {"name": "testFailingHeadSha", "type": "String"},
         {"name": "testFailingJob", "type": "String"},
@@ -5778,6 +6553,7 @@
         {"name": "deployMinutes", "type": "Long"},
         {"name": "deployState", "type": "DeployState"},
         {"name": "deployedAt", "type": "Time"},
+        {"name": "emptyFinishRefusals", "type": "Long"},
         {"name": "evalCacheReadTokens", "type": "Long"},
         {"name": "evalCacheWriteTokens", "type": "Long"},
         {"name": "evalInputTokens", "type": "Long"},
@@ -5794,6 +6570,7 @@
         {"name": "evaluations", "type": "[EvaluationRecord!]"},
         {"name": "evaluatorNodeId", "type": "UUID"},
         {"name": "failedStep", "type": "String"},
+        {"name": "finishRefusedEmpty", "type": "Boolean"},
         {"name": "finishedAt", "type": "Time"},
         {"name": "firstClaimedAt", "type": "Time"},
         {"name": "githubProjectArchived", "type": "Boolean"},
@@ -5814,7 +6591,9 @@
         {"name": "holdReleasedReason", "type": "String"},
         {"name": "holdSince", "type": "Time"},
         {"name": "id", "type": "UUID"},
+        {"name": "integrationGaveUpAt", "type": "Time"},
         {"name": "integrationGaveUpState", "type": "String"},
+        {"name": "integrationNextLookAt", "type": "Time"},
         {"name": "issue", "type": "IssueIndex"},
         {"name": "issueId", "type": "UUID"},
         {"name": "issueNumber", "type": "Long"},
@@ -5824,10 +6603,12 @@
         {"name": "keptCurrentMethod", "type": "RebaseMethod"},
         {"name": "lastError", "type": "String"},
         {"name": "lastNote", "type": "String"},
+        {"name": "mergeKeptReason", "type": "String"},
         {"name": "mergeQueuePosition", "type": "Long"},
         {"name": "mergeQueuedBehindPr", "type": "Long"},
         {"name": "mergeRefusedHead", "type": "String"},
         {"name": "mergeRefusedReason", "type": "String"},
+        {"name": "mergeRevertReason", "type": "String"},
         {"name": "mergeRevertSha", "type": "String"},
         {"name": "mergeRevertedSha", "type": "String"},
         {"name": "mergeSha", "type": "String"},
@@ -5879,10 +6660,12 @@
         {"name": "sessionToolsAt", "type": "Time"},
         {"name": "sharpened", "type": "Boolean"},
         {"name": "stalled", "type": "Boolean"},
+        {"name": "stalledSince", "type": "Time"},
         {"name": "status", "type": "WorkItemStatus"},
         {"name": "steppedAsideAt", "type": "Time"},
         {"name": "steppedAsideDetail", "type": "String"},
         {"name": "steppedAsideReason", "type": "StepAsideReason"},
+        {"name": "supersededBy", "type": "[Long!]"},
         {"name": "testFailing", "type": "[FailingTest!]"},
         {"name": "testFailingHeadSha", "type": "String"},
         {"name": "title", "type": "String"},
