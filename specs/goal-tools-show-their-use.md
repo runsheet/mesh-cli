@@ -22,13 +22,13 @@ mesh-cli tests: a stream with three mcp__brave__search calls (one erroring) yiel
 
 | Seq | Title | Status | Branch | PR | Cost |
 | --- | --- | --- | --- | --- | --- |
-| 1 | Harness: every MCP tool call is counted per server with errors and wall time, in both streams | merged | mesh/tools-show-their-use-1 | https://github.com/runsheet/mesh-cli/pull/249 | $0.75 |
-| 2 | Gateway: the usage report carries per-tool calls as tools, resent without them to an older platform | merged | mesh/tools-show-their-use-2 | https://github.com/runsheet/mesh-cli/pull/254 | $0.65 |
-| 3 | Node: the usage report carries per-tool calls, and a served tool never called or erroring is noted | merged | mesh/tools-show-their-use-2 | https://github.com/runsheet/mesh-cli/pull/254 | $1.85 |
+| 1 | Harness: every MCP tool call is counted per server with errors and wall time, in both streams | merged | mesh/tools-show-their-use-1 | https://github.com/runsheet/mesh-cli/pull/249 | $1.88 |
+| 2 | Node: the usage report carries per-tool calls, errors and ms as `tools`, and served-but-uncalled or erroring servers are noted on the item | merged | mesh/tools-show-their-use-2 | https://github.com/runsheet/mesh-cli/pull/254 | $2.72 |
+| 3 | mesh-specs: trd §3 Tools and ADR 006 describe the per-tool usage list, the notes, and what the console will show | merged | mesh/tools-show-their-use-3 | https://github.com/runsheet/mesh-specs/pull/63 | $1.33 |
 
 ## After merge
 
-After this goal merges the node half lands the per-tool counts in its UsageReport. mesh-cli has no deploy — releases go out as signed GitHub artifacts only. Build for linux/amd64, `scp` to `~/bin/mesh.new`, and `mesh node upgrade --binary ~/bin/mesh.new` (see README.md's "Upgrading a node without ending sessions"). The first per-tool rows in the platform's ToolUsageIndex — and the Tools page showing calls > 0 — are the sign it worked. Until then, the node counts the calls and logs them in a `usage: tools` line per session (items 1–3's code), but the platform sees no `tools` list because the platform half has not landed yet.
+After this goal merges the node half lands the per-tool counts in its UsageReport. mesh-cli has no deploy — releases go out as signed GitHub artifacts only. Build for linux/amd64, `scp` to `~/bin/mesh.new`, and `mesh node upgrade --binary ~/bin/mesh.new` (see README.md's "Upgrading a node without ending sessions"). The first per-tool rows in the platform's ToolUsageIndex — and the Tools page showing calls > 0 — are the sign it worked. Until then, the node counts the calls and logs them in a `usage: tools` line per session (items 1–2's code), but the platform sees no `tools` list because the platform half has not landed yet.
 
 ## What this project did not build
 
