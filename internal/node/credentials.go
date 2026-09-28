@@ -495,7 +495,7 @@ func (s *SessionAccount) Finish(ctx context.Context, res harness.Result) {
 // priced tool the session made (trd §3 Tools, priced calls are usage),
 // by the call's id: a copy of the session's report with the tool's price
 // per call as its list cost, no actual cost and no tokens. An unpriced
-// tool, one not called and a built-in server (Prologue) are none. A
+// tool, one not called and a built-in server (mesh-context) are none. A
 // platform without recordToolUsage is said once per run and each call
 // logged; a failed record is logged, never the item's failure.
 func (s *SessionAccount) reportToolUsage(ctx context.Context) {

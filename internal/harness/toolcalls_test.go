@@ -18,14 +18,14 @@ func TestParseStreamToolCalls(t *testing.T) {
 	if !res.Success {
 		t.Fatalf("result = %+v", res)
 	}
-	if res.ToolCalls["search"] != 2 || res.ToolCalls["prologue"] != 1 || len(res.ToolCalls) != 2 {
-		t.Fatalf("ToolCalls = %v, want search:2 prologue:1", res.ToolCalls)
+	if res.ToolCalls["search"] != 2 || res.ToolCalls["mesh-context"] != 1 || len(res.ToolCalls) != 2 {
+		t.Fatalf("ToolCalls = %v, want search:2 mesh-context:1", res.ToolCalls)
 	}
 	if got := res.ToolCallIDs["search"]; len(got) != 2 || got[0] != "t1" || got[1] != "t2" {
 		t.Fatalf("ToolCallIDs[search] = %v, want [t1 t2]", got)
 	}
-	if got := res.ToolCallIDs["prologue"]; len(got) != 1 || got[0] != "t3" {
-		t.Fatalf("ToolCallIDs[prologue] = %v, want [t3]", got)
+	if got := res.ToolCallIDs["mesh-context"]; len(got) != 1 || got[0] != "t3" {
+		t.Fatalf("ToolCallIDs[mesh-context] = %v, want [t3]", got)
 	}
 	for server, calls := range res.ToolCalls {
 		if got := len(res.ToolCallIDs[server]); got != calls {

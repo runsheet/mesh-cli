@@ -29,8 +29,9 @@ type SessionTools struct {
 
 // SelectTools is tools.Select for the session's role and the node's
 // runtimes, and a tool the renderer refuses — a bad or repeated name, a
-// clash with a built-in such as prologue — is omitted with the refusal as
-// its note, not rendered (trd §3 Tools, Prologue is built in).
+// clash with a built-in such as mesh-context — is omitted with the
+// refusal as its note, not rendered (trd §3 Tools, mesh-context is
+// built in).
 func SelectTools(builtin map[string]any, ts []tools.Tool, role string, runtimes []string) SessionTools {
 	use, omitted, missing := tools.Select(ts, role, runtimes)
 	st := SessionTools{Omitted: omitted, Missing: missing}
@@ -78,7 +79,7 @@ func (st SessionTools) Names() string {
 }
 
 // Apply renders the tools in use for Claude Code beside builtin (the
-// Prologue attachment) onto the job: MCPServers holds the built-in and
+// mesh-context attachment) onto the job: MCPServers holds the built-in and
 // every tool, Env gains the secret values (the config names them only),
 // Secrets gains them so the harness redacts them, and Tools carries the
 // tools for an adapter that renders its own (Codex's config.toml). It

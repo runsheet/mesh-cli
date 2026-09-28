@@ -55,7 +55,8 @@ type Job struct {
 	// runs out is killed and Run returns context.DeadlineExceeded.
 	Timeout time.Duration
 	// MCPServers are MCP servers the session gets (name → config, the
-	// shape of an mcp.json's mcpServers): Prologue, for context on demand.
+	// shape of an mcp.json's mcpServers): mesh-context, for context on
+	// demand.
 	MCPServers map[string]any
 	// Tools are the console tools the session gets (trd §3 Tools), their
 	// secrets decrypted: Claude Code's are already in MCPServers, with

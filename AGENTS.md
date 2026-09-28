@@ -292,13 +292,15 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   node); a platform without `tools` gets none and is asked for
   credentials alone from then on. `Loop.Runtimes()` is what the last
   probe found. Build and evaluate sessions get theirs
-  (`SelectTools` by role and runtimes, `SessionTools.Apply`: Prologue
+  (`SelectTools` by role and runtimes, `SessionTools.Apply`: mesh-context
   plus each tool in `Job.MCPServers`, secret values in `Job.Env` and
   `Job.Secrets` only, the tools on `Job.Tools` for Codex); a
   nice-to-have tool the node cannot start is omitted and noted on the
   item, a required one releases the item and `Declines` keeps the loop
   off it while the runtimes are unchanged. Plan, research, rebase and
-  channel sessions keep Prologue alone.
+  channel sessions keep mesh-context alone. `tools.IsBuiltin(name)`
+  knows the built-in by its current name and, for one release, its old
+  one, `prologue`.
 - **Services** (`internal/sandbox/services.go`, mesh-specs ADR 007):
   `Resolve(repoDir, allowed)` reads what a repository declares, first
   found wins — `.mesh/services.yml`, else the `services:` of its
@@ -361,7 +363,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   evaluation); a required one releases a build, declines an evaluation
   (`Declines`) or fails a rebase, naming it, and no agent starts; a
   required refused one makes no pod at all.
-- Every session gets Prologue as an MCP server with the node's token and
+- Every session gets mesh-context as an MCP server with the node's token and
   the project's context on disk under `.mesh/context/` with `INDEX.md`:
   the documents, then `## Live goals and items` — each live goal's items
   (seq, title, status, branch, PR) and the finished goals one line each,
@@ -378,7 +380,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `RecordToolUsage(itemID, toolCallId, tool, report)` (mutation
   `recordToolUsage`) per call of a rendered tool with
   `pricePerCallCents > 0` — the session's report at the tool's price,
-  no tokens, no actual cost; Prologue and unpriced tools are none.
+  no tokens, no actual cost; mesh-context and unpriced tools are none.
   A platform without `recordToolUsage` is said once per run and each
   call logged instead; it never fails the item.
 - **Models are per kind of session.** `Models` in `~/.mesh/node.yaml`

@@ -43,12 +43,12 @@ func TestContextSizeBudget(t *testing.T) {
 	if !strings.Contains(string(index), "| trd | TRD |  | `trd` | acme/widgets/specs/trd.md | fetch |") || !strings.Contains(string(index), "`mesh_document`") {
 		t.Fatalf("index:\n%s", index)
 	}
-	mcp := PrologueMCP("https://api.test/", "rs_x")
-	srv := mcp["prologue"].(map[string]any)
+	mcp := MeshContextMCP("https://api.test/", "rs_x")
+	srv := mcp["mesh-context"].(map[string]any)
 	if srv["url"] != "https://api.test/mcp" || srv["headers"].(map[string]string)["Authorization"] != "Bearer rs_x" {
 		t.Fatalf("mcp: %v", mcp)
 	}
-	if PrologueMCP("", "rs_x") != nil || PrologueMCP("https://api.test", "") != nil {
+	if MeshContextMCP("", "rs_x") != nil || MeshContextMCP("https://api.test", "") != nil {
 		t.Fatal("no gateway or no token: no server")
 	}
 }

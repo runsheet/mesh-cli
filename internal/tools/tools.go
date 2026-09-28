@@ -36,8 +36,17 @@ var (
 var adapterBinary = map[string]string{"claude-code": "claude", "codex": "codex"}
 
 // Builtin is the server the node attaches to every session itself; a
-// console tool of that name is a clash (trd §3 Tools, Prologue is built in).
-const Builtin = "prologue"
+// console tool of that name is a clash (trd §3 Tools, mesh-context is
+// built in).
+const Builtin = "mesh-context"
+
+// IsBuiltin reports whether name is the built-in server: mesh-context,
+// or — for one release — its old name, prologue, so a config or an
+// adopted session naming it the old way still works. Drop the alias at
+// the next release.
+func IsBuiltin(name string) bool {
+	return name == Builtin || name == "prologue"
+}
 
 // Tool is one tool of the claim-time read (trd §3 Tools). Secrets holds a
 // header (remote) or env (local) key and its value; it wins over the same

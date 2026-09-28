@@ -128,7 +128,7 @@ func TestArgsAskMCPFuncEachTime(t *testing.T) {
 	n := 0
 	s := &Session{Cfg: &node.Config{Slug: "mini"}, MCPFunc: func() map[string]any {
 		n++
-		return map[string]any{"prologue": map[string]any{"type": "http", "url": "https://api.test/mcp",
+		return map[string]any{"mesh-context": map[string]any{"type": "http", "url": "https://api.test/mcp",
 			"headers": map[string]string{"Authorization": fmt.Sprintf("Bearer access-%d", n)}}}
 	}}
 	first := strings.Join(s.Args("/w"), " ")

@@ -1,5 +1,5 @@
 ---
-summary: The node renders each session's tools (internal/tools) in the agent's own format — Claude Code mcpServers beside the built-in prologue server, allowed by --allowedTools mcp__<name>__*, and Codex [mcp_servers.<name>] tables in a 0600 config.toml under the session's CODEX_HOME — with every secret value in the session's environment only (MESH_TOOL_<NAME>_<KEY>, or the key itself for a Codex local tool's env_vars), the configs carrying variable names, a clash with the built-in refused, and a local tool whose runtime the node lacks omitted when nice-to-have (noted on the item) or declining the build (released, not reclaimed while the node's runtimes are unchanged) when required; priced tool calls, counted per MCP server from the stream, go to the platform as recordUsage records (calls × pricePerCallCents) after a build or evaluation.
+summary: The node renders each session's tools (internal/tools) in the agent's own format — Claude Code mcpServers beside the built-in mesh-context server, allowed by --allowedTools mcp__<name>__*, and Codex [mcp_servers.<name>] tables in a 0600 config.toml under the session's CODEX_HOME — with every secret value in the session's environment only (MESH_TOOL_<NAME>_<KEY>, or the key itself for a Codex local tool's env_vars), the configs carrying variable names, a clash with the built-in refused, and a local tool whose runtime the node lacks omitted when nice-to-have (noted on the item) or declining the build (released, not reclaimed while the node's runtimes are unchanged) when required; priced tool calls, counted per MCP server from the stream, go to the platform as recordUsage records (calls × pricePerCallCents) after a build or evaluation.
 status: accepted
 ---
 
@@ -32,7 +32,7 @@ where the code lives, the variable names, and the rendering per agent.
    item), in `missingRequired` when required (the node declines the
    claim). Remote tools need no runtime.
 3. **Claude Code.** `ClaudeCode(builtin, tools)` returns the
-   `mcpServers` map — the built-in servers (Prologue) and one entry per
+   `mcpServers` map — the built-in servers (mesh-context) and one entry per
    tool: remote `{type: http, url, headers}`, local `{command, args,
    env}` with `npx -y <command> …`, `uvx <command> …` or
    `docker run -i --rm -e <KEY>… <image> …` — so `harness.MCPArgs` of it
@@ -52,7 +52,7 @@ where the code lives, the variable names, and the rendering per agent.
    `_`); a bearer token is carried without its `Bearer ` prefix so both
    agents read the same value.
 6. **Refusals.** A tool name not `[a-z0-9_-]`, named twice, or equal to
-   a built-in (`prologue` always) is an error from either renderer, as
+   a built-in (`mesh-context` always) is an error from either renderer, as
    is an unknown transport or runtime. Nothing is written then.
 7. **The wiring.** The claim-time read is `gateway.Session` — the
    platform's `itemTools(itemId)` (`planTools(goalId)`,
@@ -65,8 +65,8 @@ where the code lives, the variable names, and the rendering per agent.
    {name, source: "item_github_token"}]` — and the node maps it to its
    `Tool`: the slug is the name, `remote_mcp` is remote and `local_mcp`
    local, `need` gives `required`; the platform's own built-in
-   (`builtIn`, mesh-context, which the node attaches itself as
-   prologue) and a builtin switch are not tools of the read, nor is a
+   (`builtIn`, mesh-context — the node attaches it itself) and a
+   builtin switch are not tools of the read, nor is a
    row whose slug no renderer takes. Every setting of a tool served
    through an account is a secret (it may be that account's; a plain
    header travelling as a variable costs nothing), a tool served with
@@ -86,9 +86,9 @@ where the code lives, the variable names, and the rendering per agent.
    its tools on the `SessionAccount`. The build (`Runner.RunItem`) and
    the evaluation (`Evaluator.Evaluate`) select them for their role and
    the node's runtimes (`SelectTools`, which also turns a tool either
-   renderer refuses — a clash with `prologue`, a bad or repeated name —
+   renderer refuses — a clash with `mesh-context`, a bad or repeated name —
    into an omission noted on the item) and render the rest for Claude
-   Code beside the built-in Prologue attachment (`SessionTools.Apply`):
+   Code beside the built-in mesh-context attachment (`SessionTools.Apply`):
    `Job.MCPServers`, the values on `Job.Env` and `Job.Secrets`, and the
    tools themselves on `Job.Tools` for an adapter that writes its own
    config (Codex, `WriteCodexConfig` into its `CODEX_HOME`). Plan,
@@ -120,7 +120,7 @@ where the code lives, the variable names, and the rendering per agent.
    ADR-005, at the tool's `pricePerCallCents`, no tokens) — once per
    call of a tool priced above zero. (Amended 2026-09-27: it called
    `recordUsage` once per tool, a field only the platform may call.)
-   Prologue and unpriced tools are never reported. A gateway without
+   mesh-context and unpriced tools are never reported. A gateway without
    the mutation (`IsUnsupported`) is said once per run and each call
    logged as a `usage: tool …` line; any error is logged, never the
    item's failure.
@@ -134,6 +134,17 @@ harness's `prepareHome` writes the tools' `config.toml` into that same
 home — secrets still by variable name in it, their values on the env —
 and leaves the directory to the account's `Cleanup`. The tools are
 rendered no differently.
+
+*Amended 2026-09-28 (goal `builtin-is-mesh-context`, item 1):* the
+built-in server is named `mesh-context` (`tools.Builtin`), not
+`prologue` — `mcpServers`/`config.toml` carry `mesh-context`,
+`--allowedTools` carries `mcp__mesh-context__*`, and a console tool
+named `mesh-context` is the clash now. `tools.IsBuiltin(name)` is true
+for `mesh-context` and, for one release only, `prologue`, so a console
+tool still named the old way, or an adopted session an older node
+started under it, keeps working; a tool named `prologue` is an
+ordinary console tool from here, no longer refused as a clash. Drop
+the alias at the next release.
 
 ## Consequences
 

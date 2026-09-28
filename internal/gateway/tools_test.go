@@ -62,7 +62,7 @@ func TestSessionCarriesTools(t *testing.T) {
 	}
 	// the rendering takes what the read gave: the secrets in env, the
 	// token's variable left for the session to expand
-	servers, env, err := tools.ClaudeCode(map[string]any{"prologue": map[string]any{"type": "http", "url": "https://p"}}, got.Tools)
+	servers, env, err := tools.ClaudeCode(map[string]any{"mesh-context": map[string]any{"type": "http", "url": "https://p"}}, got.Tools)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,6 +72,25 @@ func TestSessionCarriesTools(t *testing.T) {
 	}
 	if len(env) != 4 {
 		t.Errorf("env = %v, want linear's two and pg's two", env)
+	}
+}
+
+// The platform's own built-in row (kind builtin, builtIn: true) is never
+// a Tool of the read: the node attaches mesh-context itself.
+func TestSessionDropsTheBuiltinRow(t *testing.T) {
+	f := gatewaytest.New("rs_test")
+	defer f.Close()
+	f.SessionCredentials[itemID] = []map[string]any{anthropicSubscription("c1", "max-a", "sk-ant-oat01-x")}
+	f.SessionTools[itemID] = []map[string]any{
+		{"id": "t0", "slug": "mesh-context", "name": "Mesh context", "kind": "builtin", "builtIn": true, "account": nil, "headers": []any{}, "env": []any{}},
+	}
+	gw := gateway.New(f.URL(), "rs_test")
+	got, err := gw.Session(context.Background(), gateway.SessionRef{Kind: "build", ItemID: itemID}, nodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Tools) != 0 {
+		t.Fatalf("tools = %+v, want none", got.Tools)
 	}
 }
 
