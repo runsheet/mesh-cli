@@ -150,6 +150,17 @@ threshold on its repo and routes the flag through the same re-ask as
 an unverifiable acceptance (`PlanInput.Rejected`), with the reason
 `model <m> has first-pass <x> on <repo>`.
 
+## Usage report
+
+Each session's usage report (`gateway.UsageReport`, carried as `usage`
+on the command that ends it) also names its turn shape, added by goal
+`mesh-spends-less-per-item`: `turns`, `inputPerTurnMean` and
+`inputPerTurnMax` (its per-turn input tokens) and `largestToolResults`
+(its five largest tool results by content byte length, `{tool,
+bytes}`), all left off the report when zero or empty. See
+`docs/adr/adr-005-accounts-on-the-node.md`'s "usage report per session"
+section for the full contract.
+
 ## Success criteria
 
 - end users can create/update Mesh data without direct database credentials

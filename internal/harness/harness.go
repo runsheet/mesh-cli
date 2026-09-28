@@ -151,8 +151,21 @@ type Result struct {
 	CostUSD float64
 	// SessionID is the harness's session id (for a resume, or the report).
 	SessionID string
-	// Turns is how many turns the session took, when known.
+	// Turns is how many turns the session took, when known — a Claude
+	// session's result event num_turns, a Codex session's count of
+	// turn.completed events.
 	Turns int
+	// InputPerTurnMean and InputPerTurnMax are the session's per-turn
+	// input tokens (each assistant turn's own share: input + cache read
+	// + cache creation for Claude, the delta between successive
+	// turn.completed cumulative totals for Codex), across its turns;
+	// zero when the stream carried no per-turn usage.
+	InputPerTurnMean int64
+	InputPerTurnMax  int64
+	// LargestToolResults is the session's five largest tool results by
+	// content byte length, largest first — a Claude tool_result block's
+	// content, a Codex mcp_tool_call's result; nil when it made none.
+	LargestToolResults []ToolResultSize
 	// RateLimit is the latest plan standing the session reported; nil
 	// when it reported none.
 	RateLimit *RateLimit
@@ -200,6 +213,27 @@ type ToolStat struct {
 	// unconnected server's status — trimmed and capped at 300
 	// characters.
 	FirstError string
+}
+
+// ToolResultSize is one tool result's content, in bytes — one row of
+// Result.LargestToolResults.
+type ToolResultSize struct {
+	// Tool is the tool_use block's own name (e.g. "Bash" or
+	// "mcp__prologue__prologue_document"), not just its MCP server.
+	Tool  string
+	Bytes int
+}
+
+// addToolResultSize keeps tool's result among the five largest seen so
+// far (LargestToolResults), largest first.
+func (r *Result) addToolResultSize(tool string, bytes int) {
+	r.LargestToolResults = append(r.LargestToolResults, ToolResultSize{Tool: tool, Bytes: bytes})
+	sort.Slice(r.LargestToolResults, func(i, j int) bool {
+		return r.LargestToolResults[i].Bytes > r.LargestToolResults[j].Bytes
+	})
+	if len(r.LargestToolResults) > 5 {
+		r.LargestToolResults = r.LargestToolResults[:5]
+	}
 }
 
 // ToolCall is one row of Result.ToolReport.

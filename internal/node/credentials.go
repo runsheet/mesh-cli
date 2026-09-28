@@ -8,6 +8,7 @@ import (
 	"log"
 	"math"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -61,7 +62,7 @@ type Credentials struct {
 	Now func() time.Time
 	Log *log.Logger
 
-	credOnce, usageOnce, toolUsageOnce, toolListOnce sync.Once
+	credOnce, usageOnce, toolUsageOnce, toolListOnce, usageDetailOnce sync.Once
 }
 
 func (c *Credentials) now() time.Time {
@@ -107,12 +108,13 @@ type SessionAccount struct {
 	// result it was built from; handedIn and noLedger are what its
 	// finishing command made of it (Carried), and into the session whose
 	// report carries this one's (Carries). noToolList is a report that
-	// landed without its per-tool list (ErrNoToolUsage), which Finish
-	// logs instead.
-	report                         *gateway.UsageReport
-	res                            harness.Result
-	handedIn, noLedger, noToolList bool
-	into                           *SessionAccount
+	// landed without its per-tool list (ErrNoToolUsage), and noDetail
+	// one that landed without its turn or tool-result figures
+	// (ErrNoUsageDetail); Finish logs each instead.
+	report                                   *gateway.UsageReport
+	res                                      harness.Result
+	handedIn, noLedger, noToolList, noDetail bool
+	into                                     *SessionAccount
 	// Tools are the tools the claim-time read handed the session, their
 	// secrets decrypted (nil from a platform without them); what the
 	// session gets of them is SessionTools'.
@@ -469,6 +471,15 @@ func (s *SessionAccount) Add(res harness.Result) {
 		}
 	}
 	r.Tools = mergeToolCalls(r.Tools, rows)
+	if res.Turns > 0 {
+		sum := r.InputPerTurnMean*r.Turns + res.InputPerTurnMean*int64(res.Turns)
+		r.Turns += int64(res.Turns)
+		r.InputPerTurnMean = sum / r.Turns
+		if res.InputPerTurnMax > r.InputPerTurnMax {
+			r.InputPerTurnMax = res.InputPerTurnMax
+		}
+	}
+	r.LargestToolResults = mergeLargestToolResults(r.LargestToolResults, res.LargestToolResults)
 	cents := int64(Cents(res.CostUSD))
 	r.ListCostCents += cents
 	if r.CredentialKind == gateway.CredentialAPI {
@@ -492,24 +503,30 @@ func (s *SessionAccount) Carries(other *SessionAccount) {
 // (err from FinishWorkItem, EvaluateWorkItem, PlanGoal,
 // FinishWorkItemRebase or RecordDirectionResearch). ErrNoUsageLedger is
 // a command that landed without it: nil to the caller, and Finish logs
-// the record. Anything else is the command's own error.
-//
-// ErrNoToolUsage is a command that landed with the report but without
-// its per-tool list: nil to the caller too, and Finish logs the list.
+// the record. ErrNoToolUsage is a command that landed with the report
+// but without its per-tool list: nil to the caller too, and Finish
+// logs the list. ErrNoUsageDetail is a command that landed with the
+// rest of the report but none of its turn or tool-result figures: also
+// nil to the caller, and Finish says so once. Anything else is the
+// command's own error.
 func (s *SessionAccount) Carried(err error) error {
 	noLedger := errors.Is(err, gateway.ErrNoUsageLedger)
 	noToolList := !noLedger && errors.Is(err, gateway.ErrNoToolUsage)
+	noDetail := !noLedger && errors.Is(err, gateway.ErrNoUsageDetail)
 	if s != nil && s.report != nil {
 		switch {
-		case err == nil:
+		case err == nil, noDetail:
 			s.handedIn = true
 		case noLedger:
 			s.noLedger = true
 		case noToolList:
 			s.handedIn, s.noToolList = true, true
 		}
+		if noDetail {
+			s.noDetail = true
+		}
 	}
-	if noLedger || noToolList {
+	if noLedger || noToolList || noDetail {
 		return nil
 	}
 	return err
@@ -555,17 +572,23 @@ func capRunes(s string, n int) string {
 }
 
 // Finish is the once-per-session end, called however the session
-// ended: each call of a priced tool it made goes to recordToolUsage
-// (reportToolUsage), and a report its finishing command did not carry —
-// a failed item or rebase, a plan or research error, or a platform
-// whose command takes no `usage` (ErrNoUsageLedger, said once per run)
-// — is logged as one `usage: {…}` line: the session spent, and its
-// record must exist somewhere.
+// ended: one `usage: turns=… input/turn mean=… max=… largest=…` line
+// names the session's own per-turn input and largest tool results,
+// whatever became of the report; each call of a priced tool it made
+// goes to recordToolUsage (reportToolUsage); a platform whose usage
+// report took no per-tool list (ErrNoToolUsage) or no turn or
+// tool-result detail (ErrNoUsageDetail) is said once per run; and a
+// report its finishing command did not carry at all — a failed item or
+// rebase, a plan or research error, or a platform whose command takes
+// no `usage` (ErrNoUsageLedger, said once per run) — is logged as one
+// `usage: {…}` line: the session spent, and
+// its record must exist somewhere.
 func (s *SessionAccount) Finish(ctx context.Context, res harness.Result) {
 	if s == nil || s.creds == nil {
 		return
 	}
 	c := s.creds
+	c.logf("usage: %s", turnUsageSummary(res))
 	rep := s.Report(res)
 	s.reportToolUsage(ctx)
 	if s.ref.ItemID == "" {
@@ -581,6 +604,11 @@ func (s *SessionAccount) Finish(ctx context.Context, res harness.Result) {
 		line, _ := json.Marshal(rep.Tools)
 		c.logf("usage: session %s tools: %s", rep.SessionID, s.Redact(string(line)))
 	}
+	if s.noDetail {
+		c.usageDetailOnce.Do(func() {
+			c.logf("usage: the platform's usage report carries no turns or tool-result detail; sent without them (said once, for every session this run)")
+		})
+	}
 	if s.handedIn || s.into != nil {
 		return
 	}
@@ -591,6 +619,32 @@ func (s *SessionAccount) Finish(ctx context.Context, res harness.Result) {
 	}
 	line, _ := json.Marshal(rep)
 	c.logf("usage: %s", s.Redact(string(line)))
+}
+
+// mergeLargestToolResults combines two already-sorted (largest first,
+// at most five each) LargestToolResults lists into the five largest of
+// the two, for a report more than one session adds to (Add).
+func mergeLargestToolResults(a []gateway.ToolResultSize, b []harness.ToolResultSize) []gateway.ToolResultSize {
+	merged := append([]gateway.ToolResultSize{}, a...)
+	for _, t := range b {
+		merged = append(merged, gateway.ToolResultSize{Tool: t.Tool, Bytes: t.Bytes})
+	}
+	sort.Slice(merged, func(i, j int) bool { return merged[i].Bytes > merged[j].Bytes })
+	if len(merged) > 5 {
+		merged = merged[:5]
+	}
+	return merged
+}
+
+// turnUsageSummary is one session's per-turn input and largest tool
+// results, for Finish's node.log line.
+func turnUsageSummary(res harness.Result) string {
+	largest := make([]string, 0, len(res.LargestToolResults))
+	for _, t := range res.LargestToolResults {
+		largest = append(largest, fmt.Sprintf("%s:%d", t.Tool, t.Bytes))
+	}
+	return fmt.Sprintf("turns=%d input/turn mean=%d max=%d largest=%s",
+		res.Turns, res.InputPerTurnMean, res.InputPerTurnMax, strings.Join(largest, ","))
 }
 
 // reportToolUsage hands the platform one recordToolUsage per call of a

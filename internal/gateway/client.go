@@ -235,14 +235,30 @@ var ErrNoUsageLedger = errors.New("gateway: the platform keeps no usage ledger")
 // the list instead. errors.Is-able.
 var ErrNoToolUsage = errors.New("gateway: the platform takes no per-tool calls on the usage report")
 
+// ErrNoUsageDetail is what a finishing command returns when its usage
+// report carried turns, per-turn input or the largest tool results but
+// the gateway's UsageReportInput has none of those fields (a platform
+// older than mesh-spends-less-per-item): the report is resent without
+// them, and the rest of the usage — and the command itself — lands;
+// only the per-turn and tool-result figures did not. errors.Is-able.
+var ErrNoUsageDetail = errors.New("gateway: the platform's usage report carries no turn or tool-result detail")
+
+// usageDetailFields are UsageReport's fields a platform before
+// mesh-spends-less-per-item may not know (ErrNoUsageDetail).
+var usageDetailFields = []string{"turns", "inputPerTurnMean", "inputPerTurnMax", "largestToolResults"}
+
 // mutateWithUsage sends field's command with input, plus usage's report
 // on the `usage` key when usage is non-nil. A platform whose input has
-// no `usage` (unknownField on "usage") gets the command again without
-// it: the command lands, and ErrNoUsageLedger says the report did not.
-// A platform whose report has no `tools` (unknownField on "tools") gets
-// it again without the list, and every later report goes without it:
-// the command lands with the total, and ErrNoToolUsage says the list
-// did not.
+// no `usage` at all (unknownField on "usage") gets the command again
+// without it: the command lands, and ErrNoUsageLedger says the report
+// did not. A platform whose report has no `tools` (unknownField on
+// "tools") gets it again without the list, and every later report goes
+// without it: the command lands with the total, and ErrNoToolUsage says
+// the list did not. A platform whose `usage` input lacks only the turn
+// or tool-result detail fields (unknownField on one of
+// usageDetailFields) gets the report again without those alone: the
+// rest of the report and the command land, and ErrNoUsageDetail says
+// the detail did not.
 func (c *Client) mutateWithUsage(ctx context.Context, field, aggregateID string, input map[string]any, usage *UsageReport) error {
 	if usage == nil {
 		return c.Mutate(ctx, field, aggregateID, input)
@@ -281,6 +297,20 @@ func (c *Client) mutateWithUsage(ctx context.Context, field, aggregateID string,
 			return err2
 		}
 		return ErrNoUsageLedger
+	}
+	if err != nil && errors.As(err, &ge) && unknownField(ge.Message, usageDetailFields...) {
+		trimmed := make(map[string]any, len(um))
+		for k, v := range um {
+			trimmed[k] = v
+		}
+		for _, f := range usageDetailFields {
+			delete(trimmed, f)
+		}
+		withUsage["usage"] = trimmed
+		if err2 := c.Mutate(ctx, field, aggregateID, withUsage); err2 != nil {
+			return err2
+		}
+		return ErrNoUsageDetail
 	}
 	if err == nil && withTools && c.usageWithoutTools.Load() {
 		return ErrNoToolUsage
@@ -2051,7 +2081,12 @@ type Session struct {
 // left out when the platform issued none; CredentialKind is
 // "subscription", "api" or "unset". The four window fields (0..1) and
 // their *ResetsAt (RFC 3339) are left out for a window the session
-// never read. It never carries a secret.
+// never read. Turns, InputPerTurnMean, InputPerTurnMax and
+// LargestToolResults (mesh-spends-less-per-item) are the session's
+// per-turn input and largest tool results (harness.Result's fields of
+// the same names), left out when zero or empty — a platform whose
+// UsageReportInput lacks them gets the report again without them
+// (ErrNoUsageDetail). It never carries a secret.
 type UsageReport struct {
 	SessionID        string `json:"sessionId"`
 	Adapter          string `json:"adapter"`
@@ -2070,6 +2105,11 @@ type UsageReport struct {
 	WallMs          int64            `json:"wallMs"`
 	ListCostCents   int64            `json:"listCostCents"`
 	ActualCostCents int64            `json:"actualCostCents"`
+
+	Turns              int64            `json:"turns,omitempty"`
+	InputPerTurnMean   int64            `json:"inputPerTurnMean,omitempty"`
+	InputPerTurnMax    int64            `json:"inputPerTurnMax,omitempty"`
+	LargestToolResults []ToolResultSize `json:"largestToolResults,omitempty"`
 
 	FiveHourBefore *float64 `json:"fiveHourBefore,omitempty"`
 	FiveHourAfter  *float64 `json:"fiveHourAfter,omitempty"`
@@ -2093,6 +2133,13 @@ type ToolCallReport struct {
 	Errors int64  `json:"errors"`
 	Ms     int64  `json:"ms"`
 	Error  string `json:"error,omitempty"`
+}
+
+// ToolResultSize is one tool result's content, in bytes — one row of
+// UsageReport.LargestToolResults (harness.ToolResultSize's shape).
+type ToolResultSize struct {
+	Tool  string `json:"tool"`
+	Bytes int    `json:"bytes"`
 }
 
 // The kinds a UsageReport's CredentialKind takes.

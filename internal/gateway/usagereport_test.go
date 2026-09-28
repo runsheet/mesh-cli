@@ -27,6 +27,11 @@ func sampleUsageReport() *gateway.UsageReport {
 		InputTokens:    1000, OutputTokens: 200, CacheReadTokens: 50, CacheWriteTokens: 10,
 		ToolCalls: 3, Tools: []gateway.ToolCallReport{{Tool: "brave", Calls: 3, Errors: 1, Ms: 1500}},
 		WallMs: 45000, ListCostCents: 120, ActualCostCents: 0,
+		Turns: 7, InputPerTurnMean: 140, InputPerTurnMax: 900,
+		LargestToolResults: []gateway.ToolResultSize{
+			{Tool: "mcp__search__query", Bytes: 5000},
+			{Tool: "Bash", Bytes: 1200},
+		},
 		FiveHourBefore: &fhBefore, FiveHourAfter: &fhAfter,
 		SevenDayBefore: &sdBefore, SevenDayAfter: &sdAfter,
 		FiveHourResetsAtBefore: &fhResetBefore, FiveHourResetsAtAfter: &fhResetAfter,
@@ -135,6 +140,20 @@ func TestFinishingCommandsSendUsage(t *testing.T) {
 				t.Fatalf("usage windows = %+v", usage)
 			}
 			assertToolsRow(t, usage)
+			if usage["turns"] != float64(u.Turns) || usage["inputPerTurnMean"] != float64(u.InputPerTurnMean) ||
+				usage["inputPerTurnMax"] != float64(u.InputPerTurnMax) {
+				t.Fatalf("usage turns = %+v", usage)
+			}
+			largest, ok := usage["largestToolResults"].([]any)
+			if !ok || len(largest) != len(u.LargestToolResults) {
+				t.Fatalf("usage largestToolResults = %+v", usage["largestToolResults"])
+			}
+			for i, row := range largest {
+				m, ok := row.(map[string]any)
+				if !ok || m["tool"] != u.LargestToolResults[i].Tool || m["bytes"] != float64(u.LargestToolResults[i].Bytes) {
+					t.Fatalf("largestToolResults[%d] = %+v, want %+v", i, m, u.LargestToolResults[i])
+				}
+			}
 			for k := range usage {
 				if strings.Contains(strings.ToLower(k), "secret") {
 					t.Fatalf("usage carried a secret field %q", k)
@@ -247,6 +266,49 @@ func TestFinishingCommandWithoutToolsNeedsNoFallback(t *testing.T) {
 	u.Tools = nil
 	if err := gw.FinishWorkItem(context.Background(), finishItem, "mesh/g-7", "abc123", 12, u); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A gateway whose usage input has no turns, inputPerTurnMean,
+// inputPerTurnMax or largestToolResults (a platform older than
+// mesh-spends-less-per-item) still takes the rest of the report and the
+// command, and the caller is told the detail did not land, with
+// ErrNoUsageDetail.
+func TestFinishingCommandsWithoutUsageDetail(t *testing.T) {
+	for _, c := range usageCases() {
+		t.Run(c.name, func(t *testing.T) {
+			f := gatewaytest.New("rs_test")
+			defer f.Close()
+			f.UnknownFields = map[string]bool{
+				"turns": true, "inputPerTurnMean": true, "inputPerTurnMax": true, "largestToolResults": true,
+			}
+			c.setup(f)
+			gw := gateway.New(f.URL(), "rs_test")
+
+			err := c.send(gw, sampleUsageReport())
+			if !errors.Is(err, gateway.ErrNoUsageDetail) {
+				t.Fatalf("err = %v, want ErrNoUsageDetail", err)
+			}
+			calls := f.CallsNamed(c.name)
+			if len(calls) != 1 {
+				t.Fatalf("calls = %+v", calls)
+			}
+			usage, ok := calls[0].Input["usage"].(map[string]any)
+			if !ok {
+				t.Fatalf("the landed call carried no usage: %+v", calls[0].Input)
+			}
+			for _, field := range []string{"turns", "inputPerTurnMean", "inputPerTurnMax", "largestToolResults"} {
+				if _, ok := usage[field]; ok {
+					t.Fatalf("usage still carried %q: %+v", field, usage)
+				}
+			}
+			if usage["inputTokens"] == nil {
+				t.Fatalf("usage lost the rest of the report: %+v", usage)
+			}
+			if len(f.SessionUsage) != 1 || f.SessionUsage[0].Name != c.name {
+				t.Fatalf("SessionUsage = %+v", f.SessionUsage)
+			}
+		})
 	}
 }
 
