@@ -1,5 +1,5 @@
 ---
-summary: The first tag cut from runsheet/mesh-cli's main after the transfer (v0.0.0-runsheet-test.6) — its release, its signed node image under ghcr.io/runsheet (private to anonymous pulls) and `mesh node update --verify-only` accepting it and the pre-transfer reference tag.
+summary: The first tag cut from runsheet/mesh-cli's main after the transfer (v0.0.0-runsheet-test.6) — its release, its signed node image under ghcr.io/runsheet and `mesh node update --verify-only` accepting it; and v0.2.187, the first release on the runsheet/mesh mirror, held until item 2 (#316, the node's mirror Source) is on main.
 ---
 
 # Releases after the transfer
@@ -192,3 +192,40 @@ identity, and it refuses a release named as a tag its signature does
 not cover. Fetching over plain HTTPS keeps failing while the repository
 is private. That is the gap #168 recorded; the transfer did not change
 it.
+
+## v0.2.187: the first release on the mirror
+
+Item 4 of goal `signed-releases-on-runsheet-mesh`. **Not cut yet:** the
+item's precondition does not hold. The tag needs both item 1
+(release-tag.yml's mirror step) and item 2 (the node's Source reading
+runsheet/mesh) on `main`. Only item 1 is there. No tag was pushed, the
+mini was not touched, and v0.1.0 was not edited. The five subsections
+(Tag, Both releases, v0.1.0 superseded, The mirror's README, The mini
+updates from runsheet/mesh) are recorded once item 2 lands.
+
+### Precondition, 2026-09-28
+
+```
+$ git log origin/main --oneline -3
+a1e3e03 gateway: RecordValidationAttestation uploads a build's validation attestation ... (#318)
+9a284f7 Signed releases return to the public mesh repo ...: release-tag.yml mirrors each signed release to runsheet/mesh ... (#315)
+213d54e Codex sessions reach the context tool: ... (#305)
+$ git merge-base --is-ancestor 22170a7 origin/main || echo notonmain   # item 2's selfupdate commit
+notonmain
+$ gh pr view 316 -R runsheet/mesh-cli --json state,mergeable,mergeStateStatus
+{"mergeStateStatus":"DIRTY","mergeable":"CONFLICTING","state":"OPEN"}
+$ git merge-tree --write-tree origin/main origin/mesh/signed-releases-on-runsheet-mesh-2
+CONFLICT (content): Merge conflict in README.md
+CONFLICT (content): Merge conflict in docs/adr/adr-002-signed-tag-releases.md
+$ gh release view v0.2.187 -R runsheet/mesh
+release not found
+$ gh release view v0.2.187 -R runsheet/mesh-cli
+release not found
+```
+
+A v0.2.187 cut from this `main` would ship a node whose
+`ReleaseBaseURL` and `LatestReleaseURL` still name the private
+runsheet/mesh-cli. Its next self-update would get the 404 that v0.1.0
+got, and the goal's live check (`setNodeDesiredVersion v0.2.187` with
+no by-hand copy) could not pass on the version it is named for. #316
+has to be rebased onto `main` and merged first.
