@@ -291,3 +291,10 @@ func TestToolJSONMatchesContract(t *testing.T) {
 		t.Fatalf("%+v", tool)
 	}
 }
+
+// The Codex preflight checks the server this package reserves.
+func TestBuiltinIsTheHarnessPreflights(t *testing.T) {
+	if Builtin != harness.BuiltinMCP {
+		t.Fatalf("tools.Builtin %q, harness.BuiltinMCP %q", Builtin, harness.BuiltinMCP)
+	}
+}
