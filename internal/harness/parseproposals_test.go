@@ -106,14 +106,37 @@ func TestResearchPromptContract(t *testing.T) {
 
 // A direction that proposes rather than sets (runsheet ADR 022) is told
 // the room as information: a full project still hears the figure, and
-// is not told to propose nothing. A set direction keeps the cap.
+// is not told to propose nothing. Its output is pitches (runsheet ADR
+// 026, trd §6c Pitches), not bare goal proposals: every field, the
+// mesh_projects read of pitch_feedback and the pitches/answers
+// contract. A set direction keeps the cap and the goals contract.
 func TestResearchPromptProposeMode(t *testing.T) {
-	p := ResearchPrompt(ResearchInput{Org: "acme", Project: "mesh", Direction: "d", Room: 0, Proposes: true})
+	p := ResearchPrompt(ResearchInput{
+		Org: "acme", Project: "mesh", Direction: "d", Room: 0, Proposes: true,
+		Bets: []string{"faster-onboarding", "fewer-reworks"},
+	})
 	for _, want := range []string{
 		"This direction proposes rather than sets",
 		"the room is information, not a cap",
 		"The project has room for 0 right now.",
 		"a proposal that would wait for room should say so in its why",
+		"mesh_projects",
+		"pitch_feedback",
+		"open_questions",
+		"declined",
+		"`bets`",
+		"goal_history",
+		"`faster-onboarding`",
+		"evidence",
+		"bet",
+		"scope",
+		"estimate",
+		"risks",
+		"alternatives",
+		"signal",
+		"how_measured",
+		`{"pitches": [{"slug"`,
+		`"answers": [{"pitch"`,
 	} {
 		if !strings.Contains(p, want) {
 			t.Fatalf("prompt lacks %q:\n%s", want, p)
@@ -122,8 +145,17 @@ func TestResearchPromptProposeMode(t *testing.T) {
 	if strings.Contains(p, "Propose nothing") {
 		t.Fatalf("a propose direction is not capped by the room:\n%s", p)
 	}
+	if strings.Contains(p, `{"goals"`) {
+		t.Fatalf("a propose direction's contract is pitches, not goals:\n%s", p)
+	}
 	set := ResearchPrompt(ResearchInput{Org: "acme", Project: "mesh", Direction: "d", Room: 0})
 	if !strings.Contains(set, "Propose nothing, and say in your notes what you would have proposed.") || strings.Contains(set, "proposes rather than sets") {
 		t.Fatalf("a set direction at its ceiling:\n%s", set)
+	}
+	if !strings.Contains(set, `{"goals": [{"slug"`) {
+		t.Fatalf("a set direction keeps the goals contract:\n%s", set)
+	}
+	if strings.Contains(set, `"pitches"`) {
+		t.Fatalf("a set direction does not pitch:\n%s", set)
 	}
 }
