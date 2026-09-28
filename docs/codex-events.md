@@ -35,7 +35,7 @@ stream into a `harness.Result`.
   | Fixture | Command |
   |---|---|
   | `codex_exec_apikey.jsonl` | `CODEX_HOME=$H codex exec --json --sandbox workspace-write -m gpt-6-astra 'Reply with exactly the words: hello from codex'` |
-  | `codex_exec_item_error.jsonl` | the same, without `-m` (the default model, `gpt-6-astra`), and before `codex-code-mode-host` was installed |
+  | `codex_exec_item_error.jsonl` | the same, without `-m` (codex-cli's own default model, `gpt-6-astra`), and before `codex-code-mode-host` was installed |
   | `codex_exec_tools.jsonl` | `CODEX_HOME=$H codex exec --json --sandbox danger-full-access -m gpt-6-astra 'Run `ls` in this repo, then create a file NOTES.md containing the single line "noted", then reply with exactly: done'` |
   | `codex_exec_error.jsonl` | `CODEX_HOME=$H codex exec --json --sandbox workspace-write -m no-such-model 'Reply with exactly the words: hello from codex'` (exit 1) |
 

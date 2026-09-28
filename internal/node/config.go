@@ -321,16 +321,18 @@ func (c CodexConfig) Validate() error {
 }
 
 // The Codex model each Claude tier maps to when node.yaml's codex:
-// models names none (https://learn.chatgpt.com/docs/models).
+// models names none (https://learn.chatgpt.com/docs/models). gpt-6-astra
+// costs $1.29 for one evaluation where gpt-6-sol costs about $0.45, so
+// astra is used only when an item pins it (EvaluatorPin), never a default.
 const (
-	DefaultCodexOpus   = "gpt-6-astra"
-	DefaultCodexSonnet = "gpt-6-sol"
+	DefaultCodexOpus   = "gpt-6-sol"
+	DefaultCodexSonnet = "gpt-6-luna"
 	DefaultCodexHaiku  = "gpt-6-luna"
 )
 
 // CodexModel is the Codex model for a Claude model: an alias or a full
 // id naming opus, sonnet or haiku (by ModelRank) takes that tier's
-// model from Models, else the tier's default (gpt-6-astra, gpt-6-sol,
+// model from Models, else the tier's default (gpt-6-sol, gpt-6-luna,
 // gpt-6-luna). Empty, or a model of no tier, is "": Codex's own
 // default.
 func (c CodexConfig) CodexModel(claudeModel string) string {
