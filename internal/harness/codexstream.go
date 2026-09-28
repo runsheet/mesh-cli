@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"io"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -49,6 +50,11 @@ type CodexItem struct {
 	ExitCode         *int   `json:"exit_code"`
 	// Server is an mcp_tool_call's MCP server.
 	Server string `json:"server"`
+	// Error and Result are an mcp_tool_call's: error is
+	// {"message": "…"} on a failed call (a bare string accepted too),
+	// result {"content": [{"type": "text", "text": "…"}], …}.
+	Error  json.RawMessage `json:"error"`
+	Result json.RawMessage `json:"result"`
 	// Status is in_progress, completed or failed (declined, for a
 	// command).
 	Status string `json:"status"`
@@ -110,9 +116,13 @@ func (p CodexPrice) Cost(u CodexUsage) float64 {
 // its server, its item id (empty ones synthesised) kept on
 // ToolCallIDs, and on Result.Tools: its wall time is item.started to
 // item.completed, and a completed status of "failed" counts an error,
-// its status kept as the server's FirstError — the call still counts
-// on ToolCalls and Tools whatever its status. Lines that are not JSON
-// and unknown types are skipped.
+// the item's error text kept as the server's FirstError (else its
+// result's text, else the status) — the call still counts on ToolCalls
+// and Tools whatever its status. An error item or top-level error
+// naming an MCP server that failed to start (mcpStartupServers) counts
+// an error for that server too, the message as FirstError, even with
+// zero calls — once per server. Lines that are not JSON and unknown
+// types are skipped.
 func ParseCodexStream(r io.Reader, model string, onEvent func(CodexEvent)) Result {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 16<<20)
@@ -121,6 +131,20 @@ func ParseCodexStream(r io.Reader, model string, onEvent func(CodexEvent)) Resul
 	completed, failed := false, false
 	events := 0
 	pending := map[string]time.Time{}
+	startupFailed := map[string]bool{}
+	startupError := func(msg string) {
+		for _, server := range mcpStartupServers(msg) {
+			if startupFailed[server] {
+				continue
+			}
+			startupFailed[server] = true
+			stat := res.toolStat(server)
+			stat.Errors++
+			if stat.FirstError == "" {
+				stat.FirstError = capText(msg, 300)
+			}
+		}
+	}
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		if line == "" || line[0] != '{' {
@@ -164,9 +188,12 @@ func ParseCodexStream(r io.Reader, model string, onEvent func(CodexEvent)) Resul
 				if ev.Item.Status == "failed" {
 					stat.Errors++
 					if stat.FirstError == "" {
-						stat.FirstError = capText(ev.Item.Status, 300)
+						stat.FirstError = capText(codexCallError(ev.Item), 300)
 					}
 				}
+			}
+			if ev.Item.Type == "error" {
+				startupError(ev.Item.Message)
 			}
 			if ev.Item.Type == "agent_message" {
 				if t := strings.TrimSpace(ev.Item.Text); t != "" {
@@ -182,6 +209,8 @@ func ParseCodexStream(r io.Reader, model string, onEvent func(CodexEvent)) Resul
 			}
 		case "turn.failed":
 			failed = true
+		case "error":
+			startupError(ev.Message)
 		}
 		if onEvent != nil {
 			onEvent(ev)
@@ -205,4 +234,90 @@ func ParseCodexStream(r io.Reader, model string, onEvent func(CodexEvent)) Resul
 	res.Success = completed && !failed
 	res.EmptyOutput = events == 0
 	return res
+}
+
+// codexCallError is a failed mcp_tool_call's error text: its error's
+// message (an object's `message`, or a bare string), else its result's
+// text content, else its status.
+func codexCallError(it *CodexItem) string {
+	if t := strings.TrimSpace(rawText(it.Error)); t != "" {
+		return t
+	}
+	if t := strings.TrimSpace(rawText(it.Result)); t != "" {
+		return t
+	}
+	return it.Status
+}
+
+// rawText is the text a JSON value carries: a string itself, an
+// object's `message`, else its `content` blocks' texts joined by
+// newlines (an MCP result), else a string `text`; "" for null or
+// anything else.
+func rawText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s
+	}
+	var obj struct {
+		Message string `json:"message"`
+		Text    string `json:"text"`
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if json.Unmarshal(raw, &obj) != nil {
+		return ""
+	}
+	if obj.Message != "" {
+		return obj.Message
+	}
+	var parts []string
+	for _, c := range obj.Content {
+		if t := strings.TrimSpace(c.Text); t != "" {
+			parts = append(parts, t)
+		}
+	}
+	if len(parts) > 0 {
+		return strings.Join(parts, "\n")
+	}
+	return obj.Text
+}
+
+// mcpStartupPatterns find the server a Codex MCP startup failure names:
+// codex-cli's "MCP client for `<server>` failed to start: …", "The
+// <server> MCP server is not logged in…", "MCP server `<server>` …",
+// and "MCP startup incomplete (failed: <a>, <b>)".
+var mcpStartupPatterns = []*regexp.Regexp{
+	regexp.MustCompile("MCP client for [`'\"]([^`'\"]+)[`'\"]"),
+	regexp.MustCompile(`(?i)\bThe ([\w.-]+) MCP server\b`),
+	regexp.MustCompile("(?i)MCP server [`'\"]([^`'\"]+)[`'\"]"),
+}
+
+var mcpStartupFailedList = regexp.MustCompile(`(?i)MCP startup[^()]*\(failed: ([^)]*)\)`)
+
+// mcpStartupServers is the servers an error message says failed to
+// start (Codex's `error` item or top-level error), nil when it names
+// none or is not about MCP.
+func mcpStartupServers(msg string) []string {
+	if !strings.Contains(strings.ToUpper(msg), "MCP") {
+		return nil
+	}
+	if m := mcpStartupFailedList.FindStringSubmatch(msg); m != nil {
+		var out []string
+		for _, s := range strings.Split(m[1], ",") {
+			if s = strings.Trim(strings.TrimSpace(s), "`'\""); s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	for _, re := range mcpStartupPatterns {
+		if m := re.FindStringSubmatch(msg); m != nil {
+			return []string{m[1]}
+		}
+	}
+	return nil
 }
