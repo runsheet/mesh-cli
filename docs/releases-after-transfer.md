@@ -346,6 +346,16 @@ and nothing was pushed to runsheet/mesh):
    Contents: read and write, or with the runsheet org App's installation
    token.
 
+**Re-checked 2026-09-28 23:33Z (the item's second attempt, rebased on
+`e09dbaf`):** nothing has changed. `origin/main`'s
+`scripts/mirror-release.sh` still passes no `--target`, and no pull
+request carries the fix. `gh release view v0.2.187 --repo runsheet/mesh`
+answers `release not found`, and the SHA256SUMS URL answers `HTTP/2 404`.
+The plain `--verify-only` below is still refused with exit 1. This item
+cannot change that. Its diff is docs only, and its token cannot write
+runsheet/mesh. Step 1 and one of the two routes in step 2 are what
+remain.
+
 ## Verification
 
 The binary is built from this branch, which is `origin/main`
