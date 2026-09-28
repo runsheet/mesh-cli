@@ -362,13 +362,13 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   node); a platform without `tools` gets none and is asked for
   credentials alone from then on. `Loop.Runtimes()` is what the last
   probe found. Build and evaluate sessions get theirs
-  (`SelectTools` by role and runtimes, `SessionTools.Apply`: Prologue
+  (`SelectTools` by role and runtimes, `SessionTools.Apply`: mesh-context
   plus each tool in `Job.MCPServers`, secret values in `Job.Env` and
   `Job.Secrets` only, the tools on `Job.Tools` for Codex); a
   nice-to-have tool the node cannot start is omitted and noted on the
   item, a required one releases the item and `Declines` keeps the loop
   off it while the runtimes are unchanged. Plan, research, rebase and
-  channel sessions keep Prologue alone.
+  channel sessions keep mesh-context alone.
 - **Tool results** (`internal/harness/trim.go`, node.yaml
   `tool_results.max_kb`, default 16, 0 off): a host build session gets
   a `PreToolUse` hook on `Bash` in its `--settings` (`Job.Settings`,
@@ -451,7 +451,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   evaluation); a required one releases a build, declines an evaluation
   (`Declines`) or fails a rebase, naming it, and no agent starts; a
   required refused one makes no pod at all.
-- Every session gets Prologue as an MCP server with the node's token and
+- Every session gets mesh-context as an MCP server with the node's token and
   the project's context on disk under `.mesh/context/` with `INDEX.md`:
   the documents, then `## Live goals and items` — each live goal's items
   (seq, title, status, branch, PR) and the finished goals one line each,
@@ -468,7 +468,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `RecordToolUsage(itemID, toolCallId, tool, report)` (mutation
   `recordToolUsage`) per call of a rendered tool with
   `pricePerCallCents > 0` — the session's report at the tool's price,
-  no tokens, no actual cost; Prologue and unpriced tools are none.
+  no tokens, no actual cost; mesh-context and unpriced tools are none.
   A platform without `recordToolUsage` is said once per run and each
   call logged instead; it never fails the item.
   Every server's calls, errors, ms and first error's text (200 chars,

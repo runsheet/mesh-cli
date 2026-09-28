@@ -39,7 +39,7 @@ func TestLoopEvaluatesFinishedItems(t *testing.T) {
 
 	ws := &fakeWS{root: t.TempDir()}
 	h := &fakeHarness{text: "The test exists and fails for the right reason.\n\nVERDICT: PASS"}
-	ev := &Evaluator{GW: gw, Harness: h, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, MCP: PrologueMCP(f.URL(), "rs_test"), MaxBudgetUSD: 2, Log: log.New(os.Stderr, "", 0)}
+	ev := &Evaluator{GW: gw, Harness: h, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, MCP: MeshContextMCP(f.URL(), "rs_test"), MaxBudgetUSD: 2, Log: log.New(os.Stderr, "", 0)}
 	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Version: "test", Harness: "claude-code", Interval: time.Hour, Log: ev.Log,
 		Dispatch: func(context.Context, gateway.WorkItem) {},
 		Evaluate: func(ctx context.Context, item gateway.WorkItem) { _ = ev.Evaluate(ctx, item) }}
@@ -63,7 +63,7 @@ func TestLoopEvaluatesFinishedItems(t *testing.T) {
 	if len(ws.pushed) != 0 {
 		t.Fatal("the evaluator changes nothing")
 	}
-	if len(h.jobs) != 1 || h.jobs[0].Kind != harness.KindEvaluate || h.jobs[0].MaxBudgetUSD != 2 || h.jobs[0].MCPServers["prologue"] == nil {
+	if len(h.jobs) != 1 || h.jobs[0].Kind != harness.KindEvaluate || h.jobs[0].MaxBudgetUSD != 2 || h.jobs[0].MCPServers["mesh-context"] == nil {
 		t.Fatalf("job: %+v", h.jobs)
 	}
 	if _, err := os.Stat(filepath.Join(ws.prepared[0].Dir(), ContextDir, "adr-adr-001.md")); err != nil {

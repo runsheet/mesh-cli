@@ -15,11 +15,11 @@ import (
 	"projectmesh.io/mesh-cli/internal/sessionunit"
 )
 
-// testServers are a job's MCP servers: Prologue over http with the
+// testServers are a job's MCP servers: mesh-context over http with the
 // node's token, and a local stdio server with a secret in its env.
 func testServers() map[string]any {
 	return map[string]any{
-		"prologue": map[string]any{"type": "http", "url": "https://api.test/mcp",
+		"mesh-context": map[string]any{"type": "http", "url": "https://api.test/mcp",
 			"headers": map[string]string{"Authorization": "Bearer rs_secret"}},
 		"local": map[string]any{"command": "mcp-local", "args": []any{"--root", "."}, "env": map[string]any{"LOCAL_TOKEN": "local-secret"}},
 	}
@@ -62,7 +62,7 @@ args = ["--root", "."]
 env_vars = ["LOCAL_TOKEN"]
 default_tools_approval_mode = "approve"
 
-[mcp_servers.prologue]
+[mcp_servers.mesh-context]
 url = "https://api.test/mcp"
 env_http_headers = { "Authorization" = "MESH_CODEX_MCP_1_TOKEN" }
 default_tools_approval_mode = "approve"

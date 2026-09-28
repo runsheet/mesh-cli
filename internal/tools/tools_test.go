@@ -23,10 +23,10 @@ const (
 	envSecret    = "key-local-3d9a42"
 )
 
-func prologue() map[string]any {
-	return map[string]any{"prologue": map[string]any{
+func meshContext() map[string]any {
+	return map[string]any{"mesh-context": map[string]any{
 		"type": "http", "url": "https://api.runsheet.dev/mcp",
-		"headers": map[string]string{"Authorization": "Bearer ${MESH_PROLOGUE_TOKEN}"},
+		"headers": map[string]string{"Authorization": "Bearer ${MESH_CONTEXT_TOKEN}"},
 	}}
 }
 
@@ -47,11 +47,11 @@ func sample() []Tool {
 }
 
 func TestClaudeCodeRendersRemoteLocalAndBuiltin(t *testing.T) {
-	servers, env, err := ClaudeCode(prologue(), sample())
+	servers, env, err := ClaudeCode(meshContext(), sample())
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, n := range []string{"prologue", "search", "fs-tools"} {
+	for _, n := range []string{"mesh-context", "search", "fs-tools"} {
 		if _, ok := servers[n]; !ok {
 			t.Fatalf("servers lack %s: %v", n, servers)
 		}
@@ -85,7 +85,7 @@ func TestClaudeCodeRendersRemoteLocalAndBuiltin(t *testing.T) {
 	}
 
 	args := harness.MCPArgs(servers)
-	if len(args) != 4 || args[2] != "--allowedTools" || args[3] != "mcp__fs-tools__*,mcp__prologue__*,mcp__search__*" {
+	if len(args) != 4 || args[2] != "--allowedTools" || args[3] != "mcp__fs-tools__*,mcp__mesh-context__*,mcp__search__*" {
 		t.Fatalf("MCPArgs = %v", args)
 	}
 }
@@ -114,12 +114,25 @@ func TestLocalRuntimes(t *testing.T) {
 }
 
 func TestClaudeCodeRefusesClashWithBuiltin(t *testing.T) {
-	_, _, err := ClaudeCode(prologue(), []Tool{{Name: "prologue", Transport: Remote, URL: "https://x"}})
+	_, _, err := ClaudeCode(meshContext(), []Tool{{Name: "mesh-context", Transport: Remote, URL: "https://x"}})
 	if err == nil || !strings.Contains(err.Error(), "built-in") {
 		t.Fatalf("err = %v", err)
 	}
-	if _, err := WriteCodexConfig(t.TempDir(), []Tool{{Name: "prologue", Transport: Remote, URL: "https://x"}}); err == nil {
-		t.Fatal("codex: clash with prologue accepted")
+	if _, err := WriteCodexConfig(t.TempDir(), []Tool{{Name: "mesh-context", Transport: Remote, URL: "https://x"}}); err == nil {
+		t.Fatal("codex: clash with mesh-context accepted")
+	}
+}
+
+func TestToolNamedPrologueIsRendered(t *testing.T) {
+	servers, _, err := ClaudeCode(meshContext(), []Tool{{Name: "prologue", Transport: Remote, URL: "https://x"}})
+	if err != nil {
+		t.Fatalf("claude: prologue refused: %v", err)
+	}
+	if _, ok := servers["prologue"]; !ok {
+		t.Fatalf("servers lack prologue: %v", servers)
+	}
+	if _, err := WriteCodexConfig(t.TempDir(), []Tool{{Name: "prologue", Transport: Remote, URL: "https://x"}}); err != nil {
+		t.Fatalf("codex: prologue refused: %v", err)
 	}
 }
 
@@ -196,7 +209,7 @@ func TestCodexRefusesOneSecretKeyWithTwoValues(t *testing.T) {
 
 func TestSecretsOnlyInEnv(t *testing.T) {
 	secrets := []string{bearerSecret, headerSecret, envSecret}
-	servers, claudeEnv, err := ClaudeCode(prologue(), sample())
+	servers, claudeEnv, err := ClaudeCode(meshContext(), sample())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -10,7 +10,7 @@ import (
 )
 
 // ClaudeCode returns the mcpServers of a Claude Code session — builtin
-// (the Prologue server) and one entry per tool — and the environment the
+// (the mesh-context server) and one entry per tool — and the environment the
 // session needs for them. A remote tool is {type: http, url, headers}, a
 // local one {command, args, env} for its runtime. Every secret is written
 // as ${MESH_TOOL_<NAME>_<KEY>}, which Claude Code expands from its own

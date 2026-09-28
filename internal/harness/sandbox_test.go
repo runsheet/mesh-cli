@@ -33,7 +33,7 @@ func TestClaudeCodeRunsInTheSandbox(t *testing.T) {
 	ws := t.TempDir()
 	job := Job{Kind: KindBuild, Label: "g/1", Workspace: ws, Prompt: "build it", Model: "opus",
 		Env:        []string{"GH_TOKEN=ghs_x", "NOT_ALLOWED=1"},
-		MCPServers: map[string]any{"prologue": map[string]any{"type": "http", "url": "https://gw/mcp", "headers": map[string]string{"Authorization": "Bearer rs_secret"}}}}
+		MCPServers: map[string]any{"mesh-context": map[string]any{"type": "http", "url": "https://gw/mcp", "headers": map[string]string{"Authorization": "Bearer rs_secret"}}}}
 	res, err := c.Run(context.Background(), job, nil)
 	if err != nil || !res.Success || res.Text != "done" || res.SessionID != "s1" {
 		t.Fatalf("run: %+v %v", res, err)
@@ -52,10 +52,10 @@ func TestClaudeCodeRunsInTheSandbox(t *testing.T) {
 	}
 	for _, a := range spec.Command {
 		if strings.Contains(a, "rs_secret") {
-			t.Fatalf("the Prologue bearer is on the command line: %v", spec.Command)
+			t.Fatalf("the mesh-context bearer is on the command line: %v", spec.Command)
 		}
 	}
-	if spec.Command[len(spec.Command)-1] != "--dangerously-skip-permissions" || flagAt(spec.Command, "--allowedTools") != "mcp__prologue__*" {
+	if spec.Command[len(spec.Command)-1] != "--dangerously-skip-permissions" || flagAt(spec.Command, "--allowedTools") != "mcp__mesh-context__*" {
 		t.Fatalf("command = %v", spec.Command)
 	}
 	if !slices.Contains(spec.Env, "CLAUDE_CONFIG_DIR="+filepath.Join(home, ".claude")) || slices.Contains(spec.Env, "NOT_ALLOWED=1") {

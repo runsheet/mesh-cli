@@ -62,7 +62,7 @@ func TestSessionCarriesTools(t *testing.T) {
 	}
 	// the rendering takes what the read gave: the secrets in env, the
 	// token's variable left for the session to expand
-	servers, env, err := tools.ClaudeCode(map[string]any{"prologue": map[string]any{"type": "http", "url": "https://p"}}, got.Tools)
+	servers, env, err := tools.ClaudeCode(map[string]any{"mesh-context": map[string]any{"type": "http", "url": "https://p"}}, got.Tools)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,6 +72,30 @@ func TestSessionCarriesTools(t *testing.T) {
 	}
 	if len(env) != 4 {
 		t.Errorf("env = %v, want linear's two and pg's two", env)
+	}
+}
+
+// A builtIn row (the platform's own mesh-context) beside a remote tool
+// yields only the remote tool: the built-in is the node's own attachment
+// and is never rendered twice.
+func TestSessionExcludesTheBuiltinRow(t *testing.T) {
+	f := gatewaytest.New("rs_test")
+	defer f.Close()
+	f.SessionCredentials[itemID] = []map[string]any{anthropicSubscription("c1", "max-a", "s")}
+	f.SessionTools[itemID] = []map[string]any{
+		{"id": "t0", "slug": "mesh-context", "name": "Mesh context", "kind": "remote_mcp", "need": "required", "url": "https://api.runsheet.dev/mesh/v1", "builtIn": true, "account": nil,
+			"headers": []any{}, "env": []any{}},
+		{"id": "t1", "slug": "linear", "name": "Linear", "kind": "remote_mcp", "need": "required", "url": "https://mcp.linear.app/mcp", "builtIn": false, "account": nil,
+			"headers": []any{}, "env": []any{}},
+	}
+	gw := gateway.New(f.URL(), "rs_test")
+	got, err := gw.Session(context.Background(), gateway.SessionRef{Kind: "build", ItemID: itemID}, nodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []tools.Tool{{Name: "linear", Transport: tools.Remote, URL: "https://mcp.linear.app/mcp", Required: true}}
+	if !reflect.DeepEqual(got.Tools, want) {
+		t.Fatalf("tools = %+v\nwant %+v", got.Tools, want)
 	}
 }
 
