@@ -1053,11 +1053,15 @@ type SandboxInfo struct {
 // none before it has, or on a platform whose `scaling` has no
 // `accounts`.
 type Scaling struct {
-	Capacity int              `json:"capacity"`
-	Min      int              `json:"min"`
-	Max      int              `json:"max"`
-	Reason   string           `json:"reason"`
-	Accounts []AccountScaling `json:"accounts,omitempty"`
+	Capacity int    `json:"capacity"`
+	Min      int    `json:"min"`
+	Max      int    `json:"max"`
+	Reason   string `json:"reason"`
+	// Accounts is always a list on the wire, [] when there are none: the
+	// platform's nested input makes it non-null whatever its schema says
+	// (go-apis/loom nested-optional-lists-are-nullable), and an omitted or
+	// null list had the whole heartbeat refused (2026-09-28).
+	Accounts []AccountScaling `json:"accounts"`
 }
 
 // AccountScaling is one account's share of the capacity: its label and
@@ -1112,12 +1116,18 @@ func (c *Client) HeartbeatNode(ctx context.Context, nodeID, version string, runn
 		if x.Scaling != nil {
 			switch takes, accounts := c.takesScaling(ctx); {
 			case !takes:
-			case !accounts && len(x.Scaling.Accounts) > 0:
-				bare := *x.Scaling
-				bare.Accounts = nil
-				in["scaling"] = &bare
+			case !accounts:
+				// a platform whose scaling has no accounts field refuses the
+				// key: the four fields only
+				in["scaling"] = map[string]any{"capacity": x.Scaling.Capacity, "min": x.Scaling.Min, "max": x.Scaling.Max, "reason": x.Scaling.Reason}
 			default:
-				in["scaling"] = x.Scaling
+				// accounts is [] rather than null when the node names none:
+				// the platform's nested input is non-null
+				sc := *x.Scaling
+				if sc.Accounts == nil {
+					sc.Accounts = []AccountScaling{}
+				}
+				in["scaling"] = &sc
 			}
 		}
 		if len(x.Runtimes) > 0 {
