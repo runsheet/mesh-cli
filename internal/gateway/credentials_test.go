@@ -47,10 +47,10 @@ func TestSessionCredentials(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []gateway.Credential{
-		{ID: "c1", Label: "max-a", Kind: "subscription", Secret: "sk-ant-oat01-x"},
-		{ID: "c2", Label: "key", Kind: "api", Secret: "sk-ant-api-y", CapDailyUSD: 50, CapMonthlyUSD: 1000},
-		{ID: "c3", Label: "oauth", Kind: "subscription", Secret: "sk-ant-oat01-z"},
-		{ID: "c6", Label: "by-calls", Kind: "api", Secret: "sk-ant-api-calls"},
+		{ID: "c1", Label: "max-a", Kind: "subscription", Adapter: "claude-code", SecretVersion: 1, Secret: "sk-ant-oat01-x"},
+		{ID: "c2", Label: "key", Kind: "api", Adapter: "claude-code", SecretVersion: 2, Secret: "sk-ant-api-y", CapDailyUSD: 50, CapMonthlyUSD: 1000},
+		{ID: "c3", Label: "oauth", Kind: "subscription", Adapter: "claude-code", Secret: "sk-ant-oat01-z"},
+		{ID: "c6", Label: "by-calls", Kind: "api", Adapter: "claude-code", Secret: "sk-ant-api-calls"},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("credentials = %#v, want %d", got, len(want))
@@ -66,6 +66,39 @@ func TestSessionCredentials(t *testing.T) {
 	}
 	if len(f.CallsNamed("sessionCredentials")) != 0 {
 		t.Fatal("the node still asks for sessionCredentials, which no platform serves")
+	}
+}
+
+// An OpenAI credential whose serves name codex is a Codex account: an
+// oauth_token (the ChatGPT login's auth.json) is a subscription, an
+// api_key an api key with the row's caps. An OpenAI row serving only a
+// tool is that tool's account, not a session's.
+func TestSessionCredentialsCodex(t *testing.T) {
+	f := gatewaytest.New("rs_test")
+	defer f.Close()
+	login := `{"tokens":{"refresh_token":"rt-codex-FIXTURE"}}`
+	f.SessionCredentials[itemID] = []map[string]any{
+		{"id": "o1", "label": "chatgpt-pro", "vendor": "openai", "kind": "oauth_token", "serves": []any{"codex"}, "secretVersion": 3.0, "secret": login},
+		{"id": "o2", "label": "openai-key", "vendor": "openai", "kind": "api_key", "serves": []any{"codex", "evaluate"}, "capUnit": "dollars", "dailyCap": 30.0, "monthlyCap": 600.0, "secretVersion": 1.0, "secret": "sk-openai-FIXTURE"},
+		{"id": "o3", "label": "openai-tool", "vendor": "openai", "kind": "api_key", "serves": []any{"embeddings"}, "secret": "sk-openai-tool"},
+		{"id": "o4", "label": "openai-none", "vendor": "openai", "kind": "api_key", "serves": []any{}, "secret": "sk-openai-none"},
+	}
+	gw := gateway.New(f.URL(), "rs_test")
+	got, err := gw.SessionCredentials(context.Background(), gateway.SessionRef{Kind: "evaluate", ItemID: itemID, GoalID: "g"}, nodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []gateway.Credential{
+		{ID: "o1", Label: "chatgpt-pro", Kind: "subscription", Adapter: "codex", SecretVersion: 3, Secret: login},
+		{ID: "o2", Label: "openai-key", Kind: "api", Adapter: "codex", SecretVersion: 1, Secret: "sk-openai-FIXTURE", CapDailyUSD: 30, CapMonthlyUSD: 600},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("credentials = %#v, want %d", got, len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("credential %d = %#v, want %#v", i, got[i], want[i])
+		}
 	}
 }
 
