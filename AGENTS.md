@@ -330,7 +330,13 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `ErrFamilyWaits`, the item stays in evaluating, said once per item by
   `Waits`), a `claude-…` one pins Claude; a bare tier pins nothing. The
   loop starts an evaluation on Codex room (`Loop.CodexRoom`) when no
-  Claude account has any. An item of an `urgent` or `high` goal whose
+  Claude account has any. Before any Codex session starts,
+  `Evaluator.CodexPreflight` (`Codex.Preflight`: `codex mcp get
+  prologue` and an MCP tools/list handshake in the session's own home
+  and env) must pass: a failure moves an unpinned evaluation to Claude
+  (`Codex preflight failed (<why>); evaluating on Claude`), keeps a
+  pinned one waiting like `ErrFamilyWaits`, and makes a Codex second
+  opinion `unavailable: preflight …`. An item of an `urgent` or `high` goal whose
   first verdict passes is evaluated again on the other family with the
   same prompt and workspace: both pass is passed, a second fail is
   failed; the notes carry both, `Codex (first evaluation, gpt-6-astra):

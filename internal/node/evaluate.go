@@ -61,6 +61,12 @@ type Evaluator struct {
 	// (docs/adr/adr-005-codex-second-opinion.md,
 	// docs/adr/adr-011-evaluations-run-on-the-family-with-headroom.md).
 	Codex harness.Harness
+	// CodexPreflight checks, before any Codex session starts, that the
+	// session's job reaches the built-in context server (the Codex
+	// harness's Preflight; nil: no check). A failure moves an unpinned
+	// evaluation to Claude, keeps a pinned one waiting in evaluating, and
+	// makes a Codex second opinion unavailable.
+	CodexPreflight func(ctx context.Context, job harness.Job) error
 	// CodexModel maps the Claude evaluate model to Codex's
 	// (CodexConfig.CodexModel; nil: Codex's own default).
 	CodexModel func(claudeModel string) string
@@ -224,26 +230,58 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	if err != nil {
 		return err
 	}
-	model, job.Model = fam.model, fam.model
-	defer unlessDetached(ctx, acct.Cleanup)
-	job.Meta = harness.SessionMeta{NodeID: sc.NodeID, ItemID: item.ID, GoalID: item.GoalID, Attempt: item.Attempts, TempDirs: sessionTempDirs(job, acct)}
-	// the second opinion's job: the same brief, none of the first
-	// session's account and none of the pod's services (Codex runs on the
-	// host; a Claude second opinion opens its own account)
-	second := job
-	acct.Apply(&job)
-	// the evaluator's tools, beside the built-in Prologue. An item in
-	// evaluating cannot be released (the platform releases a claimed or
-	// running one): a required tool this node cannot start leaves it
-	// unevaluated, and the loop does not try again while that holds.
+	// whichever account the session ends on (a failed preflight swaps it)
+	defer unlessDetached(ctx, func() { acct.Cleanup() })
+	base := job
+	base.Env = slices.Clone(job.Env)
+	var second harness.Job
+	var st SessionTools
 	runtimes := e.runtimes()
-	st := SelectTools(e.MCP, acct.Tools, string(harness.KindEvaluate), runtimes)
-	if len(st.Missing) > 0 {
-		e.Declines.Record(item.ID, st.Missing, runtimes, time.Now())
-		return fmt.Errorf("declined, %s", st.DeclineReason())
-	}
-	if err := st.UseTools(&job, e.MCP, acct); err != nil {
-		return fmt.Errorf("tools: %w", err)
+	preflight := ""
+	for {
+		job = base
+		job.Env = slices.Clone(base.Env)
+		model, job.Model = fam.model, fam.model
+		job.Meta = harness.SessionMeta{NodeID: sc.NodeID, ItemID: item.ID, GoalID: item.GoalID, Attempt: item.Attempts, TempDirs: sessionTempDirs(job, acct)}
+		// the second opinion's job: the same brief, none of the first
+		// session's account and none of the pod's services (Codex runs on
+		// the host; a Claude second opinion opens its own account)
+		second = job
+		second.Env = slices.Clone(job.Env)
+		acct.Apply(&job)
+		// the evaluator's tools, beside the built-in Prologue. An item in
+		// evaluating cannot be released (the platform releases a claimed or
+		// running one): a required tool this node cannot start leaves it
+		// unevaluated, and the loop does not try again while that holds.
+		st = SelectTools(e.MCP, acct.Tools, string(harness.KindEvaluate), runtimes)
+		if len(st.Missing) > 0 {
+			e.Declines.Record(item.ID, st.Missing, runtimes, time.Now())
+			return fmt.Errorf("declined, %s", st.DeclineReason())
+		}
+		if err := st.UseTools(&job, e.MCP, acct); err != nil {
+			return fmt.Errorf("tools: %w", err)
+		}
+		if !fam.codex {
+			break
+		}
+		// a Codex session that cannot reach the context server would judge
+		// blind: it does not start, and a tool failure never becomes a
+		// verdict (ADR 011, the preflight)
+		why := e.preflight(ctx, job, acct)
+		if why == "" {
+			e.Waits.Forget(preflightKey(item.ID))
+			break
+		}
+		acct.Cleanup()
+		if fam.pinned {
+			return e.preflightWaits(item.ID, label, fam.model, why)
+		}
+		e.logf("item %s: Codex preflight failed (%s); evaluating on Claude", label, why)
+		preflight = why
+		fam = family{model: fam.claude, claude: fam.claude, priority: fam.priority}
+		if acct, err = e.Credentials.Open(ctx, ref, sc.NodeID, e.Accounts, AdapterClaudeCode); err != nil {
+			return err
+		}
 	}
 	if len(st.Use) > 0 {
 		e.logf("item %s: evaluate with tools %s", label, st.Names())
@@ -291,7 +329,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	// the usage report rides the verdict (afterEvaluate); Finish logs it
 	// when nothing carried it
 	defer acct.Finish(ctx, result)
-	return e.afterEvaluate(ctx, evalRun{item: item, res: res, label: label, model: model, fam: fam, dir: dir, acct: acct, second: &second, omitted: st.OmittedNote(), missing: pod.MissingNote()}, result, err)
+	return e.afterEvaluate(ctx, evalRun{item: item, res: res, label: label, model: model, fam: fam, dir: dir, acct: acct, second: &second, preflight: preflight, omitted: st.OmittedNote(), missing: pod.MissingNote()}, result, err)
 }
 
 // evalRun is one evaluation session as its tail needs it, whether this
@@ -307,7 +345,10 @@ type evalRun struct {
 	acct *SessionAccount // nil for an adopted session
 	// second is the second opinion's job; nil for an adopted session,
 	// whose prompt is not kept
-	second           *harness.Job
+	second *harness.Job
+	// preflight is why a Codex preflight failed and the session runs on
+	// Claude instead ("" when none did)
+	preflight        string
 	omitted, missing string
 }
 
@@ -360,10 +401,18 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 	usage := acct.Report(result)
 	// the item's events say which family and model judged it
 	evaluatedOn := ev.fam.logName()
+	if ev.preflight != "" {
+		// and why not on Codex, which the item might have expected
+		evaluatedOn = ev.fam.fullName() + "; the Codex preflight failed: " + truncate(ev.preflight, 200)
+	}
 	if passed && (ev.fam.codex || e.hasCodex()) && gateway.PriorityRank(ev.res.Goal.Priority) <= gateway.PriorityRank("high") {
 		other := ev.fam.other(e)
 		op := opinion{unavailable: "the evaluation was adopted after a restart, and its prompt is not kept"}
-		if ev.second != nil {
+		switch {
+		case ev.preflight != "" && other.codex:
+			// the preflight that moved it to Claude has just failed
+			op = opinion{unavailable: "preflight " + ev.preflight}
+		case ev.second != nil:
 			op = e.secondOpinion(ctx, ev, other, *ev.second)
 		}
 		defer op.acct.Finish(ctx, op.result)
@@ -380,13 +429,13 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 		if op.unavailable != "" {
 			e.logf("item %s: %s second opinion unavailable: %s", label, other.name(), op.unavailable)
 			line := other.name() + " second opinion unavailable: " + op.unavailable
-			notes = truncate(notes, 4000-200-len(line)-len(without)) + "\n\n" + line + "\n\n(evaluated on " + evaluatedOn + ")" + without
+			notes = truncate(notes, 4000-200-len(line)-len(without)-len(ev.preflight)) + "\n\n" + line + "\n\n(evaluated on " + evaluatedOn + ")" + without
 		} else {
 			passed = passed && op.passed
-			notes = bothNotes(ev.fam, notes, other, op.notes, op.passed, 4000-200-len(without)) + "\n\n(evaluated on " + evaluatedOn + "; second opinion on " + other.fullName() + ")" + without
+			notes = bothNotes(ev.fam, notes, other, op.notes, op.passed, 4000-200-len(without)-len(ev.preflight)) + "\n\n(evaluated on " + evaluatedOn + "; second opinion on " + other.fullName() + ")" + without
 		}
 	} else {
-		notes = truncate(notes, 4000-100-len(without)) + "\n\n(evaluated on " + evaluatedOn + ")" + without
+		notes = truncate(notes, 4000-100-len(without)-len(ev.preflight)) + "\n\n(evaluated on " + evaluatedOn + ")" + without
 	}
 	verdict := "failed"
 	if passed {
@@ -484,6 +533,11 @@ func (e *Evaluator) secondOpinion(ctx context.Context, ev evalRun, on family, jo
 	}
 	job.Model = on.model
 	job.Label = label + " second opinion"
+	if on.codex {
+		if why := e.preflight(ctx, job, acct); why != "" {
+			return opinion{unavailable: "preflight " + why}
+		}
+	}
 	e.logf("item %s: second opinion on %s", label, on.logName())
 	result, err := h.Run(ctx, job, nil)
 	op := opinion{cost: result.CostUSD, result: result, acct: acct}
@@ -627,6 +681,32 @@ func (f family) other(e *Evaluator) family {
 		return family{model: f.claude, claude: f.claude, priority: f.priority}
 	}
 	return family{codex: true, model: e.codexModel(f.claude), claude: f.claude, priority: f.priority}
+}
+
+// preflight is why the Codex session job would not reach the built-in
+// context server (Evaluator.CodexPreflight), with every secret the
+// session carries taken out; "" when it would, or with no preflight.
+func (e *Evaluator) preflight(ctx context.Context, job harness.Job, acct *SessionAccount) string {
+	if e.CodexPreflight == nil {
+		return ""
+	}
+	err := e.CodexPreflight(ctx, job)
+	if err == nil {
+		return ""
+	}
+	return truncate(acct.Redact(harness.Redact(err.Error(), job.Secrets...)), 300)
+}
+
+func preflightKey(itemID string) string { return "preflight:" + itemID }
+
+// preflightWaits is ErrFamilyWaits for an item pinned to Codex whose
+// preflight failed: no verdict, it waits in evaluating, said once for
+// the item until a preflight passes.
+func (e *Evaluator) preflightWaits(itemID, label, model, why string) error {
+	if e.Waits.First(preflightKey(itemID)) {
+		e.logf("item %s: pinned to Codex %s, and the Codex preflight failed (%s): it waits in evaluating for a later tick (said once for the item)", label, model, why)
+	}
+	return fmt.Errorf("%w: Codex preflight failed: %s", ErrFamilyWaits, why)
 }
 
 // ErrFamilyWaits is an item pinned to a family none of whose accounts

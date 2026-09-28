@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -259,4 +260,137 @@ func TestEvaluationStartsOnCodexRoom(t *testing.T) {
 	if len(started) != 1 {
 		t.Fatal("no evaluation started on Codex room")
 	}
+}
+
+// fakePreflight is a Codex preflight that answers err and records the
+// jobs it checked.
+type fakePreflight struct {
+	mu   sync.Mutex
+	err  error
+	jobs []harness.Job
+}
+
+func (p *fakePreflight) check(_ context.Context, job harness.Job) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.jobs = append(p.jobs, job)
+	return p.err
+}
+
+// A Codex account with headroom but a preflight that fails: the
+// unpinned item is evaluated on Claude, the verdict says so and why, and
+// node.log names the reason; nothing ran on Codex.
+func TestCodexPreflightFailureEvaluatesOnClaude(t *testing.T) {
+	f, ev, claude, codex, _, logs := familyFixture(t, "normal", "sonnet", "Holds.\nVERDICT: PASS", "VERDICT: FAIL")
+	pf := &fakePreflight{err: errors.New("refuses auth: 401 Unauthorized: bad token")}
+	ev.CodexPreflight = pf.check
+	in := evaluateItem1(t, f, ev)
+	if len(pf.jobs) != 1 || codex.runs() != 0 || len(claude.jobs) != 1 {
+		t.Fatalf("preflights %d, runs claude %d, codex %d", len(pf.jobs), len(claude.jobs), codex.runs())
+	}
+	if _, ok := envOf(pf.jobs[0].Env, "CODEX_HOME"); !ok {
+		t.Error("the preflight did not check the issued login's CODEX_HOME")
+	}
+	if _, ok := envOf(claude.jobs[0].Env, "CODEX_HOME"); ok {
+		t.Error("the Claude session carries the Codex home")
+	}
+	if !claude.jobs[0].Outlive || claude.jobs[0].Model != "sonnet" {
+		t.Fatalf("claude job model %q outlive %v", claude.jobs[0].Model, claude.jobs[0].Outlive)
+	}
+	want := "Holds.\n\n(evaluated on Claude sonnet; the Codex preflight failed: refuses auth: 401 Unauthorized: bad token)"
+	if in["passed"] != true || in["notes"] != want {
+		t.Fatalf("recorded %+v\nwant notes %q", in, want)
+	}
+	if u := usageOf(t, f); u["adapter"] != "claude-code" || u["credentialId"] != "cred-1" {
+		t.Fatalf("usage %v", u)
+	}
+	if want := "item ship-it/1: Codex preflight failed (refuses auth: 401 Unauthorized: bad token); evaluating on Claude"; !strings.Contains(logs.String(), want) {
+		t.Fatalf("node.log lacks %q:\n%s", want, logs.String())
+	}
+
+	// an urgent item gets no Codex second opinion after it: the same
+	// preflight has just failed
+	f, ev, claude, codex, _, _ = familyFixture(t, "urgent", "opus", "Holds.\nVERDICT: PASS", "VERDICT: FAIL")
+	ev.CodexPreflight = (&fakePreflight{err: errors.New("unreachable: connection refused")}).check
+	in = evaluateItem1(t, f, ev)
+	if codex.runs() != 0 || len(claude.jobs) != 1 {
+		t.Fatalf("urgent: runs claude %d, codex %d", len(claude.jobs), codex.runs())
+	}
+	if notes, _ := in["notes"].(string); in["passed"] != true || !strings.Contains(notes, "Codex second opinion unavailable: preflight unreachable: connection refused") {
+		t.Fatalf("urgent: recorded %+v", in)
+	}
+}
+
+// A pinned gpt-… item whose preflight fails records no verdict and waits
+// in evaluating, said once; a passing preflight then runs Codex as before.
+func TestCodexPinWaitsOnFailedPreflight(t *testing.T) {
+	f, ev, claude, codex, _, logs := familyFixture(t, "normal", "sonnet", "VERDICT: PASS", "Holds.\nVERDICT: PASS")
+	f.WorkItems[item1]["evaluateModel"] = "gpt-6-astra"
+	pf := &fakePreflight{err: errors.New("unreachable: dial tcp: connection refused")}
+	ev.CodexPreflight = pf.check
+	item, err := ev.GW.WorkItem(context.Background(), item1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		if err := ev.Evaluate(context.Background(), *item); !errors.Is(err, ErrFamilyWaits) || !strings.Contains(err.Error(), "unreachable") {
+			t.Fatalf("Evaluate = %v, want ErrFamilyWaits naming the preflight", err)
+		}
+	}
+	if len(claude.jobs) != 0 || codex.runs() != 0 || len(f.CallsNamed("evaluateWorkItem")) != 0 || f.Item(item1)["status"] != "evaluating" {
+		t.Fatalf("runs claude %d codex %d, verdicts %d, status %v", len(claude.jobs), codex.runs(), len(f.CallsNamed("evaluateWorkItem")), f.Item(item1)["status"])
+	}
+	if n := strings.Count(logs.String(), "pinned to Codex gpt-6-astra, and the Codex preflight failed (unreachable: dial tcp: connection refused)"); n != 1 {
+		t.Fatalf("said %d times:\n%s", n, logs.String())
+	}
+
+	pf.err = nil
+	if err := ev.Evaluate(context.Background(), *item); err != nil {
+		t.Fatal(err)
+	}
+	if codex.runs() != 1 || codex.jobs[0].Model != "gpt-6-astra" || len(claude.jobs) != 0 {
+		t.Fatalf("runs codex %d claude %d", codex.runs(), len(claude.jobs))
+	}
+	if in := f.CallsNamed("evaluateWorkItem")[0].Input; in["notes"] != "Holds.\n\n(evaluated on Codex gpt-6-astra)" {
+		t.Fatalf("recorded %+v", in)
+	}
+}
+
+// A passing preflight runs Codex as before, checking the very job Codex
+// then runs; a Claude-first evaluation's Codex second opinion is
+// preflighted too, and a failure makes it unavailable.
+func TestCodexPreflightPassesAndGuardsSecondOpinion(t *testing.T) {
+	f, ev, claude, codex, _, _ := familyFixture(t, "normal", "sonnet", "VERDICT: FAIL", "Holds.\nVERDICT: PASS")
+	pf := &fakePreflight{}
+	ev.CodexPreflight = pf.check
+	in := evaluateItem1(t, f, ev)
+	if len(pf.jobs) != 1 || codex.runs() != 1 || len(claude.jobs) != 0 || in["notes"] != "Holds.\n\n(evaluated on Codex gpt-6-sol)" {
+		t.Fatalf("preflights %d, runs codex %d claude %d, recorded %+v", len(pf.jobs), codex.runs(), len(claude.jobs), in)
+	}
+	if h, _ := envOf(pf.jobs[0].Env, "CODEX_HOME"); h == "" || h != mustEnv(t, codex.jobs[0].Env, "CODEX_HOME") || pf.jobs[0].Model != codex.jobs[0].Model {
+		t.Fatal("the preflight checked another job than the one Codex ran")
+	}
+
+	// Claude first (no Codex room for the first), Codex's second opinion
+	// preflighted and refused
+	f, ev, claude, codex, _, _ = familyFixture(t, "urgent", "opus", "Holds.\nVERDICT: PASS", "VERDICT: PASS")
+	f.WorkItems[item1]["evaluateModel"] = "claude-opus-5"
+	pf = &fakePreflight{err: errors.New("refuses auth: 403 Forbidden: no")}
+	ev.CodexPreflight = pf.check
+	in = evaluateItem1(t, f, ev)
+	if len(pf.jobs) != 1 || codex.runs() != 0 || len(claude.jobs) != 1 {
+		t.Fatalf("second: preflights %d, runs codex %d claude %d", len(pf.jobs), codex.runs(), len(claude.jobs))
+	}
+	if notes, _ := in["notes"].(string); in["passed"] != true || !strings.Contains(notes, "Codex second opinion unavailable: preflight refuses auth: 403 Forbidden: no") {
+		t.Fatalf("second: recorded %+v", in)
+	}
+}
+
+func mustEnv(t *testing.T, env []string, name string) string {
+	t.Helper()
+	v, ok := envOf(env, name)
+	if !ok {
+		t.Fatalf("no %s", name)
+	}
+	return v
 }
