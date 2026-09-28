@@ -3,7 +3,7 @@ title: Goal — Codex sessions reach the context tool: MCP errors are recorded, 
 kind: plan
 status: draft
 parent: prd
-summary: Codex evaluations on the mini failed because the context tool was unreachable; the node now preflights the tool, records errors, and re-evaluates on Claude when the tool fails, keeping a 24-hour stream of each Codex session for debugging.
+summary: Codex evaluations on the mini failed due to an approval policy refusal; the node now preflights the tool, records errors, and re-evaluates on the other family when the tool fails, keeping a 24-hour stream of each Codex session for debugging.
 ---
 
 # Goal — Codex sessions reach the context tool: MCP errors are recorded, a session that cannot reach it falls back to Claude, and a tool failure is never a verdict
@@ -28,15 +28,20 @@ mesh-cli tests: a Codex session whose MCP server refuses auth records the error 
 | 4 | Harness: find and fix why the built-in context tool fails inside a real Codex evaluation session | merged | mesh/codex-sessions-reach-the-context-tool-4 | https://github.com/runsheet/mesh-cli/pull/289 | $3.63 |
 | 5 | Node: the default Codex model for an opus-tier evaluation is gpt-6-sol; sonnet and haiku map to gpt-6-luna; astra only when pinned | merged | mesh/codex-sessions-reach-the-context-tool-5 | https://github.com/runsheet/mesh-cli/pull/287 | $3.20 |
 | 6 | Node: a tool-error evaluation re-evaluates on the other family, not failing the item, and the item stays evaluating | failed | mesh/codex-sessions-reach-the-context-tool-6 | https://github.com/runsheet/mesh-cli/pull/290 | $5.10 |
-| 7 | (replaced by re-plan) | — | — | — | — |
-| 8 | (replaced by re-plan) | — | — | — | — |
+| 7 | (replaced by re-plan) | replaced | — | — | — |
+| 8 | (replaced by re-plan) | replaced | — | — | — |
 | 9 | Node: an evaluation whose context tool never worked is not a verdict; it runs again on the other family and the item stays in evaluating (item 6's work rebased onto main) | merged | mesh/codex-sessions-reach-the-context-tool-9 | https://github.com/runsheet/mesh-cli/pull/305 | $1.14 |
 | 10 | mesh-specs: ADR 011 and the TRD's Codex adapter section record the preflight, the kept error and stream, the model defaults, the root cause and that a tool failure is never a verdict | merged | mesh/codex-sessions-reach-the-context-tool-10 | https://github.com/runsheet/mesh-specs/pull/70 | $2.58 |
 | 11 | Goal doc: codex-sessions-reach-the-context-tool — what landed, the root cause, the mini's by-hand upgrade and un-parking the Codex credential | in progress | mesh/codex-sessions-reach-the-context-tool-11 | — | — |
 
 ## What was found
 
-Item 4 established the root cause: Codex `exec` under `workspace-write` refuses an unapproved MCP call, so every MCP server table in the config now carries `default_tools_approval_mode = "approve"`. Before item 4 landed, console tools were rendered with Claude's `${…}` variable references until the Codex renderer was wired in the harness (`harness.CodexMCPConfig`, `CodexSessionEnviron`). The candidates ruled out per `docs/codex-events.md` were the env the harness builds (the owned-home path vs the job-prepared home), a token mismatch, and the sandbox mode.
+Item 4 established the root cause: Codex's approval policy for MCP calls in `exec` with `--sandbox workspace-write` requires each server to carry `default_tools_approval_mode = "approve"` in its table. The sandbox is a condition (exec approves calls itself only when there is no sandbox to protect), not the cause. The candidates per `docs/codex-events.md`:
+
+- **Ruled in: the cause** — Codex's approval policy for MCP calls in `exec`.
+- **Ruled in, as the condition** — `--sandbox workspace-write` (a call needs approval under it; without the sandbox exec approves calls itself).
+- **Ruled in as a defect, not this failure** — Console tools rendered as `${…}` variable references instead of resolved values until the Codex renderer was wired in item 4 (`tools.CodexConfig`, `CodexMCPConfig` resolves `${VAR}` or refuses it).
+- **Ruled out** — The env the harness builds (`prepareHome`'s job-home path vs the owned-home path, the Unset list in `SessionEnviron`), the token on the built-in, and a startup timeout.
 
 ## After merge
 
@@ -44,7 +49,7 @@ The mini's by-hand upgrade: build for linux/amd64 (`CGO_ENABLED=0 GOOS=linux GOA
 
 Then un-park the Codex credential by removing the `limitCredentialNodes` restriction to the retired laptop node on the console (Settings → Credentials → codex - chatgpt pro → edit), so evaluations can use it again.
 
-What to look for: a Codex evaluation's usage record on the mini with prologue calls and 0 errors (the `tools` list in the usage mutation); an evaluation note that reads like one that saw the code (not blind, referring to the actual logic); node.log lines `Codex preflight` (successfully passed) and `evaluating on` (family choice); the kept stream under the work root for 24 h (in `~/.mesh/items/<item>.session/output.jsonl` and `stderr.log`).
+What to look for: a Codex evaluation's usage record on the mini with prologue calls and 0 errors (the `tools` list in the usage mutation); an evaluation note that reads like one that saw the code (not blind, referring to the actual logic); node.log lines `Codex preflight` (successfully passed) and `evaluating on` (family choice); the kept stream under the work root for 24 h (`<work root>/kept-sessions/<name>/output.jsonl` and `stderr.log`).
 
 ## What this project did not build
 
