@@ -199,7 +199,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 		job.Env = SessionEnv(tok, ghDir)
 	}
 	sc, _ := e.Scopes.ByOrg(item.OrgID)
-	acct, err := e.Credentials.Open(ctx, gateway.SessionRef{Kind: string(harness.KindEvaluate), ItemID: item.ID, GoalID: item.GoalID}, sc.NodeID, e.Accounts)
+	acct, err := e.Credentials.Open(ctx, gateway.SessionRef{Kind: string(harness.KindEvaluate), ItemID: item.ID, GoalID: item.GoalID}, sc.NodeID, e.Accounts, Adapter(e.Harness))
 	if err != nil {
 		return err
 	}
@@ -258,7 +258,6 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	}
 	// the session outlives this process: a restart adopts it (ADR 009)
 	job.Outlive = true
-	acct.Adapter = Adapter(e.Harness)
 	result, err := e.Harness.Run(ctx, job, nil)
 	// the usage report rides the verdict (afterEvaluate); Finish logs it
 	// when nothing carried it

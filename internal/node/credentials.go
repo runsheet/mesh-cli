@@ -118,23 +118,34 @@ type SessionAccount struct {
 	used []tools.Tool
 }
 
-// Open is the account a claimed session runs on. It asks the platform
-// for the session's credentials (the claim-time read); those it issues
-// are the accounts the session chooses among, by the rule the loop chose
-// by (withChooser) — an api credential whose daily or monthly cap is
-// spent is never among them (a hard stop), and none left is
+// Open is the account a claimed session on adapter (Adapter of its
+// harness: "claude-code" or "codex"; empty is claude-code) runs on. It
+// asks the platform for the session's credentials (the claim-time
+// read); those it issues for that adapter are the accounts the session
+// chooses among, by the rule the loop chose by (withChooser) — an api
+// credential whose daily or monthly cap is spent is never among them (a
+// hard stop), and none left, or none of the adapter's issued at all, is
 // ErrNoAccount. A platform without the read, or one that issues
-// nothing, leaves node.yaml's accounts (OpenAccount); a refusal is an
-// error. No error or log line carries a secret.
-func (c *Credentials) Open(ctx context.Context, ref gateway.SessionRef, nodeID string, fallback []AccountConfig) (*SessionAccount, error) {
+// nothing, leaves node.yaml's accounts (OpenAccount) — for a Codex
+// session, the Codex harness's own account (no AccountSession); a
+// refusal is an error. No error or log line carries a secret.
+func (c *Credentials) Open(ctx context.Context, ref gateway.SessionRef, nodeID string, fallback []AccountConfig, adapter string) (*SessionAccount, error) {
+	if adapter == "" {
+		adapter = AdapterClaudeCode
+	}
+	if adapter == AdapterCodex {
+		// node.yaml's accounts are Claude's; the codex: block's is the
+		// harness's own
+		fallback = nil
+	}
 	if c == nil {
 		acct, err := OpenAccount(ctx, fallback)
 		if err != nil {
 			return nil, err
 		}
-		return &SessionAccount{AccountSession: acct}, nil
+		return &SessionAccount{AccountSession: acct, Adapter: adapter}, nil
 	}
-	s := &SessionAccount{creds: c, ref: ref, nodeID: nodeID, started: c.now()}
+	s := &SessionAccount{creds: c, ref: ref, nodeID: nodeID, started: c.now(), Adapter: adapter}
 	var issued []gateway.Credential
 	read, err := c.GW.Session(ctx, ref, nodeID)
 	if err == nil && read != nil {
@@ -164,6 +175,9 @@ func (c *Credentials) Open(ctx context.Context, ref gateway.SessionRef, nodeID s
 			if err := c.Known.Note(a, c.now()); err != nil {
 				c.logf("known accounts: %v", err)
 			}
+			if a.AdapterOf() != adapter {
+				continue
+			}
 			if a.Kind == AccountAPI {
 				left := CapRoom(cr)
 				if left <= 0 {
@@ -177,8 +191,11 @@ func (c *Credentials) Open(ctx context.Context, ref gateway.SessionRef, nodeID s
 		choose := chooserFrom(ctx)
 		if choose == nil {
 			choose = func(accts []AccountConfig) (AccountConfig, bool) {
-				return ChooseAccount(c.now(), accts, c.readings(), c.thresholds(), "", true)
+				return ChooseAccount(c.now(), accts, c.readingsFor(adapter), c.thresholds(), "", true)
 			}
+		}
+		if len(accounts) == 0 {
+			return nil, ErrNoAccount
 		}
 		a, ok := choose(accounts)
 		if !ok {
@@ -194,10 +211,30 @@ func (c *Credentials) Open(ctx context.Context, ref gateway.SessionRef, nodeID s
 		}
 		s.AccountSession, s.account, s.remaining = acct, a, room[a.Label]
 	}
-	if r, ok := c.readings()[s.label()]; ok {
+	if r, ok := c.reading(s.limitsKey()); ok {
 		s.before = &r
 	}
 	return s, nil
+}
+
+// readingsFor are the readings an adapter's accounts are judged by, by
+// label: the Claude accounts' (Readings), or the Codex accounts' with
+// their codex: prefix taken off (Limits.CodexReadings).
+func (c *Credentials) readingsFor(adapter string) map[string]harness.RateLimit {
+	if adapter != AdapterCodex {
+		return c.readings()
+	}
+	if c.Limits == nil {
+		return nil
+	}
+	return c.Limits.CodexReadings()
+}
+
+func (c *Credentials) reading(key string) (harness.RateLimit, bool) {
+	if c.Limits == nil {
+		return harness.RateLimit{}, false
+	}
+	return c.Limits.Reading(key)
 }
 
 func (c *Credentials) thresholds() LimitsConfig {
@@ -225,7 +262,12 @@ func IssuedAccount(cr gateway.Credential) AccountConfig {
 		label = cr.ID
 	}
 	secret := cr.Secret
-	return AccountConfig{Label: label, Kind: cr.Kind, ID: cr.ID, DailyCapUSD: cr.CapDailyUSD, MonthlyCapUSD: cr.CapMonthlyUSD, issued: &secret}
+	adapter := cr.Adapter
+	if adapter == AdapterClaudeCode {
+		adapter = ""
+	}
+	return AccountConfig{Label: label, Kind: cr.Kind, ID: cr.ID, Adapter: adapter, SecretVersion: cr.SecretVersion,
+		DailyCapUSD: cr.CapDailyUSD, MonthlyCapUSD: cr.CapMonthlyUSD, issued: &secret}
 }
 
 // CapRoom is how many dollars an api credential may still spend: the
@@ -244,12 +286,21 @@ func capOr(v, def float64) float64 {
 	return def
 }
 
-// label is the account the session's limits are kept under.
+// label is the account the session runs on.
 func (s *SessionAccount) label() string {
 	if s.account.Label != "" {
 		return s.account.Label
 	}
 	return DefaultAccount
+}
+
+// limitsKey is the key the session's limits are kept under in Limits:
+// the label, or for a Codex session CodexLimitsAccount of it.
+func (s *SessionAccount) limitsKey() string {
+	if s.Adapter == AdapterCodex {
+		return CodexLimitsAccount(s.account.Label)
+	}
+	return s.label()
 }
 
 // Apply puts the account on the job, as AccountSession.Apply does, and
@@ -342,7 +393,7 @@ func (s *SessionAccount) Report(res harness.Result) *gateway.UsageReport {
 	}
 	after := res.RateLimit
 	if after == nil {
-		if rl, ok := c.readings()[s.label()]; ok {
+		if rl, ok := c.reading(s.limitsKey()); ok {
 			after = &rl
 		}
 	}

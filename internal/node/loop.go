@@ -775,13 +775,28 @@ func (l *Loop) accounts() ([]AccountConfig, map[string]harness.RateLimit) {
 	return own, nil
 }
 
+// CodexAccounts are the issued Codex accounts Known holds and their
+// latest readings by label (Limits.CodexReadings), for judging a Codex
+// session's account apart from the Claude ones.
+func (l *Loop) CodexAccounts() ([]AccountConfig, map[string]harness.RateLimit) {
+	var codex []AccountConfig
+	for _, a := range l.Known.Accounts(l.now()) {
+		if a.IsCodex() {
+			codex = append(codex, a)
+		}
+	}
+	return codex, l.limitsStore().CodexReadings()
+}
+
 // scheduled is the union the loop schedules on: node.yaml's accounts
-// first, then each issued account Known holds whose label node.yaml
-// does not already have. None of either is none — the operator's own
-// login.
+// first, then each issued Claude account Known holds whose label
+// node.yaml does not already have. None of either is none — the
+// operator's own login. A Codex account is not among them: its sessions
+// are not the capacity's, and its readings are not the Claude accounts'
+// (CodexAccounts).
 func (l *Loop) scheduled() []AccountConfig {
 	accounts := l.nodeAccounts()
-	issued := l.Known.Accounts(l.now())
+	issued := slices.DeleteFunc(l.Known.Accounts(l.now()), AccountConfig.IsCodex)
 	if len(issued) == 0 {
 		return accounts
 	}
@@ -842,7 +857,13 @@ func (l *Loop) withAccount(ctx context.Context, what, priority string, choose fu
 		return ctx, false
 	}
 	ctx = withChooser(ctx, func(issued []AccountConfig) (AccountConfig, bool) {
-		return choose(l.spendable(issued, pressing, item), l.limitsStore().Readings())
+		// Credentials.Open hands in one adapter's accounts: a Codex
+		// session's are judged by the Codex readings
+		readings := l.limitsStore().Readings()
+		if len(issued) > 0 && issued[0].IsCodex() {
+			readings = l.limitsStore().CodexReadings()
+		}
+		return choose(l.spendable(issued, pressing, item), readings)
 	})
 	if len(l.scheduled()) == 0 {
 		return ctx, true

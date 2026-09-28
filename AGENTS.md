@@ -262,7 +262,14 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   variable name (mesh-specs ADR 006). node.yaml's `codex:` block
   (`CodexConfig`: binary, accounts, `models {opus, sonnet, haiku}`)
   and `CodexModel` map the Claude tiers to Codex models. Codex has no
-  budget flag, so `MaxBudgetUSD` is not enforced.
+  budget flag, so `MaxBudgetUSD` is not enforced. An issued openai
+  credential serving `codex` is a Codex account too (adr-005,
+  `PrepareCodexAccount`): `Credentials.Open` with adapter codex chooses
+  among those alone, the login lands as the session's
+  `CODEX_HOME/auth.json` (0600, gone with the home; a refreshed one
+  kept at `CodexLoginCache` per id and secret version), a key as
+  `CODEX_API_KEY`/`OPENAI_API_KEY`, and the harness writes only
+  `config.toml` into a home the job names.
 - **The second opinion** (`internal/node/evaluate.go`,
   `docs/adr/adr-005-codex-second-opinion.md`): `Evaluator.Second` is
   the Codex harness (`codexSecondOpinion` in `nodecmd.go`: built when

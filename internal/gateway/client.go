@@ -1838,8 +1838,15 @@ type Credential struct {
 	ID    string
 	Label string
 	// Kind is "subscription" or "api".
-	Kind   string
-	Secret string
+	Kind string
+	// Adapter is the agent CLI the credential signs in: ClaudeCodeAdapter
+	// (an Anthropic credential) or CodexAdapter (an OpenAI one, whose
+	// subscription secret is the auth.json `codex login` writes).
+	Adapter string
+	// SecretVersion is the platform's version of the sealed secret: a
+	// new one is a rotated or re-pasted secret (0: not served).
+	SecretVersion int
+	Secret        string
 	// CapDailyUSD and CapMonthlyUSD are an api key's caps (0: the
 	// platform's default, $50 and $1,000); SpentDailyUSD and
 	// SpentMonthlyUSD what the ledger has counted against them so far.
@@ -1851,7 +1858,7 @@ type Credential struct {
 
 // String is the credential without its secret.
 func (c Credential) String() string {
-	return fmt.Sprintf("credential %s (%s, %s)", c.Label, c.Kind, c.ID)
+	return fmt.Sprintf("credential %s (%s %s, %s)", c.Label, c.Adapter, c.Kind, c.ID)
 }
 
 // GoString is String, so %#v leaves the secret out too.

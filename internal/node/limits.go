@@ -70,6 +70,16 @@ func Account(env []string) string {
 	return DefaultAccount
 }
 
+// jobAccount is the label a session's env names (AccountEnv), or "".
+func jobAccount(env []string) string {
+	for i := len(env) - 1; i >= 0; i-- {
+		if v, ok := strings.CutPrefix(env[i], AccountEnv+"="); ok && v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 // Limits keeps the latest plan standing each account's sessions
 // reported. Every kind of session feeds it; the heartbeat carries it and
 // the loop paces by it.
@@ -117,6 +127,19 @@ func (s *Limits) Readings() map[string]harness.RateLimit {
 	for a := range out {
 		if strings.HasPrefix(a, CodexAccountPrefix) {
 			delete(out, a)
+		}
+	}
+	return out
+}
+
+// CodexReadings are the latest reading of every Codex account, by its
+// label (the codex: prefix taken off): what a Codex session's account is
+// chosen by, apart from the Claude accounts'.
+func (s *Limits) CodexReadings() map[string]harness.RateLimit {
+	out := map[string]harness.RateLimit{}
+	for a, rl := range s.all() {
+		if label, ok := strings.CutPrefix(a, CodexAccountPrefix); ok {
+			out[label] = rl
 		}
 	}
 	return out
@@ -190,6 +213,10 @@ type limitsHarness struct {
 
 func (h *limitsHarness) Run(ctx context.Context, job harness.Job, onProgress func(harness.Progress)) (harness.Result, error) {
 	account := h.account
+	if h.Harness.Name() == AdapterCodex && jobAccount(job.Env) != "" {
+		// a Codex session on an issued account (its label on the env)
+		account = CodexLimitsAccount(jobAccount(job.Env))
+	}
 	if account == "" {
 		account = Account(job.Env)
 	}

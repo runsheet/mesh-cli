@@ -369,7 +369,7 @@ func TestSpentAPICapIsNotChosen(t *testing.T) {
 
 	gw := &credsGW{issued: []gateway.Credential{spentDay, spentMonth, roomy}}
 	c := &Credentials{GW: gw, Log: log.New(&logs, "", 0)}
-	s, err := c.Open(context.Background(), ref, "n", nil)
+	s, err := c.Open(context.Background(), ref, "n", nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -387,7 +387,7 @@ func TestSpentAPICapIsNotChosen(t *testing.T) {
 	}
 
 	gw.issued = []gateway.Credential{spentDay, spentMonth}
-	if _, err := c.Open(context.Background(), ref, "n", nil); !errors.Is(err, ErrNoAccount) {
+	if _, err := c.Open(context.Background(), ref, "n", nil, ""); !errors.Is(err, ErrNoAccount) {
 		t.Fatalf("Open with every key at its cap = %v, want ErrNoAccount", err)
 	}
 	for _, sec := range []string{spentDay.Secret, spentMonth.Secret, roomy.Secret} {
@@ -447,7 +447,7 @@ func TestOpenRemembersEveryIssuedCredential(t *testing.T) {
 
 	// key-1 is at its cap, so Open still runs (on one of the two
 	// subscriptions), but all three land in Known.
-	s, err := c.Open(context.Background(), ref, "n", nil)
+	s, err := c.Open(context.Background(), ref, "n", nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -484,7 +484,7 @@ func TestKnownAccountsFileHasNoSecret(t *testing.T) {
 	}
 	c := &Credentials{GW: gw, Known: known, Log: log.New(io.Discard, "", 0)}
 	ref := gateway.SessionRef{Kind: "build", ItemID: item1}
-	s, err := c.Open(context.Background(), ref, "n", nil)
+	s, err := c.Open(context.Background(), ref, "n", nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}

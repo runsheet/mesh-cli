@@ -239,7 +239,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		job.Env = SessionEnv(tok, ghDir)
 	}
 	sc, _ := r.Scopes.ByOrg(item.OrgID)
-	acct, err := r.Credentials.Open(ctx, gateway.SessionRef{Kind: string(harness.KindBuild), ItemID: item.ID, GoalID: item.GoalID}, sc.NodeID, r.Accounts)
+	acct, err := r.Credentials.Open(ctx, gateway.SessionRef{Kind: string(harness.KindBuild), ItemID: item.ID, GoalID: item.GoalID}, sc.NodeID, r.Accounts, Adapter(r.Harness))
 	if errors.Is(err, ErrNoAccount) {
 		// no issued account has headroom: the item waits, not fails
 		r.logf("item %s: %v; released", label, err)
@@ -307,7 +307,6 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		r.logf("item %s: %s", label, note)
 		b.report(ctx, note)
 	}
-	acct.Adapter = Adapter(r.Harness)
 	result, runErr := b.run(ctx, func(onProgress func(harness.Progress)) (harness.Result, error) {
 		return r.Harness.Run(ctx, job, onProgress)
 	})

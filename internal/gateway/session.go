@@ -148,24 +148,43 @@ func strs(v any) []string {
 	return out
 }
 
-// ClaudeCodeAdapter is the adapter a session credential must serve.
-const ClaudeCodeAdapter = "claude-code"
+// The adapters a session credential may serve: the agent CLI it signs
+// in.
+const (
+	ClaudeCodeAdapter = "claude-code"
+	CodexAdapter      = "codex"
+)
 
 // issuedCredential is the platform's credential row as a session
-// account: an Anthropic credential serving claude-code (or everything).
-// Any other vendor is a tool's account (adr-006), not a session's, and
-// is not one. kind subscription and oauth_token are a subscription's
-// token; api_key an api key whose caps, in dollars, are the row's when
-// the cap unit is dollars (else the node's defaults). Spend is not
-// carried: the platform leaves a key at its cap out of the read.
+// account: an Anthropic credential serving claude-code (or everything),
+// or an OpenAI one whose serves name codex — a Codex account. Any other
+// row is a tool's account (adr-006), not a session's, and is not one.
+// kind subscription and oauth_token are a subscription's token (for
+// OpenAI, the ChatGPT login's auth.json); api_key an api key whose caps,
+// in dollars, are the row's when the cap unit is dollars (else the
+// node's defaults). Spend is not carried: the platform leaves a key at
+// its cap out of the read.
 func issuedCredential(row map[string]any) (Credential, bool) {
-	if str(row, "vendor") != "anthropic" {
+	serves := strs(row["serves"])
+	var adapter string
+	switch str(row, "vendor") {
+	case "anthropic":
+		if len(serves) > 0 && !slices.Contains(serves, ClaudeCodeAdapter) {
+			return Credential{}, false
+		}
+		adapter = ClaudeCodeAdapter
+	case "openai":
+		if !slices.Contains(serves, CodexAdapter) {
+			return Credential{}, false
+		}
+		adapter = CodexAdapter
+	default:
 		return Credential{}, false
 	}
-	if serves := strs(row["serves"]); len(serves) > 0 && !slices.Contains(serves, ClaudeCodeAdapter) {
-		return Credential{}, false
+	cr := Credential{ID: str(row, "id"), Label: str(row, "label"), Adapter: adapter, Secret: str(row, "secret")}
+	if v, ok := row["secretVersion"].(float64); ok {
+		cr.SecretVersion = int(v)
 	}
-	cr := Credential{ID: str(row, "id"), Label: str(row, "label"), Secret: str(row, "secret")}
 	switch str(row, "kind") {
 	case "subscription", "oauth_token":
 		cr.Kind = "subscription"
