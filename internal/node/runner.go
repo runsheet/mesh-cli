@@ -15,6 +15,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/harness"
 	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/tools"
+	"projectmesh.io/mesh-cli/internal/validate"
 )
 
 // Resolved is a work item with its goal, project and repo read.
@@ -117,7 +118,13 @@ type Runner struct {
 	// MeshBinary is the mesh executable a session's tool-trim hook runs
 	// ("" is `mesh` on the session's PATH).
 	MeshBinary string
-	Log        *log.Logger
+	// Inspect runs `podman image inspect` for a sandboxed validation's
+	// runner image digest (nil: sandbox.ExecRunner).
+	Inspect sandbox.Runner
+	// Notices say once per run that the platform takes no validation
+	// attestations, or no per-step minutes, yet (nil: every item).
+	Notices *ValidationNotices
+	Log     *log.Logger
 }
 
 // toolResults bounds the job's tool results by node.yaml's
@@ -199,14 +206,31 @@ type costReporter struct {
 	mu            sync.Mutex
 	reportedCents int
 	totalUSD      float64
+	// baseUSD is what the sessions before the current one spent: a
+	// validation retry's turn counts its own dollars from zero (carry).
+	baseUSD float64
 }
 
 func (c *costReporter) observe(usd float64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if usd > c.totalUSD {
+	if usd += c.baseUSD; usd > c.totalUSD {
 		c.totalUSD = usd
 	}
+}
+
+// carry starts the next session's dollars on top of the total so far.
+func (c *costReporter) carry() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.baseUSD = c.totalUSD
+}
+
+// total is every session's dollars so far.
+func (c *costReporter) total() float64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.totalUSD
 }
 
 // delta returns the unreported cents and marks them reported.
@@ -352,7 +376,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 
 	// the session outlives this process: a restart adopts it (ADR 009)
 	job.Outlive = true
-	b := &buildRun{r: r, item: item, res: res, label: label, spec: spec, dir: dir, cred: cred, acct: acct, runtimes: runtimes, lastText: "session started"}
+	b := &buildRun{r: r, item: item, res: res, label: label, spec: spec, dir: dir, cred: cred, acct: acct, runtimes: runtimes, lastText: "session started", job: &job, pod: pod, started: time.Now()}
 	b.report(ctx, "session started: "+spec.Branch+" on "+modelName(model))
 	if note := st.OmittedNote(); note != "" {
 		r.logf("item %s: %s", label, note)
@@ -384,10 +408,31 @@ type buildRun struct {
 	acct     *SessionAccount // nil for an adopted session
 	runtimes []string
 	cost     costReporter
+	// job is the session's job, for a validation retry's turn; pod its
+	// sandbox, where the validation runs; started when it began. The job
+	// and pod are nil for an adopted session.
+	job     *harness.Job
+	pod     *SessionPod
+	started time.Time
 
 	mu        sync.Mutex
 	lastText  string
 	sessionID string
+}
+
+// session is the session's id as last read.
+func (b *buildRun) session() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.sessionID
+}
+
+// podSession is the session's sandbox (nil: none, or adopted).
+func (b *buildRun) podSession() *sandbox.Session {
+	if b.pod == nil {
+		return nil
+	}
+	return b.pod.Session
 }
 
 // report is the item's heartbeat: the note (the session's last text when
@@ -513,6 +558,38 @@ func (r *Runner) afterBuild(ctx context.Context, b *buildRun, result harness.Res
 		b.endGoal(ctx)
 		return nil
 	}
+	// the repository's validation on the commit the item finishes with
+	// (runsheet ADR 032): a failing step gets the builder one more turn,
+	// then fails the item naming it
+	v, err := r.startValidation(ctx, b)
+	if err != nil {
+		b.report(ctx, "validation: "+err.Error())
+		return r.fail(ctx, item, fmt.Errorf("validation: %w", err))
+	}
+	var att validate.Attestation
+	if v != nil {
+		defer v.close()
+		att, err = r.validateBuild(ctx, b, v, result)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if rep := b.acct.Report(result); rep != nil {
+			rep.Validation = v.usage()
+		}
+		var vf *validationFailure
+		if errors.As(err, &vf) {
+			if len(v.runs) > 0 {
+				r.uploadAttestation(ctx, b, v.runs[len(v.runs)-1])
+			}
+			b.report(ctx, vf.Error())
+			return r.fail(ctx, item, vf)
+		}
+		if err != nil {
+			err = b.acct.RedactErr(err)
+			b.report(ctx, "validation: "+err.Error())
+			return r.fail(ctx, item, fmt.Errorf("validation: %w", err))
+		}
+	}
 	if err := b.cred.Refresh(ctx); err != nil {
 		r.logf("item %s: %v", label, err) // the token held may yet serve
 	}
@@ -520,7 +597,14 @@ func (r *Runner) afterBuild(ctx context.Context, b *buildRun, result harness.Res
 	if err != nil {
 		return r.fail(ctx, item, fmt.Errorf("push: %w", err))
 	}
-	if err := b.acct.Carried(r.GW.FinishWorkItem(ctx, item.ID, b.spec.Branch, sha, b.cost.delta(), b.acct.Report(result))); err != nil {
+	if v != nil {
+		// uploaded after the push: the platform signs for a commit that exists
+		if att.Commit != sha {
+			r.logf("item %s: validation ran on %s, the push is %s", label, short(att.Commit), short(sha))
+		}
+		r.uploadAttestation(ctx, b, att)
+	}
+	if err := b.acct.Carried(r.validationUsage(r.GW.FinishWorkItem(ctx, item.ID, b.spec.Branch, sha, b.cost.delta(), b.acct.Report(result)))); err != nil {
 		return fmt.Errorf("finish %s: %w", label, err)
 	}
 	r.logf("item %s: finished %s@%s ($%.2f)", label, b.spec.Branch, short(sha), result.CostUSD)
