@@ -22,12 +22,11 @@ mesh-cli tests: a session's MCP config names mesh-context, allowedTools carries 
 
 ## Items
 
-| Seq | Title | Status | Branch | PR |
-| --- | --- | --- | --- | --- |
-| 3 | Console: the Prologue column in the status table and the /orgs/<org>/prologue/<project> route redirect to Context | failed | — | — |
-| 5 | Node: the built-in server is mesh-context — tools.Builtin, MeshContextMCP, allowedTools mcp__mesh-context__*; a console tool named prologue no longer clashes, one named mesh-context does; a builtIn row is never rendered twice | open | mesh/builtin-is-mesh-context-5 | https://github.com/runsheet/mesh-cli/pull/264 |
-| 6 | Node: prompts, INDEX.md and the channel brief tell agents to use mesh_document/mesh_search on mesh-context; the context read goes to /mesh/v1 with /prologue/v1 as fallback | merged | mesh/builtin-is-mesh-context-6 | https://github.com/runsheet/mesh-cli/pull/258 |
-| 7 | mesh-specs: TRD §3 Tools and ADR-006 say mesh-context, not prologue; prologue_health_* and /prologue/v1 stay as aliases until 2026-10-28 | — | — | — |
+1. **Item 5:** Node: the built-in server is mesh-context — tools.Builtin, MeshContextMCP, allowedTools mcp__mesh-context__*; a console tool named prologue no longer clashes, one named mesh-context does; a builtIn row is never rendered twice — https://github.com/runsheet/mesh-cli/pull/264
+
+2. **Item 6:** Node: prompts, INDEX.md and the channel brief tell agents to use mesh_document/mesh_search on mesh-context; the context read goes to /mesh/v1 with /prologue/v1 as fallback — https://github.com/runsheet/mesh-cli/pull/258 (merged 514de9f)
+
+3. **Item 7:** mesh-specs: TRD §3 Tools and ADR-006 say mesh-context, not prologue; prologue_health_* and /prologue/v1 stay as aliases until 2026-10-28 (pending — to be created)
 
 ## Upgrading the mini
 
@@ -60,7 +59,7 @@ grep 'mcp__mesh-context__' output.jsonl | head -5
 
 ## Left to the platform
 
-These pieces are runsheet/runsheet's domain (trd §6c, ADR 006, mesh-portal), not this project's:
+These pieces are runsheet/runsheet's domain (trd §6c, ADR 006), not this project's:
 
 - **Console redirect:** /orgs/<org>/prologue/<project> → /orgs/<org>/context/<project> with nav item 'Context'
 - **Health tool aliases:** `prologue_health_*` tool names stay as aliases serving the platform's mesh-context built-in
@@ -71,6 +70,5 @@ Status tables live on the platform only; this doc records outcomes.
 
 ## Log
 
-- 2026-09-28 · item 5 · PR #264 evaluated; the node half is ready to merge once the evaluator confirms and the node drains cleanly
-- 2026-09-28 · item 6 · PR #258 merged (514de9f); prompts and context reads now use mesh_document/mesh_search on /mesh/v1 with /prologue/v1 fallback
-- 2026-09-28 · item 7 · pending — mesh-specs amendments after item 5 and 6 merge
+- 2026-09-28 · item 6 · PR #258 merged (514de9f); prompts and context reads now use mesh_document/mesh_search on /mesh/v1 with /prologue/v1 fallback. The mini binary upgrade completes the node half after item 5 merges.
+- Item 5's PR #264 and item 7's mesh-specs PR will be linked when they merge.
