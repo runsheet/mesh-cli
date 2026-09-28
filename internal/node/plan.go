@@ -124,57 +124,131 @@ func (p *Planner) evidence(ctx context.Context, goalSlug string, scope Scope, pr
 	return evidenceFromScorecard(sc)
 }
 
-// evidenceFromScorecard walks a scorecard project entry for per-repo,
-// per-model rows, tolerant of the shape: a flat list under "byModel" or
-// "byRepo" (each row already naming its repo and model), or "byRepo"
-// nested with each repo's own "byModel" list. A row needs a model and a
-// first-pass rate (`firstPass` or `first_pass`) to count; items come
-// from `items`, `merged` or `evaluated`, cost per item from
-// `costPerItemCents`/`cost_per_item_cents` or `costCents`/`cost_cents`
-// over items. Anything else — no scorecard, no such keys — yields none.
+// evidenceFromScorecard walks a scorecard project entry for per-model
+// rows, over the widest of its `windows` (runsheet trd §6a,
+// `platform/scorecard.Sums.Into`: each window's `models` list, one row
+// per model with an item in it — `model`, `evaluated`, `firstPassRate`
+// null when nothing was evaluated, `costPerItemCents`). The platform
+// carries no repo breakdown yet, so every row from `models` (or its
+// tolerated alias `byModel`) comes back with an empty repo — which
+// never matches an item's own repo in `modelAgainstEvidence`, so it is
+// advice the check has nothing to say about yet, not a wrong match. A
+// scorecard that does carry one — a `byRepo` list, each entry's own
+// repo and `models`/`byModel` rows — is read repo by repo, at the
+// project level and inside each window, for whenever the platform adds
+// it. A row needs a model and a first-pass rate to count: `firstPassRate`
+// (or `first_pass_rate`) first, else `firstPass`/`first_pass` over
+// `evaluated`/`items` when both are present, else `firstPass`/`first_pass`
+// itself as the rate; a missing or null rate skips the row. Items are
+// the row's `evaluated` (the rate's own denominator), else `items` or
+// `merged`. Cost per item is `costPerItemCents`/`cost_per_item_cents`,
+// else `costCents`/`cost_cents` over items. Anything else — no
+// scorecard, no windows, no such keys — yields none.
 func evidenceFromScorecard(sc map[string]any) []harness.ModelEvidence {
-	var rows []map[string]any
-	for _, key := range []string{"byModel", "byRepo"} {
-		list, _ := sc[key].([]any)
+	var out []harness.ModelEvidence
+	out = append(out, evidenceRows(sc, "")...)
+	out = append(out, evidenceByRepo(sc)...)
+	if w := widestWindow(sc); w != nil {
+		out = append(out, evidenceRows(w, "")...)
+		out = append(out, evidenceByRepo(w)...)
+	}
+	return out
+}
+
+// widestWindow is a scorecard entry's own `windows` row with the
+// largest `days` — the platform sends one, its own `models` list, per
+// trailing window (7 and 30 days today); the widest has the most
+// evidence behind each row.
+func widestWindow(sc map[string]any) map[string]any {
+	list, _ := sc["windows"].([]any)
+	var widest map[string]any
+	var widestDays float64 = -1
+	for _, e := range list {
+		w, ok := e.(map[string]any)
+		if !ok {
+			continue
+		}
+		if days := numberFieldOr(w, 0, "days"); days > widestDays {
+			widest, widestDays = w, days
+		}
+	}
+	return widest
+}
+
+// evidenceByRepo reads a `byRepo` list some future scorecard may carry:
+// each entry names a repo and its own `models`/`byModel` rows.
+func evidenceByRepo(m map[string]any) []harness.ModelEvidence {
+	var out []harness.ModelEvidence
+	list, _ := m["byRepo"].([]any)
+	for _, e := range list {
+		row, ok := e.(map[string]any)
+		if !ok {
+			continue
+		}
+		out = append(out, evidenceRows(row, stringField(row, "repo"))...)
+	}
+	return out
+}
+
+// evidenceRows reads the flat per-model list off m — `models`, the
+// platform's own key, or `byModel`, the tolerated alias — into
+// ModelEvidence rows all carrying the given repo.
+func evidenceRows(m map[string]any, repo string) []harness.ModelEvidence {
+	var out []harness.ModelEvidence
+	for _, key := range []string{"models", "byModel"} {
+		list, _ := m[key].([]any)
 		for _, e := range list {
 			row, ok := e.(map[string]any)
 			if !ok {
 				continue
 			}
-			nested, hasNested := row["byModel"].([]any)
-			if !hasNested {
-				rows = append(rows, row)
+			model := stringField(row, "model")
+			if model == "" {
 				continue
 			}
-			repo := stringField(row, "repo")
-			for _, ne := range nested {
-				if nrow, ok := ne.(map[string]any); ok {
-					merged := map[string]any{"repo": repo}
-					for k, v := range nrow {
-						merged[k] = v
-					}
-					rows = append(rows, merged)
+			fp, ok := firstPassRateOf(row)
+			if !ok {
+				continue
+			}
+			items := int(numberFieldOr(row, 0, "evaluated", "items", "merged"))
+			costPerItem := int(numberFieldOr(row, 0, "costPerItemCents", "cost_per_item_cents"))
+			if costPerItem == 0 && items > 0 {
+				if cost, ok := numberField(row, "costCents", "cost_cents"); ok {
+					costPerItem = int(cost / float64(items))
 				}
 			}
-		}
-	}
-	var out []harness.ModelEvidence
-	for _, row := range rows {
-		model := stringField(row, "model")
-		fp, ok := numberField(row, "firstPass", "first_pass")
-		if model == "" || !ok {
-			continue
-		}
-		items := int(numberFieldOr(row, 0, "items", "merged", "evaluated"))
-		costPerItem := int(numberFieldOr(row, 0, "costPerItemCents", "cost_per_item_cents"))
-		if costPerItem == 0 && items > 0 {
-			if cost, ok := numberField(row, "costCents", "cost_cents"); ok {
-				costPerItem = int(cost / float64(items))
+			r := repo
+			if r == "" {
+				r = stringField(row, "repo")
 			}
+			out = append(out, harness.ModelEvidence{Repo: r, Model: model, FirstPass: fp, Items: items, CostPerItemCents: costPerItem})
 		}
-		out = append(out, harness.ModelEvidence{Repo: stringField(row, "repo"), Model: model, FirstPass: fp, Items: items, CostPerItemCents: costPerItem})
 	}
 	return out
+}
+
+// firstPassRateOf is a model row's first-pass rate: `firstPassRate` (or
+// `first_pass_rate`) when the platform sent one — null reads as "no
+// rate", not zero, since nothing was evaluated — else `firstPass`/
+// `first_pass` over `evaluated`/`items` when both are counts, else
+// `firstPass`/`first_pass` taken as the rate itself.
+func firstPassRateOf(row map[string]any) (float64, bool) {
+	if v, ok := row["firstPassRate"]; ok {
+		n, ok := v.(float64)
+		return n, ok
+	}
+	if v, ok := row["first_pass_rate"]; ok {
+		n, ok := v.(float64)
+		return n, ok
+	}
+	fp, hasFP := numberField(row, "firstPass", "first_pass")
+	if !hasFP {
+		return 0, false
+	}
+	if items, ok := numberField(row, "evaluated", "items"); ok && items > 0 {
+		return fp / items, true
+	}
+	return fp, true
 }
 
 func stringField(row map[string]any, key string) string {
