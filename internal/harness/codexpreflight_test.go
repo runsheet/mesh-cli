@@ -23,7 +23,7 @@ func preflightCodex(t *testing.T, out string, code int) string {
 		"echo \"$@\" > " + out + "/args\n" +
 		"env > " + out + "/env\n" +
 		"cp \"$CODEX_HOME/config.toml\" " + out + "/config.toml\n" +
-		"[ " + itoa(code) + " = 0 ] || echo 'Error: No MCP server named prologue found.' >&2\n" +
+		"[ " + itoa(code) + " = 0 ] || echo 'Error: No MCP server named mesh-context found.' >&2\n" +
 		"exit " + itoa(code) + "\n"
 	bin := filepath.Join(t.TempDir(), "codex")
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
@@ -80,7 +80,7 @@ func builtin(url, auth string) map[string]any {
 }
 
 // A tools/list with one tool, on the header the rendered config names:
-// nil, after `codex mcp get prologue` in the session's home.
+// nil, after `codex mcp get mesh-context` in the session's home.
 func TestCodexPreflightPasses(t *testing.T) {
 	out := t.TempDir()
 	srv := mcpServer(t, "Bearer rs_node", http.StatusUnauthorized, "", 1)
@@ -90,7 +90,7 @@ func TestCodexPreflightPasses(t *testing.T) {
 	if err := c.Preflight(context.Background(), job); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.TrimSpace(readFile(t, filepath.Join(out, "args"))); got != "mcp get prologue" {
+	if got := strings.TrimSpace(readFile(t, filepath.Join(out, "args"))); got != "mcp get mesh-context" {
 		t.Fatalf("args %q", got)
 	}
 	if !strings.Contains(readFile(t, filepath.Join(out, "config.toml")), `env_http_headers = { "Authorization" = "MESH_CODEX_MCP_0_TOKEN" }`) {
@@ -163,7 +163,7 @@ func TestCodexPreflightOtherFailures(t *testing.T) {
 	srv := mcpServer(t, "", http.StatusUnauthorized, "", 1)
 	c := &Codex{Binary: preflightCodex(t, t.TempDir(), 0), HomeRoot: t.TempDir(), Account: acct}
 	err := c.Preflight(context.Background(), Job{Workspace: t.TempDir(), MCPServers: builtin(srv.URL, "")})
-	if err == nil || !strings.Contains(err.Error(), "MESH_CODEX_MCP_0_TOKEN for prologue's Authorization header is empty") {
+	if err == nil || !strings.Contains(err.Error(), "MESH_CODEX_MCP_0_TOKEN for mesh-context's Authorization header is empty") {
 		t.Fatalf("empty: %v", err)
 	}
 
@@ -175,7 +175,7 @@ func TestCodexPreflightOtherFailures(t *testing.T) {
 
 	c.Binary = preflightCodex(t, t.TempDir(), 1)
 	err = c.Preflight(context.Background(), Job{Workspace: t.TempDir(), MCPServers: builtin(srv.URL, "Bearer rs_node")})
-	if err == nil || !strings.Contains(err.Error(), "codex mcp get prologue: Error: No MCP server named prologue found.") {
+	if err == nil || !strings.Contains(err.Error(), "codex mcp get mesh-context: Error: No MCP server named mesh-context found.") {
 		t.Fatalf("mcp get: %v", err)
 	}
 

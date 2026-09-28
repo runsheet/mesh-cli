@@ -338,7 +338,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   loop starts an evaluation on Codex room (`Loop.CodexRoom`) when no
   Claude account has any. Before any Codex session starts,
   `Evaluator.CodexPreflight` (`Codex.Preflight`: `codex mcp get
-  prologue` and an MCP tools/list handshake in the session's own home
+  mesh-context` and an MCP tools/list handshake in the session's own home
   and env) must pass: a failure moves an unpinned evaluation to Claude
   (`Codex preflight failed (<why>); evaluating on Claude`), keeps a
   pinned one waiting like `ErrFamilyWaits`, and makes a Codex second
@@ -480,7 +480,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   (kept an hour). A Codex call's error is its `error.message`, and a
   server Codex says failed to start is an error with no call. A served
   console tool never called, or whose first call errored, and any other
-  server that errored — the built-in `prologue` first — is named by
+  server that errored — the built-in `mesh-context` first — is named by
   `SessionTools.UseNote` — a build's progress note, the evaluation's
   notes, a plan's or research's log line (ADR-006 amendments
   2026-09-28).

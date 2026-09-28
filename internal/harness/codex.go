@@ -703,7 +703,7 @@ func (c *Codex) Run(ctx context.Context, job Job, onProgress func(Progress)) (Re
 
 // BuiltinMCP is the MCP server the node attaches to every session
 // itself: the platform's context server (tools.Builtin).
-const BuiltinMCP = "prologue"
+const BuiltinMCP = "mesh-context"
 
 // PreflightTimeout caps each step of a Codex preflight.
 const PreflightTimeout = 10 * time.Second

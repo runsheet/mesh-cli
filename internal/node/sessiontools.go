@@ -73,8 +73,8 @@ func (st SessionTools) OmittedNote() string {
 // errored, by its first error ("tools: perplexity: first call errored:
 // …"), in Use's order; then every other server the result names with
 // an error — the built-in context server (tools.Builtin) above all,
-// never in Use, and Codex's own — by name ("prologue: first call
-// errored: …", or "prologue served, never called: …" for one that
+// never in Use, and Codex's own — by name ("mesh-context: first call
+// errored: …", or "mesh-context served, never called: …" for one that
 // failed to start); "" when every served tool was called cleanly and
 // no other server errored. The error text goes through redact (the
 // account's Redact) and has every value of every served tool's

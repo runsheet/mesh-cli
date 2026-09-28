@@ -235,16 +235,16 @@ func TestEvaluationNotesTheBuiltinsError(t *testing.T) {
 func TestUseNoteNamesTheBuiltin(t *testing.T) {
 	st := SessionTools{Use: []tools.Tool{{Name: "brave", Headers: map[string]string{"X-Key": braveSecret}}}}
 	res := harness.Result{ToolCalls: map[string]int{"brave": 1, "codex_apps": 1}, Tools: map[string]*harness.ToolStat{
-		"brave":      {Calls: 1},
-		"codex_apps": {Calls: 1, Errors: 1, FirstError: "apps unavailable " + braveSecret},
-		"prologue":   {Errors: 1, FirstError: "MCP client for `prologue` failed to start: Auth required during MCP startup"},
+		"brave":        {Calls: 1},
+		"codex_apps":   {Calls: 1, Errors: 1, FirstError: "apps unavailable " + braveSecret},
+		"mesh-context": {Errors: 1, FirstError: "MCP client for `mesh-context` failed to start: Auth required during MCP startup"},
 	}}
-	want := "tools: prologue served, never called: MCP client for `prologue` failed to start: Auth required during MCP startup; codex_apps: first call errored: apps unavailable [redacted]"
+	want := "tools: mesh-context served, never called: MCP client for `mesh-context` failed to start: Auth required during MCP startup; codex_apps: first call errored: apps unavailable [redacted]"
 	if note := st.UseNote(res, nil); note != want {
 		t.Fatalf("note = %q, want %q", note, want)
 	}
 	// the built-in called cleanly is never named
-	clean := harness.Result{ToolCalls: map[string]int{"prologue": 2}, Tools: map[string]*harness.ToolStat{"prologue": {Calls: 2}}}
+	clean := harness.Result{ToolCalls: map[string]int{"mesh-context": 2}, Tools: map[string]*harness.ToolStat{"mesh-context": {Calls: 2}}}
 	if note := (SessionTools{}).UseNote(clean, nil); note != "" {
 		t.Fatalf("clean note = %q", note)
 	}
