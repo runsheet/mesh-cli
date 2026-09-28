@@ -1693,8 +1693,9 @@ mesh node update v0.4.0 --verify-only    # download and verify into a temp dir; 
 mesh node update v0.4.0 --verify-only --from-dir ./rel   # the same, from files already downloaded
 ```
 
-It verifies first and refuses anything not signed by `release-tag.yml` on
-`refs/tags/<version>` with issuer `https://token.actions.githubusercontent.com`,
+It verifies first and refuses anything not signed by `runsheet/mesh-cli`'s
+`release-tag.yml` on `refs/tags/<version>` with issuer
+`https://token.actions.githubusercontent.com`,
 or whose hash does not match, printing the reason and exiting non-zero
 with the executable and `.prev` untouched. It then pulls the release's
 [node image](#node-image) — a failed pull is refused the same way. A
@@ -1711,7 +1712,8 @@ checks a release from any machine.
 anonymously from `runsheet/mesh`, no token needed (ADR-002's amendment).
 Until `v0.2.187` is published there, its latest release is still
 `v0.2.186`, an unsigned main build from before signed releases — it has
-no `SHA256SUMS`, so `mesh node update` (with no version) refuses it
+no `SHA256SUMS` signed by `runsheet/mesh-cli`'s `release-tag.yml`, so
+`mesh node update` (with no version) refuses it
 rather than silently accepting it; ask for a signed tag by name in the
 meantime, or download and check one by hand:
 
