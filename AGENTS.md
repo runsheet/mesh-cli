@@ -294,7 +294,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `FinishWorkItemRebase`, `RecordDirectionResearch` — and
   `SessionAccount.Finish` logs it as one `usage: {…}` line when nothing
   carried it (a fail path, or `ErrNoUsageLedger`, said once per run).
-- **Codex** (`internal/harness/codex.go`, goal `codex-adapter`): the
+- **Codex** (`internal/harness/codex.go`, goal `codex-adapter`, goal `codex-sessions-reach-the-context-tool`): the
   `codex` harness, `codex exec --json --sandbox workspace-write` in the
   workspace, the prompt on stdin, the stream read by
   `ParseCodexStream` (`docs/codex-events.md`). Each run gets a fresh
@@ -306,9 +306,9 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   (a `${VAR}` resolved from the job's env or refused), console tools by
   `tools.CodexConfig`, every table `default_tools_approval_mode =
   "approve"` — `exec` under `workspace-write` refuses an unapproved
-  MCP call (docs/codex-events.md, "Why the context tool failed"). node.yaml's `codex:` block
+  MCP call (docs/codex-events.md, "Why the context tool failed"). The session's event stream and stderr are kept under the work dir for 24 hours for debugging and auditability. Each MCP call's error text (first 200 chars) is recorded in the usage report and the item note names the first failing tool. node.yaml's `codex:` block
   (`CodexConfig`: binary, accounts, `models {opus, sonnet, haiku}`)
-  and `CodexModel` map the Claude tiers to Codex models. Codex has no
+  and `CodexModel` map the Claude tiers to Codex models: `opus` → `gpt-6-sol`, `sonnet` → `gpt-6-luna`, `haiku` → `gpt-6-luna`, `astra` only when pinned. Codex has no
   budget flag, so `MaxBudgetUSD` is not enforced. An issued openai
   credential serving `codex` is a Codex account too (adr-005,
   `PrepareCodexAccount`): `Credentials.Open` with adapter codex chooses
@@ -319,7 +319,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `config.toml` into a home the job names.
 - **The evaluator's family** (`internal/node/evaluate.go`,
   `docs/adr/adr-011-evaluations-run-on-the-family-with-headroom.md`,
-  amending `adr-005-codex-second-opinion.md`): `Evaluator.Codex` is the
+  amending `adr-005-codex-second-opinion.md`, goal `codex-sessions-reach-the-context-tool`): `Evaluator.Codex` is the
   Codex harness (`codexSecondOpinion` in `nodecmd.go`: built whenever
   the codex binary is found, with or without a `codex:` block, on the
   block's first account) and `CodexAccounts` is
@@ -328,7 +328,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   the evaluator judges them with `ChooseAccount` over
   `Limits.CodexReadings` for the goal's priority: one with headroom
   makes it a Codex session on `CodexModel` of the evaluate model
-  (defaults gpt-6-astra/sol/luna), opened by `Credentials.Open`
+  (opus → gpt-6-sol, sonnet/haiku → gpt-6-luna, astra only when pinned), opened by `Credentials.Open`
   (adapter codex) or `OpenOwn`; else Claude as before. A full `gpt-…`
   evaluate/item/agent model pins Codex (`EvaluatorPin`; no headroom is
   `ErrFamilyWaits`, the item stays in evaluating, said once per item by
@@ -336,14 +336,13 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   loop starts an evaluation on Codex room (`Loop.CodexRoom`) when no
   Claude account has any. Before any Codex session starts,
   `Evaluator.CodexPreflight` (`Codex.Preflight`: `codex mcp get
-  prologue` and an MCP tools/list handshake in the session's own home
-  and env) must pass: a failure moves an unpinned evaluation to Claude
+  mesh-context` in the session's own home and env) must pass: a failure moves an unpinned evaluation to Claude
   (`Codex preflight failed (<why>); evaluating on Claude`), keeps a
   pinned one waiting like `ErrFamilyWaits`, and makes a Codex second
   opinion `unavailable: preflight …`. An item of an `urgent` or `high` goal whose
   first verdict passes is evaluated again on the other family with the
   same prompt and workspace: both pass is passed, a second fail is
-  failed; the notes carry both, `Codex (first evaluation, gpt-6-astra):
+  failed; the notes carry both, `Codex (first evaluation, gpt-6-sol):
   VERDICT …` and `Claude (second opinion, opus): VERDICT …` (or Claude
   first, Codex second), truncated together to 4000, and the cost and
   tokens are the sum — all in the one `EvaluateWorkItem`, whose usage
@@ -358,7 +357,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   as the evaluation proper, its notes opening `<Family> (first attempt,
   <model>): no verdict — <tool>: <error>`; with no other family it
   records nothing (`ErrNoContext`), the item stays in evaluating, said
-  once per item (`Blind`). With neither a `codex:` block nor
+  once per node per item (`Blind`). With neither a `codex:` block nor
   an issued Codex account the node evaluates as before. Builders on
   Codex come later, behind a per-project setting.
 - **Tools** (`internal/tools/`, ADR-006, trd §3 Tools): the
