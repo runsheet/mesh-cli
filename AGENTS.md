@@ -314,6 +314,14 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   item, a required one releases the item and `Declines` keeps the loop
   off it while the runtimes are unchanged. Plan, research, rebase and
   channel sessions keep Prologue alone.
+- **Tool results** (`internal/harness/trim.go`, node.yaml
+  `tool_results.max_kb`, default 16, 0 off): a host build session gets
+  a `PreToolUse` hook on `Bash` in its `--settings` (`Job.Settings`,
+  `ToolTrimSettings`) — `mesh tool-trim --max-kb N --hook` rewrites the
+  command to `( <cmd>\n) 2>&1 | mesh tool-trim --max-kb N`, which keeps
+  the first 60% and last 40% of the cap (`TrimToolResult`) — and every
+  build session `MAX_MCP_OUTPUT_TOKENS` and `BASH_MAX_OUTPUT_LENGTH`
+  (`ToolResultsEnv`). Channel mode gets neither; a sandboxed one the env.
 - **Services** (`internal/sandbox/services.go`, mesh-specs ADR 007):
   `Resolve(repoDir, allowed)` reads what a repository declares, first
   found wins — `.mesh/services.yml`, else the `services:` of its

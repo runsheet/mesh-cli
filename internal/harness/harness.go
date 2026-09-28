@@ -58,6 +58,11 @@ type Job struct {
 	// MCPServers are MCP servers the session gets (name → config, the
 	// shape of an mcp.json's mcpServers): Prologue, for context on demand.
 	MCPServers map[string]any
+	// Settings are Claude Code settings for this session alone (the
+	// shape of a settings.json), passed as --settings: the node's
+	// PreToolUse hook that trims long Bash output (trd §3 Tool results).
+	// Codex ignores them.
+	Settings map[string]any
 	// Tools are the console tools the session gets (trd §3 Tools), their
 	// secrets decrypted: Claude Code's are already in MCPServers, with
 	// their secret values in Env; an adapter with its own format (Codex's

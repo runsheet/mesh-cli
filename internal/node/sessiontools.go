@@ -239,3 +239,38 @@ func (d *Declines) Holds(itemID string, runtimes []string, now time.Time) bool {
 	}
 	return true
 }
+
+// ToolTrimSettings are the Claude Code settings beside a session's MCP
+// config that bound its Bash output to maxKB (trd §3 Tool results): a
+// PreToolUse hook on Bash, `<bin> tool-trim --max-kb N --hook`, which
+// rewrites the command to pipe through `<bin> tool-trim --max-kb N`
+// (harness.TrimHook). nil for a cap of 0.
+func ToolTrimSettings(bin string, maxKB int) map[string]any {
+	if maxKB <= 0 {
+		return nil
+	}
+	return map[string]any{"hooks": map[string]any{
+		"PreToolUse": []any{map[string]any{
+			"matcher": "Bash",
+			"hooks": []any{map[string]any{
+				"type":    "command",
+				"command": harness.ToolTrimCommand(bin, maxKB) + " --hook",
+				"timeout": 10,
+			}},
+		}},
+	}}
+}
+
+// ToolResultsEnv is what the session's environment carries for a cap
+// of maxKB, so what the hook does not see is bounded by the CLI too:
+// BASH_MAX_OUTPUT_LENGTH in characters (the cap), MAX_MCP_OUTPUT_TOKENS
+// at four bytes a token. None for a cap of 0.
+func ToolResultsEnv(maxKB int) []string {
+	if maxKB <= 0 {
+		return nil
+	}
+	return []string{
+		fmt.Sprintf("MAX_MCP_OUTPUT_TOKENS=%d", maxKB*1024/4),
+		fmt.Sprintf("BASH_MAX_OUTPUT_LENGTH=%d", maxKB*1024),
+	}
+}

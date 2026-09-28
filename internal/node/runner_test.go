@@ -83,6 +83,14 @@ func envOf(env []string, key string) (string, bool) {
 	return "", false
 }
 
+// hasGHEnv says env sets gh's own variables: a fallback session keeps
+// the operator's.
+func hasGHEnv(env []string) bool {
+	_, tok := envOf(env, "GH_TOKEN")
+	_, dir := envOf(env, "GH_CONFIG_DIR")
+	return tok || dir
+}
+
 // A build session carries the item's token as GH_TOKEN and a fresh,
 // empty GH_CONFIG_DIR — not the operator's ~/.config/gh — and the
 // workspace is authorized with the token before it is prepared.
@@ -195,7 +203,7 @@ func TestRunnerFallsBackOnAnOldPlatform(t *testing.T) {
 	if row(item1)["status"] != "evaluating" {
 		t.Fatalf("row: %v", row(item1))
 	}
-	if len(h.jobs) != 1 || h.jobs[0].Env != nil {
+	if len(h.jobs) != 1 || hasGHEnv(h.jobs[0].Env) {
 		t.Fatalf("the fallback session's env must be the operator's: %+v", h.jobs)
 	}
 	if got := strings.Join(ws.Events(), ","); got != "prepare,push" {
@@ -361,7 +369,7 @@ func TestOldPlatformFallbackIsLoggedOnceAcrossARun(t *testing.T) {
 		}
 	}
 	for _, j := range h.jobs {
-		if j.Env != nil {
+		if hasGHEnv(j.Env) {
 			t.Fatalf("a fallback session's env must be the operator's: %v", j.Env)
 		}
 	}
