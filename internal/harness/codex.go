@@ -257,24 +257,53 @@ func stringList(v any) []string {
 	return nil
 }
 
-// codexHome is one session's temporary CODEX_HOME.
+// codexHome is one session's CODEX_HOME.
 type codexHome struct {
 	dir     string
 	env     []string
 	secrets []string
+	// owned says the harness made dir and must remove it in close;
+	// false for a home the job's own CODEX_HOME named, which its own
+	// AccountSession owns and cleans up.
+	owned bool
 	// login is the plan account's auth.json the copy came from, and
 	// orig what it held: Codex refreshes a plan's tokens in place, so a
-	// changed copy is written back (the refresh token rotates).
+	// changed copy is written back (the refresh token rotates). Empty
+	// when the harness copied no login: an API-key account, or a home
+	// the job named.
 	login string
 	orig  []byte
 }
 
-// prepareHome makes the session's CODEX_HOME: the MCP servers'
-// config.toml, which holds no secret, and a copy of the plan account's
-// auth.json, or for an API-key account the key in the environment only. codex-cli 0.157.0's exec reads the
-// key from CODEX_API_KEY — with only OPENAI_API_KEY set it sends no
-// credential and gets a 401 — so both are set.
-func (c *Codex) prepareHome(servers map[string]any) (*codexHome, error) {
+// prepareHome makes the session's CODEX_HOME. When job.Env carries
+// CODEX_HOME=<dir> — a login the node already placed there, e.g. an
+// issued credential's auth.json — that directory is the session's home
+// as given: the harness writes only the MCP servers' config.toml into
+// it, copies no login from Account, and sets no CODEX_HOME of its own
+// (job.Env already has it); close neither removes the directory nor
+// writes a login back, since the session that made it owns it.
+//
+// Otherwise the harness makes a fresh temporary CODEX_HOME: the same
+// config.toml, and a copy of the plan account's auth.json, or for an
+// API-key account the key in the environment only. codex-cli 0.157.0's
+// exec reads the key from CODEX_API_KEY — with only OPENAI_API_KEY set
+// it sends no credential and gets a 401 — so both are set.
+func (c *Codex) prepareHome(job Job) (*codexHome, error) {
+	if dir := jobCodexHome(job.Env); dir != "" {
+		h := &codexHome{dir: dir}
+		if cfg, env := CodexMCPConfig(job.MCPServers); cfg != "" {
+			if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(cfg), 0o600); err != nil {
+				return nil, err
+			}
+			h.env = append(h.env, env...)
+			for _, kv := range env {
+				_, v, _ := strings.Cut(kv, "=")
+				h.secrets = append(h.secrets, v)
+			}
+		}
+		return h, nil
+	}
+
 	root := c.HomeRoot
 	if root == "" {
 		cache, err := os.UserCacheDir()
@@ -290,12 +319,12 @@ func (c *Codex) prepareHome(servers map[string]any) (*codexHome, error) {
 	if err != nil {
 		return nil, err
 	}
-	h := &codexHome{dir: dir, env: []string{"CODEX_HOME=" + dir}}
+	h := &codexHome{dir: dir, owned: true, env: []string{"CODEX_HOME=" + dir}}
 	fail := func(err error) (*codexHome, error) {
 		os.RemoveAll(dir)
 		return nil, err
 	}
-	if cfg, env := CodexMCPConfig(servers); cfg != "" {
+	if cfg, env := CodexMCPConfig(job.MCPServers); cfg != "" {
 		if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(cfg), 0o600); err != nil {
 			return fail(err)
 		}
@@ -329,10 +358,23 @@ func (c *Codex) prepareHome(servers map[string]any) (*codexHome, error) {
 	return h, nil
 }
 
-// close writes a refreshed plan login back to its home and removes the
-// temporary one.
+// jobCodexHome is the CODEX_HOME job.Env names, or "".
+func jobCodexHome(env []string) string {
+	for _, kv := range env {
+		if name, v, ok := strings.Cut(kv, "="); ok && name == "CODEX_HOME" && v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// close writes a refreshed plan login back to its home, and removes the
+// directory the harness made — never one the job named (owned false):
+// its own AccountSession removes that.
 func (h *codexHome) close() error {
-	defer os.RemoveAll(h.dir)
+	if h.owned {
+		defer os.RemoveAll(h.dir)
+	}
 	if h.login == "" {
 		return nil
 	}
@@ -362,7 +404,7 @@ func (c *Codex) Run(ctx context.Context, job Job, onProgress func(Progress)) (Re
 	if _, err := exec.LookPath(bin); err != nil {
 		return Result{}, fmt.Errorf("harness codex: %w", err)
 	}
-	home, err := c.prepareHome(job.MCPServers)
+	home, err := c.prepareHome(job)
 	if err != nil {
 		return Result{}, fmt.Errorf("harness codex: %s", Redact(err.Error(), job.Secrets...))
 	}
@@ -427,6 +469,11 @@ func (c *Codex) Run(ctx context.Context, job Job, onProgress func(Progress)) (Re
 		}
 	})
 	waitErr := cmd.Wait()
+	if res.RateLimit == nil {
+		if rl, err := ParseCodexSessionLimits(home.dir); err == nil && rl != nil {
+			res.RateLimit = rl
+		}
+	}
 	if ctx.Err() != nil {
 		return res, ctx.Err()
 	}
