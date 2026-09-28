@@ -151,7 +151,7 @@ func pitchesInput() gateway.Research {
 				Bet: "fewer-steps",
 				Scope: gateway.PitchScope{Kind: gateway.PitchScopeGoal, Goals: []gateway.PitchGoal{
 					{Slug: "one-screen-onboarding", Title: "One-screen onboarding",
-						Statement: "A new org reaches its first goal from one screen.",
+						Statement:  "A new org reaches its first goal from one screen.",
 						Acceptance: "a new org creates a goal without leaving the first screen", BudgetCents: 5000},
 				}},
 				Estimate:     &gateway.PitchEstimate{CostCents: 4000, Days: 3, Basis: "similar onboarding change last quarter"},
