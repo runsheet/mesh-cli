@@ -251,7 +251,8 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if field := f.unknownInput(in); field != "" {
-			writeErrors(w, 200, fmt.Sprintf(`Variable "$in" got invalid value; In field %q: Unknown field.`, field))
+			typ := strings.ToUpper(m[2][:1]) + m[2][1:] + "Input"
+			writeErrors(w, 200, fmt.Sprintf(`Variable "$in" got invalid value; In field %q: is not defined by type %q.`, field, typ))
 			return
 		}
 		if msg := f.Refuse[m[2]]; msg != "" {
@@ -676,6 +677,8 @@ func (f *Fake) apply(name string, in map[string]any) error {
 		}
 		direction["researchNodeId"] = ""
 		direction["proposals"] = in["proposals"]
+		direction["pitches"] = in["pitches"]
+		direction["answers"] = in["answers"]
 		direction["researchCostCents"] = toInt(in["costCents"])
 		direction["researchNotes"] = in["notes"]
 	case "pauseGoal", "resumeGoal", "cancelGoal", "approveGraph", "planGoal", "requestPlan", "claimPlan":
