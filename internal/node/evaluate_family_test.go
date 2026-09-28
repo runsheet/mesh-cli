@@ -394,3 +394,127 @@ func mustEnv(t *testing.T, env []string, name string) string {
 	}
 	return v
 }
+
+// noContext is a built-in context server every one of whose calls
+// errored.
+func noContext(calls int, why string) map[string]*harness.ToolStat {
+	errs := calls
+	if calls == 0 {
+		errs = 1
+	}
+	return map[string]*harness.ToolStat{"prologue": {Calls: calls, Errors: errs, Wall: 30 * time.Millisecond, FirstError: why}}
+}
+
+// toolRow is the usage report's row for tool.
+func toolRow(t *testing.T, u map[string]any, tool string) map[string]any {
+	t.Helper()
+	rows, _ := u["tools"].([]any)
+	for _, r := range rows {
+		if row, _ := r.(map[string]any); row["tool"] == tool {
+			return row
+		}
+	}
+	t.Fatalf("usage has no %s row: %v", tool, u["tools"])
+	return nil
+}
+
+// A Codex evaluation whose context server errored on every call judged
+// blind: its FAIL is not recorded, the same job runs on Claude, and
+// Claude's verdict is the verdict, the Codex attempt first in the notes
+// and both sessions' tools in the one report.
+func TestCodexWithoutContextIsNotAVerdict(t *testing.T) {
+	f, ev, claude, codex, _, logs := familyFixture(t, "normal", "sonnet", "Holds.\nVERDICT: PASS", "Nothing to read.\nVERDICT: FAIL")
+	ev.MCP = PrologueMCP(f.URL(), "rs_test")
+	codex.tools = noContext(3, "Auth required during MCP startup")
+	claude.tools = map[string]*harness.ToolStat{"prologue": {Calls: 2, Wall: 40 * time.Millisecond}}
+	in := evaluateItem1(t, f, ev)
+	if codex.runs() != 1 || len(claude.jobs) != 1 {
+		t.Fatalf("runs: claude %d, codex %d", len(claude.jobs), codex.runs())
+	}
+	xj, cj := codex.jobs[0], claude.jobs[0]
+	if xj.Prompt != cj.Prompt || xj.Workspace != cj.Workspace || cj.Model != "sonnet" {
+		t.Fatalf("claude job: model %q, same prompt %v", cj.Model, xj.Prompt == cj.Prompt)
+	}
+	if tok, _ := envOf(cj.Env, "CLAUDE_CODE_OAUTH_TOKEN"); tok != issuedSecret {
+		t.Error("the Claude evaluation is not on the issued Claude account")
+	}
+	want := "Codex (first attempt, gpt-6-sol): no verdict — prologue: Auth required during MCP startup\n\nHolds.\n\n(evaluated on sonnet)\ntools: prologue: first call errored: Auth required during MCP startup"
+	if in["passed"] != true || in["notes"] != want || in["costCents"] != float64(165) {
+		t.Fatalf("recorded %+v\nwant notes %q", in, want)
+	}
+	if row := toolRow(t, usageOf(t, f), "prologue"); row["calls"] != 5.0 || row["errors"] != 3.0 {
+		t.Fatalf("prologue row %v", row)
+	}
+	for _, s := range []string{
+		"item ship-it/1: evaluation on Codex gpt-6-sol saw no context (prologue: Auth required during MCP startup); not a verdict, evaluating on Claude sonnet",
+		"item ship-it/1: evaluation passed on Claude sonnet",
+	} {
+		if !strings.Contains(logs.String(), s) {
+			t.Errorf("node.log lacks %q:\n%s", s, logs.String())
+		}
+	}
+}
+
+// The same with Claude first: its context server never connected, its
+// FAIL is not recorded, and Codex (on the harness's own account) gives
+// the verdict.
+func TestClaudeWithoutContextRunsOnCodex(t *testing.T) {
+	f, ev, claude, codex, _, logs := familyFixture(t, "normal", "sonnet", "VERDICT: FAIL", "Holds.\nVERDICT: PASS")
+	ev.MCP = PrologueMCP(f.URL(), "rs_test")
+	ev.CodexAccounts = nil // Codex only after Claude, on its own account
+	claude.tools = noContext(0, "failed")
+	codex.tools = map[string]*harness.ToolStat{"prologue": {Calls: 3}}
+	in := evaluateItem1(t, f, ev)
+	if codex.runs() != 1 || len(claude.jobs) != 1 || codex.jobs[0].Prompt != claude.jobs[0].Prompt {
+		t.Fatalf("runs: claude %d, codex %d", len(claude.jobs), codex.runs())
+	}
+	want := "Claude (first attempt, sonnet): no verdict — prologue: failed\n\nHolds.\n\n(evaluated on Codex gpt-6-sol)\ntools: prologue served, never called: failed"
+	if in["passed"] != true || in["notes"] != want {
+		t.Fatalf("recorded %+v\nwant notes %q", in, want)
+	}
+	if row := toolRow(t, usageOf(t, f), "prologue"); row["calls"] != 3.0 || row["errors"] != 1.0 {
+		t.Fatalf("prologue row %v", row)
+	}
+	if !strings.Contains(logs.String(), "evaluation on Claude sonnet saw no context (prologue: failed); not a verdict, evaluating on Codex gpt-6-sol") {
+		t.Errorf("node.log:\n%s", logs.String())
+	}
+}
+
+// With no other family to run on, an evaluation that saw no context
+// records nothing: the item stays in evaluating, and the wait is said
+// once for it however many ticks try.
+func TestNoContextWithNoOtherFamilyWaits(t *testing.T) {
+	f, ev, claude, codex, _, logs := familyFixture(t, "normal", "sonnet", "VERDICT: FAIL", "VERDICT: PASS")
+	ev.MCP = PrologueMCP(f.URL(), "rs_test")
+	ev.CodexAccounts = (&Loop{Known: &KnownAccounts{}}).CodexCandidates
+	claude.tools = noContext(3, "Auth required")
+	ev.Blind = &OncePer{}
+	item, err := ev.GW.WorkItem(context.Background(), item1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := ev.Evaluate(context.Background(), *item); !errors.Is(err, ErrNoContext) {
+			t.Fatalf("Evaluate = %v, want ErrNoContext", err)
+		}
+	}
+	if len(claude.jobs) != 2 || codex.runs() != 0 || len(f.CallsNamed("evaluateWorkItem")) != 0 || f.Item(item1)["status"] != "evaluating" {
+		t.Fatalf("runs claude %d codex %d, verdicts %d, status %v", len(claude.jobs), codex.runs(), len(f.CallsNamed("evaluateWorkItem")), f.Item(item1)["status"])
+	}
+	line := "item ship-it/1: evaluation on Claude sonnet saw no context (prologue: Auth required); not a verdict, and Codex cannot evaluate it: the node has no Codex harness or account; it stays in evaluating"
+	if n := strings.Count(logs.String(), line); n != 1 {
+		t.Fatalf("said %d times:\n%s", n, logs.String())
+	}
+}
+
+// A context server that answered some calls saw the context: the
+// verdict stands as before.
+func TestSomeContextIsAVerdict(t *testing.T) {
+	f, ev, claude, codex, _, _ := familyFixture(t, "normal", "sonnet", "VERDICT: PASS", "Nothing asserts it.\nVERDICT: FAIL")
+	ev.MCP = PrologueMCP(f.URL(), "rs_test")
+	codex.tools = map[string]*harness.ToolStat{"prologue": {Calls: 3, Errors: 1, FirstError: "timeout"}}
+	in := evaluateItem1(t, f, ev)
+	if codex.runs() != 1 || len(claude.jobs) != 0 || in["passed"] != false || in["notes"] != "Nothing asserts it.\n\n(evaluated on Codex gpt-6-sol)\ntools: prologue: first call errored: timeout" {
+		t.Fatalf("runs claude %d codex %d, recorded %+v", len(claude.jobs), codex.runs(), in)
+	}
+}

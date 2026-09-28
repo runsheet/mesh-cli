@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"math"
 	"os"
 	"slices"
@@ -82,6 +83,10 @@ type Evaluator struct {
 	// Waits says once per item that an item pinned to a family with no
 	// headroom waits in evaluating (nil: every time).
 	Waits *OncePer
+	// Blind says once per item that an evaluation which saw no context
+	// (toolBroken) could not run on the other family either, and the item
+	// waits in evaluating (nil: every time).
+	Blind *OncePer
 	// Limits and Thresholds judge the Codex accounts (nil: never
 	// skipped, every account with its full headroom).
 	Limits     *Limits
@@ -370,13 +375,53 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 		return fmt.Errorf("evaluator session: %w%s", acct.RedactErr(err), keptAt(result))
 	}
 	result.Text = acct.Redact(result.Text)
-	passed, notes, ok := harness.ParseVerdict(result.Text)
-	if !ok {
-		return fmt.Errorf("evaluator session reached no verdict (%s): %s%s", result.SessionID, truncate(result.Text, 300), keptAt(result))
+	if ev.fam.codex && acct != nil {
+		acct.Model = ev.fam.model
 	}
-	notes = strings.TrimSpace(notes)
-	if notes == "" {
-		notes = "(no notes)"
+	usage := acct.Report(result)
+	// fam is the family whose verdict stands: the session's, or the other
+	// one's when the session saw no context (ADR 011, a tool failure is
+	// never a verdict); head then names the attempt that gave none
+	fam, head := ev.fam, ""
+	var passed bool
+	var notes string
+	cost := result.CostUSD
+	if blind, broken := e.toolBroken(result, acct); broken {
+		other := ev.fam.other(e)
+		saw := fmt.Sprintf("item %s: evaluation on %s saw no context (%s); not a verdict", label, ev.fam.fullName(), blind)
+		if why, ok := e.canRetry(ev, other); !ok {
+			return e.blind(item.ID, fmt.Sprintf("%s, and %s cannot evaluate it: %s", saw, other.name(), why))
+		}
+		e.logf("%s, evaluating on %s", saw, other.fullName())
+		op := e.secondOpinion(ctx, ev, other, *ev.second, "evaluation")
+		defer op.acct.Finish(ctx, op.result)
+		// one report for the whole evaluation, the attempt with no verdict
+		// in it too
+		if op.acct != nil {
+			acct.Carries(op.acct)
+		} else {
+			acct.Add(op.result)
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if op.unavailable != "" {
+			return e.blind(item.ID, fmt.Sprintf("%s, and the evaluation on %s is unavailable too: %s", saw, other.fullName(), op.unavailable))
+		}
+		e.Blind.Forget(item.ID)
+		head = fmt.Sprintf("%s (first attempt, %s): no verdict — %s", ev.fam.name(), ev.fam.shortModel(), blind)
+		fam, passed, notes = other, op.passed, op.notes
+		cost += op.cost
+	} else {
+		var ok bool
+		passed, notes, ok = harness.ParseVerdict(result.Text)
+		if !ok {
+			return fmt.Errorf("evaluator session reached no verdict (%s): %s%s", result.SessionID, truncate(result.Text, 300), keptAt(result))
+		}
+		notes = strings.TrimSpace(notes)
+		if notes == "" {
+			notes = "(no notes)"
+		}
 	}
 	// the notes say which tools and services the evaluator ran without
 	without := ""
@@ -394,26 +439,29 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 	if result.KeptSessionDir != "" && hasToolError(result) {
 		e.logf("item %s: a tool errored%s", label, keptAt(result))
 	}
-	cost := result.CostUSD
-	if ev.fam.codex && acct != nil {
-		acct.Model = ev.fam.model
+	room := 4000
+	if head != "" {
+		room -= len(head) + 2
 	}
-	usage := acct.Report(result)
 	// the item's events say which family and model judged it
-	evaluatedOn := ev.fam.logName()
-	if ev.preflight != "" {
+	evaluatedOn := fam.logName()
+	if ev.preflight != "" && head == "" {
 		// and why not on Codex, which the item might have expected
-		evaluatedOn = ev.fam.fullName() + "; the Codex preflight failed: " + truncate(ev.preflight, 200)
+		evaluatedOn = fam.fullName() + "; the Codex preflight failed: " + truncate(ev.preflight, 200)
 	}
-	if passed && (ev.fam.codex || e.hasCodex()) && gateway.PriorityRank(ev.res.Goal.Priority) <= gateway.PriorityRank("high") {
-		other := ev.fam.other(e)
+	if passed && (fam.codex || e.hasCodex()) && gateway.PriorityRank(ev.res.Goal.Priority) <= gateway.PriorityRank("high") {
+		// the second opinion is the family that gave no verdict of its own
+		other := fam.other(e)
+		if head != "" {
+			other = ev.fam
+		}
 		op := opinion{unavailable: "the evaluation was adopted after a restart, and its prompt is not kept"}
 		switch {
 		case ev.preflight != "" && other.codex:
 			// the preflight that moved it to Claude has just failed
 			op = opinion{unavailable: "preflight " + ev.preflight}
 		case ev.second != nil:
-			op = e.secondOpinion(ctx, ev, other, *ev.second)
+			op = e.secondOpinion(ctx, ev, other, *ev.second, "second opinion")
 		}
 		defer op.acct.Finish(ctx, op.result)
 		if ctx.Err() != nil {
@@ -429,13 +477,16 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 		if op.unavailable != "" {
 			e.logf("item %s: %s second opinion unavailable: %s", label, other.name(), op.unavailable)
 			line := other.name() + " second opinion unavailable: " + op.unavailable
-			notes = truncate(notes, 4000-200-len(line)-len(without)-len(ev.preflight)) + "\n\n" + line + "\n\n(evaluated on " + evaluatedOn + ")" + without
+			notes = truncate(notes, room-200-len(line)-len(without)-len(ev.preflight)) + "\n\n" + line + "\n\n(evaluated on " + evaluatedOn + ")" + without
 		} else {
 			passed = passed && op.passed
-			notes = bothNotes(ev.fam, notes, other, op.notes, op.passed, 4000-200-len(without)-len(ev.preflight)) + "\n\n(evaluated on " + evaluatedOn + "; second opinion on " + other.fullName() + ")" + without
+			notes = bothNotes(fam, notes, other, op.notes, op.passed, room-200-len(without)-len(ev.preflight)) + "\n\n(evaluated on " + evaluatedOn + "; second opinion on " + other.fullName() + ")" + without
 		}
 	} else {
-		notes = truncate(notes, 4000-100-len(without)-len(ev.preflight)) + "\n\n(evaluated on " + evaluatedOn + ")" + without
+		notes = truncate(notes, room-100-len(without)-len(ev.preflight)) + "\n\n(evaluated on " + evaluatedOn + ")" + without
+	}
+	if head != "" {
+		notes = head + "\n\n" + notes
 	}
 	verdict := "failed"
 	if passed {
@@ -444,7 +495,7 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 	if err := acct.Carried(e.GW.EvaluateWorkItem(ctx, item.ID, passed, notes, Cents(cost), usage)); err != nil {
 		return fmt.Errorf("record verdict: %w", err)
 	}
-	e.logf("item %s: evaluation %s on %s ($%.2f)", label, verdict, ev.fam.fullName(), cost)
+	e.logf("item %s: evaluation %s on %s ($%.2f)", label, verdict, fam.fullName(), cost)
 	return nil
 }
 
@@ -492,9 +543,11 @@ type opinion struct {
 // secondOpinion runs the evaluation's job on the other family (on):
 // Codex after Claude, unless its account is paced or stopped; Claude
 // after Codex, on an account of its own. A session that errors, times
-// out or reaches no verdict is unavailable, and the first verdict
-// stands.
-func (e *Evaluator) secondOpinion(ctx context.Context, ev evalRun, on family, job harness.Job) opinion {
+// out, reaches no verdict or saw no context (toolBroken) is
+// unavailable, and the first verdict stands. role names it in the job's
+// label and node.log: "second opinion", or "evaluation" for the one
+// that stands in for a session that saw no context.
+func (e *Evaluator) secondOpinion(ctx context.Context, ev evalRun, on family, job harness.Job, role string) opinion {
 	label := ev.label
 	h := e.Harness
 	var acct *SessionAccount
@@ -532,13 +585,13 @@ func (e *Evaluator) secondOpinion(ctx context.Context, ev evalRun, on family, jo
 		acct = a
 	}
 	job.Model = on.model
-	job.Label = label + " second opinion"
+	job.Label = label + " " + role
 	if on.codex {
 		if why := e.preflight(ctx, job, acct); why != "" {
 			return opinion{unavailable: "preflight " + why}
 		}
 	}
-	e.logf("item %s: second opinion on %s", label, on.logName())
+	e.logf("item %s: %s on %s", label, role, on.logName())
 	result, err := h.Run(ctx, job, nil)
 	op := opinion{cost: result.CostUSD, result: result, acct: acct}
 	if acct != nil {
@@ -552,6 +605,10 @@ func (e *Evaluator) secondOpinion(ctx context.Context, ev evalRun, on family, jo
 	case err != nil:
 		op.unavailable = truncate(acct.Redact(harness.Redact(err.Error(), job.Secrets...)), 300)
 	default:
+		if blind, broken := e.toolBroken(result, acct); broken {
+			op.unavailable = "saw no context (" + harness.Redact(blind, job.Secrets...) + ")"
+			break
+		}
 		passed, notes, ok := harness.ParseVerdict(acct.Redact(result.Text))
 		if !ok {
 			op.unavailable = "no verdict: " + truncate(acct.Redact(harness.Redact(result.Text, job.Secrets...)), 300)
@@ -564,6 +621,78 @@ func (e *Evaluator) secondOpinion(ctx context.Context, ev evalRun, on family, jo
 		}
 	}
 	return op
+}
+
+// ErrNoContext is an evaluation that saw no context — its built-in
+// context server, or a required console tool, never answered
+// (toolBroken) — and could not be evaluated on the other family either:
+// nothing is recorded, and the item waits in evaluating for a later tick
+// (ADR 011, a tool failure is never a verdict).
+var ErrNoContext = errors.New("the evaluation saw no context, and the other family could not evaluate it")
+
+// toolBroken names the tool a session could not use and its first
+// error, capped at 200 characters: a built-in server of the evaluator's
+// (MCP: the context server) or a required console tool the session was
+// served, every one of whose calls errored, or which errored with no
+// call at all (not connected at startup). A session with one clean call
+// on each is not broken.
+func (e *Evaluator) toolBroken(res harness.Result, acct *SessionAccount) (string, bool) {
+	broken := func(name string) (string, bool) {
+		s := res.Tools[name]
+		if s == nil || s.Errors == 0 || s.Errors < s.Calls {
+			return "", false
+		}
+		msg := s.FirstError
+		if msg == "" {
+			msg = fmt.Sprintf("%d of %d calls errored", s.Errors, s.Calls)
+		}
+		return acct.Redact(msg), true
+	}
+	for _, name := range slices.Sorted(maps.Keys(e.MCP)) {
+		if msg, ok := broken(name); ok {
+			return name + ": " + truncate(msg, 200), true
+		}
+	}
+	if acct != nil {
+		for _, t := range acct.used {
+			if !t.Required {
+				continue
+			}
+			if msg, ok := broken(t.Name); ok {
+				return t.Name + ": " + truncate(redactToolValues(msg, t), 200), true
+			}
+		}
+	}
+	return "", false
+}
+
+// canRetry says whether an evaluation that saw no context can run on
+// the other family (on), or why not: an adopted session's prompt is not
+// kept, a pinned family is the only one the item takes, and Codex needs
+// its harness and an account with headroom.
+func (e *Evaluator) canRetry(ev evalRun, on family) (string, bool) {
+	switch {
+	case ev.second == nil:
+		return "the evaluation was adopted after a restart, and its prompt is not kept", false
+	case ev.fam.pinned:
+		return "the item pins " + ev.fam.fullName(), false
+	case on.codex && !e.hasCodex():
+		return "the node has no Codex harness or account", false
+	case on.codex:
+		if _, why, ok := e.codexForSecond(ev.res.Goal.Priority); !ok {
+			return why, false
+		}
+	}
+	return "", true
+}
+
+// blind is ErrNoContext, with line said once for the item until an
+// evaluation of it saw its context.
+func (e *Evaluator) blind(itemID, line string) error {
+	if e.Blind.First(itemID) {
+		e.logf("%s; it stays in evaluating for a later tick (said once for the item)", line)
+	}
+	return ErrNoContext
 }
 
 // codexForSecond is the Codex account a second opinion for a goal of
