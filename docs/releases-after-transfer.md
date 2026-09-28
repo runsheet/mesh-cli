@@ -356,6 +356,17 @@ cannot change that. Its diff is docs only, and its token cannot write
 runsheet/mesh. Step 1 and one of the two routes in step 2 are what
 remain.
 
+**Re-checked 2026-09-28 23:38Z (the item's third attempt):** the fix now
+exists as an open pull request,
+[#336](https://github.com/runsheet/mesh-cli/pull/336) ("mirror-release:
+create the mirror's release at main (--target)", head `ba0e737`, only
+`scripts/mirror-release.sh`, mergeable), but it is not merged. Nothing
+on runsheet/mesh has changed: `gh release view v0.2.187 --repo
+runsheet/mesh` answers `release not found`, the SHA256SUMS URL answers
+`HTTP/2 404`, and a binary built from this branch still refuses the
+plain `--verify-only v0.2.187` with exit 1. What remains is the
+operator's: merge #336, then take one of the two routes in step 2.
+
 ## Verification
 
 The binary is built from this branch, which is `origin/main`
