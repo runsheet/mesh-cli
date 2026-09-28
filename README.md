@@ -1572,6 +1572,15 @@ published as a prerelease. The version is stamped from the tag
 (`internal/version.Version`), so `mesh --version` and the node's
 heartbeat report exactly the tag. There is no manual trigger — tags only.
 
+The release notes are the PRs merged since the previous plain
+`vX.Y.Z` tag, grouped by goal slug — `scripts/release-notes.sh
+<previous-tag> <tag>` reads each PR's title and branch (`gh pr view`)
+and, for a `mesh/<slug>-<seq>` branch, prints a `### <slug>` section
+with the goal doc's link and one bullet per PR in merge order; a PR
+from any other branch lands under `### Other`, and a commit with no PR
+under `### Commits`. The publish job writes them to `release/NOTES.md`
+and `gh release create` publishes it with `--notes-file`.
+
 Test tags carry a `-` (`v0.0.0-selfupdate-test.<n>`), so they are
 prereleases, and `mesh node update` with no version never picks one up as
 the latest: a node runs one only when the platform or an operator names it.
