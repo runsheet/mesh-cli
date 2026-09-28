@@ -24,6 +24,8 @@ type Runner interface {
 // unsandboxed path, until the sandbox runtime is present.
 type HostRunner struct {
 	Dir string
+	// Env is the steps' whole environment; nil inherits the process's.
+	Env []string
 }
 
 // Run implements Runner: the command is killed at the timeout, reporting
@@ -39,6 +41,7 @@ func (r HostRunner) Run(ctx context.Context, cmd string, timeout time.Duration, 
 
 	c := exec.Command("sh", "-c", cmd)
 	c.Dir = r.Dir
+	c.Env = r.Env
 	c.Stdout = stdout
 	c.Stderr = stderr
 	setProcessGroup(c)
