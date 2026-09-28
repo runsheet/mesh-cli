@@ -1,0 +1,104 @@
+# Release on merge: every merge to main that changes the node is a release.
+#
+# A push to main touching cmd/, internal/, images/node/, go.mod or go.sum
+# runs scripts/release-on-merge.sh on the merge commit. It prints the
+# next tag — the patch after the highest vX.Y.Z (this repo's or the
+# public mirror runsheet/mesh's; test prereleases with a "-" never
+# count), the minor when the merged PR carries the label release:minor
+# or a goal doc the merge touches says `release: minor` in its
+# frontmatter, v0.1.0 when there is none — or "no release: <why>".
+# This workflow tags the merge commit with it (`git tag -a`) and pushes
+# the tag; release-tag.yml, on that tag, builds, signs and publishes as
+# ever (docs/adr/adr-002-signed-tag-releases.md, "Amendment: every
+# node-changing merge is a release"). Docs, specs, the README or
+# .github alone start nothing.
+#
+# The tag is pushed with secrets.RELEASE_TAG_TOKEN, never GITHUB_TOKEN:
+# GitHub starts no workflow for a push made with GITHUB_TOKEN, so a tag
+# pushed with it would never run release-tag.yml. Calling release-tag.yml
+# from here as a reusable workflow is not an option either: it would
+# sign under this workflow's job_workflow_ref, not the
+# release-tag.yml@refs/tags/<tag> identity the node's ReleasePolicy pins.
+# RELEASE_TAG_TOKEN is a fine-grained token with Contents: read and write
+# on runsheet/mesh-cli, which the operator creates; the workflow fails
+# saying so when it is unset.
+#
+# workflow_dispatch with dry_run (the default) computes and prints the
+# next tag for main's head and pushes nothing.
+
+name: Release on merge
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "cmd/**"
+      - "internal/**"
+      - "go.mod"
+      - "go.sum"
+      - "images/node/**"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Compute and print the next tag; push nothing"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+# Back-to-back merges serialize: each sees the tag the one before pushed.
+concurrency:
+  group: release-on-merge
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    name: Tag the merge
+    runs-on: [self-hosted, mini]
+    env:
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+    steps:
+      - name: Require RELEASE_TAG_TOKEN
+        if: env.DRY_RUN != 'true'
+        env:
+          RELEASE_TAG_TOKEN: ${{ secrets.RELEASE_TAG_TOKEN }}
+        run: |
+          if [ -z "$RELEASE_TAG_TOKEN" ]; then
+            echo "::error::RELEASE_TAG_TOKEN is not set. Create a fine-grained token with Contents: read and write on ${GITHUB_REPOSITORY} and add it as the repository secret RELEASE_TAG_TOKEN. GITHUB_TOKEN cannot be used: a tag it pushes starts no workflow, so release-tag.yml would never run (docs/adr/adr-002-signed-tag-releases.md)."
+            exit 1
+          fi
+
+      - name: Checkout (full history and tags)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Compute the next tag
+        id: next
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          flags=()
+          [ "$DRY_RUN" = "true" ] && flags+=(--dry-run)
+          out="$(scripts/release-on-merge.sh "$GITHUB_WORKSPACE" "$GITHUB_SHA" ${flags[@]+"${flags[@]}"})"
+          echo "$out"
+          echo "## Release on merge" >> "$GITHUB_STEP_SUMMARY"
+          echo "${GITHUB_SHA:0:7}: $out$([ "$DRY_RUN" = "true" ] && echo ' (dry run: nothing pushed)')" >> "$GITHUB_STEP_SUMMARY"
+          case "$out" in
+            tag=*) echo "$out" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: Tag and push
+        if: steps.next.outputs.tag != '' && env.DRY_RUN != 'true'
+        env:
+          TAG: ${{ steps.next.outputs.tag }}
+          RELEASE_TAG_TOKEN: ${{ secrets.RELEASE_TAG_TOKEN }}
+        run: |
+          git config user.name "mesh release-on-merge"
+          git config user.email "release-on-merge@users.noreply.github.com"
+          git tag -a "$TAG" -m "$TAG" "$GITHUB_SHA"
+          git push "https://x-access-token:${RELEASE_TAG_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "refs/tags/${TAG}"
+          echo "pushed $TAG at ${GITHUB_SHA}; release-tag.yml builds it" >> "$GITHUB_STEP_SUMMARY"

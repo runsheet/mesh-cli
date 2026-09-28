@@ -533,7 +533,17 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
 - Tests that render the context index or the prompts assert exact rows
   and lines; update them with the change, not around it.
 - Commits carry no Co-Authored-By trailer in this repo.
-- Deploying to the mini is by hand: build for linux/amd64, `scp` to
+- **Release path** (adr-002, amendment `node-releases-on-merge`): a
+  merge to main touching `cmd/`, `internal/`, `images/node/`, `go.mod`
+  or `go.sum` is tagged by `release-on-merge.yml`
+  (`scripts/release-on-merge.sh`: patch, or minor on the PR label
+  `release:minor` or a goal doc's `release: minor`; test prereleases
+  with a `-` never count), pushed with `RELEASE_TAG_TOKEN` — never
+  `GITHUB_TOKEN`, whose pushes start no workflow — and `release-tag.yml`,
+  the only signer, builds it; docs-only merges cut none. `git tag` by
+  hand is the fallback.
+- Deploying to the mini by hand is the fallback to the release path:
+  build for linux/amd64, `scp` to
   `~/bin/mesh.new` and `mesh node upgrade --binary ~/bin/mesh.new`: the
   binary is swapped (`.prev` kept), the node restarts at once and
   adopts its running `claude -p` sessions (README, "Upgrading a node
