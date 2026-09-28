@@ -172,8 +172,10 @@ type fakeHarness struct {
 	// texts, when set, are the final messages of the next runs in turn,
 	// before text.
 	texts []string
-	// toolCalls are the MCP calls by server a run reports.
+	// toolCalls are the MCP calls by server a run reports; tools, when
+	// set, each server's calls, errors and wall time (Result.Tools).
 	toolCalls map[string]int
+	tools     map[string]*harness.ToolStat
 }
 
 func (h *fakeHarness) Name() string { return "claude-code" }
@@ -206,7 +208,7 @@ func (h *fakeHarness) Run(ctx context.Context, job harness.Job, on func(harness.
 			ids[server] = append(ids[server], fmt.Sprintf("toolu_%s_%d", server, i+1))
 		}
 	}
-	return harness.Result{Success: true, Text: text, CostUSD: 1.25, SessionID: "s-1", ToolCalls: h.toolCalls, ToolCallIDs: ids}, nil
+	return harness.Result{Success: true, Text: text, CostUSD: 1.25, SessionID: "s-1", ToolCalls: h.toolCalls, ToolCallIDs: ids, Tools: h.tools}, nil
 }
 
 func TestLoopClaimsRunsAndFinishes(t *testing.T) {

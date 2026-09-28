@@ -345,6 +345,11 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 	if ev.missing != "" {
 		without += "\n" + truncate(ev.missing, 500)
 	}
+	// and which served tools it never called, or called with errors
+	if note := acct.UseNote(result); note != "" {
+		e.logf("item %s: %s", label, note)
+		without += "\n" + truncate(note, 500)
+	}
 	cost := result.CostUSD
 	if ev.fam.codex && acct != nil {
 		acct.Model = ev.fam.model
