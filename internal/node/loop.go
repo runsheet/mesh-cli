@@ -86,6 +86,18 @@ type Loop struct {
 	// Update updates the node's own binary to the version the platform
 	// asks for (selfUpdate); nil never updates.
 	Update Updater
+	// Confirming is the version a pending update is confirming
+	// (StartCheck.To when StartCheck.Pending); empty is none. While it
+	// is unconfirmed every failed heartbeat is logged and recorded
+	// (Updater.NoteConfirmError), and a window of ConfirmWithin from
+	// Started with none through makes Run return ErrUnconfirmed.
+	Confirming string
+	// ConfirmWithin is node.yaml's update.confirm_within; zero is
+	// selfupdate.DefaultConfirmWithin.
+	ConfirmWithin time.Duration
+	// Started is when the process started, where the confirm window
+	// opens; zero is the first tick's now.
+	Started time.Time
 	// Image makes the node image of a version present on this machine
 	// (SandboxConfig.EnsureImage, mesh-specs ADR 007): a self-update
 	// calls it once the release is verified and before it drains, and a
@@ -197,6 +209,8 @@ type Loop struct {
 	updateErr string
 	// confirmed is set once the first heartbeat has gone through.
 	confirmed bool
+	// confirmErr is the last heartbeat error while confirming
+	confirmErr error
 	// desiredUnsupported is set once the platform turned out not to
 	// know the desired version (logged once).
 	desiredUnsupported bool
@@ -404,7 +418,9 @@ func (l *Loop) RunningIDs() []string {
 // only the items count against capacity and a node is rarely without
 // the others. After Restart it returns ErrRestart at once, its sessions
 // left running for the next process to adopt; after a self-update has
-// put the new binary in place, ErrRestartForUpdate, the same way.
+// put the new binary in place, ErrRestartForUpdate, the same way; and
+// when a pending update's confirm window elapses with no heartbeat
+// through, an *UnconfirmedError (ErrUnconfirmed).
 func (l *Loop) Run(ctx context.Context) error {
 	l.mu.Lock()
 	if l.running == nil {
@@ -425,6 +441,13 @@ func (l *Loop) Run(ctx context.Context) error {
 			l.detach()
 			l.wg.Wait()
 			return ErrRestartForUpdate
+		}
+		if err := l.unconfirmedNow(); err != nil {
+			// the platform could not be reached inside the window: the
+			// service starts the process again, its sessions left to adopt
+			l.detach()
+			l.wg.Wait()
+			return err
 		}
 		if l.exitingNow() {
 			l.wg.Wait()
@@ -614,7 +637,11 @@ func (l *Loop) Tick(ctx context.Context) {
 	beat := false
 	for _, sc := range l.Scopes {
 		if err := l.GW.HeartbeatNode(ctx, sc.NodeID, l.Version, l.Running(), extras); err != nil {
-			l.logf("heartbeat %s: %v", sc.Login, err)
+			if l.confirmPending() {
+				l.confirmFailed(sc.Login, err)
+			} else {
+				l.logf("heartbeat %s: %v", sc.Login, err)
+			}
 		} else {
 			beat = true
 		}

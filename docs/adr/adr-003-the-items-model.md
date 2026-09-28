@@ -56,6 +56,36 @@ cost an older platform its items.
   named none. node.log records each item's model and reason when the
   plan is handed in. `mesh goal plan` carries a `model` from its YAML.
 
+### Amendment 2026-09-28: the rubric reads the scorecard (item 5, model choice by evidence)
+
+- Before a planner session, `Planner.evidence` reads the project's
+  entry from `gateway.Client.Scorecard(org, project)` — the platform's
+  `scorecard(orgId)` Map field, a nil map (no error) on an older
+  platform without the query or a project the scorecard does not name
+  — and `evidenceFromScorecard` turns its widest window's `models` rows
+  (runsheet `platform/scorecard.Sums.Into`: `model`, `evaluated`,
+  `firstPassRate`, `costPerItemCents`, one row per model with an item
+  in the window, no repo of its own yet) into `[]harness.ModelEvidence
+  {Repo, Model, FirstPass, Items, CostPerItemCents}`. A row whose rate
+  is null is skipped; items are the row's `evaluated` count, since the
+  rate is first passes over evaluated items, not over every item built.
+  A scorecard that does carry a repo breakdown — a `byRepo` list, each
+  entry's own `model` rows — is read the same way, repo named; until
+  the platform adds one, every row's repo is empty and so never matches
+  an item's repo in the check below, which is a table with nothing to
+  say yet, not a wrong one.
+- `PlanInput.Evidence` renders these rows as an "Evidence: which models
+  worked here" table under the model rubric, with the rule: a model
+  whose first-pass on a repo is under 0.5 over five or more items is
+  not chosen for that repo; prefer the model with the best first-pass
+  at the lowest cost per item; the goal docs in the context name models
+  that worked. `internal/node/plan_check.go`'s `modelAgainstEvidence`
+  makes the rule a check, not just advice: an item whose model matches
+  an evidence row below 0.5 with at least five items on its repo is
+  flagged and routed through the same re-ask an unverifiable acceptance
+  uses (`PlanInput.Rejected`), the reason `model <m> has first-pass <x>
+  on <repo>`.
+
 ### Which session runs on which model
 
 - A build and a rebase run on `BuildModel(item, node)`: the item's

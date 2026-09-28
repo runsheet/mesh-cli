@@ -37,6 +37,105 @@ type Updater interface {
 	// Confirm records that this binary is up and heartbeating, ending a
 	// pending update; it reports whether one was pending.
 	Confirm() (bool, error)
+	// NoteConfirmError records the last error a heartbeat hit while a
+	// pending update is unconfirmed, for a rollback to name.
+	NoteConfirmError(reason string) error
+}
+
+// ErrUnconfirmed is what Run returns when a pending update's confirm
+// window (Loop.ConfirmWithin) elapses with no heartbeat through: the
+// platform could not be reached, which is not the binary failing to
+// run. `mesh node start` logs it and exits 1 for the service to start
+// the process again; the third such start rolls back, naming the last
+// error (selfupdate.StateFile.Rollback). The error is an
+// *UnconfirmedError.
+var ErrUnconfirmed = errors.New("update not confirmed")
+
+// UnconfirmedError is ErrUnconfirmed with what it carries: the version
+// that could not confirm, the window it had and the last error.
+type UnconfirmedError struct {
+	Version string
+	Window  time.Duration
+	Last    error
+}
+
+func (e *UnconfirmedError) Error() string {
+	return fmt.Sprintf("%s did not confirm within %s: %v", e.Version, e.Window, e.Last)
+}
+
+func (e *UnconfirmedError) Is(target error) bool { return target == ErrUnconfirmed }
+
+func (e *UnconfirmedError) Unwrap() error { return e.Last }
+
+// PlatformSlow is how a confirm error is said: a timeout is the platform
+// being slow, never the binary failing to start.
+func PlatformSlow(err error) string {
+	if errors.Is(err, context.DeadlineExceeded) || os.IsTimeout(err) {
+		return err.Error() + " (the platform is slow)"
+	}
+	return err.Error()
+}
+
+// confirmPending reports whether this process is still confirming a
+// pending update: one is pending (Loop.Confirming) and no heartbeat has
+// gone through yet.
+func (l *Loop) confirmPending() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.Update != nil && l.Confirming != "" && !l.confirmed
+}
+
+// confirmDeadline is when the confirm window ends: ConfirmWithin
+// (selfupdate.DefaultConfirmWithin when unset) after Started, which the
+// first call sets to now when the caller left it empty.
+func (l *Loop) confirmDeadline() time.Time {
+	within := l.ConfirmWithin
+	if within <= 0 {
+		within = selfupdate.DefaultConfirmWithin
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.Started.IsZero() {
+		l.Started = l.now()
+	}
+	return l.Started.Add(within)
+}
+
+// confirmFailed is a heartbeat that did not go through while a pending
+// update is unconfirmed: logged with its error and how long the window
+// has left, and recorded for a rollback to name.
+func (l *Loop) confirmFailed(login string, err error) {
+	left := l.confirmDeadline().Sub(l.now()).Round(time.Second)
+	if left < 0 {
+		left = 0
+	}
+	l.logf("self-update: confirming %s: heartbeat %s: %s; retrying for %s more", l.Confirming, login, PlatformSlow(err), left)
+	l.mu.Lock()
+	l.confirmErr = err
+	l.mu.Unlock()
+	if nerr := l.Update.NoteConfirmError(err.Error()); nerr != nil {
+		l.logf("self-update: record confirm error: %v", nerr)
+	}
+}
+
+// unconfirmedNow is the error Run returns once the confirm window has
+// elapsed with no heartbeat through; nil while there is time left, or
+// with nothing to confirm.
+func (l *Loop) unconfirmedNow() error {
+	if !l.confirmPending() || l.now().Before(l.confirmDeadline()) {
+		return nil
+	}
+	within := l.ConfirmWithin
+	if within <= 0 {
+		within = selfupdate.DefaultConfirmWithin
+	}
+	l.mu.Lock()
+	last := l.confirmErr
+	l.mu.Unlock()
+	if last == nil {
+		last = errors.New("no heartbeat went through")
+	}
+	return &UnconfirmedError{Version: l.Confirming, Window: within, Last: last}
 }
 
 // updateFailure is the last version whose update failed. final is a
@@ -306,6 +405,10 @@ func (u *ReleaseUpdater) Refuse(from, to, reason string) error {
 	return u.State.Refuse(from, to, reason)
 }
 
+func (u *ReleaseUpdater) NoteConfirmError(reason string) error {
+	return u.State.NoteConfirmError(reason)
+}
+
 func (u *ReleaseUpdater) Confirm() (bool, error) {
 	s, err := u.State.Load()
 	if err != nil || !s.Pending() {
@@ -347,7 +450,8 @@ type StartCheck struct {
 // CheckStart counts this start of a pending update and rolls back to
 // <exe>.prev when the new binary has failed to start twice
 // (selfupdate.MaxStarts); otherwise it hands on the last failure, if any.
-func CheckStart(f *selfupdate.StateFile, exe string) (StartCheck, error) {
+// window is the confirm window a rollback names (Config.ConfirmWithin).
+func CheckStart(f *selfupdate.StateFile, exe string, window time.Duration) (StartCheck, error) {
 	attempts, err := f.NoteStart()
 	if err != nil {
 		return StartCheck{}, err
@@ -357,7 +461,7 @@ func CheckStart(f *selfupdate.StateFile, exe string) (StartCheck, error) {
 		return StartCheck{}, err
 	}
 	if roll {
-		if err := f.Rollback(exe, "", selfupdate.DefaultConfirmWithin); err != nil {
+		if err := f.Rollback(exe, "", window); err != nil {
 			return StartCheck{}, err
 		}
 	}

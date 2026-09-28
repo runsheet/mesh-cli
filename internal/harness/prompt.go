@@ -304,8 +304,24 @@ type PlanInput struct {
 	Existing []ExistingItem
 	NextSeq  int
 	// Rejected: on the re-ask, the items of the answer before whose
-	// acceptance names what no evaluator can see, each with why (adr-004).
+	// acceptance names what no evaluator can see, each with why (adr-004),
+	// or whose model the scorecard says does not work on its repo.
 	Rejected []string
+	// Evidence is the scorecard's per-repo, per-model first-pass and cost
+	// per item (trd §6a): what worked here, for the planner's model choice.
+	// Empty when the platform's scorecard carries nothing usable.
+	Evidence []ModelEvidence
+}
+
+// ModelEvidence is one repo/model row of the scorecard: how often that
+// model's first pass evaluated clean on that repo, over how many items,
+// and what a merged item cost on average.
+type ModelEvidence struct {
+	Repo             string
+	Model            string
+	FirstPass        float64
+	Items            int
+	CostPerItemCents int
 }
 
 // ExistingItem is one item of the plan before, for the planner.
@@ -392,11 +408,11 @@ func PlanPrompt(in PlanInput) string {
 		fmt.Fprintf(&b, "## The last plan blocked\n\n%s\n\nPlan around it.\n\n", strings.TrimSpace(in.Blocked))
 	}
 	if len(in.Rejected) > 0 {
-		b.WriteString("## Your last answer asked for what no evaluator can see\n\nThe node checked your graph before handing it in and flagged these items:\n\n")
+		b.WriteString("## Your last answer was flagged\n\nThe node checked your graph before handing it in and flagged these items — an acceptance naming what no evaluator can see, or a model the scorecard says does not work on its repo:\n\n")
 		for _, r := range in.Rejected {
 			fmt.Fprintf(&b, "- %s\n", strings.TrimSpace(r))
 		}
-		b.WriteString("\n" + planAcceptanceRule + " Write the whole graph again with those acceptances rewritten; this is the last ask.\n\n")
+		b.WriteString("\n" + planAcceptanceRule + " Write the whole graph again with those acceptances and models rewritten; this is the last ask.\n\n")
 	}
 	if len(in.Existing) > 0 {
 		b.WriteString("## The items so far\n\nYour plan replaces only the live items; merged items stay. Merged items are done: your items may depend on their seqs. Failed and cancelled items stay in the record; do their work again differently if it is still needed. Anything still live is replaced by your plan.\n\n")
@@ -468,6 +484,16 @@ func PlanPrompt(in PlanInput) string {
 	b.WriteString("   - `haiku` for mechanical items: docs-only, a goal-doc section, a version bump, a rename.\n")
 	b.WriteString("   - `sonnet` for a well-specified change in one package with tests to copy.\n")
 	b.WriteString("   - `opus` for anything cross-cutting, concurrency, migrations, security, a failing item's retry, or when unsure.\n")
+	if len(in.Evidence) > 0 {
+		b.WriteString("\n   Evidence: which models worked here\n\n")
+		b.WriteString("   | Repo | Model | First-pass | Items | Cost/item |\n")
+		b.WriteString("   | --- | --- | --- | --- | --- |\n")
+		for _, ev := range in.Evidence {
+			fmt.Fprintf(&b, "   | %s | %s | %.2f | %d | $%.2f |\n", ev.Repo, ev.Model, ev.FirstPass, ev.Items, float64(ev.CostPerItemCents)/100)
+		}
+		b.WriteString("\n")
+	}
+	b.WriteString("   A model whose first-pass on a repo is under 0.5 over five or more items is not chosen for that repo; prefer the model with the best first-pass at the lowest cost per item; the goal docs in the context name models that worked.\n")
 	b.WriteString("9. End your final message with the graph as a JSON object in a ```json fenced block, and nothing after it:\n\n")
 	b.WriteString("```json\n{\"items\": [{\"seq\": 1, \"title\": \"…\", \"brief\": \"…\", \"acceptance\": \"…\", \"depends_on\": [], \"repo\": \"owner/name\", \"base_ref\": \"main\", \"model\": \"sonnet\", \"model_reason\": \"…\"}, {\"seq\": 2, \"title\": \"…\", \"brief\": \"…\", \"acceptance\": \"…\", \"depends_on\": [{\"seq\": 1, \"because\": \"uses the … item 1 adds\"}], \"repo\": \"owner/name\", \"base_ref\": \"main\", \"model\": \"sonnet\", \"model_reason\": \"…\"}]}\n```\n")
 	return b.String()

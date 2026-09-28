@@ -652,4 +652,5 @@ type Gateway interface {
 	Repos(ctx context.Context, accountID, ownerLogin string) ([]gateway.Repo, error)
 	ContextDocuments(ctx context.Context, org, project string) ([]gateway.Document, error)
 	ContextDocument(ctx context.Context, org, project, doc string) (string, error)
+	Scorecard(ctx context.Context, org, project string) (map[string]any, error)
 }
