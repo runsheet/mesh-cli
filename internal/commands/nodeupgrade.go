@@ -40,8 +40,9 @@ it as usual.
 
 With --version vX.Y.Z, or the latest release that is not a prerelease
 when neither flag is given, the release's binary for this OS/arch is
-downloaded and verified as ` + "`mesh node update`" + ` does (SHA256SUMS signed by
-release-tag.yml on the tag), and its node image ensured. With --binary
+downloaded from the public mirror runsheet/mesh; the bundle must be signed
+by release-tag.yml on refs/tags/<version> of runsheet/mesh-cli, verified
+as ` + "`mesh node update`" + ` does, and its node image ensured. With --binary
 <path> a local build is installed instead, once ` + "`<path> version`" + ` answers.
 Either way the executable is swapped atomically, the previous one kept as
 <path>.prev. The new process confirms the upgrade with its first

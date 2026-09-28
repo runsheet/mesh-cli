@@ -1,10 +1,12 @@
 // Package selfupdate replaces the node's own executable with a signed tag
-// release of runsheet/mesh-cli (docs/adr/adr-002-signed-tag-releases.md):
-// Fetch downloads the binary for this OS/arch with SHA256SUMS and its
-// Sigstore bundle, Verify refuses anything not signed by release-tag.yml for
-// that tag or whose sum does not match, Swap puts it in place keeping the
-// previous as <path>.prev, and the State in ~/.mesh/update.json decides
-// when a new binary that will not start is rolled back.
+// release of runsheet/mesh-cli, downloaded from the public mirror
+// runsheet/mesh (docs/adr/adr-002-signed-tag-releases.md): Fetch downloads
+// the binary for this OS/arch with SHA256SUMS and its Sigstore bundle from
+// the mirror, Verify refuses anything not signed by runsheet/mesh-cli's
+// release-tag.yml for that tag or whose sum does not match, Swap puts it in
+// place keeping the previous as <path>.prev, and the State in
+// ~/.mesh/update.json decides when a new binary that will not start is
+// rolled back.
 package selfupdate
 
 import (
