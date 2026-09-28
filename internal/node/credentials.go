@@ -98,6 +98,9 @@ type SessionAccount struct {
 	// Adapter is the harness the session runs on, as its report names
 	// it ("claude-code" when empty; Adapter).
 	Adapter string
+	// Model is the model the session was asked to run on: the report's
+	// when the session's own usage names none (Codex's stream does not).
+	Model string
 	// report is the session's usage report once built (Report), res the
 	// result it was built from; handedIn and noLedger are what its
 	// finishing command made of it (Carried), and into the session whose
@@ -130,6 +133,19 @@ type SessionAccount struct {
 // session, the Codex harness's own account (no AccountSession); a
 // refusal is an error. No error or log line carries a secret.
 func (c *Credentials) Open(ctx context.Context, ref gateway.SessionRef, nodeID string, fallback []AccountConfig, adapter string) (*SessionAccount, error) {
+	return c.open(ctx, ref, nodeID, fallback, adapter, nil)
+}
+
+// OpenOwn is a Codex session on the Codex harness's own account (own:
+// node.yaml's codex: account, its label and kind), chosen by the
+// evaluator over the issued ones: the claim-time read is still asked
+// for the session's tools and noted in Known, but no issued credential
+// is opened, and the report names own.
+func (c *Credentials) OpenOwn(ctx context.Context, ref gateway.SessionRef, nodeID string, own AccountConfig) (*SessionAccount, error) {
+	return c.open(ctx, ref, nodeID, nil, AdapterCodex, &own)
+}
+
+func (c *Credentials) open(ctx context.Context, ref gateway.SessionRef, nodeID string, fallback []AccountConfig, adapter string, own *AccountConfig) (*SessionAccount, error) {
 	if adapter == "" {
 		adapter = AdapterClaudeCode
 	}
@@ -143,7 +159,11 @@ func (c *Credentials) Open(ctx context.Context, ref gateway.SessionRef, nodeID s
 		if err != nil {
 			return nil, err
 		}
-		return &SessionAccount{AccountSession: acct, Adapter: adapter}, nil
+		s := &SessionAccount{AccountSession: acct, Adapter: adapter}
+		if own != nil {
+			s.account = *own
+		}
+		return s, nil
 	}
 	s := &SessionAccount{creds: c, ref: ref, nodeID: nodeID, started: c.now(), Adapter: adapter}
 	var issued []gateway.Credential
@@ -160,7 +180,14 @@ func (c *Credentials) Open(ctx context.Context, ref gateway.SessionRef, nodeID s
 	case err != nil:
 		return nil, fmt.Errorf("session credentials: %w", err)
 	}
-	if len(issued) == 0 {
+	if own != nil {
+		for _, cr := range issued {
+			if err := c.Known.Note(IssuedAccount(cr), c.now()); err != nil {
+				c.logf("known accounts: %v", err)
+			}
+		}
+		s.account = *own
+	} else if len(issued) == 0 {
 		acct, err := OpenAccount(ctx, fallback)
 		if err != nil {
 			return nil, err
@@ -387,6 +414,9 @@ func (s *SessionAccount) Report(res harness.Result) *gateway.UsageReport {
 	}
 	s.report = r
 	s.Add(res)
+	if r.Model == "" {
+		r.Model = s.Model
+	}
 	if s.before != nil {
 		r.FiveHourBefore, r.FiveHourResetsAtBefore = reportWindow(s.before.FiveHour)
 		r.SevenDayBefore, r.SevenDayResetsAtBefore = reportWindow(s.before.SevenDay)

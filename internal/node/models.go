@@ -83,7 +83,9 @@ func ItemModel(ctx context.Context, gw Gateway, item gateway.WorkItem) string {
 // model, then its agent's, then nodeDefault (node.yaml build/default;
 // "" the CLI's own).
 func BuildModel(ctx context.Context, gw Gateway, item gateway.WorkItem, nodeDefault string) string {
-	if m := ItemModel(ctx, gw, item); m != "" {
+	// a Codex model pins the evaluator (EvaluatorPin); builders stay
+	// on Claude
+	if m := ItemModel(ctx, gw, item); m != "" && !IsCodexModel(m) {
 		return m
 	}
 	return nodeDefault
