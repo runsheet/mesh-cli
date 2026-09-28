@@ -183,3 +183,38 @@ says so on the item.
   the item through `ReportWorkItemProgress` after its final note, an
   evaluation adds it to its verdict's notes beside the omitted tools,
   and a plan or research session, with no item to note it on, logs it.
+
+## Amendment — 2026-09-28 (goal codex-sessions-reach-the-context-tool)
+
+Codex evaluations showed `prologue: 3 calls, 3 errors` and the note
+`prologue: first call errored: failed` — the error counted, its reason
+lost, and the built-in, which the note deliberately left out, the one
+tool that mattered. Both change.
+
+- **The error's text.** A failed Codex `mcp_tool_call` keeps its
+  `error.message` (a bare string accepted), else its `result`'s text,
+  else its status, as the server's `FirstError` (300 characters); a
+  Codex `error` item or top-level `error` naming an MCP server that
+  failed to start (``MCP client for `prologue` failed to start: …``)
+  counts an error for that server with the message, even with no call,
+  as Claude's `not connected` init status already did
+  (`docs/codex-events.md`). `Codex.Run` redacts the text of the job's
+  and the home's secrets.
+- **On the tool entry.** `Result.ToolReport()` rows and
+  `gateway.ToolCallReport` carry `error`: the first 200 characters of
+  `FirstError`, redacted again by the account and of every served
+  tool's values in `SessionAccount.Add`; merging a carried session's
+  rows keeps the first non-empty one. A platform whose tools entry does
+  not know `error` would refuse the whole list, so the client sends it
+  only when introspection of `UsageReportInput` finds `error` on the
+  `tools` entry (asked only when a report carries one, kept an hour, a
+  failed probe a no) and strips it otherwise: the report never falls
+  to the `ErrNoToolUsage` resend for it.
+- **The built-in in the note.** `SessionTools.UseNote` still names the
+  served console tools as before, then every other server the result
+  names with an error — the built-in `prologue` first, then Codex's own
+  (`codex_apps`) by name — `prologue: first call errored: <text>`, or
+  `prologue served, never called: <text>` for one that failed to
+  start, redacted and capped as above. A built-in called cleanly is
+  still never named. The evaluation's notes and a build's progress
+  note so say why the session could not read the project.

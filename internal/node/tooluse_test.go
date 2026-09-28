@@ -64,7 +64,7 @@ func TestSessionAccountReportsToolsAndNotesTheirUse(t *testing.T) {
 	if rep.ToolCalls != 5 {
 		t.Fatalf("toolCalls = %d", rep.ToolCalls)
 	}
-	want := []gateway.ToolCallReport{{Tool: "brave", Calls: 3, Errors: 1, Ms: 1500}, {Tool: "prologue", Calls: 2, Ms: 40}}
+	want := []gateway.ToolCallReport{{Tool: "brave", Calls: 3, Errors: 1, Ms: 1500, Error: "401 Unauthorized: token [redacted] is not valid"}, {Tool: "prologue", Calls: 2, Ms: 40}}
 	if len(rep.Tools) != len(want) || rep.Tools[0] != want[0] || rep.Tools[1] != want[1] {
 		t.Fatalf("tools = %+v", rep.Tools)
 	}
@@ -197,6 +197,70 @@ func TestEvaluationNotesItsToolUse(t *testing.T) {
 	}
 }
 
+// An evaluation whose built-in context tool errored — no console tool
+// served at all — names it and its error text in the notes, and the
+// report's prologue row carries that error.
+func TestEvaluationNotesTheBuiltinsError(t *testing.T) {
+	f := seed(t)
+	gw := gateway.New(f.URL(), "rs_test")
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "test-node", NodeID: "22222222-2222-4222-8222-222222222222"}
+	f.WorkItems[item1]["status"], f.WorkItems[item1]["nodeId"], f.WorkItems[item1]["branch"] = "evaluating", cfg.NodeID, "mesh/ship-it-1"
+	var item gateway.WorkItem
+	item.ID, item.OrgID, item.GoalID, item.RepoID, item.Seq, item.Branch = item1, orgID, goalID, repoID, 1, "mesh/ship-it-1"
+	ws := &fakeWS{root: t.TempDir()}
+	const msg = "tool call failed for `prologue/mesh_document`: 401 Unauthorized"
+	h := &fakeHarness{text: "Fine.\nVERDICT: PASS", toolCalls: map[string]int{"prologue": 3},
+		tools: map[string]*harness.ToolStat{"prologue": {Calls: 3, Errors: 3, Wall: 90 * time.Millisecond, FirstError: msg}}}
+	ev := &Evaluator{GW: gw, Harness: h, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, MCP: PrologueMCP(f.URL(), "rs_test"),
+		Credentials: &Credentials{GW: gw}, Runtimes: onlyNpx, Declines: &Declines{}, Log: log.New(&syncBuf{}, "", 0)}
+
+	if err := ev.Evaluate(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	call := f.CallsNamed("evaluateWorkItem")[0]
+	notes, _ := call.Input["notes"].(string)
+	if !strings.HasSuffix(notes, "\ntools: prologue: first call errored: "+msg) {
+		t.Fatalf("notes = %q", notes)
+	}
+	usage, _ := call.Input["usage"].(map[string]any)
+	rows, _ := usage["tools"].([]any)
+	if row, _ := rows[0].(map[string]any); len(rows) != 1 || row["tool"] != "prologue" || row["error"] != msg {
+		t.Fatalf("usage tools = %#v", usage["tools"])
+	}
+}
+
+// UseNote names the built-in and Codex's own servers when they error —
+// by their first call's error, or, with no call, the startup failure —
+// after the served tools, the built-in first.
+func TestUseNoteNamesTheBuiltin(t *testing.T) {
+	st := SessionTools{Use: []tools.Tool{{Name: "brave", Headers: map[string]string{"X-Key": braveSecret}}}}
+	res := harness.Result{ToolCalls: map[string]int{"brave": 1, "codex_apps": 1}, Tools: map[string]*harness.ToolStat{
+		"brave":      {Calls: 1},
+		"codex_apps": {Calls: 1, Errors: 1, FirstError: "apps unavailable " + braveSecret},
+		"prologue":   {Errors: 1, FirstError: "MCP client for `prologue` failed to start: Auth required during MCP startup"},
+	}}
+	want := "tools: prologue served, never called: MCP client for `prologue` failed to start: Auth required during MCP startup; codex_apps: first call errored: apps unavailable [redacted]"
+	if note := st.UseNote(res, nil); note != want {
+		t.Fatalf("note = %q, want %q", note, want)
+	}
+	// the built-in called cleanly is never named
+	clean := harness.Result{ToolCalls: map[string]int{"prologue": 2}, Tools: map[string]*harness.ToolStat{"prologue": {Calls: 2}}}
+	if note := (SessionTools{}).UseNote(clean, nil); note != "" {
+		t.Fatalf("clean note = %q", note)
+	}
+}
+
+// Merging a carried session's rows keeps the first non-empty error.
+func TestReportMergeKeepsTheFirstError(t *testing.T) {
+	acct := &SessionAccount{creds: &Credentials{}, started: time.Now()}
+	acct.Report(harness.Result{ToolCalls: map[string]int{"prologue": 1}, Tools: map[string]*harness.ToolStat{"prologue": {Calls: 1}}})
+	acct.Add(harness.Result{ToolCalls: map[string]int{"prologue": 1}, Tools: map[string]*harness.ToolStat{"prologue": {Calls: 1, Errors: 1, FirstError: "first"}}})
+	acct.Add(harness.Result{ToolCalls: map[string]int{"prologue": 1}, Tools: map[string]*harness.ToolStat{"prologue": {Calls: 1, Errors: 1, FirstError: "second"}}})
+	if got := acct.report.Tools; len(got) != 1 || got[0].Error != "first" || got[0].Errors != 2 {
+		t.Fatalf("tools = %+v", got)
+	}
+}
+
 // Against a platform whose usage report has no `tools`, the build still
 // finishes with the report's total, and the node says once that it
 // logs the per-tool calls instead, and logs them.
@@ -219,7 +283,7 @@ func TestBuildOnAPlatformWithoutToolUsage(t *testing.T) {
 	}
 	out := logs.String()
 	if !strings.Contains(out, "usage: the platform takes no per-tool calls yet; they are logged here instead") ||
-		!strings.Contains(out, `tools: [{"tool":"brave","calls":3,"errors":1,"ms":1500}`) {
+		!strings.Contains(out, `tools: [{"tool":"brave","calls":3,"errors":1,"ms":1500,"error":"401 Unauthorized: token [redacted] is not valid"}`) {
 		t.Fatalf("log:\n%s", out)
 	}
 }

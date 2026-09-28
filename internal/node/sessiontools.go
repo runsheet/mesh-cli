@@ -71,36 +71,69 @@ func (st SessionTools) OmittedNote() string {
 // served (goal tools-show-their-use): every tool in Use it never called
 // ("tools: brave served, never called") and every one whose calls
 // errored, by its first error ("tools: perplexity: first call errored:
-// …"), in Use's order; "" when every served tool was called cleanly.
-// The built-in Prologue is never in Use, so never named. The error
-// text goes through redact (the account's Redact) and has every value
-// of the tool's own secrets, headers and env taken out too, so no key
-// or header can leak, and is capped at 200 characters.
+// …"), in Use's order; then every other server the result names with
+// an error — the built-in context server (tools.Builtin) above all,
+// never in Use, and Codex's own — by name ("prologue: first call
+// errored: …", or "prologue served, never called: …" for one that
+// failed to start); "" when every served tool was called cleanly and
+// no other server errored. The error text goes through redact (the
+// account's Redact) and has every value of every served tool's
+// secrets, headers and env taken out too, so no key or header can
+// leak, and is capped at 200 characters.
 func (st SessionTools) UseNote(res harness.Result, redact func(string) string) string {
 	var notes []string
+	errored := func(name, msg string, calls int, redactValues func(string) string) {
+		if redact != nil {
+			msg = redact(msg)
+		}
+		msg = truncate(redactValues(msg), 200)
+		if calls == 0 {
+			notes = append(notes, fmt.Sprintf("%s served, never called: %s", name, msg))
+			return
+		}
+		notes = append(notes, fmt.Sprintf("%s: first call errored: %s", name, msg))
+	}
+	used := map[string]bool{}
 	for _, t := range st.Use {
+		used[t.Name] = true
 		stat := res.Tools[t.Name]
 		calls := res.ToolCalls[t.Name]
 		switch {
 		case stat != nil && stat.FirstError != "":
-			msg := stat.FirstError
-			if redact != nil {
-				msg = redact(msg)
-			}
-			msg = truncate(redactToolValues(msg, t), 200)
-			if calls == 0 {
-				notes = append(notes, fmt.Sprintf("%s served, never called: %s", t.Name, msg))
-				continue
-			}
-			notes = append(notes, fmt.Sprintf("%s: first call errored: %s", t.Name, msg))
+			errored(t.Name, stat.FirstError, calls, func(m string) string { return redactToolValues(m, t) })
 		case calls == 0:
 			notes = append(notes, t.Name+" served, never called")
 		}
+	}
+	var others []string
+	for name, stat := range res.Tools {
+		if !used[name] && stat != nil && stat.FirstError != "" {
+			others = append(others, name)
+		}
+	}
+	sort.Slice(others, func(i, j int) bool {
+		// the built-in first: it is what the session reads the project by
+		if (others[i] == tools.Builtin) != (others[j] == tools.Builtin) {
+			return others[i] == tools.Builtin
+		}
+		return others[i] < others[j]
+	})
+	for _, name := range others {
+		errored(name, res.Tools[name].FirstError, res.ToolCalls[name], st.redactAllValues)
 	}
 	if len(notes) == 0 {
 		return ""
 	}
 	return "tools: " + strings.Join(notes, "; ")
+}
+
+// redactAllValues is s with every served tool's values taken out
+// (redactToolValues for each in Use).
+func (st SessionTools) redactAllValues(s string) string {
+	for _, t := range st.Use {
+		s = redactToolValues(s, t)
+	}
+	return s
 }
 
 // redactToolValues is s with every value of t's secrets and headers
