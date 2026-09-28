@@ -469,6 +469,10 @@ func (c *Codex) Run(ctx context.Context, job Job, onProgress func(Progress)) (Re
 		}
 	})
 	waitErr := cmd.Wait()
+	// a tool's error text rides the usage report and the item's note
+	for _, stat := range res.Tools {
+		stat.FirstError = Redact(stat.FirstError, secrets...)
+	}
 	if res.RateLimit == nil {
 		if rl, err := ParseCodexSessionLimits(home.dir); err == nil && rl != nil {
 			res.RateLimit = rl

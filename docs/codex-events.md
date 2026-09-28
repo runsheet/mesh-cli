@@ -95,7 +95,7 @@ An `item` is `{id: "item_N", type, …}`, where `type` is one of:
 | `file_change` | `changes: [{path, kind: add/delete/update}]`, `status`: `in_progress`/`completed`/`failed` | yes |
 | `error` | `message` | yes: a warning, and the turn goes on |
 | `reasoning` | `text` | source only |
-| `mcp_tool_call` | `server`, `tool`, `arguments`, `result`, `error`, `status` | source only |
+| `mcp_tool_call` | `server`, `tool`, `arguments`, `result` (`{content: [{type, text}], structured_content}` or null), `error` (`{message}` or null), `status` | source only (`codex_mcp_call_error.jsonl` is modelled on it) |
 | `collab_tool_call` | `tool` (`spawn_agent`/`send_input`/`wait`/`close_agent`), `sender_thread_id`, `receiver_thread_ids`, `prompt`, `agents_states`, `status` | source only |
 | `web_search` | `id`, `query`, `action`, `results` | source only |
 | `todo_list` | `items: [{text, completed}]` | source only |
@@ -111,13 +111,35 @@ opens the clock for the call (keyed on its id, falling back to the
 server when the item carries none) and `item.completed` closes it,
 adding the elapsed time to `Wall`. The call is counted on `Calls`
 whatever its `status` — `in_progress`/`completed`/`failed`/`declined`,
-as `command_execution` uses them too, since only `completed` has been
-seen for `mcp_tool_call` items so far — but a `status` of `failed`
-also counts an `Errors` and, when it is the server's first, keeps the
-status string as `FirstError` (capped at 300 characters). No
+as `command_execution` uses them too — but a `status` of `failed`
+also counts an `Errors` and, when it is the server's first, keeps its
+text as `FirstError` (capped at 300 characters): the item's
+`error.message` (a bare-string `error` is taken too), else the text
+of its `result`'s content blocks, else the status word itself.
+`ToolReport()` carries the first 200 characters as the row's `Error`,
+which rides the usage report's `tools` entry as `error` and the item's
+note (adr-006, amendment for goal
+codex-sessions-reach-the-context-tool). `Codex.Run` redacts it of the
+job's and the home's secrets before it leaves the harness. No
 `item.started` before the matching `item.completed` (the fixtures
 here never miss one, but a real stream might) leaves that call's own
 share of `Wall` at zero.
+
+**An MCP server that fails to start** makes no `mcp_tool_call` at
+all: Codex says so in an `error` item (or a top-level `error`), e.g.
+``MCP client for `prologue` failed to start: Auth required during MCP
+startup`` when the server's `env_http_headers` variable is empty. A
+message about MCP that names a server — ``MCP client for `<s>` ``,
+`The <s> MCP server …`, ``MCP server `<s>` ``, or `MCP startup … (failed:
+<a>, <b>)` — counts one error for each named server, once, with the
+message as `FirstError` and zero calls
+(`codex_mcp_startup_error.jsonl`), as a Claude server the init event
+names not connected does. Only `Auth required during MCP startup` was
+seen by hand on 0.157.0 (an empty header variable); the surrounding
+wording and both fixtures (`codex_mcp_call_error.jsonl`,
+`codex_mcp_startup_error.jsonl`) are modelled on codex-cli's source,
+not captured from a node session — the first captured one should
+replace them. A message about MCP that names no server is not counted.
 
 **No event names the model.** The model shows up only in Codex's own
 state (`$CODEX_HOME/state_5.sqlite`, the session file under

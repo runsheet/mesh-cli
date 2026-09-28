@@ -182,8 +182,9 @@ type Result struct {
 	// Tools): a Claude tool_use whose tool_result carried is_error true,
 	// or a Codex mcp_tool_call whose status was failed, counts an error;
 	// a server the system/init event named as not connected counts an
-	// error too, with its status as FirstError, even with zero calls.
-	// Nil when the session made no MCP call and named no unconnected
+	// error too, with its status as FirstError, even with zero calls,
+	// as does a Codex error naming a server that failed to start, with
+	// its message. Nil when the session made no MCP call and named no unconnected
 	// server. See ToolReport.
 	Tools map[string]*ToolStat
 }
@@ -194,8 +195,10 @@ type ToolStat struct {
 	Errors int
 	Wall   time.Duration
 	// FirstError is the first error's text — a tool_result's content, a
-	// Codex mcp_tool_call's failed status, or an unconnected server's
-	// status — trimmed and capped at 300 characters.
+	// Codex mcp_tool_call's error (else its result's text, else its
+	// failed status), a Codex MCP startup failure's message, or an
+	// unconnected server's status — trimmed and capped at 300
+	// characters.
 	FirstError string
 }
 
@@ -206,6 +209,9 @@ type ToolCall struct {
 	Calls  int
 	Errors int
 	Ms     int64
+	// Error is the first 200 characters of the server's FirstError, ""
+	// when none of its calls errored.
+	Error string
 }
 
 // ToolReport returns Tools as a list of ToolCall, one per server, sorted
@@ -227,6 +233,7 @@ func (r *Result) ToolReport() []ToolCall {
 			Calls:  s.Calls,
 			Errors: s.Errors,
 			Ms:     s.Wall.Milliseconds(),
+			Error:  capText(s.FirstError, 200),
 		})
 	}
 	return report
