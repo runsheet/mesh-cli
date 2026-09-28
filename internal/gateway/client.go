@@ -1022,10 +1022,10 @@ type SandboxInfo struct {
 // none before it has, or on a platform whose `scaling` has no
 // `accounts`.
 type Scaling struct {
-	Capacity int              `json:"capacity"`
-	Min      int              `json:"min"`
-	Max      int              `json:"max"`
-	Reason   string           `json:"reason"`
+	Capacity int    `json:"capacity"`
+	Min      int    `json:"min"`
+	Max      int    `json:"max"`
+	Reason   string `json:"reason"`
 	// Accounts is always a list on the wire, [] when there are none: the
 	// platform's nested input makes it non-null whatever its schema says
 	// (go-apis/loom nested-optional-lists-are-nullable), and an omitted or
