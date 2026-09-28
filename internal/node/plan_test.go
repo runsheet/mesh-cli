@@ -242,6 +242,58 @@ func TestPlannerCarriesEachItemsModel(t *testing.T) {
 	}
 }
 
+// item 5: the scorecard's per-repo, per-model evidence the fake gateway
+// serves rides the plan prompt as a table.
+func TestPlannerReadsScorecardEvidence(t *testing.T) {
+	f := seed(t)
+	f.Goals[goalID]["status"] = "planning"
+	f.Projects[projID]["repoIds"] = []string{repoID}
+	f.Scorecard[orgID] = map[string]any{"projects": []any{
+		map[string]any{"projectId": projID, "byModel": []any{
+			map[string]any{"repo": "acme/widgets", "model": "sonnet", "firstPass": 0.3, "items": float64(12), "costPerItemCents": float64(450)},
+		}},
+	}}
+	gw := gateway.New(f.URL(), "rs_test")
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: Fixed(1), OwnerID: f.UserID}
+	ws := &fakeWS{root: t.TempDir()}
+	h := &fakeHarness{text: "```json\n{\"items\": [{\"seq\": 1, \"title\": \"Docs\", \"acceptance\": \"go test ./... passes\", \"repo\": \"acme/widgets\", \"model\": \"opus\"}]}\n```"}
+	pl := &Planner{GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, Log: log.New(os.Stderr, "", 0)}
+	if err := pl.Plan(context.Background(), gateway.Goal{ID: goalID, Slug: "ship-it", Title: "Ship it", ProjectID: projID, Status: "planning"}, scopesOf(cfg)[0]); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.jobs) != 1 {
+		t.Fatalf("planner sessions = %d, want 1", len(h.jobs))
+	}
+	for _, want := range []string{"acme/widgets", "sonnet", "0.30", "12", "$4.50", "under 0.5"} {
+		if !strings.Contains(h.jobs[0].Prompt, want) {
+			t.Errorf("prompt lacks %q:\n%s", want, h.jobs[0].Prompt)
+		}
+	}
+}
+
+// A platform without the scorecard query yields no evidence, and the
+// plan still runs.
+func TestPlannerWithoutScorecardOnAnOlderPlatform(t *testing.T) {
+	f := seed(t)
+	f.Goals[goalID]["status"] = "planning"
+	f.Projects[projID]["repoIds"] = []string{repoID}
+	f.Unsupported["scorecard"] = true
+	gw := gateway.New(f.URL(), "rs_test")
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: Fixed(1), OwnerID: f.UserID}
+	ws := &fakeWS{root: t.TempDir()}
+	h := &fakeHarness{text: "```json\n{\"items\": [{\"seq\": 1, \"title\": \"Docs\", \"acceptance\": \"go test ./... passes\", \"repo\": \"acme/widgets\", \"model\": \"opus\"}]}\n```"}
+	pl := &Planner{GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, Log: log.New(os.Stderr, "", 0)}
+	if err := pl.Plan(context.Background(), gateway.Goal{ID: goalID, Slug: "ship-it", Title: "Ship it", ProjectID: projID, Status: "planning"}, scopesOf(cfg)[0]); err != nil {
+		t.Fatal(err)
+	}
+	if calls := f.CallsNamed("planGoal"); len(calls) != 1 {
+		t.Fatalf("plan calls: %+v", calls)
+	}
+	if len(h.jobs) != 1 || strings.Contains(h.jobs[0].Prompt, "|") {
+		t.Error("no scorecard: prompt still renders an evidence table")
+	}
+}
+
 // adr-004: the node checks the planner's graph before PlanGoal.
 const (
 	repo2 = "cccccccc-2222-4222-8222-cccccccccccc"
@@ -284,7 +336,7 @@ func TestPlannerReasksOnAPRCheck(t *testing.T) {
 	if strings.Contains(h.jobs[0].Prompt, "Your last answer") {
 		t.Fatal("the first ask flags nothing")
 	}
-	for _, want := range []string{"## Your last answer asked for what no evaluator can see", "- item 1 (Update from the console): its acceptance names a check on its own pull request", "this is the last ask"} {
+	for _, want := range []string{"## Your last answer was flagged", "- item 1 (Update from the console): its acceptance names a check on its own pull request", "this is the last ask"} {
 		if !strings.Contains(h.jobs[1].Prompt, want) {
 			t.Fatalf("re-ask lacks %q:\n%s", want, h.jobs[1].Prompt)
 		}
@@ -397,6 +449,26 @@ func TestUnverifiableAcceptance(t *testing.T) {
 	// the same path is the item's own when the item is in mesh-specs
 	if flags := check("a specs/console-trd.md diff in mesh-specs", specs); len(flags) != 0 {
 		t.Errorf("own repo flagged: %q", flags)
+	}
+}
+
+// item 5: a model whose first-pass on a repo is under 0.5 over five or
+// more items is flagged; a clean model, a different repo, and thin
+// evidence (under five items) are not.
+func TestModelAgainstEvidence(t *testing.T) {
+	evidence := []harness.ModelEvidence{{Repo: "A", Model: "sonnet", FirstPass: 0.3, Items: 12, CostPerItemCents: 450}}
+	specs := []harness.PlannedSpec{
+		{Seq: 1, Title: "Sonnet on A", Repo: "A", Model: "sonnet"},
+		{Seq: 2, Title: "Opus on A", Repo: "A", Model: "opus"},
+		{Seq: 3, Title: "Sonnet on B", Repo: "B", Model: "sonnet"},
+	}
+	flags := modelAgainstEvidence(specs, evidence)
+	if len(flags) != 1 || !strings.Contains(flags[0], "item 1 ") || !strings.Contains(flags[0], "model sonnet has first-pass 0.30 on A") {
+		t.Fatalf("flags = %q", flags)
+	}
+	thin := []harness.ModelEvidence{{Repo: "A", Model: "sonnet", FirstPass: 0.3, Items: 3, CostPerItemCents: 450}}
+	if flags := modelAgainstEvidence(specs[:1], thin); len(flags) != 0 {
+		t.Errorf("under five items: flagged %q", flags)
 	}
 }
 

@@ -114,6 +114,23 @@ Each write should record:
 5. implement `spec create/update/status`
 6. migrate agents to use CLI for Mesh data writes
 
+## Planner: model choice by evidence
+
+The plan prompt shows the scorecard's per-repo, per-model first-pass
+rate and cost per item as an "Evidence: which models worked here"
+table (`harness.PlanInput.Evidence`, `[]harness.ModelEvidence`), read
+from the platform's `scorecard` query before the planner session
+starts (`gateway.Client.Scorecard`; a nil map, no error, on an older
+platform without it). **A model whose first-pass on a repo is under
+0.5 over five or more items is not chosen for that repo**; the planner
+is told to prefer the model with the best first-pass at the lowest
+cost per item, and that the goal docs in the context name models that
+worked. The node's own check (`internal/node/plan_check.go`,
+`modelAgainstEvidence`) flags an item whose model falls below the 0.5
+threshold on its repo and routes the flag through the same re-ask as
+an unverifiable acceptance (`PlanInput.Rejected`), with the reason
+`model <m> has first-pass <x> on <repo>`.
+
 ## Success criteria
 
 - end users can create/update Mesh data without direct database credentials

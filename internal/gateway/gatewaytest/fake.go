@@ -114,6 +114,11 @@ type Fake struct {
 	// on the fake's rows) — for a test whose platform reacts to it, as a
 	// goal ending with its last item.
 	After func(name string, in map[string]any)
+	// Scorecard maps an org id to the Map the platform's scorecard(orgId)
+	// answers (runsheet trd §6a). An org with none answers {"projects":
+	// []}; Unsupported["scorecard"] refuses the field, as a platform
+	// older than it.
+	Scorecard map[string]map[string]any
 }
 
 // New starts a fake accepting the given bearer token.
@@ -128,6 +133,7 @@ func New(token string) *Fake {
 		GitHubTokens: map[string]map[string]any{}, Unsupported: map[string]bool{},
 		Agents: map[string]map[string]any{}, UnknownFields: map[string]bool{},
 		SessionCredentials: map[string][]map[string]any{}, SessionTools: map[string][]map[string]any{},
+		Scorecard: map[string]map[string]any{},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/graphql", f.graphql)
@@ -193,6 +199,7 @@ var (
 	// the claim-time read: query($id: UUID!) { <x>Credentials(<arg>: $id) [<x>Tools(<arg>: $id)] }
 	sessionReadRe = regexp.MustCompile(`\{\s*(\w+Credentials)\s*\(\s*(\w+):\s*\$id\s*\)(?:\s*(\w+Tools)\s*\(\s*\w+:\s*\$id\s*\))?\s*\}`)
 	getRe         = regexp.MustCompile(`\{\s*(\w+Index)\s*\(\s*namespace:\s*"runsheet"\s*,\s*id:\s*"([^"]+)"`)
+	scorecardRe   = regexp.MustCompile(`\{\s*scorecard\s*\(\s*orgId:\s*"([^"]+)"\s*\)\s*\}`)
 )
 
 func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
@@ -290,6 +297,19 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 		}
 		writeData(w, map[string]any{m[2]: map[string]any{"status": "ok"}})
 	default:
+		if m := scorecardRe.FindStringSubmatch(q); m != nil {
+			f.Reads = append(f.Reads, Call{Name: "scorecard", Input: map[string]any{"orgId": m[1]}})
+			if f.Unsupported["scorecard"] {
+				writeErrors(w, 200, `Cannot query field "scorecard" on type "Query".`)
+				return
+			}
+			sc, ok := f.Scorecard[m[1]]
+			if !ok {
+				sc = map[string]any{"projects": []any{}}
+			}
+			writeData(w, map[string]any{"scorecard": sc})
+			return
+		}
 		if m := sessionReadRe.FindStringSubmatch(q); m != nil {
 			f.sessionRead(w, m[1], m[2], m[3], req.Variables)
 			return

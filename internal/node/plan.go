@@ -111,6 +111,93 @@ func (p *Planner) projectRepos(ctx context.Context, goal gateway.Goal, scope Sco
 	return project, repos, nil
 }
 
+// evidence reads the project's scorecard (item 5, model choice by
+// evidence) and builds its per-repo, per-model rows. A platform without
+// the query, or a scorecard whose shape carries none of the keys a row
+// needs, yields an empty slice — the plan still runs, unadvised.
+func (p *Planner) evidence(ctx context.Context, goalSlug string, scope Scope, project *gateway.Project) []harness.ModelEvidence {
+	sc, err := p.GW.Scorecard(ctx, scope.ID, project.ID)
+	if err != nil {
+		p.logf("goal %s: scorecard unavailable: %v", goalSlug, err)
+		return nil
+	}
+	return evidenceFromScorecard(sc)
+}
+
+// evidenceFromScorecard walks a scorecard project entry for per-repo,
+// per-model rows, tolerant of the shape: a flat list under "byModel" or
+// "byRepo" (each row already naming its repo and model), or "byRepo"
+// nested with each repo's own "byModel" list. A row needs a model and a
+// first-pass rate (`firstPass` or `first_pass`) to count; items come
+// from `items`, `merged` or `evaluated`, cost per item from
+// `costPerItemCents`/`cost_per_item_cents` or `costCents`/`cost_cents`
+// over items. Anything else — no scorecard, no such keys — yields none.
+func evidenceFromScorecard(sc map[string]any) []harness.ModelEvidence {
+	var rows []map[string]any
+	for _, key := range []string{"byModel", "byRepo"} {
+		list, _ := sc[key].([]any)
+		for _, e := range list {
+			row, ok := e.(map[string]any)
+			if !ok {
+				continue
+			}
+			nested, hasNested := row["byModel"].([]any)
+			if !hasNested {
+				rows = append(rows, row)
+				continue
+			}
+			repo := stringField(row, "repo")
+			for _, ne := range nested {
+				if nrow, ok := ne.(map[string]any); ok {
+					merged := map[string]any{"repo": repo}
+					for k, v := range nrow {
+						merged[k] = v
+					}
+					rows = append(rows, merged)
+				}
+			}
+		}
+	}
+	var out []harness.ModelEvidence
+	for _, row := range rows {
+		model := stringField(row, "model")
+		fp, ok := numberField(row, "firstPass", "first_pass")
+		if model == "" || !ok {
+			continue
+		}
+		items := int(numberFieldOr(row, 0, "items", "merged", "evaluated"))
+		costPerItem := int(numberFieldOr(row, 0, "costPerItemCents", "cost_per_item_cents"))
+		if costPerItem == 0 && items > 0 {
+			if cost, ok := numberField(row, "costCents", "cost_cents"); ok {
+				costPerItem = int(cost / float64(items))
+			}
+		}
+		out = append(out, harness.ModelEvidence{Repo: stringField(row, "repo"), Model: model, FirstPass: fp, Items: items, CostPerItemCents: costPerItem})
+	}
+	return out
+}
+
+func stringField(row map[string]any, key string) string {
+	s, _ := row[key].(string)
+	return s
+}
+
+func numberField(row map[string]any, keys ...string) (float64, bool) {
+	for _, k := range keys {
+		if n, ok := row[k].(float64); ok {
+			return n, true
+		}
+	}
+	return 0, false
+}
+
+func numberFieldOr(row map[string]any, def float64, keys ...string) float64 {
+	if n, ok := numberField(row, keys...); ok {
+		return n
+	}
+	return def
+}
+
 func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) error {
 	project, repos, err := p.projectRepos(ctx, goal, scope)
 	if err != nil {
@@ -163,7 +250,7 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 	in := harness.PlanInput{
 		GoalSlug: goal.Slug, GoalTitle: goal.Title, Statement: goal.Statement, Acceptance: goal.Acceptance, BudgetCents: goal.BudgetCents,
 		Org: scope.Login, Project: project.Slug, Repos: dirs, ContextDir: contextDir, ContextFiles: files, Blocked: goal.PausedReason,
-		Existing: existing, NextSeq: nextSeq, Prologue: len(p.MCP) > 0,
+		Existing: existing, NextSeq: nextSeq, Prologue: len(p.MCP) > 0, Evidence: p.evidence(ctx, goal.Slug, scope, project),
 	}
 	budget := p.MaxBudgetUSD
 	if budget <= 0 {
@@ -248,7 +335,7 @@ func (p *Planner) ask(ctx context.Context, goal gateway.Goal, nodeID, dir string
 	job.Outlive = true
 	result, err := p.Harness.Run(ctx, job, nil)
 	acct.Report(result)
-	items, reasons, flags, cost, err := p.readPlan(ctx, goal, dir, acct, result, err, repos, merged)
+	items, reasons, flags, cost, err := p.readPlan(ctx, goal, dir, acct, result, err, repos, merged, in.Evidence)
 	return items, reasons, flags, cost, acct, err
 }
 
@@ -256,7 +343,7 @@ func (p *Planner) ask(ctx context.Context, goal gateway.Goal, nodeID, dir string
 // to hold it: its graph read and mapped onto the project's repos, as ask
 // describes. A cancelled ctx leaves the session running for the next
 // node to adopt; otherwise its session directory goes.
-func (p *Planner) readPlan(ctx context.Context, goal gateway.Goal, dir string, acct *SessionAccount, result harness.Result, err error, repos map[string]gateway.Repo, merged []int) ([]gateway.PlannedItem, map[int]string, []string, float64, error) {
+func (p *Planner) readPlan(ctx context.Context, goal gateway.Goal, dir string, acct *SessionAccount, result harness.Result, err error, repos map[string]gateway.Repo, merged []int, evidence []harness.ModelEvidence) ([]gateway.PlannedItem, map[int]string, []string, float64, error) {
 	if ctx.Err() != nil {
 		return nil, nil, nil, 0, ctx.Err()
 	}
@@ -304,7 +391,9 @@ func (p *Planner) readPlan(ctx context.Context, goal gateway.Goal, dir string, a
 		reasons[sp.Seq] = strings.TrimSpace(sp.ModelReason)
 		items = append(items, gateway.PlannedItem{Seq: sp.Seq, Title: strings.TrimSpace(sp.Title), Brief: briefWithDeps(sp.Brief, deps, because), Acceptance: strings.TrimSpace(sp.Acceptance), DependsOn: deps, DependsBecause: because, RepoID: r.ID, BaseRef: base, Model: model})
 	}
-	return items, reasons, unverifiableAcceptance(specs, itemRepo, repos), result.CostUSD, nil
+	flags := unverifiableAcceptance(specs, itemRepo, repos)
+	flags = append(flags, modelAgainstEvidence(specs, evidence)...)
+	return items, reasons, flags, result.CostUSD, nil
 }
 
 // explainedDeps keeps the item's dependencies that carry a because and
@@ -365,7 +454,7 @@ func (p *Planner) AdoptPlan(ctx context.Context, goal gateway.Goal, scope Scope,
 		s.Stop()
 		return harness.RemoveSession(s.State.Workspace)
 	}
-	_, repos, err := p.projectRepos(ctx, goal, scope)
+	project, repos, err := p.projectRepos(ctx, goal, scope)
 	if err != nil {
 		return err
 	}
@@ -385,7 +474,7 @@ func (p *Planner) AdoptPlan(ctx context.Context, goal gateway.Goal, scope Scope,
 	}
 	p.logf("goal %s: adopted its %s planner session (pid %d)", goal.Slug, s.Liveness(), s.State.PID)
 	result, err := at.Attach(ctx, s.Dir, nil)
-	items, reasons, flags, cost, err := p.readPlan(ctx, goal, s.State.Workspace, nil, result, err, repos, merged)
+	items, reasons, flags, cost, err := p.readPlan(ctx, goal, s.State.Workspace, nil, result, err, repos, merged, p.evidence(ctx, goal.Slug, scope, project))
 	if err != nil {
 		return err
 	}

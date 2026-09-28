@@ -39,6 +39,34 @@ func TestPlanPromptModelRubric(t *testing.T) {
 	}
 }
 
+// The scorecard's per-repo, per-model evidence renders as a table under
+// rule 8, with the under-0.5 rule; with none, no table (item 5).
+func TestPlanPromptEvidence(t *testing.T) {
+	p := PlanPrompt(PlanInput{GoalSlug: "g", GoalTitle: "G", Org: "o", Project: "p", Evidence: []ModelEvidence{
+		{Repo: "acme/console", Model: "sonnet", FirstPass: 0.3, Items: 12, CostPerItemCents: 450},
+		{Repo: "acme/api", Model: "opus", FirstPass: 0.86, Items: 20, CostPerItemCents: 103},
+	}})
+	for _, want := range []string{
+		"acme/console", "acme/api", "sonnet", "opus", "0.30", "0.86", "12", "20", "$4.50", "$1.03",
+		"under 0.5",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("plan prompt with evidence lacks %q:\n%s", want, p)
+		}
+	}
+	if !strings.Contains(p, "|") {
+		t.Error("plan prompt with evidence renders no table")
+	}
+
+	none := PlanPrompt(PlanInput{GoalSlug: "g", GoalTitle: "G", Org: "o", Project: "p"})
+	if strings.Contains(none, "|") {
+		t.Error("plan prompt with no evidence renders a table")
+	}
+	if !strings.Contains(none, "under 0.5") {
+		t.Error("plan prompt still states the under-0.5 rule with no evidence")
+	}
+}
+
 // The dependency rubric is in the rules of a first plan, a replan and
 // the re-ask alike (trd §5 phase 2).
 func TestPlanPromptDependencyRubric(t *testing.T) {
@@ -109,8 +137,8 @@ func TestPlanPromptRejected(t *testing.T) {
 	}
 	p := PlanPrompt(PlanInput{GoalSlug: "g", GoalTitle: "G", Org: "o", Project: "p", Rejected: []string{"item 1 (Ship): a check on its own pull request (`deploy / verify`)"}})
 	for _, want := range []string{
-		"## Your last answer asked for what no evaluator can see\n\nThe node checked your graph before handing it in and flagged these items:\n\n- item 1 (Ship): a check on its own pull request (`deploy / verify`)\n\n",
-		"Work like that becomes its own item in the right repo, or goes in the goal's acceptance. Write the whole graph again with those acceptances rewritten; this is the last ask.\n",
+		"## Your last answer was flagged\n\nThe node checked your graph before handing it in and flagged these items — an acceptance naming what no evaluator can see, or a model the scorecard says does not work on its repo:\n\n- item 1 (Ship): a check on its own pull request (`deploy / verify`)\n\n",
+		"Work like that becomes its own item in the right repo, or goes in the goal's acceptance. Write the whole graph again with those acceptances and models rewritten; this is the last ask.\n",
 	} {
 		if !strings.Contains(p, want) {
 			t.Errorf("plan prompt lacks %q", want)
