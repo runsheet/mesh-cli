@@ -856,6 +856,33 @@ per run, logs each call instead, and the item goes on.
 A platform that does not hand out `tools` yet costs nothing: sessions
 run on Prologue alone, as before.
 
+### Tool results
+
+One `go test ./...` log or file dump can put 100 KB into a session's
+context, and every later turn pays for it again. node.yaml's
+`tool_results.max_kb` caps what one tool result may put there:
+
+```yaml
+tool_results:
+  max_kb: 16   # the default; 0 turns the cap off
+```
+
+A build session on the host gets a Claude Code `PreToolUse` hook on
+`Bash` in its `--settings`, `mesh tool-trim --max-kb 16 --hook`, which
+rewrites each command to `( <cmd>\n) 2>&1 | mesh tool-trim --max-kb 16`
+(a command that already pipes to `tool-trim` or runs in the background
+is left as it is). Output over the cap comes back as its first 60% and
+last 40%, cut at line boundaries, with
+`[mesh: trimmed N KB of M KB; run the command again with a narrower filter if the middle matters]`
+between. The pipeline's exit status is the trim's, so a failure shows in
+the output, not the status. The session's environment also carries
+`BASH_MAX_OUTPUT_LENGTH` (the cap in characters) and
+`MAX_MCP_OUTPUT_TOKENS` (the cap at four bytes a token), so MCP results
+and whatever the hook misses are bounded by the CLI itself. A sandboxed
+session gets the environment but not the hook (the pod has no `mesh`),
+and channel-mode sessions get neither. `mesh tool-trim --max-kb N`
+works by hand too: it trims stdin to stdout.
+
 ### Sandbox
 
 Every one-shot session — a poll-mode build, an evaluation, a plan, a
