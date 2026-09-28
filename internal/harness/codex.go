@@ -40,6 +40,13 @@ type Codex struct {
 	// <user cache dir>/mesh/codex. Not /tmp: Codex refuses to put its
 	// helper binaries under /tmp.
 	HomeRoot string
+	// WorkRoot is the node's work root (node.WorkRoot()); when set, Run
+	// keeps the session's whole event stream and stderr under
+	// WorkRoot/kept-sessions (KeepSessionOutput, openKeptSession) and
+	// sweeps directories older than that on every run
+	// (SweepKeptSessions). Empty keeps nothing: the stream lives only in
+	// the 64KB in-memory buffer, as before.
+	WorkRoot string
 }
 
 // CodexAccount is one OpenAI account Codex sessions run on: a
@@ -418,6 +425,25 @@ func (c *Codex) Run(ctx context.Context, job Job, onProgress func(Progress)) (Re
 	env.Unset = append(append([]string{}, job.Unset...), codexInherited...)
 	env.Env = append(append([]string{}, job.Env...), home.env...)
 
+	var keptDir string
+	var keptOut, keptErrFile *os.File
+	if c.WorkRoot != "" {
+		now := time.Now()
+		if err := SweepKeptSessions(c.WorkRoot, now); err != nil && c.Stderr != nil {
+			fmt.Fprintf(c.Stderr, "harness codex: sweep kept sessions: %v\n", err)
+		}
+		var kErr error
+		if keptDir, keptOut, keptErrFile, kErr = openKeptSession(c.WorkRoot, job, now); kErr != nil {
+			if c.Stderr != nil {
+				fmt.Fprintf(c.Stderr, "harness codex: kept session: %v\n", kErr)
+			}
+			keptDir, keptOut, keptErrFile = "", nil, nil
+		} else {
+			defer keptOut.Close()
+			defer keptErrFile.Close()
+		}
+	}
+
 	if job.Timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, job.Timeout)
@@ -429,11 +455,14 @@ func (c *Codex) Run(ctx context.Context, job Job, onProgress func(Progress)) (Re
 	cmd.Stdin = strings.NewReader(job.Prompt)
 	cmd.WaitDelay = 5 * time.Second
 	var errBuf bytes.Buffer
+	stderrWriters := []io.Writer{&errBuf}
 	if c.Stderr != nil {
-		cmd.Stderr = io.MultiWriter(&redactWriter{w: c.Stderr, secrets: secrets}, &errBuf)
-	} else {
-		cmd.Stderr = &errBuf
+		stderrWriters = append(stderrWriters, &redactWriter{w: c.Stderr, secrets: secrets})
 	}
+	if keptErrFile != nil {
+		stderrWriters = append(stderrWriters, &redactWriter{w: keptErrFile, secrets: secrets})
+	}
+	cmd.Stderr = io.MultiWriter(stderrWriters...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return Result{}, err
@@ -442,8 +471,12 @@ func (c *Codex) Run(ctx context.Context, job Job, onProgress func(Progress)) (Re
 		return Result{}, fmt.Errorf("harness codex: start: %w", err)
 	}
 	rawOut := &capBuffer{max: 64 << 10}
+	var stdoutTee io.Writer = rawOut
+	if keptOut != nil {
+		stdoutTee = io.MultiWriter(rawOut, &redactWriter{w: keptOut, secrets: secrets})
+	}
 	var sessionID, failure string
-	res := ParseCodexStream(io.TeeReader(stdout, rawOut), job.Model, func(ev CodexEvent) {
+	res := ParseCodexStream(io.TeeReader(stdout, stdoutTee), job.Model, func(ev CodexEvent) {
 		switch ev.Type {
 		case "thread.started":
 			sessionID = ev.ThreadID
@@ -468,6 +501,7 @@ func (c *Codex) Run(ctx context.Context, job Job, onProgress func(Progress)) (Re
 			}
 		}
 	})
+	res.KeptSessionDir = keptDir
 	waitErr := cmd.Wait()
 	if res.RateLimit == nil {
 		if rl, err := ParseCodexSessionLimits(home.dir); err == nil && rl != nil {

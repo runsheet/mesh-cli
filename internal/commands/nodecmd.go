@@ -545,14 +545,14 @@ func runPollMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *
 		r.Scopes = loop.CurrentScopes() // an org served since start is known to its build
 		_ = r.RunItem(ctx, item)
 	}
-	loop.Evaluate = evaluateWith(gw, cfg, h, codexSecondOpinion(cfg, loop, logger), loop, workRoot, fallback, accounts, logger)
+	loop.Evaluate = evaluateWith(gw, cfg, h, codexSecondOpinion(cfg, loop, workRoot, logger), loop, workRoot, fallback, accounts, logger)
 	loop.Plan = planWith(gw, cfg, h, workRoot, accounts, logger)
 	loop.Research = researchWith(gw, cfg, h, workRoot, accounts, logger)
 	loop.Rebase = rebaseWith(gw, cfg, h, loop.CurrentScopes, workRoot, fallback, accounts, logger)
 	logger.Printf("poll mode: node %s (%s) for %s, capacity %s, every %s", cfg.Name, cfg.Slug, strings.Join(scopes.Logins(), ", "), cfg.Capacity, loop.Interval)
 	// sessions the process before this one started run on in their own
 	// units: each is taken up where it is, before anything is claimed
-	adoptSessions(ctx, gw, cfg, h, codexSecondOpinion(cfg, loop, logger), loop, runner, workRoot, fallback, accounts, logger)
+	adoptSessions(ctx, gw, cfg, h, codexSecondOpinion(cfg, loop, workRoot, logger), loop, runner, workRoot, fallback, accounts, logger)
 	// items this node held when it last stopped are taken up again: a
 	// restart mid-build continues them (the workspace keeps the branch)
 	for _, sc := range scopes {
@@ -789,8 +789,8 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 	// in their own units: each is taken up where it is (a build of a
 	// poll-mode run before this one too), before anything is claimed
 	oneShot := observed(loop, logger)
-	adoptSessions(ctx, gw, cfg, oneShot, codexSecondOpinion(cfg, loop, logger), loop, &node.Runner{GW: gw, Harness: oneShot, WS: ws, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, Fallback: fallback, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Condition: loop.NoteCondition, Log: logger}, workRoot, fallback, accounts, logger)
-	loop.Evaluate = evaluateWith(gw, cfg, observed(loop, logger), codexSecondOpinion(cfg, loop, logger), loop, workRoot, fallback, accounts, logger)
+	adoptSessions(ctx, gw, cfg, oneShot, codexSecondOpinion(cfg, loop, workRoot, logger), loop, &node.Runner{GW: gw, Harness: oneShot, WS: ws, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, Fallback: fallback, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Condition: loop.NoteCondition, Log: logger}, workRoot, fallback, accounts, logger)
+	loop.Evaluate = evaluateWith(gw, cfg, observed(loop, logger), codexSecondOpinion(cfg, loop, workRoot, logger), loop, workRoot, fallback, accounts, logger)
 	loop.Plan = planWith(gw, cfg, observed(loop, logger), workRoot, accounts, logger)
 	loop.Research = researchWith(gw, cfg, observed(loop, logger), workRoot, accounts, logger)
 	loop.Rebase = rebaseWith(gw, cfg, observed(loop, logger), loop.CurrentScopes, workRoot, fallback, accounts, logger)
@@ -1011,8 +1011,11 @@ type secondOpinion struct {
 // (docs/adr/adr-011-evaluations-run-on-the-family-with-headroom.md).
 // Its readings land in the loop's Limits under codex:<account>. No
 // binary, or neither a block nor an issued Codex account: the node
-// evaluates as before.
-func codexSecondOpinion(cfg *node.Config, loop *node.Loop, logger *log.Logger) secondOpinion {
+// evaluates as before. Every session's whole event stream and stderr
+// are kept under workRoot/kept-sessions for harness.KeepSessionOutput
+// (docs/adr/adr-005-codex-second-opinion.md, "Amendment, 2026-09-28:
+// the stream is kept 24 hours").
+func codexSecondOpinion(cfg *node.Config, loop *node.Loop, workRoot string, logger *log.Logger) secondOpinion {
 	bin := cfg.Codex.Binary
 	if bin == "" {
 		bin = "codex"
@@ -1023,7 +1026,7 @@ func codexSecondOpinion(cfg *node.Config, loop *node.Loop, logger *log.Logger) s
 		}
 		return secondOpinion{}
 	}
-	c := &harness.Codex{Binary: bin, Stderr: os.Stderr}
+	c := &harness.Codex{Binary: bin, Stderr: os.Stderr, WorkRoot: workRoot}
 	loop.CodexOwn = nil
 	if !cfg.Codex.IsZero() {
 		if len(cfg.Codex.Accounts) > 0 {

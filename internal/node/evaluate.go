@@ -326,12 +326,12 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 		return fmt.Errorf("evaluator session ran out of time (%s)", e.Timeout)
 	}
 	if err != nil {
-		return fmt.Errorf("evaluator session: %w", acct.RedactErr(err))
+		return fmt.Errorf("evaluator session: %w%s", acct.RedactErr(err), keptAt(result))
 	}
 	result.Text = acct.Redact(result.Text)
 	passed, notes, ok := harness.ParseVerdict(result.Text)
 	if !ok {
-		return fmt.Errorf("evaluator session reached no verdict (%s): %s", result.SessionID, truncate(result.Text, 300))
+		return fmt.Errorf("evaluator session reached no verdict (%s): %s%s", result.SessionID, truncate(result.Text, 300), keptAt(result))
 	}
 	notes = strings.TrimSpace(notes)
 	if notes == "" {
@@ -349,6 +349,9 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 	if note := acct.UseNote(result); note != "" {
 		e.logf("item %s: %s", label, note)
 		without += "\n" + truncate(note, 500)
+	}
+	if result.KeptSessionDir != "" && hasToolError(result) {
+		e.logf("item %s: a tool errored%s", label, keptAt(result))
 	}
 	cost := result.CostUSD
 	if ev.fam.codex && acct != nil {
@@ -821,4 +824,25 @@ func Cents(usd float64) int {
 		return 0
 	}
 	return int(math.Round(usd * 100))
+}
+
+// keptAt is " kept at <dir>" when result names where its whole event
+// stream and stderr are kept (a Codex session with harness.Codex's
+// WorkRoot set), else "".
+func keptAt(result harness.Result) string {
+	if result.KeptSessionDir == "" {
+		return ""
+	}
+	return " kept at " + result.KeptSessionDir
+}
+
+// hasToolError is whether any MCP server the session called, or was
+// served but never reached, ended in error (harness.Result.Tools).
+func hasToolError(result harness.Result) bool {
+	for _, stat := range result.Tools {
+		if stat != nil && stat.Errors > 0 {
+			return true
+		}
+	}
+	return false
 }
