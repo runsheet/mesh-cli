@@ -107,6 +107,25 @@ func TestNodeUpgradeBinarySwapsAndRestartsWithoutDraining(t *testing.T) {
 	}
 }
 
+// After the restart the output names the confirm window, where it is set
+// and the log to watch, and what a rollback leaves in update.json.
+func TestNodeUpgradePrintsTheConfirmWindowAndTheLog(t *testing.T) {
+	noDrain(t)
+	u, f, _ := upgradeFixture(t)
+	u.ConfirmWithin = 7 * time.Minute
+	if err := u.run(context.Background(), "", fakeBinary(t, "mesh v9.9.9"), false); err != nil {
+		t.Fatalf("upgrade: %v\n%s", err, f.out)
+	}
+	for _, want := range []string{
+		"confirms the upgrade with its first heartbeat, within 7m0s (node.yaml update.confirm_within); watch ~/.mesh/node.log.",
+		"cannot confirm inside the window on 3 starts, is rolled back to " + selfupdate.PrevPath(f.exe) + " and ~/.mesh/update.json says why",
+	} {
+		if !strings.Contains(f.out.String(), want) {
+			t.Fatalf("output lacks %q:\n%s", want, f.out)
+		}
+	}
+}
+
 // A file that does not answer `version` as mesh is refused: nothing on
 // disk changes and nothing restarts.
 func TestNodeUpgradeRefusesABinaryThatIsNotMesh(t *testing.T) {

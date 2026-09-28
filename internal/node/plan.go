@@ -111,6 +111,167 @@ func (p *Planner) projectRepos(ctx context.Context, goal gateway.Goal, scope Sco
 	return project, repos, nil
 }
 
+// evidence reads the project's scorecard (item 5, model choice by
+// evidence) and builds its per-repo, per-model rows. A platform without
+// the query, or a scorecard whose shape carries none of the keys a row
+// needs, yields an empty slice — the plan still runs, unadvised.
+func (p *Planner) evidence(ctx context.Context, goalSlug string, scope Scope, project *gateway.Project) []harness.ModelEvidence {
+	sc, err := p.GW.Scorecard(ctx, scope.ID, project.ID)
+	if err != nil {
+		p.logf("goal %s: scorecard unavailable: %v", goalSlug, err)
+		return nil
+	}
+	return evidenceFromScorecard(sc)
+}
+
+// evidenceFromScorecard walks a scorecard project entry for per-model
+// rows, over the widest of its `windows` (runsheet trd §6a,
+// `platform/scorecard.Sums.Into`: each window's `models` list, one row
+// per model with an item in it — `model`, `evaluated`, `firstPassRate`
+// null when nothing was evaluated, `costPerItemCents`). The platform
+// carries no repo breakdown yet, so every row from `models` (or its
+// tolerated alias `byModel`) comes back with an empty repo — which
+// never matches an item's own repo in `modelAgainstEvidence`, so it is
+// advice the check has nothing to say about yet, not a wrong match. A
+// scorecard that does carry one — a `byRepo` list, each entry's own
+// repo and `models`/`byModel` rows — is read repo by repo, at the
+// project level and inside each window, for whenever the platform adds
+// it. A row needs a model and a first-pass rate to count: `firstPassRate`
+// (or `first_pass_rate`) first, else `firstPass`/`first_pass` over
+// `evaluated`/`items` when both are present, else `firstPass`/`first_pass`
+// itself as the rate; a missing or null rate skips the row. Items are
+// the row's `evaluated` (the rate's own denominator), else `items` or
+// `merged`. Cost per item is `costPerItemCents`/`cost_per_item_cents`,
+// else `costCents`/`cost_cents` over items. Anything else — no
+// scorecard, no windows, no such keys — yields none.
+func evidenceFromScorecard(sc map[string]any) []harness.ModelEvidence {
+	var out []harness.ModelEvidence
+	out = append(out, evidenceRows(sc, "")...)
+	out = append(out, evidenceByRepo(sc)...)
+	if w := widestWindow(sc); w != nil {
+		out = append(out, evidenceRows(w, "")...)
+		out = append(out, evidenceByRepo(w)...)
+	}
+	return out
+}
+
+// widestWindow is a scorecard entry's own `windows` row with the
+// largest `days` — the platform sends one, its own `models` list, per
+// trailing window (7 and 30 days today); the widest has the most
+// evidence behind each row.
+func widestWindow(sc map[string]any) map[string]any {
+	list, _ := sc["windows"].([]any)
+	var widest map[string]any
+	var widestDays float64 = -1
+	for _, e := range list {
+		w, ok := e.(map[string]any)
+		if !ok {
+			continue
+		}
+		if days := numberFieldOr(w, 0, "days"); days > widestDays {
+			widest, widestDays = w, days
+		}
+	}
+	return widest
+}
+
+// evidenceByRepo reads a `byRepo` list some future scorecard may carry:
+// each entry names a repo and its own `models`/`byModel` rows.
+func evidenceByRepo(m map[string]any) []harness.ModelEvidence {
+	var out []harness.ModelEvidence
+	list, _ := m["byRepo"].([]any)
+	for _, e := range list {
+		row, ok := e.(map[string]any)
+		if !ok {
+			continue
+		}
+		out = append(out, evidenceRows(row, stringField(row, "repo"))...)
+	}
+	return out
+}
+
+// evidenceRows reads the flat per-model list off m — `models`, the
+// platform's own key, or `byModel`, the tolerated alias — into
+// ModelEvidence rows all carrying the given repo.
+func evidenceRows(m map[string]any, repo string) []harness.ModelEvidence {
+	var out []harness.ModelEvidence
+	for _, key := range []string{"models", "byModel"} {
+		list, _ := m[key].([]any)
+		for _, e := range list {
+			row, ok := e.(map[string]any)
+			if !ok {
+				continue
+			}
+			model := stringField(row, "model")
+			if model == "" {
+				continue
+			}
+			fp, ok := firstPassRateOf(row)
+			if !ok {
+				continue
+			}
+			items := int(numberFieldOr(row, 0, "evaluated", "items", "merged"))
+			costPerItem := int(numberFieldOr(row, 0, "costPerItemCents", "cost_per_item_cents"))
+			if costPerItem == 0 && items > 0 {
+				if cost, ok := numberField(row, "costCents", "cost_cents"); ok {
+					costPerItem = int(cost / float64(items))
+				}
+			}
+			r := repo
+			if r == "" {
+				r = stringField(row, "repo")
+			}
+			out = append(out, harness.ModelEvidence{Repo: r, Model: model, FirstPass: fp, Items: items, CostPerItemCents: costPerItem})
+		}
+	}
+	return out
+}
+
+// firstPassRateOf is a model row's first-pass rate: `firstPassRate` (or
+// `first_pass_rate`) when the platform sent one — null reads as "no
+// rate", not zero, since nothing was evaluated — else `firstPass`/
+// `first_pass` over `evaluated`/`items` when both are counts, else
+// `firstPass`/`first_pass` taken as the rate itself.
+func firstPassRateOf(row map[string]any) (float64, bool) {
+	if v, ok := row["firstPassRate"]; ok {
+		n, ok := v.(float64)
+		return n, ok
+	}
+	if v, ok := row["first_pass_rate"]; ok {
+		n, ok := v.(float64)
+		return n, ok
+	}
+	fp, hasFP := numberField(row, "firstPass", "first_pass")
+	if !hasFP {
+		return 0, false
+	}
+	if items, ok := numberField(row, "evaluated", "items"); ok && items > 0 {
+		return fp / items, true
+	}
+	return fp, true
+}
+
+func stringField(row map[string]any, key string) string {
+	s, _ := row[key].(string)
+	return s
+}
+
+func numberField(row map[string]any, keys ...string) (float64, bool) {
+	for _, k := range keys {
+		if n, ok := row[k].(float64); ok {
+			return n, true
+		}
+	}
+	return 0, false
+}
+
+func numberFieldOr(row map[string]any, def float64, keys ...string) float64 {
+	if n, ok := numberField(row, keys...); ok {
+		return n
+	}
+	return def
+}
+
 func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) error {
 	project, repos, err := p.projectRepos(ctx, goal, scope)
 	if err != nil {
@@ -163,7 +324,7 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 	in := harness.PlanInput{
 		GoalSlug: goal.Slug, GoalTitle: goal.Title, Statement: goal.Statement, Acceptance: goal.Acceptance, BudgetCents: goal.BudgetCents,
 		Org: scope.Login, Project: project.Slug, Repos: dirs, ContextDir: contextDir, ContextFiles: files, Blocked: goal.PausedReason,
-		Existing: existing, NextSeq: nextSeq, Prologue: len(p.MCP) > 0,
+		Existing: existing, NextSeq: nextSeq, Prologue: len(p.MCP) > 0, Evidence: p.evidence(ctx, goal.Slug, scope, project),
 	}
 	budget := p.MaxBudgetUSD
 	if budget <= 0 {
@@ -248,7 +409,7 @@ func (p *Planner) ask(ctx context.Context, goal gateway.Goal, nodeID, dir string
 	job.Outlive = true
 	result, err := p.Harness.Run(ctx, job, nil)
 	acct.Report(result)
-	items, reasons, flags, cost, err := p.readPlan(ctx, goal, dir, acct, result, err, repos, merged)
+	items, reasons, flags, cost, err := p.readPlan(ctx, goal, dir, acct, result, err, repos, merged, in.Evidence)
 	return items, reasons, flags, cost, acct, err
 }
 
@@ -256,7 +417,7 @@ func (p *Planner) ask(ctx context.Context, goal gateway.Goal, nodeID, dir string
 // to hold it: its graph read and mapped onto the project's repos, as ask
 // describes. A cancelled ctx leaves the session running for the next
 // node to adopt; otherwise its session directory goes.
-func (p *Planner) readPlan(ctx context.Context, goal gateway.Goal, dir string, acct *SessionAccount, result harness.Result, err error, repos map[string]gateway.Repo, merged []int) ([]gateway.PlannedItem, map[int]string, []string, float64, error) {
+func (p *Planner) readPlan(ctx context.Context, goal gateway.Goal, dir string, acct *SessionAccount, result harness.Result, err error, repos map[string]gateway.Repo, merged []int, evidence []harness.ModelEvidence) ([]gateway.PlannedItem, map[int]string, []string, float64, error) {
 	if ctx.Err() != nil {
 		return nil, nil, nil, 0, ctx.Err()
 	}
@@ -304,7 +465,9 @@ func (p *Planner) readPlan(ctx context.Context, goal gateway.Goal, dir string, a
 		reasons[sp.Seq] = strings.TrimSpace(sp.ModelReason)
 		items = append(items, gateway.PlannedItem{Seq: sp.Seq, Title: strings.TrimSpace(sp.Title), Brief: briefWithDeps(sp.Brief, deps, because), Acceptance: strings.TrimSpace(sp.Acceptance), DependsOn: deps, DependsBecause: because, RepoID: r.ID, BaseRef: base, Model: model})
 	}
-	return items, reasons, unverifiableAcceptance(specs, itemRepo, repos), result.CostUSD, nil
+	flags := unverifiableAcceptance(specs, itemRepo, repos)
+	flags = append(flags, modelAgainstEvidence(specs, evidence)...)
+	return items, reasons, flags, result.CostUSD, nil
 }
 
 // explainedDeps keeps the item's dependencies that carry a because and
@@ -365,7 +528,7 @@ func (p *Planner) AdoptPlan(ctx context.Context, goal gateway.Goal, scope Scope,
 		s.Stop()
 		return harness.RemoveSession(s.State.Workspace)
 	}
-	_, repos, err := p.projectRepos(ctx, goal, scope)
+	project, repos, err := p.projectRepos(ctx, goal, scope)
 	if err != nil {
 		return err
 	}
@@ -385,7 +548,7 @@ func (p *Planner) AdoptPlan(ctx context.Context, goal gateway.Goal, scope Scope,
 	}
 	p.logf("goal %s: adopted its %s planner session (pid %d)", goal.Slug, s.Liveness(), s.State.PID)
 	result, err := at.Attach(ctx, s.Dir, nil)
-	items, reasons, flags, cost, err := p.readPlan(ctx, goal, s.State.Workspace, nil, result, err, repos, merged)
+	items, reasons, flags, cost, err := p.readPlan(ctx, goal, s.State.Workspace, nil, result, err, repos, merged, p.evidence(ctx, goal.Slug, scope, project))
 	if err != nil {
 		return err
 	}

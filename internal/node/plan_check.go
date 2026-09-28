@@ -185,6 +185,43 @@ func isRepoName(tok string) bool {
 	return len(parts) == 2 && !strings.Contains(tok, ".")
 }
 
+// minEvidenceItems is how many items a repo/model row of the scorecard
+// needs before its first-pass rate is trusted to refuse a model.
+const minEvidenceItems = 5
+
+// modelBelowEvidence is the first-pass rate under which a model is not
+// chosen for a repo (item 5, model choice by evidence).
+const modelBelowEvidence = 0.5
+
+// modelAgainstEvidence flags each item whose model has a first-pass
+// rate under modelBelowEvidence on its repo, over minEvidenceItems or
+// more items of the scorecard's evidence — the planner's rubric (trd
+// §6a): a model that does not work here is not chosen for it. Each flag
+// names the item, its model, the first-pass rate and the repo, for the
+// planner's re-ask; none means every item's model is either clean on
+// its repo or the evidence does not yet say.
+func modelAgainstEvidence(specs []harness.PlannedSpec, evidence []harness.ModelEvidence) []string {
+	var flags []string
+	for _, sp := range specs {
+		model := strings.TrimSpace(sp.Model)
+		if model == "" {
+			continue
+		}
+		for _, ev := range evidence {
+			if ev.Items < minEvidenceItems {
+				continue
+			}
+			if !strings.EqualFold(ev.Model, model) || !strings.EqualFold(ev.Repo, sp.Repo) {
+				continue
+			}
+			if ev.FirstPass < modelBelowEvidence {
+				flags = append(flags, fmt.Sprintf("item %d (%s): model %s has first-pass %.2f on %s", sp.Seq, strings.TrimSpace(sp.Title), model, ev.FirstPass, ev.Repo))
+			}
+		}
+	}
+	return flags
+}
+
 func snippet(s string, i, j int) string { return strings.TrimSpace(s[i:j]) }
 
 func sortedRepoNames(m map[string]gateway.Repo) []string {
