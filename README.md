@@ -856,6 +856,33 @@ per run, logs each call instead, and the item goes on.
 A platform that does not hand out `tools` yet costs nothing: sessions
 run on Prologue alone, as before.
 
+### Tool results
+
+One `go test ./...` log or file dump can put 100 KB into a session's
+context, and every later turn pays for it again. node.yaml's
+`tool_results.max_kb` caps what one tool result may put there:
+
+```yaml
+tool_results:
+  max_kb: 16   # the default; 0 turns the cap off
+```
+
+A build session on the host gets a Claude Code `PreToolUse` hook on
+`Bash` in its `--settings`, `mesh tool-trim --max-kb 16 --hook`, which
+rewrites each command to `( <cmd>\n) 2>&1 | mesh tool-trim --max-kb 16`
+(a command that already pipes to `tool-trim` or runs in the background
+is left as it is). Output over the cap comes back as its first 60% and
+last 40%, cut at line boundaries, with
+`[mesh: trimmed N KB of M KB; run the command again with a narrower filter if the middle matters]`
+between. The pipeline's exit status is the trim's, so a failure shows in
+the output, not the status. The session's environment also carries
+`BASH_MAX_OUTPUT_LENGTH` (the cap in characters) and
+`MAX_MCP_OUTPUT_TOKENS` (the cap at four bytes a token), so MCP results
+and whatever the hook misses are bounded by the CLI itself. A sandboxed
+session gets the environment but not the hook (the pod has no `mesh`),
+and channel-mode sessions get neither. `mesh tool-trim --max-kb N`
+works by hand too: it trims stdin to stdout.
+
 ### Sandbox
 
 Every one-shot session — a poll-mode build, an evaluation, a plan, a
@@ -1216,6 +1243,13 @@ pins Codex, a `claude-…` one Claude. An urgent or high pass gets a
 second opinion on the other family
 (docs/adr/adr-011-evaluations-run-on-the-family-with-headroom.md).
 
+**The node's family choice** (ADR-011): before an evaluation starts, the node
+judges headroom across all Codex accounts and all Claude accounts and
+prefers Codex when a Codex account has headroom for the item's priority.
+A planner may pin an item's evaluator to a family through the agent model;
+a pinned family with no headroom waits (not claimed, not failed). An urgent or
+high goal's first evaluation on one family gets a second opinion on the other.
+
 ### Install the CLI
 
 Verified with **codex-cli 0.157.0**. With Node.js:
@@ -1270,6 +1304,10 @@ to bound it.
 
 ### node.yaml
 
+The `codex:` block is **optional**. If present, the node's own Codex account
+lives in it; if absent, the node uses only the accounts the platform issues
+through the claim-time read. With neither, evaluations run on Claude.
+
 ```yaml
 codex:
   binary: codex                 # default: codex on PATH
@@ -1281,22 +1319,26 @@ codex:
     - name: api-file
       api_key_file: ~/.mesh/codex/api.key
   models:                       # the Codex model for each Claude tier
-    opus: gpt-6-astra
-    sonnet: gpt-6-sol
-    haiku: gpt-6-luna
+    opus: gpt-6-astra           # default for Opus
+    sonnet: gpt-6-sol           # default for Sonnet
+    haiku: gpt-6-luna           # default for Haiku
 ```
 
 Each account has a `name` and exactly one of `home`, `api_key_env` and
 `api_key_file`. A load that finds anything else is refused.
 
-These are not the only Codex accounts. An OpenAI credential added in
-the console and serving `codex` is handed to the claimed session by the
-claim-time read. A ChatGPT login (the `auth.json` from `codex login`,
-pasted as the secret) is written into the session's own temporary
-`CODEX_HOME/auth.json` and removed with it. A login Codex refreshed is
-kept under `<user cache dir>/mesh/codex/logins/` for the next session on
-the same secret version. An OpenAI key goes in the environment only
-(docs/adr/adr-005-accounts-on-the-node.md).
+**Default model mappings:** when a planner or agent model names a bare tier
+(`opus`, `sonnet`, `haiku`) for a Codex evaluator, the node maps it using the
+defaults above. Full model ids (`gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`) pass
+through unchanged. Defaults may be overridden in the `models:` block.
+
+**Issued credentials:** An OpenAI credential added in the console and serving
+`codex` is handed to the claimed session by the claim-time read. A ChatGPT
+login (the `auth.json` from `codex login`, pasted as the secret) is written
+into the session's own temporary `CODEX_HOME/auth.json` and removed with it.
+A login Codex refreshed is kept under `<user cache dir>/mesh/codex/logins/`
+for the next session on the same secret version. An OpenAI key goes in the
+environment only (docs/adr/adr-005-accounts-on-the-node.md).
 
 `models` maps the Claude tiers to Codex models. A session asked for
 `opus`, `sonnet` or `haiku` runs on that tier's Codex model, and so does
