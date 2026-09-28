@@ -181,7 +181,7 @@ func pitchesInput() gateway.Research {
 
 // A propose-mode hand-in's pitches and answers reach the fake under
 // their camelCase names, with every field — a required list a pitch
-// named none of (risks, on the second pitch) sent as `[]`, not left
+// named none of (risks and alternatives, on the second pitch) sent as `[]`, not left
 // out, and estimate/signal left out when the pitch names neither.
 func TestRecordDirectionResearchWithPitches(t *testing.T) {
 	f := gatewaytest.New("rs_test")
@@ -239,6 +239,10 @@ func TestRecordDirectionResearchWithPitches(t *testing.T) {
 	if len(risks) != 1 {
 		t.Fatalf("risks: %+v", first["risks"])
 	}
+	alternatives, _ := first["alternatives"].([]any)
+	if len(alternatives) != 1 || alternatives[0] != "a guided tour instead of fewer steps" {
+		t.Fatalf("alternatives: %+v", first["alternatives"])
+	}
 
 	second, _ := pitches[1].(map[string]any)
 	if _, ok := second["estimate"]; ok {
@@ -251,6 +255,10 @@ func TestRecordDirectionResearchWithPitches(t *testing.T) {
 	if !ok || len(secondRisks) != 0 {
 		t.Fatalf("a pitch naming no risks still sends risks as []: %+v", second["risks"])
 	}
+	secondAlternatives, ok := second["alternatives"].([]any)
+	if !ok || len(secondAlternatives) != 0 {
+		t.Fatalf("a pitch naming no alternatives still sends alternatives as []: %+v", second["alternatives"])
+	}
 
 	answers, _ := rec[0].Input["answers"].([]any)
 	if len(answers) != 1 {
@@ -259,6 +267,13 @@ func TestRecordDirectionResearchWithPitches(t *testing.T) {
 	answer, _ := answers[0].(map[string]any)
 	if answer["pitchSlug"] != "trim-onboarding" || answer["text"] == "" {
 		t.Fatalf("answer: %+v", answer)
+	}
+
+	if stored, _ := f.Directions["d1"]["pitches"].([]any); len(stored) != 2 {
+		t.Fatalf("the fake stores the pitches on the direction: %+v", f.Directions["d1"]["pitches"])
+	}
+	if stored, _ := f.Directions["d1"]["answers"].([]any); len(stored) != 1 {
+		t.Fatalf("the fake stores the answers on the direction: %+v", f.Directions["d1"]["answers"])
 	}
 }
 
