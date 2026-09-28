@@ -1092,7 +1092,10 @@ func oneShotHarness() *harness.ClaudeCode {
 // secondOpinion is the evaluator's Codex harness and how its accounts'
 // limits are kept; the zero value is no Codex at all.
 type secondOpinion struct {
-	h          harness.Harness
+	h harness.Harness
+	// preflight is the Codex harness's: the built-in context server
+	// checked before any Codex session starts
+	preflight  func(context.Context, harness.Job) error
 	account    string
 	limits     *node.Limits
 	thresholds func() node.LimitsConfig
@@ -1141,7 +1144,7 @@ func codexSecondOpinion(cfg *node.Config, loop *node.Loop, logger *log.Logger) s
 	}
 	h := node.ObserveLimitsAs(c, loop.Limits, account)
 	loop.CodexRoom = (&node.Evaluator{Codex: h, CodexAccounts: loop.CodexCandidates, Limits: loop.Limits, Thresholds: loop.Thresholds}).CodexHeadroom
-	return secondOpinion{h: h, account: account, limits: loop.Limits, thresholds: loop.Thresholds, accounts: loop.CodexCandidates, waits: &node.OncePer{}}
+	return secondOpinion{h: h, preflight: c.Preflight, account: account, limits: loop.Limits, thresholds: loop.Thresholds, accounts: loop.CodexCandidates, waits: &node.OncePer{}}
 }
 
 // evaluateWith is the loop's Evaluate hook: a fresh evaluator session per
@@ -1200,7 +1203,7 @@ func researchWith(gw *gateway.Client, cfg *node.Config, h harness.Harness, workR
 
 func evaluator(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harness.Harness, second secondOpinion, loop *node.Loop, workRoot string, fallback *node.TokenFallback, accounts *node.Credentials, logger *log.Logger) *node.Evaluator {
 	return &node.Evaluator{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Scopes: loop.CurrentScopes(), WorkRoot: workRoot, MCP: prologueMCP(ctx, gw), MaxBudgetUSD: nodeEvalBudgetFlag, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("evaluate"), Fallback: fallback, Accounts: cfg.Accounts, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Sandbox: sessionSandbox, Log: logger,
-		Codex: second.h, CodexModel: cfg.Codex.CodexModel, CodexAccount: second.account, CodexAccounts: second.accounts, Waits: second.waits, Limits: second.limits, Thresholds: second.thresholds}
+		Codex: second.h, CodexPreflight: second.preflight, CodexModel: cfg.Codex.CodexModel, CodexAccount: second.account, CodexAccounts: second.accounts, Waits: second.waits, Limits: second.limits, Thresholds: second.thresholds}
 }
 
 func rebaser(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harness.Harness, scopes func() node.Scopes, workRoot string, fallback *node.TokenFallback, accounts *node.Credentials, logger *log.Logger) *node.Rebaser {

@@ -1,5 +1,5 @@
 ---
-summary: Before an evaluation starts the node chooses its family per session — Codex when a Codex account (issued or node.yaml's) has headroom for the goal's priority, else Claude; a full gpt-… id pins Codex and waits in evaluating without headroom, a claude-… id pins Claude; the urgent/high second opinion runs on the other family, labelled by family and model; the one usage report names adapter codex and the gpt-6 model of a Codex evaluation.
+summary: Before an evaluation starts the node chooses its family per session — Codex when a Codex account (issued or node.yaml's) has headroom for the goal's priority, else Claude; a full gpt-… id pins Codex and waits in evaluating without headroom, a claude-… id pins Claude; the urgent/high second opinion runs on the other family, labelled by family and model; the one usage report names adapter codex and the gpt-6 model of a Codex evaluation; before any Codex session starts the node preflights the built-in context server in the session's own home and env (`codex mcp get` and a tools/list handshake), and a failure moves an unpinned evaluation to Claude, keeps a pinned one waiting and makes a Codex second opinion unavailable.
 status: accepted
 ---
 
@@ -107,3 +107,49 @@ gpt-6-sol ($…)`).
   per-project setting.
 - The scorecard's by-family rows (runsheet) read the reports this node
   already sends.
+
+## Amendment 2026-09-28: a Codex session is preflighted against the context server
+
+Goal `codex-sessions-reach-the-context-tool` (item 3). On the mini the
+first Codex evaluations called the built-in context tool (`prologue`)
+and got an error on every call, and two of them judged blind and failed
+their items: a tooling failure became a verdict. So a Codex session no
+longer starts on the hope that its MCP servers work.
+
+**The preflight.** Before any Codex session starts — the first
+evaluation, once its account is open and its tools applied, and a Codex
+second opinion — the evaluator calls `Evaluator.CodexPreflight`, the
+Codex harness's `Preflight` (`harness.CodexPreflight`). It runs in the
+`CODEX_HOME` the session will use and with exactly the environment
+`Codex.Run` builds — both come from one `codexSession` (`prepareHome`
+plus `SessionEnviron` with the same Unset list), so the two cannot
+drift — and checks:
+
+1. `codex mcp get prologue` succeeds: Codex parses the rendered
+   `config.toml` and sees the server;
+2. an MCP `initialize`, `notifications/initialized` and `tools/list`
+   over streamable HTTP to the built-in's URL, with the header values
+   the rendered config (`env_http_headers`) and that environment give
+   Codex, answer 2xx and list at least one tool; each step within 10 s.
+
+Its error says why: `refuses auth: <status>: <first 200 chars>` for a
+401 or 403, `unreachable: <error>` for a host that does not answer,
+`MESH_CODEX_MCP_<n>_TOKEN for prologue's Authorization header is
+missing|empty …`, `codex mcp get prologue: …`, or `lists no tools`. It
+never carries a secret (the job's and the home's are redacted). A job
+with no built-in has nothing to check. The preflight costs nothing and
+is not a tool call: no usage, no `recordToolUsage`.
+
+**The fallback.** A failed preflight on an unpinned Codex evaluation
+logs `item <label>: Codex preflight failed (<why>); evaluating on
+Claude`, cleans up the Codex account and continues on Claude exactly as
+when no issued credential has headroom: a Claude account opened, the
+session `Outlive`, the same prompt. Its notes end `(evaluated on Claude
+<model>; the Codex preflight failed: <why>)`, and an urgent or high
+pass gets no Codex second opinion after it — `Codex second opinion
+unavailable: preflight <why>`, without checking again. A Codex-pinned
+item (`gpt-…`) with a failed preflight records no verdict: it is
+`ErrFamilyWaits`, stays in evaluating for a later tick, and is said
+once per item until a preflight passes. A Codex second opinion whose
+preflight fails is `Codex second opinion unavailable: preflight <why>`
+and the first verdict stands.
