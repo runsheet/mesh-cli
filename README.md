@@ -1556,7 +1556,14 @@ run by hand) does, and opens or updates the PR on `bot/schema-refresh`.
 
 Nodes update themselves from the GitHub releases of
 `runsheet/mesh-cli`, which `.github/workflows/release-tag.yml` cuts
-from a tag (docs/adr/adr-002-signed-tag-releases.md). To cut one:
+from a tag (docs/adr/adr-002-signed-tag-releases.md). The same tag is
+also published, identical, on the public mirror `runsheet/mesh` — same
+tag, title, notes and five assets, via `scripts/mirror-release.sh` and
+the `RELEASE_TOKEN` secret (`GITHUB_TOKEN` cannot write another repo);
+see the amendment "the public mirror on runsheet/mesh" for why and how
+it is checked. To cut one, the next number one above the latest on the
+mirror (`gh release list -R runsheet/mesh`, `v0.2.x` — the public line
+`cli-release.yml` began):
 
 ```sh
 git tag vX.Y.Z && git push origin vX.Y.Z
@@ -1615,10 +1622,12 @@ cosign verify-blob \
 sha256sum --check --ignore-missing SHA256SUMS
 ```
 
-There is no other release channel: `cli-release.yml` (main builds,
-published unsigned to another repo) was dropped when the repo moved to
-the runsheet org. `release.yml` is the Shipper's `workflow_dispatch` stub
-and publishes nothing.
+There is no other release channel on `runsheet/mesh-cli`:
+`cli-release.yml` (main builds, published unsigned to the old public
+repo) was dropped when the repo moved to the runsheet org; its public
+line continues, signed, as the `runsheet/mesh` mirror above.
+`release.yml` is the Shipper's `workflow_dispatch` stub and publishes
+nothing.
 
 ### Updating a node
 

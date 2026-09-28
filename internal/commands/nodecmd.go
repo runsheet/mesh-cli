@@ -561,14 +561,17 @@ func runPollMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *
 		r.Scopes = loop.CurrentScopes() // an org served since start is known to its build
 		_ = r.RunItem(ctx, item)
 	}
-	loop.Evaluate = evaluateWith(gw, cfg, h, codexSecondOpinion(cfg, loop, workRoot, logger), loop, workRoot, fallback, accounts, logger)
+	// one per node: the evaluations of every tick and the adopted ones
+	// share what has been said once per item
+	second := codexSecondOpinion(cfg, loop, workRoot, logger)
+	loop.Evaluate = evaluateWith(gw, cfg, h, second, loop, workRoot, fallback, accounts, logger)
 	loop.Plan = planWith(gw, cfg, h, loop, workRoot, accounts, logger)
 	loop.Research = researchWith(gw, cfg, h, loop, workRoot, accounts, logger)
 	loop.Rebase = rebaseWith(gw, cfg, h, loop, loop.CurrentScopes, workRoot, fallback, accounts, logger)
 	logger.Printf("poll mode: node %s (%s) for %s, capacity %s, every %s", cfg.Name, cfg.Slug, strings.Join(scopes.Logins(), ", "), cfg.Capacity, loop.Interval)
 	// sessions the process before this one started run on in their own
 	// units: each is taken up where it is, before anything is claimed
-	adoptSessions(ctx, gw, cfg, h, codexSecondOpinion(cfg, loop, workRoot, logger), loop, runner, workRoot, fallback, accounts, logger)
+	adoptSessions(ctx, gw, cfg, h, second, loop, runner, workRoot, fallback, accounts, logger)
 	// items this node held when it last stopped are taken up again: a
 	// restart mid-build continues them (the workspace keeps the branch)
 	for _, sc := range scopes {
@@ -897,8 +900,11 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 	// in their own units: each is taken up where it is (a build of a
 	// poll-mode run before this one too), before anything is claimed
 	oneShot := observed(loop, logger)
-	adoptSessions(ctx, gw, cfg, oneShot, codexSecondOpinion(cfg, loop, workRoot, logger), loop, &node.Runner{GW: gw, Harness: oneShot, WS: ws, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, Fallback: fallback, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Condition: loop.NoteCondition, Budgets: loop.KindModelBudget, Log: logger}, workRoot, fallback, accounts, logger)
-	loop.Evaluate = evaluateWith(gw, cfg, observed(loop, logger), codexSecondOpinion(cfg, loop, workRoot, logger), loop, workRoot, fallback, accounts, logger)
+	// one per node: the evaluations of every tick and the adopted ones
+	// share what has been said once per item
+	second := codexSecondOpinion(cfg, loop, workRoot, logger)
+	adoptSessions(ctx, gw, cfg, oneShot, second, loop, &node.Runner{GW: gw, Harness: oneShot, WS: ws, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, Fallback: fallback, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Condition: loop.NoteCondition, Budgets: loop.KindModelBudget, Log: logger}, workRoot, fallback, accounts, logger)
+	loop.Evaluate = evaluateWith(gw, cfg, observed(loop, logger), second, loop, workRoot, fallback, accounts, logger)
 	loop.Plan = planWith(gw, cfg, observed(loop, logger), loop, workRoot, accounts, logger)
 	loop.Research = researchWith(gw, cfg, observed(loop, logger), loop, workRoot, accounts, logger)
 	loop.Rebase = rebaseWith(gw, cfg, observed(loop, logger), loop, loop.CurrentScopes, workRoot, fallback, accounts, logger)
@@ -1111,6 +1117,10 @@ type secondOpinion struct {
 	accounts func() []node.AccountConfig
 	// waits says a Codex-pinned item's wait once per item
 	waits *node.OncePer
+	// blind says once per item that an evaluation saw no context and
+	// could not run on the other family — one per node, Codex or not,
+	// since every evaluator is built afresh per item
+	blind *node.OncePer
 }
 
 // codexSecondOpinion builds the evaluator's Codex harness whenever its
@@ -1136,7 +1146,7 @@ func codexSecondOpinion(cfg *node.Config, loop *node.Loop, workRoot string, logg
 		if !cfg.Codex.IsZero() {
 			logger.Printf("codex: no Codex evaluations: %v", err)
 		}
-		return secondOpinion{}
+		return secondOpinion{blind: &node.OncePer{}}
 	}
 	c := &harness.Codex{Binary: bin, Stderr: os.Stderr, WorkRoot: workRoot}
 	loop.CodexOwn = nil
@@ -1154,7 +1164,7 @@ func codexSecondOpinion(cfg *node.Config, loop *node.Loop, workRoot string, logg
 	}
 	h := node.ObserveLimitsAs(c, loop.Limits, account)
 	loop.CodexRoom = (&node.Evaluator{Codex: h, CodexAccounts: loop.CodexCandidates, Limits: loop.Limits, Thresholds: loop.Thresholds}).CodexHeadroom
-	return secondOpinion{h: h, preflight: c.Preflight, account: account, limits: loop.Limits, thresholds: loop.Thresholds, accounts: loop.CodexCandidates, waits: &node.OncePer{}}
+	return secondOpinion{h: h, preflight: c.Preflight, account: account, limits: loop.Limits, thresholds: loop.Thresholds, accounts: loop.CodexCandidates, waits: &node.OncePer{}, blind: &node.OncePer{}}
 }
 
 // evaluateWith is the loop's Evaluate hook: a fresh evaluator session per
@@ -1164,12 +1174,18 @@ func codexSecondOpinion(cfg *node.Config, loop *node.Loop, workRoot string, logg
 func evaluateWith(gw *gateway.Client, cfg *node.Config, h harness.Harness, second secondOpinion, loop *node.Loop, workRoot string, fallback *node.TokenFallback, accounts *node.Credentials, logger *log.Logger) func(context.Context, gateway.WorkItem) {
 	return func(ctx context.Context, item gateway.WorkItem) {
 		ev := evaluator(ctx, gw, cfg, h, second, loop, workRoot, fallback, accounts, logger)
-		// a Codex-pinned item waiting for headroom is said once, by the
-		// evaluator
-		if err := ev.Evaluate(ctx, item); err != nil && ctx.Err() == nil && !errors.Is(err, node.ErrFamilyWaits) {
+		if err := ev.Evaluate(ctx, item); err != nil && ctx.Err() == nil && !saidByEvaluator(err) {
 			logger.Printf("item %d %q: evaluation: %v", item.Seq, item.Title, err)
 		}
 	}
+}
+
+// saidByEvaluator is an evaluation error the evaluator has already said
+// once for the item — a Codex-pinned item waiting for headroom, or one
+// whose evaluation saw no context and has no other family — and the
+// loop does not log again every tick.
+func saidByEvaluator(err error) bool {
+	return errors.Is(err, node.ErrFamilyWaits) || errors.Is(err, node.ErrNoContext)
 }
 
 // rebaseWith is the loop's Rebase hook: a fresh session of kind rebase
@@ -1213,7 +1229,7 @@ func researchWith(gw *gateway.Client, cfg *node.Config, h harness.Harness, loop 
 
 func evaluator(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harness.Harness, second secondOpinion, loop *node.Loop, workRoot string, fallback *node.TokenFallback, accounts *node.Credentials, logger *log.Logger) *node.Evaluator {
 	return &node.Evaluator{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, Scopes: loop.CurrentScopes(), WorkRoot: workRoot, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodeEvalBudgetFlag, Budgets: loop.KindModelBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("evaluate"), Fallback: fallback, Accounts: cfg.Accounts, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Sandbox: sessionSandbox, Log: logger,
-		Codex: second.h, CodexPreflight: second.preflight, CodexModel: cfg.Codex.CodexModel, CodexAccount: second.account, CodexAccounts: second.accounts, Waits: second.waits, Limits: second.limits, Thresholds: second.thresholds}
+		Codex: second.h, CodexPreflight: second.preflight, CodexModel: cfg.Codex.CodexModel, CodexAccount: second.account, CodexAccounts: second.accounts, Waits: second.waits, Blind: second.blind, Limits: second.limits, Thresholds: second.thresholds}
 }
 
 func rebaser(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harness.Harness, loop *node.Loop, scopes func() node.Scopes, workRoot string, fallback *node.TokenFallback, accounts *node.Credentials, logger *log.Logger) *node.Rebaser {

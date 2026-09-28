@@ -142,6 +142,9 @@ type fakeCodexH struct {
 	cost  float64
 	rl    *harness.RateLimit
 	usage *harness.Usage
+	// tools, when set, is each MCP server's calls and errors a run
+	// reports (Result.Tools).
+	tools map[string]*harness.ToolStat
 }
 
 func (h *fakeCodexH) Name() string { return "codex" }
@@ -149,7 +152,14 @@ func (h *fakeCodexH) Run(ctx context.Context, job harness.Job, on func(harness.P
 	h.mu.Lock()
 	h.jobs = append(h.jobs, job)
 	h.mu.Unlock()
-	return harness.Result{Success: h.err == nil, Text: h.text, CostUSD: h.cost, RateLimit: h.rl, Usage: h.usage}, h.err
+	var calls map[string]int
+	for server, s := range h.tools {
+		if calls == nil {
+			calls = map[string]int{}
+		}
+		calls[server] = s.Calls
+	}
+	return harness.Result{Success: h.err == nil, Text: h.text, CostUSD: h.cost, RateLimit: h.rl, Usage: h.usage, Tools: h.tools, ToolCalls: calls}, h.err
 }
 
 func (h *fakeCodexH) runs() int {

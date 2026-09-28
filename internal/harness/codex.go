@@ -290,7 +290,7 @@ func codexOwnServers(job Job) map[string]any {
 }
 
 // codexConfig is the session's config.toml and the environment it
-// needs: the job's own servers (the built-in Prologue) by
+// needs: the job's own servers (the built-in mesh-context) by
 // CodexMCPConfig, then its console tools (job.Tools) by the Codex
 // renderer, tools.CodexConfig — bearer_token_env_var and
 // env_http_headers naming MESH_TOOL_* variables, never Claude Code's

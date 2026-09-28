@@ -246,7 +246,7 @@ type ToolStat struct {
 // Result.LargestToolResults.
 type ToolResultSize struct {
 	// Tool is the tool_use block's own name (e.g. "Bash" or
-	// "mcp__prologue__prologue_document"), not just its MCP server.
+	// "mcp__mesh-context__mesh_document"), not just its MCP server.
 	Tool  string
 	Bytes int
 }
