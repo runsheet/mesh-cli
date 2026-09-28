@@ -17,8 +17,17 @@
 # pushed, so a node that can fetch a release can pull its image; the five
 # release assets and their signature are unchanged.
 #
-# There is no other release channel: cli-release.yml (main builds) was
-# dropped when the repo moved to the runsheet org (adr-002).
+# There is no other release channel on runsheet/mesh-cli: cli-release.yml
+# (main builds) was dropped when the repo moved to the runsheet org
+# (adr-002). The same release is also published, identical, on the
+# public mirror runsheet/mesh (adr-002's amendment "the public mirror on
+# runsheet/mesh"): scripts/mirror-release.sh creates it there — same
+# tag, title, notes and five assets — then checks it byte-for-byte the
+# one just signed. It runs with GH_TOKEN: secrets.RELEASE_TOKEN, since
+# the workflow's own GITHUB_TOKEN cannot write another repo: RELEASE_TOKEN
+# must be a fine-grained token scoped to runsheet/mesh with Contents:
+# read and write, or the runsheet org App's installation token. A failing
+# mirror step fails the workflow — there is no partial publish.
 
 name: Release (tag)
 
@@ -165,6 +174,13 @@ jobs:
       id-token: write
 
     steps:
+      - name: Checkout code
+        # scripts/mirror-release.sh and dist/mirror/README.md live in the
+        # repo tree, which this job otherwise never checks out. Runs
+        # first: it wipes the workspace, and Download artifacts below
+        # has not yet created release/.
+        uses: actions/checkout@v4
+
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
@@ -202,20 +218,50 @@ jobs:
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             SHA256SUMS
 
+      - name: Compute the release notes
+        # One $NOTES, used by both creates below, naming the source
+        # commit and both repos.
+        env:
+          TAG: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          {
+            echo "NOTES<<NOTES_EOF"
+            echo "Release ${TAG} built from runsheet/mesh-cli@${SHA}. SHA256SUMS is signed keyless with Sigstore by runsheet/mesh-cli/.github/workflows/release-tag.yml; verify as in runsheet/mesh's README."
+            echo "NOTES_EOF"
+          } >>"$GITHUB_ENV"
+
       - name: Create release on runsheet/mesh-cli
         working-directory: release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
-          SHA: ${{ github.sha }}
         run: |
           flags=()
           case "$TAG" in *-*) flags+=(--prerelease) ;; esac
           gh release create "$TAG" \
             --title "$TAG" \
-            --notes "Release ${TAG} from \`${SHA}\`. SHA256SUMS is signed keyless with Sigstore by .github/workflows/release-tag.yml; see the README's Release section to verify." \
+            --notes "$NOTES" \
             --verify-tag \
             "${flags[@]}" \
             mesh-linux-amd64 mesh-linux-arm64 mesh-darwin-arm64 \
             SHA256SUMS SHA256SUMS.sigstore.json
+
+      - name: Mirror the release to runsheet/mesh
+        # scripts/mirror-release.sh creates the identical release on the
+        # public mirror (same tag, title, notes and five assets, a
+        # prerelease only when the tag has a "-"), then checks it
+        # byte-for-byte the one just signed and its bundle against the
+        # runsheet/mesh-cli identity, and pushes dist/mirror/README.md
+        # when its content differs (adr-002's amendment "the public
+        # mirror on runsheet/mesh"). RELEASE_TOKEN is a fine-grained
+        # token scoped to runsheet/mesh with Contents: read and write, or
+        # the runsheet org App's installation token — GITHUB_TOKEN cannot
+        # write another repo. A failing mirror fails the workflow.
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          GH_REPO: runsheet/mesh
+          TAG: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: scripts/mirror-release.sh "$TAG" "$SHA" release
