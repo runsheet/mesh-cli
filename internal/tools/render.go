@@ -72,17 +72,26 @@ func ClaudeCode(builtin map[string]any, tools []Tool) (servers map[string]any, e
 	return servers, env, nil
 }
 
-// WriteCodexConfig writes codexHome/config.toml (mode 0600) with one
-// [mcp_servers.<name>] table per tool and returns the environment the
-// session needs for them. The file names variables, never values: a
-// remote tool's bearer Authorization goes by bearer_token_env_var, any
-// other secret header by env_http_headers, both under
-// MESH_TOOL_<NAME>_<KEY>; a local tool's secret env goes by env_vars,
-// which Codex forwards under the key itself, so the variable is the key —
-// two tools giving one key different values is an error.
-func WriteCodexConfig(codexHome string, tools []Tool) (env []string, err error) {
+// CodexApproval is every rendered server's default_tools_approval_mode.
+// `codex exec` runs with approval policy never, and under `--sandbox
+// workspace-write` it refuses an MCP call that would need approval
+// before it leaves the process ("MCP tool call requires approval, but
+// approval policy is never", codex-cli 0.157.0): the node chose the
+// session's servers, so their tools are approved up front
+// (docs/codex-events.md, "Why the context tool failed in Codex").
+const CodexApproval = "approve"
+
+// CodexConfig is the config.toml WriteCodexConfig writes — one
+// [mcp_servers.<name>] table per tool, each approved (CodexApproval) —
+// and the environment the session needs for them. The text names
+// variables, never values: a remote tool's bearer Authorization goes by
+// bearer_token_env_var, any other secret header by env_http_headers, both
+// under MESH_TOOL_<NAME>_<KEY>; a local tool's secret env goes by
+// env_vars, which Codex forwards under the key itself, so the variable is
+// the key — two tools giving one key different values is an error.
+func CodexConfig(tools []Tool) (config string, env []string, err error) {
 	if err := check(tools, map[string]bool{Builtin: true}); err != nil {
-		return nil, err
+		return "", nil, err
 	}
 	var b bytes.Buffer
 	local := map[string]string{}
@@ -135,7 +144,7 @@ func WriteCodexConfig(codexHome string, tools []Tool) (env []string, err error) 
 			for _, k := range sortedKeys(t.Secrets) {
 				v := t.Secrets[k]
 				if prev, ok := local[k]; ok && prev != v {
-					return nil, fmt.Errorf("tool %s: secret env %s differs from another tool's", t.Name, k)
+					return "", nil, fmt.Errorf("tool %s: secret env %s differs from another tool's", t.Name, k)
 				} else if !ok {
 					local[k] = v
 					env = append(env, k+"="+v)
@@ -146,12 +155,23 @@ func WriteCodexConfig(codexHome string, tools []Tool) (env []string, err error) 
 				fmt.Fprintf(&b, "env_vars = %s\n", tomlArray(names))
 			}
 		}
+		fmt.Fprintf(&b, "default_tools_approval_mode = %s\n", tomlString(CodexApproval))
+	}
+	return b.String(), env, nil
+}
+
+// WriteCodexConfig writes CodexConfig of tools as codexHome/config.toml
+// (mode 0600) and returns the environment the session needs for them.
+func WriteCodexConfig(codexHome string, tools []Tool) (env []string, err error) {
+	config, env, err := CodexConfig(tools)
+	if err != nil {
+		return nil, err
 	}
 	if err := os.MkdirAll(codexHome, 0o700); err != nil {
 		return nil, fmt.Errorf("codex home: %w", err)
 	}
 	path := filepath.Join(codexHome, "config.toml")
-	if err := os.WriteFile(path, b.Bytes(), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
 		return nil, fmt.Errorf("codex config: %w", err)
 	}
 	// WriteFile keeps an existing file's mode.

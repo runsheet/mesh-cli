@@ -64,7 +64,9 @@ stream into a `harness.Result`.
 - **MCP servers from `config.toml`.** `[mcp_servers.<name>]` with `url`
   and `env_http_headers = { "Authorization" = "<VAR>" }` in the
   temporary `CODEX_HOME` reached a local test server with the header
-  taken from `$VAR`. `-c mcp_servers.<name>.…` overrides also work, but
+  taken from `$VAR`. Under `--sandbox workspace-write` a *call* to one
+  also needs `default_tools_approval_mode = "approve"` in its table; see
+  [Why the context tool failed in Codex](#why-the-context-tool-failed-in-codex). `-c mcp_servers.<name>.…` overrides also work, but
   a dotted `-c` path takes no quoted segment.
 - The only redaction: `/home/chris/` → `/home/user/` in
   `codex_exec_item_error.jsonl`. Ids, request ids and cf-rays are left
@@ -263,6 +265,39 @@ replace them and update this note.
 list-price cost is a measure of use, not money spent
 (`harness.CodexPrices`); the rate-limit reading above is what paces a
 plan account, not what it costs.
+
+## Why the context tool failed in Codex
+
+On 2026-09-28 (mesh-cli 9ed5f8b, codex-cli 0.157.0) every call to the
+built-in context server inside a Codex evaluation on the mini failed
+(`prologue: 3 calls, 3 errors` in 31–92 ms, `1 call, 1 error` in 2 ms),
+though the same `config.toml` with the node's `rs_` token worked from
+`codex exec` by hand. Each candidate the goal named, and what decided it
+(goal `codex-sessions-reach-the-context-tool`, item 4):
+
+| Candidate | Verdict | Evidence |
+|---|---|---|
+| Codex's approval policy for MCP calls in `exec` | **ruled in: the cause** | A run on the mini with the harness's own argv (`codex exec --json --sandbox workspace-write -m gpt-6-luna -`), a fresh `CODEX_HOME` holding a copy of a ChatGPT login and the harness's `config.toml` (`[mcp_servers.prologue]`, `url = "https://api.runsheet.dev/mcp"`, `env_http_headers = { "Authorization" = "MESH_CODEX_MCP_0_TOKEN" }`), and `MESH_CODEX_MCP_0_TOKEN=Bearer <the node's rs_ token>`: the model found `mesh_documents` (the server started and listed its tools) and the call ended `failed` with `MCP tool call requires approval, but approval policy is never` — refused inside the process, which is why it took milliseconds. Kept verbatim as `internal/harness/testdata/codex_mcp_approval_error.jsonl` (`TestParseCodexStreamKeepsTheApprovalRefusal`). The same run with `default_tools_approval_mode = "approve"` in the server's table: two calls, both `completed`, and the answer `146 documents`. |
+| `--sandbox workspace-write` | **ruled in, as the condition** | The same config and token under `--sandbox danger-full-access`, no approval key: both calls `completed`. `exec` approves MCP calls itself only when there is no sandbox to protect; under `workspace-write` a call needs approval, and exec's policy is `never`. A by-hand run that works is one run outside the sandbox. The node keeps `workspace-write` and approves instead. |
+| Console tools rendered as `${MESH_TOOL_<NAME>_<KEY>}` | **ruled in as a defect, not this failure** | `SessionTools.Apply` renders console tools for Claude Code, and `prepareHome` fed that map to `CodexMCPConfig`, so a console tool's secret header reached Codex as a literal `Bearer ${…}` — Codex expands no `${VAR}`. It did not cause the prologue errors: the built-in's header is a literal value, and the evaluations that failed served `playwright` and `context7`, which carry no secret. Fixed: the harness renders `job.Tools` with `tools.CodexConfig` and `CodexMCPConfig` resolves a `${VAR}` from the job's env or refuses it (`TestCodexEvaluationReceivesResolvedTools`, `TestCodexMCPConfigResolvesOrRefusesRefs`). |
+| The Unset list (`codexInherited`, `CodexAuthEnv`) against `job.Env` | ruled out | `SessionEnviron` drops only *inherited* variables and appends `job.Env` after, so nothing the account or the harness sets is unset. `TestCodexEvaluationReceivesResolvedTools` runs the issued-subscription path with the operator's `CODEX_HOME` and `OPENAI_API_KEY` set: the fake `codex` sees the account's home, no key, and the built-in's variable holding `Bearer <the node token>`. |
+| `prepareHome`'s job-home path (an issued account) vs the harness-owned home | ruled out | Both paths write the same `config.toml` and the same header variables (`codexConfig`); the test above takes the job-home path an issued account takes. |
+| The token on the built-in (`gw.Bearer`) | ruled out | On the mini `~/.mesh/token` is the operator's `rs_` console token, which does not expire; the recorded run used it and `/mcp` accepted it once the call was approved. A missing or refused token looks different: `Auth required during MCP startup` (an empty variable) or `HTTP status client error (401 Unauthorized)`, never an approval refusal. |
+| A startup timeout on the mini | ruled out | The server started and listed its tools in every recorded run; the failure is on the call (`item.started` then a `failed` `item.completed`), not a startup `error` item. `startup_timeout_sec` is not set. |
+| `codex_apps` erroring too | not reproduced | Codex's own ChatGPT apps server, not one the node renders, so `default_tools_approval_mode` on the node's tables does not reach it. Its 2.6 s includes a network start; presumably the same approval refusal. The item's note now names its first error, so the next live run shows it. |
+
+**What the live capture should show** once the fixed node runs a Codex
+evaluation: the kept stream's `mcp_tool_call` items for `prologue` end
+`"status":"completed"` with a result, the usage record's `tools` entry
+reads `prologue: N calls, 0 errors`, and the evaluation's notes carry no
+`tools: prologue: first call errored`. If a call still fails, its
+`error.message` is on the tool entry and the note — an approval refusal
+means the key did not take (check `config.toml` in the kept session
+home); a 401 means the token.
+
+Codex writes to the home's `config.toml` itself: after a run it has
+appended `[projects."<workspace>"] trust_level = "trusted"`. That is
+harmless, since the node writes the file afresh for every session.
 
 ## The stream, kept
 

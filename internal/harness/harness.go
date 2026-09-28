@@ -65,9 +65,9 @@ type Job struct {
 	Settings map[string]any
 	// Tools are the console tools the session gets (trd §3 Tools), their
 	// secrets decrypted: Claude Code's are already in MCPServers, with
-	// their secret values in Env; an adapter with its own format (Codex's
-	// config.toml, tools.WriteCodexConfig into its CODEX_HOME) renders
-	// them itself. Never logged.
+	// their secret values in Env; an adapter with its own format renders
+	// them itself — Codex's config.toml takes them by tools.CodexConfig,
+	// not their `${…}` entries in MCPServers (codexConfig). Never logged.
 	Tools []tools.Tool
 	// Model is the model this session runs on — an alias the CLI knows
 	// ("opus", "sonnet", "haiku") or a full id ("claude-opus-5"). Empty
