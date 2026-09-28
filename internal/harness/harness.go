@@ -6,6 +6,7 @@ package harness
 
 import (
 	"context"
+	"sort"
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/sandbox"
@@ -172,6 +173,72 @@ type Result struct {
 	// (<sessionId>:<server>:<n>), so len(ToolCallIDs[s]) always equals
 	// ToolCalls[s]. Nil exactly when ToolCalls is.
 	ToolCallIDs map[string][]string
+	// Tools is each MCP server's calls, errors and wall time (trd §3
+	// Tools): a Claude tool_use whose tool_result carried is_error true,
+	// or a Codex mcp_tool_call whose status was failed, counts an error;
+	// a server the system/init event named as not connected counts an
+	// error too, with its status as FirstError, even with zero calls.
+	// Nil when the session made no MCP call and named no unconnected
+	// server. See ToolReport.
+	Tools map[string]*ToolStat
+}
+
+// ToolStat is one MCP server's calls in a session.
+type ToolStat struct {
+	Calls  int
+	Errors int
+	Wall   time.Duration
+	// FirstError is the first error's text — a tool_result's content, a
+	// Codex mcp_tool_call's failed status, or an unconnected server's
+	// status — trimmed and capped at 300 characters.
+	FirstError string
+}
+
+// ToolCall is one row of Result.ToolReport.
+type ToolCall struct {
+	// Tool is the MCP server's name (brave, not brave__search).
+	Tool   string
+	Calls  int
+	Errors int
+	Ms     int64
+}
+
+// ToolReport returns Tools as a list of ToolCall, one per server, sorted
+// by name.
+func (r *Result) ToolReport() []ToolCall {
+	if len(r.Tools) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(r.Tools))
+	for name := range r.Tools {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	report := make([]ToolCall, 0, len(names))
+	for _, name := range names {
+		s := r.Tools[name]
+		report = append(report, ToolCall{
+			Tool:   name,
+			Calls:  s.Calls,
+			Errors: s.Errors,
+			Ms:     s.Wall.Milliseconds(),
+		})
+	}
+	return report
+}
+
+// toolStat returns server's ToolStat on r, creating it if this is its
+// first mention.
+func (r *Result) toolStat(server string) *ToolStat {
+	if r.Tools == nil {
+		r.Tools = map[string]*ToolStat{}
+	}
+	s, ok := r.Tools[server]
+	if !ok {
+		s = &ToolStat{}
+		r.Tools[server] = s
+	}
+	return s
 }
 
 // Usage is what a session consumed, in tokens, and the model its cost
