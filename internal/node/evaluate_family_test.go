@@ -364,7 +364,7 @@ func TestCodexPreflightPassesAndGuardsSecondOpinion(t *testing.T) {
 	pf := &fakePreflight{}
 	ev.CodexPreflight = pf.check
 	in := evaluateItem1(t, f, ev)
-	if len(pf.jobs) != 1 || codex.runs() != 1 || len(claude.jobs) != 0 || in["notes"] != "Holds.\n\n(evaluated on Codex gpt-6-sol)" {
+	if len(pf.jobs) != 1 || codex.runs() != 1 || len(claude.jobs) != 0 || in["notes"] != "Holds.\n\n(evaluated on Codex gpt-6-luna)" {
 		t.Fatalf("preflights %d, runs codex %d claude %d, recorded %+v", len(pf.jobs), codex.runs(), len(claude.jobs), in)
 	}
 	if h, _ := envOf(pf.jobs[0].Env, "CODEX_HOME"); h == "" || h != mustEnv(t, codex.jobs[0].Env, "CODEX_HOME") || pf.jobs[0].Model != codex.jobs[0].Model {
