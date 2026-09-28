@@ -20,7 +20,7 @@ func detach(cmd *exec.Cmd) {
 }
 
 // stopGroup sends SIGTERM to the session's process group, and SIGKILL
-// when it is still there after StopGrace.
+// when the session or any of its group is still there after StopGrace.
 func stopGroup(h Handle) error {
 	if h.PID <= 0 {
 		return errors.New("sessionunit: no pid")
@@ -30,7 +30,7 @@ func stopGroup(h Handle) error {
 	}
 	deadline := time.Now().Add(StopGrace)
 	for time.Now().Before(deadline) {
-		if h.Exited() {
+		if h.Exited() && errors.Is(syscall.Kill(-h.PID, 0), syscall.ESRCH) {
 			return nil
 		}
 		time.Sleep(50 * time.Millisecond)
