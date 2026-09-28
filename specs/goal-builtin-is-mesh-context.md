@@ -22,15 +22,14 @@ mesh-cli tests: a session's MCP config names mesh-context, allowedTools carries 
 
 ## Items
 
-1. **Item 5:** Node: the built-in server is mesh-context — tools.Builtin, MeshContextMCP, allowedTools mcp__mesh-context__*; a console tool named prologue no longer clashes, one named mesh-context does; a builtIn row is never rendered twice — https://github.com/runsheet/mesh-cli/pull/264
-
-2. **Item 6:** Node: prompts, INDEX.md and the channel brief tell agents to use mesh_document/mesh_search on mesh-context; the context read goes to /mesh/v1 with /prologue/v1 as fallback — https://github.com/runsheet/mesh-cli/pull/258 (merged 514de9f)
-
-3. **Item 7:** mesh-specs: TRD §3 Tools and ADR-006 say mesh-context, not prologue; prologue_health_* and /prologue/v1 stay as aliases until 2026-10-28 (pending — to be created)
+- **Item 3** (failed): Design: TRD §3 says mesh-context is built in and /mesh/v1 is the context read; ADR 006 amended; the prologue aliases listed as deprecated with the date they go. Its session lost its claim mid-build (the platform read it back as ready, claimed by nobody), so it never reached an evaluation or a pull request. Item 7 is its retry.
+- **Item 5**: Node: the built-in server is mesh-context — `tools.Builtin`, `MeshContextMCP`, allowedTools `mcp__mesh-context__*`; a console tool named prologue no longer clashes, one named mesh-context does; a `builtIn` row is never rendered twice — https://github.com/runsheet/mesh-cli/pull/264 (evaluation passed; not merged into main when this doc was written, and being rebased onto main).
+- **Item 6**: Node: prompts, INDEX.md and the channel brief tell agents to use `mesh_document`/`mesh_search` on mesh-context; the context read goes to `/mesh/v1` with `/prologue/v1` as the fallback until 2026-10-28 — https://github.com/runsheet/mesh-cli/pull/258 (merged, 514de9f).
+- **Item 7**: Design: TRD §3 says mesh-context is built in and the context read is `/mesh/v1`; ADR 006 amended; the prologue aliases listed as deprecated, going 2026-10-28 — https://github.com/runsheet/mesh-specs/pull/57 (merged, 769c38d).
 
 ## Upgrading the mini
 
-After item 5 merges, the node's binary must be upgraded by hand — mesh-cli has no deploy, so releases go out as signed GitHub artifacts only.
+After item 5 (mesh-cli#264) merges, the node's binary must be upgraded by hand — mesh-cli has no deploy, so releases go out as signed GitHub artifacts only.
 
 ### Build and upgrade steps
 
@@ -39,7 +38,8 @@ After item 5 merges, the node's binary must be upgraded by hand — mesh-cli has
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh
 # Copy to the mini
 scp mesh-linux mini:~/bin/mesh.new
-# On the mini, upgrade without a drain
+# On the mini: swap the binary (.prev kept) and restart `mesh node start` at once;
+# the new process adopts the running sessions
 mesh node upgrade --binary ~/bin/mesh.new
 # Sessions adopted across the restart keep their `prologue` MCP name and are accepted until 2026-10-28
 ```
@@ -59,7 +59,7 @@ grep 'mcp__mesh-context__' output.jsonl | head -5
 
 ## Left to the platform
 
-These pieces are runsheet/runsheet's domain (trd §6c, ADR 006), not this project's:
+These pieces are runsheet/runsheet's (its trd §6c), not this project's repos — mesh-portal has no such routes:
 
 - **Console redirect:** /orgs/<org>/prologue/<project> → /orgs/<org>/context/<project> with nav item 'Context'
 - **Health tool aliases:** `prologue_health_*` tool names stay as aliases serving the platform's mesh-context built-in
@@ -70,5 +70,7 @@ Status tables live on the platform only; this doc records outcomes.
 
 ## Log
 
-- 2026-09-28 · item 6 · PR #258 merged (514de9f); prompts and context reads now use mesh_document/mesh_search on /mesh/v1 with /prologue/v1 fallback. The mini binary upgrade completes the node half after item 5 merges.
-- Item 5's PR #264 and item 7's mesh-specs PR will be linked when they merge.
+- 2026-09-28 · item 3 · failed: the session lost its claim mid-build; retried as item 7.
+- 2026-09-28 · item 7 · mesh-specs#57 merged (769c38d): trd §3 Tools and ADR 006 say mesh-context is built in; `prologue`, `prologue_*` and `/prologue/v1` are aliases until 2026-10-28.
+- 2026-09-28 · item 6 · mesh-cli#258 merged (514de9f): prompts, INDEX.md and the channel brief name `mesh_document`/`mesh_search`; the context read is `/mesh/v1` with `/prologue/v1` as the fallback.
+- 2026-09-28 · item 5 · mesh-cli#264 passed evaluation; not merged into main when this doc was written.
