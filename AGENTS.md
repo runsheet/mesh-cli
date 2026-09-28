@@ -104,8 +104,12 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   §Heartbeat); both for runsheet goal
   `limits-on-the-console` — and `runtimes` and `adapters` — the tool
   runtimes (npx, uvx, docker) and agent CLIs (claude-code, codex)
-  `Loop.LookPath` finds, probed every tick, for `tools-in-the-console`)
-  and `adopted` (below) are sent only when set,
+  `Loop.LookPath` finds, probed every tick, for `tools-in-the-console`),
+  `adopted` (below) and `holding` — the node's holding decision as data,
+  not a log line: each account's status, reset time and what the node
+  still takes on it, and the summary judgement (`HoldingReport`,
+  adr-005's amendment, for runsheet goal `node-says-why-work-waits`) —
+  are sent only when set,
   because they are fields the platform half adds. Capacity, the
   limits thresholds and the orgs need no drain: `Reload` re-reads them
   every tick.
