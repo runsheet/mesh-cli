@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
 )
@@ -323,6 +324,23 @@ func (g *Git) Commit(ctx context.Context, dir string, paths []string, msg string
 	}
 	_, err := g.run(ctx, dir, "git", "commit", "--quiet", "-m", msg)
 	return err
+}
+
+// HasCommitSince is a build's hand-back test (ADR 012): whether dir's
+// branch has a commit past origin/base, by `git rev-list --count
+// origin/<base>..HEAD`. A git that cannot answer counts as a commit, so
+// a session is never interrupted on a guess.
+func HasCommitSince(dir, base string) func() bool {
+	return func() bool {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		out, err := exec.CommandContext(ctx, "git", "-C", dir, "rev-list", "--count", "origin/"+base+"..HEAD").Output()
+		if err != nil {
+			return true
+		}
+		n, err := strconv.Atoi(strings.TrimSpace(string(out)))
+		return err != nil || n > 0
+	}
 }
 
 // Push implements Workspacer.

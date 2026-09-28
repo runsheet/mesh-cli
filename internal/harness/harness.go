@@ -40,6 +40,20 @@ type Job struct {
 	Prompt string
 	// MaxBudgetUSD caps the session's spend; 0 means the adapter's default.
 	MaxBudgetUSD float64
+	// HandBackAt is the fraction of MaxBudgetUSD past which a session
+	// with nothing committed (HasCommit false) is ended and resumed for
+	// one turn that commits what works and finishes (ADR 012 Hand-back);
+	// 0 is off. The runner sets DefaultHandBackAt on a build. A host
+	// Claude session only: a sandboxed or Codex one is capped by its
+	// budget alone.
+	HandBackAt float64
+	// HasCommit says whether the workspace's branch holds a commit of
+	// its own yet; asked once, when the session's running cost first
+	// passes HandBackAt × MaxBudgetUSD. Nil turns the hand-back off.
+	HasCommit func() bool
+	// Resume is a session id to resume (`--resume`) rather than start
+	// afresh: the hand-back turn's.
+	Resume string
 	// Env is appended to the inherited environment (KEY=VALUE).
 	Env []string
 	// Unset are the names of inherited variables the session must not
@@ -200,6 +214,14 @@ type Result struct {
 	// its message. Nil when the session made no MCP call and named no unconnected
 	// server. See ToolReport.
 	Tools map[string]*ToolStat
+	// HandedBack is a session that passed its HandBackAt mark with
+	// nothing committed and was resumed for the commit-and-finish turn;
+	// its figures are both runs' together.
+	HandedBack bool
+	// SpentOn is, for a handed-back session, one paragraph on what the
+	// run before the hand-back spent: its cost and turns, input per turn
+	// and its largest and most-called tools (SpentOn). Empty otherwise.
+	SpentOn string
 	// KeptSessionDir is where a Codex session's whole event stream and
 	// stderr are kept for KeepSessionOutput after it ends ("" when the
 	// harness kept nothing: Codex.WorkRoot unset, or another harness).

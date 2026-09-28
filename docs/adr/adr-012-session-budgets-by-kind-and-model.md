@@ -1,5 +1,5 @@
 ---
-summary: A session's cost cap is now the smallest of the goal's remaining budget, node.yaml's `budgets:` figure for its kind (build, evaluate, plan, rebase, research) and model tier (haiku, sonnet, opus) — sonnet build defaults to $4, haiku $2, opus $10 — and the kind's own flag; read live like the accounts and project budgets, logged with its source on the session's starting line.
+summary: A session's cost cap is now the smallest of the goal's remaining budget, node.yaml's `budgets:` figure for its kind (build, evaluate, plan, rebase, research) and model tier (haiku, sonnet, opus) — sonnet build defaults to $4, haiku $2, opus $10 — and the kind's own flag; read live like the accounts and project budgets, logged with its source on the session's starting line. A build past 60% of its budget with nothing committed is handed back for one commit-and-finish turn, and the next attempt is told what it spent on.
 status: accepted
 ---
 
@@ -96,3 +96,57 @@ session's own cap)`, `budget $0.00 (no cap)`.
   nothing changes for an operator who sets none.
 - The platform override (item or project `budgets`) is still to land;
   this ADR is where that read plugs in.
+
+## Hand-back
+
+2026-09-28, item 3 of the same goal.
+
+A cap alone stops a runaway at its budget with nothing to show for it:
+two of the ledger's ten costliest sessions spent their whole budget and
+landed nothing. So a build is handed back before its cap:
+
+- **The running cost is priced on the node.** `claude -p` reports
+  `total_cost_usd` only on its result event, so the harness prices each
+  assistant turn's own usage (once per message id) at its model tier's
+  list price — `listPrices` in `internal/harness/handback.go`, one table
+  dated 2026-09-28 (Opus 5, Sonnet 5, Haiku 4.5; cache reads a tenth of
+  input, cache writes a quarter more). A model it cannot place is priced
+  as opus, so it reaches its mark early rather than never. The figure is
+  for the mark alone; the cost reported is still the CLI's.
+- **The mark is `Job.HandBackAt` × `Job.MaxBudgetUSD`.** The runner sets
+  `harness.DefaultHandBackAt` (0.6) on every build; 0 is off, and every
+  other kind leaves it 0. `Job.HasCommit` — the runner's `git rev-list
+  --count origin/<base>..HEAD` in the workspace (`HasCommitSince`; a git
+  that cannot answer counts as a commit) — is asked once, when the mark
+  is first passed. A commit on the branch means the session runs on to
+  its cap as before.
+- **No commit stops the session and resumes it once.** The unit is
+  stopped and `claude -p --resume <session>` started on the budget left
+  (`MaxBudgetUSD` less the priced cost) with one turn,
+  `HandBackPrompt`: commit what works with a message naming what is
+  done and what is not, run the tests once, finish, start nothing new.
+  The Result is both runs' (cost, turns, tokens, tools), the resumed
+  run's text and verdict, with `HandedBack` true and `SpentOn` — one
+  paragraph from item 1's figures: the first run's cost against the
+  budget, its turns, input per turn (mean, max), its largest tool
+  results by bytes (each tool once) and its most-called tools.
+- **The finish is the one an empty build already takes.** A handed-back
+  build that committed pushes and finishes as any other; one that still
+  has no commit pushes an empty branch and `FinishWorkItem`s, and the
+  platform's empty-finish route (goal `empties-go-back-to-the-builder`)
+  sends it back to `ready`, attempts+1. No new failure path.
+- **The next attempt is told.** The node notes `SpentOn` on the item
+  (`ReportWorkItemProgress`, just before the finish) and keeps it in
+  `~/.mesh/items/<item>.last-session` (`RunState.RecordLastSession`);
+  the item's next claim on the node renders it in `BuildPrompt` under
+  "The last session on this item" (`PromptInput.LastSession`): read
+  less, commit earlier. A build that runs to its end without a
+  hand-back clears the record.
+
+**Claude on the host only.** A sandboxed session's HOME — where the
+session a `--resume` needs is kept — goes with its pod, Codex has no
+budget flag and no priced stream to watch, and an adopted session
+(`Attach`) is followed as it stands: all three are capped by their
+budget alone. The record lives on the node that ran the session; an
+item's next claim on another node starts without it until the platform
+carries it on the item.

@@ -62,6 +62,9 @@ func (c *ClaudeCode) Args(job Job) []string {
 	if job.Model != "" {
 		args = append(args, "--model", job.Model)
 	}
+	if job.Resume != "" {
+		args = append(args, "--resume", job.Resume)
+	}
 	if job.MaxBudgetUSD > 0 {
 		args = append(args, "--max-budget-usd", strconv.FormatFloat(job.MaxBudgetUSD, 'f', 2, 64))
 	}
@@ -129,11 +132,62 @@ func (c *ClaudeCode) SandboxArgs(job Job, mcpPath string) []string {
 // `<workdir>.session/output.jsonl`, read back as it grows, and its
 // state to `state.json` beside it, so the node's exit does not end it.
 // A cancelled ctx or the job's Timeout stops the unit.
+//
+// A job with a hand-back mark (HandBackAt, HasCommit) is watched as it
+// runs (ADR 012 Hand-back): once its turns, priced by model, pass
+// HandBackAt × MaxBudgetUSD with nothing committed, the session is
+// stopped and resumed once (`--resume`) on the budget left, told to
+// commit what works and finish; the Result is both runs', HandedBack,
+// with SpentOn saying what the first spent its budget on.
 func (c *ClaudeCode) Run(ctx context.Context, job Job, onProgress func(Progress)) (Result, error) {
 	if c.Sandbox != nil || job.Session != nil {
-		// the pod is the unit once sandboxed-sessions adopts it (ADR 008)
+		// the pod is the unit once sandboxed-sessions adopts it (ADR 008);
+		// its HOME, and the session a resume would need, goes with it
 		return c.runSandboxed(ctx, job, onProgress)
 	}
+	hb := newHandBack(job)
+	started := time.Now()
+	res, err := c.runHost(ctx, job, onProgress, hb)
+	if !hb.Fired() || ctx.Err() != nil {
+		return res, err
+	}
+	first := hb.firstRun(res)
+	spent := spentOn(first, job.MaxBudgetUSD, hb.toolCounts())
+	if first.SessionID == "" {
+		// nothing to resume: the run as it stood
+		first.HandedBack, first.SpentOn, first.Success = true, spent, false
+		return first, err
+	}
+	if onProgress != nil {
+		onProgress(Progress{Text: fmt.Sprintf("handed back at %.0f%% of the $%.2f budget with nothing committed: %s", job.HandBackAt*100, job.MaxBudgetUSD, spent), CostUSD: first.CostUSD, SessionID: first.SessionID})
+	}
+	turn := job
+	turn.Prompt = HandBackPrompt(job.HandBackAt)
+	turn.Resume = first.SessionID
+	turn.HandBackAt, turn.HasCommit = 0, nil
+	turn.MaxBudgetUSD = job.MaxBudgetUSD - first.CostUSD
+	if turn.MaxBudgetUSD < 0.01 {
+		turn.MaxBudgetUSD = 0.01
+	}
+	if job.Timeout > 0 {
+		// the wall clock left, but a turn's worth at least
+		turn.Timeout = max(job.Timeout-time.Since(started), 5*time.Minute)
+	}
+	var progress func(Progress)
+	if onProgress != nil {
+		progress = func(p Progress) {
+			if p.CostUSD > 0 {
+				p.CostUSD += first.CostUSD // the whole session's, as a caller expects
+			}
+			onProgress(p)
+		}
+	}
+	second, err := c.runHost(ctx, turn, progress, nil)
+	return mergeHandBack(first, second, spent), err
+}
+
+// runHost is Run on the host, in its unit, watched by hb (nil: not).
+func (c *ClaudeCode) runHost(ctx context.Context, job Job, onProgress func(Progress), hb *handBack) (Result, error) {
 	bin := c.Binary
 	if bin == "" {
 		bin = "claude"
@@ -184,9 +238,14 @@ func (c *ClaudeCode) Run(ctx context.Context, job Job, onProgress func(Progress)
 		return Result{}, fmt.Errorf("harness claude-code: state: %w", err)
 	}
 	keep = job.Outlive && job.Workspace != ""
-	res, detached, waitErr, errBuf, rawOut := c.follow(ctx, parent, job.Outlive, unit, h, dir, &st, 0, job.Secrets, onProgress)
+	hb.setStop(func() { go unit.Stop(h) })
+	res, detached, waitErr, errBuf, rawOut := c.follow(ctx, parent, job.Outlive, unit, h, dir, &st, 0, job.Secrets, onProgress, hb.observe)
 	if detached {
 		return res, parent.Err()
+	}
+	if hb.Fired() && ctx.Err() == nil {
+		// stopped for the hand-back: its exit is no error
+		return res, nil
 	}
 	return finishClaude(ctx, job, res, waitErr, errBuf, rawOut)
 }
@@ -212,7 +271,7 @@ func (c *ClaudeCode) Attach(ctx context.Context, dir string, onProgress func(Pro
 		ctx, cancel = context.WithDeadline(ctx, st.StartedAt.Add(time.Duration(st.TimeoutSeconds)*time.Second))
 		defer cancel()
 	}
-	res, detached, waitErr, errBuf, rawOut := c.follow(ctx, parent, true, unit, h, dir, &st, st.Offset, nil, onProgress)
+	res, detached, waitErr, errBuf, rawOut := c.follow(ctx, parent, true, unit, h, dir, &st, st.Offset, nil, onProgress, nil)
 	if detached {
 		return res, parent.Err()
 	}
@@ -238,10 +297,11 @@ func RemoveSession(workdir string) error {
 // follow reads a running (or ended) session in dir to its end: stderr
 // into a buffer (and c.Stderr), the output through the stream parser,
 // progress passed on only for the events past from, and the offset
-// saved into st as it advances. ctx done stops the unit — unless
-// outlive and parent is done too (the node shutting down), when the
-// reading stops and the session is left running: detached.
-func (c *ClaudeCode) follow(ctx, parent context.Context, outlive bool, unit sessionunit.Unit, h sessionunit.Handle, dir string, st *sessionunit.State, from int64, secrets []string, onProgress func(Progress)) (res Result, detached bool, waitErr error, errBuf *bytes.Buffer, rawOut *capBuffer) {
+// saved into st as it advances; watch, when set, sees every event. ctx
+// done stops the unit — unless outlive and parent is done too (the node
+// shutting down), when the reading stops and the session is left
+// running: detached.
+func (c *ClaudeCode) follow(ctx, parent context.Context, outlive bool, unit sessionunit.Unit, h sessionunit.Handle, dir string, st *sessionunit.State, from int64, secrets []string, onProgress func(Progress), watch func(Event)) (res Result, detached bool, waitErr error, errBuf *bytes.Buffer, rawOut *capBuffer) {
 	errBuf, rawOut = &bytes.Buffer{}, &capBuffer{max: 64 << 10}
 	readCtx, stopReading := context.WithCancel(context.Background())
 	defer stopReading()
@@ -296,6 +356,9 @@ func (c *ClaudeCode) follow(ctx, parent context.Context, outlive bool, unit sess
 		}
 	}
 	res = parseClaude(io.TeeReader(out, rawOut), progress, func(ev Event) {
+		if watch != nil {
+			watch(ev)
+		}
 		if out.Offset() <= st.Offset {
 			return
 		}

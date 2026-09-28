@@ -377,6 +377,18 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   the first 60% and last 40% of the cap (`TrimToolResult`) — and every
   build session `MAX_MCP_OUTPUT_TOKENS` and `BASH_MAX_OUTPUT_LENGTH`
   (`ToolResultsEnv`). Channel mode gets neither; a sandboxed one the env.
+- **The hand-back** (`internal/harness/handback.go`, adr-012
+  Hand-back): a host build's turns are priced by tier (`listPrices`,
+  dated); past `Job.HandBackAt` (the runner's
+  `harness.DefaultHandBackAt`, 0.6) of `MaxBudgetUSD` with
+  `Job.HasCommit` false (`HasCommitSince`: `git rev-list --count
+  origin/<base>..HEAD`) the unit is stopped and `--resume`d once on the
+  budget left with `HandBackPrompt`. `Result.HandedBack`/`SpentOn`; the
+  runner notes `SpentOn` on the item, keeps it in
+  `~/.mesh/items/<item>.last-session` (`RunState.RecordLastSession`)
+  and the next claim's `BuildPrompt` renders it as "The last session on
+  this item". No commit still is an empty finish, back to `ready` on
+  the platform. Sandboxed, adopted and Codex sessions do not hand back.
 - **Services** (`internal/sandbox/services.go`, mesh-specs ADR 007):
   `Resolve(repoDir, allowed)` reads what a repository declares, first
   found wins — `.mesh/services.yml`, else the `services:` of its
