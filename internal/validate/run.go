@@ -1,0 +1,174 @@
+package validate
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+)
+
+// Runner runs one step's command with a timeout, streaming its output.
+// The exit code is what the process (or, on a timeout, the runner's own
+// convention — HostRunner uses 124, matching GNU timeout) reports; err is
+// an infrastructure failure, not the command's own exit status.
+type Runner interface {
+	Run(ctx context.Context, cmd string, timeout time.Duration, stdout, stderr io.Writer) (exitCode int, err error)
+}
+
+// HostRunner runs a step's command with `sh -c` directly in Dir — the
+// unsandboxed path, until the sandbox runtime is present.
+type HostRunner struct {
+	Dir string
+}
+
+// Run implements Runner: the command is killed at the timeout, reporting
+// exit code 124 (the convention `timeout` itself uses). The command runs
+// in its own process group (setProcessGroup) so a step that forks — a
+// shell script running a further command — is killed whole: killing only
+// the shell would leave its child running and holding stdout/stderr open,
+// hanging Wait indefinitely.
+func (r HostRunner) Run(ctx context.Context, cmd string, timeout time.Duration, stdout, stderr io.Writer) (int, error) {
+	if timeout <= 0 {
+		timeout = DefaultTimeout
+	}
+
+	c := exec.Command("sh", "-c", cmd)
+	c.Dir = r.Dir
+	c.Stdout = stdout
+	c.Stderr = stderr
+	setProcessGroup(c)
+
+	if err := c.Start(); err != nil {
+		return -1, err
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- c.Wait() }()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			return 0, nil
+		}
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			return ee.ExitCode(), nil
+		}
+		return -1, err
+	case <-timer.C:
+		killGroup(c.Process.Pid)
+		<-done
+		return 124, nil
+	case <-ctx.Done():
+		killGroup(c.Process.Pid)
+		<-done
+		return -1, ctx.Err()
+	}
+}
+
+// Options configures Run.
+type Options struct {
+	// Dir is the workspace the steps ran (and run) in — SuiteHash and
+	// artifact digests are relative to it.
+	Dir string
+	// ContinueOnFailure runs every selected step regardless of an
+	// earlier failure; otherwise the first failing step stops the run.
+	ContinueOnFailure bool
+}
+
+// outputCap is the total bytes of a step's combined stdout+stderr kept
+// on its StepResult — the head and the tail, split evenly.
+const outputCap = 8 * 1024
+
+// Run runs each step through runner in order, recording a StepResult for
+// each. The first step whose command errors or exits non-zero stops the
+// run (its result is still recorded) unless opts.ContinueOnFailure.
+func Run(ctx context.Context, steps []Step, runner Runner, opts Options) ([]StepResult, error) {
+	results := make([]StepResult, 0, len(steps))
+	for _, step := range steps {
+		var stdout, stderr bytes.Buffer
+		start := time.Now()
+		exitCode, runErr := runner.Run(ctx, step.Command, step.Timeout, &stdout, &stderr)
+		duration := time.Since(start)
+
+		hash, err := SuiteHash(opts.Dir, step)
+		if err != nil {
+			return results, err
+		}
+		artifacts, err := digestArtifacts(opts.Dir, step.Artifacts)
+		if err != nil {
+			return results, err
+		}
+		run, passed, failed, err := parseResults(opts.Dir, step, stdout.Bytes())
+		if err != nil {
+			return results, err
+		}
+
+		sr := StepResult{
+			Name:        step.Name,
+			Command:     step.Command,
+			SuiteHash:   hash,
+			ExitCode:    exitCode,
+			DurationMs:  duration.Milliseconds(),
+			TestsRun:    run,
+			TestsPassed: passed,
+			TestsFailed: failed,
+			Output:      headTail(stdout.String() + stderr.String()),
+			TimedOut:    exitCode == 124,
+			Artifacts:   artifacts,
+		}
+		results = append(results, sr)
+
+		if runErr != nil {
+			return results, runErr
+		}
+		if exitCode != 0 && !opts.ContinueOnFailure {
+			return results, nil
+		}
+	}
+	return results, nil
+}
+
+// parseResults parses a step's test output per its Results field: empty
+// parses nothing, "stdout" reads stdout as go test -json, "go-test-json:
+// <path>" and "junit:<path>" read that file (relative to dir).
+func parseResults(dir string, step Step, stdout []byte) (run, passed, failed int, err error) {
+	switch {
+	case step.Results == "":
+		return 0, 0, 0, nil
+	case step.Results == "stdout":
+		return ParseGoTestJSON(bytes.NewReader(stdout))
+	case strings.HasPrefix(step.Results, "go-test-json:"):
+		f, err := os.Open(filepath.Join(dir, strings.TrimPrefix(step.Results, "go-test-json:")))
+		if err != nil {
+			return 0, 0, 0, err
+		}
+		defer f.Close()
+		return ParseGoTestJSON(f)
+	case strings.HasPrefix(step.Results, "junit:"):
+		f, err := os.Open(filepath.Join(dir, strings.TrimPrefix(step.Results, "junit:")))
+		if err != nil {
+			return 0, 0, 0, err
+		}
+		defer f.Close()
+		return ParseJUnit(f)
+	default:
+		return 0, 0, 0, nil
+	}
+}
+
+func headTail(combined string) string {
+	if len(combined) <= outputCap {
+		return combined
+	}
+	half := outputCap / 2
+	return combined[:half] + "\n...\n" + combined[len(combined)-half:]
+}

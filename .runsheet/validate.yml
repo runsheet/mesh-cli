@@ -1,0 +1,17 @@
+steps:
+  - name: vet
+    command: go vet ./...
+    always: true
+
+  - name: build
+    command: go build ./cmd/mesh/
+    always: true
+
+  - name: unit
+    command: go test -json ./...
+    paths:
+      - "**/*.go"
+      - go.mod
+      - go.sum
+    timeout: 15m
+    results: stdout
