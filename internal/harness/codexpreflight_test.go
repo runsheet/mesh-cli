@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"projectmesh.io/mesh-cli/internal/tools"
 )
 
 // preflightCodex is a `codex` whose `mcp get` records its environment
@@ -95,6 +97,30 @@ func TestCodexPreflightPasses(t *testing.T) {
 		t.Fatal("codex mcp get did not see the rendered config")
 	}
 	if env := envOf(t, filepath.Join(out, "env")); env["MESH_CODEX_MCP_0_TOKEN"][0] != "Bearer rs_node" || env["CODEX_API_KEY"][0] != "sk-test" {
+		t.Fatalf("env %v", env)
+	}
+}
+
+// A console tool with a secret header that sorts before the built-in
+// (as SessionTools.Apply leaves it in job.MCPServers and job.Tools):
+// the preflight reads the built-in's header from the variable the
+// rendered config names, MESH_CODEX_MCP_0_TOKEN, not one numbered over
+// the console tools too.
+func TestCodexPreflightWithConsoleTool(t *testing.T) {
+	out := t.TempDir()
+	srv := mcpServer(t, "Bearer rs_node", http.StatusUnauthorized, "", 1)
+	c := &Codex{Binary: preflightCodex(t, out, 0), HomeRoot: t.TempDir(), Account: CodexAccount{Name: "key", APIKeyEnv: "TEST_PREFLIGHT_KEY"}}
+	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
+	console := []tools.Tool{{Name: "apify", Transport: tools.Remote, URL: "https://mcp.apify.com", Secrets: map[string]string{"Authorization": "Bearer apify_tok"}}}
+	servers, env, err := tools.ClaudeCode(builtin(srv.URL+"/mcp", "Bearer rs_node"), console)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := Job{Workspace: t.TempDir(), MCPServers: servers, Env: env, Tools: console}
+	if err := c.Preflight(context.Background(), job); err != nil {
+		t.Fatal(err)
+	}
+	if env := envOf(t, filepath.Join(out, "env")); env["MESH_CODEX_MCP_0_TOKEN"][0] != "Bearer rs_node" {
 		t.Fatalf("env %v", env)
 	}
 }

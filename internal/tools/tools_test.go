@@ -133,6 +133,7 @@ type codexConfig struct {
 		Args              []string          `toml:"args"`
 		Env               map[string]string `toml:"env"`
 		EnvVars           []string          `toml:"env_vars"`
+		ApprovalMode      string            `toml:"default_tools_approval_mode"`
 	} `toml:"mcp_servers"`
 }
 
@@ -163,6 +164,12 @@ func TestWriteCodexConfig(t *testing.T) {
 		!reflect.DeepEqual(r.HTTPHeaders, map[string]string{"X-Region": "au"}) ||
 		!reflect.DeepEqual(r.EnvHTTPHeaders, map[string]string{"X-Api-Key": "MESH_TOOL_SEARCH_X_API_KEY"}) {
 		t.Fatalf("remote = %+v", r)
+	}
+	for name, srv := range cfg.MCPServers {
+		// codex exec refuses an unapproved MCP call under workspace-write
+		if srv.ApprovalMode != "approve" {
+			t.Errorf("%s: default_tools_approval_mode %q", name, srv.ApprovalMode)
+		}
 	}
 	l := cfg.MCPServers["fs-tools"]
 	if l.Command != "npx" || !reflect.DeepEqual(l.Args, []string{"-y", "@example/fs-mcp", "--root", "."}) ||

@@ -226,6 +226,24 @@ func TestParseCodexStreamKeepsTheCallsErrorText(t *testing.T) {
 	}
 }
 
+// The live cause, recorded on the mini (codex-cli 0.157.0, `codex exec
+// --json --sandbox workspace-write`, a config.toml with no
+// default_tools_approval_mode): exec refuses the call before it leaves
+// the process, and the stream says so — the text the item's note names.
+func TestParseCodexStreamKeepsTheApprovalRefusal(t *testing.T) {
+	fakeClock(t)
+	f, err := os.Open("testdata/codex_mcp_approval_error.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	res := ParseCodexStream(f, "gpt-6-luna", nil)
+	const want = "MCP tool call requires approval, but approval policy is never"
+	if stat := res.Tools["prologue"]; stat == nil || stat.Calls != 1 || stat.Errors != 1 || stat.FirstError != want {
+		t.Fatalf("Tools[prologue] = %+v, want 1 call, 1 error, FirstError %q", stat, want)
+	}
+}
+
 // A failed call with no error but a result falls back to the result's
 // text; a long error is capped at 300 on FirstError and 200 on the
 // report.
