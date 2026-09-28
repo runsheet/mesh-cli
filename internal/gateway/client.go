@@ -1091,21 +1091,6 @@ func (c *Client) ProjectRepos(ctx context.Context, repoIDs []string) ([]Repo, er
 	return out, nil
 }
 
-// Repos lists the repos of one account (an org's accountId), owner set.
-func (c *Client) Repos(ctx context.Context, accountID, ownerLogin string) ([]Repo, error) {
-	var out struct {
-		Repos []Repo `json:"repoIndexs"`
-	}
-	q := fmt.Sprintf(`{ repoIndexs(namespace: %q, where: [%s]) { id name accountId defaultBranch } }`, NS, where("account_id", accountID))
-	if err := c.Query(ctx, q, nil, &out); err != nil {
-		return nil, err
-	}
-	for i := range out.Repos {
-		out.Repos[i].Owner = ownerLogin
-	}
-	return out.Repos, nil
-}
-
 // AccountLogin reads an account's GitHub login.
 func (c *Client) AccountLogin(ctx context.Context, id string) (string, error) {
 	var out struct {
