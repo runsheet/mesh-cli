@@ -349,6 +349,16 @@ func (b *buildRun) report(ctx context.Context, note string) {
 	}
 }
 
+// reportToolUse notes on the item the served tools the session never
+// called or whose calls errored (SessionAccount.UseNote); nothing when
+// each was called cleanly, or for an adopted session.
+func (b *buildRun) reportToolUse(ctx context.Context, result harness.Result) {
+	if note := b.acct.UseNote(result); note != "" {
+		b.r.logf("item %s: %s", b.label, note)
+		b.report(ctx, note)
+	}
+}
+
 // run runs the session through start — Harness.Run or Attach — with
 // the item's heartbeat every ProgressEvery and its token renewed.
 func (b *buildRun) run(ctx context.Context, start func(onProgress func(harness.Progress)) (harness.Result, error)) (harness.Result, error) {
@@ -431,9 +441,11 @@ func (r *Runner) afterBuild(ctx context.Context, b *buildRun, result harness.Res
 	result.Text = b.acct.Redact(result.Text)
 	if !result.Success {
 		b.report(ctx, "session ended without success: "+result.Text)
+		b.reportToolUse(ctx, result)
 		return r.fail(ctx, item, fmt.Errorf("session ended without success: %s", truncate(result.Text, 500)))
 	}
 	b.report(ctx, result.Text)
+	b.reportToolUse(ctx, result)
 
 	if evidence, ok := harness.ParseAlreadyDone(result.Text); ok {
 		// main already holds the work (adr-003): no push, no branch, and
