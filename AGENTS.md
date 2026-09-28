@@ -2,7 +2,7 @@
 
 The operator tool for Mesh. `mesh node start` makes this machine a node of
 the runsheet platform: it speaks to the gateway (`api.runsheet.dev/graphql`,
-`/prologue/v1`, `/mcp`) on the credential in `~/.mesh/token` — the Latchkey
+`/mesh/v1`, `/mcp`) on the credential in `~/.mesh/token` — the Latchkey
 machine credential `mesh node login` registers for this computer, or the
 operator's `rs_*` console token — claims work items, builds each in a fresh `claude -p`
 session, evaluates it in a second, plans goals in a third. The platform
@@ -34,7 +34,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   credential — Latchkey's device flow, the rotating refresh grant, and
   the `~/.mesh/token` that holds either shape behind one `TokenSource`
   (latchkey `adr-machine-identity`).
-- `internal/node/`: the loop (`runner`), the workspace and Prologue
+- `internal/node/`: the loop (`runner`), the workspace and the project's
   context (`workspace.go`: `FetchContext`, `RenderIndex`, the size budget),
   evaluate, plan and research sessions, the service install (`launchd` /
   `systemd --user`). `internal/gateway/client.go`: the platform client.

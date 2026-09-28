@@ -69,7 +69,7 @@ func TestResearchPromptContract(t *testing.T) {
 	p := ResearchPrompt(ResearchInput{
 		Org: "acme", Project: "mesh", Direction: "Mesh is the place goals turn into merged pull requests.",
 		Repos: map[string]string{"acme/widgets": "repos/widgets"}, ContextDir: ".mesh/context",
-		ContextFiles: []string{"INDEX.md", "prd.md"}, Room: 2, DefaultBudgetCents: 4000,
+		ContextFiles: []string{"INDEX.md", "prd.md"}, Room: 2, DefaultBudgetCents: 4000, Prologue: true,
 		Goals: []ExistingGoal{{Slug: "ship-it", Title: "Ship it", Status: "running"}},
 	})
 	for _, want := range []string{
@@ -82,6 +82,7 @@ func TestResearchPromptContract(t *testing.T) {
 		"$40.00",
 		"you research and propose, you do not build",
 		"```json\n{\"goals\": [{\"slug\"",
+		"mesh_document", "mesh_search",
 	} {
 		if !strings.Contains(p, want) {
 			t.Fatalf("prompt lacks %q:\n%s", want, p)
