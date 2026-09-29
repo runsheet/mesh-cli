@@ -26,6 +26,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/node"
 	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/selfupdate"
+	"projectmesh.io/mesh-cli/internal/sessionunit"
 	"projectmesh.io/mesh-cli/internal/version"
 )
 
@@ -1257,6 +1258,13 @@ func adoptSessions(ctx context.Context, gw *gateway.Client, cfg *node.Config, h 
 	found, err := node.FindSessions(workRoot, ids)
 	if err != nil {
 		logger.Printf("adopt: %v", err)
+	}
+	// The start-up sweep (ADR 008): a scope no found session is about to
+	// adopt, whose subject is terminal on the platform, is a leak.
+	if _, ok := sessionunit.Default().(sessionunit.SystemdScope); ok {
+		if n := node.SweepScopes(ctx, gw, sessionunit.HostSystemctl{}, found, logger.Printf); n > 0 {
+			logger.Printf("sweep: %d leaked scope(s) stopped", n)
+		}
 	}
 	if len(found) == 0 {
 		return
