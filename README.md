@@ -502,6 +502,40 @@ adopt; a channel-mode or sandboxed session ends with it and its claimed
 item is left for a retry. It never fails an item on its own shutdown.
 SIGHUP does the same and execs the binary again at once.
 
+### node.log: bounded and rotated
+
+([ADR-018](docs/adr/adr-018-the-node-writes-its-own-log.md))
+
+`mesh node start` writes its own log, `~/.mesh/node.log`, and rotates
+it: at **10 MB** it becomes `node.log.1` (the older ones shift to
+`node.log.2` … `node.log.5`, the sixth is deleted) and a fresh
+`node.log` starts, so **5 rotated files are kept** and the node's log
+never takes more than about 60 MB. A node.log already past the limit
+when the node starts — one a service appended to for months — is
+rotated at once, and no write takes it past the limit: a single line
+larger than 10 MB is cut to it, and if the rotation fails the node drops
+lines (and says so once on stderr) rather than grow the file. node.log holds the node's own reasoning: ticks, claims,
+reloads, heartbeats, holds, and each session's one-line summaries
+(start, end, `usage`, cost, what its end killed). Watch it with `tail -f
+~/.mesh/node.log`; `mesh node usage` reads it and its rotated files.
+
+What sessions say goes to **`~/.mesh/sessions.log`** instead, capped the
+same way at **20 MB with 2 rotated files kept** (`sessions.log.1`,
+`sessions.log.2`): channel mode's `session: …` text, the workspaces' git
+commands and their output, and the agents' stderr. A node started from
+a terminal also echoes both to it.
+
+The service no longer points its output at node.log: the systemd unit
+sends stdout and stderr to the journal (`StandardOutput=journal`; read
+it with `journalctl --user -u io.projectmesh.mesh-node`) and the
+launchd agent to `~/.mesh/node.crash.log`. Only what the node cannot
+write itself lands there — a panic's stack, the `restarting: exec` line
+(also in node.log). **A unit installed before this change keeps
+systemd's `StandardOutput=append:~/.mesh/node.log` redirect until
+`mesh node service install` is run again**: until then the node still
+rotates node.log, but systemd's descriptor follows the renamed file and
+a panic's stack lands in whichever `node.log.N` it has become.
+
 ### Drain: take a machine out of service
 
 A node's host `claude -p` sessions run in their own units and outlive a

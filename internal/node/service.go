@@ -12,9 +12,13 @@ import (
 // The node as a service of the operator's login session: on macOS a
 // launchd LaunchAgent, on Linux a systemd user unit. Both keep
 // `mesh node start` alive across crashes and logins (KeepAlive /
-// Restart=always), log to ~/.mesh/node.log, and put the tools a session
-// needs — claude, gh, git — on PATH; the node's token and config are
-// read from ~/.mesh as ever.
+// Restart=always) and put the tools a session needs — claude, gh, git —
+// on PATH; the node's token and config are read from ~/.mesh as ever.
+// The node writes ~/.mesh/node.log itself, capped and rotated
+// (logfile.go): the service keeps only the process's own stdout and
+// stderr — a panic's stack — in the journal (systemd) or
+// ~/.mesh/node.crash.log (launchd), never appended to node.log, which
+// it would hold open past every rotation.
 //
 // Neither reaches the node's sessions when it stops or restarts the
 // node (adr-009, `mesh node upgrade`): a session runs in its own
@@ -38,8 +42,10 @@ type ServiceSpec struct {
 	Home string
 	// Path is the PATH the session inherits.
 	Path string
-	// Log is the file stdout and stderr go to.
-	Log string
+	// CrashLog is the file launchd appends stdout and stderr to — what
+	// the node cannot write to node.log itself; systemd's go to the
+	// journal.
+	CrashLog string
 	// Env are more variables the session inherits (KEY=VALUE): the gh
 	// config dir and token, when the installing shell had them.
 	Env []string
@@ -133,9 +139,9 @@ var launchAgentTmpl = template.Must(template.New("plist").Parse(`<?xml version="
 	<key>ThrottleInterval</key>
 	<integer>10</integer>
 	<key>StandardOutPath</key>
-	<string>{{.Log}}</string>
+	<string>{{.CrashLog}}</string>
 	<key>StandardErrorPath</key>
-	<string>{{.Log}}</string>
+	<string>{{.CrashLog}}</string>
 	<key>ProcessType</key>
 	<string>Background</string>
 	<key>AbandonProcessGroup</key>
@@ -159,8 +165,8 @@ Environment={{.Key}}={{.Value}}
 Restart=always
 RestartSec=10
 KillMode=process
-StandardOutput=append:{{.Log}}
-StandardError=append:{{.Log}}
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=default.target
@@ -214,5 +220,5 @@ func ServiceSpecFor(exe, home string, args []string) (ServiceSpec, error) {
 	if err != nil {
 		return ServiceSpec{}, err
 	}
-	return ServiceSpec{Exe: abs, Args: args, Home: home, Path: ServicePath(home), Log: ServiceLog(home), Env: inheritedEnv()}, nil
+	return ServiceSpec{Exe: abs, Args: args, Home: home, Path: ServicePath(home), CrashLog: CrashLog(home), Env: inheritedEnv()}, nil
 }

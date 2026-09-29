@@ -70,7 +70,7 @@ var nodeServiceInstallCmd = &cobra.Command{
 			if err := run("launchctl", "bootstrap", domain(), path); err != nil {
 				return fmt.Errorf("launchctl bootstrap: %w", err)
 			}
-			fmt.Printf("Installed %s (%s); it starts now and at every login. Log: %s\nStatus: mesh node service status\n", node.ServiceLabel, path, spec.Log)
+			fmt.Printf("Installed %s (%s); it starts now and at every login. Log: %s (a panic: %s)\nStatus: mesh node service status\n", node.ServiceLabel, path, node.ServiceLog(home), spec.CrashLog)
 		case "linux":
 			data, err := node.RenderSystemdUnit(spec)
 			if err != nil {
@@ -85,7 +85,7 @@ var nodeServiceInstallCmd = &cobra.Command{
 					return err
 				}
 			}
-			fmt.Printf("Installed %s (%s); it starts now and at every login (run `loginctl enable-linger` to keep it up while logged out). Log: %s\n", node.ServiceLabel, path, spec.Log)
+			fmt.Printf("Installed %s (%s); it starts now and at every login (run `loginctl enable-linger` to keep it up while logged out). Log: %s (a panic: journalctl --user -u %s)\n", node.ServiceLabel, path, node.ServiceLog(home), node.ServiceLabel)
 		default:
 			return fmt.Errorf("no service manager for %s; run `mesh node start` under your own supervisor", runtime.GOOS)
 		}

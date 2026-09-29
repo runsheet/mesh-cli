@@ -2,6 +2,7 @@ package commands
 
 import (
 	"errors"
+	"log"
 	"os"
 	"os/exec"
 	"strings"
@@ -19,7 +20,7 @@ func TestNodeStartPanicChild(t *testing.T) {
 	if os.Getenv("MESH_TEST_NODE_START_PANIC") != "1" {
 		t.Skip("run by TestNodeStartPanicNamesItself")
 	}
-	startNode = func(*cobra.Command, []string) error {
+	startNode = func(*cobra.Command, []string, *log.Logger) error {
 		panic("runtime error: invalid memory address or nil pointer dereference")
 	}
 	rootCmd.SetArgs([]string{"node", "start", "--mode=poll", "--unattended"})

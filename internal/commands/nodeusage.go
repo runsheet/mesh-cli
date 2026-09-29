@@ -2,6 +2,7 @@ package commands
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"time"
 
@@ -45,19 +46,28 @@ node.log's timestamps are.`,
 			return fmt.Errorf("--to %s is not after --from %s", nodeUsageTo, nodeUsageFrom)
 		}
 		path := nodeUsageLog
+		paths := []string{path}
 		if path == "" {
 			home, err := os.UserHomeDir()
 			if err != nil {
 				return err
 			}
+			// node.log and what rotation kept of it, oldest first
 			path = node.ServiceLog(home)
+			if paths = node.LogFiles(path, node.NodeLogKeep); len(paths) == 0 {
+				paths = []string{path}
+			}
 		}
-		f, err := os.Open(path)
-		if err != nil {
-			return err
+		var readers []io.Reader
+		for _, p := range paths {
+			f, err := os.Open(p)
+			if err != nil {
+				return err
+			}
+			defer f.Close()
+			readers = append(readers, f)
 		}
-		defer f.Close()
-		u, err := node.ReadUsage(f, node.UsageQuery{From: from, To: to, Goal: nodeUsageGoal, Kind: nodeUsageKind})
+		u, err := node.ReadUsage(io.MultiReader(readers...), node.UsageQuery{From: from, To: to, Goal: nodeUsageGoal, Kind: nodeUsageKind})
 		if err != nil {
 			return fmt.Errorf("%s: %w", path, err)
 		}
@@ -69,7 +79,7 @@ node.log's timestamps are.`,
 }
 
 func init() {
-	nodeUsageCmd.Flags().StringVar(&nodeUsageLog, "log", "", "the node log to read (default ~/.mesh/node.log)")
+	nodeUsageCmd.Flags().StringVar(&nodeUsageLog, "log", "", "the node log to read (default ~/.mesh/node.log and its rotated node.log.1 … node.log.5)")
 	nodeUsageCmd.Flags().StringVar(&nodeUsageFrom, "from", "", "the window's first day, YYYY-MM-DD (required)")
 	nodeUsageCmd.Flags().StringVar(&nodeUsageTo, "to", "", "the day after the window's last, YYYY-MM-DD, exclusive (required)")
 	nodeUsageCmd.Flags().StringVar(&nodeUsageGoal, "goal", "", "only records whose label names this goal's slug (its items' and its plan's)")

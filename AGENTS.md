@@ -637,6 +637,25 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   (or `default`) (`BuildModel`); the evaluator on the stronger of that
   and `sonnet` (`EvaluateModel`); node.yaml is the fallback. The model
   used is in node.log and on the item's events.
+- **The node's log** (`internal/node/logfile.go`, goal
+  `node-yaml-takes-effect-or-says-why-not`): `mesh node start` opens
+  `~/.mesh/node.log` (`ServiceLog`) itself through `RotatingFile` —
+  rotated at 10 MB (`NodeLogMaxBytes`) to `node.log.1` … `node.log.5`
+  (`NodeLogKeep`), one already past the cap rotated on open, no write
+  past the cap (one larger is cut to it; one it cannot rotate for is
+  refused with the error, said once on stderr) — and
+  `~/.mesh/sessions.log` (`SessionsLog`, 20 MB, 2 kept) beside it
+  (`OpenNodeLogs`). node.log is the node's own lines, each session's
+  summaries included; what sessions say — channel mode's `session:`
+  text (`channelText`), `Git.Log`, the harnesses' `Stderr` — goes to
+  `sessionsOut`, sessions.log under `node start`, stderr for every
+  other command. The service templates never append to node.log: the
+  systemd unit's `StandardOutput=journal`/`StandardError=journal`, the
+  LaunchAgent's `~/.mesh/node.crash.log` (`CrashLog`), for a panic's
+  stack and the `restarting: exec` line (written to node.log too). A
+  unit installed earlier keeps its append redirect until `mesh node
+  service install` runs again. `mesh node usage` reads the rotated
+  files oldest first (`LogFiles`).
 
 ## Rules
 
