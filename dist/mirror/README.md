@@ -3,10 +3,12 @@
 The public release mirror of the private source, `runsheet/mesh-cli`.
 Releases v0.2.1 through v0.2.186 were unsigned builds of every push to
 `main`, published here by the old `cli-release.yml` channel. From
-v0.2.187 every release here is a signed tag release, identical to the
+v0.2.188 every release here is a signed tag release, identical to the
 one `runsheet/mesh-cli`'s `release-tag.yml` publishes to itself
 (docs/adr/adr-002-signed-tag-releases.md in `runsheet/mesh-cli`, the
-amendment "the public mirror on runsheet/mesh").
+amendment "the public mirror on runsheet/mesh"). v0.2.187 exists on
+`runsheet/mesh-cli` only, because its mirror step failed, and it is not
+on this line.
 
 ## Install
 

@@ -462,13 +462,15 @@ func (f *Fake) sessionRead(w http.ResponseWriter, credField, arg, toolsField str
 // heartbeatInputType is HeartbeatNodeInput as introspection answers it:
 // every field a heartbeat may carry, less UnknownFields — `scaling`
 // without `accounts` when that is unknown, as the platform before
-// adr-005's per-account slots. Unsupported["__type"] refuses the probe.
+// adr-005's per-account slots; `holding` left out entirely when
+// UnknownFields["holding"] (a platform before node-says-why-work-waits).
+// Unsupported["__type"] refuses the probe.
 func (f *Fake) heartbeatInputType() map[string]any {
 	field := func(name string) map[string]any {
 		return map[string]any{"name": name}
 	}
 	var fields []any
-	for _, name := range []string{"aggregateId", "namespace", "version", "running", "draining", "updateError", "limits", "scaling", "runtimes", "adapters"} {
+	for _, name := range []string{"aggregateId", "namespace", "version", "running", "draining", "updateError", "limits", "scaling", "runtimes", "adapters", "holding"} {
 		if f.UnknownFields[name] {
 			continue
 		}
@@ -479,6 +481,13 @@ func (f *Fake) heartbeatInputType() map[string]any {
 				if !f.UnknownFields[n] {
 					sub = append(sub, field(n))
 				}
+			}
+			row["type"] = map[string]any{"kind": "INPUT_OBJECT", "inputFields": sub}
+		}
+		if name == "holding" {
+			var sub []any
+			for _, n := range []string{"mode", "summary", "until", "accounts", "unclaimed"} {
+				sub = append(sub, field(n))
 			}
 			row["type"] = map[string]any{"kind": "INPUT_OBJECT", "inputFields": sub}
 		}

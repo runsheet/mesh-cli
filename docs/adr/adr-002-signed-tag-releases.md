@@ -1,5 +1,5 @@
 ---
-summary: Nodes update only from tag-cut releases of runsheet/mesh-cli whose SHA256SUMS is signed keyless by runsheet/mesh-cli release-tag.yml's GitHub OIDC identity (tags released before the repo left projectmesh-io also under the old identity); the asset names and that identity are the updater's contract. The same tag pushes and cosign-signs the node image ghcr.io/runsheet/mesh-node:<tag>, which the node pulls before it swaps. An upgrade swaps and restarts the node at once, and the new process adopts the sessions the old one left running; a sandboxed node alone still drains first.
+summary: Nodes update only from tag-cut releases of runsheet/mesh-cli whose SHA256SUMS is signed keyless by runsheet/mesh-cli release-tag.yml's GitHub OIDC identity (tags released before the repo left projectmesh-io also under the old identity); the asset names and that identity are the updater's contract. The same tag pushes and cosign-signs the node image ghcr.io/runsheet/mesh-node:<tag>, which the node pulls before it swaps. An upgrade swaps and restarts the node at once, and the new process adopts the sessions the old one left running; a sandboxed node alone still drains first. Every merge to main that changes cmd/, internal/, images/node/ or go.mod/go.sum is tagged automatically by release-on-merge.yml, pushing with RELEASE_TAG_TOKEN.
 status: accepted
 ---
 
@@ -414,6 +414,27 @@ again and current.
   identity. Which repo `selfupdate.Source` downloads from is a
   following item of the same goal.
 
+**What happened:** `v0.2.187` was cut on 2026-09-28 at 22:46Z
+(`909202b`) and signed and released on `runsheet/mesh-cli`, but it
+never reached the mirror. The mirror step of run `36494313388` failed
+in `gh release create` itself: the tag existed only on the source
+("tag v0.2.187 exists locally but has not been pushed to runsheet/mesh
+… specify the `--target` flag"). #336 fixed it with `--target main`.
+`v0.2.188` (`5a8c29e`) is the first release cut for `runsheet/mesh`
+with that fix. Its run, `36499785802`, signed and released it on
+`runsheet/mesh-cli`, and then the mirror refused the release: `HTTP
+403: Resource not accessible by personal access token`, because
+`RELEASE_TOKEN` cannot create releases on `runsheet/mesh`. It needs a
+fine-grained token owned by `runsheet` with Contents: read and write
+there, or the org App's installation token. So `v0.2.188` is cut but
+not yet mirrored, and the mirror's latest release is still `v0.2.186`.
+Once `v0.2.188` is on the mirror, the numbering rule (max `v0.2.x` on
+`runsheet/mesh` plus one) next yields **`v0.2.189`**, and `v0.2.189` is
+also the retry once the token is fixed. Until then the rule would
+answer `v0.2.187`, a tag the source already holds, so the retry is cut
+by name. `docs/releases-after-transfer.md` ("v0.2.188: the first
+release on the mirror") is the record.
+
 ## Amendment: the node downloads from runsheet/mesh (goal `signed-releases-on-runsheet-mesh`, 2026-09-28)
 
 `runsheet/mesh-cli` stays private, so the source above (`selfupdate.GitHub`
@@ -438,16 +459,63 @@ the updater's side of that:
   came from, so a fork or an unrelated push to `runsheet/mesh` proves
   nothing.
 - `mesh node update` with no version takes the mirror's latest
-  non-prerelease. Until `v0.2.187` is published there, that is still
-  `v0.2.186` — the last of the old unsigned `cli-release.yml` builds,
-  carrying no `SHA256SUMS` or Sigstore bundle at all. `Fetch` refuses it
-  with `ErrMissingAsset` exactly as it would any other release missing
-  an asset; this is the intended behaviour, not a bug to work around,
-  and it clears itself the moment `v0.2.187` ships.
+  non-prerelease. Until `v0.2.188`'s retry, `v0.2.189` (above), is
+  published there, that is still `v0.2.186`. It is the last of the old
+  unsigned `cli-release.yml` builds and carries no Sigstore bundle.
+  `Fetch` refuses it with `ErrMissingAsset`, as it would any other
+  release missing an asset. That is intended, not a bug to work around,
+  and it clears itself once the first signed `v0.2.x` is on the mirror.
 - This supersedes the Decision section's private-repo bullet above: the
   choice it left open (make the repo public, or move to an authenticated
   download) is resolved by the mirror instead — the source repo stays
   private, and the public copy of its releases is what a node reads.
+
+## Amendment: every node-changing merge is a release (goal `node-releases-on-merge`, 2026-09-28)
+
+The mini ran a build ten commits behind main because nothing between a
+merge and a node made a release: a person cross-built and ran `mesh
+node upgrade --binary`, and the only releases were test prereleases
+until `v0.1.0`. The path is now automatic, and the by-hand tag is the
+fallback:
+
+**merge to main → `release-on-merge.yml` → tag `vX.Y.Z` on the merge
+commit → `release-tag.yml` → signed release (and the mirror) → the
+console offers it.**
+
+- **What counts as node-changing.** A push to `main` whose changes
+  (against the first parent) touch `cmd/**`, `internal/**`,
+  `images/node/**`, `go.mod` or `go.sum`. The workflow's `paths` filter
+  says so, and `scripts/release-on-merge.sh` checks it again itself, so
+  a direct call on a docs-only commit prints `no release: …`. Docs,
+  specs, the README and `.github` alone cut no release.
+- **The number.** The last release is the highest `vX.Y.Z` (no `-`:
+  test prereleases never count) among this repo's tags and the public
+  mirror's (`runsheet/mesh`, whose `v0.2.x` line this repo continues,
+  per the mirror amendment above); none is `v0.1.0`. The bump is the
+  patch. A commit already carrying a `vX.Y.Z` tag is no release, so a
+  re-run or a tag cut by hand never makes a second one.
+- **Minor is asked for**, patch reset to 0, by the merged PR's label
+  `release:minor` (the PR found by `gh api
+  repos/<repo>/commits/<sha>/pulls`, else the squash subject's
+  `(#NNN)`), or by `release: minor` in the frontmatter of a
+  `specs/goal-*.md` the merge touches. Major is by hand only. The label
+  is the operator's to create once (`gh label create release:minor`).
+- **The tag-push credential is the shipping credential.** The tag is
+  pushed with the repository secret `RELEASE_TAG_TOKEN` — a fine-grained
+  token with Contents: read and write on `runsheet/mesh-cli`, which the
+  operator creates; the workflow fails naming it when it is unset. Not
+  `GITHUB_TOKEN`: GitHub starts no workflow for a push made with it, so
+  its tag would never run `release-tag.yml`. And `release-tag.yml` is
+  not called as a reusable workflow: a called workflow signs under the
+  caller's run with its own `job_workflow_ref`, not the
+  `release-tag.yml@refs/tags/<tag>` identity `ReleasePolicy` pins. So
+  `release-tag.yml` stays the only signer, unchanged, and "who may push
+  `v*` tags is who may ship to nodes" (Consequences) now reads: who
+  holds `RELEASE_TAG_TOKEN`, or may merge node-changing code to `main`.
+- `concurrency: release-on-merge` (never cancelled) serializes
+  back-to-back merges, so each sees the tag the one before pushed.
+  `workflow_dispatch` with `dry_run` (the default) prints the next tag
+  for its ref's head and pushes nothing.
 
 ## Consequences
 
