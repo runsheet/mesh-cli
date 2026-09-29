@@ -133,7 +133,7 @@ func saveToken(tok string) error {
 	orgs, _ := gw.MyOrgs(ctx)
 	logins := make([]string, 0, len(orgs))
 	for _, o := range orgs {
-		logins = append(logins, o.Login)
+		logins = append(logins, o.Name())
 	}
 	fmt.Printf("Token saved to ~/.mesh/token. You are %s; orgs: %s\n", id, strings.Join(logins, ", "))
 	fmt.Println("`mesh node login` with no argument registers a Latchkey machine credential for this computer instead: its own principal, revocable without touching your token.")

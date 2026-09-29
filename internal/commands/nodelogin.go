@@ -167,7 +167,7 @@ func greetGateway(ctx context.Context, sess *auth.Session) error {
 	orgs, _ := gw.MyOrgs(ctx)
 	logins := make([]string, 0, len(orgs))
 	for _, o := range orgs {
-		logins = append(logins, o.Login)
+		logins = append(logins, o.Name())
 	}
 	fmt.Printf("The gateway knows you as %s; orgs: %s\n", id, strings.Join(logins, ", "))
 	return nil

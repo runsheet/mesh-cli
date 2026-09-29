@@ -100,7 +100,13 @@ caller comparing against GitHub, not showing them to a person. Every
 log and status line in `internal/node` and `internal/commands` that
 printed `sc.Login` for a human now calls `sc.Name()` (or `.Names()`);
 `Login` stays where it is compared to an actual GitHub login — repo
-owner matching, the `orgs:` restriction.
+owner matching, the `orgs:` restriction. The same holds for the org
+half of a project's `org/project`: the planner's, director's, builder's,
+evaluator's, rebaser's and channel's context fetch and prompt name it by
+`Scopes.NameOf(orgID)` / `scope.Name()` (`LoginOf` is gone), so a
+grapevine project is `grapevine/<project>`, never `/<project>`; and
+`gateway.Org.Name()` (login, else tenant slug) names the orgs
+`mesh node login` and `mesh goal set` print.
 
 **`Config.Owner`** is `""`/`"person"` (bring-your-own infra, the
 default) or `"enterprise"` (shared infra); `LoadConfig` rejects any

@@ -123,7 +123,7 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 		dirs[r.FullName()] = sub
 		names = append(names, r.FullName())
 	}
-	cx, err := FetchContext(ctx, d.GW, scope.Login, project.Slug, ContextOptions{Budget: d.contextBudget(), Repos: names, Logf: d.logf})
+	cx, err := FetchContext(ctx, d.GW, scope.Name(), project.Slug, ContextOptions{Budget: d.contextBudget(), Repos: names, Logf: d.logf})
 	if err != nil {
 		d.logf("project %s: context unavailable: %v", project.Slug, err)
 		cx = &Context{}
@@ -157,7 +157,7 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 	}
 	room := RoomFor(direction, project, goals)
 	prompt := harness.ResearchPrompt(harness.ResearchInput{
-		Org: scope.Login, Project: project.Slug, Direction: direction.Direction,
+		Org: scope.Name(), Project: project.Slug, Direction: direction.Direction,
 		Repos: dirs, ContextDir: contextDir, ContextFiles: files, Prologue: len(d.MCP) > 0,
 		Goals: existing, Room: room, Proposes: direction.Proposes(),
 	})

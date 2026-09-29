@@ -455,10 +455,12 @@ func (s Scopes) ByOrg(orgID string) (Scope, bool) {
 	return Scope{}, false
 }
 
-// LoginOf is an org's login, or "" when the node does not serve it.
-func (s Scopes) LoginOf(orgID string) string {
+// NameOf is an org's Name() — its login, or its slug when it has none —
+// or "" when the node does not serve it: the org half of a project's
+// `org/project` in a prompt and in the context fetch.
+func (s Scopes) NameOf(orgID string) string {
 	sc, _ := s.ByOrg(orgID)
-	return sc.Login
+	return sc.Name()
 }
 
 // Logins lists the orgs served, in order, by their raw GitHub login
