@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"strings"
 	"testing"
@@ -141,6 +142,35 @@ func TestLoopBudgetsAreLiveReloaded(t *testing.T) {
 		if !hasLine(logs.String(), want) {
 			t.Fatalf("log lacks %q:\n%s", want, logs.String())
 		}
+	}
+}
+
+// A node.yaml made unparseable between two ticks keeps the last good
+// values and logs the reason, once, as a whole line naming the file.
+func TestLoopKeepsTheLastGoodValuesWhenNodeYAMLIsUnparseable(t *testing.T) {
+	p := newPriorityFake(t)
+	loop, _, logs := p.liveLoop(t, "slug: box\nname: Box\norgs: [acme]\ncapacity: 2\n")
+	loop.Tick(context.Background())
+	loop.wg.Wait()
+	if loop.Capacity() != 2 {
+		t.Fatalf("before the broken file: capacity = %d, want 2", loop.Capacity())
+	}
+	writeNodeYAML(t, "slug: box\ncapacity: [not a number\n")
+	path, err := ConfigPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	loop.Tick(context.Background())
+	loop.wg.Wait()
+	if loop.Capacity() != 2 {
+		t.Fatalf("after the broken file: capacity = %d, want 2 kept", loop.Capacity())
+	}
+	want := fmt.Sprintf("reload config: node.yaml (keeping the last good capacity and limits): parse %s: yaml: line 1: did not find expected ',' or ']'", path)
+	if !hasLine(logs.String(), want) {
+		t.Fatalf("log lacks the whole line %q:\n%s", want, logs.String())
+	}
+	if n := strings.Count(logs.String(), "reload config:"); n != 1 {
+		t.Fatalf("reload config logged %d time(s) in one tick, want 1", n)
 	}
 }
 
