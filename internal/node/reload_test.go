@@ -36,6 +36,79 @@ func TestLoopAccountsAreLiveReloaded(t *testing.T) {
 	}
 }
 
+// node.yaml's `limits:` thresholds are read live: a figure changed
+// between two ticks is in force on the next one, with no restart, and
+// the change is logged as a whole line.
+func TestLoopLimitsAreLiveReloaded(t *testing.T) {
+	p := newPriorityFake(t)
+	loop, _, logs := p.liveLoop(t, "slug: box\nname: Box\norgs: [acme]\ncapacity: 1\n"+
+		"limits:\n  pace_five_hour: 0.5\n  stop: 0.9\n")
+	loop.Tick(context.Background())
+	loop.wg.Wait()
+	if th := loop.Thresholds(); th.PaceFiveHour != 0.5 || th.Stop != 0.9 {
+		t.Fatalf("before the change: thresholds = %+v, want 0.5/0.9", th)
+	}
+	writeNodeYAML(t, "slug: box\nname: Box\norgs: [acme]\ncapacity: 1\n"+
+		"limits:\n  pace_five_hour: 0.6\n  stop: 0.95\n")
+	loop.Tick(context.Background())
+	loop.wg.Wait()
+	if th := loop.Thresholds(); th.PaceFiveHour != 0.6 || th.Stop != 0.95 {
+		t.Fatalf("after the change: thresholds = %+v, want 0.6/0.95", th)
+	}
+	if !hasLine(logs.String(), "limits: pace five-hour 50% → 60%, stop 90% → 95%") {
+		t.Fatalf("the change is not logged:\n%s", logs.String())
+	}
+}
+
+// node.yaml's `context:` budget is read live from disk: a figure
+// changed between two ticks is in force on the next one, with no
+// restart, and the change is logged as a whole line.
+func TestLoopContextBudgetIsLiveReloadedFromNodeYAML(t *testing.T) {
+	p := newPriorityFake(t)
+	loop, _, logs := p.liveLoop(t, "slug: box\nname: Box\norgs: [acme]\ncapacity: 1\n"+
+		"context:\n  bytes_max: 131072\n  doc_bytes_max: 32768\n")
+	loop.Tick(context.Background())
+	loop.wg.Wait()
+	if got := loop.ContextBudget(); got != (ContextConfig{BytesMax: 131072, DocBytesMax: 32768}) {
+		t.Fatalf("before the change: %+v, want 131072/32768", got)
+	}
+	writeNodeYAML(t, "slug: box\nname: Box\norgs: [acme]\ncapacity: 1\n"+
+		"context:\n  bytes_max: 4096\n  doc_bytes_max: 1024\n")
+	loop.Tick(context.Background())
+	loop.wg.Wait()
+	if got := loop.ContextBudget(); got != (ContextConfig{BytesMax: 4096, DocBytesMax: 1024}) {
+		t.Fatalf("after the change: %+v, want 4096/1024", got)
+	}
+	if !hasLine(logs.String(), "context: bytes_max 131072 → 4096, doc_bytes_max 32768 → 1024") {
+		t.Fatalf("the change is not logged:\n%s", logs.String())
+	}
+}
+
+// The orgs the node serves are read live, both node.yaml's restriction
+// and the platform's own list: a new org appearing in MyOrgs between
+// two ticks is served on the next one, with no restart, and the change
+// is logged as a whole line.
+func TestLoopOrgsAreLiveReloaded(t *testing.T) {
+	p := newPriorityFake(t)
+	globex := p.Orgs[1]
+	p.Orgs = p.Orgs[:1]
+	loop, _, logs := p.liveLoop(t, "slug: box\nname: Box\ncapacity: 1\n")
+	loop.Tick(context.Background())
+	loop.wg.Wait()
+	if got := loop.CurrentScopes().Logins(); strings.Join(got, ",") != "acme" {
+		t.Fatalf("before the change: orgs = %v, want acme", got)
+	}
+	p.Orgs = append(p.Orgs, globex)
+	loop.Tick(context.Background())
+	loop.wg.Wait()
+	if got := loop.CurrentScopes().Logins(); strings.Join(got, ",") != "acme,globex" {
+		t.Fatalf("after the change: orgs = %v, want acme,globex", got)
+	}
+	if !hasLine(logs.String(), "orgs acme → acme, globex") {
+		t.Fatalf("the change is not logged:\n%s", logs.String())
+	}
+}
+
 // node.yaml's `budgets:` (kind/model) and `project_budgets:` are read
 // live: a figure changed between two ticks is in force on the next one,
 // and each one that changed is logged with its old and new value.
