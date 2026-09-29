@@ -83,6 +83,29 @@ func TestRotatingFileRotatesAnOversizedLogOnOpen(t *testing.T) {
 	}
 }
 
+// An oversized log whose rotation fails on open is an error naming the
+// log, never a panic, and the file is left as it was.
+func TestRotatingFileOpenFailsWhenAnOversizedLogCannotRotate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "node.log")
+	if err := os.WriteFile(path, bytes.Repeat([]byte("y"), 5000), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// node.log.1 a non-empty directory: the rename cannot happen
+	if err := os.MkdirAll(filepath.Join(path+".1", "held"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	r, err := OpenRotating(path, 1000, 1)
+	if err == nil || r != nil {
+		t.Fatalf("OpenRotating = %v, %v; want nil and an error", r, err)
+	}
+	if want := "log " + path + ": rotate on open (5000 bytes, cap 1000): "; !strings.HasPrefix(err.Error(), want) {
+		t.Fatalf("error = %q, want it to start %q", err, want)
+	}
+	if st, err := os.Stat(path); err != nil || st.Size() != 5000 {
+		t.Fatalf("node.log after the failed open: %v %v, want 5000 bytes", st, err)
+	}
+}
+
 // The node's own lines go to node.log and a session's text to
 // sessions.log, never the other.
 func TestNodeLogsKeepSessionsApart(t *testing.T) {
