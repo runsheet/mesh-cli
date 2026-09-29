@@ -1185,6 +1185,12 @@ func (l *Loop) reload(ctx context.Context) {
 		if labels(was) != labels(got.Spending.Accounts) {
 			l.logf("accounts %s → %s", labels(was), labels(got.Spending.Accounts))
 		}
+		for _, line := range accountChanges(was, got.Spending.Accounts) {
+			l.logf("%s", line)
+		}
+		for _, line := range budgetChanges(Spending{Budgets: l.sessionBudgets(), ProjectBudgets: l.projectBudgets()}, *got.Spending) {
+			l.logf("%s", line)
+		}
 		l.mu.Lock()
 		l.spending, l.spendingSet = *got.Spending, true
 		l.mu.Unlock()

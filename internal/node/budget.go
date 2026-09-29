@@ -2,6 +2,8 @@ package node
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
@@ -109,4 +111,45 @@ func SessionBudget(kindBudget float64, kindSource string, goal *gateway.Goal, fa
 	default:
 		return amount, "the session's own cap"
 	}
+}
+
+// budgetTiers are the model tiers a `budgets:` entry names, in the
+// order a log line lists them.
+var budgetTiers = []string{"haiku", "sonnet", "opus"}
+
+// budgetChanges are a reload's changes to the session budgets and the
+// project budgets, one line per entry whose figure in force changed:
+// `budget <kind>/<tier> <old> → <new>` with the defaults applied
+// (kindModelBudget — adding build/sonnet 7 is $4.00 → $7.00, removing
+// it the reverse, ADR 012), and `project budget <project> <old> →
+// <new>`, "none" where there is no figure.
+func budgetChanges(was, now Spending) []string {
+	kinds := map[string]bool{}
+	for _, m := range []map[string]map[string]float64{defaultBudgets, was.Budgets, now.Budgets} {
+		for k := range m {
+			kinds[k] = true
+		}
+	}
+	var out []string
+	for _, kind := range slices.Sorted(maps.Keys(kinds)) {
+		for _, tier := range budgetTiers {
+			from, _ := kindModelBudget(was.Budgets, kind, tier)
+			to, _ := kindModelBudget(now.Budgets, kind, tier)
+			if from != to {
+				out = append(out, fmt.Sprintf("budget %s/%s %s → %s", kind, tier, dollars(from), dollars(to)))
+			}
+		}
+	}
+	projects := map[string]bool{}
+	for _, m := range []map[string]float64{was.ProjectBudgets, now.ProjectBudgets} {
+		for p := range m {
+			projects[p] = true
+		}
+	}
+	for _, p := range slices.Sorted(maps.Keys(projects)) {
+		if from, to := was.ProjectBudgets[p], now.ProjectBudgets[p]; from != to {
+			out = append(out, fmt.Sprintf("project budget %s %s → %s", p, dollars(from), dollars(to)))
+		}
+	}
+	return out
 }
