@@ -201,27 +201,18 @@ mirror on runsheet/mesh"). `v0.2.188` is the first signed release on
 `runsheet/mesh`. Run `36499785802`'s first attempt was refused by the
 mirror with HTTP 403 (`RELEASE_TOKEN`). The operator replaced the token
 and re-ran it; attempt 3 published the release on both repositories at
-2026-09-29 00:50Z. The mini has run it since 00:51:59Z. `v0.2.187` was
-cut and signed on `runsheet/mesh-cli` only.
+2026-09-29 00:50Z. The mini has run it since 00:51:59Z.
+`v0.2.187` was cut and signed on `runsheet/mesh-cli` only, never mirrored (its own section below).
 
 ### Tag
 
 ```
-$ git ls-remote --tags origin v0.2.187 v0.2.188 'v0.2.187^{}' 'v0.2.188^{}'
-b4cf92e2a8c5f8a611092b8e9b8dde79dddac506	refs/tags/v0.2.187
-909202bb9a2081e220cacdaafb07349da5ca66a0	refs/tags/v0.2.187^{}
+$ git ls-remote --tags origin v0.2.188 'v0.2.188^{}'
 1d587a0ef52bfdcaf2ffa13bb26c4de82d4807f7	refs/tags/v0.2.188
 5a8c29ea1f534f69fa64dbcaf5f7be7497d9ffb1	refs/tags/v0.2.188^{}
 
-$ git ls-remote --tags origin 'v0.2.*'
-b4cf92e2a8c5f8a611092b8e9b8dde79dddac506	refs/tags/v0.2.187
-909202bb9a2081e220cacdaafb07349da5ca66a0	refs/tags/v0.2.187^{}
-1d587a0ef52bfdcaf2ffa13bb26c4de82d4807f7	refs/tags/v0.2.188
-5a8c29ea1f534f69fa64dbcaf5f7be7497d9ffb1	refs/tags/v0.2.188^{}
-
-$ git for-each-ref refs/tags/v0.2.187 refs/tags/v0.2.188 \
+$ git for-each-ref refs/tags/v0.2.188 \
     --format='%(refname:short) %(objectname:short) %(*objectname:short) %(taggerdate:iso8601) %(taggername)'
-v0.2.187 b4cf92e 909202b 2026-09-28 22:46:04 +0000 Chris Kolenko
 v0.2.188 1d587a0 5a8c29e 2026-09-29 09:46:50 +1000 Chris Kolenko
 
 $ git merge-base --is-ancestor 5a8c29e origin/main && echo ancestor
@@ -442,31 +433,20 @@ exit 1
 
 ### v0.2.187, cut but never mirrored
 
-The tag was cut at 2026-09-28 22:46:04Z on `909202b`. Its release on
-`runsheet/mesh-cli` was published at 23:28:42Z. Run `36494313388`'s
-mirror step failed in `gh` itself, before any request reached
-`runsheet/mesh`:
-
-```
-$ gh run view 36494313388 --repo runsheet/mesh-cli --log-failed | tail -2
-Sign and publish v0.2.187	Mirror the release to runsheet/mesh	2026-09-28T23:28:44.3714852Z tag v0.2.187 exists locally but has not been pushed to runsheet/mesh, please push it before continuing or specify the `--target` flag to create a new tag
-Sign and publish v0.2.187	Mirror the release to runsheet/mesh	2026-09-28T23:28:44.4038660Z ##[error]Process completed with exit code 1.
-```
+The tag was cut at 2026-09-28 22:46:04Z on `909202b`. Its release on `runsheet/mesh-cli` was published at 23:28:42Z, and `v0.2.187` was cut and signed on `runsheet/mesh-cli` only — it never reached `runsheet/mesh`.
+Run `36494313388`'s mirror step failed in `gh` itself, before any request reached the mirror: the tag existed on the source alone, and `gh release create` refused to guess a target on a repository with no commit of ours (`gh run view 36494313388 --repo runsheet/mesh-cli --log-failed`, the mirror step's last two lines: `tag v0.2.187 exists locally but has not been pushed to runsheet/mesh, please push it before continuing or specify the --target flag to create a new tag`, then the exit).
 
 #336 (`5a8c29e`) added `--target main` to `scripts/mirror-release.sh`'s
-`gh release create`. The mirror has no commit of ours, so its tag is
-created at its default branch's head. v0.2.187 never reached the
-token, which is why the 403 first showed up on v0.2.188. Item 10 added
-one paragraph to its release notes on `runsheet/mesh-cli`. The tag and
-the release are left as they were:
+`gh release create`, which is why `v0.2.188`'s mirror step could create the mirror's tag from scratch while the release before it — never mirrored — could not.
+Item 10 added one paragraph to `v0.2.187`'s release notes on `runsheet/mesh-cli` recording that it was never mirrored; the tag and the release are otherwise left as they were:
 
 ```
-$ gh release view v0.2.187 --repo runsheet/mesh-cli --json body -q .body | grep -o '^Never mirrored: [^)]*)\.' | sed 's/^/v0.2.187: /'
-v0.2.187: Never mirrored: the mirror step of run 36494313388 failed before it reached runsheet/mesh (gh release create without --target, fixed in #336).
+$ gh release view v0.2.187 --repo runsheet/mesh-cli --json body -q .body | grep -o '^Never mirrored: [^)]*)\.'   # v0.2.187's own notes: never mirrored
+Never mirrored: the mirror step of run 36494313388 failed before it reached runsheet/mesh (gh release create without --target, fixed in #336).
 ```
 
-That paragraph's second sentence was written before attempt 3. It still
-calls v0.2.188 unmirrored and v0.2.189 the retry (see "What is owed").
+That paragraph's second sentence was written before attempt 3 and is now stale — it still
+calls v0.2.188 unmirrored and v0.2.189 the retry (see "What is owed"); the fact that `v0.2.187` itself was never mirrored is unaffected.
 
 ### v0.1.0 superseded
 
@@ -496,13 +476,10 @@ $ cmp /tmp/live-readme.md /tmp/tag-readme.md && echo identical
 identical
 $ wc -c /tmp/live-readme.md
 2070 /tmp/live-readme.md
-$ grep -n 'v0.2.187' /tmp/live-readme.md
-6:v0.2.187 every release here is a signed tag release, identical to the
 ```
 
-It still says "From v0.2.187", because that is what `main` held at
-`5a8c29e`. This branch changes `dist/mirror/README.md` to "From
-v0.2.188", saying that v0.2.187 exists on `runsheet/mesh-cli` only. The
+The live text at `v0.2.188` still opens "From v0.2.187 every release here is a signed tag release", because that is what `main` held at `5a8c29e` — before this branch's fix. `v0.2.187` itself was cut and signed on `runsheet/mesh-cli` only and never reached that README's mirror.
+This branch changes `dist/mirror/README.md` to open "From v0.2.188" instead, and states there that `v0.2.187` exists on `runsheet/mesh-cli` only, never mirrored. The
 next release's mirror step pushes that text. Nobody edits the mirror's
 README by hand.
 
@@ -607,19 +584,21 @@ published on the mirror.
 
 ### What is owed
 
-1. **desiredVersion.** The platform's desiredVersion for the mini is
-   still `v0.1.0`. The loop refuses it after every heartbeat and records
-   the `updateError` above, then waits an hour on that version before
-   trying again. The operator sets it to `v0.2.188` from the console's
-   Update menu (`setNodeDesiredVersion`). A node session does not set
-   it.
+1. **desiredVersion — done.** The `updateError` above is what the
+   heartbeat recorded before the fix: the platform's desiredVersion for
+   the mini was still `v0.1.0`, and the loop kept refusing it. The
+   operator has since set it to `v0.2.188` from the console's Update
+   menu (`setNodeDesiredVersion`); `mesh_health_nodes` for
+   `runsheet/mesh` now reports the mini's `desiredVersion` as
+   `v0.2.188`, matching the version it runs. A node session does not
+   set it.
 2. **The console's release list.** `meshCliReleases` has to read
    `runsheet/mesh`, so that the Update menu lists exactly what a node
    can fetch. That work is owed on `runsheet/runsheet`.
 3. **v0.2.189 is simply the next tag.** ADR 002's rule is the highest
    `v0.2.x` on `runsheet/mesh` plus one, which is now `v0.2.189`. Its
    mirror step pushes this branch's `dist/mirror/README.md`.
-4. **v0.2.187's notes.** The second sentence of v0.2.187's "Never
-   mirrored" paragraph is stale. It still calls v0.2.188 not yet
+4. **`v0.2.187`'s notes are stale in one sentence, but the fact stands: `v0.2.187` was cut and signed on `runsheet/mesh-cli` only, never mirrored.** The second sentence of its "Never
+   mirrored" paragraph still calls v0.2.188 not yet
    mirrored and v0.2.189 the retry. Editing those notes is the
-   operator's call. This item leaves the v0.2.187 release as it was.
+   operator's call. This item leaves the release itself as it was.

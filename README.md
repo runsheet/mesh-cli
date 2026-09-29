@@ -1759,8 +1759,8 @@ identical to the one on `runsheet/mesh-cli`. `mesh node update` with no
 version now takes `v0.2.188` or later. On the mirror, `v0.2.1`–`v0.2.186`
 are unsigned old-channel builds from before signed releases. They have
 no Sigstore bundle signed by `runsheet/mesh-cli`'s `release-tag.yml`, so
-the updater refuses them. `v0.2.187` exists on `runsheet/mesh-cli` only,
-because its mirror step failed before #336. To check a release by hand,
+the updater refuses them.
+`v0.2.187` exists on `runsheet/mesh-cli` only, never mirrored, because its mirror step failed before #336. To check a release by hand,
 download it and verify it from the directory
 (`docs/releases-after-transfer.md` has the record):
 
