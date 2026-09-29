@@ -44,6 +44,9 @@ type Director struct {
 	// Loop.KindModelBudget); nil falls back to Cfg's own, read once at
 	// start.
 	Budgets func(kind, model string) (amount float64, source string)
+	// ContextBudget is node.yaml's `context:` budget in force, read
+	// live (Loop.ContextBudget); nil is Cfg's own, read once at start.
+	ContextBudget func() ContextConfig
 	// Model is what a research session runs on ("" the CLI's default).
 	Model string
 	// Accounts are the node's Claude accounts (node.yaml); a session runs
@@ -118,7 +121,7 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 		}
 		dirs[r.FullName()] = sub
 	}
-	cx, err := FetchContext(ctx, d.GW, scope.Login, project.Slug)
+	cx, err := FetchContext(ctx, d.GW, scope.Login, project.Slug, ContextOptions{Budget: d.contextBudget()})
 	if err != nil {
 		d.logf("project %s: context unavailable: %v", project.Slug, err)
 		cx = &Context{}
@@ -420,4 +423,16 @@ func slugify(s string) string {
 		}
 	}
 	return strings.Trim(b.String(), "-")
+}
+
+// contextBudget is the context budget for d's sessions: live, through
+// d.ContextBudget, when set; else Cfg's own.
+func (d *Director) contextBudget() ContextConfig {
+	if d.ContextBudget != nil {
+		return d.ContextBudget()
+	}
+	if d.Cfg == nil {
+		return ContextConfig{}.Effective()
+	}
+	return d.Cfg.Context.Effective()
 }

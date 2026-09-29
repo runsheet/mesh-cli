@@ -44,6 +44,9 @@ type Evaluator struct {
 	// Loop.KindModelBudget); nil falls back to Cfg's own, read once at
 	// start.
 	Budgets func(kind, model string) (amount float64, source string)
+	// ContextBudget is node.yaml's `context:` budget in force, read
+	// live (Loop.ContextBudget); nil is Cfg's own, read once at start.
+	ContextBudget func() ContextConfig
 	// Model is the node's own evaluate model (node.yaml evaluate, else
 	// default; "" the CLI's default). An item that names a model or an
 	// agent with one evaluates on the strongest of this, its build model
@@ -218,7 +221,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	}
 	// the same context the builder had: the ADRs it was bound by
 	orgLogin := e.Scopes.LoginOf(item.OrgID)
-	cx, err := FetchContext(ctx, e.GW, orgLogin, res.Project.Slug)
+	cx, err := FetchContext(ctx, e.GW, orgLogin, res.Project.Slug, ContextOptions{Budget: e.contextBudget()})
 	if err != nil {
 		e.logf("item %s: context unavailable: %v", label, err)
 		cx = &Context{}
@@ -1099,4 +1102,16 @@ func hasToolError(result harness.Result) bool {
 		}
 	}
 	return false
+}
+
+// contextBudget is the context budget for e's sessions: live, through
+// e.ContextBudget, when set; else Cfg's own.
+func (e *Evaluator) contextBudget() ContextConfig {
+	if e.ContextBudget != nil {
+		return e.ContextBudget()
+	}
+	if e.Cfg == nil {
+		return ContextConfig{}.Effective()
+	}
+	return e.Cfg.Context.Effective()
 }

@@ -15,10 +15,10 @@ import (
 func TestContextSizeBudget(t *testing.T) {
 	f := seed(t)
 	f.Documents["acme/mesh"] = append(f.Documents["acme/mesh"], map[string]any{"slug": "trd", "title": "TRD", "kind": "trd", "repo": "acme/widgets", "path": "specs/trd.md"})
-	f.Bodies["acme/mesh/trd"] = strings.Repeat("x", DocBytesMax+1)
-	f.Bodies["acme/mesh/adr-001"] = strings.Repeat("y", DocBytesMax+1) // binding: on disk whatever its size
+	f.Bodies["acme/mesh/trd"] = strings.Repeat("x", DefaultDocBytesMax+1)
+	f.Bodies["acme/mesh/adr-001"] = strings.Repeat("y", DefaultDocBytesMax+1) // binding: on disk whatever its size
 	gw := gateway.New(f.URL(), "rs_test")
-	cx, err := FetchContext(context.Background(), gw, "acme", "mesh")
+	cx, err := FetchContext(context.Background(), gw, "acme", "mesh", ContextOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
