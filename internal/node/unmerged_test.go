@@ -88,23 +88,24 @@ func TestLoopHoldsFreshClaimsForARepoAtItsUnmergedLimit(t *testing.T) {
 	}
 }
 
-// claim.unmerged_per_repo is read from node.yaml every tick: absent
-// claims everything, set to 1 the next tick holds, absent again claims.
+// claim.unmerged_per_repo is read from node.yaml every tick: 0 claims
+// everything, set to 2 the next tick holds, absent again claims.
 func TestLoopUnmergedLimitIsReadEveryTick(t *testing.T) {
 	p := newPriorityFake(t)
 	p.addGoal(orgID, "steady", "normal")
-	p.addReview(orgID, "steady", "a-open", repoID, 1)
-	p.addItemRow(orgID, "steady", "a1", 2, nil)
-	loop, _, logs := p.liveLoop(t, "slug: box\nname: Box\norgs: [acme]\ncapacity: 3\n")
+	p.addReview(orgID, "steady", "a-open-1", repoID, 1)
+	p.addReview(orgID, "steady", "a-open-2", repoID, 2)
+	p.addItemRow(orgID, "steady", "a1", 3, nil)
+	loop, _, logs := p.liveLoop(t, "slug: box\nname: Box\norgs: [acme]\ncapacity: 3\nclaim:\n  unmerged_per_repo: 0\n")
 	if got := p.claimedBy(loop); strings.Join(got, ",") != "a1" {
-		t.Fatalf("absent: claimed %v, want a1", got)
+		t.Fatalf("limit 0: claimed %v, want a1", got)
 	}
-	writeNodeYAML(t, "slug: box\nname: Box\norgs: [acme]\ncapacity: 3\nclaim:\n  unmerged_per_repo: 1\n")
-	p.addItemRow(orgID, "steady", "a2", 3, nil)
+	writeNodeYAML(t, "slug: box\nname: Box\norgs: [acme]\ncapacity: 3\nclaim:\n  unmerged_per_repo: 2\n")
+	p.addItemRow(orgID, "steady", "a2", 4, nil)
 	if got := p.claimedBy(loop); len(got) != 0 {
 		t.Fatalf("at the limit: claimed %v, want none", got)
 	}
-	if !strings.Contains(logs.String(), "claim: unmerged_per_repo 0 → 1") {
+	if !strings.Contains(logs.String(), "claim: unmerged_per_repo 0 → 2") {
 		t.Fatalf("the change is not logged:\n%s", logs)
 	}
 	writeNodeYAML(t, "slug: box\nname: Box\norgs: [acme]\ncapacity: 3\n")
