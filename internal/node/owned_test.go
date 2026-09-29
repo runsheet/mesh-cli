@@ -18,21 +18,34 @@ import (
 // gateway-backed ones are TestLoopOwned… in loop_test.go.
 
 // steps is a Registrar that records what Register did, in order:
-// "resolve", "owner <nodeID>", "org <name>" per legacy registration.
+// "probe", "resolve", "any org", "owner <nodeID>", "org <name>" per
+// legacy registration. resolveErr is what Resolve refuses with (an orgs
+// restriction the person's orgs cannot meet).
 type steps struct {
-	takes  bool
-	answer *gateway.NodeAnswer
-	scopes Scopes
-	did    []string
-	logged []string
+	takes      bool
+	answer     *gateway.NodeAnswer
+	scopes     Scopes
+	resolveErr error
+	did        []string
+	logged     []string
 }
 
 func (s *steps) registrar() Registrar {
 	return Registrar{
-		TakesOwner: func(context.Context) bool { return s.takes },
+		TakesOwner: func(context.Context) bool {
+			s.did = append(s.did, "probe")
+			return s.takes
+		},
 		Resolve: func(context.Context) (Scopes, error) {
 			s.did = append(s.did, "resolve")
+			if s.resolveErr != nil {
+				return nil, s.resolveErr
+			}
 			return s.scopes, nil
+		},
+		AnyOrg: func(context.Context) (string, error) {
+			s.did = append(s.did, "any org")
+			return "33333333-3333-4333-8333-333333333333", nil
 		},
 		RegisterOwner: func(_ context.Context, nodeID, orgID string) (*gateway.NodeAnswer, error) {
 			s.did = append(s.did, "owner "+nodeID)
@@ -93,7 +106,7 @@ func TestOwnedRegisterFixtureThreeScopesOneNodeID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"resolve", "owner 22222222-2222-4222-8222-222222222222"}; !slices.Equal(s.did, want) {
+	if want := []string{"probe", "any org", "owner 22222222-2222-4222-8222-222222222222"}; !slices.Equal(s.did, want) {
 		t.Fatalf("did %q, want %q", s.did, want)
 	}
 	if reg.Owned == nil || reg.Owned.NodeID != "55555555-5555-4555-8555-555555555555" || reg.Owned.Owner.String() != "owned by Chris" || reg.Owned.Owner.Kind != "person" {
@@ -211,7 +224,7 @@ func TestOwnedRegisterLegacyPerOrgWithNoOwner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"resolve", "org runsheet", "org wardroomid"}; !slices.Equal(s.did, want) {
+	if want := []string{"probe", "resolve", "org runsheet", "org wardroomid"}; !slices.Equal(s.did, want) {
 		t.Fatalf("did %q, want %q", s.did, want)
 	}
 	if reg.Owned != nil || !slices.Equal(reg.Scopes, s.scopes) || len(s.logged) != 0 {
@@ -229,7 +242,7 @@ func TestOwnedRegisterNilAnswerFallsBackPerOrg(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"resolve", "owner 22222222-2222-4222-8222-222222222222", "org runsheet", "org wardroomid"}; !slices.Equal(s.did, want) {
+	if want := []string{"probe", "any org", "owner 22222222-2222-4222-8222-222222222222", "resolve", "org runsheet", "org wardroomid"}; !slices.Equal(s.did, want) {
 		t.Fatalf("did %q, want %q", s.did, want)
 	}
 	if reg.Owned != nil || !slices.Equal(reg.Scopes, s.scopes) {
@@ -237,6 +250,33 @@ func TestOwnedRegisterNilAnswerFallsBackPerOrg(t *testing.T) {
 	}
 	if len(s.logged) != 1 || !strings.Contains(s.logged[0], "serving per org") {
 		t.Fatalf("logged %q, want the fallback once", s.logged)
+	}
+}
+
+// The probe comes before the person's orgs are read: an orgs
+// restriction naming grapevine by its slug — an org the person's
+// MyOrgs, which the restriction would be checked against, cannot meet —
+// is checked against the answer instead, and holds.
+func TestOwnedRegisterProbesBeforeResolving(t *testing.T) {
+	cfg := ownedCfg()
+	s := &steps{takes: true, answer: answerFixture(t, "registerNode.json"), resolveErr: fmt.Errorf("not a member of grapevine (the node.yaml orgs list names them)")}
+	reg, err := Register(context.Background(), s.registrar(), cfg, []string{"grapevine"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"probe", "any org", "owner 22222222-2222-4222-8222-222222222222"}; !slices.Equal(s.did, want) {
+		t.Fatalf("did %q, want %q (the person's orgs never read)", s.did, want)
+	}
+	if got := strings.Join(reg.Scopes.Names(), ", "); got != "grapevine" || reg.Owned == nil {
+		t.Fatalf("scopes %q owned %+v, want grapevine alone on the owner contract", got, reg.Owned)
+	}
+	// With the probe false the same restriction is today's refusal.
+	s = &steps{takes: false, resolveErr: fmt.Errorf("not a member of grapevine")}
+	if _, err := Register(context.Background(), s.registrar(), cfg, []string{"grapevine"}); err == nil {
+		t.Fatal("legacy path took a restriction the person's orgs cannot meet")
+	}
+	if want := []string{"probe", "resolve"}; !slices.Equal(s.did, want) {
+		t.Fatalf("did %q, want %q", s.did, want)
 	}
 }
 
