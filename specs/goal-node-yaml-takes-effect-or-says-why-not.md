@@ -220,12 +220,14 @@ The mini is still on **v0.2.191** (`8eba662`, PR #434 — registration
 declares an owner), the tag it was already running at 13:30Z, and is 21
 commits behind `main`'s head (`38f854d`). It has picked up none of
 items 3, 6, 7, 8 or 9 (checked by `git merge-base --is-ancestor
-<commit> v0.2.191`, all four "no"). The release that first carries
-item 6's capacity-heartbeat fix (`634e2e6`) is **v0.2.204** (tagged
-2026-09-29 22:25:22Z); item 3's panic guard (`348f147`) lands one tag
-earlier, v0.2.203 (22:09:18Z); item 9 first in v0.2.206, item 7 first
-in v0.2.207, item 8 first in v0.2.208 — the latest release
-(23:24:32Z), which carries all five.
+<commit> v0.2.191`, all five "no"). By the same check against each
+release tag: item 3's panic guard (`348f147`) first lands in
+**v0.2.203** (tagged 2026-09-29 22:09:18Z); item 6's capacity-heartbeat
+fix (`634e2e6`) first in **v0.2.204** (22:25:22Z); item 7's log
+rotation (`f4b9cbb`) first in **v0.2.205** (22:48:13Z); item 9's reload
+failure logging (`54ffce3`) first in **v0.2.206** (23:05:40Z); item 8's
+every-field reload logging (`38f854d`) first in **v0.2.208**
+(23:24:32Z), the latest release, which carries all five.
 
 The `capacity: 8` the platform shows now, **labelled version v0.2.191**,
 is not evidence of the fix: it is the 14:13–14:25Z restart's
@@ -475,7 +477,7 @@ release carrying this and its unit is reinstalled.
 **On the mini.** The mini has not yet run a release carrying this
 item: it is on v0.2.191 (`mesh_health_nodes`, confirmed again this
 session at 23:39:53Z), 21 commits behind main; the first release with
-the rotation is v0.2.207 (`## The mini before and after`, above). This
+the rotation is v0.2.205 (`## The mini before and after`, above). This
 session has no shell on the mini (`ssh mini` refuses this session's
 key, tried again while writing this section) and, per this item's
 instruction, did not restart or reinstall its unit to get a fresh
@@ -489,11 +491,12 @@ roughly 18 hours since), 1,239 of them channel `session:` text, and no
 `sessions.log` exists — the unit still has the append redirect, so
 node.log is still unbounded there regardless of the rotation code
 being on main. The operator owes two steps, in order, once ready:
-upgrade the mini past v0.2.207 (the release path, or by hand with
-`mesh node upgrade --binary`), then run `mesh node service install`
-again so the unit's `StandardOutput`/`StandardError` drop the
-`append:~/.mesh/node.log` redirect for `journal` — rotation runs
-regardless of the unit, but the stale redirect keeps the shell
+upgrade the mini to v0.2.208 or later (the release path, or by hand
+with `mesh node upgrade --binary`) — v0.2.205 alone would carry the
+rotation, but v0.2.208 also carries items 8 and 9 — then run `mesh node
+service install` again so the unit's `StandardOutput`/`StandardError`
+drop the `append:~/.mesh/node.log` redirect for `journal` — rotation
+runs regardless of the unit, but the stale redirect keeps the shell
 appending the same growing file underneath it until the unit is
 reinstalled. node.log's and sessions.log's sizes after an hour of real
 work on the mini are owed once both steps are done.
