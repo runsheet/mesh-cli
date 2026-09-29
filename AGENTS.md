@@ -340,6 +340,19 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   refuses `socket()` and no test that binds loopback runs — the price
   is a sandbox that can reach the network (ADR-011's amendment
   2026-09-29, item 9).
+  A **provider** (docs/adr/adr-015) is an OpenAI-compatible endpoint an
+  account runs against instead of OpenAI: `codex.providers.<name>` in
+  node.yaml gives a `base_url` (vLLM and SGLang serve OpenAI's API under
+  `/v1`), an optional `wire_api` (`chat`, the default, or `responses`)
+  and the list prices of the models it serves; an account names one with
+  `provider:` and must be an api-key account, because the key rides
+  `OPENAI_API_KEY` and a plan login has none to send. The provider is
+  declared first in `config.toml` as `model_provider` and its table, and
+  on its own makes the file worth writing. Its price table is the only
+  one its models are costed at — an unpriced model records tokens and no
+  money — so `CodexPrices` stays OpenAI's alone. An adapter is the CLI
+  and a provider is where the tokens come from: Kimi behind vLLM is a
+  provider, not a third adapter.
   Each session's event stream and stderr are kept for 24 hours under
   `<work root>/kept-sessions/<name>/` (`output.jsonl`, `stderr.log`;
   `KeepSessionOutput`), as a Claude session's output is. Before a Codex

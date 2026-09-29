@@ -184,13 +184,13 @@ codex:
 	if cx.Binary != "/opt/codex/bin/codex" || len(cx.Accounts) != 3 {
 		t.Fatalf("codex %+v", cx)
 	}
-	if a := cx.Accounts[0].Harness(); a.Name != "plus" || a.Home != "~/.mesh/codex/plus" || a.IsAPIKey() {
+	if a := cx.Accounts[0].Harness(cx.Providers); a.Name != "plus" || a.Home != "~/.mesh/codex/plus" || a.IsAPIKey() {
 		t.Fatalf("plan account %+v", a)
 	}
-	if a := cx.Accounts[1].Harness(); a.APIKeyEnv != "OPENAI_API_KEY" || !a.IsAPIKey() {
+	if a := cx.Accounts[1].Harness(cx.Providers); a.APIKeyEnv != "OPENAI_API_KEY" || !a.IsAPIKey() {
 		t.Fatalf("api account %+v", a)
 	}
-	if a := cx.Accounts[2].Harness(); a.APIKeyFile != "~/.mesh/codex/api.key" || !a.IsAPIKey() {
+	if a := cx.Accounts[2].Harness(cx.Providers); a.APIKeyFile != "~/.mesh/codex/api.key" || !a.IsAPIKey() {
 		t.Fatalf("api-file account %+v", a)
 	}
 	for in, want := range map[string]string{
@@ -249,6 +249,95 @@ func TestLoadConfigCodexAccountsRejected(t *testing.T) {
 				t.Fatalf("err = %v, want a codex complaint", err)
 			}
 		})
+	}
+}
+
+// A provider is an OpenAI-compatible endpoint an account runs against
+// instead of OpenAI's own (adr-015): the model names and prices are the
+// provider's, and an account naming one resolves it for the adapter.
+func TestLoadConfigCodexProvider(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	writeNodeYAML(t, `slug: mini
+name: mini
+codex:
+  providers:
+    kimi:
+      base_url: http://spark-1.lan:8000/v1
+      prices:
+        kimi-k3:
+          input: 0.55
+          output: 2.20
+  accounts:
+    - name: kimi
+      api_key_env: KIMI_API_KEY
+      provider: kimi
+  models:
+    opus: kimi-k3
+`)
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cx := cfg.Codex
+	a := cx.Accounts[0].Harness(cx.Providers)
+	if a.Provider.Name != "kimi" || a.Provider.BaseURL != "http://spark-1.lan:8000/v1" {
+		t.Fatalf("provider %+v", a.Provider)
+	}
+	if a.Provider.IsZero() {
+		t.Fatal("a named provider reads as OpenAI itself")
+	}
+	// cached_input and cache_write left out are the input price
+	p, ok := a.Provider.Price("kimi-k3")
+	if !ok || p.Input != 0.55 || p.Output != 2.20 || p.CachedInput != 0.55 || p.CacheWrite != 0.55 {
+		t.Fatalf("price %+v ok=%v", p, ok)
+	}
+	// a provider's table is the only one: OpenAI's prices are not a
+	// fallback for a model served locally under a name OpenAI also uses
+	if _, ok := a.Provider.Price("gpt-6-sol"); ok {
+		t.Fatal("a provider fell back to OpenAI's price table")
+	}
+	if got := cx.CodexModel("opus"); got != "kimi-k3" {
+		t.Fatalf("CodexModel(opus) = %q", got)
+	}
+	// an account with no provider still runs on OpenAI, priced by its table
+	var none CodexAccountConfig
+	if p, ok := none.Harness(cx.Providers).Provider.Price("gpt-6-sol"); !ok || p.Input == 0 {
+		t.Fatalf("OpenAI price %+v ok=%v", p, ok)
+	}
+}
+
+// What the codex block refuses: a provider with no endpoint, a wire the
+// adapter does not speak, an account naming a provider that is not
+// there, and a plan login as a provider account — its key would never
+// reach the endpoint, which reads OPENAI_API_KEY.
+func TestCodexProviderValidate(t *testing.T) {
+	prov := map[string]CodexProviderConfig{"kimi": {BaseURL: "http://spark-1.lan:8000/v1"}}
+	for name, c := range map[string]CodexConfig{
+		"base_url is required": {Providers: map[string]CodexProviderConfig{"kimi": {}}},
+		"want chat or responses": {
+			Providers: map[string]CodexProviderConfig{"kimi": {BaseURL: "http://x/v1", WireAPI: "grpc"}},
+		},
+		"is not in codex.providers": {
+			Providers: prov,
+			Accounts:  []CodexAccountConfig{{Name: "k", APIKeyEnv: "KIMI_API_KEY", Provider: "qwen"}},
+		},
+		"needs api_key_env or api_key_file": {
+			Providers: prov,
+			Accounts:  []CodexAccountConfig{{Name: "k", Home: "~/.mesh/codex/k", Provider: "kimi"}},
+		},
+	} {
+		err := c.Validate()
+		if err == nil {
+			t.Fatalf("%s: accepted %+v", name, c)
+		}
+		if !strings.Contains(err.Error(), name) {
+			t.Fatalf("error %q does not say %q", err, name)
+		}
+	}
+	// the good shape passes
+	ok := CodexConfig{Providers: prov, Accounts: []CodexAccountConfig{{Name: "k", APIKeyEnv: "KIMI_API_KEY", Provider: "kimi"}}}
+	if err := ok.Validate(); err != nil {
+		t.Fatalf("refused a valid provider account: %v", err)
 	}
 }
 
