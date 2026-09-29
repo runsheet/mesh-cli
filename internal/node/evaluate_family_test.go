@@ -611,6 +611,32 @@ func TestAVerdictIsRecordedAsBefore(t *testing.T) {
 	}
 }
 
+// A Claude session whose context server was connected at startup but
+// whose every call Claude Code refused before it reached the server (a
+// permission refusal) saw no context: its verdict is discarded, parsed
+// from the stream as the harness reads it, never kept as an answer.
+func TestRefusedCallsOnAConnectedContextServerAreNoVerdict(t *testing.T) {
+	f, ev, claude, codex, _, _ := familyFixture(t, "normal", "sonnet", "VERDICT: FAIL", "VERDICT: PASS")
+	ev.MCP = MeshContextMCP(f.URL(), "rs_test")
+	ev.CodexAccounts = (&Loop{Known: &KnownAccounts{}}).CodexCandidates
+	stream := `{"type":"system","subtype":"init","model":"claude-sonnet-5","mcp_servers":[{"name":"mesh-context","status":"connected"}]}
+{"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","id":"t1","name":"mcp__mesh-context__mesh_document","input":{"slug":"prd"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","is_error":true,"content":"Claude requested permissions to use mcp__mesh-context__mesh_document, but you haven't granted it yet."}]}}
+{"type":"result","subtype":"success","result":"VERDICT: FAIL","total_cost_usd":0.1,"num_turns":1}`
+	claude.tools = harness.ParseStream(strings.NewReader(stream), nil).Tools
+	ev.Blind = &OncePer{}
+	item, err := ev.GW.WorkItem(context.Background(), item1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ev.Evaluate(context.Background(), *item); !errors.Is(err, ErrNoContext) {
+		t.Fatalf("Evaluate = %v, want ErrNoContext", err)
+	}
+	if len(claude.jobs) != 1 || codex.runs() != 0 || len(f.CallsNamed("evaluateWorkItem")) != 0 || f.Item(item1)["status"] != "evaluating" {
+		t.Fatalf("runs claude %d codex %d, verdicts %d, status %v", len(claude.jobs), codex.runs(), len(f.CallsNamed("evaluateWorkItem")), f.Item(item1)["status"])
+	}
+}
+
 // A context server that answered some calls saw the context: the
 // verdict stands as before.
 func TestSomeContextIsAVerdict(t *testing.T) {
