@@ -9,8 +9,8 @@ summary: A merge touching cmd/ or internal/ tags a release automatically (releas
 # Goal — Every node-changing merge to mesh-cli main is a release the console offers, and a node can follow the latest by itself
 
 Mesh goal `node-releases-on-merge`, running: items 1, 2, 4, 5, 7, 12 and 13
-merged; items 3, 9 and 10 failed; items 6, 8 and 11 cancelled (item 8's PR
-carried forward by item 12); this document is item 14.
+merged; items 3, 9 and 10 failed; items 6 and 8 cancelled (item 8's PR
+carried forward by item 12); item 11 pending; this document is item 14.
 
 ## Statement
 
@@ -18,9 +18,9 @@ Chris, 2026-09-28: the mini was found running mesh-cli `72ff910` while main
 was ten commits ahead (pitches, Codex evaluations, MCP call counts,
 tool-result trimming) — "are we on an old version of mesh-cli?". mesh-cli had
 no deploy: merged node goals did nothing until a binary reached the mini,
-which had been a person cross-building and running `mesh node upgrade
---binary` by hand (HANDOFF 2026-09-26 08:35Z), and a by-hand upgrade rolled
-back that same morning under load. The proper path existed and was unused:
+and the only way there was the by-hand upgrade that is now only the fallback
+(HANDOFF 2026-09-26 08:35Z), and a by-hand upgrade rolled back that same
+morning under load. The proper path existed and was unused:
 `update-nodes-from-console` + `node-self-update` let the console offer
 GitHub releases of runsheet/mesh-cli and the node update itself to the
 version the platform asks for (`Node.desired_version`) — but the only
@@ -29,7 +29,7 @@ day. This goal closes the gap: a node-changing merge tags itself, the
 console shows what a node runs and how far behind it is, and an org can let
 the platform drive the update with no person.
 
-## Acceptance (the goal)
+## Acceptance
 
 A merge touching `cmd/` or `internal/` on mesh-cli main produces a tagged
 release with signed binaries within 15 minutes and release notes grouped by
@@ -54,7 +54,7 @@ describes the by-hand path except as the fallback.
 | 8 | Node: the reported version is the release tag when built from one, the commit sha otherwise, and the heartbeat carries `commit` (retry of item 3) | cancelled — PR closed unmerged, carried forward by item 12 | mesh/node-releases-on-merge-8 | https://github.com/runsheet/mesh-cli/pull/338 (closed, not merged) | $7.53 | opus |
 | 9 | Goal doc: node-releases-on-merge — second attempt | failed (three evaluations, no PR) | mesh/node-releases-on-merge-9 | — | $1.90 | opus (planned haiku, sharpened) |
 | 10 | mesh-cli README and docs/rollout.md: a merge is a release and the mini follows it (first attempt) | failed (GitHub rate limit) | — | — | $0.00 | sonnet |
-| 11 | Goal doc: node-releases-on-merge — third attempt | cancelled | — | — | $0.00 | sonnet |
+| 11 | Goal doc: node-releases-on-merge — third attempt | pending | — | — | $0.00 | sonnet |
 | 12 | Node: the reported version is the release tag when built from one, the commit sha otherwise, and the heartbeat carries `commit` when the gateway takes it (carry PR #338 forward onto main) | merged | mesh/node-releases-on-merge-12 | https://github.com/runsheet/mesh-cli/pull/402 | $1.97 | opus |
 | 13 | mesh-cli README and docs/rollout.md: a merge is a release and the mini follows it; the by-hand `--binary` upgrade is the fallback, not the way | merged | mesh/node-releases-on-merge-13 | https://github.com/runsheet/mesh-cli/pull/401 | $3.00 | opus (planned sonnet, sharpened) |
 | 14 | Goal doc: node-releases-on-merge — every item's PR and status as Mesh records them, the first automatic release blocked on RELEASE_TAG_TOKEN, the mini's path, and what is owed to runsheet and to Chris | running | mesh/node-releases-on-merge-14 | — | — | sonnet |
@@ -63,8 +63,8 @@ Every PR above is confirmed `MERGED` by `gh pr view --json state` at the time
 this document was written, except #338, which is `CLOSED` (never merged) and
 carried forward by item 12's PR #402. Item 12's PR merged at
 2026-09-29T07:49:11Z, shortly before this item started; an earlier attempt at
-this document (item 11's evaluation) was rejected in part because #402 still
-showed as unmerged when it read the record.
+this document was rejected in part because #402 still showed as unmerged
+when it read the record.
 
 ## What landed
 
@@ -135,9 +135,9 @@ cancelled before it ran. Item 9, the second goal-doc attempt, failed three
 evaluations in a row (exactness against Mesh's own PR records was the
 recurring complaint) and left no PR. Item 10, the first attempt at the
 README/rollout.md item, failed on a GitHub API rate limit with no PR; item
-13 is its retry, and it merged. Item 11, the third goal-doc attempt, was
-cancelled once items 12 and 13 gave this document, item 14, a firmer footing
-to redo it from.
+13 is its retry, and it merged. Item 11, the third goal-doc attempt, is
+pending in Mesh's record and has not run; this document, item 14, is the
+attempt made once items 12 and 13 had merged.
 
 ## The first automatic release
 
@@ -164,10 +164,10 @@ not on the line the auto-tag counts from, since `release-on-merge` reads
 node-changing merge's `release-on-merge.yml` run bumps past `v0.2.188` to
 **v0.2.189** — the first tag this pipeline cuts on its own — and
 `release-tag.yml` builds, signs and mirrors it exactly as it does for a tag
-pushed by hand. Until then, a person cross-building a binary and running
-`mesh node upgrade --binary` by hand (the fallback `docs/rollout.md`'s "Node
-deploys" section names) is the only interim path to get a node-changing
-commit onto the mini ahead of a release.
+pushed by hand. Until then there is no cross-build on the ordinary path: the
+fallback, a cross-build and `mesh node upgrade --binary` by hand (as
+`docs/rollout.md`'s "Node deploys" section names it), is the only interim
+way to put a node-changing commit onto the mini ahead of a release.
 
 ## The mini
 
@@ -178,11 +178,11 @@ exists and is turned on, nothing moves it further by itself: a person either
 sets `desiredVersion` on the console, or runs `mesh node update <tag>` on
 the mini directly — both take a signed release, verify it, and drain the
 node's sessions before swapping (the draining variant, unlike an
-adopting `--binary` upgrade). `mesh node upgrade --binary <path>` — build,
-`scp`, upgrade without a drain — is the fallback for a build the release
-pipeline has not tagged, described in full in `docs/rollout.md`'s "Node
-deploys" section (landed by item 13), not the ordinary way to reach the
-mini.
+adopting `--binary` upgrade). The `--binary` upgrade is only the fallback,
+for a build the release pipeline has not tagged: the fallback builds, `scp`s
+the binary and runs `mesh node upgrade --binary <path>` without a drain, as
+`docs/rollout.md`'s "Node deploys" section (landed by item 13) describes —
+never the ordinary way to reach the mini.
 
 ## Owed to runsheet/runsheet
 
@@ -235,7 +235,7 @@ itself"), mesh-portal [ADR 005](https://github.com/runsheet/mesh-portal/blob/mai
   item 8 (#338) closes unmerged, also out of budget; mesh-portal#18 and
   mesh-specs#80 and #93 amend items 4 and 5's ADRs for the public mirror's
   numbering.
-- 2026-09-29 · goal-doc attempts 6, 9 and 11 are cancelled or fail
+- 2026-09-29 · goal-doc attempt 6 is cancelled and 9 fails
   evaluation (three failures on item 9 alone, mostly on exactness against
   Mesh's PR records); item 10, the first README/rollout.md attempt, fails on
   a GitHub rate limit.
