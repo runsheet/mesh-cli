@@ -624,15 +624,15 @@ version and the adopted sessions.
 
 **When the node's contract changes.** A change to what the node reports
 on the finishing command — usage records, tool call costs, or window
-standings — reaches the mini only when its binary is upgraded by hand.
-mesh-cli has no deploy: releases are signed GitHub artifacts that the
-node pulls only when you ask it to `upgrade`. So if a goal lands that
-changes the node's output format or semantics, the mini is not
-automatically on the new version until you follow the steps above —
-`mesh node upgrade --binary ~/bin/mesh.new` — and the first new rows on
-the console show it worked. Until then, every session's report is only in
-the node's local log, a fallback line that names the tokens and windows
-but tells the platform it keeps no ledger.
+standings — reaches the mini on the next release: a node-changing merge
+is tagged and signed on merge (see [Release](#release)), and the mini
+takes it once `desiredVersion` is set on the console or by
+`mesh node update <tag>` — with `nodes.autoUpdate` on, the platform
+sets it itself once the mini is idle, with no person. Until then, every
+session's report is only in the node's local log, a fallback line that
+names the tokens and windows but tells the platform it keeps no ledger.
+The by-hand `--binary` upgrade above is the fallback for a build that
+is not a release, not the way to ship a contract change.
 
 <!-- RECORDED MANUAL RUN: replace this block with the run on the mini —
      date, the versions from → to, the `mesh node status` and
