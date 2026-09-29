@@ -226,10 +226,11 @@ func TestUsageReadingCoverageCountsEndedSessions(t *testing.T) {
 			coverage = append(coverage, l)
 		}
 	}
-	if len(coverage) != 3 || coverage[0] != "coverage build: 3 records of 4 sessions ended in the window" {
-		t.Errorf("coverage %q", coverage)
-	}
-	if coverage[1] != "coverage plan: 1 records of 1 sessions ended in the window" || coverage[2] != "coverage research: 1 records of 1 sessions ended in the window" {
+	ok := len(coverage) == 3 &&
+		coverage[0] == "coverage build: 3 records of 4 sessions ended in the window" &&
+		coverage[1] == "coverage plan: 1 records of 1 sessions ended in the window" &&
+		coverage[2] == "coverage research: 1 records of 1 sessions ended in the window"
+	if !ok {
 		t.Errorf("coverage %q", coverage)
 	}
 	// every goal: unknown has no coverage line; each research ended
