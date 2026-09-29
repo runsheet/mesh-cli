@@ -131,6 +131,50 @@ whatever was left in the cgroup after claude exited stayed.
   `mesh-session-<kind>-<subject>-<8 hex>`, the subject as it is in the
   name (`:` and `/` already `_`).
 
+## The start-up sweep
+
+Amended 2026-09-29 (goal `a-finished-session-leaves-no-process`). The
+36-hour leak above would have been caught by any restart, had a restart
+looked. `node.SweepScopes` runs in `mesh node start`'s `adoptSessions`
+right after `FindSessions` and before `AdoptSessions` — whether or not
+any session was found — and only when `sessionunit.Default()` is a
+`SystemdScope` (a detached session has no scope to list).
+
+- **The rule.** Every scope `ListScopes` names is looked at. An
+  inactive or failed one is systemd's (`--collect` unloads it) and
+  skipped. One whose unit a found session's `state.json` names is left:
+  it is about to be adopted. Otherwise `ParseUnitName` gives its kind
+  and subject (a name that does not parse is logged and left) and the
+  platform is asked: build, evaluate and rebase by `WorkItem(subject)`,
+  plan by `Goal(subject)`. Research is left with a log line — a
+  direction is read through its project, which the name does not carry.
+  A subject is **live** only in a status a session runs under
+  (`SessionLive`: an item claimed, running or evaluating, or one whose
+  `rebaseState` is claimed; `GoalLive`: a goal planning) and its scope
+  is left, logged `sweep: <unit> left, item <id> is running on the
+  platform`. Anything else — ready, review, merged, failed, cancelled,
+  done, already_done — and a subject the platform does not know
+  (`gateway.ErrNotFound`) is **terminal**: the scope is killed as a
+  unit (`SystemdScope.Kill` with no pid, so every process in the cgroup
+  is reported) and logged `sweep: stopped <unit> (item <id>, merged on
+  the platform): killed go[…] go run …, bash[…]`; the start logs
+  `sweep: <n> leaked scope(s) stopped` when any.
+- **An outage is not a leak.** Any other error reading the subject
+  leaves the scope with a log line and never kills it; a live session
+  whose node restarted mid-outage must not be ended by it. The next
+  start sweeps again.
+- **What `mesh node status` shows.** After the heartbeat and the node
+  list, on a machine with a user systemd, `node.ScopeReport` lists every
+  mesh-session scope `HostSystemctl.ListScopes` names — its unit, kind,
+  subject and the platform's answer, judged by the sweep's own rule:
+  `live (item running)`, `terminal (item merged)`, `unknown (item not
+  on the platform)`, `research`, `unparsed`, `unread: <err>`, or an
+  inactive scope's state — and ends `sessions: <n> live scope(s), <m>
+  leaked`. Only scopes of live sessions count as live; terminal and
+  unknown ones are leaked; research, unparsed, unread and inactive ones
+  are neither. The listing stops nothing: the sweep, at the next start,
+  does.
+
 ## Consequences
 
 - Stopping the node process no longer ends a host session; the next

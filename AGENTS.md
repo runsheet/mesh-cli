@@ -130,7 +130,11 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `<workdir>.session` and temp dirs stay) and only the job's own
   timeout stops it. On `mesh node start`, before the first tick,
   `FindSessions` walks the work root for `state.json` naming one of the
-  node's ids and `Loop.AdoptSessions` takes each up: marked as the
+  node's ids — then `SweepScopes` (`sweep.go`, ADR-008 The start-up
+  sweep) stops every other active mesh-session scope whose item or goal
+  is terminal or unknown on the platform (`SessionLive`, `GoalLive`; a
+  read error leaves it; `mesh node status` lists the scopes the same way
+  by `ScopeReport`, `sessions: <n> live scope(s), <m> leaked`) — and `Loop.AdoptSessions` takes each up: marked as the
   loop's own (a build in `Running()`, every kind in the drain's
   `sessions()`, never claimed or started again, and `Loop.Adopt` skips
   it), the item heartbeated at once so the stall window never elapses,

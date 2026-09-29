@@ -542,6 +542,10 @@ func (c *Client) OrgByLogin(ctx context.Context, login string) (*Org, error) {
 
 // ---- read models ------------------------------------------------------------
 
+// ErrNotFound is WorkItem's and Goal's answer for an id the platform
+// has no row for.
+var ErrNotFound = errors.New("not found")
+
 // WorkItem is a WorkItemIndex row.
 type WorkItem struct {
 	ID          string   `json:"id"`
@@ -715,7 +719,7 @@ func (c *Client) WorkItem(ctx context.Context, id string) (*WorkItem, error) {
 		return nil, err
 	}
 	if out.Item == nil {
-		return nil, fmt.Errorf("work item %s not found", id)
+		return nil, fmt.Errorf("work item %s %w", id, ErrNotFound)
 	}
 	return out.Item, nil
 }
@@ -880,7 +884,7 @@ func (c *Client) Goal(ctx context.Context, id string) (*Goal, error) {
 		return nil, err
 	}
 	if out.Goal == nil {
-		return nil, fmt.Errorf("goal %s not found", id)
+		return nil, fmt.Errorf("goal %s %w", id, ErrNotFound)
 	}
 	return out.Goal, nil
 }
