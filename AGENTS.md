@@ -466,7 +466,10 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `Job.Meta`; the prompt is an unlinked file on stdin. `Follow` tails
   the output a line per read until the process is gone and the file
   stops growing, `ParseStream` reads it, and the offset is saved as it
-  goes. A timeout or cancelled ctx `Stop`s the unit; the directory is
+  goes. A timeout or cancelled ctx `Stop`s the unit, and every end
+  but a detach `Kill`s it: `Result.Killed` names what the agent left
+  running there (a failed kill goes to Stderr, else `KillError`,
+  never failing the session); the directory is
   removed when `Run` returns — unless the job is `Outlive`: see the
   adoption.
 - **The sandbox** (`internal/sandbox/`, mesh-specs ADR 007,
