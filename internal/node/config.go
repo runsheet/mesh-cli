@@ -650,10 +650,11 @@ func RegisterOnce(ctx context.Context, gw Gateway, cfg *Config) (Scopes, *Owner,
 // (`mesh node status`, a rollback's report), heartbeating each of the
 // node's ids once through heartbeat on the way: a platform that takes
 // an owner answers the one heartbeat under the node's one id with them
-// (ScopesFrom); any other has them from ResolveScopes, heartbeated per
-// org.
+// (ScopesFrom); one that takes an owner but answers nothing, and any
+// other, has them from ResolveScopes, heartbeated per org — as
+// RegisterOnce registered it.
 func Served(ctx context.Context, gw Gateway, cfg *Config, heartbeat func(ctx context.Context, nodeID string) (*gateway.NodeAnswer, error)) (Scopes, error) {
-	if !gw.TakesOwner(ctx) {
+	perOrg := func() (Scopes, error) {
 		scopes, err := ResolveScopes(ctx, gw, cfg)
 		if err != nil {
 			return nil, err
@@ -665,6 +666,9 @@ func Served(ctx context.Context, gw Gateway, cfg *Config, heartbeat func(ctx con
 		}
 		return scopes, nil
 	}
+	if !gw.TakesOwner(ctx) {
+		return perOrg()
+	}
 	id, err := cfg.OwnNodeID()
 	if err != nil {
 		return nil, err
@@ -672,6 +676,12 @@ func Served(ctx context.Context, gw Gateway, cfg *Config, heartbeat func(ctx con
 	answer, err := heartbeat(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("heartbeat: %w", err)
+	}
+	if answer == nil {
+		// it took the owner but answers nothing yet: RegisterOnce
+		// registered per org, so the orgs are today's, heartbeated
+		// per org
+		return perOrg()
 	}
 	scopes := ScopesFrom(answer, cfg)
 	if len(scopes) == 0 {
