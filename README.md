@@ -955,7 +955,8 @@ carried). `mesh node usage` reads those lines back into a reading of a
 window:
 
 ```bash
-mesh node usage --from 2026-09-28 --to 2026-09-29 [--log ~/.mesh/node.log] [--goal <slug>] [--kind build]
+mesh node usage --from 2026-09-28 --to 2026-09-29 [--log ~/.mesh/node.log] [--goal <slug>] [--kind build] \
+  [--project <org>/<slug> | --goals <file>]
 ```
 
 ```
@@ -965,15 +966,28 @@ build     2         200000               200000             90.0          1000  
 evaluate  1         50000                50000              80.0          -                     0
 plan      2         50000                50000              60.0          3000                  2
 unknown   1         7000                 7000               100.0         -                     0
+coverage build: 2 records of 3 sessions ended in the window
+coverage evaluate: 1 records of 1 sessions ended in the window
+coverage plan: 2 records of 1 sessions ended in the window
 unparsed 1
 ```
 
 `--to` is exclusive and both dates are local, as node.log's timestamps
-are. Input tokens are the report's `inputTokens`, cache reads and
+are; either may instead be an RFC 3339 timestamp
+(`--from 2026-09-29T14:18:43Z`, or with an offset), so a window can
+start at a release's first context line, and the `window` line then
+prints them as given. Input tokens are the report's `inputTokens`, cache reads and
 writes among them; the context-bytes median is over the sessions that
 carry `contextBytes` (`with context bytes`), `-` when none does.
 `--goal` keeps the records whose label names the goal — its items' and
-its plan's. An older node's unlabelled `usage: {…}` line takes the kind
+its plan's. `--project org/slug` keeps the project's goals, read from
+the platform, and its research; `--goals <file>` keeps the goals the
+file lists (one slug a line, `#` comments) with no platform call, and
+the two are not given together. Each `coverage` line sets the records
+of a kind beside the sessions of that kind node.log says ended in the
+same window and filter — `finished`, `evaluation`, `rebased`,
+`planned` and the director's `pitched`/`proposed` lines — so a reading
+names its own sample. An older node's unlabelled `usage: {…}` line takes the kind
 and label of the nearest `finished …($x)`, `evaluation …($x)` or
 `rebased …($x)` line within 12 lines whose `$x` is its `listCostCents`,
 else `unknown`; a record whose JSON does not parse is counted as
