@@ -28,8 +28,9 @@ const ExitPanic = 70
 
 var (
 	mu sync.Mutex
-	// Out is where the fatal line and the stack go: the node's stderr,
-	// which its service appends to ~/.mesh/node.log. Tests replace it.
+	// Out is where the fatal line and the stack go: the node's stderr
+	// (the journal, node.crash.log), and node.log once `mesh node start`
+	// has opened it. Tests replace it.
 	Out io.Writer = os.Stderr
 	// Exit ends the process; tests replace it.
 	Exit = os.Exit
