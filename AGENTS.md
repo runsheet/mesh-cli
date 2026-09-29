@@ -503,7 +503,16 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   goes. A timeout or cancelled ctx `Stop`s the unit, and every end
   but a detach `Kill`s it: `Result.Killed` names what the agent left
   running there (a failed kill goes to Stderr, else `KillError`,
-  never failing the session); the directory is
+  never failing the session), and the node logs what it killed, a
+  line per session (`logKilled` on `Result.KilledPerSession()`:
+  `<subject>: session end killed <n> process(es) the agent left
+  running: <pid> <comm>, …`, and `kill: <KillError>`); a build and a
+  rebase also send it as a progress note, an evaluation puts it in the
+  verdict's notes when it records one and only logs it (held for the
+  next verdict, `LeftRunning`) when it records none, a plan and
+  research log only (ADR-008, The session's end) — an adopted session
+  whose subject is no longer the node's is `FoundSession.Kill`ed and
+  logged the same way; the directory is
   removed when `Run` returns — unless the job is `Outlive`: see the
   adoption.
 - **The sandbox** (`internal/sandbox/`, mesh-specs ADR 007,
