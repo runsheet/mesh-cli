@@ -165,13 +165,18 @@ func (d Detached) Stop(h Handle) error {
 }
 
 // Kill implements Unit: the process group, its members besides the
-// session's pid listed first (from /proc, so on Linux only).
+// session's pid listed first (from /proc, so on Linux only). The report
+// is returned only when the group is confirmed gone; a stop that fails
+// or leaves it standing is the error and no report.
 func (Detached) Kill(h Handle) ([]Process, error) {
 	if h.PID <= 0 {
 		return nil, errors.New("sessionunit: no pid")
 	}
 	killed := others(groupMembers(h.PID), h.PID)
-	return killed, stopGroup(h)
+	if err := stopGroup(h); err != nil {
+		return nil, err
+	}
+	return killed, nil
 }
 
 // SystemdScope runs the session in a transient systemd user scope,
@@ -259,17 +264,12 @@ func (s SystemdScope) Kill(h Handle) ([]Process, error) {
 	found := others(procs, h.PID)
 
 	var errs []error
-	// fail keeps a signal's or the stop's error unless the unit went
-	// away by itself meanwhile (an emptied scope is collected): then
-	// there was nothing left to act on.
+	// fail keeps every error of a signal or the stop; the manager saying
+	// the unit is not loaded is an answer (it was collected), not one.
 	fail := func(what string, err error) {
-		if err == nil {
-			return
+		if err != nil && !errors.Is(err, ErrNotLoaded) {
+			errs = append(errs, fmt.Errorf("sessionunit: %s: %s: %w", unit, what, err))
 		}
-		if g, gerr := unitGone(sc, unit); gerr == nil && g {
-			return
-		}
-		errs = append(errs, fmt.Errorf("sessionunit: %s: %s: %w", unit, what, err))
 	}
 	left := func() bool {
 		p, err := sc.Processes(cg)

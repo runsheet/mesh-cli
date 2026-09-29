@@ -3,6 +3,7 @@ package sessionunit
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -45,9 +46,10 @@ type Systemctl interface {
 	// unit the manager does not know answers LoadState=not-found.
 	Show(unit string, props ...string) (map[string]string, error)
 	// Kill is `systemctl --user kill --signal=<signal> <unit>`: every
-	// process in the unit's cgroup.
+	// process in the unit's cgroup. A unit not loaded is ErrNotLoaded.
 	Kill(unit, signal string) error
-	// Stop is `systemctl --user stop <unit>`.
+	// Stop is `systemctl --user stop <unit>`; a unit not loaded is
+	// ErrNotLoaded.
 	Stop(unit string) error
 	// ListScopes is `systemctl --user list-units 'mesh-session-*'
 	// --plain --no-legend --all`, the scopes among them.
@@ -56,6 +58,11 @@ type Systemctl interface {
 	// named from /proc; a cgroup that is gone has none.
 	Processes(cgroup string) ([]Process, error)
 }
+
+// ErrNotLoaded is a Kill or Stop the manager answered with "unit not
+// loaded": an answer that the unit is gone (a scope whose processes all
+// left is collected at once), not a failure to reach the manager.
+var ErrNotLoaded = errors.New("unit not loaded")
 
 // HostSystemctl is the real Systemctl: the `systemctl` binary and the
 // cgroup v2 hierarchy.
@@ -76,7 +83,14 @@ func (s HostSystemctl) run(args ...string) ([]byte, error) {
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		return out, fmt.Errorf("systemctl --user %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+		msg := strings.TrimSpace(stderr.String())
+		// `systemctl stop` exits 5 on a unit not loaded; `kill` exits 1
+		// and says so.
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && (exit.ExitCode() == 5 || strings.HasSuffix(msg, " not loaded.")) {
+			err = ErrNotLoaded
+		}
+		return out, fmt.Errorf("systemctl --user %s: %w: %s", strings.Join(args, " "), err, msg)
 	}
 	return out, nil
 }

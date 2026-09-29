@@ -2,6 +2,7 @@ package sessionunit
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,10 +26,14 @@ type fakeSystemctl struct {
 	// pid is in ignoreTerm, SIGKILL and stop leave none.
 	procs      []Process
 	ignoreTerm map[int]bool
+	// collect unloads the scope once no process is left in it, as
+	// --collect does; a kill or stop after that answers ErrNotLoaded.
+	collect bool
 	// showErr, killErr, stopErr and procsErr are what those calls
 	// return instead of answering: a manager that cannot be reached.
-	showErr, killErr, stopErr, procsErr error
-	calls                               []string
+	// showErrAfterStop is showErr from the stop on.
+	showErr, killErr, stopErr, procsErr, showErrAfterStop error
+	calls                                                 []string
 }
 
 func (f *fakeSystemctl) log(c string) { f.calls = append(f.calls, c) }
@@ -53,6 +58,9 @@ func (f *fakeSystemctl) Kill(unit, signal string) error {
 	if f.killErr != nil {
 		return f.killErr
 	}
+	if !f.loaded {
+		return fmt.Errorf("Failed to kill unit %s: %w", unit, ErrNotLoaded)
+	}
 	var left []Process
 	for _, p := range f.procs {
 		if signal == "SIGTERM" && f.ignoreTerm[p.PID] {
@@ -60,6 +68,9 @@ func (f *fakeSystemctl) Kill(unit, signal string) error {
 		}
 	}
 	f.procs = left
+	if f.collect && len(left) == 0 {
+		f.loaded = false
+	}
 	return nil
 }
 
@@ -67,8 +78,14 @@ func (f *fakeSystemctl) Stop(unit string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.log("stop " + unit)
+	if f.showErrAfterStop != nil {
+		f.showErr = f.showErrAfterStop
+	}
 	if f.stopErr != nil {
 		return f.stopErr
+	}
+	if !f.loaded {
+		return fmt.Errorf("Failed to stop %s: %w", unit, ErrNotLoaded)
 	}
 	f.procs = nil
 	if !f.stuck {
@@ -211,6 +228,54 @@ func TestSystemdScopeKillStopError(t *testing.T) {
 	f := &fakeSystemctl{loaded: true, stopErr: boom, procs: []Process{{PID: noPID, Comm: "claude"}, {PID: noPID + 1, Comm: "sleep"}}}
 	killed, err := SystemdScope{Systemctl: f}.Kill(Handle{PID: noPID, UnitName: "u"})
 	if !errors.Is(err, boom) || !strings.Contains(err.Error(), "u.scope") || len(killed) != 0 {
+		t.Fatalf("killed %v, err %v", killed, err)
+	}
+}
+
+// A stop that fails is returned even when the unit is gone by the time
+// Show is asked (collected after SIGTERM): the error is never swallowed.
+func TestSystemdScopeKillStopErrorUnitGone(t *testing.T) {
+	fastStop(t)
+	boom := errors.New("Access denied")
+	f := &fakeSystemctl{loaded: true, collect: true, stopErr: boom, procs: []Process{{PID: noPID, Comm: "claude"}, {PID: noPID + 1, Comm: "sleep"}}}
+	_, err := SystemdScope{Systemctl: f}.Kill(Handle{PID: noPID, UnitName: "u"})
+	if !errors.Is(err, boom) {
+		t.Fatalf("err %v", err)
+	}
+}
+
+// A stop that fails and a Show after it that fails are both returned,
+// and with the unit not confirmed gone nothing is reported.
+func TestSystemdScopeKillStopErrorShowError(t *testing.T) {
+	fastStop(t)
+	boom, down := errors.New("Access denied"), errors.New("Failed to connect to bus")
+	f := &fakeSystemctl{loaded: true, stopErr: boom, showErrAfterStop: down, procs: []Process{{PID: noPID, Comm: "claude"}, {PID: noPID + 1, Comm: "sleep"}}}
+	killed, err := SystemdScope{Systemctl: f}.Kill(Handle{PID: noPID, UnitName: "u"})
+	if !errors.Is(err, boom) || !errors.Is(err, down) || len(killed) != 0 {
+		t.Fatalf("killed %v, err %v", killed, err)
+	}
+}
+
+// A Show failing after the stop is Kill's error and no report, though
+// the stop itself went through.
+func TestSystemdScopeKillShowErrorAfterStop(t *testing.T) {
+	fastStop(t)
+	down := errors.New("Failed to connect to bus")
+	f := &fakeSystemctl{loaded: true, showErrAfterStop: down, procs: []Process{{PID: noPID, Comm: "claude"}, {PID: noPID + 1, Comm: "sleep"}}}
+	killed, err := SystemdScope{Systemctl: f}.Kill(Handle{PID: noPID, UnitName: "u"})
+	if !errors.Is(err, down) || len(killed) != 0 {
+		t.Fatalf("killed %v, err %v", killed, err)
+	}
+}
+
+// A signal that fails with the manager answering that the unit is not
+// loaded — collected once SIGTERM emptied it — is the unit gone, no
+// error: the stop after it answers the same.
+func TestSystemdScopeKillCollected(t *testing.T) {
+	fastStop(t)
+	f := &fakeSystemctl{loaded: true, collect: true, procs: []Process{{PID: noPID, Comm: "claude"}, {PID: noPID + 1, Comm: "sleep"}}}
+	killed, err := SystemdScope{Systemctl: f}.Kill(Handle{PID: noPID, UnitName: "u"})
+	if err != nil || len(killed) != 1 || killed[0].PID != noPID+1 {
 		t.Fatalf("killed %v, err %v", killed, err)
 	}
 }

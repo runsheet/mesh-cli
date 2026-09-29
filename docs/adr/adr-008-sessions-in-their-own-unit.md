@@ -103,10 +103,13 @@ whatever was left in the cgroup after claude exited stayed.
   gone — a `Show` that errors (the user manager unreachable) is Kill's
   error, before any signal and at any point of the wait. Reading the
   `ControlGroup` or its `cgroup.procs` failing is Kill's error before
-  any signal. A failed SIGTERM, SIGKILL or stop is returned (joined,
-  naming the unit) unless a `Show` right after it says the unit went
-  away by itself — an emptied scope `--collect` unloaded, with nothing
-  left to act on.
+  any signal. A failed SIGTERM, SIGKILL or stop is always returned
+  (joined, naming the unit), whatever a later `Show` says, and a `Show`
+  failing after it is joined in too. The one answer that is not a
+  failure is the manager saying the unit is **not loaded**
+  (`ErrNotLoaded`: `systemctl stop` exits 5, `kill` says `not loaded.`)
+  — an emptied scope `--collect` unloaded after the SIGTERM, which is
+  the unit gone, as a `Show` answering not-found is.
 - **The report**: `killed` is every process that was in the cgroup
   besides the session's own pid — what the agent should have cleaned
   up — each `Process.String()` as `comm[pid] cmdline`. It is returned
@@ -117,7 +120,9 @@ whatever was left in the cgroup after claude exited stayed.
   are listed from `/proc` (a `stat` whose pgrp is the session's pid;
   none on macOS) and reported the same way, SIGTERM to the group, and
   SIGKILL after `StopGrace` while the session or any of its group is
-  left.
+  left. Kill then waits 3s more for the group to be gone (its zombies
+  not counted); a refused signal or a group still there is the error,
+  and no report.
 - **`SystemdScope.Systemctl`** is the `Systemctl` interface — `Show`,
   `Kill`, `Stop`, `ListScopes` (`systemctl --user list-units
   'mesh-session-*' --plain --no-legend --all`, for the start-up sweep)
