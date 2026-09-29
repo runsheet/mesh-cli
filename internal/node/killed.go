@@ -3,6 +3,7 @@ package node
 import (
 	"fmt"
 	"strings"
+	"sync"
 
 	"projectmesh.io/mesh-cli/internal/harness"
 	"projectmesh.io/mesh-cli/internal/sessionunit"
@@ -47,4 +48,41 @@ func stopFound(logf func(string, ...any), subject string, s FoundSession) {
 		res.KillError = err.Error()
 	}
 	logKilled(logf, subject, res)
+}
+
+// LeftRunning holds the killed sentences of an item's evaluations that
+// recorded no verdict — a timeout, an error, no verdict, no context —
+// until one does: the platform takes no progress note on an item in
+// evaluating, so the next verdict's notes carry them. A nil one holds
+// nothing.
+type LeftRunning struct {
+	mu    sync.Mutex
+	notes map[string][]string
+}
+
+// Hold adds note ("" adds nothing) to what is held for the item and
+// returns everything held, one sentence a line.
+func (l *LeftRunning) Hold(itemID, note string) string {
+	if l == nil {
+		return note
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if note != "" {
+		if l.notes == nil {
+			l.notes = map[string][]string{}
+		}
+		l.notes[itemID] = append(l.notes[itemID], note)
+	}
+	return strings.Join(l.notes[itemID], "\n")
+}
+
+// Forget drops what is held for the item, once a verdict carried it.
+func (l *LeftRunning) Forget(itemID string) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	delete(l.notes, itemID)
 }

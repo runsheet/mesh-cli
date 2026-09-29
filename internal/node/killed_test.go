@@ -125,3 +125,54 @@ func TestAdoptItemTerminalKillsLeftRunning(t *testing.T) {
 		t.Fatalf("log = %q", logs.String())
 	}
 }
+
+// An evaluation that ran out of time records no verdict, and the
+// platform takes no note on an item in evaluating: what its end killed
+// is logged, and the item's next verdict's notes carry it.
+func TestEvaluateTimeoutKilledLeftRunningIsNoted(t *testing.T) {
+	timedOut := true
+	h := harnessFunc(func(ctx context.Context, job harness.Job, on func(harness.Progress)) (harness.Result, error) {
+		if job.Kind != harness.KindEvaluate {
+			return harness.Result{Success: true, Text: "done", SessionID: "s-1"}, nil
+		}
+		if timedOut {
+			return harness.Result{SessionID: "s-2", Killed: leftovers}, context.DeadlineExceeded
+		}
+		return harness.Result{Success: true, Text: "Fine.\nVERDICT: PASS", SessionID: "s-3"}, nil
+	})
+	f := seed(t)
+	r, ws, item, row := runnerOnFake(t, f, h, nil)
+	if err := r.RunItem(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	left := &LeftRunning{}
+	ev := &Evaluator{GW: r.GW, Harness: h, WS: ws, Scopes: r.Scopes, WorkRoot: ws.root, LeftRunning: left, Log: log.New(&logs, "", 0)}
+	item.Branch = "mesh/ship-it-1"
+	if err := ev.Evaluate(context.Background(), item); err == nil || !strings.Contains(err.Error(), "ran out of time") {
+		t.Fatalf("err = %v", err)
+	}
+	if row(item1)["status"] != "evaluating" {
+		t.Fatalf("a timed-out evaluation records no verdict: %v", row(item1))
+	}
+	sentence := "session end killed 2 process(es) the agent left running: 4242 go, 4250 runsheet"
+	if !strings.Contains(logs.String(), ": "+sentence+"\n") {
+		t.Fatalf("log = %q", logs.String())
+	}
+	// the next evaluation, a later tick's, ends with a verdict
+	timedOut = false
+	ev = &Evaluator{GW: r.GW, Harness: h, WS: ws, Scopes: r.Scopes, WorkRoot: ws.root, LeftRunning: left, Log: log.New(&logs, "", 0)}
+	if err := ev.Evaluate(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	calls := f.CallsNamed("evaluateWorkItem")
+	if len(calls) != 1 {
+		t.Fatalf("verdicts = %d", len(calls))
+	}
+	if n, _ := calls[0].Input["notes"].(string); !strings.HasSuffix(n, "\n"+sentence) {
+		t.Fatalf("verdict notes = %q", n)
+	}
+	if held := left.Hold(item1, ""); held != "" {
+		t.Fatalf("still held after the verdict: %q", held)
+	}
+}

@@ -100,6 +100,10 @@ type Evaluator struct {
 	// outcome, so an evaluation that reached none waits in evaluating
 	// (nil: every time).
 	NoVerdict *OncePer
+	// LeftRunning holds, per item, what an evaluation that recorded no
+	// verdict left running, for the notes of the item's next verdict
+	// (nil: only the session's own).
+	LeftRunning *LeftRunning
 	// Limits and Thresholds judge the Codex accounts (nil: never
 	// skipped, every account with its full headroom).
 	Limits     *Limits
@@ -404,7 +408,10 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 	}
 	defer harness.RemoveSession(ev.dir)
 	item, label, acct := ev.item, ev.label, ev.acct
-	killed := logKilled(e.logf, "item "+label, result)
+	// what the agent left running goes in the verdict's notes; an end
+	// that records no verdict holds it for the item's next one, since
+	// the platform takes no progress note on an item in evaluating
+	killed := e.LeftRunning.Hold(item.ID, logKilled(e.logf, "item "+label, result))
 	if errors.Is(err, context.DeadlineExceeded) {
 		return fmt.Errorf("evaluator session ran out of time (%s)", e.Timeout)
 	}
@@ -546,6 +553,7 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 	if err := acct.Carried(e.GW.EvaluateWorkItem(ctx, item.ID, passed, notes, Cents(cost), usage)); err != nil {
 		return fmt.Errorf("record verdict: %w", err)
 	}
+	e.LeftRunning.Forget(item.ID)
 	e.logf("item %s: evaluation %s on %s ($%.2f)", label, verdict, fam.fullName(), cost)
 	return nil
 }

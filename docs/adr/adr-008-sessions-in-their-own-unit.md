@@ -212,7 +212,11 @@ kill: one `Kill` per unit, whichever end comes first, its report kept.
   plan, `<project>/<direction>:` for research), and a `KillError` as
   `item <label>: kill: <err>`. A build or a rebase sends the same
   sentence as a progress note on the item, as a `tools: …` note is
-  sent; an evaluation adds it to its verdict's notes.
+  sent; an evaluation adds it to its verdict's notes. The platform
+  takes no progress note on an item in evaluating, so an evaluation that
+  records no verdict — a timeout, an error, no verdict, no context —
+  holds its sentence (`Evaluator.LeftRunning`, per item, for the node
+  process's life) and the item's next verdict's notes carry it.
 - **An adopted session no longer the node's**: `FoundSession.Kill`
   replaces the stop that ran only while claude was alive — an item,
   plan or direction the platform no longer has on this node has its
