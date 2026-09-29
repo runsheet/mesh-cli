@@ -3,7 +3,7 @@ title: Goal — The node says no verdict when its tools failed, and the two tool
 kind: plan
 status: draft
 parent: prd
-summary: "`prologue: not found` postdates codex-sessions-reach-the-context-tool (all of it on the mini's v0.2.188, 2026-09-29) and is (b): that goal's tool-failure rule on the evaluation path read the context tool's own `not found` — a slug it does not have — as an unreachable tool; the node now counts an answered error as reached."
+summary: "`prologue: not found` postdates codex-sessions-reach-the-context-tool (all of it on the mini's v0.2.188, 2026-09-29), so not (a); nor was the evaluation path uncovered — that goal's own tool-failure rule on it (#305) read the context tool's `not found` answer, a slug it does not have, as an unreachable tool. The node now counts an answered error as reached."
 ---
 
 # Goal — The node says no verdict when its tools failed, and the two tooling failures stop happening
@@ -17,16 +17,35 @@ and `bwrap: loopback: Failed RTM_NEWADDR`.
 
 ## prologue: not found — which is true
 
-**(b): `codex-sessions-reach-the-context-tool` did not cover this
-failure on the evaluation path.** The failures do not predate it.
-Every one of them was produced by a binary that already carried that
-goal's work, and the context tool was reachable in every one. What
-produced `not found` was the goal's own tool-failure rule (#305,
-`Evaluator.toolBroken`). It treated the context tool's *answer*, `not
-found` for a document slug it does not have, as a tool the session
-could not reach. It then discarded the verdict. The rename window
-(prompt and config naming the built-in differently) is ruled out as the
-cause; see below.
+**Not (a); and (b) only in a corrected form — the goal did cover the
+evaluation path, and its own rule on that path produced the text.**
+
+The brief offers two answers. Held against the record:
+
+- **(a) the failures predate the goal's landing on the mini — false.**
+  Every recorded `no verdict — prologue: not found` was written by
+  v0.2.188, which carries #285, #286, #289 and #305. The text itself
+  exists only from #305 onward.
+- **(b) the goal did not cover the evaluation path — false as worded.**
+  The evaluation path was covered: #286 preflights a Codex evaluation
+  against the context server, #289 approves its calls, and #305
+  (`Evaluator.toolBroken`) is a rule that runs on exactly that path.
+  In the kept streams the context tool was reachable and answered:
+  1,096 calls `completed`.
+- **What is true:** the goal's coverage of the evaluation path was
+  wrong in one case. #305's `toolBroken` called a server broken when
+  every call errored, and it counted as an error a call the tool
+  *answered* with its own `not found` (a `mesh_document` slug it does
+  not have). So a session that reached the context tool and got a
+  truthful answer was classified as one that never reached it, and its
+  verdict was discarded. The failure is a false classification by the
+  goal's own rule, not an unreachable tool and not an uncovered path.
+
+If one of the two must be named, it is (b) in this narrow sense only:
+the goal left one case of the evaluation path wrong — a tool answering
+with its own error — rather than leaving the path uncovered. The rename
+window (prompt and config naming the built-in differently) is ruled out
+as the cause; see below.
 
 ### The items
 
@@ -98,7 +117,9 @@ What the mini ran:
 The text `no verdict — <tool>: <error>` exists only from #305 onward,
 so every recorded occurrence was made by v0.2.188. That binary
 preflights the built-in, approves its calls, and treats a tool failure
-as no verdict. The failures postdate the goal, which rules out (a).
+as no verdict. The failures postdate the goal, which rules out (a). And since that
+binary preflights, approves and judges the evaluation path, the path
+was covered, which rules out (b) as the brief words it.
 
 ### The code path that said `not found`
 
@@ -209,5 +230,6 @@ failed ones, starting at 90%) is owed once the change is on the mini.
 ## Log
 
 - 2026-09-29 · item 2: `prologue: not found` traced to toolBroken
-  reading the tool's own `not found` as unreachable (answer (b));
+  reading the tool's own `not found` as unreachable — not (a), and (b)
+  only as a misclassification on a covered path, not an uncovered one;
   fixed, with the both-families context tests.

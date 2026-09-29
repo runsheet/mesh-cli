@@ -309,7 +309,10 @@ an `error` such as the approval refusal above, or a startup failure —
 make a session tool-broken. The prompt now tells the agent the slug is
 INDEX.md's `slug` column. The rename window (the prompt naming
 mesh-context while v0.2.188 served `prologue`) was not the cause: the
-calls reached `prologue`. See `specs/goal-evaluation-reports-no-verdict.md`.
+calls reached `prologue`. Nor was the evaluation path left uncovered by
+`codex-sessions-reach-the-context-tool`: its preflight, approval and
+tool-failure rule all ran there; the rule itself misclassified the
+answer. See `specs/goal-evaluation-reports-no-verdict.md`.
 
 Codex writes to the home's `config.toml` itself: after a run it has
 appended `[projects."<workspace>"] trust_level = "trusted"`. That is
