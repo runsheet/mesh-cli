@@ -653,6 +653,9 @@ type WorkItem struct {
 	LastNote    string   `json:"lastNote"`
 	PRURL       string   `json:"prUrl"`
 	HeartbeatAt string   `json:"heartbeatAt"`
+	// ReadyAt is when the item last became ready (RFC 3339); empty from
+	// an older platform. The claim order breaks ties on it (ADR-017).
+	ReadyAt string `json:"readyAt"`
 	// Evaluation is the evaluator's notes on the last finished branch;
 	// EvaluationPassed its verdict. A ready item with attempts > 0 and an
 	// evaluation is a retry: the builder reads why the last one failed.

@@ -875,7 +875,8 @@ func (f *Fake) apply(name string, in map[string]any) error {
 		} else if in["passed"] == true {
 			item["status"] = "review"
 		} else {
-			item["status"] = "ready"
+			// a verdict that did not pass is an attempt (mesh-specs trd)
+			item["status"], item["attempts"] = "ready", toInt(item["attempts"])+1
 		}
 		item["evaluation"] = in["notes"]
 		item["costCents"] = toInt(item["costCents"]) + toInt(in["costCents"])
