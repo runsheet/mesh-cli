@@ -586,7 +586,10 @@ and confirm once the gateway responds. Only a failure to *run* (a panic, a
 config it cannot read, an exit) counts as 'did not start'; `mesh node upgrade`
 prints the confirm window and the log path to watch while the update settles.
 
-**On the mini.** Build, copy, upgrade, and watch the sessions carry on:
+**On the mini, by hand.** The mini ordinarily updates from a release
+cut on merge (see [Release](#release)); this is the fallback for a
+build that is not a release. Build, copy, upgrade, and watch the
+sessions carry on:
 
 ```sh
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh
@@ -1552,25 +1555,60 @@ run by hand) does, and opens or updates the PR on `bot/schema-refresh`.
 
 ## Release
 
+Releases are cut on merge. Every merge to `main` that changes the node
+— anything under `cmd/`, `internal/` or `images/node/`, or `go.mod` /
+`go.sum` — is tagged by `.github/workflows/release-on-merge.yml`, and
+the tag runs `.github/workflows/release-tag.yml` as below: signed
+binaries, the node image and the mirror, then the console offers the
+release. A merge of docs, specs, the README or `.github` alone cuts
+none. `scripts/release-on-merge.sh <repo-dir> <sha> [--dry-run]`
+decides, printing `tag=vX.Y.Z` or `no release: <why>`:
+
+- the next tag is the patch after the highest `vX.Y.Z` on this repo or
+  the mirror `runsheet/mesh` (tags with a `-` are test prereleases and
+  never count; none at all is `v0.1.0`);
+- it is the **minor** (patch 0) when the merged PR carries the label
+  `release:minor`, or a `specs/goal-*.md` the merge touches has
+  `release: minor` in its frontmatter;
+- a commit already tagged `vX.Y.Z` is no release.
+
+Run it by hand from Actions → *Release on merge* → *Run workflow*: with
+`dry_run` (the default) it prints the next tag and pushes nothing.
+`scripts/release-on-merge_test.sh` covers the cases.
+
+The operator sets up two things once:
+
+- the repository secret **`RELEASE_TAG_TOKEN`**: a fine-grained token
+  with Contents: read and write on `runsheet/mesh-cli`. The workflow
+  pushes the tag with it and fails naming it when it is unset. It cannot
+  be `GITHUB_TOKEN`: a tag pushed with that starts no workflow, so
+  `release-tag.yml` would never run. Whoever holds it can ship to nodes.
+- the label: `gh label create release:minor -R runsheet/mesh-cli
+  --description "release-on-merge bumps the minor version"`.
+
 Nodes update themselves from the GitHub releases of the public mirror
-`runsheet/mesh`: `.github/workflows/release-tag.yml` cuts a release
+`runsheet/mesh`: `release-tag.yml` cuts a release
 from a tag on `runsheet/mesh-cli` (docs/adr/adr-002-signed-tag-releases.md),
 and the same tag is published, identical, on the mirror — same tag,
 title, notes and five assets, via `scripts/mirror-release.sh` and the
 `RELEASE_TOKEN` secret (`GITHUB_TOKEN` cannot write another repo); see
 the amendment "the public mirror on runsheet/mesh" for why and how it
-is checked. To cut one, the next number one above the latest on the
-mirror (`gh release list -R runsheet/mesh`, `v0.2.x` — the public line
-`cli-release.yml` began):
+is checked.
+
+**The fallback: a tag by hand.** When the workflow cannot run (no
+`RELEASE_TAG_TOKEN`, a major version, a release of a commit it
+skipped), tag the next number one above the latest on the mirror
+(`gh release list -R runsheet/mesh`, `v0.2.x`) yourself:
 
 ```sh
 git tag vX.Y.Z && git push origin vX.Y.Z
 ```
 
-Any tag starting `v` runs it; a tag with a `-` (`v0.4.0-test.1`) is
-published as a prerelease. The version is stamped from the tag
-(`internal/version.Version`), so `mesh --version` and the node's
-heartbeat report exactly the tag. There is no manual trigger — tags only.
+Any tag starting `v` runs `release-tag.yml`; a tag with a `-`
+(`v0.4.0-test.1`) is published as a prerelease. The version is stamped
+from the tag (`internal/version.Version`), so `mesh --version` and the
+node's heartbeat report exactly the tag. `release-tag.yml` itself has
+no manual trigger — tags only.
 
 The release notes are the PRs merged since the previous plain
 `vX.Y.Z` tag, grouped by goal slug — `scripts/release-notes.sh
@@ -1679,7 +1717,11 @@ update:
   confirm_within: 5m   # how long a new process keeps trying to confirm; default 5m
 ```
 
-**By hand.** `mesh node upgrade` installs a release (or a local build)
+**By hand — the fallback.** The ordinary way a node gets a new
+version is the one above: a merge cuts a release and the platform asks
+the node for it. Upgrading by hand is for when that path cannot run —
+a platform that cannot reach the node, a build that is not a release,
+a sandboxed or channel-mode node. `mesh node upgrade` installs a release (or a local build)
 and restarts at once, as the platform's update does (see [Upgrading a
 node without ending sessions](#upgrading-a-node-without-ending-sessions)).
 `mesh node update [version]` is the draining variant, for a node whose

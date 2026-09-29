@@ -53,6 +53,9 @@ jobs:
       - name: mirror-release.sh
         run: scripts/mirror-release_test.sh
 
+      - name: release-on-merge.sh
+        run: scripts/release-on-merge_test.sh
+
       - name: Verify archived directories absent (INV-02)
         # INV-02 archival is permanent. Plans 00-04 + 00-05 deleted these four
         # directories; recreating any of them must fail CI.
