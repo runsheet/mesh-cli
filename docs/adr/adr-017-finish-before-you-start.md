@@ -145,8 +145,13 @@ items once per tick (`OrgWorkItems(org, "review")`), only while the key
 is set and only for an org with something ready. A fresh item claimed in
 the tick is added to its repo's count at once, so one tick never claims
 more fresh items of a repo than the limit leaves. A failed listing
-counts nothing for that org and is logged; the claim goes on as with no
-limit rather than stopping on a read.
+leaves that org's counts unknown: its repos may already be at the
+limit, so its fresh items are held this tick (reason `repo <repoId>'s
+unmerged pull requests could not be counted (<org>'s review items
+unread) under node.yaml's claim.unmerged_per_repo <limit>`) and its
+started work is still claimed, as at the limit. Counting an unread org
+as having none would let a repo past its limit take fresh claims on a
+slow read; holding fresh work one tick costs a tick.
 
 **What it holds and what it still claims.** A fresh item
 (`!startedWork`) of a repo at or past the limit is not claimed and stays
@@ -162,6 +167,9 @@ Other repos are unaffected.
 heartbeat's holding report carries it with the reason `repo <repoId>
 has <n> unmerged pull requests, at node.yaml's claim.unmerged_per_repo
 <limit>`; node.log says it once per repo per tick, not once per item.
+The report keeps one entry per goal and kind, so when repos of one goal
+are held for different reasons each is appended to the entry's reason
+once: two repos at their limit in one goal are both named.
 
 **`reviewPile` and `mergePressureAt`: not read.** The platform's
 `RepoIndex` carries both, and today nothing in mesh-cli reads either —

@@ -165,3 +165,60 @@ func TestLoopUnmergedLimitCountsThisTicksClaims(t *testing.T) {
 		t.Fatalf("claimed %v, want a1 alone", got)
 	}
 }
+
+// A failed review listing leaves the repo's count unknown: the tick
+// holds its fresh items, as at the limit, and still claims its rework.
+func TestLoopUnmergedLimitHoldsFreshClaimsWhenReviewIsUnread(t *testing.T) {
+	p := newPriorityFake(t)
+	p.addGoal(orgID, "steady", "normal")
+	p.addItemRow(orgID, "steady", "a-fresh", 1, nil)
+	p.addItemRow(orgID, "steady", "a-rework", 2, map[string]any{"prUrl": "https://github.com/acme/a/pull/2", "evaluation": "the test does not pass", "attempts": 1})
+	p.FailReads["workItemIndexs/status=review"] = "gateway timeout"
+	p.register()
+	loop, logs := p.loop(3)
+	loop.Cfg.Claim = ClaimConfig{UnmergedPerRepo: 5}
+	if got := p.claimedBy(loop); strings.Join(got, ",") != "a-rework" {
+		t.Fatalf("claimed %v, want a-rework alone", got)
+	}
+	if s := p.Item("a-fresh")["status"]; s != "ready" {
+		t.Fatalf("a-fresh is %v, want ready", s)
+	}
+	want := "repo " + repoID + "'s unmerged pull requests could not be counted (acme's review items unread) under node.yaml's claim.unmerged_per_repo 5"
+	if !strings.Contains(logs.String(), want) {
+		t.Fatalf("the hold is not logged as %q:\n%s", want, logs)
+	}
+	p.claimedBy(loop)
+	u := unclaimedOf(t, p.lastHolding())["steady/item"]
+	if u == nil || !strings.Contains(u["reason"].(string), want) {
+		t.Fatalf("holding for steady = %#v, want the reason %q", u, want)
+	}
+}
+
+// Two repos of one goal at their limit: the goal's holding entry names
+// both repos, not the first alone.
+func TestLoopUnmergedLimitNamesEveryHeldRepo(t *testing.T) {
+	const repoC = "dddddddd-4444-4444-8444-dddddddddddd"
+	p := newPriorityFake(t)
+	p.addGoal(orgID, "steady", "normal")
+	p.addReview(orgID, "steady", "a-open", repoID, 1)
+	p.addReview(orgID, "steady", "c-open", repoC, 2)
+	p.addItemRow(orgID, "steady", "a-fresh", 3, nil)
+	p.addItemRow(orgID, "steady", "c-fresh", 4, map[string]any{"repoId": repoC})
+	p.register()
+	loop, _ := p.loop(3)
+	loop.Cfg.Claim = ClaimConfig{UnmergedPerRepo: 1}
+	if got := p.claimedBy(loop); len(got) != 0 {
+		t.Fatalf("claimed %v, want none", got)
+	}
+	p.claimedBy(loop)
+	u := unclaimedOf(t, p.lastHolding())["steady/item"]
+	if u == nil || u["count"] != float64(2) {
+		t.Fatalf("holding for steady = %#v, want two items", u)
+	}
+	for _, repo := range []string{repoID, repoC} {
+		want := "repo " + repo + " has 1 unmerged pull requests, at node.yaml's claim.unmerged_per_repo 1"
+		if !strings.Contains(u["reason"].(string), want) {
+			t.Fatalf("holding reason %q does not name %q", u["reason"], want)
+		}
+	}
+}

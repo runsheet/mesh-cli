@@ -973,7 +973,10 @@ a rebase conflict — is still claimed: it finishes a pull request that
 already counts. Other repos are claimed as before. The hold is logged
 once per repo per tick and the heartbeat's holding report names it
 (`repo <id> has 7 unmerged pull requests, at node.yaml's
-claim.unmerged_per_repo 7`). A negative value is refused. Like the
+claim.unmerged_per_repo 7`), each held repo of a goal named in its
+entry. A failed `review` listing holds that org's fresh items for the
+tick, as at the limit, and still claims its started work: an unknown
+count is never taken as zero. A negative value is refused. Like the
 context budget, `claim:` is read again every tick without a restart,
 and a change is logged (`claim: unmerged_per_repo 0 → 7`). With the key
 left out no `review` listing is read at all
