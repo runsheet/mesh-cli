@@ -45,7 +45,11 @@ readme=dist/mirror/README.md
 flags=()
 case "$tag" in *-*) flags+=(--prerelease) ;; esac
 
+# --target: the mirror has no commit of ours, so the release's tag is
+# created there at its default branch's head; without it gh refuses,
+# "tag exists locally but has not been pushed" (v0.2.187, run 36494313388).
 gh release create "$tag" \
+  --target main \
   --title "$tag" \
   --notes "$NOTES" \
   "${flags[@]}" \

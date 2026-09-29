@@ -114,3 +114,21 @@ func TestHandBackOff(t *testing.T) {
 		t.Fatalf("HandBackAt 0 handed back (asked %d): %+v\n%s", asked, res, rec)
 	}
 }
+
+// The validation retry's turn names the step, its command, exit code and
+// output's end, and gives the hand-back's rule: never a push.
+func TestValidationRetryPromptNamesTheStep(t *testing.T) {
+	long := strings.Repeat("x", 5000) + "\nFAIL ./api TestThing\n"
+	p := ValidationRetryPrompt("unit", "go test ./...", 1, long)
+	for _, want := range []string{"step unit (`go test ./...`) exited 1", "FAIL ./api TestThing", "Fix it and commit", "commit what works", "hand back", "Never push"} {
+		if !strings.Contains(p, want) {
+			t.Fatalf("prompt lacks %q:\n%s", want, p)
+		}
+	}
+	if strings.Count(p, "x") > 3100 {
+		t.Fatal("the output is not cut to its tail")
+	}
+	if p := ValidationRetryPrompt("lint", "golangci-lint run", 2, ""); strings.Contains(p, "```") {
+		t.Fatalf("no output, no block:\n%s", p)
+	}
+}
