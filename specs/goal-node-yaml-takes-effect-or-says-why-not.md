@@ -338,6 +338,12 @@ lands in whichever `node.log.N` systemd's descriptor has followed.
 cap: `node.log.1` exists at 1000 bytes, node.log at 100; far past it,
 node.log stays under the cap and exactly 3 rotated files are kept),
 `TestRotatingFileRotatesAnOversizedLogOnOpen`,
+`TestRotatingFileOpenFailsWhenAnOversizedLogCannotRotate` (a 5000-byte
+node.log over a 1000-byte cap with `node.log.1` a directory: the open
+returns `log <path>: rotate on open (5000 bytes, cap 1000): …` and leaves
+the file whole — the first attempt's evaluator found it panicked there,
+dereferencing the file `rotate` had already closed, the path the mini's
+oversized log takes on its first start),
 `TestRotatingFileCutsAWriteLargerThanTheCap` (a 5000-byte write to a
 1000-byte cap leaves node.log at exactly 1000 bytes ending in the cut
 line, the earlier line in `node.log.1`),
@@ -369,7 +375,9 @@ release carrying this and its unit is reinstalled.
 onto main after #493 without a conflict — branch 4 already sat on #493's
 merge, so `crash.Guard`'s wiring in `nodecmd.go` and the exit section
 above are kept. The ADR is **ADR-019**, not 018: PR #494 (item 6's
-carry) claims `adr-018-a-fixed-node-heartbeats-its-capacity`. The build
+carry) claims `adr-018-a-fixed-node-heartbeats-its-capacity`. Attempt 2
+rebased the branch onto main after #494 merged (634e2e6); the one
+conflict was this doc's `summary:`, which now carries both. The build
 ran on the mini and installed nothing. The mini at 2026-09-29 22:25Z,
 read, not changed: `mesh v0.2.191 (commit 8eba662)`, which does not
 carry this; `io.projectmesh.mesh-node.service` still has
