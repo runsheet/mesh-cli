@@ -1,5 +1,5 @@
 ---
-summary: The first tag cut from runsheet/mesh-cli's main after the transfer (v0.0.0-runsheet-test.6) and its verification; then v0.2.188, the first release cut for the runsheet/mesh mirror — signed on runsheet/mesh-cli, its mirror step refused by runsheet/mesh (HTTP 403, RELEASE_TOKEN), v0.2.189 the retry — and v0.2.187, cut and signed on the source only (its mirror step failed without --target, fixed by #336).
+summary: The first tag cut from runsheet/mesh-cli's main after the transfer (v0.0.0-runsheet-test.6) and its verification; then v0.2.188, the first signed release on the public mirror runsheet/mesh (run 36499785802, attempt 3, after attempt 1's HTTP 403 from RELEASE_TOKEN), which the mini runs since 2026-09-29 00:52Z, sessions adopted and the update confirmed — and v0.2.187, cut and signed on the source runsheet/mesh-cli only (its mirror step failed without --target, fixed by #336).
 ---
 
 # Releases after the transfer
@@ -195,20 +195,25 @@ it.
 
 ## v0.2.188: the first release on the mirror
 
-Recorded 2026-09-29 for item 10 of goal
+Recorded 2026-09-29 for items 10 and 14 of goal
 `signed-releases-on-runsheet-mesh` (ADR 002, amendment "the public
-mirror on runsheet/mesh"). `v0.2.188` is the first tag cut to put a
-signed release on `runsheet/mesh`. It is signed and released on
-`runsheet/mesh-cli`, but **it is not on the mirror yet**: the mirror
-step's first API call was refused with HTTP 403 by the token
-(`RELEASE_TOKEN`). The cause is outside this repository, so this
-branch changes no script or workflow. `v0.2.189` is the retry, once the
-token can write `runsheet/mesh` (below, "What is owed").
+mirror on runsheet/mesh"). `v0.2.188` is the first signed release on
+`runsheet/mesh`. Run `36499785802`'s first attempt was refused by the
+mirror with HTTP 403 (`RELEASE_TOKEN`). The operator replaced the token
+and re-ran it; attempt 3 published the release on both repositories at
+2026-09-29 00:50Z. The mini has run it since 00:51:59Z. `v0.2.187` was
+cut and signed on `runsheet/mesh-cli` only.
 
 ### Tag
 
 ```
 $ git ls-remote --tags origin v0.2.187 v0.2.188 'v0.2.187^{}' 'v0.2.188^{}'
+b4cf92e2a8c5f8a611092b8e9b8dde79dddac506	refs/tags/v0.2.187
+909202bb9a2081e220cacdaafb07349da5ca66a0	refs/tags/v0.2.187^{}
+1d587a0ef52bfdcaf2ffa13bb26c4de82d4807f7	refs/tags/v0.2.188
+5a8c29ea1f534f69fa64dbcaf5f7be7497d9ffb1	refs/tags/v0.2.188^{}
+
+$ git ls-remote --tags origin 'v0.2.*'
 b4cf92e2a8c5f8a611092b8e9b8dde79dddac506	refs/tags/v0.2.187
 909202bb9a2081e220cacdaafb07349da5ca66a0	refs/tags/v0.2.187^{}
 1d587a0ef52bfdcaf2ffa13bb26c4de82d4807f7	refs/tags/v0.2.188
@@ -223,45 +228,21 @@ $ git merge-base --is-ancestor 5a8c29e origin/main && echo ancestor
 ancestor
 ```
 
-`v0.2.188` is an annotated tag on `5a8c29e`, which is `origin/main`'s
-head and the merge of #336 (`--target main` for the mirror's release).
-It was pushed at 2026-09-28 23:46:50Z.
+`v0.2.188` is an annotated tag on `5a8c29e`, the merge of #336
+(`--target main` for the mirror's release). It was pushed at
+2026-09-28 23:46:50Z. No tag is newer.
 
 ### The run
 
-Run `36499785802` (`release-tag.yml` on `v0.2.188`) **concluded
-failure**. Every job passed except the last step of the publish job,
-the mirror:
+Run `36499785802` (`release-tag.yml` on `v0.2.188`) took three
+attempts.
+
+**Attempt 1** (2026-09-29 00:03Z) failed at the last step, the mirror.
+Every earlier step passed, including the release on
+`runsheet/mesh-cli`:
 
 ```
-$ gh run view 36499785802 --repo runsheet/mesh-cli --json status,conclusion,jobs \
-    -q '{status,conclusion,jobs:[.jobs[]|{name,conclusion}]}'
-{"conclusion":"failure","jobs":[{"conclusion":"success","name":"Node image v0.2.188"},{"conclusion":"success","name":"Build linux/arm64"},{"conclusion":"success","name":"Build darwin/arm64"},{"conclusion":"success","name":"Build linux/amd64"},{"conclusion":"failure","name":"Sign and publish v0.2.188"}],"status":"completed"}
-
-$ gh run view 36499785802 --repo runsheet/mesh-cli
-X v0.2.188 Release (tag) · 36499785802
-JOBS
-✓ Node image v0.2.188 in 9m58s (ID 109187634951)
-✓ Build linux/arm64 in 18s (ID 109187635289)
-✓ Build darwin/arm64 in 19s (ID 109187635346)
-✓ Build linux/amd64 in 29s (ID 109187635351)
-X Sign and publish v0.2.188 in 51s (ID 109191750944)
-  ✓ Set up job
-  ✓ Checkout code (full history, for the release notes)
-  ✓ Download artifacts
-  ✓ Check the three assets
-  ✓ Write release notes
-  ✓ Generate SHA256SUMS
-  ✓ Install cosign
-  ✓ Sign SHA256SUMS (keyless)
-  ✓ Verify the signature against the release identity
-  ✓ Compute the release notes
-  ✓ Create release on runsheet/mesh-cli
-  X Mirror the release to runsheet/mesh
-  ✓ Post Checkout code (full history, for the release notes)
-  ✓ Complete job
-
-$ gh run view 36499785802 --repo runsheet/mesh-cli --log-failed | tail -2
+$ gh run view 36499785802 --repo runsheet/mesh-cli --attempt 1 --log-failed | tail -2
 Sign and publish v0.2.188	Mirror the release to runsheet/mesh	2026-09-29T00:03:31.8438936Z HTTP 403: Resource not accessible by personal access token (https://api.github.com/repos/runsheet/mesh/releases)
 Sign and publish v0.2.188	Mirror the release to runsheet/mesh	2026-09-29T00:03:31.8601701Z ##[error]Process completed with exit code 1.
 ```
@@ -272,35 +253,75 @@ The error, verbatim:
 HTTP 403: Resource not accessible by personal access token (https://api.github.com/repos/runsheet/mesh/releases)
 ```
 
-This is the first line `scripts/mirror-release.sh` runs, `gh release
-create "$tag" --target main …`. #336 moved it past the v0.2.187 failure,
-and it reached the API: `POST /repos/runsheet/mesh/releases`. Neither
-the `cmp`, the `cosign verify-blob` ("Verified OK") nor the README PUT
-ran. Nothing was created on the mirror (see "Both releases").
+This was the first line `scripts/mirror-release.sh` runs, `gh release
+create "$tag" --target main …`, refused at `POST
+/repos/runsheet/mesh/releases`. "Resource not accessible by personal
+access token" is GitHub's answer to a fine-grained token without
+permission on the repository it calls. `RELEASE_TOKEN` was the secret
+the old `cli-release.yml` used while the mirror was
+`projectmesh-io/mesh`. A fine-grained token's resource owner is fixed
+when it is created, so it did not follow the repository to `runsheet`.
+The token the mirror needs is a fine-grained PAT **owned by
+`runsheet`**, with repository access **only `runsheet/mesh`** and
+**Contents: Read and write**, stored as `RELEASE_TOKEN` on
+`runsheet/mesh-cli`. The operator replaced it. No script changed.
 
-The cause is the token, not this repository. "Resource not accessible
-by personal access token" is GitHub's answer to a **fine-grained**
-personal access token that lacks the permission on the repository it
-calls. `RELEASE_TOKEN` is the secret the old `cli-release.yml` used to
-publish to this repo while it was `projectmesh-io/mesh`. A fine-grained
-token's resource owner is fixed when the token is created, so a token
-owned by `projectmesh-io` does not follow the repository to `runsheet`.
-The node session cannot read the secret's metadata to confirm this
-(`gh secret list --repo runsheet/mesh-cli`: `HTTP 403: Resource not
-accessible by integration`). What the token needs to create a release
-and push the README:
+**Attempt 2** (00:48Z) failed one step earlier, because the source
+release from attempt 1 still existed:
 
-- a fine-grained PAT with **resource owner `runsheet`**, repository
-  access **only `runsheet/mesh`**, repository permission **Contents:
-  Read and write** (Metadata: Read comes with it), approved by an org
-  owner if the `runsheet` org requires approval for fine-grained
-  tokens; or
-- the runsheet org App's installation token, with `contents: write` on
-  `runsheet/mesh`;
+```
+$ gh run view 36499785802 --repo runsheet/mesh-cli --attempt 2 --log-failed | tail -2
+Sign and publish v0.2.188	Create release on runsheet/mesh-cli	2026-09-29T00:48:14.7351910Z a release with the same tag name already exists: v0.2.188
+Sign and publish v0.2.188	Create release on runsheet/mesh-cli	2026-09-29T00:48:14.7406779Z ##[error]Process completed with exit code 1.
+```
 
-stored as `RELEASE_TOKEN` on `runsheet/mesh-cli`. No script change is
-owed: `--target main` got past the local-tag check, and the request
-the token was refused on is the right one.
+**Attempt 3** (00:50Z) succeeded. The source release was created again
+at 00:50:45Z (its `published` date below), with the tag left as it was:
+
+```
+$ gh run view 36499785802 --repo runsheet/mesh-cli --json attempt,conclusion
+{"attempt":3,"conclusion":"success"}
+
+$ gh run view 36499785802 --repo runsheet/mesh-cli
+✓ v0.2.188 Release (tag) · 36499785802
+
+JOBS
+✓ Sign and publish v0.2.188 in 53s (ID 109204346201)
+✓ Node image v0.2.188 in 9m58s (ID 109204346366)
+✓ Build linux/amd64 in 29s (ID 109204346668)
+✓ Build linux/arm64 in 18s (ID 109204371223)
+✓ Build darwin/arm64 in 19s (ID 109204384361)
+```
+
+The mirror step's key lines from attempt 3's log:
+
+```
+$ gh run view 36499785802 --repo runsheet/mesh-cli --attempt 3 --log \
+    | grep 'Mirror the release to runsheet/mesh' | cut -f3 \
+    | grep -E 'mirror-release|GH_REPO|TAG:|releases/tag|Verified' | sed 's/\x1b\[[0-9;]*m//g'
+2026-09-29T00:50:45.6479529Z ##[group]Run scripts/mirror-release.sh "$TAG" "$SHA" release
+2026-09-29T00:50:45.6479912Z ^[[36;1mscripts/mirror-release.sh "$TAG" "$SHA" release^[[0m
+- mirror-release: create the mirror's release at main (--target), the tag being ours alone (#336) (5a8c29e)
+2026-09-29T00:50:45.6491100Z   GH_REPO: runsheet/mesh
+2026-09-29T00:50:45.6491280Z   TAG: v0.2.188
+2026-09-29T00:50:55.6686660Z https://github.com/runsheet/mesh/releases/tag/v0.2.188
+2026-09-29T00:50:57.5565100Z Verified OK
+```
+
+- `https://github.com/runsheet/mesh/releases/tag/v0.2.188` is `gh
+  release create`'s output: the mirror's release, with its five assets.
+- The `cmp` of the source's `SHA256SUMS` against the one downloaded
+  from the mirror prints nothing when the files are equal. Under `set
+  -e` the script would have stopped there otherwise.
+- `Verified OK` is `cosign verify-blob` on the mirror's bundle against
+  the `runsheet/mesh-cli` identity.
+- The README PUT's output goes to `/dev/null`. Its commit on the
+  mirror, two seconds later, is the evidence:
+
+```
+$ gh api repos/runsheet/mesh/commits -q '.[0]|.sha[0:7]+" "+.commit.committer.date+" "+.commit.message'
+4d8a6cc 2026-09-29T00:50:58Z mirror: update README from runsheet/mesh-cli@5a8c29ea1f534f69fa64dbcaf5f7be7497d9ffb1
+```
 
 ### Both releases
 
@@ -310,43 +331,68 @@ title:	v0.2.188
 tag:	v0.2.188
 draft:	false
 prerelease:	false
+immutable:	false
 author:	github-actions[bot]
 created:	2026-09-28T23:46:50Z
-published:	2026-09-29T00:03:30Z
+published:	2026-09-29T00:50:45Z
 url:	https://github.com/runsheet/mesh-cli/releases/tag/v0.2.188
 asset:	mesh-darwin-arm64
 asset:	mesh-linux-amd64
 asset:	mesh-linux-arm64
+asset:	SHA256SUMS
+asset:	SHA256SUMS.sigstore.json
 …
-$ gh release view v0.2.188 --repo runsheet/mesh-cli --json assets -q '.assets[].name'
+$ gh release view v0.2.188 --repo runsheet/mesh
+title:	v0.2.188
+tag:	v0.2.188
+draft:	false
+prerelease:	false
+immutable:	false
+author:	chriskolenko
+created:	2026-04-23T07:41:05Z
+published:	2026-09-29T00:50:55Z
+url:	https://github.com/runsheet/mesh/releases/tag/v0.2.188
+asset:	mesh-darwin-arm64
+asset:	mesh-linux-amd64
+asset:	mesh-linux-arm64
+asset:	SHA256SUMS
+asset:	SHA256SUMS.sigstore.json
+…
+$ gh release view v0.2.188 --repo runsheet/mesh --json assets -q '.assets[].name'
 mesh-darwin-arm64
 mesh-linux-amd64
 mesh-linux-arm64
 SHA256SUMS
 SHA256SUMS.sigstore.json
-
-$ gh release view v0.2.188 --repo runsheet/mesh
-release not found
-$ gh release download v0.2.188 --repo runsheet/mesh -D /tmp/mirror188 -p SHA256SUMS -p SHA256SUMS.sigstore.json
-release not found
-exit 1
-$ gh api repos/runsheet/mesh/releases/latest -q '.tag_name+" "+.published_at+" "+([.assets[].name]|join(","))'
-v0.2.186 2026-09-26T11:48:49Z mesh-darwin-amd64,mesh-darwin-arm64,mesh-linux-amd64,mesh-linux-arm64,mesh-windows-amd64.exe,SHA256SUMS
-
-$ curl -sI https://github.com/runsheet/mesh/releases/download/v0.2.188/SHA256SUMS | head -1
-HTTP/2 404
-$ curl -sI https://github.com/runsheet/mesh/releases/download/v0.2.186/mesh-linux-amd64 | head -1
-HTTP/2 302
+$ gh api repos/runsheet/mesh/releases/latest -q .tag_name
+v0.2.188
 ```
 
-The mirror has no `v0.2.188`, so there is nothing to `cmp` against
-yet. The source's signed files verify under the `runsheet/mesh-cli`
-identity. The next tag's mirror step must hand these bytes on
-unchanged:
+The mirror's release is authored by the `RELEASE_TOKEN`'s owner. Its
+`created` date is that of the mirror's `main` head, where `--target
+main` put its tag.
+
+The notes are the same text. The source's body has one more trailing
+newline, because the source release reads `--notes-file NOTES.md`
+while the mirror's is `--notes "$NOTES"`:
 
 ```
-$ gh release download v0.2.188 --repo runsheet/mesh-cli -D /tmp/v0.2.188.3k3P
-$ cat /tmp/v0.2.188.3k3P/SHA256SUMS
+$ for r in runsheet/mesh-cli runsheet/mesh; do gh release view v0.2.188 --repo $r --json body -q '.body|length'; done
+1136
+1135
+$ for r in runsheet/mesh-cli runsheet/mesh; do gh release view v0.2.188 --repo $r --json body -q '.body|rtrimstr("\n")' | sha256sum; done
+595b2bf65d224c6ddf13d6efa76d8bfeadabc944753b05a3e6ce1d393694ce12  -
+595b2bf65d224c6ddf13d6efa76d8bfeadabc944753b05a3e6ce1d393694ce12  -
+```
+
+The signed files are the same bytes, and the mirror's verify:
+
+```
+$ gh release download v0.2.188 --repo runsheet/mesh-cli -D /tmp/src188
+$ gh release download v0.2.188 --repo runsheet/mesh -D /tmp/mir188
+$ cmp /tmp/src188/SHA256SUMS /tmp/mir188/SHA256SUMS && echo SHA256SUMS equal
+SHA256SUMS equal
+$ cd /tmp/mir188 && cat SHA256SUMS
 5c55ec97df7058730b19ba5e5939b9a67b7a114e18f09c56aa1835717852bd19  mesh-darwin-arm64
 d66057ea8d5ef005fc9add35af003e937180d87612225cbb0e4a477f2a2418f4  mesh-linux-amd64
 8b057a4a77ca9d6c734a758dfd798fbe63f6e4df1811137f1f5674c4167e4012  mesh-linux-arm64
@@ -354,45 +400,45 @@ $ cosign verify-blob --bundle SHA256SUMS.sigstore.json \
     --certificate-identity https://github.com/runsheet/mesh-cli/.github/workflows/release-tag.yml@refs/tags/v0.2.188 \
     --certificate-oidc-issuer https://token.actions.githubusercontent.com SHA256SUMS
 Verified OK
+$ sha256sum -c SHA256SUMS
+mesh-darwin-arm64: OK
+mesh-linux-amd64: OK
+mesh-linux-arm64: OK
+
+$ curl -sI https://github.com/runsheet/mesh/releases/download/v0.2.188/SHA256SUMS | head -1
+HTTP/2 302
 ```
+
+(cosign v2.5.2.)
 
 ### The updater fetches from the mirror
 
-Built from `main` (`5a8c29e`, identical to `v0.2.188`). With no
-`--from-dir` it fetches anonymously from `runsheet/mesh`, as #316 made
-it. It finds nothing there yet and says so in the words ADR 002's
-amendment gives it. The same bytes read from the source verify, and the
-same bytes named as another tag are refused:
+Built from this branch. With no `--from-dir` the updater fetches
+anonymously from `runsheet/mesh`, as #316 made it, and verifies against
+the `runsheet/mesh-cli` identity. With no version it takes the mirror's
+latest. The same bytes named as another tag are refused:
 
 ```
 $ go build -o /tmp/mesh ./cmd/mesh
 
 $ /tmp/mesh node update --verify-only v0.2.188
 Fetching mesh-linux-amd64 of v0.2.188 and verifying it…
-Error: refused v0.2.188: release v0.2.188 has no SHA256SUMS on runsheet/mesh (404: not published there, or not a signed release)
-exit 1
-
-$ /tmp/mesh node update --verify-only
-The latest release is v0.2.186.
-Fetching mesh-linux-amd64 of v0.2.186 and verifying it…
-Error: refused v0.2.186: release v0.2.186 has no SHA256SUMS.sigstore.json on runsheet/mesh (404: not published there, or not a signed release)
-exit 1
-
-$ /tmp/mesh node update --verify-only --from-dir /tmp/v0.2.188.3k3P v0.2.188
-Fetching mesh-linux-amd64 of v0.2.188 and verifying it…
 Verified: mesh-linux-amd64 sha256 d66057ea8d5ef005fc9add35af003e937180d87612225cbb0e4a477f2a2418f4 is in SHA256SUMS, signed by release-tag.yml on refs/tags/v0.2.188.
-Verify only: written to /tmp/mesh-update-2900293090/mesh-linux-amd64; nothing swapped.
+Verify only: written to /tmp/mesh-update-1578607997/mesh-linux-amd64; nothing swapped.
 exit 0
 
-$ /tmp/mesh node update --verify-only --from-dir /tmp/v0.2.188.3k3P v0.2.189
+$ /tmp/mesh node update --verify-only
+The latest release is v0.2.188.
+Fetching mesh-linux-amd64 of v0.2.188 and verifying it…
+Verified: mesh-linux-amd64 sha256 d66057ea8d5ef005fc9add35af003e937180d87612225cbb0e4a477f2a2418f4 is in SHA256SUMS, signed by release-tag.yml on refs/tags/v0.2.188.
+Verify only: written to /tmp/mesh-update-1242862115/mesh-linux-amd64; nothing swapped.
+exit 0
+
+$ /tmp/mesh node update --verify-only --from-dir /tmp/mir188 v0.2.189
 Fetching mesh-linux-amd64 of v0.2.189 and verifying it…
 Error: refused v0.2.189: SHA256SUMS is not signed by release-tag.yml on v0.2.189
 exit 1
 ```
-
-The anonymous fetch refuses and the signed bytes verify. A node told
-`v0.2.188` today would refuse it, record an `updateError` and wait an
-hour. It would not take an unsigned build.
 
 ### v0.2.187, cut but never mirrored
 
@@ -410,75 +456,170 @@ Sign and publish v0.2.187	Mirror the release to runsheet/mesh	2026-09-28T23:28:4
 #336 (`5a8c29e`) added `--target main` to `scripts/mirror-release.sh`'s
 `gh release create`. The mirror has no commit of ours, so its tag is
 created at its default branch's head. v0.2.187 never reached the
-token, which is why the 403 above first showed up on v0.2.188. Its
-release notes on `runsheet/mesh-cli` keep their text and gain one
-paragraph. The tag and the release are left as they were:
+token, which is why the 403 first showed up on v0.2.188. Item 10 added
+one paragraph to its release notes on `runsheet/mesh-cli`. The tag and
+the release are left as they were:
 
 ```
-$ gh release view v0.2.187 --repo runsheet/mesh-cli --json body -q .body > v0.2.187-notes.md
-$ printf '\nNever mirrored: …\n' >> v0.2.187-notes.md
-$ gh release edit v0.2.187 --repo runsheet/mesh-cli --notes-file v0.2.187-notes.md
-$ gh release view v0.2.187 --repo runsheet/mesh-cli --json body -q .body | tail -1
-Never mirrored: the mirror step of run 36494313388 failed before it reached runsheet/mesh (gh release create without --target, fixed in #336). v0.2.188 is the first release cut for the public mirror, but its mirror step (run 36499785802) was refused by runsheet/mesh with HTTP 403 (RELEASE_TOKEN cannot create releases there), so it is not yet mirrored; v0.2.189 is the retry once the token is fixed. This tag is left as it was.
+$ gh release view v0.2.187 --repo runsheet/mesh-cli --json body -q .body | grep -o '^Never mirrored: [^)]*)\.' | sed 's/^/v0.2.187: /'
+v0.2.187: Never mirrored: the mirror step of run 36494313388 failed before it reached runsheet/mesh (gh release create without --target, fixed in #336).
 ```
+
+That paragraph's second sentence was written before attempt 3. It still
+calls v0.2.188 unmirrored and v0.2.189 the retry (see "What is owed").
 
 ### v0.1.0 superseded
 
-Already done by an earlier item; not edited here:
+The note now names v0.2.188 as the first release on the mirror. The
+existing text is kept, `isPrerelease` stays true, and the tag is
+untouched:
 
 ```
+$ gh release view v0.1.0 --repo runsheet/mesh-cli --json body -q .body > v0.1.0-notes.md
+$ sed -i 's|continue the public line at v0.2.187 on the public mirror runsheet/mesh|continue the public line at v0.2.188 on the public mirror runsheet/mesh (v0.2.187 was cut and signed on runsheet/mesh-cli only; its mirror step failed)|' v0.1.0-notes.md
+$ gh release edit v0.1.0 --repo runsheet/mesh-cli --notes-file v0.1.0-notes.md
 $ gh release view v0.1.0 --repo runsheet/mesh-cli --json isPrerelease,body
-{"body":"Release v0.1.0 from `9ed5f8b7f7c7f4cea34ae260068ef0331481230e`. SHA256SUMS is signed keyless with Sigstore by .github/workflows/release-tag.yml; see the README's Release section to verify.\n\nSuperseded: mesh-cli's releases continue the public line at v0.2.187 on the public mirror runsheet/mesh (ADR 002, amendment \"the public mirror on runsheet/mesh\"); this tag is left as it was.","isPrerelease":true}
+{"body":"Release v0.1.0 from `9ed5f8b7f7c7f4cea34ae260068ef0331481230e`. SHA256SUMS is signed keyless with Sigstore by .github/workflows/release-tag.yml; see the README's Release section to verify.\n\nSuperseded: mesh-cli's releases continue the public line at v0.2.188 on the public mirror runsheet/mesh (v0.2.187 was cut and signed on runsheet/mesh-cli only; its mirror step failed) (ADR 002, amendment \"the public mirror on runsheet/mesh\"); this tag is left as it was.\n","isPrerelease":true}
+$ git ls-remote --tags origin v0.1.0
+2f79e5e9b3ddd02d8f729d1129c53c0b0f1c1c32	refs/tags/v0.1.0
 ```
 
 ### The mirror's README
 
-The mirror step never reached its README PUT, so the live README is
-still the one-line original. It is not the `dist/mirror/README.md` that
-`v0.2.188` carries:
+Attempt 3's README PUT made the live README byte-identical to the
+`dist/mirror/README.md` that `v0.2.188` carries:
 
 ```
-$ gh api repos/runsheet/mesh/contents/README.md --jq .content | base64 -d
-# mesh
-$ gh api repos/runsheet/mesh/commits -q '.[0]|.sha[0:7]+" "+.commit.committer.date+" "+.commit.message'
-968f2dc 2026-04-23T07:41:05Z Add reference systemd unit for mesh node daemon
-
 $ gh api repos/runsheet/mesh/contents/README.md --jq .content | base64 -d > /tmp/live-readme.md
 $ git show v0.2.188:dist/mirror/README.md > /tmp/tag-readme.md
-$ cmp /tmp/live-readme.md /tmp/tag-readme.md
-cmp: EOF on /tmp/live-readme.md after byte 6, in line 1
-$ wc -c /tmp/live-readme.md /tmp/tag-readme.md
-   6 /tmp/live-readme.md
-2070 /tmp/tag-readme.md
+$ cmp /tmp/live-readme.md /tmp/tag-readme.md && echo identical
+identical
+$ wc -c /tmp/live-readme.md
+2070 /tmp/live-readme.md
+$ grep -n 'v0.2.187' /tmp/live-readme.md
+6:v0.2.187 every release here is a signed tag release, identical to the
 ```
 
-This branch updates `dist/mirror/README.md`: the signed line starts at
-`v0.2.188`, and `v0.2.187` is on `runsheet/mesh-cli` only. The next
-successful mirror step pushes it.
-
-### What is owed
-
-1. **The token.** Replace `RELEASE_TOKEN` on `runsheet/mesh-cli` with a
-   token that can write `runsheet/mesh`: a fine-grained PAT owned by
-   `runsheet`, scoped to `runsheet/mesh` alone, with Contents: Read and
-   write, or the org App's installation token with `contents: write`
-   there (see "The run"). This is an operator's by-hand step. No node
-   session can read or set the secret.
-2. **The retry is `v0.2.189`**, cut from `main` once the token is in
-   place and this branch has merged, so that the mirror's README is
-   the new one. Do not re-run `v0.2.188`'s publish job: it would fail
-   at `gh release create` on `runsheet/mesh-cli`, where the release
-   already exists. `v0.2.187` and `v0.2.188` stay on `runsheet/mesh-cli`
-   as they are, signed and never mirrored. The ADR 002 numbering rule
-   (max `v0.2.x` on `runsheet/mesh` plus one) would still answer
-   `v0.2.187` while the mirror stops at `v0.2.186`. Cut `v0.2.189` by
-   name.
-3. `v0.2.189`'s run then repeats this record's checks against the
-   mirror: five assets and the same notes on both releases, `cmp`,
-   `cosign verify-blob`, the 302, `mesh node update --verify-only
-   v0.2.189` with no `--from-dir`, and the live README byte-identical to
-   the tag's `dist/mirror/README.md`.
+It still says "From v0.2.187", because that is what `main` held at
+`5a8c29e`. This branch changes `dist/mirror/README.md` to "From
+v0.2.188", saying that v0.2.187 exists on `runsheet/mesh-cli` only. The
+next release's mirror step pushes that text. Nobody edits the mirror's
+README by hand.
 
 ### The mini updates from runsheet/mesh
 
-Item 11 of goal signed-releases-on-runsheet-mesh records it.
+The mini runs v0.2.188. It is byte-identical to the mirror's
+`mesh-linux-amd64`:
+
+```
+$ ~/bin/mesh version
+mesh v0.2.188
+$ sha256sum ~/bin/mesh ~/bin/mesh.prev
+d66057ea8d5ef005fc9add35af003e937180d87612225cbb0e4a477f2a2418f4  /home/chris/bin/mesh
+6ccdb3e1073b097e9be41be3ac1b4e7d3a8907c82af7453eb4116533df8c3304  /home/chris/bin/mesh.prev
+$ ~/bin/mesh.prev version
+mesh 4d8d435
+```
+
+node.log, 2026/09/29 00:40–00:53:
+
+```
+$ grep -n -E '^mesh node: 2026/09/29 00:(4[0-9]|5[0-3])' ~/.mesh/node.log | grep -E 'v0.2.188|v0.1.0|adopt|confirm'
+5803127:mesh node: 2026/09/29 00:40:21 self-update: 4d8d435 → v0.1.0: fetching
+5803128:mesh node: 2026/09/29 00:40:22 self-update to v0.1.0 refused: release v0.1.0 has no SHA256SUMS on GitHub (404: missing, or the repo is private)
+5803262:mesh node: 2026/09/29 00:51:59 mesh node v0.2.188, pid 1397397, config /home/chris/.mesh/node.yaml
+5803263:mesh node: 2026/09/29 00:51:59 confirming update 4d8d435 → v0.2.188: start 1 of 3, rolls back on the third
+5803267:mesh node: 2026/09/29 00:52:06 adopted a plan session of 82c9d02f-3f3a-5298-8c6f-17de4b8fa0f6 (pid 1395781, running)
+5803268:mesh node: 2026/09/29 00:52:06 adopted a plan session of 6c5f51b0-fd7b-50fa-b703-a927ea3a7c03 (pid 1395870, running)
+5803269:mesh node: 2026/09/29 00:52:06 adopt: 2 session(s) of the process before this one taken up
+5803270:mesh node: 2026/09/29 00:52:08 goal the-node-serves-its-owners-orgs: adopted its running planner session (pid 1395870)
+5803271:mesh node: 2026/09/29 00:52:08 goal a-node-has-an-owner: adopted its running planner session (pid 1395781)
+5803274:mesh node: 2026/09/29 00:52:19 self-update: v0.2.188 is up; update confirmed
+5803275:mesh node: 2026/09/29 00:52:20 self-update: v0.2.188 → v0.1.0: fetching
+5803276:mesh node: 2026/09/29 00:52:20 self-update to v0.1.0 refused: release v0.1.0 has no SHA256SUMS on runsheet/mesh (404: not published there, or not a signed release)
+```
+
+**How it was triggered.** It was neither the loop acting on
+desiredVersion nor `mesh node update v0.2.188`. It was the operator
+running `mesh node upgrade` over ssh. The evidence:
+
+- The loop never fetched v0.2.188. Between 00:40 and 00:51:59 its only
+  `self-update:` lines are for v0.1.0, the platform's desiredVersion
+  for the mini, refused by the 4d8d435 binary.
+- There was no drain, which `mesh node update` does before its swap.
+  The old process's last lines at 00:51:59 are `context canceled` on
+  every platform call and `stopped; running items were left for a
+  retry`. That is the restart path.
+- `systemd --user` restarted the service at the second the new process
+  started. That is the `systemctl --user restart` that `mesh node
+  upgrade` runs after its swap. An ssh login from the operator's
+  machine opened in the same second, and one a few seconds earlier
+  left `~/bin/mesh.new.sums`, whose content is v0.2.188's
+  `SHA256SUMS`:
+
+```
+$ journalctl --user --since '2026-09-29 00:51' --until '2026-09-29 00:52:30' --no-pager | grep mesh-node.service
+Sep 29 00:51:59 mini systemd[1153]: Stopping io.projectmesh.mesh-node.service - Mesh node: runs work items of goals on this machine...
+Sep 29 00:51:59 mini systemd[1153]: Stopped io.projectmesh.mesh-node.service - Mesh node: runs work items of goals on this machine.
+Sep 29 00:51:59 mini systemd[1153]: io.projectmesh.mesh-node.service: Consumed 9min 37.561s CPU time.
+Sep 29 00:51:59 mini systemd[1153]: Started io.projectmesh.mesh-node.service - Mesh node: runs work items of goals on this machine.
+$ journalctl --since '2026-09-29 00:51' --until '2026-09-29 00:52:30' --no-pager | grep 'Accepted publickey'
+Sep 29 00:51:39 mini sshd[1396899]: Accepted publickey for chris from 192.168.1.102 port 62749 ssh2: ED25519 SHA256:CBu3iG/tutvQxdCUzQVYbak3BiIxxUmgYNX/Rfpql8Q
+Sep 29 00:51:59 mini sshd[1397320]: Accepted publickey for chris from 192.168.1.102 port 62766 ssh2: ED25519 SHA256:CBu3iG/tutvQxdCUzQVYbak3BiIxxUmgYNX/Rfpql8Q
+$ ls -l --time-style=full-iso ~/bin/mesh ~/bin/mesh.new.sums
+-rwxr-xr-x 1 chris chris 22986914 2026-09-29 00:51:59.772160675 +0000 /home/chris/bin/mesh
+-rw-rw-r-- 1 chris chris      250 2026-09-29 00:51:45.180804669 +0000 /home/chris/bin/mesh.new.sums
+$ cmp ~/bin/mesh.new.sums /tmp/mir188/SHA256SUMS && echo same
+same
+```
+
+`~/.bash_history` was last written on 2026-09-24, so it has no record
+of the command. There are two ways it could have been run. `mesh node
+upgrade --version v0.2.188` fetches and verifies from `runsheet/mesh`
+through `internal/selfupdate`. `--binary ~/bin/mesh.new` swaps in a
+file the operator fetched from the mirror. The mini does not say which
+of the two it was. No `~/bin/mesh.new` is left. Either way, the bytes
+are the mirror's signed `mesh-linux-amd64`. The update was recorded as
+pending (`confirming update 4d8d435 → v0.2.188: start 1 of 3`) and
+confirmed by the first heartbeat 20 s later.
+
+**Sessions survived.** The two planner sessions started at 00:50:27 and
+00:50:33 (pids 1395781 and 1395870) ran through the restart in their
+own units. The new process adopted both at 00:52:06 (the `adopted`
+lines above).
+
+**update.json now:**
+
+```
+$ cat ~/.mesh/update.json
+{
+  "from": "v0.2.188",
+  "to": "v0.1.0",
+  "attempts": 0,
+  "lastError": "release v0.1.0 has no SHA256SUMS on runsheet/mesh (404: not published there, or not a signed release)"
+}
+```
+
+It records the refusal of v0.1.0 that followed at 00:52:20, when the
+loop read the platform's desiredVersion. v0.2.188 did not fail:
+`Confirm` cleared its pending state at 00:52:19, and v0.1.0 was never
+published on the mirror.
+
+### What is owed
+
+1. **desiredVersion.** The platform's desiredVersion for the mini is
+   still `v0.1.0`. The loop refuses it after every heartbeat and records
+   the `updateError` above, then waits an hour on that version before
+   trying again. The operator sets it to `v0.2.188` from the console's
+   Update menu (`setNodeDesiredVersion`). A node session does not set
+   it.
+2. **The console's release list.** `meshCliReleases` has to read
+   `runsheet/mesh`, so that the Update menu lists exactly what a node
+   can fetch. That work is owed on `runsheet/runsheet`.
+3. **v0.2.189 is simply the next tag.** ADR 002's rule is the highest
+   `v0.2.x` on `runsheet/mesh` plus one, which is now `v0.2.189`. Its
+   mirror step pushes this branch's `dist/mirror/README.md`.
+4. **v0.2.187's notes.** The second sentence of v0.2.187's "Never
+   mirrored" paragraph is stale. It still calls v0.2.188 not yet
+   mirrored and v0.2.189 the retry. Editing those notes is the
+   operator's call. This item leaves the v0.2.187 release as it was.

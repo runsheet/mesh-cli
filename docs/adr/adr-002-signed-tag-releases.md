@@ -395,8 +395,10 @@ again and current.
   transfer — is reused: a fine-grained token scoped to `runsheet/mesh`
   with Contents: read and write, or the runsheet org App's installation
   token.
-- **Numbering continues the public line.** The next tag is
-  **`v0.2.187`**, the first signed one on the mirror; `runsheet/mesh-cli`
+- **Numbering continues the public line.** The public line continued
+  at `v0.2.187` (cut and signed on `runsheet/mesh-cli` only, its mirror
+  step failed), and **`v0.2.188`** was the first signed release on the
+  mirror; `runsheet/mesh-cli`
   itself restarted numbering below it at `v0.1.0` (the transfer
   amendment above), which is superseded — a prerelease with a note
   pointing at the `v0.2.x` line, its tag left as it was. Goal
@@ -417,22 +419,25 @@ again and current.
 **What happened:** `v0.2.187` was cut on 2026-09-28 at 22:46Z
 (`909202b`) and signed and released on `runsheet/mesh-cli`, but it
 never reached the mirror. The mirror step of run `36494313388` failed
-in `gh release create` itself: the tag existed only on the source
-("tag v0.2.187 exists locally but has not been pushed to runsheet/mesh
-… specify the `--target` flag"). #336 fixed it with `--target main`.
-`v0.2.188` (`5a8c29e`) is the first release cut for `runsheet/mesh`
-with that fix. Its run, `36499785802`, signed and released it on
-`runsheet/mesh-cli`, and then the mirror refused the release: `HTTP
-403: Resource not accessible by personal access token`, because
-`RELEASE_TOKEN` cannot create releases on `runsheet/mesh`. It needs a
-fine-grained token owned by `runsheet` with Contents: read and write
-there, or the org App's installation token. So `v0.2.188` is cut but
-not yet mirrored, and the mirror's latest release is still `v0.2.186`.
-Once `v0.2.188` is on the mirror, the numbering rule (max `v0.2.x` on
-`runsheet/mesh` plus one) next yields **`v0.2.189`**, and `v0.2.189` is
-also the retry once the token is fixed. Until then the rule would
-answer `v0.2.187`, a tag the source already holds, so the retry is cut
-by name. `docs/releases-after-transfer.md` ("v0.2.188: the first
+in `gh release create` itself, because the tag existed only on the
+source ("tag v0.2.187 exists locally but has not been pushed to
+runsheet/mesh … specify the `--target` flag"). #336 fixed it with
+`--target main`. `v0.2.188` (`5a8c29e`) was the first tag cut with that
+fix. Attempt 1 of its run, `36499785802`, signed and released it on
+`runsheet/mesh-cli`. Then the mirror refused it: `HTTP 403: Resource
+not accessible by personal access token`, because `RELEASE_TOKEN` had
+no access to `runsheet/mesh`. The token was replaced. The fine-grained
+token must be owned by `runsheet`, scoped to `runsheet/mesh` alone,
+with Contents: read and write. On attempt 3, on 2026-09-29 at 00:50Z,
+`v0.2.188` reached `runsheet/mesh` as the first signed release there.
+It carries the same assets as the source, a `SHA256SUMS` that `cmp`
+finds equal and that verifies against the `runsheet/mesh-cli`
+identity, and the mirror's README. At 00:52Z the mini
+updated to the mirror's `mesh-linux-amd64` through the operator's
+`mesh node upgrade`. Its planner sessions were adopted, and the update
+was confirmed. The numbering
+rule (max `v0.2.x` on `runsheet/mesh` plus one) next yields
+**`v0.2.189`**. `docs/releases-after-transfer.md` ("v0.2.188: the first
 release on the mirror") is the record.
 
 ## Amendment: the node downloads from runsheet/mesh (goal `signed-releases-on-runsheet-mesh`, 2026-09-28)
@@ -459,12 +464,11 @@ the updater's side of that:
   came from, so a fork or an unrelated push to `runsheet/mesh` proves
   nothing.
 - `mesh node update` with no version takes the mirror's latest
-  non-prerelease. Until `v0.2.188`'s retry, `v0.2.189` (above), is
-  published there, that is still `v0.2.186`. It is the last of the old
-  unsigned `cli-release.yml` builds and carries no Sigstore bundle.
-  `Fetch` refuses it with `ErrMissingAsset`, as it would any other
-  release missing an asset. That is intended, not a bug to work around,
-  and it clears itself once the first signed `v0.2.x` is on the mirror.
+  non-prerelease, `v0.2.188` or later. Releases `v0.2.1`–`v0.2.186`
+  there are the old unsigned `cli-release.yml` builds and carry no
+  Sigstore bundle. `Fetch` refuses them with `ErrMissingAsset`, as it
+  would any other release missing an asset. `v0.2.187` exists on
+  `runsheet/mesh-cli` only, so the mirror answers 404 for it.
 - This supersedes the Decision section's private-repo bullet above: the
   choice it left open (make the repo public, or move to an authenticated
   download) is resolved by the mirror instead — the source repo stays
