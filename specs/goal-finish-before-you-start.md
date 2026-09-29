@@ -31,7 +31,7 @@ item with started work goes before a fresh one at equal priority, bounded so
 a poisoned item cannot starve the queue), a limit on unmerged work per repo
 (node.yaml, not a constant), and age as a tiebreak within a class.
 
-## Acceptance (the goal)
+## Acceptance
 
 `go vet ./...` clean, `gofmt -l .` empty, `go build ./cmd/mesh/` and the
 linux/amd64 cross-build fine, `go test ./...` green.
@@ -203,3 +203,5 @@ recorded above, not a gap.
   check shows the mini still on v0.2.191, 9 commits behind `main` and
   missing items 1 and 4: the row above is a second baseline, and the
   after-measure stays owed until the mini upgrades.
+- 2026-09-29 · item 5, attempt 3: the acceptance section's heading renamed
+  to exactly `## Acceptance`, as the item requires.
