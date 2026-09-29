@@ -251,7 +251,8 @@ func (c *ClaudeCode) runHost(ctx context.Context, job Job, onProgress func(Progr
 	}
 	st := job.state(unit, h, c.Name())
 	if err := sessionunit.WriteState(dir, st); err != nil {
-		unit.Stop(h)
+		// never followed: the whole unit goes, as at any end
+		unit.Kill(h)
 		return Result{}, fmt.Errorf("harness claude-code: state: %w", err)
 	}
 	keep = job.Outlive && job.Workspace != ""
