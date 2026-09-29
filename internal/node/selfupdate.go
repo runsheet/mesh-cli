@@ -193,7 +193,7 @@ func (l *Loop) confirmUpdate() {
 // heartbeat, every tick). An empty one, the running one, a dev build, a
 // draining node or an update already under way do nothing. A dev build is
 // any not reporting a release tag — "dev" or the commit it was built from
-// (version.String) — and keeps today's behaviour: it was put there by
+// (version.Resolved) — and keeps today's behaviour: it was put there by
 // hand, from a checkout, and a release the platform asks for would
 // replace it unasked; a node follows desiredVersion only from a release.
 // A version that failed is left for updateRetry (for good after a

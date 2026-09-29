@@ -27,8 +27,8 @@ type Loop struct {
 	// claimed from in turn, under the one capacity.
 	Scopes Scopes
 	// Version is what the node reports itself as: the release tag it was
-	// built from, else its commit (version.String); Commit is the commit
-	// (version.BuildCommit), on every heartbeat the gateway takes it on.
+	// built from, else its commit (version.Resolved); Commit is the commit
+	// (version.Commit), on every heartbeat the gateway takes it on.
 	Version  string
 	Commit   string
 	Harness  string

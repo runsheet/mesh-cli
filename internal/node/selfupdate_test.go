@@ -275,7 +275,7 @@ func TestSelfUpdateEmptyDesiredDoesNothing(t *testing.T) {
 	if got := u.Events(); len(got) != 1 || loop.Draining() {
 		t.Fatalf("dev build: events %q, draining %v", got, loop.Draining())
 	}
-	// a dev build reports its commit rather than dev (version.String): it
+	// a dev build reports its commit rather than dev (version.Resolved): it
 	// still does not follow desiredVersion
 	for _, v := range []string{"0895d40", "0895d40-dirty"} {
 		loop.Version = v

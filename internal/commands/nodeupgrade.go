@@ -126,7 +126,7 @@ func defaultNodeUpgrade(out io.Writer) (*nodeUpgrade, error) {
 		ConfirmWithin: within,
 		Updater:       &node.ReleaseUpdater{Source: gh, State: state, Exe: exe},
 		Latest:        gh.Latest,
-		Running:       version.String(),
+		Running:       version.Resolved(),
 		Run:           run,
 		Version:       binaryVersion,
 		Image:         ensureNodeImage,

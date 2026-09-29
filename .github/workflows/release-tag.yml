@@ -83,7 +83,7 @@ jobs:
         run: |
           mkdir -p dist
           go build -trimpath \
-            -ldflags "-s -w -X projectmesh.io/mesh-cli/internal/version.Version=${GITHUB_REF_NAME} -X projectmesh.io/mesh-cli/internal/version.Commit=${GITHUB_SHA::7}" \
+            -ldflags "-s -w -X projectmesh.io/mesh-cli/internal/version.Version=${GITHUB_REF_NAME} -X projectmesh.io/mesh-cli/internal/version.Sha=${GITHUB_SHA::7}" \
             -o "dist/${ASSET}" ./cmd/mesh/
 
       - name: Upload artifact

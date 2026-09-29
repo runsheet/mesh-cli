@@ -15,9 +15,9 @@ const statusNode = "eeeeeeee-7777-4777-8777-eeeeeeeeeeee"
 // the commit beside it when the gateway's HeartbeatNodeInput takes it;
 // a schema without the field gets no key, and the heartbeat still lands.
 func TestStatusHeartbeatCarriesCommit(t *testing.T) {
-	oldV, oldC := version.Version, version.Commit
-	version.Version, version.Commit = "v0.2.188", "0895d40"
-	t.Cleanup(func() { version.Version, version.Commit = oldV, oldC })
+	oldV, oldC := version.Version, version.Sha
+	version.Version, version.Sha = "v0.2.188", "0895d40"
+	t.Cleanup(func() { version.Version, version.Sha = oldV, oldC })
 
 	for _, tc := range []struct {
 		name    string

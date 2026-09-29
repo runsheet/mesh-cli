@@ -10,7 +10,7 @@ var rootCmd = &cobra.Command{
 	Use:     "mesh",
 	Short:   "Mesh CLI — goals, work items and nodes on the runsheet platform",
 	Long:    "Mesh CLI is the operator tool for Mesh. Save a console token once, register this machine as a node, then start it; set and watch goals from the same token.",
-	Version: version.String(),
+	Version: version.Resolved(),
 	Example: "mesh auth token rs_…\nmesh node register --org acme --name \"Chris's laptop\"\nmesh node start\nmesh goal set goal.yaml && mesh goal plan ship-it plan.yaml && mesh goal watch ship-it",
 }
 

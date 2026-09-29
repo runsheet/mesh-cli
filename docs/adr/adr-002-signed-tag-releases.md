@@ -529,23 +529,28 @@ A binary built outside release-tag.yml reported `dev`, which says
 nothing about what it is; the mini ran 72ff910 for a day with the
 console none the wiser.
 
-- `internal/version` gains `Commit` (an ldflag, like `Version`) and
-  `BuildCommit()`: that ldflag, else the Go toolchain's `vcs.revision`
+- `internal/version` gains `Sha` (an ldflag, like `Version`) and
+  `Commit()`: that ldflag, else the Go toolchain's `vcs.revision`
   cut to 7 characters with `-dirty` when `vcs.modified`, else empty.
-  `String()` is what the node reports itself as everywhere — register,
+  `Resolved()` is what the node reports itself as everywhere — register,
   heartbeat, node.log's start lines, `mesh node update`/`upgrade`'s
   running version, the channel MCP server's `serverInfo`, `mesh
   --version`: `Version` when it is a tag, else the commit, else `dev`.
   `mesh version` prints both: `mesh v0.2.188 (commit 0895d40)`, or
   `mesh 0895d40 (dev build)`.
-- release-tag.yml sets `-X …/internal/version.Commit=${GITHUB_SHA::7}`
+- release-tag.yml sets `-X …/internal/version.Sha=${GITHUB_SHA::7}`
   beside `Version=${GITHUB_REF_NAME}`, so a release knows its commit
   even under `-trimpath` or with vcs stamping off.
 - The heartbeat carries `commit` (`HeartbeatExtras.Commit`, filled from
-  `Loop.Commit`) beside `version`, sent only when set and only when the
+  `Loop.Commit`) beside `version` — on the loop's heartbeats, the
+  confirm window's among them, and `mesh node status`'s one — sent only when set and only when the
   gateway's `HeartbeatNodeInput` has the field — introspected and kept
   for an hour exactly as `scaling` is. A platform without it gets the
   heartbeat it always did.
+- `mesh node upgrade --binary <path>` reads `<path> version` as any of
+  its shapes — the tagged, the untagged, the dirty (`mesh 0895d40-dirty
+  (dev build)`) and an older binary's bare `mesh <version>` — and takes
+  the version alone, never the parenthesis.
 - Self-update is unchanged in effect: only a node reporting a release
   (`version.Release`: `v` then a digit) follows `desiredVersion`. A
   sha-versioned dev build was put there by hand from a checkout and is

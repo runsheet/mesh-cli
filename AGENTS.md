@@ -110,8 +110,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   runtimes (npx, uvx, docker) and agent CLIs (claude-code, codex)
   `Loop.LookPath` finds, probed every tick, for `tools-in-the-console`
   — and `commit` — the short sha the binary was built from
-  (`Loop.Commit`, `version.BuildCommit`), beside `version`, which is
-  `version.String()`: the release tag when built from one, else that
+  (`Loop.Commit`, `version.Commit()`), beside `version`, which is
+  `version.Resolved()`: the release tag when built from one, else that
   sha; sent only when the gateway's `HeartbeatNodeInput` has the field,
   introspected and kept an hour like `scaling` (mesh-specs ADR 013,
   adr-002's tag-or-sha amendment)),

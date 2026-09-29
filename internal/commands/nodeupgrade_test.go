@@ -303,3 +303,26 @@ func TestNodeUpgradeBinaryReadsTaggedAndDevBuilds(t *testing.T) {
 		})
 	}
 }
+
+// binaryVersion runs `<path> version` and returns the version alone,
+// whatever commit suffix version.Long put beside it: a tagged binary's
+// tag, an untagged build's sha, a dirty build's sha with -dirty; an
+// older binary's bare line still reads.
+func TestBinaryVersion(t *testing.T) {
+	for _, tc := range []struct{ name, say, want string }{
+		{"tagged", "mesh v0.2.189 (commit abc1234)", "v0.2.189"},
+		{"untagged", "mesh abc1234 (dev build)", "abc1234"},
+		{"dirty", "mesh abc1234-dirty (dev build)", "abc1234-dirty"},
+		{"older", "mesh v0.2.188", "v0.2.188"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := binaryVersion(context.Background(), fakeBinary(t, tc.say))
+			if err != nil || got != tc.want {
+				t.Fatalf("binaryVersion(%q) = %q, %v; want %q", tc.say, got, err, tc.want)
+			}
+		})
+	}
+	if _, err := binaryVersion(context.Background(), fakeBinary(t, "git version 2.40")); err == nil {
+		t.Fatal("a binary that is not mesh was read")
+	}
+}

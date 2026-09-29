@@ -4,7 +4,12 @@
 package version
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"runtime/debug"
+	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -12,29 +17,34 @@ import (
 // builds; CI overrides via -ldflags "-X projectmesh.io/mesh-cli/internal/version.Version=vX.Y.Z".
 var Version = "dev"
 
-// Commit is the short git sha the binary was built from, set by
-// release-tag.yml via -ldflags "-X projectmesh.io/mesh-cli/internal/version.Commit=<sha>".
-// Empty leaves BuildCommit to the Go toolchain's vcs stamp.
-var Commit = ""
+// Sha is the short git sha the binary was built from, set by
+// release-tag.yml via -ldflags "-X projectmesh.io/mesh-cli/internal/version.Sha=<sha>".
+// Empty leaves Commit to the Go toolchain's vcs stamp.
+var Sha = ""
 
 // readBuildInfo is debug.ReadBuildInfo; tests replace it.
 var readBuildInfo = debug.ReadBuildInfo
+
+// goRunCommit is the commit of a `go run` binary, which the toolchain
+// never stamps (-buildvcs auto leaves go run out); tests replace it.
+var goRunCommit = gitHead
 
 var (
 	stampOnce sync.Once
 	stamp     string
 )
 
-// shortSHA is how much of vcs.revision BuildCommit keeps.
+// shortSHA is how much of vcs.revision Commit keeps.
 const shortSHA = 7
 
-// BuildCommit is the commit this binary was built from: Commit when the
+// Commit is the commit this binary was built from: Sha when the
 // build set it, else the toolchain's vcs.revision cut to a short sha with
-// "-dirty" when vcs.modified, else empty (a build outside a checkout, or
-// with -buildvcs=false).
-func BuildCommit() string {
-	if Commit != "" {
-		return Commit
+// "-dirty" when vcs.modified, else — for a `go run` binary only — the
+// checkout it runs in, else empty (a build outside a checkout, or with
+// -buildvcs=false).
+func Commit() string {
+	if Sha != "" {
+		return Sha
 	}
 	stampOnce.Do(func() { stamp = vcsCommit() })
 	return stamp
@@ -44,7 +54,7 @@ func BuildCommit() string {
 func vcsCommit() string {
 	info, ok := readBuildInfo()
 	if !ok || info == nil {
-		return ""
+		return goRunCommit()
 	}
 	var rev string
 	var dirty bool
@@ -57,7 +67,7 @@ func vcsCommit() string {
 		}
 	}
 	if rev == "" {
-		return ""
+		return goRunCommit()
 	}
 	if len(rev) > shortSHA {
 		rev = rev[:shortSHA]
@@ -68,14 +78,35 @@ func vcsCommit() string {
 	return rev
 }
 
-// String is what the node reports itself as, to the platform and the
+// gitHead is the working directory's HEAD, short, with "-dirty" when the
+// tree has changes — asked only of a binary `go run` built (its
+// executable under a go-build temporary directory), which runs from the
+// checkout it was built from. Any other binary without a stamp has no
+// commit: the directory it runs in says nothing about it.
+func gitHead() string {
+	exe, err := os.Executable()
+	if err != nil || !strings.HasPrefix(filepath.Base(filepath.Dir(filepath.Dir(filepath.Dir(exe)))), "go-build") {
+		return ""
+	}
+	out, err := exec.Command("git", "rev-parse", "--short="+strconv.Itoa(shortSHA), "HEAD").Output()
+	rev := strings.TrimSpace(string(out))
+	if err != nil || rev == "" {
+		return ""
+	}
+	if st, err := exec.Command("git", "status", "--porcelain").Output(); err == nil && len(strings.TrimSpace(string(st))) > 0 {
+		rev += "-dirty"
+	}
+	return rev
+}
+
+// Resolved is what the node reports itself as, to the platform and the
 // operator: the release tag when the binary was built from one, else its
 // commit, else "dev".
-func String() string {
+func Resolved() string {
 	if Version != "" && Version != "dev" {
 		return Version
 	}
-	if c := BuildCommit(); c != "" {
+	if c := Commit(); c != "" {
 		return c
 	}
 	return "dev"
@@ -91,7 +122,7 @@ func Release(v string) bool {
 // Long is `mesh version`'s line: "mesh v0.2.188 (commit 0895d40)", or
 // "mesh 0895d40 (dev build)" for a build from no tag.
 func Long() string {
-	v, c := String(), BuildCommit()
+	v, c := Resolved(), Commit()
 	switch {
 	case v == "dev":
 		return "mesh dev"

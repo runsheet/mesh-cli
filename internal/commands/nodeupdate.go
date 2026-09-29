@@ -124,7 +124,7 @@ func defaultNodeUpdate(out io.Writer) (*nodeUpdate, error) {
 	return &nodeUpdate{
 		Updater: &node.ReleaseUpdater{Source: gh, State: state, Exe: exe},
 		Latest:  gh.Latest,
-		Running: version.String(),
+		Running: version.Resolved(),
 		Run:     run,
 		Image:   ensureNodeImage,
 		Out:     out,
@@ -227,7 +227,7 @@ func ensureNodeImage(ctx context.Context, want string) (sandbox.Image, error) {
 	if err != nil {
 		return sandbox.Image{}, err
 	}
-	return cfg.Sandbox.EnsureImage(ctx, sandbox.ExecRunner, want, version.String())
+	return cfg.Sandbox.EnsureImage(ctx, sandbox.ExecRunner, want, version.Resolved())
 }
 
 // keep writes a verified binary into a new temporary directory for
