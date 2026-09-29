@@ -659,22 +659,27 @@ item's own build among them (`#21 docs/releases-after-transfer.md
 …`, started 02:34:48Z); none of it bears on desiredVersion, which is
 the one field this check is for: `"desired_version":"v0.2.188"`,
 alongside `"version":"v0.2.188"`, exactly as the tool returned them.
-`~/.mesh/node.log`'s latest `self-update:` lines agree there is nothing
-left to refuse:
+`~/.mesh/node.log`'s latest self-update lines — both the `self-update:`
+progress lines and the `self-update to <version> refused:` lines, so the
+pattern takes either — agree there is nothing left to refuse:
 
 ```
-$ grep -n '^mesh node:.*self-update:' ~/.mesh/node.log | tail -3
-5803127:mesh node: 2026/09/29 00:40:21 self-update: 4d8d435 → v0.1.0: fetching
+$ grep -nE '^mesh node: [0-9/ :]+ self-update( to |:)' ~/.mesh/node.log | tail -4
+5803128:mesh node: 2026/09/29 00:40:22 self-update to v0.1.0 refused: release v0.1.0 has no SHA256SUMS on GitHub (404: missing, or the repo is private)
 5803274:mesh node: 2026/09/29 00:52:19 self-update: v0.2.188 is up; update confirmed
 5803275:mesh node: 2026/09/29 00:52:20 self-update: v0.2.188 → v0.1.0: fetching
+5803276:mesh node: 2026/09/29 00:52:20 self-update to v0.1.0 refused: release v0.1.0 has no SHA256SUMS on runsheet/mesh (404: not published there, or not a signed release)
 ```
 
-The last line, at 00:52:20, is the one refusal against the desiredVersion
-of that moment, `v0.1.0` — the same read "What is owed" above recorded,
-before the operator moved it. Nothing has logged since, because with
-desiredVersion now `v0.2.188`, equal to the running version, the loop
-has nothing to fetch (`GetDesiredVersion`: "empty, the running one or
-`dev` does nothing"). `v0.2.188` is correct: confirmed twice now, by
+The last two lines are one attempt: at 00:52:20 the `fetching` line
+records the loop starting to fetch the desiredVersion of that moment,
+`v0.1.0`, and the `refused` line after it is the refusal itself — no
+`SHA256SUMS` for `v0.1.0` on runsheet/mesh. That refusal is the one
+"What is owed" above recorded, before the operator moved desiredVersion.
+Nothing has logged since, because with desiredVersion now `v0.2.188`,
+equal to the running version, the loop has nothing to fetch
+(`GetDesiredVersion`: "empty, the running one or `dev` does nothing").
+`v0.2.188` is correct: confirmed twice now, by
 item 17's evaluation and by this item's own live read, not corrected by
 either.
 
