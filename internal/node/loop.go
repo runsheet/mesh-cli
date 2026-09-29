@@ -1164,7 +1164,9 @@ func (l *Loop) reload(ctx context.Context) {
 	got, err := l.Reload(ctx)
 	scopes := got.Scopes
 	if err != nil {
-		l.logf("reload config: %v", err)
+		// one physical line per tick: a cause's own newlines (a YAML
+		// error lists its lines) are folded in with the rest.
+		l.logf("reload config: %s", oneLine(err.Error()))
 	}
 	if got.Capacity.Max > 0 {
 		l.setRange(got.Capacity)
@@ -1210,6 +1212,16 @@ func (l *Loop) reload(ctx context.Context) {
 		l.Scopes = scopes
 		l.mu.Unlock()
 	}
+}
+
+// oneLine folds s onto one line, each line break (and the indent after
+// it) becoming "; ".
+func oneLine(s string) string {
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	for i := range lines {
+		lines[i] = strings.TrimSpace(lines[i])
+	}
+	return strings.Join(slices.DeleteFunc(lines, func(l string) bool { return l == "" }), "; ")
 }
 
 // probe re-reads which tool runtimes and agent adapters the node has

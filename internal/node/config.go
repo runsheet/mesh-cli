@@ -725,8 +725,13 @@ type Spending struct {
 // through register (a Node there, as start does) before it is served —
 // one that fails to register is tried again next tick; an org no longer
 // listed, or no longer in the restriction, is dropped. A node.yaml that
-// cannot be read keeps the last good capacity and restriction; a MyOrgs
-// that fails, or leaves nothing to serve, keeps the orgs as they were.
+// cannot be read keeps the last good capacity, limits, accounts, context
+// and claim limits and restriction; a MyOrgs that fails, or leaves
+// nothing to serve, keeps the orgs as they were — and a node.yaml read
+// well is still returned, so the operator's edit does not wait on the
+// gateway. The reasons a reload could not be applied come back as one
+// error, joined with "; " (each cause still wrapped), which the loop logs
+// as one `reload config:` line per tick while the failure lasts.
 func Reloader(gw Gateway, cfg *Config, scopes Scopes, load func() (*Config, error), register func(context.Context, Scope) error) func(context.Context) (Reloaded, error) {
 	if load == nil {
 		load = LoadConfig
@@ -752,7 +757,7 @@ func Reloader(gw Gateway, cfg *Config, scopes Scopes, load func() (*Config, erro
 		}
 		orgs, err := gw.MyOrgs(ctx)
 		if err != nil {
-			return out, errors.Join(append(errs, fmt.Errorf("my orgs: %w", err))...)
+			return out, joinReasons(append(errs, fmt.Errorf("my orgs: %w", err)))
 		}
 		want := map[string]bool{}
 		for _, o := range restrict {
@@ -779,11 +784,34 @@ func Reloader(gw Gateway, cfg *Config, scopes Scopes, load func() (*Config, erro
 			served = append(served, sc)
 		}
 		if len(served) == 0 {
-			return out, errors.Join(append(errs, errors.New("no org left to serve (keeping the orgs as they were)"))...)
+			return out, joinReasons(append(errs, errors.New("no org left to serve (keeping the orgs as they were)")))
 		}
 		out.Scopes = served
-		return out, errors.Join(errs...)
+		return out, joinReasons(errs)
 	}
+}
+
+// reasons is why a reload could not be applied: every cause, joined
+// with "; " on one line (errors.Join's newline would split the log
+// line), each still reachable through errors.Is and errors.As.
+type reasons []error
+
+func (r reasons) Error() string {
+	s := make([]string, len(r))
+	for i, err := range r {
+		s[i] = err.Error()
+	}
+	return strings.Join(s, "; ")
+}
+
+func (r reasons) Unwrap() []error { return r }
+
+// joinReasons is nil for no reasons, else the reasons as one error.
+func joinReasons(errs []error) error {
+	if len(errs) == 0 {
+		return nil
+	}
+	return reasons(errs)
 }
 
 // ConfigPath is ~/.mesh/node.yaml.
