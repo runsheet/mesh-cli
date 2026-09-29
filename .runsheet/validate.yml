@@ -1,14 +1,17 @@
+# A node's session env need not carry Go on PATH (the mini installs it
+# at /usr/local/go/bin, outside the service's PATH): each step adds the
+# usual install dirs after whatever PATH it is given.
 steps:
   - name: vet
-    command: go vet ./...
+    command: PATH="$PATH:/usr/local/go/bin:$HOME/go/bin:$HOME/sdk/go/bin" go vet ./...
     always: true
 
   - name: build
-    command: go build ./cmd/mesh/
+    command: PATH="$PATH:/usr/local/go/bin:$HOME/go/bin:$HOME/sdk/go/bin" go build ./cmd/mesh/
     always: true
 
   - name: unit
-    command: go test -json ./...
+    command: PATH="$PATH:/usr/local/go/bin:$HOME/go/bin:$HOME/sdk/go/bin" go test -json ./...
     paths:
       - "**/*.go"
       - go.mod
