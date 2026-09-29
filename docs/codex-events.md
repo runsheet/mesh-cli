@@ -299,6 +299,39 @@ Codex writes to the home's `config.toml` itself: after a run it has
 appended `[projects."<workspace>"] trust_level = "trusted"`. That is
 harmless, since the node writes the file afresh for every session.
 
+## When the sandbox will not start
+
+`bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` is
+Codex's bundled bubblewrap failing to set up its network namespace on
+an Ubuntu with `kernel.apparmor_restrict_unprivileged_userns = 1`
+(Verified against, above). Under `--sandbox workspace-write` every
+command the session runs then fails the same way, and the turn still
+completes. The node catches it twice (ADR 011, amendment 2026-09-29):
+
+- **The probe, before the session.** `Codex.Preflight`, after its
+  context-server check, runs `codex sandbox -- true`
+  (`harness.SandboxProbe`) in the session's workspace, `CODEX_HOME` and
+  environment, within `PreflightTimeout`. codex-cli 0.157 has no
+  `sandbox linux` or `debug landlock` subcommand: `codex sandbox
+  [COMMAND]...` runs the command under the platform's sandbox, and
+  `codex sandbox linux -- true` would run a command named `linux`. On
+  the mini (2026-09-29, kernel 6.8, the restriction on) it prints the
+  bwrap line twice on stderr and exits 1. A `bwrap:` line or a non-zero
+  exit fails the preflight as `sandbox: <first 200 characters>`
+  (`TestCodexPreflightSandbox`, a fake `codex` whose `sandbox` branch
+  writes the line and exits 1).
+- **The stream, after it.** A `command_execution` whose `status` is
+  `failed` and whose `aggregated_output` carries `bwrap:` is one the
+  sandbox refused. When every command the session ran was refused that
+  way, `ParseCodexStream` sets `Result.SandboxBroken` to the first bwrap
+  line (capped at 300); one clean command leaves it empty. The fixtures
+  are hand-built on the shape of `codex_exec_tools.jsonl` with the
+  record's text (no stream of such a session was kept: kept streams go
+  after 24 hours): `codex_exec_bwrap.jsonl` (three acceptance commands refused,
+  then `VERDICT: PASS` anyway) and `codex_exec_bwrap_one_clean.jsonl`
+  (the last one ran) — `TestParseCodexStreamSandboxBroken`. The
+  evaluator reads no verdict from such a session.
+
 ## The stream, kept
 
 With `Codex.WorkRoot` set, `Codex.Run` writes this whole stream — every
