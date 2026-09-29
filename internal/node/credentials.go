@@ -119,6 +119,11 @@ type SessionAccount struct {
 	// contextBytes is what the session's context cost on disk
 	// (SetContextBytes, adr-016), the report's ContextBytes.
 	contextBytes int64
+	// logLabel and kind are the session's usual node.log label ("item
+	// <goal>/<seq>", "goal <slug>", "project <slug>") and its kind
+	// (build, evaluate, rebase, plan, research), which Finish's record
+	// line carries (SetLabel, adr-016's amendment); never on the report.
+	logLabel, kind string
 	// Tools are the tools the claim-time read handed the session, their
 	// secrets decrypted (nil from a platform without them); what the
 	// session gets of them is SessionTools'.
@@ -516,6 +521,18 @@ func (s *SessionAccount) SetContextBytes(n int) {
 	}
 }
 
+// SetLabel is the session's usual node.log label ("item <goal>/<seq>",
+// "goal <slug>", "project <slug>") and its kind (build, evaluate,
+// rebase, plan, research): Finish logs the usage record on them, as
+// `<label>: usage <kind> {…}` (adr-016's amendment). They go on the log
+// line only, never on the report the platform takes. Nil-safe.
+func (s *SessionAccount) SetLabel(label, kind string) {
+	if s == nil {
+		return
+	}
+	s.logLabel, s.kind = label, kind
+}
+
 // Carried is the finishing command's answer to the report it carried
 // (err from FinishWorkItem, EvaluateWorkItem, PlanGoal,
 // FinishWorkItemRebase or RecordDirectionResearch). ErrNoUsageLedger is
@@ -598,12 +615,15 @@ func capRunes(s string, n int) string {
 // whatever became of the report; each call of a priced tool it made
 // goes to recordToolUsage (reportToolUsage); a platform whose usage
 // report took no per-tool list (ErrNoToolUsage) or no turn or
-// tool-result detail (ErrNoUsageDetail) is said once per run; and a
-// report its finishing command did not carry at all — a failed item or
-// rebase, a plan or research error, or a platform whose command takes
-// no `usage` (ErrNoUsageLedger, said once per run) — is logged as one
-// `usage: {…}` line: the session spent, and
-// its record must exist somewhere.
+// tool-result detail (ErrNoUsageDetail), or whose finishing command
+// takes no `usage` (ErrNoUsageLedger), is said once per run; and the
+// record itself — the report exactly as sent, redacted — is logged as
+// one `<label>: usage <kind> {…}` line (SetLabel; `usage: {…}` for a
+// session with none), whatever became of it: carried, refused or never
+// sent, node.log holds every session's record for `mesh node usage`
+// (adr-016's amendment). A session whose report another carries
+// (Carries) logs none: its figures are in the carrier's record, and
+// logging both would count them twice.
 func (s *SessionAccount) Finish(ctx context.Context, res harness.Result) {
 	if s == nil || s.creds == nil {
 		return
@@ -635,7 +655,7 @@ func (s *SessionAccount) Finish(ctx context.Context, res harness.Result) {
 			c.logf("usage: the platform takes no context bytes on the usage report yet; sent without them (said once, for every session this run)")
 		})
 	}
-	if s.handedIn || s.into != nil {
+	if s.into != nil {
 		return
 	}
 	if s.noLedger {
@@ -644,7 +664,21 @@ func (s *SessionAccount) Finish(ctx context.Context, res harness.Result) {
 		})
 	}
 	line, _ := json.Marshal(rep)
-	c.logf("usage: %s", s.Redact(string(line)))
+	c.logf("%s", s.recordLine(s.Redact(string(line))))
+}
+
+// recordLine is Finish's record line for the report's JSON: on the
+// session's label with its kind, or the older unlabelled `usage: {…}`
+// when SetLabel was never called.
+func (s *SessionAccount) recordLine(js string) string {
+	if s.logLabel == "" {
+		return "usage: " + js
+	}
+	kind := s.kind
+	if kind == "" {
+		kind = "unknown"
+	}
+	return fmt.Sprintf("%s: usage %s %s", s.logLabel, kind, js)
 }
 
 // mergeLargestToolResults combines two already-sorted (largest first,
