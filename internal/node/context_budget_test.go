@@ -100,6 +100,10 @@ func TestFetchContextHonoursDocBytesMax(t *testing.T) {
 	if _, ok := cx.OnDisk["prd"]; ok {
 		t.Fatal("an 11-byte PRD past doc_bytes_max 10 must be left to the index")
 	}
+	const fetchRow = "| prd | PRD |  | `prd` | acme/widgets/specs/prd.md | fetch |"
+	if !hasLine(RenderIndex(cx), fetchRow) {
+		t.Fatalf("INDEX.md does not list the PRD to fetch; want the line\n%s\nin\n%s", fetchRow, RenderIndex(cx))
+	}
 	if _, ok := cx.OnDisk["adr-001"]; !ok {
 		t.Fatal("an ADR is binding and on disk")
 	}
@@ -109,4 +113,18 @@ func TestFetchContextHonoursDocBytesMax(t *testing.T) {
 	if cx.OnDisk["prd"] != "prd-prd.md" {
 		t.Fatalf("with the default budget the PRD is on disk: %v", cx.OnDisk)
 	}
+	const diskRow = "| prd | PRD |  | `prd` | acme/widgets/specs/prd.md | `prd-prd.md` |"
+	if !hasLine(RenderIndex(cx), diskRow) {
+		t.Fatalf("INDEX.md does not list the PRD on disk; want the line\n%s\nin\n%s", diskRow, RenderIndex(cx))
+	}
+}
+
+// hasLine reports whether s holds want as one whole line.
+func hasLine(s, want string) bool {
+	for _, l := range strings.Split(s, "\n") {
+		if l == want {
+			return true
+		}
+	}
+	return false
 }
