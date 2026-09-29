@@ -140,7 +140,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   pace five-hour a → b, stop c → d`), the accounts (`accounts a, b → a,
   c` for membership, and one `account <label>: <field> <old> → <new>,
   …` line per account kept whose kind, token_file, api_key_env,
-  daily_cap, monthly_cap — as in force, defaults applied — or project
+  daily_cap, monthly_cap — as in force for its kind, an api key's defaults applied and a subscription's none — or project
   changed), the session budgets and project budgets (`budget
   <kind>/<tier> $4.00 → $7.00`, `project budget <project> none →
   $20.00`, the effective figures with defaults applied), the context

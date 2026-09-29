@@ -91,6 +91,26 @@ func TestReloadAccountsFromDisk(t *testing.T) {
 	if got := labels(loop.nodeAccounts()); got != "api-b, api-c" {
 		t.Fatalf("accounts in force %s, want api-b, api-c", got)
 	}
+
+	// api-b becomes a subscription: its caps go, not to the api defaults
+	writeNodeYAML(t, reloadYAML+"accounts:\n"+
+		"  - {label: api-b, kind: subscription, token_file: ~/b.token}\n"+
+		"  - {label: api-c, kind: api, api_key_env: KEY_C, project: mesh}\n")
+	wantReloadLines(t, "api to subscription", tickLines(t, loop, logs),
+		"account api-b: kind api → subscription, token_file (none) → ~/b.token, api_key_env KEY_B → (none), daily_cap $50.00 → none, monthly_cap $1000.00 → none")
+	if accounts := loop.nodeAccounts(); accounts[0].Kind != AccountSubscription || accounts[0].TokenFile != "~/b.token" {
+		t.Fatalf("api-b in force %+v, want a subscription on ~/b.token", accounts[0])
+	}
+
+	// and back to an api key with a cap of its own: from none, not from $50
+	writeNodeYAML(t, reloadYAML+"accounts:\n"+
+		"  - {label: api-b, kind: api, api_key_env: KEY_B, daily_cap: 20}\n"+
+		"  - {label: api-c, kind: api, api_key_env: KEY_C, project: mesh}\n")
+	wantReloadLines(t, "subscription to api", tickLines(t, loop, logs),
+		"account api-b: kind subscription → api, token_file ~/b.token → (none), api_key_env (none) → KEY_B, daily_cap none → $20.00, monthly_cap none → $1000.00")
+	if accounts := loop.nodeAccounts(); accounts[0].Kind != AccountAPI || accounts[0].DailyCapUSD != 20 {
+		t.Fatalf("api-b in force %+v, want an api key at $20", accounts[0])
+	}
 }
 
 func TestReloadBudgetsFromDisk(t *testing.T) {
