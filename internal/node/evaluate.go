@@ -403,20 +403,21 @@ type evalRun struct {
 // means none was recorded. A cancelled ctx leaves the session running
 // for the next node to adopt.
 func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harness.Result, err error) error {
-	if ctx.Err() != nil {
-		return ctx.Err()
-	}
-	defer harness.RemoveSession(ev.dir)
 	item, label, acct := ev.item, ev.label, ev.acct
 	// what the agent left running goes in the verdict's notes; an end
 	// that records no verdict only logs it and holds it for the item's
 	// next one, since the platform takes no progress note on an item in
-	// evaluating (ADR 008, The session's end)
+	// evaluating (ADR 008, The session's end). Logged before a done ctx
+	// returns: a deadline kills the unit too, and a detach kills nothing.
 	left := e.LeftRunning
 	if left == nil {
 		left = &LeftRunning{}
 	}
 	killed := left.Hold(item.ID, logKilled(e.logf, "item "+label, result.KilledPerSession(), result.KillError))
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	defer harness.RemoveSession(ev.dir)
 	if errors.Is(err, context.DeadlineExceeded) {
 		return fmt.Errorf("evaluator session ran out of time (%s)", e.Timeout)
 	}

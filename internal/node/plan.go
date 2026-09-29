@@ -447,11 +447,13 @@ func (p *Planner) ask(ctx context.Context, goal gateway.Goal, nodeID, dir string
 // describes. A cancelled ctx leaves the session running for the next
 // node to adopt; otherwise its session directory goes.
 func (p *Planner) readPlan(ctx context.Context, goal gateway.Goal, dir string, acct *SessionAccount, result harness.Result, err error, repos map[string]gateway.Repo, merged []int, evidence []harness.ModelEvidence) ([]gateway.PlannedItem, map[int]string, []string, float64, error) {
+	// logged before a done ctx returns: a deadline kills the unit too,
+	// and a detach kills nothing
+	logKilled(p.logf, "goal "+goal.Slug, result.KilledPerSession(), result.KillError)
 	if ctx.Err() != nil {
 		return nil, nil, nil, 0, ctx.Err()
 	}
 	defer harness.RemoveSession(dir)
-	logKilled(p.logf, "goal "+goal.Slug, result.KilledPerSession(), result.KillError)
 	if errors.Is(err, context.DeadlineExceeded) {
 		return nil, nil, nil, 0, fmt.Errorf("planner session ran out of time (%s)", p.Timeout)
 	}

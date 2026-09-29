@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/harness"
@@ -244,5 +245,72 @@ func TestEvaluateVerdictCarriesKilled(t *testing.T) {
 	}
 	if held := left.Hold(item1, ""); held != "" {
 		t.Fatalf("still held after the verdict: %q", held)
+	}
+}
+
+// An evaluation whose own deadline passed — the ctx the node ran it on
+// expired, not only the harness's error — still logs what its end
+// killed before it returns: a deadline kills the unit, it is no detach.
+func TestEvaluateExpiredContextKilledIsLogged(t *testing.T) {
+	h := harnessFunc(func(ctx context.Context, job harness.Job, on func(harness.Progress)) (harness.Result, error) {
+		if job.Kind != harness.KindEvaluate {
+			return harness.Result{Success: true, Text: "done", SessionID: "s-1"}, nil
+		}
+		<-ctx.Done()
+		return harness.Result{SessionID: "s-2", Killed: leftovers}, ctx.Err()
+	})
+	f := seed(t)
+	r, ws, item, row := runnerOnFake(t, f, h, nil)
+	if err := r.RunItem(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	progress := len(f.CallsNamed("reportWorkItemProgress"))
+	var logs bytes.Buffer
+	ev := &Evaluator{GW: r.GW, Harness: h, WS: ws, Scopes: r.Scopes, WorkRoot: ws.root, Log: log.New(&logs, "", 0)}
+	item.Branch = "mesh/ship-it-1"
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	if err := ev.Evaluate(ctx, item); err == nil {
+		t.Fatal("an evaluation whose ctx expired records no verdict")
+	}
+	if ctx.Err() == nil {
+		t.Fatal("the ctx did not expire")
+	}
+	if row(item1)["status"] != "evaluating" {
+		t.Fatalf("status = %v", row(item1))
+	}
+	want := "item ship-it/1: session end killed 2 process(es) the agent left running: 4242 go, 4250 runsheet\n"
+	if !strings.Contains(logs.String(), want) {
+		t.Fatalf("log = %q", logs.String())
+	}
+	if n := len(f.CallsNamed("reportWorkItemProgress")); n != progress {
+		t.Fatalf("the evaluation sent %d progress notes", n-progress)
+	}
+}
+
+// A plan and a research session whose ctx expired log what their end
+// killed before they return.
+func TestPlanAndResearchExpiredContextKilledIsLogged(t *testing.T) {
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	result := harness.Result{SessionID: "s-1", Killed: leftovers}
+	line := ": session end killed 2 process(es) the agent left running: 4242 go, 4250 runsheet\n"
+
+	var logs bytes.Buffer
+	p := &Planner{Log: log.New(&logs, "", 0)}
+	if _, _, _, _, err := p.readPlan(ctx, gateway.Goal{Slug: "ship-it"}, t.TempDir(), nil, result, context.DeadlineExceeded, nil, nil, nil); err == nil {
+		t.Fatal("an expired plan hands in nothing")
+	}
+	if !strings.Contains(logs.String(), "goal ship-it"+line) {
+		t.Fatalf("plan log = %q", logs.String())
+	}
+
+	logs.Reset()
+	d := &Director{Log: log.New(&logs, "", 0)}
+	if err := d.handIn(ctx, gateway.Direction{Slug: "nightly"}, gateway.Project{Slug: "mesh"}, Scope{}, t.TempDir(), nil, result, context.DeadlineExceeded); err == nil {
+		t.Fatal("an expired research hands in nothing")
+	}
+	if !strings.Contains(logs.String(), "mesh/nightly"+line) {
+		t.Fatalf("research log = %q", logs.String())
 	}
 }

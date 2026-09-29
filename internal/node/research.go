@@ -190,11 +190,13 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 // session running for the next node to adopt; otherwise its session
 // directory goes.
 func (d *Director) handIn(ctx context.Context, direction gateway.Direction, project gateway.Project, scope Scope, dir string, acct *SessionAccount, result harness.Result, err error) error {
+	// logged before a done ctx returns: a deadline kills the unit too,
+	// and a detach kills nothing
+	logKilled(d.logf, project.Slug+"/"+direction.Slug, result.KilledPerSession(), result.KillError)
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
 	defer harness.RemoveSession(dir)
-	logKilled(d.logf, project.Slug+"/"+direction.Slug, result.KilledPerSession(), result.KillError)
 	if errors.Is(err, context.DeadlineExceeded) {
 		return fmt.Errorf("research session ran out of time (%s)", d.Timeout)
 	}

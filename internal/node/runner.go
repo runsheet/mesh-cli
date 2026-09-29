@@ -513,6 +513,11 @@ func (b *buildRun) run(ctx context.Context, start func(onProgress func(harness.P
 // session directory goes.
 func (r *Runner) afterBuild(ctx context.Context, b *buildRun, result harness.Result, runErr error) error {
 	item, label := b.item, b.label
+	// what the agent left running in the session's unit, killed at its
+	// end (ADR 008, The session's end): a line in the log — logged before
+	// a done ctx returns, since a deadline kills the unit too — and a
+	// note on the item. A detach kills nothing.
+	killedNote := logKilled(r.logf, "item "+label, result.KilledPerSession(), result.KillError)
 	if ctx.Err() != nil {
 		r.logf("item %s: node shutting down; its session is left for the next node to adopt", label)
 		return ctx.Err()
@@ -524,11 +529,8 @@ func (r *Runner) afterBuild(ctx context.Context, b *buildRun, result harness.Res
 		b.sessionID = result.SessionID
 		b.mu.Unlock()
 	}
-	// what the agent left running in the session's unit, killed at its
-	// end (ADR 008, The session's end): a line in the log and a note on
-	// the item
-	if note := logKilled(r.logf, "item "+label, result.KilledPerSession(), result.KillError); note != "" {
-		b.report(ctx, note)
+	if killedNote != "" {
+		b.report(ctx, killedNote)
 	}
 	if le := (*sandbox.LimitError)(nil); errors.As(runErr, &le) {
 		// the node's condition, not the item's failure (ADR 007 Limits)

@@ -219,7 +219,10 @@ kill: one `Kill` per unit, whichever end comes first, its report kept.
   `<project>/<direction>` for research), and a failed kill as
   `<subject>: kill: <KillError>`. Nothing is logged when it killed
   nothing. This line is the goal's acceptance: the node log names what
-  it killed. The note is owed only where the platform takes one:
+  it killed. Each tail logs it *first*, before its done-ctx return: a
+  ctx whose deadline passed has its unit killed like any timeout, and
+  only a detach (which kills nothing, so logs nothing) leaves the
+  session for the next node. The note is owed only where the platform takes one:
   1. **A build** sends the sentence (a line per session) as a progress
      note on the item (`ReportWorkItemProgress`), beside its usage and
      `tools: …` notes.

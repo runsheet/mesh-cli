@@ -289,6 +289,8 @@ func (rb *rebaseRun) run(ctx context.Context, start func(onProgress func(harness
 // down — leaves the claim and the still-running session for the next
 // node to adopt; otherwise the session directory goes.
 func (r *Rebaser) afterRebase(ctx context.Context, rb *rebaseRun, acct *SessionAccount, result harness.Result, runErr error) error {
+	// logged before a done ctx returns: a deadline kills the unit too
+	killedNote := logKilled(r.logf, "item "+rb.label, result.KilledPerSession(), result.KillError)
 	if ctx.Err() != nil {
 		r.logf("item %s: node shutting down; its rebase session is left for the next node to adopt", rb.label)
 		return ctx.Err()
@@ -301,8 +303,8 @@ func (r *Rebaser) afterRebase(ctx context.Context, rb *rebaseRun, acct *SessionA
 		rb.sessionID = result.SessionID
 		rb.mu.Unlock()
 	}
-	if note := logKilled(r.logf, "item "+rb.label, result.KilledPerSession(), result.KillError); note != "" {
-		rb.report(ctx, note)
+	if killedNote != "" {
+		rb.report(ctx, killedNote)
 	}
 	branch, label := rb.branch, rb.label
 	switch {
