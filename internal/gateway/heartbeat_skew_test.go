@@ -21,7 +21,7 @@ func TestHeartbeatFallsBackOnFieldsThePlatformDoesNotKnow(t *testing.T) {
 		Account: "default", FiveHour: &gateway.LimitWindow{Utilization: 0.29, ResetsAt: time.Now()}, ObservedAt: time.Now(),
 	}}}
 	for i := 0; i < 2; i++ {
-		if err := gw.HeartbeatNode(ctx, limitsNode, "v2", 3, x); err != nil {
+		if _, err := gw.HeartbeatNode(ctx, limitsNode, "v2", 3, x); err != nil {
 			t.Fatalf("beat %d: %v", i, err)
 		}
 	}
@@ -45,7 +45,7 @@ func TestHeartbeatFallsBackOnFieldsThePlatformDoesNotKnow(t *testing.T) {
 func TestHeartbeatKeepsFieldsThePlatformKnows(t *testing.T) {
 	f, gw := registeredFake(t)
 	x := gateway.HeartbeatExtras{Limits: []gateway.Limits{{Account: "default", ObservedAt: time.Now()}}}
-	if err := gw.HeartbeatNode(context.Background(), limitsNode, "v2", 1, x); err != nil {
+	if _, err := gw.HeartbeatNode(context.Background(), limitsNode, "v2", 1, x); err != nil {
 		t.Fatal(err)
 	}
 	hb := f.CallsNamed("heartbeatNode")

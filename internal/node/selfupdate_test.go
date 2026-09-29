@@ -561,13 +561,13 @@ type slowGateway struct {
 	beats int
 }
 
-func (g *slowGateway) HeartbeatNode(ctx context.Context, nodeID, version string, running int, extras ...gateway.HeartbeatExtras) error {
+func (g *slowGateway) HeartbeatNode(ctx context.Context, nodeID, version string, running int, extras ...gateway.HeartbeatExtras) (*gateway.NodeAnswer, error) {
 	g.mu.Lock()
 	up := g.up
 	g.beats++
 	g.mu.Unlock()
 	if !up {
-		return context.DeadlineExceeded
+		return nil, context.DeadlineExceeded
 	}
 	return g.Gateway.HeartbeatNode(ctx, nodeID, version, running, extras...)
 }

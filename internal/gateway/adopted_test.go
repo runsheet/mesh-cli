@@ -16,11 +16,11 @@ func TestHeartbeatAdopted(t *testing.T) {
 	ctx := context.Background()
 	since := time.Date(2026, 9, 25, 9, 48, 0, 0, time.UTC)
 	x := gateway.HeartbeatExtras{Adopted: []gateway.AdoptedSession{{ItemID: "item-1", Kind: "build", Since: since}}}
-	if err := gw.HeartbeatNode(ctx, limitsNode, "v1", 1, x); err != nil {
+	if _, err := gw.HeartbeatNode(ctx, limitsNode, "v1", 1, x); err != nil {
 		t.Fatal(err)
 	}
 	for _, x := range [][]gateway.HeartbeatExtras{nil, {{}}, {{Draining: true, Adopted: []gateway.AdoptedSession{}}}} {
-		if err := gw.HeartbeatNode(ctx, limitsNode, "v1", 0, x...); err != nil {
+		if _, err := gw.HeartbeatNode(ctx, limitsNode, "v1", 0, x...); err != nil {
 			t.Fatal(err)
 		}
 	}

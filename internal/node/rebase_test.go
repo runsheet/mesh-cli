@@ -34,7 +34,7 @@ func rebaseNode(t *testing.T, f *gatewaytest.Fake, slug string, h harness.Harnes
 	f.RebaseTokens = true
 	gw := gateway.New(f.URL(), "rs_test")
 	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: slug, NodeID: gateway.NodeID(mustUUID(orgID), slug).String(), Capacity: Fixed(1)}
-	if err := gw.RegisterNode(context.Background(), gateway.RegisterNodeInput{NodeID: cfg.NodeID, OrgID: orgID, OwnerID: f.UserID, Name: slug, Slug: slug}); err != nil {
+	if _, err := gw.RegisterNode(context.Background(), gateway.RegisterNodeInput{NodeID: cfg.NodeID, OrgID: orgID, OwnerID: f.UserID, Name: slug, Slug: slug}); err != nil {
 		t.Fatal(err)
 	}
 	var w = log.New(os.Stderr, slug+" ", 0)
@@ -306,7 +306,7 @@ func TestRebaseDoesNotConsumeCapacity(t *testing.T) {
 	requestRebase(f, item2, "mesh/ship-it-2")
 	gw := gateway.New(f.URL(), "rs_test")
 	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "test-node", NodeID: gateway.NodeID(mustUUID(orgID), "test-node").String(), Capacity: Fixed(1)}
-	if err := gw.RegisterNode(context.Background(), gateway.RegisterNodeInput{NodeID: cfg.NodeID, OrgID: orgID, OwnerID: f.UserID, Name: "n", Slug: "test-node"}); err != nil {
+	if _, err := gw.RegisterNode(context.Background(), gateway.RegisterNodeInput{NodeID: cfg.NodeID, OrgID: orgID, OwnerID: f.UserID, Name: "n", Slug: "test-node"}); err != nil {
 		t.Fatal(err)
 	}
 	release := make(chan struct{})
