@@ -359,8 +359,11 @@ unreachable. A tool that answered was reached.
   `harness.ToolStat.Clean` counts the calls the server answered without
   an error (a Claude tool_result not `is_error`, a Codex `mcp_tool_call`
   `completed`); `ToolStat.Answered` counts those it answered with an
-  error result of its own — in Codex a `failed` call with `error` null
-  and a result carrying content, in Claude an `is_error` tool_result
+  error result of its own — in Codex a `failed` call whose `error` is
+  null or absent and whose `result` is present and not null, judged on
+  the JSON values and never their text (an `error` with an empty
+  message is still Codex's refusal; a result with only structured
+  content is still the tool's answer), in Claude an `is_error` tool_result
   from a server the init event named `connected` whose text is not
   Claude Code's own refusal of the call (`claudeClientErrors`:
   `<tool_use_error>`, `No such tool available`, permission refusals, the
