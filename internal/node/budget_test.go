@@ -56,7 +56,7 @@ func TestRunnerBudgetFullModelIDResolvesToTier(t *testing.T) {
 	}
 }
 
-func TestModelTier(t *testing.T) {
+func TestBudgetModelTier(t *testing.T) {
 	cases := map[string]string{
 		"":                "",
 		"sonnet":          "sonnet",

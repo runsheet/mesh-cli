@@ -123,7 +123,7 @@ var goalSetCmd = &cobra.Command{
 			}
 		}
 		if projectID == "" {
-			return fmt.Errorf("no project %q in %s", g.Project, s.org.Login)
+			return fmt.Errorf("no project %q in %s", g.Project, s.org.Name())
 		}
 		id, err := s.goalID(g.Slug)
 		if err != nil {

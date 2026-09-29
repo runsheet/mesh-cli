@@ -276,8 +276,8 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		return r.fail(ctx, item, fmt.Errorf("workspace: %w", err))
 	}
 
-	orgLogin := r.Scopes.LoginOf(item.OrgID)
-	cx, err := FetchContext(ctx, r.GW, orgLogin, res.Project.Slug, ContextOptions{Budget: r.contextBudget(), Repos: []string{res.Repo.FullName()}, Logf: r.logf})
+	orgName := r.Scopes.NameOf(item.OrgID)
+	cx, err := FetchContext(ctx, r.GW, orgName, res.Project.Slug, ContextOptions{Budget: r.contextBudget(), Repos: []string{res.Repo.FullName()}, Logf: r.logf})
 	if err != nil {
 		r.logf("item %s: context unavailable: %v", label, err)
 		cx = &Context{}
@@ -302,7 +302,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		GoalSlug: res.Goal.Slug, GoalTitle: res.Goal.Title, GoalStatement: res.Goal.Statement, GoalAcceptance: res.Goal.Acceptance,
 		Seq: item.Seq, Title: item.Title, Brief: item.Brief, Acceptance: item.Acceptance,
 		Repo: res.Repo.FullName(), Branch: spec.Branch, BaseRef: spec.BaseRef, ContextDir: contextDir, ContextFiles: files,
-		Attempts: item.Attempts, Evaluation: item.Evaluation, Project: orgLogin + "/" + res.Project.Slug, Prologue: len(mcp) > 0,
+		Attempts: item.Attempts, Evaluation: item.Evaluation, Project: orgName + "/" + res.Project.Slug, Prologue: len(mcp) > 0,
 		LastSession: r.State.LastSession(item.ID),
 	}
 	job := harness.Job{Kind: harness.KindBuild, Workspace: dir, MaxBudgetUSD: budget, Label: label, MCPServers: mcp, Model: model}
@@ -653,7 +653,7 @@ func (b *buildRun) handedBack(ctx context.Context, result harness.Result) {
 // final document, and nothing that goes wrong there fails the item.
 func (b *buildRun) endGoal(ctx context.Context) {
 	r := b.r
-	if err := RecordEndedGoal(ctx, r.GW, r.WS, r.WorkRoot, r.Scopes.LoginOf(b.item.OrgID), b.res.Goal.ID, r.logf); err != nil {
+	if err := RecordEndedGoal(ctx, r.GW, r.WS, r.WorkRoot, r.Scopes.NameOf(b.item.OrgID), b.res.Goal.ID, r.logf); err != nil {
 		r.logf("item %s: goal doc: %v", b.label, err)
 	}
 }

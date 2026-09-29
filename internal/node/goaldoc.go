@@ -227,7 +227,7 @@ func WriteGoalDoc(workspace string, d GoalDoc, logLine string) (rel string, chan
 // on the node's own credentials. No log line is appended: the doc is the
 // goal's final state alone, the same whichever finish writes it, so a
 // second writer finds it unchanged and pushes nothing.
-func RecordEndedGoal(ctx context.Context, gw Gateway, ws Workspacer, root, orgLogin, goalID string, logf func(string, ...any)) error {
+func RecordEndedGoal(ctx context.Context, gw Gateway, ws Workspacer, root, org, goalID string, logf func(string, ...any)) error {
 	goal, err := gw.Goal(ctx, goalID)
 	if err != nil {
 		return fmt.Errorf("goal: %w", err)
@@ -259,7 +259,7 @@ func RecordEndedGoal(ctx context.Context, gw Gateway, ws Workspacer, root, orgLo
 		return fmt.Errorf("items: %w", err)
 	}
 	parent := ""
-	if cx, err := FetchContext(ctx, gw, orgLogin, project.Slug, ContextOptions{}); err == nil {
+	if cx, err := FetchContext(ctx, gw, org, project.Slug, ContextOptions{}); err == nil {
 		parent = cx.PRDSlug
 	}
 	doc := GoalDoc{Slug: goal.Slug, Title: goal.Title, Statement: goal.Statement, Acceptance: goal.Acceptance,

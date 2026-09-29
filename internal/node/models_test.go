@@ -2,9 +2,9 @@ package node
 
 import "testing"
 
-// TestModelsFor: a kind's own model wins, else the default, else the
+// TestKindModelsFor: a kind's own model wins, else the default, else the
 // CLI's own (empty).
-func TestModelsFor(t *testing.T) {
+func TestKindModelsFor(t *testing.T) {
 	var none Models
 	for _, k := range []string{"build", "evaluate", "plan", "channel", "research", "rebase", "unknown"} {
 		if got := none.For(k); got != "" {
@@ -25,9 +25,9 @@ func TestModelsFor(t *testing.T) {
 	}
 }
 
-// TestModelRank: haiku < sonnet < opus, a full id by its family, and ""
+// TestKindModelRank: haiku < sonnet < opus, a full id by its family, and ""
 // or anything unknown below all three.
-func TestModelRank(t *testing.T) {
+func TestKindModelRank(t *testing.T) {
 	order := []string{"", "haiku", "sonnet", "opus"}
 	for i, m := range order {
 		if got := ModelRank(m); got != i {

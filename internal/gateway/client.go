@@ -580,6 +580,15 @@ type Org struct {
 	TenantSlug string `json:"tenantSlug"`
 }
 
+// Name is what to show a person for this org: Login, or TenantSlug
+// when it has no GitHub login.
+func (o Org) Name() string {
+	if o.Login != "" {
+		return o.Login
+	}
+	return o.TenantSlug
+}
+
 // MyOrgs lists the orgs the person reaches. myOrgs is a Map scalar
 // (schema.json), so it takes no selection: the platform's row arrives
 // whole, tenantSlug included (runsheet gateway/person.go, its

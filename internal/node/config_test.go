@@ -251,3 +251,18 @@ func TestLoadConfigCodexAccountsRejected(t *testing.T) {
 		})
 	}
 }
+
+// An org with no GitHub login is named by its slug where a prompt or the
+// context fetch names the project's org, never as a blank.
+func TestScopesNameOfFallsBackToSlug(t *testing.T) {
+	s := Scopes{{Login: "runsheet", ID: "o1"}, {Slug: "grapevine", ID: "o2"}}
+	if got := s.NameOf("o1"); got != "runsheet" {
+		t.Errorf("NameOf(o1) = %q, want runsheet", got)
+	}
+	if got := s.NameOf("o2"); got != "grapevine" {
+		t.Errorf("NameOf(o2) = %q, want grapevine", got)
+	}
+	if got := s.NameOf("nosuch"); got != "" {
+		t.Errorf("NameOf(nosuch) = %q, want empty", got)
+	}
+}

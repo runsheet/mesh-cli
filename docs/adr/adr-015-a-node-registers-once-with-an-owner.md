@@ -82,3 +82,65 @@ one `NodeID` in `internal/node/config.go`'s `Scope`, `mesh node status`
 naming the owner, a fourth org appearing on a later heartbeat served
 without restart — lands as a later item on this branch's goal, switched
 on by the answer alone; no flag day.
+
+## Node model (2026-09-29)
+
+2026-09-29, item 12, carried onto main by item 17. The pure model the node consumes the answer with —
+types and functions only, no gateway calls and no wiring into
+register/start/status (items 18 and 19 wire it in).
+
+**`Scope` carries `Slug`.** An org's tenant slug rides beside its
+login, always set; `Scope.Name()` is `Login`, or `Slug` when `Login` is
+empty — how grapevine, with no GitHub login, is named to a person.
+`ResolveScopes` and `Reloader` (the legacy per-org path) fill it from
+`gateway.Org.TenantSlug`, so a node not yet switched onto the platform's
+answer names grapevine by slug too. `Scopes.Names()` joins `Name()` over
+every scope for display; `Scopes.Logins()` keeps the raw logins for a
+caller comparing against GitHub, not showing them to a person. Every
+log and status line in `internal/node` and `internal/commands` that
+printed `sc.Login` for a human now calls `sc.Name()` (or `.Names()`);
+`Login` stays where it is compared to an actual GitHub login — repo
+owner matching, the `orgs:` restriction. The same holds for the org
+half of a project's `org/project`: the planner's, director's, builder's,
+evaluator's, rebaser's and channel's context fetch and prompt name it by
+`Scopes.NameOf(orgID)` / `scope.Name()` (`LoginOf` is gone), so a
+grapevine project is `grapevine/<project>`, never `/<project>`; and
+`gateway.Org.Name()` (login, else tenant slug) names the orgs
+`mesh node login` and `mesh goal set` print.
+
+**`Config.Owner`** is `""`/`"person"` (bring-your-own infra, the
+default) or `"enterprise"` (shared infra); `LoadConfig` rejects any
+other value, naming the two allowed, and `Config.OwnerKind()` returns
+which. `Config.NodeID` becomes the node's one id from the platform's
+answer; on the legacy per-org path it is unused; each `Scope` still
+carries its own per-org id from `NodeIDIn`.
+
+**`ScopesFromAnswer(a *gateway.NodeAnswer, restrict []string) (Scopes,
+error)`** is the pure conversion from the platform's answer to the
+node's `Scopes`: one `Scope` per `a.Scopes` entry, `NodeID` the same
+`a.NodeID` in every one (the node's single id, not per-org).
+`restrict` is node.yaml's `orgs:` list, matched case-insensitively
+against a scope's `Login` or `Slug`, so it still restricts an org
+named only by slug, and holds for every entry of the answer — a
+match never lifts it for the entries after (both functions keep the
+requested names whole and track the matched ones apart); a restricted name the answer does not contain is
+an error listing the missing names — the same rule `ResolveScopes`
+applies — and an answer with nothing left to serve is `"the platform
+answered with no org to serve"`. `Owner{Kind, ID, Name}` and
+`OwnerFrom(a)` read the answer's owner; `Owner.String()` is `"owned by
+<Name>"`, falling back to `"<Kind> <ID>"` when the platform sends no
+name — `mesh node status` and the node's first log lines print this
+once items 18 and 19 call it.
+
+Tests in `internal/node/owner_test.go` open no socket: they decode
+`specs/contracts/registerNode.json` and `heartbeatNode.json`'s
+`answer` directly and run `ScopesFromAnswer`/`OwnerFrom` over it, so
+the evaluator can check every one of them without a gateway. They are
+named with the one prefix `TestModel…` (`go test ./internal/node -run
+'^TestModel'`), and no other test in the package carries it — the
+earlier `TestModelTier`, `TestModelsFor`, `TestModelRank` and
+`TestModelAgainstEvidence` are `TestBudgetModelTier`,
+`TestKindModelsFor`, `TestKindModelRank` and
+`TestPlanModelAgainstEvidence` — so the socket-free run never picks
+up a test that starts a gateway, as `-run Owner` picked up
+`TestLoopServesEveryOrgOfItsOwner`.

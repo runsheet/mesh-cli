@@ -133,7 +133,7 @@ func saveToken(tok string) error {
 	orgs, _ := gw.MyOrgs(ctx)
 	logins := make([]string, 0, len(orgs))
 	for _, o := range orgs {
-		logins = append(logins, o.Login)
+		logins = append(logins, o.Name())
 	}
 	fmt.Printf("Token saved to ~/.mesh/token. You are %s; orgs: %s\n", id, strings.Join(logins, ", "))
 	fmt.Println("`mesh node login` with no argument registers a Latchkey machine credential for this computer instead: its own principal, revocable without touching your token.")
@@ -183,7 +183,7 @@ var nodeRegisterCmd = &cobra.Command{
 			return err
 		}
 		path, _ := node.ConfigPath()
-		fmt.Printf("Registered node %s (%s) in %s, capacity %s. Saved %s.\nStart it with: mesh node start\n", cfg.Name, slug, strings.Join(scopes.Logins(), ", "), cfg.Capacity, path)
+		fmt.Printf("Registered node %s (%s) in %s, capacity %s. Saved %s.\nStart it with: mesh node start\n", cfg.Name, slug, strings.Join(scopes.Names(), ", "), cfg.Capacity, path)
 		return nil
 	},
 }
@@ -194,7 +194,7 @@ func registerIn(ctx context.Context, gw *gateway.Client, cfg *node.Config, scope
 	for _, sc := range scopes {
 		if _, err := gw.RegisterNode(ctx, gateway.RegisterNodeInput{NodeID: sc.NodeID, OrgID: sc.ID, OwnerID: cfg.OwnerID, Name: cfg.Name, Slug: cfg.Slug,
 			Harnesses: []string{"claude-code"}, Capacity: cfg.Capacity.Max, Version: version.Resolved()}); err != nil {
-			return fmt.Errorf("register in %s: %w", sc.Login, err)
+			return fmt.Errorf("register in %s: %w", sc.Name(), err)
 		}
 	}
 	return nil
@@ -231,7 +231,7 @@ var nodeStatusCmd = &cobra.Command{
 		fmt.Fprintln(w, "ORG\tNAME\tSLUG\tSTATUS\tRUNNING\tCAPACITY\tVERSION\tLAST_SEEN")
 		for _, sc := range scopes {
 			if err := statusHeartbeat(ctx, gw, sc.NodeID); err != nil {
-				return fmt.Errorf("heartbeat in %s: %w", sc.Login, err)
+				return fmt.Errorf("heartbeat in %s: %w", sc.Name(), err)
 			}
 			nodes, err := gw.Nodes(ctx, sc.ID)
 			if err != nil {
@@ -248,7 +248,7 @@ var nodeStatusCmd = &cobra.Command{
 						capacity = scaling.String()
 					}
 				}
-				fmt.Fprintf(w, "%s\t%s%s\t%s\t%s\t%d\t%s\t%s\t%s\n", sc.Login, n.Name, mark, n.Slug, status, n.Running, capacity, n.Version, n.LastSeenAt)
+				fmt.Fprintf(w, "%s\t%s%s\t%s\t%s\t%d\t%s\t%s\t%s\n", sc.Name(), n.Name, mark, n.Slug, status, n.Running, capacity, n.Version, n.LastSeenAt)
 			}
 		}
 		if err := w.Flush(); err != nil {
@@ -631,7 +631,7 @@ func runPollMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *
 	loop.Plan = planWith(gw, cfg, h, loop, workRoot, accounts, logger)
 	loop.Research = researchWith(gw, cfg, h, loop, workRoot, accounts, logger)
 	loop.Rebase = rebaseWith(gw, cfg, h, loop, loop.CurrentScopes, workRoot, fallback, accounts, logger)
-	logger.Printf("poll mode: node %s (%s) for %s, capacity %s, every %s", cfg.Name, cfg.Slug, strings.Join(scopes.Logins(), ", "), cfg.Capacity, loop.Interval)
+	logger.Printf("poll mode: node %s (%s) for %s, capacity %s, every %s", cfg.Name, cfg.Slug, strings.Join(scopes.Names(), ", "), cfg.Capacity, loop.Interval)
 	// sessions the process before this one started run on in their own
 	// units: each is taken up where it is, before anything is claimed
 	adoptSessions(ctx, gw, cfg, h, second, loop, runner, workRoot, fallback, accounts, logger)
@@ -641,7 +641,7 @@ func runPollMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *
 		for _, status := range []string{"claimed", "running"} {
 			items, err := gw.OrgWorkItems(ctx, sc.ID, status)
 			if err != nil {
-				logger.Printf("list held items of %s: %v", sc.Login, err)
+				logger.Printf("list held items of %s: %v", sc.Name(), err)
 				continue
 			}
 			for _, it := range items {
@@ -871,7 +871,7 @@ func reportRollback(check node.StartCheck, logger *log.Logger) {
 	// heartbeat carries none and the restored binary's first one does.
 	for _, sc := range scopes {
 		if _, err := gw.HeartbeatNode(ctx, sc.NodeID, check.From, 0, gateway.HeartbeatExtras{UpdateError: check.Reason}); err != nil {
-			logger.Printf("self-update: report rollback to %s: %v", sc.Login, err)
+			logger.Printf("self-update: report rollback to %s: %v", sc.Name(), err)
 		}
 	}
 }
@@ -933,7 +933,7 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 	}
 	defer hub.Close()
 
-	sess := &channel.Session{Cfg: cfg, Orgs: scopes.Logins(), MCPFunc: func() map[string]any { return meshContextMCP(ctx, gw) }, WorkDir: filepath.Join(workRoot, cfg.Slug), Exe: exe, SockPath: sock, Unattended: nodeUnattended, Model: nodeModels.For("channel"), Stderr: os.Stderr, Log: logger,
+	sess := &channel.Session{Cfg: cfg, Orgs: scopes.Names(), MCPFunc: func() map[string]any { return meshContextMCP(ctx, gw) }, WorkDir: filepath.Join(workRoot, cfg.Slug), Exe: exe, SockPath: sock, Unattended: nodeUnattended, Model: nodeModels.For("channel"), Stderr: os.Stderr, Log: logger,
 		OnText:      func(t string) { logger.Printf("session: %s", firstLine(t)) },
 		OnRateLimit: func(rl *harness.RateLimit) { loop.Limits.Observe(node.Account(os.Environ()), rl) }}
 	var sessMu sync.Mutex
@@ -1041,7 +1041,7 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 			for _, status := range []string{"claimed", "running"} {
 				items, err := gw.OrgWorkItems(ctx, sc.ID, status)
 				if err != nil {
-					logger.Printf("list held items of %s: %v", sc.Login, err)
+					logger.Printf("list held items of %s: %v", sc.Name(), err)
 					return
 				}
 				for _, it := range items {
@@ -1112,7 +1112,7 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 	}
 	loop.AfterTick = func(ctx context.Context) { repush(ctx, false) }
 
-	logger.Printf("channel mode: node %s (%s) for %s, capacity %s, every %s; session in %s", cfg.Name, cfg.Slug, strings.Join(scopes.Logins(), ", "), cfg.Capacity, loop.Interval, sess.WorkDir)
+	logger.Printf("channel mode: node %s (%s) for %s, capacity %s, every %s; session in %s", cfg.Name, cfg.Slug, strings.Join(scopes.Names(), ", "), cfg.Capacity, loop.Interval, sess.WorkDir)
 	for _, sc := range scopes {
 		go channel.WatchGoals(ctx, gw, sc.ID, loop.Interval, func(kind string, g gateway.Goal) {
 			content, meta := channel.GoalEvent(kind, g)

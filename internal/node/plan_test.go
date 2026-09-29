@@ -538,7 +538,7 @@ func TestUnverifiableAcceptance(t *testing.T) {
 // item 5: a model whose first-pass on a repo is under 0.5 over five or
 // more items is flagged; a clean model, a different repo, and thin
 // evidence (under five items) are not.
-func TestModelAgainstEvidence(t *testing.T) {
+func TestPlanModelAgainstEvidence(t *testing.T) {
 	evidence := []harness.ModelEvidence{{Repo: "A", Model: "sonnet", FirstPass: 0.3, Items: 12, CostPerItemCents: 450}}
 	specs := []harness.PlannedSpec{
 		{Seq: 1, Title: "Sonnet on A", Repo: "A", Model: "sonnet"},

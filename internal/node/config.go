@@ -34,10 +34,21 @@ type Config struct {
 	OrgLogin  string   `yaml:"org,omitempty"`
 	OrgID     string   `yaml:"org_id,omitempty"`
 	AccountID string   `yaml:"account_id,omitempty"`
-	NodeID    string   `yaml:"node_id,omitempty"`
-	OwnerID   string   `yaml:"owner_id,omitempty"`
-	Slug      string   `yaml:"slug"`
-	Name      string   `yaml:"name"`
+	// NodeID is the node's own single id, from the platform's NodeAnswer
+	// (goal the-node-serves-its-owners-orgs, item 12). On the legacy
+	// per-org path — a platform that answers with neither owner nor
+	// scopes — NodeID is unused: each Scope keeps its own per-org id
+	// from NodeIDIn instead.
+	NodeID  string `yaml:"node_id,omitempty"`
+	OwnerID string `yaml:"owner_id,omitempty"`
+	Slug    string `yaml:"slug"`
+	Name    string `yaml:"name"`
+	// Owner is the node's ownership model: "" or "person" (the
+	// default, bring-your-own infra — the node serves every org its
+	// token's person belongs to) or "enterprise" (shared infra — the
+	// node serves every org the enterprise has). LoadConfig rejects
+	// any other value.
+	Owner string `yaml:"owner,omitempty"`
 	// Capacity is how many items the node runs at once: a plain number
 	// (fixed) or {min, max}, between which the node scales by the
 	// headroom left in its plan's windows (adr-004).
@@ -409,12 +420,26 @@ func (c CodexConfig) CodexModel(claudeModel string) string {
 	return ""
 }
 
-// Scope is one org the node serves, with the node's id there.
+// Scope is one org the node serves, with the node's id there. Login is
+// the org's GitHub login, empty for an org with none (grapevine) —
+// compare it to a GitHub login (repo owner matching, the orgs
+// restriction); Slug is the org's tenant slug, always set, for naming
+// the org to a person.
 type Scope struct {
 	Login     string
+	Slug      string
 	ID        string
 	AccountID string
 	NodeID    string
+}
+
+// Name is what to show a person for this org: Login, or Slug when
+// Login is empty (an org with no GitHub login, like grapevine).
+func (s Scope) Name() string {
+	if s.Login != "" {
+		return s.Login
+	}
+	return s.Slug
 }
 
 // Scopes are the orgs a node serves.
@@ -430,19 +455,43 @@ func (s Scopes) ByOrg(orgID string) (Scope, bool) {
 	return Scope{}, false
 }
 
-// LoginOf is an org's login, or "" when the node does not serve it.
-func (s Scopes) LoginOf(orgID string) string {
+// NameOf is an org's Name() — its login, or its slug when it has none —
+// or "" when the node does not serve it: the org half of a project's
+// `org/project` in a prompt and in the context fetch.
+func (s Scopes) NameOf(orgID string) string {
 	sc, _ := s.ByOrg(orgID)
-	return sc.Login
+	return sc.Name()
 }
 
-// Logins lists the orgs served, in order.
+// Logins lists the orgs served, in order, by their raw GitHub login
+// (empty for one with none): for a caller comparing against logins, not
+// showing them to a person.
 func (s Scopes) Logins() []string {
 	out := make([]string, 0, len(s))
 	for _, sc := range s {
 		out = append(out, sc.Login)
 	}
 	return out
+}
+
+// Names lists the orgs served, in order, by Name(): what to show a
+// person.
+func (s Scopes) Names() []string {
+	out := make([]string, 0, len(s))
+	for _, sc := range s {
+		out = append(out, sc.Name())
+	}
+	return out
+}
+
+// OwnerKind is "person" or "enterprise": Owner empty or "person" is a
+// person's node (bring-your-own infra), "enterprise" is shared infra.
+// LoadConfig has already rejected any other value.
+func (c *Config) OwnerKind() string {
+	if c.Owner == "enterprise" {
+		return "enterprise"
+	}
+	return "person"
 }
 
 // NodeIDIn is the node's id in an org: from (org, slug), so it converges.
@@ -467,30 +516,97 @@ func ResolveScopes(ctx context.Context, gw Gateway, c *Config) (Scopes, error) {
 	for _, o := range c.Orgs {
 		want[strings.ToLower(strings.TrimSpace(o))] = true
 	}
+	// want stays whole for the entire loop: found records which of it
+	// matched, so a match never lifts the restriction for later orgs.
+	found := map[string]bool{}
 	var scopes Scopes
 	for _, o := range orgs {
-		if len(want) > 0 && !want[strings.ToLower(o.Login)] {
+		login := strings.ToLower(o.Login)
+		if len(want) > 0 && !want[login] {
 			continue
 		}
 		id, err := c.NodeIDIn(o.ID)
 		if err != nil {
 			return nil, err
 		}
-		scopes = append(scopes, Scope{Login: o.Login, ID: o.ID, AccountID: o.AccountID, NodeID: id})
-		delete(want, strings.ToLower(o.Login))
+		scopes = append(scopes, Scope{Login: o.Login, Slug: o.TenantSlug, ID: o.ID, AccountID: o.AccountID, NodeID: id})
+		found[login] = true
 	}
-	if len(want) > 0 {
-		missing := make([]string, 0, len(want))
-		for o := range want {
-			missing = append(missing, o)
-		}
-		sort.Strings(missing)
+	if missing := missingOrgs(want, found); len(missing) > 0 {
 		return nil, fmt.Errorf("not a member of %s (the node.yaml orgs list names them)", strings.Join(missing, ", "))
 	}
 	if len(scopes) == 0 {
 		return nil, errors.New("the token's person belongs to no claimed org")
 	}
 	return scopes, nil
+}
+
+// ScopesFromAnswer turns the platform's NodeAnswer (registerNode or
+// heartbeatNode) into Scopes: one per a.Scopes entry, every one sharing
+// the node's single NodeID (a.NodeID). restrict is node.yaml's orgs:
+// list, matched case-insensitively against a scope's Login or Slug
+// (empty keeps every org the answer names); a restricted name the
+// answer does not contain is an error listing the missing names, the
+// same rule ResolveScopes applies. An answer with no org left to serve
+// is an error too.
+func ScopesFromAnswer(a *gateway.NodeAnswer, restrict []string) (Scopes, error) {
+	want := map[string]bool{}
+	for _, o := range restrict {
+		want[strings.ToLower(strings.TrimSpace(o))] = true
+	}
+	found := map[string]bool{}
+	var scopes Scopes
+	for _, sa := range a.Scopes {
+		login, slug := strings.ToLower(sa.Login), strings.ToLower(sa.Slug)
+		if len(want) > 0 && !want[login] && !want[slug] {
+			continue
+		}
+		found[login] = true
+		found[slug] = true
+		scopes = append(scopes, Scope{Login: sa.Login, Slug: sa.Slug, ID: sa.OrgID, AccountID: sa.AccountID, NodeID: a.NodeID})
+	}
+	if missing := missingOrgs(want, found); len(missing) > 0 {
+		return nil, fmt.Errorf("not a member of %s (the node.yaml orgs list names them)", strings.Join(missing, ", "))
+	}
+	if len(scopes) == 0 {
+		return nil, errors.New("the platform answered with no org to serve")
+	}
+	return scopes, nil
+}
+
+// missingOrgs is every name in want that found does not hold, sorted.
+func missingOrgs(want, found map[string]bool) []string {
+	var missing []string
+	for o := range want {
+		if !found[o] {
+			missing = append(missing, o)
+		}
+	}
+	sort.Strings(missing)
+	return missing
+}
+
+// Owner is the node's owner, read off a NodeAnswer: a person or an
+// enterprise, its id and its display name.
+type Owner struct {
+	Kind string
+	ID   string
+	Name string
+}
+
+// OwnerFrom reads Owner off the platform's NodeAnswer.
+func OwnerFrom(a *gateway.NodeAnswer) Owner {
+	return Owner{Kind: a.Owner.Kind, ID: a.Owner.ID, Name: a.Owner.Name}
+}
+
+// String is what to show a person: "owned by Chris" / "owned by
+// anythink" — Name, falling back to "<kind> <id>" when Name is empty.
+func (o Owner) String() string {
+	name := o.Name
+	if name == "" {
+		name = strings.TrimSpace(o.Kind + " " + o.ID)
+	}
+	return "owned by " + name
 }
 
 // Reloaded is what Loop.Reload reads: the capacity (0 keeps the loop's),
@@ -571,10 +687,10 @@ func Reloader(gw Gateway, cfg *Config, scopes Scopes, load func() (*Config, erro
 				errs = append(errs, err)
 				continue
 			}
-			sc := Scope{Login: o.Login, ID: o.ID, AccountID: o.AccountID, NodeID: id}
+			sc := Scope{Login: o.Login, Slug: o.TenantSlug, ID: o.ID, AccountID: o.AccountID, NodeID: id}
 			if !registered[id] && register != nil {
 				if err := register(ctx, sc); err != nil {
-					errs = append(errs, fmt.Errorf("register in %s: %w", o.Login, err))
+					errs = append(errs, fmt.Errorf("register in %s: %w", sc.Name(), err))
 					continue
 				}
 			}
@@ -648,6 +764,9 @@ func LoadConfig() (*Config, error) {
 	}
 	if err := c.Context.Validate(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	if c.Owner != "" && c.Owner != "person" && c.Owner != "enterprise" {
+		return nil, fmt.Errorf(`%s: owner: %q is neither "person" nor "enterprise"`, path, c.Owner)
 	}
 	return &c, nil
 }
