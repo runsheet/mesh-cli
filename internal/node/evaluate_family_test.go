@@ -481,14 +481,45 @@ func TestClaudeWithoutContextRunsOnCodex(t *testing.T) {
 }
 
 // With no other family to run on, an evaluation that saw no context
-// records nothing: the item stays in evaluating, and the wait is said
-// once for it however many ticks try.
-func TestNoContextWithNoOtherFamilyWaits(t *testing.T) {
+// is no verdict: recorded with the tool's error as its reason and its
+// cost, never a fail, and the item stays in evaluating (ADR 011's
+// amendment 2026-09-29).
+func TestNoContextWithNoOtherFamilyIsNoVerdict(t *testing.T) {
 	f, ev, claude, codex, _, logs := familyFixture(t, "normal", "sonnet", "VERDICT: FAIL", "VERDICT: PASS")
 	ev.MCP = MeshContextMCP(f.URL(), "rs_test")
 	ev.CodexAccounts = (&Loop{Known: &KnownAccounts{}}).CodexCandidates
 	claude.tools = noContext(3, "Auth required")
 	ev.Blind = &OncePer{}
+	in := evaluateItem1(t, f, ev)
+	if len(claude.jobs) != 1 || codex.runs() != 0 {
+		t.Fatalf("runs claude %d codex %d", len(claude.jobs), codex.runs())
+	}
+	reason := "evaluation on Claude sonnet saw no context (mesh-context: Auth required); not a verdict, and Codex cannot evaluate it: the node has no Codex harness or account"
+	if _, sent := in["passed"]; sent || in["outcome"] != gateway.EvaluationNoVerdict || in["notes"] != reason || in["costCents"] != float64(125) {
+		t.Fatalf("recorded %+v\nwant notes %q", in, reason)
+	}
+	if f.Item(item1)["status"] != "evaluating" {
+		t.Fatalf("status %v", f.Item(item1)["status"])
+	}
+	if row := toolRow(t, usageOf(t, f), "mesh-context"); row["errors"] != 3.0 {
+		t.Fatalf("mesh-context row %v", row)
+	}
+	if !strings.Contains(logs.String(), "item ship-it/1: evaluation reached no verdict on Claude sonnet, recorded as no verdict ($1.25): "+reason) {
+		t.Fatalf("node.log:\n%s", logs.String())
+	}
+}
+
+// On a platform that takes no no-verdict outcome, an evaluation that saw
+// no context and had no other family records nothing, as before: the
+// item stays in evaluating, the wait is said once for it however many
+// ticks try, and the platform's lack once per run.
+func TestNoContextWithNoOtherFamilyWaitsOnAnOlderPlatform(t *testing.T) {
+	f, ev, claude, codex, _, logs := familyFixture(t, "normal", "sonnet", "VERDICT: FAIL", "VERDICT: PASS")
+	f.NoEvaluationOutcome = true
+	ev.MCP = MeshContextMCP(f.URL(), "rs_test")
+	ev.CodexAccounts = (&Loop{Known: &KnownAccounts{}}).CodexCandidates
+	claude.tools = noContext(3, "Auth required")
+	ev.Blind, ev.NoVerdict = &OncePer{}, &OncePer{}
 	item, err := ev.GW.WorkItem(context.Background(), item1)
 	if err != nil {
 		t.Fatal(err)
@@ -501,9 +532,82 @@ func TestNoContextWithNoOtherFamilyWaits(t *testing.T) {
 	if len(claude.jobs) != 2 || codex.runs() != 0 || len(f.CallsNamed("evaluateWorkItem")) != 0 || f.Item(item1)["status"] != "evaluating" {
 		t.Fatalf("runs claude %d codex %d, verdicts %d, status %v", len(claude.jobs), codex.runs(), len(f.CallsNamed("evaluateWorkItem")), f.Item(item1)["status"])
 	}
-	line := "item ship-it/1: evaluation on Claude sonnet saw no context (mesh-context: Auth required); not a verdict, and Codex cannot evaluate it: the node has no Codex harness or account; it stays in evaluating"
-	if n := strings.Count(logs.String(), line); n != 1 {
+	for _, line := range []string{
+		"item ship-it/1: evaluation on Claude sonnet saw no context (mesh-context: Auth required); not a verdict, and Codex cannot evaluate it: the node has no Codex harness or account; it stays in evaluating",
+		"the platform takes no no-verdict outcome; a no-verdict evaluation waits in evaluating (said once per run)",
+	} {
+		if n := strings.Count(logs.String(), line); n != 1 {
+			t.Fatalf("%q said %d times:\n%s", line, n, logs.String())
+		}
+	}
+}
+
+// A session with no VERDICT line on a platform without the outcome
+// records nothing either, and the lack is said once across the two.
+func TestNoVerdictLineOnAnOlderPlatformRecordsNothing(t *testing.T) {
+	f, ev, claude, codex, _, logs := familyFixture(t, "normal", "sonnet", "I ran out of ideas.", "VERDICT: PASS")
+	f.NoEvaluationOutcome = true
+	ev.CodexAccounts = (&Loop{Known: &KnownAccounts{}}).CodexCandidates
+	ev.NoVerdict = &OncePer{}
+	item, err := ev.GW.WorkItem(context.Background(), item1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := ev.Evaluate(context.Background(), *item); err == nil || !strings.Contains(err.Error(), "reached no verdict") {
+			t.Fatalf("Evaluate = %v, want no verdict", err)
+		}
+	}
+	if len(claude.jobs) != 2 || codex.runs() != 0 || len(f.CallsNamed("evaluateWorkItem")) != 0 || f.Item(item1)["status"] != "evaluating" {
+		t.Fatalf("runs claude %d codex %d, verdicts %d, status %v", len(claude.jobs), codex.runs(), len(f.CallsNamed("evaluateWorkItem")), f.Item(item1)["status"])
+	}
+	if n := strings.Count(logs.String(), "the platform takes no no-verdict outcome"); n != 1 {
 		t.Fatalf("said %d times:\n%s", n, logs.String())
+	}
+}
+
+// The pass in the record (ADR 011's amendment 2026-09-29): Codex saw no
+// context on the first attempt, Claude evaluated it and passed a high
+// goal's item; the second opinion is not asked of Codex again — it
+// could not reach the context a moment ago, and asked again it failed
+// the item on what it could not see — so the pass stands, passed=true.
+func TestBlindFirstAttemptThenPassRecordsPassed(t *testing.T) {
+	f, ev, claude, codex, _, _ := familyFixture(t, "high", "sonnet", "Holds.\nVERDICT: PASS", "A clause does not hold.\nVERDICT: FAIL")
+	ev.MCP = MeshContextMCP(f.URL(), "rs_test")
+	codex.tools = noContext(0, "prologue: not found")
+	codex.firstOnly = true
+	claude.tools = map[string]*harness.ToolStat{"mesh-context": {Calls: 2}}
+	in := evaluateItem1(t, f, ev)
+	if codex.runs() != 1 || len(claude.jobs) != 1 {
+		t.Fatalf("runs: claude %d, codex %d", len(claude.jobs), codex.runs())
+	}
+	if in["passed"] != true {
+		t.Fatalf("recorded %+v", in)
+	}
+	notes, _ := in["notes"].(string)
+	for _, want := range []string{
+		"Codex (first attempt, gpt-6-luna): no verdict — mesh-context: prologue: not found\n\nHolds.",
+		"Codex second opinion unavailable: it saw no context on the first attempt (mesh-context: prologue: not found)",
+	} {
+		if !strings.Contains(notes, want) {
+			t.Fatalf("notes lack %q:\n%s", want, notes)
+		}
+	}
+}
+
+// A session that returns a verdict records it exactly as before: PASS
+// is passed=true, FAIL passed=false, and neither carries an outcome.
+func TestAVerdictIsRecordedAsBefore(t *testing.T) {
+	for _, tc := range []struct {
+		says   string
+		passed bool
+	}{{"Holds.\nVERDICT: PASS", true}, {"Nothing asserts it.\nVERDICT: FAIL", false}} {
+		f, ev, _, _, _, _ := familyFixture(t, "normal", "sonnet", tc.says, "")
+		ev.CodexAccounts = (&Loop{Known: &KnownAccounts{}}).CodexCandidates
+		in := evaluateItem1(t, f, ev)
+		if _, sent := in["outcome"]; sent || in["passed"] != tc.passed {
+			t.Fatalf("%q recorded %+v", tc.says, in)
+		}
 	}
 }
 
@@ -536,11 +640,12 @@ func TestNoContextUnderTheOldNameIsNotAVerdict(t *testing.T) {
 	// adopted: no account and no second job, as AdoptEvaluation runs it
 	run := evalRun{item: *item, res: res, label: "ship-it/1", model: "sonnet", fam: family{model: "sonnet", claude: "sonnet"}, dir: t.TempDir(), adopted: true}
 	result := harness.Result{Text: "VERDICT: PASS", Tools: map[string]*harness.ToolStat{"prologue": {Calls: 2, Errors: 2, FirstError: "Auth required"}}}
-	if err := ev.afterEvaluate(context.Background(), run, result, nil); !errors.Is(err, ErrNoContext) {
-		t.Fatalf("afterEvaluate = %v, want ErrNoContext", err)
+	if err := ev.afterEvaluate(context.Background(), run, result, nil); err != nil {
+		t.Fatalf("afterEvaluate = %v", err)
 	}
-	if codex.runs() != 0 || len(f.CallsNamed("evaluateWorkItem")) != 0 {
-		t.Fatalf("codex runs %d, verdicts %d", codex.runs(), len(f.CallsNamed("evaluateWorkItem")))
+	calls := f.CallsNamed("evaluateWorkItem")
+	if codex.runs() != 0 || len(calls) != 1 || calls[0].Input["outcome"] != gateway.EvaluationNoVerdict {
+		t.Fatalf("codex runs %d, verdicts %+v", codex.runs(), calls)
 	}
 	if !strings.Contains(logs.String(), "saw no context (prologue: Auth required); not a verdict") {
 		t.Fatalf("node.log:\n%s", logs.String())

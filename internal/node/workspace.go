@@ -774,6 +774,10 @@ type Gateway interface {
 	ReleaseWorkItem(ctx context.Context, itemID, reason string) error
 	IssueItemRepoToken(ctx context.Context, itemID, nodeID string) (*gateway.GitHubToken, error)
 	EvaluateWorkItem(ctx context.Context, itemID string, passed bool, notes string, costCents int, usage *gateway.UsageReport) error
+	// EvaluateWorkItemNoVerdict records an evaluation that reached no
+	// verdict (gateway.ErrNoVerdictOutcome on a platform without the
+	// outcome, nothing sent).
+	EvaluateWorkItemNoVerdict(ctx context.Context, itemID, reason string, costCents int, usage *gateway.UsageReport) error
 	Goal(ctx context.Context, id string) (*gateway.Goal, error)
 	Goals(ctx context.Context, orgID string) ([]gateway.Goal, error)
 	ClaimPlan(ctx context.Context, goalID, nodeID string) error
