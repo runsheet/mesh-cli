@@ -3,7 +3,7 @@ summary: mesh node start opens ~/.mesh/node.log itself and rotates it at 10 MB k
 status: accepted
 ---
 
-# ADR-018: The node writes its own log
+# ADR-019: The node writes its own log
 
 2026-09-29, goal `node-yaml-takes-effect-or-says-why-not` (item 4).
 Changes the service definitions `mesh node service install` writes

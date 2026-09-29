@@ -3,7 +3,7 @@ title: Goal — A node.yaml the operator edits takes effect, and the node says s
 kind: plan
 status: running
 parent: prd
-summary: The mini's capacity 6 → 8 did take effect in the loop at 06:17:09Z (logged) but never reached the platform, because a fixed node on one account heartbeated no capacity and only registration sets NodeIndex.capacity; a fixed node now heartbeats `scaling {capacity, min, max, reason: fixed}` (mesh-cli ADR-018). Separately, the mini's 04:00:22Z exit with status=2/INVALIDARGUMENT on 2026-09-29 was a nil-pointer panic in the evaluator — a failed Codex preflight turned to Claude, Credentials.Open's error overwrote acct with nil, and the deferred acct.Cleanup() dereferenced it — now fixed, and a panic anywhere in the node is one `mesh node: fatal:` line and exit 70.
+summary: The mini's capacity 6 → 8 did take effect in the loop at 06:17:09Z (logged) but never reached the platform, because a fixed node on one account heartbeated no capacity and only registration sets NodeIndex.capacity; a fixed node now heartbeats `scaling {capacity, min, max, reason: fixed}` (mesh-cli ADR-018). Separately, the mini's 04:00:22Z exit with status=2/INVALIDARGUMENT on 2026-09-29 was a nil-pointer panic in the evaluator — a failed Codex preflight turned to Claude, Credentials.Open's error overwrote acct with nil, and the deferred acct.Cleanup() dereferenced it — now fixed, and a panic anywhere in the node is one `mesh node: fatal:` line and exit 70. node.log is bounded — the node writes and rotates it itself at 10 MB keeping 5, session text goes to sessions.log, and the service's output goes to the journal (or node.crash.log on macOS) (mesh-cli ADR-019).
 ---
 
 # Goal — A node.yaml the operator edits takes effect, and the node says so
@@ -308,7 +308,7 @@ item 4, the journal after — found as above by `^panic:`.
 
 ## node.log
 
-Item 4 (ADR-018, `internal/node/logfile.go`).
+Item 4 (ADR-019, `internal/node/logfile.go`).
 
 **The limit.** `mesh node start` opens `~/.mesh/node.log` itself and
 rotates it at **10 MB**, keeping **5** rotated files (`node.log.1` …
@@ -338,6 +338,12 @@ lands in whichever `node.log.N` systemd's descriptor has followed.
 cap: `node.log.1` exists at 1000 bytes, node.log at 100; far past it,
 node.log stays under the cap and exactly 3 rotated files are kept),
 `TestRotatingFileRotatesAnOversizedLogOnOpen`,
+`TestRotatingFileOpenFailsWhenAnOversizedLogCannotRotate` (a 5000-byte
+node.log over a 1000-byte cap with `node.log.1` a directory: the open
+returns `log <path>: rotate on open (5000 bytes, cap 1000): …` and leaves
+the file whole — the first attempt's evaluator found it panicked there,
+dereferencing the file `rotate` had already closed, the path the mini's
+oversized log takes on its first start),
 `TestRotatingFileCutsAWriteLargerThanTheCap` (a 5000-byte write to a
 1000-byte cap leaves node.log at exactly 1000 bytes ending in the cut
 line, the earlier line in `node.log.1`),
@@ -364,3 +370,21 @@ the same way over a 30 MB node.log, it rotated that to `node.log.1`
 (31457280 bytes) and wrote a 271-byte node.log. The size node.log
 reaches after an hour of work on the mini is owed once the mini runs a
 release carrying this and its unit is reinstalled.
+
+**Carried onto main (item 7).** PR #495's two commits were cherry-picked
+onto main after #493 without a conflict — branch 4 already sat on #493's
+merge, so `crash.Guard`'s wiring in `nodecmd.go` and the exit section
+above are kept. The ADR is **ADR-019**, not 018: PR #494 (item 6's
+carry) claims `adr-018-a-fixed-node-heartbeats-its-capacity`. Attempt 2
+rebased the branch onto main after #494 merged (634e2e6); the one
+conflict was this doc's `summary:`, which now carries both. The build
+ran on the mini and installed nothing. The mini at 2026-09-29 22:25Z,
+read, not changed: `mesh v0.2.191 (commit 8eba662)`, which does not
+carry this; `io.projectmesh.mesh-node.service` still has
+`StandardOutput=append:/home/chris/.mesh/node.log` and the same for
+`StandardError`; `~/.mesh/node.log` is **373,995,651 bytes, 6,548,269
+lines** (339 MB when the goal was set, so about 35 MB in the day since),
+1,239 of them channel `session:` text, and no `sessions.log` exists.
+**Still owed (item 10):** once a release carrying this is on the mini,
+`mesh node service install` to replace the append redirect, then
+node.log's and sessions.log's sizes after an hour of real work.
