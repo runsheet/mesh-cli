@@ -200,6 +200,31 @@ func TestAContextToolThatAnsweredIsAVerdict(t *testing.T) {
 	}
 }
 
+// The same, driven by the stream the mini recorded
+// (harness/testdata/codex_mcp_not_found.jsonl): its only context call
+// was answered `not found`. The mini's session named the built-in by its
+// old name, `prologue`; a live session names it `mesh-context`, so the
+// parsed stat is the built-in's here. The Codex verdict is recorded as
+// it stands — no `no verdict — ` head, nothing on Claude.
+func TestAContextToolThatAnsweredNotFoundKeepsItsVerdict(t *testing.T) {
+	stream, err := os.Open(filepath.Join("..", "harness", "testdata", "codex_mcp_not_found.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	parsed := harness.ParseCodexStream(stream, "gpt-6-luna", nil)
+	f, ev, claude, codex, _, _ := familyFixture(t, "normal", "sonnet", "VERDICT: PASS", "Missing the test.\nVERDICT: FAIL")
+	ev.MCP = MeshContextMCP(f.URL(), "rs_test")
+	codex.tools = map[string]*harness.ToolStat{tools.Builtin: parsed.Tools["prologue"]}
+	in := evaluateItem1(t, f, ev)
+	if codex.runs() != 1 || len(claude.jobs) != 0 || in["passed"] != false {
+		t.Fatalf("runs claude %d codex %d, recorded %+v", len(claude.jobs), codex.runs(), in)
+	}
+	if notes, _ := in["notes"].(string); strings.Contains(notes, "no verdict — ") || !strings.Contains(notes, "Missing the test.") {
+		t.Fatalf("notes %q", notes)
+	}
+}
+
 // The Claude evaluation job's rendered mcpServers — what `claude -p
 // --mcp-config` reads — carry mesh-context at the gateway's /mcp with
 // the node's bearer.
