@@ -3,10 +3,15 @@ title: Goal — A node.yaml the operator edits takes effect, and the node says s
 kind: plan
 status: running
 parent: prd
-summary: The mini's 04:00:22Z exit with status=2/INVALIDARGUMENT on 2026-09-29 was a nil-pointer panic in the evaluator — a failed Codex preflight turned to Claude, Credentials.Open's error overwrote acct with nil, and the deferred acct.Cleanup() dereferenced it — now fixed, and a panic anywhere in the node is one `mesh node: fatal:` line and exit 70.
+summary: The mini's 04:00:22Z exit with status=2/INVALIDARGUMENT on 2026-09-29 was a nil-pointer panic in the evaluator — a failed Codex preflight turned to Claude, Credentials.Open's error overwrote acct with nil, and the deferred acct.Cleanup() dereferenced it — now fixed, and a panic anywhere in the node is one `mesh node: fatal:` line and exit 70; node.log is bounded — the node writes and rotates it itself at 10 MB keeping 5, session text goes to sessions.log, and the service's output goes to the journal (or node.crash.log on macOS); the reload's root cause is another item's section.
 ---
 
 # A node.yaml the operator edits takes effect, and the node says so
+
+The mini's `capacity` was raised from 6 to 8 in `~/.mesh/node.yaml` and
+never took effect, and `~/.mesh/node.log` — 339 MB and never rotated —
+was too large to show it. This document collects what each item of the
+goal found and landed.
 
 ## The 04:00:22Z exit
 
@@ -134,3 +139,55 @@ this panic ran on) and `internal/crash`'s own. Goroutines below the node
 — the harness's stream readers, the sandbox's sidecar probes, the
 session unit's waiter — are not guarded; a panic there still exits 2 with
 the runtime's trace in node.log, found as above by `^panic:`.
+
+## node.log
+
+Item 4 (ADR-018, `internal/node/logfile.go`).
+
+**The limit.** `mesh node start` opens `~/.mesh/node.log` itself and
+rotates it at **10 MB**, keeping **5** rotated files (`node.log.1` …
+`node.log.5`): at most about 60 MB in all. A node.log already past
+10 MB when the node starts is rotated at once, so the mini's 339 MB
+file becomes `node.log.1` on the first start of a release carrying
+this, and is deleted after five more rotations.
+
+**What moved out.** Channel mode's `session: …` lines, every workspace's
+git commands and output, and the agents' stderr go to
+`~/.mesh/sessions.log` (20 MB, 2 kept). node.log keeps the node's own
+reasoning — ticks, claims, reloads, heartbeats, holds — and every line
+that summarises a session (start, end, usage, cost, what its end
+killed). The error that ends a start is now logged there too
+(`exiting: …`); before, it reached node.log only because the service
+appended stderr to it.
+
+**The service.** The systemd unit's `StandardOutput` and
+`StandardError` are `journal`; the LaunchAgent's are
+`~/.mesh/node.crash.log`. **A unit installed before this change keeps
+`StandardOutput=append:~/.mesh/node.log` until `mesh node service
+install` is run again** — the mini's included; this build did not touch
+it. Until then the node rotates node.log regardless, and a panic's stack
+lands in whichever `node.log.N` systemd's descriptor has followed.
+
+**Tests.** `TestRotatingFileRotatesAtTheLimit` (writes past a 1000-byte
+cap: `node.log.1` exists at 1000 bytes, node.log at 100; far past it,
+node.log stays under the cap and exactly 3 rotated files are kept),
+`TestRotatingFileRotatesAnOversizedLogOnOpen`,
+`TestNodeLogsKeepSessionsApart` and
+`TestChannelTextLandsApartFromNodeLines` (a node line and a `session:`
+line in different files, whole lines asserted),
+`TestServiceOutputIsNotNodeLog` (the rendered unit's output lines are
+exactly `StandardOutput=journal` and `StandardError=journal`; the plist's
+paths are node.crash.log).
+
+**Measured.** No hour-long run was possible in the build session: this
+dev box is not a registered node, and registering it would have put it
+on the platform claiming real work. The run that was possible was the
+branch's binary started as a service would (`mesh node start --mode
+poll`, stdin and stderr not a terminal) with a fresh `HOME`: it ran
+**8 ms**, to the registration check, and left a **271-byte** node.log of
+three lines — the version and pid, `no update pending`, and `exiting:
+this machine is not registered …` — and an empty sessions.log. Started
+the same way over a 30 MB node.log, it rotated that to `node.log.1`
+(31457280 bytes) and wrote a 271-byte node.log. The size node.log
+reaches after an hour of work on the mini is owed once the mini runs a
+release carrying this and its unit is reinstalled.
