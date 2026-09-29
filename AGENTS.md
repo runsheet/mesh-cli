@@ -135,7 +135,9 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   …`, `claim: unmerged_per_repo … → …`, `orgs … → …`); a reload that
   could not be applied says why, at most once a tick (`reload config:
   node.yaml (keeping the last good capacity and limits): …` on a parse
-  error, `reload config: my orgs: …` on a gateway failure).
+  error, `reload config: my orgs: …` on a gateway failure), every
+  reason on that one line, separated by `; ` (`oneLine`), when both
+  fail in the same tick.
 - **Adoption** (`internal/node/adopt.go`, mesh-cli ADR-009, mesh-specs
   ADR 008): a session's unit and output file own it, not the node
   process. Build, evaluate, plan, research and rebase jobs are

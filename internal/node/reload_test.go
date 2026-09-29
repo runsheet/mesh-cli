@@ -239,3 +239,52 @@ func TestLoopKeepsTheOrgsWhenMyOrgsFails(t *testing.T) {
 		t.Fatalf("reload config logged %d time(s) in one tick, want 1", n)
 	}
 }
+
+// A tick whose node.yaml cannot be parsed and whose MyOrgs fails as well
+// keeps the last good values and the orgs, and says both reasons on one
+// whole line — never a second physical line without the prefix.
+func TestLoopReloadLogsBothFailuresOnOneLine(t *testing.T) {
+	p := newPriorityFake(t)
+	loop, _, logs := p.liveLoop(t, "slug: box\nname: Box\norgs: [acme]\ncapacity: 2\n"+
+		"limits:\n  pace_five_hour: 0.5\n  stop: 0.9\n")
+	loop.Tick(context.Background())
+	loop.wg.Wait()
+	gw := gateway.New(p.URL(), "rs_test")
+	loop.Reload = Reloader(failingMyOrgsGW{gw}, loop.Cfg, loop.CurrentScopes(), nil, func(context.Context, Scope) error { return nil })
+	writeNodeYAML(t, "slug: box\ncapacity: [not a number\n")
+	path, err := ConfigPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	loop.Tick(context.Background())
+	loop.wg.Wait()
+	if loop.Capacity() != 2 {
+		t.Fatalf("after both failures: capacity = %d, want 2 kept", loop.Capacity())
+	}
+	if th := loop.Thresholds(); th.PaceFiveHour != 0.5 || th.Stop != 0.9 {
+		t.Fatalf("after both failures: thresholds = %+v, want 0.5/0.9 kept", th)
+	}
+	if got := loop.CurrentScopes().Logins(); strings.Join(got, ",") != "acme" {
+		t.Fatalf("after both failures: orgs = %v, want acme kept", got)
+	}
+	want := fmt.Sprintf("reload config: node.yaml (keeping the last good capacity and limits): parse %s: yaml: line 1: did not find expected ',' or ']'; my orgs: boom", path)
+	if !hasLine(logs.String(), want) {
+		t.Fatalf("log lacks the whole line %q:\n%s", want, logs.String())
+	}
+	if n := strings.Count(logs.String(), "reload config:"); n != 1 {
+		t.Fatalf("reload config logged %d time(s) in one tick, want 1", n)
+	}
+	for _, line := range strings.Split(strings.TrimRight(logs.String(), "\n"), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "my orgs:") {
+			t.Fatalf("a reason is on a line of its own, without the prefix:\n%s", logs.String())
+		}
+	}
+}
+
+// oneLine puts a joined error, and a multi-line one, on one line.
+func TestOneLineJoinsReasons(t *testing.T) {
+	err := errors.Join(errors.New("node.yaml: yaml: unmarshal errors:\n  line 3: cannot unmarshal"), errors.New("my orgs: boom"))
+	if got, want := oneLine(err), "node.yaml: yaml: unmarshal errors:; line 3: cannot unmarshal; my orgs: boom"; got != want {
+		t.Fatalf("oneLine = %q, want %q", got, want)
+	}
+}

@@ -1145,6 +1145,19 @@ func priorityName(rank int) string {
 	return [...]string{"urgent", "high", "normal", "low"}[min(max(rank, 0), 3)]
 }
 
+// oneLine is err's text on one line: a joined error's reasons — and a
+// multi-line one's, such as yaml's unmarshal errors — separated by "; ",
+// so a reload that failed several ways is still one log line.
+func oneLine(err error) string {
+	var parts []string
+	for _, line := range strings.Split(err.Error(), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			parts = append(parts, line)
+		}
+	}
+	return strings.Join(parts, "; ")
+}
+
 // CurrentScopes are the orgs served, as last read — for the sessions
 // that need an item's org login after the loop has started.
 func (l *Loop) CurrentScopes() Scopes {
@@ -1163,7 +1176,7 @@ func (l *Loop) reload(ctx context.Context) {
 	got, err := l.Reload(ctx)
 	scopes := got.Scopes
 	if err != nil {
-		l.logf("reload config: %v", err)
+		l.logf("reload config: %s", oneLine(err))
 	}
 	if got.Capacity.Max > 0 {
 		l.setRange(got.Capacity)
