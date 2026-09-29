@@ -63,7 +63,10 @@ needs the number beside the tokens.
   without the field loses that one number and nothing else: the
   command, the rest of the report and the log line all stand. When a
   report lost more than one optional part (tools, validation, context
-  bytes) the errors come joined, so each is said.
+  bytes) the errors come joined, so each is said. A platform refuses one
+  unknown field per attempt, and in no order the node can count on: each
+  refusal naming an optional field still sent drops it and sends the
+  command again, until it lands or the refusal names none of them.
 
 ## Consequences
 

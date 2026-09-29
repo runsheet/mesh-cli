@@ -278,3 +278,58 @@ func TestFinishWorkItemWithoutContextUsageDropsItAndReturnsErrNoContextUsage(t *
 		t.Fatalf("the second report carried contextBytes: %+v", usage)
 	}
 }
+
+// A platform that knows neither `contextBytes` nor `validation` refuses
+// `contextBytes` first and then `validation` on the retry: the command is
+// sent a third time without both, the report lands, and the caller is
+// told of both losses.
+func TestFinishWorkItemWithoutContextThenValidationUsageDropsBoth(t *testing.T) {
+	f := gatewaytest.New("rs_test")
+	defer f.Close()
+	f.NoContextUsage = true
+	f.NoValidationUsage = true
+	runningItem(f)
+	target, _ := url.Parse(f.URL())
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	var posts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			posts.Add(1)
+		}
+		proxy.ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+	gw := gateway.New(srv.URL, "rs_test")
+
+	u := sampleUsageReport()
+	u.ContextBytes = 187392
+	u.Validation = []gateway.ValidationMinutes{{Step: "lint", Ms: 1200, ExitCode: 0}}
+	err := gw.FinishWorkItem(context.Background(), finishItem, "mesh/g-7", "abc123", 12, u)
+	if !errors.Is(err, gateway.ErrNoContextUsage) || !errors.Is(err, gateway.ErrNoValidationUsage) {
+		t.Fatalf("err = %v, want ErrNoContextUsage and ErrNoValidationUsage", err)
+	}
+	if n := posts.Load(); n != 3 {
+		t.Fatalf("%d posts, want the two refused ones and the one without both", n)
+	}
+	calls := f.CallsNamed("finishWorkItem")
+	if len(calls) != 1 {
+		t.Fatalf("calls = %+v", calls)
+	}
+	usage, _ := calls[0].Input["usage"].(map[string]any)
+	_, withContext := usage["contextBytes"]
+	_, withValidation := usage["validation"]
+	if withContext || withValidation || usage["inputTokens"] == nil {
+		t.Fatalf("the landed usage: %+v", usage)
+	}
+
+	// the next report omits both at once: one post, no retry
+	posts.Store(0)
+	runningItem(f)
+	err = gw.FinishWorkItem(context.Background(), finishItem, "mesh/g-7", "abc124", 12, u)
+	if !errors.Is(err, gateway.ErrNoContextUsage) || !errors.Is(err, gateway.ErrNoValidationUsage) {
+		t.Fatalf("second err = %v", err)
+	}
+	if n := posts.Load(); n != 1 {
+		t.Fatalf("%d posts on the second report, want 1", n)
+	}
+}

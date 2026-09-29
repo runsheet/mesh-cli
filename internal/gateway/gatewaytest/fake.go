@@ -303,6 +303,14 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 			writeErrors(w, 200, fmt.Sprintf("Cannot query field %q on type \"Mutation\".", m[2]))
 			return
 		}
+		// contextBytes is refused before the older fields, the order a
+		// fallback that took them one by one got wrong.
+		if usage, ok := in["usage"].(map[string]any); ok && f.NoContextUsage {
+			if _, ok := usage["contextBytes"]; ok {
+				writeErrors(w, 200, `Variable "$in" got invalid value; In field "usage": Unknown field "contextBytes" is not defined by type "UsageReportInput".`)
+				return
+			}
+		}
 		if usage, ok := in["usage"].(map[string]any); ok && f.NoUsageTools {
 			if _, ok := usage["tools"]; ok {
 				writeErrors(w, 200, `Variable "$in" got invalid value; In field "usage": In field "tools": Unknown field "tools" is not defined by type "UsageReportInput".`)
@@ -312,12 +320,6 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 		if usage, ok := in["usage"].(map[string]any); ok && f.NoValidationUsage {
 			if _, ok := usage["validation"]; ok {
 				writeErrors(w, 200, `Variable "$in" got invalid value; In field "usage": Unknown field "validation" is not defined by type "UsageReportInput".`)
-				return
-			}
-		}
-		if usage, ok := in["usage"].(map[string]any); ok && f.NoContextUsage {
-			if _, ok := usage["contextBytes"]; ok {
-				writeErrors(w, 200, `Variable "$in" got invalid value; In field "usage": Unknown field "contextBytes" is not defined by type "UsageReportInput".`)
 				return
 			}
 		}

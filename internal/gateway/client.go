@@ -360,25 +360,27 @@ func (c *Client) mutateWithUsage(ctx context.Context, field, aggregateID string,
 	}
 	err = c.Mutate(ctx, field, aggregateID, withUsage)
 	var ge *Error
-	if err != nil && errors.As(err, &ge) && unknownField(ge.Message, "tools") {
-		if _, sent := um["tools"]; sent {
-			c.usageWithoutTools.Store(true)
-			delete(um, "tools")
-			err = c.Mutate(ctx, field, aggregateID, withUsage)
-		}
+	// Each optional field the platform names is dropped and the command
+	// sent again, whatever order the refusals come in: a platform that
+	// knows none of them refuses one per attempt.
+	optional := []struct {
+		name    string
+		without *atomic.Bool
+	}{
+		{"tools", &c.usageWithoutTools},
+		{"validation", &c.usageWithoutValidation},
+		{"contextBytes", &c.usageWithoutContext},
 	}
-	if err != nil && errors.As(err, &ge) && unknownField(ge.Message, "validation") {
-		if _, sent := um["validation"]; sent {
-			c.usageWithoutValidation.Store(true)
-			delete(um, "validation")
-			err = c.Mutate(ctx, field, aggregateID, withUsage)
-		}
-	}
-	if err != nil && errors.As(err, &ge) && unknownField(ge.Message, "contextBytes") {
-		if _, sent := um["contextBytes"]; sent {
-			c.usageWithoutContext.Store(true)
-			delete(um, "contextBytes")
-			err = c.Mutate(ctx, field, aggregateID, withUsage)
+	for retried := true; retried && err != nil && errors.As(err, &ge); {
+		retried = false
+		for _, o := range optional {
+			if _, sent := um[o.name]; sent && unknownField(ge.Message, o.name) {
+				o.without.Store(true)
+				delete(um, o.name)
+				err = c.Mutate(ctx, field, aggregateID, withUsage)
+				retried = true
+				break
+			}
 		}
 	}
 	if err != nil && errors.As(err, &ge) && unknownField(ge.Message, "usage") {
