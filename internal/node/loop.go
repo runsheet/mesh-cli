@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"projectmesh.io/mesh-cli/internal/crash"
 	"slices"
 	"sort"
 	"strings"
@@ -1321,6 +1322,7 @@ func (l *Loop) evaluateHeld(ctx context.Context) {
 		l.logf("evaluating item %d %q", item.Seq, item.Title)
 		l.wg.Add(1)
 		go func(ctx context.Context, item gateway.WorkItem) {
+			defer crash.Guard()
 			defer l.wg.Done()
 			defer func() {
 				l.mu.Lock()
@@ -1391,6 +1393,7 @@ func (l *Loop) rebaseRequested(ctx context.Context) {
 		l.logf("%s: rebasing item %d %q", sc.Name(), item.Seq, item.Title)
 		l.wg.Add(1)
 		go func(ctx context.Context, item gateway.WorkItem) {
+			defer crash.Guard()
 			defer l.wg.Done()
 			defer func() {
 				l.mu.Lock()
@@ -1459,6 +1462,7 @@ func (l *Loop) planRequested(ctx context.Context) {
 		l.logf("%s: planning goal %q", sc.Name(), g.Slug)
 		l.wg.Add(1)
 		go func(ctx context.Context, g gateway.Goal, sc Scope) {
+			defer crash.Guard()
 			defer l.wg.Done()
 			defer func() {
 				l.mu.Lock()
@@ -1555,6 +1559,7 @@ func (l *Loop) researchDue(ctx context.Context) {
 			l.logf("%s: researching %q", sc.Name(), p.Slug+"/"+d.Slug)
 			l.wg.Add(1)
 			go func(ctx context.Context, d gateway.Direction, p gateway.Project, sc Scope) {
+				defer crash.Guard()
 				defer l.wg.Done()
 				defer func() {
 					l.mu.Lock()
@@ -1622,6 +1627,7 @@ func (l *Loop) run(ctx context.Context, item gateway.WorkItem) {
 	l.runsOn(ctx, item.ID)
 	l.wg.Add(1)
 	go func() {
+		defer crash.Guard()
 		defer l.wg.Done()
 		defer func() {
 			l.mu.Lock()

@@ -602,6 +602,14 @@ and confirm once the gateway responds. Only a failure to *run* (a panic, a
 config it cannot read, an exit) counts as 'did not start'; `mesh node upgrade`
 prints the confirm window and the log path to watch while the update settles.
 
+**A node that dies names its death.** A panic anywhere in `mesh node
+start` or in a goroutine the node starts is one line in `~/.mesh/node.log`,
+`mesh node: fatal: <panic value> (version <v>)`, followed by its stack, and
+the process exits 70 (systemd: `status=70/SOFTWARE`) — never Go's bare 2,
+which systemd shows as `status=2/INVALIDARGUMENT`. The service restarts it
+as on any exit (`Restart=always`, `KeepAlive`). `grep -n -m5 '^mesh node:
+fatal:' ~/.mesh/node.log` finds every one.
+
 **On the mini, by hand.** The mini ordinarily updates from a release
 cut on merge (see [Release](#release)); this is the fallback for a
 build that is not a release. Build, copy, upgrade, and watch the

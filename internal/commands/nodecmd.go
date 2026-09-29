@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"projectmesh.io/mesh-cli/internal/crash"
 	"strings"
 	"sync"
 	"syscall"
@@ -404,6 +405,7 @@ func onSignal(sig os.Signal, fn func()) (stop func()) {
 	signal.Notify(ch, sig)
 	done := make(chan struct{})
 	go func() {
+		defer crash.Guard()
 		for {
 			select {
 			case <-ch:
@@ -444,10 +446,13 @@ Channels are a Claude Code research preview: the session is started with
 --dangerously-skip-permissions so the session never waits on a prompt;
 only use it on a machine you trust with that.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// a panic anywhere on the start path is one line in node.log
+		// and exit 70, not Go's bare status 2 (internal/crash)
+		defer crash.Guard()
 		// the executable as it is now: a restart (SIGHUP, `mesh node
 		// upgrade`) execs this path, which by then holds the new binary
 		exe, exeErr := node.Executable()
-		err := nodeStart(cmd, args)
+		err := startNode(cmd, args)
 		if !errors.Is(err, node.ErrRestart) {
 			return err
 		}
@@ -458,6 +463,9 @@ only use it on a machine you trust with that.`,
 		return execSelf(exe)
 	},
 }
+
+// startNode is nodeStart; a test replaces it to panic on the start path.
+var startNode = nodeStart
 
 // nodeStart is `mesh node start` up to Run's end; node.ErrRestart asks
 // its caller to exec the binary again, once the pidfile and the signal
@@ -1114,12 +1122,18 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 
 	logger.Printf("channel mode: node %s (%s) for %s, capacity %s, every %s; session in %s", cfg.Name, cfg.Slug, strings.Join(scopes.Names(), ", "), cfg.Capacity, loop.Interval, sess.WorkDir)
 	for _, sc := range scopes {
-		go channel.WatchGoals(ctx, gw, sc.ID, loop.Interval, func(kind string, g gateway.Goal) {
-			content, meta := channel.GoalEvent(kind, g)
-			push(content, meta)
-		})
+		go func() {
+			defer crash.Guard()
+			channel.WatchGoals(ctx, gw, sc.ID, loop.Interval, func(kind string, g gateway.Goal) {
+				content, meta := channel.GoalEvent(kind, g)
+				push(content, meta)
+			})
+		}()
 	}
-	go func() { _ = sess.Run(ctx, workRoot) }()
+	go func() {
+		defer crash.Guard()
+		_ = sess.Run(ctx, workRoot)
+	}()
 	err = loop.Run(ctx)
 	if errors.Is(err, context.Canceled) {
 		logger.Printf("stopped; claimed items were left for a retry")

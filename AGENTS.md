@@ -53,6 +53,13 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   and no read) holds fresh claims for a repo with N items in `review`,
   counted from the node's own listing, never `RepoIndex.reviewPile`;
   started work there is still claimed (ADR-017).
+- **A death names itself** (`internal/crash/`): `defer crash.Guard()`
+  at the top of `mesh node start` and of every goroutine the node
+  starts turns a panic into one node.log line, `mesh node: fatal:
+  <value> (version <v>)`, the stack, and exit 70 (`crash.ExitPanic`),
+  never Go's 2 (systemd's `INVALIDARGUMENT`); a new node goroutine
+  defers it first (goal node-yaml-takes-effect-or-says-why-not, The
+  04:00:22Z exit).
 - **The director** (`internal/node/research.go`, runsheet trd §6c): a
   project carries **directions** — several, each its own aggregate with
   its own words, window, timezone, gap, ceiling and research claim
