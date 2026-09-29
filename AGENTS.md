@@ -37,7 +37,11 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
 - `internal/node/`: the loop (`runner`), the workspace and the project's
   context (`workspace.go`: `FetchContext`, `RenderIndex`, the size budget),
   evaluate, plan and research sessions, the service install (`launchd` /
-  `systemd --user`). `internal/gateway/client.go`: the platform client.
+  `systemd --user`). A project's repos — for the planner, the director
+  and `mesh goal plan` — are read from `project.repoIds` through
+  `ProjectRepos`, each owned by its own account's login, never the
+  org's account: an org links several GitHub accounts (the runsheet
+  org's loom project lives at go-apis/loom). `internal/gateway/client.go`: the platform client.
   Its entity selections are generated (`fields_gen.go`, never hand-edited)
   from `schema.json` and `fields/<Type>.txt` (one name per line, sorted,
   `?` for optional): add a line, `go generate ./internal/gateway/...`
@@ -396,6 +400,19 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   and the next claim's `BuildPrompt` renders it as "The last session on
   this item". No commit still is an empty finish, back to `ready` on
   the platform. Sandboxed, adopted and Codex sessions do not hand back.
+- **Validation** (`internal/node/validation.go`, `internal/validate/`,
+  docs/adr/adr-013 and adr-014, runsheet ADR 032): after a successful,
+  not already_done build and before the push, `.runsheet/validate.yml`'s
+  steps the diff selects (`Workspacer.ChangedPaths`) plus the always
+  ones run on HEAD — in the session's pod (`sandboxRunner`, runner
+  image by `sandbox.ImageDigest`) or on the host (`host:<hostname>`,
+  the session's env less its secrets). The attestation goes to
+  `<workdir>.session/attestation.json` and, after the push, to
+  `RecordValidationAttestation` on the item's token. A failing step
+  gets one retry turn (`harness.ValidationRetryPrompt`, the session
+  resumed when it can be), then `FailWorkItem` with `validation failed:
+  step <name> exited <code>`; per-step ms ride the usage report's
+  `validation`. No validate.yml finishes as before.
 - **Services** (`internal/sandbox/services.go`, mesh-specs ADR 007):
   `Resolve(repoDir, allowed)` reads what a repository declares, first
   found wins — `.mesh/services.yml`, else the `services:` of its

@@ -102,28 +102,21 @@ func ResearchDir(root, projectSlug, directionSlug string) string {
 // error means nothing was handed in — the claim goes stale and another
 // tick, or another node, tries again.
 func (d *Director) Research(ctx context.Context, direction gateway.Direction, project gateway.Project, scope Scope) error {
-	all, err := d.GW.Repos(ctx, scope.AccountID, scope.Login)
+	if len(project.RepoIDs) == 0 {
+		return fmt.Errorf("project %s has no repos enrolled; nothing to research", project.Slug)
+	}
+	all, err := d.GW.ProjectRepos(ctx, project.RepoIDs)
 	if err != nil {
 		return fmt.Errorf("repos: %w", err)
-	}
-	inProject := map[string]bool{}
-	for _, id := range project.RepoIDs {
-		inProject[id] = true
 	}
 	dir := ResearchDir(d.WorkRoot, project.Slug, direction.Slug)
 	dirs := map[string]string{}
 	for _, r := range all {
-		if !inProject[r.ID] {
-			continue
-		}
 		sub := filepath.Join("repos", r.Name)
 		if err := d.WS.Fetch(ctx, r.FullName(), filepath.Join(dir, sub)); err != nil {
 			return fmt.Errorf("fetch %s: %w", r.FullName(), err)
 		}
 		dirs[r.FullName()] = sub
-	}
-	if len(dirs) == 0 {
-		return fmt.Errorf("project %s has no repos enrolled; nothing to research", project.Slug)
 	}
 	cx, err := FetchContext(ctx, d.GW, scope.Login, project.Slug)
 	if err != nil {

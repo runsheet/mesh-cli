@@ -238,3 +238,30 @@ func TestContainerfileHasNoSecrets(t *testing.T) {
 		}
 	}
 }
+
+// ImageDigest asks podman for the image's digest; an empty answer or a
+// failed inspect is an error, for the caller's fallback to the ref.
+func TestImageDigest(t *testing.T) {
+	var got string
+	run := func(_ context.Context, name string, args ...string) ([]byte, error) {
+		got = name + " " + strings.Join(args, " ")
+		return []byte("sha256:abc123\n"), nil
+	}
+	d, err := ImageDigest(context.Background(), run, "ghcr.io/runsheet/mesh-node:v1")
+	if err != nil || d != "sha256:abc123" {
+		t.Fatalf("digest = %q, %v", d, err)
+	}
+	if got != "podman image inspect --format {{.Digest}} ghcr.io/runsheet/mesh-node:v1" {
+		t.Fatalf("ran %q", got)
+	}
+	empty := func(context.Context, string, ...string) ([]byte, error) { return []byte("\n"), nil }
+	if _, err := ImageDigest(context.Background(), empty, "x"); err == nil {
+		t.Fatal("an empty digest must be an error")
+	}
+	failing := func(context.Context, string, ...string) ([]byte, error) {
+		return []byte("Error: no such image"), errors.New("exit status 125")
+	}
+	if _, err := ImageDigest(context.Background(), failing, "x"); err == nil || !strings.Contains(err.Error(), "no such image") {
+		t.Fatalf("err = %v", err)
+	}
+}
