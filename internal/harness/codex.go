@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -51,6 +52,10 @@ type Codex struct {
 	// (SweepKeptSessions). Empty keeps nothing: the stream lives only in
 	// the 64KB in-memory buffer, as before.
 	WorkRoot string
+	// Probe is the command the preflight's sandbox probe runs inside
+	// Codex's sandbox (SandboxProbe); nil is this executable's
+	// `mesh sandbox-probe`, which binds a loopback socket.
+	Probe []string
 }
 
 // CodexAccount is one OpenAI account Codex sessions run on: a
@@ -137,8 +142,16 @@ func (c *Codex) Name() string { return "codex" }
 // same reason as ClaudeCode.Args: MAX_ARG_STRLEN. MCP servers are not
 // here either: they go in the session's CODEX_HOME/config.toml
 // (codexConfig), as ADR 006 has it.
+//
+// The sandboxed commands get the network (SandboxNetwork,
+// `sandbox_workspace_write.network_access=true`): without it Codex's
+// seccomp filter refuses socket(), so no test that binds loopback
+// (httptest, a local server for npm test) and no `gh` can run, and an
+// evaluation could only guess (ADR 011, amendment 2026-09-29). Every
+// Codex session today is an evaluation.
 func (c *Codex) Args(job Job) []string {
 	args := []string{"exec", "--json", "--sandbox", "workspace-write"}
+	args = append(args, SandboxNetwork...)
 	if job.Model != "" {
 		args = append(args, "--model", job.Model)
 	}
@@ -714,14 +727,57 @@ func CodexPreflight(ctx context.Context, job Job) error {
 	return (&Codex{}).Preflight(ctx, job)
 }
 
-// SandboxProbe is the no-op Codex's sandbox runs in a preflight
+// SandboxNetwork is the config override that gives a workspace-write
+// sandbox's commands the network, loopback included (codex-cli 0.157:
+// `sandbox_workspace_write.network_access`, default false). Args and
+// SandboxProbe both carry it, so the probe cannot drift from the run.
+var SandboxNetwork = []string{"-c", "sandbox_workspace_write.network_access=true"}
+
+// SandboxProbe is the command line of the preflight's sandbox probe
 // (codex-cli 0.157: `codex sandbox [COMMAND]...`, the platform's own
-// sandbox — bubblewrap on Linux, Seatbelt on macOS), under the same
+// sandbox — bubblewrap on Linux, Seatbelt on macOS) under the same
 // policy `codex exec` runs the session in (Args: `--sandbox
-// workspace-write`). Left alone, `codex sandbox` defaults to read-only
+// workspace-write` and SandboxNetwork), running probe. Left alone,
+// `codex sandbox` defaults to read-only
 // (codex-rs/cli/src/debug_sandbox.rs, rust-v0.157.0); the legacy
-// `sandbox_mode` override is the one it honours instead.
-var SandboxProbe = []string{"sandbox", "-c", `sandbox_mode="workspace-write"`, "--", "true"}
+// `sandbox_mode` override is the one it honours instead. probe must
+// bind a loopback socket (`mesh sandbox-probe`, ProbeLoopback): `true`
+// passes a sandbox whose seccomp filter refuses socket(), where every
+// test that listens fails.
+func SandboxProbe(probe []string) []string {
+	args := []string{"sandbox", "-c", `sandbox_mode="workspace-write"`}
+	args = append(args, SandboxNetwork...)
+	args = append(args, "--")
+	return append(args, probe...)
+}
+
+// ProbeLoopback is `mesh sandbox-probe`: it listens on 127.0.0.1:0,
+// writes the address it got to w and closes it. The error is the
+// listen's, e.g. `listen tcp 127.0.0.1:0: socket: operation not
+// permitted` in a sandbox without the network.
+func ProbeLoopback(w io.Writer) error {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return err
+	}
+	defer l.Close()
+	_, err = fmt.Fprintln(w, l.Addr().String())
+	return err
+}
+
+// probeCommand is c.Probe, else this executable's `sandbox-probe`.
+func (c *Codex) probeCommand() []string {
+	if len(c.Probe) > 0 {
+		return c.Probe
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		exe = "mesh"
+	} else if p, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = p
+	}
+	return []string{exe, "sandbox-probe"}
+}
 
 // Preflight checks, before a Codex session starts, that the built-in
 // context server (BuiltinMCP) will answer it and that Codex's own
@@ -733,14 +789,16 @@ var SandboxProbe = []string{"sandbox", "-c", `sandbox_mode="workspace-write"`, "
 // header values the rendered config and that environment give Codex,
 // must answer 2xx listing at least one tool, each step within
 // PreflightTimeout. A job with no built-in skips (1) and (2). Then (3)
-// `codex sandbox -c sandbox_mode="workspace-write" -- true`
-// (SandboxProbe, the session's own policy) in the workspace, in the same
-// home and environment, must exit 0 with no `bwrap:` on its stderr
-// within PreflightTimeout — else `sandbox: <its stderr, 200 chars>`:
-// under `--sandbox workspace-write` every command the session ran
-// would fail the same way (`bwrap: loopback: Failed RTM_NEWADDR` on an
-// Ubuntu that restricts unprivileged user namespaces; README, Codex on
-// a node). The error says why — `refuses auth: <status> <body>`,
+// `codex sandbox -c sandbox_mode="workspace-write" -c
+// sandbox_workspace_write.network_access=true -- mesh sandbox-probe`
+// (SandboxProbe, the session's own policy, on a command that binds
+// 127.0.0.1:0) in the workspace, in the same home and environment, must
+// exit 0 with no `bwrap:` on its stderr within PreflightTimeout — else
+// `sandbox: <the bwrap line, else the socket error, else its output,
+// 200 chars>`: every command the session ran would fail the same way
+// (`bwrap: loopback: Failed RTM_NEWADDR` on an Ubuntu that restricts
+// unprivileged user namespaces; README, Codex on a node), or every test
+// that listens would (`socket: operation not permitted`). The error says why — `refuses auth: <status> <body>`,
 // `unreachable: <error>`, a header variable missing or empty,
 // `sandbox: …` — and never carries a secret. It costs nothing and is no
 // tool call of the session's.
@@ -763,23 +821,29 @@ func (c *Codex) Preflight(ctx context.Context, job Job) error {
 	return c.sandboxProbe(ctx, bin, job, s)
 }
 
-// sandboxProbe is the preflight's (3): Codex's sandbox on a no-op.
+// sandboxProbe is the preflight's (3): Codex's sandbox on a command
+// that binds a loopback socket.
 func (c *Codex) sandboxProbe(ctx context.Context, bin string, job Job, s *codexSession) error {
 	probeCtx, cancel := context.WithTimeout(ctx, PreflightTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(probeCtx, bin, SandboxProbe...)
+	cmd := exec.CommandContext(probeCtx, bin, SandboxProbe(c.probeCommand())...)
 	cmd.Dir = job.Workspace
 	cmd.Env = s.environ
 	cmd.WaitDelay = time.Second
-	var stderr bytes.Buffer
+	var stderr, stdout bytes.Buffer
 	cmd.Stderr = &stderr
+	cmd.Stdout = &stdout
 	err := cmd.Run()
 	why := strings.TrimSpace(stderr.String())
 	if err == nil && !strings.Contains(why, "bwrap:") {
 		return nil
 	}
-	if i := strings.Index(why, "bwrap:"); i >= 0 {
-		why = why[i:]
+	if line := bwrapLine(why); line != "" {
+		why = line
+	} else if line := socketLine(why + "\n" + stdout.String()); line != "" {
+		why = line
+	} else if why == "" {
+		why = strings.TrimSpace(stdout.String())
 	}
 	if why == "" {
 		why = err.Error()

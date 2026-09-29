@@ -712,7 +712,8 @@ var ErrNoContext = errors.New("the evaluation saw no context, and the other fami
 // why, for the notes' `no verdict — <why>`, and what, for node.log's
 // `evaluation on <family> <what>` — or false when it may be read for
 // one: Codex's sandbox would not start, so every command it ran failed
-// (`sandbox: <the bwrap line>`, ADR 011 amendment 2026-09-29), or it saw
+// (`sandbox: <the bwrap line>`), or its tests could not bind a socket
+// (`sandbox: <the socket line>`; ADR 011 amendments 2026-09-29), or it saw
 // no context (toolBroken).
 func (e *Evaluator) unreadable(res harness.Result, acct *SessionAccount, adopted bool) (why, what string, ok bool) {
 	if res.SandboxBroken != "" {
