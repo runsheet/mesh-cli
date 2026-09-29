@@ -318,3 +318,80 @@ func TestOwnedLegacyIDsAreThePerOrgOnes(t *testing.T) {
 		}
 	}
 }
+
+// A non-nil answer naming no org is the owner contract, not a nil one:
+// registration is the one owner registration, no per-org path and no
+// fallback line, and the node serves none until an answer names one.
+func TestOwnedRegisterEmptyAnswerIsNotNil(t *testing.T) {
+	cfg := ownedCfg()
+	a := answerFixture(t, "registerNode.json")
+	a.Scopes = nil
+	s := &steps{takes: true, answer: a, scopes: personScopes(t, cfg)}
+	reg, err := Register(context.Background(), s.registrar(), cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"probe", "any org", "owner 22222222-2222-4222-8222-222222222222"}; !slices.Equal(s.did, want) {
+		t.Fatalf("did %q, want %q (no per-org registration)", s.did, want)
+	}
+	if reg.Owned == nil || reg.Owned.NodeID != a.NodeID || len(reg.Scopes) != 0 {
+		t.Fatalf("registered %+v, want owned and serving none", reg)
+	}
+	for _, line := range s.logged {
+		if strings.Contains(line, "serving per org") {
+			t.Fatalf("an empty answer took the nil answer's fallback: %q", s.logged)
+		}
+	}
+}
+
+// A restriction matching none of the answer's orgs is logged, not a
+// failed registration: the node is owned and serves none.
+func TestOwnedRegisterUnmatchedRestrictionIsNotFatal(t *testing.T) {
+	cfg := ownedCfg()
+	s := &steps{takes: true, answer: answerFixture(t, "registerNode.json")}
+	reg, err := Register(context.Background(), s.registrar(), cfg, []string{"initech"})
+	if err != nil {
+		t.Fatalf("Register = %v, want the restriction logged, not fatal", err)
+	}
+	if reg.Owned == nil || len(reg.Scopes) != 0 {
+		t.Fatalf("registered %+v, want owned and serving none", reg)
+	}
+	if len(s.logged) != 1 || !strings.Contains(s.logged[0], "not a member of initech") {
+		t.Fatalf("logged %q, want the unmatched restriction once", s.logged)
+	}
+}
+
+// A heartbeat answer that drops orgs replaces the scopes: an org the
+// platform no longer serves is claimed from no more, and one naming no
+// org leaves the node serving none — only a nil answer keeps them.
+func TestOwnedTakeAnswerDropsRemovedOrgs(t *testing.T) {
+	loop, buf := ownedLoop(t, answerFixture(t, "heartbeatNode.json"))
+	a := answerFixture(t, "heartbeatNode.json")
+	a.Scopes = a.Scopes[:1]
+	loop.TakeAnswer(a)
+	if len(loop.Scopes) != 1 || loop.Scopes[0].Name() != (Scope{Login: a.Scopes[0].Login, Slug: a.Scopes[0].Slug}).Name() {
+		t.Fatalf("scopes %q, want the one org the answer names", loop.Scopes.Names())
+	}
+	a.Scopes = nil
+	loop.TakeAnswer(a)
+	if len(loop.Scopes) != 0 {
+		t.Fatalf("scopes %q after an answer naming no org, want none", loop.Scopes.Names())
+	}
+	if lines := logLines(buf); !strings.HasSuffix(lines[len(lines)-1], "→ none") {
+		t.Fatalf("log %q, want the last orgs line ending → none", lines)
+	}
+}
+
+// A restriction matching none of a heartbeat answer's orgs is logged,
+// and the node serves none of them.
+func TestOwnedTakeAnswerUnmatchedRestriction(t *testing.T) {
+	loop, buf := ownedLoop(t, answerFixture(t, "registerNode.json"))
+	loop.restrict, loop.restrictSet = []string{"initech"}, true
+	loop.TakeAnswer(answerFixture(t, "heartbeatNode.json"))
+	if len(loop.Scopes) != 0 {
+		t.Fatalf("scopes %q, want none", loop.Scopes.Names())
+	}
+	if !strings.Contains(buf.String(), "orgs: not a member of initech") {
+		t.Fatalf("log lacks the unmatched restriction:\n%s", buf)
+	}
+}

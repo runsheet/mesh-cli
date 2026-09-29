@@ -261,8 +261,9 @@ var nodeStatusCmd = &cobra.Command{
 				return fmt.Errorf("heartbeat: %w", err)
 			}
 			if answer != nil {
-				if scopes, err = node.ServedFrom(answer, cfg.Orgs); len(scopes) == 0 {
-					return err
+				var note error
+				if scopes, note = node.ServedFrom(answer, cfg.Orgs); note != nil {
+					fmt.Printf("orgs: %v\n", note)
 				}
 				owned = true
 				o := node.OwnerFrom(answer)
