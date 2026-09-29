@@ -155,6 +155,9 @@ type fakeCodexH struct {
 	// alone, as a context server that failed once and then answered.
 	tools     map[string]*harness.ToolStat
 	firstOnly bool
+	// sandbox, when set, is Result.SandboxBroken: every command the run
+	// made failed on bubblewrap.
+	sandbox string
 }
 
 func (h *fakeCodexH) Name() string { return "codex" }
@@ -173,7 +176,7 @@ func (h *fakeCodexH) Run(ctx context.Context, job harness.Job, on func(harness.P
 		}
 		calls[server] = s.Calls
 	}
-	return harness.Result{Success: h.err == nil, Text: h.text, CostUSD: h.cost, RateLimit: h.rl, Usage: h.usage, Tools: tools, ToolCalls: calls}, h.err
+	return harness.Result{Success: h.err == nil, Text: h.text, CostUSD: h.cost, RateLimit: h.rl, Usage: h.usage, Tools: tools, ToolCalls: calls, SandboxBroken: h.sandbox}, h.err
 }
 
 func (h *fakeCodexH) runs() int {
