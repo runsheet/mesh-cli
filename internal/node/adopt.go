@@ -266,6 +266,11 @@ type AdoptWith struct {
 	Plan     func(ctx context.Context, goal gateway.Goal, scope Scope, s FoundSession) error
 	Research func(ctx context.Context, d gateway.Direction, p gateway.Project, scope Scope, s FoundSession) error
 	Logf     func(string, ...any)
+	// Legacy maps a per-org node id the node registered under before it
+	// was owned (Config.NodeIDIn) to its org's id: a session started
+	// under it is its org's scope's still (ADR-015, Registration and the
+	// loop). Nil on the legacy path.
+	Legacy map[string]string
 }
 
 func (a AdoptWith) logf(format string, args ...any) {
@@ -285,7 +290,7 @@ func (a AdoptWith) Adopt(ctx context.Context, s FoundSession) {
 func (a AdoptWith) adopt(ctx context.Context, s FoundSession) error {
 	scope := func() (Scope, bool) {
 		for _, sc := range a.Scopes() {
-			if sc.NodeID == s.State.NodeID {
+			if sc.NodeID == s.State.NodeID || (a.Legacy[s.State.NodeID] != "" && a.Legacy[s.State.NodeID] == sc.ID) {
 				return sc, true
 			}
 		}

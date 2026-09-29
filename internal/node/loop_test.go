@@ -1,13 +1,16 @@
 package node
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -1669,5 +1672,91 @@ func TestHeartbeatCarriesLoopCommit(t *testing.T) {
 		if c.Input["version"] != "v0.2.188" {
 			t.Fatalf("heartbeat %d: version = %#v", i, c.Input["version"])
 		}
+	}
+}
+
+// An owned node through the gateway (ADR-015, Registration and the
+// loop): registerNode.json's answer gives three orgs on one id; a tick
+// heartbeats once, under that id, and claims from each of the three;
+// when the platform's answer gains foghornid (heartbeatNode.json) the
+// next tick serves it too, with no restart.
+func TestLoopOwnedClaimsFromEveryAnsweredOrgAndAFourthWithNoRestart(t *testing.T) {
+	f := gatewaytest.New("rs_test")
+	t.Cleanup(f.Close)
+	fixture := func(name string) json.RawMessage {
+		raw, err := os.ReadFile("../../specs/contracts/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var fx struct {
+			Answer json.RawMessage `json:"answer"`
+		}
+		if err := json.Unmarshal(raw, &fx); err != nil {
+			t.Fatal(err)
+		}
+		return fx.Answer
+	}
+	const nodeID = "55555555-5555-4555-8555-555555555555"
+	orgs := []struct{ id, name, acct string }{
+		{"33333333-3333-4333-8333-333333333333", "runsheet", "66666666-6666-4666-8666-666666666666"},
+		{"77777777-7777-4777-8777-777777777777", "wardroomid", "88888888-8888-4888-8888-888888888888"},
+		{"99999999-9999-4999-8999-999999999999", "grapevine", "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"},
+		{"cccccccc-3333-4333-8333-cccccccccccc", "foghornid", "dddddddd-4444-4444-8444-dddddddddddd"},
+	}
+	items := map[string]string{} // item id → org name
+	for i, o := range orgs {
+		proj, repo, goal, item := fmt.Sprintf("a0000000-0000-4000-8000-00000000000%d", i), fmt.Sprintf("b0000000-0000-4000-8000-00000000000%d", i), fmt.Sprintf("c0000000-0000-4000-8000-00000000000%d", i), fmt.Sprintf("e0000000-0000-4000-8000-00000000000%d", i)
+		f.Accounts[o.acct] = map[string]any{"id": o.acct, "login": o.name}
+		f.Projects[proj] = map[string]any{"id": proj, "orgId": o.id, "slug": "p", "name": "P"}
+		f.Repos[repo] = map[string]any{"id": repo, "accountId": o.acct, "name": "r", "defaultBranch": "main"}
+		f.Goals[goal] = map[string]any{"id": goal, "orgId": o.id, "projectId": proj, "slug": "g", "title": "G", "budgetCents": 1000, "status": "running"}
+		f.WorkItems[item] = map[string]any{"id": item, "goalId": goal, "orgId": o.id, "seq": 1, "title": o.name + " work",
+			"brief": "Do it.", "acceptance": "done", "repoId": repo, "baseRef": "main", "status": "ready", "dependsOn": []string{}}
+		items[item] = o.name
+	}
+	f.AnswerJSON = fixture("registerNode.json")
+	gw := gateway.New(f.URL(), "rs_test")
+	ctx := context.Background()
+	answer, err := gw.RegisterNode(ctx, gateway.RegisterNodeInput{NodeID: nodeID, OrgID: orgs[0].id, Name: "mini", Slug: "mini", Owner: "person"})
+	if err != nil || answer == nil {
+		t.Fatalf("register: %+v, %v", answer, err)
+	}
+	scopes, err := ScopesFromAnswer(answer, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var ran []string
+	var buf bytes.Buffer
+	loop := &Loop{GW: gw, Cfg: &Config{Slug: "mini", Name: "mini", Capacity: Fixed(8)}, Scopes: scopes, Owned: &Owned{NodeID: answer.NodeID, Owner: OwnerFrom(answer)},
+		Interval: time.Hour, Harness: "claude-code", Log: log.New(&buf, "", 0),
+		Dispatch: func(_ context.Context, item gateway.WorkItem) {
+			mu.Lock()
+			ran = append(ran, items[item.ID])
+			mu.Unlock()
+		}}
+	loop.Tick(ctx)
+	loop.wg.Wait()
+	if hb := f.CallsNamed("heartbeatNode"); len(hb) != 1 || hb[0].Input["aggregateId"] != nodeID {
+		t.Fatalf("heartbeats: %+v, want one under the node's id", hb)
+	}
+	slices.Sort(ran)
+	if want := []string{"grapevine", "runsheet", "wardroomid"}; !slices.Equal(ran, want) {
+		t.Fatalf("first tick ran %q, want %q", ran, want)
+	}
+	for id, org := range items {
+		if org != "foghornid" && f.Item(id)["nodeId"] != nodeID {
+			t.Fatalf("%s's item claimed by %v, want %s", org, f.Item(id)["nodeId"], nodeID)
+		}
+	}
+
+	f.AnswerJSON = fixture("heartbeatNode.json")
+	loop.Tick(ctx) // the heartbeat's answer names foghornid: served from this tick on
+	loop.wg.Wait()
+	if len(ran) != 4 || ran[3] != "foghornid" {
+		t.Fatalf("second tick ran %q, want foghornid added", ran)
+	}
+	if !strings.Contains(buf.String(), "orgs runsheet, wardroomid, grapevine → runsheet, wardroomid, grapevine, foghornid") {
+		t.Fatalf("log lacks the orgs change:\n%s", buf.String())
 	}
 }
