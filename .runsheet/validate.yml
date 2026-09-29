@@ -1,14 +1,17 @@
+# Host validation runs `sh -c` in the node service's environment, whose
+# PATH need not include the Go toolchain: each step appends Go's standard
+# install directories so `go` is found wherever the installer put it.
 steps:
   - name: vet
-    command: go vet ./...
+    command: PATH="$PATH:/usr/local/go/bin:$HOME/go/bin:$HOME/sdk/go/bin" go vet ./...
     always: true
 
   - name: build
-    command: go build ./cmd/mesh/
+    command: PATH="$PATH:/usr/local/go/bin:$HOME/go/bin:$HOME/sdk/go/bin" go build ./cmd/mesh/
     always: true
 
   - name: unit
-    command: go test -json ./...
+    command: PATH="$PATH:/usr/local/go/bin:$HOME/go/bin:$HOME/sdk/go/bin" go test -json ./...
     paths:
       - "**/*.go"
       - go.mod
