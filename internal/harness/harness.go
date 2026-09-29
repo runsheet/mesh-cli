@@ -263,11 +263,16 @@ func (r Result) KilledPerSession() [][]sessionunit.Process {
 type ToolStat struct {
 	Calls  int
 	Errors int
-	// Answered is how many of Errors the tool itself answered: the call
-	// reached the server and it replied with an error result (MCP
-	// isError, e.g. `not found` for a slug it does not have). Such a
-	// tool is reachable; only the calls it never answered say it is not
-	// (Reached).
+	// Clean is how many calls the server answered without an error: a
+	// Claude tool_result not is_error, a Codex mcp_tool_call `completed`.
+	// Counted as it happens, never Calls less Errors — a server not
+	// connected at startup adds an Error with no Call.
+	Clean int
+	// Answered is how many calls the server itself answered with an
+	// error result (MCP isError, e.g. `not found` for a slug it does not
+	// have): the call reached it. Each is one of Errors too. A call
+	// refused before the server (approval, permission, transport, not
+	// connected) is neither Clean nor Answered.
 	Answered int
 	Wall     time.Duration
 	// FirstError is the first error's text — a tool_result's content, a
@@ -337,12 +342,12 @@ func (r *Result) ToolReport() []ToolCall {
 }
 
 // Reached says whether any call reached the tool and was answered by
-// it — a clean call, or an error result the tool itself returned
-// (Answered). A server with no call, or whose every call failed before
-// it answered (not connected, refused auth, refused approval), is not
-// reached.
+// it — a clean call (Clean), or an error result the tool itself
+// returned (Answered). A server with no call, or whose every call
+// failed before it answered (not connected, refused auth, refused
+// approval), is not reached.
 func (s *ToolStat) Reached() bool {
-	return s.Calls-s.Errors+s.Answered > 0
+	return s.Clean+s.Answered > 0
 }
 
 // toolStat returns server's ToolStat on r, creating it if this is its

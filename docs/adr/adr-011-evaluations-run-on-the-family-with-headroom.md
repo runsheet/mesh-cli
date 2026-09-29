@@ -341,3 +341,53 @@ with them, and a later read counted 33 — but the finding does not: no
   `codex` binary on a root-owned path, or the host-wide sysctl, each
   with what it costs in isolation. Until one is in place the probe
   keeps Codex evaluations off the host.
+
+## Amendment 2026-09-29: a tool that answered was reached
+
+Goal `evaluation-reports-no-verdict` (item 6, retrying item 2's code
+half). On the mini, `no verdict — prologue: not found` discarded
+verdicts from sessions whose context tool worked. The kept Codex
+streams show the built-in answering 1,096 calls `completed` and 382
+`failed` with its own result `{"content":[{"type":"text","text":"not
+found"}]}` and `error` null: a `mesh_document` slug it does not have —
+a context file's name with `.md` dropped (`adr-adr-003-enterprises`)
+instead of INDEX.md's `slug` column. Every such answer counted as an
+error, and `toolBroken`'s rule, every call errored, called the tool
+unreachable. A tool that answered was reached.
+
+- **`Clean` and `Answered` are counted, never derived.**
+  `harness.ToolStat.Clean` counts the calls the server answered without
+  an error (a Claude tool_result not `is_error`, a Codex `mcp_tool_call`
+  `completed`); `ToolStat.Answered` counts those it answered with an
+  error result of its own — in Codex a `failed` call with `error` null
+  and a result carrying content, in Claude an `is_error` tool_result
+  from a server the init event named `connected` whose text is not
+  Claude Code's own refusal of the call (`claudeClientErrors`:
+  `<tool_use_error>`, `No such tool available`, permission refusals, the
+  MCP client's `-32000`/`-32001`, connection closed, request timed out,
+  not connected). A call refused before the server — a Codex call with
+  an `error` such as `MCP tool call requires approval, but approval
+  policy is never` — is neither. Neither is `Calls − Errors`: a server
+  not connected at startup adds an Error with no Call, so a startup
+  error followed by one clean call (Calls 1, Errors 1) would read as
+  unreached. `Calls`, `Errors`, `FirstError`, `Wall` and the usage
+  report's `tools` rows are unchanged.
+- **`ToolStat.Reached()` is `Clean + Answered > 0`**, and `toolBroken`
+  names a server broken only when `Errors > 0 && !Reached()`: every
+  call refused before the server, or a startup error and no call
+  reached. The adopted-session `prologue` alias and the
+  required-console-tool branch stand. The built-in's `not found` is the
+  tool working: the verdict it came with stands, on the family that
+  reached it, and nothing runs on the other family.
+- **The slug.** The prompts' context rule says the `mesh_document` slug
+  is INDEX.md's `slug` column, never a context file's name
+  (`adr-adr-001-….md` is slug `adr-001-…`), so the `not found` answers
+  themselves become rarer.
+- **Reachability is proved on both families by test**: the Claude
+  evaluation job's `--mcp-config` carries `mesh-context` at the
+  gateway's `/mcp` with `Authorization: Bearer <token>`; the Codex job's
+  `CodexMCPConfig` carries `[mcp_servers.mesh-context]` at that URL with
+  the header from its variable; the Codex preflight receives the very
+  job the evaluator builds; and `Codex.Preflight` passes against a fake
+  MCP server answering initialize and tools/list on that config, and
+  names the reason (`refuses auth: 401`) when it refuses.

@@ -728,17 +728,18 @@ func (e *Evaluator) unreadable(res harness.Result, acct *SessionAccount, adopted
 // toolBroken names the tool a session could not use and its first
 // error, capped at 200 characters: a built-in server of the evaluator's
 // (MCP: the context server) or a required console tool the session was
-// served, every one of whose calls errored, or which errored with no
-// call at all (not connected at startup). A session with one clean call
-// on each is not broken, and nor is one whose tool answered its calls
-// with errors of its own (ToolStat.Reached: `not found` for a slug it
-// does not have is the tool working — goal
-// evaluation-reports-no-verdict, `prologue: not found`). adopted is a session an older node process
-// started (AdoptEvaluation): only there is prologue the built-in.
+// served that errored and was never reached (ToolStat.Reached: no clean
+// call and no call the server answered itself) — every call refused
+// before the server, or an error at startup with no call at all. A tool
+// that answered was reached: `not found` for a mesh_document slug it
+// does not have is the tool working, not a broken one (ADR-011's
+// amendment 2026-09-29, `prologue: not found`). adopted is a session an
+// older node process started (AdoptEvaluation): only there is prologue
+// the built-in.
 func (e *Evaluator) toolBroken(res harness.Result, acct *SessionAccount, adopted bool) (string, bool) {
 	broken := func(name string) (string, bool) {
 		s := res.Tools[name]
-		if s == nil || s.Errors == 0 || s.Reached() {
+		if s == nil || !(s.Errors > 0 && !s.Reached()) {
 			return "", false
 		}
 		msg := s.FirstError
