@@ -99,6 +99,9 @@ type Client struct {
 	// toolErrorSchema is whether the gateway's usage report's `tools`
 	// entry was last found to take `error` (see takesToolError).
 	toolErrorSchema toolErrorProbe
+	// noVerdictSchema is whether the gateway's evaluateWorkItem input was
+	// last found to take `outcome` (see takesNoVerdict).
+	noVerdictSchema holdingProbe
 	Now             func() time.Time
 }
 
@@ -1640,8 +1643,9 @@ func (c *Client) takesScaling(ctx context.Context) (bool, bool) {
 	return p.takes, p.accounts
 }
 
-// holdingProbe is the cached answer to whether HeartbeatNodeInput has
-// `holding`, and when it was asked.
+// holdingProbe is the cached answer to whether an input type has a
+// field — HeartbeatNodeInput `holding`, EvaluateWorkItemInput `outcome`
+// (takesInputField) — and when it was asked.
 type holdingProbe struct {
 	mu    sync.Mutex
 	at    time.Time
@@ -1770,6 +1774,69 @@ func (c *Client) ReleaseWorkItem(ctx context.Context, itemID, reason string) err
 // UsageReport, ErrNoUsageLedger).
 func (c *Client) EvaluateWorkItem(ctx context.Context, itemID string, passed bool, notes string, costCents int, usage *UsageReport) error {
 	return c.mutateWithUsage(ctx, "evaluateWorkItem", itemID, map[string]any{"passed": passed, "notes": notes, "costCents": costCents}, usage)
+}
+
+// EvaluationNoVerdict is the evaluation outcome an evaluation that
+// reached no verdict is recorded with: the evaluator had no way to judge
+// — no VERDICT line, no context, its tools or its sandbox unavailable —
+// so the item is neither passed nor failed (runsheet goal
+// evaluation-reports-no-verdict-platform; ADR 011's amendment
+// 2026-09-29). The platform half had not landed when this was written:
+// the field `outcome` and the value are the node's assumption, named
+// here once.
+const (
+	EvaluationOutcomeField = "outcome"
+	EvaluationNoVerdict    = "no_verdict"
+)
+
+// ErrNoVerdictOutcome is what EvaluateWorkItemNoVerdict returns when the
+// gateway's EvaluateWorkItemInput has no `outcome` field (a platform older
+// than evaluation-reports-no-verdict-platform): nothing was sent, and the
+// caller keeps the item in evaluating as before. errors.Is-able.
+var ErrNoVerdictOutcome = errors.New("gateway: the platform takes no no-verdict outcome")
+
+// EvaluateWorkItemNoVerdict records an evaluation that reached no
+// verdict, with the reason in its notes and the session's cost and usage
+// report, so the platform returns the item to evaluating at no cost to
+// its attempts. It sends the outcome only to a gateway whose
+// EvaluateWorkItemInput has the field — asked once by introspection and
+// kept for ScalingProbeEvery, as takesHolding (ADR-004: never a field the
+// platform does not accept) — and returns ErrNoVerdictOutcome otherwise.
+func (c *Client) EvaluateWorkItemNoVerdict(ctx context.Context, itemID, reason string, costCents int, usage *UsageReport) error {
+	if !c.takesInputField(ctx, &c.noVerdictSchema, "EvaluateWorkItemInput", EvaluationOutcomeField) {
+		return ErrNoVerdictOutcome
+	}
+	return c.mutateWithUsage(ctx, "evaluateWorkItem", itemID, map[string]any{EvaluationOutcomeField: EvaluationNoVerdict, "notes": reason, "costCents": costCents}, usage)
+}
+
+// takesInputField says whether the gateway's input type typ has field,
+// asked by introspection and kept in p for ScalingProbeEvery. A failed
+// probe is a no, kept as long.
+func (c *Client) takesInputField(ctx context.Context, p *holdingProbe, typ, field string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := c.now()
+	if !p.at.IsZero() && now.Sub(p.at) < ScalingProbeEvery {
+		return p.takes
+	}
+	var out struct {
+		Type *struct {
+			InputFields []struct {
+				Name string `json:"name"`
+			} `json:"inputFields"`
+		} `json:"__type"`
+	}
+	p.at, p.takes = now, false
+	q := `query($t: String!) { __type(name: $t) { inputFields { name } } }`
+	if err := c.Query(ctx, q, map[string]any{"t": typ}, &out); err != nil || out.Type == nil {
+		return false
+	}
+	for _, f := range out.Type.InputFields {
+		if f.Name == field {
+			p.takes = true
+		}
+	}
+	return p.takes
 }
 
 // GitHubToken is a claimed item's own GitHub credential: an installation

@@ -1,5 +1,5 @@
 ---
-summary: Before an evaluation starts the node chooses its family per session — Codex when a Codex account (issued or node.yaml's) has headroom for the goal's priority, else Claude; a full gpt-… id pins Codex and waits in evaluating without headroom, a claude-… id pins Claude; the urgent/high second opinion runs on the other family, labelled by family and model; the one usage report names adapter codex and the gpt-6 model of a Codex evaluation; before any Codex session starts the node preflights the built-in context server in the session's own home and env (`codex mcp get` and a tools/list handshake), and a failure moves an unpinned evaluation to Claude, keeps a pinned one waiting and makes a Codex second opinion unavailable. Amended: an unpinned Codex evaluation defaults to gpt-6-sol (opus tier) or gpt-6-luna (sonnet, haiku), astra only when pinned; and a tool failure is never a verdict — a session that saw no context is evaluated again on the other family, or the item waits in evaluating.
+summary: Before an evaluation starts the node chooses its family per session — Codex when a Codex account (issued or node.yaml's) has headroom for the goal's priority, else Claude; a full gpt-… id pins Codex and waits in evaluating without headroom, a claude-… id pins Claude; the urgent/high second opinion runs on the other family, labelled by family and model; the one usage report names adapter codex and the gpt-6 model of a Codex evaluation; before any Codex session starts the node preflights the built-in context server in the session's own home and env (`codex mcp get` and a tools/list handshake), and a failure moves an unpinned evaluation to Claude, keeps a pinned one waiting and makes a Codex second opinion unavailable. Amended: an unpinned Codex evaluation defaults to gpt-6-sol (opus tier) or gpt-6-luna (sonnet, haiku), astra only when pinned; and a tool failure is never a verdict — a session that saw no context is evaluated again on the other family, or the item waits in evaluating. Amended 2026-09-29: an evaluation that reached no verdict — no VERDICT line, or no context and no other family — is recorded with evaluateWorkItem's outcome no_verdict and its reason, never a fail (a gateway without the field: it waits in evaluating, said once per run); a family blind on the first attempt is not asked for the second opinion.
 status: accepted
 ---
 
@@ -212,3 +212,68 @@ to `ready`, a rework each.
   `ErrFamilyWaits`. The item never goes back to `ready` on a tool error.
 - A second opinion that is tool-broken is unavailable (`saw no context
   (<tool>: <error>)`), and the first verdict stands.
+
+## Amendment 2026-09-29: no verdict is an outcome, and a blind family is not asked again
+
+Goal `evaluation-reports-no-verdict` (item 1). The record (runsheet/handbook
+`research/2026-09-29-evaluations-fail-on-plumbing-not-quality.md`) has 59
+items whose last word was `evaluation failed 3 times`; on 43 the evaluator
+could not run or reach its tools, and 10 more carry a `VERDICT: PASS`.
+
+- **The outcome.** An evaluation the evaluator had no way to judge is
+  recorded as no verdict, never as a fail:
+  `Gateway.EvaluateWorkItemNoVerdict(ctx, itemID, reason, costCents,
+  usage)` sends `evaluateWorkItem` with `outcome: "no_verdict"`, the
+  reason in `notes`, the sessions' cost in `costCents` and the one usage
+  report in `usage` — and no `passed`. The platform half (runsheet goal
+  `evaluation-reports-no-verdict-platform`, its item 1) had not landed
+  when this was written, so the field `outcome` and the value
+  `no_verdict` are the node's assumption, named once in
+  `gateway.EvaluationOutcomeField` and `gateway.EvaluationNoVerdict`;
+  if the platform lands another name, those two constants change.
+- **The three cases** (`Evaluator.noVerdict`):
+  (a) the deciding session's text has no `VERDICT:` line
+  (`harness.ParseVerdict` not ok) — reason `no VERDICT line: <the first
+  300 chars of its text>`;
+  (b) the session saw no context (`toolBroken`) and the other family ran
+  but could not evaluate it either — reason `evaluation on <family
+  model> saw no context (<tool>: <error>); not a verdict, and the
+  evaluation on <other> is unavailable too: <why>`;
+  (c) the session saw no context — its context server, a required
+  console tool or its sandbox unavailable, as `toolBroken` reports it —
+  and there is no other family to run it on — reason `…; not a verdict,
+  and <Family> cannot evaluate it: <why>`.
+  node.log says `item <label>: evaluation reached no verdict on <family
+  model>, recorded as no verdict ($<cost>): <reason>`. A session that
+  does return a verdict records pass or fail exactly as before, and a
+  verdict the other family reached after a blind first attempt keeps its
+  `<Family> (first attempt, <model>): no verdict — …` head.
+- **An older gateway.** Whether `EvaluateWorkItemInput` has `outcome` is
+  asked once by introspection and kept for `ScalingProbeEvery`, as
+  `holding` is (ADR-004: never a field the platform does not accept).
+  Without it the call returns `gateway.ErrNoVerdictOutcome`, nothing is
+  sent, and the node keeps what it did before: the item waits in
+  `evaluating` for a later tick (`ErrNoContext` for (b) and (c), the
+  `evaluator session reached no verdict` error for (a)), and node.log
+  says `the platform takes no no-verdict outcome; a no-verdict
+  evaluation waits in evaluating (said once per run)` once per run
+  (`Evaluator.NoVerdict`, one `OncePer` per node).
+- **The pass in the record was the node's.** Read through `mesh_items`
+  (runsheet/mesh): `the-node-serves-its-owners-orgs/1` (attempt 2),
+  `a-finished-session-leaves-no-process/24` (attempts 2 and 3) and
+  `signed-releases-on-runsheet-mesh/18` (attempt 1) each read `Codex
+  (first attempt, gpt-6-sol): no verdict — prologue: not found`, then
+  `Claude (first evaluation, opus): VERDICT: PASS`, then `Codex (second
+  opinion, gpt-6-sol): VERDICT: FAIL`. The goals were high priority, so
+  the pass took the second opinion — and by this ADR's earlier amendment
+  ("the urgent/high second opinion still applies to a pass, on the
+  family that gave no verdict") it ran on Codex, the family that had
+  just failed to reach its context; this time it made no failing call
+  (so `toolBroken` did not catch it) and failed the item on what it
+  could not read. `passed = passed && op.passed` then sent
+  `passed:false`: the node's fold, not the platform's. Now a family that
+  was blind on the first attempt of an evaluation is not asked for its
+  second opinion: the verdict the other family reached stands, and the
+  notes say `<Family> second opinion unavailable: it saw no context on
+  the first attempt (<tool>: <error>)`. That sentence of the earlier
+  amendment is replaced by this one.

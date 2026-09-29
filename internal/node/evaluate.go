@@ -96,6 +96,10 @@ type Evaluator struct {
 	// (toolBroken) could not run on the other family either, and the item
 	// waits in evaluating (nil: every time).
 	Blind *OncePer
+	// NoVerdict says once per run that the platform takes no no-verdict
+	// outcome, so an evaluation that reached none waits in evaluating
+	// (nil: every time).
+	NoVerdict *OncePer
 	// Limits and Thresholds judge the Codex accounts (nil: never
 	// skipped, every account with its full headroom).
 	Limits     *Limits
@@ -414,17 +418,18 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 	// fam is the family whose verdict stands: the session's, or the other
 	// one's when the session saw no context (ADR 011, a tool failure is
 	// never a verdict); head then names the attempt that gave none
-	fam, head := ev.fam, ""
+	fam, head, blindOn := ev.fam, "", ""
 	var passed bool
 	var notes string
 	cost := result.CostUSD
 	if blind, broken := e.toolBroken(result, acct, ev.adopted); broken {
 		other := ev.fam.other(e)
-		saw := fmt.Sprintf("item %s: evaluation on %s saw no context (%s); not a verdict", label, ev.fam.fullName(), blind)
+		saw := fmt.Sprintf("evaluation on %s saw no context (%s); not a verdict", ev.fam.fullName(), blind)
 		if why, ok := e.canRetry(ev, other); !ok {
-			return e.blind(item.ID, fmt.Sprintf("%s, and %s cannot evaluate it: %s", saw, other.name(), why))
+			reason := fmt.Sprintf("%s, and %s cannot evaluate it: %s", saw, other.name(), why)
+			return e.noVerdict(ctx, ev, reason, cost, usage, func() error { return e.blind(item.ID, "item "+label+": "+reason) })
 		}
-		e.logf("%s, evaluating on %s", saw, other.fullName())
+		e.logf("item %s: %s, evaluating on %s", label, saw, other.fullName())
 		op := e.secondOpinion(ctx, ev, other, *ev.second, "evaluation")
 		defer op.acct.Finish(ctx, op.result)
 		// one report for the whole evaluation, the attempt with no verdict
@@ -438,17 +443,21 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 			return ctx.Err()
 		}
 		if op.unavailable != "" {
-			return e.blind(item.ID, fmt.Sprintf("%s, and the evaluation on %s is unavailable too: %s", saw, other.fullName(), op.unavailable))
+			reason := fmt.Sprintf("%s, and the evaluation on %s is unavailable too: %s", saw, other.fullName(), op.unavailable)
+			return e.noVerdict(ctx, ev, reason, cost+op.cost, usage, func() error { return e.blind(item.ID, "item "+label+": "+reason) })
 		}
 		e.Blind.Forget(item.ID)
 		head = fmt.Sprintf("%s (first attempt, %s): no verdict — %s", ev.fam.name(), ev.fam.shortModel(), blind)
+		blindOn = blind
 		fam, passed, notes = other, op.passed, op.notes
 		cost += op.cost
 	} else {
 		var ok bool
 		passed, notes, ok = harness.ParseVerdict(result.Text)
 		if !ok {
-			return fmt.Errorf("evaluator session reached no verdict (%s): %s%s", result.SessionID, truncate(result.Text, 300), keptAt(result))
+			return e.noVerdict(ctx, ev, "no VERDICT line: "+truncate(result.Text, 300), cost, usage, func() error {
+				return fmt.Errorf("evaluator session reached no verdict (%s): %s%s", result.SessionID, truncate(result.Text, 300), keptAt(result))
+			})
 		}
 		notes = strings.TrimSpace(notes)
 		if notes == "" {
@@ -482,13 +491,18 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 		evaluatedOn = fam.fullName() + "; the Codex preflight failed: " + truncate(ev.preflight, 200)
 	}
 	if passed && (fam.codex || e.hasCodex()) && gateway.PriorityRank(ev.res.Goal.Priority) <= gateway.PriorityRank("high") {
-		// the second opinion is the family that gave no verdict of its own
+		// the second opinion is the other family — which, after a first
+		// attempt that saw no context, is the one that just could not reach
+		// it: it is not asked again, and the verdict reached stands (ADR
+		// 011's amendment 2026-09-29, the pass in the record)
 		other := fam.other(e)
 		if head != "" {
 			other = ev.fam
 		}
 		op := opinion{unavailable: "the evaluation was adopted after a restart, and its prompt is not kept"}
 		switch {
+		case blindOn != "":
+			op = opinion{unavailable: "it saw no context on the first attempt (" + blindOn + ")"}
 		case ev.preflight != "" && other.codex:
 			// the preflight that moved it to Claude has just failed
 			op = opinion{unavailable: "preflight " + ev.preflight}
@@ -528,6 +542,31 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 		return fmt.Errorf("record verdict: %w", err)
 	}
 	e.logf("item %s: evaluation %s on %s ($%.2f)", label, verdict, fam.fullName(), cost)
+	return nil
+}
+
+// noVerdict records an evaluation that reached no verdict — the deciding
+// session wrote no VERDICT line, or saw no context and the other family
+// could not evaluate it — as the no-verdict outcome with reason, the
+// session's cost and its usage report (ADR 011's amendment 2026-09-29):
+// never a fail, since the evaluator had no way to reach one. A platform
+// without the outcome (gateway.ErrNoVerdictOutcome) records nothing, as
+// before: said once per run, and fallback is the error the item waits in
+// evaluating with.
+func (e *Evaluator) noVerdict(ctx context.Context, ev evalRun, reason string, cost float64, usage *gateway.UsageReport, fallback func() error) error {
+	reason = truncate(reason, 4000)
+	err := e.GW.EvaluateWorkItemNoVerdict(ctx, ev.item.ID, reason, Cents(cost), usage)
+	if errors.Is(err, gateway.ErrNoVerdictOutcome) {
+		if e.NoVerdict.First("") {
+			e.logf("the platform takes no no-verdict outcome; a no-verdict evaluation waits in evaluating (said once per run)")
+		}
+		return fallback()
+	}
+	if err := ev.acct.Carried(err); err != nil {
+		return fmt.Errorf("record no verdict: %w", err)
+	}
+	e.Blind.Forget(ev.item.ID)
+	e.logf("item %s: evaluation reached no verdict on %s, recorded as no verdict ($%.2f): %s", ev.label, ev.fam.fullName(), cost, reason)
 	return nil
 }
 
