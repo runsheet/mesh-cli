@@ -939,7 +939,14 @@ context:
 
 A PRD, TRD or other design document past `doc_bytes_max`, or past what
 is left of `bytes_max`, is listed in `INDEX.md` and fetched on demand
-with `mesh_document` instead. A key left out takes its default; a
+with `mesh_document` instead. `INDEX.md` itself is inside
+`bytes_max`: its length is reserved before any document is placed, so
+the documents and the index together never pass it (the live goals and
+items after the tables are not counted: their size is known only after
+the fetch). The index is two tables — `Documents a session reads`
+(instructions, ADRs, PRD, TRD, with a summary for those not on disk)
+and `Other documents`, every other kind by kind, title and slug alone —
+one row per document either way (ADR-015). A key left out takes its default; a
 negative one is refused. Like the capacity and the accounts, `context:`
 is read again every tick: a change is picked up on the next tick
 without a restart, and logged

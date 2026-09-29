@@ -123,7 +123,7 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 		return fail(fmt.Errorf("workspace: %w", err))
 	}
 	orgLogin := r.Scopes.LoginOf(item.OrgID)
-	cx, err := FetchContext(ctx, r.GW, orgLogin, res.Project.Slug, ContextOptions{Budget: r.contextBudget(), Repos: []string{res.Repo.FullName()}})
+	cx, err := FetchContext(ctx, r.GW, orgLogin, res.Project.Slug, ContextOptions{Budget: r.contextBudget(), Repos: []string{res.Repo.FullName()}, Logf: r.logf})
 	if err != nil {
 		r.logf("item %s: context unavailable: %v", label, err)
 		cx = &Context{}

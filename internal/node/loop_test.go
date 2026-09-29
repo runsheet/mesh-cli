@@ -298,7 +298,7 @@ func TestLoopClaimsRunsAndFinishes(t *testing.T) {
 	}
 	// the index lists every document, the spec too, and says which are on disk
 	index, _ := os.ReadFile(filepath.Join(dir, ContextDir, IndexFile))
-	for _, want := range []string{"Project acme/mesh", "| adr | ADR 001 |  | `adr-001` | acme/widgets/specs/adr-001.md | `adr-adr-001.md` |", "| spec | Notes |  | `notes` | acme/widgets/specs/notes.md | fetch |"} {
+	for _, want := range []string{"Project acme/mesh", "| adr | ADR 001 |  | `adr-001` | acme/widgets/specs/adr-001.md | `adr-adr-001.md` |", "| spec | Notes | `notes` |"} {
 		if !strings.Contains(string(index), want) {
 			t.Fatalf("index lacks %q:\n%s", want, index)
 		}
