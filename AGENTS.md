@@ -302,7 +302,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `FinishWorkItemRebase`, `RecordDirectionResearch` — and
   `SessionAccount.Finish` logs it as one `usage: {…}` line when nothing
   carried it (a fail path, or `ErrNoUsageLedger`, said once per run).
-- **Codex** (`internal/harness/codex.go`, goal `codex-adapter`, goal `codex-sessions-reach-the-context-tool`): the
+- **Codex** (`internal/harness/codex.go`, goals `codex-adapter` and
+  `codex-sessions-reach-the-context-tool`): the
   `codex` harness, `codex exec --json --sandbox workspace-write` in the
   workspace, the prompt on stdin, the stream read by
   `ParseCodexStream` (`docs/codex-events.md`). Each run gets a fresh
@@ -314,9 +315,19 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   (a `${VAR}` resolved from the job's env or refused), console tools by
   `tools.CodexConfig`, every table `default_tools_approval_mode =
   "approve"` — `exec` under `workspace-write` refuses an unapproved
-  MCP call (docs/codex-events.md, "Why the context tool failed"). The session's event stream and stderr are kept under the work dir for 24 hours for debugging and auditability. Each MCP call's error text (first 200 chars) is recorded in the usage report and the item note names the first failing tool. node.yaml's `codex:` block
+  MCP call (docs/codex-events.md, "Why the context tool failed").
+  Each session's event stream and stderr are kept for 24 hours under
+  `<work root>/kept-sessions/<name>/` (`output.jsonl`, `stderr.log`;
+  `KeepSessionOutput`), as a Claude session's output is. Before a Codex
+  evaluation starts it is preflighted (`Codex.Preflight`, below) and
+  falls back to Claude when the context server cannot be reached.
+  node.yaml's `codex:` block
   (`CodexConfig`: binary, accounts, `models {opus, sonnet, haiku}`)
-  and `CodexModel` map the Claude tiers to Codex models: `opus` → `gpt-6-sol`, `sonnet` → `gpt-6-luna`, `haiku` → `gpt-6-luna`, `astra` only when pinned. Codex has no
+  and `CodexModel` map the Claude tiers to Codex models, by default
+  opus → `gpt-6-sol` and sonnet/haiku → `gpt-6-luna`, astra only when
+  pinned. A session whose context tool failed on every call gives no
+  verdict: a tool failure is never a verdict (the evaluator's
+  `toolBroken`, below). Codex has no
   budget flag, so `MaxBudgetUSD` is not enforced. An issued openai
   credential serving `codex` is a Codex account too (adr-005,
   `PrepareCodexAccount`): `Credentials.Open` with adapter codex chooses
@@ -327,7 +338,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `config.toml` into a home the job names.
 - **The evaluator's family** (`internal/node/evaluate.go`,
   `docs/adr/adr-011-evaluations-run-on-the-family-with-headroom.md`,
-  amending `adr-005-codex-second-opinion.md`, goal `codex-sessions-reach-the-context-tool`): `Evaluator.Codex` is the
+  amending `adr-005-codex-second-opinion.md`; goal
+  `codex-sessions-reach-the-context-tool`): `Evaluator.Codex` is the
   Codex harness (`codexSecondOpinion` in `nodecmd.go`: built whenever
   the codex binary is found, with or without a `codex:` block, on the
   block's first account) and `CodexAccounts` is
@@ -346,7 +358,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   loop starts an evaluation on Codex room (`Loop.CodexRoom`) when no
   Claude account has any. Before any Codex session starts,
   `Evaluator.CodexPreflight` (`Codex.Preflight`: `codex mcp get
-  mesh-context` in the session's own home and env) must pass: a failure moves an unpinned evaluation to Claude
+  prologue` and an MCP tools/list handshake in the session's own home
+  and env) must pass: a failure moves an unpinned evaluation to Claude
   (`Codex preflight failed (<why>); evaluating on Claude`), keeps a
   pinned one waiting like `ErrFamilyWaits`, and makes a Codex second
   opinion `unavailable: preflight …`. An item of an `urgent` or `high` goal whose
