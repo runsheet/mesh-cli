@@ -28,7 +28,7 @@ func holding() *gateway.Holding {
 // unclaimed always as lists.
 func TestHeartbeatCarriesHolding(t *testing.T) {
 	f, gw := registeredFake(t)
-	if err := gw.HeartbeatNode(context.Background(), limitsNode, "v1", 2, gateway.HeartbeatExtras{Holding: holding()}); err != nil {
+	if _, err := gw.HeartbeatNode(context.Background(), limitsNode, "v1", 2, gateway.HeartbeatExtras{Holding: holding()}); err != nil {
 		t.Fatal(err)
 	}
 	hb := f.CallsNamed("heartbeatNode")
@@ -57,7 +57,7 @@ func TestHeartbeatCarriesHolding(t *testing.T) {
 func TestHeartbeatHoldingAccountsAndUnclaimedAreAlwaysLists(t *testing.T) {
 	f, gw := registeredFake(t)
 	x := gateway.HeartbeatExtras{Holding: &gateway.Holding{Mode: "normal", Summary: "normal: up to 4 item(s)"}}
-	if err := gw.HeartbeatNode(context.Background(), limitsNode, "v1", 1, x); err != nil {
+	if _, err := gw.HeartbeatNode(context.Background(), limitsNode, "v1", 1, x); err != nil {
 		t.Fatal(err)
 	}
 	hb := f.CallsNamed("heartbeatNode")
@@ -77,7 +77,7 @@ func TestHeartbeatWithoutHoldingOmitsIt(t *testing.T) {
 	f, gw := registeredFake(t)
 	ctx := context.Background()
 	for _, x := range [][]gateway.HeartbeatExtras{nil, {{}}, {{Draining: true}}} {
-		if err := gw.HeartbeatNode(ctx, limitsNode, "v1", 0, x...); err != nil {
+		if _, err := gw.HeartbeatNode(ctx, limitsNode, "v1", 0, x...); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -94,7 +94,7 @@ func TestHeartbeatWithoutHoldingOmitsIt(t *testing.T) {
 func TestHeartbeatOmitsHoldingTheSchemaLacks(t *testing.T) {
 	f, gw := registeredFake(t)
 	f.UnknownFields["holding"] = true
-	if err := gw.HeartbeatNode(context.Background(), limitsNode, "v1", 1, gateway.HeartbeatExtras{Holding: holding()}); err != nil {
+	if _, err := gw.HeartbeatNode(context.Background(), limitsNode, "v1", 1, gateway.HeartbeatExtras{Holding: holding()}); err != nil {
 		t.Fatal(err)
 	}
 	hb := f.CallsNamed("heartbeatNode")
@@ -109,7 +109,7 @@ func TestHeartbeatOmitsHoldingTheSchemaLacks(t *testing.T) {
 	// ScalingProbeEvery) sees it
 	delete(f.UnknownFields, "holding")
 	gw.Now = func() time.Time { return time.Now().Add(gateway.ScalingProbeEvery) }
-	if err := gw.HeartbeatNode(context.Background(), limitsNode, "v1", 1, gateway.HeartbeatExtras{Holding: holding()}); err != nil {
+	if _, err := gw.HeartbeatNode(context.Background(), limitsNode, "v1", 1, gateway.HeartbeatExtras{Holding: holding()}); err != nil {
 		t.Fatal(err)
 	}
 	hb = f.CallsNamed("heartbeatNode")

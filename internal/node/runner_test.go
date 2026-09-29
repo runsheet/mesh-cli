@@ -326,7 +326,7 @@ func TestOldPlatformFallbackIsLoggedOnceAcrossARun(t *testing.T) {
 	}
 	gw := gateway.New(f.URL(), "rs_test")
 	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "test-node", NodeID: gateway.NodeID(mustUUID(orgID), "test-node").String(), Capacity: Fixed(len(items))}
-	if err := gw.RegisterNode(context.Background(), gateway.RegisterNodeInput{NodeID: cfg.NodeID, OrgID: orgID, OwnerID: f.UserID, Name: "n", Slug: "test-node", Harnesses: []string{"claude-code"}, Capacity: cfg.Capacity.Max, Version: "test"}); err != nil {
+	if _, err := gw.RegisterNode(context.Background(), gateway.RegisterNodeInput{NodeID: cfg.NodeID, OrgID: orgID, OwnerID: f.UserID, Name: "n", Slug: "test-node", Harnesses: []string{"claude-code"}, Capacity: cfg.Capacity.Max, Version: "test"}); err != nil {
 		t.Fatal(err)
 	}
 	var out syncBuf

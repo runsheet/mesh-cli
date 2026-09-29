@@ -152,6 +152,12 @@ type Fake struct {
 	// []}; Unsupported["scorecard"] refuses the field, as a platform
 	// older than it.
 	Scorecard map[string]map[string]any
+	// Answer is the NodeAnswer registerNode and heartbeatNode hand back
+	// on their payload beside status — the platform's answer to who owns
+	// the node and which orgs it now serves (runsheet goal
+	// a-node-has-an-owner). nil answers `status` alone, as a platform
+	// before that goal does.
+	Answer *gateway.NodeAnswer
 }
 
 // New starts a fake accepting the given bearer token.
@@ -263,6 +269,13 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeData(w, map[string]any{"__type": f.usageReportInputType()})
+	case strings.Contains(q, `__type(name: "RegisterNodeInput")`):
+		f.Reads = append(f.Reads, Call{Name: "__type RegisterNodeInput", Input: map[string]any{}})
+		if f.Unsupported["__type"] {
+			writeErrors(w, 200, "GraphQL introspection is not allowed")
+			return
+		}
+		writeData(w, map[string]any{"__type": f.registerNodeInputType()})
 	case strings.Contains(q, "__type("):
 		f.Reads = append(f.Reads, Call{Name: "__type", Input: map[string]any{}})
 		if f.Unsupported["__type"] {
@@ -360,7 +373,7 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 		if usage, ok := in["usage"].(map[string]any); ok && finishingMutations[m[2]] {
 			f.SessionUsage = append(f.SessionUsage, Call{Name: m[2], Input: copyRow(usage), At: time.Now()})
 		}
-		writeData(w, map[string]any{m[2]: map[string]any{"status": "ok"}})
+		writeData(w, map[string]any{m[2]: f.mutationPayload(m[2])})
 	default:
 		if m := scorecardRe.FindStringSubmatch(q); m != nil {
 			f.Reads = append(f.Reads, Call{Name: "scorecard", Input: map[string]any{"orgId": m[1]}})
@@ -497,6 +510,22 @@ func (f *Fake) heartbeatInputType() map[string]any {
 			row["type"] = map[string]any{"kind": "INPUT_OBJECT", "inputFields": sub}
 		}
 		fields = append(fields, row)
+	}
+	return map[string]any{"inputFields": fields}
+}
+
+// registerNodeInputType is RegisterNodeInput as introspection answers
+// it: every field a registration may carry, `owner` among them unless
+// UnknownFields["owner"] (a platform before
+// the-node-serves-its-owners-orgs). Unsupported["__type"] refuses the
+// probe.
+func (f *Fake) registerNodeInputType() map[string]any {
+	var fields []any
+	for _, name := range []string{"aggregateId", "namespace", "orgId", "ownerId", "name", "slug", "harnesses", "capacity", "version", "owner"} {
+		if f.UnknownFields[name] {
+			continue
+		}
+		fields = append(fields, map[string]any{"name": name, "type": map[string]any{"kind": "SCALAR"}})
 	}
 	return map[string]any{"inputFields": fields}
 }
@@ -644,6 +673,26 @@ func (f *Fake) unknownInput(in map[string]any) string {
 var finishingMutations = map[string]bool{
 	"finishWorkItem": true, "evaluateWorkItem": true, "planGoal": true,
 	"finishWorkItemRebase": true, "recordDirectionResearch": true,
+}
+
+// mutationPayload is what the fake answers a mutation's payload with:
+// {"status": "ok"} for any command, plus f.Answer's nodeId, owner and
+// scopes on registerNode and heartbeatNode (runsheet goal
+// a-node-has-an-owner) — nil leaves the payload at status alone, as a
+// platform before that goal does.
+func (f *Fake) mutationPayload(name string) map[string]any {
+	payload := map[string]any{"status": "ok"}
+	if f.Answer == nil || (name != "registerNode" && name != "heartbeatNode") {
+		return payload
+	}
+	scopes := make([]map[string]any, len(f.Answer.Scopes))
+	for i, s := range f.Answer.Scopes {
+		scopes[i] = map[string]any{"orgId": s.OrgID, "login": s.Login, "slug": s.Slug, "accountId": s.AccountID}
+	}
+	payload["nodeId"] = f.Answer.NodeID
+	payload["owner"] = map[string]any{"kind": f.Answer.Owner.Kind, "id": f.Answer.Owner.ID, "name": f.Answer.Owner.Name}
+	payload["scopes"] = scopes
+	return payload
 }
 
 func (f *Fake) apply(name string, in map[string]any) error {

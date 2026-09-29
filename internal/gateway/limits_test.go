@@ -16,7 +16,7 @@ func registeredFake(t *testing.T) (*gatewaytest.Fake, *gateway.Client) {
 	f := gatewaytest.New("rs_test")
 	t.Cleanup(f.Close)
 	gw := gateway.New(f.URL(), "rs_test")
-	if err := gw.RegisterNode(context.Background(), gateway.RegisterNodeInput{NodeID: limitsNode, OrgID: orgID, Name: "mini", Slug: "mini", Capacity: 2, Version: "v1"}); err != nil {
+	if _, err := gw.RegisterNode(context.Background(), gateway.RegisterNodeInput{NodeID: limitsNode, OrgID: orgID, Name: "mini", Slug: "mini", Capacity: 2, Version: "v1"}); err != nil {
 		t.Fatal(err)
 	}
 	return f, gw
@@ -29,7 +29,7 @@ func TestHeartbeatCarriesLimits(t *testing.T) {
 	resets := time.Date(2026, 9, 25, 18, 0, 0, 0, time.UTC)
 	week := time.Date(2026, 9, 29, 9, 0, 0, 0, time.UTC)
 	seen := time.Date(2026, 9, 25, 14, 12, 5, 0, time.UTC)
-	err := gw.HeartbeatNode(context.Background(), limitsNode, "v1", 1, gateway.HeartbeatExtras{Limits: []gateway.Limits{{
+	_, err := gw.HeartbeatNode(context.Background(), limitsNode, "v1", 1, gateway.HeartbeatExtras{Limits: []gateway.Limits{{
 		Account: "max-20x", Status: "allowed_warning", RateLimitType: "five_hour", ResetsAt: resets,
 		OverageStatus: "rejected", IsUsingOverage: false,
 		FiveHour:   &gateway.LimitWindow{Utilization: 0.83, ResetsAt: resets},
@@ -77,7 +77,7 @@ func TestHeartbeatWithoutLimitsOmitsThem(t *testing.T) {
 		{{}},
 		{{Draining: true, Limits: []gateway.Limits{}}},
 	} {
-		if err := gw.HeartbeatNode(ctx, limitsNode, "v1", 0, x...); err != nil {
+		if _, err := gw.HeartbeatNode(ctx, limitsNode, "v1", 0, x...); err != nil {
 			t.Fatal(err)
 		}
 	}

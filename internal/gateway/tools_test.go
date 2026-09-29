@@ -148,7 +148,7 @@ func TestSessionWithoutTools(t *testing.T) {
 func TestHeartbeatRuntimesAdapters(t *testing.T) {
 	f, gw := registeredFake(t)
 	ctx := context.Background()
-	if err := gw.HeartbeatNode(ctx, limitsNode, "v1", 1, gateway.HeartbeatExtras{Runtimes: []string{"npx", "docker"}, Adapters: []string{"claude-code"}}); err != nil {
+	if _, err := gw.HeartbeatNode(ctx, limitsNode, "v1", 1, gateway.HeartbeatExtras{Runtimes: []string{"npx", "docker"}, Adapters: []string{"claude-code"}}); err != nil {
 		t.Fatal(err)
 	}
 	hb := f.CallsNamed("heartbeatNode")
@@ -162,7 +162,7 @@ func TestHeartbeatRuntimesAdapters(t *testing.T) {
 		t.Fatalf("adapters = %#v", got)
 	}
 	for _, x := range [][]gateway.HeartbeatExtras{nil, {{}}, {{Draining: true, Runtimes: []string{}}}} {
-		if err := gw.HeartbeatNode(ctx, limitsNode, "v1", 0, x...); err != nil {
+		if _, err := gw.HeartbeatNode(ctx, limitsNode, "v1", 0, x...); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -111,13 +111,13 @@ func TestHeartbeatNodeStatus(t *testing.T) {
 	f, gw := registeredFake(t)
 	ctx := context.Background()
 	reason := "You've hit your monthly spend limit · raise it at claude.ai/settings/usage"
-	if err := gw.HeartbeatNode(ctx, limitsNode, "v1", 0, gateway.HeartbeatExtras{Status: "harness_unavailable", Reason: reason}); err != nil {
+	if _, err := gw.HeartbeatNode(ctx, limitsNode, "v1", 0, gateway.HeartbeatExtras{Status: "harness_unavailable", Reason: reason}); err != nil {
 		t.Fatal(err)
 	}
 	if n := f.Nodes[limitsNode]; n["status"] != "harness_unavailable" || n["reason"] != reason {
 		t.Fatalf("node after harness_unavailable: %+v", n)
 	}
-	if err := gw.HeartbeatNode(ctx, limitsNode, "v1", 0); err != nil {
+	if _, err := gw.HeartbeatNode(ctx, limitsNode, "v1", 0); err != nil {
 		t.Fatal(err)
 	}
 	hb := f.CallsNamed("heartbeatNode")

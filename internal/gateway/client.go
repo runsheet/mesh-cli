@@ -92,6 +92,9 @@ type Client struct {
 	// commitSchema is whether the gateway's heartbeat input was last
 	// found to take `commit` (see takesCommit).
 	commitSchema commitProbe
+	// ownerSchema is whether the gateway's RegisterNodeInput was last
+	// found to take `owner` (see TakesOwner).
+	ownerSchema ownerProbe
 	// toolErrorSchema is whether the gateway's usage report's `tools`
 	// entry was last found to take `error` (see takesToolError).
 	toolErrorSchema toolErrorProbe
@@ -246,15 +249,38 @@ func (e *httpError) Error() string {
 
 // Mutate sends one aggregate command: field is the mutation name
 // ("claimWorkItem"), the input type is its capitalised form + "Input".
-// aggregateId and namespace are set from id; the rest is input.
+// aggregateId and namespace are set from id; the rest is input. The
+// payload is asked for as `status` alone and discarded; MutateFields
+// asks for more of it.
 func (c *Client) Mutate(ctx context.Context, field, aggregateID string, input map[string]any) error {
+	return c.MutateFields(ctx, field, aggregateID, input, "status", nil)
+}
+
+// MutateFields is Mutate with the mutation's payload selection named by
+// fields (beside `status`, always asked for) and decoded into out — nil
+// discards it, as Mutate does. A field the platform's payload type does
+// not have yet refuses the whole call with "Cannot query field"; the
+// caller decides what that means (RegisterNode and HeartbeatNode read
+// it as no answer, not an error).
+func (c *Client) MutateFields(ctx context.Context, field, aggregateID string, input map[string]any, fields string, out any) error {
 	in := map[string]any{"aggregateId": aggregateID, "namespace": NS}
 	for k, v := range input {
 		in[k] = v
 	}
 	typ := strings.ToUpper(field[:1]) + field[1:] + "Input"
-	q := fmt.Sprintf("mutation($in: %s!) { %s(input: $in) { status } }", typ, field)
-	return c.Query(ctx, q, map[string]any{"in": in}, nil)
+	q := fmt.Sprintf("mutation($in: %s!) { %s(input: $in) { %s } }", typ, field, fields)
+	if out == nil {
+		return c.Query(ctx, q, map[string]any{"in": in}, nil)
+	}
+	var env map[string]json.RawMessage
+	if err := c.Query(ctx, q, map[string]any{"in": in}, &env); err != nil {
+		return err
+	}
+	payload := env[field]
+	if len(payload) == 0 || string(payload) == "null" {
+		return nil
+	}
+	return json.Unmarshal(payload, out)
 }
 
 // ErrNoUsageLedger is what a finishing command returns when it carried a
@@ -495,6 +521,10 @@ type Org struct {
 	Login     string `json:"login"`
 	AccountID string `json:"accountId"`
 	Role      string `json:"role"`
+	// TenantSlug names an org with no GitHub login (goal
+	// the-node-serves-its-owners-orgs): the node shows it in Login's
+	// place wherever the org has none.
+	TenantSlug string `json:"tenantSlug"`
 }
 
 // MyOrgs lists the orgs the person reaches.
@@ -1200,18 +1230,153 @@ type RegisterNodeInput struct {
 	Harnesses []string
 	Capacity  int
 	Version   string
+	// Owner is the node's ownership model — "person" or "enterprise"
+	// (mesh-specs, goal the-node-serves-its-owners-orgs): a person's
+	// node serves every org they are in, an enterprise's every org the
+	// enterprise has. Sent only when set and the platform's
+	// RegisterNodeInput takes it (TakesOwner), so an older platform's
+	// registerNode still accepts today's per-org call.
+	Owner string
 }
 
-// RegisterNode registers (converging) the node.
-func (c *Client) RegisterNode(ctx context.Context, in RegisterNodeInput) error {
+// NodeAnswer is the platform's answer to a registration or a heartbeat:
+// the node's single id, its owner and the scopes (orgs) it now serves
+// (runsheet goal a-node-has-an-owner). RegisterNode and HeartbeatNode
+// return nil, not an error, when the payload carries none of
+// nodeId/owner/scopes — an older platform, still answering `status`
+// alone.
+type NodeAnswer struct {
+	NodeID string        `json:"nodeId"`
+	Owner  NodeOwner     `json:"owner"`
+	Scopes []ScopeAnswer `json:"scopes"`
+}
+
+// NodeOwner is the NodeAnswer's owner: a person or an enterprise, its
+// id and its display name.
+type NodeOwner struct {
+	Kind string `json:"kind"` // "person" or "enterprise"
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// ScopeAnswer is one org the NodeAnswer's node now serves: the org's
+// id, its GitHub login (empty for an org without one, named by Slug
+// instead), its tenant slug and the node's account id in it.
+type ScopeAnswer struct {
+	OrgID     string `json:"orgId"`
+	Login     string `json:"login"`
+	Slug      string `json:"slug"`
+	AccountID string `json:"accountId"`
+}
+
+// nodeAnswerFields is what RegisterNode and HeartbeatNode ask their
+// mutation's payload for beyond status: the platform's answer to who
+// owns the node and which orgs it now serves.
+const nodeAnswerFields = "nodeId owner { kind id name } scopes { orgId login slug accountId }"
+
+// nodeAnswerPayload is nodeAnswerFields' shape, decoded from the
+// mutation's payload.
+type nodeAnswerPayload struct {
+	NodeID string        `json:"nodeId"`
+	Owner  *NodeOwner    `json:"owner"`
+	Scopes []ScopeAnswer `json:"scopes"`
+}
+
+// asAnswer is nil when the payload named none of nodeId, owner or
+// scopes (an older platform, answering `status` alone).
+func (p nodeAnswerPayload) asAnswer() *NodeAnswer {
+	if p.NodeID == "" && p.Owner == nil && len(p.Scopes) == 0 {
+		return nil
+	}
+	a := &NodeAnswer{NodeID: p.NodeID, Scopes: p.Scopes}
+	if a.Scopes == nil {
+		a.Scopes = []ScopeAnswer{}
+	}
+	if p.Owner != nil {
+		a.Owner = *p.Owner
+	}
+	return a
+}
+
+// mutateForAnswer sends field's command with input, asking its payload
+// for nodeAnswerFields beside status, and returns the platform's
+// NodeAnswer. A platform whose payload type does not have those fields
+// yet refuses the whole selection ("Cannot query field"); that is read
+// as no answer, not an error — the command still landed with `status`
+// alone would have.
+func (c *Client) mutateForAnswer(ctx context.Context, field, aggregateID string, input map[string]any) (*NodeAnswer, error) {
+	var payload nodeAnswerPayload
+	err := c.MutateFields(ctx, field, aggregateID, input, "status "+nodeAnswerFields, &payload)
+	if err == nil {
+		return payload.asAnswer(), nil
+	}
+	var ge *Error
+	if errors.As(err, &ge) && unknownField(ge.Message, "nodeId", "owner", "scopes") {
+		if err2 := c.Mutate(ctx, field, aggregateID, input); err2 != nil {
+			return nil, err2
+		}
+		return nil, nil
+	}
+	return nil, err
+}
+
+// RegisterNode registers (converging) the node, and returns the
+// platform's answer to who owns it and which orgs it now serves (nil
+// on a platform that does not answer that yet).
+func (c *Client) RegisterNode(ctx context.Context, in RegisterNodeInput) (*NodeAnswer, error) {
 	harnesses := in.Harnesses
 	if harnesses == nil {
 		harnesses = []string{}
 	}
-	return c.Mutate(ctx, "registerNode", in.NodeID, map[string]any{
+	input := map[string]any{
 		"orgId": in.OrgID, "ownerId": in.OwnerID, "name": in.Name, "slug": in.Slug,
 		"harnesses": harnesses, "capacity": in.Capacity, "version": in.Version,
-	})
+	}
+	if in.Owner != "" && c.TakesOwner(ctx) {
+		input["owner"] = in.Owner
+	}
+	return c.mutateForAnswer(ctx, "registerNode", in.NodeID, input)
+}
+
+// ownerProbe is the cached answer to whether RegisterNodeInput has an
+// `owner` field, and when it was asked.
+type ownerProbe struct {
+	mu    sync.Mutex
+	at    time.Time
+	takes bool
+}
+
+// TakesOwner says whether the gateway's RegisterNodeInput has an
+// `owner` field — asked by introspection and kept for
+// ScalingProbeEvery, the same as takesScaling: an older platform's
+// registerNode would refuse the whole call on an input field it does
+// not know. A failed probe is a no, kept as long.
+func (c *Client) TakesOwner(ctx context.Context) bool {
+	p := &c.ownerSchema
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := c.now()
+	if !p.at.IsZero() && now.Sub(p.at) < ScalingProbeEvery {
+		return p.takes
+	}
+	var out struct {
+		Type *struct {
+			InputFields []struct {
+				Name string `json:"name"`
+			} `json:"inputFields"`
+		} `json:"__type"`
+	}
+	p.at, p.takes = now, false
+	q := `{ __type(name: "RegisterNodeInput") { inputFields { name } } }`
+	if err := c.Query(ctx, q, nil, &out); err != nil || out.Type == nil {
+		return false
+	}
+	for _, f := range out.Type.InputFields {
+		if f.Name == "owner" {
+			p.takes = true
+		}
+	}
+	return p.takes
 }
 
 // HeartbeatExtras are what a heartbeat reports beyond liveness. Each is
@@ -1394,8 +1559,10 @@ type LimitWindow struct {
 }
 
 // HeartbeatNode reports liveness and the running session count, and the
-// extras that are set (at most one struct is read).
-func (c *Client) HeartbeatNode(ctx context.Context, nodeID, version string, running int, extras ...HeartbeatExtras) error {
+// extras that are set (at most one struct is read); it returns the
+// platform's answer to who owns the node and which orgs it now serves
+// (nil on a platform that does not answer that yet).
+func (c *Client) HeartbeatNode(ctx context.Context, nodeID, version string, running int, extras ...HeartbeatExtras) (*NodeAnswer, error) {
 	in := map[string]any{"version": version, "running": running}
 	if len(extras) > 0 {
 		x := extras[0]
@@ -1466,12 +1633,12 @@ func (c *Client) HeartbeatNode(ctx context.Context, nodeID, version string, runn
 	if len(in) > 2 && time.Now().UnixNano() < c.heartbeatBasicUntil.Load() {
 		in = basicHeartbeat(in)
 	}
-	err := c.Mutate(ctx, "heartbeatNode", nodeID, in)
+	answer, err := c.mutateForAnswer(ctx, "heartbeatNode", nodeID, in)
 	if err != nil && len(in) > 2 && strings.Contains(err.Error(), "got invalid value") {
 		c.heartbeatBasicUntil.Store(time.Now().Add(10 * time.Minute).UnixNano())
-		return c.Mutate(ctx, "heartbeatNode", nodeID, basicHeartbeat(in))
+		return c.mutateForAnswer(ctx, "heartbeatNode", nodeID, basicHeartbeat(in))
 	}
-	return err
+	return answer, err
 }
 
 // ScalingProbeEvery is how long the gateway's answer to whether its

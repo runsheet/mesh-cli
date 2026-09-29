@@ -192,7 +192,7 @@ var nodeRegisterCmd = &cobra.Command{
 // (org, slug); registering again is a heartbeat).
 func registerIn(ctx context.Context, gw *gateway.Client, cfg *node.Config, scopes node.Scopes) error {
 	for _, sc := range scopes {
-		if err := gw.RegisterNode(ctx, gateway.RegisterNodeInput{NodeID: sc.NodeID, OrgID: sc.ID, OwnerID: cfg.OwnerID, Name: cfg.Name, Slug: cfg.Slug,
+		if _, err := gw.RegisterNode(ctx, gateway.RegisterNodeInput{NodeID: sc.NodeID, OrgID: sc.ID, OwnerID: cfg.OwnerID, Name: cfg.Name, Slug: cfg.Slug,
 			Harnesses: []string{"claude-code"}, Capacity: cfg.Capacity.Max, Version: version.Resolved()}); err != nil {
 			return fmt.Errorf("register in %s: %w", sc.Login, err)
 		}
@@ -313,7 +313,8 @@ func dash(s string) string {
 // — sent like the loop's, only when known and only when the gateway's
 // HeartbeatNodeInput takes it (mesh-specs ADR 013, trd §1 Node).
 func statusHeartbeat(ctx context.Context, gw *gateway.Client, nodeID string) error {
-	return gw.HeartbeatNode(ctx, nodeID, version.Resolved(), 0, gateway.HeartbeatExtras{Commit: version.Commit()})
+	_, err := gw.HeartbeatNode(ctx, nodeID, version.Resolved(), 0, gateway.HeartbeatExtras{Commit: version.Commit()})
+	return err
 }
 
 // localNodeState is the line `mesh node status` prints for the node
@@ -869,7 +870,7 @@ func reportRollback(check node.StartCheck, logger *log.Logger) {
 	// binary's; this binary's commit would not be that version's, so the
 	// heartbeat carries none and the restored binary's first one does.
 	for _, sc := range scopes {
-		if err := gw.HeartbeatNode(ctx, sc.NodeID, check.From, 0, gateway.HeartbeatExtras{UpdateError: check.Reason}); err != nil {
+		if _, err := gw.HeartbeatNode(ctx, sc.NodeID, check.From, 0, gateway.HeartbeatExtras{UpdateError: check.Reason}); err != nil {
 			logger.Printf("self-update: report rollback to %s: %v", sc.Login, err)
 		}
 	}
