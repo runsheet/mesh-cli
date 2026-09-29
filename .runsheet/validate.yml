@@ -1,14 +1,17 @@
+# Each command runs under `sh -c` with the session's env, whose PATH may
+# not name the Go toolchain (the mini's is /usr/local/go/bin), so the
+# usual install dirs are appended as a fallback; a go already on PATH wins.
 steps:
   - name: vet
-    command: go vet ./...
+    command: PATH="$PATH:/usr/local/go/bin:$HOME/go/bin:$HOME/sdk/go/bin" go vet ./...
     always: true
 
   - name: build
-    command: go build ./cmd/mesh/
+    command: PATH="$PATH:/usr/local/go/bin:$HOME/go/bin:$HOME/sdk/go/bin" go build ./cmd/mesh/
     always: true
 
   - name: unit
-    command: go test -json ./...
+    command: PATH="$PATH:/usr/local/go/bin:$HOME/go/bin:$HOME/sdk/go/bin" go test -json ./...
     paths:
       - "**/*.go"
       - go.mod
