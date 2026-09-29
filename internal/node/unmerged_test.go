@@ -54,8 +54,10 @@ func TestClaimConfigParsesAndReloads(t *testing.T) {
 }
 
 // Limit 2 and repo A has two pull requests in review: the tick claims
-// repo B's fresh item and repo A's rework, leaves repo A's fresh item
-// ready, and the holding report names the repo and the limit.
+// repo B's fresh item and repo A's started work — its rework, its rebase
+// and a rework past the attempt bound (finishFirstAttempts), which loses
+// its place in the order but not its exemption — leaves repo A's fresh
+// item ready, and the holding report names the repo and the limit.
 func TestLoopHoldsFreshClaimsForARepoAtItsUnmergedLimit(t *testing.T) {
 	p := newPriorityFake(t)
 	p.addGoal(orgID, "steady", "normal")
@@ -64,11 +66,13 @@ func TestLoopHoldsFreshClaimsForARepoAtItsUnmergedLimit(t *testing.T) {
 	p.addItemRow(orgID, "steady", "a-fresh", 3, nil)
 	p.addItemRow(orgID, "steady", "b-fresh", 4, map[string]any{"repoId": repoB})
 	p.addItemRow(orgID, "steady", "a-rework", 5, map[string]any{"prUrl": "https://github.com/acme/a/pull/5", "evaluation": "the test does not pass", "attempts": 1})
+	p.addItemRow(orgID, "steady", "a-rebase", 6, map[string]any{"prUrl": "https://github.com/acme/a/pull/6", "rebaseState": "requested", "attempts": 1})
+	p.addItemRow(orgID, "steady", "a-cycling", 7, map[string]any{"prUrl": "https://github.com/acme/a/pull/7", "evaluation": "still failing", "attempts": 2})
 	p.register()
-	loop, logs := p.loop(3)
+	loop, logs := p.loop(5)
 	loop.Cfg.Claim = ClaimConfig{UnmergedPerRepo: 2}
-	if got := p.claimedBy(loop); strings.Join(got, ",") != "a-rework,b-fresh" {
-		t.Fatalf("claimed %v, want a-rework,b-fresh", got)
+	if got := p.claimedBy(loop); strings.Join(got, ",") != "a-rework,a-rebase,b-fresh,a-cycling" {
+		t.Fatalf("claimed %v, want a-rework,a-rebase,b-fresh,a-cycling", got)
 	}
 	if s := p.Item("a-fresh")["status"]; s != "ready" {
 		t.Fatalf("a-fresh is %v, want ready", s)
@@ -113,7 +117,7 @@ func TestLoopUnmergedLimitIsReadEveryTick(t *testing.T) {
 }
 
 // At the limit with only fresh items the tick reads each org's goals and
-// review items once; with the key absent no review listing is read.
+// review items once; with the key absent or 0 no review listing is read.
 func TestLoopUnmergedLimitReadsReviewOncePerOrg(t *testing.T) {
 	p := newPriorityFake(t)
 	p.addGoal(orgID, "steady", "normal")
@@ -149,6 +153,21 @@ func TestLoopUnmergedLimitReadsReviewOncePerOrg(t *testing.T) {
 	}
 	if got := q.reviewReads(); len(got) != 0 {
 		t.Fatalf("no limit: review reads = %v, want none", got)
+	}
+
+	r := newPriorityFake(t)
+	r.addGoal(orgID, "steady", "normal")
+	r.addReview(orgID, "steady", "a-open", repoID, 1)
+	r.addItemRow(orgID, "steady", "a1", 2, nil)
+	r.addItemRow(orgID, "steady", "a2", 3, nil)
+	r.register()
+	zero, _ := r.loop(3)
+	zero.Cfg.Claim = ClaimConfig{UnmergedPerRepo: 0}
+	if got := r.claimedBy(zero); strings.Join(got, ",") != "a1,a2" {
+		t.Fatalf("limit 0: claimed %v, want a1,a2", got)
+	}
+	if got := r.reviewReads(); len(got) != 0 {
+		t.Fatalf("limit 0: review reads = %v, want none", got)
 	}
 }
 

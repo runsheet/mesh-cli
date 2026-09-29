@@ -122,7 +122,7 @@ reason.
 
 ## Per-repo limit on unmerged work
 
-Added by item 2 of goal `finish-before-you-start`.
+Added by item 2 of goal `finish-before-you-start` (PR #465), carried onto main by item 4.
 
 The claim order decides which work goes first; it does not stop the node
 opening a pull request that cannot land. On 2026-09-29
