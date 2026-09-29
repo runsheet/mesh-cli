@@ -59,6 +59,14 @@ func TestIndexListsLiveGoalsAndItems(t *testing.T) {
 	if !strings.HasPrefix(index, docsOnly) {
 		t.Fatalf("the documents table comes first, unchanged:\n%s", index)
 	}
+	for _, line := range []string{
+		"| spec | Notes | `notes` |",
+		"3 documents on disk here, 1 to fetch (0 a session reads, 1 other); summaries are shown only for the kinds a session reads (instructions, adr, prd, trd) that are not on disk.",
+	} {
+		if !hasLine(docsOnly, line) {
+			t.Fatalf("the documents tables lack the line %q:\n%s", line, docsOnly)
+		}
+	}
 	live := strings.TrimPrefix(index, docsOnly)
 	want := "\n## Live goals and items\n\n" +
 		"Read from the platform when this session started — the one place to read status from; no status table in git is current. Not committed.\n" +
@@ -104,7 +112,7 @@ func TestIndexWithoutLiveStateIsDocumentsOnly(t *testing.T) {
 			t.Fatal(err)
 		}
 		index, _ := os.ReadFile(filepath.Join(dir, ContextDir, IndexFile))
-		if string(index) != docsOnly || strings.Contains(docsOnly, "Live goals") {
+		if string(index) != docsOnly || strings.Contains(docsOnly, "Live goals") || !strings.HasSuffix(docsOnly, "that are not on disk.\n") {
 			t.Fatalf("%s failing: index:\n%s", fail, index)
 		}
 		if len(logged) != 1 || !strings.HasPrefix(logged[0], "warning:") {

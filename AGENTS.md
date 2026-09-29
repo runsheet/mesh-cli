@@ -35,7 +35,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   the `~/.mesh/token` that holds either shape behind one `TokenSource`
   (latchkey `adr-machine-identity`).
 - `internal/node/`: the loop (`runner`), the workspace and the project's
-  context (`workspace.go`: `FetchContext`, `RenderIndex`, the size budget — node.yaml `context:`, `ContextConfig`, re-read each tick, `Loop.ContextBudget`; every document counts against `bytes_max`, instructions and ADRs are exempt from `doc_bytes_max` only, placed first those of the session's own repos (`ContextOptions.Repos`), then the rest by recency, then the PRD and TRD, and one that does not fit is left whole to the index (`Context.Dropped`, ADR-015)),
+  context (`workspace.go`: `FetchContext`, `RenderIndex`, the size budget — node.yaml `context:`, `ContextConfig`, re-read each tick, `Loop.ContextBudget`; every document counts against `bytes_max`, instructions and ADRs are exempt from `doc_bytes_max` only, placed first those of the session's own repos (`ContextOptions.Repos`), then the rest by recency, then the PRD and TRD, and one that does not fit is left whole to the index (`Context.Dropped`, ADR-015); INDEX.md is inside `bytes_max` too, its length with nothing on disk reserved before placing and the last-placed document unplaced while the written index would pass it, in two tables — `Documents a session reads` (the `ContextKinds`, summary when not on disk) and `Other documents` (`kind | title | slug`) — the live section outside the budget (`Context.IndexBytes`, ADR-015's amendment 2026-09-29)),
   evaluate, plan and research sessions, the service install (`launchd` /
   `systemd --user`). A project's repos — for the planner, the director
   and `mesh goal plan` — are read from `project.repoIds` through
@@ -326,6 +326,12 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `tools.CodexConfig`, every table `default_tools_approval_mode =
   "approve"` — `exec` under `workspace-write` refuses an unapproved
   MCP call (docs/codex-events.md, "Why the context tool failed").
+  The sandboxed commands get the network (`-c
+  sandbox_workspace_write.network_access=true`, `harness.SandboxNetwork`,
+  on `exec` and on the probe alike): without it Codex's seccomp filter
+  refuses `socket()` and no test that binds loopback runs — the price
+  is a sandbox that can reach the network (ADR-011's amendment
+  2026-09-29, item 9).
   Each session's event stream and stderr are kept for 24 hours under
   `<work root>/kept-sessions/<name>/` (`output.jsonl`, `stderr.log`;
   `KeepSessionOutput`), as a Claude session's output is. Before a Codex
@@ -370,8 +376,11 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `Evaluator.CodexPreflight` (`Codex.Preflight`: `codex mcp get
   mesh-context` and an MCP tools/list handshake in the session's own home
   and env, then the sandbox probe `codex sandbox -c
-  sandbox_mode="workspace-write" -- true`, the session's own policy — a `bwrap:`
-  line or a non-zero exit is `sandbox: <why>`) must pass: a failure moves an unpinned evaluation to Claude
+  sandbox_mode="workspace-write" -c
+  sandbox_workspace_write.network_access=true -- mesh sandbox-probe`, the
+  session's own policy on the hidden subcommand that binds 127.0.0.1:0 —
+  a `bwrap:` line or a non-zero exit is `sandbox: <why>`, the bwrap
+  line, else the socket error) must pass: a failure moves an unpinned evaluation to Claude
   (`Codex preflight failed (<why>); evaluating on Claude`), keeps a
   pinned one waiting like `ErrFamilyWaits`, and makes a Codex second
   opinion `unavailable: preflight …`. An item of an `urgent` or `high` goal whose
@@ -392,12 +401,14 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   (`ToolStat.Answered`: a Codex `failed` call with `error` null and a
   result, a Claude `is_error` result from a server init named
   `connected` that is not Claude Code's own refusal) — or, on Codex,
-  every command of which bubblewrap refused (`Result.SandboxBroken`,
-  `sandbox: <bwrap line>`) — has its verdict discarded; a tool that
-  answered was reached (`ToolStat.Reached`), so the built-in's `not
-  found` for a slug it does not have is the tool working, never a tool
-  failure (ADR-011's amendment 2026-09-29, a tool that answered was
-  reached). For a broken one the same job runs on the other family
+  every command of which bubblewrap refused, or whose test commands
+  that executed every one refused a socket — a runner's name in quoted
+  text is no test, a declined one or one with no exit code never
+  executed (`Result.SandboxBroken`, `sandbox: <bwrap or socket line>`) — has its verdict discarded; a
+  tool that answered was reached (`ToolStat.Reached`), so the
+  built-in's `not found` for a slug it does not have is the tool
+  working, never a tool failure (ADR-011's amendment 2026-09-29, a tool
+  that answered was reached). For a broken one the same job runs on the other family
   as the evaluation proper, its notes opening `<Family> (first attempt,
   <model>): no verdict — <tool>: <error>`; with no other family it
   is **no verdict** (`Evaluator.noVerdict`, ADR-011's amendment

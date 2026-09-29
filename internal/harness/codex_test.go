@@ -26,13 +26,14 @@ func testServers() map[string]any {
 }
 
 // The argv for a job with a model and MCP servers: exec in JSON, the
-// workspace-write sandbox, the model and `-` for the prompt on stdin.
+// workspace-write sandbox with the network on (its tests bind
+// loopback), the model and `-` for the prompt on stdin.
 // Neither the prompt nor the servers are on it: those go in the
 // session's CODEX_HOME/config.toml.
 func TestCodexArgs(t *testing.T) {
 	c := &Codex{ExtraArgs: []string{"--skip-git-repo-check"}}
 	job := Job{Prompt: "build the thing", Model: "gpt-6-sol", MCPServers: testServers()}
-	want := []string{"exec", "--json", "--sandbox", "workspace-write", "--model", "gpt-6-sol", "--skip-git-repo-check", "-"}
+	want := []string{"exec", "--json", "--sandbox", "workspace-write", "-c", "sandbox_workspace_write.network_access=true", "--model", "gpt-6-sol", "--skip-git-repo-check", "-"}
 	got := c.Args(job)
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("args\n got %q\nwant %q", got, want)
@@ -42,8 +43,41 @@ func TestCodexArgs(t *testing.T) {
 			t.Fatalf("argv carries the prompt or a secret: %q", a)
 		}
 	}
-	if got := c.Args(Job{Prompt: "hi"}); !reflect.DeepEqual(got, []string{"exec", "--json", "--sandbox", "workspace-write", "--skip-git-repo-check", "-"}) {
+	if got := c.Args(Job{Prompt: "hi"}); !reflect.DeepEqual(got, []string{"exec", "--json", "--sandbox", "workspace-write", "-c", "sandbox_workspace_write.network_access=true", "--skip-git-repo-check", "-"}) {
 		t.Fatalf("a job with no model: %q", got)
+	}
+}
+
+// An evaluation session's sandboxed commands get the network: without
+// `sandbox_workspace_write.network_access=true` Codex's seccomp filter
+// refuses socket() and no test that binds loopback can run (ADR 011,
+// amendment 2026-09-29).
+func TestCodexArgsGiveTheEvaluationSandboxTheNetwork(t *testing.T) {
+	args := strings.Join((&Codex{}).Args(Job{Model: "gpt-6-sol", Label: "item ship-it/1 evaluation"}), " ")
+	if !strings.Contains(args, "--sandbox workspace-write -c sandbox_workspace_write.network_access=true") {
+		t.Fatalf("args %q", args)
+	}
+}
+
+// The probe runs under exactly the keys the session does and runs a
+// command that binds a loopback socket — never `true`, which passes a
+// sandbox that refuses socket().
+func TestCodexSandboxProbeBindsLoopbackUnderTheSessionsKeys(t *testing.T) {
+	got := SandboxProbe([]string{"/usr/bin/mesh", "sandbox-probe"})
+	want := []string{"sandbox", "-c", `sandbox_mode="workspace-write"`, "-c", "sandbox_workspace_write.network_access=true", "--", "/usr/bin/mesh", "sandbox-probe"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("probe\n got %q\nwant %q", got, want)
+	}
+	if exec := strings.Join((&Codex{}).Args(Job{}), " "); !strings.Contains(exec, strings.Join(SandboxNetwork, " ")) {
+		t.Fatalf("the session runs %q, not the keys the probe checks", exec)
+	}
+	cmd := (&Codex{}).probeCommand()
+	if len(cmd) != 2 || cmd[1] != "sandbox-probe" || cmd[0] == "true" {
+		t.Fatalf("default probe command %q", cmd)
+	}
+	var out strings.Builder
+	if err := ProbeLoopback(&out); err != nil || !strings.HasPrefix(out.String(), "127.0.0.1:") {
+		t.Fatalf("ProbeLoopback = %v, %q", err, out.String())
 	}
 }
 
