@@ -64,6 +64,10 @@ type Client struct {
 	// report's `validation` (ErrNoValidationUsage, node-attests-its-validation):
 	// every later report goes without the list.
 	usageWithoutValidation atomic.Bool
+	// usageWithoutContext is set once the gateway has refused a usage
+	// report's `contextBytes` (ErrNoContextUsage, adr-016): every later
+	// report goes without it.
+	usageWithoutContext atomic.Bool
 
 	// heartbeatBasicUntil (unix nanoseconds) is when the heartbeat next
 	// offers the fields the gateway refused (see HeartbeatNode).
@@ -289,6 +293,15 @@ var ErrNoUsageDetail = errors.New("gateway: the platform's usage report carries 
 // land without it, and the caller logs the minutes instead. errors.Is-able.
 var ErrNoValidationUsage = errors.New("gateway: the platform takes no per-step validation minutes on the usage report")
 
+// ErrNoContextUsage is what a finishing command returns when its usage
+// report carried the session's context bytes but the platform's
+// UsageReportInput has no `contextBytes` (a platform older than
+// context-budget-that-holds, adr-016): the command and the rest of the
+// report land without that one number, and the caller says so once.
+// errors.Is-able; it may come joined with ErrNoValidationUsage or
+// ErrNoToolUsage when the report lost those too.
+var ErrNoContextUsage = errors.New("gateway: the platform takes no context bytes on the usage report")
+
 // usageDetailFields are UsageReport's fields a platform before
 // mesh-spends-less-per-item may not know (ErrNoUsageDetail).
 var usageDetailFields = []string{"turns", "inputPerTurnMean", "inputPerTurnMax", "largestToolResults"}
@@ -308,7 +321,11 @@ var usageDetailFields = []string{"turns", "inputPerTurnMean", "inputPerTurnMax",
 // (unknownField on "validation") gets it again without the per-step
 // minutes, and every later report goes without them: the command lands
 // with the rest of the report, and ErrNoValidationUsage says the
-// minutes did not.
+// minutes did not. A platform whose report has no `contextBytes`
+// (unknownField on "contextBytes") gets it again without the bytes, and
+// every later report goes without them, and ErrNoContextUsage says so.
+// When a report lost more than one of the list, the minutes and the
+// bytes, their errors come joined.
 func (c *Client) mutateWithUsage(ctx context.Context, field, aggregateID string, input map[string]any, usage *UsageReport) error {
 	if usage == nil {
 		return c.Mutate(ctx, field, aggregateID, input)
@@ -329,6 +346,10 @@ func (c *Client) mutateWithUsage(ctx context.Context, field, aggregateID string,
 	_, withValidation := um["validation"]
 	if withValidation && c.usageWithoutValidation.Load() {
 		delete(um, "validation")
+	}
+	_, withContext := um["contextBytes"]
+	if withContext && c.usageWithoutContext.Load() {
+		delete(um, "contextBytes")
 	}
 	if rows, ok := um["tools"].([]any); ok && toolRowsCarry(rows, "error") && !c.takesToolError(ctx) {
 		for _, r := range rows {
@@ -353,6 +374,13 @@ func (c *Client) mutateWithUsage(ctx context.Context, field, aggregateID string,
 			err = c.Mutate(ctx, field, aggregateID, withUsage)
 		}
 	}
+	if err != nil && errors.As(err, &ge) && unknownField(ge.Message, "contextBytes") {
+		if _, sent := um["contextBytes"]; sent {
+			c.usageWithoutContext.Store(true)
+			delete(um, "contextBytes")
+			err = c.Mutate(ctx, field, aggregateID, withUsage)
+		}
+	}
 	if err != nil && errors.As(err, &ge) && unknownField(ge.Message, "usage") {
 		if err2 := c.Mutate(ctx, field, aggregateID, input); err2 != nil {
 			return err2
@@ -373,13 +401,26 @@ func (c *Client) mutateWithUsage(ctx context.Context, field, aggregateID string,
 		}
 		return ErrNoUsageDetail
 	}
-	if err == nil && withTools && c.usageWithoutTools.Load() {
-		return ErrNoToolUsage
+	if err != nil {
+		return err
 	}
-	if err == nil && withValidation && c.usageWithoutValidation.Load() {
-		return ErrNoValidationUsage
+	var lost []error
+	if withTools && c.usageWithoutTools.Load() {
+		lost = append(lost, ErrNoToolUsage)
 	}
-	return err
+	if withValidation && c.usageWithoutValidation.Load() {
+		lost = append(lost, ErrNoValidationUsage)
+	}
+	if withContext && c.usageWithoutContext.Load() {
+		lost = append(lost, ErrNoContextUsage)
+	}
+	switch len(lost) {
+	case 0:
+		return nil
+	case 1:
+		return lost[0]
+	}
+	return errors.Join(lost...)
 }
 
 // toolRowsCarry says whether any of a usage map's tools rows has key.
@@ -2112,7 +2153,7 @@ func (c *Client) RecordDirectionResearch(ctx context.Context, directionID, nodeI
 		"nodeId": nodeID, "at": at,
 		"proposals": proposalRows(fallback), "costCents": costCents, "notes": notes,
 	}, usage)
-	if retryErr != nil && !errors.Is(retryErr, ErrNoUsageLedger) && !errors.Is(retryErr, ErrNoToolUsage) {
+	if retryErr != nil && !errors.Is(retryErr, ErrNoUsageLedger) && !errors.Is(retryErr, ErrNoToolUsage) && !errors.Is(retryErr, ErrNoContextUsage) {
 		return retryErr
 	}
 	if retryErr != nil {
@@ -2368,6 +2409,12 @@ type UsageReport struct {
 	// the field (ErrNoValidationUsage).
 	Validation []ValidationMinutes `json:"validation,omitempty"`
 
+	// ContextBytes is what the session's context cost on disk: every
+	// document file under .mesh/context plus INDEX.md (adr-016). Left
+	// out when none was written, and by mutateWithUsage for a platform
+	// without the field (ErrNoContextUsage).
+	ContextBytes int64 `json:"contextBytes,omitempty"`
+
 	FiveHourBefore *float64 `json:"fiveHourBefore,omitempty"`
 	FiveHourAfter  *float64 `json:"fiveHourAfter,omitempty"`
 	SevenDayBefore *float64 `json:"sevenDayBefore,omitempty"`
@@ -2417,7 +2464,8 @@ const (
 // session.
 func (c *Client) RecordToolUsage(ctx context.Context, itemID, toolCallID, tool string, usage UsageReport) error {
 	const field = "recordToolUsage"
-	usage.Tools = nil // one call's record needs no per-tool list
+	usage.Tools = nil      // one call's record needs no per-tool list
+	usage.ContextBytes = 0 // nor the session's context, counted once on its own report
 	um, err := usageInput(&usage)
 	if err != nil {
 		return err

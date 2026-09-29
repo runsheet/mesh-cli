@@ -62,7 +62,7 @@ type Credentials struct {
 	Now func() time.Time
 	Log *log.Logger
 
-	credOnce, usageOnce, toolUsageOnce, toolListOnce, usageDetailOnce sync.Once
+	credOnce, usageOnce, toolUsageOnce, toolListOnce, usageDetailOnce, contextOnce sync.Once
 }
 
 func (c *Credentials) now() time.Time {
@@ -110,11 +110,15 @@ type SessionAccount struct {
 	// report carries this one's (Carries). noToolList is a report that
 	// landed without its per-tool list (ErrNoToolUsage), and noDetail
 	// one that landed without its turn or tool-result figures
-	// (ErrNoUsageDetail); Finish logs each instead.
-	report                                   *gateway.UsageReport
-	res                                      harness.Result
-	handedIn, noLedger, noToolList, noDetail bool
-	into                                     *SessionAccount
+	// (ErrNoUsageDetail); Finish logs each instead. noContext is one
+	// that landed without its context bytes (ErrNoContextUsage).
+	report                                              *gateway.UsageReport
+	res                                                 harness.Result
+	handedIn, noLedger, noToolList, noDetail, noContext bool
+	into                                                *SessionAccount
+	// contextBytes is what the session's context cost on disk
+	// (SetContextBytes, adr-016), the report's ContextBytes.
+	contextBytes int64
 	// Tools are the tools the claim-time read handed the session, their
 	// secrets decrypted (nil from a platform without them); what the
 	// session gets of them is SessionTools'.
@@ -413,7 +417,7 @@ func (s *SessionAccount) Report(res harness.Result) *gateway.UsageReport {
 	r := &gateway.UsageReport{
 		SessionID: res.SessionID, Adapter: adapter,
 		CredentialID: s.account.ID, CredentialKind: kind,
-		WallMs: c.now().Sub(s.started).Milliseconds(),
+		WallMs: c.now().Sub(s.started).Milliseconds(), ContextBytes: s.contextBytes,
 	}
 	if r.WallMs < 0 {
 		r.WallMs = 0
@@ -499,6 +503,19 @@ func (s *SessionAccount) Carries(other *SessionAccount) {
 	other.into = s
 }
 
+// SetContextBytes is what WriteContext put on disk for the session
+// (ContextWritten.Bytes), carried on its usage report as ContextBytes
+// (adr-016) — on the report already built, too. Nil-safe.
+func (s *SessionAccount) SetContextBytes(n int) {
+	if s == nil {
+		return
+	}
+	s.contextBytes = int64(n)
+	if s.report != nil {
+		s.report.ContextBytes = s.contextBytes
+	}
+}
+
 // Carried is the finishing command's answer to the report it carried
 // (err from FinishWorkItem, EvaluateWorkItem, PlanGoal,
 // FinishWorkItemRebase or RecordDirectionResearch). ErrNoUsageLedger is
@@ -513,9 +530,10 @@ func (s *SessionAccount) Carried(err error) error {
 	noLedger := errors.Is(err, gateway.ErrNoUsageLedger)
 	noToolList := !noLedger && errors.Is(err, gateway.ErrNoToolUsage)
 	noDetail := !noLedger && errors.Is(err, gateway.ErrNoUsageDetail)
+	noContext := !noLedger && errors.Is(err, gateway.ErrNoContextUsage)
 	if s != nil && s.report != nil {
 		switch {
-		case err == nil, noDetail:
+		case err == nil, noDetail, noContext && !noToolList:
 			s.handedIn = true
 		case noLedger:
 			s.noLedger = true
@@ -525,8 +543,11 @@ func (s *SessionAccount) Carried(err error) error {
 		if noDetail {
 			s.noDetail = true
 		}
+		if noContext {
+			s.noContext = true
+		}
 	}
-	if noLedger || noToolList || noDetail {
+	if noLedger || noToolList || noDetail || noContext {
 		return nil
 	}
 	return err
@@ -607,6 +628,11 @@ func (s *SessionAccount) Finish(ctx context.Context, res harness.Result) {
 	if s.noDetail {
 		c.usageDetailOnce.Do(func() {
 			c.logf("usage: the platform's usage report carries no turns or tool-result detail; sent without them (said once, for every session this run)")
+		})
+	}
+	if s.noContext {
+		c.contextOnce.Do(func() {
+			c.logf("usage: the platform takes no context bytes on the usage report yet; sent without them (said once, for every session this run)")
 		})
 	}
 	if s.handedIn || s.into != nil {

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -194,5 +196,85 @@ func TestFinishWorkItemWithoutValidationUsageDropsItAndReturnsErrNoValidationUsa
 	}
 	if usage["inputTokens"] == nil {
 		t.Fatalf("usage lost the rest of the report: %+v", usage)
+	}
+}
+
+// A platform whose UsageReportInput takes `contextBytes` receives the
+// session's context bytes on the finishing command's usage (adr-016).
+func TestFinishWorkItemCarriesContextBytes(t *testing.T) {
+	f := gatewaytest.New("rs_test")
+	defer f.Close()
+	runningItem(f)
+	gw := gateway.New(f.URL(), "rs_test")
+
+	u := sampleUsageReport()
+	u.ContextBytes = 187392
+	if err := gw.FinishWorkItem(context.Background(), finishItem, "mesh/g-7", "abc123", 12, u); err != nil {
+		t.Fatal(err)
+	}
+	calls := f.CallsNamed("finishWorkItem")
+	if len(calls) != 1 {
+		t.Fatalf("calls = %+v", calls)
+	}
+	usage, _ := calls[0].Input["usage"].(map[string]any)
+	if usage["contextBytes"] != float64(187392) {
+		t.Fatalf("usage.contextBytes = %v: %+v", usage["contextBytes"], usage)
+	}
+}
+
+// A platform whose UsageReportInput has no `contextBytes` (older than
+// context-budget-that-holds) is sent the command again without it, the
+// report lands, the caller is told with ErrNoContextUsage, and every
+// later report goes without the field and without a retry.
+func TestFinishWorkItemWithoutContextUsageDropsItAndReturnsErrNoContextUsage(t *testing.T) {
+	f := gatewaytest.New("rs_test")
+	defer f.Close()
+	f.NoContextUsage = true
+	runningItem(f)
+	// every post to the platform is counted on its way through
+	target, _ := url.Parse(f.URL())
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	var posts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			posts.Add(1)
+		}
+		proxy.ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+	gw := gateway.New(srv.URL, "rs_test")
+
+	u := sampleUsageReport()
+	u.ContextBytes = 187392
+	err := gw.FinishWorkItem(context.Background(), finishItem, "mesh/g-7", "abc123", 12, u)
+	if !errors.Is(err, gateway.ErrNoContextUsage) {
+		t.Fatalf("err = %v, want ErrNoContextUsage", err)
+	}
+	if n := posts.Load(); n != 2 {
+		t.Fatalf("%d posts, want the refused one and the one without contextBytes", n)
+	}
+	calls := f.CallsNamed("finishWorkItem")
+	if len(calls) != 1 {
+		t.Fatalf("calls = %+v", calls)
+	}
+	usage, _ := calls[0].Input["usage"].(map[string]any)
+	if _, ok := usage["contextBytes"]; ok || usage["inputTokens"] == nil {
+		t.Fatalf("the landed usage: %+v", usage)
+	}
+
+	// the next report omits the field at once: one post, no retry
+	posts.Store(0)
+	runningItem(f)
+	err = gw.FinishWorkItem(context.Background(), finishItem, "mesh/g-7", "abc124", 12, u)
+	if !errors.Is(err, gateway.ErrNoContextUsage) {
+		t.Fatalf("second err = %v, want ErrNoContextUsage", err)
+	}
+	if n := posts.Load(); n != 1 {
+		t.Fatalf("%d posts on the second report, want 1", n)
+	}
+	calls = f.CallsNamed("finishWorkItem")
+	usage, _ = calls[len(calls)-1].Input["usage"].(map[string]any)
+	if _, ok := usage["contextBytes"]; ok {
+		t.Fatalf("the second report carried contextBytes: %+v", usage)
 	}
 }

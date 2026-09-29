@@ -98,6 +98,10 @@ type Fake struct {
 	// older than node-attests-its-validation whose UsageReportInput has
 	// no such field.
 	NoValidationUsage bool
+	// NoContextUsage refuses a `usage` report carrying `contextBytes`
+	// with "Unknown field", as a platform older than
+	// context-budget-that-holds (adr-016).
+	NoContextUsage bool
 	// NoToolError refuses a usage report whose `tools` entry carries
 	// `error`, and introspection answers the entry without it, as a
 	// platform older than the tool entry's error text.
@@ -308,6 +312,12 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 		if usage, ok := in["usage"].(map[string]any); ok && f.NoValidationUsage {
 			if _, ok := usage["validation"]; ok {
 				writeErrors(w, 200, `Variable "$in" got invalid value; In field "usage": Unknown field "validation" is not defined by type "UsageReportInput".`)
+				return
+			}
+		}
+		if usage, ok := in["usage"].(map[string]any); ok && f.NoContextUsage {
+			if _, ok := usage["contextBytes"]; ok {
+				writeErrors(w, 200, `Variable "$in" got invalid value; In field "usage": Unknown field "contextBytes" is not defined by type "UsageReportInput".`)
 				return
 			}
 		}

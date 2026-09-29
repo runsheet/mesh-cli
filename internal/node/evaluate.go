@@ -227,10 +227,11 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 		cx = &Context{}
 	}
 	AddLive(ctx, e.GW, cx, item.OrgID, res.Project.ID, e.logf)
-	files, err := WriteContext(dir, cx)
+	files, written, err := WriteContext(dir, cx)
 	if err != nil {
 		return fmt.Errorf("write context: %w", err)
 	}
+	e.logf("item %s: %s", label, written.Line())
 	contextDir := ""
 	if len(files) > 0 || len(cx.Index) > 0 || len(cx.Live) > 0 {
 		contextDir = ContextDir
@@ -315,6 +316,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 			return err
 		}
 	}
+	acct.SetContextBytes(written.Bytes)
 	if len(st.Use) > 0 {
 		e.logf("item %s: evaluate with tools %s", label, st.Names())
 	}

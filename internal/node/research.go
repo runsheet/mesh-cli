@@ -129,10 +129,11 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 		cx = &Context{}
 	}
 	AddLive(ctx, d.GW, cx, scope.ID, project.ID, d.logf)
-	files, err := WriteContext(dir, cx)
+	files, written, err := WriteContext(dir, cx)
 	if err != nil {
 		return fmt.Errorf("write context: %w", err)
 	}
+	d.logf("project %s: %s", project.Slug, written.Line())
 	contextDir := ""
 	if len(files) > 0 || len(cx.Index) > 0 || len(cx.Live) > 0 {
 		contextDir = ContextDir
@@ -169,6 +170,7 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 	if err != nil {
 		return err
 	}
+	acct.SetContextBytes(written.Bytes)
 	defer unlessDetached(ctx, acct.Cleanup)
 	acct.Apply(&job)
 	job.Meta = harness.SessionMeta{NodeID: scope.NodeID, DirectionID: direction.ID, TempDirs: sessionTempDirs(job, acct)}
@@ -231,7 +233,7 @@ func (d *Director) handIn(ctx context.Context, direction gateway.Direction, proj
 // pitches as proposals, and that landed — the research is in, so it is
 // no error, and the node says so once for its run. A report the
 // fallback landed without stays ErrNoUsageLedger (its per-tool list,
-// ErrNoToolUsage), for Carried.
+// ErrNoToolUsage; its context bytes, ErrNoContextUsage), for Carried.
 func (d *Director) pitchFallback(err error) error {
 	if !errors.Is(err, gateway.ErrNoPitches) {
 		return err
@@ -239,13 +241,13 @@ func (d *Director) pitchFallback(err error) error {
 	d.noPitches.Do(func() {
 		d.logf("pitches: the platform takes no pitches; handed in as proposals (said once, for every direction this run)")
 	})
-	if errors.Is(err, gateway.ErrNoUsageLedger) {
-		return gateway.ErrNoUsageLedger
+	var rest []error
+	for _, lost := range []error{gateway.ErrNoUsageLedger, gateway.ErrNoToolUsage, gateway.ErrNoContextUsage} {
+		if errors.Is(err, lost) {
+			rest = append(rest, lost)
+		}
 	}
-	if errors.Is(err, gateway.ErrNoToolUsage) {
-		return gateway.ErrNoToolUsage
-	}
-	return nil
+	return errors.Join(rest...)
 }
 
 // readResearch reads a session's final message by its direction's mode
