@@ -1,5 +1,5 @@
 ---
-summary: Before an evaluation starts the node chooses its family per session — Codex when a Codex account (issued or node.yaml's) has headroom for the goal's priority, else Claude; a full gpt-… id pins Codex and waits in evaluating without headroom, a claude-… id pins Claude; the urgent/high second opinion runs on the other family, labelled by family and model; the one usage report names adapter codex and the gpt-6 model of a Codex evaluation; before any Codex session starts the node preflights the built-in context server in the session's own home and env (`codex mcp get` and a tools/list handshake), and a failure moves an unpinned evaluation to Claude, keeps a pinned one waiting and makes a Codex second opinion unavailable. Amended: a tool failure is never a verdict — a session that saw no context is evaluated again on the other family, or the item waits in evaluating.
+summary: Before an evaluation starts the node chooses its family per session — Codex when a Codex account (issued or node.yaml's) has headroom for the goal's priority, else Claude; a full gpt-… id pins Codex and waits in evaluating without headroom, a claude-… id pins Claude; the urgent/high second opinion runs on the other family, labelled by family and model; the one usage report names adapter codex and the gpt-6 model of a Codex evaluation; before any Codex session starts the node preflights the built-in context server in the session's own home and env (`codex mcp get` and a tools/list handshake), and a failure moves an unpinned evaluation to Claude, keeps a pinned one waiting and makes a Codex second opinion unavailable. Amended: an unpinned Codex evaluation defaults to gpt-6-sol (opus tier) or gpt-6-luna (sonnet, haiku), astra only when pinned; and a tool failure is never a verdict — a session that saw no context is evaluated again on the other family, or the item waits in evaluating.
 status: accepted
 ---
 
@@ -34,9 +34,9 @@ item's goal priority: a paced account takes only urgent and high work,
 a stopped one nothing, an api key only what its priority allows. One
 with headroom makes the session a Codex session: the Codex harness, on
 `CodexConfig.CodexModel` of the item's Claude evaluate model
-(`EvaluateModel`), whose defaults are now `gpt-6-astra` for opus,
-`gpt-6-sol` for sonnet and `gpt-6-luna` for haiku when node.yaml names
-none. An issued account is opened by `Credentials.Open` with adapter
+(`EvaluateModel`), whose defaults are `gpt-6-sol` for opus and
+`gpt-6-luna` for sonnet and haiku when node.yaml names none (amendment
+below). An issued account is opened by `Credentials.Open` with adapter
 codex under the evaluator's own rule (`withChooser`); node.yaml's by
 `Credentials.OpenOwn`, which still asks the claim-time read for the
 session's tools but runs on the harness's own login. None with
@@ -73,9 +73,9 @@ chosen Codex account — an issued one opened for it — and unavailable
 when none has headroom), Claude after Codex, on a Claude account of its
 own (`Credentials.Open`, claude-code) on the item's Claude evaluate
 model. The notes label each verdict by family and model —
-`Codex (first evaluation, gpt-6-astra): VERDICT: PASS` and
+`Codex (first evaluation, gpt-6-sol): VERDICT: PASS` and
 `Claude (second opinion, opus): VERDICT …` — and the last line names
-both (`(evaluated on Codex gpt-6-astra; second opinion on Claude
+both (`(evaluated on Codex gpt-6-sol; second opinion on Claude
 opus)`); the unavailable line names which family (`Claude second
 opinion unavailable: …`).
 
@@ -153,6 +153,22 @@ item (`gpt-…`) with a failed preflight records no verdict: it is
 once per item until a preflight passes. A Codex second opinion whose
 preflight fails is `Codex second opinion unavailable: preflight <why>`
 and the first verdict stands.
+
+## Amendment, 2026-09-28: sol and luna are the defaults, not astra
+
+Goal `codex-sessions-reach-the-context-tool` (item 5). The mini's first
+live evaluations on GPT-6 Astra cost $1.29 each where the same
+evaluation costs about $0.45 on GPT-6 Sol — Astra was priced for a
+harder job than judging an evaluation prompt. `DefaultCodexOpus` is now `gpt-6-sol` (was `gpt-6-astra`);
+`DefaultCodexSonnet` is now `gpt-6-luna` (was `gpt-6-sol`);
+`DefaultCodexHaiku` stays `gpt-6-luna`. `CodexConfig.CodexModel` still
+takes node.yaml's `codex: models:`
+override first, so a project or operator who wants Astra sets it there;
+`EvaluatorPin` still pins a full `gpt-6-astra` on an item's
+`evaluateModel`, `model` or agent model, run and priced as before
+(`CodexPrices` keeps Astra's rate). Nothing else in this ADR changes:
+the family choice, the pin rule and the second-opinion labelling are
+per-session as above, just naming Sol where the examples said Astra.
 
 ## Amendment 2026-09-28: a tool failure is never a verdict
 

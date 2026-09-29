@@ -15,6 +15,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/harness"
 	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/tools"
+	"projectmesh.io/mesh-cli/internal/validate"
 )
 
 // Resolved is a work item with its goal, project and repo read.
@@ -99,14 +100,31 @@ type Runner struct {
 	// limits kill it (Loop.NoteCondition, the heartbeat's reason); nil
 	// tells no one.
 	Condition func(reason string)
+	// Budgets is node.yaml's `budgets:` in force, read live (ADR 012,
+	// Loop.KindModelBudget); nil falls back to Cfg's own, read once at
+	// start.
+	Budgets func(kind, model string) (amount float64, source string)
 	// Sandbox, when set, runs the session in its own pod with the
 	// services its checkout declares started beside it (ADR 007); nil is
 	// `sandbox: off`, no services.
 	Sandbox *sandbox.Sandbox
+	// State keeps what an item's handed-back build spent its budget on
+	// for the item's next claim (ADR 012 Hand-back); nil keeps nothing.
+	State *RunState
+	// HasCommit says whether dir's branch has a commit past origin/base
+	// (nil: `git rev-list --count origin/<base>..HEAD`, HasCommitSince),
+	// the harness's hand-back test.
+	HasCommit func(dir, base string) bool
 	// MeshBinary is the mesh executable a session's tool-trim hook runs
 	// ("" is `mesh` on the session's PATH).
 	MeshBinary string
-	Log        *log.Logger
+	// Inspect runs `podman image inspect` for a sandboxed validation's
+	// runner image digest (nil: sandbox.ExecRunner).
+	Inspect sandbox.Runner
+	// Notices say once per run that the platform takes no validation
+	// attestations, or no per-step minutes, yet (nil: every item).
+	Notices *ValidationNotices
+	Log     *log.Logger
 }
 
 // toolResults bounds the job's tool results by node.yaml's
@@ -150,21 +168,36 @@ func (r *Runner) logf(format string, args ...any) {
 	}
 }
 
-// Budget is the session's cap: the goal's remaining budget in dollars,
-// capped by MaxBudgetUSD (either 0 means "the other one").
-func (r *Runner) Budget(goal *gateway.Goal) float64 {
-	remaining := 0.0
-	if goal.BudgetCents > 0 {
-		remaining = math.Max(0, float64(goal.BudgetCents-goal.SpentCents)/100)
+// kindModelBudget is node.yaml's budgets: figure for kind and model —
+// live, through r.Budgets, when set; else Cfg's own, read once at start.
+func (r *Runner) kindModelBudget(kind, model string) (float64, string) {
+	if r.Budgets != nil {
+		return r.Budgets(kind, model)
 	}
-	switch {
-	case remaining > 0 && r.MaxBudgetUSD > 0:
-		return math.Min(remaining, r.MaxBudgetUSD)
-	case remaining > 0:
-		return remaining
-	default:
-		return r.MaxBudgetUSD
+	return r.Cfg.KindModelBudget(kind, model)
+}
+
+// budgetWithSource is Budget with where the figure came from, for the
+// session's starting log line.
+func (r *Runner) budgetWithSource(goal *gateway.Goal, kind, model string) (float64, string) {
+	kindBudget, kindSource := r.kindModelBudget(kind, model)
+	return SessionBudget(kindBudget, kindSource, goal, r.MaxBudgetUSD)
+}
+
+// Budget is the session's cap (ADR 012): the smallest of the goal's
+// remaining budget, node.yaml's budgets: figure for kind and model, and
+// MaxBudgetUSD (0 in any of these means "the other one" wins).
+func (r *Runner) Budget(goal *gateway.Goal, kind, model string) float64 {
+	amount, _ := r.budgetWithSource(goal, kind, model)
+	return amount
+}
+
+// hasCommit is the job's HasCommit for dir's branch against base.
+func (r *Runner) hasCommit(dir, base string) func() bool {
+	if r.HasCommit != nil {
+		return func() bool { return r.HasCommit(dir, base) }
 	}
+	return HasCommitSince(dir, base)
 }
 
 // costReporter turns cumulative dollars into the cents-since-last-report
@@ -173,14 +206,31 @@ type costReporter struct {
 	mu            sync.Mutex
 	reportedCents int
 	totalUSD      float64
+	// baseUSD is what the sessions before the current one spent: a
+	// validation retry's turn counts its own dollars from zero (carry).
+	baseUSD float64
 }
 
 func (c *costReporter) observe(usd float64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if usd > c.totalUSD {
+	if usd += c.baseUSD; usd > c.totalUSD {
 		c.totalUSD = usd
 	}
+}
+
+// carry starts the next session's dollars on top of the total so far.
+func (c *costReporter) carry() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.baseUSD = c.totalUSD
+}
+
+// total is every session's dollars so far.
+func (c *costReporter) total() float64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.totalUSD
 }
 
 // delta returns the unreported cents and marks them reported.
@@ -240,7 +290,8 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	}
 
 	model := BuildModel(ctx, r.GW, item, r.Model)
-	r.logf("item %s: build on %s", label, modelName(model))
+	budget, budgetSource := r.budgetWithSource(res.Goal, "build", model)
+	r.logf("item %s: build on %s, budget $%.2f (%s)", label, modelName(model), budget, budgetSource)
 
 	mcp := r.mcp(ctx)
 	in := harness.PromptInput{
@@ -248,8 +299,13 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		Seq: item.Seq, Title: item.Title, Brief: item.Brief, Acceptance: item.Acceptance,
 		Repo: res.Repo.FullName(), Branch: spec.Branch, BaseRef: spec.BaseRef, ContextDir: contextDir, ContextFiles: files,
 		Attempts: item.Attempts, Evaluation: item.Evaluation, Project: orgLogin + "/" + res.Project.Slug, Prologue: len(mcp) > 0,
+		LastSession: r.State.LastSession(item.ID),
 	}
-	job := harness.Job{Kind: harness.KindBuild, Workspace: dir, MaxBudgetUSD: r.Budget(res.Goal), Label: label, MCPServers: mcp, Model: model}
+	job := harness.Job{Kind: harness.KindBuild, Workspace: dir, MaxBudgetUSD: budget, Label: label, MCPServers: mcp, Model: model}
+	// past 60% of its budget with nothing committed the session is handed
+	// back for one commit-and-finish turn (ADR 012 Hand-back)
+	job.HandBackAt = harness.DefaultHandBackAt
+	job.HasCommit = r.hasCommit(dir, spec.BaseRef)
 	if tok := cred.Token(); tok != nil {
 		ghDir, err := NewGHConfigDir()
 		if err != nil {
@@ -320,7 +376,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 
 	// the session outlives this process: a restart adopts it (ADR 009)
 	job.Outlive = true
-	b := &buildRun{r: r, item: item, res: res, label: label, spec: spec, dir: dir, cred: cred, acct: acct, runtimes: runtimes, lastText: "session started"}
+	b := &buildRun{r: r, item: item, res: res, label: label, spec: spec, dir: dir, cred: cred, acct: acct, runtimes: runtimes, lastText: "session started", job: &job, pod: pod, started: time.Now()}
 	b.report(ctx, "session started: "+spec.Branch+" on "+modelName(model))
 	if note := st.OmittedNote(); note != "" {
 		r.logf("item %s: %s", label, note)
@@ -352,10 +408,31 @@ type buildRun struct {
 	acct     *SessionAccount // nil for an adopted session
 	runtimes []string
 	cost     costReporter
+	// job is the session's job, for a validation retry's turn; pod its
+	// sandbox, where the validation runs; started when it began. The job
+	// and pod are nil for an adopted session.
+	job     *harness.Job
+	pod     *SessionPod
+	started time.Time
 
 	mu        sync.Mutex
 	lastText  string
 	sessionID string
+}
+
+// session is the session's id as last read.
+func (b *buildRun) session() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.sessionID
+}
+
+// podSession is the session's sandbox (nil: none, or adopted).
+func (b *buildRun) podSession() *sandbox.Session {
+	if b.pod == nil {
+		return nil
+	}
+	return b.pod.Session
 }
 
 // report is the item's heartbeat: the note (the session's last text when
@@ -462,6 +539,7 @@ func (r *Runner) afterBuild(ctx context.Context, b *buildRun, result harness.Res
 		return r.fail(ctx, item, runErr)
 	}
 	result.Text = b.acct.Redact(result.Text)
+	b.handedBack(ctx, result)
 	if !result.Success {
 		b.report(ctx, "session ended without success: "+result.Text)
 		b.reportToolUse(ctx, result)
@@ -480,6 +558,38 @@ func (r *Runner) afterBuild(ctx context.Context, b *buildRun, result harness.Res
 		b.endGoal(ctx)
 		return nil
 	}
+	// the repository's validation on the commit the item finishes with
+	// (runsheet ADR 032): a failing step gets the builder one more turn,
+	// then fails the item naming it
+	v, err := r.startValidation(ctx, b)
+	if err != nil {
+		b.report(ctx, "validation: "+err.Error())
+		return r.fail(ctx, item, fmt.Errorf("validation: %w", err))
+	}
+	var att validate.Attestation
+	if v != nil {
+		defer v.close()
+		att, err = r.validateBuild(ctx, b, v, result)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if rep := b.acct.Report(result); rep != nil {
+			rep.Validation = v.usage()
+		}
+		var vf *validationFailure
+		if errors.As(err, &vf) {
+			if len(v.runs) > 0 {
+				r.uploadAttestation(ctx, b, v.runs[len(v.runs)-1])
+			}
+			b.report(ctx, vf.Error())
+			return r.fail(ctx, item, vf)
+		}
+		if err != nil {
+			err = b.acct.RedactErr(err)
+			b.report(ctx, "validation: "+err.Error())
+			return r.fail(ctx, item, fmt.Errorf("validation: %w", err))
+		}
+	}
 	if err := b.cred.Refresh(ctx); err != nil {
 		r.logf("item %s: %v", label, err) // the token held may yet serve
 	}
@@ -487,12 +597,42 @@ func (r *Runner) afterBuild(ctx context.Context, b *buildRun, result harness.Res
 	if err != nil {
 		return r.fail(ctx, item, fmt.Errorf("push: %w", err))
 	}
-	if err := b.acct.Carried(r.GW.FinishWorkItem(ctx, item.ID, b.spec.Branch, sha, b.cost.delta(), b.acct.Report(result))); err != nil {
+	if v != nil {
+		// uploaded after the push: the platform signs for a commit that exists
+		if att.Commit != sha {
+			r.logf("item %s: validation ran on %s, the push is %s", label, short(att.Commit), short(sha))
+		}
+		r.uploadAttestation(ctx, b, att)
+	}
+	if err := b.acct.Carried(r.validationUsage(r.GW.FinishWorkItem(ctx, item.ID, b.spec.Branch, sha, b.cost.delta(), b.acct.Report(result)))); err != nil {
 		return fmt.Errorf("finish %s: %w", label, err)
 	}
 	r.logf("item %s: finished %s@%s ($%.2f)", label, b.spec.Branch, short(sha), result.CostUSD)
 	b.endGoal(ctx)
 	return nil
+}
+
+// handedBack records what a handed-back session spent its budget on
+// under the item, for its next claim's prompt, and notes it on the item
+// before the finish (ADR 012 Hand-back); a session that ran to its end
+// clears the record. A handed-back build that committed finishes as any
+// other; one that still did not is pushed and finished empty, which
+// the platform routes back to ready (empties-go-back-to-the-builder).
+func (b *buildRun) handedBack(ctx context.Context, result harness.Result) {
+	r := b.r
+	if !result.HandedBack {
+		if result.Success {
+			r.State.ClearLastSession(b.item.ID)
+		}
+		return
+	}
+	spent := b.acct.Redact(result.SpentOn)
+	if err := r.State.RecordLastSession(b.item.ID, spent); err != nil {
+		r.logf("item %s: last session: %v", b.label, err)
+	}
+	note := "handed back with nothing committed: " + spent
+	r.logf("item %s: %s", b.label, note)
+	b.report(ctx, note)
 }
 
 // endGoal follows a finish: a goal that ended with the item gets its

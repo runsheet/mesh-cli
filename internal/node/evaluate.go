@@ -32,12 +32,17 @@ type Evaluator struct {
 	GW       Gateway
 	Harness  harness.Harness
 	WS       Workspacer
+	Cfg      *Config
 	Scopes   Scopes
 	WorkRoot string
 	// MCP are the MCP servers the session gets (Prologue).
 	MCP map[string]any
 	// MaxBudgetUSD caps the review session (3 by default).
 	MaxBudgetUSD float64
+	// Budgets is node.yaml's `budgets:` in force, read live (ADR 012,
+	// Loop.KindModelBudget); nil falls back to Cfg's own, read once at
+	// start.
+	Budgets func(kind, model string) (amount float64, source string)
 	// Model is the node's own evaluate model (node.yaml evaluate, else
 	// default; "" the CLI's default). An item that names a model or an
 	// agent with one evaluates on the strongest of this, its build model
@@ -102,6 +107,26 @@ type Evaluator struct {
 	// services its checkout declares (as Runner.Sandbox).
 	Sandbox *sandbox.Sandbox
 	Log     *log.Logger
+}
+
+// kindModelBudget is node.yaml's budgets: figure for kind and model —
+// live, through e.Budgets, when set; else Cfg's own, read once at start.
+func (e *Evaluator) kindModelBudget(kind, model string) (float64, string) {
+	if e.Budgets != nil {
+		return e.Budgets(kind, model)
+	}
+	return e.Cfg.KindModelBudget(kind, model)
+}
+
+// budgetWithSource is the evaluation's cost cap (ADR 012) and where it
+// came from, for the session's starting log line.
+func (e *Evaluator) budgetWithSource(goal *gateway.Goal, model string) (float64, string) {
+	kindBudget, kindSource := e.kindModelBudget("evaluate", model)
+	fallback := e.MaxBudgetUSD
+	if fallback <= 0 {
+		fallback = 3
+	}
+	return SessionBudget(kindBudget, kindSource, goal, fallback)
 }
 
 func (e *Evaluator) logf(format string, args ...any) {
@@ -213,11 +238,9 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 		ContextDir: contextDir, ContextFiles: files, Project: orgLogin + "/" + res.Project.Slug, Prologue: len(e.MCP) > 0,
 		AlreadyDone: alreadyDone, Evidence: item.Evidence,
 	}
-	budget := e.MaxBudgetUSD
-	if budget <= 0 {
-		budget = 3
-	}
 	model := fam.model
+	budget, budgetSource := e.budgetWithSource(res.Goal, model)
+	e.logf("item %s: evaluate budget $%.2f (%s)", label, budget, budgetSource)
 	job := harness.Job{Kind: harness.KindEvaluate, Workspace: dir, Prompt: harness.EvaluatePrompt(in), MaxBudgetUSD: budget, Label: label + " evaluate", Timeout: e.Timeout, MCPServers: e.MCP, Model: model}
 	if tok := cred.Token(); tok != nil {
 		ghDir, err := NewGHConfigDir()

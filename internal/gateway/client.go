@@ -60,6 +60,10 @@ type Client struct {
 	// report's `tools` (ErrNoToolUsage): every later report goes
 	// without the list.
 	usageWithoutTools atomic.Bool
+	// usageWithoutValidation is set once the gateway has refused a usage
+	// report's `validation` (ErrNoValidationUsage, node-attests-its-validation):
+	// every later report goes without the list.
+	usageWithoutValidation atomic.Bool
 
 	// heartbeatBasicUntil (unix nanoseconds) is when the heartbeat next
 	// offers the fields the gateway refused (see HeartbeatNode).
@@ -82,6 +86,9 @@ type Client struct {
 	// to take of `scaling` (see HeartbeatNode); Now is its clock,
 	// time.Now when nil.
 	scalingSchema scalingProbe
+	// holdingSchema is whether the gateway's heartbeat input was last
+	// found to take `holding` (see HeartbeatNode, takesHolding).
+	holdingSchema holdingProbe
 	// toolErrorSchema is whether the gateway's usage report's `tools`
 	// entry was last found to take `error` (see takesToolError).
 	toolErrorSchema toolErrorProbe
@@ -102,6 +109,18 @@ func NewWithSource(baseURL string, src TokenSource) *Client {
 		Source:  src,
 		HTTP:    &http.Client{Timeout: 60 * time.Second},
 	}
+}
+
+// WithItemToken returns a client that speaks to the same gateway on tok
+// rather than c's own bearer — an item's claim-time token
+// (node-attests-its-validation), scoped the way IssueItemRepoToken's
+// GitHub token is (adr-001-item-scoped-github-token), for
+// RecordValidationAttestation. It is a fresh Client of the transport
+// alone (BaseURL, HTTP, Now): none of c's schema-probe caches
+// (itemsWithoutModel and the rest) carry over, since they answer for a
+// long-lived node client, not a request or two on a borrowed token.
+func (c *Client) WithItemToken(tok string) *Client {
+	return &Client{BaseURL: c.BaseURL, Source: StaticToken(tok), HTTP: c.HTTP, Now: c.Now}
 }
 
 // Bearer is the token the next request would carry — for the Prologue
@@ -189,7 +208,7 @@ func (c *Client) Query(ctx context.Context, query string, vars map[string]any, o
 	}
 	if jsonErr := json.Unmarshal(raw, &env); jsonErr != nil {
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			return fmt.Errorf("gateway: %s: %s", resp.Status, strings.TrimSpace(string(raw)))
+			return &httpError{Status: resp.StatusCode, Text: resp.Status, Body: strings.TrimSpace(string(raw))}
 		}
 		return fmt.Errorf("gateway: decode response: %w", jsonErr)
 	}
@@ -197,12 +216,29 @@ func (c *Client) Query(ctx context.Context, query string, vars map[string]any, o
 		return &Error{Message: env.Errors[0].Message}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("gateway: %s", resp.Status)
+		return &httpError{Status: resp.StatusCode, Text: resp.Status}
 	}
 	if out != nil && len(env.Data) > 0 {
 		return json.Unmarshal(env.Data, out)
 	}
 	return nil
+}
+
+// httpError is a non-2xx HTTP answer with no GraphQL error body — a
+// proxy's 502/503/504, or any status Query could not decode as GraphQL
+// at all. isTransient treats a 5xx one as worth another try, as it does
+// a transport failure that never reached the gateway.
+type httpError struct {
+	Status int
+	Text   string
+	Body   string
+}
+
+func (e *httpError) Error() string {
+	if e.Body == "" {
+		return "gateway: " + e.Text
+	}
+	return fmt.Sprintf("gateway: %s: %s", e.Text, e.Body)
 }
 
 // Mutate sends one aggregate command: field is the mutation name
@@ -235,14 +271,41 @@ var ErrNoUsageLedger = errors.New("gateway: the platform keeps no usage ledger")
 // the list instead. errors.Is-able.
 var ErrNoToolUsage = errors.New("gateway: the platform takes no per-tool calls on the usage report")
 
+// ErrNoUsageDetail is what a finishing command returns when its usage
+// report carried turns, per-turn input or the largest tool results but
+// the gateway's UsageReportInput has none of those fields (a platform
+// older than mesh-spends-less-per-item): the report is resent without
+// them, and the rest of the usage — and the command itself — lands;
+// only the per-turn and tool-result figures did not. errors.Is-able.
+var ErrNoUsageDetail = errors.New("gateway: the platform's usage report carries no turn or tool-result detail")
+
+// ErrNoValidationUsage is what a finishing command returns when its
+// usage report carried per-step validation minutes but the platform's
+// UsageReportInput has no `validation` (a platform older than
+// node-attests-its-validation): the command and the rest of the report
+// land without it, and the caller logs the minutes instead. errors.Is-able.
+var ErrNoValidationUsage = errors.New("gateway: the platform takes no per-step validation minutes on the usage report")
+
+// usageDetailFields are UsageReport's fields a platform before
+// mesh-spends-less-per-item may not know (ErrNoUsageDetail).
+var usageDetailFields = []string{"turns", "inputPerTurnMean", "inputPerTurnMax", "largestToolResults"}
+
 // mutateWithUsage sends field's command with input, plus usage's report
 // on the `usage` key when usage is non-nil. A platform whose input has
-// no `usage` (unknownField on "usage") gets the command again without
-// it: the command lands, and ErrNoUsageLedger says the report did not.
-// A platform whose report has no `tools` (unknownField on "tools") gets
-// it again without the list, and every later report goes without it:
-// the command lands with the total, and ErrNoToolUsage says the list
-// did not.
+// no `usage` at all (unknownField on "usage") gets the command again
+// without it: the command lands, and ErrNoUsageLedger says the report
+// did not. A platform whose report has no `tools` (unknownField on
+// "tools") gets it again without the list, and every later report goes
+// without it: the command lands with the total, and ErrNoToolUsage says
+// the list did not. A platform whose `usage` input lacks only the turn
+// or tool-result detail fields (unknownField on one of
+// usageDetailFields) gets the report again without those alone: the
+// rest of the report and the command land, and ErrNoUsageDetail says
+// the detail did not. A platform whose report has no `validation`
+// (unknownField on "validation") gets it again without the per-step
+// minutes, and every later report goes without them: the command lands
+// with the rest of the report, and ErrNoValidationUsage says the
+// minutes did not.
 func (c *Client) mutateWithUsage(ctx context.Context, field, aggregateID string, input map[string]any, usage *UsageReport) error {
 	if usage == nil {
 		return c.Mutate(ctx, field, aggregateID, input)
@@ -260,6 +323,10 @@ func (c *Client) mutateWithUsage(ctx context.Context, field, aggregateID string,
 	if withTools && c.usageWithoutTools.Load() {
 		delete(um, "tools")
 	}
+	_, withValidation := um["validation"]
+	if withValidation && c.usageWithoutValidation.Load() {
+		delete(um, "validation")
+	}
 	if rows, ok := um["tools"].([]any); ok && toolRowsCarry(rows, "error") && !c.takesToolError(ctx) {
 		for _, r := range rows {
 			if row, ok := r.(map[string]any); ok {
@@ -276,14 +343,38 @@ func (c *Client) mutateWithUsage(ctx context.Context, field, aggregateID string,
 			err = c.Mutate(ctx, field, aggregateID, withUsage)
 		}
 	}
+	if err != nil && errors.As(err, &ge) && unknownField(ge.Message, "validation") {
+		if _, sent := um["validation"]; sent {
+			c.usageWithoutValidation.Store(true)
+			delete(um, "validation")
+			err = c.Mutate(ctx, field, aggregateID, withUsage)
+		}
+	}
 	if err != nil && errors.As(err, &ge) && unknownField(ge.Message, "usage") {
 		if err2 := c.Mutate(ctx, field, aggregateID, input); err2 != nil {
 			return err2
 		}
 		return ErrNoUsageLedger
 	}
+	if err != nil && errors.As(err, &ge) && unknownField(ge.Message, usageDetailFields...) {
+		trimmed := make(map[string]any, len(um))
+		for k, v := range um {
+			trimmed[k] = v
+		}
+		for _, f := range usageDetailFields {
+			delete(trimmed, f)
+		}
+		withUsage["usage"] = trimmed
+		if err2 := c.Mutate(ctx, field, aggregateID, withUsage); err2 != nil {
+			return err2
+		}
+		return ErrNoUsageDetail
+	}
 	if err == nil && withTools && c.usageWithoutTools.Load() {
 		return ErrNoToolUsage
+	}
+	if err == nil && withValidation && c.usageWithoutValidation.Load() {
+		return ErrNoValidationUsage
 	}
 	return err
 }
@@ -966,19 +1057,41 @@ func (c *Client) Repo(ctx context.Context, id string) (*Repo, error) {
 	return out.Repo, nil
 }
 
-// Repos lists the repos of one account (an org's accountId), owner set.
-func (c *Client) Repos(ctx context.Context, accountID, ownerLogin string) ([]Repo, error) {
-	var out struct {
-		Repos []Repo `json:"repoIndexs"`
+// ProjectRepos reads a project's repos by id, in order, each with its
+// own account's login as Owner — never the org's. The schema has no
+// project-repos read with owner logins and RepoIndex carries no login,
+// so this composes it from repoIndex and accountIndex, reading each
+// distinct account once even when several repos share it.
+func (c *Client) ProjectRepos(ctx context.Context, repoIDs []string) ([]Repo, error) {
+	if len(repoIDs) == 0 {
+		return []Repo{}, nil
 	}
-	q := fmt.Sprintf(`{ repoIndexs(namespace: %q, where: [%s]) { id name accountId defaultBranch } }`, NS, where("account_id", accountID))
-	if err := c.Query(ctx, q, nil, &out); err != nil {
-		return nil, err
+	logins := map[string]string{}
+	out := make([]Repo, 0, len(repoIDs))
+	for _, id := range repoIDs {
+		var res struct {
+			Repo *Repo `json:"repoIndex"`
+		}
+		q := fmt.Sprintf(`{ repoIndex(namespace: %q, id: %q) { id name accountId defaultBranch } }`, NS, id)
+		if err := c.Query(ctx, q, nil, &res); err != nil {
+			return nil, err
+		}
+		if res.Repo == nil {
+			return nil, fmt.Errorf("repo %s not found", id)
+		}
+		login, ok := logins[res.Repo.AccountID]
+		if !ok {
+			var err error
+			login, err = c.AccountLogin(ctx, res.Repo.AccountID)
+			if err != nil {
+				return nil, err
+			}
+			logins[res.Repo.AccountID] = login
+		}
+		res.Repo.Owner = login
+		out = append(out, *res.Repo)
 	}
-	for i := range out.Repos {
-		out.Repos[i].Owner = ownerLogin
-	}
-	return out.Repos, nil
+	return out, nil
 }
 
 // AccountLogin reads an account's GitHub login.
@@ -1136,6 +1249,66 @@ type HeartbeatExtras struct {
 	// before it rather than starting them (mesh-specs ADR 008, mesh-cli
 	// ADR 009); none sends no key.
 	Adopted []AdoptedSession
+	// Holding is the node's holding decision as data — why ready work
+	// waits, not just a log line (runsheet goal
+	// node-says-why-work-waits): each account's status, reset time and
+	// what the node still takes on it, and the summary judgement. nil
+	// sends none; set, it is sent only when the gateway's schema takes it
+	// (HeartbeatNode, takesHolding).
+	Holding *Holding
+}
+
+// Holding is the heartbeat's `holding`: the node's account-by-account
+// pacing decision and why ready work is left unclaimed
+// (docs/adr/adr-005-accounts-on-the-node.md, Amendment — 2026-09-28).
+type Holding struct {
+	// Mode is the node's own aggregate pacing: "normal", "paced" or
+	// "stopped" (paceMode.String()).
+	Mode string `json:"mode"`
+	// Summary is the one-line decision the console shows in place of the
+	// node's log line.
+	Summary string `json:"summary"`
+	// Until is the earliest reset among the accounts that hold, empty
+	// when none do.
+	Until time.Time `json:"until,omitzero"`
+	// Accounts is always a list, [] when there are none (the scaling
+	// precedent, PR #255: the platform's nested input is non-null).
+	Accounts []HoldingAccount `json:"accounts"`
+	// Unclaimed is always a list, [] when nothing was passed over this
+	// pass.
+	Unclaimed []HoldingUnclaimed `json:"unclaimed"`
+}
+
+// HoldingAccount is one account's standing in the holding report: its
+// kind, its status by the node's own pacing (ok, paced, exhausted or
+// unknown — never seen a reading, so ChooseAccount treats it as full
+// headroom), when its holding window resets, and what the node still
+// takes on it.
+type HoldingAccount struct {
+	Account  string       `json:"account"`
+	Kind     string       `json:"kind"` // "subscription" or "api_key"
+	Status   string       `json:"status"`
+	ResetsAt time.Time    `json:"resetsAt,omitzero"`
+	Takes    HoldingTakes `json:"takes"`
+}
+
+// HoldingTakes is what the node still takes on an account: the
+// priorities it claims for, the most items it runs on it at once, and
+// whether it still runs research there (research is not work that
+// waits: internal/node/select.go).
+type HoldingTakes struct {
+	Priorities []string `json:"priorities"`
+	MaxItems   int      `json:"maxItems"`
+	Research   bool     `json:"research"`
+}
+
+// HoldingUnclaimed is one goal's ready work the node passed over this
+// pass for lack of account headroom.
+type HoldingUnclaimed struct {
+	GoalID string `json:"goalId"`
+	Kind   string `json:"kind"` // "item" or "plan"
+	Count  int    `json:"count"`
+	Reason string `json:"reason"`
 }
 
 // AdoptedSession is one entry of the heartbeat's `adopted`: the item the
@@ -1258,6 +1431,16 @@ func (c *Client) HeartbeatNode(ctx context.Context, nodeID, version string, runn
 		if len(x.Adopted) > 0 {
 			in["adopted"] = x.Adopted
 		}
+		if x.Holding != nil && c.takesHolding(ctx) {
+			h := *x.Holding
+			if h.Accounts == nil {
+				h.Accounts = []HoldingAccount{}
+			}
+			if h.Unclaimed == nil {
+				h.Unclaimed = []HoldingUnclaimed{}
+			}
+			in["holding"] = &h
+		}
 	}
 	// A node can be newer than the platform it reports to: a field the
 	// gateway does not know yet makes GraphQL refuse the whole heartbeat,
@@ -1355,6 +1538,47 @@ func (c *Client) takesScaling(ctx context.Context) (bool, bool) {
 		}
 	}
 	return p.takes, p.accounts
+}
+
+// holdingProbe is the cached answer to whether HeartbeatNodeInput has
+// `holding`, and when it was asked.
+type holdingProbe struct {
+	mu    sync.Mutex
+	at    time.Time
+	takes bool
+}
+
+// takesHolding says whether the gateway's HeartbeatNodeInput has a
+// `holding` field — asked once by introspection and kept for
+// ScalingProbeEvery, the same as takesScaling (ADR-004: the node must
+// not send a field the platform does not accept). A failed probe is a
+// no, kept as long.
+func (c *Client) takesHolding(ctx context.Context) bool {
+	p := &c.holdingSchema
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := c.now()
+	if !p.at.IsZero() && now.Sub(p.at) < ScalingProbeEvery {
+		return p.takes
+	}
+	var out struct {
+		Type *struct {
+			InputFields []struct {
+				Name string `json:"name"`
+			} `json:"inputFields"`
+		} `json:"__type"`
+	}
+	p.at, p.takes = now, false
+	q := `{ __type(name: "HeartbeatNodeInput") { inputFields { name } } }`
+	if err := c.Query(ctx, q, nil, &out); err != nil || out.Type == nil {
+		return false
+	}
+	for _, f := range out.Type.InputFields {
+		if f.Name == "holding" {
+			p.takes = true
+		}
+	}
+	return p.takes
 }
 
 // basicHeartbeat is a heartbeat with only the fields every platform
@@ -2051,7 +2275,13 @@ type Session struct {
 // left out when the platform issued none; CredentialKind is
 // "subscription", "api" or "unset". The four window fields (0..1) and
 // their *ResetsAt (RFC 3339) are left out for a window the session
-// never read. It never carries a secret.
+// never read. Turns, InputPerTurnMean, InputPerTurnMax and
+// LargestToolResults (mesh-spends-less-per-item) are the session's
+// per-turn input and largest tool results (harness.Result's fields of
+// the same names), left out when zero or empty — a platform whose
+// UsageReportInput lacks them gets the report again without them
+// (ErrNoUsageDetail). Validation (node-attests-its-validation) is a
+// build's validation minutes, per step. It never carries a secret.
 type UsageReport struct {
 	SessionID        string `json:"sessionId"`
 	Adapter          string `json:"adapter"`
@@ -2070,6 +2300,18 @@ type UsageReport struct {
 	WallMs          int64            `json:"wallMs"`
 	ListCostCents   int64            `json:"listCostCents"`
 	ActualCostCents int64            `json:"actualCostCents"`
+
+	Turns              int64            `json:"turns,omitempty"`
+	InputPerTurnMean   int64            `json:"inputPerTurnMean,omitempty"`
+	InputPerTurnMax    int64            `json:"inputPerTurnMax,omitempty"`
+	LargestToolResults []ToolResultSize `json:"largestToolResults,omitempty"`
+
+	// Validation is the build's validation run, per step (goal
+	// node-attests-its-validation): the scorecard's "CI minutes saved"
+	// counterpart, "validation minutes spent". Left out when the session
+	// ran no validation, and by mutateWithUsage for a platform without
+	// the field (ErrNoValidationUsage).
+	Validation []ValidationMinutes `json:"validation,omitempty"`
 
 	FiveHourBefore *float64 `json:"fiveHourBefore,omitempty"`
 	FiveHourAfter  *float64 `json:"fiveHourAfter,omitempty"`
@@ -2095,6 +2337,13 @@ type ToolCallReport struct {
 	Error  string `json:"error,omitempty"`
 }
 
+// ToolResultSize is one tool result's content, in bytes — one row of
+// UsageReport.LargestToolResults (harness.ToolResultSize's shape).
+type ToolResultSize struct {
+	Tool  string `json:"tool"`
+	Bytes int    `json:"bytes"`
+}
+
 // The kinds a UsageReport's CredentialKind takes.
 const (
 	CredentialSubscription = "subscription"
@@ -2105,7 +2354,12 @@ const (
 // RecordToolUsage hands the platform one priced tool call's usage
 // report against the item (aggregateId), naming the tool and its
 // tool_call_id (runsheet trd §6a, ADR 019). An older platform without
-// the mutation answers IsUnsupported.
+// the mutation answers IsUnsupported. A platform whose usage input
+// lacks only the turn or tool-result detail fields (unknownField on one
+// of usageDetailFields) gets the report again without those alone: the
+// call still lands, and ErrNoUsageDetail says the detail did not —
+// following mutateWithUsage's fallback for the commands that end a
+// session.
 func (c *Client) RecordToolUsage(ctx context.Context, itemID, toolCallID, tool string, usage UsageReport) error {
 	const field = "recordToolUsage"
 	usage.Tools = nil // one call's record needs no per-tool list
@@ -2117,12 +2371,205 @@ func (c *Client) RecordToolUsage(ctx context.Context, itemID, toolCallID, tool s
 		"aggregateId": itemID, "namespace": NS, "tool": tool, "toolCallId": toolCallID, "usage": um,
 	}
 	q := `mutation($in: RecordToolUsageInput!) { recordToolUsage(input: $in) { status } }`
-	if err := c.Query(ctx, q, map[string]any{"in": in}, nil); err != nil {
-		var ge *Error
-		if errors.As(err, &ge) && (unknownOperation(ge.Message, field) || schemaMismatch(ge.Message, field)) {
-			return &Error{Message: ge.Message, Unsupported: true}
+	err = c.Query(ctx, q, map[string]any{"in": in}, nil)
+	if err == nil {
+		return nil
+	}
+	var ge *Error
+	if errors.As(err, &ge) && (unknownOperation(ge.Message, field) || schemaMismatch(ge.Message, field)) {
+		return &Error{Message: ge.Message, Unsupported: true}
+	}
+	if errors.As(err, &ge) && unknownField(ge.Message, usageDetailFields...) {
+		trimmed := make(map[string]any, len(um))
+		for k, v := range um {
+			trimmed[k] = v
 		}
+		for _, f := range usageDetailFields {
+			delete(trimmed, f)
+		}
+		in["usage"] = trimmed
+		if err2 := c.Query(ctx, q, map[string]any{"in": in}, nil); err2 != nil {
+			return err2
+		}
+		return ErrNoUsageDetail
+	}
+	return err
+}
+
+// ---- validation attestation (node-attests-its-validation, runsheet ADR 032) ----
+
+// ValidationAttestation is what a build session's validation run
+// produces, uploaded through RecordValidationAttestation: the commit and
+// tree it ran against, the runner's image digest (or "host:<hostname>"
+// when it ran unsandboxed), whether it ran sandboxed, each step's
+// result, the node and session that ran it, the item it is for, when,
+// and the same per-step minutes the usage report carries
+// (UsageReport.Validation) so the attestation stands on its own. Its
+// json tags are item 1's Attestation shape (internal/validate, not yet
+// landed on this branch) so a later item can convert one into the other,
+// field for field.
+type ValidationAttestation struct {
+	Commit      string                 `json:"commit"`
+	Tree        string                 `json:"tree"`
+	RunnerImage string                 `json:"runnerImage"`
+	Sandboxed   bool                   `json:"sandboxed"`
+	Steps       []ValidationStepResult `json:"steps"`
+	NodeID      string                 `json:"nodeId"`
+	SessionID   string                 `json:"sessionId"`
+	ItemID      string                 `json:"itemId"`
+	At          time.Time              `json:"at"`
+	Validation  []ValidationMinutes    `json:"validation,omitempty"`
+}
+
+// ValidationStepResult is one named step of .runsheet/validate.yml as it
+// ran: its command, the hash of the suite it covered, its exit code, how
+// long it took, tests parsed from its output (Go test JSON or JUnit) —
+// left out when the step reports none — and any artifacts' digests.
+type ValidationStepResult struct {
+	Step        string   `json:"step"`
+	Command     string   `json:"command"`
+	SuiteHash   string   `json:"suiteHash"`
+	ExitCode    int      `json:"exitCode"`
+	Ms          int64    `json:"ms"`
+	TestsRun    int      `json:"testsRun,omitempty"`
+	TestsPassed int      `json:"testsPassed,omitempty"`
+	TestsFailed int      `json:"testsFailed,omitempty"`
+	Artifacts   []string `json:"artifacts,omitempty"`
+}
+
+// ValidationMinutes is one step's cost for the usage record and the
+// attestation alike: the scorecard's "validation minutes spent"
+// counterpart to CI's "CI minutes saved".
+type ValidationMinutes struct {
+	Step     string `json:"step"`
+	Ms       int64  `json:"ms"`
+	ExitCode int    `json:"exitCode"`
+}
+
+// AttestationBackoff is the wait between RecordValidationAttestation's
+// retries of a transport failure or a 5xx answer (retryOnTransient) —
+// one entry per retry, so up to len(AttestationBackoff) retries beyond
+// the first attempt. A test shortens it to run fast.
+var AttestationBackoff = []time.Duration{2 * time.Second, 10 * time.Second, 30 * time.Second}
+
+// retryOnTransient calls fn, retrying on a transport error or a 5xx
+// answer (isTransient) up to len(AttestationBackoff) more times with
+// that backoff between attempts; a refusal, an unsupported operation, or
+// success returns at once — the gateway's considered answer is not
+// retried, only its absence.
+func retryOnTransient(ctx context.Context, fn func() error) error {
+	var err error
+	for attempt := 0; ; attempt++ {
+		err = fn()
+		if err == nil || !isTransient(err) || attempt >= len(AttestationBackoff) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(AttestationBackoff[attempt]):
+		}
+	}
+}
+
+// isTransient reports whether err is worth retrying: a transport failure
+// that never reached the gateway, or a 5xx one that did (httpError). A
+// GraphQL *Error — a refusal, an unsupported operation, a validation
+// error the schema itself raised — is the gateway's considered answer,
+// not a blip, and is never retried.
+func isTransient(err error) bool {
+	var ge *Error
+	if errors.As(err, &ge) {
+		return false
+	}
+	var he *httpError
+	if errors.As(err, &he) {
+		return he.Status >= 500
+	}
+	return true
+}
+
+// RecordValidationAttestation uploads one build's validation run
+// (runsheet ADR 032, the goal ci-uploads-test-evidence's attestation
+// endpoint). Call it on WithItemToken's client, so the request carries
+// the item's claim-time token rather than the node's. It tries the
+// mutation
+// recordValidationAttestation(input: RecordValidationAttestationInput!)
+// { status }, carrying aggregateId (itemID), namespace and the
+// attestation; nothing says the endpoint has landed yet (checked
+// 2026-09-28: neither the mutation nor a
+// specs/contracts/recordValidationAttestation.json fixture exist on the
+// running platform — /contracts/index.json, the gateway's introspected
+// Mutation type), so this is built to the shape ADR 032 describes, named
+// here as an assumption for the platform side to confirm or correct. An
+// unknownOperation or schemaMismatch answer falls back to
+// POST /mesh/v1/items/<itemId>/attestation with the attestation as the
+// JSON body; refused the same way (404), the caller gets
+// &Error{Unsupported: true} — log it once per run and keep the
+// attestation at <workdir>.session/attestation.json. A transport failure
+// or a 5xx answer from either path retries (retryOnTransient,
+// AttestationBackoff) before giving up.
+func (c *Client) RecordValidationAttestation(ctx context.Context, itemID string, att ValidationAttestation) error {
+	const field = "recordValidationAttestation"
+	body, err := json.Marshal(att)
+	if err != nil {
 		return err
 	}
-	return nil
+	var am map[string]any
+	if err := json.Unmarshal(body, &am); err != nil {
+		return err
+	}
+	return retryOnTransient(ctx, func() error {
+		in := map[string]any{"aggregateId": itemID, "namespace": NS, "attestation": am}
+		q := `mutation($in: RecordValidationAttestationInput!) { recordValidationAttestation(input: $in) { status } }`
+		err := c.Query(ctx, q, map[string]any{"in": in}, nil)
+		if err == nil {
+			return nil
+		}
+		var ge *Error
+		if !errors.As(err, &ge) || (!unknownOperation(ge.Message, field) && !schemaMismatch(ge.Message, field)) {
+			return err
+		}
+		restErr := c.postAttestation(ctx, itemID, body)
+		if restErr == nil {
+			return nil
+		}
+		if isNotFound(restErr) {
+			return &Error{Message: fmt.Sprintf("gateway: neither %s nor its REST fallback exist: %v", field, restErr), Unsupported: true}
+		}
+		return restErr
+	})
+}
+
+// postAttestation is RecordValidationAttestation's fallback for a
+// platform whose schema does not yet have the mutation: the same
+// attestation, as ci-uploads-test-evidence's REST path would carry it.
+func (c *Client) postAttestation(ctx context.Context, itemID string, body []byte) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/mesh/v1/items/"+url.PathEscape(itemID)+"/attestation", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	tok, err := c.Bearer(ctx)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	return &httpError{Status: resp.StatusCode, Text: resp.Status, Body: strings.TrimSpace(string(raw))}
+}
+
+// isNotFound reports whether err is postAttestation's 404 — the REST
+// fallback does not exist either.
+func isNotFound(err error) bool {
+	var he *httpError
+	return errors.As(err, &he) && he.Status == http.StatusNotFound
 }

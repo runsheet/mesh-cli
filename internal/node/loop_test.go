@@ -78,6 +78,8 @@ type fakeWS struct {
 	// pushedHead and pushedErr are what PushedHead answers.
 	pushedHead string
 	pushedErr  error
+	// changed are what ChangedPaths answers.
+	changed []string
 	// events are Authorize (with its token), Prepare, Diff and Push in
 	// the order they came
 	events []string
@@ -156,6 +158,13 @@ func assertNoGoalDoc(t *testing.T, ws *fakeWS) {
 	}
 }
 
+// ChangedPaths answers changed.
+func (w *fakeWS) ChangedPaths(_ context.Context, dir, base string) ([]string, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]string(nil), w.changed...), nil
+}
+
 func (w *fakeWS) Diff(_ context.Context, dir, base string) (string, error) {
 	w.mu.Lock()
 	w.events = append(w.events, "diff")
@@ -176,6 +185,12 @@ type fakeHarness struct {
 	// set, each server's calls, errors and wall time (Result.Tools).
 	toolCalls map[string]int
 	tools     map[string]*harness.ToolStat
+	// turns, inputPerTurnMean, inputPerTurnMax and largestToolResults,
+	// when turns is set, are the run's per-turn input and largest tool
+	// results (mesh-spends-less-per-item), same shape as a real stream's.
+	turns                             int
+	inputPerTurnMean, inputPerTurnMax int64
+	largestToolResults                []harness.ToolResultSize
 }
 
 func (h *fakeHarness) Name() string { return "claude-code" }
@@ -208,7 +223,11 @@ func (h *fakeHarness) Run(ctx context.Context, job harness.Job, on func(harness.
 			ids[server] = append(ids[server], fmt.Sprintf("toolu_%s_%d", server, i+1))
 		}
 	}
-	return harness.Result{Success: true, Text: text, CostUSD: 1.25, SessionID: "s-1", ToolCalls: h.toolCalls, ToolCallIDs: ids, Tools: h.tools}, nil
+	res := harness.Result{Success: true, Text: text, CostUSD: 1.25, SessionID: "s-1", ToolCalls: h.toolCalls, ToolCallIDs: ids, Tools: h.tools}
+	if h.turns > 0 {
+		res.Turns, res.InputPerTurnMean, res.InputPerTurnMax, res.LargestToolResults = h.turns, h.inputPerTurnMean, h.inputPerTurnMax, h.largestToolResults
+	}
+	return res, nil
 }
 
 func TestLoopClaimsRunsAndFinishes(t *testing.T) {
@@ -333,11 +352,11 @@ func TestRunnerFailsAnUnsuccessfulSession(t *testing.T) {
 	}
 	assertNoGoalDoc(t, ws)
 	// the goal's remaining budget bounds the session: (1000-100)/100 = 9
-	if b := runner.Budget(&gateway.Goal{BudgetCents: 1000, SpentCents: 100}); b != 9 {
+	if b := runner.Budget(&gateway.Goal{BudgetCents: 1000, SpentCents: 100}, "build", ""); b != 9 {
 		t.Fatalf("budget = %v", b)
 	}
 	runner.MaxBudgetUSD = 2
-	if b := runner.Budget(&gateway.Goal{BudgetCents: 1000, SpentCents: 100}); b != 2 {
+	if b := runner.Budget(&gateway.Goal{BudgetCents: 1000, SpentCents: 100}, "build", ""); b != 2 {
 		t.Fatalf("capped budget = %v", b)
 	}
 }

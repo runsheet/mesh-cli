@@ -179,24 +179,29 @@ var goalPlanCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		repos, err := s.gw.Repos(ctx, s.org.AccountID, s.org.Login)
+		id, err := s.goalID(args[0])
 		if err != nil {
 			return err
 		}
+		goal, err := s.gw.Goal(ctx, id)
+		if err != nil {
+			return err
+		}
+		project, err := s.gw.Project(ctx, goal.ProjectID)
+		if err != nil {
+			return fmt.Errorf("project: %w", err)
+		}
+		// the project's repos, each under its own account's login — not
+		// only the org's own account
+		repos, err := s.gw.ProjectRepos(ctx, project.RepoIDs)
+		if err != nil {
+			return fmt.Errorf("repos: %w", err)
+		}
 		planned := make([]gateway.PlannedItem, 0, len(items))
 		for _, it := range items {
-			name := it.Repo
-			if _, n, ok := strings.Cut(it.Repo, "/"); ok {
-				name = n
-			}
-			repoID := ""
-			for _, r := range repos {
-				if strings.EqualFold(r.Name, name) {
-					repoID = r.ID
-				}
-			}
-			if repoID == "" {
-				return fmt.Errorf("item %d: no repo %q under %s", it.Seq, it.Repo, s.org.Login)
+			repoID, err := resolvePlanRepo(repos, it.Repo)
+			if err != nil {
+				return fmt.Errorf("item %d: %w in project %s", it.Seq, err, project.Slug)
 			}
 			deps := it.DependsOn
 			if deps == nil {
@@ -204,16 +209,48 @@ var goalPlanCmd = &cobra.Command{
 			}
 			planned = append(planned, gateway.PlannedItem{Seq: it.Seq, Title: it.Title, Brief: it.Brief, Acceptance: it.Acceptance, DependsOn: deps, RepoID: repoID, BaseRef: it.BaseRef, Model: strings.TrimSpace(it.Model)})
 		}
-		id, err := s.goalID(args[0])
-		if err != nil {
-			return err
-		}
 		if err := s.gw.PlanGoal(ctx, id, s.signIn(ctx), planned, 0, nil); err != nil {
 			return err
 		}
 		fmt.Printf("Goal %s planned with %d items.\n", args[0], len(planned))
 		return nil
 	},
+}
+
+// resolvePlanRepo finds an item's repo — owner/name, or a bare name —
+// among the project's repos, case-insensitively. A bare name, or an
+// owner/name no repo matches in full, falls back to the name alone only
+// when exactly one of the project's repos carries it.
+func resolvePlanRepo(repos []gateway.Repo, ref string) (string, error) {
+	ref = strings.TrimSpace(ref)
+	if strings.Contains(ref, "/") {
+		for _, r := range repos {
+			if strings.EqualFold(r.FullName(), ref) {
+				return r.ID, nil
+			}
+		}
+	}
+	name := ref
+	if _, n, ok := strings.Cut(ref, "/"); ok {
+		name = n
+	}
+	var found []gateway.Repo
+	for _, r := range repos {
+		if strings.EqualFold(r.Name, name) {
+			found = append(found, r)
+		}
+	}
+	switch len(found) {
+	case 1:
+		return found[0].ID, nil
+	case 0:
+		return "", fmt.Errorf("no repo %q", ref)
+	}
+	names := make([]string, len(found))
+	for i, r := range found {
+		names[i] = r.FullName()
+	}
+	return "", fmt.Errorf("repo %q is ambiguous (%s)", ref, strings.Join(names, ", "))
 }
 
 func goalVerb(use, short string, run func(ctx context.Context, s *goalScope, id string) error) *cobra.Command {

@@ -60,8 +60,8 @@ func usageOf(t *testing.T, f *gatewaytest.Fake) map[string]any {
 
 // (1) A known Codex account with headroom takes a normal item's
 // evaluation: the Codex harness runs on the issued login's CODEX_HOME,
-// on the Codex tier of the evaluate model (sonnet → gpt-6-sol), and the
-// report handed in names adapter codex, gpt-6-sol and the credential.
+// on the Codex tier of the evaluate model (sonnet → gpt-6-luna), and
+// the report handed in names adapter codex, gpt-6-luna and the credential.
 func TestEvaluationRunsOnCodexWithHeadroom(t *testing.T) {
 	f, ev, claude, codex, _, logs := familyFixture(t, "normal", "sonnet", "VERDICT: FAIL", "Holds.\nVERDICT: PASS")
 	in := evaluateItem1(t, f, ev)
@@ -69,20 +69,20 @@ func TestEvaluationRunsOnCodexWithHeadroom(t *testing.T) {
 		t.Fatalf("runs: claude %d, codex %d", len(claude.jobs), codex.runs())
 	}
 	j := codex.jobs[0]
-	if j.Model != "gpt-6-sol" || j.Outlive {
+	if j.Model != "gpt-6-luna" || j.Outlive {
 		t.Fatalf("codex job model %q outlive %v", j.Model, j.Outlive)
 	}
 	if _, ok := envOf(j.Env, "CODEX_HOME"); !ok {
 		t.Error("the Codex evaluation has no CODEX_HOME of the issued login")
 	}
-	if in["passed"] != true || in["notes"] != "Holds.\n\n(evaluated on Codex gpt-6-sol)" || in["costCents"] != float64(40) {
+	if in["passed"] != true || in["notes"] != "Holds.\n\n(evaluated on Codex gpt-6-luna)" || in["costCents"] != float64(40) {
 		t.Fatalf("recorded %+v", in)
 	}
 	u := usageOf(t, f)
-	if u["adapter"] != "codex" || u["model"] != "gpt-6-sol" || u["credentialId"] != "oa-1" || u["credentialKind"] != "subscription" || u["inputTokens"] != float64(1000) {
+	if u["adapter"] != "codex" || u["model"] != "gpt-6-luna" || u["credentialId"] != "oa-1" || u["credentialKind"] != "subscription" || u["inputTokens"] != float64(1000) {
 		t.Fatalf("usage: %v", u)
 	}
-	for _, want := range []string{"item ship-it/1: evaluate on Codex gpt-6-sol: mesh/ship-it-1", "item ship-it/1: evaluation passed on Codex gpt-6-sol"} {
+	for _, want := range []string{"item ship-it/1: evaluate on Codex gpt-6-luna: mesh/ship-it-1", "item ship-it/1: evaluation passed on Codex gpt-6-luna"} {
 		if !strings.Contains(logs.String(), want) {
 			t.Errorf("node.log lacks %q:\n%s", want, logs.String())
 		}
@@ -114,10 +114,10 @@ func TestPacedCodexFallsBackToClaudeForNormalWork(t *testing.T) {
 	f, ev, claude, codex, limits, _ = familyFixture(t, "urgent", "sonnet", "Holds.\nVERDICT: PASS", "Holds too.\nVERDICT: PASS")
 	paced(limits)
 	evaluateItem1(t, f, ev)
-	if codex.runs() != 1 || codex.jobs[0].Model != "gpt-6-sol" {
+	if codex.runs() != 1 || codex.jobs[0].Model != "gpt-6-luna" {
 		t.Fatalf("urgent: codex runs %d", codex.runs())
 	}
-	if u := usageOf(t, f); u["adapter"] != "codex" || u["model"] != "gpt-6-sol" {
+	if u := usageOf(t, f); u["adapter"] != "codex" || u["model"] != "gpt-6-luna" {
 		t.Fatalf("urgent: usage %v", u)
 	}
 }
@@ -185,7 +185,7 @@ func TestCodexFirstClaudeSecondOpinion(t *testing.T) {
 		t.Fatalf("runs: claude %d, codex %d", len(claude.jobs), codex.runs())
 	}
 	xj, cj := codex.jobs[0], claude.jobs[0]
-	if xj.Model != "gpt-6-astra" || cj.Model != "opus" || xj.Prompt != cj.Prompt || xj.Workspace != cj.Workspace {
+	if xj.Model != "gpt-6-sol" || cj.Model != "opus" || xj.Prompt != cj.Prompt || xj.Workspace != cj.Workspace {
 		t.Fatalf("codex %q, claude %q", xj.Model, cj.Model)
 	}
 	if _, ok := envOf(cj.Env, "CODEX_HOME"); ok {
@@ -194,12 +194,12 @@ func TestCodexFirstClaudeSecondOpinion(t *testing.T) {
 	if tok, _ := envOf(cj.Env, "CLAUDE_CODE_OAUTH_TOKEN"); tok != issuedSecret {
 		t.Error("the Claude second opinion is not on the issued Claude account")
 	}
-	want := "Codex (first evaluation, gpt-6-astra): VERDICT: PASS\nHolds.\n\nClaude (second opinion, opus): VERDICT: PASS\nAlso holds.\n\n(evaluated on Codex gpt-6-astra; second opinion on Claude opus)"
+	want := "Codex (first evaluation, gpt-6-sol): VERDICT: PASS\nHolds.\n\nClaude (second opinion, opus): VERDICT: PASS\nAlso holds.\n\n(evaluated on Codex gpt-6-sol; second opinion on Claude opus)"
 	if in["passed"] != true || in["notes"] != want || in["costCents"] != float64(165) {
 		t.Fatalf("recorded %+v\nwant notes %q", in, want)
 	}
 	u := usageOf(t, f)
-	if u["adapter"] != "codex" || u["model"] != "gpt-6-astra" || u["credentialId"] != "oa-1" || u["listCostCents"] != float64(165) {
+	if u["adapter"] != "codex" || u["model"] != "gpt-6-sol" || u["credentialId"] != "oa-1" || u["listCostCents"] != float64(165) {
 		t.Fatalf("usage: %v", u)
 	}
 
@@ -364,7 +364,7 @@ func TestCodexPreflightPassesAndGuardsSecondOpinion(t *testing.T) {
 	pf := &fakePreflight{}
 	ev.CodexPreflight = pf.check
 	in := evaluateItem1(t, f, ev)
-	if len(pf.jobs) != 1 || codex.runs() != 1 || len(claude.jobs) != 0 || in["notes"] != "Holds.\n\n(evaluated on Codex gpt-6-sol)" {
+	if len(pf.jobs) != 1 || codex.runs() != 1 || len(claude.jobs) != 0 || in["notes"] != "Holds.\n\n(evaluated on Codex gpt-6-luna)" {
 		t.Fatalf("preflights %d, runs codex %d claude %d, recorded %+v", len(pf.jobs), codex.runs(), len(claude.jobs), in)
 	}
 	if h, _ := envOf(pf.jobs[0].Env, "CODEX_HOME"); h == "" || h != mustEnv(t, codex.jobs[0].Env, "CODEX_HOME") || pf.jobs[0].Model != codex.jobs[0].Model {
@@ -438,7 +438,7 @@ func TestCodexWithoutContextIsNotAVerdict(t *testing.T) {
 	if tok, _ := envOf(cj.Env, "CLAUDE_CODE_OAUTH_TOKEN"); tok != issuedSecret {
 		t.Error("the Claude evaluation is not on the issued Claude account")
 	}
-	want := "Codex (first attempt, gpt-6-sol): no verdict — prologue: Auth required during MCP startup\n\nHolds.\n\n(evaluated on sonnet)\ntools: prologue: first call errored: Auth required during MCP startup"
+	want := "Codex (first attempt, gpt-6-luna): no verdict — prologue: Auth required during MCP startup\n\nHolds.\n\n(evaluated on sonnet)\ntools: prologue: first call errored: Auth required during MCP startup"
 	if in["passed"] != true || in["notes"] != want || in["costCents"] != float64(165) {
 		t.Fatalf("recorded %+v\nwant notes %q", in, want)
 	}
@@ -446,7 +446,7 @@ func TestCodexWithoutContextIsNotAVerdict(t *testing.T) {
 		t.Fatalf("prologue row %v", row)
 	}
 	for _, s := range []string{
-		"item ship-it/1: evaluation on Codex gpt-6-sol saw no context (prologue: Auth required during MCP startup); not a verdict, evaluating on Claude sonnet",
+		"item ship-it/1: evaluation on Codex gpt-6-luna saw no context (prologue: Auth required during MCP startup); not a verdict, evaluating on Claude sonnet",
 		"item ship-it/1: evaluation passed on Claude sonnet",
 	} {
 		if !strings.Contains(logs.String(), s) {
@@ -468,14 +468,14 @@ func TestClaudeWithoutContextRunsOnCodex(t *testing.T) {
 	if codex.runs() != 1 || len(claude.jobs) != 1 || codex.jobs[0].Prompt != claude.jobs[0].Prompt {
 		t.Fatalf("runs: claude %d, codex %d", len(claude.jobs), codex.runs())
 	}
-	want := "Claude (first attempt, sonnet): no verdict — prologue: failed\n\nHolds.\n\n(evaluated on Codex gpt-6-sol)\ntools: prologue served, never called: failed"
+	want := "Claude (first attempt, sonnet): no verdict — prologue: failed\n\nHolds.\n\n(evaluated on Codex gpt-6-luna)\ntools: prologue served, never called: failed"
 	if in["passed"] != true || in["notes"] != want {
 		t.Fatalf("recorded %+v\nwant notes %q", in, want)
 	}
 	if row := toolRow(t, usageOf(t, f), "prologue"); row["calls"] != 3.0 || row["errors"] != 1.0 {
 		t.Fatalf("prologue row %v", row)
 	}
-	if !strings.Contains(logs.String(), "evaluation on Claude sonnet saw no context (prologue: failed); not a verdict, evaluating on Codex gpt-6-sol") {
+	if !strings.Contains(logs.String(), "evaluation on Claude sonnet saw no context (prologue: failed); not a verdict, evaluating on Codex gpt-6-luna") {
 		t.Errorf("node.log:\n%s", logs.String())
 	}
 }
@@ -514,7 +514,7 @@ func TestSomeContextIsAVerdict(t *testing.T) {
 	ev.MCP = PrologueMCP(f.URL(), "rs_test")
 	codex.tools = map[string]*harness.ToolStat{"prologue": {Calls: 3, Errors: 1, FirstError: "timeout"}}
 	in := evaluateItem1(t, f, ev)
-	if codex.runs() != 1 || len(claude.jobs) != 0 || in["passed"] != false || in["notes"] != "Nothing asserts it.\n\n(evaluated on Codex gpt-6-sol)\ntools: prologue: first call errored: timeout" {
+	if codex.runs() != 1 || len(claude.jobs) != 0 || in["passed"] != false || in["notes"] != "Nothing asserts it.\n\n(evaluated on Codex gpt-6-luna)\ntools: prologue: first call errored: timeout" {
 		t.Fatalf("runs claude %d codex %d, recorded %+v", len(claude.jobs), codex.runs(), in)
 	}
 }

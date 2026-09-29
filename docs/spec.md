@@ -150,9 +150,56 @@ threshold on its repo and routes the flag through the same re-ask as
 an unverifiable acceptance (`PlanInput.Rejected`), with the reason
 `model <m> has first-pass <x> on <repo>`.
 
+## Usage report
+
+Each session's usage report (`gateway.UsageReport`, carried as `usage`
+on the command that ends it) also names its turn shape, added by goal
+`mesh-spends-less-per-item`: `turns`, `inputPerTurnMean` and
+`inputPerTurnMax` (its per-turn input tokens) and `largestToolResults`
+(its five largest tool results by content byte length, `{tool,
+bytes}`), all left off the report when zero or empty. A priced tool
+call's own record (`recordToolUsage`) carries none of these four: they
+are the whole session's figures, not one call's, and would otherwise be
+summed once per priced call instead of once per session. See
+`docs/adr/adr-005-accounts-on-the-node.md`'s "usage report per session"
+section for the full contract.
+
 ## Success criteria
 
 - end users can create/update Mesh data without direct database credentials
 - connector remains focused on gateway integration
 - writes are auditable and actor-attributed
 - Ralph Loop operations become scriptable and repeatable
+
+## Node session budgets
+
+A node's session budget is capped per kind of session (build, evaluate,
+plan, rebase, research) and then per the model tier it runs on. Set in
+`~/.mesh/node.yaml`'s `budgets:` (`docs/adr/adr-012-session-budgets-by-kind-and-model.md`);
+a kind or tier left unset takes its default — only `build` has one:
+
+```yaml
+budgets:
+  build:
+    haiku: 2
+    sonnet: 4
+    opus: 10
+```
+
+### Hand-back
+
+A build on the host is watched as it runs: each turn's usage is priced
+by its model tier's list price (`internal/harness/handback.go`,
+`listPrices`, dated), since the CLI's `total_cost_usd` arrives only at
+the end. When the running cost passes 60% of the session's budget
+(`harness.DefaultHandBackAt`) and the branch has no commit past
+`origin/<base>` (`git rev-list --count`), the session is stopped and
+resumed once with `--resume <session>` on the budget left, told to
+commit what works, run the tests once and finish. A hand-back that
+commits finishes as usual; one that still has no commit is finished
+empty, and the platform sends the item back to `ready`. What the first
+run spent on — cost, turns, input per turn, its largest and most-called
+tools — is noted on the item and kept in
+`~/.mesh/items/<item>.last-session`, and the item's next build prompt
+names it under "The last session on this item". Sandboxed, adopted and
+Codex sessions do not hand back; their budget caps them alone.

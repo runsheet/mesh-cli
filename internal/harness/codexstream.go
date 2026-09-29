@@ -48,11 +48,13 @@ type CodexItem struct {
 	Command          string `json:"command"`
 	AggregatedOutput string `json:"aggregated_output"`
 	ExitCode         *int   `json:"exit_code"`
-	// Server is an mcp_tool_call's MCP server.
-	Server string `json:"server"`
+	// Server and ToolName are an mcp_tool_call's MCP server and tool.
+	Server   string `json:"server"`
+	ToolName string `json:"tool"`
 	// Error and Result are an mcp_tool_call's: error is
 	// {"message": "…"} on a failed call (a bare string accepted too),
-	// result {"content": [{"type": "text", "text": "…"}], …}.
+	// result {"content": [{"type": "text", "text": "…"}], …}; only
+	// Result's byte length is read for LargestToolResults.
 	Error  json.RawMessage `json:"error"`
 	Result json.RawMessage `json:"result"`
 	// Status is in_progress, completed or failed (declined, for a
@@ -121,8 +123,13 @@ func (p CodexPrice) Cost(u CodexUsage) float64 {
 // and Tools whatever its status. An error item or top-level error
 // naming an MCP server that failed to start (mcpStartupServers) counts
 // an error for that server too, the message as FirstError, even with
-// zero calls — once per server. Lines that are not JSON and unknown
-// types are skipped.
+// zero calls — once per server. Its own result, when carried, keeps its
+// byte length among Result.LargestToolResults, named
+// mcp__<server>__<tool>. turn.completed's usage is the thread's running
+// total, not the turn's own share: each turn's share is the delta from
+// the previous turn.completed, and Result.InputPerTurnMean and
+// InputPerTurnMax are computed across those shares. Lines that are not
+// JSON and unknown types are skipped.
 func ParseCodexStream(r io.Reader, model string, onEvent func(CodexEvent)) Result {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 16<<20)
@@ -130,6 +137,8 @@ func ParseCodexStream(r io.Reader, model string, onEvent func(CodexEvent)) Resul
 	var usage *CodexUsage
 	completed, failed := false, false
 	events := 0
+	var prevInput, turnInputSum, turnInputMax int64
+	turnCount := 0
 	pending := map[string]time.Time{}
 	startupFailed := map[string]bool{}
 	startupError := func(msg string) {
@@ -191,6 +200,13 @@ func ParseCodexStream(r io.Reader, model string, onEvent func(CodexEvent)) Resul
 						stat.FirstError = capText(codexCallError(ev.Item), 300)
 					}
 				}
+				if len(ev.Item.Result) > 0 {
+					name := "mcp__" + server
+					if ev.Item.ToolName != "" {
+						name += "__" + ev.Item.ToolName
+					}
+					res.addToolResultSize(name, len(ev.Item.Result))
+				}
 			}
 			if ev.Item.Type == "error" {
 				startupError(ev.Item.Message)
@@ -206,6 +222,16 @@ func ParseCodexStream(r io.Reader, model string, onEvent func(CodexEvent)) Resul
 			if ev.Usage != nil {
 				u := *ev.Usage
 				usage = &u
+				turnCount++
+				share := u.InputTokens - prevInput
+				if share < 0 {
+					share = 0
+				}
+				turnInputSum += share
+				if share > turnInputMax {
+					turnInputMax = share
+				}
+				prevInput = u.InputTokens
 			}
 		case "turn.failed":
 			failed = true
@@ -230,6 +256,10 @@ func ParseCodexStream(r io.Reader, model string, onEvent func(CodexEvent)) Resul
 		if ok {
 			res.CostUSD = price.Cost(*usage)
 		}
+	}
+	if turnCount > 0 {
+		res.InputPerTurnMean = turnInputSum / int64(turnCount)
+		res.InputPerTurnMax = turnInputMax
 	}
 	res.Success = completed && !failed
 	res.EmptyOutput = events == 0

@@ -145,10 +145,40 @@ names a `model` per item with a one-line `model_reason`, by this rubric:
   failing item's retry, or when unsure.
 
 The model a session ran on is in `node.log` (`item <goal>/<seq>: build
-on haiku`, `evaluate on sonnet`, `rebase on …`) and on the item's events
-(`session started: <branch> on haiku`, and the evaluator's notes end
-`(evaluated on sonnet)`); node.log also records each model the planner
-chose when the plan is handed in.
+on haiku, budget $2.00 (the default for build/haiku)`, `evaluate on
+sonnet`, `rebase on …`) and on the item's events (`session started:
+<branch> on haiku`, and the evaluator's notes end `(evaluated on
+sonnet)`); node.log also records each model the planner chose when the
+plan is handed in.
+
+### Session budgets
+
+A session's budget is capped by kind — build, evaluate, plan, rebase,
+research — and then by the model tier it runs on: `haiku`, `sonnet` or
+`opus` (a full `claude-*` id resolves to its tier). `~/.mesh/node.yaml`'s
+`budgets:` names the figures; a kind or tier it leaves out takes its
+default — only `build` has one (sonnet build sessions are where spend
+runs away): `haiku` $2, `sonnet` $4, `opus` $10. The other kinds keep
+their historical flat cap (`--eval-budget-usd` 3, `--plan-budget-usd`,
+`--research-budget-usd` and `--rebase-budget-usd` 5) until `budgets:`
+names one for them too.
+
+```yaml
+budgets:
+  build:
+    haiku: 2
+    sonnet: 4
+    opus: 10
+```
+
+The session's actual cap is the smallest of the goal's own remaining
+budget, this figure and the kind's `--*-budget-usd` flag (a session with
+no goal, such as research, or a flag left at 0, drops out of the
+comparison). Read live like the accounts and project budgets — a change
+takes on the next tick, no restart needed. The platform is meant to
+override this per claimed item or project once its schema carries a
+`budgets` field (ADR 012); it does not yet, so node.yaml is the only
+source.
 
 ### The director
 
@@ -441,7 +471,9 @@ available on Bedrock, Vertex or Foundry; Team/Enterprise orgs must enable
 in `~/.mesh/work/<goal-slug>/<seq>` (cloned with your `gh`, branch
 `mesh/<goal-slug>-<seq>` from the base ref), with the goal's Prologue
 context written under `.mesh/context/` (excluded from git). The budget is
-the goal's remaining budget, capped by `--max-budget-usd`. The node
+the smallest of the goal's remaining budget, node.yaml's `budgets:` for
+build and the item's model (see "Session budgets" above), and
+`--max-budget-usd`. The node
 reports progress every minute (`ReportWorkItemProgress` with the cents
 since the last report), pushes the branch with your credentials and
 `FinishWorkItem`s — or `FailWorkItem`s. `--once` runs one tick.
@@ -1341,8 +1373,8 @@ codex:
     - name: api-file
       api_key_file: ~/.mesh/codex/api.key
   models:                       # the Codex model for each Claude tier
-    opus: gpt-6-astra           # default for Opus
-    sonnet: gpt-6-sol           # default for Sonnet
+    opus: gpt-6-astra           # override — default for Opus is gpt-6-sol
+    sonnet: gpt-6-sol           # override — default for Sonnet is gpt-6-luna
     haiku: gpt-6-luna           # default for Haiku
 ```
 
@@ -1350,9 +1382,12 @@ Each account has a `name` and exactly one of `home`, `api_key_env` and
 `api_key_file`. A load that finds anything else is refused.
 
 **Default model mappings:** when a planner or agent model names a bare tier
-(`opus`, `sonnet`, `haiku`) for a Codex evaluator, the node maps it using the
-defaults above. Full model ids (`gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`) pass
-through unchanged. Defaults may be overridden in the `models:` block.
+(`opus`, `sonnet`, `haiku`) for a Codex evaluator, the node maps it to
+`gpt-6-sol` for Opus and `gpt-6-luna` for Sonnet and Haiku unless the
+`models:` block overrides it. `gpt-6-astra` costs about three times what
+`gpt-6-sol` does for one evaluation, so it never runs unless an item pins
+it or `models:` names it. Full model ids (`gpt-6-astra`, `gpt-6-sol`,
+`gpt-6-luna`) pass through unchanged.
 
 **Issued credentials:** An OpenAI credential added in the console and serving
 `codex` is handed to the claimed session by the claim-time read. A ChatGPT
@@ -1364,10 +1399,10 @@ environment only (docs/adr/adr-005-accounts-on-the-node.md).
 
 `models` maps the Claude tiers to Codex models. A session asked for
 `opus`, `sonnet` or `haiku` runs on that tier's Codex model, and so does
-a full id of that family (`claude-opus-5` → `gpt-6-astra`). A tier left
-out of `models` takes its default: `gpt-6-astra`, `gpt-6-sol`,
-`gpt-6-luna`. An empty model, or one of no tier, runs on Codex's own
-default.
+a full id of that family (`claude-opus-5` → `gpt-6-sol`). A tier left
+out of `models` takes its default: `gpt-6-sol` for Opus, `gpt-6-luna`
+for Sonnet and Haiku. An empty model, or one of no tier, runs on
+Codex's own default.
 
 The session's MCP servers (Prologue) are written to `config.toml` in
 its temporary home. Secrets are named there by variable, never by value
@@ -1517,9 +1552,16 @@ run by hand) does, and opens or updates the PR on `bot/schema-refresh`.
 
 ## Release
 
-Nodes update themselves from the GitHub releases of
-`runsheet/mesh-cli`, which `.github/workflows/release-tag.yml` cuts
-from a tag (docs/adr/adr-002-signed-tag-releases.md). To cut one:
+Nodes update themselves from the GitHub releases of the public mirror
+`runsheet/mesh`: `.github/workflows/release-tag.yml` cuts a release
+from a tag on `runsheet/mesh-cli` (docs/adr/adr-002-signed-tag-releases.md),
+and the same tag is published, identical, on the mirror — same tag,
+title, notes and five assets, via `scripts/mirror-release.sh` and the
+`RELEASE_TOKEN` secret (`GITHUB_TOKEN` cannot write another repo); see
+the amendment "the public mirror on runsheet/mesh" for why and how it
+is checked. To cut one, the next number one above the latest on the
+mirror (`gh release list -R runsheet/mesh`, `v0.2.x` — the public line
+`cli-release.yml` began):
 
 ```sh
 git tag vX.Y.Z && git push origin vX.Y.Z
@@ -1529,6 +1571,15 @@ Any tag starting `v` runs it; a tag with a `-` (`v0.4.0-test.1`) is
 published as a prerelease. The version is stamped from the tag
 (`internal/version.Version`), so `mesh --version` and the node's
 heartbeat report exactly the tag. There is no manual trigger — tags only.
+
+The release notes are the PRs merged since the previous plain
+`vX.Y.Z` tag, grouped by goal slug — `scripts/release-notes.sh
+<previous-tag> <tag>` reads each PR's title and branch (`gh pr view`)
+and, for a `mesh/<slug>-<seq>` branch, prints a `### <slug>` section
+with the goal doc's link and one bullet per PR in merge order; a PR
+from any other branch lands under `### Other`, and a commit with no PR
+under `### Commits`. The publish job writes them to `release/NOTES.md`
+and `gh release create` publishes it with `--notes-file`.
 
 Test tags carry a `-` (`v0.0.0-selfupdate-test.<n>`), so they are
 prereleases, and `mesh node update` with no version never picks one up as
@@ -1568,7 +1619,7 @@ release by hand:
 
 ```sh
 TAG=vX.Y.Z
-gh release download "$TAG" -R runsheet/mesh-cli \
+gh release download "$TAG" -R runsheet/mesh \
   -p SHA256SUMS -p SHA256SUMS.sigstore.json -p mesh-linux-amd64
 cosign verify-blob \
   --bundle SHA256SUMS.sigstore.json \
@@ -1578,10 +1629,12 @@ cosign verify-blob \
 sha256sum --check --ignore-missing SHA256SUMS
 ```
 
-There is no other release channel: `cli-release.yml` (main builds,
-published unsigned to another repo) was dropped when the repo moved to
-the runsheet org. `release.yml` is the Shipper's `workflow_dispatch` stub
-and publishes nothing.
+There is no other release channel on `runsheet/mesh-cli`:
+`cli-release.yml` (main builds, published unsigned to the old public
+repo) was dropped when the repo moved to the runsheet org; its public
+line continues, signed, as the `runsheet/mesh` mirror above.
+`release.yml` is the Shipper's `workflow_dispatch` stub and publishes
+nothing.
 
 ### Updating a node
 
@@ -1640,8 +1693,9 @@ mesh node update v0.4.0 --verify-only    # download and verify into a temp dir; 
 mesh node update v0.4.0 --verify-only --from-dir ./rel   # the same, from files already downloaded
 ```
 
-It verifies first and refuses anything not signed by `release-tag.yml` on
-`refs/tags/<version>` with issuer `https://token.actions.githubusercontent.com`,
+It verifies first and refuses anything not signed by `runsheet/mesh-cli`'s
+`release-tag.yml` on `refs/tags/<version>` with issuer
+`https://token.actions.githubusercontent.com`,
 or whose hash does not match, printing the reason and exiting non-zero
 with the executable and `.prev` untouched. It then pulls the release's
 [node image](#node-image) — a failed pull is refused the same way. A
@@ -1654,14 +1708,18 @@ same two-failed-starts rollback. It needs no platform, so it works when
 the console cannot reach the node — or `mesh node update --verify-only`
 checks a release from any machine.
 
-**The repo is private.** GitHub answers 404 on its release download URLs
-without (and even with) a token, so today neither the node nor `mesh node
-update` can fetch a release by itself (ADR-002). Download it with `gh`
-and verify or install from the directory:
+**The mirror is catching up.** The node and `mesh node update` fetch
+anonymously from `runsheet/mesh`, no token needed (ADR-002's amendment).
+Until `v0.2.187` is published there, its latest release is still
+`v0.2.186`, an unsigned main build from before signed releases — it has
+no `SHA256SUMS` signed by `runsheet/mesh-cli`'s `release-tag.yml`, so
+`mesh node update` (with no version) refuses it
+rather than silently accepting it; ask for a signed tag by name in the
+meantime, or download and check one by hand:
 
 ```sh
 TAG=v0.0.0-selfupdate-test.1
-gh release download "$TAG" -R runsheet/mesh-cli -D rel
+gh release download "$TAG" -R runsheet/mesh -D rel
 mesh node update --verify-only --from-dir rel "$TAG"
 ```
 

@@ -66,10 +66,9 @@ below).
   which works only while the repo is public. **It is private today**, and
   those URLs answer 404 even with a token (proven on the reference
   release, 2026-09-25), so a node cannot yet fetch a release on its own.
-  Either the repo (or a public mirror of its releases) goes public, or
-  the source moves to the authenticated API asset download with a
-  credential the node holds; that choice is open. Until then an operator
-  can `gh release download` and run `mesh node update --from-dir`.
+  Superseded by the amendment below (goal `signed-releases-on-runsheet-mesh`):
+  the source moved to the public mirror `runsheet/mesh`, anonymous, no
+  token, while the signing identity stays `runsheet/mesh-cli`'s.
 - The loop follows `NodeIndex.desiredVersion` (the platform half,
   update-nodes-from-console), read after each tick's heartbeat
   (`GetDesiredVersion`; a platform without the field is no update,
@@ -364,6 +363,91 @@ process start, and it is the only thing a slow platform can exhaust:
   (`update.confirm_within`), the log to watch (`~/.mesh/node.log`) and
   that a binary that cannot run, or cannot confirm on three starts, is
   rolled back with `~/.mesh/update.json` saying why.
+
+## Amendment: the public mirror on runsheet/mesh (goal `signed-releases-on-runsheet-mesh`, 2026-09-28)
+
+The `projectmesh.io/mesh` repo the old, unsigned `cli-release.yml`
+published to became `runsheet/mesh` — public — on 2026-09-28 12:00Z.
+Every tag release is now published twice: the one above on
+`runsheet/mesh-cli`, and an identical one on `runsheet/mesh`, so the
+public download channel every install instruction points at is signed
+again and current.
+
+- `release-tag.yml`'s `publish` job computes `$NOTES` once, naming the
+  source commit and both repos, and both creates use it. After it
+  creates the release on `runsheet/mesh-cli` (`--verify-tag`, the tag
+  already exists there), `scripts/mirror-release.sh <tag> <sha>
+  <release-dir>` creates the same release on `runsheet/mesh` — same
+  tag, title, notes, `--prerelease` when the tag has a `-`, the same
+  five files — with no `--verify-tag`: the tag does not exist on the
+  mirror, and GitHub creates it there on the mirror's default branch,
+  as `cli-release.yml` did for v0.2.1–186. It then proves the mirror
+  identical — the downloaded `SHA256SUMS` byte-for-byte the one just
+  signed, its bundle still verifying against the **`runsheet/mesh-cli`
+  identity** (the bytes are the same; the mirror is not itself a
+  signing identity) — and pushes `dist/mirror/README.md` to the
+  mirror's `README.md`, only when its content differs. A failing
+  mirror step fails the workflow: there is no release on
+  `runsheet/mesh-cli` alone.
+- **The token.** The workflow's own `GITHUB_TOKEN` cannot write another
+  repo. `RELEASE_TOKEN` — the repo secret that published the old
+  `cli-release.yml` channel to this same public repo before its
+  transfer — is reused: a fine-grained token scoped to `runsheet/mesh`
+  with Contents: read and write, or the runsheet org App's installation
+  token.
+- **Numbering continues the public line.** The next tag is
+  **`v0.2.187`**, the first signed one on the mirror; `runsheet/mesh-cli`
+  itself restarted numbering below it at `v0.1.0` (the transfer
+  amendment above), which is superseded — a prerelease with a note
+  pointing at the `v0.2.x` line, its tag left as it was. Goal
+  `node-releases-on-merge`'s auto-tag takes max `v0.2.x` on
+  `runsheet/mesh` plus one, not `runsheet/mesh-cli`'s own tags: the
+  mirror is the public line's record.
+  `docs/releases-after-transfer.md` carries the detail.
+- The mirror's `README.md` is a source file here,
+  `dist/mirror/README.md`, published verbatim: what the repo is, how to
+  install, and how to verify a download against the
+  `runsheet/mesh-cli` identity — since that is where the workflow ran,
+  not the mirror.
+- `internal/selfupdate` is unchanged by this amendment: the updater
+  still downloads from `runsheet/mesh-cli` and verifies against its own
+  identity. Which repo `selfupdate.Source` downloads from is a
+  following item of the same goal.
+
+## Amendment: the node downloads from runsheet/mesh (goal `signed-releases-on-runsheet-mesh`, 2026-09-28)
+
+`runsheet/mesh-cli` stays private, so the source above (`selfupdate.GitHub`
+downloading from it directly) never worked outside a token an operator
+happened to hold. The public repo that used to carry mesh-cli's releases
+(`projectmesh-io/mesh`, 186 unsigned `v0.2.x` releases through
+`v0.2.186`) was transferred to `runsheet/mesh` on 2026-09-28 and
+`release-tag.yml` now publishes each signed tag there too (a sibling goal
+covers the workflow and the version numbering); this amendment is only
+the updater's side of that:
+
+- `selfupdate.ReleaseBaseURL` and `LatestReleaseURL` name `runsheet/mesh`:
+  the node, `mesh node update` and `mesh node upgrade` all download and
+  ask for the latest release anonymously from the public mirror, no
+  token. `Fetch`'s 404 reason changes to name it: `release %s has no %s
+  on runsheet/mesh (404: not published there, or not a signed release)`.
+- The signing identity is unchanged: `verify.go`'s `IdentityPrefix`,
+  `PreTransferIdentityPrefix`, `preTransferTags` and `ReleasePolicy` are
+  exactly as the Decision above left them. The mirror holds the same
+  bytes `runsheet/mesh-cli`'s `release-tag.yml` signed; the updater
+  verifies against that workflow's identity whichever repo the bytes
+  came from, so a fork or an unrelated push to `runsheet/mesh` proves
+  nothing.
+- `mesh node update` with no version takes the mirror's latest
+  non-prerelease. Until `v0.2.187` is published there, that is still
+  `v0.2.186` — the last of the old unsigned `cli-release.yml` builds,
+  carrying no `SHA256SUMS` or Sigstore bundle at all. `Fetch` refuses it
+  with `ErrMissingAsset` exactly as it would any other release missing
+  an asset; this is the intended behaviour, not a bug to work around,
+  and it clears itself the moment `v0.2.187` ships.
+- This supersedes the Decision section's private-repo bullet above: the
+  choice it left open (make the repo public, or move to an authenticated
+  download) is resolved by the mirror instead — the source repo stays
+  private, and the public copy of its releases is what a node reads.
 
 ## Consequences
 

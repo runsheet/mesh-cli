@@ -29,6 +29,10 @@ type PromptInput struct {
 	// evaluation before and what the evaluator said of the last one.
 	Attempts   int
 	Evaluation string
+	// LastSession is what the last build session on this item spent its
+	// budget on when it was handed back (Result.SpentOn, ADR 012
+	// Hand-back), recorded by the node; empty when none was.
+	LastSession string
 	// Project is the mesh-context project (org/slug) the goal belongs to;
 	// Prologue says the session has mesh-context's tools for context on
 	// demand.
@@ -75,6 +79,9 @@ func BuildPrompt(in PromptInput) string {
 	}
 	if in.Attempts > 0 && strings.TrimSpace(in.Evaluation) != "" {
 		fmt.Fprintf(&b, "## Previous attempt\n\nThis is attempt %d. The branch carries the last attempt's commits; an independent evaluator rejected it. Fix what it found before anything else:\n\n%s\n\n", in.Attempts+1, strings.TrimSpace(in.Evaluation))
+	}
+	if s := strings.TrimSpace(in.LastSession); s != "" {
+		fmt.Fprintf(&b, "## The last session on this item\n\nIt ran past its budget's hand-back mark with nothing committed and was told to commit what worked and finish. %s Do not repeat that: read less, commit earlier — commit each piece that works as soon as it works.\n\n", s)
 	}
 	fmt.Fprintf(&b, "# Goal: %s\n\n", in.GoalTitle)
 	if strings.TrimSpace(in.GoalStatement) != "" {

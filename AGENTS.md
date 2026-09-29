@@ -37,7 +37,11 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
 - `internal/node/`: the loop (`runner`), the workspace and the project's
   context (`workspace.go`: `FetchContext`, `RenderIndex`, the size budget),
   evaluate, plan and research sessions, the service install (`launchd` /
-  `systemd --user`). `internal/gateway/client.go`: the platform client.
+  `systemd --user`). A project's repos — for the planner, the director
+  and `mesh goal plan` — are read from `project.repoIds` through
+  `ProjectRepos`, each owned by its own account's login, never the
+  org's account: an org links several GitHub accounts (the runsheet
+  org's loom project lives at go-apis/loom). `internal/gateway/client.go`: the platform client.
   Its entity selections are generated (`fields_gen.go`, never hand-edited)
   from `schema.json` and `fields/<Type>.txt` (one name per line, sorted,
   `?` for optional): add a line, `go generate ./internal/gateway/...`
@@ -104,8 +108,12 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   §Heartbeat); both for runsheet goal
   `limits-on-the-console` — and `runtimes` and `adapters` — the tool
   runtimes (npx, uvx, docker) and agent CLIs (claude-code, codex)
-  `Loop.LookPath` finds, probed every tick, for `tools-in-the-console`)
-  and `adopted` (below) are sent only when set,
+  `Loop.LookPath` finds, probed every tick, for `tools-in-the-console`),
+  `adopted` (below) and `holding` — the node's holding decision as data,
+  not a log line: each account's status, reset time and what the node
+  still takes on it, and the summary judgement (`HoldingReport`,
+  adr-005's amendment, for runsheet goal `node-says-why-work-waits`) —
+  are sent only when set,
   because they are fields the platform half adds. Capacity, the
   limits thresholds and the orgs need no drain: `Reload` re-reads them
   every tick.
@@ -328,7 +336,9 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   the evaluator judges them with `ChooseAccount` over
   `Limits.CodexReadings` for the goal's priority: one with headroom
   makes it a Codex session on `CodexModel` of the evaluate model
-  (opus → gpt-6-sol, sonnet/haiku → gpt-6-luna, astra only when pinned), opened by `Credentials.Open`
+  (defaults gpt-6-sol for opus, gpt-6-luna for sonnet and haiku — astra
+  costs $1.29 for one evaluation where sol costs about $0.45, so it
+  runs only when pinned), opened by `Credentials.Open`
   (adapter codex) or `OpenOwn`; else Claude as before. A full `gpt-…`
   evaluate/item/agent model pins Codex (`EvaluatorPin`; no headroom is
   `ErrFamilyWaits`, the item stays in evaluating, said once per item by
@@ -357,7 +367,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   as the evaluation proper, its notes opening `<Family> (first attempt,
   <model>): no verdict — <tool>: <error>`; with no other family it
   records nothing (`ErrNoContext`), the item stays in evaluating, said
-  once per node per item (`Blind`). With neither a `codex:` block nor
+  once per item (`Blind`). With neither a `codex:` block nor
   an issued Codex account the node evaluates as before. Builders on
   Codex come later, behind a per-project setting.
 - **Tools** (`internal/tools/`, ADR-006, trd §3 Tools): the
@@ -381,6 +391,31 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   the first 60% and last 40% of the cap (`TrimToolResult`) — and every
   build session `MAX_MCP_OUTPUT_TOKENS` and `BASH_MAX_OUTPUT_LENGTH`
   (`ToolResultsEnv`). Channel mode gets neither; a sandboxed one the env.
+- **The hand-back** (`internal/harness/handback.go`, adr-012
+  Hand-back): a host build's turns are priced by tier (`listPrices`,
+  dated); past `Job.HandBackAt` (the runner's
+  `harness.DefaultHandBackAt`, 0.6) of `MaxBudgetUSD` with
+  `Job.HasCommit` false (`HasCommitSince`: `git rev-list --count
+  origin/<base>..HEAD`) the unit is stopped and `--resume`d once on the
+  budget left with `HandBackPrompt`. `Result.HandedBack`/`SpentOn`; the
+  runner notes `SpentOn` on the item, keeps it in
+  `~/.mesh/items/<item>.last-session` (`RunState.RecordLastSession`)
+  and the next claim's `BuildPrompt` renders it as "The last session on
+  this item". No commit still is an empty finish, back to `ready` on
+  the platform. Sandboxed, adopted and Codex sessions do not hand back.
+- **Validation** (`internal/node/validation.go`, `internal/validate/`,
+  docs/adr/adr-013 and adr-014, runsheet ADR 032): after a successful,
+  not already_done build and before the push, `.runsheet/validate.yml`'s
+  steps the diff selects (`Workspacer.ChangedPaths`) plus the always
+  ones run on HEAD — in the session's pod (`sandboxRunner`, runner
+  image by `sandbox.ImageDigest`) or on the host (`host:<hostname>`,
+  the session's env less its secrets). The attestation goes to
+  `<workdir>.session/attestation.json` and, after the push, to
+  `RecordValidationAttestation` on the item's token. A failing step
+  gets one retry turn (`harness.ValidationRetryPrompt`, the session
+  resumed when it can be), then `FailWorkItem` with `validation failed:
+  step <name> exited <code>`; per-step ms ride the usage report's
+  `validation`. No validate.yml finishes as before.
 - **Services** (`internal/sandbox/services.go`, mesh-specs ADR 007):
   `Resolve(repoDir, allowed)` reads what a repository declares, first
   found wins — `.mesh/services.yml`, else the `services:` of its

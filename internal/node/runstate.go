@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -14,7 +15,8 @@ import (
 // other commands on the machine: its pid (`mesh node drain` signals it),
 // once it drains a marker, and when its capacity is a range the
 // capacity in force (`mesh node status` shows both). All live only as
-// long as the process.
+// long as the process — but for an item's last handed-back session
+// (RecordLastSession), which its next claim reads.
 type RunState struct {
 	// Dir is where the files live: ~/.mesh.
 	Dir string
@@ -122,4 +124,51 @@ func (s RunState) PID() (int, error) {
 func (s RunState) Draining() bool {
 	_, err := os.Stat(s.DrainingPath())
 	return err == nil
+}
+
+// LastSessionPath is where an item's last handed-back build session
+// left what it spent its budget on: items/<item id>.last-session.
+func (s RunState) LastSessionPath(itemID string) string {
+	return filepath.Join(s.Dir, "items", url.PathEscape(itemID)+".last-session")
+}
+
+// RecordLastSession keeps what a handed-back build of the item spent its
+// budget on (harness.Result.SpentOn, ADR 012 Hand-back), for the item's
+// next claim on this node to name in its prompt. It outlives the
+// process: the next attempt may come after a restart.
+func (s *RunState) RecordLastSession(itemID, spentOn string) error {
+	if s == nil || itemID == "" {
+		return nil
+	}
+	p := s.LastSessionPath(itemID)
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		return err
+	}
+	tmp := p + ".tmp"
+	if err := os.WriteFile(tmp, []byte(strings.TrimSpace(spentOn)+"\n"), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, p)
+}
+
+// LastSession is what RecordLastSession kept for the item; "" when
+// nothing was (or s is nil).
+func (s *RunState) LastSession(itemID string) string {
+	if s == nil || itemID == "" {
+		return ""
+	}
+	data, err := os.ReadFile(s.LastSessionPath(itemID))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+// ClearLastSession forgets the item's record: a build that ran to its
+// end without a hand-back has nothing left to warn the next one of.
+func (s *RunState) ClearLastSession(itemID string) {
+	if s == nil || itemID == "" {
+		return
+	}
+	_ = os.Remove(s.LastSessionPath(itemID))
 }

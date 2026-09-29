@@ -954,8 +954,8 @@ func (l *Loop) CurrentScopes() Scopes {
 	return l.Scopes
 }
 
-// reload takes the capacity, the limits, the accounts and the orgs from
-// Reload, logging a change.
+// reload takes the capacity, the limits, the accounts, the session
+// budgets and the orgs from Reload, logging a change.
 // Tick is the only writer of Scopes, so its own reads need no lock.
 func (l *Loop) reload(ctx context.Context) {
 	if l.Reload == nil {

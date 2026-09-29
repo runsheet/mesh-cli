@@ -302,6 +302,70 @@ func TestCredentialsFallBackToNodeYAMLOncePerRun(t *testing.T) {
 	checkNoOldUsage(t, f)
 }
 
+// A gateway whose usage input has no turns, inputPerTurnMean,
+// inputPerTurnMax or largestToolResults (mesh-spends-less-per-item — a
+// platform older than this node) still takes the rest of the report:
+// Carried treats ErrNoUsageDetail as landed, so the record is not
+// logged again, only the once-per-run notice that the detail did not
+// land; every session still gets its own `usage: turns=…` summary line
+// from the stream it actually saw, whatever became of the report.
+func TestCredentialsFallBackFromUsageDetailOncePerRun(t *testing.T) {
+	f := seed(t)
+	issueCredential(f, item1)
+	f.UnknownFields["turns"] = true
+	f.UnknownFields["inputPerTurnMean"] = true
+	f.UnknownFields["inputPerTurnMax"] = true
+	f.UnknownFields["largestToolResults"] = true
+	h := &streamHarness{file: usageStream()}
+	r, _, item, row := runnerOnFake(t, f, h, nil)
+	var logs syncBuf
+	r.Log = log.New(&logs, "", 0)
+	r.Credentials = usageCredentials(r.GW.(CredentialGateway), r.Log)
+
+	items := []gateway.WorkItem{item}
+	for i, id := range []string{"99999999-2222-4222-8222-999999999991", "99999999-2222-4222-8222-999999999992"} {
+		f.WorkItems[id] = map[string]any{"id": id, "goalId": goalID, "orgId": orgID, "seq": 3 + i, "title": "More",
+			"brief": "More.", "acceptance": "go test passes", "repoId": repoID, "baseRef": "main", "status": "claimed", "nodeId": r.Cfg.NodeID, "dependsOn": []string{}}
+		f.GitHubTokens[id] = f.GitHubTokens[item1]
+		issueCredential(f, id)
+		it := item
+		it.ID, it.Seq = id, 3+i
+		items = append(items, it)
+	}
+	for _, it := range items {
+		if err := r.RunItem(context.Background(), it); err != nil {
+			t.Fatalf("item %s: %v", it.ID, err)
+		}
+		if row(it.ID)["status"] != "evaluating" {
+			t.Fatalf("item %s: %v", it.ID, row(it.ID))
+		}
+	}
+	out := logs.String()
+	if n := strings.Count(out, "usage: the platform's usage report carries no turns or tool-result detail; sent without them (said once, for every session this run)"); n != 1 {
+		t.Errorf("detail fallback said %d times:\n%s", n, out)
+	}
+	if n := strings.Count(out, "usage: turns=7 input/turn mean=3 max=3 largest="); n != len(items) {
+		t.Errorf("turn summary line seen %d times, want %d:\n%s", n, len(items), out)
+	}
+	if strings.Contains(out, "the platform's finishing command takes no usage report") {
+		t.Errorf("the wrong fallback fired:\n%s", out)
+	}
+	if len(f.SessionUsage) != len(items) {
+		t.Fatalf("SessionUsage = %+v, want %d landed reports", f.SessionUsage, len(items))
+	}
+	for _, c := range f.SessionUsage {
+		for _, field := range []string{"turns", "inputPerTurnMean", "inputPerTurnMax", "largestToolResults"} {
+			if _, ok := c.Input[field]; ok {
+				t.Errorf("usage still carried %q: %+v", field, c.Input)
+			}
+		}
+		if _, ok := c.Input["inputTokens"]; !ok {
+			t.Errorf("usage lost the rest of the report: %+v", c.Input)
+		}
+	}
+	checkNoOldUsage(t, f)
+}
+
 // A build that ends in failWorkItem has nowhere to carry its report: the
 // record is in the log, without the once-per-run line (the platform has
 // the ledger; the fail command just takes no usage).

@@ -29,12 +29,17 @@ type Rebaser struct {
 	GW       Gateway
 	Harness  harness.Harness
 	WS       Workspacer
+	Cfg      *Config
 	Scopes   Scopes
 	WorkRoot string
 	// MCP are the MCP servers the session gets (Prologue).
 	MCP map[string]any
 	// MaxBudgetUSD caps the session (5 by default).
 	MaxBudgetUSD float64
+	// Budgets is node.yaml's `budgets:` in force, read live (ADR 012,
+	// Loop.KindModelBudget); nil falls back to Cfg's own, read once at
+	// start.
+	Budgets func(kind, model string) (amount float64, source string)
 	// Model is the node's own rebase model (node.yaml rebase, else
 	// default; "" the CLI's default): what a rebase session runs on when
 	// the item names no model and its agent none (BuildModel, the
@@ -66,6 +71,26 @@ func (r *Rebaser) logf(format string, args ...any) {
 	if r.Log != nil {
 		r.Log.Printf(format, args...)
 	}
+}
+
+// kindModelBudget is node.yaml's budgets: figure for kind and model —
+// live, through r.Budgets, when set; else Cfg's own, read once at start.
+func (r *Rebaser) kindModelBudget(kind, model string) (float64, string) {
+	if r.Budgets != nil {
+		return r.Budgets(kind, model)
+	}
+	return r.Cfg.KindModelBudget(kind, model)
+}
+
+// budgetWithSource is the rebase's cost cap (ADR 012) and where it came
+// from, for the session's starting log line.
+func (r *Rebaser) budgetWithSource(goal *gateway.Goal, model string) (float64, string) {
+	kindBudget, kindSource := r.kindModelBudget("rebase", model)
+	fallback := r.MaxBudgetUSD
+	if fallback <= 0 {
+		fallback = 5
+	}
+	return SessionBudget(kindBudget, kindSource, goal, fallback)
 }
 
 // Rebase runs one claimed rebase to its end. The error is what went
@@ -113,11 +138,9 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 		Repo: res.Repo.FullName(), Branch: branch, BaseRef: spec.BaseRef, Conflict: item.RebaseConflict, Files: item.RebaseFiles,
 		ContextDir: contextDir, ContextFiles: files, Project: orgLogin + "/" + res.Project.Slug, Prologue: len(r.MCP) > 0,
 	}
-	budget := r.MaxBudgetUSD
-	if budget <= 0 {
-		budget = 5
-	}
 	model := BuildModel(ctx, r.GW, item, r.Model)
+	budget, budgetSource := r.budgetWithSource(res.Goal, model)
+	r.logf("item %s: rebase budget $%.2f (%s)", label, budget, budgetSource)
 	job := harness.Job{Kind: harness.KindRebase, Workspace: dir, MaxBudgetUSD: budget, Label: label + " rebase", Timeout: r.Timeout, MCPServers: r.MCP, Model: model}
 	// the checkout's services, started in the session's pod before its
 	// agent; the pod and its sidecars go on every way out. A required one

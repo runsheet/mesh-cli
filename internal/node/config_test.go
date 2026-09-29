@@ -202,8 +202,15 @@ codex:
 			t.Errorf("CodexModel(%q) = %q, want %q", in, got, want)
 		}
 	}
-	// a tier with no mapping takes its default: astra, sol, luna
-	for in, want := range map[string]string{"opus": "gpt-6-o", "sonnet": "gpt-6-sol", "haiku": "gpt-6-luna", "": ""} {
+	// with no models configured, the defaults are sol for opus and luna
+	// for sonnet and haiku — astra costs too much to be a default
+	for in, want := range map[string]string{"opus": "gpt-6-sol", "sonnet": "gpt-6-luna", "haiku": "gpt-6-luna", "": ""} {
+		if got := (CodexConfig{}).CodexModel(in); got != want {
+			t.Errorf("CodexModel(%q) with no models = %q, want %q", in, got, want)
+		}
+	}
+	// a tier with no mapping takes its default: sol, luna, luna
+	for in, want := range map[string]string{"opus": "gpt-6-o", "sonnet": "gpt-6-luna", "haiku": "gpt-6-luna", "": ""} {
 		if got := (CodexConfig{Models: CodexModels{Opus: "gpt-6-o"}}).CodexModel(in); got != want {
 			t.Errorf("CodexModel(%q) with only opus mapped = %q, want %q", in, got, want)
 		}

@@ -30,6 +30,10 @@ type Planner struct {
 	MCP map[string]any
 	// MaxBudgetUSD caps the planning session (5 by default).
 	MaxBudgetUSD float64
+	// Budgets is node.yaml's `budgets:` in force, read live (ADR 012,
+	// Loop.KindModelBudget); nil falls back to Cfg's own, read once at
+	// start.
+	Budgets func(kind, model string) (amount float64, source string)
 	// Model is what a planner session runs on ("" the CLI's default).
 	Model string
 	// Accounts are the node's Claude accounts (node.yaml); a session runs
@@ -55,6 +59,26 @@ func (p *Planner) logf(format string, args ...any) {
 	if p.Log != nil {
 		p.Log.Printf(format, args...)
 	}
+}
+
+// kindModelBudget is node.yaml's budgets: figure for kind and model —
+// live, through p.Budgets, when set; else Cfg's own, read once at start.
+func (p *Planner) kindModelBudget(kind, model string) (float64, string) {
+	if p.Budgets != nil {
+		return p.Budgets(kind, model)
+	}
+	return p.Cfg.KindModelBudget(kind, model)
+}
+
+// budgetWithSource is the plan's cost cap (ADR 012) and where it came
+// from, for the session's starting log line.
+func (p *Planner) budgetWithSource(goal *gateway.Goal) (float64, string) {
+	kindBudget, kindSource := p.kindModelBudget("plan", p.Model)
+	fallback := p.MaxBudgetUSD
+	if fallback <= 0 {
+		fallback = 5
+	}
+	return SessionBudget(kindBudget, kindSource, goal, fallback)
 }
 
 // PlanDir is where a goal's planner works: <root>/<goal-slug>/plan.
@@ -84,29 +108,25 @@ func (p *Planner) Plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 	return err
 }
 
-// projectRepos reads the goal's project and its enrolled repos, by
-// owner/name.
-func (p *Planner) projectRepos(ctx context.Context, goal gateway.Goal, scope Scope) (*gateway.Project, map[string]gateway.Repo, error) {
+// projectRepoMap reads the goal's project and its enrolled repos, by
+// owner/name: the project's repoIds, each owned by its own account's
+// login — a repo under another account the org links is the project's
+// as much as one under the org's own.
+func (p *Planner) projectRepoMap(ctx context.Context, goal gateway.Goal, scope Scope) (*gateway.Project, map[string]gateway.Repo, error) {
 	project, err := p.GW.Project(ctx, goal.ProjectID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("project: %w", err)
 	}
-	all, err := p.GW.Repos(ctx, scope.AccountID, scope.Login)
+	if len(project.RepoIDs) == 0 {
+		return nil, nil, fmt.Errorf("project %s has no repos enrolled; nothing to plan in", project.Slug)
+	}
+	all, err := p.GW.ProjectRepos(ctx, project.RepoIDs)
 	if err != nil {
 		return nil, nil, fmt.Errorf("repos: %w", err)
 	}
-	inProject := map[string]bool{}
-	for _, id := range project.RepoIDs {
-		inProject[id] = true
-	}
 	repos := map[string]gateway.Repo{} // owner/name → repo
 	for _, r := range all {
-		if inProject[r.ID] {
-			repos[r.FullName()] = r
-		}
-	}
-	if len(repos) == 0 {
-		return nil, nil, fmt.Errorf("project %s has no repos enrolled; nothing to plan in", project.Slug)
+		repos[r.FullName()] = r
 	}
 	return project, repos, nil
 }
@@ -273,7 +293,7 @@ func numberFieldOr(row map[string]any, def float64, keys ...string) float64 {
 }
 
 func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) error {
-	project, repos, err := p.projectRepos(ctx, goal, scope)
+	project, repos, err := p.projectRepoMap(ctx, goal, scope)
 	if err != nil {
 		return err
 	}
@@ -326,11 +346,8 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 		Org: scope.Login, Project: project.Slug, Repos: dirs, ContextDir: contextDir, ContextFiles: files, Blocked: goal.PausedReason,
 		Existing: existing, NextSeq: nextSeq, Prologue: len(p.MCP) > 0, Evidence: p.evidence(ctx, goal.Slug, scope, project),
 	}
-	budget := p.MaxBudgetUSD
-	if budget <= 0 {
-		budget = 5
-	}
-	p.logf("goal %s: planning in %s (%d repos)", goal.Slug, dir, len(repos))
+	budget, budgetSource := p.budgetWithSource(&goal)
+	p.logf("goal %s: planning in %s (%d repos), budget $%.2f (%s)", goal.Slug, dir, len(repos), budget, budgetSource)
 	items, reasons, flags, cost, acct, err := p.ask(ctx, goal, scope.NodeID, dir, budget, in, repos, merged)
 	// the session's usage report rides the plan's hand-in; Finish logs it
 	// when nothing carried it (its report was built as it ended, in ask)
@@ -528,7 +545,7 @@ func (p *Planner) AdoptPlan(ctx context.Context, goal gateway.Goal, scope Scope,
 		s.Stop()
 		return harness.RemoveSession(s.State.Workspace)
 	}
-	project, repos, err := p.projectRepos(ctx, goal, scope)
+	project, repos, err := p.projectRepoMap(ctx, goal, scope)
 	if err != nil {
 		return err
 	}

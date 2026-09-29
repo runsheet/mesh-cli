@@ -25,6 +25,8 @@ type Call struct {
 	Input map[string]any
 	// At is when the fake received it: an item's heartbeats over time.
 	At time.Time
+	// Bearer is the token the request carried.
+	Bearer string
 }
 
 // Fake is the server and its state. Rows are maps with camelCase keys,
@@ -56,9 +58,14 @@ type Fake struct {
 	// MeshV1Hits and PrologueV1Hits count the requests each context path
 	// received, for a test to prove which one a read actually used.
 	MeshV1Hits, PrologueV1Hits int
-	Calls                      []Call
-	// Reads are the index lists the fake served: Name is the list
-	// (goalIndexs), Input its EQ wheres by field (org_id).
+	// ItemBearers are further tokens the fake takes on GraphQL, beside
+	// Token: an item's claim-time token, as RecordValidationAttestation
+	// carries it (WithItemToken).
+	ItemBearers []string
+	Calls       []Call
+	// Reads are the index lists and get-by-id reads the fake served:
+	// Name is the list (goalIndexs) or the get (repoIndex), Input its EQ
+	// wheres by field (org_id) or, for a get, {"id": id}.
 	Reads []Call
 	// Refuse maps a mutation name to a refusal message (returned as a
 	// GraphQL error) — for tests of "someone else has it".
@@ -86,6 +93,11 @@ type Fake struct {
 	// per-tool calls) with "Unknown field", as a platform older than
 	// tools-show-their-use whose UsageReportInput has only the total.
 	NoUsageTools bool
+	// NoValidationUsage refuses a `usage` report carrying `validation`
+	// (per-step validation minutes) with "Unknown field", as a platform
+	// older than node-attests-its-validation whose UsageReportInput has
+	// no such field.
+	NoValidationUsage bool
 	// NoToolError refuses a usage report whose `tools` entry carries
 	// `error`, and introspection answers the entry without it, as a
 	// platform older than the tool entry's error text.
@@ -100,6 +112,11 @@ type Fake struct {
 	// item's rebase while it is in review. Off, the fake refuses it as
 	// runsheet's gateway/itemtoken.go does today.
 	RebaseTokens bool
+	// EmptyHeads are head shas that carry nothing past their base: a
+	// built finish on one takes runsheet's empty-finish route
+	// (empties-go-back-to-the-builder) — back to ready, attempts+1,
+	// its node and claim cleared — rather than to evaluating.
+	EmptyHeads map[string]bool
 	// SessionCredentials maps a session's subject — its item, else its
 	// goal, else its direction — to the rows the claim-time read
 	// (itemCredentials, planCredentials, researchCredentials) hands the
@@ -220,7 +237,8 @@ var (
 )
 
 func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
-	if r.Header.Get("Authorization") != "Bearer "+f.Token {
+	bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if bearer != f.Token && !slices.Contains(f.ItemBearers, bearer) {
 		writeErrors(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
@@ -267,13 +285,13 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 		case "recordSessionUsage":
 			// never a field of the platform's schema: a session's usage
 			// rides the command that ends it (`usage`)
-			f.Calls = append(f.Calls, Call{Name: m[2], Input: in, At: time.Now()})
+			f.Calls = append(f.Calls, Call{Name: m[2], Input: in, At: time.Now(), Bearer: bearer})
 			writeErrors(w, 200, `Cannot query field "recordSessionUsage" on type "Mutation".`)
 			return
 		case "recordUsage":
 			// RegisterPlatformOnly on runsheet: the platform's own, never a
 			// node's (priced tool calls go to recordToolUsage)
-			f.Calls = append(f.Calls, Call{Name: m[2], Input: in, At: time.Now()})
+			f.Calls = append(f.Calls, Call{Name: m[2], Input: in, At: time.Now(), Bearer: bearer})
 			writeErrors(w, 200, "recordUsage: permission denied: the field is the platform's own, not a node's")
 			return
 		}
@@ -284,6 +302,12 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 		if usage, ok := in["usage"].(map[string]any); ok && f.NoUsageTools {
 			if _, ok := usage["tools"]; ok {
 				writeErrors(w, 200, `Variable "$in" got invalid value; In field "usage": In field "tools": Unknown field "tools" is not defined by type "UsageReportInput".`)
+				return
+			}
+		}
+		if usage, ok := in["usage"].(map[string]any); ok && f.NoValidationUsage {
+			if _, ok := usage["validation"]; ok {
+				writeErrors(w, 200, `Variable "$in" got invalid value; In field "usage": Unknown field "validation" is not defined by type "UsageReportInput".`)
 				return
 			}
 		}
@@ -321,7 +345,7 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 				writeErrors(w, 200, err.Error())
 				return
 			}
-			f.Calls = append(f.Calls, Call{Name: m[2], Input: in, At: time.Now()})
+			f.Calls = append(f.Calls, Call{Name: m[2], Input: in, At: time.Now(), Bearer: bearer})
 			writeData(w, map[string]any{m[2]: tok})
 			return
 		}
@@ -332,7 +356,7 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 		if f.After != nil {
 			f.After(m[2], in)
 		}
-		f.Calls = append(f.Calls, Call{Name: m[2], Input: in, At: time.Now()})
+		f.Calls = append(f.Calls, Call{Name: m[2], Input: in, At: time.Now(), Bearer: bearer})
 		if usage, ok := in["usage"].(map[string]any); ok && finishingMutations[m[2]] {
 			f.SessionUsage = append(f.SessionUsage, Call{Name: m[2], Input: copyRow(usage), At: time.Now()})
 		}
@@ -357,6 +381,7 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 		}
 		field, typ := f.unknownSelection(q)
 		if m := getRe.FindStringSubmatch(q); m != nil {
+			f.Reads = append(f.Reads, Call{Name: m[1], Input: map[string]any{"id": m[2]}})
 			if field != "" {
 				writeErrors(w, 200, fmt.Sprintf("Cannot query field %q on type %q.", field, typ))
 				return
@@ -437,13 +462,15 @@ func (f *Fake) sessionRead(w http.ResponseWriter, credField, arg, toolsField str
 // heartbeatInputType is HeartbeatNodeInput as introspection answers it:
 // every field a heartbeat may carry, less UnknownFields — `scaling`
 // without `accounts` when that is unknown, as the platform before
-// adr-005's per-account slots. Unsupported["__type"] refuses the probe.
+// adr-005's per-account slots; `holding` left out entirely when
+// UnknownFields["holding"] (a platform before node-says-why-work-waits).
+// Unsupported["__type"] refuses the probe.
 func (f *Fake) heartbeatInputType() map[string]any {
 	field := func(name string) map[string]any {
 		return map[string]any{"name": name}
 	}
 	var fields []any
-	for _, name := range []string{"aggregateId", "namespace", "version", "running", "draining", "updateError", "limits", "scaling", "runtimes", "adapters"} {
+	for _, name := range []string{"aggregateId", "namespace", "version", "running", "draining", "updateError", "limits", "scaling", "runtimes", "adapters", "holding"} {
 		if f.UnknownFields[name] {
 			continue
 		}
@@ -457,6 +484,13 @@ func (f *Fake) heartbeatInputType() map[string]any {
 			}
 			row["type"] = map[string]any{"kind": "INPUT_OBJECT", "inputFields": sub}
 		}
+		if name == "holding" {
+			var sub []any
+			for _, n := range []string{"mode", "summary", "until", "accounts", "unclaimed"} {
+				sub = append(sub, field(n))
+			}
+			row["type"] = map[string]any{"kind": "INPUT_OBJECT", "inputFields": sub}
+		}
 		fields = append(fields, row)
 	}
 	return map[string]any{"inputFields": fields}
@@ -464,11 +498,15 @@ func (f *Fake) heartbeatInputType() map[string]any {
 
 // usageReportInputType is UsageReportInput as introspection answers
 // it: `tools` a non-null list of ToolCallReportInput, whose entry has
-// `error` unless NoToolError; no `tools` at all when NoUsageTools.
+// `error` unless NoToolError; no `tools` at all when NoUsageTools; no
+// `validation` at all when NoValidationUsage.
 func (f *Fake) usageReportInputType() map[string]any {
 	fields := []any{}
 	for _, name := range []string{"sessionId", "adapter", "model", "credentialId", "credentialKind", "inputTokens", "outputTokens", "toolCalls", "wallMs"} {
 		fields = append(fields, map[string]any{"name": name, "type": map[string]any{"kind": "SCALAR"}})
+	}
+	if !f.NoValidationUsage {
+		fields = append(fields, map[string]any{"name": "validation", "type": map[string]any{"kind": "SCALAR"}})
 	}
 	if !f.NoUsageTools {
 		var sub []any
@@ -655,6 +693,12 @@ func (f *Fake) apply(name string, in map[string]any) error {
 		case outcome == "" || outcome == "built":
 			if in["branch"] == nil || in["branch"] == "" {
 				return fmt.Errorf("a built finish needs a branch")
+			}
+			if sha, _ := in["headSha"].(string); f.EmptyHeads[sha] {
+				item["status"], item["nodeId"], item["attempts"] = "ready", nil, toInt(item["attempts"])+1
+				item["lastNote"] = "empty finish: no commits past the base"
+				item["costCents"] = toInt(item["costCents"]) + toInt(in["costCents"])
+				return nil
 			}
 			item["branch"], item["headSha"], item["outcome"] = in["branch"], in["headSha"], "built"
 		case outcome == "already_done":

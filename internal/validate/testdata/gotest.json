@@ -1,0 +1,7 @@
+{"Time":"2026-09-28T00:00:00Z","Action":"run","Package":"pkg","Test":"TestA"}
+{"Time":"2026-09-28T00:00:01Z","Action":"pass","Package":"pkg","Test":"TestA","Elapsed":0.01}
+{"Time":"2026-09-28T00:00:01Z","Action":"run","Package":"pkg","Test":"TestB"}
+{"Time":"2026-09-28T00:00:02Z","Action":"fail","Package":"pkg","Test":"TestB","Elapsed":0.02}
+{"Time":"2026-09-28T00:00:02Z","Action":"run","Package":"pkg","Test":"TestC"}
+{"Time":"2026-09-28T00:00:02Z","Action":"skip","Package":"pkg","Test":"TestC"}
+{"Time":"2026-09-28T00:00:02Z","Action":"pass","Package":"pkg"}
