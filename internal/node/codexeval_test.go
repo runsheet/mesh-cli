@@ -2,8 +2,10 @@ package node
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -195,6 +197,62 @@ func TestAContextToolThatAnsweredIsAVerdict(t *testing.T) {
 	codex.tools = map[string]*harness.ToolStat{"mesh-context": {Calls: 2, Errors: 2, FirstError: "MCP tool call requires approval, but approval policy is never"}}
 	if in := evaluateItem1(t, f, ev); len(claude.jobs) != 1 || in["passed"] != true {
 		t.Fatalf("runs claude %d, recorded %+v", len(claude.jobs), in)
+	}
+}
+
+// The Claude evaluation job's rendered mcpServers — what `claude -p
+// --mcp-config` reads — carry mesh-context at the gateway's /mcp with
+// the node's bearer.
+func TestClaudeEvaluationRendersMeshContext(t *testing.T) {
+	f, ev, claude, codex, _, _ := familyFixture(t, "normal", "sonnet", "Holds.\nVERDICT: PASS", "VERDICT: FAIL")
+	ev.MCP = MeshContextMCP(f.URL(), "rs_test")
+	ev.CodexAccounts = (&Loop{Known: &KnownAccounts{}}).CodexCandidates
+	evaluateItem1(t, f, ev)
+	if len(claude.jobs) != 1 || codex.runs() != 0 {
+		t.Fatalf("runs claude %d codex %d", len(claude.jobs), codex.runs())
+	}
+	args := harness.MCPArgs(claude.jobs[0].MCPServers)
+	if len(args) < 2 || args[0] != "--mcp-config" {
+		t.Fatalf("args %q", args)
+	}
+	var cfg struct {
+		MCPServers map[string]struct {
+			URL     string            `json:"url"`
+			Headers map[string]string `json:"headers"`
+		} `json:"mcpServers"`
+	}
+	if err := json.Unmarshal([]byte(args[1]), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	srv, ok := cfg.MCPServers[tools.Builtin]
+	if !ok || srv.URL != strings.TrimRight(f.URL(), "/")+"/mcp" || srv.Headers["Authorization"] != "Bearer rs_test" {
+		t.Fatalf("mcp.json %s", args[1])
+	}
+}
+
+// The Codex evaluation job's rendered config.toml carries
+// [mcp_servers.mesh-context] at the gateway's /mcp, its Authorization
+// from a variable the session's env sets to the node's bearer.
+func TestCodexEvaluationRendersMeshContext(t *testing.T) {
+	f, ev, claude, codex, _, _ := familyFixture(t, "normal", "sonnet", "VERDICT: FAIL", "Holds.\nVERDICT: PASS")
+	ev.MCP = MeshContextMCP(f.URL(), "rs_test")
+	evaluateItem1(t, f, ev)
+	if len(claude.jobs) != 0 || codex.runs() != 1 {
+		t.Fatalf("runs claude %d codex %d", len(claude.jobs), codex.runs())
+	}
+	job := codex.jobs[0]
+	rendered, env, err := harness.CodexMCPConfig(job.MCPServers, job.Env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "[mcp_servers.mesh-context]\n" +
+		"url = \"" + strings.TrimRight(f.URL(), "/") + "/mcp\"\n" +
+		"env_http_headers = { \"Authorization\" = \"MESH_CODEX_MCP_0_TOKEN\" }\n"
+	if !strings.Contains(rendered, want) {
+		t.Fatalf("config.toml:\n%s\nwant it to carry:\n%s", rendered, want)
+	}
+	if !slices.Contains(env, "MESH_CODEX_MCP_0_TOKEN=Bearer rs_test") {
+		t.Fatalf("env %q", env)
 	}
 }
 

@@ -125,6 +125,49 @@ func TestCodexPreflightWithConsoleTool(t *testing.T) {
 	}
 }
 
+// The config CodexMCPConfig renders for an evaluation's built-in is
+// the config the preflight checks: `[mcp_servers.mesh-context]` at the
+// gateway's /mcp, its Authorization from the variable the job's env
+// carries. A fake that answers initialize and tools/list on that header
+// passes; the same config against a fake answering 401 is an error
+// naming why.
+func TestCodexPreflightOnTheRenderedEvaluationConfig(t *testing.T) {
+	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
+	for _, tc := range []struct {
+		name string
+		auth string
+		want string
+	}{{"answers", "Bearer rs_node", ""}, {"refuses", "Bearer rs_other", "refuses auth: 401"}} {
+		srv := mcpServer(t, tc.auth, http.StatusUnauthorized, `{"error":"unauthorized"}`, 1)
+		job := Job{Kind: KindEvaluate, Workspace: t.TempDir(), MCPServers: builtin(srv.URL+"/mcp", "Bearer rs_node")}
+		toml, env, err := CodexMCPConfig(job.MCPServers, job.Env)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "[mcp_servers.mesh-context]\n" +
+			"url = \"" + srv.URL + "/mcp\"\n" +
+			"env_http_headers = { \"Authorization\" = \"MESH_CODEX_MCP_0_TOKEN\" }\n"
+		if !strings.HasPrefix(toml, want) || len(env) != 1 || env[0] != "MESH_CODEX_MCP_0_TOKEN=Bearer rs_node" {
+			t.Fatalf("%s: config.toml:\n%s\nenv %q", tc.name, toml, env)
+		}
+		out := t.TempDir()
+		c := &Codex{Binary: preflightCodex(t, out, 0), HomeRoot: t.TempDir(), Account: CodexAccount{Name: "key", APIKeyEnv: "TEST_PREFLIGHT_KEY"}}
+		err = c.Preflight(context.Background(), job)
+		if tc.want == "" {
+			if err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+			if !strings.Contains(readFile(t, filepath.Join(out, "config.toml")), want) {
+				t.Fatalf("%s: codex mcp get did not see the rendered config", tc.name)
+			}
+			continue
+		}
+		if err == nil || !strings.Contains(err.Error(), tc.want) || strings.Contains(err.Error(), "rs_node") {
+			t.Fatalf("%s: err %v, want %q and no secret", tc.name, err, tc.want)
+		}
+	}
+}
+
 // A 401: `refuses auth` with the status and the body, and no secret.
 func TestCodexPreflightRefusesAuth(t *testing.T) {
 	srv := mcpServer(t, "Bearer rs_other", http.StatusUnauthorized, `{"error":"bad token Bearer rs_node"}`, 1)
