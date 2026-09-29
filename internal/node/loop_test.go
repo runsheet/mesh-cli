@@ -1157,7 +1157,7 @@ func (p *priorityFake) liveLoop(t *testing.T, yaml string) (*Loop, *[]string, *s
 	loop.Reload = Reloader(gw, cfg, start, nil, func(_ context.Context, sc Scope) error {
 		registered = append(registered, sc.Login)
 		return nil
-	})
+	}, nil)
 	return loop, &registered, &logs
 }
 

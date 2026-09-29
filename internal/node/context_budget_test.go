@@ -55,7 +55,7 @@ func TestReloaderCarriesContext(t *testing.T) {
 		c.Context = ContextConfig{BytesMax: 131072}
 		return &c, nil
 	}
-	reload := Reloader(gw, cfg, scopesOf(cfg), load, func(context.Context, Scope) error { return nil })
+	reload := Reloader(gw, cfg, scopesOf(cfg), load, func(context.Context, Scope) error { return nil }, nil)
 	got, _ := reload(context.Background())
 	if got.Context == nil || *got.Context != (ContextConfig{BytesMax: 131072}) {
 		t.Fatalf("Reloaded.Context = %+v, want bytes_max 131072", got.Context)
