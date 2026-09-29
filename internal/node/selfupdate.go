@@ -249,7 +249,7 @@ func (l *Loop) desiredVersion(ctx context.Context) (string, bool) {
 			return "", true
 		}
 		if err != nil {
-			l.logf("desired version of %s: %v", sc.Login, err)
+			l.logf("desired version of %s: %v", sc.Name(), err)
 			continue
 		}
 		ok = true
