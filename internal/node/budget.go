@@ -2,6 +2,7 @@ package node
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
@@ -72,6 +73,73 @@ func (c *Config) KindModelBudget(kind, model string) (amount float64, source str
 // like the accounts and project budgets (Spending, ADR 012).
 func (l *Loop) KindModelBudget(kind, model string) (amount float64, source string) {
 	return kindModelBudget(l.sessionBudgets(), kind, model)
+}
+
+// budgetChanges are the kind/model `budgets:` figures that differ
+// between was and now, as "<kind>/<tier> $<old> → $<new>" lines sorted
+// by kind then tier, so a tick logs them in the same order every time
+// (Loop.reload, so an operator's edit to `budgets:` is proved live the
+// way accounts and the other fields already are).
+func budgetChanges(was, now map[string]map[string]float64) []string {
+	kinds := map[string]bool{}
+	for k := range was {
+		kinds[k] = true
+	}
+	for k := range now {
+		kinds[k] = true
+	}
+	var kindList []string
+	for k := range kinds {
+		kindList = append(kindList, k)
+	}
+	sort.Strings(kindList)
+	var out []string
+	for _, kind := range kindList {
+		tiers := map[string]bool{}
+		for t := range was[kind] {
+			tiers[t] = true
+		}
+		for t := range now[kind] {
+			tiers[t] = true
+		}
+		var tierList []string
+		for t := range tiers {
+			tierList = append(tierList, t)
+		}
+		sort.Strings(tierList)
+		for _, tier := range tierList {
+			w, n := was[kind][tier], now[kind][tier]
+			if w != n {
+				out = append(out, fmt.Sprintf("%s/%s $%.2f → $%.2f", kind, tier, w, n))
+			}
+		}
+	}
+	return out
+}
+
+// projectBudgetChanges are the `project_budgets:` figures that differ
+// between was and now, as "project <slug> $<old> → $<new>" lines sorted
+// by project.
+func projectBudgetChanges(was, now map[string]float64) []string {
+	projects := map[string]bool{}
+	for p := range was {
+		projects[p] = true
+	}
+	for p := range now {
+		projects[p] = true
+	}
+	var list []string
+	for p := range projects {
+		list = append(list, p)
+	}
+	sort.Strings(list)
+	var out []string
+	for _, p := range list {
+		if w, n := was[p], now[p]; w != n {
+			out = append(out, fmt.Sprintf("project %s $%.2f → $%.2f", p, w, n))
+		}
+	}
+	return out
 }
 
 // minPositive is the smallest of vs greater than 0; 0 when none is —

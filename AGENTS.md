@@ -124,9 +124,18 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   still takes on it, and the summary judgement (`HoldingReport`,
   adr-005's amendment, for runsheet goal `node-says-why-work-waits`) —
   are sent only when set,
-  because they are fields the platform half adds. Capacity, the
-  limits thresholds and the orgs need no drain: `Reload` re-reads them
-  every tick.
+  because they are fields the platform half adds. Every reloadable
+  field needs no drain: `Reload` re-reads the capacity, the limits
+  thresholds, the accounts, the kind/model and project session budgets,
+  the context budget, `claim.unmerged_per_repo` and the orgs every
+  tick, and `Loop.reload` logs each one a reload actually changed, with
+  its old and new value (`capacity …`, `limits: pace five-hour … →
+  …, stop … → …`, `accounts … → …`, `budgets: … → …` per kind/model or
+  project that changed, `context: bytes_max … → …, doc_bytes_max … →
+  …`, `claim: unmerged_per_repo … → …`, `orgs … → …`); a reload that
+  could not be applied says why, at most once a tick (`reload config:
+  node.yaml (keeping the last good capacity and limits): …` on a parse
+  error, `reload config: my orgs: …` on a gateway failure).
 - **Adoption** (`internal/node/adopt.go`, mesh-cli ADR-009, mesh-specs
   ADR 008): a session's unit and output file own it, not the node
   process. Build, evaluate, plan, research and rebase jobs are
