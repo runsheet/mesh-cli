@@ -27,6 +27,11 @@ type Loop struct {
 	// Scopes are the orgs served: each is heartbeaten, listed and
 	// claimed from in turn, under the one capacity.
 	Scopes Scopes
+	// Owned is set when the node registered once with its owner (ADR-015,
+	// Registration and the loop): Tick then heartbeats once under its
+	// one id and takes Scopes from each answer (TakeAnswer). Nil is the
+	// legacy per-org node, heartbeating each scope.
+	Owned *Owned
 	// Version is what the node reports itself as: the release tag it was
 	// built from, else its commit (version.Resolved); Commit is the commit
 	// (version.Commit), on every heartbeat the gateway takes it on.
@@ -148,6 +153,12 @@ type Loop struct {
 	AdoptSession func(ctx context.Context, s FoundSession)
 
 	mu sync.Mutex
+	// answer is the platform's last NodeAnswer (TakeAnswer); restrict is
+	// node.yaml's orgs restriction as last reloaded (restrictSet: read
+	// at all, else Cfg.Orgs).
+	answer      *gateway.NodeAnswer
+	restrict    []string
+	restrictSet bool
 	// condition is the node's latest condition that is not a failure of
 	// its own — a session its sandbox's limits killed — and conditionAt
 	// when it was noted: the heartbeat's reason for ConditionHold.
@@ -799,15 +810,31 @@ func (l *Loop) Tick(ctx context.Context) {
 		l.Scaled(scaling, ranged)
 	}
 	beat := false
-	for _, sc := range l.Scopes {
-		if _, err := l.GW.HeartbeatNode(ctx, sc.NodeID, l.Version, l.Running(), extras); err != nil {
+	if owned := l.owned(); owned != nil {
+		// one node, one heartbeat: its answer is the orgs served now and
+		// who owns it, a hand-over taken with no restart
+		answer, err := l.GW.HeartbeatNode(ctx, owned.NodeID, l.Version, l.Running(), extras)
+		if err != nil {
 			if l.confirmPending() {
-				l.confirmFailed(sc.Name(), err)
+				l.confirmFailed(owned.Owner.String(), err)
 			} else {
-				l.logf("heartbeat %s: %v", sc.Name(), err)
+				l.logf("heartbeat %s: %v", owned.Owner.String(), err)
 			}
 		} else {
 			beat = true
+			l.TakeAnswer(answer)
+		}
+	} else {
+		for _, sc := range l.Scopes {
+			if _, err := l.GW.HeartbeatNode(ctx, sc.NodeID, l.Version, l.Running(), extras); err != nil {
+				if l.confirmPending() {
+					l.confirmFailed(sc.Name(), err)
+				} else {
+					l.logf("heartbeat %s: %v", sc.Name(), err)
+				}
+			} else {
+				beat = true
+			}
 		}
 	}
 	if beat {
@@ -1211,6 +1238,17 @@ func (l *Loop) reload(ctx context.Context) {
 		l.mu.Lock()
 		l.claim, l.claimSet = *got.Claim, true
 		l.mu.Unlock()
+	}
+	if got.OrgsRead {
+		l.mu.Lock()
+		changed := !l.restrictSet || !slices.Equal(l.restrict, got.Orgs)
+		l.restrict, l.restrictSet = got.Orgs, true
+		answer := l.answer
+		l.mu.Unlock()
+		// an owned node's restriction applies to the last answer at once
+		if changed && answer != nil {
+			l.TakeAnswer(answer)
+		}
 	}
 	if scopes != nil && !sameOrgs(scopes, l.Scopes) {
 		l.logf("orgs %s → %s", strings.Join(l.Scopes.Names(), ", "), strings.Join(scopes.Names(), ", "))
