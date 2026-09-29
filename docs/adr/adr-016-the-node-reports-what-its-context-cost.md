@@ -66,7 +66,12 @@ needs the number beside the tokens.
   bytes) the errors come joined, so each is said. A platform refuses one
   unknown field per attempt, and in no order the node can count on: each
   refusal naming an optional field still sent drops it and sends the
-  command again, until it lands or the refusal names none of them.
+  command again, until it lands or the refusal names none of them. The
+  turn and tool-result detail (`ErrNoUsageDetail`) is one more such
+  refusal in the same loop, dropped for that report alone: a platform
+  that refuses `contextBytes` and then the detail gets both said,
+  `ErrNoContextUsage` joined with `ErrNoUsageDetail`, never one for the
+  other.
 
 ## Consequences
 

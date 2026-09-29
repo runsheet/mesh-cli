@@ -333,3 +333,63 @@ func TestFinishWorkItemWithoutContextThenValidationUsageDropsBoth(t *testing.T) 
 		t.Fatalf("%d posts on the second report, want 1", n)
 	}
 }
+
+// A platform that knows neither `contextBytes` nor the turn detail
+// refuses `contextBytes` first and then a detail field on the retry: the
+// command is sent a third time without both, the report lands, and the
+// caller is told of both losses — ErrNoContextUsage is not lost to
+// ErrNoUsageDetail. The next report omits `contextBytes` without a
+// refusal; the detail, remembered for no later report, is refused again.
+func TestFinishWorkItemWithoutContextThenUsageDetailKeepsBoth(t *testing.T) {
+	f := gatewaytest.New("rs_test")
+	defer f.Close()
+	f.NoContextUsage = true
+	f.UnknownFields = map[string]bool{
+		"turns": true, "inputPerTurnMean": true, "inputPerTurnMax": true, "largestToolResults": true,
+	}
+	runningItem(f)
+	target, _ := url.Parse(f.URL())
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	var posts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			posts.Add(1)
+		}
+		proxy.ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+	gw := gateway.New(srv.URL, "rs_test")
+
+	u := sampleUsageReport()
+	u.ContextBytes = 187392
+	err := gw.FinishWorkItem(context.Background(), finishItem, "mesh/g-7", "abc123", 12, u)
+	if !errors.Is(err, gateway.ErrNoContextUsage) || !errors.Is(err, gateway.ErrNoUsageDetail) {
+		t.Fatalf("err = %v, want ErrNoContextUsage and ErrNoUsageDetail", err)
+	}
+	if n := posts.Load(); n != 3 {
+		t.Fatalf("%d posts, want the two refused ones and the one without both", n)
+	}
+	calls := f.CallsNamed("finishWorkItem")
+	if len(calls) != 1 {
+		t.Fatalf("calls = %+v", calls)
+	}
+	usage, _ := calls[0].Input["usage"].(map[string]any)
+	if _, ok := usage["contextBytes"]; ok || usage["inputTokens"] == nil {
+		t.Fatalf("the landed usage: %+v", usage)
+	}
+	for _, field := range []string{"turns", "inputPerTurnMean", "inputPerTurnMax", "largestToolResults"} {
+		if _, ok := usage[field]; ok {
+			t.Fatalf("usage still carried %q: %+v", field, usage)
+		}
+	}
+
+	posts.Store(0)
+	runningItem(f)
+	err = gw.FinishWorkItem(context.Background(), finishItem, "mesh/g-7", "abc124", 12, u)
+	if !errors.Is(err, gateway.ErrNoContextUsage) || !errors.Is(err, gateway.ErrNoUsageDetail) {
+		t.Fatalf("second err = %v", err)
+	}
+	if n := posts.Load(); n != 2 {
+		t.Fatalf("%d posts on the second report, want the detail's refusal and the one without it", n)
+	}
+}

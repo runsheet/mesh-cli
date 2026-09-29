@@ -533,12 +533,12 @@ func (s *SessionAccount) Carried(err error) error {
 	noContext := !noLedger && errors.Is(err, gateway.ErrNoContextUsage)
 	if s != nil && s.report != nil {
 		switch {
-		case err == nil, noDetail, noContext && !noToolList:
-			s.handedIn = true
 		case noLedger:
 			s.noLedger = true
 		case noToolList:
 			s.handedIn, s.noToolList = true, true
+		case err == nil, noDetail, noContext:
+			s.handedIn = true
 		}
 		if noDetail {
 			s.noDetail = true

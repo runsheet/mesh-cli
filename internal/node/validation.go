@@ -341,7 +341,7 @@ func (r *Runner) attester(cred *ItemCred) attestationRecorder {
 // validationUsage is a finishing command's answer with ErrNoValidationUsage
 // taken as landed — the platform has no per-step minutes yet, said once
 // per run — and anything else as it is. What else the report landed
-// without (ErrNoToolUsage, ErrNoContextUsage, joined with it) goes on to
+// without (ErrNoToolUsage, ErrNoContextUsage, ErrNoUsageDetail, joined with it) goes on to
 // Carried.
 func (r *Runner) validationUsage(err error) error {
 	if !errors.Is(err, gateway.ErrNoValidationUsage) {
@@ -351,7 +351,7 @@ func (r *Runner) validationUsage(err error) error {
 		r.logf("validation: the platform's usage report takes no per-step validation minutes yet; sent without them (said once, for every item this run)")
 	})
 	var rest []error
-	for _, lost := range []error{gateway.ErrNoToolUsage, gateway.ErrNoContextUsage} {
+	for _, lost := range []error{gateway.ErrNoToolUsage, gateway.ErrNoContextUsage, gateway.ErrNoUsageDetail} {
 		if errors.Is(err, lost) {
 			rest = append(rest, lost)
 		}

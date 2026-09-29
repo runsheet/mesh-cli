@@ -371,6 +371,11 @@ func (c *Client) mutateWithUsage(ctx context.Context, field, aggregateID string,
 		{"validation", &c.usageWithoutValidation},
 		{"contextBytes", &c.usageWithoutContext},
 	}
+	// The turn and tool-result detail fields go together, for this
+	// report alone, in the same loop: a platform that refuses one of the
+	// optional fields and then the detail (or the other way round) loses
+	// neither the command nor the word on what it dropped.
+	noDetail := false
 	for retried := true; retried && err != nil && errors.As(err, &ge); {
 		retried = false
 		for _, o := range optional {
@@ -382,6 +387,14 @@ func (c *Client) mutateWithUsage(ctx context.Context, field, aggregateID string,
 				break
 			}
 		}
+		if !retried && !noDetail && unknownField(ge.Message, usageDetailFields...) {
+			for _, f := range usageDetailFields {
+				delete(um, f)
+			}
+			noDetail = true
+			err = c.Mutate(ctx, field, aggregateID, withUsage)
+			retried = true
+		}
 	}
 	if err != nil && errors.As(err, &ge) && unknownField(ge.Message, "usage") {
 		if err2 := c.Mutate(ctx, field, aggregateID, input); err2 != nil {
@@ -389,24 +402,13 @@ func (c *Client) mutateWithUsage(ctx context.Context, field, aggregateID string,
 		}
 		return ErrNoUsageLedger
 	}
-	if err != nil && errors.As(err, &ge) && unknownField(ge.Message, usageDetailFields...) {
-		trimmed := make(map[string]any, len(um))
-		for k, v := range um {
-			trimmed[k] = v
-		}
-		for _, f := range usageDetailFields {
-			delete(trimmed, f)
-		}
-		withUsage["usage"] = trimmed
-		if err2 := c.Mutate(ctx, field, aggregateID, withUsage); err2 != nil {
-			return err2
-		}
-		return ErrNoUsageDetail
-	}
 	if err != nil {
 		return err
 	}
 	var lost []error
+	if noDetail {
+		lost = append(lost, ErrNoUsageDetail)
+	}
 	if withTools && c.usageWithoutTools.Load() {
 		lost = append(lost, ErrNoToolUsage)
 	}

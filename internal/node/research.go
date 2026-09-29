@@ -233,7 +233,8 @@ func (d *Director) handIn(ctx context.Context, direction gateway.Direction, proj
 // pitches as proposals, and that landed — the research is in, so it is
 // no error, and the node says so once for its run. A report the
 // fallback landed without stays ErrNoUsageLedger (its per-tool list,
-// ErrNoToolUsage; its context bytes, ErrNoContextUsage), for Carried.
+// ErrNoToolUsage; its context bytes, ErrNoContextUsage; its turn detail,
+// ErrNoUsageDetail), for Carried.
 func (d *Director) pitchFallback(err error) error {
 	if !errors.Is(err, gateway.ErrNoPitches) {
 		return err
@@ -242,7 +243,7 @@ func (d *Director) pitchFallback(err error) error {
 		d.logf("pitches: the platform takes no pitches; handed in as proposals (said once, for every direction this run)")
 	})
 	var rest []error
-	for _, lost := range []error{gateway.ErrNoUsageLedger, gateway.ErrNoToolUsage, gateway.ErrNoContextUsage} {
+	for _, lost := range []error{gateway.ErrNoUsageLedger, gateway.ErrNoToolUsage, gateway.ErrNoContextUsage, gateway.ErrNoUsageDetail} {
 		if errors.Is(err, lost) {
 			rest = append(rest, lost)
 		}
