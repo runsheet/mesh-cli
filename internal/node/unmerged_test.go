@@ -46,7 +46,7 @@ func TestClaimConfigParsesAndReloads(t *testing.T) {
 	f := seed(t)
 	gw := gateway.New(f.URL(), "rs_test")
 	base := &Config{OrgLogin: "acme", OrgID: orgID, Slug: "n", Capacity: Fixed(1)}
-	reload := Reloader(gw, base, scopesOf(base), func() (*Config, error) { return cfg, nil }, func(context.Context, Scope) error { return nil })
+	reload := Reloader(gw, base, scopesOf(base), func() (*Config, error) { return cfg, nil }, func(context.Context, Scope) error { return nil }, nil)
 	got, _ := reload(context.Background())
 	if got.Claim == nil || got.Claim.UnmergedPerRepo != 7 {
 		t.Fatalf("Reloaded.Claim = %+v, want unmerged_per_repo 7", got.Claim)

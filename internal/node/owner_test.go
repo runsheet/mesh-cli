@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -317,5 +318,43 @@ func TestServedFollowsTheAnswerElseToday(t *testing.T) {
 	scopes, beats, err = serve(f, nil)
 	if err != nil || len(scopes) != 1 || scopes[0].NodeID != perOrg || strings.Join(beats, ",") != perOrg {
 		t.Fatalf("no owner: scopes %+v, beats %v, %v", scopes, beats, err)
+	}
+}
+
+// The node is proved against the agreed contract, not a hand-built
+// answer: specs/contracts/registerNode.json's answer, served verbatim by
+// the fake, is one registration, one node id and the three orgs it
+// names — grapevine, which has no login, by its slug.
+func TestRegisterOnceFromTheContractFixture(t *testing.T) {
+	raw, err := os.ReadFile("../../specs/contracts/registerNode.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fx struct {
+		Answer json.RawMessage `json:"answer"`
+	}
+	if err := json.Unmarshal(raw, &fx); err != nil {
+		t.Fatal(err)
+	}
+	f := seed(t)
+	f.AnswerJSON = fx.Answer
+	gw := gateway.New(f.URL(), "rs_test")
+	cfg := &Config{Slug: "mini", Name: "Chris's Mini", OwnerID: ownerID, Capacity: Fixed(4)}
+
+	scopes, owner, err := RegisterOnce(context.Background(), gw, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if owner == nil || owner.Kind != "person" || owner.Name != "Chris" {
+		t.Fatalf("owner = %+v", owner)
+	}
+	if got := strings.Join(scopes.Logins(), ","); got != "runsheet,wardroomid,grapevine" {
+		t.Fatalf("logins = %q", got)
+	}
+	if ids := scopes.NodeIDs(); len(ids) != 1 || ids[0] != answerNode || cfg.NodeID != answerNode {
+		t.Fatalf("node ids = %v, cfg.NodeID = %q, want the one %s", ids, cfg.NodeID, answerNode)
+	}
+	if n := len(f.CallsNamed("registerNode")); n != 1 {
+		t.Fatalf("registerNode called %d times, want once", n)
 	}
 }

@@ -83,7 +83,9 @@ naming the owner, a fourth org appearing on a later heartbeat served
 without restart — lands as a later item on this branch's goal, switched
 on by the answer alone; no flag day.
 
-## Amendment 2026-09-29: the node consumes the answer (item 2)
+## Amendment (item 7), 2026-09-29: the node consumes the answer
+
+Built as item 2, whose push failed; item 7 carries its branch onto main.
 
 **node.yaml declares the owner.** `owner: person` (the default, when
 empty) or `owner: enterprise`; anything else is refused on load.
@@ -125,3 +127,8 @@ for an org without one (grapevine), its tenant slug, and `Scope.Name()`,
 "not a member of" error name it by that. `mesh channel serve` still
 reads the person's orgs (`ResolveScopes`) for the orgs it names: it
 never claims under a node id.
+
+**The contract proves it.** `TestRegisterOnceFromTheContractFixture`
+serves `specs/contracts/registerNode.json`'s answer verbatim
+(`gatewaytest.Fake.AnswerJSON`) to `RegisterOnce`: one `registerNode`,
+one node id, and the three orgs by `Scope.Name` — grapevine by its slug.
