@@ -283,3 +283,39 @@ func TestWriteNodeIDKeepsTheFile(t *testing.T) {
 		t.Fatalf("node_id = %q after a second write", cfg.NodeID)
 	}
 }
+
+// Served, beside the loop: a platform that takes the owner and answers
+// has the answer's orgs under the one id, heartbeated once; one that
+// takes the owner but answers nothing yet (nil) has today's orgs,
+// heartbeated per org, as RegisterOnce registered it; one that takes
+// no owner the same.
+func TestServedFollowsTheAnswerElseToday(t *testing.T) {
+	cfg := &Config{Slug: "box", Name: "Box", OwnerID: ownerID, Capacity: Fixed(1)}
+	own, _ := cfg.OwnNodeID()
+	perOrg, _ := cfg.NodeIDIn(orgID)
+	serve := func(f interface{ URL() string }, answer *gateway.NodeAnswer) (Scopes, []string, error) {
+		var beats []string
+		scopes, err := Served(context.Background(), gateway.New(f.URL(), "rs_test"), cfg, func(_ context.Context, id string) (*gateway.NodeAnswer, error) {
+			beats = append(beats, id)
+			return answer, nil
+		})
+		return scopes, beats, err
+	}
+
+	scopes, beats, err := serve(seed(t), ownerAnswer())
+	if err != nil || len(scopes) != 3 || strings.Join(beats, ",") != own {
+		t.Fatalf("answered: scopes %v, beats %v, %v", scopes.Logins(), beats, err)
+	}
+
+	scopes, beats, err = serve(seed(t), nil)
+	if err != nil || len(scopes) != 1 || scopes[0].NodeID != perOrg || strings.Join(beats, ",") != own+","+perOrg {
+		t.Fatalf("no answer: scopes %+v, beats %v, %v", scopes, beats, err)
+	}
+
+	f := seed(t)
+	f.UnknownFields = map[string]bool{"owner": true}
+	scopes, beats, err = serve(f, nil)
+	if err != nil || len(scopes) != 1 || scopes[0].NodeID != perOrg || strings.Join(beats, ",") != perOrg {
+		t.Fatalf("no owner: scopes %+v, beats %v, %v", scopes, beats, err)
+	}
+}

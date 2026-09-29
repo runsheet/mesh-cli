@@ -115,7 +115,9 @@ loop in a later item): when it names scopes those are served — a new
 org on that very tick — with no `myOrgs` and no registration; when it
 names none, today's `myOrgs`/register path runs unchanged. `mesh node
 status` and a rollback's report heartbeat each of the node's ids once
-(`Served`), so an owned node heartbeats once, not once per org.
+(`Served`), so an owned node heartbeats once, not once per org; one
+whose heartbeat answers nothing (nil) falls back as registration does —
+today's orgs, heartbeated per org.
 
 **Names.** `Scope` gains `Slug`; `Scope.Login` is the org's login or,
 for an org without one (grapevine), its tenant slug, and `Scope.Name()`,
