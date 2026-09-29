@@ -131,3 +131,27 @@ func TestParseCodexStreamEmpty(t *testing.T) {
 		}
 	}
 }
+
+// Every command failed on bubblewrap: SandboxBroken is the first bwrap
+// line, whatever verdict the session wrote after. One clean command
+// among them leaves it empty, as does a session with clean commands.
+func TestParseCodexStreamSandboxBroken(t *testing.T) {
+	res, _ := parseCodexFixture(t, "codex_exec_bwrap.jsonl", "gpt-6-sol")
+	if res.SandboxBroken != "bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted" {
+		t.Fatalf("SandboxBroken = %q", res.SandboxBroken)
+	}
+	if !res.Success || !strings.HasSuffix(res.Text, "VERDICT: PASS") {
+		t.Fatalf("result = %+v", res)
+	}
+	if res, _ := parseCodexFixture(t, "codex_exec_bwrap_one_clean.jsonl", "gpt-6-sol"); res.SandboxBroken != "" {
+		t.Fatalf("one clean command: SandboxBroken = %q", res.SandboxBroken)
+	}
+	if res, _ := parseCodexFixture(t, "codex_exec_tools.jsonl", "gpt-6-astra"); res.SandboxBroken != "" {
+		t.Fatalf("clean commands: SandboxBroken = %q", res.SandboxBroken)
+	}
+	// capped at 300
+	long := `{"type":"item.completed","item":{"id":"i","type":"command_execution","aggregated_output":"x bwrap: ` + strings.Repeat("a", 400) + `\n","exit_code":1,"status":"failed"}}`
+	if got := ParseCodexStream(strings.NewReader(long), "gpt-6-sol", nil).SandboxBroken; len(got) != 300 || !strings.HasPrefix(got, "bwrap: aaa") {
+		t.Fatalf("long: %d %q", len(got), got)
+	}
+}

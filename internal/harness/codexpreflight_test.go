@@ -16,10 +16,26 @@ import (
 )
 
 // preflightCodex is a `codex` whose `mcp get` records its environment
-// and CODEX_HOME's config.toml in out and exits with code.
+// and CODEX_HOME's config.toml in out and exits with code, and whose
+// sandbox probe passes.
 func preflightCodex(t *testing.T, out string, code int) string {
 	t.Helper()
+	return sandboxCodex(t, out, code, "", 0)
+}
+
+// sandboxCodex is preflightCodex whose sandbox probe (`codex sandbox --
+// true`) records its arguments and environment in out, writes stderr to
+// its stderr and exits with sandboxCode.
+func sandboxCodex(t *testing.T, out string, code int, stderr string, sandboxCode int) string {
+	t.Helper()
 	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = sandbox ]; then\n" +
+		"  echo \"$@\" > " + out + "/sandbox-args\n" +
+		"  env > " + out + "/sandbox-env\n" +
+		"  pwd > " + out + "/sandbox-pwd\n" +
+		"  printf '%s' '" + stderr + "' >&2\n" +
+		"  exit " + itoa(sandboxCode) + "\n" +
+		"fi\n" +
 		"echo \"$@\" > " + out + "/args\n" +
 		"env > " + out + "/env\n" +
 		"cp \"$CODEX_HOME/config.toml\" " + out + "/config.toml\n" +
@@ -181,6 +197,58 @@ func TestCodexPreflightOtherFailures(t *testing.T) {
 
 	// no built-in: nothing to check
 	if err := c.Preflight(context.Background(), Job{Workspace: t.TempDir()}); err != nil {
+		t.Fatalf("no built-in: %v", err)
+	}
+}
+
+const bwrapFailure = "bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted"
+
+// The sandbox probe runs after the context-server check, in the
+// session's workspace, home and environment: a bwrap failure with exit
+// 1 is `sandbox: <its text>`; exit 0 and a clean stderr pass.
+func TestCodexPreflightSandbox(t *testing.T) {
+	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
+	acct := CodexAccount{Name: "key", APIKeyEnv: "TEST_PREFLIGHT_KEY"}
+	srv := mcpServer(t, "Bearer rs_node", http.StatusUnauthorized, "", 1)
+
+	out := t.TempDir()
+	ws := t.TempDir()
+	c := &Codex{Binary: sandboxCodex(t, out, 0, bwrapFailure+"\n", 1), HomeRoot: t.TempDir(), Account: acct}
+	err := c.Preflight(context.Background(), Job{Workspace: ws, MCPServers: builtin(srv.URL+"/mcp", "Bearer rs_node")})
+	if err == nil || !strings.Contains(err.Error(), "sandbox: ") || !strings.Contains(err.Error(), bwrapFailure) {
+		t.Fatalf("err %v", err)
+	}
+	if got := strings.TrimSpace(readFile(t, filepath.Join(out, "sandbox-args"))); got != "sandbox -- true" {
+		t.Fatalf("probe args %q", got)
+	}
+	if got := strings.TrimSpace(readFile(t, filepath.Join(out, "sandbox-pwd"))); got != ws {
+		t.Fatalf("probe ran in %q, not the workspace %q", got, ws)
+	}
+	if env := envOf(t, filepath.Join(out, "sandbox-env")); env["CODEX_API_KEY"][0] != "sk-test" || !strings.HasPrefix(env["CODEX_HOME"][0], c.HomeRoot) {
+		t.Fatalf("probe env %v", env)
+	}
+	if strings.Contains(err.Error(), "sk-test") {
+		t.Fatalf("the error carries the secret: %v", err)
+	}
+
+	// bwrap on stderr is a failure even on exit 0
+	c.Binary = sandboxCodex(t, t.TempDir(), 0, bwrapFailure, 0)
+	if err := c.Preflight(context.Background(), Job{Workspace: t.TempDir(), MCPServers: builtin(srv.URL, "Bearer rs_node")}); err == nil || !strings.Contains(err.Error(), "sandbox: "+bwrapFailure) {
+		t.Fatalf("exit 0 with bwrap: %v", err)
+	}
+	// a non-zero exit with nothing said still fails
+	c.Binary = sandboxCodex(t, t.TempDir(), 0, "", 1)
+	if err := c.Preflight(context.Background(), Job{Workspace: t.TempDir(), MCPServers: builtin(srv.URL, "Bearer rs_node")}); err == nil || !strings.Contains(err.Error(), "sandbox: exit status 1") {
+		t.Fatalf("exit 1: %v", err)
+	}
+	// the probe exits 0: the preflight passes
+	c.Binary = sandboxCodex(t, t.TempDir(), 0, "", 0)
+	if err := c.Preflight(context.Background(), Job{Workspace: t.TempDir(), MCPServers: builtin(srv.URL, "Bearer rs_node")}); err != nil {
+		t.Fatalf("clean probe: %v", err)
+	}
+	// with no built-in the sandbox is still probed
+	c.Binary = sandboxCodex(t, t.TempDir(), 0, bwrapFailure, 1)
+	if err := c.Preflight(context.Background(), Job{Workspace: t.TempDir()}); err == nil || !strings.Contains(err.Error(), "sandbox: ") {
 		t.Fatalf("no built-in: %v", err)
 	}
 }

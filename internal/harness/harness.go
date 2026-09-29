@@ -224,6 +224,13 @@ type Result struct {
 	// run before the hand-back spent: its cost and turns, input per turn
 	// and its largest and most-called tools (SpentOn). Empty otherwise.
 	SpentOn string
+	// SandboxBroken is, for a Codex session every one of whose commands
+	// failed because Codex's own sandbox (bubblewrap) could not start,
+	// the first `bwrap:` line of their output, capped at 300 characters:
+	// the session could run nothing, so whatever it concluded it had no
+	// way to reach (ADR 011, amendment 2026-09-29). Empty when it ran no
+	// command or one ran clean, and for a Claude session.
+	SandboxBroken string
 	// KeptSessionDir is where a Codex session's whole event stream and
 	// stderr are kept for KeepSessionOutput after it ends ("" when the
 	// harness kept nothing: Codex.WorkRoot unset, or another harness).
