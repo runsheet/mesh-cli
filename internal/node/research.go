@@ -114,14 +114,16 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 	}
 	dir := ResearchDir(d.WorkRoot, project.Slug, direction.Slug)
 	dirs := map[string]string{}
+	var names []string
 	for _, r := range all {
 		sub := filepath.Join("repos", r.Name)
 		if err := d.WS.Fetch(ctx, r.FullName(), filepath.Join(dir, sub)); err != nil {
 			return fmt.Errorf("fetch %s: %w", r.FullName(), err)
 		}
 		dirs[r.FullName()] = sub
+		names = append(names, r.FullName())
 	}
-	cx, err := FetchContext(ctx, d.GW, scope.Login, project.Slug, ContextOptions{Budget: d.contextBudget()})
+	cx, err := FetchContext(ctx, d.GW, scope.Login, project.Slug, ContextOptions{Budget: d.contextBudget(), Repos: names})
 	if err != nil {
 		d.logf("project %s: context unavailable: %v", project.Slug, err)
 		cx = &Context{}

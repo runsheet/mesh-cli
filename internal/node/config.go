@@ -95,17 +95,19 @@ type Config struct {
 	Context ContextConfig `yaml:"context,omitempty"`
 }
 
-// The context budget's defaults, in bytes: a design document past
-// DefaultDocBytesMax, or past what is left of DefaultContextBytesMax,
-// is listed in the index and fetched on demand instead.
+// The context budget's defaults, in bytes: a document past what is left
+// of DefaultContextBytesMax — binding or not — or a design document past
+// DefaultDocBytesMax, is listed in the index and fetched on demand
+// instead (ADR-015).
 const (
 	DefaultContextBytesMax = 240 * 1024
 	DefaultDocBytesMax     = 60 * 1024
 )
 
 // ContextConfig is node.yaml's `context:` block, in bytes: the total a
-// session's context may put on disk and the most one design document
-// may. Zero is the default.
+// session's context may put on disk, instructions and ADRs included,
+// and the most one design document may — instructions and ADRs are
+// never cut, so they are held by the total alone. Zero is the default.
 type ContextConfig struct {
 	BytesMax    int `yaml:"bytes_max,omitempty"`
 	DocBytesMax int `yaml:"doc_bytes_max,omitempty"`

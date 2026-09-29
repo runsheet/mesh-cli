@@ -405,6 +405,9 @@ type Context struct {
 	OnDisk  map[string]string // slug → file name, for the index
 	Project string
 	PRDSlug string
+	// Dropped is the binding documents (instructions, ADRs) fetched but
+	// left off disk by the total budget: in the index, to fetch.
+	Dropped []gateway.Document
 	// Live is the project's goals and their items as the platform holds
 	// them (adr-003 decision 3), rendered into INDEX.md; nil when the
 	// platform's read failed or found none.
@@ -459,16 +462,26 @@ func AddLive(ctx context.Context, gw Gateway, cx *Context, orgID, projectID stri
 }
 
 // ContextOptions is how FetchContext fetches: Budget is the size budget
-// for design documents on disk (zero is the defaults) — a PRD or TRD
-// past its DocBytesMax, or past what is left of its BytesMax, is listed
-// in the index and fetched on demand instead. Instructions and ADRs are
-// binding and always on disk.
+// for documents on disk (zero is the defaults) and Repos (owner/name)
+// the repos of the session's own work. Every document counts against
+// Budget.BytesMax; instructions and ADRs are binding and exempt from
+// DocBytesMax alone — never truncated, a binding document that does
+// not fit the total is left whole to the index (ADR-015). Repos' own
+// instructions and ADRs are placed first.
 type ContextOptions struct {
 	Budget ContextConfig
+	Repos  []string
 }
 
-// FetchContext lists the project's context documents and fetches the
-// bodies of the kinds in ContextKinds within the size budget.
+// FetchContext lists the project's context documents, fetches the
+// bodies of the kinds in ContextKinds, and puts on disk what the size
+// budget holds, in ADR-015's order: (a) the instructions, then the
+// ADRs, of opts.Repos; (b) the other binding documents, instructions
+// then ADRs, the most recent first; (c) the PRD and TRD, each within
+// DocBytesMax too. A document that would push the total past BytesMax
+// is skipped whole and the walk goes on — a smaller one later may still
+// fit; a binding one skipped is on cx.Dropped. Either way it is in the
+// index to fetch.
 func FetchContext(ctx context.Context, gw Gateway, orgLogin, projectSlug string, opts ContextOptions) (*Context, error) {
 	budget := opts.Budget.Effective()
 	docs, err := gw.ContextDocuments(ctx, orgLogin, projectSlug)
@@ -476,7 +489,15 @@ func FetchContext(ctx context.Context, gw Gateway, orgLogin, projectSlug string,
 		return nil, err
 	}
 	out := &Context{Docs: map[string]string{}, Index: docs, OnDisk: map[string]string{}, Project: orgLogin + "/" + projectSlug}
-	total := 0
+	type fetched struct {
+		doc  gateway.Document
+		body string
+	}
+	var own, other, design []fetched
+	ownRepo := map[string]bool{}
+	for _, r := range opts.Repos {
+		ownRepo[strings.ToLower(strings.TrimSpace(r))] = true
+	}
 	for _, d := range docs {
 		if d.Kind == "prd" && out.PRDSlug == "" {
 			out.PRDSlug = d.Slug
@@ -488,8 +509,38 @@ func FetchContext(ctx context.Context, gw Gateway, orgLogin, projectSlug string,
 		if err != nil {
 			return nil, fmt.Errorf("fetch %s: %w", d.Slug, err)
 		}
-		binding := d.Kind == "instructions" || d.Kind == "adr"
-		if !binding && (len(body) > budget.DocBytesMax || total+len(body) > budget.BytesMax) {
+		f := fetched{d, body}
+		switch {
+		case !isBinding(d):
+			design = append(design, f)
+		case ownRepo[strings.ToLower(strings.TrimSpace(d.Repo))]:
+			own = append(own, f)
+		default:
+			other = append(other, f)
+		}
+	}
+	// instructions before ADRs; the rest by recency — the index carries
+	// no date, so recency is the slug's number (slugNumber), highest first
+	// (adr-014 before adr-001), a slug without one last
+	sort.SliceStable(own, func(i, j int) bool { return bindingRank(own[i].doc) < bindingRank(own[j].doc) })
+	sort.SliceStable(other, func(i, j int) bool {
+		a, b := other[i].doc, other[j].doc
+		if bindingRank(a) != bindingRank(b) {
+			return bindingRank(a) < bindingRank(b)
+		}
+		return slugNumber(a.Slug) > slugNumber(b.Slug)
+	})
+	total := 0
+	for _, f := range append(append(own, other...), design...) {
+		d, body := f.doc, f.body
+		fits := total+len(body) <= budget.BytesMax
+		if !isBinding(d) {
+			fits = fits && len(body) <= budget.DocBytesMax
+		}
+		if !fits {
+			if isBinding(d) {
+				out.Dropped = append(out.Dropped, d)
+			}
 			continue // in the index, fetched on demand
 		}
 		name := d.Kind + "-" + Slugify(d.Slug) + ".md"
@@ -501,6 +552,36 @@ func FetchContext(ctx context.Context, gw Gateway, orgLogin, projectSlug string,
 		total += len(body)
 	}
 	return out, nil
+}
+
+// isBinding is whether d binds a session: instructions and ADRs.
+func isBinding(d gateway.Document) bool { return d.Kind == "instructions" || d.Kind == "adr" }
+
+// bindingRank puts instructions before ADRs.
+func bindingRank(d gateway.Document) int {
+	if d.Kind == "instructions" {
+		return 0
+	}
+	return 1
+}
+
+// slugNumber is an ADR slug's number, its first run of digits
+// ("adr-014" and "adr-014-a-build-validates" → 14), or -1 when it has
+// none.
+func slugNumber(slug string) int {
+	i := strings.IndexAny(slug, "0123456789")
+	if i < 0 {
+		return -1
+	}
+	j := i
+	for j < len(slug) && slug[j] >= '0' && slug[j] <= '9' {
+		j++
+	}
+	n, err := strconv.Atoi(slug[i:j])
+	if err != nil {
+		return -1
+	}
+	return n
 }
 
 // IndexFile is the context directory's index of the whole project.
