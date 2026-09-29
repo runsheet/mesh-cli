@@ -395,7 +395,11 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   nice-to-have tool the node cannot start is omitted and noted on the
   item, a required one releases the item and `Declines` keeps the loop
   off it while the runtimes are unchanged. Plan, research, rebase and
-  channel sessions keep mesh-context alone.
+  channel sessions keep mesh-context alone. `tools.IsBuiltin(name)`
+  knows the built-in by its current name and, until 2026-10-28, its old
+  one, `prologue` — read only from a session an older node started and
+  this one adopted (`Evaluator.toolBroken`, `UseNote`); a console tool
+  named `prologue` is an ordinary tool, one named `mesh-context` clashes.
 - **Tool results** (`internal/harness/trim.go`, node.yaml
   `tool_results.max_kb`, default 16, 0 off): a host build session gets
   a `PreToolUse` hook on `Bash` in its `--settings` (`Job.Settings`,

@@ -344,6 +344,46 @@ func TestDeclinesHoldWhileTheRuntimesAreUnchanged(t *testing.T) {
 	}
 }
 
+// The platform serves its own built-in as a builtIn: true row with slug
+// mesh-context beside the console tools; the build renders exactly one
+// mesh-context server — the node's own attachment — beside the console
+// tool, and the row is no clash: nothing refused, nothing noted.
+func TestServedBuiltinRowIsRenderedOnce(t *testing.T) {
+	f := seed(t)
+	f.SessionTools[item1] = []map[string]any{
+		{"id": "t0", "slug": "mesh-context", "name": "Mesh context", "kind": "remote_mcp", "need": "required", "url": "https://api.runsheet.dev/mcp",
+			"builtIn": true, "account": nil, "headers": []any{}, "env": []any{}},
+		remoteTool(),
+	}
+	h := &fakeHarness{}
+	r, item, logs := toolRunner(t, f, h)
+	if err := r.RunItem(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.jobs) != 1 {
+		t.Fatalf("%d sessions", len(h.jobs))
+	}
+	job := h.jobs[0]
+	if len(job.MCPServers) != 2 || !reflect.DeepEqual(job.MCPServers["mesh-context"], r.MCP["mesh-context"]) || job.MCPServers["search"] == nil {
+		t.Fatalf("MCPServers = %v, want the node's mesh-context once and search", job.MCPServers)
+	}
+	args := harness.MCPArgs(job.MCPServers)
+	if got := strings.Count(strings.Join(args, " "), `"mesh-context":`); got != 1 {
+		t.Fatalf("--mcp-config names mesh-context %d times: %q", got, args)
+	}
+	if len(job.Tools) != 1 || job.Tools[0].Name != "search" {
+		t.Fatalf("Tools = %+v", job.Tools)
+	}
+	for _, c := range f.CallsNamed("reportWorkItemProgress") {
+		if note, _ := c.Input["note"].(string); strings.Contains(note, "refused") {
+			t.Fatalf("a clash was noted: %q", note)
+		}
+	}
+	if strings.Contains(logs.String(), "refused") {
+		t.Fatalf("node.log:\n%s", logs.String())
+	}
+}
+
 // A console tool named after the built-in is refused, noted and not
 // rendered: mesh-context stays the node's own. A tool named prologue no
 // longer clashes and is rendered like any other.
@@ -358,6 +398,8 @@ func TestToolNamedMeshContextIsRefused(t *testing.T) {
 		t.Fatalf("MCPServers = %v, %v", job.MCPServers, err)
 	}
 
+	// prologue, the built-in's old name, is read as an alias until
+	// 2026-10-28 (tools.IsBuiltin) but never clashes
 	st = SelectTools(builtin, []tools.Tool{{Name: "prologue", Transport: tools.Remote, URL: "https://ok.example/mcp"}}, "build", nil)
 	if len(st.Use) != 1 || len(st.Omitted) != 0 {
 		t.Fatalf("prologue: %+v", st)
@@ -379,6 +421,7 @@ func TestPricedToolCallsAreUsageRecords(t *testing.T) {
 	priced := remoteTool()
 	priced["pricePerCallCents"] = 3
 	f.SessionTools[item1] = []map[string]any{priced, localTool()}
+	// prologue: the built-in's old name, an alias read until 2026-10-28
 	h := &fakeHarness{toolCalls: map[string]int{"search": 2, "fs-tools": 5, "mesh-context": 4, "prologue": 3}}
 	r, item, _ := toolRunner(t, f, h)
 

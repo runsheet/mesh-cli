@@ -658,9 +658,9 @@ func turnUsageSummary(res harness.Result) string {
 // built-in server (mesh-context) are none: the loop is over s.used, the
 // rendered console tools, which never holds the built-in whatever it is
 // named — 2026-09-28, a session adopted from an older node (ADR-009) may
-// still call mcp__prologue__*, and that is unpriced here too for the same
-// reason; this note goes 2026-10-28, with the last node old enough to
-// matter. A platform without recordToolUsage is said once per run and
+// still call the built-in by its old name (tools.IsBuiltin), and that is
+// unpriced here too for the same reason; this note goes 2026-10-28, with
+// the last node old enough to matter. A platform without recordToolUsage is said once per run and
 // each call logged; a platform whose usage input lacks the detail fields
 // still takes the call (ErrNoUsageDetail, folded into the once-per-run
 // notice Finish already gives); a failed record is logged, never the

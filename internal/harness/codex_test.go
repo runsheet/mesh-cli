@@ -584,7 +584,7 @@ func TestCodexRunRedactsToolErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := res.Tools["prologue"].FirstError
+	got := res.Tools["mesh-context"].FirstError
 	if strings.Contains(got, "api.runsheet.dev") || !strings.Contains(got, Redacted) {
 		t.Fatalf("FirstError = %q, want the secret redacted", got)
 	}
