@@ -1224,7 +1224,7 @@ func codexSecondOpinion(cfg *node.Config, loop *node.Loop, workRoot string, logg
 	loop.CodexOwn = nil
 	if !cfg.Codex.IsZero() {
 		if len(cfg.Codex.Accounts) > 0 {
-			c.Account = cfg.Codex.Accounts[0].Harness()
+			c.Account = cfg.Codex.Accounts[0].Harness(cfg.Codex.Providers)
 		}
 		loop.CodexOwn = []node.AccountConfig{node.CodexOwnAccount(c.Account)}
 	}
