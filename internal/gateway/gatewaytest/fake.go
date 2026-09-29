@@ -70,8 +70,8 @@ type Fake struct {
 	// Refuse maps a mutation name to a refusal message (returned as a
 	// GraphQL error) — for tests of "someone else has it".
 	Refuse map[string]string
-	// FailReads maps an index list name (goalIndexs) to an error it
-	// answers with instead of rows.
+	// FailReads maps an index list name (goalIndexs) or a get
+	// (workItemIndex) to an error it answers with instead of rows.
 	FailReads map[string]string
 	// GitHubTokens maps an item id to the issueItemRepoToken answer
 	// (token, expiresAt, repository); only the node holding the item's
@@ -384,6 +384,10 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 			f.Reads = append(f.Reads, Call{Name: m[1], Input: map[string]any{"id": m[2]}})
 			if field != "" {
 				writeErrors(w, 200, fmt.Sprintf("Cannot query field %q on type %q.", field, typ))
+				return
+			}
+			if msg := f.FailReads[m[1]]; msg != "" {
+				writeErrors(w, 200, msg)
 				return
 			}
 			writeData(w, map[string]any{m[1]: f.known(m[1], f.table(m[1] + "s")[m[2]])})
