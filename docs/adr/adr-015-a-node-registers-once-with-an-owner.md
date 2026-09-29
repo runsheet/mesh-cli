@@ -153,8 +153,13 @@ up a test that starts a gateway, as `-run Owner` picked up
 **The probe.** A registration first asks `gateway.Client.TakesOwner`
 whether the platform's `RegisterNodeInput` has `owner`
 (`node.Register`, over a `node.Registrar` of one function per step, so
-the decision is read without a gateway). Both paths first resolve the
-token's person's orgs (`ResolveScopes`), exactly as before.
+the decision is read without a gateway). The probe comes **before**
+the person's orgs are read: on the owner contract node.yaml's `orgs:`
+restriction is checked against the answer, never against `MyOrgs`, so
+a restriction naming an enterprise org the token's person is not in, or
+an org without a login by its slug, holds
+(`TestOwnedRegisterProbesBeforeResolving`). Only the per-org path
+resolves the person's orgs (`ResolveScopes`), exactly as before.
 
 **Two paths.** `TakesOwner` false is today's path exactly: one
 `RegisterNode` per org under its per-org id (`registerIn`), no owner
@@ -162,8 +167,9 @@ sent, `Reloader` re-reading MyOrgs each tick, one heartbeat per scope.
 `TakesOwner` true is one `RegisterNode` under the node's own id —
 node.yaml's `node_id` when set, else `gateway.NodeID(owner, slug)`
 (`OwnedNodeID`, so it converges), else a fresh uuid — with `orgId` the
-first resolved org's (the platform ignores it on this contract; the
-fixture's input shows the shape) and `owner` `Config.OwnerKind()`. A
+first of the person's orgs, unrestricted (`Registrar.AnyOrg`; the
+platform ignores it on this contract; the fixture's input shows the
+shape) and `owner` `Config.OwnerKind()`. A
 non-nil answer makes the node *owned*: `cfg.NodeID` is the answer's
 `nodeId`, saved to node.yaml (a save that fails fails the start, never
 logged and ignored), the scopes are `ScopesFromAnswer(answer,
@@ -174,9 +180,10 @@ cfg.Orgs)`, and node.log's lines right after `StartLines` say `owned by
 **The nil-answer fallback, exactly.** A platform that takes `owner` but
 answers no scopes is half-deployed. The node logs once `register: the
 platform took owner but answered no scopes; serving per org until it
-does` and runs the legacy path in full. The sequence is: resolve the
-person's orgs; **one** owner registration (the one above); then **one
-registration per org** under its per-org id; then per-org heartbeats
+does` and runs the legacy path in full. The sequence is: the probe;
+**one** owner registration (the one above); then the person's orgs
+resolved (`ResolveScopes`, the restriction as on the legacy path) and
+**one registration per org** under its per-org id; then per-org heartbeats
 and `Reloader` as on the legacy path. The owner registration happening
 before the per-org ones is this fallback, not a violation of either
 path (`TestOwnedRegisterNilAnswerFallsBackPerOrg` asserts that sequence).
