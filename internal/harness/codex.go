@@ -58,6 +58,70 @@ type Codex struct {
 	Probe []string
 }
 
+// CodexProvider is an OpenAI-compatible endpoint a Codex session talks
+// to instead of OpenAI's own: a vLLM or SGLang server in front of a
+// model the operator runs (Kimi, Qwen, a local Llama), or any hosted
+// service that speaks the same wire. It is named in node.yaml's
+// `codex.providers` and chosen by an account, so one node may run real
+// Codex and a local model side by side (adr-015).
+//
+// The key travels as OPENAI_API_KEY, which the harness already exports
+// for an api-key account, so `env_key` is always that and a provider
+// needs no variable of its own. A server that checks no key still wants
+// one set: give the account an api_key_env holding any non-empty value.
+type CodexProvider struct {
+	// Name is the provider's name in node.yaml, and the name Codex
+	// knows it by; empty is OpenAI itself.
+	Name string
+	// BaseURL is the endpoint including the path a client expects —
+	// vLLM and SGLang serve OpenAI's API under /v1.
+	BaseURL string
+	// WireAPI is "chat" (OpenAI's chat completions, what vLLM and
+	// SGLang serve) or "responses" (OpenAI's own); empty is "chat".
+	WireAPI string
+	// Prices are the list prices per million tokens of the models this
+	// provider serves, by model name. A model with no price records no
+	// cost, which is right for one that costs nothing to run and wrong
+	// for a hosted one — so name the price when there is a bill.
+	Prices map[string]CodexPrice
+}
+
+// IsZero says the session runs on OpenAI itself.
+func (p CodexProvider) IsZero() bool { return p.Name == "" || p.BaseURL == "" }
+
+// TOML is the provider as the session's config.toml declares it, and
+// empty for OpenAI itself.
+func (p CodexProvider) TOML() string {
+	if p.IsZero() {
+		return ""
+	}
+	wire := p.WireAPI
+	if wire == "" {
+		wire = "chat"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "model_provider = %s\n\n", tomlString(p.Name))
+	fmt.Fprintf(&b, "[model_providers.%s]\n", tomlKey(p.Name))
+	fmt.Fprintf(&b, "name = %s\n", tomlString(p.Name))
+	fmt.Fprintf(&b, "base_url = %s\n", tomlString(p.BaseURL))
+	fmt.Fprintf(&b, "wire_api = %s\n", tomlString(wire))
+	fmt.Fprintf(&b, "env_key = %s\n", tomlString("OPENAI_API_KEY"))
+	return b.String()
+}
+
+// Price is a model's list price: a provider's own table alone, never
+// OpenAI's, because a name it happens to share ("gpt-6-sol" served
+// locally) does not cost what OpenAI charges for it. The zero provider
+// is OpenAI, priced at CodexPrices.
+func (p CodexProvider) Price(model string) (CodexPrice, bool) {
+	if !p.IsZero() {
+		pr, ok := p.Prices[model]
+		return pr, ok
+	}
+	pr, ok := CodexPrices[model]
+	return pr, ok
+}
+
 // CodexAccount is one OpenAI account Codex sessions run on: a
 // ChatGPT-plan login (Home, where `codex login` wrote its auth.json) or
 // an API key (APIKeyEnv names the variable holding it, APIKeyFile the
@@ -67,6 +131,10 @@ type CodexAccount struct {
 	Home       string
 	APIKeyEnv  string
 	APIKeyFile string
+	// Provider is the OpenAI-compatible endpoint the session talks to;
+	// the zero provider is OpenAI itself. Only an api-key account names
+	// one: a plan login's auth.json would never reach the endpoint.
+	Provider CodexProvider
 }
 
 // IsAPIKey says the account runs on an API key rather than a plan login.
@@ -307,11 +375,20 @@ func codexOwnServers(job Job) map[string]any {
 // CodexMCPConfig, then its console tools (job.Tools) by the Codex
 // renderer, tools.CodexConfig — bearer_token_env_var and
 // env_http_headers naming MESH_TOOL_* variables, never Claude Code's
-// `${…}` rendering of them that job.MCPServers also carries.
-func codexConfig(job Job) (string, []string, error) {
+// `${…}` rendering of them that job.MCPServers also carries. The
+// provider, when it is not OpenAI itself, is declared first, and on its
+// own makes the file worth writing: a session with no MCP server still
+// needs its endpoint (adr-015).
+func codexConfig(job Job, prov CodexProvider) (string, []string, error) {
 	cfg, env, err := CodexMCPConfig(codexOwnServers(job), job.Env)
 	if err != nil {
 		return "", nil, err
+	}
+	if head := prov.TOML(); head != "" {
+		if cfg != "" {
+			head += "\n"
+		}
+		cfg = head + cfg
 	}
 	if len(job.Tools) == 0 {
 		return cfg, env, nil
@@ -410,19 +487,24 @@ type codexHome struct {
 // CODEX_HOME=<dir> — a login the node already placed there, e.g. an
 // issued credential's auth.json — that directory is the session's home
 // as given: the harness writes only the MCP servers' config.toml into
-// it, copies no login from Account, and sets no CODEX_HOME of its own
+// it — with no provider, since an issued credential is OpenAI's own and
+// Account's provider is not its endpoint — copies no login from Account, and sets no CODEX_HOME of its own
 // (job.Env already has it); close neither removes the directory nor
 // writes a login back, since the session that made it owns it.
 //
 // Otherwise the harness makes a fresh temporary CODEX_HOME: the same
-// config.toml, and a copy of the plan account's auth.json, or for an
+// config.toml with Account's provider declared first (written even with
+// no MCP server, for the endpoint), and a copy of the plan account's auth.json, or for an
 // API-key account the key in the environment only. codex-cli 0.157.0's
 // exec reads the key from CODEX_API_KEY — with only OPENAI_API_KEY set
 // it sends no credential and gets a 401 — so both are set.
 func (c *Codex) prepareHome(job Job) (*codexHome, error) {
 	if dir := jobCodexHome(job.Env); dir != "" {
 		h := &codexHome{dir: dir}
-		cfg, env, err := codexConfig(job)
+		// the job's home is an issued credential's (PrepareCodexAccount):
+		// an OpenAI account that names no provider, so it gets the zero
+		// one, never this harness's own account's endpoint (adr-015)
+		cfg, env, err := codexConfig(job, CodexProvider{})
 		if err != nil {
 			return nil, err
 		}
@@ -459,7 +541,7 @@ func (c *Codex) prepareHome(job Job) (*codexHome, error) {
 		os.RemoveAll(dir)
 		return nil, err
 	}
-	cfg, env, err := codexConfig(job)
+	cfg, env, err := codexConfig(job, c.Account.Provider)
 	if err != nil {
 		return fail(err)
 	}
@@ -574,7 +656,8 @@ func (s *codexSession) lookup(name string) (string, bool) {
 // working dir, job.Env is appended to the environment, the prompt goes
 // on stdin, and a Timeout or a cancelled ctx kills the session and
 // returns the context's error. The stream is read by ParseCodexStream
-// at job.Model. A turn.failed is an error carrying Codex's message (an
+// at job.Model, priced by the account's provider (CodexProvider.Price:
+// its own table alone, OpenAI's CodexPrices only for OpenAI itself). A turn.failed is an error carrying Codex's message (an
 // UnavailableError when it is a limit); a stream that ends without
 // either turn event is a Result with Success false, as for Claude.
 func (c *Codex) Run(ctx context.Context, job Job, onProgress func(Progress)) (Result, error) {
@@ -643,7 +726,8 @@ func (c *Codex) Run(ctx context.Context, job Job, onProgress func(Progress)) (Re
 		stdoutTee = io.MultiWriter(rawOut, &redactWriter{w: keptOut, secrets: secrets})
 	}
 	var sessionID, failure string
-	res := ParseCodexStream(io.TeeReader(stdout, stdoutTee), job.Model, func(ev CodexEvent) {
+	price := c.Account.Provider.Price
+	res := parseCodexStream(io.TeeReader(stdout, stdoutTee), job.Model, price, func(ev CodexEvent) {
 		switch ev.Type {
 		case "thread.started":
 			sessionID = ev.ThreadID
@@ -658,7 +742,7 @@ func (c *Codex) Run(ctx context.Context, job Job, onProgress func(Progress)) (Re
 			}
 		case "turn.completed":
 			if onProgress != nil && ev.Usage != nil {
-				if p, ok := CodexPrices[job.Model]; ok {
+				if p, ok := price(job.Model); ok {
 					onProgress(Progress{CostUSD: p.Cost(*ev.Usage), SessionID: sessionID})
 				}
 			}

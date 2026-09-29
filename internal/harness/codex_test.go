@@ -623,3 +623,159 @@ func TestCodexRunRedactsToolErrors(t *testing.T) {
 		t.Fatalf("FirstError = %q, want the secret redacted", got)
 	}
 }
+
+// A provider declares the endpoint in the session's config.toml, and
+// does it on its own: a session with no MCP server still needs one
+// written, or Codex would talk to OpenAI (adr-015).
+func TestCodexProviderConfig(t *testing.T) {
+	prov := CodexProvider{Name: "kimi", BaseURL: "http://spark-1.lan:8000/v1"}
+	cfg, env, err := codexConfig(Job{}, prov)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = `model_provider = "kimi"
+
+[model_providers.kimi]
+name = "kimi"
+base_url = "http://spark-1.lan:8000/v1"
+wire_api = "chat"
+env_key = "OPENAI_API_KEY"
+`
+	if cfg != want {
+		t.Fatalf("config.toml\n%s\nwant\n%s", cfg, want)
+	}
+	if len(env) != 0 {
+		t.Fatalf("a provider needs no environment of its own: %q", env)
+	}
+	// the MCP servers follow it, one blank line between the tables
+	cfg, _, err = codexConfig(Job{MCPServers: testServers()}, prov)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := want + "\n" + mustCodexConfig(t, testServers()); cfg != want {
+		t.Fatalf("the servers do not follow the provider:\n%s\nwant\n%s", cfg, want)
+	}
+	if !strings.HasPrefix(cfg[len(want):], "\n[mcp_servers.") {
+		t.Fatalf("no blank line then the first server table:\n%s", cfg)
+	}
+	// responses is the other wire; OpenAI itself renders nothing
+	if got := (CodexProvider{Name: "x", BaseURL: "http://x/v1", WireAPI: "responses"}).TOML(); !strings.Contains(got, "wire_api = \"responses\"\n") {
+		t.Fatalf("wire_api\n%s", got)
+	}
+	if got := (CodexProvider{}).TOML(); got != "" {
+		t.Fatalf("OpenAI itself rendered %q", got)
+	}
+	if cfg, _, err := codexConfig(Job{}, CodexProvider{}); err != nil || cfg != "" {
+		t.Fatalf("OpenAI itself with no server: %q, %v", cfg, err)
+	}
+	// a name TOML would not take bare is quoted in the table header
+	if got := (CodexProvider{Name: "kimi.spark", BaseURL: "http://x/v1"}).TOML(); !strings.Contains(got, "\n[model_providers.\"kimi.spark\"]\n") {
+		t.Fatalf("table name\n%s", got)
+	}
+}
+
+// A provider's own table is the only one its models are priced at; the
+// zero provider is OpenAI, priced at CodexPrices (adr-015).
+func TestCodexProviderPrice(t *testing.T) {
+	kimi := CodexPrice{Input: 0.55, CachedInput: 0.55, CacheWrite: 0.55, Output: 2.20}
+	prov := CodexProvider{Name: "kimi", BaseURL: "http://spark-1.lan:8000/v1",
+		Prices: map[string]CodexPrice{"kimi-k3": kimi}}
+	if p, ok := prov.Price("kimi-k3"); !ok || p != kimi {
+		t.Fatalf("kimi-k3 = %+v, %v; want the provider's own price", p, ok)
+	}
+	if p, ok := prov.Price("gpt-6-sol"); ok {
+		t.Fatalf("gpt-6-sol on a provider priced at %+v, want unpriced", p)
+	}
+	if p, ok := (CodexProvider{}).Price("gpt-6-sol"); !ok || p != CodexPrices["gpt-6-sol"] {
+		t.Fatalf("OpenAI's gpt-6-sol = %+v, %v", p, ok)
+	}
+	if _, ok := (CodexProvider{}).Price("kimi-k3"); ok {
+		t.Fatal("OpenAI priced kimi-k3")
+	}
+}
+
+// A provider account's session: its home's config.toml declares the
+// provider though the job has no MCP server, and the Result is costed
+// at the provider's table alone — a model absent from it costs nothing
+// and is Unpriced, even one OpenAI's table names (adr-015).
+func TestCodexRunPricesAtTheProvider(t *testing.T) {
+	t.Setenv("MESH_TEST_KIMI_KEY", "kimi-key")
+	kimi := CodexPrice{Input: 0.55, CachedInput: 0.55, CacheWrite: 0.55, Output: 2.20}
+	prov := CodexProvider{Name: "kimi", BaseURL: "http://spark-1.lan:8000/v1",
+		Prices: map[string]CodexPrice{"kimi-k3": kimi}}
+	// the fixture's last turn.completed
+	usage := CodexUsage{InputTokens: 12624, CacheWriteInputTokens: 12621, OutputTokens: 8}
+	for _, tc := range []struct {
+		model    string
+		cost     float64
+		unpriced bool
+	}{
+		{"gpt-6-sol", 0, true},
+		{"kimi-k3", kimi.Cost(usage), false},
+	} {
+		out := t.TempDir()
+		c := &Codex{Binary: fakeCodex(t, out, "codex_exec_apikey.jsonl"), HomeRoot: t.TempDir(),
+			Account: CodexAccount{Name: "kimi", APIKeyEnv: "MESH_TEST_KIMI_KEY", Provider: prov}}
+		var progress []float64
+		res, err := c.Run(context.Background(), Job{Workspace: t.TempDir(), Prompt: "hi", Model: tc.model},
+			func(p Progress) {
+				if p.CostUSD != 0 {
+					progress = append(progress, p.CostUSD)
+				}
+			})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Usage == nil || res.CostUSD != tc.cost || res.Usage.Unpriced != tc.unpriced || res.Usage.InputTokens != 12624 {
+			t.Fatalf("%s: cost %v usage %+v, want cost %v unpriced %v", tc.model, res.CostUSD, res.Usage, tc.cost, tc.unpriced)
+		}
+		if tc.unpriced && len(progress) != 0 || !tc.unpriced && (len(progress) != 1 || progress[0] != tc.cost) {
+			t.Fatalf("%s: progress costs %v", tc.model, progress)
+		}
+		if got, want := readFile(t, filepath.Join(out, "config.toml")), prov.TOML(); got != want {
+			t.Fatalf("%s: config.toml\n%s\nwant\n%s", tc.model, got, want)
+		}
+	}
+	// the stream parsed on its own is OpenAI's: gpt-6-sol has a price there
+	f, err := os.Open(filepath.Join("testdata", "codex_exec_apikey.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if res := ParseCodexStream(f, "gpt-6-sol", nil); res.Usage.Unpriced || res.CostUSD != CodexPrices["gpt-6-sol"].Cost(usage) {
+		t.Fatalf("ParseCodexStream: cost %v usage %+v", res.CostUSD, res.Usage)
+	}
+}
+
+// A job that names its own CODEX_HOME runs on an issued credential —
+// OpenAI's, naming no provider — so the harness's own account's
+// provider is not declared there: an issued login pointed at the
+// node's local endpoint would never authenticate (adr-015).
+func TestCodexRunJobCodexHomeTakesNoProvider(t *testing.T) {
+	prov := CodexProvider{Name: "kimi", BaseURL: "http://spark-1.lan:8000/v1"}
+	for _, servers := range []map[string]any{testServers(), nil} {
+		out, home := t.TempDir(), t.TempDir()
+		c := &Codex{Binary: fakeCodex(t, out, "codex_exec_apikey.jsonl"), HomeRoot: t.TempDir(),
+			Account: CodexAccount{Name: "kimi", APIKeyEnv: "MESH_TEST_KIMI_KEY", Provider: prov}}
+		if _, err := c.Run(context.Background(), Job{Workspace: t.TempDir(), Prompt: "hi", Model: "gpt-6-sol",
+			MCPServers: servers, Env: []string{"CODEX_HOME=" + home}}, nil); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := os.ReadFile(filepath.Join(home, "config.toml"))
+		if servers == nil {
+			if !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("no server and no provider wrote config.toml %q (%v)", cfg, err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(cfg), "model_provider") {
+			t.Fatalf("the issued home's config.toml declares a provider:\n%s", cfg)
+		}
+		if want := mustCodexConfig(t, testServers()); string(cfg) != want {
+			t.Fatalf("config.toml\n%s\nwant\n%s", cfg, want)
+		}
+	}
+}
