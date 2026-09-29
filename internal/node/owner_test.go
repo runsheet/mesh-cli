@@ -211,8 +211,9 @@ func TestRegisterOnceWithoutOwnerRegistersPerOrg(t *testing.T) {
 		t.Fatalf("cfg.NodeID = %q on the per-org path", cfg.NodeID)
 	}
 
-	// a platform that takes the owner but answers nothing yet: one
-	// registration with the owner, then today's per org
+	// a platform that takes the owner but cannot answer with the orgs
+	// yet: today's registration, one per org under its per-org id, no
+	// registration under the owner first
 	f = seed(t)
 	gw = gateway.New(f.URL(), "rs_test")
 	cfg = &Config{Slug: "box", Name: "Box", OwnerID: ownerID, Capacity: Fixed(1)}
@@ -220,7 +221,7 @@ func TestRegisterOnceWithoutOwnerRegistersPerOrg(t *testing.T) {
 	if err != nil || len(scopes) != 1 || cfg.NodeID != "" {
 		t.Fatalf("scopes = %+v, node id %q, %v", scopes, cfg.NodeID, err)
 	}
-	if want, _ := cfg.NodeIDIn(orgID); scopes[0].NodeID != want || len(f.CallsNamed("registerNode")) != 2 {
+	if want, _ := cfg.NodeIDIn(orgID); scopes[0].NodeID != want || len(f.CallsNamed("registerNode")) != 1 || f.CallsNamed("registerNode")[0].Input["aggregateId"] != want {
 		t.Fatalf("scope %+v, %d registrations", scopes[0], len(f.CallsNamed("registerNode")))
 	}
 }
@@ -303,13 +304,17 @@ func TestServedFollowsTheAnswerElseToday(t *testing.T) {
 		return scopes, beats, err
 	}
 
-	scopes, beats, err := serve(seed(t), ownerAnswer())
+	answering := seed(t)
+	answering.Answer = ownerAnswer()
+	scopes, beats, err := serve(answering, ownerAnswer())
 	if err != nil || len(scopes) != 3 || strings.Join(beats, ",") != own {
 		t.Fatalf("answered: scopes %v, beats %v, %v", scopes.Logins(), beats, err)
 	}
 
+	// takes the owner but cannot answer with the orgs: heartbeated per
+	// org only, never under the owner's id first
 	scopes, beats, err = serve(seed(t), nil)
-	if err != nil || len(scopes) != 1 || scopes[0].NodeID != perOrg || strings.Join(beats, ",") != own+","+perOrg {
+	if err != nil || len(scopes) != 1 || scopes[0].NodeID != perOrg || strings.Join(beats, ",") != perOrg {
 		t.Fatalf("no answer: scopes %+v, beats %v, %v", scopes, beats, err)
 	}
 

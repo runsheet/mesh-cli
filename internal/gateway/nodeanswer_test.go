@@ -278,13 +278,26 @@ func TestMyOrgsIsAMapScalar(t *testing.T) {
 }
 
 // TakesOwner says whether the platform's RegisterNodeInput has an
-// `owner` field, by introspection.
+// `owner` field and its payload the answer's `scopes`, by
+// introspection.
 func TestTakesOwner(t *testing.T) {
 	f := gatewaytest.New("rs_test")
 	defer f.Close()
+	f.Answer = &gateway.NodeAnswer{NodeID: "n", Owner: gateway.NodeOwner{Kind: "person"}}
 	gw := gateway.New(f.URL(), "rs_test")
 	if !gw.TakesOwner(context.Background()) {
 		t.Fatal("TakesOwner = false, want true")
+	}
+}
+
+// A platform that takes the owner but cannot answer with the orgs is
+// registered per org, as before: TakesOwner is false.
+func TestTakesOwnerFalseWithoutTheAnswer(t *testing.T) {
+	f := gatewaytest.New("rs_test")
+	defer f.Close()
+	gw := gateway.New(f.URL(), "rs_test")
+	if gw.TakesOwner(context.Background()) {
+		t.Fatal("TakesOwner = true, want false")
 	}
 }
 

@@ -108,9 +108,13 @@ error), each `Scope` carrying the one id, so every call that took
 `Scope.NodeID` — claim, finish, usage, the upgrade's confirm, the
 desired version — follows without being rewritten; an answer with no
 scopes is an error, "the node's owner (…) serves no org". A platform
-that takes no owner — or takes it but answers nothing (nil) — gets
-today's Node per org (`ResolveScopes`, `RegisterIn`), owned by the
-person. It returns the `Owner{Kind, Name}` for the node's first lines.
+that takes no owner — or takes it but cannot answer with the orgs —
+gets today's Node per org (`ResolveScopes`, `RegisterIn`), owned by the
+person, and only that: one `registerNode` per org under its per-org
+id, none under the owner first. Which platform it is, is asked before
+registering (`TakesOwner`: `RegisterNodeInput.owner` and
+`DispatchResult.scopes`, by introspection, kept an hour), not learnt
+from a registration's nil answer. It returns the `Owner{Kind, Name}` for the node's first lines.
 
 **Every tick.** `Reloader` takes the last heartbeat's answer (set by the
 loop in a later item): when it names scopes those are served — a new
@@ -118,8 +122,8 @@ org on that very tick — with no `myOrgs` and no registration; when it
 names none, today's `myOrgs`/register path runs unchanged. `mesh node
 status` and a rollback's report heartbeat each of the node's ids once
 (`Served`), so an owned node heartbeats once, not once per org; one
-whose heartbeat answers nothing (nil) falls back as registration does —
-today's orgs, heartbeated per org.
+that cannot answer falls back as registration does — today's orgs,
+heartbeated per org only.
 
 **Names.** `Scope` gains `Slug`; `Scope.Login` is the org's login or,
 for an org without one (grapevine), its tenant slug, and `Scope.Name()`,

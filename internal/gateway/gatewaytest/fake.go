@@ -316,6 +316,13 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeData(w, map[string]any{"__type": f.registerNodeInputType()})
+	case strings.Contains(q, `__type(name: "DispatchResult")`):
+		f.Reads = append(f.Reads, Call{Name: "__type DispatchResult", Input: map[string]any{}})
+		if f.Unsupported["__type"] {
+			writeErrors(w, 200, "GraphQL introspection is not allowed")
+			return
+		}
+		writeData(w, map[string]any{"__type": f.dispatchResultType()})
 	case strings.Contains(q, "__type("):
 		f.Reads = append(f.Reads, Call{Name: "__type", Input: map[string]any{}})
 		if f.Unsupported["__type"] {
@@ -593,6 +600,21 @@ func (f *Fake) registerNodeInputType() map[string]any {
 		fields = append(fields, map[string]any{"name": name, "type": map[string]any{"kind": "SCALAR"}})
 	}
 	return map[string]any{"inputFields": fields}
+}
+
+// dispatchResultType is a command's payload type as introspection
+// answers it: `status`, and the NodeAnswer's nodeId, owner and scopes
+// when the fake answers one (Answer or AnswerJSON set, and not
+// UnknownFields["nodeAnswer"]) — a platform that takes the owner but
+// answers nothing has none of them.
+func (f *Fake) dispatchResultType() map[string]any {
+	fields := []any{map[string]any{"name": "status"}}
+	if (f.Answer != nil || len(f.AnswerJSON) > 0) && !f.UnknownFields["nodeAnswer"] {
+		for _, n := range []string{"nodeId", "owner", "scopes"} {
+			fields = append(fields, map[string]any{"name": n})
+		}
+	}
+	return map[string]any{"fields": fields}
 }
 
 // usageReportInputType is UsageReportInput as introspection answers

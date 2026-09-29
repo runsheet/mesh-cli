@@ -43,12 +43,14 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   enterprise`), validated on load, and the node has **one id**,
   `Config.NodeID` (`OwnNodeID`: node.yaml's, else a uuid5 of
   (owner_id, slug), written back by `WriteNodeID`). `RegisterOnce`
-  registers once, declaring the owner, when the gateway `TakesOwner`,
+  registers once, declaring the owner, when the gateway `TakesOwner`
+  (introspected: `RegisterNodeInput.owner` and `DispatchResult.scopes`),
   and takes the orgs it serves from the answer (`ScopesFrom`, node.yaml's
   `orgs:` kept, by login or slug), every `Scope` carrying the one id so
   claim, finish, usage and the desired version follow unchanged; a
-  platform that takes no owner, or answers nothing, gets today's Node per
-  org (`ResolveScopes`, `RegisterIn`). `Reloader`'s `answer` (the last
+  platform that takes no owner, or cannot answer, gets today's Node per
+  org and only that (`ResolveScopes`, `RegisterIn`: one registration
+  per org, none under the owner first). `Reloader`'s `answer` (the last
   heartbeat's) serves the answer's orgs — a new one on that tick — with
   no `MyOrgs` and no registration. An org without a GitHub login is
   named by its tenant slug (`Scope.Login`/`Scope.Name`,

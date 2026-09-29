@@ -613,12 +613,14 @@ func ScopesFrom(answer *gateway.NodeAnswer, cfg *Config) Scopes {
 }
 
 // RegisterOnce registers the node (ADR-015). A platform that takes an
-// owner (TakesOwner) gets one registration under the node's one id,
-// declaring node.yaml's owner, and the orgs served are its answer's
-// scopes — cfg.NodeID is set to that id for the caller to write back;
-// an answer that names no org is an error. A platform that answers
-// nothing (nil) and any other platform get today's registration: a Node in each org of
-// the person (ResolveScopes, RegisterIn), owned by that person.
+// owner and answers with the orgs (TakesOwner) gets one registration
+// under the node's one id, declaring node.yaml's owner, and the orgs
+// served are its answer's scopes — cfg.NodeID is set to that id for
+// the caller to write back; an answer that names no org is an error.
+// Any other platform — one that takes the owner but cannot answer
+// yet among them — gets today's registration and only it: a Node in
+// each org of the person (ResolveScopes, RegisterIn), owned by that
+// person, with no registration under the owner first.
 func RegisterOnce(ctx context.Context, gw Gateway, cfg *Config) (Scopes, *Owner, error) {
 	perOrg := func() (Scopes, *Owner, error) {
 		scopes, err := ResolveScopes(ctx, gw, cfg)
@@ -643,7 +645,7 @@ func RegisterOnce(ctx context.Context, gw Gateway, cfg *Config) (Scopes, *Owner,
 		return nil, nil, fmt.Errorf("register: %w", err)
 	}
 	if answer == nil {
-		// it took the owner but answers nothing yet: today's
+		// the probe said it answers, yet it answered nothing: today's
 		// registration, until it names the orgs itself
 		return perOrg()
 	}
@@ -669,7 +671,7 @@ func RegisterOnce(ctx context.Context, gw Gateway, cfg *Config) (Scopes, *Owner,
 // (`mesh node status`, a rollback's report), heartbeating each of the
 // node's ids once through heartbeat on the way: a platform that takes
 // an owner answers the one heartbeat under the node's one id with them
-// (ScopesFrom); one that takes an owner but answers nothing, and any
+// (ScopesFrom); one that takes an owner but cannot answer, and any
 // other, has them from ResolveScopes, heartbeated per org — as
 // RegisterOnce registered it.
 func Served(ctx context.Context, gw Gateway, cfg *Config, heartbeat func(ctx context.Context, nodeID string) (*gateway.NodeAnswer, error)) (Scopes, error) {
@@ -697,9 +699,8 @@ func Served(ctx context.Context, gw Gateway, cfg *Config, heartbeat func(ctx con
 		return nil, fmt.Errorf("heartbeat: %w", err)
 	}
 	if answer == nil {
-		// it took the owner but answers nothing yet: RegisterOnce
-		// registered per org, so the orgs are today's, heartbeated
-		// per org
+		// the probe said it answers, yet it answered nothing:
+		// the orgs are today's, heartbeated per org
 		return perOrg()
 	}
 	scopes := ScopesFrom(answer, cfg)

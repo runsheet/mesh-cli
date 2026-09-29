@@ -1419,10 +1419,13 @@ type ownerProbe struct {
 }
 
 // TakesOwner says whether the gateway's RegisterNodeInput has an
-// `owner` field — asked by introspection and kept for
+// `owner` field and its registerNode payload (DispatchResult) the
+// answer's `scopes` — asked by introspection and kept for
 // ScalingProbeEvery, the same as takesScaling: an older platform's
 // registerNode would refuse the whole call on an input field it does
-// not know. A failed probe is a no, kept as long.
+// not know, and one that takes the owner but cannot answer with the
+// orgs is registered per org as before, with no registration under
+// the owner first. A failed probe is a no, kept as long.
 func (c *Client) TakesOwner(ctx context.Context) bool {
 	p := &c.ownerSchema
 	p.mu.Lock()
@@ -1443,8 +1446,28 @@ func (c *Client) TakesOwner(ctx context.Context) bool {
 	if err := c.Query(ctx, q, nil, &out); err != nil || out.Type == nil {
 		return false
 	}
+	takes := false
 	for _, f := range out.Type.InputFields {
 		if f.Name == "owner" {
+			takes = true
+		}
+	}
+	if !takes {
+		return false
+	}
+	var payload struct {
+		Type *struct {
+			Fields []struct {
+				Name string `json:"name"`
+			} `json:"fields"`
+		} `json:"__type"`
+	}
+	q = `{ __type(name: "DispatchResult") { fields { name } } }`
+	if err := c.Query(ctx, q, nil, &payload); err != nil || payload.Type == nil {
+		return false
+	}
+	for _, f := range payload.Type.Fields {
+		if f.Name == "scopes" {
 			p.takes = true
 		}
 	}
