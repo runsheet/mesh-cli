@@ -221,7 +221,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	}
 	// the same context the builder had: the ADRs it was bound by
 	orgLogin := e.Scopes.LoginOf(item.OrgID)
-	cx, err := FetchContext(ctx, e.GW, orgLogin, res.Project.Slug, ContextOptions{Budget: e.contextBudget()})
+	cx, err := FetchContext(ctx, e.GW, orgLogin, res.Project.Slug, ContextOptions{Budget: e.contextBudget(), Repos: []string{res.Repo.FullName()}})
 	if err != nil {
 		e.logf("item %s: context unavailable: %v", label, err)
 		cx = &Context{}

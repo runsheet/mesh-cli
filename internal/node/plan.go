@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -309,7 +310,12 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 		}
 		dirs[name] = sub
 	}
-	cx, err := FetchContext(ctx, p.GW, scope.Login, project.Slug, ContextOptions{Budget: p.contextBudget()})
+	names := make([]string, 0, len(repos))
+	for name := range repos {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	cx, err := FetchContext(ctx, p.GW, scope.Login, project.Slug, ContextOptions{Budget: p.contextBudget(), Repos: names})
 	if err != nil {
 		p.logf("goal %s: context unavailable: %v", goal.Slug, err)
 		cx = &Context{}
