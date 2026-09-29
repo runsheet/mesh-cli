@@ -138,7 +138,8 @@ fatal: … (version <v>)`; without the guard it exits 2),
 this panic ran on) and `internal/crash`'s own. Goroutines below the node
 — the harness's stream readers, the sandbox's sidecar probes, the
 session unit's waiter — are not guarded; a panic there still exits 2 with
-the runtime's trace in node.log, found as above by `^panic:`.
+the runtime's trace on stderr — node.log under a unit installed before
+item 4, the journal after — found as above by `^panic:`.
 
 ## node.log
 
@@ -172,6 +173,13 @@ lands in whichever `node.log.N` systemd's descriptor has followed.
 cap: `node.log.1` exists at 1000 bytes, node.log at 100; far past it,
 node.log stays under the cap and exactly 3 rotated files are kept),
 `TestRotatingFileRotatesAnOversizedLogOnOpen`,
+`TestRotatingFileCutsAWriteLargerThanTheCap` (a 5000-byte write to a
+1000-byte cap leaves node.log at exactly 1000 bytes ending in the cut
+line, the earlier line in `node.log.1`),
+`TestRotatingFileRefusesAWriteItCannotRotateFor` (with `node.log.1` a
+directory the rename fails: five writes are refused with the rotate
+error, node.log stays at the cap, one line is said; once it can rotate
+the next write lands in a fresh file and the recovery is said),
 `TestNodeLogsKeepSessionsApart` and
 `TestChannelTextLandsApartFromNodeLines` (a node line and a `session:`
 line in different files, whole lines asserted),

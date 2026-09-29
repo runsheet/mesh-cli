@@ -31,8 +31,14 @@ mirrored through the harness.
   (`internal/node/logfile.go`): at 10 MB (`NodeLogMaxBytes`) it is
   renamed `node.log.1`, older ones shift up to `node.log.5`
   (`NodeLogKeep`) and the sixth is deleted. A file already at or past
-  the cap when the node opens it is rotated at once. No dependency: the
-  writer is ninety lines of the standard library.
+  the cap when the node opens it is rotated at once. **No write passes
+  the cap**: one larger than the cap on its own is cut to it, ending
+  `[log: a <n>-byte write cut to the <cap>-byte cap]`, and a write the
+  file cannot rotate for is refused with the error — dropped, never
+  appended past the cap — said once on stderr (the journal or
+  node.crash.log) when the rotation first fails and once when it works
+  again; each later write retries the rotation. No dependency: the
+  writer is the standard library.
 - What sessions say goes to `~/.mesh/sessions.log`, the same writer at
   20 MB keeping 2: channel mode's `session:` text, `Git.Log`, the
   Claude and Codex harnesses' `Stderr`. A line the node writes *about*

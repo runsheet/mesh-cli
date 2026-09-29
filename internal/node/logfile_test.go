@@ -108,3 +108,100 @@ func TestNodeLogsKeepSessionsApart(t *testing.T) {
 		t.Fatalf("sessions.log = %q, want %q", got, want)
 	}
 }
+
+// One write larger than the cap is cut to it, in a fresh file, and says
+// so: the log never passes the cap however large a line is.
+func TestRotatingFileCutsAWriteLargerThanTheCap(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "node.log")
+	const max = 1000
+	r, err := OpenRotating(path, max, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if _, err := r.Write([]byte("before\n")); err != nil {
+		t.Fatal(err)
+	}
+	big := bytes.Repeat([]byte("z"), 5000)
+	n, err := r.Write(big)
+	if err != nil || n != len(big) {
+		t.Fatalf("Write = %d, %v; want %d, nil", n, err, len(big))
+	}
+	got, _ := os.ReadFile(path)
+	if len(got) != max {
+		t.Fatalf("node.log is %d bytes, want the cap %d", len(got), max)
+	}
+	note := "\n[log: a 5000-byte write cut to the 1000-byte cap]\n"
+	if !strings.HasSuffix(string(got), note) || strings.Trim(strings.TrimSuffix(string(got), note), "z") != "" {
+		t.Fatalf("node.log = %q", got)
+	}
+	if prev, _ := os.ReadFile(path + ".1"); string(prev) != "before\n" {
+		t.Fatalf("node.log.1 = %q, want the line before", prev)
+	}
+	// and the next line rotates the cut one away
+	if _, err := r.Write([]byte("after\n")); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := os.Stat(path); st.Size() != int64(len("after\n")) {
+		t.Fatalf("node.log is %d bytes after the cut write, want %d", st.Size(), len("after\n"))
+	}
+}
+
+// A rotation that fails refuses the write with the error, says so once
+// on Errors, and never appends past the cap; once the rotation works
+// again the lines flow and that is said too.
+func TestRotatingFileRefusesAWriteItCannotRotateFor(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "node.log")
+	const max = 300
+	var said bytes.Buffer
+	r, err := OpenRotating(path, max, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Errors = &said
+	defer r.Close()
+	line := []byte(strings.Repeat("x", 99) + "\n")
+	for i := 0; i < 3; i++ {
+		if _, err := r.Write(line); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// node.log.1 a non-empty directory: the rename cannot happen
+	if err := os.MkdirAll(filepath.Join(path+".1", "held"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 5; i++ {
+		n, err := r.Write(line)
+		if err == nil || n != 0 {
+			t.Fatalf("write %d past the cap with rotation failing = %d, %v; want 0 and an error", i, n, err)
+		}
+		if !strings.Contains(err.Error(), "log "+path+": rotate: ") {
+			t.Fatalf("error = %v", err)
+		}
+	}
+	if st, _ := os.Stat(path); st.Size() != max {
+		t.Fatalf("node.log is %d bytes while rotation fails, want %d", st.Size(), max)
+	}
+	lines := strings.Split(strings.TrimSuffix(said.String(), "\n"), "\n")
+	if len(lines) != 1 || !strings.HasPrefix(lines[0], "mesh node: log "+path+": rotate: ") ||
+		!strings.HasSuffix(lines[0], "; the line is dropped rather than written past the 300-byte cap") {
+		t.Fatalf("Errors got %q, want one rotate line", said.String())
+	}
+	if err := os.RemoveAll(path + ".1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Write(line); err != nil {
+		t.Fatalf("write once rotation works again: %v", err)
+	}
+	if st, _ := os.Stat(path); st.Size() != int64(len(line)) {
+		t.Fatalf("node.log is %d bytes after rotating, want %d", st.Size(), len(line))
+	}
+	if st, err := os.Stat(path + ".1"); err != nil || st.Size() != max {
+		t.Fatalf("node.log.1: %v %v", st, err)
+	}
+	lines = strings.Split(strings.TrimSuffix(said.String(), "\n"), "\n")
+	if len(lines) != 2 || !strings.HasPrefix(lines[1], "mesh node: log "+path+": rotating again, after dropping lines for: log "+path+": rotate: ") {
+		t.Fatalf("Errors got %q, want the recovery said", said.String())
+	}
+}

@@ -50,16 +50,25 @@ func CrashLog(home string) string { return filepath.Join(home, ".mesh", "node.cr
 // RotatingFile is an append-only file capped at MaxBytes: a write that
 // would take it past the cap first renames it to <path>.1 (and each
 // <path>.n to <path>.n+1, the oldest past Keep removed) and starts a
-// new one. A single write larger than the cap is written whole into a
-// fresh file. Safe for concurrent use.
+// new one. No write takes the file past the cap: one larger than the
+// cap on its own is cut to it, ending in a line that says how much was
+// cut, and a write the file could not rotate for is refused with the
+// error — never appended past the cap. Safe for concurrent use.
 type RotatingFile struct {
 	Path     string
 	MaxBytes int64
 	Keep     int
+	// Errors gets one line when a rotation first fails and one when it
+	// works again, since a log.Logger drops its writer's errors; nil is
+	// os.Stderr (the journal or node.crash.log under a service).
+	Errors io.Writer
 
-	mu   sync.Mutex
-	f    *os.File
-	size int64
+	mu     sync.Mutex
+	f      *os.File
+	size   int64
+	closed bool
+	// failing is the rotation error writes are being refused for.
+	failing error
 }
 
 // OpenRotating opens path for appending, rotating it first when it is
@@ -122,32 +131,81 @@ func (r *RotatingFile) rotate() error {
 }
 
 // Write appends p, rotating first when p would take the file past the
-// cap.
+// cap. A p larger than the cap is cut to it (the count returned is
+// still len(p): the write was taken, and a short count would only make
+// the caller retry what cannot fit). When the rotation fails nothing is
+// written and the error is returned, and said once on Errors; the next
+// write tries the rotation again.
 func (r *RotatingFile) Write(p []byte) (int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.f == nil {
+	if r.closed {
 		return 0, os.ErrClosed
+	}
+	if r.f == nil {
+		// a rotation renamed the file but could not open the new one
+		if err := r.open(); err != nil {
+			return 0, r.fail(err)
+		}
 	}
 	if r.size > 0 && r.size+int64(len(p)) > r.MaxBytes {
 		if err := r.rotate(); err != nil {
-			// the old file is still better than nothing
-			if r.f == nil {
-				if oerr := r.open(); oerr != nil {
-					return 0, err
-				}
-			}
+			return 0, r.fail(err)
 		}
 	}
-	n, err := r.f.Write(p)
+	r.recovered()
+	out := p
+	if int64(len(p)) > r.MaxBytes {
+		out = cut(p, r.MaxBytes)
+	}
+	n, err := r.f.Write(out)
 	r.size += int64(n)
-	return n, err
+	if err != nil {
+		return n, err
+	}
+	return len(p), nil
+}
+
+// cut is p's head and a line saying the rest was left out, max bytes
+// in all.
+func cut(p []byte, max int64) []byte {
+	note := fmt.Sprintf("\n[log: a %d-byte write cut to the %d-byte cap]\n", len(p), max)
+	head := max - int64(len(note))
+	if head < 0 {
+		return p[:max]
+	}
+	return append(append([]byte{}, p[:head]...), note...)
+}
+
+func (r *RotatingFile) fail(err error) error {
+	err = fmt.Errorf("log %s: rotate: %w; the line is dropped rather than written past the %d-byte cap", r.Path, err, r.MaxBytes)
+	if r.failing == nil {
+		fmt.Fprintf(r.errors(), "mesh node: %v\n", err)
+	}
+	r.failing = err
+	return err
+}
+
+func (r *RotatingFile) recovered() {
+	if r.failing == nil {
+		return
+	}
+	fmt.Fprintf(r.errors(), "mesh node: log %s: rotating again, after dropping lines for: %v\n", r.Path, r.failing)
+	r.failing = nil
+}
+
+func (r *RotatingFile) errors() io.Writer {
+	if r.Errors != nil {
+		return r.Errors
+	}
+	return os.Stderr
 }
 
 // Close closes the active file.
 func (r *RotatingFile) Close() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.closed = true
 	if r.f == nil {
 		return nil
 	}

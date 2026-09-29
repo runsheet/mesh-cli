@@ -633,7 +633,9 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `node-yaml-takes-effect-or-says-why-not`): `mesh node start` opens
   `~/.mesh/node.log` (`ServiceLog`) itself through `RotatingFile` —
   rotated at 10 MB (`NodeLogMaxBytes`) to `node.log.1` … `node.log.5`
-  (`NodeLogKeep`), one already past the cap rotated on open — and
+  (`NodeLogKeep`), one already past the cap rotated on open, no write
+  past the cap (one larger is cut to it; one it cannot rotate for is
+  refused with the error, said once on stderr) — and
   `~/.mesh/sessions.log` (`SessionsLog`, 20 MB, 2 kept) beside it
   (`OpenNodeLogs`). node.log is the node's own lines, each session's
   summaries included; what sessions say — channel mode's `session:`

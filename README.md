@@ -512,7 +512,9 @@ it: at **10 MB** it becomes `node.log.1` (the older ones shift to
 `node.log` starts, so **5 rotated files are kept** and the node's log
 never takes more than about 60 MB. A node.log already past the limit
 when the node starts — one a service appended to for months — is
-rotated at once. node.log holds the node's own reasoning: ticks, claims,
+rotated at once, and no write takes it past the limit: a single line
+larger than 10 MB is cut to it, and if the rotation fails the node drops
+lines (and says so once on stderr) rather than grow the file. node.log holds the node's own reasoning: ticks, claims,
 reloads, heartbeats, holds, and each session's one-line summaries
 (start, end, `usage`, cost, what its end killed). Watch it with `tail -f
 ~/.mesh/node.log`; `mesh node usage` reads it and its rotated files.
