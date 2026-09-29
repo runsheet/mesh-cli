@@ -408,6 +408,10 @@ type Context struct {
 	// Dropped is the binding documents (instructions, ADRs) fetched but
 	// left off disk by the total budget: in the index, to fetch.
 	Dropped []gateway.Document
+	// IndexBytes is the length of INDEX.md's documents tables as
+	// FetchContext counted it against the budget, the live section not
+	// among them (ADR-015's amendment 2026-09-29).
+	IndexBytes int
 	// Live is the project's goals and their items as the platform holds
 	// them (adr-003 decision 3), rendered into INDEX.md; nil when the
 	// platform's read failed or found none.
@@ -463,14 +467,16 @@ func AddLive(ctx context.Context, gw Gateway, cx *Context, orgID, projectID stri
 
 // ContextOptions is how FetchContext fetches: Budget is the size budget
 // for documents on disk (zero is the defaults) and Repos (owner/name)
-// the repos of the session's own work. Every document counts against
-// Budget.BytesMax; instructions and ADRs are binding and exempt from
+// the repos of the session's own work. INDEX.md's documents tables and
+// every document count against Budget.BytesMax; instructions and ADRs are binding and exempt from
 // DocBytesMax alone — never truncated, a binding document that does
 // not fit the total is left whole to the index (ADR-015). Repos' own
-// instructions and ADRs are placed first.
+// instructions and ADRs are placed first. Logf, when set, takes the
+// warning that the index alone is past the budget.
 type ContextOptions struct {
 	Budget ContextConfig
 	Repos  []string
+	Logf   func(string, ...any)
 }
 
 // FetchContext lists the project's context documents, fetches the
@@ -481,7 +487,12 @@ type ContextOptions struct {
 // DocBytesMax too. A document that would push the total past BytesMax
 // is skipped whole and the walk goes on — a smaller one later may still
 // fit; a binding one skipped is on cx.Dropped. Either way it is in the
-// index to fetch.
+// index to fetch. The index is inside the budget (ADR-015's amendment
+// 2026-09-29): its length with nothing on disk is reserved before any
+// document is placed, and once placed, while the documents and the
+// index as rendered (an on-disk row names its file) are past BytesMax
+// the last-placed document goes back to the index. An index alone past
+// BytesMax places nothing, with one warning.
 func FetchContext(ctx context.Context, gw Gateway, orgLogin, projectSlug string, opts ContextOptions) (*Context, error) {
 	budget := opts.Budget.Effective()
 	docs, err := gw.ContextDocuments(ctx, orgLogin, projectSlug)
@@ -530,10 +541,22 @@ func FetchContext(ctx context.Context, gw Gateway, orgLogin, projectSlug string,
 		}
 		return slugNumber(a.Slug) > slugNumber(b.Slug)
 	})
+	reserve := len(RenderIndex(&Context{Index: docs, Project: out.Project}))
+	if reserve > budget.BytesMax {
+		if opts.Logf != nil {
+			opts.Logf("warning: INDEX.md alone is %d bytes, past bytes_max %d: no document on disk, every one to fetch", reserve, budget.BytesMax)
+		}
+		for _, f := range append(own, other...) {
+			out.Dropped = append(out.Dropped, f.doc)
+		}
+		out.IndexBytes = reserve
+		return out, nil
+	}
 	total := 0
+	var placed []fetched
 	for _, f := range append(append(own, other...), design...) {
 		d, body := f.doc, f.body
-		fits := total+len(body) <= budget.BytesMax
+		fits := total+len(body) <= budget.BytesMax-reserve
 		if !isBinding(d) {
 			fits = fits && len(body) <= budget.DocBytesMax
 		}
@@ -550,6 +573,22 @@ func FetchContext(ctx context.Context, gw Gateway, orgLogin, projectSlug string,
 		out.Docs[name] = body
 		out.OnDisk[d.Slug] = name
 		total += len(body)
+		placed = append(placed, f)
+	}
+	// an on-disk row swaps its summary for a file name: the index as it
+	// will be written may be past the reserve, so unplace from the last
+	out.IndexBytes = len(RenderIndex(out))
+	for len(placed) > 0 && total+out.IndexBytes > budget.BytesMax {
+		f := placed[len(placed)-1]
+		placed = placed[:len(placed)-1]
+		name := out.OnDisk[f.doc.Slug]
+		total -= len(out.Docs[name])
+		delete(out.Docs, name)
+		delete(out.OnDisk, f.doc.Slug)
+		if isBinding(f.doc) {
+			out.Dropped = append(out.Dropped, f.doc)
+		}
+		out.IndexBytes = len(RenderIndex(out))
 	}
 	return out, nil
 }
@@ -587,38 +626,47 @@ func slugNumber(slug string) int {
 // IndexFile is the context directory's index of the whole project.
 const IndexFile = "INDEX.md"
 
-// RenderIndex lists every document of the project: kind, title, slug,
-// where it lives, and whether it is on disk here or fetched on demand.
-// The "what it says" cell carries the document's summary only when its
-// kind is one a session reads first (ContextKinds) and it is not on
-// disk — a document on disk needs no summary, the file is beside the
-// index, and a kind a session rarely fetches (a skill, a runbook) is
-// listed by title and slug alone. A trailing line after the table
-// counts how many documents are on disk and how many are left to
-// fetch.
+// RenderIndex lists every document of the project, one row each, in
+// two tables. "Documents a session reads" is the ContextKinds documents
+// with kind, title, summary, slug, where it lives and whether it is on
+// disk here or fetched on demand; the "what it says" cell carries the
+// summary only when the document is not on disk — a document on disk
+// needs no summary, the file is beside the index. "Other documents" is
+// every other kind (a skill, a runbook) by kind, title and slug alone:
+// FetchContext never puts those on disk and mesh_document takes the
+// slug. A line after the tables counts how many documents are on disk
+// and how many are left to fetch, and of those how many each table
+// holds (ADR-015's amendment 2026-09-29).
 func RenderIndex(cx *Context) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Project %s — every indexed document\n\n", cx.Project)
 	b.WriteString("On disk here: read the file. Not on disk: fetch it with the `mesh_document` tool (project " + fmt.Sprintf("%q", cx.Project) + ", the slug). Search with `mesh_search`.\n\n")
-	b.WriteString("| kind | title | what it says | slug | repo/path | here |\n| --- | --- | --- | --- | --- | --- |\n")
 	cell := func(s string) string { return strings.ReplaceAll(strings.ReplaceAll(s, "\n", " "), "|", "\\|") }
-	onDisk, toFetch := 0, 0
+	onDisk, readsFetch := 0, 0
+	var others []gateway.Document
+	b.WriteString("## Documents a session reads\n\n")
+	b.WriteString("| kind | title | what it says | slug | repo/path | here |\n| --- | --- | --- | --- | --- | --- |\n")
 	for _, d := range cx.Index {
-		here := "fetch"
-		_, isOnDisk := cx.OnDisk[d.Slug]
-		if isOnDisk {
-			here = "`" + cx.OnDisk[d.Slug] + "`"
+		if !ContextKinds[d.Kind] {
+			others = append(others, d)
+			continue
+		}
+		here, summary := "fetch", d.Summary
+		if name, ok := cx.OnDisk[d.Slug]; ok {
+			here, summary = "`"+name+"`", ""
 			onDisk++
 		} else {
-			toFetch++
-		}
-		summary := ""
-		if ContextKinds[d.Kind] && !isOnDisk {
-			summary = d.Summary
+			readsFetch++
 		}
 		fmt.Fprintf(&b, "| %s | %s | %s | `%s` | %s/%s | %s |\n", d.Kind, cell(d.Title), cell(summary), d.Slug, d.Repo, d.Path, here)
 	}
-	fmt.Fprintf(&b, "\n%d documents on disk here, %d to fetch; summaries are shown only for the kinds a session reads (instructions, adr, prd, trd) that are not on disk.\n", onDisk, toFetch)
+	b.WriteString("\n## Other documents\n\n")
+	b.WriteString("| kind | title | slug |\n| --- | --- | --- |\n")
+	for _, d := range others {
+		fmt.Fprintf(&b, "| %s | %s | `%s` |\n", d.Kind, cell(d.Title), d.Slug)
+	}
+	fmt.Fprintf(&b, "\n%d documents on disk here, %d to fetch (%d a session reads, %d other); summaries are shown only for the kinds a session reads (instructions, adr, prd, trd) that are not on disk.\n",
+		onDisk, readsFetch+len(others), readsFetch, len(others))
 	if len(cx.Live) > 0 {
 		renderLive(&b, cx.Live, cell)
 	}

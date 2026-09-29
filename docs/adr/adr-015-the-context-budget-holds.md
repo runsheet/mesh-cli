@@ -1,5 +1,5 @@
 ---
-summary: Every document a session's context puts on disk counts against node.yaml's `context.bytes_max` — instructions and ADRs are exempt from `doc_bytes_max` only, never truncated — chosen in order the instructions and ADRs of the session's own repos, then the other binding documents by recency, then the PRD and TRD; one that does not fit is skipped whole, listed in INDEX.md to fetch with `mesh_document`, and kept on `Context.Dropped`.
+summary: Every document a session's context puts on disk counts against node.yaml's `context.bytes_max`, INDEX.md's documents tables reserved first — instructions and ADRs are exempt from `doc_bytes_max` only, never truncated — chosen in order the instructions and ADRs of the session's own repos, then the other binding documents by recency, then the PRD and TRD; one that does not fit is skipped whole, listed in INDEX.md to fetch with `mesh_document`, and kept on `Context.Dropped`.
 status: accepted
 ---
 
@@ -78,3 +78,47 @@ fits in what is left.
   operator trims it in node.yaml without a release.
 - Recency by slug number is a proxy. When the index carries a date,
   the order can use it without changing the tiers.
+
+## Amendment 2026-09-29: INDEX.md is inside the budget
+
+Goal `context-budget-that-holds`, item 10. On the mini a session's
+context line read `context 443252 bytes in 16 files, 667 documents to
+fetch` against the 240 KB default, and on a planning session's disk
+INDEX.md alone was 165 KB of 383 KB: the documents held `bytes_max`,
+the index beside them did not, so the budget did not hold on disk.
+
+**The index is reserved first.** Before any document is placed,
+`FetchContext` renders INDEX.md's documents tables with nothing on disk
+and reserves that length from `bytes_max`; documents are placed in the
+tiers above against `bytes_max` less the reserve. An on-disk row names
+its file where a row to fetch carries a summary, so the index as it
+will be written can be a little larger than the reserve: it is
+rendered again after placement and, while the documents and it
+together pass `bytes_max`, the last-placed document goes back to the
+index (reverse placement order: the PRD and TRD, then the other
+binding documents, then the own repos'), a binding one onto
+`Context.Dropped`. Nothing is truncated and the own-repo tier still
+wins. An index alone past `bytes_max` places no document at all and
+says so once in the session's log (`warning: INDEX.md alone is <n>
+bytes, past bytes_max <m>: …`); the table is never capped — every
+document stays one row. `Context.IndexBytes` is the rendered tables'
+length.
+
+**Two tables.** `Documents a session reads` holds the `ContextKinds`
+documents (instructions, adr, prd, trd) with `kind | title | what it
+says | slug | repo/path | here`, the summary only when the document is
+not on disk. `Other documents` holds every other kind with `kind |
+title | slug` alone: `FetchContext` never puts those kinds on disk, so
+the `here` cell always said `fetch`, and `mesh_document` takes the
+slug, so the path is not needed to fetch one. They are about 560 of
+770 rows on the runsheet project, and the path and `here` cells were
+some 80 bytes a row. The counts line after the tables names both:
+`27 documents on disk here, 656 to fetch (102 a session reads, 554
+other); summaries are shown only for …`.
+
+**The live section is outside the budget.** `## Live goals and items`
+(`AddLive`) is read after the documents are placed, so its size is
+known only after the fetch; it follows the tables unchanged and is not
+counted against `bytes_max`. The per-session log line and the usage
+record's `contextBytes` (ADR-016) still report every byte written,
+INDEX.md with its live section included.
