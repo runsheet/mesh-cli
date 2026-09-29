@@ -218,7 +218,7 @@ func (h *Handler) context(ctx context.Context, args map[string]any) (string, err
 // the node serves (the id derives from (org, slug)).
 func (h *Handler) goalBySlug(ctx context.Context, slug, org string) (*gateway.Goal, node.Scope, error) {
 	for _, sc := range h.Scopes {
-		if org != "" && !strings.EqualFold(org, sc.Login) {
+		if org != "" && !strings.EqualFold(org, sc.Name()) {
 			continue
 		}
 		id, err := uuid.Parse(sc.ID)
@@ -233,7 +233,7 @@ func (h *Handler) goalBySlug(ctx context.Context, slug, org string) (*gateway.Go
 	if org != "" {
 		return nil, node.Scope{}, fmt.Errorf("no goal %q in %s", slug, org)
 	}
-	return nil, node.Scope{}, fmt.Errorf("no goal %q in %s", slug, strings.Join(h.Scopes.Logins(), ", "))
+	return nil, node.Scope{}, fmt.Errorf("no goal %q in %s", slug, strings.Join(h.Scopes.Names(), ", "))
 }
 
 func (h *Handler) items(ctx context.Context, args map[string]any) (string, error) {
@@ -252,7 +252,9 @@ func (h *Handler) items(ctx context.Context, args map[string]any) (string, error
 	for _, it := range items {
 		fmt.Fprintf(&b, "- %s · seq %d · %s · %s", it.ID, it.Seq, it.Status, it.Title)
 		if len(h.Scopes) > 1 {
-			fmt.Fprintf(&b, " · %s", h.Scopes.LoginOf(it.OrgID))
+			if sc, ok := h.Scopes.ByOrg(it.OrgID); ok {
+				fmt.Fprintf(&b, " · %s", sc.Name())
+			}
 		}
 		if it.Branch != "" {
 			fmt.Fprintf(&b, " · %s", it.Branch)
