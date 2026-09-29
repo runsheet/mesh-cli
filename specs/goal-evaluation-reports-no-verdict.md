@@ -3,7 +3,7 @@ title: Goal — The node says no verdict when its tools failed, and the two tool
 kind: plan
 status: draft
 parent: prd
-summary: "The after-window share of tainted evaluations is pending: the mini still runs v0.2.191 at 16:20Z, and v0.2.193, the release carrying #450, was published at 16:09:40Z. Before it, 57 of the 68 failed items with evaluation text are tainted (84%). `prologue: not found` is (b) in the narrow sense, not (a): codex-sessions-reach-the-context-tool covered the evaluation path, but its tool-failure rule read the context tool's own `not found` answer as an unreachable tool."
+summary: "The after window holds 0 failed evaluations, so its tainted share is undefined (0 of 0), not low: at the 16:34:11Z read the mini had not started v0.2.193, the release carrying #450. Before it, 272 of 362 failed evaluations are tainted (75%). `prologue: not found` is (b) in the narrow sense, not (a): codex-sessions-reach-the-context-tool covered the evaluation path, but its tool-failure rule read the context tool's own `not found` answer as an unreachable tool."
 ---
 
 # Goal — The node says no verdict when its tools failed, and the two tooling failures stop happening
@@ -225,19 +225,19 @@ failed 3 times`):
 ### Owed
 
 - **Item 13, mesh-specs: ADR 011 and the TRD record the third
-  evaluation outcome.** `mesh_items` at 16:19Z reads it as
-  `evaluating` with no pull request. `gh pr list --repo
-  runsheet/mesh-specs --state all --search
-  evaluation-reports-no-verdict` printed `[]`, but that proves
-  nothing: this session's item token cannot see runsheet/mesh-specs
-  (`gh repo view runsheet/mesh-specs` gives `Could not resolve to a
+  evaluation outcome.** `mesh_items` at 16:34Z reads it as `review`
+  with [runsheet/mesh-specs#108](https://github.com/runsheet/mesh-specs/pull/108)
+  open, not merged. `gh pr list --repo runsheet/mesh-specs --state all
+  --search evaluation-reports-no-verdict` cannot confirm it either way:
+  this session's item token cannot see runsheet/mesh-specs (`gh pr view
+  108 --repo runsheet/mesh-specs` gives `Could not resolve to a
   Repository`).
 - **The platform half**, runsheet goal
   `evaluation-reports-no-verdict-platform`, is `running`. Its
   third-outcome items are still in review (#1504 and #1532 on
   runsheet/runsheet). **The gateway's `EvaluateWorkItemInput` does not
   have `outcome` today.** The introspection the node uses
-  (`takesInputField`), asked at 2026-09-29 16:20:41Z:
+  (`takesInputField`), asked at 2026-09-29 16:34:40Z:
 
   ```sh
   curl -s https://api.runsheet.dev/graphql -H "Authorization: Bearer $TOKEN" \
@@ -246,10 +246,10 @@ failed 3 times`):
     | jq -r '.data.__type.inputFields[].name' | grep -x outcome   # prints nothing
   ```
 
-  The fields are `notes files failedClauses sessionMs costCents passed
-  namespace turns usage inputTokens aggregateId evaluatedModel
-  outputTokens cacheReadTokens cacheWriteTokens`. The node itself has
-  not yet logged `the platform takes no no-verdict outcome` (`grep -a
+  The fields are `namespace files sessionMs cacheReadTokens
+  cacheWriteTokens costCents failedClauses inputTokens usage
+  evaluatedModel outputTokens aggregateId turns notes passed`. The node
+  itself has not yet logged `the platform takes no no-verdict outcome` (`grep -a
   '^mesh node: .*takes no no-verdict outcome' ~/.mesh/node.log` finds
   nothing), because since v0.2.191 it has had no no-verdict
   evaluation to send.
@@ -257,11 +257,11 @@ failed 3 times`):
 ## The mini's upgrade
 
 The mini does not run #450 yet. v0.2.193, the release carrying it, was
-published at 16:09:40Z, and at 16:20Z the mini still ran v0.2.191. The
+published at 16:09:40Z, and at 16:34Z the mini still ran v0.2.191. The
 release tags come from `gh release list --repo runsheet/mesh` and the
 tags on runsheet/mesh-cli. The start lines come from `grep -a
 '^mesh node: 2026/09/29 .* mesh node v0\.' ~/.mesh/node.log`, read on
-the mini (clock UTC) at 16:16Z. The `^mesh node:` anchor drops session
+the mini (clock UTC) at 16:34Z. The `^mesh node:` anchor drops session
 output that quotes start lines.
 
 | Tag | Commit | Carries | Published | Mini first ran it |
@@ -270,7 +270,7 @@ output that quotes start lines.
 | v0.2.190 | d5dd020 | #428, #432 | 2026-09-29 14:03:23Z | never |
 | v0.2.191 | 8eba662 | #428, #432 | 2026-09-29 14:07:50Z | 2026-09-29 14:13:19Z |
 | v0.2.192 | cdf0152 | #428, #432, #444 | 2026-09-29 14:49:47Z | never |
-| v0.2.193 | e3e3f97 | #428, #432, #444, #449, #450 | 2026-09-29 16:09:40Z | not yet at 16:20:57Z |
+| v0.2.193 | e3e3f97 | #428, #432, #444, #449, #450 | 2026-09-29 16:09:40Z | not yet at 16:34:50Z |
 
 From 14:13:19Z the mini switched back and forth between v0.2.191 and
 v0.2.188: it started v0.2.188 at 14:14:06Z, 14:19:33Z and 14:24:10Z,
@@ -283,7 +283,7 @@ it: `/etc/apparmor.d/codex-bwrap` is a profile with `userns,` on the
 bubblewrap Codex ships (`~/.local/share/codex/codex-resources/bwrap`,
 `flags=(unconfined)`). The profile lets bwrap start. It does not give
 the sandbox loopback; the network setting does that. The profile is on
-the mini as recorded. The probe was run on the mini at 16:20:57Z with
+the mini as recorded. The probe was run on the mini at 16:34:50Z with
 the installed binary:
 
 ```console
@@ -301,7 +301,7 @@ with the network on and then off:
 
 ```console
 $ PATH=/tmp/mesh-probe:$PATH codex sandbox -c sandbox_mode="workspace-write" -c sandbox_workspace_write.network_access=true -- mesh sandbox-probe
-127.0.0.1:39519
+127.0.0.1:43481
 $ echo $?
 0
 $ PATH=/tmp/mesh-probe:$PATH codex sandbox -c sandbox_mode="workspace-write" -- mesh sandbox-probe
@@ -315,89 +315,94 @@ loopback. With it off, the socket error from the record comes back.
 
 ## Tainted evaluations before and after
 
-**The after window has not opened, so its measurement is pending.** The
-mini has not run v0.2.193, the release carrying #450. This section
-gives no after row and no after share, and nothing here is
-extrapolated. The goal's evidence is owed until the mini starts
-v0.2.193 and failed evaluations accumulate after that start.
+**The after window holds 0 failed evaluations — fewer than 10 — because
+it has not opened: at the read the mini had not started v0.2.193, the
+release carrying #450.** Its share is therefore undefined (0 of 0),
+not zero and not low, and nothing here is extrapolated. The goal's
+evidence stays owed until the mini starts v0.2.193 and failed
+evaluations are recorded after that start.
 
-- **Before-window cutoff:** the mini's first start of v0.2.193 (the
-  first `mesh node v0.2.193` start line in node.log). That start has
-  not happened. At the read, the before window therefore runs to the
-  read's end, **2026-09-29T16:19:33Z**.
-- **After-window cutoff:** the same instant. It opens at that start and
-  runs to the time of the read that measures it. Today it is empty by
-  definition, and it is not reported as zero.
+- **Cutoff 1, the before window's start:** the earliest evaluation
+  `mesh_items` records, **2026-09-26T03:31:48Z**.
+- **Cutoff 2, between before and after:** the mini's first v0.2.193
+  start, the first `mesh node v0.2.193` start line in node.log. It had
+  not happened by the read's end, so the before window runs to
+  **2026-09-29T16:34:11Z** and the after window, which opens at that
+  start, is later than that instant and empty.
 - **Read time:** `mesh_items` for every goal `mesh_goals` lists in
   runsheet/mesh and runsheet/runsheet (199 goals), read from
-  2026-09-29T16:16:52Z to 2026-09-29T16:19:33Z. The latest evaluation
-  in the read is at 16:16:45Z.
+  2026-09-29T16:31:25Z to 2026-09-29T16:34:11Z. The latest evaluation
+  in the read is at 16:29:01Z.
 
-**The classification is the research note's, applied unchanged as the
-brief states it.** The note's unit is the item whose last word is
-`evaluation failed 3 times` (its 59). Each item is judged by its
-recorded evaluation text, here the last evaluation `mesh_items` holds
-for it. The item is **tainted** when that text says the evaluator
-could not run or reach its tools: `no verdict —`, `bwrap:`, `could not
-run` or `unverifiable`. It is also tainted when it carries `VERDICT:
-PASS` under the fail. Otherwise it is **substantive**, a real defect
-found. The items the platform failed before it recorded evaluation text
-(2026-09-23 to 09-25) cannot be classified, and they are counted apart.
+**The unit is every recorded evaluation that failed**, on any item,
+including items that later merged (item 9 of this goal failed once
+before #450 passed). `mesh_items` gives each evaluation its notes, not
+its verdict, so a failed evaluation is read from the item: an
+evaluation failed unless it is the item's latest and the item's
+`evaluation_passed` is true. **The classification is the research
+note's**, applied by keyword to each failed evaluation's notes. It is
+**tainted** when the text says the evaluator could not run or reach its
+tools — `no verdict —`, `bwrap:`, `could not run` or `unverifiable` —
+or carries `VERDICT: PASS` under the fail. Otherwise it is
+**substantive**, a real defect found. A **no-verdict outcome** is the
+node's third outcome, sent when neither family could judge. Its notes
+open `no verdict —`, its item is not failed, and its attempt is the
+item's current one. It is neither passed nor failed. A fallback note,
+`<Family> (first attempt, <model>): no verdict — …` followed by the
+other family's judgement, is not one: that evaluation has a verdict,
+and it is classified as a failure or a pass like any other.
 
-| Window | Failed evaluations (items, `evaluation failed 3 times`) | Tainted | Substantive | No evaluation text | Tainted / failed with text |
-|---|---|---|---|---|---|
-| Before (to 16:19:33Z) | 87 | 57 | 11 | 19 | 57/68 = 84% |
-| After (from the mini's first v0.2.193 start) | pending | pending | pending | pending | pending |
+| Window | Failed evaluations | Tainted | Substantive | Tainted / failed |
+|---|---|---|---|---|
+| Before (2026-09-26T03:31:48Z to 2026-09-29T16:34:11Z) | 362 | 272 | 90 | 272/362 = 75% |
+| After (from the mini's first v0.2.193 start, none by 2026-09-29T16:34:11Z) | 0 | 0 | 0 | undefined (0 of 0) |
 
-Checked: 57 + 11 + 19 = 87 and 57 + 11 = 68. The 57 tainted items, by
-the first rule each matched:
+Checked: 272 + 90 = 362 and 0 + 0 = 0. The read holds 552 evaluations:
+the 362 failed, 190 passed and 0 no-verdict outcomes (362 + 190 + 0 =
+552). The 272 tainted, by the first rule each matched:
 
-| Rule | Items |
+| Rule | Failed evaluations |
 |---|---|
-| `no verdict —` | 7 |
-| `bwrap:` | 25 |
-| `VERDICT: PASS` | 0 |
-| `could not run` / `unverifiable` | 25 |
-| Total | 57 |
+| `no verdict —` | 25 |
+| `bwrap:` | 131 |
+| `VERDICT: PASS` | 1 |
+| `could not run` / `unverifiable` | 115 |
+| Total | 272 |
 
-**Why the before share is 84% and not the note's 90%.** The note itself
-cannot be read from this session. `gh api
+**Why the before share is 75% and not the note's 90%.** First, the
+unit differs. The note counts items whose last word is `evaluation
+failed 3 times`, each by its last evaluation (its 59 items, 53
+tainted). This table counts every failed evaluation, as the evaluator
+of this item's second attempt required, and that includes the failures
+of items that went on to pass. Second, the note cannot be read from this
+session. `gh api
 repos/runsheet/handbook/contents/research/2026-09-29-evaluations-fail-on-plumbing-not-quality.md`
 answers `Not Found` on the item token, and `mesh_search` and
-`mesh_document` do not index it. Its 53/59 therefore cannot be
-re-derived line by line, and two differences remain:
+`mesh_document` do not index it, so its 53/59 cannot be re-derived line
+by line. On the note's own unit, the same read gives 88 items: 58
+tainted, 11 substantive and 19 failed before the platform recorded
+evaluation text (58 + 11 + 19 = 88). The share is 58/69 = 84% of those
+with text. The keyword rule reads fewer texts as tainted than the note's
+reading did. So in the direction that matters, 75% is a conservative
+baseline: an after share below it cannot be an artefact of the rule.
 
-- The record has grown since the note was written: 68 items carry
-  evaluation text now, against the note's 59.
-- The rule here is the note's rule applied by keyword, where the note
-  read each text. Judged by keyword, the 59 earliest of the 68 by last
-  evaluation (through 2026-09-29T13:44:05Z) are 49 tainted and 10
-  substantive, 83%. So the keyword rule counts fewer items tainted than
-  the note's reading did. It misses an evaluator who could not run the
-  tests but words it another way. In the direction that matters, 84% is
-  the conservative baseline: an after share below it cannot be an
-  artefact of the rule.
-
-**No-verdict outcomes in the after window.** These are items whose
-evaluations carry `no verdict —`, whose status is not failed, and whose
-attempts did not grow past that evaluation. A correctly reported no
+**No-verdict outcomes in the after window.** A correctly reported no
 verdict is the goal's success case, not a taint.
 
 | Window | No-verdict outcomes |
 |---|---|
-| After (from the mini's first v0.2.193 start) | pending: the window has not opened |
+| After (from the mini's first v0.2.193 start, none by 2026-09-29T16:34:11Z) | 0 |
 
-The same query over the before window finds 8 items. Each is
-`Codex (first attempt, gpt-6-sol): no verdict — prologue: not found`,
-followed by the other family's verdict in the same evaluation. That is
-the fall-over, not a no-verdict outcome sent to the platform. The
-gateway takes no `outcome` yet (What landed, Owed).
+The gateway takes no `outcome` yet (What landed, Owed), so none can be
+recorded until the platform half lands and the mini runs a release with
+#428. The before window has none either. Its `no verdict —` texts are
+all fallback notes followed by the other family's judgement.
 
 The query. `fetch.sh` reads every goal's items through mesh-context's
 `mesh_items`, exactly as a session calls it, on the session's
-mesh-context bearer. `classify.jq` classifies the failed items, and
-`noverdict.jq` finds the no-verdict outcomes. `C` is the cutoff. Until
-the mini starts v0.2.193, it is the read's end.
+mesh-context bearer. `evals.jq` gives one row per evaluation with its
+class. `C` is cutoff 2: until the mini starts v0.2.193, it is the
+read's end, and the after window is empty.
 
 ```sh
 # fetch.sh — one JSON line per goal: {project, goal, items: [...]}
@@ -416,45 +421,56 @@ date -u +%FT%TZ > read-end
 ```
 
 ```jq
-# classify.jq — one row per item whose last word is `evaluation failed 3 times`,
-# judged by its last recorded evaluation (the research note's unit and rules)
+# evals.jq — one row per recorded evaluation, from mesh_items. An evaluation
+# failed unless it is its item's latest and the item's evaluation passed.
+# A no-verdict outcome (the node's third outcome) is neither: its notes open
+# `no verdict —` with no other family's judgement after it.
 def why: if   test("no verdict —") then "no verdict —"
          elif test("bwrap:") then "bwrap:"
          elif test("VERDICT:\\s*PASS") then "VERDICT: PASS"
          elif test("could not run|unverifiable"; "i") then "could not run / unverifiable"
          else "" end;
-.project as $p | .goal.slug as $g | (.items // [])[] |
-  select(.status == "failed" and ((.last_error // "") | startswith("evaluation failed 3 times"))) |
-  if (.evaluations | length) == 0
-  then { project: $p, item: "\($g)/\(.seq)", at: .heartbeat_at, class: "no evaluation text" }
-  else (.evaluations | max_by(.at)) as $e |
-       { project: $p, item: "\($g)/\(.seq)", at: $e.at, why: ($e.notes | why) }
-       | .class = (if .why != "" then "tainted" else "substantive" end)
-  end
-```
-
-```jq
-# noverdict.jq — a no-verdict outcome: an evaluation carrying `no verdict —` on an
-# item that is not failed and whose attempts did not grow past that evaluation's
-.goal.slug as $g | (.items // [])[] | . as $it | (.evaluations // [])[] |
-  select((.notes | test("no verdict —")) and $it.status != "failed" and .attempt == $it.attempts) |
-  { item: "\($g)/\($it.seq)", status: $it.status, attempts: $it.attempts, at }
+.project as $p | .goal.slug as $g | (.items // [])[] | . as $it |
+  (.evaluations // []) | sort_by(.at) | length as $n | to_entries[] |
+  .key as $k | .value as $e |
+  { project: $p, item: "\($g)/\($it.seq)", status: $it.status, attempts: $it.attempts,
+    attempt: $e.attempt, at: $e.at,
+    nv: ($e.notes | test("^\\s*no verdict —")),
+    failed: (($k < $n - 1) or ($it.evaluation_passed != true)),
+    why: ($e.notes | why) }
+  | .class = (if .nv and .status != "failed" and .attempt == .attempts then "no verdict"
+              elif (.failed | not) then "passed"
+              elif .why != "" then "tainted" else "substantive" end)
 ```
 
 ```sh
-jq -c -f classify.jq items.jsonl > failed.jsonl
+jq -c -f evals.jq items.jsonl > evals.jsonl
 # C: the first v0.2.193 start on the mini, once there is one; until then the read's end
 C=$(grep -a -m1 '^mesh node: .* mesh node v0\.2\.193,' ~/.mesh/node.log \
       | awk '{gsub("/","-",$3); print $3 "T" $4 "Z"}')
 C=${C:-$(cat read-end)}
-jq -s --arg c "$C" 'def w: {failed: length,
+jq -s --arg c "$C" 'def w: {evaluations: length,
+    passed: map(select(.class=="passed"))|length,
+    no_verdict: map(select(.class=="no verdict"))|length,
+    failed: map(select(.class=="tainted" or .class=="substantive"))|length,
     tainted: map(select(.class=="tainted"))|length,
-    substantive: map(select(.class=="substantive"))|length,
-    no_text: map(select(.class=="no evaluation text"))|length};
-  {before: (map(select(.at < $c))|w), after: (map(select(.at >= $c))|w)}' failed.jsonl
-jq -s -r 'map(select(.class=="tainted"))|group_by(.why)|map("\(.[0].why) \(length)")[]' failed.jsonl
-jq -c -f noverdict.jq items.jsonl | jq -s --arg c "$C" \
-  '{before: map(select(.at < $c))|length, after: map(select(.at >= $c))}'
+    substantive: map(select(.class=="substantive"))|length};
+  {before: (map(select(.at < $c))|w), after: (map(select(.at >= $c))|w),
+   earliest: (map(.at)|min), latest: (map(.at)|max)}' evals.jsonl
+jq -s -r 'map(select(.class=="tainted"))|group_by(.why)|map("\(.[0].why) \(length)")[]' evals.jsonl
+# the note's unit: items whose last word is `evaluation failed 3 times`, by their last evaluation
+jq -s -f unit.jq items.jsonl
+```
+
+```jq
+# unit.jq — the research note's unit and rules, for comparison with its 53/59
+[.[] | .items // [] | .[] | select(.status=="failed" and ((.last_error // "")
+    | startswith("evaluation failed 3 times")))
+  | if (.evaluations // [] | length) == 0 then "no evaluation text"
+    else (.evaluations | max_by(.at) | .notes)
+      | if test("no verdict —|bwrap:|VERDICT:\\s*PASS") or test("could not run|unverifiable"; "i")
+        then "tainted" else "substantive" end end]
+  | group_by(.) | map({(.[0]): length}) | add
 ```
 
 ## Log
@@ -507,3 +523,23 @@ jq -c -f noverdict.jq items.jsonl | jq -s --arg c "$C" \
   without `outcome`. `status:` stays `draft` for two reasons: item 13 is
   still `evaluating` with no merged mesh-specs pull request, and the
   after window has not opened.
+- 2026-09-29 · item 14, third attempt: the evaluator failed the second
+  attempt on four points. It left the after window, its cutoff and its
+  share pending. It counted only terminally failed items by their last
+  evaluation, missing failed evaluations on items that later merged.
+  Its no-verdict query counted a fallback note followed by a real
+  verdict. And `git diff origin/main --stat` named 15 files. This
+  attempt merged `origin/main`, so the diff names this document alone.
+  It re-read all 199 goals through `mesh_items` (16:31:25Z to
+  16:34:11Z) and counts every failed evaluation: 272 of 362 tainted
+  (75%) before. The after window is measured, not left pending: 0
+  failed evaluations and 0 no-verdict outcomes, because the mini had
+  still not started v0.2.193 at the read. A no-verdict outcome is now
+  one whose notes open `no verdict —`, which excludes fallback notes.
+  The probe was re-run at 16:34:50Z and the gateway re-introspected at
+  16:34:40Z, still without `outcome`. Superseded by this entry: the
+  second attempt's item-unit counts, recounted on this read as the
+  section states them. Also superseded: item 13 as
+  `evaluating` with no pull request; it is in `review` with
+  runsheet/mesh-specs#108 open. `status:` stays `draft` because #108
+  has not merged and the after window has not opened.
