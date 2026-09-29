@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/sandbox"
+	"projectmesh.io/mesh-cli/internal/sessionunit"
 	"projectmesh.io/mesh-cli/internal/tools"
 )
 
@@ -227,6 +228,28 @@ type Result struct {
 	// stderr are kept for KeepSessionOutput after it ends ("" when the
 	// harness kept nothing: Codex.WorkRoot unset, or another harness).
 	KeptSessionDir string
+	// Killed is the processes the agent left running in a host session's
+	// unit — a server it backgrounded for a check and never stopped —
+	// that the node had to kill when the session ended (ADR 008, The
+	// session's end); the session's own claude is never among them. Nil
+	// when there were none, and for a session that detached, a
+	// sandboxed one or Codex. A handed-back session's are both runs'.
+	Killed []sessionunit.Process
+	// KilledRuns is a handed-back session's Killed per run, the first
+	// then the resumed one, for a line per session (nil when one run).
+	KilledRuns [][]sessionunit.Process
+	// KillError is why that kill failed, when the harness had no Stderr
+	// to say it on; it never makes the session a failure.
+	KillError string
+}
+
+// KilledPerSession is what each of the Result's sessions' ends killed,
+// in order: KilledRuns for a handed-back one, else Killed alone.
+func (r Result) KilledPerSession() [][]sessionunit.Process {
+	if r.KilledRuns != nil {
+		return r.KilledRuns
+	}
+	return [][]sessionunit.Process{r.Killed}
 }
 
 // ToolStat is one MCP server's calls in a session.
