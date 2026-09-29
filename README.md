@@ -1708,23 +1708,20 @@ same two-failed-starts rollback. It needs no platform, so it works when
 the console cannot reach the node — or `mesh node update --verify-only`
 checks a release from any machine.
 
-**The mirror is catching up.** The node and `mesh node update` fetch
-anonymously from `runsheet/mesh`, with no token (ADR-002's amendment).
-`v0.2.188` was the first signed release cut for the mirror. It is
-signed and released on `runsheet/mesh-cli`, but its mirror step was
-refused (HTTP 403 on `RELEASE_TOKEN`), so it is not on `runsheet/mesh`
-yet; `v0.2.189` is the retry. `v0.2.187` exists on `runsheet/mesh-cli`
-only, because its mirror step failed before #336. On the mirror,
-`v0.2.1`–`v0.2.186` are unsigned old-channel builds from before signed
-releases. They have no Sigstore bundle signed by `runsheet/mesh-cli`'s
-`release-tag.yml`, so the updater refuses them, and `mesh node update`
-with no version refuses `v0.2.186` rather than accepting it silently.
-Until the mirror carries a signed release, ask for a signed tag by
-name, or download one and check it by hand
+**The mirror carries the signed line from v0.2.188.** The node and
+`mesh node update` fetch anonymously from `runsheet/mesh`, with no token
+(ADR-002's amendment). `v0.2.188` is the first signed release there,
+identical to the one on `runsheet/mesh-cli`. `mesh node update` with no
+version now takes `v0.2.188` or later. On the mirror, `v0.2.1`–`v0.2.186`
+are unsigned old-channel builds from before signed releases. They have
+no Sigstore bundle signed by `runsheet/mesh-cli`'s `release-tag.yml`, so
+the updater refuses them. `v0.2.187` exists on `runsheet/mesh-cli` only,
+because its mirror step failed before #336. To check a release by hand,
+download it and verify it from the directory
 (`docs/releases-after-transfer.md` has the record):
 
 ```sh
-TAG=v0.0.0-selfupdate-test.1
+TAG=v0.2.188
 gh release download "$TAG" -R runsheet/mesh -D rel
 mesh node update --verify-only --from-dir rel "$TAG"
 ```
