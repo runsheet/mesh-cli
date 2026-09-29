@@ -4,10 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"strings"
 	"testing"
-	"time"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
 )
@@ -33,6 +31,34 @@ func TestLoopAccountsAreLiveReloaded(t *testing.T) {
 		t.Fatalf("after the change: accounts = %s, want max-a, max-b", got)
 	}
 	if !hasLine(logs.String(), "accounts max-a → max-a, max-b") {
+		t.Fatalf("the change is not logged:\n%s", logs.String())
+	}
+}
+
+// A setting of an account already in node.yaml — its credential, not
+// just the set of labels — is read live too: changed between two ticks,
+// it is in force on the next one, with no restart, and the change is
+// logged as a whole line naming the account, the field, and the old and
+// new value.
+func TestLoopAccountSettingsAreLiveReloaded(t *testing.T) {
+	p := newPriorityFake(t)
+	loop, _, logs := p.liveLoop(t, "slug: box\nname: Box\norgs: [acme]\ncapacity: 1\n"+
+		"accounts:\n  - label: max-a\n    kind: subscription\n    token_file: ~/.mesh/max-a.token\n")
+	loop.Tick(context.Background())
+	loop.wg.Wait()
+	before := loop.nodeAccounts()
+	if len(before) != 1 || before[0].TokenFile != "~/.mesh/max-a.token" {
+		t.Fatalf("before the change: accounts = %+v, want max-a token_file ~/.mesh/max-a.token", before)
+	}
+	writeNodeYAML(t, "slug: box\nname: Box\norgs: [acme]\ncapacity: 1\n"+
+		"accounts:\n  - label: max-a\n    kind: subscription\n    token_file: ~/.mesh/max-a-v2.token\n")
+	loop.Tick(context.Background())
+	loop.wg.Wait()
+	after := loop.nodeAccounts()
+	if len(after) != 1 || after[0].TokenFile != "~/.mesh/max-a-v2.token" {
+		t.Fatalf("after the change: accounts = %+v, want max-a token_file ~/.mesh/max-a-v2.token", after)
+	}
+	if !hasLine(logs.String(), "accounts max-a: token_file ~/.mesh/max-a.token → ~/.mesh/max-a-v2.token") {
 		t.Fatalf("the change is not logged:\n%s", logs.String())
 	}
 }
@@ -85,21 +111,20 @@ func TestLoopContextBudgetIsLiveReloadedFromNodeYAML(t *testing.T) {
 	}
 }
 
-// The orgs the node serves are read live, both node.yaml's restriction
-// and the platform's own list: a new org appearing in MyOrgs between
-// two ticks is served on the next one, with no restart, and the change
+// The orgs the node serves are read live from node.yaml's own
+// restriction: a `orgs:` list widened on disk between two ticks is
+// served on the next one, with no restart (the platform already knows
+// both orgs throughout — it is the file that changes), and the change
 // is logged as a whole line.
 func TestLoopOrgsAreLiveReloaded(t *testing.T) {
 	p := newPriorityFake(t)
-	globex := p.Orgs[1]
-	p.Orgs = p.Orgs[:1]
-	loop, _, logs := p.liveLoop(t, "slug: box\nname: Box\ncapacity: 1\n")
+	loop, _, logs := p.liveLoop(t, "slug: box\nname: Box\norgs: [acme]\ncapacity: 1\n")
 	loop.Tick(context.Background())
 	loop.wg.Wait()
 	if got := loop.CurrentScopes().Logins(); strings.Join(got, ",") != "acme" {
 		t.Fatalf("before the change: orgs = %v, want acme", got)
 	}
-	p.Orgs = append(p.Orgs, globex)
+	writeNodeYAML(t, "slug: box\nname: Box\norgs: [acme, globex]\ncapacity: 1\n")
 	loop.Tick(context.Background())
 	loop.wg.Wait()
 	if got := loop.CurrentScopes().Logins(); strings.Join(got, ",") != "acme,globex" {
@@ -146,14 +171,19 @@ func TestLoopBudgetsAreLiveReloaded(t *testing.T) {
 }
 
 // A node.yaml made unparseable between two ticks keeps the last good
-// values and logs the reason, once, as a whole line naming the file.
+// values — capacity and the limits thresholds alike — and logs the
+// reason, once, as a whole line naming the file.
 func TestLoopKeepsTheLastGoodValuesWhenNodeYAMLIsUnparseable(t *testing.T) {
 	p := newPriorityFake(t)
-	loop, _, logs := p.liveLoop(t, "slug: box\nname: Box\norgs: [acme]\ncapacity: 2\n")
+	loop, _, logs := p.liveLoop(t, "slug: box\nname: Box\norgs: [acme]\ncapacity: 2\n"+
+		"limits:\n  pace_five_hour: 0.5\n  stop: 0.9\n")
 	loop.Tick(context.Background())
 	loop.wg.Wait()
 	if loop.Capacity() != 2 {
 		t.Fatalf("before the broken file: capacity = %d, want 2", loop.Capacity())
+	}
+	if th := loop.Thresholds(); th.PaceFiveHour != 0.5 || th.Stop != 0.9 {
+		t.Fatalf("before the broken file: thresholds = %+v, want 0.5/0.9", th)
 	}
 	writeNodeYAML(t, "slug: box\ncapacity: [not a number\n")
 	path, err := ConfigPath()
@@ -164,6 +194,9 @@ func TestLoopKeepsTheLastGoodValuesWhenNodeYAMLIsUnparseable(t *testing.T) {
 	loop.wg.Wait()
 	if loop.Capacity() != 2 {
 		t.Fatalf("after the broken file: capacity = %d, want 2 kept", loop.Capacity())
+	}
+	if th := loop.Thresholds(); th.PaceFiveHour != 0.5 || th.Stop != 0.9 {
+		t.Fatalf("after the broken file: thresholds = %+v, want 0.5/0.9 kept", th)
 	}
 	want := fmt.Sprintf("reload config: node.yaml (keeping the last good capacity and limits): parse %s: yaml: line 1: did not find expected ',' or ']'", path)
 	if !hasLine(logs.String(), want) {
@@ -182,25 +215,22 @@ func (failingMyOrgsGW) MyOrgs(context.Context) ([]gateway.Org, error) {
 	return nil, errors.New("boom")
 }
 
-// A MyOrgs that fails keeps the orgs as they were and logs why, once.
+// A MyOrgs that fails, after a tick that already served the orgs fine,
+// keeps them as they were and logs why, once.
 func TestLoopKeepsTheOrgsWhenMyOrgsFails(t *testing.T) {
 	p := newPriorityFake(t)
-	t.Setenv("HOME", t.TempDir())
-	writeNodeYAML(t, "slug: box\nname: Box\norgs: [acme]\ncapacity: 1\n")
-	cfg, err := LoadConfig()
-	if err != nil {
-		t.Fatal(err)
-	}
-	gw := gateway.New(p.URL(), "rs_test")
-	scopes := p.scopes[:1]
-	var logs strings.Builder
-	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopes, Interval: time.Hour, Log: log.New(&logs, "", 0),
-		Dispatch: func(context.Context, gateway.WorkItem) {}}
-	loop.Reload = Reloader(failingMyOrgsGW{gw}, cfg, scopes, nil, func(context.Context, Scope) error { return nil })
+	loop, _, logs := p.liveLoop(t, "slug: box\nname: Box\norgs: [acme]\ncapacity: 1\n")
 	loop.Tick(context.Background())
 	loop.wg.Wait()
 	if got := loop.CurrentScopes().Logins(); strings.Join(got, ",") != "acme" {
-		t.Fatalf("orgs = %v, want acme kept", got)
+		t.Fatalf("before the failure: orgs = %v, want acme", got)
+	}
+	gw := gateway.New(p.URL(), "rs_test")
+	loop.Reload = Reloader(failingMyOrgsGW{gw}, loop.Cfg, loop.CurrentScopes(), nil, func(context.Context, Scope) error { return nil })
+	loop.Tick(context.Background())
+	loop.wg.Wait()
+	if got := loop.CurrentScopes().Logins(); strings.Join(got, ",") != "acme" {
+		t.Fatalf("after the failure: orgs = %v, want acme kept", got)
 	}
 	if !hasLine(logs.String(), "reload config: my orgs: boom") {
 		t.Fatalf("the failure is not logged as a whole line:\n%s", logs.String())

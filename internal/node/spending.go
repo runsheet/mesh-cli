@@ -1,6 +1,7 @@
 package node
 
 import (
+	"fmt"
 	"strings"
 
 	"projectmesh.io/mesh-cli/internal/harness"
@@ -80,6 +81,43 @@ func labels(accounts []AccountConfig) string {
 		out[i] = a.Label
 	}
 	return strings.Join(out, ", ")
+}
+
+// accountSettingChanges are the fields of an account present in both
+// was and now (matched by label — a label added or removed is the
+// "accounts <old> → <new>" line instead) that differ, as
+// "<label>: <field> <old> → <new>" lines, was's order.
+func accountSettingChanges(was, now []AccountConfig) []string {
+	byLabel := map[string]AccountConfig{}
+	for _, a := range now {
+		byLabel[a.Label] = a
+	}
+	var out []string
+	for _, w := range was {
+		n, ok := byLabel[w.Label]
+		if !ok {
+			continue
+		}
+		if w.Kind != n.Kind {
+			out = append(out, fmt.Sprintf("%s: kind %s → %s", w.Label, w.Kind, n.Kind))
+		}
+		if w.TokenFile != n.TokenFile {
+			out = append(out, fmt.Sprintf("%s: token_file %s → %s", w.Label, w.TokenFile, n.TokenFile))
+		}
+		if w.APIKeyEnv != n.APIKeyEnv {
+			out = append(out, fmt.Sprintf("%s: api_key_env %s → %s", w.Label, w.APIKeyEnv, n.APIKeyEnv))
+		}
+		if w.DailyCapUSD != n.DailyCapUSD {
+			out = append(out, fmt.Sprintf("%s: daily_cap $%.2f → $%.2f", w.Label, w.DailyCapUSD, n.DailyCapUSD))
+		}
+		if w.MonthlyCapUSD != n.MonthlyCapUSD {
+			out = append(out, fmt.Sprintf("%s: monthly_cap $%.2f → $%.2f", w.Label, w.MonthlyCapUSD, n.MonthlyCapUSD))
+		}
+		if w.Project != n.Project {
+			out = append(out, fmt.Sprintf("%s: project %s → %s", w.Label, w.Project, n.Project))
+		}
+	}
+	return out
 }
 
 // accountsTarget runs the accounts scaler: each subscription's windows
