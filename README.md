@@ -916,6 +916,26 @@ total alone: the node says so once per run and logs each session's list.
 A platform that does not hand out `tools` yet costs nothing: sessions
 run on mesh-context alone, as before.
 
+### Context budget
+
+Every session gets the project's documents on disk under
+`.mesh/context/`, and every turn re-reads them. node.yaml's `context:`
+bounds what is written there, in bytes:
+
+```yaml
+context:
+  bytes_max: 245760      # the default (240 KB): the total on disk
+  doc_bytes_max: 61440   # the default (60 KB): the most one design document may be
+```
+
+A PRD, TRD or other design document past `doc_bytes_max`, or past what
+is left of `bytes_max`, is listed in `INDEX.md` and fetched on demand
+with `mesh_document` instead. A key left out takes its default; a
+negative one is refused. Like the capacity and the accounts, `context:`
+is read again every tick: a change is picked up on the next tick
+without a restart, and logged
+(`context: bytes_max 245760 → 131072, doc_bytes_max 61440 → 61440`).
+
 ### Tool results
 
 One `go test ./...` log or file dump can put 100 KB into a session's

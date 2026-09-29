@@ -259,7 +259,7 @@ func RecordEndedGoal(ctx context.Context, gw Gateway, ws Workspacer, root, orgLo
 		return fmt.Errorf("items: %w", err)
 	}
 	parent := ""
-	if cx, err := FetchContext(ctx, gw, orgLogin, project.Slug); err == nil {
+	if cx, err := FetchContext(ctx, gw, orgLogin, project.Slug, ContextOptions{}); err == nil {
 		parent = cx.PRDSlug
 	}
 	doc := GoalDoc{Slug: goal.Slug, Title: goal.Title, Statement: goal.Statement, Acceptance: goal.Acceptance,

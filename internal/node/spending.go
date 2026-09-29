@@ -210,3 +210,17 @@ func (l *Loop) spendable(accounts []AccountConfig, pressing, item bool) []Accoun
 	}
 	return out
 }
+
+// ContextBudget is node.yaml's context budget in force, defaults
+// filled: as last reloaded, else Cfg's.
+func (l *Loop) ContextBudget() ContextConfig {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.contextSet {
+		return l.context
+	}
+	if l.Cfg == nil {
+		return ContextConfig{}.Effective()
+	}
+	return l.Cfg.Context.Effective()
+}
