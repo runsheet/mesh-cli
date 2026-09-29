@@ -308,7 +308,7 @@ item 4, the journal after — found as above by `^panic:`.
 
 ## node.log
 
-Item 4 (ADR-018, `internal/node/logfile.go`).
+Item 4 (ADR-019, `internal/node/logfile.go`).
 
 **The limit.** `mesh node start` opens `~/.mesh/node.log` itself and
 rotates it at **10 MB**, keeping **5** rotated files (`node.log.1` …
@@ -364,3 +364,19 @@ the same way over a 30 MB node.log, it rotated that to `node.log.1`
 (31457280 bytes) and wrote a 271-byte node.log. The size node.log
 reaches after an hour of work on the mini is owed once the mini runs a
 release carrying this and its unit is reinstalled.
+
+**Carried onto main (item 7).** PR #495's two commits were cherry-picked
+onto main after #493 without a conflict — branch 4 already sat on #493's
+merge, so `crash.Guard`'s wiring in `nodecmd.go` and the exit section
+above are kept. The ADR is **ADR-019**, not 018: PR #494 (item 6's
+carry) claims `adr-018-a-fixed-node-heartbeats-its-capacity`. The build
+ran on the mini and installed nothing. The mini at 2026-09-29 22:25Z,
+read, not changed: `mesh v0.2.191 (commit 8eba662)`, which does not
+carry this; `io.projectmesh.mesh-node.service` still has
+`StandardOutput=append:/home/chris/.mesh/node.log` and the same for
+`StandardError`; `~/.mesh/node.log` is **373,995,651 bytes, 6,548,269
+lines** (339 MB when the goal was set, so about 35 MB in the day since),
+1,239 of them channel `session:` text, and no `sessions.log` exists.
+**Still owed (item 10):** once a release carrying this is on the mini,
+`mesh node service install` to replace the append redirect, then
+node.log's and sessions.log's sizes after an hour of real work.
