@@ -418,19 +418,34 @@ func planOrder(goals []planningGoal) {
 func (l *Loop) claimReady(ctx context.Context, free, normalFree, maxRank int) {
 	var ready []readyItem
 	limit := l.UnmergedPerRepo()
-	unmerged := map[string]int{}
-	unread := map[string]bool{} // orgs whose review listing failed this tick
-	for _, sc := range l.Scopes {
+	listed := make([][]gateway.WorkItem, len(l.Scopes))
+	anyReady := false
+	for i, sc := range l.Scopes {
 		items, err := l.GW.ReadyWorkItems(ctx, sc.ID)
 		if err != nil {
 			l.logf("list ready items of %s: %v", sc.Login, err)
 			continue
 		}
+		listed[i] = items
+		anyReady = anyReady || len(items) > 0
+	}
+	// A repo's unmerged work is counted over every served org — one with
+	// nothing ready, or whose ready read failed, may still hold review
+	// items of a repo another org has fresh work in — and only on a tick
+	// with something to claim.
+	unmerged := map[string]int{}
+	var unread []string // orgs whose review listing failed this tick
+	if limit > 0 && anyReady {
+		for _, sc := range l.Scopes {
+			if !l.countUnmerged(ctx, sc, unmerged) {
+				unread = append(unread, sc.Login)
+			}
+		}
+	}
+	for i, sc := range l.Scopes {
+		items := listed[i]
 		if len(items) == 0 {
 			continue
-		}
-		if limit > 0 && !l.countUnmerged(ctx, sc, unmerged) {
-			unread[sc.ID] = true
 		}
 		rank := l.goalRanks(ctx, sc, "claimed")
 		for _, it := range items {
@@ -459,9 +474,9 @@ func (l *Loop) claimReady(ctx context.Context, free, normalFree, maxRank int) {
 			continue // a required tool needs a runtime still missing here
 		}
 		fresh := !startedWork(item)
-		if limit > 0 && fresh && unread[sc.ID] {
+		if limit > 0 && fresh && len(unread) > 0 {
 			// the repo's count is unknown: it may be at the limit already
-			why := fmt.Sprintf("repo %s's unmerged pull requests could not be counted (%s's review items unread) under node.yaml's claim.unmerged_per_repo %d", item.RepoID, sc.Login, limit)
+			why := fmt.Sprintf("repo %s's unmerged pull requests could not be counted (%s's review items unread) under node.yaml's claim.unmerged_per_repo %d", item.RepoID, strings.Join(unread, ", "), limit)
 			l.passOver(item.GoalID, "item", priorityName(r.rank), why)
 			if !held[item.RepoID] {
 				held[item.RepoID] = true
@@ -513,10 +528,11 @@ func (l *Loop) claimReady(ctx context.Context, free, normalFree, maxRank int) {
 
 // countUnmerged adds the org's items in review — a pull request open and
 // waiting to merge — to unmerged by repo: one OrgWorkItems read per org
-// and tick, made only while claim.unmerged_per_repo is set. A failed
-// read is logged and answers false: the org's repos may be at the limit
-// already, so claimReady holds their fresh items this tick and still
-// claims their started work.
+// and tick, made for every served org while claim.unmerged_per_repo is
+// set and something is ready. A failed
+// read is logged and answers false: any repo may have review items in
+// that org and be at the limit already, so claimReady holds every fresh
+// item this tick and still claims started work.
 func (l *Loop) countUnmerged(ctx context.Context, sc Scope, unmerged map[string]int) bool {
 	rows, err := l.GW.OrgWorkItems(ctx, sc.ID, "review")
 	if err != nil {
