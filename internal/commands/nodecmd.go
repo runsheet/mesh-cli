@@ -229,7 +229,7 @@ var nodeStatusCmd = &cobra.Command{
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 		fmt.Fprintln(w, "ORG\tNAME\tSLUG\tSTATUS\tRUNNING\tCAPACITY\tVERSION\tLAST_SEEN")
 		for _, sc := range scopes {
-			if err := gw.HeartbeatNode(ctx, sc.NodeID, version.String(), 0); err != nil {
+			if err := statusHeartbeat(ctx, gw, sc.NodeID); err != nil {
 				return fmt.Errorf("heartbeat in %s: %w", sc.Login, err)
 			}
 			nodes, err := gw.Nodes(ctx, sc.ID)
@@ -252,6 +252,14 @@ var nodeStatusCmd = &cobra.Command{
 		}
 		return w.Flush()
 	},
+}
+
+// statusHeartbeat is `mesh node status`'s one heartbeat: the version
+// this binary reports (the tag, else the sha) and, beside it, the commit
+// — sent like the loop's, only when known and only when the gateway's
+// HeartbeatNodeInput takes it (mesh-specs ADR 013, trd §1 Node).
+func statusHeartbeat(ctx context.Context, gw *gateway.Client, nodeID string) error {
+	return gw.HeartbeatNode(ctx, nodeID, version.String(), 0, gateway.HeartbeatExtras{Commit: version.BuildCommit()})
 }
 
 // localNodeState is the line `mesh node status` prints for the node
@@ -803,6 +811,9 @@ func reportRollback(check node.StartCheck, logger *log.Logger) {
 		logger.Printf("self-update: report rollback: %v", err)
 		return
 	}
+	// The rollback reports the version it rolls back to, not this
+	// binary's; this binary's commit would not be that version's, so the
+	// heartbeat carries none and the restored binary's first one does.
 	for _, sc := range scopes {
 		if err := gw.HeartbeatNode(ctx, sc.NodeID, check.From, 0, gateway.HeartbeatExtras{UpdateError: check.Reason}); err != nil {
 			logger.Printf("self-update: report rollback to %s: %v", sc.Login, err)
