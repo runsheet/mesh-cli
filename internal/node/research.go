@@ -123,7 +123,7 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 		dirs[r.FullName()] = sub
 		names = append(names, r.FullName())
 	}
-	cx, err := FetchContext(ctx, d.GW, scope.Login, project.Slug, ContextOptions{Budget: d.contextBudget(), Repos: names})
+	cx, err := FetchContext(ctx, d.GW, scope.Login, project.Slug, ContextOptions{Budget: d.contextBudget(), Repos: names, Logf: d.logf})
 	if err != nil {
 		d.logf("project %s: context unavailable: %v", project.Slug, err)
 		cx = &Context{}
@@ -191,6 +191,9 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 // session running for the next node to adopt; otherwise its session
 // directory goes.
 func (d *Director) handIn(ctx context.Context, direction gateway.Direction, project gateway.Project, scope Scope, dir string, acct *SessionAccount, result harness.Result, err error) error {
+	// logged before a done ctx returns: a deadline kills the unit too,
+	// and a detach kills nothing
+	logKilled(d.logf, project.Slug+"/"+direction.Slug, result.KilledPerSession(), result.KillError)
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -347,7 +350,7 @@ func trimAll(list []string) []string {
 func (d *Director) AdoptResearch(ctx context.Context, direction gateway.Direction, project gateway.Project, scope Scope, s FoundSession) error {
 	at, ok := d.Harness.(harness.Attacher)
 	if !ok {
-		s.Stop()
+		stopFound(d.logf, project.Slug+"/"+direction.Slug, s)
 		harness.RemoveSession(s.State.Workspace)
 		return errNoAttach
 	}

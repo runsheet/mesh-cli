@@ -100,6 +100,10 @@ type Evaluator struct {
 	// outcome, so an evaluation that reached none waits in evaluating
 	// (nil: every time).
 	NoVerdict *OncePer
+	// LeftRunning holds, per item, what an evaluation that recorded no
+	// verdict left running, for the notes of the item's next verdict
+	// (nil: only the session's own).
+	LeftRunning *LeftRunning
 	// Limits and Thresholds judge the Codex accounts (nil: never
 	// skipped, every account with its full headroom).
 	Limits     *Limits
@@ -225,7 +229,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	}
 	// the same context the builder had: the ADRs it was bound by
 	orgLogin := e.Scopes.LoginOf(item.OrgID)
-	cx, err := FetchContext(ctx, e.GW, orgLogin, res.Project.Slug, ContextOptions{Budget: e.contextBudget(), Repos: []string{res.Repo.FullName()}})
+	cx, err := FetchContext(ctx, e.GW, orgLogin, res.Project.Slug, ContextOptions{Budget: e.contextBudget(), Repos: []string{res.Repo.FullName()}, Logf: e.logf})
 	if err != nil {
 		e.logf("item %s: context unavailable: %v", label, err)
 		cx = &Context{}
@@ -400,11 +404,21 @@ type evalRun struct {
 // means none was recorded. A cancelled ctx leaves the session running
 // for the next node to adopt.
 func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harness.Result, err error) error {
+	item, label, acct := ev.item, ev.label, ev.acct
+	// what the agent left running goes in the verdict's notes; an end
+	// that records no verdict only logs it and holds it for the item's
+	// next one, since the platform takes no progress note on an item in
+	// evaluating (ADR 008, The session's end). Logged before a done ctx
+	// returns: a deadline kills the unit too, and a detach kills nothing.
+	left := e.LeftRunning
+	if left == nil {
+		left = &LeftRunning{}
+	}
+	killed := left.Hold(item.ID, logKilled(e.logf, "item "+label, result.KilledPerSession(), result.KillError))
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
 	defer harness.RemoveSession(ev.dir)
-	item, label, acct := ev.item, ev.label, ev.acct
 	if errors.Is(err, context.DeadlineExceeded) {
 		return fmt.Errorf("evaluator session ran out of time (%s)", e.Timeout)
 	}
@@ -433,6 +447,7 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 		e.logf("item %s: %s, evaluating on %s", label, saw, other.fullName())
 		op := e.secondOpinion(ctx, ev, other, *ev.second, "evaluation")
 		defer op.acct.Finish(ctx, op.result)
+		killed = left.Hold(item.ID, op.killed)
 		// one report for the whole evaluation, the attempt with no verdict
 		// in it too
 		if op.acct != nil {
@@ -491,6 +506,10 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 		// and why not on Codex, which the item might have expected
 		evaluatedOn = fam.fullName() + "; the Codex preflight failed: " + truncate(ev.preflight, 200)
 	}
+	// and what its sessions left running that their ends killed
+	if killed != "" {
+		without += "\n" + truncate(killed, 500)
+	}
 	if passed && (fam.codex || e.hasCodex()) && gateway.PriorityRank(ev.res.Goal.Priority) <= gateway.PriorityRank("high") {
 		// the second opinion is the other family — which, after a first
 		// attempt that saw no context, is the one that just could not reach
@@ -511,6 +530,10 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 			op = e.secondOpinion(ctx, ev, other, *ev.second, "second opinion")
 		}
 		defer op.acct.Finish(ctx, op.result)
+		left.Hold(item.ID, op.killed)
+		if op.killed != "" {
+			without += "\n" + truncate(op.killed, 500)
+		}
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -542,6 +565,7 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 	if err := acct.Carried(e.GW.EvaluateWorkItem(ctx, item.ID, passed, notes, Cents(cost), usage)); err != nil {
 		return fmt.Errorf("record verdict: %w", err)
 	}
+	left.Forget(item.ID)
 	e.logf("item %s: evaluation %s on %s ($%.2f)", label, verdict, fam.fullName(), cost)
 	return nil
 }
@@ -579,7 +603,7 @@ func (e *Evaluator) noVerdict(ctx context.Context, ev evalRun, reason string, co
 func (e *Evaluator) AdoptEvaluation(ctx context.Context, item gateway.WorkItem, s FoundSession) error {
 	if item.Status != "evaluating" || item.NodeID != s.State.NodeID {
 		e.logf("item %s: adopted evaluation is no longer this node's (%s); stopped", item.ID, item.Status)
-		s.Stop()
+		stopFound(e.logf, "item "+item.ID, s)
 		return harness.RemoveSession(s.State.Workspace)
 	}
 	res, err := Resolve(ctx, e.GW, item)
@@ -588,7 +612,7 @@ func (e *Evaluator) AdoptEvaluation(ctx context.Context, item gateway.WorkItem, 
 	}
 	at, ok := e.Harness.(harness.Attacher)
 	if !ok {
-		s.Stop()
+		stopFound(e.logf, "item "+item.ID, s)
 		harness.RemoveSession(s.State.Workspace)
 		return errNoAttach
 	}
@@ -605,6 +629,9 @@ type opinion struct {
 	notes       string
 	cost        float64
 	unavailable string
+	// killed is the sentence for what the session's end killed ("" when
+	// nothing), logged already
+	killed string
 	// result is the session's, for its tokens in the evaluation's report
 	result harness.Result
 	// acct is a Claude second opinion's own account, whose report the
@@ -666,7 +693,8 @@ func (e *Evaluator) secondOpinion(ctx context.Context, ev evalRun, on family, jo
 	}
 	e.logf("item %s: %s on %s", label, role, on.logName())
 	result, err := h.Run(ctx, job, nil)
-	op := opinion{cost: result.CostUSD, result: result, acct: acct}
+	op := opinion{cost: result.CostUSD, result: result, acct: acct,
+		killed: logKilled(e.logf, "item "+label, result.KilledPerSession(), result.KillError)}
 	if acct != nil {
 		acct.Report(result)
 	}

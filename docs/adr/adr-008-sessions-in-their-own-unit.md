@@ -204,6 +204,47 @@ kill: one `Kill` per unit, whichever end comes first, its report kept.
   `ClaudeCode.Stderr` (`harness claude-code: kill unit …`), or, with
   none, carried on `Result.KillError`. `finishClaude`'s result and
   error semantics are unchanged.
+- **The node says it — the log line**: each session's tail —
+  `afterBuild`, `afterEvaluate` (the second opinion's session and the
+  one that stands in for a blind first attempt included), the planner's
+  `readPlan`, the director's `handIn`, `afterRebase` — passes
+  `Result.KilledPerSession()` and `Result.KillError` to `logKilled`
+  (`internal/node/killed.go`), which logs each session's non-empty kill
+  as one line, a handed-back build's two runs as two:
+
+      <subject>: session end killed <n> process(es) the agent left running: <pid> <comm>, <pid> <comm>
+
+  (`KilledNote`; the subject is `item <label>` for a build, an
+  evaluation and a rebase, `goal <slug>` for a plan,
+  `<project>/<direction>` for research), and a failed kill as
+  `<subject>: kill: <KillError>`. Nothing is logged when it killed
+  nothing. This line is the goal's acceptance: the node log names what
+  it killed. Each tail logs it *first*, before its done-ctx return: a
+  ctx whose deadline passed has its unit killed like any timeout, and
+  only a detach (which kills nothing, so logs nothing) leaves the
+  session for the next node. The note is owed only where the platform takes one:
+  1. **A build** sends the sentence (a line per session) as a progress
+     note on the item (`ReportWorkItemProgress`), beside its usage and
+     `tools: …` notes.
+  2. **A rebase** sends it the same way, on the rebase's heartbeat.
+  3. **An evaluation** puts it in the verdict's notes when this node
+     process records a verdict. One that records none — a timeout, an
+     error, an unavailable or blind attempt, no verdict — **only logs
+     it**: the platform takes no progress note on an item in
+     evaluating, so none is sent. The node process holds the sentence
+     (`Evaluator.LeftRunning`, per item, for the process's life) and the
+     item's next verdict it records carries it; a restart loses it, the
+     log line stays.
+  4. **A plan and a research session log only**: there is no item to
+     note it on.
+- **An adopted session no longer the node's**: `FoundSession.Kill`
+  replaces the stop that ran only while claude was alive — an item,
+  plan or direction the platform no longer has on this node has its
+  unit killed whether or not claude still runs (what the agent left
+  there may outlive it), and what it killed is logged the same line
+  (`stopFound`) — in each adopter's terminal check (`AdoptItem`,
+  `AdoptEvaluation`, `AdoptPlan`, `AdoptRebase`) and in `AdoptWith`'s
+  drop of a session whose kind has no adopter.
 - Sandboxed and Codex sessions are not in a unit and report nothing.
 
 ## Consequences

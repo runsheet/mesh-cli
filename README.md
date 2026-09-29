@@ -391,16 +391,25 @@ work items of every org it serves and claims up to its free capacity
 (`ClaimWorkItem`; the aggregate refuses a second claimant, so two nodes
 never run one item). It claims them in one order across the orgs: by
 their goal's priority — urgent, high, normal, low; a goal with none is
-normal — then, within a priority, items with no evaluation before
-retries, then oldest seq first. Each org's goals are read once a tick to
+normal — then, within a priority, finish before you start: an item with
+work already begun on a branch (an open pull request, an evaluation, a
+rebase conflict or a rebase state other than none) goes before fresh
+items while it has fewer than two failed evaluations (`attempts`, one
+under the platform's cap of three); one at that bound falls back behind
+the fresh items, as retries sorted before, so a poisoned item takes the
+head of the queue at most twice and never blocks it. Within each class
+the item ready longest (`readyAt`) goes first, then oldest seq; the sort
+is stable, so full ties keep the order the orgs were listed in
+([ADR-017](docs/adr/adr-017-finish-before-you-start.md)). Each org's goals are read once a tick to
 join the priorities; if that read fails, the org's items count as normal.
 Planning and evaluation follow the same order across the orgs: the goals
 in planning are claimed (`ClaimPlan`) and planned urgent, high, normal,
 low (empty is normal), and the items this node holds for evaluation are
 evaluated by their goal's priority, then seq — on the same one goals read
 per org per tick.
-There is no starvation guard beyond this order: a steady stream of urgent
-work keeps a low goal's items, plans and evaluations waiting.
+The attempt bound guards the class order within a priority; across
+priorities the order is strict, so a steady stream of urgent work keeps a
+low goal's items, plans and evaluations waiting.
 Rebases follow it too (see The rebase session below).
 Capacity and the orgs served are re-read at the top of every tick, so
 neither needs a restart: `capacity` and `orgs` come from
@@ -931,7 +940,14 @@ context:
 
 A PRD, TRD or other design document past `doc_bytes_max`, or past what
 is left of `bytes_max`, is listed in `INDEX.md` and fetched on demand
-with `mesh_document` instead. A key left out takes its default; a
+with `mesh_document` instead. `INDEX.md` itself is inside
+`bytes_max`: its length is reserved before any document is placed, so
+the documents and the index together never pass it (the live goals and
+items after the tables are not counted: their size is known only after
+the fetch). The index is two tables — `Documents a session reads`
+(instructions, ADRs, PRD, TRD, with a summary for those not on disk)
+and `Other documents`, every other kind by kind, title and slug alone —
+one row per document either way (ADR-015). A key left out takes its default; a
 negative one is refused. Like the capacity and the accounts, `context:`
 is read again every tick: a change is picked up on the next tick
 without a restart, and logged

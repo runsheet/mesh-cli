@@ -315,7 +315,7 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	cx, err := FetchContext(ctx, p.GW, scope.Login, project.Slug, ContextOptions{Budget: p.contextBudget(), Repos: names})
+	cx, err := FetchContext(ctx, p.GW, scope.Login, project.Slug, ContextOptions{Budget: p.contextBudget(), Repos: names, Logf: p.logf})
 	if err != nil {
 		p.logf("goal %s: context unavailable: %v", goal.Slug, err)
 		cx = &Context{}
@@ -449,6 +449,9 @@ func (p *Planner) ask(ctx context.Context, goal gateway.Goal, nodeID, dir string
 // describes. A cancelled ctx leaves the session running for the next
 // node to adopt; otherwise its session directory goes.
 func (p *Planner) readPlan(ctx context.Context, goal gateway.Goal, dir string, acct *SessionAccount, result harness.Result, err error, repos map[string]gateway.Repo, merged []int, evidence []harness.ModelEvidence) ([]gateway.PlannedItem, map[int]string, []string, float64, error) {
+	// logged before a done ctx returns: a deadline kills the unit too,
+	// and a detach kills nothing
+	logKilled(p.logf, "goal "+goal.Slug, result.KilledPerSession(), result.KillError)
 	if ctx.Err() != nil {
 		return nil, nil, nil, 0, ctx.Err()
 	}
@@ -556,7 +559,7 @@ func briefWithDeps(brief string, deps []int, because map[int]string) string {
 func (p *Planner) AdoptPlan(ctx context.Context, goal gateway.Goal, scope Scope, s FoundSession) error {
 	if goal.Status != "planning" {
 		p.logf("goal %s: adopted plan is no longer wanted (%s); stopped", goal.Slug, goal.Status)
-		s.Stop()
+		stopFound(p.logf, "goal "+goal.Slug, s)
 		return harness.RemoveSession(s.State.Workspace)
 	}
 	project, repos, err := p.projectRepoMap(ctx, goal, scope)
@@ -573,7 +576,7 @@ func (p *Planner) AdoptPlan(ctx context.Context, goal gateway.Goal, scope Scope,
 	}
 	at, ok := p.Harness.(harness.Attacher)
 	if !ok {
-		s.Stop()
+		stopFound(p.logf, "goal "+goal.Slug, s)
 		harness.RemoveSession(s.State.Workspace)
 		return errNoAttach
 	}

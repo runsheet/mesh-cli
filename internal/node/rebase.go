@@ -123,7 +123,7 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 		return fail(fmt.Errorf("workspace: %w", err))
 	}
 	orgLogin := r.Scopes.LoginOf(item.OrgID)
-	cx, err := FetchContext(ctx, r.GW, orgLogin, res.Project.Slug, ContextOptions{Budget: r.contextBudget(), Repos: []string{res.Repo.FullName()}})
+	cx, err := FetchContext(ctx, r.GW, orgLogin, res.Project.Slug, ContextOptions{Budget: r.contextBudget(), Repos: []string{res.Repo.FullName()}, Logf: r.logf})
 	if err != nil {
 		r.logf("item %s: context unavailable: %v", label, err)
 		cx = &Context{}
@@ -290,6 +290,8 @@ func (rb *rebaseRun) run(ctx context.Context, start func(onProgress func(harness
 // down — leaves the claim and the still-running session for the next
 // node to adopt; otherwise the session directory goes.
 func (r *Rebaser) afterRebase(ctx context.Context, rb *rebaseRun, acct *SessionAccount, result harness.Result, runErr error) error {
+	// logged before a done ctx returns: a deadline kills the unit too
+	killedNote := logKilled(r.logf, "item "+rb.label, result.KilledPerSession(), result.KillError)
 	if ctx.Err() != nil {
 		r.logf("item %s: node shutting down; its rebase session is left for the next node to adopt", rb.label)
 		return ctx.Err()
@@ -301,6 +303,9 @@ func (r *Rebaser) afterRebase(ctx context.Context, rb *rebaseRun, acct *SessionA
 		rb.mu.Lock()
 		rb.sessionID = result.SessionID
 		rb.mu.Unlock()
+	}
+	if killedNote != "" {
+		rb.report(ctx, killedNote)
 	}
 	branch, label := rb.branch, rb.label
 	switch {
@@ -343,7 +348,7 @@ func (r *Rebaser) afterRebase(ctx context.Context, rb *rebaseRun, acct *SessionA
 func (r *Rebaser) AdoptRebase(ctx context.Context, item gateway.WorkItem, s FoundSession) error {
 	if item.RebaseState != "claimed" || item.RebaseNodeID != "" && item.RebaseNodeID != s.State.NodeID {
 		r.logf("item %s: adopted rebase is no longer this node's (%s); stopped", item.ID, item.RebaseState)
-		s.Stop()
+		stopFound(r.logf, "item "+item.ID, s)
 		return harness.RemoveSession(s.State.Workspace)
 	}
 	rb := &rebaseRun{r: r, item: item, label: item.ID, dir: s.State.Workspace, sessionID: s.State.SessionID}
@@ -363,7 +368,7 @@ func (r *Rebaser) AdoptRebase(ctx context.Context, item gateway.WorkItem, s Foun
 	}
 	at, ok := r.Harness.(harness.Attacher)
 	if !ok {
-		s.Stop()
+		stopFound(r.logf, "item "+item.ID, s)
 		return rb.fail(ctx, errNoAttach)
 	}
 	r.logf("item %s: adopted its %s rebase session (pid %d)", rb.label, s.Liveness(), s.State.PID)

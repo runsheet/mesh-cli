@@ -35,7 +35,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   the `~/.mesh/token` that holds either shape behind one `TokenSource`
   (latchkey `adr-machine-identity`).
 - `internal/node/`: the loop (`runner`), the workspace and the project's
-  context (`workspace.go`: `FetchContext`, `RenderIndex`, the size budget — node.yaml `context:`, `ContextConfig`, re-read each tick, `Loop.ContextBudget`; every document counts against `bytes_max`, instructions and ADRs are exempt from `doc_bytes_max` only, placed first those of the session's own repos (`ContextOptions.Repos`), then the rest by recency, then the PRD and TRD, and one that does not fit is left whole to the index (`Context.Dropped`, ADR-015)),
+  context (`workspace.go`: `FetchContext`, `RenderIndex`, the size budget — node.yaml `context:`, `ContextConfig`, re-read each tick, `Loop.ContextBudget`; every document counts against `bytes_max`, instructions and ADRs are exempt from `doc_bytes_max` only, placed first those of the session's own repos (`ContextOptions.Repos`), then the rest by recency, then the PRD and TRD, and one that does not fit is left whole to the index (`Context.Dropped`, ADR-015); INDEX.md is inside `bytes_max` too, its length with nothing on disk reserved before placing and the last-placed document unplaced while the written index would pass it, in two tables — `Documents a session reads` (the `ContextKinds`, summary when not on disk) and `Other documents` (`kind | title | slug`) — the live section outside the budget (`Context.IndexBytes`, ADR-015's amendment 2026-09-29)),
   evaluate, plan and research sessions, the service install (`launchd` /
   `systemd --user`). A project's repos — for the planner, the director
   and `mesh goal plan` — are read from `project.repoIds` through
@@ -506,7 +506,16 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   goes. A timeout or cancelled ctx `Stop`s the unit, and every end
   but a detach `Kill`s it: `Result.Killed` names what the agent left
   running there (a failed kill goes to Stderr, else `KillError`,
-  never failing the session); the directory is
+  never failing the session), and the node logs what it killed, a
+  line per session (`logKilled` on `Result.KilledPerSession()`:
+  `<subject>: session end killed <n> process(es) the agent left
+  running: <pid> <comm>, …`, and `kill: <KillError>`); a build and a
+  rebase also send it as a progress note, an evaluation puts it in the
+  verdict's notes when it records one and only logs it (held for the
+  next verdict, `LeftRunning`) when it records none, a plan and
+  research log only (ADR-008, The session's end) — an adopted session
+  whose subject is no longer the node's is `FoundSession.Kill`ed and
+  logged the same way; the directory is
   removed when `Run` returns — unless the job is `Outlive`: see the
   adoption.
 - **The sandbox** (`internal/sandbox/`, mesh-specs ADR 007,
