@@ -534,7 +534,7 @@ func TestNoContextUnderTheOldNameIsNotAVerdict(t *testing.T) {
 		t.Fatal(err)
 	}
 	// adopted: no account and no second job, as AdoptEvaluation runs it
-	run := evalRun{item: *item, res: res, label: "ship-it/1", model: "sonnet", fam: family{model: "sonnet", claude: "sonnet"}, dir: t.TempDir()}
+	run := evalRun{item: *item, res: res, label: "ship-it/1", model: "sonnet", fam: family{model: "sonnet", claude: "sonnet"}, dir: t.TempDir(), adopted: true}
 	result := harness.Result{Text: "VERDICT: PASS", Tools: map[string]*harness.ToolStat{"prologue": {Calls: 2, Errors: 2, FirstError: "Auth required"}}}
 	if err := ev.afterEvaluate(context.Background(), run, result, nil); !errors.Is(err, ErrNoContext) {
 		t.Fatalf("afterEvaluate = %v, want ErrNoContext", err)

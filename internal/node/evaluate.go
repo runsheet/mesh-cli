@@ -379,6 +379,9 @@ type evalRun struct {
 	// Claude instead ("" when none did)
 	preflight        string
 	omitted, missing string
+	// adopted is a session an older node process started and this one
+	// took up (AdoptEvaluation): only there is prologue the built-in
+	adopted bool
 }
 
 // afterEvaluate is what follows an evaluation session, however this
@@ -410,7 +413,7 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 	var passed bool
 	var notes string
 	cost := result.CostUSD
-	if blind, broken := e.toolBroken(result, acct, ev.second == nil); broken {
+	if blind, broken := e.toolBroken(result, acct, ev.adopted); broken {
 		other := ev.fam.other(e)
 		saw := fmt.Sprintf("item %s: evaluation on %s saw no context (%s); not a verdict", label, ev.fam.fullName(), blind)
 		if why, ok := e.canRetry(ev, other); !ok {
@@ -547,7 +550,7 @@ func (e *Evaluator) AdoptEvaluation(ctx context.Context, item gateway.WorkItem, 
 	label := fmt.Sprintf("%s/%d", res.Goal.Slug, item.Seq)
 	e.logf("item %s: adopted its %s evaluation (pid %d)", label, s.Liveness(), s.State.PID)
 	result, err := at.Attach(ctx, s.Dir, nil)
-	return e.afterEvaluate(ctx, evalRun{item: item, res: res, label: label, model: s.State.Model, fam: family{model: s.State.Model, claude: s.State.Model}, dir: s.State.Workspace}, result, err)
+	return e.afterEvaluate(ctx, evalRun{item: item, res: res, label: label, model: s.State.Model, fam: family{model: s.State.Model, claude: s.State.Model}, dir: s.State.Workspace, adopted: true}, result, err)
 }
 
 // opinion is the second evaluation's outcome: its verdict and notes, or
