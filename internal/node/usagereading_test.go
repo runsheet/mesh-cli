@@ -68,6 +68,9 @@ func TestUsageReadingByKind(t *testing.T) {
 		"evaluate  1         50000                50000              80.0          -                     0",
 		"plan      2         50000                50000              60.0          3000                  2",
 		"unknown   1         7000                 7000               100.0         -                     0",
+		"coverage build: 2 records of 3 sessions ended in the window",
+		"coverage evaluate: 1 records of 1 sessions ended in the window",
+		"coverage plan: 2 records of 1 sessions ended in the window",
 		"unparsed 1",
 	})
 }
@@ -79,6 +82,7 @@ func TestUsageReadingWindowExcludes(t *testing.T) {
 		"window 2026-09-29..2026-09-30  records 2026-09-29T00:00:00..2026-09-29T00:00:00",
 		"kind   sessions  input tokens median  input tokens mean  cache read %  context bytes median  with context bytes",
 		"build  1         5000                 5000               20.0          3000                  1",
+		"coverage build: 1 records of 0 sessions ended in the window",
 		"unparsed 0",
 	})
 	checkLines(t, readUsageFixture(t, UsageQuery{From: day("2026-09-26"), To: day("2026-09-27")}), []string{
@@ -97,12 +101,16 @@ func TestUsageReadingByGoalAndKind(t *testing.T) {
 		"build     2         200000               200000             90.0          1000                  1",
 		"evaluate  1         50000                50000              80.0          -                     0",
 		"plan      1         80000                80000              75.0          4000                  1",
+		"coverage build: 2 records of 3 sessions ended in the window",
+		"coverage evaluate: 1 records of 1 sessions ended in the window",
+		"coverage plan: 1 records of 1 sessions ended in the window",
 		"unparsed 1",
 	})
 	checkLines(t, readUsageFixture(t, UsageQuery{From: day("2026-09-28"), To: day("2026-09-29"), Kind: "plan"}), []string{
 		"window 2026-09-28..2026-09-29  records 2026-09-28T12:00:00..2026-09-28T13:00:00",
 		"kind  sessions  input tokens median  input tokens mean  cache read %  context bytes median  with context bytes",
 		"plan  2         50000                50000              60.0          3000                  2",
+		"coverage plan: 2 records of 1 sessions ended in the window",
 		"unparsed 1",
 	})
 }
@@ -125,4 +133,111 @@ func TestUsageReadingPairsLegacyByCost(t *testing.T) {
 	if b, _ := json.Marshal(u.Records[1].Report); !strings.Contains(string(b), `"listCostCents":50`) {
 		t.Errorf("s2 = %s", b)
 	}
+}
+
+// windowFixture is a node.log of 2026-09-29 around a release's first
+// context line at 14:15: builds either side of it, of three goals, a
+// plan, research of two projects and a legacy record nothing pairs.
+const windowFixture = `mesh node: 2026/09/29 14:11:40 item alpha/1: finished mesh/alpha-1@aaaa1111 ($1.00)
+mesh node: 2026/09/29 14:11:48 item alpha/1: usage build {"sessionId":"b1","inputTokens":900000,"cacheReadTokens":800000,"listCostCents":100}
+mesh node: 2026/09/29 14:15:00 item alpha/2: context 1000 bytes in 3 files, 2 documents to fetch
+mesh node: 2026/09/29 14:18:40 item alpha/2: finished mesh/alpha-2@bbbb2222 ($0.40)
+mesh node: 2026/09/29 14:18:43 item alpha/2: usage build {"sessionId":"b2","inputTokens":100000,"cacheReadTokens":90000,"listCostCents":40,"contextBytes":1000}
+mesh node: 2026/09/29 14:20:00 item beta/1: finished mesh/beta-1@cccc3333 ($0.30)
+mesh node: 2026/09/29 14:20:00 item beta/1: usage build {"sessionId":"b3","inputTokens":200000,"cacheReadTokens":150000,"listCostCents":30,"contextBytes":2000}
+mesh node: 2026/09/29 14:30:00 item gamma/1: finished mesh/gamma-1@dddd4444 ($0.20)
+mesh node: 2026/09/29 14:30:00 item gamma/1: usage build {"sessionId":"b4","inputTokens":300000,"cacheReadTokens":0,"listCostCents":20}
+mesh node: 2026/09/29 14:40:00 item beta/2: finished mesh/beta-2@eeee5555 ($0.10)
+mesh node: 2026/09/29 14:50:00 goal beta: planned, 2 items ($0.60)
+mesh node: 2026/09/29 14:50:00 goal beta: usage plan {"sessionId":"p1","inputTokens":60000,"cacheReadTokens":30000,"listCostCents":60}
+mesh node: 2026/09/29 15:00:00 mesh/nightly: pitched 2, answered 1 ($0.70)
+mesh node: 2026/09/29 15:00:00 project mesh: usage research {"sessionId":"r1","inputTokens":70000,"cacheReadTokens":35000,"listCostCents":70}
+mesh node: 2026/09/29 15:10:00 other/nightly: proposed 1 goal(s) ($0.80)
+mesh node: 2026/09/29 15:10:00 project other: usage research {"sessionId":"r2","inputTokens":80000,"cacheReadTokens":0,"listCostCents":80}
+mesh node: 2026/09/29 15:20:01 usage: {"sessionId":"u1","inputTokens":5000,"cacheReadTokens":0,"listCostCents":55}
+`
+
+func readWindowFixture(t *testing.T, q UsageQuery) UsageReading {
+	t.Helper()
+	u, err := ReadUsage(strings.NewReader(windowFixture), q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return u
+}
+
+func sessions(u UsageReading) []string {
+	var got []string
+	for _, r := range u.Records {
+		got = append(got, r.Report.SessionID)
+	}
+	return got
+}
+
+// --from as a timestamp, in the log's location: the record at 14:11:48
+// is before the release's 14:15:00 and out, the one at 14:18:43 in; the
+// window line is the timestamps as given.
+func TestUsageReadingWindowByTimestamp(t *testing.T) {
+	from := time.Date(2026, 9, 29, 14, 15, 0, 0, time.UTC)
+	u := readWindowFixture(t, UsageQuery{From: from, To: day("2026-09-30"), Kind: "build", Window: "2026-09-29T14:15:00Z..2026-09-30"})
+	if got, want := sessions(u), []string{"b2", "b3", "b4"}; !slices.Equal(got, want) {
+		t.Errorf("records %q, want %q", got, want)
+	}
+	checkLines(t, u.Lines(), []string{
+		"window 2026-09-29T14:15:00Z..2026-09-30  records 2026-09-29T14:18:43..2026-09-29T14:30:00",
+		"kind   sessions  input tokens median  input tokens mean  cache read %  context bytes median  with context bytes",
+		"build  3         200000               200000             40.0          1500                  2",
+		"coverage build: 3 records of 4 sessions ended in the window",
+		"unparsed 0",
+	})
+}
+
+// A project's goals: alpha and beta are in the list, gamma is not; the
+// project's research record is kept by its own slug, the other
+// project's is not, and the legacy record nothing paired names no goal
+// and is out.
+func TestUsageReadingByProjectGoals(t *testing.T) {
+	u := readWindowFixture(t, UsageQuery{From: day("2026-09-29"), To: day("2026-09-30"), Goals: []string{"alpha", "beta"}, Project: "mesh"})
+	if got, want := sessions(u), []string{"b1", "b2", "b3", "p1", "r1"}; !slices.Equal(got, want) {
+		t.Errorf("records %q, want %q", got, want)
+	}
+	// --goals from a file names no project: research is out with it
+	u = readWindowFixture(t, UsageQuery{From: day("2026-09-29"), To: day("2026-09-30"), Goals: []string{"alpha", "beta"}})
+	if got, want := sessions(u), []string{"b1", "b2", "b3", "p1"}; !slices.Equal(got, want) {
+		t.Errorf("records %q, want %q", got, want)
+	}
+	// an empty list is no goal, not every goal
+	u = readWindowFixture(t, UsageQuery{From: day("2026-09-29"), To: day("2026-09-30"), Goals: []string{}})
+	if got := sessions(u); len(got) != 0 {
+		t.Errorf("records %q, want none", got)
+	}
+}
+
+// Coverage counts the session-end lines of each kind in the window and
+// filter beside the records read: beta/2 ended with no record.
+func TestUsageReadingCoverageCountsEndedSessions(t *testing.T) {
+	u := readWindowFixture(t, UsageQuery{From: day("2026-09-29"), To: day("2026-09-30"), Goals: []string{"alpha", "beta"}, Project: "mesh"})
+	if u.Ended["build"] != 4 || u.Ended["plan"] != 1 || u.Ended["research"] != 1 {
+		t.Errorf("ended %v", u.Ended)
+	}
+	var coverage []string
+	for _, l := range u.Lines() {
+		if strings.HasPrefix(l, "coverage ") {
+			coverage = append(coverage, l)
+		}
+	}
+	if len(coverage) != 3 || coverage[0] != "coverage build: 3 records of 4 sessions ended in the window" {
+		t.Errorf("coverage %q", coverage)
+	}
+	if coverage[1] != "coverage plan: 1 records of 1 sessions ended in the window" || coverage[2] != "coverage research: 1 records of 1 sessions ended in the window" {
+		t.Errorf("coverage %q", coverage)
+	}
+	// every goal: unknown has no coverage line; each research ended
+	all := readWindowFixture(t, UsageQuery{From: day("2026-09-29"), To: day("2026-09-30")})
+	checkLines(t, all.Lines()[len(all.Lines())-4:], []string{
+		"coverage build: 4 records of 5 sessions ended in the window",
+		"coverage plan: 1 records of 1 sessions ended in the window",
+		"coverage research: 2 records of 2 sessions ended in the window",
+		"unparsed 0",
+	})
 }
