@@ -42,16 +42,14 @@ const ReasonFixed Reason = "fixed"
 // heartbeatScaling is the heartbeat's `scaling` (adr-004,
 // adr-005-capacity-across-accounts): s for a ranged node, and each
 // account's slots once the accounts scaler has counted them; for a
-// fixed node on several accounts its capacity as min and max, reason
-// `fixed`; for a fixed node on one account (or the operator's own
-// login) nil, so its heartbeat is what it always was. The gateway sends
-// it only when its schema takes it. Names and kinds only — never a
-// token file or a key's variable.
+// fixed node — on any number of accounts, the operator's own login
+// too — its capacity in force as capacity, min and max, reason `fixed`,
+// so a node.yaml capacity changed under a running node reaches the
+// platform on the next heartbeat rather than at the next registration
+// (mesh-cli ADR-018). The gateway sends it only when its schema takes
+// it. Names and kinds only — never a token file or a key's variable.
 func (l *Loop) heartbeatScaling(s Scaling, ranged bool) *gateway.Scaling {
 	if !ranged {
-		if len(l.scheduled()) < 2 {
-			return nil
-		}
 		c := l.Capacity()
 		s = Scaling{Capacity: c, Min: c, Max: c, Reason: ReasonFixed}
 	}

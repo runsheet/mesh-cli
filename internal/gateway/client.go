@@ -1475,9 +1475,10 @@ type HeartbeatExtras struct {
 	Limits []Limits
 	// Scaling is the node's capacity in force, its range and why, and
 	// each account's slots (adr-004, adr-005-capacity-across-accounts);
-	// a fixed node on one account sends none (runsheet goal
-	// limits-on-the-console). It is sent only when the gateway's schema
-	// takes it (HeartbeatNode).
+	// a fixed node sends its capacity as min and max, reason `fixed`, on
+	// one account too (mesh-cli ADR-018), so a capacity changed in
+	// node.yaml reaches the platform on the next heartbeat. It is sent
+	// only when the gateway's schema takes it (HeartbeatNode).
 	Scaling *Scaling
 	// Runtimes are the local tool runtimes the node can start (npx,
 	// uvx, docker) and Adapters the agent CLIs it has (claude-code,
@@ -1587,9 +1588,10 @@ type SandboxInfo struct {
 	Image   string `json:"image,omitempty"`
 }
 
-// Scaling is what a node whose capacity is a range, or that runs on
-// several accounts, reports of it: the capacity in force, node.yaml's
-// min and max, the reason (adr-004, adr-005-capacity-across-accounts),
+// Scaling is what a node reports of its capacity: the capacity in
+// force, node.yaml's min and max (both the capacity for a fixed node,
+// reason `fixed`, mesh-cli ADR-018), the reason (adr-004,
+// adr-005-capacity-across-accounts),
 // and each account's slots as the accounts scaler last counted them —
 // none before it has, or on a platform whose `scaling` has no
 // `accounts`.

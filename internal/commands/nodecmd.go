@@ -342,7 +342,9 @@ func localNodeState(state node.RunState) (string, bool) {
 // localScaling is the capacity the node on this machine has in force
 // when node.yaml's capacity is a range, as it left it at its last tick,
 // and true; false when it is fixed or no node runs here. The platform's
-// node record carries the registered capacity only.
+// node record carries the registered capacity, and beside it the
+// heartbeat's scaling.capacity — the capacity in force, fixed or ranged
+// (ADR-018).
 func localScaling(state node.RunState) (node.Scaling, bool) {
 	pid, err := state.PID()
 	if err != nil || !processAlive(pid) {
