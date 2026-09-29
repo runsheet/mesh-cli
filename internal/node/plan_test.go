@@ -675,7 +675,8 @@ func TestReplanReportsBothSessionsOnce(t *testing.T) {
 	if in["inputTokens"] != float64(2*60600) || in["listCostCents"] != float64(86) || in["credentialId"] != "cred-1" {
 		t.Fatalf("usage: %v", in)
 	}
-	if strings.Contains(logs.String(), "usage: {") {
-		t.Errorf("a carried report is logged too:\n%s", logs.String())
+	// one record, the carrier's, on the goal's label: the carried one is in it
+	if recs := loggedUsage(t, logs.String()); len(recs) != 1 || recs[0].Label != "goal ship-it" || recs[0].Kind != "plan" || recs[0].Report.ListCostCents != 86 {
+		t.Errorf("usage records = %+v:\n%s", recs, logs.String())
 	}
 }

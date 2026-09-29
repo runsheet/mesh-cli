@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -165,8 +166,12 @@ func TestBuildRunsOnAnIssuedCredentialAndReportsUsage(t *testing.T) {
 		t.Fatalf("item: %v", row(item1))
 	}
 	checkSessionUsage(t, f, "finishWorkItem")
+	// the record the finish carried is logged too, on the item's label
+	if recs := loggedUsage(t, logs.String()); len(recs) != 1 || recs[0].Label != "item ship-it/1" || recs[0].Kind != "build" || recs[0].Report.CredentialID != "cred-1" {
+		t.Errorf("usage records = %+v:\n%s", recs, logs.String())
+	}
 	if strings.Contains(logs.String(), "usage: {") {
-		t.Errorf("a report the finish carried is logged too:\n%s", logs.String())
+		t.Errorf("an unlabelled record:\n%s", logs.String())
 	}
 	for what, s := range map[string]string{"log": logs.String(), "lastNote": toString(row(item1)["lastNote"]), "lastError": toString(row(item1)["lastError"])} {
 		if strings.Contains(s, issuedSecret) {
@@ -275,14 +280,13 @@ func TestCredentialsFallBackToNodeYAMLOncePerRun(t *testing.T) {
 		t.Errorf("ledger fallback said %d times:\n%s", n, out)
 	}
 	var reports []gateway.UsageReport
-	for _, line := range strings.Split(out, "\n") {
-		if js, ok := strings.CutPrefix(line, "usage: {"); ok {
-			var rep gateway.UsageReport
-			if err := json.Unmarshal([]byte("{"+js), &rep); err != nil {
-				t.Fatalf("usage line is not one JSON report: %q: %v", line, err)
-			}
-			reports = append(reports, rep)
-		}
+	var kinds []string
+	for _, rec := range loggedUsage(t, out) {
+		reports = append(reports, rec.Report)
+		kinds = append(kinds, rec.Kind)
+	}
+	if want := []string{"build", "build", "build", "evaluate"}; !slices.Equal(kinds, want) {
+		t.Errorf("kinds = %v, want %v", kinds, want)
 	}
 	if len(reports) != len(items)+1 {
 		t.Fatalf("%d usage lines for %d sessions:\n%s", len(reports), len(items)+1, out)
@@ -384,19 +388,11 @@ func TestFailedBuildLogsItsUsage(t *testing.T) {
 		t.Fatalf("item: %v", row(item1))
 	}
 	out := logs.String()
-	var line string
-	for _, l := range strings.Split(out, "\n") {
-		if strings.HasPrefix(l, "usage: {") {
-			if line != "" {
-				t.Fatalf("two usage lines:\n%s", out)
-			}
-			line = l
-		}
+	recs := loggedUsage(t, out)
+	if len(recs) != 1 || recs[0].Label != "item ship-it/1" || recs[0].Kind != "build" {
+		t.Fatalf("usage records = %+v:\n%s", recs, out)
 	}
-	var rep gateway.UsageReport
-	if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "usage: ")), &rep); err != nil {
-		t.Fatalf("no usage record in the log (%v):\n%s", err, out)
-	}
+	rep := recs[0].Report
 	if rep.CredentialID != "cred-1" || rep.SessionID != "s-1" || rep.ListCostCents != 75 {
 		t.Errorf("record = %+v", rep)
 	}
@@ -668,5 +664,84 @@ func TestCredentialsCarryContextBytesAndFallBackOncePerRun(t *testing.T) {
 				t.Errorf("usage.contextBytes = %v: %+v", b, c.Input)
 			}
 		}
+	}
+}
+
+// loggedUsage is every `<label>: usage <kind> {…}` record in a node.log
+// written without timestamps, in order; a record that is not one JSON
+// report fails the test.
+func loggedUsage(t *testing.T, out string) []UsageRecord {
+	t.Helper()
+	var recs []UsageRecord
+	for _, line := range strings.Split(out, "\n") {
+		m := usageRecordLine.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		rec := UsageRecord{Label: m[1], Kind: m[2]}
+		if err := json.Unmarshal([]byte(m[3]), &rec.Report); err != nil {
+			t.Fatalf("usage line is not one JSON report: %q: %v", line, err)
+		}
+		recs = append(recs, rec)
+	}
+	return recs
+}
+
+// A report its finishing command carried (handedIn) is still logged,
+// once, on the session's label with its kind: a build, an evaluation
+// and a plan each give one `<label>: usage <kind> {…}` line whose JSON
+// is the report as sent.
+func TestFinishLogsTheCarriedRecordOnItsLabel(t *testing.T) {
+	for _, tc := range []struct {
+		label, kind, want string
+	}{
+		{"item ship-it/1", "build", "item ship-it/1: usage build "},
+		{"item ship-it/1", "evaluate", "item ship-it/1: usage evaluate "},
+		{"goal ship-it", "plan", "goal ship-it: usage plan "},
+	} {
+		var logs strings.Builder
+		t0 := time.Date(2026, 9, 28, 9, 0, 0, 0, time.UTC)
+		c := &Credentials{Log: log.New(&logs, "", 0), Now: func() time.Time { return t0 }}
+		s := &SessionAccount{creds: c, account: AccountConfig{Label: "max-a", Kind: AccountSubscription}, started: t0}
+		s.SetContextBytes(4096)
+		s.SetLabel(tc.label, tc.kind)
+		s.Report(harness.Result{SessionID: "s-1", CostUSD: 1.25, Usage: &harness.Usage{Model: "claude-opus-5", InputTokens: 100000, CachedInputTokens: 90000, OutputTokens: 700}})
+		if err := s.Carried(nil); err != nil {
+			t.Fatal(err)
+		}
+		if !s.handedIn {
+			t.Fatal("the report did not ride its finish")
+		}
+		s.Finish(context.Background(), harness.Result{})
+		var records []string
+		for _, l := range strings.Split(logs.String(), "\n") {
+			if strings.Contains(l, ": usage "+tc.kind+" ") || strings.HasPrefix(l, "usage: {") {
+				records = append(records, l)
+			}
+		}
+		if len(records) != 1 || !strings.HasPrefix(records[0], tc.want) {
+			t.Fatalf("%s: records %q, want one starting %q:\n%s", tc.kind, records, tc.want, logs.String())
+		}
+		want := `{"sessionId":"s-1","adapter":"claude-code","model":"claude-opus-5","credentialKind":"subscription","inputTokens":100000,"outputTokens":700,"cacheReadTokens":90000,"cacheWriteTokens":0,"toolCalls":0,"wallMs":0,"listCostCents":125,"actualCostCents":0,"contextBytes":4096}`
+		if got := strings.TrimPrefix(records[0], tc.want); got != want {
+			t.Errorf("%s: record\n%s\nwant\n%s", tc.kind, got, want)
+		}
+		if !strings.HasPrefix(logs.String(), "usage: turns=0 input/turn mean=0 max=0 largest=\n") {
+			t.Errorf("%s: the turns line changed:\n%s", tc.kind, logs.String())
+		}
+	}
+}
+
+// A session with no label (SetLabel never called) keeps the older
+// `usage: {…}` line.
+func TestFinishWithoutALabelLogsTheOlderLine(t *testing.T) {
+	var logs strings.Builder
+	c := &Credentials{Log: log.New(&logs, "", 0)}
+	s := &SessionAccount{creds: c}
+	s.Report(harness.Result{SessionID: "s-1"})
+	s.Finish(context.Background(), harness.Result{})
+	lines := strings.Split(strings.TrimSpace(logs.String()), "\n")
+	if len(lines) != 2 || !strings.HasPrefix(lines[1], `usage: {"sessionId":"s-1",`) {
+		t.Fatalf("log:\n%s", logs.String())
 	}
 }
