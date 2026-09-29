@@ -1,9 +1,9 @@
 ---
 title: Goal — A node.yaml the operator edits takes effect, and the node says so
 kind: plan
-status: running
+status: done
 parent: prd
-summary: The mini's capacity 6 → 8 did take effect in the loop at 06:17:09Z (logged) but never reached the platform, because a fixed node on one account heartbeated no capacity and only registration sets NodeIndex.capacity; a fixed node now heartbeats `scaling {capacity, min, max, reason: fixed}` (mesh-cli ADR-018). Separately, the mini's 04:00:22Z exit with status=2/INVALIDARGUMENT on 2026-09-29 was a nil-pointer panic in the evaluator — a failed Codex preflight turned to Claude, Credentials.Open's error overwrote acct with nil, and the deferred acct.Cleanup() dereferenced it — now fixed, and a panic anywhere in the node is one `mesh node: fatal:` line and exit 70.
+summary: The mini's capacity 6 → 8 took effect in the loop at 06:17:09Z but never reached the platform because a fixed node on one account heartbeated no capacity and only registration sets NodeIndex.capacity (fixed: a fixed node now heartbeats `scaling`, mesh-cli ADR-018); the same six hours' 04:00:22Z exit, status=2/INVALIDARGUMENT, was an unrecovered nil-pointer panic in the evaluator's Codex-to-Claude fallback, now impossible anywhere in the node (`crash.Guard`, exit 70); and `~/.mesh/node.log` — 339 MB and never rotated — is now capped at 10 MB × 5 files with session transcripts in their own file.
 ---
 
 # Goal — A node.yaml the operator edits takes effect, and the node says so
@@ -165,9 +165,10 @@ behaviour (ADR 004).
 - **Platform:** `NodeIndex.capacity`, which `mesh_health_nodes` reports,
   is still the registered value until the next start. runsheet should
   read `scaling_capacity` when set, or keep `capacity` in step with it.
-- **After the release reaches the mini:** the goal still needs
-  `NodeIndex` before and after a live node.yaml edit, with the file's
-  mtime and the log line. The fix is not yet on the mini (v0.2.191).
+- **After the release reaches the mini:** see `## The mini before and
+  after`, below — as of this item the mini is still on v0.2.191, so the
+  reading there is the version and the release that carries the fix,
+  not yet a live before/after on the fixed code.
 - `Reloader`'s `register` callback registers a newly served org with
   the capacity the node started with (`registerIn(ctx, gw, cfg, …)` on
   the start-time `cfg`). The heartbeat's `scaling` now corrects it on
@@ -177,6 +178,93 @@ The mini's `capacity` was raised from 6 to 8 in `~/.mesh/node.yaml` and
 never took effect, and `~/.mesh/node.log` — 339 MB and never rotated —
 was too large to show it. This document collects what each item of the
 goal found and landed.
+
+## The mini before and after
+
+**Before the fix.** `NodeIndex(mini)` from the platform, 2026-09-29
+13:30:02Z (Root cause, above): `capacity: 6, running: 4, lastSeenAt
+13:30:02Z, version v0.2.188`. `~/.mesh/node.yaml`'s own mtime on the
+mini, from the operator's pre-edit backups (Root cause, above):
+`node.yaml.bak-20260929-061520` at `2026-09-29 06:15:20.510041847
++0000` holds the old `capacity: 6`. The whole node.log line the loop
+wrote the moment it applied `capacity: 8`:
+
+```
+mesh node: 2026/09/29 06:17:09 capacity 6 → 8
+```
+
+**After: the mini has not yet run a release carrying the fix.** Queried
+live this session, `mesh_health_nodes(org: runsheet)`, 2026-09-29
+23:26:37Z:
+
+```
+mini: version v0.2.191, desired_version v0.2.191, capacity: 8,
+running: 4, last_seen_at: 2026-09-29T23:26:37Z,
+commits_behind_main: 21, oldest_unrun_merged_at: 2026-09-29T14:28:15Z
+```
+
+The mini is still on **v0.2.191** (`8eba662`, PR #434 — registration
+declares an owner), the tag it was already running at 13:30Z, and is 21
+commits behind `main`'s head (`38f854d`). It has picked up none of
+items 3, 6, 7, 8 or 9 (checked by `git merge-base --is-ancestor
+<commit> v0.2.191`, all four "no"). The release that first carries
+item 6's capacity-heartbeat fix (`634e2e6`) is **v0.2.204** (tagged
+2026-09-29 22:25:22Z); item 3's panic guard (`348f147`) lands one tag
+earlier, v0.2.203 (22:09:18Z); item 9 first in v0.2.206, item 7 first
+in v0.2.207, item 8 first in v0.2.208 — the latest release
+(23:24:32Z), which carries all five.
+
+The `capacity: 8` the platform shows now, **labelled version v0.2.191**,
+is not evidence of the fix: it is the 14:13–14:25Z restart's
+re-registration the Root cause section already used to show the
+platform only reached 8 by restarting (`registerNode` sets
+`NodeIndex.capacity` from `cfg.Capacity.Max` at start, unrelated to this
+goal's change). Proof that a live edit reaches the platform *without* a
+restart is `TestCapacityReloadFromNodeYAMLReachesTheHeartbeat`, above;
+the mini's own before/after on the fixed code is owed once it runs
+v0.2.204 or later. Per this item's instruction, this session did not
+restart or reinstall the mini's node to make that happen.
+
+## What a reload logs
+
+Every reloadable field logs one whole line with its old and new value
+the tick it changes, and nothing when the file is unchanged
+(`TestReloadUnchangedLogsNothing`, `internal/node/reload_fields_test.go`).
+A test per field rewrites `~/.mesh/node.yaml` under a temp `HOME`
+between two ticks and asserts the value through the loop's own accessor
+and the whole line:
+
+| Field | Log line (example) | Test |
+|---|---|---|
+| capacity | `capacity 6 → 8` (fixed); `capacity 3 → 2: clamped into 1–2` (ranged) | `TestCapacityReloadFromNodeYAMLReachesTheHeartbeat` (`internal/node/capacity_reload_test.go`); `TestScalingReloadClampsIntoTheNewRange` (`internal/node/scaling_loop_test.go`) |
+| limits | `limits: pace five-hour 70% → 80%, stop 90% → 95%` | `TestReloadLimitsFromDisk` |
+| accounts | `account sub-a: token_file ~/a.token → ~/a2.token`; membership as `accounts sub-a, api-b → api-b, api-c`; a kind change as `account api-b: kind api → subscription, token_file (none) → ~/b.token, api_key_env KEY_B → (none), daily_cap $50.00 → none, monthly_cap $1000.00 → none` | `TestReloadAccountsFromDisk` |
+| budgets | `budget build/sonnet $4.00 → $7.00`; `project budget mesh none → $20.00` | `TestReloadBudgetsFromDisk` |
+| context | `context: bytes_max 245760 → 131072, doc_bytes_max 61440 → 32768` | `TestReloadContextFromDisk` |
+| claim | `claim: unmerged_per_repo 0 → 2` | `TestReloadClaimFromDisk` |
+| orgs | `orgs acme → acme, globex` | `TestReloadOrgsFromDisk` |
+
+All seven in `internal/node/reload_fields_test.go` unless noted.
+
+**A reload that cannot be applied** logs one physical line per tick and
+keeps the last good values in force (`internal/node/reload_fail_test.go`,
+item 9): a bad `node.yaml` —
+
+```
+reload config: node.yaml (keeping the last good capacity and limits): parse <path>: yaml: unmarshal errors:; line 5: cannot unmarshal !!str `high` into float64; line 7: cannot unmarshal !!str `lots` into int
+```
+
+— asserted whole by `TestReloadFailUnparseableNodeYAMLKeepsTheLastGood`
+(a YAML error's own newlines folded into the one line); the same shape
+covers a failing `MyOrgs` alone (`reload config: my orgs: gateway
+unavailable`, `TestReloadFailMyOrgsKeepsTheOrgsAndAppliesNodeYAML` — the
+orgs are kept but node.yaml's other fields still apply, since the
+operator's edit does not wait on the gateway), both causes joined on one
+line (`TestReloadFailBothInOneTickIsOneLine`), no org left to serve
+(`reload config: no org left to serve (keeping the orgs as they were)`,
+`TestReloadFailNoOrgLeftKeepsTheOrgs`), and one line per failing tick,
+none once a tick's reload succeeds again
+(`TestReloadFailLogsOneLinePerTick`).
 
 ## The 04:00:22Z exit
 
@@ -364,3 +452,71 @@ the same way over a 30 MB node.log, it rotated that to `node.log.1`
 (31457280 bytes) and wrote a 271-byte node.log. The size node.log
 reaches after an hour of work on the mini is owed once the mini runs a
 release carrying this and its unit is reinstalled.
+
+**On the mini.** The mini has not yet run a release carrying this
+item: it is on v0.2.191 (`mesh_health_nodes`, 2026-09-29T23:26:37Z,
+this session), 21 commits behind main; the first release with the
+rotation is v0.2.207 (`## The mini before and after`, above). Its unit
+is the one whose `journalctl` excerpt above shows appending stderr to
+node.log, so node.log is still unbounded there — the last size on
+record is 372 MB (`## Root cause`, evidence from the mini, ~21:45Z; the
+goal's own Statement read it at 339 MB earlier the same day, so it grew
+by about 33 MB across roughly eight hours of the mini's ordinary work).
+This session has no shell on the mini (its `ssh mini` refuses this
+session's key) and, per this item's instruction, did not restart or
+reinstall its unit to get a fresh reading. The operator owes two steps,
+in order, once ready: upgrade the mini past v0.2.207 (the release path,
+or by hand with `mesh node upgrade --binary`), then run `mesh node
+service install` again so the unit's `StandardOutput`/`StandardError`
+drop the `append:~/.mesh/node.log` redirect for `journal` — rotation
+runs regardless of the unit, but the stale redirect keeps the shell
+appending the same growing file underneath it until the unit is
+reinstalled.
+
+## What closed
+
+**The four possibilities in the Statement, and which held:**
+
+- (a) reload not called on this mode, or (c) `Reloader` returning early
+  before capacity was set — both ruled out: the 06:15:46 and 06:17:09
+  lines (`## Root cause`) show the reload ran on schedule and capacity
+  was applied and logged twice in the same window.
+- (b) `LoadConfig` reading a different file — ruled out: the service's
+  `HOME` and the running process's own environment both resolve to
+  `~/.mesh/node.yaml`, the file the operator edited (`## Root cause`,
+  "The service reads the file the operator edited").
+- **(d) held: the loop applied the new capacity and logged it, but the
+  platform was never told.** `Loop.heartbeatScaling` sent `scaling` for
+  a fixed node only on two or more accounts; the mini's one account got
+  none, so `NodeIndex.capacity` stayed at its last registration (6)
+  until the 14:13–14:25Z restart re-registered it at 8. Fixed by
+  heartbeating `scaling` for a fixed node on any number of accounts
+  (ADR-018).
+
+**The exit's cause:** an unrecovered nil-pointer panic in
+`Evaluator.Evaluate` (`evaluate.go:262`, v0.2.188) — a Codex preflight
+failing on a 429 turned the evaluation to Claude, `Credentials.Open`'s
+error return overwrote the deferred-over `acct` with `nil`, and
+`(*SessionAccount)(nil).Cleanup()` reached through it on the way out.
+Nothing recovered it (the goroutine was `evaluateHeld`'s), so the whole
+node died: exit status 2, the Go runtime's unrecovered-panic code, not
+an argument. Fixed by giving `Open`'s result its own variable so the
+error returns as an ordinary evaluation error instead, and every
+goroutine the node starts now runs under `crash.Guard`, so any future
+panic anywhere is one `mesh node: fatal: … (version <v>)` line and exit
+70, never a silent 2.
+
+**node.log's bound:** 10 MB per file, 5 rotated files kept (about 60 MB
+in all), session transcripts and other sessions' own output moved to
+`~/.mesh/sessions.log` (20 MB, 2 kept) so node.log stays the node's own
+reasoning.
+
+**The items, with their pull requests:**
+
+| Item | What it landed | PR |
+|---|---|---|
+| 3 | The 04:00:22Z exit explained and fixed; a panic anywhere names itself and exits 70 | #493 |
+| 6 | The capacity-reload test that fails today, and the fixed-node `scaling` heartbeat that fixes it | #494 |
+| 7 | node.log bounded and rotated; session transcripts to their own file | #495, carried onto main as #503 |
+| 8 | Every reloadable field — limits, accounts, budgets, context, claim, orgs — proved live from disk and logged with its effective old and new value | #504 |
+| 9 | A reload that cannot be applied logs one `reload config:` line per tick and keeps the last good values | #502 |
