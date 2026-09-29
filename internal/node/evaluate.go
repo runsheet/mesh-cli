@@ -665,12 +665,15 @@ var ErrNoContext = errors.New("the evaluation saw no context, and the other fami
 // (MCP: the context server) or a required console tool the session was
 // served, every one of whose calls errored, or which errored with no
 // call at all (not connected at startup). A session with one clean call
-// on each is not broken. adopted is a session an older node process
+// on each is not broken, and nor is one whose tool answered its calls
+// with errors of its own (ToolStat.Reached: `not found` for a slug it
+// does not have is the tool working — goal
+// evaluation-reports-no-verdict, `prologue: not found`). adopted is a session an older node process
 // started (AdoptEvaluation): only there is prologue the built-in.
 func (e *Evaluator) toolBroken(res harness.Result, acct *SessionAccount, adopted bool) (string, bool) {
 	broken := func(name string) (string, bool) {
 		s := res.Tools[name]
-		if s == nil || s.Errors == 0 || s.Errors < s.Calls {
+		if s == nil || s.Errors == 0 || s.Reached() {
 			return "", false
 		}
 		msg := s.FirstError

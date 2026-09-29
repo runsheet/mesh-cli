@@ -140,7 +140,10 @@ func TestEvaluatePromptContextTools(t *testing.T) {
 	noDir := EvaluatePrompt(EvaluateInput{GoalSlug: "g", GoalTitle: "G", Seq: 1, Title: "T", Repo: "o/r", Branch: "b", BaseRef: "main",
 		Project: "acme/mesh", Prologue: true})
 	for _, p := range []string{withDir, noDir} {
-		for _, want := range []string{"mesh_document", "mesh_search"} {
+		// the slug from the index, never a file name: `adr-adr-….md`
+		// taken as a slug is `not found` (goal
+		// evaluation-reports-no-verdict)
+		for _, want := range []string{"mesh_document", "mesh_search", "(project \"acme/mesh\", the document's slug — the index's `slug` column, never a file name here: `adr-adr-001-….md` is slug `adr-001-…`)"} {
 			if !strings.Contains(p, want) {
 				t.Errorf("evaluate prompt lacks %q:\n%s", want, p)
 			}
