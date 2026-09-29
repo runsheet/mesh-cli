@@ -385,7 +385,10 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   second opinion unavailable: <reason>`. A first fail or a normal/low
   goal never runs a second opinion. **A tool failure is never a
   verdict** (`toolBroken`): a session whose context server (or a
-  required console tool) errored on every call, or never connected,
+  required console tool) was never reached — every call errored before
+  the server answered, or it never connected; an error the tool itself
+  returned, such as `not found` for a wrong slug, is an answer
+  (`ToolStat.Answered`, `Reached`) —
   has its verdict discarded and the same job runs on the other family
   as the evaluation proper, its notes opening `<Family> (first attempt,
   <model>): no verdict — <tool>: <error>`; with no other family it

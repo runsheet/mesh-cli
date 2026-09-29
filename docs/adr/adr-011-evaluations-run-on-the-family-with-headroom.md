@@ -1,5 +1,5 @@
 ---
-summary: Before an evaluation starts the node chooses its family per session — Codex when a Codex account (issued or node.yaml's) has headroom for the goal's priority, else Claude; a full gpt-… id pins Codex and waits in evaluating without headroom, a claude-… id pins Claude; the urgent/high second opinion runs on the other family, labelled by family and model; the one usage report names adapter codex and the gpt-6 model of a Codex evaluation; before any Codex session starts the node preflights the built-in context server in the session's own home and env (`codex mcp get` and a tools/list handshake), and a failure moves an unpinned evaluation to Claude, keeps a pinned one waiting and makes a Codex second opinion unavailable. Amended: an unpinned Codex evaluation defaults to gpt-6-sol (opus tier) or gpt-6-luna (sonnet, haiku), astra only when pinned; and a tool failure is never a verdict — a session that saw no context is evaluated again on the other family, or the item waits in evaluating.
+summary: Before an evaluation starts the node chooses its family per session — Codex when a Codex account (issued or node.yaml's) has headroom for the goal's priority, else Claude; a full gpt-… id pins Codex and waits in evaluating without headroom, a claude-… id pins Claude; the urgent/high second opinion runs on the other family, labelled by family and model; the one usage report names adapter codex and the gpt-6 model of a Codex evaluation; before any Codex session starts the node preflights the built-in context server in the session's own home and env (`codex mcp get` and a tools/list handshake), and a failure moves an unpinned evaluation to Claude, keeps a pinned one waiting and makes a Codex second opinion unavailable. Amended: an unpinned Codex evaluation defaults to gpt-6-sol (opus tier) or gpt-6-luna (sonnet, haiku), astra only when pinned; and a tool failure is never a verdict — a session that saw no context is evaluated again on the other family, or the item waits in evaluating; amended 2026-09-29, a tool that answered a call with its own error (`not found`) was reached and is not a tool failure.
 status: accepted
 ---
 
@@ -212,3 +212,24 @@ to `ready`, a rework each.
   `ErrFamilyWaits`. The item never goes back to `ready` on a tool error.
 - A second opinion that is tool-broken is unavailable (`saw no context
   (<tool>: <error>)`), and the first verdict stands.
+
+## Amendment 2026-09-29: a tool that answered was reached
+
+Goal `evaluation-reports-no-verdict` (item 2). On the mini,
+`no verdict — prologue: not found` discarded verdicts from sessions
+whose context tool worked. The tool had answered `not found` to
+`mesh_document` slugs that did not exist, and every such answer counted
+as an error.
+
+- **An errored call the tool answered itself is not a tool failure.**
+  `harness.ToolStat.Answered` counts them: in Codex, a `failed`
+  `mcp_tool_call` with no `error` and a result; in Claude, an
+  `is_error` tool_result from a server the init event named
+  `connected`. A session is tool-broken only when its tool was never
+  reached (`ToolStat.Reached`), meaning no clean call and no answered
+  one. That covers every call refused before the server (approval,
+  auth, transport) and a server that never connected. The rest of the
+  2026-09-28 amendment stands.
+- The prompts' context rule says a document's slug is INDEX.md's
+  `slug` column, never a file name.
+

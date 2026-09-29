@@ -295,6 +295,22 @@ reads `prologue: N calls, 0 errors`, and the evaluation's notes carry no
 means the key did not take (check `config.toml` in the kept session
 home); a 401 means the token.
 
+**2026-09-29: `prologue: not found` was the tool answering, not a
+tool failing** (goal `evaluation-reports-no-verdict`, item 2). On
+v0.2.188 the approved built-in worked: 1,096 calls in the kept streams
+ended `completed`. But 382 ended `"status":"failed"` with `"error":
+null` and the server's own result, `{"content":[{"type":"text","text":"not found"}]}`.
+Those were `mesh_document` calls for slugs made from context file names
+(`adr-adr-032-…` for `adr-032-…`). The node read such a call as an
+unreachable tool and discarded the verdict. The rule now: a failed
+`mcp_tool_call` with no `error` and a result is the tool's answer
+(`ToolStat.Answered`), and only calls that never reached the server —
+an `error` such as the approval refusal above, or a startup failure —
+make a session tool-broken. The prompt now tells the agent the slug is
+INDEX.md's `slug` column. The rename window (the prompt naming
+mesh-context while v0.2.188 served `prologue`) was not the cause: the
+calls reached `prologue`. See `specs/goal-evaluation-reports-no-verdict.md`.
+
 Codex writes to the home's `config.toml` itself: after a run it has
 appended `[projects."<workspace>"] trust_level = "trusted"`. That is
 harmless, since the node writes the file afresh for every session.
