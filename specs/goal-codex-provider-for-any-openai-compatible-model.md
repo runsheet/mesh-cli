@@ -84,8 +84,8 @@ change through the release path.
 | 4 | Goal doc: codex-provider-for-any-openai-compatible-model, what landed, the release path to the mini, and the routing question left with the platform | running | mesh/codex-provider-for-any-openai-compatible-model-4 | — | — |
 
 Item 2's pull request had not merged when this document was written;
-its evaluation passed (Codex gpt-6-sol and Claude opus, both PASS) and
-it is awaiting the platform's own merge of a reviewed item.
+its evaluation already passed and it is awaiting the platform's own
+merge of a reviewed item.
 
 ## What landed
 
