@@ -524,6 +524,12 @@ func (r *Runner) afterBuild(ctx context.Context, b *buildRun, result harness.Res
 		b.sessionID = result.SessionID
 		b.mu.Unlock()
 	}
+	// what the agent left running in the session's unit, killed at its
+	// end (ADR 008, The session's end): a line in the log and a note on
+	// the item
+	if note := logKilled(r.logf, "item "+label, result); note != "" {
+		b.report(ctx, note)
+	}
 	if le := (*sandbox.LimitError)(nil); errors.As(runErr, &le) {
 		// the node's condition, not the item's failure (ADR 007 Limits)
 		reason := LimitReason(label, le)
@@ -659,7 +665,7 @@ func (b *buildRun) endGoal(ctx context.Context) {
 func (r *Runner) AdoptItem(ctx context.Context, item gateway.WorkItem, s FoundSession) error {
 	if item.Status != "claimed" && item.Status != "running" || item.NodeID != s.State.NodeID {
 		r.logf("item %s: adopted session is no longer this node's (%s); stopped", item.ID, item.Status)
-		s.Stop()
+		stopFound(r.logf, "item "+item.ID, s)
 		return harness.RemoveSession(s.State.Workspace)
 	}
 	res, err := Resolve(ctx, r.GW, item)

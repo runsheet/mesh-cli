@@ -301,6 +301,9 @@ func (r *Rebaser) afterRebase(ctx context.Context, rb *rebaseRun, acct *SessionA
 		rb.sessionID = result.SessionID
 		rb.mu.Unlock()
 	}
+	if note := logKilled(r.logf, "item "+rb.label, result); note != "" {
+		rb.report(ctx, note)
+	}
 	branch, label := rb.branch, rb.label
 	switch {
 	case errors.Is(runErr, context.DeadlineExceeded):
@@ -342,7 +345,7 @@ func (r *Rebaser) afterRebase(ctx context.Context, rb *rebaseRun, acct *SessionA
 func (r *Rebaser) AdoptRebase(ctx context.Context, item gateway.WorkItem, s FoundSession) error {
 	if item.RebaseState != "claimed" || item.RebaseNodeID != "" && item.RebaseNodeID != s.State.NodeID {
 		r.logf("item %s: adopted rebase is no longer this node's (%s); stopped", item.ID, item.RebaseState)
-		s.Stop()
+		stopFound(r.logf, "item "+item.ID, s)
 		return harness.RemoveSession(s.State.Workspace)
 	}
 	rb := &rebaseRun{r: r, item: item, label: item.ID, dir: s.State.Workspace, sessionID: s.State.SessionID}
@@ -362,7 +365,7 @@ func (r *Rebaser) AdoptRebase(ctx context.Context, item gateway.WorkItem, s Foun
 	}
 	at, ok := r.Harness.(harness.Attacher)
 	if !ok {
-		s.Stop()
+		stopFound(r.logf, "item "+item.ID, s)
 		return rb.fail(ctx, errNoAttach)
 	}
 	r.logf("item %s: adopted its %s rebase session (pid %d)", rb.label, s.Liveness(), s.State.PID)

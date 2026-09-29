@@ -24,10 +24,16 @@ var errNoAttach = errors.New("adopt: the harness cannot attach to a running sess
 type FoundSession struct {
 	Dir   string
 	State sessionunit.State
+	// Unit is the unit the session runs in; nil is the one its state's
+	// runner names.
+	Unit sessionunit.Unit
 }
 
 // unit is the unit the session runs in, by its state's runner.
 func (s FoundSession) unit() sessionunit.Unit {
+	if s.Unit != nil {
+		return s.Unit
+	}
 	if s.State.Runner == (sessionunit.SystemdScope{}).Name() {
 		return sessionunit.SystemdScope{}
 	}
@@ -49,11 +55,15 @@ func (s FoundSession) Liveness() string {
 	return "ended"
 }
 
-// Stop ends the session when it still runs.
-func (s FoundSession) Stop() {
-	if s.Alive() {
-		_ = s.unit().Stop(s.handle())
+// Kill ends the session's whole unit — its claude, when it still runs,
+// and whatever the agent left running there, which may outlive claude —
+// and returns what it killed besides claude (ADR 008, The session's
+// end). A unit already gone is nothing and no error.
+func (s FoundSession) Kill() ([]sessionunit.Process, error) {
+	if s.State.PID <= 0 && s.State.Unit == "" {
+		return nil, nil
 	}
+	return s.unit().Kill(s.handle())
 }
 
 // Subject is what the session is for: its item, a plan's goal or a
@@ -282,7 +292,7 @@ func (a AdoptWith) adopt(ctx context.Context, s FoundSession) error {
 		return Scope{}, false
 	}
 	drop := func() error {
-		s.Stop()
+		stopFound(a.logf, s.State.Kind+" session of "+s.Subject(), s)
 		return harness.RemoveSession(s.State.Workspace)
 	}
 	switch harness.Kind(s.State.Kind) {

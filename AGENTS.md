@@ -488,7 +488,10 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   goes. A timeout or cancelled ctx `Stop`s the unit, and every end
   but a detach `Kill`s it: `Result.Killed` names what the agent left
   running there (a failed kill goes to Stderr, else `KillError`,
-  never failing the session); the directory is
+  never failing the session), and the node logs what it killed
+  (`session end killed <n> process(es) the agent left running: …`)
+  and notes it on the item — an adopted session whose item is no
+  longer the node's is killed and logged the same way; the directory is
   removed when `Run` returns — unless the job is `Outlive`: see the
   adoption.
 - **The sandbox** (`internal/sandbox/`, mesh-specs ADR 007,
