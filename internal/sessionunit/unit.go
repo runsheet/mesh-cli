@@ -224,65 +224,105 @@ func (s SystemdScope) Stop(h Handle) error {
 }
 
 // Kill implements Unit: the scope as a unit, not its leader. Its
-// cgroup's processes are listed, the cgroup gets SIGTERM, SIGKILL once
-// StopGrace has passed with any left, then `systemctl --user stop`
-// (KillMode=control-group: every process in it), and Kill waits for the
-// unit to be gone (--collect unloads it) for StopGrace and goneSlack.
-// A handle with no unit is stopped as Detached's.
+// cgroup (Show ControlGroup) and the processes in it are read first,
+// the cgroup gets SIGTERM, SIGKILL once StopGrace has passed with any
+// left, then `systemctl --user stop` (KillMode=control-group: every
+// process in it), and Kill waits for the unit to be gone (--collect
+// unloads it) for StopGrace and goneSlack. Every error on the way is
+// returned, and the report only once the unit is confirmed gone: a
+// manager that cannot be asked is an error, never proof of a stop. A
+// handle with no unit is stopped as Detached's.
 func (s SystemdScope) Kill(h Handle) ([]Process, error) {
 	if h.UnitName == "" {
 		return Detached{}.Kill(h)
 	}
 	sc, unit := s.systemctl(), h.UnitName+".scope"
-	if unitGone(sc, unit) {
+	gone, err := unitGone(sc, unit)
+	if err != nil {
+		return nil, err
+	}
+	if gone {
 		if h.PID > 0 && pidAlive(h.PID) {
 			return nil, stopGroup(h)
 		}
 		return nil, nil
 	}
-	var procs func() []Process
-	if props, err := sc.Show(unit, "ControlGroup"); err == nil && props["ControlGroup"] != "" {
-		cg := props["ControlGroup"]
-		procs = func() []Process { p, _ := sc.Processes(cg); return p }
-	} else {
-		procs = func() []Process { return nil }
+	props, err := sc.Show(unit, "ControlGroup")
+	if err != nil {
+		return nil, fmt.Errorf("sessionunit: %s: %w", unit, err)
 	}
-	killed := others(procs(), h.PID)
+	cg := props["ControlGroup"]
+	procs, err := sc.Processes(cg)
+	if err != nil {
+		return nil, fmt.Errorf("sessionunit: %s: processes: %w", unit, err)
+	}
+	found := others(procs, h.PID)
 
-	_ = sc.Kill(unit, "SIGTERM")
+	var errs []error
+	// fail keeps a signal's or the stop's error unless the unit went
+	// away by itself meanwhile (an emptied scope is collected): then
+	// there was nothing left to act on.
+	fail := func(what string, err error) {
+		if err == nil {
+			return
+		}
+		if g, gerr := unitGone(sc, unit); gerr == nil && g {
+			return
+		}
+		errs = append(errs, fmt.Errorf("sessionunit: %s: %s: %w", unit, what, err))
+	}
+	left := func() bool {
+		p, err := sc.Processes(cg)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("sessionunit: %s: processes: %w", unit, err))
+			return true // unknown: SIGKILL anyway
+		}
+		return len(p) > 0
+	}
+	fail("SIGTERM", sc.Kill(unit, "SIGTERM"))
 	deadline := time.Now().Add(StopGrace)
-	for len(procs()) > 0 && time.Now().Before(deadline) {
+	more := left()
+	for more && time.Now().Before(deadline) && len(errs) == 0 {
 		time.Sleep(pollEvery)
+		more = left()
 	}
-	if len(procs()) > 0 {
-		_ = sc.Kill(unit, "SIGKILL")
+	if more {
+		fail("SIGKILL", sc.Kill(unit, "SIGKILL"))
 	}
-	_ = sc.Stop(unit) // an emptied scope may be gone already: the wait decides
+	fail("stop", sc.Stop(unit))
+
 	deadline = time.Now().Add(StopGrace + goneSlack)
-	for !unitGone(sc, unit) {
+	for {
+		gone, err := unitGone(sc, unit)
+		if err != nil {
+			return nil, errors.Join(append(errs, err)...)
+		}
+		if gone {
+			break
+		}
 		if !time.Now().Before(deadline) {
-			return killed, fmt.Errorf("sessionunit: %s still loaded after stop", unit)
+			return nil, errors.Join(append(errs, fmt.Errorf("sessionunit: %s still loaded after stop", unit))...)
 		}
 		time.Sleep(pollEvery)
 	}
-	return killed, nil
+	return found, errors.Join(errs...)
 }
 
-// unitGone is whether the manager no longer runs unit: unknown to it,
-// or loaded but inactive or failed. A show that fails counts as gone —
-// there is no manager to ask.
-func unitGone(sc Systemctl, unit string) bool {
+// unitGone is whether the manager no longer runs unit: it answers
+// LoadState=not-found, or ActiveState inactive or failed. A show that
+// fails is its error, not an answer — the unit may be running still.
+func unitGone(sc Systemctl, unit string) (bool, error) {
 	p, err := sc.Show(unit, "LoadState", "ActiveState")
 	if err != nil {
-		return true
+		return false, fmt.Errorf("sessionunit: %s: %w", unit, err)
 	}
 	switch {
-	case p["LoadState"] == "not-found", p["LoadState"] == "":
-		return true
+	case p["LoadState"] == "not-found":
+		return true, nil
 	case p["ActiveState"] == "inactive", p["ActiveState"] == "failed":
-		return true
+		return true, nil
 	}
-	return false
+	return false, nil
 }
 
 var unitUnsafe = regexp.MustCompile(`[^A-Za-z0-9_.\-]+`)

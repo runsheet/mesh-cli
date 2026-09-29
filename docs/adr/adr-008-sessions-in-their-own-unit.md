@@ -1,5 +1,5 @@
 ---
-summary: How mesh-cli starts implementing mesh-specs ADR 008 — internal/sessionunit runs a host claude session in a unit of its own (a transient `systemd-run --user --scope`, else a detached setsid process group; the sandbox's pod is the unit later), its stream-json in `<workdir>.session/output.jsonl`, its stderr in `stderr.log`, and a secret-free `state.json` (node, item/goal/direction, claim, kind, model, account, pid, unit, startedAt, offset) written atomically, read back by a Follower that tails the file line by line; ClaudeCode.Run keeps its result and error semantics, and a cancelled context or timeout stops the unit. A stop (`Unit.Kill`) ends the whole unit, not its leader: a scope's cgroup processes are listed, SIGTERM then SIGKILL go to the cgroup, `systemctl --user stop` stops the scope (KillMode=control-group), the node waits until it is gone, and every process found besides the session's own pid is returned to the caller as what the agent left running; `SystemdScope.Systemctl` is injectable, and `ParseUnitName` reads a scope's kind and subject back.
+summary: How mesh-cli starts implementing mesh-specs ADR 008 — internal/sessionunit runs a host claude session in a unit of its own (a transient `systemd-run --user --scope`, else a detached setsid process group; the sandbox's pod is the unit later), its stream-json in `<workdir>.session/output.jsonl`, its stderr in `stderr.log`, and a secret-free `state.json` (node, item/goal/direction, claim, kind, model, account, pid, unit, startedAt, offset) written atomically, read back by a Follower that tails the file line by line; ClaudeCode.Run keeps its result and error semantics, and a cancelled context or timeout stops the unit. A stop (`Unit.Kill`) ends the whole unit, not its leader: a scope's cgroup processes are listed, SIGTERM then SIGKILL go to the cgroup, `systemctl --user stop` stops the scope (KillMode=control-group), the node waits until it is gone (a `Show` that errors is Kill's error, never taken as gone; every signal's and the stop's error is returned), and every process found besides the session's own pid is returned to the caller as what the agent left running; `SystemdScope.Systemctl` is injectable, and `ParseUnitName` reads a scope's kind and subject back.
 status: accepted
 ---
 
@@ -97,9 +97,21 @@ whatever was left in the cgroup after claude exited stayed.
   Kill then **waits until the unit is gone** (not-found, inactive or
   failed) for `StopGrace` plus 3s; a unit still there is an error
   naming it.
+- **Errors are Kill's, never proof of a stop** (amended again for item
+  23, after the Codex evaluation of item 17): only a `Show` that
+  answers `LoadState=not-found` or `ActiveState` inactive/failed means
+  gone — a `Show` that errors (the user manager unreachable) is Kill's
+  error, before any signal and at any point of the wait. Reading the
+  `ControlGroup` or its `cgroup.procs` failing is Kill's error before
+  any signal. A failed SIGTERM, SIGKILL or stop is returned (joined,
+  naming the unit) unless a `Show` right after it says the unit went
+  away by itself — an emptied scope `--collect` unloaded, with nothing
+  left to act on.
 - **The report**: `killed` is every process that was in the cgroup
   besides the session's own pid — what the agent should have cleaned
-  up. The caller logs it (the session's end, the start-up sweep: later
+  up — each `Process.String()` as `comm[pid] cmdline`. It is returned
+  only once the unit is confirmed gone; an error before that returns
+  none. The caller logs it (the session's end, the start-up sweep: later
   items of the goal).
 - **A detached session** is its process group as before: its members
   are listed from `/proc` (a `stat` whose pgrp is the session's pid;

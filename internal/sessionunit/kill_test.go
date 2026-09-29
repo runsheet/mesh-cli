@@ -1,6 +1,7 @@
 package sessionunit
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,7 +25,10 @@ type fakeSystemctl struct {
 	// pid is in ignoreTerm, SIGKILL and stop leave none.
 	procs      []Process
 	ignoreTerm map[int]bool
-	calls      []string
+	// showErr, killErr, stopErr and procsErr are what those calls
+	// return instead of answering: a manager that cannot be reached.
+	showErr, killErr, stopErr, procsErr error
+	calls                               []string
 }
 
 func (f *fakeSystemctl) log(c string) { f.calls = append(f.calls, c) }
@@ -33,6 +37,9 @@ func (f *fakeSystemctl) Show(unit string, props ...string) (map[string]string, e
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.log("show " + strings.Join(props, ",") + " " + unit)
+	if f.showErr != nil {
+		return nil, f.showErr
+	}
 	if !f.loaded {
 		return map[string]string{"LoadState": "not-found", "ActiveState": "inactive", "ControlGroup": ""}, nil
 	}
@@ -43,6 +50,9 @@ func (f *fakeSystemctl) Kill(unit, signal string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.log("kill " + signal + " " + unit)
+	if f.killErr != nil {
+		return f.killErr
+	}
 	var left []Process
 	for _, p := range f.procs {
 		if signal == "SIGTERM" && f.ignoreTerm[p.PID] {
@@ -57,6 +67,9 @@ func (f *fakeSystemctl) Stop(unit string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.log("stop " + unit)
+	if f.stopErr != nil {
+		return f.stopErr
+	}
 	f.procs = nil
 	if !f.stuck {
 		f.loaded = false
@@ -70,6 +83,9 @@ func (f *fakeSystemctl) Processes(cgroup string) ([]Process, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.log("procs " + cgroup)
+	if f.procsErr != nil {
+		return nil, f.procsErr
+	}
 	return append([]Process(nil), f.procs...), nil
 }
 
@@ -162,11 +178,67 @@ func TestSystemdScopeKillGone(t *testing.T) {
 // A unit still loaded after the wait is an error naming it.
 func TestSystemdScopeKillStuck(t *testing.T) {
 	fastStop(t)
-	f := &fakeSystemctl{loaded: true, stuck: true, procs: []Process{{PID: noPID, Comm: "claude"}}}
+	f := &fakeSystemctl{loaded: true, stuck: true, procs: []Process{{PID: noPID, Comm: "claude"}, {PID: noPID + 1, Comm: "sleep"}}}
 	u := "mesh-session-build-item_3-59082a54"
-	_, err := SystemdScope{Systemctl: f}.Kill(Handle{PID: noPID, UnitName: u})
-	if err == nil || !strings.Contains(err.Error(), u+".scope") {
+	killed, err := SystemdScope{Systemctl: f}.Kill(Handle{PID: noPID, UnitName: u})
+	if err == nil || !strings.Contains(err.Error(), u+".scope") || len(killed) != 0 {
+		t.Fatalf("killed %v, err %v", killed, err)
+	}
+}
+
+// A manager that cannot be asked is not a unit that is gone: Show's
+// error is Kill's, nothing is signalled and nothing is reported.
+func TestSystemdScopeKillShowError(t *testing.T) {
+	fastStop(t)
+	boom := errors.New("Failed to connect to bus: No such file or directory")
+	f := &fakeSystemctl{loaded: true, showErr: boom, procs: []Process{{PID: noPID, Comm: "claude"}, {PID: noPID + 1, Comm: "sleep"}}}
+	killed, err := SystemdScope{Systemctl: f}.Kill(Handle{PID: noPID, UnitName: "u"})
+	if !errors.Is(err, boom) || len(killed) != 0 {
+		t.Fatalf("killed %v, err %v", killed, err)
+	}
+	for _, c := range f.calls {
+		if strings.HasPrefix(c, "kill ") || strings.HasPrefix(c, "stop ") {
+			t.Fatalf("acted on the unit: %q", f.calls)
+		}
+	}
+}
+
+// A stop that fails with the unit still there is returned, with the
+// unit named, and nothing is reported as killed.
+func TestSystemdScopeKillStopError(t *testing.T) {
+	fastStop(t)
+	boom := errors.New("Access denied")
+	f := &fakeSystemctl{loaded: true, stopErr: boom, procs: []Process{{PID: noPID, Comm: "claude"}, {PID: noPID + 1, Comm: "sleep"}}}
+	killed, err := SystemdScope{Systemctl: f}.Kill(Handle{PID: noPID, UnitName: "u"})
+	if !errors.Is(err, boom) || !strings.Contains(err.Error(), "u.scope") || len(killed) != 0 {
+		t.Fatalf("killed %v, err %v", killed, err)
+	}
+}
+
+// A signal that fails is returned too, though the stop then clears the
+// unit: the report stands, the unit being confirmed gone.
+func TestSystemdScopeKillSignalError(t *testing.T) {
+	fastStop(t)
+	boom := errors.New("Access denied")
+	f := &fakeSystemctl{loaded: true, killErr: boom, procs: []Process{{PID: noPID, Comm: "claude"}, {PID: noPID + 1, Comm: "sleep"}}}
+	killed, err := SystemdScope{Systemctl: f}.Kill(Handle{PID: noPID, UnitName: "u"})
+	if !errors.Is(err, boom) {
 		t.Fatalf("err %v", err)
+	}
+	if len(killed) != 1 || killed[0].PID != noPID+1 {
+		t.Fatalf("killed %v", killed)
+	}
+}
+
+// Reading the cgroup's processes failing is Kill's error before any
+// signal: what was there cannot be reported.
+func TestSystemdScopeKillProcessesError(t *testing.T) {
+	fastStop(t)
+	boom := errors.New("permission denied")
+	f := &fakeSystemctl{loaded: true, procsErr: boom}
+	killed, err := SystemdScope{Systemctl: f}.Kill(Handle{PID: noPID, UnitName: "u"})
+	if !errors.Is(err, boom) || len(killed) != 0 {
+		t.Fatalf("killed %v, err %v", killed, err)
 	}
 }
 
@@ -234,7 +306,7 @@ func TestSystemdScopeKillReal(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertOneSleep(t, killed, h)
-	if !unitGone(HostSystemctl{}, h.UnitName+".scope") {
+	if gone, err := unitGone(HostSystemctl{}, h.UnitName+".scope"); err != nil || !gone {
 		t.Fatalf("%s still there", h.UnitName)
 	}
 	if err := h.Wait(t.Context()); err == nil {
