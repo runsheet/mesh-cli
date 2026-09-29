@@ -439,3 +439,56 @@ and their client methods are gone.
 - Redaction is by exact value: a secret split across two stderr writes
   can pass the stderr filter, though not the error, which is redacted
   whole.
+
+## Amendment — 2026-09-28 (goal `node-says-why-work-waits`)
+
+The heartbeat carries `holding`: the node's holding decision as data,
+not just a log line — `internal/node/holding.go`'s `HoldingReport(now,
+accounts, readings, cfg, capacity, p, unclaimed)`, pure, and
+`gateway.HeartbeatExtras.Holding` (`internal/gateway/client.go`), sent
+as `in["holding"]` only when set and only when introspection says
+`HeartbeatNodeInput` has a `holding` field (`takesHolding`, cached the
+same hour as `takesScaling`). The shape, camelCase like the rest:
+
+```
+{
+  mode: "normal" | "paced" | "stopped",
+  summary: string,
+  until?: RFC3339,
+  accounts: [{
+    account, kind: "subscription" | "api_key",
+    status: "ok" | "paced" | "exhausted" | "unknown",
+    resetsAt?: RFC3339,
+    takes: { priorities: ["urgent", "high", ...], maxItems: int, research: bool }
+  }],
+  unclaimed: [{ goalId, kind: "item" | "plan", count: int, reason: string }]
+}
+```
+
+`accounts` and `unclaimed` are always `[]`, never null, when empty (the
+`scaling.accounts` precedent, PR #255: the platform's nested input is
+non-null). Per account: `status` is `pace`'s mode on its latest
+reading — normal → `ok`, paced → `paced`, stopped → `exhausted`; an
+account with no reading yet is `unknown` (`ChooseAccount` treats it as
+full headroom, so it takes everything, the same as `ok`). `resetsAt` is
+the pacing's `resumeAt` when the account holds. `takes`: `ok`/`unknown`
+take all four priorities, up to the capacity in force, and research on
+a subscription (never on an api key: research is not work that waits,
+`internal/node/select.go`); `paced` takes urgent and high only, at most
+half the capacity; `exhausted` takes nothing. `mode` is the node's own
+aggregate pacing (`nodePace`); `until` is the earliest `resetsAt` among
+the accounts that hold. `summary` is the one-line decision the console
+shows in place of the node's log line — `"normal: up to N item(s)"`,
+`"paced: urgent and high only, N item(s), no research"`, `"no headroom:
+nothing claimed until <until>"` when every account is exhausted, or
+`"stopped: nothing new until <until>: <why>"` when the node's own mode
+is stopped but not every account is (an api account still `ok` while
+every subscription is exhausted); a goal or two left unclaimed this
+pass appends `"; k item(s) and m plan(s) left unclaimed"`.
+
+This item (1 of the goal) is the report as data, exercised without a
+loop or a platform; item 2 wires the loop's own unclaimed accounting
+(`Unclaimed{GoalID, Kind, Count, Reason}`) and the heartbeat call. The
+platform half is runsheet goal `goals-page-shows-account-limits`, with
+the contract fixture `specs/contracts/heartbeatNode.json` (runsheet
+ADR 026).
