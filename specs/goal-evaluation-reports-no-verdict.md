@@ -344,7 +344,11 @@ for f in items_*.json; do jq -r --arg p "$f" '.items[] as $i | $i.evaluations[]?
   | [$p, ($i.seq|tostring), $i.status, .at, .attempt, (.notes|gsub("[\n\t]";" "))]
   | @tsv' "$f"; done > evals.tsv
 python3 - <<'EOF'
+from datetime import datetime, timezone
+CUTOFF = datetime(2026, 9, 29, 16, 53, 3, tzinfo=timezone.utc)   # the read time
+def at(s): return datetime.fromisoformat(s.replace('Z', '+00:00'))
 rows = [l.rstrip('\n').split('\t') for l in open('evals.tsv')]
+rows = [r for r in rows if at(r[3]) <= CUTOFF]                   # evaluations at or before the read
 classes = [('tooling', ['bwrap', 'rtm_newaddr', 'no verdict —', 'loopback',
                         'socket: operation not permitted', 'local socket',
                         'listening port', 'listening socket', 'test-server socket']),
@@ -358,12 +362,15 @@ for r in rows:
 t = n['tooling'] + n['pass']
 print(n, 'total', len(rows), 'tainted', t, 'share %.1f%%' % (100 * t / len(rows)))
 EOF
-# recorded no_verdict outcomes, apart:
-grep -ac '^mesh node: 2026/09/2[0-9] [0-9:]* item [^ ]*: evaluation reached no verdict on' ~/.mesh/node.log
+# recorded no_verdict outcomes, apart, through the same read time (node.log is UTC on the mini):
+grep -a '^mesh node: 2026/09/2[0-9] [0-9:]* item [^ ]*: evaluation reached no verdict on' ~/.mesh/node.log \
+  | awk '$3" "$4 <= "2026/09/29 16:53:03"' | wc -l
 ```
 
-A later read adds evaluations after 16:53:03Z; filter `evals.tsv` on
-its `at` column (`$4 <= "2026-09-29T16:53:03"`) to get this row back.
+Both counts apply the cutoff in the steps themselves: the Python keeps
+only evaluations whose `at` is at or before 2026-09-29T16:53:03Z, and
+the `awk` keeps only node.log lines at or before the same second, so a
+later read gives this row back unchanged — 564, 246, 318, 43.6%, and 0.
 
 ### After
 
@@ -376,6 +383,10 @@ v0.2.193` (or later) start line in node.log; the after row is the same
 classification over the failed evaluations whose `at` is at or after
 that start, with the recorded `no_verdict` outcomes in their own row,
 and the status goes to `approved` with it.
+
+Read again through `mesh_health_nodes` at 2026-09-29T17:08:02Z: the
+mini still runs **v0.2.191** (desired v0.2.191; the latest release is
+v0.2.198), so the after share is still owed.
 
 ## Log
 
@@ -409,3 +420,11 @@ and the status goes to `approved` with it.
   designed out: the branch is this file alone against its merge-base,
   no after row is written over a window before that start, and the
   before count covers items that later merged.
+- 2026-09-29 · item 16, second attempt: the evaluator found the
+  reproducing block had no cutoff, so a later read counted two later
+  evaluations (566, 43.5%). The block now applies the UTC read time
+  2026-09-29T16:53:03Z in its own steps — the Python drops every
+  evaluation whose `at` is later, and the node.log `no_verdict` count
+  goes through `awk` on the same second — so it gives 564, 246, 318,
+  43.6% and 0 back at any later read. The mini re-read at 17:08:02Z
+  still runs v0.2.191; the after share stays owed.
