@@ -16,6 +16,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/harness"
 	"projectmesh.io/mesh-cli/internal/sandbox"
+	"projectmesh.io/mesh-cli/internal/tools"
 )
 
 // Evaluator is the second fresh session an item gets on the node
@@ -671,7 +672,19 @@ func (e *Evaluator) toolBroken(res harness.Result, acct *SessionAccount) (string
 		}
 		return acct.Redact(msg), true
 	}
-	for _, name := range slices.Sorted(maps.Keys(e.MCP)) {
+	// the node's own servers, and the built-in under any name it has had:
+	// an evaluation an older node started under prologue and this one
+	// adopted reports that name, not tools.Builtin (tools.IsBuiltin)
+	names := map[string]bool{}
+	for name := range e.MCP {
+		names[name] = true
+	}
+	for name := range res.Tools {
+		if tools.IsBuiltin(name) {
+			names[name] = true
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(names)) {
 		if msg, ok := broken(name); ok {
 			return name + ": " + truncate(msg, 200), true
 		}

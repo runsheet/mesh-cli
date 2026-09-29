@@ -294,6 +294,16 @@ func TestRedact(t *testing.T) {
 	}
 }
 
+// IsBuiltin knows the built-in by its current name and, for one
+// release, its old one.
+func TestIsBuiltin(t *testing.T) {
+	for name, want := range map[string]bool{"mesh-context": true, "prologue": true, "search": false, "": false} {
+		if got := IsBuiltin(name); got != want {
+			t.Errorf("IsBuiltin(%q) = %v, want %v", name, got, want)
+		}
+	}
+}
+
 func TestToolJSONMatchesContract(t *testing.T) {
 	var tool Tool
 	in := `{"name":"n","transport":"local","runtime":"npx","command":"c","args":["a"],"env":{"E":"1"},"required":true,"roles":["build"],"pricePerCallCents":3}`

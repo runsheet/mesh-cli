@@ -108,12 +108,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   §Heartbeat); both for runsheet goal
   `limits-on-the-console` — and `runtimes` and `adapters` — the tool
   runtimes (npx, uvx, docker) and agent CLIs (claude-code, codex)
-  `Loop.LookPath` finds, probed every tick, for `tools-in-the-console`),
-  `adopted` (below) and `holding` — the node's holding decision as data,
-  not a log line: each account's status, reset time and what the node
-  still takes on it, and the summary judgement (`HoldingReport`,
-  adr-005's amendment, for runsheet goal `node-says-why-work-waits`) —
-  are sent only when set,
+  `Loop.LookPath` finds, probed every tick, for `tools-in-the-console`)
+  and `adopted` (below) are sent only when set,
   because they are fields the platform half adds. Capacity, the
   limits thresholds and the orgs need no drain: `Reload` re-reads them
   every tick.
@@ -302,8 +298,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `FinishWorkItemRebase`, `RecordDirectionResearch` — and
   `SessionAccount.Finish` logs it as one `usage: {…}` line when nothing
   carried it (a fail path, or `ErrNoUsageLedger`, said once per run).
-- **Codex** (`internal/harness/codex.go`, goals `codex-adapter` and
-  `codex-sessions-reach-the-context-tool`): the
+- **Codex** (`internal/harness/codex.go`, goal `codex-adapter`): the
   `codex` harness, `codex exec --json --sandbox workspace-write` in the
   workspace, the prompt on stdin, the stream read by
   `ParseCodexStream` (`docs/codex-events.md`). Each run gets a fresh
@@ -315,19 +310,9 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   (a `${VAR}` resolved from the job's env or refused), console tools by
   `tools.CodexConfig`, every table `default_tools_approval_mode =
   "approve"` — `exec` under `workspace-write` refuses an unapproved
-  MCP call (docs/codex-events.md, "Why the context tool failed").
-  Each session's event stream and stderr are kept for 24 hours under
-  `<work root>/kept-sessions/<name>/` (`output.jsonl`, `stderr.log`;
-  `KeepSessionOutput`), as a Claude session's output is. Before a Codex
-  evaluation starts it is preflighted (`Codex.Preflight`, below) and
-  falls back to Claude when the context server cannot be reached.
-  node.yaml's `codex:` block
+  MCP call (docs/codex-events.md, "Why the context tool failed"). node.yaml's `codex:` block
   (`CodexConfig`: binary, accounts, `models {opus, sonnet, haiku}`)
-  and `CodexModel` map the Claude tiers to Codex models, by default
-  opus → `gpt-6-sol` and sonnet/haiku → `gpt-6-luna`, astra only when
-  pinned. A session whose context tool failed on every call gives no
-  verdict: a tool failure is never a verdict (the evaluator's
-  `toolBroken`, below). Codex has no
+  and `CodexModel` map the Claude tiers to Codex models. Codex has no
   budget flag, so `MaxBudgetUSD` is not enforced. An issued openai
   credential serving `codex` is a Codex account too (adr-005,
   `PrepareCodexAccount`): `Credentials.Open` with adapter codex chooses
@@ -338,8 +323,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `config.toml` into a home the job names.
 - **The evaluator's family** (`internal/node/evaluate.go`,
   `docs/adr/adr-011-evaluations-run-on-the-family-with-headroom.md`,
-  amending `adr-005-codex-second-opinion.md`; goal
-  `codex-sessions-reach-the-context-tool`): `Evaluator.Codex` is the
+  amending `adr-005-codex-second-opinion.md`): `Evaluator.Codex` is the
   Codex harness (`codexSecondOpinion` in `nodecmd.go`: built whenever
   the codex binary is found, with or without a `codex:` block, on the
   block's first account) and `CodexAccounts` is
@@ -395,7 +379,11 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   nice-to-have tool the node cannot start is omitted and noted on the
   item, a required one releases the item and `Declines` keeps the loop
   off it while the runtimes are unchanged. Plan, research, rebase and
-  channel sessions keep mesh-context alone.
+  channel sessions keep mesh-context alone. `tools.IsBuiltin(name)`
+  knows the built-in by its current name and, for one release, its old
+  one, `prologue` — for a session an older node started and this one
+  adopted (`Evaluator.toolBroken`, `UseNote`); a console tool named
+  `prologue` is an ordinary tool.
 - **Tool results** (`internal/harness/trim.go`, node.yaml
   `tool_results.max_kb`, default 16, 0 off): a host build session gets
   a `PreToolUse` hook on `Bash` in its `--settings` (`Job.Settings`,
@@ -562,17 +550,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
 - Tests that render the context index or the prompts assert exact rows
   and lines; update them with the change, not around it.
 - Commits carry no Co-Authored-By trailer in this repo.
-- **Release path** (adr-002, amendment `node-releases-on-merge`): a
-  merge to main touching `cmd/`, `internal/`, `images/node/`, `go.mod`
-  or `go.sum` is tagged by `release-on-merge.yml`
-  (`scripts/release-on-merge.sh`: patch, or minor on the PR label
-  `release:minor` or a goal doc's `release: minor`; test prereleases
-  with a `-` never count), pushed with `RELEASE_TAG_TOKEN` — never
-  `GITHUB_TOKEN`, whose pushes start no workflow — and `release-tag.yml`,
-  the only signer, builds it; docs-only merges cut none. `git tag` by
-  hand is the fallback.
-- Deploying to the mini by hand is the fallback to the release path:
-  build for linux/amd64, `scp` to
+- Deploying to the mini is by hand: build for linux/amd64, `scp` to
   `~/bin/mesh.new` and `mesh node upgrade --binary ~/bin/mesh.new`: the
   binary is swapped (`.prev` kept), the node restarts at once and
   adopts its running `claude -p` sessions (README, "Upgrading a node

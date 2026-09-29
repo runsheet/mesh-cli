@@ -151,6 +151,21 @@ and call `mcp__prologue__*`; the node's priced-usage accounting
 (`SessionAccount.reportToolUsage`) treats both names as the built-in
 (unpriced) until this note goes, 2026-10-28.
 
+*Amended 2026-09-28 (goal `builtin-is-mesh-context`, item 1):* the
+alias has one name in code — `tools.IsBuiltin(name)`, true for
+`mesh-context` and, for one release only, `prologue` — and it is used
+wherever the node checks the built-in by a name a session reports: a
+session an older node started with the built-in under `prologue` and
+this node adopted (ADR 008) reports its calls under that name, so
+`Evaluator.toolBroken` judges a `prologue` that errored on every call
+as no context, and `SessionTools.UseNote` names it first. That adopted
+session is the only place the node reads the old name: node.yaml has no
+key naming the built-in, and the platform's own `builtIn: true` row
+(kind `builtin`, slug `mesh-context`) is dropped by `servedTool`. The
+alias is not about console tools: one named `prologue` stays an
+ordinary tool. Drop the alias at the next release, when no node that
+attaches `prologue` can still have a session running.
+
 ## Consequences
 
 - No secret value is on argv (`--mcp-config` carries names), in the
@@ -180,8 +195,8 @@ says so on the item.
   as `tools: [{tool, calls, errors, ms}]` beside the total `toolCalls`,
   on every finishing command's `usage`; `SessionAccount.Add` merges the
   rows by tool across the sessions one command carries (the Codex second
-  opinion), summing calls, errors and ms. Prologue is a row like any
-  other server. `recordToolUsage`'s per-call record sends no list.
+  opinion), summing calls, errors and ms. The built-in, `mesh-context`,
+  is a row like any other server. `recordToolUsage`'s per-call record sends no list.
 - **The fallback.** A platform whose `UsageReportInput` has no `tools`
   refuses the field: `mutateWithUsage` sends the command again with the
   list taken out and the total kept, remembers that for the client's
@@ -190,7 +205,7 @@ says so on the item.
   the platform takes no per-tool calls yet; they are logged here
   instead` and logs each session's list.
 - **The two notes.** `SessionTools.UseNote` names, from the console
-  tools rendered for the session (never the built-in Prologue), each one
+  tools rendered for the session (never the built-in `mesh-context`), each one
   served but never called — `tools: brave served, never called` — and
   each whose calls errored, by its first error — `tools: perplexity:
   first call errored: <text>` — the text redacted by the account and of
@@ -203,7 +218,9 @@ says so on the item.
 ## Amendment — 2026-09-28 (goal codex-sessions-reach-the-context-tool)
 
 Codex evaluations showed `prologue: 3 calls, 3 errors` and the note
-`prologue: first call errored: failed` — the error counted, its reason
+`prologue: first call errored: failed` (the built-in was then attached
+as `prologue`; it is `mesh-context` since goal
+`builtin-is-mesh-context`) — the error counted, its reason
 lost, and the built-in, which the note deliberately left out, the one
 tool that mattered. Both change.
 
@@ -211,7 +228,7 @@ tool that mattered. Both change.
   `error.message` (a bare string accepted), else its `result`'s text,
   else its status, as the server's `FirstError` (300 characters); a
   Codex `error` item or top-level `error` naming an MCP server that
-  failed to start (``MCP client for `prologue` failed to start: …``)
+  failed to start (``MCP client for `mesh-context` failed to start: …``)
   counts an error for that server with the message, even with no call,
   as Claude's `not connected` init status already did
   (`docs/codex-events.md`). `Codex.Run` redacts the text of the job's
@@ -228,9 +245,9 @@ tool that mattered. Both change.
   to the `ErrNoToolUsage` resend for it.
 - **The built-in in the note.** `SessionTools.UseNote` still names the
   served console tools as before, then every other server the result
-  names with an error — the built-in `prologue` first, then Codex's own
-  (`codex_apps`) by name — `prologue: first call errored: <text>`, or
-  `prologue served, never called: <text>` for one that failed to
+  names with an error — the built-in `mesh-context` first, then Codex's own
+  (`codex_apps`) by name — `mesh-context: first call errored: <text>`, or
+  `mesh-context served, never called: <text>` for one that failed to
   start, redacted and capped as above. A built-in called cleanly is
   still never named. The evaluation's notes and a build's progress
   note so say why the session could not read the project.
@@ -251,7 +268,7 @@ So the Codex half of decision 4 now works like this:
 
 - **The Codex renderer renders console tools.** The harness's
   `codexConfig(job)` writes the session's `config.toml` in two parts.
-  First come the job's own servers, the built-in Prologue: every server
+  First come the job's own servers, the built-in `mesh-context`: every server
   on `Job.MCPServers` that no `Job.Tools` entry names, by
   `CodexMCPConfig`, each header value in a `MESH_CODEX_MCP_<n>_TOKEN`
   variable. Then come the console tools, `Job.Tools`, by

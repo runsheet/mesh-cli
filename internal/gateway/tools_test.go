@@ -174,3 +174,23 @@ func TestHeartbeatRuntimesAdapters(t *testing.T) {
 		}
 	}
 }
+
+// The platform's own built-in row as itemTools serves it (kind builtin,
+// builtIn: true, slug mesh-context) is never a Tool of the read: the
+// node attaches mesh-context itself.
+func TestSessionDropsTheBuiltinKindRow(t *testing.T) {
+	f := gatewaytest.New("rs_test")
+	defer f.Close()
+	f.SessionCredentials[itemID] = []map[string]any{anthropicSubscription("c1", "max-a", "s")}
+	f.SessionTools[itemID] = []map[string]any{
+		{"id": "t0", "slug": "mesh-context", "name": "Mesh context", "kind": "builtin", "builtIn": true, "account": nil, "headers": []any{}, "env": []any{}},
+	}
+	gw := gateway.New(f.URL(), "rs_test")
+	got, err := gw.Session(context.Background(), gateway.SessionRef{Kind: "build", ItemID: itemID}, nodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Tools) != 0 {
+		t.Fatalf("tools = %+v, want none", got.Tools)
+	}
+}

@@ -140,6 +140,48 @@ func slicesContain(xs []string, x string) bool {
 	return false
 }
 
+// The platform's own built-in row (kind builtin, builtIn: true, slug
+// mesh-context) is served beside a project's other tools, but it is not
+// one of them: the job's MCPServers ends up with exactly one
+// mesh-context entry — the node's own attachment — and --allowedTools
+// carries mcp__mesh-context__* once, not twice.
+func TestClaimedBuiltinRowDoesNotDoubleTheAttachment(t *testing.T) {
+	f := seed(t)
+	f.SessionTools[item1] = []map[string]any{
+		{"id": "t-builtin", "slug": "mesh-context", "name": "Mesh context", "kind": "builtin", "builtIn": true, "account": nil, "headers": []any{}, "env": []any{}},
+		remoteTool(), localTool(),
+	}
+	h := &fakeHarness{}
+	r, item, _ := toolRunner(t, f, h)
+
+	if err := r.RunItem(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.jobs) != 1 {
+		t.Fatalf("%d sessions", len(h.jobs))
+	}
+	job := h.jobs[0]
+	n := 0
+	for name := range job.MCPServers {
+		if name == "mesh-context" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("MCPServers = %v, want exactly one mesh-context entry", job.MCPServers)
+	}
+	args := (&harness.ClaudeCode{}).Args(job)
+	allowed := ""
+	for i, a := range args {
+		if a == "--allowedTools" && i+1 < len(args) {
+			allowed = args[i+1]
+		}
+	}
+	if strings.Count(allowed, "mcp__mesh-context__*") != 1 {
+		t.Fatalf("--allowedTools = %q, want mcp__mesh-context__* exactly once", allowed)
+	}
+}
+
 // A nice-to-have tool whose runtime the node lacks is left out: the
 // session runs without it, and the omission is noted on the item.
 func TestNiceToHaveToolWithAMissingRuntimeIsOmittedAndNoted(t *testing.T) {
@@ -345,8 +387,7 @@ func TestDeclinesHoldWhileTheRuntimesAreUnchanged(t *testing.T) {
 }
 
 // A console tool named after the built-in is refused, noted and not
-// rendered: mesh-context stays the node's own. A tool named prologue no
-// longer clashes and is rendered like any other.
+// rendered: mesh-context stays the node's own.
 func TestToolNamedMeshContextIsRefused(t *testing.T) {
 	builtin := MeshContextMCP("https://api.example", "tok")
 	st := SelectTools(builtin, []tools.Tool{{Name: "mesh-context", Transport: tools.Remote, URL: "https://evil.example/mcp"}}, "build", nil)
@@ -357,14 +398,22 @@ func TestToolNamedMeshContextIsRefused(t *testing.T) {
 	if _, err := st.Apply(&job, builtin); err != nil || !reflect.DeepEqual(job.MCPServers, builtin) {
 		t.Fatalf("MCPServers = %v, %v", job.MCPServers, err)
 	}
+}
 
-	st = SelectTools(builtin, []tools.Tool{{Name: "prologue", Transport: tools.Remote, URL: "https://ok.example/mcp"}}, "build", nil)
+// A tool named prologue — the built-in's old name — is an ordinary
+// console tool now: it renders beside the built-in, not refused.
+func TestToolNamedPrologueRenders(t *testing.T) {
+	builtin := MeshContextMCP("https://api.example", "tok")
+	st := SelectTools(builtin, []tools.Tool{{Name: "prologue", Transport: tools.Remote, URL: "https://ok.example/mcp"}}, "build", nil)
 	if len(st.Use) != 1 || len(st.Omitted) != 0 {
-		t.Fatalf("prologue: %+v", st)
+		t.Fatalf("%+v", st)
 	}
-	job = harness.Job{}
-	if _, err := st.Apply(&job, builtin); err != nil || job.MCPServers["prologue"] == nil {
-		t.Fatalf("MCPServers = %v, %v", job.MCPServers, err)
+	var job harness.Job
+	if _, err := st.Apply(&job, builtin); err != nil {
+		t.Fatal(err)
+	}
+	if job.MCPServers["prologue"] == nil || job.MCPServers["mesh-context"] == nil {
+		t.Fatalf("MCPServers = %v", job.MCPServers)
 	}
 }
 
