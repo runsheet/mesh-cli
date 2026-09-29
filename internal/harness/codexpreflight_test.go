@@ -24,8 +24,10 @@ func preflightCodex(t *testing.T, out string, code int) string {
 }
 
 // sandboxCodex is preflightCodex whose sandbox probe (`codex sandbox -c
-// sandbox_mode="workspace-write" -- true`) records its arguments and environment in out, writes stderr to
-// its stderr and exits with sandboxCode.
+// sandbox_mode="workspace-write" -c
+// sandbox_workspace_write.network_access=true -- <probe>`) records its
+// arguments and environment in out, writes stderr to its stderr and
+// exits with sandboxCode.
 func sandboxCodex(t *testing.T, out string, code int, stderr string, sandboxCode int) string {
 	t.Helper()
 	script := "#!/bin/sh\n" +
@@ -256,17 +258,18 @@ func TestCodexPreflightSandbox(t *testing.T) {
 
 	out := t.TempDir()
 	ws := t.TempDir()
-	c := &Codex{Binary: sandboxCodex(t, out, 0, bwrapFailure+"\n", 1), HomeRoot: t.TempDir(), Account: acct}
+	c := &Codex{Binary: sandboxCodex(t, out, 0, bwrapFailure+"\n", 1), HomeRoot: t.TempDir(), Account: acct, Probe: []string{"/opt/mesh", "sandbox-probe"}}
 	err := c.Preflight(context.Background(), Job{Workspace: ws, MCPServers: builtin(srv.URL+"/mcp", "Bearer rs_node")})
 	if err == nil || !strings.Contains(err.Error(), "sandbox: ") || !strings.Contains(err.Error(), bwrapFailure) {
 		t.Fatalf("err %v", err)
 	}
 	// the probe runs the policy the session runs in, not `codex
-	// sandbox`'s read-only default
-	if got := strings.TrimSpace(readFile(t, filepath.Join(out, "sandbox-args"))); got != `sandbox -c sandbox_mode="workspace-write" -- true` {
+	// sandbox`'s read-only default, network on, on a command that binds
+	// a socket
+	if got := strings.TrimSpace(readFile(t, filepath.Join(out, "sandbox-args"))); got != `sandbox -c sandbox_mode="workspace-write" -c sandbox_workspace_write.network_access=true -- /opt/mesh sandbox-probe` {
 		t.Fatalf("probe args %q", got)
 	}
-	if exec := strings.Join(c.Args(Job{}), " "); !strings.Contains(exec, "--sandbox workspace-write") {
+	if exec := strings.Join(c.Args(Job{}), " "); !strings.Contains(exec, "--sandbox workspace-write -c sandbox_workspace_write.network_access=true") {
 		t.Fatalf("the session runs %q, not the policy the probe checks", exec)
 	}
 	if got := strings.TrimSpace(readFile(t, filepath.Join(out, "sandbox-pwd"))); got != ws {
@@ -298,5 +301,22 @@ func TestCodexPreflightSandbox(t *testing.T) {
 	c.Binary = sandboxCodex(t, t.TempDir(), 0, bwrapFailure, 1)
 	if err := c.Preflight(context.Background(), Job{Workspace: t.TempDir()}); err == nil || !strings.Contains(err.Error(), "sandbox: ") {
 		t.Fatalf("no built-in: %v", err)
+	}
+}
+
+const socketFailure = "Error: listen tcp 127.0.0.1:0: socket: operation not permitted"
+
+// A sandbox that starts but refuses socket() — network off, as
+// workspace-write has it by default — fails the probe, naming the
+// socket error: every test that listens would fail the same way.
+func TestCodexPreflightSocketRefused(t *testing.T) {
+	out := t.TempDir()
+	c := &Codex{Binary: sandboxCodex(t, out, 0, socketFailure+"\n", 1), HomeRoot: t.TempDir(), Probe: []string{"/opt/mesh", "sandbox-probe"}}
+	err := c.Preflight(context.Background(), Job{Workspace: t.TempDir()})
+	if err == nil || err.Error() != "sandbox: "+socketFailure {
+		t.Fatalf("err %v", err)
+	}
+	if got := strings.TrimSpace(readFile(t, filepath.Join(out, "sandbox-args"))); !strings.Contains(got, "-c sandbox_workspace_write.network_access=true -- /opt/mesh sandbox-probe") {
+		t.Fatalf("probe args %q", got)
 	}
 }

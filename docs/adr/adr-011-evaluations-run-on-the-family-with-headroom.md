@@ -1,5 +1,5 @@
 ---
-summary: Before an evaluation starts the node chooses its family per session — Codex when a Codex account (issued or node.yaml's) has headroom for the goal's priority, else Claude; a full gpt-… id pins Codex and waits in evaluating without headroom, a claude-… id pins Claude; the urgent/high second opinion runs on the other family, labelled by family and model; the one usage report names adapter codex and the gpt-6 model of a Codex evaluation; before any Codex session starts the node preflights the built-in context server in the session's own home and env (`codex mcp get` and a tools/list handshake), and a failure moves an unpinned evaluation to Claude, keeps a pinned one waiting and makes a Codex second opinion unavailable. Amended: an unpinned Codex evaluation defaults to gpt-6-sol (opus tier) or gpt-6-luna (sonnet, haiku), astra only when pinned; and a tool failure is never a verdict — a session that saw no context is evaluated again on the other family, or the item waits in evaluating. Amended 2026-09-29: an evaluation that reached no verdict — no VERDICT line, or no context and no other family — is recorded with evaluateWorkItem's outcome no_verdict and its reason, never a fail (a gateway without the field: it waits in evaluating, said once per run); a family blind on the first attempt is not asked for the second opinion; and the preflight probes Codex's sandbox (`codex sandbox -c sandbox_mode="workspace-write" -- true`, the session's own policy), and a Codex session whose every command bubblewrap refused (`Result.SandboxBroken`) is never a verdict either — every `bwrap:` text in the record came from a Codex session.
+summary: Before an evaluation starts the node chooses its family per session — Codex when a Codex account (issued or node.yaml's) has headroom for the goal's priority, else Claude; a full gpt-… id pins Codex and waits in evaluating without headroom, a claude-… id pins Claude; the urgent/high second opinion runs on the other family, labelled by family and model; the one usage report names adapter codex and the gpt-6 model of a Codex evaluation; before any Codex session starts the node preflights the built-in context server in the session's own home and env (`codex mcp get` and a tools/list handshake), and a failure moves an unpinned evaluation to Claude, keeps a pinned one waiting and makes a Codex second opinion unavailable. Amended: an unpinned Codex evaluation defaults to gpt-6-sol (opus tier) or gpt-6-luna (sonnet, haiku), astra only when pinned; and a tool failure is never a verdict — a session that saw no context is evaluated again on the other family, or the item waits in evaluating. Amended 2026-09-29: an evaluation that reached no verdict — no VERDICT line, or no context and no other family — is recorded with evaluateWorkItem's outcome no_verdict and its reason, never a fail (a gateway without the field: it waits in evaluating, said once per run); a family blind on the first attempt is not asked for the second opinion; and the preflight probes Codex's sandbox (`codex sandbox -c sandbox_mode="workspace-write" -- true`, the session's own policy), and a Codex session whose every command bubblewrap refused (`Result.SandboxBroken`) is never a verdict either — every `bwrap:` text in the record came from a Codex session. Amended 2026-09-29 again: a Codex evaluation's sandbox gets the network (`sandbox_workspace_write.network_access=true` on `codex exec` and on the probe), so its tests can bind loopback; the probe binds a socket (`mesh sandbox-probe`) instead of running `true`; and a session whose test commands that executed every one died on `socket: operation not permitted` (or `bind:`) is `SandboxBroken` too. The mini's `codex-bwrap` AppArmor profile makes bwrap start; it does not give the sandbox loopback.
 status: accepted
 ---
 
@@ -394,3 +394,68 @@ unreachable. A tool that answered was reached.
   job the evaluator builds; and `Codex.Preflight` passes against a fake
   MCP server answering initialize and tools/list on that config, and
   names the reason (`refuses auth: 401`) when it refuses.
+
+## Amendment 2026-09-29: an evaluation's sandbox has the network, and the probe binds a socket
+
+Goal `evaluation-reports-no-verdict` (item 9). Since 12:59Z on
+2026-09-29 the mini has `/etc/apparmor.d/codex-bwrap`, a profile with
+`userns,` on the bubblewrap Codex ships
+(`~/.local/share/codex/codex-resources/bwrap`, `flags=(unconfined)`;
+README, The sandbox on Ubuntu). bwrap starts: kept streams from 13:13Z
+show `go vet` and `go build` exiting 0. But `go test ./...` dies with
+`listen tcp6 [::1]:0: socket: operation not permitted` — the
+workspace-write sandbox has the network off by default, and Codex's
+seccomp filter then refuses `socket()` altogether, loopback included.
+Every `httptest` test, every `npm test` against a local server and
+every `gh` is unrunnable, the evaluator wrote verdicts with the tests
+unrun, and the probe above passed, because `true` opens no socket.
+`codex-bwrap` makes bwrap start; it does not give the sandbox loopback.
+
+- **Network on for the sandboxed commands.** `Codex.Args` carries
+  `-c sandbox_workspace_write.network_access=true`
+  (`harness.SandboxNetwork`, codex-cli 0.157's key for the
+  workspace-write table, default false) after `--sandbox
+  workspace-write`. Every Codex session today is an evaluation (a
+  first evaluation or a second opinion); builders on Codex come later
+  and inherit it. On the mini, `codex sandbox -c
+  sandbox_mode="workspace-write" -- mesh sandbox-probe` fails with
+  `listen tcp 127.0.0.1:0: socket: operation not permitted`, and the same
+  with the key set prints a 127.0.0.1 address and exits 0. **The price**:
+  a command the evaluator runs may reach the network — the LAN, the
+  internet — not just loopback; Codex 0.157 has no loopback-only
+  setting. The sandbox still confines writes to the workspace, the
+  session still holds only its item's token and its own `CODEX_HOME`,
+  and an evaluation whose tests cannot run is worth nothing. Runnable
+  tests are the point of the evaluation; that is the price paid for
+  them.
+- **The probe binds a socket.** `harness.SandboxProbe(probe)` is
+  `codex sandbox -c sandbox_mode="workspace-write" -c
+  sandbox_workspace_write.network_access=true -- <probe>`, the same
+  keys as the session (`SandboxNetwork` is shared, so the check cannot
+  drift from the run), and the probe is this executable's hidden `mesh
+  sandbox-probe` (`os.Executable()`, `harness.ProbeLoopback`): listen on
+  127.0.0.1:0, print the address, exit 0; else exit 1 with the listen's
+  error. A failure names the bwrap line, else the socket line
+  (`sandbox: Error: listen tcp 127.0.0.1:0: socket: operation not
+  permitted`), else the output — with the preflight's semantics
+  unchanged (an unpinned evaluation to Claude, a pinned one waits, a
+  second opinion unavailable).
+- **The socket refusal is a second `SandboxBroken` cause.** For a node
+  upgraded before a host's config is fixed — or a Codex whose key
+  means something else — `ParseCodexStream` sets `Result.SandboxBroken`
+  to the first line matching `socket: operation not permitted` or
+  `bind: operation not permitted` when every test command that
+  executed failed with it — or, with none executed, when every failed
+  command did. A test command is one of whose simple commands, past the
+  shell wrapper, assignments and `env`/`timeout`, starts with a runner
+  (`go test`, `npm test`, `npm run test`, `pnpm`/`yarn test`, `npx
+  vitest|jest`, `pytest`, `cargo test`, `make test|check`); a runner's
+  name in quoted text — `rg 'go test'`, an echo — is no test. It
+  executed when it carries an exit code other than 126 or 127 (`go:
+  command not found`) and Codex did not decline it; one that did not
+  counts neither way, so a search or a declined test beside a refused
+  one never turns unrunnable tests into a verdict. One test command that passed, or that
+  failed on its own merits with no refusal in its output, leaves it
+  empty: that test ran, and the verdict stands. The evaluator handles it as
+  the bwrap cause: never read for a verdict, the other family, else
+  recorded as no verdict with `sandbox: <the socket line>`.
