@@ -134,10 +134,11 @@ func (p CodexPrice) Cost(u CodexUsage) float64 {
 // command_execution whose status is failed and whose output carries
 // `bwrap:` is one Codex's sandbox would not start; when every command
 // the session ran failed that way, SandboxBroken is the first such line
-// (capped at 300). Likewise when a test-shaped command (isTestCommand) failed
-// with `socket: operation not permitted` or `bind: operation not
-// permitted` and none passed — or, with no test-shaped command, every
-// failed command failed that way — SandboxBroken is the first such line
+// (capped at 300). Likewise when every test command that executed
+// (isTestCommand, executed) failed with `socket: operation not
+// permitted` or `bind: operation not permitted` — or, with no test
+// command executed, every failed command failed that way —
+// SandboxBroken is the first such line
 // (a sandbox without the network: nothing that listens could run; ADR
 // 011, amendment 2026-09-29). Lines that are not JSON and unknown types are
 // skipped.
@@ -157,7 +158,6 @@ func ParseCodexStream(r io.Reader, model string, onEvent func(CodexEvent)) Resul
 	// the socket rule: test-shaped commands, failed commands, and how
 	// many of each died on a refused socket
 	testsRan, testsRefused, failedCmds, failedRefused := 0, 0, 0, 0
-	tests := 0
 	socketRefused := ""
 	startupError := func(msg string) {
 		for _, server := range mcpStartupServers(msg) {
@@ -251,13 +251,10 @@ func ParseCodexStream(r io.Reader, model string, onEvent func(CodexEvent)) Resul
 						}
 					}
 				}
-				if isTestCommand(ev.Item.Command) {
-					tests++
-					if !notRun(ev.Item.ExitCode) {
-						testsRan++
-						if refused != "" {
-							testsRefused++
-						}
+				if isTestCommand(ev.Item.Command) && executed(ev.Item) {
+					testsRan++
+					if refused != "" {
+						testsRefused++
 					}
 				}
 			}
@@ -320,26 +317,109 @@ func ParseCodexStream(r io.Reader, model string, onEvent func(CodexEvent)) Resul
 	case commands > 0 && sandboxBlocked == commands:
 		res.SandboxBroken = capText(sandboxLine, 300)
 	case testsRan > 0 && testsRefused == testsRan,
-		tests == 0 && failedCmds > 0 && failedRefused == failedCmds:
+		testsRan == 0 && failedCmds > 0 && failedRefused == failedCmds:
 		res.SandboxBroken = capText(socketRefused, 300)
 	}
 	return res
 }
 
-// testCommands are what a command line runs to test: a session every
-// one of whose test commands that ran died on a refused socket could
-// verify nothing that listens. One that passed, or failed on its own
-// merits with no refusal in its output, is a test that ran — the
-// verdict stands. One whose shell never ran it (exit 126 or 127,
-// `go: command not found`) counts neither way.
-var testCommands = regexp.MustCompile(`\b(go test|npm (run )?test|pnpm (run )?test|yarn (run )?test|npx (vitest|jest)|pytest|cargo test|make (test|check))\b`)
+// testRunners are what a command runs to test, matched at the start
+// of one simple command of the line (runnerOf): a session every one of
+// whose test commands that ran died on a refused socket could verify
+// nothing that listens. One that passed, or failed on its own merits
+// with no refusal in its output, is a test that ran — the verdict
+// stands. One the shell never ran (exit 126 or 127, `go: command not
+// found`), one Codex declined, one with no exit code, and a line that
+// only mentions a runner (`rg 'go test'`, `echo npm test`) count
+// neither way.
+var testRunners = regexp.MustCompile(`^(go test|npm (run )?test|pnpm (run )?test|yarn (run )?test|npx (vitest|jest)|vitest|jest|pytest|cargo test|make (test|check))\b`)
 
-// notRun says a command's exit code is the shell's own refusal to run
-// it: 126 (not executable) or 127 (not found).
-func notRun(code *int) bool { return code != nil && (*code == 126 || *code == 127) }
+// executed says a completed command_execution actually ran: it has an
+// exit code, not the shell's own refusal to run it (126 not
+// executable, 127 not found), and Codex did not decline it.
+func executed(it *CodexItem) bool {
+	if it.Status == "declined" || it.ExitCode == nil {
+		return false
+	}
+	return *it.ExitCode != 126 && *it.ExitCode != 127
+}
 
-// isTestCommand says a command_execution's command line runs tests.
-func isTestCommand(cmd string) bool { return testCommands.MatchString(cmd) }
+// shellWrapper is Codex's `/bin/bash -lc '<cmd>'` (or sh/zsh, -c):
+// the command proper is its last argument.
+var shellWrapper = regexp.MustCompile(`^\s*(?:\S*/)?(?:ba|z|da)?sh\s+-l?c\s+(.*)$`)
+
+// quotedText is a single- or double-quoted string on a command line:
+// an argument, never a command.
+var quotedText = regexp.MustCompile(`'[^']*'|"(?:[^"\\]|\\.)*"`)
+
+// commandSeparators split a line into its simple commands.
+var commandSeparators = regexp.MustCompile(`&&|\|\||[;|\n]`)
+
+// isTestCommand says a command_execution's command line runs tests: one
+// of its simple commands, past the shell wrapper, variable
+// assignments and `env`/`time`/`timeout N`/`nice`, starts with a test
+// runner (its path dropped: /usr/local/go/bin/go test is go test).
+// Quoted text is blanked first, so a runner's name inside an argument
+// — a search, an echo — is not a test.
+func isTestCommand(cmd string) bool {
+	line := unwrapShell(cmd)
+	line = quotedText.ReplaceAllString(line, "''")
+	for _, simple := range commandSeparators.Split(line, -1) {
+		if testRunners.MatchString(runnerOf(simple)) {
+			return true
+		}
+	}
+	return false
+}
+
+// unwrapShell is the command a shell wrapper runs, its outer quotes
+// removed; the line itself when it has no wrapper.
+func unwrapShell(cmd string) string {
+	m := shellWrapper.FindStringSubmatch(cmd)
+	if m == nil {
+		return cmd
+	}
+	arg := strings.TrimSpace(m[1])
+	switch {
+	case len(arg) >= 2 && arg[0] == '\'' && arg[len(arg)-1] == '\'':
+		arg = arg[1 : len(arg)-1]
+		arg = strings.NewReplacer(`'\''`, `'`, `'"'"'`, `'`).Replace(arg)
+	case len(arg) >= 2 && arg[0] == '"' && arg[len(arg)-1] == '"':
+		arg = strings.ReplaceAll(arg[1:len(arg)-1], `\"`, `"`)
+	}
+	return arg
+}
+
+// runnerOf is a simple command from its program on — assignments and
+// wrappers dropped, the program's directory too — as "prog args…".
+func runnerOf(simple string) string {
+	fields := strings.Fields(strings.TrimLeft(strings.TrimSpace(simple), "({ "))
+	i := 0
+	for i < len(fields) {
+		f := fields[i]
+		switch {
+		case strings.Contains(f, "=") && !strings.HasPrefix(f, "-") && !strings.HasPrefix(f, "="):
+			i++
+		case f == "env" || f == "time" || f == "nice" || f == "command" || f == "exec":
+			i++
+		case f == "timeout":
+			i++
+			for i < len(fields) && strings.HasPrefix(fields[i], "-") {
+				if fields[i] == "-k" || fields[i] == "-s" {
+					i++ // the flag's value
+				}
+				i++
+			}
+			i++ // the duration
+		default:
+			if slash := strings.LastIndex(f, "/"); slash >= 0 {
+				f = f[slash+1:]
+			}
+			return strings.Join(append([]string{f}, fields[i+1:]...), " ")
+		}
+	}
+	return ""
+}
 
 // socketRefusal is the text a sandbox without the network leaves when
 // a program opens or binds a socket: Go's `listen tcp6 [::1]:0: socket:

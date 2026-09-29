@@ -196,3 +196,38 @@ func TestCodexStreamSocketRefusedIsSandboxBroken(t *testing.T) {
 		t.Fatalf("a real failure: %q", got)
 	}
 }
+
+// Only a test command that executed counts against the socket rule: a
+// search that merely names a runner (`rg 'go test'`, an echo) is no
+// test, and a test Codex declined or that reported no exit code never
+// ran — so beside them a socket-refused `go test` is still SandboxBroken
+// (ADR 011, amendment 2026-09-29).
+func TestCodexStreamSocketRefusedCountsOnlyTestsThatRan(t *testing.T) {
+	want := "panic: httptest: failed to listen on a port: listen tcp6 [::1]:0: socket: operation not permitted [recovered, repanicked]"
+	for _, name := range []string{"codex_exec_socket_grep.jsonl", "codex_exec_socket_declined.jsonl"} {
+		res, _ := parseCodexFixture(t, name, "gpt-6-sol")
+		if res.SandboxBroken != want {
+			t.Errorf("%s: SandboxBroken = %q", name, res.SandboxBroken)
+		}
+	}
+}
+
+func TestCodexIsTestCommand(t *testing.T) {
+	for cmd, want := range map[string]bool{
+		"/bin/bash -lc 'go test ./...'":                               true,
+		"/bin/bash -lc '/usr/local/go/bin/go test ./... 2>&1 | tail'": true,
+		"/bin/bash -lc 'cd web && npm run test'":                      true,
+		"bash -lc \"GOFLAGS=-count=1 timeout -k 5 300 go test ./x\"":  true,
+		"/bin/bash -lc 'make check'":                                  true,
+		"go test ./internal/node/":                                    true,
+		"/bin/bash -lc \"rg -n 'go test' AGENTS.md\"":                 false,
+		"/bin/bash -lc 'echo \"go test\"'":                            false,
+		"/bin/bash -lc 'grep -rn npm README.md'":                      false,
+		"/bin/bash -lc 'go vet ./...'":                                false,
+		"/bin/bash -lc 'git log --grep=\"go test\"'":                  false,
+	} {
+		if got := isTestCommand(cmd); got != want {
+			t.Errorf("isTestCommand(%q) = %v, want %v", cmd, got, want)
+		}
+	}
+}

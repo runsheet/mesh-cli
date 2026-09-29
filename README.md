@@ -1420,7 +1420,8 @@ that file and gain user namespaces — the same caution as option 1
 below; re-check it after a Codex upgrade moves its resources.
 
 **The fix** is one of these, as root. Run the probe as the node's user
-afterwards; it should print nothing and exit 0.
+afterwards; it should print the address it bound (`127.0.0.1:<port>`)
+and exit 0.
 
 1. *An AppArmor profile for Codex alone* (preferred). The bubblewrap is
    inside the `codex` binary, so the profile names that binary's real

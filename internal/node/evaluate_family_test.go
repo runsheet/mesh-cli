@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"log"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -806,5 +808,40 @@ func TestEvaluationOnCodexWithNoNetworkIsNoVerdict(t *testing.T) {
 		if p, ok := c.Input["passed"]; ok && p == false {
 			t.Fatalf("recorded as a fail: %+v", c.Input)
 		}
+	}
+}
+
+// The streams the socket rule once let through — a search naming
+// `go test` that passed, a test Codex declined or that reported no exit
+// code, beside a socket-refused `go test` — parse as SandboxBroken and
+// are recorded as no verdict, never a fail (ADR 011, amendment
+// 2026-09-29).
+func TestEvaluationOnCodexWithTestsUnrunIsNoVerdict(t *testing.T) {
+	for _, name := range []string{"codex_exec_socket_grep.jsonl", "codex_exec_socket_declined.jsonl"} {
+		t.Run(name, func(t *testing.T) {
+			stream, err := os.Open(filepath.Join("..", "harness", "testdata", name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer stream.Close()
+			res := harness.ParseCodexStream(stream, "gpt-6-sol", nil)
+			if res.SandboxBroken == "" {
+				t.Fatalf("%s parsed with no SandboxBroken", name)
+			}
+			f, ev, _, codex, _, _ := familyFixture(t, "normal", "sonnet", "VERDICT: PASS", res.Text)
+			f.WorkItems[item1]["evaluateModel"] = "gpt-6-sol"
+			codex.sandbox = res.SandboxBroken
+			ev.Blind, ev.NoVerdict = &OncePer{}, &OncePer{}
+			in := evaluateItem1(t, f, ev)
+			notes, _ := in["notes"].(string)
+			if _, sent := in["passed"]; sent || in["outcome"] != gateway.EvaluationNoVerdict || !strings.Contains(notes, "socket: operation not permitted") {
+				t.Fatalf("recorded %+v", in)
+			}
+			for _, c := range f.CallsNamed("evaluateWorkItem") {
+				if p, ok := c.Input["passed"]; ok && p == false {
+					t.Fatalf("recorded as a fail: %+v", c.Input)
+				}
+			}
+		})
 	}
 }

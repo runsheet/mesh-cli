@@ -368,16 +368,22 @@ answers (ADR 011, amendment 2026-09-29, item 9):
   `TestCodexSandboxProbeBindsLoopbackUnderTheSessionsKeys`).
 - **The stream says it.** A failed `command_execution` whose output has
   a line matching `socket: operation not permitted` or `bind: operation
-  not permitted` is a refused socket. When every test-shaped command
-  (`go test`, `npm test`, `pytest`, …) that ran was refused so — one
-  the shell never ran, exit 126 or 127, counts neither way — or, with
-  none, every failed command was, `Result.SandboxBroken` is the first
-  such line. A test command that passed, or failed on its own merits
+  not permitted` is a refused socket. When every test command that
+  executed was refused so, `Result.SandboxBroken` is the first such
+  line — or, with none executed, when every failed command was. A test
+  command is one whose simple command, past the `bash -lc` wrapper,
+  assignments and `env`/`timeout`, starts with a runner (`go test`,
+  `npm test`, `pytest`, …; `isTestCommand`) — quoted text never counts,
+  so `rg 'go test'` is no test; it executed when it has an exit code
+  other than 126 or 127 and was not `declined` (`executed`). A test command that passed, or failed on its own merits
   with no refusal, ran: the verdict stands. Fixtures `codex_exec_socket.jsonl` (go vet clean,
   `go test` not found then refused, `npm test` refused, `VERDICT: FAIL`
   anyway), `codex_exec_socket_one_passed.jsonl` (`npm test` passed)
   and `codex_exec_socket_mixed.jsonl` (one `go test` refused, another
-  failing a real assertion) —
+  failing a real assertion), and `codex_exec_socket_grep.jsonl` (a
+  passing `rg 'go test'` beside a refused `go test`) and
+  `codex_exec_socket_declined.jsonl` (`npm test` declined, a `go test`
+  with no exit code, a refused `go test`), both `SandboxBroken` —
   `TestCodexStreamSocketRefusedIsSandboxBroken`.
 
 ## The stream, kept
