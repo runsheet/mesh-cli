@@ -845,3 +845,30 @@ func TestEvaluationOnCodexWithTestsUnrunIsNoVerdict(t *testing.T) {
 		})
 	}
 }
+
+// The mini's 04:00:22Z exit (2026-09-29, goal
+// node-yaml-takes-effect-or-says-why-not): a Codex preflight fails, the
+// evaluation turns to Claude and the Claude account cannot be opened —
+// that minute a 429, here no Claude credential issued. Open's nil
+// account overwrote acct, and the deferred acct.Cleanup() dereferenced
+// it: a nil-pointer panic that took the node down with exit status 2.
+// Now the error comes back and the Codex account is cleaned up once.
+func TestCodexPreflightFailureWithNoClaudeAccountReturnsTheError(t *testing.T) {
+	f, ev, claude, codex, _, logs := familyFixture(t, "normal", "sonnet", "Holds.\nVERDICT: PASS", "VERDICT: FAIL")
+	f.SessionCredentials[item1] = f.SessionCredentials[item1][1:]
+	ev.CodexPreflight = (&fakePreflight{err: errors.New("initialize: 429 Too Many Requests: Rate exceeded.")}).check
+	item, err := ev.GW.WorkItem(context.Background(), item1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = ev.Evaluate(context.Background(), *item)
+	if !errors.Is(err, ErrNoAccount) {
+		t.Fatalf("Evaluate: %v, want ErrNoAccount", err)
+	}
+	if len(claude.jobs) != 0 || codex.runs() != 0 || len(f.CallsNamed("evaluateWorkItem")) != 0 {
+		t.Fatalf("runs claude %d, codex %d; evaluate calls %d", len(claude.jobs), codex.runs(), len(f.CallsNamed("evaluateWorkItem")))
+	}
+	if want := "item ship-it/1: Codex preflight failed (initialize: 429 Too Many Requests: Rate exceeded.); evaluating on Claude"; !strings.Contains(logs.String(), want) {
+		t.Fatalf("node.log lacks %q:\n%s", want, logs.String())
+	}
+}
