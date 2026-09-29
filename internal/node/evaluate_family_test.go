@@ -673,3 +673,85 @@ func TestAConsoleToolNamedPrologueFailingIsNotNoContext(t *testing.T) {
 		t.Fatalf("node.log:\n%s", logs.String())
 	}
 }
+
+const bwrapLine = "bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted"
+
+// An unpinned Codex evaluation whose preflight's sandbox probe fails
+// runs on Claude, and node.log and the notes name the reason.
+func TestCodexSandboxPreflightEvaluatesOnClaude(t *testing.T) {
+	f, ev, claude, codex, _, logs := familyFixture(t, "normal", "sonnet", "Holds.\nVERDICT: PASS", "VERDICT: PASS")
+	ev.CodexPreflight = (&fakePreflight{err: errors.New("sandbox: " + bwrapLine)}).check
+	in := evaluateItem1(t, f, ev)
+	if codex.runs() != 0 || len(claude.jobs) != 1 {
+		t.Fatalf("runs: claude %d, codex %d", len(claude.jobs), codex.runs())
+	}
+	if notes, _ := in["notes"].(string); in["passed"] != true || !strings.Contains(notes, "the Codex preflight failed: sandbox: "+bwrapLine) {
+		t.Fatalf("recorded %+v", in)
+	}
+	if want := "item ship-it/1: Codex preflight failed (sandbox: " + bwrapLine + "); evaluating on Claude"; !strings.Contains(logs.String(), want) {
+		t.Fatalf("node.log lacks %q:\n%s", want, logs.String())
+	}
+}
+
+// A Codex session whose sandbox blocked every command wrote VERDICT:
+// PASS anyway: that is not a verdict. The same job runs on Claude and
+// Claude's verdict is the one recorded, the Codex attempt first in the
+// notes.
+func TestCodexSandboxBrokenIsNotAVerdict(t *testing.T) {
+	f, ev, claude, codex, _, logs := familyFixture(t, "normal", "sonnet", "It fails its check.\nVERDICT: FAIL", "Read the diff.\nVERDICT: PASS")
+	codex.sandbox = bwrapLine
+	in := evaluateItem1(t, f, ev)
+	if codex.runs() != 1 || len(claude.jobs) != 1 || codex.jobs[0].Prompt != claude.jobs[0].Prompt {
+		t.Fatalf("runs: claude %d, codex %d", len(claude.jobs), codex.runs())
+	}
+	want := "Codex (first attempt, gpt-6-luna): no verdict — sandbox: " + bwrapLine + "\n\nIt fails its check.\n\n(evaluated on sonnet)"
+	if in["passed"] != false || in["notes"] != want {
+		t.Fatalf("recorded %+v\nwant notes %q", in, want)
+	}
+	if s := "item ship-it/1: evaluation on Codex gpt-6-luna ran in a sandbox that blocked every command (sandbox: " + bwrapLine + "); not a verdict, evaluating on Claude sonnet"; !strings.Contains(logs.String(), s) {
+		t.Errorf("node.log lacks %q:\n%s", s, logs.String())
+	}
+}
+
+// With no other family — the item pins Codex — a sandbox-blocked
+// session on a platform that takes no no-verdict outcome records
+// nothing: the item stays in evaluating, said once.
+func TestCodexSandboxBrokenWithNoOtherFamilyWaits(t *testing.T) {
+	f, ev, claude, codex, _, logs := familyFixture(t, "normal", "sonnet", "VERDICT: FAIL", "VERDICT: PASS")
+	f.NoEvaluationOutcome = true
+	f.WorkItems[item1]["evaluateModel"] = "gpt-6-astra"
+	codex.sandbox = bwrapLine
+	ev.Blind, ev.NoVerdict = &OncePer{}, &OncePer{}
+	item, err := ev.GW.WorkItem(context.Background(), item1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := ev.Evaluate(context.Background(), *item); !errors.Is(err, ErrNoContext) {
+			t.Fatalf("Evaluate = %v, want ErrNoContext", err)
+		}
+	}
+	if len(claude.jobs) != 0 || codex.runs() != 2 || len(f.CallsNamed("evaluateWorkItem")) != 0 || f.Item(item1)["status"] != "evaluating" {
+		t.Fatalf("runs claude %d codex %d, verdicts %d, status %v", len(claude.jobs), codex.runs(), len(f.CallsNamed("evaluateWorkItem")), f.Item(item1)["status"])
+	}
+	line := "item ship-it/1: evaluation on Codex gpt-6-astra ran in a sandbox that blocked every command (sandbox: " + bwrapLine + "); not a verdict, and Claude cannot evaluate it: the item pins Codex gpt-6-astra; it stays in evaluating"
+	if n := strings.Count(logs.String(), line); n != 1 {
+		t.Fatalf("said %d times:\n%s", n, logs.String())
+	}
+}
+
+// Claude first on an urgent item, its PASS standing: a Codex second
+// opinion whose sandbox blocked every command is unavailable, whatever
+// it wrote.
+func TestCodexSecondOpinionSandboxBrokenIsUnavailable(t *testing.T) {
+	f, ev, claude, codex, _, _ := familyFixture(t, "urgent", "opus", "Holds.\nVERDICT: PASS", "Blocked.\nVERDICT: FAIL")
+	f.WorkItems[item1]["evaluateModel"] = "claude-opus-5"
+	codex.sandbox = bwrapLine
+	in := evaluateItem1(t, f, ev)
+	if len(claude.jobs) != 1 || codex.runs() != 1 {
+		t.Fatalf("runs: claude %d, codex %d", len(claude.jobs), codex.runs())
+	}
+	if notes, _ := in["notes"].(string); in["passed"] != true || !strings.Contains(notes, "Codex second opinion unavailable: sandbox broken ("+bwrapLine+")") {
+		t.Fatalf("recorded %+v", in)
+	}
+}

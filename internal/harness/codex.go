@@ -714,27 +714,37 @@ func CodexPreflight(ctx context.Context, job Job) error {
 	return (&Codex{}).Preflight(ctx, job)
 }
 
+// SandboxProbe is the no-op Codex's sandbox runs in a preflight
+// (codex-cli 0.157: `codex sandbox [COMMAND]...`, the platform's own
+// sandbox — bubblewrap on Linux, Seatbelt on macOS), under the same
+// policy `codex exec` runs the session in (Args: `--sandbox
+// workspace-write`). Left alone, `codex sandbox` defaults to read-only
+// (codex-rs/cli/src/debug_sandbox.rs, rust-v0.157.0); the legacy
+// `sandbox_mode` override is the one it honours instead.
+var SandboxProbe = []string{"sandbox", "-c", `sandbox_mode="workspace-write"`, "--", "true"}
+
 // Preflight checks, before a Codex session starts, that the built-in
-// context server (BuiltinMCP) will answer it: in the CODEX_HOME the
+// context server (BuiltinMCP) will answer it and that Codex's own
+// sandbox starts (sandboxProbe): in the CODEX_HOME the
 // session will use and with exactly the environment Run builds
 // (codexSession), (1) `codex mcp get <builtin>` must succeed — Codex
 // parses the config and sees the server — and (2) an MCP initialize
 // and tools/list over streamable HTTP to the server's URL, with the
 // header values the rendered config and that environment give Codex,
 // must answer 2xx listing at least one tool, each step within
-// PreflightTimeout. A job with no built-in has nothing to check. The
-// error says why — `refuses auth: <status> <body>`, `unreachable:
-// <error>`, a header variable missing or empty — and never carries a
-// secret. It costs nothing and is no tool call of the session's.
+// PreflightTimeout. A job with no built-in skips (1) and (2). Then (3)
+// `codex sandbox -c sandbox_mode="workspace-write" -- true`
+// (SandboxProbe, the session's own policy) in the workspace, in the same
+// home and environment, must exit 0 with no `bwrap:` on its stderr
+// within PreflightTimeout — else `sandbox: <its stderr, 200 chars>`:
+// under `--sandbox workspace-write` every command the session ran
+// would fail the same way (`bwrap: loopback: Failed RTM_NEWADDR` on an
+// Ubuntu that restricts unprivileged user namespaces; README, Codex on
+// a node). The error says why — `refuses auth: <status> <body>`,
+// `unreachable: <error>`, a header variable missing or empty,
+// `sandbox: …` — and never carries a secret. It costs nothing and is no
+// tool call of the session's.
 func (c *Codex) Preflight(ctx context.Context, job Job) error {
-	srv, ok := job.MCPServers[BuiltinMCP].(map[string]any)
-	if !ok {
-		return nil
-	}
-	url, _ := srv["url"].(string)
-	if url == "" {
-		return nil
-	}
 	bin := c.Binary
 	if bin == "" {
 		bin = "codex"
@@ -747,6 +757,47 @@ func (c *Codex) Preflight(ctx context.Context, job Job) error {
 		return err
 	}
 	defer s.close()
+	if err := c.preflightContext(ctx, bin, job, s); err != nil {
+		return err
+	}
+	return c.sandboxProbe(ctx, bin, job, s)
+}
+
+// sandboxProbe is the preflight's (3): Codex's sandbox on a no-op.
+func (c *Codex) sandboxProbe(ctx context.Context, bin string, job Job, s *codexSession) error {
+	probeCtx, cancel := context.WithTimeout(ctx, PreflightTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(probeCtx, bin, SandboxProbe...)
+	cmd.Dir = job.Workspace
+	cmd.Env = s.environ
+	cmd.WaitDelay = time.Second
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	why := strings.TrimSpace(stderr.String())
+	if err == nil && !strings.Contains(why, "bwrap:") {
+		return nil
+	}
+	if i := strings.Index(why, "bwrap:"); i >= 0 {
+		why = why[i:]
+	}
+	if why == "" {
+		why = err.Error()
+	}
+	return fmt.Errorf("sandbox: %s", truncateRunes(Redact(why, s.secrets...), 200))
+}
+
+// preflightContext is the preflight's (1) and (2): the built-in context
+// server, when the job has one.
+func (c *Codex) preflightContext(ctx context.Context, bin string, job Job, s *codexSession) error {
+	srv, ok := job.MCPServers[BuiltinMCP].(map[string]any)
+	if !ok {
+		return nil
+	}
+	url, _ := srv["url"].(string)
+	if url == "" {
+		return nil
+	}
 	redact := func(msg string) string { return Redact(msg, s.secrets...) }
 
 	// (1) Codex sees the server in the config it will read
