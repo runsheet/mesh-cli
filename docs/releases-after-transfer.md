@@ -1,5 +1,5 @@
 ---
-summary: The first tag cut from runsheet/mesh-cli's main after the transfer (v0.0.0-runsheet-test.6) and its verification; then v0.2.188, the first signed release on the public mirror runsheet/mesh (run 36499785802, attempt 3, after attempt 1's HTTP 403 from RELEASE_TOKEN), which the mini runs since 2026-09-29 00:52Z, sessions adopted and the update confirmed — and v0.2.187, cut and signed on the source runsheet/mesh-cli only (its mirror step failed without --target, fixed by #336); a 2026-09-29 addendum records desiredVersion corrected to v0.2.188, why update.json's v0.1.0 refusal is stale, the live README's lag until v0.2.189, and v0.2.189 blocked on RELEASE_TAG_TOKEN (run 36507379094).
+summary: The first tag cut from runsheet/mesh-cli's main after the transfer (v0.0.0-runsheet-test.6) and its verification; then v0.2.188, the first signed release on the public mirror runsheet/mesh (run 36499785802, attempt 3, after attempt 1's HTTP 403 from RELEASE_TOKEN), which the mini runs since 2026-09-29 00:52Z, sessions adopted and the update confirmed — and v0.2.187, cut and signed on the source runsheet/mesh-cli only (its mirror step failed without --target, fixed by #336); a 2026-09-29 addendum confirms desiredVersion is v0.2.188 (item 17's own evaluation already read it so; this item corrected nothing), why update.json's v0.1.0 refusal is stale, the live README's lag until v0.2.189, and v0.2.189 blocked on RELEASE_TAG_TOKEN (run 36507379094).
 ---
 
 # Releases after the transfer
@@ -630,20 +630,35 @@ Recorded 2026-09-29 for item 21 of goal `signed-releases-on-runsheet-mesh`.
 It is an addendum, checked live against the platform and GitHub; it
 corrects nothing above and rewrites no earlier section.
 
-### desiredVersion, corrected
+### desiredVersion, confirmed
 
-Item 17's evaluator read the mini's desiredVersion as `v0.1.0`. It is
-`v0.2.188` now, the same as the version the mini runs — read with the
-`mesh_health_nodes` tool (project `runsheet/mesh`):
+"What is owed" item 1 above recorded desiredVersion still at `v0.1.0`.
+It no longer is: item 17's own evaluation — attempt 1, 2026-09-29
+01:44:30Z, on the platform now — already read it as `v0.2.188`, in the
+course of reviewing item 17's diff:
+
+> Review: FAIL. The supplied diff changes only the five permitted
+> files, and the platform reports Mini online at v0.2.188 with desired
+> version v0.2.188. The indexed main ADR still contains the earlier,
+> unmirrored account, so I could not confirm an `already_done` outcome;
+> PR #385's status was unavailable.
+
+So there was nothing for this item to correct there — the operator had
+already moved desiredVersion to `v0.2.188` by the time item 17 ran. A
+fresh live read today, with the `mesh_health_nodes` tool (project
+`runsheet/mesh`), agrees:
 
 ```
 $ mesh_health_nodes(project="runsheet/mesh")
-{"nodes":[{"name":"Mini","org":"runsheet","slug":"mini","status":"online",
-  "version":"v0.2.188","desired_version":"v0.2.188","behind":true,
-  "commits_behind_main":9,"oldest_unrun_merged_at":"2026-09-29T00:23:02Z",
-  …}],"latest_version":"v0.2.188","main_head":"132766a02b6cab1166222d5a3c0fda7f01994afd"}
+{"at":"2026-09-29T02:35:34Z","latest_version":"v0.2.188","main_head":"132766a02b6cab1166222d5a3c0fda7f01994afd","nodes":[{"behind":true,"capacity":6,"commits_behind_main":9,"desired_version":"v0.2.188","draining":false,"heartbeat_age_seconds":5,"id":"313f7f4d-8a16-594f-b9b2-8af7faab3328","last_seen_at":"2026-09-29T02:35:28Z","name":"Mini","oldest_unrun_merged_at":"2026-09-29T00:23:02Z","org":"runsheet","plan_seen_at":"2026-09-29T02:35:28Z","plan_status":"allowed_warning","plan_windows":[{"resets_at":"2026-09-29T03:10:00Z","used_pct":6,"window":"five_hour"},{"resets_at":"2026-10-03T03:00:00Z","used_pct":75,"window":"seven_day"}],"running":6,"sessions":[{"age_seconds":1104,"cost_cents":0,"harness":"claude-code","kind":"build","model":"opus","project":"runsheet","session_id":"fd6190d8-4a39-4e1f-a0e2-cb13ecf056fa","started_at":"2026-09-29T02:17:09.931269848Z","subject":"#1 Schema and policy: a Node has an owner (person | enterprise), one row per node, TransferNode and ShareNodeWithOrg, with the ADR (a-node-has-an-owner)","tools":[{"name":"Mesh context","slug":"mesh-context"},{"name":"Context7","slug":"context7"}]},{"age_seconds":776,"cost_cents":0,"harness":"claude-code","kind":"build","model":"sonnet","project":"runsheet","session_id":"a28525bc-4613-4f51-8977-a2f6b2eb53fe","started_at":"2026-09-29T02:22:37.339536893Z","subject":"#2 mesh_health_service reports process lag: the age of the oldest unhandled event per runner (a-new-org-opens-when-its-tenant-is-ready)","tools":[{"name":"Mesh context","slug":"mesh-context"},{"name":"Context7","slug":"context7"}]},{"age_seconds":210,"cost_cents":330,"harness":"claude-code","kind":"evaluate","model":"opus","project":"runsheet","session_id":"8a506129-e21b-4be4-a7dd-1a09d295915e","started_at":"2026-09-29T02:32:03.682418725Z","subject":"#2 Platform: a Tool may belong to an enterprise and attaches to any member org's project (credentials-follow-the-enterprise)","tools":[{"name":"Mesh context","slug":"mesh-context"},{"name":"Playwright","slug":"playwright"}]},{"age_seconds":207,"cost_cents":294,"harness":"claude-code","kind":"build","model":"sonnet","project":"runsheet","session_id":"8fe2b7fa-c356-4227-ab73-edb6f2c92be2","started_at":"2026-09-29T02:32:06.665942578Z","subject":"#23 Goal doc and design pass: specs/goal-integrator-lives-within-the-rate-limit.md records what shipped and how the day is measured; console-trd's Health and Scorecard carry the budget (integrator-lives-within-the-rate-limit)","tools":[{"name":"Mesh context","slug":"mesh-context"},{"name":"Context7","slug":"context7"}]},{"age_seconds":61,"cost_cents":33,"harness":"claude-code","kind":"evaluate","model":"opus","project":"loom","session_id":"95c0bd00-9f78-4815-b9c8-af03255181c5","started_at":"2026-09-29T02:34:32.782110723Z","subject":"#3 e2e: a nested type's optional list is nullable through the live gateway, an omitted or null list is accepted and arrives as a nil slice (nested-optional-lists-are-nullable)","tools":[{"name":"Mesh context","slug":"mesh-context"},{"name":"Playwright","slug":"playwright"}]},{"age_seconds":45,"cost_cents":78,"harness":"claude-code","kind":"build","model":"sonnet","project":"mesh","started_at":"2026-09-29T02:34:48.438060764Z","subject":"#21 docs/releases-after-transfer.md: a dated addendum of the mirror channel's state on 2026-09-29 — desiredVersion, update.json, the mirror README's lag, and the auto-tag blocked on RELEASE_TAG_TOKEN (signed-releases-on-runsheet-mesh)","tools":[{"name":"Mesh context","slug":"mesh-context"},{"name":"Context7","slug":"context7"}]},{"age_seconds":29,"cost_cents":295,"harness":"claude-code","kind":"evaluate","model":"opus","project":"runsheet","session_id":"b180a5ec-0127-4e0f-8ee8-40bf905a7296","started_at":"2026-09-29T02:35:04.365334386Z","subject":"#2 mesh_health_stuck and mesh_health_deploys answer within an overall deadline: what finished is returned, and each row or section that could not finish names its error (health-tools-always-answer)","tools":[{"name":"Mesh context","slug":"mesh-context"},{"name":"Context7","slug":"context7"}]},{"age_seconds":12,"cost_cents":0,"harness":"claude-code","kind":"build","model":"opus","project":"runsheet","started_at":"2026-09-29T02:35:21.447953997Z","subject":"#3 Platform: the metering API — POST /billing/v1/usage with idempotency, UsageReport and the ProductMeter fold, authenticated by the product's Latchkey client (one-account-one-bill-across-products)","tools":[]}],"slug":"mini","status":"online","version":"v0.2.188"}]}
 ```
 
+The `sessions` list is every other live build, evaluate and plan session
+the mini is running right now, on other goals and other projects — this
+item's own build among them (`#21 docs/releases-after-transfer.md
+…`, started 02:34:48Z); none of it bears on desiredVersion, which is
+the one field this check is for: `"desired_version":"v0.2.188"`,
+alongside `"version":"v0.2.188"`, exactly as the tool returned them.
 `~/.mesh/node.log`'s latest `self-update:` lines agree there is nothing
 left to refuse:
 
@@ -654,12 +669,14 @@ $ grep -n '^mesh node:.*self-update:' ~/.mesh/node.log | tail -3
 5803275:mesh node: 2026/09/29 00:52:20 self-update: v0.2.188 → v0.1.0: fetching
 ```
 
-The last line, at 00:52:20, is the one refusal against the *old*
-desiredVersion that followed the confirm. Nothing has logged since,
-because with desiredVersion now equal to the running version the loop
+The last line, at 00:52:20, is the one refusal against the desiredVersion
+of that moment, `v0.1.0` — the same read "What is owed" above recorded,
+before the operator moved it. Nothing has logged since, because with
+desiredVersion now `v0.2.188`, equal to the running version, the loop
 has nothing to fetch (`GetDesiredVersion`: "empty, the running one or
-`dev` does nothing"). So: `v0.2.188` is correct, not `v0.1.0` — the
-operator moved desiredVersion after item 17 read it stale.
+`dev` does nothing"). `v0.2.188` is correct: confirmed twice now, by
+item 17's evaluation and by this item's own live read, not corrected by
+either.
 
 ### update.json still holds the old refusal
 
@@ -749,7 +766,7 @@ v0.2.186		v0.2.186	2026-09-26T11:48:49Z
 v0.2.185		v0.2.185	2026-09-26T11:40:50Z
 
 $ gh release list --repo runsheet/mesh-cli -L 4
-v0.2.188	Latest	v0.2.188	2026-09-28T23:46:50Z
+v0.2.188	Latest	v0.2.188	2026-09-29T00:50:45Z
 v0.2.187		v0.2.187	2026-09-28T23:28:42Z
 v0.1.0	Pre-release	v0.1.0	2026-09-28T07:47:09Z
 v0.0.0-runsheet-test.6	Pre-release	v0.0.0-runsheet-test.6	2026-09-26T15:06:03Z
