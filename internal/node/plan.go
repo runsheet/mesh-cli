@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -34,6 +35,9 @@ type Planner struct {
 	// Loop.KindModelBudget); nil falls back to Cfg's own, read once at
 	// start.
 	Budgets func(kind, model string) (amount float64, source string)
+	// ContextBudget is node.yaml's `context:` budget in force, read
+	// live (Loop.ContextBudget); nil is Cfg's own, read once at start.
+	ContextBudget func() ContextConfig
 	// Model is what a planner session runs on ("" the CLI's default).
 	Model string
 	// Accounts are the node's Claude accounts (node.yaml); a session runs
@@ -306,16 +310,22 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 		}
 		dirs[name] = sub
 	}
-	cx, err := FetchContext(ctx, p.GW, scope.Login, project.Slug)
+	names := make([]string, 0, len(repos))
+	for name := range repos {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	cx, err := FetchContext(ctx, p.GW, scope.Login, project.Slug, ContextOptions{Budget: p.contextBudget(), Repos: names})
 	if err != nil {
 		p.logf("goal %s: context unavailable: %v", goal.Slug, err)
 		cx = &Context{}
 	}
 	AddLive(ctx, p.GW, cx, scope.ID, project.ID, p.logf)
-	files, err := WriteContext(dir, cx)
+	files, written, err := WriteContext(dir, cx)
 	if err != nil {
 		return fmt.Errorf("write context: %w", err)
 	}
+	p.logf("goal %s: %s", goal.Slug, written.Line())
 	contextDir := ""
 	if len(files) > 0 || len(cx.Index) > 0 || len(cx.Live) > 0 {
 		contextDir = ContextDir
@@ -349,6 +359,7 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 	budget, budgetSource := p.budgetWithSource(&goal)
 	p.logf("goal %s: planning in %s (%d repos), budget $%.2f (%s)", goal.Slug, dir, len(repos), budget, budgetSource)
 	items, reasons, flags, cost, acct, err := p.ask(ctx, goal, scope.NodeID, dir, budget, in, repos, merged)
+	acct.SetContextBytes(written.Bytes)
 	// the session's usage report rides the plan's hand-in; Finish logs it
 	// when nothing carried it (its report was built as it ended, in ask)
 	defer acct.Finish(ctx, harness.Result{})
@@ -364,6 +375,7 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 		var second *SessionAccount
 		items, reasons, flags, again, second, err = p.ask(ctx, goal, scope.NodeID, dir, budget, in, repos, merged)
 		defer second.Finish(ctx, harness.Result{})
+		second.SetContextBytes(written.Bytes)
 		// one hand-in, one report: the first session's rides the second's
 		second.Carries(acct)
 		if second != nil {
@@ -573,4 +585,16 @@ func (p *Planner) AdoptPlan(ctx context.Context, goal gateway.Goal, scope Scope,
 		p.logf("goal %s: adopted plan names what no evaluator can see; handing it in: %s", goal.Slug, strings.Join(flags, " | "))
 	}
 	return p.handIn(ctx, goal, items, reasons, cost, nil)
+}
+
+// contextBudget is the context budget for p's sessions: live, through
+// p.ContextBudget, when set; else Cfg's own.
+func (p *Planner) contextBudget() ContextConfig {
+	if p.ContextBudget != nil {
+		return p.ContextBudget()
+	}
+	if p.Cfg == nil {
+		return ContextConfig{}.Effective()
+	}
+	return p.Cfg.Context.Effective()
 }

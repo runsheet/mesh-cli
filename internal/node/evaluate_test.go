@@ -91,12 +91,20 @@ func TestLoopEvaluatesFinishedItems(t *testing.T) {
 	if f.Item(item1)["evaluation"] != "The test passes already, so it proves nothing.\n\n(evaluated on the CLI's default model)" {
 		t.Fatalf("notes: %v", f.Item(item1)["evaluation"])
 	}
+	// no VERDICT line is no verdict, with its reason and its cost: never
+	// a fail, and the item stays in evaluating (ADR 011's amendment
+	// 2026-09-29)
 	f.WorkItems[item1]["status"] = "evaluating"
 	h.text = "I could not tell."
 	loop.Tick(ctx)
 	loop.wg.Wait()
-	if f.Item(item1)["status"] != "evaluating" || len(f.CallsNamed("evaluateWorkItem")) != 2 {
-		t.Fatalf("no verdict must record nothing: %v", f.Item(item1)["status"])
+	calls = f.CallsNamed("evaluateWorkItem")
+	if f.Item(item1)["status"] != "evaluating" || len(calls) != 3 {
+		t.Fatalf("no verdict must leave the item in evaluating: %v, %d calls", f.Item(item1)["status"], len(calls))
+	}
+	in := calls[2].Input
+	if _, sent := in["passed"]; sent || in["outcome"] != gateway.EvaluationNoVerdict || in["notes"] != "no VERDICT line: I could not tell." || in["costCents"] != float64(125) {
+		t.Fatalf("no-verdict call: %+v", in)
 	}
 }
 
@@ -143,23 +151,29 @@ type fakeCodexH struct {
 	rl    *harness.RateLimit
 	usage *harness.Usage
 	// tools, when set, is each MCP server's calls and errors a run
-	// reports (Result.Tools).
-	tools map[string]*harness.ToolStat
+	// reports (Result.Tools); firstOnly reports them on the first run
+	// alone, as a context server that failed once and then answered.
+	tools     map[string]*harness.ToolStat
+	firstOnly bool
 }
 
 func (h *fakeCodexH) Name() string { return "codex" }
 func (h *fakeCodexH) Run(ctx context.Context, job harness.Job, on func(harness.Progress)) (harness.Result, error) {
 	h.mu.Lock()
 	h.jobs = append(h.jobs, job)
+	tools := h.tools
+	if h.firstOnly && len(h.jobs) > 1 {
+		tools = nil
+	}
 	h.mu.Unlock()
 	var calls map[string]int
-	for server, s := range h.tools {
+	for server, s := range tools {
 		if calls == nil {
 			calls = map[string]int{}
 		}
 		calls[server] = s.Calls
 	}
-	return harness.Result{Success: h.err == nil, Text: h.text, CostUSD: h.cost, RateLimit: h.rl, Usage: h.usage, Tools: h.tools, ToolCalls: calls}, h.err
+	return harness.Result{Success: h.err == nil, Text: h.text, CostUSD: h.cost, RateLimit: h.rl, Usage: h.usage, Tools: tools, ToolCalls: calls}, h.err
 }
 
 func (h *fakeCodexH) runs() int {

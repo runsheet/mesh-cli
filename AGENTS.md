@@ -35,7 +35,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   the `~/.mesh/token` that holds either shape behind one `TokenSource`
   (latchkey `adr-machine-identity`).
 - `internal/node/`: the loop (`runner`), the workspace and the project's
-  context (`workspace.go`: `FetchContext`, `RenderIndex`, the size budget),
+  context (`workspace.go`: `FetchContext`, `RenderIndex`, the size budget — node.yaml `context:`, `ContextConfig`, re-read each tick, `Loop.ContextBudget`; every document counts against `bytes_max`, instructions and ADRs are exempt from `doc_bytes_max` only, placed first those of the session's own repos (`ContextOptions.Repos`), then the rest by recency, then the PRD and TRD, and one that does not fit is left whole to the index (`Context.Dropped`, ADR-015)),
   evaluate, plan and research sessions, the service install (`launchd` /
   `systemd --user`). A project's repos — for the planner, the director
   and `mesh goal plan` — are read from `project.repoIds` through
@@ -389,8 +389,16 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   has its verdict discarded and the same job runs on the other family
   as the evaluation proper, its notes opening `<Family> (first attempt,
   <model>): no verdict — <tool>: <error>`; with no other family it
-  records nothing (`ErrNoContext`), the item stays in evaluating, said
-  once per item (`Blind`). With neither a `codex:` block nor
+  is **no verdict** (`Evaluator.noVerdict`, ADR-011's amendment
+  2026-09-29): `EvaluateWorkItemNoVerdict` sends `evaluateWorkItem`
+  `outcome: no_verdict` (`gateway.EvaluationNoVerdict`) with the reason
+  in `notes` and the cost and usage, never a fail — as does a deciding
+  session with no `VERDICT:` line. A gateway whose
+  `EvaluateWorkItemInput` lacks `outcome` (introspected, kept an hour)
+  gets nothing (`ErrNoVerdictOutcome`, said once per run): the item
+  stays in evaluating (`ErrNoContext`, said once per item by `Blind`).
+  A family blind on the first attempt is not asked for the second
+  opinion: the other family's verdict stands. With neither a `codex:` block nor
   an issued Codex account the node evaluates as before. Builders on
   Codex come later, behind a per-project setting.
 - **Tools** (`internal/tools/`, ADR-006, trd §3 Tools): the
@@ -466,7 +474,10 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `Job.Meta`; the prompt is an unlinked file on stdin. `Follow` tails
   the output a line per read until the process is gone and the file
   stops growing, `ParseStream` reads it, and the offset is saved as it
-  goes. A timeout or cancelled ctx `Stop`s the unit; the directory is
+  goes. A timeout or cancelled ctx `Stop`s the unit, and every end
+  but a detach `Kill`s it: `Result.Killed` names what the agent left
+  running there (a failed kill goes to Stderr, else `KillError`,
+  never failing the session); the directory is
   removed when `Run` returns — unless the job is `Outlive`: see the
   adoption.
 - **The sandbox** (`internal/sandbox/`, mesh-specs ADR 007,
@@ -512,6 +523,12 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   read per session through the gateway (`AddLive`, adr-003 decision 3).
   A failed read leaves the documents only, with a warning; `.mesh` is
   excluded from git, so none of it is ever committed.
+  `WriteContext` returns what that cost (`ContextWritten`: bytes on
+  disk with INDEX.md, files, documents left to fetch); each session
+  logs it once (`<label>: context <n> bytes in <k> files, <m> documents
+  to fetch`) and its usage report carries `contextBytes`, dropped for a
+  platform without the field (`ErrNoContextUsage`, said once per run;
+  docs/adr/adr-016).
 - Costs: each session's `total_cost_usd` is reported to the platform per
   item (`ReportWorkItemProgress`, `EvaluateWorkItem`, `PlanGoal`).
   Priced tool calls are tool usage records: the harness counts each

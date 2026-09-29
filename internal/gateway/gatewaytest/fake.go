@@ -89,6 +89,11 @@ type Fake struct {
 	// "Cannot query field", a command whose input (or an item of it)
 	// carries one with "Unknown field".
 	UnknownFields map[string]bool
+	// NoEvaluationOutcome is a platform older than
+	// evaluation-reports-no-verdict-platform: its EvaluateWorkItemInput
+	// has no `outcome`, introspection says so, and an evaluateWorkItem
+	// carrying one is refused with "Unknown field".
+	NoEvaluationOutcome bool
 	// NoUsageTools refuses a `usage` report carrying `tools` (the
 	// per-tool calls) with "Unknown field", as a platform older than
 	// tools-show-their-use whose UsageReportInput has only the total.
@@ -98,6 +103,10 @@ type Fake struct {
 	// older than node-attests-its-validation whose UsageReportInput has
 	// no such field.
 	NoValidationUsage bool
+	// NoContextUsage refuses a `usage` report carrying `contextBytes`
+	// with "Unknown field", as a platform older than
+	// context-budget-that-holds (adr-016).
+	NoContextUsage bool
 	// NoToolError refuses a usage report whose `tools` entry carries
 	// `error`, and introspection answers the entry without it, as a
 	// platform older than the tool entry's error text.
@@ -284,6 +293,20 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeData(w, map[string]any{"__type": f.usageReportInputType()})
+	case strings.Contains(q, "__type(") && req.Variables["t"] == "EvaluateWorkItemInput":
+		f.Reads = append(f.Reads, Call{Name: "__type EvaluateWorkItemInput", Input: map[string]any{}})
+		if f.Unsupported["__type"] {
+			writeErrors(w, 200, "GraphQL introspection is not allowed")
+			return
+		}
+		var fields []any
+		for _, n := range []string{"aggregateId", "namespace", "passed", "notes", "costCents", "usage", gateway.EvaluationOutcomeField} {
+			if n == gateway.EvaluationOutcomeField && f.NoEvaluationOutcome {
+				continue
+			}
+			fields = append(fields, map[string]any{"name": n})
+		}
+		writeData(w, map[string]any{"__type": map[string]any{"inputFields": fields}})
 	case strings.Contains(q, `__type(name: "RegisterNodeInput")`):
 		f.Reads = append(f.Reads, Call{Name: "__type RegisterNodeInput", Input: map[string]any{}})
 		if f.Unsupported["__type"] {
@@ -326,6 +349,18 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 		if f.Unsupported[m[2]] {
 			writeErrors(w, 200, fmt.Sprintf("Cannot query field %q on type \"Mutation\".", m[2]))
 			return
+		}
+		if _, ok := in[gateway.EvaluationOutcomeField]; ok && m[2] == "evaluateWorkItem" && f.NoEvaluationOutcome {
+			writeErrors(w, 200, `Variable "$in" got invalid value; Unknown field "outcome" is not defined by type "EvaluateWorkItemInput".`)
+			return
+		}
+		// contextBytes is refused before the older fields, the order a
+		// fallback that took them one by one got wrong.
+		if usage, ok := in["usage"].(map[string]any); ok && f.NoContextUsage {
+			if _, ok := usage["contextBytes"]; ok {
+				writeErrors(w, 200, `Variable "$in" got invalid value; In field "usage": Unknown field "contextBytes" is not defined by type "UsageReportInput".`)
+				return
+			}
 		}
 		if usage, ok := in["usage"].(map[string]any); ok && f.NoUsageTools {
 			if _, ok := usage["tools"]; ok {
@@ -822,6 +857,15 @@ func (f *Fake) apply(name string, in map[string]any) error {
 	case "evaluateWorkItem":
 		if item == nil {
 			return fmt.Errorf("no such item")
+		}
+		// an evaluation that reached no verdict costs the item nothing:
+		// it stays in evaluating, its reason kept (runsheet goal
+		// evaluation-reports-no-verdict-platform)
+		if in[gateway.EvaluationOutcomeField] == gateway.EvaluationNoVerdict {
+			item["noVerdict"] = in["notes"]
+			item["noVerdicts"] = toInt(item["noVerdicts"]) + 1
+			item["costCents"] = toInt(item["costCents"]) + toInt(in["costCents"])
+			return nil
 		}
 		// a confirmed already_done item is merged with no pull request
 		// (mesh ADR 003 decision 1); a built one goes to review, where

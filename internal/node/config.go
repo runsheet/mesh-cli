@@ -90,6 +90,49 @@ type Config struct {
 	// Update is node.yaml's `update:` block (UpdateConfig): how long a
 	// new process keeps trying to confirm an update before it gives up.
 	Update UpdateConfig `yaml:"update,omitempty"`
+	// Context is the size budget for the project's context on disk
+	// (ContextConfig), read again every tick like the accounts.
+	Context ContextConfig `yaml:"context,omitempty"`
+}
+
+// The context budget's defaults, in bytes: a document past what is left
+// of DefaultContextBytesMax — binding or not — or a design document past
+// DefaultDocBytesMax, is listed in the index and fetched on demand
+// instead (ADR-015).
+const (
+	DefaultContextBytesMax = 240 * 1024
+	DefaultDocBytesMax     = 60 * 1024
+)
+
+// ContextConfig is node.yaml's `context:` block, in bytes: the total a
+// session's context may put on disk, instructions and ADRs included,
+// and the most one design document may — instructions and ADRs are
+// never cut, so they are held by the total alone. Zero is the default.
+type ContextConfig struct {
+	BytesMax    int `yaml:"bytes_max,omitempty"`
+	DocBytesMax int `yaml:"doc_bytes_max,omitempty"`
+}
+
+// Effective is c with each zero field at its default.
+func (c ContextConfig) Effective() ContextConfig {
+	if c.BytesMax == 0 {
+		c.BytesMax = DefaultContextBytesMax
+	}
+	if c.DocBytesMax == 0 {
+		c.DocBytesMax = DefaultDocBytesMax
+	}
+	return c
+}
+
+// Validate refuses a negative size, naming the key.
+func (c ContextConfig) Validate() error {
+	if c.BytesMax < 0 {
+		return errors.New("context.bytes_max: a size cannot be negative")
+	}
+	if c.DocBytesMax < 0 {
+		return errors.New("context.doc_bytes_max: a size cannot be negative")
+	}
+	return nil
 }
 
 // UpdateConfig is node.yaml's `update:` block.
@@ -442,6 +485,8 @@ type Reloaded struct {
 	// Spending is node.yaml's accounts and project budgets; nil keeps
 	// the loop's.
 	Spending *Spending
+	// Context is node.yaml's `context:` budget; nil keeps the loop's.
+	Context *ContextConfig
 }
 
 // Spending is what the node may spend on: node.yaml's accounts,
@@ -456,8 +501,8 @@ type Spending struct {
 
 // Reloader is Loop.Reload for a node started on cfg and scopes: every
 // tick it reads node.yaml again through load (LoadConfig when nil) for
-// the capacity, the limits thresholds, the accounts and project budgets
-// and the orgs restriction, and asks MyOrgs for the orgs
+// the capacity, the limits thresholds, the accounts and project budgets,
+// the context budget and the orgs restriction, and asks MyOrgs for the orgs
 // the owner belongs to. An org seen for the first time is registered in
 // through register (a Node there, as start does) before it is served —
 // one that fails to register is tried again next tick; an org no longer
@@ -482,6 +527,8 @@ func Reloader(gw Gateway, cfg *Config, scopes Scopes, load func() (*Config, erro
 			limits := c.Limits
 			out.Capacity, out.Limits, restrict = c.Capacity, &limits, c.Orgs
 			out.Spending = &Spending{Accounts: c.Accounts, ProjectBudgets: c.ProjectBudgets, Budgets: c.Budgets}
+			budget := c.Context
+			out.Context = &budget
 		}
 		orgs, err := gw.MyOrgs(ctx)
 		if err != nil {
@@ -571,6 +618,9 @@ func LoadConfig() (*Config, error) {
 		}
 	}
 	if err := c.Codex.Validate(); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	if err := c.Context.Validate(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	return &c, nil

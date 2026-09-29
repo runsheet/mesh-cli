@@ -104,6 +104,9 @@ type Runner struct {
 	// Loop.KindModelBudget); nil falls back to Cfg's own, read once at
 	// start.
 	Budgets func(kind, model string) (amount float64, source string)
+	// ContextBudget is node.yaml's `context:` budget in force, read
+	// live (Loop.ContextBudget); nil is Cfg's own, read once at start.
+	ContextBudget func() ContextConfig
 	// Sandbox, when set, runs the session in its own pod with the
 	// services its checkout declares started beside it (ADR 007); nil is
 	// `sandbox: off`, no services.
@@ -274,16 +277,17 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	}
 
 	orgLogin := r.Scopes.LoginOf(item.OrgID)
-	cx, err := FetchContext(ctx, r.GW, orgLogin, res.Project.Slug)
+	cx, err := FetchContext(ctx, r.GW, orgLogin, res.Project.Slug, ContextOptions{Budget: r.contextBudget(), Repos: []string{res.Repo.FullName()}})
 	if err != nil {
 		r.logf("item %s: context unavailable: %v", label, err)
 		cx = &Context{}
 	}
 	AddLive(ctx, r.GW, cx, item.OrgID, res.Project.ID, r.logf)
-	files, err := WriteContext(dir, cx)
+	files, written, err := WriteContext(dir, cx)
 	if err != nil {
 		return r.fail(ctx, item, fmt.Errorf("write context: %w", err))
 	}
+	r.logf("item %s: %s", label, written.Line())
 	contextDir := ""
 	if len(files) > 0 || len(cx.Index) > 0 || len(cx.Live) > 0 {
 		contextDir = ContextDir
@@ -330,6 +334,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		return r.fail(ctx, item, err)
 	}
 	defer unlessDetached(ctx, acct.Cleanup)
+	acct.SetContextBytes(written.Bytes)
 	acct.Apply(&job)
 	job.Meta = harness.SessionMeta{NodeID: sc.NodeID, ItemID: item.ID, GoalID: item.GoalID, Attempt: item.Attempts, TempDirs: sessionTempDirs(job, acct)}
 	// the item's tools, beside the built-in mesh-context: a required one this
@@ -709,3 +714,15 @@ func short(sha string) string {
 
 // UserEnv is the environment a session inherits (the operator's).
 func UserEnv() []string { return os.Environ() }
+
+// contextBudget is the context budget for r's sessions: live, through
+// r.ContextBudget, when set; else Cfg's own.
+func (r *Runner) contextBudget() ContextConfig {
+	if r.ContextBudget != nil {
+		return r.ContextBudget()
+	}
+	if r.Cfg == nil {
+		return ContextConfig{}.Effective()
+	}
+	return r.Cfg.Context.Effective()
+}

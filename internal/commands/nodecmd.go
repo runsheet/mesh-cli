@@ -618,7 +618,7 @@ func runPollMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *
 	if st, err := node.DefaultRunState(); err == nil {
 		state = &st
 	}
-	runner := &node.Runner{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, MCPFunc: func(ctx context.Context) map[string]any { return meshContextMCP(ctx, gw) }, MaxBudgetUSD: nodeMaxBudgetFlag, Model: nodeModels.For("build"), Fallback: fallback, Accounts: cfg.Accounts, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Condition: loop.NoteCondition, Budgets: loop.KindModelBudget, Sandbox: sessionSandbox, MeshBinary: meshBinary(), State: state, Notices: &node.ValidationNotices{}, Log: logger}
+	runner := &node.Runner{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, MCPFunc: func(ctx context.Context) map[string]any { return meshContextMCP(ctx, gw) }, MaxBudgetUSD: nodeMaxBudgetFlag, Model: nodeModels.For("build"), Fallback: fallback, Accounts: cfg.Accounts, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Condition: loop.NoteCondition, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Sandbox: sessionSandbox, MeshBinary: meshBinary(), State: state, Notices: &node.ValidationNotices{}, Log: logger}
 	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) {
 		r := *runner
 		r.Scopes = loop.CurrentScopes() // an org served since start is known to its build
@@ -969,7 +969,7 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 	// one per node: the evaluations of every tick and the adopted ones
 	// share what has been said once per item
 	second := codexSecondOpinion(cfg, loop, workRoot, logger)
-	adoptSessions(ctx, gw, cfg, oneShot, second, loop, &node.Runner{GW: gw, Harness: oneShot, WS: ws, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, Fallback: fallback, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Condition: loop.NoteCondition, Budgets: loop.KindModelBudget, Log: logger}, workRoot, fallback, accounts, logger)
+	adoptSessions(ctx, gw, cfg, oneShot, second, loop, &node.Runner{GW: gw, Harness: oneShot, WS: ws, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, Fallback: fallback, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Condition: loop.NoteCondition, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Log: logger}, workRoot, fallback, accounts, logger)
 	loop.Evaluate = evaluateWith(gw, cfg, observed(loop, logger), second, loop, workRoot, fallback, accounts, logger)
 	loop.Plan = planWith(gw, cfg, observed(loop, logger), loop, workRoot, accounts, logger)
 	loop.Research = researchWith(gw, cfg, observed(loop, logger), loop, workRoot, accounts, logger)
@@ -1187,6 +1187,9 @@ type secondOpinion struct {
 	// could not run on the other family — one per node, Codex or not,
 	// since every evaluator is built afresh per item
 	blind *node.OncePer
+	// noVerdict says once per run that the platform takes no no-verdict
+	// outcome
+	noVerdict *node.OncePer
 }
 
 // codexSecondOpinion builds the evaluator's Codex harness whenever its
@@ -1212,7 +1215,7 @@ func codexSecondOpinion(cfg *node.Config, loop *node.Loop, workRoot string, logg
 		if !cfg.Codex.IsZero() {
 			logger.Printf("codex: no Codex evaluations: %v", err)
 		}
-		return secondOpinion{blind: &node.OncePer{}}
+		return secondOpinion{blind: &node.OncePer{}, noVerdict: &node.OncePer{}}
 	}
 	c := &harness.Codex{Binary: bin, Stderr: os.Stderr, WorkRoot: workRoot}
 	loop.CodexOwn = nil
@@ -1230,7 +1233,7 @@ func codexSecondOpinion(cfg *node.Config, loop *node.Loop, workRoot string, logg
 	}
 	h := node.ObserveLimitsAs(c, loop.Limits, account)
 	loop.CodexRoom = (&node.Evaluator{Codex: h, CodexAccounts: loop.CodexCandidates, Limits: loop.Limits, Thresholds: loop.Thresholds}).CodexHeadroom
-	return secondOpinion{h: h, preflight: c.Preflight, account: account, limits: loop.Limits, thresholds: loop.Thresholds, accounts: loop.CodexCandidates, waits: &node.OncePer{}, blind: &node.OncePer{}}
+	return secondOpinion{h: h, preflight: c.Preflight, account: account, limits: loop.Limits, thresholds: loop.Thresholds, accounts: loop.CodexCandidates, waits: &node.OncePer{}, blind: &node.OncePer{}, noVerdict: &node.OncePer{}}
 }
 
 // evaluateWith is the loop's Evaluate hook: a fresh evaluator session per
@@ -1294,20 +1297,20 @@ func researchWith(gw *gateway.Client, cfg *node.Config, h harness.Harness, loop 
 }
 
 func evaluator(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harness.Harness, second secondOpinion, loop *node.Loop, workRoot string, fallback *node.TokenFallback, accounts *node.Credentials, logger *log.Logger) *node.Evaluator {
-	return &node.Evaluator{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, Scopes: loop.CurrentScopes(), WorkRoot: workRoot, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodeEvalBudgetFlag, Budgets: loop.KindModelBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("evaluate"), Fallback: fallback, Accounts: cfg.Accounts, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Sandbox: sessionSandbox, Log: logger,
-		Codex: second.h, CodexPreflight: second.preflight, CodexModel: cfg.Codex.CodexModel, CodexAccount: second.account, CodexAccounts: second.accounts, Waits: second.waits, Blind: second.blind, Limits: second.limits, Thresholds: second.thresholds}
+	return &node.Evaluator{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, Scopes: loop.CurrentScopes(), WorkRoot: workRoot, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodeEvalBudgetFlag, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("evaluate"), Fallback: fallback, Accounts: cfg.Accounts, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Sandbox: sessionSandbox, Log: logger,
+		Codex: second.h, CodexPreflight: second.preflight, CodexModel: cfg.Codex.CodexModel, CodexAccount: second.account, CodexAccounts: second.accounts, Waits: second.waits, Blind: second.blind, NoVerdict: second.noVerdict, Limits: second.limits, Thresholds: second.thresholds}
 }
 
 func rebaser(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harness.Harness, loop *node.Loop, scopes func() node.Scopes, workRoot string, fallback *node.TokenFallback, accounts *node.Credentials, logger *log.Logger) *node.Rebaser {
-	return &node.Rebaser{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, Scopes: scopes(), WorkRoot: workRoot, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodeRebaseBudgetFlag, Budgets: loop.KindModelBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("rebase"), Fallback: fallback, Accounts: cfg.Accounts, Credentials: accounts, Sandbox: sessionSandbox, Log: logger}
+	return &node.Rebaser{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, Scopes: scopes(), WorkRoot: workRoot, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodeRebaseBudgetFlag, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("rebase"), Fallback: fallback, Accounts: cfg.Accounts, Credentials: accounts, Sandbox: sessionSandbox, Log: logger}
 }
 
 func planner(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harness.Harness, loop *node.Loop, workRoot string, accounts *node.Credentials, logger *log.Logger) *node.Planner {
-	return &node.Planner{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, WorkRoot: workRoot, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodePlanBudgetFlag, Budgets: loop.KindModelBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.PlanModel(), Accounts: cfg.Accounts, Credentials: accounts, Log: logger}
+	return &node.Planner{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, WorkRoot: workRoot, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodePlanBudgetFlag, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.PlanModel(), Accounts: cfg.Accounts, Credentials: accounts, Log: logger}
 }
 
 func director(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harness.Harness, loop *node.Loop, workRoot string, accounts *node.Credentials, logger *log.Logger) *node.Director {
-	return &node.Director{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, WorkRoot: workRoot, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodeResearchBudgetFlag, Budgets: loop.KindModelBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("research"), Accounts: cfg.Accounts, Credentials: accounts, Log: logger}
+	return &node.Director{GW: gw, Harness: h, WS: &node.Git{Log: os.Stderr}, Cfg: cfg, WorkRoot: workRoot, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodeResearchBudgetFlag, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("research"), Accounts: cfg.Accounts, Credentials: accounts, Log: logger}
 }
 
 // adoptSessions takes up, before the first claim, every session under the

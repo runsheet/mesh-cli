@@ -40,6 +40,9 @@ type Rebaser struct {
 	// Loop.KindModelBudget); nil falls back to Cfg's own, read once at
 	// start.
 	Budgets func(kind, model string) (amount float64, source string)
+	// ContextBudget is node.yaml's `context:` budget in force, read
+	// live (Loop.ContextBudget); nil is Cfg's own, read once at start.
+	ContextBudget func() ContextConfig
 	// Model is the node's own rebase model (node.yaml rebase, else
 	// default; "" the CLI's default): what a rebase session runs on when
 	// the item names no model and its agent none (BuildModel, the
@@ -120,15 +123,16 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 		return fail(fmt.Errorf("workspace: %w", err))
 	}
 	orgLogin := r.Scopes.LoginOf(item.OrgID)
-	cx, err := FetchContext(ctx, r.GW, orgLogin, res.Project.Slug)
+	cx, err := FetchContext(ctx, r.GW, orgLogin, res.Project.Slug, ContextOptions{Budget: r.contextBudget(), Repos: []string{res.Repo.FullName()}})
 	if err != nil {
 		r.logf("item %s: context unavailable: %v", label, err)
 		cx = &Context{}
 	}
-	files, err := WriteContext(dir, cx)
+	files, written, err := WriteContext(dir, cx)
 	if err != nil {
 		return fail(fmt.Errorf("write context: %w", err))
 	}
+	r.logf("item %s: %s", label, written.Line())
 	contextDir := ""
 	if len(files) > 0 || len(cx.Index) > 0 {
 		contextDir = ContextDir
@@ -171,6 +175,7 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 	if err != nil {
 		return fail(err)
 	}
+	acct.SetContextBytes(written.Bytes)
 	defer unlessDetached(ctx, acct.Cleanup)
 	acct.Apply(&job)
 	job.Meta = harness.SessionMeta{NodeID: sc.NodeID, ItemID: item.ID, GoalID: item.GoalID, Attempt: item.Attempts, TempDirs: sessionTempDirs(job, acct)}
@@ -365,4 +370,16 @@ func (r *Rebaser) AdoptRebase(ctx context.Context, item gateway.WorkItem, s Foun
 		return at.Attach(ctx, s.Dir, onProgress)
 	})
 	return r.afterRebase(ctx, rb, nil, result, runErr)
+}
+
+// contextBudget is the context budget for r's sessions: live, through
+// r.ContextBudget, when set; else Cfg's own.
+func (r *Rebaser) contextBudget() ContextConfig {
+	if r.ContextBudget != nil {
+		return r.ContextBudget()
+	}
+	if r.Cfg == nil {
+		return ContextConfig{}.Effective()
+	}
+	return r.Cfg.Context.Effective()
 }

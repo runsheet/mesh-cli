@@ -64,6 +64,10 @@ type Client struct {
 	// report's `validation` (ErrNoValidationUsage, node-attests-its-validation):
 	// every later report goes without the list.
 	usageWithoutValidation atomic.Bool
+	// usageWithoutContext is set once the gateway has refused a usage
+	// report's `contextBytes` (ErrNoContextUsage, adr-016): every later
+	// report goes without it.
+	usageWithoutContext atomic.Bool
 
 	// heartbeatBasicUntil (unix nanoseconds) is when the heartbeat next
 	// offers the fields the gateway refused (see HeartbeatNode).
@@ -103,6 +107,9 @@ type Client struct {
 	// toolErrorSchema is whether the gateway's usage report's `tools`
 	// entry was last found to take `error` (see takesToolError).
 	toolErrorSchema toolErrorProbe
+	// noVerdictSchema is whether the gateway's evaluateWorkItem input was
+	// last found to take `outcome` (see takesNoVerdict).
+	noVerdictSchema holdingProbe
 	Now             func() time.Time
 }
 
@@ -320,6 +327,15 @@ var ErrNoUsageDetail = errors.New("gateway: the platform's usage report carries 
 // land without it, and the caller logs the minutes instead. errors.Is-able.
 var ErrNoValidationUsage = errors.New("gateway: the platform takes no per-step validation minutes on the usage report")
 
+// ErrNoContextUsage is what a finishing command returns when its usage
+// report carried the session's context bytes but the platform's
+// UsageReportInput has no `contextBytes` (a platform older than
+// context-budget-that-holds, adr-016): the command and the rest of the
+// report land without that one number, and the caller says so once.
+// errors.Is-able; it may come joined with ErrNoValidationUsage or
+// ErrNoToolUsage when the report lost those too.
+var ErrNoContextUsage = errors.New("gateway: the platform takes no context bytes on the usage report")
+
 // usageDetailFields are UsageReport's fields a platform before
 // mesh-spends-less-per-item may not know (ErrNoUsageDetail).
 var usageDetailFields = []string{"turns", "inputPerTurnMean", "inputPerTurnMax", "largestToolResults"}
@@ -339,7 +355,11 @@ var usageDetailFields = []string{"turns", "inputPerTurnMean", "inputPerTurnMax",
 // (unknownField on "validation") gets it again without the per-step
 // minutes, and every later report goes without them: the command lands
 // with the rest of the report, and ErrNoValidationUsage says the
-// minutes did not.
+// minutes did not. A platform whose report has no `contextBytes`
+// (unknownField on "contextBytes") gets it again without the bytes, and
+// every later report goes without them, and ErrNoContextUsage says so.
+// When a report lost more than one of the list, the minutes and the
+// bytes, their errors come joined.
 func (c *Client) mutateWithUsage(ctx context.Context, field, aggregateID string, input map[string]any, usage *UsageReport) error {
 	if usage == nil {
 		return c.Mutate(ctx, field, aggregateID, input)
@@ -361,6 +381,10 @@ func (c *Client) mutateWithUsage(ctx context.Context, field, aggregateID string,
 	if withValidation && c.usageWithoutValidation.Load() {
 		delete(um, "validation")
 	}
+	_, withContext := um["contextBytes"]
+	if withContext && c.usageWithoutContext.Load() {
+		delete(um, "contextBytes")
+	}
 	if rows, ok := um["tools"].([]any); ok && toolRowsCarry(rows, "error") && !c.takesToolError(ctx) {
 		for _, r := range rows {
 			if row, ok := r.(map[string]any); ok {
@@ -370,18 +394,40 @@ func (c *Client) mutateWithUsage(ctx context.Context, field, aggregateID string,
 	}
 	err = c.Mutate(ctx, field, aggregateID, withUsage)
 	var ge *Error
-	if err != nil && errors.As(err, &ge) && unknownField(ge.Message, "tools") {
-		if _, sent := um["tools"]; sent {
-			c.usageWithoutTools.Store(true)
-			delete(um, "tools")
-			err = c.Mutate(ctx, field, aggregateID, withUsage)
-		}
+	// Each optional field the platform names is dropped and the command
+	// sent again, whatever order the refusals come in: a platform that
+	// knows none of them refuses one per attempt.
+	optional := []struct {
+		name    string
+		without *atomic.Bool
+	}{
+		{"tools", &c.usageWithoutTools},
+		{"validation", &c.usageWithoutValidation},
+		{"contextBytes", &c.usageWithoutContext},
 	}
-	if err != nil && errors.As(err, &ge) && unknownField(ge.Message, "validation") {
-		if _, sent := um["validation"]; sent {
-			c.usageWithoutValidation.Store(true)
-			delete(um, "validation")
+	// The turn and tool-result detail fields go together, for this
+	// report alone, in the same loop: a platform that refuses one of the
+	// optional fields and then the detail (or the other way round) loses
+	// neither the command nor the word on what it dropped.
+	noDetail := false
+	for retried := true; retried && err != nil && errors.As(err, &ge); {
+		retried = false
+		for _, o := range optional {
+			if _, sent := um[o.name]; sent && unknownField(ge.Message, o.name) {
+				o.without.Store(true)
+				delete(um, o.name)
+				err = c.Mutate(ctx, field, aggregateID, withUsage)
+				retried = true
+				break
+			}
+		}
+		if !retried && !noDetail && unknownField(ge.Message, usageDetailFields...) {
+			for _, f := range usageDetailFields {
+				delete(um, f)
+			}
+			noDetail = true
 			err = c.Mutate(ctx, field, aggregateID, withUsage)
+			retried = true
 		}
 	}
 	if err != nil && errors.As(err, &ge) && unknownField(ge.Message, "usage") {
@@ -390,27 +436,29 @@ func (c *Client) mutateWithUsage(ctx context.Context, field, aggregateID string,
 		}
 		return ErrNoUsageLedger
 	}
-	if err != nil && errors.As(err, &ge) && unknownField(ge.Message, usageDetailFields...) {
-		trimmed := make(map[string]any, len(um))
-		for k, v := range um {
-			trimmed[k] = v
-		}
-		for _, f := range usageDetailFields {
-			delete(trimmed, f)
-		}
-		withUsage["usage"] = trimmed
-		if err2 := c.Mutate(ctx, field, aggregateID, withUsage); err2 != nil {
-			return err2
-		}
-		return ErrNoUsageDetail
+	if err != nil {
+		return err
 	}
-	if err == nil && withTools && c.usageWithoutTools.Load() {
-		return ErrNoToolUsage
+	var lost []error
+	if noDetail {
+		lost = append(lost, ErrNoUsageDetail)
 	}
-	if err == nil && withValidation && c.usageWithoutValidation.Load() {
-		return ErrNoValidationUsage
+	if withTools && c.usageWithoutTools.Load() {
+		lost = append(lost, ErrNoToolUsage)
 	}
-	return err
+	if withValidation && c.usageWithoutValidation.Load() {
+		lost = append(lost, ErrNoValidationUsage)
+	}
+	if withContext && c.usageWithoutContext.Load() {
+		lost = append(lost, ErrNoContextUsage)
+	}
+	switch len(lost) {
+	case 0:
+		return nil
+	case 1:
+		return lost[0]
+	}
+	return errors.Join(lost...)
 }
 
 // toolRowsCarry says whether any of a usage map's tools rows has key.
@@ -1783,8 +1831,9 @@ func (c *Client) takesScaling(ctx context.Context) (bool, bool) {
 	return p.takes, p.accounts
 }
 
-// holdingProbe is the cached answer to whether HeartbeatNodeInput has
-// `holding`, and when it was asked.
+// holdingProbe is the cached answer to whether an input type has a
+// field — HeartbeatNodeInput `holding`, EvaluateWorkItemInput `outcome`
+// (takesInputField) — and when it was asked.
 type holdingProbe struct {
 	mu    sync.Mutex
 	at    time.Time
@@ -1913,6 +1962,69 @@ func (c *Client) ReleaseWorkItem(ctx context.Context, itemID, reason string) err
 // UsageReport, ErrNoUsageLedger).
 func (c *Client) EvaluateWorkItem(ctx context.Context, itemID string, passed bool, notes string, costCents int, usage *UsageReport) error {
 	return c.mutateWithUsage(ctx, "evaluateWorkItem", itemID, map[string]any{"passed": passed, "notes": notes, "costCents": costCents}, usage)
+}
+
+// EvaluationNoVerdict is the evaluation outcome an evaluation that
+// reached no verdict is recorded with: the evaluator had no way to judge
+// — no VERDICT line, no context, its tools or its sandbox unavailable —
+// so the item is neither passed nor failed (runsheet goal
+// evaluation-reports-no-verdict-platform; ADR 011's amendment
+// 2026-09-29). The platform half had not landed when this was written:
+// the field `outcome` and the value are the node's assumption, named
+// here once.
+const (
+	EvaluationOutcomeField = "outcome"
+	EvaluationNoVerdict    = "no_verdict"
+)
+
+// ErrNoVerdictOutcome is what EvaluateWorkItemNoVerdict returns when the
+// gateway's EvaluateWorkItemInput has no `outcome` field (a platform older
+// than evaluation-reports-no-verdict-platform): nothing was sent, and the
+// caller keeps the item in evaluating as before. errors.Is-able.
+var ErrNoVerdictOutcome = errors.New("gateway: the platform takes no no-verdict outcome")
+
+// EvaluateWorkItemNoVerdict records an evaluation that reached no
+// verdict, with the reason in its notes and the session's cost and usage
+// report, so the platform returns the item to evaluating at no cost to
+// its attempts. It sends the outcome only to a gateway whose
+// EvaluateWorkItemInput has the field — asked once by introspection and
+// kept for ScalingProbeEvery, as takesHolding (ADR-004: never a field the
+// platform does not accept) — and returns ErrNoVerdictOutcome otherwise.
+func (c *Client) EvaluateWorkItemNoVerdict(ctx context.Context, itemID, reason string, costCents int, usage *UsageReport) error {
+	if !c.takesInputField(ctx, &c.noVerdictSchema, "EvaluateWorkItemInput", EvaluationOutcomeField) {
+		return ErrNoVerdictOutcome
+	}
+	return c.mutateWithUsage(ctx, "evaluateWorkItem", itemID, map[string]any{EvaluationOutcomeField: EvaluationNoVerdict, "notes": reason, "costCents": costCents}, usage)
+}
+
+// takesInputField says whether the gateway's input type typ has field,
+// asked by introspection and kept in p for ScalingProbeEvery. A failed
+// probe is a no, kept as long.
+func (c *Client) takesInputField(ctx context.Context, p *holdingProbe, typ, field string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := c.now()
+	if !p.at.IsZero() && now.Sub(p.at) < ScalingProbeEvery {
+		return p.takes
+	}
+	var out struct {
+		Type *struct {
+			InputFields []struct {
+				Name string `json:"name"`
+			} `json:"inputFields"`
+		} `json:"__type"`
+	}
+	p.at, p.takes = now, false
+	q := `query($t: String!) { __type(name: $t) { inputFields { name } } }`
+	if err := c.Query(ctx, q, map[string]any{"t": typ}, &out); err != nil || out.Type == nil {
+		return false
+	}
+	for _, f := range out.Type.InputFields {
+		if f.Name == field {
+			p.takes = true
+		}
+	}
+	return p.takes
 }
 
 // GitHubToken is a claimed item's own GitHub credential: an installation
@@ -2300,7 +2412,7 @@ func (c *Client) RecordDirectionResearch(ctx context.Context, directionID, nodeI
 		"nodeId": nodeID, "at": at,
 		"proposals": proposalRows(fallback), "costCents": costCents, "notes": notes,
 	}, usage)
-	if retryErr != nil && !errors.Is(retryErr, ErrNoUsageLedger) && !errors.Is(retryErr, ErrNoToolUsage) {
+	if retryErr != nil && !errors.Is(retryErr, ErrNoUsageLedger) && !errors.Is(retryErr, ErrNoToolUsage) && !errors.Is(retryErr, ErrNoContextUsage) {
 		return retryErr
 	}
 	if retryErr != nil {
@@ -2556,6 +2668,12 @@ type UsageReport struct {
 	// the field (ErrNoValidationUsage).
 	Validation []ValidationMinutes `json:"validation,omitempty"`
 
+	// ContextBytes is what the session's context cost on disk: every
+	// document file under .mesh/context plus INDEX.md (adr-016). Left
+	// out when none was written, and by mutateWithUsage for a platform
+	// without the field (ErrNoContextUsage).
+	ContextBytes int64 `json:"contextBytes,omitempty"`
+
 	FiveHourBefore *float64 `json:"fiveHourBefore,omitempty"`
 	FiveHourAfter  *float64 `json:"fiveHourAfter,omitempty"`
 	SevenDayBefore *float64 `json:"sevenDayBefore,omitempty"`
@@ -2605,7 +2723,8 @@ const (
 // session.
 func (c *Client) RecordToolUsage(ctx context.Context, itemID, toolCallID, tool string, usage UsageReport) error {
 	const field = "recordToolUsage"
-	usage.Tools = nil // one call's record needs no per-tool list
+	usage.Tools = nil      // one call's record needs no per-tool list
+	usage.ContextBytes = 0 // nor the session's context, counted once on its own report
 	um, err := usageInput(&usage)
 	if err != nil {
 		return err

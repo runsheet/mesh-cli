@@ -44,6 +44,9 @@ type Director struct {
 	// Loop.KindModelBudget); nil falls back to Cfg's own, read once at
 	// start.
 	Budgets func(kind, model string) (amount float64, source string)
+	// ContextBudget is node.yaml's `context:` budget in force, read
+	// live (Loop.ContextBudget); nil is Cfg's own, read once at start.
+	ContextBudget func() ContextConfig
 	// Model is what a research session runs on ("" the CLI's default).
 	Model string
 	// Accounts are the node's Claude accounts (node.yaml); a session runs
@@ -111,23 +114,26 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 	}
 	dir := ResearchDir(d.WorkRoot, project.Slug, direction.Slug)
 	dirs := map[string]string{}
+	var names []string
 	for _, r := range all {
 		sub := filepath.Join("repos", r.Name)
 		if err := d.WS.Fetch(ctx, r.FullName(), filepath.Join(dir, sub)); err != nil {
 			return fmt.Errorf("fetch %s: %w", r.FullName(), err)
 		}
 		dirs[r.FullName()] = sub
+		names = append(names, r.FullName())
 	}
-	cx, err := FetchContext(ctx, d.GW, scope.Login, project.Slug)
+	cx, err := FetchContext(ctx, d.GW, scope.Login, project.Slug, ContextOptions{Budget: d.contextBudget(), Repos: names})
 	if err != nil {
 		d.logf("project %s: context unavailable: %v", project.Slug, err)
 		cx = &Context{}
 	}
 	AddLive(ctx, d.GW, cx, scope.ID, project.ID, d.logf)
-	files, err := WriteContext(dir, cx)
+	files, written, err := WriteContext(dir, cx)
 	if err != nil {
 		return fmt.Errorf("write context: %w", err)
 	}
+	d.logf("project %s: %s", project.Slug, written.Line())
 	contextDir := ""
 	if len(files) > 0 || len(cx.Index) > 0 || len(cx.Live) > 0 {
 		contextDir = ContextDir
@@ -164,6 +170,7 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 	if err != nil {
 		return err
 	}
+	acct.SetContextBytes(written.Bytes)
 	defer unlessDetached(ctx, acct.Cleanup)
 	acct.Apply(&job)
 	job.Meta = harness.SessionMeta{NodeID: scope.NodeID, DirectionID: direction.ID, TempDirs: sessionTempDirs(job, acct)}
@@ -226,7 +233,8 @@ func (d *Director) handIn(ctx context.Context, direction gateway.Direction, proj
 // pitches as proposals, and that landed — the research is in, so it is
 // no error, and the node says so once for its run. A report the
 // fallback landed without stays ErrNoUsageLedger (its per-tool list,
-// ErrNoToolUsage), for Carried.
+// ErrNoToolUsage; its context bytes, ErrNoContextUsage; its turn detail,
+// ErrNoUsageDetail), for Carried.
 func (d *Director) pitchFallback(err error) error {
 	if !errors.Is(err, gateway.ErrNoPitches) {
 		return err
@@ -234,13 +242,13 @@ func (d *Director) pitchFallback(err error) error {
 	d.noPitches.Do(func() {
 		d.logf("pitches: the platform takes no pitches; handed in as proposals (said once, for every direction this run)")
 	})
-	if errors.Is(err, gateway.ErrNoUsageLedger) {
-		return gateway.ErrNoUsageLedger
+	var rest []error
+	for _, lost := range []error{gateway.ErrNoUsageLedger, gateway.ErrNoToolUsage, gateway.ErrNoContextUsage, gateway.ErrNoUsageDetail} {
+		if errors.Is(err, lost) {
+			rest = append(rest, lost)
+		}
 	}
-	if errors.Is(err, gateway.ErrNoToolUsage) {
-		return gateway.ErrNoToolUsage
-	}
-	return nil
+	return errors.Join(rest...)
 }
 
 // readResearch reads a session's final message by its direction's mode
@@ -420,4 +428,16 @@ func slugify(s string) string {
 		}
 	}
 	return strings.Trim(b.String(), "-")
+}
+
+// contextBudget is the context budget for d's sessions: live, through
+// d.ContextBudget, when set; else Cfg's own.
+func (d *Director) contextBudget() ContextConfig {
+	if d.ContextBudget != nil {
+		return d.ContextBudget()
+	}
+	if d.Cfg == nil {
+		return ContextConfig{}.Effective()
+	}
+	return d.Cfg.Context.Effective()
 }
