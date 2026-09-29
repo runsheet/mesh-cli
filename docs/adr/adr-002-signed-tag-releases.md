@@ -414,6 +414,27 @@ again and current.
   identity. Which repo `selfupdate.Source` downloads from is a
   following item of the same goal.
 
+**What happened:** `v0.2.187` was cut on 2026-09-28 at 22:46Z
+(`909202b`) and signed and released on `runsheet/mesh-cli`, but it
+never reached the mirror. The mirror step of run `36494313388` failed
+in `gh release create` itself: the tag existed only on the source
+("tag v0.2.187 exists locally but has not been pushed to runsheet/mesh
+… specify the `--target` flag"). #336 fixed it with `--target main`.
+`v0.2.188` (`5a8c29e`) is the first release cut for `runsheet/mesh`
+with that fix. Its run, `36499785802`, signed and released it on
+`runsheet/mesh-cli`, and then the mirror refused the release: `HTTP
+403: Resource not accessible by personal access token`, because
+`RELEASE_TOKEN` cannot create releases on `runsheet/mesh`. It needs a
+fine-grained token owned by `runsheet` with Contents: read and write
+there, or the org App's installation token. So `v0.2.188` is cut but
+not yet mirrored, and the mirror's latest release is still `v0.2.186`.
+Once `v0.2.188` is on the mirror, the numbering rule (max `v0.2.x` on
+`runsheet/mesh` plus one) next yields **`v0.2.189`**, and `v0.2.189` is
+also the retry once the token is fixed. Until then the rule would
+answer `v0.2.187`, a tag the source already holds, so the retry is cut
+by name. `docs/releases-after-transfer.md` ("v0.2.188: the first
+release on the mirror") is the record.
+
 ## Amendment: the node downloads from runsheet/mesh (goal `signed-releases-on-runsheet-mesh`, 2026-09-28)
 
 `runsheet/mesh-cli` stays private, so the source above (`selfupdate.GitHub`
@@ -438,12 +459,12 @@ the updater's side of that:
   came from, so a fork or an unrelated push to `runsheet/mesh` proves
   nothing.
 - `mesh node update` with no version takes the mirror's latest
-  non-prerelease. Until `v0.2.187` is published there, that is still
-  `v0.2.186` — the last of the old unsigned `cli-release.yml` builds,
-  carrying no `SHA256SUMS` or Sigstore bundle at all. `Fetch` refuses it
-  with `ErrMissingAsset` exactly as it would any other release missing
-  an asset; this is the intended behaviour, not a bug to work around,
-  and it clears itself the moment `v0.2.187` ships.
+  non-prerelease. Until `v0.2.188`'s retry, `v0.2.189` (above), is
+  published there, that is still `v0.2.186`. It is the last of the old
+  unsigned `cli-release.yml` builds and carries no Sigstore bundle.
+  `Fetch` refuses it with `ErrMissingAsset`, as it would any other
+  release missing an asset. That is intended, not a bug to work around,
+  and it clears itself once the first signed `v0.2.x` is on the mirror.
 - This supersedes the Decision section's private-repo bullet above: the
   choice it left open (make the repo public, or move to an authenticated
   download) is resolved by the mirror instead — the source repo stays
