@@ -1345,12 +1345,89 @@ and put its binaries on the node's `PATH`, or name the path as
 `codex.binary`. Keep `codex-code-mode-host` beside `codex`. Without it,
 every session starts with a `Code Mode is unavailable` warning.
 
-The workspace-write sandbox uses bubblewrap. On Ubuntu with
-`kernel.apparmor_restrict_unprivileged_userns = 1` it fails
-(`bwrap: loopback: Failed RTM_NEWADDR`), and every write and command in
-the session is blocked. The session still "succeeds", and its message
-says what it could not do. Give Codex's bwrap an AppArmor profile
-before a Codex session builds anything on such a host.
+### The sandbox on Ubuntu
+
+Codex runs on the host, not in the node's pod (ADR 007), and its
+workspace-write sandbox is its own bundled bubblewrap. On Ubuntu with
+`kernel.apparmor_restrict_unprivileged_userns = 1` (the default since
+23.10) that bubblewrap cannot set up its network namespace and fails
+with `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`.
+Every command and write in the session is blocked — `npm test` never
+runs — and the session still ends "successfully". Claude sessions run
+in the node's Podman pod and never use bwrap.
+
+**The probe.** Before every Codex session the node's preflight
+(`Codex.Preflight`) runs, after its context-server check, Codex's
+sandbox on a no-op in the session's own `CODEX_HOME`, environment and
+workspace:
+
+```bash
+# codex-cli 0.157; exit 0 and no `bwrap:` is a pass
+codex sandbox -c sandbox_mode="workspace-write" -- true
+```
+
+The `-c sandbox_mode="workspace-write"` matters: left alone, `codex
+sandbox` runs its command read-only, while the session runs under
+`codex exec --sandbox workspace-write`; the probe checks the policy the
+session will actually get.
+
+A `bwrap:` line on its stderr or a non-zero exit fails the preflight
+with `sandbox: <the first 200 characters>`. Then, as for any failed
+preflight (ADR 011): an unpinned evaluation runs on Claude and says so
+in node.log and its notes (`the Codex preflight failed: sandbox: …`), an
+item pinned to a `gpt-…` model waits in evaluating (said once for the
+item), and a Codex second opinion is `unavailable: preflight sandbox:
+…`. Should a session get past the probe and still have every command
+refused by bwrap, the stream says so (`Result.SandboxBroken`) and its
+text is never read for a verdict: the same job runs on Claude, and with
+no other family the item waits in evaluating.
+
+**The fix** is one of these, as root. Run the probe as the node's user
+afterwards; it should print nothing and exit 0.
+
+1. *An AppArmor profile for Codex alone* (preferred). The bubblewrap is
+   inside the `codex` binary, so the profile names that binary's real
+   path (`readlink -f "$(command -v codex)"`). Put it somewhere only
+   root can write — a profile on a path the node's user can write lets
+   anything that user runs create user namespaces — and point node.yaml
+   `codex.binary` at it:
+
+   ```bash
+   sudo install -m 0755 "$(readlink -f "$(command -v codex)")" /usr/local/bin/codex
+   sudo install -m 0755 "$(dirname "$(readlink -f "$(command -v codex)")")/codex-code-mode-host" /usr/local/bin/
+   sudo tee /etc/apparmor.d/codex >/dev/null <<'PROFILE'
+   abi <abi/4.0>,
+   include <tunables/global>
+
+   profile codex /usr/local/bin/codex flags=(unconfined) {
+     userns,
+     include if exists <local/codex>
+   }
+   PROFILE
+   sudo apparmor_parser -r /etc/apparmor.d/codex
+   ```
+
+   What it costs: `codex` (and what it execs) may create unprivileged
+   user namespaces, which is what its sandbox is built from; every other
+   program on the host stays restricted. Re-install after a Codex
+   upgrade (the profile follows the path, not the file).
+
+2. *Lift the restriction for the whole host*:
+
+   ```bash
+   sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+   echo 'kernel.apparmor_restrict_unprivileged_userns = 0' | sudo tee /etc/sysctl.d/60-mesh-codex-userns.conf
+   ```
+
+   What it costs: every unprivileged process on the machine may create
+   user namespaces again, as before Ubuntu 23.10 — the kernel surface
+   (namespaced networking, mounts) the restriction closed is open to
+   anything a session or the operator runs, not just Codex. Prefer the
+   profile on a shared machine.
+
+Until one is in place the node keeps Codex evaluations off a host whose
+sandbox cannot start; nothing is judged on a session that could not run
+the acceptance.
 
 ### Add an account
 
