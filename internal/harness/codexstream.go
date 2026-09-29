@@ -2,6 +2,7 @@ package harness
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"io"
 	"regexp"
@@ -117,9 +118,10 @@ func (p CodexPrice) Cost(u CodexUsage) float64 {
 // stays nil. Each completed mcp_tool_call is counted on ToolCalls by
 // its server, its item id (empty ones synthesised) kept on
 // ToolCallIDs, and on Result.Tools: its wall time is item.started to
-// item.completed, and a completed status of "failed" counts an error,
+// item.completed; a status of "completed" counts Clean, and one of "failed" counts an error,
 // the item's error text kept as the server's FirstError (else its
-// result's text, else the status) — the call still counts on ToolCalls
+// result's text, else the status), and one with no error but a result
+// counted Answered too (codexToolAnswered: the tool replied) — the call still counts on ToolCalls
 // and Tools whatever its status. An error item or top-level error
 // naming an MCP server that failed to start (mcpStartupServers) counts
 // an error for that server too, the message as FirstError, even with
@@ -200,8 +202,14 @@ func ParseCodexStream(r io.Reader, model string, onEvent func(CodexEvent)) Resul
 					delete(pending, key)
 					stat.Wall += now().Sub(start)
 				}
+				if ev.Item.Status == "completed" {
+					stat.Clean++
+				}
 				if ev.Item.Status == "failed" {
 					stat.Errors++
+					if codexToolAnswered(ev.Item) {
+						stat.Answered++
+					}
 					if stat.FirstError == "" {
 						stat.FirstError = capText(codexCallError(ev.Item), 300)
 					}
@@ -293,6 +301,22 @@ func bwrapLine(out string) string {
 		}
 	}
 	return ""
+}
+
+// codexToolAnswered says whether a failed mcp_tool_call was the tool's
+// own answer: `error` null or absent (Codex sets it when the call never
+// reached the server — an approval refusal, a transport or auth failure
+// — even with an empty message) and a `result` the server returned, its
+// isError content, whatever shape it has (docs/codex-events.md,
+// `prologue: not found`). It judges the JSON values, never their text.
+func codexToolAnswered(it *CodexItem) bool {
+	return jsonNull(it.Error) && !jsonNull(it.Result)
+}
+
+// jsonNull says whether a JSON value is absent or null.
+func jsonNull(raw json.RawMessage) bool {
+	t := bytes.TrimSpace(raw)
+	return len(t) == 0 || bytes.Equal(t, []byte("null"))
 }
 
 // codexCallError is a failed mcp_tool_call's error text: its error's

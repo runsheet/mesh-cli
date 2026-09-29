@@ -170,8 +170,11 @@ func capText(s string, n int) string {
 // synthesised) kept on Result.ToolCallIDs, and on Result.Tools: its wall
 // time closes on the matching tool_result (a user event, by
 // tool_use_id), left zero if none arrives before the stream ends; a
-// tool_result with is_error true counts an error, its text (capped at
-// 300 chars) kept as the server's FirstError. A system/init event's
+// clean tool_result counts Clean; a tool_result with is_error true counts an error, its text (capped at
+// 300 chars) kept as the server's FirstError, and Answered too when the
+// system/init event named that server connected and the text is not
+// Claude Code's own refusal of the call (claudeToolAnswered: the server
+// replied with its own error result). A system/init event's
 // mcp_servers names each server whose status is not "connected" as an
 // error too, that status as FirstError, even with zero calls.
 //
@@ -200,6 +203,7 @@ func ParseStream(r io.Reader, onEvent func(Event)) Result {
 		start  time.Time
 	}
 	pending := map[string]pendingCall{}
+	connected := map[string]bool{}
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		if line == "" || line[0] != '{' {
@@ -219,6 +223,9 @@ func ParseStream(r io.Reader, onEvent func(Event)) Result {
 				model = ev.Model
 			}
 			for _, srv := range ev.MCPServers {
+				if srv.Status == "connected" {
+					connected[srv.Name] = true
+				}
 				if srv.Name == "" || srv.Status == "" || srv.Status == "connected" {
 					continue
 				}
@@ -279,9 +286,14 @@ func ParseStream(r io.Reader, onEvent func(Event)) Result {
 				stat.Wall += now().Sub(pc.start)
 				if c.IsError {
 					stat.Errors++
+					if connected[pc.server] && claudeToolAnswered(toolResultText(c.ResultContent)) {
+						stat.Answered++
+					}
 					if stat.FirstError == "" {
 						stat.FirstError = capText(toolResultText(c.ResultContent), 300)
 					}
+				} else {
+					stat.Clean++
 				}
 			}
 		case "rate_limit_event":
@@ -324,4 +336,42 @@ func ParseStream(r io.Reader, onEvent func(Event)) Result {
 	}
 	res.EmptyOutput = events == 0
 	return res
+}
+
+// claudeClientErrors are the texts Claude Code puts on an is_error
+// tool_result when the call never reached the MCP server: its own
+// validation and unknown-tool errors (wrapped in <tool_use_error>), a
+// permission refusal, and the MCP client's transport errors
+// (ConnectionClosed -32000, RequestTimeout -32001, a server not
+// connected). Lower-cased; matched as substrings.
+var claudeClientErrors = []string{
+	"<tool_use_error>",
+	"no such tool available",
+	"requested permissions to use",
+	"haven't granted it yet",
+	"permission to use",
+	"doesn't want to proceed with this tool use",
+	"mcp error -32000",
+	"mcp error -32001",
+	"connection closed",
+	"request timed out",
+	"not connected",
+}
+
+// claudeToolAnswered says whether an is_error tool_result's text is the
+// server's own answer (MCP isError content, e.g. `not found` for a slug
+// it does not have) rather than Claude Code refusing or failing the call
+// before the server saw it (claudeClientErrors). An empty text is no
+// answer.
+func claudeToolAnswered(text string) bool {
+	t := strings.ToLower(strings.TrimSpace(text))
+	if t == "" {
+		return false
+	}
+	for _, c := range claudeClientErrors {
+		if strings.Contains(t, c) {
+			return false
+		}
+	}
+	return true
 }
