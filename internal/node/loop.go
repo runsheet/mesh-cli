@@ -286,7 +286,7 @@ func (l *Loop) goalRanks(ctx context.Context, sc Scope, what string) func(goalID
 	priority := map[string]string{}
 	goals, err := l.goals(ctx, sc)
 	if err != nil {
-		l.logf("list goals of %s (its items %s as normal): %v", sc.Login, what, err)
+		l.logf("list goals of %s (its items %s as normal): %v", sc.Name(), what, err)
 	}
 	for _, g := range goals {
 		priority[g.ID] = g.Priority
@@ -346,7 +346,7 @@ func (l *Loop) claimReady(ctx context.Context, free, normalFree, maxRank int) {
 	for _, sc := range l.Scopes {
 		items, err := l.GW.ReadyWorkItems(ctx, sc.ID)
 		if err != nil {
-			l.logf("list ready items of %s: %v", sc.Login, err)
+			l.logf("list ready items of %s: %v", sc.Name(), err)
 			continue
 		}
 		if len(items) == 0 {
@@ -389,9 +389,9 @@ func (l *Loop) claimReady(ctx context.Context, free, normalFree, maxRank int) {
 		}
 		if err := l.GW.ClaimWorkItem(ctx, item.ID, sc.NodeID, l.Harness); err != nil {
 			if gateway.IsRefusal(err) {
-				l.logf("%s item %d %q: not ours (%v)", sc.Login, item.Seq, item.Title, err)
+				l.logf("%s item %d %q: not ours (%v)", sc.Name(), item.Seq, item.Title, err)
 			} else {
-				l.logf("%s claim item %d: %v", sc.Login, item.Seq, err)
+				l.logf("%s claim item %d: %v", sc.Name(), item.Seq, err)
 			}
 			continue
 		}
@@ -400,7 +400,7 @@ func (l *Loop) claimReady(ctx context.Context, free, normalFree, maxRank int) {
 			normalFree--
 		}
 		normalFree = min(normalFree, free)
-		l.logf("%s: claimed item %d %q", sc.Login, item.Seq, item.Title)
+		l.logf("%s: claimed item %d %q", sc.Name(), item.Seq, item.Title)
 		l.start(actx, item)
 	}
 }
@@ -661,9 +661,9 @@ func (l *Loop) Tick(ctx context.Context) {
 	for _, sc := range l.Scopes {
 		if _, err := l.GW.HeartbeatNode(ctx, sc.NodeID, l.Version, l.Running(), extras); err != nil {
 			if l.confirmPending() {
-				l.confirmFailed(sc.Login, err)
+				l.confirmFailed(sc.Name(), err)
 			} else {
-				l.logf("heartbeat %s: %v", sc.Login, err)
+				l.logf("heartbeat %s: %v", sc.Name(), err)
 			}
 		} else {
 			beat = true
@@ -1122,7 +1122,7 @@ func (l *Loop) evaluateHeld(ctx context.Context) {
 	for _, sc := range l.Scopes {
 		rows, err := l.GW.OrgWorkItems(ctx, sc.ID, "evaluating")
 		if err != nil {
-			l.logf("list evaluating items of %s: %v", sc.Login, err)
+			l.logf("list evaluating items of %s: %v", sc.Name(), err)
 			continue
 		}
 		var rank func(string) int
@@ -1196,7 +1196,7 @@ func (l *Loop) rebaseRequested(ctx context.Context) {
 	for _, sc := range l.Scopes {
 		rows, err := l.GW.RequestedRebases(ctx, sc.ID)
 		if err != nil {
-			l.logf("list requested rebases of %s: %v", sc.Login, err)
+			l.logf("list requested rebases of %s: %v", sc.Name(), err)
 			continue
 		}
 		if len(rows) == 0 {
@@ -1232,11 +1232,11 @@ func (l *Loop) rebaseRequested(ctx context.Context) {
 			delete(l.rebasing, item.ID)
 			l.mu.Unlock()
 			if !gateway.IsRefusal(err) {
-				l.logf("%s: claim the rebase of item %d: %v", sc.Login, item.Seq, err)
+				l.logf("%s: claim the rebase of item %d: %v", sc.Name(), item.Seq, err)
 			}
 			continue
 		}
-		l.logf("%s: rebasing item %d %q", sc.Login, item.Seq, item.Title)
+		l.logf("%s: rebasing item %d %q", sc.Name(), item.Seq, item.Title)
 		l.wg.Add(1)
 		go func(ctx context.Context, item gateway.WorkItem) {
 			defer l.wg.Done()
@@ -1263,7 +1263,7 @@ func (l *Loop) planRequested(ctx context.Context) {
 	for _, sc := range l.Scopes {
 		goals, err := l.goals(ctx, sc)
 		if err != nil {
-			l.logf("list goals of %s: %v", sc.Login, err)
+			l.logf("list goals of %s: %v", sc.Name(), err)
 			continue
 		}
 		for _, g := range goals {
@@ -1298,13 +1298,13 @@ func (l *Loop) planRequested(ctx context.Context) {
 			delete(l.planning, g.ID)
 			l.mu.Unlock()
 			if gateway.IsRefusal(err) {
-				l.logf("%s: goal %q is being planned elsewhere", sc.Login, g.Slug)
+				l.logf("%s: goal %q is being planned elsewhere", sc.Name(), g.Slug)
 			} else {
-				l.logf("%s: claim planning of %q: %v", sc.Login, g.Slug, err)
+				l.logf("%s: claim planning of %q: %v", sc.Name(), g.Slug, err)
 			}
 			continue
 		}
-		l.logf("%s: planning goal %q", sc.Login, g.Slug)
+		l.logf("%s: planning goal %q", sc.Name(), g.Slug)
 		l.wg.Add(1)
 		go func(ctx context.Context, g gateway.Goal, sc Scope) {
 			defer l.wg.Done()
@@ -1332,7 +1332,7 @@ func (l *Loop) researchDue(ctx context.Context) {
 	for _, sc := range l.Scopes {
 		directions, err := l.GW.Directions(ctx, sc.ID, "")
 		if err != nil {
-			l.logf("list directions of %s: %v", sc.Login, err)
+			l.logf("list directions of %s: %v", sc.Name(), err)
 			continue
 		}
 		live := make([]gateway.Direction, 0, len(directions))
@@ -1346,7 +1346,7 @@ func (l *Loop) researchDue(ctx context.Context) {
 		}
 		projects, err := l.GW.Projects(ctx, sc.ID)
 		if err != nil {
-			l.logf("list projects of %s: %v", sc.Login, err)
+			l.logf("list projects of %s: %v", sc.Name(), err)
 			continue
 		}
 		byID := make(map[string]gateway.Project, len(projects))
@@ -1363,7 +1363,7 @@ func (l *Loop) researchDue(ctx context.Context) {
 		// the room as information.
 		goals, err := l.goals(ctx, sc)
 		if err != nil {
-			l.logf("list goals of %s: %v", sc.Login, err)
+			l.logf("list goals of %s: %v", sc.Name(), err)
 			continue
 		}
 		for _, d := range live {
@@ -1396,11 +1396,11 @@ func (l *Loop) researchDue(ctx context.Context) {
 				delete(l.researching, d.ID)
 				l.mu.Unlock()
 				if !gateway.IsRefusal(err) {
-					l.logf("%s: claim the research of %q: %v", sc.Login, p.Slug+"/"+d.Slug, err)
+					l.logf("%s: claim the research of %q: %v", sc.Name(), p.Slug+"/"+d.Slug, err)
 				}
 				continue
 			}
-			l.logf("%s: researching %q", sc.Login, p.Slug+"/"+d.Slug)
+			l.logf("%s: researching %q", sc.Name(), p.Slug+"/"+d.Slug)
 			l.wg.Add(1)
 			go func(ctx context.Context, d gateway.Direction, p gateway.Project, sc Scope) {
 				defer l.wg.Done()

@@ -29,3 +29,14 @@ func ProjectID(orgID uuid.UUID, slug string) uuid.UUID {
 func AgentID(orgID, projectID uuid.UUID, slug string) uuid.UUID {
 	return uuid.NewSHA1(idNamespace, []byte("agent:"+orgID.String()+":"+projectID.String()+":"+slug))
 }
+
+// OwnedNodeID is a node's one id under its owner (ADR-015): from the
+// owner's id and the node's slug, so a node.yaml without a node_id
+// converges on the same id every start. For an owner id that is a uuid
+// it is NodeID's derivation over the owner in the org's place.
+func OwnedNodeID(ownerID, slug string) uuid.UUID {
+	if id, err := uuid.Parse(ownerID); err == nil {
+		ownerID = id.String()
+	}
+	return uuid.NewSHA1(idNamespace, []byte("node:"+ownerID+":"+slug))
+}

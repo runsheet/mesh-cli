@@ -781,6 +781,10 @@ func excludeFromGit(dir, pattern string) error {
 // Gateway is what the node needs of the platform; *gateway.Client is one.
 type Gateway interface {
 	MyOrgs(ctx context.Context) ([]gateway.Org, error)
+	// RegisterNode and TakesOwner are the node's registration: once,
+	// with its owner, when the platform takes one (ADR-015).
+	RegisterNode(ctx context.Context, in gateway.RegisterNodeInput) (*gateway.NodeAnswer, error)
+	TakesOwner(ctx context.Context) bool
 	HeartbeatNode(ctx context.Context, nodeID, version string, running int, extras ...gateway.HeartbeatExtras) (*gateway.NodeAnswer, error)
 	GetDesiredVersion(ctx context.Context, nodeID string) (string, error)
 	ReadyWorkItems(ctx context.Context, orgID string) ([]gateway.WorkItem, error)

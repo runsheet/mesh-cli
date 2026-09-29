@@ -21,23 +21,36 @@ import (
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/harness"
 	"projectmesh.io/mesh-cli/internal/selfupdate"
+	"projectmesh.io/mesh-cli/internal/version"
 )
 
 // Config is ~/.mesh/node.yaml, written by `mesh node register`. A node
-// serves every org its owner belongs to (a Node per org on the platform,
-// id from (org, slug)), or only those in Orgs when set. The single-org
-// fields are what older registrations wrote; read as Orgs of one.
+// has an owner, a person or an enterprise (Owner, ADR-015): a person's
+// node serves every org the person is a member of, an enterprise's
+// every org of the enterprise — or only those in Orgs when set. It has
+// one id, NodeID (OwnNodeID), and the platform names the orgs it serves
+// in its answer to the registration and each heartbeat (ScopesFrom). A
+// platform that does not take an owner yet (TakesOwner false) gets
+// today's registration: a Node per org of the person, id from (org,
+// slug) (ResolveScopes). The single-org fields are what older
+// registrations wrote; read as Orgs of one.
 type Config struct {
 	Gateway string `yaml:"gateway,omitempty"`
-	// Orgs restricts the node to these logins; empty is every org of the owner.
+	// Orgs restricts the node to these orgs, by login or, for an org
+	// without one, its slug; empty is every org the owner's node serves.
 	Orgs      []string `yaml:"orgs,omitempty"`
 	OrgLogin  string   `yaml:"org,omitempty"`
 	OrgID     string   `yaml:"org_id,omitempty"`
 	AccountID string   `yaml:"account_id,omitempty"`
-	NodeID    string   `yaml:"node_id,omitempty"`
-	OwnerID   string   `yaml:"owner_id,omitempty"`
-	Slug      string   `yaml:"slug"`
-	Name      string   `yaml:"name"`
+	// NodeID is the node's own id: kept when node.yaml has one, else
+	// derived from (owner_id, slug) and written back (OwnNodeID).
+	NodeID  string `yaml:"node_id,omitempty"`
+	OwnerID string `yaml:"owner_id,omitempty"`
+	// Owner is who owns the node: "person" (the default, when empty —
+	// bring your own infra) or "enterprise" (shared infra).
+	Owner string `yaml:"owner,omitempty"`
+	Slug  string `yaml:"slug"`
+	Name  string `yaml:"name"`
 	// Capacity is how many items the node runs at once: a plain number
 	// (fixed) or {min, max}, between which the node scales by the
 	// headroom left in its plan's windows (adr-004).
@@ -390,12 +403,67 @@ func (c CodexConfig) CodexModel(claudeModel string) string {
 	return ""
 }
 
-// Scope is one org the node serves, with the node's id there.
+// The owners a node may have (ADR-015).
+const (
+	OwnerPerson     = "person"
+	OwnerEnterprise = "enterprise"
+)
+
+// ValidateOwner refuses an owner that is neither a person nor an
+// enterprise; empty is a person.
+func ValidateOwner(owner string) error {
+	switch owner {
+	case "", OwnerPerson, OwnerEnterprise:
+		return nil
+	}
+	return fmt.Errorf("owner %q: must be %q or %q", owner, OwnerPerson, OwnerEnterprise)
+}
+
+// OwnerKind is node.yaml's owner, a person when it names none.
+func (c *Config) OwnerKind() string { return cmp.Or(c.Owner, OwnerPerson) }
+
+// OwnNodeID is the node's one id: node.yaml's node_id when it has one,
+// else a v5 uuid from (owner_id, slug), so a node.yaml without one
+// converges on the same id every start until it is written back.
+func (c *Config) OwnNodeID() (string, error) {
+	if c.NodeID != "" {
+		return c.NodeID, nil
+	}
+	if c.OwnerID == "" || c.Slug == "" {
+		return "", errors.New("node.yaml has neither a node_id nor an owner_id and slug: re-run `mesh node register`")
+	}
+	return gateway.OwnedNodeID(c.OwnerID, c.Slug).String(), nil
+}
+
+// Owner is who owns the node, as the platform answered the
+// registration: a person or an enterprise, and its name. A platform
+// that takes no owner yet makes it the person whose token registered.
+type Owner struct {
+	Kind string
+	Name string
+}
+
+// Scope is one org the node serves, with the node's id there — the
+// node's one id when the platform took its owner, else its id in that
+// org.
 type Scope struct {
+	// Login is the org's GitHub login or, for an org without one
+	// (grapevine), its tenant slug: what the node names it by.
 	Login     string
+	Slug      string
 	ID        string
 	AccountID string
 	NodeID    string
+}
+
+// Name is what the node calls the org in its logs and status: its
+// login, else its slug.
+func (sc Scope) Name() string { return cmp.Or(sc.Login, sc.Slug) }
+
+// named says whether the org is one of names (lower-cased), by login
+// or slug.
+func (sc Scope) named(names map[string]bool) bool {
+	return names[strings.ToLower(sc.Login)] || (sc.Slug != "" && names[strings.ToLower(sc.Slug)])
 }
 
 // Scopes are the orgs a node serves.
@@ -411,19 +479,61 @@ func (s Scopes) ByOrg(orgID string) (Scope, bool) {
 	return Scope{}, false
 }
 
-// LoginOf is an org's login, or "" when the node does not serve it.
+// LoginOf is an org's name (Scope.Name), or "" when the node does not
+// serve it.
 func (s Scopes) LoginOf(orgID string) string {
 	sc, _ := s.ByOrg(orgID)
-	return sc.Login
+	return sc.Name()
 }
 
-// Logins lists the orgs served, in order.
+// Logins names the orgs served, in order.
 func (s Scopes) Logins() []string {
 	out := make([]string, 0, len(s))
 	for _, sc := range s {
-		out = append(out, sc.Login)
+		out = append(out, sc.Name())
 	}
 	return out
+}
+
+// NodeIDs are the node's distinct ids across the scopes, in order: one
+// when the platform took the node's owner.
+func (s Scopes) NodeIDs() []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, sc := range s {
+		if !seen[sc.NodeID] {
+			seen[sc.NodeID] = true
+			out = append(out, sc.NodeID)
+		}
+	}
+	return out
+}
+
+// restrict keeps the scopes names (node.yaml's orgs) lists, all when it
+// lists none, and says which names matched no scope.
+func restrict(scopes Scopes, names []string) (Scopes, []string) {
+	want := map[string]bool{}
+	for _, o := range names {
+		want[strings.ToLower(strings.TrimSpace(o))] = true
+	}
+	if len(want) == 0 {
+		return scopes, nil
+	}
+	var kept Scopes
+	for _, sc := range scopes {
+		if !sc.named(want) {
+			continue
+		}
+		kept = append(kept, sc)
+		delete(want, strings.ToLower(sc.Login))
+		delete(want, strings.ToLower(sc.Slug))
+	}
+	missing := make([]string, 0, len(want))
+	for o := range want {
+		missing = append(missing, o)
+	}
+	sort.Strings(missing)
+	return kept, missing
 }
 
 // NodeIDIn is the node's id in an org: from (org, slug), so it converges.
@@ -437,41 +547,173 @@ func (c *Config) NodeIDIn(orgID string) (string, error) {
 
 // ResolveScopes lists the orgs the owner belongs to on the platform,
 // keeps those the config names (all, when it names none), and gives the
-// node its id in each. Orgs the config names that the owner is not in
-// are an error: the node would never see their items.
+// node its id in each — the registration of a platform that takes no
+// owner yet. Orgs the config names that the owner is not in are an
+// error: the node would never see their items.
 func ResolveScopes(ctx context.Context, gw Gateway, c *Config) (Scopes, error) {
 	orgs, err := gw.MyOrgs(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("my orgs: %w", err)
 	}
-	want := map[string]bool{}
-	for _, o := range c.Orgs {
-		want[strings.ToLower(strings.TrimSpace(o))] = true
-	}
-	var scopes Scopes
+	var all Scopes
 	for _, o := range orgs {
-		if len(want) > 0 && !want[strings.ToLower(o.Login)] {
-			continue
-		}
 		id, err := c.NodeIDIn(o.ID)
 		if err != nil {
 			return nil, err
 		}
-		scopes = append(scopes, Scope{Login: o.Login, ID: o.ID, AccountID: o.AccountID, NodeID: id})
-		delete(want, strings.ToLower(o.Login))
+		all = append(all, Scope{Login: cmp.Or(o.Login, o.TenantSlug), Slug: o.TenantSlug, ID: o.ID, AccountID: o.AccountID, NodeID: id})
 	}
-	if len(want) > 0 {
-		missing := make([]string, 0, len(want))
-		for o := range want {
-			missing = append(missing, o)
-		}
-		sort.Strings(missing)
+	scopes, missing := restrict(all, c.Orgs)
+	if len(missing) > 0 {
 		return nil, fmt.Errorf("not a member of %s (the node.yaml orgs list names them)", strings.Join(missing, ", "))
 	}
 	if len(scopes) == 0 {
 		return nil, errors.New("the token's person belongs to no claimed org")
 	}
 	return scopes, nil
+}
+
+// ScopesFrom is the orgs the platform's answer says the node serves,
+// kept to those node.yaml's orgs names as ResolveScopes keeps them, each
+// under the node's one id (the answer's, else OwnNodeID). A nil answer
+// is none.
+func ScopesFrom(answer *gateway.NodeAnswer, cfg *Config) Scopes {
+	if answer == nil {
+		return nil
+	}
+	id := answer.NodeID
+	if id == "" {
+		id, _ = cfg.OwnNodeID()
+	}
+	var all Scopes
+	for _, s := range answer.Scopes {
+		all = append(all, Scope{Login: cmp.Or(s.Login, s.Slug), Slug: s.Slug, ID: s.OrgID, AccountID: s.AccountID, NodeID: id})
+	}
+	scopes, _ := restrict(all, cfg.Orgs)
+	return scopes
+}
+
+// RegisterOnce registers the node (ADR-015). A platform that takes an
+// owner (TakesOwner) gets one registration under the node's one id,
+// declaring node.yaml's owner, and the orgs served are its answer's
+// scopes — cfg.NodeID is set to that id for the caller to write back;
+// an answer that names no org is an error. A platform that answers
+// nothing (nil) and any other platform get today's registration: a Node in each org of
+// the person (ResolveScopes, RegisterIn), owned by that person.
+func RegisterOnce(ctx context.Context, gw Gateway, cfg *Config) (Scopes, *Owner, error) {
+	perOrg := func() (Scopes, *Owner, error) {
+		scopes, err := ResolveScopes(ctx, gw, cfg)
+		if err != nil {
+			return nil, nil, err
+		}
+		if err := RegisterIn(ctx, gw, cfg, scopes); err != nil {
+			return nil, nil, err
+		}
+		return scopes, &Owner{Kind: OwnerPerson, Name: cfg.OwnerID}, nil
+	}
+	if !gw.TakesOwner(ctx) {
+		return perOrg()
+	}
+	id, err := cfg.OwnNodeID()
+	if err != nil {
+		return nil, nil, err
+	}
+	answer, err := gw.RegisterNode(ctx, gateway.RegisterNodeInput{NodeID: id, OrgID: homeOrg(ctx, gw, cfg), Owner: cfg.OwnerKind(), OwnerID: cfg.OwnerID, Name: cfg.Name, Slug: cfg.Slug,
+		Harnesses: []string{"claude-code"}, Capacity: cfg.Capacity.Max, Version: version.Resolved()})
+	if err != nil {
+		return nil, nil, fmt.Errorf("register: %w", err)
+	}
+	if answer == nil {
+		// it took the owner but answers nothing yet: today's
+		// registration, until it names the orgs itself
+		return perOrg()
+	}
+	cfg.NodeID = id
+	if len(answer.Scopes) == 0 {
+		return nil, nil, fmt.Errorf("the node's owner (%s) serves no org", cfg.OwnerKind())
+	}
+	var all Scopes
+	for _, s := range answer.Scopes {
+		all = append(all, Scope{Login: cmp.Or(s.Login, s.Slug), Slug: s.Slug})
+	}
+	if _, missing := restrict(all, cfg.Orgs); len(missing) > 0 {
+		return nil, nil, fmt.Errorf("the node's owner does not serve %s (the node.yaml orgs list names them)", strings.Join(missing, ", "))
+	}
+	scopes := ScopesFrom(answer, cfg)
+	if answer.NodeID != "" {
+		cfg.NodeID = answer.NodeID
+	}
+	return scopes, &Owner{Kind: cmp.Or(answer.Owner.Kind, cfg.OwnerKind()), Name: cmp.Or(answer.Owner.Name, answer.Owner.ID, cfg.OwnerID)}, nil
+}
+
+// Served is the orgs the node serves, for a command beside the loop
+// (`mesh node status`, a rollback's report), heartbeating each of the
+// node's ids once through heartbeat on the way: a platform that takes
+// an owner answers the one heartbeat under the node's one id with them
+// (ScopesFrom); any other has them from ResolveScopes, heartbeated per
+// org.
+func Served(ctx context.Context, gw Gateway, cfg *Config, heartbeat func(ctx context.Context, nodeID string) (*gateway.NodeAnswer, error)) (Scopes, error) {
+	if !gw.TakesOwner(ctx) {
+		scopes, err := ResolveScopes(ctx, gw, cfg)
+		if err != nil {
+			return nil, err
+		}
+		for _, sc := range scopes {
+			if _, err := heartbeat(ctx, sc.NodeID); err != nil {
+				return nil, fmt.Errorf("heartbeat in %s: %w", sc.Name(), err)
+			}
+		}
+		return scopes, nil
+	}
+	id, err := cfg.OwnNodeID()
+	if err != nil {
+		return nil, err
+	}
+	answer, err := heartbeat(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("heartbeat: %w", err)
+	}
+	scopes := ScopesFrom(answer, cfg)
+	if len(scopes) == 0 {
+		return nil, fmt.Errorf("the platform names no org node %s serves", id)
+	}
+	return scopes, nil
+}
+
+// homeOrg is the orgId a registration carries beside its owner (the
+// contract's input names one, specs/contracts/registerNode.json):
+// node.yaml's org_id, else the first org the person reaches that
+// node.yaml's orgs keeps; "" when none can be read — the owner, not
+// the org, decides what the node serves.
+func homeOrg(ctx context.Context, gw Gateway, cfg *Config) string {
+	if cfg.OrgID != "" {
+		return cfg.OrgID
+	}
+	orgs, err := gw.MyOrgs(ctx)
+	if err != nil {
+		return ""
+	}
+	var all Scopes
+	for _, o := range orgs {
+		all = append(all, Scope{Login: o.Login, Slug: o.TenantSlug, ID: o.ID})
+	}
+	if kept, _ := restrict(all, cfg.Orgs); len(kept) > 0 {
+		return kept[0].ID
+	}
+	return ""
+}
+
+// RegisterIn registers the node in every scope, a Node per org (id
+// from (org, slug); registering again is a heartbeat) — the
+// registration of a platform that takes no owner.
+func RegisterIn(ctx context.Context, gw Gateway, cfg *Config, scopes Scopes) error {
+	for _, sc := range scopes {
+		if _, err := gw.RegisterNode(ctx, gateway.RegisterNodeInput{NodeID: sc.NodeID, OrgID: sc.ID, OwnerID: cfg.OwnerID, Name: cfg.Name, Slug: cfg.Slug,
+			Harnesses: []string{"claude-code"}, Capacity: cfg.Capacity.Max, Version: version.Resolved()}); err != nil {
+			return fmt.Errorf("register in %s: %w", sc.Name(), err)
+		}
+	}
+	return nil
 }
 
 // Reloaded is what Loop.Reload reads: the capacity (0 keeps the loop's),
@@ -502,14 +744,23 @@ type Spending struct {
 // Reloader is Loop.Reload for a node started on cfg and scopes: every
 // tick it reads node.yaml again through load (LoadConfig when nil) for
 // the capacity, the limits thresholds, the accounts and project budgets,
-// the context budget and the orgs restriction, and asks MyOrgs for the orgs
-// the owner belongs to. An org seen for the first time is registered in
-// through register (a Node there, as start does) before it is served —
-// one that fails to register is tried again next tick; an org no longer
-// listed, or no longer in the restriction, is dropped. A node.yaml that
-// cannot be read keeps the last good capacity and restriction; a MyOrgs
-// that fails, or leaves nothing to serve, keeps the orgs as they were.
-func Reloader(gw Gateway, cfg *Config, scopes Scopes, load func() (*Config, error), register func(context.Context, Scope) error) func(context.Context) (Reloaded, error) {
+// the context budget and the orgs restriction, and works out the orgs
+// served.
+//
+// When answer (optional) gives the last heartbeat's answer and it names
+// scopes, the platform has said which orgs the node's owner serves
+// (ADR-015): those are served (ScopesFrom), kept to the restriction, a
+// new one on this very tick — no MyOrgs, no registration.
+//
+// Otherwise (a platform that takes no owner) it asks MyOrgs for the
+// orgs the person belongs to. An org seen for the first time is
+// registered in through register (a Node there, as start does) before
+// it is served — one that fails to register is tried again next tick;
+// an org no longer listed, or no longer in the restriction, is dropped.
+// A node.yaml that cannot be read keeps the last good capacity and
+// restriction; a MyOrgs that fails, or leaves nothing to serve, keeps
+// the orgs as they were.
+func Reloader(gw Gateway, cfg *Config, scopes Scopes, load func() (*Config, error), register func(context.Context, Scope) error, answer func() *gateway.NodeAnswer) func(context.Context) (Reloaded, error) {
 	if load == nil {
 		load = LoadConfig
 	}
@@ -530,6 +781,18 @@ func Reloader(gw Gateway, cfg *Config, scopes Scopes, load func() (*Config, erro
 			budget := c.Context
 			out.Context = &budget
 		}
+		if answer != nil {
+			if a := answer(); a != nil && len(a.Scopes) > 0 {
+				restricted := *cfg
+				restricted.Orgs = restrict
+				served := ScopesFrom(a, &restricted)
+				if len(served) == 0 {
+					return out, errors.Join(append(errs, errors.New("the platform's answer leaves no org to serve (keeping the orgs as they were)"))...)
+				}
+				out.Scopes = served
+				return out, errors.Join(errs...)
+			}
+		}
 		orgs, err := gw.MyOrgs(ctx)
 		if err != nil {
 			return out, errors.Join(append(errs, fmt.Errorf("my orgs: %w", err))...)
@@ -540,7 +803,8 @@ func Reloader(gw Gateway, cfg *Config, scopes Scopes, load func() (*Config, erro
 		}
 		var served Scopes
 		for _, o := range orgs {
-			if len(want) > 0 && !want[strings.ToLower(o.Login)] {
+			sc := Scope{Login: cmp.Or(o.Login, o.TenantSlug), Slug: o.TenantSlug, ID: o.ID, AccountID: o.AccountID}
+			if len(want) > 0 && !sc.named(want) {
 				continue
 			}
 			id, err := cfg.NodeIDIn(o.ID)
@@ -548,10 +812,10 @@ func Reloader(gw Gateway, cfg *Config, scopes Scopes, load func() (*Config, erro
 				errs = append(errs, err)
 				continue
 			}
-			sc := Scope{Login: o.Login, ID: o.ID, AccountID: o.AccountID, NodeID: id}
+			sc.NodeID = id
 			if !registered[id] && register != nil {
 				if err := register(ctx, sc); err != nil {
-					errs = append(errs, fmt.Errorf("register in %s: %w", o.Login, err))
+					errs = append(errs, fmt.Errorf("register in %s: %w", sc.Name(), err))
 					continue
 				}
 			}
@@ -564,6 +828,49 @@ func Reloader(gw Gateway, cfg *Config, scopes Scopes, load func() (*Config, erro
 		out.Scopes = served
 		return out, errors.Join(errs...)
 	}
+}
+
+// WriteNodeID writes the node's one id into ~/.mesh/node.yaml as
+// node_id, leaving the rest of the file — its comments among it — as it
+// is (ADR-015: the id a start derived is kept, so restarts converge).
+func WriteNodeID(id string) error {
+	path, err := ConfigPath()
+	if err != nil {
+		return err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return fmt.Errorf("parse %s: %w", path, err)
+	}
+	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		return fmt.Errorf("%s is not a mapping", path)
+	}
+	m, set := doc.Content[0], false
+	for i := 0; i+1 < len(m.Content); i += 2 {
+		if m.Content[i].Value == "node_id" {
+			m.Content[i+1].Kind, m.Content[i+1].Tag, m.Content[i+1].Value = yaml.ScalarNode, "!!str", id
+			set = true
+		}
+	}
+	if !set {
+		m.Content = append(m.Content,
+			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "node_id"},
+			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: id})
+	}
+	var out strings.Builder
+	enc := yaml.NewEncoder(&out)
+	enc.SetIndent(2)
+	if err := enc.Encode(&doc); err != nil {
+		return err
+	}
+	if err := enc.Close(); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(out.String()), 0o600)
 }
 
 // ConfigPath is ~/.mesh/node.yaml.
@@ -621,6 +928,9 @@ func LoadConfig() (*Config, error) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	if err := c.Context.Validate(); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	if err := ValidateOwner(c.Owner); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	return &c, nil

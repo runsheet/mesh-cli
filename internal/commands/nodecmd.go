@@ -32,6 +32,7 @@ import (
 
 var (
 	nodeOrgsFlag           []string
+	nodeOwnerFlag          string
 	nodeNameFlag           string
 	nodeSlugFlag           string
 	nodeCapacityFlag       int
@@ -167,37 +168,29 @@ var nodeRegisterCmd = &cobra.Command{
 		if nodeCapacityFlag <= 0 {
 			nodeCapacityFlag = 1
 		}
-		cfg := &node.Config{Gateway: gw.BaseURL, Orgs: nodeOrgsFlag, OwnerID: me, Slug: slug, Name: strings.TrimSpace(nodeNameFlag), Capacity: node.Fixed(nodeCapacityFlag)}
-		// registering again must not drop what `mesh node login` recorded
+		if err := node.ValidateOwner(nodeOwnerFlag); err != nil {
+			return fmt.Errorf("--owner: %w", err)
+		}
+		cfg := &node.Config{Gateway: gw.BaseURL, Orgs: nodeOrgsFlag, OwnerID: me, Owner: nodeOwnerFlag, Slug: slug, Name: strings.TrimSpace(nodeNameFlag), Capacity: node.Fixed(nodeCapacityFlag)}
+		// registering again must not drop what `mesh node login` recorded,
+		// nor the node's id when it is the same node (ADR-015)
 		if prev, err := node.LoadSettings(); err == nil {
 			cfg.Latchkey, cfg.LatchkeyClient = prev.Latchkey, prev.LatchkeyClient
+			if prev.Slug == slug {
+				cfg.NodeID = prev.NodeID
+			}
 		}
-		scopes, err := node.ResolveScopes(ctx, gw, cfg)
+		scopes, owner, err := node.RegisterOnce(ctx, gw, cfg)
 		if err != nil {
-			return err
-		}
-		if err := registerIn(ctx, gw, cfg, scopes); err != nil {
 			return err
 		}
 		if err := cfg.Save(); err != nil {
 			return err
 		}
 		path, _ := node.ConfigPath()
-		fmt.Printf("Registered node %s (%s) in %s, capacity %s. Saved %s.\nStart it with: mesh node start\n", cfg.Name, slug, strings.Join(scopes.Logins(), ", "), cfg.Capacity, path)
+		fmt.Printf("Registered node %s (%s), owned by %s (%s), in %s, capacity %s. Saved %s.\nStart it with: mesh node start\n", cfg.Name, slug, owner.Name, owner.Kind, strings.Join(scopes.Logins(), ", "), cfg.Capacity, path)
 		return nil
 	},
-}
-
-// registerIn registers the node in every scope (a Node per org, id from
-// (org, slug); registering again is a heartbeat).
-func registerIn(ctx context.Context, gw *gateway.Client, cfg *node.Config, scopes node.Scopes) error {
-	for _, sc := range scopes {
-		if _, err := gw.RegisterNode(ctx, gateway.RegisterNodeInput{NodeID: sc.NodeID, OrgID: sc.ID, OwnerID: cfg.OwnerID, Name: cfg.Name, Slug: cfg.Slug,
-			Harnesses: []string{"claude-code"}, Capacity: cfg.Capacity.Max, Version: version.Resolved()}); err != nil {
-			return fmt.Errorf("register in %s: %w", sc.Login, err)
-		}
-	}
-	return nil
 }
 
 var nodeStatusCmd = &cobra.Command{
@@ -215,7 +208,9 @@ var nodeStatusCmd = &cobra.Command{
 		gw := gateway.NewWithSource(gatewayURL(), src)
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		scopes, err := node.ResolveScopes(ctx, gw, cfg)
+		// one heartbeat per node id: the node's one when the platform
+		// took its owner, which also names the orgs it serves (ADR-015)
+		scopes, err := node.Served(ctx, gw, cfg, statusHeartbeat(gw))
 		if err != nil {
 			return err
 		}
@@ -230,9 +225,6 @@ var nodeStatusCmd = &cobra.Command{
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 		fmt.Fprintln(w, "ORG\tNAME\tSLUG\tSTATUS\tRUNNING\tCAPACITY\tVERSION\tLAST_SEEN")
 		for _, sc := range scopes {
-			if err := statusHeartbeat(ctx, gw, sc.NodeID); err != nil {
-				return fmt.Errorf("heartbeat in %s: %w", sc.Login, err)
-			}
 			nodes, err := gw.Nodes(ctx, sc.ID)
 			if err != nil {
 				return err
@@ -248,7 +240,7 @@ var nodeStatusCmd = &cobra.Command{
 						capacity = scaling.String()
 					}
 				}
-				fmt.Fprintf(w, "%s\t%s%s\t%s\t%s\t%d\t%s\t%s\t%s\n", sc.Login, n.Name, mark, n.Slug, status, n.Running, capacity, n.Version, n.LastSeenAt)
+				fmt.Fprintf(w, "%s\t%s%s\t%s\t%s\t%d\t%s\t%s\t%s\n", sc.Name(), n.Name, mark, n.Slug, status, n.Running, capacity, n.Version, n.LastSeenAt)
 			}
 		}
 		if err := w.Flush(); err != nil {
@@ -312,9 +304,10 @@ func dash(s string) string {
 // this binary reports (the tag, else the sha) and, beside it, the commit
 // — sent like the loop's, only when known and only when the gateway's
 // HeartbeatNodeInput takes it (mesh-specs ADR 013, trd §1 Node).
-func statusHeartbeat(ctx context.Context, gw *gateway.Client, nodeID string) error {
-	_, err := gw.HeartbeatNode(ctx, nodeID, version.Resolved(), 0, gateway.HeartbeatExtras{Commit: version.Commit()})
-	return err
+func statusHeartbeat(gw *gateway.Client) func(context.Context, string) (*gateway.NodeAnswer, error) {
+	return func(ctx context.Context, nodeID string) (*gateway.NodeAnswer, error) {
+		return gw.HeartbeatNode(ctx, nodeID, version.Resolved(), 0, gateway.HeartbeatExtras{Commit: version.Commit()})
+	}
 }
 
 // localNodeState is the line `mesh node status` prints for the node
@@ -542,8 +535,8 @@ func nodeStart(cmd *cobra.Command, args []string) error {
 	// capacity and the orgs are read again every tick, so a changed
 	// node.yaml or a newly claimed org needs no restart
 	loop.Reload = node.Reloader(gw, cfg, scopes, nil, func(ctx context.Context, sc node.Scope) error {
-		return registerIn(ctx, gw, cfg, node.Scopes{sc})
-	})
+		return node.RegisterIn(ctx, gw, cfg, node.Scopes{sc})
+	}, nil)
 	// SIGUSR1 (`mesh node drain`) drains: nothing new is claimed and
 	// the loop returns nil once every session has ended, so the
 	// process exits 0 and its service manager starts the new binary
@@ -641,7 +634,7 @@ func runPollMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *
 		for _, status := range []string{"claimed", "running"} {
 			items, err := gw.OrgWorkItems(ctx, sc.ID, status)
 			if err != nil {
-				logger.Printf("list held items of %s: %v", sc.Login, err)
+				logger.Printf("list held items of %s: %v", sc.Name(), err)
 				continue
 			}
 			for _, it := range items {
@@ -717,11 +710,21 @@ func registerNode(ctx context.Context, cmd *cobra.Command, logger *log.Logger, u
 			}
 			cfg.OwnerID = owner
 		}
+		had := cfg.NodeID
+		var owner *node.Owner
 		var err error
-		if scopes, err = node.ResolveScopes(regCtx, gw, cfg); err != nil {
+		if scopes, owner, err = node.RegisterOnce(regCtx, gw, cfg); err != nil {
 			return err
 		}
-		return registerIn(regCtx, gw, cfg, scopes)
+		// the node's one id is written back, so a restart converges on
+		// it whatever the owner id becomes (ADR-015)
+		if cfg.NodeID != had {
+			if werr := node.WriteNodeID(cfg.NodeID); werr != nil {
+				logger.Printf("node.yaml: write node_id %s: %v", cfg.NodeID, werr)
+			}
+		}
+		logger.Printf("node %s (%s) owned by %s (%s), serving %s", cfg.Name, cfg.Slug, owner.Name, owner.Kind, strings.Join(scopes.Logins(), ", "))
+		return nil
 	}
 	if updates == nil || !check.Pending {
 		if err = register(ctx); err != nil {
@@ -861,18 +864,15 @@ func reportRollback(check node.StartCheck, logger *log.Logger) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	scopes, err := node.ResolveScopes(ctx, gw, cfg)
-	if err != nil {
-		logger.Printf("self-update: report rollback: %v", err)
-		return
-	}
 	// The rollback reports the version it rolls back to, not this
 	// binary's; this binary's commit would not be that version's, so the
 	// heartbeat carries none and the restored binary's first one does.
-	for _, sc := range scopes {
-		if _, err := gw.HeartbeatNode(ctx, sc.NodeID, check.From, 0, gateway.HeartbeatExtras{UpdateError: check.Reason}); err != nil {
-			logger.Printf("self-update: report rollback to %s: %v", sc.Login, err)
-		}
+	// One heartbeat per node id: the node's one when the platform took
+	// its owner (ADR-015).
+	if _, err := node.Served(ctx, gw, cfg, func(ctx context.Context, nodeID string) (*gateway.NodeAnswer, error) {
+		return gw.HeartbeatNode(ctx, nodeID, check.From, 0, gateway.HeartbeatExtras{UpdateError: check.Reason})
+	}); err != nil {
+		logger.Printf("self-update: report rollback: %v", err)
 	}
 }
 
@@ -1041,7 +1041,7 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 			for _, status := range []string{"claimed", "running"} {
 				items, err := gw.OrgWorkItems(ctx, sc.ID, status)
 				if err != nil {
-					logger.Printf("list held items of %s: %v", sc.Login, err)
+					logger.Printf("list held items of %s: %v", sc.Name(), err)
 					return
 				}
 				for _, it := range items {
@@ -1398,6 +1398,7 @@ func init() {
 	nodeLoginCmd.Flags().StringVar(&machineNameFlag, "name", "", "what to call this machine in the Latchkey console (default: the node's name, else the hostname)")
 	nodeLoginCmd.Flags().BoolVar(&noBrowserFlag, "no-browser", false, "print the sign-in URL instead of opening it")
 	nodeRegisterCmd.Flags().StringSliceVar(&nodeOrgsFlag, "org", nil, "serve only these orgs (repeatable; default: every org you belong to)")
+	nodeRegisterCmd.Flags().StringVar(&nodeOwnerFlag, "owner", node.OwnerPerson, "who owns the node: person (bring your own infra: every org you are in) or enterprise (shared infra: every org of the enterprise)")
 	nodeRegisterCmd.Flags().StringVar(&nodeNameFlag, "name", "", "the node's name as the console shows it")
 	nodeRegisterCmd.Flags().StringVar(&nodeSlugFlag, "slug", "", "the node's slug (default: from --name); the node id derives from it")
 	nodeRegisterCmd.Flags().IntVar(&nodeCapacityFlag, "capacity", 1, "concurrent sessions")

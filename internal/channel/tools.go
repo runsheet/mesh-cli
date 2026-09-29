@@ -218,7 +218,7 @@ func (h *Handler) context(ctx context.Context, args map[string]any) (string, err
 // the node serves (the id derives from (org, slug)).
 func (h *Handler) goalBySlug(ctx context.Context, slug, org string) (*gateway.Goal, node.Scope, error) {
 	for _, sc := range h.Scopes {
-		if org != "" && !strings.EqualFold(org, sc.Login) {
+		if org != "" && !strings.EqualFold(org, sc.Login) && !strings.EqualFold(org, sc.Slug) {
 			continue
 		}
 		id, err := uuid.Parse(sc.ID)

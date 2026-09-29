@@ -37,7 +37,22 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
 - `internal/node/`: the loop (`runner`), the workspace and the project's
   context (`workspace.go`: `FetchContext`, `RenderIndex`, the size budget — node.yaml `context:`, `ContextConfig`, re-read each tick, `Loop.ContextBudget`; every document counts against `bytes_max`, instructions and ADRs are exempt from `doc_bytes_max` only, placed first those of the session's own repos (`ContextOptions.Repos`), then the rest by recency, then the PRD and TRD, and one that does not fit is left whole to the index (`Context.Dropped`, ADR-015)),
   evaluate, plan and research sessions, the service install (`launchd` /
-  `systemd --user`). A project's repos — for the planner, the director
+  `systemd --user`). **A node has an owner** (`config.go`, ADR-015):
+  node.yaml's `owner:` is `person` (the default — bring your own infra)
+  or `enterprise` (shared infra; `mesh node register --owner
+  enterprise`), validated on load, and the node has **one id**,
+  `Config.NodeID` (`OwnNodeID`: node.yaml's, else a uuid5 of
+  (owner_id, slug), written back by `WriteNodeID`). `RegisterOnce`
+  registers once, declaring the owner, when the gateway `TakesOwner`,
+  and takes the orgs it serves from the answer (`ScopesFrom`, node.yaml's
+  `orgs:` kept, by login or slug), every `Scope` carrying the one id so
+  claim, finish, usage and the desired version follow unchanged; a
+  platform that takes no owner, or answers nothing, gets today's Node per
+  org (`ResolveScopes`, `RegisterIn`). `Reloader`'s `answer` (the last
+  heartbeat's) serves the answer's orgs — a new one on that tick — with
+  no `MyOrgs` and no registration. An org without a GitHub login is
+  named by its tenant slug (`Scope.Login`/`Scope.Name`,
+  `Scopes.Logins`). A project's repos — for the planner, the director
   and `mesh goal plan` — are read from `project.repoIds` through
   `ProjectRepos`, each owned by its own account's login, never the
   org's account: an org links several GitHub accounts (the runsheet

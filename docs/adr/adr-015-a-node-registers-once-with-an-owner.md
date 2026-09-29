@@ -82,3 +82,44 @@ one `NodeID` in `internal/node/config.go`'s `Scope`, `mesh node status`
 naming the owner, a fourth org appearing on a later heartbeat served
 without restart — lands as a later item on this branch's goal, switched
 on by the answer alone; no flag day.
+
+## Amendment 2026-09-29: the node consumes the answer (item 2)
+
+**node.yaml declares the owner.** `owner: person` (the default, when
+empty) or `owner: enterprise`; anything else is refused on load.
+`mesh node register --owner enterprise` writes it (default `person`).
+
+**One id.** `Config.NodeID` is the node's own id: node.yaml's
+`node_id` is kept when it has one; otherwise `OwnNodeID` derives a v5
+uuid from (`owner_id`, slug) (`gateway.OwnedNodeID`), and registration
+writes it back (`WriteNodeID`, the rest of the file as it was) so every
+restart converges on it — the platform's `nodeId`, when its answer
+names one, wins.
+
+**Registration.** `node.RegisterOnce` is the only registration. When
+`TakesOwner`, one `registerNode` under the node's id carries the owner,
+the owner id, name, slug, harnesses, capacity, version and a home
+`orgId` (node.yaml's `org_id`, else the first org the person reaches):
+the answer's scopes are the orgs served (`ScopesFrom`, kept to
+node.yaml's `orgs:` by login or slug, a name it does not serve an
+error), each `Scope` carrying the one id, so every call that took
+`Scope.NodeID` — claim, finish, usage, the upgrade's confirm, the
+desired version — follows without being rewritten; an answer with no
+scopes is an error, "the node's owner (…) serves no org". A platform
+that takes no owner — or takes it but answers nothing (nil) — gets
+today's Node per org (`ResolveScopes`, `RegisterIn`), owned by the
+person. It returns the `Owner{Kind, Name}` for the node's first lines.
+
+**Every tick.** `Reloader` takes the last heartbeat's answer (set by the
+loop in a later item): when it names scopes those are served — a new
+org on that very tick — with no `myOrgs` and no registration; when it
+names none, today's `myOrgs`/register path runs unchanged. `mesh node
+status` and a rollback's report heartbeat each of the node's ids once
+(`Served`), so an owned node heartbeats once, not once per org.
+
+**Names.** `Scope` gains `Slug`; `Scope.Login` is the org's login or,
+for an org without one (grapevine), its tenant slug, and `Scope.Name()`,
+`Scopes.Logins()`, `LoginOf`, the log lines, the status table and the
+"not a member of" error name it by that. `mesh channel serve` still
+reads the person's orgs (`ResolveScopes`) for the orgs it names: it
+never claims under a node id.

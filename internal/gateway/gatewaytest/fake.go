@@ -322,6 +322,7 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 		}
 		writeData(w, map[string]any{"__type": f.heartbeatInputType()})
 	case strings.Contains(q, "myOrgs"):
+		f.Reads = append(f.Reads, Call{Name: "myOrgs", Input: map[string]any{}})
 		writeData(w, map[string]any{"myOrgs": f.Orgs})
 	case strings.HasPrefix(q, "mutation"):
 		m := mutationRe.FindStringSubmatch(q)
