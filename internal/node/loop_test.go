@@ -523,6 +523,11 @@ func TestLoopServesEveryOrgOfItsOwner(t *testing.T) {
 	if err != nil || len(only) != 1 || only[0].ID != org2 {
 		t.Fatalf("restricted scopes = %+v, %v", only, err)
 	}
+	// Restricting to the first org keeps the restriction for the rest.
+	first, err := ResolveScopes(ctx, gw, &Config{Slug: "box", Orgs: []string{"ACME"}})
+	if err != nil || len(first) != 1 || first[0].Login != "acme" {
+		t.Fatalf("scopes restricted to the first org = %+v, %v", first, err)
+	}
 
 	for _, sc := range scopes {
 		if _, err := gw.RegisterNode(ctx, gateway.RegisterNodeInput{NodeID: sc.NodeID, OrgID: sc.ID, OwnerID: f.UserID, Name: cfg.Name, Slug: cfg.Slug}); err != nil {
