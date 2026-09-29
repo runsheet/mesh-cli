@@ -25,17 +25,21 @@ func KilledNote(killed []sessionunit.Process) string {
 }
 
 // logKilled logs, under subject ("item <label>", "goal <slug>", …), what
-// the session's end killed and why the kill failed, one line each, and
-// returns the killed sentence for the item's note ("" when none).
+// the session's end killed — a line per session, so a handed-back one's
+// two runs are two lines — and why the kill failed, and returns the
+// killed sentences for the item's note, a line each ("" when none).
 func logKilled(logf func(string, ...any), subject string, res harness.Result) string {
-	note := KilledNote(res.Killed)
-	if note != "" {
-		logf("%s: %s", subject, note)
+	var notes []string
+	for _, killed := range res.KilledPerSession() {
+		if note := KilledNote(killed); note != "" {
+			logf("%s: %s", subject, note)
+			notes = append(notes, note)
+		}
 	}
 	if res.KillError != "" {
 		logf("%s: kill: %s", subject, res.KillError)
 	}
-	return note
+	return strings.Join(notes, "\n")
 }
 
 // stopFound kills a found session's unit — the one an item, plan or

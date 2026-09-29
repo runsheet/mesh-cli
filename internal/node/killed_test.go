@@ -51,6 +51,41 @@ func TestBuildKilledLeftRunningIsLoggedAndNoted(t *testing.T) {
 	}
 }
 
+// A handed-back build is two sessions: each one's end is its own line,
+// and the note carries both.
+func TestBuildKilledLeftRunningPerHandedBackSession(t *testing.T) {
+	second := []sessionunit.Process{{PID: 5252, Comm: "sleep"}}
+	h := harnessFunc(func(ctx context.Context, job harness.Job, on func(harness.Progress)) (harness.Result, error) {
+		return harness.Result{Success: true, Text: "done", SessionID: "s-1", HandedBack: true,
+			Killed:     append(append([]sessionunit.Process(nil), leftovers...), second...),
+			KilledRuns: [][]sessionunit.Process{leftovers, second}}, nil
+	})
+	f := seed(t)
+	r, _, item, _ := runnerOnFake(t, f, h, nil)
+	var logs bytes.Buffer
+	r.Log = log.New(&logs, "", 0)
+	if err := r.RunItem(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	first := "session end killed 2 process(es) the agent left running: 4242 go, 4250 runsheet"
+	last := "session end killed 1 process(es) the agent left running: 5252 sleep"
+	if n := strings.Count(logs.String(), "session end killed"); n != 2 {
+		t.Fatalf("%d lines, want one per session: %q", n, logs.String())
+	}
+	if !strings.Contains(logs.String(), ": "+first+"\n") || !strings.Contains(logs.String(), ": "+last+"\n") {
+		t.Fatalf("log = %q", logs.String())
+	}
+	var notes []string
+	for _, c := range f.CallsNamed("reportWorkItemProgress") {
+		if n, _ := c.Input["note"].(string); strings.Contains(n, "left running:") {
+			notes = append(notes, n)
+		}
+	}
+	if len(notes) != 1 || notes[0] != first+"\n"+last {
+		t.Fatalf("notes = %q", notes)
+	}
+}
+
 // A session that killed nothing says nothing of it.
 func TestBuildKilledNothingLeftRunningSaysNothing(t *testing.T) {
 	h := harnessFunc(func(ctx context.Context, job harness.Job, on func(harness.Progress)) (harness.Result, error) {
