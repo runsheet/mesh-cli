@@ -681,7 +681,7 @@ func Reloader(gw Gateway, cfg *Config, scopes Scopes, load func() (*Config, erro
 			sc := Scope{Login: o.Login, Slug: o.TenantSlug, ID: o.ID, AccountID: o.AccountID, NodeID: id}
 			if !registered[id] && register != nil {
 				if err := register(ctx, sc); err != nil {
-					errs = append(errs, fmt.Errorf("register in %s: %w", o.Login, err))
+					errs = append(errs, fmt.Errorf("register in %s: %w", sc.Name(), err))
 					continue
 				}
 			}
