@@ -48,7 +48,11 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   (mesh-cli ADR-010).
   `internal/channel/`: channel mode (one session per org, turns).
   **A draining node claims nothing** (`Loop.Drain`): see the drain
-  below.
+  below. node.yaml's `claim: {unmerged_per_repo: N}` (`ClaimConfig`,
+  re-read each tick, `Loop.UnmergedPerRepo`; absent or 0 is no limit
+  and no read) holds fresh claims for a repo with N items in `review`,
+  counted from the node's own listing, never `RepoIndex.reviewPile`;
+  started work there is still claimed (ADR-017).
 - **The director** (`internal/node/research.go`, runsheet trd §6c): a
   project carries **directions** — several, each its own aggregate with
   its own words, window, timezone, gap, ceiling and research claim

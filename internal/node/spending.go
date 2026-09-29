@@ -224,3 +224,18 @@ func (l *Loop) ContextBudget() ContextConfig {
 	}
 	return l.Cfg.Context.Effective()
 }
+
+// UnmergedPerRepo is node.yaml's claim.unmerged_per_repo in force: the
+// most pull requests a repo may have waiting to merge before the node
+// claims no fresh item of it (ADR-017); zero is no limit.
+func (l *Loop) UnmergedPerRepo() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.claimSet {
+		return l.claim.UnmergedPerRepo
+	}
+	if l.Cfg == nil {
+		return 0
+	}
+	return l.Cfg.Claim.UnmergedPerRepo
+}

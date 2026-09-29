@@ -193,6 +193,10 @@ type Loop struct {
 	// says otherwise (contextSet).
 	context    ContextConfig
 	contextSet bool
+	// claim is node.yaml's `claim:` block in force: Cfg's until Reload
+	// says otherwise (claimSet).
+	claim    ClaimConfig
+	claimSet bool
 	// paced is the pacing mode last logged, so a crossing is logged once.
 	paced paceMode
 	// waiting counts, by kind, the work this tick left unclaimed because
@@ -407,15 +411,39 @@ func planOrder(goals []planningGoal) {
 // on the account chosen for its priority; items of a goal ranked past
 // maxRank are left, and normal and low items take no more than
 // normalFree of the free slots. An item no account has headroom for is
-// not claimed: it stays ready for a later tick.
+// not claimed: it stays ready for a later tick. With
+// claim.unmerged_per_repo set, a fresh item of a repo with that many
+// items in review is not claimed either; started work there is
+// (ADR-017, Per-repo limit on unmerged work).
 func (l *Loop) claimReady(ctx context.Context, free, normalFree, maxRank int) {
 	var ready []readyItem
-	for _, sc := range l.Scopes {
+	limit := l.UnmergedPerRepo()
+	listed := make([][]gateway.WorkItem, len(l.Scopes))
+	anyReady := false
+	for i, sc := range l.Scopes {
 		items, err := l.GW.ReadyWorkItems(ctx, sc.ID)
 		if err != nil {
 			l.logf("list ready items of %s: %v", sc.Login, err)
 			continue
 		}
+		listed[i] = items
+		anyReady = anyReady || len(items) > 0
+	}
+	// A repo's unmerged work is counted over every served org — one with
+	// nothing ready, or whose ready read failed, may still hold review
+	// items of a repo another org has fresh work in — and only on a tick
+	// with something to claim.
+	unmerged := map[string]int{}
+	var unread []string // orgs whose review listing failed this tick
+	if limit > 0 && anyReady {
+		for _, sc := range l.Scopes {
+			if !l.countUnmerged(ctx, sc, unmerged) {
+				unread = append(unread, sc.Login)
+			}
+		}
+	}
+	for i, sc := range l.Scopes {
+		items := listed[i]
 		if len(items) == 0 {
 			continue
 		}
@@ -430,6 +458,7 @@ func (l *Loop) claimReady(ctx context.Context, free, normalFree, maxRank int) {
 		}
 	}
 	claimOrder(ready)
+	held := map[string]bool{} // repos whose hold this tick has logged
 	for _, r := range ready {
 		if free <= 0 {
 			break
@@ -443,6 +472,26 @@ func (l *Loop) claimReady(ctx context.Context, free, normalFree, maxRank int) {
 		}
 		if runtimes, _ := l.Runtimes(); l.Declines.Holds(item.ID, runtimes, time.Now()) {
 			continue // a required tool needs a runtime still missing here
+		}
+		fresh := !startedWork(item)
+		if limit > 0 && fresh && len(unread) > 0 {
+			// the repo's count is unknown: it may be at the limit already
+			why := fmt.Sprintf("repo %s's unmerged pull requests could not be counted (%s's review items unread) under node.yaml's claim.unmerged_per_repo %d", item.RepoID, strings.Join(unread, ", "), limit)
+			l.passOver(item.GoalID, "item", priorityName(r.rank), why)
+			if !held[item.RepoID] {
+				held[item.RepoID] = true
+				l.logf("claim: %s; its fresh items wait, its started work is still claimed", why)
+			}
+			continue
+		}
+		if n := unmerged[item.RepoID]; limit > 0 && fresh && n >= limit {
+			why := fmt.Sprintf("repo %s has %d unmerged pull requests, at node.yaml's claim.unmerged_per_repo %d", item.RepoID, n, limit)
+			l.passOver(item.GoalID, "item", priorityName(r.rank), why)
+			if !held[item.RepoID] {
+				held[item.RepoID] = true
+				l.logf("claim: %s; its fresh items wait, its started work is still claimed", why)
+			}
+			continue
 		}
 		pressing := r.rank <= gateway.PriorityRank("high")
 		if !pressing && normalFree <= 0 {
@@ -467,9 +516,33 @@ func (l *Loop) claimReady(ctx context.Context, free, normalFree, maxRank int) {
 			normalFree--
 		}
 		normalFree = min(normalFree, free)
+		if fresh {
+			// its pull request will count against the repo: one tick
+			// does not overshoot the limit
+			unmerged[item.RepoID]++
+		}
 		l.logf("%s: claimed item %d %q", sc.Login, item.Seq, item.Title)
 		l.start(actx, item)
 	}
+}
+
+// countUnmerged adds the org's items in review — a pull request open and
+// waiting to merge — to unmerged by repo: one OrgWorkItems read per org
+// and tick, made for every served org while claim.unmerged_per_repo is
+// set and something is ready. A failed
+// read is logged and answers false: any repo may have review items in
+// that org and be at the limit already, so claimReady holds every fresh
+// item this tick and still claims started work.
+func (l *Loop) countUnmerged(ctx context.Context, sc Scope, unmerged map[string]int) bool {
+	rows, err := l.GW.OrgWorkItems(ctx, sc.ID, "review")
+	if err != nil {
+		l.logf("list review items of %s (its fresh items held this tick): %v", sc.Login, err)
+		return false
+	}
+	for _, it := range rows {
+		unmerged[it.RepoID]++
+	}
+	return true
 }
 
 func (l *Loop) logf(format string, args ...any) {
@@ -1023,11 +1096,15 @@ func (l *Loop) withAccount(ctx context.Context, what, priority string, choose fu
 // passOver records that this pass left a goal's ready work (kind "item"
 // or "plan") for headroom: one entry per goal and kind, counting its
 // items, with the reason heldReason gives the first — held, or with
-// none every account's standing.
+// none every account's standing — and each later held not yet in it
+// appended, so two repos at their limit in one goal are both named.
 func (l *Loop) passOver(goalID, kind, priority, held string) {
 	for i := range l.unclaimed {
 		if u := &l.unclaimed[i]; u.GoalID == goalID && u.Kind == kind {
 			u.Count++
+			if held != "" && !strings.Contains(u.Reason, held) {
+				u.Reason += "; " + held
+			}
 			return
 		}
 	}
@@ -1116,6 +1193,14 @@ func (l *Loop) reload(ctx context.Context) {
 		}
 		l.mu.Lock()
 		l.context, l.contextSet = now, true
+		l.mu.Unlock()
+	}
+	if got.Claim != nil {
+		if was, now := l.UnmergedPerRepo(), got.Claim.UnmergedPerRepo; now != was {
+			l.logf("claim: unmerged_per_repo %d → %d", was, now)
+		}
+		l.mu.Lock()
+		l.claim, l.claimSet = *got.Claim, true
 		l.mu.Unlock()
 	}
 	if scopes != nil && !sameOrgs(scopes, l.Scopes) {

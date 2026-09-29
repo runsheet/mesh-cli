@@ -1,5 +1,5 @@
 ---
-summary: At equal priority a ready item with work already begun on a branch — an open pull request, an evaluation, a rebase conflict — is claimed before a fresh one while it has fewer than two failed evaluations; then the item ready longest, then seq; evaluateOrder and rebaseOrder are left as they are.
+summary: At equal priority a ready item with work already begun on a branch — an open pull request, an evaluation, a rebase conflict — is claimed before a fresh one while it has fewer than two failed evaluations; then the item ready longest, then seq; evaluateOrder and rebaseOrder are left as they are. node.yaml's claim.unmerged_per_repo (default no limit) holds fresh claims for a repo with that many items in review, counted from the node's own review listing rather than RepoIndex.reviewPile, while started work there is still claimed.
 status: accepted
 ---
 
@@ -122,4 +122,76 @@ reason.
 
 ## Per-repo limit on unmerged work
 
-Added by the next item of goal `finish-before-you-start`.
+Added by item 2 of goal `finish-before-you-start`.
+
+The claim order decides which work goes first; it does not stop the node
+opening a pull request that cannot land. On 2026-09-29
+`runsheet/runsheet` had 13 open against a merge-queue cap of 7 and two
+items were cancelled for `merge queue full: 15 of 7`: work was started
+that could not merge, and it took slots from work that could.
+
+**The key.** node.yaml `claim: {unmerged_per_repo: N}` (`ClaimConfig`).
+Its default is no limit: left out or 0 keeps the claim as it was
+before, and then no `review` listing is read at all. A negative value is
+refused. It rides `Reloaded.Claim` and `Loop.reload` applies it every
+tick like `context:`, so a change takes effect on the next tick without
+a restart and is logged (`claim: unmerged_per_repo 0 → 7`).
+`Loop.UnmergedPerRepo` is the value in force.
+
+**What counts as unmerged.** An item in status `review` — the TRD's
+status for an item whose pull request is open and waiting to merge —
+counted by its `repoId`. `claimReady` reads each served org's `review`
+items once per tick (`OrgWorkItems(org, "review")`), only while the key
+is set and only on a tick where some org has something ready — but then
+*every* served org's, including one with nothing ready or whose ready
+listing failed, before any repo is judged: a repo's pull requests may
+be in review under another org than the one offering its fresh item, and
+counting only the orgs with ready work would let the node claim past the
+limit. A fresh item claimed in the tick is added to its repo's count at
+once, so one tick never claims more fresh items of a repo than the limit
+leaves. A failed listing leaves the counts unknown — any repo may have
+review items in that org — so every fresh item is held this tick
+(reason `repo <repoId>'s unmerged pull requests could not be counted
+(<orgs>'s review items unread) under node.yaml's
+claim.unmerged_per_repo <limit>`) and started work is still claimed, as
+at the limit. Counting an unread org
+as having none would let a repo past its limit take fresh claims on a
+slow read; holding fresh work one tick costs a tick.
+
+**What it holds and what it still claims.** A fresh item
+(`!startedWork`) of a repo at or past the limit is not claimed and stays
+`ready`. Started work in that repo — an open pull request sent back for
+rework, a rebase conflict, a re-evaluation — is still claimed, whatever
+the count: it finishes a pull request that already counts, and holding
+it would deepen the jam the limit exists to clear. The attempt bound of
+the class order does not apply here: an item past it is still started
+work and still exempt, since claiming it opens no new pull request.
+Other repos are unaffected.
+
+**Why it waits.** The held item is recorded with `passOver`, so the
+heartbeat's holding report carries it with the reason `repo <repoId>
+has <n> unmerged pull requests, at node.yaml's claim.unmerged_per_repo
+<limit>`; node.log says it once per repo per tick, not once per item.
+The report keeps one entry per goal and kind, so when repos of one goal
+are held for different reasons each is appended to the entry's reason
+once: two repos at their limit in one goal are both named.
+
+**`reviewPile` and `mergePressureAt`: not read.** The platform's
+`RepoIndex` carries both, and today nothing in mesh-cli reads either —
+this decision leaves it so. The node counts from its own `review`
+listing instead because:
+
+- the count is exact for the items the scheduler will actually merge —
+  the items in `review` are precisely the pull requests waiting for the
+  integrator;
+- it needs no new gateway read and no new field: `OrgWorkItems` and
+  `repoId` are already selected, so there is nothing to add to
+  [ADR-010](adr-010-generated-gateway-fields.md)'s field lists and no
+  platform change to land first;
+- `reviewPile`'s definition and `mergePressureAt`'s trigger live on the
+  platform and are not documented in this repo, so a limit built on
+  them would mean whatever the platform later decides they mean.
+
+If the platform documents them and the node needs a signal it cannot
+derive from `review` (a pile the node does not list, or a pressure the
+integrator measures), this section is the place to revisit.
