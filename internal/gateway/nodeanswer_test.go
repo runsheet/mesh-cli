@@ -1,9 +1,11 @@
 package gateway_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
+	"regexp"
 	"testing"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
@@ -16,22 +18,47 @@ import (
 // answer — the same shape runsheet's a-node-has-an-owner serves at
 // /contracts/.
 type answerFixture struct {
-	Description string         `json:"description"`
-	Input       map[string]any `json:"input"`
-	Answer      struct {
-		NodeID string `json:"nodeId"`
-		Owner  struct {
-			Kind string `json:"kind"`
-			ID   string `json:"id"`
-			Name string `json:"name"`
-		} `json:"owner"`
-		Scopes []struct {
-			OrgID     string `json:"orgId"`
-			Login     string `json:"login"`
-			Slug      string `json:"slug"`
-			AccountID string `json:"accountId"`
-		} `json:"scopes"`
-	} `json:"answer"`
+	Description string          `json:"description"`
+	Input       map[string]any  `json:"input"`
+	Answer      json.RawMessage `json:"answer"`
+}
+
+// strictAnswer decodes the fixture's answer into gateway.NodeAnswer
+// refusing any key the client does not parse, and checks every key the
+// client parses is present — a misspelled or missing key in the fixture
+// fails here rather than decoding to an empty string on both sides.
+func (fx answerFixture) strictAnswer(t *testing.T) *gateway.NodeAnswer {
+	t.Helper()
+	dec := json.NewDecoder(bytes.NewReader(fx.Answer))
+	dec.DisallowUnknownFields()
+	var a gateway.NodeAnswer
+	if err := dec.Decode(&a); err != nil {
+		t.Fatalf("answer: %v", err)
+	}
+	var raw struct {
+		NodeID *string          `json:"nodeId"`
+		Owner  map[string]any   `json:"owner"`
+		Scopes []map[string]any `json:"scopes"`
+	}
+	if err := json.Unmarshal(fx.Answer, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if raw.NodeID == nil || *raw.NodeID == "" {
+		t.Fatal("answer: no nodeId")
+	}
+	for _, k := range []string{"kind", "id", "name"} {
+		if v, _ := raw.Owner[k].(string); v == "" {
+			t.Fatalf("answer: owner.%s missing or empty", k)
+		}
+	}
+	for i, sc := range raw.Scopes {
+		for _, k := range []string{"orgId", "login", "slug", "accountId"} {
+			if _, ok := sc[k].(string); !ok {
+				t.Fatalf("answer: scopes[%d].%s missing", i, k)
+			}
+		}
+	}
+	return &a
 }
 
 func loadAnswerFixture(t *testing.T, name string) answerFixture {
@@ -47,22 +74,20 @@ func loadAnswerFixture(t *testing.T, name string) answerFixture {
 	if fx.Description == "" {
 		t.Fatalf("%s: no description", name)
 	}
-	if len(fx.Answer.Scopes) < 3 {
-		t.Fatalf("%s: answer has %d scopes, want at least 3", name, len(fx.Answer.Scopes))
+	a := fx.strictAnswer(t)
+	if len(a.Scopes) < 3 {
+		t.Fatalf("%s: answer has %d scopes, want at least 3", name, len(a.Scopes))
+	}
+	slugOnly := false
+	for _, sc := range a.Scopes {
+		if sc.Login == "" && sc.Slug != "" {
+			slugOnly = true
+		}
+	}
+	if !slugOnly {
+		t.Fatalf("%s: no scope with an empty login and a slug", name)
 	}
 	return fx
-}
-
-// wantAnswer is fx.Answer as a gateway.NodeAnswer, for both f.Answer
-// and the assertion on what the client parsed back.
-func (fx answerFixture) wantAnswer() *gateway.NodeAnswer {
-	a := &gateway.NodeAnswer{NodeID: fx.Answer.NodeID, Owner: gateway.NodeOwner{
-		Kind: fx.Answer.Owner.Kind, ID: fx.Answer.Owner.ID, Name: fx.Answer.Owner.Name,
-	}}
-	for _, s := range fx.Answer.Scopes {
-		a.Scopes = append(a.Scopes, gateway.ScopeAnswer{OrgID: s.OrgID, Login: s.Login, Slug: s.Slug, AccountID: s.AccountID})
-	}
-	return a
 }
 
 func str(m map[string]any, k string) string {
@@ -114,7 +139,7 @@ func TestRegisterNodeAnswerFromFixture(t *testing.T) {
 	fx := loadAnswerFixture(t, "registerNode.json")
 	f := gatewaytest.New("rs_test")
 	defer f.Close()
-	f.Answer = fx.wantAnswer()
+	f.AnswerJSON = fx.Answer
 	gw := gateway.New(f.URL(), "rs_test")
 
 	in := fx.Input
@@ -126,7 +151,7 @@ func TestRegisterNodeAnswerFromFixture(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	answersEqual(t, got, fx.wantAnswer())
+	answersEqual(t, got, fx.strictAnswer(t))
 
 	calls := f.CallsNamed("registerNode")
 	if len(calls) != 1 || calls[0].Input["owner"] != str(in, "owner") {
@@ -138,7 +163,7 @@ func TestHeartbeatNodeAnswerFromFixture(t *testing.T) {
 	fx := loadAnswerFixture(t, "heartbeatNode.json")
 	f := gatewaytest.New("rs_test")
 	defer f.Close()
-	f.Answer = fx.wantAnswer()
+	f.AnswerJSON = fx.Answer
 	gw := gateway.New(f.URL(), "rs_test")
 
 	in := fx.Input
@@ -151,7 +176,7 @@ func TestHeartbeatNodeAnswerFromFixture(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	answersEqual(t, got, fx.wantAnswer())
+	answersEqual(t, got, fx.strictAnswer(t))
 }
 
 // A platform whose payload carries neither owner nor scopes (today's,
@@ -187,6 +212,40 @@ func TestNodeAnswerNilWithoutOwnerOrScopes(t *testing.T) {
 	}
 }
 
+// A platform before a-node-has-an-owner refuses the answer fields on
+// the payload ("Cannot query field"): the command lands on its `status`
+// alone, the answer is nil and no error, and the refusal is kept — the
+// next heartbeat is one request, not a refused one and a retry.
+func TestNodeAnswerRefusedIsKept(t *testing.T) {
+	f := gatewaytest.New("rs_test")
+	defer f.Close()
+	f.UnknownFields["nodeAnswer"] = true
+	f.Answer = &gateway.NodeAnswer{NodeID: "never", Owner: gateway.NodeOwner{Kind: "person", ID: "p", Name: "P"}}
+	gw := gateway.New(f.URL(), "rs_test")
+	ctx := context.Background()
+
+	answer, err := gw.RegisterNode(ctx, gateway.RegisterNodeInput{NodeID: "n1", OrgID: orgID, Name: "n", Slug: "n"})
+	if err != nil || answer != nil {
+		t.Fatalf("register = %+v, %v; want nil, nil", answer, err)
+	}
+	if calls := f.CallsNamed("registerNode"); len(calls) != 1 {
+		t.Fatalf("registerNode landed %d times, want 1", len(calls))
+	}
+	before := f.Requests()
+	for i := 0; i < 3; i++ {
+		answer, err := gw.HeartbeatNode(ctx, "n1", "v1", 0)
+		if err != nil || answer != nil {
+			t.Fatalf("heartbeat = %+v, %v; want nil, nil", answer, err)
+		}
+	}
+	if got := f.Requests() - before; got != 3 {
+		t.Fatalf("3 heartbeats took %d requests, want 3 (the refusal kept)", got)
+	}
+	if calls := f.CallsNamed("heartbeatNode"); len(calls) != 3 {
+		t.Fatalf("heartbeatNode landed %d times, want 3", len(calls))
+	}
+}
+
 // Org.TenantSlug decodes from myOrgs, naming an org with no GitHub
 // login (goal the-node-serves-its-owners-orgs).
 func TestOrgTenantSlugDecodes(t *testing.T) {
@@ -202,6 +261,19 @@ func TestOrgTenantSlugDecodes(t *testing.T) {
 	}
 	if len(orgs) != 1 || orgs[0].TenantSlug != "grapevine" || orgs[0].Login != "" {
 		t.Fatalf("orgs = %+v", orgs)
+	}
+}
+
+// myOrgs is a Map scalar on the platform, so there is no selection to
+// add tenantSlug to: the row arrives whole. If the schema ever makes it
+// an object type, MyOrgs must select tenantSlug and this fails first.
+func TestMyOrgsIsAMapScalar(t *testing.T) {
+	raw, err := os.ReadFile("schema.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !regexp.MustCompile(`\{"name":\s*"myOrgs",\s*"type":\s*"Map"\}`).Match(raw) {
+		t.Fatal(`schema.json: myOrgs is no longer a Map scalar; MyOrgs must select tenantSlug`)
 	}
 }
 

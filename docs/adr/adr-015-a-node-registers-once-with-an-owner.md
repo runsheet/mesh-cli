@@ -49,17 +49,26 @@ over it, byte-identical for every existing caller. A payload with none
 of `nodeId`/`owner`/`scopes` — today's platform, or one that refused
 the new selection with "Cannot query field" — parses to a `nil`
 answer and **no error**: the node keeps registering per org until the
-platform side of this contract ships. `gateway.Org` gains `TenantSlug`
+platform side of this contract ships. A refusal is kept for
+`NodeAnswerRetry` (10 minutes): until then both commands ask `status`
+alone, so today's platform costs one request per heartbeat, not a
+refused one and a retry, and a deploy that adds the fields is picked
+up within the window. `gateway.Org` gains `TenantSlug`
 (`json:"tenantSlug"`) from `myOrgs`, for the same org named by slug
-elsewhere.
+elsewhere; `myOrgs` is a `Map` scalar, so it takes no selection and
+the platform's row (which carries `tenantSlug`) arrives whole — a test
+fails if the schema ever makes it an object type.
 
 **The contract is the fixture.** `specs/contracts/registerNode.json`
 and `specs/contracts/heartbeatNode.json` are an example input and the
 exact answer JSON the client parses, each naming the runsheet goal
 `a-node-has-an-owner` as the side serving the same shape. A test loads
-each into `gatewaytest.Fake.Answer` and round-trips it through an
-`httptest` server and the real client, proving the fixture and the
-parser agree; the two repos' fixtures are expected to be the same
+each into `gatewaytest.Fake.AnswerJSON`, served as the fixture's own
+bytes (only the fields the query selects, as GraphQL does), and
+round-trips it through an `httptest` server and the real client; the
+fixture's answer is also decoded into `NodeAnswer` refusing unknown
+keys and checked for every key the client reads, so a misspelled key
+fails rather than decoding to empty on both sides; the two repos' fixtures are expected to be the same
 JSON, checked by inspection until a shared contracts path exists.
 
 ## Consequences

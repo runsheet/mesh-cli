@@ -158,6 +158,20 @@ type Fake struct {
 	// a-node-has-an-owner). nil answers `status` alone, as a platform
 	// before that goal does.
 	Answer *gateway.NodeAnswer
+	// AnswerJSON, when set, is served verbatim as registerNode's and
+	// heartbeatNode's answer (nodeId, owner, scopes) in Answer's place —
+	// a contract fixture's own bytes, not the fake's re-encoding of them.
+	AnswerJSON json.RawMessage
+
+	requests int
+}
+
+// Requests is how many GraphQL requests the fake has been sent, refused
+// ones included.
+func (f *Fake) Requests() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.requests
 }
 
 // New starts a fake accepting the given bearer token.
@@ -259,6 +273,7 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 	q := strings.TrimSpace(req.Query)
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.requests++
 	switch {
 	case strings.HasPrefix(q, "mutation { signIn"):
 		writeData(w, map[string]any{"signIn": map[string]any{"id": f.UserID}})
@@ -340,6 +355,12 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 			writeErrors(w, 200, fmt.Sprintf(`Variable "$in" got invalid value; In field %q: is not defined by type %q.`, field, typ))
 			return
 		}
+		if f.UnknownFields["nodeAnswer"] && (m[2] == "registerNode" || m[2] == "heartbeatNode") && strings.Contains(q, "nodeId") {
+			// a platform before a-node-has-an-owner: its CommandResult has
+			// status alone, and the whole call is refused before it runs
+			writeErrors(w, 200, `Cannot query field "nodeId" on type "CommandResult".`)
+			return
+		}
 		if msg := f.Refuse[m[2]]; msg != "" {
 			writeErrors(w, 200, msg)
 			return
@@ -373,7 +394,7 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 		if usage, ok := in["usage"].(map[string]any); ok && finishingMutations[m[2]] {
 			f.SessionUsage = append(f.SessionUsage, Call{Name: m[2], Input: copyRow(usage), At: time.Now()})
 		}
-		writeData(w, map[string]any{m[2]: f.mutationPayload(m[2])})
+		writeData(w, map[string]any{m[2]: f.mutationPayload(m[2], q)})
 	default:
 		if m := scorecardRe.FindStringSubmatch(q); m != nil {
 			f.Reads = append(f.Reads, Call{Name: "scorecard", Input: map[string]any{"orgId": m[1]}})
@@ -680,9 +701,29 @@ var finishingMutations = map[string]bool{
 // scopes on registerNode and heartbeatNode (runsheet goal
 // a-node-has-an-owner) — nil leaves the payload at status alone, as a
 // platform before that goal does.
-func (f *Fake) mutationPayload(name string) map[string]any {
+//
+// Only what the query selects is answered, as GraphQL does: a payload
+// asked for `status` alone gets status alone.
+func (f *Fake) mutationPayload(name, q string) map[string]any {
 	payload := map[string]any{"status": "ok"}
-	if f.Answer == nil || (name != "registerNode" && name != "heartbeatNode") {
+	if name != "registerNode" && name != "heartbeatNode" {
+		return payload
+	}
+	selected := func(field string) bool {
+		return strings.Contains(q, " "+field+" ") || strings.Contains(q, " "+field+"{")
+	}
+	if len(f.AnswerJSON) > 0 {
+		var raw map[string]any
+		if err := json.Unmarshal(f.AnswerJSON, &raw); err == nil {
+			for k, v := range raw {
+				if selected(k) {
+					payload[k] = v
+				}
+			}
+		}
+		return payload
+	}
+	if f.Answer == nil || !selected("nodeId") {
 		return payload
 	}
 	scopes := make([]map[string]any, len(f.Answer.Scopes))

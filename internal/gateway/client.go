@@ -68,6 +68,11 @@ type Client struct {
 	// heartbeatBasicUntil (unix nanoseconds) is when the heartbeat next
 	// offers the fields the gateway refused (see HeartbeatNode).
 	heartbeatBasicUntil atomic.Int64
+	// nodeAnswerUntil (unix nanoseconds) is when registerNode and
+	// heartbeatNode next ask their payload for the node's answer after
+	// the gateway refused it (see mutateForAnswer): until then they ask
+	// `status` alone, one request each, as before the answer existed.
+	nodeAnswerUntil atomic.Int64
 	// nodesWithoutDesired is set once the gateway has refused
 	// NodeIndex.desiredVersion (a platform older than
 	// update-nodes-from-console): every later node read leaves it out.
@@ -527,7 +532,10 @@ type Org struct {
 	TenantSlug string `json:"tenantSlug"`
 }
 
-// MyOrgs lists the orgs the person reaches.
+// MyOrgs lists the orgs the person reaches. myOrgs is a Map scalar
+// (schema.json), so it takes no selection: the platform's row arrives
+// whole, tenantSlug included (runsheet gateway/person.go, its
+// specs/contracts/myOrgs.json), and Org decodes what it names.
 func (c *Client) MyOrgs(ctx context.Context) ([]Org, error) {
 	var out struct {
 		MyOrgs json.RawMessage `json:"myOrgs"`
@@ -1304,7 +1312,14 @@ func (p nodeAnswerPayload) asAnswer() *NodeAnswer {
 // yet refuses the whole selection ("Cannot query field"); that is read
 // as no answer, not an error — the command still landed with `status`
 // alone would have.
+//
+// The refusal is kept for NodeAnswerRetry: until then the command asks
+// `status` alone, so a platform before a-node-has-an-owner costs one
+// request per heartbeat, not two, and is asked again after a deploy.
 func (c *Client) mutateForAnswer(ctx context.Context, field, aggregateID string, input map[string]any) (*NodeAnswer, error) {
+	if time.Now().UnixNano() < c.nodeAnswerUntil.Load() {
+		return nil, c.Mutate(ctx, field, aggregateID, input)
+	}
 	var payload nodeAnswerPayload
 	err := c.MutateFields(ctx, field, aggregateID, input, "status "+nodeAnswerFields, &payload)
 	if err == nil {
@@ -1312,6 +1327,7 @@ func (c *Client) mutateForAnswer(ctx context.Context, field, aggregateID string,
 	}
 	var ge *Error
 	if errors.As(err, &ge) && unknownField(ge.Message, "nodeId", "owner", "scopes") {
+		c.nodeAnswerUntil.Store(time.Now().Add(NodeAnswerRetry).UnixNano())
 		if err2 := c.Mutate(ctx, field, aggregateID, input); err2 != nil {
 			return nil, err2
 		}
@@ -1319,6 +1335,11 @@ func (c *Client) mutateForAnswer(ctx context.Context, field, aggregateID string,
 	}
 	return nil, err
 }
+
+// NodeAnswerRetry is how long a gateway's refusal of the node's answer
+// (nodeId, owner, scopes on the registerNode/heartbeatNode payload) is
+// kept before the answer is asked for again.
+const NodeAnswerRetry = 10 * time.Minute
 
 // RegisterNode registers (converging) the node, and returns the
 // platform's answer to who owns it and which orgs it now serves (nil
