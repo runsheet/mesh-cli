@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -17,6 +18,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/gateway/gatewaytest"
 	"projectmesh.io/mesh-cli/internal/harness"
+	"projectmesh.io/mesh-cli/internal/sandbox"
 )
 
 // tokenGW hands out a sequence of GitHub tokens, the last one repeated,
@@ -522,5 +524,502 @@ func TestBuildFinishesAlreadyDoneWithoutAPush(t *testing.T) {
 	}
 	if len(h.jobs) != 1 || !strings.Contains(h.jobs[0].Prompt, "mesh_finish outcome=already_done") {
 		t.Fatal("the build session's prompt must carry the check of main first")
+	}
+}
+
+// validateYML declares an always step and two path-scoped ones: api's
+// fails while api/broken exists.
+const validateYML = `steps:
+  - name: vet
+    command: sleep 0.02
+    always: true
+  - name: api
+    command: sleep 0.02 && test ! -e api/broken
+    paths: ["api/**"]
+  - name: web
+    command: sleep 0.02
+    paths: ["web/**"]
+`
+
+// gitRun runs git in dir, failing the test on an error.
+func gitRun(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-c", "user.name=Test", "-c", "user.email=test@example.com", "-c", "init.defaultBranch=main"}, args...)...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v: %s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// writeFiles writes each file under dir; an empty body removes it.
+func writeFiles(t *testing.T, dir string, files map[string]string) {
+	t.Helper()
+	for name, body := range files {
+		p := filepath.Join(dir, name)
+		if body == "" {
+			if err := os.Remove(p); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// originRepo is a bare origin whose main holds files, api/ and web/.
+func originRepo(t *testing.T, files map[string]string) string {
+	t.Helper()
+	root := t.TempDir()
+	origin := filepath.Join(root, "origin.git")
+	gitRun(t, root, "init", "--quiet", "--bare", origin)
+	seedDir := filepath.Join(root, "seed")
+	gitRun(t, root, "clone", "--quiet", origin, seedDir)
+	all := map[string]string{"api/api.go": "package api\n", "web/web.go": "package web\n"}
+	for k, v := range files {
+		all[k] = v
+	}
+	writeFiles(t, seedDir, all)
+	gitRun(t, seedDir, "add", "-A")
+	gitRun(t, seedDir, "commit", "--quiet", "-m", "base")
+	gitRun(t, seedDir, "push", "--quiet", "origin", "HEAD:main")
+	return origin
+}
+
+// gitWS is fakeWS on a real checkout of origin: Prepare clones it onto
+// the item's branch, ChangedPaths is Git's, and Push answers HEAD.
+type gitWS struct {
+	*fakeWS
+	t      *testing.T
+	origin string
+	// pushedAt is when Push answered.
+	pushedAt time.Time
+}
+
+func (w *gitWS) Prepare(ctx context.Context, spec WorkspaceSpec) (string, error) {
+	dir, err := w.fakeWS.Prepare(ctx, spec)
+	if err != nil {
+		return "", err
+	}
+	gitRun(w.t, dir, "clone", "--quiet", w.origin, ".")
+	gitRun(w.t, dir, "checkout", "--quiet", "-b", spec.Branch)
+	return dir, nil
+}
+
+func (w *gitWS) ChangedPaths(ctx context.Context, dir, base string) ([]string, error) {
+	return (&Git{}).ChangedPaths(ctx, dir, base)
+}
+
+func (w *gitWS) Push(ctx context.Context, dir, branch string) (string, error) {
+	if _, err := w.fakeWS.Push(ctx, dir, branch); err != nil {
+		return "", err
+	}
+	sha := gitRun(w.t, dir, "rev-parse", "HEAD")
+	w.mu.Lock()
+	w.pushedAt = time.Now()
+	w.mu.Unlock()
+	return sha, nil
+}
+
+// commitHarness is a build session that commits turns[n] (files; "" a
+// removal) on its n-th run, nothing past them, and succeeds.
+type commitHarness struct {
+	t     *testing.T
+	mu    sync.Mutex
+	jobs  []harness.Job
+	turns []map[string]string
+}
+
+func (h *commitHarness) Name() string { return "claude-code" }
+
+func (h *commitHarness) Run(_ context.Context, job harness.Job, on func(harness.Progress)) (harness.Result, error) {
+	h.mu.Lock()
+	n := len(h.jobs)
+	h.jobs = append(h.jobs, job)
+	var files map[string]string
+	if n < len(h.turns) {
+		files = h.turns[n]
+	}
+	h.mu.Unlock()
+	if files != nil {
+		writeFiles(h.t, job.Workspace, files)
+		gitRun(h.t, job.Workspace, "add", "-A")
+		gitRun(h.t, job.Workspace, "commit", "--quiet", "-m", fmt.Sprintf("turn %d", n+1))
+	}
+	on(harness.Progress{SessionID: "s-1"})
+	on(harness.Progress{Text: "committed", CostUSD: 0.5})
+	return harness.Result{Success: true, Text: "Committed.", SessionID: "s-1", CostUSD: 0.5}, nil
+}
+
+func (h *commitHarness) Jobs() []harness.Job {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]harness.Job(nil), h.jobs...)
+}
+
+// validatingRunner is a runner on a real checkout of an origin whose
+// main declares validateYML (files beside it), the item's token taken as
+// a bearer by the fake, with h committing each turn.
+func validatingRunner(t *testing.T, repoFiles map[string]string, turns ...map[string]string) (*Runner, *gitWS, *commitHarness, *gatewaytest.Fake, gateway.WorkItem, *syncBuf) {
+	t.Helper()
+	f := seed(t)
+	f.ItemBearers = []string{"ghs_item1"}
+	h := &commitHarness{t: t, turns: turns}
+	r, ws, item, _ := runnerOnFake(t, f, h, nil)
+	gws := &gitWS{fakeWS: ws, t: t, origin: originRepo(t, repoFiles)}
+	r.WS = gws
+	logs := &syncBuf{}
+	r.Log = log.New(logs, "", 0)
+	return r, gws, h, f, item, logs
+}
+
+func withValidation() map[string]string {
+	return map[string]string{".runsheet/validate.yml": validateYML}
+}
+
+// attestationSteps are the step names of an uploaded attestation.
+func attestationSteps(t *testing.T, call gatewaytest.Call) []string {
+	t.Helper()
+	a, _ := call.Input["attestation"].(map[string]any)
+	steps, _ := a["steps"].([]any)
+	var names []string
+	for _, s := range steps {
+		names = append(names, s.(map[string]any)["step"].(string))
+	}
+	return names
+}
+
+// A build whose commit touches api/ runs the always step and api's —
+// not web's — in the file's order, and finishes.
+func TestBuildRunsOnlyTheAffectedStepsPlusAlways(t *testing.T) {
+	r, _, _, f, item, _ := validatingRunner(t, withValidation(), map[string]string{"api/api.go": "package api\n\nconst X = 1\n"})
+	if err := r.RunItem(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	atts := f.CallsNamed("recordValidationAttestation")
+	if len(atts) != 1 {
+		t.Fatalf("attestations = %d, want 1", len(atts))
+	}
+	if got := strings.Join(attestationSteps(t, atts[0]), ","); got != "vet,api" {
+		t.Fatalf("steps run = %s, want vet,api", got)
+	}
+	if n := len(f.CallsNamed("finishWorkItem")); n != 1 {
+		t.Fatalf("finishWorkItem calls = %d", n)
+	}
+}
+
+// The attestation is uploaded after the push, for the pushed commit,
+// with every field, on the item's own token.
+func TestBuildUploadsTheAttestationWithTheItemToken(t *testing.T) {
+	r, ws, _, f, item, _ := validatingRunner(t, withValidation(), map[string]string{"web/web.go": "package web\n\nconst Y = 2\n"})
+	if err := r.RunItem(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	atts := f.CallsNamed("recordValidationAttestation")
+	if len(atts) != 1 {
+		t.Fatalf("attestations = %d, want 1", len(atts))
+	}
+	call := atts[0]
+	if call.Bearer != "ghs_item1" {
+		t.Fatalf("bearer = %q, want the item's token", call.Bearer)
+	}
+	finish := f.CallsNamed("finishWorkItem")
+	if len(finish) != 1 {
+		t.Fatalf("finishWorkItem calls = %d", len(finish))
+	}
+	sha, _ := finish[0].Input["headSha"].(string)
+	if len(sha) != 40 {
+		t.Fatalf("headSha = %q", sha)
+	}
+	ws.mu.Lock()
+	pushedAt := ws.pushedAt
+	ws.mu.Unlock()
+	if pushedAt.IsZero() || call.At.Before(pushedAt) {
+		t.Fatalf("uploaded at %v, pushed at %v: the upload must follow the push", call.At, pushedAt)
+	}
+	a, _ := call.Input["attestation"].(map[string]any)
+	if a["commit"] != sha {
+		t.Fatalf("commit = %v, pushed %s", a["commit"], sha)
+	}
+	if tree, _ := a["tree"].(string); len(tree) != 40 || tree == sha {
+		t.Fatalf("tree = %v", a["tree"])
+	}
+	host, _ := os.Hostname()
+	if a["runnerImage"] != "host:"+host || a["sandboxed"] != false {
+		t.Fatalf("runner = %v sandboxed %v", a["runnerImage"], a["sandboxed"])
+	}
+	if a["nodeId"] != r.Cfg.NodeID || a["sessionId"] != "s-1" || a["itemId"] != item1 {
+		t.Fatalf("attestation = %v", a)
+	}
+	if at, _ := a["at"].(string); at == "" {
+		t.Fatalf("at = %v", a["at"])
+	} else if _, err := time.Parse(time.RFC3339Nano, at); err != nil {
+		t.Fatalf("at = %v: %v", at, err)
+	}
+	steps, _ := a["steps"].([]any)
+	if len(steps) != 2 {
+		t.Fatalf("steps = %v", steps)
+	}
+	for _, s := range steps {
+		row := s.(map[string]any)
+		for _, k := range []string{"step", "command", "suiteHash", "exitCode", "ms"} {
+			if _, ok := row[k]; !ok {
+				t.Fatalf("step %v lacks %s", row, k)
+			}
+		}
+		if row["exitCode"] != float64(0) || row["suiteHash"] == "" || row["command"] == "" {
+			t.Fatalf("step = %v", row)
+		}
+	}
+}
+
+// With no sandbox the attestation names the host and says unsandboxed.
+func TestUnsandboxedRunSaysHostInRunnerImage(t *testing.T) {
+	r, _, _, f, item, _ := validatingRunner(t, withValidation(), map[string]string{"api/api.go": "package api\n// x\n"})
+	if r.Sandbox != nil {
+		t.Fatal("want no sandbox")
+	}
+	if err := r.RunItem(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	atts := f.CallsNamed("recordValidationAttestation")
+	if len(atts) != 1 {
+		t.Fatalf("attestations = %d", len(atts))
+	}
+	a, _ := atts[0].Input["attestation"].(map[string]any)
+	host, err := os.Hostname()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a["runnerImage"] != "host:"+host || a["sandboxed"] != false {
+		t.Fatalf("runnerImage = %v, sandboxed = %v", a["runnerImage"], a["sandboxed"])
+	}
+}
+
+// A failing step resumes the session once with a prompt naming it; a
+// retry that still fails fails the item naming the step, uploads that
+// run's attestation, and finishes nothing.
+func TestFailingStepGivesOneRetryTurnThenFailsNamingTheStep(t *testing.T) {
+	r, ws, h, f, item, _ := validatingRunner(t, withValidation(),
+		map[string]string{"api/broken": "x"},
+		map[string]string{"api/other.go": "package api\n"})
+	err := r.RunItem(context.Background(), item)
+	if err == nil || !strings.HasPrefix(err.Error(), "validation failed: step api") {
+		t.Fatalf("err = %v", err)
+	}
+	jobs := h.Jobs()
+	if len(jobs) != 2 {
+		t.Fatalf("sessions = %d, want the build and one retry", len(jobs))
+	}
+	if jobs[1].Resume != "s-1" {
+		t.Fatalf("retry resume = %q, want s-1", jobs[1].Resume)
+	}
+	for _, want := range []string{"step api", "test ! -e api/broken", "exited 1", "commit what works", "Never push"} {
+		if !strings.Contains(jobs[1].Prompt, want) {
+			t.Fatalf("retry prompt lacks %q:\n%s", want, jobs[1].Prompt)
+		}
+	}
+	if jobs[1].Outlive || jobs[1].HandBackAt != 0 {
+		t.Fatalf("retry job = %+v", jobs[1])
+	}
+	fails := f.CallsNamed("failWorkItem")
+	if len(fails) != 1 {
+		t.Fatalf("failWorkItem calls = %d", len(fails))
+	}
+	if msg, _ := fails[0].Input["error"].(string); !strings.HasPrefix(msg, "validation failed: step api exited 1") {
+		t.Fatalf("fail reason = %q", msg)
+	}
+	if n := len(f.CallsNamed("finishWorkItem")); n != 0 {
+		t.Fatalf("finishWorkItem called %d times", n)
+	}
+	if len(ws.pushed) != 0 {
+		t.Fatalf("pushed %v", ws.pushed)
+	}
+	atts := f.CallsNamed("recordValidationAttestation")
+	if len(atts) != 1 {
+		t.Fatalf("attestations = %d, want the failed run's", len(atts))
+	}
+	a, _ := atts[0].Input["attestation"].(map[string]any)
+	steps, _ := a["steps"].([]any)
+	if last := steps[len(steps)-1].(map[string]any); last["step"] != "api" || last["exitCode"] != float64(1) {
+		t.Fatalf("steps = %v", steps)
+	}
+	var noted bool
+	for _, c := range f.CallsNamed("reportWorkItemProgress") {
+		if n, _ := c.Input["note"].(string); strings.HasPrefix(n, "validation failed: step api") {
+			noted = true
+		}
+	}
+	if !noted {
+		t.Fatal("the failure is not reported on the item")
+	}
+}
+
+// A retry turn that lands no new commit is the same failure.
+func TestRetryWithoutACommitFailsNamingTheStep(t *testing.T) {
+	r, _, h, f, item, _ := validatingRunner(t, withValidation(), map[string]string{"api/broken": "x"})
+	if err := r.RunItem(context.Background(), item); err == nil {
+		t.Fatal("want the failure")
+	}
+	if n := len(h.Jobs()); n != 2 {
+		t.Fatalf("sessions = %d", n)
+	}
+	fails := f.CallsNamed("failWorkItem")
+	if len(fails) != 1 {
+		t.Fatalf("failWorkItem calls = %d", len(fails))
+	}
+	if msg, _ := fails[0].Input["error"].(string); !strings.HasPrefix(msg, "validation failed: step api") {
+		t.Fatalf("fail reason = %q", msg)
+	}
+}
+
+// A retry that fixes the step is validated again and finishes on its
+// commit.
+func TestFailingStepFixedOnTheRetryFinishes(t *testing.T) {
+	r, _, h, f, item, _ := validatingRunner(t, withValidation(),
+		map[string]string{"api/broken": "x"},
+		map[string]string{"api/broken": ""})
+	if err := r.RunItem(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(h.Jobs()); n != 2 {
+		t.Fatalf("sessions = %d", n)
+	}
+	if n := len(f.CallsNamed("failWorkItem")); n != 0 {
+		t.Fatalf("failWorkItem called %d times", n)
+	}
+	finish := f.CallsNamed("finishWorkItem")
+	if len(finish) != 1 {
+		t.Fatalf("finishWorkItem calls = %d", len(finish))
+	}
+	atts := f.CallsNamed("recordValidationAttestation")
+	if len(atts) != 1 {
+		t.Fatalf("attestations = %d", len(atts))
+	}
+	a, _ := atts[0].Input["attestation"].(map[string]any)
+	if a["commit"] != finish[0].Input["headSha"] {
+		t.Fatalf("attested %v, finished %v", a["commit"], finish[0].Input["headSha"])
+	}
+	for _, s := range a["steps"].([]any) {
+		if s.(map[string]any)["exitCode"] != float64(0) {
+			t.Fatalf("steps = %v", a["steps"])
+		}
+	}
+}
+
+// A repository with no validate.yml finishes as before: no attestation,
+// one log line.
+func TestNoValidationFileFinishesAsBefore(t *testing.T) {
+	r, ws, h, f, item, logs := validatingRunner(t, nil, map[string]string{"api/api.go": "package api\n// y\n"})
+	if err := r.RunItem(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(h.Jobs()); n != 1 {
+		t.Fatalf("sessions = %d", n)
+	}
+	if n := len(f.CallsNamed("recordValidationAttestation")); n != 0 {
+		t.Fatalf("attestations = %d", n)
+	}
+	if n := len(f.CallsNamed("finishWorkItem")); n != 1 || len(ws.pushed) != 1 {
+		t.Fatalf("finishes = %d, pushes = %v", n, ws.pushed)
+	}
+	if got := strings.Count(logs.String(), "no validation declared"); got != 1 {
+		t.Fatalf("'no validation declared' logged %d times:\n%s", got, logs.String())
+	}
+}
+
+// The finish's usage report carries one validation row per step run,
+// its milliseconds and exit code.
+func TestPerStepMinutesRideTheUsageRecord(t *testing.T) {
+	r, _, _, f, item, _ := validatingRunner(t, withValidation(), map[string]string{"api/api.go": "package api\n// z\n"})
+	r.Credentials = &Credentials{GW: r.GW.(*gateway.Client)}
+	if err := r.RunItem(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	finish := f.CallsNamed("finishWorkItem")
+	if len(finish) != 1 {
+		t.Fatalf("finishWorkItem calls = %d", len(finish))
+	}
+	usage, _ := finish[0].Input["usage"].(map[string]any)
+	rows, _ := usage["validation"].([]any)
+	if len(rows) != 2 {
+		t.Fatalf("usage.validation = %v", usage["validation"])
+	}
+	for i, want := range []string{"vet", "api"} {
+		row := rows[i].(map[string]any)
+		if row["step"] != want {
+			t.Fatalf("row %d = %v, want %s", i, row, want)
+		}
+		if ms, _ := row["ms"].(float64); ms <= 0 {
+			t.Fatalf("row %d ms = %v", i, row["ms"])
+		}
+	}
+}
+
+// A platform whose usage report takes no validation still gets the
+// finish, said once.
+func TestNoValidationUsageFinishesSaidOnce(t *testing.T) {
+	r, _, _, f, item, logs := validatingRunner(t, withValidation(), map[string]string{"api/api.go": "package api\n// w\n"})
+	f.NoValidationUsage = true
+	r.Credentials = &Credentials{GW: r.GW.(*gateway.Client)}
+	r.Notices = &ValidationNotices{}
+	if err := r.RunItem(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(f.CallsNamed("finishWorkItem")); n != 1 {
+		t.Fatalf("finishWorkItem calls = %d", n)
+	}
+	if got := strings.Count(logs.String(), "takes no per-step validation minutes"); got != 1 {
+		t.Fatalf("notice said %d times:\n%s", got, logs.String())
+	}
+}
+
+// With a sandbox each step runs in the session's pod, with the
+// workspace, and the attestation names the image's digest, sandboxed.
+func TestSandboxedRunRunsEachStepInThePod(t *testing.T) {
+	r, _, _, f, item, _ := validatingRunner(t, withValidation(), map[string]string{"api/api.go": "package api\n// s\n"})
+	rt := &sandbox.Fake{}
+	rt.Agent = func(ctx context.Context, spec sandbox.AgentSpec) (sandbox.Exit, error) {
+		cmd := exec.CommandContext(ctx, spec.Command[0], spec.Command[1:]...)
+		cmd.Dir, cmd.Stdout, cmd.Stderr = spec.Workdir, spec.Stdout, spec.Stderr
+		err := cmd.Run()
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			return sandbox.Exit{Code: ee.ExitCode()}, nil
+		}
+		return sandbox.Exit{}, err
+	}
+	r.Sandbox = &sandbox.Sandbox{Runtime: rt, Config: sandbox.Config{Image: "ghcr.io/runsheet/mesh-node:v1"}, TempDir: t.TempDir()}
+	r.Inspect = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		if name != "podman" || strings.Join(args, " ") != "image inspect --format {{.Digest}} ghcr.io/runsheet/mesh-node:v1" {
+			return nil, fmt.Errorf("unexpected %s %v", name, args)
+		}
+		return []byte("sha256:feedface\n"), nil
+	}
+	if err := r.RunItem(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	var ran []string
+	for _, a := range rt.Agents {
+		if len(a.Command) == 3 && a.Command[0] == "sh" {
+			ran = append(ran, a.Command[2])
+		}
+	}
+	if len(ran) != 2 || ran[0] != "sleep 0.02" || !strings.Contains(ran[1], "api/broken") {
+		t.Fatalf("steps in the pod = %v", ran)
+	}
+	atts := f.CallsNamed("recordValidationAttestation")
+	if len(atts) != 1 {
+		t.Fatalf("attestations = %d", len(atts))
+	}
+	a, _ := atts[0].Input["attestation"].(map[string]any)
+	if a["runnerImage"] != "sha256:feedface" || a["sandboxed"] != true {
+		t.Fatalf("runnerImage = %v, sandboxed = %v", a["runnerImage"], a["sandboxed"])
 	}
 }

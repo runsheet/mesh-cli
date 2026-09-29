@@ -127,6 +127,21 @@ func BuildImage(ctx context.Context, run Runner, ref, version string, keep ...st
 	return img, nil
 }
 
+// ImageDigest is ref's digest as the runtime holds it (`podman image
+// inspect --format {{.Digest}}`): the runner image a sandboxed
+// validation's attestation names.
+func ImageDigest(ctx context.Context, run Runner, ref string) (string, error) {
+	out, err := run(ctx, imageBinary, "image", "inspect", "--format", "{{.Digest}}", ref)
+	if err != nil {
+		return "", fmt.Errorf("node image %s: inspect failed: %s", ref, why(out, err))
+	}
+	d := strings.TrimSpace(string(out))
+	if d == "" || d == "<none>" {
+		return "", fmt.Errorf("node image %s: no digest", ref)
+	}
+	return d, nil
+}
+
 // prune removes every mesh-node tag not in keep.
 func prune(ctx context.Context, run Runner, keep []string) (removed, kept []string) {
 	out, err := run(ctx, imageBinary, "images", "--filter", "reference="+DefaultImageRepo, "--format", "{{.Repository}}:{{.Tag}}")
