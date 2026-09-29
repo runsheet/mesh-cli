@@ -320,9 +320,14 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 		e.logf("item %s: Codex preflight failed (%s); evaluating on Claude", label, why)
 		preflight = why
 		fam = family{model: fam.claude, claude: fam.claude, priority: fam.priority}
-		if acct, err = e.Credentials.Open(ctx, ref, sc.NodeID, e.Accounts, AdapterClaudeCode); err != nil {
+		// never overwrite acct with Open's nil: the deferred Cleanup
+		// above reads it, and a nil there panicked the node (the
+		// 04:00:22Z exit, goal node-yaml-takes-effect-or-says-why-not)
+		claudeAcct, err := e.Credentials.Open(ctx, ref, sc.NodeID, e.Accounts, AdapterClaudeCode)
+		if err != nil {
 			return err
 		}
+		acct = claudeAcct
 	}
 	acct.SetContextBytes(written.Bytes)
 	acct.SetLabel("item "+label, string(harness.KindEvaluate))

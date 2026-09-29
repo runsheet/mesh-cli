@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"projectmesh.io/mesh-cli/internal/crash"
 	"strings"
 	"sync"
 	"time"
@@ -258,6 +259,7 @@ func (rb *rebaseRun) run(ctx context.Context, start func(onProgress func(harness
 	tickCtx, stopTicker := context.WithCancel(ctx)
 	defer stopTicker()
 	go func() {
+		defer crash.Guard()
 		t := time.NewTicker(every)
 		defer t.Stop()
 		for {

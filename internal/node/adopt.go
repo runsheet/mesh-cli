@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"projectmesh.io/mesh-cli/internal/crash"
 	"slices"
 	"sort"
 	"strings"
@@ -162,6 +163,7 @@ func (l *Loop) AdoptSessions(ctx context.Context, found []FoundSession) int {
 		n++
 		l.wg.Add(1)
 		go func(s FoundSession) {
+			defer crash.Guard()
 			defer l.wg.Done()
 			defer func() {
 				l.mu.Lock()
