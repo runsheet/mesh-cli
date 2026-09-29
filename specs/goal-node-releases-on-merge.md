@@ -24,10 +24,10 @@ A merge touching cmd/ or internal/ on mesh-cli main produces a tagged release wi
 | --- | --- | --- | --- | --- | --- |
 | 2 | release-tag.yml release notes: the merged PR titles since the last release, grouped by goal slug with the goal-doc link | merged | mesh/node-releases-on-merge-2 | https://github.com/runsheet/mesh-cli/pull/317 | $1.40 |
 | 3 | (failed, redone as item 8) | — | — | — | — |
-| 4 | Console: tag, commit, and behind (releases) — the Nodes page shows a node's release version (tag or sha), the commit, and whether it is behind the latest release | owed to runsheet/mesh | — | mesh-portal (not yet) | — |
-| 5 | Design: node-releases-on-merge (adr-013 and trd §1 node and §3) | owed | — | mesh-specs (not yet) | — |
-| 7 | release-on-merge: a node-changing merge to main bumps the version, tags, and release-tag.yml builds it; a docs-only merge cuts none | merged | mesh/node-releases-on-merge-7 | https://github.com/runsheet/mesh-cli/pull/330 | $2.84 |
-| 8 | Node: the reported version is the release tag when built from one, the commit sha otherwise, and the heartbeat carries `commit` when the gateway takes it | open | mesh/node-releases-on-merge-8 | https://github.com/runsheet/mesh-cli/pull/338 | — |
+| 4 | Console: the Nodes list and node page show the release tag and commit, and flag a node more than one release behind with the latest named | merged | mesh/node-releases-on-merge-4 | https://github.com/runsheet/mesh-portal/pull/16 | — |
+| 5 | mesh-specs: TRD names the release path, `commit`, `behind`, and nodes.autoUpdate; ADR 013 — a node-changing merge is a release and a node follows the latest by itself | merged | mesh/node-releases-on-merge-5 | https://github.com/runsheet/mesh-specs/pull/76 | — |
+| 7 | release-on-merge: a node-changing merge to main bumps the version, tags, and release-tag.yml builds it; a docs-only merge cuts none | merged | mesh/node-releases-on-merge-7 | https://github.com/runsheet/mesh-cli/pull/337 | $2.84 |
+| 8 | Node: the reported version is the release tag when built from one, the commit sha otherwise, and the heartbeat carries `commit` when the gateway takes it | in review | mesh/node-releases-on-merge-8 | https://github.com/runsheet/mesh-cli/pull/338 | — |
 
 ## The first automatic release
 
@@ -47,9 +47,9 @@ The platform half this project cannot build (per ADR 013's "What is owed" sectio
 - **`behind: { releases, latest }` computed from `meshCliReleases`:** the node's releases, the latest tag, and how many releases the node is behind, so `mesh_health_nodes` can flag a node more than one release behind and the console can show it.
 - **`mesh_health_nodes` flagging a node more than one release behind:** alongside the existing commit-based behind check (node-behind-main-is-seen).
 - **The console's Update button defaults to the latest release** rather than requiring the operator to select it by hand.
-- **Org setting `nodes.autoUpdate` (default off):** when on, the platform sets desired_version to the latest release once an hour when the node is idle (no claims in progress).
+- **Org setting `nodes.autoUpdate` (default off):** when on, the platform sets desired_version to the latest release once an hour when the node is idle (no claims in progress), excluding any update cycle where updateError is set (so a broken update does not keep rolling back).
 - **HANDOFF 'Mesh node deploys' section:** amend it to say the by-hand path is the fallback, and the standard is now the node updating itself from releases (once autoUpdate and the confirm-window fix from upgrades-survive-a-slow-platform land).
 
 ## The mini
 
-Until autoUpdate exists, a person sets desiredVersion from the console (or `mesh node update <version>`) to the latest release tag (e.g., v0.2.188). With the tag-or-sha version reporting done (item 8), the node's reported version will be the tag itself, not a commit sha. Building the binary is no longer a cross-build (the release is already signed and built by GitHub Actions), so `scp` and `mesh node upgrade --binary` by hand is the operation until the first autoUpdate tick.
+Until autoUpdate exists, a person updates the mini by setting desiredVersion from the console (or using `mesh node update <version>` with the latest release tag, e.g., v0.2.188). With the tag-or-sha version reporting done (item 8), the node's reported version will be the tag itself, not a commit sha. Building the binary is no longer needed — the release is already signed and built by GitHub Actions — so the interim path is console or `mesh node update`, not a manual cross-build.
