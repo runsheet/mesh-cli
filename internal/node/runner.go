@@ -249,6 +249,14 @@ func (c *costReporter) delta() int {
 	return d
 }
 
+// unreport gives back cents a failed report took (delta): the next
+// report, or the finish, carries them instead of losing them.
+func (c *costReporter) unreport(d int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.reportedCents -= d
+}
+
 // RunItem is the whole of one claimed item: resolve, workspace, context,
 // session, progress, push, finish — or fail, or release it when GitHub
 // refuses the item's token through every retry (ReleaseOnCredential). A
@@ -450,7 +458,9 @@ func (b *buildRun) report(ctx context.Context, note string) {
 		n = b.lastText
 	}
 	b.mu.Unlock()
-	if err := b.r.GW.ReportWorkItemProgress(ctx, b.item.ID, truncate(n, 2000), b.cost.delta(), sid); err != nil {
+	cents := b.cost.delta()
+	if err := b.r.GW.ReportWorkItemProgress(ctx, b.item.ID, truncate(n, 2000), cents, sid); err != nil {
+		b.cost.unreport(cents)
 		b.r.logf("item %s: progress: %v", b.label, err)
 	}
 }

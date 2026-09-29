@@ -223,7 +223,9 @@ func (rb *rebaseRun) sid() string {
 // report is the rebase's heartbeat, with the session's cents since the
 // last one: finish and fail carry none.
 func (rb *rebaseRun) report(ctx context.Context, note string) {
-	if err := rb.r.GW.ReportWorkItemProgress(ctx, rb.item.ID, truncate(note, 2000), rb.cost.delta(), rb.sid()); err != nil {
+	cents := rb.cost.delta()
+	if err := rb.r.GW.ReportWorkItemProgress(ctx, rb.item.ID, truncate(note, 2000), cents, rb.sid()); err != nil {
+		rb.cost.unreport(cents)
 		rb.r.logf("item %s: rebase progress: %v", rb.label, err)
 	}
 }
