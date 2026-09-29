@@ -119,7 +119,8 @@ func (p CodexPrice) Cost(u CodexUsage) float64 {
 // ToolCallIDs, and on Result.Tools: its wall time is item.started to
 // item.completed, and a completed status of "failed" counts an error,
 // the item's error text kept as the server's FirstError (else its
-// result's text, else the status) — the call still counts on ToolCalls
+// result's text, else the status), and one with no error but a result
+// counted Answered too (codexToolAnswered: the tool replied) — the call still counts on ToolCalls
 // and Tools whatever its status. An error item or top-level error
 // naming an MCP server that failed to start (mcpStartupServers) counts
 // an error for that server too, the message as FirstError, even with
@@ -196,6 +197,9 @@ func ParseCodexStream(r io.Reader, model string, onEvent func(CodexEvent)) Resul
 				}
 				if ev.Item.Status == "failed" {
 					stat.Errors++
+					if codexToolAnswered(ev.Item) {
+						stat.Answered++
+					}
 					if stat.FirstError == "" {
 						stat.FirstError = capText(codexCallError(ev.Item), 300)
 					}
@@ -264,6 +268,15 @@ func ParseCodexStream(r io.Reader, model string, onEvent func(CodexEvent)) Resul
 	res.Success = completed && !failed
 	res.EmptyOutput = events == 0
 	return res
+}
+
+// codexToolAnswered says whether a failed mcp_tool_call was the tool's
+// own answer: no `error` (Codex sets that when the call never reached
+// the server — an approval refusal, a transport or auth failure) and a
+// result the server returned, its isError content (docs/codex-events.md,
+// `prologue: not found`).
+func codexToolAnswered(it *CodexItem) bool {
+	return strings.TrimSpace(rawText(it.Error)) == "" && strings.TrimSpace(rawText(it.Result)) != ""
 }
 
 // codexCallError is a failed mcp_tool_call's error text: its error's

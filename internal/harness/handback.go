@@ -337,6 +337,7 @@ func mergeHandBack(first, second Result, spent string) Result {
 			stat := out.toolStat(server)
 			stat.Calls += s.Calls
 			stat.Errors += s.Errors
+			stat.Answered += s.Answered
 			stat.Wall += s.Wall
 			if stat.FirstError == "" {
 				stat.FirstError = s.FirstError

@@ -134,6 +134,70 @@ func TestCodexEvaluationReceivesResolvedTools(t *testing.T) {
 	}
 }
 
+// Evaluator.Evaluate on a Codex family hands the preflight the very job
+// it builds, and that job's servers carry the built-in, mesh-context, at
+// the gateway's /mcp on the node's token — what Codex.Preflight checks
+// before the session starts (goal evaluation-reports-no-verdict, item
+// 2: the evaluation path is covered).
+func TestCodexEvaluationPreflightsMeshContext(t *testing.T) {
+	f, ev, _, codex, _, _ := familyFixture(t, "normal", "sonnet", "VERDICT: FAIL", "Holds.\nVERDICT: PASS")
+	ev.MCP = MeshContextMCP(f.URL(), "rs_test")
+	pf := &fakePreflight{}
+	ev.CodexPreflight = pf.check
+	evaluateItem1(t, f, ev)
+	if len(pf.jobs) != 1 || codex.runs() != 1 {
+		t.Fatalf("preflights %d, codex runs %d", len(pf.jobs), codex.runs())
+	}
+	job := pf.jobs[0]
+	if job.Kind != harness.KindEvaluate {
+		t.Fatalf("kind %q", job.Kind)
+	}
+	srv, ok := job.MCPServers[tools.Builtin].(map[string]any)
+	if !ok {
+		t.Fatalf("the preflighted job's servers %v carry no %s", job.MCPServers, tools.Builtin)
+	}
+	if srv["url"] != strings.TrimRight(f.URL(), "/")+"/mcp" {
+		t.Fatalf("url %v", srv["url"])
+	}
+	if h, _ := srv["headers"].(map[string]string); h["Authorization"] != "Bearer rs_test" {
+		t.Fatalf("headers %v", srv["headers"])
+	}
+	if _, ok := codex.jobs[0].MCPServers[tools.Builtin]; !ok {
+		t.Fatal("the Codex session's job has no mesh-context")
+	}
+}
+
+// `prologue: not found` (goal evaluation-reports-no-verdict): the
+// context tool answered every call with an error of its own — a
+// mesh_document slug it does not have — so it was reached, and the
+// session's verdict stands; nothing runs on the other family.
+func TestAContextToolThatAnsweredIsAVerdict(t *testing.T) {
+	f, ev, claude, codex, _, logs := familyFixture(t, "normal", "sonnet", "VERDICT: PASS", "Missing the test.\nVERDICT: FAIL")
+	ev.MCP = MeshContextMCP(f.URL(), "rs_test")
+	codex.tools = map[string]*harness.ToolStat{"mesh-context": {Calls: 2, Errors: 2, Answered: 2, FirstError: "not found"}}
+	in := evaluateItem1(t, f, ev)
+	if codex.runs() != 1 || len(claude.jobs) != 0 || in["passed"] != false {
+		t.Fatalf("runs claude %d codex %d, recorded %+v", len(claude.jobs), codex.runs(), in)
+	}
+	if strings.Contains(logs.String(), "saw no context") {
+		t.Fatalf("node.log:\n%s", logs.String())
+	}
+	// one call the tool never answered among them is still an answer
+	f, ev, claude, codex, _, _ = familyFixture(t, "normal", "sonnet", "VERDICT: PASS", "Missing the test.\nVERDICT: FAIL")
+	ev.MCP = MeshContextMCP(f.URL(), "rs_test")
+	codex.tools = map[string]*harness.ToolStat{"mesh-context": {Calls: 2, Errors: 2, Answered: 1, FirstError: "timeout"}}
+	if in := evaluateItem1(t, f, ev); len(claude.jobs) != 0 || in["passed"] != false {
+		t.Fatalf("runs claude %d, recorded %+v", len(claude.jobs), in)
+	}
+	// none answered: no context, as before
+	f, ev, claude, codex, _, _ = familyFixture(t, "normal", "sonnet", "Holds.\nVERDICT: PASS", "VERDICT: FAIL")
+	ev.MCP = MeshContextMCP(f.URL(), "rs_test")
+	codex.tools = map[string]*harness.ToolStat{"mesh-context": {Calls: 2, Errors: 2, FirstError: "MCP tool call requires approval, but approval policy is never"}}
+	if in := evaluateItem1(t, f, ev); len(claude.jobs) != 1 || in["passed"] != true {
+		t.Fatalf("runs claude %d, recorded %+v", len(claude.jobs), in)
+	}
+}
+
 func readTestFile(t *testing.T, path string) string {
 	t.Helper()
 	data, err := os.ReadFile(path)
