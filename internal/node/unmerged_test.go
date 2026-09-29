@@ -183,7 +183,7 @@ func TestLoopUnmergedLimitHoldsFreshClaimsWhenReviewIsUnread(t *testing.T) {
 	if s := p.Item("a-fresh")["status"]; s != "ready" {
 		t.Fatalf("a-fresh is %v, want ready", s)
 	}
-	want := "repo " + repoID + "'s unmerged pull requests could not be counted (acme's review items unread) under node.yaml's claim.unmerged_per_repo 5"
+	want := "repo " + repoID + "'s unmerged pull requests could not be counted (acme, globex's review items unread) under node.yaml's claim.unmerged_per_repo 5"
 	if !strings.Contains(logs.String(), want) {
 		t.Fatalf("the hold is not logged as %q:\n%s", want, logs)
 	}
@@ -220,5 +220,52 @@ func TestLoopUnmergedLimitNamesEveryHeldRepo(t *testing.T) {
 		if !strings.Contains(u["reason"].(string), want) {
 			t.Fatalf("holding reason %q does not name %q", u["reason"], want)
 		}
+	}
+}
+
+// A repo's unmerged work is counted over every served org: org2 has
+// nothing ready but a pull request in review in repo A, so under limit 1
+// acme's fresh item of repo A is held and its repo B item claimed.
+func TestLoopUnmergedLimitCountsReviewOfAnOrgWithNothingReady(t *testing.T) {
+	p := newPriorityFake(t)
+	p.addGoal(orgID, "steady", "normal")
+	p.addGoal(org2, "fire", "normal")
+	p.addReview(org2, "fire", "g-open", repoID, 1)
+	p.addItemRow(orgID, "steady", "a-fresh", 2, nil)
+	p.addItemRow(orgID, "steady", "b-fresh", 3, map[string]any{"repoId": repoB})
+	p.register()
+	loop, logs := p.loop(3)
+	loop.Cfg.Claim = ClaimConfig{UnmergedPerRepo: 1}
+	if got := p.claimedBy(loop); strings.Join(got, ",") != "b-fresh" {
+		t.Fatalf("claimed %v, want b-fresh alone", got)
+	}
+	if got := p.reviewReads(); got[orgID] != 1 || got[org2] != 1 {
+		t.Fatalf("review reads by org = %v, want one each", got)
+	}
+	want := "repo " + repoID + " has 1 unmerged pull requests, at node.yaml's claim.unmerged_per_repo 1"
+	if !strings.Contains(logs.String(), want) {
+		t.Fatalf("the hold is not logged as %q:\n%s", want, logs)
+	}
+}
+
+// An org whose reads fail — its ready listing and its review listing —
+// leaves every repo's count unknown: its review listing is still tried,
+// and the other org's fresh items are held while its rework is claimed.
+func TestLoopUnmergedLimitHoldsFreshClaimsWhenAnotherOrgIsUnread(t *testing.T) {
+	p := newPriorityFake(t)
+	p.addGoal(orgID, "steady", "normal")
+	p.addGoal(org2, "fire", "normal")
+	p.addReview(org2, "fire", "g-open", repoID, 1)
+	p.addItemRow(orgID, "steady", "a-fresh", 2, nil)
+	p.addItemRow(orgID, "steady", "a-rework", 3, map[string]any{"prUrl": "https://github.com/acme/a/pull/3", "evaluation": "the test does not pass", "attempts": 1})
+	p.FailReads["workItemIndexs/org_id="+org2] = "gateway timeout"
+	p.register()
+	loop, _ := p.loop(3)
+	loop.Cfg.Claim = ClaimConfig{UnmergedPerRepo: 5}
+	if got := p.claimedBy(loop); strings.Join(got, ",") != "a-rework" {
+		t.Fatalf("claimed %v, want a-rework alone", got)
+	}
+	if got := p.reviewReads(); got[org2] != 1 {
+		t.Fatalf("review reads by org = %v, want org2's tried despite its failed ready read", got)
 	}
 }

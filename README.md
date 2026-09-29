@@ -1014,8 +1014,9 @@ claim:
 
 Unmerged is an item in status `review` on the platform: its pull
 request is open and waiting for the integrator. While the key is set the
-node lists each served org's `review` items once a tick (an org with
-nothing ready is not read) and counts them by repo; a fresh item of a
+node lists every served org's `review` items once a tick (when anything
+is ready, and then every org's, even one with nothing ready: a repo's
+open pull requests may sit under another org) and counts them by repo; a fresh item of a
 repo at the limit stays `ready`, and each fresh item claimed in the tick
 counts against its repo at once, so one tick never overshoots. Started
 work in that repo — an item with an open pull request, an evaluation or

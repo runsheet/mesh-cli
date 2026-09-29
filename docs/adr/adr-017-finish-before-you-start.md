@@ -142,14 +142,19 @@ a restart and is logged (`claim: unmerged_per_repo 0 → 7`).
 status for an item whose pull request is open and waiting to merge —
 counted by its `repoId`. `claimReady` reads each served org's `review`
 items once per tick (`OrgWorkItems(org, "review")`), only while the key
-is set and only for an org with something ready. A fresh item claimed in
-the tick is added to its repo's count at once, so one tick never claims
-more fresh items of a repo than the limit leaves. A failed listing
-leaves that org's counts unknown: its repos may already be at the
-limit, so its fresh items are held this tick (reason `repo <repoId>'s
-unmerged pull requests could not be counted (<org>'s review items
-unread) under node.yaml's claim.unmerged_per_repo <limit>`) and its
-started work is still claimed, as at the limit. Counting an unread org
+is set and only on a tick where some org has something ready — but then
+*every* served org's, including one with nothing ready or whose ready
+listing failed, before any repo is judged: a repo's pull requests may
+be in review under another org than the one offering its fresh item, and
+counting only the orgs with ready work would let the node claim past the
+limit. A fresh item claimed in the tick is added to its repo's count at
+once, so one tick never claims more fresh items of a repo than the limit
+leaves. A failed listing leaves the counts unknown — any repo may have
+review items in that org — so every fresh item is held this tick
+(reason `repo <repoId>'s unmerged pull requests could not be counted
+(<orgs>'s review items unread) under node.yaml's
+claim.unmerged_per_repo <limit>`) and started work is still claimed, as
+at the limit. Counting an unread org
 as having none would let a repo past its limit take fresh claims on a
 slow read; holding fresh work one tick costs a tick.
 
