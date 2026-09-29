@@ -79,13 +79,12 @@ change through the release path.
 | Seq | Title | Status | Branch | PR | Cost |
 | --- | --- | --- | --- | --- | --- |
 | 1 | Harness: a CodexProvider on the account is declared first in config.toml, makes the file worth writing, and is the only price table its models are costed at | merged | mesh/codex-provider-for-any-openai-compatible-model-1 | https://github.com/runsheet/mesh-cli/pull/490 (572007a) | $1.68 |
-| 2 | Config: node.yaml's codex block takes a providers map, an account names one with provider:, and load refuses the four bad shapes | review (open) | mesh/codex-provider-for-any-openai-compatible-model-2 | https://github.com/runsheet/mesh-cli/pull/491 | $1.48 |
+| 2 | Config: node.yaml's codex block takes a providers map, an account names one with provider:, and load refuses the four bad shapes | merged | mesh/codex-provider-for-any-openai-compatible-model-2 | https://github.com/runsheet/mesh-cli/pull/491 (32083c2) | $1.48 |
 | 3 | mesh-specs: the TRD's Codex adapter section records providers, where the key rides, and that a provider's own price table is the only one | merged | mesh/codex-provider-for-any-openai-compatible-model-3 | https://github.com/runsheet/mesh-specs/pull/114 (b7662c8) | $1.02 |
-| 4 | Goal doc: codex-provider-for-any-openai-compatible-model, what landed, the release path to the mini, and the routing question left with the platform | running | mesh/codex-provider-for-any-openai-compatible-model-4 | — | — |
+| 4 | Goal doc: codex-provider-for-any-openai-compatible-model, what landed, the release path to the mini, and the routing question left with the platform | running | mesh/codex-provider-for-any-openai-compatible-model-4 | — | $2.90 so far (two evaluations failed while item 2 was unmerged) |
 
-Item 2's pull request had not merged when this document was written;
-its evaluation already passed and it is awaiting the platform's own
-merge of a reviewed item.
+Items 1 and 2 merged to `main` on 2026-09-29 (#490 as 572007a, #491
+as 32083c2); item 3 merged to mesh-specs' `main` (#114 as b7662c8).
 
 ## What landed
 
@@ -108,7 +107,7 @@ the parsed `Result` are both re-priced through the account's
 own table, unchanged) has that name — `ParseCodexStream` keeps its
 signature and OpenAI's prices for its own callers.
 
-**Item 2 — node.yaml (runsheet/mesh-cli#491, in review).** `CodexConfig`
+**Item 2 — node.yaml (runsheet/mesh-cli#491).** `CodexConfig`
 gains `Providers map[string]CodexProviderConfig`; `CodexProviderConfig`
 {BaseURL, WireAPI, Prices — `CodexPriceConfig` {Input, CachedInput,
 CacheWrite, Output} in dollars per million tokens} and its `Harness(name)`
@@ -159,8 +158,7 @@ codex:
 
 ## After merge
 
-Once items 1–2 land on `main` (item 3 already has, in mesh-specs), the
-mini takes the change through the release path: a merge to `main`
+Items 1 and 2 are on `main`, and the mini takes the change through the release path: a merge to `main`
 touching `internal/` (and `cmd/`, `images/node/`, `go.mod` or `go.sum`)
 is tagged by `release-on-merge.yml`, signed and built by `release-tag.yml`,
 and the node self-updates the next time its heartbeat's desired version
@@ -180,8 +178,11 @@ scp mesh-linux mini:~/bin/mesh.new
 ssh mini mesh node upgrade --binary ~/bin/mesh.new
 ```
 
-No live check on the mini is recorded yet: item 2's pull request has not
-merged, so `main` does not yet carry the config side of this change.
+`release-on-merge.yml` tagged #490's merge as v0.2.201 and #491's as
+v0.2.202, so v0.2.202 is the first release carrying both the harness and
+the config side. No live check is recorded here yet: a node serves
+Kimi only once its node.yaml carries a `codex.providers` block and an
+account naming it.
 
 ## What this project did not build
 
@@ -204,5 +205,5 @@ that is not.
 
 - 2026-09-29 · item 1 (#490) merged: the harness's `CodexProvider`, its config.toml rendering and re-pricing, and adr-015.
 - 2026-09-29 · item 3 (mesh-specs#114) merged after one retry on the ADR link's label style: the TRD's Codex adapter section.
-- 2026-09-29 · item 2 (#491) evaluated PASS on both families; awaiting merge.
-- 2026-09-29 · item 4 (this document) written; item 2 not yet merged, so the Items table's status and the "no live check yet" note record that.
+- 2026-09-29 · item 2 (#491) merged as 32083c2: node.yaml's `codex.providers`, `provider:`, the four refusals and AGENTS.md's Codex bullet; tagged v0.2.202.
+- 2026-09-29 · item 4 (this document) written; two evaluations failed it while item 2 was still open, and it was rebased onto `main` once #491 merged.
