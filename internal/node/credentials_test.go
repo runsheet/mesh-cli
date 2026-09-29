@@ -686,3 +686,62 @@ func loggedUsage(t *testing.T, out string) []UsageRecord {
 	}
 	return recs
 }
+
+// A report its finishing command carried (handedIn) is still logged,
+// once, on the session's label with its kind: a build, an evaluation
+// and a plan each give one `<label>: usage <kind> {…}` line whose JSON
+// is the report as sent.
+func TestFinishLogsTheCarriedRecordOnItsLabel(t *testing.T) {
+	for _, tc := range []struct {
+		label, kind, want string
+	}{
+		{"item ship-it/1", "build", "item ship-it/1: usage build "},
+		{"item ship-it/1", "evaluate", "item ship-it/1: usage evaluate "},
+		{"goal ship-it", "plan", "goal ship-it: usage plan "},
+	} {
+		var logs strings.Builder
+		t0 := time.Date(2026, 9, 28, 9, 0, 0, 0, time.UTC)
+		c := &Credentials{Log: log.New(&logs, "", 0), Now: func() time.Time { return t0 }}
+		s := &SessionAccount{creds: c, account: AccountConfig{Label: "max-a", Kind: AccountSubscription}, started: t0}
+		s.SetContextBytes(4096)
+		s.SetLabel(tc.label, tc.kind)
+		s.Report(harness.Result{SessionID: "s-1", CostUSD: 1.25, Usage: &harness.Usage{Model: "claude-opus-5", InputTokens: 100000, CachedInputTokens: 90000, OutputTokens: 700}})
+		if err := s.Carried(nil); err != nil {
+			t.Fatal(err)
+		}
+		if !s.handedIn {
+			t.Fatal("the report did not ride its finish")
+		}
+		s.Finish(context.Background(), harness.Result{})
+		var records []string
+		for _, l := range strings.Split(logs.String(), "\n") {
+			if strings.Contains(l, ": usage "+tc.kind+" ") || strings.HasPrefix(l, "usage: {") {
+				records = append(records, l)
+			}
+		}
+		if len(records) != 1 || !strings.HasPrefix(records[0], tc.want) {
+			t.Fatalf("%s: records %q, want one starting %q:\n%s", tc.kind, records, tc.want, logs.String())
+		}
+		want := `{"sessionId":"s-1","adapter":"claude-code","model":"claude-opus-5","credentialKind":"subscription","inputTokens":100000,"outputTokens":700,"cacheReadTokens":90000,"cacheWriteTokens":0,"toolCalls":0,"wallMs":0,"listCostCents":125,"actualCostCents":0,"contextBytes":4096}`
+		if got := strings.TrimPrefix(records[0], tc.want); got != want {
+			t.Errorf("%s: record\n%s\nwant\n%s", tc.kind, got, want)
+		}
+		if !strings.HasPrefix(logs.String(), "usage: turns=0 input/turn mean=0 max=0 largest=\n") {
+			t.Errorf("%s: the turns line changed:\n%s", tc.kind, logs.String())
+		}
+	}
+}
+
+// A session with no label (SetLabel never called) keeps the older
+// `usage: {…}` line.
+func TestFinishWithoutALabelLogsTheOlderLine(t *testing.T) {
+	var logs strings.Builder
+	c := &Credentials{Log: log.New(&logs, "", 0)}
+	s := &SessionAccount{creds: c}
+	s.Report(harness.Result{SessionID: "s-1"})
+	s.Finish(context.Background(), harness.Result{})
+	lines := strings.Split(strings.TrimSpace(logs.String()), "\n")
+	if len(lines) != 2 || !strings.HasPrefix(lines[1], `usage: {"sessionId":"s-1",`) {
+		t.Fatalf("log:\n%s", logs.String())
+	}
+}
