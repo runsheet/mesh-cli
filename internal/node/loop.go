@@ -261,18 +261,77 @@ type readyItem struct {
 	rank  int
 }
 
+// finishFirstAttempts bounds the finish-first preference (ADR-017): an
+// item with this many failed evaluations or more no longer goes before
+// fresh work. The platform counts attempts as failed evaluations
+// (attempts+1 on each verdict that did not pass; a release leaves them
+// alone) and fails the item at three (mesh-specs trd), so an item at two
+// is on its last try. One under the platform's cap means a poisoned item
+// takes the head of the queue at most twice, then falls back behind
+// fresh work rather than blocking it.
+const finishFirstAttempts = 2
+
+// startedWork reports whether a ready item carries work already begun on
+// a branch, which it does in any of these shapes:
+//   - an open pull request (PRURL): the branch was pushed and the item is
+//     back — sent back for rework, for a rebase the integrator could not
+//     do itself, or for re-evaluation;
+//   - an evaluation (Evaluation): a retry after a failed evaluation, the
+//     builder reading why the last one failed;
+//   - a rebase conflict (RebaseConflict) or a RebaseState other than
+//     empty or none: the branch conflicts with its base.
+func startedWork(it gateway.WorkItem) bool {
+	return it.PRURL != "" || it.Evaluation != "" || it.RebaseConflict != "" ||
+		(it.RebaseState != "" && it.RebaseState != "none")
+}
+
+// finishFirst reports whether a ready item goes before fresh work of its
+// priority: started work under the attempt bound (finishFirstAttempts).
+func finishFirst(it gateway.WorkItem) bool {
+	return startedWork(it) && it.Attempts < finishFirstAttempts
+}
+
+// readyTime parses an item's ReadyAt. The platform serves a Time as RFC
+// 3339 with however many fractional digits it has, which is not
+// lexically ordered, so the times are parsed, never compared as strings.
+// ok is false for an empty or unreadable one (an older platform).
+func readyTime(it gateway.WorkItem) (t time.Time, ok bool) {
+	if it.ReadyAt == "" {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(time.RFC3339Nano, it.ReadyAt)
+	return t, err == nil
+}
+
 // claimOrder sorts ready items from every org into the order they are
-// claimed: by the goal's priority (urgent, high, normal, low), then
-// fresh items before retries (a retry carries an evaluation), then seq.
-// The sort is stable, so ties keep the order the orgs were listed in.
+// claimed (ADR-017):
+//  1. by the goal's priority (urgent, high, normal, low);
+//  2. at equal priority, finish-first items (finishFirst: started work
+//     under the attempt bound) before the rest;
+//  3. among the rest, fresh items before retries (a retry carries an
+//     evaluation), so a retry at the bound keeps its old place behind
+//     fresh work; within the finish-first class this step does not
+//     apply;
+//  4. then the older ReadyAt first, when both items carry one;
+//  5. then seq.
+//
+// The sort is stable, so full ties keep the order the orgs were listed in.
 func claimOrder(items []readyItem) {
 	sort.SliceStable(items, func(i, j int) bool {
 		a, b := items[i], items[j]
 		if a.rank != b.rank {
 			return a.rank < b.rank
 		}
-		if ra, rb := a.item.Evaluation != "", b.item.Evaluation != ""; ra != rb {
+		if fa, fb := finishFirst(a.item), finishFirst(b.item); fa != fb {
+			return fa
+		}
+		if ra, rb := a.item.Evaluation != "", b.item.Evaluation != ""; !finishFirst(a.item) && ra != rb {
 			return rb
+		}
+		ta, oka := readyTime(a.item)
+		tb, okb := readyTime(b.item)
+		if oka && okb && !ta.Equal(tb) {
+			return ta.Before(tb)
 		}
 		return a.item.Seq < b.item.Seq
 	})

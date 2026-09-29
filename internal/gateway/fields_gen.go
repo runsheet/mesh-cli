@@ -139,6 +139,7 @@ var workItemOptional = []string{
 	"evaluateModel",
 	"model",
 	"projectId",
+	"readyAt",
 }
 
 // workItemFields is the selection of workItemRequired.
