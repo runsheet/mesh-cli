@@ -222,3 +222,8 @@ _(item 12 fills this in.)_
   with an error — 403 `not found`, 22 other — and 5 real errors); and
   described `Clean`, `Answered` and `Reached()` as `harness.go` has
   them.
+- 2026-09-29 · item 11, second attempt: the answer, the tables and the
+  counts are unchanged. Item 8's work has since landed on main as one
+  squashed merge, so the branch merged `origin/main` and `git diff
+  origin/main --stat` names this document alone; the `Reached()` line
+  quoted above is re-checked against `harness.go` on main.
