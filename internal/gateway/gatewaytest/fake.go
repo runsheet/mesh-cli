@@ -71,7 +71,9 @@ type Fake struct {
 	// GraphQL error) — for tests of "someone else has it".
 	Refuse map[string]string
 	// FailReads maps an index list name (goalIndexs) or a get
-	// (workItemIndex) to an error it answers with instead of rows.
+	// (workItemIndex) to an error it answers with instead of rows; a
+	// list's key may name one where, workItemIndexs/status=review, to
+	// fail only the lists that filter by it.
 	FailReads map[string]string
 	// GitHubTokens maps an item id to the issueItemRepoToken answer
 	// (token, expiresAt, repository); only the node holding the item's
@@ -480,6 +482,12 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 		if msg := f.FailReads[m[1]]; msg != "" {
 			writeErrors(w, 200, msg)
 			return
+		}
+		for _, wm := range wheres {
+			if msg := f.FailReads[m[1]+"/"+wm[1]+"="+wm[2]]; msg != "" {
+				writeErrors(w, 200, msg)
+				return
+			}
 		}
 		rows := []map[string]any{}
 		for _, row := range f.table(m[1]) {
