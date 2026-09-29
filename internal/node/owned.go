@@ -26,8 +26,13 @@ type Registrar struct {
 	// has `owner` (gateway.Client.TakesOwner).
 	TakesOwner func(ctx context.Context) bool
 	// Resolve lists the orgs of the token's person, restricted by
-	// node.yaml's orgs (ResolveScopes).
+	// node.yaml's orgs (ResolveScopes). Only the per-org path reads it.
 	Resolve func(ctx context.Context) (Scopes, error)
+	// AnyOrg is an org id for the owner registration's orgId, which the
+	// platform ignores on the owner contract: the first of the token's
+	// person's orgs, unrestricted, or "" when there is none. No
+	// restriction applies, since the answer is what names the orgs.
+	AnyOrg func(ctx context.Context) (string, error)
 	// RegisterOwner is the one registration on the owner contract: the
 	// node's own id, an org id the platform ignores, the owner's kind.
 	RegisterOwner func(ctx context.Context, nodeID, orgID string) (*gateway.NodeAnswer, error)
@@ -62,23 +67,25 @@ func OwnedNodeID(cfg *Config) string {
 	return uuid.NewString()
 }
 
-// Register registers the node. A platform that does not take `owner`
-// gets today's path exactly: Resolve, then RegisterIn per org, no owner
-// sent. One that does gets Resolve (for an org id), then one
-// RegisterOwner under OwnedNodeID; its answer's scopes, restricted by
-// restrict, are what the node serves. A nil answer from it logs
-// FallbackLine and runs the legacy path in full — RegisterIn per org of
-// the resolved scopes — so the sequence is one owner registration, then
-// one per org.
+// Register registers the node. The probe comes first. A platform that
+// does not take `owner` gets today's path exactly: Resolve, then
+// RegisterIn per org, no owner sent. One that does gets one
+// RegisterOwner under OwnedNodeID (orgId from AnyOrg), and its answer's
+// scopes, restricted by restrict, are what the node serves: node.yaml's
+// orgs are checked against the answer, never against the person's
+// orgs, so a restriction naming an enterprise org the person is not in
+// holds. A nil answer from it logs FallbackLine and runs the legacy
+// path in full — Resolve, then RegisterIn per org — so the sequence is
+// one owner registration, then one per org.
 func Register(ctx context.Context, r Registrar, cfg *Config, restrict []string) (Registered, error) {
-	scopes, err := r.Resolve(ctx)
+	if !r.TakesOwner(ctx) {
+		return perOrg(ctx, r)
+	}
+	orgID, err := r.AnyOrg(ctx)
 	if err != nil {
 		return Registered{}, err
 	}
-	if !r.TakesOwner(ctx) {
-		return Registered{Scopes: scopes}, r.RegisterIn(ctx, scopes)
-	}
-	answer, err := r.RegisterOwner(ctx, OwnedNodeID(cfg), scopes[0].ID)
+	answer, err := r.RegisterOwner(ctx, OwnedNodeID(cfg), orgID)
 	if err != nil {
 		return Registered{}, fmt.Errorf("register (owner %s): %w", cfg.OwnerKind(), err)
 	}
@@ -86,7 +93,7 @@ func Register(ctx context.Context, r Registrar, cfg *Config, restrict []string) 
 		if r.Logf != nil {
 			r.Logf("%s", FallbackLine)
 		}
-		return Registered{Scopes: scopes}, r.RegisterIn(ctx, scopes)
+		return perOrg(ctx, r)
 	}
 	served, err := ServedFrom(answer, restrict)
 	if err != nil {
@@ -98,6 +105,16 @@ func Register(ctx context.Context, r Registrar, cfg *Config, restrict []string) 
 		}
 	}
 	return Registered{Scopes: served, Owned: &Owned{NodeID: answer.NodeID, Owner: OwnerFrom(answer)}}, nil
+}
+
+// perOrg is the registration before owners: the person's orgs, a Node
+// in each.
+func perOrg(ctx context.Context, r Registrar) (Registered, error) {
+	scopes, err := r.Resolve(ctx)
+	if err != nil {
+		return Registered{}, err
+	}
+	return Registered{Scopes: scopes}, r.RegisterIn(ctx, scopes)
 }
 
 // ServedFrom is ScopesFromAnswer that keeps what it can: a restriction
