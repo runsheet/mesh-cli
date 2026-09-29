@@ -269,12 +269,46 @@ func TestParseCodexStreamKeepsTheApprovalRefusal(t *testing.T) {
 	}
 }
 
+// Reached is Clean+Answered, each counted as it happened — never
+// Calls less Errors, which reads a startup error followed by one clean
+// call as unreached.
+func TestToolStatReachedCountsAnswersNotStartupErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		stat ToolStat
+		want bool
+	}{
+		{"not connected at startup, then one clean call", ToolStat{Calls: 1, Errors: 1, Clean: 1}, true},
+		{"connected, its only call refused by Claude Code (permission)", ToolStat{Calls: 1, Errors: 1}, false},
+		{"every call answered not found", ToolStat{Calls: 3, Errors: 3, Answered: 3}, true},
+		{"no call, a startup error", ToolStat{Errors: 1}, false},
+		{"clean calls only", ToolStat{Calls: 2, Clean: 2}, true},
+		{"every call refused before the server (approval)", ToolStat{Calls: 2, Errors: 2}, false},
+	} {
+		if got := tc.stat.Reached(); got != tc.want {
+			t.Errorf("%s: %+v Reached() = %v, want %v", tc.name, tc.stat, got, tc.want)
+		}
+	}
+
+	// the first row as the Claude stream carries it: the server failed
+	// at startup, then a call was answered cleanly
+	fakeClock(t)
+	stream := `{"type":"system","subtype":"init","model":"claude-opus-5","mcp_servers":[{"name":"mesh-context","status":"failed"}]}
+{"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","id":"t1","name":"mcp__mesh-context__mesh_document","input":{"slug":"prd"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"# PRD"}]}}`
+	s := ParseStream(strings.NewReader(stream), nil).Tools["mesh-context"]
+	if s == nil || s.Calls != 1 || s.Errors != 1 || s.Clean != 1 || s.Answered != 0 || !s.Reached() {
+		t.Fatalf("startup error then a clean call: %+v, want Calls 1, Errors 1, Clean 1, reached", s)
+	}
+}
+
 // `prologue: not found`, as a Codex evaluation on the mini streamed it
-// on 2026-09-29 (v0.2.188): two mesh_document calls for slugs the
-// gateway does not have, each `failed` with no `error` and the server's
-// own `not found` as its result. The tool answered both — Reached —
-// unlike the approval refusal, which never reached it.
-func TestParseCodexStreamCountsTheToolsOwnErrorAnswered(t *testing.T) {
+// on 2026-09-29 (v0.2.188): a mesh_document call for a slug the gateway
+// does not have, `failed` with `error` null and the server's own `not
+// found` as its result — Answered, Reached. Beside it a call Codex
+// refused before the server (`failed`, a non-null `error`): neither
+// Clean nor Answered, never reached.
+func TestParseCodexStreamAnsweredNotFound(t *testing.T) {
 	fakeClock(t)
 	f, err := os.Open("testdata/codex_mcp_not_found.jsonl")
 	if err != nil {
@@ -283,8 +317,12 @@ func TestParseCodexStreamCountsTheToolsOwnErrorAnswered(t *testing.T) {
 	defer f.Close()
 	res := ParseCodexStream(f, "gpt-6-sol", nil)
 	stat := res.Tools["prologue"]
-	if stat == nil || stat.Calls != 2 || stat.Errors != 2 || stat.Answered != 2 || stat.FirstError != "not found" || !stat.Reached() {
-		t.Fatalf("Tools[prologue] = %+v, want 2 calls, 2 errors, 2 answered, reached", stat)
+	if stat == nil || stat.Calls != 1 || stat.Errors != 1 || stat.Answered != 1 || stat.Clean != 0 || stat.FirstError != "not found" || !stat.Reached() {
+		t.Fatalf("Tools[prologue] = %+v, want 1 call, 1 error, 1 answered, reached", stat)
+	}
+	refused := res.Tools["search"]
+	if refused == nil || refused.Calls != 1 || refused.Errors != 1 || refused.Answered != 0 || refused.Clean != 0 || refused.Reached() {
+		t.Fatalf("Tools[search] = %+v, want 1 call, 1 error, 0 answered, not reached", refused)
 	}
 
 	g, err := os.Open("testdata/codex_mcp_approval_error.jsonl")
@@ -298,19 +336,31 @@ func TestParseCodexStreamCountsTheToolsOwnErrorAnswered(t *testing.T) {
 	}
 }
 
-// Claude: an is_error tool_result from a server the init event named
-// connected is the server's own answer; from one it did not, it is not.
-func TestParseStreamCountsTheToolsOwnErrorAnswered(t *testing.T) {
+// A completed mcp_tool_call counts Clean.
+func TestParseCodexStreamAnsweredCountsCompletedClean(t *testing.T) {
 	fakeClock(t)
-	stream := `{"type":"system","subtype":"init","model":"claude-opus-5","mcp_servers":[{"name":"mesh-context","status":"connected"},{"name":"search","status":"failed"}]}
-{"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","id":"t1","name":"mcp__mesh-context__mesh_document","input":{"slug":"adr-adr-001-x"}},{"type":"tool_use","id":"t2","name":"mcp__search__query","input":{}}]}}
-{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","is_error":true,"content":"not found"},{"type":"tool_result","tool_use_id":"t2","is_error":true,"content":"No such tool available: mcp__search__query"}]}}
-{"type":"result","subtype":"success","result":"VERDICT: PASS","total_cost_usd":0.1,"num_turns":1}`
-	res := ParseStream(strings.NewReader(stream), nil)
-	if s := res.Tools["mesh-context"]; s == nil || s.Calls != 1 || s.Errors != 1 || s.Answered != 1 || !s.Reached() {
-		t.Fatalf("Tools[mesh-context] = %+v, want answered and reached", s)
+	stream := `{"type":"item.completed","item":{"id":"i1","type":"mcp_tool_call","server":"mesh-context","tool":"mesh_document","result":{"content":[{"type":"text","text":"# PRD"}]},"error":null,"status":"completed"}}`
+	s := ParseCodexStream(strings.NewReader(stream), "gpt-6-sol", nil).Tools["mesh-context"]
+	if s == nil || s.Calls != 1 || s.Clean != 1 || s.Errors != 0 || !s.Reached() {
+		t.Fatalf("Tools[mesh-context] = %+v, want 1 clean call", s)
 	}
-	if s := res.Tools["search"]; s == nil || s.Answered != 0 || s.Reached() {
+}
+
+// Claude: an is_error tool_result `not found` from a server the init
+// event named connected is the server's own answer — Answered, Reached;
+// from one it named failed, refused by Claude Code, it is not.
+func TestParseStreamAnsweredNotFound(t *testing.T) {
+	fakeClock(t)
+	f, err := os.Open("testdata/stream_mcp_not_found.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	res := ParseStream(f, nil)
+	if s := res.Tools["mesh-context"]; s == nil || s.Calls != 1 || s.Errors != 1 || s.Answered != 1 || s.Clean != 0 || s.FirstError != "not found" || !s.Reached() {
+		t.Fatalf("Tools[mesh-context] = %+v, want 1 call, 1 error, 1 answered, reached", s)
+	}
+	if s := res.Tools["search"]; s == nil || s.Answered != 0 || s.Clean != 0 || s.Reached() {
 		t.Fatalf("Tools[search] = %+v, want not reached", s)
 	}
 }
@@ -320,7 +370,7 @@ func TestParseStreamCountsTheToolsOwnErrorAnswered(t *testing.T) {
 // permission refusal, an unknown tool, its own validation error, the
 // MCP client's transport errors — was never reached, however connected
 // it was at startup.
-func TestParseStreamRefusedCallsOnAConnectedServerAreNotReached(t *testing.T) {
+func TestParseStreamAnsweredExcludesClaudeCodesOwnRefusals(t *testing.T) {
 	fakeClock(t)
 	refusals := []string{
 		"Claude requested permissions to use mcp__mesh-context__mesh_document, but you haven't granted it yet.",

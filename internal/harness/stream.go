@@ -170,7 +170,7 @@ func capText(s string, n int) string {
 // synthesised) kept on Result.ToolCallIDs, and on Result.Tools: its wall
 // time closes on the matching tool_result (a user event, by
 // tool_use_id), left zero if none arrives before the stream ends; a
-// tool_result with is_error true counts an error, its text (capped at
+// clean tool_result counts Clean; a tool_result with is_error true counts an error, its text (capped at
 // 300 chars) kept as the server's FirstError, and Answered too when the
 // system/init event named that server connected and the text is not
 // Claude Code's own refusal of the call (claudeToolAnswered: the server
@@ -292,6 +292,8 @@ func ParseStream(r io.Reader, onEvent func(Event)) Result {
 					if stat.FirstError == "" {
 						stat.FirstError = capText(toolResultText(c.ResultContent), 300)
 					}
+				} else {
+					stat.Clean++
 				}
 			}
 		case "rate_limit_event":
