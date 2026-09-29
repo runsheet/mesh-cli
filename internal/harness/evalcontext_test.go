@@ -122,9 +122,10 @@ func TestEvaluationOnCodexReachesTheContextTool(t *testing.T) {
 	}
 
 	// a `codex` whose `mcp get` records the session's env and the
-	// config.toml it would read
+	// config.toml it would read, and whose sandbox probe passes
 	out := t.TempDir()
 	script := "#!/bin/sh\n" +
+		"[ \"$1\" = sandbox ] && exit 0\n" +
 		"echo \"$@\" > " + out + "/args\n" +
 		"env > " + out + "/env\n" +
 		"cp \"$CODEX_HOME/config.toml\" " + out + "/config.toml\n"
