@@ -1,6 +1,7 @@
 package node
 
 import (
+	"fmt"
 	"strings"
 
 	"projectmesh.io/mesh-cli/internal/harness"
@@ -238,4 +239,62 @@ func (l *Loop) UnmergedPerRepo() int {
 		return 0
 	}
 	return l.Cfg.Claim.UnmergedPerRepo
+}
+
+// accountChanges are a reload's changes to accounts kept under the same
+// label, one line per account naming each field that changed with its
+// old and new value — the caps as in force, as each kind uses them
+// (capsInForce: an api key's with defaults applied, a subscription's
+// none) — for the log. Accounts added or removed are the `accounts … → …` line's.
+func accountChanges(was, now []AccountConfig) []string {
+	old := map[string]AccountConfig{}
+	for _, a := range was {
+		old[a.Label] = a
+	}
+	var out []string
+	for _, a := range now {
+		b, ok := old[a.Label]
+		if !ok {
+			continue
+		}
+		var fields []string
+		str := func(name, from, to string) {
+			if from != to {
+				fields = append(fields, fmt.Sprintf("%s %s → %s", name, orNone(from), orNone(to)))
+			}
+		}
+		usd := func(name string, from, to float64) {
+			if from != to {
+				fields = append(fields, fmt.Sprintf("%s %s → %s", name, dollars(from), dollars(to)))
+			}
+		}
+		str("kind", b.Kind, a.Kind)
+		str("token_file", b.TokenFile, a.TokenFile)
+		str("api_key_env", b.APIKeyEnv, a.APIKeyEnv)
+		bd, bm := b.capsInForce()
+		ad, am := a.capsInForce()
+		usd("daily_cap", bd, ad)
+		usd("monthly_cap", bm, am)
+		str("project", b.Project, a.Project)
+		if len(fields) > 0 {
+			out = append(out, fmt.Sprintf("account %s: %s", a.Label, strings.Join(fields, ", ")))
+		}
+	}
+	return out
+}
+
+// orNone is s, or "(none)" when it is empty.
+func orNone(s string) string {
+	if s == "" {
+		return "(none)"
+	}
+	return s
+}
+
+// dollars is a figure as a log line shows it: $4.00, or "none" for 0.
+func dollars(v float64) string {
+	if v <= 0 {
+		return "none"
+	}
+	return fmt.Sprintf("$%.2f", v)
 }

@@ -65,6 +65,13 @@ way; `Loop.KindModelBudget(kind, model)` reads the last-reloaded map, or
 field is nil in a test that builds one directly (falling back to its
 own `Cfg`) and `loop.KindModelBudget` in the running node — the same
 seam `Runtimes func() []string` already used for live tool runtimes.
+A reload that changes a figure in force logs it, one line per kind and
+tier, with the effective figures — defaults applied, not node.yaml's
+raw entry: adding `build: {sonnet: 7}` logs `budget build/sonnet $4.00
+→ $7.00` and removing it `budget build/sonnet $7.00 → $4.00`; a kind
+with no default shows `none` (`budget evaluate/opus none → $5.00`), and
+a project budget `project budget <project> <old> → <new>`
+(`budgetChanges`, goal `node-yaml-takes-effect-or-says-why-not`).
 
 **The platform's override is pending.** The brief asks for the claimed
 item's or its project's own `budgets` field to win over node.yaml once

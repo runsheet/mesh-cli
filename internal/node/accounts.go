@@ -158,6 +158,15 @@ func (a AccountConfig) Caps() (daily, monthly float64) {
 	return c.dailyCap(), c.monthlyCap()
 }
 
+// capsInForce are the caps as the account's kind uses them: an api
+// key's Caps, and none for a subscription, which no cap ever holds.
+func (a AccountConfig) capsInForce() (daily, monthly float64) {
+	if a.Kind != AccountAPI {
+		return 0, 0
+	}
+	return a.Caps()
+}
+
 // capacity is the account as the accounts scaler sees it, with its
 // project's daily budget from budgets.
 func (a AccountConfig) capacity(budgets map[string]float64) CapacityAccount {
