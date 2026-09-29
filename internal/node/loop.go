@@ -189,6 +189,10 @@ type Loop struct {
 	// Reload says otherwise (spendingSet).
 	spending    Spending
 	spendingSet bool
+	// context is node.yaml's context budget in force: Cfg's until Reload
+	// says otherwise (contextSet).
+	context    ContextConfig
+	contextSet bool
 	// paced is the pacing mode last logged, so a crossing is logged once.
 	paced paceMode
 	// waiting counts, by kind, the work this tick left unclaimed because
@@ -1036,6 +1040,15 @@ func (l *Loop) reload(ctx context.Context) {
 		}
 		l.mu.Lock()
 		l.spending, l.spendingSet = *got.Spending, true
+		l.mu.Unlock()
+	}
+	if got.Context != nil {
+		was, now := l.ContextBudget(), got.Context.Effective()
+		if now != was {
+			l.logf("context: bytes_max %d → %d, doc_bytes_max %d → %d", was.BytesMax, now.BytesMax, was.DocBytesMax, now.DocBytesMax)
+		}
+		l.mu.Lock()
+		l.context, l.contextSet = now, true
 		l.mu.Unlock()
 	}
 	if scopes != nil && !sameOrgs(scopes, l.Scopes) {

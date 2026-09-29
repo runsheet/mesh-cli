@@ -191,7 +191,7 @@ func (h *Handler) context(ctx context.Context, args map[string]any) (string, err
 	if err != nil {
 		return "", err
 	}
-	cx, err := node.FetchContext(ctx, h.GW, scope.Login, project.Slug)
+	cx, err := node.FetchContext(ctx, h.GW, scope.Login, project.Slug, node.ContextOptions{})
 	if err != nil {
 		return "", err
 	}

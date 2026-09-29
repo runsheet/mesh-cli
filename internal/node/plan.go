@@ -34,6 +34,9 @@ type Planner struct {
 	// Loop.KindModelBudget); nil falls back to Cfg's own, read once at
 	// start.
 	Budgets func(kind, model string) (amount float64, source string)
+	// ContextBudget is node.yaml's `context:` budget in force, read
+	// live (Loop.ContextBudget); nil is Cfg's own, read once at start.
+	ContextBudget func() ContextConfig
 	// Model is what a planner session runs on ("" the CLI's default).
 	Model string
 	// Accounts are the node's Claude accounts (node.yaml); a session runs
@@ -306,7 +309,7 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 		}
 		dirs[name] = sub
 	}
-	cx, err := FetchContext(ctx, p.GW, scope.Login, project.Slug)
+	cx, err := FetchContext(ctx, p.GW, scope.Login, project.Slug, ContextOptions{Budget: p.contextBudget()})
 	if err != nil {
 		p.logf("goal %s: context unavailable: %v", goal.Slug, err)
 		cx = &Context{}
@@ -573,4 +576,16 @@ func (p *Planner) AdoptPlan(ctx context.Context, goal gateway.Goal, scope Scope,
 		p.logf("goal %s: adopted plan names what no evaluator can see; handing it in: %s", goal.Slug, strings.Join(flags, " | "))
 	}
 	return p.handIn(ctx, goal, items, reasons, cost, nil)
+}
+
+// contextBudget is the context budget for p's sessions: live, through
+// p.ContextBudget, when set; else Cfg's own.
+func (p *Planner) contextBudget() ContextConfig {
+	if p.ContextBudget != nil {
+		return p.ContextBudget()
+	}
+	if p.Cfg == nil {
+		return ContextConfig{}.Effective()
+	}
+	return p.Cfg.Context.Effective()
 }

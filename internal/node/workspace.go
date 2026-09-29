@@ -458,18 +458,19 @@ func AddLive(ctx context.Context, gw Gateway, cx *Context, orgID, projectID stri
 	cx.Live = live
 }
 
-// The size budget for design documents on disk: a PRD or TRD past
-// DocBytesMax, or past what is left of ContextBytesMax, is listed in
-// the index and fetched on demand instead. Instructions and ADRs are
+// ContextOptions is how FetchContext fetches: Budget is the size budget
+// for design documents on disk (zero is the defaults) — a PRD or TRD
+// past its DocBytesMax, or past what is left of its BytesMax, is listed
+// in the index and fetched on demand instead. Instructions and ADRs are
 // binding and always on disk.
-const (
-	DocBytesMax     = 60 * 1024
-	ContextBytesMax = 240 * 1024
-)
+type ContextOptions struct {
+	Budget ContextConfig
+}
 
 // FetchContext lists the project's context documents and fetches the
 // bodies of the kinds in ContextKinds within the size budget.
-func FetchContext(ctx context.Context, gw Gateway, orgLogin, projectSlug string) (*Context, error) {
+func FetchContext(ctx context.Context, gw Gateway, orgLogin, projectSlug string, opts ContextOptions) (*Context, error) {
+	budget := opts.Budget.Effective()
 	docs, err := gw.ContextDocuments(ctx, orgLogin, projectSlug)
 	if err != nil {
 		return nil, err
@@ -488,7 +489,7 @@ func FetchContext(ctx context.Context, gw Gateway, orgLogin, projectSlug string)
 			return nil, fmt.Errorf("fetch %s: %w", d.Slug, err)
 		}
 		binding := d.Kind == "instructions" || d.Kind == "adr"
-		if !binding && (len(body) > DocBytesMax || total+len(body) > ContextBytesMax) {
+		if !binding && (len(body) > budget.DocBytesMax || total+len(body) > budget.BytesMax) {
 			continue // in the index, fetched on demand
 		}
 		name := d.Kind + "-" + Slugify(d.Slug) + ".md"

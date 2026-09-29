@@ -44,7 +44,7 @@ func seedLive(t *testing.T) *gatewaytest.Fake {
 func TestIndexListsLiveGoalsAndItems(t *testing.T) {
 	f := seedLive(t)
 	gw := gateway.New(f.URL(), "rs_test")
-	cx, err := FetchContext(context.Background(), gw, "acme", "mesh")
+	cx, err := FetchContext(context.Background(), gw, "acme", "mesh", ContextOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +92,7 @@ func TestIndexWithoutLiveStateIsDocumentsOnly(t *testing.T) {
 		f := seedLive(t)
 		f.FailReads[fail] = "Cannot query field"
 		gw := gateway.New(f.URL(), "rs_test")
-		cx, err := FetchContext(context.Background(), gw, "acme", "mesh")
+		cx, err := FetchContext(context.Background(), gw, "acme", "mesh", ContextOptions{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -115,7 +115,7 @@ func TestIndexWithoutLiveStateIsDocumentsOnly(t *testing.T) {
 	f := seed(t)
 	delete(f.Goals, goalID)
 	gw := gateway.New(f.URL(), "rs_test")
-	cx, _ := FetchContext(context.Background(), gw, "acme", "mesh")
+	cx, _ := FetchContext(context.Background(), gw, "acme", "mesh", ContextOptions{})
 	docsOnly := RenderIndex(cx)
 	AddLive(context.Background(), gw, cx, orgID, projID, func(string, ...any) { t.Fatal("no goals is not a warning") })
 	if RenderIndex(cx) != docsOnly {
@@ -144,7 +144,7 @@ func TestIndexIsNeverCommitted(t *testing.T) {
 	git("init", "-q", "-b", "main")
 	f := seedLive(t)
 	gw := gateway.New(f.URL(), "rs_test")
-	cx, err := FetchContext(context.Background(), gw, "acme", "mesh")
+	cx, err := FetchContext(context.Background(), gw, "acme", "mesh", ContextOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
