@@ -262,14 +262,44 @@ func TestHostServiceSignalsANodeNoServiceRuns(t *testing.T) {
 }
 
 func TestParseVersionLine(t *testing.T) {
-	for in, want := range map[string]string{"mesh v1.2.3\n": "v1.2.3", "mesh dev": "dev"} {
+	for in, want := range map[string]string{
+		"mesh v1.2.3\n":                    "v1.2.3",
+		"mesh dev":                         "dev",
+		"mesh v0.2.188 (commit 0895d40)\n": "v0.2.188",
+		"mesh 0895d40 (dev build)\n":       "0895d40",
+		"mesh 0895d40-dirty (dev build)":   "0895d40-dirty",
+	} {
 		if got, err := parseVersionLine(in); err != nil || got != want {
 			t.Fatalf("%q: %q, %v", in, got, err)
 		}
 	}
-	for _, in := range []string{"", "mesh", "git version 2", "mesh v1 extra"} {
+	for _, in := range []string{"", "mesh", "git version 2", "mesh v1 extra", "mesh (dev build)", "mesh v1 (commit)", "mesh v1 (commit a b)", "mesh v1 (nightly)"} {
 		if _, err := parseVersionLine(in); err == nil {
 			t.Fatalf("%q parsed", in)
 		}
+	}
+}
+
+// `mesh node upgrade --binary` reads the version out of what version.Long
+// prints for a tagged build and for a dev build, never the parenthesis.
+func TestNodeUpgradeBinaryReadsTaggedAndDevBuilds(t *testing.T) {
+	for say, want := range map[string]string{
+		"mesh v9.9.9 (commit abc1234)": "v9.9.9",
+		"mesh abc1234 (dev build)":     "abc1234",
+	} {
+		t.Run(want, func(t *testing.T) {
+			noDrain(t)
+			u, f, _ := upgradeFixture(t)
+			if err := u.run(context.Background(), "", fakeBinary(t, say), false); err != nil {
+				t.Fatalf("upgrade: %v\n%s", err, f.out)
+			}
+			s, err := f.state.Load()
+			if err != nil || !s.Pending() || s.To != want {
+				t.Fatalf("update state %+v, %v: want %s pending", s, err, want)
+			}
+			if !strings.Contains(f.out.String(), want+" is in place") {
+				t.Fatalf("output:\n%s", f.out)
+			}
+		})
 	}
 }
