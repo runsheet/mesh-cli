@@ -37,7 +37,11 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
 - `internal/node/`: the loop (`runner`), the workspace and the project's
   context (`workspace.go`: `FetchContext`, `RenderIndex`, the size budget),
   evaluate, plan and research sessions, the service install (`launchd` /
-  `systemd --user`). `internal/gateway/client.go`: the platform client.
+  `systemd --user`). A project's repos — for the planner, the director
+  and `mesh goal plan` — are read from `project.repoIds` through
+  `ProjectRepos`, each owned by its own account's login, never the
+  org's account: an org links several GitHub accounts (the runsheet
+  org's loom project lives at go-apis/loom). `internal/gateway/client.go`: the platform client.
   Its entity selections are generated (`fields_gen.go`, never hand-edited)
   from `schema.json` and `fields/<Type>.txt` (one name per line, sorted,
   `?` for optional): add a line, `go generate ./internal/gateway/...`
@@ -104,8 +108,12 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   §Heartbeat); both for runsheet goal
   `limits-on-the-console` — and `runtimes` and `adapters` — the tool
   runtimes (npx, uvx, docker) and agent CLIs (claude-code, codex)
-  `Loop.LookPath` finds, probed every tick, for `tools-in-the-console`)
-  and `adopted` (below) are sent only when set,
+  `Loop.LookPath` finds, probed every tick, for `tools-in-the-console`),
+  `adopted` (below) and `holding` — the node's holding decision as data,
+  not a log line: each account's status, reset time and what the node
+  still takes on it, and the summary judgement (`HoldingReport`,
+  adr-005's amendment, for runsheet goal `node-says-why-work-waits`) —
+  are sent only when set,
   because they are fields the platform half adds. Capacity, the
   limits thresholds and the orgs need no drain: `Reload` re-reads them
   every tick.
@@ -294,7 +302,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `FinishWorkItemRebase`, `RecordDirectionResearch` — and
   `SessionAccount.Finish` logs it as one `usage: {…}` line when nothing
   carried it (a fail path, or `ErrNoUsageLedger`, said once per run).
-- **Codex** (`internal/harness/codex.go`, goal `codex-adapter`): the
+- **Codex** (`internal/harness/codex.go`, goals `codex-adapter` and
+  `codex-sessions-reach-the-context-tool`): the
   `codex` harness, `codex exec --json --sandbox workspace-write` in the
   workspace, the prompt on stdin, the stream read by
   `ParseCodexStream` (`docs/codex-events.md`). Each run gets a fresh
@@ -306,9 +315,19 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   (a `${VAR}` resolved from the job's env or refused), console tools by
   `tools.CodexConfig`, every table `default_tools_approval_mode =
   "approve"` — `exec` under `workspace-write` refuses an unapproved
-  MCP call (docs/codex-events.md, "Why the context tool failed"). node.yaml's `codex:` block
+  MCP call (docs/codex-events.md, "Why the context tool failed").
+  Each session's event stream and stderr are kept for 24 hours under
+  `<work root>/kept-sessions/<name>/` (`output.jsonl`, `stderr.log`;
+  `KeepSessionOutput`), as a Claude session's output is. Before a Codex
+  evaluation starts it is preflighted (`Codex.Preflight`, below) and
+  falls back to Claude when the context server cannot be reached.
+  node.yaml's `codex:` block
   (`CodexConfig`: binary, accounts, `models {opus, sonnet, haiku}`)
-  and `CodexModel` map the Claude tiers to Codex models. Codex has no
+  and `CodexModel` map the Claude tiers to Codex models, by default
+  opus → `gpt-6-sol` and sonnet/haiku → `gpt-6-luna`, astra only when
+  pinned. A session whose context tool failed on every call gives no
+  verdict: a tool failure is never a verdict (the evaluator's
+  `toolBroken`, below). Codex has no
   budget flag, so `MaxBudgetUSD` is not enforced. An issued openai
   credential serving `codex` is a Codex account too (adr-005,
   `PrepareCodexAccount`): `Credentials.Open` with adapter codex chooses
@@ -319,7 +338,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `config.toml` into a home the job names.
 - **The evaluator's family** (`internal/node/evaluate.go`,
   `docs/adr/adr-011-evaluations-run-on-the-family-with-headroom.md`,
-  amending `adr-005-codex-second-opinion.md`): `Evaluator.Codex` is the
+  amending `adr-005-codex-second-opinion.md`; goal
+  `codex-sessions-reach-the-context-tool`): `Evaluator.Codex` is the
   Codex harness (`codexSecondOpinion` in `nodecmd.go`: built whenever
   the codex binary is found, with or without a `codex:` block, on the
   block's first account) and `CodexAccounts` is
@@ -396,6 +416,19 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   and the next claim's `BuildPrompt` renders it as "The last session on
   this item". No commit still is an empty finish, back to `ready` on
   the platform. Sandboxed, adopted and Codex sessions do not hand back.
+- **Validation** (`internal/node/validation.go`, `internal/validate/`,
+  docs/adr/adr-013 and adr-014, runsheet ADR 032): after a successful,
+  not already_done build and before the push, `.runsheet/validate.yml`'s
+  steps the diff selects (`Workspacer.ChangedPaths`) plus the always
+  ones run on HEAD — in the session's pod (`sandboxRunner`, runner
+  image by `sandbox.ImageDigest`) or on the host (`host:<hostname>`,
+  the session's env less its secrets). The attestation goes to
+  `<workdir>.session/attestation.json` and, after the push, to
+  `RecordValidationAttestation` on the item's token. A failing step
+  gets one retry turn (`harness.ValidationRetryPrompt`, the session
+  resumed when it can be), then `FailWorkItem` with `validation failed:
+  step <name> exited <code>`; per-step ms ride the usage report's
+  `validation`. No validate.yml finishes as before.
 - **Services** (`internal/sandbox/services.go`, mesh-specs ADR 007):
   `Resolve(repoDir, allowed)` reads what a repository declares, first
   found wins — `.mesh/services.yml`, else the `services:` of its

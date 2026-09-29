@@ -86,6 +86,9 @@ type Client struct {
 	// to take of `scaling` (see HeartbeatNode); Now is its clock,
 	// time.Now when nil.
 	scalingSchema scalingProbe
+	// holdingSchema is whether the gateway's heartbeat input was last
+	// found to take `holding` (see HeartbeatNode, takesHolding).
+	holdingSchema holdingProbe
 	// toolErrorSchema is whether the gateway's usage report's `tools`
 	// entry was last found to take `error` (see takesToolError).
 	toolErrorSchema toolErrorProbe
@@ -1091,21 +1094,6 @@ func (c *Client) ProjectRepos(ctx context.Context, repoIDs []string) ([]Repo, er
 	return out, nil
 }
 
-// Repos lists the repos of one account (an org's accountId), owner set.
-func (c *Client) Repos(ctx context.Context, accountID, ownerLogin string) ([]Repo, error) {
-	var out struct {
-		Repos []Repo `json:"repoIndexs"`
-	}
-	q := fmt.Sprintf(`{ repoIndexs(namespace: %q, where: [%s]) { id name accountId defaultBranch } }`, NS, where("account_id", accountID))
-	if err := c.Query(ctx, q, nil, &out); err != nil {
-		return nil, err
-	}
-	for i := range out.Repos {
-		out.Repos[i].Owner = ownerLogin
-	}
-	return out.Repos, nil
-}
-
 // AccountLogin reads an account's GitHub login.
 func (c *Client) AccountLogin(ctx context.Context, id string) (string, error) {
 	var out struct {
@@ -1261,6 +1249,66 @@ type HeartbeatExtras struct {
 	// before it rather than starting them (mesh-specs ADR 008, mesh-cli
 	// ADR 009); none sends no key.
 	Adopted []AdoptedSession
+	// Holding is the node's holding decision as data — why ready work
+	// waits, not just a log line (runsheet goal
+	// node-says-why-work-waits): each account's status, reset time and
+	// what the node still takes on it, and the summary judgement. nil
+	// sends none; set, it is sent only when the gateway's schema takes it
+	// (HeartbeatNode, takesHolding).
+	Holding *Holding
+}
+
+// Holding is the heartbeat's `holding`: the node's account-by-account
+// pacing decision and why ready work is left unclaimed
+// (docs/adr/adr-005-accounts-on-the-node.md, Amendment — 2026-09-28).
+type Holding struct {
+	// Mode is the node's own aggregate pacing: "normal", "paced" or
+	// "stopped" (paceMode.String()).
+	Mode string `json:"mode"`
+	// Summary is the one-line decision the console shows in place of the
+	// node's log line.
+	Summary string `json:"summary"`
+	// Until is the earliest reset among the accounts that hold, empty
+	// when none do.
+	Until time.Time `json:"until,omitzero"`
+	// Accounts is always a list, [] when there are none (the scaling
+	// precedent, PR #255: the platform's nested input is non-null).
+	Accounts []HoldingAccount `json:"accounts"`
+	// Unclaimed is always a list, [] when nothing was passed over this
+	// pass.
+	Unclaimed []HoldingUnclaimed `json:"unclaimed"`
+}
+
+// HoldingAccount is one account's standing in the holding report: its
+// kind, its status by the node's own pacing (ok, paced, exhausted or
+// unknown — never seen a reading, so ChooseAccount treats it as full
+// headroom), when its holding window resets, and what the node still
+// takes on it.
+type HoldingAccount struct {
+	Account  string       `json:"account"`
+	Kind     string       `json:"kind"` // "subscription" or "api_key"
+	Status   string       `json:"status"`
+	ResetsAt time.Time    `json:"resetsAt,omitzero"`
+	Takes    HoldingTakes `json:"takes"`
+}
+
+// HoldingTakes is what the node still takes on an account: the
+// priorities it claims for, the most items it runs on it at once, and
+// whether it still runs research there (research is not work that
+// waits: internal/node/select.go).
+type HoldingTakes struct {
+	Priorities []string `json:"priorities"`
+	MaxItems   int      `json:"maxItems"`
+	Research   bool     `json:"research"`
+}
+
+// HoldingUnclaimed is one goal's ready work the node passed over this
+// pass for lack of account headroom.
+type HoldingUnclaimed struct {
+	GoalID string `json:"goalId"`
+	Kind   string `json:"kind"` // "item" or "plan"
+	Count  int    `json:"count"`
+	Reason string `json:"reason"`
 }
 
 // AdoptedSession is one entry of the heartbeat's `adopted`: the item the
@@ -1383,6 +1431,16 @@ func (c *Client) HeartbeatNode(ctx context.Context, nodeID, version string, runn
 		if len(x.Adopted) > 0 {
 			in["adopted"] = x.Adopted
 		}
+		if x.Holding != nil && c.takesHolding(ctx) {
+			h := *x.Holding
+			if h.Accounts == nil {
+				h.Accounts = []HoldingAccount{}
+			}
+			if h.Unclaimed == nil {
+				h.Unclaimed = []HoldingUnclaimed{}
+			}
+			in["holding"] = &h
+		}
 	}
 	// A node can be newer than the platform it reports to: a field the
 	// gateway does not know yet makes GraphQL refuse the whole heartbeat,
@@ -1480,6 +1538,47 @@ func (c *Client) takesScaling(ctx context.Context) (bool, bool) {
 		}
 	}
 	return p.takes, p.accounts
+}
+
+// holdingProbe is the cached answer to whether HeartbeatNodeInput has
+// `holding`, and when it was asked.
+type holdingProbe struct {
+	mu    sync.Mutex
+	at    time.Time
+	takes bool
+}
+
+// takesHolding says whether the gateway's HeartbeatNodeInput has a
+// `holding` field — asked once by introspection and kept for
+// ScalingProbeEvery, the same as takesScaling (ADR-004: the node must
+// not send a field the platform does not accept). A failed probe is a
+// no, kept as long.
+func (c *Client) takesHolding(ctx context.Context) bool {
+	p := &c.holdingSchema
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := c.now()
+	if !p.at.IsZero() && now.Sub(p.at) < ScalingProbeEvery {
+		return p.takes
+	}
+	var out struct {
+		Type *struct {
+			InputFields []struct {
+				Name string `json:"name"`
+			} `json:"inputFields"`
+		} `json:"__type"`
+	}
+	p.at, p.takes = now, false
+	q := `{ __type(name: "HeartbeatNodeInput") { inputFields { name } } }`
+	if err := c.Query(ctx, q, nil, &out); err != nil || out.Type == nil {
+		return false
+	}
+	for _, f := range out.Type.InputFields {
+		if f.Name == "holding" {
+			p.takes = true
+		}
+	}
+	return p.takes
 }
 
 // basicHeartbeat is a heartbeat with only the fields every platform

@@ -25,6 +25,8 @@ type Call struct {
 	Input map[string]any
 	// At is when the fake received it: an item's heartbeats over time.
 	At time.Time
+	// Bearer is the token the request carried.
+	Bearer string
 }
 
 // Fake is the server and its state. Rows are maps with camelCase keys,
@@ -56,7 +58,11 @@ type Fake struct {
 	// MeshV1Hits and PrologueV1Hits count the requests each context path
 	// received, for a test to prove which one a read actually used.
 	MeshV1Hits, PrologueV1Hits int
-	Calls                      []Call
+	// ItemBearers are further tokens the fake takes on GraphQL, beside
+	// Token: an item's claim-time token, as RecordValidationAttestation
+	// carries it (WithItemToken).
+	ItemBearers []string
+	Calls       []Call
 	// Reads are the index lists and get-by-id reads the fake served:
 	// Name is the list (goalIndexs) or the get (repoIndex), Input its EQ
 	// wheres by field (org_id) or, for a get, {"id": id}.
@@ -231,7 +237,8 @@ var (
 )
 
 func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
-	if r.Header.Get("Authorization") != "Bearer "+f.Token {
+	bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if bearer != f.Token && !slices.Contains(f.ItemBearers, bearer) {
 		writeErrors(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
@@ -278,13 +285,13 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 		case "recordSessionUsage":
 			// never a field of the platform's schema: a session's usage
 			// rides the command that ends it (`usage`)
-			f.Calls = append(f.Calls, Call{Name: m[2], Input: in, At: time.Now()})
+			f.Calls = append(f.Calls, Call{Name: m[2], Input: in, At: time.Now(), Bearer: bearer})
 			writeErrors(w, 200, `Cannot query field "recordSessionUsage" on type "Mutation".`)
 			return
 		case "recordUsage":
 			// RegisterPlatformOnly on runsheet: the platform's own, never a
 			// node's (priced tool calls go to recordToolUsage)
-			f.Calls = append(f.Calls, Call{Name: m[2], Input: in, At: time.Now()})
+			f.Calls = append(f.Calls, Call{Name: m[2], Input: in, At: time.Now(), Bearer: bearer})
 			writeErrors(w, 200, "recordUsage: permission denied: the field is the platform's own, not a node's")
 			return
 		}
@@ -338,7 +345,7 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 				writeErrors(w, 200, err.Error())
 				return
 			}
-			f.Calls = append(f.Calls, Call{Name: m[2], Input: in, At: time.Now()})
+			f.Calls = append(f.Calls, Call{Name: m[2], Input: in, At: time.Now(), Bearer: bearer})
 			writeData(w, map[string]any{m[2]: tok})
 			return
 		}
@@ -349,7 +356,7 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 		if f.After != nil {
 			f.After(m[2], in)
 		}
-		f.Calls = append(f.Calls, Call{Name: m[2], Input: in, At: time.Now()})
+		f.Calls = append(f.Calls, Call{Name: m[2], Input: in, At: time.Now(), Bearer: bearer})
 		if usage, ok := in["usage"].(map[string]any); ok && finishingMutations[m[2]] {
 			f.SessionUsage = append(f.SessionUsage, Call{Name: m[2], Input: copyRow(usage), At: time.Now()})
 		}
@@ -455,13 +462,15 @@ func (f *Fake) sessionRead(w http.ResponseWriter, credField, arg, toolsField str
 // heartbeatInputType is HeartbeatNodeInput as introspection answers it:
 // every field a heartbeat may carry, less UnknownFields — `scaling`
 // without `accounts` when that is unknown, as the platform before
-// adr-005's per-account slots. Unsupported["__type"] refuses the probe.
+// adr-005's per-account slots; `holding` left out entirely when
+// UnknownFields["holding"] (a platform before node-says-why-work-waits).
+// Unsupported["__type"] refuses the probe.
 func (f *Fake) heartbeatInputType() map[string]any {
 	field := func(name string) map[string]any {
 		return map[string]any{"name": name}
 	}
 	var fields []any
-	for _, name := range []string{"aggregateId", "namespace", "version", "running", "draining", "updateError", "limits", "scaling", "runtimes", "adapters"} {
+	for _, name := range []string{"aggregateId", "namespace", "version", "running", "draining", "updateError", "limits", "scaling", "runtimes", "adapters", "holding"} {
 		if f.UnknownFields[name] {
 			continue
 		}
@@ -472,6 +481,13 @@ func (f *Fake) heartbeatInputType() map[string]any {
 				if !f.UnknownFields[n] {
 					sub = append(sub, field(n))
 				}
+			}
+			row["type"] = map[string]any{"kind": "INPUT_OBJECT", "inputFields": sub}
+		}
+		if name == "holding" {
+			var sub []any
+			for _, n := range []string{"mode", "summary", "until", "accounts", "unclaimed"} {
+				sub = append(sub, field(n))
 			}
 			row["type"] = map[string]any{"kind": "INPUT_OBJECT", "inputFields": sub}
 		}

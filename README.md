@@ -1751,13 +1751,19 @@ the console cannot reach the node — or `mesh node update --verify-only`
 checks a release from any machine.
 
 **The mirror is catching up.** The node and `mesh node update` fetch
-anonymously from `runsheet/mesh`, no token needed (ADR-002's amendment).
-Until `v0.2.187` is published there, its latest release is still
-`v0.2.186`, an unsigned main build from before signed releases — it has
-no `SHA256SUMS` signed by `runsheet/mesh-cli`'s `release-tag.yml`, so
-`mesh node update` (with no version) refuses it
-rather than silently accepting it; ask for a signed tag by name in the
-meantime, or download and check one by hand:
+anonymously from `runsheet/mesh`, with no token (ADR-002's amendment).
+`v0.2.188` was the first signed release cut for the mirror. It is
+signed and released on `runsheet/mesh-cli`, but its mirror step was
+refused (HTTP 403 on `RELEASE_TOKEN`), so it is not on `runsheet/mesh`
+yet; `v0.2.189` is the retry. `v0.2.187` exists on `runsheet/mesh-cli`
+only, because its mirror step failed before #336. On the mirror,
+`v0.2.1`–`v0.2.186` are unsigned old-channel builds from before signed
+releases. They have no Sigstore bundle signed by `runsheet/mesh-cli`'s
+`release-tag.yml`, so the updater refuses them, and `mesh node update`
+with no version refuses `v0.2.186` rather than accepting it silently.
+Until the mirror carries a signed release, ask for a signed tag by
+name, or download one and check it by hand
+(`docs/releases-after-transfer.md` has the record):
 
 ```sh
 TAG=v0.0.0-selfupdate-test.1
