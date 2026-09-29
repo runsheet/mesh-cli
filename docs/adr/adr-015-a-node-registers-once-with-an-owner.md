@@ -115,7 +115,9 @@ node's `Scopes`: one `Scope` per `a.Scopes` entry, `NodeID` the same
 `a.NodeID` in every one (the node's single id, not per-org).
 `restrict` is node.yaml's `orgs:` list, matched case-insensitively
 against a scope's `Login` or `Slug`, so it still restricts an org
-named only by slug; a restricted name the answer does not contain is
+named only by slug, and holds for every entry of the answer — a
+match never lifts it for the entries after (both functions keep the
+requested names whole and track the matched ones apart); a restricted name the answer does not contain is
 an error listing the missing names — the same rule `ResolveScopes`
 applies — and an answer with nothing left to serve is `"the platform
 answered with no org to serve"`. `Owner{Kind, ID, Name}` and

@@ -121,6 +121,28 @@ func TestScopesFromAnswerRestrict(t *testing.T) {
 		t.Fatalf("scopes = %+v, want just grapevine", scopes)
 	}
 
+	// A match early in the answer never lifts the restriction for the
+	// scopes after it; names match case-insensitively.
+	scopes, err = ScopesFromAnswer(a, []string{"RunSheet"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scopes) != 1 || scopes[0].Login != "runsheet" {
+		t.Fatalf("scopes = %+v, want just runsheet", scopes)
+	}
+	scopes, err = ScopesFromAnswer(a, []string{"runsheet", "GrapeVine"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scopes) != 2 || scopes[0].Name() != "runsheet" || scopes[1].Name() != "grapevine" {
+		t.Fatalf("scopes = %+v, want runsheet and grapevine", scopes)
+	}
+
+	_, err = ScopesFromAnswer(a, []string{"runsheet", "nope"})
+	if err == nil || !strings.Contains(err.Error(), "nope") || strings.Contains(err.Error(), "runsheet") {
+		t.Fatalf("ScopesFromAnswer(restrict=[runsheet nope]) = %v, want an error naming nope alone", err)
+	}
+
 	_, err = ScopesFromAnswer(a, []string{"nope"})
 	if err == nil || !strings.Contains(err.Error(), "nope") {
 		t.Fatalf("ScopesFromAnswer(restrict=[nope]) = %v, want an error naming nope", err)

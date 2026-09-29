@@ -514,9 +514,13 @@ func ResolveScopes(ctx context.Context, gw Gateway, c *Config) (Scopes, error) {
 	for _, o := range c.Orgs {
 		want[strings.ToLower(strings.TrimSpace(o))] = true
 	}
+	// want stays whole for the entire loop: found records which of it
+	// matched, so a match never lifts the restriction for later orgs.
+	found := map[string]bool{}
 	var scopes Scopes
 	for _, o := range orgs {
-		if len(want) > 0 && !want[strings.ToLower(o.Login)] {
+		login := strings.ToLower(o.Login)
+		if len(want) > 0 && !want[login] {
 			continue
 		}
 		id, err := c.NodeIDIn(o.ID)
@@ -524,14 +528,9 @@ func ResolveScopes(ctx context.Context, gw Gateway, c *Config) (Scopes, error) {
 			return nil, err
 		}
 		scopes = append(scopes, Scope{Login: o.Login, Slug: o.TenantSlug, ID: o.ID, AccountID: o.AccountID, NodeID: id})
-		delete(want, strings.ToLower(o.Login))
+		found[login] = true
 	}
-	if len(want) > 0 {
-		missing := make([]string, 0, len(want))
-		for o := range want {
-			missing = append(missing, o)
-		}
-		sort.Strings(missing)
+	if missing := missingOrgs(want, found); len(missing) > 0 {
 		return nil, fmt.Errorf("not a member of %s (the node.yaml orgs list names them)", strings.Join(missing, ", "))
 	}
 	if len(scopes) == 0 {
@@ -553,28 +552,36 @@ func ScopesFromAnswer(a *gateway.NodeAnswer, restrict []string) (Scopes, error) 
 	for _, o := range restrict {
 		want[strings.ToLower(strings.TrimSpace(o))] = true
 	}
+	found := map[string]bool{}
 	var scopes Scopes
 	for _, sa := range a.Scopes {
 		login, slug := strings.ToLower(sa.Login), strings.ToLower(sa.Slug)
 		if len(want) > 0 && !want[login] && !want[slug] {
 			continue
 		}
-		delete(want, login)
-		delete(want, slug)
+		found[login] = true
+		found[slug] = true
 		scopes = append(scopes, Scope{Login: sa.Login, Slug: sa.Slug, ID: sa.OrgID, AccountID: sa.AccountID, NodeID: a.NodeID})
 	}
-	if len(want) > 0 {
-		missing := make([]string, 0, len(want))
-		for o := range want {
-			missing = append(missing, o)
-		}
-		sort.Strings(missing)
+	if missing := missingOrgs(want, found); len(missing) > 0 {
 		return nil, fmt.Errorf("not a member of %s (the node.yaml orgs list names them)", strings.Join(missing, ", "))
 	}
 	if len(scopes) == 0 {
 		return nil, errors.New("the platform answered with no org to serve")
 	}
 	return scopes, nil
+}
+
+// missingOrgs is every name in want that found does not hold, sorted.
+func missingOrgs(want, found map[string]bool) []string {
+	var missing []string
+	for o := range want {
+		if !found[o] {
+			missing = append(missing, o)
+		}
+	}
+	sort.Strings(missing)
+	return missing
 }
 
 // Owner is the node's owner, read off a NodeAnswer: a person or an
