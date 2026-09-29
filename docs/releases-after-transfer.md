@@ -541,6 +541,35 @@ mesh_health_nodes (org runsheet), node mini:
 `latest_version` there is read from runsheet/mesh-cli, where v0.2.188
 exists; the mirror, which the node fetches from, does not have it.
 
+Rechecked by attempt 3 on 2026-09-29 00:36Z. Still nothing on the
+mirror past v0.2.186, so it stopped at the precondition again and
+nothing ran:
+
+```
+$ gh release list --repo runsheet/mesh --limit 1
+v0.2.186	Latest	v0.2.186	2026-09-26T11:48:49Z
+$ gh release view v0.2.187|v0.2.188|v0.2.189|v0.2.190 --repo runsheet/mesh
+release not found   (each)
+$ gh release list --repo runsheet/mesh-cli --limit 2
+v0.2.188	Latest	v0.2.188	2026-09-29T00:03:30Z
+v0.2.187		v0.2.187	2026-09-28T23:28:42Z
+$ cat ~/.mesh/update.json   # unchanged: to v0.1.0, attempts 0, the 404 lastError, no confirmedAt
+$ systemctl --user list-units 'mesh-session-*' --no-pager   # unit names only
+mesh-session-build-35a08bb0-cca4-4df5-838a-85e8b4aaf2fe-38e0ded7.scope
+mesh-session-build-497942f9-3369-483a-a7ed-11f24d65ad53-c6004944.scope
+mesh-session-build-6d5107fa-f5f9-42e0-bd82-2b25729ad5db-33efac60.scope
+mesh-session-build-a1df8261-8b75-42f4-b6f7-79b8d7cfb551-bec21da4.scope
+mesh-session-build-c6ece57c-305f-4882-89da-24428b10b243-068eee4d.scope
+mesh-session-build-ce6e1293-529b-40c6-97ba-41d3895afe5f-a6855d83.scope
+mesh_health_nodes (org runsheet, 00:36:26Z), node mini:
+  "version":"4d8d435","desired_version":"v0.1.0","behind":true,
+  "commits_behind_main":13,"latest_version":"v0.2.188"
+```
+
+`grep -c 'v0.2.188' ~/.mesh/node.log` counts 189 at 00:36Z, but none
+of them is an install. They are this item's title, logged on every
+claim, and git fetches of the `v0.2.188` tag (`* [new tag] v0.2.188`).
+
 The platform's `desiredVersion` for the mini is still `v0.1.0`. After
 the upgrade, the operator sets it on the console to the version the
 mini runs, or to the next tag. That setting is the goal's no-by-hand
