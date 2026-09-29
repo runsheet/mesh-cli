@@ -178,7 +178,14 @@ cfg.Orgs)`, and node.log's lines right after `StartLines` say `owned by
 `Scopes.Names()`. `mesh node register` prints the same.
 
 **The nil-answer fallback, exactly.** A platform that takes `owner` but
-answers no scopes is half-deployed. The node logs once `register: the
+answers nil — no `NodeAnswer` at all — is half-deployed; only a nil
+answer is. A non-nil answer naming no org, or none that node.yaml's
+`orgs:` keeps, is the owner contract all the same: the node is owned,
+logs `orgs: …` naming what was left out, serves none and claims nothing
+until a heartbeat's answer names an org — never the per-org path, never
+a failed registration (`TestOwnedRegisterEmptyAnswerIsNotNil`,
+`TestOwnedRegisterUnmatchedRestrictionIsNotFatal`). On a nil answer the
+node logs once `register: the
 platform took owner but answered no scopes; serving per org until it
 does` and runs the legacy path in full. The sequence is: the probe;
 **one** owner registration (the one above); then the person's orgs
@@ -195,8 +202,12 @@ the answer's scopes, restricted by node.yaml's `orgs:` as last
 reloaded, replace `Loop.Scopes` under `l.mu`, logged `orgs a → b` with
 `Names()` as a reload logs them; a restriction naming an org the answer
 does not serve is logged (`orgs: not a member of …`), not fatal, and the
-rest are served. A nil answer, or one naming no org, keeps the last
-scopes. The owned node's reload is `OwnedReloader`: node.yaml alone
+rest are served. Only a nil answer keeps the last scopes: a non-nil one
+replaces them whatever it names, so an org the platform stopped serving
+is claimed from no more on the next tick, and one naming no org (or
+none the restriction keeps) leaves the node serving none, logged `orgs
+a → none` (`TestOwnedTakeAnswerDropsRemovedOrgs`,
+`TestOwnedTakeAnswerUnmatchedRestriction`). The owned node's reload is `OwnedReloader`: node.yaml alone
 (capacity, limits, accounts, context, claim, the orgs restriction —
 applied at once to the last answer), never MyOrgs, never a
 registration.
