@@ -2,6 +2,7 @@ package harness
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"io"
 	"regexp"
@@ -303,12 +304,19 @@ func bwrapLine(out string) string {
 }
 
 // codexToolAnswered says whether a failed mcp_tool_call was the tool's
-// own answer: no `error` (Codex sets that when the call never reached
-// the server — an approval refusal, a transport or auth failure) and a
-// result the server returned, its isError content (docs/codex-events.md,
-// `prologue: not found`).
+// own answer: `error` null or absent (Codex sets it when the call never
+// reached the server — an approval refusal, a transport or auth failure
+// — even with an empty message) and a `result` the server returned, its
+// isError content, whatever shape it has (docs/codex-events.md,
+// `prologue: not found`). It judges the JSON values, never their text.
 func codexToolAnswered(it *CodexItem) bool {
-	return strings.TrimSpace(rawText(it.Error)) == "" && strings.TrimSpace(rawText(it.Result)) != ""
+	return jsonNull(it.Error) && !jsonNull(it.Result)
+}
+
+// jsonNull says whether a JSON value is absent or null.
+func jsonNull(raw json.RawMessage) bool {
+	t := bytes.TrimSpace(raw)
+	return len(t) == 0 || bytes.Equal(t, []byte("null"))
 }
 
 // codexCallError is a failed mcp_tool_call's error text: its error's

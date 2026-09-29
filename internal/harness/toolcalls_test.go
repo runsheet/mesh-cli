@@ -336,6 +336,31 @@ func TestParseCodexStreamAnsweredNotFound(t *testing.T) {
 	}
 }
 
+// A failed mcp_tool_call is Answered by its JSON values, not their
+// text: a non-null error with an empty message is Codex's refusal, never
+// the tool's answer; a result with only structured content is the
+// tool's answer; a null or absent result is not.
+func TestParseCodexStreamAnsweredJudgesTheValues(t *testing.T) {
+	fakeClock(t)
+	for _, tc := range []struct {
+		name, fields string
+		answered     bool
+	}{
+		{"error with an empty message", `"result":{"content":[{"type":"text","text":"not found"}]},"error":{"message":""}`, false},
+		{"error an empty string", `"result":{"content":[{"type":"text","text":"not found"}]},"error":""`, false},
+		{"structured content only", `"result":{"content":[],"structured_content":{"found":false}},"error":null`, true},
+		{"error absent, structured content only", `"result":{"structured_content":{"found":false}}`, true},
+		{"result null", `"result":null,"error":null`, false},
+		{"result absent", `"error":null`, false},
+	} {
+		stream := `{"type":"item.completed","item":{"id":"i1","type":"mcp_tool_call","server":"mesh-context","tool":"mesh_document",` + tc.fields + `,"status":"failed"}}`
+		s := ParseCodexStream(strings.NewReader(stream), "gpt-6-sol", nil).Tools["mesh-context"]
+		if s == nil || s.Calls != 1 || s.Errors != 1 || s.Clean != 0 || (s.Answered == 1) != tc.answered || s.Reached() != tc.answered {
+			t.Errorf("%s: Tools[mesh-context] = %+v, want answered %v", tc.name, s, tc.answered)
+		}
+	}
+}
+
 // A completed mcp_tool_call counts Clean.
 func TestParseCodexStreamAnsweredCountsCompletedClean(t *testing.T) {
 	fakeClock(t)
