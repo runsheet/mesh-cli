@@ -181,10 +181,13 @@ Amended 2026-09-29 (same goal). Claude's own pid exiting is not the end
 of what the session started, so **every end of a host session kills its
 unit**: `ClaudeCode.Run` and `ClaudeCode.Attach` call `Unit.Kill` once
 the leader has exited (or been stopped) and the output has been read to
-its end — a clean exit, a non-zero exit, an `UnavailableError`, a
-cancelled ctx, the job's `Timeout`, the hand-back's stop (the first run
-and the resumed one, each its own unit) and an adopted session's end
-alike. The stops a cancel, a timeout or the hand-back make *are* that
+its end — the normal end (a clean exit), a non-zero exit, an
+`UnavailableError`, a cancelled ctx, the job's `Timeout`, an output
+error (the session's `output.jsonl` that cannot be opened to follow), a
+state-write failure (`state.json` not written after `Start`), the
+hand-back's stop (the first run and the resumed one, each its own unit)
+and `Attach`'s end of an adopted session alike. The one end that makes
+no kill is the detach, below. The stops a cancel, a timeout or the hand-back make *are* that
 kill: one `Kill` per unit, whichever end comes first, its report kept.
 
 - **The report**: `Result.Killed` (`[]sessionunit.Process`) is what the
