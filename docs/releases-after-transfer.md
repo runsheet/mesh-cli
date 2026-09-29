@@ -1,5 +1,5 @@
 ---
-summary: The first tag cut from runsheet/mesh-cli's main after the transfer (v0.0.0-runsheet-test.6) and its verification; then v0.2.188, the first release cut for the runsheet/mesh mirror — signed on runsheet/mesh-cli, its mirror step refused by runsheet/mesh (HTTP 403, RELEASE_TOKEN), v0.2.189 the retry — and v0.2.187, cut and signed on the source only (its mirror step failed without --target, fixed by #336).
+summary: The first tag cut from runsheet/mesh-cli's main after the transfer (v0.0.0-runsheet-test.6) and its verification; then v0.2.188, the first release cut for the runsheet/mesh mirror — signed on runsheet/mesh-cli, its mirror step refused by runsheet/mesh (HTTP 403, RELEASE_TOKEN), v0.2.189 the retry — and v0.2.187, cut and signed on the source only (its mirror step failed without --target, fixed by #336). The mini's update from runsheet/mesh (item 11) did not run: v0.2.188 is not on the mirror, so the mini stays on 4d8d435 with update.json to v0.1.0, waiting for v0.2.189.
 ---
 
 # Releases after the transfer
@@ -481,4 +481,59 @@ successful mirror step pushes it.
 
 ### The mini updates from runsheet/mesh
 
-Item 11 of goal signed-releases-on-runsheet-mesh records it.
+Not done. Item 11 of goal signed-releases-on-runsheet-mesh stopped at
+its precondition on 2026-09-29 00:30Z: `v0.2.188` is not on
+`runsheet/mesh`. Its mirror step was refused (HTTP 403, above), and no
+`v0.2.189` has been cut yet. The mini was not upgraded. Nothing was
+built, swapped or restarted, and no `node upgrade` ran, because it
+would fetch from a release that does not exist:
+
+```
+$ gh release view v0.2.188 --repo runsheet/mesh
+release not found
+$ gh api repos/runsheet/mesh/releases/tags/v0.2.188
+{"message":"Not Found",…,"status":"404"}
+$ gh release list --repo runsheet/mesh --limit 1
+v0.2.186	Latest	v0.2.186	2026-09-26T11:48:49Z
+$ gh release view v0.2.188 --repo runsheet/mesh-cli --json tagName,publishedAt
+{"publishedAt":"2026-09-29T00:03:30Z","tagName":"v0.2.188"}
+$ gh release view v0.2.189 --repo runsheet/mesh-cli
+release not found
+```
+
+The mini's state as it was left (read only):
+
+```
+$ cat ~/.mesh/update.json
+{
+  "from": "4d8d435",
+  "to": "v0.1.0",
+  "attempts": 0,
+  "lastError": "release v0.1.0 has no SHA256SUMS on GitHub (404: missing, or the repo is private)"
+}
+$ systemctl --user list-units 'mesh-session-*' --no-pager   # unit names only
+mesh-session-build-497942f9-3369-483a-a7ed-11f24d65ad53-b70f2d73.scope
+mesh-session-build-5e896c00-45a9-4a05-8874-54c044a05956-8d75626c.scope
+mesh-session-build-a1df8261-8b75-42f4-b6f7-79b8d7cfb551-7e6463f3.scope
+mesh-session-evaluate-7b69281a-1a43-428a-a18b-798badce5b66-1d74586e.scope
+mesh-session-plan-c42ba4d3-b149-5430-ba7b-6232dbbf6c54-67f3e081.scope
+```
+
+The platform's `desiredVersion` for the mini is still `v0.1.0`. After
+the upgrade, the operator sets it on the console to the version the
+mini runs, or to the next tag. That setting is the goal's no-by-hand
+check for later versions.
+
+What unblocks it: the token and `v0.2.189` ("What is owed" above).
+Then this subsection's steps run against `v0.2.189`, not `v0.2.188`,
+because `v0.2.188` will never be on the mirror:
+
+1. Capture `~/.mesh/update.json`, `systemctl --user status
+   io.projectmesh.mesh-node.service`, the `mesh-session-*` units and
+   the mini's version on `mesh_health_nodes`.
+2. Run `go build -o /tmp/mesh-cli ./cmd/mesh` from main and
+   `/tmp/mesh-cli node upgrade --version v0.2.189`.
+3. After the confirm window, `update.json` should show `"to":
+   "v0.2.189"` with a `confirmedAt`. node.log should show `confirming
+   update 4d8d435 → v0.2.189` and the `adopt` lines, and
+   `mesh_health_nodes` should report `v0.2.189`.
