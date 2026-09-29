@@ -48,11 +48,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   (mesh-cli ADR-010).
   `internal/channel/`: channel mode (one session per org, turns).
   **A draining node claims nothing** (`Loop.Drain`): see the drain
-  below. node.yaml's `claim: {unmerged_per_repo: N}` (`ClaimConfig`,
-  re-read each tick, `Loop.UnmergedPerRepo`; absent or 0 is no limit
-  and no read) holds fresh claims for a repo with N items in `review`,
-  counted from the node's own listing, never `RepoIndex.reviewPile`;
-  started work there is still claimed (ADR-017).
+  below.
 - **The director** (`internal/node/research.go`, runsheet trd §6c): a
   project carries **directions** — several, each its own aggregate with
   its own words, window, timezone, gap, ceiling and research claim
@@ -319,7 +315,10 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   session's is in its carrier's; `ErrNoUsageLedger` said once per run),
   and `mesh node usage` (`ReadUsage`, `usagereading.go`) reads them back
   into sessions, input tokens, cache reads and context bytes by kind for
-  a window (adr-016's amendment).
+  a window — `--from`/`--to` a date or RFC 3339, `--project org/slug`
+  or `--goals <file>` (`UsageQuery.Goals`), and a `coverage <kind>:`
+  line of records beside the sessions ended (`UsageReading.Ended`) —
+  (adr-016's amendment).
 - **Codex** (`internal/harness/codex.go`, goals `codex-adapter` and
   `codex-sessions-reach-the-context-tool`): the
   `codex` harness, `codex exec --json --sandbox workspace-write` in the
@@ -507,16 +506,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   goes. A timeout or cancelled ctx `Stop`s the unit, and every end
   but a detach `Kill`s it: `Result.Killed` names what the agent left
   running there (a failed kill goes to Stderr, else `KillError`,
-  never failing the session), and the node logs what it killed, a
-  line per session (`logKilled` on `Result.KilledPerSession()`:
-  `<subject>: session end killed <n> process(es) the agent left
-  running: <pid> <comm>, …`, and `kill: <KillError>`); a build and a
-  rebase also send it as a progress note, an evaluation puts it in the
-  verdict's notes when it records one and only logs it (held for the
-  next verdict, `LeftRunning`) when it records none, a plan and
-  research log only (ADR-008, The session's end) — an adopted session
-  whose subject is no longer the node's is `FoundSession.Kill`ed and
-  logged the same way; the directory is
+  never failing the session); the directory is
   removed when `Run` returns — unless the job is `Outlive`: see the
   adoption.
 - **The sandbox** (`internal/sandbox/`, mesh-specs ADR 007,

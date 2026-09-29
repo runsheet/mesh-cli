@@ -407,12 +407,6 @@ in planning are claimed (`ClaimPlan`) and planned urgent, high, normal,
 low (empty is normal), and the items this node holds for evaluation are
 evaluated by their goal's priority, then seq — on the same one goals read
 per org per tick.
-With node.yaml's `claim: {unmerged_per_repo: N}` set, a repo with N
-items in `review` — pull requests open and waiting to merge — gets no
-fresh claim until one merges, while its started work (rework, a rebase,
-a re-evaluation) is still claimed and other repos are unaffected; left
-out or 0 there is no limit, and it is re-read every tick (see Unmerged
-work per repo below).
 The attempt bound guards the class order within a priority; across
 priorities the order is strict, so a steady stream of urgent work keeps a
 low goal's items, plans and evaluations waiting.
@@ -977,7 +971,8 @@ carried). `mesh node usage` reads those lines back into a reading of a
 window:
 
 ```bash
-mesh node usage --from 2026-09-28 --to 2026-09-29 [--log ~/.mesh/node.log] [--goal <slug>] [--kind build]
+mesh node usage --from 2026-09-28 --to 2026-09-29 [--log ~/.mesh/node.log] [--goal <slug>] [--kind build] \
+  [--project <org>/<slug> | --goals <file>]
 ```
 
 ```
@@ -987,52 +982,32 @@ build     2         200000               200000             90.0          1000  
 evaluate  1         50000                50000              80.0          -                     0
 plan      2         50000                50000              60.0          3000                  2
 unknown   1         7000                 7000               100.0         -                     0
+coverage build: 2 records of 3 sessions ended in the window
+coverage evaluate: 1 records of 1 sessions ended in the window
+coverage plan: 2 records of 1 sessions ended in the window
 unparsed 1
 ```
 
 `--to` is exclusive and both dates are local, as node.log's timestamps
-are. Input tokens are the report's `inputTokens`, cache reads and
+are; either may instead be an RFC 3339 timestamp
+(`--from 2026-09-29T14:18:43Z`, or with an offset), so a window can
+start at a release's first context line, and the `window` line then
+prints them as given. Input tokens are the report's `inputTokens`, cache reads and
 writes among them; the context-bytes median is over the sessions that
 carry `contextBytes` (`with context bytes`), `-` when none does.
 `--goal` keeps the records whose label names the goal — its items' and
-its plan's. An older node's unlabelled `usage: {…}` line takes the kind
+its plan's. `--project org/slug` keeps the project's goals, read from
+the platform, and its research; `--goals <file>` keeps the goals the
+file lists (one slug a line, `#` comments) with no platform call, and
+the two are not given together. Each `coverage` line sets the records
+of a kind beside the sessions of that kind node.log says ended in the
+same window and filter — `finished`, `evaluation`, `rebased`,
+`planned` and the director's `pitched`/`proposed` lines — so a reading
+names its own sample. An older node's unlabelled `usage: {…}` line takes the kind
 and label of the nearest `finished …($x)`, `evaluation …($x)` or
 `rebased …($x)` line within 12 lines whose `$x` is its `listCostCents`,
 else `unknown`; a record whose JSON does not parse is counted as
 `unparsed` and skipped (ADR-016, amendment 2026-09-29).
-
-### Unmerged work per repo
-
-A repo whose pull requests cannot land fast enough should not get more
-of them. node.yaml's `claim:` block sets the most a repo may have open
-and waiting to merge before the node claims no fresh item of it:
-
-```yaml
-claim:
-  unmerged_per_repo: 7   # no default: left out or 0 is no limit
-```
-
-Unmerged is an item in status `review` on the platform: its pull
-request is open and waiting for the integrator. While the key is set the
-node lists every served org's `review` items once a tick (when anything
-is ready, and then every org's, even one with nothing ready: a repo's
-open pull requests may sit under another org) and counts them by repo; a fresh item of a
-repo at the limit stays `ready`, and each fresh item claimed in the tick
-counts against its repo at once, so one tick never overshoots. Started
-work in that repo — an item with an open pull request, an evaluation or
-a rebase conflict — is still claimed: it finishes a pull request that
-already counts. Other repos are claimed as before. The hold is logged
-once per repo per tick and the heartbeat's holding report names it
-(`repo <id> has 7 unmerged pull requests, at node.yaml's
-claim.unmerged_per_repo 7`), each held repo of a goal named in its
-entry. A failed `review` listing in any served org holds every fresh item
-for the tick, as at the limit (any repo may have review items there),
-and still claims started work: an unknown count is never taken as
-zero. A negative value is refused. Like the
-context budget, `claim:` is read again every tick without a restart,
-and a change is logged (`claim: unmerged_per_repo 0 → 7`). With the key
-left out no `review` listing is read at all
-([ADR-017](docs/adr/adr-017-finish-before-you-start.md)).
 
 ### Tool results
 

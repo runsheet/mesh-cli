@@ -1,0 +1,9 @@
+mesh node: 2026/09/29 09:11:40 item alpha/1: finished mesh/alpha-1@aaaa1111 ($1.00)
+mesh node: 2026/09/29 09:11:48 item alpha/1: usage build {"sessionId":"b1","inputTokens":900000,"cacheReadTokens":800000,"listCostCents":100}
+mesh node: 2026/09/29 20:18:40 item alpha/2: finished mesh/alpha-2@bbbb2222 ($0.40)
+mesh node: 2026/09/29 20:18:43 item alpha/2: usage build {"sessionId":"b2","inputTokens":100000,"cacheReadTokens":90000,"listCostCents":40,"contextBytes":1000}
+mesh node: 2026/09/29 21:20:00 item beta/1: finished mesh/beta-1@cccc3333 ($0.30)
+mesh node: 2026/09/29 21:20:00 item beta/1: usage build {"sessionId":"b3","inputTokens":200000,"cacheReadTokens":150000,"listCostCents":30,"contextBytes":2000}
+mesh node: 2026/09/29 22:40:00 item beta/2: finished mesh/beta-2@eeee5555 ($0.10)
+mesh node: 2026/09/29 22:50:00 goal beta: planned, 2 items ($0.60)
+mesh node: 2026/09/29 22:50:00 goal beta: usage plan {"sessionId":"p1","inputTokens":60000,"cacheReadTokens":30000,"listCostCents":60}
