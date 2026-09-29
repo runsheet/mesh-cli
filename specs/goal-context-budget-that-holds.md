@@ -99,11 +99,11 @@ v0.0.0-runsheet-test.6	Pre-release	v0.0.0-runsheet-test.6	2026-09-26T15:06:03Z
 v0.0.0-selfupdate-test.1	Pre-release	v0.0.0-selfupdate-test.1	2026-09-25T13:33:49Z
 ```
 
-No published release carries item 10: v0.2.193 is `e3e3f97`, #463's parent. release-on-merge tagged `v0.2.194` at `10a9ba2`, but its release-tag.yml run failed, and `v0.2.195` (`0d4c95f`) was still building:
+No published release carries item 10: v0.2.193 is `e3e3f97`, #463's parent. release-on-merge tagged `v0.2.194` at `10a9ba2`, but its release-tag.yml run failed, and `v0.2.195` (`0d4c95f`) was still building (its conclusion is empty; the trailing space the command prints after it is dropped here):
 
 ```
 $ gh run list --repo runsheet/mesh-cli --workflow release-tag.yml --limit 3 --json headBranch,status,conclusion,createdAt -q '.[]|"\(.createdAt) \(.headBranch) \(.status) \(.conclusion)"'
-2026-09-29T16:16:05Z v0.2.195 in_progress 
+2026-09-29T16:16:05Z v0.2.195 in_progress
 2026-09-29T15:51:39Z v0.2.194 completed failure
 2026-09-29T15:20:45Z v0.2.193 completed success
 ```
