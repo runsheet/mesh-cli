@@ -709,6 +709,10 @@ type Reloaded struct {
 	Context *ContextConfig
 	// Claim is node.yaml's `claim:` block; nil keeps the loop's.
 	Claim *ClaimConfig
+	// Orgs is node.yaml's orgs restriction, read when OrgsRead: an owned
+	// node applies it to the platform's answer (TakeAnswer).
+	Orgs     []string
+	OrgsRead bool
 }
 
 // Spending is what the node may spend on: node.yaml's accounts,
@@ -751,13 +755,8 @@ func Reloader(gw Gateway, cfg *Config, scopes Scopes, load func() (*Config, erro
 		if c, err := load(); err != nil {
 			errs = append(errs, fmt.Errorf("node.yaml (keeping the last good capacity and limits): %w", err))
 		} else {
-			limits := c.Limits
-			out.Capacity, out.Limits, restrict = c.Capacity, &limits, c.Orgs
-			out.Spending = &Spending{Accounts: c.Accounts, ProjectBudgets: c.ProjectBudgets, Budgets: c.Budgets}
-			budget := c.Context
-			out.Context = &budget
-			claim := c.Claim
-			out.Claim = &claim
+			out = reloadedFrom(c)
+			restrict = c.Orgs
 		}
 		orgs, err := gw.MyOrgs(ctx)
 		if err != nil {
@@ -817,6 +816,36 @@ func joinReasons(errs []error) error {
 		return nil
 	}
 	return reasons(errs)
+}
+
+// reloadedFrom is what a re-read node.yaml gives the loop: the
+// capacity, the limits, the accounts and budgets, the context budget,
+// the claim limits and the orgs restriction.
+func reloadedFrom(c *Config) Reloaded {
+	limits, budget, claim := c.Limits, c.Context, c.Claim
+	return Reloaded{Capacity: c.Capacity, Limits: &limits, Context: &budget, Claim: &claim,
+		Spending: &Spending{Accounts: c.Accounts, ProjectBudgets: c.ProjectBudgets, Budgets: c.Budgets},
+		Orgs:     c.Orgs, OrgsRead: true}
+}
+
+// OwnedReloader is Loop.Reload for a node registered once with its
+// owner (ADR-015, Registration and the loop): every tick it reads
+// node.yaml again through load (LoadConfig when nil) for what Reloader
+// reads from it — the capacity, the limits, the accounts, the context,
+// the claim limits and the orgs restriction — but never asks MyOrgs and
+// never registers: the orgs served come only from the platform's answer
+// to each heartbeat (TakeAnswer), restricted there.
+func OwnedReloader(load func() (*Config, error)) func(context.Context) (Reloaded, error) {
+	if load == nil {
+		load = LoadConfig
+	}
+	return func(context.Context) (Reloaded, error) {
+		c, err := load()
+		if err != nil {
+			return Reloaded{}, fmt.Errorf("node.yaml (keeping the last good capacity and limits): %w", err)
+		}
+		return reloadedFrom(c), nil
+	}
 }
 
 // ConfigPath is ~/.mesh/node.yaml.
