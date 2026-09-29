@@ -83,11 +83,11 @@ naming the owner, a fourth org appearing on a later heartbeat served
 without restart — lands as a later item on this branch's goal, switched
 on by the answer alone; no flag day.
 
-## Node model (item 12)
+## Node model (2026-09-29)
 
-2026-09-29, item 12. The pure model the node consumes the answer with —
+2026-09-29, item 12, carried onto main by item 17. The pure model the node consumes the answer with —
 types and functions only, no gateway calls and no wiring into
-register/start/status (items 13 and 14 wire it in).
+register/start/status (items 18 and 19 wire it in).
 
 **`Scope` carries `Slug`.** An org's tenant slug rides beside its
 login, always set; `Scope.Name()` is `Login`, or `Slug` when `Login` is
@@ -124,9 +124,17 @@ answered with no org to serve"`. `Owner{Kind, ID, Name}` and
 `OwnerFrom(a)` read the answer's owner; `Owner.String()` is `"owned by
 <Name>"`, falling back to `"<Kind> <ID>"` when the platform sends no
 name — `mesh node status` and the node's first log lines print this
-once items 13 and 14 call it.
+once items 18 and 19 call it.
 
 Tests in `internal/node/owner_test.go` open no socket: they decode
 `specs/contracts/registerNode.json` and `heartbeatNode.json`'s
 `answer` directly and run `ScopesFromAnswer`/`OwnerFrom` over it, so
-the evaluator can check every one of them without a gateway.
+the evaluator can check every one of them without a gateway. They are
+named with the one prefix `TestModel…` (`go test ./internal/node -run
+'^TestModel'`), and no other test in the package carries it — the
+earlier `TestModelTier`, `TestModelsFor`, `TestModelRank` and
+`TestModelAgainstEvidence` are `TestBudgetModelTier`,
+`TestKindModelsFor`, `TestKindModelRank` and
+`TestPlanModelAgainstEvidence` — so the socket-free run never picks
+up a test that starts a gateway, as `-run Owner` picked up
+`TestLoopServesEveryOrgOfItsOwner`.

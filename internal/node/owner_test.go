@@ -11,7 +11,7 @@ import (
 
 // LoadConfig accepts owner absent, "person" or "enterprise", and
 // rejects anything else — naming the two allowed values.
-func TestLoadConfigOwner(t *testing.T) {
+func TestModelLoadConfigOwner(t *testing.T) {
 	for _, owner := range []string{"", "person", "enterprise"} {
 		t.Run("accepts "+owner, func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
@@ -33,12 +33,12 @@ func TestLoadConfigOwner(t *testing.T) {
 			}
 		})
 	}
-	t.Run("rejects team", func(t *testing.T) {
+	t.Run("rejects fleet", func(t *testing.T) {
 		t.Setenv("HOME", t.TempDir())
-		writeNodeYAML(t, "slug: mini\nname: mini\nowner: team\n")
+		writeNodeYAML(t, "slug: mini\nname: mini\nowner: fleet\n")
 		_, err := LoadConfig()
-		if err == nil || !strings.Contains(err.Error(), "person") || !strings.Contains(err.Error(), "enterprise") {
-			t.Fatalf("LoadConfig(owner: team) = %v, want an error naming person and enterprise", err)
+		if err == nil || !strings.Contains(err.Error(), "owner") || !strings.Contains(err.Error(), "person") || !strings.Contains(err.Error(), "enterprise") {
+			t.Fatalf("LoadConfig(owner: fleet) = %v, want an error naming owner, person and enterprise", err)
 		}
 	})
 }
@@ -64,7 +64,7 @@ func answerFixture(t *testing.T, name string) *gateway.NodeAnswer {
 // ScopesFromAnswer on registerNode.json's answer gives three scopes
 // sharing the fixture's one nodeId, the grapevine scope (empty login)
 // named "grapevine" by Scope.Name().
-func TestScopesFromAnswerRegisterNodeFixture(t *testing.T) {
+func TestModelScopesFromAnswerRegisterNodeFixture(t *testing.T) {
 	a := answerFixture(t, "registerNode.json")
 	scopes, err := ScopesFromAnswer(a, nil)
 	if err != nil {
@@ -96,7 +96,7 @@ func TestScopesFromAnswerRegisterNodeFixture(t *testing.T) {
 
 // heartbeatNode.json's answer gives four scopes: the same three plus
 // foghornid, attached to the enterprise later.
-func TestScopesFromAnswerHeartbeatNodeFixture(t *testing.T) {
+func TestModelScopesFromAnswerHeartbeatNodeFixture(t *testing.T) {
 	a := answerFixture(t, "heartbeatNode.json")
 	scopes, err := ScopesFromAnswer(a, nil)
 	if err != nil {
@@ -110,25 +110,27 @@ func TestScopesFromAnswerHeartbeatNodeFixture(t *testing.T) {
 // A restrict list naming an org the answer does contain (by login or
 // slug) keeps only that one; a restrict list naming one it does not
 // contain is an error.
-func TestScopesFromAnswerRestrict(t *testing.T) {
+func TestModelScopesFromAnswerRestrict(t *testing.T) {
 	a := answerFixture(t, "registerNode.json")
 
-	scopes, err := ScopesFromAnswer(a, []string{"grapevine"})
+	scopes, err := ScopesFromAnswer(a, []string{"Grapevine"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(scopes) != 1 || scopes[0].Name() != "grapevine" {
+	if len(scopes) != 1 || scopes[0].Login != "" || scopes[0].Name() != "grapevine" {
 		t.Fatalf("scopes = %+v, want just grapevine", scopes)
 	}
 
 	// A match early in the answer never lifts the restriction for the
 	// scopes after it; names match case-insensitively.
-	scopes, err = ScopesFromAnswer(a, []string{"RunSheet"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(scopes) != 1 || scopes[0].Login != "runsheet" {
-		t.Fatalf("scopes = %+v, want just runsheet", scopes)
+	for _, name := range []string{"runsheet", "RunSheet"} {
+		scopes, err = ScopesFromAnswer(a, []string{name})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(scopes) != 1 || scopes[0].Login != "runsheet" {
+			t.Fatalf("restrict=[%s]: scopes = %+v, want just runsheet", name, scopes)
+		}
 	}
 	scopes, err = ScopesFromAnswer(a, []string{"runsheet", "GrapeVine"})
 	if err != nil {
@@ -138,19 +140,19 @@ func TestScopesFromAnswerRestrict(t *testing.T) {
 		t.Fatalf("scopes = %+v, want runsheet and grapevine", scopes)
 	}
 
-	_, err = ScopesFromAnswer(a, []string{"runsheet", "nope"})
-	if err == nil || !strings.Contains(err.Error(), "nope") || strings.Contains(err.Error(), "runsheet") {
-		t.Fatalf("ScopesFromAnswer(restrict=[runsheet nope]) = %v, want an error naming nope alone", err)
+	_, err = ScopesFromAnswer(a, []string{"runsheet", "nosuch"})
+	if err == nil || !strings.Contains(err.Error(), "nosuch") || strings.Contains(err.Error(), "runsheet") {
+		t.Fatalf("ScopesFromAnswer(restrict=[runsheet nosuch]) = %v, want an error naming nosuch alone", err)
 	}
 
-	_, err = ScopesFromAnswer(a, []string{"nope"})
-	if err == nil || !strings.Contains(err.Error(), "nope") {
-		t.Fatalf("ScopesFromAnswer(restrict=[nope]) = %v, want an error naming nope", err)
+	_, err = ScopesFromAnswer(a, []string{"nosuch"})
+	if err == nil || !strings.Contains(err.Error(), "nosuch") {
+		t.Fatalf("ScopesFromAnswer(restrict=[nosuch]) = %v, want an error naming nosuch", err)
 	}
 }
 
 // An answer with no scopes at all is an error, restricted or not.
-func TestScopesFromAnswerEmpty(t *testing.T) {
+func TestModelScopesFromAnswerEmpty(t *testing.T) {
 	_, err := ScopesFromAnswer(&gateway.NodeAnswer{NodeID: "n1"}, nil)
 	if err == nil || !strings.Contains(err.Error(), "no org to serve") {
 		t.Fatalf("ScopesFromAnswer(empty) = %v, want an error naming no org to serve", err)
@@ -159,7 +161,7 @@ func TestScopesFromAnswerEmpty(t *testing.T) {
 
 // OwnerFrom reads the registerNode fixture's owner, and Owner.String()
 // shows it as "owned by Chris".
-func TestOwnerFromFixture(t *testing.T) {
+func TestModelOwnerFromFixture(t *testing.T) {
 	a := answerFixture(t, "registerNode.json")
 	owner := OwnerFrom(a)
 	if owner.Kind != "person" || owner.ID == "" || owner.Name != "Chris" {
@@ -172,16 +174,27 @@ func TestOwnerFromFixture(t *testing.T) {
 
 // Owner.String() falls back to kind and id when the platform sends no
 // display name.
-func TestOwnerStringFallsBackWithNoName(t *testing.T) {
+func TestModelOwnerStringFallsBackWithNoName(t *testing.T) {
 	owner := Owner{Kind: "enterprise", ID: "e1"}
 	if got := owner.String(); got != "owned by enterprise e1" {
 		t.Fatalf("owner.String() = %q, want %q", got, "owned by enterprise e1")
+	}
+	for _, c := range []struct {
+		owner Owner
+		want  string
+	}{
+		{Owner{Kind: "person", Name: "Chris"}, "owned by Chris"},
+		{Owner{Kind: "enterprise", ID: "e1", Name: "anythink"}, "owned by anythink"},
+	} {
+		if got := c.owner.String(); got != c.want {
+			t.Fatalf("%+v.String() = %q, want %q", c.owner, got, c.want)
+		}
 	}
 }
 
 // Scope.Name() is Login when set, else Slug — an org with no GitHub
 // login is still named to a person.
-func TestScopeNameGrapevine(t *testing.T) {
+func TestModelScopeNameGrapevine(t *testing.T) {
 	withLogin := Scope{Login: "runsheet", Slug: "runsheet"}
 	if got := withLogin.Name(); got != "runsheet" {
 		t.Fatalf("Name() = %q, want %q", got, "runsheet")
