@@ -402,7 +402,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   result, a Claude `is_error` result from a server init named
   `connected` that is not Claude Code's own refusal) — or, on Codex,
   every command of which bubblewrap refused, or whose test commands
-  refused a socket with none passing (`Result.SandboxBroken`,
+  that ran every one refused a socket (`Result.SandboxBroken`,
   `sandbox: <bwrap or socket line>`) — has its verdict discarded; a
   tool that answered was reached (`ToolStat.Reached`), so the
   built-in's `not found` for a slug it does not have is the tool

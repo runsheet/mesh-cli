@@ -156,7 +156,7 @@ func ParseCodexStream(r io.Reader, model string, onEvent func(CodexEvent)) Resul
 	sandboxLine := ""
 	// the socket rule: test-shaped commands, failed commands, and how
 	// many of each died on a refused socket
-	testsPassed, testsRefused, failedCmds, failedRefused := 0, 0, 0, 0
+	testsRan, testsRefused, failedCmds, failedRefused := 0, 0, 0, 0
 	tests := 0
 	socketRefused := ""
 	startupError := func(msg string) {
@@ -253,11 +253,11 @@ func ParseCodexStream(r io.Reader, model string, onEvent func(CodexEvent)) Resul
 				}
 				if isTestCommand(ev.Item.Command) {
 					tests++
-					if refused != "" {
-						testsRefused++
-					}
-					if !failedCmd {
-						testsPassed++
+					if !notRun(ev.Item.ExitCode) {
+						testsRan++
+						if refused != "" {
+							testsRefused++
+						}
 					}
 				}
 			}
@@ -319,18 +319,24 @@ func ParseCodexStream(r io.Reader, model string, onEvent func(CodexEvent)) Resul
 	switch {
 	case commands > 0 && sandboxBlocked == commands:
 		res.SandboxBroken = capText(sandboxLine, 300)
-	case testsRefused > 0 && testsPassed == 0,
+	case testsRan > 0 && testsRefused == testsRan,
 		tests == 0 && failedCmds > 0 && failedRefused == failedCmds:
 		res.SandboxBroken = capText(socketRefused, 300)
 	}
 	return res
 }
 
-// testCommands are what a command line runs to test: a session none of
-// whose test commands passed and one of which died on a refused socket
-// could verify nothing that listens (one that failed for another reason
-// — `go: command not found` — does not make the suite runnable).
+// testCommands are what a command line runs to test: a session every
+// one of whose test commands that ran died on a refused socket could
+// verify nothing that listens. One that passed, or failed on its own
+// merits with no refusal in its output, is a test that ran — the
+// verdict stands. One whose shell never ran it (exit 126 or 127,
+// `go: command not found`) counts neither way.
 var testCommands = regexp.MustCompile(`\b(go test|npm (run )?test|pnpm (run )?test|yarn (run )?test|npx (vitest|jest)|pytest|cargo test|make (test|check))\b`)
+
+// notRun says a command's exit code is the shell's own refusal to run
+// it: 126 (not executable) or 127 (not found).
+func notRun(code *int) bool { return code != nil && (*code == 126 || *code == 127) }
 
 // isTestCommand says a command_execution's command line runs tests.
 func isTestCommand(cmd string) bool { return testCommands.MatchString(cmd) }

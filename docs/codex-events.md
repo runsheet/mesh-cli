@@ -368,12 +368,16 @@ answers (ADR 011, amendment 2026-09-29, item 9):
   `TestCodexSandboxProbeBindsLoopbackUnderTheSessionsKeys`).
 - **The stream says it.** A failed `command_execution` whose output has
   a line matching `socket: operation not permitted` or `bind: operation
-  not permitted` is a refused socket. When a test-shaped command
-  (`go test`, `npm test`, `pytest`, …) was refused so and none passed —
-  or, with none, every failed command was — `Result.SandboxBroken` is
-  the first such line. Fixtures `codex_exec_socket.jsonl` (go vet clean,
+  not permitted` is a refused socket. When every test-shaped command
+  (`go test`, `npm test`, `pytest`, …) that ran was refused so — one
+  the shell never ran, exit 126 or 127, counts neither way — or, with
+  none, every failed command was, `Result.SandboxBroken` is the first
+  such line. A test command that passed, or failed on its own merits
+  with no refusal, ran: the verdict stands. Fixtures `codex_exec_socket.jsonl` (go vet clean,
   `go test` not found then refused, `npm test` refused, `VERDICT: FAIL`
-  anyway) and `codex_exec_socket_one_passed.jsonl` (`npm test` passed) —
+  anyway), `codex_exec_socket_one_passed.jsonl` (`npm test` passed)
+  and `codex_exec_socket_mixed.jsonl` (one `go test` refused, another
+  failing a real assertion) —
   `TestCodexStreamSocketRefusedIsSandboxBroken`.
 
 ## The stream, kept

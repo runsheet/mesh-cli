@@ -157,10 +157,10 @@ func TestParseCodexStreamSandboxBroken(t *testing.T) {
 }
 
 // A sandbox with no network: the test commands died on a refused
-// socket (one of them before that on `go: command not found`) and none
-// passed, so SandboxBroken is the first socket line, whatever verdict
+// socket (one of them before that on `go: command not found`, which
+// never ran), so SandboxBroken is the first socket line, whatever verdict
 // the session wrote — while go vet ran clean. One test command that
-// passed leaves it empty (ADR 011, amendment 2026-09-29).
+// passed, or that failed on its own merits, leaves it empty (ADR 011, amendment 2026-09-29).
 func TestCodexStreamSocketRefusedIsSandboxBroken(t *testing.T) {
 	res, _ := parseCodexFixture(t, "codex_exec_socket.jsonl", "gpt-6-sol")
 	want := "panic: httptest: failed to listen on a port: listen tcp6 [::1]:0: socket: operation not permitted [recovered, repanicked]"
@@ -179,6 +179,16 @@ func TestCodexStreamSocketRefusedIsSandboxBroken(t *testing.T) {
 		`{"type":"item.completed","item":{"id":"j","type":"command_execution","command":"git log","aggregated_output":"abc\n","exit_code":0,"status":"completed"}}`
 	if got := ParseCodexStream(strings.NewReader(gh), "gpt-6-sol", nil).SandboxBroken; got != "dial: bind: operation not permitted" {
 		t.Fatalf("no test command: %q", got)
+	}
+	// a refused test command beside one that failed on its own merits
+	// is a verdict: the second ran
+	mixed := `{"type":"item.completed","item":{"id":"i","type":"command_execution","command":"go test ./internal/gateway/","aggregated_output":"listen tcp6 [::1]:0: socket: operation not permitted\n","exit_code":1,"status":"failed"}}` + "\n" +
+		`{"type":"item.completed","item":{"id":"j","type":"command_execution","command":"go test ./internal/node/","aggregated_output":"--- FAIL: TestX\n    x_test.go:9: got 1, want 2\n","exit_code":1,"status":"failed"}}`
+	if got := ParseCodexStream(strings.NewReader(mixed), "gpt-6-sol", nil).SandboxBroken; got != "" {
+		t.Fatalf("a refused test beside a real failure: %q", got)
+	}
+	if res, _ := parseCodexFixture(t, "codex_exec_socket_mixed.jsonl", "gpt-6-sol"); res.SandboxBroken != "" {
+		t.Fatalf("mixed fixture: SandboxBroken = %q", res.SandboxBroken)
 	}
 	// a test that failed on its own merits is a verdict
 	fail := `{"type":"item.completed","item":{"id":"i","type":"command_execution","command":"go test ./...","aggregated_output":"--- FAIL: TestX\n","exit_code":1,"status":"failed"}}`
