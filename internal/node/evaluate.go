@@ -410,7 +410,7 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 	var passed bool
 	var notes string
 	cost := result.CostUSD
-	if blind, broken := e.toolBroken(result, acct); broken {
+	if blind, broken := e.toolBroken(result, acct, ev.second == nil); broken {
 		other := ev.fam.other(e)
 		saw := fmt.Sprintf("item %s: evaluation on %s saw no context (%s); not a verdict", label, ev.fam.fullName(), blind)
 		if why, ok := e.canRetry(ev, other); !ok {
@@ -629,7 +629,7 @@ func (e *Evaluator) secondOpinion(ctx context.Context, ev evalRun, on family, jo
 	case err != nil:
 		op.unavailable = truncate(acct.Redact(harness.Redact(err.Error(), job.Secrets...)), 300)
 	default:
-		if blind, broken := e.toolBroken(result, acct); broken {
+		if blind, broken := e.toolBroken(result, acct, false); broken {
 			op.unavailable = "saw no context (" + harness.Redact(blind, job.Secrets...) + ")"
 			break
 		}
@@ -659,8 +659,9 @@ var ErrNoContext = errors.New("the evaluation saw no context, and the other fami
 // (MCP: the context server) or a required console tool the session was
 // served, every one of whose calls errored, or which errored with no
 // call at all (not connected at startup). A session with one clean call
-// on each is not broken.
-func (e *Evaluator) toolBroken(res harness.Result, acct *SessionAccount) (string, bool) {
+// on each is not broken. adopted is a session an older node process
+// started (AdoptEvaluation): only there is prologue the built-in.
+func (e *Evaluator) toolBroken(res harness.Result, acct *SessionAccount, adopted bool) (string, bool) {
 	broken := func(name string) (string, bool) {
 		s := res.Tools[name]
 		if s == nil || s.Errors == 0 || s.Errors < s.Calls {
@@ -672,16 +673,21 @@ func (e *Evaluator) toolBroken(res harness.Result, acct *SessionAccount) (string
 		}
 		return acct.Redact(msg), true
 	}
-	// the node's own servers, and the built-in under any name it has had:
-	// an evaluation an older node started under prologue and this one
-	// adopted reports that name, not tools.Builtin (tools.IsBuiltin)
+	// the node's own servers and, for an adopted session, the built-in
+	// under any name it has had: an evaluation an older node started
+	// under prologue reports that name, not tools.Builtin
+	// (tools.IsBuiltin, an alias read until 2026-10-28). A session this
+	// process started was rendered mesh-context, so a prologue in its
+	// result is a console tool: broken only if required, below.
 	names := map[string]bool{}
 	for name := range e.MCP {
 		names[name] = true
 	}
-	for name := range res.Tools {
-		if tools.IsBuiltin(name) {
-			names[name] = true
+	if adopted {
+		for name := range res.Tools {
+			if tools.IsBuiltin(name) {
+				names[name] = true
+			}
 		}
 	}
 	for _, name := range slices.Sorted(maps.Keys(names)) {

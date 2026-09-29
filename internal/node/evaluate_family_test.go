@@ -523,21 +523,48 @@ func TestSomeContextIsAVerdict(t *testing.T) {
 // name, prologue; adopted, its broken context is still no verdict
 // (tools.IsBuiltin, an alias read until 2026-10-28).
 func TestNoContextUnderTheOldNameIsNotAVerdict(t *testing.T) {
-	f, ev, claude, codex, _, logs := familyFixture(t, "normal", "sonnet", "VERDICT: FAIL", "VERDICT: PASS")
+	f, ev, _, codex, _, logs := familyFixture(t, "normal", "sonnet", "VERDICT: FAIL", "VERDICT: PASS")
 	ev.MCP = MeshContextMCP(f.URL(), "rs_test")
-	ev.CodexAccounts = (&Loop{Known: &KnownAccounts{}}).CodexCandidates
-	claude.tools = map[string]*harness.ToolStat{"prologue": {Calls: 2, Errors: 2, FirstError: "Auth required"}}
 	item, err := ev.GW.WorkItem(context.Background(), item1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := ev.Evaluate(context.Background(), *item); !errors.Is(err, ErrNoContext) {
-		t.Fatalf("Evaluate = %v, want ErrNoContext", err)
+	res, err := Resolve(context.Background(), ev.GW, *item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// adopted: no account and no second job, as AdoptEvaluation runs it
+	run := evalRun{item: *item, res: res, label: "ship-it/1", model: "sonnet", fam: family{model: "sonnet", claude: "sonnet"}, dir: t.TempDir()}
+	result := harness.Result{Text: "VERDICT: PASS", Tools: map[string]*harness.ToolStat{"prologue": {Calls: 2, Errors: 2, FirstError: "Auth required"}}}
+	if err := ev.afterEvaluate(context.Background(), run, result, nil); !errors.Is(err, ErrNoContext) {
+		t.Fatalf("afterEvaluate = %v, want ErrNoContext", err)
 	}
 	if codex.runs() != 0 || len(f.CallsNamed("evaluateWorkItem")) != 0 {
 		t.Fatalf("codex runs %d, verdicts %d", codex.runs(), len(f.CallsNamed("evaluateWorkItem")))
 	}
 	if !strings.Contains(logs.String(), "saw no context (prologue: Auth required); not a verdict") {
+		t.Fatalf("node.log:\n%s", logs.String())
+	}
+}
+
+// A session this node started was rendered mesh-context, so a prologue
+// in its result is an ordinary console tool, not the built-in's old
+// name: every call of it failing while mesh-context works leaves the
+// verdict standing (the alias, read until 2026-10-28, is for adopted
+// sessions only).
+func TestAConsoleToolNamedPrologueFailingIsNotNoContext(t *testing.T) {
+	f, ev, claude, codex, _, logs := familyFixture(t, "normal", "sonnet", "VERDICT: PASS", "VERDICT: FAIL")
+	ev.MCP = MeshContextMCP(f.URL(), "rs_test")
+	ev.CodexAccounts = (&Loop{Known: &KnownAccounts{}}).CodexCandidates
+	claude.tools = map[string]*harness.ToolStat{
+		"mesh-context": {Calls: 3},
+		"prologue":     {Calls: 2, Errors: 2, FirstError: "upstream down"},
+	}
+	in := evaluateItem1(t, f, ev)
+	if codex.runs() != 0 || len(claude.jobs) != 1 || in["passed"] != true {
+		t.Fatalf("runs claude %d codex %d, recorded %+v", len(claude.jobs), codex.runs(), in)
+	}
+	if strings.Contains(logs.String(), "saw no context") {
 		t.Fatalf("node.log:\n%s", logs.String())
 	}
 }

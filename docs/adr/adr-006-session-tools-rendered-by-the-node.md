@@ -152,7 +152,9 @@ alias until 2026-10-28, `prologue`: a session an older node started,
 attached the built-in under `prologue` and this node adopted (ADR 008)
 reports its calls under that name, and the node still reads them as
 the built-in's — `Evaluator.toolBroken` judges a `prologue` that
-errored on every call as no context, `SessionTools.UseNote` names it
+errored on every call as no context in an adopted evaluation only (a
+session this node started was rendered `mesh-context`, so a `prologue`
+in its result is a console tool, broken only when required), `SessionTools.UseNote` names it
 first, and the priced-usage accounting (`reportToolUsage`, over the
 rendered console tools only) never prices it. That adopted session is
 the only place the node reads the old name: node.yaml has no key
