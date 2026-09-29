@@ -3,7 +3,7 @@ title: Goal — A node.yaml the operator edits takes effect, and the node says s
 kind: plan
 status: running
 parent: prd
-summary: The mini's capacity 6 → 8 did take effect in the loop at 06:17:09Z (logged) but never reached the platform, because a fixed node on one account heartbeated no capacity and only registration sets NodeIndex.capacity; a fixed node now heartbeats `scaling {capacity, min, max, reason: fixed}` (mesh-cli ADR-018). Separately, the mini's 04:00:22Z exit with status=2/INVALIDARGUMENT on 2026-09-29 was a nil-pointer panic in the evaluator — a failed Codex preflight turned to Claude, Credentials.Open's error overwrote acct with nil, and the deferred acct.Cleanup() dereferenced it — now fixed, and a panic anywhere in the node is one `mesh node: fatal:` line and exit 70.
+summary: The mini's capacity 6 → 8 did take effect in the loop at 06:17:09Z (logged) but never reached the platform, because a fixed node on one account heartbeated no capacity and only registration sets NodeIndex.capacity; a fixed node now heartbeats `scaling {capacity, min, max, reason: fixed}` (mesh-cli ADR-018). Separately, the mini's 04:00:22Z exit with status=2/INVALIDARGUMENT on 2026-09-29 was a nil-pointer panic in the evaluator — a failed Codex preflight turned to Claude, Credentials.Open's error overwrote acct with nil, and the deferred acct.Cleanup() dereferenced it — now fixed, and a panic anywhere in the node is one `mesh node: fatal:` line and exit 70. node.log is bounded — the node writes and rotates it itself at 10 MB keeping 5, session text goes to sessions.log, and the service's output goes to the journal (or node.crash.log on macOS) (mesh-cli ADR-019).
 ---
 
 # Goal — A node.yaml the operator edits takes effect, and the node says so
