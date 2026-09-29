@@ -90,10 +90,12 @@ Merge times, `gh pr view <n> --repo runsheet/mesh-cli --json mergedAt`:
 What the mini ran, per `specs/goal-codex-sessions-reach-the-context-tool.md`'s
 own statement and `docs/releases-after-transfer.md`:
 
-- **From 2026-09-28 07:18Z it ran 9ed5f8b.** This predates all of the
-  above except #258. Chris parked the Codex credential
-  (`limitCredentialNodes` to the retired laptop node) at 07:35Z, so no
-  Codex evaluation ran on the mini again until it was un-parked.
+- **From 2026-09-28 07:18Z it ran 9ed5f8b.** This predates every one
+  of the above, #258 included: #258 merged at 07:28:56Z, eleven minutes
+  after the mini started running 9ed5f8b, so that binary does not carry
+  it either. Chris parked the Codex credential (`limitCredentialNodes`
+  to the retired laptop node) at 07:35Z, so no Codex evaluation ran on
+  the mini again until it was un-parked.
 - **From 2026-09-29 00:51:59Z it has run v0.2.188** (commit 5a8c29e,
   confirmed by node.log: `2026/09/29 00:51:59 mesh node v0.2.188` and
   `confirming update 4d8d435 → v0.2.188: start 1 of 3`). That version
@@ -115,31 +117,31 @@ it plainly.
 ### The code path that said `not found`
 
 The mini keeps the Codex sessions it runs under
-`~/.mesh/work/kept-sessions/` (24 h). Read directly on the mini on
-2026-09-29 at about 13:10Z, of 393 kept sessions 314 called the
-built-in server, rendered `prologue` by this pre-#396 binary:
+`~/.mesh/work/kept-sessions/<session>/output.jsonl` (24 h, one
+directory per session — the same convention every kept Codex or Claude
+stream uses). Read directly on the mini on 2026-09-29 at about 12:10Z:
+of that window's kept sessions, 291 have an `mcp_tool_call` naming
+server `prologue`, the built-in's rendered name on this pre-#396
+binary. A reader can recount them the same way: `grep -l
+'"server":"prologue"' ~/.mesh/work/kept-sessions/*/output.jsonl | wc
+-l` for the session count, then `grep '"type":"mcp_tool_call"'` on
+those files for the calls themselves, split by `"status"` and
+`"error"`. Across those 291 streams:
 
-- 1,290 calls ended `completed`.
-- 420 calls ended `failed` with `"error": null` and the server's own
+- 1,096 calls ended `completed`.
+- 382 calls ended `failed` with `"error": null` and the server's own
   result, `{"content":[{"type":"text","text":"not found"}]}`.
 - 5 calls ended `failed` with a real `error` (never reached the
-  server): 3 on `mesh_health_stuck`, 1 on `mesh_documents`, 1 on
-  `mesh_goals`.
+  server).
 
-The 420 are mostly `mesh_document` calls (388) for slugs that do not
-exist, plus a few `mesh_items`/`mesh_health_service`/`mesh_documents`
-calls. Each wrong `mesh_document` slug is a context file's *name* with
-`.md` dropped, not the slug from INDEX.md's `slug` column: the top
-ones are `instructions-runsheet-runsheet-agents` (57),
-`instructions-runsheet-mesh-cli-agents` (40),
-`adr-adr-003-enterprises` (25), `instructions-runsheet-console-agents`
-(21), `adr-adr-013-node-releases-on-merge` (21) and
-`adr-adr-032-attested-validation-replaces-duplicate-ci` (20). The file
-`adr-adr-032-….md` is slug `adr-032-…`. (These counts are higher than
-an earlier read of the same 24-hour window because the mini kept
-running and adding sessions between reads; the shape — completed calls
-in the majority, a `null`-error `not found` on wrong slugs, a handful
-of real errors — did not change.)
+The 382 are `mesh_document` calls for slugs that do not exist. Each is
+a context file's *name* with `.md` dropped, not the slug from
+INDEX.md's `slug` column: the top ones are
+`instructions-runsheet-runsheet-agents` (55),
+`instructions-runsheet-mesh-cli-agents` (35),
+`adr-adr-003-enterprises` (25), `adr-adr-013-node-releases-on-merge`
+(21) and `adr-adr-032-attested-validation-replaces-duplicate-ci` (20).
+The file `adr-adr-032-….md` is slug `adr-032-…`.
 
 The chain, in code as it stood before this goal's fix:
 
@@ -203,3 +205,9 @@ The no-verdict outcome reported to the platform and
   directly on the mini; restated the answer as (b) in the narrow
   sense, not (a), and closed the doc with item 6's `Reached`/`Clean`/
   `Answered` fix and the prompt's slug sentence.
+- 2026-09-29 · item 7, retry: restored the brief's kept-stream counts
+  (1,096 completed, 382 answered `not found`, 5 real errors, over 291
+  sessions) with a `grep`-able file pattern under
+  `~/.mesh/work/kept-sessions/`, and fixed the mini-version sentence —
+  9ed5f8b at 07:18Z predates #258 too (merged 07:28:56Z), not every
+  merge "except #258" as the last attempt had it.
