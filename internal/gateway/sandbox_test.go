@@ -15,10 +15,10 @@ func TestHeartbeatSandbox(t *testing.T) {
 	f, gw := registeredFake(t)
 	ctx := context.Background()
 	sb := &gateway.SandboxInfo{Mode: "on", Runtime: "podman 5.2.1", Image: "ghcr.io/runsheet/mesh-node:v1"}
-	if err := gw.HeartbeatNode(ctx, limitsNode, "v1", 1, gateway.HeartbeatExtras{Sandbox: sb, Reason: "sandbox limit: item x/1 killed by its memory limit (6g)"}); err != nil {
+	if _, err := gw.HeartbeatNode(ctx, limitsNode, "v1", 1, gateway.HeartbeatExtras{Sandbox: sb, Reason: "sandbox limit: item x/1 killed by its memory limit (6g)"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := gw.HeartbeatNode(ctx, limitsNode, "v1", 1, gateway.HeartbeatExtras{Sandbox: &gateway.SandboxInfo{Mode: "off"}}); err != nil {
+	if _, err := gw.HeartbeatNode(ctx, limitsNode, "v1", 1, gateway.HeartbeatExtras{Sandbox: &gateway.SandboxInfo{Mode: "off"}}); err != nil {
 		t.Fatal(err)
 	}
 	hb := f.CallsNamed("heartbeatNode")
@@ -39,7 +39,7 @@ func TestHeartbeatSandbox(t *testing.T) {
 		t.Fatalf("no reason, no key: %#v", hb[1].Input)
 	}
 	for _, x := range [][]gateway.HeartbeatExtras{nil, {{}}, {{Draining: true}}} {
-		if err := gw.HeartbeatNode(ctx, limitsNode, "v1", 0, x...); err != nil {
+		if _, err := gw.HeartbeatNode(ctx, limitsNode, "v1", 0, x...); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -326,7 +326,7 @@ func TestOldPlatformFallbackIsLoggedOnceAcrossARun(t *testing.T) {
 	}
 	gw := gateway.New(f.URL(), "rs_test")
 	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "test-node", NodeID: gateway.NodeID(mustUUID(orgID), "test-node").String(), Capacity: Fixed(len(items))}
-	if err := gw.RegisterNode(context.Background(), gateway.RegisterNodeInput{NodeID: cfg.NodeID, OrgID: orgID, OwnerID: f.UserID, Name: "n", Slug: "test-node", Harnesses: []string{"claude-code"}, Capacity: cfg.Capacity.Max, Version: "test"}); err != nil {
+	if _, err := gw.RegisterNode(context.Background(), gateway.RegisterNodeInput{NodeID: cfg.NodeID, OrgID: orgID, OwnerID: f.UserID, Name: "n", Slug: "test-node", Harnesses: []string{"claude-code"}, Capacity: cfg.Capacity.Max, Version: "test"}); err != nil {
 		t.Fatal(err)
 	}
 	var out syncBuf
@@ -1021,5 +1021,45 @@ func TestSandboxedRunRunsEachStepInThePod(t *testing.T) {
 	a, _ := atts[0].Input["attestation"].(map[string]any)
 	if a["runnerImage"] != "sha256:feedface" || a["sandboxed"] != true {
 		t.Fatalf("runnerImage = %v, sandboxed = %v", a["runnerImage"], a["sandboxed"])
+	}
+}
+
+// A build says what its context cost in one whole node.log line: the
+// bytes on disk under .mesh/context (INDEX.md among them), the document
+// files, and the indexed documents left to fetch (adr-016).
+func TestBuildLogsItsContextWritten(t *testing.T) {
+	h := &fakeHarness{}
+	f := seed(t)
+	// a skill is indexed, never on disk: one more document to fetch
+	f.Documents["acme/mesh"] = append(f.Documents["acme/mesh"], map[string]any{"slug": "review", "title": "Review", "kind": "skill", "repo": "acme/widgets", "path": "skills/review.md"})
+	r, ws, item, _ := runnerOnFake(t, f, h, nil)
+	var logs strings.Builder
+	r.Log = log.New(&logs, "", 0)
+	if err := r.RunItem(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	if len(ws.prepared) != 1 {
+		t.Fatalf("prepared: %+v", ws.prepared)
+	}
+	cdir := filepath.Join(ws.prepared[0].Dir(), ContextDir)
+	entries, err := os.ReadDir(cdir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bytes, files := 0, 0
+	for _, e := range entries {
+		st, err := os.Stat(filepath.Join(cdir, e.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		bytes += int(st.Size())
+		if e.Name() != IndexFile {
+			files++
+		}
+	}
+	fetch := len(f.Documents["acme/mesh"]) - files
+	want := fmt.Sprintf("item ship-it/1: context %d bytes in %d files, %d documents to fetch\n", bytes, files, fetch)
+	if bytes == 0 || files == 0 || fetch < 1 || strings.Count(logs.String(), ": context ") != 1 || !strings.Contains("\n"+logs.String(), "\n"+want) {
+		t.Fatalf("node.log lacks the line %q once:\n%s", want, logs.String())
 	}
 }

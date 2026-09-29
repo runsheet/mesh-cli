@@ -174,7 +174,7 @@ func TestRunnerReleasesALimitKill(t *testing.T) {
 	r, _, item, row := runnerOnFake(t, f, h, nil)
 	r.Declines = &Declines{}
 	gw := gateway.New(f.URL(), "rs_test")
-	_ = gw.RegisterNode(context.Background(), gateway.RegisterNodeInput{NodeID: r.Cfg.NodeID, OrgID: orgID, OwnerID: f.UserID, Name: "n", Slug: "n"})
+	_, _ = gw.RegisterNode(context.Background(), gateway.RegisterNodeInput{NodeID: r.Cfg.NodeID, OrgID: orgID, OwnerID: f.UserID, Name: "n", Slug: "n"})
 	loop := &Loop{GW: gw, Cfg: r.Cfg, Scopes: scopesOf(r.Cfg), Interval: time.Hour, Declines: r.Declines,
 		Sandbox: &gateway.SandboxInfo{Mode: "on", Runtime: "podman 5.2.1", Image: "ghcr.io/runsheet/mesh-node:v1"},
 		Dispatch: func(context.Context, gateway.WorkItem) {

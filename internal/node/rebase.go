@@ -128,10 +128,11 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 		r.logf("item %s: context unavailable: %v", label, err)
 		cx = &Context{}
 	}
-	files, err := WriteContext(dir, cx)
+	files, written, err := WriteContext(dir, cx)
 	if err != nil {
 		return fail(fmt.Errorf("write context: %w", err))
 	}
+	r.logf("item %s: %s", label, written.Line())
 	contextDir := ""
 	if len(files) > 0 || len(cx.Index) > 0 {
 		contextDir = ContextDir
@@ -174,6 +175,7 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 	if err != nil {
 		return fail(err)
 	}
+	acct.SetContextBytes(written.Bytes)
 	defer unlessDetached(ctx, acct.Cleanup)
 	acct.Apply(&job)
 	job.Meta = harness.SessionMeta{NodeID: sc.NodeID, ItemID: item.ID, GoalID: item.GoalID, Attempt: item.Attempts, TempDirs: sessionTempDirs(job, acct)}

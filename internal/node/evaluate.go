@@ -231,10 +231,11 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 		cx = &Context{}
 	}
 	AddLive(ctx, e.GW, cx, item.OrgID, res.Project.ID, e.logf)
-	files, err := WriteContext(dir, cx)
+	files, written, err := WriteContext(dir, cx)
 	if err != nil {
 		return fmt.Errorf("write context: %w", err)
 	}
+	e.logf("item %s: %s", label, written.Line())
 	contextDir := ""
 	if len(files) > 0 || len(cx.Index) > 0 || len(cx.Live) > 0 {
 		contextDir = ContextDir
@@ -319,6 +320,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 			return err
 		}
 	}
+	acct.SetContextBytes(written.Bytes)
 	if len(st.Use) > 0 {
 		e.logf("item %s: evaluate with tools %s", label, st.Names())
 	}
@@ -420,9 +422,9 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 	var passed bool
 	var notes string
 	cost := result.CostUSD
-	if blind, broken := e.toolBroken(result, acct, ev.adopted); broken {
+	if blind, what, broken := e.unreadable(result, acct, ev.adopted); broken {
 		other := ev.fam.other(e)
-		saw := fmt.Sprintf("evaluation on %s saw no context (%s); not a verdict", ev.fam.fullName(), blind)
+		saw := fmt.Sprintf("evaluation on %s %s; not a verdict", ev.fam.fullName(), what)
 		if why, ok := e.canRetry(ev, other); !ok {
 			reason := fmt.Sprintf("%s, and %s cannot evaluate it: %s", saw, other.name(), why)
 			return e.noVerdict(ctx, ev, reason, cost, usage, func() error { return e.blind(item.ID, "item "+label+": "+reason) })
@@ -612,7 +614,8 @@ type opinion struct {
 // secondOpinion runs the evaluation's job on the other family (on):
 // Codex after Claude, unless its account is paced or stopped; Claude
 // after Codex, on an account of its own. A session that errors, times
-// out, reaches no verdict or saw no context (toolBroken) is
+// out, reaches no verdict, saw no context (toolBroken) or ran in a
+// sandbox that blocked every command (Result.SandboxBroken) is
 // unavailable, and the first verdict stands. role names it in the job's
 // label and node.log: "second opinion", or "evaluation" for the one
 // that stands in for a session that saw no context.
@@ -674,6 +677,10 @@ func (e *Evaluator) secondOpinion(ctx context.Context, ev evalRun, on family, jo
 	case err != nil:
 		op.unavailable = truncate(acct.Redact(harness.Redact(err.Error(), job.Secrets...)), 300)
 	default:
+		if result.SandboxBroken != "" {
+			op.unavailable = "sandbox broken (" + acct.Redact(harness.Redact(result.SandboxBroken, job.Secrets...)) + ")"
+			break
+		}
 		if blind, broken := e.toolBroken(result, acct, false); broken {
 			op.unavailable = "saw no context (" + harness.Redact(blind, job.Secrets...) + ")"
 			break
@@ -694,10 +701,29 @@ func (e *Evaluator) secondOpinion(ctx context.Context, ev evalRun, on family, jo
 
 // ErrNoContext is an evaluation that saw no context — its built-in
 // context server, or a required console tool, never answered
-// (toolBroken) — and could not be evaluated on the other family either:
+// (toolBroken), or Codex's sandbox blocked every command it ran
+// (Result.SandboxBroken) — and could not be evaluated on the other
+// family either:
 // nothing is recorded, and the item waits in evaluating for a later tick
 // (ADR 011, a tool failure is never a verdict).
 var ErrNoContext = errors.New("the evaluation saw no context, and the other family could not evaluate it")
+
+// unreadable is why a session's text is no verdict whatever it says —
+// why, for the notes' `no verdict — <why>`, and what, for node.log's
+// `evaluation on <family> <what>` — or false when it may be read for
+// one: Codex's sandbox would not start, so every command it ran failed
+// (`sandbox: <the bwrap line>`, ADR 011 amendment 2026-09-29), or it saw
+// no context (toolBroken).
+func (e *Evaluator) unreadable(res harness.Result, acct *SessionAccount, adopted bool) (why, what string, ok bool) {
+	if res.SandboxBroken != "" {
+		why = "sandbox: " + truncate(acct.Redact(res.SandboxBroken), 200)
+		return why, "ran in a sandbox that blocked every command (" + why + ")", true
+	}
+	if blind, broken := e.toolBroken(res, acct, adopted); broken {
+		return blind, "saw no context (" + blind + ")", true
+	}
+	return "", "", false
+}
 
 // toolBroken names the tool a session could not use and its first
 // error, capped at 200 characters: a built-in server of the evaluator's

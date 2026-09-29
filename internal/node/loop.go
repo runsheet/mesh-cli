@@ -659,7 +659,7 @@ func (l *Loop) Tick(ctx context.Context) {
 	}
 	beat := false
 	for _, sc := range l.Scopes {
-		if err := l.GW.HeartbeatNode(ctx, sc.NodeID, l.Version, l.Running(), extras); err != nil {
+		if _, err := l.GW.HeartbeatNode(ctx, sc.NodeID, l.Version, l.Running(), extras); err != nil {
 			if l.confirmPending() {
 				l.confirmFailed(sc.Login, err)
 			} else {

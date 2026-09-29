@@ -1,5 +1,5 @@
 ---
-summary: Before an evaluation starts the node chooses its family per session — Codex when a Codex account (issued or node.yaml's) has headroom for the goal's priority, else Claude; a full gpt-… id pins Codex and waits in evaluating without headroom, a claude-… id pins Claude; the urgent/high second opinion runs on the other family, labelled by family and model; the one usage report names adapter codex and the gpt-6 model of a Codex evaluation; before any Codex session starts the node preflights the built-in context server in the session's own home and env (`codex mcp get` and a tools/list handshake), and a failure moves an unpinned evaluation to Claude, keeps a pinned one waiting and makes a Codex second opinion unavailable. Amended: an unpinned Codex evaluation defaults to gpt-6-sol (opus tier) or gpt-6-luna (sonnet, haiku), astra only when pinned; and a tool failure is never a verdict — a session that saw no context is evaluated again on the other family, or the item waits in evaluating. Amended 2026-09-29: an evaluation that reached no verdict — no VERDICT line, or no context and no other family — is recorded with evaluateWorkItem's outcome no_verdict and its reason, never a fail (a gateway without the field: it waits in evaluating, said once per run); a family blind on the first attempt is not asked for the second opinion.
+summary: Before an evaluation starts the node chooses its family per session — Codex when a Codex account (issued or node.yaml's) has headroom for the goal's priority, else Claude; a full gpt-… id pins Codex and waits in evaluating without headroom, a claude-… id pins Claude; the urgent/high second opinion runs on the other family, labelled by family and model; the one usage report names adapter codex and the gpt-6 model of a Codex evaluation; before any Codex session starts the node preflights the built-in context server in the session's own home and env (`codex mcp get` and a tools/list handshake), and a failure moves an unpinned evaluation to Claude, keeps a pinned one waiting and makes a Codex second opinion unavailable. Amended: an unpinned Codex evaluation defaults to gpt-6-sol (opus tier) or gpt-6-luna (sonnet, haiku), astra only when pinned; and a tool failure is never a verdict — a session that saw no context is evaluated again on the other family, or the item waits in evaluating. Amended 2026-09-29: an evaluation that reached no verdict — no VERDICT line, or no context and no other family — is recorded with evaluateWorkItem's outcome no_verdict and its reason, never a fail (a gateway without the field: it waits in evaluating, said once per run); a family blind on the first attempt is not asked for the second opinion; and the preflight probes Codex's sandbox (`codex sandbox -c sandbox_mode="workspace-write" -- true`, the session's own policy), and a Codex session whose every command bubblewrap refused (`Result.SandboxBroken`) is never a verdict either — every `bwrap:` text in the record came from a Codex session.
 status: accepted
 ---
 
@@ -277,3 +277,67 @@ could not run or reach its tools, and 10 more carry a `VERDICT: PASS`.
   notes say `<Family> second opinion unavailable: it saw no context on
   the first attempt (<tool>: <error>)`. That sentence of the earlier
   amendment is replaced by this one.
+
+## Amendment 2026-09-29: a sandbox that will not start is never a verdict
+
+Goal `evaluation-reports-no-verdict` (item 3). Codex runs on the host,
+not in the node's pod (mesh-specs ADR 007), under `codex exec --sandbox
+workspace-write`, whose sandbox is Codex's bundled bubblewrap. On the
+mini (Ubuntu, `kernel.apparmor_restrict_unprivileged_userns = 1`) it
+fails to set up its network namespace — `bwrap: loopback: Failed
+RTM_NEWADDR: Operation not permitted` — so every command the session
+runs is refused before it starts, the acceptance's `go test` or `npm
+test` never runs, and the turn still completes with a verdict the
+evaluator had no way to reach.
+
+**The record.** Of every evaluation in project runsheet/mesh read on
+2026-09-29 (`mesh_items`, all 52 goals), 34 carry `bwrap` in their
+notes, on 19 items of 6 goals, all on 2026-09-29. **Every one of those
+texts came from a Codex session (gpt-6-sol); none from Claude.** 28
+were Codex evaluations alone; in the other 6 Claude opus judged too
+(5 as the first evaluation with a Codex second opinion, 1 as the
+second opinion after Codex), and in each the bwrap text sits inside
+the Codex section of the notes. That is as expected: a Claude session
+runs in the node's Podman pod or plainly on the host and never uses
+bwrap. The record moves — items are replaced and their evaluations
+with them, and a later read counted 33 — but the finding does not: no
+`bwrap` text in it came from a Claude session.
+
+- **The probe joins the preflight.** `Codex.Preflight`, after the
+  context-server check (and for a job with no built-in too), runs
+  Codex's sandbox on a no-op under the session's own policy — `codex
+  sandbox -c sandbox_mode="workspace-write" -- true` (`harness.SandboxProbe`;
+  codex-cli 0.157 has no `sandbox linux` or `debug landlock`
+  subcommand, and `codex sandbox` alone defaults to read-only, so the
+  `sandbox_mode` override makes it the `workspace-write` that `codex
+  exec` runs) — in the session's workspace, its own
+  `CODEX_HOME` and the environment `Run` builds, within
+  `PreflightTimeout`. A `bwrap:` line on stderr or a non-zero exit fails
+  it: `sandbox: <first 200 characters>`. The preflight's semantics hold
+  unchanged: an unpinned evaluation moves to Claude (`Codex preflight
+  failed (sandbox: …); evaluating on Claude`, and in the notes), a
+  pinned one waits in evaluating said once for the item, a Codex second
+  opinion is `unavailable: preflight sandbox: …`.
+- **The stream says it too.** `ParseCodexStream` marks a completed
+  `command_execution` whose status is `failed` and whose aggregated
+  output carries `bwrap:`; when every command the session ran was
+  refused that way, `Result.SandboxBroken` is the first bwrap line
+  (capped at 300). One clean command leaves it empty.
+- **A sandbox-blocked session is never a verdict.** The evaluator treats
+  `SandboxBroken` exactly as a tool failure (`Evaluator.unreadable`,
+  ahead of `toolBroken`): its text is never read by `ParseVerdict`,
+  whatever `VERDICT:` it wrote; node.log says `evaluation on <family
+  model> ran in a sandbox that blocked every command (sandbox: <line>);
+  not a verdict`; the same job runs on the other family, the notes
+  opening `Codex (first attempt, <model>): no verdict — sandbox:
+  <line>`; with no other family it is recorded as no
+  verdict (case (c) of the amendment above; on a gateway without the
+  outcome nothing is recorded, `ErrNoContext`, and the item stays in
+  evaluating, said once). A Codex second opinion
+  with it is unavailable: `sandbox broken (<line>)`, and the first
+  verdict stands.
+- **The operator's fix** is in the README (`Codex on a node`, The
+  sandbox on Ubuntu): an AppArmor profile granting `userns` to the
+  `codex` binary on a root-owned path, or the host-wide sysctl, each
+  with what it costs in isolation. Until one is in place the probe
+  keeps Codex evaluations off the host.

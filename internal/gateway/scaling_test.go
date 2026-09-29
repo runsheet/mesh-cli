@@ -19,7 +19,7 @@ import (
 // range and the reason (adr-004).
 func TestHeartbeatCarriesScaling(t *testing.T) {
 	f, gw := registeredFake(t)
-	err := gw.HeartbeatNode(context.Background(), limitsNode, "v1", 2, gateway.HeartbeatExtras{
+	_, err := gw.HeartbeatNode(context.Background(), limitsNode, "v1", 2, gateway.HeartbeatExtras{
 		Scaling: &gateway.Scaling{Capacity: 3, Min: 1, Max: 4, Reason: "weekly pace"},
 	})
 	if err != nil {
@@ -51,7 +51,7 @@ func TestHeartbeatWithoutScalingOmitsIt(t *testing.T) {
 	f, gw := registeredFake(t)
 	ctx := context.Background()
 	for _, x := range [][]gateway.HeartbeatExtras{nil, {{}}, {{Draining: true}}} {
-		if err := gw.HeartbeatNode(ctx, limitsNode, "v1", 0, x...); err != nil {
+		if _, err := gw.HeartbeatNode(ctx, limitsNode, "v1", 0, x...); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -81,7 +81,7 @@ func TestHeartbeatCarriesAccountSlotsTheSchemaTakes(t *testing.T) {
 	gw.Now = func() time.Time { return now }
 	ctx := context.Background()
 	for range 2 {
-		if err := gw.HeartbeatNode(ctx, limitsNode, "v1", 4, gateway.HeartbeatExtras{Scaling: accountsScaling()}); err != nil {
+		if _, err := gw.HeartbeatNode(ctx, limitsNode, "v1", 4, gateway.HeartbeatExtras{Scaling: accountsScaling()}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -119,7 +119,7 @@ func TestHeartbeatCarriesAccountSlotsTheSchemaTakes(t *testing.T) {
 		t.Fatalf("schema probed %d times, want once", n)
 	}
 	now = now.Add(gateway.ScalingProbeEvery)
-	if err := gw.HeartbeatNode(ctx, limitsNode, "v1", 4, gateway.HeartbeatExtras{Scaling: accountsScaling()}); err != nil {
+	if _, err := gw.HeartbeatNode(ctx, limitsNode, "v1", 4, gateway.HeartbeatExtras{Scaling: accountsScaling()}); err != nil {
 		t.Fatal(err)
 	}
 	if n := len(f.ReadsNamed("__type")); n != 2 {
@@ -146,7 +146,7 @@ func TestHeartbeatOmitsScalingTheSchemaLacks(t *testing.T) {
 			gw.Now = func() time.Time { return now }
 			ctx := context.Background()
 			for range 2 {
-				if err := gw.HeartbeatNode(ctx, limitsNode, "v1", 1, gateway.HeartbeatExtras{Scaling: accountsScaling()}); err != nil {
+				if _, err := gw.HeartbeatNode(ctx, limitsNode, "v1", 1, gateway.HeartbeatExtras{Scaling: accountsScaling()}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -167,7 +167,7 @@ func TestHeartbeatOmitsScalingTheSchemaLacks(t *testing.T) {
 			delete(f.UnknownFields, "scaling")
 			delete(f.Unsupported, "__type")
 			now = now.Add(gateway.ScalingProbeEvery)
-			if err := gw.HeartbeatNode(ctx, limitsNode, "v1", 1, gateway.HeartbeatExtras{Scaling: accountsScaling()}); err != nil {
+			if _, err := gw.HeartbeatNode(ctx, limitsNode, "v1", 1, gateway.HeartbeatExtras{Scaling: accountsScaling()}); err != nil {
 				t.Fatal(err)
 			}
 			if hb := f.CallsNamed("heartbeatNode"); hb[len(hb)-1].Input["scaling"] == nil {
@@ -182,7 +182,7 @@ func TestHeartbeatOmitsScalingTheSchemaLacks(t *testing.T) {
 func TestHeartbeatScalingWithoutAccountsTheSchemaLacks(t *testing.T) {
 	f, gw := registeredFake(t)
 	f.UnknownFields["accounts"] = true
-	if err := gw.HeartbeatNode(context.Background(), limitsNode, "v1", 1, gateway.HeartbeatExtras{Scaling: accountsScaling()}); err != nil {
+	if _, err := gw.HeartbeatNode(context.Background(), limitsNode, "v1", 1, gateway.HeartbeatExtras{Scaling: accountsScaling()}); err != nil {
 		t.Fatal(err)
 	}
 	hb := f.CallsNamed("heartbeatNode")
@@ -211,16 +211,17 @@ func (b *bodies) RoundTrip(r *http.Request) (*http.Response, error) {
 	return b.next.RoundTrip(r)
 }
 
-// A fixed node on one account sends no scaling, so its heartbeat is the
-// request it always was, byte for byte, and the schema is never probed.
+// A fixed node on one account sends no scaling, so its heartbeat asks
+// only for status and the node answer, byte for byte, and the schema
+// is never probed for scaling.
 func TestHeartbeatOfAFixedNodeIsUnchanged(t *testing.T) {
 	f, gw := registeredFake(t)
 	rec := &bodies{next: http.DefaultTransport}
 	gw.HTTP = &http.Client{Transport: rec}
-	if err := gw.HeartbeatNode(context.Background(), limitsNode, "v1", 2, gateway.HeartbeatExtras{}); err != nil {
+	if _, err := gw.HeartbeatNode(context.Background(), limitsNode, "v1", 2, gateway.HeartbeatExtras{}); err != nil {
 		t.Fatal(err)
 	}
-	want := `{"query":"mutation($in: HeartbeatNodeInput!) { heartbeatNode(input: $in) { status } }","variables":{"in":{"aggregateId":"` + limitsNode + `","namespace":"runsheet","running":2,"version":"v1"}}}`
+	want := `{"query":"mutation($in: HeartbeatNodeInput!) { heartbeatNode(input: $in) { status nodeId owner { kind id name } scopes { orgId login slug accountId } } }","variables":{"in":{"aggregateId":"` + limitsNode + `","namespace":"runsheet","running":2,"version":"v1"}}}`
 	if len(rec.sent) != 1 || rec.sent[0] != want {
 		t.Fatalf("sent %q\nwant %q", rec.sent, want)
 	}
@@ -236,7 +237,7 @@ func TestHeartbeatOfAFixedNodeIsUnchanged(t *testing.T) {
 func TestScalingAccountsAreAlwaysAList(t *testing.T) {
 	f, gw := registeredFake(t)
 	sc := &gateway.Scaling{Capacity: 1, Min: 1, Max: 1, Reason: "fixed"}
-	if err := gw.HeartbeatNode(context.Background(), limitsNode, "v3", 0, gateway.HeartbeatExtras{Scaling: sc}); err != nil {
+	if _, err := gw.HeartbeatNode(context.Background(), limitsNode, "v3", 0, gateway.HeartbeatExtras{Scaling: sc}); err != nil {
 		t.Fatal(err)
 	}
 	hb := f.CallsNamed("heartbeatNode")
@@ -263,7 +264,7 @@ func TestHeartbeatCarriesCommitTheSchemaTakes(t *testing.T) {
 	gw.Now = func() time.Time { return now }
 	ctx := context.Background()
 	for _, c := range []string{"0895d40", "0895d40", ""} {
-		if err := gw.HeartbeatNode(ctx, limitsNode, "v0.2.188", 1, gateway.HeartbeatExtras{Commit: c}); err != nil {
+		if _, err := gw.HeartbeatNode(ctx, limitsNode, "v0.2.188", 1, gateway.HeartbeatExtras{Commit: c}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -299,7 +300,7 @@ func TestHeartbeatOmitsCommitTheSchemaLacks(t *testing.T) {
 			gw.Now = func() time.Time { return now }
 			ctx := context.Background()
 			for range 2 {
-				if err := gw.HeartbeatNode(ctx, limitsNode, "v0.2.188", 1, gateway.HeartbeatExtras{Commit: "0895d40"}); err != nil {
+				if _, err := gw.HeartbeatNode(ctx, limitsNode, "v0.2.188", 1, gateway.HeartbeatExtras{Commit: "0895d40"}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -320,7 +321,7 @@ func TestHeartbeatOmitsCommitTheSchemaLacks(t *testing.T) {
 			delete(f.UnknownFields, "commit")
 			delete(f.Unsupported, "__type")
 			now = now.Add(gateway.ScalingProbeEvery)
-			if err := gw.HeartbeatNode(ctx, limitsNode, "v0.2.188", 1, gateway.HeartbeatExtras{Commit: "0895d40"}); err != nil {
+			if _, err := gw.HeartbeatNode(ctx, limitsNode, "v0.2.188", 1, gateway.HeartbeatExtras{Commit: "0895d40"}); err != nil {
 				t.Fatal(err)
 			}
 			if hb := f.CallsNamed("heartbeatNode"); hb[len(hb)-1].Input["commit"] != "0895d40" {

@@ -128,8 +128,12 @@ func (p CodexPrice) Cost(u CodexUsage) float64 {
 // mcp__<server>__<tool>. turn.completed's usage is the thread's running
 // total, not the turn's own share: each turn's share is the delta from
 // the previous turn.completed, and Result.InputPerTurnMean and
-// InputPerTurnMax are computed across those shares. Lines that are not
-// JSON and unknown types are skipped.
+// InputPerTurnMax are computed across those shares. A completed
+// command_execution whose status is failed and whose output carries
+// `bwrap:` is one Codex's sandbox would not start; when every command
+// the session ran failed that way, SandboxBroken is the first such line
+// (capped at 300). Lines that are not JSON and unknown types are
+// skipped.
 func ParseCodexStream(r io.Reader, model string, onEvent func(CodexEvent)) Result {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 16<<20)
@@ -141,6 +145,8 @@ func ParseCodexStream(r io.Reader, model string, onEvent func(CodexEvent)) Resul
 	turnCount := 0
 	pending := map[string]time.Time{}
 	startupFailed := map[string]bool{}
+	commands, sandboxBlocked := 0, 0
+	sandboxLine := ""
 	startupError := func(msg string) {
 		for _, server := range mcpStartupServers(msg) {
 			if startupFailed[server] {
@@ -208,6 +214,15 @@ func ParseCodexStream(r io.Reader, model string, onEvent func(CodexEvent)) Resul
 					res.addToolResultSize(name, len(ev.Item.Result))
 				}
 			}
+			if ev.Item.Type == "command_execution" {
+				commands++
+				if line := bwrapLine(ev.Item.AggregatedOutput); line != "" && ev.Item.Status == "failed" {
+					sandboxBlocked++
+					if sandboxLine == "" {
+						sandboxLine = line
+					}
+				}
+			}
 			if ev.Item.Type == "error" {
 				startupError(ev.Item.Message)
 			}
@@ -263,7 +278,21 @@ func ParseCodexStream(r io.Reader, model string, onEvent func(CodexEvent)) Resul
 	}
 	res.Success = completed && !failed
 	res.EmptyOutput = events == 0
+	if commands > 0 && sandboxBlocked == commands {
+		res.SandboxBroken = capText(sandboxLine, 300)
+	}
 	return res
+}
+
+// bwrapLine is the first line of a command's output that bubblewrap
+// wrote, from its `bwrap:` on; "" when none did.
+func bwrapLine(out string) string {
+	for _, line := range strings.Split(out, "\n") {
+		if i := strings.Index(line, "bwrap:"); i >= 0 {
+			return strings.TrimSpace(line[i:])
+		}
+	}
+	return ""
 }
 
 // codexCallError is a failed mcp_tool_call's error text: its error's

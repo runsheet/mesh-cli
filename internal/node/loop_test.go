@@ -234,7 +234,7 @@ func TestLoopClaimsRunsAndFinishes(t *testing.T) {
 	f := seed(t)
 	gw := gateway.New(f.URL(), "rs_test")
 	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "test-node", NodeID: gateway.NodeID(mustUUID(orgID), "test-node").String(), Capacity: Fixed(2)}
-	if err := gw.RegisterNode(context.Background(), gateway.RegisterNodeInput{NodeID: cfg.NodeID, OrgID: orgID, OwnerID: f.UserID, Name: "n", Slug: "test-node", Harnesses: []string{"claude-code"}, Capacity: 2, Version: "test"}); err != nil {
+	if _, err := gw.RegisterNode(context.Background(), gateway.RegisterNodeInput{NodeID: cfg.NodeID, OrgID: orgID, OwnerID: f.UserID, Name: "n", Slug: "test-node", Harnesses: []string{"claude-code"}, Capacity: 2, Version: "test"}); err != nil {
 		t.Fatal(err)
 	}
 	ws := &fakeWS{root: t.TempDir()}
@@ -321,7 +321,7 @@ func TestLoopSkipsRefusedClaim(t *testing.T) {
 	f.Refuse["claimWorkItem"] = "item is claimed, not ready"
 	gw := gateway.New(f.URL(), "rs_test")
 	cfg := &Config{OrgLogin: "acme", OrgID: orgID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: Fixed(1)}
-	_ = gw.RegisterNode(context.Background(), gateway.RegisterNodeInput{NodeID: cfg.NodeID, OrgID: orgID, OwnerID: f.UserID, Name: "n", Slug: "n"})
+	_, _ = gw.RegisterNode(context.Background(), gateway.RegisterNodeInput{NodeID: cfg.NodeID, OrgID: orgID, OwnerID: f.UserID, Name: "n", Slug: "n"})
 	dispatched := 0
 	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Interval: time.Hour, Dispatch: func(context.Context, gateway.WorkItem) { dispatched++ }}
 	loop.Tick(context.Background())
@@ -525,7 +525,7 @@ func TestLoopServesEveryOrgOfItsOwner(t *testing.T) {
 	}
 
 	for _, sc := range scopes {
-		if err := gw.RegisterNode(ctx, gateway.RegisterNodeInput{NodeID: sc.NodeID, OrgID: sc.ID, OwnerID: f.UserID, Name: cfg.Name, Slug: cfg.Slug}); err != nil {
+		if _, err := gw.RegisterNode(ctx, gateway.RegisterNodeInput{NodeID: sc.NodeID, OrgID: sc.ID, OwnerID: f.UserID, Name: cfg.Name, Slug: cfg.Slug}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1079,7 +1079,7 @@ func (p *priorityFake) register() {
 	p.t.Helper()
 	gw := gateway.New(p.URL(), "rs_test")
 	for _, sc := range p.scopes {
-		if err := gw.RegisterNode(context.Background(), gateway.RegisterNodeInput{NodeID: sc.NodeID, OrgID: sc.ID, OwnerID: p.UserID, Name: "Box", Slug: "box"}); err != nil {
+		if _, err := gw.RegisterNode(context.Background(), gateway.RegisterNodeInput{NodeID: sc.NodeID, OrgID: sc.ID, OwnerID: p.UserID, Name: "Box", Slug: "box"}); err != nil {
 			p.t.Fatal(err)
 		}
 	}
@@ -1192,14 +1192,18 @@ func TestHeartbeatSendsExtrasOnlyWhenSet(t *testing.T) {
 	gw := gateway.New(p.URL(), "rs_test")
 	node := p.scopes[0].NodeID
 	ctx := context.Background()
-	calls := []error{
-		gw.HeartbeatNode(ctx, node, "v1", 0),
-		gw.HeartbeatNode(ctx, node, "v1", 0, gateway.HeartbeatExtras{}),
-		gw.HeartbeatNode(ctx, node, "v1", 1, gateway.HeartbeatExtras{Draining: true}),
-		gw.HeartbeatNode(ctx, node, "v1", 0, gateway.HeartbeatExtras{UpdateError: "signature does not match"}),
-		// the fake's HeartbeatNodeInput takes commit: sent when set
-		gw.HeartbeatNode(ctx, node, "v1", 0, gateway.HeartbeatExtras{Commit: "0895d40"}),
-	}
+	var calls []error
+	_, err := gw.HeartbeatNode(ctx, node, "v1", 0)
+	calls = append(calls, err)
+	_, err = gw.HeartbeatNode(ctx, node, "v1", 0, gateway.HeartbeatExtras{})
+	calls = append(calls, err)
+	_, err = gw.HeartbeatNode(ctx, node, "v1", 1, gateway.HeartbeatExtras{Draining: true})
+	calls = append(calls, err)
+	_, err = gw.HeartbeatNode(ctx, node, "v1", 0, gateway.HeartbeatExtras{UpdateError: "signature does not match"})
+	calls = append(calls, err)
+	// the fake's HeartbeatNodeInput takes commit: sent when set
+	_, err = gw.HeartbeatNode(ctx, node, "v1", 0, gateway.HeartbeatExtras{Commit: "0895d40"})
+	calls = append(calls, err)
 	for i, err := range calls {
 		if err != nil {
 			t.Fatalf("heartbeat %d: %v", i, err)
@@ -1208,7 +1212,7 @@ func TestHeartbeatSendsExtrasOnlyWhenSet(t *testing.T) {
 	// a platform whose HeartbeatNodeInput has no commit is sent none; a
 	// new client, since the schema's answer is kept for an hour
 	p.UnknownFields["commit"] = true
-	if err := gateway.New(p.URL(), "rs_test").HeartbeatNode(ctx, node, "v1", 0, gateway.HeartbeatExtras{Commit: "0895d40"}); err != nil {
+	if _, err := gateway.New(p.URL(), "rs_test").HeartbeatNode(ctx, node, "v1", 0, gateway.HeartbeatExtras{Commit: "0895d40"}); err != nil {
 		t.Fatalf("heartbeat without commit in the schema: %v", err)
 	}
 	hb := p.CallsNamed("heartbeatNode")
@@ -1324,7 +1328,7 @@ func TestDrainingLoopClaimsNothing(t *testing.T) {
 	p.addHeld(orgID, "g", "held-3", 3)
 	loop, logs := p.loop(4)
 	for _, sc := range p.scopes {
-		if err := loop.GW.(*gateway.Client).RegisterNode(context.Background(), gateway.RegisterNodeInput{NodeID: sc.NodeID, OrgID: sc.ID, Name: "Box", Slug: "box", Capacity: 4}); err != nil {
+		if _, err := loop.GW.(*gateway.Client).RegisterNode(context.Background(), gateway.RegisterNodeInput{NodeID: sc.NodeID, OrgID: sc.ID, Name: "Box", Slug: "box", Capacity: 4}); err != nil {
 			t.Fatal(err)
 		}
 	}

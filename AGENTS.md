@@ -369,7 +369,9 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   Claude account has any. Before any Codex session starts,
   `Evaluator.CodexPreflight` (`Codex.Preflight`: `codex mcp get
   mesh-context` and an MCP tools/list handshake in the session's own home
-  and env) must pass: a failure moves an unpinned evaluation to Claude
+  and env, then the sandbox probe `codex sandbox -c
+  sandbox_mode="workspace-write" -- true`, the session's own policy — a `bwrap:`
+  line or a non-zero exit is `sandbox: <why>`) must pass: a failure moves an unpinned evaluation to Claude
   (`Codex preflight failed (<why>); evaluating on Claude`), keeps a
   pinned one waiting like `ErrFamilyWaits`, and makes a Codex second
   opinion `unavailable: preflight …`. An item of an `urgent` or `high` goal whose
@@ -386,7 +388,9 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   goal never runs a second opinion. **A tool failure is never a
   verdict** (`toolBroken`): a session whose context server (or a
   required console tool) errored on every call, or never connected,
-  has its verdict discarded and the same job runs on the other family
+  — or, on Codex, every command of which bubblewrap refused
+  (`Result.SandboxBroken`, `sandbox: <bwrap line>`) — has its verdict
+  discarded and the same job runs on the other family
   as the evaluation proper, its notes opening `<Family> (first attempt,
   <model>): no verdict — <tool>: <error>`; with no other family it
   is **no verdict** (`Evaluator.noVerdict`, ADR-011's amendment
@@ -523,6 +527,12 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   read per session through the gateway (`AddLive`, adr-003 decision 3).
   A failed read leaves the documents only, with a warning; `.mesh` is
   excluded from git, so none of it is ever committed.
+  `WriteContext` returns what that cost (`ContextWritten`: bytes on
+  disk with INDEX.md, files, documents left to fetch); each session
+  logs it once (`<label>: context <n> bytes in <k> files, <m> documents
+  to fetch`) and its usage report carries `contextBytes`, dropped for a
+  platform without the field (`ErrNoContextUsage`, said once per run;
+  docs/adr/adr-016).
 - Costs: each session's `total_cost_usd` is reported to the platform per
   item (`ReportWorkItemProgress`, `EvaluateWorkItem`, `PlanGoal`).
   Priced tool calls are tool usage records: the harness counts each

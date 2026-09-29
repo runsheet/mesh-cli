@@ -103,6 +103,10 @@ type Fake struct {
 	// older than node-attests-its-validation whose UsageReportInput has
 	// no such field.
 	NoValidationUsage bool
+	// NoContextUsage refuses a `usage` report carrying `contextBytes`
+	// with "Unknown field", as a platform older than
+	// context-budget-that-holds (adr-016).
+	NoContextUsage bool
 	// NoToolError refuses a usage report whose `tools` entry carries
 	// `error`, and introspection answers the entry without it, as a
 	// platform older than the tool entry's error text.
@@ -157,6 +161,26 @@ type Fake struct {
 	// []}; Unsupported["scorecard"] refuses the field, as a platform
 	// older than it.
 	Scorecard map[string]map[string]any
+	// Answer is the NodeAnswer registerNode and heartbeatNode hand back
+	// on their payload beside status — the platform's answer to who owns
+	// the node and which orgs it now serves (runsheet goal
+	// a-node-has-an-owner). nil answers `status` alone, as a platform
+	// before that goal does.
+	Answer *gateway.NodeAnswer
+	// AnswerJSON, when set, is served verbatim as registerNode's and
+	// heartbeatNode's answer (nodeId, owner, scopes) in Answer's place —
+	// a contract fixture's own bytes, not the fake's re-encoding of them.
+	AnswerJSON json.RawMessage
+
+	requests int
+}
+
+// Requests is how many GraphQL requests the fake has been sent, refused
+// ones included.
+func (f *Fake) Requests() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.requests
 }
 
 // New starts a fake accepting the given bearer token.
@@ -258,6 +282,7 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 	q := strings.TrimSpace(req.Query)
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.requests++
 	switch {
 	case strings.HasPrefix(q, "mutation { signIn"):
 		writeData(w, map[string]any{"signIn": map[string]any{"id": f.UserID}})
@@ -282,6 +307,13 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 			fields = append(fields, map[string]any{"name": n})
 		}
 		writeData(w, map[string]any{"__type": map[string]any{"inputFields": fields}})
+	case strings.Contains(q, `__type(name: "RegisterNodeInput")`):
+		f.Reads = append(f.Reads, Call{Name: "__type RegisterNodeInput", Input: map[string]any{}})
+		if f.Unsupported["__type"] {
+			writeErrors(w, 200, "GraphQL introspection is not allowed")
+			return
+		}
+		writeData(w, map[string]any{"__type": f.registerNodeInputType()})
 	case strings.Contains(q, "__type("):
 		f.Reads = append(f.Reads, Call{Name: "__type", Input: map[string]any{}})
 		if f.Unsupported["__type"] {
@@ -322,6 +354,14 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 			writeErrors(w, 200, `Variable "$in" got invalid value; Unknown field "outcome" is not defined by type "EvaluateWorkItemInput".`)
 			return
 		}
+		// contextBytes is refused before the older fields, the order a
+		// fallback that took them one by one got wrong.
+		if usage, ok := in["usage"].(map[string]any); ok && f.NoContextUsage {
+			if _, ok := usage["contextBytes"]; ok {
+				writeErrors(w, 200, `Variable "$in" got invalid value; In field "usage": Unknown field "contextBytes" is not defined by type "UsageReportInput".`)
+				return
+			}
+		}
 		if usage, ok := in["usage"].(map[string]any); ok && f.NoUsageTools {
 			if _, ok := usage["tools"]; ok {
 				writeErrors(w, 200, `Variable "$in" got invalid value; In field "usage": In field "tools": Unknown field "tools" is not defined by type "UsageReportInput".`)
@@ -348,6 +388,12 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 		if field := f.unknownInput(in); field != "" {
 			typ := strings.ToUpper(m[2][:1]) + m[2][1:] + "Input"
 			writeErrors(w, 200, fmt.Sprintf(`Variable "$in" got invalid value; In field %q: is not defined by type %q.`, field, typ))
+			return
+		}
+		if f.UnknownFields["nodeAnswer"] && (m[2] == "registerNode" || m[2] == "heartbeatNode") && strings.Contains(q, "nodeId") {
+			// a platform before a-node-has-an-owner: its CommandResult has
+			// status alone, and the whole call is refused before it runs
+			writeErrors(w, 200, `Cannot query field "nodeId" on type "CommandResult".`)
 			return
 		}
 		if msg := f.Refuse[m[2]]; msg != "" {
@@ -383,7 +429,7 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 		if usage, ok := in["usage"].(map[string]any); ok && finishingMutations[m[2]] {
 			f.SessionUsage = append(f.SessionUsage, Call{Name: m[2], Input: copyRow(usage), At: time.Now()})
 		}
-		writeData(w, map[string]any{m[2]: map[string]any{"status": "ok"}})
+		writeData(w, map[string]any{m[2]: f.mutationPayload(m[2], q)})
 	default:
 		if m := scorecardRe.FindStringSubmatch(q); m != nil {
 			f.Reads = append(f.Reads, Call{Name: "scorecard", Input: map[string]any{"orgId": m[1]}})
@@ -520,6 +566,22 @@ func (f *Fake) heartbeatInputType() map[string]any {
 			row["type"] = map[string]any{"kind": "INPUT_OBJECT", "inputFields": sub}
 		}
 		fields = append(fields, row)
+	}
+	return map[string]any{"inputFields": fields}
+}
+
+// registerNodeInputType is RegisterNodeInput as introspection answers
+// it: every field a registration may carry, `owner` among them unless
+// UnknownFields["owner"] (a platform before
+// the-node-serves-its-owners-orgs). Unsupported["__type"] refuses the
+// probe.
+func (f *Fake) registerNodeInputType() map[string]any {
+	var fields []any
+	for _, name := range []string{"aggregateId", "namespace", "orgId", "ownerId", "name", "slug", "harnesses", "capacity", "version", "owner"} {
+		if f.UnknownFields[name] {
+			continue
+		}
+		fields = append(fields, map[string]any{"name": name, "type": map[string]any{"kind": "SCALAR"}})
 	}
 	return map[string]any{"inputFields": fields}
 }
@@ -667,6 +729,46 @@ func (f *Fake) unknownInput(in map[string]any) string {
 var finishingMutations = map[string]bool{
 	"finishWorkItem": true, "evaluateWorkItem": true, "planGoal": true,
 	"finishWorkItemRebase": true, "recordDirectionResearch": true,
+}
+
+// mutationPayload is what the fake answers a mutation's payload with:
+// {"status": "ok"} for any command, plus f.Answer's nodeId, owner and
+// scopes on registerNode and heartbeatNode (runsheet goal
+// a-node-has-an-owner) — nil leaves the payload at status alone, as a
+// platform before that goal does.
+//
+// Only what the query selects is answered, as GraphQL does: a payload
+// asked for `status` alone gets status alone.
+func (f *Fake) mutationPayload(name, q string) map[string]any {
+	payload := map[string]any{"status": "ok"}
+	if name != "registerNode" && name != "heartbeatNode" {
+		return payload
+	}
+	selected := func(field string) bool {
+		return strings.Contains(q, " "+field+" ") || strings.Contains(q, " "+field+"{")
+	}
+	if len(f.AnswerJSON) > 0 {
+		var raw map[string]any
+		if err := json.Unmarshal(f.AnswerJSON, &raw); err == nil {
+			for k, v := range raw {
+				if selected(k) {
+					payload[k] = v
+				}
+			}
+		}
+		return payload
+	}
+	if f.Answer == nil || !selected("nodeId") {
+		return payload
+	}
+	scopes := make([]map[string]any, len(f.Answer.Scopes))
+	for i, s := range f.Answer.Scopes {
+		scopes[i] = map[string]any{"orgId": s.OrgID, "login": s.Login, "slug": s.Slug, "accountId": s.AccountID}
+	}
+	payload["nodeId"] = f.Answer.NodeID
+	payload["owner"] = map[string]any{"kind": f.Answer.Owner.Kind, "id": f.Answer.Owner.ID, "name": f.Answer.Owner.Name}
+	payload["scopes"] = scopes
+	return payload
 }
 
 func (f *Fake) apply(name string, in map[string]any) error {
