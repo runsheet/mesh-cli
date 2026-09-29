@@ -23,6 +23,8 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"regexp"
@@ -117,13 +119,24 @@ type Unit interface {
 	Start(spec Spec) (Handle, error)
 	// Alive is whether the session's process is still running.
 	Alive(h Handle) bool
-	// Stop ends the session: SIGTERM to its process group, SIGKILL after
-	// a grace period.
+	// Stop is Kill without its report.
 	Stop(h Handle) error
+	// Kill ends the session's whole unit — SIGTERM, SIGKILL after
+	// StopGrace — waits for it to be gone and returns every process it
+	// found there besides the session's own pid: what the agent left
+	// running. A unit already gone is no error and no processes.
+	Kill(h Handle) (killed []Process, err error)
 }
 
-// StopGrace is how long Stop waits after SIGTERM before SIGKILL.
+// StopGrace is how long Kill waits after SIGTERM before SIGKILL.
 var StopGrace = 5 * time.Second
+
+// goneSlack is how much longer than StopGrace a scope's Kill waits for
+// the unit to be gone after its stop.
+var goneSlack = 3 * time.Second
+
+// pollEvery is how often Kill looks again.
+var pollEvery = 100 * time.Millisecond
 
 // Detached runs the session as a process in a session (setsid) and
 // process group of its own, so a signal to the node's group or the
@@ -146,7 +159,25 @@ func (Detached) Start(spec Spec) (Handle, error) {
 func (Detached) Alive(h Handle) bool { return !h.Exited() }
 
 // Stop implements Unit.
-func (Detached) Stop(h Handle) error { return stopGroup(h) }
+func (d Detached) Stop(h Handle) error {
+	_, err := d.Kill(h)
+	return err
+}
+
+// Kill implements Unit: the process group, its members besides the
+// session's pid listed first (from /proc, so on Linux only). The report
+// is returned only when the group is confirmed gone; a stop that fails
+// or leaves it standing is the error and no report.
+func (Detached) Kill(h Handle) ([]Process, error) {
+	if h.PID <= 0 {
+		return nil, errors.New("sessionunit: no pid")
+	}
+	killed := others(groupMembers(h.PID), h.PID)
+	if err := stopGroup(h); err != nil {
+		return nil, err
+	}
+	return killed, nil
+}
 
 // SystemdScope runs the session in a transient systemd user scope,
 // `systemd-run --user --scope --unit=mesh-session-<kind>-<subject>-<rand>
@@ -156,6 +187,16 @@ func (Detached) Stop(h Handle) error { return stopGroup(h) }
 type SystemdScope struct {
 	// SystemdRun is the systemd-run executable ("systemd-run" by default).
 	SystemdRun string
+	// Systemctl is how the scope is looked at and stopped; nil is
+	// HostSystemctl.
+	Systemctl Systemctl
+}
+
+func (s SystemdScope) systemctl() Systemctl {
+	if s.Systemctl == nil {
+		return HostSystemctl{}
+	}
+	return s.Systemctl
 }
 
 // Name implements Unit.
@@ -181,14 +222,107 @@ func (s SystemdScope) Start(spec Spec) (Handle, error) {
 // Alive implements Unit.
 func (SystemdScope) Alive(h Handle) bool { return !h.Exited() }
 
-// Stop implements Unit: the process group as Detached, then whatever of
-// the scope is left.
-func (SystemdScope) Stop(h Handle) error {
-	err := stopGroup(h)
-	if h.UnitName != "" && pidAlive(h.PID) {
-		_ = exec.Command("systemctl", "--user", "kill", "--signal=SIGKILL", h.UnitName+".scope").Run()
-	}
+// Stop implements Unit.
+func (s SystemdScope) Stop(h Handle) error {
+	_, err := s.Kill(h)
 	return err
+}
+
+// Kill implements Unit: the scope as a unit, not its leader. Its
+// cgroup (Show ControlGroup) and the processes in it are read first,
+// the cgroup gets SIGTERM, SIGKILL once StopGrace has passed with any
+// left, then `systemctl --user stop` (KillMode=control-group: every
+// process in it), and Kill waits for the unit to be gone (--collect
+// unloads it) for StopGrace and goneSlack. Every error on the way is
+// returned, and the report only once the unit is confirmed gone: a
+// manager that cannot be asked is an error, never proof of a stop. A
+// handle with no unit is stopped as Detached's.
+func (s SystemdScope) Kill(h Handle) ([]Process, error) {
+	if h.UnitName == "" {
+		return Detached{}.Kill(h)
+	}
+	sc, unit := s.systemctl(), h.UnitName+".scope"
+	gone, err := unitGone(sc, unit)
+	if err != nil {
+		return nil, err
+	}
+	if gone {
+		if h.PID > 0 && pidAlive(h.PID) {
+			return nil, stopGroup(h)
+		}
+		return nil, nil
+	}
+	props, err := sc.Show(unit, "ControlGroup")
+	if err != nil {
+		return nil, fmt.Errorf("sessionunit: %s: %w", unit, err)
+	}
+	cg := props["ControlGroup"]
+	procs, err := sc.Processes(cg)
+	if err != nil {
+		return nil, fmt.Errorf("sessionunit: %s: processes: %w", unit, err)
+	}
+	found := others(procs, h.PID)
+
+	var errs []error
+	// fail keeps every error of a signal or the stop; the manager saying
+	// the unit is not loaded is an answer (it was collected), not one.
+	fail := func(what string, err error) {
+		if err != nil && !errors.Is(err, ErrNotLoaded) {
+			errs = append(errs, fmt.Errorf("sessionunit: %s: %s: %w", unit, what, err))
+		}
+	}
+	left := func() bool {
+		p, err := sc.Processes(cg)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("sessionunit: %s: processes: %w", unit, err))
+			return true // unknown: SIGKILL anyway
+		}
+		return len(p) > 0
+	}
+	fail("SIGTERM", sc.Kill(unit, "SIGTERM"))
+	deadline := time.Now().Add(StopGrace)
+	more := left()
+	for more && time.Now().Before(deadline) && len(errs) == 0 {
+		time.Sleep(pollEvery)
+		more = left()
+	}
+	if more {
+		fail("SIGKILL", sc.Kill(unit, "SIGKILL"))
+	}
+	fail("stop", sc.Stop(unit))
+
+	deadline = time.Now().Add(StopGrace + goneSlack)
+	for {
+		gone, err := unitGone(sc, unit)
+		if err != nil {
+			return nil, errors.Join(append(errs, err)...)
+		}
+		if gone {
+			break
+		}
+		if !time.Now().Before(deadline) {
+			return nil, errors.Join(append(errs, fmt.Errorf("sessionunit: %s still loaded after stop", unit))...)
+		}
+		time.Sleep(pollEvery)
+	}
+	return found, errors.Join(errs...)
+}
+
+// unitGone is whether the manager no longer runs unit: it answers
+// LoadState=not-found, or ActiveState inactive or failed. A show that
+// fails is its error, not an answer — the unit may be running still.
+func unitGone(sc Systemctl, unit string) (bool, error) {
+	p, err := sc.Show(unit, "LoadState", "ActiveState")
+	if err != nil {
+		return false, fmt.Errorf("sessionunit: %s: %w", unit, err)
+	}
+	switch {
+	case p["LoadState"] == "not-found":
+		return true, nil
+	case p["ActiveState"] == "inactive", p["ActiveState"] == "failed":
+		return true, nil
+	}
+	return false, nil
 }
 
 var unitUnsafe = regexp.MustCompile(`[^A-Za-z0-9_.\-]+`)

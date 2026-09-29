@@ -31,9 +31,12 @@ func stopGroup(h Handle) error {
 	if err := p.Kill(); err != nil && pidAlive(h.PID) {
 		return fmt.Errorf("sessionunit: stop %d: %w", h.PID, err)
 	}
-	deadline := time.Now().Add(StopGrace)
+	deadline := time.Now().Add(StopGrace + goneSlack)
 	for time.Now().Before(deadline) && !h.Exited() {
 		time.Sleep(50 * time.Millisecond)
+	}
+	if !h.Exited() {
+		return fmt.Errorf("sessionunit: %d still there after kill", h.PID)
 	}
 	return nil
 }

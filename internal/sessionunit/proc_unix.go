@@ -19,24 +19,59 @@ func detach(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 }
 
+// signalGroup sends sig to the process group pid leads; tests replace it
+// to refuse a signal without reaching any process but their own.
+var signalGroup = func(pid int, sig syscall.Signal) error { return syscall.Kill(-pid, sig) }
+
 // stopGroup sends SIGTERM to the session's process group, and SIGKILL
-// when it is still there after StopGrace.
+// when the session or any of its group is still there after StopGrace,
+// then waits goneSlack for the group to be gone: a group still standing,
+// or a signal refused, is its error.
 func stopGroup(h Handle) error {
 	if h.PID <= 0 {
 		return errors.New("sessionunit: no pid")
 	}
-	if err := syscall.Kill(-h.PID, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
+	if err := signalGroup(h.PID, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
 		return fmt.Errorf("sessionunit: stop %d: %w", h.PID, err)
 	}
-	deadline := time.Now().Add(StopGrace)
-	for time.Now().Before(deadline) {
-		if h.Exited() {
-			return nil
+	if waitGroupGone(h, StopGrace) {
+		return nil
+	}
+	if err := signalGroup(h.PID, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+		return fmt.Errorf("sessionunit: kill %d: %w", h.PID, err)
+	}
+	if waitGroupGone(h, goneSlack) {
+		return nil
+	}
+	return fmt.Errorf("sessionunit: process group %d still there after SIGKILL", h.PID)
+}
+
+// waitGroupGone waits up to d for the session and its group to be gone.
+func waitGroupGone(h Handle, d time.Duration) bool {
+	deadline := time.Now().Add(d)
+	for {
+		if groupGone(h) {
+			return true
+		}
+		if !time.Now().Before(deadline) {
+			return false
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	_ = syscall.Kill(-h.PID, syscall.SIGKILL)
-	return nil
+}
+
+// groupGone is whether the session has exited and no live process is
+// left in its group. Where there is /proc its zombies do not count (an
+// adopted session's parent is the node, which never reaps it); without
+// one the group must be empty to kill(2).
+func groupGone(h Handle) bool {
+	if !h.Exited() {
+		return false
+	}
+	if _, err := os.Stat("/proc/self/stat"); err == nil {
+		return len(groupMembers(h.PID)) == 0
+	}
+	return errors.Is(syscall.Kill(-h.PID, 0), syscall.ESRCH)
 }
 
 // pidAlive is whether pid is a running process (not a zombie).
