@@ -94,5 +94,10 @@ scp mesh-linux mini:bin/mesh.new
 ssh mini 'mesh node upgrade --binary ~/bin/mesh.new'
 ```
 
-This is the fallback, not the way: sessions are adopted across the
-restart either way, but the ordinary path is the merge above.
+This is the fallback, not the way: `mesh node upgrade --binary` swaps
+the binary and restarts without a drain, so host sessions are adopted
+by the new process — the same as a platform-driven self-update.
+`mesh node update <tag>` above, used to take a signed release by hand,
+is the draining variant instead: it waits for the node's sessions to
+end before it swaps, so nothing is adopted there. Either way, the
+ordinary path is the merge above.
