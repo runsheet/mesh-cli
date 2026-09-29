@@ -190,6 +190,13 @@ type Loop struct {
 	// waiting counts, by kind, the work this tick left unclaimed because
 	// no account had headroom for it: logged once at the tick's end.
 	waiting map[string]int
+	// unclaimed is the ready work this pass left for headroom, one entry
+	// per goal and kind (passOver), folded into holding at the tick's
+	// end. Tick alone touches it.
+	unclaimed []Unclaimed
+	// holding is the last pass's holding report (HoldingReport), which
+	// the next tick's heartbeat carries; nil before the first pass.
+	holding *gateway.Holding
 	// tickGoals holds each org's goals as read this tick, so the claim,
 	// the planner and the director share one GoalIndex read per org.
 	tickGoals map[string]goalsRead
@@ -341,6 +348,9 @@ func (l *Loop) claimReady(ctx context.Context, free, normalFree, maxRank int) {
 		for _, it := range items {
 			if r := rank(it.GoalID); r <= maxRank {
 				ready = append(ready, readyItem{item: it, scope: sc, rank: r})
+			} else {
+				// only a ranged node at its min ranks past low
+				l.passOver(it.GoalID, "item", priorityName(r), fmt.Sprintf("the node is at its min of %d slot(s) for headroom and builds only urgent and high goals there", l.Capacity()))
 			}
 		}
 	}
@@ -361,10 +371,12 @@ func (l *Loop) claimReady(ctx context.Context, free, normalFree, maxRank int) {
 		}
 		pressing := r.rank <= gateway.PriorityRank("high")
 		if !pressing && normalFree <= 0 {
+			l.passOver(item.GoalID, "item", priorityName(r.rank), "the free slots are the urgent-only reserve at the end of an api key's day")
 			continue
 		}
 		actx, ok := l.accountFor(ctx, priorityName(r.rank), true, "item")
 		if !ok {
+			l.passOver(item.GoalID, "item", priorityName(r.rank), "")
 			continue
 		}
 		if err := l.GW.ClaimWorkItem(ctx, item.ID, sc.NodeID, l.Harness); err != nil {
@@ -628,7 +640,10 @@ func (l *Loop) Tick(ctx context.Context) {
 	l.probe()
 	l.scale()
 	runtimes, adapters := l.Runtimes()
-	extras := gateway.HeartbeatExtras{Draining: l.Draining(), UpdateError: l.UpdateError(), Limits: l.limitsStore().Heartbeat(), Runtimes: runtimes, Adapters: adapters, Sandbox: l.Sandbox, Reason: l.Condition(), Adopted: l.Adopted()}
+	// the heartbeat goes out before this tick's pass, so its holding is
+	// the last pass's decision (nil before the first; a draining node,
+	// which makes no pass, keeps sending its last one unchanged)
+	extras := gateway.HeartbeatExtras{Draining: l.Draining(), UpdateError: l.UpdateError(), Limits: l.limitsStore().Heartbeat(), Runtimes: runtimes, Adapters: adapters, Sandbox: l.Sandbox, Reason: l.Condition(), Adopted: l.Adopted(), Holding: l.Holding()}
 	scaling, ranged := l.Scaling()
 	extras.Scaling = l.heartbeatScaling(scaling, ranged)
 	if l.Scaled != nil {
@@ -655,6 +670,7 @@ func (l *Loop) Tick(ctx context.Context) {
 		// every start below first picks its account (accountFor): one
 		// with no account to run on is left for a later tick
 		l.waiting = map[string]int{}
+		l.unclaimed = nil
 		l.evaluateHeld(ctx)
 		l.rebaseRequested(ctx)
 		l.planRequested(ctx)
@@ -675,6 +691,13 @@ func (l *Loop) Tick(ctx context.Context) {
 			l.claimReady(ctx, free, normalFree, claimRank)
 		}
 		l.logWaiting()
+		// with no accounts configured this is the operator's own login,
+		// one implicit account: normal, and unknown until a reading
+		accounts, readings := l.accounts()
+		h := HoldingReport(l.now(), accounts, readings, l.Thresholds(), l.Capacity(), p, l.unclaimed)
+		l.mu.Lock()
+		l.holding = &h
+		l.mu.Unlock()
 	}
 	if l.AfterTick != nil {
 		l.AfterTick(ctx)
@@ -920,6 +943,30 @@ func (l *Loop) withAccount(ctx context.Context, what, priority string, choose fu
 	// an issued account rides ctx for its label alone (runsOn, the
 	// heartbeat's slots): OpenAccount never opens one it does not hold
 	return WithAccount(ctx, a), true
+}
+
+// passOver records that this pass left a goal's ready work (kind "item"
+// or "plan") for headroom: one entry per goal and kind, counting its
+// items, with the reason heldReason gives the first — held, or with
+// none every account's standing.
+func (l *Loop) passOver(goalID, kind, priority, held string) {
+	for i := range l.unclaimed {
+		if u := &l.unclaimed[i]; u.GoalID == goalID && u.Kind == kind {
+			u.Count++
+			return
+		}
+	}
+	accounts, readings := l.accounts()
+	rows := holdingAccounts(l.now(), accounts, readings, l.Thresholds(), l.Capacity())
+	l.unclaimed = append(l.unclaimed, Unclaimed{GoalID: goalID, Kind: kind, Count: 1, Reason: heldReason(priority, held, rows)})
+}
+
+// Holding is the last pass's holding report, which the next heartbeat
+// carries; nil before the first pass.
+func (l *Loop) Holding() *gateway.Holding {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.holding
 }
 
 // logWaiting says once per tick what waits for an account with
@@ -1222,6 +1269,7 @@ func (l *Loop) planRequested(ctx context.Context) {
 		l.mu.Unlock()
 		actx, ok := l.accountFor(ctx, priorityName(gateway.PriorityRank(g.Priority)), true, "plan")
 		if !ok {
+			l.passOver(g.ID, "plan", priorityName(gateway.PriorityRank(g.Priority)), "")
 			continue
 		}
 		l.mu.Lock()

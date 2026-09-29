@@ -488,7 +488,30 @@ pass appends `"; k item(s) and m plan(s) left unclaimed"`.
 
 This item (1 of the goal) is the report as data, exercised without a
 loop or a platform; item 2 wires the loop's own unclaimed accounting
-(`Unclaimed{GoalID, Kind, Count, Reason}`) and the heartbeat call. The
+(`Unclaimed{GoalID, Kind, Count, Reason}`) and the heartbeat call.
+
+What counts as passed over (item 2): ready work the pass left for
+headroom, never for capacity, a claim refused or a runtime missing —
+in `claimReady` an item no account has headroom for
+(`accountFor` false), a normal or low item skipped because the only
+free slots are the urgent-only reserve at the end of an api key's day,
+and an item of a normal or low goal a ranged node at its min does not
+build; in `planRequested` a goal in planning no account has headroom
+for (kind `plan`). `Loop.passOver` keeps one `Unclaimed` per goal and
+kind per pass, its `count` the items, and one sentence of reason from
+`heldReason`: the goal's priority, what held it (the reserve, the
+min), else each account's standing from its row of the report
+(`holdingAccounts`) — e.g. `normal priority; only urgent and high
+while paced (mesh - max20 until 2026-09-28T18:00:00Z); claude -
+shhemail exhausted until 2026-10-03T03:00:00Z`. At the end of the pass
+`Tick` builds `HoldingReport` and keeps it (`Loop.Holding`); since the
+heartbeat goes out *before* the pass, each heartbeat carries the last
+pass's report (none before the first). A draining node makes no pass
+and sends its last report unchanged. A node with no accounts is the
+operator's own login, one implicit account: its report is sent, not
+nil — mode `normal`, the account `unknown` until a reading (item 1's
+tests take it). The log lines `limits: paced …` and `accounts: no
+account has headroom …` stay as they were. The
 platform half is runsheet goal `goals-page-shows-account-limits`, with
 the contract fixture `specs/contracts/heartbeatNode.json` (runsheet
 ADR 026).
