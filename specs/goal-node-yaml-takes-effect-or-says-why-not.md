@@ -183,23 +183,36 @@ goal found and landed.
 
 **Before the fix.** `NodeIndex(mini)` from the platform, 2026-09-29
 13:30:02Z (Root cause, above): `capacity: 6, running: 4, lastSeenAt
-13:30:02Z, version v0.2.188`. `~/.mesh/node.yaml`'s own mtime on the
-mini, from the operator's pre-edit backups (Root cause, above):
-`node.yaml.bak-20260929-061520` at `2026-09-29 06:15:20.510041847
-+0000` holds the old `capacity: 6`. The whole node.log line the loop
-wrote the moment it applied `capacity: 8`:
+13:30:02Z, version v0.2.188`. **`stat -c %y ~/.mesh/node.yaml` on the
+mini itself is not obtainable this session**: this session has no
+shell on the mini (`ssh mini` refuses this session's key, tried again
+while writing this section, and confirmed once more below in `##
+node.log`), and no earlier session of this goal ran `stat` on the live
+file either — only on the operator's own pre-edit backups (Root cause,
+above). The closest evidence is those backups, each timestamped just
+before an edit: `node.yaml.bak-20260929-061520` at `2026-09-29
+06:15:20.510041847 +0000` still holds `capacity: 6`, and the loop
+logged `capacity 6 → 8` at 06:17:09 — about 109 seconds later — so the
+live file's own mtime at that moment sits somewhere in that window, not
+at the 06:15:20 the backup shows (which is the moment *before* the
+edit, taken by whatever made the backup, not the edited file's own
+mtime). The whole node.log line the loop wrote the moment it applied
+`capacity: 8`:
 
 ```
 mesh node: 2026/09/29 06:17:09 capacity 6 → 8
 ```
 
+A live `stat -c %y ~/.mesh/node.yaml` reading is owed from a session
+with shell access to the mini.
+
 **After: the mini has not yet run a release carrying the fix.** Queried
 live this session, `mesh_health_nodes(org: runsheet)`, 2026-09-29
-23:26:37Z:
+23:39:53Z:
 
 ```
 mini: version v0.2.191, desired_version v0.2.191, capacity: 8,
-running: 4, last_seen_at: 2026-09-29T23:26:37Z,
+running: 4, last_seen_at: 2026-09-29T23:39:53Z,
 commits_behind_main: 21, oldest_unrun_merged_at: 2026-09-29T14:28:15Z
 ```
 
@@ -396,7 +409,7 @@ item 4, the journal after — found as above by `^panic:`.
 
 ## node.log
 
-Item 4 (ADR-018, `internal/node/logfile.go`).
+Item 4 (ADR-019, `internal/node/logfile.go`).
 
 **The limit.** `mesh node start` opens `~/.mesh/node.log` itself and
 rotates it at **10 MB**, keeping **5** rotated files (`node.log.1` …
@@ -426,6 +439,12 @@ lands in whichever `node.log.N` systemd's descriptor has followed.
 cap: `node.log.1` exists at 1000 bytes, node.log at 100; far past it,
 node.log stays under the cap and exactly 3 rotated files are kept),
 `TestRotatingFileRotatesAnOversizedLogOnOpen`,
+`TestRotatingFileOpenFailsWhenAnOversizedLogCannotRotate` (a 5000-byte
+node.log over a 1000-byte cap with `node.log.1` a directory: the open
+returns `log <path>: rotate on open (5000 bytes, cap 1000): …` and leaves
+the file whole — the first attempt's evaluator found it panicked there,
+dereferencing the file `rotate` had already closed, the path the mini's
+oversized log takes on its first start),
 `TestRotatingFileCutsAWriteLargerThanTheCap` (a 5000-byte write to a
 1000-byte cap leaves node.log at exactly 1000 bytes ending in the cut
 line, the earlier line in `node.log.1`),
@@ -454,24 +473,30 @@ reaches after an hour of work on the mini is owed once the mini runs a
 release carrying this and its unit is reinstalled.
 
 **On the mini.** The mini has not yet run a release carrying this
-item: it is on v0.2.191 (`mesh_health_nodes`, 2026-09-29T23:26:37Z,
-this session), 21 commits behind main; the first release with the
-rotation is v0.2.207 (`## The mini before and after`, above). Its unit
-is the one whose `journalctl` excerpt above shows appending stderr to
-node.log, so node.log is still unbounded there — the last size on
-record is 372 MB (`## Root cause`, evidence from the mini, ~21:45Z; the
-goal's own Statement read it at 339 MB earlier the same day, so it grew
-by about 33 MB across roughly eight hours of the mini's ordinary work).
-This session has no shell on the mini (its `ssh mini` refuses this
-session's key) and, per this item's instruction, did not restart or
-reinstall its unit to get a fresh reading. The operator owes two steps,
-in order, once ready: upgrade the mini past v0.2.207 (the release path,
-or by hand with `mesh node upgrade --binary`), then run `mesh node
-service install` again so the unit's `StandardOutput`/`StandardError`
-drop the `append:~/.mesh/node.log` redirect for `journal` — rotation
-runs regardless of the unit, but the stale redirect keeps the shell
+item: it is on v0.2.191 (`mesh_health_nodes`, confirmed again this
+session at 23:39:53Z), 21 commits behind main; the first release with
+the rotation is v0.2.207 (`## The mini before and after`, above). This
+session has no shell on the mini (`ssh mini` refuses this session's
+key, tried again while writing this section) and, per this item's
+instruction, did not restart or reinstall its unit to get a fresh
+reading — but item 7's own build session did have one, at 2026-09-29
+22:25Z, and read rather than changed it: `mesh v0.2.191 (commit
+8eba662)`, which does not carry this; `io.projectmesh.mesh-node.service`
+still has `StandardOutput=append:/home/chris/.mesh/node.log` and the
+same for `StandardError`; `~/.mesh/node.log` is **373,995,651 bytes,
+6,548,269 lines** (339 MB when the goal was set, so about 35 MB in the
+roughly 18 hours since), 1,239 of them channel `session:` text, and no
+`sessions.log` exists — the unit still has the append redirect, so
+node.log is still unbounded there regardless of the rotation code
+being on main. The operator owes two steps, in order, once ready:
+upgrade the mini past v0.2.207 (the release path, or by hand with
+`mesh node upgrade --binary`), then run `mesh node service install`
+again so the unit's `StandardOutput`/`StandardError` drop the
+`append:~/.mesh/node.log` redirect for `journal` — rotation runs
+regardless of the unit, but the stale redirect keeps the shell
 appending the same growing file underneath it until the unit is
-reinstalled.
+reinstalled. node.log's and sessions.log's sizes after an hour of real
+work on the mini are owed once both steps are done.
 
 ## What closed
 
@@ -520,3 +545,9 @@ reasoning.
 | 7 | node.log bounded and rotated; session transcripts to their own file | #495, carried onto main as #503 |
 | 8 | Every reloadable field — limits, accounts, budgets, context, claim, orgs — proved live from disk and logged with its effective old and new value | #504 |
 | 9 | A reload that cannot be applied logs one `reload config:` line per tick and keeps the last good values | #502 |
+
+**The ADR note.** PR #495's two commits (item 7) were cherry-picked onto
+main after #493 without a conflict — branch 4 already sat on #493's
+merge, so `crash.Guard`'s wiring in `nodecmd.go` and the exit section
+above are kept. The ADR is **ADR-019**, not 018: PR #494 (item 6's
+carry) claims `adr-018-a-fixed-node-heartbeats-its-capacity`.

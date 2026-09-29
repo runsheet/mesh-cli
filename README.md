@@ -504,7 +504,7 @@ SIGHUP does the same and execs the binary again at once.
 
 ### node.log: bounded and rotated
 
-([ADR-018](docs/adr/adr-018-the-node-writes-its-own-log.md))
+([ADR-019](docs/adr/adr-019-the-node-writes-its-own-log.md))
 
 `mesh node start` writes its own log, `~/.mesh/node.log`, and rotates
 it: at **10 MB** it becomes `node.log.1` (the older ones shift to

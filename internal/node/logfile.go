@@ -89,8 +89,11 @@ func OpenRotating(path string, maxBytes int64, keep int) (*RotatingFile, error) 
 	}
 	if r.size >= maxBytes {
 		if err := r.rotate(); err != nil {
-			r.f.Close()
-			return nil, err
+			// rotate closed the file before the rename that failed
+			if r.f != nil {
+				r.f.Close()
+			}
+			return nil, fmt.Errorf("log %s: rotate on open (%d bytes, cap %d): %w", path, r.size, maxBytes, err)
 		}
 	}
 	return r, nil

@@ -133,9 +133,29 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   still takes on it, and the summary judgement (`HoldingReport`,
   adr-005's amendment, for runsheet goal `node-says-why-work-waits`) —
   are sent only when set,
-  because they are fields the platform half adds. Capacity, the
-  limits thresholds and the orgs need no drain: `Reload` re-reads them
-  every tick.
+  because they are fields the platform half adds. No reloadable field
+  needs a drain: `Reload` (`Reloader` over `LoadConfig`) re-reads
+  node.yaml every tick and the next tick runs on it — the capacity
+  (`capacity N → M`, a range's clamp), the limits thresholds (`limits:
+  pace five-hour a → b, stop c → d`), the accounts (`accounts a, b → a,
+  c` for membership, and one `account <label>: <field> <old> → <new>,
+  …` line per account kept whose kind, token_file, api_key_env,
+  daily_cap, monthly_cap — as in force for its kind, an api key's defaults applied and a subscription's none — or project
+  changed), the session budgets and project budgets (`budget
+  <kind>/<tier> $4.00 → $7.00`, `project budget <project> none →
+  $20.00`, the effective figures with defaults applied), the context
+  budget (`context: bytes_max … → …, doc_bytes_max … → …`), the claim
+  limit (`claim: unmerged_per_repo … → …`) and the orgs restriction
+  (`orgs a, b → a`). Each change is logged once, at the tick it takes
+  effect, with its old and new value; a field left alone logs nothing
+  (`reload_fields_test.go`, a test per field from disk).
+  A reload that cannot be applied — a node.yaml that does
+  not parse, a failing `MyOrgs`, no org left to serve — logs one
+  `reload config: <reason>; <reason>` line per tick while it lasts (the
+  reasons joined with `; `, a cause's own newlines folded in, so it is
+  one physical line) and keeps the last good values: a bad node.yaml
+  keeps the capacity, limits, accounts, context and claim limits, a
+  failed `MyOrgs` keeps the orgs and still applies a good node.yaml.
 - **Adoption** (`internal/node/adopt.go`, mesh-cli ADR-009, mesh-specs
   ADR 008): a session's unit and output file own it, not the node
   process. Build, evaluate, plan, research and rebase jobs are
