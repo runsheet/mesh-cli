@@ -312,7 +312,12 @@ func readyTime(it gateway.WorkItem) (t time.Time, ok bool) {
 //     evaluation), so a retry at the bound keeps its old place behind
 //     fresh work; within the finish-first class this step does not
 //     apply;
-//  4. then the older ReadyAt first, when both items carry one;
+//  4. then the older ReadyAt first; an item with no ReadyAt (an older
+//     platform) or one that does not parse goes after every item that
+//     has one, as if ready now. Comparing times only when both have one
+//     and seq otherwise would not be transitive (older A seq 3 < newer
+//     B seq 1 < timeless C seq 2 < A), and a sort needs a strict weak
+//     order, so the key is (has a time, the time, seq);
 //  5. then seq.
 //
 // The sort is stable, so full ties keep the order the orgs were listed in.
@@ -330,7 +335,10 @@ func claimOrder(items []readyItem) {
 		}
 		ta, oka := readyTime(a.item)
 		tb, okb := readyTime(b.item)
-		if oka && okb && !ta.Equal(tb) {
+		if oka != okb {
+			return oka
+		}
+		if oka && !ta.Equal(tb) {
 			return ta.Before(tb)
 		}
 		return a.item.Seq < b.item.Seq

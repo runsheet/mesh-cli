@@ -76,11 +76,17 @@ The node claims ready items from every org it serves in this order:
    step does not apply — a rework retry, a rebase and a re-evaluation are
    one class.
 5. **Ready longest.** Within the step's class, the item with the older
-   `readyAt` goes first, when both carry one. The platform serves a
-   `Time` as RFC 3339 with however many fractional digits it has, which
-   does not sort as a string, so the node parses both and compares the
-   times. An item with no `readyAt` (an older platform) or one that does
-   not parse falls to seq against the rest.
+   `readyAt` goes first. The platform serves a `Time` as RFC 3339 with
+   however many fractional digits it has, which does not sort as a
+   string, so the node parses both and compares the times. An item with
+   no `readyAt` (an older platform) or one that does not parse goes
+   after every item of its class that has one — as if it became ready
+   now — and among themselves such items go by seq. The key is
+   (has a time, the time, seq). Comparing times only when both items
+   carry one and seq otherwise was the first version and is not an
+   order: older A (seq 3) before newer B (seq 1), B before timeless C
+   (seq 2), C before A — a cycle, and a sort given one guarantees
+   nothing.
 6. **Seq.** Then the lower seq first.
 7. **Stable.** The sort is stable (`sort.SliceStable`): items tied on
    every step keep the order the orgs and their items were listed in.
@@ -111,7 +117,8 @@ reason.
   1 and an evaluation that always fails.
 - Priority stays strict: a steady stream of urgent work still keeps a
   low goal's items waiting, as before.
-- An older platform without `readyAt` loses only step 5.
+- An older platform without `readyAt` loses only step 5: every item
+  lacks the time, so the order falls to seq.
 
 ## Per-repo limit on unmerged work
 

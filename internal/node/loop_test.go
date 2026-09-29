@@ -823,7 +823,7 @@ func TestLoopAttemptCapLosesThePreference(t *testing.T) {
 
 // Within the fresh class and within the started class the older readyAt
 // is claimed first whatever the seq; an item with no readyAt (an older
-// platform) falls to seq against the rest.
+// platform) goes after every item of its class that has one.
 func TestLoopOlderReadyFirst(t *testing.T) {
 	p := newPriorityFake(t)
 	p.addGoal(orgID, "g", "normal")
@@ -951,6 +951,46 @@ func TestClaimOrder(t *testing.T) {
 	if strings.Join(got, ",") != "retry,unknown,fresh,spent,low" {
 		t.Fatalf("order %v", got)
 	}
+}
+
+// Mixed readyAt with crossing seqs: the items with a time go first, the
+// older first whatever the seq, then those without by seq — in every
+// class, and whatever order they are listed in. Comparing the times only
+// when both items had one, else seq, made a cycle here (older-3 before
+// newer-1, newer-1 before none-2, none-2 before older-3) and the result
+// depended on the listed order.
+func TestClaimOrderMixedReadyAtIsTransitive(t *testing.T) {
+	base := []readyItem{
+		{item: gateway.WorkItem{ID: "older-3", Seq: 3, ReadyAt: "2026-09-28T02:24:00Z"}},
+		{item: gateway.WorkItem{ID: "newer-1", Seq: 1, ReadyAt: "2026-09-29T12:00:00.5Z"}},
+		{item: gateway.WorkItem{ID: "none-2", Seq: 2}},
+		{item: gateway.WorkItem{ID: "none-0", Seq: 0, ReadyAt: "not a time"}},
+		{item: gateway.WorkItem{ID: "started-older-6", Seq: 6, PRURL: "u", ReadyAt: "2026-09-27T00:00:00Z"}},
+		{item: gateway.WorkItem{ID: "started-newer-4", Seq: 4, PRURL: "u", ReadyAt: "2026-09-29T00:00:00Z"}},
+		{item: gateway.WorkItem{ID: "started-none-5", Seq: 5, PRURL: "u"}},
+	}
+	want := "started-older-6,started-newer-4,started-none-5,older-3,newer-1,none-0,none-2"
+	var permute func(k int)
+	permute = func(k int) {
+		if k == len(base) {
+			items := append([]readyItem(nil), base...)
+			claimOrder(items)
+			var got []string
+			for _, r := range items {
+				got = append(got, r.item.ID)
+			}
+			if strings.Join(got, ",") != want {
+				t.Fatalf("order %s, want %s", strings.Join(got, ","), want)
+			}
+			return
+		}
+		for i := k; i < len(base); i++ {
+			base[k], base[i] = base[i], base[k]
+			permute(k + 1)
+			base[k], base[i] = base[i], base[k]
+		}
+	}
+	permute(0)
 }
 
 // Full ties — rank, class, readyAt and seq — keep the order the orgs
