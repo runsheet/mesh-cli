@@ -519,6 +519,28 @@ mesh-session-evaluate-7b69281a-1a43-428a-a18b-798badce5b66-1d74586e.scope
 mesh-session-plan-c42ba4d3-b149-5430-ba7b-6232dbbf6c54-67f3e081.scope
 ```
 
+Rechecked by attempt 2 on 2026-09-29 00:33Z: nothing had changed, so
+it stopped again at the precondition and nothing ran:
+
+```
+$ gh release view v0.2.188 --repo runsheet/mesh
+release not found
+$ gh release list --repo runsheet/mesh --limit 1
+v0.2.186	Latest	v0.2.186	2026-09-26T11:48:49Z
+$ cat ~/.mesh/update.json   # unchanged: to v0.1.0, the 404 lastError, no confirmedAt
+$ systemctl --user list-units 'mesh-session-*' --no-pager   # unit names only
+mesh-session-build-6bf3a18e-07cc-4323-ab45-6f47a0fb449b-f2d6e5df.scope
+mesh-session-build-9a1d4ff1-335c-40b6-adf1-2c0c2ba344c9-2a209cb9.scope
+mesh-session-build-a1df8261-8b75-42f4-b6f7-79b8d7cfb551-ede7fc06.scope
+mesh-session-plan-c42ba4d3-b149-5430-ba7b-6232dbbf6c54-67f3e081.scope
+mesh_health_nodes (org runsheet), node mini:
+  "version":"4d8d435","desired_version":"v0.1.0","behind":true,
+  "commits_behind_main":13,"latest_version":"v0.2.188"
+```
+
+`latest_version` there is read from runsheet/mesh-cli, where v0.2.188
+exists; the mirror, which the node fetches from, does not have it.
+
 The platform's `desiredVersion` for the mini is still `v0.1.0`. After
 the upgrade, the operator sets it on the console to the version the
 mini runs, or to the next tag. That setting is the goal's no-by-hand
