@@ -73,17 +73,31 @@ func TestRenderIndexSummaries(t *testing.T) {
 		t.Fatalf("index: %d documents", len(cx.Index))
 	}
 	index := RenderIndex(cx)
-	rows := []string{
+	lines := strings.Split(index, "\n")
+	lineSet := make(map[string]bool, len(lines))
+	for _, l := range lines {
+		lineSet[l] = true
+	}
+	want := []string{
 		"| adr | ADR 001 |  | `adr-001` | acme/widgets/specs/adr-001.md | `adr-adr-001.md` |",
 		"| trd | TRD | The design in one line. | `trd` | acme/widgets/specs/trd.md | fetch |",
 		"| skill | Deploy |  | `deploy` | acme/widgets/skills/deploy.md | fetch |",
+		"3 documents on disk here, 3 to fetch; summaries are shown only for the kinds a session reads (instructions, adr, prd, trd) that are not on disk.",
 	}
-	for _, row := range rows {
-		if !strings.Contains(index, row+"\n") {
-			t.Fatalf("index missing row %q:\n%s", row, index)
+	for _, line := range want {
+		if !lineSet[line] {
+			t.Fatalf("index missing exact line %q:\n%s", line, index)
 		}
 	}
-	if !strings.Contains(index, "\n3 documents on disk here, 3 to fetch; summaries are shown only for the kinds a session reads (instructions, adr, prd, trd) that are not on disk.\n") {
-		t.Fatalf("index missing counts line:\n%s", index)
+	header := "| kind | title | what it says | slug | repo/path | here |"
+	separator := "| --- | --- | --- | --- | --- | --- |"
+	bodyRows := 0
+	for _, l := range lines {
+		if strings.HasPrefix(l, "| ") && l != header && l != separator {
+			bodyRows++
+		}
+	}
+	if bodyRows != len(cx.Index) {
+		t.Fatalf("rendered %d body rows, want %d (one per document):\n%s", bodyRows, len(cx.Index), index)
 	}
 }
