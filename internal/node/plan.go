@@ -439,6 +439,7 @@ func (p *Planner) readPlan(ctx context.Context, goal gateway.Goal, dir string, a
 		return nil, nil, nil, 0, ctx.Err()
 	}
 	defer harness.RemoveSession(dir)
+	logKilled(p.logf, "goal "+goal.Slug, result)
 	if errors.Is(err, context.DeadlineExceeded) {
 		return nil, nil, nil, 0, fmt.Errorf("planner session ran out of time (%s)", p.Timeout)
 	}
@@ -542,7 +543,7 @@ func briefWithDeps(brief string, deps []int, because map[int]string) string {
 func (p *Planner) AdoptPlan(ctx context.Context, goal gateway.Goal, scope Scope, s FoundSession) error {
 	if goal.Status != "planning" {
 		p.logf("goal %s: adopted plan is no longer wanted (%s); stopped", goal.Slug, goal.Status)
-		s.Stop()
+		stopFound(p.logf, "goal "+goal.Slug, s)
 		return harness.RemoveSession(s.State.Workspace)
 	}
 	project, repos, err := p.projectRepoMap(ctx, goal, scope)
@@ -559,7 +560,7 @@ func (p *Planner) AdoptPlan(ctx context.Context, goal gateway.Goal, scope Scope,
 	}
 	at, ok := p.Harness.(harness.Attacher)
 	if !ok {
-		s.Stop()
+		stopFound(p.logf, "goal "+goal.Slug, s)
 		harness.RemoveSession(s.State.Workspace)
 		return errNoAttach
 	}

@@ -187,6 +187,7 @@ func (d *Director) handIn(ctx context.Context, direction gateway.Direction, proj
 		return ctx.Err()
 	}
 	defer harness.RemoveSession(dir)
+	logKilled(d.logf, project.Slug+"/"+direction.Slug, result)
 	if errors.Is(err, context.DeadlineExceeded) {
 		return fmt.Errorf("research session ran out of time (%s)", d.Timeout)
 	}
@@ -338,7 +339,7 @@ func trimAll(list []string) []string {
 func (d *Director) AdoptResearch(ctx context.Context, direction gateway.Direction, project gateway.Project, scope Scope, s FoundSession) error {
 	at, ok := d.Harness.(harness.Attacher)
 	if !ok {
-		s.Stop()
+		stopFound(d.logf, project.Slug+"/"+direction.Slug, s)
 		harness.RemoveSession(s.State.Workspace)
 		return errNoAttach
 	}

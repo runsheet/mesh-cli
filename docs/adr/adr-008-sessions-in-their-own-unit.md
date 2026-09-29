@@ -153,6 +153,20 @@ kill: one `Kill` per unit, whichever end comes first, its report kept.
   `ClaudeCode.Stderr` (`harness claude-code: kill unit …`), or, with
   none, carried on `Result.KillError`. `finishClaude`'s result and
   error semantics are unchanged.
+- **The node says it**: each session's tail — `afterBuild`,
+  `afterEvaluate`, the planner's `readPlan`, the director's `handIn`,
+  `afterRebase` — logs a non-empty `Killed` as one line,
+  `item <label>: session end killed <n> process(es) the agent left
+  running: <pid comm, pid comm>` (`KilledNote`; `goal <slug>:` for a
+  plan, `<project>/<direction>:` for research), and a `KillError` as
+  `item <label>: kill: <err>`. A build or a rebase sends the same
+  sentence as a progress note on the item, as a `tools: …` note is
+  sent; an evaluation adds it to its verdict's notes.
+- **An adopted session no longer the node's**: `FoundSession.Kill`
+  replaces the stop that ran only while claude was alive — an item,
+  plan or direction the platform no longer has on this node has its
+  unit killed whether or not claude still runs (what the agent left
+  there may outlive it), and what it killed is logged the same way.
 - Sandboxed and Codex sessions are not in a unit and report nothing.
 
 ## Consequences

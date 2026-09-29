@@ -395,6 +395,7 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 	}
 	defer harness.RemoveSession(ev.dir)
 	item, label, acct := ev.item, ev.label, ev.acct
+	killed := logKilled(e.logf, "item "+label, result)
 	if errors.Is(err, context.DeadlineExceeded) {
 		return fmt.Errorf("evaluator session ran out of time (%s)", e.Timeout)
 	}
@@ -462,6 +463,10 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 	if note := acct.UseNote(result); note != "" {
 		e.logf("item %s: %s", label, note)
 		without += "\n" + truncate(note, 500)
+	}
+	// and what it left running that its end killed
+	if killed != "" {
+		without += "\n" + truncate(killed, 500)
 	}
 	if result.KeptSessionDir != "" && hasToolError(result) {
 		e.logf("item %s: a tool errored%s", label, keptAt(result))
@@ -534,7 +539,7 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 func (e *Evaluator) AdoptEvaluation(ctx context.Context, item gateway.WorkItem, s FoundSession) error {
 	if item.Status != "evaluating" || item.NodeID != s.State.NodeID {
 		e.logf("item %s: adopted evaluation is no longer this node's (%s); stopped", item.ID, item.Status)
-		s.Stop()
+		stopFound(e.logf, "item "+item.ID, s)
 		return harness.RemoveSession(s.State.Workspace)
 	}
 	res, err := Resolve(ctx, e.GW, item)
@@ -543,7 +548,7 @@ func (e *Evaluator) AdoptEvaluation(ctx context.Context, item gateway.WorkItem, 
 	}
 	at, ok := e.Harness.(harness.Attacher)
 	if !ok {
-		s.Stop()
+		stopFound(e.logf, "item "+item.ID, s)
 		harness.RemoveSession(s.State.Workspace)
 		return errNoAttach
 	}
