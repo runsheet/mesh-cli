@@ -507,19 +507,36 @@ const IndexFile = "INDEX.md"
 
 // RenderIndex lists every document of the project: kind, title, slug,
 // where it lives, and whether it is on disk here or fetched on demand.
+// The "what it says" cell carries the document's summary only when its
+// kind is one a session reads first (ContextKinds) and it is not on
+// disk — a document on disk needs no summary, the file is beside the
+// index, and a kind a session rarely fetches (a skill, a runbook) is
+// listed by title and slug alone. A trailing line after the table
+// counts how many documents are on disk and how many are left to
+// fetch.
 func RenderIndex(cx *Context) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Project %s — every indexed document\n\n", cx.Project)
 	b.WriteString("On disk here: read the file. Not on disk: fetch it with the `mesh_document` tool (project " + fmt.Sprintf("%q", cx.Project) + ", the slug). Search with `mesh_search`.\n\n")
 	b.WriteString("| kind | title | what it says | slug | repo/path | here |\n| --- | --- | --- | --- | --- | --- |\n")
 	cell := func(s string) string { return strings.ReplaceAll(strings.ReplaceAll(s, "\n", " "), "|", "\\|") }
+	onDisk, toFetch := 0, 0
 	for _, d := range cx.Index {
 		here := "fetch"
-		if n, ok := cx.OnDisk[d.Slug]; ok {
-			here = "`" + n + "`"
+		_, isOnDisk := cx.OnDisk[d.Slug]
+		if isOnDisk {
+			here = "`" + cx.OnDisk[d.Slug] + "`"
+			onDisk++
+		} else {
+			toFetch++
 		}
-		fmt.Fprintf(&b, "| %s | %s | %s | `%s` | %s/%s | %s |\n", d.Kind, cell(d.Title), cell(d.Summary), d.Slug, d.Repo, d.Path, here)
+		summary := ""
+		if ContextKinds[d.Kind] && !isOnDisk {
+			summary = d.Summary
+		}
+		fmt.Fprintf(&b, "| %s | %s | %s | `%s` | %s/%s | %s |\n", d.Kind, cell(d.Title), cell(summary), d.Slug, d.Repo, d.Path, here)
 	}
+	fmt.Fprintf(&b, "\n%d documents on disk here, %d to fetch; summaries are shown only for the kinds a session reads (instructions, adr, prd, trd) that are not on disk.\n", onDisk, toFetch)
 	if len(cx.Live) > 0 {
 		renderLive(&b, cx.Live, cell)
 	}
