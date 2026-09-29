@@ -171,7 +171,9 @@ func capText(s string, n int) string {
 // time closes on the matching tool_result (a user event, by
 // tool_use_id), left zero if none arrives before the stream ends; a
 // tool_result with is_error true counts an error, its text (capped at
-// 300 chars) kept as the server's FirstError. A system/init event's
+// 300 chars) kept as the server's FirstError, and Answered too when the
+// system/init event named that server connected (the server replied
+// with its own error result). A system/init event's
 // mcp_servers names each server whose status is not "connected" as an
 // error too, that status as FirstError, even with zero calls.
 //
@@ -200,6 +202,7 @@ func ParseStream(r io.Reader, onEvent func(Event)) Result {
 		start  time.Time
 	}
 	pending := map[string]pendingCall{}
+	connected := map[string]bool{}
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		if line == "" || line[0] != '{' {
@@ -219,6 +222,9 @@ func ParseStream(r io.Reader, onEvent func(Event)) Result {
 				model = ev.Model
 			}
 			for _, srv := range ev.MCPServers {
+				if srv.Status == "connected" {
+					connected[srv.Name] = true
+				}
 				if srv.Name == "" || srv.Status == "" || srv.Status == "connected" {
 					continue
 				}
@@ -279,6 +285,9 @@ func ParseStream(r io.Reader, onEvent func(Event)) Result {
 				stat.Wall += now().Sub(pc.start)
 				if c.IsError {
 					stat.Errors++
+					if connected[pc.server] {
+						stat.Answered++
+					}
 					if stat.FirstError == "" {
 						stat.FirstError = capText(toolResultText(c.ResultContent), 300)
 					}

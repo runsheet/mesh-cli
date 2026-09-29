@@ -269,6 +269,52 @@ func TestParseCodexStreamKeepsTheApprovalRefusal(t *testing.T) {
 	}
 }
 
+// `prologue: not found`, as a Codex evaluation on the mini streamed it
+// on 2026-09-29 (v0.2.188): two mesh_document calls for slugs the
+// gateway does not have, each `failed` with no `error` and the server's
+// own `not found` as its result. The tool answered both — Reached —
+// unlike the approval refusal, which never reached it.
+func TestParseCodexStreamCountsTheToolsOwnErrorAnswered(t *testing.T) {
+	fakeClock(t)
+	f, err := os.Open("testdata/codex_mcp_not_found.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	res := ParseCodexStream(f, "gpt-6-sol", nil)
+	stat := res.Tools["prologue"]
+	if stat == nil || stat.Calls != 2 || stat.Errors != 2 || stat.Answered != 2 || stat.FirstError != "not found" || !stat.Reached() {
+		t.Fatalf("Tools[prologue] = %+v, want 2 calls, 2 errors, 2 answered, reached", stat)
+	}
+
+	g, err := os.Open("testdata/codex_mcp_approval_error.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer g.Close()
+	res = ParseCodexStream(g, "gpt-6-luna", nil)
+	if stat := res.Tools["mesh-context"]; stat == nil || stat.Answered != 0 || stat.Reached() {
+		t.Fatalf("the approval refusal: Tools[mesh-context] = %+v, want not reached", stat)
+	}
+}
+
+// Claude: an is_error tool_result from a server the init event named
+// connected is the server's own answer; from one it did not, it is not.
+func TestParseStreamCountsTheToolsOwnErrorAnswered(t *testing.T) {
+	fakeClock(t)
+	stream := `{"type":"system","subtype":"init","model":"claude-opus-5","mcp_servers":[{"name":"mesh-context","status":"connected"},{"name":"search","status":"failed"}]}
+{"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","id":"t1","name":"mcp__mesh-context__mesh_document","input":{"slug":"adr-adr-001-x"}},{"type":"tool_use","id":"t2","name":"mcp__search__query","input":{}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","is_error":true,"content":"not found"},{"type":"tool_result","tool_use_id":"t2","is_error":true,"content":"No such tool available: mcp__search__query"}]}}
+{"type":"result","subtype":"success","result":"VERDICT: PASS","total_cost_usd":0.1,"num_turns":1}`
+	res := ParseStream(strings.NewReader(stream), nil)
+	if s := res.Tools["mesh-context"]; s == nil || s.Calls != 1 || s.Errors != 1 || s.Answered != 1 || !s.Reached() {
+		t.Fatalf("Tools[mesh-context] = %+v, want answered and reached", s)
+	}
+	if s := res.Tools["search"]; s == nil || s.Answered != 0 || s.Reached() {
+		t.Fatalf("Tools[search] = %+v, want not reached", s)
+	}
+}
+
 // A failed call with no error but a result falls back to the result's
 // text; a long error is capped at 300 on FirstError and 200 on the
 // report.

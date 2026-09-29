@@ -263,7 +263,13 @@ func (r Result) KilledPerSession() [][]sessionunit.Process {
 type ToolStat struct {
 	Calls  int
 	Errors int
-	Wall   time.Duration
+	// Answered is how many of Errors the tool itself answered: the call
+	// reached the server and it replied with an error result (MCP
+	// isError, e.g. `not found` for a slug it does not have). Such a
+	// tool is reachable; only the calls it never answered say it is not
+	// (Reached).
+	Answered int
+	Wall     time.Duration
 	// FirstError is the first error's text — a tool_result's content, a
 	// Codex mcp_tool_call's error (else its result's text, else its
 	// failed status), a Codex MCP startup failure's message, or an
@@ -328,6 +334,15 @@ func (r *Result) ToolReport() []ToolCall {
 		})
 	}
 	return report
+}
+
+// Reached says whether any call reached the tool and was answered by
+// it — a clean call, or an error result the tool itself returned
+// (Answered). A server with no call, or whose every call failed before
+// it answered (not connected, refused auth, refused approval), is not
+// reached.
+func (s *ToolStat) Reached() bool {
+	return s.Calls-s.Errors+s.Answered > 0
 }
 
 // toolStat returns server's ToolStat on r, creating it if this is its
