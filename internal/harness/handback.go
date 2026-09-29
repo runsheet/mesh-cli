@@ -54,6 +54,27 @@ func HandBackPrompt(at float64) string {
 	return fmt.Sprintf("You have used %.0f%% of this session's budget with nothing committed. Commit what works now with a message naming what is done and what is not, run the tests once, and finish — do not start new work.", at*100)
 }
 
+// ValidationRetryPrompt is the one more turn a build gets when a step of
+// its repository's validation (.runsheet/validate.yml) fails on its
+// commit: the step, its command, its exit code and the end of its
+// output, and the hand-back's rule (ADR 012) — fix it and commit, or
+// commit what works and hand back. The node validates the new commit and
+// pushes it; the session never does.
+func ValidationRetryPrompt(step, command string, exitCode int, output string) string {
+	const tailMax = 3000
+	if len(output) > tailMax {
+		output = "…" + output[len(output)-tailMax:]
+	}
+	output = strings.TrimRight(output, "\n")
+	var b strings.Builder
+	fmt.Fprintf(&b, "The repository's validation failed on your commit: step %s (`%s`) exited %d.\n\n", step, command, exitCode)
+	if output != "" {
+		fmt.Fprintf(&b, "The end of its output:\n\n```\n%s\n```\n\n", output)
+	}
+	b.WriteString("Fix it and commit. If you cannot fix it in this turn, commit what works with a message naming what is done and what is not, and hand back — do not start new work. Never push: the node validates your new commit and pushes it.")
+	return b.String()
+}
+
 // handBack watches a running session's stream for its hand-back mark:
 // each assistant turn's usage priced by model (once per message id),
 // and, the first time the running cost passes HandBackAt ×

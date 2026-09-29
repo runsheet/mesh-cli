@@ -174,12 +174,15 @@ jobs:
       id-token: write
 
     steps:
-      - name: Checkout code
-        # scripts/mirror-release.sh and dist/mirror/README.md live in the
-        # repo tree, which this job otherwise never checks out. Runs
-        # first: it wipes the workspace, and Download artifacts below
-        # has not yet created release/.
+      # scripts/mirror-release.sh and dist/mirror/README.md live in the
+      # repo tree, which this job otherwise never checks out. Runs first:
+      # it wipes the workspace, and Download artifacts below has not yet
+      # created release/. Full history (not just the tag's commit) so
+      # release-notes.sh can walk <previous-tag>..<tag>.
+      - name: Checkout code (full history, for the release notes)
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Download artifacts
         uses: actions/download-artifact@v4
@@ -197,6 +200,20 @@ jobs:
           for f in mesh-linux-amd64 mesh-linux-arm64 mesh-darwin-arm64; do
             test -f "$f" || { echo "missing $f"; exit 1; }
           done
+
+      - name: Write release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          prev="$(
+            { printf '%s\n' "$TAG"; git tag --list | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$'; } \
+              | sort -V -u \
+              | awk -v t="$TAG" '$0==t{print prev; exit} {prev=$0}'
+          )"
+          prev="${prev:-v0.0.0-runsheet-test.6}"
+          scripts/release-notes.sh "$prev" "$TAG" > release/NOTES.md
+          cat release/NOTES.md
 
       - name: Generate SHA256SUMS
         working-directory: release
@@ -219,15 +236,13 @@ jobs:
             SHA256SUMS
 
       - name: Compute the release notes
-        # One $NOTES, used by both creates below, naming the source
-        # commit and both repos.
-        env:
-          TAG: ${{ github.ref_name }}
-          SHA: ${{ github.sha }}
+        # One $NOTES, used by both creates below: the grouped notes
+        # release-notes.sh wrote to release/NOTES.md above, so the
+        # mirror on runsheet/mesh shows the exact same text.
         run: |
           {
             echo "NOTES<<NOTES_EOF"
-            echo "Release ${TAG} built from runsheet/mesh-cli@${SHA}. SHA256SUMS is signed keyless with Sigstore by runsheet/mesh-cli/.github/workflows/release-tag.yml; verify as in runsheet/mesh's README."
+            cat release/NOTES.md
             echo "NOTES_EOF"
           } >>"$GITHUB_ENV"
 
@@ -242,7 +257,7 @@ jobs:
           case "$TAG" in *-*) flags+=(--prerelease) ;; esac
           gh release create "$TAG" \
             --title "$TAG" \
-            --notes "$NOTES" \
+            --notes-file NOTES.md \
             --verify-tag \
             "${flags[@]}" \
             mesh-linux-amd64 mesh-linux-arm64 mesh-darwin-arm64 \

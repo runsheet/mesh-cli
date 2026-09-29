@@ -61,6 +61,10 @@ type Workspacer interface {
 	// Diff renders what the checked-out branch changed since it left
 	// origin/base: the stat, then the patch (the evaluator's evidence).
 	Diff(ctx context.Context, dir, base string) (string, error)
+	// ChangedPaths are the files the checked-out branch changed since it
+	// left origin/base (`git diff --name-only <merge-base> HEAD`): what
+	// selects a build's validation steps.
+	ChangedPaths(ctx context.Context, dir, base string) ([]string, error)
 	// Fetch clones repo (owner/name) into dir, shallow but with the
 	// default branch's last FetchDepth commits, or refreshes a clone
 	// already there: a read-only copy for the planner, whose `git log`
@@ -235,6 +239,24 @@ func (g *Git) Diff(ctx context.Context, dir, base string) (string, error) {
 		patch = patch[:MaxDiffBytes] + "\n… (diff truncated; read the branch for the rest)"
 	}
 	return stat + "\n\n" + patch, nil
+}
+
+// ChangedPaths implements Workspacer.
+func (g *Git) ChangedPaths(ctx context.Context, dir, base string) ([]string, error) {
+	if err := g.EnsureMergeBase(ctx, dir, base); err != nil {
+		return nil, err
+	}
+	out, err := g.run(ctx, dir, "git", "diff", "--name-only", "origin/"+base+"...HEAD")
+	if err != nil {
+		return nil, err
+	}
+	var paths []string
+	for _, l := range strings.Split(out, "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			paths = append(paths, l)
+		}
+	}
+	return paths, nil
 }
 
 // NoMergeBaseError says the checked-out branch shares no history with
@@ -667,7 +689,7 @@ type Gateway interface {
 	FailWorkItemRebase(ctx context.Context, itemID, reason string) error
 	RecordDirectionResearch(ctx context.Context, directionID, nodeID string, research gateway.Research, costCents int, notes string, usage *gateway.UsageReport) error
 	Repo(ctx context.Context, id string) (*gateway.Repo, error)
-	Repos(ctx context.Context, accountID, ownerLogin string) ([]gateway.Repo, error)
+	ProjectRepos(ctx context.Context, repoIDs []string) ([]gateway.Repo, error)
 	ContextDocuments(ctx context.Context, org, project string) ([]gateway.Document, error)
 	ContextDocument(ctx context.Context, org, project, doc string) (string, error)
 	Scorecard(ctx context.Context, org, project string) (map[string]any, error)

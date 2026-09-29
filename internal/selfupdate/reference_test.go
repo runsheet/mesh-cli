@@ -2,9 +2,11 @@ package selfupdate
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -108,6 +110,49 @@ func TestReferenceReleaseRefused(t *testing.T) {
 				t.Errorf("Reason = %q, want it to contain %q", r, tc.reason)
 			}
 		})
+	}
+}
+
+// The reference release, fetched through the public mirror's URL shape
+// rather than read straight off disk, still verifies under its own tag's
+// policy and is refused under another tag's — proving Fetch's new base
+// (runsheet/mesh) and Verify's unchanged identity (runsheet/mesh-cli's
+// release-tag.yml) work together.
+func TestReferenceReleaseFetchedFromTheMirrorVerifiesUnderItsOwnTag(t *testing.T) {
+	trusted, err := os.ReadFile(filepath.Join("testdata", "trusted_root.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sums, err := os.ReadFile(filepath.Join("testdata", referenceTag, SumsAsset))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := os.ReadFile(filepath.Join("testdata", referenceTag, BundleAsset))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := "/runsheet/mesh/releases/download/" + referenceTag + "/"
+	ft := &fakeTransport{files: map[string][]byte{
+		dir + SumsAsset:                   sums,
+		dir + BundleAsset:                 bundle,
+		dir + AssetName("linux", "amd64"): []byte("placeholder: the reference testdata carries no binary artifact"),
+	}}
+	rel, err := Fetch(context.Background(), GitHub{Client: &http.Client{Transport: ft}}, referenceTag, "linux", "amd64")
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	trustedMaterial := func() (root.TrustedMaterial, error) { return root.NewTrustedRootFromJSON(trusted) }
+
+	own := ReleasePolicy(referenceTag)
+	own.TrustedMaterial = trustedMaterial
+	if err := verifySignature(rel, own); err != nil {
+		t.Fatalf("verifySignature under %s's own policy: %v", referenceTag, err)
+	}
+
+	other := ReleasePolicy("v0.2.187")
+	other.TrustedMaterial = trustedMaterial
+	if err := verifySignature(rel, other); !errors.Is(err, ErrIdentity) {
+		t.Fatalf("verifySignature under v0.2.187's policy = %v, want ErrIdentity", err)
 	}
 }
 

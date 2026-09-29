@@ -31,10 +31,10 @@ var nodeUpdateCmd = &cobra.Command{
 (adr-002). With no version it takes the latest release that is not a
 prerelease.
 
-The release's binary for this OS/arch is downloaded with SHA256SUMS and its
-Sigstore bundle, and verified: the bundle must be signed by
-release-tag.yml on refs/tags/<version> of runsheet/mesh-cli, issued
-by https://token.actions.githubusercontent.com, and the binary's sha256 must
+The release's binary for this OS/arch is downloaded from the public mirror
+runsheet/mesh; the bundle must be signed by release-tag.yml on
+refs/tags/<version> of runsheet/mesh-cli, issued by
+https://token.actions.githubusercontent.com, and the binary's sha256 must
 be its line in the sums. Anything else is refused with the reason and a
 non-zero exit, and nothing on disk changes.
 
