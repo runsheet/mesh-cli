@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"projectmesh.io/mesh-cli/internal/tools"
 )
 
 // fakeClock installs a monotonically increasing clock for the duration
@@ -46,6 +48,29 @@ func TestParseStreamToolCalls(t *testing.T) {
 		if got := len(res.ToolCallIDs[server]); got != calls {
 			t.Errorf("len(ToolCallIDs[%s]) = %d, want %d", server, got, calls)
 		}
+	}
+}
+
+// A session an older node started called the built-in under its old
+// name, mcp__prologue__*: adopted, its stream counts those calls for
+// prologue, which tools.IsBuiltin reads as the built-in — the alias for
+// reading, removed 2026-10-28 with this fixture
+// (stream_tool_calls_prologue.jsonl, the one kept on the old name).
+func TestParseStreamCountsTheOldBuiltinName(t *testing.T) {
+	f, err := os.Open("testdata/stream_tool_calls_prologue.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	res := ParseStream(f, nil)
+	builtin := 0
+	for server, calls := range res.ToolCalls {
+		if tools.IsBuiltin(server) {
+			builtin += calls
+		}
+	}
+	if builtin != 1 || res.ToolCalls["prologue"] != 1 || res.ToolCalls["search"] != 2 {
+		t.Fatalf("ToolCalls = %v, want prologue:1 read as the built-in, search:2", res.ToolCalls)
 	}
 }
 
@@ -215,10 +240,10 @@ func TestParseCodexStreamKeepsTheCallsErrorText(t *testing.T) {
 	}
 	defer f.Close()
 	res := ParseCodexStream(f, "gpt-6-sol", nil)
-	want := "tool call failed for `prologue/mesh_document`: HTTP status client error (401 Unauthorized) for url (https://api.runsheet.dev/mcp)"
-	stat := res.Tools["prologue"]
+	want := "tool call failed for `mesh-context/mesh_document`: HTTP status client error (401 Unauthorized) for url (https://api.runsheet.dev/mcp)"
+	stat := res.Tools["mesh-context"]
 	if stat == nil || stat.FirstError != want || stat.Errors != 1 || stat.Calls != 1 {
-		t.Fatalf("Tools[prologue] = %+v, want 1 call, 1 error, FirstError %q", stat, want)
+		t.Fatalf("Tools[mesh-context] = %+v, want 1 call, 1 error, FirstError %q", stat, want)
 	}
 	report := res.ToolReport()
 	if len(report) != 1 || report[0].Error != capText(want, 200) {
@@ -239,8 +264,8 @@ func TestParseCodexStreamKeepsTheApprovalRefusal(t *testing.T) {
 	defer f.Close()
 	res := ParseCodexStream(f, "gpt-6-luna", nil)
 	const want = "MCP tool call requires approval, but approval policy is never"
-	if stat := res.Tools["prologue"]; stat == nil || stat.Calls != 1 || stat.Errors != 1 || stat.FirstError != want {
-		t.Fatalf("Tools[prologue] = %+v, want 1 call, 1 error, FirstError %q", stat, want)
+	if stat := res.Tools["mesh-context"]; stat == nil || stat.Calls != 1 || stat.Errors != 1 || stat.FirstError != want {
+		t.Fatalf("Tools[mesh-context] = %+v, want 1 call, 1 error, FirstError %q", stat, want)
 	}
 }
 
@@ -273,12 +298,12 @@ func TestParseCodexStreamMCPStartupError(t *testing.T) {
 	}
 	defer f.Close()
 	res := ParseCodexStream(f, "gpt-6-sol", nil)
-	want := "MCP client for `prologue` failed to start: Auth required during MCP startup"
-	stat := res.Tools["prologue"]
+	want := "MCP client for `mesh-context` failed to start: Auth required during MCP startup"
+	stat := res.Tools["mesh-context"]
 	if stat == nil || stat.Calls != 0 || stat.Errors != 1 || stat.FirstError != want {
-		t.Fatalf("Tools[prologue] = %+v, want 0 calls, 1 error, FirstError %q", stat, want)
+		t.Fatalf("Tools[mesh-context] = %+v, want 0 calls, 1 error, FirstError %q", stat, want)
 	}
-	if res.ToolCalls["prologue"] != 0 {
+	if res.ToolCalls["mesh-context"] != 0 {
 		t.Fatalf("ToolCalls = %+v", res.ToolCalls)
 	}
 	if report := res.ToolReport(); len(report) != 1 || report[0].Error != want {
@@ -288,11 +313,11 @@ func TestParseCodexStreamMCPStartupError(t *testing.T) {
 
 func TestMCPStartupServers(t *testing.T) {
 	for msg, want := range map[string][]string{
-		"MCP client for `prologue` failed to start: Auth required during MCP startup": {"prologue"},
-		"The prologue MCP server is not logged in. Run `codex mcp login prologue`.":   {"prologue"},
-		"MCP startup incomplete (failed: prologue, codex_apps)":                       {"prologue", "codex_apps"},
-		"Code Mode is unavailable: codex-code-mode-host not found":                    nil,
-		"model rerouted: gpt-6-astra -> gpt-6-sol (capacity)":                         nil,
+		"MCP client for `mesh-context` failed to start: Auth required during MCP startup":   {"mesh-context"},
+		"The mesh-context MCP server is not logged in. Run `codex mcp login mesh-context`.": {"mesh-context"},
+		"MCP startup incomplete (failed: mesh-context, codex_apps)":                         {"mesh-context", "codex_apps"},
+		"Code Mode is unavailable: codex-code-mode-host not found":                          nil,
+		"model rerouted: gpt-6-astra -> gpt-6-sol (capacity)":                               nil,
 	} {
 		if got := mcpStartupServers(msg); !slices.Equal(got, want) {
 			t.Errorf("mcpStartupServers(%q) = %v, want %v", msg, got, want)

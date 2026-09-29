@@ -16,6 +16,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/harness"
 	"projectmesh.io/mesh-cli/internal/sandbox"
+	"projectmesh.io/mesh-cli/internal/tools"
 )
 
 // Evaluator is the second fresh session an item gets on the node
@@ -378,6 +379,9 @@ type evalRun struct {
 	// Claude instead ("" when none did)
 	preflight        string
 	omitted, missing string
+	// adopted is a session an older node process started and this one
+	// took up (AdoptEvaluation): only there is prologue the built-in
+	adopted bool
 }
 
 // afterEvaluate is what follows an evaluation session, however this
@@ -409,7 +413,7 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 	var passed bool
 	var notes string
 	cost := result.CostUSD
-	if blind, broken := e.toolBroken(result, acct); broken {
+	if blind, broken := e.toolBroken(result, acct, ev.adopted); broken {
 		other := ev.fam.other(e)
 		saw := fmt.Sprintf("item %s: evaluation on %s saw no context (%s); not a verdict", label, ev.fam.fullName(), blind)
 		if why, ok := e.canRetry(ev, other); !ok {
@@ -546,7 +550,7 @@ func (e *Evaluator) AdoptEvaluation(ctx context.Context, item gateway.WorkItem, 
 	label := fmt.Sprintf("%s/%d", res.Goal.Slug, item.Seq)
 	e.logf("item %s: adopted its %s evaluation (pid %d)", label, s.Liveness(), s.State.PID)
 	result, err := at.Attach(ctx, s.Dir, nil)
-	return e.afterEvaluate(ctx, evalRun{item: item, res: res, label: label, model: s.State.Model, fam: family{model: s.State.Model, claude: s.State.Model}, dir: s.State.Workspace}, result, err)
+	return e.afterEvaluate(ctx, evalRun{item: item, res: res, label: label, model: s.State.Model, fam: family{model: s.State.Model, claude: s.State.Model}, dir: s.State.Workspace, adopted: true}, result, err)
 }
 
 // opinion is the second evaluation's outcome: its verdict and notes, or
@@ -628,7 +632,7 @@ func (e *Evaluator) secondOpinion(ctx context.Context, ev evalRun, on family, jo
 	case err != nil:
 		op.unavailable = truncate(acct.Redact(harness.Redact(err.Error(), job.Secrets...)), 300)
 	default:
-		if blind, broken := e.toolBroken(result, acct); broken {
+		if blind, broken := e.toolBroken(result, acct, false); broken {
 			op.unavailable = "saw no context (" + harness.Redact(blind, job.Secrets...) + ")"
 			break
 		}
@@ -658,8 +662,9 @@ var ErrNoContext = errors.New("the evaluation saw no context, and the other fami
 // (MCP: the context server) or a required console tool the session was
 // served, every one of whose calls errored, or which errored with no
 // call at all (not connected at startup). A session with one clean call
-// on each is not broken.
-func (e *Evaluator) toolBroken(res harness.Result, acct *SessionAccount) (string, bool) {
+// on each is not broken. adopted is a session an older node process
+// started (AdoptEvaluation): only there is prologue the built-in.
+func (e *Evaluator) toolBroken(res harness.Result, acct *SessionAccount, adopted bool) (string, bool) {
 	broken := func(name string) (string, bool) {
 		s := res.Tools[name]
 		if s == nil || s.Errors == 0 || s.Errors < s.Calls {
@@ -671,7 +676,24 @@ func (e *Evaluator) toolBroken(res harness.Result, acct *SessionAccount) (string
 		}
 		return acct.Redact(msg), true
 	}
-	for _, name := range slices.Sorted(maps.Keys(e.MCP)) {
+	// the node's own servers and, for an adopted session, the built-in
+	// under any name it has had: an evaluation an older node started
+	// under prologue reports that name, not tools.Builtin
+	// (tools.IsBuiltin, an alias read until 2026-10-28). A session this
+	// process started was rendered mesh-context, so a prologue in its
+	// result is a console tool: broken only if required, below.
+	names := map[string]bool{}
+	for name := range e.MCP {
+		names[name] = true
+	}
+	if adopted {
+		for name := range res.Tools {
+			if tools.IsBuiltin(name) {
+				names[name] = true
+			}
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(names)) {
 		if msg, ok := broken(name); ok {
 			return name + ": " + truncate(msg, 200), true
 		}

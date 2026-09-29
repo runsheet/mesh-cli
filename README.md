@@ -237,7 +237,7 @@ and leaves it for a node.
   each conflict keeping both sides' intent, re-runs the item's
   acceptance and pushes with `--force-with-lease`. The runbook is the
   mesh-branch-rebase skill in runsheet/runsheet
-  (`skill-mesh-branch-rebase`, read through Prologue); the prompt
+  (`skill-mesh-branch-rebase`, read through mesh-context); the prompt
   carries its steps for when it cannot be fetched. The session ends with
   `REBASED: <sha>` and `RESOLVED: <files>`, or `REBASE FAILED: <why>`.
 - **Finish.** The node reads the pushed head back from the remote and
@@ -447,7 +447,7 @@ already_done, evidence}` with no branch, when main already holds the
 item's work (the merged PRs or commits that satisfy its acceptance; the
 evaluator checks them, mesh-specs ADR 003) — `mesh_fail {item_id, error}`, `mesh_evaluate
 {item_id, passed, notes}`, `mesh_context {goal_slug}` (the project's
-Prologue documents: instructions, ADRs, PRD, TRD), `mesh_items {status}`,
+mesh-context documents: instructions, ADRs, PRD, TRD), `mesh_items {status}`,
 `mesh_record {item_id, summary}` (a milestone note to the platform; see below) and `reply`. The daemon
 has already cloned or fetched the repo into
 `~/.mesh/work/<goal-slug>/<seq>` and checked out `mesh/<goal-slug>-<seq>`
@@ -469,7 +469,7 @@ available on Bedrock, Vertex or Foundry; Team/Enterprise orgs must enable
 **Poll mode** (`--mode poll`). Each claimed item runs its own
 `claude -p "<prompt>" --output-format stream-json --verbose --max-budget-usd <budget>`
 in `~/.mesh/work/<goal-slug>/<seq>` (cloned with your `gh`, branch
-`mesh/<goal-slug>-<seq>` from the base ref), with the goal's Prologue
+`mesh/<goal-slug>-<seq>` from the base ref), with the goal's mesh-context
 context written under `.mesh/context/` (excluded from git). The budget is
 the smallest of the goal's remaining budget, node.yaml's `budgets:` for
 build and the item's model (see "Session budgets" above), and
@@ -624,15 +624,15 @@ version and the adopted sessions.
 
 **When the node's contract changes.** A change to what the node reports
 on the finishing command — usage records, tool call costs, or window
-standings — reaches the mini only when its binary is upgraded by hand.
-mesh-cli has no deploy: releases are signed GitHub artifacts that the
-node pulls only when you ask it to `upgrade`. So if a goal lands that
-changes the node's output format or semantics, the mini is not
-automatically on the new version until you follow the steps above —
-`mesh node upgrade --binary ~/bin/mesh.new` — and the first new rows on
-the console show it worked. Until then, every session's report is only in
-the node's local log, a fallback line that names the tokens and windows
-but tells the platform it keeps no ledger.
+standings — reaches the mini on the next release: a node-changing merge
+is tagged and signed on merge (see [Release](#release)), and the mini
+takes it once `desiredVersion` is set on the console or by
+`mesh node update <tag>` — with `nodes.autoUpdate` on, the platform
+sets it itself once the mini is idle, with no person. Until then, every
+session's report is only in the node's local log, a fallback line that
+names the tokens and windows but tells the platform it keeps no ledger.
+The by-hand `--binary` upgrade above is the fallback for a build that
+is not a release, not the way to ship a contract change.
 
 <!-- RECORDED MANUAL RUN: replace this block with the run on the mini —
      date, the versions from → to, the `mesh node status` and
@@ -843,9 +843,10 @@ A session gets the tools its project and role have, configured in the
 console and handed to the node that claimed the session (ADR-006, trd
 §3 Tools). The mesh-context MCP server is not one of them: the node
 attaches it to every session itself, and a console tool named
-`mesh-context` is refused and noted (a session adopted from an older
-node may still carry a server named `prologue`, accepted as the
-built-in's name until 2026-10-28).
+`mesh-context` is refused and noted. A tool named `prologue`, the
+built-in's old name, is an ordinary tool now; the node reads `prologue`
+as the built-in only in a session an older node started and this one
+adopted, a deprecated alias it drops on 2026-10-28.
 
 **What the node reports.** Every tick the node looks on its `PATH` for
 the tool runtimes it can start — `npx`, `uvx`, `docker` — and the agent
@@ -1169,11 +1170,11 @@ poll mode writes nothing either — a build's branch carries only its own
 work. A session reads live status from `.mesh/context/INDEX.md` or the
 platform.
 
-Prologue is read-only over git, so a goal still writes itself into the
+mesh-context is read-only over git, so a goal still writes itself into the
 repo once, when it ends: `specs/goal-<goal-slug>.md` (frontmatter
 `title: Goal — …`, `kind: plan`, `status: approved` when done /
 `superseded` when cancelled, `summary:`, `parent:` the project's PRD when
-Prologue lists one), with the statement, the acceptance and the final
+mesh-context lists one), with the statement, the acceptance and the final
 `## Items` table. `internal/node/goaldoc.go` is its only writer. The node
 writes it after an item finishes: it re-reads the goal, and if the goal
 has ended (`done` or `cancelled`) it checks out the project's primary repo

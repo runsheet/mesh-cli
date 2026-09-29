@@ -29,8 +29,9 @@ type SessionTools struct {
 
 // SelectTools is tools.Select for the session's role and the node's
 // runtimes, and a tool the renderer refuses — a bad or repeated name, a
-// clash with a built-in such as mesh-context — is omitted with the refusal
-// as its note, not rendered (trd §3 Tools, mesh-context is built in).
+// clash with a built-in such as mesh-context — is omitted with the
+// refusal as its note, not rendered (trd §3 Tools, mesh-context is
+// built in).
 func SelectTools(builtin map[string]any, ts []tools.Tool, role string, runtimes []string) SessionTools {
 	use, omitted, missing := tools.Select(ts, role, runtimes)
 	st := SessionTools{Omitted: omitted, Missing: missing}
@@ -72,7 +73,7 @@ func (st SessionTools) OmittedNote() string {
 // ("tools: brave served, never called") and every one whose calls
 // errored, by its first error ("tools: perplexity: first call errored:
 // …"), in Use's order; then every other server the result names with
-// an error — the built-in context server (tools.Builtin) above all,
+// an error — the built-in context server (tools.IsBuiltin) above all,
 // never in Use, and Codex's own — by name ("mesh-context: first call
 // errored: …", or "mesh-context served, never called: …" for one that
 // failed to start); "" when every served tool was called cleanly and
@@ -113,8 +114,8 @@ func (st SessionTools) UseNote(res harness.Result, redact func(string) string) s
 	}
 	sort.Slice(others, func(i, j int) bool {
 		// the built-in first: it is what the session reads the project by
-		if (others[i] == tools.Builtin) != (others[j] == tools.Builtin) {
-			return others[i] == tools.Builtin
+		if tools.IsBuiltin(others[i]) != tools.IsBuiltin(others[j]) {
+			return tools.IsBuiltin(others[i])
 		}
 		return others[i] < others[j]
 	})

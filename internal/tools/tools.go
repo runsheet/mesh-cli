@@ -40,6 +40,19 @@ var adapterBinary = map[string]string{"claude-code": "claude", "codex": "codex"}
 // built in).
 const Builtin = "mesh-context"
 
+// builtinAlias is the built-in's old name — deprecated 2026-09-28 (goal
+// builtin-is-mesh-context), removed 2026-10-28.
+const builtinAlias = "prologue"
+
+// IsBuiltin reports whether name is the built-in server: mesh-context,
+// or its old name, prologue, until 2026-10-28 — for reading the stream
+// and state of a session an older node started and this one adopted.
+// Reading only: the clash check (check) refuses Builtin alone, so a
+// console tool named prologue is an ordinary tool.
+func IsBuiltin(name string) bool {
+	return name == Builtin || name == builtinAlias
+}
+
 // Tool is one tool of the claim-time read (trd §3 Tools). Secrets holds a
 // header (remote) or env (local) key and its value; it wins over the same
 // key in Headers or Env and its value is never written anywhere but the
