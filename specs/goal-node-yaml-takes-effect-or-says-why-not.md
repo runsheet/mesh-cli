@@ -487,7 +487,7 @@ reading — but item 7's own build session did have one, at 2026-09-29
 still has `StandardOutput=append:/home/chris/.mesh/node.log` and the
 same for `StandardError`; `~/.mesh/node.log` is **373,995,651 bytes,
 6,548,269 lines** (339 MB when the goal was set, so about 35 MB in the
-roughly 18 hours since), 1,239 of them channel `session:` text, and no
+day since), 1,239 of them channel `session:` text, and no
 `sessions.log` exists — the unit still has the append redirect, so
 node.log is still unbounded there regardless of the rotation code
 being on main. The operator owes two steps, in order, once ready:
