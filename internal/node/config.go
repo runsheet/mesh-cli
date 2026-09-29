@@ -93,6 +93,25 @@ type Config struct {
 	// Context is the size budget for the project's context on disk
 	// (ContextConfig), read again every tick like the accounts.
 	Context ContextConfig `yaml:"context,omitempty"`
+	// Claim is node.yaml's `claim:` block (ClaimConfig), read again
+	// every tick like the context budget.
+	Claim ClaimConfig `yaml:"claim,omitempty"`
+}
+
+// ClaimConfig is node.yaml's `claim:` block. UnmergedPerRepo is the most
+// pull requests a repo may have open and waiting to merge (items in
+// `review`) before the node claims no fresh item of that repo; started
+// work there is still claimed (ADR-017). Zero, the default, is no limit.
+type ClaimConfig struct {
+	UnmergedPerRepo int `yaml:"unmerged_per_repo,omitempty"`
+}
+
+// Validate refuses a negative limit, naming the key.
+func (c ClaimConfig) Validate() error {
+	if c.UnmergedPerRepo < 0 {
+		return errors.New("claim.unmerged_per_repo: a limit cannot be negative")
+	}
+	return nil
 }
 
 // The context budget's defaults, in bytes: a document past what is left
@@ -487,6 +506,8 @@ type Reloaded struct {
 	Spending *Spending
 	// Context is node.yaml's `context:` budget; nil keeps the loop's.
 	Context *ContextConfig
+	// Claim is node.yaml's `claim:` block; nil keeps the loop's.
+	Claim *ClaimConfig
 }
 
 // Spending is what the node may spend on: node.yaml's accounts,
@@ -502,7 +523,7 @@ type Spending struct {
 // Reloader is Loop.Reload for a node started on cfg and scopes: every
 // tick it reads node.yaml again through load (LoadConfig when nil) for
 // the capacity, the limits thresholds, the accounts and project budgets,
-// the context budget and the orgs restriction, and asks MyOrgs for the orgs
+// the context budget, the claim limits and the orgs restriction, and asks MyOrgs for the orgs
 // the owner belongs to. An org seen for the first time is registered in
 // through register (a Node there, as start does) before it is served —
 // one that fails to register is tried again next tick; an org no longer
@@ -529,6 +550,8 @@ func Reloader(gw Gateway, cfg *Config, scopes Scopes, load func() (*Config, erro
 			out.Spending = &Spending{Accounts: c.Accounts, ProjectBudgets: c.ProjectBudgets, Budgets: c.Budgets}
 			budget := c.Context
 			out.Context = &budget
+			claim := c.Claim
+			out.Claim = &claim
 		}
 		orgs, err := gw.MyOrgs(ctx)
 		if err != nil {
@@ -618,6 +641,9 @@ func LoadConfig() (*Config, error) {
 		}
 	}
 	if err := c.Codex.Validate(); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	if err := c.Claim.Validate(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	if err := c.Context.Validate(); err != nil {

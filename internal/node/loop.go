@@ -193,6 +193,10 @@ type Loop struct {
 	// says otherwise (contextSet).
 	context    ContextConfig
 	contextSet bool
+	// claim is node.yaml's `claim:` block in force: Cfg's until Reload
+	// says otherwise (claimSet).
+	claim    ClaimConfig
+	claimSet bool
 	// paced is the pacing mode last logged, so a crossing is logged once.
 	paced paceMode
 	// waiting counts, by kind, the work this tick left unclaimed because
@@ -407,9 +411,14 @@ func planOrder(goals []planningGoal) {
 // on the account chosen for its priority; items of a goal ranked past
 // maxRank are left, and normal and low items take no more than
 // normalFree of the free slots. An item no account has headroom for is
-// not claimed: it stays ready for a later tick.
+// not claimed: it stays ready for a later tick. With
+// claim.unmerged_per_repo set, a fresh item of a repo with that many
+// items in review is not claimed either; started work there is
+// (ADR-017, Per-repo limit on unmerged work).
 func (l *Loop) claimReady(ctx context.Context, free, normalFree, maxRank int) {
 	var ready []readyItem
+	limit := l.UnmergedPerRepo()
+	unmerged := map[string]int{}
 	for _, sc := range l.Scopes {
 		items, err := l.GW.ReadyWorkItems(ctx, sc.ID)
 		if err != nil {
@@ -418,6 +427,9 @@ func (l *Loop) claimReady(ctx context.Context, free, normalFree, maxRank int) {
 		}
 		if len(items) == 0 {
 			continue
+		}
+		if limit > 0 {
+			l.countUnmerged(ctx, sc, unmerged)
 		}
 		rank := l.goalRanks(ctx, sc, "claimed")
 		for _, it := range items {
@@ -430,6 +442,7 @@ func (l *Loop) claimReady(ctx context.Context, free, normalFree, maxRank int) {
 		}
 	}
 	claimOrder(ready)
+	held := map[string]bool{} // repos whose hold this tick has logged
 	for _, r := range ready {
 		if free <= 0 {
 			break
@@ -443,6 +456,16 @@ func (l *Loop) claimReady(ctx context.Context, free, normalFree, maxRank int) {
 		}
 		if runtimes, _ := l.Runtimes(); l.Declines.Holds(item.ID, runtimes, time.Now()) {
 			continue // a required tool needs a runtime still missing here
+		}
+		fresh := !startedWork(item)
+		if n := unmerged[item.RepoID]; limit > 0 && fresh && n >= limit {
+			why := fmt.Sprintf("repo %s has %d unmerged pull requests, at node.yaml's claim.unmerged_per_repo %d", item.RepoID, n, limit)
+			l.passOver(item.GoalID, "item", priorityName(r.rank), why)
+			if !held[item.RepoID] {
+				held[item.RepoID] = true
+				l.logf("claim: %s; its fresh items wait, its started work is still claimed", why)
+			}
+			continue
 		}
 		pressing := r.rank <= gateway.PriorityRank("high")
 		if !pressing && normalFree <= 0 {
@@ -467,8 +490,29 @@ func (l *Loop) claimReady(ctx context.Context, free, normalFree, maxRank int) {
 			normalFree--
 		}
 		normalFree = min(normalFree, free)
+		if fresh {
+			// its pull request will count against the repo: one tick
+			// does not overshoot the limit
+			unmerged[item.RepoID]++
+		}
 		l.logf("%s: claimed item %d %q", sc.Login, item.Seq, item.Title)
 		l.start(actx, item)
+	}
+}
+
+// countUnmerged adds the org's items in review — a pull request open and
+// waiting to merge — to unmerged by repo: one OrgWorkItems read per org
+// and tick, made only while claim.unmerged_per_repo is set. A failed
+// read counts nothing for the org and is logged, so the claim goes on as
+// with no limit rather than stopping on a listing.
+func (l *Loop) countUnmerged(ctx context.Context, sc Scope, unmerged map[string]int) {
+	rows, err := l.GW.OrgWorkItems(ctx, sc.ID, "review")
+	if err != nil {
+		l.logf("list review items of %s (its repos counted as having none unmerged): %v", sc.Login, err)
+		return
+	}
+	for _, it := range rows {
+		unmerged[it.RepoID]++
 	}
 }
 
@@ -1116,6 +1160,14 @@ func (l *Loop) reload(ctx context.Context) {
 		}
 		l.mu.Lock()
 		l.context, l.contextSet = now, true
+		l.mu.Unlock()
+	}
+	if got.Claim != nil {
+		if was, now := l.UnmergedPerRepo(), got.Claim.UnmergedPerRepo; now != was {
+			l.logf("claim: unmerged_per_repo %d → %d", was, now)
+		}
+		l.mu.Lock()
+		l.claim, l.claimSet = *got.Claim, true
 		l.mu.Unlock()
 	}
 	if scopes != nil && !sameOrgs(scopes, l.Scopes) {
