@@ -126,7 +126,7 @@ func defaultNodeUpgrade(out io.Writer) (*nodeUpgrade, error) {
 		ConfirmWithin: within,
 		Updater:       &node.ReleaseUpdater{Source: gh, State: state, Exe: exe},
 		Latest:        gh.Latest,
-		Running:       version.Version,
+		Running:       version.Resolved(),
 		Run:           run,
 		Version:       binaryVersion,
 		Image:         ensureNodeImage,
@@ -233,7 +233,8 @@ func (u *nodeUpgrade) goarch() string {
 }
 
 // binaryVersion runs `<path> version` and returns the version it prints
-// (`mesh <version>`): a file that does not run as mesh is refused.
+// (`mesh <version>`, as version.Long says it): a file that does not run
+// as mesh is refused.
 func binaryVersion(ctx context.Context, path string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -244,11 +245,22 @@ func binaryVersion(ctx context.Context, path string) (string, error) {
 	return parseVersionLine(string(out))
 }
 
-// parseVersionLine reads `mesh <version>`.
+// parseVersionLine reads version.Long's line — `mesh <version>`, `mesh
+// <tag> (commit <sha>)` or `mesh <sha> (dev build)` — and returns the
+// version alone, as the new binary will report itself: the tag, else the
+// sha. An older binary says the bare `mesh <version>`.
 func parseVersionLine(out string) (string, error) {
-	f := strings.Fields(strings.TrimSpace(out))
-	if len(f) != 2 || f[0] != "mesh" || f[1] == "" {
-		return "", fmt.Errorf("`version` said %q, not `mesh <version>`", strings.TrimSpace(out))
+	line := strings.TrimSpace(out)
+	bad := fmt.Errorf("`version` said %q, not `mesh <version>`", line)
+	f := strings.Fields(line)
+	if len(f) < 2 || f[0] != "mesh" || f[1] == "" || strings.HasPrefix(f[1], "(") {
+		return "", bad
+	}
+	switch rest := strings.Join(f[2:], " "); {
+	case rest == "", rest == "(dev build)":
+	case strings.HasPrefix(rest, "(commit ") && strings.HasSuffix(rest, ")") && len(f) == 4:
+	default:
+		return "", bad
 	}
 	return f[1], nil
 }
@@ -334,10 +346,10 @@ func (s hostService) Restart(ctx context.Context, state node.RunState, out io.Wr
 
 var versionCmd = &cobra.Command{
 	Use:   "version",
-	Short: "Print this binary's version: mesh <version>",
+	Short: "Print this binary's version and commit: mesh <tag> (commit <sha>), or mesh <sha> (dev build)",
 	Args:  cobra.NoArgs,
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Fprintf(cmd.OutOrStdout(), "mesh %s\n", version.Version)
+		fmt.Fprintln(cmd.OutOrStdout(), version.Long())
 	},
 }
 
