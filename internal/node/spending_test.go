@@ -303,10 +303,11 @@ func TestAccountsNodeHeartbeatsEachAccountsSlots(t *testing.T) {
 	}
 }
 
-// A fixed node on several accounts heartbeats its capacity as its min
-// and max, reason `fixed` — no scaler counts its accounts' slots; a
-// fixed node on one account heartbeats none, as before.
-func TestFixedNodeHeartbeatsScalingOnlyOnSeveralAccounts(t *testing.T) {
+// A fixed node heartbeats its capacity as its min and max, reason
+// `fixed`, on several accounts and on one alike — no scaler counts its
+// accounts' slots (ADR-018: before it, a fixed node on one account sent
+// none, and a capacity changed in node.yaml never reached the platform).
+func TestFixedNodeHeartbeatsItsCapacityOnAnyNumberOfAccounts(t *testing.T) {
 	two := newScaled(t, Fixed(3), false)
 	two.loop.Cfg.Accounts = []AccountConfig{
 		{Label: "max-a", Kind: AccountSubscription, TokenFile: "/a"},
@@ -322,10 +323,36 @@ func TestFixedNodeHeartbeatsScalingOnlyOnSeveralAccounts(t *testing.T) {
 	one := newScaled(t, Fixed(3), false)
 	one.loop.Cfg.Accounts = []AccountConfig{{Label: "max-a", Kind: AccountSubscription, TokenFile: "/a"}}
 	one.at(0)
-	if s, ok := lastScaling(t, one); ok {
-		t.Fatalf("fixed node on one account sent scaling = %#v", s)
+	if s, ok := lastScaling(t, one); !ok || len(s) != 5 || s["capacity"] != 3.0 || s["min"] != 3.0 || s["max"] != 3.0 || s["reason"] != "fixed" {
+		t.Fatalf("fixed node on one account: scaling = %#v, %v", s, ok)
 	}
-	if n := len(one.ReadsNamed("__type")); n != 0 {
-		t.Fatalf("fixed node on one account probed the schema %d times", n)
+}
+
+// The whole heartbeat of a fixed node on the operator's own login, one
+// account: version, running and scaling {capacity, min, max, reason,
+// accounts} with its capacity — nothing else rides it, and a gateway
+// whose schema lacks scaling gets the heartbeat without it.
+func TestFixedSingleAccountHeartbeatBody(t *testing.T) {
+	n := newScaled(t, Fixed(3), false)
+	n.loop.Version = "v0.2.203"
+	n.at(0)
+	hb := n.CallsNamed("heartbeatNode")
+	if len(hb) == 0 {
+		t.Fatal("no heartbeat")
+	}
+	in := hb[len(hb)-1].Input
+	delete(in, "nodeId")
+	delete(in, "aggregateId")
+	got, _ := json.Marshal(in)
+	const want = `{"namespace":"runsheet","running":0,"scaling":{"accounts":[],"capacity":3,"max":3,"min":3,"reason":"fixed"},"version":"v0.2.203"}`
+	if string(got) != want {
+		t.Fatalf("heartbeat body =\n%s\nwant\n%s", got, want)
+	}
+
+	old := newScaled(t, Fixed(3), false)
+	old.UnknownFields["scaling"] = true
+	old.at(0)
+	if s, ok := lastScaling(t, old); ok {
+		t.Fatalf("scaling sent to a schema without it: %#v", s)
 	}
 }

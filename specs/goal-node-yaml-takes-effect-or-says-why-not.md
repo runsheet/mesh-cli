@@ -3,10 +3,175 @@ title: Goal — A node.yaml the operator edits takes effect, and the node says s
 kind: plan
 status: running
 parent: prd
-summary: The mini's 04:00:22Z exit with status=2/INVALIDARGUMENT on 2026-09-29 was a nil-pointer panic in the evaluator — a failed Codex preflight turned to Claude, Credentials.Open's error overwrote acct with nil, and the deferred acct.Cleanup() dereferenced it — now fixed, and a panic anywhere in the node is one `mesh node: fatal:` line and exit 70; node.log is bounded — the node writes and rotates it itself at 10 MB keeping 5, session text goes to sessions.log, and the service's output goes to the journal (or node.crash.log on macOS); the reload's root cause is another item's section.
+summary: The mini's capacity 6 → 8 did take effect in the loop at 06:17:09Z (logged) but never reached the platform, because a fixed node on one account heartbeated no capacity and only registration sets NodeIndex.capacity; a fixed node now heartbeats `scaling {capacity, min, max, reason: fixed}` (mesh-cli ADR-018). Separately, the mini's 04:00:22Z exit with status=2/INVALIDARGUMENT on 2026-09-29 was a nil-pointer panic in the evaluator — a failed Codex preflight turned to Claude, Credentials.Open's error overwrote acct with nil, and the deferred acct.Cleanup() dereferenced it — now fixed, and a panic anywhere in the node is one `mesh node: fatal:` line and exit 70.
 ---
 
-# A node.yaml the operator edits takes effect, and the node says so
+# Goal — A node.yaml the operator edits takes effect, and the node says so
+
+Mesh goal `node-yaml-takes-effect-or-says-why-not`, running. Item 1 (this
+section) found and fixed why the capacity change never reached the
+platform. Items 2–4 cover every reloadable field, the 04:00:22Z
+`status=2/INVALIDARGUMENT` exit (below, in The 04:00:22Z exit), and the
+unbounded node.log.
+
+## Statement
+
+On 2026-09-29 the mini's `~/.mesh/node.yaml` said `capacity: 8` (mtime
+11:16:18Z) under a node started 04:00:32Z on v0.2.188. At 13:30Z the
+platform's `NodeIndex(mini)` still said `capacity: 6`, and a grep of
+node.log after 11:16 found no `capacity 6 → 8` line and no
+`reload config:` line.
+
+## Root cause
+
+**Possibility (d) held: the loop applied the new capacity and logged it,
+but the platform was never told.** (a), (b) and (c) are ruled out by the
+evidence below. The operator edited node.yaml at 06:15–06:17Z, not at
+11:16Z. The 11:16 edit only added a `codex:` block, so the search for the
+line began five hours after the line was written.
+
+### Evidence from the mini
+
+Commands run on the mini on 2026-09-29 at about 21:45Z. Log lines are
+from `~/.mesh/node.log` (372 MB), found by timestamp prefix.
+
+**The service reads the file the operator edited (rules out b).**
+
+```
+$ systemctl --user cat io.projectmesh.mesh-node | grep -E 'ExecStart|Environment'
+ExecStart=/home/chris/bin/mesh node start --mode=poll --unattended
+Environment=PATH=/usr/bin:/home/chris/bin:/home/chris/.local/bin:/opt/homebrew/bin:/usr/local/bin:/bin:/usr/sbin:/sbin
+Environment=HOME=/home/chris
+$ tr '\0' '\n' < /proc/$(cat ~/.mesh/node.pid)/environ | grep ^HOME
+HOME=/home/chris
+$ grep -n '2026/09/29 04:00:32 mesh node' ~/.mesh/node.log
+5921770:mesh node: 2026/09/29 04:00:32 mesh node v0.2.188, pid 3303985, config /home/chris/.mesh/node.yaml
+```
+
+**The capacity changed at 06:15–06:17, not at 11:16.** The operator's
+own backups, each taken just before an edit:
+
+```
+$ stat -c '%y' ~/.mesh/node.yaml.bak-20260929-061520 ~/.mesh/node.yaml.bak-20260929-111617
+2026-09-29 06:15:20.510041847 +0000      # capacity: 6
+2026-09-29 11:16:17.962121594 +0000      # capacity: 8 — already
+$ diff ~/.mesh/node.yaml.bak-20260929-111617 ~/.mesh/node.yaml
+10a11,21
+> # The operator's own ChatGPT login, so evaluations prefer Codex: …
+> codex:
+>   binary: /home/chris/.local/bin/codex
+>   accounts:
+>     - name: chatgpt-pro
+>       home: ~/.codex
+```
+
+**The reload ran on this mode and applied it, logged at that moment
+(rules out a and c).** It was the same process: the service's next start
+was 14:13:19Z.
+
+```
+$ grep -n 'capacity' ~/.mesh/node.log | grep '2026/09/29 0[4-9]\|2026/09/29 1[0-3]'
+6015200:mesh node: 2026/09/29 06:15:46 capacity 6 → 6–8
+6015202:mesh node: 2026/09/29 06:15:46 capacity 6–8: scaling by what its 2 account(s) afford from 6
+6015207:mesh node: 2026/09/29 06:17:09 capacity 6 → 8
+$ journalctl --user -u io.projectmesh.mesh-node --since '2026-09-29 00:00' | grep -E 'Started|status='
+Sep 29 04:00:22 … Main process exited, code=exited, status=2/INVALIDARGUMENT
+Sep 29 04:00:32 … Started io.projectmesh.mesh-node.service …
+Sep 29 14:13:19 … Started io.projectmesh.mesh-node.service …
+```
+
+The operator briefly wrote a range (`{min: 6, max: 8}`) and then a plain
+`8`, and each was in force on the next 30 s tick. The loop then ran at 8.
+When paced it caps new work at half its capacity, and that half went from
+3 to 4:
+
+```
+03:17:20 limits: paced … at most 3 item(s) at once, and no research     # capacity 6
+06:32:15 limits: paced … at most 4 item(s) at once, and no research     # capacity 8
+```
+
+**The platform never heard (d).** `NodeIndex.capacity` is set by
+`registerNode` alone (`Capacity: cfg.Capacity.Max`,
+`internal/commands/nodecmd.go`), and only a start registers. The
+heartbeat's `scaling` sets `NodeIndex.scaling_capacity` (runsheet
+`platform/aggregates/node.go`, `scalingSeen`), but
+`Loop.heartbeatScaling` returned nil for a fixed capacity on fewer than
+two accounts. From 06:15:46 to 06:17:09 the range sent
+`scaling.capacity 6`; from 06:17:09 a plain `8` sent nothing. So:
+
+```
+13:30:02Z  NodeIndex(mini)  capacity: 6, running: 4, version v0.2.188          (the goal's reading)
+14:24:10Z  mesh node v0.2.188, pid 786507 … poll mode: … capacity 8             (restart re-registers)
+21:45:14Z  mesh_health_nodes(runsheet) → mini: "capacity": 8, "version": "v0.2.191"
+```
+
+It was 8 only after the 14:13–14:25 restarts re-registered the node.
+
+### The test, failing before the fix
+
+`TestCapacityReloadFromNodeYAMLReachesTheHeartbeat`
+(`internal/node/capacity_reload_test.go`) drives a `Loop` whose `Reload`
+is `Reloader` over a node.yaml on disk. The file goes from `capacity: 6`
+to `capacity: 8` between two Ticks. The test asserts `Capacity() == 8`,
+the whole log line `capacity 6 → 8`, and `scaling.capacity == 8` on the
+heartbeat the fake gateway received after the second tick. It was
+committed alone on top of main (882ceab), with main's non-test files:
+
+```
+$ go test ./internal/node/ -run TestCapacityReloadFromNodeYAMLReachesTheHeartbeat -count=1 -v
+=== RUN   TestCapacityReloadFromNodeYAMLReachesTheHeartbeat
+    capacity_reload_test.go:42: the heartbeat after the reload carries scaling <nil>, want capacity 8
+--- FAIL: TestCapacityReloadFromNodeYAMLReachesTheHeartbeat (0.01s)
+FAIL
+FAIL	projectmesh.io/mesh-cli/internal/node	0.016s
+```
+
+It fails at the heartbeat, not at `Capacity()` or the log line, which
+matches what the mini showed.
+
+### The fix
+
+`Loop.heartbeatScaling` now sends `scaling` for a fixed node on any
+number of accounts, the operator's own login included, as
+`{capacity: N, min: N, max: N, reason: fixed, accounts: […]}`. It rides
+the existing gate: only when the gateway's `HeartbeatNodeInput` takes
+`scaling`, introspected and cached for an hour. `reason: fixed` is
+already sent for a fixed node on several accounts, so the platform
+accepts it unchanged. The console shows `scaling.capacity` when present
+(runsheet/mesh ADR-001), so a node.yaml capacity change shows there
+within one heartbeat. The contract change is recorded in
+`docs/adr/adr-018-a-fixed-node-heartbeats-its-capacity.md` and AGENTS.md's
+heartbeat-extras paragraph.
+
+Tests:
+
+- `TestCapacityReloadFromNodeYAMLReachesTheHeartbeat` passes.
+- `TestFixedSingleAccountHeartbeatBody` asserts the whole heartbeat body
+  of a fixed single-account node:
+  `{"namespace":"runsheet","running":0,"scaling":{"accounts":[],"capacity":3,"max":3,"min":3,"reason":"fixed"},"version":"v0.2.203"}`.
+  It also checks that a schema without `scaling` gets none.
+- `TestFixedNodeHeartbeatsItsCapacityOnAnyNumberOfAccounts` and
+  `TestScalingHeartbeat` now expect the fixed `scaling`.
+
+The `capacity %d → %d` line in `setRange` needed no change: it already
+logs whenever the fixed capacity in force changes, as 06:17:09 shows. The
+new test asserts it as a whole line.
+
+Not changed: what capacity means, the scaler, and a ranged node's
+behaviour (ADR 004).
+
+### Still owed
+
+- **Platform:** `NodeIndex.capacity`, which `mesh_health_nodes` reports,
+  is still the registered value until the next start. runsheet should
+  read `scaling_capacity` when set, or keep `capacity` in step with it.
+- **After the release reaches the mini:** the goal still needs
+  `NodeIndex` before and after a live node.yaml edit, with the file's
+  mtime and the log line. The fix is not yet on the mini (v0.2.191).
+- `Reloader`'s `register` callback registers a newly served org with
+  the capacity the node started with (`registerIn(ctx, gw, cfg, …)` on
+  the start-time `cfg`). The heartbeat's `scaling` now corrects it on
+  the next tick.
 
 The mini's `capacity` was raised from 6 to 8 in `~/.mesh/node.yaml` and
 never took effect, and `~/.mesh/node.log` — 339 MB and never rotated —
