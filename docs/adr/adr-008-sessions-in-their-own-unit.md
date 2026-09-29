@@ -1,5 +1,5 @@
 ---
-summary: How mesh-cli starts implementing mesh-specs ADR 008 — internal/sessionunit runs a host claude session in a unit of its own (a transient `systemd-run --user --scope`, else a detached setsid process group; the sandbox's pod is the unit later), its stream-json in `<workdir>.session/output.jsonl`, its stderr in `stderr.log`, and a secret-free `state.json` (node, item/goal/direction, claim, kind, model, account, pid, unit, startedAt, offset) written atomically, read back by a Follower that tails the file line by line; ClaudeCode.Run keeps its result and error semantics, and a cancelled context or timeout stops the unit. A stop (`Unit.Kill`) ends the whole unit, not its leader: a scope's cgroup processes are listed, SIGTERM then SIGKILL go to the cgroup, `systemctl --user stop` stops the scope (KillMode=control-group), the node waits until it is gone (a `Show` that errors is Kill's error, never taken as gone; every signal's and the stop's error is returned), and every process found besides the session's own pid is returned to the caller as what the agent left running; `SystemdScope.Systemctl` is injectable, and `ParseUnitName` reads a scope's kind and subject back.
+summary: How mesh-cli starts implementing mesh-specs ADR 008 — internal/sessionunit runs a host claude session in a unit of its own (a transient `systemd-run --user --scope`, else a detached setsid process group; the sandbox's pod is the unit later), its stream-json in `<workdir>.session/output.jsonl`, its stderr in `stderr.log`, and a secret-free `state.json` (node, item/goal/direction, claim, kind, model, account, pid, unit, startedAt, offset) written atomically, read back by a Follower that tails the file line by line; ClaudeCode.Run keeps its result and error semantics, and a cancelled context or timeout stops the unit. A stop (`Unit.Kill`) ends the whole unit, not its leader: a scope's cgroup processes are listed, SIGTERM then SIGKILL go to the cgroup, `systemctl --user stop` stops the scope (KillMode=control-group), the node waits until it is gone (a `Show` that errors is Kill's error, never taken as gone; every signal's and the stop's error is returned), and every process found besides the session's own pid is returned to the caller as what the agent left running; every end of a host session but a detach kills its unit, the Result's `Killed` reports those processes and the node logs them and notes them on the item; `SystemdScope.Systemctl` is injectable, and `ParseUnitName` reads a scope's kind and subject back.
 status: accepted
 ---
 
@@ -130,6 +130,30 @@ whatever was left in the cgroup after claude exited stayed.
   tests. `ParseUnitName` is `UnitName`'s inverse: kind and subject of
   `mesh-session-<kind>-<subject>-<8 hex>`, the subject as it is in the
   name (`:` and `/` already `_`).
+
+### The session's end
+
+Amended 2026-09-29 (same goal). Claude's own pid exiting is not the end
+of what the session started, so **every end of a host session kills its
+unit**: `ClaudeCode.Run` and `ClaudeCode.Attach` call `Unit.Kill` once
+the leader has exited (or been stopped) and the output has been read to
+its end — a clean exit, a non-zero exit, an `UnavailableError`, a
+cancelled ctx, the job's `Timeout`, the hand-back's stop (the first run
+and the resumed one, each its own unit) and an adopted session's end
+alike. The stops a cancel, a timeout or the hand-back make *are* that
+kill: one `Kill` per unit, whichever end comes first, its report kept.
+
+- **The report**: `Result.Killed` (`[]sessionunit.Process`) is what the
+  kill found — the processes the agent left running that the node had
+  to kill; nil when none. A handed-back Result's is both runs'.
+- **Not on a detach**: an `Outlive` job whose parent ctx is done is left
+  running for the next node and its unit is not killed; the adopting
+  node's `Attach` kills it at its real end.
+- **A failed kill is never the session's failure**: it is written to
+  `ClaudeCode.Stderr` (`harness claude-code: kill unit …`), or, with
+  none, carried on `Result.KillError`. `finishClaude`'s result and
+  error semantics are unchanged.
+- Sandboxed and Codex sessions are not in a unit and report nothing.
 
 ## Consequences
 

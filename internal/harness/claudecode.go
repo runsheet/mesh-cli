@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -131,7 +132,9 @@ func (c *ClaudeCode) SandboxArgs(job Job, mcpPath string) []string {
 // (sessionunit), not as the node's child: its stream-json goes to
 // `<workdir>.session/output.jsonl`, read back as it grows, and its
 // state to `state.json` beside it, so the node's exit does not end it.
-// A cancelled ctx or the job's Timeout stops the unit.
+// A cancelled ctx or the job's Timeout stops the unit, and every end
+// but a detach kills it (ADR 008, The session's end): Result.Killed is
+// what the agent left running there.
 //
 // A job with a hand-back mark (HandBackAt, HasCommit) is watched as it
 // runs (ADR 012 Hand-back): once its turns, priced by model, pass
@@ -183,7 +186,21 @@ func (c *ClaudeCode) Run(ctx context.Context, job Job, onProgress func(Progress)
 		}
 	}
 	second, err := c.runHost(ctx, turn, progress, nil)
-	return mergeHandBack(first, second, spent), err
+	merged := mergeHandBack(first, second, spent)
+	// both runs' leftovers: the first's unit was killed at its stop
+	merged.Killed = append(append([]sessionunit.Process(nil), first.Killed...), second.Killed...)
+	merged.KillError = strings.Join(nonEmpty(first.KillError, second.KillError), "; ")
+	return merged, err
+}
+
+func nonEmpty(ss ...string) []string {
+	var out []string
+	for _, s := range ss {
+		if s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // runHost is Run on the host, in its unit, watched by hb (nil: not).
@@ -238,8 +255,9 @@ func (c *ClaudeCode) runHost(ctx context.Context, job Job, onProgress func(Progr
 		return Result{}, fmt.Errorf("harness claude-code: state: %w", err)
 	}
 	keep = job.Outlive && job.Workspace != ""
-	hb.setStop(func() { go unit.Stop(h) })
-	res, detached, waitErr, errBuf, rawOut := c.follow(ctx, parent, job.Outlive, unit, h, dir, &st, 0, job.Secrets, onProgress, hb.observe)
+	end := &unitEnd{unit: unit, h: h}
+	hb.setStop(func() { go end.kill() })
+	res, detached, waitErr, errBuf, rawOut := c.follow(ctx, parent, job.Outlive, end, dir, &st, 0, job.Secrets, onProgress, hb.observe)
 	if detached {
 		return res, parent.Err()
 	}
@@ -271,7 +289,7 @@ func (c *ClaudeCode) Attach(ctx context.Context, dir string, onProgress func(Pro
 		ctx, cancel = context.WithDeadline(ctx, st.StartedAt.Add(time.Duration(st.TimeoutSeconds)*time.Second))
 		defer cancel()
 	}
-	res, detached, waitErr, errBuf, rawOut := c.follow(ctx, parent, true, unit, h, dir, &st, st.Offset, nil, onProgress, nil)
+	res, detached, waitErr, errBuf, rawOut := c.follow(ctx, parent, true, &unitEnd{unit: unit, h: h}, dir, &st, st.Offset, nil, onProgress, nil)
 	if detached {
 		return res, parent.Err()
 	}
@@ -300,8 +318,10 @@ func RemoveSession(workdir string) error {
 // saved into st as it advances; watch, when set, sees every event. ctx
 // done stops the unit — unless outlive and parent is done too (the node
 // shutting down), when the reading stops and the session is left
-// running: detached.
-func (c *ClaudeCode) follow(ctx, parent context.Context, outlive bool, unit sessionunit.Unit, h sessionunit.Handle, dir string, st *sessionunit.State, from int64, secrets []string, onProgress func(Progress), watch func(Event)) (res Result, detached bool, waitErr error, errBuf *bytes.Buffer, rawOut *capBuffer) {
+// running: detached. Every other end kills the unit once the output is
+// read, and res.Killed is what that kill (or the stop before it) found.
+func (c *ClaudeCode) follow(ctx, parent context.Context, outlive bool, end *unitEnd, dir string, st *sessionunit.State, from int64, secrets []string, onProgress func(Progress), watch func(Event)) (res Result, detached bool, waitErr error, errBuf *bytes.Buffer, rawOut *capBuffer) {
+	unit, h := end.unit, end.h
 	errBuf, rawOut = &bytes.Buffer{}, &capBuffer{max: 64 << 10}
 	readCtx, stopReading := context.WithCancel(context.Background())
 	defer stopReading()
@@ -318,7 +338,7 @@ func (c *ClaudeCode) follow(ctx, parent context.Context, outlive bool, unit sess
 				stopReading()
 				return
 			}
-			unit.Stop(h)
+			end.kill()
 		case <-ended:
 		}
 	}()
@@ -340,9 +360,9 @@ func (c *ClaudeCode) follow(ctx, parent context.Context, outlive bool, unit sess
 	}
 	out, err := sessionunit.Follow(readCtx, filepath.Join(dir, sessionunit.OutputFile), 0, alive)
 	if err != nil {
-		unit.Stop(h)
+		end.kill()
 		<-errDone
-		return Result{}, false, fmt.Errorf("output: %w", err), errBuf, rawOut
+		return c.ended(end, Result{}), false, fmt.Errorf("output: %w", err), errBuf, rawOut
 	}
 	defer out.Close()
 	progress := onProgress
@@ -382,7 +402,43 @@ func (c *ClaudeCode) follow(ctx, parent context.Context, outlive bool, unit sess
 		st.Offset = out.Offset()
 		_ = sessionunit.WriteState(dir, *st)
 	}
-	return res, false, waitErr, errBuf, rawOut
+	end.kill()
+	return c.ended(end, res), false, waitErr, errBuf, rawOut
+}
+
+// unitEnd is a session's unit killed once, whichever end comes first — a
+// cancel, the timeout, the hand-back's stop or the leader's own exit —
+// and what the kill found.
+type unitEnd struct {
+	unit   sessionunit.Unit
+	h      sessionunit.Handle
+	once   sync.Once
+	killed []sessionunit.Process
+	err    error
+}
+
+// kill kills the unit, or waits for the kill already under way.
+func (e *unitEnd) kill() {
+	e.once.Do(func() { e.killed, e.err = e.unit.Kill(e.h) })
+}
+
+// ended puts the kill's report on res. A kill that failed is never the
+// session's failure: it goes to c.Stderr, else onto res.KillError.
+func (c *ClaudeCode) ended(e *unitEnd, res Result) Result {
+	e.kill()
+	res.Killed = e.killed
+	if e.err != nil {
+		msg := fmt.Sprintf("kill unit %s: %v", e.h.UnitName, e.err)
+		if e.h.UnitName == "" {
+			msg = fmt.Sprintf("kill session %d: %v", e.h.PID, e.err)
+		}
+		if c.Stderr != nil {
+			fmt.Fprintf(c.Stderr, "harness claude-code: %s\n", msg)
+		} else {
+			res.KillError = msg
+		}
+	}
+	return res
 }
 
 // sessionFiles are the files a session is started on: the prompt (on
