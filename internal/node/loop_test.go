@@ -298,7 +298,7 @@ func TestLoopClaimsRunsAndFinishes(t *testing.T) {
 	}
 	// the index lists every document, the spec too, and says which are on disk
 	index, _ := os.ReadFile(filepath.Join(dir, ContextDir, IndexFile))
-	for _, want := range []string{"Project acme/mesh", "| adr | ADR 001 |  | `adr-001` | acme/widgets/specs/adr-001.md | `adr-adr-001.md` |", "| spec | Notes |  | `notes` | acme/widgets/specs/notes.md | fetch |"} {
+	for _, want := range []string{"Project acme/mesh", "| adr | ADR 001 |  | `adr-001` | acme/widgets/specs/adr-001.md | `adr-adr-001.md` |", "| spec | Notes | `notes` |"} {
 		if !strings.Contains(string(index), want) {
 			t.Fatalf("index lacks %q:\n%s", want, index)
 		}
@@ -638,6 +638,16 @@ func (p *priorityFake) addItem(org, goal, title string, seq int, retry bool) {
 	p.WorkItems[title] = row
 }
 
+// addItemRow adds a ready item of the goal, its id title, carrying the
+// fields of extra as the platform serves them (prUrl, evaluation,
+// evaluationPassed, rebaseConflict, rebaseState, attempts, readyAt).
+func (p *priorityFake) addItemRow(org, goal, title string, seq int, extra map[string]any) {
+	p.addItem(org, goal, title, seq, false)
+	for k, v := range extra {
+		p.WorkItems[title][k] = v
+	}
+}
+
 // addPlanning adds a goal of that priority to the org, in planning.
 func (p *priorityFake) addPlanning(org, slug, priority string) {
 	p.addGoal(org, slug, priority)
@@ -737,8 +747,9 @@ func TestLoopReadsEmptyPriorityAsNormal(t *testing.T) {
 }
 
 // urgent > high > normal > low, whatever the seq and org; within a
-// priority a fresh item goes before a retry, then seq.
-func TestLoopClaimsInPriorityThenFreshThenSeq(t *testing.T) {
+// priority started work under the attempt bound (a retry at attempts 1)
+// goes before fresh items, then seq.
+func TestLoopClaimsInPriorityThenStartedThenSeq(t *testing.T) {
 	p := newPriorityFake(t)
 	p.addGoal(orgID, "low", "low")
 	p.addGoal(org2, "normal", "normal")
@@ -750,9 +761,131 @@ func TestLoopClaimsInPriorityThenFreshThenSeq(t *testing.T) {
 	p.addItem(orgID, "high", "high-5", 5, false)
 	p.addItem(orgID, "high", "high-4", 4, false)
 	p.addItem(org2, "urgent", "urgent-9", 9, false)
-	want := "urgent-9,high-4,high-5,high-retry-3,normal-2,low-1"
+	want := "urgent-9,high-retry-3,high-4,high-5,normal-2,low-1"
 	if got := strings.Join(p.tick(6), ","); got != want {
 		t.Fatalf("claimed %s, want %s", got, want)
+	}
+}
+
+// At equal priority every shape of started work — a rework retry, a
+// rebase the integrator could not do, a re-evaluation — is claimed
+// before the fresh items, older readyAt first among them, though the
+// fresh ones have the lower seqs.
+func TestLoopClaimsStartedWorkBeforeFresh(t *testing.T) {
+	p := newPriorityFake(t)
+	p.addGoal(orgID, "g", "normal")
+	p.addGoal(org2, "h", "normal")
+	p.addItem(orgID, "g", "fresh-1", 1, false)
+	p.addItem(org2, "h", "fresh-2", 2, false)
+	p.addItem(orgID, "g", "fresh-3", 3, false)
+	p.addItemRow(orgID, "g", "rework-7", 7, map[string]any{"evaluation": "the test does not fail", "attempts": 1, "prUrl": "https://github.com/acme/app/pull/7", "readyAt": "2026-09-28T02:24:00Z"})
+	p.addItemRow(org2, "h", "rebase-8", 8, map[string]any{"prUrl": "https://github.com/globex/app/pull/8", "rebaseConflict": "<<<<<<< HEAD", "rebaseState": "unresolved", "readyAt": "2026-09-27T10:00:00Z"})
+	p.addItemRow(orgID, "g", "reeval-9", 9, map[string]any{"prUrl": "https://github.com/acme/app/pull/9", "evaluation": "passed before", "evaluationPassed": true, "readyAt": "2026-09-29T08:00:00.5Z"})
+	want := "rebase-8,rework-7,reeval-9,fresh-1,fresh-2,fresh-3"
+	if got := strings.Join(p.tick(6), ","); got != want {
+		t.Fatalf("claimed %s, want %s", got, want)
+	}
+}
+
+// Priority outranks the class: an urgent fresh item beats a normal
+// retry, which still beats the normal fresh one.
+func TestLoopPriorityOutranksStartedWork(t *testing.T) {
+	p := newPriorityFake(t)
+	p.addGoal(orgID, "steady", "normal")
+	p.addGoal(org2, "fire", "urgent")
+	p.addItem(orgID, "steady", "normal-fresh-1", 1, false)
+	p.addItem(orgID, "steady", "normal-retry-2", 2, true)
+	p.addItem(org2, "fire", "urgent-fresh-9", 9, false)
+	want := "urgent-fresh-9,normal-retry-2,normal-fresh-1"
+	if got := strings.Join(p.tick(3), ","); got != want {
+		t.Fatalf("claimed %s, want %s", got, want)
+	}
+}
+
+// A retry at the attempt bound loses the preference: it goes after the
+// fresh items of its priority, older readyAt or not, and with capacity
+// for one the fresh item is claimed, not it.
+func TestLoopAttemptCapLosesThePreference(t *testing.T) {
+	p := newPriorityFake(t)
+	p.addGoal(orgID, "g", "normal")
+	p.addGoal(orgID, "later", "low")
+	p.addItemRow(orgID, "g", "poisoned-1", 1, map[string]any{"evaluation": "still broken", "attempts": finishFirstAttempts, "prUrl": "https://github.com/acme/app/pull/1", "readyAt": "2026-09-20T00:00:00Z"})
+	p.addItemRow(orgID, "g", "fresh-5", 5, map[string]any{"readyAt": "2026-09-29T09:00:00Z"})
+	p.addItemRow(orgID, "g", "fresh-4", 4, map[string]any{"readyAt": "2026-09-29T08:00:00Z"})
+	p.addItem(orgID, "later", "low-2", 2, false)
+	if got := strings.Join(p.tick(1), ","); got != "fresh-4" {
+		t.Fatalf("claimed %s: a retry at the bound must not block fresh work", got)
+	}
+	if got := strings.Join(p.tick(3), ","); got != "fresh-5,poisoned-1,low-2" {
+		t.Fatalf("then claimed %s", got)
+	}
+}
+
+// Within the fresh class and within the started class the older readyAt
+// is claimed first whatever the seq; an item with no readyAt (an older
+// platform) goes after every item of its class that has one.
+func TestLoopOlderReadyFirst(t *testing.T) {
+	p := newPriorityFake(t)
+	p.addGoal(orgID, "g", "normal")
+	p.addItemRow(orgID, "g", "fresh-new-1", 1, map[string]any{"readyAt": "2026-09-29T12:00:00Z"})
+	p.addItemRow(orgID, "g", "fresh-old-2", 2, map[string]any{"readyAt": "2026-09-28T02:24:00Z"})
+	p.addItemRow(orgID, "g", "started-new-3", 3, map[string]any{"prUrl": "https://github.com/acme/app/pull/3", "rebaseState": "requested", "readyAt": "2026-09-29T11:00:00Z"})
+	p.addItemRow(orgID, "g", "started-old-4", 4, map[string]any{"prUrl": "https://github.com/acme/app/pull/4", "readyAt": "2026-09-29T10:59:59.123456Z"})
+	p.addItem(orgID, "g", "fresh-none-9", 9, false)
+	p.addItemRow(orgID, "g", "started-none-5", 5, map[string]any{"prUrl": "https://github.com/acme/app/pull/5"})
+	want := "started-old-4,started-new-3,started-none-5,fresh-old-2,fresh-new-1,fresh-none-9"
+	if got := strings.Join(p.tick(6), ","); got != want {
+		t.Fatalf("claimed %s, want %s", got, want)
+	}
+}
+
+// A poisoned item — its evaluation always fails — does not starve the
+// queue: with capacity 1 it is claimed at most finishFirstAttempts times
+// ahead of the fresh items, attempts climbing with each failed
+// evaluation, then both fresh items are claimed before it is again.
+func TestLoopPoisonedItemDoesNotStarveTheQueue(t *testing.T) {
+	p := newPriorityFake(t)
+	p.addGoal(orgID, "g", "normal")
+	p.addItemRow(orgID, "g", "poisoned", 9, map[string]any{"prUrl": "https://github.com/acme/app/pull/9", "rebaseConflict": "<<<<<<< HEAD", "readyAt": "2026-09-28T02:24:00Z"})
+	p.addItemRow(orgID, "g", "fresh-1", 1, map[string]any{"readyAt": "2026-09-29T08:00:00Z"})
+	p.addItemRow(orgID, "g", "fresh-2", 2, map[string]any{"readyAt": "2026-09-29T09:00:00Z"})
+	loop, _ := p.loop(1)
+	gw := loop.GW
+	// the build of the poisoned item finishes; the fresh ones run on
+	loop.Dispatch = func(ctx context.Context, it gateway.WorkItem) {
+		if it.ID == "poisoned" {
+			if err := gw.FinishWorkItem(ctx, it.ID, "mesh/g-9", "abc123", 0, nil); err != nil {
+				t.Errorf("finish: %v", err)
+			}
+		}
+	}
+	// and every evaluation of it fails
+	loop.Evaluate = func(ctx context.Context, it gateway.WorkItem) {
+		if err := gw.EvaluateWorkItem(ctx, it.ID, false, "VERDICT: FAIL", 0, nil); err != nil {
+			t.Errorf("evaluate: %v", err)
+		}
+	}
+	ctx := context.Background()
+	var trace []string
+	var attempts []string
+	for i := 0; i < 5; i++ {
+		// the held item is evaluated first, so the tick sees it ready
+		loop.evaluateHeld(ctx)
+		loop.wg.Wait()
+		before := len(p.CallsNamed("claimWorkItem"))
+		loop.Tick(ctx)
+		loop.wg.Wait()
+		for _, c := range p.CallsNamed("claimWorkItem")[before:] {
+			trace = append(trace, fmt.Sprint(c.Input["aggregateId"]))
+		}
+		attempts = append(attempts, fmt.Sprint(p.Item("poisoned")["attempts"]))
+	}
+	want := "poisoned,poisoned,fresh-1,fresh-2,poisoned"
+	if got := strings.Join(trace, ","); got != want {
+		t.Fatalf("claims over the ticks %s, want %s", got, want)
+	}
+	if got := strings.Join(attempts, ","); got != "<nil>,1,2,2,2" {
+		t.Fatalf("poisoned attempts after each tick %s", got)
 	}
 }
 
@@ -800,12 +933,14 @@ func TestLoopClaimsAsNormalWhenGoalsFail(t *testing.T) {
 }
 
 // claimOrder: unknown and empty priorities rank as normal, a retry
-// goes after a fresh item of the same rank, then seq.
+// under the attempt bound goes before a fresh item of the same rank, a
+// retry at the bound after it, then seq.
 func TestClaimOrder(t *testing.T) {
 	items := []readyItem{
 		{item: gateway.WorkItem{ID: "low", Seq: 1}, rank: gateway.PriorityRank("low")},
 		{item: gateway.WorkItem{ID: "unknown", Seq: 3}, rank: gateway.PriorityRank("")},
-		{item: gateway.WorkItem{ID: "retry", Seq: 2, Evaluation: "no"}, rank: gateway.PriorityRank("normal")},
+		{item: gateway.WorkItem{ID: "retry", Seq: 2, Evaluation: "no", Attempts: 1}, rank: gateway.PriorityRank("normal")},
+		{item: gateway.WorkItem{ID: "spent", Seq: 0, Evaluation: "no", Attempts: finishFirstAttempts}, rank: gateway.PriorityRank("normal")},
 		{item: gateway.WorkItem{ID: "fresh", Seq: 4}, rank: gateway.PriorityRank("bogus")},
 	}
 	claimOrder(items)
@@ -813,8 +948,70 @@ func TestClaimOrder(t *testing.T) {
 	for _, r := range items {
 		got = append(got, r.item.ID)
 	}
-	if strings.Join(got, ",") != "unknown,fresh,retry,low" {
+	if strings.Join(got, ",") != "retry,unknown,fresh,spent,low" {
 		t.Fatalf("order %v", got)
+	}
+}
+
+// Mixed readyAt with crossing seqs: the items with a time go first, the
+// older first whatever the seq, then those without by seq — in every
+// class, and whatever order they are listed in. Comparing the times only
+// when both items had one, else seq, made a cycle here (older-3 before
+// newer-1, newer-1 before none-2, none-2 before older-3) and the result
+// depended on the listed order.
+func TestClaimOrderMixedReadyAtIsTransitive(t *testing.T) {
+	base := []readyItem{
+		{item: gateway.WorkItem{ID: "older-3", Seq: 3, ReadyAt: "2026-09-28T02:24:00Z"}},
+		{item: gateway.WorkItem{ID: "newer-1", Seq: 1, ReadyAt: "2026-09-29T12:00:00.5Z"}},
+		{item: gateway.WorkItem{ID: "none-2", Seq: 2}},
+		{item: gateway.WorkItem{ID: "none-0", Seq: 0, ReadyAt: "not a time"}},
+		{item: gateway.WorkItem{ID: "started-older-6", Seq: 6, PRURL: "u", ReadyAt: "2026-09-27T00:00:00Z"}},
+		{item: gateway.WorkItem{ID: "started-newer-4", Seq: 4, PRURL: "u", ReadyAt: "2026-09-29T00:00:00Z"}},
+		{item: gateway.WorkItem{ID: "started-none-5", Seq: 5, PRURL: "u"}},
+	}
+	want := "started-older-6,started-newer-4,started-none-5,older-3,newer-1,none-0,none-2"
+	var permute func(k int)
+	permute = func(k int) {
+		if k == len(base) {
+			items := append([]readyItem(nil), base...)
+			claimOrder(items)
+			var got []string
+			for _, r := range items {
+				got = append(got, r.item.ID)
+			}
+			if strings.Join(got, ",") != want {
+				t.Fatalf("order %s, want %s", strings.Join(got, ","), want)
+			}
+			return
+		}
+		for i := k; i < len(base); i++ {
+			base[k], base[i] = base[i], base[k]
+			permute(k + 1)
+			base[k], base[i] = base[i], base[k]
+		}
+	}
+	permute(0)
+}
+
+// Full ties — rank, class, readyAt and seq — keep the order the orgs
+// were listed in: the sort is stable.
+func TestClaimOrderIsStable(t *testing.T) {
+	acme, globex := Scope{Login: "acme"}, Scope{Login: "globex"}
+	at := "2026-09-29T08:00:00Z"
+	items := []readyItem{
+		{item: gateway.WorkItem{ID: "acme-fresh", Seq: 1, ReadyAt: at}, scope: acme},
+		{item: gateway.WorkItem{ID: "acme-started", Seq: 1, ReadyAt: at, PRURL: "u"}, scope: acme},
+		{item: gateway.WorkItem{ID: "globex-fresh", Seq: 1, ReadyAt: at}, scope: globex},
+		{item: gateway.WorkItem{ID: "globex-started", Seq: 1, ReadyAt: at, PRURL: "u"}, scope: globex},
+		{item: gateway.WorkItem{ID: "acme-fresh-2", Seq: 1, ReadyAt: at}, scope: acme},
+	}
+	claimOrder(items)
+	var got []string
+	for _, r := range items {
+		got = append(got, r.item.ID)
+	}
+	if want := "acme-started,globex-started,acme-fresh,globex-fresh,acme-fresh-2"; strings.Join(got, ",") != want {
+		t.Fatalf("order %s, want %s", strings.Join(got, ","), want)
 	}
 }
 

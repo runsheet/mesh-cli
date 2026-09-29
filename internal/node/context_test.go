@@ -58,8 +58,9 @@ func TestContextSizeBudget(t *testing.T) {
 }
 
 // RenderIndex carries a summary only for a ContextKinds document that is
-// not on disk; an on-disk ADR and a kind a session rarely fetches (a
-// skill) get no summary cell even when the document has one.
+// not on disk; an on-disk ADR gets no summary cell, and a kind a session
+// rarely fetches (a skill) is a row of the second table, kind, title and
+// slug alone, even when the document has one.
 func TestRenderIndexSummaries(t *testing.T) {
 	f := seed(t)
 	f.Documents["acme/mesh"][0]["summary"] = "What the ADR decides." // adr-001, on disk
@@ -85,25 +86,234 @@ func TestRenderIndexSummaries(t *testing.T) {
 	want := []string{
 		"| adr | ADR 001 |  | `adr-001` | acme/widgets/specs/adr-001.md | `adr-adr-001.md` |",
 		"| trd | TRD | The design in one line. | `trd` | acme/widgets/specs/trd.md | fetch |",
-		"| skill | Deploy |  | `deploy` | acme/widgets/skills/deploy.md | fetch |",
-		"3 documents on disk here, 3 to fetch; summaries are shown only for the kinds a session reads (instructions, adr, prd, trd) that are not on disk.",
+		"| skill | Deploy | `deploy` |",
+		"3 documents on disk here, 3 to fetch (1 a session reads, 2 other); summaries are shown only for the kinds a session reads (instructions, adr, prd, trd) that are not on disk.",
 	}
 	for _, line := range want {
 		if !lineSet[line] {
 			t.Fatalf("index missing exact line %q:\n%s", line, index)
 		}
 	}
-	header := "| kind | title | what it says | slug | repo/path | here |"
-	separator := "| --- | --- | --- | --- | --- | --- |"
-	bodyRows := 0
-	for _, l := range lines {
-		if strings.HasPrefix(l, "| ") && l != header && l != separator {
-			bodyRows++
-		}
-	}
-	if bodyRows != len(cx.Index) {
+	if bodyRows := indexRows(index); bodyRows != len(cx.Index) {
 		t.Fatalf("rendered %d body rows, want %d (one per document):\n%s", bodyRows, len(cx.Index), index)
 	}
+}
+
+// indexRows is how many body rows INDEX.md's documents tables hold:
+// every table line but the headers and separators, the live section's
+// tables not among them.
+func indexRows(index string) int {
+	docs, _, _ := strings.Cut(index, "\n## Live goals and items")
+	rows := 0
+	for _, l := range strings.Split(docs, "\n") {
+		switch l {
+		case indexReadsHeader, indexOtherHeader, "| --- | --- | --- | --- | --- | --- |", "| --- | --- | --- |":
+		default:
+			if strings.HasPrefix(l, "| ") {
+				rows++
+			}
+		}
+	}
+	return rows
+}
+
+const (
+	indexReadsHeader = "| kind | title | what it says | slug | repo/path | here |"
+	indexOtherHeader = "| kind | title | slug |"
+)
+
+// INDEX.md is two tables: the kinds a session reads with summary, path
+// and where it is, and every other kind by kind, title and slug alone;
+// the counts line names both.
+func TestRenderIndexTwoTables(t *testing.T) {
+	cx := &Context{
+		Project: "acme/mesh",
+		Index: []gateway.Document{
+			{Slug: "agents", Title: "AGENTS.md", Kind: "instructions", Summary: "How to work here.", Repo: "acme/widgets", Path: "AGENTS.md"},
+			{Slug: "adr-002", Title: "ADR 002", Kind: "adr", Summary: "Tags are signed.", Repo: "acme/widgets", Path: "docs/adr-002.md"},
+			{Slug: "restart", Title: "Restart | the node", Kind: "runbook", Summary: "Never shown.", Repo: "acme/widgets", Path: "runbooks/restart.md"},
+			{Slug: "deploy", Title: "Deploy", Kind: "skill", Summary: "Never shown.", Repo: "acme/widgets", Path: "skills/deploy.md"},
+		},
+		OnDisk: map[string]string{"agents": "instructions-acme-widgets-agents.md"},
+	}
+	index := RenderIndex(cx)
+	count := func(want string) int {
+		n := 0
+		for _, l := range strings.Split(index, "\n") {
+			if l == want {
+				n++
+			}
+		}
+		return n
+	}
+	for _, want := range []string{
+		"## Documents a session reads",
+		indexReadsHeader,
+		"| instructions | AGENTS.md |  | `agents` | acme/widgets/AGENTS.md | `instructions-acme-widgets-agents.md` |",
+		"| adr | ADR 002 | Tags are signed. | `adr-002` | acme/widgets/docs/adr-002.md | fetch |",
+		"## Other documents",
+		indexOtherHeader,
+		"| runbook | Restart \\| the node | `restart` |",
+		"| skill | Deploy | `deploy` |",
+		"1 documents on disk here, 3 to fetch (1 a session reads, 2 other); summaries are shown only for the kinds a session reads (instructions, adr, prd, trd) that are not on disk.",
+	} {
+		if got := count(want); got != 1 {
+			t.Fatalf("INDEX.md holds the line %q %d times, want once:\n%s", want, got, index)
+		}
+	}
+	if strings.Contains(index, "Never shown.") {
+		t.Fatalf("a runbook's or a skill's summary is in the index:\n%s", index)
+	}
+	if rows := indexRows(index); rows != len(cx.Index) {
+		t.Fatalf("%d rows, want one per document:\n%s", rows, index)
+	}
+}
+
+// INDEX.md is inside bytes_max: several hundred documents of mixed kinds
+// under a budget smaller than the index and the documents together put
+// on disk no more than bytes_max, INDEX.md counted; the item's own
+// repo's instructions are on disk, every document is one row, and
+// nothing on disk is cut.
+func TestIndexIsInsideTheBudget(t *testing.T) {
+	f := seed(t)
+	type doc struct{ kind, slug, repo string }
+	var docs []doc
+	docs = append(docs, doc{"instructions", "agents", "acme/widgets"}, doc{"prd", "prd", "acme/widgets"}, doc{"trd", "trd", "acme/widgets"})
+	for i := 1; i <= 40; i++ {
+		docs = append(docs, doc{"instructions", fmt.Sprintf("agents-%03d", i), fmt.Sprintf("acme/repo-%03d", i)})
+	}
+	for i := 1; i <= 80; i++ {
+		repo := fmt.Sprintf("acme/repo-%03d", i%40+1)
+		if i%10 == 0 {
+			repo = "acme/widgets"
+		}
+		docs = append(docs, doc{"adr", fmt.Sprintf("adr-%03d", i), repo})
+	}
+	for i := 1; i <= 200; i++ {
+		kind := []string{"runbook", "skill", "spec", "note"}[i%4]
+		docs = append(docs, doc{kind, fmt.Sprintf("%s-%03d", kind, i), "acme/widgets"})
+	}
+	f.Documents["acme/mesh"] = nil
+	bodies := map[string]string{}
+	full := 0
+	for i, d := range docs {
+		f.Documents["acme/mesh"] = append(f.Documents["acme/mesh"], map[string]any{
+			"slug": d.slug, "title": "Title of " + d.slug, "kind": d.kind, "repo": d.repo, "path": d.slug + ".md",
+			"summary": "What " + d.slug + " says, in one line of about sixty bytes or so.",
+		})
+		if !ContextKinds[d.kind] {
+			continue
+		}
+		body := "# " + d.slug + "\n" + strings.Repeat("z", 400+(i%7)*150)
+		f.Bodies["acme/mesh/"+d.slug] = body
+		bodies[d.slug] = body + "\n" // the fake serves a newline after it
+		full += len(bodies[d.slug])
+	}
+	if len(docs) < 300 {
+		t.Fatalf("%d documents, want at least 300", len(docs))
+	}
+	gw := gateway.New(f.URL(), "rs_test")
+	const bytesMax = 48 * 1024
+	cx, err := FetchContext(context.Background(), gw, "acme", "mesh", ContextOptions{Budget: ContextConfig{BytesMax: bytesMax}, Repos: []string{"acme/widgets"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if full+len(RenderIndex(&Context{Index: cx.Index, Project: cx.Project})) <= bytesMax {
+		t.Fatal("the budget must be smaller than the index and the documents together")
+	}
+	dir := t.TempDir()
+	_, w, err := WriteContext(dir, cx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	total := 0
+	entries, _ := os.ReadDir(filepath.Join(dir, ContextDir))
+	for _, e := range entries {
+		st, err := os.Stat(filepath.Join(dir, ContextDir, e.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		total += int(st.Size())
+	}
+	if total > bytesMax || w.Bytes != total {
+		t.Fatalf("%d bytes on disk (logged %d), bytes_max %d", total, w.Bytes, bytesMax)
+	}
+	if cx.OnDisk["agents"] != "instructions-acme-widgets-agents.md" {
+		t.Fatalf("the item's own repo's instructions must be on disk: %v", cx.OnDisk)
+	}
+	if len(cx.Dropped) == 0 || len(cx.OnDisk) < 2 {
+		t.Fatalf("want some binding documents on disk and some dropped: %d on disk, %d dropped", len(cx.OnDisk), len(cx.Dropped))
+	}
+	b, _ := os.ReadFile(filepath.Join(dir, ContextDir, IndexFile))
+	index := string(b)
+	if cx.IndexBytes != len(index) {
+		t.Fatalf("IndexBytes %d, INDEX.md %d bytes", cx.IndexBytes, len(index))
+	}
+	if rows := indexRows(index); rows != len(docs) {
+		t.Fatalf("%d rows in INDEX.md, want %d, one per document", rows, len(docs))
+	}
+	for _, d := range cx.Index {
+		n := 0
+		for _, l := range strings.Split(index, "\n") {
+			if strings.Contains(l, " | `"+d.Slug+"` |") {
+				n++
+			}
+		}
+		if n != 1 {
+			t.Fatalf("%s is %d rows of INDEX.md, want 1", d.Slug, n)
+		}
+	}
+	for _, d := range cx.Dropped {
+		row := fmt.Sprintf("| %s | Title of %s | What %s says, in one line of about sixty bytes or so. | `%s` | %s/%s.md | fetch |", d.Kind, d.Slug, d.Slug, d.Slug, d.Repo, d.Slug)
+		if !hasLine(index, row) {
+			t.Fatalf("dropped %s is not a whole row to fetch:\n%s", d.Slug, row)
+		}
+	}
+	for slug, name := range cx.OnDisk {
+		got, err := os.ReadFile(filepath.Join(dir, ContextDir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != bodies[slug] {
+			t.Fatalf("%s on disk is %d bytes, its document %d: cut", name, len(got), len(bodies[slug]))
+		}
+	}
+}
+
+// An index alone past bytes_max puts no document on disk and says so
+// once; the index is whole.
+func TestIndexAlonePastTheBudget(t *testing.T) {
+	f := seed(t)
+	gw := gateway.New(f.URL(), "rs_test")
+	var logged []string
+	logf := func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }
+	cx, err := FetchContext(context.Background(), gw, "acme", "mesh", ContextOptions{Budget: ContextConfig{BytesMax: 100}, Repos: []string{"acme/widgets"}, Logf: logf})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cx.OnDisk) != 0 || len(cx.Docs) != 0 {
+		t.Fatalf("on disk: %v", cx.OnDisk)
+	}
+	if len(logged) != 1 || !strings.HasPrefix(logged[0], "warning: INDEX.md alone is ") {
+		t.Fatalf("logged %q", logged)
+	}
+	if got := strings.Join(slugsOf(cx.Dropped), ","); got != "adr-001,agents" {
+		t.Fatalf("dropped: %s", got)
+	}
+	if rows := indexRows(RenderIndex(cx)); rows != len(cx.Index) {
+		t.Fatalf("%d rows, want %d", rows, len(cx.Index))
+	}
+}
+
+// indexReserve is the length of the seeded project's INDEX.md with
+// nothing on disk, what FetchContext reserves from bytes_max first.
+func indexReserve(t *testing.T, gw *gateway.Client) int {
+	t.Helper()
+	docs, err := gw.ContextDocuments(context.Background(), "acme", "mesh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(RenderIndex(&Context{Index: docs, Project: "acme/mesh"}))
 }
 
 // bindingDoc is one binding document of the project for the seeded
@@ -127,6 +337,11 @@ func seedBinding(f *gatewaytest.Fake, docs ...bindingDoc) map[string]string {
 	}
 	return bodies
 }
+
+// onDiskSlack is room past the reserve for the on-disk rows' file names
+// in the budget tests below (INDEX.md is inside bytes_max): less than
+// any one document there, so what fits is decided by the documents.
+const onDiskSlack = 140
 
 // slugsOf is the documents' slugs, sorted.
 func slugsOf(docs []gateway.Document) []string {
@@ -162,7 +377,7 @@ func TestContextBudgetHoldsForBindingDocuments(t *testing.T) {
 		bindingDoc{"adr", "adr-004", "acme/other", 1000},
 	)
 	gw := gateway.New(f.URL(), "rs_test")
-	cx, err := FetchContext(context.Background(), gw, "acme", "mesh", ContextOptions{Budget: ContextConfig{BytesMax: 3000}, Repos: []string{"acme/widgets"}})
+	cx, err := FetchContext(context.Background(), gw, "acme", "mesh", ContextOptions{Budget: ContextConfig{BytesMax: 3000 + indexReserve(t, gw) + onDiskSlack}, Repos: []string{"acme/widgets"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +416,7 @@ func TestContextBudgetOwnRepoFirst(t *testing.T) {
 		bindingDoc{"instructions", "agents", "acme/widgets", 1000},
 	)
 	gw := gateway.New(f.URL(), "rs_test")
-	cx, err := FetchContext(context.Background(), gw, "acme", "mesh", ContextOptions{Budget: ContextConfig{BytesMax: 2999}, Repos: []string{"acme/widgets"}})
+	cx, err := FetchContext(context.Background(), gw, "acme", "mesh", ContextOptions{Budget: ContextConfig{BytesMax: 2000 + indexReserve(t, gw) + onDiskSlack}, Repos: []string{"acme/widgets"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,7 +442,7 @@ func TestContextBudgetBindingAloneExceeds(t *testing.T) {
 		bindingDoc{"instructions", "other-agents", "acme/other", 4000},
 	)
 	gw := gateway.New(f.URL(), "rs_test")
-	cx, err := FetchContext(context.Background(), gw, "acme", "mesh", ContextOptions{Budget: ContextConfig{BytesMax: 1200}, Repos: []string{"acme/widgets"}})
+	cx, err := FetchContext(context.Background(), gw, "acme", "mesh", ContextOptions{Budget: ContextConfig{BytesMax: 1200 + indexReserve(t, gw) + onDiskSlack}, Repos: []string{"acme/widgets"}})
 	if err != nil {
 		t.Fatal(err)
 	}
