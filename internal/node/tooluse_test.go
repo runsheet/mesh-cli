@@ -304,6 +304,21 @@ func TestCarriedTakesNoToolUsage(t *testing.T) {
 	}
 }
 
+// Carried takes every loss a report landed with at once: a platform that
+// refused contextBytes, the per-tool list and the turn detail leaves each
+// for Finish to say, the list among them.
+func TestCarriedTakesContextToolsAndDetailTogether(t *testing.T) {
+	acct := &SessionAccount{creds: &Credentials{}, started: time.Now()}
+	acct.Report(harness.Result{})
+	err := errors.Join(gateway.ErrNoUsageDetail, gateway.ErrNoToolUsage, gateway.ErrNoContextUsage)
+	if err := acct.Carried(err); err != nil {
+		t.Fatal(err)
+	}
+	if !acct.handedIn || !acct.noToolList || !acct.noDetail || !acct.noContext {
+		t.Fatalf("handedIn %v, noToolList %v, noDetail %v, noContext %v", acct.handedIn, acct.noToolList, acct.noDetail, acct.noContext)
+	}
+}
+
 // The built-in comes first among the other servers that errored under
 // its old name too: an adopted session from an older node reports
 // prologue (tools.IsBuiltin, an alias read until 2026-10-28).
