@@ -586,7 +586,10 @@ and confirm once the gateway responds. Only a failure to *run* (a panic, a
 config it cannot read, an exit) counts as 'did not start'; `mesh node upgrade`
 prints the confirm window and the log path to watch while the update settles.
 
-**On the mini.** Build, copy, upgrade, and watch the sessions carry on:
+**On the mini, by hand.** The mini ordinarily updates from a release
+cut on merge (see [Release](#release)); this is the fallback for a
+build that is not a release. Build, copy, upgrade, and watch the
+sessions carry on:
 
 ```sh
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh
@@ -838,9 +841,11 @@ accepts them.
 
 A session gets the tools its project and role have, configured in the
 console and handed to the node that claimed the session (ADR-006, trd
-§3 Tools). The Prologue MCP server is not one of them: the node attaches
-it to every session itself, and a console tool named `prologue` is
-refused and noted.
+§3 Tools). The mesh-context MCP server is not one of them: the node
+attaches it to every session itself, and a console tool named
+`mesh-context` is refused and noted (a session adopted from an older
+node may still carry a server named `prologue`, accepted as the
+built-in's name until 2026-10-28).
 
 **What the node reports.** Every tick the node looks on its `PATH` for
 the tool runtimes it can start — `npx`, `uvx`, `docker` — and the agent
@@ -852,10 +857,10 @@ node runs is reported without a restart.
 credentials and its `tools` (name, remote `url`/`headers` or local
 `runtime`/`command`/`args`/`env`, `required`, `roles`) in one read, and
 keeps the tools whose `roles` include the session's (`build`,
-`evaluate`; plan, research and rebase sessions keep Prologue alone for
-now). Each agent gets them in its own format:
+`evaluate`; plan, research and rebase sessions keep mesh-context alone
+for now). Each agent gets them in its own format:
 
-- **Claude Code**: `--mcp-config` with `mcpServers` — Prologue plus one
+- **Claude Code**: `--mcp-config` with `mcpServers` — mesh-context plus one
   entry per tool, `{type: http, url, headers}` remote or `{command, args,
   env}` local (`npx -y …`, `uvx …`, `docker run -i --rm -e KEY… image
   …`) — and `--allowedTools mcp__<name>__*` for each, so a print-mode
@@ -893,7 +898,7 @@ named `mcp__<name>__…`, Codex's `mcp_tool_call` items) and, after a
 build or evaluation, hands the platform one `recordToolUsage` per call
 of a priced tool — the item, the call's id, the tool, and the session's
 usage report at the tool's price per call — beside the session's own
-report on its finish. Unpriced tools and Prologue report nothing.
+report on its finish. Unpriced tools and mesh-context report nothing.
 A platform without `recordToolUsage` gets none: the node says so once
 per run, logs each call instead, and the item goes on.
 
@@ -908,7 +913,7 @@ session logs it. A platform whose usage report takes no `tools` gets the
 total alone: the node says so once per run and logs each session's list.
 
 A platform that does not hand out `tools` yet costs nothing: sessions
-run on Prologue alone, as before.
+run on mesh-context alone, as before.
 
 ### Tool results
 
@@ -1404,7 +1409,7 @@ out of `models` takes its default: `gpt-6-sol` for Opus, `gpt-6-luna`
 for Sonnet and Haiku. An empty model, or one of no tier, runs on
 Codex's own default.
 
-The session's MCP servers (Prologue) are written to `config.toml` in
+The session's MCP servers (mesh-context) are written to `config.toml` in
 its temporary home. Secrets are named there by variable, never by value
 (mesh-specs ADR 006). What Codex's event stream reports is documented
 in [docs/codex-events.md](docs/codex-events.md): the final message,
@@ -1552,25 +1557,60 @@ run by hand) does, and opens or updates the PR on `bot/schema-refresh`.
 
 ## Release
 
+Releases are cut on merge. Every merge to `main` that changes the node
+— anything under `cmd/`, `internal/` or `images/node/`, or `go.mod` /
+`go.sum` — is tagged by `.github/workflows/release-on-merge.yml`, and
+the tag runs `.github/workflows/release-tag.yml` as below: signed
+binaries, the node image and the mirror, then the console offers the
+release. A merge of docs, specs, the README or `.github` alone cuts
+none. `scripts/release-on-merge.sh <repo-dir> <sha> [--dry-run]`
+decides, printing `tag=vX.Y.Z` or `no release: <why>`:
+
+- the next tag is the patch after the highest `vX.Y.Z` on this repo or
+  the mirror `runsheet/mesh` (tags with a `-` are test prereleases and
+  never count; none at all is `v0.1.0`);
+- it is the **minor** (patch 0) when the merged PR carries the label
+  `release:minor`, or a `specs/goal-*.md` the merge touches has
+  `release: minor` in its frontmatter;
+- a commit already tagged `vX.Y.Z` is no release.
+
+Run it by hand from Actions → *Release on merge* → *Run workflow*: with
+`dry_run` (the default) it prints the next tag and pushes nothing.
+`scripts/release-on-merge_test.sh` covers the cases.
+
+The operator sets up two things once:
+
+- the repository secret **`RELEASE_TAG_TOKEN`**: a fine-grained token
+  with Contents: read and write on `runsheet/mesh-cli`. The workflow
+  pushes the tag with it and fails naming it when it is unset. It cannot
+  be `GITHUB_TOKEN`: a tag pushed with that starts no workflow, so
+  `release-tag.yml` would never run. Whoever holds it can ship to nodes.
+- the label: `gh label create release:minor -R runsheet/mesh-cli
+  --description "release-on-merge bumps the minor version"`.
+
 Nodes update themselves from the GitHub releases of the public mirror
-`runsheet/mesh`: `.github/workflows/release-tag.yml` cuts a release
+`runsheet/mesh`: `release-tag.yml` cuts a release
 from a tag on `runsheet/mesh-cli` (docs/adr/adr-002-signed-tag-releases.md),
 and the same tag is published, identical, on the mirror — same tag,
 title, notes and five assets, via `scripts/mirror-release.sh` and the
 `RELEASE_TOKEN` secret (`GITHUB_TOKEN` cannot write another repo); see
 the amendment "the public mirror on runsheet/mesh" for why and how it
-is checked. To cut one, the next number one above the latest on the
-mirror (`gh release list -R runsheet/mesh`, `v0.2.x` — the public line
-`cli-release.yml` began):
+is checked.
+
+**The fallback: a tag by hand.** When the workflow cannot run (no
+`RELEASE_TAG_TOKEN`, a major version, a release of a commit it
+skipped), tag the next number one above the latest on the mirror
+(`gh release list -R runsheet/mesh`, `v0.2.x`) yourself:
 
 ```sh
 git tag vX.Y.Z && git push origin vX.Y.Z
 ```
 
-Any tag starting `v` runs it; a tag with a `-` (`v0.4.0-test.1`) is
-published as a prerelease. The version is stamped from the tag
-(`internal/version.Version`), so `mesh --version` and the node's
-heartbeat report exactly the tag. There is no manual trigger — tags only.
+Any tag starting `v` runs `release-tag.yml`; a tag with a `-`
+(`v0.4.0-test.1`) is published as a prerelease. The version is stamped
+from the tag (`internal/version.Version`), so `mesh --version` and the
+node's heartbeat report exactly the tag. `release-tag.yml` itself has
+no manual trigger — tags only.
 
 The release notes are the PRs merged since the previous plain
 `vX.Y.Z` tag, grouped by goal slug — `scripts/release-notes.sh
@@ -1679,7 +1719,11 @@ update:
   confirm_within: 5m   # how long a new process keeps trying to confirm; default 5m
 ```
 
-**By hand.** `mesh node upgrade` installs a release (or a local build)
+**By hand — the fallback.** The ordinary way a node gets a new
+version is the one above: a merge cuts a release and the platform asks
+the node for it. Upgrading by hand is for when that path cannot run —
+a platform that cannot reach the node, a build that is not a release,
+a sandboxed or channel-mode node. `mesh node upgrade` installs a release (or a local build)
 and restarts at once, as the platform's update does (see [Upgrading a
 node without ending sessions](#upgrading-a-node-without-ending-sessions)).
 `mesh node update [version]` is the draining variant, for a node whose

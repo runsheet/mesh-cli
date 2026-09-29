@@ -16,7 +16,7 @@ import (
 // A Codex evaluation prepared the way Evaluator.Evaluate prepares one —
 // an issued Codex subscription (PrepareCodexAccount), the account on the
 // job, a console remote tool with a bearer secret beside the built-in
-// from PrologueMCP (SelectTools, UseTools), then Codex.Run — reaches a
+// from MeshContextMCP (SelectTools, UseTools), then Codex.Run — reaches a
 // `codex` on PATH with the built-in's Authorization in its variable as
 // `Bearer <the node token>`, its own CODEX_HOME and none of the
 // operator's Codex variables, the console tool's bearer by
@@ -54,7 +54,7 @@ func TestCodexEvaluationReceivesResolvedTools(t *testing.T) {
 	}
 	sa := &SessionAccount{AccountSession: acct}
 	defer sa.Cleanup()
-	builtin := PrologueMCP("https://api.test", nodeToken)
+	builtin := MeshContextMCP("https://api.test", nodeToken)
 	job := harness.Job{Kind: harness.KindEvaluate, Workspace: ws, Prompt: "evaluate", MCPServers: builtin, Model: "gpt-6-sol"}
 	sa.Apply(&job)
 	console := []tools.Tool{{Name: "search", Transport: tools.Remote, URL: "https://search.test/mcp",

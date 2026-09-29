@@ -1,5 +1,5 @@
 ---
-summary: Nodes update only from tag-cut releases of runsheet/mesh-cli whose SHA256SUMS is signed keyless by runsheet/mesh-cli release-tag.yml's GitHub OIDC identity (tags released before the repo left projectmesh-io also under the old identity); the asset names and that identity are the updater's contract. The same tag pushes and cosign-signs the node image ghcr.io/runsheet/mesh-node:<tag>, which the node pulls before it swaps. An upgrade swaps and restarts the node at once, and the new process adopts the sessions the old one left running; a sandboxed node alone still drains first.
+summary: Nodes update only from tag-cut releases of runsheet/mesh-cli whose SHA256SUMS is signed keyless by runsheet/mesh-cli release-tag.yml's GitHub OIDC identity (tags released before the repo left projectmesh-io also under the old identity); the asset names and that identity are the updater's contract. The same tag pushes and cosign-signs the node image ghcr.io/runsheet/mesh-node:<tag>, which the node pulls before it swaps. An upgrade swaps and restarts the node at once, and the new process adopts the sessions the old one left running; a sandboxed node alone still drains first. Every merge to main that changes cmd/, internal/, images/node/ or go.mod/go.sum is tagged automatically by release-on-merge.yml, pushing with RELEASE_TAG_TOKEN.
 status: accepted
 ---
 
@@ -473,6 +473,53 @@ the updater's side of that:
   choice it left open (make the repo public, or move to an authenticated
   download) is resolved by the mirror instead — the source repo stays
   private, and the public copy of its releases is what a node reads.
+
+## Amendment: every node-changing merge is a release (goal `node-releases-on-merge`, 2026-09-28)
+
+The mini ran a build ten commits behind main because nothing between a
+merge and a node made a release: a person cross-built and ran `mesh
+node upgrade --binary`, and the only releases were test prereleases
+until `v0.1.0`. The path is now automatic, and the by-hand tag is the
+fallback:
+
+**merge to main → `release-on-merge.yml` → tag `vX.Y.Z` on the merge
+commit → `release-tag.yml` → signed release (and the mirror) → the
+console offers it.**
+
+- **What counts as node-changing.** A push to `main` whose changes
+  (against the first parent) touch `cmd/**`, `internal/**`,
+  `images/node/**`, `go.mod` or `go.sum`. The workflow's `paths` filter
+  says so, and `scripts/release-on-merge.sh` checks it again itself, so
+  a direct call on a docs-only commit prints `no release: …`. Docs,
+  specs, the README and `.github` alone cut no release.
+- **The number.** The last release is the highest `vX.Y.Z` (no `-`:
+  test prereleases never count) among this repo's tags and the public
+  mirror's (`runsheet/mesh`, whose `v0.2.x` line this repo continues,
+  per the mirror amendment above); none is `v0.1.0`. The bump is the
+  patch. A commit already carrying a `vX.Y.Z` tag is no release, so a
+  re-run or a tag cut by hand never makes a second one.
+- **Minor is asked for**, patch reset to 0, by the merged PR's label
+  `release:minor` (the PR found by `gh api
+  repos/<repo>/commits/<sha>/pulls`, else the squash subject's
+  `(#NNN)`), or by `release: minor` in the frontmatter of a
+  `specs/goal-*.md` the merge touches. Major is by hand only. The label
+  is the operator's to create once (`gh label create release:minor`).
+- **The tag-push credential is the shipping credential.** The tag is
+  pushed with the repository secret `RELEASE_TAG_TOKEN` — a fine-grained
+  token with Contents: read and write on `runsheet/mesh-cli`, which the
+  operator creates; the workflow fails naming it when it is unset. Not
+  `GITHUB_TOKEN`: GitHub starts no workflow for a push made with it, so
+  its tag would never run `release-tag.yml`. And `release-tag.yml` is
+  not called as a reusable workflow: a called workflow signs under the
+  caller's run with its own `job_workflow_ref`, not the
+  `release-tag.yml@refs/tags/<tag>` identity `ReleasePolicy` pins. So
+  `release-tag.yml` stays the only signer, unchanged, and "who may push
+  `v*` tags is who may ship to nodes" (Consequences) now reads: who
+  holds `RELEASE_TAG_TOKEN`, or may merge node-changing code to `main`.
+- `concurrency: release-on-merge` (never cancelled) serializes
+  back-to-back merges, so each sees the tag the one before pushed.
+  `workflow_dispatch` with `dry_run` (the default) prints the next tag
+  for its ref's head and pushes nothing.
 
 ## Consequences
 

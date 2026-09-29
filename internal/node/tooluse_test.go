@@ -181,7 +181,7 @@ func TestEvaluationNotesItsToolUse(t *testing.T) {
 	calls, stats := braveErrored()
 	h := &fakeHarness{text: "Fine.\nVERDICT: PASS", toolCalls: calls, tools: stats}
 	logs := &syncBuf{}
-	ev := &Evaluator{GW: gw, Harness: h, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, MCP: PrologueMCP(f.URL(), "rs_test"),
+	ev := &Evaluator{GW: gw, Harness: h, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, MCP: MeshContextMCP(f.URL(), "rs_test"),
 		Credentials: &Credentials{GW: gw}, Runtimes: onlyNpx, Declines: &Declines{}, Log: log.New(logs, "", 0)}
 	f.SessionTools[item1] = []map[string]any{braveTool(), perplexityTool()}
 
@@ -212,7 +212,7 @@ func TestEvaluationNotesTheBuiltinsError(t *testing.T) {
 	const msg = "tool call failed for `prologue/mesh_document`: 401 Unauthorized"
 	h := &fakeHarness{text: "Fine.\nVERDICT: PASS", toolCalls: map[string]int{"prologue": 3},
 		tools: map[string]*harness.ToolStat{"prologue": {Calls: 3, Errors: 2, Wall: 90 * time.Millisecond, FirstError: msg}}}
-	ev := &Evaluator{GW: gw, Harness: h, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, MCP: PrologueMCP(f.URL(), "rs_test"),
+	ev := &Evaluator{GW: gw, Harness: h, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, MCP: MeshContextMCP(f.URL(), "rs_test"),
 		Credentials: &Credentials{GW: gw}, Runtimes: onlyNpx, Declines: &Declines{}, Log: log.New(&syncBuf{}, "", 0)}
 
 	if err := ev.Evaluate(context.Background(), item); err != nil {
@@ -236,16 +236,16 @@ func TestEvaluationNotesTheBuiltinsError(t *testing.T) {
 func TestUseNoteNamesTheBuiltin(t *testing.T) {
 	st := SessionTools{Use: []tools.Tool{{Name: "brave", Headers: map[string]string{"X-Key": braveSecret}}}}
 	res := harness.Result{ToolCalls: map[string]int{"brave": 1, "codex_apps": 1}, Tools: map[string]*harness.ToolStat{
-		"brave":      {Calls: 1},
-		"codex_apps": {Calls: 1, Errors: 1, FirstError: "apps unavailable " + braveSecret},
-		"prologue":   {Errors: 1, FirstError: "MCP client for `prologue` failed to start: Auth required during MCP startup"},
+		"brave":        {Calls: 1},
+		"codex_apps":   {Calls: 1, Errors: 1, FirstError: "apps unavailable " + braveSecret},
+		"mesh-context": {Errors: 1, FirstError: "MCP client for `mesh-context` failed to start: Auth required during MCP startup"},
 	}}
-	want := "tools: prologue served, never called: MCP client for `prologue` failed to start: Auth required during MCP startup; codex_apps: first call errored: apps unavailable [redacted]"
+	want := "tools: mesh-context served, never called: MCP client for `mesh-context` failed to start: Auth required during MCP startup; codex_apps: first call errored: apps unavailable [redacted]"
 	if note := st.UseNote(res, nil); note != want {
 		t.Fatalf("note = %q, want %q", note, want)
 	}
 	// the built-in called cleanly is never named
-	clean := harness.Result{ToolCalls: map[string]int{"prologue": 2}, Tools: map[string]*harness.ToolStat{"prologue": {Calls: 2}}}
+	clean := harness.Result{ToolCalls: map[string]int{"mesh-context": 2}, Tools: map[string]*harness.ToolStat{"mesh-context": {Calls: 2}}}
 	if note := (SessionTools{}).UseNote(clean, nil); note != "" {
 		t.Fatalf("clean note = %q", note)
 	}

@@ -566,14 +566,14 @@ func renderLive(b *strings.Builder, live []LiveGoal, cell func(string) string) {
 	}
 }
 
-// PrologueMCP is the MCP server a session gets for Prologue: the
+// MeshContextMCP is the MCP server a session gets for mesh-context: the
 // platform's /mcp with the node's own token, so the session reads what
 // the node's operator may.
-func PrologueMCP(gatewayURL, token string) map[string]any {
+func MeshContextMCP(gatewayURL, token string) map[string]any {
 	if gatewayURL == "" || token == "" {
 		return nil
 	}
-	return map[string]any{"prologue": map[string]any{
+	return map[string]any{"mesh-context": map[string]any{
 		"type": "http", "url": strings.TrimRight(gatewayURL, "/") + "/mcp",
 		"headers": map[string]string{"Authorization": "Bearer " + token},
 	}}

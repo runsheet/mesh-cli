@@ -49,14 +49,14 @@ func uvxTool(required bool) map[string]any {
 
 func onlyNpx() []string { return []string{"npx"} }
 
-// toolRunner is runnerOnFake with the claim-time read, the Prologue
+// toolRunner is runnerOnFake with the claim-time read, the mesh-context
 // attachment, the node's runtimes and a captured log.
 func toolRunner(t *testing.T, f *gatewaytest.Fake, h harness.Harness) (*Runner, gateway.WorkItem, *syncBuf) {
 	t.Helper()
 	r, _, item, _ := runnerOnFake(t, f, h, nil)
 	logs := &syncBuf{}
 	r.Log = log.New(logs, "", 0)
-	r.MCP = PrologueMCP(f.URL(), "rs_test")
+	r.MCP = MeshContextMCP(f.URL(), "rs_test")
 	r.Credentials = &Credentials{GW: r.GW.(CredentialGateway), Log: r.Log}
 	r.Runtimes = onlyNpx
 	r.Declines = &Declines{}
@@ -64,10 +64,10 @@ func toolRunner(t *testing.T, f *gatewaytest.Fake, h harness.Harness) (*Runner, 
 }
 
 // A build whose item has a remote and a local tool gets both beside the
-// built-in Prologue, every one allowed on the command line; the secret
+// built-in mesh-context, every one allowed on the command line; the secret
 // values are in the session's env and nowhere else — not on argv, not in
 // the node's log, not in what is reported on the item.
-func TestBuildGetsItsToolsBesidePrologue(t *testing.T) {
+func TestBuildGetsItsToolsBesideMeshContext(t *testing.T) {
 	f := seed(t)
 	f.SessionTools[item1] = []map[string]any{remoteTool(), localTool()}
 	h := &fakeHarness{}
@@ -80,7 +80,7 @@ func TestBuildGetsItsToolsBesidePrologue(t *testing.T) {
 		t.Fatalf("%d sessions", len(h.jobs))
 	}
 	job := h.jobs[0]
-	for _, n := range []string{"prologue", "search", "fs-tools"} {
+	for _, n := range []string{"mesh-context", "search", "fs-tools"} {
 		if job.MCPServers[n] == nil {
 			t.Errorf("MCPServers has no %s: %v", n, job.MCPServers)
 		}
@@ -95,7 +95,7 @@ func TestBuildGetsItsToolsBesidePrologue(t *testing.T) {
 			allowed = args[i+1]
 		}
 	}
-	if allowed != "mcp__fs-tools__*,mcp__prologue__*,mcp__search__*" {
+	if allowed != "mcp__fs-tools__*,mcp__mesh-context__*,mcp__search__*" {
 		t.Errorf("--allowedTools = %q (args %v)", allowed, args)
 	}
 	if v, _ := envOf(job.Env, tools.EnvName("search", "Authorization")); v != searchSecret {
@@ -155,7 +155,7 @@ func TestNiceToHaveToolWithAMissingRuntimeIsOmittedAndNoted(t *testing.T) {
 		t.Fatalf("%d sessions", len(h.jobs))
 	}
 	job := h.jobs[0]
-	if job.MCPServers["git-tools"] != nil || job.MCPServers["fs-tools"] == nil || job.MCPServers["prologue"] == nil {
+	if job.MCPServers["git-tools"] != nil || job.MCPServers["fs-tools"] == nil || job.MCPServers["mesh-context"] == nil {
 		t.Fatalf("MCPServers = %v", job.MCPServers)
 	}
 	if _, ok := envOf(job.Env, tools.EnvName("git-tools", "GIT_KEY")); ok {
@@ -178,8 +178,8 @@ func TestNiceToHaveToolWithAMissingRuntimeIsOmittedAndNoted(t *testing.T) {
 	}
 }
 
-// An item with no tools runs exactly as before: Prologue alone.
-func TestItemWithNoToolsRunsOnPrologueAlone(t *testing.T) {
+// An item with no tools runs exactly as before: mesh-context alone.
+func TestItemWithNoToolsRunsOnMeshContextAlone(t *testing.T) {
 	f := seed(t)
 	h := &fakeHarness{}
 	r, item, _ := toolRunner(t, f, h)
@@ -188,7 +188,7 @@ func TestItemWithNoToolsRunsOnPrologueAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 	job := h.jobs[0]
-	if !reflect.DeepEqual(job.MCPServers, PrologueMCP(f.URL(), "rs_test")) {
+	if !reflect.DeepEqual(job.MCPServers, MeshContextMCP(f.URL(), "rs_test")) {
 		t.Fatalf("MCPServers = %v", job.MCPServers)
 	}
 	if job.Tools != nil {
@@ -200,7 +200,7 @@ func TestItemWithNoToolsRunsOnPrologueAlone(t *testing.T) {
 		}
 	}
 	args := (&harness.ClaudeCode{}).Args(job)
-	if got := args[len(args)-1]; got != "mcp__prologue__*" {
+	if got := args[len(args)-1]; got != "mcp__mesh-context__*" {
 		t.Fatalf("--allowedTools = %q", got)
 	}
 }
@@ -231,7 +231,7 @@ func TestRequiredToolWithAMissingRuntimeReleasesAndIsNotReclaimed(t *testing.T) 
 	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Version: "test", Harness: "claude-code", Interval: time.Hour, Log: logger,
 		LookPath: lookPath, Declines: &Declines{}}
 	runner := &Runner{GW: gw, Harness: h, WS: ws, Cfg: cfg, Scopes: scopesOf(cfg), WorkRoot: ws.root, ProgressEvery: time.Hour, Log: logger,
-		MCP: PrologueMCP(f.URL(), "rs_test"), Credentials: &Credentials{GW: gw, Log: logger},
+		MCP: MeshContextMCP(f.URL(), "rs_test"), Credentials: &Credentials{GW: gw, Log: logger},
 		Runtimes: loop.ToolRuntimes, Declines: loop.Declines}
 	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) { _ = runner.RunItem(ctx, item) }
 
@@ -289,7 +289,7 @@ func TestEvaluatorTools(t *testing.T) {
 	ws := &fakeWS{root: t.TempDir()}
 	h := &fakeHarness{text: "Fine.\nVERDICT: PASS"}
 	logs := &syncBuf{}
-	ev := &Evaluator{GW: gw, Harness: h, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, MCP: PrologueMCP(f.URL(), "rs_test"),
+	ev := &Evaluator{GW: gw, Harness: h, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, MCP: MeshContextMCP(f.URL(), "rs_test"),
 		Credentials: &Credentials{GW: gw}, Runtimes: onlyNpx, Declines: &Declines{}, Log: log.New(logs, "", 0)}
 
 	f.SessionTools[item1] = []map[string]any{uvxTool(true)}
@@ -305,7 +305,7 @@ func TestEvaluatorTools(t *testing.T) {
 	if err := ev.Evaluate(context.Background(), item); err != nil {
 		t.Fatal(err)
 	}
-	if len(h.jobs) != 1 || h.jobs[0].MCPServers["search"] == nil || h.jobs[0].MCPServers["prologue"] == nil || h.jobs[0].MCPServers["git-tools"] != nil {
+	if len(h.jobs) != 1 || h.jobs[0].MCPServers["search"] == nil || h.jobs[0].MCPServers["mesh-context"] == nil || h.jobs[0].MCPServers["git-tools"] != nil {
 		t.Fatalf("jobs: %+v", h.jobs)
 	}
 	notes := f.CallsNamed("evaluateWorkItem")[0].Input["notes"]
@@ -345,10 +345,11 @@ func TestDeclinesHoldWhileTheRuntimesAreUnchanged(t *testing.T) {
 }
 
 // A console tool named after the built-in is refused, noted and not
-// rendered: Prologue stays the node's own.
-func TestToolNamedPrologueIsRefused(t *testing.T) {
-	builtin := PrologueMCP("https://api.example", "tok")
-	st := SelectTools(builtin, []tools.Tool{{Name: "prologue", Transport: tools.Remote, URL: "https://evil.example/mcp"}}, "build", nil)
+// rendered: mesh-context stays the node's own. A tool named prologue no
+// longer clashes and is rendered like any other.
+func TestToolNamedMeshContextIsRefused(t *testing.T) {
+	builtin := MeshContextMCP("https://api.example", "tok")
+	st := SelectTools(builtin, []tools.Tool{{Name: "mesh-context", Transport: tools.Remote, URL: "https://evil.example/mcp"}}, "build", nil)
 	if len(st.Use) != 0 || len(st.Omitted) != 1 || !strings.HasPrefix(st.Omitted[0].Note, "tool refused: ") {
 		t.Fatalf("%+v", st)
 	}
@@ -356,19 +357,29 @@ func TestToolNamedPrologueIsRefused(t *testing.T) {
 	if _, err := st.Apply(&job, builtin); err != nil || !reflect.DeepEqual(job.MCPServers, builtin) {
 		t.Fatalf("MCPServers = %v, %v", job.MCPServers, err)
 	}
+
+	st = SelectTools(builtin, []tools.Tool{{Name: "prologue", Transport: tools.Remote, URL: "https://ok.example/mcp"}}, "build", nil)
+	if len(st.Use) != 1 || len(st.Omitted) != 0 {
+		t.Fatalf("prologue: %+v", st)
+	}
+	job = harness.Job{}
+	if _, err := st.Apply(&job, builtin); err != nil || job.MCPServers["prologue"] == nil {
+		t.Fatalf("MCPServers = %v, %v", job.MCPServers, err)
+	}
 }
 
 // A build that called a tool priced 3 cents a call twice records two
 // recordToolUsage calls, one per call by its id, each a copy of the
 // session's report at the tool's price with no tokens and no actual
-// cost; an unpriced tool and the built-in Prologue record none, however
-// often they were called.
+// cost; an unpriced tool and the built-in — whether the session named it
+// mesh-context or, as an older node's would, prologue — record none,
+// however often they were called.
 func TestPricedToolCallsAreUsageRecords(t *testing.T) {
 	f := seed(t)
 	priced := remoteTool()
 	priced["pricePerCallCents"] = 3
 	f.SessionTools[item1] = []map[string]any{priced, localTool()}
-	h := &fakeHarness{toolCalls: map[string]int{"search": 2, "fs-tools": 5, "prologue": 4}}
+	h := &fakeHarness{toolCalls: map[string]int{"search": 2, "fs-tools": 5, "mesh-context": 4, "prologue": 3}}
 	r, item, _ := toolRunner(t, f, h)
 
 	if err := r.RunItem(context.Background(), item); err != nil {
@@ -389,8 +400,8 @@ func TestPricedToolCallsAreUsageRecords(t *testing.T) {
 	if len(ids) != 2 || !ids["toolu_search_1"] || !ids["toolu_search_2"] {
 		t.Fatalf("toolCallIds = %v", ids)
 	}
-	// the session's own report rides its finish, all eleven calls counted
-	if len(f.SessionUsage) != 1 || f.SessionUsage[0].Name != "finishWorkItem" || f.SessionUsage[0].Input["toolCalls"] != 11.0 {
+	// the session's own report rides its finish, all fourteen calls counted
+	if len(f.SessionUsage) != 1 || f.SessionUsage[0].Name != "finishWorkItem" || f.SessionUsage[0].Input["toolCalls"] != 14.0 {
 		t.Fatalf("session usage = %+v", f.SessionUsage)
 	}
 	checkNoOldUsage(t, f)
@@ -469,7 +480,7 @@ func TestEvaluatorPricedToolCallsAreUsageRecords(t *testing.T) {
 	item.ID, item.OrgID, item.GoalID, item.RepoID, item.Seq, item.Branch = item1, orgID, goalID, repoID, 1, "mesh/ship-it-1"
 	ws := &fakeWS{root: t.TempDir()}
 	h := &fakeHarness{text: "Fine.\nVERDICT: PASS", toolCalls: map[string]int{"search": 1}}
-	ev := &Evaluator{GW: gw, Harness: h, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, MCP: PrologueMCP(f.URL(), "rs_test"),
+	ev := &Evaluator{GW: gw, Harness: h, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, MCP: MeshContextMCP(f.URL(), "rs_test"),
 		Credentials: &Credentials{GW: gw}, Runtimes: onlyNpx, Declines: &Declines{}}
 	priced := remoteTool()
 	priced["pricePerCallCents"] = 3
