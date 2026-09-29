@@ -265,6 +265,57 @@ type CodexConfig struct {
 	Accounts []CodexAccountConfig `yaml:"accounts,omitempty"`
 	// Models maps the Claude tiers to Codex models (CodexModel).
 	Models CodexModels `yaml:"models,omitempty"`
+	// Providers are the OpenAI-compatible endpoints an account may run
+	// against instead of OpenAI's own, by name (adr-015): a vLLM or
+	// SGLang server in front of a model the operator runs. An account
+	// naming none runs on OpenAI.
+	Providers map[string]CodexProviderConfig `yaml:"providers,omitempty"`
+}
+
+// CodexProviderConfig is one entry of `codex.providers`: where the
+// endpoint is, which wire it speaks, and what its models cost. The key
+// is the provider's name.
+type CodexProviderConfig struct {
+	// BaseURL is the endpoint including the path a client expects —
+	// vLLM and SGLang serve OpenAI's API under /v1.
+	BaseURL string `yaml:"base_url"`
+	// WireAPI is "chat" or "responses"; empty is "chat", which is what
+	// vLLM and SGLang serve.
+	WireAPI string `yaml:"wire_api,omitempty"`
+	// Prices are list prices per million tokens by model name. A model
+	// with none records no cost — right for one the operator runs, and
+	// wrong for a hosted endpoint, so name the price when there is a bill.
+	Prices map[string]CodexPriceConfig `yaml:"prices,omitempty"`
+}
+
+// CodexPriceConfig is a model's list price in dollars per million
+// tokens. cached_input and cache_write left out are the input price.
+type CodexPriceConfig struct {
+	Input       float64 `yaml:"input"`
+	CachedInput float64 `yaml:"cached_input,omitempty"`
+	CacheWrite  float64 `yaml:"cache_write,omitempty"`
+	Output      float64 `yaml:"output"`
+}
+
+// Harness is the provider as the Codex adapter takes it.
+func (p CodexProviderConfig) Harness(name string) harness.CodexProvider {
+	out := harness.CodexProvider{Name: name, BaseURL: p.BaseURL, WireAPI: p.WireAPI}
+	if len(p.Prices) > 0 {
+		out.Prices = make(map[string]harness.CodexPrice, len(p.Prices))
+		for model, pr := range p.Prices {
+			cached, write := pr.CachedInput, pr.CacheWrite
+			if cached == 0 {
+				cached = pr.Input
+			}
+			if write == 0 {
+				write = pr.Input
+			}
+			out.Prices[model] = harness.CodexPrice{
+				Input: pr.Input, CachedInput: cached, CacheWrite: write, Output: pr.Output,
+			}
+		}
+	}
+	return out
 }
 
 // CodexAccountConfig is one Codex account: a ChatGPT-plan login in its
@@ -275,11 +326,18 @@ type CodexAccountConfig struct {
 	Home       string `yaml:"home,omitempty"`
 	APIKeyEnv  string `yaml:"api_key_env,omitempty"`
 	APIKeyFile string `yaml:"api_key_file,omitempty"`
+	// Provider names one of `codex.providers`; empty is OpenAI itself.
+	Provider string `yaml:"provider,omitempty"`
 }
 
-// Harness is the account as the Codex adapter takes it.
-func (a CodexAccountConfig) Harness() harness.CodexAccount {
-	return harness.CodexAccount{Name: a.Name, Home: a.Home, APIKeyEnv: a.APIKeyEnv, APIKeyFile: a.APIKeyFile}
+// Harness is the account as the Codex adapter takes it, with the
+// provider it names resolved from the block's `providers`.
+func (a CodexAccountConfig) Harness(providers map[string]CodexProviderConfig) harness.CodexAccount {
+	out := harness.CodexAccount{Name: a.Name, Home: a.Home, APIKeyEnv: a.APIKeyEnv, APIKeyFile: a.APIKeyFile}
+	if a.Provider != "" {
+		out.Provider = providers[a.Provider].Harness(a.Provider)
+	}
+	return out
 }
 
 // CodexModels is the Codex model for each Claude tier.
@@ -291,12 +349,25 @@ type CodexModels struct {
 
 // IsZero leaves an empty block out of a saved node.yaml.
 func (c CodexConfig) IsZero() bool {
-	return c.Binary == "" && len(c.Accounts) == 0 && c.Models == CodexModels{}
+	return c.Binary == "" && len(c.Accounts) == 0 && len(c.Providers) == 0 && c.Models == CodexModels{}
 }
 
 // Validate refuses accounts Codex could not run on: a name missing or
 // used twice, or not exactly one of home, api_key_env and api_key_file.
 func (c CodexConfig) Validate() error {
+	for name, prov := range c.Providers {
+		if strings.TrimSpace(name) == "" {
+			return fmt.Errorf("codex.providers: a provider needs a name")
+		}
+		if strings.TrimSpace(prov.BaseURL) == "" {
+			return fmt.Errorf("codex provider %q: base_url is required", name)
+		}
+		switch prov.WireAPI {
+		case "", "chat", "responses":
+		default:
+			return fmt.Errorf("codex provider %q: wire_api %q: want chat or responses", name, prov.WireAPI)
+		}
+	}
 	seen := map[string]bool{}
 	for i, a := range c.Accounts {
 		name := strings.TrimSpace(a.Name)
@@ -315,6 +386,16 @@ func (c CodexConfig) Validate() error {
 		}
 		if n != 1 {
 			return fmt.Errorf("codex account %q: want exactly one of home, api_key_env and api_key_file", name)
+		}
+		if a.Provider != "" {
+			if _, ok := c.Providers[a.Provider]; !ok {
+				return fmt.Errorf("codex account %q: provider %q is not in codex.providers", name, a.Provider)
+			}
+			// a provider's key rides OPENAI_API_KEY, which only an
+			// api-key account sets: a plan login has none to send
+			if strings.TrimSpace(a.APIKeyEnv) == "" && strings.TrimSpace(a.APIKeyFile) == "" {
+				return fmt.Errorf("codex account %q: a provider account needs api_key_env or api_key_file", name)
+			}
 		}
 	}
 	return nil

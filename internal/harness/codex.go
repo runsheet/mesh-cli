@@ -53,6 +53,69 @@ type Codex struct {
 	WorkRoot string
 }
 
+// CodexProvider is an OpenAI-compatible endpoint a Codex session talks
+// to instead of OpenAI's own: a vLLM or SGLang server in front of a
+// model the operator runs (Kimi, Qwen, a local Llama), or any hosted
+// service that speaks the same wire. It is named in node.yaml's
+// `codex.providers` and chosen by an account, so one node may run real
+// Codex and a local model side by side.
+//
+// The key travels as OPENAI_API_KEY, which the harness already exports
+// for an api-key account, so `env_key` is always that and a provider
+// needs no variable of its own. A server that checks no key still wants
+// one set: give the account an api_key_env holding any non-empty value.
+type CodexProvider struct {
+	// Name is the provider's name in node.yaml, and the name Codex
+	// knows it by; empty is OpenAI itself.
+	Name string
+	// BaseURL is the endpoint including the path a client expects —
+	// vLLM and SGLang serve OpenAI's API under /v1.
+	BaseURL string
+	// WireAPI is "chat" (OpenAI's chat completions, what vLLM and
+	// SGLang serve) or "responses" (OpenAI's own); empty is "chat".
+	WireAPI string
+	// Prices are the list prices per million tokens of the models this
+	// provider serves, by model name. A model with no price records no
+	// cost, which is right for one that costs nothing to run and wrong
+	// for a hosted one — so name the price when there is a bill.
+	Prices map[string]CodexPrice
+}
+
+// IsZero says the session runs on OpenAI itself.
+func (p CodexProvider) IsZero() bool { return p.Name == "" || p.BaseURL == "" }
+
+// TOML is the provider as the session's config.toml declares it, and
+// empty for OpenAI itself.
+func (p CodexProvider) TOML() string {
+	if p.IsZero() {
+		return ""
+	}
+	wire := p.WireAPI
+	if wire == "" {
+		wire = "chat"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "model_provider = %s\n\n", tomlString(p.Name))
+	fmt.Fprintf(&b, "[model_providers.%s]\n", tomlKey(p.Name))
+	fmt.Fprintf(&b, "name = %s\n", tomlString(p.Name))
+	fmt.Fprintf(&b, "base_url = %s\n", tomlString(p.BaseURL))
+	fmt.Fprintf(&b, "wire_api = %s\n", tomlString(wire))
+	fmt.Fprintf(&b, "env_key = %s\n", tomlString("OPENAI_API_KEY"))
+	return b.String()
+}
+
+// Price is a model's list price: a provider's own table alone, never
+// OpenAI's, because a name it happens to share ("gpt-6-sol" served
+// locally) does not cost what OpenAI charges for it.
+func (p CodexProvider) Price(model string) (CodexPrice, bool) {
+	if !p.IsZero() {
+		pr, ok := p.Prices[model]
+		return pr, ok
+	}
+	pr, ok := CodexPrices[model]
+	return pr, ok
+}
+
 // CodexAccount is one OpenAI account Codex sessions run on: a
 // ChatGPT-plan login (Home, where `codex login` wrote its auth.json) or
 // an API key (APIKeyEnv names the variable holding it, APIKeyFile the
@@ -62,6 +125,9 @@ type CodexAccount struct {
 	Home       string
 	APIKeyEnv  string
 	APIKeyFile string
+	// Provider is the OpenAI-compatible endpoint the session talks to;
+	// the zero provider is OpenAI itself.
+	Provider CodexProvider
 }
 
 // IsAPIKey says the account runs on an API key rather than a plan login.
@@ -295,10 +361,18 @@ func codexOwnServers(job Job) map[string]any {
 // renderer, tools.CodexConfig — bearer_token_env_var and
 // env_http_headers naming MESH_TOOL_* variables, never Claude Code's
 // `${…}` rendering of them that job.MCPServers also carries.
-func codexConfig(job Job) (string, []string, error) {
+func codexConfig(job Job, prov CodexProvider) (string, []string, error) {
 	cfg, env, err := CodexMCPConfig(codexOwnServers(job), job.Env)
 	if err != nil {
 		return "", nil, err
+	}
+	// the provider comes first, and on its own makes the file worth
+	// writing: a session with no MCP server still needs its endpoint
+	if head := prov.TOML(); head != "" {
+		if cfg != "" {
+			head += "\n"
+		}
+		cfg = head + cfg
 	}
 	if len(job.Tools) == 0 {
 		return cfg, env, nil
@@ -409,7 +483,7 @@ type codexHome struct {
 func (c *Codex) prepareHome(job Job) (*codexHome, error) {
 	if dir := jobCodexHome(job.Env); dir != "" {
 		h := &codexHome{dir: dir}
-		cfg, env, err := codexConfig(job)
+		cfg, env, err := codexConfig(job, c.Account.Provider)
 		if err != nil {
 			return nil, err
 		}
@@ -446,7 +520,7 @@ func (c *Codex) prepareHome(job Job) (*codexHome, error) {
 		os.RemoveAll(dir)
 		return nil, err
 	}
-	cfg, env, err := codexConfig(job)
+	cfg, env, err := codexConfig(job, c.Account.Provider)
 	if err != nil {
 		return fail(err)
 	}
@@ -645,7 +719,7 @@ func (c *Codex) Run(ctx context.Context, job Job, onProgress func(Progress)) (Re
 			}
 		case "turn.completed":
 			if onProgress != nil && ev.Usage != nil {
-				if p, ok := CodexPrices[job.Model]; ok {
+				if p, ok := c.Account.Provider.Price(job.Model); ok {
 					onProgress(Progress{CostUSD: p.Cost(*ev.Usage), SessionID: sessionID})
 				}
 			}

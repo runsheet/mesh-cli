@@ -589,3 +589,47 @@ func TestCodexRunRedactsToolErrors(t *testing.T) {
 		t.Fatalf("FirstError = %q, want the secret redacted", got)
 	}
 }
+
+// A provider declares the endpoint in the session's config.toml, and
+// does it on its own: a session with no MCP server still needs one
+// written, or Codex would talk to OpenAI (adr-015).
+func TestCodexProviderConfig(t *testing.T) {
+	prov := CodexProvider{Name: "kimi", BaseURL: "http://spark-1.lan:8000/v1"}
+	cfg, env, err := codexConfig(Job{}, prov)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = `model_provider = "kimi"
+
+[model_providers.kimi]
+name = "kimi"
+base_url = "http://spark-1.lan:8000/v1"
+wire_api = "chat"
+env_key = "OPENAI_API_KEY"
+`
+	if cfg != want {
+		t.Fatalf("config.toml\n%s\nwant\n%s", cfg, want)
+	}
+	if len(env) != 0 {
+		t.Fatalf("a provider needs no environment of its own: %q", env)
+	}
+	// the MCP servers follow it, one blank line between the tables
+	cfg, _, err = codexConfig(Job{MCPServers: testServers()}, prov)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(cfg, want+"\n[mcp_servers.") {
+		t.Fatalf("the servers do not follow the provider:\n%s", cfg)
+	}
+	// responses is the other wire; OpenAI itself renders nothing
+	if got := (CodexProvider{Name: "x", BaseURL: "http://x/v1", WireAPI: "responses"}).TOML(); !strings.Contains(got, `wire_api = "responses"`) {
+		t.Fatalf("wire_api\n%s", got)
+	}
+	if got := (CodexProvider{}).TOML(); got != "" {
+		t.Fatalf("OpenAI itself rendered %q", got)
+	}
+	// a name TOML would not take bare is quoted in the table header
+	if got := (CodexProvider{Name: "kimi.spark", BaseURL: "http://x/v1"}).TOML(); !strings.Contains(got, `[model_providers."kimi.spark"]`) {
+		t.Fatalf("table name\n%s", got)
+	}
+}
