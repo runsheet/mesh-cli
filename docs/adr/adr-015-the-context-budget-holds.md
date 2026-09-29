@@ -78,3 +78,11 @@ fits in what is left.
   operator trims it in node.yaml without a release.
 - Recency by slug number is a proxy. When the index carries a date,
   the order can use it without changing the tiers.
+- `INDEX.md`'s "what it says" cell is filled only for a document of a
+  kind a session fetches (instructions, adr, prd, trd) that is not on
+  disk; one already on disk needs no summary, the file is beside the
+  index (item 3).
+- What the budget wrote is not left to inference: the node logs one
+  line per session with the bytes written and the documents left to
+  fetch, and carries the bytes on the usage record as `contextBytes`
+  ([ADR-016](adr-016-the-node-reports-what-its-context-cost.md), item 4).
