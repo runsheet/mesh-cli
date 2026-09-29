@@ -53,7 +53,7 @@ func TestBuildKilledLeftRunningIsLoggedAndNoted(t *testing.T) {
 
 // A handed-back build is two sessions: each one's end is its own line,
 // and the note carries both.
-func TestBuildKilledLeftRunningPerHandedBackSession(t *testing.T) {
+func TestHandBackKilledLogsALinePerSession(t *testing.T) {
 	second := []sessionunit.Process{{PID: 5252, Comm: "sleep"}}
 	h := harnessFunc(func(ctx context.Context, job harness.Job, on func(harness.Progress)) (harness.Result, error) {
 		return harness.Result{Success: true, Text: "done", SessionID: "s-1", HandedBack: true,
@@ -163,8 +163,46 @@ func TestAdoptItemTerminalKillsLeftRunning(t *testing.T) {
 
 // An evaluation that ran out of time records no verdict, and the
 // platform takes no note on an item in evaluating: what its end killed
-// is logged, and the item's next verdict's notes carry it.
-func TestEvaluateTimeoutKilledLeftRunningIsNoted(t *testing.T) {
+// is logged, and nothing is sent as the item's progress.
+func TestEvaluateTimeoutKilledIsLogged(t *testing.T) {
+	h := harnessFunc(func(ctx context.Context, job harness.Job, on func(harness.Progress)) (harness.Result, error) {
+		if job.Kind != harness.KindEvaluate {
+			return harness.Result{Success: true, Text: "done", SessionID: "s-1"}, nil
+		}
+		return harness.Result{SessionID: "s-2", Killed: leftovers}, context.DeadlineExceeded
+	})
+	f := seed(t)
+	r, ws, item, row := runnerOnFake(t, f, h, nil)
+	if err := r.RunItem(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	progress := len(f.CallsNamed("reportWorkItemProgress"))
+	var logs bytes.Buffer
+	ev := &Evaluator{GW: r.GW, Harness: h, WS: ws, Scopes: r.Scopes, WorkRoot: ws.root, Log: log.New(&logs, "", 0)}
+	item.Branch = "mesh/ship-it-1"
+	if err := ev.Evaluate(context.Background(), item); err == nil || !strings.Contains(err.Error(), "ran out of time") {
+		t.Fatalf("err = %v", err)
+	}
+	if row(item1)["status"] != "evaluating" {
+		t.Fatalf("a timed-out evaluation records no verdict: %v", row(item1))
+	}
+	want := "item ship-it/1: session end killed 2 process(es) the agent left running: 4242 go, 4250 runsheet\n"
+	if !strings.Contains(logs.String(), want) {
+		t.Fatalf("log = %q", logs.String())
+	}
+	if n := len(f.CallsNamed("reportWorkItemProgress")); n != progress {
+		t.Fatalf("the evaluation sent %d progress notes; the platform takes none on an item in evaluating", n-progress)
+	}
+	if n := len(f.CallsNamed("evaluateWorkItem")); n != 0 {
+		t.Fatalf("verdicts = %d", n)
+	}
+}
+
+// An evaluation that records a verdict carries what its end killed in
+// the verdict's notes — and, held by LeftRunning, what an earlier
+// evaluation of the item that recorded none killed.
+func TestEvaluateVerdictCarriesKilled(t *testing.T) {
+	second := []sessionunit.Process{{PID: 5252, Comm: "sleep"}}
 	timedOut := true
 	h := harnessFunc(func(ctx context.Context, job harness.Job, on func(harness.Progress)) (harness.Result, error) {
 		if job.Kind != harness.KindEvaluate {
@@ -173,10 +211,10 @@ func TestEvaluateTimeoutKilledLeftRunningIsNoted(t *testing.T) {
 		if timedOut {
 			return harness.Result{SessionID: "s-2", Killed: leftovers}, context.DeadlineExceeded
 		}
-		return harness.Result{Success: true, Text: "Fine.\nVERDICT: PASS", SessionID: "s-3"}, nil
+		return harness.Result{Success: true, Text: "Fine.\nVERDICT: PASS", SessionID: "s-3", Killed: second}, nil
 	})
 	f := seed(t)
-	r, ws, item, row := runnerOnFake(t, f, h, nil)
+	r, ws, item, _ := runnerOnFake(t, f, h, nil)
 	if err := r.RunItem(context.Background(), item); err != nil {
 		t.Fatal(err)
 	}
@@ -184,27 +222,24 @@ func TestEvaluateTimeoutKilledLeftRunningIsNoted(t *testing.T) {
 	left := &LeftRunning{}
 	ev := &Evaluator{GW: r.GW, Harness: h, WS: ws, Scopes: r.Scopes, WorkRoot: ws.root, LeftRunning: left, Log: log.New(&logs, "", 0)}
 	item.Branch = "mesh/ship-it-1"
-	if err := ev.Evaluate(context.Background(), item); err == nil || !strings.Contains(err.Error(), "ran out of time") {
-		t.Fatalf("err = %v", err)
-	}
-	if row(item1)["status"] != "evaluating" {
-		t.Fatalf("a timed-out evaluation records no verdict: %v", row(item1))
-	}
-	sentence := "session end killed 2 process(es) the agent left running: 4242 go, 4250 runsheet"
-	if !strings.Contains(logs.String(), ": "+sentence+"\n") {
-		t.Fatalf("log = %q", logs.String())
+	if err := ev.Evaluate(context.Background(), item); err == nil {
+		t.Fatal("a timed-out evaluation records no verdict")
 	}
 	// the next evaluation, a later tick's, ends with a verdict
 	timedOut = false
-	ev = &Evaluator{GW: r.GW, Harness: h, WS: ws, Scopes: r.Scopes, WorkRoot: ws.root, LeftRunning: left, Log: log.New(&logs, "", 0)}
 	if err := ev.Evaluate(context.Background(), item); err != nil {
 		t.Fatal(err)
+	}
+	earlier := "session end killed 2 process(es) the agent left running: 4242 go, 4250 runsheet"
+	own := "session end killed 1 process(es) the agent left running: 5252 sleep"
+	if !strings.Contains(logs.String(), "item ship-it/1: "+own+"\n") {
+		t.Fatalf("log = %q", logs.String())
 	}
 	calls := f.CallsNamed("evaluateWorkItem")
 	if len(calls) != 1 {
 		t.Fatalf("verdicts = %d", len(calls))
 	}
-	if n, _ := calls[0].Input["notes"].(string); !strings.HasSuffix(n, "\n"+sentence) {
+	if n, _ := calls[0].Input["notes"].(string); !strings.HasSuffix(n, "\n"+earlier+"\n"+own) {
 		t.Fatalf("verdict notes = %q", n)
 	}
 	if held := left.Hold(item1, ""); held != "" {

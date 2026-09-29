@@ -451,7 +451,7 @@ func (p *Planner) readPlan(ctx context.Context, goal gateway.Goal, dir string, a
 		return nil, nil, nil, 0, ctx.Err()
 	}
 	defer harness.RemoveSession(dir)
-	logKilled(p.logf, "goal "+goal.Slug, result)
+	logKilled(p.logf, "goal "+goal.Slug, result.KilledPerSession(), result.KillError)
 	if errors.Is(err, context.DeadlineExceeded) {
 		return nil, nil, nil, 0, fmt.Errorf("planner session ran out of time (%s)", p.Timeout)
 	}

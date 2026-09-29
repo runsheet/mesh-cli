@@ -301,7 +301,7 @@ func (r *Rebaser) afterRebase(ctx context.Context, rb *rebaseRun, acct *SessionA
 		rb.sessionID = result.SessionID
 		rb.mu.Unlock()
 	}
-	if note := logKilled(r.logf, "item "+rb.label, result); note != "" {
+	if note := logKilled(r.logf, "item "+rb.label, result.KilledPerSession(), result.KillError); note != "" {
 		rb.report(ctx, note)
 	}
 	branch, label := rb.branch, rb.label

@@ -194,7 +194,7 @@ func (d *Director) handIn(ctx context.Context, direction gateway.Direction, proj
 		return ctx.Err()
 	}
 	defer harness.RemoveSession(dir)
-	logKilled(d.logf, project.Slug+"/"+direction.Slug, result)
+	logKilled(d.logf, project.Slug+"/"+direction.Slug, result.KilledPerSession(), result.KillError)
 	if errors.Is(err, context.DeadlineExceeded) {
 		return fmt.Errorf("research session ran out of time (%s)", d.Timeout)
 	}

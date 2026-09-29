@@ -527,7 +527,7 @@ func (r *Runner) afterBuild(ctx context.Context, b *buildRun, result harness.Res
 	// what the agent left running in the session's unit, killed at its
 	// end (ADR 008, The session's end): a line in the log and a note on
 	// the item
-	if note := logKilled(r.logf, "item "+label, result); note != "" {
+	if note := logKilled(r.logf, "item "+label, result.KilledPerSession(), result.KillError); note != "" {
 		b.report(ctx, note)
 	}
 	if le := (*sandbox.LimitError)(nil); errors.As(runErr, &le) {

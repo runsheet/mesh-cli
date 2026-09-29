@@ -5,7 +5,6 @@ import (
 	"strings"
 	"sync"
 
-	"projectmesh.io/mesh-cli/internal/harness"
 	"projectmesh.io/mesh-cli/internal/sessionunit"
 )
 
@@ -25,19 +24,20 @@ func KilledNote(killed []sessionunit.Process) string {
 }
 
 // logKilled logs, under subject ("item <label>", "goal <slug>", …), what
-// the session's end killed — a line per session, so a handed-back one's
-// two runs are two lines — and why the kill failed, and returns the
-// killed sentences for the item's note, a line each ("" when none).
-func logKilled(logf func(string, ...any), subject string, res harness.Result) string {
+// the session's end killed — perSession is Result.KilledPerSession, a
+// line per session, so a handed-back one's two runs are two lines — and
+// why the kill failed (Result.KillError), and returns the killed
+// sentences for the item's note, a line each ("" when none).
+func logKilled(logf func(string, ...any), subject string, perSession [][]sessionunit.Process, killError string) string {
 	var notes []string
-	for _, killed := range res.KilledPerSession() {
+	for _, killed := range perSession {
 		if note := KilledNote(killed); note != "" {
 			logf("%s: %s", subject, note)
 			notes = append(notes, note)
 		}
 	}
-	if res.KillError != "" {
-		logf("%s: kill: %s", subject, res.KillError)
+	if killError != "" {
+		logf("%s: kill: %s", subject, killError)
 	}
 	return strings.Join(notes, "\n")
 }
@@ -47,11 +47,11 @@ func logKilled(logf func(string, ...any), subject string, res harness.Result) st
 // killed, as a session's own end does.
 func stopFound(logf func(string, ...any), subject string, s FoundSession) {
 	killed, err := s.Kill()
-	res := harness.Result{Killed: killed}
+	killError := ""
 	if err != nil {
-		res.KillError = err.Error()
+		killError = err.Error()
 	}
-	logKilled(logf, subject, res)
+	logKilled(logf, subject, [][]sessionunit.Process{killed}, killError)
 }
 
 // LeftRunning holds the killed sentences of an item's evaluations that

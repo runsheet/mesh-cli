@@ -409,9 +409,14 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 	defer harness.RemoveSession(ev.dir)
 	item, label, acct := ev.item, ev.label, ev.acct
 	// what the agent left running goes in the verdict's notes; an end
-	// that records no verdict holds it for the item's next one, since
-	// the platform takes no progress note on an item in evaluating
-	killed := e.LeftRunning.Hold(item.ID, logKilled(e.logf, "item "+label, result))
+	// that records no verdict only logs it and holds it for the item's
+	// next one, since the platform takes no progress note on an item in
+	// evaluating (ADR 008, The session's end)
+	left := e.LeftRunning
+	if left == nil {
+		left = &LeftRunning{}
+	}
+	killed := left.Hold(item.ID, logKilled(e.logf, "item "+label, result.KilledPerSession(), result.KillError))
 	if errors.Is(err, context.DeadlineExceeded) {
 		return fmt.Errorf("evaluator session ran out of time (%s)", e.Timeout)
 	}
@@ -440,6 +445,7 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 		e.logf("item %s: %s, evaluating on %s", label, saw, other.fullName())
 		op := e.secondOpinion(ctx, ev, other, *ev.second, "evaluation")
 		defer op.acct.Finish(ctx, op.result)
+		killed = left.Hold(item.ID, op.killed)
 		// one report for the whole evaluation, the attempt with no verdict
 		// in it too
 		if op.acct != nil {
@@ -485,10 +491,6 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 		e.logf("item %s: %s", label, note)
 		without += "\n" + truncate(note, 500)
 	}
-	// and what it left running that its end killed
-	if killed != "" {
-		without += "\n" + truncate(killed, 500)
-	}
 	if result.KeptSessionDir != "" && hasToolError(result) {
 		e.logf("item %s: a tool errored%s", label, keptAt(result))
 	}
@@ -501,6 +503,10 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 	if ev.preflight != "" && head == "" {
 		// and why not on Codex, which the item might have expected
 		evaluatedOn = fam.fullName() + "; the Codex preflight failed: " + truncate(ev.preflight, 200)
+	}
+	// and what its sessions left running that their ends killed
+	if killed != "" {
+		without += "\n" + truncate(killed, 500)
 	}
 	if passed && (fam.codex || e.hasCodex()) && gateway.PriorityRank(ev.res.Goal.Priority) <= gateway.PriorityRank("high") {
 		// the second opinion is the other family — which, after a first
@@ -522,6 +528,10 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 			op = e.secondOpinion(ctx, ev, other, *ev.second, "second opinion")
 		}
 		defer op.acct.Finish(ctx, op.result)
+		left.Hold(item.ID, op.killed)
+		if op.killed != "" {
+			without += "\n" + truncate(op.killed, 500)
+		}
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -553,7 +563,7 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 	if err := acct.Carried(e.GW.EvaluateWorkItem(ctx, item.ID, passed, notes, Cents(cost), usage)); err != nil {
 		return fmt.Errorf("record verdict: %w", err)
 	}
-	e.LeftRunning.Forget(item.ID)
+	left.Forget(item.ID)
 	e.logf("item %s: evaluation %s on %s ($%.2f)", label, verdict, fam.fullName(), cost)
 	return nil
 }
@@ -617,6 +627,9 @@ type opinion struct {
 	notes       string
 	cost        float64
 	unavailable string
+	// killed is the sentence for what the session's end killed ("" when
+	// nothing), logged already
+	killed string
 	// result is the session's, for its tokens in the evaluation's report
 	result harness.Result
 	// acct is a Claude second opinion's own account, whose report the
@@ -678,7 +691,8 @@ func (e *Evaluator) secondOpinion(ctx context.Context, ev evalRun, on family, jo
 	}
 	e.logf("item %s: %s on %s", label, role, on.logName())
 	result, err := h.Run(ctx, job, nil)
-	op := opinion{cost: result.CostUSD, result: result, acct: acct}
+	op := opinion{cost: result.CostUSD, result: result, acct: acct,
+		killed: logKilled(e.logf, "item "+label, result.KilledPerSession(), result.KillError)}
 	if acct != nil {
 		acct.Report(result)
 	}
