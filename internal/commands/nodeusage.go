@@ -26,8 +26,8 @@ var (
 
 // nodeUsageCmd is the node-side reading of what sessions cost
 // (adr-016's amendment): node.ReadUsage over node.log's usage records,
-// printed as node.UsageReading.Lines. The platform exposes no usage
-// query, so this is the reading a goal doc quotes.
+// printed as node.UsageReading.Lines. This is the node-side reading;
+// mesh-bench.py is the platform's.
 var nodeUsageCmd = &cobra.Command{
 	Use:   "usage",
 	Short: "Read node.log's usage records: sessions, input tokens, cache reads and context bytes by kind, for a window",

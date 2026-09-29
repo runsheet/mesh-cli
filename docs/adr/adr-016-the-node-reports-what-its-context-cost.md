@@ -102,8 +102,9 @@ sample was failed three times for it. Now:
   did not parse. An older binary's unlabelled `usage: {…}` takes the
   label and kind of the nearest `finished`/`evaluation`/`rebased …($x)`
   line within 12 lines whose `$x` is its `listCostCents` to the cent,
-  else `unknown`. The platform exposes no usage query, so this is the
-  node-side reading the goal doc quotes, before and after.
+  else `unknown`. `mesh node usage` is the node-side reading the goal
+  doc quotes, before and after; `mesh-bench.py` is the platform's, over
+  its `usageRecord`, `usageIndexs` and `usageWork` queries.
 - (Item 11) The reading is precise enough to quote. `--from` and `--to`
   take a date (`YYYY-MM-DD`, local midnight) or an RFC 3339 timestamp
   (`2026-09-29T14:18:43Z`, or with an offset), so an after-reading can
