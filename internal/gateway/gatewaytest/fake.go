@@ -464,7 +464,8 @@ func (f *Fake) sessionRead(w http.ResponseWriter, credField, arg, toolsField str
 }
 
 // heartbeatInputType is HeartbeatNodeInput as introspection answers it:
-// every field a heartbeat may carry, less UnknownFields — `scaling`
+// every field a heartbeat may carry, `commit` among them, less
+// UnknownFields — `scaling`
 // without `accounts` when that is unknown, as the platform before
 // adr-005's per-account slots; `holding` left out entirely when
 // UnknownFields["holding"] (a platform before node-says-why-work-waits).
@@ -474,7 +475,7 @@ func (f *Fake) heartbeatInputType() map[string]any {
 		return map[string]any{"name": name}
 	}
 	var fields []any
-	for _, name := range []string{"aggregateId", "namespace", "version", "running", "draining", "updateError", "limits", "scaling", "runtimes", "adapters", "holding"} {
+	for _, name := range []string{"aggregateId", "namespace", "version", "running", "draining", "updateError", "limits", "scaling", "runtimes", "adapters", "holding", "commit"} {
 		if f.UnknownFields[name] {
 			continue
 		}

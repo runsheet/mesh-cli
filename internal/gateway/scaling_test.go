@@ -251,3 +251,81 @@ func TestScalingAccountsAreAlwaysAList(t *testing.T) {
 		t.Fatalf("marshalled scaling: %s", b)
 	}
 }
+
+// A heartbeat carries commit beside version when the node knows it and
+// the gateway's HeartbeatNodeInput takes it (mesh-specs ADR 013, trd §1
+// Node); an empty one, or a schema without the field, sends no key and
+// the heartbeat lands the first time. The schema's answer is kept for
+// ScalingProbeEvery, then asked again.
+func TestHeartbeatCarriesCommitTheSchemaTakes(t *testing.T) {
+	f, gw := registeredFake(t)
+	now := time.Date(2026, 9, 28, 9, 0, 0, 0, time.UTC)
+	gw.Now = func() time.Time { return now }
+	ctx := context.Background()
+	for _, c := range []string{"0895d40", "0895d40", ""} {
+		if err := gw.HeartbeatNode(ctx, limitsNode, "v0.2.188", 1, gateway.HeartbeatExtras{Commit: c}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	hb := f.CallsNamed("heartbeatNode")
+	if len(hb) != 3 {
+		t.Fatalf("heartbeats: %+v", hb)
+	}
+	for i, want := range []any{"0895d40", "0895d40", nil} {
+		if got := hb[i].Input["commit"]; got != want {
+			t.Fatalf("heartbeat %d: commit = %#v, want %#v", i, got, want)
+		}
+		if hb[i].Input["version"] != "v0.2.188" {
+			t.Fatalf("heartbeat %d: version = %#v", i, hb[i].Input["version"])
+		}
+	}
+	if n := len(f.ReadsNamed("__type")); n != 1 {
+		t.Fatalf("schema probed %d times, want once", n)
+	}
+}
+
+func TestHeartbeatOmitsCommitTheSchemaLacks(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(*gatewaytest.Fake)
+	}{
+		{"no commit", func(f *gatewaytest.Fake) { f.UnknownFields["commit"] = true }},
+		{"no introspection", func(f *gatewaytest.Fake) { f.Unsupported["__type"] = true }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, gw := registeredFake(t)
+			tc.setup(f)
+			now := time.Date(2026, 9, 28, 9, 0, 0, 0, time.UTC)
+			gw.Now = func() time.Time { return now }
+			ctx := context.Background()
+			for range 2 {
+				if err := gw.HeartbeatNode(ctx, limitsNode, "v0.2.188", 1, gateway.HeartbeatExtras{Commit: "0895d40"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			hb := f.CallsNamed("heartbeatNode")
+			if len(hb) != 2 {
+				t.Fatalf("heartbeats: %+v (refused and resent?)", hb)
+			}
+			for _, c := range hb {
+				if v, ok := c.Input["commit"]; ok {
+					t.Fatalf("sent commit the schema lacks: %#v", v)
+				}
+			}
+			if n := len(f.ReadsNamed("__type")); n != 1 {
+				t.Fatalf("schema probed %d times, want once", n)
+			}
+
+			// the platform deploys the field; the next probe sees it
+			delete(f.UnknownFields, "commit")
+			delete(f.Unsupported, "__type")
+			now = now.Add(gateway.ScalingProbeEvery)
+			if err := gw.HeartbeatNode(ctx, limitsNode, "v0.2.188", 1, gateway.HeartbeatExtras{Commit: "0895d40"}); err != nil {
+				t.Fatal(err)
+			}
+			if hb := f.CallsNamed("heartbeatNode"); hb[len(hb)-1].Input["commit"] != "0895d40" {
+				t.Fatalf("commit not sent once the schema has it: %#v", hb[len(hb)-1].Input)
+			}
+		})
+	}
+}

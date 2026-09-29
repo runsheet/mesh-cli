@@ -145,7 +145,7 @@ func (s *Server) handle(ctx context.Context, raw []byte) error {
 				"tools":        map[string]any{},
 				"experimental": map[string]any{"claude/channel": map[string]any{}},
 			},
-			"serverInfo":   map[string]any{"name": ServerName, "version": version.Version},
+			"serverInfo":   map[string]any{"name": ServerName, "version": version.Resolved()},
 			"instructions": s.Instructions,
 		}})
 	case "ping":

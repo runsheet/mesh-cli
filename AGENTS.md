@@ -108,7 +108,13 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   §Heartbeat); both for runsheet goal
   `limits-on-the-console` — and `runtimes` and `adapters` — the tool
   runtimes (npx, uvx, docker) and agent CLIs (claude-code, codex)
-  `Loop.LookPath` finds, probed every tick, for `tools-in-the-console`),
+  `Loop.LookPath` finds, probed every tick, for `tools-in-the-console`
+  — and `commit` — the short sha the binary was built from
+  (`Loop.Commit`, `version.Commit()`), beside `version`, which is
+  `version.Resolved()`: the release tag when built from one, else that
+  sha; sent only when the gateway's `HeartbeatNodeInput` has the field,
+  introspected and kept an hour like `scaling` (mesh-specs ADR 013,
+  adr-002's tag-or-sha amendment)),
   `adopted` (below) and `holding` — the node's holding decision as data,
   not a log line: each account's status, reset time and what the node
   still takes on it, and the summary judgement (`HoldingReport`,

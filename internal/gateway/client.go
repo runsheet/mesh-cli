@@ -89,6 +89,9 @@ type Client struct {
 	// holdingSchema is whether the gateway's heartbeat input was last
 	// found to take `holding` (see HeartbeatNode, takesHolding).
 	holdingSchema holdingProbe
+	// commitSchema is whether the gateway's heartbeat input was last
+	// found to take `commit` (see takesCommit).
+	commitSchema commitProbe
 	// toolErrorSchema is whether the gateway's usage report's `tools`
 	// entry was last found to take `error` (see takesToolError).
 	toolErrorSchema toolErrorProbe
@@ -1260,6 +1263,11 @@ type HeartbeatExtras struct {
 	// sends none; set, it is sent only when the gateway's schema takes it
 	// (HeartbeatNode, takesHolding).
 	Holding *Holding
+	// Commit is the short git sha the node was built from, beside its
+	// version (the release tag, or that sha for a dev build; mesh-specs
+	// ADR 013, trd §1 Node). It is sent only when set and the gateway's
+	// schema takes it (HeartbeatNode).
+	Commit string
 }
 
 // Holding is the heartbeat's `holding`: the node's account-by-account
@@ -1445,6 +1453,9 @@ func (c *Client) HeartbeatNode(ctx context.Context, nodeID, version string, runn
 			}
 			in["holding"] = &h
 		}
+		if x.Commit != "" && c.takesCommit(ctx) {
+			in["commit"] = x.Commit
+		}
 	}
 	// A node can be newer than the platform it reports to: a field the
 	// gateway does not know yet makes GraphQL refuse the whole heartbeat,
@@ -1467,6 +1478,46 @@ func (c *Client) HeartbeatNode(ctx context.Context, nodeID, version string, runn
 // heartbeat takes `scaling` is kept before it is asked again: a
 // platform deploy adds the field without the node restarting.
 const ScalingProbeEvery = time.Hour
+
+// commitProbe is the cached answer to whether heartbeatNode's input has
+// `commit`, and when it was asked.
+type commitProbe struct {
+	mu    sync.Mutex
+	at    time.Time
+	takes bool
+}
+
+// takesCommit says whether the gateway's HeartbeatNodeInput has a
+// `commit` field — asked by introspection and kept for ScalingProbeEvery,
+// as takesScaling is: a platform older than the field would refuse the
+// whole heartbeat. A failed probe is a no, kept as long.
+func (c *Client) takesCommit(ctx context.Context) bool {
+	p := &c.commitSchema
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := c.now()
+	if !p.at.IsZero() && now.Sub(p.at) < ScalingProbeEvery {
+		return p.takes
+	}
+	var out struct {
+		Type *struct {
+			InputFields []struct {
+				Name string `json:"name"`
+			} `json:"inputFields"`
+		} `json:"__type"`
+	}
+	p.at, p.takes = now, false
+	q := `{ __type(name: "HeartbeatNodeInput") { inputFields { name } } }`
+	if err := c.Query(ctx, q, nil, &out); err != nil || out.Type == nil {
+		return false
+	}
+	for _, f := range out.Type.InputFields {
+		if f.Name == "commit" {
+			p.takes = true
+		}
+	}
+	return p.takes
+}
 
 // scalingProbe is the cached answer: whether heartbeatNode's input has
 // `scaling`, whether that has `accounts`, and when it was asked.
