@@ -135,7 +135,13 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   are sent only when set,
   because they are fields the platform half adds. Capacity, the
   limits thresholds and the orgs need no drain: `Reload` re-reads them
-  every tick.
+  every tick. A reload that cannot be applied — a node.yaml that does
+  not parse, a failing `MyOrgs`, no org left to serve — logs one
+  `reload config: <reason>; <reason>` line per tick while it lasts (the
+  reasons joined with `; `, a cause's own newlines folded in, so it is
+  one physical line) and keeps the last good values: a bad node.yaml
+  keeps the capacity, limits, accounts, context and claim limits, a
+  failed `MyOrgs` keeps the orgs and still applies a good node.yaml.
 - **Adoption** (`internal/node/adopt.go`, mesh-cli ADR-009, mesh-specs
   ADR 008): a session's unit and output file own it, not the node
   process. Build, evaluate, plan, research and rebase jobs are
