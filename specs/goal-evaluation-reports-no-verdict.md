@@ -3,7 +3,7 @@ title: Goal — The node says no verdict when its tools failed, and the two tool
 kind: plan
 status: draft
 parent: prd
-summary: "`prologue: not found` is (b) in the narrow sense — codex-sessions-reach-the-context-tool covered the evaluation path, but its tool-failure rule read the context tool's own `not found` answer as an unreachable tool — and not (a): the mini ran v0.2.188 from 2026-09-29 00:51:59Z and the earliest occurrence is 01:14:55Z."
+summary: "Tainted evaluations were 246 of 564 failed evaluations (43.6%) on every goal read through mesh_items at 2026-09-29T16:53:03Z; the after share is owed — the mini runs v0.2.191 and has not started v0.2.193, the first release carrying #450 (e3e3f97). `prologue: not found` is (b) in the narrow sense, not (a): #305's tool-failure rule read the context tool's own `not found` answer as an unreachable tool."
 ---
 
 # Goal — The node says no verdict when its tools failed, and the two tooling failures stop happening
@@ -197,15 +197,196 @@ file's name: a file name is not a slug, `adr-adr-001-….md` is slug
 
 ## What landed
 
-_(item 12 fills this in.)_
+Five squashed merges on runsheet/mesh-cli `main`, times from `git log
+origin/main --format='%h %cI %s'` (each merge's committer date, UTC),
+and the release each first appears in (`git merge-base --is-ancestor
+<sha> <tag>`):
+
+| PR | Squash commit | Merged (main, UTC) | First release | What |
+|---|---|---|---|---|
+| #428 | 11aa560 | 2026-09-29 12:46:44Z | v0.2.189 | An evaluation that reached no verdict is recorded as no verdict with its reason (`evaluateWorkItem` `outcome: no_verdict`), never a fail; a pass in the record is never sent as a fail |
+| #432 | d5dd020 | 2026-09-29 13:28:08Z | v0.2.190 | A Codex session whose bubblewrap sandbox cannot start is never a verdict: probed before the session, caught in the stream (`Result.SandboxBroken`), moved to Claude |
+| #444 | cdf0152 | 2026-09-29 14:28:15Z | v0.2.192 | A context tool that answered with its own error was reached (`ToolStat.Clean`, `Answered`, `Reached()`): `prologue: not found` keeps its verdict; each family's evaluation session proved to get a reachable mesh-context |
+| #449 | ebb1948 | 2026-09-29 14:56:00Z | v0.2.193 | This document's `prologue: not found` answer (docs only) |
+| #450 | e3e3f97 | 2026-09-29 15:15:12Z | v0.2.193 | A Codex evaluation's sandbox lets its tests bind loopback (`sandbox_workspace_write.network_access=true`), the probe binds a socket (`mesh sandbox-probe`), the mini's AppArmor profile recorded |
+| mesh-specs #108 | — | — | — | ADR 011 and the TRD record the third evaluation outcome, the Codex sandbox probe, network-on evaluation sandboxes and the reached-tool rule |
 
 ## The mini's upgrade
 
-_(item 12 fills this in.)_
+From the mini's `~/.mesh/node.log` start lines (the host's clock is
+UTC; `grep -a '^mesh node: 2026/09/29 [0-9:]* mesh node [v0-9a-f.]*,
+pid' ~/.mesh/node.log`), read 2026-09-29 16:52:20Z, and
+`~/.mesh/update.json`:
+
+| Release | Tagged commit | First start on 2026-09-29 (UTC) | Other starts that day | Carries e3e3f97 (#450) |
+|---|---|---|---|---|
+| v0.2.188 | 5a8c29e | 00:51:59Z | 04:00:32Z; 14:14:06Z, 14:19:33Z, 14:24:10Z | no |
+| v0.2.191 | 8eba662 | 14:13:19Z | 14:17:04Z, 14:21:24Z, 14:25:00Z (confirmed 14:25:31Z, `update.json` `confirmedAt`) | no |
+
+Between 14:13Z and 14:25Z the node alternated between the two
+(`confirming update v0.2.191 → v0.2.188` and back) before v0.2.191
+confirmed; it has run v0.2.191 since. **Neither release the mini
+started on 2026-09-29 carries e3e3f97.** The first release that does
+is v0.2.193 (tagged on e3e3f97 itself); v0.2.194–v0.2.197 carry it
+too. `mesh_health_nodes` at 2026-09-29T16:52:11Z gives the mini
+`version: v0.2.191`, `desired_version: v0.2.191`, 7 commits behind
+main, the oldest unrun merge 14:28:15Z (#444): self-update follows the
+desired version, so the mini will not start v0.2.193 or later until
+its desired version is raised. node.log has no `mesh node v0.2.193`
+(or later) start line.
+
+**The sandbox fix on the host**, as ADR 011's amendment "an
+evaluation's sandbox has the network, and the probe binds a socket"
+records it: since 12:59Z on 2026-09-29 the mini has
+`/etc/apparmor.d/codex-bwrap`, a profile with `userns,` on the
+bubblewrap Codex ships (`~/.local/share/codex/codex-resources/bwrap`,
+`flags=(unconfined)`; README, The sandbox on Ubuntu). With it bwrap
+starts — kept streams from 13:13Z show `go vet` and `go build` exiting
+0 — and `bwrap: loopback: Failed RTM_NEWADDR` stops: the latest failed
+evaluation carrying `bwrap` in the before read below is at 13:55Z. It
+does not give the sandbox loopback: `go test ./...` still dies with
+`socket: operation not permitted` because workspace-write has the
+network off. That half is #450's `network_access=true`, which reaches
+the mini only with v0.2.193 or later — and the loopback-socket notes
+in the before read run on to 16:44:00Z.
 
 ## Tainted evaluations before and after
 
-_(item 12 fills this in.)_
+### The rules
+
+A **failed evaluation** is one entry of an item's `evaluations`
+list as `mesh_items` returns it — "every failed evaluation so far",
+on every item of every goal, whatever the item's status now (merged,
+failed, cancelled, ready, review, …). Each entry's `notes` is
+classified by the goal statement's three classes (the research note,
+runsheet/handbook `research/2026-09-29-evaluations-fail-on-plumbing-not-quality.md`,
+could not be fetched from this session: `mesh_document` answers `not
+found` and `gh` cannot see runsheet/handbook), by literal,
+case-insensitive substring match, the first class that matches:
+
+1. **Tooling — the evaluator could not run or reach its tools.** The
+   notes contain any of `bwrap`, `RTM_NEWADDR` (the sandbox would not
+   start), `no verdict —` (the node's fallback note: the first family
+   saw no context tool, and the job ran again on the other family),
+   `loopback`, `socket: operation not permitted`, `local socket`,
+   `listening port`, `listening socket`, `test-server socket` (the
+   sandbox refused the tests their sockets). A note that also names a
+   real defect still counts here: the acceptance's commands could not
+   run, so the verdict was not reached on them.
+2. **Carries `VERDICT: PASS` yet recorded as fail.** Not tooling, and
+   the notes contain `VERDICT: PASS`.
+3. **Substantive.** Everything else: an evaluator's review finding a
+   defect, and — shown in its own row — a CI check recorded as a
+   failed evaluation (notes starting `The check "`).
+
+Tainted is classes 1 and 2. The match is lexical: a note that says it
+could not reach Postgres, or GitHub, in words none of the strings
+above catches is counted substantive, so the tainted count is a floor.
+
+**No verdict, two different things.** A *fallback note* (`no verdict —
+<tool>: <error>` at the head of the notes, followed by the other
+family's real `VERDICT: FAIL`) is a failed evaluation and is counted in
+class 1. A *recorded no_verdict outcome* (#428: `evaluateWorkItem`
+`outcome: no_verdict`) is not a failed evaluation at all — the
+platform spends no attempt on it and `mesh_items` does not list it — so
+it is counted apart, from node.log's `evaluation reached no verdict on
+<family>, recorded as no verdict` lines.
+
+### Before
+
+Read 2026-09-29T16:53:03Z: 7 projects, 216 goals, 1,653 items, 564
+failed evaluations (the earliest 2026-09-26T03:31:48Z, the latest
+2026-09-29T16:50:59Z). Every one precedes the mini's first start of a
+release carrying e3e3f97, which has not happened.
+
+| Before, read 2026-09-29T16:53:03Z | Failed evaluations |
+|---|---|
+| Tooling: `bwrap` / `RTM_NEWADDR` | 197 |
+| Tooling: `no verdict —` fallback note, no `bwrap` (31 carry the note in all; 22 of them also carry `bwrap` and are in the row above) | 9 |
+| Tooling: a loopback / socket string, neither of the above | 38 |
+| `VERDICT: PASS` recorded as fail | 2 |
+| **Tainted** | **246** |
+| Substantive: an evaluator's review | 216 |
+| Substantive: a CI check (`The check "…" failed`) | 102 |
+| **Substantive** | **318** |
+| **Total failed evaluations** | **564** |
+| **Tainted share** (246 / 564) | **43.6%** |
+| Recorded `no_verdict` outcomes (node.log, not failed evaluations) | 0 |
+
+246 + 318 = 564. The research note's 90% is a different unit — the 59
+items whose last word was `evaluation failed 3 times`, by their
+recorded text — so 43.6% over every failed evaluation on every item is
+the baseline this goal's after is measured against, not a move from 90%.
+No recorded `no_verdict` outcome exists yet: the mini's v0.2.191
+carries #428, but node.log has no `recorded as no verdict` line through
+the read.
+
+To reproduce, on the mini (`~/.mesh/token` is the node's credential;
+`mesh_items` and `mesh_goals` are mesh-context's tools, called over the
+gateway's `/mcp`):
+
+```sh
+# tool: mesh-context mesh_goals + mesh_items; read time 2026-09-29T16:53:03Z
+mkdir -p /tmp/eval && cd /tmp/eval
+call() { curl -s https://api.runsheet.dev/mcp \
+  -H "Authorization: Bearer $(tr -d '\n' < ~/.mesh/token)" \
+  -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+  -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"$1\",\"arguments\":$2}}" \
+  | jq -r '.result.content[0].text'; }
+for p in foghornid/foghorn latchkeyid/latchkey purserid/purser runsheet/loom \
+         runsheet/mesh runsheet/runsheet wardroomid/wardroom; do
+  f=$(echo $p | tr / _); call mesh_goals "{\"project\":\"$p\"}" > goals_$f.json
+  for g in $(jq -r '.goals[].slug' goals_$f.json); do
+    call mesh_items "{\"project\":\"$p\",\"goal\":\"$g\"}" > items_${f}__$g.json
+  done
+done
+for f in items_*.json; do jq -r --arg p "$f" '.items[] as $i | $i.evaluations[]?
+  | [$p, ($i.seq|tostring), $i.status, .at, .attempt, (.notes|gsub("[\n\t]";" "))]
+  | @tsv' "$f"; done > evals.tsv
+python3 - <<'EOF'
+from datetime import datetime, timezone
+CUTOFF = datetime(2026, 9, 29, 16, 53, 3, tzinfo=timezone.utc)   # the read time
+def at(s): return datetime.fromisoformat(s.replace('Z', '+00:00'))
+rows = [l.rstrip('\n').split('\t') for l in open('evals.tsv')]
+rows = [r for r in rows if at(r[3]) <= CUTOFF]                   # evaluations at or before the read
+classes = [('tooling', ['bwrap', 'rtm_newaddr', 'no verdict —', 'loopback',
+                        'socket: operation not permitted', 'local socket',
+                        'listening port', 'listening socket', 'test-server socket']),
+           ('pass', ['verdict: pass'])]
+n = {}
+for r in rows:
+    notes = r[5].lower()
+    c = next((k for k, ss in classes if any(s in notes for s in ss)),
+             'ci' if r[5].startswith('The check "') else 'substantive')
+    n[c] = n.get(c, 0) + 1
+t = n['tooling'] + n['pass']
+print(n, 'total', len(rows), 'tainted', t, 'share %.1f%%' % (100 * t / len(rows)))
+EOF
+# recorded no_verdict outcomes, apart, through the same read time (node.log is UTC on the mini):
+grep -a '^mesh node: 2026/09/2[0-9] [0-9:]* item [^ ]*: evaluation reached no verdict on' ~/.mesh/node.log \
+  | awk '$3" "$4 <= "2026/09/29 16:53:03"' | wc -l
+```
+
+Both counts apply the cutoff in the steps themselves: the Python keeps
+only evaluations whose `at` is at or before 2026-09-29T16:53:03Z, and
+the `awk` keeps only node.log lines at or before the same second, so a
+later read gives this row back unchanged — 564, 246, 318, 43.6%, and 0.
+
+### After
+
+**Owed.** At the read (node.log 2026-09-29 16:52:20Z,
+`mesh_health_nodes` 2026-09-29T16:52:11Z) the mini runs **v0.2.191**
+and had not started **v0.2.193**, the first release carrying #450
+(e3e3f97), nor any later one; so no after window exists and no after
+row is written. The after window opens at the mini's first `mesh node
+v0.2.193` (or later) start line in node.log; the after row is the same
+classification over the failed evaluations whose `at` is at or after
+that start, with the recorded `no_verdict` outcomes in their own row,
+and the status goes to `approved` with it.
+
+Read again through `mesh_health_nodes` at 2026-09-29T17:08:02Z: the
+mini still runs **v0.2.191** (desired v0.2.191; the latest release is
+v0.2.198), so the after share is still owed.
 
 ## Log
 
@@ -227,3 +408,23 @@ _(item 12 fills this in.)_
   squashed merge, so the branch merged `origin/main` and `git diff
   origin/main --stat` names this document alone; the `Reached()` line
   quoted above is re-checked against `harness.go` on main.
+- 2026-09-29 · item 16: filled `What landed` (#428, #432, #444, #449,
+  #450 from `git log` on main, mesh-specs #108 by number), `The mini's
+  upgrade` (v0.2.188 first started 00:51:59Z, v0.2.191 14:13:19Z,
+  neither carrying e3e3f97; the `codex-bwrap` profile as ADR 011
+  records it) and the before row: 564 failed evaluations on every goal
+  of every project through `mesh_items` at 16:53:03Z, 246 tainted,
+  318 substantive, 43.6%, no recorded `no_verdict` outcome yet. The
+  after share is owed: the mini runs v0.2.191 and has not started
+  v0.2.193, the first release carrying #450. Item 14's three failures
+  designed out: the branch is this file alone against its merge-base,
+  no after row is written over a window before that start, and the
+  before count covers items that later merged.
+- 2026-09-29 · item 16, second attempt: the evaluator found the
+  reproducing block had no cutoff, so a later read counted two later
+  evaluations (566, 43.5%). The block now applies the UTC read time
+  2026-09-29T16:53:03Z in its own steps — the Python drops every
+  evaluation whose `at` is later, and the node.log `no_verdict` count
+  goes through `awk` on the same second — so it gives 564, 246, 318,
+  43.6% and 0 back at any later read. The mini re-read at 17:08:02Z
+  still runs v0.2.191; the after share stays owed.
