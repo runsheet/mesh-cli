@@ -187,8 +187,10 @@ func (c *ClaudeCode) Run(ctx context.Context, job Job, onProgress func(Progress)
 	}
 	second, err := c.runHost(ctx, turn, progress, nil)
 	merged := mergeHandBack(first, second, spent)
-	// both runs' leftovers: the first's unit was killed at its stop
+	// both runs' leftovers: the first's unit was killed at its stop; each
+	// run's kept apart too, for the node's line per session
 	merged.Killed = append(append([]sessionunit.Process(nil), first.Killed...), second.Killed...)
+	merged.KilledRuns = [][]sessionunit.Process{first.Killed, second.Killed}
 	merged.KillError = strings.Join(nonEmpty(first.KillError, second.KillError), "; ")
 	return merged, err
 }
@@ -250,13 +252,13 @@ func (c *ClaudeCode) runHost(ctx context.Context, job Job, onProgress func(Progr
 		return Result{}, fmt.Errorf("harness claude-code: start: %w", err)
 	}
 	st := job.state(unit, h, c.Name())
+	end := &unitEnd{unit: unit, h: h}
 	if err := sessionunit.WriteState(dir, st); err != nil {
-		// never followed: the whole unit goes, as at any end
-		unit.Kill(h)
-		return Result{}, fmt.Errorf("harness claude-code: state: %w", err)
+		// never followed: the whole unit goes, as at any end, and the
+		// Result says what the kill found
+		return c.ended(end, Result{}), fmt.Errorf("harness claude-code: state: %w", err)
 	}
 	keep = job.Outlive && job.Workspace != ""
-	end := &unitEnd{unit: unit, h: h}
 	hb.setStop(func() { go end.kill() })
 	res, detached, waitErr, errBuf, rawOut := c.follow(ctx, parent, job.Outlive, end, dir, &st, 0, job.Secrets, onProgress, hb.observe)
 	if detached {

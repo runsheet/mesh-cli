@@ -212,6 +212,42 @@ func TestKillOnHandBack(t *testing.T) {
 	if !reflect.DeepEqual(res.Killed, want) {
 		t.Fatalf("Result.Killed = %v, want %v", res.Killed, want)
 	}
+	runs := res.KilledPerSession()
+	if len(runs) != 2 || !reflect.DeepEqual(runs[0], leftovers) || !reflect.DeepEqual(runs[1], want[len(leftovers):]) {
+		t.Fatalf("KilledPerSession = %v, want each run's apart", runs)
+	}
+}
+
+// stateBlockUnit is a killUnit whose Start leaves a directory where the
+// session's state.json goes, so writing the state fails.
+type stateBlockUnit struct{ *killUnit }
+
+func (u stateBlockUnit) Start(spec sessionunit.Spec) (sessionunit.Handle, error) {
+	h, err := u.killUnit.Start(spec)
+	if err == nil {
+		err = os.MkdirAll(filepath.Join(sessionunit.Dir(spec.Dir), sessionunit.StateFile, "x"), 0o700)
+	}
+	return h, err
+}
+
+// A session whose state cannot be written is never followed: its unit
+// is killed at once, and the Result names what that kill found.
+func TestKillOnStateWriteFailure(t *testing.T) {
+	u := &killUnit{leftovers: leftovers, err: errors.New("systemctl stop: exit status 1")}
+	h := &ClaudeCode{Binary: slowClaude(t), Unit: stateBlockUnit{u}}
+	res, err := h.Run(context.Background(), Job{Kind: KindBuild, Workspace: t.TempDir(), Env: []string{"SLOW_EVENTS=100", "SLOW_SLEEP=1"}}, nil)
+	if err == nil || !strings.Contains(err.Error(), "state:") {
+		t.Fatalf("Run = %+v, %v; want the state's error", res, err)
+	}
+	if n := u.killCalls(); n != 1 {
+		t.Fatalf("Kill called %d times, want once", n)
+	}
+	if !reflect.DeepEqual(res.Killed, leftovers) {
+		t.Fatalf("Result.Killed = %v, want %v", res.Killed, leftovers)
+	}
+	if !strings.Contains(res.KillError, "systemctl stop: exit status 1") {
+		t.Fatalf("KillError = %q", res.KillError)
+	}
 }
 
 // A kill that fails is said on Stderr and never fails the session.

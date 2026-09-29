@@ -235,9 +235,21 @@ type Result struct {
 	// when there were none, and for a session that detached, a
 	// sandboxed one or Codex. A handed-back session's are both runs'.
 	Killed []sessionunit.Process
+	// KilledRuns is a handed-back session's Killed per run, the first
+	// then the resumed one, for a line per session (nil when one run).
+	KilledRuns [][]sessionunit.Process
 	// KillError is why that kill failed, when the harness had no Stderr
 	// to say it on; it never makes the session a failure.
 	KillError string
+}
+
+// KilledPerSession is what each of the Result's sessions' ends killed,
+// in order: KilledRuns for a handed-back one, else Killed alone.
+func (r Result) KilledPerSession() [][]sessionunit.Process {
+	if r.KilledRuns != nil {
+		return r.KilledRuns
+	}
+	return [][]sessionunit.Process{r.Killed}
 }
 
 // ToolStat is one MCP server's calls in a session.

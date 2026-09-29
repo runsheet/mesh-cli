@@ -145,7 +145,11 @@ kill: one `Kill` per unit, whichever end comes first, its report kept.
 
 - **The report**: `Result.Killed` (`[]sessionunit.Process`) is what the
   kill found — the processes the agent left running that the node had
-  to kill; nil when none. A handed-back Result's is both runs'.
+  to kill; nil when none. A handed-back Result's is both runs', and
+  `Result.KilledRuns` keeps each run's apart (`KilledPerSession`). A
+  session whose `state.json` cannot be written is never followed: its
+  unit is killed at once and the Result, returned with the error, still
+  carries the kill's report.
 - **Not on a detach**: an `Outlive` job whose parent ctx is done is left
   running for the next node and its unit is not killed; the adopting
   node's `Attach` kills it at its real end.
@@ -155,7 +159,8 @@ kill: one `Kill` per unit, whichever end comes first, its report kept.
   error semantics are unchanged.
 - **The node says it**: each session's tail — `afterBuild`,
   `afterEvaluate`, the planner's `readPlan`, the director's `handIn`,
-  `afterRebase` — logs a non-empty `Killed` as one line,
+  `afterRebase` — logs each session's non-empty `Killed` as one line
+  (a handed-back build's two runs are two lines, and its note both),
   `item <label>: session end killed <n> process(es) the agent left
   running: <pid comm, pid comm>` (`KilledNote`; `goal <slug>:` for a
   plan, `<project>/<direction>:` for research), and a `KillError` as
