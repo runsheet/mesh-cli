@@ -104,6 +104,30 @@ sample was failed three times for it. Now:
   line within 12 lines whose `$x` is its `listCostCents` to the cent,
   else `unknown`. The platform exposes no usage query, so this is the
   node-side reading the goal doc quotes, before and after.
+- (Item 11) The reading is precise enough to quote. `--from` and `--to`
+  take a date (`YYYY-MM-DD`, local midnight) or an RFC 3339 timestamp
+  (`2026-09-29T14:18:43Z`, or with an offset), so an after-reading can
+  start at a release's first context line rather than sweep in the
+  morning's pre-change sessions; the `window` line prints the two as
+  given when either has a time part. `--project org/slug` keeps the
+  records of the project's goals — the org by `OrgByLogin`, the project
+  by slug from `Projects`, its goals from `Goals` by `projectId` — and
+  its research records (`project <slug>: usage research`) by the
+  project's own slug; `--goals <file>` (one goal slug a line, `#`
+  comments) does the same offline, without research, and the two
+  together are refused. The command resolves the list;
+  `UsageQuery.Goals` (nil is every goal) and `Project` keep
+  `ReadUsage` off the network. And the reading names its sample size:
+  `UsageReading.Ended` counts, over the same window and filter, the
+  labelled session-end lines of each kind — `finished …($x)` (build),
+  `evaluation …($x)` (evaluate), `rebased …($x)` (rebase), `goal
+  <slug>: planned, <n> items ($x)` (plan), `<project>/<direction>:
+  pitched …`/`proposed … goal(s) ($x)` (research) — and after the table
+  one line per kind in either count, `unknown` aside: `coverage build:
+  48 records of 359 sessions ended in the window`. A session that ended
+  with no such line (a failure, a release) has its record read but is
+  not among the sessions ended, so records can exceed them. The
+  record's format and the legacy pairing are unchanged.
 
 ## Consequences
 

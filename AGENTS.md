@@ -315,7 +315,10 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   session's is in its carrier's; `ErrNoUsageLedger` said once per run),
   and `mesh node usage` (`ReadUsage`, `usagereading.go`) reads them back
   into sessions, input tokens, cache reads and context bytes by kind for
-  a window (adr-016's amendment).
+  a window — `--from`/`--to` a date or RFC 3339, `--project org/slug`
+  or `--goals <file>` (`UsageQuery.Goals`), and a `coverage <kind>:`
+  line of records beside the sessions ended (`UsageReading.Ended`) —
+  (adr-016's amendment).
 - **Codex** (`internal/harness/codex.go`, goals `codex-adapter` and
   `codex-sessions-reach-the-context-tool`): the
   `codex` harness, `codex exec --json --sandbox workspace-write` in the
