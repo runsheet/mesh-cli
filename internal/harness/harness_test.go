@@ -94,9 +94,9 @@ func TestClaudeCodeArgs(t *testing.T) {
 		}
 	}
 	// with an MCP server: the config inline and its tools allowed
-	with := c.Args(Job{Prompt: "hi", MCPServers: map[string]any{"prologue": map[string]any{"type": "http", "url": "https://api.test/mcp"}}})
+	with := c.Args(Job{Prompt: "hi", MCPServers: map[string]any{"mesh-context": map[string]any{"type": "http", "url": "https://api.test/mcp"}}})
 	joined := strings.Join(with, "\x00")
-	if !strings.Contains(joined, "--mcp-config\x00{\"mcpServers\":{\"prologue\":{\"type\":\"http\",\"url\":\"https://api.test/mcp\"}}}\x00--allowedTools\x00mcp__prologue__*\x00--dangerously-skip-permissions") {
+	if !strings.Contains(joined, "--mcp-config\x00{\"mcpServers\":{\"mesh-context\":{\"type\":\"http\",\"url\":\"https://api.test/mcp\"}}}\x00--allowedTools\x00mcp__mesh-context__*\x00--dangerously-skip-permissions") {
 		t.Fatalf("mcp args: %q", with)
 	}
 }

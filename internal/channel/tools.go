@@ -101,7 +101,7 @@ func (h *Handler) Tools() []Tool {
 		{Name: "mesh_evaluate", Description: "Record an evaluation verdict on a finished item (the evaluator's).",
 			Schema: ObjectSchema(map[string]string{"item_id": "the work item id", "passed": "whether the acceptance holds", "notes": "the review", "cost_cents": "cents the evaluation spent (0 if unknown)"}, "item_id", "passed"),
 			Call:   h.evaluate},
-		{Name: "mesh_context", Description: "The goal's context: the project's instructions, ADRs, PRD and TRD from Prologue. Read it before working on an item.",
+		{Name: "mesh_context", Description: "The goal's context: the project's instructions, ADRs, PRD and TRD from mesh-context. Read it before working on an item.",
 			Schema: ObjectSchema(map[string]string{"goal_slug": "the goal's slug", "org": "the goal's org login, when the node serves more than one"}, "goal_slug"),
 			Call:   h.context},
 		{Name: "mesh_items", Description: "List the work items of the orgs this node serves, optionally in one status (pending, ready, claimed, running, evaluating, review, merged, failed, cancelled).",

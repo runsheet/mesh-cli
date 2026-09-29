@@ -33,14 +33,14 @@ func TestParseStreamToolCalls(t *testing.T) {
 	if !res.Success {
 		t.Fatalf("result = %+v", res)
 	}
-	if res.ToolCalls["search"] != 2 || res.ToolCalls["prologue"] != 1 || len(res.ToolCalls) != 2 {
-		t.Fatalf("ToolCalls = %v, want search:2 prologue:1", res.ToolCalls)
+	if res.ToolCalls["search"] != 2 || res.ToolCalls["mesh-context"] != 1 || len(res.ToolCalls) != 2 {
+		t.Fatalf("ToolCalls = %v, want search:2 mesh-context:1", res.ToolCalls)
 	}
 	if got := res.ToolCallIDs["search"]; len(got) != 2 || got[0] != "t1" || got[1] != "t2" {
 		t.Fatalf("ToolCallIDs[search] = %v, want [t1 t2]", got)
 	}
-	if got := res.ToolCallIDs["prologue"]; len(got) != 1 || got[0] != "t3" {
-		t.Fatalf("ToolCallIDs[prologue] = %v, want [t3]", got)
+	if got := res.ToolCallIDs["mesh-context"]; len(got) != 1 || got[0] != "t3" {
+		t.Fatalf("ToolCallIDs[mesh-context] = %v, want [t3]", got)
 	}
 	for server, calls := range res.ToolCalls {
 		if got := len(res.ToolCallIDs[server]); got != calls {
@@ -126,7 +126,7 @@ func TestParseCodexStreamToolCallNoID(t *testing.T) {
 
 // Three calls to brave, one of whose tool_result errors, yield one
 // ToolReport row {brave, Calls 3, Errors 1, Ms > 0}; the Bash call is
-// not counted, and prologue is its own row.
+// not counted, and mesh-context is its own row.
 func TestParseStreamToolReport(t *testing.T) {
 	fakeClock(t)
 	f, err := os.Open("testdata/stream_tool_errors.jsonl")
@@ -142,12 +142,12 @@ func TestParseStreamToolReport(t *testing.T) {
 	if len(report) != 2 {
 		t.Fatalf("ToolReport() = %+v, want 2 rows", report)
 	}
-	brave, prologue := report[0], report[1]
+	brave, meshContext := report[0], report[1]
 	if brave.Tool != "brave" || brave.Calls != 3 || brave.Errors != 1 || brave.Ms <= 0 {
 		t.Errorf("brave row = %+v, want {brave 3 1 >0}", brave)
 	}
-	if prologue.Tool != "prologue" || prologue.Calls != 1 || prologue.Errors != 0 {
-		t.Errorf("prologue row = %+v, want {prologue 1 0 _}", prologue)
+	if meshContext.Tool != "mesh-context" || meshContext.Calls != 1 || meshContext.Errors != 0 {
+		t.Errorf("mesh-context row = %+v, want {mesh-context 1 0 _}", meshContext)
 	}
 	if got := res.Tools["brave"].FirstError; got != "rate limited: too many requests" {
 		t.Errorf("brave FirstError = %q", got)

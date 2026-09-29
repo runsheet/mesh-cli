@@ -36,7 +36,7 @@ type Director struct {
 	WS       Workspacer
 	Cfg      *Config
 	WorkRoot string
-	// MCP are the MCP servers the session gets (Prologue).
+	// MCP are the MCP servers the session gets (mesh-context).
 	MCP map[string]any
 	// MaxBudgetUSD caps the research session (5 by default).
 	MaxBudgetUSD float64
