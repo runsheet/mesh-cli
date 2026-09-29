@@ -147,3 +147,15 @@ waiting at measurement time) is claimed sooner once it carries started
 work under the new order, and whether `runsheet/runsheet`'s open pull
 requests stay at or below its merge-queue cap once the per-repo limit
 is live on the mini.
+
+Also owed: this document's comparison against `main`. The branch is
+stacked on item 2's (`mesh/finish-before-you-start-2`, itself on item
+1's), and ADR-017 reaches `main` only with `#458` and `#465`. Until
+both merge, `git diff origin/mesh/finish-before-you-start-2 --stat`
+shows this file alone and the claim order above matches ADR-017 on
+that branch. Against `origin/main` the diff still carries items 1 and
+2's commits, and ADR-017 is not there. Once they merge, this branch is
+rebased onto `origin/main`. `git diff origin/main --stat` then shows
+this file alone, and the claim order is checked again against ADR-017
+on `main`. Rechecked at 2026-09-29T16:12Z: both pull requests are
+still open, and the mini still runs v0.2.191 (latest release v0.2.193).
