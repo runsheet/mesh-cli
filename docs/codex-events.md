@@ -310,7 +310,9 @@ completes. The node catches it twice (ADR 011, amendment 2026-09-29):
 
 - **The probe, before the session.** `Codex.Preflight`, after its
   context-server check, runs `codex sandbox -c sandbox_mode="workspace-write" -- true`
-  (`harness.SandboxProbe`) in the session's workspace, `CODEX_HOME` and
+  (`harness.SandboxProbe`; since item 9 `-c
+  sandbox_workspace_write.network_access=true -- mesh sandbox-probe`,
+  below) in the session's workspace, `CODEX_HOME` and
   environment, within `PreflightTimeout`. The `sandbox_mode` override
   is the session's own policy (`codex exec --sandbox workspace-write`):
   without it `codex sandbox` defaults to read-only
@@ -336,6 +338,43 @@ completes. The node catches it twice (ADR 011, amendment 2026-09-29):
   then `VERDICT: PASS` anyway) and `codex_exec_bwrap_one_clean.jsonl`
   (the last one ran) — `TestParseCodexStreamSandboxBroken`. The
   evaluator reads no verdict from such a session.
+
+### When the sandbox starts but has no network
+
+With the mini's `codex-bwrap` AppArmor profile (README, The sandbox on
+Ubuntu) bwrap starts, but `--sandbox workspace-write` has the network
+off by default and Codex's seccomp filter refuses `socket()` — loopback
+too. `go vet` and `go build` pass; `go test ./...` dies with `panic:
+httptest: failed to listen on a port: listen tcp6 [::1]:0: socket:
+operation not permitted` (kept stream
+`evaluation-reports-no-verdict-7-1790688483`, 2026-09-29). Three
+answers (ADR 011, amendment 2026-09-29, item 9):
+
+- **The session gets the network.** `codex exec` runs with `-c
+  sandbox_workspace_write.network_access=true` (`harness.SandboxNetwork`).
+  On the mini, codex-cli 0.157:
+
+  ```
+  $ codex sandbox -c sandbox_mode="workspace-write" -- mesh sandbox-probe
+  Error: listen tcp 127.0.0.1:0: socket: operation not permitted     (exit 1)
+  $ codex sandbox -c sandbox_mode="workspace-write" -c sandbox_workspace_write.network_access=true -- mesh sandbox-probe
+  127.0.0.1:43995                                                    (exit 0)
+  ```
+
+- **The probe binds a socket.** `harness.SandboxProbe` runs the node's
+  own `mesh sandbox-probe` (listen on 127.0.0.1:0) under the same `-c`
+  keys as the session, not `true`; its failure is `sandbox: <the socket
+  line>` (`TestCodexPreflightSocketRefused`,
+  `TestCodexSandboxProbeBindsLoopbackUnderTheSessionsKeys`).
+- **The stream says it.** A failed `command_execution` whose output has
+  a line matching `socket: operation not permitted` or `bind: operation
+  not permitted` is a refused socket. When a test-shaped command
+  (`go test`, `npm test`, `pytest`, …) was refused so and none passed —
+  or, with none, every failed command was — `Result.SandboxBroken` is
+  the first such line. Fixtures `codex_exec_socket.jsonl` (go vet clean,
+  `go test` not found then refused, `npm test` refused, `VERDICT: FAIL`
+  anyway) and `codex_exec_socket_one_passed.jsonl` (`npm test` passed) —
+  `TestCodexStreamSocketRefusedIsSandboxBroken`.
 
 ## The stream, kept
 

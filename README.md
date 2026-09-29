@@ -1356,31 +1356,68 @@ Every command and write in the session is blocked — `npm test` never
 runs — and the session still ends "successfully". Claude sessions run
 in the node's Podman pod and never use bwrap.
 
+**The network.** Workspace-write has the network off by default, and
+then Codex's seccomp filter refuses `socket()` — loopback too — so no
+`httptest` test, no `npm test` against a local server and no `gh` can
+run. The node runs every Codex session with `-c
+sandbox_workspace_write.network_access=true`: a command the evaluator
+runs may reach the network, which is the price of tests that run (ADR
+011, amendment 2026-09-29).
+
 **The probe.** Before every Codex session the node's preflight
 (`Codex.Preflight`) runs, after its context-server check, Codex's
-sandbox on a no-op in the session's own `CODEX_HOME`, environment and
-workspace:
+sandbox on a command that binds a loopback socket — the node's own
+hidden `mesh sandbox-probe` — in the session's own `CODEX_HOME`,
+environment and workspace, under the session's own keys:
 
 ```bash
-# codex-cli 0.157; exit 0 and no `bwrap:` is a pass
-codex sandbox -c sandbox_mode="workspace-write" -- true
+# codex-cli 0.157; exit 0, a 127.0.0.1 address and no `bwrap:` is a pass
+codex sandbox -c sandbox_mode="workspace-write" \
+  -c sandbox_workspace_write.network_access=true -- mesh sandbox-probe
 ```
 
 The `-c sandbox_mode="workspace-write"` matters: left alone, `codex
 sandbox` runs its command read-only, while the session runs under
 `codex exec --sandbox workspace-write`; the probe checks the policy the
-session will actually get.
+session will actually get. Without the `network_access` key the probe
+exits 1 with `Error: listen tcp 127.0.0.1:0: socket: operation not
+permitted`.
 
 A `bwrap:` line on its stderr or a non-zero exit fails the preflight
-with `sandbox: <the first 200 characters>`. Then, as for any failed
+with `sandbox: <the bwrap line, else the socket error>`. Then, as for any failed
 preflight (ADR 011): an unpinned evaluation runs on Claude and says so
 in node.log and its notes (`the Codex preflight failed: sandbox: …`), an
 item pinned to a `gpt-…` model waits in evaluating (said once for the
 item), and a Codex second opinion is `unavailable: preflight sandbox:
 …`. Should a session get past the probe and still have every command
-refused by bwrap, the stream says so (`Result.SandboxBroken`) and its
-text is never read for a verdict: the same job runs on Claude, and with
-no other family the item waits in evaluating.
+refused by bwrap — or every test it ran refused a socket (`socket:
+operation not permitted`) — the stream says so (`Result.SandboxBroken`)
+and its text is never read for a verdict: the same job runs on Claude,
+and with no other family it is recorded as no verdict.
+
+**What the mini has** (since 12:59Z on 2026-09-29, installed by
+Chris): `/etc/apparmor.d/codex-bwrap`, a profile on the bubblewrap
+Codex ships beside itself rather than on `codex`:
+
+```
+abi <abi/4.0>,
+include <tunables/global>
+
+profile codex-bwrap /home/chris/.local/share/codex/codex-resources/bwrap flags=(unconfined) {
+  userns,
+
+  include if exists <local/codex-bwrap>
+}
+```
+
+Its `userns,` line lets that bwrap create its user namespace, so
+`bwrap: loopback: Failed RTM_NEWADDR` is gone and commands run. It does
+**not** give the sandbox loopback: that is the `network_access` key
+above, without which `go test ./...` still dies on `listen tcp6
+[::1]:0: socket: operation not permitted`. The path is in the
+operator's home, so anything the operator's user runs could replace
+that file and gain user namespaces — the same caution as option 1
+below; re-check it after a Codex upgrade moves its resources.
 
 **The fix** is one of these, as root. Run the probe as the node's user
 afterwards; it should print nothing and exit 0.
