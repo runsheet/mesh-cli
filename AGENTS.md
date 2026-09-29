@@ -369,7 +369,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   Claude account has any. Before any Codex session starts,
   `Evaluator.CodexPreflight` (`Codex.Preflight`: `codex mcp get
   mesh-context` and an MCP tools/list handshake in the session's own home
-  and env, then the sandbox probe `codex sandbox -- true` — a `bwrap:`
+  and env, then the sandbox probe `codex sandbox -c
+  sandbox_mode="workspace-write" -- true`, the session's own policy — a `bwrap:`
   line or a non-zero exit is `sandbox: <why>`) must pass: a failure moves an unpinned evaluation to Claude
   (`Codex preflight failed (<why>); evaluating on Claude`), keeps a
   pinned one waiting like `ErrFamilyWaits`, and makes a Codex second

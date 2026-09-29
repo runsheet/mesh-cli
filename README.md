@@ -1362,8 +1362,14 @@ sandbox on a no-op in the session's own `CODEX_HOME`, environment and
 workspace:
 
 ```bash
-codex sandbox -- true      # codex-cli 0.157; exit 0 and no `bwrap:` is a pass
+# codex-cli 0.157; exit 0 and no `bwrap:` is a pass
+codex sandbox -c sandbox_mode="workspace-write" -- true
 ```
+
+The `-c sandbox_mode="workspace-write"` matters: left alone, `codex
+sandbox` runs its command read-only, while the session runs under
+`codex exec --sandbox workspace-write`; the probe checks the policy the
+session will actually get.
 
 A `bwrap:` line on its stderr or a non-zero exit fails the preflight
 with `sandbox: <the first 200 characters>`. Then, as for any failed

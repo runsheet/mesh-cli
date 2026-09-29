@@ -716,8 +716,12 @@ func CodexPreflight(ctx context.Context, job Job) error {
 
 // SandboxProbe is the no-op Codex's sandbox runs in a preflight
 // (codex-cli 0.157: `codex sandbox [COMMAND]...`, the platform's own
-// sandbox — bubblewrap on Linux, Seatbelt on macOS).
-var SandboxProbe = []string{"sandbox", "--", "true"}
+// sandbox — bubblewrap on Linux, Seatbelt on macOS), under the same
+// policy `codex exec` runs the session in (Args: `--sandbox
+// workspace-write`). Left alone, `codex sandbox` defaults to read-only
+// (codex-rs/cli/src/debug_sandbox.rs, rust-v0.157.0); the legacy
+// `sandbox_mode` override is the one it honours instead.
+var SandboxProbe = []string{"sandbox", "-c", `sandbox_mode="workspace-write"`, "--", "true"}
 
 // Preflight checks, before a Codex session starts, that the built-in
 // context server (BuiltinMCP) will answer it and that Codex's own
@@ -729,7 +733,8 @@ var SandboxProbe = []string{"sandbox", "--", "true"}
 // header values the rendered config and that environment give Codex,
 // must answer 2xx listing at least one tool, each step within
 // PreflightTimeout. A job with no built-in skips (1) and (2). Then (3)
-// `codex sandbox -- true` (SandboxProbe) in the workspace, in the same
+// `codex sandbox -c sandbox_mode="workspace-write" -- true`
+// (SandboxProbe, the session's own policy) in the workspace, in the same
 // home and environment, must exit 0 with no `bwrap:` on its stderr
 // within PreflightTimeout — else `sandbox: <its stderr, 200 chars>`:
 // under `--sandbox workspace-write` every command the session ran

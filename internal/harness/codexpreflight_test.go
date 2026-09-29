@@ -23,8 +23,8 @@ func preflightCodex(t *testing.T, out string, code int) string {
 	return sandboxCodex(t, out, code, "", 0)
 }
 
-// sandboxCodex is preflightCodex whose sandbox probe (`codex sandbox --
-// true`) records its arguments and environment in out, writes stderr to
+// sandboxCodex is preflightCodex whose sandbox probe (`codex sandbox -c
+// sandbox_mode="workspace-write" -- true`) records its arguments and environment in out, writes stderr to
 // its stderr and exits with sandboxCode.
 func sandboxCodex(t *testing.T, out string, code int, stderr string, sandboxCode int) string {
 	t.Helper()
@@ -218,8 +218,13 @@ func TestCodexPreflightSandbox(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "sandbox: ") || !strings.Contains(err.Error(), bwrapFailure) {
 		t.Fatalf("err %v", err)
 	}
-	if got := strings.TrimSpace(readFile(t, filepath.Join(out, "sandbox-args"))); got != "sandbox -- true" {
+	// the probe runs the policy the session runs in, not `codex
+	// sandbox`'s read-only default
+	if got := strings.TrimSpace(readFile(t, filepath.Join(out, "sandbox-args"))); got != `sandbox -c sandbox_mode="workspace-write" -- true` {
 		t.Fatalf("probe args %q", got)
+	}
+	if exec := strings.Join(c.Args(Job{}), " "); !strings.Contains(exec, "--sandbox workspace-write") {
+		t.Fatalf("the session runs %q, not the policy the probe checks", exec)
 	}
 	if got := strings.TrimSpace(readFile(t, filepath.Join(out, "sandbox-pwd"))); got != ws {
 		t.Fatalf("probe ran in %q, not the workspace %q", got, ws)

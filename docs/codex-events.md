@@ -309,9 +309,14 @@ command the session runs then fails the same way, and the turn still
 completes. The node catches it twice (ADR 011, amendment 2026-09-29):
 
 - **The probe, before the session.** `Codex.Preflight`, after its
-  context-server check, runs `codex sandbox -- true`
+  context-server check, runs `codex sandbox -c sandbox_mode="workspace-write" -- true`
   (`harness.SandboxProbe`) in the session's workspace, `CODEX_HOME` and
-  environment, within `PreflightTimeout`. codex-cli 0.157 has no
+  environment, within `PreflightTimeout`. The `sandbox_mode` override
+  is the session's own policy (`codex exec --sandbox workspace-write`):
+  without it `codex sandbox` defaults to read-only
+  (`codex-rs/cli/src/debug_sandbox.rs` at `rust-v0.157.0`, which keeps
+  the legacy default unless a `sandbox_mode` override is passed), and a
+  read-only pass would say nothing about the session's sandbox. codex-cli 0.157 has no
   `sandbox linux` or `debug landlock` subcommand: `codex sandbox
   [COMMAND]...` runs the command under the platform's sandbox, and
   `codex sandbox linux -- true` would run a command named `linux`. On
