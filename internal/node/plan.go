@@ -360,6 +360,7 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 	p.logf("goal %s: planning in %s (%d repos), budget $%.2f (%s)", goal.Slug, dir, len(repos), budget, budgetSource)
 	items, reasons, flags, cost, acct, err := p.ask(ctx, goal, scope.NodeID, dir, budget, in, repos, merged)
 	acct.SetContextBytes(written.Bytes)
+	acct.SetLabel("goal "+goal.Slug, string(harness.KindPlan))
 	// the session's usage report rides the plan's hand-in; Finish logs it
 	// when nothing carried it (its report was built as it ended, in ask)
 	defer acct.Finish(ctx, harness.Result{})
@@ -376,6 +377,7 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 		items, reasons, flags, again, second, err = p.ask(ctx, goal, scope.NodeID, dir, budget, in, repos, merged)
 		defer second.Finish(ctx, harness.Result{})
 		second.SetContextBytes(written.Bytes)
+		second.SetLabel("goal "+goal.Slug, string(harness.KindPlan))
 		// one hand-in, one report: the first session's rides the second's
 		second.Carries(acct)
 		if second != nil {

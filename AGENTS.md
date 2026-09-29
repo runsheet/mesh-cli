@@ -310,8 +310,12 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   as `usage` — `FinishWorkItem`/`FinishWorkItemAlreadyDone`,
   `EvaluateWorkItem` (the Codex second opinion folded in), `PlanGoal`,
   `FinishWorkItemRebase`, `RecordDirectionResearch` — and
-  `SessionAccount.Finish` logs it as one `usage: {…}` line when nothing
-  carried it (a fail path, or `ErrNoUsageLedger`, said once per run).
+  `SessionAccount.Finish` logs every session's record, carried or not,
+  as one `<label>: usage <kind> {…}` line (`SetLabel`; a carried
+  session's is in its carrier's; `ErrNoUsageLedger` said once per run),
+  and `mesh node usage` (`ReadUsage`, `usagereading.go`) reads them back
+  into sessions, input tokens, cache reads and context bytes by kind for
+  a window (adr-016's amendment).
 - **Codex** (`internal/harness/codex.go`, goals `codex-adapter` and
   `codex-sessions-reach-the-context-tool`): the
   `codex` harness, `codex exec --json --sandbox workspace-write` in the

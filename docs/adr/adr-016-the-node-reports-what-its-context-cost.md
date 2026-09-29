@@ -73,6 +73,38 @@ needs the number beside the tokens.
   `ErrNoContextUsage` joined with `ErrNoUsageDetail`, never one for the
   other.
 
+**Amendment 2026-09-29 (item 6): the record is always logged, on its
+label, and `mesh node usage` reads it.** `SessionAccount.Finish` logged
+the `usage: {…}` record only when its finishing command had not carried
+it, and with no kind, goal or seq — so node.log could not say what a
+build session cost in input tokens, and a goal doc read from a partial
+sample was failed three times for it. Now:
+
+- `Finish` logs every session's record, after the once-per-run notices,
+  as `<label>: usage <kind> {…}` — `item <goal>/<seq>: usage build`,
+  `… evaluate`, `… rebase`, `goal <slug>: usage plan`,
+  `project <slug>: usage research` — whatever became of the report:
+  carried, refused (`ErrNoUsageLedger`) or never sent (a fail path).
+  Each session path names its label and kind once, beside
+  `SetContextBytes` (`SessionAccount.SetLabel`). The JSON is the
+  `gateway.UsageReport` exactly as sent, redacted: the label and kind
+  are on the log line, never on the report, whose input the platform
+  holds to its schema. A session another carries (`Carries`: a second
+  opinion, a plan asked twice) logs no record of its own — its figures
+  are in the carrier's, and two would count them twice. A session with
+  no label keeps the older `usage: {…}` line. The `usage: turns=…`
+  summary line is unchanged.
+- `mesh node usage --from <day> --to <day, exclusive> [--log]
+  [--goal] [--kind]` (`node.ReadUsage`, `UsageReading.Lines`) reads
+  those records back: one row per kind — sessions, median and mean
+  input tokens, the cache-read share, the median context bytes over the
+  sessions that carry them — the span of the records read, and how many
+  did not parse. An older binary's unlabelled `usage: {…}` takes the
+  label and kind of the nearest `finished`/`evaluation`/`rebased …($x)`
+  line within 12 lines whose `$x` is its `listCostCents` to the cent,
+  else `unknown`. The platform exposes no usage query, so this is the
+  node-side reading the goal doc quotes, before and after.
+
 ## Consequences
 
 - The log line is there on every node from this release, whatever the
@@ -88,3 +120,8 @@ needs the number beside the tokens.
 - The bytes are what was written, not what the model read: a session
   that fetches documents with `mesh_document` pays for them in tokens
   the report already counts, not in `contextBytes`.
+- (Amendment 2026-09-29) node.log grows by one record line per
+  session, carried or not; it is the only place a node's reading comes
+  from until the platform serves one, and `mesh node usage` reads only
+  what the node that wrote the log still has — a rotated or lost log is
+  a gap in the reading, not a zero.
