@@ -155,3 +155,34 @@ func TestParseCodexStreamSandboxBroken(t *testing.T) {
 		t.Fatalf("long: %d %q", len(got), got)
 	}
 }
+
+// A sandbox with no network: the test commands died on a refused
+// socket (one of them before that on `go: command not found`) and none
+// passed, so SandboxBroken is the first socket line, whatever verdict
+// the session wrote — while go vet ran clean. One test command that
+// passed leaves it empty (ADR 011, amendment 2026-09-29).
+func TestCodexStreamSocketRefusedIsSandboxBroken(t *testing.T) {
+	res, _ := parseCodexFixture(t, "codex_exec_socket.jsonl", "gpt-6-sol")
+	want := "panic: httptest: failed to listen on a port: listen tcp6 [::1]:0: socket: operation not permitted [recovered, repanicked]"
+	if res.SandboxBroken != want {
+		t.Fatalf("SandboxBroken = %q", res.SandboxBroken)
+	}
+	if !strings.Contains(res.SandboxBroken, "socket: operation not permitted") || !strings.HasSuffix(res.Text, "VERDICT: FAIL") {
+		t.Fatalf("result = %+v", res)
+	}
+	if res, _ := parseCodexFixture(t, "codex_exec_socket_one_passed.jsonl", "gpt-6-sol"); res.SandboxBroken != "" {
+		t.Fatalf("one test command passed: SandboxBroken = %q", res.SandboxBroken)
+	}
+	// with no test command, every failed command refused is broken too;
+	// a bind refusal counts as a socket one
+	gh := `{"type":"item.completed","item":{"id":"i","type":"command_execution","command":"gh pr view 1","aggregated_output":"dial: bind: operation not permitted\n","exit_code":1,"status":"failed"}}` + "\n" +
+		`{"type":"item.completed","item":{"id":"j","type":"command_execution","command":"git log","aggregated_output":"abc\n","exit_code":0,"status":"completed"}}`
+	if got := ParseCodexStream(strings.NewReader(gh), "gpt-6-sol", nil).SandboxBroken; got != "dial: bind: operation not permitted" {
+		t.Fatalf("no test command: %q", got)
+	}
+	// a test that failed on its own merits is a verdict
+	fail := `{"type":"item.completed","item":{"id":"i","type":"command_execution","command":"go test ./...","aggregated_output":"--- FAIL: TestX\n","exit_code":1,"status":"failed"}}`
+	if got := ParseCodexStream(strings.NewReader(fail), "gpt-6-sol", nil).SandboxBroken; got != "" {
+		t.Fatalf("a real failure: %q", got)
+	}
+}

@@ -134,7 +134,12 @@ func (p CodexPrice) Cost(u CodexUsage) float64 {
 // command_execution whose status is failed and whose output carries
 // `bwrap:` is one Codex's sandbox would not start; when every command
 // the session ran failed that way, SandboxBroken is the first such line
-// (capped at 300). Lines that are not JSON and unknown types are
+// (capped at 300). Likewise when a test-shaped command (isTestCommand) failed
+// with `socket: operation not permitted` or `bind: operation not
+// permitted` and none passed — or, with no test-shaped command, every
+// failed command failed that way — SandboxBroken is the first such line
+// (a sandbox without the network: nothing that listens could run; ADR
+// 011, amendment 2026-09-29). Lines that are not JSON and unknown types are
 // skipped.
 func ParseCodexStream(r io.Reader, model string, onEvent func(CodexEvent)) Result {
 	sc := bufio.NewScanner(r)
@@ -149,6 +154,11 @@ func ParseCodexStream(r io.Reader, model string, onEvent func(CodexEvent)) Resul
 	startupFailed := map[string]bool{}
 	commands, sandboxBlocked := 0, 0
 	sandboxLine := ""
+	// the socket rule: test-shaped commands, failed commands, and how
+	// many of each died on a refused socket
+	testsPassed, testsRefused, failedCmds, failedRefused := 0, 0, 0, 0
+	tests := 0
+	socketRefused := ""
 	startupError := func(msg string) {
 		for _, server := range mcpStartupServers(msg) {
 			if startupFailed[server] {
@@ -230,6 +240,26 @@ func ParseCodexStream(r io.Reader, model string, onEvent func(CodexEvent)) Resul
 						sandboxLine = line
 					}
 				}
+				failedCmd := ev.Item.Status == "failed"
+				refused := ""
+				if failedCmd {
+					failedCmds++
+					if refused = socketLine(ev.Item.AggregatedOutput); refused != "" {
+						failedRefused++
+						if socketRefused == "" {
+							socketRefused = refused
+						}
+					}
+				}
+				if isTestCommand(ev.Item.Command) {
+					tests++
+					if refused != "" {
+						testsRefused++
+					}
+					if !failedCmd {
+						testsPassed++
+					}
+				}
 			}
 			if ev.Item.Type == "error" {
 				startupError(ev.Item.Message)
@@ -286,10 +316,39 @@ func ParseCodexStream(r io.Reader, model string, onEvent func(CodexEvent)) Resul
 	}
 	res.Success = completed && !failed
 	res.EmptyOutput = events == 0
-	if commands > 0 && sandboxBlocked == commands {
+	switch {
+	case commands > 0 && sandboxBlocked == commands:
 		res.SandboxBroken = capText(sandboxLine, 300)
+	case testsRefused > 0 && testsPassed == 0,
+		tests == 0 && failedCmds > 0 && failedRefused == failedCmds:
+		res.SandboxBroken = capText(socketRefused, 300)
 	}
 	return res
+}
+
+// testCommands are what a command line runs to test: a session none of
+// whose test commands passed and one of which died on a refused socket
+// could verify nothing that listens (one that failed for another reason
+// — `go: command not found` — does not make the suite runnable).
+var testCommands = regexp.MustCompile(`\b(go test|npm (run )?test|pnpm (run )?test|yarn (run )?test|npx (vitest|jest)|pytest|cargo test|make (test|check))\b`)
+
+// isTestCommand says a command_execution's command line runs tests.
+func isTestCommand(cmd string) bool { return testCommands.MatchString(cmd) }
+
+// socketRefusal is the text a sandbox without the network leaves when
+// a program opens or binds a socket: Go's `listen tcp6 [::1]:0: socket:
+// operation not permitted`, or a bind refused the same way.
+var socketRefusal = regexp.MustCompile(`(?i)\b(socket|bind): operation not permitted`)
+
+// socketLine is the first line of a command's output on which a socket
+// was refused (socketRefusal), trimmed; "" when none was.
+func socketLine(out string) string {
+	for _, line := range strings.Split(out, "\n") {
+		if socketRefusal.MatchString(line) {
+			return strings.TrimSpace(line)
+		}
+	}
+	return ""
 }
 
 // bwrapLine is the first line of a command's output that bubblewrap

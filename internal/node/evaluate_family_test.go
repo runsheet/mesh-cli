@@ -782,3 +782,29 @@ func TestCodexSecondOpinionSandboxBrokenIsUnavailable(t *testing.T) {
 		t.Fatalf("recorded %+v", in)
 	}
 }
+
+// A Codex evaluation whose sandbox refused every test's socket
+// (Result.SandboxBroken carrying the socket line) with no other family
+// to run on is recorded as no verdict with that line as its reason —
+// never evaluateWorkItem with passed false, whatever VERDICT it wrote
+// (ADR 011, amendment 2026-09-29).
+func TestEvaluationOnCodexWithNoNetworkIsNoVerdict(t *testing.T) {
+	f, ev, claude, codex, _, _ := familyFixture(t, "normal", "sonnet", "VERDICT: PASS", "The tests would not run.\nVERDICT: FAIL")
+	f.WorkItems[item1]["evaluateModel"] = "gpt-6-astra"
+	socket := "panic: httptest: failed to listen on a port: listen tcp6 [::1]:0: socket: operation not permitted"
+	codex.sandbox = socket
+	ev.Blind, ev.NoVerdict = &OncePer{}, &OncePer{}
+	in := evaluateItem1(t, f, ev)
+	if len(claude.jobs) != 0 || codex.runs() != 1 {
+		t.Fatalf("runs claude %d codex %d", len(claude.jobs), codex.runs())
+	}
+	notes, _ := in["notes"].(string)
+	if _, sent := in["passed"]; sent || in["outcome"] != gateway.EvaluationNoVerdict || !strings.Contains(notes, "sandbox: "+socket) {
+		t.Fatalf("recorded %+v", in)
+	}
+	for _, c := range f.CallsNamed("evaluateWorkItem") {
+		if p, ok := c.Input["passed"]; ok && p == false {
+			t.Fatalf("recorded as a fail: %+v", c.Input)
+		}
+	}
+}
