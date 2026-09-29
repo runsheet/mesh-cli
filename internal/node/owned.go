@@ -74,9 +74,13 @@ func OwnedNodeID(cfg *Config) string {
 // scopes, restricted by restrict, are what the node serves: node.yaml's
 // orgs are checked against the answer, never against the person's
 // orgs, so a restriction naming an enterprise org the person is not in
-// holds. A nil answer from it logs FallbackLine and runs the legacy
-// path in full — Resolve, then RegisterIn per org — so the sequence is
-// one owner registration, then one per org.
+// holds. A nil answer from it — and only a nil one — logs FallbackLine
+// and runs the legacy path in full — Resolve, then RegisterIn per org —
+// so the sequence is one owner registration, then one per org. A
+// non-nil answer is the owner contract whatever it names: an answer
+// naming no org, or a restriction matching none of the orgs it names,
+// is logged and the node serves none until a heartbeat's answer names
+// one — never the per-org path, never a failed registration.
 func Register(ctx context.Context, r Registrar, cfg *Config, restrict []string) (Registered, error) {
 	if !r.TakesOwner(ctx) {
 		return perOrg(ctx, r)
@@ -89,20 +93,15 @@ func Register(ctx context.Context, r Registrar, cfg *Config, restrict []string) 
 	if err != nil {
 		return Registered{}, fmt.Errorf("register (owner %s): %w", cfg.OwnerKind(), err)
 	}
-	if answer == nil || len(answer.Scopes) == 0 {
+	if answer == nil {
 		if r.Logf != nil {
 			r.Logf("%s", FallbackLine)
 		}
 		return perOrg(ctx, r)
 	}
-	served, err := ServedFrom(answer, restrict)
-	if err != nil {
-		if len(served) == 0 {
-			return Registered{}, err
-		}
-		if r.Logf != nil {
-			r.Logf("orgs: %v; serving the rest", err)
-		}
+	served, note := ServedFrom(answer, restrict)
+	if note != nil && r.Logf != nil {
+		r.Logf("orgs: %v", note)
 	}
 	return Registered{Scopes: served, Owned: &Owned{NodeID: answer.NodeID, Owner: OwnerFrom(answer)}}, nil
 }
@@ -117,29 +116,45 @@ func perOrg(ctx context.Context, r Registrar) (Registered, error) {
 	return Registered{Scopes: scopes}, r.RegisterIn(ctx, scopes)
 }
 
-// ServedFrom is ScopesFromAnswer that keeps what it can: a restriction
-// naming an org the answer does not serve is the error, beside the
-// scopes of the orgs it does name.
+// ServedFrom is the scopes an answer names, restricted by node.yaml's
+// orgs, each on the node's one id. It is never fatal: the scopes are
+// what it could keep — none when the answer names no org or the
+// restriction matches none of them — and the error, when not nil, is a
+// note for the log naming what was left out.
 func ServedFrom(a *gateway.NodeAnswer, restrict []string) (Scopes, error) {
+	if a == nil {
+		return nil, nil
+	}
 	scopes, err := ScopesFromAnswer(a, restrict)
 	if err == nil {
 		return scopes, nil
 	}
-	all, aerr := ScopesFromAnswer(a, nil)
-	if aerr != nil {
-		return nil, aerr
+	if len(a.Scopes) == 0 {
+		return nil, err
 	}
 	want := map[string]bool{}
 	for _, o := range restrict {
 		want[strings.ToLower(strings.TrimSpace(o))] = true
 	}
 	var kept Scopes
-	for _, sc := range all {
-		if want[strings.ToLower(sc.Login)] || want[strings.ToLower(sc.Slug)] {
-			kept = append(kept, sc)
+	for _, sa := range a.Scopes {
+		if len(want) == 0 || want[strings.ToLower(sa.Login)] || want[strings.ToLower(sa.Slug)] {
+			kept = append(kept, Scope{Login: sa.Login, Slug: sa.Slug, ID: sa.OrgID, AccountID: sa.AccountID, NodeID: a.NodeID})
 		}
 	}
-	return kept, err
+	if len(kept) == 0 {
+		return nil, fmt.Errorf("%v; the platform serves %s, so none is served", err, strings.Join(answerNames(a), ", "))
+	}
+	return kept, fmt.Errorf("%v; serving the rest", err)
+}
+
+// answerNames is each org an answer names, by Scope.Name.
+func answerNames(a *gateway.NodeAnswer) []string {
+	var names []string
+	for _, sa := range a.Scopes {
+		names = append(names, Scope{Login: sa.Login, Slug: sa.Slug}.Name())
+	}
+	return names
 }
 
 // LegacyIDs are the per-org node ids an owned node registered under
@@ -161,9 +176,12 @@ func LegacyIDs(cfg *Config, scopes Scopes) map[string]string {
 // node.yaml's orgs, as last reloaded) replace the loop's, logged `orgs a
 // → b` as a reload logs them, and an owner whose id or kind changed —
 // a node handed from a person to an enterprise — is logged `owner <old>
-// → <new>`, with no restart. A nil answer, or one naming no org, keeps
-// the last scopes; a restriction naming an org not served is logged,
-// not fatal. The loop is Owned from then on.
+// → <new>`, with no restart. A nil answer keeps the last scopes; a
+// non-nil one replaces them whatever it names, so an org the platform no
+// longer serves is claimed from no more — one naming no org, or none
+// the restriction keeps, leaves the node serving none. A restriction
+// naming an org not served is logged, not fatal. The loop is Owned from
+// then on.
 func (l *Loop) TakeAnswer(a *gateway.NodeAnswer) {
 	if a == nil {
 		return
@@ -190,11 +208,8 @@ func (l *Loop) TakeAnswer(a *gateway.NodeAnswer) {
 	if err != nil {
 		l.logf("orgs: %v", err)
 	}
-	if len(scopes) == 0 {
-		return
-	}
 	if !sameOrgs(scopes, l.Scopes) {
-		l.logf("orgs %s → %s", strings.Join(l.Scopes.Names(), ", "), strings.Join(scopes.Names(), ", "))
+		l.logf("orgs %s → %s", orgsOrNone(l.Scopes), orgsOrNone(scopes))
 	}
 	// the NodeID is the node's one id either way; the scopes are taken
 	// whole so a changed login or slug is taken too
@@ -208,4 +223,12 @@ func (l *Loop) owned() *Owned {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.Owned
+}
+
+// orgsOrNone is Names joined by ", ", or "none" for no scope.
+func orgsOrNone(s Scopes) string {
+	if len(s) == 0 {
+		return "none"
+	}
+	return strings.Join(s.Names(), ", ")
 }
