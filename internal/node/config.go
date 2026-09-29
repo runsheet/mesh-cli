@@ -460,6 +460,21 @@ func (c *Config) OwnNodeID() (string, error) {
 type Owner struct {
 	Kind string
 	Name string
+	// Answer is the registration's answer when the platform took the
+	// owner and named the orgs; nil when the node registered per org.
+	Answer *gateway.NodeAnswer
+}
+
+// Answered is the answer source a Reloader serves from after this
+// registration: the registration's answer, so the loop keeps the node's
+// one id and the answer's orgs from its first tick; nil (the MyOrgs
+// path) for a node registered per org.
+func (o *Owner) Answered() func() *gateway.NodeAnswer {
+	if o == nil || o.Answer == nil {
+		return nil
+	}
+	answer := o.Answer
+	return func() *gateway.NodeAnswer { return answer }
 }
 
 // Scope is one org the node serves, with the node's id there — the
@@ -664,7 +679,7 @@ func RegisterOnce(ctx context.Context, gw Gateway, cfg *Config) (Scopes, *Owner,
 	if answer.NodeID != "" {
 		cfg.NodeID = answer.NodeID
 	}
-	return scopes, &Owner{Kind: cmp.Or(answer.Owner.Kind, cfg.OwnerKind()), Name: cmp.Or(answer.Owner.Name, answer.Owner.ID, cfg.OwnerID)}, nil
+	return scopes, &Owner{Kind: cmp.Or(answer.Owner.Kind, cfg.OwnerKind()), Name: cmp.Or(answer.Owner.Name, answer.Owner.ID, cfg.OwnerID), Answer: answer}, nil
 }
 
 // Served is the orgs the node serves, for a command beside the loop

@@ -114,20 +114,27 @@ person, and only that: one `registerNode` per org under its per-org
 id, none under the owner first. Which platform it is, is asked before
 registering (`TakesOwner`: `RegisterNodeInput.owner` and
 `DispatchResult.scopes`, by introspection, kept an hour), not learnt
-from a registration's nil answer. It returns the `Owner{Kind, Name}` for the node's first lines.
+from a registration's nil answer. It returns the `Owner{Kind, Name,
+Answer}` for the node's first lines; `Answer` is the registration's
+answer, nil for a node registered per org.
 
-**Every tick.** `Reloader` takes the last heartbeat's answer (set by the
-loop in a later item): when it names scopes those are served — a new
-org on that very tick — with no `myOrgs` and no registration; when it
-names none, today's `myOrgs`/register path runs unchanged. `mesh node
-status` and a rollback's report heartbeat each of the node's ids once
-(`Served`), so an owned node heartbeats once, not once per org; one
-that cannot answer falls back as registration does — today's orgs,
-heartbeated per org only.
+**Every tick.** `Reloader` takes an answer source: `mesh node start`
+hands it `Owner.Answered()`, the registration's answer, so from the
+first tick an owned node keeps its one id and the answer's orgs — it
+never falls to the per-org `myOrgs` path, which would put per-org ids
+back on its scopes before it claims anything
+(`TestFirstTickKeepsTheOwnedNodesOneID`). When the answer names scopes
+those are served — a new org on that very tick — with no `myOrgs` and
+no registration; with no answer (a node registered per org) or one
+naming none, today's `myOrgs`/register path runs unchanged. The loop's
+heartbeat hands the source the last heartbeat's answer in a later item
+(8), as `mesh node status` and a rollback's report move onto `Served`
+(the orgs served, each of the node's ids heartbeated once) in item 9;
+this item leaves both as they were.
 
 **Names.** `Scope` gains `Slug`; `Scope.Login` is the org's login or,
 for an org without one (grapevine), its tenant slug, and `Scope.Name()`,
-`Scopes.Logins()`, `LoginOf`, the log lines, the status table and the
+`Scopes.Logins()`, `LoginOf`, the loop's log lines and the
 "not a member of" error name it by that. `mesh channel serve` still
 reads the person's orgs (`ResolveScopes`) for the orgs it names: it
 never claims under a node id.

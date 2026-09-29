@@ -50,9 +50,10 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   claim, finish, usage and the desired version follow unchanged; a
   platform that takes no owner, or cannot answer, gets today's Node per
   org and only that (`ResolveScopes`, `RegisterIn`: one registration
-  per org, none under the owner first). `Reloader`'s `answer` (the last
-  heartbeat's) serves the answer's orgs — a new one on that tick — with
-  no `MyOrgs` and no registration. An org without a GitHub login is
+  per org, none under the owner first). `Reloader`'s `answer` serves
+  the answer's orgs — a new one on that tick — with no `MyOrgs` and no
+  registration; `mesh node start` seeds it with the registration's
+  (`Owner.Answered()`), so the one id holds from the first tick. An org without a GitHub login is
   named by its tenant slug (`Scope.Login`/`Scope.Name`,
   `Scopes.Logins`). A project's repos — for the planner, the director
   and `mesh goal plan` — are read from `project.repoIds` through

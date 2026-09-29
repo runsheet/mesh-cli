@@ -208,9 +208,7 @@ var nodeStatusCmd = &cobra.Command{
 		gw := gateway.NewWithSource(gatewayURL(), src)
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		// one heartbeat per node id: the node's one when the platform
-		// took its owner, which also names the orgs it serves (ADR-015)
-		scopes, err := node.Served(ctx, gw, cfg, statusHeartbeat(gw))
+		scopes, err := node.ResolveScopes(ctx, gw, cfg)
 		if err != nil {
 			return err
 		}
@@ -225,6 +223,9 @@ var nodeStatusCmd = &cobra.Command{
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 		fmt.Fprintln(w, "ORG\tNAME\tSLUG\tSTATUS\tRUNNING\tCAPACITY\tVERSION\tLAST_SEEN")
 		for _, sc := range scopes {
+			if err := statusHeartbeat(ctx, gw, sc.NodeID); err != nil {
+				return fmt.Errorf("heartbeat in %s: %w", sc.Login, err)
+			}
 			nodes, err := gw.Nodes(ctx, sc.ID)
 			if err != nil {
 				return err
@@ -240,7 +241,7 @@ var nodeStatusCmd = &cobra.Command{
 						capacity = scaling.String()
 					}
 				}
-				fmt.Fprintf(w, "%s\t%s%s\t%s\t%s\t%d\t%s\t%s\t%s\n", sc.Name(), n.Name, mark, n.Slug, status, n.Running, capacity, n.Version, n.LastSeenAt)
+				fmt.Fprintf(w, "%s\t%s%s\t%s\t%s\t%d\t%s\t%s\t%s\n", sc.Login, n.Name, mark, n.Slug, status, n.Running, capacity, n.Version, n.LastSeenAt)
 			}
 		}
 		if err := w.Flush(); err != nil {
@@ -304,10 +305,9 @@ func dash(s string) string {
 // this binary reports (the tag, else the sha) and, beside it, the commit
 // — sent like the loop's, only when known and only when the gateway's
 // HeartbeatNodeInput takes it (mesh-specs ADR 013, trd §1 Node).
-func statusHeartbeat(gw *gateway.Client) func(context.Context, string) (*gateway.NodeAnswer, error) {
-	return func(ctx context.Context, nodeID string) (*gateway.NodeAnswer, error) {
-		return gw.HeartbeatNode(ctx, nodeID, version.Resolved(), 0, gateway.HeartbeatExtras{Commit: version.Commit()})
-	}
+func statusHeartbeat(ctx context.Context, gw *gateway.Client, nodeID string) error {
+	_, err := gw.HeartbeatNode(ctx, nodeID, version.Resolved(), 0, gateway.HeartbeatExtras{Commit: version.Commit()})
+	return err
 }
 
 // localNodeState is the line `mesh node status` prints for the node
@@ -475,7 +475,7 @@ func nodeStart(cmd *cobra.Command, args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	cfg, gw, scopes, workRoot, err := registerNode(ctx, cmd, logger, updates, check, started)
+	cfg, gw, scopes, owner, workRoot, err := registerNode(ctx, cmd, logger, updates, check, started)
 	if errors.Is(err, node.ErrUnconfirmed) {
 		return endRun(err, logger)
 	}
@@ -533,10 +533,12 @@ func nodeStart(cmd *cobra.Command, args []string) error {
 		}
 	}
 	// capacity and the orgs are read again every tick, so a changed
-	// node.yaml or a newly claimed org needs no restart
+	// node.yaml or a newly claimed org needs no restart; a node the
+	// platform took the owner of keeps its one id and the answer's orgs
+	// (ADR-015), never the per-org MyOrgs path
 	loop.Reload = node.Reloader(gw, cfg, scopes, nil, func(ctx context.Context, sc node.Scope) error {
 		return node.RegisterIn(ctx, gw, cfg, node.Scopes{sc})
-	}, nil)
+	}, owner.Answered())
 	// SIGUSR1 (`mesh node drain`) drains: nothing new is claimed and
 	// the loop returns nil once every session has ended, so the
 	// process exits 0 and its service manager starts the new binary
@@ -663,7 +665,7 @@ func runPollMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *
 // (noteStartFailure) so a rollback names the real cause instead of the
 // bare "did not start": this is the same 60-second registration timeout
 // that once left node.log silent when the platform was slow.
-func registerNode(ctx context.Context, cmd *cobra.Command, logger *log.Logger, updates *selfupdate.StateFile, check node.StartCheck, started time.Time) (cfg *node.Config, gw *gateway.Client, scopes node.Scopes, workRoot string, err error) {
+func registerNode(ctx context.Context, cmd *cobra.Command, logger *log.Logger, updates *selfupdate.StateFile, check node.StartCheck, started time.Time) (cfg *node.Config, gw *gateway.Client, scopes node.Scopes, owner *node.Owner, workRoot string, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			noteStartFailure(updates, check, fmt.Sprintf("panic: %v", r), logger)
@@ -711,7 +713,6 @@ func registerNode(ctx context.Context, cmd *cobra.Command, logger *log.Logger, u
 			cfg.OwnerID = owner
 		}
 		had := cfg.NodeID
-		var owner *node.Owner
 		var err error
 		if scopes, owner, err = node.RegisterOnce(regCtx, gw, cfg); err != nil {
 			return err
@@ -864,15 +865,18 @@ func reportRollback(check node.StartCheck, logger *log.Logger) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	scopes, err := node.ResolveScopes(ctx, gw, cfg)
+	if err != nil {
+		logger.Printf("self-update: report rollback: %v", err)
+		return
+	}
 	// The rollback reports the version it rolls back to, not this
 	// binary's; this binary's commit would not be that version's, so the
 	// heartbeat carries none and the restored binary's first one does.
-	// One heartbeat per node id: the node's one when the platform took
-	// its owner (ADR-015).
-	if _, err := node.Served(ctx, gw, cfg, func(ctx context.Context, nodeID string) (*gateway.NodeAnswer, error) {
-		return gw.HeartbeatNode(ctx, nodeID, check.From, 0, gateway.HeartbeatExtras{UpdateError: check.Reason})
-	}); err != nil {
-		logger.Printf("self-update: report rollback: %v", err)
+	for _, sc := range scopes {
+		if _, err := gw.HeartbeatNode(ctx, sc.NodeID, check.From, 0, gateway.HeartbeatExtras{UpdateError: check.Reason}); err != nil {
+			logger.Printf("self-update: report rollback to %s: %v", sc.Login, err)
+		}
 	}
 }
 

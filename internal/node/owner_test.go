@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
 )
@@ -361,5 +362,55 @@ func TestRegisterOnceFromTheContractFixture(t *testing.T) {
 	}
 	if n := len(f.CallsNamed("registerNode")); n != 1 {
 		t.Fatalf("registerNode called %d times, want once", n)
+	}
+}
+
+// On the first tick after an owned registration the loop keeps the
+// node's one id: the Reloader serves the registration's answer
+// (Owner.Answered), so no MyOrgs read replaces the scopes with per-org
+// ids, the heartbeat goes under the one id and the claim carries it.
+func TestFirstTickKeepsTheOwnedNodesOneID(t *testing.T) {
+	f := seed(t)
+	f.Answer = ownerAnswer()
+	gw := gateway.New(f.URL(), "rs_test")
+	cfg := &Config{Slug: "mini", Name: "Mini", OwnerID: ownerID, Capacity: Fixed(1)}
+	scopes, owner, err := RegisterOnce(context.Background(), gw, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orgReads := len(f.ReadsNamed("myOrgs"))
+	registered := 0
+	load := func() (*Config, error) { c := *cfg; return &c, nil }
+	dispatched := make(chan gateway.WorkItem, 1)
+	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopes, Interval: time.Hour,
+		Reload:   Reloader(gw, cfg, scopes, load, func(context.Context, Scope) error { registered++; return nil }, owner.Answered()),
+		Dispatch: func(_ context.Context, it gateway.WorkItem) { dispatched <- it }}
+	loop.Tick(context.Background())
+	select {
+	case <-dispatched:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no item claimed on the first tick")
+	}
+
+	if ids := loop.CurrentScopes().NodeIDs(); len(ids) != 1 || ids[0] != answerNode {
+		t.Fatalf("after the first tick the node ids are %v, want the one %s", ids, answerNode)
+	}
+	if got := loop.CurrentScopes().Logins(); len(got) != 3 || got[2] != "grapevine" {
+		t.Fatalf("scopes = %v", got)
+	}
+	if n := len(f.ReadsNamed("myOrgs")) - orgReads; n != 0 || registered != 0 {
+		t.Fatalf("the first tick read MyOrgs %d times and registered %d times", n, registered)
+	}
+	for _, hb := range f.CallsNamed("heartbeatNode") {
+		if hb.Input["aggregateId"] != answerNode {
+			t.Fatalf("heartbeat under %v, want %s", hb.Input["aggregateId"], answerNode)
+		}
+	}
+	if f.WorkItems[item1]["nodeId"] != answerNode {
+		t.Fatalf("item claimed by %v, want %s", f.WorkItems[item1]["nodeId"], answerNode)
+	}
+	// a node registered per org has no answer to serve from
+	if (&Owner{Kind: OwnerPerson}).Answered() != nil || (*Owner)(nil).Answered() != nil {
+		t.Fatal("a per-org registration must leave the Reloader on the MyOrgs path")
 	}
 }

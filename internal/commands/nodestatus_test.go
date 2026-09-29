@@ -38,7 +38,7 @@ func TestStatusHeartbeatCarriesCommit(t *testing.T) {
 			if _, err := gw.RegisterNode(ctx, gateway.RegisterNodeInput{NodeID: statusNode, OrgID: "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa", Name: "mini", Slug: "mini", Capacity: 1, Version: "v1"}); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := statusHeartbeat(gw)(ctx, statusNode); err != nil {
+			if err := statusHeartbeat(ctx, gw, statusNode); err != nil {
 				t.Fatal(err)
 			}
 			hb := f.CallsNamed("heartbeatNode")
