@@ -202,7 +202,7 @@ func registerIn(ctx context.Context, gw *gateway.Client, cfg *node.Config, scope
 
 var nodeStatusCmd = &cobra.Command{
 	Use:   "status",
-	Short: "Heartbeat once and list the org's nodes",
+	Short: "Heartbeat once, list the org's nodes and this machine's session scopes",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := node.LoadConfig()
 		if err != nil {
@@ -251,8 +251,61 @@ var nodeStatusCmd = &cobra.Command{
 				fmt.Fprintf(w, "%s\t%s%s\t%s\t%s\t%d\t%s\t%s\t%s\n", sc.Login, n.Name, mark, n.Slug, status, n.Running, capacity, n.Version, n.LastSeenAt)
 			}
 		}
-		return w.Flush()
+		if err := w.Flush(); err != nil {
+			return err
+		}
+		if _, ok := sessionunit.Default().(sessionunit.SystemdScope); ok {
+			printScopes(ctx, gw, sessionunit.HostSystemctl{})
+		}
+		return nil
 	},
+}
+
+// printScopes is `mesh node status`'s sessions listing (ADR 008, The
+// start-up sweep): this machine's mesh-session scopes (sc.ListScopes,
+// judged by node.ScopeReport), each with its kind, subject and the
+// platform's answer, and a `sessions:` line where only scopes of live
+// sessions count as live.
+func printScopes(ctx context.Context, gw node.Gateway, sc sessionunit.Systemctl) {
+	rows, n, err := node.ScopeReport(ctx, gw, sc)
+	if err != nil {
+		fmt.Printf("sessions: %v\n", err)
+		return
+	}
+	fmt.Println()
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "SCOPE\tKIND\tSUBJECT\tPLATFORM")
+	for _, r := range rows {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", r.Unit, dash(r.Kind), dash(r.Subject), scopeAnswer(r))
+	}
+	_ = w.Flush()
+	fmt.Printf("sessions: %d live scope(s), %d leaked\n", n.Live, n.Leaked)
+}
+
+// scopeAnswer is a scope row's PLATFORM column.
+func scopeAnswer(r node.ScopeRow) string {
+	switch r.Verdict {
+	case node.ScopeLive:
+		return fmt.Sprintf("live (%s %s)", r.What, r.Status)
+	case node.ScopeTerminal:
+		return fmt.Sprintf("terminal (%s %s)", r.What, r.Status)
+	case node.ScopeUnknown:
+		return "unknown (" + r.What + " not on the platform)"
+	case node.ScopeUnread:
+		return fmt.Sprintf("unread: %v", r.Err)
+	case node.ScopeInactive:
+		return r.Active
+	case node.ScopeStrange:
+		return "not a kind the node runs"
+	}
+	return string(r.Verdict)
+}
+
+func dash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
 }
 
 // localNodeState is the line `mesh node status` prints for the node

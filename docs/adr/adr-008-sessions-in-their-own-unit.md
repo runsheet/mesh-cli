@@ -163,8 +163,17 @@ any session was found — and only when `sessionunit.Default()` is a
   leaves the scope with a log line and never kills it; a live session
   whose node restarted mid-outage must not be ended by it. The next
   start sweeps again.
-- `SessionLive` is exported for `mesh node status`, which counts only
-  the scopes of live sessions.
+- **What `mesh node status` shows.** After the heartbeat and the node
+  list, on a machine with a user systemd, `node.ScopeReport` lists every
+  mesh-session scope `HostSystemctl.ListScopes` names — its unit, kind,
+  subject and the platform's answer, judged by the sweep's own rule:
+  `live (item running)`, `terminal (item merged)`, `unknown (item not
+  on the platform)`, `research`, `unparsed`, `unread: <err>`, or an
+  inactive scope's state — and ends `sessions: <n> live scope(s), <m>
+  leaked`. Only scopes of live sessions count as live; terminal and
+  unknown ones are leaked; research, unparsed, unread and inactive ones
+  are neither. The listing stops nothing: the sweep, at the next start,
+  does.
 
 ## Consequences
 

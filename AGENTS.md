@@ -127,7 +127,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   node's ids — then `SweepScopes` (`sweep.go`, ADR-008 The start-up
   sweep) stops every other active mesh-session scope whose item or goal
   is terminal or unknown on the platform (`SessionLive`, `GoalLive`; a
-  read error leaves it) — and `Loop.AdoptSessions` takes each up: marked as the
+  read error leaves it; `mesh node status` lists the scopes the same way
+  by `ScopeReport`, `sessions: <n> live scope(s), <m> leaked`) — and `Loop.AdoptSessions` takes each up: marked as the
   loop's own (a build in `Running()`, every kind in the drain's
   `sessions()`, never claimed or started again, and `Loop.Adopt` skips
   it), the item heartbeated at once so the stall window never elapses,

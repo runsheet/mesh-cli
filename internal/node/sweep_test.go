@@ -228,3 +228,58 @@ func TestSessionLive(t *testing.T) {
 		}
 	}
 }
+
+// `mesh node status` lists every scope with the platform's answer, and
+// only a live session's scope counts as live: a terminal or unknown
+// subject is leaked, a research, unparsable, unread or inactive one is
+// neither. Listing stops nothing.
+func TestScopeReportCountsOnlyLiveSessions(t *testing.T) {
+	f := seed(t)
+	gw := gateway.New(f.URL(), "rs_test")
+	f.WorkItems[item1]["status"] = "running"
+	f.WorkItems[item2]["status"] = "merged"
+	f.Goals[goalID]["status"] = "planning"
+	live, merged := sessionunit.UnitName("build", item1), sessionunit.UnitName("evaluate", item2)
+	planning, gone := sessionunit.UnitName("plan", goalID), sessionunit.UnitName("build", "0f0f0f0f-0000-4000-8000-000000000000")
+	research, old := sessionunit.UnitName("research", "direction:mesh:nightly"), sessionunit.UnitName("build", item2)
+	sc := &sweepSystemctl{scopes: []sessionunit.Scope{
+		{Unit: live, Active: "active"}, {Unit: merged, Active: "active"},
+		{Unit: planning, Active: "active"}, {Unit: gone, Active: "active"},
+		{Unit: research, Active: "active"}, {Unit: "mesh-session-odd", Active: "active"},
+		{Unit: old, Active: "inactive"},
+	}}
+	rows, n, err := ScopeReport(context.Background(), gw, sc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != (ScopeCounts{Live: 2, Leaked: 2}) {
+		t.Fatalf("counts %+v, rows %+v", n, rows)
+	}
+	got := map[string]string{}
+	for _, r := range rows {
+		got[r.Unit] = fmt.Sprintf("%s %s %s %s %s", r.Kind, r.What, r.Subject, r.Status, r.Verdict)
+	}
+	want := map[string]string{
+		live:               "build item " + item1 + " running live",
+		merged:             "evaluate item " + item2 + " merged terminal",
+		planning:           "plan goal " + goalID + " planning live",
+		gone:               "build item 0f0f0f0f-0000-4000-8000-000000000000 unknown unknown",
+		research:           "research  direction_mesh_nightly  research",
+		"mesh-session-odd": "    unparsed",
+		old:                "build  " + item2 + "  inactive",
+	}
+	for unit, w := range want {
+		if got[unit] != w {
+			t.Errorf("%s: %q, want %q", unit, got[unit], w)
+		}
+	}
+	if sc.stopped() {
+		t.Fatalf("the report stopped something: %q", sc.calls)
+	}
+
+	f.FailReads["workItemIndex"] = "upstream unavailable"
+	rows, n, err = ScopeReport(context.Background(), gw, &sweepSystemctl{scopes: []sessionunit.Scope{{Unit: live, Active: "active"}}})
+	if err != nil || n != (ScopeCounts{}) || rows[0].Verdict != ScopeUnread || rows[0].Err == nil {
+		t.Fatalf("unread: %+v %+v %v", rows, n, err)
+	}
+}
