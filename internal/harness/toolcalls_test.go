@@ -315,6 +315,41 @@ func TestParseStreamCountsTheToolsOwnErrorAnswered(t *testing.T) {
 	}
 }
 
+// Claude: a server the init event named connected, whose calls Claude
+// Code itself refused or failed before the server saw them — a
+// permission refusal, an unknown tool, its own validation error, the
+// MCP client's transport errors — was never reached, however connected
+// it was at startup.
+func TestParseStreamRefusedCallsOnAConnectedServerAreNotReached(t *testing.T) {
+	fakeClock(t)
+	refusals := []string{
+		"Claude requested permissions to use mcp__mesh-context__mesh_document, but you haven't granted it yet.",
+		"<tool_use_error>Error: No such tool available: mcp__mesh-context__mesh_document</tool_use_error>",
+		"<tool_use_error>InputValidationError: mesh_document failed due to the following issue:\\nThe required parameter `slug` is missing</tool_use_error>",
+		"MCP error -32000: Connection closed",
+		"MCP error -32001: Request timed out",
+		"Permission to use mcp__mesh-context__mesh_document has been denied.",
+	}
+	for _, text := range refusals {
+		stream := `{"type":"system","subtype":"init","model":"claude-opus-5","mcp_servers":[{"name":"mesh-context","status":"connected"}]}
+{"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","id":"t1","name":"mcp__mesh-context__mesh_document","input":{"slug":"prd"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","is_error":true,"content":"` + text + `"}]}}
+{"type":"result","subtype":"success","result":"VERDICT: PASS","total_cost_usd":0.1,"num_turns":1}`
+		res := ParseStream(strings.NewReader(stream), nil)
+		s := res.Tools["mesh-context"]
+		if s == nil || s.Calls != 1 || s.Errors != 1 || s.Answered != 0 || s.Reached() {
+			t.Errorf("%q: Tools[mesh-context] = %+v, want 1 call, 1 error, none answered, not reached", text, s)
+		}
+	}
+	// the same refusal among content blocks, as Claude Code also writes it
+	stream := `{"type":"system","subtype":"init","model":"claude-opus-5","mcp_servers":[{"name":"mesh-context","status":"connected"}]}
+{"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","id":"t1","name":"mcp__mesh-context__mesh_search","input":{}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","is_error":true,"content":[{"type":"text","text":"Claude requested permissions to use mcp__mesh-context__mesh_search, but you haven't granted it yet."}]}]}}`
+	if s := ParseStream(strings.NewReader(stream), nil).Tools["mesh-context"]; s == nil || s.Answered != 0 || s.Reached() {
+		t.Errorf("blocks: Tools[mesh-context] = %+v, want not reached", s)
+	}
+}
+
 // A failed call with no error but a result falls back to the result's
 // text; a long error is capped at 300 on FirstError and 200 on the
 // report.

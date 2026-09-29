@@ -225,7 +225,11 @@ as an error.
   `harness.ToolStat.Answered` counts them: in Codex, a `failed`
   `mcp_tool_call` with no `error` and a result; in Claude, an
   `is_error` tool_result from a server the init event named
-  `connected`. A session is tool-broken only when its tool was never
+  `connected` whose text is not Claude Code's own refusal of the call
+  (`claudeToolAnswered`: a `<tool_use_error>`, a permission refusal,
+  `No such tool available`, the MCP client's `-32000`/`-32001`
+  transport errors). A connected server does not prove that a given
+  call reached it. A session is tool-broken only when its tool was never
   reached (`ToolStat.Reached`), meaning no clean call and no answered
   one. That covers every call refused before the server (approval,
   auth, transport) and a server that never connected. The rest of the

@@ -149,7 +149,13 @@ server name in the note is just the name v0.2.188 renders.
 - **`harness.ToolStat.Answered` counts the errored calls the tool
   answered itself.** In Codex that is a `failed` call with no `error`
   and a result (`codexToolAnswered`). In Claude it is an `is_error`
-  tool_result from a server the init event named `connected`.
+  tool_result from a server the init event named `connected`, unless
+  its text is Claude Code's own refusal of the call — a
+  `<tool_use_error>` (unknown tool, input validation), a permission
+  refusal, or the MCP client's transport errors (`MCP error -32000`,
+  `-32001`, not connected) — which the server never saw
+  (`claudeToolAnswered`, attempt 2: a connected server at startup does
+  not prove a given call reached it).
   `ToolStat.Reached()` is true when any call was answered, cleanly or
   with the tool's own error. `toolBroken` now asks `Reached()`, so a
   context tool that said `not found` leaves the verdict standing.
@@ -157,8 +163,11 @@ server name in the note is just the name v0.2.188 renders.
   still make a session tool-broken.
   - Tests: `TestParseCodexStreamCountsTheToolsOwnErrorAnswered` (on
     the mini's stream shape, `testdata/codex_mcp_not_found.jsonl`),
-    `TestParseStreamCountsTheToolsOwnErrorAnswered` and
-    `TestAContextToolThatAnsweredIsAVerdict`.
+    `TestParseStreamCountsTheToolsOwnErrorAnswered`,
+    `TestParseStreamRefusedCallsOnAConnectedServerAreNotReached`,
+    `TestAContextToolThatAnsweredIsAVerdict` and
+    `TestRefusedCallsOnAConnectedContextServerAreNoVerdict` (a
+    connected server whose call Claude Code refused: no verdict).
 - **The context rule every prompt carries now names where the slug
   comes from:** INDEX.md's `slug` column, never a file name here, with
   the example `adr-adr-001-….md` → `adr-001-…`. Test:
