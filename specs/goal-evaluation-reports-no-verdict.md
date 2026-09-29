@@ -129,17 +129,34 @@ those files for the calls themselves, split by `"status"` and
 `"error"`. Across those 291 streams:
 
 - 1,096 calls ended `completed`.
-- 382 calls ended `failed` with `"error": null` and the server's own
-  result, `{"content":[{"type":"text","text":"not found"}]}`.
+- 382 calls ended `failed` with `"error": null` — the server answered,
+  with its own error result. Of those:
+  - 364 answered `{"content":[{"type":"text","text":"not found"}]}`:
+    360 `mesh_document`, 2 `mesh_documents`, 2 `mesh_items`;
+  - 18 answered something else: 8 `mesh_health_service` "answers only
+    the estate (a token with ns.runsheet)", 6 "a project is named
+    org/slug" (4 `mesh_document`, 2 `mesh_documents`), and 4 argument
+    validation failures (`required: missing properties`, 2
+    `mesh_document`, 2 `mesh_items`).
 - 5 calls ended `failed` with a real `error` (never reached the
   server).
 
-The 382 are `mesh_document` calls for slugs that do not exist. Each is
-a context file's *name* with `.md` dropped, not the slug from
-INDEX.md's `slug` column: the top ones are
-`instructions-runsheet-runsheet-agents` (55),
+So the `not found` answers are 364 of the 382, not all of them, and
+nearly all are `mesh_document`. The recount splits them by the
+result's text: `jq -r 'select(.type=="item.completed" and
+.item.type=="mcp_tool_call" and .item.server=="prologue" and
+.item.status=="failed" and .item.error==null) |
+.item.result.content[0].text'` over the same files, restricted to
+files last written before 12:10Z.
+
+Of the 360 `mesh_document` calls answered `not found`, 340 asked for a
+slug that is a context file's *name* with `.md` dropped, not the slug
+from INDEX.md's `slug` column; the other 20 guessed slugs that exist
+nowhere (`trd--slice-5-slipway`, `goal-goals-page-shows-initiatives`,
+a slug left out). The top ones are
+`instructions-runsheet-runsheet-agents` (54),
 `instructions-runsheet-mesh-cli-agents` (35),
-`adr-adr-003-enterprises` (25), `adr-adr-013-node-releases-on-merge`
+`adr-adr-003-enterprises` (24), `adr-adr-013-node-releases-on-merge`
 (21) and `adr-adr-032-attested-validation-replaces-duplicate-ci` (20).
 The file `adr-adr-032-….md` is slug `adr-032-…`.
 
@@ -211,3 +228,10 @@ The no-verdict outcome reported to the platform and
   `~/.mesh/work/kept-sessions/`, and fixed the mini-version sentence —
   9ed5f8b at 07:18Z predates #258 too (merged 07:28:56Z), not every
   merge "except #258" as the last attempt had it.
+- 2026-09-29 · item 7, attempt 3: split the 382 null-error failures by
+  their result text, recounted at the same 12:10Z cutoff on the mini
+  at 13:24Z — 364 `not found` (360 `mesh_document`, 2
+  `mesh_documents`, 2 `mesh_items`) and 18 other answers (8
+  `mesh_health_service` estate refusals, 6 `a project is named
+  org/slug`, 4 argument validation) — and corrected the top slugs'
+  counts to the `not found` calls alone (54, 35, 24, 21, 20).
