@@ -335,6 +335,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	}
 	defer unlessDetached(ctx, acct.Cleanup)
 	acct.SetContextBytes(written.Bytes)
+	acct.SetLabel("item "+label, string(harness.KindBuild))
 	acct.Apply(&job)
 	job.Meta = harness.SessionMeta{NodeID: sc.NodeID, ItemID: item.ID, GoalID: item.GoalID, Attempt: item.Attempts, TempDirs: sessionTempDirs(job, acct)}
 	// the item's tools, beside the built-in mesh-context: a required one this

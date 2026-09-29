@@ -171,6 +171,7 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 		return err
 	}
 	acct.SetContextBytes(written.Bytes)
+	acct.SetLabel("project "+project.Slug, string(harness.KindResearch))
 	defer unlessDetached(ctx, acct.Cleanup)
 	acct.Apply(&job)
 	job.Meta = harness.SessionMeta{NodeID: scope.NodeID, DirectionID: direction.ID, TempDirs: sessionTempDirs(job, acct)}

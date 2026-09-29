@@ -358,9 +358,10 @@ reports its usage on the command that ends it (`usage` on
 credential id and its kind, input, output and cache tokens, tool calls
 (the total, and every MCP call counted per tool as `tools: [{tool,
 calls, errors, ms}]`), wall time, the list cost in cents (and the actual cost, on an API key),
-and the plan's windows before and after. A platform whose finishing
-command takes no `usage`, and a session that ends in a failure, leave it
-in the node's log instead, one `usage: {…}` JSON line per session.
+and the plan's windows before and after. Every session's record is in
+the node's log too, one `<label>: usage <kind> {…}` JSON line per
+session, whether its finishing command carried it, refused it or — a
+session that ends in a failure — never sent it (see [Usage](#usage)).
 `mesh node start` refuses an account whose token file or variable
 cannot be read.
 
@@ -390,16 +391,25 @@ work items of every org it serves and claims up to its free capacity
 (`ClaimWorkItem`; the aggregate refuses a second claimant, so two nodes
 never run one item). It claims them in one order across the orgs: by
 their goal's priority — urgent, high, normal, low; a goal with none is
-normal — then, within a priority, items with no evaluation before
-retries, then oldest seq first. Each org's goals are read once a tick to
+normal — then, within a priority, finish before you start: an item with
+work already begun on a branch (an open pull request, an evaluation, a
+rebase conflict or a rebase state other than none) goes before fresh
+items while it has fewer than two failed evaluations (`attempts`, one
+under the platform's cap of three); one at that bound falls back behind
+the fresh items, as retries sorted before, so a poisoned item takes the
+head of the queue at most twice and never blocks it. Within each class
+the item ready longest (`readyAt`) goes first, then oldest seq; the sort
+is stable, so full ties keep the order the orgs were listed in
+([ADR-017](docs/adr/adr-017-finish-before-you-start.md)). Each org's goals are read once a tick to
 join the priorities; if that read fails, the org's items count as normal.
 Planning and evaluation follow the same order across the orgs: the goals
 in planning are claimed (`ClaimPlan`) and planned urgent, high, normal,
 low (empty is normal), and the items this node holds for evaluation are
 evaluated by their goal's priority, then seq — on the same one goals read
 per org per tick.
-There is no starvation guard beyond this order: a steady stream of urgent
-work keeps a low goal's items, plans and evaluations waiting.
+The attempt bound guards the class order within a priority; across
+priorities the order is strict, so a steady stream of urgent work keeps a
+low goal's items, plans and evaluations waiting.
 Rebases follow it too (see The rebase session below).
 Capacity and the orgs served are re-read at the top of every tick, so
 neither needs a restart: `capacity` and `orgs` come from
@@ -942,6 +952,48 @@ negative one is refused. Like the capacity and the accounts, `context:`
 is read again every tick: a change is picked up on the next tick
 without a restart, and logged
 (`context: bytes_max 245760 → 131072, doc_bytes_max 61440 → 61440`).
+
+### Usage
+
+Every session logs its usage record to node.log when it ends, on its
+label with its kind, whatever became of the report — carried by its
+finishing command, refused, or never sent — as the platform took it:
+
+```
+item <goal>/<seq>: usage build {"sessionId":…,"inputTokens":…,"cacheReadTokens":…,"listCostCents":…,"contextBytes":…}
+goal <slug>: usage plan {…}
+project <slug>: usage research {…}
+```
+
+The kinds are build, evaluate, rebase, plan and research (a second
+opinion, or a plan asked twice, is in the one record its finish
+carried). `mesh node usage` reads those lines back into a reading of a
+window:
+
+```bash
+mesh node usage --from 2026-09-28 --to 2026-09-29 [--log ~/.mesh/node.log] [--goal <slug>] [--kind build]
+```
+
+```
+window 2026-09-28..2026-09-29  records 2026-09-28T09:10:00..2026-09-28T14:00:01
+kind      sessions  input tokens median  input tokens mean  cache read %  context bytes median  with context bytes
+build     2         200000               200000             90.0          1000                  1
+evaluate  1         50000                50000              80.0          -                     0
+plan      2         50000                50000              60.0          3000                  2
+unknown   1         7000                 7000               100.0         -                     0
+unparsed 1
+```
+
+`--to` is exclusive and both dates are local, as node.log's timestamps
+are. Input tokens are the report's `inputTokens`, cache reads and
+writes among them; the context-bytes median is over the sessions that
+carry `contextBytes` (`with context bytes`), `-` when none does.
+`--goal` keeps the records whose label names the goal — its items' and
+its plan's. An older node's unlabelled `usage: {…}` line takes the kind
+and label of the nearest `finished …($x)`, `evaluation …($x)` or
+`rebased …($x)` line within 12 lines whose `$x` is its `listCostCents`,
+else `unknown`; a record whose JSON does not parse is counted as
+`unparsed` and skipped (ADR-016, amendment 2026-09-29).
 
 ### Tool results
 

@@ -325,6 +325,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 		}
 	}
 	acct.SetContextBytes(written.Bytes)
+	acct.SetLabel("item "+label, string(harness.KindEvaluate))
 	if len(st.Use) > 0 {
 		e.logf("item %s: evaluate with tools %s", label, st.Names())
 	}
