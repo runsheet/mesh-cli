@@ -661,22 +661,40 @@ func MeshContextMCP(gatewayURL, token string) map[string]any {
 	}}
 }
 
+// ContextWritten is what WriteContext put on disk (adr-016): Bytes is
+// every document file written plus INDEX.md, Files the documents
+// (INDEX.md not among them), and ToFetch the indexed documents left off
+// disk, fetched on demand with mesh_document.
+type ContextWritten struct {
+	Bytes   int
+	Files   int
+	ToFetch int
+}
+
+// Line is the session's one context log line after its label, e.g.
+// "context 187392 bytes in 21 files, 43 documents to fetch".
+func (w ContextWritten) Line() string {
+	return fmt.Sprintf("context %d bytes in %d files, %d documents to fetch", w.Bytes, w.Files, w.ToFetch)
+}
+
 // WriteContext writes the context's documents under <dir>/.mesh/context
 // — and INDEX.md, the whole project's listing — and excludes .mesh from
 // git via .git/info/exclude. It returns the document file names written,
 // in reading order (instructions, adr, prd, trd); the index is beside
-// them, not among them.
-func WriteContext(dir string, cx *Context) ([]string, error) {
+// them, not among them. The ContextWritten is what that cost.
+func WriteContext(dir string, cx *Context) ([]string, ContextWritten, error) {
+	var w ContextWritten
 	if cx == nil || (len(cx.Docs) == 0 && len(cx.Index) == 0 && len(cx.Live) == 0) {
-		return nil, nil
+		return nil, w, nil
 	}
+	w.ToFetch = max(len(cx.Index)-len(cx.OnDisk), 0)
 	docs := cx.Docs
 	cdir := filepath.Join(dir, ContextDir)
 	if err := os.RemoveAll(cdir); err != nil {
-		return nil, err
+		return nil, w, err
 	}
 	if err := os.MkdirAll(cdir, 0o755); err != nil {
-		return nil, err
+		return nil, w, err
 	}
 	names := make([]string, 0, len(docs))
 	for n := range docs {
@@ -698,18 +716,22 @@ func WriteContext(dir string, cx *Context) ([]string, error) {
 	})
 	for _, n := range names {
 		if err := os.WriteFile(filepath.Join(cdir, n), []byte(docs[n]), 0o644); err != nil {
-			return nil, err
+			return nil, w, err
 		}
+		w.Bytes += len(docs[n])
 	}
+	w.Files = len(names)
 	if len(cx.Index) > 0 || len(cx.Live) > 0 {
-		if err := os.WriteFile(filepath.Join(cdir, IndexFile), []byte(RenderIndex(cx)), 0o644); err != nil {
-			return nil, err
+		index := RenderIndex(cx)
+		if err := os.WriteFile(filepath.Join(cdir, IndexFile), []byte(index), 0o644); err != nil {
+			return nil, w, err
 		}
+		w.Bytes += len(index)
 	}
 	if err := excludeFromGit(dir, ".mesh/"); err != nil {
-		return nil, err
+		return nil, w, err
 	}
-	return names, nil
+	return names, w, nil
 }
 
 func excludeFromGit(dir, pattern string) error {

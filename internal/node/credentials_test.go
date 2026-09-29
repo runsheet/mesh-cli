@@ -615,3 +615,58 @@ func TestOpenAccountPassesOverAChosenIssuedAccount(t *testing.T) {
 		t.Fatalf("with no node.yaml accounts: %v, %v; want the operator's own login", acct, err)
 	}
 }
+
+// A build's usage report carries what its context cost on disk
+// (contextBytes, adr-016); a platform whose usage input has no such
+// field takes the rest of every report, Carried treats
+// ErrNoContextUsage as landed, and the node says so once per run.
+func TestCredentialsCarryContextBytesAndFallBackOncePerRun(t *testing.T) {
+	for _, old := range []bool{false, true} {
+		f := seed(t)
+		issueCredential(f, item1)
+		f.NoContextUsage = old
+		h := &streamHarness{file: usageStream()}
+		r, _, item, row := runnerOnFake(t, f, h, nil)
+		var logs syncBuf
+		r.Log = log.New(&logs, "", 0)
+		r.Credentials = usageCredentials(r.GW.(CredentialGateway), r.Log)
+
+		items := []gateway.WorkItem{item}
+		id := "99999999-2222-4222-8222-999999999991"
+		f.WorkItems[id] = map[string]any{"id": id, "goalId": goalID, "orgId": orgID, "seq": 3, "title": "More",
+			"brief": "More.", "acceptance": "go test passes", "repoId": repoID, "baseRef": "main", "status": "claimed", "nodeId": r.Cfg.NodeID, "dependsOn": []string{}}
+		f.GitHubTokens[id] = f.GitHubTokens[item1]
+		issueCredential(f, id)
+		it := item
+		it.ID, it.Seq = id, 3
+		items = append(items, it)
+		for _, it := range items {
+			if err := r.RunItem(context.Background(), it); err != nil {
+				t.Fatalf("old=%v item %s: %v", old, it.ID, err)
+			}
+			if row(it.ID)["status"] != "evaluating" {
+				t.Fatalf("old=%v item %s: %v", old, it.ID, row(it.ID))
+			}
+		}
+		out := logs.String()
+		notice := "usage: the platform takes no context bytes on the usage report yet; sent without them (said once, for every session this run)"
+		if n, want := strings.Count(out, notice), map[bool]int{false: 0, true: 1}[old]; n != want {
+			t.Errorf("old=%v: notice said %d times, want %d:\n%s", old, n, want, out)
+		}
+		if strings.Contains(out, "the platform's finishing command takes no usage report") {
+			t.Errorf("old=%v: the wrong fallback fired:\n%s", old, out)
+		}
+		if len(f.SessionUsage) != len(items) {
+			t.Fatalf("old=%v: SessionUsage = %+v, want %d landed reports", old, f.SessionUsage, len(items))
+		}
+		for _, c := range f.SessionUsage {
+			b, ok := c.Input["contextBytes"]
+			if old && ok {
+				t.Errorf("an old platform's usage carried contextBytes: %+v", c.Input)
+			}
+			if !old && (!ok || b.(float64) <= 0) {
+				t.Errorf("usage.contextBytes = %v: %+v", b, c.Input)
+			}
+		}
+	}
+}

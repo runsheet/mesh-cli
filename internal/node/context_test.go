@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -35,7 +36,7 @@ func TestContextSizeBudget(t *testing.T) {
 		t.Fatalf("context: project %s, %d in the index", cx.Project, len(cx.Index))
 	}
 	dir := t.TempDir()
-	names, err := WriteContext(dir, cx)
+	names, _, err := WriteContext(dir, cx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,5 +200,52 @@ func TestSlugNumber(t *testing.T) {
 		if got := slugNumber(slug); got != want {
 			t.Errorf("slugNumber(%q) = %d, want %d", slug, got, want)
 		}
+	}
+}
+
+// WriteContext's ContextWritten is what is on disk: the bytes of every
+// document file and INDEX.md as read back, the document count, and the
+// index rows with no file (adr-016).
+func TestContextWritten(t *testing.T) {
+	f := seed(t)
+	f.Documents["acme/mesh"] = append(f.Documents["acme/mesh"], map[string]any{"slug": "trd", "title": "TRD", "kind": "trd", "repo": "acme/widgets", "path": "specs/trd.md"})
+	f.Bodies["acme/mesh/trd"] = strings.Repeat("x", DefaultDocBytesMax+1)
+	gw := gateway.New(f.URL(), "rs_test")
+	cx, err := FetchContext(context.Background(), gw, "acme", "mesh", ContextOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	names, w, err := WriteContext(dir, cx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	onDisk := 0
+	for _, n := range append(names, IndexFile) {
+		st, err := os.Stat(filepath.Join(dir, ContextDir, n))
+		if err != nil {
+			t.Fatal(err)
+		}
+		onDisk += int(st.Size())
+	}
+	entries, _ := os.ReadDir(filepath.Join(dir, ContextDir))
+	if len(entries) != len(names)+1 {
+		t.Fatalf("%d files in the context dir, %d names and INDEX.md", len(entries), len(names))
+	}
+	fetch := 0
+	for _, d := range cx.Index {
+		if _, ok := cx.OnDisk[d.Slug]; !ok {
+			fetch++
+		}
+	}
+	if w.Bytes != onDisk || w.Files != len(names) || w.ToFetch != fetch || fetch == 0 {
+		t.Fatalf("written %+v; on disk %d bytes in %d files, %d to fetch", w, onDisk, len(names), fetch)
+	}
+	want := fmt.Sprintf("context %d bytes in %d files, %d documents to fetch", onDisk, len(names), fetch)
+	if w.Line() != want {
+		t.Fatalf("line %q, want %q", w.Line(), want)
+	}
+	if _, w, _ := WriteContext(t.TempDir(), &Context{}); w != (ContextWritten{}) {
+		t.Fatalf("no context: %+v", w)
 	}
 }

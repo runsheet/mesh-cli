@@ -51,7 +51,7 @@ func TestIndexListsLiveGoalsAndItems(t *testing.T) {
 	docsOnly := RenderIndex(cx)
 	AddLive(context.Background(), gw, cx, orgID, projID, t.Logf)
 	dir := t.TempDir()
-	if _, err := WriteContext(dir, cx); err != nil {
+	if _, _, err := WriteContext(dir, cx); err != nil {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(filepath.Join(dir, ContextDir, IndexFile))
@@ -100,7 +100,7 @@ func TestIndexWithoutLiveStateIsDocumentsOnly(t *testing.T) {
 		var logged []string
 		AddLive(context.Background(), gw, cx, orgID, projID, func(format string, args ...any) { logged = append(logged, format) })
 		dir := t.TempDir()
-		if _, err := WriteContext(dir, cx); err != nil {
+		if _, _, err := WriteContext(dir, cx); err != nil {
 			t.Fatal(err)
 		}
 		index, _ := os.ReadFile(filepath.Join(dir, ContextDir, IndexFile))
@@ -149,7 +149,7 @@ func TestIndexIsNeverCommitted(t *testing.T) {
 		t.Fatal(err)
 	}
 	AddLive(context.Background(), gw, cx, orgID, projID, t.Logf)
-	if _, err := WriteContext(dir, cx); err != nil {
+	if _, _, err := WriteContext(dir, cx); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, ContextDir, IndexFile)); err != nil {

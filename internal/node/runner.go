@@ -283,10 +283,11 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		cx = &Context{}
 	}
 	AddLive(ctx, r.GW, cx, item.OrgID, res.Project.ID, r.logf)
-	files, err := WriteContext(dir, cx)
+	files, written, err := WriteContext(dir, cx)
 	if err != nil {
 		return r.fail(ctx, item, fmt.Errorf("write context: %w", err))
 	}
+	r.logf("item %s: %s", label, written.Line())
 	contextDir := ""
 	if len(files) > 0 || len(cx.Index) > 0 || len(cx.Live) > 0 {
 		contextDir = ContextDir
@@ -333,6 +334,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		return r.fail(ctx, item, err)
 	}
 	defer unlessDetached(ctx, acct.Cleanup)
+	acct.SetContextBytes(written.Bytes)
 	acct.Apply(&job)
 	job.Meta = harness.SessionMeta{NodeID: sc.NodeID, ItemID: item.ID, GoalID: item.GoalID, Attempt: item.Attempts, TempDirs: sessionTempDirs(job, acct)}
 	// the item's tools, beside the built-in mesh-context: a required one this
