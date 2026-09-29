@@ -1,5 +1,5 @@
 ---
-summary: The first tag cut from runsheet/mesh-cli's main after the transfer (v0.0.0-runsheet-test.6) and its verification; then v0.2.188, the first signed release on the public mirror runsheet/mesh (run 36499785802, attempt 3, after attempt 1's HTTP 403 from RELEASE_TOKEN), which the mini runs since 2026-09-29 00:52Z, sessions adopted and the update confirmed — and v0.2.187, cut and signed on the source runsheet/mesh-cli only (its mirror step failed without --target, fixed by #336).
+summary: The first tag cut from runsheet/mesh-cli's main after the transfer (v0.0.0-runsheet-test.6) and its verification; then v0.2.188, the first signed release on the public mirror runsheet/mesh (run 36499785802, attempt 3, after attempt 1's HTTP 403 from RELEASE_TOKEN), which the mini runs since 2026-09-29 00:52Z, sessions adopted and the update confirmed — and v0.2.187, cut and signed on the source runsheet/mesh-cli only (its mirror step failed without --target, fixed by #336); a 2026-09-29 addendum records desiredVersion corrected to v0.2.188, why update.json's v0.1.0 refusal is stale, the live README's lag until v0.2.189, and v0.2.189 blocked on RELEASE_TAG_TOKEN (run 36507379094).
 ---
 
 # Releases after the transfer
@@ -623,3 +623,156 @@ published on the mirror.
    mirrored" paragraph is stale. It still calls v0.2.188 not yet
    mirrored and v0.2.189 the retry. Editing those notes is the
    operator's call. This item leaves the v0.2.187 release as it was.
+
+## The channel on 2026-09-29
+
+Recorded 2026-09-29 for item 21 of goal `signed-releases-on-runsheet-mesh`.
+It is an addendum, checked live against the platform and GitHub; it
+corrects nothing above and rewrites no earlier section.
+
+### desiredVersion, corrected
+
+Item 17's evaluator read the mini's desiredVersion as `v0.1.0`. It is
+`v0.2.188` now, the same as the version the mini runs — read with the
+`mesh_health_nodes` tool (project `runsheet/mesh`):
+
+```
+$ mesh_health_nodes(project="runsheet/mesh")
+{"nodes":[{"name":"Mini","org":"runsheet","slug":"mini","status":"online",
+  "version":"v0.2.188","desired_version":"v0.2.188","behind":true,
+  "commits_behind_main":9,"oldest_unrun_merged_at":"2026-09-29T00:23:02Z",
+  …}],"latest_version":"v0.2.188","main_head":"132766a02b6cab1166222d5a3c0fda7f01994afd"}
+```
+
+`~/.mesh/node.log`'s latest `self-update:` lines agree there is nothing
+left to refuse:
+
+```
+$ grep -n '^mesh node:.*self-update:' ~/.mesh/node.log | tail -3
+5803127:mesh node: 2026/09/29 00:40:21 self-update: 4d8d435 → v0.1.0: fetching
+5803274:mesh node: 2026/09/29 00:52:19 self-update: v0.2.188 is up; update confirmed
+5803275:mesh node: 2026/09/29 00:52:20 self-update: v0.2.188 → v0.1.0: fetching
+```
+
+The last line, at 00:52:20, is the one refusal against the *old*
+desiredVersion that followed the confirm. Nothing has logged since,
+because with desiredVersion now equal to the running version the loop
+has nothing to fetch (`GetDesiredVersion`: "empty, the running one or
+`dev` does nothing"). So: `v0.2.188` is correct, not `v0.1.0` — the
+operator moved desiredVersion after item 17 read it stale.
+
+### update.json still holds the old refusal
+
+```
+$ cat ~/.mesh/update.json
+{
+  "from": "v0.2.188",
+  "to": "v0.1.0",
+  "attempts": 0,
+  "lastError": "release v0.1.0 has no SHA256SUMS on runsheet/mesh (404: not published there, or not a signed release)"
+}
+```
+
+This is the same file the September 29 section above already quotes,
+unchanged, because the loop writes `update.json` only on an attempt
+(`selfupdate`, adr-002) and it has not attempted anything since
+00:52:20. It is stale now that desiredVersion reads `v0.2.188`: nobody
+has asked the mini for `v0.1.0` since, and no start failed or was left
+unconfirmed against `v0.2.188`. The console's `updateError` for the
+mini, if it still shows this `lastError`, is quoting the *last*
+refusal on record, not a live condition — a stale refusal is expected
+to sit in `update.json` between attempts, not a sign the mini is stuck.
+This item changed nothing under `~/.mesh` and made no update attempt of
+its own.
+
+### The live README still says v0.2.187
+
+```
+$ gh api repos/runsheet/mesh/readme -q .content | base64 -d | head -12
+# mesh
+
+The public release mirror of the private source, `runsheet/mesh-cli`.
+Releases v0.2.1 through v0.2.186 were unsigned builds of every push to
+`main`, published here by the old `cli-release.yml` channel. From
+v0.2.187 every release here is a signed tag release, identical to the
+one `runsheet/mesh-cli`'s `release-tag.yml` publishes to itself
+(docs/adr/adr-002-signed-tag-releases.md in `runsheet/mesh-cli`, the
+amendment "the public mirror on runsheet/mesh").
+
+## Install
+```
+
+The line reading `From v0.2.187 every release here is a signed tag
+release` is what `5a8c29e`'s mirror step pushed, and it is what the
+"The mirror's README" section above already found. `main`'s own
+`dist/mirror/README.md` reads "From v0.2.188" today (this branch
+touches neither file). Nobody edits the live mirror README by hand —
+the mirror step of the *next* release that reaches
+`scripts/mirror-release.sh`'s README `PUT` pushes `main`'s copy over
+it, so the live README corrects itself to "From v0.2.188" only once
+that release runs, i.e. at v0.2.189.
+
+### v0.2.189 has not been cut
+
+```
+$ gh run list --repo runsheet/mesh-cli --workflow release-on-merge.yml -L 3
+completed	failure	The built-in context tool is called mesh-context everywhere an agent …	Release on merge	main	push	36507379094	2m8s	2026-09-29T01:19:49Z
+```
+
+```
+$ gh run view 36507379094 --repo runsheet/mesh-cli --log-failed
+Tag the merge	UNKNOWN STEP	2026-09-29T01:21:51.1994450Z ^[[36;1mif [ -z "$RELEASE_TAG_TOKEN" ]; then^[[0m
+Tag the merge	UNKNOWN STEP	2026-09-29T01:21:51.2000245Z ^[[36;1m  echo "::error::RELEASE_TAG_TOKEN is not set. Create a fine-grained token with Contents: read and write on ${GITHUB_REPOSITORY} and add it as the repository secret RELEASE_TAG_TOKEN. GITHUB_TOKEN cannot be used: a tag it pushes starts no workflow, so release-tag.yml would never run (docs/adr/adr-002-signed-tag-releases.md)."^[[0m
+Tag the merge	UNKNOWN STEP	2026-09-29T01:21:51.2006045Z ^[[36;1m  exit 1^[[0m
+Tag the merge	UNKNOWN STEP	2026-09-29T01:21:51.2423608Z ##[error]RELEASE_TAG_TOKEN is not set. Create a fine-grained token with Contents: read and write on runsheet/mesh-cli and add it as the repository secret RELEASE_TAG_TOKEN. GITHUB_TOKEN cannot be used: a tag it pushes starts no workflow, so release-tag.yml would never run (docs/adr/adr-002-signed-tag-releases.md).
+##[error]Process completed with exit code 1.
+```
+
+Run `36507379094` (`release-on-merge.yml` on the merge of #320, "The
+built-in context tool is called mesh-context…", 2026-09-29 01:19:49Z)
+failed in job `Tag the merge` at its own guard clause, before it
+computed a version or pushed anything: `RELEASE_TAG_TOKEN is not set`.
+That secret is `scripts/release-on-merge.sh`'s own — a fine-grained
+token with `Contents: read and write` on `runsheet/mesh-cli`, because
+`GITHUB_TOKEN`'s push starts no workflow. Adding it is the operator's
+to do, and it belongs to goal `node-releases-on-merge`, not this one.
+So `v0.2.189` — the next tag ADR 002 names, one past the mirror's
+highest `v0.2.x` — is simply not cut yet; nothing pushed a tag after
+`v0.2.188`.
+
+### Both repositories today
+
+```
+$ gh release list --repo runsheet/mesh -L 3
+v0.2.188	Latest	v0.2.188	2026-09-29T00:50:55Z
+v0.2.186		v0.2.186	2026-09-26T11:48:49Z
+v0.2.185		v0.2.185	2026-09-26T11:40:50Z
+
+$ gh release list --repo runsheet/mesh-cli -L 4
+v0.2.188	Latest	v0.2.188	2026-09-28T23:46:50Z
+v0.2.187		v0.2.187	2026-09-28T23:28:42Z
+v0.1.0	Pre-release	v0.1.0	2026-09-28T07:47:09Z
+v0.0.0-runsheet-test.6	Pre-release	v0.0.0-runsheet-test.6	2026-09-26T15:06:03Z
+
+$ gh release view v0.1.0 --repo runsheet/mesh-cli --json isPrerelease -q .isPrerelease
+true
+```
+
+`runsheet/mesh` has not moved since `v0.2.188` — no `v0.2.189` to
+mirror, because none has been cut on the source. `runsheet/mesh-cli`
+still lists `v0.2.187` above `v0.1.0`: it is the one release never
+mirrored (see "v0.2.187, cut but never mirrored" above), unchanged by
+this item. `v0.1.0` is still `isPrerelease: true`, as the "v0.1.0
+superseded" section above left it.
+
+### What stays owed
+
+1. **`meshCliReleases` reading `runsheet/mesh`.** Still owed on
+   `runsheet/runsheet`, so the console's Update menu lists exactly what
+   a node can fetch, as "What is owed" above already said.
+2. **`RELEASE_TAG_TOKEN`.** Not set on `runsheet/mesh-cli`. Until the
+   operator adds it, `release-on-merge.yml`'s tag job fails at the
+   guard above on every node-changing merge, and no `v0.2.189` — or any
+   tag after it — is cut. Goal `node-releases-on-merge`, not this one.
+3. **v0.2.187's stale release notes.** Unchanged; still the operator's
+   call, as "What is owed" item 4 already recorded.
