@@ -391,10 +391,17 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   second opinion unavailable: <reason>`. A first fail or a normal/low
   goal never runs a second opinion. **A tool failure is never a
   verdict** (`toolBroken`): a session whose context server (or a
-  required console tool) errored on every call, or never connected,
-  — or, on Codex, every command of which bubblewrap refused
-  (`Result.SandboxBroken`, `sandbox: <bwrap line>`) — has its verdict
-  discarded and the same job runs on the other family
+  required console tool) errored and was never reached — no call it
+  answered, clean (`ToolStat.Clean`) or with its own error result
+  (`ToolStat.Answered`: a Codex `failed` call with `error` null and a
+  result, a Claude `is_error` result from a server init named
+  `connected` that is not Claude Code's own refusal) — or, on Codex,
+  every command of which bubblewrap refused (`Result.SandboxBroken`,
+  `sandbox: <bwrap line>`) — has its verdict discarded; a tool that
+  answered was reached (`ToolStat.Reached`), so the built-in's `not
+  found` for a slug it does not have is the tool working, never a tool
+  failure (ADR-011's amendment 2026-09-29, a tool that answered was
+  reached). For a broken one the same job runs on the other family
   as the evaluation proper, its notes opening `<Family> (first attempt,
   <model>): no verdict — <tool>: <error>`; with no other family it
   is **no verdict** (`Evaluator.noVerdict`, ADR-011's amendment

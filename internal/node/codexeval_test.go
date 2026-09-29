@@ -2,8 +2,10 @@ package node
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -131,6 +133,151 @@ func TestCodexEvaluationReceivesResolvedTools(t *testing.T) {
 		if strings.Contains(v, "${") {
 			t.Errorf("env %s holds an unexpanded reference: %q", k, v)
 		}
+	}
+}
+
+// Evaluator.Evaluate on a Codex family hands the preflight the very job
+// it builds, and that job's servers carry the built-in, mesh-context, at
+// the gateway's /mcp on the node's token — what Codex.Preflight checks
+// before the session starts (goal evaluation-reports-no-verdict, item
+// 2: the evaluation path is covered).
+func TestCodexEvaluationPreflightsMeshContext(t *testing.T) {
+	f, ev, _, codex, _, _ := familyFixture(t, "normal", "sonnet", "VERDICT: FAIL", "Holds.\nVERDICT: PASS")
+	ev.MCP = MeshContextMCP(f.URL(), "rs_test")
+	pf := &fakePreflight{}
+	ev.CodexPreflight = pf.check
+	evaluateItem1(t, f, ev)
+	if len(pf.jobs) != 1 || codex.runs() != 1 {
+		t.Fatalf("preflights %d, codex runs %d", len(pf.jobs), codex.runs())
+	}
+	job := pf.jobs[0]
+	if job.Kind != harness.KindEvaluate {
+		t.Fatalf("kind %q", job.Kind)
+	}
+	srv, ok := job.MCPServers[tools.Builtin].(map[string]any)
+	if !ok {
+		t.Fatalf("the preflighted job's servers %v carry no %s", job.MCPServers, tools.Builtin)
+	}
+	if srv["url"] != strings.TrimRight(f.URL(), "/")+"/mcp" {
+		t.Fatalf("url %v", srv["url"])
+	}
+	if h, _ := srv["headers"].(map[string]string); h["Authorization"] != "Bearer rs_test" {
+		t.Fatalf("headers %v", srv["headers"])
+	}
+	if _, ok := codex.jobs[0].MCPServers[tools.Builtin]; !ok {
+		t.Fatal("the Codex session's job has no mesh-context")
+	}
+}
+
+// `prologue: not found` (goal evaluation-reports-no-verdict): the
+// context tool answered every call with an error of its own — a
+// mesh_document slug it does not have — so it was reached, and the
+// session's verdict stands; nothing runs on the other family.
+func TestAContextToolThatAnsweredIsAVerdict(t *testing.T) {
+	f, ev, claude, codex, _, logs := familyFixture(t, "normal", "sonnet", "VERDICT: PASS", "Missing the test.\nVERDICT: FAIL")
+	ev.MCP = MeshContextMCP(f.URL(), "rs_test")
+	codex.tools = map[string]*harness.ToolStat{"mesh-context": {Calls: 2, Errors: 2, Answered: 2, FirstError: "not found"}}
+	in := evaluateItem1(t, f, ev)
+	if codex.runs() != 1 || len(claude.jobs) != 0 || in["passed"] != false {
+		t.Fatalf("runs claude %d codex %d, recorded %+v", len(claude.jobs), codex.runs(), in)
+	}
+	if strings.Contains(logs.String(), "saw no context") {
+		t.Fatalf("node.log:\n%s", logs.String())
+	}
+	// one call the tool never answered among them is still an answer
+	f, ev, claude, codex, _, _ = familyFixture(t, "normal", "sonnet", "VERDICT: PASS", "Missing the test.\nVERDICT: FAIL")
+	ev.MCP = MeshContextMCP(f.URL(), "rs_test")
+	codex.tools = map[string]*harness.ToolStat{"mesh-context": {Calls: 2, Errors: 2, Answered: 1, FirstError: "timeout"}}
+	if in := evaluateItem1(t, f, ev); len(claude.jobs) != 0 || in["passed"] != false {
+		t.Fatalf("runs claude %d, recorded %+v", len(claude.jobs), in)
+	}
+	// none answered: no context, as before
+	f, ev, claude, codex, _, _ = familyFixture(t, "normal", "sonnet", "Holds.\nVERDICT: PASS", "VERDICT: FAIL")
+	ev.MCP = MeshContextMCP(f.URL(), "rs_test")
+	codex.tools = map[string]*harness.ToolStat{"mesh-context": {Calls: 2, Errors: 2, FirstError: "MCP tool call requires approval, but approval policy is never"}}
+	if in := evaluateItem1(t, f, ev); len(claude.jobs) != 1 || in["passed"] != true {
+		t.Fatalf("runs claude %d, recorded %+v", len(claude.jobs), in)
+	}
+}
+
+// The same, driven by the stream the mini recorded
+// (harness/testdata/codex_mcp_not_found.jsonl): its only context call
+// was answered `not found`. The mini's session named the built-in by its
+// old name, `prologue`; a live session names it `mesh-context`, so the
+// parsed stat is the built-in's here. The Codex verdict is recorded as
+// it stands — no `no verdict — ` head, nothing on Claude.
+func TestAContextToolThatAnsweredNotFoundKeepsItsVerdict(t *testing.T) {
+	stream, err := os.Open(filepath.Join("..", "harness", "testdata", "codex_mcp_not_found.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	parsed := harness.ParseCodexStream(stream, "gpt-6-luna", nil)
+	f, ev, claude, codex, _, _ := familyFixture(t, "normal", "sonnet", "VERDICT: PASS", "Missing the test.\nVERDICT: FAIL")
+	ev.MCP = MeshContextMCP(f.URL(), "rs_test")
+	codex.tools = map[string]*harness.ToolStat{tools.Builtin: parsed.Tools["prologue"]}
+	in := evaluateItem1(t, f, ev)
+	if codex.runs() != 1 || len(claude.jobs) != 0 || in["passed"] != false {
+		t.Fatalf("runs claude %d codex %d, recorded %+v", len(claude.jobs), codex.runs(), in)
+	}
+	if notes, _ := in["notes"].(string); strings.Contains(notes, "no verdict — ") || !strings.Contains(notes, "Missing the test.") {
+		t.Fatalf("notes %q", notes)
+	}
+}
+
+// The Claude evaluation job's rendered mcpServers — what `claude -p
+// --mcp-config` reads — carry mesh-context at the gateway's /mcp with
+// the node's bearer.
+func TestClaudeEvaluationRendersMeshContext(t *testing.T) {
+	f, ev, claude, codex, _, _ := familyFixture(t, "normal", "sonnet", "Holds.\nVERDICT: PASS", "VERDICT: FAIL")
+	ev.MCP = MeshContextMCP(f.URL(), "rs_test")
+	ev.CodexAccounts = (&Loop{Known: &KnownAccounts{}}).CodexCandidates
+	evaluateItem1(t, f, ev)
+	if len(claude.jobs) != 1 || codex.runs() != 0 {
+		t.Fatalf("runs claude %d codex %d", len(claude.jobs), codex.runs())
+	}
+	args := harness.MCPArgs(claude.jobs[0].MCPServers)
+	if len(args) < 2 || args[0] != "--mcp-config" {
+		t.Fatalf("args %q", args)
+	}
+	var cfg struct {
+		MCPServers map[string]struct {
+			URL     string            `json:"url"`
+			Headers map[string]string `json:"headers"`
+		} `json:"mcpServers"`
+	}
+	if err := json.Unmarshal([]byte(args[1]), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	srv, ok := cfg.MCPServers[tools.Builtin]
+	if !ok || srv.URL != strings.TrimRight(f.URL(), "/")+"/mcp" || srv.Headers["Authorization"] != "Bearer rs_test" {
+		t.Fatalf("mcp.json %s", args[1])
+	}
+}
+
+// The Codex evaluation job's rendered config.toml carries
+// [mcp_servers.mesh-context] at the gateway's /mcp, its Authorization
+// from a variable the session's env sets to the node's bearer.
+func TestCodexEvaluationRendersMeshContext(t *testing.T) {
+	f, ev, claude, codex, _, _ := familyFixture(t, "normal", "sonnet", "VERDICT: FAIL", "Holds.\nVERDICT: PASS")
+	ev.MCP = MeshContextMCP(f.URL(), "rs_test")
+	evaluateItem1(t, f, ev)
+	if len(claude.jobs) != 0 || codex.runs() != 1 {
+		t.Fatalf("runs claude %d codex %d", len(claude.jobs), codex.runs())
+	}
+	job := codex.jobs[0]
+	rendered, env, err := harness.CodexMCPConfig(job.MCPServers, job.Env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "[mcp_servers.mesh-context]\n" +
+		"url = \"" + strings.TrimRight(f.URL(), "/") + "/mcp\"\n" +
+		"env_http_headers = { \"Authorization\" = \"MESH_CODEX_MCP_0_TOKEN\" }\n"
+	if !strings.Contains(rendered, want) {
+		t.Fatalf("config.toml:\n%s\nwant it to carry:\n%s", rendered, want)
+	}
+	if !slices.Contains(env, "MESH_CODEX_MCP_0_TOKEN=Bearer rs_test") {
+		t.Fatalf("env %q", env)
 	}
 }
 

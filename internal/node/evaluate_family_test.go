@@ -611,12 +611,39 @@ func TestAVerdictIsRecordedAsBefore(t *testing.T) {
 	}
 }
 
+// A Claude session whose context server was connected at startup but
+// whose every call Claude Code refused before it reached the server (a
+// permission refusal) saw no context: its verdict is discarded, parsed
+// from the stream as the harness reads it, and with no other family it
+// is recorded as no verdict, never kept as an answer.
+func TestRefusedCallsOnAConnectedContextServerAreNoVerdict(t *testing.T) {
+	f, ev, claude, codex, _, _ := familyFixture(t, "normal", "sonnet", "VERDICT: FAIL", "VERDICT: PASS")
+	ev.MCP = MeshContextMCP(f.URL(), "rs_test")
+	ev.CodexAccounts = (&Loop{Known: &KnownAccounts{}}).CodexCandidates
+	stream := `{"type":"system","subtype":"init","model":"claude-sonnet-5","mcp_servers":[{"name":"mesh-context","status":"connected"}]}
+{"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","id":"t1","name":"mcp__mesh-context__mesh_document","input":{"slug":"prd"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","is_error":true,"content":"Claude requested permissions to use mcp__mesh-context__mesh_document, but you haven't granted it yet."}]}}
+{"type":"result","subtype":"success","result":"VERDICT: FAIL","total_cost_usd":0.1,"num_turns":1}`
+	claude.tools = harness.ParseStream(strings.NewReader(stream), nil).Tools
+	ev.Blind = &OncePer{}
+	in := evaluateItem1(t, f, ev)
+	if len(claude.jobs) != 1 || codex.runs() != 0 {
+		t.Fatalf("runs claude %d codex %d", len(claude.jobs), codex.runs())
+	}
+	if _, sent := in["passed"]; sent || in["outcome"] != gateway.EvaluationNoVerdict {
+		t.Fatalf("recorded %+v", in)
+	}
+	if notes, _ := in["notes"].(string); !strings.Contains(notes, "saw no context (mesh-context: Claude requested permissions") {
+		t.Fatalf("notes %q", notes)
+	}
+}
+
 // A context server that answered some calls saw the context: the
 // verdict stands as before.
 func TestSomeContextIsAVerdict(t *testing.T) {
 	f, ev, claude, codex, _, _ := familyFixture(t, "normal", "sonnet", "VERDICT: PASS", "Nothing asserts it.\nVERDICT: FAIL")
 	ev.MCP = MeshContextMCP(f.URL(), "rs_test")
-	codex.tools = map[string]*harness.ToolStat{"mesh-context": {Calls: 3, Errors: 1, FirstError: "timeout"}}
+	codex.tools = map[string]*harness.ToolStat{"mesh-context": {Calls: 3, Clean: 2, Errors: 1, FirstError: "timeout"}}
 	in := evaluateItem1(t, f, ev)
 	if codex.runs() != 1 || len(claude.jobs) != 0 || in["passed"] != false || in["notes"] != "Nothing asserts it.\n\n(evaluated on Codex gpt-6-luna)\ntools: mesh-context: first call errored: timeout" {
 		t.Fatalf("runs claude %d codex %d, recorded %+v", len(claude.jobs), codex.runs(), in)
