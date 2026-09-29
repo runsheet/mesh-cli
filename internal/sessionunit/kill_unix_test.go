@@ -4,54 +4,38 @@ package sessionunit
 
 import (
 	"os"
-	"path/filepath"
-	"strconv"
 	"syscall"
 	"testing"
 )
 
-// A group the stop cannot end — here one this user may not signal, a
-// root process's — is Kill's error and no report, though its members
-// were read.
+// A group the stop cannot end — a signal refused (EPERM) — is Kill's
+// error and no report, though its members were read. The refusal is
+// injected, and the group is this test's own sleeps: no other process
+// is ever signalled.
 func TestDetachedKillStopError(t *testing.T) {
 	if _, err := os.Stat("/proc/self/stat"); err != nil {
 		t.Skip("no /proc")
 	}
-	if os.Getuid() == 0 {
-		t.Skip("root may signal any group")
-	}
 	fastStop(t)
-	pid := rootGroupLeader()
-	if pid == 0 {
-		t.Skip("no root process group leader")
+	h, cleanup := startSleeps(t, Detached{})
+	defer cleanup()
+	real := signalGroup
+	var sent []int
+	signalGroup = func(pid int, sig syscall.Signal) error {
+		sent = append(sent, pid)
+		return syscall.EPERM
 	}
-	killed, err := Detached{}.Kill(Handle{PID: pid})
+	defer func() { signalGroup = real }()
+	killed, err := Detached{}.Kill(h)
 	if err == nil || len(killed) != 0 {
 		t.Fatalf("killed %v, err %v", killed, err)
 	}
-}
-
-// rootGroupLeader is a live process owned by root that leads its own
-// process group, besides init; 0 when there is none.
-func rootGroupLeader() int {
-	ents, _ := os.ReadDir("/proc")
-	for _, e := range ents {
-		pid, err := strconv.Atoi(e.Name())
-		if err != nil || pid <= 1 {
-			continue
-		}
-		fi, err := os.Stat(filepath.Join("/proc", e.Name()))
-		if err != nil {
-			continue
-		}
-		if st, ok := fi.Sys().(*syscall.Stat_t); !ok || st.Uid != 0 {
-			continue
-		}
-		for _, p := range groupMembers(pid) {
-			if p.PID == pid {
-				return pid
-			}
+	for _, pid := range sent {
+		if pid != h.PID {
+			t.Fatalf("signalled group %d, not the session's %d", pid, h.PID)
 		}
 	}
-	return 0
+	if len(sent) == 0 {
+		t.Fatal("no signal attempted")
+	}
 }

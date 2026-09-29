@@ -19,6 +19,10 @@ func detach(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 }
 
+// signalGroup sends sig to the process group pid leads; tests replace it
+// to refuse a signal without reaching any process but their own.
+var signalGroup = func(pid int, sig syscall.Signal) error { return syscall.Kill(-pid, sig) }
+
 // stopGroup sends SIGTERM to the session's process group, and SIGKILL
 // when the session or any of its group is still there after StopGrace,
 // then waits goneSlack for the group to be gone: a group still standing,
@@ -27,13 +31,13 @@ func stopGroup(h Handle) error {
 	if h.PID <= 0 {
 		return errors.New("sessionunit: no pid")
 	}
-	if err := syscall.Kill(-h.PID, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
+	if err := signalGroup(h.PID, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
 		return fmt.Errorf("sessionunit: stop %d: %w", h.PID, err)
 	}
 	if waitGroupGone(h, StopGrace) {
 		return nil
 	}
-	if err := syscall.Kill(-h.PID, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+	if err := signalGroup(h.PID, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
 		return fmt.Errorf("sessionunit: kill %d: %w", h.PID, err)
 	}
 	if waitGroupGone(h, goneSlack) {
