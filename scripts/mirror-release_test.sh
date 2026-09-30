@@ -180,4 +180,23 @@ binding_line=$(call_with "$log" "${binding_put[@]}") || fail "binding not PUT th
 [[ $binding_line == *$'\x1f'"sha=sha-of-$binding"* ]] || fail "binding PUT does not name the sha it replaces"
 echo "ok: $binding PUT when it differs, not when identical"
 
+# 6. The binding differs only by its final newline — the mirror's copy
+#    lacks it, then carries an extra one: still a change, so it is PUT.
+#    A comparison through $(…) strips trailing newlines and would miss it.
+for variant in missing extra; do
+  : >"$log"
+  mirror_up_to_date
+  if [[ $variant == missing ]]; then
+    printf '%s' "$(cat "dist/mirror/$binding")" >"$FAKE_REMOTE/$binding"
+  else
+    printf '\n' >>"$FAKE_REMOTE/$binding"
+  fi
+  cmp -s "dist/mirror/$binding" "$FAKE_REMOTE/$binding" && fail "test setup: the $variant-newline copy is byte-identical"
+  ./scripts/mirror-release.sh v0.2.187 abc123def "$release_dir"
+  binding_line=$(call_with "$log" "${binding_put[@]}") || fail "binding not PUT though its final newline is $variant on the mirror"
+  [[ $binding_line == *$'\x1f'"sha=sha-of-$binding"* ]] || fail "binding PUT does not name the sha it replaces"
+  call_with "$log" "${readme_put[@]}" >/dev/null && fail "README pushed though its content already matches"
+done
+echo "ok: $binding PUT when it differs only by its final newline"
+
 echo "mirror-release_test.sh: PASS"

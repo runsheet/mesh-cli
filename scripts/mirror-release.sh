@@ -77,19 +77,23 @@ cosign verify-blob \
   "$mirror_dir/SHA256SUMS"
 
 # publish_file <local> <remote-path>: puts <local> at <remote-path> on
-# the mirror's default branch, only when its content differs from what
-# is already there (absent counts as different).
+# the mirror's default branch, only when its bytes differ from what is
+# already there (absent counts as different). The remote file is decoded
+# into a file and compared with cmp, never through $(…), which strips
+# trailing newlines: a file that differs only by its last newline is
+# still a change.
 publish_file() {
   local local_file=$1 remote=$2
-  local current_sha="" current_content="" new_content encoded
+  local current_sha="" current_file encoded
+  current_file="$mirror_dir/publish-current"
+  rm -f "$current_file"
   if current_sha=$(gh api "repos/${GH_REPO}/contents/${remote}" --jq '.sha' 2>/dev/null); then
-    current_content=$(gh api "repos/${GH_REPO}/contents/${remote}" --jq '.content' | tr -d '\n' | base64 -d)
+    gh api "repos/${GH_REPO}/contents/${remote}" --jq '.content' | tr -d '\n' | base64 -d >"$current_file"
   else
     current_sha=""
   fi
-  new_content=$(cat "$local_file")
 
-  if [[ $current_content == "$new_content" && -n $current_sha ]]; then
+  if [[ -n $current_sha ]] && cmp -s "$local_file" "$current_file"; then
     return 0
   fi
   encoded=$(base64 -w0 "$local_file")
