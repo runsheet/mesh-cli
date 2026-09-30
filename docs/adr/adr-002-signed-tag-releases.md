@@ -567,6 +567,55 @@ console none the wiser.
   left alone, as `dev` always was; a desired version equal to the
   running tag still does nothing.
 
+## Amendment: the publish job is idempotent (goal `release-tag-mirrors-with-a-rigger-binding`, 2026-09-29)
+
+`gh release create` refuses outright when a release of the tag already
+exists ("release already exists"), so a re-run of the publish job after
+a failure partway through — the mirror step, say — had no way back:
+`v0.2.188`'s attempt 1 (run `36499785802`, the "What happened" section
+above) signed and released on `runsheet/mesh-cli`, then failed at the
+mirror; attempt 3 could not re-run `gh release create` on
+`runsheet/mesh-cli` at all, and the release there was deleted by hand
+to unblock it. Both creates — `release-tag.yml`'s own "Create release
+on runsheet/mesh-cli" step and `scripts/mirror-release.sh`'s create on
+the mirror — now go through `scripts/ensure-release.sh <tag> <sha>
+<release-dir>` in place of a bare `gh release create`:
+
+- **No release of the tag on `GH_REPO`:** created exactly as before —
+  `--verify-tag` on `runsheet/mesh-cli` (the tag is already pushed
+  there), `--target main` on the mirror (it is not), `--prerelease`
+  when the tag has a `-`, the title, the shared `$NOTES` and the five
+  assets.
+- **An existing release whose `SHA256SUMS` is byte-for-byte
+  `<release-dir>/SHA256SUMS` and whose assets include the three
+  binaries: kept.** Nothing is created, deleted or overwritten on
+  GitHub; the log says `release <tag> already on <repo> with identical
+  assets; keeping it`. A re-run after a failure downstream is a no-op
+  here. On `runsheet/mesh-cli` only, the existing release's
+  `SHA256SUMS.sigstore.json` is downloaded over `<release-dir>`'s
+  freshly-signed one, so the mirror step that follows publishes the
+  exact bytes the source release already carries rather than a second,
+  differently-signed one — keyless signing mints a new Sigstore
+  certificate every run, so a re-signed bundle is valid but not
+  identical; the existing bundle still verifies.
+- **An existing release whose `SHA256SUMS` differs, or that is missing
+  one of the three binaries: refused.** `ensure-release.sh` exits
+  non-zero naming the asset and the repo; nothing already published is
+  touched. A mismatch this deep — the tag exists but does not match
+  what this run built — is for a person to resolve, not to overwrite
+  automatically.
+- **Nothing is ever deleted**, on either repo, by this workflow. The
+  by-hand deletion that unblocked `v0.2.188` is no longer how a re-run
+  after a partial failure is fixed.
+
+`scripts/mirror-release_test.sh` covers both call sites (a fake `gh`
+answering `release view --json assets` from `FAKE_` variables): no
+release creates as before, an identical existing release is kept with
+no create and no delete, and a differing one exits non-zero with no
+create — on the mirror (`GH_REPO=runsheet/mesh`) and on the source
+(`GH_REPO=runsheet/mesh-cli`, `--verify-tag` instead of `--target`)
+alike.
+
 ## Consequences
 
 - Renaming an asset, the workflow file, or the repo breaks every
