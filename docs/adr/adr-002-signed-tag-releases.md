@@ -394,7 +394,17 @@ again and current.
   `cli-release.yml` channel to this same public repo before its
   transfer — is reused: a fine-grained token scoped to `runsheet/mesh`
   with Contents: read and write, or the runsheet org App's installation
-  token.
+  token. **Superseded by
+  [ADR-015](adr-015-workflow-tokens-exchanged-through-rigger.md)**
+  (goal `release-tag-mirrors-with-a-rigger-binding`, 2026-09-30): the
+  mirror step exchanges the run's OIDC identity (audience
+  `runsheet-rigger`) at the runsheet gateway for a token on
+  `runsheet/mesh` alone, `contents: write`, at most an hour
+  (`scripts/exchange-workflow-token.sh`), against the binding the mirror
+  carries, `.runsheet/bindings/mesh-cli-release.yaml` — published from
+  `dist/mirror/` as the README is. `RELEASE_TOKEN` stays only as the
+  logged fallback (`mirror token: RELEASE_TOKEN fallback (exchange
+  failed: <reason>)`) until the runsheet half answers.
 - **Numbering continues the public line.** The public line continued
   at `v0.2.187` (cut and signed on `runsheet/mesh-cli` only, its mirror
   step failed), and **`v0.2.188`** was the first signed release on the
