@@ -259,13 +259,15 @@ func (v *buildValidation) usage() []gateway.ValidationMinutes {
 }
 
 // uploadAttestation hands the platform the run's attestation to sign,
-// on the item's own token (WithItemToken; the operator's fallback, with
-// no item token, on the node's). A platform without the endpoint is
-// said once per run; any other failure is a note on the item, never its
-// failure. Either keeps a copy at <workdir>.attestation.json, which the
+// on the node's own token — the gateway takes a Latchkey machine token
+// or an rs_* console token and refuses a GitHub one, and it is the node
+// holding the item it checks (runsheet gateway/attestation.go,
+// attestingNode); the item's ghs_* token is for git and GitHub alone. A
+// platform without the endpoint is said once per run; any other failure
+// is a note on the item, never its failure. Either keeps a copy at <workdir>.attestation.json, which the
 // session directory's removal leaves.
 func (r *Runner) uploadAttestation(ctx context.Context, b *buildRun, att validate.Attestation) {
-	rec := r.attester(b.cred)
+	rec := r.attester()
 	var err error
 	if rec == nil {
 		err = &gateway.Error{Message: "the node's gateway takes no attestations", Unsupported: true}
@@ -324,16 +326,12 @@ type attestationRecorder interface {
 	RecordValidationAttestation(ctx context.Context, itemID string, att gateway.ValidationAttestation) error
 }
 
-// attester is the gateway on the item's token when the node's gateway
-// can speak on one and the item has one, else the node's own, else nil.
-func (r *Runner) attester(cred *ItemCred) attestationRecorder {
-	if tok := cred.Token(); tok != nil && tok.Token != "" {
-		if c, ok := r.GW.(interface {
-			WithItemToken(string) *gateway.Client
-		}); ok {
-			return c.WithItemToken(tok.Token)
-		}
-	}
+// attester is the node's own gateway when it takes attestations, else
+// nil. Never the item's token: v0.2.208 and before sent the item's
+// ghs_* token and every upload came back "the bearer is a GitHub App
+// installation token … a node sends its own Latchkey machine token, as
+// its heartbeat does".
+func (r *Runner) attester() attestationRecorder {
 	rec, _ := r.GW.(attestationRecorder)
 	return rec
 }

@@ -664,12 +664,12 @@ func (h *commitHarness) Jobs() []harness.Job {
 }
 
 // validatingRunner is a runner on a real checkout of an origin whose
-// main declares validateYML (files beside it), the item's token taken as
-// a bearer by the fake, with h committing each turn.
+// main declares validateYML (files beside it), with h committing each
+// turn. The fake takes the node's token alone, as the gateway does: an
+// upload on the item's ghs_* token is refused.
 func validatingRunner(t *testing.T, repoFiles map[string]string, turns ...map[string]string) (*Runner, *gitWS, *commitHarness, *gatewaytest.Fake, gateway.WorkItem, *syncBuf) {
 	t.Helper()
 	f := seed(t)
-	f.ItemBearers = []string{"ghs_item1"}
 	h := &commitHarness{t: t, turns: turns}
 	r, ws, item, _ := runnerOnFake(t, f, h, nil)
 	gws := &gitWS{fakeWS: ws, t: t, origin: originRepo(t, repoFiles)}
@@ -715,8 +715,9 @@ func TestBuildRunsOnlyTheAffectedStepsPlusAlways(t *testing.T) {
 }
 
 // The attestation is uploaded after the push, for the pushed commit,
-// with every field, on the item's own token.
-func TestBuildUploadsTheAttestationWithTheItemToken(t *testing.T) {
+// with every field, on the node's own token — never the item's ghs_*
+// token, which the gateway refuses.
+func TestBuildUploadsTheAttestationOnTheNodesToken(t *testing.T) {
 	r, ws, _, f, item, _ := validatingRunner(t, withValidation(), map[string]string{"web/web.go": "package web\n\nconst Y = 2\n"})
 	if err := r.RunItem(context.Background(), item); err != nil {
 		t.Fatal(err)
@@ -726,8 +727,8 @@ func TestBuildUploadsTheAttestationWithTheItemToken(t *testing.T) {
 		t.Fatalf("attestations = %d, want 1", len(atts))
 	}
 	call := atts[0]
-	if call.Bearer != "ghs_item1" {
-		t.Fatalf("bearer = %q, want the item's token", call.Bearer)
+	if call.Bearer != f.Token {
+		t.Fatalf("bearer = %q, want the node's own token %q", call.Bearer, f.Token)
 	}
 	finish := f.CallsNamed("finishWorkItem")
 	if len(finish) != 1 {
