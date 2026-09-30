@@ -15,8 +15,8 @@ runsheet ADR 032 has the platform sign a validation attestation for an
 item's head commit, so the PR workflow can skip the CI the node already
 ran. [ADR-013](adr-013-validation-runs-from-a-declared-config.md) is
 the config, selection, run and attestation (`internal/validate`); #318
-is the upload (`gateway.RecordValidationAttestation`, `WithItemToken`)
-and the usage report's `validation`. This is where the node calls them.
+is the upload (`gateway.RecordValidationAttestation`) and the usage
+report's `validation`. This is where the node calls them.
 
 ## Decision
 
@@ -51,9 +51,12 @@ carries one of its secrets and less what the job unsets;
 **The attestation** (`validate.Build`: node id, the session id, the
 item id) is written to `<workdir>.session/attestation.json` and, after
 the push — so the platform signs for a commit that exists — uploaded by
-`RecordValidationAttestation` on a client carrying the item's token
-(`WithItemToken(ItemCred.Token())`; the operator's fallback, with no
-item token, on the node's own). A platform without the endpoint is said
+`RecordValidationAttestation` on the node's own token, as every other
+command. Not the item's `ghs_*` token: the gateway takes a Latchkey
+machine token or an `rs_*` console token and checks that the caller is
+the node holding the item; a GitHub token is refused outright, which is
+what every upload up to v0.2.208 got back (the item token client,
+`WithItemToken`, went with that fix). A platform without the endpoint is said
 once per run (`ValidationNotices`); any other error is a progress note
 on the item. Either keeps a copy at `<workdir>.attestation.json`, which
 the session directory's removal leaves. Artifacts go to the gateway as

@@ -36,16 +36,16 @@ func sampleAttestation() gateway.ValidationAttestation {
 	}
 }
 
-// RecordValidationAttestation carries the item's claim-time token, not
-// the node's own — WithItemToken's client is what actually reaches the
-// gateway, and the fake accepts only that bearer.
-func TestRecordValidationAttestationSendsTheAttestationWithTheItemToken(t *testing.T) {
-	const itemToken = "item-token-only-this-one-works"
-	f := gatewaytest.New(itemToken)
+// RecordValidationAttestation carries the node's own token — the fake
+// accepts only that bearer, as the gateway does (it refuses the item's
+// ghs_* token, which v0.2.208 and before sent).
+func TestRecordValidationAttestationSendsTheAttestationOnTheNodesToken(t *testing.T) {
+	const nodeToken = "the-nodes-own-token"
+	f := gatewaytest.New(nodeToken)
 	defer f.Close()
 	claimedItem(f)
 
-	gw := gateway.New(f.URL(), "the-nodes-own-token").WithItemToken(itemToken)
+	gw := gateway.New(f.URL(), nodeToken)
 	att := sampleAttestation()
 	if err := gw.RecordValidationAttestation(context.Background(), itemID, att); err != nil {
 		t.Fatal(err)
