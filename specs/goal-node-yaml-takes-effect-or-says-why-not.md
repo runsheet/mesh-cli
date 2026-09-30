@@ -3,13 +3,13 @@ title: Goal — A node.yaml the operator edits takes effect, and the node says s
 kind: plan
 status: done
 parent: prd
-summary: The mini's capacity 6 → 8 took effect in the loop at 06:17:09Z but never reached the platform because a fixed node on one account heartbeated no capacity and only registration sets NodeIndex.capacity (fixed: a fixed node now heartbeats `scaling`, mesh-cli ADR-018); the same six hours' 04:00:22Z exit, status=2/INVALIDARGUMENT, was an unrecovered nil-pointer panic in the evaluator's Codex-to-Claude fallback, now impossible anywhere in the node (`crash.Guard`, exit 70); and `~/.mesh/node.log` — 339 MB and never rotated — is now capped at 10 MB × 5 files with session transcripts in their own file.
+summary: The mini's capacity 6 → 8 took effect in the loop at 06:17:09Z but never reached the platform because a fixed node on one account heartbeated no capacity and only registration sets NodeIndex.capacity (fixed: a fixed node now heartbeats `scaling`, mesh-cli ADR-018); the same six hours' 04:00:22Z exit, status=2/INVALIDARGUMENT, was an unrecovered nil-pointer panic in the evaluator's Codex-to-Claude fallback, now fixed, and a panic on the start path or any goroutine the node starts now names itself and exits 70 (`crash.Guard`); and `~/.mesh/node.log` — 339 MB and never rotated — is now capped at 10 MB × 5 files with session transcripts in their own file.
 ---
 
 # Goal — A node.yaml the operator edits takes effect, and the node says so
 
-Mesh goal `node-yaml-takes-effect-or-says-why-not`, running. Item 1 (this
-section) found and fixed why the capacity change never reached the
+Mesh goal `node-yaml-takes-effect-or-says-why-not`, done. Item 1 (Root
+cause) found and fixed why the capacity change never reached the
 platform. Items 2–4 cover every reloadable field, the 04:00:22Z
 `status=2/INVALIDARGUMENT` exit (below, in The 04:00:22Z exit), and the
 unbounded node.log.
@@ -174,71 +174,102 @@ behaviour (ADR 004).
   the start-time `cfg`). The heartbeat's `scaling` now corrects it on
   the next tick.
 
-The mini's `capacity` was raised from 6 to 8 in `~/.mesh/node.yaml` and
-never took effect, and `~/.mesh/node.log` — 339 MB and never rotated —
+The mini's `capacity` was raised from 6 to 8 in `~/.mesh/node.yaml`. The
+loop applied it, but the platform never saw it. And `~/.mesh/node.log` — 339 MB and never rotated —
 was too large to show it. This document collects what each item of the
 goal found and landed.
 
 ## The mini before and after
 
-**Before the fix.** `NodeIndex(mini)` from the platform, 2026-09-29
-13:30:02Z (Root cause, above): `capacity: 6, running: 4, lastSeenAt
-13:30:02Z, version v0.2.188`. **`stat -c %y ~/.mesh/node.yaml` on the
-mini itself is not obtainable this session**: this session has no
-shell on the mini (`ssh mini` refuses this session's key, tried again
-while writing this section, and confirmed once more below in `##
-node.log`), and no earlier session of this goal ran `stat` on the live
-file either — only on the operator's own pre-edit backups (Root cause,
-above). The closest evidence is those backups, each timestamped just
-before an edit: `node.yaml.bak-20260929-061520` at `2026-09-29
-06:15:20.510041847 +0000` still holds `capacity: 6`, and the loop
-logged `capacity 6 → 8` at 06:17:09 — about 109 seconds later — so the
-live file's own mtime at that moment sits somewhere in that window, not
-at the 06:15:20 the backup shows (which is the moment *before* the
-edit, taken by whatever made the backup, not the edited file's own
-mtime). The whole node.log line the loop wrote the moment it applied
-`capacity: 8`:
+Every reading below was taken on the mini itself, from this session's own
+shell (this build session runs on the mini: `hostname` answers `mini`),
+on 2026-09-29 at 23:59–00:00Z, except the goal's own 13:30Z reading.
+
+**The node.yaml mtime, read live:**
 
 ```
-mesh node: 2026/09/29 06:17:09 capacity 6 → 8
+$ date -u
+Tue 29 Sep 23:59:03 UTC 2026
+$ stat -c '%y %n' ~/.mesh/node.yaml
+2026-09-29 11:16:18.015122536 +0000 /home/chris/.mesh/node.yaml
 ```
 
-A live `stat -c %y ~/.mesh/node.yaml` reading is owed from a session
-with shell access to the mini.
-
-**After: the mini has not yet run a release carrying the fix.** Queried
-live this session, `mesh_health_nodes(org: runsheet)`, 2026-09-29
-23:39:53Z:
+That is the goal's `11:16:18Z`: the file's last write, which added only
+the `codex:` block. `capacity: 8` was already in the file before it
+(Root cause: the backup `node.yaml.bak-20260929-111617`, written at
+11:16:17.96, already says `capacity: 8`). The change from 6 went in at
+06:15–06:17Z, and the loop logged it then. The whole line, read live
+from `~/.mesh/node.log`:
 
 ```
-mini: version v0.2.191, desired_version v0.2.191, capacity: 8,
-running: 4, last_seen_at: 2026-09-29T23:39:53Z,
-commits_behind_main: 21, oldest_unrun_merged_at: 2026-09-29T14:28:15Z
+$ grep -n 'capacity 6 → 8' ~/.mesh/node.log | head -1
+6015207:mesh node: 2026/09/29 06:17:09 capacity 6 → 8
 ```
 
-The mini is still on **v0.2.191** (`8eba662`, PR #434 — registration
-declares an owner), the tag it was already running at 13:30Z, and is 21
-commits behind `main`'s head (`38f854d`). It has picked up none of
-items 3, 6, 7, 8 or 9 (checked by `git merge-base --is-ancestor
-<commit> v0.2.191`, all five "no"). By the same check against each
-release tag: item 3's panic guard (`348f147`) first lands in
-**v0.2.203** (tagged 2026-09-29 22:09:18Z); item 6's capacity-heartbeat
-fix (`634e2e6`) first in **v0.2.204** (22:25:22Z); item 7's log
-rotation (`f4b9cbb`) first in **v0.2.205** (22:48:13Z); item 9's reload
-failure logging (`54ffce3`) first in **v0.2.206** (23:05:40Z); item 8's
-every-field reload logging (`38f854d`) first in **v0.2.208**
-(23:24:32Z), the latest release, which carries all five.
+(node.log's timestamps are local time, and the mini's zone is UTC:
+`timedatectl` shows `Time zone: Etc/UTC (UTC, +0000)`.)
 
-The `capacity: 8` the platform shows now, **labelled version v0.2.191**,
-is not evidence of the fix: it is the 14:13–14:25Z restart's
-re-registration the Root cause section already used to show the
-platform only reached 8 by restarting (`registerNode` sets
-`NodeIndex.capacity` from `cfg.Capacity.Max` at start, unrelated to this
-goal's change). Proof that a live edit reaches the platform *without* a
-restart is `TestCapacityReloadFromNodeYAMLReachesTheHeartbeat`, above;
-the mini's own before/after on the fixed code is owed once it runs
-v0.2.204 or later. Per this item's instruction, this session did not
-restart or reinstall the mini's node to make that happen.
+**Before the fix, v0.2.188.** `NodeIndex(mini)` from the platform, the
+goal's reading: `capacity: 6, running: 4, lastSeenAt 13:30:02Z, version
+v0.2.188`. The process that logged `capacity 6 → 8` at 06:17:09 was
+v0.2.188 too (`04:00:32 mesh node v0.2.188, pid 3303985`). Its capacity
+of 8 never reached the platform, because a fixed node on one account
+sent no `scaling`.
+
+**Restarts on the unfixed code, 14:24–14:25Z.** node.log's start lines:
+
+```
+6309147:mesh node: 2026/09/29 14:24:10 mesh node v0.2.188, pid 786507, config /home/chris/.mesh/node.yaml
+6309291:mesh node: 2026/09/29 14:25:00 mesh node v0.2.191, pid 794933, config /home/chris/.mesh/node.yaml
+```
+
+The running node is still that last process:
+
+```
+$ ps -o pid,lstart,args -p $(cat ~/.mesh/node.pid)
+    PID                  STARTED COMMAND
+ 794933 Tue Sep 29 14:24:59 2026 /home/chris/bin/mesh node start --mode=poll --unattended
+$ ~/bin/mesh version
+mesh v0.2.191 (commit 8eba662)
+```
+
+So v0.2.191 has run since 14:24:59Z, after the goal's 13:30Z reading.
+At 13:30Z the node was on v0.2.188.
+
+**Now, still v0.2.191, which has no fix.** `mesh_health_nodes(org:
+runsheet)`, 2026-09-30T00:00:02Z:
+
+```
+mini: version v0.2.191, desired_version v0.2.208, capacity: 8,
+running: 4, last_seen_at: 2026-09-29T23:59:40Z, status: online,
+commits_behind_main: 21, latest_version: v0.2.208
+```
+
+(`mesh node status` on the mini timed out on the heartbeat, `context
+deadline exceeded`, so the platform reading comes from the tool.)
+
+The mini has not yet run a release carrying the fix. The platform now
+asks it for v0.2.208 (`desired_version`; it said v0.2.191 at 23:39:53Z),
+and node.log's last 3 MB show no `self-update` line yet. None of items
+3, 6, 7, 8 or 9 is in v0.2.191 (`git merge-base --is-ancestor <commit>
+v0.2.191`: all five "no"). The first release carrying each:
+
+- item 3's panic guard (`348f147`): **v0.2.203** (tagged 22:09:18Z)
+- item 6's capacity heartbeat (`634e2e6`): **v0.2.204** (22:25:22Z)
+- item 7's log rotation (`f4b9cbb`): **v0.2.205** (22:48:13Z)
+- item 9's reload-failure line (`54ffce3`): **v0.2.206** (23:05:40Z)
+- item 8's every-field logging (`38f854d`): **v0.2.208** (23:24:32Z), which
+  carries all five
+
+The `capacity: 8` the platform shows now, **labelled v0.2.191**, does
+not show the fix working. It comes from the 14:24–14:25Z restarts:
+`registerNode` sets `NodeIndex.capacity` from `cfg.Capacity.Max` at
+start, which is how the platform reached 8 on the unfixed code.
+`TestCapacityReloadFromNodeYAMLReachesTheHeartbeat` (above) proves that
+a live edit now reaches the heartbeat without a restart. The mini's own
+reading on the fixed code is owed once it runs v0.2.204 or later. As
+this item instructs, this session did not restart the node or install
+its unit.
 
 ## What a reload logs
 
@@ -474,32 +505,48 @@ the same way over a 30 MB node.log, it rotated that to `node.log.1`
 reaches after an hour of work on the mini is owed once the mini runs a
 release carrying this and its unit is reinstalled.
 
-**On the mini.** The mini has not yet run a release carrying this
-item: it is on v0.2.191 (`mesh_health_nodes`, confirmed again this
-session at 23:39:53Z), 21 commits behind main; the first release with
-the rotation is v0.2.205 (`## The mini before and after`, above). This
-session has no shell on the mini (`ssh mini` refuses this session's
-key, tried again while writing this section) and, per this item's
-instruction, did not restart or reinstall its unit to get a fresh
-reading — but item 7's own build session did have one, at 2026-09-29
-22:25Z, and read rather than changed it: `mesh v0.2.191 (commit
-8eba662)`, which does not carry this; `io.projectmesh.mesh-node.service`
-still has `StandardOutput=append:/home/chris/.mesh/node.log` and the
-same for `StandardError`; `~/.mesh/node.log` is **373,995,651 bytes,
-6,548,269 lines** (339 MB when the goal was set, so about 35 MB in the
-day since), 1,239 of them channel `session:` text, and no
-`sessions.log` exists — the unit still has the append redirect, so
-node.log is still unbounded there regardless of the rotation code
-being on main. The operator owes two steps, in order, once ready:
-upgrade the mini to v0.2.208 or later (the release path, or by hand
-with `mesh node upgrade --binary`) — v0.2.205 alone would carry the
-rotation, but v0.2.208 also carries items 8 and 9 — then run `mesh node
-service install` again so the unit's `StandardOutput`/`StandardError`
-drop the `append:~/.mesh/node.log` redirect for `journal` — rotation
-runs regardless of the unit, but the stale redirect keeps the shell
-appending the same growing file underneath it until the unit is
-reinstalled. node.log's and sessions.log's sizes after an hour of real
-work on the mini are owed once both steps are done.
+**On the mini, read live (2026-09-29 23:59Z, from this session's shell
+on the mini).** The mini has not run a release carrying this item. It
+runs v0.2.191, and the first release with the rotation is v0.2.205 (see
+`## The mini before and after`). Its unit also still has the append
+redirect:
+
+```
+$ ~/bin/mesh version
+mesh v0.2.191 (commit 8eba662)
+$ grep -nE 'Standard' ~/.config/systemd/user/io.projectmesh.mesh-node.service
+12:StandardOutput=append:/home/chris/.mesh/node.log
+13:StandardError=append:/home/chris/.mesh/node.log
+$ ls -l --time-style=full-iso ~/.mesh/node.log* ~/.mesh/sessions.log*
+ls: cannot access '/home/chris/.mesh/sessions.log*': No such file or directory
+-rw-rw-r-- 1 chris chris 378865741 2026-09-29 23:58:59.593580673 +0000 /home/chris/.mesh/node.log
+$ wc -l < ~/.mesh/node.log
+6630614
+```
+
+So node.log is **378,865,741 bytes (about 361 MiB), 6,630,614 lines**,
+one file, never rotated, and there is no sessions.log. The current
+process started at 14:24:59Z, so that is about 9 h 34 min on v0.2.191.
+Item 7's build session read 373,995,651 bytes at 22:25Z, so the file
+grew about 4.9 MB in the last 1 h 34 min. That rate is for the old
+binary, with session output still mixed into node.log. It is not the
+bounded figure.
+
+The operator owes two steps, in this order:
+
+1. Get the mini onto v0.2.208 or later. The platform already asks for it
+   (`desired_version v0.2.208`); `mesh node upgrade --binary` is the
+   manual fallback. v0.2.205 alone carries the rotation; v0.2.208 also
+   carries items 8 and 9.
+2. Run **`mesh node service install`** again. The unit's
+   `StandardOutput`/`StandardError` then become `journal` in place of
+   `append:/home/chris/.mesh/node.log`.
+
+The new binary rotates on its first start either way: the 361 MiB file
+becomes `node.log.1`. Until step 2, though, the stale redirect keeps
+systemd appending the process's stdout and stderr through its own
+descriptor. The size node.log and sessions.log reach after an hour of
+real work on the mini is owed once both steps are done.
 
 ## What closed
 
@@ -530,9 +577,12 @@ Nothing recovered it (the goroutine was `evaluateHeld`'s), so the whole
 node died: exit status 2, the Go runtime's unrecovered-panic code, not
 an argument. Fixed by giving `Open`'s result its own variable so the
 error returns as an ordinary evaluation error instead, and every
-goroutine the node starts now runs under `crash.Guard`, so any future
-panic anywhere is one `mesh node: fatal: … (version <v>)` line and exit
-70, never a silent 2.
+goroutine the node starts now runs under `crash.Guard`, so a panic on
+the start path or on any of those goroutines is one `mesh node: fatal:
+… (version <v>)` line and exit 70. Goroutines below the node are not
+guarded (the harness's stream readers, the sandbox's sidecar probes, the
+session unit's waiter; see A death that names itself), and a panic there
+still exits 2 with the runtime's trace.
 
 **node.log's bound:** 10 MB per file, 5 rotated files kept (about 60 MB
 in all), session transcripts and other sessions' own output moved to
@@ -543,7 +593,7 @@ reasoning.
 
 | Item | What it landed | PR |
 |---|---|---|
-| 3 | The 04:00:22Z exit explained and fixed; a panic anywhere names itself and exits 70 | #493 |
+| 3 | The 04:00:22Z exit explained and fixed; a panic on the start path or a node goroutine names itself and exits 70 | #493 |
 | 6 | The capacity-reload test that fails today, and the fixed-node `scaling` heartbeat that fixes it | #494 |
 | 7 | node.log bounded and rotated; session transcripts to their own file | #495, carried onto main as #503 |
 | 8 | Every reloadable field — limits, accounts, budgets, context, claim, orgs — proved live from disk and logged with its effective old and new value | #504 |
