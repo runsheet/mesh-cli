@@ -45,3 +45,4 @@ The console's /orgs/<org>/prologue/<project> → /orgs/<org>/context/<project> r
 ## Log
 
 - 2026-09-30 · item 10 · wrote this goal doc in the shape of specs/goal-tools-show-their-use.md — the Items table for seqs 1–9, the After merge and What this project did not build sections — replacing item 8's differently-shaped attempt at the same document.
+- 2026-09-30 · item 10 · attempt 3: item 9's https://github.com/runsheet/mesh-cli/pull/396 confirmed merged (2026-09-29); main already carried this file from https://github.com/runsheet/mesh-cli/pull/320, so the branch rewrites it in place rather than adding it.
