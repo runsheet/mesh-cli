@@ -9,18 +9,25 @@
 # prerelease only when the tag has a "-", and the same five assets.
 # Then it proves the mirror is identical — the downloaded SHA256SUMS
 # byte-for-byte the one just signed, and its Sigstore bundle still
-# verifying against the runsheet/mesh-cli identity — and pushes
-# dist/mirror/README.md to the mirror's README.md, only when its
-# content differs from what is already there.
+# verifying against the runsheet/mesh-cli identity — and publishes
+# what dist/mirror/ holds for the mirror's tree (publish_file), each
+# only when its content differs from what is already there:
+#   dist/mirror/README.md                                 → README.md
+#   dist/mirror/.runsheet/bindings/mesh-cli-release.yaml  → the Rigger
+#     binding the mirror carries, against which the runsheet gateway
+#     exchanges this workflow's OIDC token for the GH_TOKEN below
+#     (docs/adr/adr-015-workflow-tokens-exchanged-through-rigger.md).
 #
 # <release-dir> holds the five files, named exactly as the release
 # does: mesh-linux-amd64, mesh-linux-arm64, mesh-darwin-arm64,
 # SHA256SUMS, SHA256SUMS.sigstore.json.
 #
 # Env (all required):
-#   GH_TOKEN   a token that can write the mirror (RELEASE_TOKEN): a
-#              fine-grained token scoped to it with Contents: read and
-#              write, or the runsheet org App's installation token
+#   GH_TOKEN   a token that can write the mirror's contents: the one
+#              scripts/exchange-workflow-token.sh exchanged through
+#              Rigger (one repository, contents: write, an hour), or —
+#              transitional, until the runsheet half lands — the
+#              RELEASE_TOKEN secret release-tag.yml falls back to
 #   GH_REPO    the mirror, runsheet/mesh
 #   NOTES      the release notes — computed once by release-tag.yml and
 #              shared with its own runsheet/mesh-cli release, so both
@@ -40,7 +47,6 @@ release_dir=${3:?usage: mirror-release.sh <tag> <sha> <release-dir>}
 cd "$(dirname "$0")/.."
 
 source_identity="runsheet/mesh-cli"
-readme=dist/mirror/README.md
 
 flags=()
 case "$tag" in *-*) flags+=(--prerelease) ;; esac
@@ -70,21 +76,31 @@ cosign verify-blob \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   "$mirror_dir/SHA256SUMS"
 
-# The README, pushed only when its content differs from what is there.
-current_sha=""
-current_content=""
-if current_sha=$(gh api "repos/${GH_REPO}/contents/README.md" --jq '.sha' 2>/dev/null); then
-  current_content=$(gh api "repos/${GH_REPO}/contents/README.md" --jq '.content' | tr -d '\n' | base64 -d)
-fi
-new_content=$(cat "$readme")
+# publish_file <local> <remote-path>: puts <local> at <remote-path> on
+# the mirror's default branch, only when its content differs from what
+# is already there (absent counts as different).
+publish_file() {
+  local local_file=$1 remote=$2
+  local current_sha="" current_content="" new_content encoded
+  if current_sha=$(gh api "repos/${GH_REPO}/contents/${remote}" --jq '.sha' 2>/dev/null); then
+    current_content=$(gh api "repos/${GH_REPO}/contents/${remote}" --jq '.content' | tr -d '\n' | base64 -d)
+  else
+    current_sha=""
+  fi
+  new_content=$(cat "$local_file")
 
-if [[ $current_content != "$new_content" ]]; then
-  encoded=$(base64 -w0 "$readme")
-  args=(-X PUT "repos/${GH_REPO}/contents/README.md" \
-    -f "message=mirror: update README from ${source_identity}@${sha}" \
+  if [[ $current_content == "$new_content" && -n $current_sha ]]; then
+    return 0
+  fi
+  encoded=$(base64 -w0 "$local_file")
+  local args=(-X PUT "repos/${GH_REPO}/contents/${remote}"
+    -f "message=mirror: update ${remote} from ${source_identity}@${sha}"
     -f "content=${encoded}")
   if [[ -n $current_sha ]]; then
     args+=(-f "sha=${current_sha}")
   fi
   gh api "${args[@]}" >/dev/null
-fi
+}
+
+publish_file dist/mirror/README.md README.md
+publish_file dist/mirror/.runsheet/bindings/mesh-cli-release.yaml .runsheet/bindings/mesh-cli-release.yaml
