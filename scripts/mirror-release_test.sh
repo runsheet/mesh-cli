@@ -227,6 +227,21 @@ rc=0
 call_with "$log" "release" "create" >/dev/null && fail "mirror: gh release create ran though the existing release differs"
 echo "ok: mirror — existing release with a differing SHA256SUMS exits non-zero, no create"
 
+# 5b. A release exists on the mirror missing the Sigstore bundle asset:
+#     non-zero, naming it, no create — a mirror release that never got
+#     that fifth asset must not be logged as identical.
+reset_release_dir
+export FAKE_RELEASE_EXISTS=1
+export FAKE_RELEASE_ASSETS="mesh-linux-amd64 mesh-linux-arm64 mesh-darwin-arm64 SHA256SUMS"
+export FAKE_DOWNLOAD_DIR="$existing_identical_dir"
+: >"$log"
+rc=0
+out=$(./scripts/mirror-release.sh v0.2.187 abc123def "$release_dir" 2>&1) || rc=$?
+[[ $rc -ne 0 ]] || fail "mirror: expected a non-zero exit for a release missing the Sigstore bundle"
+[[ $out == *"SHA256SUMS.sigstore.json"* ]] || fail "mirror: the missing bundle was not named: $out"
+call_with "$log" "release" "create" >/dev/null && fail "mirror: gh release create ran though the existing release is missing the bundle"
+echo "ok: mirror — existing release missing the Sigstore bundle exits non-zero naming it, no create"
+
 unset FAKE_DOWNLOAD_DIR FAKE_RELEASE_EXISTS FAKE_RELEASE_ASSETS
 
 # 4. The binding is absent on the mirror: it is PUT, with its content
@@ -327,5 +342,21 @@ out=$(./scripts/ensure-release.sh v0.2.187 abc123def "$release_dir" 2>&1) || rc=
 [[ $out == *"mesh-linux-arm64"* ]] || fail "source: the missing asset was not named: $out"
 call_with "$log" "release" "create" >/dev/null && fail "source: gh release create ran though the existing release is missing an asset"
 echo "ok: source — existing release missing an asset exits non-zero naming it, no create"
+
+# 10. An existing release missing the Sigstore bundle asset: non-zero,
+#     naming it, no create — otherwise the source path would keep the
+#     release as identical and then fail unhelpfully at the later `cp`
+#     of the (nonexistent) existing bundle.
+reset_release_dir
+export FAKE_RELEASE_EXISTS=1
+export FAKE_RELEASE_ASSETS="mesh-linux-amd64 mesh-linux-arm64 mesh-darwin-arm64 SHA256SUMS"
+export FAKE_DOWNLOAD_DIR="$existing_identical_dir"
+: >"$log"
+rc=0
+out=$(./scripts/ensure-release.sh v0.2.187 abc123def "$release_dir" 2>&1) || rc=$?
+[[ $rc -ne 0 ]] || fail "source: expected a non-zero exit for a release missing the Sigstore bundle"
+[[ $out == *"SHA256SUMS.sigstore.json"* ]] || fail "source: the missing bundle was not named: $out"
+call_with "$log" "release" "create" >/dev/null && fail "source: gh release create ran though the existing release is missing the bundle"
+echo "ok: source — existing release missing the Sigstore bundle exits non-zero naming it, no create"
 
 echo "ensure-release.sh: PASS"

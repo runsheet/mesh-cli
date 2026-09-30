@@ -13,18 +13,20 @@
 #     before — the five files in <release-dir>, --prerelease when the
 #     tag has a "-", TARGET's flag below.
 #   - a release exists whose SHA256SUMS is byte-for-byte
-#     <release-dir>/SHA256SUMS and whose assets include the three
-#     binaries: kept, nothing created or touched on GitHub — a re-run
-#     is a no-op there. With no TARGET (the source repo) the existing
-#     release's SHA256SUMS.sigstore.json is downloaded over
-#     <release-dir>'s freshly-signed one, so the mirror step that
-#     follows publishes the exact bytes the source release already
-#     carries — a re-run re-signs with a new Sigstore certificate every
-#     time, and the existing bundle still verifies.
-#   - a release exists whose SHA256SUMS differs, or that is missing one
-#     of the three binaries: exits non-zero naming the asset and the
-#     repo. Nothing is deleted or overwritten on GitHub either way — a
-#     mismatch is for a person to resolve.
+#     <release-dir>/SHA256SUMS and whose assets include all five files
+#     (the three binaries, SHA256SUMS, SHA256SUMS.sigstore.json): kept,
+#     nothing created or touched on GitHub — a re-run is a no-op there.
+#     With no TARGET (the source repo) the existing release's
+#     SHA256SUMS.sigstore.json is downloaded over <release-dir>'s
+#     freshly-signed one, so the mirror step that follows publishes the
+#     exact bytes the source release already carries — a re-run
+#     re-signs with a new Sigstore certificate every time, and the
+#     existing bundle still verifies.
+#   - a release exists whose SHA256SUMS differs, or that is missing any
+#     of the five assets (including the Sigstore bundle itself): exits
+#     non-zero naming the asset and the repo. Nothing is deleted or
+#     overwritten on GitHub either way — a mismatch is for a person to
+#     resolve.
 #
 # Env (all required unless noted):
 #   GH_REPO   the repo to check and, if needed, create on
@@ -62,7 +64,7 @@ fi
 
 assets_json=""
 if assets_json=$(gh release view "$tag" --json assets 2>/dev/null); then
-  for name in "${binaries[@]}" SHA256SUMS; do
+  for name in "${binaries[@]}" SHA256SUMS SHA256SUMS.sigstore.json; do
     if ! jq -e --arg n "$name" '.assets[] | select(.name == $n)' <<<"$assets_json" >/dev/null; then
       echo "ensure-release: ${tag} on ${GH_REPO} is missing asset ${name}; not touching it — a person decides" >&2
       exit 1
