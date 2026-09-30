@@ -1,0 +1,12 @@
+{
+  "errors": [
+    {
+      "message": "binding mesh-cli-release on runsheet/mesh refuses this token: claim ref is refs/heads/main, the binding wants refs/tags/v*",
+      "path": ["exchangeWorkflowToken"],
+      "extensions": {
+        "code": "FORBIDDEN"
+      }
+    }
+  ],
+  "data": null
+}

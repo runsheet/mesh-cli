@@ -23,10 +23,16 @@
 # public mirror runsheet/mesh (adr-002's amendment "the public mirror on
 # runsheet/mesh"): scripts/mirror-release.sh creates it there — same
 # tag, title, notes and five assets — then checks it byte-for-byte the
-# one just signed. It runs with GH_TOKEN: secrets.RELEASE_TOKEN, since
-# the workflow's own GITHUB_TOKEN cannot write another repo: RELEASE_TOKEN
-# must be a fine-grained token scoped to runsheet/mesh with Contents:
-# read and write, or the runsheet org App's installation token. A failing
+# one just signed, and publishes dist/mirror/'s README and Rigger
+# binding. The workflow's own GITHUB_TOKEN cannot write another repo, so
+# the mirror step first exchanges this run's OIDC identity (audience
+# runsheet-rigger) at the runsheet gateway for a token on runsheet/mesh
+# alone, contents: write, at most an hour
+# (scripts/exchange-workflow-token.sh,
+# docs/adr/adr-015-workflow-tokens-exchanged-through-rigger.md), against
+# the binding runsheet/mesh carries, .runsheet/bindings/mesh-cli-release.yaml.
+# Until the runsheet half answers, a failed exchange falls back to the
+# RELEASE_TOKEN secret, and the log says which path it took. A failing
 # mirror step fails the workflow — there is no partial publish.
 
 name: Release (tag)
@@ -268,15 +274,35 @@ jobs:
         # public mirror (same tag, title, notes and five assets, a
         # prerelease only when the tag has a "-"), then checks it
         # byte-for-byte the one just signed and its bundle against the
-        # runsheet/mesh-cli identity, and pushes dist/mirror/README.md
-        # when its content differs (adr-002's amendment "the public
-        # mirror on runsheet/mesh"). RELEASE_TOKEN is a fine-grained
-        # token scoped to runsheet/mesh with Contents: read and write, or
-        # the runsheet org App's installation token — GITHUB_TOKEN cannot
-        # write another repo. A failing mirror fails the workflow.
+        # runsheet/mesh-cli identity, and publishes dist/mirror/README.md
+        # and the binding .runsheet/bindings/mesh-cli-release.yaml when
+        # their content differs (adr-002's amendment "the public mirror
+        # on runsheet/mesh"). Its GH_TOKEN is exchanged first from this
+        # run's OIDC identity through Rigger (adr-015, the job's
+        # id-token: write): one repository, contents: write, an hour.
+        # RELEASE_TOKEN is the transitional fallback while the runsheet
+        # half is not there; the log says which path was taken. With
+        # neither the step fails. A failing mirror fails the workflow.
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
           GH_REPO: runsheet/mesh
           TAG: ${{ github.ref_name }}
           SHA: ${{ github.sha }}
-        run: scripts/mirror-release.sh "$TAG" "$SHA" release
+        run: |
+          err="${RUNNER_TEMP}/exchange-workflow-token.err"
+          if token=$(scripts/exchange-workflow-token.sh runsheet/mesh mesh-cli-release 2>"$err"); then
+            echo "::add-mask::${token}"
+            export GH_TOKEN="$token"
+            echo "mirror token: exchanged through rigger, expires $(tail -n1 "$err")"
+          else
+            reason=$(tr '\n' ' ' <"$err" | sed 's/^exchange-workflow-token: //; s/ *$//')
+            if [ -n "${RELEASE_TOKEN}" ]; then
+              export GH_TOKEN="$RELEASE_TOKEN"
+              echo "mirror token: RELEASE_TOKEN fallback (exchange failed: ${reason})"
+            else
+              echo "mirror token: none — the exchange through rigger failed (${reason}) and RELEASE_TOKEN is not set" >&2
+              exit 1
+            fi
+          fi
+          unset RELEASE_TOKEN
+          scripts/mirror-release.sh "$TAG" "$SHA" release

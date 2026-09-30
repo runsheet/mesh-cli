@@ -1,0 +1,15 @@
+# A Rigger binding (mesh-cli docs/adr/adr-015-workflow-tokens-exchanged-through-rigger.md).
+# runsheet/mesh carries it; mesh-cli's release-tag.yml publishes it here
+# from dist/mirror/. The runsheet gateway's exchangeWorkflowToken issues
+# a token on this repository only to a run whose OIDC claims match it.
+name: mesh-cli-release
+summary: runsheet/mesh-cli's tag release mirrors its signed release to runsheet/mesh.
+issuer: https://token.actions.githubusercontent.com
+audience: runsheet-rigger
+subject:
+  repository: runsheet/mesh-cli
+  workflow: .github/workflows/release-tag.yml
+  ref: refs/tags/v*
+grants:
+  contents: write
+ttl: 1h

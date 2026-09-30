@@ -53,6 +53,9 @@ jobs:
       - name: mirror-release.sh
         run: scripts/mirror-release_test.sh
 
+      - name: exchange-workflow-token.sh
+        run: scripts/exchange-workflow-token_test.sh
+
       - name: release-on-merge.sh
         run: scripts/release-on-merge_test.sh
 

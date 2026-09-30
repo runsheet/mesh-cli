@@ -1,0 +1,12 @@
+{
+  "errors": [
+    {
+      "message": "Cannot query field \"exchangeWorkflowToken\" on type \"Mutation\".",
+      "locations": [{"line": 1, "column": 12}],
+      "extensions": {
+        "code": "GRAPHQL_VALIDATION_FAILED"
+      }
+    }
+  ],
+  "data": null
+}
