@@ -342,7 +342,8 @@ func TestWindowsOfTakesTheHighestAcrossAccounts(t *testing.T) {
 
 // A ranged node heartbeats scaling — the capacity in force, the range
 // and the reason — and tells Scaled so; a plain `capacity: N` heartbeats
-// none and tells Scaled it is fixed.
+// N as its min and max, reason `fixed` (ADR-018), and tells Scaled it is
+// fixed.
 func TestScalingHeartbeat(t *testing.T) {
 	lastScaling := func(s *scaled) (any, bool) {
 		hb := s.CallsNamed("heartbeatNode")
@@ -387,8 +388,9 @@ func TestScalingHeartbeat(t *testing.T) {
 	}
 	fixed.at(0)
 	fixed.at(5 * time.Minute)
-	if v, ok := lastScaling(fixed); ok {
-		t.Fatalf("fixed heartbeat sent scaling = %#v", v)
+	v, ok = lastScaling(fixed)
+	if s, _ := v.(map[string]any); !ok || s["capacity"] != 3.0 || s["min"] != 3.0 || s["max"] != 3.0 || s["reason"] != "fixed" {
+		t.Fatalf("fixed heartbeat scaling = %#v, %v; want its capacity 3 as 3–3, fixed", v, ok)
 	}
 	if fixedTold != 2 {
 		t.Fatalf("Scaled told %d times, want 2", fixedTold)

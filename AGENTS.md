@@ -53,6 +53,13 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   and no read) holds fresh claims for a repo with N items in `review`,
   counted from the node's own listing, never `RepoIndex.reviewPile`;
   started work there is still claimed (ADR-017).
+- **A death names itself** (`internal/crash/`): `defer crash.Guard()`
+  at the top of `mesh node start` and of every goroutine the node
+  starts turns a panic into one node.log line, `mesh node: fatal:
+  <value> (version <v>)`, the stack, and exit 70 (`crash.ExitPanic`),
+  never Go's 2 (systemd's `INVALIDARGUMENT`); a new node goroutine
+  defers it first (goal node-yaml-takes-effect-or-says-why-not, The
+  04:00:22Z exit).
 - **The director** (`internal/node/research.go`, runsheet trd §6c): a
   project carries **directions** — several, each its own aggregate with
   its own words, window, timezone, gap, ceiling and research claim
@@ -105,9 +112,11 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `updateError`, `limits` — the latest Claude plan limits per
   account — and `scaling` — a ranged node's `{capacity, min, max,
   reason, accounts}`, the capacity in force, node.yaml's range, why
-  and each account's slots, sent only when the capacity is a range
-  or the node has several accounts (node.yaml's and the issued ones it
-  knows, `Loop.Known`), and only when the gateway's
+  and each account's slots — and a fixed node's too, on any number of
+  accounts, as `{capacity: N, min: N, max: N, reason: fixed}`, so a
+  capacity changed in node.yaml reaches the platform on the next
+  heartbeat and not only at the next registration (mesh-cli ADR-018;
+  before it only a range or several accounts sent it) — sent only when the gateway's
   schema has the field (introspected, kept an hour: adr-005
   §Heartbeat); both for runsheet goal
   `limits-on-the-console` — and `runtimes` and `adapters` — the tool
@@ -124,9 +133,29 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   still takes on it, and the summary judgement (`HoldingReport`,
   adr-005's amendment, for runsheet goal `node-says-why-work-waits`) —
   are sent only when set,
-  because they are fields the platform half adds. Capacity, the
-  limits thresholds and the orgs need no drain: `Reload` re-reads them
-  every tick.
+  because they are fields the platform half adds. No reloadable field
+  needs a drain: `Reload` (`Reloader` over `LoadConfig`) re-reads
+  node.yaml every tick and the next tick runs on it — the capacity
+  (`capacity N → M`, a range's clamp), the limits thresholds (`limits:
+  pace five-hour a → b, stop c → d`), the accounts (`accounts a, b → a,
+  c` for membership, and one `account <label>: <field> <old> → <new>,
+  …` line per account kept whose kind, token_file, api_key_env,
+  daily_cap, monthly_cap — as in force for its kind, an api key's defaults applied and a subscription's none — or project
+  changed), the session budgets and project budgets (`budget
+  <kind>/<tier> $4.00 → $7.00`, `project budget <project> none →
+  $20.00`, the effective figures with defaults applied), the context
+  budget (`context: bytes_max … → …, doc_bytes_max … → …`), the claim
+  limit (`claim: unmerged_per_repo … → …`) and the orgs restriction
+  (`orgs a, b → a`). Each change is logged once, at the tick it takes
+  effect, with its old and new value; a field left alone logs nothing
+  (`reload_fields_test.go`, a test per field from disk).
+  A reload that cannot be applied — a node.yaml that does
+  not parse, a failing `MyOrgs`, no org left to serve — logs one
+  `reload config: <reason>; <reason>` line per tick while it lasts (the
+  reasons joined with `; `, a cause's own newlines folded in, so it is
+  one physical line) and keeps the last good values: a bad node.yaml
+  keeps the capacity, limits, accounts, context and claim limits, a
+  failed `MyOrgs` keeps the orgs and still applies a good node.yaml.
 - **Adoption** (`internal/node/adopt.go`, mesh-cli ADR-009, mesh-specs
   ADR 008): a session's unit and output file own it, not the node
   process. Build, evaluate, plan, research and rebase jobs are
@@ -340,6 +369,19 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   refuses `socket()` and no test that binds loopback runs — the price
   is a sandbox that can reach the network (ADR-011's amendment
   2026-09-29, item 9).
+  A **provider** (docs/adr/adr-015) is an OpenAI-compatible endpoint an
+  account runs against instead of OpenAI: `codex.providers.<name>` in
+  node.yaml gives a `base_url` (vLLM and SGLang serve OpenAI's API under
+  `/v1`), an optional `wire_api` (`chat`, the default, or `responses`)
+  and the list prices of the models it serves; an account names one with
+  `provider:` and must be an api-key account, because the key rides
+  `OPENAI_API_KEY` and a plan login has none to send. The provider is
+  declared first in `config.toml` as `model_provider` and its table, and
+  on its own makes the file worth writing. Its price table is the only
+  one its models are costed at — an unpriced model records tokens and no
+  money — so `CodexPrices` stays OpenAI's alone. An adapter is the CLI
+  and a provider is where the tokens come from: Kimi behind vLLM is a
+  provider, not a third adapter.
   Each session's event stream and stderr are kept for 24 hours under
   `<work root>/kept-sessions/<name>/` (`output.jsonl`, `stderr.log`;
   `KeepSessionOutput`), as a Claude session's output is. Before a Codex
@@ -609,6 +651,25 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   (or `default`) (`BuildModel`); the evaluator on the stronger of that
   and `sonnet` (`EvaluateModel`); node.yaml is the fallback. The model
   used is in node.log and on the item's events.
+- **The node's log** (`internal/node/logfile.go`, goal
+  `node-yaml-takes-effect-or-says-why-not`): `mesh node start` opens
+  `~/.mesh/node.log` (`ServiceLog`) itself through `RotatingFile` —
+  rotated at 10 MB (`NodeLogMaxBytes`) to `node.log.1` … `node.log.5`
+  (`NodeLogKeep`), one already past the cap rotated on open, no write
+  past the cap (one larger is cut to it; one it cannot rotate for is
+  refused with the error, said once on stderr) — and
+  `~/.mesh/sessions.log` (`SessionsLog`, 20 MB, 2 kept) beside it
+  (`OpenNodeLogs`). node.log is the node's own lines, each session's
+  summaries included; what sessions say — channel mode's `session:`
+  text (`channelText`), `Git.Log`, the harnesses' `Stderr` — goes to
+  `sessionsOut`, sessions.log under `node start`, stderr for every
+  other command. The service templates never append to node.log: the
+  systemd unit's `StandardOutput=journal`/`StandardError=journal`, the
+  LaunchAgent's `~/.mesh/node.crash.log` (`CrashLog`), for a panic's
+  stack and the `restarting: exec` line (written to node.log too). A
+  unit installed earlier keeps its append redirect until `mesh node
+  service install` runs again. `mesh node usage` reads the rotated
+  files oldest first (`LogFiles`).
 
 ## Rules
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"projectmesh.io/mesh-cli/internal/crash"
 	"slices"
 	"sort"
 	"strings"
@@ -1163,7 +1164,9 @@ func (l *Loop) reload(ctx context.Context) {
 	got, err := l.Reload(ctx)
 	scopes := got.Scopes
 	if err != nil {
-		l.logf("reload config: %v", err)
+		// one physical line per tick: a cause's own newlines (a YAML
+		// error lists its lines) are folded in with the rest.
+		l.logf("reload config: %s", oneLine(err.Error()))
 	}
 	if got.Capacity.Max > 0 {
 		l.setRange(got.Capacity)
@@ -1181,6 +1184,12 @@ func (l *Loop) reload(ctx context.Context) {
 		was := l.nodeAccounts()
 		if labels(was) != labels(got.Spending.Accounts) {
 			l.logf("accounts %s → %s", labels(was), labels(got.Spending.Accounts))
+		}
+		for _, line := range accountChanges(was, got.Spending.Accounts) {
+			l.logf("%s", line)
+		}
+		for _, line := range budgetChanges(Spending{Budgets: l.sessionBudgets(), ProjectBudgets: l.projectBudgets()}, *got.Spending) {
+			l.logf("%s", line)
 		}
 		l.mu.Lock()
 		l.spending, l.spendingSet = *got.Spending, true
@@ -1209,6 +1218,16 @@ func (l *Loop) reload(ctx context.Context) {
 		l.Scopes = scopes
 		l.mu.Unlock()
 	}
+}
+
+// oneLine folds s onto one line, each line break (and the indent after
+// it) becoming "; ".
+func oneLine(s string) string {
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	for i := range lines {
+		lines[i] = strings.TrimSpace(lines[i])
+	}
+	return strings.Join(slices.DeleteFunc(lines, func(l string) bool { return l == "" }), "; ")
 }
 
 // probe re-reads which tool runtimes and agent adapters the node has
@@ -1321,6 +1340,7 @@ func (l *Loop) evaluateHeld(ctx context.Context) {
 		l.logf("evaluating item %d %q", item.Seq, item.Title)
 		l.wg.Add(1)
 		go func(ctx context.Context, item gateway.WorkItem) {
+			defer crash.Guard()
 			defer l.wg.Done()
 			defer func() {
 				l.mu.Lock()
@@ -1391,6 +1411,7 @@ func (l *Loop) rebaseRequested(ctx context.Context) {
 		l.logf("%s: rebasing item %d %q", sc.Name(), item.Seq, item.Title)
 		l.wg.Add(1)
 		go func(ctx context.Context, item gateway.WorkItem) {
+			defer crash.Guard()
 			defer l.wg.Done()
 			defer func() {
 				l.mu.Lock()
@@ -1459,6 +1480,7 @@ func (l *Loop) planRequested(ctx context.Context) {
 		l.logf("%s: planning goal %q", sc.Name(), g.Slug)
 		l.wg.Add(1)
 		go func(ctx context.Context, g gateway.Goal, sc Scope) {
+			defer crash.Guard()
 			defer l.wg.Done()
 			defer func() {
 				l.mu.Lock()
@@ -1555,6 +1577,7 @@ func (l *Loop) researchDue(ctx context.Context) {
 			l.logf("%s: researching %q", sc.Name(), p.Slug+"/"+d.Slug)
 			l.wg.Add(1)
 			go func(ctx context.Context, d gateway.Direction, p gateway.Project, sc Scope) {
+				defer crash.Guard()
 				defer l.wg.Done()
 				defer func() {
 					l.mu.Lock()
@@ -1622,6 +1645,7 @@ func (l *Loop) run(ctx context.Context, item gateway.WorkItem) {
 	l.runsOn(ctx, item.ID)
 	l.wg.Add(1)
 	go func() {
+		defer crash.Guard()
 		defer l.wg.Done()
 		defer func() {
 			l.mu.Lock()

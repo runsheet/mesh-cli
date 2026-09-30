@@ -11,9 +11,11 @@ import (
 	"testing"
 	"time"
 
+	"projectmesh.io/mesh-cli/internal/crash"
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/gateway/gatewaytest"
 	"projectmesh.io/mesh-cli/internal/harness"
+	"projectmesh.io/mesh-cli/internal/version"
 )
 
 // familyFixture is an evaluator on item 1 of a goal of that priority on
@@ -843,5 +845,63 @@ func TestEvaluationOnCodexWithTestsUnrunIsNoVerdict(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The mini's 04:00:22Z exit (2026-09-29, goal
+// node-yaml-takes-effect-or-says-why-not): a Codex preflight fails, the
+// evaluation turns to Claude and the Claude account cannot be opened —
+// that minute a 429, here no Claude credential issued. Open's nil
+// account overwrote acct, and the deferred acct.Cleanup() dereferenced
+// it: a nil-pointer panic that took the node down with exit status 2.
+// Now the error comes back and the Codex account is cleaned up once.
+func TestCodexPreflightFailureWithNoClaudeAccountReturnsTheError(t *testing.T) {
+	f, ev, claude, codex, _, logs := familyFixture(t, "normal", "sonnet", "Holds.\nVERDICT: PASS", "VERDICT: FAIL")
+	f.SessionCredentials[item1] = f.SessionCredentials[item1][1:]
+	ev.CodexPreflight = (&fakePreflight{err: errors.New("initialize: 429 Too Many Requests: Rate exceeded.")}).check
+	item, err := ev.GW.WorkItem(context.Background(), item1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = ev.Evaluate(context.Background(), *item)
+	if !errors.Is(err, ErrNoAccount) {
+		t.Fatalf("Evaluate: %v, want ErrNoAccount", err)
+	}
+	if len(claude.jobs) != 0 || codex.runs() != 0 || len(f.CallsNamed("evaluateWorkItem")) != 0 {
+		t.Fatalf("runs claude %d, codex %d; evaluate calls %d", len(claude.jobs), codex.runs(), len(f.CallsNamed("evaluateWorkItem")))
+	}
+	if want := "item ship-it/1: Codex preflight failed (initialize: 429 Too Many Requests: Rate exceeded.); evaluating on Claude"; !strings.Contains(logs.String(), want) {
+		t.Fatalf("node.log lacks %q:\n%s", want, logs.String())
+	}
+}
+
+// The goroutine the 04:00:22Z panic ran on — evaluateHeld's — is
+// guarded: a panicking evaluation is the whole fatal line and exit
+// crash.ExitPanic, not the runtime's bare status 2 (a recover on the
+// start path alone never sees another goroutine's panic).
+func TestPanickingEvaluationNamesItself(t *testing.T) {
+	f := seed(t)
+	gw := gateway.New(f.URL(), "rs_test")
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "test-node", NodeID: gateway.NodeID(mustUUID(orgID), "test-node").String(), Capacity: Fixed(1)}
+	f.WorkItems[item1]["status"] = "evaluating"
+	f.WorkItems[item1]["nodeId"] = cfg.NodeID
+	var out syncBuf
+	status := make(chan int, 1)
+	was, exit := crash.Out, crash.Exit
+	crash.Out, crash.Exit = &out, func(code int) { status <- code }
+	t.Cleanup(func() { crash.Out, crash.Exit = was, exit })
+	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Limits: &Limits{}, Log: log.New(&syncBuf{}, "", 0),
+		Evaluate: func(context.Context, gateway.WorkItem) {
+			var acct *SessionAccount
+			acct.Cleanup()
+		}}
+	loop.evaluateHeld(context.Background())
+	loop.wg.Wait()
+	if code := <-status; code != crash.ExitPanic {
+		t.Fatalf("exit %d, want %d", code, crash.ExitPanic)
+	}
+	first, _, _ := strings.Cut(out.String(), "\n")
+	if want := "mesh node: fatal: runtime error: invalid memory address or nil pointer dereference (version " + version.Resolved() + ")"; first != want {
+		t.Fatalf("first line %q, want %q", first, want)
 	}
 }

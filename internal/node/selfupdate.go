@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"projectmesh.io/mesh-cli/internal/crash"
 	"runtime"
 	"time"
 
@@ -227,7 +228,10 @@ func (l *Loop) selfUpdate(ctx context.Context) {
 	l.updating = true
 	l.updateWG.Add(1)
 	l.mu.Unlock()
-	go l.update(ctx, l.Version, desired)
+	go func() {
+		defer crash.Guard()
+		l.update(ctx, l.Version, desired)
+	}()
 }
 
 // desiredVersion is the version the platform asks this node to run: the

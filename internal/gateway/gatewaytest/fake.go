@@ -58,11 +58,7 @@ type Fake struct {
 	// MeshV1Hits and PrologueV1Hits count the requests each context path
 	// received, for a test to prove which one a read actually used.
 	MeshV1Hits, PrologueV1Hits int
-	// ItemBearers are further tokens the fake takes on GraphQL, beside
-	// Token: an item's claim-time token, as RecordValidationAttestation
-	// carries it (WithItemToken).
-	ItemBearers []string
-	Calls       []Call
+	Calls                      []Call
 	// Reads are the index lists and get-by-id reads the fake served:
 	// Name is the list (goalIndexs) or the get (repoIndex), Input its EQ
 	// wheres by field (org_id) or, for a get, {"id": id}.
@@ -73,7 +69,7 @@ type Fake struct {
 	// FailReads maps an index list name (goalIndexs) or a get
 	// (workItemIndex) to an error it answers with instead of rows; a
 	// list's key may name one where, workItemIndexs/status=review, to
-	// fail only the lists that filter by it.
+	// fail only the lists that filter by it; "myOrgs" fails MyOrgs.
 	FailReads map[string]string
 	// GitHubTokens maps an item id to the issueItemRepoToken answer
 	// (token, expiresAt, repository); only the node holding the item's
@@ -269,7 +265,7 @@ var (
 
 func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 	bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if bearer != f.Token && !slices.Contains(f.ItemBearers, bearer) {
+	if bearer != f.Token {
 		writeErrors(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
@@ -324,6 +320,10 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 		}
 		writeData(w, map[string]any{"__type": f.heartbeatInputType()})
 	case strings.Contains(q, "myOrgs"):
+		if msg := f.FailReads["myOrgs"]; msg != "" {
+			writeErrors(w, 200, msg)
+			return
+		}
 		writeData(w, map[string]any{"myOrgs": f.Orgs})
 	case strings.HasPrefix(q, "mutation"):
 		m := mutationRe.FindStringSubmatch(q)

@@ -143,6 +143,14 @@ func (p CodexPrice) Cost(u CodexUsage) float64 {
 // 011, amendment 2026-09-29). Lines that are not JSON and unknown types are
 // skipped.
 func ParseCodexStream(r io.Reader, model string, onEvent func(CodexEvent)) Result {
+	return parseCodexStream(r, model, CodexProvider{}.Price, onEvent)
+}
+
+// parseCodexStream is ParseCodexStream with the price table a lookup:
+// Run passes its account's provider's, so a provider's model is costed
+// at its own table alone and is Unpriced when absent from it, whatever
+// CodexPrices holds for the name (adr-015).
+func parseCodexStream(r io.Reader, model string, price func(string) (CodexPrice, bool), onEvent func(CodexEvent)) Result {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 16<<20)
 	var res Result
@@ -293,7 +301,7 @@ func ParseCodexStream(r io.Reader, model string, onEvent func(CodexEvent)) Resul
 		}
 	}
 	if usage != nil {
-		price, ok := CodexPrices[model]
+		p, ok := price(model)
 		res.Usage = &Usage{
 			Model:                 model,
 			InputTokens:           usage.InputTokens,
@@ -304,7 +312,7 @@ func ParseCodexStream(r io.Reader, model string, onEvent func(CodexEvent)) Resul
 			Unpriced:              !ok,
 		}
 		if ok {
-			res.CostUSD = price.Cost(*usage)
+			res.CostUSD = p.Cost(*usage)
 		}
 	}
 	if turnCount > 0 {
