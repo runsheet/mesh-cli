@@ -1671,3 +1671,31 @@ func TestHeartbeatCarriesLoopCommit(t *testing.T) {
 		}
 	}
 }
+
+// An org with no GitHub login is named by its tenant slug. grapevine
+// has login "" and tenantSlug "grapevine": `orgs: [grapevine]` must
+// resolve it, not refuse it as an org the owner is not in — the owner
+// is an admin of it. ScopesFromAnswer already matches Login or Slug;
+// this is the same rule on the MyOrgs path.
+func TestResolveScopesNamesAnOrgWithoutLoginBySlug(t *testing.T) {
+	f := seed(t)
+	const org2, acct2 = "22222222-3333-4444-8555-666666666666", "bbbbbbbb-3333-4444-8555-bbbbbbbbbbbb"
+	f.Orgs = append(f.Orgs, map[string]any{"id": org2, "login": "", "tenantSlug": "grapevine", "accountId": acct2})
+	gw := gateway.New(f.URL(), "rs_test")
+	ctx := context.Background()
+
+	only, err := ResolveScopes(ctx, gw, &Config{Slug: "box", Orgs: []string{"grapevine"}})
+	if err != nil || len(only) != 1 || only[0].ID != org2 || only[0].Slug != "grapevine" {
+		t.Fatalf("an org with no login must resolve by slug: %+v, %v", only, err)
+	}
+	if up, err := ResolveScopes(ctx, gw, &Config{Slug: "box", Orgs: []string{"Grapevine"}}); err != nil || len(up) != 1 {
+		t.Fatalf("a slug must match whatever its case: %+v, %v", up, err)
+	}
+	if _, err := ResolveScopes(ctx, gw, &Config{Slug: "box", Orgs: []string{"grapevine", "nowhere"}}); err == nil || !strings.Contains(err.Error(), "nowhere") {
+		t.Fatalf("a name the owner is in no org for must still refuse: %v", err)
+	}
+	all, err := ResolveScopes(ctx, gw, &Config{Slug: "box"})
+	if err != nil || len(all) != 2 {
+		t.Fatalf("naming no org still serves every one: %+v, %v", all, err)
+	}
+}

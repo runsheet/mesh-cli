@@ -586,8 +586,11 @@ func (c *Config) NodeIDIn(orgID string) (string, error) {
 
 // ResolveScopes lists the orgs the owner belongs to on the platform,
 // keeps those the config names (all, when it names none), and gives the
-// node its id in each. Orgs the config names that the owner is not in
-// are an error: the node would never see their items.
+// node its id in each. A name is matched against an org's Login or its
+// TenantSlug, so an org with no GitHub login (grapevine) is named by its
+// slug — the same rule ScopesFromAnswer applies. Orgs the config names
+// that the owner is not in are an error: the node would never see their
+// items.
 func ResolveScopes(ctx context.Context, gw Gateway, c *Config) (Scopes, error) {
 	orgs, err := gw.MyOrgs(ctx)
 	if err != nil {
@@ -602,8 +605,8 @@ func ResolveScopes(ctx context.Context, gw Gateway, c *Config) (Scopes, error) {
 	found := map[string]bool{}
 	var scopes Scopes
 	for _, o := range orgs {
-		login := strings.ToLower(o.Login)
-		if len(want) > 0 && !want[login] {
+		login, slug := strings.ToLower(o.Login), strings.ToLower(o.TenantSlug)
+		if len(want) > 0 && !want[login] && !want[slug] {
 			continue
 		}
 		id, err := c.NodeIDIn(o.ID)
@@ -612,6 +615,7 @@ func ResolveScopes(ctx context.Context, gw Gateway, c *Config) (Scopes, error) {
 		}
 		scopes = append(scopes, Scope{Login: o.Login, Slug: o.TenantSlug, ID: o.ID, AccountID: o.AccountID, NodeID: id})
 		found[login] = true
+		found[slug] = true
 	}
 	if missing := missingOrgs(want, found); len(missing) > 0 {
 		return nil, fmt.Errorf("not a member of %s (the node.yaml orgs list names them)", strings.Join(missing, ", "))
