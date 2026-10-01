@@ -271,7 +271,8 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	}
 	dir, err := PrepareWithRetry(ctx, r.WS, spec, cred, r.logf)
 	if ce := (*CredentialError)(nil); errors.As(err, &ce) {
-		return ReleaseOnCredential(ctx, r.GW, item.ID, ce, r.logf)
+		sc, _ := r.Scopes.ByOrg(item.OrgID)
+		return ReleaseOnCredential(ctx, r.GW, item.ID, sc.NodeID, ce, r.logf)
 	}
 	if err != nil {
 		return r.fail(ctx, item, fmt.Errorf("workspace: %w", err))
@@ -326,7 +327,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	if errors.Is(err, ErrNoAccount) {
 		// no issued account has headroom: the item waits, not fails
 		r.logf("item %s: %v; released", label, err)
-		if rerr := r.GW.ReleaseWorkItem(ctx, item.ID, "accounts: "+err.Error()); rerr != nil {
+		if rerr := r.GW.ReleaseWorkItem(ctx, item.ID, sc.NodeID, "accounts: "+err.Error()); rerr != nil {
 			r.logf("item %s: release: %v", label, rerr)
 		}
 		return nil
@@ -347,7 +348,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		reason := st.DeclineReason()
 		r.Declines.Record(item.ID, st.Missing, runtimes, time.Now())
 		r.logf("item %s: declined, %s; released", label, reason)
-		if rerr := r.GW.ReleaseWorkItem(ctx, item.ID, reason); rerr != nil {
+		if rerr := r.GW.ReleaseWorkItem(ctx, item.ID, sc.NodeID, reason); rerr != nil {
 			r.logf("item %s: release: %v", label, rerr)
 		}
 		return nil
@@ -371,7 +372,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		reason := pod.ReleaseReason()
 		r.Declines.Record(item.ID, pod.Declined(), runtimes, time.Now())
 		r.logf("item %s: %s; released", label, reason)
-		if rerr := r.GW.ReleaseWorkItem(ctx, item.ID, reason); rerr != nil {
+		if rerr := r.GW.ReleaseWorkItem(ctx, item.ID, sc.NodeID, reason); rerr != nil {
 			r.logf("item %s: release: %v", label, rerr)
 		}
 		return nil
@@ -544,7 +545,8 @@ func (r *Runner) afterBuild(ctx context.Context, b *buildRun, result harness.Res
 			r.Condition(reason)
 		}
 		r.logf("item %s: %s", label, reason)
-		if rerr := r.GW.ReleaseWorkItem(ctx, item.ID, reason); rerr != nil {
+		bsc, _ := r.Scopes.ByOrg(b.item.OrgID)
+		if rerr := r.GW.ReleaseWorkItem(ctx, b.item.ID, bsc.NodeID, reason); rerr != nil {
 			r.logf("item %s: release: %v", label, rerr)
 		}
 		return nil

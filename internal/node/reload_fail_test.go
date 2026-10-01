@@ -242,3 +242,46 @@ func TestReloadFailLogsOneLinePerTick(t *testing.T) {
 	}
 	n.retained()
 }
+
+// An org with no GitHub login is named by its tenant slug on the reload
+// path too. The grapevine node on the mini registered with
+// `orgs: [grapevine]` and then logged "no org left to serve" every pass,
+// because the reload matched node.yaml's names against Login alone —
+// the same rule ResolveScopes and ScopesFromAnswer apply.
+func TestReloadNamesAnOrgWithoutLoginBySlug(t *testing.T) {
+	f := seed(t)
+	const org2, acct2 = "33333333-4444-4555-8666-777777777777", "cccccccc-4444-4555-8666-cccccccccccc"
+	f.Orgs = append(f.Orgs, map[string]any{"id": org2, "login": "", "tenantSlug": "grapevine", "accountId": acct2})
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	tokFile := filepath.Join(home, "team.token")
+	if err := os.WriteFile(tokFile, []byte("sk-ant-oat-team\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeNodeYAML(t, "slug: box\nname: Box\norgs: [grapevine]\ncapacity: 1\n")
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw := gateway.New(f.URL(), "rs_test")
+	scopes, err := ResolveScopes(context.Background(), gw, cfg)
+	if err != nil {
+		t.Fatalf("resolve by slug: %v", err)
+	}
+	var logs strings.Builder
+	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopes, Interval: time.Hour, Harness: "claude-code", Log: log.New(&logs, "", 0),
+		Dispatch: func(context.Context, gateway.WorkItem) {}}
+	loop.Reload = Reloader(gw, cfg, scopes, LoadConfig, func(context.Context, Scope) error { return nil })
+	writeNodeYAML(t, "slug: box\nname: Box\norgs: [grapevine]\ncapacity: 2\n"+
+		"accounts:\n  - {label: team, kind: subscription, token_file: "+tokFile+"}\n")
+	loop.Tick(context.Background())
+	loop.wg.Wait()
+	for _, l := range strings.Split(logs.String(), "\n") {
+		if strings.Contains(l, "no org left to serve") {
+			t.Fatalf("the reload dropped the slug-named org: %s", l)
+		}
+	}
+	if got := loop.CurrentScopes(); len(got) != 1 || got[0].Slug != "grapevine" {
+		t.Fatalf("scopes = %+v, want the grapevine org alone", got)
+	}
+}

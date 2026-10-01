@@ -129,6 +129,18 @@ func NewWithSource(baseURL string, src TokenSource) *Client {
 	}
 }
 
+// WithItemToken returns a client that speaks to the same gateway on tok
+// rather than c's own bearer — an item's claim-time token
+// (node-attests-its-validation), scoped the way IssueItemRepoToken's
+// GitHub token is (adr-001-item-scoped-github-token), for
+// RecordValidationAttestation. It is a fresh Client of the transport
+// alone (BaseURL, HTTP, Now): none of c's schema-probe caches
+// (itemsWithoutModel and the rest) carry over, since they answer for a
+// long-lived node client, not a request or two on a borrowed token.
+func (c *Client) WithItemToken(tok string) *Client {
+	return &Client{BaseURL: c.BaseURL, Source: StaticToken(tok), HTTP: c.HTTP, Now: c.Now}
+}
+
 // Bearer is the token the next request would carry — for the Prologue
 // MCP server a session is started with, which takes a header, not a
 // source.
@@ -1954,8 +1966,8 @@ func (c *Client) FailWorkItem(ctx context.Context, itemID, errMsg string) error 
 // retry. The platform takes it only for a claimed or running item held by
 // the calling node; the item is ready again with its node cleared,
 // attempts unchanged, and the reason in last_note, not last_error.
-func (c *Client) ReleaseWorkItem(ctx context.Context, itemID, reason string) error {
-	return c.Mutate(ctx, "releaseWorkItem", itemID, map[string]any{"reason": reason})
+func (c *Client) ReleaseWorkItem(ctx context.Context, itemID, nodeID, reason string) error {
+	return c.Mutate(ctx, "releaseWorkItem", itemID, map[string]any{"nodeId": nodeID, "note": reason})
 }
 
 // EvaluateWorkItem records the evaluator's verdict (phase 1's session; the
@@ -2855,9 +2867,8 @@ func isTransient(err error) bool {
 
 // RecordValidationAttestation uploads one build's validation run
 // (runsheet ADR 032, the goal ci-uploads-test-evidence's attestation
-// endpoint). It goes on the node's own token, like every other command:
-// the gateway checks that the caller is the node holding the item and
-// refuses a GitHub token outright. It tries the
+// endpoint). Call it on WithItemToken's client, so the request carries
+// the item's claim-time token rather than the node's. It tries the
 // mutation
 // recordValidationAttestation(input: RecordValidationAttestationInput!)
 // { status }, carrying aggregateId (itemID), namespace and the

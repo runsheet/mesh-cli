@@ -192,7 +192,7 @@ func TestRequiredServiceFailingReleasesTheItem(t *testing.T) {
 	if len(rel) != 1 {
 		t.Fatalf("releases: %+v", rel)
 	}
-	if reason := fmt.Sprint(rel[0].Input["reason"]); reason != "services: required service postgres (postgres:16) did not come up: health check failed 3 times: pg_isready: no response" {
+	if reason := fmt.Sprint(rel[0].Input["note"]); reason != "services: required service postgres (postgres:16) did not come up: health check failed 3 times: pg_isready: no response" {
 		t.Fatalf("reason = %q", reason)
 	}
 	if len(f.CallsNamed("failWorkItem")) != 0 {
@@ -245,7 +245,7 @@ func TestDisallowedRegistryIsRefusedWithANote(t *testing.T) {
 		t.Fatalf("releases: %+v", rel)
 	}
 	want := "services: required service db (registry.example.com/pg:16) did not come up: image registry.example.com/pg:16 refused: registry registry.example.com is not allowed (allowed: docker.io, ghcr.io, *.pkg.dev, quay.io)"
-	if reason := fmt.Sprint(rel[0].Input["reason"]); reason != want {
+	if reason := fmt.Sprint(rel[0].Input["note"]); reason != want {
 		t.Fatalf("reason = %q, want %q", reason, want)
 	}
 

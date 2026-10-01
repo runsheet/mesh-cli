@@ -283,13 +283,13 @@ func (e *CredentialError) Reason() string {
 // the release would leave the item held by a node that has stopped
 // working on it, so then the item is failed with the same reason. It
 // answers the error the item's session ends with.
-func ReleaseOnCredential(ctx context.Context, gw Gateway, itemID string, ce *CredentialError, logf func(string, ...any)) error {
+func ReleaseOnCredential(ctx context.Context, gw Gateway, itemID, nodeID string, ce *CredentialError, logf func(string, ...any)) error {
 	cause := fmt.Errorf("workspace: %w", ce)
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
 	reason := truncate(ce.Reason(), 2000)
-	err := gw.ReleaseWorkItem(ctx, itemID, reason)
+	err := gw.ReleaseWorkItem(ctx, itemID, nodeID, reason)
 	if err == nil {
 		logf("item %s: released, the node's condition: %s", itemID, reason)
 		return cause
