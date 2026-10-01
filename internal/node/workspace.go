@@ -841,7 +841,7 @@ type Gateway interface {
 	FinishWorkItem(ctx context.Context, itemID, branch, headSha string, costCents int, usage *gateway.UsageReport) error
 	FinishWorkItemAlreadyDone(ctx context.Context, itemID, evidence string, costCents int, usage *gateway.UsageReport) error
 	FailWorkItem(ctx context.Context, itemID, errMsg string) error
-	ReleaseWorkItem(ctx context.Context, itemID, reason string) error
+	ReleaseWorkItem(ctx context.Context, itemID, nodeID, reason string) error
 	IssueItemRepoToken(ctx context.Context, itemID, nodeID string) (*gateway.GitHubToken, error)
 	EvaluateWorkItem(ctx context.Context, itemID string, passed bool, notes string, costCents int, usage *gateway.UsageReport) error
 	// EvaluateWorkItemNoVerdict records an evaluation that reached no

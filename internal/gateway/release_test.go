@@ -27,11 +27,12 @@ func TestReleaseWorkItem(t *testing.T) {
 			gw := gateway.New(f.URL(), "rs_test")
 			ctx := context.Background()
 
-			if err := gw.ReleaseWorkItem(ctx, itemID, releaseReason); err != nil {
+			if err := gw.ReleaseWorkItem(ctx, itemID, nodeID, releaseReason); err != nil {
 				t.Fatal(err)
 			}
 			calls := f.CallsNamed("releaseWorkItem")
-			if len(calls) != 1 || calls[0].Input["aggregateId"] != itemID || calls[0].Input["reason"] != releaseReason {
+			if len(calls) != 1 || calls[0].Input["aggregateId"] != itemID ||
+				calls[0].Input["nodeId"] != nodeID || calls[0].Input["note"] != releaseReason {
 				t.Fatalf("calls = %+v", calls)
 			}
 			it, err := gw.WorkItem(ctx, itemID)
@@ -72,7 +73,7 @@ func TestReleaseWorkItemRefusedUnlessHeldAndRunning(t *testing.T) {
 			before := f.Item(itemID)
 			gw := gateway.New(f.URL(), "rs_test")
 
-			if err := gw.ReleaseWorkItem(context.Background(), itemID, releaseReason); err == nil {
+			if err := gw.ReleaseWorkItem(context.Background(), itemID, nodeID, releaseReason); err == nil {
 				t.Fatal("release accepted")
 			}
 			if after := f.Item(itemID); !reflect.DeepEqual(after, before) {
@@ -96,7 +97,7 @@ func TestReleaseWorkItemRefusedByThePlatform(t *testing.T) {
 	before := f.Item(itemID)
 	gw := gateway.New(f.URL(), "rs_test")
 
-	if err := gw.ReleaseWorkItem(context.Background(), itemID, releaseReason); err == nil {
+	if err := gw.ReleaseWorkItem(context.Background(), itemID, nodeID, releaseReason); err == nil {
 		t.Fatal("release accepted")
 	}
 	if after := f.Item(itemID); !reflect.DeepEqual(after, before) {

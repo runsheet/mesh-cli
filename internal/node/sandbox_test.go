@@ -192,7 +192,7 @@ func TestRunnerReleasesALimitKill(t *testing.T) {
 	if len(rel) != 1 {
 		t.Fatalf("releases: %+v", rel)
 	}
-	reason := fmt.Sprint(rel[0].Input["reason"])
+	reason := fmt.Sprint(rel[0].Input["note"])
 	for _, want := range []string{"memory", "6g", "ship-it/1"} {
 		if !strings.Contains(reason, want) {
 			t.Fatalf("release reason %q must name %q", reason, want)

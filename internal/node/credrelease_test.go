@@ -131,7 +131,7 @@ func TestCredentialReleaseLogAndReasonNameRepoAndExpiryNotToken(t *testing.T) {
 	if len(rel) != 1 {
 		t.Fatalf("releases = %+v", rel)
 	}
-	reason, _ := rel[0].Input["reason"].(string)
+	reason, _ := rel[0].Input["note"].(string)
 	credentialReasonOK(t, reason)
 	if !strings.Contains(run.logged, "released, the node's condition: "+reason) {
 		t.Fatalf("the log must name the release and its reason:\n%s", run.logged)

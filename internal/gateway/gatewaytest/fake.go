@@ -58,7 +58,11 @@ type Fake struct {
 	// MeshV1Hits and PrologueV1Hits count the requests each context path
 	// received, for a test to prove which one a read actually used.
 	MeshV1Hits, PrologueV1Hits int
-	Calls                      []Call
+	// ItemBearers are further tokens the fake takes on GraphQL, beside
+	// Token: an item's claim-time token, as RecordValidationAttestation
+	// carries it (WithItemToken).
+	ItemBearers []string
+	Calls       []Call
 	// Reads are the index lists and get-by-id reads the fake served:
 	// Name is the list (goalIndexs) or the get (repoIndex), Input its EQ
 	// wheres by field (org_id) or, for a get, {"id": id}.
@@ -265,7 +269,7 @@ var (
 
 func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 	bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if bearer != f.Token {
+	if bearer != f.Token && !slices.Contains(f.ItemBearers, bearer) {
 		writeErrors(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
@@ -1000,8 +1004,15 @@ func (f *Fake) release(item, in map[string]any) error {
 	if f.TokenNodeID != "" && item["nodeId"] != f.TokenNodeID {
 		return fmt.Errorf("the item is not node %s's", f.TokenNodeID)
 	}
+	// nodeId is NON_NULL on the platform's ReleaseWorkItemInput, and the
+	// note is `note`, not `reason`: a release that names neither is
+	// refused there, so it is refused here too — a caller that sends the
+	// wrong shape fails in the tests instead of in production.
+	if id, _ := in["nodeId"].(string); id == "" {
+		return fmt.Errorf("releaseWorkItem: nodeId is required")
+	}
 	item["status"], item["nodeId"], item["harness"], item["sessionId"] = "ready", nil, nil, nil
-	item["lastNote"] = in["reason"]
+	item["lastNote"] = in["note"]
 	return nil
 }
 

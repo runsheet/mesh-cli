@@ -241,7 +241,7 @@ func TestRequiredToolWithAMissingRuntimeReleasesAndIsNotReclaimed(t *testing.T) 
 	waitFor(t, func() bool { return len(f.CallsNamed("releaseWorkItem")) == 1 && loop.Running() == 0 })
 
 	rel := f.CallsNamed("releaseWorkItem")[0].Input
-	if rel["aggregateId"] != item1 || rel["reason"] != "tools: required tool git-tools needs uvx, which this node lacks" {
+	if rel["aggregateId"] != item1 || rel["nodeId"] == "" || rel["note"] != "tools: required tool git-tools needs uvx, which this node lacks" {
 		t.Fatalf("release: %+v", rel)
 	}
 	if len(h.jobs) != 0 {
