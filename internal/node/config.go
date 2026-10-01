@@ -769,7 +769,8 @@ func Reloader(gw Gateway, cfg *Config, scopes Scopes, load func() (*Config, erro
 		}
 		var served Scopes
 		for _, o := range orgs {
-			if len(want) > 0 && !want[strings.ToLower(o.Login)] {
+			login, slug := strings.ToLower(o.Login), strings.ToLower(o.TenantSlug)
+			if len(want) > 0 && !want[login] && !want[slug] {
 				continue
 			}
 			id, err := cfg.NodeIDIn(o.ID)
