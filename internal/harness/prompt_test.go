@@ -136,9 +136,9 @@ func TestEvaluatePromptUnverifiableClause(t *testing.T) {
 // evaluator's context section (with and without a ContextDir).
 func TestEvaluatePromptContextTools(t *testing.T) {
 	withDir := EvaluatePrompt(EvaluateInput{GoalSlug: "g", GoalTitle: "G", Seq: 1, Title: "T", Repo: "o/r", Branch: "b", BaseRef: "main",
-		ContextDir: ".mesh/context", Project: "acme/mesh", Prologue: true})
+		ContextDir: ".mesh/context", Project: "acme/mesh", MeshContext: true})
 	noDir := EvaluatePrompt(EvaluateInput{GoalSlug: "g", GoalTitle: "G", Seq: 1, Title: "T", Repo: "o/r", Branch: "b", BaseRef: "main",
-		Project: "acme/mesh", Prologue: true})
+		Project: "acme/mesh", MeshContext: true})
 	for _, p := range []string{withDir, noDir} {
 		// the slug from the index, never a file name: `adr-adr-….md`
 		// taken as a slug is `not found` (goal
@@ -157,7 +157,7 @@ func TestEvaluatePromptContextTools(t *testing.T) {
 // The planner is told to use mesh_document and mesh_search when the
 // session has mesh-context's tools.
 func TestPlanPromptContextTools(t *testing.T) {
-	p := PlanPrompt(PlanInput{GoalSlug: "g", GoalTitle: "G", Org: "o", Project: "p", ContextDir: ".mesh/context", Prologue: true})
+	p := PlanPrompt(PlanInput{GoalSlug: "g", GoalTitle: "G", Org: "o", Project: "p", ContextDir: ".mesh/context", MeshContext: true})
 	for _, want := range []string{"mesh_document", "mesh_search"} {
 		if !strings.Contains(p, want) {
 			t.Errorf("plan prompt lacks %q:\n%s", want, p)

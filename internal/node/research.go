@@ -17,7 +17,7 @@ import (
 
 // Director is the session that acts on one direction of a project
 // (runsheet trd §6c): the project's repos checked out read-only, its
-// Prologue context, the words of the direction and the goals the
+// mesh-context context, the words of the direction and the goals the
 // project has already had; a fresh `claude -p` that reads and then
 // writes what it came to as JSON, handed in against the direction with
 // RecordDirectionResearch, the session's cost with it. A propose-mode
@@ -158,7 +158,7 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 	room := RoomFor(direction, project, goals)
 	prompt := harness.ResearchPrompt(harness.ResearchInput{
 		Org: scope.Name(), Project: project.Slug, Direction: direction.Direction,
-		Repos: dirs, ContextDir: contextDir, ContextFiles: files, Prologue: len(d.MCP) > 0,
+		Repos: dirs, ContextDir: contextDir, ContextFiles: files, MeshContext: len(d.MCP) > 0,
 		Goals: existing, Room: room, Proposes: direction.Proposes(),
 	})
 	budget, budgetSource := d.budgetWithSource()
