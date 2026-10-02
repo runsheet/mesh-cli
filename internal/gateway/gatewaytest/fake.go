@@ -102,6 +102,13 @@ type Fake struct {
 	// NoFailedClauses is a platform whose EvaluateWorkItemInput has no
 	// failedClauses: the node sends the verdict without them.
 	NoFailedClauses bool
+	// NoProtectedFields is a platform whose WorkItemIndex has no
+	// protectedFiles/protectedRulePaths and whose ProjectIndex has no
+	// protectedPaths (goal one-evaluator-for-ordinary-work): a selection
+	// naming one of the three is refused with "Unknown field", as
+	// UnknownFields refuses any other field — this is the convenience
+	// flag for all three at once.
+	NoProtectedFields bool
 	// NoEvaluations is a platform whose WorkItemIndex has no
 	// `evaluations`: the read WorkItemPriorAttempts makes is refused
 	// with "Cannot query field", as the client tolerates (the
@@ -830,6 +837,19 @@ func byID(rows []map[string]any) map[string]map[string]any {
 	return out
 }
 
+// protectedFields are the three fields NoProtectedFields refuses at
+// once (goal one-evaluator-for-ordinary-work).
+var protectedFields = []string{"protectedFiles", "protectedRulePaths", "protectedPaths"}
+
+// fieldUnknown is whether the fake's schema refuses field, either named
+// in UnknownFields or one of protectedFields while NoProtectedFields.
+func (f *Fake) fieldUnknown(field string) bool {
+	if f.UnknownFields[field] {
+		return true
+	}
+	return f.NoProtectedFields && slices.Contains(protectedFields, field)
+}
+
 // unknownSelection is the first field of the query's selections the
 // fake's schema does not have, and the type it was asked of.
 func (f *Fake) unknownSelection(q string) (string, string) {
@@ -845,7 +865,7 @@ func (f *Fake) unknownSelection(q string) (string, string) {
 		return "", ""
 	}
 	for _, word := range strings.FieldsFunc(q[i:], func(r rune) bool { return r == ' ' || r == '{' || r == '}' || r == ')' }) {
-		if f.UnknownFields[word] || !selectable(typ, word) {
+		if f.fieldUnknown(word) || !selectable(typ, word) {
 			return word, typ
 		}
 	}
@@ -888,6 +908,11 @@ func (f *Fake) known(typ string, row map[string]any) map[string]any {
 	}
 	for k := range f.UnknownFields {
 		delete(out, k)
+	}
+	if f.NoProtectedFields {
+		for _, k := range protectedFields {
+			delete(out, k)
+		}
 	}
 	return out
 }
@@ -1052,6 +1077,9 @@ func (f *Fake) apply(name string, in map[string]any) error {
 	case "evaluateWorkItem":
 		if item == nil {
 			return fmt.Errorf("no such item")
+		}
+		if m, ok := in[gateway.EvaluatedModelField]; ok {
+			item["evaluatedModel"] = m
 		}
 		// an evaluation that reached no verdict costs the item nothing:
 		// it stays in evaluating, its reason kept (runsheet ADR 035) — and

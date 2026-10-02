@@ -26,6 +26,8 @@ nodeId
 orgId
 prUrl
 projectId?
+protectedFiles?
+protectedRulePaths?
 readyAt?
 rebaseConflict
 rebaseFiles

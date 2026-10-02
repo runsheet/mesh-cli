@@ -122,7 +122,9 @@ var projectRequired = []string{
 }
 
 // projectOptional are the ProjectIndex fields an older platform may lack (a `?` in fields/ProjectIndex.txt).
-var projectOptional = []string{}
+var projectOptional = []string{
+	"protectedPaths",
+}
 
 // projectFields is the selection of projectRequired.
 var projectFields = strings.Join(projectRequired, " ")
@@ -168,6 +170,8 @@ var workItemOptional = []string{
 	"lineageRootSeq",
 	"model",
 	"projectId",
+	"protectedFiles",
+	"protectedRulePaths",
 	"readyAt",
 }
 

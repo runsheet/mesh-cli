@@ -165,7 +165,7 @@ func (e *Evaluator) failDiff(ctx context.Context, item gateway.WorkItem, label, 
 	}
 	notes = truncate(notes, 4000)
 	e.logf("item %s: not evaluated, failed: %s", label, notes)
-	if err := e.GW.EvaluateWorkItem(ctx, item.ID, false, notes, nil, 0, nil); err != nil {
+	if err := e.GW.EvaluateWorkItem(ctx, item.ID, false, notes, nil, 0, nil, gateway.EvaluateChoice{}); err != nil {
 		return fmt.Errorf("record verdict: %w", err)
 	}
 	return nil
@@ -627,7 +627,7 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 			e.logf("item %s: fails on the same clause as attempt %d", label, attempt)
 		}
 	}
-	if err := acct.Carried(e.GW.EvaluateWorkItem(ctx, item.ID, passed, notes, failed, Cents(cost), usage)); err != nil {
+	if err := acct.Carried(e.GW.EvaluateWorkItem(ctx, item.ID, passed, notes, failed, Cents(cost), usage, gateway.EvaluateChoice{})); err != nil {
 		return fmt.Errorf("record verdict: %w", err)
 	}
 	left.Forget(item.ID)
@@ -748,7 +748,7 @@ func (e *Evaluator) logReadings(label, notes string) {
 // evaluating with.
 func (e *Evaluator) noVerdict(ctx context.Context, ev evalRun, reason string, cost float64, usage *gateway.UsageReport, fallback func() error) error {
 	reason = truncate(reason, 4000)
-	err := e.GW.EvaluateWorkItemNoVerdict(ctx, ev.item.ID, reason, Cents(cost), usage)
+	err := e.GW.EvaluateWorkItemNoVerdict(ctx, ev.item.ID, reason, Cents(cost), usage, gateway.EvaluateChoice{})
 	if errors.Is(err, gateway.ErrNoVerdictOutcome) {
 		if e.NoVerdict.First("") {
 			e.logf("the platform takes no no-verdict outcome; a no-verdict evaluation waits in evaluating (said once per run)")

@@ -18,10 +18,10 @@ func TestWorkItemPriorAttemptsReturnsRecordedAttemptsInOrder(t *testing.T) {
 	ctx := context.Background()
 
 	clauses := []gateway.FailedClause{{Clause: "the shards run within 20% of each other", Satisfy: "a reading recorded honestly under load"}}
-	if err := gw.EvaluateWorkItem(ctx, finishItem, false, "first attempt: fails on load", clauses, 10, nil); err != nil {
+	if err := gw.EvaluateWorkItem(ctx, finishItem, false, "first attempt: fails on load", clauses, 10, nil, gateway.EvaluateChoice{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := gw.EvaluateWorkItem(ctx, finishItem, false, "second attempt: fails again", nil, 10, nil); err != nil {
+	if err := gw.EvaluateWorkItem(ctx, finishItem, false, "second attempt: fails again", nil, 10, nil, gateway.EvaluateChoice{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -57,7 +57,7 @@ func TestWorkItemPriorAttemptsOnAnOlderPlatform(t *testing.T) {
 	gw := gateway.New(f.URL(), "rs_test")
 	ctx := context.Background()
 
-	if err := gw.EvaluateWorkItem(ctx, finishItem, false, "first attempt", nil, 10, nil); err != nil {
+	if err := gw.EvaluateWorkItem(ctx, finishItem, false, "first attempt", nil, 10, nil, gateway.EvaluateChoice{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := gw.WorkItemPriorAttempts(ctx, finishItem); err == nil {
