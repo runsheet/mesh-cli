@@ -1,6 +1,7 @@
 package node
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -344,7 +345,17 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		job.Env = SessionEnv(tok, ghDir)
 	}
 	sc, _ := r.Scopes.ByOrg(item.OrgID)
-	acct, err := r.Credentials.Open(ctx, gateway.SessionRef{Kind: string(harness.KindBuild), ItemID: item.ID, GoalID: item.GoalID}, sc.NodeID, r.Accounts, Adapter(r.Harness))
+	acct, err := r.Credentials.Open(withSubject(ctx, sc, cmp.Or(res.Project.ID, item.ProjectID), res.Project.Slug), gateway.SessionRef{Kind: string(harness.KindBuild), ItemID: item.ID, GoalID: item.GoalID}, sc.NodeID, r.Accounts, Adapter(r.Harness))
+	if nc, ok := NoCredentialOf(err); ok {
+		// nothing issued for the adapter: the item waits, never on the
+		// machine's own login; the reason is said once for the goal
+		// (NoCredentials.Say), not on every release
+		r.logf("item %s: no credential for %s; released", label, nc.Adapter)
+		if rerr := r.GW.ReleaseWorkItem(ctx, item.ID, sc.NodeID, "accounts: "+nc.Error()); rerr != nil {
+			r.logf("item %s: release: %v", label, rerr)
+		}
+		return nil
+	}
 	if errors.Is(err, ErrNoAccount) {
 		// no issued account has headroom: the item waits, not fails
 		r.logf("item %s: %v; released", label, err)

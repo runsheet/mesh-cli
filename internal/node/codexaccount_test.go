@@ -235,12 +235,12 @@ func TestOpenChoosesByAdapter(t *testing.T) {
 	s.Cleanup()
 
 	gw.issued = []gateway.Credential{codexSub(), codexAPI()}
-	if _, err := c.Open(context.Background(), ref, "n", nil, ""); !errors.Is(err, ErrNoAccount) {
-		t.Fatalf("a codex-only read for a Claude session = %v, want ErrNoAccount", err)
+	if _, err := c.Open(context.Background(), ref, "n", nil, ""); !isNoCredential(err) || !strings.Contains(err.Error(), "no claude-code credential") {
+		t.Fatalf("a codex-only read for a Claude session = %v, want ErrNoCredential", err)
 	}
 	gw.issued = []gateway.Credential{claudeSub()}
-	if _, err := c.Open(context.Background(), ref, "n", nil, AdapterCodex); !errors.Is(err, ErrNoAccount) {
-		t.Fatalf("an anthropic-only read for a Codex session = %v, want ErrNoAccount", err)
+	if _, err := c.Open(context.Background(), ref, "n", nil, AdapterCodex); !isNoCredential(err) || !strings.Contains(err.Error(), "no codex credential") {
+		t.Fatalf("an anthropic-only read for a Codex session = %v, want ErrNoCredential", err)
 	}
 
 	// the known accounts note the codex ones with their adapter, and no secret

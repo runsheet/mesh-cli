@@ -318,8 +318,10 @@ node drain` so the service starts again with it.
 a rebase — and before an evaluation, the node picks the account the
 session runs on, by the latest plan limits each account's sessions
 reported (see Near the plan's limits). The accounts are the union of
-node.yaml's `accounts:` and any credentials the platform issues; a
-platform that issues none uses node.yaml only:
+the credentials the platform issues for the session; node.yaml's
+`accounts:` only on a platform whose claim-time read is unsupported —
+a read that answers with none for the session's adapter is a hold (4,
+below), never node.yaml or the machine's own login:
 
 1. Subscriptions first: of those with headroom, the one with the most —
    the lowest use of its five-hour and seven-day windows. An account
@@ -340,6 +342,21 @@ platform that issues none uses node.yaml only:
 
 ```
 accounts: no account has headroom for 2 item(s), 1 plan(s); left unclaimed until one has
+```
+
+4. **No credential issued means the node waits too.** A node runs
+   sessions only on credentials the platform issues for the org or its
+   enterprise, never on the machine's own login: when the claim-time
+   read answers with none for the session's adapter (`claude-code` or
+   `codex`), no session starts, a claimed item is released, and that
+   project's items, plans and rebases are left unclaimed — asked again
+   by one claim every 10 minutes, so a credential attached on the console's credentials page
+   is picked up without a restart. The heartbeat's
+   `holding.unclaimed[].reason` carries the line, which the goal's
+   waiting reason shows, and node.log says it once per goal per run:
+
+```
+accounts: org acme's project widgets has no claude-code credential open to this node; goal <goal id>'s items and plans left unclaimed until one is (asked again every 10m0s; said once for the goal)
 ```
 
 Capacity still bounds how many items run at once. Each session gets its

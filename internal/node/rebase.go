@@ -1,6 +1,7 @@
 package node
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -175,7 +176,16 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 		job.Env = SessionEnv(tok, ghDir)
 	}
 	sc, _ := r.Scopes.ByOrg(item.OrgID)
-	acct, err := r.Credentials.Open(ctx, gateway.SessionRef{Kind: string(harness.KindRebase), ItemID: item.ID, GoalID: item.GoalID}, sc.NodeID, r.Accounts, Adapter(r.Harness))
+	acct, err := r.Credentials.Open(withSubject(ctx, sc, cmp.Or(res.Project.ID, item.ProjectID), res.Project.Slug), gateway.SessionRef{Kind: string(harness.KindRebase), ItemID: item.ID, GoalID: item.GoalID}, sc.NodeID, r.Accounts, Adapter(r.Harness))
+	if isNoCredential(err) {
+		// a wait, not a failure: the conflict is no reason to hand the
+		// item to its builder. The platform has no release for a rebase
+		// claim, so the claim lapses on its 15-minute timer and the loop
+		// leaves the project's rebases unclaimed meanwhile
+		// (Loop.NoCredential); node.log has said why, once for the goal
+		// (NoCredentials.Note), so nothing here says it again.
+		return err
+	}
 	if err != nil {
 		return fail(err)
 	}

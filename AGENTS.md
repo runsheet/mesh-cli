@@ -328,8 +328,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   re-runs the acceptance and pushes with `--force-with-lease`; the node
   reads the pushed head back (`Workspacer.PushedHead`) and hands it in
   with `FinishWorkItemRebase`, or `FailWorkItemRebase` with the reason
-  for *anything* else — a held claim waits out the platform's
-  15-minute timer. Its heartbeat and its cost are
+  for *anything* else but `ErrNoCredential` (a wait: the claim lapses)
+  — a held claim waits out the platform's 15-minute timer. Its heartbeat and its cost are
   `ReportWorkItemProgress`. Like evaluations, rebases do not count
   against capacity. **The platform does not yet issue the item's token
   to the rebase holder** (runsheet `gateway/itemtoken.go` refuses an
@@ -358,8 +358,15 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   or `researchCredentials`/`researchTools`, by what the session works on)
   for the claimed session's credentials and chooses among them by the
   loop's own rule (`withChooser`); an api key at its cap is never
-  chosen, and none left releases a build. A platform without the read
-  or issuing none leaves node.yaml, said once per run. At the end
+  chosen, and none left releases a build. A read that answers with
+  none for the session's adapter is `ErrNoCredential` (`nocredential.go`,
+  adr-005's amendment 2026-10-02) — `org <org>'s project <project> has
+  no <adapter> credential open to this node`, never the machine's own
+  login: the build is released, and `NoCredentials` (shared with
+  `Loop.NoCredential`) holds that project's items, plans and rebases
+  unclaimed for 10 minutes with the reason on `holding.unclaimed`, said
+  once per goal per run; then one claim probes, the rest still held. Only a platform without the read leaves node.yaml,
+  said once per run. At the end
   the session's `SessionAccount.Report` (`gateway.UsageReport`:
   credential id and kind, tokens, tool calls, wall time, list and
   actual cents, windows before and after) rides its finishing command

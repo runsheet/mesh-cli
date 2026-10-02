@@ -58,6 +58,8 @@ func toolRunner(t *testing.T, f *gatewaytest.Fake, h harness.Harness) (*Runner, 
 	r.Log = log.New(logs, "", 0)
 	r.MCP = MeshContextMCP(f.URL(), "rs_test")
 	r.Credentials = &Credentials{GW: r.GW.(CredentialGateway), Log: r.Log}
+	// a session runs only on what the read issues (ErrNoCredential)
+	issueClaude(f, item.ID)
 	r.Runtimes = onlyNpx
 	r.Declines = &Declines{}
 	return r, item, logs
@@ -211,6 +213,7 @@ func TestItemWithNoToolsRunsOnMeshContextAlone(t *testing.T) {
 // node has the runtime.
 func TestRequiredToolWithAMissingRuntimeReleasesAndIsNotReclaimed(t *testing.T) {
 	f := seed(t)
+	issueClaude(f, item1)
 	f.SessionTools[item1] = []map[string]any{remoteTool(), uvxTool(true)}
 	gw := gateway.New(f.URL(), "rs_test")
 	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "test-node", NodeID: gateway.NodeID(mustUUID(orgID), "test-node").String(), Capacity: Fixed(2)}
@@ -281,6 +284,7 @@ func TestRequiredToolWithAMissingRuntimeReleasesAndIsNotReclaimed(t *testing.T) 
 // the verdict's notes.
 func TestEvaluatorTools(t *testing.T) {
 	f := seed(t)
+	issueClaude(f, item1)
 	gw := gateway.New(f.URL(), "rs_test")
 	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "test-node", NodeID: "22222222-2222-4222-8222-222222222222"}
 	f.WorkItems[item1]["status"], f.WorkItems[item1]["nodeId"], f.WorkItems[item1]["branch"] = "evaluating", cfg.NodeID, "mesh/ship-it-1"
@@ -516,6 +520,7 @@ func TestPricedToolUsageOnAPlatformWithoutDetailFieldsStillLands(t *testing.T) {
 // The evaluator's priced calls are tool usage records too.
 func TestEvaluatorPricedToolCallsAreUsageRecords(t *testing.T) {
 	f := seed(t)
+	issueClaude(f, item1)
 	gw := gateway.New(f.URL(), "rs_test")
 	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "test-node", NodeID: "22222222-2222-4222-8222-222222222222"}
 	f.WorkItems[item1]["status"], f.WorkItems[item1]["nodeId"], f.WorkItems[item1]["branch"] = "evaluating", cfg.NodeID, "mesh/ship-it-1"

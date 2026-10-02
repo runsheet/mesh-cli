@@ -525,3 +525,64 @@ and no longer the name a current session carries. "Priced tool calls
 go to `recordToolUsage`" above said `Prologue` sends no record; it now
 says `mesh-context`, since that is the built-in's own name. Nothing
 about what is reported or when changes — only the word.
+
+## Amendment — 2026-10-02 (goal a-session-never-runs-on-the-machines-own-login)
+
+**The rule: a node only runs sessions on credentials the platform
+issues** for the org or its enterprise (Chris, 2026-09-30). On
+2026-09-30 the mini started the latchkeyid planner 512 times before
+06:50Z, each `credentialKind: unset` and ending "Not logged in" in
+6–8 s: `planCredentials` issued nothing (no credential was attached to
+latchkey), and `Credentials.open` fell to `OpenAccount(fallback)` —
+with an empty `accounts:`, the operator's own login, already removed
+from the machine. The node retried every 30 s, at $0, and nothing said
+why.
+
+Now a claim-time read (`itemCredentials`, `planCredentials`,
+`researchCredentials`) that *answers* and issues no credential whose
+adapter is the session's is `ErrNoCredential`
+(`internal/node/nocredential.go`), whatever node.yaml holds:
+
+```
+org <org slug>'s project <project slug> has no <claude-code|codex> credential open to this node
+```
+
+The org is the session's scope's slug and the project the caller's
+slug, else read by id once per run (`Credentials.projectSlug`, the id
+when the read fails). The fallback to node.yaml's accounts is left
+only for a platform whose read is unsupported (`gateway.IsUnsupported`;
+item 2 of the goal retires it, and `OpenOwn` with it in item 3).
+
+It is a hold, in the no-headroom shape, never a failure: the runner
+releases the item with `accounts: <reason>`; the planner hands nothing
+in and does not count a try (the platform has no release for a plan
+claim — it lapses); the director hands in nothing; an evaluation's
+Codex open falls to Claude as for `ErrNoAccount`, and its Claude open
+leaves the item in evaluating; a rebase is not failed — the conflict is
+no reason to hand the item to its builder, and the platform has no
+release for a rebase claim, so it lapses on its 15-minute timer — and
+nothing but the `accounts:` line says it. `NoCredentials`, one store shared by
+`Credentials` and `Loop.NoCredential`, remembers the (project,
+adapter) for `NoCredentialRecheck` (10 minutes): meanwhile the loop
+does not claim that project's items, plans or rebases, and passes each
+item and plan over
+(`passOver`) with the reason, so `holding.unclaimed[].reason` carries
+it — free text, beside `no account has headroom`, the input's shape
+unchanged (`gateway.HoldingUnclaimed`; `specs/contracts/heartbeatNode.json`
+pins only the heartbeat's answer, not `holding`, so the shape is the one
+runsheet's goal `goals-page-shows-account-limits` takes) — and the platform's GoalWaiting (runsheet ADR 016's
+amendment 2026-09-29) shows it as the goal's waiting reason; the
+summary counts it among the unclaimed. Once the re-check is due the
+first claim that finds it so is the one probe (`NoCredentials.Holds`
+renews the hold as it lets it through): every other item and plan of
+the project stays unclaimed until the probe's read clears the hold or
+renews it, so the read is asked once per project and adapter every 10
+minutes, never once per ready item. So a credential an admin attaches on
+the console is picked up without a restart; an issued one clears the
+hold. node.log says it once per goal per run, in the `accounts:`
+family beside `no account has headroom`:
+
+```
+accounts: <reason>; goal <goal id>'s items and plans left unclaimed until one is (asked again every 10m0s; said once for the goal)
+```
+
