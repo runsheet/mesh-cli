@@ -524,17 +524,18 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   with the same prompt and workspace by the rule (`secondOpinionWanted`,
   ADR-005's and ADR-011's amendments 2026-10-02): its goal `urgent` or
   `high`, a protected touch (`WorkItem.ProtectedFiles`, or a changed
-  file — `Workspacer.ChangedPaths` — matching its `ProtectedRulePaths`
-  or the project's `ProtectedPaths`, `globMatch`), a first FAIL on a
+  file — `Workspacer.ChangedPaths` — matching its `ProtectedRulePaths`,
+  the project's `ProtectedPaths` or the checkout's `.mesh/config.yml`
+  `protected_paths:`, `globMatch`), a first FAIL on a
   clause that is not a host reading (`hostReadingClause`, the planner's
   lexical test), or the checkout's `.mesh/config.yml` `second_opinion:
-  always` (`secondOpinionSetting`; default `rule`, until ProjectIndex
+  always` (`readCheckoutConfig`; default `rule`, until ProjectIndex
   serves the field) — else one verdict. The second verdict decides:
   after a first pass a second fail is failed, after a first fail a
   second fail is failed on the union of clauses and a second pass is
   passed. The choice is one notes line before the `(evaluated on …)`
-  tail and a node.log line, `evaluators: 1 — normal/low goal, no
-  protected path` or `evaluators: 2 — <reason>`, and every
+  tail and a node.log line, `evaluators: one — normal/low goal, no
+  protected path` or `evaluators: two — <reason>`, and every
   `EvaluateWorkItem` carries `EvaluateChoice{EvaluatedModel}`; the notes carry both, `Codex (first evaluation, gpt-6-sol):
   VERDICT …` and `Claude (second opinion, opus): VERDICT …` (or Claude
   first, Codex second), truncated together to 4000, and the cost and

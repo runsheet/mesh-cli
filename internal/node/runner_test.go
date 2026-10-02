@@ -472,7 +472,7 @@ func TestSessionsRunOnTheItemsModel(t *testing.T) {
 			if len(mg.notes) == 0 || mg.notes[0] != "session started: mesh/ship-it-1 on "+build {
 				t.Fatalf("first progress note: %q", mg.notes)
 			}
-			if got := row(item1)["evaluation"]; got != "Fine.\n\nevaluators: 1 — normal/low goal, no protected path\n(evaluated on "+eval+")" {
+			if got := row(item1)["evaluation"]; got != "Fine.\n\nevaluators: one — normal/low goal, no protected path\n(evaluated on "+eval+")" {
 				t.Fatalf("evaluation = %q", got)
 			}
 

@@ -225,7 +225,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 			return e.failDiff(ctx, item, label, spec.BaseRef, branch, err)
 		}
 	}
-	changed, setting := e.touched(ctx, label, dir, spec.BaseRef, alreadyDone)
+	changed, cfg := e.touched(ctx, label, dir, spec.BaseRef, alreadyDone)
 	// the same context the builder had: its repo's instructions and its goal
 	orgName := e.Scopes.NameOf(item.OrgID)
 	cx, err := FetchContext(ctx, e.GW, orgName, res.Project.Slug, ContextOptions{Budget: e.contextBudget(), Repos: []string{res.Repo.FullName()}, Checkouts: map[string]string{res.Repo.FullName(): dir}, Goal: res.Goal, Logf: e.logf})
@@ -381,7 +381,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	// the usage report rides the verdict (afterEvaluate); Finish logs it
 	// when nothing carried it
 	defer acct.Finish(ctx, result)
-	return e.afterEvaluate(ctx, evalRun{item: item, res: res, label: label, model: model, fam: fam, dir: dir, acct: acct, second: &second, preflight: preflight, omitted: st.OmittedNote(), missing: pod.MissingNote(), prior: prior, changed: changed, setting: setting}, result, err)
+	return e.afterEvaluate(ctx, evalRun{item: item, res: res, label: label, model: model, fam: fam, dir: dir, acct: acct, second: &second, preflight: preflight, omitted: st.OmittedNote(), missing: pod.MissingNote(), prior: prior, changed: changed, setting: cfg.setting(), protected: cfg.ProtectedPaths}, result, err)
 }
 
 // priorAttempts reads the verdicts earlier attempts of the item were
@@ -433,18 +433,20 @@ type evalRun struct {
 	// prior are the verdicts earlier attempts were given, for the
 	// same-clause first line (ADR-020)
 	prior []harness.PriorAttempt
-	// changed are the files the evaluated diff changed and setting the
-	// checkout's second_opinion, for secondOpinionWanted
-	changed []string
-	setting string
+	// changed are the files the evaluated diff changed, setting the
+	// checkout's second_opinion and protected its protected_paths, for
+	// secondOpinionWanted
+	changed   []string
+	setting   string
+	protected []string
 }
 
 // touched is what the evaluation's choice of evaluators reads from the
 // checkout: the files the branch changed since base (none for an
 // already_done item, which has no diff) and its .mesh/config.yml
-// second_opinion. Unread changed paths are logged and read as none: the
+// second_opinion and protected_paths. Unread changed paths are logged and read as none: the
 // item's own protectedFiles still hold.
-func (e *Evaluator) touched(ctx context.Context, label, dir, base string, alreadyDone bool) ([]string, string) {
+func (e *Evaluator) touched(ctx context.Context, label, dir, base string, alreadyDone bool) ([]string, checkoutConfig) {
 	var changed []string
 	if !alreadyDone && e.WS != nil {
 		var err error
@@ -452,7 +454,7 @@ func (e *Evaluator) touched(ctx context.Context, label, dir, base string, alread
 			e.logf("item %s: changed paths unread, judging protected paths on protectedFiles alone: %v", label, err)
 		}
 	}
-	return changed, secondOpinionSetting(dir)
+	return changed, readCheckoutConfig(dir)
 }
 
 // afterEvaluate is what follows an evaluation session, however this
@@ -581,7 +583,7 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 	wanted, why := secondOpinionWanted(evalDecision{
 		Priority:       ev.res.Goal.Priority,
 		ProtectedFiles: item.ProtectedFiles, ProtectedRulePaths: item.ProtectedRulePaths,
-		ProtectedPaths: projectProtectedPaths(ev.res), Changed: ev.changed,
+		ProtectedPaths: append(append([]string(nil), projectProtectedPaths(ev.res)...), ev.protected...), Changed: ev.changed,
 		FirstPassed: passed, FailedClauses: clauses, Setting: ev.setting,
 	})
 	firstPassed := passed
@@ -838,8 +840,8 @@ func (e *Evaluator) AdoptEvaluation(ctx context.Context, item gateway.WorkItem, 
 	label := fmt.Sprintf("%s/%d", res.Goal.Slug, item.Seq)
 	e.logf("item %s: adopted its %s evaluation (pid %d)", label, s.Liveness(), s.State.PID)
 	result, err := at.Attach(ctx, s.Dir, nil)
-	changed, setting := e.touched(ctx, label, s.State.Workspace, res.BaseRef(), item.Outcome == gateway.OutcomeAlreadyDone)
-	return e.afterEvaluate(ctx, evalRun{item: item, res: res, label: label, model: s.State.Model, fam: family{model: s.State.Model, claude: s.State.Model}, dir: s.State.Workspace, adopted: true, prior: e.priorAttempts(ctx, item, label), changed: changed, setting: setting}, result, err)
+	changed, cfg := e.touched(ctx, label, s.State.Workspace, res.BaseRef(), item.Outcome == gateway.OutcomeAlreadyDone)
+	return e.afterEvaluate(ctx, evalRun{item: item, res: res, label: label, model: s.State.Model, fam: family{model: s.State.Model, claude: s.State.Model}, dir: s.State.Workspace, adopted: true, prior: e.priorAttempts(ctx, item, label), changed: changed, setting: cfg.setting(), protected: cfg.ProtectedPaths}, result, err)
 }
 
 // opinion is the second evaluation's outcome: its verdict and notes, or
@@ -1090,6 +1092,67 @@ func bothNotes(firstOn family, first string, firstPassed bool, secondOn family, 
 		a += b - len(second)
 	}
 	return firstHead + truncateNotes(first, a) + "\n\n" + secondHead + truncateNotes(second, b)
+}
+
+// evalDecision is what the evaluate path decides one evaluator or two
+// on (goal one-evaluator-for-ordinary-work; ADR 005's and ADR 011's
+// amendments 2026-10-02): the goal's priority, what the item touched
+// that is protected, the first verdict and the project's setting.
+type evalDecision struct {
+	// Priority is the goal's.
+	Priority string
+	// ProtectedFiles are the item's touched files the platform matched to
+	// a protected rule; ProtectedRulePaths that rule's globs.
+	ProtectedFiles     []string
+	ProtectedRulePaths []string
+	// ProtectedPaths are the project's own protected-path globs.
+	ProtectedPaths []string
+	// Changed are the files the evaluated diff changed.
+	Changed []string
+	// FirstPassed is the first verdict, FailedClauses the clauses it
+	// failed (none on a pass).
+	FirstPassed   bool
+	FailedClauses []harness.FailedClause
+	// Setting is the project's second_opinion: "always", else the rule.
+	Setting string
+}
+
+// secondOpinionAlways is the second_opinion setting that keeps two
+// evaluators on every item.
+const secondOpinionAlways = "always"
+
+// oneEvaluatorReason is the reason a normal or low item gets one verdict.
+const oneEvaluatorReason = "normal/low goal, no protected path"
+
+// secondOpinionWanted is the rule: an urgent or high goal, a protected
+// touch, a first FAIL on a correctness clause (one that is not a reading
+// of the host, ADR-020) or second_opinion: always gets a second
+// evaluator; anything else one. The reason is the first that held.
+func secondOpinionWanted(d evalDecision) (bool, string) {
+	if gateway.PriorityRank(d.Priority) <= gateway.PriorityRank("high") {
+		return true, "urgent/high goal"
+	}
+	if len(d.ProtectedFiles) > 0 {
+		return true, "protected path " + d.ProtectedFiles[0]
+	}
+	for _, f := range d.Changed {
+		for _, g := range append(append([]string(nil), d.ProtectedRulePaths...), d.ProtectedPaths...) {
+			if globMatch(g, f) {
+				return true, "protected path " + f
+			}
+		}
+	}
+	if !d.FirstPassed {
+		for _, c := range d.FailedClauses {
+			if !hostReadingClause(c.Clause + ". " + c.Satisfy) {
+				return true, "first verdict FAIL on a correctness clause"
+			}
+		}
+	}
+	if d.Setting == secondOpinionAlways {
+		return true, "second_opinion: always"
+	}
+	return false, oneEvaluatorReason
 }
 
 // projectProtectedPaths are the project's protected-path globs, none

@@ -1585,14 +1585,15 @@ a pinned family with no headroom waits (not claimed, not failed).
 **One evaluator or two** (ADR-005's and ADR-011's amendments 2026-10-02): an
 item gets a second opinion on the other family when its goal is urgent or high,
 when it touches a protected path (the item's `protectedFiles`, or a changed file
-matching its `protectedRulePaths` or the project's `protectedPaths`), when its
+matching its `protectedRulePaths`, the project's `protectedPaths` or the repo's
+`.mesh/config.yml` `protected_paths:`), when its
 first verdict is FAIL on a clause that is not a reading of the host, or when the
 repo's `.mesh/config.yml` says `second_opinion: always` (default `rule`). Any
 other item — a normal or low goal's, touching no protected path — gets one
 verdict. After a first PASS a second FAIL fails it; after a first FAIL a second
 FAIL fails it on both sets of failed clauses, and a second PASS passes it. The
-notes and node.log say which, as `evaluators: 1 — normal/low goal, no protected
-path` or `evaluators: 2 — <reason>`.
+notes and node.log say which, as `evaluators: one — normal/low goal, no protected
+path` or `evaluators: two — <reason>`.
 
 ### Install the CLI
 
