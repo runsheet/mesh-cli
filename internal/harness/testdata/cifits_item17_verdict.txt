@@ -1,0 +1,11 @@
+The branch has the measured-duration planner, a single whole-package regeneration documented for 2026-09-29, median weights for unmeasured tests, and the requested design and handoff updates. The visible diff also retains the workflow settings named in the brief.
+
+**Item 17 fails its measured balance requirement.** Its two new sequential rounds are recorded in [e2e/README.md](/home/chris/.mesh/work/ci-fits-the-mini/17/e2e/README.md) at max/min **1.25** and **1.49**; acceptance requires **≤ 1.20**. The README records this honestly, but the earlier 1.09 round belongs to item 14.
+
+I could not independently run vet, tests, shard list comparisons, or spec checks: every local command failed before execution with `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`. Pull request CI and the goal’s later scorecard figures are also unverifiable at this review point. A retry must obtain a green sequential round at ≤ 1.20, record its three wall times, and run the named checks in a working execution environment.
+
+(evaluated on Codex gpt-6-sol)
+tools: playwright served, never called
+
+FAILED: the three shards within 20% || SATISFY: a green sequential round on the mini at max/min ≤ 1.20, its three wall times recorded in e2e/README.md
+VERDICT: FAIL

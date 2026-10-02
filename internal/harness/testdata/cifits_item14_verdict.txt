@@ -1,0 +1,11 @@
+**Review:** The diff implements a deterministic duration based plan, gives unmeasured tests the file’s median, warns about missing and stale names, and records eleven sequential mini rounds. The reported latest round is 76.6/78.5/72.2 seconds, a max/min of 1.09.
+
+**Does not hold:** [e2e/README.md](/home/chris/.mesh/work/ci-fits-the-mini/14/e2e/README.md) says the committed `shard_times.json` uses the median of sharded rounds 1–9. The brief requires regeneration from a fresh, whole-package `go test -json ./e2e` run. A retry must regenerate it that way, then rerun the mini measurement with the resulting plan and update the recorded figures.
+
+**Unverifiable here:** I attempted the named tests, `-check`, `-list`, `bash -n`, the grep, and `go vet`. Every command was stopped before execution by the shell sandbox (`bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`). CI on this item’s future PR is also unavailable.
+
+(evaluated on Codex gpt-6-sol)
+tools: playwright served, never called; prologue: first call errored: not found; codex_apps: first call errored: Parameters failed connector schema validation: repository_full_name [required]: Missing required property (does not match constraints configured by your ChatGPT workspace admin. If the issue persists…
+
+FAILED: the three shards within 20% of each other, proven by a sequential run on the mini || SATISFY: shard_times.json regenerated from one fresh whole-package `go test -json ./e2e` run, the mini round rerun on the plan it gives, and the README's figures updated to that round
+VERDICT: FAIL

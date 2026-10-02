@@ -25,7 +25,15 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   acceptance clause above it (`ParseFailedClauses`; the node records them
   with the verdict as `evaluateWorkItem`'s `failedClauses`, and a retry's
   evaluator is given the clauses earlier attempts named and judges that
-  attempt on those and on regressions, never on a gap nobody named), the planner ends with the JSON graph in a fenced
+  attempt on those and on regressions, never on a gap nobody named); a
+  clause that reads the host — load, wall time, a ratio of durations —
+  is judged on its mechanism and its reading written above the verdict
+  as `READING: <clause> || <what it measured, when, under what load>`
+  (`ClauseReading`, `ParseReadings`), never failed for the host's number,
+  and a retry that fails a clause an earlier attempt failed opens its
+  review with `fails on the same clause as attempt N: <clause>`
+  (`SameClauseLine`; `SameClause` finds the repeat and `NoteSameClause`
+  prepends the line when the model forgot it; ADR-020), the planner ends with the JSON graph in a fenced
   block, the director ends with its pitches and answers in one for a
   propose-mode direction, its proposals in one for a set-mode one, the rebase session
   ends with `REBASED: <sha>` and `RESOLVED: <files>` or
