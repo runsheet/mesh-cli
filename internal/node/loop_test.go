@@ -283,22 +283,25 @@ func TestLoopClaimsRunsAndFinishes(t *testing.T) {
 	if len(h.jobs) != 1 || h.jobs[0].MaxBudgetUSD != 5 || h.jobs[0].Kind != harness.KindBuild || !strings.Contains(h.jobs[0].Prompt, "Write the failing test") {
 		t.Fatalf("job: %+v", h.jobs)
 	}
-	// the context: instructions, adr and prd written; the spec skipped
+	// the context: the repo's instructions alone; ADR, PRD and spec are fetched
 	dir := ws.prepared[0].Dir()
 	entries, _ := os.ReadDir(filepath.Join(dir, ContextDir))
 	var names []string
 	for _, e := range entries {
 		names = append(names, e.Name())
 	}
-	if strings.Join(names, ",") != "INDEX.md,adr-adr-001.md,instructions-acme-widgets-agents.md,prd-prd.md" {
+	if strings.Join(names, ",") != "INDEX.md,instructions-acme-widgets-agents.md" {
 		t.Fatalf("context files: %v", names)
 	}
-	if !strings.Contains(h.jobs[0].Prompt, "instructions-acme-widgets-agents.md, adr-adr-001.md, prd-prd.md") {
+	if !strings.Contains(h.jobs[0].Prompt, "instructions-acme-widgets-agents.md") {
 		t.Fatalf("prompt must list the context in reading order:\n%s", h.jobs[0].Prompt)
 	}
-	// the index lists every document, the spec too, and says which are on disk
+	// the index says what is on disk, counts the rest and lists none of it
 	index, _ := os.ReadFile(filepath.Join(dir, ContextDir, IndexFile))
-	for _, want := range []string{"Project acme/mesh", "| adr | ADR 001 |  | `adr-001` | acme/widgets/specs/adr-001.md | `adr-adr-001.md` |", "| spec | Notes | `notes` |"} {
+	if strings.Contains(string(index), "`notes`") || strings.Contains(string(index), "| kind") {
+		t.Fatalf("index lists documents:\n%s", index)
+	}
+	for _, want := range []string{"# Project acme/mesh", "- `instructions-acme-widgets-agents.md` — the instructions of acme/widgets, binding", "4 documents indexed, none listed here.", "## Goal `ship-it` — Ship it (running)"} {
 		if !strings.Contains(string(index), want) {
 			t.Fatalf("index lacks %q:\n%s", want, index)
 		}

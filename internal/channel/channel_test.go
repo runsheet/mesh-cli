@@ -32,7 +32,7 @@ func seed(t *testing.T) (*gatewatestFake, *Handler) {
 	t.Helper()
 	f := gatewaytest.New("rs_test")
 	f.Accounts[acctID] = map[string]any{"id": acctID, "login": "acme"}
-	f.Projects[projID] = map[string]any{"id": projID, "orgId": orgID, "slug": "mesh", "name": "Mesh"}
+	f.Projects[projID] = map[string]any{"id": projID, "orgId": orgID, "slug": "mesh", "name": "Mesh", "repoIds": []string{repoID}}
 	f.Repos[repoID] = map[string]any{"id": repoID, "accountId": acctID, "name": "widgets", "defaultBranch": "main"}
 	f.Goals[goalID] = map[string]any{"id": goalID, "orgId": orgID, "projectId": projID, "slug": "ship-it", "title": "Ship it",
 		"statement": "Make the thing.", "acceptance": "go test ./... passes", "budgetCents": 1000, "spentCents": 0, "status": "running"}
@@ -85,7 +85,7 @@ func TestToolsAgainstGateway(t *testing.T) {
 		t.Fatalf("reply: %q %v", out, f.Item(item1))
 	}
 	cx := call(t, h, "mesh_context", map[string]any{"goal_slug": "ship-it"})
-	if !strings.Contains(cx, "<!-- instructions-acme-widgets-agents.md -->\n# AGENTS") || !strings.Contains(cx, "# PRD") {
+	if !strings.Contains(cx, "<!-- instructions-acme-widgets-agents.md -->\n# AGENTS") || strings.Contains(cx, "# PRD") || !strings.Contains(cx, "## Goal `ship-it`") {
 		t.Fatalf("context:\n%s", cx)
 	}
 	items := call(t, h, "mesh_items", map[string]any{"status": "running"})
