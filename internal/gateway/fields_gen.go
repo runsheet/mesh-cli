@@ -161,6 +161,8 @@ var workItemRequired = []string{
 var workItemOptional = []string{
 	"agentSlug",
 	"evaluateModel",
+	"lineageAttempt",
+	"lineageRootSeq",
 	"model",
 	"projectId",
 	"readyAt",

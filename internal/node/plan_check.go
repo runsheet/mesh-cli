@@ -299,3 +299,109 @@ func hostReadingPhrase(sentence string) string {
 	}
 	return strings.TrimSpace(sentence[start:end])
 }
+
+// The node's check of a plan for a re-land (ADR-021, its amendment): a
+// lineage's attempts shrink, so a new item whose acceptance is a failed
+// item's of the goal, word for word once normalised, is the same scope
+// built again — refused, and the planner told to split it.
+var (
+	acceptancePunct = regexp.MustCompile(`[^\p{L}\p{N}\s]+`)
+)
+
+// normaliseAcceptance is s as the re-land check compares it: lower-case,
+// backticks and punctuation stripped, whitespace collapsed — so a
+// re-plan that only re-quotes or re-wraps a failed item's acceptance is
+// the same acceptance.
+func normaliseAcceptance(s string) string {
+	s = strings.ToLower(s)
+	s = acceptancePunct.ReplaceAllString(s, " ")
+	return strings.Join(strings.Fields(s), " ")
+}
+
+// reLand is a new item whose acceptance is a failed item's: the new
+// item's seq and title, the failed item's seq, and its lineage root and
+// attempt as the platform serves them (0 from an older one).
+type reLand struct {
+	Seq            int
+	Title          string
+	FailedSeq      int
+	LineageRootSeq int
+	LineageAttempt int
+}
+
+// lineage is the failed item's lineage root: the platform's, else the
+// failed item's own seq.
+func (r reLand) lineage() int {
+	if r.LineageRootSeq > 0 {
+		return r.LineageRootSeq
+	}
+	return r.FailedSeq
+}
+
+// flag is the re-ask's line for r.
+func (r reLand) flag() string {
+	where := fmt.Sprintf("lineage %d", r.lineage())
+	if r.LineageAttempt > 0 {
+		where += fmt.Sprintf(", attempt %d of 3", r.LineageAttempt)
+	}
+	return fmt.Sprintf("item %d (%s): its acceptance is the same as failed item %d's (%s) — split it: partition the acceptance into two or more items, one PR each, naming the dependency", r.Seq, r.Title, r.FailedSeq, where)
+}
+
+// refusal is the planner error a re-land still in the second answer is.
+func (r reLand) refusal() string {
+	return fmt.Sprintf("plan would re-land failed item %d (lineage %d) at the same acceptance; refused", r.FailedSeq, r.lineage())
+}
+
+// failedForReLand says an item of the goal is one a re-plan must not
+// recreate at its size: failed, superseded, or cancelled with an error
+// of its own (a dependent cancelled by a re-plan carries none).
+func failedForReLand(it gateway.WorkItem) bool {
+	switch it.Status {
+	case "failed", "superseded":
+		return true
+	case "cancelled":
+		return strings.TrimSpace(it.LastError) != ""
+	}
+	return false
+}
+
+// reLands are the new items whose normalised acceptance equals a failed
+// item's of the goal (failedForReLand). A new item marked atomic is
+// exempt once: it is not a re-land unless the failed item it matches
+// was itself atomic (its brief's `atomic:` line), the exemption spent.
+func reLands(specs []harness.PlannedSpec, existing []gateway.WorkItem) []reLand {
+	var out []reLand
+	for _, sp := range specs {
+		acc := normaliseAcceptance(sp.Acceptance)
+		if acc == "" {
+			continue
+		}
+		for _, it := range existing {
+			if !failedForReLand(it) || normaliseAcceptance(it.Acceptance) != acc {
+				continue
+			}
+			atomic := it.Atomic
+			if atomic == "" {
+				atomic = gateway.AtomicReason(it.Brief)
+			}
+			if strings.TrimSpace(sp.Atomic) != "" && atomic == "" {
+				continue
+			}
+			out = append(out, reLand{Seq: sp.Seq, Title: strings.TrimSpace(sp.Title), FailedSeq: it.Seq, LineageRootSeq: it.LineageRootSeq, LineageAttempt: it.LineageAttempt})
+			break
+		}
+	}
+	return out
+}
+
+// sameAcceptanceAsFailed flags each new item whose acceptance is a
+// failed item's of the goal (reLands), naming the failed item, its
+// lineage and the split, for the planner's re-ask; none means no item is
+// a re-land.
+func sameAcceptanceAsFailed(specs []harness.PlannedSpec, existing []gateway.WorkItem) []string {
+	var flags []string
+	for _, r := range reLands(specs, existing) {
+		flags = append(flags, r.flag())
+	}
+	return flags
+}

@@ -339,13 +339,15 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 	var existing []harness.ExistingItem
 	var merged []int
 	nextSeq := 1
-	if items, err := p.GW.GoalWorkItems(ctx, goal.ID); err == nil {
-		for _, it := range items {
+	// the goal's items, kept for the re-land check (ADR-021)
+	goalItems, err := p.GW.GoalWorkItems(ctx, goal.ID)
+	if err == nil {
+		for _, it := range goalItems {
 			note := it.Evaluation
 			if it.LastError != "" {
 				note = it.LastError
 			}
-			existing = append(existing, harness.ExistingItem{Seq: it.Seq, Title: it.Title, Status: it.Status, Note: truncate(note, 300), Branch: it.Branch, PRURL: it.PRURL})
+			existing = append(existing, harness.ExistingItem{Seq: it.Seq, Title: it.Title, Status: it.Status, Note: truncate(note, 300), Branch: it.Branch, PRURL: it.PRURL, Acceptance: it.Acceptance, LineageRootSeq: it.LineageRootSeq, LineageAttempt: it.LineageAttempt})
 			if it.Status == "merged" {
 				merged = append(merged, it.Seq)
 			}
@@ -364,7 +366,7 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 	budget, budgetSource := p.budgetWithSource(&goal)
 	p.logf("goal %s: planning in %s (%d repos), budget $%.2f (%s)", goal.Slug, dir, len(repos), budget, budgetSource)
 	ctx = withSubject(ctx, scope, goal.ProjectID, project.Slug)
-	items, reasons, flags, questions, cost, acct, err := p.ask(ctx, goal, scope.NodeID, dir, budget, in, repos, merged)
+	items, reasons, flags, questions, cost, acct, err := p.ask(ctx, goal, scope.NodeID, dir, budget, in, repos, merged, goalItems)
 	acct.SetContextBytes(written.Bytes)
 	acct.SetLabel("goal "+goal.Slug, string(harness.KindPlan))
 	// the session's usage report rides the plan's hand-in; Finish logs it
@@ -375,13 +377,14 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 	}
 	if len(flags) > 0 {
 		// adr-004: an acceptance no evaluator can see is the plan's error,
-		// and ADR-020: so is a reading of the host as a merge gate; the
-		// planner is asked once more with what was flagged
+		// ADR-020: so is a reading of the host as a merge gate, and
+		// ADR-021: so is a failed item recreated at its size; the planner
+		// is asked once more with what was flagged
 		p.logf("goal %s: plan names what no evaluator can see; asking again: %s", goal.Slug, strings.Join(flags, " | "))
 		in.Rejected = flags
 		var again float64
 		var second *SessionAccount
-		items, reasons, flags, questions, again, second, err = p.ask(ctx, goal, scope.NodeID, dir, budget, in, repos, merged)
+		items, reasons, flags, questions, again, second, err = p.ask(ctx, goal, scope.NodeID, dir, budget, in, repos, merged, goalItems)
 		defer second.Finish(ctx, harness.Result{})
 		second.SetContextBytes(written.Bytes)
 		second.SetLabel("goal "+goal.Slug, string(harness.KindPlan))
@@ -396,7 +399,8 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 		}
 		if len(flags) > 0 {
 			// adr-004: the second plan is handed in as it stands; the
-			// evaluator's unverifiable-clause rule is the backstop
+			// evaluator's unverifiable-clause rule is the backstop (a
+			// re-land never gets here: readPlan refused it)
 			p.logf("goal %s: plan still names what no evaluator can see; handing it in: %s", goal.Slug, strings.Join(flags, " | "))
 		}
 	}
@@ -451,10 +455,10 @@ func (p *Planner) handIn(ctx context.Context, goal gateway.Goal, items []gateway
 // ask runs one planner session on in and reads its graph: the items
 // mapped onto the project's repos, each item's model_reason by seq, the
 // check's flags on their acceptance (unverifiableAcceptance,
-// hostReadingAcceptance), its questions for the person, the session's cost and its account, whose usage report is built as the
+// hostReadingAcceptance, sameAcceptanceAsFailed against goalItems), its questions for the person, the session's cost and its account, whose usage report is built as the
 // session ends: the caller hands it in and Finishes it. An error means
 // there is no graph to hand in.
-func (p *Planner) ask(ctx context.Context, goal gateway.Goal, nodeID, dir string, budget float64, in harness.PlanInput, repos map[string]gateway.Repo, merged []int) ([]gateway.PlannedItem, map[int]string, []string, []harness.PlanQuestion, float64, *SessionAccount, error) {
+func (p *Planner) ask(ctx context.Context, goal gateway.Goal, nodeID, dir string, budget float64, in harness.PlanInput, repos map[string]gateway.Repo, merged []int, goalItems []gateway.WorkItem) ([]gateway.PlannedItem, map[int]string, []string, []harness.PlanQuestion, float64, *SessionAccount, error) {
 	job := harness.Job{Kind: harness.KindPlan, Workspace: dir, Prompt: harness.PlanPrompt(in), MaxBudgetUSD: budget, Label: goal.Slug + " plan", Timeout: p.Timeout, MCPServers: p.MCP, Model: p.Model}
 	acct, err := p.Credentials.Open(ctx, gateway.SessionRef{Kind: string(harness.KindPlan), GoalID: goal.ID}, nodeID, Adapter(p.Harness))
 	if err != nil {
@@ -469,15 +473,18 @@ func (p *Planner) ask(ctx context.Context, goal gateway.Goal, nodeID, dir string
 	job.Outlive = true
 	result, err := p.Harness.Run(ctx, job, nil)
 	acct.Report(result)
-	items, reasons, flags, questions, cost, err := p.readPlan(ctx, goal, dir, acct, result, err, repos, merged, in.Evidence)
+	items, reasons, flags, questions, cost, err := p.readPlan(ctx, goal, dir, acct, result, err, repos, merged, in.Evidence, goalItems, len(in.Rejected) > 0)
 	return items, reasons, flags, questions, cost, acct, err
 }
 
 // readPlan is what follows a planner session, however this process came
 // to hold it: its graph read and mapped onto the project's repos, as ask
 // describes. A cancelled ctx leaves the session running for the next
-// node to adopt; otherwise its session directory goes.
-func (p *Planner) readPlan(ctx context.Context, goal gateway.Goal, dir string, acct *SessionAccount, result harness.Result, err error, repos map[string]gateway.Repo, merged []int, evidence []harness.ModelEvidence) ([]gateway.PlannedItem, map[int]string, []string, []harness.PlanQuestion, float64, error) {
+// node to adopt; otherwise its session directory goes. A last answer
+// (final: the re-ask's, or an adopted session's, which is not asked
+// again) that still recreates a failed item at its acceptance is not
+// handed in: it is an error naming the lineage (ADR-021's amendment).
+func (p *Planner) readPlan(ctx context.Context, goal gateway.Goal, dir string, acct *SessionAccount, result harness.Result, err error, repos map[string]gateway.Repo, merged []int, evidence []harness.ModelEvidence, goalItems []gateway.WorkItem, final bool) ([]gateway.PlannedItem, map[int]string, []string, []harness.PlanQuestion, float64, error) {
 	// logged before a done ctx returns: a deadline kills the unit too,
 	// and a detach kills nothing
 	logKilled(p.logf, "goal "+goal.Slug, result.KilledPerSession(), result.KillError)
@@ -526,11 +533,20 @@ func (p *Planner) readPlan(ctx context.Context, goal gateway.Goal, dir string, a
 			model = ""
 		}
 		reasons[sp.Seq] = strings.TrimSpace(sp.ModelReason)
-		items = append(items, gateway.PlannedItem{Seq: sp.Seq, Title: strings.TrimSpace(sp.Title), Brief: briefWithDeps(sp.Brief, deps, because), Acceptance: strings.TrimSpace(sp.Acceptance), DependsOn: deps, DependsBecause: because, RepoID: r.ID, BaseRef: base, Model: model})
+		items = append(items, gateway.PlannedItem{Seq: sp.Seq, Title: strings.TrimSpace(sp.Title), Brief: gateway.BriefWithAtomic(briefWithDeps(sp.Brief, deps, because), sp.Atomic), Acceptance: strings.TrimSpace(sp.Acceptance), DependsOn: deps, DependsBecause: because, RepoID: r.ID, BaseRef: base, Model: model})
 	}
 	flags := unverifiableAcceptance(specs, itemRepo, repos)
 	flags = append(flags, hostReadingAcceptance(specs)...)
 	flags = append(flags, modelAgainstEvidence(specs, evidence)...)
+	relanded := reLands(specs, goalItems)
+	if final && len(relanded) > 0 {
+		why := make([]string, 0, len(relanded))
+		for _, r := range relanded {
+			why = append(why, r.refusal())
+		}
+		return nil, nil, nil, nil, 0, errors.New(strings.Join(why, "; "))
+	}
+	flags = append(flags, sameAcceptanceAsFailed(specs, goalItems)...)
 	return items, reasons, flags, harness.ParsePlanQuestions(result.Text), result.CostUSD, nil
 }
 
@@ -597,8 +613,9 @@ func (p *Planner) AdoptPlan(ctx context.Context, goal gateway.Goal, scope Scope,
 		return err
 	}
 	var merged []int
-	if items, err := p.GW.GoalWorkItems(ctx, goal.ID); err == nil {
-		for _, it := range items {
+	goalItems, err := p.GW.GoalWorkItems(ctx, goal.ID)
+	if err == nil {
+		for _, it := range goalItems {
 			if it.Status == "merged" {
 				merged = append(merged, it.Seq)
 			}
@@ -612,7 +629,7 @@ func (p *Planner) AdoptPlan(ctx context.Context, goal gateway.Goal, scope Scope,
 	}
 	p.logf("goal %s: adopted its %s planner session (pid %d)", goal.Slug, s.Liveness(), s.State.PID)
 	result, err := at.Attach(ctx, s.Dir, nil)
-	items, reasons, flags, questions, cost, err := p.readPlan(ctx, goal, s.State.Workspace, nil, result, err, repos, merged, p.evidence(ctx, goal.Slug, scope, project))
+	items, reasons, flags, questions, cost, err := p.readPlan(ctx, goal, s.State.Workspace, nil, result, err, repos, merged, p.evidence(ctx, goal.Slug, scope, project), goalItems, true)
 	if err != nil {
 		return err
 	}
