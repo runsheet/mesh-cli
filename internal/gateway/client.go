@@ -97,6 +97,11 @@ type Client struct {
 	// optional fields (replacingItemId, narrowReplans): goals are read
 	// with the base fields alone from then on.
 	goalsWithoutNarrow atomic.Bool
+	// projectsWithoutExtras is set once the gateway has refused
+	// ProjectIndex's optional fields (protectedPaths): projects are
+	// read with the base fields alone from then on (goal
+	// one-evaluator-for-ordinary-work).
+	projectsWithoutExtras atomic.Bool
 	// credentialsWithoutEnterprise is set once the gateway has refused
 	// CredentialIndex.enterpriseId (a platform older than runsheet ADR
 	// 030): every later credential read asks for credentialFields alone.
@@ -755,6 +760,13 @@ type WorkItem struct {
 	// ProjectID is the mesh-context project the item's goal is in: the scope
 	// its agent resolves in (AgentIDs).
 	ProjectID string `json:"projectId"`
+	// ProtectedFiles are this item's own touched files that matched a
+	// protected rule; ProtectedRulePaths the rule's own globs. Both empty
+	// from an older platform (`?` in fields/WorkItemIndex.txt; goal
+	// one-evaluator-for-ordinary-work): an empty ProtectedFiles reads as
+	// no protected path touched, never as unknown.
+	ProtectedFiles     []string `json:"protectedFiles"`
+	ProtectedRulePaths []string `json:"protectedRulePaths"`
 	// AgentSlug names the agent that builds the item (runsheet trd §6c);
 	// empty is the role's resolved definition.
 	AgentSlug string `json:"agentSlug"`
@@ -1153,6 +1165,10 @@ type Project struct {
 	// where a direction's own ceiling caps its share. 0 is the
 	// platform's default.
 	MaxLiveGoals int `json:"maxLiveGoals"`
+	// ProtectedPaths are the project's own protected-path globs; empty
+	// from an older platform (`?` in fields/ProjectIndex.txt; goal
+	// one-evaluator-for-ordinary-work).
+	ProtectedPaths []string `json:"protectedPaths"`
 }
 
 // Project reads one project by id.
@@ -1160,8 +1176,10 @@ func (c *Client) Project(ctx context.Context, id string) (*Project, error) {
 	var out struct {
 		Project *Project `json:"projectIndex"`
 	}
-	q := fmt.Sprintf(`{ projectIndex(namespace: %q, id: %q) { %s } }`, NS, id, projectFields)
-	if err := c.Query(ctx, q, nil, &out); err != nil {
+	q := func(fields string) string {
+		return fmt.Sprintf(`{ projectIndex(namespace: %q, id: %q) { %s } }`, NS, id, fields)
+	}
+	if err := c.readProjects(ctx, q, &out); err != nil {
 		return nil, err
 	}
 	if out.Project == nil {
@@ -1175,11 +1193,31 @@ func (c *Client) Projects(ctx context.Context, orgID string) ([]Project, error) 
 	var out struct {
 		Projects []Project `json:"projectIndexs"`
 	}
-	q := fmt.Sprintf(`{ projectIndexs(namespace: %q, where: [%s]) { %s } }`, NS, where("org_id", orgID), projectFields)
-	if err := c.Query(ctx, q, nil, &out); err != nil {
+	q := func(fields string) string {
+		return fmt.Sprintf(`{ projectIndexs(namespace: %q, where: [%s]) { %s } }`, NS, where("org_id", orgID), fields)
+	}
+	if err := c.readProjects(ctx, q, &out); err != nil {
 		return nil, err
 	}
 	return out.Projects, nil
+}
+
+// readProjects runs one ProjectIndex read, query being the document with
+// its selection left to fill in. It asks for the optional fields too
+// (fields/ProjectIndex.txt's `?`: protectedPaths); a gateway that
+// refuses one is a platform without it, and from then on the client
+// asks for projectFields alone — every project reads with no protected
+// paths (goal one-evaluator-for-ordinary-work).
+func (c *Client) readProjects(ctx context.Context, query func(fields string) string, out any) error {
+	if !c.projectsWithoutExtras.Load() {
+		err := c.Query(ctx, query(projectFields+" "+projectOptionalFields), nil, out)
+		var ge *Error
+		if err == nil || !errors.As(err, &ge) || !unknownField(ge.Message, projectOptional...) {
+			return err
+		}
+		c.projectsWithoutExtras.Store(true)
+	}
+	return c.Query(ctx, query(projectFields), nil, out)
 }
 
 // Direction is a DirectionIndex row: one direction of one project — the
@@ -2189,6 +2227,15 @@ func (c *Client) ReleaseWorkItem(ctx context.Context, itemID, nodeID, reason str
 	return c.Mutate(ctx, "releaseWorkItem", itemID, map[string]any{"nodeId": nodeID, "note": reason})
 }
 
+// EvaluateChoice is the evaluate path's choice of evaluator for an item
+// (goal one-evaluator-for-ordinary-work): EvaluatedModel is the tier the
+// deciding evaluation ran on, recorded as evaluatedModel. A zero value
+// sends nothing, as EvaluateWorkItem and EvaluateWorkItemNoVerdict
+// always did before this goal.
+type EvaluateChoice struct {
+	EvaluatedModel string
+}
+
 // EvaluateWorkItem records the evaluator's verdict (phase 1's session; the
 // platform readies or reviews the item) and that session's cost. usage
 // is that session's usage report, carried as `usage` when non-nil (see
@@ -2198,11 +2245,16 @@ func (c *Client) ReleaseWorkItem(ctx context.Context, itemID, nodeID, reason str
 // on a fail and only to a gateway whose EvaluateWorkItemInput takes the
 // field (ADR-004: never a field the platform does not accept). A
 // platform without it records the verdict as before, the clauses only in
-// the prose of notes.
-func (c *Client) EvaluateWorkItem(ctx context.Context, itemID string, passed bool, notes string, clauses []FailedClause, costCents int, usage *UsageReport) error {
+// the prose of notes. choice.EvaluatedModel is sent as evaluatedModel
+// when non-empty; EvaluateWorkItemInput carries the field today, so no
+// probe is needed (goal one-evaluator-for-ordinary-work).
+func (c *Client) EvaluateWorkItem(ctx context.Context, itemID string, passed bool, notes string, clauses []FailedClause, costCents int, usage *UsageReport, choice EvaluateChoice) error {
 	in := map[string]any{"passed": passed, "notes": notes, "costCents": costCents}
 	if !passed && len(clauses) > 0 && c.takesInputField(ctx, &c.clausesSchema, "EvaluateWorkItemInput", FailedClausesField) {
 		in[FailedClausesField] = clauses
+	}
+	if choice.EvaluatedModel != "" {
+		in[EvaluatedModelField] = choice.EvaluatedModel
 	}
 	return c.mutateWithUsage(ctx, "evaluateWorkItem", itemID, in, usage)
 }
@@ -2210,6 +2262,10 @@ func (c *Client) EvaluateWorkItem(ctx context.Context, itemID string, passed boo
 // FailedClausesField is evaluateWorkItem's input field for the clauses a
 // failed evaluation failed on.
 const FailedClausesField = "failedClauses"
+
+// EvaluatedModelField is evaluateWorkItem's input field for the tier the
+// deciding evaluation ran on (goal one-evaluator-for-ordinary-work).
+const EvaluatedModelField = "evaluatedModel"
 
 // FailedClause is one acceptance clause a failed evaluation failed on,
 // with what would satisfy it. The platform refuses a clause missing
@@ -2287,18 +2343,24 @@ var ErrNoVerdictOutcome = errors.New("gateway: the platform takes no no-verdict 
 // only to a gateway whose EvaluateWorkItemInput has `noVerdict` — asked
 // once by introspection and kept for ScalingProbeEvery, as takesHolding
 // (ADR-004: never a field the platform does not accept) — and returns
-// ErrNoVerdictOutcome otherwise.
-func (c *Client) EvaluateWorkItemNoVerdict(ctx context.Context, itemID, reason string, costCents int, usage *UsageReport) error {
+// ErrNoVerdictOutcome otherwise. choice.EvaluatedModel is sent as
+// evaluatedModel when non-empty, the same field EvaluateWorkItem
+// carries (goal one-evaluator-for-ordinary-work).
+func (c *Client) EvaluateWorkItemNoVerdict(ctx context.Context, itemID, reason string, costCents int, usage *UsageReport, choice EvaluateChoice) error {
 	if !c.takesInputField(ctx, &c.noVerdictSchema, "EvaluateWorkItemInput", NoVerdictField) {
 		return ErrNoVerdictOutcome
 	}
-	return c.mutateWithUsage(ctx, "evaluateWorkItem", itemID, map[string]any{
+	in := map[string]any{
 		"passed":             false,
 		NoVerdictField:       true,
 		NoVerdictReasonField: reason,
 		"notes":              reason,
 		"costCents":          costCents,
-	}, usage)
+	}
+	if choice.EvaluatedModel != "" {
+		in[EvaluatedModelField] = choice.EvaluatedModel
+	}
+	return c.mutateWithUsage(ctx, "evaluateWorkItem", itemID, in, usage)
 }
 
 // takesInputField says whether the gateway's input type typ has field,

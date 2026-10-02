@@ -872,7 +872,7 @@ func TestLoopPoisonedItemDoesNotStarveTheQueue(t *testing.T) {
 	}
 	// and every evaluation of it fails
 	loop.Evaluate = func(ctx context.Context, it gateway.WorkItem) {
-		if err := gw.EvaluateWorkItem(ctx, it.ID, false, "VERDICT: FAIL", nil, 0, nil); err != nil {
+		if err := gw.EvaluateWorkItem(ctx, it.ID, false, "VERDICT: FAIL", nil, 0, nil, gateway.EvaluateChoice{}); err != nil {
 			t.Errorf("evaluate: %v", err)
 		}
 	}

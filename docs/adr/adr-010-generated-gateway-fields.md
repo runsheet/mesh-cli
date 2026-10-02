@@ -72,3 +72,27 @@ hand-written.
   yet carry `limits`, `scaling`, `runtimes` or `adapters` (the platform
   half is not deployed), and the fake simulates platforms with and without
   them.
+
+## Amendment 2026-10-02: protectedFiles, protectedRulePaths, protectedPaths
+
+Goal `one-evaluator-for-ordinary-work` reads the item's and the
+project's protected paths to decide whether an evaluation needs a
+second opinion. `fields/WorkItemIndex.txt` gained `protectedFiles?`
+and `protectedRulePaths?`, `fields/ProjectIndex.txt` gained
+`protectedPaths?` — all three already in schema.json, so no refresh
+was needed — and `readProjects` got the same probe-and-fallback the
+item and goal reads already had: the optional selection first, the
+required one alone once the platform refuses it.
+
+An earlier attempt at this goal (branch
+`mesh/one-evaluator-for-ordinary-work-1`) also added a `secondOpinion`
+field to `EvaluateWorkItemInput`, plus `evaluators` and
+`evaluatorsWhy`, and failed: the platform does not serve
+`secondOpinion`, so selecting it was refused outright, not dropped as
+an optional field would be. Rule 3 above is for a field the platform
+*may* lack on an otherwise-known type; it does not let the client ask
+for a field the schema has never carried. `secondOpinion`,
+`evaluators` and `evaluatorsWhy` wait for the platform side to land
+first (the standing rule: a process reacts only to events after its
+own deploy) and are not selected, sent or named anywhere in
+`internal/gateway` until it does.
