@@ -250,33 +250,18 @@ var nodeStatusCmd = &cobra.Command{
 		gw := gateway.NewWithSource(gatewayURL(), src)
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		// an owned node heartbeats once under its one id and serves the
-		// orgs the answer names; else, or with no answer, per org as before
-		var scopes node.Scopes
-		owned := false
-		// by the contract the last registration saved: a per-org node —
-		// or one whose node.yaml predates `contract:` — is never asked
-		// under the one id, whatever node_id it kept
-		if cfg.OwnedID() != "" && gw.TakesOwner(ctx) {
-			answer, err := gw.HeartbeatNode(ctx, cfg.OwnedID(), version.Resolved(), 0, gateway.HeartbeatExtras{Commit: version.Commit()})
-			if err != nil {
-				return fmt.Errorf("heartbeat: %w", err)
-			}
-			if answer != nil {
-				var note error
-				if scopes, note = node.ServedFrom(answer, cfg.Orgs); note != nil {
-					fmt.Printf("orgs: %v\n", note)
-				}
-				owned = true
-				o := node.OwnerFrom(answer)
-				fmt.Printf("%s (%s); serving %s\n", o.String(), o.Kind, strings.Join(scopes.Names(), ", "))
-			}
+		// an owned node — by the contract the last registration saved —
+		// heartbeats once under its one id, a nil answer included; a
+		// per-org node per org as before (node.HeartbeatOutside)
+		out, err := node.HeartbeatOutside(ctx, gw, cfg, version.Resolved(), gateway.HeartbeatExtras{Commit: version.Commit()},
+			func(sc node.Scope, err error) error { return fmt.Errorf("heartbeat in %s: %w", sc.Name(), err) })
+		if err != nil {
+			return err
 		}
-		if !owned {
-			if scopes, err = node.ResolveScopes(ctx, gw, cfg); err != nil {
-				return err
-			}
+		if line := ownedStatusLine(out); line != "" {
+			fmt.Println(line)
 		}
+		scopes := out.Scopes
 		fmt.Println(credentialLine(src.Credential()))
 		state, err := node.DefaultRunState()
 		if err != nil {
@@ -288,11 +273,6 @@ var nodeStatusCmd = &cobra.Command{
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 		fmt.Fprintln(w, "ORG\tNAME\tSLUG\tSTATUS\tRUNNING\tCAPACITY\tVERSION\tLAST_SEEN")
 		for _, sc := range scopes {
-			if !owned {
-				if err := statusHeartbeat(ctx, gw, sc.NodeID); err != nil {
-					return fmt.Errorf("heartbeat in %s: %w", sc.Name(), err)
-				}
-			}
 			nodes, err := gw.Nodes(ctx, sc.ID)
 			if err != nil {
 				return err
@@ -366,6 +346,25 @@ func dash(s string) string {
 		return "-"
 	}
 	return s
+}
+
+// ownedStatusLine is what `mesh node status` says of the owner contract:
+// the owner and the orgs it serves, an orgs restriction the answer did
+// not meet, or — on a nil answer — that the platform named none this
+// time. A per-org node says nothing here.
+func ownedStatusLine(out node.Outside) string {
+	if !out.Owned {
+		return ""
+	}
+	if out.Answer == nil {
+		return "owner contract: the platform answered no orgs on this heartbeat"
+	}
+	o := node.OwnerFrom(out.Answer)
+	line := fmt.Sprintf("%s (%s); serving %s", o.String(), o.Kind, strings.Join(out.Scopes.Names(), ", "))
+	if out.Restrict != nil {
+		line = fmt.Sprintf("orgs: %v\n%s", out.Restrict, line)
+	}
+	return line
 }
 
 // statusHeartbeat is `mesh node status`'s one heartbeat: the version
@@ -1006,32 +1005,24 @@ func reportRollback(check node.StartCheck, logger *log.Logger) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	// an owned node — by the contract its last registration saved —
-	// reports it once, under its one id; a platform that answers no
-	// scopes there is still reached per org below. A per-org node is
-	// reached per org alone, whatever node_id it kept.
-	if cfg.OwnedID() != "" && gw.TakesOwner(ctx) {
-		answer, err := gw.HeartbeatNode(ctx, cfg.OwnedID(), check.From, 0, gateway.HeartbeatExtras{UpdateError: check.Reason})
-		if err != nil {
-			logger.Printf("self-update: report rollback: %v", err)
-			return
-		}
-		if answer != nil {
-			return
-		}
-	}
-	scopes, err := node.ResolveScopes(ctx, gw, cfg)
+	reportRollbackVia(ctx, gw, cfg, check, logger)
+}
+
+// reportRollbackVia is reportRollback on a given platform. An owned
+// node — by the contract its last registration saved — reports it once,
+// under its one id, and a nil answer there ends it: it is never reached
+// per org as well. A per-org node is reached per org alone, whatever
+// node_id it kept. The rollback reports the version it rolls back to,
+// not this binary's; this binary's commit would not be that version's,
+// so the heartbeat carries none and the restored binary's first one does.
+func reportRollbackVia(ctx context.Context, gw node.OutsideGateway, cfg *node.Config, check node.StartCheck, logger *log.Logger) {
+	_, err := node.HeartbeatOutside(ctx, gw, cfg, check.From, gateway.HeartbeatExtras{UpdateError: check.Reason},
+		func(sc node.Scope, err error) error {
+			logger.Printf("self-update: report rollback to %s: %v", sc.Name(), err)
+			return nil
+		})
 	if err != nil {
 		logger.Printf("self-update: report rollback: %v", err)
-		return
-	}
-	// The rollback reports the version it rolls back to, not this
-	// binary's; this binary's commit would not be that version's, so the
-	// heartbeat carries none and the restored binary's first one does.
-	for _, sc := range scopes {
-		if _, err := gw.HeartbeatNode(ctx, sc.NodeID, check.From, 0, gateway.HeartbeatExtras{UpdateError: check.Reason}); err != nil {
-			logger.Printf("self-update: report rollback to %s: %v", sc.Name(), err)
-		}
 	}
 }
 
