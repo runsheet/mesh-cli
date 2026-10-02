@@ -233,7 +233,24 @@ const (
 	// ClauseMax is how many clauses one verdict carries; beyond it the
 	// evaluator is listing, not judging.
 	ClauseMax = 20
+	// ClauseReading opens a line recording the evaluator's own reading
+	// of a clause that depends on the host: `READING: <clause> ||
+	// <what it measured, when, under what load>` (ADR-020).
+	// ParseReadings reads them; the node records them with the verdict.
+	ClauseReading = "READING:"
+	// SameClauseLine opens a review that fails a clause an earlier
+	// attempt failed on: `fails on the same clause as attempt N:
+	// <clause>` (ADR-020). NoteSameClause puts it there when the model
+	// did not.
+	SameClauseLine = "fails on the same clause as attempt"
 )
+
+// Reading is the evaluator's own reading of a host-state clause: the
+// clause, and what it measured, when and under what load.
+type Reading struct {
+	Clause string
+	Value  string
+}
 
 // FailedClause is one acceptance clause an evaluation failed, with what
 // would satisfy it. Both halves are required: the platform refuses a
@@ -260,6 +277,20 @@ type PriorAttempt struct {
 const evaluateRetryRule = "Judge this attempt on the clauses earlier attempts failed on, listed above, and on whether anything that held before has regressed. A clause of the acceptance no earlier attempt named, and that is not a regression, belongs in your review as work still to do — not in your verdict: do not fail the item on it. Fail only a clause already named, or a regression."
 
 const evaluateUnverifiableRule = "A clause you cannot check at evaluation time — a CI check on this item's pull request (it opens only after you pass), a deploy, a file in another repository — is reported in your review as unverifiable, not failed, and the item is not failed on that clause alone. Every clause you can check you still check."
+
+// evaluateHostRule is the evaluator's side of ADR-020: a clause whose
+// truth is a reading of the host the evaluator runs on — load, wall
+// time, a ratio of durations, a p90 over a day — is judged on its
+// mechanism, and the evaluator's own reading is recorded beside the
+// verdict (a READING line), never failed for the host's number. Both
+// families get it: Claude and Codex share this prompt (ADR 005, ADR 011).
+var evaluateHostRule = fmt.Sprintf("A clause whose truth depends on the host you run on — load, wall time, the seconds a run takes, a ratio of durations, a p90 over a day, anything measured on the machine rather than in the branch — is judged on its mechanism: the script or test that takes the reading exists, runs, and the branch records its reading truthfully (a README, a timings file, a log checked in). Take your own reading and write it above the verdict, one line per such clause: `%s <the clause, as the acceptance words it> %s <what you measured, when, under what load>`. Fail such a clause only for what the branch can change — the script missing, a recorded figure that contradicts the file it cites, a stale timings file — never because the host's number is over the threshold. For example, ci-fits-the-mini asked for `the three shards' durations within 20%% of each other`, measured on a node whose load ran 30–65 on 18 cores: rounds of 1.09, 1.13 and 1.19 max/min were failed while the planner, disjoint lists over all 309 tests and the -check tools passed every time — the ratio was the host's number, not the branch's, and no round should have failed on it: each records its ratio as a READING. What the branch could change still fails: item 14's shard_times.json was stale, the median of earlier sharded rounds rather than the fresh whole-package `go test -json` run its brief asked for, and item 14 fails on that stale file — not on its 1.09, which is recorded as a READING.", ClauseReading, ClauseSep)
+
+// evaluateSameClauseRule makes a retry's repeated failure visible: when
+// a clause an earlier attempt already failed fails again, the review
+// opens by saying so (SameClauseLine), so the narrow re-plan changes the
+// clause or escalates instead of rebuilding the same thing (ADR-020).
+var evaluateSameClauseRule = fmt.Sprintf("When you fail a clause an earlier attempt above already failed on, the first line of your review must be `%s N: <the clause>`, N that attempt's number: a second failure on the same clause says the clause, not the build, needs changing.", SameClauseLine)
 
 // EvaluatePrompt renders the evaluator's prompt (mesh-specs trd §3.4): a
 // fresh session, the diff and the acceptance, an adversarial review that
@@ -342,10 +373,12 @@ func EvaluatePrompt(in EvaluateInput) string {
 	}
 	b.WriteString("4. Change nothing: no edits, no commits, no pushes, nothing outside this workspace. You are a reviewer.\n")
 	b.WriteString("5. " + evaluateUnverifiableRule + "\n")
-	n := 6
+	b.WriteString("6. " + evaluateHostRule + "\n")
+	n := 7
 	if len(in.PriorAttempts) > 0 {
 		fmt.Fprintf(&b, "%d. %s\n", n, evaluateRetryRule)
-		n++
+		fmt.Fprintf(&b, "%d. %s\n", n+1, evaluateSameClauseRule)
+		n += 2
 	}
 	fmt.Fprintf(&b, "%d. End your final message with a short review — what holds, what does not, what is unverifiable, and exactly what a retry must fix. When you fail it, write one line per failed acceptance clause, `%s <the clause, as the acceptance words it> %s %s <what would satisfy it>`, above the verdict; a clause that does not say what would satisfy it is dropped, so write both halves. Then one last line that is either `%s` or `%s`. Pass only when every clause of the acceptance you can check holds.\n", n, ClauseFailed, ClauseSep, ClauseSatisfy, VerdictPass, VerdictFail)
 	return b.String()
@@ -384,6 +417,86 @@ func ParseFailedClauses(text string) []FailedClause {
 		}
 	}
 	return out
+}
+
+// ParseReadings reads the READING lines of an evaluator's final message,
+// in the order written and at most ClauseMax of them. A line missing
+// either half is dropped, as are duplicates of a clause.
+func ParseReadings(text string) []Reading {
+	var out []Reading
+	seen := map[string]bool{}
+	for _, line := range strings.Split(text, "\n") {
+		l := strings.TrimLeft(strings.TrimSpace(line), "-*\u2022># \t")
+		l = strings.TrimSpace(strings.Trim(l, "`*_"))
+		if !strings.HasPrefix(strings.ToUpper(l), ClauseReading) {
+			continue
+		}
+		clause, value, ok := strings.Cut(strings.TrimSpace(l[len(ClauseReading):]), ClauseSep)
+		if !ok {
+			continue
+		}
+		clause = strings.TrimSpace(strings.Trim(strings.TrimSpace(clause), "`*_"))
+		value = strings.TrimSpace(strings.Trim(strings.TrimSpace(value), "`*_"))
+		if clause == "" || value == "" || seen[clause] {
+			continue
+		}
+		seen[clause] = true
+		if out = append(out, Reading{Clause: clause, Value: value}); len(out) == ClauseMax {
+			break
+		}
+	}
+	return out
+}
+
+// normClause is a clause as SameClause compares it: lower case, no
+// backticks, its whitespace collapsed and its trailing punctuation gone.
+func normClause(s string) string {
+	s = strings.ToLower(strings.ReplaceAll(s, "`", ""))
+	s = strings.Join(strings.Fields(s), " ")
+	return strings.TrimRight(s, ".,;:!?")
+}
+
+// SameClause finds a clause of this verdict an earlier attempt already
+// failed on: equal once normalised (normClause), or one containing the
+// other. It returns the latest such attempt's number and this verdict's
+// clause; ok is false when no clause repeats (ADR-020).
+func SameClause(prior []PriorAttempt, clauses []FailedClause) (attempt int, clause string, ok bool) {
+	for _, c := range clauses {
+		now := normClause(c.Clause)
+		if now == "" {
+			continue
+		}
+		for i := len(prior) - 1; i >= 0; i-- {
+			for _, pc := range prior[i].Clauses {
+				was := normClause(pc.Clause)
+				if was != "" && (now == was || strings.Contains(now, was) || strings.Contains(was, now)) {
+					return prior[i].Attempt, c.Clause, true
+				}
+			}
+		}
+	}
+	return 0, "", false
+}
+
+// NoteSameClause gives a verdict's notes the same-clause first line when
+// it fails a clause an earlier attempt failed on, so the record carries
+// it even when the model forgot to write it. Notes that already open
+// with SameClauseLine, or that repeat no clause, are returned unchanged.
+func NoteSameClause(notes string, prior []PriorAttempt, clauses []FailedClause) string {
+	attempt, clause, ok := SameClause(prior, clauses)
+	if !ok {
+		return notes
+	}
+	first, _, _ := strings.Cut(strings.TrimSpace(notes), "\n")
+	first = strings.TrimSpace(strings.Trim(strings.TrimSpace(first), "`*_#> "))
+	if strings.HasPrefix(strings.ToLower(first), SameClauseLine) {
+		return notes
+	}
+	line := fmt.Sprintf("%s %d: %s", SameClauseLine, attempt, clause)
+	if strings.TrimSpace(notes) == "" {
+		return line
+	}
+	return line + "\n\n" + notes
 }
 
 // ParseVerdict reads the evaluator's final message: the last verdict line
