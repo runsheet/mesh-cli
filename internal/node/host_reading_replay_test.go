@@ -148,6 +148,54 @@ func TestReplayCIFitsItem5HostReadingPassesOnCodex(t *testing.T) {
 	assertItem5Recorded(t, f, logs.String())
 }
 
+// cifitsItem5LongVerdict is item 5's verdict with a review long enough
+// that the notes are cut to fit: the READING line sits near the verdict,
+// below the cut, and must still be recorded.
+func cifitsItem5LongVerdict() string {
+	review := strings.Repeat("The shard planner reads e2e/shard_times.json and the generator's lists were checked test by test against `go test -list . ./e2e`. ", 60)
+	return review + "\n\n" + cifitsItem5Verdict
+}
+
+// Item 5 replayed on Claude with a long review: the notes are cut, the
+// reading is not.
+func TestReplayCIFitsItem5LongReviewKeepsReading(t *testing.T) {
+	f, ev, _, logs := priorAttemptsFixture(t)
+	f.WorkItems[item1]["attempts"] = 0
+	f.WorkItems[item1]["evaluations"] = nil
+	cifitsItem5(f)
+	verdict := cifitsItem5LongVerdict()
+	if len(verdict) <= 4000 {
+		t.Fatalf("the review is %d bytes, not long enough to be cut", len(verdict))
+	}
+	ev.Harness = &readmeEvaluator{fakeHarness{text: verdict}}
+	ev.WS = readmeWS{ev.WS.(*fakeWS)}
+	evaluateIt(t, ev)
+	assertItem5Cut(t, f)
+	assertItem5Recorded(t, f, logs.String())
+}
+
+// Item 5 replayed on Codex with a long review: the same.
+func TestReplayCIFitsItem5LongReviewKeepsReadingOnCodex(t *testing.T) {
+	f, ev, _, codex, _, logs := familyFixture(t, "normal", "sonnet", "VERDICT: FAIL", cifitsItem5LongVerdict())
+	cifitsItem5(f)
+	ev.WS = readmeWS{ev.WS.(*fakeWS)}
+	evaluateIt(t, ev)
+	if codex.runs() != 1 {
+		t.Fatalf("codex runs %d", codex.runs())
+	}
+	assertItem5Cut(t, f)
+	assertItem5Recorded(t, f, logs.String())
+}
+
+// assertItem5Cut: the recorded notes were cut to fit.
+func assertItem5Cut(t *testing.T, f *gatewaytest.Fake) {
+	t.Helper()
+	notes, _ := lastEvaluation(t, f)["notes"].(string)
+	if len(notes) > 4000 || !strings.Contains(notes, "…") {
+		t.Fatalf("notes were not cut (%d bytes):\n%s", len(notes), notes)
+	}
+}
+
 // cifitsItem14 records item 14's verdict in the fake as attempt 1, its
 // FAILED clause with it, and puts the retry back in evaluating.
 func cifitsItem14(t *testing.T, f *gatewaytest.Fake, gw *gateway.Client) {
@@ -245,4 +293,32 @@ func TestReplayCIFitsItem14Then17SameClauseOnCodex(t *testing.T) {
 		t.Fatalf("runs: claude %d, codex %d", len(claude.jobs), codex.runs())
 	}
 	assertSameClause(t, f, codex.jobs[0].Prompt, logs.String())
+}
+
+// truncateNotes cuts the review and keeps every READING line, to n.
+func TestTruncateNotesKeepsReadings(t *testing.T) {
+	reading := "READING: " + cifitsHostClause + " || max/min 1.19"
+	s := strings.Repeat("review ", 200) + "\n" + reading + "\nmore review after it"
+	for _, n := range []int{100, 400, 1000} {
+		got := truncateNotes(s, n)
+		if len(got) > n || !strings.Contains(got, reading) {
+			t.Fatalf("n=%d: %d bytes:\n%s", n, len(got), got)
+		}
+	}
+	if got := truncateNotes("short\n"+reading, 4000); got != "short\n"+reading {
+		t.Fatalf("an uncut note changed: %q", got)
+	}
+	if got, want := truncateNotes(strings.Repeat("x", 50), 10), truncate(strings.Repeat("x", 50), 10); got != want {
+		t.Fatalf("no reading: %q, want %q", got, want)
+	}
+}
+
+// Both families' notes, cut together, keep each one's reading.
+func TestBothNotesKeepReadings(t *testing.T) {
+	long := cifitsItem5LongVerdict()
+	_, notes, _ := harness.ParseVerdict(long)
+	got := bothNotes(family{}, notes, family{codex: true}, notes, true, 3000)
+	if len(got) > 3000 || strings.Count(got, "READING: "+cifitsHostClause) != 2 {
+		t.Fatalf("%d bytes:\n%s", len(got), got)
+	}
 }

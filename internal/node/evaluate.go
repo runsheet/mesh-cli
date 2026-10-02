@@ -594,7 +594,7 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 		if op.unavailable != "" {
 			e.logf("item %s: %s second opinion unavailable: %s", label, other.name(), op.unavailable)
 			line := other.name() + " second opinion unavailable: " + op.unavailable
-			notes = truncate(notes, room-200-len(line)-len(without)-len(ev.preflight)) + "\n\n" + line + "\n\n(evaluated on " + evaluatedOn + ")" + without
+			notes = truncateNotes(notes, room-200-len(line)-len(without)-len(ev.preflight)) + "\n\n" + line + "\n\n(evaluated on " + evaluatedOn + ")" + without
 		} else {
 			if !op.passed {
 				// the second opinion's clauses are the item's too
@@ -605,7 +605,7 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 			notes = bothNotes(fam, notes, other, op.notes, op.passed, room-200-len(without)-len(ev.preflight)) + "\n\n(evaluated on " + evaluatedOn + "; second opinion on " + other.fullName() + ")" + without
 		}
 	} else {
-		notes = truncate(notes, room-100-len(without)-len(ev.preflight)) + "\n\n(evaluated on " + evaluatedOn + ")" + without
+		notes = truncateNotes(notes, room-100-len(without)-len(ev.preflight)) + "\n\n(evaluated on " + evaluatedOn + ")" + without
 	}
 	if head != "" {
 		notes = head + "\n\n" + notes
@@ -623,7 +623,7 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 		// first, so the narrow re-plan changes the clause or escalates
 		// rather than rebuilding (ADR-020)
 		if attempt, _, ok := harness.SameClause(ev.prior, clauses); ok {
-			notes = truncate(harness.NoteSameClause(notes, ev.prior, clauses), 4000)
+			notes = truncateNotes(harness.NoteSameClause(notes, ev.prior, clauses), 4000)
 			e.logf("item %s: fails on the same clause as attempt %d", label, attempt)
 		}
 	}
@@ -638,6 +638,34 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 // sameClauseRoom is what a failing retry's notes leave for the line
 // NoteSameClause may open them with.
 const sameClauseRoom = 400
+
+// truncateNotes cuts a verdict's notes to n as truncate does, but
+// never its READING lines: the review above them is cut and they follow
+// it, so a reading node.log says was recorded is in the recorded notes
+// (ADR-020).
+func truncateNotes(s string, n int) string {
+	s = strings.TrimSpace(s)
+	if len(s) <= n {
+		return s
+	}
+	var body, readings []string
+	for _, line := range strings.Split(s, "\n") {
+		if len(harness.ParseReadings(line)) > 0 {
+			readings = append(readings, strings.TrimSpace(line))
+		} else {
+			body = append(body, line)
+		}
+	}
+	if len(readings) == 0 {
+		return truncate(s, n)
+	}
+	keep := strings.Join(readings, "\n")
+	room := n - len(keep) - 3 // the newline, and truncate's "…" over the byte it replaces
+	if room < 2 {
+		return truncate(keep, n)
+	}
+	return truncate(strings.Join(body, "\n"), room) + "\n" + keep
+}
 
 // logReadings logs each READING line of a verdict's notes: the
 // evaluator's own reading of a host clause, recorded with the verdict
@@ -962,7 +990,7 @@ func bothNotes(firstOn family, first string, secondOn family, second string, sec
 	} else if len(second) < b {
 		a += b - len(second)
 	}
-	return firstHead + truncate(first, a) + "\n\n" + secondHead + truncate(second, b)
+	return firstHead + truncateNotes(first, a) + "\n\n" + secondHead + truncateNotes(second, b)
 }
 
 func verdictLine(passed bool) string {
