@@ -35,7 +35,7 @@ func TestBuildPrompt(t *testing.T) {
 // A session with mesh-context's tools is told to use mesh_document and
 // mesh_search, not the prologue_* names.
 func TestBuildPromptContextTools(t *testing.T) {
-	p := BuildPrompt(PromptInput{Title: "x", Repo: "acme/widgets", ContextDir: ".mesh/context", Project: "acme/mesh", Prologue: true})
+	p := BuildPrompt(PromptInput{Title: "x", Repo: "acme/widgets", ContextDir: ".mesh/context", Project: "acme/mesh", MeshContext: true})
 	for _, want := range []string{"mesh_document", "mesh_search"} {
 		if !strings.Contains(p, want) {
 			t.Errorf("build prompt lacks %q:\n%s", want, p)
