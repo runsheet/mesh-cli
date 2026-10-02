@@ -40,12 +40,9 @@ type Planner struct {
 	ContextBudget func() ContextConfig
 	// Model is what a planner session runs on ("" the CLI's default).
 	Model string
-	// Accounts are the node's Claude accounts (node.yaml); a session runs
-	// on the first, or on the operator's own login when there are none.
-	// They are the fallback to the credentials the platform issues.
-	Accounts []AccountConfig
 	// Credentials asks the platform for the session's credentials and
-	// reports its usage record (nil: node.yaml's accounts, no record).
+	// reports its usage record. Required: a nil one is a programming
+	// error, and its Open panics (no node.yaml fallback, adr-005).
 	Credentials *Credentials
 	// Timeout caps its wall clock (0 none).
 	Timeout time.Duration
@@ -459,7 +456,7 @@ func (p *Planner) handIn(ctx context.Context, goal gateway.Goal, items []gateway
 // there is no graph to hand in.
 func (p *Planner) ask(ctx context.Context, goal gateway.Goal, nodeID, dir string, budget float64, in harness.PlanInput, repos map[string]gateway.Repo, merged []int) ([]gateway.PlannedItem, map[int]string, []string, []harness.PlanQuestion, float64, *SessionAccount, error) {
 	job := harness.Job{Kind: harness.KindPlan, Workspace: dir, Prompt: harness.PlanPrompt(in), MaxBudgetUSD: budget, Label: goal.Slug + " plan", Timeout: p.Timeout, MCPServers: p.MCP, Model: p.Model}
-	acct, err := p.Credentials.Open(ctx, gateway.SessionRef{Kind: string(harness.KindPlan), GoalID: goal.ID}, nodeID, p.Accounts, Adapter(p.Harness))
+	acct, err := p.Credentials.Open(ctx, gateway.SessionRef{Kind: string(harness.KindPlan), GoalID: goal.ID}, nodeID, Adapter(p.Harness))
 	if err != nil {
 		// an ErrNoCredential among them: no session starts, and the loop
 		// leaves the goal's plan unclaimed (Loop.NoCredential)

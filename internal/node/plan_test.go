@@ -32,7 +32,7 @@ func TestLoopPlansRequestedGoals(t *testing.T) {
 		"{\"seq\": 1, \"title\": \"Write the failing test\", \"brief\": \"A test in widgets.\", \"acceptance\": \"go test fails on TestThing\", \"depends_on\": [], \"repo\": \"acme/widgets\"}," +
 		"{\"seq\": 2, \"title\": \"Make it pass\", \"brief\": \"Implement Thing.\", \"acceptance\": \"go test ./... passes\", \"depends_on\": [{\"seq\": 1, \"because\": \"uses TestThing item 1 adds\"}], \"repo\": \"widgets\", \"base_ref\": \"main\"}" +
 		"]}\n```"}
-	pl := &Planner{GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, MaxBudgetUSD: 4, Log: log.New(os.Stderr, "", 0)}
+	pl := &Planner{Credentials: testCreds(gw), GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, MaxBudgetUSD: 4, Log: log.New(os.Stderr, "", 0)}
 	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Interval: time.Hour, Log: pl.Log,
 		Dispatch: func(context.Context, gateway.WorkItem) {},
 		Plan:     func(ctx context.Context, g gateway.Goal, sc Scope) { _ = pl.Plan(ctx, g, sc) }}
@@ -117,7 +117,7 @@ func TestPlannerReplans(t *testing.T) {
 	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: Fixed(1), OwnerID: f.UserID}
 	ws := &fakeWS{root: t.TempDir()}
 	h := &fakeHarness{text: "```json\n{\"items\": [{\"seq\": 3, \"title\": \"Make it pass, smaller\", \"brief\": \"Half.\", \"acceptance\": \"half passes\", \"depends_on\": [{\"seq\": 1, \"because\": \"uses the test item 1 merged\"}], \"repo\": \"acme/widgets\"}]}\n```"}
-	pl := &Planner{GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, Log: log.New(os.Stderr, "", 0)}
+	pl := &Planner{Credentials: testCreds(gw), GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, Log: log.New(os.Stderr, "", 0)}
 	if err := pl.Plan(context.Background(), gateway.Goal{ID: goalID, Slug: "ship-it", Title: "Ship it", ProjectID: projID, Status: "planning", PausedReason: "item failed: evaluation failed 3 times"}, scopesOf(cfg)[0]); err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +213,7 @@ func TestPlannerCarriesEachItemsModel(t *testing.T) {
 		"]}\n```"}
 	var logged strings.Builder
 	models := Models{Default: "sonnet", Build: "opus"}
-	pl := &Planner{GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, Model: models.PlanModel(), Log: log.New(&logged, "", 0)}
+	pl := &Planner{Credentials: testCreds(gw), GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, Model: models.PlanModel(), Log: log.New(&logged, "", 0)}
 	if err := pl.Plan(context.Background(), gateway.Goal{ID: goalID, Slug: "ship-it", Title: "Ship it", ProjectID: projID, Status: "planning"}, scopesOf(cfg)[0]); err != nil {
 		t.Fatal(err)
 	}
@@ -260,7 +260,7 @@ func TestPlannerReadsScorecardEvidence(t *testing.T) {
 	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: Fixed(1), OwnerID: f.UserID}
 	ws := &fakeWS{root: t.TempDir()}
 	h := &fakeHarness{text: "```json\n{\"items\": [{\"seq\": 1, \"title\": \"Docs\", \"acceptance\": \"go test ./... passes\", \"repo\": \"acme/widgets\", \"model\": \"opus\"}]}\n```"}
-	pl := &Planner{GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, Log: log.New(os.Stderr, "", 0)}
+	pl := &Planner{Credentials: testCreds(gw), GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, Log: log.New(os.Stderr, "", 0)}
 	if err := pl.Plan(context.Background(), gateway.Goal{ID: goalID, Slug: "ship-it", Title: "Ship it", ProjectID: projID, Status: "planning"}, scopesOf(cfg)[0]); err != nil {
 		t.Fatal(err)
 	}
@@ -285,7 +285,7 @@ func TestPlannerWithoutScorecardOnAnOlderPlatform(t *testing.T) {
 	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: Fixed(1), OwnerID: f.UserID}
 	ws := &fakeWS{root: t.TempDir()}
 	h := &fakeHarness{text: "```json\n{\"items\": [{\"seq\": 1, \"title\": \"Docs\", \"acceptance\": \"go test ./... passes\", \"repo\": \"acme/widgets\", \"model\": \"opus\"}]}\n```"}
-	pl := &Planner{GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, Log: log.New(os.Stderr, "", 0)}
+	pl := &Planner{Credentials: testCreds(gw), GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, Log: log.New(os.Stderr, "", 0)}
 	if err := pl.Plan(context.Background(), gateway.Goal{ID: goalID, Slug: "ship-it", Title: "Ship it", ProjectID: projID, Status: "planning"}, scopesOf(cfg)[0]); err != nil {
 		t.Fatal(err)
 	}
@@ -400,7 +400,7 @@ func planOnce(t *testing.T, answers ...string) (*gatewaytest.Fake, *fakeHarness,
 	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: Fixed(1), OwnerID: f.UserID}
 	ws := &fakeWS{root: t.TempDir()}
 	h := &fakeHarness{texts: answers}
-	pl := &Planner{GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, Log: log.New(os.Stderr, "", 0)}
+	pl := &Planner{Credentials: testCreds(gw), GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, Log: log.New(os.Stderr, "", 0)}
 	err := pl.Plan(context.Background(), gateway.Goal{ID: goalID, Slug: "ship-it", Title: "Ship it", ProjectID: projID, Status: "planning"}, scopesOf(cfg)[0])
 	return f, h, err
 }
@@ -572,7 +572,7 @@ func TestPlannerDropsUnexplainedDependencies(t *testing.T) {
 		`{"seq": 4, "title": "Docs", "brief": "Record it.", "acceptance": "README has a Foo section", "repo": "acme/widgets", "depends_on": [2]}` +
 		"]}\n```"}
 	var logged strings.Builder
-	pl := &Planner{GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, Log: log.New(&logged, "", 0)}
+	pl := &Planner{Credentials: testCreds(gw), GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, Log: log.New(&logged, "", 0)}
 	goal := gateway.Goal{ID: goalID, Slug: "ship-it", Title: "Ship it", ProjectID: projID, Status: "planning"}
 	if err := pl.Plan(context.Background(), goal, scopesOf(cfg)[0]); err != nil {
 		t.Fatal(err)

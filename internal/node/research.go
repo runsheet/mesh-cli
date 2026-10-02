@@ -49,12 +49,9 @@ type Director struct {
 	ContextBudget func() ContextConfig
 	// Model is what a research session runs on ("" the CLI's default).
 	Model string
-	// Accounts are the node's Claude accounts (node.yaml); a session runs
-	// on the first, or on the operator's own login when there are none.
-	// They are the fallback to the credentials the platform issues.
-	Accounts []AccountConfig
 	// Credentials asks the platform for the session's credentials and
-	// reports its usage record (nil: node.yaml's accounts, no record).
+	// reports its usage record. Required: a nil one is a programming
+	// error, and its Open panics (no node.yaml fallback, adr-005).
 	Credentials *Credentials
 	// Timeout caps its wall clock (0 none).
 	Timeout time.Duration
@@ -168,7 +165,7 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 		Kind: harness.KindResearch, Workspace: dir, Prompt: prompt, MaxBudgetUSD: budget,
 		Label: project.Slug + "/" + direction.Slug + " research", Timeout: d.Timeout, MCPServers: d.MCP, Model: d.Model,
 	}
-	acct, err := d.Credentials.Open(withSubject(ctx, scope, project.ID, project.Slug), gateway.SessionRef{Kind: string(harness.KindResearch), DirectionID: direction.ID}, scope.NodeID, d.Accounts, Adapter(d.Harness))
+	acct, err := d.Credentials.Open(withSubject(ctx, scope, project.ID, project.Slug), gateway.SessionRef{Kind: string(harness.KindResearch), DirectionID: direction.ID}, scope.NodeID, Adapter(d.Harness))
 	if err != nil {
 		return err
 	}

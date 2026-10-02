@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -210,7 +211,7 @@ func TestOpenChoosesByAdapter(t *testing.T) {
 	known := &KnownAccounts{}
 	c := &Credentials{GW: gw, Known: known, Log: log.New(&logs, "", 0)}
 
-	s, err := c.Open(context.Background(), ref, "n", nil, AdapterCodex)
+	s, err := c.Open(context.Background(), ref, "n", AdapterCodex)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,7 +223,7 @@ func TestOpenChoosesByAdapter(t *testing.T) {
 	}
 	s.Cleanup()
 
-	s, err = c.Open(context.Background(), ref, "n", nil, AdapterClaudeCode)
+	s, err = c.Open(context.Background(), ref, "n", AdapterClaudeCode)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,11 +236,11 @@ func TestOpenChoosesByAdapter(t *testing.T) {
 	s.Cleanup()
 
 	gw.issued = []gateway.Credential{codexSub(), codexAPI()}
-	if _, err := c.Open(context.Background(), ref, "n", nil, ""); !isNoCredential(err) || !strings.Contains(err.Error(), "no claude-code credential") {
+	if _, err := c.Open(context.Background(), ref, "n", ""); !isNoCredential(err) || !strings.Contains(err.Error(), "no claude-code credential") {
 		t.Fatalf("a codex-only read for a Claude session = %v, want ErrNoCredential", err)
 	}
 	gw.issued = []gateway.Credential{claudeSub()}
-	if _, err := c.Open(context.Background(), ref, "n", nil, AdapterCodex); !isNoCredential(err) || !strings.Contains(err.Error(), "no codex credential") {
+	if _, err := c.Open(context.Background(), ref, "n", AdapterCodex); !isNoCredential(err) || !strings.Contains(err.Error(), "no codex credential") {
 		t.Fatalf("an anthropic-only read for a Codex session = %v, want ErrNoCredential", err)
 	}
 
@@ -281,7 +282,7 @@ func TestCodexSessionUsageReport(t *testing.T) {
 	limits := &Limits{}
 	c := &Credentials{GW: &credsGW{issued: []gateway.Credential{claudeSub(), codexSub()}}, Limits: limits}
 	h := &codexFake{}
-	s, err := c.Open(context.Background(), gateway.SessionRef{Kind: "evaluate", ItemID: item1}, "n", nil, Adapter(h))
+	s, err := c.Open(context.Background(), gateway.SessionRef{Kind: "evaluate", ItemID: item1}, "n", Adapter(h))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -375,18 +376,22 @@ func containsStr(list []string, s string) bool {
 
 // A Codex session with no issued Codex credential has no account: a
 // read that issues nothing is ErrNoCredential (adr-005's amendment
-// 2026-10), and no Credentials at all is ErrNoAccount — never the
-// operator's own Codex login, which no longer exists as an account
-// (codex:default).
+// 2026-10), and no Credentials at all is a programming error, a panic —
+// never the operator's own Codex login, which no longer exists as an
+// account (codex:default).
 func TestCodexOpenWithNothingIssuedIsNoAccount(t *testing.T) {
 	cacheRoot(t)
 	ref := gateway.SessionRef{Kind: "evaluate", ItemID: item1}
 	c := &Credentials{GW: &credsGW{}, Log: log.New(&syncBuf{}, "", 0)}
-	if _, err := c.Open(context.Background(), ref, "n", nil, AdapterCodex); !isNoCredential(err) {
+	if _, err := c.Open(context.Background(), ref, "n", AdapterCodex); !isNoCredential(err) {
 		t.Fatalf("nothing issued = %v, want ErrNoCredential", err)
 	}
+	defer func() {
+		if r := recover(); r == nil || !strings.Contains(fmt.Sprint(r), "nil *Credentials") {
+			t.Fatalf("no Credentials recovered %v, want the nil *Credentials panic", r)
+		}
+	}()
 	var none *Credentials
-	if _, err := none.Open(context.Background(), ref, "n", nil, AdapterCodex); !errors.Is(err, ErrNoAccount) {
-		t.Fatalf("no Credentials = %v, want ErrNoAccount", err)
-	}
+	_, _ = none.Open(context.Background(), ref, "n", AdapterCodex)
+	t.Fatal("Open on a nil *Credentials returned")
 }

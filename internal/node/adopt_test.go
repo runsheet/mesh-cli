@@ -47,7 +47,7 @@ func adoptNode(t *testing.T, f *gatewaytest.Fake, cfg *Config, root string, h ha
 	t.Helper()
 	gw := gateway.New(f.URL(), "rs_test")
 	logger := log.New(os.Stderr, "", 0)
-	runner := &Runner{GW: gw, Harness: h, WS: &fakeWS{root: root}, Cfg: cfg, Scopes: scopesOf(cfg), WorkRoot: root, ProgressEvery: 50 * time.Millisecond, Log: logger}
+	runner := &Runner{Credentials: testCreds(gw), GW: gw, Harness: h, WS: &fakeWS{root: root}, Cfg: cfg, Scopes: scopesOf(cfg), WorkRoot: root, ProgressEvery: 50 * time.Millisecond, Log: logger}
 	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Version: "test", Harness: "claude-code", Interval: time.Hour, Log: logger,
 		Dispatch: func(ctx context.Context, item gateway.WorkItem) { _ = runner.RunItem(ctx, item) }}
 	loop.AdoptSession = AdoptWith{GW: gw, Scopes: loop.CurrentScopes, Logf: logger.Printf, Build: runner.AdoptItem}.Adopt

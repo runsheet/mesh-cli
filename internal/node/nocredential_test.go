@@ -3,8 +3,10 @@ package node
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,7 +25,38 @@ func issueClaude(f *gatewaytest.Fake, subject string) {
 	if len(f.SessionCredentials[subject]) > 0 {
 		return
 	}
-	f.SessionCredentials[subject] = []map[string]any{{"id": "cred-claude", "label": "max-issued", "vendor": "anthropic", "kind": "subscription", "serves": []any{"claude-code"}, "secret": "sk-ant-oat01-ISSUED"}}
+	f.SessionCredentials[subject] = []map[string]any{claudeCredential}
+}
+
+// claudeCredential is the Claude subscription the fixtures issue.
+var claudeCredential = map[string]any{"id": "cred-claude", "label": "max-issued", "vendor": "anthropic", "kind": "subscription", "serves": []any{"claude-code"}, "secret": "sk-ant-oat01-ISSUED"}
+
+// issueNothing has the fake's claim-time read issue no credential to
+// any subject the test has not issued one.
+func issueNothing(f *gatewaytest.Fake) { f.DefaultSessionCredentials = nil }
+
+// testCreds is the node's Credentials on gw, as every session is given
+// one (a nil one is a programming error).
+// A test's wrapping gateway is unwrapped to the one it embeds.
+func testCreds(gw any) *Credentials {
+	if cg, ok := gw.(CredentialGateway); ok {
+		return &Credentials{GW: cg}
+	}
+	v := reflect.ValueOf(gw)
+	for v.Kind() == reflect.Pointer || v.Kind() == reflect.Interface {
+		v = v.Elem()
+	}
+	if v.Kind() == reflect.Struct {
+		for i := range v.NumField() {
+			if f := v.Field(i); v.Type().Field(i).Anonymous && f.CanInterface() {
+				if cg, ok := f.Interface().(CredentialGateway); ok {
+					return &Credentials{GW: cg}
+				}
+				return testCreds(f.Interface())
+			}
+		}
+	}
+	panic(fmt.Sprintf("testCreds: %T is no CredentialGateway", gw))
 }
 
 // noCredentialReason is what seed's org and project say when the read
@@ -38,21 +71,21 @@ const noCredentialReason = "org acme's project mesh has no claude-code credentia
 // 2026-09-30).
 func TestNoCredentialOpenNamesOrgProjectAndAdapter(t *testing.T) {
 	f := seed(t)
+	issueNothing(f)
 	gw := gateway.New(f.URL(), "rs_test")
 	store := &NoCredentials{}
 	c := &Credentials{GW: gw, NoCredential: store}
 	sc := Scope{Login: "acme", Slug: "acme", ID: orgID}
 	ref := gateway.SessionRef{Kind: string(harness.KindBuild), ItemID: item1, GoalID: goalID}
-	// a fallback that would open if Open ever fell to it
-	fallback := []AccountConfig{{Label: "own", Kind: AccountAPI, APIKeyEnv: "MESH_TEST_OWN_KEY"}}
-	t.Setenv("MESH_TEST_OWN_KEY", "sk-ant-api03-OWN")
+	// the operator's own key in the env: never what a session opens
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-api03-OWN")
 
 	for name, rows := range map[string][]map[string]any{
 		"codex only": {{"id": "cred-codex", "label": "openai", "vendor": "openai", "kind": "api_key", "serves": []any{"codex"}, "secret": "sk-proj-X"}},
 		"nothing":    nil,
 	} {
 		f.SessionCredentials[item1] = rows
-		s, err := c.Open(withSubject(context.Background(), sc, projID, ""), ref, "n", fallback, AdapterClaudeCode)
+		s, err := c.Open(withSubject(context.Background(), sc, projID, ""), ref, "n", AdapterClaudeCode)
 		nc, ok := NoCredentialOf(err)
 		if !ok {
 			t.Fatalf("%s: Open = %v, %v; want ErrNoCredential", name, s, err)
@@ -70,12 +103,12 @@ func TestNoCredentialOpenNamesOrgProjectAndAdapter(t *testing.T) {
 	// a Codex session on a Claude-only read names codex
 	f.SessionCredentials[item1] = nil
 	issueClaude(f, item1)
-	_, err := c.Open(withSubject(context.Background(), sc, projID, "mesh"), ref, "n", nil, AdapterCodex)
+	_, err := c.Open(withSubject(context.Background(), sc, projID, "mesh"), ref, "n", AdapterCodex)
 	if nc, ok := NoCredentialOf(err); !ok || nc.Error() != "org acme's project mesh has no codex credential open to this node" {
 		t.Fatalf("codex on a claude-only read = %v", err)
 	}
 	// a credential attached: the hold is let go
-	s, err := c.Open(withSubject(context.Background(), sc, projID, "mesh"), ref, "n", nil, AdapterClaudeCode)
+	s, err := c.Open(withSubject(context.Background(), sc, projID, "mesh"), ref, "n", AdapterClaudeCode)
 	if err != nil || s.Label != "max-issued" {
 		t.Fatalf("issued: %v, %v", s, err)
 	}
@@ -85,16 +118,96 @@ func TestNoCredentialOpenNamesOrgProjectAndAdapter(t *testing.T) {
 	}
 }
 
-// A platform without the read still runs on node.yaml's accounts: the
-// fallback is for an unsupported read alone.
-func TestNoCredentialNotForAnUnsupportedRead(t *testing.T) {
+// A platform without the claim-time read issues nothing: the open is
+// ErrNoCredential naming the org, project and adapter — never node.yaml
+// nor the operator's own login (adr-005's amendment 2026-10, the
+// fallback is gone) — the project is held, and node.log says once per
+// run, per adapter and kind, that the platform does not issue them.
+func TestUnsupportedReadIsNoCredential(t *testing.T) {
 	f := seed(t)
+	issueNothing(f)
 	f.Unsupported["itemCredentials"] = true
-	c := &Credentials{GW: gateway.New(f.URL(), "rs_test")}
-	ref := gateway.SessionRef{Kind: string(harness.KindBuild), ItemID: item1, GoalID: goalID}
-	s, err := c.Open(context.Background(), ref, "n", nil, AdapterClaudeCode)
-	if err != nil || s == nil {
-		t.Fatalf("unsupported read: %v, %v", s, err)
+	f.Unsupported["planCredentials"] = true
+	logs := &syncBuf{}
+	store := &NoCredentials{}
+	c := &Credentials{GW: gateway.New(f.URL(), "rs_test"), NoCredential: store, Log: log.New(logs, "", 0)}
+	sc := Scope{Login: "acme", Slug: "acme", ID: orgID}
+	ctx := withSubject(context.Background(), sc, projID, "mesh")
+	build := gateway.SessionRef{Kind: string(harness.KindBuild), ItemID: item1, GoalID: goalID}
+	for range 2 {
+		s, err := c.Open(ctx, build, "n", AdapterClaudeCode)
+		nc, ok := NoCredentialOf(err)
+		if !ok || s != nil || nc.Error() != noCredentialReason {
+			t.Fatalf("unsupported read: %v, %v; want ErrNoCredential %q", s, err, noCredentialReason)
+		}
+	}
+	if why, held := store.Holds(projID, AdapterClaudeCode); !held || why != noCredentialReason {
+		t.Fatalf("store holds %q, %v", why, held)
+	}
+	if _, err := c.Open(ctx, gateway.SessionRef{Kind: string(harness.KindPlan), GoalID: goalID}, "n", AdapterClaudeCode); !isNoCredential(err) {
+		t.Fatalf("unsupported plan read = %v", err)
+	}
+	const line = "credentials: the platform does not issue claude-code credentials for build sessions; nothing runs until it does"
+	if n := strings.Count(logs.String(), line); n != 1 {
+		t.Fatalf("said %d times, want once:\n%s", n, logs)
+	}
+	if n := strings.Count(logs.String(), "credentials: the platform does not issue claude-code credentials for plan sessions; nothing runs until it does"); n != 1 {
+		t.Fatalf("plan's said %d times, want once:\n%s", n, logs)
+	}
+	if n := strings.Count(logs.String(), "credentials: the platform does not issue"); n != 2 {
+		t.Fatalf("%d notices, want one per kind:\n%s", n, logs)
+	}
+}
+
+// The loop against a platform without itemCredentials starts no
+// session: the claim is released with the reason, the project's work is
+// held, and the heartbeat's holding.unclaimed carries the reason for
+// the goal row (goal-node-says-why-work-waits).
+func TestUnsupportedReadLoopHoldsOnHoldingUnclaimed(t *testing.T) {
+	f := seed(t)
+	issueNothing(f)
+	f.Unsupported["itemCredentials"] = true
+	gw := gateway.New(f.URL(), "rs_test")
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "test-node", NodeID: gateway.NodeID(mustUUID(orgID), "test-node").String(), Capacity: Fixed(2)}
+	if _, err := gw.RegisterNode(context.Background(), gateway.RegisterNodeInput{NodeID: cfg.NodeID, OrgID: orgID, OwnerID: f.UserID, Name: "n", Slug: "test-node", Harnesses: []string{"claude-code"}, Capacity: 2, Version: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	ws := &fakeWS{root: t.TempDir()}
+	h := &fakeHarness{}
+	logs := &syncBuf{}
+	logger := log.New(logs, "", 0)
+	store := &NoCredentials{Log: logger}
+	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Version: "test", Harness: "claude-code", Interval: time.Hour, Log: logger, NoCredential: store}
+	runner := &Runner{GW: gw, Harness: h, WS: ws, Cfg: cfg, Scopes: scopesOf(cfg), WorkRoot: ws.root, ProgressEvery: time.Hour, Log: logger,
+		MCP: MeshContextMCP(f.URL(), "rs_test"), Credentials: &Credentials{GW: gw, NoCredential: store, Log: logger}}
+	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) { _ = runner.RunItem(ctx, item) }
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	loop.Tick(ctx)
+	waitFor(t, func() bool { return len(f.CallsNamed("releaseWorkItem")) == 1 && loop.Running() == 0 })
+	loop.Tick(ctx)
+	loop.wg.Wait()
+	loop.Tick(ctx)
+	loop.wg.Wait()
+
+	if len(h.jobs) != 0 {
+		t.Fatalf("%d sessions started", len(h.jobs))
+	}
+	if f.Item(item1)["status"] != "ready" || len(f.CallsNamed("failWorkItem")) != 0 {
+		t.Fatalf("item: %v", f.Item(item1))
+	}
+	if !strings.Contains(logs.String(), "credentials: the platform does not issue claude-code credentials for build sessions; nothing runs until it does") {
+		t.Fatalf("no unsupported notice:\n%s", logs)
+	}
+	hb := f.CallsNamed("heartbeatNode")
+	holding, ok := hb[len(hb)-1].Input["holding"].(map[string]any)
+	if !ok {
+		t.Fatalf("heartbeat holding = %#v", hb[len(hb)-1].Input["holding"])
+	}
+	u, ok := unclaimedOf(t, holding)[goalID+"/item"]
+	if !ok || !strings.Contains(u["reason"].(string), noCredentialReason) {
+		t.Fatalf("holding.unclaimed = %#v", holding["unclaimed"])
 	}
 }
 
@@ -102,8 +215,10 @@ func TestNoCredentialNotForAnUnsupportedRead(t *testing.T) {
 // reason and runs no session.
 func TestNoCredentialRunnerReleasesTheItem(t *testing.T) {
 	f := seed(t)
+	issueNothing(f)
 	h := &fakeHarness{}
 	r, _, item, _ := runnerOnFake(t, f, h, nil)
+	f.SessionCredentials[item1] = nil
 	r.Credentials = &Credentials{GW: r.GW.(*gateway.Client), Log: r.Log}
 	if err := r.RunItem(context.Background(), item); err != nil {
 		t.Fatal(err)
@@ -127,6 +242,7 @@ func TestNoCredentialRunnerReleasesTheItem(t *testing.T) {
 // minutes on, the loop asks again.
 func TestNoCredentialLoopHoldsTheGoalAndSaysWhyOnce(t *testing.T) {
 	f := seed(t)
+	issueNothing(f)
 	gw := gateway.New(f.URL(), "rs_test")
 	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "test-node", NodeID: gateway.NodeID(mustUUID(orgID), "test-node").String(), Capacity: Fixed(2)}
 	if _, err := gw.RegisterNode(context.Background(), gateway.RegisterNodeInput{NodeID: cfg.NodeID, OrgID: orgID, OwnerID: f.UserID, Name: "n", Slug: "test-node", Harnesses: []string{"claude-code"}, Capacity: 2, Version: "test"}); err != nil {
@@ -198,6 +314,7 @@ func TestNoCredentialLoopHoldsTheGoalAndSaysWhyOnce(t *testing.T) {
 // its ready items: each passed over with the reason, said once.
 func TestNoCredentialLoopHoldsThePlan(t *testing.T) {
 	f := seed(t)
+	issueNothing(f)
 	f.Goals[goalID]["status"] = "planning"
 	gw := gateway.New(f.URL(), "rs_test")
 	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "test-node", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: Fixed(2)}
@@ -260,6 +377,7 @@ func TestNoCredentialHoldLetsOneProbeThrough(t *testing.T) {
 // none again renews the hold, so the next tick claims nothing.
 func TestNoCredentialRecheckClaimsOneOfSeveral(t *testing.T) {
 	f := seed(t)
+	issueNothing(f)
 	f.WorkItems[item2]["status"], f.WorkItems[item2]["dependsOn"] = "ready", []string{}
 	gw := gateway.New(f.URL(), "rs_test")
 	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "test-node", NodeID: gateway.NodeID(mustUUID(orgID), "test-node").String(), Capacity: Fixed(4)}
@@ -310,6 +428,7 @@ func TestNoCredentialRecheckClaimsOneOfSeveral(t *testing.T) {
 // the hold lasts.
 func TestNoCredentialRebaseWaitsAndSaysWhyOnce(t *testing.T) {
 	f := seed(t)
+	issueNothing(f)
 	requestRebase(f, item1, "mesh/ship-it-1")
 	f.RebaseTokens = true
 	gw := gateway.New(f.URL(), "rs_test")
@@ -365,11 +484,12 @@ func TestNoCredentialRebaseWaitsAndSaysWhyOnce(t *testing.T) {
 // credential is ErrNoCredential naming codex, and no account is opened.
 func TestNoCredentialCodexOpenOnAnAnsweredReadWithNoCodex(t *testing.T) {
 	f := seed(t)
+	issueNothing(f)
 	issueClaude(f, item1)
 	c := &Credentials{GW: gateway.New(f.URL(), "rs_test"), NoCredential: &NoCredentials{}}
 	sc := Scope{Login: "acme", Slug: "acme", ID: orgID}
 	ref := gateway.SessionRef{Kind: string(harness.KindEvaluate), ItemID: item1, GoalID: goalID}
-	s, err := c.Open(withSubject(context.Background(), sc, projID, "mesh"), ref, "n", nil, AdapterCodex)
+	s, err := c.Open(withSubject(context.Background(), sc, projID, "mesh"), ref, "n", AdapterCodex)
 	if nc, ok := NoCredentialOf(err); !ok || s != nil || nc.Error() != "org acme's project mesh has no codex credential open to this node" {
 		t.Fatalf("Open(codex) = %v, %v; want ErrNoCredential naming codex", s, err)
 	}

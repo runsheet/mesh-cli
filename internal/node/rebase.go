@@ -50,12 +50,9 @@ type Rebaser struct {
 	// the item names no model and its agent none (BuildModel, the
 	// builder's choice).
 	Model string
-	// Accounts are the node's Claude accounts (node.yaml); a session runs
-	// on the first, or on the operator's own login when there are none.
-	// They are the fallback to the credentials the platform issues.
-	Accounts []AccountConfig
 	// Credentials asks the platform for the session's credentials and
-	// reports its usage record (nil: node.yaml's accounts, no record).
+	// reports its usage record. Required: a nil one is a programming
+	// error, and its Open panics (no node.yaml fallback, adr-005).
 	Credentials *Credentials
 	// Timeout caps its wall clock (0 none).
 	Timeout time.Duration
@@ -176,7 +173,7 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 		job.Env = SessionEnv(tok, ghDir)
 	}
 	sc, _ := r.Scopes.ByOrg(item.OrgID)
-	acct, err := r.Credentials.Open(withSubject(ctx, sc, cmp.Or(res.Project.ID, item.ProjectID), res.Project.Slug), gateway.SessionRef{Kind: string(harness.KindRebase), ItemID: item.ID, GoalID: item.GoalID}, sc.NodeID, r.Accounts, Adapter(r.Harness))
+	acct, err := r.Credentials.Open(withSubject(ctx, sc, cmp.Or(res.Project.ID, item.ProjectID), res.Project.Slug), gateway.SessionRef{Kind: string(harness.KindRebase), ItemID: item.ID, GoalID: item.GoalID}, sc.NodeID, Adapter(r.Harness))
 	if isNoCredential(err) {
 		// a wait, not a failure: the conflict is no reason to hand the
 		// item to its builder. The platform has no release for a rebase

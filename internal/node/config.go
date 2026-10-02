@@ -69,11 +69,11 @@ type Config struct {
 	// Claude plan (LimitsConfig): the defaults when left out, read again
 	// every tick like the capacity.
 	Limits LimitsConfig `yaml:"limits,omitempty"`
-	// Accounts are the Claude accounts the node's sessions run on
-	// (AccountConfig, adr-005) until the platform hands a session its
-	// credential at claim. None is the one implicit account `default`:
-	// the operator's own CLI login, as before.
-	Accounts []AccountConfig `yaml:"accounts,omitempty"`
+	// Accounts is the retired `accounts:` key, read only to refuse it
+	// (Retired): a session runs only on the credentials the platform
+	// issues at claim (adr-005's amendments 2026-10). AccountConfig is the
+	// shape of those, never of node.yaml.
+	Accounts []any `yaml:"accounts,omitempty"`
 	// ProjectBudgets is each project's daily budget in list-price
 	// dollars, shared by the api accounts naming that project
 	// (adr-005-capacity-across-accounts); a project not listed has none.
@@ -345,8 +345,10 @@ func (m Models) PlanModel() string {
 type CodexConfig struct {
 	// Binary is the codex executable; empty is "codex" on PATH.
 	Binary string `yaml:"binary,omitempty"`
-	// Accounts are the OpenAI accounts Codex sessions run on.
-	Accounts []CodexAccountConfig `yaml:"accounts,omitempty"`
+	// Accounts is the retired `codex.accounts` key, read only to refuse
+	// it (Config.Retired): a Codex session runs on an issued OpenAI
+	// credential or not at all (ADR 011's amendment 2026-10-02).
+	Accounts []any `yaml:"accounts,omitempty"`
 	// Models maps the Claude tiers to Codex models (CodexModel).
 	Models CodexModels `yaml:"models,omitempty"`
 	// Providers are the OpenAI-compatible endpoints an account may run
@@ -402,28 +404,6 @@ func (p CodexProviderConfig) Harness(name string) harness.CodexProvider {
 	return out
 }
 
-// CodexAccountConfig is one Codex account: a ChatGPT-plan login in its
-// own Home (`CODEX_HOME=<home> codex login`), or an API key in the
-// variable APIKeyEnv names or the file APIKeyFile names. Exactly one.
-type CodexAccountConfig struct {
-	Name       string `yaml:"name"`
-	Home       string `yaml:"home,omitempty"`
-	APIKeyEnv  string `yaml:"api_key_env,omitempty"`
-	APIKeyFile string `yaml:"api_key_file,omitempty"`
-	// Provider names one of `codex.providers`; empty is OpenAI itself.
-	Provider string `yaml:"provider,omitempty"`
-}
-
-// Harness is the account as the Codex adapter takes it, with the
-// provider it names resolved from the block's `providers`.
-func (a CodexAccountConfig) Harness(providers map[string]CodexProviderConfig) harness.CodexAccount {
-	out := harness.CodexAccount{Name: a.Name, Home: a.Home, APIKeyEnv: a.APIKeyEnv, APIKeyFile: a.APIKeyFile}
-	if a.Provider != "" {
-		out.Provider = providers[a.Provider].Harness(a.Provider)
-	}
-	return out
-}
-
 // CodexModels is the Codex model for each Claude tier.
 type CodexModels struct {
 	Opus   string `yaml:"opus,omitempty"`
@@ -436,8 +416,9 @@ func (c CodexConfig) IsZero() bool {
 	return c.Binary == "" && len(c.Accounts) == 0 && len(c.Providers) == 0 && c.Models == CodexModels{}
 }
 
-// Validate refuses accounts Codex could not run on: a name missing or
-// used twice, or not exactly one of home, api_key_env and api_key_file.
+// Validate refuses providers Codex could not run against: a name or
+// base_url missing, or a wire_api it does not speak. The retired
+// `codex.accounts` is Config.Retired's to refuse.
 func (c CodexConfig) Validate() error {
 	for name, prov := range c.Providers {
 		if strings.TrimSpace(name) == "" {
@@ -450,36 +431,6 @@ func (c CodexConfig) Validate() error {
 		case "", "chat", "responses":
 		default:
 			return fmt.Errorf("codex provider %q: wire_api %q: want chat or responses", name, prov.WireAPI)
-		}
-	}
-	seen := map[string]bool{}
-	for i, a := range c.Accounts {
-		name := strings.TrimSpace(a.Name)
-		if name == "" {
-			return fmt.Errorf("codex.accounts[%d]: a name is required", i)
-		}
-		if seen[name] {
-			return fmt.Errorf("codex.accounts[%d]: name %q is used twice", i, name)
-		}
-		seen[name] = true
-		n := 0
-		for _, v := range []string{a.Home, a.APIKeyEnv, a.APIKeyFile} {
-			if strings.TrimSpace(v) != "" {
-				n++
-			}
-		}
-		if n != 1 {
-			return fmt.Errorf("codex account %q: want exactly one of home, api_key_env and api_key_file", name)
-		}
-		if a.Provider != "" {
-			if _, ok := c.Providers[a.Provider]; !ok {
-				return fmt.Errorf("codex account %q: provider %q is not in codex.providers", name, a.Provider)
-			}
-			// a provider's key rides OPENAI_API_KEY, which only an
-			// api-key account sets: a plan login has none to send
-			if strings.TrimSpace(a.APIKeyEnv) == "" && strings.TrimSpace(a.APIKeyFile) == "" {
-				return fmt.Errorf("codex account %q: a provider account needs api_key_env or api_key_file", name)
-			}
 		}
 	}
 	return nil
@@ -760,11 +711,10 @@ type Reloaded struct {
 	OrgsRead bool
 }
 
-// Spending is what the node may spend on: node.yaml's accounts,
-// project budgets and per-kind, per-model session budgets, read again
-// every tick like the capacity.
+// Spending is what the node may spend on: node.yaml's project budgets
+// and per-kind, per-model session budgets, read again every tick like
+// the capacity. The accounts are the platform's (Known), never node.yaml's.
 type Spending struct {
-	Accounts       []AccountConfig
 	ProjectBudgets map[string]float64
 	// Budgets is node.yaml's `budgets:` (ADR 012).
 	Budgets map[string]map[string]float64
@@ -869,7 +819,7 @@ func joinReasons(errs []error) error {
 func reloadedFrom(c *Config) Reloaded {
 	limits, budget, claim := c.Limits, c.Context, c.Claim
 	return Reloaded{Capacity: c.Capacity, Limits: &limits, Context: &budget, Claim: &claim,
-		Spending: &Spending{Accounts: c.Accounts, ProjectBudgets: c.ProjectBudgets, Budgets: c.Budgets},
+		Spending: &Spending{ProjectBudgets: c.ProjectBudgets, Budgets: c.Budgets},
 		Orgs:     c.Orgs, OrgsRead: true}
 }
 
@@ -905,14 +855,6 @@ func ConfigPath() (string, error) {
 // LoadConfig reads ~/.mesh/node.yaml, refusing a retired key
 // (Config.Retired) before anything else is judged.
 func LoadConfig() (*Config, error) {
-	return loadConfig(true)
-}
-
-// loadConfig reads ~/.mesh/node.yaml; refuseRetired false reads an
-// `accounts:` or `codex.accounts` list as it was read before they were
-// retired, for the tests of the plumbing item 9 of goal
-// a-session-never-runs-on-the-machines-own-login removes.
-func loadConfig(refuseRetired bool) (*Config, error) {
 	path, err := ConfigPath()
 	if err != nil {
 		return nil, err
@@ -928,10 +870,8 @@ func loadConfig(refuseRetired bool) (*Config, error) {
 	if err := yaml.Unmarshal(data, &c); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
-	if refuseRetired {
-		if err := c.Retired(); err != nil {
-			return nil, err
-		}
+	if err := c.Retired(); err != nil {
+		return nil, err
 	}
 	if c.Gateway == "" {
 		c.Gateway = gateway.DefaultURL
@@ -949,9 +889,6 @@ func loadConfig(refuseRetired bool) (*Config, error) {
 	}
 	if len(c.Orgs) == 0 && c.OrgLogin != "" {
 		c.Orgs = []string{c.OrgLogin} // an older, single-org registration
-	}
-	if err := ValidateAccounts(c.Accounts); err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	for p, b := range c.ProjectBudgets {
 		if b < 0 {

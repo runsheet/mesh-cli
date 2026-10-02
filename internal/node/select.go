@@ -94,7 +94,8 @@ func used(now time.Time, r harness.RateLimit) float64 {
 type accountKey struct{}
 
 // WithAccount is ctx carrying the account the loop chose for the
-// session it starts; OpenAccount opens that one.
+// session it starts, for its label (runsOn, the heartbeat's slots);
+// the session opens the issued one Credentials.Open chooses.
 func WithAccount(ctx context.Context, a AccountConfig) context.Context {
 	return context.WithValue(ctx, accountKey{}, a)
 }

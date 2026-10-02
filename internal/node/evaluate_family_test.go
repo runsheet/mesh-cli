@@ -240,8 +240,7 @@ func TestNoCodexAccountEvaluatesAsBefore(t *testing.T) {
 func TestEvaluationStartsOnCodexRoom(t *testing.T) {
 	f := seed(t)
 	gw := gateway.New(f.URL(), "rs_test")
-	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "test-node", NodeID: gateway.NodeID(mustUUID(orgID), "test-node").String(), Capacity: Fixed(0),
-		Accounts: []AccountConfig{{Label: "max", Kind: AccountSubscription, TokenFile: "/dev/null"}}}
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "test-node", NodeID: gateway.NodeID(mustUUID(orgID), "test-node").String(), Capacity: Fixed(0)}
 	f.WorkItems[item1]["status"] = "evaluating"
 	f.WorkItems[item1]["nodeId"] = cfg.NodeID
 	limits := &Limits{}
@@ -253,6 +252,7 @@ func TestEvaluationStartsOnCodexRoom(t *testing.T) {
 	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Limits: limits, Log: log.New(&syncBuf{}, "", 0),
 		Evaluate:  func(_ context.Context, item gateway.WorkItem) { started <- item.ID },
 		CodexRoom: func(string) bool { return room }}
+	knowAccounts(loop, AccountConfig{Label: "max", Kind: AccountSubscription})
 	loop.waiting = map[string]int{}
 	loop.evaluateHeld(context.Background())
 	loop.wg.Wait()

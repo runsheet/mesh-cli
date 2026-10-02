@@ -41,13 +41,13 @@ type CredentialGateway interface {
 // Credentials is where every session's account comes from and where its
 // usage goes (adr-005, the claim-time read): the platform's read for
 // the claimed session (itemCredentials, planCredentials or
-// researchCredentials, with its tools) first, node.yaml's
-// accounts when the platform does not know the read or issues none; a
+// researchCredentials, with its tools) and nothing else — no read, or
+// none issued for the session's adapter, is ErrNoCredential, a hold; a
 // usage report per session on the command that ends it (Report,
 // Carried), or one structured log line when that command has nowhere to
-// put it (Finish). Each fallback is said once per run.
-// A nil *Credentials is the node before the platform half: node.yaml's
-// accounts and no usage record.
+// put it (Finish). Each old-platform notice is said once per run.
+// Every session is given one; a nil *Credentials is a programming error
+// (Open panics), never the node before the platform half.
 type Credentials struct {
 	GW CredentialGateway
 	// Limits is the node's latest reading per account, for the windows
@@ -72,7 +72,11 @@ type Credentials struct {
 	// projects are the project slugs read by id this run (projectSlug).
 	projects map[string]string
 
-	credOnce, usageOnce, toolUsageOnce, toolListOnce, usageDetailOnce, contextOnce sync.Once
+	// unsupported says, once per adapter and kind of session this run,
+	// that the platform has no claim-time read for it.
+	unsupported OncePer
+
+	usageOnce, toolUsageOnce, toolListOnce, usageDetailOnce, contextOnce sync.Once
 	// documentsFetchedOnce and toolNamesOnce are Finish's once-per-run
 	// notices for ErrNoDocumentsFetched and ErrNoToolNames (adr-016's
 	// amendment 2026-10-02, goal context-is-fetched-not-shipped).
@@ -162,123 +166,91 @@ type SessionAccount struct {
 // credential whose daily or monthly cap is spent is never among them (a
 // hard stop), and none left is ErrNoAccount. A read that issues none of
 // the adapter's at all is ErrNoCredential, naming the org and project
-// withSubject put on ctx: the session never falls to node.yaml's
-// accounts or the operator's own login (adr-005's amendment 2026-10).
-// Only a platform without the read leaves node.yaml's accounts
-// (OpenAccount), and only for a Claude session; a Codex session has no
-// such fallback — no issued Codex credential is ErrNoAccount, never the
-// operator's own Codex login (ADR 011's amendment 2026-10-02). A refusal
-// is an error. No error or log line carries a secret.
-func (c *Credentials) Open(ctx context.Context, ref gateway.SessionRef, nodeID string, fallback []AccountConfig, adapter string) (*SessionAccount, error) {
+// withSubject put on ctx, and so is a read the platform does not
+// support (gateway.IsUnsupported), said once per run: a session never
+// runs on node.yaml's accounts or the operator's own login (adr-005's
+// amendments 2026-10). A refusal is an error. No error or log line
+// carries a secret. c must not be nil: every session constructor is
+// given the node's Credentials (NewCredentials' caller, mesh node
+// start), and a nil one is a programming error.
+func (c *Credentials) Open(ctx context.Context, ref gateway.SessionRef, nodeID, adapter string) (*SessionAccount, error) {
+	if c == nil {
+		panic("node: Credentials.Open on a nil *Credentials: every session opens its account through the node's Credentials (adr-005's amendment 2026-10: no node.yaml fallback)")
+	}
 	if adapter == "" {
 		adapter = AdapterClaudeCode
-	}
-	if adapter == AdapterCodex {
-		// node.yaml's accounts are Claude's, and a Codex session runs
-		// only on an issued credential
-		fallback = nil
-	}
-	if c == nil {
-		if adapter == AdapterCodex {
-			return nil, ErrNoAccount
-		}
-		acct, err := OpenAccount(ctx, fallback)
-		if err != nil {
-			return nil, err
-		}
-		return &SessionAccount{AccountSession: acct, Adapter: adapter}, nil
 	}
 	s := &SessionAccount{creds: c, ref: ref, nodeID: nodeID, started: c.now(), Adapter: adapter}
 	var issued []gateway.Credential
 	read, err := c.GW.Session(ctx, ref, nodeID)
-	if err == nil && read != nil {
-		issued, s.Tools = read.Credentials, read.Tools
-	}
 	unsupported := gateway.IsUnsupported(err)
 	switch {
 	case unsupported:
-		c.credOnce.Do(func() {
-			c.logf("credentials: the platform issues no session credentials; sessions run on node.yaml's accounts (said once, for every session this run)")
-		})
-		issued = nil
+		if kind := cmp.Or(ref.Kind, "these"); c.unsupported.First(adapter + "/" + kind) {
+			c.logf("credentials: the platform does not issue %s credentials for %s sessions; nothing runs until it does", adapter, kind)
+		}
 	case err != nil:
 		return nil, fmt.Errorf("session credentials: %w", err)
+	case read != nil:
+		issued, s.Tools = read.Credentials, read.Tools
 	}
-	if !unsupported {
-		// the read answered: only what it issued for this adapter may
-		// run the session, never the fallback nor the harness's own
-		// account (adr-005's amendment 2026-10)
-		subj := subjectFrom(ctx)
-		if !slices.ContainsFunc(issued, func(cr gateway.Credential) bool { return IssuedAccount(cr).AdapterOf() == adapter }) {
-			for _, cr := range issued {
-				if err := c.Known.Note(IssuedAccount(cr), c.now()); err != nil {
-					c.logf("known accounts: %v", err)
-				}
-			}
-			nc := &ErrNoCredential{Org: cmp.Or(subj.org, "(unknown)"), Project: c.projectSlug(ctx, subj), ProjectID: subj.projectID, Adapter: adapter}
-			if c.NoCredential != nil {
-				c.NoCredential.Note(cmp.Or(ref.GoalID, ref.DirectionID, ref.ItemID), nc)
-			} else {
-				c.logf("accounts: %v", nc)
-			}
-			return nil, nc
-		}
-		c.NoCredential.Clear(subj.projectID, adapter)
-	}
-	if len(issued) == 0 && adapter == AdapterCodex {
-		return nil, ErrNoAccount
-	}
-	if len(issued) == 0 {
-		acct, err := OpenAccount(ctx, fallback)
-		if err != nil {
-			return nil, err
-		}
-		s.AccountSession = acct
-		s.account = openedAccount(ctx, fallback)
-	} else {
-		var accounts []AccountConfig
-		room := map[string]float64{}
+	// only what the read issued for this adapter may run the session,
+	// never node.yaml nor the harness's own account (adr-005's
+	// amendments 2026-10); an unsupported read issued nothing
+	subj := subjectFrom(ctx)
+	if !slices.ContainsFunc(issued, func(cr gateway.Credential) bool { return IssuedAccount(cr).AdapterOf() == adapter }) {
 		for _, cr := range issued {
-			a := IssuedAccount(cr)
-			if err := c.Known.Note(a, c.now()); err != nil {
+			if err := c.Known.Note(IssuedAccount(cr), c.now()); err != nil {
 				c.logf("known accounts: %v", err)
 			}
-			if a.AdapterOf() != adapter {
+		}
+		nc := &ErrNoCredential{Org: cmp.Or(subj.org, "(unknown)"), Project: c.projectSlug(ctx, subj), ProjectID: subj.projectID, Adapter: adapter}
+		if c.NoCredential != nil {
+			c.NoCredential.Note(cmp.Or(ref.GoalID, ref.DirectionID, ref.ItemID), nc)
+		} else {
+			c.logf("accounts: %v", nc)
+		}
+		return nil, nc
+	}
+	c.NoCredential.Clear(subj.projectID, adapter)
+	var accounts []AccountConfig
+	room := map[string]float64{}
+	for _, cr := range issued {
+		a := IssuedAccount(cr)
+		if err := c.Known.Note(a, c.now()); err != nil {
+			c.logf("known accounts: %v", err)
+		}
+		if a.AdapterOf() != adapter {
+			continue
+		}
+		if a.Kind == AccountAPI {
+			left := CapRoom(cr)
+			if left <= 0 {
+				c.logf("credentials: %s is at its cap ($%.2f of $%.2f today, $%.2f of $%.2f this month); not used", cr.Label, cr.SpentDailyUSD, capOr(cr.CapDailyUSD, DefaultCapDailyUSD), cr.SpentMonthlyUSD, capOr(cr.CapMonthlyUSD, DefaultCapMonthlyUSD))
 				continue
 			}
-			if a.Kind == AccountAPI {
-				left := CapRoom(cr)
-				if left <= 0 {
-					c.logf("credentials: %s is at its cap ($%.2f of $%.2f today, $%.2f of $%.2f this month); not used", cr.Label, cr.SpentDailyUSD, capOr(cr.CapDailyUSD, DefaultCapDailyUSD), cr.SpentMonthlyUSD, capOr(cr.CapMonthlyUSD, DefaultCapMonthlyUSD))
-					continue
-				}
-				room[a.Label] = left
-			}
-			accounts = append(accounts, a)
+			room[a.Label] = left
 		}
-		choose := chooserFrom(ctx)
-		if choose == nil {
-			choose = func(accts []AccountConfig) (AccountConfig, bool) {
-				return ChooseAccount(c.now(), accts, c.readingsFor(adapter), c.thresholds(), "", true)
-			}
-		}
-		if len(accounts) == 0 {
-			return nil, ErrNoAccount
-		}
-		a, ok := choose(accounts)
-		if !ok {
-			return nil, ErrNoAccount
-		}
-		secret, err := a.Secret()
-		if err != nil {
-			return nil, err
-		}
-		acct, err := PrepareAccount(a, secret)
-		if err != nil {
-			return nil, err
-		}
-		s.AccountSession, s.account, s.remaining = acct, a, room[a.Label]
+		accounts = append(accounts, a)
 	}
+	choose := chooserFrom(ctx)
+	if choose == nil {
+		choose = func(accts []AccountConfig) (AccountConfig, bool) {
+			return ChooseAccount(c.now(), accts, c.readingsFor(adapter), c.thresholds(), "", true)
+		}
+	}
+	if len(accounts) == 0 {
+		return nil, ErrNoAccount
+	}
+	a, ok := choose(accounts)
+	if !ok {
+		return nil, ErrNoAccount
+	}
+	acct, err := OpenAccount(a)
+	if err != nil {
+		return nil, err
+	}
+	s.AccountSession, s.account, s.remaining = acct, a, room[a.Label]
 	if r, ok := c.reading(s.limitsKey()); ok {
 		s.before = &r
 	}
@@ -344,15 +316,6 @@ func (c *Credentials) thresholds() LimitsConfig {
 		return c.Thresholds()
 	}
 	return LimitsConfig{}
-}
-
-// openedAccount is the node.yaml account OpenAccount opened: the chosen
-// one, else the first, else none (the operator's own login).
-func openedAccount(ctx context.Context, accounts []AccountConfig) AccountConfig {
-	if len(accounts) == 0 {
-		return AccountConfig{}
-	}
-	return chosenAmong(ctx, accounts)
 }
 
 // IssuedAccount is a platform credential as an account a session may

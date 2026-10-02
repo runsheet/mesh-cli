@@ -25,7 +25,6 @@ type reloadFailNode struct {
 	// the values the good tick put in force
 	capacity int
 	limits   LimitsConfig
-	accounts string
 	context  ContextConfig
 	scopes   string
 }
@@ -65,12 +64,12 @@ func newReloadFailNode(t *testing.T) *reloadFailNode {
 	if got := n.reloadLines(); len(got) != 0 {
 		t.Fatalf("the good tick logged %q", got)
 	}
-	n.capacity, n.limits, n.accounts = loop.Capacity(), loop.Thresholds(), labels(loop.nodeAccounts())
+	n.capacity, n.limits = loop.Capacity(), loop.Thresholds()
 	n.context, n.scopes = loop.ContextBudget(), strings.Join(loop.CurrentScopes().Logins(), ",")
-	if n.capacity != 3 || n.limits != (LimitsConfig{PaceFiveHour: 0.5, Stop: 0.9}) || n.accounts != labels(nil) ||
+	if n.capacity != 3 || n.limits != (LimitsConfig{PaceFiveHour: 0.5, Stop: 0.9}) ||
 		n.context != (ContextConfig{BytesMax: 131072, DocBytesMax: 32768}) || n.scopes != "acme" {
-		t.Fatalf("the good tick is not in force: capacity %d, limits %+v, accounts %s, context %+v, orgs %s",
-			n.capacity, n.limits, n.accounts, n.context, n.scopes)
+		t.Fatalf("the good tick is not in force: capacity %d, limits %+v, context %+v, orgs %s",
+			n.capacity, n.limits, n.context, n.scopes)
 	}
 	logs.Reset()
 	return n
@@ -113,10 +112,10 @@ func (n *reloadFailNode) oneReloadLine() string {
 func (n *reloadFailNode) retained() {
 	n.t.Helper()
 	l := n.loop
-	if l.Capacity() != n.capacity || l.Thresholds() != n.limits || labels(l.nodeAccounts()) != n.accounts ||
+	if l.Capacity() != n.capacity || l.Thresholds() != n.limits ||
 		l.ContextBudget() != n.context || strings.Join(l.CurrentScopes().Logins(), ",") != n.scopes {
-		n.t.Fatalf("not retained: capacity %d (want %d), limits %+v (want %+v), accounts %s (want %s), context %+v (want %+v), orgs %v (want %s)",
-			l.Capacity(), n.capacity, l.Thresholds(), n.limits, labels(l.nodeAccounts()), n.accounts,
+		n.t.Fatalf("not retained: capacity %d (want %d), limits %+v (want %+v), context %+v (want %+v), orgs %v (want %s)",
+			l.Capacity(), n.capacity, l.Thresholds(), n.limits,
 			l.ContextBudget(), n.context, l.CurrentScopes().Logins(), n.scopes)
 	}
 }
@@ -166,9 +165,6 @@ func TestReloadFailMyOrgsKeepsTheOrgsAndAppliesNodeYAML(t *testing.T) {
 	}
 	if got := n.loop.Thresholds(); got != (LimitsConfig{PaceFiveHour: 0.6, Stop: 0.95}) {
 		t.Fatalf("limits %+v, want node.yaml's", got)
-	}
-	if got := labels(n.loop.nodeAccounts()); got != labels(nil) {
-		t.Fatalf("accounts %s, want node.yaml's none", got)
 	}
 	if got := n.loop.ContextBudget(); got.BytesMax != 65536 {
 		t.Fatalf("context %+v, want bytes_max 65536", got)

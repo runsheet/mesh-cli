@@ -261,7 +261,7 @@ func cifitsFixture(t *testing.T, says string) (*gatewaytest.Fake, *gateway.Clien
 	ws := &fakeWS{root: t.TempDir()}
 	h := &fakeHarness{text: says}
 	var logs bytes.Buffer
-	ev := &Evaluator{GW: gw, Harness: h, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, MaxBudgetUSD: 2, Log: log.New(&logs, "", 0)}
+	ev := &Evaluator{Credentials: testCreds(gw), GW: gw, Harness: h, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, MaxBudgetUSD: 2, Log: log.New(&logs, "", 0)}
 	return f, gw, ev, h, &logs
 }
 

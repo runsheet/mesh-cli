@@ -221,7 +221,7 @@ func TestEvaluatorKeepsAnItemItsTokenIsRefusedFor(t *testing.T) {
 	tg.Gateway = r.GW
 	ws := &refusingWS{fakeWS: fws, refusals: 4, err: notFound("ghs_first")}
 	var logged bytes.Buffer
-	ev := &Evaluator{GW: tg, Harness: h, WS: ws, Scopes: r.Scopes, WorkRoot: fws.root, Log: log.New(&logged, "", 0)}
+	ev := &Evaluator{Credentials: testCreds(tg), GW: tg, Harness: h, WS: ws, Scopes: r.Scopes, WorkRoot: fws.root, Log: log.New(&logged, "", 0)}
 	item.Branch = "mesh/ship-it-1"
 	var ce *CredentialError
 	if err := ev.Evaluate(context.Background(), item); !errors.As(err, &ce) {

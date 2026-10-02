@@ -35,6 +35,9 @@ const (
 func seed(t *testing.T) *gatewaytest.Fake {
 	t.Helper()
 	f := gatewaytest.New("rs_test")
+	// a session runs only on an issued credential: every subject is
+	// issued a Claude subscription unless its test says otherwise
+	f.DefaultSessionCredentials = []map[string]any{claudeCredential}
 	f.Orgs = []map[string]any{{"id": orgID, "login": "acme", "accountId": acctID}}
 	f.Accounts[acctID] = map[string]any{"id": acctID, "login": "acme"}
 	f.Projects[projID] = map[string]any{"id": projID, "orgId": orgID, "slug": "mesh", "name": "Mesh"}
@@ -239,7 +242,7 @@ func TestLoopClaimsRunsAndFinishes(t *testing.T) {
 	}
 	ws := &fakeWS{root: t.TempDir()}
 	h := &fakeHarness{}
-	runner := &Runner{GW: gw, Harness: h, WS: ws, Cfg: cfg, Scopes: scopesOf(cfg), WorkRoot: ws.root, MaxBudgetUSD: 5, ProgressEvery: 10 * time.Millisecond, Log: log.New(os.Stderr, "", 0)}
+	runner := &Runner{Credentials: testCreds(gw), GW: gw, Harness: h, WS: ws, Cfg: cfg, Scopes: scopesOf(cfg), WorkRoot: ws.root, MaxBudgetUSD: 5, ProgressEvery: 10 * time.Millisecond, Log: log.New(os.Stderr, "", 0)}
 	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Version: "test", Harness: "claude-code", Interval: time.Hour, Log: runner.Log,
 		Dispatch: func(ctx context.Context, item gateway.WorkItem) { _ = runner.RunItem(ctx, item) }}
 
@@ -341,7 +344,7 @@ func TestRunnerFailsAnUnsuccessfulSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	ws := &fakeWS{root: t.TempDir()}
-	runner := &Runner{GW: gw, Harness: &fakeHarness{fail: true}, WS: ws, Cfg: cfg, Scopes: scopesOf(cfg), WorkRoot: ws.root, ProgressEvery: time.Hour}
+	runner := &Runner{Credentials: testCreds(gw), GW: gw, Harness: &fakeHarness{fail: true}, WS: ws, Cfg: cfg, Scopes: scopesOf(cfg), WorkRoot: ws.root, ProgressEvery: time.Hour}
 	var item gateway.WorkItem
 	item.ID, item.OrgID, item.GoalID, item.RepoID, item.Seq, item.Title = item1, orgID, goalID, repoID, 1, "Write the failing test"
 	if err := runner.RunItem(context.Background(), item); err == nil {
@@ -388,7 +391,7 @@ func TestRunnerWritesEndedGoalDocOnceInPrimaryRepo(t *testing.T) {
 	gw := gateway.New(f.URL(), "rs_test")
 	cfg := &Config{OrgLogin: "acme", OrgID: orgID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: Fixed(1)}
 	ws := &fakeWS{root: t.TempDir()}
-	runner := &Runner{GW: gw, Harness: &fakeHarness{}, WS: ws, Cfg: cfg, Scopes: scopesOf(cfg), WorkRoot: ws.root, ProgressEvery: time.Hour}
+	runner := &Runner{Credentials: testCreds(gw), GW: gw, Harness: &fakeHarness{}, WS: ws, Cfg: cfg, Scopes: scopesOf(cfg), WorkRoot: ws.root, ProgressEvery: time.Hour}
 	ctx := context.Background()
 	if err := gw.ClaimWorkItem(ctx, item2, cfg.NodeID, "claude-code"); err != nil {
 		t.Fatal(err)
@@ -467,7 +470,7 @@ func TestRunnerLeavesItemOnShutdown(t *testing.T) {
 		<-ctx.Done()
 		return harness.Result{}, ctx.Err()
 	})
-	runner := &Runner{GW: gw, Harness: blocking, WS: ws, Cfg: cfg, Scopes: scopesOf(cfg), WorkRoot: ws.root, ProgressEvery: time.Hour}
+	runner := &Runner{Credentials: testCreds(gw), GW: gw, Harness: blocking, WS: ws, Cfg: cfg, Scopes: scopesOf(cfg), WorkRoot: ws.root, ProgressEvery: time.Hour}
 	var item gateway.WorkItem
 	item.ID, item.OrgID, item.GoalID, item.RepoID, item.Seq = item1, orgID, goalID, repoID, 1
 	if err := runner.RunItem(ctx, item); err != context.Canceled {
@@ -568,7 +571,7 @@ func TestRunnerAsksForItsMCPServersPerItem(t *testing.T) {
 	ws := &fakeWS{root: t.TempDir()}
 	h := &fakeHarness{}
 	calls := 0
-	runner := &Runner{GW: gw, Harness: h, WS: ws, Cfg: cfg, Scopes: scopesOf(cfg), WorkRoot: ws.root, ProgressEvery: time.Hour,
+	runner := &Runner{Credentials: testCreds(gw), GW: gw, Harness: h, WS: ws, Cfg: cfg, Scopes: scopesOf(cfg), WorkRoot: ws.root, ProgressEvery: time.Hour,
 		MCP: MeshContextMCP(f.URL(), "stale"),
 		MCPFunc: func(context.Context) map[string]any {
 			calls++

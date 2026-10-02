@@ -40,11 +40,11 @@ type accountsNode struct {
 func newAccountsNode(t *testing.T, c Capacity) *accountsNode {
 	s := newScaled(t, c, true)
 	n := &accountsNode{scaled: s, on: map[string]string{}}
-	s.loop.Cfg.Accounts = []AccountConfig{
-		{Label: "max-a", Kind: AccountSubscription, TokenFile: "/a"},
-		{Label: "max-b", Kind: AccountSubscription, TokenFile: "/b"},
-		{Label: "key", Kind: AccountAPI, APIKeyEnv: "KEY", DailyCapUSD: 300},
-	}
+	knowAccounts(s.loop, []AccountConfig{
+		{Label: "max-a", Kind: AccountSubscription},
+		{Label: "max-b", Kind: AccountSubscription},
+		{Label: "key", Kind: AccountAPI, DailyCapUSD: 300},
+	}...)
 	s.loop.Ledger = &Ledger{Location: time.UTC, Now: s.clock.Now}
 	s.loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) {
 		a, _ := ChosenAccount(ctx)
@@ -216,7 +216,8 @@ func TestAccountsKeyAtItsCapTakesNothing(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			n := newAccountsNode(t, Capacity{Min: 1, Max: 4})
-			n.loop.Cfg.Accounts = n.loop.Cfg.Accounts[2:]
+			n.loop.Known = nil
+			knowAccounts(n.loop, AccountConfig{Label: "key", Kind: AccountAPI, DailyCapUSD: 300})
 			spend(n.loop.Ledger)
 			n.addGoal(orgID, "fire", "urgent")
 			n.addItem(orgID, "fire", "u1", 1, false)
@@ -309,10 +310,10 @@ func TestAccountsNodeHeartbeatsEachAccountsSlots(t *testing.T) {
 // none, and a capacity changed in node.yaml never reached the platform).
 func TestFixedNodeHeartbeatsItsCapacityOnAnyNumberOfAccounts(t *testing.T) {
 	two := newScaled(t, Fixed(3), false)
-	two.loop.Cfg.Accounts = []AccountConfig{
-		{Label: "max-a", Kind: AccountSubscription, TokenFile: "/a"},
-		{Label: "max-b", Kind: AccountSubscription, TokenFile: "/b"},
-	}
+	knowAccounts(two.loop, []AccountConfig{
+		{Label: "max-a", Kind: AccountSubscription},
+		{Label: "max-b", Kind: AccountSubscription},
+	}...)
 	two.at(0)
 	s, ok := lastScaling(t, two)
 	// accounts rides as [] (the platform refuses a null list, 2026-09-28)
@@ -321,7 +322,7 @@ func TestFixedNodeHeartbeatsItsCapacityOnAnyNumberOfAccounts(t *testing.T) {
 	}
 
 	one := newScaled(t, Fixed(3), false)
-	one.loop.Cfg.Accounts = []AccountConfig{{Label: "max-a", Kind: AccountSubscription, TokenFile: "/a"}}
+	knowAccounts(one.loop, []AccountConfig{{Label: "max-a", Kind: AccountSubscription}}...)
 	one.at(0)
 	if s, ok := lastScaling(t, one); !ok || len(s) != 5 || s["capacity"] != 3.0 || s["min"] != 3.0 || s["max"] != 3.0 || s["reason"] != "fixed" {
 		t.Fatalf("fixed node on one account: scaling = %#v, %v", s, ok)

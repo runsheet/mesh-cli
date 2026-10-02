@@ -49,7 +49,7 @@ func TestLoopPlansOnALinkedAccountRepo(t *testing.T) {
 		"{\"seq\": 1, \"title\": \"Make nested lists nullable\", \"brief\": \"In loom.\", \"acceptance\": \"go test ./... passes\", \"depends_on\": [], \"repo\": \"go-apis/loom\"}" +
 		"]}\n```"}
 	var logs bytes.Buffer
-	pl := &Planner{GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, MaxBudgetUSD: 4, Log: log.New(&logs, "", 0)}
+	pl := &Planner{Credentials: testCreds(gw), GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, MaxBudgetUSD: 4, Log: log.New(&logs, "", 0)}
 	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Interval: time.Hour, Log: pl.Log,
 		Dispatch: func(context.Context, gateway.WorkItem) {},
 		Plan:     func(ctx context.Context, g gateway.Goal, sc Scope) { _ = pl.Plan(ctx, g, sc) }}
@@ -88,7 +88,7 @@ func TestPlannerReposUnderBothAccountsLinkedAccount(t *testing.T) {
 	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, NodeID: "22222222-2222-4222-8222-222222222222"}
 	ws := &fakeWS{root: t.TempDir()}
 	h := &fakeHarness{text: "no graph"}
-	pl := &Planner{GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, MaxBudgetUSD: 4, Log: log.New(&bytes.Buffer{}, "", 0)}
+	pl := &Planner{Credentials: testCreds(gw), GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, MaxBudgetUSD: 4, Log: log.New(&bytes.Buffer{}, "", 0)}
 	goal, err := gw.Goal(context.Background(), goal2)
 	if err != nil {
 		t.Fatal(err)
@@ -113,7 +113,7 @@ func TestPlannerReposUnderBothAccountsLinkedAccount(t *testing.T) {
 func TestPlannerNoReposLinkedAccount(t *testing.T) {
 	f := seed(t)
 	gw := gateway.New(f.URL(), "rs_test")
-	pl := &Planner{GW: gw, Log: log.New(&bytes.Buffer{}, "", 0)}
+	pl := &Planner{Credentials: testCreds(gw), GW: gw, Log: log.New(&bytes.Buffer{}, "", 0)}
 	_, _, err := pl.projectRepoMap(context.Background(), gateway.Goal{ProjectID: projID}, Scope{Login: "acme", ID: orgID, AccountID: acctID})
 	if err == nil || !strings.Contains(err.Error(), "project mesh has no repos enrolled") {
 		t.Fatalf("err = %v", err)
@@ -129,7 +129,7 @@ func TestLoopResearchesALinkedAccountRepo(t *testing.T) {
 	ws := &fakeWS{root: t.TempDir()}
 	h := &fakeHarness{text: "```json\n{\"goals\": []}\n```"}
 	var logs bytes.Buffer
-	dir := &Director{GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, MaxBudgetUSD: 4, Log: log.New(&logs, "", 0)}
+	dir := &Director{Credentials: testCreds(gw), GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, MaxBudgetUSD: 4, Log: log.New(&logs, "", 0)}
 	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Interval: time.Hour, Log: dir.Log,
 		Dispatch: func(context.Context, gateway.WorkItem) {},
 		Research: func(ctx context.Context, dn gateway.Direction, p gateway.Project, sc Scope) {
@@ -163,7 +163,7 @@ func TestResearchReposUnderBothAccountsLinkedAccount(t *testing.T) {
 	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, NodeID: "22222222-2222-4222-8222-222222222222", OwnerID: f.UserID}
 	ws := &fakeWS{root: t.TempDir()}
 	h := &fakeHarness{text: "```json\n{\"goals\": []}\n```"}
-	dir := &Director{GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, MaxBudgetUSD: 4, Log: log.New(&bytes.Buffer{}, "", 0)}
+	dir := &Director{Credentials: testCreds(gw), GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, MaxBudgetUSD: 4, Log: log.New(&bytes.Buffer{}, "", 0)}
 	ctx := context.Background()
 	project, err := gw.Project(ctx, projID)
 	if err != nil {
@@ -197,7 +197,7 @@ func TestLoopBuildsOnALinkedAccountRepo(t *testing.T) {
 	}
 	ws := &fakeWS{root: t.TempDir()}
 	h := &fakeHarness{}
-	runner := &Runner{GW: gw, Harness: h, WS: ws, Cfg: cfg, Scopes: scopesOf(cfg), WorkRoot: ws.root, MaxBudgetUSD: 5, ProgressEvery: time.Hour, Log: log.New(&bytes.Buffer{}, "", 0)}
+	runner := &Runner{Credentials: testCreds(gw), GW: gw, Harness: h, WS: ws, Cfg: cfg, Scopes: scopesOf(cfg), WorkRoot: ws.root, MaxBudgetUSD: 5, ProgressEvery: time.Hour, Log: log.New(&bytes.Buffer{}, "", 0)}
 	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Version: "test", Harness: "claude-code", Interval: time.Hour, Log: runner.Log,
 		Dispatch: func(ctx context.Context, item gateway.WorkItem) { _ = runner.RunItem(ctx, item) }}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

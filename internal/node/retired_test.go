@@ -11,12 +11,6 @@ import (
 	"projectmesh.io/mesh-cli/internal/gateway"
 )
 
-// loadConfigKeepingAccounts reads node.yaml as it was read before
-// `accounts:` and `codex.accounts` were retired: the tests of the
-// plumbing item 9 of a-session-never-runs-on-the-machines-own-login
-// removes, until it does.
-func loadConfigKeepingAccounts() (*Config, error) { return loadConfig(false) }
-
 // node.yaml's accounts: and codex.accounts are refused at load with the
 // pointer to the console's Credentials page; neither, or an empty list,
 // loads as before.
@@ -26,6 +20,8 @@ func TestRetiredAccountsRefused(t *testing.T) {
 		"codex.accounts": {"codex:\n  binary: /opt/codex\n  accounts:\n    - name: plus\n      home: ~/.codex\n", "codex.accounts"},
 		// an account the old validation refused is still refused as retired
 		"invalid accounts": {"accounts:\n  - {label: a, kind: team}\n", "accounts:"},
+		// whatever the entries' shape: the key alone is refused
+		"a scalar list": {"accounts: [max-a]\ncodex:\n  accounts: [plus]\n", "accounts:"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())

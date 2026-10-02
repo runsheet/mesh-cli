@@ -15,25 +15,6 @@ import (
 // have nothing left and work waits, never past a key's cap, and the
 // reserve at the end of a key's day for urgent and high work only.
 
-// nodeAccounts are node.yaml's accounts in force: as last reloaded,
-// else Cfg's.
-func (l *Loop) nodeAccounts() []AccountConfig {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.nodeAccountsLocked()
-}
-
-// nodeAccountsLocked is nodeAccounts; l.mu is held.
-func (l *Loop) nodeAccountsLocked() []AccountConfig {
-	if l.spendingSet {
-		return l.spending.Accounts
-	}
-	if l.Cfg == nil {
-		return nil
-	}
-	return l.Cfg.Accounts
-}
-
 // projectBudgets are node.yaml's project budgets in force.
 func (l *Loop) projectBudgets() map[string]float64 {
 	l.mu.Lock()
@@ -160,8 +141,7 @@ func (l *Loop) urgentOnly() int {
 }
 
 // spendable is the accounts the spending order leaves a session: with
-// node.yaml's accounts or known issued ones (neither leaves the
-// operator's own login, as it was), an api key at or past its daily or monthly cap is dropped —
+// known issued ones (none leaves the choice as it was), an api key at or past its daily or monthly cap is dropped —
 // the hard stop — and one inside the reserve at the end of its day
 // (UrgentReserve) unless the work is pressing. For an item, once the
 // accounts scaler has counted slots, an account with none free is
@@ -239,48 +219,6 @@ func (l *Loop) UnmergedPerRepo() int {
 		return 0
 	}
 	return l.Cfg.Claim.UnmergedPerRepo
-}
-
-// accountChanges are a reload's changes to accounts kept under the same
-// label, one line per account naming each field that changed with its
-// old and new value — the caps as in force, as each kind uses them
-// (capsInForce: an api key's with defaults applied, a subscription's
-// none) — for the log. Accounts added or removed are the `accounts … → …` line's.
-func accountChanges(was, now []AccountConfig) []string {
-	old := map[string]AccountConfig{}
-	for _, a := range was {
-		old[a.Label] = a
-	}
-	var out []string
-	for _, a := range now {
-		b, ok := old[a.Label]
-		if !ok {
-			continue
-		}
-		var fields []string
-		str := func(name, from, to string) {
-			if from != to {
-				fields = append(fields, fmt.Sprintf("%s %s → %s", name, orNone(from), orNone(to)))
-			}
-		}
-		usd := func(name string, from, to float64) {
-			if from != to {
-				fields = append(fields, fmt.Sprintf("%s %s → %s", name, dollars(from), dollars(to)))
-			}
-		}
-		str("kind", b.Kind, a.Kind)
-		str("token_file", b.TokenFile, a.TokenFile)
-		str("api_key_env", b.APIKeyEnv, a.APIKeyEnv)
-		bd, bm := b.capsInForce()
-		ad, am := a.capsInForce()
-		usd("daily_cap", bd, ad)
-		usd("monthly_cap", bm, am)
-		str("project", b.Project, a.Project)
-		if len(fields) > 0 {
-			out = append(out, fmt.Sprintf("account %s: %s", a.Label, strings.Join(fields, ", ")))
-		}
-	}
-	return out
 }
 
 // orNone is s, or "(none)" when it is empty.

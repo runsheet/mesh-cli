@@ -6,7 +6,6 @@ import (
 	"errors"
 	"log"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -14,62 +13,16 @@ import (
 	"projectmesh.io/mesh-cli/internal/harness"
 )
 
-// Two subscriptions and an api key load as listed; the token file's ~
-// is the operator's home.
-func TestAccountsLoad(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	writeNodeYAML(t, `slug: mini
-name: mini
-accounts:
-  - label: max-a
-    kind: subscription
-    token_file: ~/.mesh/max-a.token
-  - label: max-b
-    kind: subscription
-    token_file: /etc/mesh/max-b.token
-  - label: api
-    kind: api
-    api_key_env: MESH_TEST_API_KEY
-`)
-	cfg, err := loadConfigKeepingAccounts()
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []AccountConfig{
-		{Label: "max-a", Kind: AccountSubscription, TokenFile: "~/.mesh/max-a.token"},
-		{Label: "max-b", Kind: AccountSubscription, TokenFile: "/etc/mesh/max-b.token"},
-		{Label: "api", Kind: AccountAPI, APIKeyEnv: "MESH_TEST_API_KEY"},
-	}
-	if len(cfg.Accounts) != len(want) {
-		t.Fatalf("accounts %+v, want %+v", cfg.Accounts, want)
-	}
-	for i := range want {
-		if cfg.Accounts[i] != want[i] {
-			t.Errorf("accounts[%d] = %+v, want %+v", i, cfg.Accounts[i], want[i])
-		}
-	}
-	if p, _ := cfg.Accounts[0].TokenPath(); p != filepath.Join(home, ".mesh", "max-a.token") {
-		t.Errorf("token path %q: ~ not expanded", p)
-	}
+// issuedWith is a an issued account carrying secret, as the claim-time
+// read hands one over (IssuedAccount): the only kind a session opens.
+func issuedWith(a AccountConfig, secret string) AccountConfig {
+	a.issued = &secret
+	return a
 }
 
-// A node.yaml with none is the node as it was: no accounts, sessions on
-// the operator's own login.
-func TestAccountsNone(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	writeNodeYAML(t, "slug: mini\nname: mini\n")
-	cfg, err := LoadConfig()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(cfg.Accounts) != 0 {
-		t.Fatalf("accounts %+v", cfg.Accounts)
-	}
-	acct, err := OpenAccount(context.Background(), cfg.Accounts)
-	if err != nil || acct != nil {
-		t.Fatalf("OpenAccount with none = %v, %v; want nil, nil", acct, err)
-	}
+// A nil account — a test's job with none — changes nothing on a job.
+func TestNilAccountSessionChangesNothing(t *testing.T) {
+	var acct *AccountSession
 	job := harness.Job{Env: []string{"GH_TOKEN=x"}}
 	acct.Apply(&job)
 	acct.Cleanup()
@@ -81,20 +34,11 @@ func TestAccountsNone(t *testing.T) {
 // An api key's caps default to $50 a day and $1,000 a month; set, they
 // are its own. A project's budget is shared by the keys naming it.
 func TestAccountsCapsAndBudgets(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	writeNodeYAML(t, `slug: mini
-name: mini
-capacity: {min: 1, max: 6}
-accounts:
-  - {label: max-a, kind: subscription, token_file: /t}
-  - {label: key, kind: api, api_key_env: K}
-  - {label: big, kind: api, api_key_env: B, daily_cap: 200, monthly_cap: 3000, project: mesh-cli}
-project_budgets:
-  mesh-cli: 120
-`)
-	cfg, err := loadConfigKeepingAccounts()
-	if err != nil {
-		t.Fatal(err)
+	budgets := map[string]float64{"mesh-cli": 120}
+	accounts := []AccountConfig{
+		{Label: "max-a", Kind: AccountSubscription},
+		{Label: "key", Kind: AccountAPI},
+		{Label: "big", Kind: AccountAPI, DailyCapUSD: 200, MonthlyCapUSD: 3000, Project: "mesh-cli"},
 	}
 	for _, c := range []struct {
 		i          int
@@ -102,59 +46,32 @@ project_budgets:
 		project    string
 		budget     float64
 	}{{1, 50, 1000, "", 0}, {2, 200, 3000, "mesh-cli", 120}} {
-		a := cfg.Accounts[c.i]
+		a := accounts[c.i]
 		if d, m := a.Caps(); d != c.day || m != c.month {
 			t.Errorf("%s caps %v/%v, want %v/%v", a.Label, d, m, c.day, c.month)
 		}
-		got := a.capacity(cfg.ProjectBudgets)
+		got := a.capacity(budgets)
 		want := CapacityAccount{Name: a.Label, Kind: AccountAPI, DailyCapUSD: c.day, MonthlyCapUSD: c.month, Project: c.project, ProjectDailyBudgetUSD: c.budget}
 		if got != want {
 			t.Errorf("%s as the scaler sees it: %+v, want %+v", a.Label, got, want)
 		}
 	}
-	if got := cfg.Accounts[0].capacity(cfg.ProjectBudgets); got != (CapacityAccount{Name: "max-a", Kind: AccountSubscription}) {
+	if got := accounts[0].capacity(budgets); got != (CapacityAccount{Name: "max-a", Kind: AccountSubscription}) {
 		t.Errorf("subscription as the scaler sees it: %+v", got)
 	}
 }
 
-func TestAccountsRejected(t *testing.T) {
-	for name, entries := range map[string]string{
-		"duplicate label":  "  - {label: a, kind: subscription, token_file: /t}\n  - {label: a, kind: api, api_key_env: K}\n",
-		"no label":         "  - {kind: subscription, token_file: /t}\n",
-		"unknown kind":     "  - {label: a, kind: team, token_file: /t}\n",
-		"no token_file":    "  - {label: a, kind: subscription}\n",
-		"no api_key_env":   "  - {label: a, kind: api}\n",
-		"negative cap":     "  - {label: a, kind: api, api_key_env: K, daily_cap: -1}\n",
-		"subscription cap": "  - {label: a, kind: subscription, token_file: /t, monthly_cap: 10}\n",
-	} {
-		t.Run(name, func(t *testing.T) {
-			t.Setenv("HOME", t.TempDir())
-			writeNodeYAML(t, "slug: mini\nname: mini\naccounts:\n"+entries)
-			if cfg, err := loadConfigKeepingAccounts(); err == nil {
-				t.Fatalf("loaded %+v, want an error", cfg.Accounts)
-			}
-		})
-	}
-}
-
+// An account's secret is only what the claim-time read issued: one Known
+// remembers (no secret) or an empty one is no secret.
 func TestAccountSecret(t *testing.T) {
-	dir := t.TempDir()
-	tokFile := filepath.Join(dir, "tok")
-	if err := os.WriteFile(tokFile, []byte("  sk-ant-oat-123\n"), 0o600); err != nil {
-		t.Fatal(err)
+	if s, err := issuedWith(AccountConfig{Label: "a", Kind: AccountSubscription, ID: "c1"}, "sk-ant-oat-123").Secret(); err != nil || s != "sk-ant-oat-123" {
+		t.Fatalf("issued secret %q, %v", s, err)
 	}
-	if s, err := (AccountConfig{Label: "a", Kind: AccountSubscription, TokenFile: tokFile}).Secret(); err != nil || s != "sk-ant-oat-123" {
-		t.Fatalf("subscription secret %q, %v", s, err)
+	if _, err := (AccountConfig{Label: "b", Kind: AccountAPI, ID: "c2"}).Secret(); err == nil {
+		t.Fatal("a remembered account read as a secret")
 	}
-	t.Setenv("MESH_TEST_KEY", "sk-ant-api-456")
-	if s, err := (AccountConfig{Label: "b", Kind: AccountAPI, APIKeyEnv: "MESH_TEST_KEY"}).Secret(); err != nil || s != "sk-ant-api-456" {
-		t.Fatalf("api secret %q, %v", s, err)
-	}
-	if _, err := (AccountConfig{Label: "c", Kind: AccountAPI, APIKeyEnv: "MESH_TEST_UNSET_KEY"}).Secret(); err == nil {
-		t.Fatal("an unset key variable read as a secret")
-	}
-	if _, err := (AccountConfig{Label: "d", Kind: AccountSubscription, TokenFile: filepath.Join(dir, "missing")}).Secret(); err == nil {
-		t.Fatal("a missing token file read as a secret")
+	if _, err := issuedWith(AccountConfig{Label: "c", Kind: AccountAPI}, "").Secret(); err == nil {
+		t.Fatal("an empty issued secret read as a secret")
 	}
 }
 
@@ -165,8 +82,8 @@ func TestPrepareAccount(t *testing.T) {
 		acct AccountConfig
 		want string
 	}{
-		{AccountConfig{Label: "max-a", Kind: AccountSubscription, TokenFile: "/t"}, "CLAUDE_CODE_OAUTH_TOKEN"},
-		{AccountConfig{Label: "api", Kind: AccountAPI, APIKeyEnv: "K"}, "ANTHROPIC_API_KEY"},
+		{AccountConfig{Label: "max-a", Kind: AccountSubscription}, "CLAUDE_CODE_OAUTH_TOKEN"},
+		{AccountConfig{Label: "api", Kind: AccountAPI}, "ANTHROPIC_API_KEY"},
 	} {
 		t.Run(c.acct.Kind, func(t *testing.T) {
 			s, err := PrepareAccount(c.acct, "secret-"+c.acct.Label)
@@ -242,21 +159,19 @@ func (h *accountHarness) Run(_ context.Context, job harness.Job, _ func(harness.
 	return harness.Result{Success: true, Text: "done", SessionID: "s"}, nil
 }
 
-// A build on a configured account runs with its env beside the GH
+// A build on an issued account runs with its env beside the GH
 // variables, the auth variables unset and the config dir alive; the dir
 // is gone after, and a failure that carries the secret is logged and
 // handed in with it redacted.
 func TestRunItemOnAccount(t *testing.T) {
 	const secret = "sk-ant-oat-SECRET-token"
-	tokFile := filepath.Join(t.TempDir(), "tok")
-	if err := os.WriteFile(tokFile, []byte(secret+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	f := seed(t)
+	f.SessionCredentials[item1] = []map[string]any{{"id": "cred-a", "label": "max-a", "vendor": "anthropic", "kind": "subscription", "serves": []any{"claude-code"}, "secret": secret}}
 	h := &accountHarness{fail: "claude: bad credential " + secret}
-	r, _, item, row := runnerOn(t, h, nil)
+	r, _, item, row := runnerOnFake(t, f, h, nil)
 	var logs bytes.Buffer
 	r.Log = log.New(&logs, "", 0)
-	r.Accounts = []AccountConfig{{Label: "max-a", Kind: AccountSubscription, TokenFile: tokFile}, {Label: "max-b", Kind: AccountSubscription, TokenFile: "/nope"}}
+	r.Credentials.Log = r.Log
 	err := r.RunItem(context.Background(), item)
 	if err == nil {
 		t.Fatal("RunItem succeeded on a failing session")
@@ -299,21 +214,16 @@ func TestRunItemOnAccount(t *testing.T) {
 
 // Two sessions on different accounts run in different config dirs.
 func TestSessionsOnDifferentAccounts(t *testing.T) {
-	dir := t.TempDir()
 	var accounts []AccountConfig
 	for _, l := range []string{"max-a", "max-b"} {
-		p := filepath.Join(dir, l)
-		if err := os.WriteFile(p, []byte("tok-"+l), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		accounts = append(accounts, AccountConfig{Label: l, Kind: AccountSubscription, TokenFile: p})
+		accounts = append(accounts, issuedWith(AccountConfig{Label: l, Kind: AccountSubscription, ID: "cred-" + l}, "tok-"+l))
 	}
-	a, err := OpenAccount(context.Background(), accounts[:1])
+	a, err := OpenAccount(accounts[0])
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer a.Cleanup()
-	b, err := OpenAccount(context.Background(), accounts[1:])
+	b, err := OpenAccount(accounts[1])
 	if err != nil {
 		t.Fatal(err)
 	}
