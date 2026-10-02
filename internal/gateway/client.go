@@ -762,6 +762,46 @@ type WorkItem struct {
 	// the platform serves them every item reads as built.
 	Outcome  string `json:"outcome"`
 	Evidence string `json:"evidence"`
+	// LineageRootSeq is the seq of the first item of the item's lineage
+	// and LineageAttempt which attempt of it the item is (runsheet ADR
+	// 023's 2026-10-02 amendment, a cap of 3); both 0 from an older
+	// platform (`?` in fields/WorkItemIndex.txt).
+	LineageRootSeq int `json:"lineageRootSeq"`
+	LineageAttempt int `json:"lineageAttempt"`
+	// Atomic is the planner's reason the item cannot be halved, read
+	// from its brief's first line (AtomicReason): planGoal has no field
+	// for it yet (mesh-cli ADR-021).
+	Atomic string `json:"-"`
+}
+
+// atomicPrefix opens a brief's first line when the planner marked the
+// item atomic (ADR-021).
+const atomicPrefix = "atomic:"
+
+// AtomicReason is the reason on a brief's first line `atomic: <reason>`,
+// or "" when the brief does not open with one.
+func AtomicReason(brief string) string {
+	first, _, _ := strings.Cut(strings.TrimSpace(brief), "\n")
+	first = strings.TrimSpace(first)
+	if len(first) < len(atomicPrefix) || !strings.EqualFold(first[:len(atomicPrefix)], atomicPrefix) {
+		return ""
+	}
+	return strings.TrimSpace(first[len(atomicPrefix):])
+}
+
+// BriefWithAtomic is brief with `atomic: <reason>` as its first line, so
+// the item's record — and so the goal — carries the reason; a brief
+// unchanged when reason is empty.
+func BriefWithAtomic(brief, reason string) string {
+	reason = strings.Join(strings.Fields(reason), " ")
+	brief = strings.TrimSpace(brief)
+	if reason == "" {
+		return brief
+	}
+	if brief == "" {
+		return atomicPrefix + " " + reason
+	}
+	return atomicPrefix + " " + reason + "\n\n" + brief
 }
 
 // The outcomes a WorkItem finishes with (mesh ADR 003 decision 1).
@@ -780,6 +820,7 @@ func (w *WorkItem) UnmarshalJSON(b []byte) error {
 	if r.Outcome == "" {
 		r.Outcome = OutcomeBuilt
 	}
+	r.Atomic = AtomicReason(r.Brief)
 	*w = WorkItem(r)
 	return nil
 }

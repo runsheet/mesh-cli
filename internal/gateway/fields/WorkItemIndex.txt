@@ -19,6 +19,8 @@ heartbeatAt
 id
 lastError
 lastNote
+lineageAttempt?
+lineageRootSeq?
 model?
 nodeId
 orgId

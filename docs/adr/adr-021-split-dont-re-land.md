@@ -95,3 +95,40 @@ platform's contract changes before the node reports it.
 - This item lands the prompt, the `Atomic` field and the
   `ExistingItem`/`PlanInput` fields; the plan check, the request at the
   second failure and the `planGoal` field are later items of the goal.
+
+## Amendment 2026-10-02: the plan check, the brief's `atomic:` line and the refusal (item 2)
+
+**The check.** `sameAcceptanceAsFailed(specs, existing)`
+(`internal/node/plan_check.go`) compares each new item's acceptance,
+by `normaliseAcceptance` — lower-case, backticks and punctuation
+stripped, whitespace collapsed — with every item of the goal that is
+`failed`, `superseded`, or `cancelled` with a `lastError` of its own (a
+dependent a re-plan cancelled carries none). An equal one is flagged
+for the re-ask, beside `unverifiableAcceptance` and
+`hostReadingAcceptance`: `item N (title): its acceptance is the same as
+failed item M's (lineage R, attempt A of 3) — split it: partition the
+acceptance into two or more items, one PR each, naming the
+dependency`. R and A are the failed item's `lineageRootSeq` and
+`lineageAttempt`, read from `WorkItemIndex` as optional fields
+(ADR-010: an older gateway still answers); without them R is M and the
+attempt is left out. The planner reads the goal's items once and keeps
+them for the check; "The items so far" gets their `Acceptance`,
+`LineageRootSeq` and `LineageAttempt`.
+
+**`atomic` on the brief.** `planGoal` has no field for the reason yet,
+so the node writes it as the brief's first line, `atomic: <reason>`
+(`gateway.BriefWithAtomic`); the item's record, and so the goal,
+carries it, and `gateway.AtomicReason(brief)` reads it back
+(`WorkItem.Atomic`). An item with `atomic` set is not flagged against a
+failed item whose brief has no `atomic:` line; against one that has it
+— the exemption spent — it is flagged like any other. When the platform
+takes `atomic` on the planned item, the field replaces the line.
+
+**The refusal on the second answer.** adr-004's backstop hands a
+still-flagged second answer in as it stands; a re-land is not handed
+in. A second answer — or an adopted planner session's, which is not
+asked again — that still recreates a failed item at its acceptance is
+an error from `readPlan`, `plan would re-land failed item M (lineage
+R) at the same acceptance; refused`, logged and counted like any
+planner error (`MaxPlanAttempts`), and `PlanGoal` is not called: the
+goal never gets a fourth re-land from this node.

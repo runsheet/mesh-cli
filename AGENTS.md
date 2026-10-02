@@ -51,7 +51,14 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   (`PlannedSpec.Atomic`) exempt once, a failed item's acceptance and
   lineage shown in the items so far, and a narrow re-plan's
   `PlanInput.Replacing` written as `## Split this item`
-  (`planSplitRule`, ADR-021), the director ends with its pitches and answers in one for a
+  (`planSplitRule`, ADR-021; the node's `sameAcceptanceAsFailed` flags
+  a new item whose `normaliseAcceptance` equals a failed, superseded or
+  erred-cancelled item's of the goal, naming its lineage from
+  `WorkItem.LineageRootSeq`/`LineageAttempt`, for the re-ask, an
+  `atomic` item let through unless that item's brief opened `atomic:`,
+  and a second answer still re-landing is refused — `PlanGoal` not
+  called; the reason rides the brief's first line `atomic: <reason>`,
+  `gateway.BriefWithAtomic`/`AtomicReason`), the director ends with its pitches and answers in one for a
   propose-mode direction, its proposals in one for a set-mode one, the rebase session
   ends with `REBASED: <sha>` and `RESOLVED: <files>` or
   `REBASE FAILED: <why>`, the builder never pushes and checks main
