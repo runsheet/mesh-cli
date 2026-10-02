@@ -80,6 +80,11 @@ type Loop struct {
 	// it). A capacity of 0, nil limits or nil scopes keep what the loop
 	// has; an error is logged, and what came back with it is still taken.
 	Reload func(ctx context.Context) (Reloaded, error)
+	// FirstBeat runs once, after the first heartbeat through, on the
+	// orgs it answered: `mesh node start`'s credentials report
+	// (ReportCoverage), which an owned node cannot make before then.
+	FirstBeat func(ctx context.Context, scopes Scopes)
+	firstBeat sync.Once
 	// Limits holds the latest Claude plan standing of each account, fed
 	// by every session (ObserveLimits); the heartbeat carries it and the
 	// loop paces by it. Nil until the first tick makes one.
@@ -860,6 +865,9 @@ func (l *Loop) Tick(ctx context.Context) {
 	}
 	if beat {
 		l.confirmUpdate()
+		if l.FirstBeat != nil {
+			l.firstBeat.Do(func() { l.FirstBeat(ctx, l.CurrentScopes()) })
+		}
 	}
 	l.selfUpdate(ctx)
 	p := l.pacing()

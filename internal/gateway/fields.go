@@ -6,11 +6,12 @@ import "sort"
 // schema's type name: the fields every platform serves and the ones an
 // older platform may lack.
 var entityFields = map[string]struct{ required, optional []string }{
-	"DirectionIndex": {directionRequired, directionOptional},
-	"GoalIndex":      {goalRequired, goalOptional},
-	"NodeIndex":      {nodeRequired, nodeOptional},
-	"ProjectIndex":   {projectRequired, projectOptional},
-	"WorkItemIndex":  {workItemRequired, workItemOptional},
+	"CredentialIndex": {credentialRequired, credentialOptional},
+	"DirectionIndex":  {directionRequired, directionOptional},
+	"GoalIndex":       {goalRequired, goalOptional},
+	"NodeIndex":       {nodeRequired, nodeOptional},
+	"ProjectIndex":    {projectRequired, projectOptional},
+	"WorkItemIndex":   {workItemRequired, workItemOptional},
 }
 
 // Entities are the schema types whose field lists are generated, sorted.

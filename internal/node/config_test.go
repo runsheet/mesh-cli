@@ -176,7 +176,7 @@ codex:
     sonnet: gpt-6-sol
     haiku: gpt-6-luna
 `)
-	cfg, err := LoadConfig()
+	cfg, err := loadConfigKeepingAccounts()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,7 +245,7 @@ func TestLoadConfigCodexAccountsRejected(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
 			writeNodeYAML(t, "slug: mini\nname: mini\ncodex:\n  accounts:\n"+block)
-			if _, err := LoadConfig(); err == nil || !strings.Contains(err.Error(), "codex") {
+			if _, err := loadConfigKeepingAccounts(); err == nil || !strings.Contains(err.Error(), "codex") {
 				t.Fatalf("err = %v, want a codex complaint", err)
 			}
 		})
@@ -274,7 +274,7 @@ codex:
   models:
     opus: kimi-k3
 `)
-	cfg, err := LoadConfig()
+	cfg, err := loadConfigKeepingAccounts()
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -65,8 +65,12 @@ func TestReloadLimitsFromDisk(t *testing.T) {
 
 func TestReloadAccountsFromDisk(t *testing.T) {
 	const a = "  - {label: sub-a, kind: subscription, token_file: ~/a.token}\n"
-	loop, _, logs := newPriorityFake(t).liveLoop(t, reloadYAML+"accounts:\n"+a+
-		"  - {label: api-b, kind: api, api_key_env: KEY_B, daily_cap: 20}\n")
+	// accounts: is refused at load now (TestRetiredAccountsRefused); the
+	// reload of the plumbing is proved on the loader that still reads it
+	// until item 9 of a-session-never-runs-on-the-machines-own-login
+	// removes both.
+	loop, _, logs := newPriorityFake(t).liveLoopOn(t, reloadYAML+"accounts:\n"+a+
+		"  - {label: api-b, kind: api, api_key_env: KEY_B, daily_cap: 20}\n", loadConfigKeepingAccounts)
 	wantReloadLines(t, "first tick", tickLines(t, loop, logs))
 
 	// the same labels, one's cap and the other's credential changed
@@ -195,7 +199,6 @@ func TestReloadOrgsFromDisk(t *testing.T) {
 // A node.yaml rewritten as it was changes nothing, and says nothing.
 func TestReloadUnchangedLogsNothing(t *testing.T) {
 	const yaml = reloadYAML + "limits: {pace_five_hour: 70, stop: 90}\n" +
-		"accounts:\n  - {label: api-b, kind: api, api_key_env: KEY_B, daily_cap: 20, project: mesh}\n" +
 		"project_budgets: {mesh: 20}\nbudgets: {build: {sonnet: 7}}\n" +
 		"context: {bytes_max: 131072}\nclaim: {unmerged_per_repo: 2}\n"
 	loop, _, logs := newPriorityFake(t).liveLoop(t, yaml)

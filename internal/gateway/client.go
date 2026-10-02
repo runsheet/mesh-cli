@@ -93,6 +93,14 @@ type Client struct {
 	// DirectionIndex.mode (a platform older than runsheet ADR 022):
 	// every later direction read asks for directionFields alone.
 	directionsWithoutMode atomic.Bool
+	// credentialsWithoutEnterprise is set once the gateway has refused
+	// CredentialIndex.enterpriseId (a platform older than runsheet ADR
+	// 030): every later credential read asks for credentialFields alone.
+	credentialsWithoutEnterprise atomic.Bool
+	// orgsWithoutEnterprise is set once the gateway has refused
+	// OrgIndex.enterpriseId: an org then has no enterprise to read
+	// credentials of.
+	orgsWithoutEnterprise atomic.Bool
 	// toolsUnknown holds each claim-time tools field (itemTools,
 	// planTools, researchTools) the gateway has refused — a platform
 	// older than tools-in-the-console, or without that session kind's

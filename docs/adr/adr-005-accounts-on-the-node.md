@@ -1,5 +1,5 @@
 ---
-summary: A node's sessions run on the Claude accounts the platform issues the claimed session (the claim-time read: itemCredentials, planCredentials, researchCredentials; an api key at its cap never chosen), with node.yaml's `accounts:` ({label, kind subscription|api, token_file|api_key_env}) the fallback, and every session's usage report rides the command that ends it (`usage` on finishWorkItem, evaluateWorkItem, planGoal, finishWorkItemRebase, recordDirectionResearch; each priced tool call on recordToolUsage; else one log line); the secret reaches the session in its environment only (CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY), with a temporary CLAUDE_CONFIG_DIR per session removed after, the inherited auth variables stripped, and the secret redacted from every log, error and report; each session runs on the account ChooseAccount picks by headroom and the spending order (subscriptions first, API only for urgent/high work or when subscriptions are stopped and work waits), and no account with headroom means no claim.
+summary: A node's sessions run on the Claude accounts the platform issues the claimed session (the claim-time read: itemCredentials, planCredentials, researchCredentials; an api key at its cap never chosen), with node.yaml's `accounts:` and `codex.accounts` retired and refused at start (amendment 2026-10-02: a session runs only on an issued credential, and the start logs which projects have none open to the node), and every session's usage report rides the command that ends it (`usage` on finishWorkItem, evaluateWorkItem, planGoal, finishWorkItemRebase, recordDirectionResearch; each priced tool call on recordToolUsage; else one log line); the secret reaches the session in its environment only (CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY), with a temporary CLAUDE_CONFIG_DIR per session removed after, the inherited auth variables stripped, and the secret redacted from every log, error and report; each session runs on the account ChooseAccount picks by headroom and the spending order (subscriptions first, API only for urgent/high work or when subscriptions are stopped and work waits), and no account with headroom means no claim.
 status: accepted
 ---
 
@@ -591,3 +591,58 @@ family beside `no account has headroom`:
 accounts: <reason>; goal <goal id>'s items and plans left unclaimed until one is (asked again every 10m0s; said once for the goal)
 ```
 
+## Amendment — 2026-10-02 (goal `a-session-never-runs-on-the-machines-own-login`, item 8)
+
+A node runs a session only on a credential the platform issues for the
+session's org or its enterprise (Chris's rule, 2026-09-30). On
+2026-09-30 the mini launched one planner 512 times before 06:50Z, each
+on node.yaml's empty `accounts:` — the operator's own login, removed
+from the machine — and each ended "Not logged in". node.yaml's
+accounts are therefore no longer a fallback.
+
+**`accounts:` and `codex.accounts` are retired and refused.**
+`LoadConfig` (`Config.Retired`, `internal/node/config.go`) refuses a
+node.yaml whose `accounts:` list or `codex.accounts` list is non-empty,
+before anything else in it is judged, with one error naming the key:
+
+```
+node.yaml: accounts: is retired — a node runs sessions only on credentials the platform issues; add them on the console's Credentials page and attach them to the project (see README, 'Credentials come from the platform')
+```
+
+(`codex.accounts` in the key's place for the other; `ErrRetired`
+wraps both). `mesh node start` exits non-zero with it before it
+registers. A node.yaml with neither key, or an empty list, loads as
+before. A running node whose node.yaml gains either is refused like any
+node.yaml that cannot be read: `Reloader` keeps the last good config
+and the loop logs it on its `reload config:` line. The console's
+Credentials page is `/orgs/:org/settings/credentials` (runsheet
+console-trd §3). The `Accounts` fields and the code that reads them
+stay until item 9 of the goal removes them; nothing can fill them from
+disk.
+
+**The start-time coverage line.** Once the first heartbeat has answered
+the orgs the node serves (`Loop.FirstBeat`, once per process), `mesh
+node start` reads each org's credentials — `Client.Credentials`:
+`credentialIndexs` on `org_id` and, for an org under an enterprise
+(`OrgIndex.enterpriseId`), on `enterprise_id`, the two scopes the
+gateway reads `CredentialIndex` on (runsheet trd §6i); the fields are
+`internal/gateway/fields/CredentialIndex.txt`, `enterpriseId`
+optional — and its projects, and `node.ReportCoverage` logs one line
+per project and adapter that `CredentialCoverage` finds uncovered:
+
+```
+credentials: org <slug>'s project <slug> has no <adapter> credential open to this node
+```
+
+and one `credentials: every project has a <adapter> credential open to
+this node` for each adapter no project lacks — claude-code's said
+whatever codex's coverage is. The adapters are `claude-code` and, when the
+node's adapter probe finds the CLI, `codex` (`CoverageAdapters`). A
+credential covers a project for an adapter as the claim-time read's
+`credentialServes` decides: `active`, `serves` naming the adapter,
+`allowedNodeIds` empty or listing this node, and `projectIds` naming
+the project — or, on an enterprise's credential, naming none. A
+platform that refuses the read or does not have it gets one line,
+`credentials: the platform does not serve credentialIndexs to this
+node; which projects have none is known at claim time`, and the start
+goes on: the read is best effort and never stops a start.

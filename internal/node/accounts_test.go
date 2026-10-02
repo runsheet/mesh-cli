@@ -32,7 +32,7 @@ accounts:
     kind: api
     api_key_env: MESH_TEST_API_KEY
 `)
-	cfg, err := LoadConfig()
+	cfg, err := loadConfigKeepingAccounts()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +92,7 @@ accounts:
 project_budgets:
   mesh-cli: 120
 `)
-	cfg, err := LoadConfig()
+	cfg, err := loadConfigKeepingAccounts()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +130,7 @@ func TestAccountsRejected(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
 			writeNodeYAML(t, "slug: mini\nname: mini\naccounts:\n"+entries)
-			if cfg, err := LoadConfig(); err == nil {
+			if cfg, err := loadConfigKeepingAccounts(); err == nil {
 				t.Fatalf("loaded %+v, want an error", cfg.Accounts)
 			}
 		})

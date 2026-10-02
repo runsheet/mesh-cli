@@ -4,7 +4,6 @@ import (
 	"context"
 	"log"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -33,10 +32,9 @@ type reloadFailNode struct {
 
 // reloadGood is the node.yaml the first tick reads: every reloadable
 // field away from the one the node started on.
-func reloadGood(tokFile string) string {
+func reloadGood() string {
 	return "slug: box\nname: Box\norgs: [acme]\ncapacity: 3\n" +
 		"limits:\n  pace_five_hour: 0.5\n  stop: 0.9\n" +
-		"accounts:\n  - {label: team, kind: subscription, token_file: " + tokFile + "}\n" +
 		"context:\n  bytes_max: 131072\n  doc_bytes_max: 32768\n"
 }
 
@@ -45,10 +43,6 @@ func newReloadFailNode(t *testing.T) *reloadFailNode {
 	f := seed(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	tokFile := filepath.Join(home, "team.token")
-	if err := os.WriteFile(tokFile, []byte("sk-ant-oat-team\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	writeNodeYAML(t, "slug: box\nname: Box\norgs: [acme]\ncapacity: 1\n")
 	cfg, err := LoadConfig()
 	if err != nil {
@@ -66,14 +60,14 @@ func newReloadFailNode(t *testing.T) *reloadFailNode {
 	path, _ := ConfigPath()
 	n := &reloadFailNode{t: t, f: f, loop: loop, logs: &logs, path: path}
 
-	writeNodeYAML(t, reloadGood(tokFile))
+	writeNodeYAML(t, reloadGood())
 	n.tick()
 	if got := n.reloadLines(); len(got) != 0 {
 		t.Fatalf("the good tick logged %q", got)
 	}
 	n.capacity, n.limits, n.accounts = loop.Capacity(), loop.Thresholds(), labels(loop.nodeAccounts())
 	n.context, n.scopes = loop.ContextBudget(), strings.Join(loop.CurrentScopes().Logins(), ",")
-	if n.capacity != 3 || n.limits != (LimitsConfig{PaceFiveHour: 0.5, Stop: 0.9}) || n.accounts != "team" ||
+	if n.capacity != 3 || n.limits != (LimitsConfig{PaceFiveHour: 0.5, Stop: 0.9}) || n.accounts != labels(nil) ||
 		n.context != (ContextConfig{BytesMax: 131072, DocBytesMax: 32768}) || n.scopes != "acme" {
 		t.Fatalf("the good tick is not in force: capacity %d, limits %+v, accounts %s, context %+v, orgs %s",
 			n.capacity, n.limits, n.accounts, n.context, n.scopes)
@@ -182,7 +176,7 @@ func TestReloadFailMyOrgsKeepsTheOrgsAndAppliesNodeYAML(t *testing.T) {
 	if got := strings.Join(n.loop.CurrentScopes().Logins(), ","); got != n.scopes {
 		t.Fatalf("orgs %s, want %s kept", got, n.scopes)
 	}
-	for _, want := range []string{"capacity 3 → 5", "limits: pace five-hour 50% → 60%, stop 90% → 95%", "accounts team → " + labels(nil)} {
+	for _, want := range []string{"capacity 3 → 5", "limits: pace five-hour 50% → 60%, stop 90% → 95%"} {
 		if !hasLine(n.logs.String(), want) {
 			t.Fatalf("no line %q:\n%s", want, n.logs)
 		}
@@ -254,10 +248,6 @@ func TestReloadNamesAnOrgWithoutLoginBySlug(t *testing.T) {
 	f.Orgs = append(f.Orgs, map[string]any{"id": org2, "login": "", "tenantSlug": "grapevine", "accountId": acct2})
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	tokFile := filepath.Join(home, "team.token")
-	if err := os.WriteFile(tokFile, []byte("sk-ant-oat-team\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	writeNodeYAML(t, "slug: box\nname: Box\norgs: [grapevine]\ncapacity: 1\n")
 	cfg, err := LoadConfig()
 	if err != nil {
@@ -272,8 +262,7 @@ func TestReloadNamesAnOrgWithoutLoginBySlug(t *testing.T) {
 	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopes, Interval: time.Hour, Harness: "claude-code", Log: log.New(&logs, "", 0),
 		Dispatch: func(context.Context, gateway.WorkItem) {}}
 	loop.Reload = Reloader(gw, cfg, scopes, LoadConfig, func(context.Context, Scope) error { return nil })
-	writeNodeYAML(t, "slug: box\nname: Box\norgs: [grapevine]\ncapacity: 2\n"+
-		"accounts:\n  - {label: team, kind: subscription, token_file: "+tokFile+"}\n")
+	writeNodeYAML(t, "slug: box\nname: Box\norgs: [grapevine]\ncapacity: 2\n")
 	loop.Tick(context.Background())
 	loop.wg.Wait()
 	for _, l := range strings.Split(logs.String(), "\n") {

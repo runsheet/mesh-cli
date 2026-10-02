@@ -262,67 +262,60 @@ Until the platform issues an item's token to the node holding its
 rebase (ADR-001 asks for it), every rebase fails at `github token:` and
 the item goes to its builder.
 
-### Several Claude accounts
+### Credentials come from the platform
 
-Each session runs on the Claude accounts the org's admins configured
-for its project on the console's credentials page — handed to the node
-for that session only by the claim-time read (adr-005). A read that
-answers with no credential for the session's adapter starts no session
-and leaves the work unclaimed (4, below); it never falls to node.yaml
-or the operator's own login. Only a platform whose gateway has no
-claim-time read at all leaves node.yaml's `accounts:` (the node logs
-`credentials: the platform issues no session credentials; sessions run
-on node.yaml's accounts` once per run); for that platform alone, list
-them in `~/.mesh/node.yaml`:
+A node runs a session only on a credential the platform issues for the
+session's org or its enterprise — never on the machine's own login.
+Admins add the org's Claude subscriptions and API keys, and OpenAI
+credentials for Codex, on the console's Credentials page
+(`/orgs/<org>/settings/credentials`, console-trd §3) and attach them to
+projects; an enterprise's credentials serve every project of its orgs
+unless they name some. At claim time the node asks the platform for the
+claimed session's credentials (`itemCredentials`, `planCredentials`,
+`researchCredentials`; the claim-time read, adr-005) and the session
+gets one of them for that session only. A read that answers with no
+credential for the session's adapter starts no session and leaves the
+work unclaimed (4, below); it never falls to node.yaml or the
+operator's own login.
 
-```yaml
-accounts:
-  - label: max-a
-    kind: subscription
-    token_file: ~/.mesh/accounts/max-a.token
-  - label: max-b
-    kind: subscription
-    token_file: ~/.mesh/accounts/max-b.token
-  - label: api
-    kind: api
-    api_key_env: MESH_ANTHROPIC_KEY
+**node.yaml's `accounts:` and `codex.accounts` are retired.** A
+node.yaml that lists either is refused — `mesh node start` exits
+non-zero before it registers, and a running node that reads one on its
+per-tick reload keeps its last good config and logs the refusal:
+
+```
+node.yaml: accounts: is retired — a node runs sessions only on credentials the platform issues; add them on the console's Credentials page and attach them to the project (see README, 'Credentials come from the platform')
 ```
 
-**Adding a Max account.** Signed in to that account (in a browser the
-CLI's login opens), run `claude setup-token`; it prints a long-lived
-OAuth token. Save it to a file only you can read, and list the file as
-the account's `token_file`:
+Delete the list (an empty one loads) and add the accounts in the
+console instead.
 
-```sh
-mkdir -p ~/.mesh/accounts
-claude setup-token                          # signed in to the Max account
-cat > ~/.mesh/accounts/max-b.token          # paste the token, then Ctrl-D
-chmod 600 ~/.mesh/accounts/max-b.token
+**Which projects have none.** Once the first heartbeat has answered the
+orgs the node serves, `mesh node start` reads each org's credentials
+and projects and logs one line for each project with no credential
+open to this node — active, serving the adapter, attached to the
+project (an enterprise's, to it or to none) and not limited to other
+nodes — for `claude-code` and, when the `codex` CLI is on PATH, for
+`codex`:
+
+```
+credentials: org acme's project latchkey has no claude-code credential open to this node
 ```
 
-**Adding an API key.** Put the key in a variable and name the variable
-as the account's `api_key_env` — never the key itself. The service does
-not read your shell's profile, so export it in the service's
-environment: on Linux with `systemctl --user edit
-io.projectmesh.mesh-node` and
-
-```ini
-[Service]
-Environment=MESH_ANTHROPIC_KEY=sk-ant-...
-```
-
-(on macOS, an `EnvironmentVariables` entry in
-`~/Library/LaunchAgents/io.projectmesh.mesh-node.plist`), then `mesh
-node drain` so the service starts again with it.
+and, for each adapter every project has one for, `credentials: every
+project has a claude-code credential open to this node` (the same for
+`codex`) — said for claude-code whatever codex's coverage. A platform that does not
+serve `credentialIndexs` to the node says so once (`credentials: the
+platform does not serve credentialIndexs to this node; which projects
+have none is known at claim time`) and the start goes on.
 
 **The spending order.** Before every claim — an item, a plan, research,
 a rebase — and before an evaluation, the node picks the account the
 session runs on, by the latest plan limits each account's sessions
-reported (see Near the plan's limits). The accounts are the union of
-the credentials the platform issues for the session; node.yaml's
-`accounts:` only on a platform whose claim-time read is unsupported —
-a read that answers with none for the session's adapter is a hold (4,
-below), never node.yaml or the machine's own login:
+reported (see Near the plan's limits). The accounts are the
+credentials the platform issues for the session — a read that answers
+with none for the session's adapter is a hold (4, below), never
+node.yaml or the machine's own login:
 
 1. Subscriptions first: of those with headroom, the one with the most —
    the lowest use of its five-hour and seven-day windows. An account
@@ -381,8 +374,6 @@ and the plan's windows before and after. Every session's record is in
 the node's log too, one `<label>: usage <kind> {…}` JSON line per
 session, whether its finishing command carried it, refused it or — a
 session that ends in a failure — never sent it (see [Usage](#usage)).
-`mesh node start` refuses an account whose token file or variable
-cannot be read.
 
 ### Who owns a node
 
@@ -811,12 +802,12 @@ Every `claude -p` session — build, evaluation, plan, research, rebase and
 the channel session — reports its Claude plan's standing in a
 `rate_limit_event`: a status (`allowed` while sessions may run), and how
 much of the five-hour and the seven-day window is used, with when each
-resets. The node keeps the latest reading per account (its label from
-`accounts:`, else the session's `CLAUDE_CONFIG_DIR`, or `default`) and
+resets. The node keeps the latest reading per account (the issued
+credential's label, else the session's `CLAUDE_CONFIG_DIR`, or `default`) and
 paces each account by its own, so it slows down before the plan runs
 out rather than failing items once it has. With several accounts, the
 modes below are each account's, and every session goes to an account
-that may take it (see Several Claude accounts); the node as a whole is
+that may take it (see [Credentials come from the platform](#credentials-come-from-the-platform)); the node as a whole is
 paced or stopped — and logs it — only when every subscription is:
 
 - **Paced** — the five-hour window at `limits.pace_five_hour` (80%) or
@@ -929,30 +920,10 @@ without a restart; neither is sent when nothing is found.
 
 ### Capacity across accounts
 
-A ranged node that lists `accounts:` scales by what **all** of them
-afford together rather than by one plan's windows (adr-005, capacity
-across accounts). node.yaml names the accounts and their caps — never a
-secret — and, like the capacity, is read again every tick:
-
-```yaml
-capacity: {min: 1, max: 8}
-accounts:
-  - {label: max-a, kind: subscription, token_file: ~/.mesh/accounts/max-a.token}
-  - {label: max-b, kind: subscription, token_file: ~/.mesh/accounts/max-b.token}
-  - label: api
-    kind: api
-    api_key_env: MESH_ANTHROPIC_KEY
-    daily_cap: 50        # list-price dollars; the default
-    monthly_cap: 1000    # the default
-    project: mesh-cli    # optional: spends that project's budget
-project_budgets:
-  mesh-cli: 30           # dollars a day, shared by the keys naming it
-```
-
-`kind` is `subscription` or `api`; anything else is refused, as is a
-negative cap or a cap on a subscription. With no `accounts:` the node
-runs on the operator's own login and scales as in [Capacity that scales
-with headroom](#capacity-that-scales-with-headroom) — nothing changes.
+A ranged node scales by what **all** the accounts the platform has
+issued it afford together rather than by one plan's windows (adr-005,
+capacity across accounts): each subscription by its windows, each api
+key by its money left under its caps and the project's budget.
 
 **The rule, every minute:**
 
@@ -1725,9 +1696,10 @@ the acceptance.
 ### Credentials
 
 Every Codex session runs on an OpenAI credential the platform issues for
-it at claim time (`itemCredentials`): add one in the console's
-credentials page, serving `codex`, and open it to the project. There are
-two kinds.
+it at claim time (`itemCredentials`): an admin adds it on the console's
+Credentials page, serving `codex`, and attaches it to the project (see
+[Credentials come from the platform](#credentials-come-from-the-platform)).
+There are two kinds.
 
 **A ChatGPT plan** (Plus, Pro, Business): its `auth.json`, pasted as the
 secret. The node writes it into the session's own temporary
@@ -1758,8 +1730,10 @@ to bound it.
 ### node.yaml
 
 The `codex:` block is **optional** and names no account: `codex.accounts`
-is retired, and the credentials are the console's. It keeps the binary
-and the model map:
+is retired and refused, as `accounts:` is (see
+[Credentials come from the platform](#credentials-come-from-the-platform)),
+and the credentials are the console's. It keeps the binary and the model
+map:
 
 ```yaml
 codex:
@@ -1892,7 +1866,7 @@ mesh work-item learning <work-item-id> "Release flow is stable now"
 ## Gateway fields are generated
 
 What the node selects on each platform entity — `WorkItemIndex`,
-`GoalIndex`, `ProjectIndex`, `DirectionIndex`, `NodeIndex` — is not
+`GoalIndex`, `ProjectIndex`, `DirectionIndex`, `NodeIndex`, `CredentialIndex` — is not
 written by hand in `internal/gateway/client.go`. It comes from two
 committed inputs (docs/adr/adr-010-generated-gateway-fields.md):
 
