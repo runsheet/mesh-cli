@@ -80,7 +80,7 @@ func TestEvaluationRunsOnCodexWithHeadroom(t *testing.T) {
 	if _, ok := envOf(j.Env, "CODEX_HOME"); !ok {
 		t.Error("the Codex evaluation has no CODEX_HOME of the issued login")
 	}
-	if in["passed"] != true || in["notes"] != "Holds.\n\n(evaluated on Codex gpt-6-luna)" || in["costCents"] != float64(40) {
+	if in["passed"] != true || in["notes"] != "Holds.\n\nevaluators: 1 — normal/low goal, no protected path\n(evaluated on Codex gpt-6-luna)" || in["costCents"] != float64(40) {
 		t.Fatalf("recorded %+v", in)
 	}
 	u := usageOf(t, f)
@@ -109,7 +109,7 @@ func TestPacedCodexFallsBackToClaudeForNormalWork(t *testing.T) {
 	if len(claude.jobs) != 1 || codex.runs() != 0 {
 		t.Fatalf("normal: runs claude %d, codex %d", len(claude.jobs), codex.runs())
 	}
-	if in["notes"] != "Holds.\n\n(evaluated on sonnet)" {
+	if in["notes"] != "Holds.\n\nevaluators: 1 — normal/low goal, no protected path\n(evaluated on sonnet)" {
 		t.Fatalf("normal: recorded %+v", in)
 	}
 	if u := usageOf(t, f); u["adapter"] != "claude-code" || u["credentialId"] != "cred-1" {
@@ -199,7 +199,7 @@ func TestCodexFirstClaudeSecondOpinion(t *testing.T) {
 	if tok, _ := envOf(cj.Env, "CLAUDE_CODE_OAUTH_TOKEN"); tok != issuedSecret {
 		t.Error("the Claude second opinion is not on the issued Claude account")
 	}
-	want := "Codex (first evaluation, gpt-6-sol): VERDICT: PASS\nHolds.\n\nClaude (second opinion, opus): VERDICT: PASS\nAlso holds.\n\n(evaluated on Codex gpt-6-sol; second opinion on Claude opus)"
+	want := "Codex (first evaluation, gpt-6-sol): VERDICT: PASS\nHolds.\n\nClaude (second opinion, opus): VERDICT: PASS\nAlso holds.\n\nevaluators: 2 — urgent/high goal\n(evaluated on Codex gpt-6-sol; second opinion on Claude opus)"
 	if in["passed"] != true || in["notes"] != want || in["costCents"] != float64(165) {
 		t.Fatalf("recorded %+v\nwant notes %q", in, want)
 	}
@@ -229,7 +229,7 @@ func TestNoCodexAccountEvaluatesAsBefore(t *testing.T) {
 	f, ev, claude, codex, _, _ := familyFixture(t, "urgent", "sonnet", "Holds.\nVERDICT: PASS", "VERDICT: FAIL")
 	ev.CodexAccounts = (&Loop{Known: &KnownAccounts{}}).CodexCandidates
 	in := evaluateItem1(t, f, ev)
-	if len(claude.jobs) != 1 || codex.runs() != 0 || in["notes"] != "Holds.\n\n(evaluated on sonnet)" {
+	if len(claude.jobs) != 1 || codex.runs() != 0 || in["notes"] != "Holds.\n\nevaluators: 1 — urgent/high goal, but no other family on this node\n(evaluated on sonnet)" {
 		t.Fatalf("runs claude %d codex %d, recorded %+v", len(claude.jobs), codex.runs(), in)
 	}
 }
@@ -302,7 +302,7 @@ func TestCodexPreflightFailureEvaluatesOnClaude(t *testing.T) {
 	if !claude.jobs[0].Outlive || claude.jobs[0].Model != "sonnet" {
 		t.Fatalf("claude job model %q outlive %v", claude.jobs[0].Model, claude.jobs[0].Outlive)
 	}
-	want := "Holds.\n\n(evaluated on Claude sonnet; the Codex preflight failed: refuses auth: 401 Unauthorized: bad token)"
+	want := "Holds.\n\nevaluators: 1 — normal/low goal, no protected path\n(evaluated on Claude sonnet; the Codex preflight failed: refuses auth: 401 Unauthorized: bad token)"
 	if in["passed"] != true || in["notes"] != want {
 		t.Fatalf("recorded %+v\nwant notes %q", in, want)
 	}
@@ -356,7 +356,7 @@ func TestCodexPinWaitsOnFailedPreflight(t *testing.T) {
 	if codex.runs() != 1 || codex.jobs[0].Model != "gpt-6-astra" || len(claude.jobs) != 0 {
 		t.Fatalf("runs codex %d claude %d", codex.runs(), len(claude.jobs))
 	}
-	if in := f.CallsNamed("evaluateWorkItem")[0].Input; in["notes"] != "Holds.\n\n(evaluated on Codex gpt-6-astra)" {
+	if in := f.CallsNamed("evaluateWorkItem")[0].Input; in["notes"] != "Holds.\n\nevaluators: 1 — normal/low goal, no protected path\n(evaluated on Codex gpt-6-astra)" {
 		t.Fatalf("recorded %+v", in)
 	}
 }
@@ -369,7 +369,7 @@ func TestCodexPreflightPassesAndGuardsSecondOpinion(t *testing.T) {
 	pf := &fakePreflight{}
 	ev.CodexPreflight = pf.check
 	in := evaluateItem1(t, f, ev)
-	if len(pf.jobs) != 1 || codex.runs() != 1 || len(claude.jobs) != 0 || in["notes"] != "Holds.\n\n(evaluated on Codex gpt-6-luna)" {
+	if len(pf.jobs) != 1 || codex.runs() != 1 || len(claude.jobs) != 0 || in["notes"] != "Holds.\n\nevaluators: 1 — normal/low goal, no protected path\n(evaluated on Codex gpt-6-luna)" {
 		t.Fatalf("preflights %d, runs codex %d claude %d, recorded %+v", len(pf.jobs), codex.runs(), len(claude.jobs), in)
 	}
 	if h, _ := envOf(pf.jobs[0].Env, "CODEX_HOME"); h == "" || h != mustEnv(t, codex.jobs[0].Env, "CODEX_HOME") || pf.jobs[0].Model != codex.jobs[0].Model {
@@ -443,7 +443,7 @@ func TestCodexWithoutContextIsNotAVerdict(t *testing.T) {
 	if tok, _ := envOf(cj.Env, "CLAUDE_CODE_OAUTH_TOKEN"); tok != issuedSecret {
 		t.Error("the Claude evaluation is not on the issued Claude account")
 	}
-	want := "Codex (first attempt, gpt-6-luna): no verdict — mesh-context: Auth required during MCP startup\n\nHolds.\n\n(evaluated on sonnet)\ntools: mesh-context: first call errored: Auth required during MCP startup"
+	want := "Codex (first attempt, gpt-6-luna): no verdict — mesh-context: Auth required during MCP startup\n\nHolds.\n\nevaluators: 1 — normal/low goal, no protected path\n(evaluated on sonnet)\ntools: mesh-context: first call errored: Auth required during MCP startup"
 	if in["passed"] != true || in["notes"] != want || in["costCents"] != float64(165) {
 		t.Fatalf("recorded %+v\nwant notes %q", in, want)
 	}
@@ -475,7 +475,7 @@ func TestClaudeWithoutContextRunsOnCodex(t *testing.T) {
 	if codex.runs() != 1 || len(claude.jobs) != 1 || codex.jobs[0].Prompt != claude.jobs[0].Prompt {
 		t.Fatalf("runs: claude %d, codex %d", len(claude.jobs), codex.runs())
 	}
-	want := "Claude (first attempt, sonnet): no verdict — mesh-context: failed\n\nHolds.\n\n(evaluated on Codex gpt-6-luna)\ntools: mesh-context served, never called: failed"
+	want := "Claude (first attempt, sonnet): no verdict — mesh-context: failed\n\nHolds.\n\nevaluators: 1 — normal/low goal, no protected path\n(evaluated on Codex gpt-6-luna)\ntools: mesh-context served, never called: failed"
 	if in["passed"] != true || in["notes"] != want {
 		t.Fatalf("recorded %+v\nwant notes %q", in, want)
 	}
@@ -680,7 +680,7 @@ func TestSomeContextIsAVerdict(t *testing.T) {
 	ev.MCP = MeshContextMCP(f.URL(), "rs_test")
 	codex.tools = map[string]*harness.ToolStat{"mesh-context": {Calls: 3, Clean: 2, Errors: 1, FirstError: "timeout"}}
 	in := evaluateItem1(t, f, ev)
-	if codex.runs() != 1 || len(claude.jobs) != 0 || in["passed"] != false || in["notes"] != "Nothing asserts it.\n\n(evaluated on Codex gpt-6-luna)\ntools: mesh-context: first call errored: timeout" {
+	if codex.runs() != 1 || len(claude.jobs) != 0 || in["passed"] != false || in["notes"] != "Nothing asserts it.\n\nevaluators: 1 — normal/low goal, no protected path\n(evaluated on Codex gpt-6-luna)\ntools: mesh-context: first call errored: timeout" {
 		t.Fatalf("runs claude %d codex %d, recorded %+v", len(claude.jobs), codex.runs(), in)
 	}
 }
@@ -766,7 +766,7 @@ func TestCodexSandboxBrokenIsNotAVerdict(t *testing.T) {
 	if codex.runs() != 1 || len(claude.jobs) != 1 || codex.jobs[0].Prompt != claude.jobs[0].Prompt {
 		t.Fatalf("runs: claude %d, codex %d", len(claude.jobs), codex.runs())
 	}
-	want := "Codex (first attempt, gpt-6-luna): no verdict — sandbox: " + bwrapLine + "\n\nIt fails its check.\n\n(evaluated on sonnet)"
+	want := "Codex (first attempt, gpt-6-luna): no verdict — sandbox: " + bwrapLine + "\n\nIt fails its check.\n\nevaluators: 1 — normal/low goal, no protected path\n(evaluated on sonnet)"
 	if in["passed"] != false || in["notes"] != want {
 		t.Fatalf("recorded %+v\nwant notes %q", in, want)
 	}
@@ -995,7 +995,7 @@ func TestNoIssuedCodexCredentialEvaluatesOnClaude(t *testing.T) {
 	known := &KnownAccounts{}
 	ev.CodexAccounts, ev.Credentials.Known = (&Loop{Known: known}).CodexCandidates, known
 	in := evaluateItem1(t, f, ev)
-	if len(claude.jobs) != 1 || codex.runs() != 0 || in["notes"] != "Holds.\n\n(evaluated on sonnet)" {
+	if len(claude.jobs) != 1 || codex.runs() != 0 || in["notes"] != "Holds.\n\nevaluators: 1 — urgent/high goal, but no other family on this node\n(evaluated on sonnet)" {
 		t.Fatalf("runs claude %d codex %d, recorded %+v", len(claude.jobs), codex.runs(), in)
 	}
 	if u := usageOf(t, f); u["adapter"] != "claude-code" || u["credentialId"] != "cred-1" {

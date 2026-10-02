@@ -226,6 +226,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 			return e.failDiff(ctx, item, label, spec.BaseRef, branch, err)
 		}
 	}
+	changed, setting := e.touched(ctx, label, dir, spec.BaseRef, alreadyDone)
 	// the same context the builder had: its repo's instructions and its goal
 	orgName := e.Scopes.NameOf(item.OrgID)
 	cx, err := FetchContext(ctx, e.GW, orgName, res.Project.Slug, ContextOptions{Budget: e.contextBudget(), Repos: []string{res.Repo.FullName()}, Checkouts: map[string]string{res.Repo.FullName(): dir}, Goal: res.Goal, Logf: e.logf})
@@ -381,7 +382,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	// the usage report rides the verdict (afterEvaluate); Finish logs it
 	// when nothing carried it
 	defer acct.Finish(ctx, result)
-	return e.afterEvaluate(ctx, evalRun{item: item, res: res, label: label, model: model, fam: fam, dir: dir, acct: acct, second: &second, preflight: preflight, omitted: st.OmittedNote(), missing: pod.MissingNote(), prior: prior}, result, err)
+	return e.afterEvaluate(ctx, evalRun{item: item, res: res, label: label, model: model, fam: fam, dir: dir, acct: acct, second: &second, preflight: preflight, omitted: st.OmittedNote(), missing: pod.MissingNote(), prior: prior, changed: changed, setting: setting}, result, err)
 }
 
 // priorAttempts reads the verdicts earlier attempts of the item were
@@ -433,6 +434,26 @@ type evalRun struct {
 	// prior are the verdicts earlier attempts were given, for the
 	// same-clause first line (ADR-020)
 	prior []harness.PriorAttempt
+	// changed are the files the evaluated diff changed and setting the
+	// checkout's second_opinion, for secondOpinionWanted
+	changed []string
+	setting string
+}
+
+// touched is what the evaluation's choice of evaluators reads from the
+// checkout: the files the branch changed since base (none for an
+// already_done item, which has no diff) and its .mesh/config.yml
+// second_opinion. Unread changed paths are logged and read as none: the
+// item's own protectedFiles still hold.
+func (e *Evaluator) touched(ctx context.Context, label, dir, base string, alreadyDone bool) ([]string, string) {
+	var changed []string
+	if !alreadyDone && e.WS != nil {
+		var err error
+		if changed, err = e.WS.ChangedPaths(ctx, dir, base); err != nil {
+			e.logf("item %s: changed paths unread, judging protected paths on protectedFiles alone: %v", label, err)
+		}
+	}
+	return changed, secondOpinionSetting(dir)
 }
 
 // afterEvaluate is what follows an evaluation session, however this
@@ -557,7 +578,23 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 	if killed != "" {
 		without += "\n" + truncate(killed, 500)
 	}
-	if passed && (fam.codex || e.hasCodex()) && gateway.PriorityRank(ev.res.Goal.Priority) <= gateway.PriorityRank("high") {
+	// one evaluator or two, by the rule (goal one-evaluator-for-ordinary-work)
+	wanted, why := secondOpinionWanted(evalDecision{
+		Priority:       ev.res.Goal.Priority,
+		ProtectedFiles: item.ProtectedFiles, ProtectedRulePaths: item.ProtectedRulePaths,
+		ProtectedPaths: projectProtectedPaths(ev.res), Changed: ev.changed,
+		FirstPassed: passed, FailedClauses: clauses, Setting: ev.setting,
+	})
+	firstPassed := passed
+	choice := evaluatorsLine(1, why)
+	if wanted && !(fam.codex || e.hasCodex()) {
+		choice += ", but no other family on this node"
+	} else if wanted {
+		choice = evaluatorsLine(2, why)
+	}
+	e.logf("item %s: %s", label, choice)
+	room -= len(choice) + 1
+	if wanted && (fam.codex || e.hasCodex()) {
 		// the second opinion is the other family — which, after a first
 		// attempt that saw no context, is the one that just could not reach
 		// it: it is not asked again, and the verdict reached stands (ADR
@@ -594,18 +631,26 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 		if op.unavailable != "" {
 			e.logf("item %s: %s second opinion unavailable: %s", label, other.name(), op.unavailable)
 			line := other.name() + " second opinion unavailable: " + op.unavailable
-			notes = truncateNotes(notes, room-200-len(line)-len(without)-len(ev.preflight)) + "\n\n" + line + "\n\n(evaluated on " + evaluatedOn + ")" + without
+			notes = truncateNotes(notes, room-200-len(line)-len(without)-len(ev.preflight)) + "\n\n" + line + "\n\n" + choice + "\n(evaluated on " + evaluatedOn + ")" + without
 		} else {
-			if !op.passed {
-				// the second opinion's clauses are the item's too
-				clauses = append(clauses, op.clauses...)
-			}
 			e.logReadings(label, op.notes)
-			passed = passed && op.passed
-			notes = bothNotes(fam, notes, other, op.notes, op.passed, room-200-len(without)-len(ev.preflight)) + "\n\n(evaluated on " + evaluatedOn + "; second opinion on " + other.fullName() + ")" + without
+			// the second verdict decides: after a first PASS a second fail
+			// fails it; after a first FAIL a second fail fails it on the
+			// union of both clauses, and a second pass passes it (a wrong
+			// fail costs a rebuild)
+			switch {
+			case op.passed:
+				clauses = nil
+			case firstPassed:
+				clauses = op.clauses
+			default:
+				clauses = unionClauses(clauses, op.clauses)
+			}
+			passed = op.passed
+			notes = bothNotes(fam, notes, firstPassed, other, op.notes, op.passed, room-200-len(without)-len(ev.preflight)) + "\n\n" + choice + "\n(evaluated on " + evaluatedOn + "; second opinion on " + other.fullName() + ")" + without
 		}
 	} else {
-		notes = truncateNotes(notes, room-100-len(without)-len(ev.preflight)) + "\n\n(evaluated on " + evaluatedOn + ")" + without
+		notes = truncateNotes(notes, room-100-len(without)-len(ev.preflight)) + "\n\n" + choice + "\n(evaluated on " + evaluatedOn + ")" + without
 	}
 	if head != "" {
 		notes = head + "\n\n" + notes
@@ -627,7 +672,7 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 			e.logf("item %s: fails on the same clause as attempt %d", label, attempt)
 		}
 	}
-	if err := acct.Carried(e.GW.EvaluateWorkItem(ctx, item.ID, passed, notes, failed, Cents(cost), usage, gateway.EvaluateChoice{})); err != nil {
+	if err := acct.Carried(e.GW.EvaluateWorkItem(ctx, item.ID, passed, notes, failed, Cents(cost), usage, gateway.EvaluateChoice{EvaluatedModel: fam.model})); err != nil {
 		return fmt.Errorf("record verdict: %w", err)
 	}
 	left.Forget(item.ID)
@@ -748,7 +793,7 @@ func (e *Evaluator) logReadings(label, notes string) {
 // evaluating with.
 func (e *Evaluator) noVerdict(ctx context.Context, ev evalRun, reason string, cost float64, usage *gateway.UsageReport, fallback func() error) error {
 	reason = truncate(reason, 4000)
-	err := e.GW.EvaluateWorkItemNoVerdict(ctx, ev.item.ID, reason, Cents(cost), usage, gateway.EvaluateChoice{})
+	err := e.GW.EvaluateWorkItemNoVerdict(ctx, ev.item.ID, reason, Cents(cost), usage, gateway.EvaluateChoice{EvaluatedModel: ev.fam.model})
 	if errors.Is(err, gateway.ErrNoVerdictOutcome) {
 		if e.NoVerdict.First("") {
 			e.logf("the platform takes no no-verdict outcome; a no-verdict evaluation waits in evaluating (said once per run)")
@@ -787,7 +832,8 @@ func (e *Evaluator) AdoptEvaluation(ctx context.Context, item gateway.WorkItem, 
 	label := fmt.Sprintf("%s/%d", res.Goal.Slug, item.Seq)
 	e.logf("item %s: adopted its %s evaluation (pid %d)", label, s.Liveness(), s.State.PID)
 	result, err := at.Attach(ctx, s.Dir, nil)
-	return e.afterEvaluate(ctx, evalRun{item: item, res: res, label: label, model: s.State.Model, fam: family{model: s.State.Model, claude: s.State.Model}, dir: s.State.Workspace, adopted: true, prior: e.priorAttempts(ctx, item, label)}, result, err)
+	changed, setting := e.touched(ctx, label, s.State.Workspace, res.BaseRef(), item.Outcome == gateway.OutcomeAlreadyDone)
+	return e.afterEvaluate(ctx, evalRun{item: item, res: res, label: label, model: s.State.Model, fam: family{model: s.State.Model, claude: s.State.Model}, dir: s.State.Workspace, adopted: true, prior: e.priorAttempts(ctx, item, label), changed: changed, setting: setting}, result, err)
 }
 
 // opinion is the second evaluation's outcome: its verdict and notes, or
@@ -1025,8 +1071,8 @@ func (e *Evaluator) codexForSecond(priority string) (AccountConfig, string, bool
 // its family and model, so a builder sees both, truncated together to
 // n: each gets half, and one shorter than its half leaves the rest to
 // the other, so neither is cut out.
-func bothNotes(firstOn family, first string, secondOn family, second string, secondPassed bool, n int) string {
-	firstHead := firstOn.name() + " (first evaluation, " + firstOn.shortModel() + "): " + harness.VerdictPass + "\n"
+func bothNotes(firstOn family, first string, firstPassed bool, secondOn family, second string, secondPassed bool, n int) string {
+	firstHead := firstOn.name() + " (first evaluation, " + firstOn.shortModel() + "): " + verdictLine(firstPassed) + "\n"
 	secondHead := secondOn.name() + " (second opinion, " + secondOn.shortModel() + "): " + verdictLine(secondPassed) + "\n"
 	// the blank line between them, and the two bytes more truncate's
 	// "…" takes than the byte it replaces, in each
@@ -1038,6 +1084,29 @@ func bothNotes(firstOn family, first string, secondOn family, second string, sec
 		a += b - len(second)
 	}
 	return firstHead + truncateNotes(first, a) + "\n\n" + secondHead + truncateNotes(second, b)
+}
+
+// projectProtectedPaths are the project's protected-path globs, none
+// when the project was not read.
+func projectProtectedPaths(res *Resolved) []string {
+	if res == nil || res.Project == nil {
+		return nil
+	}
+	return res.Project.ProtectedPaths
+}
+
+// unionClauses is a's failed clauses and those of b no clause of a
+// names already.
+func unionClauses(a, b []harness.FailedClause) []harness.FailedClause {
+	out := slices.Clone(a)
+	for _, c := range b {
+		if !slices.ContainsFunc(out, func(o harness.FailedClause) bool {
+			return strings.EqualFold(strings.TrimSpace(o.Clause), strings.TrimSpace(c.Clause))
+		}) {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 func verdictLine(passed bool) string {

@@ -51,7 +51,7 @@ func TestLoopEvaluatesFinishedItems(t *testing.T) {
 	waitFor(t, func() bool { return f.Item(item1)["status"] == "review" })
 
 	calls := f.CallsNamed("evaluateWorkItem")
-	if len(calls) != 1 || calls[0].Input["aggregateId"] != item1 || calls[0].Input["passed"] != true || calls[0].Input["notes"] != "The test exists and fails for the right reason.\n\n(evaluated on the CLI's default model)" || calls[0].Input["costCents"] != float64(125) {
+	if len(calls) != 1 || calls[0].Input["aggregateId"] != item1 || calls[0].Input["passed"] != true || calls[0].Input["notes"] != "The test exists and fails for the right reason.\n\nevaluators: 1 — normal/low goal, no protected path\n(evaluated on the CLI's default model)" || calls[0].Input["costCents"] != float64(125) {
 		t.Fatalf("evaluate calls: %+v", calls)
 	}
 	if f.Item(item2)["status"] != "evaluating" {
@@ -91,7 +91,7 @@ func TestLoopEvaluatesFinishedItems(t *testing.T) {
 	h.text = "The test passes already, so it proves nothing.\nVERDICT: FAIL"
 	loop.Tick(ctx)
 	waitFor(t, func() bool { return f.Item(item1)["status"] == "ready" })
-	if f.Item(item1)["evaluation"] != "The test passes already, so it proves nothing.\n\n(evaluated on the CLI's default model)" {
+	if f.Item(item1)["evaluation"] != "The test passes already, so it proves nothing.\n\nevaluators: 1 — normal/low goal, no protected path\n(evaluated on the CLI's default model)" {
 		t.Fatalf("notes: %v", f.Item(item1)["evaluation"])
 	}
 	// no VERDICT line is no verdict, with its reason and its cost: never
@@ -248,7 +248,7 @@ func TestSecondOpinionBothPass(t *testing.T) {
 		rl: &harness.RateLimit{Status: "allowed", ObservedAt: time.Now()}}
 	f, ev, claude, limits := secondFixture(t, "high", "Holds.\n\nVERDICT: PASS", codex)
 	in := evaluateItem1(t, f, ev)
-	want := "Claude (first evaluation, sonnet): VERDICT: PASS\nHolds.\n\nCodex (second opinion, gpt-6-astra): VERDICT: PASS\nThe test fails for the right reason.\n\n(evaluated on sonnet; second opinion on Codex gpt-6-astra)"
+	want := "Claude (first evaluation, sonnet): VERDICT: PASS\nHolds.\n\nCodex (second opinion, gpt-6-astra): VERDICT: PASS\nThe test fails for the right reason.\n\nevaluators: 2 — urgent/high goal\n(evaluated on sonnet; second opinion on Codex gpt-6-astra)"
 	if in["passed"] != true || in["notes"] != want || in["costCents"] != float64(165) {
 		t.Fatalf("recorded %+v\nwant notes %q", in, want)
 	}
@@ -290,10 +290,10 @@ func TestSecondOpinionDisagreementFails(t *testing.T) {
 	}
 }
 
-// A first fail, or a normal or low goal, never runs Codex.
+// A normal or low goal's pass touching no protected path never runs
+// Codex.
 func TestSecondOpinionNotRun(t *testing.T) {
 	for _, c := range []struct{ priority, first string }{
-		{"high", "Broken.\nVERDICT: FAIL"},
 		{"normal", "Holds.\nVERDICT: PASS"},
 		{"", "Holds.\nVERDICT: PASS"},
 		{"low", "Holds.\nVERDICT: PASS"},
@@ -324,7 +324,7 @@ func TestSecondOpinionUnavailable(t *testing.T) {
 	} {
 		f, ev, _, _ := secondFixture(t, "high", "Holds.\n\nVERDICT: PASS", c.h)
 		in := evaluateItem1(t, f, ev)
-		want := "Holds.\n\n" + c.want + "\n\n(evaluated on sonnet)"
+		want := "Holds.\n\n" + c.want + "\n\nevaluators: 2 — urgent/high goal\n(evaluated on sonnet)"
 		if in["passed"] != true || in["notes"] != want {
 			t.Errorf("%s: recorded %+v\nwant notes %q", name, in, want)
 		}
@@ -401,11 +401,11 @@ func replayedCost(t *testing.T) float64 {
 func TestBothNotesTruncatedTogether(t *testing.T) {
 	long := strings.Repeat("a", 5000)
 	claude, codex := family{model: "sonnet"}, family{codex: true, model: "gpt-6-astra"}
-	got := bothNotes(claude, long, codex, strings.Repeat("b", 5000), false, 3800)
+	got := bothNotes(claude, long, true, codex, strings.Repeat("b", 5000), false, 3800)
 	if len(got) > 3800 || strings.Count(got, "a") < 1800 || strings.Count(got, "b") < 1800 || !strings.Contains(got, "Codex (second opinion, gpt-6-astra): VERDICT: FAIL\nbbb") {
 		t.Fatalf("len %d, a %d, b %d", len(got), strings.Count(got, "a"), strings.Count(got, "b"))
 	}
-	got = bothNotes(claude, long, codex, "short", true, 3800)
+	got = bothNotes(claude, long, true, codex, "short", true, 3800)
 	if len(got) > 3800 || strings.Count(got, "a") < 3600 || !strings.HasSuffix(got, "VERDICT: PASS\nshort") {
 		t.Fatalf("len %d: %q", len(got), got[len(got)-60:])
 	}
@@ -555,7 +555,7 @@ func TestEvaluateAlreadyDoneConfirmed(t *testing.T) {
 		}
 	}
 	calls := f.CallsNamed("evaluateWorkItem")
-	if len(calls) != 1 || calls[0].Input["passed"] != true || calls[0].Input["notes"] != "PR 41 is on main and go test ./... passes there.\n\n(evaluated on sonnet)" {
+	if len(calls) != 1 || calls[0].Input["passed"] != true || calls[0].Input["notes"] != "PR 41 is on main and go test ./... passes there.\n\nevaluators: 1 — normal/low goal, no protected path\n(evaluated on sonnet)" {
 		t.Fatalf("evaluate calls: %+v", calls)
 	}
 	if n := len(f.CallsNamed("openPullRequest")); n != 0 || len(ws.pushed) != 0 {
@@ -574,7 +574,7 @@ func TestEvaluateAlreadyDoneRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 	calls := f.CallsNamed("evaluateWorkItem")
-	want := "PR 41 is on main but TestThing is not: the acceptance does not hold there.\n\n(evaluated on sonnet)"
+	want := "PR 41 is on main but TestThing is not: the acceptance does not hold there.\n\nevaluators: 1 — normal/low goal, no protected path\n(evaluated on sonnet)"
 	if len(calls) != 1 || calls[0].Input["aggregateId"] != item1 || calls[0].Input["passed"] != false || calls[0].Input["notes"] != want || calls[0].Input["costCents"] != float64(125) {
 		t.Fatalf("evaluate calls: %+v", calls)
 	}
