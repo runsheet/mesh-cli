@@ -95,6 +95,10 @@ type Evaluator struct {
 	// outcome, so an evaluation that reached none waits in evaluating
 	// (nil: every time).
 	NoVerdict *OncePer
+	// Splits says once per item that the platform refused the split an
+	// item's second failed evaluation asked for (askSplit; nil: every
+	// time).
+	Splits *OncePer
 	// LeftRunning holds, per item, what an evaluation that recorded no
 	// verdict left running, for the notes of the item's next verdict
 	// (nil: only the session's own).
@@ -628,7 +632,68 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 	}
 	left.Forget(item.ID)
 	e.logf("item %s: evaluation %s on %s ($%.2f)", label, verdict, fam.fullName(), cost)
+	if !passed {
+		e.askSplit(ctx, item, label, ev.prior)
+	}
 	return nil
+}
+
+// splitAt is the failed evaluation after which the evaluator asks for a
+// split rather than leave a third build to the platform (ADR-021's
+// amendment 2026-10-02). The third failure is the platform's own narrow
+// re-plan (runsheet ADR 023, rung 3), so the node asks at this one alone.
+const splitAt = 2
+
+// failedVerdicts counts the failed verdicts of an item: the earlier
+// attempts' records whose notes carry no `VERDICT: PASS` and are not a
+// no-verdict's reason (an unreached evaluation is not a failed one,
+// runsheet ADR 035), plus this failing one.
+func failedVerdicts(prior []harness.PriorAttempt) int {
+	n := 1
+	for _, p := range prior {
+		if strings.Contains(p.Notes, harness.VerdictPass) || noVerdictRecord(p.Notes) {
+			continue
+		}
+		n++
+	}
+	return n
+}
+
+// noVerdictRecord says whether a recorded evaluation's notes are the
+// reason an evaluation reached no verdict, as the evaluator writes it
+// (noVerdict): no VERDICT line, or a session whose tools or sandbox
+// failed — `…; not a verdict`. The platform keeps those out of
+// `evaluations` (runsheet ADR 023's amendment 2026-09-29); this keeps a
+// record that slipped in from counting.
+func noVerdictRecord(notes string) bool {
+	n := strings.TrimSpace(notes)
+	return strings.HasPrefix(n, "no VERDICT line:") || strings.Contains(n, "; not a verdict")
+}
+
+// askSplit is the evaluator's ask after an item's second failed
+// evaluation: a narrow re-plan replacing the item (RequestPlanReplacing),
+// which the planner answers with two or more smaller items (planSplitRule)
+// instead of a third build at the same size. A refusal is the
+// platform's ladder going on, said once per item and never an error; a
+// platform without replaceItem is sent nothing.
+func (e *Evaluator) askSplit(ctx context.Context, item gateway.WorkItem, label string, prior []harness.PriorAttempt) {
+	if failedVerdicts(prior) != splitAt || item.GoalID == "" {
+		return
+	}
+	sc, _ := e.Scopes.ByOrg(item.OrgID)
+	err := e.GW.RequestPlanReplacing(ctx, item.GoalID, sc.NodeID, item.ID)
+	switch {
+	case errors.Is(err, gateway.ErrNoReplaceItem):
+		return
+	case err == nil:
+		e.logf("item %s: failed evaluation %d; asking for a split (narrow re-plan) instead of a third build", label, splitAt)
+	case gateway.IsRefusal(err):
+		if e.Splits.First(item.ID) {
+			e.logf("item %s: split refused by the platform: %v; the platform's ladder continues", label, err)
+		}
+	default:
+		e.logf("item %s: split not asked: %v; the platform's ladder continues", label, err)
+	}
 }
 
 // sameClauseRoom is what a failing retry's notes leave for the line
