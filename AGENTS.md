@@ -34,7 +34,14 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   review with `fails on the same clause as attempt N: <clause>`
   (`SameClauseLine`; `SameClause` finds the repeat and `NoteSameClause`
   prepends the line when the model forgot it; ADR-020), the planner ends with the JSON graph in a fenced
-  block, the director ends with its pitches and answers in one for a
+  block — `items` and, beside them, `"questions": [{"clause", "question"}]`
+  for a clause no PR can satisfy (`ParsePlanQuestions`; sent with
+  `planGoal` only when its input has `questions`, `TakesPlanQuestions`,
+  else each logged `plan <goal>: question for the person: …`), its rule
+  3 and re-ask saying an item's acceptance names only what a PR can
+  change and a host reading is a `Measure: …` item (`planHostRule`;
+  the node's `hostReadingAcceptance` flags a threshold on a reading in
+  any other item for the re-ask, ADR-020), the director ends with its pitches and answers in one for a
   propose-mode direction, its proposals in one for a set-mode one, the rebase session
   ends with `REBASED: <sha>` and `RESOLVED: <files>` or
   `REBASE FAILED: <why>`, the builder never pushes and checks main

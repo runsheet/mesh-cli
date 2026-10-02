@@ -46,7 +46,47 @@ recorded honestly. A measurement of the host — load, wall time, a p90
 over a day — goes in the goal doc's After section, or in a separate
 `Measure:` item that is never a merge gate. A clause the planner cannot
 phrase that way is a question for the person (the goal waits on a
-person), not an item. (`PlanPrompt`, a later item of this goal.)
+person), not an item.
+
+`PlanPrompt` says so in rule 3 and again in the re-ask
+(`planHostRule`, beside `planAcceptanceRule`), with ci-fits-the-mini's
+two shapes as the example: "the three shards' durations within 20% of
+each other" is a host reading, "proven by planned-seconds balance and
+disjoint shard lists" is what a PR can prove.
+
+**`Measure:` items.** A reading the goal wants taken is its own item
+titled `Measure: …`, whose acceptance is that the script runs and its
+reading is recorded — whatever the number. No other item depends on its
+number, and its evaluator judges it by the host rule below.
+
+**`questions`.** The planner's JSON carries, beside `items`,
+
+    "questions": [{"clause": "…", "question": "…"}]
+
+one per clause of the goal it could not phrase as what a PR can change
+(the goal's own "the mini's load p90 under 1.5 × cores" is one).
+`ParsePlanQuestions` reads them; `ParsePlan` reads the items as before.
+They ride `planGoal` as `questions` only when the gateway's
+`PlanGoalInput` has the field (`TakesPlanQuestions`, introspected and
+kept an hour, as `failedClauses` is on `evaluateWorkItem`). Until then
+each is logged once, `plan <goal>: question for the person: <clause> —
+<question>`, and counted in the `planned, …` line; `planGoal` has no
+note field to append them to, so node.log is where the person reads
+them. **The platform half is owed**: runsheet stores the questions and
+sets the goal `waiting_on: person` while any is open.
+
+**The node's check** (`hostReadingAcceptance`, `internal/node/plan_check.go`,
+lexical like adr-004's `unverifiableAcceptance`): an item whose
+acceptance has, in one sentence, a reading — `load`, `p90`, `wall time`,
+`duration(s)`, `seconds` — and a threshold — `under`, `below`,
+`within N%`, `at most`, `≤`, `< N`, `× cores` — is flagged with the
+phrase from the reading to its threshold, unless its title starts
+`Measure:`. `readPlan` appends its flags to the re-ask's Rejected list
+beside the unverifiable ones; the second answer is handed in as it
+stands, its flags logged (adr-004 decision 3), and the evaluator's host
+rule is the backstop for what the check misses. The fixtures are
+ci-fits-the-mini's graph as planned and as item 28 had it
+(`internal/node/testdata/plans/cifits_before.json`, `cifits_after.json`).
 
 ### The evaluator's half
 
@@ -92,6 +132,9 @@ it either way. Both lines are contract, like `FAILED:` and `VERDICT:`.
 - Containment matching can call two different clauses the same when one
   is a short phrase inside another; the cost is a re-plan that looks at
   the clause again, which is cheaper than a sixth build.
+- The planner's check is lexical: "a diff under 200 lines" is no
+  reading and passes, but a sentence that names seconds and a size
+  limit together is flagged; the cost is one re-ask.
 - The node records the readings and applies `NoteSameClause` when it
   hands the verdict in, and the evaluator's prompt is given the
   lineage's previous verdicts: later items of this goal. Until the
