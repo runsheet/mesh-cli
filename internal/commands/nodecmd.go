@@ -176,7 +176,7 @@ var nodeRegisterCmd = &cobra.Command{
 			cfg.Latchkey, cfg.LatchkeyClient = prev.Latchkey, prev.LatchkeyClient
 			cfg.Owner, cfg.NodeID = prev.Owner, prev.NodeID
 		}
-		reg, err := node.Register(ctx, registrar(gw, cfg, func(format string, args ...any) { fmt.Printf(format+"\n", args...) }), cfg, cfg.Orgs)
+		reg, err := node.Register(ctx, registrar(gw, cfg), cfg, cfg.Orgs)
 		if err != nil {
 			return err
 		}
@@ -185,6 +185,9 @@ var nodeRegisterCmd = &cobra.Command{
 			return err
 		}
 		path, _ := node.ConfigPath()
+		for _, note := range reg.Notes {
+			fmt.Println(note)
+		}
 		if reg.Owned != nil {
 			fmt.Printf("Registered %s, capacity %s. Saved %s.\nStart it with: mesh node start\n", node.StartLine(cfg, reg), cfg.Capacity, path)
 			return nil
@@ -198,7 +201,7 @@ var nodeRegisterCmd = &cobra.Command{
 // `owner` probe, the orgs of the token's person, the one registration
 // on the owner contract (the node's own id, the owner's kind) and the
 // legacy registration per org.
-func registrar(gw *gateway.Client, cfg *node.Config, logf func(string, ...any)) node.Registrar {
+func registrar(gw *gateway.Client, cfg *node.Config) node.Registrar {
 	return node.Registrar{
 		TakesOwner: gw.TakesOwner,
 		Resolve:    func(ctx context.Context) (node.Scopes, error) { return node.ResolveScopes(ctx, gw, cfg) },
@@ -217,7 +220,6 @@ func registrar(gw *gateway.Client, cfg *node.Config, logf func(string, ...any)) 
 				Harnesses: []string{"claude-code"}, Capacity: cfg.Capacity.Max, Version: version.Resolved(), Owner: cfg.OwnerKind()})
 		},
 		RegisterIn: func(ctx context.Context, scopes node.Scopes) error { return registerIn(ctx, gw, cfg, scopes) },
-		Logf:       logf,
 	}
 }
 
@@ -252,8 +254,11 @@ var nodeStatusCmd = &cobra.Command{
 		// orgs the answer names; else, or with no answer, per org as before
 		var scopes node.Scopes
 		owned := false
-		if cfg.NodeID != "" && gw.TakesOwner(ctx) {
-			answer, err := gw.HeartbeatNode(ctx, cfg.NodeID, version.Resolved(), 0, gateway.HeartbeatExtras{Commit: version.Commit()})
+		// by the contract the last registration saved: a per-org node —
+		// or one whose node.yaml predates `contract:` — is never asked
+		// under the one id, whatever node_id it kept
+		if cfg.OwnedID() != "" && gw.TakesOwner(ctx) {
+			answer, err := gw.HeartbeatNode(ctx, cfg.OwnedID(), version.Resolved(), 0, gateway.HeartbeatExtras{Commit: version.Commit()})
 			if err != nil {
 				return fmt.Errorf("heartbeat: %w", err)
 			}
@@ -845,7 +850,7 @@ func registerNode(ctx context.Context, cmd *cobra.Command, logger *log.Logger, u
 			}
 			cfg.OwnerID = owner
 		}
-		got, err := node.Register(regCtx, registrar(gw, cfg, logger.Printf), cfg, cfg.Orgs)
+		got, err := node.Register(regCtx, registrar(gw, cfg), cfg, cfg.Orgs)
 		if err != nil {
 			return err
 		}
@@ -856,8 +861,11 @@ func registerNode(ctx context.Context, cmd *cobra.Command, logger *log.Logger, u
 		}
 		reg = got
 		// node.log's first line after StartLines names the owner and the
-		// orgs: "node mini (runsheet-mini) owned by Chris, serving …"
-		logger.Print(node.StartLine(cfg, reg))
+		// orgs: "node mini (runsheet-mini) owned by Chris, serving …";
+		// what the registration has to say follows it
+		for _, line := range node.RegistrationLines(cfg, reg) {
+			logger.Print(line)
+		}
 		return nil
 	}
 	if updates == nil || !check.Pending {
@@ -998,10 +1006,12 @@ func reportRollback(check node.StartCheck, logger *log.Logger) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	// an owned node reports it once, under its one id; a platform that
-	// answers no scopes there is still reached per org below
-	if cfg.NodeID != "" && gw.TakesOwner(ctx) {
-		answer, err := gw.HeartbeatNode(ctx, cfg.NodeID, check.From, 0, gateway.HeartbeatExtras{UpdateError: check.Reason})
+	// an owned node — by the contract its last registration saved —
+	// reports it once, under its one id; a platform that answers no
+	// scopes there is still reached per org below. A per-org node is
+	// reached per org alone, whatever node_id it kept.
+	if cfg.OwnedID() != "" && gw.TakesOwner(ctx) {
+		answer, err := gw.HeartbeatNode(ctx, cfg.OwnedID(), check.From, 0, gateway.HeartbeatExtras{UpdateError: check.Reason})
 		if err != nil {
 			logger.Printf("self-update: report rollback: %v", err)
 			return

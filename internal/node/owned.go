@@ -38,8 +38,6 @@ type Registrar struct {
 	RegisterOwner func(ctx context.Context, nodeID, orgID string) (*gateway.NodeAnswer, error)
 	// RegisterIn registers one Node per org, as before owners.
 	RegisterIn func(ctx context.Context, scopes Scopes) error
-	// Logf logs a line (optional).
-	Logf func(format string, args ...any)
 }
 
 // Registered is Register's result: the scopes to serve and, on the
@@ -52,6 +50,11 @@ type Registered struct {
 	Scopes Scopes
 	Owned  *Owned
 	Answer *gateway.NodeAnswer
+	// Notes are what the registration has to say — the nil answer's
+	// FallbackLine, an orgs restriction the answer did not meet — for
+	// the caller to log after StartLine, so node.log's first line after
+	// the start lines is always the owner and the orgs (ADR-015).
+	Notes []string
 }
 
 // Contract is the contract the registration made: ContractOwner when
@@ -73,6 +76,13 @@ func StartLine(cfg *Config, r Registered) string {
 		return fmt.Sprintf("node %s (%s) owned by %s, serving %s", cfg.Name, cfg.Slug, r.Owned.Owner.Who(), orgsOrNone(r.Scopes))
 	}
 	return fmt.Sprintf("node %s (%s) per org, serving %s", cfg.Name, cfg.Slug, orgsOrNone(r.Scopes))
+}
+
+// RegistrationLines is what a start logs of its registration, in
+// order: StartLine first — node.log's first line after the start lines
+// names the owner and the orgs — then the registration's Notes.
+func RegistrationLines(cfg *Config, r Registered) []string {
+	return append([]string{StartLine(cfg, r)}, r.Notes...)
 }
 
 // SaveRegistration records what a registration made in node.yaml —
@@ -123,12 +133,12 @@ func OwnedNodeID(cfg *Config) string {
 // scopes, restricted by restrict, are what the node serves: node.yaml's
 // orgs are checked against the answer, never against the person's
 // orgs, so a restriction naming an enterprise org the person is not in
-// holds. A nil answer from it — and only a nil one — logs FallbackLine
+// holds. A nil answer from it — and only a nil one — notes FallbackLine
 // and runs the legacy path in full — Resolve, then RegisterIn per org —
 // so the sequence is one owner registration, then one per org. A
 // non-nil answer is the owner contract whatever it names: an answer
 // naming no org, or a restriction matching none of the orgs it names,
-// is logged and the node serves none until a heartbeat's answer names
+// is noted and the node serves none until a heartbeat's answer names
 // one — never the per-org path, never a failed registration.
 func Register(ctx context.Context, r Registrar, cfg *Config, restrict []string) (Registered, error) {
 	if !r.TakesOwner(ctx) {
@@ -143,16 +153,16 @@ func Register(ctx context.Context, r Registrar, cfg *Config, restrict []string) 
 		return Registered{}, fmt.Errorf("register (owner %s): %w", cfg.OwnerKind(), err)
 	}
 	if answer == nil {
-		if r.Logf != nil {
-			r.Logf("%s", FallbackLine)
-		}
-		return perOrg(ctx, r)
+		reg, err := perOrg(ctx, r)
+		reg.Notes = append(reg.Notes, FallbackLine)
+		return reg, err
 	}
-	served, note := ServedFrom(answer, restrict)
-	if note != nil && r.Logf != nil {
-		r.Logf("orgs: %v", note)
+	reg := Registered{Owned: &Owned{NodeID: answer.NodeID, Owner: OwnerFrom(answer)}, Answer: answer}
+	var note error
+	if reg.Scopes, note = ServedFrom(answer, restrict); note != nil {
+		reg.Notes = append(reg.Notes, fmt.Sprintf("orgs: %v", note))
 	}
-	return Registered{Scopes: served, Owned: &Owned{NodeID: answer.NodeID, Owner: OwnerFrom(answer)}, Answer: answer}, nil
+	return reg, nil
 }
 
 // perOrg is the registration before owners: the person's orgs, a Node

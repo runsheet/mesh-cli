@@ -280,14 +280,21 @@ node register` save it beside `node_id` through `SaveRegistration`
 whenever either changed, and a failed save is returned as an error —
 the start fails, never logged and ignored. It is the TRD §3 step 1 field
 `mesh node status` and the rollback reporter read (item 25)
-(`TestOwnedContractPersisted`).
+(`TestOwnedContractPersisted`): both heartbeat under the one id only
+when it says `owner` (`Config.OwnedID`), so a per-org node that kept a
+`node_id` is reached per org alone, exactly as before owners
+(`TestOwnedContractChoosesTheHeartbeat`).
 
 **The log wording** (mesh-specs ADR 014, TRD §3). node.log's first line
 after `StartLines` is `node <name> (<slug>) owned by <owner>, serving
 <orgs>` — `node mini (runsheet-mini) owned by Chris, serving runsheet,
 wardroomid, grapevine` — and on the per-org path `node <name> (<slug>)
 per org, serving <orgs>` (`node.StartLine`; `mesh node register` prints
-it too). A hand-over is `owner changed: Chris → anythink`
+it too). What the registration has to say — the nil answer's
+`FallbackLine`, an `orgs:` restriction the answer did not meet — is
+carried on `Registered.Notes` and logged after it, never before
+(`RegistrationLines`, `TestOwnedRegistrationLinesNameTheOwnerFirst`).
+A hand-over is `owner changed: Chris → anythink`
 (`Owner.Who`, the name alone), an org change `orgs a, b → a, b, c`. An
 org without a GitHub login is named by `Scope.Name()` — its tenant slug
 — in every one of them, never a blank.
