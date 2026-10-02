@@ -780,7 +780,9 @@ func TestTwoEvaluatorsOnAProtectedPath(t *testing.T) {
 	if codex.runs() != 1 || len(claude.jobs) != 1 {
 		t.Fatalf("protectedFiles: runs codex %d, claude %d", codex.runs(), len(claude.jobs))
 	}
-	assertChoice(t, f, "gpt-6-luna", "evaluators: two — protected path schema.sql")
+	if in := assertChoice(t, f, "gpt-6-luna", "evaluators: two — protected path schema.sql"); in["passed"] != true {
+		t.Fatalf("recorded %+v", in)
+	}
 
 	f, ev, claude, codex, _, _ = familyFixture(t, "low", "sonnet", "Also holds.\nVERDICT: PASS", "Holds.\nVERDICT: PASS")
 	f.Projects[projID]["protectedPaths"] = []any{"db/migrations/**"}
@@ -789,7 +791,9 @@ func TestTwoEvaluatorsOnAProtectedPath(t *testing.T) {
 	if codex.runs() != 1 || len(claude.jobs) != 1 {
 		t.Fatalf("protectedPaths: runs codex %d, claude %d", codex.runs(), len(claude.jobs))
 	}
-	assertChoice(t, f, "gpt-6-luna", "evaluators: two — protected path db/migrations/0042.sql")
+	if in := assertChoice(t, f, "gpt-6-luna", "evaluators: two — protected path db/migrations/0042.sql"); in["passed"] != true {
+		t.Fatalf("recorded %+v", in)
+	}
 
 	// the checkout's own .mesh/config.yml protected_paths
 	f, ev, claude, codex, _, _ = familyFixture(t, "normal", "sonnet", "Also holds.\nVERDICT: PASS", "Holds.\nVERDICT: PASS")
@@ -800,7 +804,9 @@ func TestTwoEvaluatorsOnAProtectedPath(t *testing.T) {
 	if codex.runs() != 1 || len(claude.jobs) != 1 {
 		t.Fatalf("protected_paths: runs codex %d, claude %d", codex.runs(), len(claude.jobs))
 	}
-	assertChoice(t, f, "gpt-6-luna", "evaluators: two — protected path internal/gateway/fields/WorkItemIndex.txt")
+	if in := assertChoice(t, f, "gpt-6-luna", "evaluators: two — protected path internal/gateway/fields/WorkItemIndex.txt"); in["passed"] != true {
+		t.Fatalf("recorded %+v", in)
+	}
 
 	// and a checkout whose protected_paths the diff misses gets one
 	f, ev, claude, codex, _, _ = familyFixture(t, "normal", "sonnet", "Also holds.\nVERDICT: PASS", "Holds.\nVERDICT: PASS")
@@ -811,7 +817,9 @@ func TestTwoEvaluatorsOnAProtectedPath(t *testing.T) {
 	if codex.runs() != 1 || len(claude.jobs) != 0 {
 		t.Fatalf("protected_paths, no match: runs codex %d, claude %d", codex.runs(), len(claude.jobs))
 	}
-	assertChoice(t, f, "gpt-6-luna", "evaluators: one — normal/low goal, no protected path")
+	if in := assertChoice(t, f, "gpt-6-luna", "evaluators: one — normal/low goal, no protected path"); in["passed"] != true {
+		t.Fatalf("recorded %+v", in)
+	}
 }
 
 // A normal item under a checkout whose .mesh/config.yml says
@@ -828,5 +836,7 @@ func TestSecondOpinionAlways(t *testing.T) {
 	if codex.runs() != 1 || len(claude.jobs) != 1 {
 		t.Fatalf("runs: codex %d, claude %d", codex.runs(), len(claude.jobs))
 	}
-	assertChoice(t, f, "gpt-6-luna", "evaluators: two — second_opinion: always")
+	if in := assertChoice(t, f, "gpt-6-luna", "evaluators: two — second_opinion: always"); in["passed"] != true {
+		t.Fatalf("recorded %+v", in)
+	}
 }
