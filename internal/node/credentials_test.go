@@ -726,7 +726,7 @@ func TestFinishLogsTheCarriedRecordOnItsLabel(t *testing.T) {
 		if got := strings.TrimPrefix(records[0], tc.want); got != want {
 			t.Errorf("%s: record\n%s\nwant\n%s", tc.kind, got, want)
 		}
-		if !strings.HasPrefix(logs.String(), "usage: turns=0 input/turn mean=0 max=0 largest=\n") {
+		if !strings.HasPrefix(logs.String(), "usage: turns=0 input/turn mean=0 max=0 largest=, 0 documents fetched\n") {
 			t.Errorf("%s: the turns line changed:\n%s", tc.kind, logs.String())
 		}
 	}

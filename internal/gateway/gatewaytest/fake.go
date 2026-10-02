@@ -112,6 +112,14 @@ type Fake struct {
 	// with "Unknown field", as a platform older than
 	// context-budget-that-holds (adr-016).
 	NoContextUsage bool
+	// NoDocumentsFetched refuses a `usage` report carrying
+	// `documentsFetched` with "Unknown field", as a platform older than
+	// context-is-fetched-not-shipped (adr-016's amendment 2026-10-02).
+	NoDocumentsFetched bool
+	// NoToolNames refuses a `usage` report carrying `toolNames` with
+	// "Unknown field", as a platform older than
+	// context-is-fetched-not-shipped (adr-016's amendment 2026-10-02).
+	NoToolNames bool
 	// NoToolError refuses a usage report whose `tools` entry carries
 	// `error`, and introspection answers the entry without it, as a
 	// platform older than the tool entry's error text.
@@ -371,6 +379,18 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 		if usage, ok := in["usage"].(map[string]any); ok && f.NoContextUsage {
 			if _, ok := usage["contextBytes"]; ok {
 				writeErrors(w, 200, `Variable "$in" got invalid value; In field "usage": Unknown field "contextBytes" is not defined by type "UsageReportInput".`)
+				return
+			}
+		}
+		if usage, ok := in["usage"].(map[string]any); ok && f.NoDocumentsFetched {
+			if _, ok := usage["documentsFetched"]; ok {
+				writeErrors(w, 200, `Variable "$in" got invalid value; In field "usage": Unknown field "documentsFetched" is not defined by type "UsageReportInput".`)
+				return
+			}
+		}
+		if usage, ok := in["usage"].(map[string]any); ok && f.NoToolNames {
+			if _, ok := usage["toolNames"]; ok {
+				writeErrors(w, 200, `Variable "$in" got invalid value; In field "usage": Unknown field "toolNames" is not defined by type "UsageReportInput".`)
 				return
 			}
 		}

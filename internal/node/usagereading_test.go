@@ -10,14 +10,14 @@ import (
 
 // usageFixture is a node.log: labelled records of three kinds, a legacy
 // record paired by cost to its finished line, a legacy one nothing
-// pairs, an unparsable one, records carrying contextBytes, and records
-// either side of 2026-09-28.
+// pairs, an unparsable one, records carrying contextBytes, one (s1)
+// carrying documentsFetched, and records either side of 2026-09-28.
 const usageFixture = `mesh node: 2026/09/27 23:59:59 item ship-it/1: usage build {"sessionId":"s0","inputTokens":999,"cacheReadTokens":0,"listCostCents":1}
 mesh node: 2026/09/28 09:00:00 item ship-it/1: "Write the failing test" on acme/widgets from main
 mesh node: 2026/09/28 09:00:00 item ship-it/1: context 1000 bytes in 3 files, 2 documents to fetch
 mesh node: 2026/09/28 09:10:00 item ship-it/1: finished mesh/ship-it-1@abc12345 ($1.25)
 mesh node: 2026/09/28 09:10:00 usage: turns=12 input/turn mean=8000 max=9000 largest=Bash:1200
-mesh node: 2026/09/28 09:10:00 item ship-it/1: usage build {"sessionId":"s1","inputTokens":100000,"cacheReadTokens":90000,"listCostCents":125,"contextBytes":1000}
+mesh node: 2026/09/28 09:10:00 item ship-it/1: usage build {"sessionId":"s1","inputTokens":100000,"cacheReadTokens":90000,"listCostCents":125,"contextBytes":1000,"documentsFetched":4}
 mesh node: 2026/09/28 10:00:00 item ship-it/2: finished mesh/ship-it-2@def45678 ($0.50)
 mesh node: 2026/09/28 10:00:00 usage: turns=30 input/turn mean=10000 max=20000 largest=
 mesh node: 2026/09/28 10:00:01 usage: {"sessionId":"s2","inputTokens":300000,"cacheReadTokens":270000,"listCostCents":50}
@@ -63,11 +63,11 @@ func checkLines(t *testing.T, got, want []string) {
 func TestUsageReadingByKind(t *testing.T) {
 	checkLines(t, readUsageFixture(t, UsageQuery{From: day("2026-09-28"), To: day("2026-09-29")}), []string{
 		"window 2026-09-28..2026-09-29  records 2026-09-28T09:10:00..2026-09-28T14:00:01",
-		"kind      sessions  input tokens median  input tokens mean  cache read %  context bytes median  with context bytes",
-		"build     2         200000               200000             90.0          1000                  1",
-		"evaluate  1         50000                50000              80.0          -                     0",
-		"plan      2         50000                50000              60.0          3000                  2",
-		"unknown   1         7000                 7000               100.0         -                     0",
+		"kind      sessions  input tokens median  input tokens mean  cache read %  context bytes median  with context bytes  documents fetched median  with documents",
+		"build     2         200000               200000             90.0          1000                  1                   4                         1",
+		"evaluate  1         50000                50000              80.0          -                     0                   -                         0",
+		"plan      2         50000                50000              60.0          3000                  2                   -                         0",
+		"unknown   1         7000                 7000               100.0         -                     0                   -                         0",
 		"unparsed 1",
 	})
 }
@@ -77,13 +77,13 @@ func TestUsageReadingByKind(t *testing.T) {
 func TestUsageReadingWindowExcludes(t *testing.T) {
 	checkLines(t, readUsageFixture(t, UsageQuery{From: day("2026-09-29"), To: day("2026-09-30")}), []string{
 		"window 2026-09-29..2026-09-30  records 2026-09-29T00:00:00..2026-09-29T00:00:00",
-		"kind   sessions  input tokens median  input tokens mean  cache read %  context bytes median  with context bytes",
-		"build  1         5000                 5000               20.0          3000                  1",
+		"kind   sessions  input tokens median  input tokens mean  cache read %  context bytes median  with context bytes  documents fetched median  with documents",
+		"build  1         5000                 5000               20.0          3000                  1                   -                         0",
 		"unparsed 0",
 	})
 	checkLines(t, readUsageFixture(t, UsageQuery{From: day("2026-09-26"), To: day("2026-09-27")}), []string{
 		"window 2026-09-26..2026-09-27  records -",
-		"kind  sessions  input tokens median  input tokens mean  cache read %  context bytes median  with context bytes",
+		"kind  sessions  input tokens median  input tokens mean  cache read %  context bytes median  with context bytes  documents fetched median  with documents",
 		"unparsed 0",
 	})
 }
@@ -93,16 +93,16 @@ func TestUsageReadingWindowExcludes(t *testing.T) {
 func TestUsageReadingByGoalAndKind(t *testing.T) {
 	checkLines(t, readUsageFixture(t, UsageQuery{From: day("2026-09-28"), To: day("2026-09-29"), Goal: "ship-it"}), []string{
 		"window 2026-09-28..2026-09-29  records 2026-09-28T09:10:00..2026-09-28T12:00:00",
-		"kind      sessions  input tokens median  input tokens mean  cache read %  context bytes median  with context bytes",
-		"build     2         200000               200000             90.0          1000                  1",
-		"evaluate  1         50000                50000              80.0          -                     0",
-		"plan      1         80000                80000              75.0          4000                  1",
+		"kind      sessions  input tokens median  input tokens mean  cache read %  context bytes median  with context bytes  documents fetched median  with documents",
+		"build     2         200000               200000             90.0          1000                  1                   4                         1",
+		"evaluate  1         50000                50000              80.0          -                     0                   -                         0",
+		"plan      1         80000                80000              75.0          4000                  1                   -                         0",
 		"unparsed 1",
 	})
 	checkLines(t, readUsageFixture(t, UsageQuery{From: day("2026-09-28"), To: day("2026-09-29"), Kind: "plan"}), []string{
 		"window 2026-09-28..2026-09-29  records 2026-09-28T12:00:00..2026-09-28T13:00:00",
-		"kind  sessions  input tokens median  input tokens mean  cache read %  context bytes median  with context bytes",
-		"plan  2         50000                50000              60.0          3000                  2",
+		"kind  sessions  input tokens median  input tokens mean  cache read %  context bytes median  with context bytes  documents fetched median  with documents",
+		"plan  2         50000                50000              60.0          3000                  2                   -                         0",
 		"unparsed 1",
 	})
 }

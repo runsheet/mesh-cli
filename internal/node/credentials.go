@@ -480,6 +480,8 @@ func (s *SessionAccount) Add(res harness.Result) {
 		}
 	}
 	r.Tools = mergeToolCalls(r.Tools, rows)
+	r.DocumentsFetched += int64(res.DocumentsFetched)
+	r.ToolNames = mergeToolNames(r.ToolNames, res.ToolNames)
 	if res.Turns > 0 {
 		sum := r.InputPerTurnMean*r.Turns + res.InputPerTurnMean*int64(res.Turns)
 		r.Turns += int64(res.Turns)
@@ -601,6 +603,21 @@ func mergeToolCalls(rows []gateway.ToolCallReport, more []harness.ToolCall) []ga
 	return rows
 }
 
+// mergeToolNames adds more's calls per <server>__<tool> name into
+// rows, summed by name (goal context-is-fetched-not-shipped).
+func mergeToolNames(rows []gateway.ToolNameCount, more map[string]int) []gateway.ToolNameCount {
+	for name, n := range more {
+		i := slices.IndexFunc(rows, func(r gateway.ToolNameCount) bool { return r.Name == name })
+		if i < 0 {
+			rows = append(rows, gateway.ToolNameCount{Name: name})
+			i = len(rows) - 1
+		}
+		rows[i].Calls += int64(n)
+	}
+	slices.SortFunc(rows, func(a, b gateway.ToolNameCount) int { return strings.Compare(a.Name, b.Name) })
+	return rows
+}
+
 // capRunes is s cut to at most n characters.
 func capRunes(s string, n int) string {
 	if r := []rune(s); len(r) > n {
@@ -697,14 +714,15 @@ func mergeLargestToolResults(a []gateway.ToolResultSize, b []harness.ToolResultS
 }
 
 // turnUsageSummary is one session's per-turn input and largest tool
-// results, for Finish's node.log line.
+// results, plus its documents fetched (goal
+// context-is-fetched-not-shipped), for Finish's node.log line.
 func turnUsageSummary(res harness.Result) string {
 	largest := make([]string, 0, len(res.LargestToolResults))
 	for _, t := range res.LargestToolResults {
 		largest = append(largest, fmt.Sprintf("%s:%d", t.Tool, t.Bytes))
 	}
-	return fmt.Sprintf("turns=%d input/turn mean=%d max=%d largest=%s",
-		res.Turns, res.InputPerTurnMean, res.InputPerTurnMax, strings.Join(largest, ","))
+	return fmt.Sprintf("turns=%d input/turn mean=%d max=%d largest=%s, %d documents fetched",
+		res.Turns, res.InputPerTurnMean, res.InputPerTurnMax, strings.Join(largest, ","), res.DocumentsFetched)
 }
 
 // reportToolUsage hands the platform one recordToolUsage per call of a
