@@ -1949,10 +1949,19 @@ Nodes update themselves from the GitHub releases of the public mirror
 `runsheet/mesh`: `release-tag.yml` cuts a release
 from a tag on `runsheet/mesh-cli` (docs/adr/adr-002-signed-tag-releases.md),
 and the same tag is published, identical, on the mirror — same tag,
-title, notes and five assets, via `scripts/mirror-release.sh` and the
-`RELEASE_TOKEN` secret (`GITHUB_TOKEN` cannot write another repo); see
-the amendment "the public mirror on runsheet/mesh" for why and how it
-is checked.
+title, notes and five assets, via `scripts/mirror-release.sh`. The
+mirror step exchanges this run's OIDC identity (audience
+`runsheet-rigger`) at the runsheet gateway for a contents:write token
+on `runsheet/mesh` alone, against the binding the mirror carries,
+`.runsheet/bindings/mesh-cli-release.yaml` (docs/adr/adr-015-workflow-tokens-exchanged-through-rigger.md).
+`RELEASE_TOKEN` is only the transitional fallback, kept until the
+runsheet half (goal `rigger-binds-a-workflow-to-a-scoped-github-token`)
+answers the exchange and deleted then. The step logs which path it
+took: `mirror token: exchanged through rigger, …` or `mirror token:
+RELEASE_TOKEN fallback (…)`. A re-run of the publish job after a mirror
+failure keeps an existing release of the tag whose assets are identical
+(`scripts/ensure-release.sh`) and deletes nothing. See the amendment "the public
+mirror on runsheet/mesh" in ADR 002 for why and how it is checked.
 
 **The fallback: a tag by hand.** When the workflow cannot run (no
 `RELEASE_TAG_TOKEN`, a major version, a release of a commit it
