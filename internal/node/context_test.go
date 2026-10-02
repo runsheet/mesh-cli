@@ -166,28 +166,142 @@ func TestIndexIsInsideTheBudget(t *testing.T) {
 	}
 }
 
-// An index alone past bytes_max puts no document on disk and says so
-// once; the own repo's instructions are named to fetch.
-func TestIndexAlonePastTheBudget(t *testing.T) {
-	f := seed(t)
-	gw := gateway.New(f.URL(), "rs_test")
-	var logged []string
-	logf := func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }
-	cx, err := FetchContext(context.Background(), gw, "acme", "mesh", ContextOptions{Budget: ContextConfig{BytesMax: 100}, Repos: widgets, Goal: seedGoal(t, gw), Logf: logf})
+// writtenBytes is every file under the context directory as read back.
+func writtenBytes(t *testing.T, dir string) int {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(dir, ContextDir))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cx.Docs) != 0 || len(cx.OnDisk) != 0 {
-		t.Fatalf("on disk: %v", cx.OnDisk)
+	n := 0
+	for _, e := range entries {
+		b, err := os.ReadFile(filepath.Join(dir, ContextDir, e.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		n += len(b)
 	}
-	if got := strings.Join(slugsOf(cx.Dropped), ","); got != "agents" {
-		t.Fatalf("dropped: %s", got)
+	return n
+}
+
+// An own goal whose section alone is past the cap: the index says so
+// once, shortens the goal section to fit — its items to mesh_items,
+// then its statement and acceptance — puts no document on disk and
+// names the own repo's instructions to fetch. What is written, read
+// back, is inside the cap.
+func TestIndexAlonePastTheBudget(t *testing.T) {
+	f := seed(t)
+	f.Goals[goalID]["statement"] = strings.Repeat("Why this goal matters. ", 3000) // ~69KB
+	f.Goals[goalID]["acceptance"] = strings.Repeat("What proves it. ", 1000)       // ~16KB
+	for s := 3; s <= 400; s++ {
+		iid := fmt.Sprintf("eeeeeeee-0000-4000-8000-%012d", s)
+		f.WorkItems[iid] = map[string]any{"id": iid, "goalId": goalID, "orgId": orgID, "seq": s, "title": strings.Repeat("A long item title ", 5),
+			"repoId": repoID, "status": "pending", "dependsOn": []string{}}
 	}
-	if len(logged) != 1 || !strings.HasPrefix(logged[0], "warning: INDEX.md alone is ") || !strings.Contains(logged[0], "past bytes_max 100") {
-		t.Fatalf("logged %q", logged)
+	gw := gateway.New(f.URL(), "rs_test")
+	for _, c := range []struct {
+		name     string
+		bytesMax int
+		want     string
+	}{
+		{"default cap, statement and acceptance past it", 0, "Its statement, acceptance and items are past the context cap: ask `mesh_items`."},
+		{"a cap smaller than the index's own lines", 300, "… INDEX.md cut at the context cap (300 bytes)"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			var logged []string
+			logf := func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }
+			cx, err := FetchContext(context.Background(), gw, "acme", "mesh", ContextOptions{Budget: ContextConfig{BytesMax: c.bytesMax}, Repos: widgets, Goal: seedGoal(t, gw), Logf: logf})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(cx.Docs) != 0 || len(cx.OnDisk) != 0 || strings.Join(slugsOf(cx.Dropped), ",") != "agents" {
+				t.Fatalf("on disk %v, dropped %v", cx.OnDisk, slugsOf(cx.Dropped))
+			}
+			if len(logged) != 1 || !strings.HasPrefix(logged[0], "warning: INDEX.md alone is ") {
+				t.Fatalf("logged %q", logged)
+			}
+			dir := t.TempDir()
+			_, w, err := WriteContext(dir, cx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cap := cx.bytesMax()
+			if got := writtenBytes(t, dir); got != w.Bytes || got > cap || cx.IndexBytes != got {
+				t.Fatalf("written %d, reported %d, IndexBytes %d, cap %d", got, w.Bytes, cx.IndexBytes, cap)
+			}
+			index, _ := os.ReadFile(filepath.Join(dir, ContextDir, IndexFile))
+			if !strings.Contains(string(index), c.want) {
+				t.Fatalf("INDEX.md lacks %q:\n%s", c.want, index)
+			}
+			if c.bytesMax == 0 && !strings.Contains(string(index), "- `agents` — the instructions of acme/widgets, binding, past the context cap") {
+				t.Fatalf("INDEX.md does not name the instructions:\n%s", index)
+			}
+		})
 	}
-	if !strings.Contains(RenderIndex(cx), "- `agents` — the instructions of acme/widgets, binding, past the context cap") {
-		t.Fatalf("index:\n%s", RenderIndex(cx))
+}
+
+// Items past the cap go to mesh_items, the statement and acceptance
+// kept: the goal section is shortened only as far as it must be.
+func TestIndexGoalItemsPastTheCap(t *testing.T) {
+	f := seed(t)
+	for s := 3; s <= 800; s++ {
+		iid := fmt.Sprintf("eeeeeeee-0000-4000-8000-%012d", s)
+		f.WorkItems[iid] = map[string]any{"id": iid, "goalId": goalID, "orgId": orgID, "seq": s, "title": strings.Repeat("A long item title ", 5),
+			"repoId": repoID, "status": "pending", "branch": fmt.Sprintf("mesh/ship-it-%d", s), "dependsOn": []string{}}
+	}
+	gw := gateway.New(f.URL(), "rs_test")
+	cx, err := FetchContext(context.Background(), gw, "acme", "mesh", ContextOptions{Repos: widgets, Goal: seedGoal(t, gw)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	_, w, err := WriteContext(dir, cx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := writtenBytes(t, dir); got != w.Bytes || got > DefaultContextBytesMax {
+		t.Fatalf("written %d, reported %d", got, w.Bytes)
+	}
+	index, _ := os.ReadFile(filepath.Join(dir, ContextDir, IndexFile))
+	if !hasLine(string(index), "800 items, past the context cap: ask `mesh_items`.") || !strings.Contains(string(index), "Make the thing.") {
+		t.Fatalf("INDEX.md:\n%s", index)
+	}
+}
+
+// A dropped document's line grows INDEX.md after the documents before
+// it were placed: the cap is checked again on what is written, and a
+// placed document leaves the disk for the index when it must.
+func TestDroppedLinesNeverPushPastTheCap(t *testing.T) {
+	cx := &Context{Project: "acme/mesh", BytesMax: 4000, Docs: map[string]string{}, OnDisk: map[string]string{}}
+	for i := 0; i < 3; i++ {
+		d := gateway.Document{Slug: fmt.Sprintf("agents-%d", i), Kind: "instructions", Repo: "acme/widgets"}
+		cx.Index = append(cx.Index, d)
+		name := contextFileName(d)
+		cx.Docs[name] = strings.Repeat("a", 900)
+		cx.OnDisk[d.Slug] = name
+	}
+	bare := len(RenderIndex(cx))
+	// documents and index exactly at the cap, then three dropped lines
+	cx.BytesMax = bare + 3*900
+	for i := 0; i < 3; i++ {
+		d := gateway.Document{Slug: fmt.Sprintf("dropped-%02d-%s", i, strings.Repeat("x", 40)), Kind: "instructions", Repo: "acme/widgets"}
+		cx.Index = append(cx.Index, d)
+		cx.Dropped = append(cx.Dropped, d)
+	}
+	dir := t.TempDir()
+	names, w, err := WriteContext(dir, cx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := writtenBytes(t, dir); got != w.Bytes || got > cx.BytesMax {
+		t.Fatalf("written %d, reported %d, cap %d", got, w.Bytes, cx.BytesMax)
+	}
+	if len(names) == 3 || len(cx.Dropped) != 3+3-len(names) {
+		t.Fatalf("files %v, dropped %v", names, slugsOf(cx.Dropped))
+	}
+	index, _ := os.ReadFile(filepath.Join(dir, ContextDir, IndexFile))
+	if !strings.Contains(string(index), "- `agents-2` — the instructions of acme/widgets, binding, past the context cap") {
+		t.Fatalf("INDEX.md does not name the document it took off disk:\n%s", index)
 	}
 }
 
