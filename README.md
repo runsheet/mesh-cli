@@ -1024,18 +1024,22 @@ mesh node usage --from 2026-09-28 --to 2026-09-29 [--log ~/.mesh/node.log] [--go
 
 ```
 window 2026-09-28..2026-09-29  records 2026-09-28T09:10:00..2026-09-28T14:00:01
-kind      sessions  input tokens median  input tokens mean  cache read %  context bytes median  with context bytes
-build     2         200000               200000             90.0          1000                  1
-evaluate  1         50000                50000              80.0          -                     0
-plan      2         50000                50000              60.0          3000                  2
-unknown   1         7000                 7000               100.0         -                     0
+kind      sessions  input tokens median  input tokens mean  cache read %  context bytes median  with context bytes  documents fetched median  fetched by tool
+build     2         200000               200000             90.0          1000                  1                   4                         1
+evaluate  1         50000                50000              80.0          -                     0                   -                         0
+plan      2         50000                50000              60.0          3000                  2                   -                         0
+unknown   1         7000                 7000               100.0         -                     0                   -                         0
 unparsed 1
 ```
 
 `--to` is exclusive and both dates are local, as node.log's timestamps
 are. Input tokens are the report's `inputTokens`, cache reads and
 writes among them; the context-bytes median is over the sessions that
-carry `contextBytes` (`with context bytes`), `-` when none does.
+carry `contextBytes` (`with context bytes`), `-` when none does; the
+documents-fetched median is over the sessions that fetched any document
+by tool (`mesh_document` or `mesh_search`, the record's
+`documentsFetched`), and `fetched by tool` is how many did (ADR-016,
+amendment 2026-10-02).
 `--goal` keeps the records whose label names the goal — its items' and
 its plan's. An older node's unlabelled `usage: {…}` line takes the kind
 and label of the nearest `finished …($x)`, `evaluation …($x)` or
