@@ -33,8 +33,15 @@
 #              shared with its own runsheet/mesh-cli release, so both
 #              read the same text
 #
-# Needs gh and cosign on PATH. Any failure here fails the workflow: a
-# release that exists only on runsheet/mesh-cli is not this contract.
+# The release itself is created idempotently by ensure-release.sh: a
+# mirror release of <tag> that already exists with identical assets is
+# kept (a re-run after a failure below is a no-op there), one that
+# differs fails naming the mismatch, and nothing already published is
+# ever deleted or clobbered (docs/adr/adr-002-signed-tag-releases.md,
+# "the publish job is idempotent").
+#
+# Needs gh, jq and cosign on PATH. Any failure here fails the workflow:
+# a release that exists only on runsheet/mesh-cli is not this contract.
 set -euo pipefail
 
 tag=${1:?usage: mirror-release.sh <tag> <sha> <release-dir>}
@@ -48,19 +55,11 @@ cd "$(dirname "$0")/.."
 
 source_identity="runsheet/mesh-cli"
 
-flags=()
-case "$tag" in *-*) flags+=(--prerelease) ;; esac
-
-# --target: the mirror has no commit of ours, so the release's tag is
-# created there at its default branch's head; without it gh refuses,
-# "tag exists locally but has not been pushed" (v0.2.187, run 36494313388).
-gh release create "$tag" \
-  --target main \
-  --title "$tag" \
-  --notes "$NOTES" \
-  "${flags[@]}" \
-  "$release_dir/mesh-linux-amd64" "$release_dir/mesh-linux-arm64" "$release_dir/mesh-darwin-arm64" \
-  "$release_dir/SHA256SUMS" "$release_dir/SHA256SUMS.sigstore.json"
+# TARGET=main: the mirror has no commit of ours, so the release's tag
+# is created there at its default branch's head; without it gh
+# refuses, "tag exists locally but has not been pushed" (v0.2.187, run
+# 36494313388).
+TARGET=main "$(dirname "$0")/ensure-release.sh" "$tag" "$sha" "$release_dir"
 
 mirror_dir=$(mktemp -d)
 trap 'rm -rf "$mirror_dir"' EXIT
