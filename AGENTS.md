@@ -531,7 +531,14 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   second session that errors, times out or reaches no verdict, or no
   Codex account with headroom, keeps the first verdict with `<Family>
   second opinion unavailable: <reason>`. A first fail or a normal/low
-  goal never runs a second opinion. **A tool failure is never a
+  goal never runs a second opinion. After a failed verdict is handed in,
+  an item's second failed evaluation — the earlier records with no
+  `VERDICT: PASS` that are not a no-verdict's reason, plus this one,
+  exactly 2 — asks for a split, `RequestPlanReplacing(goal, node,
+  item)` (`askSplit`; `replaceItem` sent only when `RequestPlanInput`
+  has it, introspected and kept an hour; a refusal logged once per item
+  as `split refused by the platform`, never an error; ADR-021's
+  amendment 2026-10-02). **A tool failure is never a
   verdict** (`toolBroken`): a session whose context server (or a
   required console tool) errored and was never reached — no call it
   answered, clean (`ToolStat.Clean`) or with its own error result

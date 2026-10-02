@@ -133,6 +133,44 @@ R) at the same acceptance; refused`, logged and counted like any
 planner error (`MaxPlanAttempts`), and `PlanGoal` is not called: the
 goal never gets a fourth re-land from this node.
 
+## Amendment 2026-10-02 — the evaluator asks for the split at the second failure
+
+Mesh goal `split-dont-re-land`, item 3.
+
+**Decision.** After `EvaluateWorkItem` records a failed verdict
+(`afterEvaluate`'s hand-in), the evaluator counts the item's failed
+verdicts: the earlier attempts' records it already read for
+`PriorAttempts` (ADR-020) whose notes carry no `VERDICT: PASS` and are
+not a no-verdict's reason (`no VERDICT line: …`, `…; not a verdict` —
+an unreached evaluation is not a failed one, runsheet ADR 035, and the
+platform keeps those out of `evaluations`), plus this one
+(`failedVerdicts`). **When the count is exactly 2** it calls
+`RequestPlanReplacing(goalID, nodeID, itemID)` — `requestPlan` with
+`RequestPlanInput.replaceItem` — and logs `item <label>: failed
+evaluation 2; asking for a split (narrow re-plan) instead of a third
+build` (`askSplit`). A count of 1 is the platform's rework (rung 1) and
+3 is the platform's own narrow re-plan (runsheet ADR 023, rung 3): the
+node asks at neither. The ask follows the verdict, never precedes it,
+so the hand-in stands whatever the answer:
+
+- a refusal (`IsRefusal`) is the platform's ladder going on — logged
+  once per item (`Evaluator.Splits`) as `item <label>: split refused by
+  the platform: <reason>; the platform's ladder continues`, not an
+  error;
+- a gateway whose `RequestPlanInput` has no `replaceItem` —
+  introspected and kept an hour, as `scaling` (adr-005 §Heartbeat) — is
+  sent nothing and nothing is logged (`gateway.ErrNoReplaceItem`).
+
+**What is owed to the platform.** The `Goal` aggregate must accept a
+node's `RequestPlan {by, replace_item}` for an item that is `ready`
+after its second failed evaluation (today the narrow re-plan is asked
+for a failed item at rung 3), record `replacing_item_id`, and supersede
+the item's third build: the item is not served to a builder again while
+the narrow re-plan is pending, and the planner's replacements take its
+dependents (`GoalPlanned.rewired`). Until it does, the request is
+refused and the ladder runs as before; the cost of an early node is a
+refused call and a log line.
+
 ## Amendment 2026-10-02: the planner's narrow mode (item 4)
 
 **The read.** `GoalIndex` serves `replacingItemId` and `narrowReplans`
