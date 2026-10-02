@@ -198,12 +198,14 @@ to make more. The 64KB `capBuffer` a Codex session's error paths already
 read from is unchanged: `KeptSessionDir` is additional, not a
 replacement.
 
-## Amendment, 2026-10-02: wording corrected to mesh-context
+## Amendment — 2026-10-02 (goal builtin-is-mesh-context)
 
-Goal `builtin-is-mesh-context`. **When it runs** said "the same item
-token and Prologue"; the served-tools note above said "some MCP
-server's calls — Prologue's included". Both named the built-in by its
-old name after the rename had already reached the node's own
+The built-in attachment is `mesh-context` (`tools.Builtin`, mesh-cli
+#264/#396); `prologue` is the deprecated alias read until 2026-10-28,
+not the name a current session carries. **When it runs** said "the
+same item token and Prologue"; the served-tools note above said "some
+MCP server's calls — Prologue's included". Both named the built-in by
+its old name after the rename had already reached the node's own
 attachment (`adr-006`'s 2026-09-28 amendment); both now say
 `mesh-context`. Nothing about when the second opinion runs or what the
 note names changes — only the word.
