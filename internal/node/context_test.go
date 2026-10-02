@@ -305,7 +305,7 @@ func TestDroppedLinesNeverPushPastTheCap(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		d := gateway.Document{Slug: fmt.Sprintf("agents-%d", i), Kind: "instructions", Repo: "acme/widgets"}
 		cx.Index = append(cx.Index, d)
-		name := contextFileName(d)
+		name := contextFileName(d, nil)
 		cx.Docs[name] = strings.Repeat("a", 900)
 		cx.OnDisk[name] = d
 	}
@@ -602,7 +602,7 @@ func TestContextWritten(t *testing.T) {
 	}
 	fetch := 0
 	for _, d := range cx.Index {
-		if _, ok := cx.OnDisk[contextFileName(d)]; !ok || d.Kind != "instructions" {
+		if _, ok := cx.OnDisk[contextFileName(d, nil)]; !ok || d.Kind != "instructions" {
 			fetch++
 		}
 	}
@@ -700,5 +700,63 @@ func TestSharedInstructionsSlugWithoutACheckoutIsNamedByRepo(t *testing.T) {
 	const line = "- `AGENTS.md` of acme/widgets — its instructions, binding, not on disk: read `AGENTS.md` in acme/widgets's checkout before you start (slug `agents` is shared by several repos' instructions)"
 	if index := RenderIndex(cx); !hasLine(index, line) {
 		t.Fatalf("INDEX.md:\n%s", index)
+	}
+}
+
+// Two instructions documents of one repo with one slug at different
+// paths are two files: each its own body under its own name, each its
+// own INDEX.md line. Named by slug they would overwrite each other.
+func TestInstructionsOfOneRepoAreKeyedByPath(t *testing.T) {
+	f := seed(t)
+	f.Documents["acme/mesh"] = append(f.Documents["acme/mesh"], map[string]any{"slug": "agents", "title": "AGENTS.md", "kind": "instructions", "repo": "acme/widgets", "path": "docs/AGENTS.md"})
+	checkout := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(checkout, "docs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(checkout, "AGENTS.md"), []byte("root instructions\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(checkout, "docs", "AGENTS.md"), []byte("docs instructions\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gw := gateway.New(f.URL(), "rs_test")
+	cx, err := FetchContext(context.Background(), gw, "acme", "mesh", ContextOptions{Repos: widgets, Checkouts: map[string]string{"acme/widgets": checkout}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if _, _, err := WriteContext(dir, cx); err != nil {
+		t.Fatal(err)
+	}
+	cdir := filepath.Join(dir, ContextDir)
+	for name, want := range map[string]string{
+		"instructions-acme-widgets-agents.md":      "root instructions\n",
+		"instructions-acme-widgets-docs-agents.md": "docs instructions\n",
+	} {
+		got, err := os.ReadFile(filepath.Join(cdir, name))
+		if err != nil || string(got) != want {
+			t.Fatalf("%s: %q, %v (on disk %v, dropped %v)", name, got, err, cx.OnDisk, slugsOf(cx.Dropped))
+		}
+		if cx.OnDisk[name].Path == "" {
+			t.Fatalf("%s not on disk by path: %v", name, cx.OnDisk)
+		}
+		index, _ := os.ReadFile(filepath.Join(cdir, "INDEX.md"))
+		if !hasLine(string(index), "- `"+name+"` — the instructions of acme/widgets, binding") {
+			t.Fatalf("INDEX.md lacks %s:\n%s", name, index)
+		}
+	}
+}
+
+// A path whose name another path of the same repo already took gets a
+// name of its own.
+func TestContextFileNameNeverCollides(t *testing.T) {
+	taken := map[string]gateway.Document{}
+	a := gateway.Document{Slug: "agents", Kind: "instructions", Repo: "acme/widgets", Path: "docs/agents.md"}
+	b := gateway.Document{Slug: "agents", Kind: "instructions", Repo: "acme/widgets", Path: "docs-agents.md"}
+	na := contextFileName(a, taken)
+	taken[na] = a
+	nb := contextFileName(b, taken)
+	if na != "instructions-acme-widgets-docs-agents.md" || nb == na || contextFileName(a, taken) != na {
+		t.Fatalf("names %q, %q", na, nb)
 	}
 }

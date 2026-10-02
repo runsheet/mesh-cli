@@ -2,6 +2,8 @@ package node
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -553,7 +555,7 @@ func FetchContext(ctx context.Context, gw Gateway, orgLogin, projectSlug string,
 			out.Dropped = append(out.Dropped, d)
 			continue
 		}
-		name := contextFileName(d)
+		name := contextFileName(d, out.OnDisk)
 		out.Docs[name] = body
 		out.OnDisk[name] = d
 		// the index names the file: count it as it will be written
@@ -572,9 +574,24 @@ func FetchContext(ctx context.Context, gw Gateway, orgLogin, projectSlug string,
 }
 
 // contextFileName is an instructions document's file on disk, named by
-// its repo: instructions-<owner>-<repo>-<slug>.md.
-func contextFileName(d gateway.Document) string {
-	return "instructions-" + Slugify(d.Repo) + "-" + Slugify(d.Slug) + ".md"
+// its repo and path: instructions-<owner>-<repo>-<path>.md, the path
+// without its .md (AGENTS.md is `agents`, docs/AGENTS.md `docs-agents`),
+// the slug when the listing gives no path. One repo may hold two
+// instructions documents of one slug at different paths, so the slug
+// alone would put both under one name; a name another path of the same
+// repo already took (docs/agents.md and docs-agents.md) gets a short
+// hash of its path.
+func contextFileName(d gateway.Document, taken map[string]gateway.Document) string {
+	stem := Slugify(strings.TrimSuffix(strings.TrimSuffix(d.Path, ".md"), ".MD"))
+	if stem == "" {
+		stem = Slugify(d.Slug)
+	}
+	name := "instructions-" + Slugify(d.Repo) + "-" + stem + ".md"
+	if t, ok := taken[name]; ok && (repoKey(t.Repo) != repoKey(d.Repo) || t.Path != d.Path || t.Slug != d.Slug) {
+		sum := sha256.Sum256([]byte(d.Repo + "\x00" + d.Path + "\x00" + d.Slug))
+		name = "instructions-" + Slugify(d.Repo) + "-" + stem + "-" + hex.EncodeToString(sum[:4]) + ".md"
+	}
+	return name
 }
 
 // checkoutsUnder is each repo's checkout, its sub-directory of dir.

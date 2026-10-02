@@ -55,9 +55,14 @@ once, and only by a session whose work touches it.
    item's checkout for a build, an evaluation or a rebase, each
    `repos/<name>` for the planner and the director), and with no
    checkout it is left off disk, named in INDEX.md by repo and path to
-   read there. Each is written as its own repo's file,
-   `instructions-<owner>-<repo>-<slug>.md`, and `Context.OnDisk` is
-   keyed by that file name;
+   read there. Each is written as its own repo's and path's file,
+   `instructions-<owner>-<repo>-<path>.md` (the path without `.md`:
+   `AGENTS.md` is `…-agents.md`, `docs/AGENTS.md` `…-docs-agents.md`;
+   the slug when the listing has no path; a name another path of the
+   repo already took gets a short hash of the path), and
+   `Context.OnDisk` is keyed by that file name — so two instructions
+   documents of one repo with one slug at two paths are two files and
+   two INDEX.md lines, never one overwriting the other;
 2. the session's own goal (`ContextOptions.Goal`), in INDEX.md: its
    statement, acceptance and a table of its items (`seq | title |
    status | repo | branch`). A build, an evaluation and a rebase pass
