@@ -38,96 +38,71 @@ func seedLive(t *testing.T) *gatewaytest.Fake {
 	return f
 }
 
-// INDEX.md carries, beside the documents, the project's live goals with
-// a row per item; a finished goal is one line; another project's goal is
-// not there.
+// INDEX.md carries the session's own goal — statement, acceptance and
+// a row per item with its repo and branch — and no other goal, live,
+// finished or of another project.
 func TestIndexListsLiveGoalsAndItems(t *testing.T) {
 	f := seedLive(t)
 	gw := gateway.New(f.URL(), "rs_test")
-	cx, err := FetchContext(context.Background(), gw, "acme", "mesh", ContextOptions{})
+	cx, err := FetchContext(context.Background(), gw, "acme", "mesh", ContextOptions{Repos: widgets, Goal: seedGoal(t, gw), Logf: t.Logf})
 	if err != nil {
 		t.Fatal(err)
 	}
-	docsOnly := RenderIndex(cx)
-	AddLive(context.Background(), gw, cx, orgID, projID, t.Logf)
 	dir := t.TempDir()
 	if _, _, err := WriteContext(dir, cx); err != nil {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(filepath.Join(dir, ContextDir, IndexFile))
 	index := string(b)
-	if !strings.HasPrefix(index, docsOnly) {
-		t.Fatalf("the documents table comes first, unchanged:\n%s", index)
+	_, goal, ok := strings.Cut(index, "\n## Goal ")
+	if !ok {
+		t.Fatalf("no goal section:\n%s", index)
 	}
-	for _, line := range []string{
-		"| spec | Notes | `notes` |",
-		"3 documents on disk here, 1 to fetch (0 a session reads, 1 other); summaries are shown only for the kinds a session reads (instructions, adr, prd, trd) that are not on disk.",
-	} {
-		if !hasLine(docsOnly, line) {
-			t.Fatalf("the documents tables lack the line %q:\n%s", line, docsOnly)
+	want := "`ship-it` — Ship it (running)\n\n" +
+		"Read from the platform when this session started; not committed.\n" +
+		"\n### Statement\n\nMake the thing.\n" +
+		"\n### Acceptance\n\ngo test ./... passes\n" +
+		"\n### Items\n\n" +
+		"| seq | title | status | repo | branch |\n| --- | --- | --- | --- | --- |\n" +
+		"| 1 | Write the failing test | running | acme/widgets | `mesh/ship-it-1` |\n" +
+		"| 2 | Make it pass | pending | acme/widgets | — |\n"
+	if goal != want {
+		t.Fatalf("goal section:\n%s\nwant:\n%s", goal, want)
+	}
+	for _, other := range []string{"docs", "Write the guide", "old-work", "Buried", "not-ours"} {
+		if strings.Contains(index, other) {
+			t.Fatalf("INDEX.md names %q, of another goal:\n%s", other, index)
 		}
 	}
-	live := strings.TrimPrefix(index, docsOnly)
-	want := "\n## Live goals and items\n\n" +
-		"Read from the platform when this session started — the one place to read status from; no status table in git is current. Not committed.\n" +
-		"\n### `docs` — Docs \\| all (paused)\n\n" +
-		"| seq | title | status | branch | PR |\n| --- | --- | --- | --- | --- |\n" +
-		"| 1 | Write the guide | merged | `mesh/docs-1` | https://github.com/acme/widgets/pull/7 |\n" +
-		"| 2 | Link it | evaluating | `mesh/docs-2` | — |\n" +
-		"\n### `ship-it` — Ship it (running)\n\n" +
-		"| seq | title | status | branch | PR |\n| --- | --- | --- | --- | --- |\n" +
-		"| 1 | Write the failing test | running | `mesh/ship-it-1` | — |\n" +
-		"| 2 | Make it pass | pending | — | — |\n" +
-		"\n### Finished goals\n\n" +
-		"- `old-work` — Old work (done)\n"
-	if live != want {
-		t.Fatalf("live section:\n%s\nwant:\n%s", live, want)
-	}
-	if strings.Contains(index, "Buried") || strings.Contains(index, "not-ours") {
-		t.Fatalf("a finished goal is not expanded; another project's goal is not listed:\n%s", index)
-	}
 	for _, r := range f.Reads {
-		if r.Name == "workItemIndexs" && r.Input["goal_id"] == goal3 {
-			t.Fatal("a finished goal's items are not read")
+		if r.Name == "goalIndexs" || (r.Name == "workItemIndexs" && r.Input["goal_id"] != nil && r.Input["goal_id"] != goalID) {
+			t.Fatalf("another goal was read: %v", r)
 		}
 	}
 }
 
-// When the platform's read fails, INDEX.md is the documents-only index
-// it was before, and a warning is logged.
+// When the items cannot be read, the goal's statement and acceptance
+// are still there, the items are left to mesh_items, and a warning is
+// logged; a session with no goal (research) has no goal section.
 func TestIndexWithoutLiveStateIsDocumentsOnly(t *testing.T) {
-	for _, fail := range []string{"goalIndexs", "workItemIndexs"} {
-		f := seedLive(t)
-		f.FailReads[fail] = "Cannot query field"
-		gw := gateway.New(f.URL(), "rs_test")
-		cx, err := FetchContext(context.Background(), gw, "acme", "mesh", ContextOptions{})
-		if err != nil {
-			t.Fatal(err)
-		}
-		docsOnly := RenderIndex(cx)
-		var logged []string
-		AddLive(context.Background(), gw, cx, orgID, projID, func(format string, args ...any) { logged = append(logged, format) })
-		dir := t.TempDir()
-		if _, _, err := WriteContext(dir, cx); err != nil {
-			t.Fatal(err)
-		}
-		index, _ := os.ReadFile(filepath.Join(dir, ContextDir, IndexFile))
-		if string(index) != docsOnly || strings.Contains(docsOnly, "Live goals") || !strings.HasSuffix(docsOnly, "that are not on disk.\n") {
-			t.Fatalf("%s failing: index:\n%s", fail, index)
-		}
-		if len(logged) != 1 || !strings.HasPrefix(logged[0], "warning:") {
-			t.Fatalf("%s failing: logged %v", fail, logged)
-		}
-	}
-	// a platform with no goals for the project: no section, no warning
-	f := seed(t)
-	delete(f.Goals, goalID)
+	f := seedLive(t)
+	f.FailReads["workItemIndexs"] = "Cannot query field"
 	gw := gateway.New(f.URL(), "rs_test")
-	cx, _ := FetchContext(context.Background(), gw, "acme", "mesh", ContextOptions{})
-	docsOnly := RenderIndex(cx)
-	AddLive(context.Background(), gw, cx, orgID, projID, func(string, ...any) { t.Fatal("no goals is not a warning") })
-	if RenderIndex(cx) != docsOnly {
-		t.Fatal("no goals: documents only")
+	var logged []string
+	cx, err := FetchContext(context.Background(), gw, "acme", "mesh", ContextOptions{Goal: seedGoal(t, gw), Logf: func(format string, args ...any) { logged = append(logged, format) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	index := RenderIndex(cx)
+	if !strings.Contains(index, "### Acceptance\n\ngo test ./... passes\n") || !strings.HasSuffix(index, "### Items\n\nUnread here: ask `mesh_items`.\n") {
+		t.Fatalf("index:\n%s", index)
+	}
+	if len(logged) != 1 || !strings.HasPrefix(logged[0], "warning:") {
+		t.Fatalf("logged %v", logged)
+	}
+	cx, _ = FetchContext(context.Background(), gw, "acme", "mesh", ContextOptions{Logf: func(string, ...any) { t.Fatal("no goal is not a warning") }})
+	if cx.Live != nil || strings.Contains(RenderIndex(cx), "## Goal") {
+		t.Fatal("no goal: no goal section")
 	}
 }
 
@@ -152,11 +127,10 @@ func TestIndexIsNeverCommitted(t *testing.T) {
 	git("init", "-q", "-b", "main")
 	f := seedLive(t)
 	gw := gateway.New(f.URL(), "rs_test")
-	cx, err := FetchContext(context.Background(), gw, "acme", "mesh", ContextOptions{})
+	cx, err := FetchContext(context.Background(), gw, "acme", "mesh", ContextOptions{Repos: widgets, Goal: seedGoal(t, gw)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	AddLive(context.Background(), gw, cx, orgID, projID, t.Logf)
 	if _, _, err := WriteContext(dir, cx); err != nil {
 		t.Fatal(err)
 	}

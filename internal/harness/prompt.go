@@ -59,7 +59,7 @@ func contextRule(contextDir, project string) string {
 	if contextDir != "" {
 		where = "`" + contextDir + "/INDEX.md`"
 	}
-	return fmt.Sprintf("%s lists every document of project %q — specs, decisions, instructions, skills — with what is on disk and what is not; fetch any of the rest with the `mesh_document` tool (project %q, the document's slug — INDEX.md's `slug` column, never a context file's name: a file name is not a slug, `adr-adr-001-….md` is slug `adr-001-…`), search with `mesh_search`, and read another project's decisions through `mesh_projects` and `mesh_documents` when the work touches it. Prefer reading a document to guessing what it says.", where, project, project)
+	return fmt.Sprintf("%s says what of project %q is on disk and how to find the rest; search with `mesh_search` (it answers each document's slug), fetch one with the `mesh_document` tool (project %q, the document's slug — never a context file's name: a file name is not a slug, `instructions-acme-widgets-agents.md` is slug `agents`), and read another project's decisions through `mesh_projects` and `mesh_documents` when the work touches it. Prefer reading a document to guessing what it says.", where, project, project)
 }
 
 // BuildPrompt renders the session's whole prompt for a build job: the item

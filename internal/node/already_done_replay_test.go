@@ -246,13 +246,13 @@ func TestReplayStalledItem7EndsAlreadyDoneUnderADollar(t *testing.T) {
 	}
 
 	// both sessions read item 3 as merged in INDEX.md
-	item3Row := "| 3 | The goal page shows a stalled badge | merged | `mesh/stalled-3` | " + item3PR + " |\n"
+	item3Row := "| 3 | The goal page shows a stalled badge | merged | acme/widgets | `mesh/stalled-3` |\n"
 	for _, kind := range []harness.Kind{harness.KindBuild, harness.KindEvaluate} {
-		if index := sessions.index[kind]; !strings.Contains(index, "## Live goals and items") || !strings.Contains(index, item3Row) {
+		if index := sessions.index[kind]; !strings.Contains(index, "## Goal `stalled`") || !strings.Contains(index, item3Row) {
 			t.Fatalf("%s session's INDEX.md lacks %q:\n%s", kind, item3Row, index)
 		}
 	}
-	if !strings.Contains(sessions.index[harness.KindBuild], "| 7 | Show a stalled badge on the goal page | claimed | — | — |\n") {
+	if !strings.Contains(sessions.index[harness.KindBuild], "| 7 | Show a stalled badge on the goal page | claimed | acme/widgets | — |\n") {
 		t.Fatalf("the build's INDEX.md lacks item 7:\n%s", sessions.index[harness.KindBuild])
 	}
 

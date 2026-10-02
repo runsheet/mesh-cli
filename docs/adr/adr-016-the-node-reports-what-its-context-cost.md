@@ -105,6 +105,18 @@ sample was failed three times for it. Now:
   else `unknown`. The platform exposes no usage query, so this is the
   node-side reading the goal doc quotes, before and after.
 
+**Amendment 2026-10-02 (goal `context-is-fetched-not-shipped`, item
+1): the bytes are the inverted default's.** INDEX.md no longer carries
+two document tables and every live goal's items: per ADR-015 as
+rewritten, it is a screen — what is on disk, how to fetch the rest, one
+count line — and the session's own goal with its items; the only
+document files are the session's own repos' instructions. `Bytes` is
+still every file written, INDEX.md included, and `ToFetch` every indexed
+document not on disk, which is now nearly all of them. The context line
+is unchanged; a context past ADR-015's 40KB target adds one line after
+it, `<label>: warning: context <n> bytes, past the 40960-byte target:
+<file> took it past`.
+
 ## Consequences
 
 - The log line is there on every node from this release, whatever the

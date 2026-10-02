@@ -124,7 +124,7 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 		return fail(fmt.Errorf("workspace: %w", err))
 	}
 	orgName := r.Scopes.NameOf(item.OrgID)
-	cx, err := FetchContext(ctx, r.GW, orgName, res.Project.Slug, ContextOptions{Budget: r.contextBudget(), Repos: []string{res.Repo.FullName()}, Logf: r.logf})
+	cx, err := FetchContext(ctx, r.GW, orgName, res.Project.Slug, ContextOptions{Budget: r.contextBudget(), Repos: []string{res.Repo.FullName()}, Goal: res.Goal, Logf: r.logf})
 	if err != nil {
 		r.logf("item %s: context unavailable: %v", label, err)
 		cx = &Context{}
@@ -134,8 +134,11 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 		return fail(fmt.Errorf("write context: %w", err))
 	}
 	r.logf("item %s: %s", label, written.Line())
+	if w := written.TargetWarning(); w != "" {
+		r.logf("item %s: %s", label, w)
+	}
 	contextDir := ""
-	if len(files) > 0 || len(cx.Index) > 0 {
+	if len(files) > 0 || len(cx.Index) > 0 || cx.Live != nil {
 		contextDir = ContextDir
 	}
 	in := harness.RebaseInput{

@@ -393,323 +393,241 @@ func (g *Git) PushedHead(ctx context.Context, dir, branch, base string) (string,
 // ContextDir is where the goal's context documents land in a workspace.
 const ContextDir = ".mesh/context"
 
-// ContextKinds are the mesh-context kinds a session reads first.
-var ContextKinds = map[string]bool{"instructions": true, "adr": true, "prd": true, "trd": true}
-
-// Context is the goal's context: the documents on disk by file name,
-// the whole index of the project (every document, on disk or not), the
-// project (org/slug) and its PRD slug when it lists one.
+// Context is a session's context (ADR-015): the instructions of its own
+// repos on disk by file name, the project's whole listing kept in
+// memory for INDEX.md's count line (never rendered as rows), the
+// project (org/slug), its PRD slug when it lists one, and the session's
+// own goal.
 type Context struct {
 	Docs    map[string]string
 	Index   []gateway.Document
 	OnDisk  map[string]string // slug → file name, for the index
 	Project string
 	PRDSlug string
-	// Dropped is the binding documents (instructions, ADRs) fetched but
-	// left off disk by the total budget: in the index, to fetch.
+	// Dropped is the own repos' instructions fetched but left off disk
+	// by the cap: named in INDEX.md as binding, to fetch first.
 	Dropped []gateway.Document
-	// IndexBytes is the length of INDEX.md's documents tables as
-	// FetchContext counted it against the budget, the live section not
-	// among them (ADR-015's amendment 2026-09-29).
+	// IndexBytes is INDEX.md's length as FetchContext counted it against
+	// the cap, the goal section included.
 	IndexBytes int
-	// Live is the project's goals and their items as the platform holds
-	// them (adr-003 decision 3), rendered into INDEX.md; nil when the
-	// platform's read failed or found none.
-	Live []LiveGoal
+	// Live is the session's own goal with its items as the platform
+	// holds them (adr-003 decision 3), rendered into INDEX.md; nil for a
+	// session with no goal (research, channel mode).
+	Live *LiveGoal
 }
 
-// LiveGoal is one goal of the project with its items; a goal that is
-// over carries none, it is listed as one line.
+// LiveGoal is the session's own goal with its items and, by repo id,
+// the owner/name each item works in.
 type LiveGoal struct {
 	Goal  gateway.Goal
 	Items []gateway.WorkItem
+	Repos map[string]string
+	// Unread is why the items could not be read; the goal's statement
+	// and acceptance are still rendered.
+	Unread string
 }
 
-// FetchLive reads the project's goals and, for each live one, its items
-// through the gateway. Any read failing fails the whole: a partial
-// status is worse than none.
-func FetchLive(ctx context.Context, gw Gateway, orgID, projectID string) ([]LiveGoal, error) {
-	goals, err := gw.Goals(ctx, orgID)
+// fetchOwnGoal reads g's items and the repos they work in. A failed
+// items read keeps the goal with Unread set; a failed repos read leaves
+// the repo cells empty.
+func fetchOwnGoal(ctx context.Context, gw Gateway, g gateway.Goal) *LiveGoal {
+	lg := &LiveGoal{Goal: g, Repos: map[string]string{}}
+	items, err := gw.GoalWorkItems(ctx, g.ID)
 	if err != nil {
-		return nil, err
+		lg.Unread = err.Error()
+		return lg
 	}
-	var out []LiveGoal
-	for _, g := range goals {
-		if g.ProjectID != projectID {
-			continue
+	sort.Slice(items, func(i, j int) bool { return items[i].Seq < items[j].Seq })
+	lg.Items = items
+	var ids []string
+	seen := map[string]bool{}
+	for _, it := range items {
+		if it.RepoID != "" && !seen[it.RepoID] {
+			seen[it.RepoID] = true
+			ids = append(ids, it.RepoID)
 		}
-		lg := LiveGoal{Goal: g}
-		if isLiveGoal(g.Status) {
-			items, err := gw.GoalWorkItems(ctx, g.ID)
-			if err != nil {
-				return nil, fmt.Errorf("items of %s: %w", g.Slug, err)
-			}
-			sort.Slice(items, func(i, j int) bool { return items[i].Seq < items[j].Seq })
-			lg.Items = items
+	}
+	if repos, err := gw.ProjectRepos(ctx, ids); err == nil {
+		for _, r := range repos {
+			lg.Repos[r.ID] = r.FullName()
 		}
-		out = append(out, lg)
 	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].Goal.Slug < out[j].Goal.Slug })
-	return out, nil
-}
-
-// AddLive puts the project's live goals and items on cx for INDEX.md.
-// When the platform cannot say (an old platform, a failed read) it logs
-// a warning and cx keeps its documents only.
-func AddLive(ctx context.Context, gw Gateway, cx *Context, orgID, projectID string, logf func(string, ...any)) {
-	live, err := FetchLive(ctx, gw, orgID, projectID)
-	if err != nil {
-		logf("warning: live goals and items unavailable, INDEX.md lists documents only: %v", err)
-		return
-	}
-	cx.Live = live
+	return lg
 }
 
 // ContextOptions is how FetchContext fetches: Budget is the size budget
-// for documents on disk (zero is the defaults) and Repos (owner/name)
-// the repos of the session's own work. INDEX.md's documents tables and
-// every document count against Budget.BytesMax; instructions and ADRs are binding and exempt from
-// DocBytesMax alone — never truncated, a binding document that does
-// not fit the total is left whole to the index (ADR-015). Repos' own
-// instructions and ADRs are placed first. Logf, when set, takes the
-// warning that the index alone is past the budget.
+// (zero is the defaults; only bytes_max applies, ADR-015), Repos
+// (owner/name) the repos of the session's own work — whose instructions
+// alone go on disk — and Goal the session's own goal, nil for none.
+// Logf, when set, takes the warnings: the goal's items unread, and
+// INDEX.md alone past the cap.
 type ContextOptions struct {
 	Budget ContextConfig
 	Repos  []string
+	Goal   *gateway.Goal
 	Logf   func(string, ...any)
 }
 
-// FetchContext lists the project's context documents, fetches the
-// bodies of the kinds in ContextKinds, and puts on disk what the size
-// budget holds, in ADR-015's order: (a) the instructions, then the
-// ADRs, of opts.Repos; (b) the other binding documents, instructions
-// then ADRs, the most recent first; (c) the PRD and TRD, each within
-// DocBytesMax too. A document that would push the total past BytesMax
-// is skipped whole and the walk goes on — a smaller one later may still
-// fit; a binding one skipped is on cx.Dropped. Either way it is in the
-// index to fetch. The index is inside the budget (ADR-015's amendment
-// 2026-09-29): its length with nothing on disk is reserved before any
-// document is placed, and once placed, while the documents and the
-// index as rendered (an on-disk row names its file) are past BytesMax
-// the last-placed document goes back to the index. An index alone past
-// BytesMax places nothing, with one warning.
+// FetchContext lists the project's documents and puts on disk only what
+// a session cannot do without (ADR-015): the instructions documents
+// whose repo is one of opts.Repos (case-insensitive) — no ADR, PRD or
+// TRD body is fetched — and, in INDEX.md, the session's own goal with
+// its items. Everything else is fetched on demand through the MCP
+// tools. INDEX.md is inside bytes_max: its length is counted first, and
+// an instructions document that would take the total past the cap is
+// left off disk whole, on cx.Dropped, and named in INDEX.md as binding,
+// to fetch first. An INDEX.md alone past the cap places nothing, with
+// one warning.
 func FetchContext(ctx context.Context, gw Gateway, orgLogin, projectSlug string, opts ContextOptions) (*Context, error) {
 	budget := opts.Budget.Effective()
+	logf := opts.Logf
+	if logf == nil {
+		logf = func(string, ...any) {}
+	}
 	docs, err := gw.ContextDocuments(ctx, orgLogin, projectSlug)
 	if err != nil {
 		return nil, err
 	}
 	out := &Context{Docs: map[string]string{}, Index: docs, OnDisk: map[string]string{}, Project: orgLogin + "/" + projectSlug}
-	type fetched struct {
-		doc  gateway.Document
-		body string
+	if opts.Goal != nil {
+		out.Live = fetchOwnGoal(ctx, gw, *opts.Goal)
+		if out.Live.Unread != "" {
+			logf("warning: goal %s: items unavailable, INDEX.md carries its statement and acceptance only: %s", opts.Goal.Slug, out.Live.Unread)
+		}
 	}
-	var own, other, design []fetched
 	ownRepo := map[string]bool{}
 	for _, r := range opts.Repos {
 		ownRepo[strings.ToLower(strings.TrimSpace(r))] = true
 	}
+	var own []gateway.Document
 	for _, d := range docs {
 		if d.Kind == "prd" && out.PRDSlug == "" {
 			out.PRDSlug = d.Slug
 		}
-		if !ContextKinds[d.Kind] {
-			continue
+		if d.Kind == "instructions" && ownRepo[strings.ToLower(strings.TrimSpace(d.Repo))] {
+			own = append(own, d)
 		}
+	}
+	out.IndexBytes = len(RenderIndex(out))
+	if out.IndexBytes > budget.BytesMax {
+		logf("warning: INDEX.md alone is %d bytes, past bytes_max %d: no document on disk, every one to fetch", out.IndexBytes, budget.BytesMax)
+		out.Dropped = own
+		out.IndexBytes = len(RenderIndex(out))
+		return out, nil
+	}
+	total := 0
+	for _, d := range own {
 		body, err := gw.ContextDocument(ctx, orgLogin, projectSlug, d.Slug)
 		if err != nil {
 			return nil, fmt.Errorf("fetch %s: %w", d.Slug, err)
 		}
-		f := fetched{d, body}
-		switch {
-		case !isBinding(d):
-			design = append(design, f)
-		case ownRepo[strings.ToLower(strings.TrimSpace(d.Repo))]:
-			own = append(own, f)
-		default:
-			other = append(other, f)
-		}
-	}
-	// instructions before ADRs; the rest by recency — the index carries
-	// no date, so recency is the slug's number (slugNumber), highest first
-	// (adr-014 before adr-001), a slug without one last
-	sort.SliceStable(own, func(i, j int) bool { return bindingRank(own[i].doc) < bindingRank(own[j].doc) })
-	sort.SliceStable(other, func(i, j int) bool {
-		a, b := other[i].doc, other[j].doc
-		if bindingRank(a) != bindingRank(b) {
-			return bindingRank(a) < bindingRank(b)
-		}
-		return slugNumber(a.Slug) > slugNumber(b.Slug)
-	})
-	reserve := len(RenderIndex(&Context{Index: docs, Project: out.Project}))
-	if reserve > budget.BytesMax {
-		if opts.Logf != nil {
-			opts.Logf("warning: INDEX.md alone is %d bytes, past bytes_max %d: no document on disk, every one to fetch", reserve, budget.BytesMax)
-		}
-		for _, f := range append(own, other...) {
-			out.Dropped = append(out.Dropped, f.doc)
-		}
-		out.IndexBytes = reserve
-		return out, nil
-	}
-	total := 0
-	var placed []fetched
-	for _, f := range append(append(own, other...), design...) {
-		d, body := f.doc, f.body
-		fits := total+len(body) <= budget.BytesMax-reserve
-		if !isBinding(d) {
-			fits = fits && len(body) <= budget.DocBytesMax
-		}
-		if !fits {
-			if isBinding(d) {
-				out.Dropped = append(out.Dropped, d)
-			}
-			continue // in the index, fetched on demand
-		}
-		name := d.Kind + "-" + Slugify(d.Slug) + ".md"
-		if d.Kind == "instructions" && strings.TrimSpace(d.Repo) != "" {
-			name = d.Kind + "-" + Slugify(d.Repo) + "-" + Slugify(d.Slug) + ".md"
-		}
+		name := "instructions-" + Slugify(d.Repo) + "-" + Slugify(d.Slug) + ".md"
 		out.Docs[name] = body
 		out.OnDisk[d.Slug] = name
-		total += len(body)
-		placed = append(placed, f)
-	}
-	// an on-disk row swaps its summary for a file name: the index as it
-	// will be written may be past the reserve, so unplace from the last
-	out.IndexBytes = len(RenderIndex(out))
-	for len(placed) > 0 && total+out.IndexBytes > budget.BytesMax {
-		f := placed[len(placed)-1]
-		placed = placed[:len(placed)-1]
-		name := out.OnDisk[f.doc.Slug]
-		total -= len(out.Docs[name])
-		delete(out.Docs, name)
-		delete(out.OnDisk, f.doc.Slug)
-		if isBinding(f.doc) {
-			out.Dropped = append(out.Dropped, f.doc)
+		// the index names the file: count it as it will be written
+		if index := len(RenderIndex(out)); total+len(body)+index <= budget.BytesMax {
+			total += len(body)
+			out.IndexBytes = index
+			continue
 		}
+		delete(out.Docs, name)
+		delete(out.OnDisk, d.Slug)
+		out.Dropped = append(out.Dropped, d)
 		out.IndexBytes = len(RenderIndex(out))
 	}
 	return out, nil
 }
 
-// isBinding is whether d binds a session: instructions and ADRs.
-func isBinding(d gateway.Document) bool { return d.Kind == "instructions" || d.Kind == "adr" }
-
-// bindingRank puts instructions before ADRs.
-func bindingRank(d gateway.Document) int {
-	if d.Kind == "instructions" {
-		return 0
-	}
-	return 1
-}
-
-// slugNumber is an ADR slug's number, its first run of digits
-// ("adr-014" and "adr-014-a-build-validates" → 14), or -1 when it has
-// none.
-func slugNumber(slug string) int {
-	i := strings.IndexAny(slug, "0123456789")
-	if i < 0 {
-		return -1
-	}
-	j := i
-	for j < len(slug) && slug[j] >= '0' && slug[j] <= '9' {
-		j++
-	}
-	n, err := strconv.Atoi(slug[i:j])
-	if err != nil {
-		return -1
-	}
-	return n
-}
-
-// IndexFile is the context directory's index of the whole project.
+// IndexFile is the context directory's index: what is on disk and how
+// to find the rest.
 const IndexFile = "INDEX.md"
 
-// RenderIndex lists every document of the project, one row each, in
-// two tables. "Documents a session reads" is the ContextKinds documents
-// with kind, title, summary, slug, where it lives and whether it is on
-// disk here or fetched on demand; the "what it says" cell carries the
-// summary only when the document is not on disk — a document on disk
-// needs no summary, the file is beside the index. "Other documents" is
-// every other kind (a skill, a runbook) by kind, title and slug alone:
-// FetchContext never puts those on disk and mesh_document takes the
-// slug. A line after the tables counts how many documents are on disk
-// and how many are left to fetch, and of those how many each table
-// holds (ADR-015's amendment 2026-09-29).
+// RenderIndex is INDEX.md, a screen and not a table (ADR-015): the
+// project; what is on disk — the instruction files by name and the repo
+// each came from, and the goal section; the own repos' instructions the
+// cap left off disk, binding, to fetch first; how to find the rest with
+// the MCP tools; the ADRs and the TRD named as binding, searched before
+// any design decision; one count line. No document is listed as a row
+// and no other goal is named. The session's own goal follows: its
+// statement, acceptance and items.
 func RenderIndex(cx *Context) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "# Project %s — every indexed document\n\n", cx.Project)
-	b.WriteString("On disk here: read the file. Not on disk: fetch it with the `mesh_document` tool (project " + fmt.Sprintf("%q", cx.Project) + ", the slug). Search with `mesh_search`.\n\n")
+	project := fmt.Sprintf("%q", cx.Project)
 	cell := func(s string) string { return strings.ReplaceAll(strings.ReplaceAll(s, "\n", " "), "|", "\\|") }
-	onDisk, readsFetch := 0, 0
-	var others []gateway.Document
-	b.WriteString("## Documents a session reads\n\n")
-	b.WriteString("| kind | title | what it says | slug | repo/path | here |\n| --- | --- | --- | --- | --- | --- |\n")
+	fmt.Fprintf(&b, "# Project %s\n\n", cx.Project)
+	b.WriteString("## On disk here\n\n")
+	slugs := make([]string, 0, len(cx.OnDisk))
+	for slug := range cx.OnDisk {
+		slugs = append(slugs, slug)
+	}
+	sort.Slice(slugs, func(i, j int) bool { return cx.OnDisk[slugs[i]] < cx.OnDisk[slugs[j]] })
+	repoOf := map[string]string{}
 	for _, d := range cx.Index {
-		if !ContextKinds[d.Kind] {
-			others = append(others, d)
-			continue
-		}
-		here, summary := "fetch", d.Summary
-		if name, ok := cx.OnDisk[d.Slug]; ok {
-			here, summary = "`"+name+"`", ""
-			onDisk++
-		} else {
-			readsFetch++
-		}
-		fmt.Fprintf(&b, "| %s | %s | %s | `%s` | %s/%s | %s |\n", d.Kind, cell(d.Title), cell(summary), d.Slug, d.Repo, d.Path, here)
+		repoOf[d.Slug] = d.Repo
 	}
-	b.WriteString("\n## Other documents\n\n")
-	b.WriteString("| kind | title | slug |\n| --- | --- | --- |\n")
-	for _, d := range others {
-		fmt.Fprintf(&b, "| %s | %s | `%s` |\n", d.Kind, cell(d.Title), d.Slug)
+	for _, slug := range slugs {
+		fmt.Fprintf(&b, "- `%s` — the instructions of %s, binding\n", cx.OnDisk[slug], repoOf[slug])
 	}
-	fmt.Fprintf(&b, "\n%d documents on disk here, %d to fetch (%d a session reads, %d other); summaries are shown only for the kinds a session reads (instructions, adr, prd, trd) that are not on disk.\n",
-		onDisk, readsFetch+len(others), readsFetch, len(others))
-	if len(cx.Live) > 0 {
-		renderLive(&b, cx.Live, cell)
+	if cx.Live != nil {
+		fmt.Fprintf(&b, "- this session's goal, `%s`, below: its statement, acceptance and items\n", cx.Live.Goal.Slug)
+	}
+	if len(cx.OnDisk) == 0 && cx.Live == nil {
+		b.WriteString("- nothing but this index\n")
+	}
+	if len(cx.Dropped) > 0 {
+		b.WriteString("\n## Binding, not on disk — fetch first\n\n")
+		for _, d := range cx.Dropped {
+			fmt.Fprintf(&b, "- `%s` — the instructions of %s, binding, past the context cap: fetch it with `mesh_document` before you start\n", d.Slug, d.Repo)
+		}
+	}
+	b.WriteString("\n## Everything else: fetch it\n\n")
+	b.WriteString("Search before you read, and read a document only when the work touches it.\n\n")
+	fmt.Fprintf(&b, "- `mesh_search` (project %s, a query) → slug, title, kind, summary\n", project)
+	fmt.Fprintf(&b, "- `mesh_document` (project %s, a slug) → the body\n", project)
+	b.WriteString("- `mesh_documents` and `mesh_projects` → another project's documents\n")
+	b.WriteString("- `mesh_items` → live state: goals and items as the platform holds them now\n")
+	b.WriteString("\nThe ADRs and the TRD are binding: search them with `mesh_search` before any design decision.\n")
+	fmt.Fprintf(&b, "\n%d documents indexed, none listed here.\n", len(cx.Index))
+	if cx.Live != nil {
+		renderOwnGoal(&b, cx.Live, cell)
 	}
 	return b.String()
 }
 
-// renderLive is INDEX.md's live section: each live goal with a row per
-// item, then the goals that are over, one line each.
-func renderLive(b *strings.Builder, live []LiveGoal, cell func(string) string) {
-	b.WriteString("\n## Live goals and items\n\n")
-	b.WriteString("Read from the platform when this session started — the one place to read status from; no status table in git is current. Not committed.\n")
+// renderOwnGoal is INDEX.md's goal section: the session's own goal,
+// its statement, acceptance and a row per item.
+func renderOwnGoal(b *strings.Builder, lg *LiveGoal, cell func(string) string) {
+	g := lg.Goal
 	or := func(s string) string {
 		if strings.TrimSpace(s) == "" {
 			return "—"
 		}
 		return s
 	}
-	var over []LiveGoal
-	for _, lg := range live {
-		g := lg.Goal
-		if !isLiveGoal(g.Status) {
-			over = append(over, lg)
-			continue
-		}
-		fmt.Fprintf(b, "\n### `%s` — %s (%s)\n\n", g.Slug, cell(g.Title), g.Status)
-		if len(lg.Items) == 0 {
-			b.WriteString("No items yet.\n")
-			continue
-		}
-		b.WriteString("| seq | title | status | branch | PR |\n| --- | --- | --- | --- | --- |\n")
-		for _, it := range lg.Items {
-			branch := or(it.Branch)
-			if branch != "—" {
-				branch = "`" + branch + "`"
-			}
-			fmt.Fprintf(b, "| %d | %s | %s | %s | %s |\n", it.Seq, cell(it.Title), it.Status, branch, or(it.PRURL))
-		}
+	fmt.Fprintf(b, "\n## Goal `%s` — %s (%s)\n\n", g.Slug, cell(g.Title), g.Status)
+	b.WriteString("Read from the platform when this session started; not committed.\n")
+	if s := strings.TrimSpace(g.Statement); s != "" {
+		fmt.Fprintf(b, "\n### Statement\n\n%s\n", s)
 	}
-	if len(over) > 0 {
-		b.WriteString("\n### Finished goals\n\n")
-		for _, lg := range over {
-			fmt.Fprintf(b, "- `%s` — %s (%s)\n", lg.Goal.Slug, cell(lg.Goal.Title), lg.Goal.Status)
+	if s := strings.TrimSpace(g.Acceptance); s != "" {
+		fmt.Fprintf(b, "\n### Acceptance\n\n%s\n", s)
+	}
+	b.WriteString("\n### Items\n\n")
+	switch {
+	case lg.Unread != "":
+		b.WriteString("Unread here: ask `mesh_items`.\n")
+		return
+	case len(lg.Items) == 0:
+		b.WriteString("No items yet.\n")
+		return
+	}
+	b.WriteString("| seq | title | status | repo | branch |\n| --- | --- | --- | --- | --- |\n")
+	for _, it := range lg.Items {
+		branch := or(it.Branch)
+		if branch != "—" {
+			branch = "`" + branch + "`"
 		}
+		fmt.Fprintf(b, "| %d | %s | %s | %s | %s |\n", it.Seq, cell(it.Title), it.Status, or(lg.Repos[it.RepoID]), branch)
 	}
 }
 
@@ -729,11 +647,14 @@ func MeshContextMCP(gatewayURL, token string) map[string]any {
 // ContextWritten is what WriteContext put on disk (adr-016): Bytes is
 // every document file written plus INDEX.md, Files the documents
 // (INDEX.md not among them), and ToFetch the indexed documents left off
-// disk, fetched on demand with mesh_document.
+// disk, fetched on demand with mesh_document. PastTarget is the file
+// that took the running total past ContextBytesTarget, empty while it
+// held (ADR-015).
 type ContextWritten struct {
-	Bytes   int
-	Files   int
-	ToFetch int
+	Bytes      int
+	Files      int
+	ToFetch    int
+	PastTarget string
 }
 
 // Line is the session's one context log line after its label, e.g.
@@ -742,14 +663,24 @@ func (w ContextWritten) Line() string {
 	return fmt.Sprintf("context %d bytes in %d files, %d documents to fetch", w.Bytes, w.Files, w.ToFetch)
 }
 
+// TargetWarning is the session's warning line when its context passed
+// ContextBytesTarget, naming the file that took it past; empty when it
+// held.
+func (w ContextWritten) TargetWarning() string {
+	if w.PastTarget == "" {
+		return ""
+	}
+	return fmt.Sprintf("warning: context %d bytes, past the %d-byte target: %s took it past", w.Bytes, ContextBytesTarget, w.PastTarget)
+}
+
 // WriteContext writes the context's documents under <dir>/.mesh/context
-// — and INDEX.md, the whole project's listing — and excludes .mesh from
-// git via .git/info/exclude. It returns the document file names written,
-// in reading order (instructions, adr, prd, trd); the index is beside
+// — and INDEX.md, the screen that says what is here and how to find the
+// rest — and excludes .mesh from git via .git/info/exclude. It returns
+// the document file names written, in name order; the index is beside
 // them, not among them. The ContextWritten is what that cost.
 func WriteContext(dir string, cx *Context) ([]string, ContextWritten, error) {
 	var w ContextWritten
-	if cx == nil || (len(cx.Docs) == 0 && len(cx.Index) == 0 && len(cx.Live) == 0) {
+	if cx == nil || (len(cx.Docs) == 0 && len(cx.Index) == 0 && cx.Live == nil) {
 		return nil, w, nil
 	}
 	w.ToFetch = max(len(cx.Index)-len(cx.OnDisk), 0)
@@ -765,34 +696,25 @@ func WriteContext(dir string, cx *Context) ([]string, ContextWritten, error) {
 	for n := range docs {
 		names = append(names, n)
 	}
-	order := map[string]int{"instructions": 0, "adr": 1, "prd": 2, "trd": 3}
-	rank := func(n string) int {
-		k, _, _ := strings.Cut(n, "-")
-		if r, ok := order[k]; ok {
-			return r
+	sort.Strings(names)
+	count := func(name string, n int) {
+		w.Bytes += n
+		if w.PastTarget == "" && w.Bytes > ContextBytesTarget {
+			w.PastTarget = name
 		}
-		return 9
 	}
-	sort.Slice(names, func(i, j int) bool {
-		if rank(names[i]) != rank(names[j]) {
-			return rank(names[i]) < rank(names[j])
-		}
-		return names[i] < names[j]
-	})
 	for _, n := range names {
 		if err := os.WriteFile(filepath.Join(cdir, n), []byte(docs[n]), 0o644); err != nil {
 			return nil, w, err
 		}
-		w.Bytes += len(docs[n])
+		count(n, len(docs[n]))
 	}
 	w.Files = len(names)
-	if len(cx.Index) > 0 || len(cx.Live) > 0 {
-		index := RenderIndex(cx)
-		if err := os.WriteFile(filepath.Join(cdir, IndexFile), []byte(index), 0o644); err != nil {
-			return nil, w, err
-		}
-		w.Bytes += len(index)
+	index := RenderIndex(cx)
+	if err := os.WriteFile(filepath.Join(cdir, IndexFile), []byte(index), 0o644); err != nil {
+		return nil, w, err
 	}
+	count(IndexFile, len(index))
 	if err := excludeFromGit(dir, ".mesh/"); err != nil {
 		return nil, w, err
 	}

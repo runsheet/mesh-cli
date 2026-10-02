@@ -125,19 +125,24 @@ func (c ClaimConfig) Validate() error {
 	return nil
 }
 
-// The context budget's defaults, in bytes: a document past what is left
-// of DefaultContextBytesMax — binding or not — or a design document past
-// DefaultDocBytesMax, is listed in the index and fetched on demand
-// instead (ADR-015).
+// The context budget, in bytes (ADR-015): a session's context — its own
+// repos' instructions and INDEX.md with its own goal — aims under
+// ContextBytesTarget (past it, one warning naming the file that took it
+// there) and never passes DefaultContextBytesMax, the cap: an
+// instructions document that would pass it is left off disk and named in
+// INDEX.md to fetch first. DefaultDocBytesMax is doc_bytes_max's default,
+// kept so node.yaml files that set it still load; it applies to nothing
+// on disk since no design document is put there.
 const (
-	DefaultContextBytesMax = 240 * 1024
+	ContextBytesTarget     = 40 * 1024
+	DefaultContextBytesMax = 80 * 1024
 	DefaultDocBytesMax     = 60 * 1024
 )
 
-// ContextConfig is node.yaml's `context:` block, in bytes: the total a
-// session's context may put on disk, instructions and ADRs included,
-// and the most one design document may — instructions and ADRs are
-// never cut, so they are held by the total alone. Zero is the default.
+// ContextConfig is node.yaml's `context:` block, in bytes: bytes_max is
+// the most a session's context may put on disk, INDEX.md included.
+// doc_bytes_max is still accepted and reloaded, but no longer applies to
+// anything on disk (ADR-015). Zero is the default.
 type ContextConfig struct {
 	BytesMax    int `yaml:"bytes_max,omitempty"`
 	DocBytesMax int `yaml:"doc_bytes_max,omitempty"`

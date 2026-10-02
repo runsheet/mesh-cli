@@ -227,21 +227,23 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 			return e.failDiff(ctx, item, label, spec.BaseRef, branch, err)
 		}
 	}
-	// the same context the builder had: the ADRs it was bound by
+	// the same context the builder had: its repo's instructions and its goal
 	orgName := e.Scopes.NameOf(item.OrgID)
-	cx, err := FetchContext(ctx, e.GW, orgName, res.Project.Slug, ContextOptions{Budget: e.contextBudget(), Repos: []string{res.Repo.FullName()}, Logf: e.logf})
+	cx, err := FetchContext(ctx, e.GW, orgName, res.Project.Slug, ContextOptions{Budget: e.contextBudget(), Repos: []string{res.Repo.FullName()}, Goal: res.Goal, Logf: e.logf})
 	if err != nil {
 		e.logf("item %s: context unavailable: %v", label, err)
 		cx = &Context{}
 	}
-	AddLive(ctx, e.GW, cx, item.OrgID, res.Project.ID, e.logf)
 	files, written, err := WriteContext(dir, cx)
 	if err != nil {
 		return fmt.Errorf("write context: %w", err)
 	}
 	e.logf("item %s: %s", label, written.Line())
+	if w := written.TargetWarning(); w != "" {
+		e.logf("item %s: %s", label, w)
+	}
 	contextDir := ""
-	if len(files) > 0 || len(cx.Index) > 0 || len(cx.Live) > 0 {
+	if len(files) > 0 || len(cx.Index) > 0 || cx.Live != nil {
 		contextDir = ContextDir
 	}
 	// a retry is judged on what earlier attempts failed on, so an item
