@@ -66,12 +66,15 @@ func TestLoopEvaluatesFinishedItems(t *testing.T) {
 	if len(h.jobs) != 1 || h.jobs[0].Kind != harness.KindEvaluate || h.jobs[0].MaxBudgetUSD != 2 || h.jobs[0].MCPServers["mesh-context"] == nil {
 		t.Fatalf("job: %+v", h.jobs)
 	}
-	if _, err := os.Stat(filepath.Join(ws.prepared[0].Dir(), ContextDir, "adr-adr-001.md")); err != nil {
-		t.Fatal("the evaluator must have the ADRs on disk")
+	if _, err := os.Stat(filepath.Join(ws.prepared[0].Dir(), ContextDir, "instructions-acme-widgets-agents.md")); err != nil {
+		t.Fatal("the evaluator must have its repo's instructions on disk")
+	}
+	if _, err := os.Stat(filepath.Join(ws.prepared[0].Dir(), ContextDir, "adr-adr-001.md")); err == nil {
+		t.Fatal("no ADR is on disk: it is fetched")
 	}
 	p := h.jobs[0].Prompt
 	for _, want := range []string{"Write the failing test", "the test fails", "go test ./... passes", "+func TestThing", "origin/main...HEAD", harness.VerdictPass, harness.VerdictFail, "Change nothing",
-		".mesh/context/", "adr-adr-001.md", "goes against an ADR", "mesh_document", `project "acme/mesh"`} {
+		".mesh/context/", "instructions-acme-widgets-agents.md", "goes against an ADR", "mesh_document", `project "acme/mesh"`} {
 		if !strings.Contains(p, want) {
 			t.Fatalf("prompt lacks %q:\n%s", want, p)
 		}

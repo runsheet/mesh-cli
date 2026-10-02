@@ -40,7 +40,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   the `~/.mesh/token` that holds either shape behind one `TokenSource`
   (latchkey `adr-machine-identity`).
 - `internal/node/`: the loop (`runner`), the workspace and the project's
-  context (`workspace.go`: `FetchContext`, `RenderIndex`, the size budget — node.yaml `context:`, `ContextConfig`, re-read each tick, `Loop.ContextBudget`; every document counts against `bytes_max`, instructions and ADRs are exempt from `doc_bytes_max` only, placed first those of the session's own repos (`ContextOptions.Repos`), then the rest by recency, then the PRD and TRD, and one that does not fit is left whole to the index (`Context.Dropped`, ADR-015); INDEX.md is inside `bytes_max` too, its length with nothing on disk reserved before placing and the last-placed document unplaced while the written index would pass it, in two tables — `Documents a session reads` (the `ContextKinds`, summary when not on disk) and `Other documents` (`kind | title | slug`) — the live section outside the budget (`Context.IndexBytes`, ADR-015's amendment 2026-09-29)),
+  context (`workspace.go`: `FetchContext`, `RenderIndex`, ADR-015 — on disk only the instructions of the session's own repos (`ContextOptions.Repos`) and, in INDEX.md, its own goal (`ContextOptions.Goal`: statement, acceptance, items; none for research); no ADR, PRD or TRD body is fetched; INDEX.md is a screen with no document table and no other goal — what is on disk, `mesh_search`/`mesh_document`/`mesh_documents`/`mesh_projects`/`mesh_items` for the rest, the ADRs and TRD binding, one count line; node.yaml `context:` (`ContextConfig`, re-read each tick, `Loop.ContextBudget`) `bytes_max` is the cap, default 80KB, INDEX.md included, an instructions document past it left whole to INDEX.md as binding, to fetch (`Context.Dropped`); past the 40KB target (`ContextBytesTarget`) a session logs `ContextWritten.TargetWarning`; `doc_bytes_max` is accepted and applies to nothing),
   evaluate, plan and research sessions, the service install (`launchd` /
   `systemd --user`). A project's repos — for the planner, the director
   and `mesh goal plan` — are read from `project.repoIds` through
@@ -607,11 +607,11 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   required refused one makes no pod at all.
 - Every session gets mesh-context as an MCP server with the node's token and
   the project's context on disk under `.mesh/context/` with `INDEX.md`:
-  the documents, then `## Live goals and items` — each live goal's items
-  (seq, title, status, branch, PR) and the finished goals one line each,
-  read per session through the gateway (`AddLive`, adr-003 decision 3).
-  A failed read leaves the documents only, with a warning; `.mesh` is
-  excluded from git, so none of it is ever committed.
+  its own repos' instructions, then the screen, then `## Goal` — the
+  session's own goal and its items (seq, title, status, repo, branch),
+  read per session through the gateway (adr-003 decision 3, ADR-015).
+  A failed items read leaves the goal's statement and acceptance, with a
+  warning; `.mesh` is excluded from git, so none of it is ever committed.
   `WriteContext` returns what that cost (`ContextWritten`: bytes on
   disk with INDEX.md, files, documents left to fetch); each session
   logs it once (`<label>: context <n> bytes in <k> files, <m> documents

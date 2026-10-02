@@ -315,19 +315,21 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	cx, err := FetchContext(ctx, p.GW, scope.Name(), project.Slug, ContextOptions{Budget: p.contextBudget(), Repos: names, Logf: p.logf})
+	cx, err := FetchContext(ctx, p.GW, scope.Name(), project.Slug, ContextOptions{Budget: p.contextBudget(), Repos: names, Goal: &goal, Logf: p.logf})
 	if err != nil {
 		p.logf("goal %s: context unavailable: %v", goal.Slug, err)
 		cx = &Context{}
 	}
-	AddLive(ctx, p.GW, cx, scope.ID, project.ID, p.logf)
 	files, written, err := WriteContext(dir, cx)
 	if err != nil {
 		return fmt.Errorf("write context: %w", err)
 	}
 	p.logf("goal %s: %s", goal.Slug, written.Line())
+	if w := written.TargetWarning(); w != "" {
+		p.logf("goal %s: %s", goal.Slug, w)
+	}
 	contextDir := ""
-	if len(files) > 0 || len(cx.Index) > 0 || len(cx.Live) > 0 {
+	if len(files) > 0 || len(cx.Index) > 0 || cx.Live != nil {
 		contextDir = ContextDir
 	}
 	// a re-plan: the items so far, and where the numbering goes on

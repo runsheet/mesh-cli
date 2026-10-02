@@ -1,15 +1,143 @@
 ---
-summary: Every document a session's context puts on disk counts against node.yaml's `context.bytes_max`, INDEX.md's documents tables reserved first — instructions and ADRs are exempt from `doc_bytes_max` only, never truncated — chosen in order the instructions and ADRs of the session's own repos, then the other binding documents by recency, then the PRD and TRD; one that does not fit is skipped whole, listed in INDEX.md to fetch with `mesh_document`, and kept on `Context.Dropped`.
+summary: A session's context holds only what it cannot do without — its own repos' instructions and its own goal with its items — under a 40KB target and an 80KB cap (`context.bytes_max`); INDEX.md is a screen with no document table and no other goal, saying how to fetch the rest with `mesh_search`, `mesh_document`, `mesh_documents`, `mesh_projects` and `mesh_items`, the ADRs and TRD binding and searched first.
 status: accepted
 ---
 
 # ADR-015: The context budget holds
 
+2026-10-02, goal `context-is-fetched-not-shipped` (item 1), which
+supersedes `context-budget-that-holds`. Rewrites this ADR's
+2026-09-29 version (kept below as history) and amends the project's
+context on disk (mesh-specs adr-003 decision 3, trd §3) as this node
+implements it in `internal/node/workspace.go` (`FetchContext`,
+`RenderIndex`, `WriteContext`).
+
+## Context
+
+The 2026-09-29 version made the budget hold — every document and
+INDEX.md inside `bytes_max`, 240KB — but the budget was the problem.
+Measured on the mini on 2026-09-30 (node v0.2.209): a build's
+`.mesh/context/` was 309KB median, 430KB at worst; INDEX.md alone was
+190KB, of which 116KB was two document tables of 1,003 rows and some
+70KB a live section listing every live goal's items; nine ADRs rode
+along at 120KB whether the item touched them or not. Every prompt says
+to read INDEX.md first, so the first turns pulled some 75K tokens into
+the transcript and every later turn re-read them: builds averaged 81–99K
+input tokens a turn, the large ones 12–14M tokens each, and 124 builds
+spent 355M input tokens that day. The MCP tools that were meant to
+fetch the rest on demand were served and, in most sessions, never
+called.
+
+The on-disk set had swallowed the on-demand one. A document on disk is
+paid for on every turn of the session; a document fetched is paid for
+once, and only by a session whose work touches it.
+
+## Decision
+
+**What is on disk.** Only what a session cannot do without:
+
+1. the instructions documents (`kind: instructions` — AGENTS.md,
+   CLAUDE.md as mesh-context indexes them) whose `repo` is one of the
+   session's own repos (`ContextOptions.Repos`, owner/name, compared
+   case-insensitively). A build, an evaluation and a rebase pass the
+   item's repo; the planner and the director pass every repo of the
+   project; `mesh goal` passes none, and channel mode's `mesh_context`
+   the project's repos. Another repo's instructions, every ADR, the PRD,
+   the TRD, skills and runbooks are never fetched, let alone written:
+   `FetchContext` reads their bodies not at all;
+2. the session's own goal (`ContextOptions.Goal`), in INDEX.md: its
+   statement, acceptance and a table of its items (`seq | title |
+   status | repo | branch`). A build, an evaluation and a rebase pass
+   the item's goal, the planner the goal it plans; the director has no
+   goal and puts none on disk — it reads goals through `mesh_goals`.
+   No other goal, live or finished, is named.
+
+The project's listing (`Context.Index`) is still read, for the count
+line and for `ContextWritten.ToFetch`; it is never rendered as rows.
+
+**INDEX.md is a screen, not a table.** `RenderIndex` writes: the
+project; `On disk here` — each instruction file by name and the repo it
+came from, and the goal section; `Binding, not on disk — fetch first` —
+any own instructions the cap left off (below); `Everything else: fetch
+it` — `mesh_search` (project, query → slug, title, kind, summary),
+`mesh_document` (project, slug → body), `mesh_documents` and
+`mesh_projects` for another project, `mesh_items` for live state, under
+"search before you read, and read a document only when the work touches
+it"; one line naming the ADRs and the TRD as binding, to be searched
+before any design decision; and one count line, `<n> documents indexed,
+none listed here.` Then the goal. No `| kind | title |` table, no row
+per document.
+
+**The budget.** node.yaml's `context.bytes_max` (`ContextConfig`,
+re-read each tick) is the cap, default **80KB**
+(`DefaultContextBytesMax`): every file written, INDEX.md with its goal
+section included. INDEX.md's length is counted first; each own
+instructions document is then placed in the index's order while the
+documents and the index as it will be written (it names the file) stay
+within the cap. One that would pass it is left off disk whole — never
+truncated — kept on `Context.Dropped`, and named in INDEX.md as
+binding, to fetch with `mesh_document` before the session starts work.
+An INDEX.md alone past the cap places nothing, with one warning
+(`warning: INDEX.md alone is <n> bytes, past bytes_max <m>: …`).
+
+The **target is 40KB** (`ContextBytesTarget`). A session whose context
+passes it still runs, and logs once, after its context line,
+`warning: context <n> bytes, past the 40960-byte target: <file> took it
+past` (`ContextWritten.TargetWarning`), the file being the one whose
+bytes crossed the target in writing order (the instruction files by
+name, then INDEX.md).
+
+`context.doc_bytes_max` is still accepted, validated and reloaded, so a
+node.yaml that sets it loads unchanged, but it applies to nothing on
+disk: no design document is put there any more.
+
+The per-session line is unchanged (ADR-016): `context <bytes> bytes in
+<files> files, <n> documents to fetch`, and `contextBytes` on the usage
+report is the same `Bytes`.
+
+**Worked example.** A project of 1,000 indexed documents — ADRs, the
+PRD and TRD, skills, and two repos' AGENTS.md of 30KB each — and 12
+live goals of 20 items. A build in `acme/widgets` writes
+`instructions-acme-widgets-agents.md` (30KB) and an INDEX.md under 4KB
+holding its own goal's 20 items: about 34KB in all, under 40KB, `999 documents to
+fetch`, no ADR on disk, none of the other 11 goals named
+(`TestContextHoldsOnlyInstructionsAndOwnGoal`). Were that AGENTS.md
+100KB it would stay off disk, INDEX.md naming it as binding, to fetch
+first, and the context would be the index alone
+(`TestContextNeverPastTheCap`).
+
+## Consequences
+
+- A session reads its ADRs, the PRD and the TRD by searching and
+  fetching. They are still binding: INDEX.md says so and says to search
+  them before any design decision. A session that does not fetch a
+  binding ADR its work touches is wrong in the same way one that did
+  not read the file was.
+- The cost of a context no longer grows with the estate's document
+  count or its number of live goals: it is the own repos' instructions
+  plus one goal. A project whose AGENTS.md alone passes 40KB is told so
+  every session, which is the prompt to trim it.
+- The prompts still point at INDEX.md first; the planner naming in
+  each item's brief the documents a builder must fetch, and bounded
+  `mesh_search`/`mesh_document` bodies, are the same goal's other
+  items — this ADR moves the bytes, those make the fetches cheap.
+- Live state of other goals is a `mesh_items` call away rather than on
+  disk; the planner's re-plan still gets its own goal's items in its
+  prompt.
+- Owed to runsheet/mesh-specs: trd §3 (the context on disk) and
+  adr-003 decision 3 (INDEX.md carries the live goals and items) are
+  amended there for this default.
+
+## History: the 2026-09-29 version
+
+Goal `context-budget-that-holds`, items 2 and 10. Superseded by the
+decision above; kept as it was decided.
+
 2026-09-29, goal `context-budget-that-holds` (item 2). Amends the
 project's context on disk (mesh-specs adr-003 decision 3) as this node
 implements it in `internal/node/workspace.go` (`FetchContext`).
 
-## Context
+### Context
 
 On 2026-09-28 the estate ran 500 sessions on 1.16 billion input tokens
 against 7.3 million output — 160 to 1, 97% of it cache reads. Almost
@@ -24,7 +152,7 @@ total. The real ceiling was 240KB plus every AGENTS.md and every ADR
 of the project, without limit, and it grew with every ADR the estate
 wrote (most days), for every session of every kind.
 
-## Decision
+### Decision
 
 **The keys.** node.yaml's `context:` block (item 1, `ContextConfig`,
 re-read each tick): `bytes_max`, the total a session's context may put
@@ -64,7 +192,7 @@ and the widgets documents 500 bytes each, both still land, a 5000-byte
 `adr-011` elsewhere is skipped, and a 150-byte `adr-002` after it
 fits in what is left.
 
-## Consequences
+### Consequences
 
 - A session may find a binding ADR only in the index. It is still
   binding: the session fetches it with `mesh_document` (the prompts
@@ -79,7 +207,7 @@ fits in what is left.
 - Recency by slug number is a proxy. When the index carries a date,
   the order can use it without changing the tiers.
 
-## Amendment 2026-09-29: INDEX.md is inside the budget
+### Amendment 2026-09-29: INDEX.md is inside the budget
 
 Goal `context-budget-that-holds`, item 10. On the mini a session's
 context line read `context 443252 bytes in 16 files, 667 documents to

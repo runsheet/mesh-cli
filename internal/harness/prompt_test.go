@@ -143,7 +143,7 @@ func TestEvaluatePromptContextTools(t *testing.T) {
 		// the slug from the index, never a file name: `adr-adr-….md`
 		// taken as a slug is `not found` (goal
 		// evaluation-reports-no-verdict)
-		for _, want := range []string{"mesh_document", "mesh_search", "(project \"acme/mesh\", the document's slug — never a context file's name: a file name is not a slug, `adr-adr-001-….md` is slug `adr-001-…`)"} {
+		for _, want := range []string{"mesh_document", "mesh_search", "(project \"acme/mesh\", the document's slug — never a context file's name: a file name is not a slug, `instructions-acme-widgets-agents.md` is slug `agents`)"} {
 			if !strings.Contains(p, want) {
 				t.Errorf("evaluate prompt lacks %q:\n%s", want, p)
 			}

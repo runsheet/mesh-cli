@@ -156,7 +156,7 @@ func TestReloadContextFromDisk(t *testing.T) {
 
 	writeNodeYAML(t, reloadYAML+"context: {bytes_max: 131072, doc_bytes_max: 32768}\n")
 	wantReloadLines(t, "after the edit", tickLines(t, loop, logs),
-		"context: bytes_max 245760 → 131072, doc_bytes_max 61440 → 32768")
+		"context: bytes_max 81920 → 131072, doc_bytes_max 61440 → 32768")
 	if got := loop.ContextBudget(); got != (ContextConfig{BytesMax: 131072, DocBytesMax: 32768}) {
 		t.Fatalf("context budget in force %+v, want 131072/32768", got)
 	}
