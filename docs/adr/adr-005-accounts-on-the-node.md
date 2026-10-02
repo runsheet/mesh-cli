@@ -551,7 +551,12 @@ The org is the session's scope's slug and the project the caller's
 slug, else read by id once per run (`Credentials.projectSlug`, the id
 when the read fails). The fallback to node.yaml's accounts is left
 only for a platform whose read is unsupported (`gateway.IsUnsupported`;
-item 2 of the goal retires it, and `OpenOwn` with it in item 3).
+item 2 of the goal retires it). The Codex harness's own account is no
+way round it either: `OpenOwn` — the evaluator's open of node.yaml's
+`codex:` account, `codex:default` — asks the same read and, when it
+answered with no `codex` credential, is the same `ErrNoCredential`, so
+an unpinned evaluation runs on Claude and a pinned one waits; never
+`$CODEX_HOME` on an answered read (item 3 retires `OpenOwn` itself).
 
 It is a hold, in the no-headroom shape, never a failure: the runner
 releases the item with `accounts: <reason>`; the planner hands nothing

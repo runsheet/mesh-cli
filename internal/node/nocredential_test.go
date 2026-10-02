@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"errors"
 	"log"
 	"os"
 	"strings"
@@ -356,5 +357,61 @@ func TestNoCredentialRebaseWaitsAndSaysWhyOnce(t *testing.T) {
 	}
 	if strings.Contains(logs.String(), "rebase failed") {
 		t.Fatalf("logged as a failure:\n%s", logs)
+	}
+}
+
+// The Codex harness's own account (node.yaml's codex: block, chosen by
+// the evaluator as OpenOwn) is no way round the rule: a read that
+// answered and issued no Codex credential is ErrNoCredential naming
+// codex, and no account is opened.
+func TestNoCredentialOpenOwnOnAnAnsweredReadWithNoCodex(t *testing.T) {
+	f := seed(t)
+	issueClaude(f, item1)
+	c := &Credentials{GW: gateway.New(f.URL(), "rs_test"), NoCredential: &NoCredentials{}}
+	sc := Scope{Login: "acme", Slug: "acme", ID: orgID}
+	ref := gateway.SessionRef{Kind: string(harness.KindEvaluate), ItemID: item1, GoalID: goalID}
+	own := AccountConfig{Label: DefaultAccount, Kind: AccountSubscription, Adapter: AdapterCodex}
+	s, err := c.OpenOwn(withSubject(context.Background(), sc, projID, "mesh"), ref, "n", own)
+	if nc, ok := NoCredentialOf(err); !ok || s != nil || nc.Error() != "org acme's project mesh has no codex credential open to this node" {
+		t.Fatalf("OpenOwn = %v, %v; want ErrNoCredential naming codex", s, err)
+	}
+}
+
+// An evaluation whose Codex account is the harness's own, on a read
+// that issues Claude alone, starts no Codex session: unpinned it runs on
+// the issued Claude credential, pinned to Codex it waits — the
+// operator's ~/.codex login never runs it.
+func TestNoCredentialEvaluationNeverRunsCodexOnItsOwnAccount(t *testing.T) {
+	ownOnly := func(ev *Evaluator, f *gatewaytest.Fake) {
+		f.SessionCredentials[item1] = nil
+		issueClaude(f, item1)
+		ev.CodexAccounts = func() []AccountConfig {
+			return []AccountConfig{{Label: DefaultAccount, Kind: AccountSubscription, Adapter: AdapterCodex}}
+		}
+	}
+	f, ev, claude, codex, _, _ := familyFixture(t, "normal", "sonnet", "Holds.\nVERDICT: PASS", "VERDICT: PASS")
+	ownOnly(ev, f)
+	in := evaluateItem1(t, f, ev)
+	if codex.runs() != 0 || len(claude.jobs) != 1 {
+		t.Fatalf("unpinned: runs claude %d, codex %d", len(claude.jobs), codex.runs())
+	}
+	if u := usageOf(t, f); u["adapter"] != "claude-code" || u["credentialId"] != "cred-claude" || in["passed"] != true {
+		t.Fatalf("unpinned: usage %v, recorded %v", u, in)
+	}
+
+	f, ev, claude, codex, _, _ = familyFixture(t, "normal", "sonnet", "VERDICT: PASS", "VERDICT: PASS")
+	ownOnly(ev, f)
+	f.WorkItems[item1]["evaluateModel"] = "gpt-6-sol"
+	item, err := ev.GW.WorkItem(context.Background(), item1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := ev.Evaluate(context.Background(), *item); !errors.Is(err, ErrFamilyWaits) {
+			t.Fatalf("pinned: Evaluate = %v, want ErrFamilyWaits", err)
+		}
+	}
+	if codex.runs() != 0 || len(claude.jobs) != 0 || len(f.CallsNamed("evaluateWorkItem")) != 0 {
+		t.Fatalf("pinned: runs claude %d, codex %d", len(claude.jobs), codex.runs())
 	}
 }

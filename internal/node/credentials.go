@@ -176,7 +176,9 @@ func (c *Credentials) Open(ctx context.Context, ref gateway.SessionRef, nodeID s
 // node.yaml's codex: account, its label and kind), chosen by the
 // evaluator over the issued ones: the claim-time read is still asked
 // for the session's tools and noted in Known, but no issued credential
-// is opened, and the report names own.
+// is opened, and the report names own. A read that answered and issued
+// no Codex credential is ErrNoCredential here too: own never runs a
+// session the platform issued nothing for (adr-005's amendment 2026-10).
 func (c *Credentials) OpenOwn(ctx context.Context, ref gateway.SessionRef, nodeID string, own AccountConfig) (*SessionAccount, error) {
 	return c.open(ctx, ref, nodeID, nil, AdapterCodex, &own)
 }
@@ -217,10 +219,10 @@ func (c *Credentials) open(ctx context.Context, ref gateway.SessionRef, nodeID s
 	case err != nil:
 		return nil, fmt.Errorf("session credentials: %w", err)
 	}
-	if own == nil && !unsupported {
+	if !unsupported {
 		// the read answered: only what it issued for this adapter may
-		// run the session, never the fallback (adr-005's amendment
-		// 2026-10)
+		// run the session, never the fallback nor the harness's own
+		// account (adr-005's amendment 2026-10)
 		subj := subjectFrom(ctx)
 		if !slices.ContainsFunc(issued, func(cr gateway.Credential) bool { return IssuedAccount(cr).AdapterOf() == adapter }) {
 			for _, cr := range issued {

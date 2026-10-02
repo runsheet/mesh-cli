@@ -264,15 +264,16 @@ the item goes to its builder.
 
 ### Several Claude accounts
 
-By default every session runs on the operator's own `claude` login.
-Once the platform issues credentials (the claim-time read, adr-005),
-each session runs on the Claude accounts the org's admins configured
-for its project — handed to the node for that session only — and
-node.yaml's `accounts:` are only the fallback, for a platform that
-does not issue them yet (the node logs `credentials: the platform
-issues no session credentials; sessions run on node.yaml's accounts`
-once per run). Until then, to run on other accounts — several Max
-subscriptions, or an API key — list them in `~/.mesh/node.yaml`:
+Each session runs on the Claude accounts the org's admins configured
+for its project on the console's credentials page — handed to the node
+for that session only by the claim-time read (adr-005). A read that
+answers with no credential for the session's adapter starts no session
+and leaves the work unclaimed (4, below); it never falls to node.yaml
+or the operator's own login. Only a platform whose gateway has no
+claim-time read at all leaves node.yaml's `accounts:` (the node logs
+`credentials: the platform issues no session credentials; sessions run
+on node.yaml's accounts` once per run); for that platform alone, list
+them in `~/.mesh/node.yaml`:
 
 ```yaml
 accounts:
@@ -348,7 +349,8 @@ accounts: no account has headroom for 2 item(s), 1 plan(s); left unclaimed until
    sessions only on credentials the platform issues for the org or its
    enterprise, never on the machine's own login: when the claim-time
    read answers with none for the session's adapter (`claude-code` or
-   `codex`), no session starts, a claimed item is released, and that
+   `codex`), no session starts — not on node.yaml's `accounts:`, nor
+   a Codex evaluation on the `codex:` block's own login — a claimed item is released, and that
    project's items, plans and rebases are left unclaimed — asked again
    by one claim every 10 minutes, so a credential attached on the console's credentials page
    is picked up without a restart. The heartbeat's
