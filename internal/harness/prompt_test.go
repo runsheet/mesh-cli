@@ -38,8 +38,115 @@ func TestPlanPromptHostRule(t *testing.T) {
 			}
 		}
 	}
-	if !strings.Contains(reask, "goes in the goal's acceptance. "+planHostRule+" Write the whole graph again") {
+	if !strings.Contains(reask, "goes in the goal's acceptance. "+planHostRule+" "+planSplitRule+" Write the whole graph again") {
 		t.Errorf("the re-ask does not restate the host rule:\n%s", reask)
+	}
+}
+
+// ADR-021's planner half: a lineage's attempts shrink — rule 3 of every
+// plan and the re-ask say to partition a failed item's acceptance into
+// two or more items, never to recreate it at the same acceptance, and
+// that `atomic` exempts once.
+func TestPlanPromptSplitRule(t *testing.T) {
+	first := PlanPrompt(PlanInput{GoalSlug: "g", GoalTitle: "G", Org: "o", Project: "p"})
+	reask := PlanPrompt(PlanInput{GoalSlug: "g", GoalTitle: "G", Org: "o", Project: "p", Rejected: []string{"item 8 (Retry of item 1): the same acceptance as failed item 1 (lineage 1)"}})
+	rule3 := func(p string) string {
+		i, j := strings.Index(p, "\n3. "), strings.Index(p, "\n4. ")
+		if i < 0 || j < i {
+			t.Fatalf("no rule 3:\n%s", p)
+		}
+		return p[i : j+1]
+	}
+	reaskPara := func(p string) string {
+		i := strings.Index(p, "## Your last answer was flagged")
+		if i < 0 {
+			t.Fatalf("no re-ask:\n%s", p)
+		}
+		j := strings.Index(p[i:], "this is the last ask.")
+		if j < 0 {
+			t.Fatalf("re-ask does not end:\n%s", p[i:])
+		}
+		return p[i : i+j]
+	}
+	for name, text := range map[string]string{"rule 3": rule3(first), "re-ask rule 3": rule3(reask), "re-ask": reaskPara(reask)} {
+		for _, want := range []string{"partition", "two or more items", "atomic", "same acceptance", "because"} {
+			if !strings.Contains(text, want) {
+				t.Errorf("%s lacks %q:\n%s", name, want, text)
+			}
+		}
+	}
+	if !strings.Contains(rule3(first), "   "+planSplitRule+"\n") {
+		t.Errorf("rule 3 does not carry planSplitRule on its own line:\n%s", rule3(first))
+	}
+}
+
+// An item's `atomic` reason is kept; without one it is empty.
+func TestParsePlanAtomic(t *testing.T) {
+	items, err := ParsePlan("```json\n" + `{"items": [{"seq": 1, "title": "Schema", "repo": "o/r", "acceptance": "the migration runs", "atomic": "one migration, cannot be halved"}, {"seq": 2, "title": "Policy", "repo": "o/r", "depends_on": [{"seq": 1, "because": "uses the column item 1 adds"}]}]}` + "\n```")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if items[0].Atomic != "one migration, cannot be halved" {
+		t.Errorf("atomic = %q, want the reason", items[0].Atomic)
+	}
+	if items[1].Atomic != "" {
+		t.Errorf("an item without atomic has %q", items[1].Atomic)
+	}
+}
+
+// A failed item of the plan before is rendered with its whole acceptance
+// and its lineage, so a re-plan can partition it; a merged one's
+// acceptance is not.
+func TestPlanPromptExistingShowsFailedAcceptance(t *testing.T) {
+	p := PlanPrompt(PlanInput{GoalSlug: "g", GoalTitle: "G", Org: "o", Project: "p", NextSeq: 21, Existing: []ExistingItem{
+		{Seq: 2, Title: "Console page", Status: "merged", PRURL: "https://github.com/o/r/pull/9", Acceptance: "the console lists the owner"},
+		{Seq: 20, Title: "Re-land the owner model", Status: "failed", Note: "evaluation failed 3 times", Acceptance: "RegisterNode pins the id to NodeID(owner, slug);\ntransfersNode applies ownsAs to the source", LineageRootSeq: 1, LineageAttempt: 3},
+	}})
+	for _, want := range []string{
+		"- 20. Re-land the owner model — failed: evaluation failed 3 times\n  lineage 1, attempt 3 of 3\n  Acceptance: RegisterNode pins the id to NodeID(owner, slug);\n  transfersNode applies ownsAs to the source\n",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("plan prompt lacks %q:\n%s", want, p)
+		}
+	}
+	if strings.Contains(p, "the console lists the owner") {
+		t.Errorf("a merged item's acceptance is rendered:\n%s", p)
+	}
+}
+
+// A narrow re-plan names the item it replaces in its own section before
+// the rules: title, acceptance and failed clauses, and asks for a split
+// or one atomic item.
+func TestPlanPromptReplacingItem(t *testing.T) {
+	if p := PlanPrompt(PlanInput{GoalSlug: "g", GoalTitle: "G", Org: "o", Project: "p"}); strings.Contains(p, "## Split this item") {
+		t.Error("a plan replacing nothing has a split section")
+	}
+	item := ExistingItem{Seq: 1, Title: "Schema and policy: a Node has an owner", Status: "failed", Acceptance: "one row per node; TransferNode moves it", LineageRootSeq: 1, LineageAttempt: 2}
+	p := PlanPrompt(PlanInput{GoalSlug: "g", GoalTitle: "G", Org: "o", Project: "p", Existing: []ExistingItem{item}, NextSeq: 2, Replacing: &item, ReplacingClauses: []FailedClause{
+		{Clause: "RegisterNode pins the aggregate id to NodeID(owner, slug)", Satisfy: "a test registering twice"},
+		{Clause: "transfersNode applies ownsAs to the source"},
+	}})
+	i, j := strings.Index(p, "## Split this item"), strings.Index(p, "# Rules")
+	if i < 0 || j < i {
+		t.Fatalf("no split section before the rules:\n%s", p)
+	}
+	sec := p[i:j]
+	for _, want := range []string{
+		"\"Schema and policy: a Node has an owner\"",
+		"Its acceptance:\n\none row per node; TransferNode moves it\n",
+		"- RegisterNode pins the aggregate id to NodeID(owner, slug) — would be satisfied by: a test registering twice\n",
+		"- transfersNode applies ownsAs to the source\n",
+		"two or more items",
+		"partitions",
+		"one item carrying `\"atomic\": \"<reason>\"`",
+		"lineage 1, attempt 2 of 3",
+	} {
+		if !strings.Contains(sec, want) {
+			t.Errorf("split section lacks %q:\n%s", want, sec)
+		}
+	}
+	if strings.Index(sec, "RegisterNode pins") > strings.Index(sec, "transfersNode applies") {
+		t.Error("failed clauses are not oldest first")
 	}
 }
 
@@ -211,7 +318,7 @@ func TestPlanPromptRejected(t *testing.T) {
 	p := PlanPrompt(PlanInput{GoalSlug: "g", GoalTitle: "G", Org: "o", Project: "p", Rejected: []string{"item 1 (Ship): a check on its own pull request (`deploy / verify`)"}})
 	for _, want := range []string{
 		"## Your last answer was flagged\n\nThe node checked your graph before handing it in and flagged these items — an acceptance naming what no evaluator can see or a reading of the host as a merge gate, or a model the scorecard says does not work on its repo:\n\n- item 1 (Ship): a check on its own pull request (`deploy / verify`)\n\n",
-		"Work like that becomes its own item in the right repo, or goes in the goal's acceptance. " + planHostRule + " Write the whole graph again with those acceptances and models rewritten; this is the last ask.\n",
+		"Work like that becomes its own item in the right repo, or goes in the goal's acceptance. " + planHostRule + " " + planSplitRule + " Write the whole graph again with those acceptances and models rewritten; this is the last ask.\n",
 	} {
 		if !strings.Contains(p, want) {
 			t.Errorf("plan prompt lacks %q", want)

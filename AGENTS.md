@@ -44,7 +44,14 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   3 and re-ask saying an item's acceptance names only what a PR can
   change and a host reading is a `Measure: …` item (`planHostRule`;
   the node's `hostReadingAcceptance` flags a threshold on a reading in
-  any other item for the re-ask, ADR-020), the director ends with its pitches and answers in one for a
+  any other item for the re-ask, ADR-020), and saying a lineage's
+  attempts shrink — a failed item is replaced by two or more items
+  partitioning its acceptance, never recreated at the same acceptance,
+  an item that cannot be halved carrying `"atomic": "<reason>"`
+  (`PlannedSpec.Atomic`) exempt once, a failed item's acceptance and
+  lineage shown in the items so far, and a narrow re-plan's
+  `PlanInput.Replacing` written as `## Split this item`
+  (`planSplitRule`, ADR-021), the director ends with its pitches and answers in one for a
   propose-mode direction, its proposals in one for a set-mode one, the rebase session
   ends with `REBASED: <sha>` and `RESOLVED: <files>` or
   `REBASE FAILED: <why>`, the builder never pushes and checks main
