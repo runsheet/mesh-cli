@@ -8,9 +8,11 @@ budgetCents
 checkpoints
 directionId
 id
+narrowReplans?
 pausedReason
 priority
 projectId
+replacingItemId?
 slug
 spentCents
 statement

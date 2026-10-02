@@ -77,7 +77,10 @@ var goalRequired = []string{
 }
 
 // goalOptional are the GoalIndex fields an older platform may lack (a `?` in fields/GoalIndex.txt).
-var goalOptional = []string{}
+var goalOptional = []string{
+	"narrowReplans",
+	"replacingItemId",
+}
 
 // goalFields is the selection of goalRequired.
 var goalFields = strings.Join(goalRequired, " ")
