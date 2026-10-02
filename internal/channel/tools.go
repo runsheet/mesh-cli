@@ -172,7 +172,7 @@ func (h *Handler) evaluate(ctx context.Context, args map[string]any) (string, er
 	if id == "" {
 		return "", fmt.Errorf("item_id required")
 	}
-	if err := h.GW.EvaluateWorkItem(ctx, id, passed, str(args, "notes"), num(args, "cost_cents"), nil); err != nil {
+	if err := h.GW.EvaluateWorkItem(ctx, id, passed, str(args, "notes"), nil, num(args, "cost_cents"), nil); err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("evaluated: passed=%v", passed), nil

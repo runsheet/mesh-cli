@@ -843,7 +843,11 @@ type Gateway interface {
 	FailWorkItem(ctx context.Context, itemID, errMsg string) error
 	ReleaseWorkItem(ctx context.Context, itemID, nodeID, reason string) error
 	IssueItemRepoToken(ctx context.Context, itemID, nodeID string) (*gateway.GitHubToken, error)
-	EvaluateWorkItem(ctx context.Context, itemID string, passed bool, notes string, costCents int, usage *gateway.UsageReport) error
+	EvaluateWorkItem(ctx context.Context, itemID string, passed bool, notes string, clauses []gateway.FailedClause, costCents int, usage *gateway.UsageReport) error
+	// WorkItemPriorAttempts reads the evaluations already recorded
+	// against an item (none, and no error, on a platform that does not
+	// serve them).
+	WorkItemPriorAttempts(ctx context.Context, itemID string) ([]gateway.PriorAttempt, error)
 	// EvaluateWorkItemNoVerdict records an evaluation that reached no
 	// verdict (gateway.ErrNoVerdictOutcome on a platform without the
 	// outcome, nothing sent).

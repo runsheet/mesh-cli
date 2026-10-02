@@ -91,7 +91,7 @@ func TestEvaluateWorkItemCarriesNoOutcome(t *testing.T) {
 	defer f.Close()
 	evaluatingItem(f)
 	gw := gateway.New(f.URL(), "rs_test")
-	if err := gw.EvaluateWorkItem(context.Background(), finishItem, false, "no", 10, nil); err != nil {
+	if err := gw.EvaluateWorkItem(context.Background(), finishItem, false, "no", nil, 10, nil); err != nil {
 		t.Fatal(err)
 	}
 	in := f.CallsNamed("evaluateWorkItem")[0].Input

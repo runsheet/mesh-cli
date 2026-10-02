@@ -67,7 +67,7 @@ func usageCases() []usageCase {
 			name:  "evaluateWorkItem",
 			setup: runningItem,
 			send: func(gw *gateway.Client, u *gateway.UsageReport) error {
-				return gw.EvaluateWorkItem(context.Background(), finishItem, true, "looks good", 30, u)
+				return gw.EvaluateWorkItem(context.Background(), finishItem, true, "looks good", nil, 30, u)
 			},
 		},
 		{
@@ -434,7 +434,7 @@ func TestUsageReportToolErrorFollowsTheSchema(t *testing.T) {
 			for range 2 {
 				u := sampleUsageReport()
 				u.Tools[0].Error = "tool call failed: 401 Unauthorized"
-				if err := gw.EvaluateWorkItem(context.Background(), finishItem, true, "looks good", 30, u); err != nil {
+				if err := gw.EvaluateWorkItem(context.Background(), finishItem, true, "looks good", nil, 30, u); err != nil {
 					t.Fatalf("err = %v, want nil (no ErrNoToolUsage)", err)
 				}
 			}
@@ -464,7 +464,7 @@ func TestUsageReportWithoutToolErrorProbesNothing(t *testing.T) {
 	defer f.Close()
 	runningItem(f)
 	gw := gateway.New(f.URL(), "rs_test")
-	if err := gw.EvaluateWorkItem(context.Background(), finishItem, true, "ok", 30, sampleUsageReport()); err != nil {
+	if err := gw.EvaluateWorkItem(context.Background(), finishItem, true, "ok", nil, 30, sampleUsageReport()); err != nil {
 		t.Fatal(err)
 	}
 	if n := len(f.ReadsNamed("__type UsageReportInput")); n != 0 {

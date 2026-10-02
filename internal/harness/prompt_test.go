@@ -120,7 +120,7 @@ func TestEvaluatePromptUnverifiableClause(t *testing.T) {
 	p := EvaluatePrompt(EvaluateInput{GoalSlug: "g", GoalTitle: "G", Seq: 1, Title: "T", Repo: "o/r", Branch: "b", BaseRef: "main"})
 	for _, want := range []string{
 		"5. A clause you cannot check at evaluation time — a CI check on this item's pull request (it opens only after you pass), a deploy, a file in another repository — is reported in your review as unverifiable, not failed, and the item is not failed on that clause alone. Every clause you can check you still check.\n",
-		"6. End your final message with a short review — what holds, what does not, what is unverifiable, and exactly what a retry must fix — and then one last line that is either `VERDICT: PASS` or `VERDICT: FAIL`. Pass only when every clause of the acceptance you can check holds.\n",
+		"6. End your final message with a short review — what holds, what does not, what is unverifiable, and exactly what a retry must fix. When you fail it, write one line per failed acceptance clause, `FAILED: <the clause, as the acceptance words it> || SATISFY: <what would satisfy it>`, above the verdict; a clause that does not say what would satisfy it is dropped, so write both halves. Then one last line that is either `VERDICT: PASS` or `VERDICT: FAIL`. Pass only when every clause of the acceptance you can check holds.\n",
 	} {
 		if !strings.Contains(p, want) {
 			t.Errorf("evaluate prompt lacks %q", want)
