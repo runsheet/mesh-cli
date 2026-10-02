@@ -355,8 +355,15 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   or `researchCredentials`/`researchTools`, by what the session works on)
   for the claimed session's credentials and chooses among them by the
   loop's own rule (`withChooser`); an api key at its cap is never
-  chosen, and none left releases a build. A platform without the read
-  or issuing none leaves node.yaml, said once per run. At the end
+  chosen, and none left releases a build. A read that answers with
+  none for the session's adapter is `ErrNoCredential` (`nocredential.go`,
+  adr-005's amendment 2026-10-02) — `org <org>'s project <project> has
+  no <adapter> credential open to this node`, never the machine's own
+  login: the build is released, and `NoCredentials` (shared with
+  `Loop.NoCredential`) holds that project's items and plans unclaimed
+  for 10 minutes with the reason on `holding.unclaimed`, said once per
+  goal per run. Only a platform without the read leaves node.yaml,
+  said once per run. At the end
   the session's `SessionAccount.Report` (`gateway.UsageReport`:
   credential id and kind, tokens, tool calls, wall time, list and
   actual cents, windows before and after) rides its finishing command

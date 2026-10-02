@@ -342,6 +342,21 @@ platform that issues none uses node.yaml only:
 accounts: no account has headroom for 2 item(s), 1 plan(s); left unclaimed until one has
 ```
 
+4. **No credential issued means the node waits too.** A node runs
+   sessions only on credentials the platform issues for the org or its
+   enterprise, never on the machine's own login: when the claim-time
+   read answers with none for the session's adapter (`claude-code` or
+   `codex`), no session starts, a claimed item is released, and that
+   project's items and plans are left unclaimed — asked again every 10
+   minutes, so a credential attached on the console's credentials page
+   is picked up without a restart. The heartbeat's
+   `holding.unclaimed[].reason` carries the line, which the goal's
+   waiting reason shows, and node.log says it once per goal per run:
+
+```
+accounts: org acme's project widgets has no claude-code credential open to this node; goal <goal id>'s items and plans left unclaimed until one is (asked again every 10m0s; said once for the goal)
+```
+
 Capacity still bounds how many items run at once. Each session gets its
 account's secret in its environment only (`CLAUDE_CODE_OAUTH_TOKEN` or
 `ANTHROPIC_API_KEY`), its own temporary `CLAUDE_CONFIG_DIR`, removed
