@@ -102,6 +102,14 @@ type Fake struct {
 	// NoFailedClauses is a platform whose EvaluateWorkItemInput has no
 	// failedClauses: the node sends the verdict without them.
 	NoFailedClauses bool
+	// EvaluatorsField is a platform whose EvaluateWorkItemInput has
+	// `evaluators` and `evaluatorsWhy` (goal
+	// one-evaluator-for-ordinary-work): false, the default, is today's
+	// platform — introspection leaves them out and a caller sending them
+	// is refused with "Unknown field", as the unknown-input check does
+	// for every other field the fake's schema does not have; true lists
+	// them and records them on the item.
+	EvaluatorsField bool
 	// NoEvaluations is a platform whose WorkItemIndex has no
 	// `evaluations`: the read WorkItemPriorAttempts makes is refused
 	// with "Cannot query field", as the client tolerates (the
@@ -369,11 +377,14 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var fields []any
-		for _, n := range []string{"aggregateId", "namespace", "passed", "notes", "costCents", "usage", gateway.NoVerdictField, gateway.NoVerdictReasonField, gateway.FailedClausesField} {
+		for _, n := range []string{"aggregateId", "namespace", "passed", "notes", "costCents", "usage", gateway.NoVerdictField, gateway.NoVerdictReasonField, gateway.FailedClausesField, gateway.EvaluatedModelField, gateway.EvaluatorsField, gateway.EvaluatorsWhyField} {
 			if (n == gateway.NoVerdictField || n == gateway.NoVerdictReasonField) && f.NoNoVerdict {
 				continue
 			}
 			if n == gateway.FailedClausesField && f.NoFailedClauses {
+				continue
+			}
+			if (n == gateway.EvaluatorsField || n == gateway.EvaluatorsWhyField) && !f.EvaluatorsField {
 				continue
 			}
 			fields = append(fields, map[string]any{"name": n})
@@ -481,6 +492,10 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 			}
 			if _, ok := in[gateway.NoVerdictField]; ok && f.NoNoVerdict {
 				writeErrors(w, 200, `Variable "$in" got invalid value; Unknown field "noVerdict" is not defined by type "EvaluateWorkItemInput".`)
+				return
+			}
+			if _, ok := in[gateway.EvaluatorsField]; ok && !f.EvaluatorsField {
+				writeErrors(w, 200, `Variable "$in" got invalid value; Unknown field "evaluators" is not defined by type "EvaluateWorkItemInput".`)
 				return
 			}
 		}
@@ -1091,6 +1106,13 @@ func (f *Fake) apply(name string, in map[string]any) error {
 		}
 		if cl, ok := in[gateway.FailedClausesField]; ok {
 			item["failedClauses"] = cl
+		}
+		if m, ok := in[gateway.EvaluatedModelField]; ok {
+			item["evaluatedModel"] = m
+		}
+		if ev, ok := in[gateway.EvaluatorsField]; ok {
+			item["evaluators"] = ev
+			item["evaluatorsWhy"] = in[gateway.EvaluatorsWhyField]
 		}
 		evals, _ := item["evaluations"].([]any)
 		item["evaluations"] = append(evals, map[string]any{
