@@ -3,7 +3,7 @@ title: Goal — The node says no verdict when its tools failed, and the two tool
 kind: plan
 status: draft
 parent: prd
-summary: "Tainted evaluations were 246 of 564 failed evaluations (43.6%) before (read 2026-09-29T16:53:03Z) and 3 of 135 (2.2%) in after window A, from the mini's first v0.2.193-or-later start (v0.2.208, 2026-09-30T00:00:05Z) to 2026-10-02T04:23:02Z; no no-verdict outcome was recorded, because the node sent `outcome`, which the platform's EvaluateWorkItemInput never took (it takes `noVerdict`/`noVerdictReason`, runsheet ADR 035) — item 17 (#545, open) fixes it and window B is owed. `prologue: not found` is (b) in the narrow sense, not (a): #305's tool-failure rule read the context tool's own `not found` answer as an unreachable tool."
+summary: "Tainted evaluations were 246 of 564 failed evaluations (43.6%) before (read 2026-09-29T16:53:03Z) and 3 of 135 (2.2%) in after window A, from the mini's first v0.2.193-or-later start (v0.2.208, 2026-09-30T00:00:05Z) to 2026-10-02T04:23:02Z; no no-verdict outcome was recorded, because the node sent `outcome`, which the platform's EvaluateWorkItemInput never took (it takes `noVerdict`/`noVerdictReason`, runsheet ADR 035) — item 17 (#545, squash 640a8eb, merged 2026-10-02T04:33:31Z, first in v0.2.213) fixes it, and window B is owed until the mini starts v0.2.213 or later (it ran v0.2.210 at 04:37:17Z). `prologue: not found` is (b) in the narrow sense, not (a): #305's tool-failure rule read the context tool's own `not found` answer as an unreachable tool."
 ---
 
 # Goal — The node says no verdict when its tools failed, and the two tooling failures stop happening
@@ -210,8 +210,8 @@ and the release each first appears in (`git merge-base --is-ancestor
 | #449 | ebb1948 | 2026-09-29 14:56:00Z | v0.2.193 | This document's `prologue: not found` answer (docs only) |
 | #450 | e3e3f97 | 2026-09-29 15:15:12Z | v0.2.193 | A Codex evaluation's sandbox lets its tests bind loopback (`sandbox_workspace_write.network_access=true`), the probe binds a socket (`mesh sandbox-probe`), the mini's AppArmor profile recorded |
 | mesh-specs #108 | — | — | — | ADR 011 and the TRD record the third evaluation outcome, the Codex sandbox probe, network-on evaluation sandboxes and the reached-tool rule |
-| #545 (item 17) | — (open; branch head 9665d66) | — | — (none yet) | The no-verdict outcome reaches the platform as runsheet ADR 035 defines it: `evaluateWorkItem` sends `passed: false`, `noVerdict: true`, `noVerdictReason`, probed on `noVerdict` — never `outcome`, which the gateway never took |
-| mesh-specs, item 18 | — (no pull request yet; the item is `pending`) | — | — | ADR 011 and the TRD record the third outcome in the platform's shape (`noVerdict`, `noVerdictReason`, `passed: false`) |
+| #545 (item 17) | 640a8eb | 2026-10-02 04:33:31Z | v0.2.213 | The no-verdict outcome reaches the platform as runsheet ADR 035 defines it: `evaluateWorkItem` sends `passed: false`, `noVerdict: true`, `noVerdictReason`, probed on `noVerdict` — never `outcome`, which the gateway never took |
+| mesh-specs, item 18 | — (open: no pull request yet; the item is `running` at 2026-10-02T04:37Z) | — | — | ADR 011 and the TRD record the third outcome in the platform's shape (`noVerdict`, `noVerdictReason`, `passed: false`) |
 
 ## The mini's upgrade
 
@@ -265,8 +265,9 @@ mesh node: 2026/09/30 00:00:05 confirming update v0.2.191 → v0.2.208: start 1 
 So the mini first started a release carrying e3e3f97 (#450) at
 **2026-09-30T00:00:05Z**, on **v0.2.208** (38f854d); it went straight
 from v0.2.191 to v0.2.208 and never started v0.2.193–v0.2.207. Every
-start since is v0.2.208 or later (v0.2.209 from 02:41:17Z on
-2026-09-30, v0.2.210 from 2026-10-01 14:23:52Z, alternating with
+start since is v0.2.208 or later (v0.2.209 first at 01:41:23Z on
+2026-09-30, alternating with v0.2.208 until 02:41:17Z and alone from
+then, v0.2.210 from 2026-10-01 14:23:52Z, alternating with
 v0.2.211 between 03:31Z and 03:46Z on 2026-10-02 before settling on
 v0.2.210), and each of those carries e3e3f97. **The version at the
 read:** `mesh_health_nodes` at 2026-10-02T04:22:34Z gives the mini
@@ -495,27 +496,35 @@ evaluation that reached no verdict waited in evaluating instead of
 being recorded: `outcome` was never accepted, and the recorded
 no-verdict count is 0 until the mini runs a release carrying item 17.
 Item 17 is runsheet/mesh-cli **#545**, which sends `passed: false`,
-`noVerdict: true` and `noVerdictReason`, probed on `noVerdict`. At the
-read it is **open**: it has no squash commit on main (`git log
-origin/main --format='%h %cI %s' | grep -i noVerdict` prints nothing;
-its branch head is 9665d66, its first commit d679516) and so no
-release carries it (`git tag --contains d679516` prints nothing).
+`noVerdict: true` and `noVerdictReason`, probed on `noVerdict`. It
+merged after window A's read, as squash commit **640a8eb** at
+2026-10-02T04:33:31Z (`git log origin/main --format='%h %cI %s' | grep
+-i noVerdict`), and the first release carrying it is **v0.2.213**
+(`git tag --contains 640a8eb | sort -V | head -1`; tagged on 640a8eb
+itself, its release build still running at 04:37Z). No release the
+mini has started carries it, so every no-verdict before the mini's
+first v0.2.213-or-later start waited in evaluating and none was
+recorded.
 
 #### Window B — Owed
 
-**Owed.** At the read, 2026-10-02T04:23:02Z (`mesh_health_nodes` at
-2026-10-02T04:22:34Z), the mini runs **v0.2.210** with desired version
-**v0.2.210**; item 17's #545 is open, so there is no squash commit and
-no first release carrying it, and node.log can have no start line of
-one. Window B opens at the mini's first node.log start line `mesh
-node: <UTC date time> mesh node <tag>, pid …` whose `<tag>` is the
-first release carrying #545's squash commit — the earliest tag `git
-tag --contains <sha> | sort -V | head -1` names once #545 merges — or
-any later release. Its row is the table above over the failed
-evaluations from that start to a stated read, with the recorded
-`no_verdict` outcomes (node.log's `evaluation reached no verdict on`
-lines over the same instants) in their own row, and the status goes to
-`approved` with it.
+**Owed.** At the read, 2026-10-02T04:37:17Z (`mesh_health_nodes`),
+the mini runs **v0.2.210** with desired version **v0.2.210** (3
+commits behind main; the platform's latest release v0.2.211, since
+v0.2.212 and v0.2.213 were still building). The first release carrying
+item 17's 640a8eb is **v0.2.213**, and node.log has no start line of it
+or any later release (`grep -a -h '^mesh node: 2026/[0-9/]* [0-9:]*
+mesh node v0\.2\.2\(1[3-9]\|[2-9][0-9]\), pid' ~/.mesh/node.log*`
+prints nothing; the latest start is `mesh node: 2026/10/02 03:46:27
+mesh node v0.2.210, pid 3563663`). Window B opens at the mini's first
+node.log line `mesh node: <UTC date time> mesh node v0.2.213, pid …`
+— or of any later release, whichever comes first — and closes at a
+stated read. Its row is the table above over the failed evaluations
+from that start to the read, with the recorded `no_verdict` outcomes
+(node.log's `evaluation reached no verdict on` lines over the same
+instants) in their own row, and the status goes to `approved` with it.
+Self-update follows the desired version, so that start waits on the
+mini's desired version reaching v0.2.213 or later.
 
 ## Log
 
@@ -571,3 +580,12 @@ lines over the same instants) in their own row, and the status goes to
   #545 and mesh-specs item 18 (no pull request yet). The branch is
   this file alone against main: item 17's commits are on #545, not
   here.
+- 2026-10-02 · item 19, second attempt: #545 merged at 04:33:31Z,
+  after the first attempt's read, as 640a8eb, first released in
+  v0.2.213; the branch merged `origin/main`, and the summary, `What
+  landed`, the no-verdict paragraph and the Owed paragraph now name
+  640a8eb and v0.2.213. Re-read at 04:37:17Z: the mini runs v0.2.210
+  (desired v0.2.210) and node.log has no v0.2.213-or-later start, so
+  window B stays owed and the status `draft`. Corrected the upgrade
+  section: v0.2.209 first started at 01:41:23Z, alternating with
+  v0.2.208 until 02:41:17Z. Window A and the before row unchanged.
