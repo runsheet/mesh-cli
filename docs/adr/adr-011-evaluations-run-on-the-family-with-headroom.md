@@ -231,6 +231,20 @@ could not run or reach its tools, and 10 more carry a `VERDICT: PASS`.
   `no_verdict` are the node's assumption, named once in
   `gateway.EvaluationOutcomeField` and `gateway.EvaluationNoVerdict`;
   if the platform lands another name, those two constants change.
+  *Amended 2026-10-02:* it did. The platform's shape is runsheet ADR 035
+  (`adr-035-an-unreached-evaluation-is-not-a-failed-one`):
+  `EvaluateWorkItemInput` carries optional `noVerdict: Boolean` and
+  `noVerdictReason: String` beside the required `passed: Boolean!`, and
+  refuses a no-verdict with `passed: true` or a blank reason. `outcome`
+  was never accepted by the platform — never a field of its input — so
+  the probe never found it, every call returned `ErrNoVerdictOutcome`,
+  and no no-verdict was recorded between v0.2.189 and this change: each
+  such item waited in evaluating instead. The node now sends
+  `evaluateWorkItem` with `passed: false`, `noVerdict: true`,
+  `noVerdictReason: <reason>`, the same reason in `notes` (so a page
+  without the new field still shows it), `costCents` and `usage`, named
+  in `gateway.NoVerdictField` and `gateway.NoVerdictReasonField`, and
+  never `outcome`.
 - **The three cases** (`Evaluator.noVerdict`):
   (a) the deciding session's text has no `VERDICT:` line
   (`harness.ParseVerdict` not ok) — reason `no VERDICT line: <the first
@@ -248,7 +262,8 @@ could not run or reach its tools, and 10 more carry a `VERDICT: PASS`.
   does return a verdict records pass or fail exactly as before, and a
   verdict the other family reached after a blind first attempt keeps its
   `<Family> (first attempt, <model>): no verdict — …` head.
-- **An older gateway.** Whether `EvaluateWorkItemInput` has `outcome` is
+- **An older gateway.** Whether `EvaluateWorkItemInput` has `noVerdict`
+  (`outcome` before the 2026-10-02 amendment) is
   asked once by introspection and kept for `ScalingProbeEvery`, as
   `holding` is (ADR-004: never a field the platform does not accept).
   Without it the call returns `gateway.ErrNoVerdictOutcome`, nothing is
