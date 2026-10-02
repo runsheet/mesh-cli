@@ -6,6 +6,9 @@
 # on the pattern of scripts/node-reload-reading.sh. Before this, nobody
 # could answer "has a v* run mirrored on the exchanged token yet?"
 # without reading run logs by hand (item 4 failed three times over it).
+# Item 12 adds whether the RELEASE_TOKEN secret itself still exists on
+# the repo (`gh secret list`) — the goal's acceptance says no such
+# secret exists, and until this nobody could read that either.
 set -euo pipefail
 
 usage() {
@@ -29,9 +32,17 @@ databaseId,headBranch,createdAt,conclusion`), fetches each run's log
 
 Prints one line per run: <tag>\t<run id>\t<created>\t<path>\t<reason>,
 where <reason> is the gateway's refusal for fallback and none, "failed
-at <step>" for absent, and empty for exchanged. A final line,
+at <step>" for absent, and empty for exchanged. A line,
 `latest: <path> (<tag>, run <id>)`, names the newest run that reached
-the step.
+the step, followed by a final line reading whether the RELEASE_TOKEN
+secret itself still exists on the repo (`gh secret list --repo
+<repo>`):
+
+  secret: present (RELEASE_TOKEN, updated <date>)
+  secret: absent (RELEASE_TOKEN)
+  secret: unknown (<reason>)   gh could not list secrets (no admin
+                               scope, 403, …) — <reason> is gh's own
+                               first line of stderr
 
 Always exits 0: the reading is the output, never a verdict.
 
@@ -110,6 +121,21 @@ if [[ -n $latest_path ]]; then
   echo "latest: $latest_path ($latest_tag, run $latest_id)"
 else
   echo "latest: none of the last $count run(s) reached the step"
+fi
+
+secret_err=$(mktemp)
+trap 'rm -f "$secret_err"' EXIT
+
+if secret_json=$(gh secret list --repo "$repo" --json name,updatedAt 2>"$secret_err"); then
+  updated=$(jq -r '.[] | select(.name == "RELEASE_TOKEN") | .updatedAt' <<<"$secret_json")
+  if [[ -n $updated ]]; then
+    echo "secret: present (RELEASE_TOKEN, updated $updated)"
+  else
+    echo "secret: absent (RELEASE_TOKEN)"
+  fi
+else
+  reason=$(head -n1 "$secret_err")
+  echo "secret: unknown ($reason)"
 fi
 
 exit 0
