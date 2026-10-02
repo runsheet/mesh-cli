@@ -50,7 +50,12 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   an item that cannot be halved carrying `"atomic": "<reason>"`
   (`PlannedSpec.Atomic`) exempt once, a failed item's acceptance and
   lineage shown in the items so far, and a narrow re-plan's
-  `PlanInput.Replacing` written as `## Split this item`
+  `PlanInput.Replacing` written as `## Split this item` — the planner's narrow mode: a goal carrying `replacingItemId`
+  (`Goal.ReplacingItemID`) is planned as a split of that item alone,
+  its evaluations' failed clauses as `ReplacingClauses`, an answer of
+  fewer than two items and no once-only `atomic` one asked again and
+  then refused, and only the replacements handed in, `PlanGoal`
+  rewiring the dependents (runsheet ADR 023)
   (`planSplitRule`, ADR-021; the node's `sameAcceptanceAsFailed` flags
   a new item whose `normaliseAcceptance` equals a failed, superseded or
   erred-cancelled item's of the goal, naming its lineage from

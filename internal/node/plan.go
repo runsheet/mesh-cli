@@ -358,15 +358,25 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 	} else {
 		p.logf("goal %s: items so far unavailable: %v", goal.Slug, err)
 	}
+	replacing := p.replacingItem(goal, goalItems)
 	in := harness.PlanInput{
 		GoalSlug: goal.Slug, GoalTitle: goal.Title, Statement: goal.Statement, Acceptance: goal.Acceptance, BudgetCents: goal.BudgetCents,
 		Org: scope.Name(), Project: project.Slug, Repos: dirs, ContextDir: contextDir, ContextFiles: files, Blocked: goal.PausedReason,
 		Existing: existing, NextSeq: nextSeq, MeshContext: len(p.MCP) > 0, Evidence: p.evidence(ctx, goal.Slug, scope, project),
 	}
+	if replacing != nil {
+		// a narrow re-plan (runsheet ADR 023's third rung): the planner is
+		// asked to split the failed item, shown its acceptance and every
+		// clause its evaluations failed (ADR-021's amendment)
+		root, attempt := lineageOf(*replacing)
+		in.Replacing = &harness.ExistingItem{Seq: replacing.Seq, Title: replacing.Title, Status: replacing.Status, Acceptance: replacing.Acceptance, LineageRootSeq: root, LineageAttempt: attempt}
+		in.ReplacingClauses = p.failedClauses(ctx, goal.Slug, *replacing)
+		p.logf("goal %s: narrow re-plan replacing item %d (%s): asking for a split", goal.Slug, replacing.Seq, lineageWords(root, attempt))
+	}
 	budget, budgetSource := p.budgetWithSource(&goal)
 	p.logf("goal %s: planning in %s (%d repos), budget $%.2f (%s)", goal.Slug, dir, len(repos), budget, budgetSource)
 	ctx = withSubject(ctx, scope, goal.ProjectID, project.Slug)
-	items, reasons, flags, questions, cost, acct, err := p.ask(ctx, goal, scope.NodeID, dir, budget, in, repos, merged, goalItems)
+	items, reasons, flags, questions, cost, acct, err := p.ask(ctx, goal, scope.NodeID, dir, budget, in, repos, merged, goalItems, replacing)
 	acct.SetContextBytes(written.Bytes)
 	acct.SetLabel("goal "+goal.Slug, string(harness.KindPlan))
 	// the session's usage report rides the plan's hand-in; Finish logs it
@@ -384,7 +394,7 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 		in.Rejected = flags
 		var again float64
 		var second *SessionAccount
-		items, reasons, flags, questions, again, second, err = p.ask(ctx, goal, scope.NodeID, dir, budget, in, repos, merged, goalItems)
+		items, reasons, flags, questions, again, second, err = p.ask(ctx, goal, scope.NodeID, dir, budget, in, repos, merged, goalItems, replacing)
 		defer second.Finish(ctx, harness.Result{})
 		second.SetContextBytes(written.Bytes)
 		second.SetLabel("goal "+goal.Slug, string(harness.KindPlan))
@@ -400,11 +410,53 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 		if len(flags) > 0 {
 			// adr-004: the second plan is handed in as it stands; the
 			// evaluator's unverifiable-clause rule is the backstop (a
-			// re-land never gets here: readPlan refused it)
+			// re-land, or a narrow plan that does not split, never gets
+			// here: readPlan refused it)
 			p.logf("goal %s: plan still names what no evaluator can see; handing it in: %s", goal.Slug, strings.Join(flags, " | "))
 		}
 	}
+	// a narrow plan hands in its replacement items alone: PlanGoal, while
+	// the goal carries replacingItemId, supersedes only that item, keeps
+	// every other and rewires the replaced item's dependents onto these
+	// (runsheet ADR 023), so the node neither cancels nor recreates them
 	return p.handIn(ctx, goal, items, reasons, questions, cost, acct)
+}
+
+// replacingItem is the goal's item a narrow re-plan replaces
+// (goal.ReplacingItemID among goalItems), nil for a whole plan. An id
+// the items do not hold is said and planned as whole: PlanGoal still
+// keeps every other item.
+func (p *Planner) replacingItem(goal gateway.Goal, goalItems []gateway.WorkItem) *gateway.WorkItem {
+	id := strings.TrimSpace(goal.ReplacingItemID)
+	if id == "" {
+		return nil
+	}
+	for i := range goalItems {
+		if goalItems[i].ID == id {
+			return &goalItems[i]
+		}
+	}
+	p.logf("goal %s: narrow re-plan replacing item %s, which is not among the goal's items; planning without the split", goal.Slug, id)
+	return nil
+}
+
+// failedClauses are every clause the item's recorded evaluations
+// failed, oldest attempt first; none when the platform serves no
+// records, said.
+func (p *Planner) failedClauses(ctx context.Context, goalSlug string, it gateway.WorkItem) []harness.FailedClause {
+	was, err := p.GW.WorkItemPriorAttempts(ctx, it.ID)
+	if err != nil {
+		p.logf("goal %s: item %d's evaluations unavailable: %v", goalSlug, it.Seq, err)
+		return nil
+	}
+	sort.SliceStable(was, func(i, j int) bool { return was[i].Attempt < was[j].Attempt })
+	var out []harness.FailedClause
+	for _, a := range was {
+		for _, c := range a.Clauses {
+			out = append(out, harness.FailedClause{Clause: c.Clause, Satisfy: c.Satisfy})
+		}
+	}
+	return out
 }
 
 // handIn hands the graph in with PlanGoal, carrying the planner
@@ -458,7 +510,7 @@ func (p *Planner) handIn(ctx context.Context, goal gateway.Goal, items []gateway
 // hostReadingAcceptance, sameAcceptanceAsFailed against goalItems), its questions for the person, the session's cost and its account, whose usage report is built as the
 // session ends: the caller hands it in and Finishes it. An error means
 // there is no graph to hand in.
-func (p *Planner) ask(ctx context.Context, goal gateway.Goal, nodeID, dir string, budget float64, in harness.PlanInput, repos map[string]gateway.Repo, merged []int, goalItems []gateway.WorkItem) ([]gateway.PlannedItem, map[int]string, []string, []harness.PlanQuestion, float64, *SessionAccount, error) {
+func (p *Planner) ask(ctx context.Context, goal gateway.Goal, nodeID, dir string, budget float64, in harness.PlanInput, repos map[string]gateway.Repo, merged []int, goalItems []gateway.WorkItem, replacing *gateway.WorkItem) ([]gateway.PlannedItem, map[int]string, []string, []harness.PlanQuestion, float64, *SessionAccount, error) {
 	job := harness.Job{Kind: harness.KindPlan, Workspace: dir, Prompt: harness.PlanPrompt(in), MaxBudgetUSD: budget, Label: goal.Slug + " plan", Timeout: p.Timeout, MCPServers: p.MCP, Model: p.Model}
 	acct, err := p.Credentials.Open(ctx, gateway.SessionRef{Kind: string(harness.KindPlan), GoalID: goal.ID}, nodeID, Adapter(p.Harness))
 	if err != nil {
@@ -473,7 +525,7 @@ func (p *Planner) ask(ctx context.Context, goal gateway.Goal, nodeID, dir string
 	job.Outlive = true
 	result, err := p.Harness.Run(ctx, job, nil)
 	acct.Report(result)
-	items, reasons, flags, questions, cost, err := p.readPlan(ctx, goal, dir, acct, result, err, repos, merged, in.Evidence, goalItems, len(in.Rejected) > 0)
+	items, reasons, flags, questions, cost, err := p.readPlan(ctx, goal, dir, acct, result, err, repos, merged, in.Evidence, goalItems, replacing, len(in.Rejected) > 0)
 	return items, reasons, flags, questions, cost, acct, err
 }
 
@@ -482,9 +534,11 @@ func (p *Planner) ask(ctx context.Context, goal gateway.Goal, nodeID, dir string
 // describes. A cancelled ctx leaves the session running for the next
 // node to adopt; otherwise its session directory goes. A last answer
 // (final: the re-ask's, or an adopted session's, which is not asked
-// again) that still recreates a failed item at its acceptance is not
-// handed in: it is an error naming the lineage (ADR-021's amendment).
-func (p *Planner) readPlan(ctx context.Context, goal gateway.Goal, dir string, acct *SessionAccount, result harness.Result, err error, repos map[string]gateway.Repo, merged []int, evidence []harness.ModelEvidence, goalItems []gateway.WorkItem, final bool) ([]gateway.PlannedItem, map[int]string, []string, []harness.PlanQuestion, float64, error) {
+// again) that still recreates a failed item at its acceptance, or, on a
+// narrow re-plan (replacing set), still does not split the replaced
+// item, is not handed in: it is an error naming the lineage (ADR-021's
+// amendments).
+func (p *Planner) readPlan(ctx context.Context, goal gateway.Goal, dir string, acct *SessionAccount, result harness.Result, err error, repos map[string]gateway.Repo, merged []int, evidence []harness.ModelEvidence, goalItems []gateway.WorkItem, replacing *gateway.WorkItem, final bool) ([]gateway.PlannedItem, map[int]string, []string, []harness.PlanQuestion, float64, error) {
 	// logged before a done ctx returns: a deadline kills the unit too,
 	// and a detach kills nothing
 	logKilled(p.logf, "goal "+goal.Slug, result.KilledPerSession(), result.KillError)
@@ -539,14 +593,24 @@ func (p *Planner) readPlan(ctx context.Context, goal gateway.Goal, dir string, a
 	flags = append(flags, hostReadingAcceptance(specs)...)
 	flags = append(flags, modelAgainstEvidence(specs, evidence)...)
 	relanded := reLands(specs, goalItems)
-	if final && len(relanded) > 0 {
-		why := make([]string, 0, len(relanded))
+	unsplit := ""
+	if replacing != nil {
+		unsplit = notASplit(specs, *replacing)
+	}
+	if final && (len(relanded) > 0 || unsplit != "") {
+		why := make([]string, 0, len(relanded)+1)
 		for _, r := range relanded {
 			why = append(why, r.refusal())
+		}
+		if unsplit != "" {
+			why = append(why, splitRefusal(*replacing, len(specs)))
 		}
 		return nil, nil, nil, nil, 0, errors.New(strings.Join(why, "; "))
 	}
 	flags = append(flags, sameAcceptanceAsFailed(specs, goalItems)...)
+	if unsplit != "" {
+		flags = append(flags, unsplit)
+	}
 	return items, reasons, flags, harness.ParsePlanQuestions(result.Text), result.CostUSD, nil
 }
 
@@ -621,6 +685,7 @@ func (p *Planner) AdoptPlan(ctx context.Context, goal gateway.Goal, scope Scope,
 			}
 		}
 	}
+	replacing := p.replacingItem(goal, goalItems)
 	at, ok := p.Harness.(harness.Attacher)
 	if !ok {
 		stopFound(p.logf, "goal "+goal.Slug, s)
@@ -629,7 +694,7 @@ func (p *Planner) AdoptPlan(ctx context.Context, goal gateway.Goal, scope Scope,
 	}
 	p.logf("goal %s: adopted its %s planner session (pid %d)", goal.Slug, s.Liveness(), s.State.PID)
 	result, err := at.Attach(ctx, s.Dir, nil)
-	items, reasons, flags, questions, cost, err := p.readPlan(ctx, goal, s.State.Workspace, nil, result, err, repos, merged, p.evidence(ctx, goal.Slug, scope, project), goalItems, true)
+	items, reasons, flags, questions, cost, err := p.readPlan(ctx, goal, s.State.Workspace, nil, result, err, repos, merged, p.evidence(ctx, goal.Slug, scope, project), goalItems, replacing, true)
 	if err != nil {
 		return err
 	}

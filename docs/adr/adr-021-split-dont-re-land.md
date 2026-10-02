@@ -132,3 +132,38 @@ an error from `readPlan`, `plan would re-land failed item M (lineage
 R) at the same acceptance; refused`, logged and counted like any
 planner error (`MaxPlanAttempts`), and `PlanGoal` is not called: the
 goal never gets a fourth re-land from this node.
+
+## Amendment 2026-10-02: the planner's narrow mode (item 4)
+
+**The read.** `GoalIndex` serves `replacingItemId` and `narrowReplans`
+(runsheet ADR 023's third rung); the node reads them as optional fields
+(`Goal.ReplacingItemID`, `Goal.NarrowReplans`, `fields/GoalIndex.txt`'s
+`?`, ADR-010): an older gateway refuses them once and every plan reads
+as whole from then on.
+
+**The narrow mode.** When `Goal.ReplacingItemID` is set, `Planner.Plan`
+finds that item among the goal's items, reads its recorded evaluations
+(`WorkItemPriorAttempts`) and fills `PlanInput.Replacing` — title,
+acceptance, status, lineage — and `ReplacingClauses`, every attempt's
+failed clauses, oldest first, so the prompt's `## Split this item`
+shows what to partition. It logs `goal <slug>: narrow re-plan replacing
+item <seq> (lineage R, attempt A of 3): asking for a split`. An id the
+goal's items do not hold is said and planned as whole.
+
+**The check.** On a narrow plan the answer must hold two or more items,
+or exactly one carrying `atomic` with a reason — and that one only when
+the replaced item's brief carried no `atomic:` line, the exemption once
+per lineage. Otherwise `readPlan` flags `narrow re-plan of item M
+(lineage R) must replace it with two or more items whose acceptance
+partitions it, or one atomic item with a reason` (with, for a spent
+exemption, that item M was already atomic) for the re-ask; a second
+answer — or an adopted session's — that still fails it is refused like
+a re-land, `narrow re-plan of item M (lineage R) answered N item(s) and
+no split; refused`, and `PlanGoal` is not called. The same-acceptance
+check runs beside it, so a split that recreates the failed item's
+acceptance in one of its parts is still flagged.
+
+**The hand-in.** Only the replacement items are sent: `PlanGoal`, while
+the goal carries `replacingItemId`, supersedes only that item, keeps
+every other and rewires its dependents onto the replacement (runsheet
+ADR 023), so the node neither cancels nor recreates them.
