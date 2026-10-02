@@ -348,9 +348,24 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   loop calls `ChooseAccount` (subscriptions first, the most headroom;
   an api account only for urgent/high work or when every subscription
   is stopped and work waits) and hands the choice to the session on its
-  context (`WithAccount` → `OpenAccount`). **No account with headroom
+  context (`WithAccount` → `OpenAccount`). **An account serves named
+  priorities** (`AccountConfig.Priorities`, `Serves`; empty serves all,
+  research's `""` runs anywhere): `ChooseAccount`, `accountToFinish`'s
+  fallback and `codexChooser` never pick one for work it does not
+  serve, whatever its headroom, and an api key's "every subscription
+  stopped" is judged over the subscriptions serving the priority; its
+  own pace point (`PaceFiveHour`, `PaceSevenDay`, the credential's
+  windowTargets) paces it in place of node.yaml's
+  (`LimitsConfig.For`), `limits.stop` still node-wide (adr-005's
+  amendment 2026-10-02, a credential names the priorities it serves).
+  **No account with headroom
   means no claim**: the item stays ready, not failed or released, and
-  the tick logs one `accounts: no account has headroom …` line.
+  the tick logs one `accounts: no account has headroom …` line — or,
+  when the accounts with headroom were skipped for their priorities
+  alone, `accounts: no account serves <priority> work (<label> serves
+  urgent and high, …); <n> item(s) left unclaimed until one does`, and
+  the holding reason (`heldReason`, the goal's waiting_reason) says
+  `<label> serves only urgent and high`.
   **The claim-time read** (`internal/node/credentials.go`, adr-005):
   every one-shot session opens its account through
   `Credentials.Open`, which asks the platform (`gateway.Session`: the

@@ -23,6 +23,24 @@ type LimitsConfig struct {
 	PaceFiveHour float64 `yaml:"pace_five_hour,omitempty"`
 	// Stop is either window's use past which the node starts nothing new.
 	Stop float64 `yaml:"stop,omitempty"`
+	// PaceSevenDay is the seven-day window's use past which an account
+	// takes only urgent and high work: never node.yaml's, only an
+	// account's own pace point (For); 0 is none.
+	PaceSevenDay float64 `yaml:"-"`
+}
+
+// For is the thresholds one account is paced by: its own pace points
+// where it names them (AccountConfig.PaceFiveHour, PaceSevenDay — the
+// credential's windowTargets), else the node-wide rule; Stop is always
+// the node's.
+func (c LimitsConfig) For(a AccountConfig) LimitsConfig {
+	if a.PaceFiveHour > 0 {
+		c.PaceFiveHour = a.PaceFiveHour
+	}
+	if a.PaceSevenDay > 0 {
+		c.PaceSevenDay = a.PaceSevenDay
+	}
+	return c
 }
 
 // The thresholds when node.yaml names none.
@@ -42,7 +60,8 @@ func (c LimitsConfig) Thresholds() LimitsConfig {
 		}
 		return v
 	}
-	return LimitsConfig{PaceFiveHour: fraction(c.PaceFiveHour, DefaultPaceFiveHour), Stop: fraction(c.Stop, DefaultStop)}
+	return LimitsConfig{PaceFiveHour: fraction(c.PaceFiveHour, DefaultPaceFiveHour), Stop: fraction(c.Stop, DefaultStop),
+		PaceSevenDay: fraction(c.PaceSevenDay, 0)}
 }
 
 // DefaultAccount names the account of a node whose sessions run on the
@@ -271,7 +290,8 @@ type pacing struct {
 // either window at or past cfg.Stop, or a status other than "allowed";
 // it lasts until the triggering window's reset (the event's own for the
 // status). Paced: the five-hour window at or past cfg.PaceFiveHour,
-// until its reset. A trigger whose reset has come is stale and counts
+// or the seven-day one at or past cfg.PaceSevenDay when set (an
+// account's own pace point, LimitsConfig.For), until its reset. A trigger whose reset has come is stale and counts
 // for nothing, so the node resumes normal at resumeAt.
 func pace(now time.Time, r harness.RateLimit, cfg LimitsConfig) pacing {
 	cfg = cfg.Thresholds()
@@ -326,6 +346,12 @@ func pace(now time.Time, r harness.RateLimit, cfg LimitsConfig) pacing {
 				why: fmt.Sprintf("five-hour window at %s (pace %s)", pct(r.FiveHour.Utilization), pct(cfg.PaceFiveHour))}
 		}
 	}
+	if cfg.PaceSevenDay > 0 && r.SevenDay.Utilization >= cfg.PaceSevenDay {
+		if at := until(r.SevenDay.ResetsAt); now.Before(at) {
+			return pacing{mode: pacePaced, resumeAt: at,
+				why: fmt.Sprintf("seven-day window at %s (pace %s)", pct(r.SevenDay.Utilization), pct(cfg.PaceSevenDay))}
+		}
+	}
 	return pacing{mode: paceNormal}
 }
 
@@ -369,7 +395,7 @@ func nodePace(now time.Time, accounts []AccountConfig, readings map[string]harne
 	for i, a := range judged {
 		p := pacing{mode: paceNormal}
 		if r, ok := readings[a.Label]; ok {
-			p = pace(now, r, cfg)
+			p = pace(now, r, cfg.For(a))
 		}
 		if (len(judged) > 1 || a.Label != DefaultAccount) && p.why != "" {
 			p.why = a.Label + ": " + p.why

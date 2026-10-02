@@ -11,17 +11,22 @@ import (
 // by headroom and the spending order (adr-005, trd §3 Capacity across
 // accounts):
 //
+//   - An account that does not serve the work's priority
+//     (AccountConfig.Serves) is never picked, whatever its headroom: a
+//     subscription reserved for urgent and high work sits idle for the
+//     rest (adr-005's amendment 2026-10).
 //   - An account is judged by pace on its latest reading: stopped (past
 //     cfg.Stop in either window, or a status not allowed, until its
-//     reset) it takes nothing; paced (past cfg.PaceFiveHour) it takes
-//     only urgent and high work. An account never seen yet has its full
+//     reset) it takes nothing; paced (past its own pace point, else
+//     cfg.PaceFiveHour: LimitsConfig.For) it takes only urgent and high
+//     work. An account never seen yet has its full
 //     headroom.
 //   - Subscriptions first: of those that fit, the one with the most
 //     headroom — the lowest of max(five-hour, seven-day) use, a window
 //     past its reset counting as unused; a tie goes to the one listed
 //     first.
 //   - An api account only for urgent or high work, or when every
-//     subscription is stopped and workWaits (an item, plan, evaluation
+//     subscription serving the priority is stopped and workWaits (an item, plan, evaluation
 //     or rebase is waiting; research is not work that waits). Urgent and
 //     high work takes an api account before a paced subscription, so a
 //     subscription's last room is not spent while money is set aside
@@ -36,11 +41,14 @@ func ChooseAccount(now time.Time, accounts []AccountConfig, readings map[string]
 		used float64
 	}
 	var subs, apis []fit
-	exhausted := true // every subscription stopped (vacuously, none)
+	exhausted := true // every subscription serving it stopped (vacuously, none)
 	for _, a := range accounts {
+		if !a.Serves(priority) {
+			continue
+		}
 		f := fit{a: a, mode: paceNormal}
 		if r, seen := readings[a.Label]; seen {
-			f.mode, f.used = pace(now, r, cfg).mode, used(now, r)
+			f.mode, f.used = pace(now, r, cfg.For(a)).mode, used(now, r)
 		}
 		if a.Kind == AccountSubscription && f.mode != paceStopped {
 			exhausted = false

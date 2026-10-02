@@ -32,14 +32,17 @@ type knownAccount struct {
 	Adapter       string    `json:"adapter,omitempty"`
 	CapDailyUSD   float64   `json:"capDailyUSD,omitempty"`
 	CapMonthlyUSD float64   `json:"capMonthlyUSD,omitempty"`
+	Priorities    []string  `json:"priorities,omitempty"`
+	PaceFiveHour  float64   `json:"paceFiveHour,omitempty"`
+	PaceSevenDay  float64   `json:"paceSevenDay,omitempty"`
 	IssuedAt      time.Time `json:"issuedAt"`
 }
 
 // KnownAccounts is every account the platform's claim-time read has
 // issued the node lately (adr-005, "The node remembers what the platform
 // issues"): the label, its kind, its platform id, its adapter (empty for
-// Claude, codex for an OpenAI credential serving Codex) and its caps,
-// never the secret. The zero value keeps it in memory.
+// Claude, codex for an OpenAI credential serving Codex), its caps, the
+// priorities it serves and its own pace points, never the secret. The zero value keeps it in memory.
 type KnownAccounts struct {
 	// Path is the file it is kept in; "" keeps it in memory only.
 	Path string
@@ -123,6 +126,7 @@ func (k *KnownAccounts) Note(a AccountConfig, now time.Time) error {
 	}
 	e.Kind, e.ID, e.Adapter = a.Kind, a.ID, a.Adapter
 	e.CapDailyUSD, e.CapMonthlyUSD = a.DailyCapUSD, a.MonthlyCapUSD
+	e.Priorities, e.PaceFiveHour, e.PaceSevenDay = a.Priorities, a.PaceFiveHour, a.PaceSevenDay
 	e.IssuedAt = now
 	k.pruneLocked(now)
 	return k.saveLocked()
@@ -165,6 +169,7 @@ func (k *KnownAccounts) Accounts(now time.Time) []AccountConfig {
 		out = append(out, AccountConfig{
 			Label: e.Label, Kind: e.Kind, ID: e.ID, Adapter: e.Adapter,
 			DailyCapUSD: e.CapDailyUSD, MonthlyCapUSD: e.CapMonthlyUSD,
+			Priorities: e.Priorities, PaceFiveHour: e.PaceFiveHour, PaceSevenDay: e.PaceSevenDay,
 		})
 	}
 	return out

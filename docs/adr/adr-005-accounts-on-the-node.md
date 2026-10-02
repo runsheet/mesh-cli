@@ -697,3 +697,66 @@ node before the platform half is gone — and `Credentials.Open` panics
 on it with a message `crash.Guard` names. Every started session's usage
 report therefore carries a `credentialId` and a `credentialKind` other
 than `unset` (`unset` stays in the enum for the platform's older rows).
+
+## Amendment — 2026-10-02 (goal `a-credential-names-the-priorities-it-serves`, item 1): an account serves named priorities and has its own pace point
+
+Until now an account served every priority: a fresh subscription has
+full headroom and `ChooseAccount` picked it for every session until the
+node-wide `limits.pace_five_hour` paced it. Both subscriptions spent
+their seven-day windows in 36 hours on 2026-09-29/30, mostly on
+normal-priority re-lands, with nothing kept back for urgent goals.
+
+**An account names the priorities it serves.** `AccountConfig.Priorities`
+is a list of goal priorities (`urgent`, `high`, `normal`, `low`) — the
+credential's `priorities` on the claim-time read, carried onto
+`IssuedAccount` and the known accounts by item 2. Empty serves every
+priority, which is the behaviour before this amendment, so nothing changes
+on upgrade until a credential is marked. `AccountConfig.Serves(priority)`
+is true for an empty list and for work of no priority (research passes
+`""` and runs on any account its pace allows).
+
+**The chooser never picks an account for work it does not serve.**
+`ChooseAccount` skips such an account whatever its headroom — a
+subscription or an api key alike. The rest of the spending order is
+unchanged. *Exhausted*, the condition that lets an api key take
+normal or low work that waits, is judged over the subscriptions that
+serve the work's priority only. So with one subscription reserved for
+urgent and high, normal work that waits goes to the api key: no
+subscription serves it, so every one that does is (vacuously) stopped.
+The same filter applies to the paced-subscription fallback of `accountToFinish` (evaluations and rebases) and
+of the Codex evaluator's `codexChooser`: a reserved account never
+finishes normal work.
+
+**The account's own pace point (windowTargets).** The credential's
+`windowTargets` ([{window, percent}], edited on the console) is now read
+as that account's pace point. It is not removed. It reaches the node as
+`AccountConfig.PaceFiveHour` and `PaceSevenDay` (fractions; 0 is the
+node-wide rule). `LimitsConfig.For(account)` gives the thresholds the
+account is paced by: its `PaceFiveHour` in place of node.yaml's
+`limits.pace_five_hour`, and a seven-day pace point
+(`LimitsConfig.PaceSevenDay`, never set from node.yaml) when it names
+one. Past either point the account is *paced* (urgent and high only)
+until that window resets. `limits.stop` stays node-wide. `ChooseAccount`,
+`nodePace` and the holding report's account status (`holdingAccounts`)
+all judge by `cfg.For(a)`.
+
+**The holding report.** `holdingTakes` reports the priorities the
+status allows that the account also serves: an ok account marked
+urgent,high reports `takes.priorities [urgent, high]`, and research is
+unchanged. `heldReason` names an ok (or unread) account that does not
+serve the goal's priority as `<label> serves only urgent and high`. The
+platform shows that sentence as the goal's `waiting_reason`.
+
+**The waiting line.** Some work is left unclaimed although an account had
+headroom, because every account with headroom was skipped for its
+priorities alone. The test is that the same choice with every account
+serving everything would have found one. That work is counted by
+priority and kind (`Loop.unserved`), and each tick logs one line per
+priority:
+
+```
+accounts: no account serves normal work (max20 serves urgent and high, shhemail serves all); 1 item(s) left unclaimed until one does
+```
+
+The `no account has headroom … left unclaimed until one has` line stays
+for work that waits for headroom.
