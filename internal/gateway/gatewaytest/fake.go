@@ -91,11 +91,11 @@ type Fake struct {
 	// "Cannot query field", a command whose input (or an item of it)
 	// carries one with "Unknown field".
 	UnknownFields map[string]bool
-	// NoEvaluationOutcome is a platform older than
-	// evaluation-reports-no-verdict-platform: its EvaluateWorkItemInput
-	// has no `outcome`, introspection says so, and an evaluateWorkItem
-	// carrying one is refused with "Unknown field".
-	NoEvaluationOutcome bool
+	// NoNoVerdict is a platform older than runsheet ADR 035: its
+	// EvaluateWorkItemInput has no `noVerdict` (nor `noVerdictReason`),
+	// introspection says so, and an evaluateWorkItem carrying one is
+	// refused with "Unknown field".
+	NoNoVerdict bool
 	// NoFailedClauses is a platform whose EvaluateWorkItemInput has no
 	// failedClauses: the node sends the verdict without them.
 	NoFailedClauses bool
@@ -313,8 +313,8 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var fields []any
-		for _, n := range []string{"aggregateId", "namespace", "passed", "notes", "costCents", "usage", gateway.EvaluationOutcomeField, gateway.FailedClausesField} {
-			if n == gateway.EvaluationOutcomeField && f.NoEvaluationOutcome {
+		for _, n := range []string{"aggregateId", "namespace", "passed", "notes", "costCents", "usage", gateway.NoVerdictField, gateway.NoVerdictReasonField, gateway.FailedClausesField} {
+			if (n == gateway.NoVerdictField || n == gateway.NoVerdictReasonField) && f.NoNoVerdict {
 				continue
 			}
 			if n == gateway.FailedClausesField && f.NoFailedClauses {
@@ -370,9 +370,21 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 			writeErrors(w, 200, fmt.Sprintf("Cannot query field %q on type \"Mutation\".", m[2]))
 			return
 		}
-		if _, ok := in[gateway.EvaluationOutcomeField]; ok && m[2] == "evaluateWorkItem" && f.NoEvaluationOutcome {
-			writeErrors(w, 200, `Variable "$in" got invalid value; Unknown field "outcome" is not defined by type "EvaluateWorkItemInput".`)
-			return
+		if m[2] == "evaluateWorkItem" {
+			// the platform's input, as runsheet ADR 035 defines it:
+			// `passed` is required, and `outcome` was never a field
+			if _, ok := in["outcome"]; ok {
+				writeErrors(w, 200, `Variable "$in" got invalid value; Unknown field "outcome" is not defined by type "EvaluateWorkItemInput".`)
+				return
+			}
+			if _, ok := in["passed"]; !ok {
+				writeErrors(w, 200, `Variable "$in" got invalid value; Field "passed" of required type "Boolean!" was not provided.`)
+				return
+			}
+			if _, ok := in[gateway.NoVerdictField]; ok && f.NoNoVerdict {
+				writeErrors(w, 200, `Variable "$in" got invalid value; Unknown field "noVerdict" is not defined by type "EvaluateWorkItemInput".`)
+				return
+			}
 		}
 		// contextBytes is refused before the older fields, the order a
 		// fallback that took them one by one got wrong.
@@ -897,10 +909,16 @@ func (f *Fake) apply(name string, in map[string]any) error {
 			return fmt.Errorf("no such item")
 		}
 		// an evaluation that reached no verdict costs the item nothing:
-		// it stays in evaluating, its reason kept (runsheet goal
-		// evaluation-reports-no-verdict-platform)
-		if in[gateway.EvaluationOutcomeField] == gateway.EvaluationNoVerdict {
-			item["noVerdict"] = in["notes"]
+		// it stays in evaluating, its reason kept (runsheet ADR 035) — and
+		// it is refused with `passed: true` or a blank reason
+		if in[gateway.NoVerdictField] == true {
+			if in["passed"] == true {
+				return fmt.Errorf("evaluateWorkItem: a no-verdict evaluation cannot pass")
+			}
+			if r, _ := in[gateway.NoVerdictReasonField].(string); strings.TrimSpace(r) == "" {
+				return fmt.Errorf("evaluateWorkItem: a no-verdict evaluation needs a reason")
+			}
+			item["noVerdictReason"] = in[gateway.NoVerdictReasonField]
 			item["noVerdicts"] = toInt(item["noVerdicts"]) + 1
 			item["costCents"] = toInt(item["costCents"]) + toInt(in["costCents"])
 			return nil

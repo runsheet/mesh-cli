@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -499,7 +500,7 @@ func TestNoContextWithNoOtherFamilyIsNoVerdict(t *testing.T) {
 		t.Fatalf("runs claude %d codex %d", len(claude.jobs), codex.runs())
 	}
 	reason := "evaluation on Claude sonnet saw no context (mesh-context: Auth required); not a verdict, and Codex cannot evaluate it: the node has no Codex harness or account"
-	if _, sent := in["passed"]; sent || in["outcome"] != gateway.EvaluationNoVerdict || in["notes"] != reason || in["costCents"] != float64(125) {
+	if !sentNoVerdict(in) || in["notes"] != reason || in["costCents"] != float64(125) {
 		t.Fatalf("recorded %+v\nwant notes %q", in, reason)
 	}
 	if f.Item(item1)["status"] != "evaluating" {
@@ -519,7 +520,7 @@ func TestNoContextWithNoOtherFamilyIsNoVerdict(t *testing.T) {
 // ticks try, and the platform's lack once per run.
 func TestNoContextWithNoOtherFamilyWaitsOnAnOlderPlatform(t *testing.T) {
 	f, ev, claude, codex, _, logs := familyFixture(t, "normal", "sonnet", "VERDICT: FAIL", "VERDICT: PASS")
-	f.NoEvaluationOutcome = true
+	f.NoNoVerdict = true
 	ev.MCP = MeshContextMCP(f.URL(), "rs_test")
 	ev.CodexAccounts = (&Loop{Known: &KnownAccounts{}}).CodexCandidates
 	claude.tools = noContext(3, "Auth required")
@@ -546,11 +547,39 @@ func TestNoContextWithNoOtherFamilyWaitsOnAnOlderPlatform(t *testing.T) {
 	}
 }
 
+// A session whose stream carries no VERDICT line is no verdict: one
+// evaluateWorkItem with passed false, noVerdict true and the reason
+// `no VERDICT line: …` (runsheet ADR 035), never a bare fail; the item
+// stays in evaluating and the platform keeps the reason.
+func TestNoVerdictLineIsRecordedAsNoVerdict(t *testing.T) {
+	f, ev, claude, codex, _, logs := familyFixture(t, "normal", "sonnet", "I ran out of ideas.", "VERDICT: PASS")
+	ev.CodexAccounts = (&Loop{Known: &KnownAccounts{}}).CodexCandidates
+	in := evaluateItem1(t, f, ev)
+	if len(claude.jobs) != 1 || codex.runs() != 0 {
+		t.Fatalf("runs claude %d codex %d", len(claude.jobs), codex.runs())
+	}
+	calls := f.CallsNamed("evaluateWorkItem")
+	if len(calls) != 1 {
+		t.Fatalf("%d evaluateWorkItem calls", len(calls))
+	}
+	reason := "no VERDICT line: I ran out of ideas."
+	if !sentNoVerdict(in) || in[gateway.NoVerdictReasonField] != reason || in["costCents"] != float64(125) {
+		t.Fatalf("recorded %+v\nwant reason %q", in, reason)
+	}
+	item := f.Item(item1)
+	if item["status"] != "evaluating" || item["noVerdictReason"] != reason || fmt.Sprint(item["noVerdicts"]) != "1" {
+		t.Fatalf("item %+v", item)
+	}
+	if !strings.Contains(logs.String(), "evaluation reached no verdict on Claude sonnet, recorded as no verdict") {
+		t.Fatalf("node.log:\n%s", logs.String())
+	}
+}
+
 // A session with no VERDICT line on a platform without the outcome
 // records nothing either, and the lack is said once across the two.
 func TestNoVerdictLineOnAnOlderPlatformRecordsNothing(t *testing.T) {
 	f, ev, claude, codex, _, logs := familyFixture(t, "normal", "sonnet", "I ran out of ideas.", "VERDICT: PASS")
-	f.NoEvaluationOutcome = true
+	f.NoNoVerdict = true
 	ev.CodexAccounts = (&Loop{Known: &KnownAccounts{}}).CodexCandidates
 	ev.NoVerdict = &OncePer{}
 	item, err := ev.GW.WorkItem(context.Background(), item1)
@@ -609,7 +638,7 @@ func TestAVerdictIsRecordedAsBefore(t *testing.T) {
 		f, ev, _, _, _, _ := familyFixture(t, "normal", "sonnet", tc.says, "")
 		ev.CodexAccounts = (&Loop{Known: &KnownAccounts{}}).CodexCandidates
 		in := evaluateItem1(t, f, ev)
-		if _, sent := in["outcome"]; sent || in["passed"] != tc.passed {
+		if _, sent := in["outcome"]; sent || in["passed"] != tc.passed || in[gateway.NoVerdictField] == true {
 			t.Fatalf("%q recorded %+v", tc.says, in)
 		}
 	}
@@ -634,7 +663,7 @@ func TestRefusedCallsOnAConnectedContextServerAreNoVerdict(t *testing.T) {
 	if len(claude.jobs) != 1 || codex.runs() != 0 {
 		t.Fatalf("runs claude %d codex %d", len(claude.jobs), codex.runs())
 	}
-	if _, sent := in["passed"]; sent || in["outcome"] != gateway.EvaluationNoVerdict {
+	if !sentNoVerdict(in) {
 		t.Fatalf("recorded %+v", in)
 	}
 	if notes, _ := in["notes"].(string); !strings.Contains(notes, "saw no context (mesh-context: Claude requested permissions") {
@@ -675,7 +704,7 @@ func TestNoContextUnderTheOldNameIsNotAVerdict(t *testing.T) {
 		t.Fatalf("afterEvaluate = %v", err)
 	}
 	calls := f.CallsNamed("evaluateWorkItem")
-	if codex.runs() != 0 || len(calls) != 1 || calls[0].Input["outcome"] != gateway.EvaluationNoVerdict {
+	if codex.runs() != 0 || len(calls) != 1 || !sentNoVerdict(calls[0].Input) {
 		t.Fatalf("codex runs %d, verdicts %+v", codex.runs(), calls)
 	}
 	if !strings.Contains(logs.String(), "saw no context (prologue: Auth required); not a verdict") {
@@ -749,7 +778,7 @@ func TestCodexSandboxBrokenIsNotAVerdict(t *testing.T) {
 // nothing: the item stays in evaluating, said once.
 func TestCodexSandboxBrokenWithNoOtherFamilyWaits(t *testing.T) {
 	f, ev, claude, codex, _, logs := familyFixture(t, "normal", "sonnet", "VERDICT: FAIL", "VERDICT: PASS")
-	f.NoEvaluationOutcome = true
+	f.NoNoVerdict = true
 	f.WorkItems[item1]["evaluateModel"] = "gpt-6-astra"
 	codex.sandbox = bwrapLine
 	ev.Blind, ev.NoVerdict = &OncePer{}, &OncePer{}
@@ -768,6 +797,49 @@ func TestCodexSandboxBrokenWithNoOtherFamilyWaits(t *testing.T) {
 	line := "item ship-it/1: evaluation on Codex gpt-6-astra ran in a sandbox that blocked every command (sandbox: " + bwrapLine + "); not a verdict, and Claude cannot evaluate it: the item pins Codex gpt-6-astra; it stays in evaluating"
 	if n := strings.Count(logs.String(), line); n != 1 {
 		t.Fatalf("said %d times:\n%s", n, logs.String())
+	}
+}
+
+// The sandbox would not start — bubblewrap's loopback refused, the
+// research note's `bwrap: loopback: Failed RTM_NEWADDR` — and the item
+// pins Codex, so no other family can evaluate it: on a platform that
+// takes `noVerdict` it is recorded as no verdict with the bwrap line as
+// its reason, never an ordinary fail, whatever VERDICT the session wrote;
+// the item stays in evaluating with its attempts unchanged (ADR 011,
+// amendment 2026-09-29; runsheet ADR 035).
+func TestCodexSandboxWillNotStartWithNoOtherFamilyIsNoVerdict(t *testing.T) {
+	f, ev, claude, codex, _, logs := familyFixture(t, "normal", "sonnet", "VERDICT: PASS", "Nothing would run.\nVERDICT: FAIL")
+	f.WorkItems[item1]["evaluateModel"] = "gpt-6-astra"
+	codex.sandbox = bwrapLine
+	ev.Blind, ev.NoVerdict = &OncePer{}, &OncePer{}
+	attempts := f.Item(item1)["attempts"]
+	in := evaluateItem1(t, f, ev)
+	if len(claude.jobs) != 0 || codex.runs() != 1 {
+		t.Fatalf("runs claude %d codex %d", len(claude.jobs), codex.runs())
+	}
+	reason := "evaluation on Codex gpt-6-astra ran in a sandbox that blocked every command (sandbox: " + bwrapLine + "); not a verdict, and Claude cannot evaluate it: the item pins Codex gpt-6-astra"
+	if !sentNoVerdict(in) || in[gateway.NoVerdictReasonField] != reason || in["notes"] != reason {
+		t.Fatalf("recorded %+v\nwant reason %q", in, reason)
+	}
+	calls := f.CallsNamed("evaluateWorkItem")
+	if len(calls) != 1 {
+		t.Fatalf("evaluateWorkItem sent %d times", len(calls))
+	}
+	if c := calls[0].Input; c["passed"] != false || c[gateway.NoVerdictField] != true {
+		t.Fatalf("recorded as a fail: %+v", c)
+	}
+	if _, ok := in["outcome"]; ok {
+		t.Fatalf("sent outcome: %+v", in)
+	}
+	item := f.Item(item1)
+	if item["status"] != "evaluating" || item["attempts"] != attempts || item["noVerdicts"] != 1 || item["noVerdictReason"] != reason {
+		t.Fatalf("item %+v", item)
+	}
+	if line := "item ship-it/1: evaluation reached no verdict on Codex gpt-6-astra, recorded as no verdict"; !strings.Contains(logs.String(), line) {
+		t.Fatalf("node.log lacks %q:\n%s", line, logs.String())
+	}
+	if strings.Contains(logs.String(), "the platform takes no no-verdict outcome") {
+		t.Fatalf("node.log:\n%s", logs.String())
 	}
 }
 
@@ -803,11 +875,11 @@ func TestEvaluationOnCodexWithNoNetworkIsNoVerdict(t *testing.T) {
 		t.Fatalf("runs claude %d codex %d", len(claude.jobs), codex.runs())
 	}
 	notes, _ := in["notes"].(string)
-	if _, sent := in["passed"]; sent || in["outcome"] != gateway.EvaluationNoVerdict || !strings.Contains(notes, "sandbox: "+socket) {
+	if !sentNoVerdict(in) || !strings.Contains(notes, "sandbox: "+socket) {
 		t.Fatalf("recorded %+v", in)
 	}
 	for _, c := range f.CallsNamed("evaluateWorkItem") {
-		if p, ok := c.Input["passed"]; ok && p == false {
+		if c.Input["passed"] == false && c.Input[gateway.NoVerdictField] != true {
 			t.Fatalf("recorded as a fail: %+v", c.Input)
 		}
 	}
@@ -836,11 +908,11 @@ func TestEvaluationOnCodexWithTestsUnrunIsNoVerdict(t *testing.T) {
 			ev.Blind, ev.NoVerdict = &OncePer{}, &OncePer{}
 			in := evaluateItem1(t, f, ev)
 			notes, _ := in["notes"].(string)
-			if _, sent := in["passed"]; sent || in["outcome"] != gateway.EvaluationNoVerdict || !strings.Contains(notes, "socket: operation not permitted") {
+			if !sentNoVerdict(in) || !strings.Contains(notes, "socket: operation not permitted") {
 				t.Fatalf("recorded %+v", in)
 			}
 			for _, c := range f.CallsNamed("evaluateWorkItem") {
-				if p, ok := c.Input["passed"]; ok && p == false {
+				if c.Input["passed"] == false && c.Input[gateway.NoVerdictField] != true {
 					t.Fatalf("recorded as a fail: %+v", c.Input)
 				}
 			}

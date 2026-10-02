@@ -468,10 +468,11 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   <model>): no verdict — <tool>: <error>`; with no other family it
   is **no verdict** (`Evaluator.noVerdict`, ADR-011's amendment
   2026-09-29): `EvaluateWorkItemNoVerdict` sends `evaluateWorkItem`
-  `outcome: no_verdict` (`gateway.EvaluationNoVerdict`) with the reason
-  in `notes` and the cost and usage, never a fail — as does a deciding
-  session with no `VERDICT:` line. A gateway whose
-  `EvaluateWorkItemInput` lacks `outcome` (introspected, kept an hour)
+  `passed: false`, `noVerdict: true` and `noVerdictReason` (runsheet
+  ADR 035; `gateway.NoVerdictField`, `NoVerdictReasonField`) with the
+  reason in `notes` too and the cost and usage, never a fail — as does a
+  deciding session with no `VERDICT:` line. A gateway whose
+  `EvaluateWorkItemInput` lacks `noVerdict` (introspected, kept an hour)
   gets nothing (`ErrNoVerdictOutcome`, said once per run): the item
   stays in evaluating (`ErrNoContext`, said once per item by `Blind`).
   A family blind on the first attempt is not asked for the second

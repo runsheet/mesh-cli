@@ -125,7 +125,7 @@ Codex harness's `Preflight` (`harness.CodexPreflight`). It runs in the
 plus `SessionEnviron` with the same Unset list), so the two cannot
 drift — and checks:
 
-1. `codex mcp get prologue` succeeds: Codex parses the rendered
+1. `codex mcp get mesh-context` succeeds: Codex parses the rendered
    `config.toml` and sees the server;
 2. an MCP `initialize`, `notifications/initialized` and `tools/list`
    over streamable HTTP to the built-in's URL, with the header values
@@ -134,8 +134,8 @@ drift — and checks:
 
 Its error says why: `refuses auth: <status>: <first 200 chars>` for a
 401 or 403, `unreachable: <error>` for a host that does not answer,
-`MESH_CODEX_MCP_<n>_TOKEN for prologue's Authorization header is
-missing|empty …`, `codex mcp get prologue: …`, or `lists no tools`. It
+`MESH_CODEX_MCP_<n>_TOKEN for mesh-context's Authorization header is
+missing|empty …`, `codex mcp get mesh-context: …`, or `lists no tools`. It
 never carries a secret (the job's and the home's are redacted). A job
 with no built-in has nothing to check. The preflight costs nothing and
 is not a tool call: no usage, no `recordToolUsage`.
@@ -180,7 +180,7 @@ to `ready`, a rework each.
 - **A session that saw no context gives no verdict.** Before a verdict
   is read, the evaluator judges the session's tools from `Result.Tools`
   (`Evaluator.toolBroken`): it is *tool-broken* when a built-in server
-  of its MCP map (the context server, `prologue`) or a required console
+  of its MCP map (the context server, `mesh-context`) or a required console
   tool it was served has calls and every one errored, or has an error
   and no call at all (not connected at startup). One clean call is
   enough: 3 calls and 1 error is a verdict as before. A tool-broken
@@ -231,6 +231,20 @@ could not run or reach its tools, and 10 more carry a `VERDICT: PASS`.
   `no_verdict` are the node's assumption, named once in
   `gateway.EvaluationOutcomeField` and `gateway.EvaluationNoVerdict`;
   if the platform lands another name, those two constants change.
+  *Amended 2026-10-02:* it did. The platform's shape is runsheet ADR 035
+  (`adr-035-an-unreached-evaluation-is-not-a-failed-one`):
+  `EvaluateWorkItemInput` carries optional `noVerdict: Boolean` and
+  `noVerdictReason: String` beside the required `passed: Boolean!`, and
+  refuses a no-verdict with `passed: true` or a blank reason. `outcome`
+  was never accepted by the platform — never a field of its input — so
+  the probe never found it, every call returned `ErrNoVerdictOutcome`,
+  and no no-verdict was recorded between v0.2.189 and this change: each
+  such item waited in evaluating instead. The node now sends
+  `evaluateWorkItem` with `passed: false`, `noVerdict: true`,
+  `noVerdictReason: <reason>`, the same reason in `notes` (so a page
+  without the new field still shows it), `costCents` and `usage`, named
+  in `gateway.NoVerdictField` and `gateway.NoVerdictReasonField`, and
+  never `outcome`.
 - **The three cases** (`Evaluator.noVerdict`):
   (a) the deciding session's text has no `VERDICT:` line
   (`harness.ParseVerdict` not ok) — reason `no VERDICT line: <the first
@@ -248,7 +262,8 @@ could not run or reach its tools, and 10 more carry a `VERDICT: PASS`.
   does return a verdict records pass or fail exactly as before, and a
   verdict the other family reached after a blind first attempt keeps its
   `<Family> (first attempt, <model>): no verdict — …` head.
-- **An older gateway.** Whether `EvaluateWorkItemInput` has `outcome` is
+- **An older gateway.** Whether `EvaluateWorkItemInput` has `noVerdict`
+  (`outcome` before the 2026-10-02 amendment) is
   asked once by introspection and kept for `ScalingProbeEvery`, as
   `holding` is (ADR-004: never a field the platform does not accept).
   Without it the call returns `gateway.ErrNoVerdictOutcome`, nothing is
@@ -378,7 +393,7 @@ unreachable. A tool that answered was reached.
 - **`ToolStat.Reached()` is `Clean + Answered > 0`**, and `toolBroken`
   names a server broken only when `Errors > 0 && !Reached()`: every
   call refused before the server, or a startup error and no call
-  reached. The adopted-session `prologue` alias and the
+  reached. The adopted-session `prologue` alias (until 2026-10-28) and the
   required-console-tool branch stand. The built-in's `not found` is the
   tool working: the verdict it came with stands, on the family that
   reached it, and nothing runs on the other family.
@@ -459,3 +474,19 @@ unrun, and the probe above passed, because `true` opens no socket.
   empty: that test ran, and the verdict stands. The evaluator handles it as
   the bwrap cause: never read for a verdict, the other family, else
   recorded as no verdict with `sandbox: <the socket line>`.
+
+## Amendment 2026-10-02: wording corrected to mesh-context
+
+Goal `builtin-is-mesh-context`. The preflight section above named the
+built-in `prologue` after the rename had already reached the node's
+own attachment (`adr-006`'s 2026-09-28 amendment): `codex mcp get
+prologue`, the error texts naming `prologue`'s Authorization header,
+and the `toolBroken` paragraph's "the context server, `prologue`". All
+now read `mesh-context`: the preflight runs `codex mcp get
+mesh-context`, its errors name `mesh-context`'s header and command, and
+`toolBroken` names `mesh-context` as the context server. Nothing about
+what the preflight checks or how `toolBroken` judges a session
+changes — only the name. The dated narrative above (the first Codex
+evaluations' own `prologue: not found` results, read on 2026-09-29 and
+before) stays as it was recorded: it quotes what those sessions said,
+not what the node does now.

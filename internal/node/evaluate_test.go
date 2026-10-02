@@ -103,7 +103,7 @@ func TestLoopEvaluatesFinishedItems(t *testing.T) {
 		t.Fatalf("no verdict must leave the item in evaluating: %v, %d calls", f.Item(item1)["status"], len(calls))
 	}
 	in := calls[2].Input
-	if _, sent := in["passed"]; sent || in["outcome"] != gateway.EvaluationNoVerdict || in["notes"] != "no VERDICT line: I could not tell." || in["costCents"] != float64(125) {
+	if !sentNoVerdict(in) || in["notes"] != "no VERDICT line: I could not tell." || in["costCents"] != float64(125) {
 		t.Fatalf("no-verdict call: %+v", in)
 	}
 }
@@ -586,4 +586,13 @@ func TestSecondOpinionUsageInTheOneReport(t *testing.T) {
 		t.Fatalf("usage: %v", u)
 	}
 	checkNoOldUsage(t, f)
+}
+
+// sentNoVerdict says whether an evaluateWorkItem input is the no-verdict
+// shape runsheet ADR 035 defines: passed false, noVerdict true, the
+// reason as noVerdictReason and in the notes, and never `outcome`.
+func sentNoVerdict(in map[string]any) bool {
+	_, outcome := in["outcome"]
+	return !outcome && in["passed"] == false && in[gateway.NoVerdictField] == true &&
+		in[gateway.NoVerdictReasonField] != "" && in[gateway.NoVerdictReasonField] == in["notes"]
 }
