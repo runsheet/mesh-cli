@@ -123,10 +123,11 @@ type Loop struct {
 	// chooses and scales on them beside node.yaml's (goal
 	// loop-schedules-on-issued-accounts). Nil: none.
 	Known *KnownAccounts
-	// CodexOwn is node.yaml's codex: account the Codex harness runs on
-	// (CodexOwnAccount; nil: no codex: block), a Codex account an
-	// evaluation may run on beside the issued ones (CodexCandidates).
-	CodexOwn []AccountConfig
+	// NoCredential is the projects whose claim-time read issued no
+	// credential for an adapter (the same store as
+	// Credentials.NoCredential): their goals' items and plans are passed
+	// over with its reason until its re-check is due. Nil: none held.
+	NoCredential *NoCredentials
 	// CodexRoom says whether a Codex account has headroom for an
 	// evaluation of that priority (Evaluator.CodexHeadroom; nil: none
 	// ever): an evaluation no Claude account has room for starts on it
@@ -267,6 +268,21 @@ func (l *Loop) goals(ctx context.Context, sc Scope) ([]gateway.Goal, error) {
 		l.tickGoals[sc.ID] = goalsRead{goals, err}
 	}
 	return goals, err
+}
+
+// goalProject is the project an item's work is held by: its goal's,
+// through the tick's one GoalIndex read, else the item's own.
+func (l *Loop) goalProject(ctx context.Context, sc Scope, item gateway.WorkItem) string {
+	if l.NoCredential == nil {
+		return item.ProjectID
+	}
+	goals, _ := l.goals(ctx, sc)
+	for _, g := range goals {
+		if g.ID == item.GoalID && g.ProjectID != "" {
+			return g.ProjectID
+		}
+	}
+	return item.ProjectID
 }
 
 // readyItem is a ready item with the scope it was listed in and its
@@ -484,6 +500,11 @@ func (l *Loop) claimReady(ctx context.Context, free, normalFree, maxRank int) {
 		}
 		if runtimes, _ := l.Runtimes(); l.Declines.Holds(item.ID, runtimes, time.Now()) {
 			continue // a required tool needs a runtime still missing here
+		}
+		if why, ok := l.NoCredential.Holds(l.goalProject(ctx, sc, item), l.adapter()); ok {
+			l.passOver(item.GoalID, "item", priorityName(r.rank), why)
+			l.NoCredential.Say(item.GoalID, why)
+			continue
 		}
 		fresh := !startedWork(item)
 		if limit > 0 && fresh && len(unread) > 0 {
@@ -1024,15 +1045,11 @@ func (l *Loop) CodexAccounts() ([]AccountConfig, map[string]harness.RateLimit) {
 }
 
 // CodexCandidates are the Codex accounts an evaluation may run on
-// first (ADR 011): the issued ones Known holds, then node.yaml's
-// codex: account (CodexOwn) unless an issued one has its label.
+// first (ADR 011): the issued ones Known holds, and only those — the
+// operator's own Codex login is never one (ADR 011's amendment
+// 2026-10-02).
 func (l *Loop) CodexCandidates() []AccountConfig {
 	out, _ := l.CodexAccounts()
-	for _, a := range l.CodexOwn {
-		if !slices.ContainsFunc(out, func(b AccountConfig) bool { return b.Label == a.Label }) {
-			out = append(out, a)
-		}
-	}
 	return out
 }
 
@@ -1429,6 +1446,12 @@ func (l *Loop) rebaseRequested(ctx context.Context) {
 			continue
 		}
 		l.mu.Unlock()
+		if why, ok := l.NoCredential.Holds(l.goalProject(ctx, sc, item), l.adapter()); ok {
+			// no credential open to this node: the rebase waits, said
+			// once for the goal
+			l.NoCredential.Say(item.GoalID, why)
+			continue
+		}
 		actx, ok := l.accountToFinish(ctx, priorityName(r.rank), "rebase")
 		if !ok {
 			continue
@@ -1495,6 +1518,11 @@ func (l *Loop) planRequested(ctx context.Context) {
 			continue
 		}
 		l.mu.Unlock()
+		if why, ok := l.NoCredential.Holds(g.ProjectID, l.adapter()); ok {
+			l.passOver(g.ID, "plan", priorityName(gateway.PriorityRank(g.Priority)), why)
+			l.NoCredential.Say(g.ID, why)
+			continue
+		}
 		actx, ok := l.accountFor(ctx, priorityName(gateway.PriorityRank(g.Priority)), true, "plan")
 		if !ok {
 			l.passOver(g.ID, "plan", priorityName(gateway.PriorityRank(g.Priority)), "")
@@ -1699,4 +1727,14 @@ func (l *Loop) run(ctx context.Context, item gateway.WorkItem) {
 			l.Dispatch(ctx, item)
 		}
 	}()
+}
+
+// adapter is the agent CLI the loop's builds and plans run on, as the
+// claim-time read names it: claude-code unless the loop's harness is
+// codex.
+func (l *Loop) adapter() string {
+	if l.Harness == AdapterCodex {
+		return AdapterCodex
+	}
+	return AdapterClaudeCode
 }

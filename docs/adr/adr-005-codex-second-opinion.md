@@ -209,3 +209,19 @@ its old name after the rename had already reached the node's own
 attachment (`adr-006`'s 2026-09-28 amendment); both now say
 `mesh-context`. Nothing about when the second opinion runs or what the
 note names changes — only the word.
+
+## Amendment — 2026-10-02: no Codex session on node.yaml's account (goal a-session-never-runs-on-the-machines-own-login)
+
+The Decision's "on node.yaml's first `codex:` account" and **When it
+runs** as amended on 2026-09-28 ("an issued one, or node.yaml's
+`codex:` account") no longer hold: a Codex session — first evaluation or
+second opinion — runs only on an issued OpenAI credential serving
+`codex` with headroom, opened by `Credentials.Open` (adapter codex);
+none is Claude for an unpinned evaluation, a wait for a pinned one, and
+an unavailable second opinion. The Evaluator's `CodexAccount` (the
+harness's own account's Limits key) is gone; "Only the first `codex:`
+account is used" is moot, since node.yaml names none. The operator's
+`~/.codex` and `$CODEX_HOME` are never read: the harness refuses a job
+with no placed home (`codex: no issued credential on the session;
+refusing the operator's own login`). The decision is
+[ADR-011's amendment 2026-10-02](adr-011-evaluations-run-on-the-family-with-headroom.md).

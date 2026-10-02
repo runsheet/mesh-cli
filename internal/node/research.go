@@ -168,7 +168,7 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 		Kind: harness.KindResearch, Workspace: dir, Prompt: prompt, MaxBudgetUSD: budget,
 		Label: project.Slug + "/" + direction.Slug + " research", Timeout: d.Timeout, MCPServers: d.MCP, Model: d.Model,
 	}
-	acct, err := d.Credentials.Open(ctx, gateway.SessionRef{Kind: string(harness.KindResearch), DirectionID: direction.ID}, scope.NodeID, d.Accounts, Adapter(d.Harness))
+	acct, err := d.Credentials.Open(withSubject(ctx, scope, project.ID, project.Slug), gateway.SessionRef{Kind: string(harness.KindResearch), DirectionID: direction.ID}, scope.NodeID, d.Accounts, Adapter(d.Harness))
 	if err != nil {
 		return err
 	}

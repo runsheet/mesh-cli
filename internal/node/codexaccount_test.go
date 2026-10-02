@@ -235,12 +235,12 @@ func TestOpenChoosesByAdapter(t *testing.T) {
 	s.Cleanup()
 
 	gw.issued = []gateway.Credential{codexSub(), codexAPI()}
-	if _, err := c.Open(context.Background(), ref, "n", nil, ""); !errors.Is(err, ErrNoAccount) {
-		t.Fatalf("a codex-only read for a Claude session = %v, want ErrNoAccount", err)
+	if _, err := c.Open(context.Background(), ref, "n", nil, ""); !isNoCredential(err) || !strings.Contains(err.Error(), "no claude-code credential") {
+		t.Fatalf("a codex-only read for a Claude session = %v, want ErrNoCredential", err)
 	}
 	gw.issued = []gateway.Credential{claudeSub()}
-	if _, err := c.Open(context.Background(), ref, "n", nil, AdapterCodex); !errors.Is(err, ErrNoAccount) {
-		t.Fatalf("an anthropic-only read for a Codex session = %v, want ErrNoAccount", err)
+	if _, err := c.Open(context.Background(), ref, "n", nil, AdapterCodex); !isNoCredential(err) || !strings.Contains(err.Error(), "no codex credential") {
+		t.Fatalf("an anthropic-only read for a Codex session = %v, want ErrNoCredential", err)
 	}
 
 	// the known accounts note the codex ones with their adapter, and no secret
@@ -371,4 +371,22 @@ func containsStr(list []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// A Codex session with no issued Codex credential has no account: a
+// read that issues nothing is ErrNoCredential (adr-005's amendment
+// 2026-10), and no Credentials at all is ErrNoAccount — never the
+// operator's own Codex login, which no longer exists as an account
+// (codex:default).
+func TestCodexOpenWithNothingIssuedIsNoAccount(t *testing.T) {
+	cacheRoot(t)
+	ref := gateway.SessionRef{Kind: "evaluate", ItemID: item1}
+	c := &Credentials{GW: &credsGW{}, Log: log.New(&syncBuf{}, "", 0)}
+	if _, err := c.Open(context.Background(), ref, "n", nil, AdapterCodex); !isNoCredential(err) {
+		t.Fatalf("nothing issued = %v, want ErrNoCredential", err)
+	}
+	var none *Credentials
+	if _, err := none.Open(context.Background(), ref, "n", nil, AdapterCodex); !errors.Is(err, ErrNoAccount) {
+		t.Fatalf("no Credentials = %v, want ErrNoAccount", err)
+	}
 }

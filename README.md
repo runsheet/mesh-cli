@@ -264,15 +264,16 @@ the item goes to its builder.
 
 ### Several Claude accounts
 
-By default every session runs on the operator's own `claude` login.
-Once the platform issues credentials (the claim-time read, adr-005),
-each session runs on the Claude accounts the org's admins configured
-for its project — handed to the node for that session only — and
-node.yaml's `accounts:` are only the fallback, for a platform that
-does not issue them yet (the node logs `credentials: the platform
-issues no session credentials; sessions run on node.yaml's accounts`
-once per run). Until then, to run on other accounts — several Max
-subscriptions, or an API key — list them in `~/.mesh/node.yaml`:
+Each session runs on the Claude accounts the org's admins configured
+for its project on the console's credentials page — handed to the node
+for that session only by the claim-time read (adr-005). A read that
+answers with no credential for the session's adapter starts no session
+and leaves the work unclaimed (4, below); it never falls to node.yaml
+or the operator's own login. Only a platform whose gateway has no
+claim-time read at all leaves node.yaml's `accounts:` (the node logs
+`credentials: the platform issues no session credentials; sessions run
+on node.yaml's accounts` once per run); for that platform alone, list
+them in `~/.mesh/node.yaml`:
 
 ```yaml
 accounts:
@@ -318,8 +319,10 @@ node drain` so the service starts again with it.
 a rebase — and before an evaluation, the node picks the account the
 session runs on, by the latest plan limits each account's sessions
 reported (see Near the plan's limits). The accounts are the union of
-node.yaml's `accounts:` and any credentials the platform issues; a
-platform that issues none uses node.yaml only:
+the credentials the platform issues for the session; node.yaml's
+`accounts:` only on a platform whose claim-time read is unsupported —
+a read that answers with none for the session's adapter is a hold (4,
+below), never node.yaml or the machine's own login:
 
 1. Subscriptions first: of those with headroom, the one with the most —
    the lowest use of its five-hour and seven-day windows. An account
@@ -340,6 +343,22 @@ platform that issues none uses node.yaml only:
 
 ```
 accounts: no account has headroom for 2 item(s), 1 plan(s); left unclaimed until one has
+```
+
+4. **No credential issued means the node waits too.** A node runs
+   sessions only on credentials the platform issues for the org or its
+   enterprise, never on the machine's own login: when the claim-time
+   read answers with none for the session's adapter (`claude-code` or
+   `codex`), no session starts — not on node.yaml's `accounts:`, nor
+   a Codex evaluation on the `codex:` block's own login — a claimed item is released, and that
+   project's items, plans and rebases are left unclaimed — asked again
+   by one claim every 10 minutes, so a credential attached on the console's credentials page
+   is picked up without a restart. The heartbeat's
+   `holding.unclaimed[].reason` carries the line, which the goal's
+   waiting reason shows, and node.log says it once per goal per run:
+
+```
+accounts: org acme's project widgets has no claude-code credential open to this node; goal <goal id>'s items and plans left unclaimed until one is (asked again every 10m0s; said once for the goal)
 ```
 
 Capacity still bounds how many items run at once. Each session gets its
@@ -1547,16 +1566,21 @@ A node can run OpenAI's Codex CLI beside Claude Code. The adapter
 (`internal/harness/codex.go`) runs `codex exec --json --sandbox
 workspace-write` in the item's workspace, with the prompt on stdin.
 Evaluations run on it: `mesh node start` builds it whenever `codex` is
-on `PATH`, and an evaluation runs on Codex when a Codex account (one
-the console issues, or node.yaml's `codex:` account) has headroom for
-the goal's priority, else on Claude. A `gpt-…` evaluate or agent model
+on `PATH`, and an evaluation runs on Codex when an issued Codex
+credential (an OpenAI credential the console opens to the project,
+serving `codex`) has headroom for the goal's priority, else on Claude.
+The node never runs a Codex session on the machine's own login: not
+`~/.codex`, not `$CODEX_HOME`, and node.yaml names no Codex account
+(ADR 011, amendment 2026-10-02). A `gpt-…` evaluate or agent model
 pins Codex, a `claude-…` one Claude. An urgent or high pass gets a
 second opinion on the other family
 (docs/adr/adr-011-evaluations-run-on-the-family-with-headroom.md).
 
 **The node's family choice** (ADR-011): before an evaluation starts, the node
-judges headroom across all Codex accounts and all Claude accounts and
-prefers Codex when a Codex account has headroom for the item's priority.
+judges headroom across the issued Codex credentials and the Claude accounts and
+prefers Codex when an issued Codex credential has headroom for the item's priority.
+`mesh node start` says so in node.log: `codex: evaluations on Codex when an
+issued Codex credential has headroom, else on Claude`.
 A planner may pin an item's evaluator to a family through the agent model;
 a pinned family with no headroom waits (not claimed, not failed). An urgent or
 high goal's first evaluation on one family gets a second opinion on the other.
@@ -1698,30 +1722,33 @@ Until one is in place the node keeps Codex evaluations off a host whose
 sandbox cannot start; nothing is judged on a session that could not run
 the acceptance.
 
-### Add an account
+### Credentials
 
-Each session gets a fresh temporary `CODEX_HOME` under the user cache
-dir (`~/.cache/mesh/codex/home-*`), removed when the session ends. The
-operator's own `CODEX_HOME`, `CODEX_API_KEY` and `OPENAI_API_KEY` never
-reach it. There are two kinds of account.
+Every Codex session runs on an OpenAI credential the platform issues for
+it at claim time (`itemCredentials`): add one in the console's
+credentials page, serving `codex`, and open it to the project. There are
+two kinds.
 
-**A ChatGPT plan** (Plus, Pro, Business). Log it in to its own home,
-once per account:
+**A ChatGPT plan** (Plus, Pro, Business): its `auth.json`, pasted as the
+secret. The node writes it into the session's own temporary
+`CODEX_HOME/auth.json` (0600) and removes it with the home; a login
+Codex refreshed during the session is kept under `<user cache
+dir>/mesh/codex/logins/` for the next session on the same secret
+version.
 
-```bash
-CODEX_HOME=~/.mesh/codex/plus codex login
-```
+**An API key**: it reaches the session only in its environment, as
+`CODEX_API_KEY` and `OPENAI_API_KEY`, never logged or written to the
+workspace or the home. codex-cli 0.157.0's `exec` reads only
+`CODEX_API_KEY` and gets a 401 with just `OPENAI_API_KEY`, so the node
+sets both (docs/adr/adr-005-accounts-on-the-node.md).
 
-Each session gets a copy of that home's `auth.json`. When Codex
-refreshes the tokens during the session, the refreshed file is written
-back.
-
-**An API key.** Name the environment variable that holds it, or a file
-(0600) that holds it. The key reaches the session only in its
-environment, as `CODEX_API_KEY` and `OPENAI_API_KEY`. It is never
-logged or written to the workspace or the temporary home. codex-cli
-0.157.0's `exec` reads only `CODEX_API_KEY` and gets a 401 with just
-`OPENAI_API_KEY`, so the node sets both.
+With no issued Codex credential an unpinned evaluation runs on Claude,
+and an item pinned to a `gpt-…` model waits in evaluating. A Codex job
+the node did not place a home for is refused by the harness (`codex: no
+issued credential on the session; refusing the operator's own login`):
+the operator's own `CODEX_HOME`, `CODEX_API_KEY` and `OPENAI_API_KEY`
+never reach a session, and every Codex evaluation's usage record carries
+its `credentialId`.
 
 Codex has no budget flag, so a job's `MaxBudgetUSD` is **not enforced**
 for a Codex session. The cost is known only at the end, from the token
@@ -1730,28 +1757,18 @@ to bound it.
 
 ### node.yaml
 
-The `codex:` block is **optional**. If present, the node's own Codex account
-lives in it; if absent, the node uses only the accounts the platform issues
-through the claim-time read. With neither, evaluations run on Claude.
+The `codex:` block is **optional** and names no account: `codex.accounts`
+is retired, and the credentials are the console's. It keeps the binary
+and the model map:
 
 ```yaml
 codex:
   binary: codex                 # default: codex on PATH
-  accounts:
-    - name: plus
-      home: ~/.mesh/codex/plus  # a ChatGPT-plan login
-    - name: api
-      api_key_env: OPENAI_API_KEY
-    - name: api-file
-      api_key_file: ~/.mesh/codex/api.key
   models:                       # the Codex model for each Claude tier
     opus: gpt-6-astra           # override — default for Opus is gpt-6-sol
     sonnet: gpt-6-sol           # override — default for Sonnet is gpt-6-luna
     haiku: gpt-6-luna           # default for Haiku
 ```
-
-Each account has a `name` and exactly one of `home`, `api_key_env` and
-`api_key_file`. A load that finds anything else is refused.
 
 **Default model mappings:** when a planner or agent model names a bare tier
 (`opus`, `sonnet`, `haiku`) for a Codex evaluator, the node maps it to
@@ -1760,14 +1777,6 @@ Each account has a `name` and exactly one of `home`, `api_key_env` and
 `gpt-6-sol` does for one evaluation, so it never runs unless an item pins
 it or `models:` names it. Full model ids (`gpt-6-astra`, `gpt-6-sol`,
 `gpt-6-luna`) pass through unchanged.
-
-**Issued credentials:** An OpenAI credential added in the console and serving
-`codex` is handed to the claimed session by the claim-time read. A ChatGPT
-login (the `auth.json` from `codex login`, pasted as the secret) is written
-into the session's own temporary `CODEX_HOME/auth.json` and removed with it.
-A login Codex refreshed is kept under `<user cache dir>/mesh/codex/logins/`
-for the next session on the same secret version. An OpenAI key goes in the
-environment only (docs/adr/adr-005-accounts-on-the-node.md).
 
 `models` maps the Claude tiers to Codex models. A session asked for
 `opus`, `sonnet` or `haiku` runs on that tier's Codex model, and so does

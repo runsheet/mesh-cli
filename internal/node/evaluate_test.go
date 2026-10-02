@@ -189,24 +189,38 @@ func (h *fakeCodexH) runs() int {
 }
 
 // secondFixture is an evaluator on item 1 of a goal of that priority,
-// with Claude saying first and second as the second opinion; the
-// second's readings land in the returned Limits under codex:plan.
+// with Claude saying first and second as the second opinion, on the one
+// issued Codex credential the node knows, plan (oa-1); the second's
+// readings land in the returned Limits under codex:plan.
 func secondFixture(t *testing.T, priority, first string, second harness.Harness) (*gatewaytest.Fake, *Evaluator, *fakeHarness, *Limits) {
 	t.Helper()
+	cacheRoot(t)
 	f := seed(t)
 	f.Goals[goalID]["priority"] = priority
 	f.WorkItems[item1]["status"] = "evaluating"
 	f.WorkItems[item1]["branch"] = "mesh/ship-it-1"
+	// pinned to Claude, so Claude judges first and Codex gives the
+	// second opinion
+	f.WorkItems[item1]["evaluateModel"] = "claude-sonnet-5"
 	gw := gateway.New(f.URL(), "rs_test")
 	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "test-node", NodeID: gateway.NodeID(mustUUID(orgID), "test-node").String(), Capacity: Fixed(1)}
 	f.WorkItems[item1]["nodeId"] = cfg.NodeID
 	ws := &fakeWS{root: t.TempDir()}
 	claude := &fakeHarness{text: first}
-	limits := &Limits{}
-	account := CodexLimitsAccount("plan")
+	plan := gateway.Credential{ID: "oa-1", Label: "plan", Kind: AccountSubscription, Adapter: AdapterCodex, SecretVersion: 1, Secret: codexLogin}
+	f.SessionCredentials[item1] = []map[string]any{
+		{"id": "cred-1", "label": "max-cloud", "vendor": "anthropic", "kind": "subscription", "serves": []any{"claude-code"}, "secret": issuedSecret},
+		{"id": plan.ID, "label": plan.Label, "vendor": "openai", "kind": "oauth_token", "serves": []any{"codex"}, "secret": codexLogin, "secretVersion": float64(1)},
+	}
+	limits, known := &Limits{}, &KnownAccounts{}
+	if err := known.Note(IssuedAccount(plan), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	loop := &Loop{Known: known, Limits: limits}
 	ev := &Evaluator{GW: gw, Harness: claude, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, Model: "sonnet",
-		Codex: ObserveLimitsAs(second, limits, account), CodexModel: func(string) string { return "gpt-6-astra" }, CodexAccount: account, Limits: limits,
-		Thresholds: func() LimitsConfig { return LimitsConfig{} }, Log: log.New(io.Discard, "", 0)}
+		Codex: ObserveLimits(second, limits), CodexModel: func(string) string { return "gpt-6-astra" }, CodexAccounts: loop.CodexCandidates, Limits: limits,
+		Thresholds: func() LimitsConfig { return LimitsConfig{} }, Credentials: &Credentials{GW: gw, Limits: limits, Known: known, Log: log.New(io.Discard, "", 0)},
+		Log: log.New(io.Discard, "", 0)}
 	return f, ev, claude, limits
 }
 
@@ -328,7 +342,7 @@ func TestSecondOpinionAccountStopped(t *testing.T) {
 		FiveHour: harness.RateLimitWindow{Utilization: 1, ResetsAt: now.Add(time.Hour)}})
 	in := evaluateItem1(t, f, ev)
 	notes, _ := in["notes"].(string)
-	if codex.runs() != 0 || in["passed"] != true || !strings.Contains(notes, "Codex second opinion unavailable: account codex:plan is stopped until") {
+	if codex.runs() != 0 || in["passed"] != true || !strings.Contains(notes, "Codex second opinion unavailable: no Codex account has headroom") {
 		t.Fatalf("codex runs %d, recorded %+v", codex.runs(), in)
 	}
 	// the loop — no Claude accounts configured, and so judged by its
@@ -575,7 +589,7 @@ func TestSecondOpinionUsageInTheOneReport(t *testing.T) {
 	codex := &fakeCodexH{text: "Holds.\nVERDICT: PASS", cost: 0.40,
 		usage: &harness.Usage{Model: "gpt-6-astra", InputTokens: 1000, CachedInputTokens: 200, OutputTokens: 50}}
 	f, ev, _, _ := secondFixture(t, "high", "Holds.\n\nVERDICT: PASS", codex)
-	ev.Credentials = &Credentials{GW: ev.GW.(*gateway.Client), Limits: &Limits{}, Log: log.New(io.Discard, "", 0)}
+	issueClaude(f, item1)
 	in := evaluateItem1(t, f, ev)
 	if in["costCents"] != float64(165) {
 		t.Fatalf("recorded %+v", in)
@@ -585,7 +599,7 @@ func TestSecondOpinionUsageInTheOneReport(t *testing.T) {
 	}
 	u := f.SessionUsage[0].Input
 	if u["listCostCents"] != float64(165) || u["inputTokens"] != float64(1000) || u["cacheReadTokens"] != float64(200) ||
-		u["outputTokens"] != float64(50) || u["adapter"] != "claude-code" || u["credentialKind"] != "unset" || u["actualCostCents"] != float64(0) {
+		u["outputTokens"] != float64(50) || u["adapter"] != "claude-code" || u["credentialId"] != "cred-1" || u["credentialKind"] != "subscription" || u["actualCostCents"] != float64(0) {
 		t.Fatalf("usage: %v", u)
 	}
 	checkNoOldUsage(t, f)

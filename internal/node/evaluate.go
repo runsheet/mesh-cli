@@ -1,6 +1,7 @@
 package node
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -80,14 +81,11 @@ type Evaluator struct {
 	// CodexModel maps the Claude evaluate model to Codex's
 	// (CodexConfig.CodexModel; nil: Codex's own default).
 	CodexModel func(claudeModel string) string
-	// CodexAccount is the Limits key of the Codex harness's own account
-	// (CodexLimitsAccount of node.yaml's codex: account): a reading there
-	// that paces or stops it skips a second opinion on it.
-	CodexAccount string
 	// CodexAccounts are the Codex accounts an evaluation may run on
-	// first (Loop.CodexCandidates: the issued ones Known holds, and
-	// node.yaml's codex: account, which has no ID). Nil: Codex is only
-	// the second opinion, on its own account.
+	// (Loop.CodexCandidates: the issued ones Known holds, and only
+	// those). Nil or none: no evaluation and no second opinion runs on
+	// Codex — the operator's own Codex login is never one (ADR 011's
+	// amendment 2026-10-02).
 	CodexAccounts func() []AccountConfig
 	// Waits says once per item that an item pinned to a family with no
 	// headroom waits in evaluating (nil: every time).
@@ -271,6 +269,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	}
 	sc, _ := e.Scopes.ByOrg(item.OrgID)
 	ref := gateway.SessionRef{Kind: string(harness.KindEvaluate), ItemID: item.ID, GoalID: item.GoalID}
+	ctx = withSubject(ctx, sc, cmp.Or(item.ProjectID, res.Project.ID), res.Project.Slug)
 	acct, fam, err := e.openFamily(ctx, ref, sc.NodeID, fam, label)
 	if err != nil {
 		return err
@@ -762,19 +761,16 @@ func (e *Evaluator) secondOpinion(ctx context.Context, ev evalRun, on family, jo
 	var acct *SessionAccount
 	sc, _ := e.Scopes.ByOrg(ev.item.OrgID)
 	ref := gateway.SessionRef{Kind: string(harness.KindEvaluate), ItemID: ev.item.ID, GoalID: ev.item.GoalID}
+	ctx = withSubject(ctx, sc, ev.item.ProjectID, "")
 	var open func() (*SessionAccount, error)
 	if on.codex {
-		a, why, ok := e.codexForSecond(ev.res.Goal.Priority)
-		if !ok {
+		if _, why, ok := e.codexForSecond(ev.res.Goal.Priority); !ok {
 			return opinion{unavailable: why}
 		}
 		h = e.Codex
-		if a.ID != "" {
-			// an issued Codex account: opened as a first Codex
-			// evaluation's is; the harness's own needs nothing opened
-			open = func() (*SessionAccount, error) {
-				return e.Credentials.Open(withChooser(ctx, e.codexChooser(ev.res.Goal.Priority, false)), ref, sc.NodeID, nil, AdapterCodex)
-			}
+		// an issued Codex account, opened as a first Codex evaluation's is
+		open = func() (*SessionAccount, error) {
+			return e.Credentials.Open(withChooser(ctx, e.codexChooser(ev.res.Goal.Priority, false)), ref, sc.NodeID, nil, AdapterCodex)
 		}
 	} else {
 		open = func() (*SessionAccount, error) {
@@ -952,26 +948,15 @@ func (e *Evaluator) blind(itemID, line string) error {
 	return ErrNoContext
 }
 
-// codexForSecond is the Codex account a second opinion for a goal of
-// that priority runs on, or why there is none: none of CodexAccounts
-// has headroom, or — with no CodexAccounts — the harness's own account
-// (CodexAccount) is paced or stopped.
+// codexForSecond is the issued Codex account a second opinion for a
+// goal of that priority runs on, or why there is none: none of
+// CodexAccounts has headroom.
 func (e *Evaluator) codexForSecond(priority string) (AccountConfig, string, bool) {
-	if e.CodexAccounts != nil {
-		a, ok := e.chooseCodex(priority, false)
-		if !ok {
-			return AccountConfig{}, "no Codex account has headroom", false
-		}
-		return a, "", true
+	a, ok := e.chooseCodex(priority, false)
+	if !ok {
+		return AccountConfig{}, "no Codex account has headroom", false
 	}
-	if e.Limits != nil && e.CodexAccount != "" {
-		if r, ok := e.Limits.Reading(e.CodexAccount); ok {
-			if p := pace(time.Now(), r, e.thresholds()); p.mode != paceNormal {
-				return AccountConfig{}, fmt.Sprintf("account %s is %s until %s: %s", e.CodexAccount, p.mode, p.resumeAt.UTC().Format(time.RFC3339), p.why), false
-			}
-		}
-	}
-	return AccountConfig{}, "", true
+	return a, "", true
 }
 
 // bothNotes labels the two verdicts, the first family's first, each by
@@ -1018,10 +1003,7 @@ type family struct {
 	// (EvaluateModel) whichever family runs, which a Codex one maps from
 	// and a Claude second opinion runs on
 	model, claude string
-	// account is a Codex session's: an issued one (its ID set) or the
-	// harness's own (node.yaml's codex:, no ID)
-	account  AccountConfig
-	priority string
+	priority      string
 }
 
 func (f family) name() string {
@@ -1136,14 +1118,13 @@ func (e *Evaluator) family(ctx context.Context, item gateway.WorkItem, priority,
 	case AdapterClaudeCode:
 		return fam, nil
 	case AdapterCodex:
-		a, ok := e.chooseCodex(priority, true)
-		if !ok {
+		if _, ok := e.chooseCodex(priority, true); !ok {
 			return fam, e.waits(item.ID, label, model)
 		}
-		return family{codex: true, pinned: true, model: model, claude: claude, account: a, priority: priority}, nil
+		return family{codex: true, pinned: true, model: model, claude: claude, priority: priority}, nil
 	}
-	if a, ok := e.chooseCodex(priority, false); ok {
-		return family{codex: true, model: e.codexModel(claude), claude: claude, account: a, priority: priority}, nil
+	if _, ok := e.chooseCodex(priority, false); ok {
+		return family{codex: true, model: e.codexModel(claude), claude: claude, priority: priority}, nil
 	}
 	return fam, nil
 }
@@ -1159,24 +1140,18 @@ func (e *Evaluator) waits(itemID, label, model string) error {
 
 // openFamily opens the session's account on its family: a Codex one on
 // the chosen issued credential (by the same rule, among those the
-// claim-time read issues) or on the harness's own; a Claude one as
-// ever. An unpinned Codex evaluation none of whose issued credentials
+// claim-time read issues), never the operator's own login; a Claude one
+// as ever. An unpinned Codex evaluation none of whose issued credentials
 // has headroom after all runs on Claude instead; a pinned one waits.
 func (e *Evaluator) openFamily(ctx context.Context, ref gateway.SessionRef, nodeID string, fam family, label string) (*SessionAccount, family, error) {
 	if fam.codex {
-		var acct *SessionAccount
-		var err error
-		if fam.account.ID == "" {
-			acct, err = e.Credentials.OpenOwn(ctx, ref, nodeID, fam.account)
-		} else {
-			acct, err = e.Credentials.Open(withChooser(ctx, e.codexChooser(fam.priority, fam.pinned)), ref, nodeID, nil, AdapterCodex)
-		}
+		acct, err := e.Credentials.Open(withChooser(ctx, e.codexChooser(fam.priority, fam.pinned)), ref, nodeID, nil, AdapterCodex)
 		switch {
 		case err == nil:
 			e.Waits.Forget(ref.ItemID)
 			acct.Model = fam.model
 			return acct, fam, nil
-		case !errors.Is(err, ErrNoAccount):
+		case !errors.Is(err, ErrNoAccount) && !isNoCredential(err):
 			return nil, fam, err
 		case fam.pinned:
 			return nil, fam, e.waits(ref.ItemID, label, fam.model)
@@ -1196,10 +1171,9 @@ func (e *Evaluator) CodexHeadroom(priority string) bool {
 }
 
 // hasCodex says the evaluator has Codex to run on at all: its harness,
-// and an account — any of CodexAccounts, or (nil CodexAccounts) the
-// harness's own.
+// and an issued Codex account (CodexAccounts).
 func (e *Evaluator) hasCodex() bool {
-	return e.Codex != nil && (e.CodexAccounts == nil || len(e.CodexAccounts()) > 0)
+	return e.Codex != nil && e.CodexAccounts != nil && len(e.CodexAccounts()) > 0
 }
 
 // chooseCodex is the Codex account an evaluation of that priority runs

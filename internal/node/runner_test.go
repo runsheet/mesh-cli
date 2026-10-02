@@ -940,6 +940,7 @@ func TestNoValidationFileFinishesAsBefore(t *testing.T) {
 func TestPerStepMinutesRideTheUsageRecord(t *testing.T) {
 	r, _, _, f, item, _ := validatingRunner(t, withValidation(), map[string]string{"api/api.go": "package api\n// z\n"})
 	r.Credentials = &Credentials{GW: r.GW.(*gateway.Client)}
+	issueClaude(f, item.ID)
 	if err := r.RunItem(context.Background(), item); err != nil {
 		t.Fatal(err)
 	}
@@ -969,6 +970,7 @@ func TestNoValidationUsageFinishesSaidOnce(t *testing.T) {
 	r, _, _, f, item, logs := validatingRunner(t, withValidation(), map[string]string{"api/api.go": "package api\n// w\n"})
 	f.NoValidationUsage = true
 	r.Credentials = &Credentials{GW: r.GW.(*gateway.Client)}
+	issueClaude(f, item.ID)
 	r.Notices = &ValidationNotices{}
 	if err := r.RunItem(context.Background(), item); err != nil {
 		t.Fatal(err)

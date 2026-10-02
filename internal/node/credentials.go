@@ -1,6 +1,7 @@
 package node
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -58,9 +59,18 @@ type Credentials struct {
 	// (label, kind, id, caps; never the secret), so the loop can learn
 	// which accounts the platform issues (nil: not remembered here).
 	Known *KnownAccounts
+	// NoCredential remembers the projects whose read issued no
+	// credential for an adapter (ErrNoCredential), for the loop to leave
+	// their work unclaimed; the same store as Loop.NoCredential (nil:
+	// not remembered, and each one logged).
+	NoCredential *NoCredentials
 	// Now is the clock (nil: time.Now).
 	Now func() time.Time
 	Log *log.Logger
+
+	projMu sync.Mutex
+	// projects are the project slugs read by id this run (projectSlug).
+	projects map[string]string
 
 	credOnce, usageOnce, toolUsageOnce, toolListOnce, usageDetailOnce, contextOnce sync.Once
 	// documentsFetchedOnce and toolNamesOnce are Finish's once-per-run
@@ -150,43 +160,33 @@ type SessionAccount struct {
 // read); those it issues for that adapter are the accounts the session
 // chooses among, by the rule the loop chose by (withChooser) — an api
 // credential whose daily or monthly cap is spent is never among them (a
-// hard stop), and none left, or none of the adapter's issued at all, is
-// ErrNoAccount. A platform without the read, or one that issues
-// nothing, leaves node.yaml's accounts (OpenAccount) — for a Codex
-// session, the Codex harness's own account (no AccountSession); a
-// refusal is an error. No error or log line carries a secret.
+// hard stop), and none left is ErrNoAccount. A read that issues none of
+// the adapter's at all is ErrNoCredential, naming the org and project
+// withSubject put on ctx: the session never falls to node.yaml's
+// accounts or the operator's own login (adr-005's amendment 2026-10).
+// Only a platform without the read leaves node.yaml's accounts
+// (OpenAccount), and only for a Claude session; a Codex session has no
+// such fallback — no issued Codex credential is ErrNoAccount, never the
+// operator's own Codex login (ADR 011's amendment 2026-10-02). A refusal
+// is an error. No error or log line carries a secret.
 func (c *Credentials) Open(ctx context.Context, ref gateway.SessionRef, nodeID string, fallback []AccountConfig, adapter string) (*SessionAccount, error) {
-	return c.open(ctx, ref, nodeID, fallback, adapter, nil)
-}
-
-// OpenOwn is a Codex session on the Codex harness's own account (own:
-// node.yaml's codex: account, its label and kind), chosen by the
-// evaluator over the issued ones: the claim-time read is still asked
-// for the session's tools and noted in Known, but no issued credential
-// is opened, and the report names own.
-func (c *Credentials) OpenOwn(ctx context.Context, ref gateway.SessionRef, nodeID string, own AccountConfig) (*SessionAccount, error) {
-	return c.open(ctx, ref, nodeID, nil, AdapterCodex, &own)
-}
-
-func (c *Credentials) open(ctx context.Context, ref gateway.SessionRef, nodeID string, fallback []AccountConfig, adapter string, own *AccountConfig) (*SessionAccount, error) {
 	if adapter == "" {
 		adapter = AdapterClaudeCode
 	}
 	if adapter == AdapterCodex {
-		// node.yaml's accounts are Claude's; the codex: block's is the
-		// harness's own
+		// node.yaml's accounts are Claude's, and a Codex session runs
+		// only on an issued credential
 		fallback = nil
 	}
 	if c == nil {
+		if adapter == AdapterCodex {
+			return nil, ErrNoAccount
+		}
 		acct, err := OpenAccount(ctx, fallback)
 		if err != nil {
 			return nil, err
 		}
-		s := &SessionAccount{AccountSession: acct, Adapter: adapter}
-		if own != nil {
-			s.account = *own
-		}
-		return s, nil
+		return &SessionAccount{AccountSession: acct, Adapter: adapter}, nil
 	}
 	s := &SessionAccount{creds: c, ref: ref, nodeID: nodeID, started: c.now(), Adapter: adapter}
 	var issued []gateway.Credential
@@ -194,8 +194,9 @@ func (c *Credentials) open(ctx context.Context, ref gateway.SessionRef, nodeID s
 	if err == nil && read != nil {
 		issued, s.Tools = read.Credentials, read.Tools
 	}
+	unsupported := gateway.IsUnsupported(err)
 	switch {
-	case gateway.IsUnsupported(err):
+	case unsupported:
 		c.credOnce.Do(func() {
 			c.logf("credentials: the platform issues no session credentials; sessions run on node.yaml's accounts (said once, for every session this run)")
 		})
@@ -203,14 +204,31 @@ func (c *Credentials) open(ctx context.Context, ref gateway.SessionRef, nodeID s
 	case err != nil:
 		return nil, fmt.Errorf("session credentials: %w", err)
 	}
-	if own != nil {
-		for _, cr := range issued {
-			if err := c.Known.Note(IssuedAccount(cr), c.now()); err != nil {
-				c.logf("known accounts: %v", err)
+	if !unsupported {
+		// the read answered: only what it issued for this adapter may
+		// run the session, never the fallback nor the harness's own
+		// account (adr-005's amendment 2026-10)
+		subj := subjectFrom(ctx)
+		if !slices.ContainsFunc(issued, func(cr gateway.Credential) bool { return IssuedAccount(cr).AdapterOf() == adapter }) {
+			for _, cr := range issued {
+				if err := c.Known.Note(IssuedAccount(cr), c.now()); err != nil {
+					c.logf("known accounts: %v", err)
+				}
 			}
+			nc := &ErrNoCredential{Org: cmp.Or(subj.org, "(unknown)"), Project: c.projectSlug(ctx, subj), ProjectID: subj.projectID, Adapter: adapter}
+			if c.NoCredential != nil {
+				c.NoCredential.Note(cmp.Or(ref.GoalID, ref.DirectionID, ref.ItemID), nc)
+			} else {
+				c.logf("accounts: %v", nc)
+			}
+			return nil, nc
 		}
-		s.account = *own
-	} else if len(issued) == 0 {
+		c.NoCredential.Clear(subj.projectID, adapter)
+	}
+	if len(issued) == 0 && adapter == AdapterCodex {
+		return nil, ErrNoAccount
+	}
+	if len(issued) == 0 {
 		acct, err := OpenAccount(ctx, fallback)
 		if err != nil {
 			return nil, err
@@ -265,6 +283,40 @@ func (c *Credentials) open(ctx context.Context, ref gateway.SessionRef, nodeID s
 		s.before = &r
 	}
 	return s, nil
+}
+
+// projectSlug is the subject's project slug: as the caller had it, else
+// read by id once per run, else (no id, or the read failed) its id.
+func (c *Credentials) projectSlug(ctx context.Context, subj subject) string {
+	if subj.project != "" {
+		return subj.project
+	}
+	if subj.projectID == "" {
+		return "(unknown)"
+	}
+	c.projMu.Lock()
+	slug, ok := c.projects[subj.projectID]
+	c.projMu.Unlock()
+	if ok {
+		return slug
+	}
+	pr, ok := c.GW.(interface {
+		Project(ctx context.Context, id string) (*gateway.Project, error)
+	})
+	if !ok {
+		return subj.projectID
+	}
+	p, err := pr.Project(ctx, subj.projectID)
+	if err != nil || p == nil || p.Slug == "" {
+		return subj.projectID // not cached: the next one asks again
+	}
+	c.projMu.Lock()
+	if c.projects == nil {
+		c.projects = map[string]string{}
+	}
+	c.projects[subj.projectID] = p.Slug
+	c.projMu.Unlock()
+	return p.Slug
 }
 
 // readingsFor are the readings an adapter's accounts are judged by, by
