@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -366,6 +367,7 @@ func TestSystemdScopeKillReal(t *testing.T) {
 	h, cleanup := startSleeps(t, u)
 	defer cleanup()
 	defer exec.Command("systemctl", "--user", "stop", h.UnitName+".scope").Run()
+	skipWithoutCgroup(t, h.UnitName+".scope")
 	killed, err := u.Kill(h)
 	if err != nil {
 		t.Fatal(err)
@@ -376,6 +378,26 @@ func TestSystemdScopeKillReal(t *testing.T) {
 	}
 	if err := h.Wait(t.Context()); err == nil {
 		t.Fatal("the leader exited cleanly: it was not killed")
+	}
+}
+
+// skipWithoutCgroup skips the test when the started scope's cgroup.procs
+// cannot be read: a GitHub Actions runner has a user systemd but no
+// cgroup delegation, and reading the file answers ENODEV ("no such
+// device"). The test proves the kill on a delegated cgroup; a host
+// without one cannot run it.
+func skipWithoutCgroup(t *testing.T, unit string) {
+	t.Helper()
+	sc := HostSystemctl{}
+	props, err := sc.Show(unit, "ControlGroup")
+	if err != nil {
+		t.Fatalf("show %s: %v", unit, err)
+	}
+	if _, err := sc.Processes(props["ControlGroup"]); err != nil {
+		if errors.Is(err, syscall.ENODEV) || errors.Is(err, syscall.EACCES) || errors.Is(err, syscall.EPERM) {
+			t.Skipf("the runner has no cgroup delegation: %s's cgroup.procs cannot be read: %v", unit, err)
+		}
+		t.Fatalf("cgroup.procs of %s: %v", unit, err)
 	}
 }
 
