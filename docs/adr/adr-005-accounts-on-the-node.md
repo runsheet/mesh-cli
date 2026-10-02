@@ -167,8 +167,10 @@ this section describes them.
   `WorkItem.node_id`, `Goal.planner_node_id`,
   `Direction.research_node_id`); anyone else is refused with the
   reason and no secret. A credential row is `{id, label, vendor, kind,
-  serves, plan, windowTargets, dailyCap, monthlyCap, capUnit,
-  secretVersion, secret}`. The node keeps the rows whose `vendor` is
+  serves, plan, priorities, windowTargets, dailyCap, monthlyCap, capUnit,
+  secretVersion, secret}` — `priorities` a list of `urgent`, `high`,
+  `normal`, `low`, absent or empty meaning every priority (item 2's
+  amendment below). The node keeps the rows whose `vendor` is
   `anthropic` and whose `serves` is empty or names `claude-code` —
   any other vendor is a tool's account (ADR-006), not a session's —
   and maps `kind` `subscription` or `oauth_token` to `subscription`,
@@ -760,3 +762,54 @@ accounts: no account serves normal work (max20 serves urgent and high, shhemail 
 
 The `no account has headroom … left unclaimed until one has` line stays
 for work that waits for headroom.
+
+## Amendment — 2026-10-02 (goal `a-credential-names-the-priorities-it-serves`, item 2): the claim-time read carries `priorities` and `windowTargets`
+
+Item 1 gave `AccountConfig` `Priorities`, `PaceFiveHour` and
+`PaceSevenDay` and described their effect; this item is the read that
+fills them from the platform.
+
+**`gateway.Credential` carries both fields.** `Priorities []string` is
+the credential row's `priorities` — a JSON list kept to `urgent`,
+`high`, `normal`, `low`, lower-cased, an unrecognised or absent value
+dropped; empty (including all-unrecognised or absent) means every
+priority. `WindowTargets []WindowTarget` (`WindowTarget{Window,
+Percent}`) is the row's `windowTargets`, `Percent` kept as given
+(0..100). `Credential.String()` (and `GoString()`) names what the
+credential serves — `serves urgent, high` or `serves all` — and never
+its secret, so a log line is safe to print as before.
+
+**The window name.** `normalizeWindow` accepts the platform's own
+`five_hour`/`seven_day` and the camelCase `fiveHour`/`sevenDay` the
+console and the heartbeat have also used; any other name is dropped,
+not guessed at. (Runsheet's published fixture for this read could not
+be reached while building this amendment — `itemCredentials.json` 404s
+— so this list is the accepted spellings as coded, to be checked
+against the fixture when it is reachable.)
+
+**`IssuedAccount` maps the read onto the account.** It copies
+`Priorities` straight across, and turns each `WindowTarget` into a
+fraction on the matching field: `five_hour` → `PaceFiveHour`, `seven_day`
+→ `PaceSevenDay`, each `Percent / 100`; an unknown window (already
+dropped by `normalizeWindow`) is never reached, and a credential with
+no window targets leaves both at 0 — the node-wide rule, as item 1
+describes.
+
+**The known accounts persist both**, so a restart knows an account's
+priorities and pace point before its first claim: `accounts.json` holds
+`priorities` and `windowTargets` beside the rest of the row (never the
+secret), and `KnownAccounts.Accounts` hands them back on `AccountConfig`
+the same way a fresh claim-time read would.
+
+**`mesh node start` logs each issued account.** After `Loop.Known` is
+set and before the first tick, one line per account the platform has
+issued this node lately (`node.IssuedAccountLines`):
+
+```
+accounts: issued max20 (subscription, serves urgent, high, paces at 50% five-hour)
+accounts: issued shhemail (subscription, serves all, paces at node-wide)
+```
+
+— the kind, what it serves (`all` when `Priorities` is empty), and its
+own pace point (`N% five-hour`, `N% seven-day`, both joined when both
+are set, or `node-wide` when neither is).

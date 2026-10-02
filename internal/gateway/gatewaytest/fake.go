@@ -156,7 +156,15 @@ type Fake struct {
 	// (itemCredentials, planCredentials, researchCredentials) hands the
 	// node, in the platform's shape: id, label, vendor, kind
 	// (subscription | api_key | oauth_token), serves, dailyCap,
-	// monthlyCap, capUnit, secret. A subject with none gets an empty
+	// monthlyCap, capUnit, secret, priorities, windowTargets. priorities
+	// is a JSON list of urgent/high/normal/low (absent or empty serves
+	// every priority); windowTargets is a list of {window, percent} —
+	// window five_hour or seven_day (fiveHour/sevenDay also read),
+	// percent 0..100 (adr-005's amendment 2026-10-02, a credential names
+	// the priorities it serves): a row hands both as
+	// `"priorities": []any{"urgent", "high"}, "windowTargets":
+	// []any{map[string]any{"window": "five_hour", "percent": 50.0}}`.
+	// A subject with none gets an empty
 	// list. Unsupported[<field>] refuses the field, as a platform
 	// without that read.
 	SessionCredentials map[string][]map[string]any
