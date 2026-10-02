@@ -936,8 +936,8 @@ func TestCodexPreflightFailureWithNoClaudeAccountReturnsTheError(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = ev.Evaluate(context.Background(), *item)
-	if !errors.Is(err, ErrNoAccount) {
-		t.Fatalf("Evaluate: %v, want ErrNoAccount", err)
+	if !isNoCredential(err) {
+		t.Fatalf("Evaluate: %v, want ErrNoCredential", err)
 	}
 	if len(claude.jobs) != 0 || codex.runs() != 0 || len(f.CallsNamed("evaluateWorkItem")) != 0 {
 		t.Fatalf("runs claude %d, codex %d; evaluate calls %d", len(claude.jobs), codex.runs(), len(f.CallsNamed("evaluateWorkItem")))

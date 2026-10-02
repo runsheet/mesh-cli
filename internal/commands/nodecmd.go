@@ -688,7 +688,11 @@ func nodeStart(cmd *cobra.Command, args []string, logger *log.Logger) error {
 	// every one-shot session's account comes from the platform's
 	// claim-time read, node.yaml the fallback, and every one reports
 	// its usage record (adr-005); each fallback is said once per run
-	accounts := &node.Credentials{GW: gw, Limits: loop.Limits, Thresholds: loop.Thresholds, Known: known, Log: logger}
+	// a read that issues no credential for the adapter is a hold, never
+	// the machine's own login: the loop leaves that project's work
+	// unclaimed and says why (adr-005's amendment 2026-10)
+	loop.NoCredential = &node.NoCredentials{Log: logger, Now: loop.Now}
+	accounts := &node.Credentials{GW: gw, Limits: loop.Limits, Thresholds: loop.Thresholds, Known: known, NoCredential: loop.NoCredential, Log: logger}
 	switch nodeModeFlag {
 	case "poll":
 		return runPollMode(ctx, cfg, scopes, gw, loop, workRoot, fallback, accounts, logger)
@@ -1414,7 +1418,15 @@ func evaluateWith(gw *gateway.Client, cfg *node.Config, h harness.Harness, secon
 // whose evaluation saw no context and has no other family — and the
 // loop does not log again every tick.
 func saidByEvaluator(err error) bool {
-	return errors.Is(err, node.ErrFamilyWaits) || errors.Is(err, node.ErrNoContext)
+	return errors.Is(err, node.ErrFamilyWaits) || errors.Is(err, node.ErrNoContext) || saidOnce(err)
+}
+
+// saidOnce is an error node.log has said already, once for its goal: a
+// claim-time read that issued no credential for the session's adapter
+// (node.NoCredentials.Say).
+func saidOnce(err error) bool {
+	_, ok := node.NoCredentialOf(err)
+	return ok
 }
 
 // rebaseWith is the loop's Rebase hook: a fresh session of kind rebase
@@ -1437,7 +1449,7 @@ func rebaseWith(gw *gateway.Client, cfg *node.Config, h harness.Harness, loop *n
 func planWith(gw *gateway.Client, cfg *node.Config, h harness.Harness, loop *node.Loop, workRoot string, accounts *node.Credentials, logger *log.Logger) func(context.Context, gateway.Goal, node.Scope) {
 	return func(ctx context.Context, goal gateway.Goal, scope node.Scope) {
 		pl := planner(ctx, gw, cfg, h, loop, workRoot, accounts, logger)
-		if err := pl.Plan(ctx, goal, scope); err != nil && ctx.Err() == nil {
+		if err := pl.Plan(ctx, goal, scope); err != nil && ctx.Err() == nil && !saidOnce(err) {
 			logger.Printf("goal %s: planning: %v", goal.Slug, err)
 		}
 	}
@@ -1450,7 +1462,7 @@ func planWith(gw *gateway.Client, cfg *node.Config, h harness.Harness, loop *nod
 func researchWith(gw *gateway.Client, cfg *node.Config, h harness.Harness, loop *node.Loop, workRoot string, accounts *node.Credentials, logger *log.Logger) func(context.Context, gateway.Direction, gateway.Project, node.Scope) {
 	return func(ctx context.Context, direction gateway.Direction, project gateway.Project, scope node.Scope) {
 		dir := director(ctx, gw, cfg, h, loop, workRoot, accounts, logger)
-		if err := dir.Research(ctx, direction, project, scope); err != nil && ctx.Err() == nil {
+		if err := dir.Research(ctx, direction, project, scope); err != nil && ctx.Err() == nil && !saidOnce(err) {
 			logger.Printf("%s/%s: research: %v", project.Slug, direction.Slug, err)
 		}
 	}

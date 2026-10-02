@@ -172,6 +172,7 @@ func TestBuildNotesItsToolUse(t *testing.T) {
 // An evaluation's notes carry the same tool-use note.
 func TestEvaluationNotesItsToolUse(t *testing.T) {
 	f := seed(t)
+	issueClaude(f, item1)
 	gw := gateway.New(f.URL(), "rs_test")
 	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "test-node", NodeID: "22222222-2222-4222-8222-222222222222"}
 	f.WorkItems[item1]["status"], f.WorkItems[item1]["nodeId"], f.WorkItems[item1]["branch"] = "evaluating", cfg.NodeID, "mesh/ship-it-1"
@@ -203,6 +204,7 @@ func TestEvaluationNotesItsToolUse(t *testing.T) {
 // session whose every call errored is no verdict, ADR 011.)
 func TestEvaluationNotesTheBuiltinsError(t *testing.T) {
 	f := seed(t)
+	issueClaude(f, item1)
 	gw := gateway.New(f.URL(), "rs_test")
 	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "test-node", NodeID: "22222222-2222-4222-8222-222222222222"}
 	f.WorkItems[item1]["status"], f.WorkItems[item1]["nodeId"], f.WorkItems[item1]["branch"] = "evaluating", cfg.NodeID, "mesh/ship-it-1"

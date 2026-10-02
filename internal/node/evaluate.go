@@ -1,6 +1,7 @@
 package node
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -288,6 +289,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	}
 	sc, _ := e.Scopes.ByOrg(item.OrgID)
 	ref := gateway.SessionRef{Kind: string(harness.KindEvaluate), ItemID: item.ID, GoalID: item.GoalID}
+	ctx = withSubject(ctx, sc, cmp.Or(item.ProjectID, res.Project.ID), res.Project.Slug)
 	acct, fam, err := e.openFamily(ctx, ref, sc.NodeID, fam, label)
 	if err != nil {
 		return err
@@ -695,6 +697,7 @@ func (e *Evaluator) secondOpinion(ctx context.Context, ev evalRun, on family, jo
 	var acct *SessionAccount
 	sc, _ := e.Scopes.ByOrg(ev.item.OrgID)
 	ref := gateway.SessionRef{Kind: string(harness.KindEvaluate), ItemID: ev.item.ID, GoalID: ev.item.GoalID}
+	ctx = withSubject(ctx, sc, ev.item.ProjectID, "")
 	var open func() (*SessionAccount, error)
 	if on.codex {
 		a, why, ok := e.codexForSecond(ev.res.Goal.Priority)
@@ -1109,7 +1112,7 @@ func (e *Evaluator) openFamily(ctx context.Context, ref gateway.SessionRef, node
 			e.Waits.Forget(ref.ItemID)
 			acct.Model = fam.model
 			return acct, fam, nil
-		case !errors.Is(err, ErrNoAccount):
+		case !errors.Is(err, ErrNoAccount) && !isNoCredential(err):
 			return nil, fam, err
 		case fam.pinned:
 			return nil, fam, e.waits(ref.ItemID, label, fam.model)

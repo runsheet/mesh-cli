@@ -101,6 +101,12 @@ func (p *Planner) Plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 		return nil // said so already
 	}
 	err := p.plan(ctx, goal, scope)
+	if _, ok := NoCredentialOf(err); ok {
+		// no credential issued is a hold, not a try: the platform has no
+		// release for a plan claim, so it lapses, and the loop asks again
+		// once Loop.NoCredential's re-check is due
+		return err
+	}
 	if err != nil && ctx.Err() == nil {
 		p.mu.Lock()
 		p.attempts[goal.ID] = tries + 1
@@ -360,6 +366,7 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 	}
 	budget, budgetSource := p.budgetWithSource(&goal)
 	p.logf("goal %s: planning in %s (%d repos), budget $%.2f (%s)", goal.Slug, dir, len(repos), budget, budgetSource)
+	ctx = withSubject(ctx, scope, goal.ProjectID, project.Slug)
 	items, reasons, flags, questions, cost, acct, err := p.ask(ctx, goal, scope.NodeID, dir, budget, in, repos, merged)
 	acct.SetContextBytes(written.Bytes)
 	acct.SetLabel("goal "+goal.Slug, string(harness.KindPlan))
@@ -454,6 +461,8 @@ func (p *Planner) ask(ctx context.Context, goal gateway.Goal, nodeID, dir string
 	job := harness.Job{Kind: harness.KindPlan, Workspace: dir, Prompt: harness.PlanPrompt(in), MaxBudgetUSD: budget, Label: goal.Slug + " plan", Timeout: p.Timeout, MCPServers: p.MCP, Model: p.Model}
 	acct, err := p.Credentials.Open(ctx, gateway.SessionRef{Kind: string(harness.KindPlan), GoalID: goal.ID}, nodeID, p.Accounts, Adapter(p.Harness))
 	if err != nil {
+		// an ErrNoCredential among them: no session starts, and the loop
+		// leaves the goal's plan unclaimed (Loop.NoCredential)
 		return nil, nil, nil, nil, 0, nil, err
 	}
 	defer unlessDetached(ctx, acct.Cleanup)

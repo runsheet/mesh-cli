@@ -575,6 +575,7 @@ func TestSecondOpinionUsageInTheOneReport(t *testing.T) {
 	codex := &fakeCodexH{text: "Holds.\nVERDICT: PASS", cost: 0.40,
 		usage: &harness.Usage{Model: "gpt-6-astra", InputTokens: 1000, CachedInputTokens: 200, OutputTokens: 50}}
 	f, ev, _, _ := secondFixture(t, "high", "Holds.\n\nVERDICT: PASS", codex)
+	issueClaude(f, item1)
 	ev.Credentials = &Credentials{GW: ev.GW.(*gateway.Client), Limits: &Limits{}, Log: log.New(io.Discard, "", 0)}
 	in := evaluateItem1(t, f, ev)
 	if in["costCents"] != float64(165) {
@@ -585,7 +586,7 @@ func TestSecondOpinionUsageInTheOneReport(t *testing.T) {
 	}
 	u := f.SessionUsage[0].Input
 	if u["listCostCents"] != float64(165) || u["inputTokens"] != float64(1000) || u["cacheReadTokens"] != float64(200) ||
-		u["outputTokens"] != float64(50) || u["adapter"] != "claude-code" || u["credentialKind"] != "unset" || u["actualCostCents"] != float64(0) {
+		u["outputTokens"] != float64(50) || u["adapter"] != "claude-code" || u["credentialKind"] != "subscription" || u["actualCostCents"] != float64(0) {
 		t.Fatalf("usage: %v", u)
 	}
 	checkNoOldUsage(t, f)
