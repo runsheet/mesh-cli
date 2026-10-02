@@ -7,5 +7,7 @@ id
 maxLiveGoals
 name
 orgId
+protectedPaths?
 repoIds
+secondOpinion?
 slug

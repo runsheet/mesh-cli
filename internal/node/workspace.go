@@ -980,7 +980,7 @@ type Gateway interface {
 	FailWorkItem(ctx context.Context, itemID, errMsg string) error
 	ReleaseWorkItem(ctx context.Context, itemID, nodeID, reason string) error
 	IssueItemRepoToken(ctx context.Context, itemID, nodeID string) (*gateway.GitHubToken, error)
-	EvaluateWorkItem(ctx context.Context, itemID string, passed bool, notes string, clauses []gateway.FailedClause, costCents int, usage *gateway.UsageReport) error
+	EvaluateWorkItem(ctx context.Context, itemID string, passed bool, notes string, clauses []gateway.FailedClause, costCents int, usage *gateway.UsageReport, choice gateway.EvaluateChoice) error
 	// WorkItemPriorAttempts reads the evaluations already recorded
 	// against an item (none, and no error, on a platform that does not
 	// serve them).
@@ -988,7 +988,7 @@ type Gateway interface {
 	// EvaluateWorkItemNoVerdict records an evaluation that reached no
 	// verdict (gateway.ErrNoVerdictOutcome on a platform without the
 	// outcome, nothing sent).
-	EvaluateWorkItemNoVerdict(ctx context.Context, itemID, reason string, costCents int, usage *gateway.UsageReport) error
+	EvaluateWorkItemNoVerdict(ctx context.Context, itemID, reason, model string, costCents int, usage *gateway.UsageReport) error
 	Goal(ctx context.Context, id string) (*gateway.Goal, error)
 	Goals(ctx context.Context, orgID string) ([]gateway.Goal, error)
 	ClaimPlan(ctx context.Context, goalID, nodeID string) error

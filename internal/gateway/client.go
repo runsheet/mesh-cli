@@ -97,6 +97,10 @@ type Client struct {
 	// optional fields (replacingItemId, narrowReplans): goals are read
 	// with the base fields alone from then on.
 	goalsWithoutNarrow atomic.Bool
+	// projectsWithoutExtras is set once the gateway has refused
+	// ProjectIndex's optional fields (protectedPaths, secondOpinion):
+	// projects are read with the base fields alone from then on.
+	projectsWithoutExtras atomic.Bool
 	// credentialsWithoutEnterprise is set once the gateway has refused
 	// CredentialIndex.enterpriseId (a platform older than runsheet ADR
 	// 030): every later credential read asks for credentialFields alone.
@@ -143,7 +147,11 @@ type Client struct {
 	// replaceItemSchema is whether the gateway's requestPlan input was
 	// last seen to take replaceItem, kept for ScalingProbeEvery.
 	replaceItemSchema holdingProbe
-	Now               func() time.Time
+	// evaluatorsSchema is whether the gateway's evaluateWorkItem input
+	// was last seen to take evaluators (and evaluatorsWhy beside it),
+	// kept for ScalingProbeEvery (goal one-evaluator-for-ordinary-work).
+	evaluatorsSchema holdingProbe
+	Now              func() time.Time
 }
 
 // New returns a client for baseURL (scheme+host, no trailing slash) with
@@ -755,6 +763,14 @@ type WorkItem struct {
 	// ProjectID is the mesh-context project the item's goal is in: the scope
 	// its agent resolves in (AgentIDs).
 	ProjectID string `json:"projectId"`
+	// ProtectedFiles are this item's own touched files that matched a
+	// protected rule (runsheet ADR 021, console-trd §3); ProtectedRulePaths
+	// the rule's own globs. Both empty from an older platform (`?` in
+	// fields/WorkItemIndex.txt; goal one-evaluator-for-ordinary-work): the
+	// evaluate path takes an empty ProtectedFiles as no protected path
+	// touched, never as unknown.
+	ProtectedFiles     []string `json:"protectedFiles"`
+	ProtectedRulePaths []string `json:"protectedRulePaths"`
 	// AgentSlug names the agent that builds the item (runsheet trd §6c);
 	// empty is the role's resolved definition.
 	AgentSlug string `json:"agentSlug"`
@@ -1153,6 +1169,36 @@ type Project struct {
 	// where a direction's own ceiling caps its share. 0 is the
 	// platform's default.
 	MaxLiveGoals int `json:"maxLiveGoals"`
+	// ProtectedPaths are the project's own protected-path globs — a
+	// repo's `.mesh/config.yml` protected_paths overrides them (runsheet
+	// ADR 021); empty from an older platform (`?` in
+	// fields/ProjectIndex.txt).
+	ProtectedPaths []string `json:"protectedPaths"`
+	// SecondOpinion is the project's `second_opinion` setting: "always"
+	// keeps every item on two evaluators, "rule" (the field's default
+	// value, an empty read and anything else) hands the choice to the
+	// evaluate path's own rule. Not on the platform yet, so it is an
+	// optional field the client drops once the gateway refuses it (`?`
+	// in fields/ProjectIndex.txt; goal one-evaluator-for-ordinary-work).
+	// Read it through SecondOpinionRule, never the raw field.
+	SecondOpinion string `json:"secondOpinion"`
+}
+
+// SecondOpinionAlways is the one value of Project.SecondOpinion that
+// SecondOpinionRule reports back unchanged: every other value, an empty
+// one and an older platform's un-read one all mean "rule" — the
+// evaluate path's own choice of one or two evaluators (goal
+// one-evaluator-for-ordinary-work).
+const SecondOpinionAlways = "always"
+
+// SecondOpinionRule is the project's second_opinion setting as the
+// evaluate path reads it: SecondOpinionAlways only when the field says
+// so exactly, else "rule".
+func (p Project) SecondOpinionRule() string {
+	if p.SecondOpinion == SecondOpinionAlways {
+		return SecondOpinionAlways
+	}
+	return "rule"
 }
 
 // Project reads one project by id.
@@ -1160,8 +1206,10 @@ func (c *Client) Project(ctx context.Context, id string) (*Project, error) {
 	var out struct {
 		Project *Project `json:"projectIndex"`
 	}
-	q := fmt.Sprintf(`{ projectIndex(namespace: %q, id: %q) { %s } }`, NS, id, projectFields)
-	if err := c.Query(ctx, q, nil, &out); err != nil {
+	q := func(fields string) string {
+		return fmt.Sprintf(`{ projectIndex(namespace: %q, id: %q) { %s } }`, NS, id, fields)
+	}
+	if err := c.readProjects(ctx, q, &out); err != nil {
 		return nil, err
 	}
 	if out.Project == nil {
@@ -1175,11 +1223,31 @@ func (c *Client) Projects(ctx context.Context, orgID string) ([]Project, error) 
 	var out struct {
 		Projects []Project `json:"projectIndexs"`
 	}
-	q := fmt.Sprintf(`{ projectIndexs(namespace: %q, where: [%s]) { %s } }`, NS, where("org_id", orgID), projectFields)
-	if err := c.Query(ctx, q, nil, &out); err != nil {
+	q := func(fields string) string {
+		return fmt.Sprintf(`{ projectIndexs(namespace: %q, where: [%s]) { %s } }`, NS, where("org_id", orgID), fields)
+	}
+	if err := c.readProjects(ctx, q, &out); err != nil {
 		return nil, err
 	}
 	return out.Projects, nil
+}
+
+// readProjects runs one ProjectIndex read, query being the document with
+// its selection left to fill in. It asks for the optional fields too
+// (fields/ProjectIndex.txt's `?`: protectedPaths, secondOpinion); a
+// gateway that does not know one of them is a platform without it, and
+// from then on the client asks for projectFields alone — every project
+// reads with no protected paths and SecondOpinionRule "rule".
+func (c *Client) readProjects(ctx context.Context, query func(fields string) string, out any) error {
+	if !c.projectsWithoutExtras.Load() {
+		err := c.Query(ctx, query(projectFields+" "+projectOptionalFields), nil, out)
+		var ge *Error
+		if err == nil || !errors.As(err, &ge) || !unknownField(ge.Message, projectOptional...) {
+			return err
+		}
+		c.projectsWithoutExtras.Store(true)
+	}
+	return c.Query(ctx, query(projectFields), nil, out)
 }
 
 // Direction is a DirectionIndex row: one direction of one project — the
@@ -2189,6 +2257,21 @@ func (c *Client) ReleaseWorkItem(ctx context.Context, itemID, nodeID, reason str
 	return c.Mutate(ctx, "releaseWorkItem", itemID, map[string]any{"nodeId": nodeID, "note": reason})
 }
 
+// EvaluateChoice is the evaluate path's choice of evaluator(s) for an
+// item (goal one-evaluator-for-ordinary-work): Model is the tier the
+// deciding evaluation ran on, recorded as evaluatedModel; Evaluators is
+// how many ran, 1 or 2; Why is the reason recorded beside the count
+// (priority, a protected path, a first fail, or the project's
+// second_opinion: always). A zero Model is not sent; Evaluators and Why
+// are sent together, and only when the gateway's EvaluateWorkItemInput
+// takes them (EvaluatorsField) — item 2 of this goal fills the choice
+// in, this client only carries it.
+type EvaluateChoice struct {
+	Model      string
+	Evaluators int
+	Why        string
+}
+
 // EvaluateWorkItem records the evaluator's verdict (phase 1's session; the
 // platform readies or reviews the item) and that session's cost. usage
 // is that session's usage report, carried as `usage` when non-nil (see
@@ -2199,10 +2282,21 @@ func (c *Client) ReleaseWorkItem(ctx context.Context, itemID, nodeID, reason str
 // field (ADR-004: never a field the platform does not accept). A
 // platform without it records the verdict as before, the clauses only in
 // the prose of notes.
-func (c *Client) EvaluateWorkItem(ctx context.Context, itemID string, passed bool, notes string, clauses []FailedClause, costCents int, usage *UsageReport) error {
+// choice carries evaluatedModel and, when the gateway takes them,
+// evaluators and evaluatorsWhy (see EvaluateChoice); its zero value
+// sends none of the three, as EvaluateWorkItem always did before this
+// goal.
+func (c *Client) EvaluateWorkItem(ctx context.Context, itemID string, passed bool, notes string, clauses []FailedClause, costCents int, usage *UsageReport, choice EvaluateChoice) error {
 	in := map[string]any{"passed": passed, "notes": notes, "costCents": costCents}
 	if !passed && len(clauses) > 0 && c.takesInputField(ctx, &c.clausesSchema, "EvaluateWorkItemInput", FailedClausesField) {
 		in[FailedClausesField] = clauses
+	}
+	if choice.Model != "" {
+		in[EvaluatedModelField] = choice.Model
+	}
+	if choice.Evaluators > 0 && c.takesInputField(ctx, &c.evaluatorsSchema, "EvaluateWorkItemInput", EvaluatorsField) {
+		in[EvaluatorsField] = choice.Evaluators
+		in[EvaluatorsWhyField] = choice.Why
 	}
 	return c.mutateWithUsage(ctx, "evaluateWorkItem", itemID, in, usage)
 }
@@ -2210,6 +2304,16 @@ func (c *Client) EvaluateWorkItem(ctx context.Context, itemID string, passed boo
 // FailedClausesField is evaluateWorkItem's input field for the clauses a
 // failed evaluation failed on.
 const FailedClausesField = "failedClauses"
+
+// EvaluatedModelField is evaluateWorkItem's input field for the tier the
+// deciding evaluation ran on; EvaluatorsField and EvaluatorsWhyField are
+// how many evaluators ran and why, sent only to a gateway whose
+// EvaluateWorkItemInput takes them (goal one-evaluator-for-ordinary-work).
+const (
+	EvaluatedModelField = "evaluatedModel"
+	EvaluatorsField     = "evaluators"
+	EvaluatorsWhyField  = "evaluatorsWhy"
+)
 
 // FailedClause is one acceptance clause a failed evaluation failed on,
 // with what would satisfy it. The platform refuses a clause missing
@@ -2283,22 +2387,28 @@ var ErrNoVerdictOutcome = errors.New("gateway: the platform takes no no-verdict 
 // verdict — `passed: false`, `noVerdict: true`, the reason as
 // `noVerdictReason` and in the notes (so a page without the new field
 // still shows it), the session's cost and usage report — so the platform
-// returns the item to evaluating at no cost to its attempts. It sends it
-// only to a gateway whose EvaluateWorkItemInput has `noVerdict` — asked
-// once by introspection and kept for ScalingProbeEvery, as takesHolding
-// (ADR-004: never a field the platform does not accept) — and returns
-// ErrNoVerdictOutcome otherwise.
-func (c *Client) EvaluateWorkItemNoVerdict(ctx context.Context, itemID, reason string, costCents int, usage *UsageReport) error {
+// returns the item to evaluating at no cost to its attempts. model is
+// the tier the deciding evaluation ran on, sent as evaluatedModel when
+// non-empty (EvaluatedModelField), the same field EvaluateWorkItem
+// carries. It sends it only to a gateway whose EvaluateWorkItemInput has
+// `noVerdict` — asked once by introspection and kept for
+// ScalingProbeEvery, as takesHolding (ADR-004: never a field the
+// platform does not accept) — and returns ErrNoVerdictOutcome otherwise.
+func (c *Client) EvaluateWorkItemNoVerdict(ctx context.Context, itemID, reason, model string, costCents int, usage *UsageReport) error {
 	if !c.takesInputField(ctx, &c.noVerdictSchema, "EvaluateWorkItemInput", NoVerdictField) {
 		return ErrNoVerdictOutcome
 	}
-	return c.mutateWithUsage(ctx, "evaluateWorkItem", itemID, map[string]any{
+	in := map[string]any{
 		"passed":             false,
 		NoVerdictField:       true,
 		NoVerdictReasonField: reason,
 		"notes":              reason,
 		"costCents":          costCents,
-	}, usage)
+	}
+	if model != "" {
+		in[EvaluatedModelField] = model
+	}
+	return c.mutateWithUsage(ctx, "evaluateWorkItem", itemID, in, usage)
 }
 
 // takesInputField says whether the gateway's input type typ has field,

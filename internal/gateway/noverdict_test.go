@@ -26,7 +26,7 @@ func TestEvaluateWorkItemNoVerdictSendsTheOutcome(t *testing.T) {
 	gw := gateway.New(f.URL(), "rs_test")
 	ctx := context.Background()
 	for range 2 {
-		if err := gw.EvaluateWorkItemNoVerdict(ctx, finishItem, "no VERDICT line: I could not tell.", 30, nil); err != nil {
+		if err := gw.EvaluateWorkItemNoVerdict(ctx, finishItem, "no VERDICT line: I could not tell.", "", 30, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -71,7 +71,7 @@ func TestEvaluateWorkItemNoVerdictOnAnOlderPlatform(t *testing.T) {
 	gw.Now = func() time.Time { return now }
 	ctx := context.Background()
 	for range 2 {
-		if err := gw.EvaluateWorkItemNoVerdict(ctx, finishItem, "blind", 30, nil); !errors.Is(err, gateway.ErrNoVerdictOutcome) {
+		if err := gw.EvaluateWorkItemNoVerdict(ctx, finishItem, "blind", "", 30, nil); !errors.Is(err, gateway.ErrNoVerdictOutcome) {
 			t.Fatalf("err = %v, want ErrNoVerdictOutcome", err)
 		}
 	}
@@ -84,7 +84,7 @@ func TestEvaluateWorkItemNoVerdictOnAnOlderPlatform(t *testing.T) {
 
 	f.NoNoVerdict = false
 	now = now.Add(gateway.ScalingProbeEvery)
-	if err := gw.EvaluateWorkItemNoVerdict(ctx, finishItem, "blind", 30, nil); err != nil {
+	if err := gw.EvaluateWorkItemNoVerdict(ctx, finishItem, "blind", "", 30, nil); err != nil {
 		t.Fatal(err)
 	}
 	if n := len(f.ReadsNamed("__type EvaluateWorkItemInput")); n != 2 {
@@ -101,7 +101,7 @@ func TestEvaluateWorkItemCarriesNoOutcome(t *testing.T) {
 	defer f.Close()
 	evaluatingItem(f)
 	gw := gateway.New(f.URL(), "rs_test")
-	if err := gw.EvaluateWorkItem(context.Background(), finishItem, false, "no", nil, 10, nil); err != nil {
+	if err := gw.EvaluateWorkItem(context.Background(), finishItem, false, "no", nil, 10, nil, gateway.EvaluateChoice{}); err != nil {
 		t.Fatal(err)
 	}
 	in := f.CallsNamed("evaluateWorkItem")[0].Input
@@ -118,7 +118,7 @@ func TestTheFakeRefusesANoVerdictThePlatformRefuses(t *testing.T) {
 	evaluatingItem(f)
 	gw := gateway.New(f.URL(), "rs_test")
 	ctx := context.Background()
-	if err := gw.EvaluateWorkItemNoVerdict(ctx, finishItem, "  ", 30, nil); err == nil {
+	if err := gw.EvaluateWorkItemNoVerdict(ctx, finishItem, "  ", "", 30, nil); err == nil {
 		t.Fatal("a blank reason was taken")
 	}
 	for _, in := range []map[string]any{

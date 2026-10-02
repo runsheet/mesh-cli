@@ -25,10 +25,10 @@ func priorAttemptsFixture(t *testing.T) (*gatewaytest.Fake, *Evaluator, *fakeHar
 	f.WorkItems[item1]["branch"] = "mesh/ship-it-1"
 
 	clauses := []gateway.FailedClause{{Clause: "the three shards' durations are within 20% of each other", Satisfy: "a reading recorded honestly under load"}}
-	if err := gw.EvaluateWorkItem(ctx, item1, false, "first attempt: fails on load", clauses, 10, nil); err != nil {
+	if err := gw.EvaluateWorkItem(ctx, item1, false, "first attempt: fails on load", clauses, 10, nil, gateway.EvaluateChoice{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := gw.EvaluateWorkItem(ctx, item1, false, "second attempt: fails again", nil, 10, nil); err != nil {
+	if err := gw.EvaluateWorkItem(ctx, item1, false, "second attempt: fails again", nil, 10, nil, gateway.EvaluateChoice{}); err != nil {
 		t.Fatal(err)
 	}
 	// the retry's build lands it back in evaluating

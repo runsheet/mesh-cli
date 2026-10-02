@@ -3795,6 +3795,7 @@
         {"name": "protectedPathsSet", "type": "Boolean"},
         {"name": "replanCap", "type": "Long"},
         {"name": "repoIds", "type": "[UUID!]"},
+        {"name": "secondOpinion", "type": "String"},
         {"name": "slug", "type": "String"},
         {"name": "spendDay", "type": "String"},
         {"name": "status", "type": "ProjectStatus"},
