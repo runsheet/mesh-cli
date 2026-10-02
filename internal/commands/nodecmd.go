@@ -1437,7 +1437,7 @@ func saidOnce(err error) bool {
 func rebaseWith(gw *gateway.Client, cfg *node.Config, h harness.Harness, loop *node.Loop, scopes func() node.Scopes, workRoot string, fallback *node.TokenFallback, accounts *node.Credentials, logger *log.Logger) func(context.Context, gateway.WorkItem) {
 	return func(ctx context.Context, item gateway.WorkItem) {
 		rb := rebaser(ctx, gw, cfg, h, loop, scopes, workRoot, fallback, accounts, logger)
-		if err := rb.Rebase(ctx, item); err != nil && ctx.Err() == nil {
+		if err := rb.Rebase(ctx, item); err != nil && ctx.Err() == nil && !saidOnce(err) {
 			logger.Printf("item %d %q: rebase: %v", item.Seq, item.Title, err)
 		}
 	}

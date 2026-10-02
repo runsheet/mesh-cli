@@ -1454,6 +1454,12 @@ func (l *Loop) rebaseRequested(ctx context.Context) {
 			continue
 		}
 		l.mu.Unlock()
+		if why, ok := l.NoCredential.Holds(l.goalProject(ctx, sc, item), l.adapter()); ok {
+			// no credential open to this node: the rebase waits, said
+			// once for the goal
+			l.NoCredential.Say(item.GoalID, why)
+			continue
+		}
 		actx, ok := l.accountToFinish(ctx, priorityName(r.rank), "rebase")
 		if !ok {
 			continue

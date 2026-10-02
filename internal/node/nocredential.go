@@ -121,15 +121,27 @@ func (n *NoCredentials) Clear(projectID, adapter string) {
 }
 
 // Holds is the reason a project's work on adapter is left unclaimed,
-// while its last Note is younger than NoCredentialRecheck.
+// while its last Note is younger than NoCredentialRecheck. Once that has
+// passed, the one call that finds it so is let through as the probe —
+// its claim-time read asks again — and the hold is renewed at once, so
+// every other item and plan of the project stays unclaimed until the
+// probe's read resolves it (Clear, or Note again) or another
+// NoCredentialRecheck passes: one read per project and adapter every
+// NoCredentialRecheck, never one per ready item.
 func (n *NoCredentials) Holds(projectID, adapter string) (string, bool) {
 	if n == nil || projectID == "" {
 		return "", false
 	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	h, ok := n.held[noCredKey{projectID, adapter}]
-	if !ok || n.now().Sub(h.at) >= NoCredentialRecheck {
+	k := noCredKey{projectID, adapter}
+	h, ok := n.held[k]
+	if !ok {
+		return "", false
+	}
+	if now := n.now(); now.Sub(h.at) >= NoCredentialRecheck {
+		h.at = now
+		n.held[k] = h
 		return "", false
 	}
 	return h.reason, true

@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -226,5 +227,134 @@ func TestNoCredentialLoopHoldsThePlan(t *testing.T) {
 	}
 	if n := strings.Count(logs.String(), noCredentialReason); n != 1 {
 		t.Fatalf("said %d times:\n%s", n, logs)
+	}
+}
+
+// A hold past its re-check lets one probe through and renews itself at
+// once: the next caller is held until the probe's read resolves it.
+func TestNoCredentialHoldLetsOneProbeThrough(t *testing.T) {
+	now := time.Now()
+	store := &NoCredentials{Now: func() time.Time { return now }}
+	store.Note(goalID, &ErrNoCredential{Org: "acme", Project: "mesh", ProjectID: projID, Adapter: AdapterClaudeCode})
+	if _, ok := store.Holds(projID, AdapterClaudeCode); !ok {
+		t.Fatal("a fresh hold does not hold")
+	}
+	now = now.Add(NoCredentialRecheck)
+	if _, ok := store.Holds(projID, AdapterClaudeCode); ok {
+		t.Fatal("the probe past the re-check is held")
+	}
+	for i := 0; i < 3; i++ {
+		if why, ok := store.Holds(projID, AdapterClaudeCode); !ok || why != noCredentialReason {
+			t.Fatalf("call %d after the probe: %q, %v; want held until the probe resolves", i, why, ok)
+		}
+	}
+	store.Clear(projID, AdapterClaudeCode)
+	if _, ok := store.Holds(projID, AdapterClaudeCode); ok {
+		t.Fatal("a cleared hold still holds")
+	}
+}
+
+// With several ready items of a held project, the re-check claims one
+// of them — one read — and leaves the rest unclaimed; the read issuing
+// none again renews the hold, so the next tick claims nothing.
+func TestNoCredentialRecheckClaimsOneOfSeveral(t *testing.T) {
+	f := seed(t)
+	f.WorkItems[item2]["status"], f.WorkItems[item2]["dependsOn"] = "ready", []string{}
+	gw := gateway.New(f.URL(), "rs_test")
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "test-node", NodeID: gateway.NodeID(mustUUID(orgID), "test-node").String(), Capacity: Fixed(4)}
+	if _, err := gw.RegisterNode(context.Background(), gateway.RegisterNodeInput{NodeID: cfg.NodeID, OrgID: orgID, OwnerID: f.UserID, Name: "n", Slug: "test-node", Harnesses: []string{"claude-code"}, Capacity: 4, Version: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	ws := &fakeWS{root: t.TempDir()}
+	h := &fakeHarness{}
+	logs := &syncBuf{}
+	logger := log.New(logs, "", 0)
+	now := time.Now()
+	store := &NoCredentials{Log: logger, Now: func() time.Time { return now }}
+	store.Note(goalID, &ErrNoCredential{Org: "acme", Project: "mesh", ProjectID: projID, Adapter: AdapterClaudeCode})
+	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Version: "test", Harness: "claude-code", Interval: time.Hour, Log: logger, NoCredential: store}
+	runner := &Runner{GW: gw, Harness: h, WS: ws, Cfg: cfg, Scopes: scopesOf(cfg), WorkRoot: ws.root, ProgressEvery: time.Hour, Log: logger,
+		MCP: MeshContextMCP(f.URL(), "rs_test"), Credentials: &Credentials{GW: gw, NoCredential: store, Log: logger}}
+	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) { _ = runner.RunItem(ctx, item) }
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	loop.Tick(ctx) // held: nothing claimed
+	loop.wg.Wait()
+	if n := len(f.CallsNamed("claimWorkItem")); n != 0 {
+		t.Fatalf("claimed %d under the hold", n)
+	}
+	now = now.Add(NoCredentialRecheck)
+	loop.Tick(ctx) // the re-check: one probe of two ready items
+	waitFor(t, func() bool { return len(f.CallsNamed("releaseWorkItem")) == 1 && loop.Running() == 0 })
+	if n := len(f.CallsNamed("claimWorkItem")); n != 1 {
+		t.Fatalf("the re-check claimed %d of 2 ready items, want 1", n)
+	}
+	loop.Tick(ctx) // the probe's read renewed the hold
+	loop.wg.Wait()
+	if n := len(f.CallsNamed("claimWorkItem")); n != 1 {
+		t.Fatalf("claimed %d after the probe, want 1", n)
+	}
+	if len(h.jobs) != 0 {
+		t.Fatalf("%d sessions started", len(h.jobs))
+	}
+	if n := strings.Count(logs.String(), noCredentialReason); n != 1 {
+		t.Fatalf("node.log says the reason %d times, want once:\n%s", n, logs)
+	}
+}
+
+// A rebase whose read issues no credential waits: no session, no
+// failWorkItemRebase handing the item to its builder, the reason said
+// once for the goal however many ticks pass, and no second claim while
+// the hold lasts.
+func TestNoCredentialRebaseWaitsAndSaysWhyOnce(t *testing.T) {
+	f := seed(t)
+	requestRebase(f, item1, "mesh/ship-it-1")
+	f.RebaseTokens = true
+	gw := gateway.New(f.URL(), "rs_test")
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "test-node", NodeID: gateway.NodeID(mustUUID(orgID), "test-node").String(), Capacity: Fixed(1)}
+	if _, err := gw.RegisterNode(context.Background(), gateway.RegisterNodeInput{NodeID: cfg.NodeID, OrgID: orgID, OwnerID: f.UserID, Name: "n", Slug: "test-node"}); err != nil {
+		t.Fatal(err)
+	}
+	ws := &fakeWS{root: t.TempDir(), pushedHead: "abc123"}
+	h := &fakeHarness{text: "REBASED: abc123\nRESOLVED: main.go"}
+	logs := &syncBuf{}
+	logger := log.New(logs, "", 0)
+	store := &NoCredentials{Log: logger}
+	rb := &Rebaser{GW: gw, Harness: h, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, MCP: MeshContextMCP(f.URL(), "rs_test"), MaxBudgetUSD: 4, ProgressEvery: time.Hour, Log: logger,
+		Credentials: &Credentials{GW: gw, NoCredential: store, Log: logger}}
+	var errs []error
+	var mu sync.Mutex
+	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Version: "test", Harness: "claude-code", Interval: time.Hour, Log: logger, NoCredential: store,
+		Dispatch: func(context.Context, gateway.WorkItem) {},
+		Rebase: func(ctx context.Context, item gateway.WorkItem) {
+			err := rb.Rebase(ctx, item)
+			mu.Lock()
+			errs = append(errs, err)
+			mu.Unlock()
+		}}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	for i := 0; i < 3; i++ {
+		loop.Tick(ctx)
+		loop.wg.Wait()
+	}
+	if len(h.jobs) != 0 {
+		t.Fatalf("%d sessions started", len(h.jobs))
+	}
+	if n := len(f.CallsNamed("failWorkItemRebase")); n != 0 {
+		t.Fatalf("the rebase was failed %d times: no credential is a wait", n)
+	}
+	if n := len(f.CallsNamed("claimWorkItemRebase")); n != 1 {
+		t.Fatalf("claimed the rebase %d times, want once (the read that found none)", n)
+	}
+	if len(errs) != 1 || !isNoCredential(errs[0]) {
+		t.Fatalf("Rebase = %v, want one ErrNoCredential", errs)
+	}
+	if n := strings.Count(logs.String(), noCredentialReason); n != 1 {
+		t.Fatalf("node.log says the reason %d times, want once:\n%s", n, logs)
+	}
+	if strings.Contains(logs.String(), "rebase failed") {
+		t.Fatalf("logged as a failure:\n%s", logs)
 	}
 }

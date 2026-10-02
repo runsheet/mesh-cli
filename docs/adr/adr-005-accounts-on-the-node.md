@@ -558,17 +558,26 @@ releases the item with `accounts: <reason>`; the planner hands nothing
 in and does not count a try (the platform has no release for a plan
 claim — it lapses); the director hands in nothing; an evaluation's
 Codex open falls to Claude as for `ErrNoAccount`, and its Claude open
-leaves the item in evaluating; a rebase fails with the reason to its
-builder, as for `ErrNoAccount`. `NoCredentials`, one store shared by
+leaves the item in evaluating; a rebase is not failed — the conflict is
+no reason to hand the item to its builder, and the platform has no
+release for a rebase claim, so it lapses on its 15-minute timer — and
+nothing but the `accounts:` line says it. `NoCredentials`, one store shared by
 `Credentials` and `Loop.NoCredential`, remembers the (project,
 adapter) for `NoCredentialRecheck` (10 minutes): meanwhile the loop
-does not claim that project's items or plans, and passes each over
+does not claim that project's items, plans or rebases, and passes each
+item and plan over
 (`passOver`) with the reason, so `holding.unclaimed[].reason` carries
-it — free text, the shape above unchanged, `specs/contracts/heartbeatNode.json`
-untouched — and the platform's GoalWaiting (runsheet ADR 016's
+it — free text, beside `no account has headroom`, the input's shape
+unchanged (`gateway.HoldingUnclaimed`; `specs/contracts/heartbeatNode.json`
+pins only the heartbeat's answer, not `holding`, so the shape is the one
+runsheet's goal `goals-page-shows-account-limits` takes) — and the platform's GoalWaiting (runsheet ADR 016's
 amendment 2026-09-29) shows it as the goal's waiting reason; the
-summary counts it among the unclaimed. After the re-check the loop
-claims once more and asks again, so a credential an admin attaches on
+summary counts it among the unclaimed. Once the re-check is due the
+first claim that finds it so is the one probe (`NoCredentials.Holds`
+renews the hold as it lets it through): every other item and plan of
+the project stays unclaimed until the probe's read clears the hold or
+renews it, so the read is asked once per project and adapter every 10
+minutes, never once per ready item. So a credential an admin attaches on
 the console is picked up without a restart; an issued one clears the
 hold. node.log says it once per goal per run, in the `accounts:`
 family beside `no account has headroom`:
