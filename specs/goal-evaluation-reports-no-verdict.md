@@ -3,7 +3,7 @@ title: Goal — The node says no verdict when its tools failed, and the two tool
 kind: plan
 status: draft
 parent: prd
-summary: "Tainted evaluations were 246 of 564 failed evaluations (43.6%) on every goal read through mesh_items at 2026-09-29T16:53:03Z; the after share is owed — the mini runs v0.2.191 and has not started v0.2.193, the first release carrying #450 (e3e3f97). `prologue: not found` is (b) in the narrow sense, not (a): #305's tool-failure rule read the context tool's own `not found` answer as an unreachable tool."
+summary: "Tainted evaluations were 246 of 564 failed evaluations (43.6%) before (read 2026-09-29T16:53:03Z) and 3 of 135 (2.2%) in after window A, from the mini's first v0.2.193-or-later start (v0.2.208, 2026-09-30T00:00:05Z) to 2026-10-02T04:23:02Z; no no-verdict outcome was recorded, because the node sent `outcome`, which the platform's EvaluateWorkItemInput never took (it takes `noVerdict`/`noVerdictReason`, runsheet ADR 035) — item 17 (#545, open) fixes it and window B is owed. `prologue: not found` is (b) in the narrow sense, not (a): #305's tool-failure rule read the context tool's own `not found` answer as an unreachable tool."
 ---
 
 # Goal — The node says no verdict when its tools failed, and the two tooling failures stop happening
@@ -210,6 +210,8 @@ and the release each first appears in (`git merge-base --is-ancestor
 | #449 | ebb1948 | 2026-09-29 14:56:00Z | v0.2.193 | This document's `prologue: not found` answer (docs only) |
 | #450 | e3e3f97 | 2026-09-29 15:15:12Z | v0.2.193 | A Codex evaluation's sandbox lets its tests bind loopback (`sandbox_workspace_write.network_access=true`), the probe binds a socket (`mesh sandbox-probe`), the mini's AppArmor profile recorded |
 | mesh-specs #108 | — | — | — | ADR 011 and the TRD record the third evaluation outcome, the Codex sandbox probe, network-on evaluation sandboxes and the reached-tool rule |
+| #545 (item 17) | — (open; branch head 9665d66) | — | — (none yet) | The no-verdict outcome reaches the platform as runsheet ADR 035 defines it: `evaluateWorkItem` sends `passed: false`, `noVerdict: true`, `noVerdictReason`, probed on `noVerdict` — never `outcome`, which the gateway never took |
+| mesh-specs, item 18 | — (no pull request yet; the item is `pending`) | — | — | ADR 011 and the TRD record the third outcome in the platform's shape (`noVerdict`, `noVerdictReason`, `passed: false`) |
 
 ## The mini's upgrade
 
@@ -249,6 +251,28 @@ does not give the sandbox loopback: `go test ./...` still dies with
 network off. That half is #450's `network_access=true`, which reaches
 the mini only with v0.2.193 or later — and the loopback-socket notes
 in the before read run on to 16:44:00Z.
+
+**The first start of v0.2.193 or later** (read 2026-10-02T04:22Z,
+`grep -a '^mesh node: 2026/[0-9/]* [0-9:]* mesh node v[0-9.]*, pid'
+~/.mesh/node.log.1 ~/.mesh/node.log`, the first line whose version is
+v0.2.193 or later; the host's clock is UTC):
+
+```
+mesh node: 2026/09/30 00:00:05 mesh node v0.2.208, pid 1945297, config /home/chris/.mesh/node.yaml
+mesh node: 2026/09/30 00:00:05 confirming update v0.2.191 → v0.2.208: start 1 of 3, rolls back on the third
+```
+
+So the mini first started a release carrying e3e3f97 (#450) at
+**2026-09-30T00:00:05Z**, on **v0.2.208** (38f854d); it went straight
+from v0.2.191 to v0.2.208 and never started v0.2.193–v0.2.207. Every
+start since is v0.2.208 or later (v0.2.209 from 02:41:17Z on
+2026-09-30, v0.2.210 from 2026-10-01 14:23:52Z, alternating with
+v0.2.211 between 03:31Z and 03:46Z on 2026-10-02 before settling on
+v0.2.210), and each of those carries e3e3f97. **The version at the
+read:** `mesh_health_nodes` at 2026-10-02T04:22:34Z gives the mini
+`version: v0.2.210`, `desired_version: v0.2.210`, 1 commit behind
+main, latest release v0.2.211; `~/.mesh/update.json` has it confirmed
+at 2026-10-02T03:49:08Z.
 
 ## Tainted evaluations before and after
 
@@ -374,19 +398,124 @@ later read gives this row back unchanged — 564, 246, 318, 43.6%, and 0.
 
 ### After
 
-**Owed.** At the read (node.log 2026-09-29 16:52:20Z,
-`mesh_health_nodes` 2026-09-29T16:52:11Z) the mini runs **v0.2.191**
-and had not started **v0.2.193**, the first release carrying #450
-(e3e3f97), nor any later one; so no after window exists and no after
-row is written. The after window opens at the mini's first `mesh node
-v0.2.193` (or later) start line in node.log; the after row is the same
-classification over the failed evaluations whose `at` is at or after
-that start, with the recorded `no_verdict` outcomes in their own row,
-and the status goes to `approved` with it.
+The after windows open only at a start of the release they measure,
+never before it.
 
-Read again through `mesh_health_nodes` at 2026-09-29T17:08:02Z: the
-mini still runs **v0.2.191** (desired v0.2.191; the latest release is
-v0.2.198), so the after share is still owed.
+#### Window A — from the mini's first start of a release carrying #450
+
+Window A opens at **2026-09-30T00:00:05Z**, the mini's first start of
+v0.2.193 or later (v0.2.208, above), and closes at the read,
+**2026-10-02T04:23:02Z**: the same rules, the same three classes, the
+same fetch, Python and awk as the before block, over every failed
+evaluation whose `at` is at or after the start and at or before the
+read. That read gave 7 projects, 233 goals and 794 failed evaluations
+in all; 135 fall in the window (the earliest 2026-09-30T00:03:47Z, the
+latest 2026-10-02T04:22:54Z). The same fetch with the before block's
+cutoff alone gives 564, 246, 318, 43.6% back unchanged.
+
+| After, window A: 2026-09-30T00:00:05Z – 2026-10-02T04:23:02Z | Failed evaluations |
+|---|---|
+| Tooling: `bwrap` / `RTM_NEWADDR` | 1 |
+| Tooling: `no verdict —` fallback note, no `bwrap` (0 carry the note in all) | 0 |
+| Tooling: a loopback / socket string, neither of the above | 0 |
+| `VERDICT: PASS` recorded as fail | 2 |
+| **Tainted** | **3** |
+| Substantive: an evaluator's review | 127 |
+| Substantive: a CI check (`The check "…" failed`) | 5 |
+| **Substantive** | **132** |
+| **Total failed evaluations** | **135** |
+| **Tainted share** (3 / 135) | **2.2%** |
+| Recorded `no_verdict` outcomes (node.log, not failed evaluations) | 0 |
+
+1 + 0 + 0 + 2 = 3 tainted; 127 + 5 = 132 substantive; 3 + 132 = 135.
+The share moved from 43.6% to 2.2%: no `RTM_NEWADDR`, no loopback or
+socket refusal and no `no verdict —` fallback note in the window. The
+one `bwrap` row is the lexical rule at work, not a sandbox that would
+not start — it is item 17 of this goal (attempt 1, 2026-10-02T03:54:16Z),
+a review that ran the suite and failed the item because the
+sandbox-start (`bwrap`) case lacked a no-verdict test; it is kept in
+class 1 so the rule stays the before block's. The two `VERDICT: PASS`
+rows are a Codex first evaluation that passed and a Claude second
+opinion that failed (`rigger-sets-up-a-business` item 19 at
+2026-09-30T04:20:16Z, and this goal's item 17 at
+2026-10-02T04:02:43Z): both families' notes are recorded, the pass
+first.
+
+To reproduce, on the mini: fetch `evals.tsv` exactly as the before
+block does (any later read), then apply both cutoffs in their own
+steps:
+
+```sh
+# window A: start 2026-09-30T00:00:05Z (first v0.2.193+ start), read 2026-10-02T04:23:02Z
+cd /tmp/eval   # evals.tsv from the before block's fetch
+python3 - <<'EOF'
+from datetime import datetime, timezone
+START  = datetime(2026, 9, 30, 0, 0, 5, tzinfo=timezone.utc)     # the mini's first v0.2.193+ start
+CUTOFF = datetime(2026, 10, 2, 4, 23, 2, tzinfo=timezone.utc)    # the read time
+def at(s): return datetime.fromisoformat(s.replace('Z', '+00:00'))
+rows = [l.rstrip('\n').split('\t') for l in open('evals.tsv')]
+rows = [r for r in rows if at(r[3]) >= START]                    # at or after the window's start
+rows = [r for r in rows if at(r[3]) <= CUTOFF]                   # at or before the read
+classes = [('tooling', ['bwrap', 'rtm_newaddr', 'no verdict —', 'loopback',
+                        'socket: operation not permitted', 'local socket',
+                        'listening port', 'listening socket', 'test-server socket']),
+           ('pass', ['verdict: pass'])]
+n = {}
+for r in rows:
+    notes = r[5].lower()
+    c = next((k for k, ss in classes if any(s in notes for s in ss)),
+             'ci' if r[5].startswith('The check "') else 'substantive')
+    n[c] = n.get(c, 0) + 1
+t = n.get('tooling', 0) + n.get('pass', 0)
+print(n, 'total', len(rows), 'tainted', t, 'share %.1f%%' % (100 * t / len(rows)))
+EOF
+# node.log over the same instants (UTC on the mini; the window may have rotated into node.log.N):
+grep -a -h '^mesh node: 2026/[0-9/]* [0-9:]* item [^ ]*: evaluation reached no verdict on' ~/.mesh/node.log* \
+  | awk '$3" "$4 >= "2026/09/30 00:00:05"' | awk '$3" "$4 <= "2026/10/02 04:23:02"' | wc -l      # 0
+grep -a -h '^mesh node: 2026/[0-9/]* [0-9:]* the platform takes no no-verdict outcome' ~/.mesh/node.log* \
+  | awk '$3" "$4 >= "2026/09/30 00:00:05"' | awk '$3" "$4 <= "2026/10/02 04:23:02"' | wc -l      # 1
+```
+
+It prints `{'substantive': 127, 'tooling': 1, 'pass': 2, 'ci': 5} total
+135 tainted 3 share 2.2%`, then 0 and 1.
+
+#### Recorded no-verdict outcomes — why the count stayed 0
+
+In window A node.log has **0** `evaluation reached no verdict on`
+lines and **1** `the platform takes no no-verdict outcome` line —
+`mesh node: 2026/09/30 07:09:29 the platform takes no no-verdict
+outcome; a no-verdict evaluation waits in evaluating (said once per
+run)`. That is the finding item 17 fixes. From v0.2.189 (#428, 11aa560)
+the node sent the outcome as `evaluateWorkItem` `outcome: no_verdict`
+and probed the gateway's `EvaluateWorkItemInput` for `outcome`; the
+platform never took `outcome` — its input takes `noVerdict` and
+`noVerdictReason` beside `passed: false` (runsheet ADR 035). So the
+probe found no field, the node said so once per run, and every
+evaluation that reached no verdict waited in evaluating instead of
+being recorded: `outcome` was never accepted, and the recorded
+no-verdict count is 0 until the mini runs a release carrying item 17.
+Item 17 is runsheet/mesh-cli **#545**, which sends `passed: false`,
+`noVerdict: true` and `noVerdictReason`, probed on `noVerdict`. At the
+read it is **open**: it has no squash commit on main (`git log
+origin/main --format='%h %cI %s' | grep -i noVerdict` prints nothing;
+its branch head is 9665d66, its first commit d679516) and so no
+release carries it (`git tag --contains d679516` prints nothing).
+
+#### Window B — Owed
+
+**Owed.** At the read, 2026-10-02T04:23:02Z (`mesh_health_nodes` at
+2026-10-02T04:22:34Z), the mini runs **v0.2.210** with desired version
+**v0.2.210**; item 17's #545 is open, so there is no squash commit and
+no first release carrying it, and node.log can have no start line of
+one. Window B opens at the mini's first node.log start line `mesh
+node: <UTC date time> mesh node <tag>, pid …` whose `<tag>` is the
+first release carrying #545's squash commit — the earliest tag `git
+tag --contains <sha> | sort -V | head -1` names once #545 merges — or
+any later release. Its row is the table above over the failed
+evaluations from that start to a stated read, with the recorded
+`no_verdict` outcomes (node.log's `evaluation reached no verdict on`
+lines over the same instants) in their own row, and the status goes to
+`approved` with it.
 
 ## Log
 
@@ -428,3 +557,17 @@ v0.2.198), so the after share is still owed.
   goes through `awk` on the same second — so it gives 564, 246, 318,
   43.6% and 0 back at any later read. The mini re-read at 17:08:02Z
   still runs v0.2.191; the after share stays owed.
+- 2026-10-02 · item 19: the mini first started a release carrying
+  #450 at 2026-09-30T00:00:05Z (v0.2.208; it never ran v0.2.193–207),
+  and runs v0.2.210 (desired v0.2.210) at 04:22:34Z. Window A, from
+  that start to the read 2026-10-02T04:23:02Z, by the before block's
+  rules: 135 failed evaluations, 3 tainted (1 lexical `bwrap`, 2
+  `VERDICT: PASS`), 132 substantive, 2.2% against the before 43.6%,
+  which the same fetch gives back unchanged. No no-verdict outcome was
+  recorded: the node sent `outcome`, which the platform never took
+  (it takes `noVerdict`/`noVerdictReason`, ADR 035), and node.log says
+  so once at 2026-09-30 07:09:29. Item 17 (#545) fixes it and is open,
+  so window B is owed and the status stays `draft`. `What landed` has
+  #545 and mesh-specs item 18 (no pull request yet). The branch is
+  this file alone against main: item 17's commits are on #545, not
+  here.
