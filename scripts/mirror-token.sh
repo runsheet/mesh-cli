@@ -32,8 +32,10 @@ err=$(mktemp)
 trap 'rm -f "$err"' EXIT
 
 # The transitional fallback: this read and the function below are all of
-# it. Item 10 of goal release-tag-mirrors-with-a-rigger-binding deletes
-# them and the one call further down, once a v* run reads `exchanged`.
+# it. The operator retires it by deleting the RELEASE_TOKEN secret
+# (`gh secret delete RELEASE_TOKEN --repo runsheet/mesh-cli`) once
+# scripts/mirror-token-reading.sh reads a run `exchanged`; a cleanup PR
+# deleting them and the one call further down follows that, not before.
 release_token=${RELEASE_TOKEN:-}
 fallback_token() {
   [[ -n $release_token ]] || return 1
