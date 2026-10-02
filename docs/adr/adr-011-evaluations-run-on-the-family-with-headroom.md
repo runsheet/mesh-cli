@@ -475,9 +475,11 @@ unrun, and the probe above passed, because `true` opens no socket.
   the bwrap cause: never read for a verdict, the other family, else
   recorded as no verdict with `sandbox: <the socket line>`.
 
-## Amendment 2026-10-02: wording corrected to mesh-context
+## Amendment — 2026-10-02 (goal builtin-is-mesh-context)
 
-Goal `builtin-is-mesh-context`. The preflight section above named the
+The built-in attachment is `mesh-context` (`tools.Builtin`, mesh-cli
+#264/#396); `prologue` is the deprecated alias read until 2026-10-28.
+The preflight section above named the
 built-in `prologue` after the rename had already reached the node's
 own attachment (`adr-006`'s 2026-09-28 amendment): `codex mcp get
 prologue`, the error texts naming `prologue`'s Authorization header,

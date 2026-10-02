@@ -32,8 +32,7 @@ where the code lives, the variable names, and the rendering per agent.
    item), in `missingRequired` when required (the node declines the
    claim). Remote tools need no runtime.
 3. **Claude Code.** `ClaudeCode(builtin, tools)` returns the
-   `mcpServers` map — the built-in servers (`mesh-context`; amended
-   2026-10-02, this decision said Prologue) and one entry per
+   `mcpServers` map — the built-in servers (`mesh-context`) and one entry per
    tool: remote `{type: http, url, headers}`, local `{command, args,
    env}` with `npx -y <command> …`, `uvx <command> …` or
    `docker run -i --rm -e <KEY>… <image> …` — so `harness.MCPArgs` of it
@@ -122,7 +121,7 @@ where the code lives, the variable names, and the rendering per agent.
    ADR-005, at the tool's `pricePerCallCents`, no tokens) — once per
    call of a tool priced above zero. (Amended 2026-09-27: it called
    `recordUsage` once per tool, a field only the platform may call.)
-   mesh-context (amended 2026-10-02, this decision said Prologue) and
+   mesh-context and
    unpriced tools are never reported. A gateway without
    the mutation (`IsUnsupported`) is said once per run and each call
    logged as a `usage: tool …` line; any error is logged, never the
@@ -288,3 +287,15 @@ So the Codex half of decision 4 now works like this:
   a session that cannot call them judges blind. The sandbox stays
   `workspace-write`. Codex's own `codex_apps` is not rendered by the
   node and is not approved by it.
+
+## Amendment — 2026-10-02 (goal builtin-is-mesh-context)
+
+The built-in attachment is `mesh-context` (`tools.Builtin`, mesh-cli
+#264/#396); `prologue` is the deprecated alias read until 2026-10-28
+(the amendment above, 2026-09-28, already made the node's own
+attachment `mesh-context`). Two sentences in "What this decision
+covers" still named the old wording: **Claude Code**'s `mcpServers` map
+and the `recordToolUsage` bullet in "Priced tool calls" each said
+`Prologue` where they meant the built-in; both now say `mesh-context`.
+Nothing about what is rendered, approved or reported changes — only
+the word.

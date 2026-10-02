@@ -160,15 +160,6 @@ true`. A limit kill there is the step's failure, not the node's
 condition. With `sandbox: off` the steps run on the host and the
 attestation says `host:<hostname>`.
 
-### Amendment 2026-10-02: wording corrected to mesh-context
-
-Goal `builtin-is-mesh-context`. "Where it plugs in" said the harness
-writes the MCP config to `$HOME/mcp.json` "the Prologue bearer on no
-command line" — the built-in's old name, left unfixed in this decision
-after the rename reached the node's own attachment (`adr-006`'s
-2026-09-28 amendment). It now says the mesh-context bearer; nothing
-about where the config is written or how it is read changes.
-
 ## Consequences
 
 - A sandboxed node needs accounts: the operator's own `~/.claude` login
@@ -178,3 +169,14 @@ about where the config is written or how it is read changes.
   `PATH` the sandbox sets.
 - The pids heuristic reads stderr; a session that swallows fork errors
   fails as an ordinary exit.
+
+## Amendment — 2026-10-02 (goal builtin-is-mesh-context)
+
+The built-in attachment is `mesh-context` (`tools.Builtin`, mesh-cli
+#264/#396); `prologue` is the deprecated alias read until 2026-10-28.
+"Where it plugs in" said the harness writes the MCP config to
+`$HOME/mcp.json` "the Prologue bearer on no command line" — the
+built-in's old name, left unfixed in this decision after the rename
+reached the node's own attachment (`adr-006`'s 2026-09-28 amendment).
+It now says the mesh-context bearer; nothing about where the config is
+written or how it is read changes.

@@ -273,9 +273,7 @@ this section describes them.
   are the whole session's figures, not this one call's, and are cleared
   on the per-call copy so a platform summing them is not counting the
   same session once per priced call. mesh-context and unpriced tools send
-  none. (Amended 2026-10-02: this bullet said `Prologue`; it is
-  `mesh-context`, the built-in's name since `adr-006`'s 2026-09-28
-  amendment reached the node's own attachment.) A platform without the
+  none. A platform without the
   mutation is said once per run and each
   call logged; `RecordToolUsage` takes the same detail-field fallback as
   the finishing commands (`ErrNoUsageDetail`: the call still lands,
@@ -518,3 +516,12 @@ account has headroom …` stay as they were. The
 platform half is runsheet goal `goals-page-shows-account-limits`, with
 the contract fixture `specs/contracts/heartbeatNode.json` (runsheet
 ADR 026).
+
+## Amendment — 2026-10-02 (goal builtin-is-mesh-context)
+
+The built-in attachment is `mesh-context` (`tools.Builtin`, mesh-cli
+#264/#396); `prologue` is the deprecated alias read until 2026-10-28
+and no longer the name a current session carries. "Priced tool calls
+go to `recordToolUsage`" above said `Prologue` sends no record; it now
+says `mesh-context`, since that is the built-in's own name. Nothing
+about what is reported or when changes — only the word.
