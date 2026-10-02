@@ -98,7 +98,7 @@ type Client struct {
 	// with the base fields alone from then on.
 	goalsWithoutNarrow atomic.Bool
 	// projectsWithoutExtras is set once the gateway has refused
-	// ProjectIndex's optional fields (protectedPaths, secondOpinion):
+	// ProjectIndex's optional fields (protectedPaths):
 	// projects are read with the base fields alone from then on.
 	projectsWithoutExtras atomic.Bool
 	// credentialsWithoutEnterprise is set once the gateway has refused
@@ -1177,10 +1177,12 @@ type Project struct {
 	// SecondOpinion is the project's `second_opinion` setting: "always"
 	// keeps every item on two evaluators, "rule" (the field's default
 	// value, an empty read and anything else) hands the choice to the
-	// evaluate path's own rule. Not on the platform yet, so it is an
-	// optional field the client drops once the gateway refuses it (`?`
-	// in fields/ProjectIndex.txt; goal one-evaluator-for-ordinary-work).
-	// Read it through SecondOpinionRule, never the raw field.
+	// evaluate path's own rule. Not on the platform yet, so it is not
+	// selected: ADR-010 lets fields/ProjectIndex.txt name it only once
+	// schema.json is refreshed from a gateway that serves it, and until
+	// then every project reads empty — "rule" (goal
+	// one-evaluator-for-ordinary-work). Read it through
+	// SecondOpinionRule, never the raw field.
 	SecondOpinion string `json:"secondOpinion"`
 }
 
@@ -1234,7 +1236,7 @@ func (c *Client) Projects(ctx context.Context, orgID string) ([]Project, error) 
 
 // readProjects runs one ProjectIndex read, query being the document with
 // its selection left to fill in. It asks for the optional fields too
-// (fields/ProjectIndex.txt's `?`: protectedPaths, secondOpinion); a
+// (fields/ProjectIndex.txt's `?`: protectedPaths); a
 // gateway that does not know one of them is a platform without it, and
 // from then on the client asks for projectFields alone — every project
 // reads with no protected paths and SecondOpinionRule "rule".

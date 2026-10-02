@@ -27,19 +27,16 @@ func TestProjectWithoutSecondOpinionOnAnOlderPlatform(t *testing.T) {
 	}
 }
 
-// A project row with second_opinion: always reads as SecondOpinionAlways.
-func TestProjectSecondOpinionAlways(t *testing.T) {
-	f := gatewaytest.New("rs_test")
-	defer f.Close()
-	f.Projects["p1"] = map[string]any{"id": "p1", "orgId": orgID, "slug": "widgets", "secondOpinion": "always"}
-	gw := gateway.New(f.URL(), "rs_test")
-
-	p, err := gw.Project(context.Background(), "p1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if p.SecondOpinion != "always" || p.SecondOpinionRule() != gateway.SecondOpinionAlways {
-		t.Fatalf("project = %+v, SecondOpinionRule() = %q", p, p.SecondOpinionRule())
+// SecondOpinionRule is "always" only for exactly "always", else "rule".
+// The gateway read of a row with secondOpinion "always" waits on the
+// platform: ProjectIndex does not serve secondOpinion yet, and ADR-010
+// lets fields/ProjectIndex.txt select it only once schema.json is
+// refreshed from a gateway that does.
+func TestSecondOpinionRule(t *testing.T) {
+	for in, want := range map[string]string{"": "rule", "rule": "rule", "always": gateway.SecondOpinionAlways, "Always": "rule", "never": "rule"} {
+		if got := (gateway.Project{SecondOpinion: in}).SecondOpinionRule(); got != want {
+			t.Errorf("SecondOpinionRule(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 

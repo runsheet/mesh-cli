@@ -124,7 +124,6 @@ var projectRequired = []string{
 // projectOptional are the ProjectIndex fields an older platform may lack (a `?` in fields/ProjectIndex.txt).
 var projectOptional = []string{
 	"protectedPaths",
-	"secondOpinion",
 }
 
 // projectFields is the selection of projectRequired.
