@@ -204,3 +204,39 @@ the same week.
   `UsageReportInput.documentsFetched` (`Int`) and `.toolNames` (a list
   of `{name, calls}`). Until they land, the first report of a run that
   carries either is refused once and re-sent without it.
+
+## Amended 2026-10-02 (2)
+
+Goal `one-evaluator-for-ordinary-work` (item 7): making the saving the
+goal claims measurable from node.log alone, before the rule is built,
+needs the evaluation record to carry what made it cost what it cost —
+the goal's priority and whether a second opinion ran.
+
+- **`priority` and `evaluators`.** Every evaluate record's log line
+  gains `priority=<goal priority>` and `evaluators=<1 or 2>`, written
+  by `SessionAccount.SetEvaluation` before the finishing
+  `EvaluateWorkItem`/`EvaluateWorkItemNoVerdict` call and read back
+  into `UsageRecord.Priority`/`UsageRecord.Evaluators` by `ReadUsage`.
+  `evaluators` is 2 only where the notes already gain the "second
+  opinion on" tail — never for a blind retry that keeps the other
+  family's lone verdict (ADR-011's amendment 2026-09-29) — so it never
+  disagrees with what a reader of the notes would count by hand.
+  Neither field is sent to the gateway: this is node.log's own
+  measure, not the platform's. A record logged before this change has
+  neither, read back as `Priority ""` and `Evaluators 0`.
+- **`evaluation cost per item by priority`.** `mesh node usage` groups
+  the window's evaluate records by `Priority` (`UsageReading.
+  EvaluationCostByPriority`), ordered urgent, high, normal, low, then
+  `unknown` for the pre-amendment records, and prints one row — items,
+  evaluations, cost total, cost per item (median and mean, each item's
+  evaluations summed first so a retry counts once), and the share of
+  evaluations that ran on two evaluators — after the existing kind
+  table, whenever the window holds any evaluate record. `--kind
+  evaluate` narrows the rest of the reading the same way it always
+  did; the priority section is unaffected by `--kind` since it only
+  ever looks at evaluate records.
+- **`scripts/evaluation-cost-by-priority.sh`** runs `mesh node usage
+  --kind evaluate` for a window and log path and prints just this
+  section, so the goal's before (today, two evaluators for everything)
+  and after (one evaluator for normal and low work) readings on the
+  mini are one command each (README, "Usage").

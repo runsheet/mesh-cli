@@ -1124,6 +1124,33 @@ and label of the nearest `finished …($x)`, `evaluation …($x)` or
 else `unknown`; a record whose JSON does not parse is counted as
 `unparsed` and skipped (ADR-016, amendment 2026-09-29).
 
+An evaluate record also carries `priority` (the goal's priority when the
+evaluation ran) and `evaluators` (1 or 2, whether a second opinion ran);
+both are logged, never sent to the gateway, and zero on a record from
+before this change. The reading groups them into a further section,
+printed after the kind table whenever the window holds any evaluate
+record:
+
+```
+evaluation cost per item by priority
+priority  items  evaluations  cost total cents  cost per item median cents  cost per item mean cents  two evaluators %
+urgent    4      8            960               240                        240                        100.0
+high      6      7            560               90                         93                         16.7
+normal    40     40           800               20                         20                         0.0
+low       12     12           180               15                         15                         0.0
+unknown   3      3            270               90                         90                          0.0
+```
+
+Rows are ordered urgent, high, normal, low, then `unknown` for records
+logged before this change. Items and evaluations count distinct items
+and the evaluations run on them (a retried item's evaluations are
+summed into one item); cost is the list cost in cents; the two
+evaluators share is of evaluations, not items (adr-016, amendment
+2026-10-02, goal one-evaluator-for-ordinary-work). `scripts/evaluation-cost-by-priority.sh --from <date> --to <date>
+[--log <path>]` runs `mesh node usage --kind evaluate` and prints just
+this section, so the goal's before and after readings on the mini are
+one command each.
+
 ### Unmerged work per repo
 
 A repo whose pull requests cannot land fast enough should not get more
