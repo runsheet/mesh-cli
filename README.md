@@ -1873,8 +1873,13 @@ mirror step exchanges this run's OIDC identity (audience
 `runsheet-rigger`) at the runsheet gateway for a contents:write token
 on `runsheet/mesh` alone, against the binding the mirror carries,
 `.runsheet/bindings/mesh-cli-release.yaml` (docs/adr/adr-015-workflow-tokens-exchanged-through-rigger.md).
-`RELEASE_TOKEN` is the logged fallback until the runsheet half
-answers. The step logs which path it took. See the amendment "the public
+`RELEASE_TOKEN` is only the transitional fallback, kept until the
+runsheet half (goal `rigger-binds-a-workflow-to-a-scoped-github-token`)
+answers the exchange and deleted then. The step logs which path it
+took: `mirror token: exchanged through rigger, …` or `mirror token:
+RELEASE_TOKEN fallback (…)`. A re-run of the publish job after a mirror
+failure keeps an existing release of the tag whose assets are identical
+(`scripts/ensure-release.sh`) and deletes nothing. See the amendment "the public
 mirror on runsheet/mesh" in ADR 002 for why and how it is checked.
 
 **The fallback: a tag by hand.** When the workflow cannot run (no
