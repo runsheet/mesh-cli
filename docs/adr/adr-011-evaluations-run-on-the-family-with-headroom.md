@@ -459,3 +459,19 @@ unrun, and the probe above passed, because `true` opens no socket.
   empty: that test ran, and the verdict stands. The evaluator handles it as
   the bwrap cause: never read for a verdict, the other family, else
   recorded as no verdict with `sandbox: <the socket line>`.
+
+## Amendment 2026-10-02: wording corrected to mesh-context
+
+Goal `builtin-is-mesh-context`. The preflight section above named the
+built-in `prologue` after the rename had already reached the node's
+own attachment (`adr-006`'s 2026-09-28 amendment): `codex mcp get
+prologue`, the error texts naming `prologue`'s Authorization header,
+and the `toolBroken` paragraph's "the context server, `prologue`". All
+now read `mesh-context`: the preflight runs `codex mcp get
+mesh-context`, its errors name `mesh-context`'s header and command, and
+`toolBroken` names `mesh-context` as the context server. Nothing about
+what the preflight checks or how `toolBroken` judges a session
+changes — only the name. The dated narrative above (the first Codex
+evaluations' own `prologue: not found` results, read on 2026-09-29 and
+before) stays as it was recorded: it quotes what those sessions said,
+not what the node does now.

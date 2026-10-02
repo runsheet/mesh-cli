@@ -160,6 +160,15 @@ true`. A limit kill there is the step's failure, not the node's
 condition. With `sandbox: off` the steps run on the host and the
 attestation says `host:<hostname>`.
 
+### Amendment 2026-10-02: wording corrected to mesh-context
+
+Goal `builtin-is-mesh-context`. "Where it plugs in" said the harness
+writes the MCP config to `$HOME/mcp.json` "the Prologue bearer on no
+command line" — the built-in's old name, left unfixed in this decision
+after the rename reached the node's own attachment (`adr-006`'s
+2026-09-28 amendment). It now says the mesh-context bearer; nothing
+about where the config is written or how it is read changes.
+
 ## Consequences
 
 - A sandboxed node needs accounts: the operator's own `~/.claude` login

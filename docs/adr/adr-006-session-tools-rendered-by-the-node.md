@@ -32,7 +32,8 @@ where the code lives, the variable names, and the rendering per agent.
    item), in `missingRequired` when required (the node declines the
    claim). Remote tools need no runtime.
 3. **Claude Code.** `ClaudeCode(builtin, tools)` returns the
-   `mcpServers` map — the built-in servers (mesh-context) and one entry per
+   `mcpServers` map — the built-in servers (`mesh-context`; amended
+   2026-10-02, this decision said Prologue) and one entry per
    tool: remote `{type: http, url, headers}`, local `{command, args,
    env}` with `npx -y <command> …`, `uvx <command> …` or
    `docker run -i --rm -e <KEY>… <image> …` — so `harness.MCPArgs` of it
@@ -121,7 +122,8 @@ where the code lives, the variable names, and the rendering per agent.
    ADR-005, at the tool's `pricePerCallCents`, no tokens) — once per
    call of a tool priced above zero. (Amended 2026-09-27: it called
    `recordUsage` once per tool, a field only the platform may call.)
-   mesh-context and unpriced tools are never reported. A gateway without
+   mesh-context (amended 2026-10-02, this decision said Prologue) and
+   unpriced tools are never reported. A gateway without
    the mutation (`IsUnsupported`) is said once per run and each call
    logged as a `usage: tool …` line; any error is logged, never the
    item's failure.
