@@ -111,6 +111,14 @@ type Fake struct {
 	// (ADR-020); without it, as the platform is today, the field is
 	// left out of the introspection and refused on planGoal.
 	PlanQuestions bool
+	// NoReplaceItem is a platform whose RequestPlanInput has no
+	// `replaceItem` (before the narrow re-plan): introspection leaves it
+	// out and a requestPlan carrying it is refused with "Unknown field".
+	NoReplaceItem bool
+	// PlanRequests is every requestPlan the fake was sent, refused or
+	// not, with its replaceItem ("" for a whole re-plan); refuse one
+	// with Refuse["requestPlan"].
+	PlanRequests []PlanRequest
 	// NoUsageTools refuses a `usage` report carrying `tools` (the
 	// per-tool calls) with "Unknown field", as a platform older than
 	// tools-show-their-use whose UsageReportInput has only the total.
@@ -250,6 +258,20 @@ func (f *Fake) Close() { f.Server.Close() }
 func (f *Fake) URL() string { return f.Server.URL }
 
 // CallsNamed returns the recorded mutations with that name.
+// PlanRequest is one requestPlan the fake was sent: the goal, who asked
+// and the item a narrow re-plan replaces ("" for a whole one).
+type PlanRequest struct {
+	GoalID, By, ReplaceItem string
+}
+
+// RequestPlans returns every requestPlan the fake was sent, refused ones
+// included.
+func (f *Fake) RequestPlans() []PlanRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]PlanRequest(nil), f.PlanRequests...)
+}
+
 func (f *Fake) CallsNamed(name string) []Call {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -371,6 +393,20 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 			fields = append(fields, map[string]any{"name": n})
 		}
 		writeData(w, map[string]any{"__type": map[string]any{"inputFields": fields}})
+	case strings.Contains(q, "__type(") && req.Variables["t"] == "RequestPlanInput":
+		f.Reads = append(f.Reads, Call{Name: "__type RequestPlanInput", Input: map[string]any{}})
+		if f.Unsupported["__type"] {
+			writeErrors(w, 200, "GraphQL introspection is not allowed")
+			return
+		}
+		fields := []any{}
+		for _, n := range []string{"aggregateId", "by", "namespace", gateway.ReplaceItemField} {
+			if n == gateway.ReplaceItemField && f.NoReplaceItem {
+				continue
+			}
+			fields = append(fields, map[string]any{"name": n})
+		}
+		writeData(w, map[string]any{"__type": map[string]any{"inputFields": fields}})
 	case strings.Contains(q, `__type(name: "RegisterNodeInput")`):
 		f.Reads = append(f.Reads, Call{Name: "__type RegisterNodeInput", Input: map[string]any{}})
 		if f.Unsupported["__type"] {
@@ -417,6 +453,16 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 		if f.Unsupported[m[2]] {
 			writeErrors(w, 200, fmt.Sprintf("Cannot query field %q on type \"Mutation\".", m[2]))
 			return
+		}
+		if m[2] == "requestPlan" {
+			by, _ := in["by"].(string)
+			replace, _ := in[gateway.ReplaceItemField].(string)
+			goal, _ := in["aggregateId"].(string)
+			f.PlanRequests = append(f.PlanRequests, PlanRequest{GoalID: goal, By: by, ReplaceItem: replace})
+			if _, ok := in[gateway.ReplaceItemField]; ok && f.NoReplaceItem {
+				writeErrors(w, 200, `Variable "$in" got invalid value; Unknown field "replaceItem" is not defined by type "RequestPlanInput".`)
+				return
+			}
 		}
 		if _, ok := in[gateway.PlanQuestionsField]; ok && m[2] == "planGoal" && !f.PlanQuestions {
 			writeErrors(w, 200, `Variable "$in" got invalid value; Unknown field "questions" is not defined by type "PlanGoalInput".`)
@@ -1143,6 +1189,9 @@ func (f *Fake) apply(name string, in map[string]any) error {
 			}
 		case "requestPlan":
 			f.Goals[id]["status"] = "planning"
+			if r, _ := in[gateway.ReplaceItemField].(string); r != "" {
+				f.Goals[id]["replacingItemId"] = r
+			}
 		case "claimPlan":
 			if held, _ := f.Goals[id]["plannerNodeId"].(string); held != "" && held != in["nodeId"] {
 				return fmt.Errorf("another node is planning it")

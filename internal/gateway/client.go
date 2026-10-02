@@ -140,7 +140,10 @@ type Client struct {
 	// list input was last found to take `priorities` (see
 	// takesLimitsPriorities).
 	limitsPrioritiesSchema holdingProbe
-	Now                    func() time.Time
+	// replaceItemSchema is whether the gateway's requestPlan input was
+	// last seen to take replaceItem, kept for ScalingProbeEvery.
+	replaceItemSchema holdingProbe
+	Now               func() time.Time
 }
 
 // New returns a client for baseURL (scheme+host, no trailing slash) with
@@ -2449,6 +2452,34 @@ type PlannedItem struct {
 // planning until a node's planner session hands one in.
 func (c *Client) RequestPlan(ctx context.Context, goalID, by string) error {
 	m := map[string]any{}
+	if by != "" {
+		m["by"] = by
+	}
+	return c.Mutate(ctx, "requestPlan", goalID, m)
+}
+
+// ReplaceItemField is RequestPlanInput's narrow re-plan: the one item
+// the planner is asked to replace, every other item kept (runsheet ADR
+// 023, rung 3; mesh-cli ADR-021's amendment 2026-10-02).
+const ReplaceItemField = "replaceItem"
+
+// ErrNoReplaceItem is what RequestPlanReplacing returns when the
+// gateway's RequestPlanInput has no `replaceItem` (a platform older than
+// the narrow re-plan): nothing was sent. errors.Is-able.
+var ErrNoReplaceItem = errors.New("gateway: the platform takes no replaceItem on requestPlan")
+
+// RequestPlanReplacing asks for a narrow re-plan of the goal that
+// replaces itemID alone — the evaluator's ask for a split after an
+// item's second failed evaluation (ADR-021's amendment 2026-10-02). It
+// is sent only to a gateway whose RequestPlanInput has `replaceItem`,
+// asked once by introspection and kept for ScalingProbeEvery, and
+// returns ErrNoReplaceItem otherwise. A platform that will not take it
+// answers a refusal (IsRefusal), returned as such.
+func (c *Client) RequestPlanReplacing(ctx context.Context, goalID, by, itemID string) error {
+	if !c.takesInputField(ctx, &c.replaceItemSchema, "RequestPlanInput", ReplaceItemField) {
+		return ErrNoReplaceItem
+	}
+	m := map[string]any{ReplaceItemField: itemID}
 	if by != "" {
 		m["by"] = by
 	}

@@ -34,7 +34,11 @@ type fakeSystemctl struct {
 	// return instead of answering: a manager that cannot be reached.
 	// showErrAfterStop is showErr from the stop on.
 	showErr, killErr, stopErr, procsErr, showErrAfterStop error
-	calls                                                 []string
+	// removing is a cgroup systemd tears down once a signal empties it:
+	// from then on its cgroup.procs answers ENODEV, as the kernel's does.
+	removing bool
+	gone     bool
+	calls    []string
 }
 
 func (f *fakeSystemctl) log(c string) { f.calls = append(f.calls, c) }
@@ -69,6 +73,9 @@ func (f *fakeSystemctl) Kill(unit, signal string) error {
 		}
 	}
 	f.procs = left
+	if f.removing && len(left) == 0 {
+		f.gone = true
+	}
 	if f.collect && len(left) == 0 {
 		f.loaded = false
 	}
@@ -103,6 +110,9 @@ func (f *fakeSystemctl) Processes(cgroup string) ([]Process, error) {
 	f.log("procs " + cgroup)
 	if f.procsErr != nil {
 		return nil, f.procsErr
+	}
+	if f.gone {
+		return nil, &os.PathError{Op: "read", Path: cgroup + "/cgroup.procs", Err: syscall.ENODEV}
 	}
 	return append([]Process(nil), f.procs...), nil
 }
@@ -170,6 +180,25 @@ func TestSystemdScopeKillTermIsEnough(t *testing.T) {
 	killed, err := SystemdScope{Systemctl: f}.Kill(Handle{PID: noPID, UnitName: "u"})
 	if err != nil || killed != nil {
 		t.Fatalf("killed %v, err %v", killed, err)
+	}
+	want := []string{"show LoadState,ActiveState u.scope", "kill SIGTERM u.scope", "stop u.scope", "show LoadState,ActiveState u.scope"}
+	if got := f.signals(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("calls\n got %q\nwant %q", got, want)
+	}
+}
+
+// A scope whose cgroup systemd is removing once SIGTERM emptied it
+// answers ENODEV to a read of cgroup.procs: nothing is left in it, not
+// an error (the race TestSystemdScopeKillReal hit on a real host).
+func TestSystemdScopeKillCgroupRemoved(t *testing.T) {
+	fastStop(t)
+	f := &fakeSystemctl{loaded: true, removing: true, procs: []Process{{PID: noPID, Comm: "claude"}, {PID: noPID + 1, Comm: "sleep"}}}
+	killed, err := SystemdScope{Systemctl: f}.Kill(Handle{PID: noPID, UnitName: "u"})
+	if err != nil {
+		t.Fatalf("err %v", err)
+	}
+	if len(killed) != 1 || killed[0].Comm != "sleep" {
+		t.Fatalf("killed %v", killed)
 	}
 	want := []string{"show LoadState,ActiveState u.scope", "kill SIGTERM u.scope", "stop u.scope", "show LoadState,ActiveState u.scope"}
 	if got := f.signals(); !reflect.DeepEqual(got, want) {
