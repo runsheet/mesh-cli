@@ -2771,11 +2771,31 @@ type Credential struct {
 	CapMonthlyUSD   float64
 	SpentDailyUSD   float64
 	SpentMonthlyUSD float64
+	// Priorities are the goal priorities this credential serves (urgent,
+	// high, normal, low), the console's checkboxes on the Credentials
+	// page; empty serves every priority (adr-005's amendment 2026-10-02,
+	// a credential names the priorities it serves).
+	Priorities []string
+	// WindowTargets is the credential's own pace point, edited on the
+	// console: past this share of a window the account takes only
+	// urgent and high work, in place of the node-wide limits.pace_five_hour.
+	WindowTargets []WindowTarget
+}
+
+// WindowTarget is one window's pace point on a credential (the
+// console's windowTargets): Percent is 0..100, as given.
+type WindowTarget struct {
+	Window  string
+	Percent float64
 }
 
 // String is the credential without its secret.
 func (c Credential) String() string {
-	return fmt.Sprintf("credential %s (%s %s, %s)", c.Label, c.Adapter, c.Kind, c.ID)
+	serves := "serves all"
+	if len(c.Priorities) > 0 {
+		serves = "serves " + strings.Join(c.Priorities, ", ")
+	}
+	return fmt.Sprintf("credential %s (%s %s, %s, %s)", c.Label, c.Adapter, c.Kind, c.ID, serves)
 }
 
 // GoString is String, so %#v leaves the secret out too.
