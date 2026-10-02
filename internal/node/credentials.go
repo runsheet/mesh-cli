@@ -235,8 +235,11 @@ func (c *Credentials) Open(ctx context.Context, ref gateway.SessionRef, nodeID, 
 	}
 	choose := chooserFrom(ctx)
 	if choose == nil {
+		// no rule from the loop: still the session's priority, so a
+		// credential reserved for other work is never opened for it
+		priority := priorityFrom(ctx)
 		choose = func(accts []AccountConfig) (AccountConfig, bool) {
-			return ChooseAccount(c.now(), accts, c.readingsFor(adapter), c.thresholds(), "", true)
+			return ChooseAccount(c.now(), accts, c.readingsFor(adapter), c.thresholds(), priority, true)
 		}
 	}
 	if len(accounts) == 0 {
@@ -320,7 +323,9 @@ func (c *Credentials) thresholds() LimitsConfig {
 
 // IssuedAccount is a platform credential as an account a session may
 // run on: its label (its id when it has none), kind, id and caps, its
-// secret held in memory for this session only.
+// secret held in memory for this session only, the priorities it
+// serves and its own pace point (adr-005's amendment 2026-10-02, a
+// credential names the priorities it serves).
 func IssuedAccount(cr gateway.Credential) AccountConfig {
 	label := cr.Label
 	if label == "" {
@@ -331,8 +336,17 @@ func IssuedAccount(cr gateway.Credential) AccountConfig {
 	if adapter == AdapterClaudeCode {
 		adapter = ""
 	}
-	return AccountConfig{Label: label, Kind: cr.Kind, ID: cr.ID, Adapter: adapter, SecretVersion: cr.SecretVersion,
-		DailyCapUSD: cr.CapDailyUSD, MonthlyCapUSD: cr.CapMonthlyUSD, issued: &secret}
+	a := AccountConfig{Label: label, Kind: cr.Kind, ID: cr.ID, Adapter: adapter, SecretVersion: cr.SecretVersion,
+		DailyCapUSD: cr.CapDailyUSD, MonthlyCapUSD: cr.CapMonthlyUSD, issued: &secret, Priorities: cr.Priorities}
+	for _, w := range cr.WindowTargets {
+		switch w.Window {
+		case "five_hour":
+			a.PaceFiveHour = w.Percent / 100
+		case "seven_day":
+			a.PaceSevenDay = w.Percent / 100
+		}
+	}
+	return a
 }
 
 // CapRoom is how many dollars an api credential may still spend: the

@@ -355,7 +355,7 @@ func TestSecondOpinionAccountStopped(t *testing.T) {
 		t.Fatal("no Claude account for normal work while only Codex is stopped")
 	}
 	// and on the heartbeat all the same
-	if hb := limits.Heartbeat(); len(hb) != 1 || hb[0].Account != "codex:plan" {
+	if hb := limits.Heartbeat(nil); len(hb) != 1 || hb[0].Account != "codex:plan" {
 		t.Fatalf("heartbeat %+v", hb)
 	}
 }

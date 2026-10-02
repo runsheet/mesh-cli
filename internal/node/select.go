@@ -129,3 +129,23 @@ func chooserFrom(ctx context.Context) func([]AccountConfig) (AccountConfig, bool
 	f, _ := ctx.Value(chooserKey{}).(func([]AccountConfig) (AccountConfig, bool))
 	return f
 }
+
+type priorityKey struct{}
+
+// withPriority is ctx carrying the priority of the work a session is
+// for — its goal's, "" for research — so that Credentials.Open, given
+// no chooser (withChooser), still never opens an issued credential
+// that does not serve it (adr-005's amendment 2026-10-02): a session
+// the loop starts without choosing an account (an evaluation on Codex
+// room that falls back to Claude, a held item adopted at start) keeps
+// its priority.
+func withPriority(ctx context.Context, priority string) context.Context {
+	return context.WithValue(ctx, priorityKey{}, priority)
+}
+
+// priorityFrom is the priority ctx carries; "" (any credential) when
+// none.
+func priorityFrom(ctx context.Context) string {
+	p, _ := ctx.Value(priorityKey{}).(string)
+	return p
+}

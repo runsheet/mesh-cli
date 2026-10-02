@@ -78,3 +78,38 @@ func TestKnownForIsADay(t *testing.T) {
 		t.Fatalf("KnownFor = %v, want 24h", KnownFor)
 	}
 }
+
+// A known account's priorities and its own pace point round-trip
+// through accounts.json across a restart (adr-005's amendment
+// 2026-10-02, a credential names the priorities it serves): the node
+// knows what a reserved subscription serves before its first claim.
+func TestKnownAccountsRoundTripsPrioritiesAndPace(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "accounts.json")
+	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+
+	k1, err := OpenKnownAccounts(path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reserved := AccountConfig{Label: "max20", Kind: AccountSubscription, ID: "cred-a",
+		Priorities: []string{"urgent", "high"}, PaceFiveHour: 0.5}
+	if err := k1.Note(reserved, now); err != nil {
+		t.Fatal(err)
+	}
+
+	k2, err := OpenKnownAccounts(path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	accts := k2.Accounts(now)
+	if len(accts) != 1 {
+		t.Fatalf("accounts = %+v, want 1", accts)
+	}
+	got := accts[0]
+	if want := []string{"urgent", "high"}; len(got.Priorities) != len(want) || got.Priorities[0] != want[0] || got.Priorities[1] != want[1] {
+		t.Errorf("priorities = %v, want %v", got.Priorities, want)
+	}
+	if got.PaceFiveHour != 0.5 {
+		t.Errorf("PaceFiveHour = %v, want 0.5", got.PaceFiveHour)
+	}
+}

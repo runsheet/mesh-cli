@@ -182,8 +182,16 @@ func (s *Limits) all() map[string]harness.RateLimit {
 }
 
 // Heartbeat is the readings of every account, Codex's too, as the
-// heartbeat carries them, by account.
-func (s *Limits) Heartbeat() []gateway.Limits {
+// heartbeat carries them, by account, each with the priorities known
+// names it serves (a Codex account's own label, its "codex:" prefix
+// stripped) — empty for one serving all, or one known has not heard the
+// platform issue — so the Nodes page's account gauges can show what
+// each serves (adr-005's amendment 2026-10, `limits[].priorities`).
+func (s *Limits) Heartbeat(known []AccountConfig) []gateway.Limits {
+	priorities := make(map[string][]string, len(known))
+	for _, a := range known {
+		priorities[a.Label] = a.Priorities
+	}
 	readings := s.all()
 	accounts := make([]string, 0, len(readings))
 	for a := range readings {
@@ -197,6 +205,7 @@ func (s *Limits) Heartbeat() []gateway.Limits {
 			Account: a, Status: rl.Status, RateLimitType: rl.RateLimitType, ResetsAt: rl.ResetsAt,
 			OverageStatus: rl.OverageStatus, IsUsingOverage: rl.IsUsingOverage,
 			FiveHour: limitWindow(rl.FiveHour), SevenDay: limitWindow(rl.SevenDay), ObservedAt: rl.ObservedAt,
+			Priorities: priorities[strings.TrimPrefix(a, CodexAccountPrefix)],
 		})
 	}
 	return out

@@ -167,8 +167,10 @@ this section describes them.
   `WorkItem.node_id`, `Goal.planner_node_id`,
   `Direction.research_node_id`); anyone else is refused with the
   reason and no secret. A credential row is `{id, label, vendor, kind,
-  serves, plan, windowTargets, dailyCap, monthlyCap, capUnit,
-  secretVersion, secret}`. The node keeps the rows whose `vendor` is
+  serves, plan, priorities, windowTargets, dailyCap, monthlyCap, capUnit,
+  secretVersion, secret}` — `priorities` a list of `urgent`, `high`,
+  `normal`, `low`, absent or empty meaning every priority (item 2's
+  amendment below). The node keeps the rows whose `vendor` is
   `anthropic` and whose `serves` is empty or names `claude-code` —
   any other vendor is a tool's account (ADR-006), not a session's —
   and maps `kind` `subscription` or `oauth_token` to `subscription`,
@@ -760,3 +762,159 @@ accounts: no account serves normal work (max20 serves urgent and high, shhemail 
 
 The `no account has headroom … left unclaimed until one has` line stays
 for work that waits for headroom.
+
+## Amendment — 2026-10-02 (goal `a-credential-names-the-priorities-it-serves`, item 2): the claim-time read carries `priorities` and `windowTargets`
+
+Item 1 gave `AccountConfig` `Priorities`, `PaceFiveHour` and
+`PaceSevenDay` and described their effect; this item is the read that
+fills them from the platform.
+
+**`gateway.Credential` carries both fields.** `Priorities []string` is
+the credential row's `priorities` — a JSON list kept to `urgent`,
+`high`, `normal`, `low`, lower-cased, an unrecognised or absent value
+dropped; empty (including all-unrecognised or absent) means every
+priority. `WindowTargets []WindowTarget` (`WindowTarget{Window,
+Percent}`) is the row's `windowTargets`, `Percent` kept as given
+(0..100). `Credential.String()` (and `GoString()`) names what the
+credential serves — `serves urgent, high` or `serves all` — and never
+its secret, so a log line is safe to print as before.
+
+**The window name.** `normalizeWindow` accepts the platform's own
+`five_hour`/`seven_day` and the camelCase `fiveHour`/`sevenDay` the
+console and the heartbeat have also used; any other name is dropped,
+not guessed at. (Runsheet's published fixture for this read could not
+be reached while building this amendment — `itemCredentials.json` 404s
+— so this list is the accepted spellings as coded, to be checked
+against the fixture when it is reachable.)
+
+**`IssuedAccount` maps the read onto the account.** It copies
+`Priorities` straight across, and turns each `WindowTarget` into a
+fraction on the matching field: `five_hour` → `PaceFiveHour`, `seven_day`
+→ `PaceSevenDay`, each `Percent / 100`; an unknown window (already
+dropped by `normalizeWindow`) is never reached, and a credential with
+no window targets leaves both at 0 — the node-wide rule, as item 1
+describes.
+
+**The known accounts persist both**, so a restart knows an account's
+priorities and pace point before its first claim: `accounts.json` holds
+`priorities` and `windowTargets` beside the rest of the row (never the
+secret), and `KnownAccounts.Accounts` hands them back on `AccountConfig`
+the same way a fresh claim-time read would.
+
+**`mesh node start` logs each issued account.** After `Loop.Known` is
+set and before the first tick, one line per account the platform has
+issued this node lately (`node.IssuedAccountLines`):
+
+```
+accounts: issued max20 (subscription, serves urgent, high, paces at 50% five-hour)
+accounts: issued shhemail (subscription, serves all, paces at node-wide)
+```
+
+— the kind, what it serves (`all` when `Priorities` is empty), and its
+own pace point (`N% five-hour`, `N% seven-day`, both joined when both
+are set, or `node-wide` when neither is).
+
+## Amendment — 2026-10-02 (goal `a-credential-names-the-priorities-it-serves`, item 3): the rule is proved for every kind of session
+
+Item 1's rule — an account never opened for work whose priority it
+does not serve — is proved at the loop for the six kinds of session.
+Each test has the claim-time read issue `max20` (`priorities: [urgent,
+high]`, full headroom) and `shhemail` (all, a third spent). Each session
+opens its account through `Credentials.Open` on the context the loop
+hands it (`internal/node/priorities_loop_test.go`):
+
+- 2026-10-02, **build** (`TestBuildServesPriorities`): a normal item
+  opens `shhemail` and an urgent one `max20`. With `max20` alone a normal
+  item is not claimed. It stays `ready`, with no attempt, failure or
+  release, and the tick logs `no account serves normal work`.
+- 2026-10-02, **evaluation** (`TestEvaluationServesPriorities`), by
+  `accountToFinish`: a normal evaluation opens `shhemail` and an urgent
+  one `max20`. With both paced, the paced-subscription fallback takes
+  `shhemail` for normal work. A paced `max20` alone takes no normal
+  evaluation, and the item stays `evaluating`.
+- 2026-10-02, **plan** (`TestPlanServesPriorities`, `ClaimPlan` then
+  `planCredentials`): it follows the goal's priority, and with `max20`
+  alone a normal goal is not claimed and stays `planning`.
+- 2026-10-02, **rebase** (`TestRebaseServesPriorities`,
+  `ClaimWorkItemRebase`): it follows the goal's priority, and with
+  `max20` alone a normal item's rebase is not claimed and stays
+  `requested`.
+- 2026-10-02, **research**
+  (`TestResearchPriorityNoneRunsOnAnyCredentialItsPaceServes`): research
+  has priority `""`, which every account serves, so it runs on `max20`.
+  A paced `max20` takes no research. This differed from the rule: the
+  loop chose research's account with priority `"low"`, so a reserved
+  account never ran research. The loop now passes `""`. Pacing is
+  unchanged: research is still not work that waits, so it never runs on
+  an api key or on a paced account.
+- 2026-10-02, **Codex evaluator** (`TestCodexEvaluatorServesPriorities`):
+  an issued openai credential serving `codex` with `priorities [urgent,
+  high]` declines a normal evaluation. `CodexRoom` (`CodexHeadroom`)
+  answers false for normal and true for high, and the normal evaluation
+  runs on Claude. A high evaluation runs on that credential.
+
+Two paths lost the priority between the loop and `Credentials.Open`, and
+both are fixed. `withPriority` now carries the session's priority on ctx
+beside `withChooser`. `Credentials.Open`, given no chooser, chooses with
+that priority instead of `""`:
+
+- 2026-10-02, an evaluation started on Codex room
+  (`TestCodexRoomEvaluationKeepsItsPriorityServes`): with no Claude
+  account chosen and the session falling back to Claude, the open had no
+  priority and could take a reserved credential for normal work.
+- 2026-10-02, a held item adopted at start
+  (`TestAdoptedHeldItemServesPriorities`): `Loop.Adopt` chose as if
+  `high`. It now reads the goal's priority (`Loop.goalPriority`; an
+  unreadable goal is `high`, as before, and is logged) and chooses by
+  `accountToFinish`.
+
+The heartbeat after such a tick
+(`TestHeartbeatHoldingNamesWhatTheReservedCredentialServesPriorities`)
+lists `max20` with `takes.priorities [urgent high]`. The goal's
+`unclaimed` reason contains `serves only urgent and high`.
+
+## Amendment — 2026-10-02 (goal `a-credential-names-the-priorities-it-serves`, item 4): the heartbeat's `limits` carry `priorities`
+
+Item 1 made the node read an account's priorities off the claim-time
+read; this item puts them on the heartbeat too, so the Nodes page's
+account gauges can show what each serves — not just node.log and
+`holding.accounts[].takes.priorities`, which only ever reach the
+console once something is held back.
+
+**`gateway.Limits` gains `Priorities []string`** (`json:"priorities,omitempty"`):
+empty — an account serving all, or one the loop has not yet learned the
+platform issued — sends no key, so an account that serves everything
+looks the same on the wire as before this amendment and an older
+platform is unaffected either way. `Limits.Heartbeat(known
+[]AccountConfig)` (`internal/node/limits.go`) fills it from the matching
+`AccountConfig.Priorities` among `known` — the accounts
+`KnownAccounts.Accounts` remembers, the same store item 2 persists — by
+label, a Codex reading's `codex:` prefix stripped first (`Loop.Tick`
+calls it as `l.limitsStore().Heartbeat(l.Known.Accounts(l.now()))`).
+
+**Gated on the platform's schema, the way `scaling` and `holding`
+are** (ADR-004: an input field the platform does not know refuses the
+whole heartbeat). `Client.takesLimitsPriorities` introspects
+`HeartbeatNodeInput`, walks its `limits` field's wrapping types (list,
+non-null) to the named input object, and asks whether that has a
+`priorities` field — asked once by introspection and kept for
+`ScalingProbeEvery` (an hour), as every other heartbeat gate is. When it
+answers no, `HeartbeatNode` sends each limits row through
+`limitsWithoutPriorities`, which drops the key from the wire shape
+rather than touching what `Limits.Heartbeat` built — the same row,
+`priorities` included, is what a probe answering yes sends as-is.
+
+**The platform half is owed to runsheet/runsheet**: `NodeAccountLimitsInput`
+needs a `priorities` field (`[String!]`, the Priority enum's names,
+nullable to stay compatible with a node that has not upgraded), and the
+Nodes page's per-account gauge needs to read it and show what the
+account serves beside its utilization — the same words `holding`'s
+`takes.priorities` and node.log's `accounts: issued …` already use
+(`urgent, high` or `all`).
+
+Tests: `TestHeartbeatLimitsCarryPriorities` (a gatewaytest fixture whose
+`NodeAccountLimitsInput` has `priorities` carries `[urgent, high]` for a
+reserved account and no key for one serving all) and
+`TestHeartbeatLimitsOmitPrioritiesOnAnOlderPlatform` (a fixture without
+it: no limits entry carries the key, and the heartbeat is still
+recorded).
