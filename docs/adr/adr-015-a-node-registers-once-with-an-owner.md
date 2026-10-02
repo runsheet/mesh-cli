@@ -150,8 +150,8 @@ up a test that starts a gateway, as `-run Owner` picked up
 Goal `the-node-serves-its-owners-orgs`, item 27: the registration half
 of the owner contract, in `internal/node/owned.go` (`Register`,
 `Registrar`, `Registered`, `Owned`, `OwnedNodeID`), used by `mesh node
-register` and `mesh node start` alike. The loop's half — heartbeating
-once under the one id and taking each answer's scopes — is item 28's.
+register`. `mesh node start` and the loop's half — heartbeating once
+under the one id and taking each answer's scopes — are item 28's.
 
 - **Probe first.** `Register` asks `TakesOwner` before anything else.
   A platform whose `RegisterNodeInput` has no `owner` gets today's path
