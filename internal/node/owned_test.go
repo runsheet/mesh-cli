@@ -15,12 +15,16 @@ import (
 
 // steps is a Registrar that records what Register did, in order:
 // "probe", "resolve", "owner <nodeID>", and "org <name>" per legacy
-// registration.
+// registration — and, in sent, the registrations that reached the
+// platform as mutations: "register <nodeID>". Its RegisterOwner keeps
+// gateway.Client.RegisterOwnedNode's contract: a nil answer is a
+// selection refused at validation, so it sends nothing.
 type steps struct {
 	takes  bool
 	answer *gateway.NodeAnswer
 	scopes Scopes
 	did    []string
+	sent   []string
 	logged []string
 }
 
@@ -36,11 +40,15 @@ func (s *steps) registrar() Registrar {
 		},
 		RegisterOwner: func(_ context.Context, nodeID string) (*gateway.NodeAnswer, error) {
 			s.did = append(s.did, "owner "+nodeID)
+			if s.answer != nil {
+				s.sent = append(s.sent, "register "+nodeID)
+			}
 			return s.answer, nil
 		},
 		RegisterIn: func(_ context.Context, scopes Scopes) error {
 			for _, sc := range scopes {
 				s.did = append(s.did, "org "+sc.Name())
+				s.sent = append(s.sent, "register "+sc.NodeID)
 			}
 			return nil
 		},
@@ -96,8 +104,9 @@ func TestOwnedRegisterProbesBeforeResolving(t *testing.T) {
 }
 
 // A platform that takes `owner` but answers status alone falls to the
-// per-org path: one registration per org after the owner one, and the
-// owner registration's id is served nowhere.
+// per-org path: the owner registration answered nil and sent nothing,
+// so the mutations sent are exactly one registration per org, none
+// under the owner id.
 func TestOwnedRegisterNilAnswerIsLegacy(t *testing.T) {
 	cfg := ownedCfg()
 	s := &steps{takes: true, answer: nil, scopes: personScopes(t, cfg)}
@@ -110,6 +119,13 @@ func TestOwnedRegisterNilAnswerIsLegacy(t *testing.T) {
 	}
 	if n := countPrefix(s.did, "org "); n != 2 {
 		t.Fatalf("%d per-org registrations, want one per org (2)", n)
+	}
+	var want []string
+	for _, sc := range personScopes(t, cfg) {
+		want = append(want, "register "+sc.NodeID)
+	}
+	if !slices.Equal(s.sent, want) {
+		t.Fatalf("sent %q, want only the per-org registrations %q", s.sent, want)
 	}
 	if reg.Contract != ContractPerOrg || reg.Owned != nil {
 		t.Fatalf("registered = %+v, want per-org", reg)

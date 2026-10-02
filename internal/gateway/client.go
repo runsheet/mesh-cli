@@ -1422,6 +1422,49 @@ func (c *Client) RegisterNode(ctx context.Context, in RegisterNodeInput) (*NodeA
 	return c.mutateForAnswer(ctx, "registerNode", in.NodeID, input)
 }
 
+// RegisterOwnedNode is the one registration on the owner contract
+// (ADR-015, Registration): RegisterNode under the node's own id with
+// `owner` sent, asking the payload for the answer. Unlike RegisterNode
+// it never resends with `status` alone: a platform whose payload type
+// refuses the answer's fields refuses the whole selection at
+// validation, before anything executes, and that is returned as a nil
+// answer with nothing registered — as is a refusal still kept from an
+// earlier call (NodeAnswerRetry), which sends nothing at all. The node
+// then registers per org, the owner id having made no Node row. A
+// registration that executed always returns a non-nil answer, empty
+// when the platform named nothing: the row exists, the contract is the
+// owner's, and it serves no org.
+func (c *Client) RegisterOwnedNode(ctx context.Context, in RegisterNodeInput) (*NodeAnswer, error) {
+	if time.Now().UnixNano() < c.nodeAnswerUntil.Load() {
+		return nil, nil
+	}
+	harnesses := in.Harnesses
+	if harnesses == nil {
+		harnesses = []string{}
+	}
+	input := map[string]any{
+		"orgId": in.OrgID, "ownerId": in.OwnerID, "name": in.Name, "slug": in.Slug,
+		"harnesses": harnesses, "capacity": in.Capacity, "version": in.Version,
+	}
+	if in.Owner != "" {
+		input["owner"] = in.Owner
+	}
+	var payload nodeAnswerPayload
+	err := c.MutateFields(ctx, "registerNode", in.NodeID, input, "status "+nodeAnswerFields, &payload)
+	if err != nil {
+		var ge *Error
+		if errors.As(err, &ge) && unknownField(ge.Message, "nodeId", "owner", "scopes") {
+			c.nodeAnswerUntil.Store(time.Now().Add(NodeAnswerRetry).UnixNano())
+			return nil, nil
+		}
+		return nil, err
+	}
+	if a := payload.asAnswer(); a != nil {
+		return a, nil
+	}
+	return &NodeAnswer{Scopes: []ScopeAnswer{}}, nil
+}
+
 // ownerProbe is the cached answer to whether RegisterNodeInput has an
 // `owner` field, and when it was asked.
 type ownerProbe struct {

@@ -214,7 +214,8 @@ func servingNames(s node.Scopes) string {
 // registrar is node.Register's steps on the platform client: the
 // `owner` probe, the orgs of the token's person, the one registration
 // on the owner contract (the node's own id, the owner's kind, an orgId
-// the platform ignores there) and the legacy registration per org.
+// the platform ignores there; RegisterOwnedNode, which registers nothing
+// when it answers nil) and the legacy registration per org.
 func registrar(gw *gateway.Client, cfg *node.Config, logf func(string, ...any)) node.Registrar {
 	return node.Registrar{
 		TakesOwner: gw.TakesOwner,
@@ -228,7 +229,7 @@ func registrar(gw *gateway.Client, cfg *node.Config, logf func(string, ...any)) 
 			if len(orgs) > 0 {
 				orgID = orgs[0].ID
 			}
-			return gw.RegisterNode(ctx, gateway.RegisterNodeInput{NodeID: nodeID, OrgID: orgID, OwnerID: cfg.OwnerID, Name: cfg.Name, Slug: cfg.Slug,
+			return gw.RegisterOwnedNode(ctx, gateway.RegisterNodeInput{NodeID: nodeID, OrgID: orgID, OwnerID: cfg.OwnerID, Name: cfg.Name, Slug: cfg.Slug,
 				Harnesses: []string{"claude-code"}, Capacity: cfg.Capacity.Max, Version: version.Resolved(), Owner: cfg.OwnerKind()})
 		},
 		RegisterIn: func(ctx context.Context, scopes node.Scopes) error { return registerIn(ctx, gw, cfg, scopes) },

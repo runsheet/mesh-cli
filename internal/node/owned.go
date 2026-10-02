@@ -30,8 +30,11 @@ type Registrar struct {
 	// node.yaml's orgs (ResolveScopes). Only the per-org path reads it.
 	Resolve func(ctx context.Context) (Scopes, error)
 	// RegisterOwner is the one registration on the owner contract, under
-	// the node's own id and declaring its owner's kind; nil is a
-	// platform that took `owner` but answered status alone.
+	// the node's own id and declaring its owner's kind. Nil is a platform
+	// that took `owner` but cannot answer a node, and it must mean that
+	// nothing was registered (gateway.Client.RegisterOwnedNode: the
+	// answer's selection refused at validation, never resent with status
+	// alone), so the per-org path that follows is the only registration.
 	RegisterOwner func(ctx context.Context, nodeID string) (*gateway.NodeAnswer, error)
 	// RegisterIn registers one Node per org, as before owners.
 	RegisterIn func(ctx context.Context, scopes Scopes) error
@@ -72,8 +75,8 @@ func OwnedNodeID(cfg *Config) string {
 // path exactly — Resolve, then RegisterIn per org, no owner sent. One
 // that has it gets one RegisterOwner under OwnedNodeID. A nil answer —
 // the platform took `owner` but answered status alone — falls to the
-// per-org path, the owner registration having made no row of its own
-// worth serving. A non-nil answer is the owner contract whatever it
+// per-org path, RegisterOwner having registered nothing (its contract):
+// the per-org registrations are the only ones made. A non-nil answer is the owner contract whatever it
 // names: its scopes, restricted by restrict, are what the node serves,
 // and none — an answer naming no org, or a restriction matching none of
 // those it names — is a node serving nothing, logged, never an error
