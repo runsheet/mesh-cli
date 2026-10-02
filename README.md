@@ -1855,7 +1855,7 @@ mesh work-item learning <work-item-id> "Release flow is stable now"
 ## Gateway fields are generated
 
 What the node selects on each platform entity — `WorkItemIndex`,
-`GoalIndex`, `ProjectIndex`, `DirectionIndex`, `NodeIndex` — is not
+`GoalIndex`, `ProjectIndex`, `DirectionIndex`, `NodeIndex`, `CredentialIndex` — is not
 written by hand in `internal/gateway/client.go`. It comes from two
 committed inputs (docs/adr/adr-010-generated-gateway-fields.md):
 
