@@ -74,9 +74,19 @@ same broker to fetch attestations with a run's OIDC token.
   choice is `scripts/mirror-token.sh` (tested by
   `scripts/mirror-token_test.sh`), and the fallback in it is one
   function, `fallback_token`, and one read of the environment; the
-  workflow only calls the script. Once a tag has mirrored on the
-  exchanged token, the goal's item 10 deletes that function, its call,
-  the workflow's `RELEASE_TOKEN` env line and the secret.
+  workflow only calls the script. **The switch is the secret's
+  deletion, not a PR.** Once `scripts/mirror-token-reading.sh` ends
+  `latest: exchanged (…)`, the operator runs
+  `gh secret delete RELEASE_TOKEN --repo runsheet/mesh-cli`: with the
+  secret gone, `scripts/mirror-token.sh` already runs on the exchanged
+  token alone, or fails the step naming the gateway's refusal (its
+  `none` line) —
+  nothing here needs to change for that to be true. The cleanup PR —
+  deleting `fallback_token`, its call, the `release_token` read, the
+  workflow's `RELEASE_TOKEN` env line and `unset`, the fallback test
+  case, `scripts/mirror-release.sh`'s header mention, and the fallback
+  sentences in these docs — follows the flip and is planned then, not
+  before.
 
 ## Consequences
 
@@ -121,10 +131,25 @@ reason, one line `presented: kid=… iss=… aud=… sub=… repository=… ref=
 job_workflow_ref=…` — the JWT's header `kid` and claims, decoded
 unverified, never the token or its signature — and the mirror step's
 choice of token moved out of the workflow into
-`scripts/mirror-token.sh`, where the fallback is the one function item
-10 deletes. The `mirror token: ` lines are unchanged, so
-`scripts/mirror-token-reading.sh` reads the runs before and after alike.
-The goal's acceptance that no `RELEASE_TOKEN` secret exists on
-`mesh-cli` is read the same way: the script's final `secret: ` line
-(item 12, `gh secret list`) names it present with its update date,
-absent, or unknown when `gh` cannot list secrets.
+`scripts/mirror-token.sh`, where the fallback stays one function until
+the secret is deleted (above). The `mirror token: ` lines are
+unchanged, so `scripts/mirror-token-reading.sh` reads the runs before
+and after alike. The goal's acceptance that no `RELEASE_TOKEN` secret
+exists on `mesh-cli` is read the same way: the script's final
+`secret: ` line (item 12, `gh secret list`) names it present with its
+update date, absent, or unknown when `gh` cannot list secrets.
+
+**2026-10-02, the gate is still closed.** Three items of this goal have
+now failed on it, not on anything of theirs to fix: item 4 (the
+fallback goes) and item 7 (the fallback goes from the workflow and
+scripts) each asked for a v* run that mirrors on the exchanged token
+before either could proceed, and item 10 (the fallback goes, built only
+once a v* run has mirrored on the exchanged token) failed the same
+way — `scripts/mirror-token-reading.sh 10` over `v0.2.228`-`v0.2.237`
+still reads every reached run `fallback`, refused `unauthenticated: the
+bearer is a JWT with no role (unknown key id)`. The runsheet goal
+`rigger-binds-a-workflow-to-a-scoped-github-token` — the other half,
+which teaches the gateway the GitHub OIDC issuer and its JWKS and
+answers `exchangeWorkflowToken` — is still queued in `runsheet/runsheet`
+(since 2026-09-29). Nothing on this side is wrong; there is nothing to
+retry until that goal runs.

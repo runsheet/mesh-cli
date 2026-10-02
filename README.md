@@ -1960,9 +1960,12 @@ on `runsheet/mesh` alone, against the binding the mirror carries,
 `.runsheet/bindings/mesh-cli-release.yaml` (docs/adr/adr-015-workflow-tokens-exchanged-through-rigger.md).
 `RELEASE_TOKEN` is only the transitional fallback, kept until the
 runsheet half (goal `rigger-binds-a-workflow-to-a-scoped-github-token`)
-answers the exchange and deleted then. The step logs which path it
-took: `mirror token: exchanged through rigger, …` or `mirror token:
-RELEASE_TOKEN fallback (…)`. A re-run of the publish job after a mirror
+answers the exchange, at which point the operator runs
+`gh secret delete RELEASE_TOKEN --repo runsheet/mesh-cli` to retire it
+— no PR needed; a cleanup PR removing the fallback code follows
+separately. The step logs which path it took: `mirror token: exchanged
+through rigger, …` or `mirror token: RELEASE_TOKEN fallback (…)`. A
+re-run of the publish job after a mirror
 failure keeps an existing release of the tag whose assets are identical
 (`scripts/ensure-release.sh`) and deletes nothing. See the amendment "the public
 mirror on runsheet/mesh" in ADR 002 for why and how it is checked.
