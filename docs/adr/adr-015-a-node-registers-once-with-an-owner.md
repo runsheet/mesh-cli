@@ -144,3 +144,39 @@ earlier `TestModelTier`, `TestModelsFor`, `TestModelRank` and
 `TestPlanModelAgainstEvidence` — so the socket-free run never picks
 up a test that starts a gateway, as `-run Owner` picked up
 `TestLoopServesEveryOrgOfItsOwner`.
+
+## Registration (2026-10-02)
+
+Goal `the-node-serves-its-owners-orgs`, item 27: the registration half
+of the owner contract, in `internal/node/owned.go` (`Register`,
+`Registrar`, `Registered`, `Owned`, `OwnedNodeID`), used by `mesh node
+register` and `mesh node start` alike. The loop's half — heartbeating
+once under the one id and taking each answer's scopes — is item 28's.
+
+- **Probe first.** `Register` asks `TakesOwner` before anything else.
+  A platform whose `RegisterNodeInput` has no `owner` gets today's path
+  exactly: the person's orgs (`ResolveScopes`), then one `registerNode`
+  per org, no owner sent, no extra Node row. Only when the probe says
+  yes does the node register once, under `OwnedNodeID` — node.yaml's
+  `node_id`, else the id from (owner, slug), so it converges — with
+  `owner` set to node.yaml's kind (`--owner` on `mesh node register`).
+- **A nil answer is not an empty one.** A platform that took `owner`
+  but answered `status` alone (`RegisterNode` returns nil) falls to the
+  per-org path: the per-org registrations follow, one per org, and the
+  owner registration's id is served in no org. A non-nil answer is the
+  owner contract whatever it names: its scopes, every one on the
+  answer's node id, are what the node serves, and an answer naming no
+  org is a node serving nothing until an answer names one — never the
+  per-org path.
+- **`contract:` in node.yaml.** Every registration writes
+  `contract: owner` or `contract: per-org` (`Config.Contract`, validated
+  by `LoadConfig`, read by `Config.OnOwnerContract`) and, on the owner
+  contract, the node's one id as `node_id` (`WriteNodeID`). A failed
+  write fails `mesh node register`; it is never only logged.
+- **A restriction matching nothing is not fatal.** node.yaml's `orgs:`
+  is applied to the answer's scopes (`ScopesFromAnswer`, case-insensitive
+  by login or slug, never lifted by an earlier match). Naming an org the
+  owner does not serve is logged, and the rest are served; naming none
+  it serves logs `orgs: none of <list> is served by this node's owner;
+  serving nothing until it changes` and registers with no scope, where
+  before it was an error that stopped the start.

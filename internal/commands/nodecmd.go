@@ -34,6 +34,7 @@ import (
 
 var (
 	nodeOrgsFlag           []string
+	nodeOwnerFlag          string
 	nodeNameFlag           string
 	nodeSlugFlag           string
 	nodeCapacityFlag       int
@@ -170,24 +171,69 @@ var nodeRegisterCmd = &cobra.Command{
 			nodeCapacityFlag = 1
 		}
 		cfg := &node.Config{Gateway: gw.BaseURL, Orgs: nodeOrgsFlag, OwnerID: me, Slug: slug, Name: strings.TrimSpace(nodeNameFlag), Capacity: node.Fixed(nodeCapacityFlag)}
-		// registering again must not drop what `mesh node login` recorded
+		// registering again must not drop what `mesh node login` recorded,
+		// nor the owner and the node's one id an earlier registration kept
 		if prev, err := node.LoadSettings(); err == nil {
 			cfg.Latchkey, cfg.LatchkeyClient = prev.Latchkey, prev.LatchkeyClient
+			cfg.Owner, cfg.NodeID = prev.Owner, prev.NodeID
 		}
-		scopes, err := node.ResolveScopes(ctx, gw, cfg)
+		if o := strings.TrimSpace(nodeOwnerFlag); o != "" {
+			if o != "person" && o != "enterprise" {
+				return fmt.Errorf(`--owner %q is neither "person" nor "enterprise"`, o)
+			}
+			cfg.Owner = o
+		}
+		reg, err := node.Register(ctx, registrar(gw, cfg, func(format string, args ...any) { fmt.Printf(format+"\n", args...) }), cfg, cfg.Orgs)
 		if err != nil {
 			return err
 		}
-		if err := registerIn(ctx, gw, cfg, scopes); err != nil {
-			return err
-		}
-		if err := cfg.Save(); err != nil {
+		// the contract and the node's one id are what the next start
+		// registers under: a failed write is the command's failure
+		if err := node.WriteNodeID(cfg, reg); err != nil {
 			return err
 		}
 		path, _ := node.ConfigPath()
-		fmt.Printf("Registered node %s (%s) in %s, capacity %s. Saved %s.\nStart it with: mesh node start\n", cfg.Name, slug, strings.Join(scopes.Names(), ", "), cfg.Capacity, path)
+		if reg.Owned != nil {
+			o := reg.Owned.Owner
+			fmt.Printf("Registered node %s (%s) %s (%s); serving %s, capacity %s. Saved %s.\nStart it with: mesh node start\n", cfg.Name, slug, o, o.Kind, servingNames(reg.Scopes), cfg.Capacity, path)
+			return nil
+		}
+		fmt.Printf("Registered node %s (%s) in %s, capacity %s. Saved %s.\nStart it with: mesh node start\n", cfg.Name, slug, strings.Join(reg.Scopes.Names(), ", "), cfg.Capacity, path)
 		return nil
 	},
+}
+
+// servingNames is the orgs served by name, or "no org".
+func servingNames(s node.Scopes) string {
+	if len(s) == 0 {
+		return "no org"
+	}
+	return strings.Join(s.Names(), ", ")
+}
+
+// registrar is node.Register's steps on the platform client: the
+// `owner` probe, the orgs of the token's person, the one registration
+// on the owner contract (the node's own id, the owner's kind, an orgId
+// the platform ignores there) and the legacy registration per org.
+func registrar(gw *gateway.Client, cfg *node.Config, logf func(string, ...any)) node.Registrar {
+	return node.Registrar{
+		TakesOwner: gw.TakesOwner,
+		Resolve:    func(ctx context.Context) (node.Scopes, error) { return node.ResolveScopes(ctx, gw, cfg) },
+		RegisterOwner: func(ctx context.Context, nodeID string) (*gateway.NodeAnswer, error) {
+			orgs, err := gw.MyOrgs(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("my orgs: %w", err)
+			}
+			orgID := ""
+			if len(orgs) > 0 {
+				orgID = orgs[0].ID
+			}
+			return gw.RegisterNode(ctx, gateway.RegisterNodeInput{NodeID: nodeID, OrgID: orgID, OwnerID: cfg.OwnerID, Name: cfg.Name, Slug: cfg.Slug,
+				Harnesses: []string{"claude-code"}, Capacity: cfg.Capacity.Max, Version: version.Resolved(), Owner: cfg.OwnerKind()})
+		},
+		RegisterIn: func(ctx context.Context, scopes node.Scopes) error { return registerIn(ctx, gw, cfg, scopes) },
+		Logf:       logf,
+	}
 }
 
 // registerIn registers the node in every scope (a Node per org, id from
@@ -1470,6 +1516,7 @@ func init() {
 	nodeLoginCmd.Flags().StringVar(&machineNameFlag, "name", "", "what to call this machine in the Latchkey console (default: the node's name, else the hostname)")
 	nodeLoginCmd.Flags().BoolVar(&noBrowserFlag, "no-browser", false, "print the sign-in URL instead of opening it")
 	nodeRegisterCmd.Flags().StringSliceVar(&nodeOrgsFlag, "org", nil, "serve only these orgs (repeatable; default: every org you belong to)")
+	nodeRegisterCmd.Flags().StringVar(&nodeOwnerFlag, "owner", "", `who owns the node: "person" (the default, your own infra) or "enterprise" (shared infra); kept from node.yaml when left out`)
 	nodeRegisterCmd.Flags().StringVar(&nodeNameFlag, "name", "", "the node's name as the console shows it")
 	nodeRegisterCmd.Flags().StringVar(&nodeSlugFlag, "slug", "", "the node's slug (default: from --name); the node id derives from it")
 	nodeRegisterCmd.Flags().IntVar(&nodeCapacityFlag, "capacity", 1, "concurrent sessions")

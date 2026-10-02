@@ -39,10 +39,16 @@ type Config struct {
 	// per-org path — a platform that answers with neither owner nor
 	// scopes — NodeID is unused: each Scope keeps its own per-org id
 	// from NodeIDIn instead.
-	NodeID  string `yaml:"node_id,omitempty"`
-	OwnerID string `yaml:"owner_id,omitempty"`
-	Slug    string `yaml:"slug"`
-	Name    string `yaml:"name"`
+	NodeID string `yaml:"node_id,omitempty"`
+	// Contract is the registration the node last made (ADR-015,
+	// Registration): "owner" when the platform answered the owner
+	// registration, "per-org" when it ran the per-org path. Written by
+	// every registration beside NodeID (WriteNodeID); empty, on a
+	// node.yaml from before it, is per-org.
+	Contract string `yaml:"contract,omitempty"`
+	OwnerID  string `yaml:"owner_id,omitempty"`
+	Slug     string `yaml:"slug"`
+	Name     string `yaml:"name"`
 	// Owner is the node's ownership model: "" or "person" (the
 	// default, bring-your-own infra — the node serves every org its
 	// token's person belongs to) or "enterprise" (shared infra — the
@@ -575,6 +581,18 @@ func (c *Config) OwnerKind() string {
 	return "person"
 }
 
+// The contracts a registration can make (Config.Contract).
+const (
+	ContractOwner  = "owner"
+	ContractPerOrg = "per-org"
+)
+
+// OnOwnerContract is whether the node's last registration was on the
+// owner contract: one id, the orgs from the platform's answer.
+func (c *Config) OnOwnerContract() bool {
+	return c.Contract == ContractOwner
+}
+
 // NodeIDIn is the node's id in an org: from (org, slug), so it converges.
 func (c *Config) NodeIDIn(orgID string) (string, error) {
 	id, err := uuid.Parse(orgID)
@@ -882,6 +900,9 @@ func LoadConfig() (*Config, error) {
 	if c.Owner != "" && c.Owner != "person" && c.Owner != "enterprise" {
 		return nil, fmt.Errorf(`%s: owner: %q is neither "person" nor "enterprise"`, path, c.Owner)
 	}
+	if c.Contract != "" && c.Contract != ContractOwner && c.Contract != ContractPerOrg {
+		return nil, fmt.Errorf(`%s: contract: %q is neither "owner" nor "per-org"`, path, c.Contract)
+	}
 	return &c, nil
 }
 
@@ -925,6 +946,10 @@ func SaveLatchkey(issuer, clientID string) error {
 	return c.Save()
 }
 
+// SaveConfig writes c to ~/.mesh/node.yaml (Config.Save).
+func SaveConfig(c *Config) error { return c.Save() }
+
+// Save writes ~/.mesh/node.yaml.
 func (c *Config) Save() error {
 	path, err := ConfigPath()
 	if err != nil {
