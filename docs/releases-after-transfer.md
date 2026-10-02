@@ -846,8 +846,10 @@ RELEASE_TOKEN secret exists on mesh-cli" — is readable too; today's run
 says `secret: unknown (failed to get secrets: HTTP 403: Resource not
 accessible by integration (https://api.github.com/repos/runsheet/mesh-cli/actions/secrets?per_page=100))`,
 because this node's own credential has no admin scope on the repo, not
-because the secret is gone — the secret still exists until item 10 or
-a later check with admin scope confirms its deletion.
+because the secret is gone — item 10 failed on the closed gate before
+it could settle either way (ADR 015, "Where it stands"); only a later
+check with admin scope, or the operator's own `gh secret delete`,
+confirms whether it still exists.
 
 **2026-10-02, item 13's reading.** Run live against `runsheet/mesh-cli`
 from this session, over the last ten completed runs:
