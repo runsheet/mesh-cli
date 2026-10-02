@@ -814,6 +814,65 @@ accounts: issued shhemail (subscription, serves all, paces at node-wide)
 own pace point (`N% five-hour`, `N% seven-day`, both joined when both
 are set, or `node-wide` when neither is).
 
+## Amendment — 2026-10-02 (goal `a-credential-names-the-priorities-it-serves`, item 3): the rule is proved for every kind of session
+
+Item 1's rule — an account never opened for work whose priority it
+does not serve — is proved at the loop for the six kinds of session.
+Each test has the claim-time read issue `max20` (`priorities: [urgent,
+high]`, full headroom) and `shhemail` (all, a third spent). Each session
+opens its account through `Credentials.Open` on the context the loop
+hands it (`internal/node/priorities_loop_test.go`):
+
+- 2026-10-02, **build** (`TestBuildServesPriorities`): a normal item
+  opens `shhemail` and an urgent one `max20`. With `max20` alone a normal
+  item is not claimed. It stays `ready`, with no attempt, failure or
+  release, and the tick logs `no account serves normal work`.
+- 2026-10-02, **evaluation** (`TestEvaluationServesPriorities`), by
+  `accountToFinish`: a normal evaluation opens `shhemail` and an urgent
+  one `max20`. With both paced, the paced-subscription fallback takes
+  `shhemail` for normal work. A paced `max20` alone takes no normal
+  evaluation, and the item stays `evaluating`.
+- 2026-10-02, **plan** (`TestPlanServesPriorities`, `ClaimPlan` then
+  `planCredentials`): it follows the goal's priority, and with `max20`
+  alone a normal goal is not claimed and stays `planning`.
+- 2026-10-02, **rebase** (`TestRebaseServesPriorities`,
+  `ClaimWorkItemRebase`): it follows the goal's priority, and with
+  `max20` alone a normal item's rebase is not claimed and stays
+  `requested`.
+- 2026-10-02, **research**
+  (`TestResearchPriorityNoneRunsOnAnyCredentialItsPaceServes`): research
+  has priority `""`, which every account serves, so it runs on `max20`.
+  A paced `max20` takes no research. This differed from the rule: the
+  loop chose research's account with priority `"low"`, so a reserved
+  account never ran research. The loop now passes `""`. Pacing is
+  unchanged: research is still not work that waits, so it never runs on
+  an api key or on a paced account.
+- 2026-10-02, **Codex evaluator** (`TestCodexEvaluatorServesPriorities`):
+  an issued openai credential serving `codex` with `priorities [urgent,
+  high]` declines a normal evaluation. `CodexRoom` (`CodexHeadroom`)
+  answers false for normal and true for high, and the normal evaluation
+  runs on Claude. A high evaluation runs on that credential.
+
+Two paths lost the priority between the loop and `Credentials.Open`, and
+both are fixed. `withPriority` now carries the session's priority on ctx
+beside `withChooser`. `Credentials.Open`, given no chooser, chooses with
+that priority instead of `""`:
+
+- 2026-10-02, an evaluation started on Codex room
+  (`TestCodexRoomEvaluationKeepsItsPriorityServes`): with no Claude
+  account chosen and the session falling back to Claude, the open had no
+  priority and could take a reserved credential for normal work.
+- 2026-10-02, a held item adopted at start
+  (`TestAdoptedHeldItemServesPriorities`): `Loop.Adopt` chose as if
+  `high`. It now reads the goal's priority (`Loop.goalPriority`; an
+  unreadable goal is `high`, as before, and is logged) and chooses by
+  `accountToFinish`.
+
+The heartbeat after such a tick
+(`TestHeartbeatHoldingNamesWhatTheReservedCredentialServesPriorities`)
+lists `max20` with `takes.priorities [urgent high]`. The goal's
+`unclaimed` reason contains `serves only urgent and high`.
+
 ## Amendment — 2026-10-02 (goal `a-credential-names-the-priorities-it-serves`, item 4): the heartbeat's `limits` carry `priorities`
 
 Item 1 made the node read an account's priorities off the claim-time

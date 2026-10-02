@@ -235,8 +235,11 @@ func (c *Credentials) Open(ctx context.Context, ref gateway.SessionRef, nodeID, 
 	}
 	choose := chooserFrom(ctx)
 	if choose == nil {
+		// no rule from the loop: still the session's priority, so a
+		// credential reserved for other work is never opened for it
+		priority := priorityFrom(ctx)
 		choose = func(accts []AccountConfig) (AccountConfig, bool) {
-			return ChooseAccount(c.now(), accts, c.readingsFor(adapter), c.thresholds(), "", true)
+			return ChooseAccount(c.now(), accts, c.readingsFor(adapter), c.thresholds(), priority, true)
 		}
 	}
 	if len(accounts) == 0 {

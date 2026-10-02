@@ -357,7 +357,10 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   priorities** (`AccountConfig.Priorities`, `Serves`; empty serves all,
   research's `""` runs anywhere): `ChooseAccount`, `accountToFinish`'s
   fallback and `codexChooser` never pick one for work it does not
-  serve, whatever its headroom, and an api key's "every subscription
+  serve, whatever its headroom — nor does `Credentials.Open` given no
+  chooser, which takes the session's priority from ctx (`withPriority`:
+  an evaluation on Codex room, a held item `Adopt`ed by its goal's
+  priority; `priorities_loop_test.go` proves it per session kind) — and an api key's "every subscription
   stopped" is judged over the subscriptions serving the priority; its
   own pace point (`PaceFiveHour`, `PaceSevenDay`, the credential's
   windowTargets) paces it in place of node.yaml's
