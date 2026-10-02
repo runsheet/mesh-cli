@@ -12,8 +12,8 @@ import (
 )
 
 // The goal's record in the repo: `specs/goal-<slug>.md`, flat under
-// `specs/` so Prologue's own layout indexes it on the push that merges
-// the item. Prologue is read-only over git — writing to it is committing
+// `specs/` so the context service's own layout indexes it on the push that merges
+// the item. The context service is read-only over git — writing to it is committing
 // this file. Frontmatter names the goal; the body carries the statement,
 // the acceptance, the items table (regenerated from the gateway's rows
 // every time) and a log that only ever appends.
@@ -28,7 +28,7 @@ type GoalDoc struct {
 	// document's status (draft while running, approved when done,
 	// superseded when cancelled).
 	GoalStatus string
-	// Parent is the project's PRD slug when Prologue lists one.
+	// Parent is the project's PRD slug when the project's context lists one.
 	Parent string
 	// SpentCents is the goal's total spend as the platform has it —
 	// the budget guard's own number, not a sum over Items.
