@@ -1868,10 +1868,14 @@ Nodes update themselves from the GitHub releases of the public mirror
 `runsheet/mesh`: `release-tag.yml` cuts a release
 from a tag on `runsheet/mesh-cli` (docs/adr/adr-002-signed-tag-releases.md),
 and the same tag is published, identical, on the mirror — same tag,
-title, notes and five assets, via `scripts/mirror-release.sh` and the
-`RELEASE_TOKEN` secret (`GITHUB_TOKEN` cannot write another repo); see
-the amendment "the public mirror on runsheet/mesh" for why and how it
-is checked.
+title, notes and five assets, via `scripts/mirror-release.sh`. The
+mirror step exchanges this run's OIDC identity (audience
+`runsheet-rigger`) at the runsheet gateway for a contents:write token
+on `runsheet/mesh` alone, against the binding the mirror carries,
+`.runsheet/bindings/mesh-cli-release.yaml` (docs/adr/adr-015-workflow-tokens-exchanged-through-rigger.md).
+`RELEASE_TOKEN` is the logged fallback until the runsheet half
+answers. The step logs which path it took. See the amendment "the public
+mirror on runsheet/mesh" in ADR 002 for why and how it is checked.
 
 **The fallback: a tag by hand.** When the workflow cannot run (no
 `RELEASE_TAG_TOKEN`, a major version, a release of a commit it

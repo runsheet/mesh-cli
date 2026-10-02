@@ -1,5 +1,5 @@
 ---
-summary: The first tag cut from runsheet/mesh-cli's main after the transfer (v0.0.0-runsheet-test.6) and its verification; then v0.2.188, the first signed release on the public mirror runsheet/mesh (run 36499785802, attempt 3, after attempt 1's HTTP 403 from RELEASE_TOKEN), which the mini runs since 2026-09-29 00:52Z, sessions adopted and the update confirmed — and v0.2.187, cut and signed on the source runsheet/mesh-cli only (its mirror step failed without --target, fixed by #336); a 2026-09-29 addendum confirms desiredVersion is v0.2.188 (item 17's own evaluation already read it so; this item corrected nothing), why update.json's v0.1.0 refusal is stale, the live README's lag until v0.2.189, and v0.2.189 blocked on RELEASE_TAG_TOKEN (run 36507379094).
+summary: The first tag cut from runsheet/mesh-cli's main after the transfer (v0.0.0-runsheet-test.6) and its verification; then v0.2.188, the first signed release on the public mirror runsheet/mesh (run 36499785802, attempt 3, after attempt 1's HTTP 403 from RELEASE_TOKEN), which the mini runs since 2026-09-29 00:52Z, sessions adopted and the update confirmed — and v0.2.187, cut and signed on the source runsheet/mesh-cli only (its mirror step failed without --target, fixed by #336); a 2026-09-29 addendum confirms desiredVersion is v0.2.188 (item 17's own evaluation already read it so; this item corrected nothing), why update.json's v0.1.0 refusal is stale, the live README's lag until v0.2.189, and v0.2.189 blocked on RELEASE_TAG_TOKEN (run 36507379094); a 2026-09-30 addendum records the mirror's token exchange through Rigger for a scoped credential, the binding .runsheet/bindings/mesh-cli-release.yaml, and RELEASE_TOKEN as the logged fallback.
 ---
 
 # Releases after the transfer
@@ -618,7 +618,10 @@ published on the mirror.
    can fetch. That work is owed on `runsheet/runsheet`.
 3. **v0.2.189 is simply the next tag.** ADR 002's rule is the highest
    `v0.2.x` on `runsheet/mesh` plus one, which is now `v0.2.189`. Its
-   mirror step pushes this branch's `dist/mirror/README.md`.
+   mirror step pushes this branch's `dist/mirror/README.md` and the
+   binding `.runsheet/bindings/mesh-cli-release.yaml`, when their
+   content differs (see "The mirror's token is exchanged, not stored"
+   below).
 4. **v0.2.187's notes.** The second sentence of v0.2.187's "Never
    mirrored" paragraph is stale. It still calls v0.2.188 not yet
    mirrored and v0.2.189 the retry. Editing those notes is the
@@ -761,6 +764,34 @@ to do, and it belongs to goal `node-releases-on-merge`, not this one.
 So `v0.2.189` — the next tag ADR 002 names, one past the mirror's
 highest `v0.2.x` — is simply not cut yet; nothing pushed a tag after
 `v0.2.188`.
+
+### The mirror's token is exchanged, not stored
+
+The v0.2.188 attempt 1 (run 36499785802, 2026-09-29 00:03Z) failed
+with `HTTP 403: Resource not accessible by personal access token`:
+`RELEASE_TOKEN` had no access to the mirror, because it was created
+when the repo was still `projectmesh-io/mesh` and the repo had moved to
+`runsheet/mesh` without notice. Chris made a new token by hand (owner
+`runsheet`, scoped to `runsheet/mesh`, Contents: read and write) to
+unblock v0.2.188. An operator-held token that expires is exactly the
+problem Rigger (goal `release-tag-mirrors-with-a-rigger-binding`)
+solves: the platform exchanges its own OIDC identity for a short-lived,
+scoped credential.
+
+As of 2026-09-30, the mirror step no longer holds a long-lived
+`RELEASE_TOKEN` secret. Instead, it exchanges the run's OIDC identity
+(audience `runsheet-rigger`) at the runsheet gateway for a
+contents:write token on `runsheet/mesh` alone, at most an hour old
+(`scripts/exchange-workflow-token.sh`, docs/adr/adr-015-workflow-tokens-exchanged-through-rigger.md).
+The exchange is against the binding the mirror carries,
+`.runsheet/bindings/mesh-cli-release.yaml`, published from
+`dist/mirror/` (like the README) with each release whose binding
+content differs. The log says which path it took: `mirror token:
+exchanged through rigger, expires <time>` (success) or `mirror token:
+RELEASE_TOKEN fallback (exchange failed: <reason>)` (fallback until the
+runsheet half answers). Once the runsheet binding is in place and
+confirmed working, `RELEASE_TOKEN` is deleted: see ADR 002's amendment
+"the public mirror on runsheet/mesh" and ADR 015.
 
 ### Both repositories today
 
