@@ -1,0 +1,12 @@
+mesh node: 2026/09/27 10:00:00 item ship-it/1: evaluation passed on Codex (gpt-6-sol) ($0.40)
+mesh node: 2026/09/27 10:00:00 item ship-it/1: usage evaluate {"sessionId":"e0","inputTokens":1000,"cacheReadTokens":500,"listCostCents":40}
+mesh node: 2026/09/27 11:00:00 item ship-it/9: usage evaluate {"sessionId":"e1","inputTokens":3000,"cacheReadTokens":1500,"listCostCents":120}
+mesh node: 2026/09/28 09:00:00 item ship-it/2: usage evaluate priority=urgent evaluators=2 {"sessionId":"e2","inputTokens":2000,"cacheReadTokens":1000,"listCostCents":100}
+mesh node: 2026/09/28 09:05:00 item ship-it/3: usage evaluate priority=urgent evaluators=1 {"sessionId":"e3","inputTokens":1500,"cacheReadTokens":750,"listCostCents":60}
+mesh node: 2026/09/28 09:10:00 item ship-it/4: usage evaluate priority=high evaluators=1 {"sessionId":"e4","inputTokens":1200,"cacheReadTokens":600,"listCostCents":45}
+mesh node: 2026/09/28 09:15:00 item ship-it/4: usage evaluate priority=high evaluators=2 {"sessionId":"e5","inputTokens":1300,"cacheReadTokens":650,"listCostCents":55}
+mesh node: 2026/09/28 09:17:00 item ship-it/7: usage evaluate priority=high evaluators=2 {"sessionId":"e6","inputTokens":2600,"cacheReadTokens":1300,"listCostCents":130}
+mesh node: 2026/09/28 09:20:00 item ship-it/5: usage evaluate priority=normal evaluators=1 {"sessionId":"e7","inputTokens":900,"cacheReadTokens":450,"listCostCents":30}
+mesh node: 2026/09/28 09:22:00 item ship-it/8: usage evaluate priority=normal evaluators=1 {"sessionId":"e8","inputTokens":1000,"cacheReadTokens":500,"listCostCents":34}
+mesh node: 2026/09/28 09:24:00 item ship-it/10: usage evaluate priority=normal evaluators=2 {"sessionId":"e9","inputTokens":1800,"cacheReadTokens":900,"listCostCents":90}
+mesh node: 2026/09/28 09:25:00 item ship-it/6: usage evaluate priority=low evaluators=1 {"sessionId":"e10","inputTokens":800,"cacheReadTokens":400,"listCostCents":20}

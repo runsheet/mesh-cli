@@ -240,3 +240,66 @@ the goal's priority and whether a second opinion ran.
   section, so the goal's before (today, two evaluators for everything)
   and after (one evaluator for normal and low work) readings on the
   mini are one command each (README, "Usage").
+
+## Amended 2026-10-02: evaluation cost by priority
+
+Goal `one-evaluator-for-ordinary-work` (item 3). The section above was
+a table of its own; the reading is now rows under the kind table, one
+per priority present, so before (unknown, two evaluators) and after
+(1× on normal and low) read on the same lines:
+
+```
+evaluate <priority>: <n> items, <a>×1 / <b>×2, median $<x>/item, total $<y>
+```
+
+- **The row.** `UsageReading.Lines()` prints, after the kind table, one
+  `evaluate <priority>:` row per priority present in the window, in
+  the order urgent, high, normal, low, then `evaluate unknown` for any
+  record without `priority` (logged before the amendment above).
+  `<n> items` counts distinct items; `<a>×1` and `<b>×2` count
+  evaluations — not items — recorded with `evaluators=1` and
+  `evaluators=2` (a record without the field, evaluators 0, is in
+  neither); the median is of cost per item, each item's evaluations
+  summed first, and the total of every evaluation's list cost, both in
+  dollars to the cent. `PriorityCost` carries `OneEvaluator` and
+  `TwoEvaluators` in place of the share.
+- **`scripts/evaluation-cost-by-priority.sh`** takes `--since <day>`
+  (the window from that day through today) or `--from`/`--to`, and
+  prints just these rows. A script rather than a flag: `mesh node
+  usage` already prints them on every reading with an evaluate record,
+  and the script is only the filter the before/after comparison wants.
+  Its test (`scripts/evaluation-cost-by-priority_test.sh`) runs in
+  pr-checks.
+- **Tested** on `internal/node/testdata/usage-by-priority.log`: urgent,
+  high, normal and low records, some on one evaluator and some on two,
+  a retried item and two records from before the field;
+  `TestEvaluationCostByPriority` asserts the exact rows, median and
+  total. `TestEvaluationUsageRecordsPriorityAndEvaluators` asserts the
+  evaluator's logged line carries `priority=normal evaluators=1` and
+  `priority=high evaluators=2`.
+
+**The reading over the test data** (`scripts/evaluation-cost-by-priority.sh
+--from 2026-09-27 --to 2026-09-29 --log
+internal/node/testdata/usage-by-priority.log`, this branch's binary):
+
+```
+evaluate urgent: 2 items, 1×1 / 1×2, median $0.80/item, total $1.60
+evaluate high: 2 items, 1×1 / 2×2, median $1.15/item, total $2.30
+evaluate normal: 3 items, 2×1 / 1×2, median $0.34/item, total $1.54
+evaluate low: 1 items, 1×1 / 0×2, median $0.20/item, total $0.20
+evaluate unknown: 2 items, 0×1 / 0×2, median $0.80/item, total $1.60
+```
+
+**The reading taken on the mini** (the session ran on it; its own
+`~/.mesh/node.log` and rotated files, read 2026-10-02 23:08 UTC with
+this branch's binary, `--from 2026-09-25 --to 2026-10-03`):
+
+```
+evaluate unknown: 499 items, 0×1 / 0×2, median $0.80/item, total $525.68
+```
+
+That is the *before*: the mini runs v0.2.222, which predates the
+`priority` and `evaluators` fields, so all 1,344 evaluate records in
+its log since 2026-09-28 11:41 read as unknown. The after is the same
+command once a release carrying the rule runs on the mini, its rows by
+priority beside this one.
