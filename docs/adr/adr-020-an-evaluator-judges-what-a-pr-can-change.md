@@ -63,7 +63,11 @@ writes it above the verdict, one line per such clause:
 It fails such a clause only for what the branch can change — the script
 missing, a recorded figure that contradicts the file it cites, a stale
 timings file — never because the host's number is over the threshold.
-The prompt gives ci-fits-the-mini as its example.
+The prompt gives ci-fits-the-mini as its example, and draws the line
+inside it: no round fails on its max/min ratio, which is recorded as a
+reading, but item 14 still fails on its stale `shard_times.json` — the
+median of earlier sharded rounds where the brief asked for a fresh
+whole-package run — because the branch can change that.
 
 A retry's evaluator (one with `PriorAttempts`) is also told: when it
 fails a clause an earlier attempt failed, the first line of its review

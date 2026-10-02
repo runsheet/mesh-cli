@@ -118,6 +118,7 @@ func TestEvaluatePromptJudgesWhatAPRCanChange(t *testing.T) {
 		"load ran 30–65 on 18 cores",
 		"1.09, 1.13 and 1.19",
 		"all 309 tests",
+		"item 14 fails on that stale file — not on its 1.09",
 		"7. End your final message",
 	} {
 		if !strings.Contains(first, want) {
