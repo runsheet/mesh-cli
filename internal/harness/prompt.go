@@ -636,6 +636,12 @@ const planDependencyRule = "An item depends on another only when it uses somethi
 // acceptance names only what its evaluator can see.
 const planAcceptanceRule = "An item's acceptance names only what the evaluator can see at evaluation time, on that item's branch, in that item's repository: tests, commands and their output, file contents. It never names a CI check on the item's own pull request (the pull request opens only after evaluation passes), a deploy, or a file in another repository. Work like that becomes its own item in the right repo, or goes in the goal's acceptance."
 
+// planHostRule is the planner's half of ADR-020: an item's acceptance
+// names only what a pull request can change, a reading of the host is
+// a `Measure:` item or the goal doc's After section, and a clause that
+// cannot be phrased so is a question for the person (ParsePlanQuestions).
+const planHostRule = "An item's acceptance names only what a pull request can change: code, tests, docs, a script that reproduces a reading, and the reading recorded honestly. A measurement of the host — load, wall time, shard durations, a p90 over a day — is never an item's merge gate: put it in the goal doc's After section, or in its own item titled `Measure: …` whose acceptance is that the script runs and its reading is recorded, whatever the number. (\"The three shards' durations within 20% of each other\" is a host reading; \"proven by planned-seconds balance and disjoint shard lists\" is what a PR can prove.) A clause you cannot phrase that way is a question for the person, not an item: write it beside `items` as `\"questions\": [{\"clause\": \"…\", \"question\": \"…\"}]`."
+
 // PlanPrompt renders the planner's prompt (mesh-specs prd, the planner;
 // trd §5 phase 2): read the context and the repos, then compile the goal
 // into a graph of items — each one fresh session's work with a checkable
@@ -657,11 +663,11 @@ func PlanPrompt(in PlanInput) string {
 		fmt.Fprintf(&b, "## The last plan blocked\n\n%s\n\nPlan around it.\n\n", strings.TrimSpace(in.Blocked))
 	}
 	if len(in.Rejected) > 0 {
-		b.WriteString("## Your last answer was flagged\n\nThe node checked your graph before handing it in and flagged these items — an acceptance naming what no evaluator can see, or a model the scorecard says does not work on its repo:\n\n")
+		b.WriteString("## Your last answer was flagged\n\nThe node checked your graph before handing it in and flagged these items — an acceptance naming what no evaluator can see or a reading of the host as a merge gate, or a model the scorecard says does not work on its repo:\n\n")
 		for _, r := range in.Rejected {
 			fmt.Fprintf(&b, "- %s\n", strings.TrimSpace(r))
 		}
-		b.WriteString("\n" + planAcceptanceRule + " Write the whole graph again with those acceptances and models rewritten; this is the last ask.\n\n")
+		b.WriteString("\n" + planAcceptanceRule + " " + planHostRule + " Write the whole graph again with those acceptances and models rewritten; this is the last ask.\n\n")
 	}
 	if len(in.Existing) > 0 {
 		b.WriteString("## The items so far\n\nYour plan replaces only the live items; merged items stay. Merged items are done: your items may depend on their seqs. Failed and cancelled items stay in the record; do their work again differently if it is still needed. Anything still live is replaced by your plan.\n\n")
@@ -724,6 +730,7 @@ func PlanPrompt(in PlanInput) string {
 	b.WriteString("2. Each item is one fresh session's work in one repo on one branch: small enough to finish and evaluate in one sitting, large enough to be worth a pull request. Two to eight items.\n")
 	b.WriteString("3. Each item's brief says what to do and where, naming files and functions where it helps; its acceptance is what an evaluator can check — a test that passes, a command's output, a document with named sections — never a feeling.\n")
 	b.WriteString("   " + planAcceptanceRule + "\n")
+	b.WriteString("   " + planHostRule + "\n")
 	if in.MeshContext {
 		b.WriteString("   Each item's brief names, by slug, the two or three documents the builder must fetch with `mesh_document` — found with `mesh_search` while you plan. You search before you read, same as the builder will.\n")
 	}
@@ -747,8 +754,8 @@ func PlanPrompt(in PlanInput) string {
 		b.WriteString("\n")
 	}
 	b.WriteString("   A model whose first-pass on a repo is under 0.5 over five or more items is not chosen for that repo; prefer the model with the best first-pass at the lowest cost per item; the goal docs in the context name models that worked.\n")
-	b.WriteString("9. End your final message with the graph as a JSON object in a ```json fenced block, and nothing after it:\n\n")
-	b.WriteString("```json\n{\"items\": [{\"seq\": 1, \"title\": \"…\", \"brief\": \"…\", \"acceptance\": \"…\", \"depends_on\": [], \"repo\": \"owner/name\", \"base_ref\": \"main\", \"model\": \"sonnet\", \"model_reason\": \"…\"}, {\"seq\": 2, \"title\": \"…\", \"brief\": \"…\", \"acceptance\": \"…\", \"depends_on\": [{\"seq\": 1, \"because\": \"uses the … item 1 adds\"}], \"repo\": \"owner/name\", \"base_ref\": \"main\", \"model\": \"sonnet\", \"model_reason\": \"…\"}]}\n```\n")
+	b.WriteString("9. End your final message with the graph as a JSON object in a ```json fenced block, and nothing after it. Its `questions` is empty unless a clause of the goal is one no pull request can satisfy (rule 3); each is {\"clause\": \"…\", \"question\": \"…\"}, for the person to answer:\n\n")
+	b.WriteString("```json\n{\"items\": [{\"seq\": 1, \"title\": \"…\", \"brief\": \"…\", \"acceptance\": \"…\", \"depends_on\": [], \"repo\": \"owner/name\", \"base_ref\": \"main\", \"model\": \"sonnet\", \"model_reason\": \"…\"}, {\"seq\": 2, \"title\": \"…\", \"brief\": \"…\", \"acceptance\": \"…\", \"depends_on\": [{\"seq\": 1, \"because\": \"uses the … item 1 adds\"}], \"repo\": \"owner/name\", \"base_ref\": \"main\", \"model\": \"sonnet\", \"model_reason\": \"…\"}], \"questions\": []}\n```\n")
 	return b.String()
 }
 
@@ -860,6 +867,38 @@ func ParsePlan(text string, merged ...int) ([]PlannedSpec, error) {
 		}
 	}
 	return items, nil
+}
+
+// PlanQuestion is a clause of the goal the planner could not phrase as
+// what a pull request can change (ADR-020): a question for the person,
+// not an item.
+type PlanQuestion struct {
+	Clause   string `json:"clause"`
+	Question string `json:"question"`
+}
+
+// ParsePlanQuestions reads the `questions` beside `items` in the
+// planner's graph, from the same candidates ParsePlan reads; a question
+// without both halves is dropped, and none is nil.
+func ParsePlanQuestions(text string) []PlanQuestion {
+	for _, raw := range planCandidates(text) {
+		var wrapped struct {
+			Items     []json.RawMessage `json:"items"`
+			Questions []PlanQuestion    `json:"questions"`
+		}
+		if err := json.Unmarshal([]byte(raw), &wrapped); err != nil || len(wrapped.Items) == 0 {
+			continue
+		}
+		var out []PlanQuestion
+		for _, q := range wrapped.Questions {
+			q.Clause, q.Question = strings.TrimSpace(q.Clause), strings.TrimSpace(q.Question)
+			if q.Clause != "" && q.Question != "" {
+				out = append(out, q)
+			}
+		}
+		return out
+	}
+	return nil
 }
 
 // ResearchInput is what a research session is given: the project, the

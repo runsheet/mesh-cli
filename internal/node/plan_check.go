@@ -232,3 +232,70 @@ func sortedRepoNames(m map[string]gateway.Repo) []string {
 	sort.Strings(keys)
 	return keys
 }
+
+// The node's check of a plan for a reading of the host as a merge gate
+// (ADR-020, the planner's half): a sentence of an item's acceptance that
+// names a reading — load, a p90, wall time, durations, seconds — and a
+// threshold on it. The check is lexical like unverifiableAcceptance; the
+// evaluator's host rule (READING:) is the backstop for what it misses.
+var (
+	hostReadingPattern    = regexp.MustCompile(`(?i)\b(?:load|p90|wall[- ]time|durations?|seconds)\b`)
+	hostThresholdPatterns = []*regexp.Regexp{
+		regexp.MustCompile(`(?i)\b(?:under|below|at most)\b`),
+		regexp.MustCompile(`(?i)\bwithin \d+(?:\.\d+)?\s*%`),
+		regexp.MustCompile(`≤|<\s*\d`),
+		regexp.MustCompile(`(?i)(?:×|\bx)\s*cores\b`),
+	}
+	measureTitle = regexp.MustCompile(`(?i)^measure:`)
+)
+
+// hostReadingAcceptance flags each item whose acceptance states a
+// threshold on a reading of the host, which no pull request can satisfy,
+// unless the item is a `Measure:` one, whose acceptance is that its
+// script runs and its reading is recorded. Each flag names the item and
+// the phrase, from the reading to its threshold, for the planner's
+// re-ask; none means the plan is clean.
+func hostReadingAcceptance(specs []harness.PlannedSpec) []string {
+	var flags []string
+	for _, sp := range specs {
+		if measureTitle.MatchString(strings.TrimSpace(sp.Title)) {
+			continue
+		}
+		var phrases []string
+		for _, sentence := range sentenceEnd.Split(sp.Acceptance, -1) {
+			if m := hostReadingPhrase(sentence); m != "" {
+				phrases = append(phrases, fmt.Sprintf("%q", m))
+			}
+		}
+		if len(phrases) > 0 {
+			flags = append(flags, fmt.Sprintf("item %d (%s): its acceptance names a reading of the host as a merge gate (%s), which no pull request can change; make it a `Measure:` item whose acceptance is a script and its recorded reading, or a question for the person", sp.Seq, strings.TrimSpace(sp.Title), strings.Join(phrases, ", ")))
+		}
+	}
+	return flags
+}
+
+// hostReadingPhrase is the span of sentence from its first reading to
+// the end of its last threshold, or "" when it lacks either.
+func hostReadingPhrase(sentence string) string {
+	reading := hostReadingPattern.FindStringIndex(sentence)
+	if reading == nil {
+		return ""
+	}
+	start, end := reading[0], reading[1]
+	found := false
+	for _, re := range hostThresholdPatterns {
+		for _, loc := range re.FindAllStringIndex(sentence, -1) {
+			found = true
+			if loc[0] < start {
+				start = loc[0]
+			}
+			if loc[1] > end {
+				end = loc[1]
+			}
+		}
+	}
+	if !found {
+		return ""
+	}
+	return strings.TrimSpace(sentence[start:end])
+}
