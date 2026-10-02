@@ -43,6 +43,23 @@ mesh-cli tests: a session's MCP config names mesh-context, allowedTools carries 
 - **Item 19** (merged): Node docs: the mesh-cli ADRs name the built-in mesh-context where they describe current behaviour, each with a dated amendment heading; prologue stays only as the dated alias or inside a quoted record — https://github.com/runsheet/mesh-cli/pull/559.
 - **Item 20** (in review): Goal doc: builtin-is-mesh-context rewritten from the record — items 1–20 with outcome and PR, the mini on v0.2.210 already attaching mesh-context, and the console and platform halves that stay with runsheet — https://github.com/runsheet/mesh-cli/pull/562, the same rewrite as item 17's; whichever merges second takes the other's lines.
 
+## What landed
+
+**runsheet/mesh-cli** (main):
+
+- `tools.Builtin` is `mesh-context` (internal/tools/tools.go); a session's `--mcp-config` names it under `mcpServers` and `--allowedTools` carries `mcp__mesh-context__*` (#264, #396).
+- A Codex session's `config.toml` declares the built-in as `[mcp_servers.mesh-context]` (#396).
+- The platform's `builtIn: true` row is the node's own and is rendered once, never twice; a console tool named `prologue` no longer clashes and one named `mesh-context` does (#264, #396).
+- `prologue` is read as an alias only from sessions an older node started and this one adopted (`tools.IsBuiltin`), until 2026-10-28 (#396).
+- The prompts, INDEX.md and the channel brief tell agents to use `mesh_document`/`mesh_search`; the context read goes to `/mesh/v1`, with `/prologue/v1` as the fallback on a 404 until 2026-10-28 (#258).
+- The harness inputs' `Prologue` field is `MeshContext`, and present-tense comments in internal/ name mesh-context (#558).
+- The mesh-cli ADRs name the built-in mesh-context where they describe current behaviour, each with a dated amendment heading (#546, #559).
+
+**runsheet/mesh-specs** (main):
+
+- TRD §3 Tools says mesh-context is built in and the context read is `/mesh/v1`; ADR 006 amended; the prologue aliases listed as deprecated, going 2026-10-28 (#57).
+- The PRD, ADR 007, ADR 010, ADR 002 and the README name the context layer mesh-context in dated amendment lines (#125).
+
 ## The mini
 
 No by-hand upgrade was needed: the node self-updated. The rename merged 2026-09-29 (mesh-cli#264, then #396), and a merge to main touching `cmd/`, `internal/`, `images/node/`, `go.mod` or `go.sum` is tagged and released automatically (mesh-cli ADR-002), so the mini took the release through its own self-update without anyone running `mesh node upgrade`. Its `~/.mesh/node.log` reads `self-update: v0.2.210 is up; update confirmed` at 2026-10-02 03:49:08, and `self-update: v0.2.211 is up; update confirmed` at 05:52:14 for the release after it. `mesh_health_nodes` on 2026-10-02 reported the mini (`Mini`, org runsheet) online at `v0.2.210`, and every one of its live sessions' `tools` lists a tool with slug `mesh-context`, never `prologue`.
