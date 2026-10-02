@@ -123,19 +123,21 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 		dirs[r.FullName()] = sub
 		names = append(names, r.FullName())
 	}
-	cx, err := FetchContext(ctx, d.GW, scope.Name(), project.Slug, ContextOptions{Budget: d.contextBudget(), Repos: names, Logf: d.logf})
+	cx, err := FetchContext(ctx, d.GW, scope.Name(), project.Slug, ContextOptions{Budget: d.contextBudget(), Repos: names, Checkouts: checkoutsUnder(dir, dirs), Logf: d.logf})
 	if err != nil {
 		d.logf("project %s: context unavailable: %v", project.Slug, err)
 		cx = &Context{}
 	}
-	AddLive(ctx, d.GW, cx, scope.ID, project.ID, d.logf)
 	files, written, err := WriteContext(dir, cx)
 	if err != nil {
 		return fmt.Errorf("write context: %w", err)
 	}
 	d.logf("project %s: %s", project.Slug, written.Line())
+	if w := written.TargetWarning(); w != "" {
+		d.logf("project %s: %s", project.Slug, w)
+	}
 	contextDir := ""
-	if len(files) > 0 || len(cx.Index) > 0 || len(cx.Live) > 0 {
+	if len(files) > 0 || len(cx.Index) > 0 {
 		contextDir = ContextDir
 	}
 	// what the project has already taken on, and the room left: the

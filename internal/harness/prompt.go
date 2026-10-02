@@ -60,7 +60,7 @@ func contextRule(contextDir, project string) string {
 	if contextDir != "" {
 		where = "`" + contextDir + "/INDEX.md`"
 	}
-	return fmt.Sprintf("%s says what is on disk — just this session's repos' instructions and its own goal — and how to find the rest: search before you read, with the mesh-context server's tools: `mesh_search` (query → slug, title, kind, summary); read a document only when the work touches it, with `mesh_document` (project %q, the document's slug — never a context file's name: a file name is not a slug, `adr-adr-001-….md` is slug `adr-001-…`). Reach another project with `mesh_projects` and `mesh_documents`, live state with `mesh_items`. The ADRs and the TRD are binding and are searched before any design decision. A build fetches two or three documents, not forty.", where, project)
+	return fmt.Sprintf("%s says what is on disk — just this session's repos' instructions and its own goal — and how to find the rest: search before you read, with the mesh-context server's tools: `mesh_search` (query → slug, title, kind, summary); read a document only when the work touches it, with `mesh_document` (project %q, the document's slug — never a context file's name: a file name is not a slug, `instructions-acme-widgets-agents.md` is slug `agents`). Reach another project with `mesh_projects` and `mesh_documents`, live state with `mesh_items`. The ADRs and the TRD are binding and are searched before any design decision. A build fetches two or three documents, not forty.", where, project)
 }
 
 // BuildPrompt renders the session's whole prompt for a build job: the item

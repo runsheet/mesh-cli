@@ -67,7 +67,7 @@ func TestLoopPlansRequestedGoals(t *testing.T) {
 		t.Fatalf("fetched: %v", ws.fetched)
 	}
 	p := h.jobs[0].Prompt
-	for _, want := range []string{"Build the new thing.", "the thing works", "$20.00", "`acme/widgets` in `repos/widgets/`", ContextDir, "adr-adr-001.md", "```json"} {
+	for _, want := range []string{"Build the new thing.", "the thing works", "$20.00", "`acme/widgets` in `repos/widgets/`", ContextDir, "instructions-acme-widgets-agents.md", "```json"} {
 		if !strings.Contains(p, want) {
 			t.Fatalf("prompt lacks %q:\n%s", want, p)
 		}
