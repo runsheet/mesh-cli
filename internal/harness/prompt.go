@@ -29,6 +29,10 @@ type PromptInput struct {
 	// evaluation before and what the evaluator said of the last one.
 	Attempts   int
 	Evaluation string
+	// FailedClauses are the acceptance clauses the last evaluation failed,
+	// each with what would satisfy it (evaluateWorkItem's failedClauses).
+	// Empty on a first attempt, and from an evaluator that named none.
+	FailedClauses []FailedClause
 	// LastSession is what the last build session on this item spent its
 	// budget on when it was handed back (Result.SpentOn, ADR 012
 	// Hand-back), recorded by the node; empty when none was.
@@ -81,8 +85,20 @@ func BuildPrompt(in PromptInput) string {
 	if strings.TrimSpace(in.Acceptance) != "" {
 		fmt.Fprintf(&b, "## Acceptance (this item)\n\n%s\n\n", strings.TrimSpace(in.Acceptance))
 	}
-	if in.Attempts > 0 && strings.TrimSpace(in.Evaluation) != "" {
-		fmt.Fprintf(&b, "## Previous attempt\n\nThis is attempt %d. The branch carries the last attempt's commits; an independent evaluator rejected it. Fix what it found before anything else:\n\n%s\n\n", in.Attempts+1, strings.TrimSpace(in.Evaluation))
+	if in.Attempts > 0 && (strings.TrimSpace(in.Evaluation) != "" || len(in.FailedClauses) > 0) {
+		fmt.Fprintf(&b, "## Previous attempt\n\nThis is attempt %d. The branch carries the last attempt's commits; an independent evaluator rejected it. Fix what it found before anything else:\n\n", in.Attempts+1)
+		if ev := strings.TrimSpace(in.Evaluation); ev != "" {
+			fmt.Fprintf(&b, "%s\n\n", ev)
+		}
+		// the clauses it failed, as a list: the prose above says it too, but a
+		// retry that works through a list finishes what the last one missed
+		if len(in.FailedClauses) > 0 {
+			b.WriteString("### Every clause it failed\n\nOne line per acceptance clause the evaluator failed, with what it said would satisfy it. Fix every one; the next evaluation judges this attempt on these clauses and on whether anything that held before has regressed.\n\n")
+			for _, c := range in.FailedClauses {
+				fmt.Fprintf(&b, "- **%s** — satisfied by: %s\n", c.Clause, c.Satisfy)
+			}
+			b.WriteString("\n")
+		}
 	}
 	if s := strings.TrimSpace(in.LastSession); s != "" {
 		fmt.Fprintf(&b, "## The last session on this item\n\nIt ran past its budget's hand-back mark with nothing committed and was told to commit what worked and finish. %s Do not repeat that: read less, commit earlier — commit each piece that works as soon as it works.\n\n", s)
@@ -492,7 +508,16 @@ func (d *PlannedDep) UnmarshalJSON(b []byte) error {
 
 // planDependencyRule is the planner's dependency rubric (trd §5 phase
 // 2): an item waits for another only when it uses what that one builds.
-const planDependencyRule = "An item depends on another only when it uses something that item creates or changes — a type, command, field, function, file or endpoint — and could not be built against main without it. Sharing a repository or touching the same file is not a dependency: the merge queue rebases, and the scheduler's overlap hold covers conflicts. Order by importance is priority, not dependency. Prefer a wide, shallow graph: the node runs up to 6 items at once and readies every item whose dependencies merged. A final docs or goal-doc item depends only on the items whose results it records. Each dependency carries a one-line `because` naming what is used, as {\"seq\": 3, \"because\": \"uses the Foo type item 3 adds\"}; a dependency without one is dropped."
+// planGoalDocRule keeps the planner out of the goal's own document. The
+// node writes it itself when the goal ends (RecordEndedGoal, ADR 003
+// decision 4) - straight to the default branch, regenerated from the
+// platform's own rows, no item and no pull request. An item that writes it
+// as well is work nobody needs, and two such items in one plan conflict
+// with each other over the one file. The path is named in goaldoc.go
+// alone, which TestOnlyGoalDocWritesTheGoalDoc holds to.
+const planGoalDocRule = "Plan no item for the goal's own document: when the goal ends the node writes it itself, under the project's specs, from the platform's record of every item and its pull request. An item that records the goal's outcome is work nobody needs. The documents an item changes are the ones its own change makes wrong - an ADR, a TRD section, a README."
+
+const planDependencyRule = "An item depends on another only when it uses something that item creates or changes — a type, command, field, function, file or endpoint — and could not be built against main without it. Sharing a repository or touching the same file is not a dependency: the merge queue rebases, and the scheduler's overlap hold covers conflicts. Order by importance is priority, not dependency. Prefer a wide, shallow graph: the node runs up to 6 items at once and readies every item whose dependencies merged. A final docs item depends only on the items whose results it records. Each dependency carries a one-line `because` naming what is used, as {\"seq\": 3, \"because\": \"uses the Foo type item 3 adds\"}; a dependency without one is dropped."
 
 // planAcceptanceRule is the planner's side of adr-004: an item's
 // acceptance names only what its evaluator can see.
@@ -593,9 +618,10 @@ func PlanPrompt(in PlanInput) string {
 	b.WriteString("   " + planDependencyRule + "\n")
 	b.WriteString("5. repo is one of the project's repos above, as owner/name. base_ref is its default branch unless the item builds on another item's branch.\n")
 	b.WriteString("6. Change nothing in the repos: you plan, you do not build.\n")
+	b.WriteString("   " + planGoalDocRule + "\n")
 	b.WriteString("7. Design keeps pace with code: an item that changes an aggregate, a policy, a process, or a public contract (a gateway field, an API, a console route) also amends the ADR or TRD section that describes it, in the same item and pull request; a decision no ADR covers gets a new ADR at the next free number in that repo. Say so in the item's brief and acceptance. Every new document carries frontmatter with a one-line `summary:`.\n")
 	b.WriteString("8. Each item names the model its session runs on, as `model`, with a one-line `model_reason`:\n")
-	b.WriteString("   - `haiku` for mechanical items: docs-only, a goal-doc section, a version bump, a rename.\n")
+	b.WriteString("   - `haiku` for mechanical items: docs-only, a version bump, a rename.\n")
 	b.WriteString("   - `sonnet` for a well-specified change in one package with tests to copy.\n")
 	b.WriteString("   - `opus` for anything cross-cutting, concurrency, migrations, security, a failing item's retry, or when unsure.\n")
 	if len(in.Evidence) > 0 {

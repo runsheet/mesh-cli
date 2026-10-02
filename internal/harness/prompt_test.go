@@ -26,7 +26,7 @@ func TestPlanPromptModelRubric(t *testing.T) {
 	p := PlanPrompt(PlanInput{GoalSlug: "g", GoalTitle: "G", Org: "o", Project: "p"})
 	for _, want := range []string{
 		"8. Each item names the model its session runs on, as `model`, with a one-line `model_reason`:\n",
-		"   - `haiku` for mechanical items: docs-only, a goal-doc section, a version bump, a rename.\n",
+		"   - `haiku` for mechanical items: docs-only, a version bump, a rename.\n",
 		"   - `sonnet` for a well-specified change in one package with tests to copy.\n",
 		"   - `opus` for anything cross-cutting, concurrency, migrations, security, a failing item's retry, or when unsure.\n",
 	} {
@@ -82,7 +82,7 @@ func TestPlanPromptDependencyRubric(t *testing.T) {
 			"Sharing a repository or touching the same file is not a dependency",
 			"Order by importance is priority, not dependency.",
 			"Prefer a wide, shallow graph",
-			"A final docs or goal-doc item depends only on the items whose results it records.",
+			"A final docs item depends only on the items whose results it records.",
 			"Each dependency carries a one-line `because` naming what is used",
 			"a dependency without one is dropped.",
 			`"depends_on": [{"seq": 1, "because": `,
