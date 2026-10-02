@@ -2,6 +2,7 @@ package node
 
 import (
 	"encoding/json"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -32,49 +33,46 @@ mesh node: 2026/09/28 15:00:00 item ship-it/3: usage build {"sessionId":"s7","in
 mesh node: 2026/09/29 00:00:00 item ship-it/5: usage build {"sessionId":"s8","inputTokens":5000,"cacheReadTokens":1000,"listCostCents":5,"contextBytes":3000}
 `
 
-// priorityFixture is a node.log of evaluate records only: one logged
-// before adr-016's amendment 2026-10-02 (no priority or evaluators),
-// two urgent (one with a second opinion, one without), two high on the
-// same item (a retry, both evaluators recorded on the item once), one
-// normal and one low.
-const priorityFixture = `mesh node: 2026/09/27 10:00:00 item ship-it/1: usage evaluate {"sessionId":"e0","inputTokens":1000,"listCostCents":40}
-mesh node: 2026/09/28 09:00:00 item ship-it/2: usage evaluate priority=urgent evaluators=2 {"sessionId":"e1","inputTokens":2000,"listCostCents":100}
-mesh node: 2026/09/28 09:05:00 item ship-it/3: usage evaluate priority=urgent evaluators=1 {"sessionId":"e2","inputTokens":1500,"listCostCents":60}
-mesh node: 2026/09/28 09:10:00 item ship-it/4: usage evaluate priority=high evaluators=1 {"sessionId":"e3","inputTokens":1200,"listCostCents":45}
-mesh node: 2026/09/28 09:15:00 item ship-it/4: usage evaluate priority=high evaluators=2 {"sessionId":"e4","inputTokens":1300,"listCostCents":55}
-mesh node: 2026/09/28 09:20:00 item ship-it/5: usage evaluate priority=normal evaluators=1 {"sessionId":"e5","inputTokens":900,"listCostCents":30}
-mesh node: 2026/09/28 09:25:00 item ship-it/6: usage evaluate priority=low evaluators=1 {"sessionId":"e6","inputTokens":800,"listCostCents":20}
-`
-
-// EvaluationCostByPriority groups a mix of records logged before and
-// after adr-016's amendment 2026-10-02 into one row per priority,
-// unknown last for the records with none, and `mesh node usage`'s
-// rendering (Lines) carries the section.
+// testdata/usage-by-priority.log is a node.log of evaluate records: two
+// logged before adr-016's amendment 2026-10-02 (no priority or
+// evaluators), two urgent (one with a second opinion, one without),
+// three high on two items (ship-it/4 retried, once on one evaluator
+// and once on two), three normal (one with a second opinion) and one
+// low. EvaluationCostByPriority groups them into one row per priority,
+// unknown last, and Lines prints each as an `evaluate <priority>:` row
+// under the kind table.
 func TestEvaluationCostByPriority(t *testing.T) {
-	u, err := ReadUsage(strings.NewReader(priorityFixture), UsageQuery{From: day("2026-09-27"), To: day("2026-09-29")})
+	f, err := os.Open("testdata/usage-by-priority.log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	u, err := ReadUsage(f, UsageQuery{From: day("2026-09-27"), To: day("2026-09-29")})
 	if err != nil {
 		t.Fatal(err)
 	}
 	got := u.EvaluationCostByPriority()
 	want := []PriorityCost{
-		{Priority: "urgent", Items: 2, Evaluations: 2, CostTotalCents: 160, CostPerItemMedianCents: 80, CostPerItemMeanCents: 80, TwoEvaluatorsPercent: 50},
-		{Priority: "high", Items: 1, Evaluations: 2, CostTotalCents: 100, CostPerItemMedianCents: 100, CostPerItemMeanCents: 100, TwoEvaluatorsPercent: 50},
-		{Priority: "normal", Items: 1, Evaluations: 1, CostTotalCents: 30, CostPerItemMedianCents: 30, CostPerItemMeanCents: 30, TwoEvaluatorsPercent: 0},
-		{Priority: "low", Items: 1, Evaluations: 1, CostTotalCents: 20, CostPerItemMedianCents: 20, CostPerItemMeanCents: 20, TwoEvaluatorsPercent: 0},
-		{Priority: "", Items: 1, Evaluations: 1, CostTotalCents: 40, CostPerItemMedianCents: 40, CostPerItemMeanCents: 40, TwoEvaluatorsPercent: 0},
+		{Priority: "urgent", Items: 2, Evaluations: 2, CostTotalCents: 160, CostPerItemMedianCents: 80, CostPerItemMeanCents: 80, OneEvaluator: 1, TwoEvaluators: 1},
+		{Priority: "high", Items: 2, Evaluations: 3, CostTotalCents: 230, CostPerItemMedianCents: 115, CostPerItemMeanCents: 115, OneEvaluator: 1, TwoEvaluators: 2},
+		{Priority: "normal", Items: 3, Evaluations: 3, CostTotalCents: 154, CostPerItemMedianCents: 34, CostPerItemMeanCents: 51, OneEvaluator: 2, TwoEvaluators: 1},
+		{Priority: "low", Items: 1, Evaluations: 1, CostTotalCents: 20, CostPerItemMedianCents: 20, CostPerItemMeanCents: 20, OneEvaluator: 1},
+		{Priority: "", Items: 2, Evaluations: 2, CostTotalCents: 160, CostPerItemMedianCents: 80, CostPerItemMeanCents: 80},
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("EvaluationCostByPriority =\n%+v\nwant\n%+v", got, want)
 	}
-	lines := strings.Join(u.Lines(), "\n")
-	if !strings.Contains(lines, "evaluation cost per item by priority") {
-		t.Fatalf("rendering lacks the section:\n%s", lines)
-	}
-	for _, row := range []string{"urgent", "high", "normal", "low", UsageUnknown} {
-		if !strings.Contains(lines, row) {
-			t.Errorf("rendering lacks the %q row:\n%s", row, lines)
-		}
-	}
+	checkLines(t, u.Lines(), []string{
+		"window 2026-09-27..2026-09-29  records 2026-09-27T10:00:00..2026-09-28T09:25:00",
+		"kind      sessions  input tokens median  input tokens mean  cache read %  context bytes median  with context bytes  documents fetched median  fetched by tool",
+		"evaluate  11        1300                 1554               50.0          -                     0                   -                         0",
+		"evaluate urgent: 2 items, 1×1 / 1×2, median $0.80/item, total $1.60",
+		"evaluate high: 2 items, 1×1 / 2×2, median $1.15/item, total $2.30",
+		"evaluate normal: 3 items, 2×1 / 1×2, median $0.34/item, total $1.54",
+		"evaluate low: 1 items, 1×1 / 0×2, median $0.20/item, total $0.20",
+		"evaluate unknown: 2 items, 0×1 / 0×2, median $0.80/item, total $1.60",
+		"unparsed 0",
+	})
 }
 
 func readUsageFixture(t *testing.T, q UsageQuery) []string {
@@ -113,10 +111,7 @@ func TestUsageReadingByKind(t *testing.T) {
 		"evaluate  1         50000                50000              80.0          -                     0                   -                         0",
 		"plan      2         50000                50000              60.0          3000                  2                   -                         0",
 		"unknown   1         7000                 7000               100.0         -                     0                   -                         0",
-		"",
-		"evaluation cost per item by priority",
-		"priority  items  evaluations  cost total cents  cost per item median cents  cost per item mean cents  two evaluators %",
-		"unknown   1      1            40                40                          40                        0.0",
+		"evaluate unknown: 1 items, 0×1 / 0×2, median $0.40/item, total $0.40",
 		"unparsed 1",
 	})
 }
@@ -146,10 +141,7 @@ func TestUsageReadingByGoalAndKind(t *testing.T) {
 		"build     2         200000               200000             90.0          1000                  1                   4                         1",
 		"evaluate  1         50000                50000              80.0          -                     0                   -                         0",
 		"plan      1         80000                80000              75.0          4000                  1                   -                         0",
-		"",
-		"evaluation cost per item by priority",
-		"priority  items  evaluations  cost total cents  cost per item median cents  cost per item mean cents  two evaluators %",
-		"unknown   1      1            40                40                          40                        0.0",
+		"evaluate unknown: 1 items, 0×1 / 0×2, median $0.40/item, total $0.40",
 		"unparsed 1",
 	})
 	checkLines(t, readUsageFixture(t, UsageQuery{From: day("2026-09-28"), To: day("2026-09-29"), Kind: "plan"}), []string{

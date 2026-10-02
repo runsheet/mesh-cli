@@ -279,15 +279,16 @@ var priorityOrder = []string{"urgent", "high", "normal", "low"}
 // evaluations run on them (more than one evaluation per item when a
 // retry is evaluated again), the total list cost in cents, the median
 // and mean cost per item in cents (each item's own evaluations summed
-// first, so a retried item counts once), and the share of evaluations
-// — not items — that ran on two evaluators.
+// first, so a retried item counts once), and the evaluations — not
+// items — that ran on one evaluator and on two (a record from before
+// the amendment, evaluators 0, is in neither).
 type PriorityCost struct {
-	Priority               string
-	Items, Evaluations     int
-	CostTotalCents         int64
-	CostPerItemMedianCents int64
-	CostPerItemMeanCents   int64
-	TwoEvaluatorsPercent   float64
+	Priority                    string
+	Items, Evaluations          int
+	CostTotalCents              int64
+	CostPerItemMedianCents      int64
+	CostPerItemMeanCents        int64
+	OneEvaluator, TwoEvaluators int
 }
 
 // EvaluationCostByPriority groups the reading's evaluate records by the
@@ -324,12 +325,15 @@ func (u UsageReading) EvaluationCostByPriority() []PriorityCost {
 		recs := byPriority[p]
 		itemCost := map[string]int64{}
 		var total int64
-		var twoEvaluators int
+		var one, two int
 		for _, r := range recs {
 			itemCost[r.Label] += r.Report.ListCostCents
 			total += r.Report.ListCostCents
-			if r.Evaluators == 2 {
-				twoEvaluators++
+			switch r.Evaluators {
+			case 1:
+				one++
+			case 2:
+				two++
 			}
 		}
 		perItem := make([]int64, 0, len(itemCost))
@@ -339,7 +343,7 @@ func (u UsageReading) EvaluationCostByPriority() []PriorityCost {
 		pc := PriorityCost{
 			Priority: p, Items: len(itemCost), Evaluations: len(recs),
 			CostTotalCents: total, CostPerItemMedianCents: median(perItem),
-			TwoEvaluatorsPercent: float64(twoEvaluators) * 100 / float64(len(recs)),
+			OneEvaluator: one, TwoEvaluators: two,
 		}
 		if len(perItem) > 0 {
 			pc.CostPerItemMeanCents = total / int64(len(perItem))
@@ -349,31 +353,29 @@ func (u UsageReading) EvaluationCostByPriority() []PriorityCost {
 	return out
 }
 
-// priorityLines is EvaluationCostByPriority rendered as Lines does the
-// kind table: a blank line, the section's heading, then one row per
-// priority present; nothing when the reading holds no evaluate record.
+// priorityLines is EvaluationCostByPriority rendered under the kind
+// table, one row per priority present, unknown (a record logged before
+// adr-016's amendment 2026-10-02) last:
+//
+//	evaluate <priority>: <n> items, <a>×1 / <b>×2, median $<x>/item, total $<y>
+//
+// nothing when the reading holds no evaluate record.
 func (u UsageReading) priorityLines() []string {
-	pcs := u.EvaluationCostByPriority()
-	if len(pcs) == 0 {
-		return nil
-	}
-	var buf bytes.Buffer
-	w := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "priority\titems\tevaluations\tcost total cents\tcost per item median cents\tcost per item mean cents\ttwo evaluators %")
-	for _, pc := range pcs {
+	var out []string
+	for _, pc := range u.EvaluationCostByPriority() {
 		name := pc.Priority
 		if name == "" {
 			name = UsageUnknown
 		}
-		fmt.Fprintf(w, "%s\t%d\t%d\t%d\t%d\t%d\t%s\n", name, pc.Items, pc.Evaluations, pc.CostTotalCents,
-			pc.CostPerItemMedianCents, pc.CostPerItemMeanCents, strconv.FormatFloat(pc.TwoEvaluatorsPercent, 'f', 1, 64))
-	}
-	w.Flush()
-	out := []string{"", "evaluation cost per item by priority"}
-	for _, l := range strings.Split(strings.TrimRight(buf.String(), "\n"), "\n") {
-		out = append(out, strings.TrimRight(l, " "))
+		out = append(out, fmt.Sprintf("evaluate %s: %d items, %d×1 / %d×2, median %s/item, total %s",
+			name, pc.Items, pc.OneEvaluator, pc.TwoEvaluators, centsAsDollars(pc.CostPerItemMedianCents), centsAsDollars(pc.CostTotalCents)))
 	}
 	return out
+}
+
+// centsAsDollars is cents as `$d.cc`, $0.00 included.
+func centsAsDollars(cents int64) string {
+	return fmt.Sprintf("$%d.%02d", cents/100, cents%100)
 }
 
 // median is the middle of vs (the mean of the two middle ones, rounded

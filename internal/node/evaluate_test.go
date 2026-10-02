@@ -619,6 +619,9 @@ func TestEvaluationUsageRecordsPriorityAndEvaluators(t *testing.T) {
 	f, ev, _, _ := secondFixture(t, "normal", "Holds.\n\nVERDICT: PASS", &fakeCodexH{text: "VERDICT: FAIL"})
 	ev.Credentials.Log = log.New(&buf, "", log.LstdFlags)
 	evaluateItem1(t, f, ev)
+	if line := buf.String(); !strings.Contains(line, ": usage evaluate priority=normal evaluators=1 {") {
+		t.Fatalf("logged record lacks priority=normal evaluators=1:\n%s", line)
+	}
 	recs, err := ReadUsage(&buf, UsageQuery{From: day("2000-01-01"), To: day("2100-01-01"), Kind: "evaluate"})
 	if err != nil {
 		t.Fatal(err)
@@ -633,6 +636,9 @@ func TestEvaluationUsageRecordsPriorityAndEvaluators(t *testing.T) {
 	f, ev, _, _ = secondFixture(t, "high", "Holds.\n\nVERDICT: PASS", codex)
 	ev.Credentials.Log = log.New(&buf, "", log.LstdFlags)
 	evaluateItem1(t, f, ev)
+	if line := buf.String(); !strings.Contains(line, ": usage evaluate priority=high evaluators=2 {") {
+		t.Fatalf("logged record lacks priority=high evaluators=2:\n%s", line)
+	}
 	recs, err = ReadUsage(&buf, UsageQuery{From: day("2000-01-01"), To: day("2100-01-01"), Kind: "evaluate"})
 	if err != nil {
 		t.Fatal(err)
