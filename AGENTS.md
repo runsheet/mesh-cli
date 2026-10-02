@@ -439,17 +439,19 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   amending `adr-005-codex-second-opinion.md`; goal
   `codex-sessions-reach-the-context-tool`): `Evaluator.Codex` is the
   Codex harness (`codexSecondOpinion` in `nodecmd.go`: built whenever
-  the codex binary is found, with or without a `codex:` block, on the
-  block's first account) and `CodexAccounts` is
+  the codex binary is found, with or without a `codex:` block, with no
+  account of its own) and `CodexAccounts` is
   `Loop.CodexCandidates` — the issued Codex accounts `Known` holds and
-  node.yaml's (`CodexOwnAccount`, no ID). Before an evaluation starts
+  only those: no Codex session runs on the machine's own login, and a
+  Codex job with no placed `CODEX_HOME` is refused by the harness
+  (`harness.ErrNoIssuedCredential`; ADR-011's amendment 2026-10-02). Before an evaluation starts
   the evaluator judges them with `ChooseAccount` over
   `Limits.CodexReadings` for the goal's priority: one with headroom
   makes it a Codex session on `CodexModel` of the evaluate model
   (defaults gpt-6-sol for opus, gpt-6-luna for sonnet and haiku — astra
   costs $1.29 for one evaluation where sol costs about $0.45, so it
   runs only when pinned), opened by `Credentials.Open`
-  (adapter codex) or `OpenOwn`; else Claude as before. A full `gpt-…`
+  (adapter codex), none issued `ErrNoAccount`; else Claude as before. A full `gpt-…`
   evaluate/item/agent model pins Codex (`EvaluatorPin`; no headroom is
   `ErrFamilyWaits`, the item stays in evaluating, said once per item by
   `Waits`), a `claude-…` one pins Claude; a bare tier pins nothing. The

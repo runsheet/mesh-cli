@@ -985,7 +985,7 @@ func TestPanickingEvaluationNamesItself(t *testing.T) {
 // operator's own $CODEX_HOME: that login is never a candidate (ADR 011's
 // amendment 2026-10-02), and the report names the Claude credential.
 func TestNoIssuedCodexCredentialEvaluatesOnClaude(t *testing.T) {
-	f, ev, claude, codex, _, logs := familyFixture(t, "urgent", "sonnet", "Holds.\nVERDICT: PASS", "VERDICT: FAIL")
+	f, ev, claude, codex, limits, _ := familyFixture(t, "urgent", "sonnet", "Holds.\nVERDICT: PASS", "VERDICT: FAIL")
 	operator := t.TempDir()
 	t.Setenv("CODEX_HOME", operator)
 	if err := os.WriteFile(filepath.Join(operator, "auth.json"), []byte(codexLogin), 0o600); err != nil {
@@ -1001,8 +1001,8 @@ func TestNoIssuedCodexCredentialEvaluatesOnClaude(t *testing.T) {
 	if u := usageOf(t, f); u["adapter"] != "claude-code" || u["credentialId"] != "cred-1" {
 		t.Fatalf("usage %v", u)
 	}
-	if strings.Contains(logs.String(), "codex:default") {
-		t.Errorf("node.log names codex:default:\n%s", logs.String())
+	if got := limits.CodexReadings(); len(got) != 0 {
+		t.Errorf("Codex readings %v, want none: no Codex session ran", got)
 	}
 }
 
