@@ -1339,6 +1339,8 @@
         {"name": "files", "type": "[String!]"},
         {"name": "inputTokens", "type": "Long"},
         {"name": "namespace", "type": "Namespace!"},
+        {"name": "noVerdict", "type": "Boolean"},
+        {"name": "noVerdictReason", "type": "String"},
         {"name": "notes", "type": "String"},
         {"name": "outputTokens", "type": "Long"},
         {"name": "passed", "type": "Boolean!"},
