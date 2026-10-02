@@ -190,7 +190,7 @@ func TestEvaluationNotesItsToolUse(t *testing.T) {
 		t.Fatal(err)
 	}
 	notes, _ := f.CallsNamed("evaluateWorkItem")[0].Input["notes"].(string)
-	if notes != "Fine.\n\nevaluators: 1 — normal/low goal, no protected path\n(evaluated on the CLI's default model)\ntools: brave: first call errored: 401 Unauthorized: token [redacted] is not valid; perplexity served, never called" {
+	if notes != "Fine.\n\nevaluators: one — normal/low goal, no protected path\n(evaluated on the CLI's default model)\ntools: brave: first call errored: 401 Unauthorized: token [redacted] is not valid; perplexity served, never called" {
 		t.Fatalf("notes = %q", notes)
 	}
 	if strings.Contains(logs.String(), braveSecret) {

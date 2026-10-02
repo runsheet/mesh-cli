@@ -537,13 +537,13 @@ Evaluation cost as much as building (15,564 evaluate minutes against
 17,629 build minutes in a week), and a second judge is worth its cost
 only where a wrong verdict is expensive. The second opinion is now asked
 by a rule, not by priority on a pass alone. `secondOpinionWanted(evalDecision)` in
-`internal/node/second_opinion.go` is a pure decision returning whether
+`internal/node/evaluate.go` is a pure decision returning whether
 and why; the first reason that holds is the one recorded:
 
 | The item | Evaluators | Reason |
 |---|---|---|
 | its goal is `urgent` or `high` | 2 | `urgent/high goal` |
-| its `protectedFiles` is non-empty, or a file its diff changed (`Workspacer.ChangedPaths`) matches a glob of its `protectedRulePaths` or the project's `protectedPaths` (`globMatch`: `path.Match` per segment, `**` any number of segments) | 2 | `protected path <path>` |
+| its `protectedFiles` is non-empty, or a file its diff changed (`Workspacer.ChangedPaths`) matches a glob of its `protectedRulePaths`, the project's `protectedPaths` or the `protected_paths:` list of the checkout's `.mesh/config.yml` (`globMatch`: `path.Match` per segment, `**` any number of segments) | 2 | `protected path <path>` |
 | its first verdict is FAIL with at least one failed clause that is not a reading of the host (`hostReadingClause`, the planner's lexical test behind `hostReadingAcceptance`, on the clause and its SATISFY; ADR-020) | 2 | `first verdict FAIL on a correctness clause` |
 | the checkout's `.mesh/config.yml` says `second_opinion: always` | 2 | `second_opinion: always` |
 | anything else — a normal or low goal touching no protected path, a first FAIL on host readings alone | 1 | `normal/low goal, no protected path` |
@@ -559,19 +559,30 @@ second fail is failed.
 
 **The setting.** `second_opinion: always|rule` is read from the top
 level of the item's repo checkout's `.mesh/config.yml`
-(`secondOpinionSetting`); absent, unreadable or any other value is
+(`readCheckoutConfig`, which reads its `protected_paths:` globs too —
+the repo's own protected paths beside the project's); absent, unreadable or any other value is
 `rule`. It belongs on the project, read at claim time through
 ProjectIndex, and waits for the platform to serve that field: nothing
 was added to `schema.json`, and the reader carries a TODO naming it.
 
 **The record.** The choice is one line in the notes before the
 `(evaluated on …)` tail and one in node.log, `item <label>: evaluators:
-1 — normal/low goal, no protected path` or `evaluators: 2 — <reason>`
-(`evaluators: 1 — <reason>, but no other family on this node` when the
+one — normal/low goal, no protected path` or `evaluators: two — <reason>`
+(`evaluators: one — <reason>, but no other family on this node` when the
 rule wants two and the node has no second family). Every
 `evaluateWorkItem` — verdict or no verdict — carries `evaluatedModel`,
 the model of the evaluation whose verdict came first
 (`gateway.EvaluateChoice`). What already degrades to one verdict still
 does, with `<Family> second opinion unavailable: <why>` beside the
-`evaluators: 2` line: an adopted session, a family blind on the first
+`evaluators: two` line: an adopted session, a family blind on the first
 attempt, a failed preflight, no Codex headroom.
+
+**The retry.** A FAIL the second family confirms or contests is recorded
+for the retry as any FAIL is: both reviews in the one `evaluateWorkItem`'s
+notes and both sessions' clause lists in its `failedClauses` (the
+union), so the next attempt's evaluator is given them and `SameClause`
+sees a clause either family named. The verdict rule itself (TRD §3: a
+disagreement after a first PASS fails) is unchanged; only when the
+second opinion is asked is. A first attempt that reached no verdict —
+blind, or no `VERDICT:` line — is never a first FAIL: those paths are
+unchanged and ask no second opinion.
