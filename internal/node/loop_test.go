@@ -1149,10 +1149,17 @@ func TestLoopTickReadsGoalsOncePerOrg(t *testing.T) {
 // the returned list. Items finish as soon as they are dispatched.
 func (p *priorityFake) liveLoop(t *testing.T, yaml string) (*Loop, *[]string, *strings.Builder) {
 	t.Helper()
+	return p.liveLoopOn(t, yaml, LoadConfig)
+}
+
+// liveLoopOn is liveLoop reading node.yaml with load, at the start and
+// on every reload.
+func (p *priorityFake) liveLoopOn(t *testing.T, yaml string, load func() (*Config, error)) (*Loop, *[]string, *strings.Builder) {
+	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	writeNodeYAML(t, yaml)
-	cfg, err := LoadConfig()
+	cfg, err := load()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1162,7 +1169,7 @@ func (p *priorityFake) liveLoop(t *testing.T, yaml string) (*Loop, *[]string, *s
 	start := p.scopes[:1]
 	loop := &Loop{GW: gw, Cfg: cfg, Scopes: start, Interval: time.Hour, Harness: "claude-code", Log: log.New(&logs, "", 0),
 		Dispatch: func(context.Context, gateway.WorkItem) {}}
-	loop.Reload = Reloader(gw, cfg, start, nil, func(_ context.Context, sc Scope) error {
+	loop.Reload = Reloader(gw, cfg, start, load, func(_ context.Context, sc Scope) error {
 		registered = append(registered, sc.Login)
 		return nil
 	})

@@ -902,8 +902,17 @@ func ConfigPath() (string, error) {
 	return filepath.Join(home, ".mesh", "node.yaml"), nil
 }
 
-// LoadConfig reads ~/.mesh/node.yaml.
+// LoadConfig reads ~/.mesh/node.yaml, refusing a retired key
+// (Config.Retired) before anything else is judged.
 func LoadConfig() (*Config, error) {
+	return loadConfig(true)
+}
+
+// loadConfig reads ~/.mesh/node.yaml; refuseRetired false reads an
+// `accounts:` or `codex.accounts` list as it was read before they were
+// retired, for the tests of the plumbing item 9 of goal
+// a-session-never-runs-on-the-machines-own-login removes.
+func loadConfig(refuseRetired bool) (*Config, error) {
 	path, err := ConfigPath()
 	if err != nil {
 		return nil, err
@@ -918,6 +927,11 @@ func LoadConfig() (*Config, error) {
 	var c Config
 	if err := yaml.Unmarshal(data, &c); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+	if refuseRetired {
+		if err := c.Retired(); err != nil {
+			return nil, err
+		}
 	}
 	if c.Gateway == "" {
 		c.Gateway = gateway.DefaultURL
@@ -957,6 +971,32 @@ func LoadConfig() (*Config, error) {
 		return nil, fmt.Errorf(`%s: owner: %q is neither "person" nor "enterprise"`, path, c.Owner)
 	}
 	return &c, nil
+}
+
+// ErrRetired is the refusal of a node.yaml key the node no longer
+// honours: a node runs sessions only on credentials the platform
+// issues (goal a-session-never-runs-on-the-machines-own-login,
+// adr-005's 2026-10 amendment).
+var ErrRetired = errors.New("retired")
+
+// retiredKey is the refusal of one retired key, naming it and where
+// its credentials go instead.
+func retiredKey(key string) error {
+	return fmt.Errorf("node.yaml: %s is %w — a node runs sessions only on credentials the platform issues; add them on the console's Credentials page and attach them to the project (see README, 'Credentials come from the platform')", key, ErrRetired)
+}
+
+// Retired refuses a node.yaml that lists `accounts:` or
+// `codex.accounts`: both named the machine's own logins and keys, and
+// a node never runs a session on those. An empty list, or neither key,
+// is no refusal.
+func (c *Config) Retired() error {
+	if len(c.Accounts) > 0 {
+		return retiredKey("accounts:")
+	}
+	if len(c.Codex.Accounts) > 0 {
+		return retiredKey("codex.accounts")
+	}
+	return nil
 }
 
 // Save writes ~/.mesh/node.yaml.

@@ -50,10 +50,14 @@ func TestFakeServesEveryGeneratedField(t *testing.T) {
 				"WorkItemIndex": f.WorkItems, "GoalIndex": f.Goals, "ProjectIndex": f.Projects,
 				"DirectionIndex": f.Directions, "NodeIndex": f.Nodes,
 			}[entity]
-			if table == nil {
+			first := map[string]any{"id": "row1", "orgId": "o"}
+			if entity == "CredentialIndex" {
+				f.Credentials = append(f.Credentials, first)
+			} else if table == nil {
 				t.Fatalf("no fake table for %s", entity)
+			} else {
+				table["row1"] = first
 			}
-			table["row1"] = map[string]any{"id": "row1", "orgId": "o"}
 			all := append(gateway.Fields(entity), gateway.OptionalFields(entity)...)
 			if len(all) == 0 {
 				t.Fatalf("%s has no generated fields", entity)

@@ -4,6 +4,30 @@ package gateway
 
 import "strings"
 
+// credentialRequired are the CredentialIndex fields every supported platform serves (fields/CredentialIndex.txt).
+var credentialRequired = []string{
+	"allowedNodeIds",
+	"id",
+	"kind",
+	"label",
+	"orgId",
+	"projectIds",
+	"serves",
+	"status",
+	"vendor",
+}
+
+// credentialOptional are the CredentialIndex fields an older platform may lack (a `?` in fields/CredentialIndex.txt).
+var credentialOptional = []string{
+	"enterpriseId",
+}
+
+// credentialFields is the selection of credentialRequired.
+var credentialFields = strings.Join(credentialRequired, " ")
+
+// credentialOptionalFields is the selection of credentialOptional.
+var credentialOptionalFields = strings.Join(credentialOptional, " ")
+
 // directionRequired are the DirectionIndex fields every supported platform serves (fields/DirectionIndex.txt).
 var directionRequired = []string{
 	"direction",

@@ -48,6 +48,9 @@ type Fake struct {
 	Nodes      map[string]map[string]any
 	// Agents by id, as AgentIndex rows (runsheet trd §6e).
 	Agents map[string]map[string]any
+	// Credentials are CredentialIndex rows (runsheet trd §6i), served
+	// by credentialIndexs on org_id or enterprise_id; no secret.
+	Credentials []map[string]any
 	// Documents by "org/project" → list rows; Bodies by "org/project/slug".
 	Documents map[string][]map[string]any
 	Bodies    map[string]string
@@ -731,8 +734,25 @@ func (f *Fake) table(name string) map[string]map[string]any {
 		return f.Nodes
 	case "agentIndexs":
 		return f.Agents
+	case "credentialIndexs":
+		return byID(f.Credentials)
+	case "orgIndexs":
+		return byID(f.Orgs)
 	}
 	return map[string]map[string]any{}
+}
+
+// byID keys rows held as a list by their id, as table answers.
+func byID(rows []map[string]any) map[string]map[string]any {
+	out := make(map[string]map[string]any, len(rows))
+	for i, row := range rows {
+		id := fmt.Sprint(row["id"])
+		if row["id"] == nil {
+			id = fmt.Sprint(i)
+		}
+		out[id] = row
+	}
+	return out
 }
 
 // unknownSelection is the first field of the query's selections the

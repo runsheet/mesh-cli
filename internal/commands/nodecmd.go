@@ -639,6 +639,11 @@ func nodeStart(cmd *cobra.Command, args []string, logger *log.Logger) error {
 	// changed orgs restriction applies to it on reload even while every
 	// heartbeat since answers nil
 	loop.TakeAnswer(reg.Answer)
+	// which of the served orgs' projects no credential is open to this
+	// node for, said once the first heartbeat has answered the orgs:
+	// node.yaml's accounts are retired, so those projects' work waits
+	// (goal a-session-never-runs-on-the-machines-own-login)
+	loop.FirstBeat = func(ctx context.Context, scopes node.Scopes) { reportCredentials(ctx, gw, loop, scopes, logger) }
 	// SIGUSR1 (`mesh node drain`) drains: nothing new is claimed and
 	// the loop returns nil once every session has ended, so the
 	// process exits 0 and its service manager starts the new binary
@@ -882,6 +887,17 @@ func registerNode(ctx context.Context, cmd *cobra.Command, logger *log.Logger, u
 	w := confirmWindow{To: check.To, Started: started, Within: cfg.ConfirmWithin(), Every: nodeIntervalFlag, Note: updates.NoteConfirmError, Log: logger}
 	err = w.retry(ctx, register)
 	return
+}
+
+// reportCredentials logs which projects of the orgs served have no
+// credential open to this node, for claude-code and, when its CLI is
+// on PATH, codex. It is best effort: a refusal is one line, and nothing
+// it reads stops the start.
+func reportCredentials(ctx context.Context, gw node.CoverageGateway, loop *node.Loop, scopes node.Scopes, logger *log.Logger) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	_, adapters := loop.Runtimes()
+	node.ReportCoverage(ctx, gw, scopes, node.CoverageAdapters(adapters), logger.Printf)
 }
 
 // confirmWindow retries what a pending update's new process must reach

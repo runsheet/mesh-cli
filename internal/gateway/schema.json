@@ -760,6 +760,7 @@
         {"name": "createdBy", "type": "UUID"},
         {"name": "dailyCap", "type": "Long"},
         {"name": "daySpentCents", "type": "Long"},
+        {"name": "enterpriseId", "type": "UUID"},
         {"name": "id", "type": "UUID"},
         {"name": "kind", "type": "CredentialKind"},
         {"name": "label", "type": "String"},
