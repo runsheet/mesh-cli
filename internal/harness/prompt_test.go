@@ -11,12 +11,48 @@ func TestPlanPromptAcceptanceTheEvaluatorCanSee(t *testing.T) {
 		"3. Each item's brief says what to do and where, naming files and functions where it helps; its acceptance is what an evaluator can check — a test that passes, a command's output, a document with named sections — never a feeling.\n",
 		"   An item's acceptance names only what the evaluator can see at evaluation time, on that item's branch, in that item's repository: tests, commands and their output, file contents. It never names a CI check on the item's own pull request (the pull request opens only after evaluation passes), a deploy, or a file in another repository. Work like that becomes its own item in the right repo, or goes in the goal's acceptance.\n",
 		"4. depends_on names earlier seqs",
-		"9. End your final message with the graph as a JSON object in a ```json fenced block, and nothing after it:\n",
-		"```json\n{\"items\": [{\"seq\": 1, \"title\": \"…\", \"brief\": \"…\", \"acceptance\": \"…\", \"depends_on\": [], \"repo\": \"owner/name\", \"base_ref\": \"main\", \"model\": \"sonnet\", \"model_reason\": \"…\"}, {\"seq\": 2, \"title\": \"…\", \"brief\": \"…\", \"acceptance\": \"…\", \"depends_on\": [{\"seq\": 1, \"because\": \"uses the … item 1 adds\"}], \"repo\": \"owner/name\", \"base_ref\": \"main\", \"model\": \"sonnet\", \"model_reason\": \"…\"}]}\n```\n",
+		"9. End your final message with the graph as a JSON object in a ```json fenced block, and nothing after it. Its `questions` is empty unless a clause of the goal is one no pull request can satisfy (rule 3); each is {\"clause\": \"…\", \"question\": \"…\"}, for the person to answer:\n",
+		"```json\n{\"items\": [{\"seq\": 1, \"title\": \"…\", \"brief\": \"…\", \"acceptance\": \"…\", \"depends_on\": [], \"repo\": \"owner/name\", \"base_ref\": \"main\", \"model\": \"sonnet\", \"model_reason\": \"…\"}, {\"seq\": 2, \"title\": \"…\", \"brief\": \"…\", \"acceptance\": \"…\", \"depends_on\": [{\"seq\": 1, \"because\": \"uses the … item 1 adds\"}], \"repo\": \"owner/name\", \"base_ref\": \"main\", \"model\": \"sonnet\", \"model_reason\": \"…\"}], \"questions\": []}\n```\n",
 	} {
 		if !strings.Contains(p, want) {
 			t.Errorf("plan prompt lacks %q", want)
 		}
+	}
+}
+
+// ADR-020's planner half: an item's acceptance names only what a PR can
+// change, a host reading is a `Measure:` item, and a clause that cannot
+// be phrased so is a question in the graph's `questions` — in rule 3 of
+// every plan and in the re-ask.
+func TestPlanPromptHostRule(t *testing.T) {
+	first := PlanPrompt(PlanInput{GoalSlug: "g", GoalTitle: "G", Org: "o", Project: "p"})
+	reask := PlanPrompt(PlanInput{GoalSlug: "g", GoalTitle: "G", Org: "o", Project: "p", Rejected: []string{"item 5 (Shard): a reading of the host"}})
+	for name, p := range map[string]string{"first": first, "re-ask": reask} {
+		for _, want := range []string{
+			"   An item's acceptance names only what a pull request can change: code, tests, docs, a script that reproduces a reading, and the reading recorded honestly. A measurement of the host — load, wall time, shard durations, a p90 over a day — is never an item's merge gate: put it in the goal doc's After section, or in its own item titled `Measure: …` whose acceptance is that the script runs and its reading is recorded, whatever the number.",
+			"A clause you cannot phrase that way is a question for the person, not an item: write it beside `items` as `\"questions\": [{\"clause\": \"…\", \"question\": \"…\"}]`.\n",
+			"\"questions\": []}\n```\n",
+		} {
+			if !strings.Contains(p, want) {
+				t.Errorf("%s plan prompt lacks %q", name, want)
+			}
+		}
+	}
+	if !strings.Contains(reask, "goes in the goal's acceptance. "+planHostRule+" Write the whole graph again") {
+		t.Errorf("the re-ask does not restate the host rule:\n%s", reask)
+	}
+}
+
+// The questions beside the items are read; one missing a half is dropped,
+// and a graph with none has none.
+func TestParsePlanQuestions(t *testing.T) {
+	text := "Planned.\n\n```json\n{\"items\": [{\"seq\": 1, \"title\": \"T\", \"repo\": \"o/r\"}], \"questions\": [{\"clause\": \" the mini's load p90 under 1.5 × cores \", \"question\": \"Record it as not met?\"}, {\"clause\": \"half\"}]}\n```"
+	got := ParsePlanQuestions(text)
+	if len(got) != 1 || got[0] != (PlanQuestion{Clause: "the mini's load p90 under 1.5 × cores", Question: "Record it as not met?"}) {
+		t.Fatalf("questions = %+v", got)
+	}
+	if q := ParsePlanQuestions("```json\n{\"items\": [{\"seq\": 1, \"title\": \"T\", \"repo\": \"o/r\"}]}\n```"); q != nil {
+		t.Fatalf("no questions read as %+v", q)
 	}
 }
 
@@ -34,7 +70,7 @@ func TestPlanPromptModelRubric(t *testing.T) {
 			t.Errorf("plan prompt lacks %q", want)
 		}
 	}
-	if !strings.HasSuffix(p, "\"model\": \"sonnet\", \"model_reason\": \"…\"}]}\n```\n") {
+	if !strings.HasSuffix(p, "\"model\": \"sonnet\", \"model_reason\": \"…\"}], \"questions\": []}\n```\n") {
 		t.Error("the plan prompt no longer ends with the JSON example")
 	}
 }
@@ -174,8 +210,8 @@ func TestPlanPromptRejected(t *testing.T) {
 	}
 	p := PlanPrompt(PlanInput{GoalSlug: "g", GoalTitle: "G", Org: "o", Project: "p", Rejected: []string{"item 1 (Ship): a check on its own pull request (`deploy / verify`)"}})
 	for _, want := range []string{
-		"## Your last answer was flagged\n\nThe node checked your graph before handing it in and flagged these items — an acceptance naming what no evaluator can see, or a model the scorecard says does not work on its repo:\n\n- item 1 (Ship): a check on its own pull request (`deploy / verify`)\n\n",
-		"Work like that becomes its own item in the right repo, or goes in the goal's acceptance. Write the whole graph again with those acceptances and models rewritten; this is the last ask.\n",
+		"## Your last answer was flagged\n\nThe node checked your graph before handing it in and flagged these items — an acceptance naming what no evaluator can see or a reading of the host as a merge gate, or a model the scorecard says does not work on its repo:\n\n- item 1 (Ship): a check on its own pull request (`deploy / verify`)\n\n",
+		"Work like that becomes its own item in the right repo, or goes in the goal's acceptance. " + planHostRule + " Write the whole graph again with those acceptances and models rewritten; this is the last ask.\n",
 	} {
 		if !strings.Contains(p, want) {
 			t.Errorf("plan prompt lacks %q", want)
