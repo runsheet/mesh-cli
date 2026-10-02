@@ -125,3 +125,59 @@ sample was failed three times for it. Now:
   from until the platform serves one, and `mesh node usage` reads only
   what the node that wrote the log still has — a rotated or lost log is
   a gap in the reading, not a zero.
+
+**Amendment 2026-10-02, goal `context-is-fetched-not-shipped`: the
+report also carries how many documents a session fetched, and by which
+tool.** Context bytes says what a session wrote to disk; it says
+nothing about what the session pulled back in through the MCP tools —
+the number this goal's inversion (search before you read, fetch two or
+three documents instead of forty) is meant to shrink. Without a count
+beside `contextBytes`, the only evidence the inversion worked would be
+the input-tokens median moving, which a reader cannot attribute to
+fetches versus everything else that moved the same week.
+
+- `harness.Result` gains `ToolNames map[string]int` — calls per
+  `<server>__<tool>` (e.g. `mesh-context__mesh_document`), the
+  `prologue` alias folded into `mesh-context` as `Result.ToolCalls`
+  already does — and `DocumentsFetched int`, the count of those calls
+  that were `mesh_document` on the built-in context server: document
+  bodies fetched, not `mesh_search` queries. Both are set on the Claude
+  stream (`stream.go`, from `toolUseNames`) and the Codex stream
+  (`codexstream.go`, from each `mcp_tool_call`'s `Server`/`ToolName`).
+- `gateway.UsageReport` gains matching fields: `DocumentsFetched int64
+  json:"documentsFetched,omitempty"` and `ToolNames []ToolNameCount
+  json:"toolNames,omitempty"` (`ToolNameCount{Name, Calls}`, one row
+  per `<server>__<tool>`). `mutateWithUsage` treats each exactly as
+  `contextBytes`: its own `atomic.Bool` (`usageWithoutDocumentsFetched`,
+  `usageWithoutToolNames`) and its own error (`ErrNoDocumentsFetched`,
+  `ErrNoToolNames`), in the same optional-field loop — a platform that
+  knows neither is sent the command again without each in turn, every
+  later report goes without both and without a retry, and the two
+  errors come joined with whatever else the report lost (contextBytes,
+  validation, the per-tool list, the turn detail); `errors.Is` finds
+  each one in the joined error.
+- `SessionAccount.Carried` takes `ErrNoDocumentsFetched` and
+  `ErrNoToolNames` as landed, exactly as it does `ErrNoContextUsage` —
+  the command is not a failure because one older platform does not
+  store a count yet. (Attempt 1 of this item left them out of
+  `Carried`'s switch: an evaluator caught the gap, since every
+  finishing command rode the plain `err` back to the caller, retrying a
+  command that had in fact already landed and failing nothing by
+  accident alone.) `Finish` logs each fallback once per run, folded
+  into the same notice style as `contextBytes`'s: `usage: the platform
+  takes no documents-fetched count on the usage report yet; sent
+  without it` and `usage: the platform takes no per-tool call names on
+  the usage report yet; sent without them`.
+- The session's usage log line (`turnUsageSummary`) ends `, <n>
+  documents fetched` beside `turns=… input/turn mean=… max=…
+  largest=…`.
+- `mesh node usage` adds two columns after `with context bytes`:
+  `documents fetched median` (the median `Report.DocumentsFetched`
+  over the sessions that fetched at least one) and `with documents`
+  (how many of the kind's sessions did), on the same `-` for none as
+  the context-bytes columns.
+- **Owed to runsheet/runsheet**, beside `contextBytes`:
+  `UsageReportInput.documentsFetched` and `.toolNames` (an `Int` and a
+  list of `{name, calls}`), for the same scorecard reading. Until they
+  land, every report tries both, is refused, and is re-sent without
+  them.

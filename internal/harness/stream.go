@@ -98,6 +98,20 @@ func MCPServer(name string) string {
 	return server
 }
 
+// mcpToolName is the tool of an MCP tool name, mcp__<server>__<tool>
+// ("" for a tool that is not an MCP server's).
+func mcpToolName(name string) string {
+	rest, ok := strings.CutPrefix(name, "mcp__")
+	if !ok {
+		return ""
+	}
+	_, tool, ok := strings.Cut(rest, "__")
+	if !ok {
+		return ""
+	}
+	return tool
+}
+
 // countToolCall counts one call to server, keeping its id on
 // ToolCallIDs; an empty id (an event that carried none) is synthesised
 // from the session id, the server and the call's place in it, so the
@@ -176,7 +190,11 @@ func capText(s string, n int) string {
 // Claude Code's own refusal of the call (claudeToolAnswered: the server
 // replied with its own error result). A system/init event's
 // mcp_servers names each server whose status is not "connected" as an
-// error too, that status as FirstError, even with zero calls.
+// error too, that status as FirstError, even with zero calls. Each
+// such tool_use is also counted on Result.ToolNames, keyed
+// <server>__<tool> with the prologue alias folded into mesh-context,
+// and on Result.DocumentsFetched when it is a mesh_document call on
+// the built-in (goal context-is-fetched-not-shipped).
 //
 // Every assistant event's own message.usage (input + cache_read +
 // cache_creation) is that turn's input tokens, counted once per
@@ -262,6 +280,7 @@ func ParseStream(r io.Reader, onEvent func(Event)) Result {
 						id := res.countToolCall(server, c.ID)
 						res.toolStat(server).Calls++
 						pending[id] = pendingCall{server: server, start: now()}
+						res.countToolName(server, mcpToolName(c.Name))
 					}
 				}
 			}

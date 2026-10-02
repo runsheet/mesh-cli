@@ -726,8 +726,39 @@ func TestFinishLogsTheCarriedRecordOnItsLabel(t *testing.T) {
 		if got := strings.TrimPrefix(records[0], tc.want); got != want {
 			t.Errorf("%s: record\n%s\nwant\n%s", tc.kind, got, want)
 		}
-		if !strings.HasPrefix(logs.String(), "usage: turns=0 input/turn mean=0 max=0 largest=\n") {
+		if !strings.HasPrefix(logs.String(), "usage: turns=0 input/turn mean=0 max=0 largest=, 0 documents fetched\n") {
 			t.Errorf("%s: the turns line changed:\n%s", tc.kind, logs.String())
+		}
+	}
+}
+
+// A platform refusing both `documentsFetched` and `toolNames`
+// (ErrNoDocumentsFetched, ErrNoToolNames, possibly joined into one
+// error as mutateWithUsage does) is not a finishing failure: Carried
+// treats it as landed, and Finish logs each fallback once per run, not
+// once per session (adr-016's amendment 2026-10-02).
+func TestCarriedTreatsNoDocumentsFetchedAndNoToolNamesAsLandedAndLogsOncePerRun(t *testing.T) {
+	var logs strings.Builder
+	c := &Credentials{Log: log.New(&logs, "", 0)}
+	joined := errors.Join(gateway.ErrNoDocumentsFetched, gateway.ErrNoToolNames)
+	for i := range 2 {
+		s := &SessionAccount{creds: c}
+		s.Report(harness.Result{SessionID: fmt.Sprintf("s-%d", i), DocumentsFetched: 3, ToolNames: map[string]int{"mesh-context__mesh_document": 3}})
+		if err := s.Carried(joined); err != nil {
+			t.Fatalf("session %d: Carried = %v, want nil", i, err)
+		}
+		if !s.handedIn || !s.noDocumentsFetched || !s.noToolNames {
+			t.Fatalf("session %d: handedIn=%v noDocumentsFetched=%v noToolNames=%v", i, s.handedIn, s.noDocumentsFetched, s.noToolNames)
+		}
+		s.Finish(context.Background(), harness.Result{})
+	}
+	out := logs.String()
+	for _, notice := range []string{
+		"usage: the platform takes no documents-fetched count on the usage report yet; sent without it (said once, for every session this run)",
+		"usage: the platform takes no per-tool call names on the usage report yet; sent without them (said once, for every session this run)",
+	} {
+		if n := strings.Count(out, notice); n != 1 {
+			t.Errorf("notice %q said %d times, want 1:\n%s", notice, n, out)
 		}
 	}
 }

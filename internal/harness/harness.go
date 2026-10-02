@@ -216,6 +216,16 @@ type Result struct {
 	// its message. Nil when the session made no MCP call and named no unconnected
 	// server. See ToolReport.
 	Tools map[string]*ToolStat
+	// ToolNames is the session's MCP calls per <server>__<tool> (e.g.
+	// mesh-context__mesh_document), the prologue alias folded into
+	// mesh-context (tools.IsBuiltin) — finer than Tools' per-server
+	// totals (goal context-is-fetched-not-shipped). Nil when the
+	// session made no MCP call.
+	ToolNames map[string]int
+	// DocumentsFetched is how many of those calls were mesh_document on
+	// the built-in context server: document bodies fetched, not
+	// mesh_search calls.
+	DocumentsFetched int
 	// HandedBack is a session that passed its HandBackAt mark with
 	// nothing committed and was resumed for the commit-and-finish turn;
 	// its figures are both runs' together.
@@ -366,6 +376,27 @@ func (r *Result) toolStat(server string) *ToolStat {
 		r.Tools[server] = s
 	}
 	return s
+}
+
+// countToolName counts one call to server/tool on ToolNames, keyed
+// <server>__<tool> with the prologue alias folded into mesh-context
+// (tools.IsBuiltin), and DocumentsFetched when it is a mesh_document
+// call on the built-in. A tool-less call (server with no tool name) is
+// not counted.
+func (r *Result) countToolName(server, tool string) {
+	if tool == "" {
+		return
+	}
+	if tools.IsBuiltin(server) {
+		server = tools.Builtin
+	}
+	if r.ToolNames == nil {
+		r.ToolNames = map[string]int{}
+	}
+	r.ToolNames[server+"__"+tool]++
+	if server == tools.Builtin && tool == "mesh_document" {
+		r.DocumentsFetched++
+	}
 }
 
 // Usage is what a session consumed, in tokens, and the model its cost

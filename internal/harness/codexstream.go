@@ -118,7 +118,10 @@ func (p CodexPrice) Cost(u CodexUsage) float64 {
 // stays nil. Each completed mcp_tool_call is counted on ToolCalls by
 // its server, its item id (empty ones synthesised) kept on
 // ToolCallIDs, and on Result.Tools: its wall time is item.started to
-// item.completed; a status of "completed" counts Clean, and one of "failed" counts an error,
+// item.completed. Each is also counted on Result.ToolNames, keyed
+// <server>__<tool>, and on Result.DocumentsFetched when it is a
+// mesh_document call on the built-in (goal
+// context-is-fetched-not-shipped). A status of "completed" counts Clean, and one of "failed" counts an error,
 // the item's error text kept as the server's FirstError (else its
 // result's text, else the status), and one with no error but a result
 // counted Answered too (codexToolAnswered: the tool replied) — the call still counts on ToolCalls
@@ -212,6 +215,7 @@ func parseCodexStream(r io.Reader, model string, price func(string) (CodexPrice,
 				res.countToolCall(server, ev.Item.ID)
 				stat := res.toolStat(server)
 				stat.Calls++
+				res.countToolName(server, ev.Item.ToolName)
 				key := ev.Item.ID
 				if key == "" {
 					key = server
