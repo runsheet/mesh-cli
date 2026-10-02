@@ -266,7 +266,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 		GoalSlug: res.Goal.Slug, GoalTitle: res.Goal.Title, GoalAcceptance: res.Goal.Acceptance,
 		Seq: item.Seq, Title: item.Title, Brief: item.Brief, Acceptance: item.Acceptance,
 		Repo: res.Repo.FullName(), Branch: branch, BaseRef: spec.BaseRef, Diff: diff,
-		ContextDir: contextDir, ContextFiles: files, Project: orgName + "/" + res.Project.Slug, Prologue: len(e.MCP) > 0,
+		ContextDir: contextDir, ContextFiles: files, Project: orgName + "/" + res.Project.Slug, MeshContext: len(e.MCP) > 0,
 		AlreadyDone: alreadyDone, Evidence: item.Evidence,
 		PriorAttempts: prior,
 	}
@@ -418,7 +418,7 @@ type evalRun struct {
 	preflight        string
 	omitted, missing string
 	// adopted is a session an older node process started and this one
-	// took up (AdoptEvaluation): only there is prologue the built-in
+	// took up (AdoptEvaluation): only there may the built-in carry its old name
 	adopted bool
 }
 
@@ -804,9 +804,9 @@ func (e *Evaluator) unreadable(res harness.Result, acct *SessionAccount, adopted
 // before the server, or an error at startup with no call at all. A tool
 // that answered was reached: `not found` for a mesh_document slug it
 // does not have is the tool working, not a broken one (ADR-011's
-// amendment 2026-09-29, `prologue: not found`). adopted is a session an
-// older node process started (AdoptEvaluation): only there is prologue
-// the built-in.
+// amendment 2026-09-29, a tool that answered was reached). adopted is a
+// session an older node process started (AdoptEvaluation): only there
+// may the built-in carry its old name (tools.IsBuiltin).
 func (e *Evaluator) toolBroken(res harness.Result, acct *SessionAccount, adopted bool) (string, bool) {
 	broken := func(name string) (string, bool) {
 		s := res.Tools[name]
@@ -821,10 +821,10 @@ func (e *Evaluator) toolBroken(res harness.Result, acct *SessionAccount, adopted
 	}
 	// the node's own servers and, for an adopted session, the built-in
 	// under any name it has had: an evaluation an older node started
-	// under prologue reports that name, not tools.Builtin
+	// under its old name reports that name, not tools.Builtin
 	// (tools.IsBuiltin, an alias read until 2026-10-28). A session this
-	// process started was rendered mesh-context, so a prologue in its
-	// result is a console tool: broken only if required, below.
+	// process started was rendered mesh-context, so a server by the old
+	// name in its result is a console tool: broken only if required, below.
 	names := map[string]bool{}
 	for name := range e.MCP {
 		names[name] = true

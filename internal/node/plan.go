@@ -17,7 +17,7 @@ import (
 
 // Planner is the session that compiles a goal into its graph (mesh-specs
 // prd, the planner; trd §5 phase 2): the project's repos checked out
-// read-only, its Prologue context, the statement and the acceptance; a
+// read-only, its context from mesh-context, the statement and the acceptance; a
 // fresh `claude -p` that reads and then writes the items as JSON; the
 // graph handed in with PlanGoal, the session's cost with it. A goal
 // whose plan cannot be read three times is left in planning and said so.
@@ -354,7 +354,7 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 	in := harness.PlanInput{
 		GoalSlug: goal.Slug, GoalTitle: goal.Title, Statement: goal.Statement, Acceptance: goal.Acceptance, BudgetCents: goal.BudgetCents,
 		Org: scope.Name(), Project: project.Slug, Repos: dirs, ContextDir: contextDir, ContextFiles: files, Blocked: goal.PausedReason,
-		Existing: existing, NextSeq: nextSeq, Prologue: len(p.MCP) > 0, Evidence: p.evidence(ctx, goal.Slug, scope, project),
+		Existing: existing, NextSeq: nextSeq, MeshContext: len(p.MCP) > 0, Evidence: p.evidence(ctx, goal.Slug, scope, project),
 	}
 	budget, budgetSource := p.budgetWithSource(&goal)
 	p.logf("goal %s: planning in %s (%d repos), budget $%.2f (%s)", goal.Slug, dir, len(repos), budget, budgetSource)

@@ -44,7 +44,7 @@ type StaticToken string
 // Token returns the bearer.
 func (t StaticToken) Token(context.Context) (string, error) { return string(t), nil }
 
-// Client speaks GraphQL (and Prologue's JSON) to one gateway as one
+// Client speaks GraphQL (and mesh-context's JSON) to one gateway as one
 // principal.
 type Client struct {
 	BaseURL string
@@ -152,7 +152,7 @@ func (c *Client) WithItemToken(tok string) *Client {
 	return &Client{BaseURL: c.BaseURL, Source: StaticToken(tok), HTTP: c.HTTP, Now: c.Now}
 }
 
-// Bearer is the token the next request would carry — for the Prologue
+// Bearer is the token the next request would carry — for the mesh-context
 // MCP server a session is started with, which takes a header, not a
 // source.
 func (c *Client) Bearer(ctx context.Context) (string, error) {
@@ -730,7 +730,7 @@ type WorkItem struct {
 	RebaseFiles    []string `json:"rebaseFiles"`
 	RebaseNodeID   string   `json:"rebaseNodeId"`
 	RebasedHeadSHA string   `json:"rebasedHeadSha"`
-	// ProjectID is the Prologue project the item's goal is in: the scope
+	// ProjectID is the mesh-context project the item's goal is in: the scope
 	// its agent resolves in (AgentIDs).
 	ProjectID string `json:"projectId"`
 	// AgentSlug names the agent that builds the item (runsheet trd §6c);
