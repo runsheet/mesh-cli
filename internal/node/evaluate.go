@@ -63,9 +63,8 @@ type Evaluator struct {
 	Fallback *TokenFallback
 	// Codex is the Codex harness (nil: none). An evaluation runs on it
 	// when one of CodexAccounts has headroom for the item's priority, or
-	// the item pins it; and an item of an urgent or high goal whose first
-	// verdict passes is evaluated again on the other family, with the
-	// same prompt in the same workspace
+	// the item pins it; and an item secondOpinionWanted picks is evaluated
+	// again on the other family, with the same prompt in the same workspace
 	// (docs/adr/adr-005-codex-second-opinion.md,
 	// docs/adr/adr-011-evaluations-run-on-the-family-with-headroom.md).
 	Codex harness.Harness
@@ -458,7 +457,7 @@ func (e *Evaluator) touched(ctx context.Context, label, dir, base string, alread
 
 // afterEvaluate is what follows an evaluation session, however this
 // process came to hold it: the verdict read, the second opinion asked
-// for an urgent or high goal's pass, and the verdict recorded. An error
+// when secondOpinionWanted says so, and the verdict recorded. An error
 // means none was recorded. A cancelled ctx leaves the session running
 // for the next node to adopt.
 func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harness.Result, err error) error {
