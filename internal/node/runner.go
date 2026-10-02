@@ -301,12 +301,31 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	budget, budgetSource := r.budgetWithSource(res.Goal, "build", model)
 	r.logf("item %s: build on %s, budget $%.2f (%s)", label, modelName(model), budget, budgetSource)
 
+	// the clauses the last evaluation failed, so the retry works through a
+	// list instead of mining them out of Evaluation's prose. Unread records
+	// are not fatal: the build runs on the prose alone, as it did before.
+	var failed []harness.FailedClause
+	if item.Attempts > 0 {
+		was, err := r.GW.WorkItemPriorAttempts(ctx, item.ID)
+		if err != nil {
+			r.logf("item %s: earlier evaluations unread, building on the notes alone: %v", label, err)
+		}
+		latest := gateway.PriorAttempt{}
+		for _, p := range was {
+			if p.Attempt >= latest.Attempt {
+				latest = p
+			}
+		}
+		for _, c := range latest.Clauses {
+			failed = append(failed, harness.FailedClause{Clause: c.Clause, Satisfy: c.Satisfy})
+		}
+	}
 	mcp := r.mcp(ctx)
 	in := harness.PromptInput{
 		GoalSlug: res.Goal.Slug, GoalTitle: res.Goal.Title, GoalStatement: res.Goal.Statement, GoalAcceptance: res.Goal.Acceptance,
 		Seq: item.Seq, Title: item.Title, Brief: item.Brief, Acceptance: item.Acceptance,
 		Repo: res.Repo.FullName(), Branch: spec.Branch, BaseRef: spec.BaseRef, ContextDir: contextDir, ContextFiles: files,
-		Attempts: item.Attempts, Evaluation: item.Evaluation, Project: orgName + "/" + res.Project.Slug, MeshContext: len(mcp) > 0,
+		Attempts: item.Attempts, Evaluation: item.Evaluation, FailedClauses: failed, Project: orgName + "/" + res.Project.Slug, MeshContext: len(mcp) > 0,
 		LastSession: r.State.LastSession(item.ID),
 	}
 	job := harness.Job{Kind: harness.KindBuild, Workspace: dir, MaxBudgetUSD: budget, Label: label, MCPServers: mcp, Model: model}
