@@ -1,11 +1,16 @@
 package commands
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"os"
+	"strings"
 	"testing"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/gateway/gatewaytest"
+	"projectmesh.io/mesh-cli/internal/node"
 	"projectmesh.io/mesh-cli/internal/version"
 )
 
@@ -57,4 +62,99 @@ func TestStatusHeartbeatCarriesCommit(t *testing.T) {
 			}
 		})
 	}
+}
+
+// heartbeatAnswerFixture reads specs/contracts/heartbeatNode.json and
+// decodes its "answer" into a gateway.NodeAnswer, the way
+// internal/node/owner_test.go's answerFixture does for its own package.
+func heartbeatAnswerFixture(t *testing.T) *gateway.NodeAnswer {
+	t.Helper()
+	raw, err := os.ReadFile("../../specs/contracts/heartbeatNode.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fx struct {
+		Answer gateway.NodeAnswer `json:"answer"`
+	}
+	if err := json.Unmarshal(raw, &fx); err != nil {
+		t.Fatalf("heartbeatNode.json: %v", err)
+	}
+	return &fx.Answer
+}
+
+// `mesh node status` on a saved owner contract renders the `owned by …`
+// line and one table row per org the answer names — decoding
+// heartbeatNode.json's answer directly, no httptest, no socket:
+// renderOwnedStatus driven with a stub nodesOf. An org without a GitHub
+// login (grapevine) is named by its slug, and the row for the node's
+// one id carries the `*` mark.
+func TestStatusOwnedRendersOwnerAndOneRowPerOrg(t *testing.T) {
+	answer := heartbeatAnswerFixture(t)
+	var buf bytes.Buffer
+	nodesOf := func(orgID string) ([]gateway.Node, error) {
+		return []gateway.Node{{ID: answer.NodeID, Name: "mini", Slug: "mini", Status: "ok", Running: 1, Capacity: 4, Version: "v0.2.200", LastSeenAt: "now"}}, nil
+	}
+	scopes, err := renderOwnedStatus(&buf, answer, nil, nodesOf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scopes) != len(answer.Scopes) {
+		t.Fatalf("scopes = %d, want %d (one per org the answer names)", len(scopes), len(answer.Scopes))
+	}
+	out := buf.String()
+	wantLine := "owned by anythink (enterprise); serving " + strings.Join(scopes.Names(), ", ")
+	if !strings.Contains(out, wantLine) {
+		t.Fatalf("output %q, want a line containing %q", out, wantLine)
+	}
+	var rows []string
+	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		if strings.HasPrefix(line, "ORG") || !strings.Contains(line, "mini") {
+			continue
+		}
+		rows = append(rows, line)
+	}
+	if len(rows) != len(answer.Scopes) {
+		t.Fatalf("table rows = %d, want %d (one per scope the fixture answers): %q", len(rows), len(answer.Scopes), out)
+	}
+	var sawGrapevine, sawMark bool
+	for _, r := range rows {
+		if strings.HasPrefix(r, "grapevine") {
+			sawGrapevine = true
+		}
+		if strings.Contains(r, "*") {
+			sawMark = true
+		}
+	}
+	if !sawGrapevine {
+		t.Fatalf("no row named grapevine: %q", out)
+	}
+	if !sawMark {
+		t.Fatalf("no row marked * for the node's one id: %q", out)
+	}
+}
+
+// An empty `contract` (a node.yaml from before owners) takes the legacy
+// path: ownedHeartbeat — what `mesh node status` and `reportRollback`
+// call first — never heartbeats under cfg.NodeID, no socket opened.
+func TestStatusPerOrgUnchanged(t *testing.T) {
+	gw := &outsideStub{}
+	cfg := &node.Config{NodeID: "55555555-5555-4555-8555-555555555555", Contract: ""}
+	answer, owned, err := ownedHeartbeat(context.Background(), gw, cfg, "v1", gateway.HeartbeatExtras{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if owned || answer != nil {
+		t.Fatalf("ownedHeartbeat = (%v, %v), want (nil, false) on an empty contract", answer, owned)
+	}
+	if len(gw.beats) != 0 {
+		t.Fatalf("heartbeats = %v, want none under cfg.NodeID on the per-org path", gw.beats)
+	}
+}
+
+// outsideStub is a gateway that records every heartbeat it is asked for.
+type outsideStub struct{ beats []string }
+
+func (g *outsideStub) HeartbeatNode(_ context.Context, nodeID, _ string, _ int, _ ...gateway.HeartbeatExtras) (*gateway.NodeAnswer, error) {
+	g.beats = append(g.beats, nodeID)
+	return nil, nil
 }
