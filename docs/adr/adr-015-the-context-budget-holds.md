@@ -80,6 +80,19 @@ binding, to fetch with `mesh_document` before the session starts work.
 An INDEX.md alone past the cap places nothing, with one warning
 (`warning: INDEX.md alone is <n> bytes, past bytes_max <m>: …`).
 
+The cap holds on what is written, not only on what was counted.
+`RenderIndex` never returns more than the cap: past it the goal's item
+table becomes `<n> items, past the context cap: ask mesh_items.`, then
+its statement and acceptance give way to the same pointer, and an index
+still past it — a cap smaller than its own lines — is cut at the cap
+with a closing line naming `mesh_items` and `mesh_search`. A dropped
+document's line grows the index after the documents before it were
+placed, so `FetchContext` fits again at the end, and `WriteContext`
+fits once more before it writes (`Context.fit`): while the documents
+and the index as rendered pass the cap, the last instruction file by
+name leaves the disk for `Dropped`. What `ContextWritten.Bytes` reports
+is what was written, and it is never past the cap.
+
 The **target is 40KB** (`ContextBytesTarget`). A session whose context
 passes it still runs, and logs once, after its context line,
 `warning: context <n> bytes, past the 40960-byte target: <file> took it

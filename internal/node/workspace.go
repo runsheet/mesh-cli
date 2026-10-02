@@ -410,6 +410,9 @@ type Context struct {
 	// IndexBytes is INDEX.md's length as FetchContext counted it against
 	// the cap, the goal section included.
 	IndexBytes int
+	// BytesMax is the cap the context holds to, INDEX.md included; zero
+	// is DefaultContextBytesMax.
+	BytesMax int
 	// Live is the session's own goal with its items as the platform
 	// holds them (adr-003 decision 3), rendered into INDEX.md; nil for a
 	// session with no goal (research, channel mode).
@@ -488,7 +491,7 @@ func FetchContext(ctx context.Context, gw Gateway, orgLogin, projectSlug string,
 	if err != nil {
 		return nil, err
 	}
-	out := &Context{Docs: map[string]string{}, Index: docs, OnDisk: map[string]string{}, Project: orgLogin + "/" + projectSlug}
+	out := &Context{Docs: map[string]string{}, Index: docs, OnDisk: map[string]string{}, Project: orgLogin + "/" + projectSlug, BytesMax: budget.BytesMax}
 	if opts.Goal != nil {
 		out.Live = fetchOwnGoal(ctx, gw, *opts.Goal)
 		if out.Live.Unread != "" {
@@ -508,9 +511,8 @@ func FetchContext(ctx context.Context, gw Gateway, orgLogin, projectSlug string,
 			own = append(own, d)
 		}
 	}
-	out.IndexBytes = len(RenderIndex(out))
-	if out.IndexBytes > budget.BytesMax {
-		logf("warning: INDEX.md alone is %d bytes, past bytes_max %d: no document on disk, every one to fetch", out.IndexBytes, budget.BytesMax)
+	if full := len(renderIndex(out, indexFull)); full > budget.BytesMax {
+		logf("warning: INDEX.md alone is %d bytes, past bytes_max %d: the goal section is shortened to fit, no document on disk, every one to fetch", full, budget.BytesMax)
 		out.Dropped = own
 		out.IndexBytes = len(RenderIndex(out))
 		return out, nil
@@ -521,21 +523,67 @@ func FetchContext(ctx context.Context, gw Gateway, orgLogin, projectSlug string,
 		if err != nil {
 			return nil, fmt.Errorf("fetch %s: %w", d.Slug, err)
 		}
-		name := "instructions-" + Slugify(d.Repo) + "-" + Slugify(d.Slug) + ".md"
+		name := contextFileName(d)
 		out.Docs[name] = body
 		out.OnDisk[d.Slug] = name
 		// the index names the file: count it as it will be written
 		if index := len(RenderIndex(out)); total+len(body)+index <= budget.BytesMax {
 			total += len(body)
-			out.IndexBytes = index
 			continue
 		}
 		delete(out.Docs, name)
 		delete(out.OnDisk, d.Slug)
 		out.Dropped = append(out.Dropped, d)
-		out.IndexBytes = len(RenderIndex(out))
 	}
+	// a dropped document's line grows the index: fit again
+	out.fit()
+	out.IndexBytes = len(RenderIndex(out))
 	return out, nil
+}
+
+func contextFileName(d gateway.Document) string {
+	return "instructions-" + Slugify(d.Repo) + "-" + Slugify(d.Slug) + ".md"
+}
+
+func (cx *Context) bytesMax() int {
+	if cx.BytesMax > 0 {
+		return cx.BytesMax
+	}
+	return DefaultContextBytesMax
+}
+
+// fit holds the context to its cap, INDEX.md included: while the
+// documents and the index as rendered pass it, the last document by
+// file name leaves the disk for Dropped — named in the index, binding,
+// to fetch first. RenderIndex never passes the cap itself, so it ends.
+func (cx *Context) fit() {
+	for len(cx.Docs) > 0 {
+		total := len(RenderIndex(cx))
+		names := make([]string, 0, len(cx.Docs))
+		for n, body := range cx.Docs {
+			names = append(names, n)
+			total += len(body)
+		}
+		if total <= cx.bytesMax() {
+			return
+		}
+		sort.Strings(names)
+		last := names[len(names)-1]
+		delete(cx.Docs, last)
+		for slug, n := range cx.OnDisk {
+			if n != last {
+				continue
+			}
+			delete(cx.OnDisk, slug)
+			d := gateway.Document{Slug: slug}
+			for _, x := range cx.Index {
+				if x.Slug == slug {
+					d = x
+				}
+			}
+			cx.Dropped = append(cx.Dropped, d)
+		}
+	}
 }
 
 // IndexFile is the context directory's index: what is on disk and how
@@ -550,7 +598,34 @@ const IndexFile = "INDEX.md"
 // any design decision; one count line. No document is listed as a row
 // and no other goal is named. The session's own goal follows: its
 // statement, acceptance and items.
+//
+// It never passes the context's cap: past it the goal's item table goes
+// to mesh_items, then its statement and acceptance, and an index still
+// past it is cut at the cap with a closing line.
 func RenderIndex(cx *Context) string {
+	max := cx.bytesMax()
+	for _, level := range []int{indexFull, indexNoItems, indexGoalTitle} {
+		if s := renderIndex(cx, level); len(s) <= max {
+			return s
+		}
+	}
+	s := renderIndex(cx, indexGoalTitle)
+	tail := fmt.Sprintf("\n… INDEX.md cut at the context cap (%d bytes): ask `mesh_items` and `mesh_search` for the rest.\n", max)
+	keep := max - len(tail)
+	if keep < 0 {
+		return strings.ToValidUTF8(tail[:max], "")
+	}
+	return strings.ToValidUTF8(s[:keep], "") + tail
+}
+
+// How much of the goal section renderIndex renders.
+const (
+	indexFull      = iota // statement, acceptance, items
+	indexNoItems          // statement, acceptance, the items to ask mesh_items for
+	indexGoalTitle        // the goal's title, the rest to ask mesh_items for
+)
+
+func renderIndex(cx *Context, level int) string {
 	var b strings.Builder
 	project := fmt.Sprintf("%q", cx.Project)
 	cell := func(s string) string { return strings.ReplaceAll(strings.ReplaceAll(s, "\n", " "), "|", "\\|") }
@@ -589,14 +664,14 @@ func RenderIndex(cx *Context) string {
 	b.WriteString("\nThe ADRs and the TRD are binding: search them with `mesh_search` before any design decision.\n")
 	fmt.Fprintf(&b, "\n%d documents indexed, none listed here.\n", len(cx.Index))
 	if cx.Live != nil {
-		renderOwnGoal(&b, cx.Live, cell)
+		renderOwnGoal(&b, cx.Live, cell, level)
 	}
 	return b.String()
 }
 
 // renderOwnGoal is INDEX.md's goal section: the session's own goal,
 // its statement, acceptance and a row per item.
-func renderOwnGoal(b *strings.Builder, lg *LiveGoal, cell func(string) string) {
+func renderOwnGoal(b *strings.Builder, lg *LiveGoal, cell func(string) string, level int) {
 	g := lg.Goal
 	or := func(s string) string {
 		if strings.TrimSpace(s) == "" {
@@ -606,6 +681,10 @@ func renderOwnGoal(b *strings.Builder, lg *LiveGoal, cell func(string) string) {
 	}
 	fmt.Fprintf(b, "\n## Goal `%s` — %s (%s)\n\n", g.Slug, cell(g.Title), g.Status)
 	b.WriteString("Read from the platform when this session started; not committed.\n")
+	if level >= indexGoalTitle {
+		b.WriteString("\nIts statement, acceptance and items are past the context cap: ask `mesh_items`.\n")
+		return
+	}
 	if s := strings.TrimSpace(g.Statement); s != "" {
 		fmt.Fprintf(b, "\n### Statement\n\n%s\n", s)
 	}
@@ -619,6 +698,9 @@ func renderOwnGoal(b *strings.Builder, lg *LiveGoal, cell func(string) string) {
 		return
 	case len(lg.Items) == 0:
 		b.WriteString("No items yet.\n")
+		return
+	case level >= indexNoItems:
+		fmt.Fprintf(b, "%d items, past the context cap: ask `mesh_items`.\n", len(lg.Items))
 		return
 	}
 	b.WriteString("| seq | title | status | repo | branch |\n| --- | --- | --- | --- | --- |\n")
@@ -683,6 +765,8 @@ func WriteContext(dir string, cx *Context) ([]string, ContextWritten, error) {
 	if cx == nil || (len(cx.Docs) == 0 && len(cx.Index) == 0 && cx.Live == nil) {
 		return nil, w, nil
 	}
+	// the cap holds on what is written, whoever built the context
+	cx.fit()
 	w.ToFetch = max(len(cx.Index)-len(cx.OnDisk), 0)
 	docs := cx.Docs
 	cdir := filepath.Join(dir, ContextDir)
