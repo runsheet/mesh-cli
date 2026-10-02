@@ -37,9 +37,10 @@ type Codex struct {
 	ExtraArgs []string
 	// Stderr receives the process's stderr (nil discards it).
 	Stderr io.Writer
-	// Account is the OpenAI account the session runs on. The zero
-	// account is the operator's own login: the auth.json in $CODEX_HOME,
-	// else ~/.codex.
+	// Account is the OpenAI account the session runs on when the job
+	// places no CODEX_HOME of its own. The zero account is no account: a
+	// job with neither is refused (ErrNoIssuedCredential) — the
+	// operator's own login, $CODEX_HOME or ~/.codex, is never read.
 	Account CodexAccount
 	// HomeRoot is where the temporary CODEX_HOMEs are made; empty is
 	// <user cache dir>/mesh/codex. Not /tmp: Codex refuses to put its
@@ -166,21 +167,21 @@ func (a CodexAccount) apiKey() (string, error) {
 	return key, nil
 }
 
-// loginHome is where the account's auth.json lives: Home, or for the
-// zero account the operator's own CODEX_HOME (~/.codex by default).
+// loginHome is where the account's auth.json lives: Home. There is no
+// default: the operator's own CODEX_HOME (~/.codex) is never a
+// session's login (ErrNoIssuedCredential).
 func (a CodexAccount) loginHome() (string, error) {
-	if a.Home != "" {
-		return expandTilde(a.Home)
+	if a.Home == "" {
+		return "", ErrNoIssuedCredential
 	}
-	if h := os.Getenv("CODEX_HOME"); h != "" {
-		return h, nil
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".codex"), nil
+	return expandTilde(a.Home)
 }
+
+// ErrNoIssuedCredential is a Codex job with no login to run on: no
+// CODEX_HOME the node placed for an issued credential, and no account
+// of the harness's own. The operator's own login is never the fallback
+// (goal a-session-never-runs-on-the-machines-own-login).
+var ErrNoIssuedCredential = errors.New("codex: no issued credential on the session; refusing the operator's own login")
 
 func expandTilde(p string) (string, error) {
 	p = strings.TrimSpace(p)
@@ -521,6 +522,10 @@ func (c *Codex) prepareHome(job Job) (*codexHome, error) {
 		return h, nil
 	}
 
+	if !c.Account.IsAPIKey() && c.Account.Home == "" {
+		// no placed home and no account: never the operator's own login
+		return nil, ErrNoIssuedCredential
+	}
 	root := c.HomeRoot
 	if root == "" {
 		cache, err := os.UserCacheDir()
@@ -806,7 +811,7 @@ const BuiltinMCP = "mesh-context"
 const PreflightTimeout = 10 * time.Second
 
 // CodexPreflight is Codex{}.Preflight: `codex` on PATH, on the job's
-// own CODEX_HOME or the operator's login.
+// own CODEX_HOME (none is ErrNoIssuedCredential).
 func CodexPreflight(ctx context.Context, job Job) error {
 	return (&Codex{}).Preflight(ctx, job)
 }
