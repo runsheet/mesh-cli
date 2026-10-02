@@ -24,8 +24,8 @@ func TestContextDocumentsUsesMeshV1(t *testing.T) {
 	if len(docs) != 1 || docs[0].Slug != "agents" {
 		t.Fatalf("docs: %+v", docs)
 	}
-	if f.MeshV1Hits != 1 || f.AliasV1Hits != 0 {
-		t.Fatalf("mesh hits = %d, prologue hits = %d; want 1, 0", f.MeshV1Hits, f.AliasV1Hits)
+	if f.MeshV1Hits != 1 || f.PrologueV1Hits != 0 {
+		t.Fatalf("mesh hits = %d, prologue hits = %d; want 1, 0", f.MeshV1Hits, f.PrologueV1Hits)
 	}
 }
 
@@ -46,8 +46,8 @@ func TestContextDocumentsFallsBackToPrologueOn404(t *testing.T) {
 	if len(docs) != 1 || docs[0].Slug != "agents" {
 		t.Fatalf("docs: %+v", docs)
 	}
-	if f.MeshV1Hits != 1 || f.AliasV1Hits != 1 {
-		t.Fatalf("mesh hits = %d, prologue hits = %d; want 1, 1", f.MeshV1Hits, f.AliasV1Hits)
+	if f.MeshV1Hits != 1 || f.PrologueV1Hits != 1 {
+		t.Fatalf("mesh hits = %d, prologue hits = %d; want 1, 1", f.MeshV1Hits, f.PrologueV1Hits)
 	}
 
 	body, err := gw.ContextDocument(context.Background(), "acme", "widgets", "agents")
@@ -57,7 +57,7 @@ func TestContextDocumentsFallsBackToPrologueOn404(t *testing.T) {
 	if body != "# AGENTS\n" {
 		t.Fatalf("body: %q", body)
 	}
-	if f.MeshV1Hits != 2 || f.AliasV1Hits != 2 {
-		t.Fatalf("mesh hits = %d, prologue hits = %d; want 2, 2", f.MeshV1Hits, f.AliasV1Hits)
+	if f.MeshV1Hits != 2 || f.PrologueV1Hits != 2 {
+		t.Fatalf("mesh hits = %d, prologue hits = %d; want 2, 2", f.MeshV1Hits, f.PrologueV1Hits)
 	}
 }

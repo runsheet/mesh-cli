@@ -55,9 +55,9 @@ type Fake struct {
 	// platform that serves only the /prologue/v1 alias — for a test that
 	// the client falls back to it.
 	NoMeshV1 bool
-	// MeshV1Hits and AliasV1Hits count the requests each context path
+	// MeshV1Hits and PrologueV1Hits count the requests each context path
 	// received, for a test to prove which one a read actually used.
-	MeshV1Hits, AliasV1Hits int
+	MeshV1Hits, PrologueV1Hits int
 	// ItemBearers are further tokens the fake takes on GraphQL, beside
 	// Token: an item's claim-time token, as RecordValidationAttestation
 	// carries it (WithItemToken).
@@ -1130,7 +1130,7 @@ func (f *Fake) mesh(w http.ResponseWriter, r *http.Request) {
 // platform, or one falling back off a 404 from /mesh/v1, still reads.
 func (f *Fake) prologue(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
-	f.AliasV1Hits++
+	f.PrologueV1Hits++
 	f.mu.Unlock()
 	f.context(w, r, "/prologue/v1/projects/")
 }

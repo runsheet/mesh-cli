@@ -34,8 +34,9 @@ type PromptInput struct {
 	// Hand-back), recorded by the node; empty when none was.
 	LastSession string
 	// Project is the mesh-context project (org/slug) the goal belongs to;
-	// MeshContext says the session has mesh-context's tools for context on
-	// demand.
+	// MeshContext says the session has the built-in mesh-context server's tools (mesh_document, mesh_search,
+	// mesh_projects, mesh_documents) for
+	// context on demand.
 	Project     string
 	MeshContext bool
 	// Services is what the session's pod runs beside it
@@ -175,7 +176,9 @@ type EvaluateInput struct {
 	ContextDir   string
 	ContextFiles []string
 	Project      string
-	// MeshContext as on PromptInput.
+	// MeshContext says the session has the built-in mesh-context server's tools (mesh_document, mesh_search,
+	// mesh_projects, mesh_documents) for
+	// context on demand.
 	MeshContext bool
 	// Services as on PromptInput.
 	Services string
@@ -400,8 +403,9 @@ type PlanInput struct {
 	ContextFiles []string
 	// Blocked: on a re-plan, what went wrong the last time.
 	Blocked string
-	// MeshContext says the session has mesh-context's tools for context
-	// on demand.
+	// MeshContext says the session has the built-in mesh-context server's tools (mesh_document, mesh_search,
+	// mesh_projects, mesh_documents) for
+	// context on demand.
 	MeshContext bool
 	// Existing are the goal's items so far, on a re-plan: merged ones
 	// stay and may be depended on, failed and cancelled ones are the
@@ -727,7 +731,9 @@ type ResearchInput struct {
 	Repos        map[string]string
 	ContextDir   string
 	ContextFiles []string
-	// MeshContext as on PromptInput.
+	// MeshContext says the session has the built-in mesh-context server's tools (mesh_document, mesh_search,
+	// mesh_projects, mesh_documents) for
+	// context on demand.
 	MeshContext bool
 	// Goals are what the project has already taken on, newest first —
 	// what to build on and what not to propose again.
@@ -1102,7 +1108,9 @@ type RebaseInput struct {
 	ContextDir   string
 	ContextFiles []string
 	Project      string
-	// MeshContext as on EvaluateInput.
+	// MeshContext says the session has the built-in mesh-context server's tools (mesh_document, mesh_search,
+	// mesh_projects, mesh_documents) for
+	// context on demand.
 	MeshContext bool
 	// Services as on PromptInput.
 	Services string
