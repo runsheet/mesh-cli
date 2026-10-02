@@ -65,3 +65,16 @@ mirrored through the harness.
   does not touch an installed unit.
 - `mesh node usage` reads the rotated node.logs oldest first, then
   node.log, when `--log` is not given.
+
+## Amendment — 2026-10-02 (goal node-yaml-takes-effect-or-says-why-not, item 11)
+
+- 2026-10-02 11:13Z, the mini on v0.2.222 under real work
+  (`scripts/node-reload-reading.sh`): node.log grows about 240 KB an
+  hour — 4,485,367 bytes in the 67,220 s since the 2026-10-01 16:33:14Z
+  rotation that closed `node.log.1` at 10,485,596 bytes — so the 10 MB
+  cap is reached about every 44 hours and 10 MB × 5 keeps about nine
+  days. sessions.log grows about 9 MB an hour (`sessions.log.1`,
+  20,760,274 bytes, in the 2 h 15 min after `sessions.log.2` closed), so
+  20 MB × 2 keeps four to six hours. The mini's unit still carries the
+  pre-ADR `StandardOutput=append:~/.mesh/node.log` redirect; `mesh node
+  service install` is the operator's to run.
