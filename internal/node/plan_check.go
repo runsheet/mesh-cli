@@ -405,3 +405,53 @@ func sameAcceptanceAsFailed(specs []harness.PlannedSpec, existing []gateway.Work
 	}
 	return flags
 }
+
+// lineageOf is an item's lineage root and attempt: the platform's, else
+// the item's own seq and no attempt (an older platform).
+func lineageOf(it gateway.WorkItem) (root, attempt int) {
+	if it.LineageRootSeq > 0 {
+		return it.LineageRootSeq, it.LineageAttempt
+	}
+	return it.Seq, it.LineageAttempt
+}
+
+// lineageWords is "lineage R, attempt A of 3", or "lineage R" with no
+// attempt.
+func lineageWords(root, attempt int) string {
+	if attempt > 0 {
+		return fmt.Sprintf("lineage %d, attempt %d of 3", root, attempt)
+	}
+	return fmt.Sprintf("lineage %d", root)
+}
+
+// notASplit is the flag on a narrow re-plan's answer that does not
+// replace the item with a split (ADR-021's amendment, the narrow mode):
+// it must hold two or more items, or exactly one carrying `atomic` with
+// a reason — and that one only when the replaced item was not itself
+// atomic, the exemption once per lineage. Empty for an answer that
+// splits.
+func notASplit(specs []harness.PlannedSpec, replaced gateway.WorkItem) string {
+	if len(specs) >= 2 {
+		return ""
+	}
+	root, _ := lineageOf(replaced)
+	flag := fmt.Sprintf("narrow re-plan of item %d (lineage %d) must replace it with two or more items whose acceptance partitions it, or one atomic item with a reason", replaced.Seq, root)
+	if len(specs) == 1 && strings.TrimSpace(specs[0].Atomic) != "" {
+		was := replaced.Atomic
+		if was == "" {
+			was = gateway.AtomicReason(replaced.Brief)
+		}
+		if was == "" {
+			return ""
+		}
+		return flag + fmt.Sprintf(" — item %d was already atomic (%s), so the lineage's exemption is spent: split it", replaced.Seq, was)
+	}
+	return flag
+}
+
+// splitRefusal is the planner error a narrow re-plan's second answer
+// that still does not split is.
+func splitRefusal(replaced gateway.WorkItem, items int) string {
+	root, _ := lineageOf(replaced)
+	return fmt.Sprintf("narrow re-plan of item %d (lineage %d) answered %d item(s) and no split; refused", replaced.Seq, root, items)
+}

@@ -93,6 +93,10 @@ type Client struct {
 	// DirectionIndex.mode (a platform older than runsheet ADR 022):
 	// every later direction read asks for directionFields alone.
 	directionsWithoutMode atomic.Bool
+	// goalsWithoutNarrow is set once the gateway has refused GoalIndex's
+	// optional fields (replacingItemId, narrowReplans): goals are read
+	// with the base fields alone from then on.
+	goalsWithoutNarrow atomic.Bool
 	// credentialsWithoutEnterprise is set once the gateway has refused
 	// CredentialIndex.enterpriseId (a platform older than runsheet ADR
 	// 030): every later credential read asks for credentialFields alone.
@@ -1064,6 +1068,13 @@ type Goal struct {
 	// Priority is urgent, high, normal or low; empty reads as normal. The
 	// node claims ready work in this order across every org it serves.
 	Priority string `json:"priority"`
+	// ReplacingItemID is the failed item a narrow re-plan replaces alone
+	// (runsheet ADR 023's third rung), empty for a whole plan; the
+	// planner then asks for a split of that item (ADR-021's amendment).
+	// NarrowReplans counts the goal's narrow re-plans. Both are optional:
+	// an older platform serves neither, and every plan reads as whole.
+	ReplacingItemID string `json:"replacingItemId"`
+	NarrowReplans   int    `json:"narrowReplans"`
 }
 
 // PriorityRank orders goal priorities, most pressing first: urgent 0,
@@ -1085,8 +1096,10 @@ func (c *Client) Goal(ctx context.Context, id string) (*Goal, error) {
 	var out struct {
 		Goal *Goal `json:"goalIndex"`
 	}
-	q := fmt.Sprintf(`{ goalIndex(namespace: %q, id: %q) { %s } }`, NS, id, goalFields)
-	if err := c.Query(ctx, q, nil, &out); err != nil {
+	q := func(fields string) string {
+		return fmt.Sprintf(`{ goalIndex(namespace: %q, id: %q) { %s } }`, NS, id, fields)
+	}
+	if err := c.readGoals(ctx, q, &out); err != nil {
 		return nil, err
 	}
 	if out.Goal == nil {
@@ -1100,11 +1113,31 @@ func (c *Client) Goals(ctx context.Context, orgID string) ([]Goal, error) {
 	var out struct {
 		Goals []Goal `json:"goalIndexs"`
 	}
-	q := fmt.Sprintf(`{ goalIndexs(namespace: %q, where: [%s]) { %s } }`, NS, where("org_id", orgID), goalFields)
-	if err := c.Query(ctx, q, nil, &out); err != nil {
+	q := func(fields string) string {
+		return fmt.Sprintf(`{ goalIndexs(namespace: %q, where: [%s]) { %s } }`, NS, where("org_id", orgID), fields)
+	}
+	if err := c.readGoals(ctx, q, &out); err != nil {
 		return nil, err
 	}
 	return out.Goals, nil
+}
+
+// readGoals runs one GoalIndex read, query being the document with its
+// selection left to fill in. It asks for the optional fields too
+// (fields/GoalIndex.txt's `?`: replacingItemId and narrowReplans,
+// runsheet ADR 023); a gateway that does not know one is an older
+// platform, and from then on the client asks for goalFields alone —
+// every plan reads as whole.
+func (c *Client) readGoals(ctx context.Context, query func(fields string) string, out any) error {
+	if !c.goalsWithoutNarrow.Load() {
+		err := c.Query(ctx, query(goalFields+" "+goalOptionalFields), nil, out)
+		var ge *Error
+		if err == nil || !errors.As(err, &ge) || !unknownField(ge.Message, goalOptional...) {
+			return err
+		}
+		c.goalsWithoutNarrow.Store(true)
+	}
+	return c.Query(ctx, query(goalFields), nil, out)
 }
 
 // Project is a ProjectIndex row.
