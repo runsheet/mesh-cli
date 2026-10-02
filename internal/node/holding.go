@@ -2,6 +2,7 @@ package node
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -92,7 +93,7 @@ func holdingAccounts(now time.Time, accounts []AccountConfig, readings map[strin
 		status := "unknown"
 		var resetsAt time.Time
 		if r, seen := readings[a.Label]; seen {
-			ap := pace(now, r, cfg)
+			ap := pace(now, r, cfg.For(a))
 			switch ap.mode {
 			case paceNormal:
 				status = "ok"
@@ -105,7 +106,7 @@ func holdingAccounts(now time.Time, accounts []AccountConfig, readings map[strin
 		}
 		out = append(out, gateway.HoldingAccount{
 			Account: a.Label, Kind: holdingKind(a.Kind), Status: status, ResetsAt: resetsAt,
-			Takes: holdingTakes(status, a.Kind, capacity),
+			Takes: holdingTakes(status, a, capacity),
 		})
 	}
 	return out
@@ -116,7 +117,9 @@ func holdingAccounts(now time.Time, accounts []AccountConfig, readings map[strin
 // reserve, a ranged node at its min), else every account's standing
 // from its row of the report, e.g. "normal priority; only urgent and
 // high while paced (mesh - max20 until 2026-09-28T18:00:00Z); claude -
-// shhemail exhausted until 2026-10-03T03:00:00Z".
+// shhemail exhausted until 2026-10-03T03:00:00Z" — and an account with
+// headroom that does not serve the priority as "<label> serves only
+// urgent and high".
 func heldReason(priority, held string, rows []gateway.HoldingAccount) string {
 	parts := []string{priority + " priority"}
 	if held != "" {
@@ -126,6 +129,11 @@ func heldReason(priority, held string, rows []gateway.HoldingAccount) string {
 		until := ""
 		if !a.ResetsAt.IsZero() {
 			until = " until " + a.ResetsAt.UTC().Format(time.RFC3339)
+		}
+		if (a.Status == "ok" || a.Status == "unknown") && !slices.Contains(a.Takes.Priorities, priority) {
+			// headroom, but reserved for other work
+			parts = append(parts, servesLine(a.Account, a.Takes.Priorities))
+			continue
 		}
 		switch a.Status {
 		case "paced":
@@ -156,18 +164,36 @@ func holdingKind(kind string) string {
 // holdingTakes is what the node still takes on an account of that
 // status: ok and unknown (never read yet, so ChooseAccount treats it as
 // full headroom) take everything; paced only urgent and high, at most
-// half the capacity, no research; exhausted takes nothing.
-func holdingTakes(status, kind string, capacity int) gateway.HoldingTakes {
+// half the capacity, no research; exhausted takes nothing — each only
+// of the priorities the account serves (AccountConfig.Serves).
+func holdingTakes(status string, a AccountConfig, capacity int) gateway.HoldingTakes {
+	var t gateway.HoldingTakes
 	switch status {
 	case "paced":
-		return gateway.HoldingTakes{Priorities: []string{"urgent", "high"}, MaxItems: max(1, capacity/2)}
+		t = gateway.HoldingTakes{Priorities: []string{"urgent", "high"}, MaxItems: max(1, capacity/2)}
 	case "exhausted":
-		return gateway.HoldingTakes{Priorities: []string{}}
+		t = gateway.HoldingTakes{Priorities: []string{}}
 	default: // ok, unknown
-		return gateway.HoldingTakes{
+		t = gateway.HoldingTakes{
 			Priorities: []string{"urgent", "high", "normal", "low"},
 			MaxItems:   capacity,
-			Research:   kind == AccountSubscription,
+			Research:   a.Kind == AccountSubscription,
 		}
 	}
+	t.Priorities = slices.DeleteFunc(t.Priorities, func(p string) bool { return !a.Serves(p) })
+	return t
+}
+
+// servesLine is "<label> serves only urgent and high": what an account
+// reserved for some priorities serves.
+func servesLine(label string, priorities []string) string {
+	return label + " serves only " + andList(priorities)
+}
+
+// andList is "a", "a and b", "a, b and c".
+func andList(words []string) string {
+	if len(words) <= 1 {
+		return strings.Join(words, "")
+	}
+	return strings.Join(words[:len(words)-1], ", ") + " and " + words[len(words)-1]
 }

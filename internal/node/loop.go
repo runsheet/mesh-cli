@@ -220,6 +220,11 @@ type Loop struct {
 	// waiting counts, by kind, the work this tick left unclaimed because
 	// no account had headroom for it: logged once at the tick's end.
 	waiting map[string]int
+	// unserved counts, by priority and kind, the work this tick left
+	// unclaimed because the accounts with headroom serve other
+	// priorities alone (AccountConfig.Serves): its own line in
+	// logWaiting.
+	unserved map[string]map[string]int
 	// unclaimed is the ready work this pass left for headroom, one entry
 	// per goal and kind (passOver), folded into holding at the tick's
 	// end. Tick alone touches it.
@@ -875,6 +880,7 @@ func (l *Loop) Tick(ctx context.Context) {
 		// every start below first picks its account (accountFor): one
 		// with no account to run on is left for a later tick
 		l.waiting = map[string]int{}
+		l.unserved = map[string]map[string]int{}
 		l.unclaimed = nil
 		l.evaluateHeld(ctx)
 		l.rebaseRequested(ctx)
@@ -1095,7 +1101,7 @@ func (l *Loop) accountToFinish(ctx context.Context, priority, what string) (cont
 		}
 		var subs []AccountConfig
 		for _, a := range accounts {
-			if a.Kind != AccountAPI {
+			if a.Kind != AccountAPI && a.Serves(priority) {
 				subs = append(subs, a)
 			}
 		}
@@ -1112,7 +1118,17 @@ func (l *Loop) withAccount(ctx context.Context, what, priority string, choose fu
 	pressing, item := priority == "urgent" || priority == "high", what == "item"
 	a, ok := choose(l.spendable(accounts, pressing, item), readings)
 	if !ok {
-		if what != "" && l.waiting != nil {
+		switch {
+		case what == "":
+		case l.unserved != nil && unservedOnly(accounts, func(all []AccountConfig) bool {
+			_, ok := choose(l.spendable(all, pressing, item), readings)
+			return ok
+		}):
+			if l.unserved[priority] == nil {
+				l.unserved[priority] = map[string]int{}
+			}
+			l.unserved[priority][what]++
+		case l.waiting != nil:
 			l.waiting[what]++
 		}
 		return ctx, false
@@ -1132,6 +1148,20 @@ func (l *Loop) withAccount(ctx context.Context, what, priority string, choose fu
 	// an issued account rides ctx for its label alone (runsOn, the
 	// heartbeat's slots): Credentials.Open opens what the read issues
 	return WithAccount(ctx, a), true
+}
+
+// unservedOnly says the accounts' priorities alone left the work
+// without one: with every account serving every priority, fits would
+// find one.
+func unservedOnly(accounts []AccountConfig, fits func([]AccountConfig) bool) bool {
+	all := make([]AccountConfig, len(accounts))
+	reserved := false
+	for i, a := range accounts {
+		reserved = reserved || len(a.Priorities) > 0
+		a.Priorities = nil
+		all[i] = a
+	}
+	return reserved && fits(all)
 }
 
 // passOver records that this pass left a goal's ready work (kind "item"
@@ -1165,20 +1195,47 @@ func (l *Loop) Holding() *gateway.Holding {
 // logWaiting says once per tick what waits for an account with
 // headroom, not once per item.
 func (l *Loop) logWaiting() {
+	judged, _ := l.accounts()
+	for _, p := range []string{"urgent", "high", "normal", "low"} {
+		if len(l.unserved[p]) > 0 {
+			l.logf("accounts: no account serves %s work (%s); %s left unclaimed until one does", p, servesLabels(judged), countKinds(l.unserved[p]))
+		}
+	}
 	if len(l.waiting) == 0 {
 		return
 	}
-	kinds := make([]string, 0, len(l.waiting))
-	for k := range l.waiting {
+	l.logf("accounts: no account has headroom for %s; judged %s; left unclaimed until one has", countKinds(l.waiting), labels(judged))
+}
+
+// countKinds is "2 item(s), 1 plan(s)", by kind in order.
+func countKinds(counts map[string]int) string {
+	kinds := make([]string, 0, len(counts))
+	for k := range counts {
 		kinds = append(kinds, k)
 	}
 	sort.Strings(kinds)
 	parts := make([]string, 0, len(kinds))
 	for _, k := range kinds {
-		parts = append(parts, fmt.Sprintf("%d %s(s)", l.waiting[k], k))
+		parts = append(parts, fmt.Sprintf("%d %s(s)", counts[k], k))
 	}
-	judged, _ := l.accounts()
-	l.logf("accounts: no account has headroom for %s; judged %s; left unclaimed until one has", strings.Join(parts, ", "), labels(judged))
+	return strings.Join(parts, ", ")
+}
+
+// servesLabels is each account with what it serves: "max20 serves
+// urgent and high, shhemail serves all".
+func servesLabels(accounts []AccountConfig) string {
+	if len(accounts) == 0 {
+		return "(none)"
+	}
+	out := make([]string, len(accounts))
+	for i, a := range accounts {
+		what := "all"
+		if len(a.Priorities) > 0 {
+			what = andList(a.Priorities)
+		}
+		out[i] = a.Label + " serves " + what
+	}
+	return strings.Join(out, ", ")
 }
 
 // priorityName is the priority a goal rank stands for.

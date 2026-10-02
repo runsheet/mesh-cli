@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -70,6 +71,16 @@ type AccountConfig struct {
 	// SecretVersion is an issued credential's secret version: a Codex
 	// login refreshed under one is kept for it (CodexLoginCache).
 	SecretVersion int
+	// Priorities are the goal priorities the account serves (urgent,
+	// high, normal, low): ChooseAccount never picks it for work of any
+	// other. Empty serves every priority, as before (adr-005's amendment
+	// 2026-10, a credential names the priorities it serves).
+	Priorities []string
+	// PaceFiveHour and PaceSevenDay are the account's own pace points,
+	// fractions of its windows (the credential's windowTargets): past
+	// either it takes only urgent and high work. 0 is the node-wide rule
+	// (LimitsConfig.PaceFiveHour; no seven-day pace point).
+	PaceFiveHour, PaceSevenDay float64
 	// issued is a platform credential's secret, held in memory for the
 	// one session it was issued for; a pointer, so printing the account
 	// prints an address, never the secret.
@@ -83,6 +94,13 @@ func (a AccountConfig) AdapterOf() string {
 		return AdapterClaudeCode
 	}
 	return a.Adapter
+}
+
+// Serves says the account serves work of that priority: every
+// priority when it names none, and work of no priority (research, "")
+// on every account.
+func (a AccountConfig) Serves(priority string) bool {
+	return len(a.Priorities) == 0 || priority == "" || slices.Contains(a.Priorities, priority)
 }
 
 // IsCodex says the account is a Codex one.

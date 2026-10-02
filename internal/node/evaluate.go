@@ -1202,7 +1202,7 @@ func (e *Evaluator) codexChooser(priority string, pinned bool) func([]AccountCon
 		if a, ok := ChooseAccount(now, accounts, readings, cfg, priority, true); ok || !pinned {
 			return a, ok
 		}
-		subs := slices.DeleteFunc(slices.Clone(accounts), func(a AccountConfig) bool { return a.Kind == AccountAPI })
+		subs := slices.DeleteFunc(slices.Clone(accounts), func(a AccountConfig) bool { return a.Kind == AccountAPI || !a.Serves(priority) })
 		return ChooseAccount(now, subs, readings, cfg, "high", true)
 	}
 }
