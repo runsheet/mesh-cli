@@ -132,7 +132,11 @@ type Client struct {
 	// questionsSchema is whether the gateway's planGoal input was last
 	// seen to take questions, kept for ScalingProbeEvery.
 	questionsSchema holdingProbe
-	Now             func() time.Time
+	// limitsPrioritiesSchema is whether the gateway's heartbeat `limits`
+	// list input was last found to take `priorities` (see
+	// takesLimitsPriorities).
+	limitsPrioritiesSchema holdingProbe
+	Now                    func() time.Time
 }
 
 // New returns a client for baseURL (scheme+host, no trailing slash) with
@@ -1692,6 +1696,15 @@ type Limits struct {
 	FiveHour       *LimitWindow `json:"fiveHour,omitempty"`
 	SevenDay       *LimitWindow `json:"sevenDay,omitempty"`
 	ObservedAt     time.Time    `json:"observedAt,omitzero"`
+	// Priorities are the goal priorities the account serves (the known
+	// issued account's AccountConfig.Priorities), so the Nodes page's
+	// account gauges can show what each account is for; empty (an
+	// account serving all, or one the loop has not learned the platform
+	// issued) sends no key, so an older platform is unchanged. Sent only
+	// when the gateway's NodeAccountLimitsInput has it (HeartbeatNode,
+	// takesLimitsPriorities; adr-005's amendment 2026-10,
+	// `limits[].priorities`).
+	Priorities []string `json:"priorities,omitempty"`
 }
 
 // LimitWindow is one of the plan's windows: how much of it is used, as
@@ -1716,7 +1729,11 @@ func (c *Client) HeartbeatNode(ctx context.Context, nodeID, version string, runn
 			in["updateError"] = x.UpdateError
 		}
 		if len(x.Limits) > 0 {
-			in["limits"] = x.Limits
+			if c.takesLimitsPriorities(ctx) {
+				in["limits"] = x.Limits
+			} else {
+				in["limits"] = limitsWithoutPriorities(x.Limits)
+			}
 		}
 		if x.Scaling != nil {
 			switch takes, accounts := c.takesScaling(ctx); {
@@ -1942,6 +1959,71 @@ func (c *Client) takesHolding(ctx context.Context) bool {
 	for _, f := range out.Type.InputFields {
 		if f.Name == "holding" {
 			p.takes = true
+		}
+	}
+	return p.takes
+}
+
+// limitsWithoutPriorities is limits with its `priorities` dropped from
+// the wire shape, for a platform whose NodeAccountLimitsInput does not
+// take it yet: an unknown field refuses the whole heartbeat (see
+// HeartbeatNode).
+func limitsWithoutPriorities(limits []Limits) []map[string]any {
+	out := make([]map[string]any, len(limits))
+	for i, l := range limits {
+		b, _ := json.Marshal(l)
+		m := map[string]any{}
+		_ = json.Unmarshal(b, &m)
+		delete(m, "priorities")
+		out[i] = m
+	}
+	return out
+}
+
+// takesLimitsPriorities says whether the gateway's HeartbeatNodeInput's
+// `limits` list carries a `priorities` field on its element type —
+// asked once by introspection and kept for ScalingProbeEvery, the same
+// as takesScaling (ADR-004: the node must not send a field the platform
+// does not accept). A failed probe is a no, kept as long
+// (adr-005's amendment 2026-10, `limits[].priorities`).
+func (c *Client) takesLimitsPriorities(ctx context.Context) bool {
+	p := &c.limitsPrioritiesSchema
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := c.now()
+	if !p.at.IsZero() && now.Sub(p.at) < ScalingProbeEvery {
+		return p.takes
+	}
+	type typeRef struct {
+		Kind        string `json:"kind"`
+		InputFields []struct {
+			Name string `json:"name"`
+		} `json:"inputFields"`
+		OfType *typeRef `json:"ofType"`
+	}
+	var out struct {
+		Type *struct {
+			InputFields []struct {
+				Name string  `json:"name"`
+				Type typeRef `json:"type"`
+			} `json:"inputFields"`
+		} `json:"__type"`
+	}
+	p.at, p.takes = now, false
+	q := `{ __type(name: "HeartbeatNodeInput") { inputFields { name type { kind inputFields { name } ofType { kind inputFields { name } ofType { kind inputFields { name } } } } } } }`
+	if err := c.Query(ctx, q, nil, &out); err != nil || out.Type == nil {
+		return false
+	}
+	for _, f := range out.Type.InputFields {
+		if f.Name != "limits" {
+			continue
+		}
+		for t := &f.Type; t != nil; t = t.OfType {
+			for _, sf := range t.InputFields {
+				if sf.Name == "priorities" {
+					p.takes = true
+				}
+			}
 		}
 	}
 	return p.takes

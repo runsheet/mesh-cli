@@ -133,7 +133,12 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   sandboxed node's self-update still blocks on; `Resume` undoes a drain
   that has not yet ended `Run`. The heartbeat's extras (`gateway.HeartbeatExtras`: `draining`,
   `updateError`, `limits` — the latest Claude plan limits per
-  account — and `scaling` — a ranged node's `{capacity, min, max,
+  account, each with the priorities the known account serves
+  (`priorities`, empty for one serving all; sent only when the
+  gateway's `NodeAccountLimitsInput` has the field, introspected and
+  kept an hour like `scaling` — adr-005's amendment 2026-10,
+  `limits[].priorities`, for the Nodes page's account gauges) — and
+  `scaling` — a ranged node's `{capacity, min, max,
   reason, accounts}`, the capacity in force, node.yaml's range, why
   and each account's slots — and a fixed node's too, on any number of
   accounts, as `{capacity: N, min: N, max: N, reason: fixed}`, so a
