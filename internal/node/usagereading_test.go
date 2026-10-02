@@ -63,7 +63,7 @@ func checkLines(t *testing.T, got, want []string) {
 func TestUsageReadingByKind(t *testing.T) {
 	checkLines(t, readUsageFixture(t, UsageQuery{From: day("2026-09-28"), To: day("2026-09-29")}), []string{
 		"window 2026-09-28..2026-09-29  records 2026-09-28T09:10:00..2026-09-28T14:00:01",
-		"kind      sessions  input tokens median  input tokens mean  cache read %  context bytes median  with context bytes  documents fetched median  with documents",
+		"kind      sessions  input tokens median  input tokens mean  cache read %  context bytes median  with context bytes  documents fetched median  fetched by tool",
 		"build     2         200000               200000             90.0          1000                  1                   4                         1",
 		"evaluate  1         50000                50000              80.0          -                     0                   -                         0",
 		"plan      2         50000                50000              60.0          3000                  2                   -                         0",
@@ -77,13 +77,13 @@ func TestUsageReadingByKind(t *testing.T) {
 func TestUsageReadingWindowExcludes(t *testing.T) {
 	checkLines(t, readUsageFixture(t, UsageQuery{From: day("2026-09-29"), To: day("2026-09-30")}), []string{
 		"window 2026-09-29..2026-09-30  records 2026-09-29T00:00:00..2026-09-29T00:00:00",
-		"kind   sessions  input tokens median  input tokens mean  cache read %  context bytes median  with context bytes  documents fetched median  with documents",
+		"kind   sessions  input tokens median  input tokens mean  cache read %  context bytes median  with context bytes  documents fetched median  fetched by tool",
 		"build  1         5000                 5000               20.0          3000                  1                   -                         0",
 		"unparsed 0",
 	})
 	checkLines(t, readUsageFixture(t, UsageQuery{From: day("2026-09-26"), To: day("2026-09-27")}), []string{
 		"window 2026-09-26..2026-09-27  records -",
-		"kind  sessions  input tokens median  input tokens mean  cache read %  context bytes median  with context bytes  documents fetched median  with documents",
+		"kind  sessions  input tokens median  input tokens mean  cache read %  context bytes median  with context bytes  documents fetched median  fetched by tool",
 		"unparsed 0",
 	})
 }
@@ -93,7 +93,7 @@ func TestUsageReadingWindowExcludes(t *testing.T) {
 func TestUsageReadingByGoalAndKind(t *testing.T) {
 	checkLines(t, readUsageFixture(t, UsageQuery{From: day("2026-09-28"), To: day("2026-09-29"), Goal: "ship-it"}), []string{
 		"window 2026-09-28..2026-09-29  records 2026-09-28T09:10:00..2026-09-28T12:00:00",
-		"kind      sessions  input tokens median  input tokens mean  cache read %  context bytes median  with context bytes  documents fetched median  with documents",
+		"kind      sessions  input tokens median  input tokens mean  cache read %  context bytes median  with context bytes  documents fetched median  fetched by tool",
 		"build     2         200000               200000             90.0          1000                  1                   4                         1",
 		"evaluate  1         50000                50000              80.0          -                     0                   -                         0",
 		"plan      1         80000                80000              75.0          4000                  1                   -                         0",
@@ -101,7 +101,7 @@ func TestUsageReadingByGoalAndKind(t *testing.T) {
 	})
 	checkLines(t, readUsageFixture(t, UsageQuery{From: day("2026-09-28"), To: day("2026-09-29"), Kind: "plan"}), []string{
 		"window 2026-09-28..2026-09-29  records 2026-09-28T12:00:00..2026-09-28T13:00:00",
-		"kind  sessions  input tokens median  input tokens mean  cache read %  context bytes median  with context bytes  documents fetched median  with documents",
+		"kind  sessions  input tokens median  input tokens mean  cache read %  context bytes median  with context bytes  documents fetched median  fetched by tool",
 		"plan  2         50000                50000              60.0          3000                  2                   -                         0",
 		"unparsed 1",
 	})

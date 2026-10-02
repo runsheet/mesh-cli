@@ -180,9 +180,12 @@ var usageKindOrder = []string{"build", "evaluate", "rebase", "plan", "research"}
 // median and mean input tokens per session (the report's inputTokens,
 // its cache reads and writes among them), the share of those that were
 // cache reads, the median context bytes over the sessions that carry
-// them, `-` when none does, and likewise the median documents fetched
-// (Report.DocumentsFetched, goal context-is-fetched-not-shipped) and
-// how many sessions carried it — and the count of records that did
+// them, `-` when none does, the median documents fetched by tool
+// (Report.DocumentsFetched, goal context-is-fetched-not-shipped) over
+// the sessions that fetched any, `-` when none did, and how many
+// sessions those were (`fetched by tool`; the count is omitted from a
+// record at zero, so a session that fetched none and one from a node
+// older than the count read alike) — and the count of records that did
 // not parse.
 func (u UsageReading) Lines() []string {
 	span := "-"
@@ -215,7 +218,7 @@ func (u UsageReading) Lines() []string {
 	})
 	var buf bytes.Buffer
 	w := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "kind\tsessions\tinput tokens median\tinput tokens mean\tcache read %\tcontext bytes median\twith context bytes\tdocuments fetched median\twith documents")
+	fmt.Fprintln(w, "kind\tsessions\tinput tokens median\tinput tokens mean\tcache read %\tcontext bytes median\twith context bytes\tdocuments fetched median\tfetched by tool")
 	for _, k := range kinds {
 		recs := byKind[k]
 		var inputs, ctx, docs []int64

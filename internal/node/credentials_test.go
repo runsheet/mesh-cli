@@ -763,6 +763,55 @@ func TestCarriedTreatsNoDocumentsFetchedAndNoToolNamesAsLandedAndLogsOncePerRun(
 	}
 }
 
+// ErrNoDocumentsFetched or ErrNoToolNames joined with ErrNoContextUsage
+// (a platform older than both context-budget-that-holds and
+// context-is-fetched-not-shipped, mutateWithUsage joining every loss)
+// is a landed command too: Carried returns nil and marks every loss,
+// and the node's logger says each once per run.
+func TestCarriedTreatsLossesJoinedWithNoContextUsageAsLanded(t *testing.T) {
+	const (
+		docsNotice    = "usage: the platform takes no documents-fetched count on the usage report yet; sent without it (said once, for every session this run)"
+		namesNotice   = "usage: the platform takes no per-tool call names on the usage report yet; sent without them (said once, for every session this run)"
+		contextNotice = "usage: the platform takes no context bytes on the usage report yet; sent without them (said once, for every session this run)"
+	)
+	for _, tc := range []struct {
+		name       string
+		err        error
+		docs, tool bool
+		notices    []string
+	}{
+		{"documentsFetched", gateway.ErrNoDocumentsFetched, true, false, []string{docsNotice}},
+		{"toolNames", gateway.ErrNoToolNames, false, true, []string{namesNotice}},
+		{"documentsFetched+contextBytes", errors.Join(gateway.ErrNoContextUsage, gateway.ErrNoDocumentsFetched), true, false, []string{docsNotice, contextNotice}},
+		{"toolNames+contextBytes", errors.Join(gateway.ErrNoContextUsage, gateway.ErrNoToolNames), false, true, []string{namesNotice, contextNotice}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var logs strings.Builder
+			c := &Credentials{Log: log.New(&logs, "", 0)}
+			for i := range 3 {
+				s := &SessionAccount{creds: c}
+				s.Report(harness.Result{SessionID: fmt.Sprintf("s-%d", i), DocumentsFetched: 3, ToolNames: map[string]int{"mesh-context__mesh_document": 2, "mesh-context__mesh_search": 1}})
+				if err := s.Carried(tc.err); err != nil {
+					t.Fatalf("session %d: Carried = %v, want nil (landed)", i, err)
+				}
+				if !s.handedIn || s.noDocumentsFetched != tc.docs || s.noToolNames != tc.tool {
+					t.Fatalf("session %d: handedIn=%v noDocumentsFetched=%v noToolNames=%v", i, s.handedIn, s.noDocumentsFetched, s.noToolNames)
+				}
+				s.Finish(context.Background(), harness.Result{})
+			}
+			out := logs.String()
+			for _, notice := range tc.notices {
+				if n := strings.Count(out, notice); n != 1 {
+					t.Errorf("notice %q said %d times over 3 sessions, want 1:\n%s", notice, n, out)
+				}
+			}
+			if !tc.docs && strings.Contains(out, docsNotice) || !tc.tool && strings.Contains(out, namesNotice) {
+				t.Errorf("a loss not refused was logged:\n%s", out)
+			}
+		})
+	}
+}
+
 // A session with no label (SetLabel never called) keeps the older
 // `usage: {…}` line.
 func TestFinishWithoutALabelLogsTheOlderLine(t *testing.T) {

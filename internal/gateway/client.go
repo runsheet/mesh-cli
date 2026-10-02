@@ -2798,9 +2798,10 @@ type UsageReport struct {
 	// without the field (ErrNoContextUsage).
 	ContextBytes int64 `json:"contextBytes,omitempty"`
 
-	// DocumentsFetched is the session's mesh_document calls on the
-	// built-in context server — document bodies, not searches (adr-016's
-	// amendment 2026-10-02, goal context-is-fetched-not-shipped). Left
+	// DocumentsFetched is the session's mesh_document and mesh_search
+	// calls on the built-in context server — what it fetched by tool
+	// (adr-016's amendment 2026-10-02, goal
+	// context-is-fetched-not-shipped); ToolNames tells the two apart. Left
 	// out when the session fetched none, and by mutateWithUsage for a
 	// platform without the field (ErrNoDocumentsFetched).
 	DocumentsFetched int64 `json:"documentsFetched,omitempty"`

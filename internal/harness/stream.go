@@ -193,8 +193,8 @@ func capText(s string, n int) string {
 // error too, that status as FirstError, even with zero calls. Each
 // such tool_use is also counted on Result.ToolNames, keyed
 // <server>__<tool> with the prologue alias folded into mesh-context,
-// and on Result.DocumentsFetched when it is a mesh_document call on
-// the built-in (goal context-is-fetched-not-shipped).
+// and on Result.DocumentsFetched when it is a mesh_document or
+// mesh_search call on the built-in (goal context-is-fetched-not-shipped).
 //
 // Every assistant event's own message.usage (input + cache_read +
 // cache_creation) is that turn's input tokens, counted once per
