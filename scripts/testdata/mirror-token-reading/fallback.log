@@ -1,0 +1,4 @@
+Sign and publish v0.9.2	Mirror the release to runsheet/mesh	2026-10-02T05:10:00.0000000Z ﻿##[group]Run scripts/exchange-workflow-token.sh
+Sign and publish v0.9.2	Mirror the release to runsheet/mesh	2026-10-02T05:10:00.1000000Z [36;1m    echo "mirror token: RELEASE_TOKEN fallback (exchange failed: $reason)"[0m
+Sign and publish v0.9.2	Mirror the release to runsheet/mesh	2026-10-02T05:10:01.0000000Z mirror token: RELEASE_TOKEN fallback (exchange failed: refused: unauthenticated: the bearer is a JWT with no role (unknown key id))
+Sign and publish v0.9.2	Mirror the release to runsheet/mesh	2026-10-02T05:10:02.0000000Z ##[endgroup]

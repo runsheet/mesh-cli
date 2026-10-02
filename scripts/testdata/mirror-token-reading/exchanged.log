@@ -1,0 +1,4 @@
+Sign and publish v0.9.1	Mirror the release to runsheet/mesh	2026-10-02T05:00:00.0000000Z ﻿##[group]Run scripts/exchange-workflow-token.sh
+Sign and publish v0.9.1	Mirror the release to runsheet/mesh	2026-10-02T05:00:00.1000000Z [36;1m  echo "mirror token: exchanged through rigger, expires $(tail -n1 "$err")"[0m
+Sign and publish v0.9.1	Mirror the release to runsheet/mesh	2026-10-02T05:00:01.0000000Z mirror token: exchanged through rigger, expires 2026-10-02T06:00:00Z
+Sign and publish v0.9.1	Mirror the release to runsheet/mesh	2026-10-02T05:00:02.0000000Z ##[endgroup]
