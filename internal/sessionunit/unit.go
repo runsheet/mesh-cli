@@ -30,6 +30,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -273,6 +274,11 @@ func (s SystemdScope) Kill(h Handle) ([]Process, error) {
 	}
 	left := func() bool {
 		p, err := sc.Processes(cg)
+		if errors.Is(err, syscall.ENODEV) {
+			// the cgroup is being removed: the signal emptied it and
+			// systemd is tearing it down, so nothing is left in it
+			return false
+		}
 		if err != nil {
 			errs = append(errs, fmt.Errorf("sessionunit: %s: processes: %w", unit, err))
 			return true // unknown: SIGKILL anyway
