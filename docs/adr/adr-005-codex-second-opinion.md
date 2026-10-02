@@ -30,7 +30,7 @@ evaluator, and none of this should need it to.
 evaluate model). It runs when the item's goal is `urgent` or `high`
 (`gateway.PriorityRank`), a `Second` is configured, and Claude's
 verdict is a pass — with the same prompt, in the same workspace, on the
-same item token and Prologue. A first fail stands on its own; a normal
+same item token and mesh-context. A first fail stands on its own; a normal
 or low goal never runs Codex. `mesh node start` builds the Codex
 harness only when node.yaml has a `codex:` block and its binary is
 found, on the block's first account (none: the operator's own Codex
@@ -183,7 +183,7 @@ start" of the brief's two options, not "each tick".
 `" kept at <dir>"` (`keptAt`) to a Codex evaluation's session error and
 its no-verdict error, and logs `"a tool errored kept at <dir>"`
 (`hasToolError`, over `Result.Tools`) beside the existing served-tools
-note when the verdict was read but some MCP server's calls — Prologue's
+note when the verdict was read but some MCP server's calls — mesh-context's
 included, unlike `SessionTools.UseNote`, which only ever names a
 session's own `Use` tools — carried an error. A Claude session names
 nothing here: `Result.KeptSessionDir` is empty for it.
@@ -197,3 +197,15 @@ old directory past its day — acceptable, since nothing runs Codex there
 to make more. The 64KB `capBuffer` a Codex session's error paths already
 read from is unchanged: `KeptSessionDir` is additional, not a
 replacement.
+
+## Amendment — 2026-10-02 (goal builtin-is-mesh-context)
+
+The built-in attachment is `mesh-context` (`tools.Builtin`, mesh-cli
+#264/#396); `prologue` is the deprecated alias read until 2026-10-28,
+not the name a current session carries. **When it runs** said "the
+same item token and Prologue"; the served-tools note above said "some
+MCP server's calls — Prologue's included". Both named the built-in by
+its old name after the rename had already reached the node's own
+attachment (`adr-006`'s 2026-09-28 amendment); both now say
+`mesh-context`. Nothing about when the second opinion runs or what the
+note names changes — only the word.

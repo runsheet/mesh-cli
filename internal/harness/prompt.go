@@ -33,11 +33,11 @@ type PromptInput struct {
 	// budget on when it was handed back (Result.SpentOn, ADR 012
 	// Hand-back), recorded by the node; empty when none was.
 	LastSession string
-	// Project is the mesh-context project (org/slug) the goal belongs to;
-	// Prologue says the session has mesh-context's tools for context on
-	// demand.
-	Project  string
-	Prologue bool
+	// Project is the mesh-context project (org/slug) the goal belongs to.
+	Project string
+	// MeshContext says the session has the built-in mesh-context server
+	// (tools.Builtin) and its mesh_* tools for context on demand.
+	MeshContext bool
 	// Services is what the session's pod runs beside it
 	// (sandbox.ServicesLine): the ready ones on 127.0.0.1 and the
 	// missing ones; empty when there are none.
@@ -52,14 +52,15 @@ func servicesSection(b *strings.Builder, services string) {
 }
 
 // contextRule is the line every prompt carries when the session has
-// mesh-context's tools: the index in the context directory, the tools
-// that fetch the rest, and the other projects within reach.
+// mesh-context's tools: the context directory holds only this
+// session's repos' instructions and its own goal — everything else is
+// fetched on demand, search before you read.
 func contextRule(contextDir, project string) string {
-	where := "the project's index"
+	where := "The project's index"
 	if contextDir != "" {
 		where = "`" + contextDir + "/INDEX.md`"
 	}
-	return fmt.Sprintf("%s lists every document of project %q — specs, decisions, instructions, skills — with what is on disk and what is not; fetch any of the rest with the `mesh_document` tool (project %q, the document's slug — INDEX.md's `slug` column, never a context file's name: a file name is not a slug, `adr-adr-001-….md` is slug `adr-001-…`), search with `mesh_search`, and read another project's decisions through `mesh_projects` and `mesh_documents` when the work touches it. Prefer reading a document to guessing what it says.", where, project, project)
+	return fmt.Sprintf("%s says what is on disk — just this session's repos' instructions and its own goal — and how to find the rest: search before you read, with the mesh-context server's tools: `mesh_search` (query → slug, title, kind, summary); read a document only when the work touches it, with `mesh_document` (project %q, the document's slug — never a context file's name: a file name is not a slug, `instructions-acme-widgets-agents.md` is slug `agents`). Reach another project with `mesh_projects` and `mesh_documents`, live state with `mesh_items`. The ADRs and the TRD are binding and are searched before any design decision. A build fetches two or three documents, not forty.", where, project)
 }
 
 // BuildPrompt renders the session's whole prompt for a build job: the item
@@ -73,6 +74,9 @@ func BuildPrompt(in PromptInput) string {
 	fmt.Fprintf(&b, "# Item %d: %s\n\n", in.Seq, in.Title)
 	if strings.TrimSpace(in.Brief) != "" {
 		fmt.Fprintf(&b, "## Brief\n\n%s\n\n", strings.TrimSpace(in.Brief))
+		if in.MeshContext {
+			b.WriteString("Fetch the documents the brief names before you build; search for anything else.\n\n")
+		}
 	}
 	if strings.TrimSpace(in.Acceptance) != "" {
 		fmt.Fprintf(&b, "## Acceptance (this item)\n\n%s\n\n", strings.TrimSpace(in.Acceptance))
@@ -102,7 +106,7 @@ func BuildPrompt(in PromptInput) string {
 	} else {
 		b.WriteString("1. Read the repository's own instructions (AGENTS.md, CLAUDE.md, README) first.\n")
 	}
-	if in.Prologue {
+	if in.MeshContext {
 		b.WriteString("   " + contextRule(in.ContextDir, in.Project) + "\n")
 	}
 	fmt.Fprintf(&b, "2. You are in %s on branch `%s` (from `%s`). Work on this branch only; do not switch or create branches.\n", in.Repo, in.Branch, in.BaseRef)
@@ -171,11 +175,13 @@ type EvaluateInput struct {
 	Diff           string
 	// ContextDir and ContextFiles: the goal's context documents, the
 	// ADRs and instructions the builder was bound by. Project and
-	// Prologue as on PromptInput.
+	// MeshContext as on PromptInput.
 	ContextDir   string
 	ContextFiles []string
 	Project      string
-	Prologue     bool
+	// MeshContext says the session has the built-in mesh-context server
+	// (tools.Builtin) and its mesh_* tools for context on demand.
+	MeshContext bool
 	// Services as on PromptInput.
 	Services string
 	// AlreadyDone is the second shape (mesh ADR 003 decision 1): the
@@ -284,11 +290,11 @@ func EvaluatePrompt(in EvaluateInput) string {
 			fmt.Fprintf(&b, " (%s)", strings.Join(in.ContextFiles, ", "))
 		}
 		b.WriteString(": the instructions and the ADRs bound the builder; the PRD and TRD are the design.")
-		if in.Prologue {
+		if in.MeshContext {
 			b.WriteString(" " + contextRule(in.ContextDir, in.Project))
 		}
 		b.WriteString("\n\n")
-	} else if in.Prologue {
+	} else if in.MeshContext {
 		b.WriteString("# The context\n\n" + contextRule("", in.Project) + "\n\n")
 	}
 	if len(in.PriorAttempts) > 0 {
@@ -399,9 +405,9 @@ type PlanInput struct {
 	ContextFiles []string
 	// Blocked: on a re-plan, what went wrong the last time.
 	Blocked string
-	// Prologue says the session has mesh-context's tools for context on
-	// demand.
-	Prologue bool
+	// MeshContext says the session has the built-in mesh-context server
+	// (tools.Builtin) and its mesh_* tools for context on demand.
+	MeshContext bool
 	// Existing are the goal's items so far, on a re-plan: merged ones
 	// stay and may be depended on, failed and cancelled ones are the
 	// record, live ones are replaced by this plan. NextSeq is where the
@@ -569,7 +575,7 @@ func PlanPrompt(in PlanInput) string {
 	} else {
 		b.WriteString("There are no context documents; read each repo's AGENTS.md, CLAUDE.md and README first.\n\n")
 	}
-	if in.Prologue {
+	if in.MeshContext {
 		b.WriteString(contextRule(in.ContextDir, in.Org+"/"+in.Project) + "\n\n")
 	}
 	b.WriteString("# Check main first\n\n")
@@ -580,6 +586,9 @@ func PlanPrompt(in PlanInput) string {
 	b.WriteString("2. Each item is one fresh session's work in one repo on one branch: small enough to finish and evaluate in one sitting, large enough to be worth a pull request. Two to eight items.\n")
 	b.WriteString("3. Each item's brief says what to do and where, naming files and functions where it helps; its acceptance is what an evaluator can check — a test that passes, a command's output, a document with named sections — never a feeling.\n")
 	b.WriteString("   " + planAcceptanceRule + "\n")
+	if in.MeshContext {
+		b.WriteString("   Each item's brief names, by slug, the two or three documents the builder must fetch with `mesh_document` — found with `mesh_search` while you plan. You search before you read, same as the builder will.\n")
+	}
 	b.WriteString("4. depends_on names earlier seqs whose branches must be merged first; items with no dependency between them run in parallel.\n")
 	b.WriteString("   " + planDependencyRule + "\n")
 	b.WriteString("5. repo is one of the project's repos above, as owner/name. base_ref is its default branch unless the item builds on another item's branch.\n")
@@ -726,7 +735,9 @@ type ResearchInput struct {
 	Repos        map[string]string
 	ContextDir   string
 	ContextFiles []string
-	Prologue     bool
+	// MeshContext says the session has the built-in mesh-context server
+	// (tools.Builtin) and its mesh_* tools for context on demand.
+	MeshContext bool
 	// Goals are what the project has already taken on, newest first —
 	// what to build on and what not to propose again.
 	Goals []ExistingGoal
@@ -884,7 +895,7 @@ func ResearchPrompt(in ResearchInput) string {
 	} else {
 		b.WriteString("There are no context documents; read each repo's AGENTS.md, CLAUDE.md and README, then the code.\n\n")
 	}
-	if in.Prologue {
+	if in.MeshContext {
 		b.WriteString(contextRule(in.ContextDir, in.Org+"/"+in.Project) + "\n\n")
 	}
 	b.WriteString("# Rules\n\n")
@@ -928,7 +939,7 @@ func researchGoalRules(b *strings.Builder, in ResearchInput) {
 // strategy bet with evidence, scopes it to a goal or an initiative,
 // sizes and risks it, and names the signal it should move — not a bare
 // goal proposal. The platform hands the direction's earlier pitches'
-// feedback back through Prologue's mesh_projects read, so the session
+// feedback back through mesh-context's mesh_projects read, so the session
 // answers it before pitching again, never re-pitches a declined idea,
 // and grounds its bet and its estimate in what the project already
 // knows.
@@ -1096,11 +1107,13 @@ type RebaseInput struct {
 	// files, as RequestWorkItemRebase gave them (either may be empty).
 	Conflict string
 	Files    []string
-	// ContextDir, ContextFiles, Project and Prologue as on EvaluateInput.
+	// ContextDir, ContextFiles and Project as on EvaluateInput.
 	ContextDir   string
 	ContextFiles []string
 	Project      string
-	Prologue     bool
+	// MeshContext says the session has the built-in mesh-context server
+	// (tools.Builtin) and its mesh_* tools for context on demand.
+	MeshContext bool
 	// Services as on PromptInput.
 	Services string
 }
@@ -1150,16 +1163,16 @@ func RebasePrompt(in RebaseInput) string {
 			fmt.Fprintf(&b, " (%s)", strings.Join(in.ContextFiles, ", "))
 		}
 		b.WriteString(": the resolved branch must still keep to them.")
-		if in.Prologue {
+		if in.MeshContext {
 			b.WriteString(" " + contextRule(in.ContextDir, in.Project))
 		}
 		b.WriteString("\n\n")
-	} else if in.Prologue {
+	} else if in.MeshContext {
 		b.WriteString("# The context\n\n" + contextRule("", in.Project) + "\n\n")
 	}
 	servicesSection(&b, in.Services)
 	b.WriteString("# The runbook\n\n")
-	if in.Prologue {
+	if in.MeshContext {
 		fmt.Fprintf(&b, "Read the mesh-branch-rebase skill first: `mesh_document` with project %q, slug %q (or the same slug in project %q, if it is indexed there). If neither has it, these steps are the runbook:\n\n", RebaseRunbookProject, RebaseRunbookSlug, in.Project)
 	} else {
 		b.WriteString("The mesh-branch-rebase skill's steps:\n\n")

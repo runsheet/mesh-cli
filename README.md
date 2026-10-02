@@ -365,16 +365,89 @@ session that ends in a failure — never sent it (see [Usage](#usage)).
 `mesh node start` refuses an account whose token file or variable
 cannot be read.
 
+### Who owns a node
+
+A node has an owner — a person or an enterprise
+(`internal/node/owned.go`, `internal/commands/nodecmd.go`,
+[ADR-015](docs/adr/adr-015-a-node-registers-once-with-an-owner.md)).
+node.yaml's `owner:` says which: empty or `person` (the default) is
+**bring your own infra** — the node serves every org the person is a
+member of, on the person's own accounts and each org's tools, and
+leaves an org when the person does, exactly as it always has.
+`owner: enterprise` is shared infra — the node serves every org the
+enterprise has, on the enterprise's own credentials, and an org
+outside the enterprise only by an explicit share from an enterprise
+admin.
+
+The node registers once with its owner and takes the orgs it serves
+from the platform's answer to that registration and to every
+heartbeat since, never by re-reading the person's orgs. An org
+attached to the owner later, or a hand-over from a person to an
+enterprise, is picked up on the next heartbeat, no restart — logged
+`owner changed: Chris → anythink`. `orgs:` in node.yaml still
+restricts which of the answer's orgs the node serves; a name it does
+not meet is logged, never fatal, and a changed served set is logged
+too (`orgs a, b → a, b, c`).
+
+node.yaml records which registration the node made as `contract:`:
+`contract: owner` (one node id, under `node_id:`, shared by every org
+it serves) when the platform answered the owner registration, or
+`contract: per-org` (legacy — one node id per org, from `(org,
+slug)`) when it did not, because the platform's `RegisterNodeInput`
+has no `owner` at all. `mesh node status` and the rollback reporter
+(the self-update confirm path) heartbeat the same way the last
+registration recorded: once, under the one id, on the owner contract;
+per org on the legacy one. An org with no GitHub login — `grapevine`,
+an org the platform derives rather than links to a login — is named
+by its tenant slug throughout: in the log, in `mesh node status`, and
+as the name to give `--org`.
+
+node.log's first line after the start lines names the owner and the
+orgs, on the owner contract:
+
+```
+node mini (runsheet-mini) owned by Chris, serving runsheet, wardroomid, grapevine
+```
+
+or, on the legacy path:
+
+```
+node mini (runsheet-mini) per org, serving runsheet, wardroomid, grapevine
+```
+
+`mesh node status` says the same, beside the org's nodes:
+
+```
+owned by Chris (person); serving runsheet, wardroomid, grapevine
+```
+
+and `mesh node register` prints it too, on whichever contract the
+platform answered:
+
+```
+Registered node mini (runsheet-mini) owned by Chris, serving runsheet, wardroomid, grapevine, capacity 1. Saved ~/.mesh/node.yaml.
+Start it with: mesh node start
+```
+
+```
+Registered node mini (runsheet-mini) in runsheet, wardroomid, capacity 1. Saved ~/.mesh/node.yaml.
+Start it with: mesh node start
+```
+
 ### Register
 
 ```bash
 mesh node register --org acme --name "Chris's laptop" [--slug chris-mbp] [--capacity 2]
 ```
 
-Signs in, finds the org among yours, derives the node id from
-`(org, slug)` — registering twice converges on the same node — and writes
-`~/.mesh/node.yaml` (org login and id, slug, node id, capacity).
-`mesh node status` heartbeats once and lists the org's nodes, above a
+Signs in, finds the org among yours, probes whether the platform's
+registration takes an owner (see Who owns a node above), and writes
+`~/.mesh/node.yaml` with what it decided: on the owner contract, the
+node's one id and `contract: owner`, from the platform's answer; on
+the legacy path, the node id derived from `(org, slug)` — registering
+twice converges on the same node — org login and id, slug and
+`contract: per-org`. Either way node.yaml keeps the slug and the
+capacity too. `mesh node status` heartbeats once and lists the org's nodes, above a
 line naming the credential this machine runs on — the machine, its org
 and operator, and when its access token is next refreshed, or the rs_*
 console token it is still on — and a line for the node process on this
@@ -418,12 +491,16 @@ priorities the order is strict, so a steady stream of urgent work keeps a
 low goal's items, plans and evaluations waiting.
 Rebases follow it too (see The rebase session below).
 Capacity and the orgs served are re-read at the top of every tick, so
-neither needs a restart: `capacity` and `orgs` come from
-`~/.mesh/node.yaml` as it stands (a file that cannot be read is logged and
-the last good capacity kept), and the orgs from the platform's `MyOrgs`
-— an org seen for the first time is registered in and served that tick,
-one no longer listed (or outside `orgs`) is dropped. A change is logged
-(`capacity 3 → 6`, `orgs acme → acme, go-apis`). In channel mode the
+neither needs a restart: `capacity` comes from `~/.mesh/node.yaml` as
+it stands (a file that cannot be read is logged and the last good
+capacity kept). The orgs served come, on the owner contract, from
+every heartbeat's answer — an org the platform adds, or a hand-over
+from a person to an enterprise, is served from the next heartbeat on,
+restricted by node.yaml's `orgs` as it stands — or, on the legacy
+path, from the platform's `MyOrgs`: an org seen for the first time is
+registered in and served that tick, one no longer listed (or outside
+`orgs`) is dropped. A change is logged (`capacity 3 → 6`, `orgs acme →
+acme, go-apis`). In channel mode the
 goal watch of an org added this way waits for the next start; its
 planning, items and evaluations do not.
 What happens to a claimed item depends on the mode.
@@ -1024,18 +1101,22 @@ mesh node usage --from 2026-09-28 --to 2026-09-29 [--log ~/.mesh/node.log] [--go
 
 ```
 window 2026-09-28..2026-09-29  records 2026-09-28T09:10:00..2026-09-28T14:00:01
-kind      sessions  input tokens median  input tokens mean  cache read %  context bytes median  with context bytes
-build     2         200000               200000             90.0          1000                  1
-evaluate  1         50000                50000              80.0          -                     0
-plan      2         50000                50000              60.0          3000                  2
-unknown   1         7000                 7000               100.0         -                     0
+kind      sessions  input tokens median  input tokens mean  cache read %  context bytes median  with context bytes  documents fetched median  fetched by tool
+build     2         200000               200000             90.0          1000                  1                   4                         1
+evaluate  1         50000                50000              80.0          -                     0                   -                         0
+plan      2         50000                50000              60.0          3000                  2                   -                         0
+unknown   1         7000                 7000               100.0         -                     0                   -                         0
 unparsed 1
 ```
 
 `--to` is exclusive and both dates are local, as node.log's timestamps
 are. Input tokens are the report's `inputTokens`, cache reads and
 writes among them; the context-bytes median is over the sessions that
-carry `contextBytes` (`with context bytes`), `-` when none does.
+carry `contextBytes` (`with context bytes`), `-` when none does; the
+documents-fetched median is over the sessions that fetched any document
+by tool (`mesh_document` or `mesh_search`, the record's
+`documentsFetched`), and `fetched by tool` is how many did (ADR-016,
+amendment 2026-10-02).
 `--goal` keeps the records whose label names the goal — its items' and
 its plan's. An older node's unlabelled `usage: {…}` line takes the kind
 and label of the nearest `finished …($x)`, `evaluation …($x)` or

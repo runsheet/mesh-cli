@@ -11,7 +11,7 @@ import (
 func TestRebasePromptContract(t *testing.T) {
 	p := RebasePrompt(RebaseInput{GoalSlug: "ship-it", GoalTitle: "Ship it", Seq: 2, Title: "Make it pass", Acceptance: "go test ./... passes",
 		Repo: "acme/widgets", Branch: "mesh/ship-it-2", BaseRef: "main", Conflict: "<<<<<<< main.go\n=======\n>>>>>>>", Files: []string{"main.go"},
-		ContextDir: ".mesh/context", ContextFiles: []string{"adr-001.md"}, Project: "acme/mesh", Prologue: true})
+		ContextDir: ".mesh/context", ContextFiles: []string{"adr-001.md"}, Project: "acme/mesh", MeshContext: true})
 	for _, want := range []string{
 		"REBASED: <sha>\n   RESOLVED: <file>, <file>",
 		"REBASE FAILED: <why>",

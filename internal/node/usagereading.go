@@ -179,8 +179,13 @@ var usageKindOrder = []string{"build", "evaluate", "rebase", "plan", "research"}
 // the span of the records in it, one row per kind — sessions, the
 // median and mean input tokens per session (the report's inputTokens,
 // its cache reads and writes among them), the share of those that were
-// cache reads, and the median context bytes over the sessions that
-// carry them, `-` when none does — and the count of records that did
+// cache reads, the median context bytes over the sessions that carry
+// them, `-` when none does, the median documents fetched by tool
+// (Report.DocumentsFetched, goal context-is-fetched-not-shipped) over
+// the sessions that fetched any, `-` when none did, and how many
+// sessions those were (`fetched by tool`; the count is omitted from a
+// record at zero, so a session that fetched none and one from a node
+// older than the count read alike) — and the count of records that did
 // not parse.
 func (u UsageReading) Lines() []string {
 	span := "-"
@@ -213,10 +218,10 @@ func (u UsageReading) Lines() []string {
 	})
 	var buf bytes.Buffer
 	w := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "kind\tsessions\tinput tokens median\tinput tokens mean\tcache read %\tcontext bytes median\twith context bytes")
+	fmt.Fprintln(w, "kind\tsessions\tinput tokens median\tinput tokens mean\tcache read %\tcontext bytes median\twith context bytes\tdocuments fetched median\tfetched by tool")
 	for _, k := range kinds {
 		recs := byKind[k]
-		var inputs, ctx []int64
+		var inputs, ctx, docs []int64
 		var total, cached int64
 		for _, r := range recs {
 			// the report's inputTokens already holds its cache reads and writes
@@ -227,15 +232,21 @@ func (u UsageReading) Lines() []string {
 			if r.Report.ContextBytes > 0 {
 				ctx = append(ctx, r.Report.ContextBytes)
 			}
+			if r.Report.DocumentsFetched > 0 {
+				docs = append(docs, r.Report.DocumentsFetched)
+			}
 		}
-		share, ctxMedian := "-", "-"
+		share, ctxMedian, docsMedian := "-", "-", "-"
 		if total > 0 {
 			share = strconv.FormatFloat(float64(cached)*100/float64(total), 'f', 1, 64)
 		}
 		if len(ctx) > 0 {
 			ctxMedian = strconv.FormatInt(median(ctx), 10)
 		}
-		fmt.Fprintf(w, "%s\t%d\t%d\t%d\t%s\t%s\t%d\n", k, len(recs), median(inputs), total/int64(len(recs)), share, ctxMedian, len(ctx))
+		if len(docs) > 0 {
+			docsMedian = strconv.FormatInt(median(docs), 10)
+		}
+		fmt.Fprintf(w, "%s\t%d\t%d\t%d\t%s\t%s\t%d\t%s\t%d\n", k, len(recs), median(inputs), total/int64(len(recs)), share, ctxMedian, len(ctx), docsMedian, len(docs))
 	}
 	w.Flush()
 	for _, l := range strings.Split(strings.TrimRight(buf.String(), "\n"), "\n") {

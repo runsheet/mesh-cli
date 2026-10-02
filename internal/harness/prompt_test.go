@@ -136,14 +136,14 @@ func TestEvaluatePromptUnverifiableClause(t *testing.T) {
 // evaluator's context section (with and without a ContextDir).
 func TestEvaluatePromptContextTools(t *testing.T) {
 	withDir := EvaluatePrompt(EvaluateInput{GoalSlug: "g", GoalTitle: "G", Seq: 1, Title: "T", Repo: "o/r", Branch: "b", BaseRef: "main",
-		ContextDir: ".mesh/context", Project: "acme/mesh", Prologue: true})
+		ContextDir: ".mesh/context", Project: "acme/mesh", MeshContext: true})
 	noDir := EvaluatePrompt(EvaluateInput{GoalSlug: "g", GoalTitle: "G", Seq: 1, Title: "T", Repo: "o/r", Branch: "b", BaseRef: "main",
-		Project: "acme/mesh", Prologue: true})
+		Project: "acme/mesh", MeshContext: true})
 	for _, p := range []string{withDir, noDir} {
 		// the slug from the index, never a file name: `adr-adr-….md`
 		// taken as a slug is `not found` (goal
 		// evaluation-reports-no-verdict)
-		for _, want := range []string{"mesh_document", "mesh_search", "(project \"acme/mesh\", the document's slug — INDEX.md's `slug` column, never a context file's name: a file name is not a slug, `adr-adr-001-….md` is slug `adr-001-…`)"} {
+		for _, want := range []string{"mesh_document", "mesh_search", "(project \"acme/mesh\", the document's slug — never a context file's name: a file name is not a slug, `instructions-acme-widgets-agents.md` is slug `agents`)"} {
 			if !strings.Contains(p, want) {
 				t.Errorf("evaluate prompt lacks %q:\n%s", want, p)
 			}
@@ -157,7 +157,7 @@ func TestEvaluatePromptContextTools(t *testing.T) {
 // The planner is told to use mesh_document and mesh_search when the
 // session has mesh-context's tools.
 func TestPlanPromptContextTools(t *testing.T) {
-	p := PlanPrompt(PlanInput{GoalSlug: "g", GoalTitle: "G", Org: "o", Project: "p", ContextDir: ".mesh/context", Prologue: true})
+	p := PlanPrompt(PlanInput{GoalSlug: "g", GoalTitle: "G", Org: "o", Project: "p", ContextDir: ".mesh/context", MeshContext: true})
 	for _, want := range []string{"mesh_document", "mesh_search"} {
 		if !strings.Contains(p, want) {
 			t.Errorf("plan prompt lacks %q:\n%s", want, p)
@@ -213,6 +213,65 @@ func TestPromptsCarryTheServicesLine(t *testing.T) {
 	} {
 		if strings.Contains(p, "# Services") {
 			t.Errorf("no services, no section:\n%s", p)
+		}
+	}
+}
+
+// Every prompt that carries mesh-context's tools tells the session to
+// search before it reads, and none claims the index lists every
+// document — the inverted default (goal
+// context-is-fetched-not-shipped): the context directory holds only
+// the session's repos' instructions and its own goal, everything else
+// comes through mesh_search and mesh_document.
+func TestPromptsCarrySearchFirst(t *testing.T) {
+	const phrase = "search before you read"
+	build := BuildPrompt(PromptInput{GoalSlug: "g", GoalTitle: "G", Seq: 1, Title: "T", Brief: "do it", Repo: "o/r", Branch: "b", BaseRef: "main", ContextDir: ".mesh/context", Project: "acme/mesh", MeshContext: true})
+	eval := EvaluatePrompt(EvaluateInput{GoalSlug: "g", GoalTitle: "G", Seq: 1, Title: "T", Repo: "o/r", Branch: "b", BaseRef: "main", ContextDir: ".mesh/context", Project: "acme/mesh", MeshContext: true})
+	plan := PlanPrompt(PlanInput{GoalSlug: "g", GoalTitle: "G", Org: "o", Project: "p", ContextDir: ".mesh/context", MeshContext: true})
+	rebase := RebasePrompt(RebaseInput{GoalSlug: "g", GoalTitle: "G", Seq: 1, Title: "T", Repo: "o/r", Branch: "b", BaseRef: "main", ContextDir: ".mesh/context", Project: "acme/mesh", MeshContext: true})
+	research := ResearchPrompt(ResearchInput{Org: "acme", Project: "mesh", ContextDir: ".mesh/context", MeshContext: true})
+	for name, p := range map[string]string{"build": build, "evaluate": eval, "plan": plan, "rebase": rebase, "research": research} {
+		if !strings.Contains(p, phrase) {
+			t.Errorf("%s prompt lacks %q:\n%s", name, phrase, p)
+		}
+		if !strings.Contains(p, "mesh_search") {
+			t.Errorf("%s prompt lacks %q:\n%s", name, "mesh_search", p)
+		}
+		if strings.Contains(p, "lists every document") {
+			t.Errorf("%s prompt still claims the index lists every document:\n%s", name, p)
+		}
+	}
+}
+
+// The plan prompt tells the planner to name, by slug, the two or
+// three documents the builder must fetch with mesh_document — found
+// with mesh_search while planning.
+func TestPlanPromptFetchList(t *testing.T) {
+	p := PlanPrompt(PlanInput{GoalSlug: "g", GoalTitle: "G", Org: "o", Project: "p", ContextDir: ".mesh/context", MeshContext: true})
+	for _, want := range []string{"mesh_document", "slug", "two or three documents"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("plan prompt lacks %q:\n%s", want, p)
+		}
+	}
+}
+
+// Every prompt given the built-in server names it mesh-context and
+// never sends the session to its old tool prefix (goal
+// builtin-is-mesh-context).
+func TestPromptsNameMeshContext(t *testing.T) {
+	prompts := map[string]string{
+		"build":    BuildPrompt(PromptInput{GoalSlug: "g", GoalTitle: "G", Seq: 1, Title: "T", Brief: "do it", Repo: "o/r", Branch: "b", BaseRef: "main", ContextDir: ".mesh/context", Project: "acme/mesh", MeshContext: true}),
+		"evaluate": EvaluatePrompt(EvaluateInput{GoalSlug: "g", GoalTitle: "G", Seq: 1, Title: "T", Repo: "o/r", Branch: "b", BaseRef: "main", ContextDir: ".mesh/context", Project: "acme/mesh", MeshContext: true}),
+		"plan":     PlanPrompt(PlanInput{GoalSlug: "g", GoalTitle: "G", Org: "o", Project: "p", ContextDir: ".mesh/context", MeshContext: true}),
+		"research": ResearchPrompt(ResearchInput{Org: "acme", Project: "mesh", ContextDir: ".mesh/context", MeshContext: true}),
+		"rebase":   RebasePrompt(RebaseInput{GoalSlug: "g", GoalTitle: "G", Seq: 1, Title: "T", Repo: "o/r", Branch: "b", BaseRef: "main", ContextDir: ".mesh/context", Project: "acme/mesh", MeshContext: true}),
+	}
+	for name, p := range prompts {
+		if !strings.Contains(p, "mesh-context") {
+			t.Errorf("%s prompt does not name mesh-context:\n%s", name, p)
+		}
+		if strings.Contains(p, "mcp__prologue__") {
+			t.Errorf("%s prompt still names mcp__prologue__:\n%s", name, p)
 		}
 	}
 }

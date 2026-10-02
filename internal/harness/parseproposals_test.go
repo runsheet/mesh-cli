@@ -69,7 +69,7 @@ func TestResearchPromptContract(t *testing.T) {
 	p := ResearchPrompt(ResearchInput{
 		Org: "acme", Project: "mesh", Direction: "Mesh is the place goals turn into merged pull requests.",
 		Repos: map[string]string{"acme/widgets": "repos/widgets"}, ContextDir: ".mesh/context",
-		ContextFiles: []string{"INDEX.md", "prd.md"}, Room: 2, DefaultBudgetCents: 4000, Prologue: true,
+		ContextFiles: []string{"INDEX.md", "prd.md"}, Room: 2, DefaultBudgetCents: 4000, MeshContext: true,
 		Goals: []ExistingGoal{{Slug: "ship-it", Title: "Ship it", Status: "running"}},
 	})
 	for _, want := range []string{

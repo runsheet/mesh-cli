@@ -66,12 +66,15 @@ func TestLoopEvaluatesFinishedItems(t *testing.T) {
 	if len(h.jobs) != 1 || h.jobs[0].Kind != harness.KindEvaluate || h.jobs[0].MaxBudgetUSD != 2 || h.jobs[0].MCPServers["mesh-context"] == nil {
 		t.Fatalf("job: %+v", h.jobs)
 	}
-	if _, err := os.Stat(filepath.Join(ws.prepared[0].Dir(), ContextDir, "adr-adr-001.md")); err != nil {
-		t.Fatal("the evaluator must have the ADRs on disk")
+	if _, err := os.Stat(filepath.Join(ws.prepared[0].Dir(), ContextDir, "instructions-acme-widgets-agents.md")); err != nil {
+		t.Fatal("the evaluator must have its repo's instructions on disk")
+	}
+	if _, err := os.Stat(filepath.Join(ws.prepared[0].Dir(), ContextDir, "adr-adr-001.md")); err == nil {
+		t.Fatal("no ADR is on disk: it is fetched")
 	}
 	p := h.jobs[0].Prompt
 	for _, want := range []string{"Write the failing test", "the test fails", "go test ./... passes", "+func TestThing", "origin/main...HEAD", harness.VerdictPass, harness.VerdictFail, "Change nothing",
-		".mesh/context/", "adr-adr-001.md", "goes against an ADR", "mesh_document", `project "acme/mesh"`} {
+		".mesh/context/", "instructions-acme-widgets-agents.md", "goes against an ADR", "mesh_document", `project "acme/mesh"`} {
 		if !strings.Contains(p, want) {
 			t.Fatalf("prompt lacks %q:\n%s", want, p)
 		}
@@ -103,7 +106,7 @@ func TestLoopEvaluatesFinishedItems(t *testing.T) {
 		t.Fatalf("no verdict must leave the item in evaluating: %v, %d calls", f.Item(item1)["status"], len(calls))
 	}
 	in := calls[2].Input
-	if _, sent := in["passed"]; sent || in["outcome"] != gateway.EvaluationNoVerdict || in["notes"] != "no VERDICT line: I could not tell." || in["costCents"] != float64(125) {
+	if !sentNoVerdict(in) || in["notes"] != "no VERDICT line: I could not tell." || in["costCents"] != float64(125) {
 		t.Fatalf("no-verdict call: %+v", in)
 	}
 }
@@ -586,4 +589,13 @@ func TestSecondOpinionUsageInTheOneReport(t *testing.T) {
 		t.Fatalf("usage: %v", u)
 	}
 	checkNoOldUsage(t, f)
+}
+
+// sentNoVerdict says whether an evaluateWorkItem input is the no-verdict
+// shape runsheet ADR 035 defines: passed false, noVerdict true, the
+// reason as noVerdictReason and in the notes, and never `outcome`.
+func sentNoVerdict(in map[string]any) bool {
+	_, outcome := in["outcome"]
+	return !outcome && in["passed"] == false && in[gateway.NoVerdictField] == true &&
+		in[gateway.NoVerdictReasonField] != "" && in[gateway.NoVerdictReasonField] == in["notes"]
 }

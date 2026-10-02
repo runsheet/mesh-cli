@@ -23,7 +23,7 @@ type Handler struct {
 	GW  node.Gateway
 	Cfg *node.Config
 	// Scopes are the orgs the node serves: a goal slug is looked up in
-	// each, an item's org names its Prologue project.
+	// each, an item's org names its mesh-context project.
 	Scopes node.Scopes
 	Log    *log.Logger
 	// OnDone is told when an item's session reported finish or fail.
@@ -101,7 +101,7 @@ func (h *Handler) Tools() []Tool {
 		{Name: "mesh_evaluate", Description: "Record an evaluation verdict on a finished item (the evaluator's).",
 			Schema: ObjectSchema(map[string]string{"item_id": "the work item id", "passed": "whether the acceptance holds", "notes": "the review", "cost_cents": "cents the evaluation spent (0 if unknown)"}, "item_id", "passed"),
 			Call:   h.evaluate},
-		{Name: "mesh_context", Description: "The goal's context: the project's instructions, ADRs, PRD and TRD from mesh-context. Read it before working on an item.",
+		{Name: "mesh_context", Description: "The goal's context: its repos' instructions, the goal with its items, and how to fetch the rest (ADRs, PRD, TRD) with mesh_search and mesh_document. Read it before working on an item.",
 			Schema: ObjectSchema(map[string]string{"goal_slug": "the goal's slug", "org": "the goal's org login, when the node serves more than one"}, "goal_slug"),
 			Call:   h.context},
 		{Name: "mesh_items", Description: "List the work items of the orgs this node serves, optionally in one status (pending, ready, claimed, running, evaluating, review, merged, failed, cancelled).",
@@ -191,7 +191,15 @@ func (h *Handler) context(ctx context.Context, args map[string]any) (string, err
 	if err != nil {
 		return "", err
 	}
-	cx, err := node.FetchContext(ctx, h.GW, scope.Name(), project.Slug, node.ContextOptions{})
+	// the project's repos' instructions and the goal (ADR-015); the rest
+	// is fetched with mesh_document
+	var repos []string
+	if rs, err := h.GW.ProjectRepos(ctx, project.RepoIDs); err == nil {
+		for _, r := range rs {
+			repos = append(repos, r.FullName())
+		}
+	}
+	cx, err := node.FetchContext(ctx, h.GW, scope.Name(), project.Slug, node.ContextOptions{Repos: repos, Goal: goal})
 	if err != nil {
 		return "", err
 	}
@@ -208,9 +216,7 @@ func (h *Handler) context(ctx context.Context, args map[string]any) (string, err
 	for _, n := range names {
 		fmt.Fprintf(&b, "<!-- %s -->\n%s\n\n", n, strings.TrimSpace(cx.Docs[n]))
 	}
-	if len(cx.Index) > 0 {
-		b.WriteString(node.RenderIndex(cx))
-	}
+	b.WriteString(node.RenderIndex(cx))
 	return b.String(), nil
 }
 

@@ -279,19 +279,21 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	}
 
 	orgName := r.Scopes.NameOf(item.OrgID)
-	cx, err := FetchContext(ctx, r.GW, orgName, res.Project.Slug, ContextOptions{Budget: r.contextBudget(), Repos: []string{res.Repo.FullName()}, Logf: r.logf})
+	cx, err := FetchContext(ctx, r.GW, orgName, res.Project.Slug, ContextOptions{Budget: r.contextBudget(), Repos: []string{res.Repo.FullName()}, Checkouts: map[string]string{res.Repo.FullName(): dir}, Goal: res.Goal, Logf: r.logf})
 	if err != nil {
 		r.logf("item %s: context unavailable: %v", label, err)
 		cx = &Context{}
 	}
-	AddLive(ctx, r.GW, cx, item.OrgID, res.Project.ID, r.logf)
 	files, written, err := WriteContext(dir, cx)
 	if err != nil {
 		return r.fail(ctx, item, fmt.Errorf("write context: %w", err))
 	}
 	r.logf("item %s: %s", label, written.Line())
+	if w := written.TargetWarning(); w != "" {
+		r.logf("item %s: %s", label, w)
+	}
 	contextDir := ""
-	if len(files) > 0 || len(cx.Index) > 0 || len(cx.Live) > 0 {
+	if len(files) > 0 || len(cx.Index) > 0 || cx.Live != nil {
 		contextDir = ContextDir
 	}
 
@@ -304,7 +306,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		GoalSlug: res.Goal.Slug, GoalTitle: res.Goal.Title, GoalStatement: res.Goal.Statement, GoalAcceptance: res.Goal.Acceptance,
 		Seq: item.Seq, Title: item.Title, Brief: item.Brief, Acceptance: item.Acceptance,
 		Repo: res.Repo.FullName(), Branch: spec.Branch, BaseRef: spec.BaseRef, ContextDir: contextDir, ContextFiles: files,
-		Attempts: item.Attempts, Evaluation: item.Evaluation, Project: orgName + "/" + res.Project.Slug, Prologue: len(mcp) > 0,
+		Attempts: item.Attempts, Evaluation: item.Evaluation, Project: orgName + "/" + res.Project.Slug, MeshContext: len(mcp) > 0,
 		LastSession: r.State.LastSession(item.ID),
 	}
 	job := harness.Job{Kind: harness.KindBuild, Workspace: dir, MaxBudgetUSD: budget, Label: label, MCPServers: mcp, Model: model}

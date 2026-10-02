@@ -17,7 +17,7 @@ import (
 
 // Director is the session that acts on one direction of a project
 // (runsheet trd §6c): the project's repos checked out read-only, its
-// Prologue context, the words of the direction and the goals the
+// context from mesh-context, the words of the direction and the goals the
 // project has already had; a fresh `claude -p` that reads and then
 // writes what it came to as JSON, handed in against the direction with
 // RecordDirectionResearch, the session's cost with it. A propose-mode
@@ -123,19 +123,21 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 		dirs[r.FullName()] = sub
 		names = append(names, r.FullName())
 	}
-	cx, err := FetchContext(ctx, d.GW, scope.Name(), project.Slug, ContextOptions{Budget: d.contextBudget(), Repos: names, Logf: d.logf})
+	cx, err := FetchContext(ctx, d.GW, scope.Name(), project.Slug, ContextOptions{Budget: d.contextBudget(), Repos: names, Checkouts: checkoutsUnder(dir, dirs), Logf: d.logf})
 	if err != nil {
 		d.logf("project %s: context unavailable: %v", project.Slug, err)
 		cx = &Context{}
 	}
-	AddLive(ctx, d.GW, cx, scope.ID, project.ID, d.logf)
 	files, written, err := WriteContext(dir, cx)
 	if err != nil {
 		return fmt.Errorf("write context: %w", err)
 	}
 	d.logf("project %s: %s", project.Slug, written.Line())
+	if w := written.TargetWarning(); w != "" {
+		d.logf("project %s: %s", project.Slug, w)
+	}
 	contextDir := ""
-	if len(files) > 0 || len(cx.Index) > 0 || len(cx.Live) > 0 {
+	if len(files) > 0 || len(cx.Index) > 0 {
 		contextDir = ContextDir
 	}
 	// what the project has already taken on, and the room left: the
@@ -158,7 +160,7 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 	room := RoomFor(direction, project, goals)
 	prompt := harness.ResearchPrompt(harness.ResearchInput{
 		Org: scope.Name(), Project: project.Slug, Direction: direction.Direction,
-		Repos: dirs, ContextDir: contextDir, ContextFiles: files, Prologue: len(d.MCP) > 0,
+		Repos: dirs, ContextDir: contextDir, ContextFiles: files, MeshContext: len(d.MCP) > 0,
 		Goals: existing, Room: room, Proposes: direction.Proposes(),
 	})
 	budget, budgetSource := d.budgetWithSource()

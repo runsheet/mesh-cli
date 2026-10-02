@@ -227,21 +227,23 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 			return e.failDiff(ctx, item, label, spec.BaseRef, branch, err)
 		}
 	}
-	// the same context the builder had: the ADRs it was bound by
+	// the same context the builder had: its repo's instructions and its goal
 	orgName := e.Scopes.NameOf(item.OrgID)
-	cx, err := FetchContext(ctx, e.GW, orgName, res.Project.Slug, ContextOptions{Budget: e.contextBudget(), Repos: []string{res.Repo.FullName()}, Logf: e.logf})
+	cx, err := FetchContext(ctx, e.GW, orgName, res.Project.Slug, ContextOptions{Budget: e.contextBudget(), Repos: []string{res.Repo.FullName()}, Checkouts: map[string]string{res.Repo.FullName(): dir}, Goal: res.Goal, Logf: e.logf})
 	if err != nil {
 		e.logf("item %s: context unavailable: %v", label, err)
 		cx = &Context{}
 	}
-	AddLive(ctx, e.GW, cx, item.OrgID, res.Project.ID, e.logf)
 	files, written, err := WriteContext(dir, cx)
 	if err != nil {
 		return fmt.Errorf("write context: %w", err)
 	}
 	e.logf("item %s: %s", label, written.Line())
+	if w := written.TargetWarning(); w != "" {
+		e.logf("item %s: %s", label, w)
+	}
 	contextDir := ""
-	if len(files) > 0 || len(cx.Index) > 0 || len(cx.Live) > 0 {
+	if len(files) > 0 || len(cx.Index) > 0 || cx.Live != nil {
 		contextDir = ContextDir
 	}
 	// a retry is judged on what earlier attempts failed on, so an item
@@ -266,7 +268,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 		GoalSlug: res.Goal.Slug, GoalTitle: res.Goal.Title, GoalAcceptance: res.Goal.Acceptance,
 		Seq: item.Seq, Title: item.Title, Brief: item.Brief, Acceptance: item.Acceptance,
 		Repo: res.Repo.FullName(), Branch: branch, BaseRef: spec.BaseRef, Diff: diff,
-		ContextDir: contextDir, ContextFiles: files, Project: orgName + "/" + res.Project.Slug, Prologue: len(e.MCP) > 0,
+		ContextDir: contextDir, ContextFiles: files, Project: orgName + "/" + res.Project.Slug, MeshContext: len(e.MCP) > 0,
 		AlreadyDone: alreadyDone, Evidence: item.Evidence,
 		PriorAttempts: prior,
 	}
@@ -418,7 +420,7 @@ type evalRun struct {
 	preflight        string
 	omitted, missing string
 	// adopted is a session an older node process started and this one
-	// took up (AdoptEvaluation): only there is prologue the built-in
+	// took up (AdoptEvaluation): only there may the built-in carry its old name
 	adopted bool
 }
 
@@ -609,10 +611,11 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 
 // noVerdict records an evaluation that reached no verdict — the deciding
 // session wrote no VERDICT line, or saw no context and the other family
-// could not evaluate it — as the no-verdict outcome with reason, the
-// session's cost and its usage report (ADR 011's amendment 2026-09-29):
-// never a fail, since the evaluator had no way to reach one. A platform
-// without the outcome (gateway.ErrNoVerdictOutcome) records nothing, as
+// could not evaluate it — as a no-verdict (`passed: false`, `noVerdict:
+// true`, the reason; runsheet ADR 035) with the session's cost and its
+// usage report (ADR 011's amendments 2026-09-29 and 2026-10-02): never a
+// fail, since the evaluator had no way to reach one. A platform without
+// `noVerdict` (gateway.ErrNoVerdictOutcome) records nothing, as
 // before: said once per run, and fallback is the error the item waits in
 // evaluating with.
 func (e *Evaluator) noVerdict(ctx context.Context, ev evalRun, reason string, cost float64, usage *gateway.UsageReport, fallback func() error) error {
@@ -803,9 +806,9 @@ func (e *Evaluator) unreadable(res harness.Result, acct *SessionAccount, adopted
 // before the server, or an error at startup with no call at all. A tool
 // that answered was reached: `not found` for a mesh_document slug it
 // does not have is the tool working, not a broken one (ADR-011's
-// amendment 2026-09-29, `prologue: not found`). adopted is a session an
-// older node process started (AdoptEvaluation): only there is prologue
-// the built-in.
+// amendment 2026-09-29, a tool that answered was reached). adopted is a
+// session an older node process started (AdoptEvaluation): only there
+// may the built-in carry its old name (tools.IsBuiltin).
 func (e *Evaluator) toolBroken(res harness.Result, acct *SessionAccount, adopted bool) (string, bool) {
 	broken := func(name string) (string, bool) {
 		s := res.Tools[name]
@@ -820,10 +823,10 @@ func (e *Evaluator) toolBroken(res harness.Result, acct *SessionAccount, adopted
 	}
 	// the node's own servers and, for an adopted session, the built-in
 	// under any name it has had: an evaluation an older node started
-	// under prologue reports that name, not tools.Builtin
+	// under its old name reports that name, not tools.Builtin
 	// (tools.IsBuiltin, an alias read until 2026-10-28). A session this
-	// process started was rendered mesh-context, so a prologue in its
-	// result is a console tool: broken only if required, below.
+	// process started was rendered mesh-context, so a server by the old
+	// name in its result is a console tool: broken only if required, below.
 	names := map[string]bool{}
 	for name := range e.MCP {
 		names[name] = true

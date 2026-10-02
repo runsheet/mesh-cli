@@ -124,7 +124,7 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 		return fail(fmt.Errorf("workspace: %w", err))
 	}
 	orgName := r.Scopes.NameOf(item.OrgID)
-	cx, err := FetchContext(ctx, r.GW, orgName, res.Project.Slug, ContextOptions{Budget: r.contextBudget(), Repos: []string{res.Repo.FullName()}, Logf: r.logf})
+	cx, err := FetchContext(ctx, r.GW, orgName, res.Project.Slug, ContextOptions{Budget: r.contextBudget(), Repos: []string{res.Repo.FullName()}, Checkouts: map[string]string{res.Repo.FullName(): dir}, Goal: res.Goal, Logf: r.logf})
 	if err != nil {
 		r.logf("item %s: context unavailable: %v", label, err)
 		cx = &Context{}
@@ -134,14 +134,17 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 		return fail(fmt.Errorf("write context: %w", err))
 	}
 	r.logf("item %s: %s", label, written.Line())
+	if w := written.TargetWarning(); w != "" {
+		r.logf("item %s: %s", label, w)
+	}
 	contextDir := ""
-	if len(files) > 0 || len(cx.Index) > 0 {
+	if len(files) > 0 || len(cx.Index) > 0 || cx.Live != nil {
 		contextDir = ContextDir
 	}
 	in := harness.RebaseInput{
 		GoalSlug: res.Goal.Slug, GoalTitle: res.Goal.Title, Seq: item.Seq, Title: item.Title, Brief: item.Brief, Acceptance: item.Acceptance,
 		Repo: res.Repo.FullName(), Branch: branch, BaseRef: spec.BaseRef, Conflict: item.RebaseConflict, Files: item.RebaseFiles,
-		ContextDir: contextDir, ContextFiles: files, Project: orgName + "/" + res.Project.Slug, Prologue: len(r.MCP) > 0,
+		ContextDir: contextDir, ContextFiles: files, Project: orgName + "/" + res.Project.Slug, MeshContext: len(r.MCP) > 0,
 	}
 	model := BuildModel(ctx, r.GW, item, r.Model)
 	budget, budgetSource := r.budgetWithSource(res.Goal, model)

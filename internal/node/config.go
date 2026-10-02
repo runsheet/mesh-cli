@@ -39,10 +39,16 @@ type Config struct {
 	// per-org path — a platform that answers with neither owner nor
 	// scopes — NodeID is unused: each Scope keeps its own per-org id
 	// from NodeIDIn instead.
-	NodeID  string `yaml:"node_id,omitempty"`
-	OwnerID string `yaml:"owner_id,omitempty"`
-	Slug    string `yaml:"slug"`
-	Name    string `yaml:"name"`
+	NodeID string `yaml:"node_id,omitempty"`
+	// Contract is the registration the node last made (ADR-015,
+	// Registration and the loop; TRD §3 step 1): ContractOwner when the
+	// platform answered the owner registration, ContractPerOrg when it
+	// ran the per-org path. Saved by every registration beside NodeID;
+	// empty, on a node.yaml from before it, means per-org.
+	Contract string `yaml:"contract,omitempty"`
+	OwnerID  string `yaml:"owner_id,omitempty"`
+	Slug     string `yaml:"slug"`
+	Name     string `yaml:"name"`
 	// Owner is the node's ownership model: "" or "person" (the
 	// default, bring-your-own infra — the node serves every org its
 	// token's person belongs to) or "enterprise" (shared infra — the
@@ -125,19 +131,24 @@ func (c ClaimConfig) Validate() error {
 	return nil
 }
 
-// The context budget's defaults, in bytes: a document past what is left
-// of DefaultContextBytesMax — binding or not — or a design document past
-// DefaultDocBytesMax, is listed in the index and fetched on demand
-// instead (ADR-015).
+// The context budget, in bytes (ADR-015): a session's context — its own
+// repos' instructions and INDEX.md with its own goal — aims under
+// ContextBytesTarget (past it, one warning naming the file that took it
+// there) and never passes DefaultContextBytesMax, the cap: an
+// instructions document that would pass it is left off disk and named in
+// INDEX.md to fetch first. DefaultDocBytesMax is doc_bytes_max's default,
+// kept so node.yaml files that set it still load; it applies to nothing
+// on disk since no design document is put there.
 const (
-	DefaultContextBytesMax = 240 * 1024
+	ContextBytesTarget     = 40 * 1024
+	DefaultContextBytesMax = 80 * 1024
 	DefaultDocBytesMax     = 60 * 1024
 )
 
-// ContextConfig is node.yaml's `context:` block, in bytes: the total a
-// session's context may put on disk, instructions and ADRs included,
-// and the most one design document may — instructions and ADRs are
-// never cut, so they are held by the total alone. Zero is the default.
+// ContextConfig is node.yaml's `context:` block, in bytes: bytes_max is
+// the most a session's context may put on disk, INDEX.md included.
+// doc_bytes_max is still accepted and reloaded, but no longer applies to
+// anything on disk (ADR-015). Zero is the default.
 type ContextConfig struct {
 	BytesMax    int `yaml:"bytes_max,omitempty"`
 	DocBytesMax int `yaml:"doc_bytes_max,omitempty"`
@@ -575,6 +586,32 @@ func (c *Config) OwnerKind() string {
 	return "person"
 }
 
+// The contracts a registration can have made (Config.Contract).
+const (
+	ContractOwner  = "owner"
+	ContractPerOrg = "per-org"
+)
+
+// OwnedID is the one id an owned node heartbeats under outside the
+// loop — `mesh node status`, the rollback reporter — read from the
+// contract the last registration saved: NodeID on ContractOwner, else
+// empty, so a per-org node (or a node.yaml before `contract:`) that
+// kept a node_id is still reached per org alone.
+func (c *Config) OwnedID() string {
+	if c.ContractKind() != ContractOwner {
+		return ""
+	}
+	return c.NodeID
+}
+
+// ContractKind is Contract, an empty one read as ContractPerOrg.
+func (c *Config) ContractKind() string {
+	if c.Contract == ContractOwner {
+		return ContractOwner
+	}
+	return ContractPerOrg
+}
+
 // NodeIDIn is the node's id in an org: from (org, slug), so it converges.
 func (c *Config) NodeIDIn(orgID string) (string, error) {
 	id, err := uuid.Parse(orgID)
@@ -591,7 +628,9 @@ func (c *Config) NodeIDIn(orgID string) (string, error) {
 // slug — the same rule ScopesFromAnswer applies. Orgs the config names
 // that the owner is not in are an error: the node would never see their
 // items.
-func ResolveScopes(ctx context.Context, gw Gateway, c *Config) (Scopes, error) {
+func ResolveScopes(ctx context.Context, gw interface {
+	MyOrgs(ctx context.Context) ([]gateway.Org, error)
+}, c *Config) (Scopes, error) {
 	orgs, err := gw.MyOrgs(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("my orgs: %w", err)
@@ -694,6 +733,12 @@ func (o Owner) String() string {
 	return "owned by " + name
 }
 
+// Who is the owner's name alone — "Chris", "anythink" — falling back
+// to "<kind> <id>" when Name is empty: what the log lines name.
+func (o Owner) Who() string {
+	return strings.TrimPrefix(o.String(), "owned by ")
+}
+
 // Reloaded is what Loop.Reload reads: the capacity (0 keeps the loop's),
 // the limits thresholds (nil keeps the loop's) and the orgs served (nil
 // keeps the loop's).
@@ -709,6 +754,10 @@ type Reloaded struct {
 	Context *ContextConfig
 	// Claim is node.yaml's `claim:` block; nil keeps the loop's.
 	Claim *ClaimConfig
+	// Orgs is node.yaml's orgs restriction, read when OrgsRead: an owned
+	// node applies it to the platform's answer (TakeAnswer).
+	Orgs     []string
+	OrgsRead bool
 }
 
 // Spending is what the node may spend on: node.yaml's accounts,
@@ -751,13 +800,8 @@ func Reloader(gw Gateway, cfg *Config, scopes Scopes, load func() (*Config, erro
 		if c, err := load(); err != nil {
 			errs = append(errs, fmt.Errorf("node.yaml (keeping the last good capacity and limits): %w", err))
 		} else {
-			limits := c.Limits
-			out.Capacity, out.Limits, restrict = c.Capacity, &limits, c.Orgs
-			out.Spending = &Spending{Accounts: c.Accounts, ProjectBudgets: c.ProjectBudgets, Budgets: c.Budgets}
-			budget := c.Context
-			out.Context = &budget
-			claim := c.Claim
-			out.Claim = &claim
+			out = reloadedFrom(c)
+			restrict = c.Orgs
 		}
 		orgs, err := gw.MyOrgs(ctx)
 		if err != nil {
@@ -817,6 +861,36 @@ func joinReasons(errs []error) error {
 		return nil
 	}
 	return reasons(errs)
+}
+
+// reloadedFrom is what a re-read node.yaml gives the loop: the
+// capacity, the limits, the accounts and budgets, the context budget,
+// the claim limits and the orgs restriction.
+func reloadedFrom(c *Config) Reloaded {
+	limits, budget, claim := c.Limits, c.Context, c.Claim
+	return Reloaded{Capacity: c.Capacity, Limits: &limits, Context: &budget, Claim: &claim,
+		Spending: &Spending{Accounts: c.Accounts, ProjectBudgets: c.ProjectBudgets, Budgets: c.Budgets},
+		Orgs:     c.Orgs, OrgsRead: true}
+}
+
+// OwnedReloader is Loop.Reload for a node registered once with its
+// owner (ADR-015, Registration and the loop): every tick it reads
+// node.yaml again through load (LoadConfig when nil) for what Reloader
+// reads from it — the capacity, the limits, the accounts, the context,
+// the claim limits and the orgs restriction — but never asks MyOrgs and
+// never registers: the orgs served come only from the platform's answer
+// to each heartbeat (TakeAnswer), restricted there.
+func OwnedReloader(load func() (*Config, error)) func(context.Context) (Reloaded, error) {
+	if load == nil {
+		load = LoadConfig
+	}
+	return func(context.Context) (Reloaded, error) {
+		c, err := load()
+		if err != nil {
+			return Reloaded{}, fmt.Errorf("node.yaml (keeping the last good capacity and limits): %w", err)
+		}
+		return reloadedFrom(c), nil
+	}
 }
 
 // ConfigPath is ~/.mesh/node.yaml.

@@ -44,7 +44,7 @@ type StaticToken string
 // Token returns the bearer.
 func (t StaticToken) Token(context.Context) (string, error) { return string(t), nil }
 
-// Client speaks GraphQL (and Prologue's JSON) to one gateway as one
+// Client speaks GraphQL (and mesh-context's JSON) to one gateway as one
 // principal.
 type Client struct {
 	BaseURL string
@@ -68,6 +68,14 @@ type Client struct {
 	// report's `contextBytes` (ErrNoContextUsage, adr-016): every later
 	// report goes without it.
 	usageWithoutContext atomic.Bool
+	// usageWithoutDocumentsFetched is set once the gateway has refused a
+	// usage report's `documentsFetched` (ErrNoDocumentsFetched, adr-016's
+	// amendment 2026-10-02): every later report goes without it.
+	usageWithoutDocumentsFetched atomic.Bool
+	// usageWithoutToolNames is set once the gateway has refused a usage
+	// report's `toolNames` (ErrNoToolNames, adr-016's amendment
+	// 2026-10-02): every later report goes without the list.
+	usageWithoutToolNames atomic.Bool
 
 	// heartbeatBasicUntil (unix nanoseconds) is when the heartbeat next
 	// offers the fields the gateway refused (see HeartbeatNode).
@@ -108,7 +116,7 @@ type Client struct {
 	// entry was last found to take `error` (see takesToolError).
 	toolErrorSchema toolErrorProbe
 	// noVerdictSchema is whether the gateway's evaluateWorkItem input was
-	// last found to take `outcome` (see takesNoVerdict).
+	// last found to take `noVerdict` (see EvaluateWorkItemNoVerdict).
 	noVerdictSchema holdingProbe
 	// clausesSchema is whether the gateway's evaluateWorkItem input was
 	// last seen to take failedClauses, kept for ScalingProbeEvery.
@@ -144,7 +152,7 @@ func (c *Client) WithItemToken(tok string) *Client {
 	return &Client{BaseURL: c.BaseURL, Source: StaticToken(tok), HTTP: c.HTTP, Now: c.Now}
 }
 
-// Bearer is the token the next request would carry — for the Prologue
+// Bearer is the token the next request would carry — for the mesh-context
 // MCP server a session is started with, which takes a header, not a
 // source.
 func (c *Client) Bearer(ctx context.Context) (string, error) {
@@ -339,6 +347,24 @@ var ErrNoValidationUsage = errors.New("gateway: the platform takes no per-step v
 // ErrNoToolUsage when the report lost those too.
 var ErrNoContextUsage = errors.New("gateway: the platform takes no context bytes on the usage report")
 
+// ErrNoDocumentsFetched is what a finishing command returns when its
+// usage report carried the session's documents-fetched count but the
+// platform's UsageReportInput has no `documentsFetched` (a platform
+// older than context-is-fetched-not-shipped, adr-016's amendment
+// 2026-10-02): the command and the rest of the report land without
+// that one number, and the caller says so once. errors.Is-able; it may
+// come joined with the other usage errors.
+var ErrNoDocumentsFetched = errors.New("gateway: the platform takes no documents-fetched count on the usage report")
+
+// ErrNoToolNames is what a finishing command returns when its usage
+// report carried the session's per-tool call counts but the platform's
+// UsageReportInput has no `toolNames` (a platform older than
+// context-is-fetched-not-shipped, adr-016's amendment 2026-10-02): the
+// command and the rest of the report land without the list, and the
+// caller says so once. errors.Is-able; it may come joined with the
+// other usage errors.
+var ErrNoToolNames = errors.New("gateway: the platform takes no per-tool call counts on the usage report")
+
 // usageDetailFields are UsageReport's fields a platform before
 // mesh-spends-less-per-item may not know (ErrNoUsageDetail).
 var usageDetailFields = []string{"turns", "inputPerTurnMean", "inputPerTurnMax", "largestToolResults"}
@@ -361,8 +387,12 @@ var usageDetailFields = []string{"turns", "inputPerTurnMean", "inputPerTurnMax",
 // minutes did not. A platform whose report has no `contextBytes`
 // (unknownField on "contextBytes") gets it again without the bytes, and
 // every later report goes without them, and ErrNoContextUsage says so.
-// When a report lost more than one of the list, the minutes and the
-// bytes, their errors come joined.
+// A platform whose report has no `documentsFetched` or `toolNames`
+// (unknownField on either) gets it again without that one, and every
+// later report goes without it, and ErrNoDocumentsFetched or
+// ErrNoToolNames says so (adr-016's amendment 2026-10-02). When a
+// report lost more than one of the list, the minutes, the bytes, the
+// documents fetched and the tool names, their errors come joined.
 func (c *Client) mutateWithUsage(ctx context.Context, field, aggregateID string, input map[string]any, usage *UsageReport) error {
 	if usage == nil {
 		return c.Mutate(ctx, field, aggregateID, input)
@@ -388,6 +418,14 @@ func (c *Client) mutateWithUsage(ctx context.Context, field, aggregateID string,
 	if withContext && c.usageWithoutContext.Load() {
 		delete(um, "contextBytes")
 	}
+	_, withDocumentsFetched := um["documentsFetched"]
+	if withDocumentsFetched && c.usageWithoutDocumentsFetched.Load() {
+		delete(um, "documentsFetched")
+	}
+	_, withToolNames := um["toolNames"]
+	if withToolNames && c.usageWithoutToolNames.Load() {
+		delete(um, "toolNames")
+	}
 	if rows, ok := um["tools"].([]any); ok && toolRowsCarry(rows, "error") && !c.takesToolError(ctx) {
 		for _, r := range rows {
 			if row, ok := r.(map[string]any); ok {
@@ -407,6 +445,8 @@ func (c *Client) mutateWithUsage(ctx context.Context, field, aggregateID string,
 		{"tools", &c.usageWithoutTools},
 		{"validation", &c.usageWithoutValidation},
 		{"contextBytes", &c.usageWithoutContext},
+		{"documentsFetched", &c.usageWithoutDocumentsFetched},
+		{"toolNames", &c.usageWithoutToolNames},
 	}
 	// The turn and tool-result detail fields go together, for this
 	// report alone, in the same loop: a platform that refuses one of the
@@ -454,6 +494,12 @@ func (c *Client) mutateWithUsage(ctx context.Context, field, aggregateID string,
 	}
 	if withContext && c.usageWithoutContext.Load() {
 		lost = append(lost, ErrNoContextUsage)
+	}
+	if withDocumentsFetched && c.usageWithoutDocumentsFetched.Load() {
+		lost = append(lost, ErrNoDocumentsFetched)
+	}
+	if withToolNames && c.usageWithoutToolNames.Load() {
+		lost = append(lost, ErrNoToolNames)
 	}
 	switch len(lost) {
 	case 0:
@@ -684,7 +730,7 @@ type WorkItem struct {
 	RebaseFiles    []string `json:"rebaseFiles"`
 	RebaseNodeID   string   `json:"rebaseNodeId"`
 	RebasedHeadSHA string   `json:"rebasedHeadSha"`
-	// ProjectID is the Prologue project the item's goal is in: the scope
+	// ProjectID is the mesh-context project the item's goal is in: the scope
 	// its agent resolves in (AgentIDs).
 	ProjectID string `json:"projectId"`
 	// AgentSlug names the agent that builds the item (runsheet trd §6c);
@@ -2033,37 +2079,46 @@ func (c *Client) WorkItemPriorAttempts(ctx context.Context, itemID string) ([]Pr
 	return out.Item.Evaluations, nil
 }
 
-// EvaluationNoVerdict is the evaluation outcome an evaluation that
-// reached no verdict is recorded with: the evaluator had no way to judge
-// — no VERDICT line, no context, its tools or its sandbox unavailable —
-// so the item is neither passed nor failed (runsheet goal
-// evaluation-reports-no-verdict-platform; ADR 011's amendment
-// 2026-09-29). The platform half had not landed when this was written:
-// the field `outcome` and the value are the node's assumption, named
-// here once.
+// NoVerdictField and NoVerdictReasonField are how an evaluation that
+// reached no verdict is recorded: the evaluator had no way to judge — no
+// VERDICT line, no context, its tools or its sandbox unavailable — so the
+// item is neither passed nor failed (runsheet ADR 035, an unreached
+// evaluation is not a failed one; ADR 011's amendments 2026-09-29 and
+// 2026-10-02). They sit beside the platform's required `passed`, which a
+// no-verdict sends false: the platform refuses `passed: true` or a blank
+// reason with them. The node's earlier guess, `outcome: no_verdict`, was
+// never a field of the platform's input.
 const (
-	EvaluationOutcomeField = "outcome"
-	EvaluationNoVerdict    = "no_verdict"
+	NoVerdictField       = "noVerdict"
+	NoVerdictReasonField = "noVerdictReason"
 )
 
 // ErrNoVerdictOutcome is what EvaluateWorkItemNoVerdict returns when the
-// gateway's EvaluateWorkItemInput has no `outcome` field (a platform older
-// than evaluation-reports-no-verdict-platform): nothing was sent, and the
-// caller keeps the item in evaluating as before. errors.Is-able.
+// gateway's EvaluateWorkItemInput has no `noVerdict` field (a platform
+// older than runsheet ADR 035): nothing was sent, and the caller keeps the
+// item in evaluating as before. errors.Is-able.
 var ErrNoVerdictOutcome = errors.New("gateway: the platform takes no no-verdict outcome")
 
 // EvaluateWorkItemNoVerdict records an evaluation that reached no
-// verdict, with the reason in its notes and the session's cost and usage
-// report, so the platform returns the item to evaluating at no cost to
-// its attempts. It sends the outcome only to a gateway whose
-// EvaluateWorkItemInput has the field — asked once by introspection and
-// kept for ScalingProbeEvery, as takesHolding (ADR-004: never a field the
-// platform does not accept) — and returns ErrNoVerdictOutcome otherwise.
+// verdict — `passed: false`, `noVerdict: true`, the reason as
+// `noVerdictReason` and in the notes (so a page without the new field
+// still shows it), the session's cost and usage report — so the platform
+// returns the item to evaluating at no cost to its attempts. It sends it
+// only to a gateway whose EvaluateWorkItemInput has `noVerdict` — asked
+// once by introspection and kept for ScalingProbeEvery, as takesHolding
+// (ADR-004: never a field the platform does not accept) — and returns
+// ErrNoVerdictOutcome otherwise.
 func (c *Client) EvaluateWorkItemNoVerdict(ctx context.Context, itemID, reason string, costCents int, usage *UsageReport) error {
-	if !c.takesInputField(ctx, &c.noVerdictSchema, "EvaluateWorkItemInput", EvaluationOutcomeField) {
+	if !c.takesInputField(ctx, &c.noVerdictSchema, "EvaluateWorkItemInput", NoVerdictField) {
 		return ErrNoVerdictOutcome
 	}
-	return c.mutateWithUsage(ctx, "evaluateWorkItem", itemID, map[string]any{EvaluationOutcomeField: EvaluationNoVerdict, "notes": reason, "costCents": costCents}, usage)
+	return c.mutateWithUsage(ctx, "evaluateWorkItem", itemID, map[string]any{
+		"passed":             false,
+		NoVerdictField:       true,
+		NoVerdictReasonField: reason,
+		"notes":              reason,
+		"costCents":          costCents,
+	}, usage)
 }
 
 // takesInputField says whether the gateway's input type typ has field,
@@ -2743,6 +2798,20 @@ type UsageReport struct {
 	// without the field (ErrNoContextUsage).
 	ContextBytes int64 `json:"contextBytes,omitempty"`
 
+	// DocumentsFetched is the session's mesh_document and mesh_search
+	// calls on the built-in context server — what it fetched by tool
+	// (adr-016's amendment 2026-10-02, goal
+	// context-is-fetched-not-shipped); ToolNames tells the two apart. Left
+	// out when the session fetched none, and by mutateWithUsage for a
+	// platform without the field (ErrNoDocumentsFetched).
+	DocumentsFetched int64 `json:"documentsFetched,omitempty"`
+	// ToolNames is the session's MCP calls per <server>__<tool>
+	// (harness.Result.ToolNames), beside Tools' per-server totals — so
+	// a reading can tell mesh_document from mesh_search. Left out when
+	// the session made no MCP call, and by mutateWithUsage for a
+	// platform without the field (ErrNoToolNames).
+	ToolNames []ToolNameCount `json:"toolNames,omitempty"`
+
 	FiveHourBefore *float64 `json:"fiveHourBefore,omitempty"`
 	FiveHourAfter  *float64 `json:"fiveHourAfter,omitempty"`
 	SevenDayBefore *float64 `json:"sevenDayBefore,omitempty"`
@@ -2774,6 +2843,13 @@ type ToolResultSize struct {
 	Bytes int    `json:"bytes"`
 }
 
+// ToolNameCount is one <server>__<tool> name's calls — one row of
+// UsageReport.ToolNames.
+type ToolNameCount struct {
+	Name  string `json:"name"`
+	Calls int64  `json:"calls"`
+}
+
 // The kinds a UsageReport's CredentialKind takes.
 const (
 	CredentialSubscription = "subscription"
@@ -2792,8 +2868,10 @@ const (
 // session.
 func (c *Client) RecordToolUsage(ctx context.Context, itemID, toolCallID, tool string, usage UsageReport) error {
 	const field = "recordToolUsage"
-	usage.Tools = nil      // one call's record needs no per-tool list
-	usage.ContextBytes = 0 // nor the session's context, counted once on its own report
+	usage.Tools = nil          // one call's record needs no per-tool list
+	usage.ContextBytes = 0     // nor the session's context, counted once on its own report
+	usage.DocumentsFetched = 0 // nor the documents-fetched count
+	usage.ToolNames = nil      // nor the per-tool-name counts
 	um, err := usageInput(&usage)
 	if err != nil {
 		return err
