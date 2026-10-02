@@ -161,20 +161,22 @@ under the one id and taking each answer's scopes — are item 28's.
   `node_id`, else the id from (owner, slug), so it converges — with
   `owner` set to node.yaml's kind (`--owner` on `mesh node register`).
 - **A nil answer is not an empty one.** A platform that took `owner`
-  but cannot answer a node falls to the per-org path, and the per-org
-  registrations — one per org — are the only ones made. The owner
-  registration goes through `gateway.Client.RegisterOwnedNode`, which,
-  unlike `RegisterNode`, never resends with `status` alone: a payload
-  without `nodeId`/`owner`/`scopes` refuses the whole selection at
-  validation, before the mutation executes, and that refusal (or one
-  still kept from an earlier call, `NodeAnswerRetry`, which sends
-  nothing) is the nil answer — no Node row under the owner id. A
-  registration that executed is never nil: it answers at least an
-  empty answer, which is the owner contract serving nothing. A non-nil answer is the
-  owner contract whatever it names: its scopes, every one on the
-  answer's node id, are what the node serves, and an answer naming no
-  org is a node serving nothing until an answer names one — never the
-  per-org path.
+  but answers no node falls to the per-org path, and the per-org
+  registrations — one per org — are the only Node rows left. The owner
+  registration goes through `gateway.Client.RegisterOwnedNode`, which
+  answers nil in two cases, neither leaving a row under the owner id:
+  a payload without `nodeId`/`owner`/`scopes` refuses the whole
+  selection at validation, before the mutation executes (never resent
+  with `status` alone, unlike `RegisterNode`; a refusal kept from an
+  earlier call, `NodeAnswerRetry`, sends nothing), and a registration
+  that executed but answered `status` alone — no `nodeId`, no `owner`,
+  no `scopes` — has the row it made retired (`retireNode`) before nil
+  is returned; a failed retire is the registration's error. An answer
+  naming the node or its owner is non-nil even with no scope, and a
+  non-nil answer is the owner contract whatever it names: its scopes,
+  every one on the answer's node id, are what the node serves, and an
+  answer naming no org is a node serving nothing until an answer names
+  one — never the per-org path.
 - **`contract:` in node.yaml.** Every registration writes
   `contract: owner` or `contract: per-org` (`Config.Contract`, validated
   by `LoadConfig`, read by `Config.OnOwnerContract`) and, on the owner
@@ -185,5 +187,7 @@ under the one id and taking each answer's scopes — are item 28's.
   by login or slug, never lifted by an earlier match). Naming an org the
   owner does not serve is logged, and the rest are served; naming none
   it serves logs `orgs: none of <list> is served by this node's owner;
-  serving nothing until it changes` and registers with no scope, where
+  serving nothing until it changes` — an answer naming no org at all
+  included, whenever a restriction is set — and registers with no
+  scope, where
   before it was an error that stopped the start.

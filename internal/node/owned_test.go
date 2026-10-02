@@ -17,8 +17,9 @@ import (
 // "probe", "resolve", "owner <nodeID>", and "org <name>" per legacy
 // registration — and, in sent, the registrations that reached the
 // platform as mutations: "register <nodeID>". Its RegisterOwner keeps
-// gateway.Client.RegisterOwnedNode's contract: a nil answer is a
-// selection refused at validation, so it sends nothing.
+// gateway.Client.RegisterOwnedNode's contract: a nil answer leaves no
+// row under the owner id (refused at validation, or a status-only
+// answer's row retired), so it counts as nothing sent.
 type steps struct {
 	takes  bool
 	answer *gateway.NodeAnswer
@@ -201,6 +202,26 @@ func TestOwnedRegisterUnmatchedRestrictionIsLogged(t *testing.T) {
 	}
 	want := "orgs: none of foghornid is served by this node's owner; serving nothing until it changes"
 	if !slices.Contains(s.logged, want) {
+		t.Fatalf("logged %q, want %q", s.logged, want)
+	}
+	t.Run("empty answer", unmatchedRestrictionOnEmptyAnswer)
+}
+
+// A restriction meeting an answer that names no org at all is the same
+// case: the restriction's line, not the empty answer's.
+func unmatchedRestrictionOnEmptyAnswer(t *testing.T) {
+	cfg := ownedCfg()
+	a := &gateway.NodeAnswer{NodeID: "55555555-5555-4555-8555-555555555555", Owner: gateway.NodeOwner{Kind: "person", Name: "Chris"}, Scopes: []gateway.ScopeAnswer{}}
+	s := &steps{takes: true, answer: a}
+	reg, err := Register(context.Background(), s.registrar(), cfg, []string{"foghornid", "grapevine"})
+	if err != nil {
+		t.Fatalf("register: %v, want no error", err)
+	}
+	if reg.Contract != ContractOwner || len(reg.Scopes) != 0 {
+		t.Fatalf("registered = %+v, want owner serving nothing", reg)
+	}
+	want := []string{"orgs: none of foghornid, grapevine is served by this node's owner; serving nothing until it changes"}
+	if !slices.Equal(s.logged, want) {
 		t.Fatalf("logged %q, want %q", s.logged, want)
 	}
 }

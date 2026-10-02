@@ -31,10 +31,11 @@ type Registrar struct {
 	Resolve func(ctx context.Context) (Scopes, error)
 	// RegisterOwner is the one registration on the owner contract, under
 	// the node's own id and declaring its owner's kind. Nil is a platform
-	// that took `owner` but cannot answer a node, and it must mean that
-	// nothing was registered (gateway.Client.RegisterOwnedNode: the
-	// answer's selection refused at validation, never resent with status
-	// alone), so the per-org path that follows is the only registration.
+	// that took `owner` but answered no node, and it must mean that no
+	// row is left under the owner id (gateway.Client.RegisterOwnedNode:
+	// a selection refused at validation sends nothing, and a status-only
+	// answer has its row retired), so the per-org path that follows is
+	// the only registration.
 	RegisterOwner func(ctx context.Context, nodeID string) (*gateway.NodeAnswer, error)
 	// RegisterIn registers one Node per org, as before owners.
 	RegisterIn func(ctx context.Context, scopes Scopes) error
@@ -126,13 +127,19 @@ func ServedFrom(a *gateway.NodeAnswer, restrict []string, logf func(string, ...a
 	if scopes, err := ScopesFromAnswer(a, restrict); err == nil {
 		return scopes
 	}
-	if len(a.Scopes) == 0 {
-		logf("orgs: the platform answered with no org to serve; serving nothing until it changes")
-		return nil
-	}
 	want := map[string]bool{}
 	for _, o := range restrict {
-		want[strings.ToLower(strings.TrimSpace(o))] = true
+		if o = strings.ToLower(strings.TrimSpace(o)); o != "" {
+			want[o] = true
+		}
+	}
+	if len(a.Scopes) == 0 {
+		if len(want) > 0 {
+			logf("orgs: none of %s is served by this node's owner; serving nothing until it changes", strings.Join(restrict, ", "))
+			return nil
+		}
+		logf("orgs: the platform answered with no org to serve; serving nothing until it changes")
+		return nil
 	}
 	found := map[string]bool{}
 	var kept Scopes

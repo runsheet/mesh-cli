@@ -214,8 +214,8 @@ func servingNames(s node.Scopes) string {
 // registrar is node.Register's steps on the platform client: the
 // `owner` probe, the orgs of the token's person, the one registration
 // on the owner contract (the node's own id, the owner's kind, an orgId
-// the platform ignores there; RegisterOwnedNode, which registers nothing
-// when it answers nil) and the legacy registration per org.
+// the platform ignores there; RegisterOwnedNode, which leaves no row
+// under that id when it answers nil) and the legacy registration per org.
 func registrar(gw *gateway.Client, cfg *node.Config, logf func(string, ...any)) node.Registrar {
 	return node.Registrar{
 		TakesOwner: gw.TakesOwner,

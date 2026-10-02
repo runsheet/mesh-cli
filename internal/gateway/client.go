@@ -1424,16 +1424,21 @@ func (c *Client) RegisterNode(ctx context.Context, in RegisterNodeInput) (*NodeA
 
 // RegisterOwnedNode is the one registration on the owner contract
 // (ADR-015, Registration): RegisterNode under the node's own id with
-// `owner` sent, asking the payload for the answer. Unlike RegisterNode
-// it never resends with `status` alone: a platform whose payload type
-// refuses the answer's fields refuses the whole selection at
-// validation, before anything executes, and that is returned as a nil
-// answer with nothing registered — as is a refusal still kept from an
-// earlier call (NodeAnswerRetry), which sends nothing at all. The node
-// then registers per org, the owner id having made no Node row. A
-// registration that executed always returns a non-nil answer, empty
-// when the platform named nothing: the row exists, the contract is the
-// owner's, and it serves no org.
+// `owner` sent, asking the payload for the answer. It answers nil —
+// the node registers per org — with no Node row left under the owner
+// id, whichever way the platform declines the contract:
+//
+//   - a payload type without the answer's fields refuses the whole
+//     selection at validation, before anything executes; it is never
+//     resent with `status` alone, and a refusal still kept from an
+//     earlier call (NodeAnswerRetry) sends nothing at all;
+//   - a registration that executed but answered `status` alone (no
+//     nodeId, no owner, no scopes) made a row under the owner id, and
+//     that row is retired (retireNode) before nil is returned; a failed
+//     retire is the error, never a nil that would leave the row.
+//
+// An answer naming the node or its owner is the owner contract even
+// with no scope: the row is the node's and it serves no org.
 func (c *Client) RegisterOwnedNode(ctx context.Context, in RegisterNodeInput) (*NodeAnswer, error) {
 	if time.Now().UnixNano() < c.nodeAnswerUntil.Load() {
 		return nil, nil
@@ -1462,7 +1467,10 @@ func (c *Client) RegisterOwnedNode(ctx context.Context, in RegisterNodeInput) (*
 	if a := payload.asAnswer(); a != nil {
 		return a, nil
 	}
-	return &NodeAnswer{Scopes: []ScopeAnswer{}}, nil
+	if err := c.Mutate(ctx, "retireNode", in.NodeID, nil); err != nil {
+		return nil, fmt.Errorf("registerNode answered status alone; retiring the owner-id node %s: %w", in.NodeID, err)
+	}
+	return nil, nil
 }
 
 // ownerProbe is the cached answer to whether RegisterNodeInput has an

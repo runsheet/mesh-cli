@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 
@@ -17,9 +18,10 @@ import (
 // field the payload lacks is refused at validation, as GraphQL does,
 // and executes nothing; executed counts the mutations that ran.
 type ownedPlatform struct {
-	answers  bool
-	answer   string
-	executed []string
+	answers     bool
+	answer      string
+	retireFails bool
+	executed    []string
 }
 
 func (p *ownedPlatform) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -32,10 +34,18 @@ func (p *ownedPlatform) RoundTrip(r *http.Request) (*http.Response, error) {
 	switch {
 	case !p.answers && strings.Contains(body.Query, "nodeId"):
 		out = `{"errors":[{"message":"Cannot query field \"nodeId\" on type \"RegisterNodePayload\"."}]}`
+	case strings.Contains(body.Query, "retireNode"):
+		in, _ := body.Variables["in"].(map[string]any)
+		id, _ := in["aggregateId"].(string)
+		p.executed = append(p.executed, "retireNode "+id)
+		out = `{"data":{"retireNode":{"status":"ok"}}}`
+		if p.retireFails {
+			out = `{"errors":[{"message":"retire refused"}]}`
+		}
 	default:
 		in, _ := body.Variables["in"].(map[string]any)
 		id, _ := in["aggregateId"].(string)
-		p.executed = append(p.executed, id)
+		p.executed = append(p.executed, "registerNode "+id)
 		if p.answers {
 			out = `{"data":{"registerNode":` + p.answer + `}}`
 		}
@@ -68,15 +78,38 @@ func TestRegisterOwnedNodeNilAnswerRegistersNothing(t *testing.T) {
 	}
 }
 
-// A registration that executed is never nil: an answer naming nothing
-// is the owner contract serving no org.
-func TestRegisterOwnedNodeExecutedIsAnswered(t *testing.T) {
+// A registration that executed but answered status alone is nil, and
+// the row it made under the owner id is retired: the per-org path that
+// follows leaves no owner-id Node.
+func TestRegisterOwnedNodeStatusOnlyIsNilAndRetired(t *testing.T) {
 	p := &ownedPlatform{answers: true, answer: `{"status":"ok","nodeId":null,"owner":null,"scopes":null}`}
 	a, err := ownedClient(p).RegisterOwnedNode(context.Background(), gateway.RegisterNodeInput{NodeID: ownedNodeID, Owner: "person"})
-	if err != nil || a == nil || len(a.Scopes) != 0 {
-		t.Fatalf("answer %+v, err %v; want an empty answer", a, err)
+	if err != nil || a != nil {
+		t.Fatalf("answer %+v, err %v; want nil, nil", a, err)
 	}
-	if len(p.executed) != 1 || p.executed[0] != ownedNodeID {
-		t.Fatalf("executed %q, want one registration under %s", p.executed, ownedNodeID)
+	if want := []string{"registerNode " + ownedNodeID, "retireNode " + ownedNodeID}; !slices.Equal(p.executed, want) {
+		t.Fatalf("executed %q, want %q", p.executed, want)
+	}
+}
+
+// A failed retire is the error, never a nil answer leaving the row.
+func TestRegisterOwnedNodeStatusOnlyRetireFails(t *testing.T) {
+	p := &ownedPlatform{answers: true, answer: `{"status":"ok"}`, retireFails: true}
+	a, err := ownedClient(p).RegisterOwnedNode(context.Background(), gateway.RegisterNodeInput{NodeID: ownedNodeID, Owner: "person"})
+	if err == nil || a != nil {
+		t.Fatalf("answer %+v, err %v; want the retire's error", a, err)
+	}
+}
+
+// An answer naming the node and its owner but no org is the owner
+// contract serving nothing: non-nil, empty, the row kept.
+func TestRegisterOwnedNodeEmptyAnswerIsAnswered(t *testing.T) {
+	p := &ownedPlatform{answers: true, answer: `{"status":"ok","nodeId":"` + ownedNodeID + `","owner":{"kind":"enterprise","id":"e","name":"anythink"},"scopes":[]}`}
+	a, err := ownedClient(p).RegisterOwnedNode(context.Background(), gateway.RegisterNodeInput{NodeID: ownedNodeID, Owner: "enterprise"})
+	if err != nil || a == nil || len(a.Scopes) != 0 || a.NodeID != ownedNodeID {
+		t.Fatalf("answer %+v, err %v; want an empty owner answer", a, err)
+	}
+	if want := []string{"registerNode " + ownedNodeID}; !slices.Equal(p.executed, want) {
+		t.Fatalf("executed %q, want %q", p.executed, want)
 	}
 }
