@@ -575,6 +575,54 @@ func TestCredentialPrintsNoSecret(t *testing.T) {
 
 func fmtAll(v any) string { return fmt.Sprintf("%v %+v %#v %s", v, v, v, v) }
 
+// A credential's priorities and windowTargets become the account's
+// Priorities and its own pace point (adr-005's amendment 2026-10-02): a
+// five_hour windowTarget of 50% is PaceFiveHour 0.5, a seven_day one
+// PaceSevenDay, and an unknown window is ignored. No windowTargets is
+// the node-wide rule, 0.
+func TestIssuedAccountCarriesPrioritiesAndPace(t *testing.T) {
+	cr := gateway.Credential{ID: "c1", Label: "max20", Kind: AccountSubscription,
+		Priorities:    []string{"urgent", "high"},
+		WindowTargets: []gateway.WindowTarget{{Window: "five_hour", Percent: 50}, {Window: "unknown", Percent: 90}}}
+	a := IssuedAccount(cr)
+	if want := []string{"urgent", "high"}; len(a.Priorities) != 2 || a.Priorities[0] != want[0] || a.Priorities[1] != want[1] {
+		t.Errorf("Priorities = %v, want %v", a.Priorities, want)
+	}
+	if a.PaceFiveHour != 0.5 {
+		t.Errorf("PaceFiveHour = %v, want 0.5", a.PaceFiveHour)
+	}
+	if a.PaceSevenDay != 0 {
+		t.Errorf("PaceSevenDay = %v, want 0", a.PaceSevenDay)
+	}
+
+	plain := IssuedAccount(gateway.Credential{ID: "c2", Label: "shhemail", Kind: AccountSubscription})
+	if len(plain.Priorities) != 0 {
+		t.Errorf("Priorities = %v, want none", plain.Priorities)
+	}
+	if plain.PaceFiveHour != 0 || plain.PaceSevenDay != 0 {
+		t.Errorf("pace = %v/%v, want 0/0", plain.PaceFiveHour, plain.PaceSevenDay)
+	}
+}
+
+// mesh node start logs each known issued account with its kind, what it
+// serves and its own pace point, so a restart's node.log names a
+// reserved subscription before its first claim.
+func TestIssuedAccountLines(t *testing.T) {
+	lines := IssuedAccountLines([]AccountConfig{
+		{Label: "max20", Kind: AccountSubscription, Priorities: []string{"urgent", "high"}, PaceFiveHour: 0.5},
+		{Label: "shhemail", Kind: AccountSubscription},
+	})
+	if len(lines) != 2 {
+		t.Fatalf("lines = %v, want 2", lines)
+	}
+	if !strings.Contains(lines[0], "accounts: issued max20") || !strings.Contains(lines[0], "serves urgent, high") || !strings.Contains(lines[0], "50% five-hour") {
+		t.Errorf("lines[0] = %q", lines[0])
+	}
+	if !strings.Contains(lines[1], "accounts: issued shhemail") || !strings.Contains(lines[1], "serves all") || !strings.Contains(lines[1], "node-wide") {
+		t.Errorf("lines[1] = %q", lines[1])
+	}
+}
+
 // A build's usage report carries what its context cost on disk
 // (contextBytes, adr-016); a platform whose usage input has no such
 // field takes the rest of every report, Carried treats

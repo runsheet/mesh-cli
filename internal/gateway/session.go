@@ -21,8 +21,11 @@ import (
 //	researchCredentials(directionId) researchTools(directionId)  research
 //
 // Each returns a JSON list (a Map scalar): a credential is {id, label,
-// vendor, kind, serves, plan, windowTargets, dailyCap, monthlyCap,
-// capUnit, secretVersion, secret}; a tool {id, slug, name, kind, need,
+// vendor, kind, serves, plan, priorities, windowTargets, dailyCap,
+// monthlyCap, capUnit, secretVersion, secret} — priorities a JSON list
+// of urgent/high/normal/low, absent or empty meaning every priority
+// (adr-005's amendment 2026-10-02), windowTargets a list of
+// {window, percent}; a tool {id, slug, name, kind, need,
 // url, command, args, runtime, builtin, builtIn, account, headers, env}
 // with headers and env as [{name, value} | {name, source}]. The node
 // is not named: the platform knows it from the bearer.
@@ -197,7 +200,58 @@ func issuedCredential(row map[string]any) (Credential, bool) {
 		cr.CapDailyUSD, _ = row["dailyCap"].(float64)
 		cr.CapMonthlyUSD, _ = row["monthlyCap"].(float64)
 	}
+	cr.Priorities = priorities(row["priorities"])
+	cr.WindowTargets = windowTargets(row["windowTargets"])
 	return cr, true
+}
+
+// The goal priorities a credential may name (runsheet's Priority enum,
+// lower-cased).
+var credentialPriorities = []string{"urgent", "high", "normal", "low"}
+
+// priorities is row["priorities"] kept to the known priorities,
+// lower-cased; absent or empty (or none recognised) is nil, meaning
+// every priority.
+func priorities(v any) []string {
+	var out []string
+	for _, s := range strs(v) {
+		s = strings.ToLower(s)
+		if slices.Contains(credentialPriorities, s) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// windowTargets is row["windowTargets"] ([{window, percent}]) as
+// []WindowTarget, percent kept as given (0..100). A malformed entry is
+// skipped.
+func windowTargets(v any) []WindowTarget {
+	var out []WindowTarget
+	for _, row := range rowsOf(v) {
+		window, ok := normalizeWindow(str(row, "window"))
+		if !ok {
+			continue
+		}
+		pct, _ := row["percent"].(float64)
+		out = append(out, WindowTarget{Window: window, Percent: pct})
+	}
+	return out
+}
+
+// normalizeWindow accepts the platform's spelling of a credential
+// window alongside the five_hour/fiveHour and seven_day/sevenDay
+// variants (the console and the heartbeat have used both), and answers
+// the canonical five_hour/seven_day; an unknown name is not ok.
+func normalizeWindow(w string) (string, bool) {
+	switch w {
+	case "five_hour", "fiveHour":
+		return "five_hour", true
+	case "seven_day", "sevenDay":
+		return "seven_day", true
+	default:
+		return "", false
+	}
 }
 
 // ItemGitHubTokenVar is the session variable a setting sourced from the

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -173,6 +174,40 @@ func (k *KnownAccounts) Accounts(now time.Time) []AccountConfig {
 		})
 	}
 	return out
+}
+
+// IssuedAccountLines is what `mesh node start` logs of the accounts the
+// platform has issued this node lately (adr-005's amendment
+// 2026-10-02, a credential names the priorities it serves): one line
+// per account, naming its kind, the priorities it serves and its own
+// pace point — so node.log says what a reserved subscription is for
+// before its first claim, even across a restart.
+func IssuedAccountLines(accounts []AccountConfig) []string {
+	lines := make([]string, 0, len(accounts))
+	for _, a := range accounts {
+		serves := "all"
+		if len(a.Priorities) > 0 {
+			serves = strings.Join(a.Priorities, ", ")
+		}
+		lines = append(lines, fmt.Sprintf("accounts: issued %s (%s, serves %s, paces at %s)", a.Label, a.Kind, serves, pacesAt(a)))
+	}
+	return lines
+}
+
+// pacesAt is an account's own pace point, as IssuedAccountLines names
+// it: the node-wide rule when it names none.
+func pacesAt(a AccountConfig) string {
+	var parts []string
+	if a.PaceFiveHour > 0 {
+		parts = append(parts, pct(a.PaceFiveHour)+" five-hour")
+	}
+	if a.PaceSevenDay > 0 {
+		parts = append(parts, pct(a.PaceSevenDay)+" seven-day")
+	}
+	if len(parts) == 0 {
+		return "node-wide"
+	}
+	return strings.Join(parts, ", ")
 }
 
 // saveLocked writes the store through a temp file, so a crash leaves the
