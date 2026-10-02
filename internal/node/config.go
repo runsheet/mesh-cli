@@ -587,6 +587,18 @@ const (
 	ContractPerOrg = "per-org"
 )
 
+// OwnedID is the one id an owned node heartbeats under outside the
+// loop — `mesh node status`, the rollback reporter — read from the
+// contract the last registration saved: NodeID on ContractOwner, else
+// empty, so a per-org node (or a node.yaml before `contract:`) that
+// kept a node_id is still reached per org alone.
+func (c *Config) OwnedID() string {
+	if c.ContractKind() != ContractOwner {
+		return ""
+	}
+	return c.NodeID
+}
+
 // ContractKind is Contract, an empty one read as ContractPerOrg.
 func (c *Config) ContractKind() string {
 	if c.Contract == ContractOwner {

@@ -32,7 +32,6 @@ type steps struct {
 	scopes     Scopes
 	resolveErr error
 	did        []string
-	logged     []string
 }
 
 func (s *steps) registrar() Registrar {
@@ -62,7 +61,6 @@ func (s *steps) registrar() Registrar {
 			}
 			return nil
 		},
-		Logf: func(format string, args ...any) { s.logged = append(s.logged, fmt.Sprintf(format, args...)) },
 	}
 }
 
@@ -232,8 +230,8 @@ func TestOwnedRegisterLegacyPerOrgWithNoOwner(t *testing.T) {
 	if want := []string{"probe", "resolve", "org runsheet", "org wardroomid"}; !slices.Equal(s.did, want) {
 		t.Fatalf("did %q, want %q", s.did, want)
 	}
-	if reg.Owned != nil || !slices.Equal(reg.Scopes, s.scopes) || len(s.logged) != 0 {
-		t.Fatalf("registered %+v, logged %q", reg, s.logged)
+	if reg.Owned != nil || !slices.Equal(reg.Scopes, s.scopes) || len(reg.Notes) != 0 {
+		t.Fatalf("registered %+v, notes %q", reg, reg.Notes)
 	}
 }
 
@@ -253,8 +251,8 @@ func TestOwnedRegisterNilAnswerFallsBackPerOrg(t *testing.T) {
 	if reg.Owned != nil || !slices.Equal(reg.Scopes, s.scopes) {
 		t.Fatalf("registered %+v, want the per-org scopes", reg)
 	}
-	if len(s.logged) != 1 || !strings.Contains(s.logged[0], "serving per org") {
-		t.Fatalf("logged %q, want the fallback once", s.logged)
+	if len(reg.Notes) != 1 || !strings.Contains(reg.Notes[0], "serving per org") {
+		t.Fatalf("logged %q, want the fallback once", reg.Notes)
 	}
 }
 
@@ -342,9 +340,9 @@ func TestOwnedRegisterEmptyAnswerIsNotNil(t *testing.T) {
 	if reg.Owned == nil || reg.Owned.NodeID != a.NodeID || len(reg.Scopes) != 0 {
 		t.Fatalf("registered %+v, want owned and serving none", reg)
 	}
-	for _, line := range s.logged {
+	for _, line := range reg.Notes {
 		if strings.Contains(line, "serving per org") {
-			t.Fatalf("an empty answer took the nil answer's fallback: %q", s.logged)
+			t.Fatalf("an empty answer took the nil answer's fallback: %q", reg.Notes)
 		}
 	}
 }
@@ -361,8 +359,8 @@ func TestOwnedRegisterUnmatchedRestrictionIsNotFatal(t *testing.T) {
 	if reg.Owned == nil || len(reg.Scopes) != 0 {
 		t.Fatalf("registered %+v, want owned and serving none", reg)
 	}
-	if len(s.logged) != 1 || !strings.Contains(s.logged[0], "not a member of initech") {
-		t.Fatalf("logged %q, want the unmatched restriction once", s.logged)
+	if len(reg.Notes) != 1 || !strings.Contains(reg.Notes[0], "not a member of initech") {
+		t.Fatalf("logged %q, want the unmatched restriction once", reg.Notes)
 	}
 }
 
@@ -660,4 +658,47 @@ func TestOwnedContractPersisted(t *testing.T) {
 			t.Fatalf("SaveRegistration = %v, want the save's error", err)
 		}
 	})
+}
+
+// node.log's first line after the start lines names the owner and the
+// orgs; what the registration has to say — an unmatched restriction,
+// the nil answer's fallback — follows it, never precedes it.
+func TestOwnedRegistrationLinesNameTheOwnerFirst(t *testing.T) {
+	cfg := ownedCfg()
+	s := &steps{takes: true, answer: answerFixture(t, "registerNode.json")}
+	reg, err := Register(context.Background(), s.registrar(), cfg, []string{"grapevine", "initech"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := RegistrationLines(cfg, reg)
+	if len(lines) != 2 || !strings.Contains(lines[0], " owned by ") || !strings.HasSuffix(lines[0], "serving grapevine") || !strings.HasPrefix(lines[1], "orgs: ") {
+		t.Fatalf("lines %q, want the owner line first, then the restriction", lines)
+	}
+	s = &steps{takes: true, scopes: personScopes(t, cfg)}
+	if reg, err = Register(context.Background(), s.registrar(), cfg, nil); err != nil {
+		t.Fatal(err)
+	}
+	lines = RegistrationLines(cfg, reg)
+	if len(lines) != 2 || !strings.Contains(lines[0], " per org, serving ") || lines[1] != FallbackLine {
+		t.Fatalf("lines %q, want the per-org line first, then the fallback", lines)
+	}
+}
+
+// Status and the rollback reporter heartbeat under the one id only on
+// the contract the last registration saved: a per-org node, or a
+// node.yaml before `contract:`, that kept a node_id is reached per org.
+func TestOwnedContractChoosesTheHeartbeat(t *testing.T) {
+	for _, tc := range []struct{ contract, want string }{
+		{ContractOwner, "55555555-5555-4555-8555-555555555555"},
+		{ContractPerOrg, ""},
+		{"", ""},
+	} {
+		cfg := &Config{NodeID: "55555555-5555-4555-8555-555555555555", Contract: tc.contract}
+		if got := cfg.OwnedID(); got != tc.want {
+			t.Errorf("contract %q: OwnedID = %q, want %q", tc.contract, got, tc.want)
+		}
+	}
+	if (&Config{Contract: ContractOwner}).OwnedID() != "" {
+		t.Error("an owner contract with no node_id heartbeats under an empty id")
+	}
 }
