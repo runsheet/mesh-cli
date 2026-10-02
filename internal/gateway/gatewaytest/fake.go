@@ -99,6 +99,11 @@ type Fake struct {
 	// NoFailedClauses is a platform whose EvaluateWorkItemInput has no
 	// failedClauses: the node sends the verdict without them.
 	NoFailedClauses bool
+	// NoEvaluations is a platform whose WorkItemIndex has no
+	// `evaluations`: the read WorkItemPriorAttempts makes is refused
+	// with "Cannot query field", as the client tolerates (the
+	// evaluation still runs, without the lineage's earlier verdicts).
+	NoEvaluations bool
 	// NoUsageTools refuses a `usage` report carrying `tools` (the
 	// per-tool calls) with "Unknown field", as a platform older than
 	// tools-show-their-use whose UsageReportInput has only the total.
@@ -276,6 +281,15 @@ var (
 	sessionReadRe = regexp.MustCompile(`\{\s*(\w+Credentials)\s*\(\s*(\w+):\s*\$id\s*\)(?:\s*(\w+Tools)\s*\(\s*\w+:\s*\$id\s*\))?\s*\}`)
 	getRe         = regexp.MustCompile(`\{\s*(\w+Index)\s*\(\s*namespace:\s*"runsheet"\s*,\s*id:\s*"([^"]+)"`)
 	scorecardRe   = regexp.MustCompile(`\{\s*scorecard\s*\(\s*orgId:\s*"([^"]+)"\s*\)\s*\}`)
+	// the retry's read of an item's recorded evaluations
+	// (WorkItemPriorAttempts): workItemIndex { evaluations { attempt
+	// notes failedClauses { clause satisfy } } }. evaluations is a list
+	// of EvaluationRecord, not a flat scalar, so it is not one of
+	// WorkItemIndex's generated fields (fields/WorkItemIndex.txt holds
+	// only fields a bare selection can name) — the fake answers this
+	// query specially instead, as it already does for scorecard and the
+	// claim-time credentials read.
+	priorAttemptsRe = regexp.MustCompile(`\{\s*workItemIndex\s*\(\s*namespace:\s*"runsheet"\s*,\s*id:\s*"([^"]+)"\s*\)\s*\{\s*evaluations\s*\{`)
 )
 
 func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
@@ -490,6 +504,20 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 		}
 		if m := sessionReadRe.FindStringSubmatch(q); m != nil {
 			f.sessionRead(w, m[1], m[2], m[3], req.Variables)
+			return
+		}
+		if m := priorAttemptsRe.FindStringSubmatch(q); m != nil {
+			f.Reads = append(f.Reads, Call{Name: "workItemIndex", Input: map[string]any{"id": m[1]}})
+			if f.NoEvaluations {
+				writeErrors(w, 200, `Cannot query field "evaluations" on type "WorkItemIndex".`)
+				return
+			}
+			item := f.WorkItems[m[1]]
+			if item == nil {
+				writeData(w, map[string]any{"workItemIndex": nil})
+				return
+			}
+			writeData(w, map[string]any{"workItemIndex": map[string]any{"evaluations": item["evaluations"]}})
 			return
 		}
 		field, typ := f.unknownSelection(q)
@@ -923,6 +951,9 @@ func (f *Fake) apply(name string, in map[string]any) error {
 			item["costCents"] = toInt(item["costCents"]) + toInt(in["costCents"])
 			return nil
 		}
+		// the attempt this verdict records, before this fail's own
+		// increment below (so the first evaluation is attempt 1)
+		attempt := toInt(item["attempts"]) + 1
 		// a confirmed already_done item is merged with no pull request
 		// (mesh ADR 003 decision 1); a built one goes to review, where
 		// the platform opens its pull request
@@ -937,9 +968,19 @@ func (f *Fake) apply(name string, in map[string]any) error {
 		item["evaluation"] = in["notes"]
 		// the clauses a failed verdict named, for the retry (nil when the
 		// node sent none)
+		clauses, _ := in[gateway.FailedClausesField].([]any)
+		if clauses == nil {
+			clauses = []any{}
+		}
 		if cl, ok := in[gateway.FailedClausesField]; ok {
 			item["failedClauses"] = cl
 		}
+		evals, _ := item["evaluations"].([]any)
+		item["evaluations"] = append(evals, map[string]any{
+			"attempt":       attempt,
+			"notes":         in["notes"],
+			"failedClauses": clauses,
+		})
 		item["costCents"] = toInt(item["costCents"]) + toInt(in["costCents"])
 	case "claimWorkItemRebase", "finishWorkItemRebase", "failWorkItemRebase":
 		if item == nil {
