@@ -222,9 +222,10 @@ type Result struct {
 	// totals (goal context-is-fetched-not-shipped). Nil when the
 	// session made no MCP call.
 	ToolNames map[string]int
-	// DocumentsFetched is how many of those calls were mesh_document on
-	// the built-in context server: document bodies fetched, not
-	// mesh_search calls.
+	// DocumentsFetched is how many of those calls fetched from the
+	// built-in context server by tool: mesh_document (a body) and
+	// mesh_search (a query's slugs and summaries), the two reads that
+	// replace what the context directory used to ship.
 	DocumentsFetched int
 	// HandedBack is a session that passed its HandBackAt mark with
 	// nothing committed and was resumed for the commit-and-finish turn;
@@ -381,7 +382,7 @@ func (r *Result) toolStat(server string) *ToolStat {
 // countToolName counts one call to server/tool on ToolNames, keyed
 // <server>__<tool> with the prologue alias folded into mesh-context
 // (tools.IsBuiltin), and DocumentsFetched when it is a mesh_document
-// call on the built-in. A tool-less call (server with no tool name) is
+// or mesh_search call on the built-in. A tool-less call (server with no tool name) is
 // not counted.
 func (r *Result) countToolName(server, tool string) {
 	if tool == "" {
@@ -394,7 +395,7 @@ func (r *Result) countToolName(server, tool string) {
 		r.ToolNames = map[string]int{}
 	}
 	r.ToolNames[server+"__"+tool]++
-	if server == tools.Builtin && tool == "mesh_document" {
+	if server == tools.Builtin && (tool == "mesh_document" || tool == "mesh_search") {
 		r.DocumentsFetched++
 	}
 }

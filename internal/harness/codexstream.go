@@ -120,7 +120,7 @@ func (p CodexPrice) Cost(u CodexUsage) float64 {
 // ToolCallIDs, and on Result.Tools: its wall time is item.started to
 // item.completed. Each is also counted on Result.ToolNames, keyed
 // <server>__<tool>, and on Result.DocumentsFetched when it is a
-// mesh_document call on the built-in (goal
+// mesh_document or mesh_search call on the built-in (goal
 // context-is-fetched-not-shipped). A status of "completed" counts Clean, and one of "failed" counts an error,
 // the item's error text kept as the server's FirstError (else its
 // result's text, else the status), and one with no error but a result
