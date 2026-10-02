@@ -771,6 +771,49 @@ func TestCodexSandboxBrokenWithNoOtherFamilyWaits(t *testing.T) {
 	}
 }
 
+// The sandbox would not start — bubblewrap's loopback refused, the
+// research note's `bwrap: loopback: Failed RTM_NEWADDR` — and the item
+// pins Codex, so no other family can evaluate it: on a platform that
+// takes `noVerdict` it is recorded as no verdict with the bwrap line as
+// its reason, never an ordinary fail, whatever VERDICT the session wrote;
+// the item stays in evaluating with its attempts unchanged (ADR 011,
+// amendment 2026-09-29; runsheet ADR 035).
+func TestCodexSandboxWillNotStartWithNoOtherFamilyIsNoVerdict(t *testing.T) {
+	f, ev, claude, codex, _, logs := familyFixture(t, "normal", "sonnet", "VERDICT: PASS", "Nothing would run.\nVERDICT: FAIL")
+	f.WorkItems[item1]["evaluateModel"] = "gpt-6-astra"
+	codex.sandbox = bwrapLine
+	ev.Blind, ev.NoVerdict = &OncePer{}, &OncePer{}
+	attempts := f.Item(item1)["attempts"]
+	in := evaluateItem1(t, f, ev)
+	if len(claude.jobs) != 0 || codex.runs() != 1 {
+		t.Fatalf("runs claude %d codex %d", len(claude.jobs), codex.runs())
+	}
+	reason := "evaluation on Codex gpt-6-astra ran in a sandbox that blocked every command (sandbox: " + bwrapLine + "); not a verdict, and Claude cannot evaluate it: the item pins Codex gpt-6-astra"
+	if !sentNoVerdict(in) || in[gateway.NoVerdictReasonField] != reason || in["notes"] != reason {
+		t.Fatalf("recorded %+v\nwant reason %q", in, reason)
+	}
+	calls := f.CallsNamed("evaluateWorkItem")
+	if len(calls) != 1 {
+		t.Fatalf("evaluateWorkItem sent %d times", len(calls))
+	}
+	if c := calls[0].Input; c["passed"] != false || c[gateway.NoVerdictField] != true {
+		t.Fatalf("recorded as a fail: %+v", c)
+	}
+	if _, ok := in["outcome"]; ok {
+		t.Fatalf("sent outcome: %+v", in)
+	}
+	item := f.Item(item1)
+	if item["status"] != "evaluating" || item["attempts"] != attempts || item["noVerdicts"] != 1 || item["noVerdictReason"] != reason {
+		t.Fatalf("item %+v", item)
+	}
+	if line := "item ship-it/1: evaluation reached no verdict on Codex gpt-6-astra, recorded as no verdict"; !strings.Contains(logs.String(), line) {
+		t.Fatalf("node.log lacks %q:\n%s", line, logs.String())
+	}
+	if strings.Contains(logs.String(), "the platform takes no no-verdict outcome") {
+		t.Fatalf("node.log:\n%s", logs.String())
+	}
+}
+
 // Claude first on an urgent item, its PASS standing: a Codex second
 // opinion whose sandbox blocked every command is unavailable, whatever
 // it wrote.
