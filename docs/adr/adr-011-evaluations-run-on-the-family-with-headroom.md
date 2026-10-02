@@ -1,5 +1,5 @@
 ---
-summary: Before an evaluation starts the node chooses its family per session — Codex when a Codex account (issued or node.yaml's) has headroom for the goal's priority, else Claude; a full gpt-… id pins Codex and waits in evaluating without headroom, a claude-… id pins Claude; the urgent/high second opinion runs on the other family, labelled by family and model; the one usage report names adapter codex and the gpt-6 model of a Codex evaluation; before any Codex session starts the node preflights the built-in context server in the session's own home and env (`codex mcp get` and a tools/list handshake), and a failure moves an unpinned evaluation to Claude, keeps a pinned one waiting and makes a Codex second opinion unavailable. Amended: an unpinned Codex evaluation defaults to gpt-6-sol (opus tier) or gpt-6-luna (sonnet, haiku), astra only when pinned; and a tool failure is never a verdict — a session that saw no context is evaluated again on the other family, or the item waits in evaluating. Amended 2026-09-29: an evaluation that reached no verdict — no VERDICT line, or no context and no other family — is recorded with evaluateWorkItem's outcome no_verdict and its reason, never a fail (a gateway without the field: it waits in evaluating, said once per run); a family blind on the first attempt is not asked for the second opinion; and the preflight probes Codex's sandbox (`codex sandbox -c sandbox_mode="workspace-write" -- true`, the session's own policy), and a Codex session whose every command bubblewrap refused (`Result.SandboxBroken`) is never a verdict either — every `bwrap:` text in the record came from a Codex session. Amended 2026-09-29 again: a Codex evaluation's sandbox gets the network (`sandbox_workspace_write.network_access=true` on `codex exec` and on the probe), so its tests can bind loopback; the probe binds a socket (`mesh sandbox-probe`) instead of running `true`; and a session whose test commands that executed every one died on `socket: operation not permitted` (or `bind:`) is `SandboxBroken` too. The mini's `codex-bwrap` AppArmor profile makes bwrap start; it does not give the sandbox loopback.
+summary: Before an evaluation starts the node chooses its family per session — Codex when an issued Codex account has headroom for the goal's priority (node.yaml's own-login candidate is gone, amendment 2026-10-02), else Claude; a full gpt-… id pins Codex and waits in evaluating without headroom, a claude-… id pins Claude; the urgent/high second opinion runs on the other family, labelled by family and model; the one usage report names adapter codex and the gpt-6 model of a Codex evaluation; before any Codex session starts the node preflights the built-in context server in the session's own home and env (`codex mcp get` and a tools/list handshake), and a failure moves an unpinned evaluation to Claude, keeps a pinned one waiting and makes a Codex second opinion unavailable. Amended: an unpinned Codex evaluation defaults to gpt-6-sol (opus tier) or gpt-6-luna (sonnet, haiku), astra only when pinned; and a tool failure is never a verdict — a session that saw no context is evaluated again on the other family, or the item waits in evaluating. Amended 2026-09-29: an evaluation that reached no verdict — no VERDICT line, or no context and no other family — is recorded with evaluateWorkItem's outcome no_verdict and its reason, never a fail (a gateway without the field: it waits in evaluating, said once per run); a family blind on the first attempt is not asked for the second opinion; and the preflight probes Codex's sandbox (`codex sandbox -c sandbox_mode="workspace-write" -- true`, the session's own policy), and a Codex session whose every command bubblewrap refused (`Result.SandboxBroken`) is never a verdict either — every `bwrap:` text in the record came from a Codex session. Amended 2026-09-29 again: a Codex evaluation's sandbox gets the network (`sandbox_workspace_write.network_access=true` on `codex exec` and on the probe), so its tests can bind loopback; the probe binds a socket (`mesh sandbox-probe`) instead of running `true`; and a session whose test commands that executed every one died on `socket: operation not permitted` (or `bind:`) is `SandboxBroken` too. The mini's `codex-bwrap` AppArmor profile makes bwrap start; it does not give the sandbox loopback.
 status: accepted
 ---
 
@@ -492,3 +492,41 @@ changes — only the name. The dated narrative above (the first Codex
 evaluations' own `prologue: not found` results, read on 2026-09-29 and
 before) stays as it was recorded: it quotes what those sessions said,
 not what the node does now.
+
+## Amendment — 2026-10-02: the family is chosen only among issued credentials (goal a-session-never-runs-on-the-machines-own-login)
+
+The Decision above made node.yaml's `codex:` account a candidate beside
+the issued ones (`CodexOwnAccount`, no ID, opened by
+`Credentials.OpenOwn` on the harness's own login — the operator's
+`~/.codex` or `$CODEX_HOME` when the block named no account, labelled
+`codex:default`). That candidate is gone. Chris's rule, 2026-09-30: a
+node only ever runs sessions on credentials the platform issues for the
+org or its enterprise.
+
+- `Loop.CodexCandidates` is the issued Codex accounts `Known` holds and
+  nothing else; `CodexOwnAccount`, `Credentials.OpenOwn`,
+  `Loop.CodexOwn`, `Evaluator.CodexAccount` and the `codex:default`
+  label (`CodexLimitsAccount` has no zero-account branch) are removed.
+  `codexSecondOpinion` builds the harness with no account of its own;
+  it logs `codex: evaluations on Codex when an issued Codex credential
+  has headroom, else on Claude; the second opinion on the other family`.
+- Every Codex session — first evaluation or second opinion — is opened
+  by `Credentials.Open` with adapter codex. A read that issues no Codex
+  credential, a platform without the read, or no `Credentials` at all is
+  `ErrNoAccount`: an unpinned evaluation runs on Claude (`no issued
+  Codex credential has headroom after all; evaluating on Claude` when
+  `Known` still held one), a pinned `gpt-…` item waits in evaluating
+  (`ErrFamilyWaits`), and a second opinion is `unavailable: no Codex
+  account has headroom`.
+- The harness refuses what slips past: a Codex job with no `CODEX_HOME`
+  the node placed and no account of the harness's own fails with
+  `codex: no issued credential on the session; refusing the operator's
+  own login` (`harness.ErrNoIssuedCredential`), before any home is made
+  or any login read.
+- So every Codex evaluation's usage record carries the issued
+  credential's `credentialId` and a `credentialKind` of `subscription`
+  or `api`, never `unset`.
+
+node.yaml's `codex.accounts` is retired with node.yaml's `accounts:`
+(item 2 of the goal refuses a node.yaml naming either); the `codex:`
+block keeps `binary`, `models` and `providers`.
