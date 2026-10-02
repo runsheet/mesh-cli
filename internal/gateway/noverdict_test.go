@@ -15,9 +15,10 @@ func evaluatingItem(f *gatewaytest.Fake) {
 	f.WorkItems[finishItem] = map[string]any{"id": finishItem, "orgId": orgID, "seq": 7, "status": "evaluating"}
 }
 
-// A gateway whose EvaluateWorkItemInput has `outcome` takes a no-verdict
-// evaluation: the outcome, the reason in notes, the cost, and no
-// `passed`. The input type is asked about once, however many are sent.
+// A gateway whose EvaluateWorkItemInput has `noVerdict` takes a no-verdict
+// evaluation as runsheet ADR 035 defines it: passed false, noVerdict true,
+// the reason as noVerdictReason and in notes, the cost, and never
+// `outcome`. The input type is asked about once, however many are sent.
 func TestEvaluateWorkItemNoVerdictSendsTheOutcome(t *testing.T) {
 	f := gatewaytest.New("rs_test")
 	defer f.Close()
@@ -36,25 +37,34 @@ func TestEvaluateWorkItemNoVerdictSendsTheOutcome(t *testing.T) {
 	if len(calls) != 2 {
 		t.Fatalf("calls = %+v", calls)
 	}
+	const reason = "no VERDICT line: I could not tell."
 	in := calls[0].Input
-	if in["outcome"] != gateway.EvaluationNoVerdict || in["notes"] != "no VERDICT line: I could not tell." || in["costCents"] != float64(30) {
-		t.Fatalf("input = %+v", in)
+	want := map[string]any{"passed": false, "noVerdict": true, "noVerdictReason": reason, "notes": reason, "costCents": float64(30)}
+	for k, v := range want {
+		if in[k] != v {
+			t.Fatalf("%s = %#v, want %#v; input %+v", k, in[k], v, in)
+		}
 	}
-	if _, sent := in["passed"]; sent {
-		t.Fatalf("a no-verdict evaluation sent passed: %+v", in)
+	for k := range in {
+		if _, ok := want[k]; !ok && k != "aggregateId" && k != "namespace" {
+			t.Fatalf("unexpected field %q sent: %+v", k, in)
+		}
 	}
-	if row := f.Item(finishItem); row["status"] != "evaluating" {
+	if _, sent := in["outcome"]; sent {
+		t.Fatalf("a no-verdict evaluation sent outcome: %+v", in)
+	}
+	if row := f.Item(finishItem); row["status"] != "evaluating" || row["noVerdicts"] != 2 || row["noVerdictReason"] != reason || row["attempts"] != nil {
 		t.Fatalf("row = %+v", row)
 	}
 }
 
-// A gateway whose EvaluateWorkItemInput lacks `outcome` is sent nothing:
+// A gateway whose EvaluateWorkItemInput lacks `noVerdict` is sent nothing:
 // ErrNoVerdictOutcome, asked once and kept for ScalingProbeEvery, then
 // asked again and — the platform having deployed it — sent.
 func TestEvaluateWorkItemNoVerdictOnAnOlderPlatform(t *testing.T) {
 	f := gatewaytest.New("rs_test")
 	defer f.Close()
-	f.NoEvaluationOutcome = true
+	f.NoNoVerdict = true
 	evaluatingItem(f)
 	gw := gateway.New(f.URL(), "rs_test")
 	now := time.Now()
@@ -72,7 +82,7 @@ func TestEvaluateWorkItemNoVerdictOnAnOlderPlatform(t *testing.T) {
 		t.Fatalf("sent to a platform without the field: %+v", calls)
 	}
 
-	f.NoEvaluationOutcome = false
+	f.NoNoVerdict = false
 	now = now.Add(gateway.ScalingProbeEvery)
 	if err := gw.EvaluateWorkItemNoVerdict(ctx, finishItem, "blind", 30, nil); err != nil {
 		t.Fatal(err)
@@ -80,7 +90,7 @@ func TestEvaluateWorkItemNoVerdictOnAnOlderPlatform(t *testing.T) {
 	if n := len(f.ReadsNamed("__type EvaluateWorkItemInput")); n != 2 {
 		t.Fatalf("EvaluateWorkItemInput asked %d times, want 2", n)
 	}
-	if calls := f.CallsNamed("evaluateWorkItem"); len(calls) != 1 || calls[0].Input["outcome"] != gateway.EvaluationNoVerdict {
+	if calls := f.CallsNamed("evaluateWorkItem"); len(calls) != 1 || calls[0].Input["noVerdict"] != true {
 		t.Fatalf("calls = %+v", calls)
 	}
 }
@@ -97,5 +107,30 @@ func TestEvaluateWorkItemCarriesNoOutcome(t *testing.T) {
 	in := f.CallsNamed("evaluateWorkItem")[0].Input
 	if _, sent := in["outcome"]; sent || in["passed"] != false {
 		t.Fatalf("input = %+v", in)
+	}
+}
+
+// The fake refuses what the platform refuses (runsheet ADR 035): a
+// no-verdict that passes, or one with a blank reason, and `outcome`.
+func TestTheFakeRefusesANoVerdictThePlatformRefuses(t *testing.T) {
+	f := gatewaytest.New("rs_test")
+	defer f.Close()
+	evaluatingItem(f)
+	gw := gateway.New(f.URL(), "rs_test")
+	ctx := context.Background()
+	if err := gw.EvaluateWorkItemNoVerdict(ctx, finishItem, "  ", 30, nil); err == nil {
+		t.Fatal("a blank reason was taken")
+	}
+	for _, in := range []map[string]any{
+		{"passed": true, "noVerdict": true, "noVerdictReason": "blind"},
+		{"outcome": "no_verdict", "notes": "blind"},
+		{"noVerdict": true, "noVerdictReason": "blind"},
+	} {
+		if err := gw.Mutate(ctx, "evaluateWorkItem", finishItem, in); err == nil {
+			t.Fatalf("%+v was taken", in)
+		}
+	}
+	if row := f.Item(finishItem); row["status"] != "evaluating" || row["noVerdicts"] != nil {
+		t.Fatalf("row = %+v", row)
 	}
 }

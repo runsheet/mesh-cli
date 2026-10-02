@@ -609,10 +609,11 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 
 // noVerdict records an evaluation that reached no verdict — the deciding
 // session wrote no VERDICT line, or saw no context and the other family
-// could not evaluate it — as the no-verdict outcome with reason, the
-// session's cost and its usage report (ADR 011's amendment 2026-09-29):
-// never a fail, since the evaluator had no way to reach one. A platform
-// without the outcome (gateway.ErrNoVerdictOutcome) records nothing, as
+// could not evaluate it — as a no-verdict (`passed: false`, `noVerdict:
+// true`, the reason; runsheet ADR 035) with the session's cost and its
+// usage report (ADR 011's amendments 2026-09-29 and 2026-10-02): never a
+// fail, since the evaluator had no way to reach one. A platform without
+// `noVerdict` (gateway.ErrNoVerdictOutcome) records nothing, as
 // before: said once per run, and fallback is the error the item waits in
 // evaluating with.
 func (e *Evaluator) noVerdict(ctx context.Context, ev evalRun, reason string, cost float64, usage *gateway.UsageReport, fallback func() error) error {
