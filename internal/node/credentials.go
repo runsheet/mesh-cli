@@ -146,6 +146,14 @@ type SessionAccount struct {
 	// (build, evaluate, rebase, plan, research), which Finish's record
 	// line carries (SetLabel, adr-016's amendment); never on the report.
 	logLabel, kind string
+	// evalPriority and evaluators are an evaluation's goal priority and
+	// whether a second opinion ran (1 or 2), which Finish's record line
+	// also carries for kind evaluate (SetEvaluation, adr-016's amendment
+	// 2026-10-02); never on the report. Neither is written when
+	// evalPriority is empty (SetEvaluation never called, or a goal with
+	// no priority), the same as a record logged before this change.
+	evalPriority string
+	evaluators   int
 	// Tools are the tools the claim-time read handed the session, their
 	// secrets decrypted (nil from a platform without them); what the
 	// session gets of them is SessionTools'.
@@ -572,6 +580,20 @@ func (s *SessionAccount) SetLabel(label, kind string) {
 	s.logLabel, s.kind = label, kind
 }
 
+// SetEvaluation is an evaluation's goal priority at evaluation time and
+// whether a second opinion ran (1 or 2 evaluators): Finish's record
+// line carries them alongside the label and kind, as `<label>: usage
+// evaluate priority=<priority> evaluators=<n> {…}` (adr-016's amendment
+// 2026-10-02), so the saving one evaluator for ordinary work makes is
+// measurable from node.log. They go on the log line only, never on the
+// report the platform takes. Nil-safe.
+func (s *SessionAccount) SetEvaluation(priority string, evaluators int) {
+	if s == nil {
+		return
+	}
+	s.evalPriority, s.evaluators = priority, evaluators
+}
+
 // Carried is the finishing command's answer to the report it carried
 // (err from FinishWorkItem, EvaluateWorkItem, PlanGoal,
 // FinishWorkItemRebase or RecordDirectionResearch). ErrNoUsageLedger is
@@ -744,7 +766,9 @@ func (s *SessionAccount) Finish(ctx context.Context, res harness.Result) {
 
 // recordLine is Finish's record line for the report's JSON: on the
 // session's label with its kind, or the older unlabelled `usage: {…}`
-// when SetLabel was never called.
+// when SetLabel was never called; an evaluation whose SetEvaluation was
+// called carries `priority=<priority> evaluators=<n>` before the JSON
+// too (adr-016's amendment 2026-10-02).
 func (s *SessionAccount) recordLine(js string) string {
 	if s.logLabel == "" {
 		return "usage: " + js
@@ -753,7 +777,11 @@ func (s *SessionAccount) recordLine(js string) string {
 	if kind == "" {
 		kind = "unknown"
 	}
-	return fmt.Sprintf("%s: usage %s %s", s.logLabel, kind, js)
+	extra := ""
+	if s.evalPriority != "" {
+		extra = fmt.Sprintf("priority=%s evaluators=%d ", s.evalPriority, s.evaluators)
+	}
+	return fmt.Sprintf("%s: usage %s %s%s", s.logLabel, kind, extra, js)
 }
 
 // mergeLargestToolResults combines two already-sorted (largest first,

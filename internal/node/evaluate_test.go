@@ -1,6 +1,7 @@
 package node
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -603,6 +604,39 @@ func TestSecondOpinionUsageInTheOneReport(t *testing.T) {
 		t.Fatalf("usage: %v", u)
 	}
 	checkNoOldUsage(t, f)
+}
+
+// The evaluation's usage record carries the goal's priority and the
+// evaluator count (adr-016's amendment 2026-10-02): a normal goal with
+// no second opinion logs evaluators=1, a high goal whose second opinion
+// runs logs evaluators=2 — the measure the goal doc needs for the
+// saving one evaluator for ordinary work makes.
+func TestEvaluationUsageRecordsPriorityAndEvaluators(t *testing.T) {
+	var buf bytes.Buffer
+	f, ev, _, _ := secondFixture(t, "normal", "Holds.\n\nVERDICT: PASS", &fakeCodexH{text: "VERDICT: FAIL"})
+	ev.Credentials.Log = log.New(&buf, "", log.LstdFlags)
+	evaluateItem1(t, f, ev)
+	recs, err := ReadUsage(&buf, UsageQuery{From: day("2000-01-01"), To: day("2100-01-01"), Kind: "evaluate"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recs.Records) != 1 || recs.Records[0].Priority != "normal" || recs.Records[0].Evaluators != 1 {
+		t.Fatalf("records: %+v", recs.Records)
+	}
+
+	buf.Reset()
+	codex := &fakeCodexH{text: "Holds.\nVERDICT: PASS", cost: 0.40,
+		rl: &harness.RateLimit{Status: "allowed", ObservedAt: time.Now()}}
+	f, ev, _, _ = secondFixture(t, "high", "Holds.\n\nVERDICT: PASS", codex)
+	ev.Credentials.Log = log.New(&buf, "", log.LstdFlags)
+	evaluateItem1(t, f, ev)
+	recs, err = ReadUsage(&buf, UsageQuery{From: day("2000-01-01"), To: day("2100-01-01"), Kind: "evaluate"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recs.Records) != 1 || recs.Records[0].Priority != "high" || recs.Records[0].Evaluators != 2 {
+		t.Fatalf("records: %+v", recs.Records)
+	}
 }
 
 // sentNoVerdict says whether an evaluateWorkItem input is the no-verdict
