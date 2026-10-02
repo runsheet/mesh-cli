@@ -104,6 +104,10 @@ type Fake struct {
 	// with "Cannot query field", as the client tolerates (the
 	// evaluation still runs, without the lineage's earlier verdicts).
 	NoEvaluations bool
+	// PlanQuestions is a platform whose PlanGoalInput has `questions`
+	// (ADR-020); without it, as the platform is today, the field is
+	// left out of the introspection and refused on planGoal.
+	PlanQuestions bool
 	// NoUsageTools refuses a `usage` report carrying `tools` (the
 	// per-tool calls) with "Unknown field", as a platform older than
 	// tools-show-their-use whose UsageReportInput has only the total.
@@ -337,6 +341,20 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 			fields = append(fields, map[string]any{"name": n})
 		}
 		writeData(w, map[string]any{"__type": map[string]any{"inputFields": fields}})
+	case strings.Contains(q, "__type(") && req.Variables["t"] == "PlanGoalInput":
+		f.Reads = append(f.Reads, Call{Name: "__type PlanGoalInput", Input: map[string]any{}})
+		if f.Unsupported["__type"] {
+			writeErrors(w, 200, "GraphQL introspection is not allowed")
+			return
+		}
+		fields := []any{}
+		for _, n := range []string{"aggregateId", "by", "costCents", "items", "namespace", "usage", gateway.PlanQuestionsField} {
+			if n == gateway.PlanQuestionsField && !f.PlanQuestions {
+				continue
+			}
+			fields = append(fields, map[string]any{"name": n})
+		}
+		writeData(w, map[string]any{"__type": map[string]any{"inputFields": fields}})
 	case strings.Contains(q, `__type(name: "RegisterNodeInput")`):
 		f.Reads = append(f.Reads, Call{Name: "__type RegisterNodeInput", Input: map[string]any{}})
 		if f.Unsupported["__type"] {
@@ -382,6 +400,10 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 		}
 		if f.Unsupported[m[2]] {
 			writeErrors(w, 200, fmt.Sprintf("Cannot query field %q on type \"Mutation\".", m[2]))
+			return
+		}
+		if _, ok := in[gateway.PlanQuestionsField]; ok && m[2] == "planGoal" && !f.PlanQuestions {
+			writeErrors(w, 200, `Variable "$in" got invalid value; Unknown field "questions" is not defined by type "PlanGoalInput".`)
 			return
 		}
 		if m[2] == "evaluateWorkItem" {
@@ -1067,6 +1089,9 @@ func (f *Fake) apply(name string, in map[string]any) error {
 		case "planGoal":
 			f.Goals[id]["status"] = "awaiting_approval"
 			f.Goals[id]["spentCents"] = toInt(f.Goals[id]["spentCents"]) + toInt(in["costCents"])
+			if qs, ok := in["questions"]; ok {
+				f.Goals[id]["questions"] = qs
+			}
 		case "requestPlan":
 			f.Goals[id]["status"] = "planning"
 		case "claimPlan":

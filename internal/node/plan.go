@@ -360,7 +360,7 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 	}
 	budget, budgetSource := p.budgetWithSource(&goal)
 	p.logf("goal %s: planning in %s (%d repos), budget $%.2f (%s)", goal.Slug, dir, len(repos), budget, budgetSource)
-	items, reasons, flags, cost, acct, err := p.ask(ctx, goal, scope.NodeID, dir, budget, in, repos, merged)
+	items, reasons, flags, questions, cost, acct, err := p.ask(ctx, goal, scope.NodeID, dir, budget, in, repos, merged)
 	acct.SetContextBytes(written.Bytes)
 	acct.SetLabel("goal "+goal.Slug, string(harness.KindPlan))
 	// the session's usage report rides the plan's hand-in; Finish logs it
@@ -370,13 +370,14 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 		return err
 	}
 	if len(flags) > 0 {
-		// adr-004: an acceptance no evaluator can see is the plan's error;
-		// the planner is asked once more with what was flagged
+		// adr-004: an acceptance no evaluator can see is the plan's error,
+		// and ADR-020: so is a reading of the host as a merge gate; the
+		// planner is asked once more with what was flagged
 		p.logf("goal %s: plan names what no evaluator can see; asking again: %s", goal.Slug, strings.Join(flags, " | "))
 		in.Rejected = flags
 		var again float64
 		var second *SessionAccount
-		items, reasons, flags, again, second, err = p.ask(ctx, goal, scope.NodeID, dir, budget, in, repos, merged)
+		items, reasons, flags, questions, again, second, err = p.ask(ctx, goal, scope.NodeID, dir, budget, in, repos, merged)
 		defer second.Finish(ctx, harness.Result{})
 		second.SetContextBytes(written.Bytes)
 		second.SetLabel("goal "+goal.Slug, string(harness.KindPlan))
@@ -395,21 +396,41 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 			p.logf("goal %s: plan still names what no evaluator can see; handing it in: %s", goal.Slug, strings.Join(flags, " | "))
 		}
 	}
-	return p.handIn(ctx, goal, items, reasons, cost, acct)
+	return p.handIn(ctx, goal, items, reasons, questions, cost, acct)
 }
 
 // handIn hands the graph in with PlanGoal, carrying the planner
 // session's usage report (acct's, built as it ended; none for an adopted
 // one), and logs each item's model.
-func (p *Planner) handIn(ctx context.Context, goal gateway.Goal, items []gateway.PlannedItem, reasons map[int]string, cost float64, acct *SessionAccount) error {
+func (p *Planner) handIn(ctx context.Context, goal gateway.Goal, items []gateway.PlannedItem, reasons map[int]string, questions []harness.PlanQuestion, cost float64, acct *SessionAccount) error {
 	by := ""
 	if p.Cfg != nil {
 		by = p.Cfg.OwnerID
 	}
-	if err := acct.Carried(p.GW.PlanGoal(ctx, goal.ID, by, items, Cents(cost), acct.Report(harness.Result{}))); err != nil {
+	// ADR-020: the planner's questions for the person ride the plan on a
+	// platform that takes them; else each is said once here, and the
+	// person reads them in node.log until the platform half lands
+	var sent []gateway.PlanQuestion
+	if len(questions) > 0 && p.GW.TakesPlanQuestions(ctx) {
+		for _, q := range questions {
+			sent = append(sent, gateway.PlanQuestion{Clause: q.Clause, Question: q.Question})
+		}
+	} else {
+		for _, q := range questions {
+			p.logf("plan %s: question for the person: %s — %s", goal.Slug, q.Clause, q.Question)
+		}
+	}
+	if err := acct.Carried(p.GW.PlanGoal(ctx, goal.ID, by, items, Cents(cost), acct.Report(harness.Result{}), sent...)); err != nil {
 		return fmt.Errorf("hand in the plan: %w", err)
 	}
-	p.logf("goal %s: planned, %d items ($%.2f)", goal.Slug, len(items), cost)
+	switch len(questions) {
+	case 0:
+		p.logf("goal %s: planned, %d items ($%.2f)", goal.Slug, len(items), cost)
+	case 1:
+		p.logf("goal %s: planned, %d items and a question for the person ($%.2f)", goal.Slug, len(items), cost)
+	default:
+		p.logf("goal %s: planned, %d items and %d questions for the person ($%.2f)", goal.Slug, len(items), len(questions), cost)
+	}
 	for _, it := range items {
 		model := it.Model
 		if model == "" {
@@ -425,15 +446,15 @@ func (p *Planner) handIn(ctx context.Context, goal gateway.Goal, items []gateway
 
 // ask runs one planner session on in and reads its graph: the items
 // mapped onto the project's repos, each item's model_reason by seq, the
-// check's flags on their acceptance (unverifiableAcceptance), the
-// session's cost and its account, whose usage report is built as the
+// check's flags on their acceptance (unverifiableAcceptance,
+// hostReadingAcceptance), its questions for the person, the session's cost and its account, whose usage report is built as the
 // session ends: the caller hands it in and Finishes it. An error means
 // there is no graph to hand in.
-func (p *Planner) ask(ctx context.Context, goal gateway.Goal, nodeID, dir string, budget float64, in harness.PlanInput, repos map[string]gateway.Repo, merged []int) ([]gateway.PlannedItem, map[int]string, []string, float64, *SessionAccount, error) {
+func (p *Planner) ask(ctx context.Context, goal gateway.Goal, nodeID, dir string, budget float64, in harness.PlanInput, repos map[string]gateway.Repo, merged []int) ([]gateway.PlannedItem, map[int]string, []string, []harness.PlanQuestion, float64, *SessionAccount, error) {
 	job := harness.Job{Kind: harness.KindPlan, Workspace: dir, Prompt: harness.PlanPrompt(in), MaxBudgetUSD: budget, Label: goal.Slug + " plan", Timeout: p.Timeout, MCPServers: p.MCP, Model: p.Model}
 	acct, err := p.Credentials.Open(ctx, gateway.SessionRef{Kind: string(harness.KindPlan), GoalID: goal.ID}, nodeID, p.Accounts, Adapter(p.Harness))
 	if err != nil {
-		return nil, nil, nil, 0, nil, err
+		return nil, nil, nil, nil, 0, nil, err
 	}
 	defer unlessDetached(ctx, acct.Cleanup)
 	acct.Apply(&job)
@@ -442,32 +463,32 @@ func (p *Planner) ask(ctx context.Context, goal gateway.Goal, nodeID, dir string
 	job.Outlive = true
 	result, err := p.Harness.Run(ctx, job, nil)
 	acct.Report(result)
-	items, reasons, flags, cost, err := p.readPlan(ctx, goal, dir, acct, result, err, repos, merged, in.Evidence)
-	return items, reasons, flags, cost, acct, err
+	items, reasons, flags, questions, cost, err := p.readPlan(ctx, goal, dir, acct, result, err, repos, merged, in.Evidence)
+	return items, reasons, flags, questions, cost, acct, err
 }
 
 // readPlan is what follows a planner session, however this process came
 // to hold it: its graph read and mapped onto the project's repos, as ask
 // describes. A cancelled ctx leaves the session running for the next
 // node to adopt; otherwise its session directory goes.
-func (p *Planner) readPlan(ctx context.Context, goal gateway.Goal, dir string, acct *SessionAccount, result harness.Result, err error, repos map[string]gateway.Repo, merged []int, evidence []harness.ModelEvidence) ([]gateway.PlannedItem, map[int]string, []string, float64, error) {
+func (p *Planner) readPlan(ctx context.Context, goal gateway.Goal, dir string, acct *SessionAccount, result harness.Result, err error, repos map[string]gateway.Repo, merged []int, evidence []harness.ModelEvidence) ([]gateway.PlannedItem, map[int]string, []string, []harness.PlanQuestion, float64, error) {
 	// logged before a done ctx returns: a deadline kills the unit too,
 	// and a detach kills nothing
 	logKilled(p.logf, "goal "+goal.Slug, result.KilledPerSession(), result.KillError)
 	if ctx.Err() != nil {
-		return nil, nil, nil, 0, ctx.Err()
+		return nil, nil, nil, nil, 0, ctx.Err()
 	}
 	defer harness.RemoveSession(dir)
 	if errors.Is(err, context.DeadlineExceeded) {
-		return nil, nil, nil, 0, fmt.Errorf("planner session ran out of time (%s)", p.Timeout)
+		return nil, nil, nil, nil, 0, fmt.Errorf("planner session ran out of time (%s)", p.Timeout)
 	}
 	if err != nil {
-		return nil, nil, nil, 0, fmt.Errorf("planner session: %w", acct.RedactErr(err))
+		return nil, nil, nil, nil, 0, fmt.Errorf("planner session: %w", acct.RedactErr(err))
 	}
 	result.Text = acct.Redact(result.Text)
 	specs, err := harness.ParsePlan(result.Text, merged...)
 	if err != nil {
-		return nil, nil, nil, 0, fmt.Errorf("planner session (%s): %w: %s", result.SessionID, err, truncate(result.Text, 300))
+		return nil, nil, nil, nil, 0, fmt.Errorf("planner session (%s): %w: %s", result.SessionID, err, truncate(result.Text, 300))
 	}
 	items := make([]gateway.PlannedItem, 0, len(specs))
 	itemRepo := map[int]gateway.Repo{}
@@ -483,7 +504,7 @@ func (p *Planner) readPlan(ctx context.Context, goal gateway.Goal, dir string, a
 			}
 		}
 		if !ok {
-			return nil, nil, nil, 0, fmt.Errorf("item %d names repo %q, not one of the project's", sp.Seq, sp.Repo)
+			return nil, nil, nil, nil, 0, fmt.Errorf("item %d names repo %q, not one of the project's", sp.Seq, sp.Repo)
 		}
 		itemRepo[sp.Seq] = r
 		base := strings.TrimSpace(sp.BaseRef)
@@ -502,8 +523,9 @@ func (p *Planner) readPlan(ctx context.Context, goal gateway.Goal, dir string, a
 		items = append(items, gateway.PlannedItem{Seq: sp.Seq, Title: strings.TrimSpace(sp.Title), Brief: briefWithDeps(sp.Brief, deps, because), Acceptance: strings.TrimSpace(sp.Acceptance), DependsOn: deps, DependsBecause: because, RepoID: r.ID, BaseRef: base, Model: model})
 	}
 	flags := unverifiableAcceptance(specs, itemRepo, repos)
+	flags = append(flags, hostReadingAcceptance(specs)...)
 	flags = append(flags, modelAgainstEvidence(specs, evidence)...)
-	return items, reasons, flags, result.CostUSD, nil
+	return items, reasons, flags, harness.ParsePlanQuestions(result.Text), result.CostUSD, nil
 }
 
 // explainedDeps keeps the item's dependencies that carry a because and
@@ -584,14 +606,14 @@ func (p *Planner) AdoptPlan(ctx context.Context, goal gateway.Goal, scope Scope,
 	}
 	p.logf("goal %s: adopted its %s planner session (pid %d)", goal.Slug, s.Liveness(), s.State.PID)
 	result, err := at.Attach(ctx, s.Dir, nil)
-	items, reasons, flags, cost, err := p.readPlan(ctx, goal, s.State.Workspace, nil, result, err, repos, merged, p.evidence(ctx, goal.Slug, scope, project))
+	items, reasons, flags, questions, cost, err := p.readPlan(ctx, goal, s.State.Workspace, nil, result, err, repos, merged, p.evidence(ctx, goal.Slug, scope, project))
 	if err != nil {
 		return err
 	}
 	if len(flags) > 0 {
 		p.logf("goal %s: adopted plan names what no evaluator can see; handing it in: %s", goal.Slug, strings.Join(flags, " | "))
 	}
-	return p.handIn(ctx, goal, items, reasons, cost, nil)
+	return p.handIn(ctx, goal, items, reasons, questions, cost, nil)
 }
 
 // contextBudget is the context budget for p's sessions: live, through

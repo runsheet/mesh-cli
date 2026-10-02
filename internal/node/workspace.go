@@ -992,7 +992,10 @@ type Gateway interface {
 	Goal(ctx context.Context, id string) (*gateway.Goal, error)
 	Goals(ctx context.Context, orgID string) ([]gateway.Goal, error)
 	ClaimPlan(ctx context.Context, goalID, nodeID string) error
-	PlanGoal(ctx context.Context, goalID, by string, items []gateway.PlannedItem, costCents int, usage *gateway.UsageReport) error
+	PlanGoal(ctx context.Context, goalID, by string, items []gateway.PlannedItem, costCents int, usage *gateway.UsageReport, questions ...gateway.PlanQuestion) error
+	// TakesPlanQuestions is whether PlanGoal can carry the planner's
+	// questions for the person (ADR-020).
+	TakesPlanQuestions(ctx context.Context) bool
 	Project(ctx context.Context, id string) (*gateway.Project, error)
 	Projects(ctx context.Context, orgID string) ([]gateway.Project, error)
 	Directions(ctx context.Context, orgID, projectID string) ([]gateway.Direction, error)

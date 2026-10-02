@@ -121,7 +121,10 @@ type Client struct {
 	// clausesSchema is whether the gateway's evaluateWorkItem input was
 	// last seen to take failedClauses, kept for ScalingProbeEvery.
 	clausesSchema holdingProbe
-	Now           func() time.Time
+	// questionsSchema is whether the gateway's planGoal input was last
+	// seen to take questions, kept for ScalingProbeEvery.
+	questionsSchema holdingProbe
+	Now             func() time.Time
 }
 
 // New returns a client for baseURL (scheme+host, no trailing slash) with
@@ -2560,8 +2563,11 @@ func (c *Client) RecordDirectionResearch(ctx context.Context, directionID, nodeI
 // when non-nil: see UsageReport, ErrNoUsageLedger). An item's model is
 // sent only when it has one; a platform older than
 // items-carry-a-model refuses the field, and the graph is handed in
-// again without it.
-func (c *Client) PlanGoal(ctx context.Context, goalID, by string, items []PlannedItem, costCents int, usage *UsageReport) error {
+// again without it. questions are the clauses the planner could not
+// phrase as what a pull request can change (ADR-020), sent only to a
+// gateway whose PlanGoalInput takes them (TakesPlanQuestions); the
+// caller says them otherwise.
+func (c *Client) PlanGoal(ctx context.Context, goalID, by string, items []PlannedItem, costCents int, usage *UsageReport, questions ...PlanQuestion) error {
 	send := func(withModel bool) error {
 		list := make([]map[string]any, 0, len(items))
 		for _, it := range items {
@@ -2579,6 +2585,9 @@ func (c *Client) PlanGoal(ctx context.Context, goalID, by string, items []Planne
 			list = append(list, row)
 		}
 		m := map[string]any{"items": list, "costCents": costCents}
+		if len(questions) > 0 && c.TakesPlanQuestions(ctx) {
+			m[PlanQuestionsField] = questions
+		}
 		if by != "" {
 			m["by"] = by
 		}
@@ -2590,6 +2599,24 @@ func (c *Client) PlanGoal(ctx context.Context, goalID, by string, items []Planne
 		return send(false)
 	}
 	return err
+}
+
+// PlanQuestionsField is planGoal's input field for the planner's
+// questions for the person.
+const PlanQuestionsField = "questions"
+
+// PlanQuestion is a clause of the goal no pull request can satisfy, and
+// what the planner asks the person about it (ADR-020).
+type PlanQuestion struct {
+	Clause   string `json:"clause"`
+	Question string `json:"question"`
+}
+
+// TakesPlanQuestions is whether the gateway's PlanGoalInput has
+// `questions` (introspected, kept for ScalingProbeEvery): a platform
+// without it is never sent the field.
+func (c *Client) TakesPlanQuestions(ctx context.Context) bool {
+	return c.takesInputField(ctx, &c.questionsSchema, "PlanGoalInput", PlanQuestionsField)
 }
 
 // ApproveGraph approves the pending graph checkpoint.
