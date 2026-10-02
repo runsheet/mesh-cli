@@ -813,3 +813,49 @@ accounts: issued shhemail (subscription, serves all, paces at node-wide)
 — the kind, what it serves (`all` when `Priorities` is empty), and its
 own pace point (`N% five-hour`, `N% seven-day`, both joined when both
 are set, or `node-wide` when neither is).
+
+## Amendment — 2026-10-02 (goal `a-credential-names-the-priorities-it-serves`, item 4): the heartbeat's `limits` carry `priorities`
+
+Item 1 made the node read an account's priorities off the claim-time
+read; this item puts them on the heartbeat too, so the Nodes page's
+account gauges can show what each serves — not just node.log and
+`holding.accounts[].takes.priorities`, which only ever reach the
+console once something is held back.
+
+**`gateway.Limits` gains `Priorities []string`** (`json:"priorities,omitempty"`):
+empty — an account serving all, or one the loop has not yet learned the
+platform issued — sends no key, so an account that serves everything
+looks the same on the wire as before this amendment and an older
+platform is unaffected either way. `Limits.Heartbeat(known
+[]AccountConfig)` (`internal/node/limits.go`) fills it from the matching
+`AccountConfig.Priorities` among `known` — the accounts
+`KnownAccounts.Accounts` remembers, the same store item 2 persists — by
+label, a Codex reading's `codex:` prefix stripped first (`Loop.Tick`
+calls it as `l.limitsStore().Heartbeat(l.Known.Accounts(l.now()))`).
+
+**Gated on the platform's schema, the way `scaling` and `holding`
+are** (ADR-004: an input field the platform does not know refuses the
+whole heartbeat). `Client.takesLimitsPriorities` introspects
+`HeartbeatNodeInput`, walks its `limits` field's wrapping types (list,
+non-null) to the named input object, and asks whether that has a
+`priorities` field — asked once by introspection and kept for
+`ScalingProbeEvery` (an hour), as every other heartbeat gate is. When it
+answers no, `HeartbeatNode` sends each limits row through
+`limitsWithoutPriorities`, which drops the key from the wire shape
+rather than touching what `Limits.Heartbeat` built — the same row,
+`priorities` included, is what a probe answering yes sends as-is.
+
+**The platform half is owed to runsheet/runsheet**: `NodeAccountLimitsInput`
+needs a `priorities` field (`[String!]`, the Priority enum's names,
+nullable to stay compatible with a node that has not upgraded), and the
+Nodes page's per-account gauge needs to read it and show what the
+account serves beside its utilization — the same words `holding`'s
+`takes.priorities` and node.log's `accounts: issued …` already use
+(`urgent, high` or `all`).
+
+Tests: `TestHeartbeatLimitsCarryPriorities` (a gatewaytest fixture whose
+`NodeAccountLimitsInput` has `priorities` carries `[urgent, high]` for a
+reserved account and no key for one serving all) and
+`TestHeartbeatLimitsOmitPrioritiesOnAnOlderPlatform` (a fixture without
+it: no limits entry carries the key, and the heartbeat is still
+recorded).
