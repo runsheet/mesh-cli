@@ -834,7 +834,7 @@ func (l *Loop) Tick(ctx context.Context) {
 	// the heartbeat goes out before this tick's pass, so its holding is
 	// the last pass's decision (nil before the first; a draining node,
 	// which makes no pass, keeps sending its last one unchanged)
-	extras := gateway.HeartbeatExtras{Draining: l.Draining(), UpdateError: l.UpdateError(), Limits: l.limitsStore().Heartbeat(), Runtimes: runtimes, Adapters: adapters, Sandbox: l.Sandbox, Reason: l.Condition(), Adopted: l.Adopted(), Holding: l.Holding(), Commit: l.Commit}
+	extras := gateway.HeartbeatExtras{Draining: l.Draining(), UpdateError: l.UpdateError(), Limits: l.limitsStore().Heartbeat(l.Known.Accounts(l.now())), Runtimes: runtimes, Adapters: adapters, Sandbox: l.Sandbox, Reason: l.Condition(), Adopted: l.Adopted(), Holding: l.Holding(), Commit: l.Commit}
 	scaling, ranged := l.Scaling()
 	extras.Scaling = l.heartbeatScaling(scaling, ranged)
 	if l.Scaled != nil {
@@ -1133,7 +1133,7 @@ func (l *Loop) withAccount(ctx context.Context, what, priority string, choose fu
 		}
 		return ctx, false
 	}
-	ctx = withChooser(ctx, func(issued []AccountConfig) (AccountConfig, bool) {
+	ctx = withChooser(withPriority(ctx, priority), func(issued []AccountConfig) (AccountConfig, bool) {
 		// Credentials.Open hands in one adapter's accounts: a Codex
 		// session's are judged by the Codex readings
 		readings := l.limitsStore().Readings()
@@ -1427,7 +1427,7 @@ func (l *Loop) evaluateHeld(ctx context.Context) {
 		// still evaluates it (ADR 011)
 		actx, ok := l.accountToFinish(ctx, priorityName(h.rank), "")
 		if !ok && l.CodexRoom != nil && l.CodexRoom(priorityName(h.rank)) {
-			actx, ok = ctx, true
+			actx, ok = withPriority(ctx, priorityName(h.rank)), true
 		}
 		if !ok {
 			if l.waiting != nil {
@@ -1662,8 +1662,10 @@ func (l *Loop) researchDue(ctx context.Context) {
 			}
 			// research is not work that waits: it runs only on a
 			// subscription with headroom for normal work, never on an
-			// api account and never on a paced one
-			actx, ok := l.accountFor(ctx, "low", false, "")
+			// api account and never on a paced one; it has no priority
+			// (""), so any credential's priorities serve it (adr-005's
+			// amendment 2026-10-02)
+			actx, ok := l.accountFor(ctx, "", false, "")
 			if !ok {
 				continue
 			}
@@ -1721,13 +1723,29 @@ func (l *Loop) Adopt(ctx context.Context, item gateway.WorkItem) bool {
 	l.running[item.ID] = true
 	l.mu.Unlock()
 	l.logf("adopted held item %d %q", item.Seq, item.Title)
-	// already held: it runs on the account with the most headroom, or on
-	// on what the claim-time read issues when none has any
-	if actx, ok := l.accountFor(ctx, "high", true, ""); ok {
+	// already held: it runs on the account serving its goal's priority
+	// with the most headroom, a paced one as if pressing, or on what the
+	// claim-time read issues when none has any — never on a credential
+	// reserved for other work (adr-005's amendment 2026-10-02)
+	priority := l.goalPriority(ctx, item.GoalID)
+	ctx = withPriority(ctx, priority)
+	if actx, ok := l.accountToFinish(ctx, priority, ""); ok {
 		ctx = actx
 	}
 	l.run(ctx, item)
 	return true
+}
+
+// goalPriority is the priority of the goal an item belongs to, read
+// from the platform; a goal it cannot read is "high", as a held item's
+// was before priorities were served, said in the log.
+func (l *Loop) goalPriority(ctx context.Context, goalID string) string {
+	g, err := l.GW.Goal(ctx, goalID)
+	if err != nil || g == nil {
+		l.logf("adopt: goal %s: priority unread (%v); taken as high", goalID, err)
+		return "high"
+	}
+	return priorityName(gateway.PriorityRank(g.Priority))
 }
 
 func (l *Loop) start(ctx context.Context, item gateway.WorkItem) {

@@ -2,6 +2,8 @@ package gateway_test
 
 import (
 	"context"
+	"reflect"
+	"strings"
 	"testing"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
@@ -56,7 +58,7 @@ func TestSessionCredentials(t *testing.T) {
 		t.Fatalf("credentials = %#v, want %d", got, len(want))
 	}
 	for i := range want {
-		if got[i] != want[i] {
+		if !reflect.DeepEqual(got[i], want[i]) {
 			t.Errorf("credential %d = %#v (secret %q), want %#v", i, got[i], got[i].Secret, want[i])
 		}
 	}
@@ -96,7 +98,7 @@ func TestSessionCredentialsCodex(t *testing.T) {
 		t.Fatalf("credentials = %#v, want %d", got, len(want))
 	}
 	for i := range want {
-		if got[i] != want[i] {
+		if !reflect.DeepEqual(got[i], want[i]) {
 			t.Errorf("credential %d = %#v, want %#v", i, got[i], want[i])
 		}
 	}
@@ -128,6 +130,80 @@ func TestPlanAndResearchReadTheirOwnFields(t *testing.T) {
 	if _, err := gw.Session(context.Background(), gateway.SessionRef{Kind: "plan"}, nodeID); err == nil {
 		t.Fatal("a ref naming nothing must be an error")
 	}
+}
+
+// A credential's priorities and windowTargets ride the claim-time read
+// (adr-005's amendment 2026-10-02): priorities is kept to the known
+// priorities, lower-cased, and windowTargets to its window and percent.
+// A row naming neither parses to nil/empty, the behaviour before the
+// amendment. Credential.String() names what it serves and never its
+// secret.
+func TestCredentialPriorities(t *testing.T) {
+	f := gatewaytest.New("rs_test")
+	defer f.Close()
+	f.SessionCredentials[itemID] = []map[string]any{
+		{"id": "c1", "label": "max20", "vendor": "anthropic", "kind": "subscription", "serves": []any{"claude-code"},
+			"priorities": []any{"urgent", "high"}, "windowTargets": []any{map[string]any{"window": "five_hour", "percent": 50.0}},
+			"secret": "sk-ant-oat01-reserved"},
+		anthropicSubscription("c2", "shhemail", "sk-ant-oat01-plain"),
+	}
+	gw := gateway.New(f.URL(), "rs_test")
+	got, err := gw.SessionCredentials(context.Background(), gateway.SessionRef{Kind: "build", ItemID: itemID}, nodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("credentials = %#v, want 2", got)
+	}
+	reserved := got[0]
+	if want := []string{"urgent", "high"}; !equalStrings(reserved.Priorities, want) {
+		t.Errorf("priorities = %v, want %v", reserved.Priorities, want)
+	}
+	wantWindows := []gateway.WindowTarget{{Window: "five_hour", Percent: 50}}
+	if !equalWindows(reserved.WindowTargets, wantWindows) {
+		t.Errorf("windowTargets = %#v, want %#v", reserved.WindowTargets, wantWindows)
+	}
+	if s := reserved.String(); !strings.Contains(s, "serves urgent, high") {
+		t.Errorf("String() = %q, want it to name what it serves", s)
+	}
+	if strings.Contains(reserved.String(), reserved.Secret) {
+		t.Errorf("String() = %q, leaks the secret", reserved.String())
+	}
+
+	plain := got[1]
+	if len(plain.Priorities) != 0 {
+		t.Errorf("priorities = %v, want none (serves all)", plain.Priorities)
+	}
+	if len(plain.WindowTargets) != 0 {
+		t.Errorf("windowTargets = %#v, want none", plain.WindowTargets)
+	}
+	if s := plain.String(); !strings.Contains(s, "serves all") {
+		t.Errorf("String() = %q, want it to say it serves all", s)
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func equalWindows(a, b []gateway.WindowTarget) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // A platform without the read answers IsUnsupported: the

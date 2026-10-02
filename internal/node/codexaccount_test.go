@@ -334,7 +334,7 @@ func TestCodexReadingsApart(t *testing.T) {
 		t.Errorf("CodexReadings = %v", got)
 	}
 	var accounts []string
-	for _, h := range l.Heartbeat() {
+	for _, h := range l.Heartbeat(nil) {
 		accounts = append(accounts, h.Account)
 	}
 	if strings.Join(accounts, ",") != "codex:chatgpt-pro,max-cloud" {
