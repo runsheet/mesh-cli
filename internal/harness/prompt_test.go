@@ -216,3 +216,28 @@ func TestPromptsCarryTheServicesLine(t *testing.T) {
 		}
 	}
 }
+
+// Every kind of session prompt, given MeshContext, tells the session to
+// use mesh-context's tools (mesh_document, mesh_search, mesh_projects,
+// mesh_documents) and never a prologue_ tool name.
+func TestPromptsNameMeshContext(t *testing.T) {
+	prompts := map[string]string{
+		"build": BuildPrompt(PromptInput{Title: "x", Repo: "acme/widgets", ContextDir: ".mesh/context", Project: "acme/mesh", MeshContext: true}),
+		"evaluate": EvaluatePrompt(EvaluateInput{GoalSlug: "g", GoalTitle: "G", Seq: 1, Title: "T", Repo: "o/r", Branch: "b", BaseRef: "main",
+			ContextDir: ".mesh/context", Project: "acme/mesh", MeshContext: true}),
+		"plan":     PlanPrompt(PlanInput{GoalSlug: "g", GoalTitle: "G", Org: "o", Project: "p", ContextDir: ".mesh/context", MeshContext: true}),
+		"research": ResearchPrompt(ResearchInput{Org: "acme", Project: "mesh", ContextDir: ".mesh/context", Room: 1, MeshContext: true}),
+		"rebase": RebasePrompt(RebaseInput{GoalSlug: "g", GoalTitle: "G", Seq: 1, Title: "T", Repo: "o/r", Branch: "b", BaseRef: "main",
+			Project: "acme/mesh", MeshContext: true}),
+	}
+	for kind, p := range prompts {
+		for _, want := range []string{"mesh_document", "mesh_search", "mesh_projects", "mesh_documents"} {
+			if !strings.Contains(p, want) {
+				t.Errorf("%s prompt lacks %q:\n%s", kind, want, p)
+			}
+		}
+		if strings.Contains(p, "prologue_") {
+			t.Errorf("%s prompt still names a prologue_ tool:\n%s", kind, p)
+		}
+	}
+}

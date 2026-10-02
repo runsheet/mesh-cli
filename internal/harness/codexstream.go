@@ -460,8 +460,8 @@ func bwrapLine(out string) string {
 // own answer: `error` null or absent (Codex sets it when the call never
 // reached the server — an approval refusal, a transport or auth failure
 // — even with an empty message) and a `result` the server returned, its
-// isError content, whatever shape it has (docs/codex-events.md,
-// `prologue: not found`). It judges the JSON values, never their text.
+// isError content, whatever shape it has (docs/codex-events.md's dated
+// `not found` example). It judges the JSON values, never their text.
 func codexToolAnswered(it *CodexItem) bool {
 	return jsonNull(it.Error) && !jsonNull(it.Result)
 }
