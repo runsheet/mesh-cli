@@ -33,7 +33,10 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   and a retry that fails a clause an earlier attempt failed opens its
   review with `fails on the same clause as attempt N: <clause>`
   (`SameClauseLine`; `SameClause` finds the repeat and `NoteSameClause`
-  prepends the line when the model forgot it; ADR-020), the planner ends with the JSON graph in a fenced
+  prepends the line when the model forgot it — the node applies it in
+  `afterEvaluate` on either family before `EvaluateWorkItem` and logs
+  `fails on the same clause as attempt N`, and one `reading recorded:
+  <clause>` line per READING, which rides the notes; ADR-020), the planner ends with the JSON graph in a fenced
   block — `items` and, beside them, `"questions": [{"clause", "question"}]`
   for a clause no PR can satisfy (`ParsePlanQuestions`; sent with
   `planGoal` only when its input has `questions`, `TakesPlanQuestions`,

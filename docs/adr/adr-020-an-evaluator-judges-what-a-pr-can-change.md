@@ -135,7 +135,17 @@ it either way. Both lines are contract, like `FAILED:` and `VERDICT:`.
 - The planner's check is lexical: "a diff under 200 lines" is no
   reading and passes, but a sentence that names seconds and a size
   limit together is flagged; the cost is one re-ask.
-- The node records the readings and applies `NoteSameClause` when it
-  hands the verdict in, and the evaluator's prompt is given the
-  lineage's previous verdicts: later items of this goal. Until the
-  platform stores readings they ride the notes.
+- The node (`afterEvaluate`, on either family and on an adopted
+  session) applies `NoteSameClause` to a failing verdict's notes before
+  `EvaluateWorkItem`, against the item's earlier verdicts
+  (`WorkItemPriorAttempts`, the same read that gives the retry's prompt
+  the lineage), and logs `item <label>: fails on the same clause as
+  attempt N`. Readings need no gateway field: they ride the notes, and
+  node.log carries one `item <label>: reading recorded: <clause>` line
+  per `READING:` line. Notes cut to fit (`truncateNotes`, either
+  family's and both together) cut the review and keep every `READING:`
+  line after it, so a reading node.log says was recorded is in the
+  recorded notes. `host_reading_replay_test.go` replays item 5
+  (a pass with its reading, and with a review long enough to be cut)
+  and item 14 against item 17 (the
+  same-clause first line) on Claude and on Codex.
