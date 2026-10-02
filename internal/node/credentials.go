@@ -165,43 +165,28 @@ type SessionAccount struct {
 // withSubject put on ctx: the session never falls to node.yaml's
 // accounts or the operator's own login (adr-005's amendment 2026-10).
 // Only a platform without the read leaves node.yaml's accounts
-// (OpenAccount) — for a Codex session, the Codex harness's own account
-// (no AccountSession); a refusal is an error. No error or log line
-// carries a secret.
+// (OpenAccount), and only for a Claude session; a Codex session has no
+// such fallback — no issued Codex credential is ErrNoAccount, never the
+// operator's own Codex login (ADR 011's amendment 2026-10-02). A refusal
+// is an error. No error or log line carries a secret.
 func (c *Credentials) Open(ctx context.Context, ref gateway.SessionRef, nodeID string, fallback []AccountConfig, adapter string) (*SessionAccount, error) {
-	return c.open(ctx, ref, nodeID, fallback, adapter, nil)
-}
-
-// OpenOwn is a Codex session on the Codex harness's own account (own:
-// node.yaml's codex: account, its label and kind), chosen by the
-// evaluator over the issued ones: the claim-time read is still asked
-// for the session's tools and noted in Known, but no issued credential
-// is opened, and the report names own. A read that answered and issued
-// no Codex credential is ErrNoCredential here too: own never runs a
-// session the platform issued nothing for (adr-005's amendment 2026-10).
-func (c *Credentials) OpenOwn(ctx context.Context, ref gateway.SessionRef, nodeID string, own AccountConfig) (*SessionAccount, error) {
-	return c.open(ctx, ref, nodeID, nil, AdapterCodex, &own)
-}
-
-func (c *Credentials) open(ctx context.Context, ref gateway.SessionRef, nodeID string, fallback []AccountConfig, adapter string, own *AccountConfig) (*SessionAccount, error) {
 	if adapter == "" {
 		adapter = AdapterClaudeCode
 	}
 	if adapter == AdapterCodex {
-		// node.yaml's accounts are Claude's; the codex: block's is the
-		// harness's own
+		// node.yaml's accounts are Claude's, and a Codex session runs
+		// only on an issued credential
 		fallback = nil
 	}
 	if c == nil {
+		if adapter == AdapterCodex {
+			return nil, ErrNoAccount
+		}
 		acct, err := OpenAccount(ctx, fallback)
 		if err != nil {
 			return nil, err
 		}
-		s := &SessionAccount{AccountSession: acct, Adapter: adapter}
-		if own != nil {
-			s.account = *own
-		}
-		return s, nil
+		return &SessionAccount{AccountSession: acct, Adapter: adapter}, nil
 	}
 	s := &SessionAccount{creds: c, ref: ref, nodeID: nodeID, started: c.now(), Adapter: adapter}
 	var issued []gateway.Credential
@@ -240,14 +225,10 @@ func (c *Credentials) open(ctx context.Context, ref gateway.SessionRef, nodeID s
 		}
 		c.NoCredential.Clear(subj.projectID, adapter)
 	}
-	if own != nil {
-		for _, cr := range issued {
-			if err := c.Known.Note(IssuedAccount(cr), c.now()); err != nil {
-				c.logf("known accounts: %v", err)
-			}
-		}
-		s.account = *own
-	} else if len(issued) == 0 {
+	if len(issued) == 0 && adapter == AdapterCodex {
+		return nil, ErrNoAccount
+	}
+	if len(issued) == 0 {
 		acct, err := OpenAccount(ctx, fallback)
 		if err != nil {
 			return nil, err

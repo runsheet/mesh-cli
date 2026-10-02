@@ -372,3 +372,20 @@ func containsStr(list []string, s string) bool {
 	}
 	return false
 }
+
+// A Codex session with no issued Codex credential has no account: a
+// read that issues nothing, a platform without the read, and no
+// Credentials at all are each ErrNoAccount — never the operator's own
+// Codex login, which no longer exists as an account (codex:default).
+func TestCodexOpenWithNothingIssuedIsNoAccount(t *testing.T) {
+	cacheRoot(t)
+	ref := gateway.SessionRef{Kind: "evaluate", ItemID: item1}
+	c := &Credentials{GW: &credsGW{}, Log: log.New(&syncBuf{}, "", 0)}
+	if _, err := c.Open(context.Background(), ref, "n", nil, AdapterCodex); !errors.Is(err, ErrNoAccount) {
+		t.Fatalf("nothing issued = %v, want ErrNoAccount", err)
+	}
+	var none *Credentials
+	if _, err := none.Open(context.Background(), ref, "n", nil, AdapterCodex); !errors.Is(err, ErrNoAccount) {
+		t.Fatalf("no Credentials = %v, want ErrNoAccount", err)
+	}
+}

@@ -111,11 +111,10 @@ func (s *Limits) Observe(account string, rl *harness.RateLimit) {
 // (docs/adr/adr-005-codex-second-opinion.md).
 const CodexAccountPrefix = "codex:"
 
-// CodexLimitsAccount is the key a Codex account's readings land under.
+// CodexLimitsAccount is the key a Codex account's readings land under:
+// its label's. Every Codex session runs on an issued credential, which
+// has one; there is no codex:default of the operator's own login.
 func CodexLimitsAccount(name string) string {
-	if name == "" {
-		name = DefaultAccount
-	}
 	return CodexAccountPrefix + name
 }
 
@@ -199,8 +198,9 @@ func ObserveLimits(h harness.Harness, store *Limits) harness.Harness {
 	return &limitsHarness{Harness: h, store: store}
 }
 
-// ObserveLimitsAs is ObserveLimits under one fixed account key: a Codex
-// harness's, CodexLimitsAccount of its account.
+// ObserveLimitsAs is ObserveLimits under one fixed account key, for a
+// job that names none: a Codex session on an issued credential lands
+// under CodexLimitsAccount of its label all the same.
 func ObserveLimitsAs(h harness.Harness, store *Limits, account string) harness.Harness {
 	return &limitsHarness{Harness: h, store: store, account: account}
 }
@@ -213,8 +213,9 @@ type limitsHarness struct {
 
 func (h *limitsHarness) Run(ctx context.Context, job harness.Job, onProgress func(harness.Progress)) (harness.Result, error) {
 	account := h.account
-	if h.Harness.Name() == AdapterCodex && jobAccount(job.Env) != "" {
-		// a Codex session on an issued account (its label on the env)
+	if h.Harness.Name() == AdapterCodex && (jobAccount(job.Env) != "" || account == "") {
+		// a Codex session on an issued account (its label on the env),
+		// kept apart from the Claude accounts' readings
 		account = CodexLimitsAccount(jobAccount(job.Env))
 	}
 	if account == "" {

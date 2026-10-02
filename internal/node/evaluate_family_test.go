@@ -48,7 +48,7 @@ func familyFixture(t *testing.T, priority, model, claudeSays, codexSays string) 
 	claude := &fakeHarness{text: claudeSays}
 	codex := &fakeCodexH{text: codexSays, cost: 0.40, usage: &harness.Usage{InputTokens: 1000, OutputTokens: 50}}
 	ev := &Evaluator{GW: gw, Harness: claude, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, Model: model,
-		Codex: ObserveLimits(codex, limits), CodexModel: CodexConfig{}.CodexModel, CodexAccount: CodexLimitsAccount(""),
+		Codex: ObserveLimits(codex, limits), CodexModel: CodexConfig{}.CodexModel,
 		CodexAccounts: loop.CodexCandidates, Waits: &OncePer{}, Limits: limits, Thresholds: func() LimitsConfig { return LimitsConfig{} },
 		Credentials: &Credentials{GW: gw, Limits: limits, Known: known, Log: log.New(logs, "", 0)}, Log: log.New(logs, "", 0)}
 	return f, ev, claude, codex, limits, logs
@@ -461,12 +461,14 @@ func TestCodexWithoutContextIsNotAVerdict(t *testing.T) {
 }
 
 // The same with Claude first: its context server never connected, its
-// FAIL is not recorded, and Codex (on the harness's own account) gives
-// the verdict.
+// FAIL is not recorded, and Codex gives the verdict — on the issued
+// Codex credential the node learnt of only from the Claude session's
+// claim-time read, so the first choice found none.
 func TestClaudeWithoutContextRunsOnCodex(t *testing.T) {
 	f, ev, claude, codex, _, logs := familyFixture(t, "normal", "sonnet", "VERDICT: FAIL", "Holds.\nVERDICT: PASS")
 	ev.MCP = MeshContextMCP(f.URL(), "rs_test")
-	ev.CodexAccounts = nil // Codex only after Claude, on its own account
+	known := &KnownAccounts{}
+	ev.CodexAccounts, ev.Credentials.Known = (&Loop{Known: known}).CodexCandidates, known
 	claude.tools = noContext(0, "failed")
 	codex.tools = map[string]*harness.ToolStat{"mesh-context": {Calls: 3}}
 	in := evaluateItem1(t, f, ev)
@@ -975,5 +977,110 @@ func TestPanickingEvaluationNamesItself(t *testing.T) {
 	first, _, _ := strings.Cut(out.String(), "\n")
 	if want := "mesh node: fatal: runtime error: invalid memory address or nil pointer dereference (version " + version.Resolved() + ")"; first != want {
 		t.Fatalf("first line %q, want %q", first, want)
+	}
+}
+
+// A node that knows no issued Codex credential evaluates an unpinned
+// item on Claude, even with the Codex harness built and a login in the
+// operator's own $CODEX_HOME: that login is never a candidate (ADR 011's
+// amendment 2026-10-02), and the report names the Claude credential.
+func TestNoIssuedCodexCredentialEvaluatesOnClaude(t *testing.T) {
+	f, ev, claude, codex, _, logs := familyFixture(t, "urgent", "sonnet", "Holds.\nVERDICT: PASS", "VERDICT: FAIL")
+	operator := t.TempDir()
+	t.Setenv("CODEX_HOME", operator)
+	if err := os.WriteFile(filepath.Join(operator, "auth.json"), []byte(codexLogin), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f.SessionCredentials[item1] = f.SessionCredentials[item1][:1] // the Claude one alone
+	known := &KnownAccounts{}
+	ev.CodexAccounts, ev.Credentials.Known = (&Loop{Known: known}).CodexCandidates, known
+	in := evaluateItem1(t, f, ev)
+	if len(claude.jobs) != 1 || codex.runs() != 0 || in["notes"] != "Holds.\n\n(evaluated on sonnet)" {
+		t.Fatalf("runs claude %d codex %d, recorded %+v", len(claude.jobs), codex.runs(), in)
+	}
+	if u := usageOf(t, f); u["adapter"] != "claude-code" || u["credentialId"] != "cred-1" {
+		t.Fatalf("usage %v", u)
+	}
+	if strings.Contains(logs.String(), "codex:default") {
+		t.Errorf("node.log names codex:default:\n%s", logs.String())
+	}
+}
+
+// An item whose only Codex account is gone — Known still holds it, but
+// the claim-time read issues no Codex credential now — runs on Claude,
+// said in node.log; a pinned gpt item waits in evaluating instead.
+func TestCodexAccountGoneFamilyFallsBackOrWaits(t *testing.T) {
+	f, ev, claude, codex, _, logs := familyFixture(t, "normal", "sonnet", "Holds.\nVERDICT: PASS", "VERDICT: FAIL")
+	f.SessionCredentials[item1] = f.SessionCredentials[item1][:1]
+	in := evaluateItem1(t, f, ev)
+	if len(claude.jobs) != 1 || codex.runs() != 0 || in["passed"] != true {
+		t.Fatalf("unpinned: runs claude %d codex %d, recorded %+v", len(claude.jobs), codex.runs(), in)
+	}
+	if !strings.Contains(logs.String(), "no issued Codex credential has headroom after all; evaluating on Claude") {
+		t.Errorf("node.log:\n%s", logs.String())
+	}
+
+	f, ev, claude, codex, _, _ = familyFixture(t, "normal", "sonnet", "Holds.\nVERDICT: PASS", "VERDICT: FAIL")
+	f.SessionCredentials[item1] = f.SessionCredentials[item1][:1]
+	f.WorkItems[item1]["evaluateModel"] = "gpt-6-sol"
+	item, err := ev.GW.WorkItem(context.Background(), item1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ev.Evaluate(context.Background(), *item); !errors.Is(err, ErrFamilyWaits) {
+		t.Fatalf("pinned: Evaluate = %v, want ErrFamilyWaits", err)
+	}
+	if len(claude.jobs) != 0 || codex.runs() != 0 || len(f.CallsNamed("evaluateWorkItem")) != 0 {
+		t.Fatalf("pinned: runs claude %d codex %d", len(claude.jobs), codex.runs())
+	}
+}
+
+// A pinned gpt item on a node that knows no issued Codex credential at
+// all waits in evaluating: nothing runs, on Codex or on Claude.
+func TestCodexPinWaitsWithNoIssuedCredential(t *testing.T) {
+	f, ev, claude, codex, _, _ := familyFixture(t, "high", "sonnet", "VERDICT: PASS", "VERDICT: PASS")
+	f.WorkItems[item1]["evaluateModel"] = "gpt-6-sol"
+	f.SessionCredentials[item1] = f.SessionCredentials[item1][:1]
+	ev.CodexAccounts = (&Loop{Known: &KnownAccounts{}}).CodexCandidates
+	item, err := ev.GW.WorkItem(context.Background(), item1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ev.Evaluate(context.Background(), *item); !errors.Is(err, ErrFamilyWaits) {
+		t.Fatalf("Evaluate = %v, want ErrFamilyWaits", err)
+	}
+	if len(claude.jobs) != 0 || codex.runs() != 0 || f.Item(item1)["status"] != "evaluating" {
+		t.Fatalf("runs claude %d codex %d, status %v", len(claude.jobs), codex.runs(), f.Item(item1)["status"])
+	}
+}
+
+// Every Codex evaluation is opened through Credentials.Open(adapter
+// codex) on an issued credential, so its usage report always carries a
+// credentialId and a credentialKind of subscription or api — never
+// unset, which only the operator's own login ever reported.
+func TestCodexEvaluationUsageCarriesItsCredential(t *testing.T) {
+	for _, tc := range []struct {
+		cred gateway.Credential
+		raw  map[string]any
+		kind string
+	}{
+		{codexSub(), map[string]any{"id": "oa-1", "label": "chatgpt-pro", "vendor": "openai", "kind": "oauth_token", "serves": []any{"codex"}, "secret": codexLogin, "secretVersion": float64(1)}, "subscription"},
+		{codexAPI(), map[string]any{"id": "oa-2", "label": "openai-key", "vendor": "openai", "kind": "api_key", "serves": []any{"codex"}, "secret": codexKey, "secretVersion": float64(1), "capUnit": "dollars", "dailyCap": 30.0}, "api"},
+	} {
+		f, ev, claude, codex, _, _ := familyFixture(t, "normal", "sonnet", "VERDICT: FAIL", "Holds.\nVERDICT: PASS")
+		f.SessionCredentials[item1] = []map[string]any{f.SessionCredentials[item1][0], tc.raw}
+		known := &KnownAccounts{}
+		if err := known.Note(IssuedAccount(tc.cred), time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		ev.CodexAccounts, ev.Credentials.Known = (&Loop{Known: known}).CodexCandidates, known
+		evaluateItem1(t, f, ev)
+		if len(claude.jobs) != 0 || codex.runs() != 1 {
+			t.Fatalf("%s: runs claude %d codex %d", tc.cred.Label, len(claude.jobs), codex.runs())
+		}
+		u := usageOf(t, f)
+		if u["adapter"] != "codex" || u["credentialId"] != tc.cred.ID || u["credentialKind"] != tc.kind {
+			t.Fatalf("%s: usage %v", tc.cred.Label, u)
+		}
 	}
 }
