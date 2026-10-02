@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"slices"
-	"strings"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
 )
@@ -71,7 +70,7 @@ func ReportCoverage(ctx context.Context, gw CoverageGateway, scopes Scopes, adap
 	if len(adapters) == 0 || len(scopes) == 0 {
 		return
 	}
-	missing := 0
+	missing := map[string]bool{}
 	for _, sc := range scopes {
 		creds, err := gw.Credentials(ctx, sc.ID)
 		if gateway.IsRefusal(err) {
@@ -89,11 +88,15 @@ func ReportCoverage(ctx context.Context, gw CoverageGateway, scopes Scopes, adap
 		}
 		for _, u := range CredentialCoverage(creds, projects, sc.NodeID, adapters) {
 			logf("%s", u.Line(sc.Name()))
-			missing++
+			missing[u.Adapter] = true
 		}
 	}
-	if missing == 0 {
-		logf("credentials: every project has a %s credential open to this node", strings.Join(adapters, " and "))
+	// one line per adapter every project has: claude-code's is said
+	// whatever codex's coverage is
+	for _, a := range adapters {
+		if !missing[a] {
+			logf("credentials: every project has a %s credential open to this node", a)
+		}
 	}
 }
 

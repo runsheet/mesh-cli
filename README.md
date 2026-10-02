@@ -302,8 +302,9 @@ nodes — for `claude-code` and, when the `codex` CLI is on PATH, for
 credentials: org acme's project latchkey has no claude-code credential open to this node
 ```
 
-or, when every project has one, `credentials: every project has a
-claude-code credential open to this node`. A platform that does not
+and, for each adapter every project has one for, `credentials: every
+project has a claude-code credential open to this node` (the same for
+`codex`) — said for claude-code whatever codex's coverage. A platform that does not
 serve `credentialIndexs` to the node says so once (`credentials: the
 platform does not serve credentialIndexs to this node; which projects
 have none is known at claim time`) and the start goes on.

@@ -634,8 +634,9 @@ per project and adapter that `CredentialCoverage` finds uncovered:
 credentials: org <slug>'s project <slug> has no <adapter> credential open to this node
 ```
 
-or `credentials: every project has a claude-code credential open to
-this node` when none is. The adapters are `claude-code` and, when the
+and one `credentials: every project has a <adapter> credential open to
+this node` for each adapter no project lacks — claude-code's said
+whatever codex's coverage is. The adapters are `claude-code` and, when the
 node's adapter probe finds the CLI, `codex` (`CoverageAdapters`). A
 credential covers a project for an adapter as the claim-time read's
 `credentialServes` decides: `active`, `serves` naming the adapter,

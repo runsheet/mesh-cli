@@ -708,6 +708,11 @@ func nodeStart(cmd *cobra.Command, args []string, logger *log.Logger) error {
 	}
 }
 
+// hostUnit is the unit sessions run in on this machine; a test of the
+// start path replaces it so the start-up sweep never judges the host's
+// own scopes against a fake platform.
+var hostUnit = sessionunit.Default
+
 // sessionsOut is where what sessions say goes — the workspaces' git
 // commands, the agents' stderr, channel mode's text: ~/.mesh/sessions.log
 // once `mesh node start` has opened it, so node.log keeps the node's own
@@ -1512,7 +1517,7 @@ func adoptSessions(ctx context.Context, gw *gateway.Client, cfg *node.Config, h 
 	}
 	// The start-up sweep (ADR 008): a scope no found session is about to
 	// adopt, whose subject is terminal on the platform, is a leak.
-	if _, ok := sessionunit.Default().(sessionunit.SystemdScope); ok {
+	if _, ok := hostUnit().(sessionunit.SystemdScope); ok {
 		if n := node.SweepScopes(ctx, gw, sessionunit.HostSystemctl{}, found, logger.Printf); n > 0 {
 			logger.Printf("sweep: %d leaked scope(s) stopped", n)
 		}

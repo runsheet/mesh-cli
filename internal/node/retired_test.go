@@ -1,7 +1,9 @@
 package node
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -154,5 +156,47 @@ func TestCoverageAdapters(t *testing.T) {
 	}
 	if got := CoverageAdapters([]string{"claude-code", "codex"}); !slices.Equal(got, []string{"claude-code", "codex"}) {
 		t.Fatalf("codex found: %q", got)
+	}
+}
+
+type coverageGW struct {
+	creds    []gateway.CredentialRow
+	projects []gateway.Project
+}
+
+func (g coverageGW) Projects(context.Context, string) ([]gateway.Project, error) {
+	return g.projects, nil
+}
+
+func (g coverageGW) Credentials(context.Context, string) ([]gateway.CredentialRow, error) {
+	return g.creds, nil
+}
+
+// The start's word: claude-code's every-project line is said whenever
+// every project has one, whether codex was found and covered or not.
+func TestReportCoverageEveryProject(t *testing.T) {
+	projects := []gateway.Project{{ID: "p-mesh", OrgID: "org-1", Slug: "mesh"}, {ID: "p-latchkey", OrgID: "org-1", Slug: "latchkey"}}
+	claudeAll := gateway.CredentialRow{ID: "c1", OrgID: "org-1", Status: "active", Serves: []string{"claude-code"}, ProjectIDs: []string{"p-mesh", "p-latchkey"}}
+	codexAll := gateway.CredentialRow{ID: "c2", OrgID: "org-1", Status: "active", Serves: []string{"codex"}, ProjectIDs: []string{"p-mesh", "p-latchkey"}}
+	const everyClaude = "credentials: every project has a claude-code credential open to this node"
+	const everyCodex = "credentials: every project has a codex credential open to this node"
+	scopes := Scopes{{Login: "acme", ID: "org-1", NodeID: "node-1"}}
+	for name, tc := range map[string]struct {
+		creds    []gateway.CredentialRow
+		adapters []string
+		want     []string
+	}{
+		"claude-code alone":           {[]gateway.CredentialRow{claudeAll}, []string{"claude-code"}, []string{everyClaude}},
+		"codex found and covered":     {[]gateway.CredentialRow{claudeAll, codexAll}, []string{"claude-code", "codex"}, []string{everyClaude, everyCodex}},
+		"codex found and not covered": {[]gateway.CredentialRow{claudeAll}, []string{"claude-code", "codex"}, []string{"credentials: org acme's project mesh has no codex credential open to this node", "credentials: org acme's project latchkey has no codex credential open to this node", everyClaude}},
+		"claude-code missing on one":  {[]gateway.CredentialRow{{ID: "c1", OrgID: "org-1", Status: "active", Serves: []string{"claude-code"}, ProjectIDs: []string{"p-mesh"}}, codexAll}, []string{"claude-code", "codex"}, []string{"credentials: org acme's project latchkey has no claude-code credential open to this node", everyCodex}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var got []string
+			ReportCoverage(context.Background(), coverageGW{tc.creds, projects}, scopes, tc.adapters, func(f string, a ...any) { got = append(got, fmt.Sprintf(f, a...)) })
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("logged %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

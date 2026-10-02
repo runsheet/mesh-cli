@@ -2,14 +2,11 @@ package commands
 
 import (
 	"bytes"
-	"context"
-	"errors"
 	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
@@ -17,7 +14,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/gateway/gatewaytest"
 	"projectmesh.io/mesh-cli/internal/node"
-	"projectmesh.io/mesh-cli/internal/selfupdate"
+	"projectmesh.io/mesh-cli/internal/sessionunit"
 )
 
 const (
@@ -27,39 +24,36 @@ const (
 	credLatch = "dddddddd-1111-4111-8111-dddddddddddd"
 )
 
-// startAgainst runs `mesh node start`'s registration against the fake
-// and the loop's first ticks, whose first heartbeat makes the
-// credentials report, returning node.log.
+// startAgainst runs `mesh node start --mode poll --once` — nodeStart
+// itself, registration through the loop's one tick, whose first
+// heartbeat makes the credentials report — against the fake, and
+// returns node.log. The host's sessions are out of its reach: PATH is
+// empty, so no claude or codex is found, and the start-up sweep runs
+// on no systemd scope of this machine's.
 func startAgainst(t *testing.T, f *gatewaytest.Fake) string {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("PATH", t.TempDir())
 	t.Setenv("MESH_GATEWAY", f.URL())
 	t.Setenv("MESH_TOKEN", "rs_test")
 	if err := os.MkdirAll(filepath.Join(home, ".mesh"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(home, ".mesh", "node.yaml"), []byte("slug: mini\nname: mini\norgs: [acme]\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(home, ".mesh", "node.yaml"), []byte("slug: mini\nname: mini\norgs: [acme]\nsandbox: off\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	// the platform answers with the node's own id: the signed-in
 	// owner's node of this slug
 	f.UserID = "ffffffff-1111-4111-8111-ffffffffffff"
 	f.Answer.NodeID = gateway.NodeID(uuid.MustParse(f.UserID), "mini").String()
+	unit, mode, once := hostUnit, nodeModeFlag, nodeOnceFlag
+	hostUnit = func() sessionunit.Unit { return sessionunit.Detached{} }
+	nodeModeFlag, nodeOnceFlag = "poll", true
+	t.Cleanup(func() { hostUnit, nodeModeFlag, nodeOnceFlag = unit, mode, once })
 	var logs bytes.Buffer
-	logger := log.New(&logs, "", 0)
-	state := &selfupdate.StateFile{Path: filepath.Join(t.TempDir(), "update.json")}
-	cfg, gw, reg, _, err := registerNode(context.Background(), &cobra.Command{}, logger, state, node.StartCheck{}, time.Now())
-	if err != nil {
-		t.Fatalf("register: %v\n%s", err, logs.String())
-	}
-	loop := &node.Loop{GW: gw, Cfg: cfg, Scopes: reg.Scopes, Owned: reg.Owned, Interval: time.Hour, Harness: "claude-code", Log: logger,
-		LookPath: func(string) (string, error) { return "", errors.New("not found") }}
-	loop.TakeAnswer(reg.Answer)
-	loop.FirstBeat = func(ctx context.Context, scopes node.Scopes) { reportCredentials(ctx, gw, loop, scopes, logger) }
-	// two ticks: the report is the first heartbeat's, and once
-	for range 2 {
-		loop.Tick(context.Background())
+	if err := nodeStart(&cobra.Command{}, nil, log.New(&logs, "", 0)); err != nil {
+		t.Fatalf("mesh node start: %v\n%s", err, logs.String())
 	}
 	return logs.String()
 }
@@ -88,6 +82,9 @@ func TestNodeStartNamesAProjectWithNoCredential(t *testing.T) {
 	if strings.Count(logs, want) != 1 {
 		t.Fatalf("node.log lacks %q once:\n%s", want, logs)
 	}
+	if !strings.Contains(logs, "poll mode: node mini") {
+		t.Fatalf("not the start's log:\n%s", logs)
+	}
 	if strings.Contains(logs, "project mesh has no") || strings.Contains(logs, "every project") {
 		t.Fatalf("node.log names a covered project:\n%s", logs)
 	}
@@ -114,5 +111,10 @@ func TestNodeStartContinuesWhenCredentialsAreRefused(t *testing.T) {
 	}
 	if strings.Contains(logs, "has no claude-code") {
 		t.Fatalf("named projects without a read:\n%s", logs)
+	}
+	// and the start went on: the loop ran its tick past the notice and
+	// nodeStart returned nil (startAgainst fails on its error)
+	if !strings.Contains(logs, "poll mode: node mini") {
+		t.Fatalf("the start did not go on:\n%s", logs)
 	}
 }
