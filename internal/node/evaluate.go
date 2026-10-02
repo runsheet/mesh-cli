@@ -246,24 +246,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	if len(files) > 0 || len(cx.Index) > 0 || cx.Live != nil {
 		contextDir = ContextDir
 	}
-	// a retry is judged on what earlier attempts failed on, so an item
-	// that has answered every objection already named is not failed on a
-	// fresh reading of the acceptance (evaluateRetryRule). Unread records
-	// are not fatal: the evaluation runs without them.
-	var prior []harness.PriorAttempt
-	if item.Attempts > 0 {
-		was, err := e.GW.WorkItemPriorAttempts(ctx, item.ID)
-		if err != nil {
-			e.logf("item %s: earlier evaluations unread, evaluating without them: %v", label, err)
-		}
-		for _, p := range was {
-			at := harness.PriorAttempt{Attempt: p.Attempt, Notes: p.Notes}
-			for _, c := range p.Clauses {
-				at.Clauses = append(at.Clauses, harness.FailedClause{Clause: c.Clause, Satisfy: c.Satisfy})
-			}
-			prior = append(prior, at)
-		}
-	}
+	prior := e.priorAttempts(ctx, item, label)
 	in := harness.EvaluateInput{
 		GoalSlug: res.Goal.Slug, GoalTitle: res.Goal.Title, GoalAcceptance: res.Goal.Acceptance,
 		Seq: item.Seq, Title: item.Title, Brief: item.Brief, Acceptance: item.Acceptance,
@@ -398,7 +381,32 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	// the usage report rides the verdict (afterEvaluate); Finish logs it
 	// when nothing carried it
 	defer acct.Finish(ctx, result)
-	return e.afterEvaluate(ctx, evalRun{item: item, res: res, label: label, model: model, fam: fam, dir: dir, acct: acct, second: &second, preflight: preflight, omitted: st.OmittedNote(), missing: pod.MissingNote()}, result, err)
+	return e.afterEvaluate(ctx, evalRun{item: item, res: res, label: label, model: model, fam: fam, dir: dir, acct: acct, second: &second, preflight: preflight, omitted: st.OmittedNote(), missing: pod.MissingNote(), prior: prior}, result, err)
+}
+
+// priorAttempts reads the verdicts earlier attempts of the item were
+// given. A retry is judged on what earlier attempts failed on, so an
+// item that has answered every objection already named is not failed on
+// a fresh reading of the acceptance (evaluateRetryRule), and a verdict
+// failing a clause one of them failed opens by saying so (ADR-020).
+// Unread records are not fatal: the evaluation runs without them.
+func (e *Evaluator) priorAttempts(ctx context.Context, item gateway.WorkItem, label string) []harness.PriorAttempt {
+	if item.Attempts == 0 {
+		return nil
+	}
+	was, err := e.GW.WorkItemPriorAttempts(ctx, item.ID)
+	if err != nil {
+		e.logf("item %s: earlier evaluations unread, evaluating without them: %v", label, err)
+	}
+	var prior []harness.PriorAttempt
+	for _, p := range was {
+		at := harness.PriorAttempt{Attempt: p.Attempt, Notes: p.Notes}
+		for _, c := range p.Clauses {
+			at.Clauses = append(at.Clauses, harness.FailedClause{Clause: c.Clause, Satisfy: c.Satisfy})
+		}
+		prior = append(prior, at)
+	}
+	return prior
 }
 
 // evalRun is one evaluation session as its tail needs it, whether this
@@ -422,6 +430,9 @@ type evalRun struct {
 	// adopted is a session an older node process started and this one
 	// took up (AdoptEvaluation): only there may the built-in carry its old name
 	adopted bool
+	// prior are the verdicts earlier attempts were given, for the
+	// same-clause first line (ADR-020)
+	prior []harness.PriorAttempt
 }
 
 // afterEvaluate is what follows an evaluation session, however this
@@ -509,6 +520,9 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 		}
 		clauses = harness.ParseFailedClauses(result.Text)
 	}
+	// a host reading is recorded, not failed: it rides the notes, and
+	// node.log says so (ADR-020)
+	e.logReadings(label, notes)
 	// the notes say which tools and services the evaluator ran without
 	without := ""
 	if ev.omitted != "" {
@@ -528,6 +542,10 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 	room := 4000
 	if head != "" {
 		room -= len(head) + 2
+	}
+	if len(ev.prior) > 0 {
+		// for the same-clause first line a failing retry may open with
+		room -= sameClauseRoom
 	}
 	// the item's events say which family and model judged it
 	evaluatedOn := fam.logName()
@@ -582,6 +600,7 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 				// the second opinion's clauses are the item's too
 				clauses = append(clauses, op.clauses...)
 			}
+			e.logReadings(label, op.notes)
 			passed = passed && op.passed
 			notes = bothNotes(fam, notes, other, op.notes, op.passed, room-200-len(without)-len(ev.preflight)) + "\n\n(evaluated on " + evaluatedOn + "; second opinion on " + other.fullName() + ")" + without
 		}
@@ -600,6 +619,13 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 		for _, c := range clauses {
 			failed = append(failed, gateway.FailedClause{Clause: c.Clause, Satisfy: c.Satisfy})
 		}
+		// a second failure on a clause an earlier attempt failed says so
+		// first, so the narrow re-plan changes the clause or escalates
+		// rather than rebuilding (ADR-020)
+		if attempt, _, ok := harness.SameClause(ev.prior, clauses); ok {
+			notes = truncate(harness.NoteSameClause(notes, ev.prior, clauses), 4000)
+			e.logf("item %s: fails on the same clause as attempt %d", label, attempt)
+		}
 	}
 	if err := acct.Carried(e.GW.EvaluateWorkItem(ctx, item.ID, passed, notes, failed, Cents(cost), usage)); err != nil {
 		return fmt.Errorf("record verdict: %w", err)
@@ -607,6 +633,19 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 	left.Forget(item.ID)
 	e.logf("item %s: evaluation %s on %s ($%.2f)", label, verdict, fam.fullName(), cost)
 	return nil
+}
+
+// sameClauseRoom is what a failing retry's notes leave for the line
+// NoteSameClause may open them with.
+const sameClauseRoom = 400
+
+// logReadings logs each READING line of a verdict's notes: the
+// evaluator's own reading of a host clause, recorded with the verdict
+// rather than failed (ADR-020).
+func (e *Evaluator) logReadings(label, notes string) {
+	for _, r := range harness.ParseReadings(notes) {
+		e.logf("item %s: reading recorded: %s", label, r.Clause)
+	}
 }
 
 // noVerdict records an evaluation that reached no verdict — the deciding
@@ -659,7 +698,7 @@ func (e *Evaluator) AdoptEvaluation(ctx context.Context, item gateway.WorkItem, 
 	label := fmt.Sprintf("%s/%d", res.Goal.Slug, item.Seq)
 	e.logf("item %s: adopted its %s evaluation (pid %d)", label, s.Liveness(), s.State.PID)
 	result, err := at.Attach(ctx, s.Dir, nil)
-	return e.afterEvaluate(ctx, evalRun{item: item, res: res, label: label, model: s.State.Model, fam: family{model: s.State.Model, claude: s.State.Model}, dir: s.State.Workspace, adopted: true}, result, err)
+	return e.afterEvaluate(ctx, evalRun{item: item, res: res, label: label, model: s.State.Model, fam: family{model: s.State.Model, claude: s.State.Model}, dir: s.State.Workspace, adopted: true, prior: e.priorAttempts(ctx, item, label)}, result, err)
 }
 
 // opinion is the second evaluation's outcome: its verdict and notes, or
