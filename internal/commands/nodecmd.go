@@ -609,6 +609,11 @@ func nodeStart(cmd *cobra.Command, args []string, logger *log.Logger) error {
 		return err
 	}
 	loop.Known = known
+	// each known issued account, what it serves and its own pace point,
+	// before the first claim (adr-005's amendment 2026-10-02)
+	for _, line := range node.IssuedAccountLines(known.Accounts(time.Now())) {
+		logger.Print(line)
+	}
 	// the node follows the version the platform asks for (adr-002);
 	// --once is one tick, too short for an update to finish
 	if updates != nil && !nodeOnceFlag {

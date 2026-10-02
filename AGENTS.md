@@ -358,6 +358,17 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   windowTargets) paces it in place of node.yaml's
   (`LimitsConfig.For`), `limits.stop` still node-wide (adr-005's
   amendment 2026-10-02, a credential names the priorities it serves).
+  Both ride the claim-time read: `gateway.Credential` carries
+  `Priorities []string` and `WindowTargets []WindowTarget`
+  (`WindowTarget{Window, Percent}`) from the row's `priorities` and
+  `windowTargets` (`String()` names what it serves, never the secret),
+  `IssuedAccount` copies `Priorities` straight across and turns each
+  `WindowTarget`'s `Percent / 100` into `PaceFiveHour` or `PaceSevenDay`
+  by its window, the known accounts persist both in `accounts.json` so
+  a restart has them before its first claim, and `mesh node start` logs
+  one `accounts: issued <label> (<kind>, serves <urgent, high|all>,
+  paces at <50%> five-hour|node-wide)` line per known issued account
+  (`node.IssuedAccountLines`, adr-005's amendment 2026-10-02, item 2).
   **No account with headroom
   means no claim**: the item stays ready, not failed or released, and
   the tick logs one `accounts: no account has headroom …` line — or,
