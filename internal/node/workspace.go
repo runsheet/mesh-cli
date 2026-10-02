@@ -992,6 +992,10 @@ type Gateway interface {
 	Goal(ctx context.Context, id string) (*gateway.Goal, error)
 	Goals(ctx context.Context, orgID string) ([]gateway.Goal, error)
 	ClaimPlan(ctx context.Context, goalID, nodeID string) error
+	// RequestPlanReplacing asks for a narrow re-plan replacing one item
+	// (gateway.ErrNoReplaceItem on a platform without replaceItem,
+	// nothing sent; ADR-021's amendment 2026-10-02).
+	RequestPlanReplacing(ctx context.Context, goalID, by, itemID string) error
 	PlanGoal(ctx context.Context, goalID, by string, items []gateway.PlannedItem, costCents int, usage *gateway.UsageReport, questions ...gateway.PlanQuestion) error
 	// TakesPlanQuestions is whether PlanGoal can carry the planner's
 	// questions for the person (ADR-020).
