@@ -317,7 +317,7 @@ func TestTruncateNotesKeepsReadings(t *testing.T) {
 func TestBothNotesKeepReadings(t *testing.T) {
 	long := cifitsItem5LongVerdict()
 	_, notes, _ := harness.ParseVerdict(long)
-	got := bothNotes(family{}, notes, family{codex: true}, notes, true, 3000)
+	got := bothNotes(family{}, notes, true, family{codex: true}, notes, true, 3000)
 	if len(got) > 3000 || strings.Count(got, "READING: "+cifitsHostClause) != 2 {
 		t.Fatalf("%d bytes:\n%s", len(got), got)
 	}

@@ -239,7 +239,7 @@ func sortedRepoNames(m map[string]gateway.Repo) []string {
 // threshold on it. The check is lexical like unverifiableAcceptance; the
 // evaluator's host rule (READING:) is the backstop for what it misses.
 var (
-	hostReadingPattern    = regexp.MustCompile(`(?i)\b(?:load|p90|wall[- ]time|durations?|seconds)\b`)
+	hostReadingPattern    = regexp.MustCompile(`(?i)\b(?:load|p90|wall[- ]times?|durations?|seconds)\b`)
 	hostThresholdPatterns = []*regexp.Regexp{
 		regexp.MustCompile(`(?i)\b(?:under|below|at most)\b`),
 		regexp.MustCompile(`(?i)\bwithin \d+(?:\.\d+)?\s*%`),
