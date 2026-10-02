@@ -43,11 +43,60 @@ type Registrar struct {
 }
 
 // Registered is Register's result: the scopes to serve and, on the
-// owner contract, the node's one id and its owner (nil on the legacy
-// per-org path).
+// owner contract, the node's one id and its owner and the platform's
+// answer itself (both nil on the legacy per-org path). The answer is
+// handed to the loop before its first tick (Loop.TakeAnswer), so a
+// reload that changes node.yaml's orgs restricts it even while every
+// heartbeat since answers nil.
 type Registered struct {
 	Scopes Scopes
 	Owned  *Owned
+	Answer *gateway.NodeAnswer
+}
+
+// Contract is the contract the registration made: ContractOwner when
+// the platform answered the owner registration, else ContractPerOrg.
+func (r Registered) Contract() string {
+	if r.Owned != nil {
+		return ContractOwner
+	}
+	return ContractPerOrg
+}
+
+// StartLine is node.log's first line after the start lines (mesh-specs
+// ADR 014, TRD §3): `node mini (runsheet-mini) owned by Chris, serving
+// runsheet, wardroomid, grapevine` on the owner contract, `node mini
+// (runsheet-mini) per org, serving …` on the legacy path; every org by
+// Scope.Name, so one without a GitHub login is its slug.
+func StartLine(cfg *Config, r Registered) string {
+	if r.Owned != nil {
+		return fmt.Sprintf("node %s (%s) owned by %s, serving %s", cfg.Name, cfg.Slug, r.Owned.Owner.Who(), orgsOrNone(r.Scopes))
+	}
+	return fmt.Sprintf("node %s (%s) per org, serving %s", cfg.Name, cfg.Slug, orgsOrNone(r.Scopes))
+}
+
+// SaveRegistration records what a registration made in node.yaml —
+// Contract and, on the owner contract, the node's one id — and saves it
+// through save (Config.Save when nil) when either changed. A failed
+// save is returned: `mesh node status` and the rollback reporter read
+// the contract from the file (TRD §3 step 1).
+func SaveRegistration(cfg *Config, r Registered, save func() error) error {
+	contract := r.Contract()
+	changed := cfg.Contract != contract
+	cfg.Contract = contract
+	if r.Owned != nil && r.Owned.NodeID != "" && cfg.NodeID != r.Owned.NodeID {
+		cfg.NodeID, changed = r.Owned.NodeID, true
+	}
+	if !changed {
+		return nil
+	}
+	if save == nil {
+		save = cfg.Save
+	}
+	if err := save(); err != nil {
+		return fmt.Errorf("save node.yaml (contract %s, node id %s): %w", contract, cfg.NodeID, err)
+	}
+	return nil
 }
 
 // FallbackLine is logged once when the platform takes `owner` but its
@@ -103,7 +152,7 @@ func Register(ctx context.Context, r Registrar, cfg *Config, restrict []string) 
 	if note != nil && r.Logf != nil {
 		r.Logf("orgs: %v", note)
 	}
-	return Registered{Scopes: served, Owned: &Owned{NodeID: answer.NodeID, Owner: OwnerFrom(answer)}}, nil
+	return Registered{Scopes: served, Owned: &Owned{NodeID: answer.NodeID, Owner: OwnerFrom(answer)}, Answer: answer}, nil
 }
 
 // perOrg is the registration before owners: the person's orgs, a Node
@@ -175,8 +224,8 @@ func LegacyIDs(cfg *Config, scopes Scopes) map[string]string {
 // heartbeat on the owner contract: the scopes it names (restricted by
 // node.yaml's orgs, as last reloaded) replace the loop's, logged `orgs a
 // → b` as a reload logs them, and an owner whose id or kind changed —
-// a node handed from a person to an enterprise — is logged `owner <old>
-// → <new>`, with no restart. A nil answer keeps the last scopes; a
+// a node handed from a person to an enterprise — is logged `owner
+// changed: Chris → anythink`, with no restart. A nil answer keeps the last scopes; a
 // non-nil one replaces them whatever it names, so an org the platform no
 // longer serves is claimed from no more — one naming no org, or none
 // the restriction keeps, leaves the node serving none. A restriction
@@ -195,7 +244,7 @@ func (l *Loop) TakeAnswer(a *gateway.NodeAnswer) {
 	l.mu.Unlock()
 	owner, was := OwnerFrom(a), l.owned()
 	if was != nil && (was.Owner.ID != owner.ID || was.Owner.Kind != owner.Kind) {
-		l.logf("owner %s → %s", was.Owner.String(), owner.String())
+		l.logf("owner changed: %s → %s", was.Owner.Who(), owner.Who())
 	}
 	id := a.NodeID
 	if id == "" && was != nil {

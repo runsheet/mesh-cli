@@ -31,7 +31,7 @@ func TestRegisterNodeRecordsStartFailureWhenUpdatePending(t *testing.T) {
 
 	var logs bytes.Buffer
 	logger := log.New(&logs, "", 0)
-	if _, _, _, _, _, err := registerNode(context.Background(), &cobra.Command{}, logger, state, check, time.Now()); err == nil {
+	if _, _, _, _, err := registerNode(context.Background(), &cobra.Command{}, logger, state, check, time.Now()); err == nil {
 		t.Fatal("registerNode with no node.yaml succeeded")
 	}
 
@@ -55,7 +55,7 @@ func TestRegisterNodeRecordsNothingWithoutPendingUpdate(t *testing.T) {
 
 	var logs bytes.Buffer
 	logger := log.New(&logs, "", 0)
-	if _, _, _, _, _, err := registerNode(context.Background(), &cobra.Command{}, logger, state, node.StartCheck{}, time.Now()); err == nil {
+	if _, _, _, _, err := registerNode(context.Background(), &cobra.Command{}, logger, state, node.StartCheck{}, time.Now()); err == nil {
 		t.Fatal("registerNode with no node.yaml succeeded")
 	}
 
