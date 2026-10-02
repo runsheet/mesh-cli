@@ -236,23 +236,34 @@ func TestOwnedRegisterLegacyPerOrgWithNoOwner(t *testing.T) {
 }
 
 // With TakesOwner true and a nil answer (the platform half-deployed):
-// one owner registration, then the legacy path in full — one
-// registration per org — and the fallback said.
-func TestOwnedRegisterNilAnswerFallsBackPerOrg(t *testing.T) {
+// the probe chose the contract, so the node keeps it — one owner
+// registration, no per-org one, the person's orgs never read, the one
+// id kept, no scopes until a heartbeat answers — and the fallback said.
+func TestOwnedRegisterNilAnswerKeepsTheOwnerContract(t *testing.T) {
 	cfg := ownedCfg()
 	s := &steps{takes: true, answer: nil, scopes: personScopes(t, cfg)}
 	reg, err := Register(context.Background(), s.registrar(), cfg, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"probe", "any org", "owner 22222222-2222-4222-8222-222222222222", "resolve", "org runsheet", "org wardroomid"}; !slices.Equal(s.did, want) {
-		t.Fatalf("did %q, want %q", s.did, want)
+	if want := []string{"probe", "any org", "owner 22222222-2222-4222-8222-222222222222"}; !slices.Equal(s.did, want) {
+		t.Fatalf("did %q, want %q (no per-org registration)", s.did, want)
 	}
-	if reg.Owned != nil || !slices.Equal(reg.Scopes, s.scopes) {
-		t.Fatalf("registered %+v, want the per-org scopes", reg)
+	if reg.Owned == nil || reg.Owned.NodeID != "22222222-2222-4222-8222-222222222222" || len(reg.Scopes) != 0 || reg.Answer != nil {
+		t.Fatalf("registered %+v, want the owner contract on the one id with no scopes yet", reg)
 	}
-	if len(reg.Notes) != 1 || !strings.Contains(reg.Notes[0], "serving per org") {
+	if reg.Contract() != ContractOwner {
+		t.Fatalf("contract %q, want %q", reg.Contract(), ContractOwner)
+	}
+	if len(reg.Notes) != 1 || reg.Notes[0] != FallbackLine {
 		t.Fatalf("logged %q, want the fallback once", reg.Notes)
+	}
+	saved := false
+	if err := SaveRegistration(cfg, reg, func() error { saved = true; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Contract != ContractOwner || cfg.OwnedID() != "22222222-2222-4222-8222-222222222222" {
+		t.Fatalf("saved contract %q id %q, want the owner contract on the one id (saved %v)", cfg.Contract, cfg.OwnedID(), saved)
 	}
 }
 
@@ -679,8 +690,8 @@ func TestOwnedRegistrationLinesNameTheOwnerFirst(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines = RegistrationLines(cfg, reg)
-	if len(lines) != 2 || !strings.Contains(lines[0], " per org, serving ") || lines[1] != FallbackLine {
-		t.Fatalf("lines %q, want the per-org line first, then the fallback", lines)
+	if len(lines) != 2 || !strings.Contains(lines[0], " owned by ") || !strings.HasSuffix(lines[0], "serving none") || lines[1] != FallbackLine {
+		t.Fatalf("lines %q, want the owner line first, then the fallback", lines)
 	}
 }
 

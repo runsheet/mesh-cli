@@ -1,5 +1,5 @@
 ---
-summary: The node registers with an owner (a person by default, or `enterprise` for shared infra), and registerNode/heartbeatNode answer with the node's one id and its scopes — the orgs it serves — so the node stops deriving them by re-reading the person's orgs; a platform that answers with neither owner nor scopes keeps today's per-org registration.
+summary: The node registers with an owner (a person by default, or `enterprise` for shared infra), and registerNode/heartbeatNode answer with the node's one id and its scopes — the orgs it serves — so the node stops deriving them by re-reading the person's orgs; a platform whose schema does not take `owner` keeps today's per-org registration, and one that takes it but answers nil keeps the owner contract.
 status: accepted
 ---
 
@@ -48,8 +48,10 @@ returns the mutation's decoded payload; `Mutate` is now a thin wrapper
 over it, byte-identical for every existing caller. A payload with none
 of `nodeId`/`owner`/`scopes` — today's platform, or one that refused
 the new selection with "Cannot query field" — parses to a `nil`
-answer and **no error**: the node keeps registering per org until the
-platform side of this contract ships. A refusal is kept for
+answer and **no error**: a platform whose `RegisterNodeInput` has no
+`owner` keeps the node registering per org until the platform side of
+this contract ships; one that takes `owner` and answers nil keeps the
+node on the owner contract (the 2026-10-02 section below). A refusal is kept for
 `NodeAnswerRetry` (10 minutes): until then both commands ask `status`
 alone, so today's platform costs one request per heartbeat, not a
 refused one and a retry, and a deploy that adds the fields is picked
@@ -183,16 +185,21 @@ answer is. A non-nil answer naming no org, or none that node.yaml's
 logs `orgs: …` naming what was left out, serves none and claims nothing
 until a heartbeat's answer names an org — never the per-org path, never
 a failed registration (`TestOwnedRegisterEmptyAnswerIsNotNil`,
-`TestOwnedRegisterUnmatchedRestrictionIsNotFatal`). On a nil answer the
-node logs once `register: the
-platform took owner but answered no scopes; serving per org until it
-does` and runs the legacy path in full. The sequence is: the probe;
-**one** owner registration (the one above); then the person's orgs
-resolved (`ResolveScopes`, the restriction as on the legacy path) and
-**one registration per org** under its per-org id; then per-org heartbeats
-and `Reloader` as on the legacy path. The owner registration happening
-before the per-org ones is this fallback, not a violation of either
-path (`TestOwnedRegisterNilAnswerFallsBackPerOrg` asserts that sequence).
+`TestOwnedRegisterUnmatchedRestrictionIsNotFatal`). **The probe chooses
+the contract, never the answer**: a nil answer after a positive probe
+keeps the owner contract. The node logs `FallbackLine` — `register: the
+platform took owner but answered nil; keeping the owner contract and the
+last scopes until a heartbeat answers` — and is owned all the same: its
+one id (`OwnedNodeID`), the owner's kind from node.yaml, `contract:
+owner` and `node_id` saved, and its last scopes, which at a start are
+none. It makes no per-org registration and never reads the person's
+orgs; the loop heartbeats the one id and the first answer that names
+orgs is what it serves (`TestOwnedRegisterNilAnswerKeepsTheOwnerContract`).
+The sequence is: the probe; **one** owner registration; nothing else. An
+earlier draft (item 27) fell back per org on a nil answer, registering a
+Node per org after the owner registration and saving `contract:
+per-org`; that let a nil answer undo the probe's choice, and was
+rejected.
 
 **`Loop.Owned` and `Loop.TakeAnswer`.** An owned loop (`Loop.Owned`:
 the one id and the `Owner`) heartbeats **once** per tick under its id,
@@ -261,7 +268,8 @@ extra Node row. Only then, on a platform that takes it, is the one
 made.
 
 **Nil versus empty.** A **nil** answer — and only nil — is a
-half-deployed platform: `FallbackLine` once, then the per-org path. A
+half-deployed platform: `FallbackLine`, and the node stays on the owner
+contract under its one id with its last scopes — never the per-org path. A
 **non-nil** answer is the owner contract whatever it names: its scopes,
 restricted by node.yaml's `orgs:` (`ServedFrom`, never fatal, an
 unmatched restriction logged), are what the node serves — an answer

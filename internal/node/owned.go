@@ -109,9 +109,12 @@ func SaveRegistration(cfg *Config, r Registered, save func() error) error {
 	return nil
 }
 
-// FallbackLine is logged once when the platform takes `owner` but its
-// answer names no scopes: a half-deployed platform.
-const FallbackLine = "register: the platform took owner but answered no scopes; serving per org until it does"
+// FallbackLine is logged when the platform takes `owner` but answers
+// the owner registration nil: a half-deployed platform. The probe chose
+// the contract, so the node stays on it — its one id, its last scopes
+// (none at a start) — until a heartbeat answers; it never registers per
+// org.
+const FallbackLine = "register: the platform took owner but answered nil; keeping the owner contract and the last scopes until a heartbeat answers"
 
 // OwnedNodeID is the id the node registers under on the owner
 // contract: node.yaml's node_id when set, else one from (owner, slug),
@@ -133,9 +136,10 @@ func OwnedNodeID(cfg *Config) string {
 // scopes, restricted by restrict, are what the node serves: node.yaml's
 // orgs are checked against the answer, never against the person's
 // orgs, so a restriction naming an enterprise org the person is not in
-// holds. A nil answer from it — and only a nil one — notes FallbackLine
-// and runs the legacy path in full — Resolve, then RegisterIn per org —
-// so the sequence is one owner registration, then one per org. A
+// holds. The probe alone chooses the contract: a nil answer from it
+// notes FallbackLine and keeps the owner contract under the node's one
+// id with no scopes yet — never Resolve, never RegisterIn — so the loop
+// heartbeats that id and takes the first answer that names its orgs. A
 // non-nil answer is the owner contract whatever it names: an answer
 // naming no org, or a restriction matching none of the orgs it names,
 // is noted and the node serves none until a heartbeat's answer names
@@ -148,14 +152,14 @@ func Register(ctx context.Context, r Registrar, cfg *Config, restrict []string) 
 	if err != nil {
 		return Registered{}, err
 	}
-	answer, err := r.RegisterOwner(ctx, OwnedNodeID(cfg), orgID)
+	id := OwnedNodeID(cfg)
+	answer, err := r.RegisterOwner(ctx, id, orgID)
 	if err != nil {
 		return Registered{}, fmt.Errorf("register (owner %s): %w", cfg.OwnerKind(), err)
 	}
 	if answer == nil {
-		reg, err := perOrg(ctx, r)
-		reg.Notes = append(reg.Notes, FallbackLine)
-		return reg, err
+		owned := &Owned{NodeID: id, Owner: Owner{Kind: cfg.OwnerKind()}}
+		return Registered{Owned: owned, Notes: []string{FallbackLine}}, nil
 	}
 	reg := Registered{Owned: &Owned{NodeID: answer.NodeID, Owner: OwnerFrom(answer)}, Answer: answer}
 	var note error
