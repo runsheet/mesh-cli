@@ -31,9 +31,9 @@
 # (scripts/exchange-workflow-token.sh,
 # docs/adr/adr-015-workflow-tokens-exchanged-through-rigger.md), against
 # the binding runsheet/mesh carries, .runsheet/bindings/mesh-cli-release.yaml.
-# Until the runsheet half answers, a failed exchange falls back to the
-# RELEASE_TOKEN secret, and the log says which path it took. A failing
-# mirror step fails the workflow — there is no partial publish.
+# Until the runsheet half answers, scripts/mirror-token.sh falls back to
+# the stored secret on a failed exchange and logs which path it took. A
+# failing mirror step fails the workflow — there is no partial publish.
 #
 # The publish job is idempotent (adr-002's amendment "the publish job
 # is idempotent"): both the runsheet/mesh-cli release and the mirror
@@ -284,32 +284,21 @@ jobs:
         # .runsheet/bindings/mesh-cli-release.yaml when their content
         # differs (adr-002's amendments "the public mirror on
         # runsheet/mesh" and "the publish job is idempotent"). Its
-        # GH_TOKEN is exchanged first from this run's OIDC identity
-        # through Rigger (adr-015, the job's id-token: write): one
-        # repository, contents: write, an hour. RELEASE_TOKEN is the
-        # transitional fallback while the runsheet half is not there;
-        # the log says which path was taken. With neither the step
-        # fails. A failing mirror fails the workflow.
+        # GH_TOKEN comes from scripts/mirror-token.sh, which exchanges
+        # this run's OIDC identity through Rigger (adr-015, the job's
+        # id-token: write): one repository, contents: write, an hour.
+        # The transitional fallback to the stored secret is one function
+        # in scripts/mirror-token.sh, which logs the path taken. With
+        # neither the step fails. A failing mirror fails the workflow.
         env:
+          # Item 10 of the goal removes this line with the fallback.
           RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
           GH_REPO: runsheet/mesh
           TAG: ${{ github.ref_name }}
           SHA: ${{ github.sha }}
         run: |
-          err="${RUNNER_TEMP}/exchange-workflow-token.err"
-          if token=$(scripts/exchange-workflow-token.sh runsheet/mesh mesh-cli-release 2>"$err"); then
-            echo "::add-mask::${token}"
-            export GH_TOKEN="$token"
-            echo "mirror token: exchanged through rigger, expires $(tail -n1 "$err")"
-          else
-            reason=$(tr '\n' ' ' <"$err" | sed 's/^exchange-workflow-token: //; s/ *$//')
-            if [ -n "${RELEASE_TOKEN}" ]; then
-              export GH_TOKEN="$RELEASE_TOKEN"
-              echo "mirror token: RELEASE_TOKEN fallback (exchange failed: ${reason})"
-            else
-              echo "mirror token: none — the exchange through rigger failed (${reason}) and RELEASE_TOKEN is not set" >&2
-              exit 1
-            fi
-          fi
+          token=$(scripts/mirror-token.sh runsheet/mesh mesh-cli-release) || exit 1
+          echo "::add-mask::${token}"
+          export GH_TOKEN="$token"
           unset RELEASE_TOKEN
           scripts/mirror-release.sh "$TAG" "$SHA" release

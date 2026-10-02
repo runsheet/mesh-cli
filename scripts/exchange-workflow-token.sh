@@ -22,6 +22,11 @@
 # Prints the token on stdout and its expiresAt on stderr. A refusal, a
 # platform without the mutation, or no OIDC token exits 1 with the
 # reason on stderr, one line, prefixed "exchange-workflow-token: ".
+# A refusal (the gateway answers with errors) adds one more line after
+# it, `presented: kid=… iss=… aud=… sub=… repository=… ref=…
+# job_workflow_ref=…`: the JWT's header kid and claims, decoded
+# unverified, so the run log shows the runsheet half exactly what to
+# accept — never the token, a segment of it or its signature.
 #
 # repository defaults to runsheet/mesh, binding to mesh-cli-release.
 # Needs curl and jq on PATH.
@@ -35,6 +40,29 @@ audience=runsheet-rigger
 die() {
   echo "exchange-workflow-token: $*" >&2
   exit 1
+}
+
+# b64url_json <segment>: one base64url JWT segment decoded, unverified.
+b64url_json() {
+  local s=${1//-/+}
+  s=${s//_//}
+  case $((${#s} % 4)) in
+    2) s+="==" ;;
+    3) s+="=" ;;
+  esac
+  base64 -d <<<"$s" 2>/dev/null
+}
+
+# presented <jwt>: the line naming what the token claims, for a refusal.
+presented() {
+  local header payload rest
+  header=$(b64url_json "${1%%.*}") || header=""
+  rest=${1#*.}
+  payload=$(b64url_json "${rest%%.*}") || payload=""
+  jq -rn --argjson h "${header:-null}" --argjson p "${payload:-null}" '
+    def v: if . == null then "" elif type == "array" then join(",") else tostring end;
+    "presented: kid=\($h.kid | v) iss=\($p.iss | v) aud=\($p.aud | v) sub=\($p.sub | v) repository=\($p.repository | v) ref=\($p.ref | v) job_workflow_ref=\($p.job_workflow_ref | v)"
+  ' 2>/dev/null || echo "presented: (the OIDC token's claims could not be decoded)"
 }
 
 [[ -n ${ACTIONS_ID_TOKEN_REQUEST_URL:-} && -n ${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-} ]] ||
@@ -63,7 +91,9 @@ jq -e . >/dev/null 2>&1 <<<"$response" ||
 
 errors=$(jq -r '[.errors[]?.message] | join("; ")' <<<"$response")
 if [[ -n $errors ]]; then
-  die "refused: ${errors}"
+  echo "exchange-workflow-token: refused: ${errors}" >&2
+  presented "$jwt" >&2
+  exit 1
 fi
 
 token=$(jq -er '.data.exchangeWorkflowToken.token // empty' <<<"$response") ||
