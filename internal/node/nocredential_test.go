@@ -360,25 +360,23 @@ func TestNoCredentialRebaseWaitsAndSaysWhyOnce(t *testing.T) {
 	}
 }
 
-// The Codex harness's own account (node.yaml's codex: block, chosen by
-// the evaluator as OpenOwn) is no way round the rule: a read that
-// answered and issued no Codex credential is ErrNoCredential naming
-// codex, and no account is opened.
-func TestNoCredentialOpenOwnOnAnAnsweredReadWithNoCodex(t *testing.T) {
+// A Codex session has no own account to fall back to (ADR 011's
+// amendment 2026-10-02): a read that answered and issued no Codex
+// credential is ErrNoCredential naming codex, and no account is opened.
+func TestNoCredentialCodexOpenOnAnAnsweredReadWithNoCodex(t *testing.T) {
 	f := seed(t)
 	issueClaude(f, item1)
 	c := &Credentials{GW: gateway.New(f.URL(), "rs_test"), NoCredential: &NoCredentials{}}
 	sc := Scope{Login: "acme", Slug: "acme", ID: orgID}
 	ref := gateway.SessionRef{Kind: string(harness.KindEvaluate), ItemID: item1, GoalID: goalID}
-	own := AccountConfig{Label: DefaultAccount, Kind: AccountSubscription, Adapter: AdapterCodex}
-	s, err := c.OpenOwn(withSubject(context.Background(), sc, projID, "mesh"), ref, "n", own)
+	s, err := c.Open(withSubject(context.Background(), sc, projID, "mesh"), ref, "n", nil, AdapterCodex)
 	if nc, ok := NoCredentialOf(err); !ok || s != nil || nc.Error() != "org acme's project mesh has no codex credential open to this node" {
-		t.Fatalf("OpenOwn = %v, %v; want ErrNoCredential naming codex", s, err)
+		t.Fatalf("Open(codex) = %v, %v; want ErrNoCredential naming codex", s, err)
 	}
 }
 
-// An evaluation whose Codex account is the harness's own, on a read
-// that issues Claude alone, starts no Codex session: unpinned it runs on
+// An evaluation whose only Codex candidate the read does not issue, on
+// a read that issues Claude alone, starts no Codex session: unpinned it runs on
 // the issued Claude credential, pinned to Codex it waits — the
 // operator's ~/.codex login never runs it.
 func TestNoCredentialEvaluationNeverRunsCodexOnItsOwnAccount(t *testing.T) {

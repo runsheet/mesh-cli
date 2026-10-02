@@ -128,10 +128,6 @@ type Loop struct {
 	// Credentials.NoCredential): their goals' items and plans are passed
 	// over with its reason until its re-check is due. Nil: none held.
 	NoCredential *NoCredentials
-	// CodexOwn is node.yaml's codex: account the Codex harness runs on
-	// (CodexOwnAccount; nil: no codex: block), a Codex account an
-	// evaluation may run on beside the issued ones (CodexCandidates).
-	CodexOwn []AccountConfig
 	// CodexRoom says whether a Codex account has headroom for an
 	// evaluation of that priority (Evaluator.CodexHeadroom; nil: none
 	// ever): an evaluation no Claude account has room for starts on it
@@ -1049,15 +1045,11 @@ func (l *Loop) CodexAccounts() ([]AccountConfig, map[string]harness.RateLimit) {
 }
 
 // CodexCandidates are the Codex accounts an evaluation may run on
-// first (ADR 011): the issued ones Known holds, then node.yaml's
-// codex: account (CodexOwn) unless an issued one has its label.
+// first (ADR 011): the issued ones Known holds, and only those — the
+// operator's own Codex login is never one (ADR 011's amendment
+// 2026-10-02).
 func (l *Loop) CodexCandidates() []AccountConfig {
 	out, _ := l.CodexAccounts()
-	for _, a := range l.CodexOwn {
-		if !slices.ContainsFunc(out, func(b AccountConfig) bool { return b.Label == a.Label }) {
-			out = append(out, a)
-		}
-	}
 	return out
 }
 

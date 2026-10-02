@@ -1336,7 +1336,6 @@ type secondOpinion struct {
 	// preflight is the Codex harness's: the built-in context server
 	// checked before any Codex session starts
 	preflight  func(context.Context, harness.Job) error
-	account    string
 	limits     *node.Limits
 	thresholds func() node.LimitsConfig
 	// accounts are the Codex accounts an evaluation may run on first
@@ -1357,16 +1356,15 @@ type secondOpinion struct {
 }
 
 // codexSecondOpinion builds the evaluator's Codex harness whenever its
-// binary is found, with or without a `codex:` block — an issued OpenAI
-// credential serving codex supplies the login — on the block's first
-// account (none: the operator's own Codex login, used only when the
-// block is there). An evaluation runs on Codex when one of the issued
-// Codex accounts or the block's has headroom for the item's priority,
-// else on Claude, and the second opinion runs on the other family
+// binary is found, with or without a `codex:` block. It has no account
+// of its own: an issued OpenAI credential serving codex supplies every
+// session's login, and the operator's own Codex login is never one (ADR
+// 011's amendment 2026-10-02). An evaluation runs on Codex when an
+// issued Codex account has headroom for the item's priority, else on
+// Claude, and the second opinion runs on the other family
 // (docs/adr/adr-011-evaluations-run-on-the-family-with-headroom.md).
-// Its readings land in the loop's Limits under codex:<account>. No
-// binary, or neither a block nor an issued Codex account: the node
-// evaluates as before. Every session's whole event stream and stderr
+// Its readings land in the loop's Limits under codex:<label>. No
+// binary, or no issued Codex account: the node evaluates as before. Every session's whole event stream and stderr
 // are kept under workRoot/kept-sessions for harness.KeepSessionOutput
 // (docs/adr/adr-005-codex-second-opinion.md, "Amendment, 2026-09-28:
 // the stream is kept 24 hours").
@@ -1382,22 +1380,10 @@ func codexSecondOpinion(cfg *node.Config, loop *node.Loop, workRoot string, logg
 		return secondOpinion{blind: &node.OncePer{}, noVerdict: &node.OncePer{}, left: &node.LeftRunning{}}
 	}
 	c := &harness.Codex{Binary: bin, Stderr: sessionsOut, WorkRoot: workRoot}
-	loop.CodexOwn = nil
-	if !cfg.Codex.IsZero() {
-		if len(cfg.Codex.Accounts) > 0 {
-			c.Account = cfg.Codex.Accounts[0].Harness(cfg.Codex.Providers)
-		}
-		loop.CodexOwn = []node.AccountConfig{node.CodexOwnAccount(c.Account)}
-	}
-	account := node.CodexLimitsAccount(c.Account.Name)
-	if loop.CodexOwn != nil {
-		logger.Printf("codex: evaluations on Codex when an account has headroom (node.yaml's %s, and the issued ones), else on Claude; the second opinion on the other family", account)
-	} else {
-		logger.Printf("codex: evaluations on Codex when an issued Codex account has headroom, else on Claude; the second opinion on the other family")
-	}
-	h := node.ObserveLimitsAs(c, loop.Limits, account)
+	logger.Printf("codex: evaluations on Codex when an issued Codex credential has headroom, else on Claude; the second opinion on the other family")
+	h := node.ObserveLimits(c, loop.Limits)
 	loop.CodexRoom = (&node.Evaluator{Codex: h, CodexAccounts: loop.CodexCandidates, Limits: loop.Limits, Thresholds: loop.Thresholds}).CodexHeadroom
-	return secondOpinion{h: h, preflight: c.Preflight, account: account, limits: loop.Limits, thresholds: loop.Thresholds, accounts: loop.CodexCandidates, waits: &node.OncePer{}, blind: &node.OncePer{}, noVerdict: &node.OncePer{}, left: &node.LeftRunning{}}
+	return secondOpinion{h: h, preflight: c.Preflight, limits: loop.Limits, thresholds: loop.Thresholds, accounts: loop.CodexCandidates, waits: &node.OncePer{}, blind: &node.OncePer{}, noVerdict: &node.OncePer{}, left: &node.LeftRunning{}}
 }
 
 // evaluateWith is the loop's Evaluate hook: a fresh evaluator session per
@@ -1470,7 +1456,7 @@ func researchWith(gw *gateway.Client, cfg *node.Config, h harness.Harness, loop 
 
 func evaluator(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harness.Harness, second secondOpinion, loop *node.Loop, workRoot string, fallback *node.TokenFallback, accounts *node.Credentials, logger *log.Logger) *node.Evaluator {
 	return &node.Evaluator{GW: gw, Harness: h, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, Scopes: loop.CurrentScopes(), WorkRoot: workRoot, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodeEvalBudgetFlag, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("evaluate"), Fallback: fallback, Accounts: cfg.Accounts, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Sandbox: sessionSandbox, Log: logger,
-		Codex: second.h, CodexPreflight: second.preflight, CodexModel: cfg.Codex.CodexModel, CodexAccount: second.account, CodexAccounts: second.accounts, Waits: second.waits, Blind: second.blind, NoVerdict: second.noVerdict, LeftRunning: second.left, Limits: second.limits, Thresholds: second.thresholds}
+		Codex: second.h, CodexPreflight: second.preflight, CodexModel: cfg.Codex.CodexModel, CodexAccounts: second.accounts, Waits: second.waits, Blind: second.blind, NoVerdict: second.noVerdict, LeftRunning: second.left, Limits: second.limits, Thresholds: second.thresholds}
 }
 
 func rebaser(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harness.Harness, loop *node.Loop, scopes func() node.Scopes, workRoot string, fallback *node.TokenFallback, accounts *node.Credentials, logger *log.Logger) *node.Rebaser {

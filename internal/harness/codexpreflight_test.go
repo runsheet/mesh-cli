@@ -312,7 +312,7 @@ const socketFailure = "Error: listen tcp 127.0.0.1:0: socket: operation not perm
 func TestCodexPreflightSocketRefused(t *testing.T) {
 	out := t.TempDir()
 	c := &Codex{Binary: sandboxCodex(t, out, 0, socketFailure+"\n", 1), HomeRoot: t.TempDir(), Probe: []string{"/opt/mesh", "sandbox-probe"}}
-	err := c.Preflight(context.Background(), Job{Workspace: t.TempDir()})
+	err := c.Preflight(context.Background(), Job{Workspace: t.TempDir(), Env: []string{"CODEX_HOME=" + t.TempDir()}})
 	if err == nil || err.Error() != "sandbox: "+socketFailure {
 		t.Fatalf("err %v", err)
 	}

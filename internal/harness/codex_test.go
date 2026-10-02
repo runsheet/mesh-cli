@@ -779,3 +779,35 @@ func TestCodexRunJobCodexHomeTakesNoProvider(t *testing.T) {
 		}
 	}
 }
+
+// A Codex job with no CODEX_HOME the node placed and a zero Account is
+// refused: the operator's own login is never a session's. Neither
+// $CODEX_HOME nor ~/.codex is read — the fake operator home's auth.json
+// is unreadable, so a read would fail with another error — no session
+// home is made and the binary never runs.
+func TestCodexZeroAccountRefusesTheOperatorsLogin(t *testing.T) {
+	out, operator, root := t.TempDir(), t.TempDir(), t.TempDir()
+	t.Setenv("CODEX_HOME", operator)
+	t.Setenv("HOME", operator)
+	auth := filepath.Join(operator, "auth.json")
+	if err := os.WriteFile(auth, []byte(`{"auth_mode":"chatgpt"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(auth, 0); err != nil {
+		t.Fatal(err)
+	}
+	c := &Codex{Binary: fakeCodex(t, out, "codex_exec_apikey.jsonl"), HomeRoot: root}
+	_, err := c.Run(context.Background(), Job{Workspace: t.TempDir(), Prompt: "say hello", MCPServers: testServers()}, nil)
+	if err == nil || !strings.Contains(err.Error(), "refusing the operator's own login") {
+		t.Fatalf("err %v, want the refusal", err)
+	}
+	if _, err := os.Stat(filepath.Join(out, "stdin")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("codex ran: %v", err)
+	}
+	if ls, _ := os.ReadDir(root); len(ls) != 0 {
+		t.Fatalf("a session home was made: %v", ls)
+	}
+	if err := c.Preflight(context.Background(), Job{Workspace: t.TempDir()}); err == nil || !strings.Contains(err.Error(), "refusing the operator's own login") {
+		t.Fatalf("preflight err %v, want the refusal", err)
+	}
+}
