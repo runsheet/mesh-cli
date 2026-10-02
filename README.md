@@ -613,9 +613,9 @@ systemd's `StandardOutput=append:~/.mesh/node.log` redirect until
 rotates node.log, but systemd's descriptor follows the renamed file and
 a panic's stack lands in whichever `node.log.N` it has become.
 
-**Measured on the mini, 2026-10-02 10:54Z, v0.2.222** (under real work,
+**Measured on the mini, 2026-10-02 11:13Z, v0.2.222** (under real work,
 four to eight sessions at a time; `scripts/node-reload-reading.sh`):
-node.log grows about **237 KB an hour** (4,344,540 bytes in the 66,043 s
+node.log grows about **240 KB an hour** (4,485,367 bytes in the 67,220 s
 since it began at the 2026-10-01 16:33:14Z rotation), so it reaches the
 10 MB cap about every 44 hours and the five kept files hold about nine
 days. sessions.log grows far faster, about 9 MB an hour

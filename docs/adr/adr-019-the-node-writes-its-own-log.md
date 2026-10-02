@@ -68,9 +68,9 @@ mirrored through the harness.
 
 ## Amendment — 2026-10-02 (goal node-yaml-takes-effect-or-says-why-not, item 11)
 
-- 2026-10-02 10:54Z, the mini on v0.2.222 under real work
-  (`scripts/node-reload-reading.sh`): node.log grows about 237 KB an
-  hour — 4,344,540 bytes in the 66,043 s since the 2026-10-01 16:33:14Z
+- 2026-10-02 11:13Z, the mini on v0.2.222 under real work
+  (`scripts/node-reload-reading.sh`): node.log grows about 240 KB an
+  hour — 4,485,367 bytes in the 67,220 s since the 2026-10-01 16:33:14Z
   rotation that closed `node.log.1` at 10,485,596 bytes — so the 10 MB
   cap is reached about every 44 hours and 10 MB × 5 keeps about nine
   days. sessions.log grows about 9 MB an hour (`sessions.log.1`,

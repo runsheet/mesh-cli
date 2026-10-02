@@ -25,8 +25,14 @@ Prints, each section labelled, for the node whose home is $MESH_HOME
                and ExecStart lines, when systemd is present
   status       `mesh node status`, when $MESH_HOME/token exists
 
---now sets the clock the window is measured from (default: now); the
-mesh binary is $MESH_BIN (default mesh).
+--now sets the clock the window is measured from (default: now).
+
+The mesh binary is the one the node runs, never whichever `mesh` is first
+on PATH: $MESH_BIN when set; else the running node's own executable,
+/proc/<pid>/exe of the pid in $MESH_HOME/node.pid (a binary swapped since
+the start still runs from there); else the first word of the service
+unit's ExecStart; else `mesh` on PATH. The section says which. `mesh node
+status` is given $STATUS_TIMEOUT seconds (default 60).
 EOF
 }
 
@@ -45,7 +51,7 @@ done
 case "$hours" in '' | *[!0-9]*) echo "node-reload-reading: --hours wants a whole number, got '$hours'" >&2; exit 2 ;; esac
 
 home="${MESH_HOME:-$HOME/.mesh}"
-mesh="${MESH_BIN:-mesh}"
+proc="${MESH_PROC:-/proc}"
 log="$home/node.log"
 now_s="$(if [ -n "$now" ]; then date -d "$now" +%s; else date +%s; fi)"
 since_s=$((now_s - hours * 3600))
@@ -54,8 +60,29 @@ since="$(date -d "@$since_s" '+%Y/%m/%d %H:%M:%S')"
 
 echo "== reading taken $(date -d "@$now_s" '+%Y-%m-%d %H:%M:%S %z') on $(hostname), MESH_HOME=$home"
 
+# The binary the node runs, and how it was found.
+mesh=""
+how=""
+pid="$(cat "$home/node.pid" 2>/dev/null || true)"
+if [ -n "${MESH_BIN:-}" ]; then
+  mesh="$MESH_BIN"
+  how="MESH_BIN"
+elif [ -n "$pid" ] && [ -x "$proc/$pid/exe" ]; then
+  mesh="$proc/$pid/exe"
+  how="the running node, pid $pid in node.pid, -> $(readlink "$proc/$pid/exe" 2>/dev/null || echo '?')"
+elif command -v systemctl >/dev/null 2>&1 \
+  && exec_start="$(systemctl --user show -p ExecStart --value io.projectmesh.mesh-node 2>/dev/null)" \
+  && unit_bin="$(sed -n 's/.*path=\([^ ;]*\).*/\1/p' <<<"$exec_start")" && [ -x "$unit_bin" ]; then
+  mesh="$unit_bin"
+  how="the unit's ExecStart (no live pid in node.pid)"
+else
+  mesh="mesh"
+  how="PATH: $(command -v mesh || echo 'not found') (no live pid in node.pid, no unit)"
+fi
+
 echo "== version"
-if command -v "$mesh" >/dev/null 2>&1; then
+echo "binary: $mesh ($how)"
+if [ -x "$mesh" ] || command -v "$mesh" >/dev/null 2>&1; then
   echo "mesh version: $("$mesh" version 2>&1)"
 else
   echo "mesh version: $mesh not found"
@@ -122,8 +149,8 @@ else
 fi
 
 echo "== status"
-if [ -f "$home/token" ] && command -v "$mesh" >/dev/null 2>&1; then
-  "$mesh" node status 2>&1 || echo "(mesh node status exited $?)"
+if [ -f "$home/token" ] && { [ -x "$mesh" ] || command -v "$mesh" >/dev/null 2>&1; }; then
+  timeout "${STATUS_TIMEOUT:-60}" "$mesh" node status 2>&1 || echo "(mesh node status exited $?; 124 is the ${STATUS_TIMEOUT:-60} s timeout)"
 else
   echo "no $home/token or no $mesh: mesh node status not run"
 fi
