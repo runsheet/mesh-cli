@@ -399,9 +399,12 @@ const ContextDir = ".mesh/context"
 // project (org/slug), its PRD slug when it lists one, and the session's
 // own goal.
 type Context struct {
-	Docs    map[string]string
-	Index   []gateway.Document
-	OnDisk  map[string]string // slug → file name, for the index
+	Docs  map[string]string
+	Index []gateway.Document
+	// OnDisk is file name → the document it holds, for the index. It is
+	// keyed by file name and not by slug: several repos' AGENTS.md share
+	// the slug `agents`, and each is its own repo's file.
+	OnDisk  map[string]gateway.Document
 	Project string
 	PRDSlug string
 	// Dropped is the own repos' instructions fetched but left off disk
@@ -459,16 +462,20 @@ func fetchOwnGoal(ctx context.Context, gw Gateway, g gateway.Goal) *LiveGoal {
 }
 
 // ContextOptions is how FetchContext fetches: Budget is the size budget
-// (zero is the defaults; only bytes_max applies, ADR-015), Repos
+// (zero is the defaults; bytes_max holds everything written,
+// doc_bytes_max each instructions document, ADR-015), Repos
 // (owner/name) the repos of the session's own work — whose instructions
-// alone go on disk — and Goal the session's own goal, nil for none.
-// Logf, when set, takes the warnings: the goal's items unread, and
-// INDEX.md alone past the cap.
+// alone go on disk — Checkouts each of those repos' checkout on this
+// machine (owner/name → dir), read for an instructions document whose
+// slug another repo's shares, and Goal the session's own goal, nil for
+// none. Logf, when set, takes the warnings: the goal's items unread,
+// and INDEX.md alone past the cap.
 type ContextOptions struct {
-	Budget ContextConfig
-	Repos  []string
-	Goal   *gateway.Goal
-	Logf   func(string, ...any)
+	Budget    ContextConfig
+	Repos     []string
+	Checkouts map[string]string
+	Goal      *gateway.Goal
+	Logf      func(string, ...any)
 }
 
 // FetchContext lists the project's documents and puts on disk only what
@@ -477,10 +484,19 @@ type ContextOptions struct {
 // TRD body is fetched — and, in INDEX.md, the session's own goal with
 // its items. Everything else is fetched on demand through the MCP
 // tools. INDEX.md is inside bytes_max: its length is counted first, and
-// an instructions document that would take the total past the cap is
-// left off disk whole, on cx.Dropped, and named in INDEX.md as binding,
-// to fetch first. An INDEX.md alone past the cap places nothing, with
-// one warning.
+// an instructions document past doc_bytes_max, or that would take the
+// total past the cap, is left off disk whole, on cx.Dropped, and named
+// in INDEX.md as binding, to fetch first. An INDEX.md alone past the
+// cap places nothing, with one warning.
+//
+// Instructions are read by repo and path, not by slug alone: every
+// repo's AGENTS.md is slug `agents`, and the gateway's by-slug read
+// (/documents/<slug>) answers one of them, whichever repo it picks. A
+// slug only one instructions document carries is read from the gateway;
+// a shared one is read from the session's own checkout of its repo
+// (opts.Checkouts, the file at the document's path — the checkout is
+// the repo's default branch, or a branch from it), and with no checkout
+// it is left to the index, named by repo and path.
 func FetchContext(ctx context.Context, gw Gateway, orgLogin, projectSlug string, opts ContextOptions) (*Context, error) {
 	budget := opts.Budget.Effective()
 	logf := opts.Logf
@@ -491,7 +507,7 @@ func FetchContext(ctx context.Context, gw Gateway, orgLogin, projectSlug string,
 	if err != nil {
 		return nil, err
 	}
-	out := &Context{Docs: map[string]string{}, Index: docs, OnDisk: map[string]string{}, Project: orgLogin + "/" + projectSlug, BytesMax: budget.BytesMax}
+	out := &Context{Docs: map[string]string{}, Index: docs, OnDisk: map[string]gateway.Document{}, Project: orgLogin + "/" + projectSlug, BytesMax: budget.BytesMax}
 	if opts.Goal != nil {
 		out.Live = fetchOwnGoal(ctx, gw, *opts.Goal)
 		if out.Live.Unread != "" {
@@ -500,39 +516,53 @@ func FetchContext(ctx context.Context, gw Gateway, orgLogin, projectSlug string,
 	}
 	ownRepo := map[string]bool{}
 	for _, r := range opts.Repos {
-		ownRepo[strings.ToLower(strings.TrimSpace(r))] = true
+		ownRepo[repoKey(r)] = true
+	}
+	checkouts := map[string]string{}
+	for r, dir := range opts.Checkouts {
+		checkouts[repoKey(r)] = dir
 	}
 	var own []gateway.Document
 	for _, d := range docs {
 		if d.Kind == "prd" && out.PRDSlug == "" {
 			out.PRDSlug = d.Slug
 		}
-		if d.Kind == "instructions" && ownRepo[strings.ToLower(strings.TrimSpace(d.Repo))] {
+		if d.Kind == "instructions" && ownRepo[repoKey(d.Repo)] {
 			own = append(own, d)
 		}
 	}
-	if full := len(renderIndex(out, indexFull)); full > budget.BytesMax {
-		logf("warning: INDEX.md alone is %d bytes, past bytes_max %d: the goal section is shortened to fit, no document on disk, every one to fetch", full, budget.BytesMax)
+	if least := len(renderIndex(out, indexGoalTitle, 0)); least > budget.BytesMax {
+		logf("warning: INDEX.md alone is %d bytes at its shortest, past bytes_max %d: it is cut to fit, no document on disk, every one to fetch", least, budget.BytesMax)
 		out.Dropped = own
 		out.IndexBytes = len(RenderIndex(out))
 		return out, nil
 	}
+	shared := sharedSlugs(docs)
 	total := 0
 	for _, d := range own {
-		body, err := gw.ContextDocument(ctx, orgLogin, projectSlug, d.Slug)
-		if err != nil {
-			return nil, fmt.Errorf("fetch %s: %w", d.Slug, err)
+		var body string
+		if !shared[d.Slug] {
+			if body, err = gw.ContextDocument(ctx, orgLogin, projectSlug, d.Slug); err != nil {
+				return nil, fmt.Errorf("fetch %s: %w", d.Slug, err)
+			}
+		} else if b, ok := readCheckout(checkouts[repoKey(d.Repo)], d.Path); ok {
+			body = b
+		} else {
+			// by slug the gateway may answer another repo's body
+			logf("warning: instructions %s of %s: slug %q is shared and no checkout holds %s: left to INDEX.md", d.Path, d.Repo, d.Slug, d.Path)
+			out.Dropped = append(out.Dropped, d)
+			continue
 		}
 		name := contextFileName(d)
 		out.Docs[name] = body
-		out.OnDisk[d.Slug] = name
+		out.OnDisk[name] = d
 		// the index names the file: count it as it will be written
-		if index := len(RenderIndex(out)); total+len(body)+index <= budget.BytesMax {
+		if index := len(RenderIndex(out)); len(body) <= budget.DocBytesMax && total+len(body)+index <= budget.BytesMax {
 			total += len(body)
 			continue
 		}
 		delete(out.Docs, name)
-		delete(out.OnDisk, d.Slug)
+		delete(out.OnDisk, name)
 		out.Dropped = append(out.Dropped, d)
 	}
 	// a dropped document's line grows the index: fit again
@@ -541,8 +571,52 @@ func FetchContext(ctx context.Context, gw Gateway, orgLogin, projectSlug string,
 	return out, nil
 }
 
+// contextFileName is an instructions document's file on disk, named by
+// its repo: instructions-<owner>-<repo>-<slug>.md.
 func contextFileName(d gateway.Document) string {
 	return "instructions-" + Slugify(d.Repo) + "-" + Slugify(d.Slug) + ".md"
+}
+
+// checkoutsUnder is each repo's checkout, its sub-directory of dir.
+func checkoutsUnder(dir string, subs map[string]string) map[string]string {
+	out := make(map[string]string, len(subs))
+	for repo, sub := range subs {
+		out[repo] = filepath.Join(dir, sub)
+	}
+	return out
+}
+
+func repoKey(r string) string { return strings.ToLower(strings.TrimSpace(r)) }
+
+// sharedSlugs is the instructions slugs more than one document of the
+// listing carries — every repo's AGENTS.md is `agents`.
+func sharedSlugs(docs []gateway.Document) map[string]bool {
+	n := map[string]int{}
+	for _, d := range docs {
+		if d.Kind == "instructions" {
+			n[d.Slug]++
+		}
+	}
+	out := map[string]bool{}
+	for slug, c := range n {
+		if c > 1 {
+			out[slug] = true
+		}
+	}
+	return out
+}
+
+// readCheckout reads path inside the checkout dir; false when either is
+// empty, the path leaves the checkout, or the file cannot be read.
+func readCheckout(dir, path string) (string, bool) {
+	if dir == "" || path == "" || !filepath.IsLocal(path) {
+		return "", false
+	}
+	b, err := os.ReadFile(filepath.Join(dir, path))
+	if err != nil {
+		return "", false
+	}
+	return string(b), true
 }
 
 func (cx *Context) bytesMax() int {
@@ -570,17 +644,8 @@ func (cx *Context) fit() {
 		sort.Strings(names)
 		last := names[len(names)-1]
 		delete(cx.Docs, last)
-		for slug, n := range cx.OnDisk {
-			if n != last {
-				continue
-			}
-			delete(cx.OnDisk, slug)
-			d := gateway.Document{Slug: slug}
-			for _, x := range cx.Index {
-				if x.Slug == slug {
-					d = x
-				}
-			}
+		if d, ok := cx.OnDisk[last]; ok {
+			delete(cx.OnDisk, last)
 			cx.Dropped = append(cx.Dropped, d)
 		}
 	}
@@ -599,17 +664,40 @@ const IndexFile = "INDEX.md"
 // and no other goal is named. The session's own goal follows: its
 // statement, acceptance and items.
 //
-// It never passes the context's cap: past it the goal's item table goes
-// to mesh_items, then its statement and acceptance, and an index still
-// past it is cut at the cap with a closing line.
+// It never passes the room the instruction files leave under the cap —
+// they are binding, the goal's items can be asked for: past it the
+// goal's item table is cut at a row boundary — as many rows as fit,
+// then a line sending the rest to mesh_items — then its statement and
+// acceptance go too. With files on disk an index still past the room is
+// returned as it is, for fit to take a file off; with none it is cut at
+// the cap with a closing line.
 func RenderIndex(cx *Context) string {
 	max := cx.bytesMax()
-	for _, level := range []int{indexFull, indexNoItems, indexGoalTitle} {
-		if s := renderIndex(cx, level); len(s) <= max {
+	for _, body := range cx.Docs {
+		max -= len(body)
+	}
+	if s := renderIndex(cx, indexFull, -1); len(s) <= max {
+		return s
+	}
+	if cx.Live != nil && len(cx.Live.Items) > 0 && cx.Live.Unread == "" {
+		// the most rows that fit: the length grows with the rows kept
+		lo, hi := 0, len(cx.Live.Items)-1
+		for lo < hi {
+			mid := (lo + hi + 1) / 2
+			if len(renderIndex(cx, indexFull, mid)) <= max {
+				lo = mid
+			} else {
+				hi = mid - 1
+			}
+		}
+		if s := renderIndex(cx, indexFull, lo); len(s) <= max {
 			return s
 		}
 	}
-	s := renderIndex(cx, indexGoalTitle)
+	s := renderIndex(cx, indexGoalTitle, 0)
+	if len(s) <= max || len(cx.Docs) > 0 {
+		return s
+	}
 	tail := fmt.Sprintf("\n… INDEX.md cut at the context cap (%d bytes): ask `mesh_items` and `mesh_search` for the rest.\n", max)
 	keep := max - len(tail)
 	if keep < 0 {
@@ -620,28 +708,25 @@ func RenderIndex(cx *Context) string {
 
 // How much of the goal section renderIndex renders.
 const (
-	indexFull      = iota // statement, acceptance, items
-	indexNoItems          // statement, acceptance, the items to ask mesh_items for
+	indexFull      = iota // statement, acceptance, items (rows of them)
 	indexGoalTitle        // the goal's title, the rest to ask mesh_items for
 )
 
-func renderIndex(cx *Context, level int) string {
+// renderIndex renders INDEX.md at level with the goal's first rows
+// items as table rows, every one for rows < 0.
+func renderIndex(cx *Context, level, rows int) string {
 	var b strings.Builder
 	project := fmt.Sprintf("%q", cx.Project)
 	cell := func(s string) string { return strings.ReplaceAll(strings.ReplaceAll(s, "\n", " "), "|", "\\|") }
 	fmt.Fprintf(&b, "# Project %s\n\n", cx.Project)
 	b.WriteString("## On disk here\n\n")
-	slugs := make([]string, 0, len(cx.OnDisk))
-	for slug := range cx.OnDisk {
-		slugs = append(slugs, slug)
+	files := make([]string, 0, len(cx.OnDisk))
+	for name := range cx.OnDisk {
+		files = append(files, name)
 	}
-	sort.Slice(slugs, func(i, j int) bool { return cx.OnDisk[slugs[i]] < cx.OnDisk[slugs[j]] })
-	repoOf := map[string]string{}
-	for _, d := range cx.Index {
-		repoOf[d.Slug] = d.Repo
-	}
-	for _, slug := range slugs {
-		fmt.Fprintf(&b, "- `%s` — the instructions of %s, binding\n", cx.OnDisk[slug], repoOf[slug])
+	sort.Strings(files)
+	for _, name := range files {
+		fmt.Fprintf(&b, "- `%s` — the instructions of %s, binding\n", name, cx.OnDisk[name].Repo)
 	}
 	if cx.Live != nil {
 		fmt.Fprintf(&b, "- this session's goal, `%s`, below: its statement, acceptance and items\n", cx.Live.Goal.Slug)
@@ -651,7 +736,13 @@ func renderIndex(cx *Context, level int) string {
 	}
 	if len(cx.Dropped) > 0 {
 		b.WriteString("\n## Binding, not on disk — fetch first\n\n")
+		shared := sharedSlugs(cx.Index)
 		for _, d := range cx.Dropped {
+			if shared[d.Slug] {
+				// mesh_document by a shared slug may answer another repo's
+				fmt.Fprintf(&b, "- `%s` of %s — its instructions, binding, not on disk: read `%s` in %s's checkout before you start (slug `%s` is shared by several repos' instructions)\n", d.Path, d.Repo, d.Path, d.Repo, d.Slug)
+				continue
+			}
 			fmt.Fprintf(&b, "- `%s` — the instructions of %s, binding, past the context cap: fetch it with `mesh_document` before you start\n", d.Slug, d.Repo)
 		}
 	}
@@ -664,14 +755,15 @@ func renderIndex(cx *Context, level int) string {
 	b.WriteString("\nThe ADRs and the TRD are binding: search them with `mesh_search` before any design decision.\n")
 	fmt.Fprintf(&b, "\n%d documents indexed, none listed here.\n", len(cx.Index))
 	if cx.Live != nil {
-		renderOwnGoal(&b, cx.Live, cell, level)
+		renderOwnGoal(&b, cx.Live, cell, level, rows)
 	}
 	return b.String()
 }
 
 // renderOwnGoal is INDEX.md's goal section: the session's own goal,
-// its statement, acceptance and a row per item.
-func renderOwnGoal(b *strings.Builder, lg *LiveGoal, cell func(string) string, level int) {
+// its statement, acceptance and a row per item — the first rows, then a
+// line for the rest, when rows >= 0.
+func renderOwnGoal(b *strings.Builder, lg *LiveGoal, cell func(string) string, level, rows int) {
 	g := lg.Goal
 	or := func(s string) string {
 		if strings.TrimSpace(s) == "" {
@@ -699,12 +791,21 @@ func renderOwnGoal(b *strings.Builder, lg *LiveGoal, cell func(string) string, l
 	case len(lg.Items) == 0:
 		b.WriteString("No items yet.\n")
 		return
-	case level >= indexNoItems:
+	case rows == 0:
 		fmt.Fprintf(b, "%d items, past the context cap: ask `mesh_items`.\n", len(lg.Items))
 		return
 	}
+	items := lg.Items
+	if rows > 0 && rows < len(items) {
+		items = items[:rows]
+	}
 	b.WriteString("| seq | title | status | repo | branch |\n| --- | --- | --- | --- | --- |\n")
-	for _, it := range lg.Items {
+	defer func() {
+		if rest := len(lg.Items) - len(items); rest > 0 {
+			fmt.Fprintf(b, "\n… %d more items past the context cap (seq %d on): ask `mesh_items` for the rest.\n", rest, lg.Items[len(items)].Seq)
+		}
+	}()
+	for _, it := range items {
 		branch := or(it.Branch)
 		if branch != "—" {
 			branch = "`" + branch + "`"
@@ -791,6 +892,16 @@ func WriteContext(dir string, cx *Context) ([]string, ContextWritten, error) {
 			w.PastTarget = name
 		}
 	}
+	// measured as rendered, before a byte is written: nothing past the
+	// cap is ever written
+	index := RenderIndex(cx)
+	total := len(index)
+	for _, n := range names {
+		total += len(docs[n])
+	}
+	if total > cx.bytesMax() {
+		return nil, w, fmt.Errorf("context: %d bytes rendered, past the %d-byte cap", total, cx.bytesMax())
+	}
 	for _, n := range names {
 		if err := os.WriteFile(filepath.Join(cdir, n), []byte(docs[n]), 0o644); err != nil {
 			return nil, w, err
@@ -798,7 +909,6 @@ func WriteContext(dir string, cx *Context) ([]string, ContextWritten, error) {
 		count(n, len(docs[n]))
 	}
 	w.Files = len(names)
-	index := RenderIndex(cx)
 	if err := os.WriteFile(filepath.Join(cdir, IndexFile), []byte(index), 0o644); err != nil {
 		return nil, w, err
 	}

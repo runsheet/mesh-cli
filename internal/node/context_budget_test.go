@@ -87,26 +87,30 @@ func TestLoopContextBudgetIsLiveReloaded(t *testing.T) {
 	}
 }
 
-// doc_bytes_max is accepted but applies to nothing on disk: no PRD is
-// put there, whatever it is set to, and bytes_max alone holds the own
-// repo's instructions.
+// doc_bytes_max holds each instructions document and nothing else: no
+// PRD or ADR is put on disk whatever it is set to, and an instructions
+// document past it is left whole to the index.
 func TestFetchContextHonoursDocBytesMax(t *testing.T) {
 	f := seed(t)
 	f.Bodies["acme/mesh/prd"] = strings.Repeat("p", 11)
+	f.Bodies["acme/mesh/agents"] = strings.Repeat("a", 11)
 	gw := gateway.New(f.URL(), "rs_test")
 	for _, docMax := range []int{10, 0, 1 << 20} {
 		cx, err := FetchContext(context.Background(), gw, "acme", "mesh", ContextOptions{Budget: ContextConfig{DocBytesMax: docMax}, Repos: widgets})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, ok := cx.OnDisk["prd"]; ok {
-			t.Fatalf("doc_bytes_max %d: the PRD is on disk", docMax)
+		var slugs []string
+		for _, d := range cx.OnDisk {
+			slugs = append(slugs, d.Slug)
 		}
-		if _, ok := cx.OnDisk["adr-001"]; ok {
-			t.Fatalf("doc_bytes_max %d: an ADR is on disk", docMax)
+		// past doc_bytes_max the instructions go to the index, whole
+		want := "agents"
+		if docMax == 10 {
+			want = ""
 		}
-		if cx.OnDisk["agents"] != "instructions-acme-widgets-agents.md" {
-			t.Fatalf("doc_bytes_max %d: on disk %v", docMax, cx.OnDisk)
+		if strings.Join(slugs, ",") != want {
+			t.Fatalf("doc_bytes_max %d: on disk %v", docMax, slugs)
 		}
 	}
 }

@@ -229,7 +229,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	}
 	// the same context the builder had: its repo's instructions and its goal
 	orgName := e.Scopes.NameOf(item.OrgID)
-	cx, err := FetchContext(ctx, e.GW, orgName, res.Project.Slug, ContextOptions{Budget: e.contextBudget(), Repos: []string{res.Repo.FullName()}, Goal: res.Goal, Logf: e.logf})
+	cx, err := FetchContext(ctx, e.GW, orgName, res.Project.Slug, ContextOptions{Budget: e.contextBudget(), Repos: []string{res.Repo.FullName()}, Checkouts: map[string]string{res.Repo.FullName(): dir}, Goal: res.Goal, Logf: e.logf})
 	if err != nil {
 		e.logf("item %s: context unavailable: %v", label, err)
 		cx = &Context{}

@@ -123,7 +123,7 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 		dirs[r.FullName()] = sub
 		names = append(names, r.FullName())
 	}
-	cx, err := FetchContext(ctx, d.GW, scope.Name(), project.Slug, ContextOptions{Budget: d.contextBudget(), Repos: names, Logf: d.logf})
+	cx, err := FetchContext(ctx, d.GW, scope.Name(), project.Slug, ContextOptions{Budget: d.contextBudget(), Repos: names, Checkouts: checkoutsUnder(dir, dirs), Logf: d.logf})
 	if err != nil {
 		d.logf("project %s: context unavailable: %v", project.Slug, err)
 		cx = &Context{}

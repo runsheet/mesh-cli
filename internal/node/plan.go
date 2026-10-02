@@ -315,7 +315,7 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	cx, err := FetchContext(ctx, p.GW, scope.Name(), project.Slug, ContextOptions{Budget: p.contextBudget(), Repos: names, Goal: &goal, Logf: p.logf})
+	cx, err := FetchContext(ctx, p.GW, scope.Name(), project.Slug, ContextOptions{Budget: p.contextBudget(), Repos: names, Checkouts: checkoutsUnder(dir, dirs), Goal: &goal, Logf: p.logf})
 	if err != nil {
 		p.logf("goal %s: context unavailable: %v", goal.Slug, err)
 		cx = &Context{}

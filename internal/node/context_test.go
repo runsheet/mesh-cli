@@ -102,7 +102,7 @@ func TestRenderIndexTwoTables(t *testing.T) {
 			{Slug: "adr-002", Title: "ADR 002", Kind: "adr", Repo: "acme/widgets", Path: "docs/adr-002.md"},
 			{Slug: "deploy", Title: "Deploy", Kind: "skill", Repo: "acme/widgets", Path: "skills/deploy.md"},
 		},
-		OnDisk:  map[string]string{"agents": "instructions-acme-widgets-agents.md"},
+		OnDisk:  map[string]gateway.Document{"instructions-acme-widgets-agents.md": {Slug: "agents", Kind: "instructions", Repo: "acme/widgets", Path: "AGENTS.md"}},
 		Dropped: []gateway.Document{{Slug: "claude", Title: "CLAUDE.md", Kind: "instructions", Repo: "acme/widgets"}},
 		Live: &LiveGoal{
 			Goal:  gateway.Goal{Slug: "ship-it", Title: "Ship | it", Status: "running", Statement: "Make the thing.", Acceptance: "go test ./... passes"},
@@ -159,9 +159,15 @@ func TestIndexIsInsideTheBudget(t *testing.T) {
 	if cx.IndexBytes != len(index) || w.Bytes > bytesMax || len(cx.OnDisk) != 1 {
 		t.Fatalf("IndexBytes %d, INDEX.md %d, written %d of %d, on disk %v", cx.IndexBytes, len(index), w.Bytes, bytesMax, cx.OnDisk)
 	}
-	// ten bytes less: the instructions no longer fit and go to the index
+	// ten bytes less: the instructions are binding and stay, the goal's
+	// item rows give way to mesh_items
 	cx, _ = FetchContext(context.Background(), gw, "acme", "mesh", ContextOptions{Budget: ContextConfig{BytesMax: w.Bytes - 10}, Repos: widgets, Goal: goal})
-	if len(cx.OnDisk) != 0 || len(cx.Dropped) != 1 || cx.IndexBytes > w.Bytes-10 {
+	if len(cx.OnDisk) != 1 || len(cx.Dropped) != 0 || cx.IndexBytes+2001 > w.Bytes-10 || !strings.Contains(RenderIndex(cx), "ask `mesh_items`") {
+		t.Fatalf("on disk %v, dropped %v, index %d", cx.OnDisk, cx.Dropped, cx.IndexBytes)
+	}
+	// a cap the instructions alone pass: they go to the index
+	cx, _ = FetchContext(context.Background(), gw, "acme", "mesh", ContextOptions{Budget: ContextConfig{BytesMax: 1900}, Repos: widgets, Goal: goal})
+	if len(cx.OnDisk) != 0 || len(cx.Dropped) != 1 || cx.IndexBytes > 1900 {
 		t.Fatalf("on disk %v, dropped %v, index %d", cx.OnDisk, cx.Dropped, cx.IndexBytes)
 	}
 }
@@ -184,11 +190,12 @@ func writtenBytes(t *testing.T, dir string) int {
 	return n
 }
 
-// An own goal whose section alone is past the cap: the index says so
-// once, shortens the goal section to fit — its items to mesh_items,
-// then its statement and acceptance — puts no document on disk and
-// names the own repo's instructions to fetch. What is written, read
-// back, is inside the cap.
+// An own goal whose section alone is past the cap: the goal section is
+// shortened to fit — its items to mesh_items, then its statement and
+// acceptance — and the own repo's instructions, binding, stay on disk.
+// A cap smaller than the index's own lines says so once, puts no
+// document on disk and names the instructions to fetch. What is
+// written, read back, is inside the cap.
 func TestIndexAlonePastTheBudget(t *testing.T) {
 	f := seed(t)
 	f.Goals[goalID]["statement"] = strings.Repeat("Why this goal matters. ", 3000) // ~69KB
@@ -203,9 +210,10 @@ func TestIndexAlonePastTheBudget(t *testing.T) {
 		name     string
 		bytesMax int
 		want     string
+		dropped  string
 	}{
-		{"default cap, statement and acceptance past it", 0, "Its statement, acceptance and items are past the context cap: ask `mesh_items`."},
-		{"a cap smaller than the index's own lines", 300, "… INDEX.md cut at the context cap (300 bytes)"},
+		{"default cap, statement and acceptance past it", 0, "Its statement, acceptance and items are past the context cap: ask `mesh_items`.", ""},
+		{"a cap smaller than the index's own lines", 300, "… INDEX.md cut at the context cap (300 bytes)", "agents"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			var logged []string
@@ -214,10 +222,10 @@ func TestIndexAlonePastTheBudget(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(cx.Docs) != 0 || len(cx.OnDisk) != 0 || strings.Join(slugsOf(cx.Dropped), ",") != "agents" {
+			if len(cx.Docs)+len(cx.Dropped) != 1 || strings.Join(slugsOf(cx.Dropped), ",") != c.dropped {
 				t.Fatalf("on disk %v, dropped %v", cx.OnDisk, slugsOf(cx.Dropped))
 			}
-			if len(logged) != 1 || !strings.HasPrefix(logged[0], "warning: INDEX.md alone is ") {
+			if (c.dropped == "") != (len(logged) == 0) || len(logged) > 1 || len(logged) == 1 && !strings.HasPrefix(logged[0], "warning: INDEX.md alone is ") {
 				t.Fatalf("logged %q", logged)
 			}
 			dir := t.TempDir()
@@ -226,23 +234,25 @@ func TestIndexAlonePastTheBudget(t *testing.T) {
 				t.Fatal(err)
 			}
 			cap := cx.bytesMax()
-			if got := writtenBytes(t, dir); got != w.Bytes || got > cap || cx.IndexBytes != got {
+			if got := writtenBytes(t, dir); got != w.Bytes || got > cap || c.dropped != "" && cx.IndexBytes != got {
 				t.Fatalf("written %d, reported %d, IndexBytes %d, cap %d", got, w.Bytes, cx.IndexBytes, cap)
 			}
 			index, _ := os.ReadFile(filepath.Join(dir, ContextDir, IndexFile))
 			if !strings.Contains(string(index), c.want) {
 				t.Fatalf("INDEX.md lacks %q:\n%s", c.want, index)
 			}
-			if c.bytesMax == 0 && !strings.Contains(string(index), "- `agents` — the instructions of acme/widgets, binding, past the context cap") {
+			if c.bytesMax == 0 && !strings.Contains(string(index), "- `instructions-acme-widgets-agents.md` — the instructions of acme/widgets, binding") {
 				t.Fatalf("INDEX.md does not name the instructions:\n%s", index)
 			}
 		})
 	}
 }
 
-// Items past the cap go to mesh_items, the statement and acceptance
-// kept: the goal section is shortened only as far as it must be.
-func TestIndexGoalItemsPastTheCap(t *testing.T) {
+// The own goal's item table alone past the 80KB cap: the bytes on disk
+// after WriteContext are inside it, the table is cut at a row boundary
+// — every row written whole — and INDEX.md sends the rest to
+// mesh_items; the statement, acceptance and instructions stay.
+func TestOwnGoalItemTablePastTheCapIsCutAtARow(t *testing.T) {
 	f := seed(t)
 	for s := 3; s <= 800; s++ {
 		iid := fmt.Sprintf("eeeeeeee-0000-4000-8000-%012d", s)
@@ -254,17 +264,36 @@ func TestIndexGoalItemsPastTheCap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var table strings.Builder
+	renderOwnGoal(&table, cx.Live, func(s string) string { return s }, indexFull, -1)
+	if table.Len() <= DefaultContextBytesMax {
+		t.Fatalf("the goal section is %d bytes, not past the cap", table.Len())
+	}
 	dir := t.TempDir()
 	_, w, err := WriteContext(dir, cx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := writtenBytes(t, dir); got != w.Bytes || got > DefaultContextBytesMax {
-		t.Fatalf("written %d, reported %d", got, w.Bytes)
+		t.Fatalf("written %d, reported %d, cap %d", got, w.Bytes, DefaultContextBytesMax)
 	}
-	index, _ := os.ReadFile(filepath.Join(dir, ContextDir, IndexFile))
-	if !hasLine(string(index), "800 items, past the context cap: ask `mesh_items`.") || !strings.Contains(string(index), "Make the thing.") {
-		t.Fatalf("INDEX.md:\n%s", index)
+	t.Logf("800 items: %s", w.Line())
+	b, _ := os.ReadFile(filepath.Join(dir, ContextDir, IndexFile))
+	index := string(b)
+	rows, last := 0, 0
+	for _, l := range strings.Split(index, "\n") {
+		if !strings.HasPrefix(l, "| ") || strings.HasPrefix(l, "| seq") || strings.HasPrefix(l, "| ---") {
+			continue
+		}
+		if !strings.HasSuffix(l, "` |") && !strings.HasSuffix(l, "— |") {
+			t.Fatalf("a row cut short: %q", l)
+		}
+		rows++
+		_, _ = fmt.Sscanf(l, "| %d |", &last)
+	}
+	want := fmt.Sprintf("… %d more items past the context cap (seq %d on): ask `mesh_items` for the rest.", 800-rows, last+1)
+	if rows == 0 || rows == 800 || !hasLine(index, want) || !strings.Contains(index, "Make the thing.") || len(cx.Docs) != 1 {
+		t.Fatalf("%d rows, want line %q, docs %d:\n%s", rows, want, len(cx.Docs), index[len(index)-600:])
 	}
 }
 
@@ -272,13 +301,13 @@ func TestIndexGoalItemsPastTheCap(t *testing.T) {
 // it were placed: the cap is checked again on what is written, and a
 // placed document leaves the disk for the index when it must.
 func TestDroppedLinesNeverPushPastTheCap(t *testing.T) {
-	cx := &Context{Project: "acme/mesh", BytesMax: 4000, Docs: map[string]string{}, OnDisk: map[string]string{}}
+	cx := &Context{Project: "acme/mesh", BytesMax: 4000, Docs: map[string]string{}, OnDisk: map[string]gateway.Document{}}
 	for i := 0; i < 3; i++ {
 		d := gateway.Document{Slug: fmt.Sprintf("agents-%d", i), Kind: "instructions", Repo: "acme/widgets"}
 		cx.Index = append(cx.Index, d)
 		name := contextFileName(d)
 		cx.Docs[name] = strings.Repeat("a", 900)
-		cx.OnDisk[d.Slug] = name
+		cx.OnDisk[name] = d
 	}
 	bare := len(RenderIndex(cx))
 	// documents and index exactly at the cap, then three dropped lines
@@ -334,7 +363,7 @@ func TestContextBudgetHoldsForBindingDocuments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cx.OnDisk["agents"] == "" || len(cx.Docs) != 1 || strings.Join(slugsOf(cx.Dropped), ",") != "claude" {
+	if cx.OnDisk["instructions-acme-widgets-agents.md"].Slug != "agents" || len(cx.Docs) != 1 || strings.Join(slugsOf(cx.Dropped), ",") != "claude" {
 		t.Fatalf("on disk %v, dropped %v", cx.OnDisk, slugsOf(cx.Dropped))
 	}
 	if cx.Docs["instructions-acme-widgets-agents.md"] != strings.Repeat("a", 3000)+"\n" { // the fake ends a body with a newline
@@ -352,7 +381,7 @@ func TestContextBudgetOwnRepoFirst(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cx.OnDisk) != 1 || cx.OnDisk["agents"] != "instructions-acme-widgets-agents.md" || len(cx.Dropped) != 0 {
+	if len(cx.OnDisk) != 1 || cx.OnDisk["instructions-acme-widgets-agents.md"].Slug != "agents" || len(cx.Dropped) != 0 {
 		t.Fatalf("on disk %v, dropped %v", cx.OnDisk, slugsOf(cx.Dropped))
 	}
 	// no repos (mesh goal, channel mode): nothing on disk but the index
@@ -387,19 +416,32 @@ func TestContextBudgetBindingAloneExceeds(t *testing.T) {
 }
 
 // The goal's acceptance, end to end: a project of 1,000 documents —
-// ADRs, PRD, TRD, skills, two repos' instructions of 30KB — and 12 live
-// goals of 20 items each. A build in one repo writes under 40KB: its
-// repo's instructions and its own goal, no document row, no other goal.
+// ADRs, PRD, TRD, skills, three repos' AGENTS.md all of slug `agents` —
+// and 12 live goals of 20 items each. A session whose repos are two of
+// the three writes under 40KB: exactly those two repos' instructions,
+// each its own repo's body under its own repo-named file, its own goal
+// and INDEX.md; no document row, no other goal, and the tools named.
 func TestContextHoldsOnlyInstructionsAndOwnGoal(t *testing.T) {
 	f := seed(t)
 	docs := []map[string]any{
 		{"slug": "agents", "title": "AGENTS.md", "kind": "instructions", "repo": "acme/widgets", "path": "AGENTS.md", "summary": "How to work in widgets."},
-		{"slug": "other-agents", "title": "AGENTS.md", "kind": "instructions", "repo": "acme/other", "path": "AGENTS.md", "summary": "How to work in other."},
+		{"slug": "agents", "title": "AGENTS.md", "kind": "instructions", "repo": "acme/gears", "path": "AGENTS.md", "summary": "How to work in gears."},
+		{"slug": "agents", "title": "AGENTS.md", "kind": "instructions", "repo": "acme/mesh-cli", "path": "AGENTS.md", "summary": "How to work in mesh-cli."},
 		{"slug": "prd", "title": "PRD", "kind": "prd", "repo": "acme/specs", "path": "specs/prd.md", "summary": "What."},
 		{"slug": "trd", "title": "TRD", "kind": "trd", "repo": "acme/specs", "path": "specs/trd.md", "summary": "How."},
 	}
-	f.Bodies["acme/mesh/agents"] = strings.Repeat("w", 30*1024)
-	f.Bodies["acme/mesh/other-agents"] = strings.Repeat("o", 30*1024)
+	// the gateway's by-slug read answers one repo's body for all three
+	f.Bodies["acme/mesh/agents"] = strings.Repeat("m", 15*1024)
+	checkouts := map[string]string{}
+	bodies := map[string]string{}
+	for repo, c := range map[string]string{"acme/widgets": "w", "acme/gears": "g"} {
+		dir := t.TempDir()
+		bodies[repo] = "# " + repo + "\n" + strings.Repeat(c, 15*1024)
+		if err := os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte(bodies[repo]), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		checkouts[repo] = dir
+	}
 	f.Bodies["acme/mesh/prd"] = strings.Repeat("p", 60*1024)
 	f.Bodies["acme/mesh/trd"] = strings.Repeat("t", 60*1024)
 	for i := 0; len(docs) < 1000; i++ {
@@ -433,7 +475,7 @@ func TestContextHoldsOnlyInstructionsAndOwnGoal(t *testing.T) {
 	}
 	gw := gateway.New(f.URL(), "rs_test")
 	var logged []string
-	cx, err := FetchContext(context.Background(), gw, "acme", "mesh", ContextOptions{Repos: widgets, Goal: seedGoal(t, gw), Logf: func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }})
+	cx, err := FetchContext(context.Background(), gw, "acme", "mesh", ContextOptions{Repos: []string{"acme/widgets", "acme/gears"}, Checkouts: checkouts, Goal: seedGoal(t, gw), Logf: func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -458,20 +500,46 @@ func TestContextHoldsOnlyInstructionsAndOwnGoal(t *testing.T) {
 	if w.Bytes >= 40*1024 || w.Bytes != onDisk || w.TargetWarning() != "" || len(logged) != 0 {
 		t.Fatalf("written %+v, on disk %d, logged %q", w, onDisk, logged)
 	}
-	if strings.Join(names, ",") != "instructions-acme-widgets-agents.md" || w.ToFetch != 999 {
-		t.Fatalf("files %v, %d to fetch", names, w.ToFetch)
+	if strings.Join(names, ",") != "instructions-acme-gears-agents.md,instructions-acme-widgets-agents.md" || w.ToFetch != 998 || len(entries) != 3 {
+		t.Fatalf("files %v, %d to fetch, %d entries", names, w.ToFetch, len(entries))
+	}
+	for repo, body := range bodies {
+		name := "instructions-" + Slugify(repo) + "-agents.md"
+		got, _ := os.ReadFile(filepath.Join(cdir, name))
+		if string(got) != body {
+			t.Fatalf("%s is not %s's own AGENTS.md: %.40q", name, repo, got)
+		}
 	}
 	b, _ := os.ReadFile(filepath.Join(cdir, IndexFile))
 	index := string(b)
+	// the only table is the own goal's items: no row for a document
 	for _, l := range strings.Split(index, "\n") {
-		if strings.HasPrefix(l, "| kind") {
-			t.Fatalf("INDEX.md has a document table:\n%s", index)
+		if strings.HasPrefix(l, "|") && !strings.HasPrefix(l, "| seq |") && !strings.HasPrefix(l, "| --- |") && !strings.Contains(l, "| `mesh/goal-0-") {
+			t.Fatalf("INDEX.md has a row that is not its own goal's item: %q", l)
 		}
 	}
-	for _, title := range others {
-		if strings.Contains(index, title) {
-			t.Fatalf("INDEX.md names another goal, %q", title)
+	for _, d := range docs[3:] {
+		if strings.Contains(index, "`"+d["slug"].(string)+"`") || strings.Contains(index, d["summary"].(string)) {
+			t.Fatalf("INDEX.md names %s, not on disk", d["slug"])
 		}
+	}
+	for g := 1; g < 12; g++ {
+		if strings.Contains(index, fmt.Sprintf("`goal-%d`", g)) || strings.Contains(index, others[g-1]) {
+			t.Fatalf("INDEX.md names another goal, goal-%d", g)
+		}
+	}
+	for _, repo := range []string{"acme/widgets", "acme/gears"} {
+		if !hasLine(index, "- `instructions-"+Slugify(repo)+"-agents.md` — the instructions of "+repo+", binding") {
+			t.Fatalf("INDEX.md does not list %s's file:\n%s", repo, index)
+		}
+	}
+	for _, tool := range []string{"`mesh_search`", "`mesh_document`", "`mesh_items`", "`mesh_documents`", "`mesh_projects`"} {
+		if !strings.Contains(index, tool) {
+			t.Fatalf("INDEX.md does not name %s", tool)
+		}
+	}
+	if strings.Contains(index, "mesh-cli") || strings.Count(index, "\n") > 60 {
+		t.Fatalf("INDEX.md names a repo not the session's, or is past a screen (%d lines)", strings.Count(index, "\n"))
 	}
 	if !hasLine(index, "| 20 | Item 20 of goal 0 does one thing well | merged | acme/widgets | `mesh/goal-0-20` |") ||
 		!hasLine(index, "1000 documents indexed, none listed here.") {
@@ -534,7 +602,7 @@ func TestContextWritten(t *testing.T) {
 	}
 	fetch := 0
 	for _, d := range cx.Index {
-		if _, ok := cx.OnDisk[d.Slug]; !ok {
+		if _, ok := cx.OnDisk[contextFileName(d)]; !ok || d.Kind != "instructions" {
 			fetch++
 		}
 	}
@@ -567,9 +635,10 @@ func TestContextReadFailureClearsAReusedCheckout(t *testing.T) {
 		t.Fatal(err)
 	}
 	stale := map[string]int{
-		"adr-adr-001-item-scoped-github-token.md": 20 * 1024,
-		"trd-prologue-trd.md":                     60 * 1024,
-		IndexFile:                                 190 * 1024,
+		"adr-adr-001-item-scoped-github-token.md":  20 * 1024,
+		"adr-adr-002-signed-tag-releases.md":       14 * 1024,
+		"adr-adr-009-sessions-outlive-the-node.md": 17 * 1024,
+		IndexFile: 150 * 1024,
 	}
 	for n, size := range stale {
 		if err := os.WriteFile(filepath.Join(cdir, n), []byte(strings.Repeat("x", size)), 0o644); err != nil {
@@ -610,5 +679,26 @@ func TestContextReadFailureClearsAReusedCheckout(t *testing.T) {
 	}
 	if _, err := os.Stat(cdir); !os.IsNotExist(err) {
 		t.Fatalf("nil context left %s: %v", cdir, err)
+	}
+}
+
+// A shared instructions slug with no checkout of its repo is never read
+// by slug — the gateway would answer another repo's body — and INDEX.md
+// names it by repo and path, to read before starting.
+func TestSharedInstructionsSlugWithoutACheckoutIsNamedByRepo(t *testing.T) {
+	f := seed(t)
+	f.Documents["acme/mesh"] = append(f.Documents["acme/mesh"], map[string]any{"slug": "agents", "title": "AGENTS.md", "kind": "instructions", "repo": "acme/other", "path": "AGENTS.md"})
+	gw := gateway.New(f.URL(), "rs_test")
+	cx, err := FetchContext(context.Background(), gw, "acme", "mesh", ContextOptions{Repos: widgets})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// the gateway holds a body for `agents`: none on disk is none read
+	if f.Bodies["acme/mesh/agents"] == "" || len(cx.Docs) != 0 || strings.Join(slugsOf(cx.Dropped), ",") != "agents" {
+		t.Fatalf("on disk %v, dropped %v", cx.OnDisk, slugsOf(cx.Dropped))
+	}
+	const line = "- `AGENTS.md` of acme/widgets — its instructions, binding, not on disk: read `AGENTS.md` in acme/widgets's checkout before you start (slug `agents` is shared by several repos' instructions)"
+	if index := RenderIndex(cx); !hasLine(index, line) {
+		t.Fatalf("INDEX.md:\n%s", index)
 	}
 }
