@@ -166,7 +166,7 @@ func (e *Evaluator) failDiff(ctx context.Context, item gateway.WorkItem, label, 
 	}
 	notes = truncate(notes, 4000)
 	e.logf("item %s: not evaluated, failed: %s", label, notes)
-	if err := e.GW.EvaluateWorkItem(ctx, item.ID, false, notes, 0, nil); err != nil {
+	if err := e.GW.EvaluateWorkItem(ctx, item.ID, false, notes, nil, 0, nil); err != nil {
 		return fmt.Errorf("record verdict: %w", err)
 	}
 	return nil
@@ -244,12 +244,31 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	if len(files) > 0 || len(cx.Index) > 0 || len(cx.Live) > 0 {
 		contextDir = ContextDir
 	}
+	// a retry is judged on what earlier attempts failed on, so an item
+	// that has answered every objection already named is not failed on a
+	// fresh reading of the acceptance (evaluateRetryRule). Unread records
+	// are not fatal: the evaluation runs without them.
+	var prior []harness.PriorAttempt
+	if item.Attempts > 0 {
+		was, err := e.GW.WorkItemPriorAttempts(ctx, item.ID)
+		if err != nil {
+			e.logf("item %s: earlier evaluations unread, evaluating without them: %v", label, err)
+		}
+		for _, p := range was {
+			at := harness.PriorAttempt{Attempt: p.Attempt, Notes: p.Notes}
+			for _, c := range p.Clauses {
+				at.Clauses = append(at.Clauses, harness.FailedClause{Clause: c.Clause, Satisfy: c.Satisfy})
+			}
+			prior = append(prior, at)
+		}
+	}
 	in := harness.EvaluateInput{
 		GoalSlug: res.Goal.Slug, GoalTitle: res.Goal.Title, GoalAcceptance: res.Goal.Acceptance,
 		Seq: item.Seq, Title: item.Title, Brief: item.Brief, Acceptance: item.Acceptance,
 		Repo: res.Repo.FullName(), Branch: branch, BaseRef: spec.BaseRef, Diff: diff,
 		ContextDir: contextDir, ContextFiles: files, Project: orgName + "/" + res.Project.Slug, Prologue: len(e.MCP) > 0,
 		AlreadyDone: alreadyDone, Evidence: item.Evidence,
+		PriorAttempts: prior,
 	}
 	model := fam.model
 	budget, budgetSource := e.budgetWithSource(res.Goal, model)
@@ -441,6 +460,8 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 	fam, head, blindOn := ev.fam, "", ""
 	var passed bool
 	var notes string
+	// the clauses the deciding session failed, for the retry to fix
+	var clauses []harness.FailedClause
 	cost := result.CostUSD
 	if blind, what, broken := e.unreadable(result, acct, ev.adopted); broken {
 		other := ev.fam.other(e)
@@ -470,7 +491,7 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 		e.Blind.Forget(item.ID)
 		head = fmt.Sprintf("%s (first attempt, %s): no verdict — %s", ev.fam.name(), ev.fam.shortModel(), blind)
 		blindOn = blind
-		fam, passed, notes = other, op.passed, op.notes
+		fam, passed, notes, clauses = other, op.passed, op.notes, op.clauses
 		cost += op.cost
 	} else {
 		var ok bool
@@ -484,6 +505,7 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 		if notes == "" {
 			notes = "(no notes)"
 		}
+		clauses = harness.ParseFailedClauses(result.Text)
 	}
 	// the notes say which tools and services the evaluator ran without
 	without := ""
@@ -554,6 +576,10 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 			line := other.name() + " second opinion unavailable: " + op.unavailable
 			notes = truncate(notes, room-200-len(line)-len(without)-len(ev.preflight)) + "\n\n" + line + "\n\n(evaluated on " + evaluatedOn + ")" + without
 		} else {
+			if !op.passed {
+				// the second opinion's clauses are the item's too
+				clauses = append(clauses, op.clauses...)
+			}
 			passed = passed && op.passed
 			notes = bothNotes(fam, notes, other, op.notes, op.passed, room-200-len(without)-len(ev.preflight)) + "\n\n(evaluated on " + evaluatedOn + "; second opinion on " + other.fullName() + ")" + without
 		}
@@ -567,7 +593,13 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 	if passed {
 		verdict = "passed"
 	}
-	if err := acct.Carried(e.GW.EvaluateWorkItem(ctx, item.ID, passed, notes, Cents(cost), usage)); err != nil {
+	var failed []gateway.FailedClause
+	if !passed {
+		for _, c := range clauses {
+			failed = append(failed, gateway.FailedClause{Clause: c.Clause, Satisfy: c.Satisfy})
+		}
+	}
+	if err := acct.Carried(e.GW.EvaluateWorkItem(ctx, item.ID, passed, notes, failed, Cents(cost), usage)); err != nil {
 		return fmt.Errorf("record verdict: %w", err)
 	}
 	left.Forget(item.ID)
@@ -642,6 +674,8 @@ type opinion struct {
 	// acct is a Claude second opinion's own account, whose report the
 	// evaluation's carries (nil: a Codex one, on the harness's account)
 	acct *SessionAccount
+	// clauses are the acceptance clauses it failed, empty on a pass
+	clauses []harness.FailedClause
 }
 
 // secondOpinion runs the evaluation's job on the other family (on):
@@ -729,6 +763,7 @@ func (e *Evaluator) secondOpinion(ctx context.Context, ev evalRun, on family, jo
 		if op.notes == "" {
 			op.notes = "(no notes)"
 		}
+		op.clauses = harness.ParseFailedClauses(acct.Redact(result.Text))
 	}
 	return op
 }

@@ -96,6 +96,9 @@ type Fake struct {
 	// has no `outcome`, introspection says so, and an evaluateWorkItem
 	// carrying one is refused with "Unknown field".
 	NoEvaluationOutcome bool
+	// NoFailedClauses is a platform whose EvaluateWorkItemInput has no
+	// failedClauses: the node sends the verdict without them.
+	NoFailedClauses bool
 	// NoUsageTools refuses a `usage` report carrying `tools` (the
 	// per-tool calls) with "Unknown field", as a platform older than
 	// tools-show-their-use whose UsageReportInput has only the total.
@@ -302,8 +305,11 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var fields []any
-		for _, n := range []string{"aggregateId", "namespace", "passed", "notes", "costCents", "usage", gateway.EvaluationOutcomeField} {
+		for _, n := range []string{"aggregateId", "namespace", "passed", "notes", "costCents", "usage", gateway.EvaluationOutcomeField, gateway.FailedClausesField} {
 			if n == gateway.EvaluationOutcomeField && f.NoEvaluationOutcome {
+				continue
+			}
+			if n == gateway.FailedClausesField && f.NoFailedClauses {
 				continue
 			}
 			fields = append(fields, map[string]any{"name": n})
@@ -891,6 +897,11 @@ func (f *Fake) apply(name string, in map[string]any) error {
 			item["status"], item["attempts"] = "ready", toInt(item["attempts"])+1
 		}
 		item["evaluation"] = in["notes"]
+		// the clauses a failed verdict named, for the retry (nil when the
+		// node sent none)
+		if cl, ok := in[gateway.FailedClausesField]; ok {
+			item["failedClauses"] = cl
+		}
 		item["costCents"] = toInt(item["costCents"]) + toInt(in["costCents"])
 	case "claimWorkItemRebase", "finishWorkItemRebase", "failWorkItemRebase":
 		if item == nil {

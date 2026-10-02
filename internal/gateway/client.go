@@ -110,7 +110,10 @@ type Client struct {
 	// noVerdictSchema is whether the gateway's evaluateWorkItem input was
 	// last found to take `outcome` (see takesNoVerdict).
 	noVerdictSchema holdingProbe
-	Now             func() time.Time
+	// clausesSchema is whether the gateway's evaluateWorkItem input was
+	// last seen to take failedClauses, kept for ScalingProbeEvery.
+	clausesSchema holdingProbe
+	Now           func() time.Time
 }
 
 // New returns a client for baseURL (scheme+host, no trailing slash) with
@@ -1974,8 +1977,60 @@ func (c *Client) ReleaseWorkItem(ctx context.Context, itemID, nodeID, reason str
 // platform readies or reviews the item) and that session's cost. usage
 // is that session's usage report, carried as `usage` when non-nil (see
 // UsageReport, ErrNoUsageLedger).
-func (c *Client) EvaluateWorkItem(ctx context.Context, itemID string, passed bool, notes string, costCents int, usage *UsageReport) error {
-	return c.mutateWithUsage(ctx, "evaluateWorkItem", itemID, map[string]any{"passed": passed, "notes": notes, "costCents": costCents}, usage)
+// clauses are the acceptance clauses a failed verdict failed on, each
+// with what would satisfy it, for the retry to fix; they are sent only
+// on a fail and only to a gateway whose EvaluateWorkItemInput takes the
+// field (ADR-004: never a field the platform does not accept). A
+// platform without it records the verdict as before, the clauses only in
+// the prose of notes.
+func (c *Client) EvaluateWorkItem(ctx context.Context, itemID string, passed bool, notes string, clauses []FailedClause, costCents int, usage *UsageReport) error {
+	in := map[string]any{"passed": passed, "notes": notes, "costCents": costCents}
+	if !passed && len(clauses) > 0 && c.takesInputField(ctx, &c.clausesSchema, "EvaluateWorkItemInput", FailedClausesField) {
+		in[FailedClausesField] = clauses
+	}
+	return c.mutateWithUsage(ctx, "evaluateWorkItem", itemID, in, usage)
+}
+
+// FailedClausesField is evaluateWorkItem's input field for the clauses a
+// failed evaluation failed on.
+const FailedClausesField = "failedClauses"
+
+// FailedClause is one acceptance clause a failed evaluation failed on,
+// with what would satisfy it. The platform refuses a clause missing
+// either half, so a caller sends only complete ones
+// (harness.ParseFailedClauses drops the rest).
+type FailedClause struct {
+	Clause  string `json:"clause"`
+	Satisfy string `json:"satisfy"`
+}
+
+// PriorAttempt is one evaluation already recorded against an item: the
+// attempt it judged, its review and the clauses it failed.
+type PriorAttempt struct {
+	Attempt int            `json:"attempt"`
+	Notes   string         `json:"notes"`
+	Clauses []FailedClause `json:"failedClauses"`
+}
+
+// WorkItemPriorAttempts reads the evaluations already recorded against an
+// item, oldest attempt first, so a retry's evaluator is judged on the
+// clauses earlier attempts named rather than on a fresh reading. A
+// platform that does not serve the records answers an error, which the
+// caller treats as none: the evaluation runs without them.
+func (c *Client) WorkItemPriorAttempts(ctx context.Context, itemID string) ([]PriorAttempt, error) {
+	var out struct {
+		Item *struct {
+			Evaluations []PriorAttempt `json:"evaluations"`
+		} `json:"workItemIndex"`
+	}
+	q := fmt.Sprintf(`{ workItemIndex(namespace: %q, id: %q) { evaluations { attempt notes failedClauses { clause satisfy } } } }`, NS, itemID)
+	if err := c.Query(ctx, q, nil, &out); err != nil {
+		return nil, err
+	}
+	if out.Item == nil {
+		return nil, nil
+	}
+	return out.Item.Evaluations, nil
 }
 
 // EvaluationNoVerdict is the evaluation outcome an evaluation that

@@ -185,6 +185,10 @@ type EvaluateInput struct {
 	// Diff: it checks the evidence and the acceptance there.
 	AlreadyDone bool
 	Evidence    string
+	// PriorAttempts are the evaluations this item already failed, oldest
+	// first and empty on a first attempt. They pin the retry's verdict
+	// (evaluateRetryRule).
+	PriorAttempts []PriorAttempt
 }
 
 // Verdict lines the evaluator ends with; ParseVerdict reads them.
@@ -193,8 +197,46 @@ const (
 	VerdictFail = "VERDICT: FAIL"
 )
 
+// Clause lines a failing evaluator writes above its verdict, one per
+// acceptance clause it failed: `FAILED: <clause> || SATISFY: <what would
+// satisfy it>`. ParseFailedClauses reads them and the node records them
+// with the verdict, so a retry is told what to fix in a shape the
+// platform stores rather than only in prose a later session must
+// re-read. Load-bearing, as the verdict line is.
+const (
+	ClauseFailed  = "FAILED:"
+	ClauseSatisfy = "SATISFY:"
+	// ClauseSep divides a clause from what would satisfy it.
+	ClauseSep = "||"
+	// ClauseMax is how many clauses one verdict carries; beyond it the
+	// evaluator is listing, not judging.
+	ClauseMax = 20
+)
+
+// FailedClause is one acceptance clause an evaluation failed, with what
+// would satisfy it. Both halves are required: the platform refuses a
+// clause that does not say what would satisfy it.
+type FailedClause struct {
+	Clause  string
+	Satisfy string
+}
+
+// PriorAttempt is what an earlier evaluation of the same item failed on:
+// its attempt number, the clauses it named and its review.
+type PriorAttempt struct {
+	Attempt int
+	Clauses []FailedClause
+	Notes   string
+}
+
 // evaluateUnverifiableRule is the evaluator's side of adr-004: a clause
 // it cannot see at evaluation time is unverifiable, not failed.
+// evaluateRetryRule is the evaluator's side of a retry: an item that has
+// satisfied every objection already named must not be failed on a fresh
+// one, or three attempts can never converge on anything. A gap nobody
+// named before is work still to do, reported, not failed.
+const evaluateRetryRule = "Judge this attempt on the clauses earlier attempts failed on, listed above, and on whether anything that held before has regressed. A clause of the acceptance no earlier attempt named, and that is not a regression, belongs in your review as work still to do — not in your verdict: do not fail the item on it. Fail only a clause already named, or a regression."
+
 const evaluateUnverifiableRule = "A clause you cannot check at evaluation time — a CI check on this item's pull request (it opens only after you pass), a deploy, a file in another repository — is reported in your review as unverifiable, not failed, and the item is not failed on that clause alone. Every clause you can check you still check."
 
 // EvaluatePrompt renders the evaluator's prompt (mesh-specs trd §3.4): a
@@ -249,6 +291,22 @@ func EvaluatePrompt(in EvaluateInput) string {
 	} else if in.Prologue {
 		b.WriteString("# The context\n\n" + contextRule("", in.Project) + "\n\n")
 	}
+	if len(in.PriorAttempts) > 0 {
+		b.WriteString("# What earlier attempts failed on\n\nThis item was built and failed before. Each attempt below is an earlier evaluation of it — the clauses it failed, and its review.\n\n")
+		for _, p := range in.PriorAttempts {
+			fmt.Fprintf(&b, "## Attempt %d\n\n", p.Attempt)
+			for _, c := range p.Clauses {
+				fmt.Fprintf(&b, "- %s — satisfied by: %s\n", c.Clause, c.Satisfy)
+			}
+			if len(p.Clauses) == 0 {
+				b.WriteString("It named no clauses; its review is all there is.\n")
+			}
+			if n := strings.TrimSpace(p.Notes); n != "" {
+				fmt.Fprintf(&b, "\n%s\n", n)
+			}
+			b.WriteString("\n")
+		}
+	}
 	servicesSection(&b, in.Services)
 	b.WriteString("# Rules\n\n")
 	if in.AlreadyDone {
@@ -262,8 +320,48 @@ func EvaluatePrompt(in EvaluateInput) string {
 	}
 	b.WriteString("4. Change nothing: no edits, no commits, no pushes, nothing outside this workspace. You are a reviewer.\n")
 	b.WriteString("5. " + evaluateUnverifiableRule + "\n")
-	fmt.Fprintf(&b, "6. End your final message with a short review — what holds, what does not, what is unverifiable, and exactly what a retry must fix — and then one last line that is either `%s` or `%s`. Pass only when every clause of the acceptance you can check holds.\n", VerdictPass, VerdictFail)
+	n := 6
+	if len(in.PriorAttempts) > 0 {
+		fmt.Fprintf(&b, "%d. %s\n", n, evaluateRetryRule)
+		n++
+	}
+	fmt.Fprintf(&b, "%d. End your final message with a short review — what holds, what does not, what is unverifiable, and exactly what a retry must fix. When you fail it, write one line per failed acceptance clause, `%s <the clause, as the acceptance words it> %s %s <what would satisfy it>`, above the verdict; a clause that does not say what would satisfy it is dropped, so write both halves. Then one last line that is either `%s` or `%s`. Pass only when every clause of the acceptance you can check holds.\n", n, ClauseFailed, ClauseSep, ClauseSatisfy, VerdictPass, VerdictFail)
 	return b.String()
+}
+
+// ParseFailedClauses reads the FAILED/SATISFY lines of an evaluator's
+// final message, in the order written and at most ClauseMax of them. A
+// line missing either half is dropped rather than sent: the platform
+// refuses a clause without what would satisfy it, and one malformed line
+// must not cost the whole verdict. Duplicates are dropped too.
+func ParseFailedClauses(text string) []FailedClause {
+	var out []FailedClause
+	seen := map[string]bool{}
+	for _, line := range strings.Split(text, "\n") {
+		l := strings.TrimLeft(strings.TrimSpace(line), "-*\u2022># \t")
+		l = strings.TrimSpace(strings.Trim(l, "`*_"))
+		if !strings.HasPrefix(strings.ToUpper(l), ClauseFailed) {
+			continue
+		}
+		clause, satisfy, ok := strings.Cut(strings.TrimSpace(l[len(ClauseFailed):]), ClauseSep)
+		if !ok {
+			continue
+		}
+		satisfy = strings.TrimSpace(satisfy)
+		if strings.HasPrefix(strings.ToUpper(satisfy), ClauseSatisfy) {
+			satisfy = strings.TrimSpace(satisfy[len(ClauseSatisfy):])
+		}
+		clause = strings.TrimSpace(strings.Trim(strings.TrimSpace(clause), "`*_"))
+		satisfy = strings.TrimSpace(strings.Trim(satisfy, "`*_"))
+		if clause == "" || satisfy == "" || seen[clause] {
+			continue
+		}
+		seen[clause] = true
+		if out = append(out, FailedClause{Clause: clause, Satisfy: satisfy}); len(out) == ClauseMax {
+			break
+		}
+	}
+	return out
 }
 
 // ParseVerdict reads the evaluator's final message: the last verdict line

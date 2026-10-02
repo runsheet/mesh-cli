@@ -20,7 +20,12 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
 - `internal/harness/prompt.go`: the five prompts — `BuildPrompt`,
   `EvaluatePrompt`, `PlanPrompt`, `ResearchPrompt`, `RebasePrompt`. Their
   contract lines are load-bearing: the evaluator ends with
-  `VERDICT: PASS|FAIL`, the planner ends with the JSON graph in a fenced
+  `VERDICT: PASS|FAIL` and, when it fails, one
+  `FAILED: <clause> || SATISFY: <what would satisfy it>` line per failed
+  acceptance clause above it (`ParseFailedClauses`; the node records them
+  with the verdict as `evaluateWorkItem`'s `failedClauses`, and a retry's
+  evaluator is given the clauses earlier attempts named and judges that
+  attempt on those and on regressions, never on a gap nobody named), the planner ends with the JSON graph in a fenced
   block, the director ends with its pitches and answers in one for a
   propose-mode direction, its proposals in one for a set-mode one, the rebase session
   ends with `REBASED: <sha>` and `RESOLVED: <files>` or
