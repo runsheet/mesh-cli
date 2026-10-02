@@ -104,6 +104,13 @@ name, then INDEX.md).
 node.yaml that sets it loads unchanged, but it applies to nothing on
 disk: no design document is put there any more.
 
+What is on disk is what this session wrote. A checkout is reused
+across attempts, so `WriteContext` clears `.mesh/context` before it
+writes anything — an empty context too, which is what a session gets
+when the context read fails: an earlier node's ADR bodies or an
+INDEX.md past the cap never ride into a retry, and its `0 bytes` is
+true (`TestContextReadFailureClearsAReusedCheckout`).
+
 The per-session line is unchanged (ADR-016): `context <bytes> bytes in
 <files> files, <n> documents to fetch`, and `contextBytes` on the usage
 report is the same `Bytes`.

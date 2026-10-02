@@ -759,9 +759,17 @@ func (w ContextWritten) TargetWarning() string {
 // — and INDEX.md, the screen that says what is here and how to find the
 // rest — and excludes .mesh from git via .git/info/exclude. It returns
 // the document file names written, in name order; the index is beside
-// them, not among them. The ContextWritten is what that cost.
+// them, not among them. The ContextWritten is what that cost. Whatever
+// an earlier session left under .mesh/context goes first, an empty
+// context included.
 func WriteContext(dir string, cx *Context) ([]string, ContextWritten, error) {
 	var w ContextWritten
+	// a reused checkout keeps the last session's context: clear it
+	// first, so an empty context leaves nothing behind it
+	cdir := filepath.Join(dir, ContextDir)
+	if err := os.RemoveAll(cdir); err != nil {
+		return nil, w, err
+	}
 	if cx == nil || (len(cx.Docs) == 0 && len(cx.Index) == 0 && cx.Live == nil) {
 		return nil, w, nil
 	}
@@ -769,10 +777,6 @@ func WriteContext(dir string, cx *Context) ([]string, ContextWritten, error) {
 	cx.fit()
 	w.ToFetch = max(len(cx.Index)-len(cx.OnDisk), 0)
 	docs := cx.Docs
-	cdir := filepath.Join(dir, ContextDir)
-	if err := os.RemoveAll(cdir); err != nil {
-		return nil, w, err
-	}
 	if err := os.MkdirAll(cdir, 0o755); err != nil {
 		return nil, w, err
 	}

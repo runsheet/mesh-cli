@@ -549,3 +549,66 @@ func TestContextWritten(t *testing.T) {
 		t.Fatalf("no context: %+v", w)
 	}
 }
+
+// A reused checkout keeps the last session's .mesh/context. When the
+// context read fails the session writes an empty context (RunItem's
+// cx = &Context{}), and what an earlier node left there — ADR bodies,
+// an INDEX.md past the cap — must not ride along: the directory is
+// cleared and the bytes reported are the bytes on disk, none.
+func TestContextReadFailureClearsAReusedCheckout(t *testing.T) {
+	// nothing listens here: the documents read fails
+	gw := gateway.New("http://127.0.0.1:1", "rs_test")
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".git", "info"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cdir := filepath.Join(dir, ContextDir)
+	if err := os.MkdirAll(cdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stale := map[string]int{
+		"adr-adr-001-item-scoped-github-token.md": 20 * 1024,
+		"trd-prologue-trd.md":                     60 * 1024,
+		IndexFile:                                 190 * 1024,
+	}
+	for n, size := range stale {
+		if err := os.WriteFile(filepath.Join(cdir, n), []byte(strings.Repeat("x", size)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cx, err := FetchContext(context.Background(), gw, "acme", "mesh", ContextOptions{Repos: widgets})
+	if err == nil {
+		t.Fatalf("read from a gateway that is not there succeeded: %+v", cx)
+	}
+	cx = &Context{}
+	names, w, err := WriteContext(dir, cx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != 0 || w != (ContextWritten{}) {
+		t.Fatalf("empty context wrote %v, %+v", names, w)
+	}
+	onDisk := 0
+	_ = filepath.WalkDir(filepath.Join(dir, ".mesh"), func(p string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			st, _ := d.Info()
+			onDisk += int(st.Size())
+			t.Errorf("left on disk: %s (%d bytes)", p, st.Size())
+		}
+		return nil
+	})
+	if onDisk != w.Bytes {
+		t.Fatalf("%d bytes on disk, %d reported", onDisk, w.Bytes)
+	}
+	// and a nil context clears it the same
+	if err := os.MkdirAll(cdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(filepath.Join(cdir, IndexFile), []byte("stale"), 0o644)
+	if _, _, err := WriteContext(dir, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(cdir); !os.IsNotExist(err) {
+		t.Fatalf("nil context left %s: %v", cdir, err)
+	}
+}
