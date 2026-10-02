@@ -551,6 +551,13 @@ type PlanInput struct {
 	// per item (trd §6a): what worked here, for the planner's model choice.
 	// Empty when the platform's scorecard carries nothing usable.
 	Evidence []ModelEvidence
+	// Replacing: on a narrow re-plan (runsheet ADR 023), the failed item
+	// this plan replaces alone, and ReplacingClauses the clauses its
+	// evaluations failed, oldest first. The prompt asks for a split
+	// (ADR-021): two or more items partitioning its acceptance, or one
+	// `atomic` item with a reason.
+	Replacing        *ExistingItem
+	ReplacingClauses []FailedClause
 }
 
 // ModelEvidence is one repo/model row of the scorecard: how often that
@@ -574,6 +581,13 @@ type ExistingItem struct {
 	// pull request main took it in with.
 	Branch string
 	PRURL  string
+	// Acceptance is the item's own acceptance, rendered whole for a
+	// failed, superseded or cancelled item so a re-plan can partition it
+	// (ADR-021). LineageRootSeq and LineageAttempt are its lineage
+	// (runsheet ADR 023's amendment), zero when the platform has none.
+	Acceptance     string
+	LineageRootSeq int
+	LineageAttempt int
 }
 
 // PlannedSpec is one item of the graph the planner writes: like
@@ -590,6 +604,9 @@ type PlannedSpec struct {
 	// opus or a claude-* id), ModelReason its one line of why.
 	Model       string `json:"model"`
 	ModelReason string `json:"model_reason"`
+	// Atomic is the planner's reason an item cannot be halved (a schema
+	// change); it exempts the item from the split once (ADR-021).
+	Atomic string `json:"atomic"`
 }
 
 // PlannedDep is one entry of an item's depends_on: the seq it waits on
@@ -642,6 +659,11 @@ const planAcceptanceRule = "An item's acceptance names only what the evaluator c
 // cannot be phrased so is a question for the person (ParsePlanQuestions).
 const planHostRule = "An item's acceptance names only what a pull request can change: code, tests, docs, a script that reproduces a reading, and the reading recorded honestly. A measurement of the host — load, wall time, shard durations, a p90 over a day — is never an item's merge gate: put it in the goal doc's After section, or in its own item titled `Measure: …` whose acceptance is that the script runs and its reading is recorded, whatever the number. (\"The three shards' durations within 20% of each other\" is a host reading; \"proven by planned-seconds balance and disjoint shard lists\" is what a PR can prove.) A clause you cannot phrase that way is a question for the person, not an item: write it beside `items` as `\"questions\": [{\"clause\": \"…\", \"question\": \"…\"}]`."
 
+// planSplitRule is the planner's half of ADR-021: a lineage's attempts
+// shrink. A failed item is never recreated at the same acceptance; it is
+// replaced by items that partition it, or carries `atomic` once.
+const planSplitRule = "A lineage's attempts shrink: a re-plan never recreates a failed item with the same acceptance — the node's plan check refuses it. Replace the failed item with two or more items whose acceptance clauses partition the original's: every clause of the original lands in exactly one new item and none is dropped, each new item a pull request one evaluation can check, and the new items naming their dependency on each other with `because`. An item that cannot be halved (a schema change, one migration) may carry `\"atomic\": \"<reason>\"` and is exempt once; the second time it fails it must be split."
+
 // PlanPrompt renders the planner's prompt (mesh-specs prd, the planner;
 // trd §5 phase 2): read the context and the repos, then compile the goal
 // into a graph of items — each one fresh session's work with a checkable
@@ -667,7 +689,7 @@ func PlanPrompt(in PlanInput) string {
 		for _, r := range in.Rejected {
 			fmt.Fprintf(&b, "- %s\n", strings.TrimSpace(r))
 		}
-		b.WriteString("\n" + planAcceptanceRule + " " + planHostRule + " Write the whole graph again with those acceptances and models rewritten; this is the last ask.\n\n")
+		b.WriteString("\n" + planAcceptanceRule + " " + planHostRule + " " + planSplitRule + " Write the whole graph again with those acceptances and models rewritten; this is the last ask.\n\n")
 	}
 	if len(in.Existing) > 0 {
 		b.WriteString("## The items so far\n\nYour plan replaces only the live items; merged items stay. Merged items are done: your items may depend on their seqs. Failed and cancelled items stay in the record; do their work again differently if it is still needed. Anything still live is replaced by your plan.\n\n")
@@ -680,6 +702,14 @@ func PlanPrompt(in PlanInput) string {
 				fmt.Fprintf(&b, ": %s", strings.TrimSpace(it.Note))
 			}
 			b.WriteString("\n")
+			if spent(it.Status) {
+				if it.LineageRootSeq > 0 && it.LineageAttempt > 0 {
+					fmt.Fprintf(&b, "  lineage %d, attempt %d of 3\n", it.LineageRootSeq, it.LineageAttempt)
+				}
+				if a := strings.TrimSpace(it.Acceptance); a != "" {
+					fmt.Fprintf(&b, "  Acceptance: %s\n", indentLines(a, "  "))
+				}
+			}
 		}
 		fmt.Fprintf(&b, "\nNumber your items from %d.\n\n", in.NextSeq)
 		var merged []ExistingItem
@@ -701,6 +731,28 @@ func PlanPrompt(in PlanInput) string {
 			}
 			b.WriteString("\n")
 		}
+	}
+	if r := in.Replacing; r != nil {
+		fmt.Fprintf(&b, "## Split this item\n\nThis is a narrow re-plan: your plan replaces item %d alone, %q, which failed its evaluations; every other item stays, and the platform re-points its dependents onto your items (runsheet ADR 023's lineage).", r.Seq, r.Title)
+		if r.LineageRootSeq > 0 && r.LineageAttempt > 0 {
+			fmt.Fprintf(&b, " It is lineage %d, attempt %d of 3.", r.LineageRootSeq, r.LineageAttempt)
+		}
+		b.WriteString("\n\n")
+		if a := strings.TrimSpace(r.Acceptance); a != "" {
+			fmt.Fprintf(&b, "Its acceptance:\n\n%s\n\n", a)
+		}
+		if len(in.ReplacingClauses) > 0 {
+			b.WriteString("The clauses its evaluations failed, oldest first:\n\n")
+			for _, c := range in.ReplacingClauses {
+				fmt.Fprintf(&b, "- %s", strings.TrimSpace(c.Clause))
+				if s := strings.TrimSpace(c.Satisfy); s != "" {
+					fmt.Fprintf(&b, " — would be satisfied by: %s", s)
+				}
+				b.WriteString("\n")
+			}
+			b.WriteString("\n")
+		}
+		b.WriteString("Answer with two or more items whose acceptance partitions this one's — every clause in exactly one item, none dropped, each a pull request one evaluation can check, their dependencies on each other named with `because` — or, when it truly cannot be halved, one item carrying `\"atomic\": \"<reason>\"`. Do not answer with the same acceptance again.\n\n")
 	}
 	b.WriteString("# The project\n\n")
 	if len(in.Repos) > 0 {
@@ -731,6 +783,7 @@ func PlanPrompt(in PlanInput) string {
 	b.WriteString("3. Each item's brief says what to do and where, naming files and functions where it helps; its acceptance is what an evaluator can check — a test that passes, a command's output, a document with named sections — never a feeling.\n")
 	b.WriteString("   " + planAcceptanceRule + "\n")
 	b.WriteString("   " + planHostRule + "\n")
+	b.WriteString("   " + planSplitRule + "\n")
 	if in.MeshContext {
 		b.WriteString("   Each item's brief names, by slug, the two or three documents the builder must fetch with `mesh_document` — found with `mesh_search` while you plan. You search before you read, same as the builder will.\n")
 	}
@@ -757,6 +810,21 @@ func PlanPrompt(in PlanInput) string {
 	b.WriteString("9. End your final message with the graph as a JSON object in a ```json fenced block, and nothing after it. Its `questions` is empty unless a clause of the goal is one no pull request can satisfy (rule 3); each is {\"clause\": \"…\", \"question\": \"…\"}, for the person to answer:\n\n")
 	b.WriteString("```json\n{\"items\": [{\"seq\": 1, \"title\": \"…\", \"brief\": \"…\", \"acceptance\": \"…\", \"depends_on\": [], \"repo\": \"owner/name\", \"base_ref\": \"main\", \"model\": \"sonnet\", \"model_reason\": \"…\"}, {\"seq\": 2, \"title\": \"…\", \"brief\": \"…\", \"acceptance\": \"…\", \"depends_on\": [{\"seq\": 1, \"because\": \"uses the … item 1 adds\"}], \"repo\": \"owner/name\", \"base_ref\": \"main\", \"model\": \"sonnet\", \"model_reason\": \"…\"}], \"questions\": []}\n```\n")
 	return b.String()
+}
+
+// spent says whether an item of the plan before is one a re-plan may not
+// recreate at its size: failed, superseded or cancelled (ADR-021).
+func spent(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "failed", "superseded", "cancelled", "canceled":
+		return true
+	}
+	return false
+}
+
+// indentLines indents every line of s after the first by prefix.
+func indentLines(s, prefix string) string {
+	return strings.ReplaceAll(s, "\n", "\n"+prefix)
 }
 
 func sortedKeys(m map[string]string) []string {
