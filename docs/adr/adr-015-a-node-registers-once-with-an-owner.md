@@ -226,9 +226,15 @@ the claim-time `Credentials.Open` and its usage, the sessions'
 `EvaluateWorkItem`, `FinishWorkItemRebase` and `ReportWorkItemProgress`
 carry the item, not the node. The upgrade confirm is the loop's first
 heartbeat — the owned one. Outside the loop, `reportRollback` (the
-rollback heartbeat) and `mesh node status` heartbeat once under
-node.yaml's `node_id` when the platform takes `owner` and answers, and
-per org otherwise. Channel mode still resolves per org (unchanged).
+rollback heartbeat) and `mesh node status` heartbeat through
+`node.HeartbeatOutside`: once under node.yaml's `node_id` when its saved
+`contract:` is `owner` and the platform takes `owner` — whatever that
+heartbeat answers, a nil answer included, which serves no orgs this time
+but never falls through to `MyOrgs` or a heartbeat per org (that would
+send several and fail on an owner's orgs outside the token's person's;
+`TestOwnedOutsideHeartbeatNilAnswerKeepsTheOneID`,
+`TestOwnedRollbackNilAnswerStaysOnTheOneID`,
+`TestOwnedStatusNilAnswerStaysOnTheOneID`) — and per org otherwise. Channel mode still resolves per org (unchanged).
 Adoption: an owned node's first start after the switch also looks for
 sessions under its old per-org ids (`LegacyIDs`, `AdoptWith.Legacy`),
 so the builds a per-org node left running are taken up, not left to

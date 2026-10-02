@@ -623,7 +623,9 @@ func (c *Config) NodeIDIn(orgID string) (string, error) {
 // slug — the same rule ScopesFromAnswer applies. Orgs the config names
 // that the owner is not in are an error: the node would never see their
 // items.
-func ResolveScopes(ctx context.Context, gw Gateway, c *Config) (Scopes, error) {
+func ResolveScopes(ctx context.Context, gw interface {
+	MyOrgs(ctx context.Context) ([]gateway.Org, error)
+}, c *Config) (Scopes, error) {
 	orgs, err := gw.MyOrgs(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("my orgs: %w", err)

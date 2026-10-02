@@ -702,3 +702,79 @@ func TestOwnedContractChoosesTheHeartbeat(t *testing.T) {
 		t.Error("an owner contract with no node_id heartbeats under an empty id")
 	}
 }
+
+// outsideGW is the platform a command outside the loop sees: the probe,
+// the heartbeat (answering answer) and the person's orgs, each call
+// recorded.
+type outsideGW struct {
+	takes  bool
+	answer *gateway.NodeAnswer
+	orgs   []gateway.Org
+	beats  []string
+	myOrgs int
+}
+
+func (g *outsideGW) TakesOwner(context.Context) bool { return g.takes }
+func (g *outsideGW) HeartbeatNode(_ context.Context, nodeID, _ string, _ int, _ ...gateway.HeartbeatExtras) (*gateway.NodeAnswer, error) {
+	g.beats = append(g.beats, nodeID)
+	return g.answer, nil
+}
+func (g *outsideGW) MyOrgs(context.Context) ([]gateway.Org, error) {
+	g.myOrgs++
+	return g.orgs, nil
+}
+
+// `mesh node status` and the rollback reporter on a saved owner
+// contract: a nil heartbeat answer keeps the contract — one heartbeat,
+// under the one id, and never the person's orgs or a heartbeat per org,
+// even when the token's person is in orgs the owner is not.
+func TestOwnedOutsideHeartbeatNilAnswerKeepsTheOneID(t *testing.T) {
+	const id = "55555555-5555-4555-8555-555555555555"
+	cfg := &Config{NodeID: id, Contract: ContractOwner, Slug: "runsheet-mini"}
+	gw := &outsideGW{takes: true, orgs: []gateway.Org{
+		{ID: "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa", Login: "runsheet"},
+		{ID: "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb", Login: "wardroomid"},
+	}}
+	out, err := HeartbeatOutside(context.Background(), gw, cfg, "v1", gateway.HeartbeatExtras{}, func(Scope, error) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !out.Owned || out.Answer != nil || len(out.Scopes) != 0 {
+		t.Errorf("out = %+v, want owned with no answer and no scopes", out)
+	}
+	if !slices.Equal(gw.beats, []string{id}) {
+		t.Errorf("heartbeats = %v, want one under %s", gw.beats, id)
+	}
+	if gw.myOrgs != 0 {
+		t.Errorf("MyOrgs read %d times on the owner contract", gw.myOrgs)
+	}
+}
+
+// A per-org node (or a node.yaml before `contract:`) is reached per org
+// alone, whatever node_id it kept, and a platform that no longer takes
+// `owner` reaches an owned one per org too.
+func TestOwnedOutsideHeartbeatPerOrg(t *testing.T) {
+	orgs := []gateway.Org{
+		{ID: "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa", Login: "runsheet"},
+		{ID: "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb", Login: "wardroomid"},
+	}
+	for _, tc := range []struct {
+		contract string
+		takes    bool
+	}{{"", true}, {ContractPerOrg, true}, {ContractOwner, false}} {
+		cfg := &Config{NodeID: "55555555-5555-4555-8555-555555555555", Contract: tc.contract, Slug: "runsheet-mini"}
+		gw := &outsideGW{takes: tc.takes, orgs: orgs}
+		out, err := HeartbeatOutside(context.Background(), gw, cfg, "v1", gateway.HeartbeatExtras{}, func(Scope, error) error { return nil })
+		if err != nil {
+			t.Fatal(err)
+		}
+		if out.Owned || len(out.Scopes) != 2 || len(gw.beats) != 2 || gw.myOrgs != 1 {
+			t.Errorf("contract %q takes %v: out %+v, beats %v, myOrgs %d; want per org", tc.contract, tc.takes, out, gw.beats, gw.myOrgs)
+		}
+		for i, sc := range out.Scopes {
+			if gw.beats[i] != sc.NodeID {
+				t.Errorf("beat %d under %s, want %s's per-org id %s", i, gw.beats[i], sc.Name(), sc.NodeID)
+			}
+		}
+	}
+}

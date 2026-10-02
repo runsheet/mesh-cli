@@ -291,3 +291,58 @@ func orgsOrNone(s Scopes) string {
 	}
 	return strings.Join(s.Names(), ", ")
 }
+
+// OutsideGateway is what a heartbeat outside the loop needs: the probe,
+// the heartbeat and, on the per-org path alone, the person's orgs.
+type OutsideGateway interface {
+	TakesOwner(ctx context.Context) bool
+	HeartbeatNode(ctx context.Context, nodeID, version string, running int, extras ...gateway.HeartbeatExtras) (*gateway.NodeAnswer, error)
+	MyOrgs(ctx context.Context) ([]gateway.Org, error)
+}
+
+// Outside is HeartbeatOutside's result. Owned is the owner contract:
+// the one heartbeat went under the saved id, and Answer is what it
+// answered — nil included, which serves no Scopes here but never sends
+// the command per org. Restrict is node.yaml's orgs the answer did not
+// meet, said and not fatal.
+type Outside struct {
+	Owned    bool
+	Answer   *gateway.NodeAnswer
+	Scopes   Scopes
+	Restrict error
+}
+
+// HeartbeatOutside is the heartbeat of a command outside the loop —
+// `mesh node status`, the rollback reporter (ADR-015, Registration and
+// the loop). A node whose last registration saved the owner contract,
+// on a platform that still takes `owner`, heartbeats once, under its one
+// id, whatever the answer — a nil answer keeps the contract and never
+// falls through to MyOrgs or per-org heartbeats, which would send
+// several and fail on an owner's orgs outside the token's person's.
+// Any other node resolves its orgs and heartbeats in each; failed is
+// told each org's error and stops the round when it returns one.
+func HeartbeatOutside(ctx context.Context, gw OutsideGateway, cfg *Config, version string, extras gateway.HeartbeatExtras, failed func(Scope, error) error) (Outside, error) {
+	if id := cfg.OwnedID(); id != "" && gw.TakesOwner(ctx) {
+		answer, err := gw.HeartbeatNode(ctx, id, version, 0, extras)
+		if err != nil {
+			return Outside{}, fmt.Errorf("heartbeat: %w", err)
+		}
+		out := Outside{Owned: true, Answer: answer}
+		if answer != nil {
+			out.Scopes, out.Restrict = ServedFrom(answer, cfg.Orgs)
+		}
+		return out, nil
+	}
+	scopes, err := ResolveScopes(ctx, gw, cfg)
+	if err != nil {
+		return Outside{}, err
+	}
+	for _, sc := range scopes {
+		if _, err := gw.HeartbeatNode(ctx, sc.NodeID, version, 0, extras); err != nil {
+			if err := failed(sc, err); err != nil {
+				return Outside{}, err
+			}
+		}
+	}
+	return Outside{Scopes: scopes}, nil
+}
