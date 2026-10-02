@@ -56,6 +56,20 @@ case "\${1:-}" in
       *) echo "fake gh: unknown run subcommand \${2:-}" >&2; exit 1 ;;
     esac
     ;;
+  secret)
+    case "\${2:-}" in
+      list)
+        [[ " \$* " == *" runsheet/mesh-cli "* ]] || { echo "fake gh: unexpected repo in: \$*" >&2; exit 1; }
+        case "\${FAKE_SECRET_MODE:-}" in
+          present) echo '[{"name":"RELEASE_TOKEN","updatedAt":"2026-04-18T12:00:00Z"}]' ;;
+          absent) echo '[{"name":"OTHER_SECRET","updatedAt":"2026-01-01T00:00:00Z"}]' ;;
+          error) echo "failed to get secrets: HTTP 403: Resource not accessible by integration" >&2; exit 1 ;;
+          *) echo "fake gh: FAKE_SECRET_MODE not set" >&2; exit 1 ;;
+        esac
+        ;;
+      *) echo "fake gh: unknown secret subcommand \${2:-}" >&2; exit 1 ;;
+    esac
+    ;;
   *) echo "fake gh: unknown command \${1:-}" >&2; exit 1 ;;
 esac
 FAKE
@@ -64,6 +78,7 @@ chmod +x "$bin/gh"
 export PATH="$bin:$PATH"
 export FAKE_LOG="$work/log"
 export FAKE_EXPECT_LIMIT=5
+export FAKE_SECRET_MODE=present
 : >"$FAKE_LOG"
 
 scripts/mirror-token-reading.sh --help | grep -q '^usage: scripts/mirror-token-reading.sh' ||
@@ -84,6 +99,9 @@ grep -qx $'v0.9.1\t2001\t2026-10-02T05:00:00Z\texchanged\t' <<<"$out" ||
 grep -qx 'latest: fallback (v0.9.2, run 2002)' <<<"$out" ||
   fail "missing the latest line naming the newest run that reached the step"
 
+grep -qx 'secret: present (RELEASE_TOKEN, updated 2026-04-18T12:00:00Z)' <<<"$out" ||
+  fail "missing the secret line for the present case"
+
 grep -q 'echo "mirror token' <<<"$out" && fail "an echoed source line was read as the reading"
 
 # --limit N is passed through from the count argument.
@@ -94,5 +112,23 @@ grep -q -- '--limit' "$FAKE_LOG" || fail "count argument did not reach --limit"
 # A non-numeric count is refused.
 if scripts/mirror-token-reading.sh abc >/dev/null 2>"$work/err"; then fail "a non-numeric count exited 0"; fi
 grep -q "whole number" "$work/err" || fail "a non-numeric count did not say why"
+
+# The secret: line, read from a fake `gh secret list` — present, absent
+# and a failing gh (no admin scope, 403) — each asserted exactly and
+# exit 0 in every case.
+FAKE_SECRET_MODE=present out=$(scripts/mirror-token-reading.sh); rc=$?
+[[ $rc -eq 0 ]] || fail "secret present: exited $rc, wanted 0"
+grep -qx 'secret: present (RELEASE_TOKEN, updated 2026-04-18T12:00:00Z)' <<<"$out" ||
+  fail "secret present: missing the exact secret line: $out"
+
+FAKE_SECRET_MODE=absent out=$(scripts/mirror-token-reading.sh); rc=$?
+[[ $rc -eq 0 ]] || fail "secret absent: exited $rc, wanted 0"
+grep -qx 'secret: absent (RELEASE_TOKEN)' <<<"$out" ||
+  fail "secret absent: missing the exact secret line: $out"
+
+FAKE_SECRET_MODE=error out=$(scripts/mirror-token-reading.sh); rc=$?
+[[ $rc -eq 0 ]] || fail "secret error: exited $rc, wanted 0"
+grep -qx 'secret: unknown (failed to get secrets: HTTP 403: Resource not accessible by integration)' <<<"$out" ||
+  fail "secret error: missing the exact secret line: $out"
 
 echo "mirror-token-reading_test.sh: PASS"

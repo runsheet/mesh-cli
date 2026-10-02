@@ -836,6 +836,16 @@ download), unrelated to the token exchange. This reading changes
 nothing here — the fallback stays until a run reads `exchanged` — it is
 only the measure item 7 and item 8 read before they remove it.
 
+Item 12 (2026-10-02) extends the script with a final `secret:` line
+reading whether the `RELEASE_TOKEN` secret itself still exists on
+`runsheet/mesh-cli` (`gh secret list`), so the goal's acceptance — "no
+RELEASE_TOKEN secret exists on mesh-cli" — is readable too; today's run
+says `secret: unknown (failed to get secrets: HTTP 403: Resource not
+accessible by integration (https://api.github.com/repos/runsheet/mesh-cli/actions/secrets?per_page=100))`,
+because this node's own credential has no admin scope on the repo, not
+because the secret is gone — the secret still exists until item 10 or
+a later check with admin scope confirms its deletion.
+
 ### Both repositories today
 
 ```

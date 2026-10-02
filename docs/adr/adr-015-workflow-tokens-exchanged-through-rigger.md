@@ -124,3 +124,7 @@ choice of token moved out of the workflow into
 `scripts/mirror-token.sh`, where the fallback is the one function item
 10 deletes. The `mirror token: ` lines are unchanged, so
 `scripts/mirror-token-reading.sh` reads the runs before and after alike.
+The goal's acceptance that no `RELEASE_TOKEN` secret exists on
+`mesh-cli` is read the same way: the script's final `secret: ` line
+(item 12, `gh secret list`) names it present with its update date,
+absent, or unknown when `gh` cannot list secrets.
