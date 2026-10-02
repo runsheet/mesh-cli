@@ -225,3 +225,52 @@ account is used" is moot, since node.yaml names none. The operator's
 with no placed home (`codex: no issued credential on the session;
 refusing the operator's own login`). The decision is
 [ADR-011's amendment 2026-10-02](adr-011-evaluations-run-on-the-family-with-headroom.md).
+
+## Amendment — 2026-10-02: one evaluator for ordinary work (goal one-evaluator-for-ordinary-work)
+
+This replaces the Decision's "When it runs": a first fail no longer
+always stands on its own, and a normal or low goal's item may get a
+second opinion. The same text is in ADR 011's amendment of this date.
+
+Evaluation cost as much as building (15,564 evaluate minutes against
+17,629 build minutes in a week), and a second judge is worth its cost
+only where a wrong verdict is expensive. The second opinion is now asked
+by a rule, not by priority on a pass alone. `secondOpinionWanted(evalDecision)` in
+`internal/node/second_opinion.go` is a pure decision returning whether
+and why; the first reason that holds is the one recorded:
+
+| The item | Evaluators | Reason |
+|---|---|---|
+| its goal is `urgent` or `high` | 2 | `urgent/high goal` |
+| its `protectedFiles` is non-empty, or a file its diff changed (`Workspacer.ChangedPaths`) matches a glob of its `protectedRulePaths` or the project's `protectedPaths` (`globMatch`: `path.Match` per segment, `**` any number of segments) | 2 | `protected path <path>` |
+| its first verdict is FAIL with at least one failed clause that is not a reading of the host (`hostReadingClause`, the planner's lexical test behind `hostReadingAcceptance`, on the clause and its SATISFY; ADR-020) | 2 | `first verdict FAIL on a correctness clause` |
+| the checkout's `.mesh/config.yml` says `second_opinion: always` | 2 | `second_opinion: always` |
+| anything else — a normal or low goal touching no protected path, a first FAIL on host readings alone | 1 | `normal/low goal, no protected path` |
+
+**The verdict on a first FAIL.** The second verdict decides, as it did
+on a first PASS: a second FAIL is failed with the union of both
+sessions' failed clauses (the first's, then the second's not already
+named), and a second PASS passes the item, both reviews in the notes. A
+wrong fail costs a rebuild, the most expensive thing the evaluator can
+spend, so a second judge that finds the acceptance held is let to
+overturn it. On a first PASS nothing changed: both pass is passed, a
+second fail is failed.
+
+**The setting.** `second_opinion: always|rule` is read from the top
+level of the item's repo checkout's `.mesh/config.yml`
+(`secondOpinionSetting`); absent, unreadable or any other value is
+`rule`. It belongs on the project, read at claim time through
+ProjectIndex, and waits for the platform to serve that field: nothing
+was added to `schema.json`, and the reader carries a TODO naming it.
+
+**The record.** The choice is one line in the notes before the
+`(evaluated on …)` tail and one in node.log, `item <label>: evaluators:
+1 — normal/low goal, no protected path` or `evaluators: 2 — <reason>`
+(`evaluators: 1 — <reason>, but no other family on this node` when the
+rule wants two and the node has no second family). Every
+`evaluateWorkItem` — verdict or no verdict — carries `evaluatedModel`,
+the model of the evaluation whose verdict came first
+(`gateway.EvaluateChoice`). What already degrades to one verdict still
+does, with `<Family> second opinion unavailable: <why>` beside the
+`evaluators: 2` line: an adopted session, a family blind on the first
+attempt, a failed preflight, no Codex headroom.
