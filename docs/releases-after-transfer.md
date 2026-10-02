@@ -791,8 +791,11 @@ through rigger, expires <time>`, or `mirror token: RELEASE_TOKEN
 fallback (exchange failed: <reason>)` when it falls back. The
 `RELEASE_TOKEN` fallback lasts only until the runsheet half (goal
 `rigger-binds-a-workflow-to-a-scoped-github-token`) answers the
-exchange; then the fallback secret is deleted from `runsheet/mesh-cli`,
-and the fallback branch with it.
+exchange; the switch is the operator running
+`gh secret delete RELEASE_TOKEN --repo runsheet/mesh-cli` once
+`scripts/mirror-token-reading.sh` reads a run `exchanged` — no PR flips
+it — and the fallback code (and these docs' fallback sentences) is
+deleted by a cleanup PR that follows, not before.
 
 A re-run of the publish job after a mirror failure no longer needs a
 release deleted by hand. `scripts/ensure-release.sh` keeps an existing
@@ -845,6 +848,47 @@ accessible by integration (https://api.github.com/repos/runsheet/mesh-cli/action
 because this node's own credential has no admin scope on the repo, not
 because the secret is gone — the secret still exists until item 10 or
 a later check with admin scope confirms its deletion.
+
+**2026-10-02, item 13's reading.** Run live against `runsheet/mesh-cli`
+from this session, over the last ten completed runs:
+
+```
+$ scripts/mirror-token-reading.sh 10
+v0.2.237	37045365015	2026-10-02T18:07:51Z	fallback	refused: unauthenticated: the bearer is a JWT with no role (unknown key id)
+v0.2.236	37041204145	2026-10-02T17:30:46Z	fallback	refused: unauthenticated: the bearer is a JWT with no role (unknown key id)
+v0.2.235	37038403839	2026-10-02T17:05:56Z	fallback	refused: unauthenticated: the bearer is a JWT with no role (unknown key id)
+v0.2.234	37035625041	2026-10-02T16:41:25Z	absent	failed at Install cosign
+v0.2.233	37032523771	2026-10-02T16:14:02Z	fallback	refused: unauthenticated: the bearer is a JWT with no role (unknown key id)
+v0.2.232	37031328695	2026-10-02T16:03:45Z	fallback	refused: unauthenticated: the bearer is a JWT with no role (unknown key id)
+v0.2.231	37026904615	2026-10-02T15:25:44Z	fallback	refused: unauthenticated: the bearer is a JWT with no role (unknown key id)
+v0.2.230	37023236264	2026-10-02T14:55:00Z	fallback	refused: unauthenticated: the bearer is a JWT with no role (unknown key id)
+v0.2.229	37009200374	2026-10-02T12:51:05Z	fallback	refused: unauthenticated: the bearer is a JWT with no role (unknown key id)
+v0.2.228	37005040447	2026-10-02T12:09:35Z	fallback	refused: unauthenticated: the bearer is a JWT with no role (unknown key id)
+latest: fallback (v0.2.237, run 37045365015)
+```
+
+Still `fallback`, on every run from `v0.2.228` to `v0.2.237`: the gate
+item 9's own reading, taken earlier the same day, already found closed.
+This is the reading items 4, 7 and 10 each found the hard way, as a
+failed build; it is why ADR-015's "Where it stands" now records all
+three as failed on it rather than on anything of their own.
+
+`gh secret list --repo runsheet/mesh-cli`, attempted from this build
+session:
+
+```
+$ gh secret list --repo runsheet/mesh-cli
+failed to get secrets: HTTP 403: Resource not accessible by integration (https://api.github.com/repos/runsheet/mesh-cli/actions/secrets?per_page=100)
+```
+
+This session's own GitHub credential is the item-scoped installation
+token `docs/adr/adr-001-item-scoped-github-token.md` describes —
+contents write and pull requests read on this one repository, nothing
+that reaches `Secrets` — so a build session can never read whether
+`RELEASE_TOKEN` still exists; only the operator's own `gh`, run by
+hand, can take that reading. Nothing here says the secret is present or
+absent; the `mirror token: ` readings above are the only live evidence
+this session can gather, and they still read `fallback`.
 
 ### Both repositories today
 

@@ -291,7 +291,10 @@ jobs:
         # in scripts/mirror-token.sh, which logs the path taken. With
         # neither the step fails. A failing mirror fails the workflow.
         env:
-          # Item 10 of the goal removes this line with the fallback.
+          # The operator removes this line, with the fallback, once
+          # scripts/mirror-token-reading.sh reads a run exchanged and
+          # deletes the RELEASE_TOKEN secret (adr-015, "Where it
+          # stands"); the cleanup PR follows that, not before.
           RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
           GH_REPO: runsheet/mesh
           TAG: ${{ github.ref_name }}

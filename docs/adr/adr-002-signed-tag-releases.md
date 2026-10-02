@@ -404,7 +404,10 @@ again and current.
   carries, `.runsheet/bindings/mesh-cli-release.yaml` — published from
   `dist/mirror/` as the README is. `RELEASE_TOKEN` stays only as the
   logged fallback (`mirror token: RELEASE_TOKEN fallback (exchange
-  failed: <reason>)`) until the runsheet half answers.
+  failed: <reason>)`) until the runsheet half answers; the switch is the
+  operator running `gh secret delete RELEASE_TOKEN --repo
+  runsheet/mesh-cli` once a run reads `exchanged`, not a PR (ADR-015,
+  "Where it stands").
 - **Numbering continues the public line.** The public line continued
   at `v0.2.187` (cut and signed on `runsheet/mesh-cli` only, its mirror
   step failed), and **`v0.2.188`** was the first signed release on the
