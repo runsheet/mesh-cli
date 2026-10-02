@@ -68,6 +68,14 @@ type Client struct {
 	// report's `contextBytes` (ErrNoContextUsage, adr-016): every later
 	// report goes without it.
 	usageWithoutContext atomic.Bool
+	// usageWithoutDocumentsFetched is set once the gateway has refused a
+	// usage report's `documentsFetched` (ErrNoDocumentsFetched, adr-016's
+	// amendment 2026-10-02): every later report goes without it.
+	usageWithoutDocumentsFetched atomic.Bool
+	// usageWithoutToolNames is set once the gateway has refused a usage
+	// report's `toolNames` (ErrNoToolNames, adr-016's amendment
+	// 2026-10-02): every later report goes without the list.
+	usageWithoutToolNames atomic.Bool
 
 	// heartbeatBasicUntil (unix nanoseconds) is when the heartbeat next
 	// offers the fields the gateway refused (see HeartbeatNode).
@@ -339,6 +347,24 @@ var ErrNoValidationUsage = errors.New("gateway: the platform takes no per-step v
 // ErrNoToolUsage when the report lost those too.
 var ErrNoContextUsage = errors.New("gateway: the platform takes no context bytes on the usage report")
 
+// ErrNoDocumentsFetched is what a finishing command returns when its
+// usage report carried the session's documents-fetched count but the
+// platform's UsageReportInput has no `documentsFetched` (a platform
+// older than context-is-fetched-not-shipped, adr-016's amendment
+// 2026-10-02): the command and the rest of the report land without
+// that one number, and the caller says so once. errors.Is-able; it may
+// come joined with the other usage errors.
+var ErrNoDocumentsFetched = errors.New("gateway: the platform takes no documents-fetched count on the usage report")
+
+// ErrNoToolNames is what a finishing command returns when its usage
+// report carried the session's per-tool call counts but the platform's
+// UsageReportInput has no `toolNames` (a platform older than
+// context-is-fetched-not-shipped, adr-016's amendment 2026-10-02): the
+// command and the rest of the report land without the list, and the
+// caller says so once. errors.Is-able; it may come joined with the
+// other usage errors.
+var ErrNoToolNames = errors.New("gateway: the platform takes no per-tool call counts on the usage report")
+
 // usageDetailFields are UsageReport's fields a platform before
 // mesh-spends-less-per-item may not know (ErrNoUsageDetail).
 var usageDetailFields = []string{"turns", "inputPerTurnMean", "inputPerTurnMax", "largestToolResults"}
@@ -361,8 +387,12 @@ var usageDetailFields = []string{"turns", "inputPerTurnMean", "inputPerTurnMax",
 // minutes did not. A platform whose report has no `contextBytes`
 // (unknownField on "contextBytes") gets it again without the bytes, and
 // every later report goes without them, and ErrNoContextUsage says so.
-// When a report lost more than one of the list, the minutes and the
-// bytes, their errors come joined.
+// A platform whose report has no `documentsFetched` or `toolNames`
+// (unknownField on either) gets it again without that one, and every
+// later report goes without it, and ErrNoDocumentsFetched or
+// ErrNoToolNames says so (adr-016's amendment 2026-10-02). When a
+// report lost more than one of the list, the minutes, the bytes, the
+// documents fetched and the tool names, their errors come joined.
 func (c *Client) mutateWithUsage(ctx context.Context, field, aggregateID string, input map[string]any, usage *UsageReport) error {
 	if usage == nil {
 		return c.Mutate(ctx, field, aggregateID, input)
@@ -388,6 +418,14 @@ func (c *Client) mutateWithUsage(ctx context.Context, field, aggregateID string,
 	if withContext && c.usageWithoutContext.Load() {
 		delete(um, "contextBytes")
 	}
+	_, withDocumentsFetched := um["documentsFetched"]
+	if withDocumentsFetched && c.usageWithoutDocumentsFetched.Load() {
+		delete(um, "documentsFetched")
+	}
+	_, withToolNames := um["toolNames"]
+	if withToolNames && c.usageWithoutToolNames.Load() {
+		delete(um, "toolNames")
+	}
 	if rows, ok := um["tools"].([]any); ok && toolRowsCarry(rows, "error") && !c.takesToolError(ctx) {
 		for _, r := range rows {
 			if row, ok := r.(map[string]any); ok {
@@ -407,6 +445,8 @@ func (c *Client) mutateWithUsage(ctx context.Context, field, aggregateID string,
 		{"tools", &c.usageWithoutTools},
 		{"validation", &c.usageWithoutValidation},
 		{"contextBytes", &c.usageWithoutContext},
+		{"documentsFetched", &c.usageWithoutDocumentsFetched},
+		{"toolNames", &c.usageWithoutToolNames},
 	}
 	// The turn and tool-result detail fields go together, for this
 	// report alone, in the same loop: a platform that refuses one of the
@@ -454,6 +494,12 @@ func (c *Client) mutateWithUsage(ctx context.Context, field, aggregateID string,
 	}
 	if withContext && c.usageWithoutContext.Load() {
 		lost = append(lost, ErrNoContextUsage)
+	}
+	if withDocumentsFetched && c.usageWithoutDocumentsFetched.Load() {
+		lost = append(lost, ErrNoDocumentsFetched)
+	}
+	if withToolNames && c.usageWithoutToolNames.Load() {
+		lost = append(lost, ErrNoToolNames)
 	}
 	switch len(lost) {
 	case 0:
@@ -2752,6 +2798,20 @@ type UsageReport struct {
 	// without the field (ErrNoContextUsage).
 	ContextBytes int64 `json:"contextBytes,omitempty"`
 
+	// DocumentsFetched is the session's mesh_document and mesh_search
+	// calls on the built-in context server — what it fetched by tool
+	// (adr-016's amendment 2026-10-02, goal
+	// context-is-fetched-not-shipped); ToolNames tells the two apart. Left
+	// out when the session fetched none, and by mutateWithUsage for a
+	// platform without the field (ErrNoDocumentsFetched).
+	DocumentsFetched int64 `json:"documentsFetched,omitempty"`
+	// ToolNames is the session's MCP calls per <server>__<tool>
+	// (harness.Result.ToolNames), beside Tools' per-server totals — so
+	// a reading can tell mesh_document from mesh_search. Left out when
+	// the session made no MCP call, and by mutateWithUsage for a
+	// platform without the field (ErrNoToolNames).
+	ToolNames []ToolNameCount `json:"toolNames,omitempty"`
+
 	FiveHourBefore *float64 `json:"fiveHourBefore,omitempty"`
 	FiveHourAfter  *float64 `json:"fiveHourAfter,omitempty"`
 	SevenDayBefore *float64 `json:"sevenDayBefore,omitempty"`
@@ -2783,6 +2843,13 @@ type ToolResultSize struct {
 	Bytes int    `json:"bytes"`
 }
 
+// ToolNameCount is one <server>__<tool> name's calls — one row of
+// UsageReport.ToolNames.
+type ToolNameCount struct {
+	Name  string `json:"name"`
+	Calls int64  `json:"calls"`
+}
+
 // The kinds a UsageReport's CredentialKind takes.
 const (
 	CredentialSubscription = "subscription"
@@ -2801,8 +2868,10 @@ const (
 // session.
 func (c *Client) RecordToolUsage(ctx context.Context, itemID, toolCallID, tool string, usage UsageReport) error {
 	const field = "recordToolUsage"
-	usage.Tools = nil      // one call's record needs no per-tool list
-	usage.ContextBytes = 0 // nor the session's context, counted once on its own report
+	usage.Tools = nil          // one call's record needs no per-tool list
+	usage.ContextBytes = 0     // nor the session's context, counted once on its own report
+	usage.DocumentsFetched = 0 // nor the documents-fetched count
+	usage.ToolNames = nil      // nor the per-tool-name counts
 	um, err := usageInput(&usage)
 	if err != nil {
 		return err

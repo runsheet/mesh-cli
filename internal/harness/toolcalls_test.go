@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"maps"
 	"os"
 	"slices"
 	"strings"
@@ -71,6 +72,42 @@ func TestParseStreamCountsTheOldBuiltinName(t *testing.T) {
 	}
 	if builtin != 1 || res.ToolCalls["prologue"] != 1 || res.ToolCalls["search"] != 2 {
 		t.Fatalf("ToolCalls = %v, want prologue:1 read as the built-in, search:2", res.ToolCalls)
+	}
+}
+
+// Two mesh_document calls and one mesh_search on mesh-context are 3
+// documents fetched; a mesh_items call is on ToolNames but fetches no
+// document.
+func TestParseStreamCountsDocumentsFetched(t *testing.T) {
+	stream := strings.Join([]string{
+		`{"type":"system","subtype":"init","session_id":"s-docs","model":"claude-sonnet-5"}`,
+		`{"type":"assistant","session_id":"s-docs","message":{"role":"assistant","content":[{"type":"tool_use","name":"mcp__mesh-context__mesh_document","id":"t1"}]}}`,
+		`{"type":"assistant","session_id":"s-docs","message":{"role":"assistant","content":[{"type":"tool_use","name":"mcp__mesh-context__mesh_document","id":"t2"}]}}`,
+		`{"type":"assistant","session_id":"s-docs","message":{"role":"assistant","content":[{"type":"tool_use","name":"mcp__mesh-context__mesh_search","id":"t3"}]}}`,
+		`{"type":"assistant","session_id":"s-docs","message":{"role":"assistant","content":[{"type":"tool_use","name":"mcp__mesh-context__mesh_items","id":"t4"}]}}`,
+		`{"type":"result","subtype":"success","session_id":"s-docs","is_error":false,"result":"Done."}`,
+	}, "\n")
+	res := ParseStream(strings.NewReader(stream), nil)
+	if res.DocumentsFetched != 3 {
+		t.Fatalf("DocumentsFetched = %d, want 3", res.DocumentsFetched)
+	}
+	want := map[string]int{"mesh-context__mesh_document": 2, "mesh-context__mesh_search": 1, "mesh-context__mesh_items": 1}
+	if !maps.Equal(res.ToolNames, want) {
+		t.Fatalf("ToolNames = %v, want %v", res.ToolNames, want)
+	}
+}
+
+// A call on prologue (the built-in's old name, tools.IsBuiltin) folds
+// into mesh-context and counts as fetched.
+func TestParseStreamFoldsPrologueIntoDocumentsFetched(t *testing.T) {
+	stream := strings.Join([]string{
+		`{"type":"system","subtype":"init","session_id":"s-old","model":"claude-sonnet-5"}`,
+		`{"type":"assistant","session_id":"s-old","message":{"role":"assistant","content":[{"type":"tool_use","name":"mcp__prologue__mesh_document","id":"t1"}]}}`,
+		`{"type":"result","subtype":"success","session_id":"s-old","is_error":false,"result":"Done."}`,
+	}, "\n")
+	res := ParseStream(strings.NewReader(stream), nil)
+	if res.DocumentsFetched != 1 || res.ToolNames["mesh-context__mesh_document"] != 1 || len(res.ToolNames) != 1 {
+		t.Fatalf("DocumentsFetched = %d, ToolNames = %v, want 1 on mesh-context__mesh_document", res.DocumentsFetched, res.ToolNames)
 	}
 }
 
@@ -146,6 +183,28 @@ func TestParseCodexStreamToolCallNoID(t *testing.T) {
 	ids := res.ToolCallIDs["search"]
 	if want := "th-noid:search:1"; len(ids) != 1 || ids[0] != want {
 		t.Fatalf("ToolCallIDs[search] = %v, want [%s]", ids, want)
+	}
+}
+
+// The Codex stream counts the same: two mesh_document calls and one
+// mesh_search on mesh-context are 3 documents fetched, a prologue call
+// folded into mesh-context, mesh_items on ToolNames alone.
+func TestParseCodexStreamCountsDocumentsFetched(t *testing.T) {
+	stream := strings.Join([]string{
+		`{"type":"thread.started","thread_id":"th-docs"}`,
+		`{"type":"item.completed","item":{"id":"i1","type":"mcp_tool_call","server":"mesh-context","tool":"mesh_document","status":"completed"}}`,
+		`{"type":"item.completed","item":{"id":"i2","type":"mcp_tool_call","server":"prologue","tool":"mesh_document","status":"completed"}}`,
+		`{"type":"item.completed","item":{"id":"i3","type":"mcp_tool_call","server":"mesh-context","tool":"mesh_search","status":"completed"}}`,
+		`{"type":"item.completed","item":{"id":"i4","type":"mcp_tool_call","server":"mesh-context","tool":"mesh_items","status":"completed"}}`,
+		`{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}`,
+	}, "\n")
+	res := ParseCodexStream(strings.NewReader(stream), "gpt-5-codex", nil)
+	if res.DocumentsFetched != 3 {
+		t.Fatalf("DocumentsFetched = %d, want 3", res.DocumentsFetched)
+	}
+	want := map[string]int{"mesh-context__mesh_document": 2, "mesh-context__mesh_search": 1, "mesh-context__mesh_items": 1}
+	if !maps.Equal(res.ToolNames, want) {
+		t.Fatalf("ToolNames = %v, want %v", res.ToolNames, want)
 	}
 }
 

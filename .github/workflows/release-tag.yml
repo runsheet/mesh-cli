@@ -34,6 +34,15 @@
 # Until the runsheet half answers, a failed exchange falls back to the
 # RELEASE_TOKEN secret, and the log says which path it took. A failing
 # mirror step fails the workflow — there is no partial publish.
+#
+# The publish job is idempotent (adr-002's amendment "the publish job
+# is idempotent"): both the runsheet/mesh-cli release and the mirror
+# are created through scripts/ensure-release.sh, never a bare `gh
+# release create`, so a re-run after a mirror failure keeps an existing
+# identical release rather than failing with "release exists" — the
+# fix, before this, was deleting the release by hand (run
+# 36499785802, 2026-09-29). A release that exists but differs fails
+# loudly; nothing is ever deleted.
 
 name: Release (tag)
 
@@ -253,36 +262,34 @@ jobs:
           } >>"$GITHUB_ENV"
 
       - name: Create release on runsheet/mesh-cli
-        working-directory: release
+        # scripts/ensure-release.sh, not a bare `gh release create`: a
+        # release of $TAG that already exists here (a re-run after the
+        # mirror step below failed) is kept when its assets are
+        # identical, never recreated or deleted (adr-002's amendment
+        # "the publish job is idempotent").
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
-        run: |
-          flags=()
-          case "$TAG" in *-*) flags+=(--prerelease) ;; esac
-          gh release create "$TAG" \
-            --title "$TAG" \
-            --notes-file NOTES.md \
-            --verify-tag \
-            "${flags[@]}" \
-            mesh-linux-amd64 mesh-linux-arm64 mesh-darwin-arm64 \
-            SHA256SUMS SHA256SUMS.sigstore.json
+        run: scripts/ensure-release.sh "$TAG" "$GITHUB_SHA" release
 
       - name: Mirror the release to runsheet/mesh
         # scripts/mirror-release.sh creates the identical release on the
-        # public mirror (same tag, title, notes and five assets, a
-        # prerelease only when the tag has a "-"), then checks it
-        # byte-for-byte the one just signed and its bundle against the
-        # runsheet/mesh-cli identity, and publishes dist/mirror/README.md
-        # and the binding .runsheet/bindings/mesh-cli-release.yaml when
-        # their content differs (adr-002's amendment "the public mirror
-        # on runsheet/mesh"). Its GH_TOKEN is exchanged first from this
-        # run's OIDC identity through Rigger (adr-015, the job's
-        # id-token: write): one repository, contents: write, an hour.
-        # RELEASE_TOKEN is the transitional fallback while the runsheet
-        # half is not there; the log says which path was taken. With
-        # neither the step fails. A failing mirror fails the workflow.
+        # public mirror via ensure-release.sh (same tag, title, notes
+        # and five assets, a prerelease only when the tag has a "-",
+        # idempotent — an existing identical mirror release is kept,
+        # never recreated or deleted), then checks it byte-for-byte the
+        # one just signed and its bundle against the runsheet/mesh-cli
+        # identity, and publishes dist/mirror/README.md and the binding
+        # .runsheet/bindings/mesh-cli-release.yaml when their content
+        # differs (adr-002's amendments "the public mirror on
+        # runsheet/mesh" and "the publish job is idempotent"). Its
+        # GH_TOKEN is exchanged first from this run's OIDC identity
+        # through Rigger (adr-015, the job's id-token: write): one
+        # repository, contents: write, an hour. RELEASE_TOKEN is the
+        # transitional fallback while the runsheet half is not there;
+        # the log says which path was taken. With neither the step
+        # fails. A failing mirror fails the workflow.
         env:
           RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
           GH_REPO: runsheet/mesh

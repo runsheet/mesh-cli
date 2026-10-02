@@ -24,7 +24,7 @@ implementing it that the spec leaves open or that differ in detail.
   pod, `Session.Close` removes anything left and the HOME.
 - **Where it plugs in.** `harness.ClaudeCode.Sandbox`: nil is the old
   exec path, untouched; set, the harness writes the MCP config to
-  `$HOME/mcp.json` (the Prologue bearer on no command line), and runs
+  `$HOME/mcp.json` (the mesh-context bearer on no command line), and runs
   `claude` with the same arguments otherwise in the pod. Every one-shot
   session (poll-mode build, evaluate, plan, research, rebase) goes
   through it. Channel-mode sessions and Codex are later items of the
@@ -159,6 +159,15 @@ the node image by digest (`sandbox.ImageDigest`) and says `sandboxed:
 true`. A limit kill there is the step's failure, not the node's
 condition. With `sandbox: off` the steps run on the host and the
 attestation says `host:<hostname>`.
+
+### Amendment 2026-10-02: wording corrected to mesh-context
+
+Goal `builtin-is-mesh-context`. "Where it plugs in" said the harness
+writes the MCP config to `$HOME/mcp.json` "the Prologue bearer on no
+command line" — the built-in's old name, left unfixed in this decision
+after the rename reached the node's own attachment (`adr-006`'s
+2026-09-28 amendment). It now says the mesh-context bearer; nothing
+about where the config is written or how it is read changes.
 
 ## Consequences
 

@@ -352,8 +352,10 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   as one `<label>: usage <kind> {…}` line (`SetLabel`; a carried
   session's is in its carrier's; `ErrNoUsageLedger` said once per run),
   and `mesh node usage` (`ReadUsage`, `usagereading.go`) reads them back
-  into sessions, input tokens, cache reads and context bytes by kind for
-  a window (adr-016's amendment).
+  into sessions, input tokens, cache reads, context bytes and documents
+  fetched by tool (`documentsFetched`: `mesh_document` and `mesh_search`
+  calls, with `toolNames` beside it on the report) by kind for a window
+  (adr-016's amendments).
 - **Codex** (`internal/harness/codex.go`, goals `codex-adapter` and
   `codex-sessions-reach-the-context-tool`): the
   `codex` harness, `codex exec --json --sandbox workspace-write` in the

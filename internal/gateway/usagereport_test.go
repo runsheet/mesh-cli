@@ -3,7 +3,12 @@ package gateway_test
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -269,6 +274,68 @@ func TestFinishingCommandWithoutToolsNeedsNoFallback(t *testing.T) {
 	}
 }
 
+// A gateway whose UsageReportInput has no `documentsFetched` or
+// `toolNames` (a platform older than context-is-fetched-not-shipped) is
+// sent the command again without them, the report lands, and the
+// caller is told with ErrNoDocumentsFetched and ErrNoToolNames; a later
+// report omits both at once, no retry (adr-016's amendment 2026-10-02).
+func TestFinishingCommandsWithoutDocumentsFetchedAndToolNames(t *testing.T) {
+	for _, c := range usageCases() {
+		t.Run(c.name, func(t *testing.T) {
+			f := gatewaytest.New("rs_test")
+			defer f.Close()
+			f.NoDocumentsFetched = true
+			f.NoToolNames = true
+			c.setup(f)
+			gw := gateway.New(f.URL(), "rs_test")
+
+			u := sampleUsageReport()
+			u.DocumentsFetched = 3
+			u.ToolNames = []gateway.ToolNameCount{{Name: "mesh-context__mesh_document", Calls: 3}}
+			err := c.send(gw, u)
+			if !errors.Is(err, gateway.ErrNoDocumentsFetched) || !errors.Is(err, gateway.ErrNoToolNames) {
+				t.Fatalf("err = %v, want ErrNoDocumentsFetched and ErrNoToolNames", err)
+			}
+			calls := f.CallsNamed(c.name)
+			if len(calls) != 1 {
+				t.Fatalf("calls = %+v", calls)
+			}
+			usage, ok := calls[0].Input["usage"].(map[string]any)
+			if !ok {
+				t.Fatalf("no usage on the landed call: %+v", calls[0].Input)
+			}
+			if _, ok := usage["documentsFetched"]; ok {
+				t.Fatalf("the landed usage still carried documentsFetched: %+v", usage)
+			}
+			if _, ok := usage["toolNames"]; ok {
+				t.Fatalf("the landed usage still carried toolNames: %+v", usage)
+			}
+			if usage["inputTokens"] == nil {
+				t.Fatalf("usage lost the rest of the report: %+v", usage)
+			}
+
+			// the client remembers both refusals: a second report on the
+			// same gateway omits them at once, with one post, no retry.
+			c.setup(f)
+			err = c.send(gw, u)
+			if !errors.Is(err, gateway.ErrNoDocumentsFetched) || !errors.Is(err, gateway.ErrNoToolNames) {
+				t.Fatalf("second err = %v", err)
+			}
+			calls = f.CallsNamed(c.name)
+			if len(calls) != 2 {
+				t.Fatalf("calls = %+v, want the first retried call and a second sent once", calls)
+			}
+			usage, _ = calls[1].Input["usage"].(map[string]any)
+			if _, ok := usage["documentsFetched"]; ok {
+				t.Fatalf("the second report carried documentsFetched: %+v", usage)
+			}
+			if _, ok := usage["toolNames"]; ok {
+				t.Fatalf("the second report carried toolNames: %+v", usage)
+			}
+		})
+	}
+}
+
 // A gateway whose usage input has no turns, inputPerTurnMean,
 // inputPerTurnMax or largestToolResults (a platform older than
 // mesh-spends-less-per-item) still takes the rest of the report and the
@@ -470,4 +537,87 @@ func TestUsageReportWithoutToolErrorProbesNothing(t *testing.T) {
 	if n := len(f.ReadsNamed("__type UsageReportInput")); n != 0 {
 		t.Fatalf("schema probed %d times, want none", n)
 	}
+}
+
+// usageFallbackOnce is the contextBytes fallback test
+// (TestFinishWorkItemWithoutContextUsageDropsItAndReturnsErrNoContextUsage)
+// for another optional usage field: refuse makes the fake refuse it,
+// set puts it on the report, field is its name on the wire and want the
+// error the caller is told. The first report is refused once and lands
+// on the retry without the field; the second goes without it at once,
+// one post, no retry.
+func usageFallbackOnce(t *testing.T, refuse func(*gatewaytest.Fake), set func(*gateway.UsageReport), field string, want error) {
+	t.Helper()
+	f := gatewaytest.New("rs_test")
+	defer f.Close()
+	refuse(f)
+	runningItem(f)
+	target, _ := url.Parse(f.URL())
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	var posts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			posts.Add(1)
+		}
+		proxy.ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+	gw := gateway.New(srv.URL, "rs_test")
+
+	u := sampleUsageReport()
+	set(u)
+	err := gw.FinishWorkItem(context.Background(), finishItem, "mesh/g-7", "abc123", 12, u)
+	if !errors.Is(err, want) {
+		t.Fatalf("err = %v, want %v", err, want)
+	}
+	if n := posts.Load(); n != 2 {
+		t.Fatalf("%d posts, want the refused one and the one without %s", n, field)
+	}
+	calls := f.CallsNamed("finishWorkItem")
+	if len(calls) != 1 {
+		t.Fatalf("calls = %+v", calls)
+	}
+	usage, _ := calls[0].Input["usage"].(map[string]any)
+	if _, ok := usage[field]; ok || usage["inputTokens"] == nil {
+		t.Fatalf("the landed usage: %+v", usage)
+	}
+	t.Logf("refused once, landed without %s: %d posts", field, posts.Load())
+
+	posts.Store(0)
+	runningItem(f)
+	err = gw.FinishWorkItem(context.Background(), finishItem, "mesh/g-7", "abc124", 12, u)
+	if !errors.Is(err, want) {
+		t.Fatalf("second err = %v, want %v", err, want)
+	}
+	if n := posts.Load(); n != 1 {
+		t.Fatalf("%d posts on the second report, want 1", n)
+	}
+	calls = f.CallsNamed("finishWorkItem")
+	usage, _ = calls[len(calls)-1].Input["usage"].(map[string]any)
+	if _, ok := usage[field]; ok {
+		t.Fatalf("the second report carried %s: %+v", field, usage)
+	}
+	t.Logf("the next report went without %s: %d post", field, posts.Load())
+}
+
+// A platform whose UsageReportInput has no `documentsFetched` refuses
+// it once, is sent the report again without it, and every later report
+// omits it (ErrNoDocumentsFetched, adr-016's amendment 2026-10-02).
+func TestUsageReportWithoutDocumentsFetched(t *testing.T) {
+	usageFallbackOnce(t,
+		func(f *gatewaytest.Fake) { f.NoDocumentsFetched = true },
+		func(u *gateway.UsageReport) { u.DocumentsFetched = 3 },
+		"documentsFetched", gateway.ErrNoDocumentsFetched)
+}
+
+// A platform whose UsageReportInput has no `toolNames` refuses it once,
+// is sent the report again without it, and every later report omits it
+// (ErrNoToolNames, adr-016's amendment 2026-10-02).
+func TestUsageReportWithoutToolNames(t *testing.T) {
+	usageFallbackOnce(t,
+		func(f *gatewaytest.Fake) { f.NoToolNames = true },
+		func(u *gateway.UsageReport) {
+			u.ToolNames = []gateway.ToolNameCount{{Name: "mesh-context__mesh_document", Calls: 2}, {Name: "mesh-context__mesh_search", Calls: 1}}
+		},
+		"toolNames", gateway.ErrNoToolNames)
 }

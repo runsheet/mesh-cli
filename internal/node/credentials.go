@@ -63,6 +63,10 @@ type Credentials struct {
 	Log *log.Logger
 
 	credOnce, usageOnce, toolUsageOnce, toolListOnce, usageDetailOnce, contextOnce sync.Once
+	// documentsFetchedOnce and toolNamesOnce are Finish's once-per-run
+	// notices for ErrNoDocumentsFetched and ErrNoToolNames (adr-016's
+	// amendment 2026-10-02, goal context-is-fetched-not-shipped).
+	documentsFetchedOnce, toolNamesOnce sync.Once
 }
 
 func (c *Credentials) now() time.Time {
@@ -112,10 +116,14 @@ type SessionAccount struct {
 	// one that landed without its turn or tool-result figures
 	// (ErrNoUsageDetail); Finish logs each instead. noContext is one
 	// that landed without its context bytes (ErrNoContextUsage).
-	report                                              *gateway.UsageReport
-	res                                                 harness.Result
-	handedIn, noLedger, noToolList, noDetail, noContext bool
-	into                                                *SessionAccount
+	// noDocumentsFetched and noToolNames are one that landed without its
+	// documents-fetched count or its per-tool call names
+	// (ErrNoDocumentsFetched, ErrNoToolNames; adr-016's amendment
+	// 2026-10-02).
+	report                                                                               *gateway.UsageReport
+	res                                                                                  harness.Result
+	handedIn, noLedger, noToolList, noDetail, noContext, noDocumentsFetched, noToolNames bool
+	into                                                                                 *SessionAccount
 	// contextBytes is what the session's context cost on disk
 	// (SetContextBytes, adr-016), the report's ContextBytes.
 	contextBytes int64
@@ -480,6 +488,8 @@ func (s *SessionAccount) Add(res harness.Result) {
 		}
 	}
 	r.Tools = mergeToolCalls(r.Tools, rows)
+	r.DocumentsFetched += int64(res.DocumentsFetched)
+	r.ToolNames = mergeToolNames(r.ToolNames, res.ToolNames)
 	if res.Turns > 0 {
 		sum := r.InputPerTurnMean*r.Turns + res.InputPerTurnMean*int64(res.Turns)
 		r.Turns += int64(res.Turns)
@@ -541,20 +551,25 @@ func (s *SessionAccount) SetLabel(label, kind string) {
 // but without its per-tool list: nil to the caller too, and Finish
 // logs the list. ErrNoUsageDetail is a command that landed with the
 // rest of the report but none of its turn or tool-result figures: also
-// nil to the caller, and Finish says so once. Anything else is the
-// command's own error.
+// nil to the caller, and Finish says so once. ErrNoDocumentsFetched and
+// ErrNoToolNames are the same for the documents-fetched count and the
+// per-tool call names (adr-016's amendment 2026-10-02) — each may come
+// joined with the others, and errors.Is finds every one of them in a
+// joined error. Anything else is the command's own error.
 func (s *SessionAccount) Carried(err error) error {
 	noLedger := errors.Is(err, gateway.ErrNoUsageLedger)
 	noToolList := !noLedger && errors.Is(err, gateway.ErrNoToolUsage)
 	noDetail := !noLedger && errors.Is(err, gateway.ErrNoUsageDetail)
 	noContext := !noLedger && errors.Is(err, gateway.ErrNoContextUsage)
+	noDocumentsFetched := !noLedger && errors.Is(err, gateway.ErrNoDocumentsFetched)
+	noToolNames := !noLedger && errors.Is(err, gateway.ErrNoToolNames)
 	if s != nil && s.report != nil {
 		switch {
 		case noLedger:
 			s.noLedger = true
 		case noToolList:
 			s.handedIn, s.noToolList = true, true
-		case err == nil, noDetail, noContext:
+		case err == nil, noDetail, noContext, noDocumentsFetched, noToolNames:
 			s.handedIn = true
 		}
 		if noDetail {
@@ -563,8 +578,14 @@ func (s *SessionAccount) Carried(err error) error {
 		if noContext {
 			s.noContext = true
 		}
+		if noDocumentsFetched {
+			s.noDocumentsFetched = true
+		}
+		if noToolNames {
+			s.noToolNames = true
+		}
 	}
-	if noLedger || noToolList || noDetail || noContext {
+	if noLedger || noToolList || noDetail || noContext || noDocumentsFetched || noToolNames {
 		return nil
 	}
 	return err
@@ -598,6 +619,21 @@ func mergeToolCalls(rows []gateway.ToolCallReport, more []harness.ToolCall) []ga
 		}
 	}
 	slices.SortFunc(rows, func(a, b gateway.ToolCallReport) int { return strings.Compare(a.Tool, b.Tool) })
+	return rows
+}
+
+// mergeToolNames adds more's calls per <server>__<tool> name into
+// rows, summed by name (goal context-is-fetched-not-shipped).
+func mergeToolNames(rows []gateway.ToolNameCount, more map[string]int) []gateway.ToolNameCount {
+	for name, n := range more {
+		i := slices.IndexFunc(rows, func(r gateway.ToolNameCount) bool { return r.Name == name })
+		if i < 0 {
+			rows = append(rows, gateway.ToolNameCount{Name: name})
+			i = len(rows) - 1
+		}
+		rows[i].Calls += int64(n)
+	}
+	slices.SortFunc(rows, func(a, b gateway.ToolNameCount) int { return strings.Compare(a.Name, b.Name) })
 	return rows
 }
 
@@ -655,6 +691,16 @@ func (s *SessionAccount) Finish(ctx context.Context, res harness.Result) {
 			c.logf("usage: the platform takes no context bytes on the usage report yet; sent without them (said once, for every session this run)")
 		})
 	}
+	if s.noDocumentsFetched {
+		c.documentsFetchedOnce.Do(func() {
+			c.logf("usage: the platform takes no documents-fetched count on the usage report yet; sent without it (said once, for every session this run)")
+		})
+	}
+	if s.noToolNames {
+		c.toolNamesOnce.Do(func() {
+			c.logf("usage: the platform takes no per-tool call names on the usage report yet; sent without them (said once, for every session this run)")
+		})
+	}
 	if s.into != nil {
 		return
 	}
@@ -697,14 +743,15 @@ func mergeLargestToolResults(a []gateway.ToolResultSize, b []harness.ToolResultS
 }
 
 // turnUsageSummary is one session's per-turn input and largest tool
-// results, for Finish's node.log line.
+// results, plus its documents fetched (goal
+// context-is-fetched-not-shipped), for Finish's node.log line.
 func turnUsageSummary(res harness.Result) string {
 	largest := make([]string, 0, len(res.LargestToolResults))
 	for _, t := range res.LargestToolResults {
 		largest = append(largest, fmt.Sprintf("%s:%d", t.Tool, t.Bytes))
 	}
-	return fmt.Sprintf("turns=%d input/turn mean=%d max=%d largest=%s",
-		res.Turns, res.InputPerTurnMean, res.InputPerTurnMax, strings.Join(largest, ","))
+	return fmt.Sprintf("turns=%d input/turn mean=%d max=%d largest=%s, %d documents fetched",
+		res.Turns, res.InputPerTurnMean, res.InputPerTurnMax, strings.Join(largest, ","), res.DocumentsFetched)
 }
 
 // reportToolUsage hands the platform one recordToolUsage per call of a
