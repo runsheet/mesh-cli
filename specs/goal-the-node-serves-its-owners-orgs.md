@@ -3,13 +3,13 @@ title: Goal — The node registers once with an owner, person or enterprise, ser
 kind: plan
 status: running
 parent: prd
-summary: A node declares its owner — person (bring-your-own infra) or enterprise (shared infra) — registers once, and takes the orgs it serves from the platform's answer; the mesh-cli half is merged (#434, #485) and in review (#561), mesh-specs' TRD and ADR-014 are merged (#102, #104, #113), and the mini's live checks wait on the runsheet platform half.
+summary: A node declares its owner — person (bring-your-own infra) or enterprise (shared infra) — registers once, and takes the orgs it serves from the platform's answer; the mesh-cli half is merged (#434, #485, #561), mesh-specs' TRD and ADR-014 are merged (#102, #104, #113), and the mini's live checks wait on the runsheet platform half.
 ---
 
 # Goal — The node registers once with an owner, person or enterprise, serves the orgs the platform derives from it, and names an org without GitHub by its slug
 
-Mesh goal `the-node-serves-its-owners-orgs`, running: items 1, 5, 10, 15
-and 17 merged, item 32 (PR #561) in review, this document is item 33.
+Mesh goal `the-node-serves-its-owners-orgs`, running: items 1, 5, 10, 15,
+17 and 32 (PR #561) merged, this document is item 33.
 
 ## Statement
 
@@ -134,7 +134,7 @@ signature across the estate. All three readers of the orgs list —
 `ResolveScopes`, `ScopesFromAnswer`, `Reloader` — now agree.
 
 **Registration, the loop, status and the rollback reporter on the
-owner contract (runsheet/mesh-cli#561, item 32, in review — carries PR
+owner contract (runsheet/mesh-cli#561, item 32, merged — carries PR
 #547's probe-first design onto main).** This is the code this branch
 builds on (`internal/node/owned.go`, `internal/node/config.go`,
 `internal/commands/nodecmd.go`). `Register` probes `TakesOwner` first,
@@ -199,10 +199,12 @@ per-process — and, finding it true for the first time, registers once
 under `OwnedNodeID` (node.yaml's existing `node_id:`, if a prior
 per-org registration happens to have left one matching `(owner,
 slug)`, else a fresh one) and `SaveRegistration` writes `contract:
-owner` on its own, the first time it sees the contract change — logged
-once, with the old and new value, like every other reload field.
-`owner:` itself stays unset (person, the default) unless the mini is
-later handed to an enterprise by editing it.
+owner` to node.yaml the first time it sees the contract change — a
+silent save, unlike `Reload`'s per-field lines (`node.yaml takes
+effect`): what names the hand-over on that start is `StartLine` and
+`RegistrationLines`, printed right after, not `SaveRegistration`
+itself. `owner:` itself stays unset (person, the default) unless the
+mini is later handed to an enterprise by editing it.
 
 ## Known gaps
 
