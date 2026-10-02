@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -689,8 +690,11 @@ func loggedUsage(t *testing.T, out string) []UsageRecord {
 		if m == nil {
 			continue
 		}
-		rec := UsageRecord{Label: m[1], Kind: m[2]}
-		if err := json.Unmarshal([]byte(m[3]), &rec.Report); err != nil {
+		rec := UsageRecord{Label: m[1], Kind: m[2], Priority: m[3]}
+		if m[4] != "" {
+			rec.Evaluators, _ = strconv.Atoi(m[4])
+		}
+		if err := json.Unmarshal([]byte(m[5]), &rec.Report); err != nil {
 			t.Fatalf("usage line is not one JSON report: %q: %v", line, err)
 		}
 		recs = append(recs, rec)

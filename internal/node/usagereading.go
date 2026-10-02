@@ -28,12 +28,19 @@ type UsageQuery struct {
 // UsageRecord is one session's usage record as node.log holds it: when
 // it was logged, the session's label ("item <goal>/<seq>", "goal
 // <slug>", "project <slug>"; empty for a legacy record nothing paired),
-// its kind, and the report exactly as it was sent.
+// its kind, and the report exactly as it was sent. An evaluate record
+// also carries the goal's priority at evaluation time and whether a
+// second opinion ran (1 or 2 evaluators) — written on the log line
+// only, never sent to the gateway (adr-016's amendment 2026-10-02);
+// both are zero on a record logged before that change, and on any
+// other kind.
 type UsageRecord struct {
-	At     time.Time
-	Label  string
-	Kind   string
-	Report gateway.UsageReport
+	At         time.Time
+	Label      string
+	Kind       string
+	Priority   string
+	Evaluators int
+	Report     gateway.UsageReport
 }
 
 // Goal is the goal the record's label names: an item's goal, a plan's
@@ -70,8 +77,10 @@ var (
 	// logStamp is log.LstdFlags' stamp, after node.log's "mesh node: "
 	// prefix (optional here).
 	logStamp = regexp.MustCompile(`^(?:mesh node: )?(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}) (.*)$`)
-	// usageRecordLine is Finish's `<label>: usage <kind> {…}`.
-	usageRecordLine = regexp.MustCompile(`^(.+?): usage ([a-z]+) (\{.*)$`)
+	// usageRecordLine is Finish's `<label>: usage <kind> {…}`, an
+	// evaluate record's optionally carrying `priority=<p> evaluators=<n>`
+	// before the JSON (adr-016's amendment 2026-10-02).
+	usageRecordLine = regexp.MustCompile(`^(.+?): usage ([a-z]+) (?:priority=(\S+) evaluators=(\d+) )?(\{.*)$`)
 	// sessionEndLine is a labelled session's end with its cost:
 	// finished (build), evaluation, rebased.
 	sessionEndLine = regexp.MustCompile(`^(item \S+): (finished|evaluation|rebased) .*?\(\$(\d+\.\d\d)\)`)
@@ -125,7 +134,11 @@ func ReadUsage(r io.Reader, q UsageQuery) (UsageReading, error) {
 		if rest, ok := strings.CutPrefix(l.msg, "usage: {"); ok {
 			js, legacy = "{"+rest, true
 		} else if m := usageRecordLine.FindStringSubmatch(l.msg); m != nil {
-			rec.Label, rec.Kind, js = m[1], m[2], m[3]
+			rec.Label, rec.Kind, js = m[1], m[2], m[5]
+			rec.Priority = m[3]
+			if m[4] != "" {
+				rec.Evaluators, _ = strconv.Atoi(m[4])
+			}
 		} else {
 			continue
 		}
@@ -252,7 +265,115 @@ func (u UsageReading) Lines() []string {
 	for _, l := range strings.Split(strings.TrimRight(buf.String(), "\n"), "\n") {
 		lines = append(lines, strings.TrimRight(l, " "))
 	}
+	lines = append(lines, u.priorityLines()...)
 	return append(lines, fmt.Sprintf("unparsed %d", u.Unparsed))
+}
+
+// priorityOrder is EvaluationCostByPriority's row order: the goal
+// priorities most pressing first, then "" (a record logged before
+// adr-016's amendment 2026-10-02, shown as unknown) last.
+var priorityOrder = []string{"urgent", "high", "normal", "low"}
+
+// PriorityCost is one priority's evaluate records in a UsageReading
+// (EvaluationCostByPriority): the distinct items evaluated and the
+// evaluations run on them (more than one evaluation per item when a
+// retry is evaluated again), the total list cost in cents, the median
+// and mean cost per item in cents (each item's own evaluations summed
+// first, so a retried item counts once), and the share of evaluations
+// — not items — that ran on two evaluators.
+type PriorityCost struct {
+	Priority               string
+	Items, Evaluations     int
+	CostTotalCents         int64
+	CostPerItemMedianCents int64
+	CostPerItemMeanCents   int64
+	TwoEvaluatorsPercent   float64
+}
+
+// EvaluationCostByPriority groups the reading's evaluate records by the
+// goal's priority at evaluation time (UsageRecord.Priority), in
+// priorityOrder then unknown last: this is the measure of the saving
+// one evaluator for ordinary work makes, read before and after on the
+// same node.log (adr-016's amendment 2026-10-02).
+func (u UsageReading) EvaluationCostByPriority() []PriorityCost {
+	byPriority := map[string][]UsageRecord{}
+	for _, r := range u.Records {
+		if r.Kind != "evaluate" {
+			continue
+		}
+		byPriority[r.Priority] = append(byPriority[r.Priority], r)
+	}
+	var priorities []string
+	for p := range byPriority {
+		priorities = append(priorities, p)
+	}
+	rank := func(p string) int {
+		if i := slices.Index(priorityOrder, p); i >= 0 {
+			return i
+		}
+		return len(priorityOrder)
+	}
+	slices.SortFunc(priorities, func(a, b string) int {
+		if d := rank(a) - rank(b); d != 0 {
+			return d
+		}
+		return strings.Compare(a, b)
+	})
+	out := make([]PriorityCost, 0, len(priorities))
+	for _, p := range priorities {
+		recs := byPriority[p]
+		itemCost := map[string]int64{}
+		var total int64
+		var twoEvaluators int
+		for _, r := range recs {
+			itemCost[r.Label] += r.Report.ListCostCents
+			total += r.Report.ListCostCents
+			if r.Evaluators == 2 {
+				twoEvaluators++
+			}
+		}
+		perItem := make([]int64, 0, len(itemCost))
+		for _, c := range itemCost {
+			perItem = append(perItem, c)
+		}
+		pc := PriorityCost{
+			Priority: p, Items: len(itemCost), Evaluations: len(recs),
+			CostTotalCents: total, CostPerItemMedianCents: median(perItem),
+			TwoEvaluatorsPercent: float64(twoEvaluators) * 100 / float64(len(recs)),
+		}
+		if len(perItem) > 0 {
+			pc.CostPerItemMeanCents = total / int64(len(perItem))
+		}
+		out = append(out, pc)
+	}
+	return out
+}
+
+// priorityLines is EvaluationCostByPriority rendered as Lines does the
+// kind table: a blank line, the section's heading, then one row per
+// priority present; nothing when the reading holds no evaluate record.
+func (u UsageReading) priorityLines() []string {
+	pcs := u.EvaluationCostByPriority()
+	if len(pcs) == 0 {
+		return nil
+	}
+	var buf bytes.Buffer
+	w := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "priority\titems\tevaluations\tcost total cents\tcost per item median cents\tcost per item mean cents\ttwo evaluators %")
+	for _, pc := range pcs {
+		name := pc.Priority
+		if name == "" {
+			name = UsageUnknown
+		}
+		fmt.Fprintf(w, "%s\t%d\t%d\t%d\t%d\t%d\t%s\n", name, pc.Items, pc.Evaluations, pc.CostTotalCents,
+			pc.CostPerItemMedianCents, pc.CostPerItemMeanCents, strconv.FormatFloat(pc.TwoEvaluatorsPercent, 'f', 1, 64))
+	}
+	w.Flush()
+	out := []string{"", "evaluation cost per item by priority"}
+	for _, l := range strings.Split(strings.TrimRight(buf.String(), "\n"), "\n") {
+		out = append(out, strings.TrimRight(l, " "))
+	}
+	return out
 }
 
 // median is the middle of vs (the mean of the two middle ones, rounded

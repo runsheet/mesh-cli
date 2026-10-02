@@ -585,6 +585,11 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 		FirstPassed: passed, FailedClauses: clauses, Setting: ev.setting,
 	})
 	firstPassed := passed
+	// evaluators is 1 or 2, for the usage record (adr-016's amendment
+	// 2026-10-02): 2 only where the notes below gain the "second opinion
+	// on" tail, never for a blind retry on the other family, whose
+	// verdict stands alone.
+	evaluators := 1
 	choice := evaluatorsLine(1, why)
 	if wanted && !(fam.codex || e.hasCodex()) {
 		choice += ", but no other family on this node"
@@ -647,6 +652,7 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 			}
 			passed = op.passed
 			notes = bothNotes(fam, notes, firstPassed, other, op.notes, op.passed, room-200-len(without)-len(ev.preflight)) + "\n\n" + choice + "\n(evaluated on " + evaluatedOn + "; second opinion on " + other.fullName() + ")" + without
+			evaluators = 2
 		}
 	} else {
 		notes = truncateNotes(notes, room-100-len(without)-len(ev.preflight)) + "\n\n" + choice + "\n(evaluated on " + evaluatedOn + ")" + without
@@ -671,6 +677,7 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 			e.logf("item %s: fails on the same clause as attempt %d", label, attempt)
 		}
 	}
+	acct.SetEvaluation(ev.res.Goal.Priority, evaluators)
 	if err := acct.Carried(e.GW.EvaluateWorkItem(ctx, item.ID, passed, notes, failed, Cents(cost), usage, gateway.EvaluateChoice{EvaluatedModel: fam.model})); err != nil {
 		return fmt.Errorf("record verdict: %w", err)
 	}
