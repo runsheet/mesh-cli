@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -543,6 +544,34 @@ func TestNoContextWithNoOtherFamilyWaitsOnAnOlderPlatform(t *testing.T) {
 		if n := strings.Count(logs.String(), line); n != 1 {
 			t.Fatalf("%q said %d times:\n%s", line, n, logs.String())
 		}
+	}
+}
+
+// A session whose stream carries no VERDICT line is no verdict: one
+// evaluateWorkItem with passed false, noVerdict true and the reason
+// `no VERDICT line: …` (runsheet ADR 035), never a bare fail; the item
+// stays in evaluating and the platform keeps the reason.
+func TestNoVerdictLineIsRecordedAsNoVerdict(t *testing.T) {
+	f, ev, claude, codex, _, logs := familyFixture(t, "normal", "sonnet", "I ran out of ideas.", "VERDICT: PASS")
+	ev.CodexAccounts = (&Loop{Known: &KnownAccounts{}}).CodexCandidates
+	in := evaluateItem1(t, f, ev)
+	if len(claude.jobs) != 1 || codex.runs() != 0 {
+		t.Fatalf("runs claude %d codex %d", len(claude.jobs), codex.runs())
+	}
+	calls := f.CallsNamed("evaluateWorkItem")
+	if len(calls) != 1 {
+		t.Fatalf("%d evaluateWorkItem calls", len(calls))
+	}
+	reason := "no VERDICT line: I ran out of ideas."
+	if !sentNoVerdict(in) || in[gateway.NoVerdictReasonField] != reason || in["costCents"] != float64(125) {
+		t.Fatalf("recorded %+v\nwant reason %q", in, reason)
+	}
+	item := f.Item(item1)
+	if item["status"] != "evaluating" || item["noVerdictReason"] != reason || fmt.Sprint(item["noVerdicts"]) != "1" {
+		t.Fatalf("item %+v", item)
+	}
+	if !strings.Contains(logs.String(), "evaluation reached no verdict on Claude sonnet, recorded as no verdict") {
+		t.Fatalf("node.log:\n%s", logs.String())
 	}
 }
 
