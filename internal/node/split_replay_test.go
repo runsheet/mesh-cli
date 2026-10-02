@@ -129,6 +129,29 @@ func plannerOn(t *testing.T, f *gatewaytest.Fake, goal gateway.Goal, answers ...
 	return h, &logged, err
 }
 
+// flaggedBullet is the "- …" line of prompt's "## Your last answer was
+// flagged" section that names marker (an item's "item N"), failing the
+// test if the section or that bullet is missing.
+func flaggedBullet(t *testing.T, prompt, marker string) string {
+	t.Helper()
+	const header = "## Your last answer was flagged"
+	i := strings.Index(prompt, header)
+	if i < 0 {
+		t.Fatalf("prompt has no %q section:\n%s", header, prompt)
+	}
+	section := prompt[i:]
+	if j := strings.Index(section, "\n## "); j >= 0 {
+		section = section[:j]
+	}
+	for _, line := range strings.Split(section, "\n") {
+		if strings.HasPrefix(line, "- ") && strings.Contains(line, marker) {
+			return line
+		}
+	}
+	t.Fatalf("no flag bullet names %q in:\n%s", marker, section)
+	return ""
+}
+
 // planGoalItems is the titles and acceptances PlanGoal was called with,
 // requiring exactly one call.
 func planGoalItems(t *testing.T, f *gatewaytest.Fake) []map[string]any {
@@ -165,10 +188,25 @@ func TestReplayANodeHasAnOwnerEndsAtTheSplit(t *testing.T) {
 			t.Fatalf("plan prompt lacks %q:\n%s", want, h.jobs[0].Prompt)
 		}
 	}
-	// the re-ask names lineage 1 and tells the planner to split
+	// the first prompt carries no flagged section: nothing has been
+	// rejected yet
+	if strings.Contains(h.jobs[0].Prompt, "## Your last answer was flagged") {
+		t.Fatalf("first prompt is already flagged:\n%s", h.jobs[0].Prompt)
+	}
+	// the re-ask's flagged section names item 21, lineage 1, and tells
+	// the planner to split — the bullet itself, not the whole prompt
+	// (planSplitRule's own "split" sits lower in every plan prompt, so
+	// a whole-prompt search for "split" would pass even with the
+	// bullet's own "split it: partition…" removed)
 	reask := h.jobs[1].Prompt
-	if !strings.Contains(reask, "lineage 1") || !strings.Contains(reask, "split") {
-		t.Fatalf("re-ask does not name lineage 1 and split:\n%s", reask)
+	if !strings.Contains(reask, "## Your last answer was flagged") {
+		t.Fatalf("re-ask has no flagged section:\n%s", reask)
+	}
+	bullet := flaggedBullet(t, reask, "item 21")
+	for _, want := range []string{"item 21", "lineage 1", "split"} {
+		if !strings.Contains(bullet, want) {
+			t.Fatalf("the flag bullet for item 21 does not name %q:\n%s", want, bullet)
+		}
 	}
 	if !strings.Contains(logged.String(), "lineage 1") {
 		t.Fatalf("the re-ask's flag is not logged:\n%s", logged)
