@@ -1,5 +1,5 @@
 ---
-summary: The first tag cut from runsheet/mesh-cli's main after the transfer (v0.0.0-runsheet-test.6) and its verification; then v0.2.188, the first signed release on the public mirror runsheet/mesh (run 36499785802, attempt 3, after attempt 1's HTTP 403 from the stored mirror token), which the mini runs since 2026-09-29 00:52Z, sessions adopted and the update confirmed — and v0.2.187, cut and signed on the source runsheet/mesh-cli only (its mirror step failed without --target, fixed by #336); a 2026-09-29 addendum confirms desiredVersion is v0.2.188 (item 17's own evaluation already read it so; this item corrected nothing), why update.json's v0.1.0 refusal is stale, the live README's lag until v0.2.189, and v0.2.189 blocked on RELEASE_TAG_TOKEN (run 36507379094); a 2026-09-30 addendum records the mirror's token exchange through Rigger for a scoped credential, the binding .runsheet/bindings/mesh-cli-release.yaml, RELEASE_TOKEN as only the logged fallback until the runsheet half answers and then deleted, and the idempotent publish a re-run after a mirror failure relies on.
+summary: The first tag cut from runsheet/mesh-cli's main after the transfer (v0.0.0-runsheet-test.6) and its verification; then v0.2.188, the first signed release on the public mirror runsheet/mesh (run 36499785802, attempt 3, after attempt 1's HTTP 403 from the stored mirror token), which the mini runs since 2026-09-29 00:52Z, sessions adopted and the update confirmed — and v0.2.187, cut and signed on the source runsheet/mesh-cli only (its mirror step failed without --target, fixed by #336); a 2026-09-29 addendum confirms desiredVersion is v0.2.188 (item 17's own evaluation already read it so; this item corrected nothing), why update.json's v0.1.0 refusal is stale, the live README's lag until v0.2.189, and v0.2.189 blocked on RELEASE_TAG_TOKEN (run 36507379094); a 2026-09-30 addendum records the mirror's token exchange through Rigger for a scoped credential, the binding .runsheet/bindings/mesh-cli-release.yaml, RELEASE_TOKEN as only the logged fallback until the runsheet half answers and then deleted, and the idempotent publish a re-run after a mirror failure relies on; a 2026-10-02 reading with scripts/mirror-token-reading.sh over the last five release-tag.yml runs finds every one still on the RELEASE_TOKEN fallback, the gateway refusing with "unauthenticated: the bearer is a JWT with no role (unknown key id)" while the runsheet goal rigger-binds-a-workflow-to-a-scoped-github-token is queued.
 ---
 
 # Releases after the transfer
@@ -801,6 +801,40 @@ differs; it deletes nothing. See
 `docs/adr/adr-015-workflow-tokens-exchanged-through-rigger.md` and ADR
 002's amendments "the public mirror on runsheet/mesh" and "the publish
 job is idempotent".
+
+#### The mirror token path, read
+
+Recorded 2026-10-02 for item 6 of goal
+`release-tag-mirrors-with-a-rigger-binding`. Item 4 failed three times
+because nobody could answer "has a v* run mirrored on the exchanged
+token yet?" without reading run logs by hand. `scripts/mirror-token-reading.sh`
+(tested against fixture logs, `scripts/mirror-token-reading_test.sh`)
+reads the "Mirror the release to runsheet/mesh" step's own `mirror
+token: ` line of each of the last `count` completed `release-tag.yml`
+runs and says which path it took. Run live against `runsheet/mesh-cli`
+from this session:
+
+```
+$ scripts/mirror-token-reading.sh 5
+v0.2.234	37035625041	2026-10-02T16:41:25Z	absent	failed at Install cosign
+v0.2.233	37032523771	2026-10-02T16:14:02Z	fallback	refused: unauthenticated: the bearer is a JWT with no role (unknown key id)
+v0.2.232	37031328695	2026-10-02T16:03:45Z	fallback	refused: unauthenticated: the bearer is a JWT with no role (unknown key id)
+v0.2.231	37026904615	2026-10-02T15:25:44Z	fallback	refused: unauthenticated: the bearer is a JWT with no role (unknown key id)
+v0.2.230	37023236264	2026-10-02T14:55:00Z	fallback	refused: unauthenticated: the bearer is a JWT with no role (unknown key id)
+latest: fallback (v0.2.233, run 37032523771)
+```
+
+Every run that reached the step still falls back to `RELEASE_TOKEN`:
+the gateway refuses the exchange with `unauthenticated: the bearer is a
+JWT with no role (unknown key id)`, naming no binding and no claim —
+the runsheet goal `rigger-binds-a-workflow-to-a-scoped-github-token`
+was still queued when this reading was taken, so `exchangeWorkflowToken`
+has nothing on the other end to issue against yet. `v0.2.234` never
+reached the step at all: its `Sign and publish` job failed earlier, at
+`Install cosign` (`cosign-installer` could not validate the bootstrap
+download), unrelated to the token exchange. This reading changes
+nothing here — the fallback stays until a run reads `exchanged` — it is
+only the measure item 7 and item 8 read before they remove it.
 
 ### Both repositories today
 

@@ -1,0 +1,5 @@
+Sign and publish v0.9.3	Install cosign	2026-10-02T05:20:00.0000000Z ﻿##[group]Run sigstore/cosign-installer@v3
+Sign and publish v0.9.3	Install cosign	2026-10-02T05:20:01.0000000Z Downloading bootstrap version of cosign...
+Sign and publish v0.9.3	Install cosign	2026-10-02T05:20:02.0000000Z ##[error]Unable to validate cosign version
+Sign and publish v0.9.3	Install cosign	2026-10-02T05:20:02.1000000Z ##[error]Process completed with exit code 1.
+Sign and publish v0.9.3	Complete job	2026-10-02T05:20:03.0000000Z Cleaning up orphan processes
