@@ -35,31 +35,27 @@ mesh-cli tests: a session's MCP config names mesh-context, allowedTools carries 
 - **Item 11** (cancelled): Design: ADR 007, ADR 010, ADR 011 and the PRD name the built-in attachment mesh-context where they describe current behaviour, in dated amendment lines; Prologue stays only as the product's former name or the dated alias. Redone as item 16.
 - **Item 12** (cancelled): Node: the harness inputs' `Prologue` field is `MeshContext`, and present-tense comments in internal/ call the context service mesh-context; prologue stays only where it names the dated alias. Redone as item 14.
 - **Item 13** (cancelled): Goal doc: builtin-is-mesh-context rewritten from the record — every item 1–12 with its outcome and PR, the mini's by-hand upgrade after mesh-cli #396, and the console and platform halves that stay with runsheet. Redone as item 17.
-- **Item 14** (failed): Node: the harness inputs' `Prologue` field is `MeshContext`, and present-tense comments in internal/ name mesh-context; prologue stays only where it names the dated alias. Its greps contradicted its own brief; redone as item 18.
+- **Item 14** (failed): Node: the harness inputs' `Prologue` field is `MeshContext`, and present-tense comments in internal/ name mesh-context; prologue stays only where it names the dated alias. Its greps contradicted its own brief; redone as item 18, whose merge carries its work and the `MeshContext` field — https://github.com/runsheet/mesh-cli/pull/558.
 - **Item 15** (merged): Node docs: the mesh-cli ADRs name the built-in mesh-context where they describe current behaviour, in dated amendment lines; prologue stays only as the dated alias or inside a quoted record — https://github.com/runsheet/mesh-cli/pull/546.
 - **Item 16** (merged): Design: the PRD, ADR 007, ADR 010, ADR 002 and the README name the context layer mesh-context where they describe current behaviour, in dated amendment lines; Prologue stays only as the product's former name or the dated alias — https://github.com/runsheet/mesh-specs/pull/125.
-- **Item 17** (cancelled): Goal doc: builtin-is-mesh-context rewritten from the record — every item 1–17 with its outcome and PR, the mini on v0.2.210 already attaching mesh-context, and the console and platform halves that stay with runsheet. Like item 10's, its acceptance demanded an added file where this document already existed on main; replaced by this item.
+- **Item 17** (this document): Goal doc: builtin-is-mesh-context rewritten from the record — every item 1–17 with its outcome and PR, the mini on v0.2.210 already attaching mesh-context, and the console and platform halves that stay with runsheet. Its brief modifies this one file only, which item 10's acceptance did not allow.
 - **Item 18** (merged): Node: the harness inputs' `Prologue` field is `MeshContext`, and every present-tense comment in internal/ names mesh-context; prologue stays only in the dated alias, the `/prologue/v1` fallback and the quoted `prologue: not found` record — https://github.com/runsheet/mesh-cli/pull/558.
 - **Item 19** (merged): Node docs: the mesh-cli ADRs name the built-in mesh-context where they describe current behaviour, each with a dated amendment heading; prologue stays only as the dated alias or inside a quoted record — https://github.com/runsheet/mesh-cli/pull/559.
-- **Item 20** (running): Goal doc: builtin-is-mesh-context rewritten from the record — items 1–20 with outcome and PR, the mini on v0.2.210 already attaching mesh-context, and the console and platform halves that stay with runsheet. This document.
+- **Item 20** (in review): Goal doc: builtin-is-mesh-context rewritten from the record — items 1–20 with outcome and PR, the mini on v0.2.210 already attaching mesh-context, and the console and platform halves that stay with runsheet — https://github.com/runsheet/mesh-cli/pull/562, the same rewrite as item 17's; whichever merges second takes the other's lines.
 
 ## The mini
 
-No by-hand upgrade was needed: a merge to main touching `cmd/`, `internal/`, `images/node/`, `go.mod` or `go.sum` is tagged and released automatically (mesh-cli ADR-002), so item 9's merge (mesh-cli#396, merged 2026-09-29) released itself without anyone running `mesh node upgrade` by hand.
+No by-hand upgrade was needed: the node self-updated. The rename merged 2026-09-29 (mesh-cli#264, then #396), and a merge to main touching `cmd/`, `internal/`, `images/node/`, `go.mod` or `go.sum` is tagged and released automatically (mesh-cli ADR-002), so the mini took the release through its own self-update without anyone running `mesh node upgrade`. Its `~/.mesh/node.log` reads `self-update: v0.2.210 is up; update confirmed` at 2026-10-02 03:49:08, and `self-update: v0.2.211 is up; update confirmed` at 05:52:14 for the release after it. `mesh_health_nodes` on 2026-10-02 reported the mini (`Mini`, org runsheet) online at `v0.2.210`, and every one of its live sessions' `tools` lists a tool with slug `mesh-context`, never `prologue`.
 
-`mesh_health_nodes` on 2026-10-02 reported the mini (`Mini`, org runsheet) online at `v0.2.210` — the release that carries #396 — and every one of its live sessions' `tools` lists a tool named `Mesh context` with slug `mesh-context`, never `prologue`.
+The checks, read on the mini on 2026-10-02:
 
-The one check the record cannot show is that a session's own transcript, not just its tool listing, calls `mcp__mesh-context__*`. That is owed to Chris. On the mini:
-
-```sh
-grep -l 'mcp__mesh-context__' ~/.mesh/work/*/*/output.jsonl | head
-```
-
-or the node's session transcript path per the mesh-cli README, for whichever session is live when it is run.
+- The command line: a session's `--mcp-config` carries `"mcpServers":{"mesh-context":…}` (with a console tool served, `"mcpServers":{"context7":…,"mesh-context":…}`), checked with `ps -eo args | grep -o -- '--mcp-config [^ ]*'`.
+- `--allowedTools mcp__mesh-context__*`: the live sessions show `--allowedTools mcp__context7__*,mcp__mesh-context__*`.
+- A transcript calls `mcp__mesh-context__*`: item 17's own session's `output.jsonl` has a `tool_use` named `mcp__mesh-context__mesh_items`, and every session's `system` event lists `{"name":"mesh-context","status":"connected"}` among its `mcp_servers`. Checked with `grep -l 'mcp__mesh-context__' ~/.mesh/work/*/*.session/output.jsonl`.
 
 ## Left to the platform
 
-These pieces are runsheet/runsheet's (its trd §6c), not this project's repos — mesh-portal has no such routes:
+These pieces are runsheet/runsheet's, deprecated in runsheet/runsheet's trd §6c, not this project's repos — mesh-portal has no such route, so this project's console clause is owed by a goal on runsheet/runsheet:
 
 - **Console redirect:** /orgs/<org>/prologue/<project> → /orgs/<org>/context/<project> with nav item 'Context'
 - **Health tool aliases:** `prologue_health_*` tool names stay as aliases serving the platform's mesh-context built-in
@@ -86,7 +82,7 @@ Status tables live on the platform only; this doc records outcomes.
 - 2026-10-02 · item 14 · failed: its greps contradicted its own brief; redone as item 18.
 - 2026-10-02 · item 15 · mesh-cli#546 merged (5230ffb): the mesh-cli ADRs name mesh-context as the built-in, each with a dated amendment heading; prologue stays only as the dated alias or inside a quoted record.
 - 2026-10-02 · item 16 · mesh-specs#125 merged: the PRD, ADR 007, ADR 010, ADR 002 and the README name mesh-context as the context layer, in dated amendment lines.
-- 2026-10-02 · item 17 · cancelled: like item 10's, its acceptance demanded an added file where this document already existed; replaced by item 20.
 - 2026-10-02 · item 18 · mesh-cli#558 merged (298cf88): every present-tense comment in internal/ names mesh-context; prologue stays only in the dated alias, the `/prologue/v1` fallback and the quoted `prologue: not found` record.
 - 2026-10-02 · item 19 · mesh-cli#559 merged (9dd1301): the mesh-cli ADRs name mesh-context where they describe current behaviour, each with a dated amendment heading.
-- 2026-10-02 · item 20 · this document: rewritten from the record for items 1–20; `mesh_health_nodes` confirms the mini on v0.2.210 with mesh-context live in every session's tools; the transcript check is left owed to Chris.
+- 2026-10-02 · item 20 · mesh-cli#562 opened: the same rewrite from the record, for items 1–20.
+- 2026-10-02 · item 17 · this document: rewritten from the record for items 1–17 and after; the mini confirmed v0.2.210 by self-update, its command lines carry `mcp__mesh-context__*` and its transcripts call `mcp__mesh-context__mesh_items`.
