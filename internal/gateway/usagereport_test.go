@@ -269,6 +269,68 @@ func TestFinishingCommandWithoutToolsNeedsNoFallback(t *testing.T) {
 	}
 }
 
+// A gateway whose UsageReportInput has no `documentsFetched` or
+// `toolNames` (a platform older than context-is-fetched-not-shipped) is
+// sent the command again without them, the report lands, and the
+// caller is told with ErrNoDocumentsFetched and ErrNoToolNames; a later
+// report omits both at once, no retry (adr-016's amendment 2026-10-02).
+func TestFinishingCommandsWithoutDocumentsFetchedAndToolNames(t *testing.T) {
+	for _, c := range usageCases() {
+		t.Run(c.name, func(t *testing.T) {
+			f := gatewaytest.New("rs_test")
+			defer f.Close()
+			f.NoDocumentsFetched = true
+			f.NoToolNames = true
+			c.setup(f)
+			gw := gateway.New(f.URL(), "rs_test")
+
+			u := sampleUsageReport()
+			u.DocumentsFetched = 3
+			u.ToolNames = []gateway.ToolNameCount{{Name: "mesh-context__mesh_document", Calls: 3}}
+			err := c.send(gw, u)
+			if !errors.Is(err, gateway.ErrNoDocumentsFetched) || !errors.Is(err, gateway.ErrNoToolNames) {
+				t.Fatalf("err = %v, want ErrNoDocumentsFetched and ErrNoToolNames", err)
+			}
+			calls := f.CallsNamed(c.name)
+			if len(calls) != 1 {
+				t.Fatalf("calls = %+v", calls)
+			}
+			usage, ok := calls[0].Input["usage"].(map[string]any)
+			if !ok {
+				t.Fatalf("no usage on the landed call: %+v", calls[0].Input)
+			}
+			if _, ok := usage["documentsFetched"]; ok {
+				t.Fatalf("the landed usage still carried documentsFetched: %+v", usage)
+			}
+			if _, ok := usage["toolNames"]; ok {
+				t.Fatalf("the landed usage still carried toolNames: %+v", usage)
+			}
+			if usage["inputTokens"] == nil {
+				t.Fatalf("usage lost the rest of the report: %+v", usage)
+			}
+
+			// the client remembers both refusals: a second report on the
+			// same gateway omits them at once, with one post, no retry.
+			c.setup(f)
+			err = c.send(gw, u)
+			if !errors.Is(err, gateway.ErrNoDocumentsFetched) || !errors.Is(err, gateway.ErrNoToolNames) {
+				t.Fatalf("second err = %v", err)
+			}
+			calls = f.CallsNamed(c.name)
+			if len(calls) != 2 {
+				t.Fatalf("calls = %+v, want the first retried call and a second sent once", calls)
+			}
+			usage, _ = calls[1].Input["usage"].(map[string]any)
+			if _, ok := usage["documentsFetched"]; ok {
+				t.Fatalf("the second report carried documentsFetched: %+v", usage)
+			}
+			if _, ok := usage["toolNames"]; ok {
+				t.Fatalf("the second report carried toolNames: %+v", usage)
+			}
+		})
+	}
+}
+
 // A gateway whose usage input has no turns, inputPerTurnMean,
 // inputPerTurnMax or largestToolResults (a platform older than
 // mesh-spends-less-per-item) still takes the rest of the report and the
