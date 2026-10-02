@@ -53,12 +53,9 @@ type Evaluator struct {
 	// agent with one evaluates on the strongest of this, its build model
 	// and sonnet (EvaluateModel); one that names none, on this alone.
 	Model string
-	// Accounts are the node's Claude accounts (node.yaml); a session runs
-	// on the first, or on the operator's own login when there are none.
-	// They are the fallback to the credentials the platform issues.
-	Accounts []AccountConfig
 	// Credentials asks the platform for the session's credentials and
-	// reports its usage record (nil: node.yaml's accounts, no record).
+	// reports its usage record. Required: a nil one is a programming
+	// error, and its Open panics (no node.yaml fallback, adr-005).
 	Credentials *Credentials
 	// Timeout caps its wall clock (0 none).
 	Timeout time.Duration
@@ -326,7 +323,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 		// never overwrite acct with Open's nil: the deferred Cleanup
 		// above reads it, and a nil there panicked the node (the
 		// 04:00:22Z exit, goal node-yaml-takes-effect-or-says-why-not)
-		claudeAcct, err := e.Credentials.Open(ctx, ref, sc.NodeID, e.Accounts, AdapterClaudeCode)
+		claudeAcct, err := e.Credentials.Open(ctx, ref, sc.NodeID, AdapterClaudeCode)
 		if err != nil {
 			return err
 		}
@@ -770,11 +767,11 @@ func (e *Evaluator) secondOpinion(ctx context.Context, ev evalRun, on family, jo
 		h = e.Codex
 		// an issued Codex account, opened as a first Codex evaluation's is
 		open = func() (*SessionAccount, error) {
-			return e.Credentials.Open(withChooser(ctx, e.codexChooser(ev.res.Goal.Priority, false)), ref, sc.NodeID, nil, AdapterCodex)
+			return e.Credentials.Open(withChooser(ctx, e.codexChooser(ev.res.Goal.Priority, false)), ref, sc.NodeID, AdapterCodex)
 		}
 	} else {
 		open = func() (*SessionAccount, error) {
-			return e.Credentials.Open(ctx, ref, sc.NodeID, e.Accounts, AdapterClaudeCode)
+			return e.Credentials.Open(ctx, ref, sc.NodeID, AdapterClaudeCode)
 		}
 	}
 	if open != nil {
@@ -1145,7 +1142,7 @@ func (e *Evaluator) waits(itemID, label, model string) error {
 // has headroom after all runs on Claude instead; a pinned one waits.
 func (e *Evaluator) openFamily(ctx context.Context, ref gateway.SessionRef, nodeID string, fam family, label string) (*SessionAccount, family, error) {
 	if fam.codex {
-		acct, err := e.Credentials.Open(withChooser(ctx, e.codexChooser(fam.priority, fam.pinned)), ref, nodeID, nil, AdapterCodex)
+		acct, err := e.Credentials.Open(withChooser(ctx, e.codexChooser(fam.priority, fam.pinned)), ref, nodeID, AdapterCodex)
 		switch {
 		case err == nil:
 			e.Waits.Forget(ref.ItemID)
@@ -1159,7 +1156,7 @@ func (e *Evaluator) openFamily(ctx context.Context, ref gateway.SessionRef, node
 		e.logf("item %s: no issued Codex credential has headroom after all; evaluating on Claude", label)
 		fam = family{model: fam.claude, claude: fam.claude, priority: fam.priority}
 	}
-	acct, err := e.Credentials.Open(ctx, ref, nodeID, e.Accounts, AdapterClaudeCode)
+	acct, err := e.Credentials.Open(ctx, ref, nodeID, AdapterClaudeCode)
 	return acct, fam, err
 }
 

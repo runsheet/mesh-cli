@@ -179,8 +179,8 @@ func TestReplayStalledItem7EndsAlreadyDoneUnderADollar(t *testing.T) {
 	}
 	ws := &fakeWS{root: t.TempDir()}
 	logger := log.New(io.Discard, "", 0)
-	runner := &Runner{GW: gw, Harness: sessions, WS: ws, Cfg: cfg, Scopes: scopesOf(cfg), WorkRoot: ws.root, ProgressEvery: time.Hour, Log: logger}
-	ev := &Evaluator{GW: gw, Harness: sessions, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, Model: "sonnet", Log: logger}
+	runner := &Runner{Credentials: testCreds(gw), GW: gw, Harness: sessions, WS: ws, Cfg: cfg, Scopes: scopesOf(cfg), WorkRoot: ws.root, ProgressEvery: time.Hour, Log: logger}
+	ev := &Evaluator{Credentials: testCreds(gw), GW: gw, Harness: sessions, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, Model: "sonnet", Log: logger}
 
 	// the build: item 7 claimed and run
 	item, err := gw.WorkItem(ctx, stalledItem7)

@@ -303,7 +303,7 @@ func TestServicesPodRemovedOnEveryExit(t *testing.T) {
 		ws := &fakeWS{root: t.TempDir()}
 		writeServices(t, filepath.Join(ws.root, "ship-it", "1"), servicesYML)
 		seen := fakeAgent(rt, func(ctx context.Context) (sandbox.Exit, error) { <-ctx.Done(); return sandbox.Exit{Code: 137}, nil })
-		ev := &Evaluator{GW: gw, Harness: &harness.ClaudeCode{Sandbox: sb}, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, Timeout: 200 * time.Millisecond, Sandbox: sb, Log: log.New(os.Stderr, "", 0)}
+		ev := &Evaluator{Credentials: testCreds(gw), GW: gw, Harness: &harness.ClaudeCode{Sandbox: sb}, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, Timeout: 200 * time.Millisecond, Sandbox: sb, Log: log.New(os.Stderr, "", 0)}
 		var item gateway.WorkItem
 		item.ID, item.OrgID, item.GoalID, item.RepoID, item.Seq, item.Branch = item1, orgID, goalID, repoID, 1, "mesh/ship-it-1"
 		err := ev.Evaluate(context.Background(), item)
@@ -354,7 +354,7 @@ func TestRequiredServiceFailingEvaluateAndRebase(t *testing.T) {
 	ws := &fakeWS{root: t.TempDir()}
 	writeServices(t, filepath.Join(ws.root, "ship-it", "1"), servicesYML)
 	seen := fakeAgent(rt, nil)
-	ev := &Evaluator{GW: gateway.New(f.URL(), "rs_test"), Harness: &harness.ClaudeCode{Sandbox: sb}, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, Sandbox: sb, Declines: &Declines{}}
+	ev := &Evaluator{Credentials: testCreds(gateway.New(f.URL(), "rs_test")), GW: gateway.New(f.URL(), "rs_test"), Harness: &harness.ClaudeCode{Sandbox: sb}, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, Sandbox: sb, Declines: &Declines{}}
 	err := ev.Evaluate(context.Background(), item)
 	if err == nil || !strings.Contains(err.Error(), "required service postgres (postgres:16) did not come up") || seen.ran {
 		t.Fatalf("evaluate: %v ran=%v", err, seen.ran)
@@ -373,7 +373,7 @@ func TestRequiredServiceFailingEvaluateAndRebase(t *testing.T) {
 	ws = &fakeWS{root: t.TempDir()}
 	writeServices(t, filepath.Join(ws.root, "ship-it", "1"), servicesYML)
 	seen = fakeAgent(rt, nil)
-	rb := &Rebaser{GW: gateway.New(f.URL(), "rs_test"), Harness: &harness.ClaudeCode{Sandbox: sb}, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, Sandbox: sb}
+	rb := &Rebaser{Credentials: testCreds(gateway.New(f.URL(), "rs_test")), GW: gateway.New(f.URL(), "rs_test"), Harness: &harness.ClaudeCode{Sandbox: sb}, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, Sandbox: sb}
 	if err := rb.Rebase(context.Background(), item); err == nil || seen.ran {
 		t.Fatalf("rebase: %v ran=%v", err, seen.ran)
 	}

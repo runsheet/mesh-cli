@@ -39,7 +39,7 @@ func TestLoopEvaluatesFinishedItems(t *testing.T) {
 
 	ws := &fakeWS{root: t.TempDir()}
 	h := &fakeHarness{text: "The test exists and fails for the right reason.\n\nVERDICT: PASS"}
-	ev := &Evaluator{GW: gw, Harness: h, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, MCP: MeshContextMCP(f.URL(), "rs_test"), MaxBudgetUSD: 2, Log: log.New(os.Stderr, "", 0)}
+	ev := &Evaluator{Credentials: testCreds(gw), GW: gw, Harness: h, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, MCP: MeshContextMCP(f.URL(), "rs_test"), MaxBudgetUSD: 2, Log: log.New(os.Stderr, "", 0)}
 	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Version: "test", Harness: "claude-code", Interval: time.Hour, Log: ev.Log,
 		Dispatch: func(context.Context, gateway.WorkItem) {},
 		Evaluate: func(ctx context.Context, item gateway.WorkItem) { _ = ev.Evaluate(ctx, item) }}
@@ -382,7 +382,7 @@ func replayCodex(t *testing.T, text string) harness.Harness {
 		t.Fatal(err)
 	}
 	t.Setenv("MESH_TEST_CODEX_KEY", "sk-test")
-	return &harness.Codex{Binary: bin, HomeRoot: t.TempDir(), Account: harness.CodexAccount{Name: "plan", APIKeyEnv: "MESH_TEST_CODEX_KEY"}}
+	return &harness.Codex{Binary: bin, HomeRoot: t.TempDir(), Account: harness.CodexAccount{Name: "plan"}}
 }
 
 // replayedCost is the recorded stream's cost at gpt-6-astra.

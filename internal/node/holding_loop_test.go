@@ -13,10 +13,10 @@ import (
 func (p *priorityFake) holdingLoop(capacity int) (*Loop, *strings.Builder) {
 	loop, logs, _ := p.pacedLoop(capacity, reading(0.1, 0.1))
 	loop.Limits = &Limits{}
-	loop.Cfg.Accounts = []AccountConfig{
+	knowAccounts(loop, []AccountConfig{
 		{Label: "mesh - max20", Kind: AccountSubscription},
 		{Label: "claude - shhemail", Kind: AccountSubscription},
-	}
+	}...)
 	loop.Limits.Observe("mesh - max20", reading(0.85, 0.2))
 	loop.Limits.Observe("claude - shhemail", reading(0.1, 0.97))
 	return loop, logs
@@ -176,5 +176,22 @@ func TestDrainingNodeSendsTheLastHolding(t *testing.T) {
 	}
 	if len(unclaimedOf(t, p.lastHolding())) != 1 {
 		t.Fatalf("the draining heartbeat's holding = %#v", p.lastHolding())
+	}
+}
+
+// knowAccounts has the loop know accounts as the claim-time read issued
+// them (Known): the only accounts it schedules on, since node.yaml names
+// none. An account with no id gets one from its label.
+func knowAccounts(l *Loop, accounts ...AccountConfig) {
+	if l.Known == nil {
+		l.Known = &KnownAccounts{}
+	}
+	for _, a := range accounts {
+		if a.ID == "" {
+			a.ID = "cred-" + a.Label
+		}
+		if err := l.Known.Note(a, l.now()); err != nil {
+			panic(err)
+		}
 	}
 }

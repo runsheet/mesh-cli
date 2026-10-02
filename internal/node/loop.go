@@ -1061,30 +1061,18 @@ func (l *Loop) CodexCandidates() []AccountConfig {
 	return out
 }
 
-// scheduled is the union the loop schedules on: node.yaml's accounts
-// first, then each issued Claude account Known holds whose label
-// node.yaml does not already have. None of either is none — the
-// operator's own login. A Codex account is not among them: its sessions
-// are not the capacity's, and its readings are not the Claude accounts'
-// (CodexAccounts).
+// scheduled are the accounts the loop schedules on: the issued Claude
+// accounts Known holds, and only those — node.yaml names none
+// (adr-005's amendments 2026-10). A Codex account is not among them: its
+// sessions are not the capacity's, and its readings are not the Claude
+// accounts' (CodexAccounts).
 func (l *Loop) scheduled() []AccountConfig {
-	accounts := l.nodeAccounts()
-	issued := slices.DeleteFunc(l.Known.Accounts(l.now()), AccountConfig.IsCodex)
-	if len(issued) == 0 {
-		return accounts
-	}
-	out := slices.Clone(accounts)
-	for _, a := range issued {
-		if !slices.ContainsFunc(out, func(b AccountConfig) bool { return b.Label == a.Label }) {
-			out = append(out, a)
-		}
-	}
-	return out
+	return slices.DeleteFunc(l.Known.Accounts(l.now()), AccountConfig.IsCodex)
 }
 
 // accountFor picks the account a session of that priority runs on
-// (ChooseAccount) and returns ctx carrying it for OpenAccount — the
-// operator's own login, when none is configured, carries nothing. ok is
+// (ChooseAccount) and returns ctx carrying it — with no issued account
+// known yet, nothing: the claim-time read decides. ok is
 // false when no account has headroom: the session is not started, and
 // a what that is not empty is counted for the tick's one line
 // (logWaiting).
@@ -1142,7 +1130,7 @@ func (l *Loop) withAccount(ctx context.Context, what, priority string, choose fu
 		return ctx, true
 	}
 	// an issued account rides ctx for its label alone (runsOn, the
-	// heartbeat's slots): OpenAccount never opens one it does not hold
+	// heartbeat's slots): Credentials.Open opens what the read issues
 	return WithAccount(ctx, a), true
 }
 
@@ -1233,13 +1221,6 @@ func (l *Loop) reload(ctx context.Context) {
 		l.mu.Unlock()
 	}
 	if got.Spending != nil {
-		was := l.nodeAccounts()
-		if labels(was) != labels(got.Spending.Accounts) {
-			l.logf("accounts %s → %s", labels(was), labels(got.Spending.Accounts))
-		}
-		for _, line := range accountChanges(was, got.Spending.Accounts) {
-			l.logf("%s", line)
-		}
 		for _, line := range budgetChanges(Spending{Budgets: l.sessionBudgets(), ProjectBudgets: l.projectBudgets()}, *got.Spending) {
 			l.logf("%s", line)
 		}
@@ -1684,7 +1665,7 @@ func (l *Loop) Adopt(ctx context.Context, item gateway.WorkItem) bool {
 	l.mu.Unlock()
 	l.logf("adopted held item %d %q", item.Seq, item.Title)
 	// already held: it runs on the account with the most headroom, or on
-	// the first listed when none has any (OpenAccount's fallback)
+	// on what the claim-time read issues when none has any
 	if actx, ok := l.accountFor(ctx, "high", true, ""); ok {
 		ctx = actx
 	}

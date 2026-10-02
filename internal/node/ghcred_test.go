@@ -197,7 +197,7 @@ func TestEvaluatorRetriesAFetchRefusedOnceWithAFreshToken(t *testing.T) {
 	fws.events = nil
 	fws.mu.Unlock()
 	ws := &refusingWS{fakeWS: fws, refusals: 1, err: notFound("ghs_first")}
-	ev := &Evaluator{GW: tg, Harness: h, WS: ws, Scopes: r.Scopes, WorkRoot: fws.root, Log: r.Log}
+	ev := &Evaluator{Credentials: testCreds(tg), GW: tg, Harness: h, WS: ws, Scopes: r.Scopes, WorkRoot: fws.root, Log: r.Log}
 	item.Branch = "mesh/ship-it-1"
 	if err := ev.Evaluate(context.Background(), item); err != nil {
 		t.Fatal(err)

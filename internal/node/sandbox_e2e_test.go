@@ -150,7 +150,7 @@ func TestSandboxedSessionsE2E(t *testing.T) {
 			// its evaluation, on the same checkout
 			f.WorkItems[item1]["status"], f.WorkItems[item1]["branch"] = "evaluating", "mesh/"+slug+"-1"
 			item.Branch = "mesh/" + slug + "-1"
-			ev := &Evaluator{GW: gateway.New(f.URL(), "rs_test"), Harness: h, WS: ws, Scopes: r.Scopes, WorkRoot: ws.root, Sandbox: sb, Declines: &Declines{}, Log: log.New(os.Stderr, "", 0)}
+			ev := &Evaluator{Credentials: testCreds(gateway.New(f.URL(), "rs_test")), GW: gateway.New(f.URL(), "rs_test"), Harness: h, WS: ws, Scopes: r.Scopes, WorkRoot: ws.root, Sandbox: sb, Declines: &Declines{}, Log: log.New(os.Stderr, "", 0)}
 			if err := ev.Evaluate(ctx, item); err != nil {
 				t.Fatalf("evaluate: %v", err)
 			}

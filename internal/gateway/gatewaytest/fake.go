@@ -160,6 +160,11 @@ type Fake struct {
 	// list. Unsupported[<field>] refuses the field, as a platform
 	// without that read.
 	SessionCredentials map[string][]map[string]any
+	// DefaultSessionCredentials are the rows the claim-time read hands a
+	// subject SessionCredentials has no entry for (an entry, even an
+	// empty one, is that subject's alone): a node only runs sessions on
+	// issued credentials, so a test fixture issues one by default.
+	DefaultSessionCredentials []map[string]any
 	// SessionTools maps a session's subject, as SessionCredentials does,
 	// to the rows itemTools (planTools, researchTools) hands it: id,
 	// slug, name, kind (remote_mcp | local_mcp | builtin), need, url,
@@ -619,7 +624,11 @@ func (f *Fake) sessionRead(w http.ResponseWriter, credField, arg, toolsField str
 		return
 	}
 	creds := []map[string]any{}
-	for _, c := range f.SessionCredentials[id] {
+	rows, ok := f.SessionCredentials[id]
+	if !ok {
+		rows = f.DefaultSessionCredentials
+	}
+	for _, c := range rows {
 		creds = append(creds, copyRow(c))
 	}
 	data := map[string]any{credField: creds}

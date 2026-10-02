@@ -179,7 +179,7 @@ func TestEvaluateTimeoutKilledIsLogged(t *testing.T) {
 	}
 	progress := len(f.CallsNamed("reportWorkItemProgress"))
 	var logs bytes.Buffer
-	ev := &Evaluator{GW: r.GW, Harness: h, WS: ws, Scopes: r.Scopes, WorkRoot: ws.root, Log: log.New(&logs, "", 0)}
+	ev := &Evaluator{Credentials: testCreds(r.GW), GW: r.GW, Harness: h, WS: ws, Scopes: r.Scopes, WorkRoot: ws.root, Log: log.New(&logs, "", 0)}
 	item.Branch = "mesh/ship-it-1"
 	if err := ev.Evaluate(context.Background(), item); err == nil || !strings.Contains(err.Error(), "ran out of time") {
 		t.Fatalf("err = %v", err)
@@ -221,7 +221,7 @@ func TestEvaluateVerdictCarriesKilled(t *testing.T) {
 	}
 	var logs bytes.Buffer
 	left := &LeftRunning{}
-	ev := &Evaluator{GW: r.GW, Harness: h, WS: ws, Scopes: r.Scopes, WorkRoot: ws.root, LeftRunning: left, Log: log.New(&logs, "", 0)}
+	ev := &Evaluator{Credentials: testCreds(r.GW), GW: r.GW, Harness: h, WS: ws, Scopes: r.Scopes, WorkRoot: ws.root, LeftRunning: left, Log: log.New(&logs, "", 0)}
 	item.Branch = "mesh/ship-it-1"
 	if err := ev.Evaluate(context.Background(), item); err == nil {
 		t.Fatal("a timed-out evaluation records no verdict")
@@ -266,7 +266,7 @@ func TestEvaluateExpiredContextKilledIsLogged(t *testing.T) {
 	}
 	progress := len(f.CallsNamed("reportWorkItemProgress"))
 	var logs bytes.Buffer
-	ev := &Evaluator{GW: r.GW, Harness: h, WS: ws, Scopes: r.Scopes, WorkRoot: ws.root, Log: log.New(&logs, "", 0)}
+	ev := &Evaluator{Credentials: testCreds(r.GW), GW: r.GW, Harness: h, WS: ws, Scopes: r.Scopes, WorkRoot: ws.root, Log: log.New(&logs, "", 0)}
 	item.Branch = "mesh/ship-it-1"
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()

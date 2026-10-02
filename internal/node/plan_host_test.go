@@ -119,7 +119,7 @@ func planCIFits(t *testing.T, takesQuestions bool, answers ...string) (*gatewayt
 	}
 	h := &fakeHarness{texts: answers}
 	var logs bytes.Buffer
-	pl := &Planner{GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, Log: log.New(&logs, "", 0)}
+	pl := &Planner{Credentials: testCreds(gw), GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, Log: log.New(&logs, "", 0)}
 	if err := pl.Plan(context.Background(), gateway.Goal{ID: goalID, Slug: "ci-fits-the-mini", Title: "CI fits the mini", ProjectID: projID, Status: "planning"}, scopesOf(cfg)[0]); err != nil {
 		t.Fatal(err)
 	}

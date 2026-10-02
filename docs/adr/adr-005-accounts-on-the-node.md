@@ -1,5 +1,5 @@
 ---
-summary: A node's sessions run on the Claude accounts the platform issues the claimed session (the claim-time read: itemCredentials, planCredentials, researchCredentials; an api key at its cap never chosen), with node.yaml's `accounts:` and `codex.accounts` retired and refused at start (amendment 2026-10-02: a session runs only on an issued credential, and the start logs which projects have none open to the node), and every session's usage report rides the command that ends it (`usage` on finishWorkItem, evaluateWorkItem, planGoal, finishWorkItemRebase, recordDirectionResearch; each priced tool call on recordToolUsage; else one log line); the secret reaches the session in its environment only (CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY), with a temporary CLAUDE_CONFIG_DIR per session removed after, the inherited auth variables stripped, and the secret redacted from every log, error and report; each session runs on the account ChooseAccount picks by headroom and the spending order (subscriptions first, API only for urgent/high work or when subscriptions are stopped and work waits), and no account with headroom means no claim.
+summary: A node's sessions run on the Claude accounts the platform issues the claimed session (the claim-time read: itemCredentials, planCredentials, researchCredentials; an api key at its cap never chosen), with node.yaml's `accounts:` and `codex.accounts` retired and refused at start (amendments 2026-10-02: a session runs only on an issued credential, the start logs which projects have none open to the node, and the node.yaml fallback is gone — a platform without the read is an ErrNoCredential hold, never the operator's login), and every session's usage report rides the command that ends it (`usage` on finishWorkItem, evaluateWorkItem, planGoal, finishWorkItemRebase, recordDirectionResearch; each priced tool call on recordToolUsage; else one log line); the secret reaches the session in its environment only (CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY), with a temporary CLAUDE_CONFIG_DIR per session removed after, the inherited auth variables stripped, and the secret redacted from every log, error and report; each session runs on the account ChooseAccount picks by headroom and the spending order (subscriptions first, API only for urgent/high work or when subscriptions are stopped and work waits), and no account with headroom means no claim.
 status: accepted
 ---
 
@@ -28,7 +28,10 @@ own may run on the wrong account.
 
 ## Decision
 
-- **node.yaml `accounts:` is the fallback source.** Each entry is
+- *Superseded by the amendment 2026-10-02 (item 9): node.yaml's
+  `accounts:` are retired and are no source at all; a session runs only
+  on a credential the claim-time read issues.* **node.yaml `accounts:`
+  was the fallback source.** Each entry was
   `{label, kind, token_file | api_key_env}`: `kind: subscription` names
   a file holding a `claude setup-token` token (`~` expanded),
   `kind: api` names the environment variable holding an API key. The
@@ -193,7 +196,10 @@ this section describes them.
   (`ReleaseWorkItem`, not failed), an evaluation stays in evaluating
   for the next tick, and a plan, research or rebase ends as its own
   error path does.
-- **node.yaml is the fallback.** A platform without the credentials
+- *Superseded by the amendment 2026-10-02 (item 9): there is no
+  fallback — an unsupported read is an `ErrNoCredential` hold and an
+  empty read is the same hold; nothing runs on node.yaml or the
+  operator's login.* **node.yaml was the fallback.** A platform without the credentials
   field for that session's subject (`Cannot query field`, the same
   detection as the item's GitHub token, `gateway.IsUnsupported`), or
   one that issues an empty list, leaves
@@ -222,7 +228,8 @@ this section describes them.
   sevenDayResetsAtBefore?, sevenDayResetsAtAfter?}`. `credentialId` is
   the id the claim-time read handed the session, left out for a
   node.yaml account or the operator's own login (`unset` then when it
-  has no kind). The tokens are the stream's result `usage`
+  has no kind) — neither runs a session since the amendment 2026-10-02
+  (item 9), so every started session carries both. The tokens are the stream's result `usage`
   (`harness.Result.Usage`): `inputTokens` counts every input token, the
   cache reads and writes included, which are also given on their own.
   `listCostCents` is the session's `total_cost_usd` in cents;
@@ -392,6 +399,9 @@ and their client methods are gone.
 
 ## Consequences
 
+- *Superseded in part by the amendment 2026-10-02 (item 9): node.yaml
+  serves no session; the bullets below on node.yaml's accounts describe
+  the node before it.*
 - Several Max subscriptions work on one node from node.yaml before the
   platform's credentials exist; the operator's own login is untouched.
 - Once the platform issues credentials a node needs none in node.yaml:
@@ -549,9 +559,9 @@ org <org slug>'s project <project slug> has no <claude-code|codex> credential op
 
 The org is the session's scope's slug and the project the caller's
 slug, else read by id once per run (`Credentials.projectSlug`, the id
-when the read fails). The fallback to node.yaml's accounts is left
-only for a platform whose read is unsupported (`gateway.IsUnsupported`;
-item 2 of the goal retires it). The Codex harness's own account is no
+when the read fails). The fallback to node.yaml's accounts was left
+only for a platform whose read is unsupported (`gateway.IsUnsupported`);
+item 9's amendment below removes it — an unsupported read is a hold too. The Codex harness's own account is no
 way round it either: `OpenOwn` — the evaluator's open of node.yaml's
 `codex:` account, `codex:default` — asks the same read and, when it
 answered with no `codex` credential, is the same `ErrNoCredential`, so
@@ -617,8 +627,8 @@ node.yaml that cannot be read: `Reloader` keeps the last good config
 and the loop logs it on its `reload config:` line. The console's
 Credentials page is `/orgs/:org/settings/credentials` (runsheet
 console-trd §3). The `Accounts` fields and the code that reads them
-stay until item 9 of the goal removes them; nothing can fill them from
-disk.
+stayed until item 9 of the goal removed them (below); nothing could
+fill them from disk.
 
 **The start-time coverage line.** Once the first heartbeat has answered
 the orgs the node serves (`Loop.FirstBeat`, once per process), `mesh
@@ -646,3 +656,44 @@ platform that refuses the read or does not have it gets one line,
 `credentials: the platform does not serve credentialIndexs to this
 node; which projects have none is known at claim time`, and the start
 goes on: the read is best effort and never stops a start.
+
+## Amendment — 2026-10-02 (goal `a-session-never-runs-on-the-machines-own-login`, item 9): the fallback is gone; an unsupported read is a hold
+
+The node.yaml fallback is gone, code and all. `Credentials.Open` takes
+no fallback accounts and has one path: the claim-time read
+(`itemCredentials`/`planCredentials`/`researchCredentials`), and only
+what it issues for the session's adapter may run the session. Every
+statement above that a session runs on node.yaml's `accounts:`, the
+implicit `default` or the operator's own login — "node.yaml is the
+fallback", "node.yaml stays the fallback", "the fallback to node.yaml's
+accounts is left for a platform whose read is unsupported" — is
+superseded by this amendment.
+
+**An unsupported read is a hold, not the operator's login.** A platform
+without the read for the session's subject (`gateway.IsUnsupported`)
+issued nothing, so the open returns the same `ErrNoCredential` as a read
+that answered with none for the adapter — org, project and adapter
+named, `NoCredentials` noted, the reason on `holding.unclaimed[].reason`
+and the goal's waiting reason, the session not started — and node.log
+says once per run, per adapter and session kind:
+
+```
+credentials: the platform does not issue <adapter> credentials for <kind> sessions; nothing runs until it does
+```
+
+Every session asks again, so a platform deploy that adds the read takes
+effect without a restart. The once-per-run `sessions run on node.yaml's
+accounts` line is gone.
+
+**What went with it.** `Runner`, `Evaluator`, `Rebaser`, `Planner` and
+`Director` carry no `Accounts`; `Spending` has none; the loop's account
+rows, `holding` and `CodexCandidates` come from `Known` (the issued
+credentials remembered from the reads) alone; the reload logs no
+`accounts a → b` line; `mesh node start` wires no node.yaml account.
+`Config.Accounts` and `CodexConfig.Accounts` remain only as the retired
+keys item 8's refusal reads, and `AccountConfig` is only the shape the
+read hands a session. A nil `*Credentials` is a programming error — the
+node before the platform half is gone — and `Credentials.Open` panics
+on it with a message `crash.Guard` names. Every started session's usage
+report therefore carries a `credentialId` and a `credentialKind` other
+than `unset` (`unset` stays in the enum for the platform's older rows).

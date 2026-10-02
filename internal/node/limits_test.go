@@ -66,7 +66,7 @@ func TestLimitsFromProgressReachTheHeartbeat(t *testing.T) {
 	})
 	ws := &fakeWS{root: t.TempDir()}
 	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Interval: time.Hour, Harness: "claude-code", Limits: &Limits{}, Now: func() time.Time { return t0 }}
-	runner := &Runner{GW: gw, Harness: ObserveLimits(h, loop.Limits), WS: ws, Cfg: cfg, Scopes: scopesOf(cfg), WorkRoot: ws.root, ProgressEvery: time.Hour}
+	runner := &Runner{Credentials: testCreds(gw), GW: gw, Harness: ObserveLimits(h, loop.Limits), WS: ws, Cfg: cfg, Scopes: scopesOf(cfg), WorkRoot: ws.root, ProgressEvery: time.Hour}
 	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) { _ = runner.RunItem(ctx, item) }
 
 	loop.Tick(context.Background())
@@ -74,7 +74,7 @@ func TestLimitsFromProgressReachTheHeartbeat(t *testing.T) {
 	if hb := f.CallsNamed("heartbeatNode"); len(hb) != 1 || hb[0].Input["limits"] != nil {
 		t.Fatalf("no session has run yet, no limits to send: %+v", hb)
 	}
-	got := loop.Limits.Readings()[DefaultAccount]
+	got := loop.Limits.Readings()["max-issued"]
 	if got.FiveHour.Utilization != 0.42 || got.SevenDay.Utilization != 0.17 {
 		t.Fatalf("store = %+v", loop.Limits.Readings())
 	}
@@ -88,7 +88,7 @@ func TestLimitsFromProgressReachTheHeartbeat(t *testing.T) {
 	l := limits[0].(map[string]any)
 	five, _ := l["fiveHour"].(map[string]any)
 	seven, _ := l["sevenDay"].(map[string]any)
-	if l["account"] != DefaultAccount || l["status"] != "allowed" || five["utilization"] != 0.42 || seven["utilization"] != 0.17 ||
+	if l["account"] != "max-issued" || l["status"] != "allowed" || five["utilization"] != 0.42 || seven["utilization"] != 0.17 ||
 		five["resetsAt"] != "2026-09-25T15:00:00Z" || l["observedAt"] != "2026-09-25T14:00:00Z" {
 		t.Fatalf("heartbeat limits = %#v", l)
 	}

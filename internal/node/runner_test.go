@@ -71,7 +71,11 @@ func runnerOnFake(t *testing.T, f *gatewaytest.Fake, h harness.Harness, wrap fun
 		g = wrap(gw)
 	}
 	ws := &fakeWS{root: t.TempDir()}
-	r := &Runner{GW: g, Harness: h, WS: ws, Cfg: cfg, Scopes: scopesOf(cfg), WorkRoot: ws.root, ProgressEvery: time.Hour, Log: log.New(os.Stderr, "", 0)}
+	// a session runs only on what the claim-time read issues: the fake
+	// issues the item one Claude subscription unless the test set its own
+	issueClaude(f, item1)
+	r := &Runner{Credentials: testCreds(g), GW: g, Harness: h, WS: ws, Cfg: cfg, Scopes: scopesOf(cfg), WorkRoot: ws.root, ProgressEvery: time.Hour, Log: log.New(os.Stderr, "", 0)}
+	r.Credentials = &Credentials{GW: gw, Log: r.Log}
 	var item gateway.WorkItem
 	item.ID, item.OrgID, item.GoalID, item.RepoID, item.Seq, item.Title = item1, orgID, goalID, repoID, 1, "Write the failing test"
 	return r, ws, item, f.Item
@@ -243,7 +247,7 @@ func TestEvaluatorRunsOnTheItemsToken(t *testing.T) {
 	ws.mu.Lock()
 	ws.events = nil
 	ws.mu.Unlock()
-	ev := &Evaluator{GW: r.GW, Harness: h, WS: ws, Scopes: r.Scopes, WorkRoot: ws.root, Log: r.Log}
+	ev := &Evaluator{Credentials: testCreds(r.GW), GW: r.GW, Harness: h, WS: ws, Scopes: r.Scopes, WorkRoot: ws.root, Log: r.Log}
 	item.Branch = "mesh/ship-it-1"
 	if err := ev.Evaluate(context.Background(), item); err != nil {
 		t.Fatal(err)
@@ -334,7 +338,7 @@ func TestOldPlatformFallbackIsLoggedOnceAcrossARun(t *testing.T) {
 	fallback := &TokenFallback{}
 	ws := &fakeWS{root: t.TempDir()}
 	h := &fakeHarness{text: "Fine.\nVERDICT: PASS"}
-	runner := &Runner{GW: gw, Harness: h, WS: ws, Cfg: cfg, Scopes: scopesOf(cfg), WorkRoot: ws.root, ProgressEvery: time.Hour, Fallback: fallback, Log: logger}
+	runner := &Runner{Credentials: testCreds(gw), GW: gw, Harness: h, WS: ws, Cfg: cfg, Scopes: scopesOf(cfg), WorkRoot: ws.root, ProgressEvery: time.Hour, Fallback: fallback, Log: logger}
 	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Version: "test", Harness: "claude-code", Interval: time.Hour, Log: logger,
 		Dispatch: func(ctx context.Context, item gateway.WorkItem) { _ = runner.RunItem(ctx, item) }}
 
@@ -351,7 +355,7 @@ func TestOldPlatformFallbackIsLoggedOnceAcrossARun(t *testing.T) {
 	})
 	for _, id := range items {
 		row := f.Item(id)
-		ev := &Evaluator{GW: gw, Harness: h, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, Fallback: fallback, Log: logger}
+		ev := &Evaluator{Credentials: testCreds(gw), GW: gw, Harness: h, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, Fallback: fallback, Log: logger}
 		it := gateway.WorkItem{ID: id, OrgID: orgID, GoalID: goalID, RepoID: repoID, Seq: row["seq"].(int), Title: row["title"].(string), Branch: row["branch"].(string)}
 		if err := ev.Evaluate(ctx, it); err != nil {
 			t.Fatal(err)
@@ -437,7 +441,7 @@ func TestSessionsRunOnTheItemsModel(t *testing.T) {
 			if err := r.RunItem(context.Background(), item); err != nil {
 				t.Fatal(err)
 			}
-			ev := &Evaluator{GW: mg, Harness: h, WS: ws, Scopes: r.Scopes, WorkRoot: ws.root, Model: c.nodeEval, Log: r.Log}
+			ev := &Evaluator{Credentials: testCreds(mg), GW: mg, Harness: h, WS: ws, Scopes: r.Scopes, WorkRoot: ws.root, Model: c.nodeEval, Log: r.Log}
 			item.Branch = "mesh/ship-it-1"
 			if err := ev.Evaluate(context.Background(), item); err != nil {
 				t.Fatal(err)
@@ -475,7 +479,7 @@ func TestSessionsRunOnTheItemsModel(t *testing.T) {
 			// a rebase works on the builder's branch, so on its model
 			f.RebaseTokens = true
 			f.WorkItems[item1]["status"], f.WorkItems[item1]["rebaseState"] = "review", "claimed"
-			rb := &Rebaser{GW: mg, Harness: h, WS: ws, Scopes: r.Scopes, WorkRoot: ws.root, Model: c.nodeBuild, ProgressEvery: time.Hour, Log: r.Log}
+			rb := &Rebaser{Credentials: testCreds(mg), GW: mg, Harness: h, WS: ws, Scopes: r.Scopes, WorkRoot: ws.root, Model: c.nodeBuild, ProgressEvery: time.Hour, Log: r.Log}
 			_ = rb.Rebase(context.Background(), item) // the job is what is checked
 			if len(h.jobs) != 3 || h.jobs[2].Kind != harness.KindRebase || h.jobs[2].Model != c.wantBuild {
 				t.Fatalf("rebase job: %+v\n%s", h.jobs[len(h.jobs)-1], logs.String())

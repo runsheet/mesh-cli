@@ -37,7 +37,7 @@ func priorAttemptsFixture(t *testing.T) (*gatewaytest.Fake, *Evaluator, *fakeHar
 	ws := &fakeWS{root: t.TempDir()}
 	h := &fakeHarness{text: "Holds.\n\nVERDICT: PASS"}
 	var logs bytes.Buffer
-	ev := &Evaluator{GW: gw, Harness: h, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, MaxBudgetUSD: 2, Log: log.New(&logs, "", 0)}
+	ev := &Evaluator{Credentials: testCreds(gw), GW: gw, Harness: h, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, MaxBudgetUSD: 2, Log: log.New(&logs, "", 0)}
 	return f, ev, h, &logs
 }
 

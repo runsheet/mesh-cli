@@ -141,9 +141,6 @@ func TestBuildRunsOnAnIssuedCredentialAndReportsUsage(t *testing.T) {
 	r, _, item, row := runnerOnFake(t, f, h, nil)
 	var logs syncBuf
 	r.Log = log.New(&logs, "", 0)
-	// node.yaml names an account whose token file does not exist: if it
-	// were consulted the session could not open
-	r.Accounts = []AccountConfig{{Label: "max-local", Kind: AccountSubscription, TokenFile: "/nope/token"}}
 	r.Credentials = usageCredentials(r.GW.(CredentialGateway), r.Log)
 
 	if err := r.RunItem(context.Background(), item); err != nil {
@@ -217,26 +214,20 @@ func TestEvaluationReportsUsage(t *testing.T) {
 	checkSessionUsage(t, f, "evaluateWorkItem")
 }
 
-// Against a platform without the claim-time read, and whose finishing
-// commands take no `usage`, a node running several sessions uses
-// node.yaml's accounts, finishes every one — the builds reach
-// evaluating, the verdict lands — says each fallback once for the run,
-// and writes each session's usage report as one log line; the secret
-// is in no log line.
-func TestCredentialsFallBackToNodeYAMLOncePerRun(t *testing.T) {
-	const local = "sk-ant-oat01-LOCAL-token-file"
-	tokFile := filepath.Join(t.TempDir(), "tok")
-	if err := os.WriteFile(tokFile, []byte(local+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+// Against a platform whose finishing commands take no `usage`, a node
+// running several sessions on issued credentials finishes every one —
+// the builds reach evaluating, the verdict lands — says the fallback
+// once for the run, and writes each session's usage report as one log
+// line, its credential named; the secret is in no log line.
+func TestCredentialsLogUsageWithoutTheLedgerOncePerRun(t *testing.T) {
+	const local = issuedSecret
 	f := seed(t)
-	f.Unsupported["itemCredentials"] = true
+	issueCredential(f, item1)
 	f.UnknownFields["usage"] = true
 	h := &streamHarness{file: usageStream()}
 	r, ws, item, row := runnerOnFake(t, f, h, nil)
 	var logs syncBuf
 	r.Log = log.New(&logs, "", 0)
-	r.Accounts = []AccountConfig{{Label: "max-a", Kind: AccountSubscription, TokenFile: tokFile}}
 	r.Credentials = &Credentials{GW: r.GW.(CredentialGateway), Limits: &Limits{}, Log: r.Log}
 
 	items := []gateway.WorkItem{item}
@@ -244,6 +235,7 @@ func TestCredentialsFallBackToNodeYAMLOncePerRun(t *testing.T) {
 		f.WorkItems[id] = map[string]any{"id": id, "goalId": goalID, "orgId": orgID, "seq": 3 + i, "title": "More",
 			"brief": "More.", "acceptance": "go test passes", "repoId": repoID, "baseRef": "main", "status": "claimed", "nodeId": r.Cfg.NodeID, "dependsOn": []string{}}
 		f.GitHubTokens[id] = f.GitHubTokens[item1]
+		issueCredential(f, id)
 		it := item
 		it.ID, it.Seq = id, 3+i
 		items = append(items, it)
@@ -258,7 +250,7 @@ func TestCredentialsFallBackToNodeYAMLOncePerRun(t *testing.T) {
 	}
 	// and an evaluation: its verdict lands without the report
 	h.text = "Fine.\nVERDICT: PASS"
-	ev := &Evaluator{GW: r.GW, Harness: h, WS: ws, Scopes: r.Scopes, WorkRoot: ws.root, Accounts: r.Accounts, Credentials: r.Credentials, Log: r.Log}
+	ev := &Evaluator{GW: r.GW, Harness: h, WS: ws, Scopes: r.Scopes, WorkRoot: ws.root, Credentials: r.Credentials, Log: r.Log}
 	evItem := item
 	evItem.Branch = "mesh/ship-it-1"
 	if err := ev.Evaluate(context.Background(), evItem); err != nil {
@@ -268,14 +260,11 @@ func TestCredentialsFallBackToNodeYAMLOncePerRun(t *testing.T) {
 		t.Fatalf("verdicts: %+v", calls)
 	}
 	for _, job := range h.Jobs() {
-		if v, _ := envOf(job.Env, "CLAUDE_CODE_OAUTH_TOKEN"); v != local || Account(job.Env) != "max-a" {
-			t.Fatalf("session not on node.yaml's account: %v", job.Env)
+		if v, _ := envOf(job.Env, "CLAUDE_CODE_OAUTH_TOKEN"); v != local || Account(job.Env) != "max-cloud" {
+			t.Fatalf("session not on the issued credential: %v", job.Env)
 		}
 	}
 	out := logs.String()
-	if n := strings.Count(out, "the platform issues no session credentials"); n != 1 {
-		t.Errorf("credential fallback said %d times:\n%s", n, out)
-	}
 	if n := strings.Count(out, "usage: the platform's finishing command takes no usage report; each session's record is logged here instead (said once, for every session this run)"); n != 1 {
 		t.Errorf("ledger fallback said %d times:\n%s", n, out)
 	}
@@ -292,7 +281,7 @@ func TestCredentialsFallBackToNodeYAMLOncePerRun(t *testing.T) {
 		t.Fatalf("%d usage lines for %d sessions:\n%s", len(reports), len(items)+1, out)
 	}
 	for i, rep := range reports {
-		if rep.SessionID != "s-usage" || rep.CredentialID != "" || rep.CredentialKind != "subscription" ||
+		if rep.SessionID != "s-usage" || rep.CredentialID != "cred-1" || rep.CredentialKind != "subscription" ||
 			rep.InputTokens != 60600 || rep.OutputTokens != 789 || rep.ListCostCents != 43 || rep.FiveHourAfter == nil || *rep.FiveHourAfter != 0.52 {
 			t.Errorf("report %d = %+v", i, rep)
 		}
@@ -429,7 +418,7 @@ func TestSpentAPICapIsNotChosen(t *testing.T) {
 
 	gw := &credsGW{issued: []gateway.Credential{spentDay, spentMonth, roomy}}
 	c := &Credentials{GW: gw, Log: log.New(&logs, "", 0)}
-	s, err := c.Open(context.Background(), ref, "n", nil, "")
+	s, err := c.Open(context.Background(), ref, "n", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -447,7 +436,7 @@ func TestSpentAPICapIsNotChosen(t *testing.T) {
 	}
 
 	gw.issued = []gateway.Credential{spentDay, spentMonth}
-	if _, err := c.Open(context.Background(), ref, "n", nil, ""); !errors.Is(err, ErrNoAccount) {
+	if _, err := c.Open(context.Background(), ref, "n", ""); !errors.Is(err, ErrNoAccount) {
 		t.Fatalf("Open with every key at its cap = %v, want ErrNoAccount", err)
 	}
 	for _, sec := range []string{spentDay.Secret, spentMonth.Secret, roomy.Secret} {
@@ -507,7 +496,7 @@ func TestOpenRemembersEveryIssuedCredential(t *testing.T) {
 
 	// key-1 is at its cap, so Open still runs (on one of the two
 	// subscriptions), but all three land in Known.
-	s, err := c.Open(context.Background(), ref, "n", nil, "")
+	s, err := c.Open(context.Background(), ref, "n", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -544,7 +533,7 @@ func TestKnownAccountsFileHasNoSecret(t *testing.T) {
 	}
 	c := &Credentials{GW: gw, Known: known, Log: log.New(io.Discard, "", 0)}
 	ref := gateway.SessionRef{Kind: "build", ItemID: item1}
-	s, err := c.Open(context.Background(), ref, "n", nil, "")
+	s, err := c.Open(context.Background(), ref, "n", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -585,32 +574,6 @@ func TestCredentialPrintsNoSecret(t *testing.T) {
 }
 
 func fmtAll(v any) string { return fmt.Sprintf("%v %+v %#v %s", v, v, v, v) }
-
-// A chosen account the platform issued, which node.yaml does not have,
-// is the loop's prediction only: OpenAccount never asks it for a secret
-// and opens node.yaml's first instead.
-func TestOpenAccountPassesOverAChosenIssuedAccount(t *testing.T) {
-	tok := filepath.Join(t.TempDir(), "tok")
-	if err := os.WriteFile(tok, []byte("tok-own"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	fallback := []AccountConfig{{Label: "own", Kind: AccountSubscription, TokenFile: tok}}
-	ctx := WithAccount(context.Background(), AccountConfig{Label: "max20", Kind: AccountSubscription, ID: "cred-1"})
-	acct, err := OpenAccount(ctx, fallback)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer acct.Cleanup()
-	if acct.Label != "own" {
-		t.Fatalf("opened %q, want own", acct.Label)
-	}
-	if a := openedAccount(ctx, fallback); a.Label != "own" {
-		t.Fatalf("openedAccount = %q, want own", a.Label)
-	}
-	if acct, err := OpenAccount(ctx, nil); err != nil || acct != nil {
-		t.Fatalf("with no node.yaml accounts: %v, %v; want the operator's own login", acct, err)
-	}
-}
 
 // A build's usage report carries what its context cost on disk
 // (contextBytes, adr-016); a platform whose usage input has no such
@@ -823,5 +786,43 @@ func TestFinishWithoutALabelLogsTheOlderLine(t *testing.T) {
 	lines := strings.Split(strings.TrimSpace(logs.String()), "\n")
 	if len(lines) != 2 || !strings.HasPrefix(lines[1], `usage: {"sessionId":"s-1",`) {
 		t.Fatalf("log:\n%s", logs.String())
+	}
+}
+
+// Every kind of session — build, evaluate, rebase, plan, research — runs
+// on a credential the claim-time read issued, so its usage report names
+// that credential and its kind: never an empty CredentialID nor
+// credentialKind unset, the 2,027 planner launches of 2026-09-29.
+func TestEveryKindsUsageReportNamesItsCredential(t *testing.T) {
+	const direction = "direction:mesh:night"
+	f := seed(t)
+	issueNothing(f)
+	f.SessionCredentials[item1] = []map[string]any{{"id": "cred-item", "label": "max-item", "vendor": "anthropic", "kind": "subscription", "serves": []any{"claude-code"}, "secret": "sk-ant-oat01-ITEM"}}
+	f.SessionCredentials[goalID] = []map[string]any{{"id": "cred-goal", "label": "key-goal", "vendor": "anthropic", "kind": "api_key", "serves": []any{"claude-code"}, "secret": "sk-ant-api03-GOAL"}}
+	f.SessionCredentials[direction] = []map[string]any{{"id": "cred-dir", "label": "max-dir", "vendor": "anthropic", "kind": "subscription", "serves": []any{"claude-code"}, "secret": "sk-ant-oat01-DIR"}}
+	c := &Credentials{GW: gateway.New(f.URL(), "rs_test"), Log: log.New(io.Discard, "", 0)}
+	ctx := withSubject(context.Background(), Scope{Login: "acme", Slug: "acme", ID: orgID}, projID, "mesh")
+	for _, tc := range []struct {
+		ref      gateway.SessionRef
+		id, kind string
+	}{
+		{gateway.SessionRef{Kind: string(harness.KindBuild), ItemID: item1, GoalID: goalID}, "cred-item", gateway.CredentialSubscription},
+		{gateway.SessionRef{Kind: string(harness.KindEvaluate), ItemID: item1, GoalID: goalID}, "cred-item", gateway.CredentialSubscription},
+		{gateway.SessionRef{Kind: string(harness.KindRebase), ItemID: item1, GoalID: goalID}, "cred-item", gateway.CredentialSubscription},
+		{gateway.SessionRef{Kind: string(harness.KindPlan), GoalID: goalID}, "cred-goal", gateway.CredentialAPI},
+		{gateway.SessionRef{Kind: string(harness.KindResearch), DirectionID: direction}, "cred-dir", gateway.CredentialSubscription},
+	} {
+		acct, err := c.Open(ctx, tc.ref, "n", AdapterClaudeCode)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.ref.Kind, err)
+		}
+		rep := acct.Report(harness.Result{SessionID: "s-" + tc.ref.Kind})
+		acct.Cleanup()
+		if rep == nil || rep.CredentialID == "" || rep.CredentialKind == gateway.CredentialUnset {
+			t.Fatalf("%s: report %+v names no credential", tc.ref.Kind, rep)
+		}
+		if rep.CredentialID != tc.id || rep.CredentialKind != tc.kind {
+			t.Errorf("%s: credential %s/%s, want %s/%s", tc.ref.Kind, rep.CredentialID, rep.CredentialKind, tc.id, tc.kind)
+		}
 	}
 }

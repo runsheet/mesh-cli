@@ -2,8 +2,6 @@ package node
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -15,9 +13,9 @@ import (
 
 // ChooseAccount, the pure choice, by headroom and the spending order.
 func TestChooseAccount(t *testing.T) {
-	maxA := AccountConfig{Label: "max-a", Kind: AccountSubscription, TokenFile: "/a"}
-	maxB := AccountConfig{Label: "max-b", Kind: AccountSubscription, TokenFile: "/b"}
-	key := AccountConfig{Label: "key", Kind: AccountAPI, APIKeyEnv: "KEY"}
+	maxA := AccountConfig{Label: "max-a", Kind: AccountSubscription}
+	maxB := AccountConfig{Label: "max-b", Kind: AccountSubscription}
+	key := AccountConfig{Label: "key", Kind: AccountAPI}
 	rejected := *reading(0.3, 0.3)
 	rejected.Status, rejected.ResetsAt = "rejected", t0.Add(30*time.Minute)
 	type readings = map[string]harness.RateLimit
@@ -68,14 +66,9 @@ func TestChooseAccount(t *testing.T) {
 // When an account frees up, the next tick claims the item and the
 // session runs on that account's env.
 func TestLoopClaimsNothingWithoutHeadroomThenClaimsOnTheFreedAccount(t *testing.T) {
-	dir := t.TempDir()
 	var accounts []AccountConfig
 	for _, l := range []string{"max-a", "max-b"} {
-		p := filepath.Join(dir, l)
-		if err := os.WriteFile(p, []byte("tok-"+l), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		accounts = append(accounts, AccountConfig{Label: l, Kind: AccountSubscription, TokenFile: p})
+		accounts = append(accounts, AccountConfig{Label: l, Kind: AccountSubscription})
 	}
 	p := newPriorityFake(t)
 	p.addGoal(orgID, "g", "urgent")
@@ -83,7 +76,7 @@ func TestLoopClaimsNothingWithoutHeadroomThenClaimsOnTheFreedAccount(t *testing.
 	p.addItem(orgID, "g", "two", 2, false)
 	p.addPlanning(orgID, "planned", "normal")
 	loop, logs, _ := p.pacedLoop(2, nil)
-	loop.Cfg.Accounts = accounts
+	knowAccounts(loop, accounts...)
 	loop.Limits.Observe("max-a", reading(0.97, 0.1))
 	rejected := reading(0.3, 0.3)
 	rejected.Status = "rejected"
@@ -92,17 +85,9 @@ func TestLoopClaimsNothingWithoutHeadroomThenClaimsOnTheFreedAccount(t *testing.
 	var mu sync.Mutex
 	tokens := map[string]string{}
 	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) {
-		acct, err := OpenAccount(ctx, accounts)
-		if err != nil {
-			t.Error(err)
-			return
-		}
-		defer acct.Cleanup()
-		var job harness.Job
-		acct.Apply(&job)
-		tok, _ := envOf(job.Env, "CLAUDE_CODE_OAUTH_TOKEN")
+		a, _ := ChosenAccount(ctx)
 		mu.Lock()
-		tokens[item.ID] = tok
+		tokens[item.ID] = a.Label
 		mu.Unlock()
 	}
 
@@ -136,8 +121,8 @@ func TestLoopClaimsNothingWithoutHeadroomThenClaimsOnTheFreedAccount(t *testing.
 	mu.Lock()
 	defer mu.Unlock()
 	for _, id := range claimed {
-		if tokens[id] != "tok-max-b" {
-			t.Fatalf("item %s ran on token %q, want max-b's", id, tokens[id])
+		if tokens[id] != "max-b" {
+			t.Fatalf("item %s ran on %q, want max-b", id, tokens[id])
 		}
 	}
 	if n := len(p.CallsNamed("claimPlan")); n != 1 {
@@ -152,8 +137,8 @@ func TestLoopClaimsNothingWithoutHeadroomThenClaimsOnTheFreedAccount(t *testing.
 // before the api account — finishing work never moves it onto money —
 // and falls to the api account only once every subscription is stopped.
 func TestAccountToFinishKeepsTheSpendingOrder(t *testing.T) {
-	maxA := AccountConfig{Label: "max-a", Kind: AccountSubscription, TokenFile: "/a"}
-	key := AccountConfig{Label: "key", Kind: AccountAPI, APIKeyEnv: "KEY"}
+	maxA := AccountConfig{Label: "max-a", Kind: AccountSubscription}
+	key := AccountConfig{Label: "key", Kind: AccountAPI}
 	for _, c := range []struct {
 		name string
 		rl   *harness.RateLimit
@@ -164,7 +149,8 @@ func TestAccountToFinishKeepsTheSpendingOrder(t *testing.T) {
 		{"paced", reading(0.85, 0.3), "max-a", true},
 		{"stopped", reading(0.3, 0.96), "key", true},
 	} {
-		loop := &Loop{Cfg: &Config{Accounts: []AccountConfig{maxA, key}}, Limits: &Limits{}, Now: func() time.Time { return t0 }}
+		loop := &Loop{Cfg: &Config{}, Limits: &Limits{}, Now: func() time.Time { return t0 }}
+		knowAccounts(loop, maxA, key)
 		loop.Limits.Observe("max-a", c.rl)
 		ctx, ok := loop.accountToFinish(context.Background(), "normal", "evaluation")
 		a, _ := ChosenAccount(ctx)
@@ -173,7 +159,8 @@ func TestAccountToFinishKeepsTheSpendingOrder(t *testing.T) {
 		}
 	}
 	// nothing but a stopped subscription: nothing
-	loop := &Loop{Cfg: &Config{Accounts: []AccountConfig{maxA}}, Limits: &Limits{}, Now: func() time.Time { return t0 }}
+	loop := &Loop{Cfg: &Config{}, Limits: &Limits{}, Now: func() time.Time { return t0 }}
+	knowAccounts(loop, maxA)
 	loop.Limits.Observe("max-a", reading(0.3, 0.96))
 	if _, ok := loop.accountToFinish(context.Background(), "normal", "evaluation"); ok {
 		t.Error("a stopped subscription took an evaluation")

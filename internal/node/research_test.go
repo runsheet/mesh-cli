@@ -41,7 +41,7 @@ func TestLoopResearchesDirectedProjects(t *testing.T) {
 		"{\"slug\": \"One Sign-In!\", \"title\": \"One sign-in\", \"statement\": \"Everyone signs in once.\", \"acceptance\": \"a person signs in once and reaches every service\", \"why\": \"the direction asks for one front door\"}," +
 		"{\"slug\": \"health-board\", \"title\": \"The health board\", \"statement\": \"Every service's health on one page.\", \"acceptance\": \"the page lists every service with its last check\", \"why\": \"nobody can see what is down\", \"budget_cents\": 3000}" +
 		"]}\n```"}
-	dir := &Director{GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, MaxBudgetUSD: 4, Log: log.New(os.Stderr, "", 0)}
+	dir := &Director{Credentials: testCreds(gw), GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, MaxBudgetUSD: 4, Log: log.New(os.Stderr, "", 0)}
 	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Interval: time.Hour, Log: dir.Log,
 		Dispatch: func(context.Context, gateway.WorkItem) {},
 		Research: func(ctx context.Context, dn gateway.Direction, p gateway.Project, sc Scope) {
@@ -169,7 +169,7 @@ func fullProjectForDirection(t *testing.T, mode string) (*gatewaytest.Fake, *Loo
 	if mode == "propose" {
 		h.text = "Nothing worth pitching tonight.\n\n```json\n{\"pitches\": [], \"answers\": []}\n```"
 	}
-	dir := &Director{GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, MaxBudgetUSD: 4, Log: log.New(os.Stderr, "", 0)}
+	dir := &Director{Credentials: testCreds(gw), GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, MaxBudgetUSD: 4, Log: log.New(os.Stderr, "", 0)}
 	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Interval: time.Hour, Log: dir.Log,
 		Dispatch: func(context.Context, gateway.WorkItem) {},
 		Research: func(ctx context.Context, dn gateway.Direction, p gateway.Project, sc Scope) {
@@ -327,7 +327,7 @@ func TestResearchUnreadableHandsInEmpty(t *testing.T) {
 	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: Fixed(1), OwnerID: f.UserID}
 	ws := &fakeWS{root: t.TempDir()}
 	h := &fakeHarness{text: "I had a good think and decided not to say."}
-	d := &Director{GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, Log: log.New(os.Stderr, "", 0)}
+	d := &Director{Credentials: testCreds(gw), GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, Log: log.New(os.Stderr, "", 0)}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
@@ -451,7 +451,7 @@ func TestLoopResearchesTwoDirectionsOfOneProject(t *testing.T) {
 	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: Fixed(1), OwnerID: f.UserID}
 	ws := &fakeWS{root: t.TempDir()}
 	h := &barrierHarness{both: make(chan struct{})}
-	dir := &Director{GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, MaxBudgetUSD: 4, Log: log.New(os.Stderr, "", 0)}
+	dir := &Director{Credentials: testCreds(gw), GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, MaxBudgetUSD: 4, Log: log.New(os.Stderr, "", 0)}
 	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Interval: time.Hour, Log: dir.Log,
 		Dispatch: func(context.Context, gateway.WorkItem) {},
 		Research: func(ctx context.Context, dn gateway.Direction, p gateway.Project, sc Scope) {
@@ -607,7 +607,7 @@ func researchOn(t *testing.T, f *gatewaytest.Fake, mode, text string) (*Director
 	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: Fixed(1), OwnerID: f.UserID}
 	ws := &fakeWS{root: t.TempDir()}
 	var logged strings.Builder
-	d := &Director{GW: gw, Harness: &fakeHarness{text: text}, WS: ws, Cfg: cfg, WorkRoot: ws.root, Log: log.New(&logged, "", 0)}
+	d := &Director{Credentials: testCreds(gw), GW: gw, Harness: &fakeHarness{text: text}, WS: ws, Cfg: cfg, WorkRoot: ws.root, Log: log.New(&logged, "", 0)}
 	dn := gateway.Direction{ID: dirID, ProjectID: projID, OrgID: orgID, Slug: "scout", Mode: mode,
 		Direction: "Go on then.", Enabled: true, Status: "active", MaxLiveGoals: 3}
 	return d, dn, gateway.Project{ID: projID, Slug: "mesh", OrgID: orgID, RepoIDs: []string{repoID}}, scopesOf(cfg)[0], &logged
