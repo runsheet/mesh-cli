@@ -2063,6 +2063,16 @@ type PriorAttempt struct {
 // clauses earlier attempts named rather than on a fresh reading. A
 // platform that does not serve the records answers an error, which the
 // caller treats as none: the evaluation runs without them.
+//
+// It reads only this item's own attempts. A narrow re-plan's goal carries
+// `replacingItemId`/`replacementItemIds` (schema.json's GoalIndex), but
+// WorkItemIndex itself has no `replaces`/`replacedBy`/`replacingItemId`
+// back-link from a replacement item to what it replaced, so there is no
+// chain this read can follow from one item's id alone. A lineage that
+// spans a replaced item's own earlier evaluations — oldest item first,
+// each attempt labelled with its item's seq — is owed to the platform:
+// it needs that link on WorkItemIndex (or an index read keyed on the
+// goal) before this client can walk it.
 func (c *Client) WorkItemPriorAttempts(ctx context.Context, itemID string) ([]PriorAttempt, error) {
 	var out struct {
 		Item *struct {
