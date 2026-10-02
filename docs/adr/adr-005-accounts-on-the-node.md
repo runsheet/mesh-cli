@@ -272,7 +272,7 @@ this section describes them.
   `InputPerTurnMean`, `InputPerTurnMax`, `LargestToolResults`): those
   are the whole session's figures, not this one call's, and are cleared
   on the per-call copy so a platform summing them is not counting the
-  same session once per priced call. Prologue and unpriced tools send
+  same session once per priced call. mesh-context and unpriced tools send
   none. A platform without the mutation is said once per run and each
   call logged; `RecordToolUsage` takes the same detail-field fallback as
   the finishing commands (`ErrNoUsageDetail`: the call still lands,

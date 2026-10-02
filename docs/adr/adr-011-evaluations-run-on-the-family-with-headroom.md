@@ -125,7 +125,7 @@ Codex harness's `Preflight` (`harness.CodexPreflight`). It runs in the
 plus `SessionEnviron` with the same Unset list), so the two cannot
 drift — and checks:
 
-1. `codex mcp get prologue` succeeds: Codex parses the rendered
+1. `codex mcp get mesh-context` succeeds: Codex parses the rendered
    `config.toml` and sees the server;
 2. an MCP `initialize`, `notifications/initialized` and `tools/list`
    over streamable HTTP to the built-in's URL, with the header values
@@ -134,8 +134,8 @@ drift — and checks:
 
 Its error says why: `refuses auth: <status>: <first 200 chars>` for a
 401 or 403, `unreachable: <error>` for a host that does not answer,
-`MESH_CODEX_MCP_<n>_TOKEN for prologue's Authorization header is
-missing|empty …`, `codex mcp get prologue: …`, or `lists no tools`. It
+`MESH_CODEX_MCP_<n>_TOKEN for mesh-context's Authorization header is
+missing|empty …`, `codex mcp get mesh-context: …`, or `lists no tools`. It
 never carries a secret (the job's and the home's are redacted). A job
 with no built-in has nothing to check. The preflight costs nothing and
 is not a tool call: no usage, no `recordToolUsage`.
@@ -180,7 +180,7 @@ to `ready`, a rework each.
 - **A session that saw no context gives no verdict.** Before a verdict
   is read, the evaluator judges the session's tools from `Result.Tools`
   (`Evaluator.toolBroken`): it is *tool-broken* when a built-in server
-  of its MCP map (the context server, `prologue`) or a required console
+  of its MCP map (the context server, `mesh-context`) or a required console
   tool it was served has calls and every one errored, or has an error
   and no call at all (not connected at startup). One clean call is
   enough: 3 calls and 1 error is a verdict as before. A tool-broken
@@ -378,7 +378,7 @@ unreachable. A tool that answered was reached.
 - **`ToolStat.Reached()` is `Clean + Answered > 0`**, and `toolBroken`
   names a server broken only when `Errors > 0 && !Reached()`: every
   call refused before the server, or a startup error and no call
-  reached. The adopted-session `prologue` alias and the
+  reached. The adopted-session `prologue` alias (until 2026-10-28) and the
   required-console-tool branch stand. The built-in's `not found` is the
   tool working: the verdict it came with stands, on the family that
   reached it, and nothing runs on the other family.
