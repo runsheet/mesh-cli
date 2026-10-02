@@ -39,10 +39,16 @@ type Config struct {
 	// per-org path — a platform that answers with neither owner nor
 	// scopes — NodeID is unused: each Scope keeps its own per-org id
 	// from NodeIDIn instead.
-	NodeID  string `yaml:"node_id,omitempty"`
-	OwnerID string `yaml:"owner_id,omitempty"`
-	Slug    string `yaml:"slug"`
-	Name    string `yaml:"name"`
+	NodeID string `yaml:"node_id,omitempty"`
+	// Contract is the registration the node last made (ADR-015,
+	// Registration and the loop; TRD §3 step 1): ContractOwner when the
+	// platform answered the owner registration, ContractPerOrg when it
+	// ran the per-org path. Saved by every registration beside NodeID;
+	// empty, on a node.yaml from before it, means per-org.
+	Contract string `yaml:"contract,omitempty"`
+	OwnerID  string `yaml:"owner_id,omitempty"`
+	Slug     string `yaml:"slug"`
+	Name     string `yaml:"name"`
 	// Owner is the node's ownership model: "" or "person" (the
 	// default, bring-your-own infra — the node serves every org its
 	// token's person belongs to) or "enterprise" (shared infra — the
@@ -575,6 +581,20 @@ func (c *Config) OwnerKind() string {
 	return "person"
 }
 
+// The contracts a registration can have made (Config.Contract).
+const (
+	ContractOwner  = "owner"
+	ContractPerOrg = "per-org"
+)
+
+// ContractKind is Contract, an empty one read as ContractPerOrg.
+func (c *Config) ContractKind() string {
+	if c.Contract == ContractOwner {
+		return ContractOwner
+	}
+	return ContractPerOrg
+}
+
 // NodeIDIn is the node's id in an org: from (org, slug), so it converges.
 func (c *Config) NodeIDIn(orgID string) (string, error) {
 	id, err := uuid.Parse(orgID)
@@ -692,6 +712,12 @@ func (o Owner) String() string {
 		name = strings.TrimSpace(o.Kind + " " + o.ID)
 	}
 	return "owned by " + name
+}
+
+// Who is the owner's name alone — "Chris", "anythink" — falling back
+// to "<kind> <id>" when Name is empty: what the log lines name.
+func (o Owner) Who() string {
+	return strings.TrimPrefix(o.String(), "owned by ")
 }
 
 // Reloaded is what Loop.Reload reads: the capacity (0 keeps the loop's),

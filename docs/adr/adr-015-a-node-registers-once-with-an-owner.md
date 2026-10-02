@@ -173,9 +173,8 @@ shape) and `owner` `Config.OwnerKind()`. A
 non-nil answer makes the node *owned*: `cfg.NodeID` is the answer's
 `nodeId`, saved to node.yaml (a save that fails fails the start, never
 logged and ignored), the scopes are `ScopesFromAnswer(answer,
-cfg.Orgs)`, and node.log's lines right after `StartLines` say `owned by
-<name> (<kind>); serving <org>, <org>` — `Owner.String()` and
-`Scopes.Names()`. `mesh node register` prints the same.
+cfg.Orgs)`, and node.log's line right after `StartLines` names the
+owner and the orgs (its wording is the 2026-10-02 section's below).
 
 **The nil-answer fallback, exactly.** A platform that takes `owner` but
 answers nil — no `NodeAnswer` at all — is half-deployed; only a nil
@@ -213,8 +212,8 @@ applied at once to the last answer), never MyOrgs, never a
 registration.
 
 **The hand-over.** An answer whose owner's id or kind differs from the
-last is logged `owner <old> → <new>` — `owner owned by Chris → owned by
-anythink` when the mini goes from Chris to the enterprise — and taken,
+last is logged (`owner changed: Chris → anythink` since 2026-10-02,
+below) when the mini goes from Chris to the enterprise — and taken,
 with the scopes it names, on that tick: no restart.
 
 **Every call that carried a per-org node id** reads `Scope.NodeID`,
@@ -237,8 +236,73 @@ time out.
 
 **Tests.** Socket-free, `TestOwned…` in `internal/node/owned_test.go`
 (`go test ./internal/node -run '^TestOwned'`): the fixtures' answers
-through `Register` and `TakeAnswer`. Through `gatewaytest`,
-`TestLoopOwnedClaimsFromEveryAnsweredOrgAndAFourthWithNoRestart` in
-`loop_test.go`: one heartbeat under the one id, a claim from each of
-three orgs, a fourth served on the next tick — it binds a loopback
-socket, which the evaluator's sandbox may refuse.
+through `Register` and `TakeAnswer`. The loop test that bound a
+loopback socket through `gatewaytest` is gone: 2026-10-02, below.
+
+## Registration and the loop, carried onto main (2026-10-02)
+
+2026-10-02, item 24. Item 18's work above, carried onto main after
+5e2b33e (`orgs:` matched by login or tenant slug on every path,
+`releaseWorkItem` naming its node) and three things fixed that the last
+evaluation and TRD §3 name. What holds, restated so it is read in one
+place:
+
+**Probe first.** `node.Register` asks `TakesOwner` before anything
+else. A platform without `owner` runs the per-org path exactly —
+`ResolveScopes`, then one `RegisterNode` per org, no `owner` sent, no
+extra Node row. Only then, on a platform that takes it, is the one
+`RegisterNode` under `OwnedNodeID(cfg)` with `owner` `cfg.OwnerKind()`
+made.
+
+**Nil versus empty.** A **nil** answer — and only nil — is a
+half-deployed platform: `FallbackLine` once, then the per-org path. A
+**non-nil** answer is the owner contract whatever it names: its scopes,
+restricted by node.yaml's `orgs:` (`ServedFrom`, never fatal, an
+unmatched restriction logged), are what the node serves — an answer
+with no scopes serves none and never runs the per-org path. The same
+holds per heartbeat (`TakeAnswer`): nil keeps the last scopes, non-nil
+replaces them whole, so an org removed is claimed from no more and an
+empty answer serves none.
+
+**The answer is retained in the loop.** `Registered` carries the
+answer (`Registered.Answer`) and `mesh node start` hands it to the loop
+with `Loop.TakeAnswer` before the first tick. Without it a node whose
+heartbeats since registration all answered nil had no answer to apply
+a changed `orgs:` restriction to; with it `OwnedReloader`'s restriction
+narrows the registration's answer at once
+(`TestOwnedStartHandsTheAnswerToTheLoop`).
+
+**`contract:` in node.yaml.** `Config.Contract` (yaml `contract:`) is
+the registration the node last made: `owner` or `per-org`
+(`ContractOwner`, `ContractPerOrg`); empty, on a node.yaml from before
+it, reads `per-org` (`Config.ContractKind`). `registerNode` and `mesh
+node register` save it beside `node_id` through `SaveRegistration`
+whenever either changed, and a failed save is returned as an error —
+the start fails, never logged and ignored. It is the TRD §3 step 1 field
+`mesh node status` and the rollback reporter read (item 25)
+(`TestOwnedContractPersisted`).
+
+**The log wording** (mesh-specs ADR 014, TRD §3). node.log's first line
+after `StartLines` is `node <name> (<slug>) owned by <owner>, serving
+<orgs>` — `node mini (runsheet-mini) owned by Chris, serving runsheet,
+wardroomid, grapevine` — and on the per-org path `node <name> (<slug>)
+per org, serving <orgs>` (`node.StartLine`; `mesh node register` prints
+it too). A hand-over is `owner changed: Chris → anythink`
+(`Owner.Who`, the name alone), an org change `orgs a, b → a, b, c`. An
+org without a GitHub login is named by `Scope.Name()` — its tenant slug
+— in every one of them, never a blank.
+
+**One id everywhere.** Every call that carried a per-org node id reads
+`Scope.NodeID`, which the answer's scopes all set to its one id; the
+held items a restart takes up (`OrgWorkItems` in `claimed`/`running`)
+are matched against it and, on an owned node, its old per-org id as
+well, as the adoption's `LegacyIDs` are.
+
+**Tests open no socket.** The loop test
+`TestOwnedLoopClaimsFromEveryAnsweredOrgAndAFourthWithNoRestart` drives
+`Loop.Tick` against an in-process `node.Gateway` (`ownedGW` in
+`owned_test.go`), never `httptest`: one `HeartbeatNode` per tick under
+the one id, a `ClaimWorkItem` in each of registerNode.json's three orgs
+on it, and heartbeatNode.json's fourth org claimed from on the next
+tick with no restart. All run with `go test ./internal/node -run
+'^TestOwned'`.

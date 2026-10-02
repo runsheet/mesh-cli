@@ -180,16 +180,13 @@ var nodeRegisterCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if reg.Owned != nil {
-			cfg.NodeID = reg.Owned.NodeID
-		}
-		if err := cfg.Save(); err != nil {
+		// a fresh cfg: the contract is always new to it, so this saves
+		if err := node.SaveRegistration(cfg, reg, nil); err != nil {
 			return err
 		}
 		path, _ := node.ConfigPath()
 		if reg.Owned != nil {
-			o := reg.Owned.Owner // "owned by anythink (enterprise); serving …"
-			fmt.Printf("Registered node %s (%s), %s (%s); serving %s, capacity %s. Saved %s.\nStart it with: mesh node start\n", cfg.Name, slug, o.String(), o.Kind, strings.Join(reg.Scopes.Names(), ", "), cfg.Capacity, path)
+			fmt.Printf("Registered %s, capacity %s. Saved %s.\nStart it with: mesh node start\n", node.StartLine(cfg, reg), cfg.Capacity, path)
 			return nil
 		}
 		fmt.Printf("Registered node %s (%s) in %s, capacity %s. Saved %s.\nStart it with: mesh node start\n", cfg.Name, slug, strings.Join(reg.Scopes.Names(), ", "), cfg.Capacity, path)
@@ -566,13 +563,14 @@ func nodeStart(cmd *cobra.Command, args []string, logger *log.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	cfg, gw, scopes, owned, workRoot, err := registerNode(ctx, cmd, logger, updates, check, started)
+	cfg, gw, reg, workRoot, err := registerNode(ctx, cmd, logger, updates, check, started)
 	if errors.Is(err, node.ErrUnconfirmed) {
 		return endRun(err, logger)
 	}
 	if err != nil {
 		return err
 	}
+	scopes, owned := reg.Scopes, reg.Owned
 
 	// every session's plan standing lands in Limits: the heartbeat
 	// carries it and the loop paces by it
@@ -633,6 +631,10 @@ func nodeStart(cmd *cobra.Command, args []string, logger *log.Logger) error {
 			return registerIn(ctx, gw, cfg, node.Scopes{sc})
 		})
 	}
+	// the registration's answer is the loop's before its first tick: a
+	// changed orgs restriction applies to it on reload even while every
+	// heartbeat since answers nil
+	loop.TakeAnswer(reg.Answer)
 	// SIGUSR1 (`mesh node drain`) drains: nothing new is claimed and
 	// the loop returns nil once every session has ended, so the
 	// process exits 0 and its service manager starts the new binary
@@ -767,8 +769,11 @@ func runPollMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *
 				logger.Printf("list held items of %s: %v", sc.Name(), err)
 				continue
 			}
+			// an owned node holds, too, what it claimed under its
+			// per-org id before it was owned (ADR-015)
+			legacy, _ := cfg.NodeIDIn(sc.ID)
 			for _, it := range items {
-				if it.NodeID == sc.NodeID {
+				if it.NodeID == sc.NodeID || (loop.Owned != nil && it.NodeID == legacy) {
 					loop.Adopt(ctx, it)
 				}
 			}
@@ -793,7 +798,7 @@ func runPollMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *
 // (noteStartFailure) so a rollback names the real cause instead of the
 // bare "did not start": this is the same 60-second registration timeout
 // that once left node.log silent when the platform was slow.
-func registerNode(ctx context.Context, cmd *cobra.Command, logger *log.Logger, updates *selfupdate.StateFile, check node.StartCheck, started time.Time) (cfg *node.Config, gw *gateway.Client, scopes node.Scopes, owned *node.Owned, workRoot string, err error) {
+func registerNode(ctx context.Context, cmd *cobra.Command, logger *log.Logger, updates *selfupdate.StateFile, check node.StartCheck, started time.Time) (cfg *node.Config, gw *gateway.Client, reg node.Registered, workRoot string, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			noteStartFailure(updates, check, fmt.Sprintf("panic: %v", r), logger)
@@ -840,23 +845,19 @@ func registerNode(ctx context.Context, cmd *cobra.Command, logger *log.Logger, u
 			}
 			cfg.OwnerID = owner
 		}
-		reg, err := node.Register(regCtx, registrar(gw, cfg, logger.Printf), cfg, cfg.Orgs)
+		got, err := node.Register(regCtx, registrar(gw, cfg, logger.Printf), cfg, cfg.Orgs)
 		if err != nil {
 			return err
 		}
-		scopes, owned = reg.Scopes, reg.Owned
-		if owned == nil {
-			return nil
+		// the contract and the node's one id are kept: the next start
+		// registers under it, status and the rollback reporter read it
+		if err := node.SaveRegistration(cfg, got, nil); err != nil {
+			return err
 		}
-		// the node's one id is kept: the next start registers under it
-		if owned.NodeID != cfg.NodeID {
-			cfg.NodeID = owned.NodeID
-			if err := cfg.Save(); err != nil {
-				return fmt.Errorf("save node id %s: %w", owned.NodeID, err)
-			}
-		}
-		// node.log's first lines after StartLines name the owner and the orgs
-		logger.Printf("%s (%s); serving %s", owned.Owner.String(), owned.Owner.Kind, strings.Join(scopes.Names(), ", ")) // "owned by Chris (person); serving runsheet, wardroomid, grapevine"
+		reg = got
+		// node.log's first line after StartLines names the owner and the
+		// orgs: "node mini (runsheet-mini) owned by Chris, serving …"
+		logger.Print(node.StartLine(cfg, reg))
 		return nil
 	}
 	if updates == nil || !check.Pending {

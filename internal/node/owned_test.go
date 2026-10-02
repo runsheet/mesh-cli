@@ -3,11 +3,16 @@ package node
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"maps"
+	"os"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
 )
@@ -15,7 +20,7 @@ import (
 // These tests read the owner contract without a socket: Register is
 // driven through a Registrar of recording functions and TakeAnswer with
 // the contract fixtures' answers (specs/contracts/*.json). The
-// gateway-backed ones are TestLoopOwned… in loop_test.go.
+// loop is driven through Tick against ownedGW, an in-process Gateway.
 
 // steps is a Registrar that records what Register did, in order:
 // "probe", "resolve", "any org", "owner <nodeID>", "org <name>" per
@@ -177,7 +182,7 @@ func TestOwnedTakeAnswerHandOver(t *testing.T) {
 	handed := answerFixture(t, "registerNode.json")
 	handed.Owner = gateway.NodeOwner{Kind: "enterprise", ID: "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb", Name: "anythink"}
 	loop.TakeAnswer(handed)
-	if want := "owner owned by Chris → owned by anythink"; !slices.Contains(logLines(buf), want) {
+	if want := "owner changed: Chris → anythink"; !slices.Contains(logLines(buf), want) {
 		t.Fatalf("log lacks %q:\n%s", want, buf)
 	}
 	if loop.Owned.Owner.Kind != "enterprise" || loop.Owned.Owner.Name != "anythink" {
@@ -394,4 +399,265 @@ func TestOwnedTakeAnswerUnmatchedRestriction(t *testing.T) {
 	if !strings.Contains(buf.String(), "orgs: not a member of initech") {
 		t.Fatalf("log lacks the unmatched restriction:\n%s", buf)
 	}
+}
+
+// ownedGW is an in-process platform for an owned node's Tick: every
+// heartbeat answers answer (nil, an older platform's silence, until
+// set), one ready item per org is listed, a claim is recorded with the
+// node id it carried, and everything else answers empty.
+type ownedGW struct {
+	Gateway
+	mu     sync.Mutex
+	answer *gateway.NodeAnswer
+	items  map[string]gateway.WorkItem // org id → its ready item
+	beats  []string                    // the node id each heartbeat carried
+	claims map[string]string           // org id → the node id its claim carried
+}
+
+func (g *ownedGW) HeartbeatNode(_ context.Context, nodeID, _ string, _ int, _ ...gateway.HeartbeatExtras) (*gateway.NodeAnswer, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.beats = append(g.beats, nodeID)
+	return g.answer, nil
+}
+
+func (g *ownedGW) ReadyWorkItems(_ context.Context, orgID string) ([]gateway.WorkItem, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if it, ok := g.items[orgID]; ok && g.claims[orgID] == "" {
+		return []gateway.WorkItem{it}, nil
+	}
+	return nil, nil
+}
+
+func (g *ownedGW) ClaimWorkItem(_ context.Context, itemID, nodeID, _ string) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for org, it := range g.items {
+		if it.ID == itemID {
+			g.claims[org] = nodeID
+		}
+	}
+	return nil
+}
+
+func (g *ownedGW) GetDesiredVersion(context.Context, string) (string, error) { return "", nil }
+func (g *ownedGW) Goals(context.Context, string) ([]gateway.Goal, error)     { return nil, nil }
+func (g *ownedGW) GoalWorkItems(context.Context, string) ([]gateway.WorkItem, error) {
+	return nil, nil
+}
+func (g *ownedGW) OrgWorkItems(context.Context, string, string) ([]gateway.WorkItem, error) {
+	return nil, nil
+}
+func (g *ownedGW) RequestedRebases(context.Context, string) ([]gateway.WorkItem, error) {
+	return nil, nil
+}
+func (g *ownedGW) Projects(context.Context, string) ([]gateway.Project, error) { return nil, nil }
+func (g *ownedGW) Directions(context.Context, string, string) ([]gateway.Direction, error) {
+	return nil, nil
+}
+
+func (g *ownedGW) setAnswer(a *gateway.NodeAnswer) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.answer = a
+}
+
+func (g *ownedGW) beatsNow() []string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return slices.Clone(g.beats)
+}
+
+func (g *ownedGW) claimed() map[string]string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return maps.Clone(g.claims)
+}
+
+// An owned node's loop through Tick, no socket: registerNode.json's
+// answer serves three orgs on one id; a tick heartbeats once, under that
+// id, and claims from each of the three on it — grapevine, with no
+// login, named by its slug. When the next heartbeat's answer
+// (heartbeatNode.json) adds foghornid the tick after serves it too,
+// with no restart.
+func TestOwnedLoopClaimsFromEveryAnsweredOrgAndAFourthWithNoRestart(t *testing.T) {
+	const nodeID = "55555555-5555-4555-8555-555555555555"
+	registered, heartbeat := answerFixture(t, "registerNode.json"), answerFixture(t, "heartbeatNode.json")
+	gw := &ownedGW{items: map[string]gateway.WorkItem{}, claims: map[string]string{}}
+	names := map[string]string{} // org id → its name
+	for i, sa := range heartbeat.Scopes {
+		name := Scope{Login: sa.Login, Slug: sa.Slug}.Name()
+		names[sa.OrgID] = name
+		gw.items[sa.OrgID] = gateway.WorkItem{ID: fmt.Sprintf("e0000000-0000-4000-8000-00000000000%d", i), GoalID: fmt.Sprintf("c0000000-0000-4000-8000-00000000000%d", i),
+			OrgID: sa.OrgID, Seq: 1, Title: name + " work", Status: "ready"}
+	}
+	s := &steps{takes: true, answer: registered}
+	reg, err := Register(context.Background(), s.registrar(), ownedCfg(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var ran []string
+	var buf bytes.Buffer
+	loop := &Loop{GW: gw, Cfg: &Config{Slug: "mini", Name: "mini", Capacity: Fixed(8)}, Scopes: reg.Scopes, Owned: reg.Owned,
+		Interval: time.Hour, Harness: "claude-code", Log: log.New(&buf, "", 0),
+		Dispatch: func(_ context.Context, item gateway.WorkItem) {
+			mu.Lock()
+			ran = append(ran, names[item.OrgID])
+			mu.Unlock()
+		}}
+	loop.TakeAnswer(reg.Answer)
+	gw.setAnswer(registered)
+
+	ctx := context.Background()
+	loop.Tick(ctx)
+	loop.wg.Wait()
+	if beats := gw.beatsNow(); !slices.Equal(beats, []string{nodeID}) {
+		t.Fatalf("heartbeats %q, want one under the node's id", beats)
+	}
+	claims := gw.claimed()
+	for _, sa := range registered.Scopes {
+		if claims[sa.OrgID] != nodeID {
+			t.Fatalf("%s's item claimed by %q, want %s (claims %v)", names[sa.OrgID], claims[sa.OrgID], nodeID, claims)
+		}
+	}
+	if len(claims) != 3 {
+		t.Fatalf("claims %v, want the three answered orgs", claims)
+	}
+	mu.Lock()
+	first := slices.Sorted(slices.Values(ran))
+	mu.Unlock()
+	if want := []string{"grapevine", "runsheet", "wardroomid"}; !slices.Equal(first, want) {
+		t.Fatalf("first tick ran %q, want %q", first, want)
+	}
+
+	gw.setAnswer(heartbeat)
+	loop.Tick(ctx) // the heartbeat's answer names foghornid: served from this tick on
+	loop.wg.Wait()
+	if beats := gw.beatsNow(); !slices.Equal(beats, []string{nodeID, nodeID}) {
+		t.Fatalf("heartbeats %q, want one per tick under the node's id", beats)
+	}
+	if got := gw.claimed()["cccccccc-3333-4333-8333-cccccccccccc"]; got != nodeID {
+		t.Fatalf("foghornid's item claimed by %q, want %s", got, nodeID)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(ran) != 4 || ran[3] != "foghornid" {
+		t.Fatalf("second tick ran %q, want foghornid added", ran)
+	}
+	for _, want := range []string{
+		"orgs runsheet, wardroomid, grapevine → runsheet, wardroomid, grapevine, foghornid",
+		"owner changed: Chris → anythink",
+	} {
+		if !slices.Contains(logLines(&buf), want) {
+			t.Fatalf("log lacks %q:\n%s", want, buf.String())
+		}
+	}
+}
+
+// node start hands the registration's answer to the loop before its
+// first tick: a reload that narrows node.yaml's orgs to runsheet applies
+// to it even though every heartbeat since answered nil.
+func TestOwnedStartHandsTheAnswerToTheLoop(t *testing.T) {
+	cfg := ownedCfg()
+	s := &steps{takes: true, answer: answerFixture(t, "registerNode.json")}
+	reg, err := Register(context.Background(), s.registrar(), cfg, cfg.Orgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reg.Answer == nil {
+		t.Fatal("Registered carries no answer")
+	}
+	var buf bytes.Buffer
+	gw := &ownedGW{items: map[string]gateway.WorkItem{}, claims: map[string]string{}} // every heartbeat answers nil
+	// as nodeStart builds it
+	loop := &Loop{GW: gw, Cfg: cfg, Scopes: reg.Scopes, Owned: reg.Owned, Interval: time.Hour, Harness: "claude-code", Log: log.New(&buf, "", 0)}
+	loop.Reload = OwnedReloader(func() (*Config, error) {
+		return &Config{Slug: "mini", Name: mini, Capacity: Fixed(2), Orgs: []string{"runsheet"}}, nil
+	})
+	loop.TakeAnswer(reg.Answer)
+	if buf.Len() != 0 {
+		t.Fatalf("taking the registration's own answer logged:\n%s", buf.String())
+	}
+	loop.Tick(context.Background())
+	loop.wg.Wait()
+	if len(gw.beatsNow()) != 1 {
+		t.Fatalf("heartbeats %q", gw.beatsNow())
+	}
+	if names := strings.Join(loop.CurrentScopes().Names(), ", "); names != "runsheet" {
+		t.Fatalf("scopes %q, want runsheet alone", names)
+	}
+	if !slices.Contains(logLines(&buf), "orgs runsheet, wardroomid, grapevine → runsheet") {
+		t.Fatalf("log lacks the orgs change:\n%s", buf.String())
+	}
+	if line := StartLine(cfg, reg); line != "node Chris's Mini (mini) owned by Chris, serving runsheet, wardroomid, grapevine" {
+		t.Fatalf("start line %q", line)
+	}
+}
+
+// Every registration records its contract in node.yaml beside the
+// node's id: the owner contract `contract: owner` and the answer's one
+// id, the legacy path `contract: per-org`. A failed save is an error.
+func TestOwnedContractPersisted(t *testing.T) {
+	read := func(t *testing.T) *Config {
+		t.Helper()
+		c, err := LoadSettings()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	t.Run("owner", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		cfg := ownedCfg()
+		s := &steps{takes: true, answer: answerFixture(t, "registerNode.json")}
+		reg, err := Register(context.Background(), s.registrar(), cfg, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := SaveRegistration(cfg, reg, nil); err != nil {
+			t.Fatal(err)
+		}
+		got := read(t)
+		if got.Contract != ContractOwner || got.NodeID != "55555555-5555-4555-8555-555555555555" {
+			t.Fatalf("node.yaml contract %q node_id %q", got.Contract, got.NodeID)
+		}
+		path, _ := ConfigPath()
+		if raw, _ := os.ReadFile(path); !strings.Contains(string(raw), "contract: owner\n") {
+			t.Fatalf("node.yaml:\n%s", raw)
+		}
+	})
+	t.Run("per-org", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		cfg := ownedCfg()
+		cfg.NodeID = ""
+		s := &steps{scopes: personScopes(t, cfg)}
+		reg, err := Register(context.Background(), s.registrar(), cfg, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := SaveRegistration(cfg, reg, nil); err != nil {
+			t.Fatal(err)
+		}
+		if got := read(t); got.Contract != ContractPerOrg || got.NodeID != "" {
+			t.Fatalf("node.yaml contract %q node_id %q", got.Contract, got.NodeID)
+		}
+		if StartLine(cfg, reg) != "node Chris's Mini (mini) per org, serving runsheet, wardroomid" {
+			t.Fatalf("start line %q", StartLine(cfg, reg))
+		}
+	})
+	t.Run("old node.yaml", func(t *testing.T) {
+		if (&Config{}).ContractKind() != ContractPerOrg {
+			t.Fatal("an empty contract must read per-org")
+		}
+	})
+	t.Run("failed save", func(t *testing.T) {
+		cfg := ownedCfg()
+		refused := errors.New("read-only file system")
+		err := SaveRegistration(cfg, Registered{Owned: &Owned{NodeID: "55555555-5555-4555-8555-555555555555"}}, func() error { return refused })
+		if !errors.Is(err, refused) {
+			t.Fatalf("SaveRegistration = %v, want the save's error", err)
+		}
+	})
 }
