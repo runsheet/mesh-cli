@@ -1,0 +1,3 @@
+{"items": [
+  {"seq": 19, "title": "Stall detector: a node.log line when a session exceeds its timeout fraction", "brief": "Watch each session's elapsed time against its job timeout; past 80% write one node.log line naming the subject and the fraction.", "acceptance": "`go test ./internal/node/ -run Stall` passes; node.log gets one `stall: <subject> <fraction>` line past 80% of the job's timeout; README's Observability section, docs/adr/017's Consequences and the TRD's §6b all describe the shape this item lands, in the same words.", "depends_on": [], "repo": "acme/widgets", "base_ref": "main", "model": "sonnet", "model_reason": "one detector with tests to copy, its docs folded in"}
+]}
