@@ -142,21 +142,25 @@ func (l *Loop) unconfirmedNow() error {
 
 // updateFailure is the last version whose update failed. final is a
 // rollback: that version is not tried again until the platform asks for
-// another.
+// another. retryNow is a rollback whose refusal named an id the node has
+// since adopted: that version is tried again on the next tick, once,
+// without waiting updateRetry.
 type updateFailure struct {
-	version string
-	at      time.Time
-	final   bool
+	version  string
+	at       time.Time
+	final    bool
+	retryNow bool
 }
 
 // NoteUpdateFailure seeds the loop with an update that failed before this
 // process started (StartCheck.Failed): the heartbeat carries reason, and
 // version is not tried again for updateRetry — or, final, until the
-// platform asks for another.
-func (l *Loop) NoteUpdateFailure(version, reason string, final bool) {
+// platform asks for another, or, retryNow (StartCheck.RetryNow), it is
+// tried again on the next tick that reads it as the desired version.
+func (l *Loop) NoteUpdateFailure(version, reason string, final, retryNow bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.failed = updateFailure{version: version, at: l.now(), final: final}
+	l.failed = updateFailure{version: version, at: l.now(), final: final && !retryNow, retryNow: retryNow}
 	l.updateErr = reason
 }
 
@@ -198,7 +202,8 @@ func (l *Loop) confirmUpdate() {
 // hand, from a checkout, and a release the platform asks for would
 // replace it unasked; a node follows desiredVersion only from a release.
 // A version that failed is left for updateRetry (for good after a
-// rollback) unless the platform asks for another. The update itself runs beside the loop.
+// rollback, unless its refusal named an id the node adopted: then it is
+// tried again at once) unless the platform asks for another. The update itself runs beside the loop.
 func (l *Loop) selfUpdate(ctx context.Context) {
 	if l.Update == nil || !version.Release(l.Version) || l.Draining() {
 		return
@@ -221,10 +226,12 @@ func (l *Loop) selfUpdate(ctx context.Context) {
 		return
 	}
 	f := l.failed
-	if f.version == desired && (f.final || l.now().Sub(f.at) < updateRetry) {
+	if f.version == desired && !f.retryNow && (f.final || l.now().Sub(f.at) < updateRetry) {
 		l.mu.Unlock()
 		return
 	}
+	// a retry after an adoption is had once: a failure of it waits as any
+	l.failed.retryNow = false
 	l.updating = true
 	l.updateWG.Add(1)
 	l.mu.Unlock()
@@ -449,6 +456,11 @@ type StartCheck struct {
 	Failed string
 	Reason string
 	Final  bool
+	// RetryNow is a rollback whose confirm was refused naming the id the
+	// node registers at (selfupdate.State.RetryAfterAdopt): the node has
+	// adopted that id, so the version is tried again on the next tick
+	// rather than marked failed for good (adr-002's amendment 2026-10-03).
+	RetryNow bool
 	// Pending is whether an update is still awaiting confirmation after
 	// this start (never true alongside RolledBack).
 	Pending bool
@@ -457,9 +469,14 @@ type StartCheck struct {
 	Attempts int
 }
 
+// RetryAfterAdoptSuffix ends a StartCheck's Reason when the rollback is
+// not final because the refusal named an id the node adopted.
+const RetryAfterAdoptSuffix = " (owner id adopted; the update is tried again)"
+
 // CheckStart counts this start of a pending update and rolls back to
 // <exe>.prev when the new binary has failed to start twice
-// (selfupdate.MaxStarts); otherwise it hands on the last failure, if any.
+// (selfupdate.MaxStarts); otherwise it hands on the last failure, if any:
+// final after a rollback, unless the refusal named an id (RetryNow).
 // window is the confirm window a rollback names (Config.ConfirmWithin).
 func CheckStart(f *selfupdate.StateFile, exe string, window time.Duration) (StartCheck, error) {
 	attempts, err := f.NoteStart()
@@ -481,7 +498,12 @@ func CheckStart(f *selfupdate.StateFile, exe string, window time.Duration) (Star
 	}
 	c := StartCheck{RolledBack: roll, From: s.From, To: s.To, Pending: s.Pending(), Attempts: attempts}
 	if s.LastError != "" && s.To != "" {
-		c.Failed, c.Reason, c.Final = s.To, s.LastError, s.RolledBackAt != nil
+		c.Failed, c.Reason = s.To, s.LastError
+		c.RetryNow = s.RolledBackAt != nil && s.RetryAfterAdopt
+		c.Final = s.RolledBackAt != nil && !s.RetryAfterAdopt
+		if c.RetryNow {
+			c.Reason += RetryAfterAdoptSuffix
+		}
 	}
 	return c, nil
 }

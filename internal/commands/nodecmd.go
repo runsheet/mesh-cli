@@ -673,7 +673,7 @@ func nodeStart(cmd *cobra.Command, args []string, logger *log.Logger) error {
 		// drain (mesh-specs ADR 007)
 		loop.Image = ensureNodeImage
 		if check.Failed != "" {
-			loop.NoteUpdateFailure(check.Failed, check.Reason, check.Final)
+			loop.NoteUpdateFailure(check.Failed, check.Reason, check.Final, check.RetryNow)
 		}
 		// a pending update is confirmed by the first heartbeat through,
 		// retried for node.yaml's update.confirm_within from start

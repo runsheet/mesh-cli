@@ -268,7 +268,13 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   exited process — and `confirmError` (`NoteConfirmError`) is the last
   error a heartbeat hit while unconfirmed — a refusal or a timeout, the
   platform being slow rather than the binary failing to start. Neither
-  affects `Pending()`, and `Confirm` clears both. `Rollback` takes the
+  affects `Pending()`, and `Confirm` clears both. A confirm error naming
+  an id (`registers at <uuid>`, `selfupdate.NamesID`) sets
+  `retryAfterAdopt`, which `Rollback` keeps: that rollback is not final
+  (`StartCheck.RetryNow`, its `Reason` ending ` (owner id adopted; the
+  update is tried again)`) and the loop tries the version again on the
+  next tick, once (`NoteUpdateFailure(…, final, retryNow)`; adr-002's
+  amendment 2026-10-03). `Rollback` takes the
   confirm window as a parameter and names the real cause when one is
   recorded — `'<to> did not start: <startError>'`, or `'<to> did not
   confirm within <window>: <confirmError>'` — falling back to the old
