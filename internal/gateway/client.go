@@ -1163,6 +1163,15 @@ type Goal struct {
 	// an older platform serves neither, and every plan reads as whole.
 	ReplacingItemID string `json:"replacingItemId"`
 	NarrowReplans   int    `json:"narrowReplans"`
+	// RepoID is the goal's own repo (GoalIndex.repoId, ADR-023's repo
+	// rule (d)): the planner's project-wide fetch still reads every repo
+	// of the project, but an item naming a repo other than this one is a
+	// different goal. Today's platform does not yet serve the field — it
+	// is not in fields/GoalIndex.txt, so this is always "" until it does
+	// (ADR-010: a field the platform has not shipped cannot be
+	// selected); the node falls back to the project's own repo when it
+	// has exactly one (internal/node.goalRepo).
+	RepoID string `json:"repoId"`
 }
 
 // PriorityRank orders goal priorities, most pressing first: urgent 0,

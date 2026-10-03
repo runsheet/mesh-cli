@@ -84,9 +84,19 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   release-tag-mirrors item 14's gate no builder could open is the
   example, `planCutOverRule`); and an item naming a repo other than the
   goal's is a different goal, left out or drafted into the `split`
-  (`planRepoRule`; ADR-023 — the node's plan check, the gateway's
-  `maxItems`/`ProposeGoalSplit`/`SetGoalCheckpoints` and the hand-in of
-  a `split` answer are later items of the same goal), the director ends with its pitches and answers in one for a
+  (`planRepoRule`; ADR-023 (d) — the node's plan check,
+  `internal/node/plan_check.go`'s `otherRepoItems(specs, itemRepo,
+  goalRepo)`, flags each one for the re-ask and, a final answer — the
+  re-ask's, or an adopted session's — still holding one is refused
+  outright like a re-land, `plan names repo <owner/name> outside the
+  goal's <owner/name>; a different goal; refused`, nothing handed in;
+  `goalRepo` is `Goal.RepoID` among the project's repos when the
+  platform names one, else the project's one repo when it has exactly
+  one, else the rule does not apply — `Goal.RepoID` rides no selected
+  field yet, so it is always "" until `fields/GoalIndex.txt` gains
+  `repoId?`, which the gateway's `maxItems`/`ProposeGoalSplit`/
+  `SetGoalCheckpoints` and the hand-in of a `split` answer are later
+  items of the same goal to land), the director ends with its pitches and answers in one for a
   propose-mode direction, its proposals in one for a set-mode one, the rebase session
   ends with `REBASED: <sha>` and `RESOLVED: <files>` or
   `REBASE FAILED: <why>`, the builder never pushes and checks main

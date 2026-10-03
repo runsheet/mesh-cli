@@ -96,3 +96,42 @@ draft of a `split` answer naming that repo.
   gateway half (`ProjectIndex.maxItems`, `ProposeGoalSplit`,
   `SetGoalCheckpoints`) and the node's hand-in of a `split` answer are
   later items of this goal and amend it.
+
+## Amendment: the node's half of the repo rule — `otherRepoItems`
+
+Item 6. `internal/node/plan_check.go` gains `otherRepoItems(specs,
+itemRepo, goalRepo) []string`: each item whose mapped repo is not
+`goalRepo`'s is flagged `item N (title): names repo <owner/name>, not
+the goal's <owner/name> — a different goal: leave it out, or make it a
+draft of a split`. `readPlan` appends the flags to the first answer's,
+so the re-ask carries `planRepoRule` (already in every re-ask's rule 3)
+beside them; a final answer — the re-ask's, or an adopted session's —
+still holding one is refused outright, like a re-land
+(`reLand.refusal`): `otherRepoRefusal` names the first such item's
+repo, `plan names repo <owner/name> outside the goal's <owner/name>; a
+different goal; refused`, and nothing is handed in.
+
+The goal's own repo (`goalRepo` in `internal/node/plan.go`) is
+`Goal.RepoID` among the project's repos when the platform names one,
+else the project's one repo when `project.RepoIDs` has exactly one,
+else neither — and then the rule does not apply (the check in
+`readPlan` that an item names one of the project's repos at all, for
+the planner's project-wide fetch, stands either way). `Planner.plan`
+resolves it once, alongside `projectRepoMap`, and threads it through
+`ask` and `readPlan`; `AdoptPlan` resolves it the same way for a
+session this node did not start.
+
+**`Goal.RepoID` carries no selected field today.** `GoalIndex.repoId`
+is not yet in the platform's schema (confirmed by introspecting
+`api.runsheet.dev/graphql` while building this item) — ADR-010's rule:
+a field the platform has not shipped cannot be selected, and the
+generator enforces it by failing when an allow-listed field is not in
+the committed `schema.json`. So `fields/GoalIndex.txt` does not gain
+`repoId?` yet, and `gateway.Goal.RepoID` is always `""` from a fetched
+goal — `goalRepo` always falls back to the project's one-repo case
+until the platform ships the field and a later change adds `repoId?`
+to the allow-list and regenerates (the same pattern as
+`Project.MaxItems`/`ItemCap` in this goal's item 2, awaiting
+`ProjectIndex.maxItems`). The unit tests construct `gateway.Goal{RepoID:
+...}` directly, as the planner's own callers do, so the rule is fully
+exercised node-side without the wire selection.
