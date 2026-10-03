@@ -1,11 +1,13 @@
 package commands
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -54,4 +56,64 @@ func mcpNodeID(context.Context) (string, error) {
 		return "", errors.New("no node registered on this machine yet")
 	}
 	return cfg.NodeID, nil
+}
+
+var mcpInstallForce bool
+
+// mcpInstallCmd is `mesh mcp install`: writes the embedded `/mesh` skill
+// (skills/mesh/SKILL.md, meshmcp.Skill) to Claude Code's skills
+// directory (ADR-023, Skill) — $CLAUDE_CONFIG_DIR/skills/mesh/SKILL.md
+// when set, else ~/.claude/skills/mesh/SKILL.md — refusing to overwrite
+// a file that differs unless --force.
+var mcpInstallCmd = &cobra.Command{
+	Use:   "install",
+	Short: "Write the /mesh skill to Claude Code's skills directory",
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		path, err := skillInstallPath()
+		if err != nil {
+			return err
+		}
+		want := meshmcp.Skill()
+		if existing, err := os.ReadFile(path); err == nil {
+			if bytes.Equal(existing, want) {
+				fmt.Println(path, "is already up to date")
+			} else if !mcpInstallForce {
+				return fmt.Errorf("%s already exists and differs from the skill mesh-cli ships; pass --force to overwrite it", path)
+			} else {
+				if err := node.WriteFile(path, want); err != nil {
+					return err
+				}
+				fmt.Println("overwrote", path)
+			}
+		} else if errors.Is(err, os.ErrNotExist) {
+			if err := node.WriteFile(path, want); err != nil {
+				return err
+			}
+			fmt.Println("wrote", path)
+		} else {
+			return err
+		}
+		fmt.Println("\nAdd mesh mcp to Claude Code with:\n\n  claude mcp add mesh -- mesh mcp")
+		return nil
+	},
+}
+
+// skillInstallPath is $CLAUDE_CONFIG_DIR/skills/mesh/SKILL.md, else
+// ~/.claude/skills/mesh/SKILL.md.
+func skillInstallPath() (string, error) {
+	dir := os.Getenv("CLAUDE_CONFIG_DIR")
+	if dir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		dir = filepath.Join(home, ".claude")
+	}
+	return filepath.Join(dir, "skills", "mesh", "SKILL.md"), nil
+}
+
+func init() {
+	mcpInstallCmd.Flags().BoolVar(&mcpInstallForce, "force", false, "overwrite a skill file that differs from the one mesh-cli ships")
+	mcpCmd.AddCommand(mcpInstallCmd)
 }
