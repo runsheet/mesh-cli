@@ -120,7 +120,7 @@ func TestBuildFailsOnTheMeshFailCall(t *testing.T) {
 // does once the hosted mesh_finish moved the item to evaluating.
 type stateRefusingGW struct{ Gateway }
 
-func (stateRefusingGW) FinishWorkItem(context.Context, string, string, string, int, *gateway.UsageReport) error {
+func (stateRefusingGW) FinishWorkItem(context.Context, string, string, string, int, *gateway.UsageReport, ...string) error {
 	return &gateway.Error{Message: "finishWorkItem: item is evaluating, not running"}
 }
 

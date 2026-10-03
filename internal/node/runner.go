@@ -429,7 +429,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 
 	// the session outlives this process: a restart adopts it (ADR 009)
 	job.Outlive = true
-	b := &buildRun{r: r, item: item, res: res, label: label, spec: spec, dir: dir, cred: cred, acct: acct, runtimes: runtimes, lastText: "session started", job: &job, pod: pod, started: time.Now()}
+	b := &buildRun{r: r, item: item, res: res, label: label, spec: spec, dir: dir, cred: cred, acct: acct, runtimes: runtimes, ident: ident, model: model, lastText: "session started", job: &job, pod: pod, started: time.Now()}
 	b.report(ctx, "session started: "+spec.Branch+" on "+modelName(model))
 	if note := st.OmittedNote(); note != "" {
 		r.logf("item %s: %s", label, note)
@@ -461,6 +461,11 @@ type buildRun struct {
 	acct     *SessionAccount // nil for an adopted session
 	runtimes []string
 	cost     costReporter
+	// ident is the session's commit identity, its pairers named on the
+	// finish description (FinishWho); model is the session's own, named
+	// there too.
+	ident Identity
+	model string
 	// job is the session's job, for a validation retry's turn; pod its
 	// sandbox, where the validation runs; started when it began. The job
 	// and pod are nil for an adopted session.
@@ -486,6 +491,15 @@ func (b *buildRun) podSession() *sandbox.Session {
 		return nil
 	}
 	return b.pod.Session
+}
+
+// description is the PR body FinishWorkItem and FinishWorkItemAlreadyDone
+// carry (FinishDescription, every-actor-has-a-name item 3): who built the
+// item, on what model and adapter, and who it was paired with — the
+// evaluator is left to the verdict's own actor, not known yet here.
+func (b *buildRun) description(ctx context.Context) string {
+	actor, _ := gateway.ActorFrom(ctx)
+	return FinishDescription(FinishWho{Actor: actor, Model: b.model, Adapter: Adapter(b.r.Harness), Pairers: b.ident.Pairers})
 }
 
 // report is the item's heartbeat: the note (the session's last text when
@@ -628,7 +642,7 @@ func (r *Runner) afterBuild(ctx context.Context, b *buildRun, result harness.Res
 	if already {
 		// main already holds the work (adr-003): no push, no branch, and
 		// the evaluator checks the evidence on the base ref
-		if err := b.acct.Carried(r.GW.FinishWorkItemAlreadyDone(ctx, item.ID, truncate(b.acct.Redact(evidence), 4000), b.cost.delta(), b.acct.Report(result))); err != nil {
+		if err := b.acct.Carried(r.GW.FinishWorkItemAlreadyDone(ctx, item.ID, truncate(b.acct.Redact(evidence), 4000), b.cost.delta(), b.acct.Report(result), b.description(ctx))); err != nil {
 			if fin.handedIn(err) {
 				return r.finishedByTool(ctx, b)
 			}
@@ -684,7 +698,7 @@ func (r *Runner) afterBuild(ctx context.Context, b *buildRun, result harness.Res
 		}
 		r.uploadAttestation(ctx, b, att)
 	}
-	if err := b.acct.Carried(r.validationUsage(r.GW.FinishWorkItem(ctx, item.ID, b.spec.Branch, sha, b.cost.delta(), b.acct.Report(result)))); err != nil {
+	if err := b.acct.Carried(r.validationUsage(r.GW.FinishWorkItem(ctx, item.ID, b.spec.Branch, sha, b.cost.delta(), b.acct.Report(result), b.description(ctx)))); err != nil {
 		if fin.handedIn(err) {
 			return r.finishedByTool(ctx, b)
 		}
@@ -816,7 +830,10 @@ func (r *Runner) AdoptItem(ctx context.Context, item gateway.WorkItem, s FoundSe
 	if !ok {
 		return r.fail(ctx, item, errNoAttach)
 	}
-	b := &buildRun{r: r, item: item, res: res, label: label, spec: spec, dir: s.State.Workspace, cred: cred, runtimes: r.runtimes(), lastText: "session adopted", sessionID: s.State.SessionID}
+	// the finish description names the same agent and pairers the
+	// session committed as, though this process did not start it
+	ident := identityFor(r.Cfg, tools.RoleFor(string(harness.KindBuild)), item, res.Goal)
+	b := &buildRun{r: r, item: item, res: res, label: label, spec: spec, dir: s.State.Workspace, cred: cred, runtimes: r.runtimes(), ident: ident, model: s.State.Model, lastText: "session adopted", sessionID: s.State.SessionID}
 	r.logf("item %s: adopted its %s session (pid %d, from byte %d)", label, s.Liveness(), s.State.PID, s.State.Offset)
 	result, runErr := b.run(ctx, func(onProgress func(harness.Progress)) (harness.Result, error) {
 		return at.Attach(ctx, s.Dir, onProgress)

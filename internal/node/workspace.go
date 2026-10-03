@@ -1030,8 +1030,11 @@ type Gateway interface {
 	AgentModel(ctx context.Context, agentID string) (string, error)
 	ClaimWorkItem(ctx context.Context, itemID, nodeID, harness string) error
 	ReportWorkItemProgress(ctx context.Context, itemID, note string, costCents int, sessionID string) error
-	FinishWorkItem(ctx context.Context, itemID, branch, headSha string, costCents int, usage *gateway.UsageReport) error
-	FinishWorkItemAlreadyDone(ctx context.Context, itemID, evidence string, costCents int, usage *gateway.UsageReport) error
+	// description, when given and non-empty, is the PR body
+	// FinishDescription rendered: sent only when the platform's
+	// FinishWorkItemInput takes it (every-actor-has-a-name item 3).
+	FinishWorkItem(ctx context.Context, itemID, branch, headSha string, costCents int, usage *gateway.UsageReport, description ...string) error
+	FinishWorkItemAlreadyDone(ctx context.Context, itemID, evidence string, costCents int, usage *gateway.UsageReport, description ...string) error
 	FailWorkItem(ctx context.Context, itemID, errMsg string) error
 	ReleaseWorkItem(ctx context.Context, itemID, nodeID, reason string) error
 	// ReleasePlan hands back a goal's plan claim with why, the goal's
