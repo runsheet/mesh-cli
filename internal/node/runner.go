@@ -378,7 +378,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	// the item's tools, beside the built-in mesh-context: a required one this
 	// node cannot start hands the item back for a node that can
 	runtimes := r.runtimes()
-	st := SelectTools(mcp, acct.Tools, string(harness.KindBuild), runtimes)
+	st := SelectTools(mcp, acct.Tools, tools.RoleFor(string(harness.KindBuild)), runtimes)
 	if len(st.Missing) > 0 {
 		reason := st.DeclineReason()
 		r.Declines.Record(item.ID, st.Missing, runtimes, time.Now())
