@@ -133,6 +133,12 @@ type Fake struct {
 	// `replaceItem` (before the narrow re-plan): introspection leaves it
 	// out and a requestPlan carrying it is refused with "Unknown field".
 	NoReplaceItem bool
+	// GoalSplit is a platform whose Mutation has proposeGoalSplit
+	// (ADR-023, the size rule): false, as the platform is today (goal
+	// a-goal-fits-in-eight-items is still queued), leaves the field out
+	// of the Mutation introspection and refuses a call to it as a schema
+	// without it, the way an absent recordValidationAttestation does.
+	GoalSplit bool
 	// PlanRequests is every requestPlan the fake was sent, refused or
 	// not, with its replaceItem ("" for a whole re-plan); refuse one
 	// with Refuse["requestPlan"].
@@ -596,6 +602,13 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if f.Unsupported[m[2]] {
+			writeErrors(w, 200, fmt.Sprintf("Cannot query field %q on type \"Mutation\".", m[2]))
+			return
+		}
+		if m[2] == "proposeGoalSplit" && !f.GoalSplit {
+			// goal a-goal-fits-in-eight-items is still queued: the
+			// platform's Mutation has no proposeGoalSplit yet, the same
+			// refusal an absent recordValidationAttestation gets
 			writeErrors(w, 200, fmt.Sprintf("Cannot query field %q on type \"Mutation\".", m[2]))
 			return
 		}
@@ -1553,11 +1566,16 @@ func (f *Fake) apply(name string, in map[string]any) error {
 		direction["answers"] = in["answers"]
 		direction["researchCostCents"] = toInt(in["costCents"])
 		direction["researchNotes"] = in["notes"]
-	case "pauseGoal", "resumeGoal", "cancelGoal", "approveGraph", "planGoal", "requestPlan", "claimPlan", "releasePlan":
+	case "pauseGoal", "resumeGoal", "cancelGoal", "approveGraph", "planGoal", "requestPlan", "claimPlan", "releasePlan", "setGoalCheckpoints", "proposeGoalSplit":
 		if f.Goals[id] == nil {
 			return fmt.Errorf("no such goal")
 		}
 		switch name {
+		case "setGoalCheckpoints":
+			f.Goals[id]["checkpoints"] = in["checkpoints"]
+		case "proposeGoalSplit":
+			f.Goals[id]["splitDrafts"] = in["drafts"]
+			f.Goals[id]["splitCostCents"] = toInt(in["costCents"])
 		case "pauseGoal":
 			f.Goals[id]["status"] = "paused"
 		case "resumeGoal":
@@ -1805,13 +1823,20 @@ func writeErrors(w http.ResponseWriter, code int, msg string) {
 
 // mutationType is the Mutation type's introspection as the
 // attestation probe reads it: recordValidationAttestation(workItemId,
-// input), unless Unsupported names it.
+// input), unless Unsupported names it; proposeGoalSplit(input) too,
+// when GoalSplit is set (ADR-023's gateway amendment).
 func (f *Fake) mutationType() map[string]any {
 	fields := []any{}
 	if !f.Unsupported["recordValidationAttestation"] {
 		fields = append(fields, map[string]any{
 			"name": "recordValidationAttestation",
 			"args": []any{map[string]any{"name": "workItemId"}, map[string]any{"name": "input"}},
+		})
+	}
+	if f.GoalSplit && !f.Unsupported["proposeGoalSplit"] {
+		fields = append(fields, map[string]any{
+			"name": "proposeGoalSplit",
+			"args": []any{map[string]any{"name": "input"}},
 		})
 	}
 	return map[string]any{"fields": fields}
