@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -109,6 +110,115 @@ func TestLoadParsesConfig(t *testing.T) {
 	}
 }
 
+// Load reads the platform's `suites:` — name, kind, command, paths,
+// reports, jobs — and this node's own timeout, always, artifacts and
+// results beside them, ignoring a key it does not know.
+func TestLoadReadsSuitesWithKindPathsReportsJobsAndTheNodesKeys(t *testing.T) {
+	dir := t.TempDir()
+	yml := `version: 2
+suites:
+  - name: vet
+    kind: lint
+    command: go vet ./...
+    always: true
+  - name: e2e
+    kind: integration
+    command: " go test ./e2e -json "
+    paths: [e2e/**, "platform/**", e2e/**]
+    reports: [e2e.json, "  "]
+    jobs: [shard (e2e 1/3), shard (e2e 2/3)]
+    timeout: 20m
+    artifacts: [cover.out]
+    results: go-test-json:e2e.json
+    flaky: retry
+`
+	writeFile(t, filepath.Join(dir, ".runsheet", "validate.yml"), yml)
+	cfg, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Step{
+		{Name: "vet", Kind: KindLint, Command: "go vet ./...", Paths: []string{}, Always: true, Timeout: DefaultTimeout},
+		{Name: "e2e", Kind: KindIntegration, Command: "go test ./e2e -json", Paths: []string{"e2e/**", "platform/**"},
+			Reports: []string{"e2e.json"}, Jobs: []string{"shard (e2e 1/3)", "shard (e2e 2/3)"},
+			Timeout: 20 * time.Minute, Artifacts: []string{"cover.out"}, Results: "go-test-json:e2e.json"},
+	}
+	if !reflect.DeepEqual(cfg.Steps, want) {
+		t.Fatalf("Load =\n %+v\nwant\n %+v", cfg.Steps, want)
+	}
+}
+
+// A file the platform refuses is refused here too: an unknown kind, a
+// repeated name, a path that is not a repo-relative glob.
+func TestLoadRefusesWhatThePlatformRefuses(t *testing.T) {
+	for name, yml := range map[string]string{
+		"kind":     "suites:\n  - name: a\n    kind: smoke\n    command: x\n",
+		"repeated": "suites:\n  - name: a\n    command: x\n  - name: a\n    command: y\n",
+		"path":     "suites:\n  - name: a\n    command: x\n    paths: [../up]\n",
+		"command":  "suites:\n  - name: a\n",
+	} {
+		if _, err := Parse([]byte(yml)); err == nil {
+			t.Errorf("%s: parsed", name)
+		}
+	}
+}
+
+// A suite with no paths is affected by every change, as the platform's
+// Affected has it — `always` or not; one with paths only by a match.
+func TestSelectTakesASuiteWithNoPathsForAnyChange(t *testing.T) {
+	cfg, err := Parse([]byte("suites:\n  - name: lint\n    kind: lint\n    command: go vet ./...\n  - name: e2e\n    kind: integration\n    command: go test ./e2e\n    paths: [e2e/**]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, changed := range [][]string{{"docs/readme.md"}, {"a/b/c.go"}, {".runsheet/validate.yml"}} {
+		got := Select(cfg, changed)
+		if len(got) != 1 || got[0].Name != "lint" {
+			t.Errorf("Select(%v) = %v, want [lint]", changed, got)
+		}
+	}
+	if got := Select(cfg, []string{"e2e/x_test.go"}); len(got) != 2 {
+		t.Errorf("Select(e2e) = %v, want lint and e2e", got)
+	}
+}
+
+// Nothing affected selects nothing — and that is a selection, not an
+// error: the run attests it ran none.
+func TestSelectCanBeEmpty(t *testing.T) {
+	cfg := Config{Steps: []Step{{Name: "e2e", Command: "x", Paths: []string{"e2e/**"}}}}
+	if got := Select(cfg, []string{"docs/x.md"}); len(got) != 0 {
+		t.Fatalf("Select = %v, want none", got)
+	}
+}
+
+// The reports of one run are cut at 256 KiB in all, not per step.
+func TestRunCutsReportsAtTheCapInAll(t *testing.T) {
+	dir := t.TempDir()
+	big := strings.Repeat("x", 200*1024)
+	writeFile(t, filepath.Join(dir, "a.json"), big)
+	writeFile(t, filepath.Join(dir, "b.json"), big)
+	steps := []Step{
+		{Name: "a", Command: "true", Reports: []string{"a.json"}, Timeout: time.Second},
+		{Name: "b", Command: "true", Reports: []string{"b.json", "missing.json"}, Timeout: time.Second},
+	}
+	results, err := Run(context.Background(), steps, HostRunner{Dir: dir}, Options{Dir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results[0].Report) != 200*1024 || len(results[1].Report) != 56*1024 {
+		t.Fatalf("reports = %d, %d bytes, want %d and %d", len(results[0].Report), len(results[1].Report), 200*1024, 56*1024)
+	}
+}
+
+func writeFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRunStopsAtTheFirstFailingStepAndNamesIt(t *testing.T) {
 	dir := t.TempDir()
 	steps := []Step{
@@ -185,46 +295,104 @@ func TestParseJUnitCountsRunPassedFailed(t *testing.T) {
 	}
 }
 
-func TestSuiteHashChangesWhenAnAffectedFileChanges(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(dir, "pkg"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	affected := filepath.Join(dir, "pkg", "a.go")
-	other := filepath.Join(dir, "pkg", "b.txt")
-	if err := os.WriteFile(affected, []byte("package pkg"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(other, []byte("unaffected"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	step := Step{Name: "unit", Command: "go test ./...", Paths: []string{"**/*.go"}}
+// hashBase is a validate.yml in the platform's shape with this node's
+// extra keys; the hash cases below change it one way at a time.
+const hashBase = `# the suites
+suites:
+  - name: vet
+    kind: lint
+    command: go vet ./...
+    always: true
+    timeout: 5m
+  - name: unit
+    kind: unit
+    command: go test -json ./...
+    paths: ["**/*.go", go.mod]
+    reports: [unit.json]
+    jobs: [test]
+    results: stdout
+`
 
-	before, err := SuiteHash(dir, step)
+func mustHash(t *testing.T, content string) string {
+	t.Helper()
+	h, err := SuiteHash([]byte(content))
 	if err != nil {
-		t.Fatalf("SuiteHash() err = %v", err)
+		t.Fatalf("SuiteHash(%q): %v", content, err)
 	}
+	return h
+}
 
-	if err := os.WriteFile(other, []byte("still unaffected, but changed"), 0o644); err != nil {
+// SuiteHash reads what runs and when: comments, blank lines, key order,
+// reports, jobs and this node's own keys leave it; name, kind, command,
+// paths and the suites' order change it.
+func TestSuiteHashIsTheCanonicalSuitesNotTheBytes(t *testing.T) {
+	want := mustHash(t, hashBase)
+	if len(want) != 64 || strings.ToLower(want) != want {
+		t.Fatalf("hash %q is not lower-case hex sha256", want)
+	}
+	same := map[string]string{
+		"comments and blank lines": "# a comment\n\n" + strings.ReplaceAll(hashBase, "  - name: unit\n", "\n  # unit tests\n  - name: unit # here\n"),
+		"key order": `suites:
+  - command: go vet ./...
+    kind: lint
+    name: vet
+  - paths:
+      - "**/*.go"
+      - go.mod
+    command: go test -json ./...
+    name: unit
+    kind: unit
+`,
+		"reports":        strings.Replace(hashBase, "reports: [unit.json]", "reports: [other.json, more.xml]", 1),
+		"jobs":           strings.Replace(hashBase, "jobs: [test]", "jobs: [shard (e2e 1/3)]", 1),
+		"timeout":        strings.Replace(hashBase, "timeout: 5m", "timeout: 50m", 1),
+		"always":         strings.Replace(hashBase, "always: true", "always: false", 1),
+		"results":        strings.Replace(hashBase, "results: stdout", "results: junit:out.xml", 1),
+		"an unknown key": strings.Replace(hashBase, "suites:", "version: 2\nsuites:", 1),
+	}
+	for name, content := range same {
+		if got := mustHash(t, content); got != want {
+			t.Errorf("%s changed the hash: %s != %s", name, got, want)
+		}
+	}
+	changed := map[string]string{
+		"name":       strings.Replace(hashBase, "name: vet", "name: lint", 1),
+		"kind":       strings.Replace(hashBase, "kind: lint", "kind: typecheck", 1),
+		"command":    strings.Replace(hashBase, "go vet ./...", "go vet ./internal/...", 1),
+		"paths":      strings.Replace(hashBase, `["**/*.go", go.mod]`, `["**/*.go"]`, 1),
+		"path order": strings.Replace(hashBase, `["**/*.go", go.mod]`, `[go.mod, "**/*.go"]`, 1),
+		"suite order": `suites:
+  - name: unit
+    kind: unit
+    command: go test -json ./...
+    paths: ["**/*.go", go.mod]
+  - name: vet
+    kind: lint
+    command: go vet ./...
+`,
+	}
+	for name, content := range changed {
+		if got := mustHash(t, content); got == want {
+			t.Errorf("a change to %s left the hash unchanged", name)
+		}
+	}
+	if _, err := SuiteHash([]byte("suites: [\n")); err == nil {
+		t.Error("an invalid file hashed")
+	}
+}
+
+// The platform's own hash of runsheet/runsheet's validate.yml (at
+// 1d08f03b6c84804ef46d3e9306424400057b03df), computed by its
+// platform/validatespec.SuiteHash: the node's must be byte for byte the
+// same, or every verify answers wrong_suite.
+func TestSuiteHashIsThePlatformsOnRunsheetsFile(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "runsheet-validate.yml"))
+	if err != nil {
 		t.Fatal(err)
 	}
-	unaffected, err := SuiteHash(dir, step)
-	if err != nil {
-		t.Fatalf("SuiteHash() err = %v", err)
-	}
-	if unaffected != before {
-		t.Fatalf("SuiteHash() changed after an unaffected file changed")
-	}
-
-	if err := os.WriteFile(affected, []byte("package pkg\n\nfunc x() {}"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	after, err := SuiteHash(dir, step)
-	if err != nil {
-		t.Fatalf("SuiteHash() err = %v", err)
-	}
-	if after == before {
-		t.Fatalf("SuiteHash() did not change after an affected file changed")
+	const platform = "84015ff30d2d0be7f7ab0e827a42303b747c8f201b964d4027eee810c1cf64e7"
+	if got := mustHash(t, string(data)); got != platform {
+		t.Fatalf("SuiteHash = %s, the platform's is %s", got, platform)
 	}
 }
 
@@ -237,7 +405,6 @@ func TestAttestationHasEveryField(t *testing.T) {
 	steps := []StepResult{{
 		Name:        "vet",
 		Command:     "go vet ./...",
-		SuiteHash:   "deadbeef",
 		ExitCode:    0,
 		DurationMs:  1500,
 		TestsRun:    2,
@@ -274,8 +441,8 @@ func TestAttestationHasEveryField(t *testing.T) {
 		t.Fatalf("steps = %d, want 1", len(att.Steps))
 	}
 	s := att.Steps[0]
-	if s.Name == "" || s.Command == "" || s.SuiteHash == "" {
-		t.Errorf("step missing name/command/suiteHash: %+v", s)
+	if s.Name == "" || s.Command == "" {
+		t.Errorf("step missing name/command: %+v", s)
 	}
 	if s.DurationMs == 0 {
 		t.Error("step durationMs is zero")
@@ -292,8 +459,8 @@ func TestAttestationHasEveryField(t *testing.T) {
 	if att.At.IsZero() {
 		t.Error("at is zero")
 	}
-	if att.Validation.Hash == "" {
-		t.Error("validation.hash is empty")
+	if want := mustHash(t, "steps:\n  - name: vet\n    command: go vet ./...\n"); att.Validation.Hash != want {
+		t.Errorf("validation.hash = %q, want the file's SuiteHash %q", att.Validation.Hash, want)
 	}
 }
 
@@ -310,6 +477,31 @@ func TestMinutesByStepRoundsUp(t *testing.T) {
 	for name, minutes := range want {
 		if got[name] != minutes {
 			t.Errorf("MinutesByStep()[%s] = %d, want %d", name, got[name], minutes)
+		}
+	}
+}
+
+// This repository's own validate.yml is in the platform's shape: a
+// `suites:` key and a kind on every suite, so the platform's Parse reads
+// it and its hash is the one the node attests.
+func TestThisRepositorysFileIsThePlatformsShape(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", ".runsheet", "validate.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "\nsuites:\n") || strings.Contains(string(data), "\nsteps:") {
+		t.Fatal("validate.yml has no top-level suites: key")
+	}
+	cfg, err := Parse(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Steps) == 0 {
+		t.Fatal("no suites")
+	}
+	for _, s := range cfg.Steps {
+		if !s.Kind.Valid() {
+			t.Errorf("suite %s has kind %q", s.Name, s.Kind)
 		}
 	}
 }

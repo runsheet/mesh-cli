@@ -1,0 +1,41 @@
+# What runsheet/runsheet declares as its validation (ADR 032, attested
+# validation; platform/validatespec reads it). The node's sandbox runs
+# the affected suites and the platform attests the run; a pull request's
+# verify step checks the attestation's suite hash against this file at
+# the pull request's base. A change here is a risk class (workflows):
+# the pull request that makes it always runs full CI.
+suites:
+  - name: lint
+    kind: lint
+    command: go vet ./...
+  - name: typecheck
+    kind: typecheck
+    command: go build ./...
+  - name: unit
+    kind: unit
+    command: scripts/mini/load-gate.sh && go test $(go list ./... | grep -v /e2e) -count=1 -json
+    reports:
+      - unit.json
+  - name: build
+    kind: build
+    command: go build ./cmd/...
+  - name: integration
+    kind: integration
+    # -p=4 matches test.yml's E2E_GO_PARALLELISM: the mini's 18 cores
+    # over the ~4 shard jobs that run together, not 18-wide per shard.
+    command: scripts/mini/load-gate.sh && GOFLAGS=-p=4 go test ./e2e -count=1 -json
+    # the CI jobs this suite stands in for, by their check names in
+    # .github/workflows/test.yml: what a verified attestation skips, and
+    # whose measured minutes the scorecard counts as saved (ADR 032, The
+    # honesty check). Not part of the suite hash.
+    jobs:
+      - shard (e2e 1/3)
+      - shard (e2e 2/3)
+      - shard (e2e 3/3)
+    paths:
+      - e2e/**
+      - platform/**
+      - gateway/**
+      - prologue/**
+    reports:
+      - integration.json

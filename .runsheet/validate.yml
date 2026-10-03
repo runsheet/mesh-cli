@@ -1,16 +1,22 @@
 # Each command runs under `sh -c` with the session's env, whose PATH may
 # not name the Go toolchain (the mini's is /usr/local/go/bin), so the
 # usual install dirs are appended as a fallback; a go already on PATH wins.
-steps:
+# The suites in runsheet ADR 032's shape (`suites:`, a kind on each),
+# read by the node's internal/validate; `always`, `timeout` and `results`
+# are the node's own keys and stay out of the suite hash.
+suites:
   - name: vet
+    kind: lint
     command: PATH="$PATH:/usr/local/go/bin:$HOME/go/bin:$HOME/sdk/go/bin" go vet ./...
     always: true
 
   - name: build
+    kind: build
     command: PATH="$PATH:/usr/local/go/bin:$HOME/go/bin:$HOME/sdk/go/bin" go build ./cmd/mesh/
     always: true
 
   - name: unit
+    kind: unit
     command: PATH="$PATH:/usr/local/go/bin:$HOME/go/bin:$HOME/sdk/go/bin" go test -json ./...
     paths:
       - "**/*.go"
