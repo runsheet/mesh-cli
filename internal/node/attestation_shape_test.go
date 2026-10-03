@@ -20,8 +20,8 @@ func TestGatewayAttestationIsThePlatformsShape(t *testing.T) {
 		NodeID: "node-1", SessionID: "s-1", ItemID: "item-1", At: at,
 		Validation: validate.ValidationFile{File: ".runsheet/validate.yml", Hash: "vhash"},
 		Steps: []validate.StepResult{
-			{Name: "vet", Command: "go vet ./...", SuiteHash: "h1", ExitCode: 0, DurationMs: 900},
-			{Name: "unit", Command: "go test -json ./...", SuiteHash: "h2", ExitCode: 1, DurationMs: 61000,
+			{Name: "vet", Command: "go vet ./...", ExitCode: 0, DurationMs: 900},
+			{Name: "unit", Command: "go test -json ./...", ExitCode: 1, DurationMs: 61000,
 				TestsRun: 12, TestsPassed: 11, TestsFailed: 1, Report: `{"Action":"fail"}`,
 				Artifacts: []validate.Artifact{{Path: "cover.out", SHA256: "beef"}}},
 			{Name: "e2e", Command: "go test ./e2e", ExitCode: 0, DurationMs: 5, TestsRun: 3, TestsPassed: 3},

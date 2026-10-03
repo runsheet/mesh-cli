@@ -2,8 +2,6 @@ package validate
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -16,7 +14,6 @@ import (
 type StepResult struct {
 	Name        string `json:"name"`
 	Command     string `json:"command"`
-	SuiteHash   string `json:"suiteHash"`
 	ExitCode    int    `json:"exitCode"`
 	DurationMs  int64  `json:"durationMs"`
 	TestsRun    int    `json:"testsRun,omitempty"`
@@ -24,8 +21,9 @@ type StepResult struct {
 	TestsFailed int    `json:"testsFailed,omitempty"`
 	Output      string `json:"output,omitempty"`
 	// Report is the raw test report the step's results named (its
-	// results file, or stdout), up to reportCap — the attestation's
-	// reports, which the platform stores with the signature.
+	// results file, or stdout; else its reports files), within the
+	// run's reportCap — the attestation's reports, which the platform
+	// stores with the signature.
 	Report    string     `json:"report,omitempty"`
 	TimedOut  bool       `json:"timedOut,omitempty"`
 	Artifacts []Artifact `json:"artifacts,omitempty"`
@@ -38,8 +36,8 @@ type Artifact struct {
 }
 
 // ValidationFile names the config a run's steps were selected from, and
-// its content hash, so the attestation stands on its own even if
-// validate.yml later changes.
+// its SuiteHash — the platform's canonical hash of the file, which a
+// pull request's verify step compares with the base's.
 type ValidationFile struct {
 	File string `json:"file"`
 	Hash string `json:"hash"`
@@ -73,8 +71,8 @@ type Meta struct {
 }
 
 // Build fills in an Attestation for one validation run: commit and tree
-// from git (dir must be commit's checkout), the validation file's hash
-// from disk, "at" as now in UTC, and the rest from meta and results.
+// from git (dir must be commit's checkout), the validation file's
+// SuiteHash from disk, "at" as now in UTC, and the rest from meta and results.
 func Build(dir, commit string, results []StepResult, meta Meta) (Attestation, error) {
 	tree, err := gitTree(dir, commit)
 	if err != nil {
@@ -119,8 +117,7 @@ func validationFileHash(dir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:]), nil
+	return SuiteHash(data)
 }
 
 // Failed names the first failing step, if any.

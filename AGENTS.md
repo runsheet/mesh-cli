@@ -687,8 +687,13 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
 - **Validation** (`internal/node/validation.go`, `internal/validate/`,
   docs/adr/adr-013 and adr-014, runsheet ADR 032): after a successful,
   not already_done build and before the push, `.runsheet/validate.yml`'s
-  steps the diff selects (`Workspacer.ChangedPaths`) plus the always
-  ones run on HEAD — in the session's pod (`sandboxRunner`, runner
+  suites (the platform's schema: `suites:` with name, kind, command,
+  paths, reports, jobs, plus the node's timeout, always, artifacts,
+  results; `steps:` an alias) the diff affects (`Workspacer.ChangedPaths`;
+  a suite with no paths is every change) plus the always ones run on
+  HEAD — none affected still attests, `commands: []` — and the
+  attestation's `suiteHash` is `validate.SuiteHash`, the platform's
+  `validatespec.SuiteHash` of the file (ADR-013's amendment) — in the session's pod (`sandboxRunner`, runner
   image by `sandbox.ImageDigest`) or on the host (`host:<hostname>`,
   the session's env less its secrets). The attestation goes to
   `<workdir>.session/attestation.json` and, after the push, to

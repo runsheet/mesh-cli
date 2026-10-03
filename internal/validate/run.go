@@ -79,8 +79,8 @@ func (r HostRunner) Run(ctx context.Context, cmd string, timeout time.Duration, 
 
 // Options configures Run.
 type Options struct {
-	// Dir is the workspace the steps ran (and run) in — SuiteHash and
-	// artifact digests are relative to it.
+	// Dir is the workspace the steps ran (and run) in — results files
+	// and artifact digests are relative to it.
 	Dir string
 	// ContinueOnFailure runs every selected step regardless of an
 	// earlier failure; otherwise the first failing step stops the run.
@@ -94,18 +94,17 @@ const outputCap = 8 * 1024
 // Run runs each step through runner in order, recording a StepResult for
 // each. The first step whose command errors or exits non-zero stops the
 // run (its result is still recorded) unless opts.ContinueOnFailure.
+// Each step's report is cut to what is left of reportCap after the
+// steps before it.
 func Run(ctx context.Context, steps []Step, runner Runner, opts Options) ([]StepResult, error) {
 	results := make([]StepResult, 0, len(steps))
+	room := reportCap
 	for _, step := range steps {
 		var stdout, stderr bytes.Buffer
 		start := time.Now()
 		exitCode, runErr := runner.Run(ctx, step.Command, step.Timeout, &stdout, &stderr)
 		duration := time.Since(start)
 
-		hash, err := SuiteHash(opts.Dir, step)
-		if err != nil {
-			return results, err
-		}
 		artifacts, err := digestArtifacts(opts.Dir, step.Artifacts)
 		if err != nil {
 			return results, err
@@ -114,11 +113,14 @@ func Run(ctx context.Context, steps []Step, runner Runner, opts Options) ([]Step
 		if err != nil {
 			return results, err
 		}
+		if len(report) > room {
+			report = report[:room]
+		}
+		room -= len(report)
 
 		sr := StepResult{
 			Name:        step.Name,
 			Command:     step.Command,
-			SuiteHash:   hash,
 			ExitCode:    exitCode,
 			DurationMs:  duration.Milliseconds(),
 			TestsRun:    run,
@@ -141,14 +143,17 @@ func Run(ctx context.Context, steps []Step, runner Runner, opts Options) ([]Step
 	return results, nil
 }
 
-// reportCap is the most of a step's raw report kept on its StepResult:
-// the platform keeps 256 KiB of reports in all (runsheet ADR 032).
+// reportCap is the most of a run's raw reports kept on its StepResults,
+// in all: the platform keeps 256 KiB of reports per attestation
+// (runsheet ADR 032).
 const reportCap = 256 * 1024
 
 // parseResults parses a step's test output per its Results field: empty
 // parses nothing, "stdout" reads stdout as go test -json, "go-test-json:
 // <path>" and "junit:<path>" read that file (relative to dir). The raw
-// report it parsed is returned beside the counts, cut at reportCap.
+// report it parsed is returned beside the counts, cut at reportCap. A
+// step with no results but reports is the files it names that exist,
+// one after another, counted as no tests.
 func parseResults(dir string, step Step, stdout []byte) (run, passed, failed int, report string, err error) {
 	var raw []byte
 	parse := ParseGoTestJSON
@@ -165,13 +170,30 @@ func parseResults(dir string, step Step, stdout []byte) (run, passed, failed int
 		}
 		parse = ParseJUnit
 	default:
-		return 0, 0, 0, "", nil
+		return 0, 0, 0, readReports(dir, step.Reports), nil
 	}
 	run, passed, failed, err = parse(bytes.NewReader(raw))
 	if len(raw) > reportCap {
 		raw = raw[:reportCap]
 	}
 	return run, passed, failed, string(raw), err
+}
+
+// readReports is the content of each of reports under dir that exists,
+// in order, cut at reportCap.
+func readReports(dir string, reports []string) string {
+	var b strings.Builder
+	for _, r := range reports {
+		data, err := os.ReadFile(filepath.Join(dir, r))
+		if err != nil {
+			continue
+		}
+		b.Write(data)
+		if b.Len() >= reportCap {
+			return b.String()[:reportCap]
+		}
+	}
+	return b.String()
 }
 
 func headTail(combined string) string {
