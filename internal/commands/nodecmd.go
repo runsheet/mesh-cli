@@ -657,7 +657,7 @@ func nodeStart(cmd *cobra.Command, args []string, logger *log.Logger) error {
 
 	// every session's plan standing lands in Limits: the heartbeat
 	// carries it and the loop paces by it
-	loop := &node.Loop{GW: gw, Cfg: cfg, Scopes: scopes, Owned: owned, Version: version.Resolved(), Commit: version.Commit(), Harness: "claude-code", Interval: nodeIntervalFlag, Log: logger, Limits: &node.Limits{},
+	loop := &node.Loop{GW: gw, Cfg: cfg, Scopes: scopes, Owned: owned, ClaimsDir: node.ClaimsDir(workRoot), Version: version.Resolved(), Commit: version.Commit(), Harness: "claude-code", Interval: nodeIntervalFlag, Log: logger, Limits: &node.Limits{},
 		// a ranged capacity scales by the plan's windows, capped by this
 		// machine's load and memory (adr-004)
 		Machine: node.HostMachine(),
@@ -861,7 +861,9 @@ func runPollMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *
 	logger.Printf("poll mode: node %s (%s) for %s, capacity %s, every %s", cfg.Name, cfg.Slug, strings.Join(scopes.Names(), ", "), cfg.Capacity, loop.Interval)
 	// sessions the process before this one started run on in their own
 	// units: each is taken up where it is, before anything is claimed
-	adoptSessions(ctx, gw, cfg, h, second, loop, runner, workRoot, fallback, accounts, logger)
+	found := adoptSessions(ctx, gw, cfg, h, second, loop, runner, workRoot, fallback, accounts, logger)
+	// plan and research claims it held but had not opened are taken again
+	reopenClaims(ctx, loop, workRoot, found, logger)
 	// items this node held when it last stopped are taken up again: a
 	// restart mid-build continues them (the workspace keeps the branch)
 	for _, sc := range scopes {
@@ -1228,11 +1230,12 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 	// one per node: the evaluations of every tick and the adopted ones
 	// share what has been said once per item
 	second := codexSecondOpinion(cfg, loop, workRoot, logger)
-	adoptSessions(ctx, gw, cfg, oneShot, second, loop, &node.Runner{GW: gw, Harness: oneShot, WS: ws, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, Fallback: fallback, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Condition: loop.NoteCondition, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Log: logger}, workRoot, fallback, accounts, logger)
+	found := adoptSessions(ctx, gw, cfg, oneShot, second, loop, &node.Runner{GW: gw, Harness: oneShot, WS: ws, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, Fallback: fallback, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Condition: loop.NoteCondition, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Log: logger}, workRoot, fallback, accounts, logger)
 	loop.Evaluate = evaluateWith(gw, cfg, observed(loop, logger), second, loop, workRoot, fallback, accounts, logger)
 	loop.Plan = planWith(gw, cfg, observed(loop, logger), loop, workRoot, accounts, logger)
 	loop.Research = researchWith(gw, cfg, observed(loop, logger), loop, workRoot, accounts, logger)
 	loop.Rebase = rebaseWith(gw, cfg, observed(loop, logger), loop, loop.CurrentScopes, workRoot, fallback, accounts, logger)
+	reopenClaims(ctx, loop, workRoot, found, logger)
 	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) {
 		ready, err := readyChannelItem(ctx, gw, ws, loop.CurrentScopes(), item, workRoot, fallback, logger.Printf)
 		if err != nil {
@@ -1582,7 +1585,7 @@ func director(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harne
 // 009): each kind by the session that would have run it, the item's
 // heartbeat sent at once. The held items Adopt then runs from the start
 // are only those with no session left to take up.
-func adoptSessions(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harness.Harness, second secondOpinion, loop *node.Loop, runner *node.Runner, workRoot string, fallback *node.TokenFallback, accounts *node.Credentials, logger *log.Logger) {
+func adoptSessions(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harness.Harness, second secondOpinion, loop *node.Loop, runner *node.Runner, workRoot string, fallback *node.TokenFallback, accounts *node.Credentials, logger *log.Logger) []node.FoundSession {
 	ids := make([]string, 0, len(loop.CurrentScopes()))
 	for _, sc := range loop.CurrentScopes() {
 		ids = append(ids, sc.NodeID)
@@ -1608,7 +1611,7 @@ func adoptSessions(ctx context.Context, gw *gateway.Client, cfg *node.Config, h 
 		}
 	}
 	if len(found) == 0 {
-		return
+		return nil
 	}
 	loop.AdoptSession = node.AdoptWith{GW: gw, Scopes: loop.CurrentScopes, Logf: logger.Printf, Legacy: legacy,
 		Build: func(ctx context.Context, item gateway.WorkItem, s node.FoundSession) error {
@@ -1630,6 +1633,26 @@ func adoptSessions(ctx context.Context, gw *gateway.Client, cfg *node.Config, h 
 		},
 	}.Adopt
 	logger.Printf("adopt: %d session(s) of the process before this one taken up", loop.AdoptSessions(ctx, found))
+	return found
+}
+
+// reopenClaims re-opens, after adoptSessions and once the loop's Plan and
+// Research are set, every plan or research claim the process before this
+// one recorded and never opened a session for (mesh-cli ADR 009, Claims):
+// one whose session was found is adoptSessions'.
+func reopenClaims(ctx context.Context, loop *node.Loop, workRoot string, found []node.FoundSession, logger *log.Logger) {
+	ids := make([]string, 0, len(loop.CurrentScopes()))
+	for _, sc := range loop.CurrentScopes() {
+		ids = append(ids, sc.NodeID)
+	}
+	claims, err := node.FindClaims(workRoot, ids)
+	if err != nil {
+		logger.Printf("claims: %v", err)
+	}
+	if len(claims) == 0 {
+		return
+	}
+	logger.Printf("claims: %d unopened claim(s) of the process before this one re-opened", loop.ReopenClaims(ctx, claims, found))
 }
 
 // recentProgress reports whether an item's last heartbeat is within the

@@ -248,7 +248,15 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   session dir goes (`harness.RemoveSession`) only once the end is
   handled. The heartbeat's optional `adopted [{itemId, kind, since}]`
   lists them while they run. Sandboxed and Codex sessions still end
-  with the node.
+  with the node. **Claims outlive the node too** (`claims.go`, ADR-009
+  Claims): a plan or research claim is recorded as a `ClaimRecord` in
+  `<root>/.claims/` (`Loop.ClaimsDir`) the moment it is granted and
+  removed once its session's end is handled (kept when the context is
+  done); after `AdoptSessions`, `FindClaims` + `Loop.ReopenClaims`
+  re-claim each record with no found session by the same node id, log
+  `re-opening the plan claim of goal <slug> held since <t>` (or `the
+  research claim of <project>/<direction>`) and run it fresh; a refused
+  re-claim removes the record and says why.
 - **Self-update** (`internal/node/selfupdate.go`, `internal/selfupdate/`,
   adr-002): after each heartbeat the loop reads the node's desired
   version (`GetDesiredVersion`; empty, the running one or `dev` does

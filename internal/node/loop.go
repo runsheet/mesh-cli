@@ -158,6 +158,11 @@ type Loop struct {
 	// (AdoptSessions, mesh-cli ADR 009; AdoptWith is the node's). Nil
 	// adopts nothing.
 	AdoptSession func(ctx context.Context, s FoundSession)
+	// ClaimsDir is where a plan or research claim is recorded the moment
+	// it is granted, until its session's end is handled (ClaimsDir of the
+	// work root; ReopenClaims, mesh-cli ADR 009 Claims). Empty records
+	// nothing. A record is not a session: the drain does not wait on it.
+	ClaimsDir string
 
 	mu sync.Mutex
 	// answer is the platform's last NodeAnswer (TakeAnswer); restrict is
@@ -1615,18 +1620,10 @@ func (l *Loop) planRequested(ctx context.Context) {
 			continue
 		}
 		l.logf("%s: planning goal %q", sc.Name(), g.Slug)
-		l.wg.Add(1)
-		go func(ctx context.Context, g gateway.Goal, sc Scope) {
-			defer crash.Guard()
-			defer l.wg.Done()
-			defer func() {
-				l.mu.Lock()
-				delete(l.planning, g.ID)
-				l.mu.Unlock()
-				l.notify()
-			}()
-			l.Plan(ctx, g, sc)
-		}(actx, g, sc)
+		// on disk before the session opens: a node that exits before then
+		// leaves the claim for the next process to re-open (ADR 009, Claims)
+		l.recordClaim(ClaimRecord{NodeID: sc.NodeID, Kind: harness.KindPlan, GoalID: g.ID, ScopeID: sc.ID, Name: g.Slug})
+		l.startPlan(actx, g, sc)
 	}
 }
 
@@ -1735,18 +1732,8 @@ func (l *Loop) researchDue(ctx context.Context) {
 				continue
 			}
 			l.logf("%s: researching %q", sc.Name(), p.Slug+"/"+d.Slug)
-			l.wg.Add(1)
-			go func(ctx context.Context, d gateway.Direction, p gateway.Project, sc Scope) {
-				defer crash.Guard()
-				defer l.wg.Done()
-				defer func() {
-					l.mu.Lock()
-					delete(l.researching, d.ID)
-					l.mu.Unlock()
-					l.notify()
-				}()
-				l.Research(ctx, d, p, sc)
-			}(actx, d, p, sc)
+			l.recordClaim(ClaimRecord{NodeID: sc.NodeID, Kind: harness.KindResearch, DirectionID: d.ID, ScopeID: sc.ID, Name: p.Slug + "/" + d.Slug})
+			l.startResearch(actx, d, p, sc)
 		}
 	}
 }
