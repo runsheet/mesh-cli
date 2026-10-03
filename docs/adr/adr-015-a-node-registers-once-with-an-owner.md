@@ -594,3 +594,24 @@ Tests: `internal/node/configuredorg_test.go`
 `TestConfiguredOrgIDNoRestrictionIsTheFirst`,
 `TestConfiguredOrgIDNoneMatchesSendsNone`,
 `TestOwnedRegisterSendsTheConfiguredOrg`).
+
+## RegisterNodeInput gains `kind` (2026-10-03)
+
+ADR-023 (`mesh mcp`, Claude Code is a personal node) needs a node row
+marked apart from an operator's: `mesh mcp`'s own node registers on the
+owner contract above (`Owner "person"`) but also carries `Kind
+"personal"`, so the platform and `mesh node status` can tell it from a
+node a person runs as a service.
+
+**`RegisterNodeInput.Kind`**, sent as a `kind` key only when the
+introspected `RegisterNodeInput` has the field — `gateway.NodeKindField`
+("kind"), `Client.TakesNodeKind(ctx)` cached an hour the same way as
+`TakesOwner`/`OwnerField`. An older platform's `registerNode` still
+accepts the call unchanged, with no `kind` sent. `internal/node/personal.go`'s
+`RegisterPersonal` is the first caller: it sends `Kind "personal"`
+alongside `Owner "person"`.
+
+Tests: `internal/gateway` (the `TakesNodeKind` probe, cached and
+decided by introspection the same way as `TakesOwner`), and
+`internal/node/personal_test.go` (a registration's input carries `kind`
+`personal` when the platform's schema has it, none when it does not).
