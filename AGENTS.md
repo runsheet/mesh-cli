@@ -123,7 +123,14 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   parsed the final message` once per session; a finish the platform
   refuses after a call is `finished by tool call on the platform`, not a
   failure (ADR-023, finish by tool call; the evaluator's `mesh_verdict`
-  and the planner's `mesh_plan` are its item 5). Change wording
+  and the planner's `mesh_plan` are its item 5). Both finish calls carry
+  a `description` — the PR body `FinishDescription` renders
+  (`internal/node/finishdesc.go`): a `## Who` section naming who built
+  the item (its actor, model and adapter) and who it was paired with,
+  the evaluator left to `EvaluateWorkItem`'s own actor rather than named
+  here — sent only when the introspected `FinishWorkItemInput` takes
+  `description` (every-actor-has-a-name item 3, adr-015's amendment).
+  Change wording
   freely; never the contract. (A later goal moves the guidance onto the
   platform as agent definitions.)
 - `internal/latchkey/` + `internal/auth/token.go`: the machine

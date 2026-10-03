@@ -677,3 +677,50 @@ commands and its commits name one agent. Tests:
 evaluation's `evaluateWorkItem` as `agent:evaluator@<slug>` on both
 paths; a plan's `planGoal` as `agent:planner@<slug>`), each read with
 `gateway.ActorFrom` on the ctx the node's gateway receives.
+
+## FinishWorkItem carries a description naming who built and paired (2026-10-03)
+
+Goal every-actor-has-a-name item 3: the PR body `FinishWorkItem` opens
+the pull request with should name who built the item and who it was
+paired with, not just the operator's token. The evaluator is not known
+at finish time — an item can be evaluated after it is finished, and
+twice — so the description does not name it; it says where to look.
+
+**The shape.** `internal/node.FinishDescription(FinishWho)` renders:
+
+```
+## Who
+
+Built by agent:builder@<slug> on <model> (<adapter>)
+Paired with <name> <email>
+[one more such line per further pairer, or, with none:]
+Paired with nobody
+
+Evaluated by: recorded by the evaluation's actor
+```
+
+`FinishWho.Actor` is the build session's own actor string (this ADR's
+section above, `gateway.ActorFrom`); `Pairers` is `internal/node.Pairer`
+(every-actor-has-a-name item 2, node.yaml's `pair:`). "Evaluated by:
+recorded by the evaluation's actor" is deliberate: the evaluator is
+named by `EvaluateWorkItem`'s own `actor` (`agent:evaluator@<slug>`),
+recorded on the evaluation's event, not folded into the finish's
+description — the platform reads the evaluator from there, not from
+this text.
+
+**Where it rides.** `gateway.DescriptionField` is `"description"` on
+`FinishWorkItemInput`, sent by `Client.FinishWorkItem` and
+`FinishWorkItemAlreadyDone` (a variadic `description ...string`, so a
+caller that has none sends none) only when the introspected
+`FinishWorkItemInput` takes it (`Client.withDescription`, the same
+once-an-hour probe as `actor`'s, above). The `Runner`'s `buildRun.description`
+renders it from the session's actor, model, adapter (`Adapter`) and
+`ident.Pairers`, and `afterBuild` passes it to both finish calls, so a
+pushed finish and an already-done one carry the same text.
+
+Tests: `internal/node/finishdesc_test.go` (`FinishDescription`'s exact
+lines, with pairers and with none; a `Runner` test against
+`gatewaytest.Fake` asserting the recorded `finishWorkItem` input's
+`description` names the builder's actor and a pairer, that
+`Fake.NoDescription` omits the key while the finish still succeeds, and
+that an already-done finish carries the same description).
