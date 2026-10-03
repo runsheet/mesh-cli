@@ -17,7 +17,7 @@ var rootCmd = &cobra.Command{
 func init() {
 	// --version says what `mesh version` does: the tag and the commit
 	rootCmd.SetVersionTemplate(version.Long() + "\n")
-	rootCmd.AddCommand(authCmd, nodeCmd, goalCmd, channelCmd)
+	rootCmd.AddCommand(authCmd, nodeCmd, goalCmd, channelCmd, mcpCmd)
 	rootCmd.AddCommand(orgCmd, agentCmd, sessionCmd)
 	rootCmd.AddCommand(runCmd, psCmd, attachCmd, logsCmd, restartCmd, rmCmd, inspectCmd)
 	rootCmd.AddCommand(pullCmd, imagesCmd, templatesCmd, localUpdateCmd)

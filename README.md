@@ -7,6 +7,33 @@ gateway (`https://api.runsheet.dev/graphql`) as the machine credential
 Latchkey issued it — or, until the estate has moved over, as the person
 whose console token it holds. No gRPC, no relay, no shared secret.
 
+## Work a goal from Claude Code
+
+`mesh mcp` is Mesh inside Claude Code: a stdio MCP server on your own
+login (the credential in `~/.mesh/token` — `mesh node login`'s Latchkey
+credential or an `rs_*` token). Add it once:
+
+```bash
+claude mcp add mesh -- mesh mcp
+```
+
+and Claude Code has these tools (docs/adr/adr-023-mesh-mcp-claude-code-is-a-personal-node.md):
+
+| tool | what it does |
+| --- | --- |
+| `mesh_goals` | the live goals of the orgs you reach and their open items |
+| `mesh_status` | the items this server holds |
+| `mesh_join` | claim an item and prepare its checkout on its branch — not yet available |
+| `mesh_switch` | push, note and release the item you hold, then join another — not yet available |
+| `mesh_progress` | a progress note on the item you hold — not yet available |
+| `mesh_ask` | a question to the goal's people — not yet available |
+| `mesh_finish` | the branch is pushed: end the item — not yet available |
+| `mesh_release` | give the item back unfinished — not yet available |
+
+The tools marked not yet available answer so until the rest of goal
+`mesh-mcp-joins-an-item-from-claude-code` lands; this section is
+completed with the walk-through then.
+
 ## Installation
 
 Build from source:

@@ -52,7 +52,7 @@ var channelServeCmd = &cobra.Command{
 			return err
 		}
 		h := &channel.Handler{GW: gw, Cfg: cfg, Scopes: scopes, Log: logger}
-		srv := &channel.Server{Instructions: channel.Instructions, Tools: h.Tools()}
+		srv := &channel.Server{Instructions: channel.Instructions, Tools: h.Tools(), Channel: true}
 		var conn *channel.Conn
 		h.OnDone = func(itemID, outcome string) {
 			if conn != nil {
