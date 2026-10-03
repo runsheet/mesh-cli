@@ -131,8 +131,8 @@ the committed `schema.json`. So `fields/GoalIndex.txt` does not gain
 goal — `goalRepo` always falls back to the project's one-repo case
 until the platform ships the field and a later change adds `repoId?`
 to the allow-list and regenerates (the same pattern as
-`Project.MaxItems`/`ItemCap` in this goal's item 2, awaiting
-`ProjectIndex.maxItems`). The unit tests construct `gateway.Goal{RepoID:
+`Project.MaxItems`/`ItemCap` awaiting `ProjectIndex.maxItems`, below).
+The unit tests construct `gateway.Goal{RepoID:
 ...}` directly, as the planner's own callers do, so the rule is fully
 exercised node-side without the wire selection.
 
@@ -172,3 +172,52 @@ design: README, ADR 017 and the TRD describe the stall report," an
 acceptance of document sections alone — is the fixture this check is
 built against, folded into item 19's own acceptance in the clean graph
 (`internal/node/plan_closeout_test.go`).
+
+## Amendment 2026-10-03: the gateway half — ProposeGoalSplit, TakesGoalSplit, SetGoalCheckpoints
+
+Item 7. The rest of the gateway half named in the Decision's
+Consequences — `ProjectIndex.maxItems` and `Project.ItemCap` — is a
+separate, later item (`Project.MaxItems`/`ItemCap` stays unwritten on
+this branch; `fields/ProjectIndex.txt` and `fields_gen.go` are
+untouched here): the live gateway still does not serve
+`ProjectIndex.maxItems`, and ADR-010's rule keeps it off the allow-list
+until it does. This item lands the three methods rule (a) and rule (c)
+need to hand their answers to the platform, plus the fake that lets
+both be tested before the platform ships either:
+
+- `gateway.GoalDraft{Slug, Title, Statement, Acceptance, RepoID}` is
+  one of the `split` answer's drafts.
+- `Client.ProposeGoalSplit(ctx, goalID, by string, drafts []GoalDraft,
+  costCents int, usage *UsageReport) error` sends `proposeGoalSplit` on
+  the goal with `drafts` (each slug, title, statement, acceptance,
+  repoId), `costCents` and, when non-empty, `by`, through the same
+  `mutateWithUsage` every costed mutation uses.
+- `Client.TakesGoalSplit(ctx) bool` is the introspection probe —
+  `{ __type(name: "Mutation") { fields { name } } }` read for
+  `proposeGoalSplit`, cached in a `holdingProbe` for `ScalingProbeEvery`
+  the same way `TakesPlanQuestions` and `takesAttestations` are:
+  `ProposeGoalSplit` calls it first and, when false, sends nothing and
+  returns `&Error{Unsupported: true}` for the caller to fall back on.
+- `Client.SetGoalCheckpoints(ctx, goalID, by string, checkpoints
+  []string) error` sends `setGoalCheckpoints` with `checkpoints` (an
+  empty list, never nil) and `by`. `SetGoalCheckpointsInput` is already
+  on the live schema, so this one needs no probe.
+
+`gatewaytest/fake.go` gets a `GoalSplit bool`: false (the platform
+today — goal `a-goal-fits-in-eight-items` in `runsheet/runsheet` is
+still `queued`) leaves `proposeGoalSplit` out of `mutationType()` and
+refuses a call to it the same way an absent
+`recordValidationAttestation` is refused, `Cannot query field
+"proposeGoalSplit" on type "Mutation".`; true lists it, and `apply`
+records the drafts and cost on the goal row (`goal["splitDrafts"]`,
+`goal["splitCostCents"]`) as well as on the generic `Calls` list every
+mutation already lands on, so a test can read either.
+`setGoalCheckpoints` is on the live mutation list unconditionally and
+sets `goal["checkpoints"]`.
+
+`internal/gateway/goalsplit_test.go` proves: `ProposeGoalSplit` against
+a `GoalSplit: true` fake sends the drafts and cost and the fake
+records them; `TakesGoalSplit` is false against a fake without
+`GoalSplit` and true against one with it; `ProposeGoalSplit` against a
+fake without it is `IsUnsupported` and sends nothing; and
+`SetGoalCheckpoints` sends the list and the fake's goal row holds it.
