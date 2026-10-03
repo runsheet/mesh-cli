@@ -13,6 +13,20 @@ func NodeID(orgID uuid.UUID, slug string) uuid.UUID {
 	return uuid.NewSHA1(idNamespace, []byte("node:"+orgID.String()+":"+slug))
 }
 
+// NodeOwnerID is the Node aggregate id for a slug under an owner on the
+// owner contract (platform/ids/node.go, NodeOwnerID): kind is "person"
+// or "enterprise", an empty kind reading as "person". This is the
+// formula the platform derives a registration's aggregate id by, and
+// refuses a registerNode whose aggregateId is not this — never NodeID,
+// which is the per-org formula with the owner's uuid in the org's
+// place (ADR-015, 2026-10-03).
+func NodeOwnerID(kind string, owner uuid.UUID, slug string) uuid.UUID {
+	if kind == "" {
+		kind = "person"
+	}
+	return uuid.NewSHA1(idNamespace, []byte("node:"+kind+":"+owner.String()+":"+slug))
+}
+
 // GoalID is the Goal aggregate id for a slug under an org.
 func GoalID(orgID uuid.UUID, slug string) uuid.UUID {
 	return uuid.NewSHA1(idNamespace, []byte("goal:"+orgID.String()+":"+slug))

@@ -327,15 +327,19 @@ func SaveAdoption(cfg *Config, r Registered, save func() error) error {
 const FallbackLine = "register: the platform took owner but answered nil; keeping the owner contract and the last scopes until a heartbeat answers"
 
 // OwnedNodeID is the id the node registers under on the owner
-// contract: node.yaml's node_id when set, else one from (owner, slug),
-// so it converges, else a fresh one. Registered.IDSource names the
+// contract: node.yaml's node_id when set, else
+// gateway.NodeOwnerID(kind, ownerID, slug) — the platform's own formula
+// (platform/ids/node.go) over the ownerId the registration actually
+// sends (ownerIDFor: the enterprise's id on `owner: enterprise`,
+// node.yaml's owner_id for a person), so it converges on the row the
+// platform derives, else a fresh one. Registered.IDSource names the
 // latter two IDDerived.
-func OwnedNodeID(cfg *Config) string {
+func OwnedNodeID(cfg *Config, kind, ownerID string) string {
 	if cfg.NodeID != "" {
 		return cfg.NodeID
 	}
-	if owner, err := uuid.Parse(cfg.OwnerID); err == nil {
-		return gateway.NodeID(owner, cfg.Slug).String()
+	if owner, err := uuid.Parse(ownerID); err == nil {
+		return gateway.NodeOwnerID(kind, owner, cfg.Slug).String()
 	}
 	return uuid.NewString()
 }
@@ -385,7 +389,7 @@ func Register(ctx context.Context, r Registrar, cfg *Config, restrict []string) 
 	if cfg.NodeID == "" {
 		source = IDDerived
 	}
-	id := OwnedNodeID(cfg)
+	id := OwnedNodeID(cfg, cfg.OwnerKind(), ownerID)
 	answer, err := r.RegisterOwner(ctx, id, orgID, ownerID)
 	adopted := false
 	if named, ok := AdoptedID(err); ok && named != id {

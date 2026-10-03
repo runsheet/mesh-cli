@@ -76,7 +76,7 @@ func TestModelScopesFromAnswerRegisterNodeFixture(t *testing.T) {
 	if len(scopes) != 3 {
 		t.Fatalf("scopes = %+v, want 3", scopes)
 	}
-	const wantNodeID = "55555555-5555-4555-8555-555555555555"
+	const wantNodeID = "b99be3f5-2f54-54a7-9af5-49d9bfc96744"
 	if a.NodeID != wantNodeID {
 		t.Fatalf("fixture nodeId = %q, want %q", a.NodeID, wantNodeID)
 	}

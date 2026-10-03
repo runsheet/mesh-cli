@@ -3,6 +3,7 @@ package node
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -13,6 +14,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
 )
@@ -115,7 +118,7 @@ func TestOwnedRegisterFixtureThreeScopesOneNodeID(t *testing.T) {
 	if want := []string{"probe", "any org", "owner 22222222-2222-4222-8222-222222222222"}; !slices.Equal(s.did, want) {
 		t.Fatalf("did %q, want %q", s.did, want)
 	}
-	if reg.Owned == nil || reg.Owned.NodeID != "55555555-5555-4555-8555-555555555555" || reg.Owned.Owner.String() != "owned by Chris" || reg.Owned.Owner.Kind != "person" {
+	if reg.Owned == nil || reg.Owned.NodeID != "b99be3f5-2f54-54a7-9af5-49d9bfc96744" || reg.Owned.Owner.String() != "owned by Chris" || reg.Owned.Owner.Kind != "person" {
 		t.Fatalf("owned = %+v", reg.Owned)
 	}
 	loop := &Loop{Scopes: reg.Scopes, Owned: reg.Owned}
@@ -123,7 +126,7 @@ func TestOwnedRegisterFixtureThreeScopesOneNodeID(t *testing.T) {
 		t.Fatalf("scopes = %+v, want 3", loop.Scopes)
 	}
 	for _, sc := range loop.Scopes {
-		if sc.NodeID != "55555555-5555-4555-8555-555555555555" {
+		if sc.NodeID != "b99be3f5-2f54-54a7-9af5-49d9bfc96744" {
 			t.Fatalf("scope %s on node %s, want the answer's one id", sc.Name(), sc.NodeID)
 		}
 	}
@@ -137,13 +140,83 @@ func TestOwnedRegisterFixtureThreeScopesOneNodeID(t *testing.T) {
 func TestOwnedNodeIDConverges(t *testing.T) {
 	cfg := ownedCfg()
 	cfg.NodeID = ""
-	a, b := OwnedNodeID(cfg), OwnedNodeID(cfg)
+	a, b := OwnedNodeID(cfg, cfg.OwnerKind(), cfg.OwnerID), OwnedNodeID(cfg, cfg.OwnerKind(), cfg.OwnerID)
 	if a == "" || a != b {
 		t.Fatalf("OwnedNodeID = %q then %q, want one stable id", a, b)
 	}
 	cfg.NodeID = "22222222-2222-4222-8222-222222222222"
-	if got := OwnedNodeID(cfg); got != cfg.NodeID {
+	if got := OwnedNodeID(cfg, cfg.OwnerKind(), cfg.OwnerID); got != cfg.NodeID {
 		t.Fatalf("OwnedNodeID = %q, want node.yaml's %q", got, cfg.NodeID)
+	}
+}
+
+// registerNodeOwnerNodeIDFixture reads specs/contracts/registerNode.json's
+// ownerNodeId object: the platform's own formula's worked example,
+// never invented here.
+func registerNodeOwnerNodeIDFixture(t *testing.T) (kind, owner, slug, id string) {
+	t.Helper()
+	raw, err := os.ReadFile("../../specs/contracts/registerNode.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fx struct {
+		OwnerNodeID struct {
+			Kind  string `json:"kind"`
+			Owner string `json:"owner"`
+			Slug  string `json:"slug"`
+			ID    string `json:"id"`
+		} `json:"ownerNodeId"`
+	}
+	if err := json.Unmarshal(raw, &fx); err != nil {
+		t.Fatal(err)
+	}
+	if fx.OwnerNodeID.ID == "" {
+		t.Fatal("registerNode.json: no ownerNodeId")
+	}
+	return fx.OwnerNodeID.Kind, fx.OwnerNodeID.Owner, fx.OwnerNodeID.Slug, fx.OwnerNodeID.ID
+}
+
+// OwnedNodeID over a Config built from the fixture's inputs, with no
+// node_id set, equals the fixture's worked example (ADR-015,
+// 2026-10-03): the node derives the owner row's id the same way the
+// platform does.
+func TestOwnedNodeIDMatchesFixtureExample(t *testing.T) {
+	kind, owner, slug, want := registerNodeOwnerNodeIDFixture(t)
+	cfg := &Config{Slug: slug, OwnerID: owner}
+	if got := OwnedNodeID(cfg, kind, owner); got != want {
+		t.Fatalf("OwnedNodeID(kind %q, owner %q, slug %q) = %q, want the fixture's %q", kind, owner, slug, got, want)
+	}
+}
+
+// An unparsable owner id still falls back to a fresh uuid, never an
+// empty or malformed one.
+func TestOwnedNodeIDFallsBackOnAnUnparsableOwner(t *testing.T) {
+	cfg := &Config{Slug: "mini"}
+	a, b := OwnedNodeID(cfg, "person", "not-a-uuid"), OwnedNodeID(cfg, "person", "not-a-uuid")
+	if a == "" || b == "" || a == b {
+		t.Fatalf("OwnedNodeID with an unparsable owner = %q then %q, want two distinct fresh uuids", a, b)
+	}
+}
+
+// An enterprise node derives its owned id from the enterprise's own
+// id, not the admin person's owner_id — the ownerId the registration
+// actually sends (ownerIDFor), never cfg.OwnerID directly.
+func TestOwnedNodeIDDerivesFromTheEnterpriseIDNotThePerson(t *testing.T) {
+	const (
+		personID     = "a1111111-1111-4111-8111-111111111111"
+		enterpriseID = "a3333333-1111-4111-8111-111111111111"
+	)
+	cfg := &Config{Slug: "runsheet-mini", Owner: "enterprise", Enterprise: "anythink", OwnerID: personID}
+	if cfg.OwnerKind() != "enterprise" {
+		t.Fatalf("OwnerKind() = %q, want enterprise", cfg.OwnerKind())
+	}
+	want := gateway.NodeOwnerID("enterprise", uuid.MustParse(enterpriseID), cfg.Slug).String()
+	got := OwnedNodeID(cfg, cfg.OwnerKind(), enterpriseID)
+	if got != want {
+		t.Fatalf("OwnedNodeID = %q, want %q (derived from the enterprise id)", got, want)
+	}
+	if fromPerson := OwnedNodeID(cfg, cfg.OwnerKind(), personID); got == fromPerson {
+		t.Fatalf("OwnedNodeID derived from the enterprise id matches deriving from the person's owner_id %q — it must not", personID)
 	}
 }
 
@@ -158,7 +231,7 @@ func TestOwnedTakeAnswerServesTheFourthOrg(t *testing.T) {
 	grapevine := false
 	for _, sc := range loop.Scopes {
 		grapevine = grapevine || sc.Name() == "grapevine"
-		if sc.NodeID != "55555555-5555-4555-8555-555555555555" {
+		if sc.NodeID != "b99be3f5-2f54-54a7-9af5-49d9bfc96744" {
 			t.Fatalf("scope %s on node %s", sc.Name(), sc.NodeID)
 		}
 	}
@@ -494,7 +567,7 @@ func (g *ownedGW) claimed() map[string]string {
 // (heartbeatNode.json) adds foghornid the tick after serves it too,
 // with no restart.
 func TestOwnedLoopClaimsFromEveryAnsweredOrgAndAFourthWithNoRestart(t *testing.T) {
-	const nodeID = "55555555-5555-4555-8555-555555555555"
+	const nodeID = "b99be3f5-2f54-54a7-9af5-49d9bfc96744"
 	registered, heartbeat := answerFixture(t, "registerNode.json"), answerFixture(t, "heartbeatNode.json")
 	gw := &ownedGW{items: map[string]gateway.WorkItem{}, claims: map[string]string{}}
 	names := map[string]string{} // org id → its name
@@ -632,7 +705,7 @@ func TestOwnedContractPersisted(t *testing.T) {
 			t.Fatal(err)
 		}
 		got := read(t)
-		if got.Contract != ContractOwner || got.NodeID != "55555555-5555-4555-8555-555555555555" {
+		if got.Contract != ContractOwner || got.NodeID != "b99be3f5-2f54-54a7-9af5-49d9bfc96744" {
 			t.Fatalf("node.yaml contract %q node_id %q", got.Contract, got.NodeID)
 		}
 		path, _ := ConfigPath()

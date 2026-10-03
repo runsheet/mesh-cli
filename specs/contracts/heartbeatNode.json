@@ -1,7 +1,7 @@
 {
   "description": "heartbeatNode: every heartbeat carries the platform's answer to who owns the node and which orgs it now serves too, not only at registration — an enterprise's node picks up an org attached later with no restart. The runsheet goal a-node-has-an-owner serves this same shape at /contracts/heartbeatNode.json — the platform side of the contract.",
   "input": {
-    "aggregateId": "55555555-5555-4555-8555-555555555555",
+    "aggregateId": "b99be3f5-2f54-54a7-9af5-49d9bfc96744",
     "namespace": "runsheet",
     "version": "v0.2.200",
     "running": 3,
@@ -30,7 +30,7 @@
     }
   },
   "answer": {
-    "nodeId": "55555555-5555-4555-8555-555555555555",
+    "nodeId": "b99be3f5-2f54-54a7-9af5-49d9bfc96744",
     "owner": {
       "kind": "enterprise",
       "id": "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb",
