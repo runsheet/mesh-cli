@@ -1,0 +1,5 @@
+{
+  "errors": [
+    {"message": "Cannot query field \"ownerKind\" on type \"NodeIndex\"."}
+  ]
+}

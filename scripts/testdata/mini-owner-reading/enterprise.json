@@ -1,0 +1,8 @@
+{
+  "data": {
+    "enterpriseIndexs": [
+      {"id": "ent-1", "slug": "anythink", "tenantSlug": "anythink", "orgs": [{"id": "org-a"}, {"id": "org-b"}]},
+      {"id": "ent-2", "slug": "other", "tenantSlug": "other", "orgs": [{"id": "org-z"}]}
+    ]
+  }
+}
