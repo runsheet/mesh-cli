@@ -221,7 +221,7 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 	prompt := harness.ResearchPrompt(harness.ResearchInput{
 		Org: scope.Name(), Project: project.Slug, Direction: direction.Direction,
 		Repos: dirs, ContextDir: contextDir, ContextFiles: files, MeshContext: len(d.MCP) > 0,
-		Goals: existing, Room: room, Proposes: direction.Proposes(),
+		Tools: toolHints(st.Use), Goals: existing, Room: room, Proposes: direction.Proposes(),
 	})
 	budget, budgetSource := d.budgetWithSource()
 	job := harness.Job{

@@ -518,6 +518,17 @@ func ParseVerdict(text string) (passed bool, notes string, ok bool) {
 
 // PlanInput is what a planner prompt is made of: the goal, its project's
 // context and repos, and the budget the graph has to fit.
+// ToolHint is one tool a research or plan session is served beside
+// mesh-context (goal the-director-and-the-planner-get-their-tools): the
+// prompt names it and says when to reach for it. A known search tool
+// (brave, perplexity, by name prefix) gets its use written for it by
+// the prompt itself, whatever Use holds; any other tool is named with
+// Use, or "(as its name says)" when it is empty.
+type ToolHint struct {
+	Name string
+	Use  string
+}
+
 type PlanInput struct {
 	GoalSlug    string
 	GoalTitle   string
@@ -537,6 +548,10 @@ type PlanInput struct {
 	// MeshContext says the session has the built-in mesh-context server
 	// (tools.Builtin) and its mesh_* tools for context on demand.
 	MeshContext bool
+	// Tools are the tools this session is served beside mesh-context
+	// (internal/node's SelectTools, by role planner): the prompt names
+	// each and says when to search. Empty when none is attached.
+	Tools []ToolHint
 	// Existing are the goal's items so far, on a re-plan: merged ones
 	// stay and may be depended on, failed and cancelled ones are the
 	// record, live ones are replaced by this plan. NextSeq is where the
@@ -664,6 +679,62 @@ const planHostRule = "An item's acceptance names only what a pull request can ch
 // replaced by items that partition it, or carries `atomic` once.
 const planSplitRule = "A lineage's attempts shrink: a re-plan never recreates a failed item with the same acceptance — the node's plan check refuses it. Replace the failed item with two or more items whose acceptance clauses partition the original's: every clause of the original lands in exactly one new item and none is dropped, each new item a pull request one evaluation can check, and the new items naming their dependency on each other with `because`. An item that cannot be halved (a schema change, one migration) may carry `\"atomic\": \"<reason>\"` and is exempt once; the second time it fails it must be split."
 
+// knownSearchTool reports whether name (by prefix, case-insensitive) is
+// a search tool the prompts know by name — brave, perplexity — and, if
+// so, the guidance to write for it regardless of its ToolHint.Use (goal
+// the-director-and-the-planner-get-their-tools: the research agents
+// never searched because nothing ever told them to).
+func knownSearchTool(name string) bool {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	return strings.HasPrefix(lower, "brave") || strings.HasPrefix(lower, "perplexity")
+}
+
+// researchToolUse is the use ResearchPrompt writes for one served tool:
+// a known search tool's fixed guidance — search for a source behind a
+// Scout note or a pitch's evidence, a competitor's, a library's or a
+// vendor's claim, a date or a version, and cite the URL as the evidence
+// ref — or the hint's own Use, or, failing that, a line saying the
+// session must infer the use from the tool's own name.
+func researchToolUse(t ToolHint) string {
+	if knownSearchTool(t.Name) {
+		return "search when a Scout note or a pitch's `evidence` needs a source, when you claim what a competitor, a library or a vendor does, or when a date or a version matters; cite the URL you found as the evidence `ref` and say in `note` what it shows"
+	}
+	if use := strings.TrimSpace(t.Use); use != "" {
+		return use
+	}
+	return "(as its name says)"
+}
+
+// planToolUse is planSearchRule's own, shorter use for the planner: the
+// planner names libraries and versions in briefs and acceptance, not
+// pitches, so its rubric is shorter than the director's.
+func planToolUse(t ToolHint) string {
+	if knownSearchTool(t.Name) {
+		return "search before you name a library or a version the brief relies on"
+	}
+	if use := strings.TrimSpace(t.Use); use != "" {
+		return use
+	}
+	return "(as its name says)"
+}
+
+// toolsSection renders "# Your tools" — one line per hint, its use by
+// use — or nothing when hints is empty, so a session with none shows no
+// section at all.
+func toolsSection(hints []ToolHint, use func(ToolHint) string) string {
+	if len(hints) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("# Your tools\n\n")
+	b.WriteString("Beside mesh-context, this session is served:\n\n")
+	for _, t := range hints {
+		fmt.Fprintf(&b, "- `%s`: %s\n", t.Name, use(t))
+	}
+	b.WriteString("\n")
+	return b.String()
+}
+
 // PlanPrompt renders the planner's prompt (mesh-specs prd, the planner;
 // trd §5 phase 2): read the context and the repos, then compile the goal
 // into a graph of items — each one fresh session's work with a checkable
@@ -774,6 +845,7 @@ func PlanPrompt(in PlanInput) string {
 	if in.MeshContext {
 		b.WriteString(contextRule(in.ContextDir, in.Org+"/"+in.Project) + "\n\n")
 	}
+	b.WriteString(toolsSection(in.Tools, planToolUse))
 	b.WriteString("# Check main first\n\n")
 	fmt.Fprintf(&b, "Before you write a graph, find out what main already holds of this goal's work. For each repo, search its recent merged pull requests and the commits on its default branch since the goal was set — `gh pr list --repo <owner/name> --state merged --limit 50` (add `--search` with the goal's words, and the `mesh/%s-` branches), and `git log --oneline` in its checkout, which carries the default branch's recent history — by title, by the brief's words, and by the files the acceptance names.\n\n", in.GoalSlug)
 	b.WriteString("Leave out work main already has. When main may already hold an item's work but you cannot tell it satisfies the acceptance, keep the item and say in its brief that an already_done check is expected: the builder checks main first and, if the acceptance holds there, finishes it already_done with the merged PRs or commits as evidence instead of building it again.\n\n")
@@ -984,6 +1056,10 @@ type ResearchInput struct {
 	// MeshContext says the session has the built-in mesh-context server
 	// (tools.Builtin) and its mesh_* tools for context on demand.
 	MeshContext bool
+	// Tools are the tools this session is served beside mesh-context
+	// (internal/node's SelectTools, by role director): the prompt names
+	// each and says when to search. Empty when none is attached.
+	Tools []ToolHint
 	// Goals are what the project has already taken on, newest first —
 	// what to build on and what not to propose again.
 	Goals []ExistingGoal
@@ -1144,6 +1220,7 @@ func ResearchPrompt(in ResearchInput) string {
 	if in.MeshContext {
 		b.WriteString(contextRule(in.ContextDir, in.Org+"/"+in.Project) + "\n\n")
 	}
+	b.WriteString(toolsSection(in.Tools, researchToolUse))
 	b.WriteString("# Rules\n\n")
 	fmt.Fprintf(&b, "1. Research first. Read the direction, the design documents, the code and the open issues before you propose anything. A goal that duplicates what is there, or that the design already forbids, is worse than none.\n")
 	if in.Proposes {
@@ -1153,6 +1230,14 @@ func ResearchPrompt(in ResearchInput) string {
 	}
 	return b.String()
 }
+
+// researchSearchRule is the rule both researchGoalRules and
+// researchPitchRules end on (goal
+// the-director-and-the-planner-get-their-tools): Brave and Perplexity
+// were attached and never called because nothing told a research
+// session to reach for them — this is that telling, beside the tools
+// section's per-tool line.
+const researchSearchRule = "A claim about the world outside the repos — what a competitor, a library or a vendor does, a date, a version — that you did not search is not evidence."
 
 // researchGoalRules writes a set-mode direction's rules and its JSON
 // contract (runsheet trd §6c): the goals shape, unchanged so a
@@ -1173,8 +1258,9 @@ func researchGoalRules(b *strings.Builder, in ResearchInput) {
 	b.WriteString("7. The slug is lowercase, hyphenated and stable — it is the goal's identity, so the same idea proposed twice must carry the same slug rather than making a second goal.\n")
 	b.WriteString("8. Prefer work that can be finished and merged unattended: clear acceptance, tests that exist, no decision a person has to make first. A question for a person is not a goal — say it in your notes instead.\n")
 	b.WriteString("9. Change nothing in the repos: you research and propose, you do not build.\n")
+	b.WriteString("10. " + researchSearchRule + "\n")
 	if in.DefaultBudgetCents > 0 {
-		fmt.Fprintf(b, "10. A goal here is usually given $%.2f. Set budget_cents only when a goal plainly needs more or less; leave it out otherwise.\n", float64(in.DefaultBudgetCents)/100)
+		fmt.Fprintf(b, "11. A goal here is usually given $%.2f. Set budget_cents only when a goal plainly needs more or less; leave it out otherwise.\n", float64(in.DefaultBudgetCents)/100)
 	}
 	b.WriteString("\nEnd your final message with your proposals as a JSON object in a ```json fenced block, and nothing after it. An empty list is a valid answer:\n\n")
 	b.WriteString("```json\n{\"goals\": [{\"slug\": \"…\", \"title\": \"…\", \"statement\": \"…\", \"acceptance\": \"…\", \"why\": \"…\"}]}\n```\n")
@@ -1208,8 +1294,9 @@ func researchPitchRules(b *strings.Builder, in ResearchInput) {
 	b.WriteString("9. `signal` is `{\"metric\", \"how_measured\", \"direction\", \"window_days\"}`: the one scorecard metric this should move (`merged`, `mergedWithoutRewrite`, `costCents`, `conflictReworksPer100Merges`, `shareSettledWithoutSession`, or one like them), how you would measure it, `\"up\"` or `\"down\"`, and the window in days after the goal ships.\n")
 	b.WriteString("10. The slug is lowercase, hyphenated and stable — it is the pitch's identity: the same idea pitched twice must carry the same slug rather than making a second pitch.\n")
 	b.WriteString("11. Change nothing in the repos: you research and pitch, you do not build.\n")
+	b.WriteString("12. " + researchSearchRule + "\n")
 	if in.DefaultBudgetCents > 0 {
-		fmt.Fprintf(b, "12. A goal here is usually given $%.2f. Set a scope goal's budget_cents only when it plainly needs more or less; leave it out otherwise.\n", float64(in.DefaultBudgetCents)/100)
+		fmt.Fprintf(b, "13. A goal here is usually given $%.2f. Set a scope goal's budget_cents only when it plainly needs more or less; leave it out otherwise.\n", float64(in.DefaultBudgetCents)/100)
 	}
 	b.WriteString("\nEnd your final message with your pitches as a JSON object in a ```json fenced block, and nothing after it. An empty list is a valid answer, and so is an empty `answers` list:\n\n")
 	b.WriteString("```json\n{\"pitches\": [{\"slug\": \"…\", \"title\": \"…\", \"problem\": \"…\", \"evidence\": [{\"kind\": \"research_note\", \"ref\": \"…\", \"note\": \"…\"}], \"bet\": \"…\", \"scope\": {\"kind\": \"goal\", \"goals\": [{\"slug\": \"…\", \"title\": \"…\", \"statement\": \"…\", \"acceptance\": \"…\"}]}, \"estimate\": {\"cost_cents\": 400000, \"days\": 3, \"basis\": \"…\"}, \"risks\": [\"…\"], \"alternatives\": [\"…\"], \"signal\": {\"metric\": \"merged\", \"how_measured\": \"…\", \"direction\": \"up\", \"window_days\": 30}}], \"answers\": [{\"pitch\": \"<slug>\", \"text\": \"…\"}]}\n```\n")

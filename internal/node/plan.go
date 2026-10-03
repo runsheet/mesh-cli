@@ -659,7 +659,6 @@ func (p *Planner) handIn(ctx context.Context, goal gateway.Goal, items []gateway
 // session ends: the caller hands it in and Finishes it. An error means
 // there is no graph to hand in.
 func (p *Planner) ask(ctx context.Context, goal gateway.Goal, nodeID, dir string, budget float64, in harness.PlanInput, repos map[string]gateway.Repo, merged []int, goalItems []gateway.WorkItem, replacing *gateway.WorkItem, tok *gateway.GitHubToken) ([]gateway.PlannedItem, map[int]string, []string, []harness.PlanQuestion, float64, *SessionAccount, error) {
-	job := harness.Job{Kind: harness.KindPlan, Workspace: dir, Prompt: harness.PlanPrompt(in), MaxBudgetUSD: budget, Label: goal.Slug + " plan", Timeout: p.Timeout, MCPServers: p.MCP, Model: p.Model}
 	acct, err := p.Credentials.Open(ctx, gateway.SessionRef{Kind: string(harness.KindPlan), GoalID: goal.ID}, nodeID, Adapter(p.Harness))
 	if err != nil {
 		// an ErrNoCredential among them: no session starts, and the loop
@@ -669,13 +668,19 @@ func (p *Planner) ask(ctx context.Context, goal gateway.Goal, nodeID, dir string
 	defer unlessDetached(ctx, acct.Cleanup)
 	// the tools attached for the planner role, beside mesh-context: a
 	// required one this node cannot start starts no session, and the
-	// goal's plan is left for a node that can
+	// goal's plan is left for a node that can — chosen before the prompt
+	// is rendered, so it can name them (ToolHint, the-director-and-the-
+	// planner-get-their-tools)
 	runtimes := p.runtimes()
 	st := SelectTools(p.MCP, acct.Tools, tools.RoleFor(string(harness.KindPlan)), runtimes)
 	if len(st.Missing) > 0 {
 		p.Declines.Record(goal.ID, st.Missing, runtimes, time.Now())
 		return nil, nil, nil, nil, 0, nil, &ToolsDeclinedError{Reason: st.DeclineReason()}
 	}
+	// Tools: the served tools, so PlanPrompt can name them and say when
+	// to search.
+	in.Tools = toolHints(st.Use)
+	job := harness.Job{Kind: harness.KindPlan, Workspace: dir, Prompt: harness.PlanPrompt(in), MaxBudgetUSD: budget, Label: goal.Slug + " plan", Timeout: p.Timeout, MCPServers: p.MCP, Model: p.Model}
 	if tok != nil {
 		// gh in the session runs on the goal's token and a config dir of
 		// its own, never the operator's login (adr-022)
