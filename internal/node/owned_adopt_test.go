@@ -49,7 +49,7 @@ func TestAdoptedID(t *testing.T) {
 func refusing(errs ...error) (Registrar, *[]string) {
 	var sent []string
 	r := Registrar{
-		TakesOwner: func(context.Context) bool { return true },
+		TakesOwner:    func(context.Context) bool { return true },
 		ConfiguredOrg: func(context.Context) (string, error) { return "33333333-3333-4333-8333-333333333333", nil },
 		RegisterOwner: func(_ context.Context, nodeID, _, _ string) (*gateway.NodeAnswer, error) {
 			sent = append(sent, nodeID)
