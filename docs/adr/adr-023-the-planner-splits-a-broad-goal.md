@@ -142,13 +142,18 @@ exercised node-side without the wire selection.
 (`internal/node/plan_check.go`) flags an item whose title or acceptance
 matches a close-out phrase — "reads as one design," "describes what
 landed," "records that/what … landed/merged/shipped," an ADR's status
-or frontmatter moved to accepted or superseded, "docs-only," "close-out"
-— **and** whose acceptance names no code or test check: no `go test`,
-`go build`, `go vet`, a `_test.go`, `.go`, `.ts` or `.sh` file, `npm
-test`, `make`, or a backticked command other than `grep`, `cat` or `ls`
-on a `.md` file (`hasCodeOrTestCheck`). Both conditions are lexical,
-like `hostReadingAcceptance`; the evaluator's unverifiable-clause rule
-is the backstop for what this check misses. An ADR whose status line
+or frontmatter moved to accepted or superseded (either word order: "ADR
+018 status accepted" and "the status of ADR-018 to accepted" both
+match), "docs-only," "close-out" — **and** whose acceptance names no
+code or test check: no `go test`, `go build`, `go vet`, a `_test.go`,
+`.go`, `.ts` or `.sh` file, `npm test`, a `make` *command* (`make
+test`, `make build`, …, never the English verb — "the docs make sense
+together" names no check), or a backticked command other than `grep`,
+`cat` or `ls` on a `.md` file — a bare backticked document filename
+(`` `README.md` ``) is a reference, not a command, and never counts
+(`hasCodeOrTestCheck`). Both conditions are lexical, like
+`hostReadingAcceptance`; the evaluator's unverifiable-clause rule is
+the backstop for what this check misses. An ADR whose status line
 moves beside its own code or test check is never flagged — the clause
 rides a real change, not a close-out of its own.
 

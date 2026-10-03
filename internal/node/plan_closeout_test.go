@@ -90,6 +90,53 @@ func TestCloseOutAcceptanceADRStatus(t *testing.T) {
 	}
 }
 
+// The ADR-status phrase is caught whichever way it is worded: "ADR 018
+// status accepted" (ADR before status) and "the status of ADR-018 to
+// accepted" (status before ADR, the brief's own wording).
+func TestCloseOutAcceptanceADRStatusEitherOrder(t *testing.T) {
+	specs := []harness.PlannedSpec{{
+		Seq: 25, Title: "ADR 018: mirror the release tag",
+		Acceptance: "Set the status of ADR-018 to accepted.",
+	}}
+	flags := closeOutAcceptance(specs)
+	if len(flags) != 1 {
+		t.Fatalf("flags = %d, want 1: %v", len(flags), flags)
+	}
+	if !strings.Contains(flags[0], "docs land in the pull request of the change they describe") {
+		t.Errorf("flag = %q, want the AGENTS.md rule", flags[0])
+	}
+}
+
+// "make" inside ordinary prose ("make sense") is not a code or test
+// check, so a docs-only item is still flagged even when its acceptance
+// happens to use the word.
+func TestCloseOutAcceptanceMakeTheEnglishWordNotACheck(t *testing.T) {
+	specs := []harness.PlannedSpec{{
+		Seq: 23, Title: "The retry window's docs, folded back together",
+		Acceptance: "README and the TRD describe what landed, so the docs make sense together.",
+	}}
+	flags := closeOutAcceptance(specs)
+	if len(flags) != 1 {
+		t.Fatalf("flags = %d, want 1: %v", len(flags), flags)
+	}
+	if !strings.Contains(flags[0], "describe what landed") {
+		t.Errorf("flag = %q, want the phrase", flags[0])
+	}
+}
+
+// A bare document filename in backticks is a reference, not a command:
+// it does not let a docs-only item escape the flag.
+func TestCloseOutAcceptanceBacktickedDocFilenameNotACheck(t *testing.T) {
+	specs := []harness.PlannedSpec{{
+		Seq: 24, Title: "The landed branches read as one design: the stall report",
+		Acceptance: "`README.md` and `docs/adr/adr-017-stall-report.md` describe what landed, in the same words.",
+	}}
+	flags := closeOutAcceptance(specs)
+	if len(flags) != 1 {
+		t.Fatalf("flags = %d, want 1: %v", len(flags), flags)
+	}
+}
+
 // An item that amends an ADR's status beside its own code or test check
 // is never flagged: the ADR amendment rides a real change, not a
 // close-out of its own.

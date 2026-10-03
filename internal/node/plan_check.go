@@ -311,19 +311,28 @@ var (
 		regexp.MustCompile(`(?i)reads? as one design`),
 		regexp.MustCompile(`(?i)describes? what landed`),
 		regexp.MustCompile(`(?i)records? (?:that|what)\b.*\b(?:landed|merged|shipped)\b`),
+		// ADR before status/frontmatter ("ADR 018 status accepted") or
+		// status/frontmatter before ADR ("the status of ADR-018 to
+		// accepted", "the status on ADR 018 is accepted")
 		regexp.MustCompile(`(?i)\bADR[\w-]*\b[^.;\n]*\b(?:status|frontmatter)\b[^.;\n]*\b(?:accepted|superseded)\b`),
+		regexp.MustCompile(`(?i)\b(?:status|frontmatter)\b[^.;\n]*\b(?:of|on)\b[^.;\n]*\bADR[\w-]*\b[^.;\n]*\b(?:to|is)\b[^.;\n]*\b(?:accepted|superseded)\b`),
 		regexp.MustCompile(`(?i)docs?-only`),
 		regexp.MustCompile(`(?i)close-?out`),
 	}
 	codeOrTestCheck = []*regexp.Regexp{
 		regexp.MustCompile(`(?i)\bgo (?:test|build|vet)\b`),
 		regexp.MustCompile(`(?i)\bnpm test\b`),
-		regexp.MustCompile(`(?i)\bmake\b`),
+		// "make" as a command (`make test`, `make build`), never the
+		// English verb ("make sense", "make it accepted")
+		regexp.MustCompile(`(?i)\bmake (?:test|build|check|lint|install)\b`),
 		regexp.MustCompile(`_test\.go\b`),
 		regexp.MustCompile(`\.(?:go|ts|sh)\b`),
 	}
 	backtickedCommand = regexp.MustCompile("`([^`\n]+)`")
 	mdReadCommand     = regexp.MustCompile(`(?i)^(?:grep|cat|ls)\b.*\.md\b`)
+	// a bare document filename in backticks ("`README.md`"), not a
+	// command: no spaces, ending in .md
+	bareMDFile = regexp.MustCompile(`(?i)^[\w./-]+\.md$`)
 )
 
 // closeOutAcceptance flags each item whose title or acceptance matches
@@ -356,8 +365,10 @@ func closeOutPhrase(s string) string {
 }
 
 // hasCodeOrTestCheck says acc names a code or test check: go test,
-// build or vet, npm test, make, a _test.go or .go/.ts/.sh file, or a
-// backticked command other than grep, cat or ls on a .md file.
+// build or vet, npm test, a make command (`make test`, `make build`,
+// never the English verb), a _test.go or .go/.ts/.sh file, or a
+// backticked command other than grep, cat or ls on a .md file — a bare
+// backticked document filename (`README.md`) is not a command.
 func hasCodeOrTestCheck(acc string) bool {
 	for _, re := range codeOrTestCheck {
 		if re.MatchString(acc) {
@@ -365,9 +376,11 @@ func hasCodeOrTestCheck(acc string) bool {
 		}
 	}
 	for _, m := range backtickedCommand.FindAllStringSubmatch(acc, -1) {
-		if !mdReadCommand.MatchString(strings.TrimSpace(m[1])) {
-			return true
+		cmd := strings.TrimSpace(m[1])
+		if mdReadCommand.MatchString(cmd) || bareMDFile.MatchString(cmd) {
+			continue
 		}
+		return true
 	}
 	return false
 }
