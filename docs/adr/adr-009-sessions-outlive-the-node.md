@@ -146,6 +146,25 @@ two swaps, nothing planned until 04:00:44Z.
   plan and research claims are re-opened; builds and evaluations are
   re-run from the platform's record — a held item with no session by
   `Loop.Adopt`, an item in evaluating on this node by the next tick.
+  No claim file is written for a build or an evaluation: the platform's
+  record is theirs. `swap_e2e_test.go` proves research and evaluations
+  across a self-update's swap, `claims_test.go` plans.
+- **The log says which way an update goes.** An unsandboxed node's
+  self-update logs `self-update: <to> verified; no drain: swapping and
+  restarting, sessions left running for the new binary to adopt`; a
+  sandboxed one still drains first and says why — `self-update: <to>
+  verified; sandboxed node: draining before the swap because its pods
+  end with the node (sandbox: on)`.
+- **The proof** is the grapevine replay (`hotswap_plans_test.go`):
+  four plans claimed, the binary swapped — once through a release
+  signed on a virtual Sigstore and verified by the `ReleaseUpdater` —
+  before any session opened, and again after two had; the new process
+  adopts the open two, re-opens the rest by the same node id, and every
+  plan reaches `planGoal` inside `PlanClaimTTL`, no claim re-taken.
+  `gatewaytest.Fake` holds the platform's rule for it: `planClaimedAt`
+  stamped on a fresh claim and kept on the holder's re-claim, another
+  node refused while `PlanClaimTTL` (settable, default 30 minutes) has
+  not passed since it.
 
 ## Limits
 

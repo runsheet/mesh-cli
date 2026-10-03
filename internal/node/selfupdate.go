@@ -299,7 +299,7 @@ func (l *Loop) update(ctx context.Context, from, to string) {
 	ours := false
 	if l.sandboxed() {
 		ours = !l.Draining()
-		l.logf("self-update: %s verified; draining (sandboxed sessions end with the node)", to)
+		l.logf("self-update: %s verified; sandboxed node: draining before the swap because its pods end with the node (sandbox: %s)", to, l.Sandbox.Mode)
 		if err := l.DrainAndWait(ctx); err != nil {
 			l.mu.Lock()
 			l.updating = false
@@ -309,7 +309,7 @@ func (l *Loop) update(ctx context.Context, from, to string) {
 			return
 		}
 	} else {
-		l.logf("self-update: %s verified; swapping and restarting, sessions left running", to)
+		l.logf("self-update: %s verified; no drain: swapping and restarting, sessions left running for the new binary to adopt", to)
 	}
 	err = l.Update.Begin(from, to)
 	if err == nil {

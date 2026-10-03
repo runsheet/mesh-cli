@@ -15,6 +15,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -204,6 +205,14 @@ type Error struct {
 	// Unsupported is set when the gateway does not know the operation at
 	// all — a platform older than the node (see IsUnsupported).
 	Unsupported bool
+	// Status is the HTTP status the answer carried when it was not 2xx —
+	// a GraphQL error body a proxy or the gateway itself wrapped with a
+	// 429 or 5xx, as isTransient and retryAfterOf read it. 0 for the
+	// ordinary 200 refusal.
+	Status int
+	// RetryAfter is the answer's Retry-After header, when it named one
+	// alongside a non-2xx status.
+	RetryAfter time.Duration
 }
 
 func (e *Error) Error() string { return e.Message }
@@ -272,15 +281,20 @@ func (c *Client) Query(ctx context.Context, query string, vars map[string]any, o
 	}
 	if jsonErr := json.Unmarshal(raw, &env); jsonErr != nil {
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			return &httpError{Status: resp.StatusCode, Text: resp.Status, Body: strings.TrimSpace(string(raw))}
+			return &httpError{Status: resp.StatusCode, Text: resp.Status, Body: strings.TrimSpace(string(raw)), RetryAfter: parseRetryAfter(resp)}
 		}
 		return fmt.Errorf("gateway: decode response: %w", jsonErr)
 	}
 	if len(env.Errors) > 0 {
-		return &Error{Message: env.Errors[0].Message}
+		ge := &Error{Message: env.Errors[0].Message}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			ge.Status = resp.StatusCode
+			ge.RetryAfter = parseRetryAfter(resp)
+		}
+		return ge
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return &httpError{Status: resp.StatusCode, Text: resp.Status}
+		return &httpError{Status: resp.StatusCode, Text: resp.Status, RetryAfter: parseRetryAfter(resp)}
 	}
 	if out != nil && len(env.Data) > 0 {
 		return json.Unmarshal(env.Data, out)
@@ -288,14 +302,29 @@ func (c *Client) Query(ctx context.Context, query string, vars map[string]any, o
 	return nil
 }
 
+// parseRetryAfter reads a Retry-After header as whole seconds, the only
+// form the gateway sends; a missing or unparseable one is 0.
+func parseRetryAfter(resp *http.Response) time.Duration {
+	v := resp.Header.Get("Retry-After")
+	if v == "" {
+		return 0
+	}
+	secs, err := strconv.Atoi(v)
+	if err != nil || secs < 0 {
+		return 0
+	}
+	return time.Duration(secs) * time.Second
+}
+
 // httpError is a non-2xx HTTP answer with no GraphQL error body — a
 // proxy's 502/503/504, or any status Query could not decode as GraphQL
-// at all. isTransient treats a 5xx one as worth another try, as it does
-// a transport failure that never reached the gateway.
+// at all. isTransient treats a 5xx one, or a 429, as worth another try,
+// as it does a transport failure that never reached the gateway.
 type httpError struct {
-	Status int
-	Text   string
-	Body   string
+	Status     int
+	Text       string
+	Body       string
+	RetryAfter time.Duration
 }
 
 func (e *httpError) Error() string {
@@ -3592,46 +3621,84 @@ type ValidationMinutes struct {
 }
 
 // AttestationBackoff is the wait between RecordValidationAttestation's
-// retries of a transport failure or a 5xx answer (retryOnTransient) —
-// one entry per retry, so up to len(AttestationBackoff) retries beyond
-// the first attempt. A test shortens it to run fast.
+// retries of a transport failure or a 429/5xx answer (retryOnTransient)
+// — one entry per retry, so up to len(AttestationBackoff) retries beyond
+// the first attempt, and the cap a Retry-After header's wait is held to
+// (retryDelay). A test shortens it to run fast.
 var AttestationBackoff = []time.Duration{2 * time.Second, 10 * time.Second, 30 * time.Second}
 
-// retryOnTransient calls fn, retrying on a transport error or a 5xx
+// retryOnTransient calls fn, retrying on a transport error or a 429/5xx
 // answer (isTransient) up to len(AttestationBackoff) more times with
-// that backoff between attempts; a refusal, an unsupported operation, or
-// success returns at once — the gateway's considered answer is not
-// retried, only its absence.
+// that backoff between attempts, honouring a Retry-After header in place
+// of the table's entry for the attempt (retryDelay); a refusal, an
+// unsupported operation, or success returns at once — the gateway's
+// considered answer is not retried, only its absence. The retries spent
+// with no success return the last answer wrapped so it reads "after N
+// retries: <last answer>" (errors.As still reaches the wrapped error).
 func retryOnTransient(ctx context.Context, fn func() error) error {
 	var err error
 	for attempt := 0; ; attempt++ {
 		err = fn()
-		if err == nil || !isTransient(err) || attempt >= len(AttestationBackoff) {
+		if err == nil || !isTransient(err) {
 			return err
+		}
+		if attempt >= len(AttestationBackoff) {
+			return fmt.Errorf("after %d retries: %w", len(AttestationBackoff), err)
 		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(AttestationBackoff[attempt]):
+		case <-time.After(retryDelay(err, attempt)):
 		}
 	}
 }
 
 // isTransient reports whether err is worth retrying: a transport failure
-// that never reached the gateway, or a 5xx one that did (httpError). A
-// GraphQL *Error — a refusal, an unsupported operation, a validation
-// error the schema itself raised — is the gateway's considered answer,
-// not a blip, and is never retried.
+// that never reached the gateway, a 5xx or 429 httpError, or a GraphQL
+// *Error the gateway (or a proxy in front of it) wrapped with a 429
+// status. Any other GraphQL *Error — a refusal, an unsupported
+// operation, a validation error the schema itself raised, all answered
+// with an ordinary 200 — is the gateway's considered answer, not a blip,
+// and is never retried.
 func isTransient(err error) bool {
 	var ge *Error
 	if errors.As(err, &ge) {
-		return false
+		return ge.Status == http.StatusTooManyRequests
 	}
 	var he *httpError
 	if errors.As(err, &he) {
-		return he.Status >= 500
+		return he.Status >= 500 || he.Status == http.StatusTooManyRequests
 	}
 	return true
+}
+
+// retryDelay is the wait before the next attempt: the table's entry for
+// attempt, unless the last answer named a Retry-After, which is honoured
+// instead, capped at the table's largest entry so a generous header
+// cannot stall the upload far past what the table would.
+func retryDelay(err error, attempt int) time.Duration {
+	d := AttestationBackoff[attempt]
+	if ra := retryAfterOf(err); ra > 0 {
+		d = ra
+		if largest := AttestationBackoff[len(AttestationBackoff)-1]; d > largest {
+			d = largest
+		}
+	}
+	return d
+}
+
+// retryAfterOf reads the Retry-After a transient answer named, 0 when it
+// named none.
+func retryAfterOf(err error) time.Duration {
+	var ge *Error
+	if errors.As(err, &ge) {
+		return ge.RetryAfter
+	}
+	var he *httpError
+	if errors.As(err, &he) {
+		return he.RetryAfter
+	}
+	return 0
 }
 
 // RecordValidationAttestation uploads one build's validation run
@@ -3651,9 +3718,12 @@ func isTransient(err error) bool {
 // POST /mesh/v1/items/<itemId>/attestation with the attestation as the
 // JSON body; refused the same way (404), the caller gets
 // &Error{Unsupported: true} — log it once per run and keep the
-// attestation at <workdir>.session/attestation.json. A transport failure
-// or a 5xx answer from either path retries (retryOnTransient,
-// AttestationBackoff) before giving up.
+// attestation at <workdir>.session/attestation.json. A transport
+// failure or a 429/5xx answer from either path — an httpError, or a
+// GraphQL error body a proxy wrapped with that status — retries with
+// backoff, honouring a Retry-After header (retryOnTransient,
+// AttestationBackoff), before giving up and returning the last answer
+// wrapped as "after N retries: <last answer>".
 func (c *Client) RecordValidationAttestation(ctx context.Context, itemID string, att ValidationAttestation) error {
 	const field = "recordValidationAttestation"
 	body, err := json.Marshal(att)
