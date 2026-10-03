@@ -42,6 +42,19 @@ checkout made locally and reports through the same tools a node uses.
    available` until the goal's later items fill them in, so Claude
    Code's tool list and a `/mesh` skill written against it do not
    change shape as they land.
+4. **One personal node, registered once and reused.** Before `Serve`
+   answers its first request, `internal/node/personal.go`'s
+   `RegisterPersonal` registers `mesh mcp`'s own node — ADR-015's owner
+   form (`Owner "person"`, sent only when the platform's
+   `RegisterNodeInput` takes an owner field), `Kind "personal"` (sent
+   only when it takes `kind`), `Capacity 1`, named `<hostname> (Claude
+   Code)`. The first call's id is saved to `~/.mesh/personal-node.json`
+   (0600); every later start reads it back and sends it as
+   `RegisterNodeInput.NodeID`, so the platform updates that one row
+   instead of registering a new node each time Claude Code starts the
+   server. `mesh node status` names it: `personal node: <name> (<id>)`.
+   A failed registration is logged to stderr and does not stop the
+   server from serving its tools.
 
 ## `mesh_join`
 
@@ -109,9 +122,9 @@ by `gatewaytest.GitHub`.
 
 - Channel mode is unchanged on the wire: its server still advertises
   the channel capability and its tools are the same.
-- `mesh mcp` is the client half; the personal node it registers
-  (ADR-015's owner form, kind personal, capacity 1), mesh_join's
-  checkout on the item token and pairing are later items of the goal, each amending this ADR.
+- `mesh mcp` is the client half; mesh_join's checkout on the item
+  token and pairing are later items of the goal, each amending this
+  ADR.
 - Usage of a `mesh mcp` session is the person's Claude Code's own; it
   goes to their personal subscription credential once the node is
   registered.

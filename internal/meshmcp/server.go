@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"sync"
 
 	"projectmesh.io/mesh-cli/internal/version"
@@ -35,6 +36,11 @@ type Server struct {
 	Instructions string
 	Tools        []Tool
 	Channel      bool
+	// Register, when set, runs once before Serve reads its first
+	// request: `mesh mcp`'s personal node registration (ADR-015's owner
+	// form, ADR-023 mesh mcp). A failure is logged to stderr, never
+	// fatal — the tools still serve. A channel-mode server leaves it nil.
+	Register func(ctx context.Context) error
 
 	mu  sync.Mutex
 	out io.Writer
@@ -90,6 +96,11 @@ func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 	s.mu.Lock()
 	s.out = out
 	s.mu.Unlock()
+	if s.Register != nil {
+		if err := s.Register(ctx); err != nil {
+			fmt.Fprintf(os.Stderr, "mesh mcp: register: %v\n", err)
+		}
+	}
 	sc := bufio.NewScanner(in)
 	sc.Buffer(make([]byte, 0, 64*1024), 16<<20)
 	lines := make(chan []byte)
