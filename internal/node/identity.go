@@ -146,3 +146,10 @@ func prepareCommitMsg(pairers []Pairer) string {
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
+
+// actorContext marks ctx as a role's session on the node: every command
+// sent on it carries agent:<role>@<slug>, the slug identityFor names the
+// agent's commits for (ADR-015's amendment 2026-10-03).
+func actorContext(ctx context.Context, cfg *Config, role gateway.Role) context.Context {
+	return gateway.WithActor(ctx, role, agentSlug(cfg))
+}

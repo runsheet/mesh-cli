@@ -89,3 +89,79 @@ func TestBuildCommandsActAsTheBuilder(t *testing.T) {
 		})
 	}
 }
+
+func (g *actorGW) EvaluateWorkItem(ctx context.Context, itemID string, passed bool, notes string, clauses []gateway.FailedClause, costCents int, usage *gateway.UsageReport, choice gateway.EvaluateChoice) error {
+	g.note("evaluateWorkItem", ctx)
+	return g.Gateway.EvaluateWorkItem(ctx, itemID, passed, notes, clauses, costCents, usage, choice)
+}
+
+func (g *actorGW) EvaluateWorkItemNoVerdict(ctx context.Context, itemID, reason string, costCents int, usage *gateway.UsageReport, choice gateway.EvaluateChoice) error {
+	g.note("evaluateWorkItem", ctx)
+	return g.Gateway.EvaluateWorkItemNoVerdict(ctx, itemID, reason, costCents, usage, choice)
+}
+
+func (g *actorGW) PlanGoal(ctx context.Context, goalID, by string, items []gateway.PlannedItem, costCents int, usage *gateway.UsageReport, questions ...gateway.PlanQuestion) error {
+	g.note("planGoal", ctx)
+	return g.Gateway.PlanGoal(ctx, goalID, by, items, costCents, usage, questions...)
+}
+
+// An evaluation's evaluateWorkItem acts as agent:evaluator@<slug>, on a
+// verdict and on no verdict alike (ADR-015's amendment 2026-10-03).
+func TestEvaluateActsAsTheEvaluator(t *testing.T) {
+	for _, tc := range []struct{ name, text string }{
+		{"verdict", "It holds.\n\nVERDICT: PASS"},
+		{"no verdict", "I could not tell."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := seed(t)
+			gw := gateway.New(f.URL(), "rs_test")
+			cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "test-node", NodeID: gateway.NodeID(mustUUID(orgID), "test-node").String(), Capacity: Fixed(1)}
+			f.WorkItems[item1]["status"] = "evaluating"
+			f.WorkItems[item1]["nodeId"] = cfg.NodeID
+			f.WorkItems[item1]["branch"] = "mesh/ship-it-1"
+			rec := &actorGW{Gateway: gw}
+			ws := &fakeWS{root: t.TempDir()}
+			ev := &Evaluator{Credentials: testCreds(gw), GW: rec, Harness: &fakeHarness{text: tc.text}, WS: ws, Cfg: cfg, Scopes: scopesOf(cfg), WorkRoot: ws.root, Log: log.New(os.Stderr, "", 0)}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			item, err := gw.WorkItem(ctx, item1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := ev.Evaluate(ctx, *item); err != nil {
+				t.Fatal(err)
+			}
+			got := rec.of("evaluateWorkItem")
+			if len(got) != 1 || got[0] != "agent:evaluator@test-node" {
+				t.Fatalf("evaluateWorkItem actors %q, want [agent:evaluator@test-node]", got)
+			}
+		})
+	}
+}
+
+// A plan's planGoal acts as agent:planner@<slug> (ADR-015's amendment
+// 2026-10-03).
+func TestPlanActsAsThePlanner(t *testing.T) {
+	f := seed(t)
+	const goal2 = "dddddddd-3333-4333-8333-dddddddddddd"
+	f.Goals[goal2] = map[string]any{"id": goal2, "orgId": orgID, "projectId": projID, "slug": "new-thing", "title": "New thing",
+		"statement": "Build the new thing.", "acceptance": "the thing works", "budgetCents": 2000, "spentCents": 0, "status": "planning"}
+	f.Projects[projID]["repoIds"] = []string{repoID}
+	gw := gateway.New(f.URL(), "rs_test")
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "test-node", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: Fixed(1), OwnerID: f.UserID}
+	rec := &actorGW{Gateway: gw}
+	ws := &fakeWS{root: t.TempDir()}
+	h := &fakeHarness{text: "```json\n{\"items\": [{\"seq\": 1, \"title\": \"Write the failing test\", \"brief\": \"A test in widgets.\", \"acceptance\": \"go test fails on TestThing\", \"depends_on\": [], \"repo\": \"acme/widgets\"}]}\n```"}
+	pl := &Planner{Credentials: testCreds(gw), GW: rec, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, Log: log.New(os.Stderr, "", 0)}
+	loop := &Loop{GW: rec, Cfg: cfg, Scopes: scopesOf(cfg), Interval: time.Hour, Log: pl.Log,
+		Dispatch: func(context.Context, gateway.WorkItem) {},
+		Plan:     func(ctx context.Context, g gateway.Goal, sc Scope) { _ = pl.Plan(ctx, g, sc) }}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	loop.Tick(ctx)
+	loop.wg.Wait()
+	got := rec.of("planGoal")
+	if len(got) != 1 || got[0] != "agent:planner@test-node" {
+		t.Fatalf("planGoal actors %q, want [agent:planner@test-node]", got)
+	}
+}

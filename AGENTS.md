@@ -810,6 +810,16 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   put `GIT_AUTHOR_*`/`GIT_COMMITTER_*` on `Job.Env`; the sandbox's
   `.gitconfig` is the same agent (`Sandbox.Open`'s `GitIdentity`, the
   hooks mounted read-only), never the operator's. Evaluations get none.
+- **A session's commands name their actor** (`internal/node/identity.go`,
+  docs/adr/adr-015's amendment 2026-10-03): every command a session
+  sends carries `agent:<role>@<slug>` — its ctx marked once where the
+  session opens with `actorContext(ctx, cfg, role)` over
+  `gateway.WithActor`, the slug `agentSlug` (node.yaml's, else `node`,
+  as `identityFor`'s). The Loop's claim, the Runner, the Rebaser and an
+  adopted build's progress act as `builder`, the Evaluator as
+  `evaluator`, the Planner as `planner`; `mesh mcp`'s pass-through
+  tools as none. A new session kind marks its ctx the same way
+  (`internal/node/actor_test.go`).
 - **Session units** (`internal/sessionunit/`, mesh-specs ADR 008,
   `docs/adr/adr-008-sessions-in-their-own-unit.md`): a host `claude -p`
   is not the node's child. `ClaudeCode.Run` starts it through a `Unit`

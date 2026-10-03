@@ -657,3 +657,23 @@ commands; none, and no error, on a platform without the field —
 `gatewaytest.Fake.NoActor`, whose inputs refuse the key, so a client
 that skipped the probe fails loudly; the probe kept an hour; none with
 no `WithActor`).
+
+**The node's wiring.** Each session marks its ctx once where it opens,
+with `actorContext(ctx, cfg, role)` (`internal/node/identity.go`, over
+`gateway.WithActor`), so every command it sends carries
+`agent:<role>@<slug>`. The builder: the `Loop`'s `claimWorkItem`, the
+`Runner`'s progress and finish (`RunItem`, `AdoptItem`), the
+`Rebaser`'s session (its claim, progress and finish) and the progress
+heartbeat of an adopted session. The evaluator: the `Evaluator`
+(`Evaluate`, `AdoptEvaluation`), whose `evaluateWorkItem` carries it on
+a verdict and on no verdict alike. The planner: the `Planner` (`Plan`,
+`AdoptPlan`), whose `planGoal` carries it. `mesh mcp`'s pass-through
+work tools mark none: they act as the person. The `<slug>` is
+`agentSlug(cfg)` — node.yaml's `slug`, else `node` — the same fallback
+`identityFor` names the agent's commits for (ADR-024), so a session's
+commands and its commits name one agent. Tests:
+`internal/node/actor_test.go` (a build's claim, progress and finish as
+`agent:builder@<slug>`, and `agent:builder@node` with no slug; an
+evaluation's `evaluateWorkItem` as `agent:evaluator@<slug>` on both
+paths; a plan's `planGoal` as `agent:planner@<slug>`), each read with
+`gateway.ActorFrom` on the ctx the node's gateway receives.
