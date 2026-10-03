@@ -78,6 +78,15 @@ command, exitCode, durationMs}], reports [{suite, content}]}`
 command per step, the tests summed over the steps, `suiteHash` the
 validate.yml's hash, a report per step whose results it parsed —
 `validate.StepResult.Report`, the raw file or stdout, up to 256 KiB).
+*Amended again by item 4:* `commands` names exactly the suites the run
+ran, `{suite, command, exitCode, durationMs}` each, in the file's
+order — possibly none: a diff no suite's paths match still uploads one
+attestation with `commands: []`, so the verify step never answers
+`missing` for "nothing affected"; `reports` is `[{suite, content}]`,
+each the step's results file, stdout or `reports:` files, 256 KiB in
+all over the run; and `suiteHash` is `validate.SuiteHash`, the
+platform's canonical `validatespec.SuiteHash` of the file (ADR-013's
+amendment), which the verify step compares with the base's.
 The node id, the item id, the tree's old name, `sandboxed` and the
 per-step rows stay on the local attestation: the platform takes the
 holder from the bearer and the item from `workItemId`. The contract is
