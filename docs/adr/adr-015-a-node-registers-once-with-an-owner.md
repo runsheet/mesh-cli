@@ -502,5 +502,10 @@ platform's exact wording naming `RegistersAt` and the sent id — the
 refused call recorded in `Calls`, as the platform saw it — and registers
 one under it.
 
+**A self-update refused this way is not marked failed for good**
+(2026-10-03): a rollback whose confirm error named an id is retried on
+the next tick, under the adopted id — ADR-002's amendment of 2026-10-03,
+a rollback on a refusal naming the owner id is not final.
+
 Tests: `internal/node/owned_adopt_test.go`,
 `internal/commands/nodestart_adopt_test.go`.

@@ -496,7 +496,7 @@ func TestCheckStartRollsBackAfterTwoFailedStarts(t *testing.T) {
 	loop, u, _, _ := p.updateLoop("v1.1.0")
 	now := time.Now()
 	loop.Now = func() time.Time { return now }
-	loop.NoteUpdateFailure(c.Failed, c.Reason, c.Final)
+	loop.NoteUpdateFailure(c.Failed, c.Reason, c.Final, c.RetryNow)
 	loop.Tick(context.Background())
 	if got := p.lastHeartbeat()["updateError"]; got != reason {
 		t.Fatalf("heartbeat updateError = %v", got)

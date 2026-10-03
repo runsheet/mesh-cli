@@ -130,3 +130,24 @@ func TestConfirmWindowElapsesUnconfirmed(t *testing.T) {
 		t.Fatalf("endRun logged %q", logs.String())
 	}
 }
+
+// A registration refused naming the owner id is recorded in update.json
+// as the refusal's own text, so the id is visible and the rollback it
+// leads to is not final (adr-002's amendment 2026-10-03).
+func TestConfirmWindowRecordsTheRefusalNamingAnID(t *testing.T) {
+	const refusal = "register (owner person): RegisterNode: node grapevine registers at 18a8b766-18f3-5e73-b4cf-efb91c01946a, the id its form names, not 47a08dd9-bafb-5c64-bb16-7e806f0b1b95"
+	f := &selfupdate.StateFile{Path: filepath.Join(t.TempDir(), "update.json")}
+	if err := f.BeginUpdate("v0.2.247", "v0.2.248"); err != nil {
+		t.Fatal(err)
+	}
+	w, _, _ := confirmFake(time.Minute)
+	w.Note = f.NoteConfirmError
+	err := w.retry(context.Background(), func(context.Context) error { return errors.New(refusal) })
+	if !errors.Is(err, node.ErrUnconfirmed) {
+		t.Fatalf("retry = %v", err)
+	}
+	s, err := f.Load()
+	if err != nil || s.ConfirmError != refusal || !s.RetryAfterAdopt {
+		t.Fatalf("update.json: %+v, %v", s, err)
+	}
+}

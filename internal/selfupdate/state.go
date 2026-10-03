@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/paths"
@@ -41,6 +42,25 @@ type State struct {
 	// is unconfirmed — the platform refused it or it timed out — set by
 	// NoteConfirmError.
 	ConfirmError string `json:"confirmError,omitempty"`
+	// RetryAfterAdopt is set by NoteConfirmError when a refusal named
+	// the id the node should register at (NamesID): the node adopts it
+	// and keeps it in node.yaml, so a rollback of this update is not
+	// final — the version is tried again on the next tick (adr-002's
+	// amendment 2026-10-03). Rollback keeps it; BeginUpdate and Confirm
+	// clear it, so a version gets that second try once.
+	RetryAfterAdopt bool `json:"retryAfterAdopt,omitempty"`
+}
+
+// registersAt is the platform's refusal of an owner registration under
+// another id than the one it derives: `node <slug> registers at <uuid>,
+// the id its form names, not <uuid>` (node.AdoptedID reads the same
+// shape; this package imports nothing from internal/node).
+var registersAt = regexp.MustCompile(`registers at [0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\b`)
+
+// NamesID reports whether reason is a refusal naming the id the node
+// should register at, one the node adopts.
+func NamesID(reason string) bool {
+	return registersAt.MatchString(reason)
 }
 
 // Pending is true between BeginUpdate and Confirm or Rollback. A refused
@@ -157,7 +177,10 @@ func (f *StateFile) NoteStartFailure(reason string) error {
 // NoteConfirmError records the last error a heartbeat hit while this
 // update is unconfirmed — the platform refused it or it timed out — so a
 // rollback can say the platform was slow rather than that the binary
-// failed to start. A start with no update pending records nothing.
+// failed to start. A reason naming an id (NamesID) sets
+// RetryAfterAdopt, and a later one naming none does not clear it: the
+// node has adopted that id by then. A start with no update pending
+// records nothing.
 func (f *StateFile) NoteConfirmError(reason string) error {
 	s, err := f.Load()
 	if err != nil {
@@ -167,6 +190,9 @@ func (f *StateFile) NoteConfirmError(reason string) error {
 		return nil
 	}
 	s.ConfirmError = reason
+	if NamesID(reason) {
+		s.RetryAfterAdopt = true
+	}
 	return f.save(s)
 }
 
@@ -186,6 +212,7 @@ func (f *StateFile) Confirm() error {
 	s.LastError = ""
 	s.StartError = ""
 	s.ConfirmError = ""
+	s.RetryAfterAdopt = false
 	return f.save(s)
 }
 
@@ -194,7 +221,8 @@ func (f *StateFile) Confirm() error {
 // filled in from what NoteStartFailure or NoteConfirmError last
 // recorded — a start error names the binary as never having run, a
 // confirm error names window as how long it was given to reach the
-// platform — else the old bare wording. The caller exits so the service
+// platform — else the old bare wording. RetryAfterAdopt is kept: the
+// rollback is then not final (node.CheckStart). The caller exits so the service
 // manager starts the previous binary.
 func (f *StateFile) Rollback(exePath, reason string, window time.Duration) error {
 	s, err := f.Load()
