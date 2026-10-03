@@ -398,24 +398,52 @@ func dash(s string) string {
 // the owner and the orgs it serves, an orgs restriction the answer did
 // not meet, or — on a nil answer — that the platform named none this
 // time (naming node.yaml's own `enterprise:` when the node is one, since
-// the answer carries none to fall back on). A per-org node says nothing
+// the answer carries none to fall back on) — followed, either way, by
+// the node id line (nodeIDStatusLine), since node.yaml's node_id does
+// not depend on this heartbeat's answer. A per-org node says nothing
 // here.
 func ownedStatusLine(cfg *node.Config, out node.Outside) string {
 	if !out.Owned {
 		return ""
 	}
-	if out.Answer == nil {
-		if cfg != nil && cfg.Enterprise != "" {
-			return fmt.Sprintf("owner: %s (enterprise), the platform answered no orgs on this heartbeat", cfg.Enterprise)
-		}
-		return "owner contract: the platform answered no orgs on this heartbeat"
+	var line string
+	switch {
+	case out.Answer == nil && cfg != nil && cfg.Enterprise != "":
+		line = fmt.Sprintf("owner: %s (enterprise), the platform answered no orgs on this heartbeat", cfg.Enterprise)
+	case out.Answer == nil:
+		line = "owner contract: the platform answered no orgs on this heartbeat"
+	default:
+		o := node.OwnerFrom(out.Answer)
+		line = fmt.Sprintf("%s (%s); serving %s", o.String(), o.Kind, strings.Join(out.Scopes.Names(), ", "))
 	}
-	o := node.OwnerFrom(out.Answer)
-	line := fmt.Sprintf("%s (%s); serving %s", o.String(), o.Kind, strings.Join(out.Scopes.Names(), ", "))
-	if out.Restrict != nil {
+	if id := nodeIDStatusLine(cfg); id != "" {
+		line += "\n" + id
+	}
+	if out.Answer != nil && out.Restrict != nil {
 		line = fmt.Sprintf("orgs: %v\n%s", out.Restrict, line)
 	}
 	return line
+}
+
+// nodeIDStatusLine is mesh node status's line naming node.yaml's node_id
+// and how it was arrived at (node_id_source, item 4 of
+// a-node-takes-the-id-the-platform-names): "derived" when OwnedNodeID
+// computed it, "adopted from the platform" after a refusal named it
+// (node.IDAdopted), or "recorded" for a node_id saved before
+// node_id_source existed (empty on a node registered before this
+// goal). Empty when node.yaml has no node_id to show.
+func nodeIDStatusLine(cfg *node.Config) string {
+	if cfg == nil || cfg.NodeID == "" {
+		return ""
+	}
+	switch cfg.NodeIDSource {
+	case node.IDDerived:
+		return fmt.Sprintf("node id: %s (derived)", cfg.NodeID)
+	case node.IDAdopted:
+		return fmt.Sprintf("node id: %s (adopted from the platform)", cfg.NodeID)
+	default:
+		return fmt.Sprintf("node id: %s (recorded)", cfg.NodeID)
+	}
 }
 
 // statusHeartbeat is `mesh node status`'s one heartbeat: the version
