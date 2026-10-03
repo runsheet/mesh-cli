@@ -46,13 +46,14 @@ func DefaultImage(version string) string {
 // AllowedEnv are the variables of a session's own environment (the
 // job's, never the node's) that reach its pod: the item's GitHub token
 // and gh config dir (ADR-001), the account's secret and label (adr-005),
-// and the Codex keys. Tool secrets (ADR 006) are allowed by
+// the Codex keys, and the session's agent identity (ADR-024). Tool secrets (ADR 006) are allowed by
 // ToolEnvPrefix.
 var AllowedEnv = []string{
 	"GH_TOKEN", "GH_CONFIG_DIR",
 	"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY",
 	"OPENAI_API_KEY", "CODEX_API_KEY",
 	"MESH_ACCOUNT",
+	"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL",
 }
 
 // ToolEnvPrefix names a tool secret's variable (tools.EnvName).
@@ -71,11 +72,6 @@ type Config struct {
 	ServicesLimits Limits
 	Registries     []string
 	Network        NetworkPolicy
-	// GitName and GitEmail are the commit identity written into the
-	// session's .gitconfig (the operator's, which a session no longer
-	// reads from the host).
-	GitName  string
-	GitEmail string
 	// TZ is the session's time zone ("" is UTC).
 	TZ string
 	// ServiceTimeout bounds the wait for the services' health checks
@@ -103,13 +99,42 @@ type Session struct {
 	pods  []Pod
 	// started is the pod Start made, which the next Run runs in.
 	started *Pod
+	// hooks is the checkout's hooks directory, mounted beside it.
+	hooks string
+}
+
+// GitIdentity is a session's commit identity: the agent its .gitconfig
+// names (never the node's owner, ADR-024) and the hooks directory the
+// checkout's core.hooksPath names, mounted at its own path. Empty
+// fields write and mount nothing.
+type GitIdentity struct {
+	Name     string
+	Email    string
+	HooksDir string
+}
+
+// GitIdentityFromEnv is the identity a job's GIT_AUTHOR_NAME and
+// GIT_AUTHOR_EMAIL name, with no hooks directory.
+func GitIdentityFromEnv(env []string) GitIdentity {
+	var id GitIdentity
+	for _, kv := range env {
+		k, v, _ := strings.Cut(kv, "=")
+		switch k {
+		case "GIT_AUTHOR_NAME":
+			id.Name = v
+		case "GIT_AUTHOR_EMAIL":
+			id.Email = v
+		}
+	}
+	return id
 }
 
 var unsafeName = regexp.MustCompile(`[^a-z0-9-]+`)
 
-// Open makes a session's empty temporary HOME, with the .gitconfig and
-// the empty gh and Claude config directories it is given.
-func (s *Sandbox) Open(label, kind string) (*Session, error) {
+// Open makes a session's empty temporary HOME, with the .gitconfig
+// naming git's identity and the empty gh and Claude config directories
+// it is given.
+func (s *Sandbox) Open(label, kind string, git GitIdentity) (*Session, error) {
 	home, err := os.MkdirTemp(s.TempDir, "mesh-home-")
 	if err != nil {
 		return nil, fmt.Errorf("sandbox: home: %w", err)
@@ -125,13 +150,13 @@ func (s *Sandbox) Open(label, kind string) (*Session, error) {
 		}
 	}
 	var gc strings.Builder
-	if s.Config.GitName != "" || s.Config.GitEmail != "" {
+	if git.Name != "" || git.Email != "" {
 		gc.WriteString("[user]\n")
-		if s.Config.GitName != "" {
-			fmt.Fprintf(&gc, "\tname = %s\n", s.Config.GitName)
+		if git.Name != "" {
+			fmt.Fprintf(&gc, "\tname = %s\n", gitConfigValue(git.Name))
 		}
-		if s.Config.GitEmail != "" {
-			fmt.Fprintf(&gc, "\temail = %s\n", s.Config.GitEmail)
+		if git.Email != "" {
+			fmt.Fprintf(&gc, "\temail = %s\n", gitConfigValue(git.Email))
 		}
 	}
 	gc.WriteString("[safe]\n\tdirectory = *\n")
@@ -145,7 +170,15 @@ func (s *Sandbox) Open(label, kind string) (*Session, error) {
 	if len(name) > 40 {
 		name = name[:40]
 	}
-	return &Session{sb: s, Home: home, Label: label, Kind: kind, name: "mesh-" + name + "-" + hex.EncodeToString(rnd[:])}, nil
+	return &Session{sb: s, Home: home, Label: label, Kind: kind, hooks: git.HooksDir, name: "mesh-" + name + "-" + hex.EncodeToString(rnd[:])}, nil
+}
+
+// gitConfigValue quotes v for a .gitconfig line: `Mesh builder (mini)`
+// keeps its parentheses, a quote or backslash is escaped, and a line
+// break is dropped.
+func gitConfigValue(v string) string {
+	v = strings.NewReplacer("\r", "", "\n", "", `\`, `\\`, `"`, `\"`).Replace(v)
+	return `"` + v + `"`
 }
 
 // WriteFile writes data at rel under the session's HOME and returns its
@@ -210,13 +243,19 @@ func Allowed(name string) bool {
 	return false
 }
 
-// Mounts are the pod's only host paths: the workspace and the session's
-// HOME, both read-write, each at its own path.
+// Mounts are the pod's only host paths, each at its own path: the
+// workspace and the session's HOME read-write, and the checkout's hooks
+// directory, when it has one, read-only.
 func (s *Session) Mounts(workspace string) []Mount {
-	return []Mount{
+	m := []Mount{
 		{Source: workspace, Target: workspace},
 		{Source: s.Home, Target: s.Home},
 	}
+	// the checkout's hooks, which its core.hooksPath names (ADR-024)
+	if s.hooks != "" {
+		m = append(m, Mount{Source: s.hooks, Target: s.hooks, ReadOnly: true})
+	}
+	return m
 }
 
 // RunSpec is what runs in a session's pod.

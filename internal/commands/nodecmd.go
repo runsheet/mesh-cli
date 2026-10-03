@@ -788,7 +788,6 @@ func nodeStart(cmd *cobra.Command, args []string, logger *log.Logger) error {
 		return err
 	}
 	if sb != nil {
-		sb.Config.GitName, sb.Config.GitEmail = gitIdentity(ctx)
 		sb.Config.TZ = os.Getenv("TZ")
 	}
 	sessionSandbox, loop.Sandbox = sb, sbInfo
@@ -1431,19 +1430,6 @@ func meshContextMCP(ctx context.Context, gw *gateway.Client) map[string]any {
 // sessionSandbox is the pod every one-shot session runs in (OpenSandbox);
 // nil runs it on the host, as `sandbox: off` does.
 var sessionSandbox *sandbox.Sandbox
-
-// gitIdentity is the operator's commit identity, which a sandboxed
-// session gets in its own .gitconfig instead of reading the host's.
-func gitIdentity(ctx context.Context) (name, email string) {
-	get := func(key string) string {
-		out, err := exec.CommandContext(ctx, "git", "config", "--global", key).Output()
-		if err != nil {
-			return ""
-		}
-		return strings.TrimSpace(string(out))
-	}
-	return get("user.name"), get("user.email")
-}
 
 // oneShotHarness is `claude -p` for a session that ends with its turn:
 // poll-mode builds and every evaluation.

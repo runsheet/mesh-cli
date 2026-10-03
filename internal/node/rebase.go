@@ -8,10 +8,12 @@ import (
 	"log"
 	"os"
 	"os/exec"
-	"projectmesh.io/mesh-cli/internal/crash"
 	"strings"
 	"sync"
 	"time"
+
+	"projectmesh.io/mesh-cli/internal/crash"
+	"projectmesh.io/mesh-cli/internal/tools"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/harness"
@@ -128,6 +130,12 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 	if err != nil {
 		return fail(fmt.Errorf("workspace: %w", err))
 	}
+	// the rebased commits are the agent's, with the pairers' trailers
+	// (ADR-024)
+	ident := identityFor(r.Cfg, tools.RoleFor(string(harness.KindRebase)), item, res.Goal)
+	if err := r.WS.Identify(ctx, dir, ident); err != nil {
+		return fail(fmt.Errorf("workspace: %w", err))
+	}
 	orgName := r.Scopes.NameOf(item.OrgID)
 	cx, err := FetchContext(ctx, r.GW, orgName, res.Project.Slug, ContextOptions{Budget: r.contextBudget(), Repos: []string{res.Repo.FullName()}, Checkouts: map[string]string{res.Repo.FullName(): dir}, Goal: res.Goal, Logf: r.logf})
 	if err != nil {
@@ -158,7 +166,7 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 	// the checkout's services, started in the session's pod before its
 	// agent; the pod and its sidecars go on every way out. A required one
 	// that does not come up gives the rebase up, naming it.
-	pod, err := OpenSessionPod(ctx, r.Sandbox, dir, job.Label, harness.KindRebase, r.logf)
+	pod, err := OpenSessionPod(ctx, r.Sandbox, dir, job.Label, harness.KindRebase, ident.Sandbox(dir), r.logf)
 	defer pod.Close()
 	if err != nil {
 		return fail(fmt.Errorf("services: %w", err))
@@ -179,6 +187,7 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 		defer unlessDetached(ctx, func() { os.RemoveAll(ghDir) })
 		job.Env = SessionEnv(tok, ghDir)
 	}
+	ident.Apply(&job)
 	sc, _ := r.Scopes.ByOrg(item.OrgID)
 	acct, err := r.Credentials.Open(withSubject(ctx, sc, cmp.Or(res.Project.ID, item.ProjectID), res.Project.Slug), gateway.SessionRef{Kind: string(harness.KindRebase), ItemID: item.ID, GoalID: item.GoalID}, sc.NodeID, Adapter(r.Harness))
 	if isNoCredential(err) {

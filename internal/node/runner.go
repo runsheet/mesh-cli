@@ -8,10 +8,11 @@ import (
 	"log"
 	"math"
 	"os"
-	"projectmesh.io/mesh-cli/internal/crash"
 	"strings"
 	"sync"
 	"time"
+
+	"projectmesh.io/mesh-cli/internal/crash"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/harness"
@@ -275,6 +276,12 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	if err != nil {
 		return r.fail(ctx, item, fmt.Errorf("workspace: %w", err))
 	}
+	// the session commits as its agent with the pairers' trailers, never
+	// as the node's owner (ADR-024)
+	ident := identityFor(r.Cfg, tools.RoleFor(string(harness.KindBuild)), item, res.Goal)
+	if err := r.WS.Identify(ctx, dir, ident); err != nil {
+		return r.fail(ctx, item, fmt.Errorf("workspace: %w", err))
+	}
 
 	orgName := r.Scopes.NameOf(item.OrgID)
 	cx, err := FetchContext(ctx, r.GW, orgName, res.Project.Slug, ContextOptions{Budget: r.contextBudget(), Repos: []string{res.Repo.FullName()}, Checkouts: map[string]string{res.Repo.FullName(): dir}, Goal: res.Goal, Logf: r.logf})
@@ -341,6 +348,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		defer unlessDetached(ctx, func() { os.RemoveAll(ghDir) })
 		job.Env = SessionEnv(tok, ghDir)
 	}
+	ident.Apply(&job)
 	sc, _ := r.Scopes.ByOrg(item.OrgID)
 	acct, err := r.Credentials.Open(withSubject(ctx, sc, cmp.Or(res.Project.ID, item.ProjectID), res.Project.Slug), gateway.SessionRef{Kind: string(harness.KindBuild), ItemID: item.ID, GoalID: item.GoalID}, sc.NodeID, Adapter(r.Harness))
 	if nc, ok := NoCredentialOf(err); ok {
@@ -396,7 +404,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	}
 	// the checkout's services, started in the session's pod before its
 	// agent; the pod and its sidecars go on every way out
-	pod, err := OpenSessionPod(ctx, r.Sandbox, dir, label, harness.KindBuild, r.logf)
+	pod, err := OpenSessionPod(ctx, r.Sandbox, dir, label, harness.KindBuild, ident.Sandbox(dir), r.logf)
 	defer pod.Close()
 	if err != nil {
 		return r.fail(ctx, item, fmt.Errorf("services: %w", err))

@@ -545,7 +545,8 @@ func (c *ClaudeCode) runSandboxed(ctx context.Context, job Job, onProgress func(
 	sess := job.Session
 	if sess == nil {
 		var err error
-		if sess, err = c.Sandbox.Open(job.Label, string(job.Kind)); err != nil {
+		// the agent the node put on the job's env, never the operator
+		if sess, err = c.Sandbox.Open(job.Label, string(job.Kind), sandbox.GitIdentityFromEnv(job.Env)); err != nil {
 			return Result{}, fmt.Errorf("harness claude-code: %w", err)
 		}
 		defer sess.Close()

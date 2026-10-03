@@ -55,6 +55,11 @@ type Config struct {
 	OwnerID  string `yaml:"owner_id,omitempty"`
 	Slug     string `yaml:"slug"`
 	Name     string `yaml:"name"`
+	// Pair are the people paired with this node's build and rebase
+	// sessions: each a Co-Authored-By trailer on every commit they make
+	// (Pairers). The interim source until the platform serves an item's
+	// paired field (ADR-024).
+	Pair []Pairer `yaml:"pair,omitempty"`
 	// Owner is the node's ownership model: "" or "person" (the
 	// default, bring-your-own infra — the node serves every org its
 	// token's person belongs to) or "enterprise" (shared infra — the

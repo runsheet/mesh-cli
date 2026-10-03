@@ -70,6 +70,11 @@ type Workspacer interface {
 	// empty spec.Branch leaves it on origin/<base>, detached, with the
 	// base's full history (an already_done item's evaluation).
 	Prepare(ctx context.Context, spec WorkspaceSpec) (string, error)
+	// Identify makes the checkout in dir commit as id's agent, author
+	// and committer, with each pairer's Co-Authored-By (ADR-024): what
+	// a build or rebase session is given after Prepare and before it
+	// starts, so none commits as the node's owner.
+	Identify(ctx context.Context, dir string, id Identity) error
 	// Commit stages paths and commits them with msg when anything
 	// changed. Only the goal's document at the goal's end uses it
 	// (RecordEndedGoal, on the default branch); a build's branch is
