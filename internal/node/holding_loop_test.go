@@ -161,6 +161,39 @@ func TestHoldingLeavesOutTheUrgentItemAPacedNodeClaims(t *testing.T) {
 	}
 }
 
+// A NoCredentials headroom hold (item 1) on the item's project lands on
+// the heartbeat's holding.unclaimed with the hold's own reason and
+// until, in RFC 3339 (item 4 of no-headroom-is-a-hold-not-a-claim-loop).
+func TestHoldingCarriesANoCredentialHeadroomHoldUntil(t *testing.T) {
+	p := newPriorityFake(t)
+	p.addGoal(orgID, "steady", "normal")
+	p.addItem(orgID, "steady", "normal-1", 1, false)
+	loop, _, c := p.pacedLoop(4, reading(0.1, 0.1))
+	until := c.Now().Add(30 * time.Minute)
+	loop.NoCredential = &NoCredentials{Now: loop.Now}
+	e := &ErrNoHeadroom{Org: "acme", Project: "mesh", ProjectID: projID, Kind: "build", Adapter: AdapterClaudeCode, Refused: []string{"max20"}, Until: until}
+	loop.NoCredential.NoteHeadroom("steady", e)
+
+	loop.Tick(context.Background())
+	loop.Tick(context.Background())
+	loop.wg.Wait()
+
+	if n := len(p.CallsNamed("claimWorkItem")); n != 0 {
+		t.Fatalf("claimed %d time(s) under a headroom hold", n)
+	}
+	un := unclaimedOf(t, p.lastHolding())
+	u, ok := un["steady/item"]
+	if !ok {
+		t.Fatalf("holding.unclaimed has no steady/item: %#v", un)
+	}
+	if reason, _ := u["reason"].(string); !strings.Contains(reason, e.Error()) {
+		t.Fatalf("reason = %q, want it to contain %q", reason, e.Error())
+	}
+	if got := u["until"]; got != until.Format(time.RFC3339) {
+		t.Fatalf("until = %v, want %v", got, until.Format(time.RFC3339))
+	}
+}
+
 // A draining node makes no pass and sends the last report unchanged.
 func TestDrainingNodeSendsTheLastHolding(t *testing.T) {
 	p := newPriorityFake(t)

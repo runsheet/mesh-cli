@@ -19,6 +19,11 @@ type Unclaimed struct {
 	Kind   string // "item", "plan", "evaluation", "rebase" or "research" (GoalID a direction id)
 	Count  int
 	Reason string
+	// Until is when this hold lifts — zero for a hold with none, such as
+	// the unmerged-per-repo limit or the urgent-only reserve. When
+	// several holds of one goal and kind fold into one entry, Until is
+	// the earliest of their non-zero untils (passOver).
+	Until time.Time
 }
 
 // HoldingReport is the node's holding decision as data (runsheet goal
@@ -53,7 +58,6 @@ func HoldingReport(now time.Time, accounts []AccountConfig, readings map[string]
 		}
 		holds(a.ResetsAt)
 	}
-	out.Until = until
 
 	var items, plans int
 	for _, u := range unclaimed {
@@ -63,10 +67,12 @@ func HoldingReport(now time.Time, accounts []AccountConfig, readings map[string]
 		case "plan":
 			plans += u.Count
 		}
+		holds(u.Until)
 		out.Unclaimed = append(out.Unclaimed, gateway.HoldingUnclaimed{
-			GoalID: u.GoalID, Kind: u.Kind, Count: u.Count, Reason: u.Reason,
+			GoalID: u.GoalID, Kind: u.Kind, Count: u.Count, Reason: u.Reason, Until: u.Until,
 		})
 	}
+	out.Until = until
 
 	switch {
 	case allExhausted:

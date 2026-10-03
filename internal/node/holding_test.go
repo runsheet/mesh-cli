@@ -1,10 +1,12 @@
 package node
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 
+	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/harness"
 )
 
@@ -153,6 +155,59 @@ func TestHoldingReportNamesUnclaimedWork(t *testing.T) {
 	}
 	if len(rep.Unclaimed) != 2 {
 		t.Fatalf("unclaimed = %#v", rep.Unclaimed)
+	}
+}
+
+// An unclaimed entry's Until rides the report (item 4 of
+// no-headroom-is-a-hold-not-a-claim-loop): the report's own until is
+// the earliest of a hold's until and the accounts' resetsAt, and a zero
+// Until is left out of the wire shape (omitzero).
+func TestHoldingReportCarriesUnclaimedUntil(t *testing.T) {
+	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+	accountReset := time.Date(2026, 9, 29, 0, 0, 0, 0, time.UTC)
+	holdUntil := time.Date(2026, 9, 28, 18, 0, 0, 0, time.UTC) // earlier than the account's
+	accounts := []AccountConfig{{Label: "max20", Kind: AccountSubscription}}
+	readings := map[string]harness.RateLimit{
+		"max20": {Status: "rejected", ObservedAt: now, ResetsAt: accountReset},
+	}
+	cfg := LimitsConfig{}
+	p := nodePace(now, accounts, readings, cfg)
+	unclaimed := []Unclaimed{
+		{GoalID: "goal-1", Kind: "item", Count: 1, Reason: "no issued credential has headroom", Until: holdUntil},
+		{GoalID: "goal-2", Kind: "plan", Count: 1, Reason: "the node is at its min"},
+	}
+	rep := HoldingReport(now, accounts, readings, cfg, 4, p, unclaimed)
+	if !rep.Until.Equal(holdUntil) {
+		t.Fatalf("report.Until = %v, want %v (the earliest of the hold and the account's reset)", rep.Until, holdUntil)
+	}
+	var withUntil, withoutUntil gateway.HoldingUnclaimed
+	for _, u := range rep.Unclaimed {
+		switch u.GoalID {
+		case "goal-1":
+			withUntil = u
+		case "goal-2":
+			withoutUntil = u
+		}
+	}
+	if !withUntil.Until.Equal(holdUntil) {
+		t.Fatalf("goal-1.Until = %v, want %v", withUntil.Until, holdUntil)
+	}
+	if !withoutUntil.Until.IsZero() {
+		t.Fatalf("goal-2.Until = %v, want zero", withoutUntil.Until)
+	}
+	b, err := json.Marshal(withoutUntil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), `"until"`) {
+		t.Fatalf("a zero Until was not omitted: %s", b)
+	}
+	b2, err := json.Marshal(withUntil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b2), `"until"`) {
+		t.Fatalf("a set Until was omitted: %s", b2)
 	}
 }
 

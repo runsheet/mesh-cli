@@ -184,9 +184,15 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   adr-002's tag-or-sha amendment)),
   `adopted` (below) and `holding` — the node's holding decision as data,
   not a log line: each account's status, reset time and what the node
-  still takes on it, and the summary judgement (`HoldingReport`,
-  adr-005's amendment, for runsheet goal `node-says-why-work-waits`) —
-  are sent only when set,
+  still takes on it, the summary judgement (`HoldingReport`, adr-005's
+  amendment, for runsheet goal `node-says-why-work-waits`), and each
+  `holding.unclaimed[]` entry's own `until` beside its reason — the
+  hold's own until when it has one, the earliest when several holds of
+  a goal and kind fold into one entry, folded into the report's own
+  `until` the same way accounts' `resetsAt` are, dropped from an entry
+  whose schema's `unclaimed` element type does not take it
+  (`takesHoldingUnclaimedUntil`, adr-005's amendment 2026-10-03) — are
+  sent only when set,
   because they are fields the platform half adds. No reloadable field
   needs a drain: `Reload` (`Reloader` over `LoadConfig`) re-reads
   node.yaml every tick and the next tick runs on it — the capacity

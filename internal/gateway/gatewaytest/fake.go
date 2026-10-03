@@ -151,6 +151,12 @@ type Fake struct {
 	// `error`, and introspection answers the entry without it, as a
 	// platform older than the tool entry's error text.
 	NoToolError bool
+	// NoUnclaimedUntil is a platform whose holding.unclaimed element
+	// type has no `until` (adr-005's amendment 2026-10-03, goal
+	// no-headroom-is-a-hold-not-a-claim-loop, item 4): introspection
+	// answers the element type without it, so a heartbeat carrying
+	// Holding.Unclaimed[].Until sends the entry without `until`.
+	NoUnclaimedUntil bool
 	// RefuseReleases answers every releaseWorkItem with a refusal and
 	// changes nothing, as a platform that will not take a node's release.
 	// By default the fake follows the contract (trd §1): a node releases
@@ -713,8 +719,10 @@ func (f *Fake) sessionRead(w http.ResponseWriter, credField, arg, toolsField str
 // UnknownFields["holding"] (a platform before node-says-why-work-waits);
 // `limits`'s element type (NodeAccountLimitsInput) without `priorities`
 // when UnknownFields["priorities"] (a platform before adr-005's
-// amendment 2026-10, `limits[].priorities`). Unsupported["__type"]
-// refuses the probe.
+// amendment 2026-10, `limits[].priorities`); `holding.unclaimed`'s
+// element type without `until` when NoUnclaimedUntil (a platform
+// before adr-005's amendment 2026-10-03, `holding.unclaimed[].until`).
+// Unsupported["__type"] refuses the probe.
 func (f *Fake) heartbeatInputType() map[string]any {
 	field := func(name string) map[string]any {
 		return map[string]any{"name": name}
@@ -737,6 +745,21 @@ func (f *Fake) heartbeatInputType() map[string]any {
 		if name == "holding" {
 			var sub []any
 			for _, n := range []string{"mode", "summary", "until", "accounts", "unclaimed"} {
+				if n == "unclaimed" {
+					var usub []any
+					for _, un := range []string{"goalId", "kind", "count", "reason", "until"} {
+						if un == "until" && f.NoUnclaimedUntil {
+							continue
+						}
+						usub = append(usub, field(un))
+					}
+					sub = append(sub, map[string]any{"name": n, "type": map[string]any{
+						"kind": "LIST", "ofType": map[string]any{
+							"kind": "NON_NULL", "ofType": map[string]any{"kind": "INPUT_OBJECT", "inputFields": usub},
+						},
+					}})
+					continue
+				}
 				sub = append(sub, field(n))
 			}
 			row["type"] = map[string]any{"kind": "INPUT_OBJECT", "inputFields": sub}

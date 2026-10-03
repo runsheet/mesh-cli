@@ -491,7 +491,7 @@ func (l *Loop) claimReady(ctx context.Context, free, normalFree, maxRank int) {
 				ready = append(ready, readyItem{item: it, scope: sc, rank: r})
 			} else {
 				// only a ranged node at its min ranks past low
-				l.passOver(it.GoalID, "item", priorityName(r), fmt.Sprintf("the node is at its min of %d slot(s) for headroom and builds only urgent and high goals there", l.Capacity()))
+				l.passOver(it.GoalID, "item", priorityName(r), fmt.Sprintf("the node is at its min of %d slot(s) for headroom and builds only urgent and high goals there", l.Capacity()), time.Time{})
 			}
 		}
 	}
@@ -512,7 +512,7 @@ func (l *Loop) claimReady(ctx context.Context, free, normalFree, maxRank int) {
 			continue // a required tool needs a runtime still missing here
 		}
 		if why, until, ok := l.NoCredential.Holds(l.goalProject(ctx, sc, item), string(harness.KindBuild), l.adapter()); ok {
-			l.passOver(item.GoalID, "item", priorityName(r.rank), why)
+			l.passOver(item.GoalID, "item", priorityName(r.rank), why, until)
 			l.NoCredential.Say(item.GoalID, why, until)
 			continue
 		}
@@ -520,7 +520,7 @@ func (l *Loop) claimReady(ctx context.Context, free, normalFree, maxRank int) {
 		if limit > 0 && fresh && len(unread) > 0 {
 			// the repo's count is unknown: it may be at the limit already
 			why := fmt.Sprintf("repo %s's unmerged pull requests could not be counted (%s's review items unread) under node.yaml's claim.unmerged_per_repo %d", item.RepoID, strings.Join(unread, ", "), limit)
-			l.passOver(item.GoalID, "item", priorityName(r.rank), why)
+			l.passOver(item.GoalID, "item", priorityName(r.rank), why, time.Time{})
 			if !held[item.RepoID] {
 				held[item.RepoID] = true
 				l.logf("claim: %s; its fresh items wait, its started work is still claimed", why)
@@ -529,7 +529,7 @@ func (l *Loop) claimReady(ctx context.Context, free, normalFree, maxRank int) {
 		}
 		if n := unmerged[item.RepoID]; limit > 0 && fresh && n >= limit {
 			why := fmt.Sprintf("repo %s has %d unmerged pull requests, at node.yaml's claim.unmerged_per_repo %d", item.RepoID, n, limit)
-			l.passOver(item.GoalID, "item", priorityName(r.rank), why)
+			l.passOver(item.GoalID, "item", priorityName(r.rank), why, time.Time{})
 			if !held[item.RepoID] {
 				held[item.RepoID] = true
 				l.logf("claim: %s; its fresh items wait, its started work is still claimed", why)
@@ -538,12 +538,12 @@ func (l *Loop) claimReady(ctx context.Context, free, normalFree, maxRank int) {
 		}
 		pressing := r.rank <= gateway.PriorityRank("high")
 		if !pressing && normalFree <= 0 {
-			l.passOver(item.GoalID, "item", priorityName(r.rank), "the free slots are the urgent-only reserve at the end of an api key's day")
+			l.passOver(item.GoalID, "item", priorityName(r.rank), "the free slots are the urgent-only reserve at the end of an api key's day", time.Time{})
 			continue
 		}
 		actx, ok := l.accountFor(ctx, priorityName(r.rank), true, "item")
 		if !ok {
-			l.passOver(item.GoalID, "item", priorityName(r.rank), "")
+			l.passOver(item.GoalID, "item", priorityName(r.rank), "", time.Time{})
 			continue
 		}
 		if err := l.GW.ClaimWorkItem(ctx, item.ID, sc.NodeID, l.Harness); err != nil {
@@ -1170,19 +1170,26 @@ func unservedOnly(accounts []AccountConfig, fits func([]AccountConfig) bool) boo
 // items, with the reason heldReason gives the first — held, or with
 // none every account's standing — and each later held not yet in it
 // appended, so two repos at their limit in one goal are both named.
-func (l *Loop) passOver(goalID, kind, priority, held string) {
+// until is this hold's own (zero for a hold with none, such as the
+// unmerged-per-repo limit or the urgent-only reserve); when several
+// holds fold into one entry, its Until is the earliest of their
+// non-zero untils.
+func (l *Loop) passOver(goalID, kind, priority, held string, until time.Time) {
 	for i := range l.unclaimed {
 		if u := &l.unclaimed[i]; u.GoalID == goalID && u.Kind == kind {
 			u.Count++
 			if held != "" && !strings.Contains(u.Reason, held) {
 				u.Reason += "; " + held
 			}
+			if !until.IsZero() && (u.Until.IsZero() || until.Before(u.Until)) {
+				u.Until = until
+			}
 			return
 		}
 	}
 	accounts, readings := l.accounts()
 	rows := holdingAccounts(l.now(), accounts, readings, l.Thresholds(), l.Capacity())
-	l.unclaimed = append(l.unclaimed, Unclaimed{GoalID: goalID, Kind: kind, Count: 1, Reason: heldReason(priority, held, rows)})
+	l.unclaimed = append(l.unclaimed, Unclaimed{GoalID: goalID, Kind: kind, Count: 1, Reason: heldReason(priority, held, rows), Until: until})
 }
 
 // Holding is the last pass's holding report, which the next heartbeat
@@ -1428,7 +1435,7 @@ func (l *Loop) evaluateHeld(ctx context.Context) {
 			// its project's claim-time read refused an evaluation: it
 			// waits in evaluating until the hold's until, said once for
 			// the goal
-			l.passOver(item.GoalID, "evaluation", priorityName(h.rank), why)
+			l.passOver(item.GoalID, "evaluation", priorityName(h.rank), why, until)
 			l.NoCredential.Say(item.GoalID, why, until)
 			continue
 		}
@@ -1504,7 +1511,7 @@ func (l *Loop) rebaseRequested(ctx context.Context) {
 		if why, until, ok := l.NoCredential.Holds(l.goalProject(ctx, sc, item), string(harness.KindRebase), l.adapter()); ok {
 			// no credential open to this node, or none with headroom:
 			// the rebase waits, said once for the goal
-			l.passOver(item.GoalID, "rebase", priorityName(r.rank), why)
+			l.passOver(item.GoalID, "rebase", priorityName(r.rank), why, until)
 			l.NoCredential.Say(item.GoalID, why, until)
 			continue
 		}
@@ -1575,13 +1582,13 @@ func (l *Loop) planRequested(ctx context.Context) {
 		}
 		l.mu.Unlock()
 		if why, until, ok := l.NoCredential.Holds(g.ProjectID, string(harness.KindPlan), l.adapter()); ok {
-			l.passOver(g.ID, "plan", priorityName(gateway.PriorityRank(g.Priority)), why)
+			l.passOver(g.ID, "plan", priorityName(gateway.PriorityRank(g.Priority)), why, until)
 			l.NoCredential.Say(g.ID, why, until)
 			continue
 		}
 		actx, ok := l.accountFor(ctx, priorityName(gateway.PriorityRank(g.Priority)), true, "plan")
 		if !ok {
-			l.passOver(g.ID, "plan", priorityName(gateway.PriorityRank(g.Priority)), "")
+			l.passOver(g.ID, "plan", priorityName(gateway.PriorityRank(g.Priority)), "", time.Time{})
 			continue
 		}
 		l.mu.Lock()
@@ -1680,7 +1687,7 @@ func (l *Loop) researchDue(ctx context.Context) {
 			// issued, or none with headroom): the direction is not
 			// offered until the hold's until, said once for it
 			if why, until, ok := l.NoCredential.Holds(d.ProjectID, string(harness.KindResearch), l.adapter()); ok {
-				l.passOver(d.ID, "research", "", why)
+				l.passOver(d.ID, "research", "", why, until)
 				l.NoCredential.Say(d.ID, why, until)
 				continue
 			}
