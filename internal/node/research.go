@@ -378,11 +378,16 @@ func (d *Director) handIn(ctx context.Context, direction gateway.Direction, proj
 			what = "pitches"
 		}
 		note := fmt.Sprintf("the session's %s could not be read (%s): %s", what, result.SessionID, truncate(result.Text, 300))
+		note = withUseNote(note, acct.UseNote(result))
 		if hand := acct.Carried(d.pitchFallback(d.GW.RecordDirectionResearch(ctx, direction.ID, scope.NodeID, gateway.Research{}, Cents(result.CostUSD), note, acct.Report(result)))); hand != nil {
 			d.logf("%s/%s: %v (and handing in the empty session failed: %v)", project.Slug, direction.Slug, err, hand)
 		}
 		return fmt.Errorf("research session (%s): %w", result.SessionID, err)
 	}
+	// the direction's record says how the session used its tools —
+	// `tools: brave served, never called` when it did not search
+	// (ADR-006's amendment 2026-10-03)
+	notes = withUseNote(notes, acct.UseNote(result))
 	if err := acct.Carried(d.pitchFallback(d.GW.RecordDirectionResearch(ctx, direction.ID, scope.NodeID, research, Cents(result.CostUSD), notes, acct.Report(result)))); err != nil {
 		return fmt.Errorf("hand in the research: %w", err)
 	}
@@ -392,6 +397,19 @@ func (d *Director) handIn(ctx context.Context, direction gateway.Direction, proj
 	}
 	d.logf("%s/%s: proposed %d goal(s) ($%.2f)", project.Slug, direction.Slug, len(research.Proposals), result.CostUSD)
 	return nil
+}
+
+// withUseNote is a hand-in's notes with the session's tool-use note
+// (SessionAccount.UseNote) after them on its own line; notes unchanged
+// when there is none.
+func withUseNote(notes, use string) string {
+	if use == "" {
+		return notes
+	}
+	if notes == "" {
+		return use
+	}
+	return notes + "\n" + use
 }
 
 // pitchFallback is the hand-in's answer with gateway.ErrNoPitches taken

@@ -756,12 +756,6 @@ func (s *SessionAccount) Finish(ctx context.Context, res harness.Result) {
 	c.logf("usage: %s", turnUsageSummary(res))
 	rep := s.Report(res)
 	s.reportToolUsage(ctx)
-	if s.ref.ItemID == "" {
-		// a plan or research session has no item to note its tools on
-		if note := s.UseNote(s.res); note != "" {
-			c.logf("%s", note)
-		}
-	}
 	if s.noToolList && len(rep.Tools) > 0 {
 		c.toolListOnce.Do(func() {
 			c.logf("usage: the platform takes no per-tool calls yet; they are logged here instead (said once, for every session this run)")
@@ -848,8 +842,23 @@ func turnUsageSummary(res harness.Result) string {
 		res.Turns, res.InputPerTurnMean, res.InputPerTurnMax, strings.Join(largest, ","), res.DocumentsFetched)
 }
 
+// subject is what the session works on, as recordToolUsage's
+// aggregateId and the log's noun: its item, else its goal (a plan),
+// else its direction (research) — ADR-006's amendment 2026-10-03, the
+// subject rule.
+func (s *SessionAccount) subject() (noun, id string) {
+	switch {
+	case s.ref.ItemID != "":
+		return "item", s.ref.ItemID
+	case s.ref.GoalID != "":
+		return "goal", s.ref.GoalID
+	default:
+		return "direction", s.ref.DirectionID
+	}
+}
+
 // reportToolUsage hands the platform one recordToolUsage per call of a
-// priced tool the session made (trd §3 Tools, priced calls are usage),
+// priced tool the session made on its subject (subject) (trd §3 Tools, priced calls are usage),
 // by the call's id: a copy of the session's report with the tool's price
 // per call as its list cost, no actual cost, no tokens and none of the
 // session's turn or tool-result detail (Turns, InputPerTurnMean,
@@ -871,6 +880,7 @@ func (s *SessionAccount) reportToolUsage(ctx context.Context) {
 	if s.report == nil {
 		return
 	}
+	noun, subject := s.subject()
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
 	for _, t := range s.used {
@@ -883,7 +893,7 @@ func (s *SessionAccount) reportToolUsage(ctx context.Context) {
 			u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheWriteTokens = 0, 0, 0, 0
 			u.ToolCalls = 1
 			u.Turns, u.InputPerTurnMean, u.InputPerTurnMax, u.LargestToolResults = 0, 0, 0, nil
-			err := c.GW.RecordToolUsage(rctx, s.ref.ItemID, id, t.Name, u)
+			err := c.GW.RecordToolUsage(rctx, subject, id, t.Name, u)
 			switch {
 			case err == nil, errors.Is(err, gateway.ErrNoUsageDetail):
 				continue
@@ -894,7 +904,7 @@ func (s *SessionAccount) reportToolUsage(ctx context.Context) {
 			default:
 				c.logf("usage: tool %s: %v", t.Name, s.RedactErr(err))
 			}
-			c.logf("usage: tool %s on item %s (%s): call %s, %d¢", t.Name, s.ref.ItemID, s.ref.Kind, id, t.PricePerCallCents)
+			c.logf("usage: tool %s on %s %s (%s): call %s, %d¢", t.Name, noun, subject, s.ref.Kind, id, t.PricePerCallCents)
 		}
 	}
 }
