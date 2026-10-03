@@ -153,7 +153,11 @@ type Client struct {
 	// replaceItemSchema is whether the gateway's requestPlan input was
 	// last seen to take replaceItem, kept for ScalingProbeEvery.
 	replaceItemSchema holdingProbe
-	Now               func() time.Time
+	// adoptedFieldsSchema is whether the gateway's HeartbeatNodeInput's
+	// `adopted` element type was last found to take goalId, directionId,
+	// sessionId and alive (see takesAdoptedFields).
+	adoptedFieldsSchema holdingProbe
+	Now                 func() time.Time
 }
 
 // New returns a client for baseURL (scheme+host, no trailing slash) with
@@ -1856,11 +1860,24 @@ type HoldingUnclaimed struct {
 // AdoptedSession is one entry of the heartbeat's `adopted`: the item the
 // session is for (a plan's goal, a research session's direction), its
 // kind (build, evaluate, plan, research, rebase) and when the session
-// started.
+// started. GoalID and DirectionID name a plan's or a research session's
+// own subject beside ItemID, which keeps the goal or direction id as it
+// always has, for an older platform; SessionID is the agent's own
+// session id once state.json carries it, and Alive is whether the
+// session's unit still runs, both re-read on every heartbeat so they
+// stay current while the session runs (mesh-cli ADR-009 amendment,
+// Loop.Adopted). The four are sent only when the gateway's
+// HeartbeatNodeInput's `adopted` element type takes them
+// (takesAdoptedFields); an older platform gets itemId, kind and since
+// alone.
 type AdoptedSession struct {
-	ItemID string    `json:"itemId"`
-	Kind   string    `json:"kind"`
-	Since  time.Time `json:"since"`
+	ItemID      string    `json:"itemId"`
+	Kind        string    `json:"kind"`
+	Since       time.Time `json:"since"`
+	GoalID      string    `json:"goalId,omitempty"`
+	DirectionID string    `json:"directionId,omitempty"`
+	SessionID   string    `json:"sessionId,omitempty"`
+	Alive       bool      `json:"alive"`
 }
 
 // SandboxInfo is the heartbeat's `sandbox`: the mode (on or off), the
@@ -1987,7 +2004,11 @@ func (c *Client) HeartbeatNode(ctx context.Context, nodeID, version string, runn
 			in["reason"] = x.Reason
 		}
 		if len(x.Adopted) > 0 {
-			in["adopted"] = x.Adopted
+			if c.takesAdoptedFields(ctx) {
+				in["adopted"] = x.Adopted
+			} else {
+				in["adopted"] = adoptedWithoutNewFields(x.Adopted)
+			}
 		}
 		if x.Holding != nil && c.takesHolding(ctx) {
 			h := *x.Holding
@@ -2323,6 +2344,79 @@ func (c *Client) takesLimitsPriorities(ctx context.Context) bool {
 		for t := &f.Type; t != nil; t = t.OfType {
 			for _, sf := range t.InputFields {
 				if sf.Name == "priorities" {
+					p.takes = true
+				}
+			}
+		}
+	}
+	return p.takes
+}
+
+// adoptedWithoutNewFields is adopted with goalId, directionId,
+// sessionId and alive dropped from the wire shape, for a platform
+// whose `adopted` element type does not take them yet (see
+// takesAdoptedFields): an unknown field refuses the whole heartbeat
+// (see HeartbeatNode).
+func adoptedWithoutNewFields(adopted []AdoptedSession) []map[string]any {
+	out := make([]map[string]any, len(adopted))
+	for i, a := range adopted {
+		b, _ := json.Marshal(a)
+		m := map[string]any{}
+		_ = json.Unmarshal(b, &m)
+		delete(m, "goalId")
+		delete(m, "directionId")
+		delete(m, "sessionId")
+		delete(m, "alive")
+		out[i] = m
+	}
+	return out
+}
+
+// takesAdoptedFields says whether the gateway's HeartbeatNodeInput's
+// `adopted` list carries goalId, directionId, sessionId and alive on
+// its element type — asked once by introspection and kept for
+// ScalingProbeEvery, the same as takesLimitsPriorities (ADR-004: the
+// node must not send a field the platform does not accept; mesh-cli
+// ADR-009 amendment, the adopted entries carry a plan's or research's
+// own subject, the agent's session id and whether it still runs). A
+// failed probe is a no, kept as long. The four fields ship together on
+// the platform, so one — `alive`, present on every entry — stands for
+// the rest.
+func (c *Client) takesAdoptedFields(ctx context.Context) bool {
+	p := &c.adoptedFieldsSchema
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := c.now()
+	if !p.at.IsZero() && now.Sub(p.at) < ScalingProbeEvery {
+		return p.takes
+	}
+	type typeRef struct {
+		Kind        string `json:"kind"`
+		InputFields []struct {
+			Name string `json:"name"`
+		} `json:"inputFields"`
+		OfType *typeRef `json:"ofType"`
+	}
+	var out struct {
+		Type *struct {
+			InputFields []struct {
+				Name string  `json:"name"`
+				Type typeRef `json:"type"`
+			} `json:"inputFields"`
+		} `json:"__type"`
+	}
+	p.at, p.takes = now, false
+	q := `{ __type(name: "HeartbeatNodeInput") { inputFields { name type { kind inputFields { name } ofType { kind inputFields { name } ofType { kind inputFields { name } } } } } } }`
+	if err := c.Query(ctx, q, nil, &out); err != nil || out.Type == nil {
+		return false
+	}
+	for _, f := range out.Type.InputFields {
+		if f.Name != "adopted" {
+			continue
+		}
+		for t := &f.Type; t != nil; t = t.OfType {
+			for _, sf := range t.InputFields {
+				if sf.Name == "alive" {
 					p.takes = true
 				}
 			}

@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -122,6 +123,15 @@ func stateAccount(dir string) string {
 	return DefaultAccount
 }
 
+// adoptedEntry is one adopted session kept in Loop.adopted: the
+// heartbeat fields that do not change (item/goal/direction id, kind,
+// since) and the FoundSession, re-read on every heartbeat for its
+// SessionID and liveness (Loop.Adopted, mesh-cli ADR-009 amendment).
+type adoptedEntry struct {
+	session gateway.AdoptedSession
+	found   FoundSession
+}
+
 // AdoptSessions takes up the sessions a node process before this one
 // started (mesh-cli ADR 009), before the first tick claims anything:
 // each is marked as the loop's own — a build counts in Running, every
@@ -149,9 +159,16 @@ func (l *Loop) AdoptSessions(ctx context.Context, found []FoundSession) int {
 			continue
 		}
 		if l.adopted == nil {
-			l.adopted = map[string]gateway.AdoptedSession{}
+			l.adopted = map[string]adoptedEntry{}
 		}
-		l.adopted[subject] = gateway.AdoptedSession{ItemID: subject, Kind: string(kind), Since: s.State.StartedAt.UTC()}
+		session := gateway.AdoptedSession{ItemID: subject, Kind: string(kind), Since: s.State.StartedAt.UTC(), SessionID: s.State.SessionID, Alive: s.Alive()}
+		switch kind {
+		case harness.KindPlan:
+			session.GoalID = subject
+		case harness.KindResearch:
+			session.DirectionID = subject
+		}
+		l.adopted[subject] = adoptedEntry{session: session, found: s}
 		l.mu.Unlock()
 		if s.State.ItemID != "" && kind != harness.KindPlan && kind != harness.KindResearch {
 			note := "session adopted by the restarted node (" + s.Liveness() + ")"
@@ -159,7 +176,11 @@ func (l *Loop) AdoptSessions(ctx context.Context, found []FoundSession) int {
 				l.logf("item %s: adopted heartbeat: %v", s.State.ItemID, err)
 			}
 		}
-		l.logf("adopted a %s session of %s (pid %d, %s)", kind, subject, s.State.PID, s.Liveness())
+		sessionNote := ""
+		if s.State.SessionID != "" {
+			sessionNote = fmt.Sprintf(", session %s", s.State.SessionID)
+		}
+		l.logf("adopted a %s session of %s (pid %d, %s%s)", kind, subject, s.State.PID, s.Liveness(), sessionNote)
 		n++
 		l.wg.Add(1)
 		go func(s FoundSession) {
@@ -229,15 +250,32 @@ func (l *Loop) adoptLocked(kind harness.Kind, subject, account string) map[strin
 }
 
 // Adopted is the heartbeat's `adopted`: the sessions taken over from the
-// process before this one that have not yet ended, oldest first.
+// process before this one that have not yet ended, oldest first. Each
+// entry's SessionID and Alive are re-read from its session's state.json
+// and unit so a session id the agent names after AdoptSessions ran, and
+// the session ending, both reach the next heartbeat (mesh-cli ADR-009
+// amendment).
 func (l *Loop) Adopted() []gateway.AdoptedSession {
 	l.mu.Lock()
-	defer l.mu.Unlock()
-	if len(l.adopted) == 0 {
+	entries := make([]adoptedEntry, 0, len(l.adopted))
+	for _, e := range l.adopted {
+		entries = append(entries, e)
+	}
+	l.mu.Unlock()
+	if len(entries) == 0 {
 		return nil
 	}
-	out := make([]gateway.AdoptedSession, 0, len(l.adopted))
-	for _, a := range l.adopted {
+	out := make([]gateway.AdoptedSession, 0, len(entries))
+	for _, e := range entries {
+		a := e.session
+		found := e.found
+		if st, err := sessionunit.ReadState(found.Dir); err == nil {
+			found.State = st
+			if st.SessionID != "" {
+				a.SessionID = st.SessionID
+			}
+		}
+		a.Alive = found.Alive()
 		out = append(out, a)
 	}
 	sort.Slice(out, func(i, j int) bool {

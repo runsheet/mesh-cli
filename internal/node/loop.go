@@ -186,10 +186,12 @@ type Loop struct {
 	researching map[string]bool
 	rebasing    map[string]bool
 	// adopted are the sessions taken over from the process before this
-	// one that have not yet ended, by subject: the heartbeat's `adopted`.
+	// one that have not yet ended, by subject: the heartbeat's `adopted`,
+	// its SessionID and Alive re-read from the found session's state on
+	// every heartbeat (mesh-cli ADR-009 amendment, Loop.Adopted).
 	// adoptedIDs are every subject adopted this run, so Adopt never runs
 	// one of them again from the start.
-	adopted    map[string]gateway.AdoptedSession
+	adopted    map[string]adoptedEntry
 	adoptedIDs map[string]bool
 	wg         sync.WaitGroup
 	// draining is set by Drain: nothing new is started, and Run returns
