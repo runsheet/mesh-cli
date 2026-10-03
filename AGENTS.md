@@ -142,7 +142,11 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `question: `), `mesh_finish` (`Git.Push`, then `finishWorkItem`),
   `mesh_release` (`releaseWorkItem`) and `mesh_switch` (push, note,
   release `switched`, join); a gateway refusal is the answer `<tool>
-  refused: <reason>`), served by
+  refused: <reason>`; `pair: true` on an item another node holds joins
+  its branch with no claim, `paired` in the state, and a push git
+  refuses because the branch moved (`node.PushRefusedError`) is
+  `push refused: …; run git pull --rebase in <path> and finish again`,
+  the item still held — ADR-023 Pairing), served by
   `internal/commands/mcpcmd.go` on `platformClient` (ADR-023, mesh mcp).
   **A draining node claims nothing** (`Loop.Drain`): see the drain
   below. node.yaml's `claim: {unmerged_per_repo: N}` (`ClaimConfig`,

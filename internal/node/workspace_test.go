@@ -495,3 +495,63 @@ func TestPrepareGivesTheBaseRefsHistory(t *testing.T) {
 		t.Fatalf("branch = %s", branch)
 	}
 }
+
+// Push against a branch that moved on origin since the checkout last
+// saw it is a *PushRefusedError naming --force-with-lease, and origin
+// keeps its head; a remote that cannot be reached is not one.
+func TestPushRefusedWhenTheRemoteMoved(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	root := t.TempDir()
+	origin := filepath.Join(root, "origin.git")
+	git := func(dir string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	commit := func(dir, name string) {
+		os.WriteFile(filepath.Join(dir, name), []byte(name), 0o644)
+		git(dir, "add", name)
+		git(dir, "commit", "-q", "-m", name)
+	}
+	git(root, "init", "--bare", "-b", "main", origin)
+	seed := filepath.Join(root, "seed")
+	git(root, "clone", "-q", origin, seed)
+	commit(seed, "a")
+	git(seed, "push", "-q", "origin", "HEAD:main", "HEAD:refs/heads/mesh/g-1")
+
+	holder := filepath.Join(root, "holder")
+	pair := filepath.Join(root, "pair")
+	for _, d := range []string{holder, pair} {
+		git(root, "clone", "-q", "-b", "mesh/g-1", origin, d)
+	}
+	commit(holder, "b")
+	git(holder, "push", "-q", "origin", "mesh/g-1")
+	moved := git(origin, "rev-parse", "refs/heads/mesh/g-1")
+	commit(pair, "c")
+
+	g := &Git{}
+	_, err := g.Push(context.Background(), pair, "mesh/g-1")
+	var refused *PushRefusedError
+	if !errors.As(err, &refused) {
+		t.Fatalf("push on a moved remote: %v (%T)", err, err)
+	}
+	if !strings.Contains(err.Error(), "--force-with-lease") || refused.Branch != "mesh/g-1" || !PushRefusal(refused.Output) {
+		t.Fatalf("refusal: %v", err)
+	}
+	if got := git(origin, "rev-parse", "refs/heads/mesh/g-1"); got != moved {
+		t.Fatalf("origin moved to %s, want %s", got, moved)
+	}
+
+	git(pair, "remote", "set-url", "origin", filepath.Join(root, "gone.git"))
+	if _, err := g.Push(context.Background(), pair, "mesh/g-1"); err == nil || errors.As(err, &refused) {
+		t.Fatalf("an unreachable remote: %v", err)
+	}
+}
