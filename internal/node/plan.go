@@ -104,6 +104,11 @@ func (p *Planner) Plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 		// once Loop.NoCredential's re-check is due
 		return err
 	}
+	if _, ok := NoHeadroomOf(err); ok {
+		// issued credentials with no headroom are a hold too, until the
+		// earliest resets: the claim lapses and no try is counted
+		return err
+	}
 	if err != nil && ctx.Err() == nil {
 		p.mu.Lock()
 		p.attempts[goal.ID] = tries + 1

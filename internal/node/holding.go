@@ -16,7 +16,7 @@ import (
 // the report).
 type Unclaimed struct {
 	GoalID string
-	Kind   string // "item" or "plan"
+	Kind   string // "item", "plan", "evaluation", "rebase" or "research" (GoalID a direction id)
 	Count  int
 	Reason string
 }
@@ -121,7 +121,11 @@ func holdingAccounts(now time.Time, accounts []AccountConfig, readings map[strin
 // headroom that does not serve the priority as "<label> serves only
 // urgent and high".
 func heldReason(priority, held string, rows []gateway.HoldingAccount) string {
-	parts := []string{priority + " priority"}
+	// research has no priority ("") and every credential serves it
+	var parts []string
+	if priority != "" {
+		parts = append(parts, priority+" priority")
+	}
 	if held != "" {
 		parts = append(parts, held)
 	}
@@ -130,7 +134,7 @@ func heldReason(priority, held string, rows []gateway.HoldingAccount) string {
 		if !a.ResetsAt.IsZero() {
 			until = " until " + a.ResetsAt.UTC().Format(time.RFC3339)
 		}
-		if (a.Status == "ok" || a.Status == "unknown") && !slices.Contains(a.Takes.Priorities, priority) {
+		if (a.Status == "ok" || a.Status == "unknown") && priority != "" && !slices.Contains(a.Takes.Priorities, priority) {
 			// headroom, but reserved for other work
 			parts = append(parts, servesLine(a.Account, a.Takes.Priorities))
 			continue

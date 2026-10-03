@@ -1164,8 +1164,9 @@ func unservedOnly(accounts []AccountConfig, fits func([]AccountConfig) bool) boo
 	return reserved && fits(all)
 }
 
-// passOver records that this pass left a goal's ready work (kind "item"
-// or "plan") for headroom: one entry per goal and kind, counting its
+// passOver records that this pass left a goal's ready work (kind "item",
+// "plan", "evaluation", "rebase", or "research" under a direction's id)
+// for headroom: one entry per goal and kind, counting its
 // items, with the reason heldReason gives the first — held, or with
 // none every account's standing — and each later held not yet in it
 // appended, so two repos at their limit in one goal are both named.
@@ -1423,6 +1424,14 @@ func (l *Loop) evaluateHeld(ctx context.Context) {
 		if runtimes, _ := l.Runtimes(); l.Declines.Holds(item.ID, runtimes, time.Now()) {
 			continue
 		}
+		if why, until, ok := l.evaluationHeld(l.goalProject(ctx, h.scope, item), priorityName(h.rank)); ok {
+			// its project's claim-time read refused an evaluation: it
+			// waits in evaluating until the hold's until, said once for
+			// the goal
+			l.passOver(item.GoalID, "evaluation", priorityName(h.rank), why)
+			l.NoCredential.Say(item.GoalID, why, until)
+			continue
+		}
 		// no Claude account with room: a Codex account with room for it
 		// still evaluates it (ADR 011)
 		actx, ok := l.accountToFinish(ctx, priorityName(h.rank), "")
@@ -1493,8 +1502,9 @@ func (l *Loop) rebaseRequested(ctx context.Context) {
 		}
 		l.mu.Unlock()
 		if why, until, ok := l.NoCredential.Holds(l.goalProject(ctx, sc, item), string(harness.KindRebase), l.adapter()); ok {
-			// no credential open to this node: the rebase waits, said
-			// once for the goal
+			// no credential open to this node, or none with headroom:
+			// the rebase waits, said once for the goal
+			l.passOver(item.GoalID, "rebase", priorityName(r.rank), why)
 			l.NoCredential.Say(item.GoalID, why, until)
 			continue
 		}
@@ -1660,6 +1670,20 @@ func (l *Loop) researchDue(ctx context.Context) {
 			if !d.Proposes() && RoomFor(d, p, goals) <= 0 {
 				continue
 			}
+			l.mu.Lock()
+			busy := l.researching[d.ID]
+			l.mu.Unlock()
+			if busy {
+				continue
+			}
+			// the project's claim-time read refused research (none
+			// issued, or none with headroom): the direction is not
+			// offered until the hold's until, said once for it
+			if why, until, ok := l.NoCredential.Holds(d.ProjectID, string(harness.KindResearch), l.adapter()); ok {
+				l.passOver(d.ID, "research", "", why)
+				l.NoCredential.Say(d.ID, why, until)
+				continue
+			}
 			// research is not work that waits: it runs only on a
 			// subscription with headroom for normal work, never on an
 			// api account and never on a paced one; it has no priority
@@ -1791,6 +1815,22 @@ func (l *Loop) run(ctx context.Context, item gateway.WorkItem) {
 			l.Dispatch(ctx, item)
 		}
 	}()
+}
+
+// evaluationHeld is the reason a project's evaluations wait and until
+// when: its Claude evaluations are held (NoCredentials.Holds, kind
+// evaluate) and Codex is no way round — no Codex room for the priority,
+// or Codex held too. A Codex evaluation with room is not held by a
+// refused Claude read: the evaluator runs it there (ADR 011).
+func (l *Loop) evaluationHeld(projectID, priority string) (string, time.Time, bool) {
+	why, until, ok := l.NoCredential.Holds(projectID, string(harness.KindEvaluate), AdapterClaudeCode)
+	if !ok || l.CodexRoom == nil || !l.CodexRoom(priority) {
+		return why, until, ok
+	}
+	if _, _, codexHeld := l.NoCredential.Holds(projectID, string(harness.KindEvaluate), AdapterCodex); codexHeld {
+		return why, until, true
+	}
+	return "", time.Time{}, false
 }
 
 // adapter is the agent CLI the loop's builds and plans run on, as the
