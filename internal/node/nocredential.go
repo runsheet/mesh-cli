@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 )
@@ -65,12 +66,62 @@ func subjectFrom(ctx context.Context) subject {
 	return s
 }
 
+// ErrNoHeadroom is a claimed session whose claim-time read issued
+// credentials for its adapter and none of which may take it — each
+// stopped, paced for its priority or, for an api key, at its cap
+// (adr-005's amendment 2026-10-03, goal
+// no-headroom-is-a-hold-not-a-claim-loop). It is ErrNoAccount
+// (errors.Is), so every caller that releases on ErrNoAccount still
+// does; the loop holds the project's work of that kind on that adapter
+// unclaimed until Until (NoCredentials.NoteHeadroom).
+type ErrNoHeadroom struct {
+	// Org and Project are the slugs named to a person; ProjectID is the
+	// project the loop holds the work of.
+	Org, Project, ProjectID string
+	// Kind is the session's (gateway.SessionRef.Kind: build, evaluate,
+	// plan, research, rebase); Adapter is claude-code or codex.
+	Kind, Adapter string
+	// Refused are the labels of the adapter's issued credentials the
+	// session was refused on.
+	Refused []string
+	// Until is the earliest a refused credential resumes, by its
+	// reading (pace); zero when none of them has a reading that says.
+	Until time.Time
+	// resumes are each refused label's resume time, for Error.
+	resumes map[string]time.Time
+}
+
+func (e *ErrNoHeadroom) Error() string {
+	var named []string
+	for _, l := range e.Refused {
+		if at, ok := e.resumes[l]; ok && !at.IsZero() {
+			named = append(named, fmt.Sprintf("%s exhausted until %s", l, at.UTC().Format(time.RFC3339)))
+		} else {
+			named = append(named, l+" exhausted")
+		}
+	}
+	return fmt.Sprintf("no issued credential has headroom for %s on org %s's project %s (%s)", cmp.Or(e.Kind, "the session"), e.Org, e.Project, strings.Join(named, ", "))
+}
+
+// Is makes an ErrNoHeadroom ErrNoAccount.
+func (e *ErrNoHeadroom) Is(target error) bool { return target == ErrNoAccount }
+
+// NoHeadroomOf is err's ErrNoHeadroom, if it is one.
+func NoHeadroomOf(err error) (*ErrNoHeadroom, bool) {
+	var nh *ErrNoHeadroom
+	ok := errors.As(err, &nh)
+	return nh, ok
+}
+
 // NoCredentials remembers, for this run, the projects whose claim-time
-// read issued no credential for an adapter (Note, from Credentials) so
-// the loop leaves their goals' items and plans unclaimed (Holds) for
-// NoCredentialRecheck before asking again, and says so in node.log once
-// per goal per run (Say). The store is shared by Credentials and the
-// Loop; a nil one remembers nothing and says every time.
+// read issued no credential for an adapter (Note) or issued only
+// credentials with no headroom for a kind of session (NoteHeadroom), so
+// the loop leaves their work unclaimed (Holds) until the hold's until
+// before asking again, and says so in node.log once per goal per run
+// (Say). A hold is keyed by project, kind and adapter; kind "" is the
+// no-credential hold, which covers every kind. The store is shared by
+// Credentials and the Loop; a nil one remembers nothing and says every
+// time.
 type NoCredentials struct {
 	Log *log.Logger
 	// Now is the clock (nil: time.Now).
@@ -81,11 +132,11 @@ type NoCredentials struct {
 	said OncePer
 }
 
-type noCredKey struct{ projectID, adapter string }
+type noCredKey struct{ projectID, kind, adapter string }
 
 type noCredHold struct {
 	reason string
-	at     time.Time
+	until  time.Time
 }
 
 func (n *NoCredentials) now() time.Time {
@@ -95,63 +146,100 @@ func (n *NoCredentials) now() time.Time {
 	return time.Now()
 }
 
-// Note records that goalID's project issued no credential for e's
-// adapter, now, and says it for the goal (Say).
-func (n *NoCredentials) Note(goalID string, e *ErrNoCredential) {
-	if n == nil {
-		return
-	}
+func (n *NoCredentials) hold(k noCredKey, reason string, until time.Time) {
 	n.mu.Lock()
 	if n.held == nil {
 		n.held = map[noCredKey]noCredHold{}
 	}
-	n.held[noCredKey{e.ProjectID, e.Adapter}] = noCredHold{reason: e.Error(), at: n.now()}
+	n.held[k] = noCredHold{reason: reason, until: until}
 	n.mu.Unlock()
-	n.Say(goalID, e.Error())
 }
 
-// Clear forgets a project's hold for an adapter: its read issued one.
-func (n *NoCredentials) Clear(projectID, adapter string) {
+// Note records that goalID's project issued no credential for e's
+// adapter, now, holding every kind of its work for NoCredentialRecheck,
+// and says it for the goal (Say).
+func (n *NoCredentials) Note(goalID string, e *ErrNoCredential) {
+	if n == nil {
+		return
+	}
+	until := n.now().Add(NoCredentialRecheck)
+	n.hold(noCredKey{e.ProjectID, "", e.Adapter}, e.Error(), until)
+	n.Say(goalID, e.Error(), until)
+}
+
+// NoteHeadroom records that goalID's project issued only credentials
+// with no headroom for e's kind on e's adapter, holding that kind until
+// e.Until (NoCredentialRecheck from now when it is zero or past), and
+// says it for the goal (Say).
+func (n *NoCredentials) NoteHeadroom(goalID string, e *ErrNoHeadroom) {
+	if n == nil {
+		return
+	}
+	now := n.now()
+	until := e.Until
+	if !until.After(now) {
+		until = now.Add(NoCredentialRecheck)
+	}
+	n.hold(noCredKey{e.ProjectID, e.Kind, e.Adapter}, e.Error(), until)
+	n.Say(goalID, e.Error(), until)
+}
+
+// Clear forgets a project's hold for a kind on an adapter (kind "": the
+// no-credential hold): its read issued one, or one with headroom.
+func (n *NoCredentials) Clear(projectID, kind, adapter string) {
 	if n == nil {
 		return
 	}
 	n.mu.Lock()
-	delete(n.held, noCredKey{projectID, adapter})
+	delete(n.held, noCredKey{projectID, kind, adapter})
 	n.mu.Unlock()
 }
 
-// Holds is the reason a project's work on adapter is left unclaimed,
-// while its last Note is younger than NoCredentialRecheck. Once that has
-// passed, the one call that finds it so is let through as the probe —
-// its claim-time read asks again — and the hold is renewed at once, so
-// every other item and plan of the project stays unclaimed until the
+// Holds is the reason a project's work of kind on adapter is left
+// unclaimed and until when: its kind's own hold or the kind-"" one,
+// while now is before the hold's until. Once it is not, the one call
+// that finds it so is let through as the probe — its claim-time read
+// asks again — and the hold is renewed for NoCredentialRecheck at once,
+// so every other item and plan of the project stays unclaimed until the
 // probe's read resolves it (Clear, or Note again) or another
-// NoCredentialRecheck passes: one read per project and adapter every
-// NoCredentialRecheck, never one per ready item.
-func (n *NoCredentials) Holds(projectID, adapter string) (string, bool) {
+// NoCredentialRecheck passes: one read per project, kind and adapter at
+// a time, never one per ready item.
+func (n *NoCredentials) Holds(projectID, kind, adapter string) (reason string, until time.Time, held bool) {
 	if n == nil || projectID == "" {
-		return "", false
+		return "", time.Time{}, false
 	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	k := noCredKey{projectID, adapter}
-	h, ok := n.held[k]
-	if !ok {
-		return "", false
+	now := n.now()
+	keys := []noCredKey{{projectID, "", adapter}}
+	if kind != "" {
+		keys = append(keys, noCredKey{projectID, kind, adapter})
 	}
-	if now := n.now(); now.Sub(h.at) >= NoCredentialRecheck {
-		h.at = now
-		n.held[k] = h
-		return "", false
+	for _, k := range keys {
+		h, ok := n.held[k]
+		if !ok {
+			continue
+		}
+		if !now.Before(h.until) {
+			h.until = now.Add(NoCredentialRecheck)
+			n.held[k] = h
+			return "", time.Time{}, false
+		}
+		return h.reason, h.until, true
 	}
-	return h.reason, true
+	return "", time.Time{}, false
 }
 
 // Say logs the hold once per goal per run, in the accounts: family of
-// lines beside "no account has headroom".
-func (n *NoCredentials) Say(goalID, reason string) {
+// lines beside "no account has headroom", naming the reason and until
+// when (zero: not known).
+func (n *NoCredentials) Say(goalID, reason string, until time.Time) {
 	if n == nil || n.Log == nil || !n.said.First(goalID) {
 		return
 	}
-	n.Log.Printf("accounts: %s; goal %s's items and plans left unclaimed until one is (asked again every %s; said once for the goal)", reason, goalID, NoCredentialRecheck)
+	when := "until one is"
+	if !until.IsZero() {
+		when = "until " + until.UTC().Format(time.RFC3339)
+	}
+	n.Log.Printf("accounts: %s; goal %s's work left unclaimed %s (asked again then, and every %s after; said once for the goal)", reason, goalID, when, NoCredentialRecheck)
 }

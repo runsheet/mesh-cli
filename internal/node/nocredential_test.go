@@ -96,7 +96,7 @@ func TestNoCredentialOpenNamesOrgProjectAndAdapter(t *testing.T) {
 		if nc.Error() != noCredentialReason || nc.Org != "acme" || nc.Project != "mesh" || nc.Adapter != "claude-code" {
 			t.Fatalf("%s: %+v: %q", name, nc, nc.Error())
 		}
-		if why, held := store.Holds(projID, AdapterClaudeCode); !held || why != noCredentialReason {
+		if why, _, held := store.Holds(projID, "", AdapterClaudeCode); !held || why != noCredentialReason {
 			t.Fatalf("%s: store holds %q, %v", name, why, held)
 		}
 	}
@@ -113,7 +113,7 @@ func TestNoCredentialOpenNamesOrgProjectAndAdapter(t *testing.T) {
 		t.Fatalf("issued: %v, %v", s, err)
 	}
 	s.Cleanup()
-	if _, held := store.Holds(projID, AdapterClaudeCode); held {
+	if _, _, held := store.Holds(projID, "", AdapterClaudeCode); held {
 		t.Fatal("the hold outlived an issued credential")
 	}
 }
@@ -141,7 +141,7 @@ func TestUnsupportedReadIsNoCredential(t *testing.T) {
 			t.Fatalf("unsupported read: %v, %v; want ErrNoCredential %q", s, err, noCredentialReason)
 		}
 	}
-	if why, held := store.Holds(projID, AdapterClaudeCode); !held || why != noCredentialReason {
+	if why, _, held := store.Holds(projID, "", AdapterClaudeCode); !held || why != noCredentialReason {
 		t.Fatalf("store holds %q, %v", why, held)
 	}
 	if _, err := c.Open(ctx, gateway.SessionRef{Kind: string(harness.KindPlan), GoalID: goalID}, "n", AdapterClaudeCode); !isNoCredential(err) {
@@ -354,20 +354,20 @@ func TestNoCredentialHoldLetsOneProbeThrough(t *testing.T) {
 	now := time.Now()
 	store := &NoCredentials{Now: func() time.Time { return now }}
 	store.Note(goalID, &ErrNoCredential{Org: "acme", Project: "mesh", ProjectID: projID, Adapter: AdapterClaudeCode})
-	if _, ok := store.Holds(projID, AdapterClaudeCode); !ok {
+	if _, _, ok := store.Holds(projID, "", AdapterClaudeCode); !ok {
 		t.Fatal("a fresh hold does not hold")
 	}
 	now = now.Add(NoCredentialRecheck)
-	if _, ok := store.Holds(projID, AdapterClaudeCode); ok {
+	if _, _, ok := store.Holds(projID, "", AdapterClaudeCode); ok {
 		t.Fatal("the probe past the re-check is held")
 	}
 	for i := 0; i < 3; i++ {
-		if why, ok := store.Holds(projID, AdapterClaudeCode); !ok || why != noCredentialReason {
+		if why, _, ok := store.Holds(projID, "", AdapterClaudeCode); !ok || why != noCredentialReason {
 			t.Fatalf("call %d after the probe: %q, %v; want held until the probe resolves", i, why, ok)
 		}
 	}
-	store.Clear(projID, AdapterClaudeCode)
-	if _, ok := store.Holds(projID, AdapterClaudeCode); ok {
+	store.Clear(projID, "", AdapterClaudeCode)
+	if _, _, ok := store.Holds(projID, "", AdapterClaudeCode); ok {
 		t.Fatal("a cleared hold still holds")
 	}
 }

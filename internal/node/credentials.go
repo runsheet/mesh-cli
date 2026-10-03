@@ -220,7 +220,8 @@ func (c *Credentials) Open(ctx context.Context, ref gateway.SessionRef, nodeID, 
 		}
 		return nil, nc
 	}
-	c.NoCredential.Clear(subj.projectID, adapter)
+	c.NoCredential.Clear(subj.projectID, "", adapter)
+	var refused []AccountConfig
 	var accounts []AccountConfig
 	room := map[string]float64{}
 	for _, cr := range issued {
@@ -231,6 +232,7 @@ func (c *Credentials) Open(ctx context.Context, ref gateway.SessionRef, nodeID, 
 		if a.AdapterOf() != adapter {
 			continue
 		}
+		refused = append(refused, a)
 		if a.Kind == AccountAPI {
 			left := CapRoom(cr)
 			if left <= 0 {
@@ -251,21 +253,56 @@ func (c *Credentials) Open(ctx context.Context, ref gateway.SessionRef, nodeID, 
 		}
 	}
 	if len(accounts) == 0 {
-		return nil, ErrNoAccount
+		return nil, c.noHeadroom(ctx, ref, subj, adapter, refused)
 	}
 	a, ok := choose(accounts)
 	if !ok {
-		return nil, ErrNoAccount
+		return nil, c.noHeadroom(ctx, ref, subj, adapter, refused)
 	}
 	acct, err := OpenAccount(a)
 	if err != nil {
 		return nil, err
 	}
+	c.NoCredential.Clear(subj.projectID, ref.Kind, adapter)
 	s.AccountSession, s.account, s.remaining = acct, a, room[a.Label]
 	if r, ok := c.reading(s.limitsKey()); ok {
 		s.before = &r
 	}
 	return s, nil
+}
+
+// noHeadroom is the ErrNoHeadroom of a session refused on every one of
+// the adapter's issued credentials (refused, by label), its Until the
+// earliest any of them resumes by its reading — an api key at its cap
+// or a label with no reading says nothing — noted on the hold store
+// under the session's goal, direction or item (adr-005's amendment
+// 2026-10-03).
+func (c *Credentials) noHeadroom(ctx context.Context, ref gateway.SessionRef, subj subject, adapter string, refused []AccountConfig) error {
+	e := &ErrNoHeadroom{Org: cmp.Or(subj.org, "(unknown)"), Project: c.projectSlug(ctx, subj), ProjectID: subj.projectID,
+		Kind: ref.Kind, Adapter: adapter, resumes: map[string]time.Time{}}
+	readings, now, cfg := c.readingsFor(adapter), c.now(), c.thresholds()
+	for _, a := range refused {
+		label := a.Label
+		e.Refused = append(e.Refused, label)
+		r, ok := readings[label]
+		if !ok {
+			continue
+		}
+		at := pace(now, r, cfg.For(a)).resumeAt
+		if at.IsZero() {
+			continue
+		}
+		e.resumes[label] = at
+		if e.Until.IsZero() || at.Before(e.Until) {
+			e.Until = at
+		}
+	}
+	if c.NoCredential != nil {
+		c.NoCredential.NoteHeadroom(cmp.Or(ref.GoalID, ref.DirectionID, ref.ItemID), e)
+	} else {
+		c.logf("accounts: %v", e)
+	}
+	return e
 }
 
 // projectSlug is the subject's project slug: as the caller had it, else

@@ -918,3 +918,60 @@ reserved account and no key for one serving all) and
 `TestHeartbeatLimitsOmitPrioritiesOnAnOlderPlatform` (a fixture without
 it: no limits entry carries the key, and the heartbeat is still
 recorded).
+
+## Amendment — 2026-10-03 (goal `no-headroom-is-a-hold-not-a-claim-loop`, item 1): no headroom is a typed hold
+
+**Why.** A claim-time read that answers with credentials for the
+session's adapter, none of which may take it — each stopped, paced for
+the session's priority, or an api key at its cap — was the bare sentinel
+`ErrNoAccount`. Nothing recorded what was refused or until when, and
+`NoCredentials` held only `ErrNoCredential` (no credential at all), so
+the loop claimed the same project's work again on the next tick, about
+every 40 seconds, for builds, evaluations, plans and research alike.
+
+**Decision.**
+
+1. `Credentials.Open` returns `*ErrNoHeadroom` in place of the sentinel
+   at both of its no-account sites: `{Org, Project, ProjectID, Kind,
+   Adapter, Refused, Until}` — the org and project from `withSubject`'s
+   subject (the slug by `projectSlug`), the session's kind as
+   `SessionRef.Kind` carries it (build, evaluate, plan, research,
+   rebase), the adapter, the labels of the adapter's issued credentials
+   it was refused on, and `Until`, the earliest non-zero
+   `pace(now, reading, thresholds.For(account)).resumeAt` over their
+   readings (`readingsFor(adapter)`). An api key at its cap or a label
+   with no reading contributes nothing; none at all leaves `Until` zero.
+   Its `Error()` reads `no issued credential has headroom for <kind> on
+   org <org>'s project <project> (<label> exhausted until <RFC3339>, …)`,
+   and its `Is` answers true for `ErrNoAccount`, so every caller that
+   releases on `errors.Is(err, ErrNoAccount)` still does.
+   `NoHeadroomOf(err)` sits beside `NoCredentialOf`.
+2. The hold store is generalised: `NoCredentials` is keyed by
+   **(project, kind, adapter)**. Kind `""` is the no-credential hold
+   (`Note`, for `ErrNoCredential`) and covers every kind; a headroom
+   hold (`NoteHeadroom(goalID, *ErrNoHeadroom)`, noted by `Open` under
+   the session's goal, direction or item) holds its own kind on its own
+   adapter only. Each hold carries `until` — the error's `Until` when it
+   is set and still ahead, else `NoCredentialRecheck` (10 minutes) from
+   the note. `Holds(project, kind, adapter) (reason, until, held)`
+   matches the kind's own hold or the kind-`""` one; at or past `until`
+   it answers not held exactly once — the probe, whose own claim-time
+   read asks again — and renews the hold for `NoCredentialRecheck` at
+   once, so the rest stay held until the probe's read resolves it. A
+   successful `Open` clears the kind-`""` hold once credentials for the
+   adapter are issued and the (project, kind, adapter) headroom hold once
+   an account is chosen (`Clear(project, kind, adapter)`).
+3. `Say(goalID, reason, until)` stays once per goal per run in the
+   `accounts:` family, naming the reason and its until.
+
+The loop's three hold checks (ready items as `build`, rebases as
+`rebase`, requested plans as `plan`) pass their kind; the loop's wider
+use of the hold — releasing a research claim, the heartbeat's
+`holding.unclaimed` until — is the goal's later items.
+
+Tests: `noheadroom_test.go` — `TestNoHeadroomOpenNamesKindAdapterAndResetsAt`,
+`TestNoHeadroomHoldsUntilResetsAtThenProbesOnce`,
+`TestNoHeadroomClearedByASuccessfulOpen`,
+`TestNoHeadroomWithoutUntilRechecksAfterTenMinutes`,
+`TestNoCredentialHoldsEveryKindAndHeadroomItsOwn`,
+`TestNoHeadroomSaidOncePerGoal`.
