@@ -255,6 +255,8 @@ func (c *costReporter) delta() int {
 // cancelled ctx (the node's own shutdown) leaves the item as it is for a
 // retry.
 func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
+	// every command the build sends acts as its builder (ADR-015)
+	ctx = gateway.WithActor(ctx, gateway.RoleBuilder, agentSlug(r.Cfg))
 	res, err := Resolve(ctx, r.GW, item)
 	if err != nil {
 		return r.fail(ctx, item, fmt.Errorf("resolve: %w", err))
@@ -792,6 +794,7 @@ func (b *buildRun) endGoal(ctx context.Context) {
 // platform no longer has running on this node is not this session's to
 // finish: its session is stopped and its directory removed.
 func (r *Runner) AdoptItem(ctx context.Context, item gateway.WorkItem, s FoundSession) error {
+	ctx = gateway.WithActor(ctx, gateway.RoleBuilder, agentSlug(r.Cfg))
 	if item.Status != "claimed" && item.Status != "running" || item.NodeID != s.State.NodeID {
 		r.logf("item %s: adopted session is no longer this node's (%s); stopped", item.ID, item.Status)
 		stopFound(r.logf, "item "+item.ID, s)

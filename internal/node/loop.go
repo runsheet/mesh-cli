@@ -554,7 +554,7 @@ func (l *Loop) claimReady(ctx context.Context, free, normalFree, maxRank int) {
 			l.passOver(item.GoalID, "item", priorityName(r.rank), "", time.Time{})
 			continue
 		}
-		if err := l.GW.ClaimWorkItem(ctx, item.ID, sc.NodeID, l.Harness); err != nil {
+		if err := l.GW.ClaimWorkItem(gateway.WithActor(ctx, gateway.RoleBuilder, agentSlug(l.Cfg)), item.ID, sc.NodeID, l.Harness); err != nil {
 			if gateway.IsRefusal(err) {
 				l.logf("%s item %d %q: not ours (%v)", sc.Name(), item.Seq, item.Title, err)
 			} else {

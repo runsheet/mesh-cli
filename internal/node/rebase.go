@@ -107,6 +107,8 @@ func (r *Rebaser) budgetWithSource(goal *gateway.Goal, model string) (float64, s
 // Rebase runs one claimed rebase to its end. The error is what went
 // wrong, already handed in as the rebase's failure when it could be.
 func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
+	// a rebase is build-side: its commands act as the builder (ADR-024)
+	ctx = gateway.WithActor(ctx, gateway.RoleBuilder, agentSlug(r.Cfg))
 	rb := &rebaseRun{r: r, item: item, label: item.ID} // the goal's slug and the seq once resolved
 	fail := func(cause error) error { return rb.fail(ctx, cause) }
 
@@ -390,6 +392,7 @@ func (r *Rebaser) afterRebase(ctx context.Context, rb *rebaseRun, acct *SessionA
 // by this node is not its to finish: the session is stopped and its
 // directory removed.
 func (r *Rebaser) AdoptRebase(ctx context.Context, item gateway.WorkItem, s FoundSession) error {
+	ctx = gateway.WithActor(ctx, gateway.RoleBuilder, agentSlug(r.Cfg))
 	if item.RebaseState != "claimed" || item.RebaseNodeID != "" && item.RebaseNodeID != s.State.NodeID {
 		r.logf("item %s: adopted rebase is no longer this node's (%s); stopped", item.ID, item.RebaseState)
 		stopFound(r.logf, "item "+item.ID, s)
