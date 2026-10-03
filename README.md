@@ -783,6 +783,27 @@ once (the platform never sees it stall), follows the session's
 `output.jsonl` from its saved offset and finishes the item as if nothing
 had happened. The heartbeat lists them as `adopted` while they run.
 
+What survives a swap:
+
+- **Open sessions are adopted** — any session whose unit had started
+  (`<workdir>.session/state.json` names the node) is followed to its end
+  by the new process, as above.
+- **Unopened plan and research claims are re-opened.** A plan or research
+  claim is written to `<work root>/.claims/<kind>-<subject>.json` the
+  moment the platform grants it, before its credential read, context
+  fetch or unit. A record with no session beside it is claimed again by
+  the same node id (the platform lets its holder re-claim inside
+  `PlanClaimTTL`) and run as a fresh session, logged once:
+  `re-opening the plan claim of goal <slug> held since <t>` or
+  `re-opening the research claim of <project>/<direction> held since <t>`.
+  A refused re-claim, or a goal no longer planning, or a direction no
+  longer live, removes the record and says why. The record goes once the
+  session's end is handled.
+- **Builds and evaluations are re-run from the platform's record.** An
+  item the node holds (`claimed` or `running`) with no session left is
+  run again from the start (the workspace keeps the branch), and an item
+  in `evaluating` on this node is evaluated again on the next tick.
+
 ```sh
 mesh node upgrade                          # the latest release: verify, pull its image, swap, restart
 mesh node upgrade --version v0.5.0         # that release

@@ -1,9 +1,12 @@
 ---
-summary: A session's unit and output file, not the node process, own a session — a node shutting down detaches from its host Claude sessions (Job.Outlive) instead of stopping them, and on start, before its first claim, the node finds every `<workdir>.session/state.json` naming it, heartbeats each item at once, follows each session from its saved offset (or reads the file of one that ended while no node ran) and runs the same tail the live path runs — push and FinishWorkItem, the verdict, the plan, the research, the rebase — removing the session directory only once the end is handled; the heartbeat carries the optional `adopted [{itemId, kind, since}]`.
+summary: A session's unit and output file, not the node process, own a session — a node shutting down detaches from its host Claude sessions (Job.Outlive) instead of stopping them, and on start, before its first claim, the node finds every `<workdir>.session/state.json` naming it, heartbeats each item at once, follows each session from its saved offset (or reads the file of one that ended while no node ran) and runs the same tail the live path runs — push and FinishWorkItem, the verdict, the plan, the research, the rebase — removing the session directory only once the end is handled; the heartbeat carries the optional `adopted [{itemId, kind, since}]`; and claims, not only sessions, outlive the node — a plan or research claim is recorded under `<work root>/.claims/` the moment it is granted, removed once its session's end is handled, and a starting node re-claims each one with no session (same node id, inside PlanClaimTTL) and runs it fresh, one log line each.
 status: accepted
 ---
 
 # ADR-009: Sessions outlive the node
+
+(Amended 2026-10-03: Claims — claims, not only sessions, outlive the
+node.)
 
 ## Context
 
@@ -84,6 +87,51 @@ process that started it is only its first reader.**
   `draining`: the adopted sessions that have not yet ended. `itemId` is
   a plan's goal id and a research session's direction id.
 
+## Claims (amendment 2026-10-03)
+
+**Claims, not only sessions, outlive the node.** A session's state file
+appears only once its unit opens, after `Credentials.Open` and the
+context fetch; a plan or research claim taken before then had nothing on
+disk, so a node that exited for an upgrade in between left the platform
+holding a claim nobody worked until `PlanClaimTTL` (30 minutes) let it
+go — the grapevine node on 2026-10-03, four plans claimed at 03:30:35Z,
+two swaps, nothing planned until 04:00:44Z.
+
+- **The record.** `internal/node/claims.go`: right after
+  `ClaimPlan` / `ClaimDirectionResearch` succeeds and before the
+  session's goroutine starts, the loop writes a `ClaimRecord {nodeId,
+  kind (plan|research), goalId | directionId, scopeId, name, claimedAt}`
+  atomically to `<work root>/.claims/<kind>-<subject>.json`
+  (`Loop.ClaimsDir`, `ClaimsDir(root)`) — a dot dir, never a checkout or
+  a session dir, so `FindSessions` passes it by.
+- **Its lifetime.** The record is removed when the session's end is
+  handled: the goroutine that ran `Plan` / `Research` removes it once it
+  returns — the plan or research handed in, a plan released, a hold
+  (`ErrNoCredential`, `ErrNoHeadroom`) — unless its context is done
+  (`unlessDetached`): a node letting go of its sessions (`Restart`,
+  `ErrRestartForUpdate`, a shutdown) keeps the record for the next
+  process. An adopted plan or research session's end removes it the same
+  way. A record is not a session: the drain's exit test does not count it.
+- **The re-open.** On `mesh node start`, after `AdoptSessions` and once
+  the loop's planner and director are set, `FindClaims(root, nodeIDs)`
+  lists the records naming the node's ids and `Loop.ReopenClaims(ctx,
+  claims, found)` takes each one whose subject has no `FoundSession`
+  (one that has is `AdoptSessions`'): it reads the goal (still in
+  planning) or the direction (still live), claims it again **by the same
+  node id** — the platform lets its holder re-claim within the TTL
+  (runsheet goal.go) — logs one line, `re-opening the plan claim of goal
+  <slug> held since <t>` or `re-opening the research claim of
+  <project>/<direction> held since <t>`, and runs it as a fresh session
+  through the same marking (`planning`, `researching`) the tick's pass
+  uses. A refused re-claim, a goal no longer in planning, a direction no
+  longer live, or a node id no org here serves under removes the record
+  and logs why; a read that fails leaves it for the next start. A
+  draining node re-opens nothing.
+- **What survives a swap**, then: open sessions are adopted; unopened
+  plan and research claims are re-opened; builds and evaluations are
+  re-run from the platform's record — a held item with no session by
+  `Loop.Adopt`, an item in evaluating on this node by the next tick.
+
 ## Limits
 
 - An adopted session has no `SessionAccount`: no usage record is
@@ -97,8 +145,9 @@ process that started it is only its first reader.**
   handed in as it stands; it is not asked again.
 - The pid in `state.json` is trusted: a pid reused by another process
   after a reboot reads as alive until that process ends.
-- Stopping the node while a session is still being prepared (before the
-  unit starts) leaves the item for `Loop.Adopt`, as before.
+- Stopping the node while a build is still being prepared (before the
+  unit starts) leaves the item for `Loop.Adopt`, as before; a plan or
+  research being prepared is re-opened (Claims, below).
 
 ## Consequences
 

@@ -166,6 +166,11 @@ func (l *Loop) AdoptSessions(ctx context.Context, found []FoundSession) int {
 			defer crash.Guard()
 			defer l.wg.Done()
 			defer func() {
+				// the claim's record, if the process before kept one, goes
+				// with the session's handled end (ADR 009, Claims)
+				if kind == harness.KindPlan || kind == harness.KindResearch {
+					unlessDetached(ctx, func() { l.dropClaim(kind, subject) })
+				}
 				l.mu.Lock()
 				delete(held, subject)
 				delete(l.adopted, subject)
