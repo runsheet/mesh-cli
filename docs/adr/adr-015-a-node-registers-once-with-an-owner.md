@@ -561,3 +561,36 @@ Tests: `internal/node/owned_test.go`
 takes `ownerKind` with a nil `Answer`, node.yaml's orgs `[grapevine]`,
 the person's first org foghornid — the node starts `serving grapevine`
 and its first tick claims grapevine's item on grapevine's per-org id).
+
+## The owner registration names a configured org (2026-10-03)
+
+The grapevine canary (goal `an-update-that-serves-no-org-is-not-confirmed`,
+item 4): `Registrar.AnyOrg` sent the first of the token's person's orgs,
+unrestricted — "the platform ignores orgId on this contract" held until
+the id it named landed the derived row under foghornid, the person's
+first org, when the node was configured to serve grapevine. The
+platform does not yet derive `orgId` from the owner the row is
+registered under (runsheet goal `registernode-answers-with-the-node-it-made`,
+queued), so an unconfigured org sent today is not purely decorative.
+
+**The owner registration passes no arbitrary org.** `Registrar.AnyOrg`
+is renamed `Registrar.ConfiguredOrg` and its contract changes: an org
+the node is configured to serve (node.yaml's `orgs:`), never the
+person's first unconditionally. `ConfiguredOrgID(orgs []gateway.Org,
+configured []string) (id string, matched bool)` (`internal/node`, pure,
+no gateway) is the rule, the same one `ResolveScopes` applies to the
+per-org path — case-insensitive, trimmed, matched against an org's
+`Login` or `TenantSlug`: when `configured` names any, the id of the
+first of `orgs` matching one of them; when `configured` is empty, the
+first of `orgs`, unrestricted, as before; when `configured` names some
+but none matches, `""` and `matched` false. `Register` sends no orgId
+in that last case and notes it — `register: none of the orgs node.yaml
+names is one of the person's; sending no orgId` — rather than falling
+back to the first, so a restriction naming an org the person is not in
+never silently derives a row under one they are.
+
+Tests: `internal/node/configuredorg_test.go`
+(`TestConfiguredOrgIDPicksAConfiguredOrg`,
+`TestConfiguredOrgIDNoRestrictionIsTheFirst`,
+`TestConfiguredOrgIDNoneMatchesSendsNone`,
+`TestOwnedRegisterSendsTheConfiguredOrg`).
