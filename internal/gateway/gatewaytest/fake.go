@@ -1245,12 +1245,17 @@ func (f *Fake) apply(name string, in map[string]any) error {
 		// a claimed rebase's session reports on the item in review: the
 		// rebase's heartbeat (runsheet ADR 008), its cents on the item
 		rebasing := item["status"] == "review" && item["rebaseState"] == "claimed"
-		if item["status"] != "claimed" && item["status"] != "running" && !rebasing {
+		// an evaluation's session reports on the item in evaluating — an
+		// adopted one's "session adopted by the restarted node" — and the
+		// status is left where it is, as the platform leaves it
+		evaluating := item["status"] == "evaluating"
+		if item["status"] != "claimed" && item["status"] != "running" && !rebasing && !evaluating {
 			return fmt.Errorf("item is %s, not running", item["status"])
 		}
-		if rebasing {
+		switch {
+		case rebasing:
 			item["rebaseHeartbeats"] = toInt(item["rebaseHeartbeats"]) + 1
-		} else {
+		case !evaluating:
 			item["status"] = "running"
 		}
 		item["costCents"] = toInt(item["costCents"]) + toInt(in["costCents"])

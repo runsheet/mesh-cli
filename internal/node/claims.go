@@ -270,6 +270,11 @@ func (l *Loop) reopen(ctx context.Context, r ClaimRecord) bool {
 			break
 		}
 	}
+	// Only plans and research are recorded: an evaluation or a build has
+	// the platform's record instead — an item in evaluating or running
+	// held by this node is found by the tick (evaluateHeld, the held
+	// builds) and started again, or adopted when its session opened — so
+	// no claim file is written for them and none is re-opened here.
 	switch r.Kind {
 	case harness.KindPlan:
 		if l.Plan == nil {

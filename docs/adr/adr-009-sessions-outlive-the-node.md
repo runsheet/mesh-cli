@@ -131,6 +131,15 @@ two swaps, nothing planned until 04:00:44Z.
   plan and research claims are re-opened; builds and evaluations are
   re-run from the platform's record — a held item with no session by
   `Loop.Adopt`, an item in evaluating on this node by the next tick.
+  No claim file is written for a build or an evaluation: the platform's
+  record is theirs. `swap_e2e_test.go` proves research and evaluations
+  across a self-update's swap, `claims_test.go` plans.
+- **The log says which way an update goes.** An unsandboxed node's
+  self-update logs `self-update: <to> verified; no drain: swapping and
+  restarting, sessions left running for the new binary to adopt`; a
+  sandboxed one still drains first and says why — `self-update: <to>
+  verified; sandboxed node: draining before the swap because its pods
+  end with the node (sandbox: on)`.
 
 ## Limits
 
