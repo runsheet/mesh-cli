@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/paths"
@@ -49,6 +50,46 @@ type State struct {
 	// amendment 2026-10-03). Rollback keeps it; BeginUpdate and Confirm
 	// clear it, so a version gets that second try once.
 	RetryAfterAdopt bool `json:"retryAfterAdopt,omitempty"`
+	// Served is the names of the orgs the node served when the swap was
+	// made (BeginUpdate): a confirm that finds fewer served is a failed
+	// confirm (FewerOrgs). Confirm and Rollback keep it, so a rollback's
+	// reason can name it (adr-002's amendment 2026-10-03, an update that
+	// serves fewer orgs is not confirmed).
+	Served []string `json:"served,omitempty"`
+}
+
+// FewerOrgsError is a confirm that found the node serving fewer orgs
+// than it served before the update: not confirmed, rolled back like a
+// heartbeat that never went through.
+type FewerOrgsError struct {
+	Before, After []string
+}
+
+func (e *FewerOrgsError) Error() string {
+	return fmt.Sprintf("serving fewer orgs than before the update: before %s, after %s", orgsOrNone(e.Before), orgsOrNone(e.After))
+}
+
+func orgsOrNone(orgs []string) string {
+	if len(orgs) == 0 {
+		return "none"
+	}
+	return strings.Join(orgs, ", ")
+}
+
+// FewerOrgs is the error a confirm serving after has, given the orgs
+// served before the swap: nil unless some org served before is served no
+// more. None before is never fewer.
+func FewerOrgs(before, after []string) *FewerOrgsError {
+	now := make(map[string]bool, len(after))
+	for _, o := range after {
+		now[o] = true
+	}
+	for _, o := range before {
+		if !now[o] {
+			return &FewerOrgsError{Before: before, After: after}
+		}
+	}
+	return nil
 }
 
 // registersAt is the platform's refusal of an owner registration under
@@ -124,9 +165,10 @@ func (f *StateFile) save(s State) error {
 }
 
 // BeginUpdate records an update from one version to another, just before
-// the swap. It clears what the last update left.
-func (f *StateFile) BeginUpdate(from, to string) error {
-	return f.save(State{From: from, To: to})
+// the swap, with the names of the orgs served then. It clears what the
+// last update left.
+func (f *StateFile) BeginUpdate(from, to string, served []string) error {
+	return f.save(State{From: from, To: to, Served: served})
 }
 
 // Refuse records an update that did not happen — a failed download or

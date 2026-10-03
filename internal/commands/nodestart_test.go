@@ -24,7 +24,7 @@ import (
 func TestRegisterNodeRecordsStartFailureWhenUpdatePending(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	state := &selfupdate.StateFile{Path: filepath.Join(t.TempDir(), "update.json")}
-	if err := state.BeginUpdate("72ff910", "0a04088"); err != nil {
+	if err := state.BeginUpdate("72ff910", "0a04088", nil); err != nil {
 		t.Fatal(err)
 	}
 	check := node.StartCheck{From: "72ff910", To: "0a04088", Pending: true, Attempts: 1}
@@ -137,7 +137,7 @@ func TestConfirmWindowElapsesUnconfirmed(t *testing.T) {
 func TestConfirmWindowRecordsTheRefusalNamingAnID(t *testing.T) {
 	const refusal = "register (owner person): RegisterNode: node grapevine registers at 18a8b766-18f3-5e73-b4cf-efb91c01946a, the id its form names, not 47a08dd9-bafb-5c64-bb16-7e806f0b1b95"
 	f := &selfupdate.StateFile{Path: filepath.Join(t.TempDir(), "update.json")}
-	if err := f.BeginUpdate("v0.2.247", "v0.2.248"); err != nil {
+	if err := f.BeginUpdate("v0.2.247", "v0.2.248", nil); err != nil {
 		t.Fatal(err)
 	}
 	w, _, _ := confirmFake(time.Minute)

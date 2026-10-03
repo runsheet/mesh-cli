@@ -685,6 +685,49 @@ Test: `internal/node/selfupdate_test.go`
 (`TestSelfUpdateServingNoneFollowsADowngrade`,
 `TestDesiredVersionReadsTheOwnedIDOnce`).
 
+## Amendment: an update that serves fewer orgs is not confirmed (goal an-update-that-serves-no-org-is-not-confirmed, 2026-10-03)
+
+On 2026-10-03 the grapevine node took v0.2.264 as a canary: the swap
+worked, the owner registration's refusal named an id the node adopted,
+and the first heartbeat through confirmed the update — on a node that
+then served no org and claimed nothing. A heartbeat going through is
+not enough: the confirm also asks whether the node still serves what
+it served.
+
+- **update.json records `served`.** `selfupdate.State.Served`
+  (`served`, omitted when empty) is the names of the orgs the node
+  served when the swap was made: `Loop.update` calls
+  `Updater.Begin(from, to, l.CurrentScopes().Names())` →
+  `StateFile.BeginUpdate(from, to, served)`. `Confirm` and `Rollback`
+  keep it. `mesh node update` and `mesh node upgrade` run outside the
+  node and know no scopes: they record none, and their update confirms
+  as before.
+- **The comparison.** `Updater.Confirm(served)` is given the names
+  served after the heartbeat went through (on the owner contract, after
+  its answer was taken). `ReleaseUpdater.Confirm` loads the state and,
+  while the update is pending, returns `false` and a
+  `*selfupdate.FewerOrgsError{Before, After}` when any org in `served`
+  at the swap is served no more (`selfupdate.FewerOrgs`): fewer orgs,
+  above all none. None before is never fewer, and an org added is
+  never fewer.
+- **A failed confirm.** `Loop.confirmUpdate` then leaves the update
+  unconfirmed: it logs `self-update: confirming <to>: serving fewer
+  orgs than before the update: before <orgs>, after <orgs|none>;
+  retrying for <left> more`, records the text with `NoteConfirmError`,
+  keeps it as the window's last error and sets it as the heartbeat's
+  `updateError` (which `selfUpdate` does not clear while the confirm is
+  pending). A later heartbeat serving enough orgs confirms as before;
+  the window elapsing with none is `ErrUnconfirmed` naming the orgs.
+- **The rollback wording.** The third unconfirmed start rolls back with
+  `Rollback`'s confirm-error reason, so `lastError` and the rolled-back
+  binary's `updateError` read `<to> did not confirm within <window>:
+  serving fewer orgs than before the update: before grapevine, after
+  none`.
+
+Tests: `internal/selfupdate/state_test.go`
+(`TestBeginUpdateRecordsServed`, `TestRollbackNamesFewerOrgs`,
+`TestFewerOrgs`), `internal/node/selfupdate_served_test.go`.
+
 ## Consequences
 
 - Renaming an asset, the workflow file, or the repo breaks every
