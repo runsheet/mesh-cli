@@ -705,7 +705,11 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   gets one retry turn (`harness.ValidationRetryPrompt`, the session
   resumed when it can be), then `FailWorkItem` with `validation failed:
   step <name> exited <code>`; per-step ms ride the usage report's
-  `validation`. No validate.yml finishes as before.
+  `validation`. No validate.yml finishes as before. A rebase re-attests
+  the head it pushed (`Rebaser.validateRebased`, after `PushedHead` and
+  before `FinishWorkItemRebase`; ADR 032 carries no attestation across a
+  rebase): the same steps and upload, a failing step logged and still
+  uploaded, never the rebase's failure (adr-014, After a rebase).
 - **Services** (`internal/sandbox/services.go`, mesh-specs ADR 007):
   `Resolve(repoDir, allowed)` reads what a repository declares, first
   found wins — `.mesh/services.yml`, else the `services:` of its

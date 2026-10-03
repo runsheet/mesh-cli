@@ -132,6 +132,34 @@ added to the build's report and cost.
 one (a deadline at the session's start plus it); a step's own timeout
 is validate.yml's.
 
+**After a rebase** (2026-10-03, goal
+`the-nodes-attestation-reaches-the-platform`, item 5). A rebase
+session (runsheet ADR 008) pushes a new head, and runsheet ADR 032
+carries no attestation forward to it: *The honesty check*, rule 1 of
+its item 32 amendment, says "a head the pull request had before a
+rebase never reached main", and decision 1 signs only "the item's
+branch head as GitHub reports it" — so the build's attestation names a
+head the pull request no longer has, and the pull request's `verify
+attestation` would answer `missing`. ADR 032 names no platform-side
+carry-forward for an unchanged tree; the node's half is to attest the
+rebased head. In `Rebaser.afterRebase`, once the push is read back
+(`PushedHead`) and before `FinishWorkItemRebase`, `validateRebased`
+runs the checkout's `.runsheet/validate.yml` exactly as a build's —
+the steps the branch's diff against its base selects plus the always
+ones, on that head (checked out detached if the checkout is anywhere
+else), in the session's pod or on the host, by the same
+`validator.start`/`run`/`upload` a build uses — writes the attestation
+beside the rebase's workdir and uploads it on the node's own token.
+Nothing in it fails the rebase, whose job is the head: a failing step
+is logged `rebase <label>: validation step <name> exited <code>`, noted
+on the item, and its run still uploaded for the platform to refuse or
+record; a refused upload is a note on the item and a platform without
+the mutation the once-per-run notice (shared with the Runner,
+`ValidationNotices`); a validation that cannot run at all is a note
+and no attestation. There is no retry turn and no `validation` usage
+on the rebase's report. A repository with no validate.yml logs `no
+validation declared` once and finishes as before.
+
 ## Consequences
 
 - An item cannot finish on a commit whose declared validation fails:

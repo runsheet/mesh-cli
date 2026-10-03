@@ -54,46 +54,91 @@ func (e *validationFailure) Error() string {
 	return fmt.Sprintf("validation failed: step %s exited %d", e.Step.Name, e.Step.ExitCode)
 }
 
+// validator runs a checkout's validation and uploads its attestation
+// for whichever session it follows: a build's (Runner.validator) or a
+// rebase's (Rebaser.validator), each on the node's own gateway.
+type validator struct {
+	GW      Gateway
+	WS      Workspacer
+	Scopes  Scopes
+	Sandbox *sandbox.Sandbox
+	Inspect sandbox.Runner
+	Notices *ValidationNotices
+	logf    func(format string, args ...any)
+}
+
+// validationTarget is what a validation needs of the session it
+// follows: the item and its checkout, the base its diff is taken
+// against, the log prefix ("item <label>", "rebase <label>"), the
+// session's job and pod (nil when adopted), its id, how its errors are
+// redacted and how a note reaches the item.
+type validationTarget struct {
+	item    gateway.WorkItem
+	dir     string
+	base    string
+	prefix  string
+	label   string
+	job     *harness.Job
+	pod     *sandbox.Session
+	session func() string
+	redact  func(error) error
+	report  func(ctx context.Context, note string)
+}
+
+func (r *Runner) validator() validator {
+	return validator{GW: r.GW, WS: r.WS, Scopes: r.Scopes, Sandbox: r.Sandbox, Inspect: r.Inspect, Notices: r.Notices, logf: r.logf}
+}
+
+// target is the build as its validation needs it.
+func (b *buildRun) target() validationTarget {
+	return validationTarget{item: b.item, dir: b.dir, base: b.spec.BaseRef, prefix: "item " + b.label, label: b.label,
+		job: b.job, pod: b.podSession(), session: b.session, redact: b.acct.RedactErr, report: b.report}
+}
+
 // startValidation reads the checkout's validate.yml and readies the
 // runner its steps go through: nil when the repository declares none
 // (said once per item), the finish as before.
 func (r *Runner) startValidation(ctx context.Context, b *buildRun) (*buildValidation, error) {
-	if _, err := validate.Load(b.dir); errors.Is(err, validate.ErrNoValidation) {
-		r.logf("item %s: no validation declared", b.label)
+	return r.validator().start(ctx, b.target())
+}
+
+func (vr validator) start(ctx context.Context, t validationTarget) (*buildValidation, error) {
+	if _, err := validate.Load(t.dir); errors.Is(err, validate.ErrNoValidation) {
+		vr.logf("%s: no validation declared", t.prefix)
 		return nil, nil
 	} else if err != nil {
 		return nil, err
 	}
-	sc, _ := r.Scopes.ByOrg(b.item.OrgID)
-	v := &buildValidation{meta: validate.Meta{NodeID: sc.NodeID, ItemID: b.item.ID}, close: func() {}}
-	if r.Sandbox == nil {
+	sc, _ := vr.Scopes.ByOrg(t.item.OrgID)
+	v := &buildValidation{meta: validate.Meta{NodeID: sc.NodeID, ItemID: t.item.ID}, close: func() {}}
+	if vr.Sandbox == nil {
 		host, _ := os.Hostname()
-		v.runner = validate.HostRunner{Dir: b.dir, Env: hostValidationEnv(b.job)}
+		v.runner = validate.HostRunner{Dir: t.dir, Env: hostValidationEnv(t.job)}
 		v.meta.RunnerImage, v.meta.Sandboxed = "host:"+host, false
 		return v, nil
 	}
-	sess := b.podSession()
+	sess := t.pod
 	if sess == nil {
 		// an adopted session's pod ended with the node before it
-		s, err := r.Sandbox.Open(b.label, "validate")
+		s, err := vr.Sandbox.Open(t.label, "validate")
 		if err != nil {
 			return nil, err
 		}
 		sess, v.close = s, func() { _ = s.Close() }
 	}
 	var env []string
-	if b.job != nil {
-		env = b.job.Env
+	if t.job != nil {
+		env = t.job.Env
 	}
-	v.runner = sandboxRunner{sess: sess, dir: b.dir, env: env}
-	image := r.Sandbox.Config.Image
-	run := r.Inspect
+	v.runner = sandboxRunner{sess: sess, dir: t.dir, env: env}
+	image := vr.Sandbox.Config.Image
+	run := vr.Inspect
 	if run == nil {
 		run = sandbox.ExecRunner
 	}
 	v.meta.RunnerImage, v.meta.Sandboxed = image, true
 	if digest, err := sandbox.ImageDigest(ctx, run, image); err != nil {
-		r.logf("item %s: validation: %v; the attestation names the image by its ref", b.label, err)
+		vr.logf("%s: validation: %v; the attestation names the image by its ref", t.prefix, err)
 	} else {
 		v.meta.RunnerImage = digest
 	}
@@ -161,15 +206,19 @@ func (r *Runner) validateBuild(ctx context.Context, b *buildRun, v *buildValidat
 // the head and never answers missing for "nothing affected" (goal
 // the-nodes-attestation-reaches-the-platform, rule d).
 func (r *Runner) runValidation(ctx context.Context, b *buildRun, v *buildValidation) (validate.Attestation, error) {
-	cfg, err := validate.Load(b.dir)
+	return r.validator().run(ctx, b.target(), v)
+}
+
+func (vr validator) run(ctx context.Context, t validationTarget, v *buildValidation) (validate.Attestation, error) {
+	cfg, err := validate.Load(t.dir)
 	if err != nil {
 		return validate.Attestation{}, err
 	}
-	changed, err := r.WS.ChangedPaths(ctx, b.dir, b.spec.BaseRef)
+	changed, err := vr.WS.ChangedPaths(ctx, t.dir, t.base)
 	if err != nil {
 		return validate.Attestation{}, fmt.Errorf("changed paths: %w", err)
 	}
-	head, err := gitHead(ctx, b.dir)
+	head, err := gitHead(ctx, t.dir)
 	if err != nil {
 		return validate.Attestation{}, err
 	}
@@ -182,23 +231,23 @@ func (r *Runner) runValidation(ctx context.Context, b *buildRun, v *buildValidat
 	if ran == "" {
 		ran = "no suite affected"
 	}
-	r.logf("item %s: validation on %s: %s", b.label, short(head), ran)
-	results, err := validate.Run(ctx, steps, v.runner, validate.Options{Dir: b.dir})
+	vr.logf("%s: validation on %s: %s", t.prefix, short(head), ran)
+	results, err := validate.Run(ctx, steps, v.runner, validate.Options{Dir: t.dir})
 	if err != nil {
 		return validate.Attestation{}, err
 	}
 	meta := v.meta
-	meta.SessionID = b.session()
-	att, err := validate.Build(b.dir, head, results, meta)
+	meta.SessionID = t.session()
+	att, err := validate.Build(t.dir, head, results, meta)
 	if err != nil {
 		return att, err
 	}
 	v.runs = append(v.runs, att)
 	for _, s := range results {
-		r.logf("item %s: validation step %s exited %d in %dms", b.label, s.Name, s.ExitCode, s.DurationMs)
+		vr.logf("%s: validation step %s exited %d in %dms", t.prefix, s.Name, s.ExitCode, s.DurationMs)
 	}
-	if err := writeAttestation(sessionunit.Dir(b.dir), att); err != nil {
-		r.logf("item %s: validation: %v", b.label, err)
+	if err := writeAttestation(sessionunit.Dir(t.dir), att); err != nil {
+		vr.logf("%s: validation: %v", t.prefix, err)
 	}
 	return att, nil
 }
@@ -276,28 +325,32 @@ func (v *buildValidation) usage() []gateway.ValidationMinutes {
 // a note on the item, never its failure. Either keeps a copy at <workdir>.attestation.json, which the
 // session directory's removal leaves.
 func (r *Runner) uploadAttestation(ctx context.Context, b *buildRun, att validate.Attestation) {
-	rec := r.attester()
+	r.validator().upload(ctx, b.target(), att)
+}
+
+func (vr validator) upload(ctx context.Context, t validationTarget, att validate.Attestation) {
+	rec := vr.attester()
 	var err error
 	if rec == nil {
 		err = &gateway.Error{Message: "the node's gateway takes no attestations", Unsupported: true}
 	} else {
-		_, err = rec.RecordValidationAttestation(ctx, b.item.ID, gatewayAttestation(att))
+		_, err = rec.RecordValidationAttestation(ctx, t.item.ID, gatewayAttestation(att))
 	}
 	switch {
 	case err == nil:
-		r.logf("item %s: validation attestation for %s uploaded", b.label, short(att.Commit))
+		vr.logf("%s: validation attestation for %s uploaded", t.prefix, short(att.Commit))
 		return
 	case gateway.IsUnsupported(err):
-		once(r.Notices.attestation(), func() {
-			r.logf("validation: the platform takes no attestations yet; each is kept beside its checkout as %s (said once, for every item this run)", AttestationFile)
+		once(vr.Notices.attestation(), func() {
+			vr.logf("validation: the platform takes no attestations yet; each is kept beside its checkout as %s (said once, for every item this run)", AttestationFile)
 		})
 	default:
-		note := "validation attestation: upload failed: " + b.acct.RedactErr(err).Error()
-		r.logf("item %s: %s", b.label, note)
-		b.report(ctx, note)
+		note := "validation attestation: upload failed: " + t.redact(err).Error()
+		vr.logf("%s: %s", t.prefix, note)
+		t.report(ctx, note)
 	}
-	if err := writeAttestationAt(b.dir+".attestation.json", att); err != nil {
-		r.logf("item %s: validation: %v", b.label, err)
+	if err := writeAttestationAt(t.dir+".attestation.json", att); err != nil {
+		vr.logf("%s: validation: %v", t.prefix, err)
 	}
 }
 
@@ -340,8 +393,8 @@ type attestationRecorder interface {
 // ghs_* token and every upload came back "the bearer is a GitHub App
 // installation token … a node sends its own Latchkey machine token, as
 // its heartbeat does".
-func (r *Runner) attester() attestationRecorder {
-	rec, _ := r.GW.(attestationRecorder)
+func (vr validator) attester() attestationRecorder {
+	rec, _ := vr.GW.(attestationRecorder)
 	return rec
 }
 

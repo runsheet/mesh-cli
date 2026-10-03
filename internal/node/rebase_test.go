@@ -29,6 +29,17 @@ func requestRebase(f *gatewaytest.Fake, id, branch string) {
 // rebaseNode is a node over the seeded org that rebases with h and ws.
 func rebaseNode(t *testing.T, f *gatewaytest.Fake, slug string, h harness.Harness, ws *fakeWS, logs *strings.Builder) (*Loop, *Config) {
 	t.Helper()
+	var w io.Writer
+	if logs != nil {
+		w = logs
+	}
+	return rebaseNodeOn(t, f, slug, h, ws, ws.root, w)
+}
+
+// rebaseNodeOn is rebaseNode on any workspace (root its work root),
+// logging to logs (nil: stderr).
+func rebaseNodeOn(t *testing.T, f *gatewaytest.Fake, slug string, h harness.Harness, ws Workspacer, root string, logs io.Writer) (*Loop, *Config) {
+	t.Helper()
 	// the rebase holder's token: the platform half ADR-001 asks for
 	// (TestRebaseTokenRefusedFailsTheRebase is the platform as it is)
 	f.RebaseTokens = true
@@ -41,7 +52,7 @@ func rebaseNode(t *testing.T, f *gatewaytest.Fake, slug string, h harness.Harnes
 	if logs != nil {
 		w = log.New(logs, "", 0)
 	}
-	rb := &Rebaser{Credentials: testCreds(gw), GW: gw, Harness: h, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, MCP: MeshContextMCP(f.URL(), "rs_test"), MaxBudgetUSD: 4, ProgressEvery: time.Hour, Log: w}
+	rb := &Rebaser{Credentials: testCreds(gw), GW: gw, Harness: h, WS: ws, Scopes: scopesOf(cfg), WorkRoot: root, MCP: MeshContextMCP(f.URL(), "rs_test"), MaxBudgetUSD: 4, ProgressEvery: time.Hour, Log: w}
 	return &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Version: "test", Harness: "claude-code", Interval: time.Hour, Log: w,
 		Dispatch: func(context.Context, gateway.WorkItem) {},
 		Rebase:   func(ctx context.Context, item gateway.WorkItem) { _ = rb.Rebase(ctx, item) }}, cfg
@@ -416,4 +427,165 @@ func TestRebaseReportsUsage(t *testing.T) {
 		t.Fatalf("finishes: %+v", finishes)
 	}
 	checkSessionUsage(t, f, "finishWorkItemRebase")
+}
+
+// rebaseGitWS is gitWS whose PushedHead is Git's: origin fetched and
+// read back, as the node reads a rebase's head.
+type rebaseGitWS struct{ *gitWS }
+
+func (w *rebaseGitWS) PushedHead(ctx context.Context, dir, branch, base string) (string, error) {
+	if _, err := w.fakeWS.PushedHead(ctx, dir, branch, base); err != nil {
+		return "", err
+	}
+	return (&Git{}).PushedHead(ctx, dir, branch, base)
+}
+
+// pushingRebaseHarness is a rebase session that commits files on the
+// item's branch, pushes it to origin with --force and ends REBASED: with
+// the head it pushed.
+type pushingRebaseHarness struct {
+	t     *testing.T
+	files map[string]string
+	mu    sync.Mutex
+	head  string
+}
+
+func (h *pushingRebaseHarness) Name() string { return "claude-code" }
+
+func (h *pushingRebaseHarness) Run(_ context.Context, job harness.Job, on func(harness.Progress)) (harness.Result, error) {
+	writeFiles(h.t, job.Workspace, h.files)
+	gitRun(h.t, job.Workspace, "add", "-A")
+	gitRun(h.t, job.Workspace, "commit", "--quiet", "-m", "rebased")
+	branch := gitRun(h.t, job.Workspace, "rev-parse", "--abbrev-ref", "HEAD")
+	gitRun(h.t, job.Workspace, "push", "--quiet", "--force", "origin", "HEAD:"+branch)
+	head := gitRun(h.t, job.Workspace, "rev-parse", "HEAD")
+	h.mu.Lock()
+	h.head = head
+	h.mu.Unlock()
+	on(harness.Progress{SessionID: "rb-1", CostUSD: 0.25})
+	return harness.Result{Success: true, SessionID: "rb-1", CostUSD: 0.25,
+		Text: fmt.Sprintf("Kept both sides.\n\nREBASED: %s\nRESOLVED: api/api.go", head[:12])}, nil
+}
+
+func (h *pushingRebaseHarness) Head() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.head
+}
+
+// attestingRebase runs one requested rebase of item1 on a real checkout
+// of an origin holding repoFiles, its session committing files, and
+// returns the fake, the session and node.log.
+func attestingRebase(t *testing.T, repoFiles, files map[string]string) (*gatewaytest.Fake, *pushingRebaseHarness, string) {
+	t.Helper()
+	f := seed(t)
+	requestRebase(f, item1, "mesh/ship-it-1")
+	root := t.TempDir()
+	ws := &rebaseGitWS{&gitWS{fakeWS: &fakeWS{root: root}, t: t, origin: originRepo(t, repoFiles)}}
+	h := &pushingRebaseHarness{t: t, files: files}
+	logs := &syncBuf{}
+	loop, _ := rebaseNodeOn(t, f, "test-node", h, ws, root, logs)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	loop.Tick(ctx)
+	loop.wg.Wait()
+	return f, h, logs.String()
+}
+
+// callOrder is the index of each named mutation's first call in f.
+func callOrder(f *gatewaytest.Fake, names ...string) map[string]int {
+	at := map[string]int{}
+	for i, c := range f.Calls {
+		for _, n := range names {
+			if _, seen := at[n]; !seen && c.Name == n {
+				at[n] = i
+			}
+		}
+	}
+	return at
+}
+
+// A rebase whose session pushes a new head on a repository declaring
+// .runsheet/validate.yml validates that head and uploads its attestation
+// — exactly once, for the head origin has, on the item — before the
+// rebase is finished with it (runsheet ADR 032, The honesty check, rule
+// 1: the head before the rebase never reaches main).
+func TestRebaseAttestsThePushedHead(t *testing.T) {
+	f, h, logs := attestingRebase(t, withValidation(), map[string]string{"api/api.go": "package api\n\nconst X = 1\n"})
+	head := h.Head()
+	if len(head) != 40 {
+		t.Fatalf("the session pushed no head: %q\n%s", head, logs)
+	}
+	atts := f.CallsNamed("recordValidationAttestation")
+	if len(atts) != 1 {
+		t.Fatalf("attestations = %d, want 1\n%s", len(atts), logs)
+	}
+	in, _ := atts[0].Input["input"].(map[string]any)
+	if in["commit"] != head || atts[0].Input["workItemId"] != item1 {
+		t.Fatalf("attestation: commit %v item %v, want %s %s", in["commit"], atts[0].Input["workItemId"], head, item1)
+	}
+	if atts[0].Bearer != f.Token {
+		t.Fatalf("bearer = %q, want the node's own token", atts[0].Bearer)
+	}
+	if got := strings.Join(attestationSteps(t, atts[0]), ","); got != "vet,api" {
+		t.Fatalf("steps = %s, want vet,api", got)
+	}
+	finishes := f.CallsNamed("finishWorkItemRebase")
+	if len(finishes) != 1 || finishes[0].Input["headSha"] != head {
+		t.Fatalf("finishes: %+v", finishes)
+	}
+	if at := callOrder(f, "recordValidationAttestation", "finishWorkItemRebase"); at["recordValidationAttestation"] > at["finishWorkItemRebase"] {
+		t.Fatalf("the attestation (call %d) must come before the finish (call %d)", at["recordValidationAttestation"], at["finishWorkItemRebase"])
+	}
+	if !strings.Contains(logs, "rebase ship-it/1: validation attestation for "+short(head)+" uploaded") {
+		t.Fatalf("node.log:\n%s", logs)
+	}
+}
+
+// A repository with no validate.yml says so and finishes the rebase as
+// before, uploading nothing.
+func TestRebaseWithoutValidationAttestsNothing(t *testing.T) {
+	f, h, logs := attestingRebase(t, nil, map[string]string{"api/api.go": "package api\n\nconst X = 1\n"})
+	if n := len(f.CallsNamed("recordValidationAttestation")); n != 0 {
+		t.Fatalf("attestations = %d, want none", n)
+	}
+	if strings.Count(logs, "rebase ship-it/1: no validation declared") != 1 {
+		t.Fatalf("node.log:\n%s", logs)
+	}
+	if finishes := f.CallsNamed("finishWorkItemRebase"); len(finishes) != 1 || finishes[0].Input["headSha"] != h.Head() {
+		t.Fatalf("finishes: %+v", finishes)
+	}
+}
+
+// A step that fails on the rebased head does not fail the rebase — its
+// job is the head: the step is logged, the run is still uploaded for the
+// platform to refuse or record, and the rebase is finished.
+func TestRebaseFailingStepStillAttestsAndFinishes(t *testing.T) {
+	f, h, logs := attestingRebase(t, withValidation(), map[string]string{"api/broken": "x\n"})
+	atts := f.CallsNamed("recordValidationAttestation")
+	if len(atts) != 1 {
+		t.Fatalf("attestations = %d, want 1\n%s", len(atts), logs)
+	}
+	in, _ := atts[0].Input["input"].(map[string]any)
+	if in["commit"] != h.Head() {
+		t.Fatalf("commit = %v, want %s", in["commit"], h.Head())
+	}
+	failed := false
+	for _, c := range in["commands"].([]any) {
+		if c := c.(map[string]any); c["suite"] == "api" && c["exitCode"] != float64(0) {
+			failed = true
+		}
+	}
+	if !failed {
+		t.Fatalf("the api step should have failed: %v", in["commands"])
+	}
+	if !strings.Contains(logs, "rebase ship-it/1: validation step api exited 1") {
+		t.Fatalf("node.log:\n%s", logs)
+	}
+	if n := len(f.CallsNamed("failWorkItemRebase")); n != 0 {
+		t.Fatalf("a failing step failed the rebase (%d)", n)
+	}
+	if finishes := f.CallsNamed("finishWorkItemRebase"); len(finishes) != 1 || finishes[0].Input["headSha"] != h.Head() {
+		t.Fatalf("finishes: %+v", finishes)
+	}
 }
