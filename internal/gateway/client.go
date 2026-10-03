@@ -134,6 +134,9 @@ type Client struct {
 	// ownerSchema is which owner field the gateway's RegisterNodeInput
 	// was last found to have (see OwnerField).
 	ownerSchema ownerProbe
+	// nodeKindSchema is whether the gateway's RegisterNodeInput was last
+	// found to take `kind` (see TakesNodeKind).
+	nodeKindSchema holdingProbe
 	// toolErrorSchema is whether the gateway's usage report's `tools`
 	// entry was last found to take `error` (see takesToolError).
 	toolErrorSchema toolErrorProbe
@@ -1579,7 +1582,17 @@ type RegisterNodeInput struct {
 	// platform checks adminOnEnterprise(ownerId)). The node resolves an
 	// enterprise's id from node.yaml's `enterprise:` (MyEnterprises).
 	Owner string
+	// Kind is the node's own kind — "personal" for `mesh mcp`'s node
+	// (ADR-015's owner form, ADR-023 mesh mcp): sent only when set and
+	// the platform's RegisterNodeInput takes it (TakesNodeKind), under
+	// NodeKindField, so an older platform's registerNode still accepts
+	// the call unchanged.
+	Kind string
 }
+
+// NodeKindField is the name RegisterNodeInput gives the node's own
+// kind.
+const NodeKindField = "kind"
 
 // NodeAnswer is the platform's answer to a registration or a heartbeat:
 // the node's single id, its owner and the scopes (orgs) it now serves
@@ -1692,7 +1705,19 @@ func (c *Client) RegisterNode(ctx context.Context, in RegisterNodeInput) (*NodeA
 			input[field] = in.Owner
 		}
 	}
+	if in.Kind != "" && c.TakesNodeKind(ctx) {
+		input[NodeKindField] = in.Kind
+	}
 	return c.mutateForAnswer(ctx, "registerNode", in.NodeID, input)
+}
+
+// TakesNodeKind says whether the gateway's RegisterNodeInput has a
+// `kind` field (NodeKindField) — asked by introspection and kept for
+// ScalingProbeEvery, the same as TakesOwner: an older platform's
+// registerNode would refuse the whole call on an input field it does
+// not know.
+func (c *Client) TakesNodeKind(ctx context.Context) bool {
+	return c.takesInputField(ctx, &c.nodeKindSchema, "RegisterNodeInput", NodeKindField)
 }
 
 // ownerProbe is the cached answer to which owner field

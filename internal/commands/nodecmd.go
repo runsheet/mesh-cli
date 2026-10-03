@@ -312,6 +312,9 @@ var nodeStatusCmd = &cobra.Command{
 		if line := ownedStatusLine(cfg, out); line != "" {
 			fmt.Println(line)
 		}
+		if line := personalNodeStatusLine(); line != "" {
+			fmt.Println(line)
+		}
 		scopes := out.Scopes
 		fmt.Println(credentialLine(src.Credential()))
 		state, err := node.DefaultRunState()
@@ -428,6 +431,16 @@ func ownedStatusLine(cfg *node.Config, out node.Outside) string {
 		line = fmt.Sprintf("orgs: %v\n%s", out.Restrict, line)
 	}
 	return line
+}
+
+// personalNodeStatusLine is `mesh node status`'s line for `mesh mcp`'s
+// personal node (ADR-023, mesh mcp): empty until one has registered.
+func personalNodeStatusLine() string {
+	pn, err := node.LoadPersonalNode()
+	if err != nil || pn.ID == "" {
+		return ""
+	}
+	return fmt.Sprintf("personal node: %s (%s)", pn.Name, pn.ID)
 }
 
 // nodeIDStatusLine is mesh node status's line naming node.yaml's node_id

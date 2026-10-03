@@ -284,6 +284,12 @@ type Fake struct {
 	// `owner` in place of `ownerKind`, and a registerNode carrying the
 	// other spelling is refused with "Unknown field".
 	OwnerFieldLegacy bool
+	// TakesNodeKind says whether the fake's RegisterNodeInput has `kind`
+	// (gateway.NodeKindField), the node's own kind — "personal" for
+	// `mesh mcp`'s node (ADR-015's owner form, ADR-023 mesh mcp). Unset
+	// (the default) is a platform before that field: a registerNode
+	// carrying `kind` is refused with "Unknown field".
+	TakesNodeKind bool
 	// Enterprises by id: the enterprises the platform knows, each with
 	// its admins' user ids. myEnterprises serves those the caller
 	// (UserID) admins, and a registerNode with owner kind "enterprise"
@@ -534,7 +540,8 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 			fields = append(fields, map[string]any{"name": n})
 		}
 		writeData(w, map[string]any{"__type": map[string]any{"inputFields": fields}})
-	case strings.Contains(q, `__type(name: "RegisterNodeInput")`):
+	case strings.Contains(q, `__type(name: "RegisterNodeInput")`),
+		strings.Contains(q, "__type(") && req.Variables["t"] == "RegisterNodeInput":
 		f.Reads = append(f.Reads, Call{Name: "__type RegisterNodeInput", Input: map[string]any{}})
 		if f.Unsupported["__type"] {
 			writeErrors(w, 200, "GraphQL introspection is not allowed")
@@ -1062,8 +1069,12 @@ func (f *Fake) heartbeatInputType() map[string]any {
 // the-node-serves-its-owners-orgs). Unsupported["__type"] refuses the
 // probe.
 func (f *Fake) registerNodeInputType() map[string]any {
+	names := []string{"aggregateId", "namespace", "orgId", "ownerId", "name", "slug", "harnesses", "capacity", "version", f.ownerField()}
+	if f.TakesNodeKind {
+		names = append(names, gateway.NodeKindField)
+	}
 	var fields []any
-	for _, name := range []string{"aggregateId", "namespace", "orgId", "ownerId", "name", "slug", "harnesses", "capacity", "version", f.ownerField()} {
+	for _, name := range names {
 		if f.UnknownFields[name] {
 			continue
 		}
@@ -1478,6 +1489,9 @@ func (f *Fake) apply(name string, in map[string]any) error {
 			if _, ok := in[k]; ok && (k != f.ownerField() || f.UnknownFields[k]) {
 				return fmt.Errorf(`Variable "$in" got invalid value; Unknown field %q is not defined by type "RegisterNodeInput".`, k)
 			}
+		}
+		if _, ok := in[gateway.NodeKindField]; ok && (!f.TakesNodeKind || f.UnknownFields[gateway.NodeKindField]) {
+			return fmt.Errorf(`Variable "$in" got invalid value; Unknown field %q is not defined by type "RegisterNodeInput".`, gateway.NodeKindField)
 		}
 		kind, _ := in[f.ownerField()].(string)
 		if kind == "enterprise" {
