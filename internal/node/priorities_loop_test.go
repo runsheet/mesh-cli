@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"sync"
@@ -57,9 +58,14 @@ func (p *priorityFake) servesLoop(rows ...map[string]any) *servesLoop {
 		ref.Kind = kind
 		acct, err := creds.Open(ctx, ref, p.scopes[0].NodeID, AdapterClaudeCode)
 		got := ""
-		if err != nil {
+		switch {
+		case errors.Is(err, ErrNoAccount):
+			// an ErrNoHeadroom names its subject; the tests ask only
+			// that it is ErrNoAccount
+			got = "error: " + ErrNoAccount.Error()
+		case err != nil:
 			got = "error: " + err.Error()
-		} else {
+		default:
 			got = acct.Label
 			acct.Cleanup()
 		}

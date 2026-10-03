@@ -511,9 +511,9 @@ func (l *Loop) claimReady(ctx context.Context, free, normalFree, maxRank int) {
 		if runtimes, _ := l.Runtimes(); l.Declines.Holds(item.ID, runtimes, time.Now()) {
 			continue // a required tool needs a runtime still missing here
 		}
-		if why, ok := l.NoCredential.Holds(l.goalProject(ctx, sc, item), l.adapter()); ok {
+		if why, until, ok := l.NoCredential.Holds(l.goalProject(ctx, sc, item), string(harness.KindBuild), l.adapter()); ok {
 			l.passOver(item.GoalID, "item", priorityName(r.rank), why)
-			l.NoCredential.Say(item.GoalID, why)
+			l.NoCredential.Say(item.GoalID, why, until)
 			continue
 		}
 		fresh := !startedWork(item)
@@ -1492,10 +1492,10 @@ func (l *Loop) rebaseRequested(ctx context.Context) {
 			continue
 		}
 		l.mu.Unlock()
-		if why, ok := l.NoCredential.Holds(l.goalProject(ctx, sc, item), l.adapter()); ok {
+		if why, until, ok := l.NoCredential.Holds(l.goalProject(ctx, sc, item), string(harness.KindRebase), l.adapter()); ok {
 			// no credential open to this node: the rebase waits, said
 			// once for the goal
-			l.NoCredential.Say(item.GoalID, why)
+			l.NoCredential.Say(item.GoalID, why, until)
 			continue
 		}
 		actx, ok := l.accountToFinish(ctx, priorityName(r.rank), "rebase")
@@ -1564,9 +1564,9 @@ func (l *Loop) planRequested(ctx context.Context) {
 			continue
 		}
 		l.mu.Unlock()
-		if why, ok := l.NoCredential.Holds(g.ProjectID, l.adapter()); ok {
+		if why, until, ok := l.NoCredential.Holds(g.ProjectID, string(harness.KindPlan), l.adapter()); ok {
 			l.passOver(g.ID, "plan", priorityName(gateway.PriorityRank(g.Priority)), why)
-			l.NoCredential.Say(g.ID, why)
+			l.NoCredential.Say(g.ID, why, until)
 			continue
 		}
 		actx, ok := l.accountFor(ctx, priorityName(gateway.PriorityRank(g.Priority)), true, "plan")

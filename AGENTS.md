@@ -418,7 +418,17 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   login: the build is released, and `NoCredentials` (shared with
   `Loop.NoCredential`) holds that project's items, plans and rebases
   unclaimed for 10 minutes with the reason on `holding.unclaimed`, said
-  once per goal per run; then one claim probes, the rest still held. Only a platform without the read leaves node.yaml,
+  once per goal per run; then one claim probes, the rest still held.
+  A read whose issued credentials for the adapter have no headroom is
+  `ErrNoHeadroom` (adr-005's amendment 2026-10-03): it `Is`
+  `ErrNoAccount`, names the org, project, session kind, adapter, the
+  refused labels and `Until`, the earliest `resumeAt` among their
+  readings (`NoHeadroomOf`), and `NoteHeadroom` holds that (project,
+  kind, adapter) — the store is keyed so, kind `""` being the
+  no-credential hold over every kind — until `Until` (else 10 minutes);
+  `Holds(project, kind, adapter)` gives the reason and its until and
+  lets one probe through when it passes, and a successful open clears
+  it. Only a platform without the read leaves node.yaml,
   said once per run. At the end
   the session's `SessionAccount.Report` (`gateway.UsageReport`:
   credential id and kind, tokens, tool calls, wall time, list and
