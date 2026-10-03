@@ -63,6 +63,9 @@ func assertEmptyHandIn(t *testing.T, f *gatewaytest.Fake, ws *fakeWS, h *fakeHar
 	if len(ws.fetched) != 0 || len(h.jobs) != 0 {
 		t.Fatalf("a refused read fetches nothing and runs nothing: fetched %v, %d jobs", ws.fetched, len(h.jobs))
 	}
+	if len(ws.repoOps) != 0 {
+		t.Fatalf("a refused read neither authorizes nor fetches any repo: %v", ws.repoOps)
+	}
 }
 
 // A read whose one issued claude-code credential is exhausted is

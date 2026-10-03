@@ -109,9 +109,13 @@ func ResearchDir(root, projectSlug, directionSlug string) string {
 // context written: a refused read — no credential issued, or none with
 // headroom (ErrNoCredential, ErrNoAccount) — hands in an empty research
 // costing nothing, so the direction is not left claimed, and returns
-// nil; Credentials.Open has noted the hold. Any other error means
-// nothing was handed in — the claim goes stale and another tick, or
-// another node, tries again.
+// nil; Credentials.Open has noted the hold. researchTokens' own refusal
+// — a repo the platform issues no token for, or a refused read — hands
+// in an empty research the same way (refusedToken), naming the repo; an
+// old platform (gateway.IsUnsupported) is not this: researchTokens
+// answers nil, nil and the fetch runs on the operator's gh as before.
+// Any other error means nothing was handed in — the claim goes stale and
+// another tick, or another node, tries again.
 func (d *Director) Research(ctx context.Context, direction gateway.Direction, project gateway.Project, scope Scope) error {
 	if len(project.RepoIDs) == 0 {
 		return fmt.Errorf("project %s has no repos enrolled; nothing to research", project.Slug)
@@ -142,7 +146,7 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 	// the operator's gh as before
 	toks, err := d.researchTokens(ctx, direction, project, scope.NodeID, names)
 	if err != nil {
-		return err
+		return d.refusedToken(ctx, direction, project, scope, err)
 	}
 	dirs := map[string]string{}
 	for _, name := range names {
@@ -274,6 +278,27 @@ func (d *Director) refused(ctx context.Context, direction gateway.Direction, pro
 	if !noCredential && !strings.Contains(note, noHeadroomNote) {
 		note = noHeadroomNote + ": " + note
 	}
+	return d.emptyResearch(ctx, direction, project, scope, err, note)
+}
+
+// refusedToken is Research's answer to a refused research token read
+// (researchTokens): a repo the platform issues no token for, or a
+// refusal from the platform — never an old platform's IsUnsupported,
+// which researchTokens turns into nil, nil for the operator's-gh
+// fallback instead. The error names the repo, so it is the note
+// unchanged, and the hand-in is the same as a refused credential's
+// (emptyResearch): no session ran, nothing to cost or report, and the
+// direction's claim is let go rather than held for the platform's
+// 45-minute timer.
+func (d *Director) refusedToken(ctx context.Context, direction gateway.Direction, project gateway.Project, scope Scope, err error) error {
+	return d.emptyResearch(ctx, direction, project, scope, err, err.Error())
+}
+
+// emptyResearch is the hand-in refused and refusedToken share: log why,
+// then RecordDirectionResearch an empty one at no cost with note, through
+// pitchFallback like every other hand-in. A failed hand-in still returns
+// the original err, not swallowed.
+func (d *Director) emptyResearch(ctx context.Context, direction gateway.Direction, project gateway.Project, scope Scope, err error, note string) error {
 	d.logf("%s/%s: %v; handing in an empty research", project.Slug, direction.Slug, err)
 	if hand := d.pitchFallback(d.GW.RecordDirectionResearch(ctx, direction.ID, scope.NodeID, gateway.Research{}, 0, note, nil)); hand != nil {
 		return fmt.Errorf("%w (and handing in the empty research failed: %v)", err, hand)
