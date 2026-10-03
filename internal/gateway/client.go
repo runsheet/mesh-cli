@@ -3716,8 +3716,11 @@ func retryAfterOf(err error) time.Duration {
 // copied from runsheet's, is the contract and its fixture), returned as
 // the platform's receipt. Whether the Mutation type has the field is
 // asked by introspection once and kept for ScalingProbeEvery
-// (takesAttestations): a platform without it is &Error{Unsupported:
-// true} and nothing is sent. A platform with it that refuses ("<sha> is
+// (takesAttestations): a platform observed without it is
+// &Error{Unsupported: true} and nothing is sent, but a probe that
+// cannot be answered at all is its own error, never Unsupported — an
+// introspection outage must not read as an absent mutation. A platform
+// with it that refuses ("<sha> is
 // not the head of <branch> …") is a *Error carrying its words, a
 // refusal (IsRefusal), never Unsupported. A transport failure or a
 // 429/5xx answer — an httpError, or a GraphQL error body a proxy
@@ -3726,7 +3729,11 @@ func retryAfterOf(err error) time.Duration {
 // giving up and returning the last answer wrapped as "after N retries:
 // <last answer>". There is no REST path.
 func (c *Client) RecordValidationAttestation(ctx context.Context, itemID string, att ValidationAttestation) (map[string]any, error) {
-	if !c.takesAttestations(ctx) {
+	takes, err := c.takesAttestations(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("gateway: probing for recordValidationAttestation: %w", err)
+	}
+	if !takes {
 		return nil, &Error{Message: "gateway: the platform's Mutation has no recordValidationAttestation", Unsupported: true}
 	}
 	body, err := json.Marshal(att)
@@ -3760,15 +3767,21 @@ type attestationProbe struct {
 
 // takesAttestations says whether the gateway's Mutation type has
 // recordValidationAttestation taking workItemId and input — asked by
-// introspection and kept for ScalingProbeEvery, as takesCommit is. A
-// failed probe is a no, kept as long.
-func (c *Client) takesAttestations(ctx context.Context) bool {
+// introspection and kept for ScalingProbeEvery, as takesCommit is. An
+// observed absence — the query answers and the field is not listed —
+// is cached and returned as false, nil: that is IsUnsupported's case,
+// a platform older than the node. A probe that cannot be answered —
+// the introspection query itself fails, a transport error or a 5xx —
+// is not cached and is returned as its error: a transient failure to
+// ask must never read as "the platform has no
+// recordValidationAttestation" and trip the once-per-run notice.
+func (c *Client) takesAttestations(ctx context.Context) (bool, error) {
 	p := &c.attestationSchema
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := c.now()
 	if !p.at.IsZero() && now.Sub(p.at) < ScalingProbeEvery {
-		return p.takes
+		return p.takes, nil
 	}
 	var out struct {
 		Type *struct {
@@ -3780,15 +3793,18 @@ func (c *Client) takesAttestations(ctx context.Context) bool {
 			} `json:"fields"`
 		} `json:"__type"`
 	}
-	p.at, p.takes = now, false
 	q := `{ __type(name: "Mutation") { fields { name args { name } } } }`
-	if err := c.Query(ctx, q, nil, &out); err != nil || out.Type == nil {
-		return false
+	if err := c.Query(ctx, q, nil, &out); err != nil {
+		return false, err
 	}
-	for _, f := range out.Type.Fields {
-		if f.Name == "recordValidationAttestation" {
-			p.takes = true
+	takes := false
+	if out.Type != nil {
+		for _, f := range out.Type.Fields {
+			if f.Name == "recordValidationAttestation" {
+				takes = true
+			}
 		}
 	}
-	return p.takes
+	p.at, p.takes = now, takes
+	return takes, nil
 }

@@ -107,17 +107,22 @@ item 3).* An upload lands in one of three outcomes, in `uploadAttestation`.
 Uploaded: the platform's considered answer, logged and done. Absent:
 `IsUnsupported` — checked first, since such an error is also a
 refusal — is the once-per-run "takes no attestations yet" alone, never a
-note on the item. Refused: a platform that has the mutation and refuses
-it (`IsRefusal`), in its own words — "<sha> is not the head of <branch>
-(GitHub has <sha>)", a tree mismatch, the item held by no node, the App
-not installed — is a note on the item, `validation attestation refused
-by the platform: <words>`, verbatim, and the same words logged; never
-unsupported. A 429 or 5xx answer retries with backoff, honouring a
-`Retry-After` header (`retryOnTransient`, `AttestationBackoff`); spent,
-it is wrapped `after N retries: <last answer>` and lands as any other
-failure would — `validation attestation: upload failed: <error>`, a
-note on the item, never the item's own failure. Either way a copy stays
-at `<workdir>.attestation.json`.
+note on the item; this is reserved for an *observed* absence, the probe
+answering with no `recordValidationAttestation` field — a probe that
+cannot be answered at all (the introspection query itself fails, a
+transport error or a 5xx) is not cached and reaches `uploadAttestation`
+as its own error, never read as the mutation being missing. Refused: a
+platform that has the mutation and refuses it (`IsRefusal`), in its own
+words — "<sha> is not the head of <branch> (GitHub has <sha>)", a tree
+mismatch, the item held by no node, the App not installed — is a note
+on the item, `validation attestation refused by the platform: <words>`,
+verbatim, and the same words logged; never unsupported. A 429 or 5xx
+answer retries with backoff, honouring a `Retry-After` header
+(`retryOnTransient`, `AttestationBackoff`); spent, it is wrapped `after
+N retries: <last answer>` and lands as any other failure would —
+`validation attestation: upload failed: <error>`, a note on the item,
+never the item's own failure. In every case — uploaded, absent, refused
+or failed — a copy stays at `<workdir>.attestation.json`.
 
 **A failing step** stops the run (the first failure) and gets the
 builder **one** more turn, with `harness.ValidationRetryPrompt`: the

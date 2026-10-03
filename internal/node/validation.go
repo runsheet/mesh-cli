@@ -326,9 +326,10 @@ func (v *buildValidation) usage() []gateway.ValidationMinutes {
 // platform that has the mutation and refuses the upload (IsRefusal) is
 // a note on the item quoting its words verbatim. A spent retry (the
 // mutation existed but every attempt failed transiently) or any other
-// failure is a note on the item too, never the item's own failure.
-// Either way a copy stays at <workdir>.attestation.json, which the
-// session directory's removal leaves.
+// failure is a note on the item too, never the item's own failure. In
+// every case — uploaded, refused, unsupported or failed — a copy stays
+// at <workdir>.attestation.json, which the session directory's removal
+// leaves.
 func (r *Runner) uploadAttestation(ctx context.Context, b *buildRun, att validate.Attestation) {
 	r.validator().upload(ctx, b.target(), att)
 }
@@ -344,15 +345,14 @@ func (vr validator) upload(ctx context.Context, t validationTarget, att validate
 	switch {
 	case err == nil:
 		vr.logf("%s: validation attestation for %s uploaded", t.prefix, short(att.Commit))
-		return
 	case gateway.IsUnsupported(err):
 		once(vr.Notices.attestation(), func() {
 			vr.logf("validation: the platform takes no attestations yet; each is kept beside its checkout as %s (said once, for every item this run)", AttestationFile)
 		})
 	case gateway.IsRefusal(err):
 		note := "validation attestation refused by the platform: " + err.Error()
-		r.logf("item %s: validation attestation refused: %s", b.label, err.Error())
-		b.report(ctx, note)
+		vr.logf("%s: validation attestation refused: %s", t.prefix, err.Error())
+		t.report(ctx, note)
 	default:
 		note := "validation attestation: upload failed: " + t.redact(err).Error()
 		vr.logf("%s: %s", t.prefix, note)
