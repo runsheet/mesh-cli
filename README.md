@@ -11,28 +11,55 @@ whose console token it holds. No gRPC, no relay, no shared secret.
 
 `mesh mcp` is Mesh inside Claude Code: a stdio MCP server on your own
 login (the credential in `~/.mesh/token` — `mesh node login`'s Latchkey
-credential or an `rs_*` token). Add it once:
+credential or an `rs_*` token). Add it once, then install the `/mesh`
+skill:
 
 ```bash
 claude mcp add mesh -- mesh mcp
+mesh mcp install
 ```
 
-and Claude Code has these tools (docs/adr/adr-023-mesh-mcp-claude-code-is-a-personal-node.md):
+`mesh mcp install` writes `skills/mesh/SKILL.md` to
+`$CLAUDE_CONFIG_DIR/skills/mesh/SKILL.md`, or `~/.claude/skills/mesh/SKILL.md`
+when that is unset, so Claude Code answers `/mesh`. It refuses to
+overwrite a file that differs from the one mesh-cli ships unless you
+pass `--force`.
 
-| tool | what it does |
-| --- | --- |
-| `mesh_goals` | the live goals of the orgs you reach and their open items |
-| `mesh_status` | the items this server holds |
-| `mesh_join` | claim an item and prepare its checkout on its branch — not yet available |
-| `mesh_switch` | push, note and release the item you hold, then join another — not yet available |
-| `mesh_progress` | a progress note on the item you hold — not yet available |
-| `mesh_ask` | a question to the goal's people — not yet available |
-| `mesh_finish` | the branch is pushed: end the item — not yet available |
-| `mesh_release` | give the item back unfinished — not yet available |
+With both in place Claude Code has `mesh_goals`, `mesh_join`,
+`mesh_switch`, `mesh_status`, `mesh_progress`, `mesh_ask`,
+`mesh_finish` and `mesh_release`
+(docs/adr/adr-023-mesh-mcp-claude-code-is-a-personal-node.md), and the
+`/mesh` skill is the five everyday forms:
 
-The tools marked not yet available answer so until the rest of goal
-`mesh-mcp-joins-an-item-from-claude-code` lands; this section is
-completed with the walk-through then.
+- **`/mesh goals`** — `mesh_goals`: the live goals of the orgs you
+  reach and their open items.
+  > `/mesh goals` → `runsheet/widgets-goal (running): 3 ready, 1 review`
+- **`/mesh join <goal> [seq] [--pair]`** — `mesh_join`: claims the item
+  (or the goal's next ready one) and prepares its checkout. The
+  checkout lands at `~/.mesh/work/<goal>/<seq>`, or the current
+  directory when it is already that item's repo; `cd` there, read the
+  brief and acceptance it answers, and work on the branch it checked
+  out. `--pair` joins the branch another holder is already working on
+  (`pair: true`) with no claim of your own.
+  > `/mesh join widgets-goal 3` → `cd ~/.mesh/work/widgets-goal/3; on mesh/widgets-goal-3`
+- **`/mesh switch <goal> [seq]`** — `mesh_switch`: pushes the held
+  item's commits, notes why, releases it, and joins the target —
+  answering like a join.
+  > `/mesh switch other-goal` → `left widgets-goal/3: switching to other-goal; cd ~/.mesh/work/other-goal/1`
+- **`/mesh status`** — `mesh_status`: each held item's goal, seq, path
+  and branch, and the checkout's uncommitted changes and commits past
+  base.
+  > `/mesh status` → `widgets-goal/3 at ~/.mesh/work/widgets-goal/3 (mesh/widgets-goal-3), uncommitted`
+- **`/mesh finish`** — commit first, then `mesh_finish`: pushes the
+  branch and ends the item (or, with `outcome: already_done`, the
+  evidence and no push). A reply that starts `push refused:` — the
+  branch moved under you, usually a pair's holder pushing first — is
+  relayed to you verbatim; `git pull --rebase` and finish again.
+  > `/mesh finish` → `finished widgets-goal/3: pushed mesh/widgets-goal-3 at a1b2c3d`
+
+`mesh node status` names the personal node these tools claim through
+(`ADR-015`'s owner form, kind `personal`, capacity 1) once it is
+registered.
 
 ## Installation
 

@@ -205,6 +205,41 @@ and with `HostedWorkTools` the five, each applied as its mutation is
 (`mesh_claim` → `claimWorkItem`, `mesh_ask` → a `question: ` progress
 note) and recorded under its own name, never the mutation's.
 
+## Skill
+
+Amended 2026-10-03 (item 7). `skills/mesh/SKILL.md` ships with
+mesh-cli: a Claude Code skill (frontmatter `name: mesh`, one-line
+`description`) covering the five everyday forms —
+`/mesh goals`, `/mesh join <goal> [seq] [--pair]`,
+`/mesh switch <goal> [seq]`, `/mesh status` and `/mesh finish` — each
+naming the `mesh_*` tool it calls, with what to tell the person: a
+join or switch answers `path`, `brief`, `acceptance` and `context`, so
+`cd` to `path`, read the brief and acceptance, and work on the branch
+it checked out; a finish is committed first, then `mesh_finish`, and a
+`push refused:` answer (Pairing, above) is relayed to the person
+verbatim.
+
+It is embedded, not read from disk at runtime: `skills/mesh/embed.go`
+(package `meshskill`, colocated with the file, as `images/node`'s
+`embed.go` carries the node image's Containerfile) holds
+`//go:embed SKILL.md`, and `internal/meshmcp/skill.go`'s `Skill()
+[]byte` returns it — `go:embed` cannot name a file outside its own
+package's directory, so the embed lives beside the file it embeds
+rather than beside its caller.
+
+`mesh mcp install` (`internal/commands/mcpcmd.go`) writes `Skill()` to
+`$CLAUDE_CONFIG_DIR/skills/mesh/SKILL.md` when that is set, else
+`~/.claude/skills/mesh/SKILL.md`, making the directories, mode 0644; a
+file already there that differs from `Skill()` is left alone unless
+`--force`, and then overwritten. It prints the path written and the
+`claude mcp add mesh -- mesh mcp` line, so installing the tool and the
+skill is one two-line routine.
+
+README's "Work a goal from Claude Code" section (the first `## ` after
+the title, from item 1) walks both lines, the checkout location, the
+personal node, pairing and the `push refused` message with one example
+transcript line per `/mesh` form.
+
 ## Consequences
 
 - Channel mode is unchanged on the wire: its server still advertises

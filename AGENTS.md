@@ -149,6 +149,12 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   the item still held — ADR-023 Pairing; the hosted work tools when
   `/mcp` serves them, `hosted.go`, ADR-023 Hosted path), served by
   `internal/commands/mcpcmd.go` on `platformClient` (ADR-023, mesh mcp).
+  `skills/mesh/SKILL.md` is the `/mesh` skill Claude Code runs against
+  these tools, embedded (`internal/meshmcp/skill.go`'s `Skill()`, by way
+  of `skills/mesh/embed.go` colocated with the file) and written by
+  `mesh mcp install` to `$CLAUDE_CONFIG_DIR/skills/mesh/SKILL.md`, else
+  `~/.claude/skills/mesh/SKILL.md`, refusing to overwrite a file that
+  differs unless `--force` (ADR-023, Skill).
   **A draining node claims nothing** (`Loop.Drain`): see the drain
   below. node.yaml's `claim: {unmerged_per_repo: N}` (`ClaimConfig`,
   re-read each tick, `Loop.UnmergedPerRepo`; absent or 0 is no limit
