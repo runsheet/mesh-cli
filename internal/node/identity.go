@@ -65,16 +65,21 @@ type Identity struct {
 // identityFor is the identity of a role's session on item: the agent of
 // the node's slug, and the item's pairers.
 func identityFor(cfg *Config, role string, item gateway.WorkItem, goal *gateway.Goal) Identity {
-	var slug string
 	var pair []Pairer
 	if cfg != nil {
-		slug, pair = cfg.Slug, cfg.Pair
+		pair = cfg.Pair
 	}
-	if slug == "" {
-		slug = "node"
-	}
-	name, email := AgentIdentity(role, slug)
+	name, email := AgentIdentity(role, agentSlug(cfg))
 	return Identity{Name: name, Email: email, Pairers: Pairers(item, goal, pair)}
+}
+
+// agentSlug is the node slug a session's agent is named for: node.yaml's
+// slug, else "node".
+func agentSlug(cfg *Config) string {
+	if cfg == nil || cfg.Slug == "" {
+		return "node"
+	}
+	return cfg.Slug
 }
 
 // Env is the identity as GIT_AUTHOR_*/GIT_COMMITTER_*: a session that
