@@ -99,10 +99,30 @@ Whether the platform has the mutation is an introspection probe,
 `{ __type(name: "Mutation") { fields { name args { name } } } }`, asked
 once and kept for `ScalingProbeEvery` (`takesAttestations`): only a
 Mutation without the field is `Unsupported` — the once-per-run "takes
-no attestations yet" — and nothing is sent. A platform with it that
-refuses ("<sha> is not the head of <branch> (GitHub has <sha>)") is a
-refusal in its own words, a progress note on the item, never
-unsupported. There is no REST path: none exists on the platform.
+no attestations yet" — and nothing is sent. There is no REST path: none
+exists on the platform.
+
+*Amended 2026-10-03 (goal the-nodes-attestation-reaches-the-platform,
+item 3).* An upload lands in one of three outcomes, in `uploadAttestation`.
+Uploaded: the platform's considered answer, logged and done. Absent:
+`IsUnsupported` — checked first, since such an error is also a
+refusal — is the once-per-run "takes no attestations yet" alone, never a
+note on the item; this is reserved for an *observed* absence, the probe
+answering with no `recordValidationAttestation` field — a probe that
+cannot be answered at all (the introspection query itself fails, a
+transport error or a 5xx) is not cached and reaches `uploadAttestation`
+as its own error, never read as the mutation being missing. Refused: a
+platform that has the mutation and refuses it (`IsRefusal`), in its own
+words — "<sha> is not the head of <branch> (GitHub has <sha>)", a tree
+mismatch, the item held by no node, the App not installed — is a note
+on the item, `validation attestation refused by the platform: <words>`,
+verbatim, and the same words logged; never unsupported. A 429 or 5xx
+answer retries with backoff, honouring a `Retry-After` header
+(`retryOnTransient`, `AttestationBackoff`); spent, it is wrapped `after
+N retries: <last answer>` and lands as any other failure would —
+`validation attestation: upload failed: <error>`, a note on the item,
+never the item's own failure. In every case — uploaded, absent, refused
+or failed — a copy stays at `<workdir>.attestation.json`.
 
 **A failing step** stops the run (the first failure) and gets the
 builder **one** more turn, with `harness.ValidationRetryPrompt`: the
@@ -131,6 +151,34 @@ added to the build's report and cost.
 **Time.** The validation counts against the job's timeout when it has
 one (a deadline at the session's start plus it); a step's own timeout
 is validate.yml's.
+
+**After a rebase** (2026-10-03, goal
+`the-nodes-attestation-reaches-the-platform`, item 5). A rebase
+session (runsheet ADR 008) pushes a new head, and runsheet ADR 032
+carries no attestation forward to it: *The honesty check*, rule 1 of
+its item 32 amendment, says "a head the pull request had before a
+rebase never reached main", and decision 1 signs only "the item's
+branch head as GitHub reports it" — so the build's attestation names a
+head the pull request no longer has, and the pull request's `verify
+attestation` would answer `missing`. ADR 032 names no platform-side
+carry-forward for an unchanged tree; the node's half is to attest the
+rebased head. In `Rebaser.afterRebase`, once the push is read back
+(`PushedHead`) and before `FinishWorkItemRebase`, `validateRebased`
+runs the checkout's `.runsheet/validate.yml` exactly as a build's —
+the steps the branch's diff against its base selects plus the always
+ones, on that head (checked out detached if the checkout is anywhere
+else), in the session's pod or on the host, by the same
+`validator.start`/`run`/`upload` a build uses — writes the attestation
+beside the rebase's workdir and uploads it on the node's own token.
+Nothing in it fails the rebase, whose job is the head: a failing step
+is logged `rebase <label>: validation step <name> exited <code>`, noted
+on the item, and its run still uploaded for the platform to refuse or
+record; a refused upload is a note on the item and a platform without
+the mutation the once-per-run notice (shared with the Runner,
+`ValidationNotices`); a validation that cannot run at all is a note
+and no attestation. There is no retry turn and no `validation` usage
+on the rebase's report. A repository with no validate.yml logs `no
+validation declared` once and finishes as before.
 
 ## Consequences
 

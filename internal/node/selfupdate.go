@@ -30,15 +30,18 @@ type Updater interface {
 	// Fetch downloads version's binary for this OS/arch and verifies it;
 	// an error is a refusal whose selfupdate.Reason the heartbeat carries.
 	Fetch(ctx context.Context, version string) ([]byte, error)
-	// Begin records the update from → to, just before the swap.
-	Begin(from, to string) error
+	// Begin records the update from → to, just before the swap, with the
+	// names of the orgs served then.
+	Begin(from, to string, served []string) error
 	// Swap puts bin in place of the running executable, keeping it as .prev.
 	Swap(bin []byte) error
 	// Refuse records an update that did not happen and why.
 	Refuse(from, to, reason string) error
-	// Confirm records that this binary is up and heartbeating, ending a
-	// pending update; it reports whether one was pending.
-	Confirm() (bool, error)
+	// Confirm records that this binary is up and heartbeating, serving
+	// the orgs named, ending a pending update; it reports whether one was
+	// pending. Serving fewer orgs than Begin recorded is a
+	// *selfupdate.FewerOrgsError and confirms nothing.
+	Confirm(served []string) (bool, error)
 	// NoteConfirmError records the last error a heartbeat hit while a
 	// pending update is unconfirmed, for a rollback to name.
 	NoteConfirmError(reason string) error
@@ -107,11 +110,19 @@ func (l *Loop) confirmDeadline() time.Time {
 // update is unconfirmed: logged with its error and how long the window
 // has left, and recorded for a rollback to name.
 func (l *Loop) confirmFailed(login string, err error) {
+	l.notConfirmed("heartbeat "+login+": ", err)
+}
+
+// notConfirmed is a confirm that did not happen — a heartbeat that did
+// not go through, or one that did serving fewer orgs than before the
+// update: logged with its error after prefix and how long the window has
+// left, and recorded for a rollback to name.
+func (l *Loop) notConfirmed(prefix string, err error) {
 	left := l.confirmDeadline().Sub(l.now()).Round(time.Second)
 	if left < 0 {
 		left = 0
 	}
-	l.logf("self-update: confirming %s: heartbeat %s: %s; retrying for %s more", l.Confirming, login, PlatformSlow(err), left)
+	l.logf("self-update: confirming %s: %s%s; retrying for %s more", l.Confirming, prefix, PlatformSlow(err), left)
 	l.mu.Lock()
 	l.confirmErr = err
 	l.mu.Unlock()
@@ -173,16 +184,32 @@ func (l *Loop) UpdateError() string {
 }
 
 // confirmUpdate is called after a heartbeat went through: the first one
-// of the process confirms a pending update.
+// of the process serving no fewer orgs than were served at the swap
+// confirms a pending update. One serving fewer — above all none — is a
+// confirm that failed: logged and recorded like a heartbeat that did not
+// go through, the reason on the next heartbeat's updateError, and tried
+// again on the next heartbeat until the window elapses (adr-002's
+// amendment 2026-10-03, an update that serves fewer orgs is not
+// confirmed).
 func (l *Loop) confirmUpdate() {
 	l.mu.Lock()
 	done := l.Update == nil || l.confirmed
-	l.confirmed = true
 	l.mu.Unlock()
 	if done {
 		return
 	}
-	confirmed, err := l.Update.Confirm()
+	confirmed, err := l.Update.Confirm(l.CurrentScopes().Names())
+	var fewer *selfupdate.FewerOrgsError
+	if errors.As(err, &fewer) {
+		l.notConfirmed("", err)
+		l.mu.Lock()
+		l.updateErr = err.Error()
+		l.mu.Unlock()
+		return
+	}
+	l.mu.Lock()
+	l.confirmed = true
+	l.mu.Unlock()
 	switch {
 	case err != nil:
 		l.logf("self-update: confirm %s: %v", l.Version, err)
@@ -218,10 +245,14 @@ func (l *Loop) selfUpdate(ctx context.Context) {
 	if !ok {
 		return
 	}
+	confirming := l.confirmPending()
 	l.mu.Lock()
 	if desired == "" || desired == l.Version {
-		// nothing asked: an old failure is no longer news
-		l.updateErr = ""
+		// nothing asked: an old failure is no longer news — but a confirm
+		// that failed is, until it goes through
+		if !confirming {
+			l.updateErr = ""
+		}
 		l.mu.Unlock()
 		return
 	}
@@ -327,7 +358,7 @@ func (l *Loop) update(ctx context.Context, from, to string) {
 	} else {
 		l.logf("self-update: %s verified; no drain: swapping and restarting, sessions left running for the new binary to adopt", to)
 	}
-	err = l.Update.Begin(from, to)
+	err = l.Update.Begin(from, to, l.CurrentScopes().Names())
 	if err == nil {
 		err = l.Update.Swap(bin)
 	}
@@ -430,7 +461,9 @@ func (u *ReleaseUpdater) Fetch(ctx context.Context, version string) ([]byte, err
 	return rel.Binary, nil
 }
 
-func (u *ReleaseUpdater) Begin(from, to string) error { return u.State.BeginUpdate(from, to) }
+func (u *ReleaseUpdater) Begin(from, to string, served []string) error {
+	return u.State.BeginUpdate(from, to, served)
+}
 
 func (u *ReleaseUpdater) Swap(bin []byte) error { return selfupdate.Swap(u.Exe, bin) }
 
@@ -442,10 +475,13 @@ func (u *ReleaseUpdater) NoteConfirmError(reason string) error {
 	return u.State.NoteConfirmError(reason)
 }
 
-func (u *ReleaseUpdater) Confirm() (bool, error) {
+func (u *ReleaseUpdater) Confirm(served []string) (bool, error) {
 	s, err := u.State.Load()
 	if err != nil || !s.Pending() {
 		return false, err
+	}
+	if fewer := selfupdate.FewerOrgs(s.Served, served); fewer != nil {
+		return false, fewer
 	}
 	return true, u.State.Confirm()
 }

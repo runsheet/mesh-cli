@@ -268,7 +268,13 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   it (a sandboxed node drains before the swap: its pods end with it). A refusal resumes, heartbeats `updateError`
   and waits an hour on that version. `mesh node start` counts starts in
   `~/.mesh/update.json` (`CheckStart`): the third unconfirmed one rolls
-  back to `.prev`, reports it and exits 0; the first heartbeat confirms.
+  back to `.prev`, reports it and exits 0; the first heartbeat confirms
+  — unless it serves fewer orgs than `update.json`'s `served` (the
+  names `Begin` recorded at the swap): that is a failed confirm,
+  `*selfupdate.FewerOrgsError` (`serving fewer orgs than before the
+  update: before grapevine, after none`), logged and recorded like a
+  failed heartbeat and sent as `updateError` (adr-002's amendment
+  2026-10-03, an update that serves fewer orgs is not confirmed).
   The loop's `Update` is an interface; tests inject a fake.
   **`update.json`'s `State` carries why, not just that**: `startError`
   (`NoteStartFailure`) is why the last start of the pending update ended
@@ -699,7 +705,11 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   gets one retry turn (`harness.ValidationRetryPrompt`, the session
   resumed when it can be), then `FailWorkItem` with `validation failed:
   step <name> exited <code>`; per-step ms ride the usage report's
-  `validation`. No validate.yml finishes as before.
+  `validation`. No validate.yml finishes as before. A rebase re-attests
+  the head it pushed (`Rebaser.validateRebased`, after `PushedHead` and
+  before `FinishWorkItemRebase`; ADR 032 carries no attestation across a
+  rebase): the same steps and upload, a failing step logged and still
+  uploaded, never the rebase's failure (adr-014, After a rebase).
 - **Services** (`internal/sandbox/services.go`, mesh-specs ADR 007):
   `Resolve(repoDir, allowed)` reads what a repository declares, first
   found wins — `.mesh/services.yml`, else the `services:` of its

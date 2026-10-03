@@ -181,7 +181,7 @@ func (u *nodeUpdate) run(ctx context.Context, want string, verifyOnly bool) erro
 	if err != nil {
 		return fmt.Errorf("not updated: %w", err)
 	}
-	err = u.Updater.Begin(u.Running, want)
+	err = u.Updater.Begin(u.Running, want, nil)
 	if err == nil {
 		err = u.Updater.Swap(bin)
 	}

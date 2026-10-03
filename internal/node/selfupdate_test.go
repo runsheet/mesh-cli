@@ -63,7 +63,7 @@ func (u *fakeUpdater) Fetch(_ context.Context, version string) ([]byte, error) {
 	return []byte("mesh " + version), nil
 }
 
-func (u *fakeUpdater) Begin(from, to string) error {
+func (u *fakeUpdater) Begin(from, to string, served []string) error {
 	u.add("begin " + from + " " + to)
 	return nil
 }
@@ -95,7 +95,7 @@ func (u *fakeUpdater) ConfirmErrs() []string {
 	return append([]string(nil), u.confirmErrs...)
 }
 
-func (u *fakeUpdater) Confirm() (bool, error) {
+func (u *fakeUpdater) Confirm(served []string) (bool, error) {
 	u.add("confirm")
 	return u.pending, nil
 }
@@ -518,7 +518,7 @@ func updateState(t *testing.T) (*selfupdate.StateFile, string) {
 // and does not try that version again.
 func TestCheckStartRollsBackAfterTwoFailedStarts(t *testing.T) {
 	f, exe := updateState(t)
-	if err := f.BeginUpdate("v1.0.0", "v1.1.0"); err != nil {
+	if err := f.BeginUpdate("v1.0.0", "v1.1.0", nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := selfupdate.Swap(exe, []byte("v1.1.0")); err != nil {
@@ -568,7 +568,7 @@ func TestCheckStartRollsBackAfterTwoFailedStarts(t *testing.T) {
 // the state ends it and later starts count nothing.
 func TestFirstHeartbeatConfirmsTheUpdate(t *testing.T) {
 	f, exe := updateState(t)
-	if err := f.BeginUpdate("v1.0.0", "v1.1.0"); err != nil {
+	if err := f.BeginUpdate("v1.0.0", "v1.1.0", nil); err != nil {
 		t.Fatal(err)
 	}
 	if c, err := CheckStart(f, exe, selfupdate.DefaultConfirmWithin); err != nil || c.RolledBack {
@@ -806,7 +806,7 @@ func TestFailedHeartbeatWithNoPendingUpdate(t *testing.T) {
 // name.
 func TestReleaseUpdaterNotesConfirmError(t *testing.T) {
 	f, exe := updateState(t)
-	if err := f.BeginUpdate("v1.0.0", "v1.1.0"); err != nil {
+	if err := f.BeginUpdate("v1.0.0", "v1.1.0", nil); err != nil {
 		t.Fatal(err)
 	}
 	u := &ReleaseUpdater{State: f, Exe: exe}

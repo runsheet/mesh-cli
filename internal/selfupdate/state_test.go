@@ -44,7 +44,7 @@ func TestStateNoUpdate(t *testing.T) {
 
 func TestStateTwoFailedStartsRollBack(t *testing.T) {
 	f := newStateFile(t)
-	if err := f.BeginUpdate("v1.0.0", "v1.1.0"); err != nil {
+	if err := f.BeginUpdate("v1.0.0", "v1.1.0", nil); err != nil {
 		t.Fatal(err)
 	}
 	// First start of the new binary, which dies before confirming.
@@ -63,7 +63,7 @@ func TestStateTwoFailedStartsRollBack(t *testing.T) {
 
 func TestStateConfirmResets(t *testing.T) {
 	f := newStateFile(t)
-	if err := f.BeginUpdate("v1.0.0", "v1.1.0"); err != nil {
+	if err := f.BeginUpdate("v1.0.0", "v1.1.0", nil); err != nil {
 		t.Fatal(err)
 	}
 	start(t, f)
@@ -93,7 +93,7 @@ func TestStateRollbackRestoresPrev(t *testing.T) {
 	f := newStateFile(t)
 	exe := filepath.Join(t.TempDir(), "mesh")
 	writeExe(t, exe, "v1.0.0")
-	if err := f.BeginUpdate("v1.0.0", "v1.1.0"); err != nil {
+	if err := f.BeginUpdate("v1.0.0", "v1.1.0", nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := Swap(exe, []byte("v1.1.0")); err != nil {
@@ -130,7 +130,7 @@ func TestStateRollbackWithoutPrev(t *testing.T) {
 	f := newStateFile(t)
 	exe := filepath.Join(t.TempDir(), "mesh")
 	writeExe(t, exe, "v1.1.0")
-	if err := f.BeginUpdate("v1.0.0", "v1.1.0"); err != nil {
+	if err := f.BeginUpdate("v1.0.0", "v1.1.0", nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.Rollback(exe, "x", DefaultConfirmWithin); err == nil {
@@ -145,7 +145,7 @@ func TestStateStartFailureRollsBackWithReason(t *testing.T) {
 	f := newStateFile(t)
 	exe := filepath.Join(t.TempDir(), "mesh")
 	writeExe(t, exe, "72ff910")
-	if err := f.BeginUpdate("72ff910", "0a04088"); err != nil {
+	if err := f.BeginUpdate("72ff910", "0a04088", nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := Swap(exe, []byte("0a04088")); err != nil {
@@ -181,7 +181,7 @@ func TestStateConfirmErrorRollsBackWithReason(t *testing.T) {
 	f := newStateFile(t)
 	exe := filepath.Join(t.TempDir(), "mesh")
 	writeExe(t, exe, "72ff910")
-	if err := f.BeginUpdate("72ff910", "0a04088"); err != nil {
+	if err := f.BeginUpdate("72ff910", "0a04088", nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := Swap(exe, []byte("0a04088")); err != nil {
@@ -208,7 +208,7 @@ func TestStateConfirmErrorRollsBackWithReason(t *testing.T) {
 
 func TestStateConfirmClearsStartAndConfirmErrors(t *testing.T) {
 	f := newStateFile(t)
-	if err := f.BeginUpdate("v1.0.0", "v1.1.0"); err != nil {
+	if err := f.BeginUpdate("v1.0.0", "v1.1.0", nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.NoteStartFailure("exit status 1"); err != nil {
@@ -274,7 +274,7 @@ func rollBackOn(t *testing.T, reason string) (State, string) {
 	f := newStateFile(t)
 	exe := filepath.Join(t.TempDir(), "mesh")
 	writeExe(t, exe, "v0.2.247")
-	if err := f.BeginUpdate("v0.2.247", "v0.2.248"); err != nil {
+	if err := f.BeginUpdate("v0.2.247", "v0.2.248", nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := Swap(exe, []byte("v0.2.248")); err != nil {
@@ -317,7 +317,7 @@ func TestStateConfirmTimeoutRollsBackFinal(t *testing.T) {
 // BeginUpdate clear it.
 func TestStateRetryAfterAdoptIsKeptThenCleared(t *testing.T) {
 	f := newStateFile(t)
-	if err := f.BeginUpdate("v0.2.247", "v0.2.248"); err != nil {
+	if err := f.BeginUpdate("v0.2.247", "v0.2.248", nil); err != nil {
 		t.Fatal(err)
 	}
 	for _, r := range []string{grapevineRefusal, "heartbeat: context deadline exceeded"} {
@@ -346,5 +346,78 @@ func TestNamesID(t *testing.T) {
 		if got := NamesID(reason); got != want {
 			t.Errorf("NamesID(%q) = %v, want %v", reason, got, want)
 		}
+	}
+}
+
+// BeginUpdate records the orgs served at the swap in update.json's
+// served, and Confirm keeps it.
+func TestBeginUpdateRecordsServed(t *testing.T) {
+	f := newStateFile(t)
+	if err := f.BeginUpdate("v1.0.0", "v1.1.0", []string{"grapevine"}); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(f.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"served": [`) || !strings.Contains(string(b), `"grapevine"`) {
+		t.Fatalf("update.json:\n%s", b)
+	}
+	if err := f.Confirm(); err != nil {
+		t.Fatal(err)
+	}
+	if s, err := f.Load(); err != nil || len(s.Served) != 1 || s.Served[0] != "grapevine" {
+		t.Fatalf("after Confirm: %+v, %v", s, err)
+	}
+}
+
+// A confirm that served fewer orgs, rolled back, names them in lastError.
+func TestRollbackNamesFewerOrgs(t *testing.T) {
+	f := newStateFile(t)
+	exe := filepath.Join(t.TempDir(), "mesh")
+	writeExe(t, exe, "v1.0.0")
+	if err := f.BeginUpdate("v1.0.0", "v1.1.0", []string{"grapevine"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := Swap(exe, []byte("v1.1.0")); err != nil {
+		t.Fatal(err)
+	}
+	fewer := FewerOrgs([]string{"grapevine"}, nil)
+	if fewer == nil {
+		t.Fatal("grapevine → none is not fewer")
+	}
+	if err := f.NoteConfirmError(fewer.Error()); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Rollback(exe, "", 5*time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	s, err := f.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(s.LastError, "before grapevine, after none") || len(s.Served) != 1 {
+		t.Fatalf("after Rollback: %+v", s)
+	}
+}
+
+func TestFewerOrgs(t *testing.T) {
+	for _, c := range []struct {
+		before, after []string
+		fewer         bool
+	}{
+		{nil, nil, false},
+		{[]string{"grapevine"}, []string{"grapevine"}, false},
+		{[]string{"grapevine"}, []string{"grapevine", "acme"}, false},
+		{[]string{"grapevine"}, nil, true},
+		{[]string{"grapevine", "acme"}, []string{"acme"}, true},
+		{[]string{"grapevine"}, []string{"acme"}, true},
+	} {
+		if got := FewerOrgs(c.before, c.after) != nil; got != c.fewer {
+			t.Errorf("FewerOrgs(%q, %q) = %v", c.before, c.after, got)
+		}
+	}
+	if got := (&FewerOrgsError{Before: []string{"grapevine", "acme"}, After: []string{"acme"}}).Error(); got != "serving fewer orgs than before the update: before grapevine, acme, after acme" {
+		t.Errorf("Error() = %q", got)
 	}
 }

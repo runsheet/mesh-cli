@@ -19,7 +19,7 @@ const grapevineConfirmRefusal = "register (owner person): RegisterNode: node gra
 func rolledBackOn(t *testing.T, reason string) (rollback, after StartCheck) {
 	t.Helper()
 	f, exe := updateState(t)
-	if err := f.BeginUpdate("v1.0.0", "v1.1.0"); err != nil {
+	if err := f.BeginUpdate("v1.0.0", "v1.1.0", nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := selfupdate.Swap(exe, []byte("v1.1.0")); err != nil {

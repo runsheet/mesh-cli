@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"projectmesh.io/mesh-cli/internal/crash"
 	"strings"
 	"sync"
@@ -66,6 +67,12 @@ type Rebaser struct {
 	// services its checkout declares (as Runner.Sandbox): the acceptance
 	// is re-run on the rebased head.
 	Sandbox *sandbox.Sandbox
+	// Inspect runs `podman image inspect` for a sandboxed validation's
+	// image digest (nil: the real podman), as Runner.Inspect.
+	Inspect sandbox.Runner
+	// Notices say once per run that the platform takes no attestations,
+	// shared with the node's Runner.
+	Notices *ValidationNotices
 	Log     *log.Logger
 }
 
@@ -193,6 +200,7 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 	job.Meta = harness.SessionMeta{NodeID: sc.NodeID, ItemID: item.ID, GoalID: item.GoalID, Attempt: item.Attempts, TempDirs: sessionTempDirs(job, acct)}
 
 	rb.cred, rb.dir, rb.branch, rb.base = cred, dir, branch, spec.BaseRef
+	rb.job, rb.pod = &job, pod
 	r.logf("item %s: rebase on %s: %s onto %s", label, modelName(model), branch, spec.BaseRef)
 	rb.report(ctx, "rebase session started: "+branch+" onto "+spec.BaseRef+" on "+modelName(model))
 	if note := pod.MissingNote(); note != "" {
@@ -220,9 +228,21 @@ type rebaseRun struct {
 	dir          string
 	branch, base string
 	cost         costReporter
+	// job and pod are the session's, for the rebased head's validation:
+	// nil for an adopted session (its pod ended with the node before it)
+	job *harness.Job
+	pod *SessionPod
 
 	mu        sync.Mutex
 	sessionID string
+}
+
+// podSession is the session's sandbox (nil: none, or adopted).
+func (rb *rebaseRun) podSession() *sandbox.Session {
+	if rb.pod == nil {
+		return nil
+	}
+	return rb.pod.Session
 }
 
 func (rb *rebaseRun) sid() string {
@@ -343,6 +363,9 @@ func (r *Rebaser) afterRebase(ctx context.Context, rb *rebaseRun, acct *SessionA
 		return fail(fmt.Errorf("the rebase session said it pushed %s, but origin/%s is at %s: the push did not land", short(out.Head), branch, short(head)))
 	}
 	rb.report(ctx, fmt.Sprintf("rebased %s onto %s at %s", branch, rb.base, short(head)))
+	// the rebased head is a commit no attestation names: the platform
+	// carries none forward (runsheet ADR 032, The honesty check, rule 1)
+	r.validateRebased(ctx, rb, acct, head)
 	if err := acct.Carried(r.GW.FinishWorkItemRebase(ctx, rb.item.ID, head, out.Files, acct.Report(result))); err != nil {
 		// a finish the platform did not take still ends the claim
 		return fail(fmt.Errorf("the rebase landed at %s, but finishing it failed: %w", short(head), err))
@@ -400,4 +423,69 @@ func (r *Rebaser) contextBudget() ContextConfig {
 		return ContextConfig{}.Effective()
 	}
 	return r.Cfg.Context.Effective()
+}
+
+func (r *Rebaser) validator() validator {
+	return validator{GW: r.GW, WS: r.WS, Scopes: r.Scopes, Sandbox: r.Sandbox, Inspect: r.Inspect, Notices: r.Notices, logf: r.logf}
+}
+
+// validateRebased runs the checkout's declared validation on the head
+// the rebase pushed — the steps the branch's diff against its base
+// selects plus the always ones, on the host or in the session's pod as a
+// build's — and uploads that head's attestation on the node's own token
+// (docs/adr/adr-014, After a rebase). Nothing here fails the rebase: its
+// job is the head. A failing step is logged and its run still uploaded,
+// for the platform to refuse or record; an upload refused or not taken
+// is a note or the once-per-run notice, as a build's. A repository with
+// no validate.yml says so and finishes as before.
+func (r *Rebaser) validateRebased(ctx context.Context, rb *rebaseRun, acct *SessionAccount, head string) {
+	vr := r.validator()
+	t := validationTarget{item: rb.item, dir: rb.dir, base: rb.base, prefix: "rebase " + rb.label, label: rb.label + " rebase",
+		job: rb.job, pod: rb.podSession(), session: rb.sid, redact: acct.RedactErr, report: rb.report}
+	note := func(err error) {
+		msg := "validation: " + acct.RedactErr(err).Error() + "; no attestation for " + short(head)
+		r.logf("%s: %s", t.prefix, msg)
+		rb.report(ctx, msg)
+	}
+	v, err := vr.start(ctx, t)
+	if err != nil {
+		note(err)
+		return
+	}
+	if v == nil {
+		return
+	}
+	defer v.close()
+	if err := checkoutHead(ctx, rb.dir, head); err != nil {
+		note(err)
+		return
+	}
+	att, err := vr.run(ctx, t, v)
+	if err != nil {
+		note(err)
+		return
+	}
+	if failed, ok := failedStep(att); ok {
+		rb.report(ctx, fmt.Sprintf("validation step %s exited %d on %s; the run is uploaded for the platform to judge", failed.Name, failed.ExitCode, short(head)))
+	}
+	vr.upload(ctx, t, att)
+}
+
+// checkoutHead leaves the checkout at head: the rebase session pushed
+// from it, so HEAD is the pushed head already, and anything else is
+// checked out detached — the validation runs on what origin has.
+func checkoutHead(ctx context.Context, dir, head string) error {
+	at, err := gitHead(ctx, dir)
+	if err != nil {
+		return err
+	}
+	if at == head {
+		return nil
+	}
+	cmd := exec.CommandContext(ctx, "git", "checkout", "--quiet", "--detach", head)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("checkout %s: %v: %s", short(head), err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }

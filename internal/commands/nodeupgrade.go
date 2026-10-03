@@ -193,7 +193,7 @@ func (u *nodeUpgrade) run(ctx context.Context, want, binary string, force bool) 
 			fmt.Fprintf(u.Out, "Node image: %s\n", img.Summary())
 		}
 	}
-	err := u.Updater.Begin(u.Running, want)
+	err := u.Updater.Begin(u.Running, want, nil)
 	if err == nil {
 		err = u.Updater.Swap(bin)
 	}
