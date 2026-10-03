@@ -14,17 +14,21 @@ import (
 
 // StepResult is one step of validate.yml as it ran.
 type StepResult struct {
-	Name        string     `json:"name"`
-	Command     string     `json:"command"`
-	SuiteHash   string     `json:"suiteHash"`
-	ExitCode    int        `json:"exitCode"`
-	DurationMs  int64      `json:"durationMs"`
-	TestsRun    int        `json:"testsRun,omitempty"`
-	TestsPassed int        `json:"testsPassed,omitempty"`
-	TestsFailed int        `json:"testsFailed,omitempty"`
-	Output      string     `json:"output,omitempty"`
-	TimedOut    bool       `json:"timedOut,omitempty"`
-	Artifacts   []Artifact `json:"artifacts,omitempty"`
+	Name        string `json:"name"`
+	Command     string `json:"command"`
+	SuiteHash   string `json:"suiteHash"`
+	ExitCode    int    `json:"exitCode"`
+	DurationMs  int64  `json:"durationMs"`
+	TestsRun    int    `json:"testsRun,omitempty"`
+	TestsPassed int    `json:"testsPassed,omitempty"`
+	TestsFailed int    `json:"testsFailed,omitempty"`
+	Output      string `json:"output,omitempty"`
+	// Report is the raw test report the step's results named (its
+	// results file, or stdout), up to reportCap — the attestation's
+	// reports, which the platform stores with the signature.
+	Report    string     `json:"report,omitempty"`
+	TimedOut  bool       `json:"timedOut,omitempty"`
+	Artifacts []Artifact `json:"artifacts,omitempty"`
 }
 
 // Artifact is one digested file a step named on Step.Artifacts.

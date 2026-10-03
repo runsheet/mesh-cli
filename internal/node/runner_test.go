@@ -687,14 +687,14 @@ func withValidation() map[string]string {
 	return map[string]string{".runsheet/validate.yml": validateYML}
 }
 
-// attestationSteps are the step names of an uploaded attestation.
+// attestationSteps are the suites of an uploaded attestation's commands.
 func attestationSteps(t *testing.T, call gatewaytest.Call) []string {
 	t.Helper()
-	a, _ := call.Input["attestation"].(map[string]any)
-	steps, _ := a["steps"].([]any)
+	a, _ := call.Input["input"].(map[string]any)
+	commands, _ := a["commands"].([]any)
 	var names []string
-	for _, s := range steps {
-		names = append(names, s.(map[string]any)["step"].(string))
+	for _, c := range commands {
+		names = append(names, c.(map[string]any)["suite"].(string))
 	}
 	return names
 }
@@ -748,38 +748,46 @@ func TestBuildUploadsTheAttestationOnTheNodesToken(t *testing.T) {
 	if pushedAt.IsZero() || call.At.Before(pushedAt) {
 		t.Fatalf("uploaded at %v, pushed at %v: the upload must follow the push", call.At, pushedAt)
 	}
-	a, _ := call.Input["attestation"].(map[string]any)
+	a, _ := call.Input["input"].(map[string]any)
 	if a["commit"] != sha {
 		t.Fatalf("commit = %v, pushed %s", a["commit"], sha)
 	}
-	if tree, _ := a["tree"].(string); len(tree) != 40 || tree == sha {
-		t.Fatalf("tree = %v", a["tree"])
+	if call.Input["workItemId"] != item1 {
+		t.Fatalf("workItemId = %v, want %s", call.Input["workItemId"], item1)
+	}
+	if tree, _ := a["treeHash"].(string); len(tree) != 40 || tree == sha {
+		t.Fatalf("treeHash = %v", a["treeHash"])
 	}
 	host, _ := os.Hostname()
-	if a["runnerImage"] != "host:"+host || a["sandboxed"] != false {
-		t.Fatalf("runner = %v sandboxed %v", a["runnerImage"], a["sandboxed"])
+	if a["runnerImage"] != "host:"+host {
+		t.Fatalf("runnerImage = %v", a["runnerImage"])
 	}
-	if a["nodeId"] != r.Cfg.NodeID || a["sessionId"] != "s-1" || a["itemId"] != item1 {
+	if hash, _ := a["suiteHash"].(string); a["sessionId"] != "s-1" || len(hash) != 64 {
 		t.Fatalf("attestation = %v", a)
+	}
+	for _, gone := range []string{"nodeId", "itemId", "tree", "sandboxed", "steps"} {
+		if _, ok := a[gone]; ok {
+			t.Fatalf("attestation carries %q: %v", gone, a)
+		}
 	}
 	if at, _ := a["at"].(string); at == "" {
 		t.Fatalf("at = %v", a["at"])
 	} else if _, err := time.Parse(time.RFC3339Nano, at); err != nil {
 		t.Fatalf("at = %v: %v", at, err)
 	}
-	steps, _ := a["steps"].([]any)
-	if len(steps) != 2 {
-		t.Fatalf("steps = %v", steps)
+	commands, _ := a["commands"].([]any)
+	if len(commands) != 2 {
+		t.Fatalf("commands = %v", commands)
 	}
-	for _, s := range steps {
-		row := s.(map[string]any)
-		for _, k := range []string{"step", "command", "suiteHash", "exitCode", "ms"} {
+	for _, c := range commands {
+		row := c.(map[string]any)
+		for _, k := range []string{"suite", "command", "exitCode", "durationMs"} {
 			if _, ok := row[k]; !ok {
-				t.Fatalf("step %v lacks %s", row, k)
+				t.Fatalf("command %v lacks %s", row, k)
 			}
 		}
-		if row["exitCode"] != float64(0) || row["suiteHash"] == "" || row["command"] == "" {
-			t.Fatalf("step = %v", row)
+		if row["exitCode"] != float64(0) || row["command"] == "" {
+			t.Fatalf("command = %v", row)
 		}
 	}
 }
@@ -797,13 +805,13 @@ func TestUnsandboxedRunSaysHostInRunnerImage(t *testing.T) {
 	if len(atts) != 1 {
 		t.Fatalf("attestations = %d", len(atts))
 	}
-	a, _ := atts[0].Input["attestation"].(map[string]any)
+	a, _ := atts[0].Input["input"].(map[string]any)
 	host, err := os.Hostname()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a["runnerImage"] != "host:"+host || a["sandboxed"] != false {
-		t.Fatalf("runnerImage = %v, sandboxed = %v", a["runnerImage"], a["sandboxed"])
+	if a["runnerImage"] != "host:"+host {
+		t.Fatalf("runnerImage = %v", a["runnerImage"])
 	}
 }
 
@@ -850,10 +858,10 @@ func TestFailingStepGivesOneRetryTurnThenFailsNamingTheStep(t *testing.T) {
 	if len(atts) != 1 {
 		t.Fatalf("attestations = %d, want the failed run's", len(atts))
 	}
-	a, _ := atts[0].Input["attestation"].(map[string]any)
-	steps, _ := a["steps"].([]any)
-	if last := steps[len(steps)-1].(map[string]any); last["step"] != "api" || last["exitCode"] != float64(1) {
-		t.Fatalf("steps = %v", steps)
+	a, _ := atts[0].Input["input"].(map[string]any)
+	commands, _ := a["commands"].([]any)
+	if last := commands[len(commands)-1].(map[string]any); last["suite"] != "api" || last["exitCode"] != float64(1) {
+		t.Fatalf("commands = %v", commands)
 	}
 	var noted bool
 	for _, c := range f.CallsNamed("reportWorkItemProgress") {
@@ -907,13 +915,13 @@ func TestFailingStepFixedOnTheRetryFinishes(t *testing.T) {
 	if len(atts) != 1 {
 		t.Fatalf("attestations = %d", len(atts))
 	}
-	a, _ := atts[0].Input["attestation"].(map[string]any)
+	a, _ := atts[0].Input["input"].(map[string]any)
 	if a["commit"] != finish[0].Input["headSha"] {
 		t.Fatalf("attested %v, finished %v", a["commit"], finish[0].Input["headSha"])
 	}
-	for _, s := range a["steps"].([]any) {
-		if s.(map[string]any)["exitCode"] != float64(0) {
-			t.Fatalf("steps = %v", a["steps"])
+	for _, c := range a["commands"].([]any) {
+		if c.(map[string]any)["exitCode"] != float64(0) {
+			t.Fatalf("commands = %v", a["commands"])
 		}
 	}
 }
@@ -1025,9 +1033,9 @@ func TestSandboxedRunRunsEachStepInThePod(t *testing.T) {
 	if len(atts) != 1 {
 		t.Fatalf("attestations = %d", len(atts))
 	}
-	a, _ := atts[0].Input["attestation"].(map[string]any)
-	if a["runnerImage"] != "sha256:feedface" || a["sandboxed"] != true {
-		t.Fatalf("runnerImage = %v, sandboxed = %v", a["runnerImage"], a["sandboxed"])
+	a, _ := atts[0].Input["input"].(map[string]any)
+	if a["runnerImage"] != "sha256:feedface" {
+		t.Fatalf("runnerImage = %v", a["runnerImage"])
 	}
 }
 

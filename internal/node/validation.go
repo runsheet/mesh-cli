@@ -263,8 +263,9 @@ func (v *buildValidation) usage() []gateway.ValidationMinutes {
 // or an rs_* console token and refuses a GitHub one, and it is the node
 // holding the item it checks (runsheet gateway/attestation.go,
 // attestingNode); the item's ghs_* token is for git and GitHub alone. A
-// platform without the endpoint is said once per run; any other failure
-// is a note on the item, never its failure. Either keeps a copy at <workdir>.attestation.json, which the
+// platform whose Mutation has no recordValidationAttestation is said once
+// per run; a refusal — the platform's own words — or any other failure is
+// a note on the item, never its failure. Either keeps a copy at <workdir>.attestation.json, which the
 // session directory's removal leaves.
 func (r *Runner) uploadAttestation(ctx context.Context, b *buildRun, att validate.Attestation) {
 	rec := r.attester()
@@ -272,7 +273,7 @@ func (r *Runner) uploadAttestation(ctx context.Context, b *buildRun, att validat
 	if rec == nil {
 		err = &gateway.Error{Message: "the node's gateway takes no attestations", Unsupported: true}
 	} else {
-		err = rec.RecordValidationAttestation(ctx, b.item.ID, gatewayAttestation(att))
+		_, err = rec.RecordValidationAttestation(ctx, b.item.ID, gatewayAttestation(att))
 	}
 	switch {
 	case err == nil:
@@ -323,7 +324,7 @@ func (n *ValidationNotices) usage() *sync.Once {
 
 // attestationRecorder is what uploads an attestation (*gateway.Client).
 type attestationRecorder interface {
-	RecordValidationAttestation(ctx context.Context, itemID string, att gateway.ValidationAttestation) error
+	RecordValidationAttestation(ctx context.Context, itemID string, att gateway.ValidationAttestation) (map[string]any, error)
 }
 
 // attester is the node's own gateway when it takes attestations, else
@@ -357,25 +358,33 @@ func (r *Runner) validationUsage(err error) error {
 	return errors.Join(rest...)
 }
 
-// gatewayAttestation is validate's attestation in the gateway's shape,
-// field for field, with its own per-step minutes; an artifact is
-// "<path>@sha256:<digest>".
+// gatewayAttestation is validate's attestation in the platform's input
+// shape (specs/contracts/recordValidationAttestation.json), field for
+// field: one command per step, the tests summed over the steps, each
+// artifact as "<path>@sha256:<digest>", the validate.yml's hash as the
+// suite hash, and a report per step that parsed one. Whether it ran
+// sandboxed, the node and the item stay on the local attestation: the
+// platform reads the runner from runnerImage and the node from the
+// bearer.
 func gatewayAttestation(att validate.Attestation) gateway.ValidationAttestation {
 	out := gateway.ValidationAttestation{
-		Commit: att.Commit, Tree: att.Tree, RunnerImage: att.RunnerImage, Sandboxed: att.Sandboxed,
-		NodeID: att.NodeID, SessionID: att.SessionID, ItemID: att.ItemID, At: att.At,
-		Steps: []gateway.ValidationStepResult{},
+		Commit: att.Commit, TreeHash: att.Tree, RunnerImage: att.RunnerImage,
+		SuiteHash: att.Validation.Hash, SessionID: att.SessionID, At: att.At,
+		ArtifactDigests: []string{}, Commands: []gateway.ValidationCommand{}, Reports: []gateway.ValidationReport{},
 	}
 	for _, s := range att.Steps {
-		row := gateway.ValidationStepResult{
-			Step: s.Name, Command: s.Command, SuiteHash: s.SuiteHash, ExitCode: s.ExitCode, Ms: s.DurationMs,
-			TestsRun: s.TestsRun, TestsPassed: s.TestsPassed, TestsFailed: s.TestsFailed,
-		}
+		out.Commands = append(out.Commands, gateway.ValidationCommand{
+			Suite: s.Name, Command: s.Command, ExitCode: s.ExitCode, DurationMs: s.DurationMs,
+		})
+		out.TestsRun += s.TestsRun
+		out.TestsPassed += s.TestsPassed
+		out.TestsFailed += s.TestsFailed
 		for _, a := range s.Artifacts {
-			row.Artifacts = append(row.Artifacts, a.Path+"@sha256:"+a.SHA256)
+			out.ArtifactDigests = append(out.ArtifactDigests, a.Path+"@sha256:"+a.SHA256)
 		}
-		out.Steps = append(out.Steps, row)
-		out.Validation = append(out.Validation, gateway.ValidationMinutes{Step: s.Name, Ms: s.DurationMs, ExitCode: s.ExitCode})
+		if s.Report != "" {
+			out.Reports = append(out.Reports, gateway.ValidationReport{Suite: s.Name, Content: s.Report})
+		}
 	}
 	return out
 }
