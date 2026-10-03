@@ -74,12 +74,36 @@ it does what channel mode's `readyChannelItem` does:
   goal, the checkout) and `node.WriteContext`: JSON `{path, branch,
   brief, acceptance, context: [files written], item: {id, goal, seq,
   title}}`. The held item is recorded in `~/.mesh/mcp-state.json`
-  (`{held: [{itemId, goal, seq, path, branch, claimedAt}]}`), which
+  (`{held: [{itemId, goal, seq, path, branch, base, claimedAt}]}`), which
   `mesh_status` lists. A workspace that cannot be made releases the
   claim (`releaseWorkItem`) and answers the error.
 
 The personal node the claim names is node.yaml's `node_id` until the
 personal node's registration (item 2) answers its own.
+
+## Work tools
+
+Amended 2026-10-03 (item 4). The rest of the list is served
+(`internal/meshmcp/work.go`), each on the items `mcp-state.json` holds.
+A tool's `item` names the held item — its id, its seq, or `goal/seq` —
+and defaults to the one held item; with several held it is required.
+`mesh mcp` commits nothing itself. Every refusal from the gateway, and
+a push the remote refuses, is the tool's answer `<tool> refused:
+<reason>`, not a transport error, and leaves the item held.
+
+| Tool | What it does | Gateway call |
+|---|---|---|
+| `mesh_join(goal, item?, pair?)` | claims and prepares the checkout (above) | `claimWorkItem`, `issueItemRepoToken`, the context reads |
+| `mesh_status()` | each held item's goal, seq, path, branch, base, `uncommitted` (`git status --porcelain` non-empty) and `commitsPastBase` (`git rev-list --count origin/<base>..HEAD`) | none: the state file and the checkouts |
+| `mesh_progress(item?, note, costCents?)` | a progress note on the item | `reportWorkItemProgress` |
+| `mesh_ask(item?, question)` | the question as a progress note opening `question: `, until the hosted `mesh_ask` exists (item 6) | `reportWorkItemProgress` |
+| `mesh_finish(item?, outcome?, evidence?)` | pushes the branch as committed (`node.Git.Push`, `-u --force-with-lease`), reads its head and finishes the item, then drops it from the state; `outcome: already_done` pushes nothing and sends the evidence | `finishWorkItem(itemId, branch, head, 0)`, or `finishWorkItem` with `outcome: already_done` |
+| `mesh_release(item?, reason)` | gives the item back and drops it | `releaseWorkItem(itemId, nodeId, reason)` |
+| `mesh_switch(goal, item?, note?, from?)` | leaves the held item (`from`, defaulted as `item` is): pushes its branch when it has commits past base, reports the note (default `switching to <goal>[/<seq>]`), releases it with reason `switched`, then joins the target — never the item it just left — and answers the join | `reportWorkItemProgress`, `releaseWorkItem`, then mesh_join's |
+
+The tests (`internal/meshmcp/flow_test.go`) run join → work → finish and
+join → switch → join against `gatewaytest.New` and a bare origin served
+by `gatewaytest.GitHub`.
 
 ## Consequences
 
@@ -87,8 +111,7 @@ personal node's registration (item 2) answers its own.
   the channel capability and its tools are the same.
 - `mesh mcp` is the client half; the personal node it registers
   (ADR-015's owner form, kind personal, capacity 1), mesh_join's
-  checkout on the item token, the pass-through work tools and pairing
-  are later items of the goal, each amending this ADR.
+  checkout on the item token and pairing are later items of the goal, each amending this ADR.
 - Usage of a `mesh mcp` session is the person's Claude Code's own; it
   goes to their personal subscription credential once the node is
   registered.

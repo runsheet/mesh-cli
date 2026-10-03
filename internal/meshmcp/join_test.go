@@ -207,7 +207,7 @@ func TestJoinPreparesTheCheckoutOnTheItemToken(t *testing.T) {
 		t.Fatalf("state: %+v", s)
 	}
 	status, err := w.persona.status(context.Background(), nil)
-	if err != nil || !strings.Contains(status, "ship-it 1 mesh/ship-it-1") {
+	if err != nil || !strings.Contains(status, `"branch": "mesh/ship-it-1"`) {
 		t.Fatalf("mesh_status = %q, %v", status, err)
 	}
 }
