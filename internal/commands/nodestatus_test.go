@@ -2,10 +2,12 @@ package commands
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/gateway/gatewaytest"
+	"projectmesh.io/mesh-cli/internal/node"
 	"projectmesh.io/mesh-cli/internal/version"
 )
 
@@ -54,6 +56,89 @@ func TestStatusHeartbeatCarriesCommit(t *testing.T) {
 			}
 			if tc.want != nil && got != tc.want {
 				t.Fatalf("commit = %#v, want %#v", got, tc.want)
+			}
+		})
+	}
+}
+
+const statusOwnerID = "18a8b766-18f3-5e73-b4cf-efb91c01946a"
+
+// `mesh node status` names node.yaml's node_id and how it was arrived
+// at — derived, adopted from the platform, or recorded (a node_id from
+// before node_id_source existed) — after the owner line, whatever the
+// heartbeat answered.
+func TestOwnedStatusLineNodeID(t *testing.T) {
+	answer := &gateway.NodeAnswer{
+		NodeID: statusOwnerID,
+		Owner:  gateway.NodeOwner{Kind: "person", Name: "Chris"},
+		Scopes: []gateway.ScopeAnswer{{OrgID: "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa", Login: "runsheet"}},
+	}
+	for _, tc := range []struct {
+		name   string
+		source string
+		want   string
+	}{
+		{"derived", node.IDDerived, "node id: " + statusOwnerID + " (derived)"},
+		{"adopted", node.IDAdopted, "node id: " + statusOwnerID + " (adopted from the platform)"},
+		{"recorded", "", "node id: " + statusOwnerID + " (recorded)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &node.Config{NodeID: statusOwnerID, NodeIDSource: tc.source}
+			out := node.Outside{Owned: true, Answer: answer}
+			line := ownedStatusLine(cfg, out)
+			lines := strings.Split(line, "\n")
+			if lines[len(lines)-1] != tc.want {
+				t.Errorf("status line %q, want it to end with %q", line, tc.want)
+			}
+		})
+	}
+}
+
+// A per-org node (Outside.Owned false) prints nothing, including no
+// node id line, whatever node.yaml records — the per-org path has no
+// single node_id to show.
+func TestOwnedStatusLineNodeIDPerOrg(t *testing.T) {
+	cfg := &node.Config{NodeID: statusOwnerID, NodeIDSource: node.IDDerived}
+	line := ownedStatusLine(cfg, node.Outside{Owned: false})
+	if line != "" {
+		t.Errorf("status line %q, want empty on the per-org path", line)
+	}
+}
+
+// Against a real client and the fake platform: a heartbeat under the
+// owner contract answers normally, and the status line still carries
+// the node id line node.yaml records, derived or adopted.
+func TestStatusLineNodeIDAgainstFake(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		source string
+		want   string
+	}{
+		{"derived", node.IDDerived, "node id: " + statusOwnerID + " (derived)"},
+		{"adopted", node.IDAdopted, "node id: " + statusOwnerID + " (adopted from the platform)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := gatewaytest.New("rs_test")
+			t.Cleanup(f.Close)
+			f.Answer = &gateway.NodeAnswer{
+				NodeID: statusOwnerID,
+				Owner:  gateway.NodeOwner{Kind: "person", Name: "Chris"},
+				Scopes: []gateway.ScopeAnswer{{OrgID: "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa", Login: "runsheet"}},
+			}
+			gw := gateway.New(f.URL(), "rs_test")
+			ctx := context.Background()
+			if _, err := gw.RegisterNode(ctx, gateway.RegisterNodeInput{NodeID: statusOwnerID, OrgID: "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa", OwnerID: statusOwnerID, Name: "mini", Slug: "runsheet-mini", Owner: "person", Capacity: 1, Version: "v1"}); err != nil {
+				t.Fatal(err)
+			}
+			cfg := &node.Config{NodeID: statusOwnerID, NodeIDSource: tc.source, Contract: node.ContractOwner, Slug: "runsheet-mini"}
+			out, err := node.HeartbeatOutside(ctx, gw, cfg, "v1", gateway.HeartbeatExtras{},
+				func(node.Scope, error) error { t.Fatal("a per-org heartbeat on the owner contract"); return nil })
+			if err != nil {
+				t.Fatal(err)
+			}
+			line := ownedStatusLine(cfg, out)
+			if !strings.Contains(line, tc.want) {
+				t.Errorf("status line %q, want it to contain %q", line, tc.want)
 			}
 		})
 	}
