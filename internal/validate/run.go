@@ -110,7 +110,7 @@ func Run(ctx context.Context, steps []Step, runner Runner, opts Options) ([]Step
 		if err != nil {
 			return results, err
 		}
-		run, passed, failed, err := parseResults(opts.Dir, step, stdout.Bytes())
+		run, passed, failed, report, err := parseResults(opts.Dir, step, stdout.Bytes())
 		if err != nil {
 			return results, err
 		}
@@ -125,6 +125,7 @@ func Run(ctx context.Context, steps []Step, runner Runner, opts Options) ([]Step
 			TestsPassed: passed,
 			TestsFailed: failed,
 			Output:      headTail(stdout.String() + stderr.String()),
+			Report:      report,
 			TimedOut:    exitCode == 124,
 			Artifacts:   artifacts,
 		}
@@ -140,32 +141,37 @@ func Run(ctx context.Context, steps []Step, runner Runner, opts Options) ([]Step
 	return results, nil
 }
 
+// reportCap is the most of a step's raw report kept on its StepResult:
+// the platform keeps 256 KiB of reports in all (runsheet ADR 032).
+const reportCap = 256 * 1024
+
 // parseResults parses a step's test output per its Results field: empty
 // parses nothing, "stdout" reads stdout as go test -json, "go-test-json:
-// <path>" and "junit:<path>" read that file (relative to dir).
-func parseResults(dir string, step Step, stdout []byte) (run, passed, failed int, err error) {
+// <path>" and "junit:<path>" read that file (relative to dir). The raw
+// report it parsed is returned beside the counts, cut at reportCap.
+func parseResults(dir string, step Step, stdout []byte) (run, passed, failed int, report string, err error) {
+	var raw []byte
+	parse := ParseGoTestJSON
 	switch {
-	case step.Results == "":
-		return 0, 0, 0, nil
 	case step.Results == "stdout":
-		return ParseGoTestJSON(bytes.NewReader(stdout))
+		raw = stdout
 	case strings.HasPrefix(step.Results, "go-test-json:"):
-		f, err := os.Open(filepath.Join(dir, strings.TrimPrefix(step.Results, "go-test-json:")))
-		if err != nil {
-			return 0, 0, 0, err
+		if raw, err = os.ReadFile(filepath.Join(dir, strings.TrimPrefix(step.Results, "go-test-json:"))); err != nil {
+			return 0, 0, 0, "", err
 		}
-		defer f.Close()
-		return ParseGoTestJSON(f)
 	case strings.HasPrefix(step.Results, "junit:"):
-		f, err := os.Open(filepath.Join(dir, strings.TrimPrefix(step.Results, "junit:")))
-		if err != nil {
-			return 0, 0, 0, err
+		if raw, err = os.ReadFile(filepath.Join(dir, strings.TrimPrefix(step.Results, "junit:"))); err != nil {
+			return 0, 0, 0, "", err
 		}
-		defer f.Close()
-		return ParseJUnit(f)
+		parse = ParseJUnit
 	default:
-		return 0, 0, 0, nil
+		return 0, 0, 0, "", nil
 	}
+	run, passed, failed, err = parse(bytes.NewReader(raw))
+	if len(raw) > reportCap {
+		raw = raw[:reportCap]
+	}
+	return run, passed, failed, string(raw), err
 }
 
 func headTail(combined string) string {
