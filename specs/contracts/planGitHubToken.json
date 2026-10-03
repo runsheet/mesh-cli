@@ -1,0 +1,18 @@
+{
+  "description": "planGitHubToken: the node holding a goal's plan claim reads the project's GitHub tokens for its own fetch — one row per enrolled repo, each minted from that repo's own GitHub App installation and scoped to it, the way issueItemRepoToken is scoped to an item's one repo. researchGitHubToken(directionId) answers a direction's research session the same shape. The runsheet goal a-plan-clones-on-the-platforms-token serves this same shape at /contracts/planGitHubToken.json — the platform side of the contract.",
+  "input": {
+    "goalId": "66666666-6666-4666-8666-666666666666"
+  },
+  "answer": [
+    {
+      "token": "ghs_planFIXTURE1",
+      "expiresAt": "2026-10-03T05:11:00Z",
+      "repository": "grapevine/mobile"
+    },
+    {
+      "token": "ghs_planFIXTURE2",
+      "expiresAt": "2026-10-03T05:11:00Z",
+      "repository": "grapevine/handbook"
+    }
+  ]
+}

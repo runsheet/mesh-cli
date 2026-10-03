@@ -980,6 +980,12 @@ type Gateway interface {
 	FailWorkItem(ctx context.Context, itemID, errMsg string) error
 	ReleaseWorkItem(ctx context.Context, itemID, nodeID, reason string) error
 	IssueItemRepoToken(ctx context.Context, itemID, nodeID string) (*gateway.GitHubToken, error)
+	// PlanGitHubTokens / ResearchGitHubTokens are IssueItemRepoToken for
+	// a plan's or a direction's own fetch (adr-022): one token per repo
+	// of the goal's or the direction's project, given only to the node
+	// holding the plan's or the research's claim.
+	PlanGitHubTokens(ctx context.Context, goalID, nodeID string) ([]gateway.GitHubToken, error)
+	ResearchGitHubTokens(ctx context.Context, directionID, nodeID string) ([]gateway.GitHubToken, error)
 	EvaluateWorkItem(ctx context.Context, itemID string, passed bool, notes string, clauses []gateway.FailedClause, costCents int, usage *gateway.UsageReport, choice gateway.EvaluateChoice) error
 	// WorkItemPriorAttempts reads the evaluations already recorded
 	// against an item (none, and no error, on a platform that does not
