@@ -508,10 +508,15 @@ The second shape is a refusal — already retired, never registered —
 and is not fatal. A restart already on the owner contract, a nil answer
 and the per-org path retire nothing.
 
-`mesh node status` says the same, beside the org's nodes:
+`mesh node status` says the same, beside the org's nodes, followed by
+the node id and how it was arrived at — `derived` (`OwnedNodeID`
+computed it), `adopted from the platform` (a refusal named it, see
+above), or `recorded` for a `node_id` saved before `node_id_source`
+existed:
 
 ```
 owned by Chris (person); serving runsheet, wardroomid, grapevine
+node id: 18a8b766-18f3-5e73-b4cf-efb91c01946a (adopted from the platform)
 ```
 
 and `mesh node register` prints it too, on whichever contract the
