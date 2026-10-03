@@ -121,7 +121,9 @@ func researchNode(f *gatewaytest.Fake, cfg *Config, root string, h harness.Harne
 	d := &Director{Credentials: c, GW: gw, Harness: h, WS: &fakeWS{root: root}, Cfg: cfg, WorkRoot: root, MaxBudgetUSD: 4, Log: logger}
 	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Interval: time.Hour, Harness: "claude-code", Log: logger, ClaimsDir: ClaimsDir(root),
 		Dispatch: func(context.Context, gateway.WorkItem) {},
-		Research: func(ctx context.Context, dn gateway.Direction, p gateway.Project, sc Scope) { _ = d.Research(ctx, dn, p, sc) }}
+		Research: func(ctx context.Context, dn gateway.Direction, p gateway.Project, sc Scope) {
+			_ = d.Research(ctx, dn, p, sc)
+		}}
 	loop.AdoptSession = AdoptWith{GW: gw, Scopes: loop.CurrentScopes, Logf: logger.Printf, Research: d.AdoptResearch}.Adopt
 	return loop, d, logs
 }
