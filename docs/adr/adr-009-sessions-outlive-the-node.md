@@ -140,6 +140,16 @@ two swaps, nothing planned until 04:00:44Z.
   sandboxed one still drains first and says why — `self-update: <to>
   verified; sandboxed node: draining before the swap because its pods
   end with the node (sandbox: on)`.
+- **The proof** is the grapevine replay (`hotswap_plans_test.go`):
+  four plans claimed, the binary swapped — once through a release
+  signed on a virtual Sigstore and verified by the `ReleaseUpdater` —
+  before any session opened, and again after two had; the new process
+  adopts the open two, re-opens the rest by the same node id, and every
+  plan reaches `planGoal` inside `PlanClaimTTL`, no claim re-taken.
+  `gatewaytest.Fake` holds the platform's rule for it: `planClaimedAt`
+  stamped on a fresh claim and kept on the holder's re-claim, another
+  node refused while `PlanClaimTTL` (settable, default 30 minutes) has
+  not passed since it.
 
 ## Limits
 

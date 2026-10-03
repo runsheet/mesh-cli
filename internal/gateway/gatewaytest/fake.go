@@ -260,8 +260,36 @@ type Fake struct {
 	// <sent>` (platform/aggregates/node.go), and recorded in Calls as
 	// the platform saw it; one under RegistersAt registers.
 	RegistersAt string
+	// PlanClaimTTL is how long a plan claim keeps another node off the
+	// goal, as runsheet goal.go's PlanClaimTTL: claimPlan by another node
+	// is refused while the holder's planClaimedAt is within it (or the
+	// claim has no planClaimedAt) and takes the claim once it has passed.
+	// The holder may always claim again, and its planClaimedAt is kept.
+	// Zero is DefaultPlanClaimTTL.
+	PlanClaimTTL time.Duration
+	// Now is the fake's clock for planClaimedAt and the TTL; nil is
+	// time.Now.
+	Now func() time.Time
 
 	requests int
+}
+
+// DefaultPlanClaimTTL is the platform's PlanClaimTTL (runsheet goal.go).
+const DefaultPlanClaimTTL = 30 * time.Minute
+
+// PlanClaimTTLInForce is PlanClaimTTL, or DefaultPlanClaimTTL when unset.
+func (f *Fake) PlanClaimTTLInForce() time.Duration {
+	if f.PlanClaimTTL > 0 {
+		return f.PlanClaimTTL
+	}
+	return DefaultPlanClaimTTL
+}
+
+func (f *Fake) now() time.Time {
+	if f.Now != nil {
+		return f.Now()
+	}
+	return time.Now()
 }
 
 // Requests is how many GraphQL requests the fake has been sent, refused
@@ -1477,11 +1505,22 @@ func (f *Fake) apply(name string, in map[string]any) error {
 				f.Goals[id]["replacingItemId"] = r
 			}
 		case "claimPlan":
-			if held, _ := f.Goals[id]["plannerNodeId"].(string); held != "" && held != in["nodeId"] {
-				return fmt.Errorf("another node is planning it")
+			// runsheet goal.go: the holder re-claims at will and keeps
+			// its planClaimedAt; another node only once PlanClaimTTL has
+			// passed since it, when the claim is its, freshly stamped
+			held, _ := f.Goals[id]["plannerNodeId"].(string)
+			if held != "" && held == in["nodeId"] {
+				if at, _ := f.Goals[id]["planClaimedAt"].(string); at != "" {
+					break
+				}
+			} else if held != "" {
+				at, err := time.Parse(time.RFC3339, fmt.Sprint(f.Goals[id]["planClaimedAt"]))
+				if err != nil || f.now().Sub(at) < f.PlanClaimTTLInForce() {
+					return fmt.Errorf("another node is planning it")
+				}
 			}
 			f.Goals[id]["plannerNodeId"] = in["nodeId"]
-			f.Goals[id]["planClaimedAt"] = time.Now().UTC().Format(time.RFC3339)
+			f.Goals[id]["planClaimedAt"] = f.now().UTC().Format(time.RFC3339)
 		case "releasePlan":
 			// adr-022, A fetch that fails is reported: the claim is
 			// cleared, the goal stays in planning, and the note is its
