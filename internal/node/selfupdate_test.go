@@ -457,6 +457,52 @@ func TestGetDesiredVersion(t *testing.T) {
 	}
 }
 
+// (c) On the owner contract a node serving no org (Scopes nil) still
+// reads desiredVersion by its own id: asked to run an older version
+// than the one it is on, it follows the downgrade — the grapevine
+// node's canary, goal an-update-that-serves-no-org-is-not-confirmed.
+func TestSelfUpdateServingNoneFollowsADowngrade(t *testing.T) {
+	p := newPriorityFake(t)
+	loop, u, release, _ := p.updateLoop("")
+	defer close(release)
+	loop.Owned = &Owned{NodeID: p.scopes[0].NodeID}
+	loop.Scopes = nil
+	loop.Version = "v1.1.0"
+	p.Nodes[p.scopes[0].NodeID]["desiredVersion"] = "v1.0.0"
+	done := make(chan error, 1)
+	go func() { done <- loop.Run(context.Background()) }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrRestartForUpdate) {
+			t.Fatalf("Run = %v, want ErrRestartForUpdate", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not follow the downgrade")
+	}
+	want := []string{"confirm", "fetch v1.0.0", "image v1.0.0 running", "begin v1.1.0 v1.0.0", "swap mesh v1.0.0 running"}
+	if got := u.Events(); strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("events %q, want %q", got, want)
+	}
+}
+
+// desiredVersion reads the owner contract's one id once, not once per
+// scope, even when the node serves several orgs under it.
+func TestDesiredVersionReadsTheOwnedIDOnce(t *testing.T) {
+	p := newPriorityFake(t)
+	loop, _, release, _ := p.updateLoop("")
+	defer close(release)
+	owned := p.scopes[0].NodeID
+	s0, s1 := p.scopes[0], p.scopes[1]
+	s1.NodeID = owned // the owner contract gives every scope the same id
+	loop.Owned = &Owned{NodeID: owned}
+	loop.Scopes = Scopes{s0, s1}
+	loop.Tick(context.Background())
+	loop.updateWG.Wait()
+	if got := p.ReadsNamed("nodeIndex"); len(got) != 1 {
+		t.Fatalf("desiredVersion reads = %d, want 1: %+v", len(got), got)
+	}
+}
+
 func updateState(t *testing.T) (*selfupdate.StateFile, string) {
 	t.Helper()
 	dir := t.TempDir()

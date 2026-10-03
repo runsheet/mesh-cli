@@ -661,6 +661,30 @@ Tests: `internal/selfupdate/state_test.go`,
 `internal/commands/nodestart_test.go`
 (`TestConfirmWindowRecordsTheRefusalNamingAnID`).
 
+## Amendment: desiredVersion is read by the node's own id (goal an-update-that-serves-no-org-is-not-confirmed, 2026-10-03)
+
+On 2026-10-03 the grapevine node, on the owner contract and serving no
+org (the platform answered no scopes on its first owner registration),
+was asked by a person to downgrade through the platform — and never
+read the request: `Loop.desiredVersion` iterated `l.Scopes` only, and
+there were none. A node with no scope hears nothing, forever, however
+loudly it is asked.
+
+`desiredVersion` now reads the node's own id first, when it has one
+(`Loop.owned`, ADR-015): `GetDesiredVersion(ctx, owned.NodeID)` before
+any scope's. Only then does it read each scope's `NodeID` — skipping
+any already read, since the owner contract gives every scope the same
+id as the node's own, so a node serving several orgs under it still
+reads `desiredVersion` once, not once per org. The first non-empty
+answer wins, as before; an `Unsupported` error still stops and logs
+once; `ok` is true when any read went through, whichever id it was
+read by. A node with neither `Owned` nor `Scopes` reads nothing, as
+today — it has no id to ask the platform about.
+
+Test: `internal/node/selfupdate_test.go`
+(`TestSelfUpdateServingNoneFollowsADowngrade`,
+`TestDesiredVersionReadsTheOwnedIDOnce`).
+
 ## Consequences
 
 - Renaming an asset, the workflow file, or the repo breaks every
