@@ -1032,3 +1032,50 @@ Tests: `noheadroom_loop_test.go` —
 `TestNoCredentialHoldsResearch`, `TestNoHeadroomPlanHoldIsItsOwnKind`,
 `TestNoHeadroomPlannerCountsNoAttempt`,
 `TestNoHeadroomHoldsEvaluationsUntilItsUntil`.
+
+## Amendment — 2026-10-03 (goal `no-headroom-is-a-hold-not-a-claim-loop`, item 4): `holding.unclaimed[].until`
+
+**Decision.** `Unclaimed` and `gateway.HoldingUnclaimed` gain `Until
+time.Time` (wire `until`, `json:",omitzero"`): when the hold a
+`passOver` call names has one — today, item 1's `NoCredentials.Holds`
+for a build or a requested plan — it rides the entry; a hold with none
+(the unmerged-per-repo limit, the urgent-only reserve, the ranged
+node's min) leaves it zero. `passOver(goalID, kind, priority, held
+string, until time.Time)` takes it as a parameter, and when several
+holds of one goal and kind fold into one entry (`Loop.passOver`'s
+existing per-pass dedupe) the entry's `until` is the *earliest*
+non-zero one among them — the same rule `HoldingReport`'s own `until`
+already applies across accounts' `resetsAt`, now applied to the
+unclaimed entries' untils too, and the report's `until` folds those in
+the same way. The reason text already names the until (`ErrNoHeadroom.Error()`,
+item 1); the field is the structured copy a console reads without
+parsing prose.
+
+Sending it is gated the same way `limits[].priorities` is
+(`takesLimitsPriorities`): `takesHoldingUnclaimedUntil` introspects
+`HeartbeatNodeInput`'s `holding` field's type down to its `unclaimed`
+list's element type for an `until` input field, cached for
+`ScalingProbeEvery` like `takesHolding`; a platform whose element type
+lacks it gets the entry with `until` stripped
+(`holdingWithoutUnclaimedUntil`), not a refused heartbeat. The fixture
+fake's `NoUnclaimedUntil` switch (`gatewaytest.Fake`) drops `until` from
+the introspected element type's fields the same way `UnknownFields`
+drops a top-level one, so a test can prove the strip without a schema
+change.
+
+`specs/contracts/heartbeatNode.json`'s example input now shows a
+`holding.unclaimed[]` entry carrying `until` (the shape `holding` itself
+is not pinned by the contract, per the note above — the example is
+illustrative, not asserted field-by-field by a fixture-reading test).
+
+Tests: `TestHoldingReportCarriesUnclaimedUntil` (the report copies an
+entry's `Until` across, omits a zero one from the JSON, and folds a
+hold's until into the report's own the same way an account's `resetsAt`
+does); `TestHoldingCarriesANoCredentialHeadroomHoldUntil`
+(`holding_loop_test.go`: a loop with a headroom hold until `T` on a
+ready item's project sends a heartbeat whose `holding.unclaimed` entry
+for the goal names the hold's reason and carries `until` equal to `T`
+in RFC 3339); `TestHeartbeatOmitsUnclaimedUntilTheSchemaLacks`
+(`internal/gateway/holding_test.go`: a schema without the field gets the
+entry with no `until` key, and the heartbeat is still recorded; the next
+probe, once the schema has it, sends it).

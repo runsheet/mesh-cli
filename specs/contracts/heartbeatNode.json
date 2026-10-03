@@ -4,7 +4,30 @@
     "aggregateId": "55555555-5555-4555-8555-555555555555",
     "namespace": "runsheet",
     "version": "v0.2.200",
-    "running": 3
+    "running": 3,
+    "holding": {
+      "mode": "paced",
+      "summary": "paced: urgent and high only, 3 item(s), no research; 1 item(s) and 0 plan(s) left unclaimed",
+      "until": "2026-10-03T03:00:00Z",
+      "accounts": [
+        {
+          "account": "max20",
+          "kind": "subscription",
+          "status": "paced",
+          "resetsAt": "2026-10-03T03:00:00Z",
+          "takes": { "priorities": ["urgent", "high"], "maxItems": 3, "research": false }
+        }
+      ],
+      "unclaimed": [
+        {
+          "goalId": "goal-1",
+          "kind": "item",
+          "count": 1,
+          "reason": "no issued credential has headroom for build on org runsheet's project mesh (max20 exhausted until 2026-10-03T03:00:00Z)",
+          "until": "2026-10-03T03:00:00Z"
+        }
+      ]
+    }
   },
   "answer": {
     "nodeId": "55555555-5555-4555-8555-555555555555",

@@ -1435,7 +1435,7 @@ func (l *Loop) evaluateHeld(ctx context.Context) {
 			// its project's claim-time read refused an evaluation: it
 			// waits in evaluating until the hold's until, said once for
 			// the goal
-			l.passOver(item.GoalID, "evaluation", priorityName(h.rank), why)
+			l.passOver(item.GoalID, "evaluation", priorityName(h.rank), why, until)
 			l.NoCredential.Say(item.GoalID, why, until)
 			continue
 		}
@@ -1511,7 +1511,7 @@ func (l *Loop) rebaseRequested(ctx context.Context) {
 		if why, until, ok := l.NoCredential.Holds(l.goalProject(ctx, sc, item), string(harness.KindRebase), l.adapter()); ok {
 			// no credential open to this node, or none with headroom:
 			// the rebase waits, said once for the goal
-			l.passOver(item.GoalID, "rebase", priorityName(r.rank), why)
+			l.passOver(item.GoalID, "rebase", priorityName(r.rank), why, until)
 			l.NoCredential.Say(item.GoalID, why, until)
 			continue
 		}
@@ -1687,7 +1687,7 @@ func (l *Loop) researchDue(ctx context.Context) {
 			// issued, or none with headroom): the direction is not
 			// offered until the hold's until, said once for it
 			if why, until, ok := l.NoCredential.Holds(d.ProjectID, string(harness.KindResearch), l.adapter()); ok {
-				l.passOver(d.ID, "research", "", why)
+				l.passOver(d.ID, "research", "", why, until)
 				l.NoCredential.Say(d.ID, why, until)
 				continue
 			}

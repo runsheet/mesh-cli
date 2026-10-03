@@ -117,3 +117,56 @@ func TestHeartbeatOmitsHoldingTheSchemaLacks(t *testing.T) {
 		t.Fatalf("holding not sent once the schema has it: %#v", hb[len(hb)-1].Input)
 	}
 }
+
+// A gateway whose holding.unclaimed element type lacks `until` gets a
+// heartbeat whose unclaimed entry carries no `until` key, even though
+// Holding.Unclaimed[0].Until is set: the platform predates
+// no-headroom-is-a-hold-not-a-claim-loop item 4.
+func TestHeartbeatOmitsUnclaimedUntilTheSchemaLacks(t *testing.T) {
+	f, gw := registeredFake(t)
+	f.NoUnclaimedUntil = true
+	h := holding()
+	h.Unclaimed[0].Until = time.Date(2026, 10, 3, 3, 0, 0, 0, time.UTC)
+	if _, err := gw.HeartbeatNode(context.Background(), limitsNode, "v1", 1, gateway.HeartbeatExtras{Holding: h}); err != nil {
+		t.Fatal(err)
+	}
+	hb := f.CallsNamed("heartbeatNode")
+	if len(hb) != 1 {
+		t.Fatalf("heartbeats: %+v", hb)
+	}
+	entry := unclaimedEntry(t, hb[0].Input)
+	if _, ok := entry["until"]; ok {
+		t.Fatalf("sent until the schema lacks: %#v", entry)
+	}
+
+	// the platform deploys the field; the next probe (after
+	// ScalingProbeEvery) sees it and sends it
+	f.NoUnclaimedUntil = false
+	gw.Now = func() time.Time { return time.Now().Add(gateway.ScalingProbeEvery) }
+	if _, err := gw.HeartbeatNode(context.Background(), limitsNode, "v1", 1, gateway.HeartbeatExtras{Holding: h}); err != nil {
+		t.Fatal(err)
+	}
+	hb = f.CallsNamed("heartbeatNode")
+	entry = unclaimedEntry(t, hb[len(hb)-1].Input)
+	if entry["until"] != "2026-10-03T03:00:00Z" {
+		t.Fatalf("until = %#v, want sent once the schema has it", entry["until"])
+	}
+}
+
+// unclaimedEntry is a heartbeat input's lone holding.unclaimed entry.
+func unclaimedEntry(t *testing.T, in map[string]any) map[string]any {
+	t.Helper()
+	h, ok := in["holding"].(map[string]any)
+	if !ok {
+		t.Fatalf("holding = %#v", in["holding"])
+	}
+	unclaimed, ok := h["unclaimed"].([]any)
+	if !ok || len(unclaimed) != 1 {
+		t.Fatalf("holding.unclaimed = %#v", h["unclaimed"])
+	}
+	entry, ok := unclaimed[0].(map[string]any)
+	if !ok {
+		t.Fatalf("unclaimed[0] = %#v", unclaimed[0])
+	}
+	return entry
+}
