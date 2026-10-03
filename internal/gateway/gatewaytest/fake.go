@@ -137,6 +137,15 @@ type Fake struct {
 	// not, with its replaceItem ("" for a whole re-plan); refuse one
 	// with Refuse["requestPlan"].
 	PlanRequests []PlanRequest
+	// AttestationReceipt is what recordValidationAttestation answers on
+	// success — a test sets the contract fixture's result; nil answers
+	// {status: ok, commit: <the input's commit>}. Unsupported[
+	// "recordValidationAttestation"] leaves the field out of the
+	// Mutation introspection (and refuses it as a schema without it),
+	// and Refuse["recordValidationAttestation"] answers its words as a
+	// GraphQL error, as the platform refuses a commit that is not the
+	// branch head.
+	AttestationReceipt map[string]any
 	// NoUsageTools refuses a `usage` report carrying `tools` (the
 	// per-tool calls) with "Unknown field", as a platform older than
 	// tools-show-their-use whose UsageReportInput has only the total.
@@ -476,6 +485,15 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeData(w, map[string]any{"__type": f.registerNodeInputType()})
+	case strings.Contains(q, `__type(name: "Mutation")`):
+		f.Reads = append(f.Reads, Call{Name: "__type Mutation", Input: map[string]any{}})
+		if f.Unsupported["__type"] {
+			writeErrors(w, 200, "GraphQL introspection is not allowed")
+			return
+		}
+		writeData(w, map[string]any{"__type": f.mutationType()})
+	case strings.HasPrefix(q, "mutation") && strings.Contains(q, "recordValidationAttestation("):
+		f.recordValidationAttestation(w, q, req.Variables, bearer)
 	case strings.Contains(q, "__type("):
 		f.Reads = append(f.Reads, Call{Name: "__type", Input: map[string]any{}})
 		if f.Unsupported["__type"] {
@@ -1674,4 +1692,47 @@ func writeErrors(w http.ResponseWriter, code int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(map[string]any{"errors": []map[string]any{{"message": msg}}})
+}
+
+// mutationType is the Mutation type's introspection as the
+// attestation probe reads it: recordValidationAttestation(workItemId,
+// input), unless Unsupported names it.
+func (f *Fake) mutationType() map[string]any {
+	fields := []any{}
+	if !f.Unsupported["recordValidationAttestation"] {
+		fields = append(fields, map[string]any{
+			"name": "recordValidationAttestation",
+			"args": []any{map[string]any{"name": "workItemId"}, map[string]any{"name": "input"}},
+		})
+	}
+	return map[string]any{"fields": fields}
+}
+
+// recordValidationAttestation is the platform's
+// recordValidationAttestation(workItemId: UUID!, input: Map!): Map
+// (specs/contracts/recordValidationAttestation.json): an input-object
+// shape is the schema error production answers, every call is recorded
+// with workItemId and input, and success answers AttestationReceipt.
+func (f *Fake) recordValidationAttestation(w http.ResponseWriter, q string, vars map[string]any, bearer string) {
+	const field = "recordValidationAttestation"
+	if f.Unsupported[field] {
+		writeErrors(w, 200, fmt.Sprintf("Cannot query field %q on type \"Mutation\".", field))
+		return
+	}
+	if !strings.Contains(q, "recordValidationAttestation(workItemId: $id, input: $in)") || strings.Contains(q, "RecordValidationAttestationInput") {
+		writeErrors(w, 200, `Unknown type "RecordValidationAttestationInput".`)
+		return
+	}
+	id, _ := vars["id"].(string)
+	in, _ := vars["in"].(map[string]any)
+	f.Calls = append(f.Calls, Call{Name: field, Input: map[string]any{"workItemId": id, "input": in}, At: time.Now(), Bearer: bearer})
+	if msg := f.Refuse[field]; msg != "" {
+		writeErrors(w, 200, msg)
+		return
+	}
+	receipt := f.AttestationReceipt
+	if receipt == nil {
+		receipt = map[string]any{"status": "ok", "commit": in["commit"]}
+	}
+	writeData(w, map[string]any{field: receipt})
 }

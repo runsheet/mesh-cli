@@ -152,6 +152,9 @@ type Client struct {
 	// replaceItemSchema is whether the gateway's requestPlan input was
 	// last seen to take replaceItem, kept for ScalingProbeEvery.
 	replaceItemSchema holdingProbe
+	// attestationSchema is whether the gateway's Mutation was last found
+	// to have recordValidationAttestation (see takesAttestations).
+	attestationSchema attestationProbe
 	Now               func() time.Time
 }
 
@@ -3450,42 +3453,45 @@ func (c *Client) RecordToolUsage(ctx context.Context, itemID, toolCallID, tool s
 // ---- validation attestation (node-attests-its-validation, runsheet ADR 032) ----
 
 // ValidationAttestation is what a build session's validation run
-// produces, uploaded through RecordValidationAttestation: the commit and
-// tree it ran against, the runner's image digest (or "host:<hostname>"
-// when it ran unsandboxed), whether it ran sandboxed, each step's
-// result, the node and session that ran it, the item it is for, when,
-// and the same per-step minutes the usage report carries
-// (UsageReport.Validation) so the attestation stands on its own. Its
-// json tags are item 1's Attestation shape (internal/validate, not yet
-// landed on this branch) so a later item can convert one into the other,
-// field for field.
+// produces, uploaded through RecordValidationAttestation in the
+// platform's input shape — the keys of
+// specs/contracts/recordValidationAttestation.json's input.input, copied
+// from runsheet's (runsheet ADR 032, As built (item 3)): the commit and
+// its tree, the runner's image digest (or "host:<hostname>" when it ran
+// unsandboxed), the validate.yml's hash, the session, the tests summed
+// over the commands, each artifact's digest, when, one command per step
+// and each step's raw report. The node and the item are not in it: the
+// item is the mutation's workItemId and the node the holder the
+// platform reads from the bearer.
 type ValidationAttestation struct {
-	Commit      string                 `json:"commit"`
-	Tree        string                 `json:"tree"`
-	RunnerImage string                 `json:"runnerImage"`
-	Sandboxed   bool                   `json:"sandboxed"`
-	Steps       []ValidationStepResult `json:"steps"`
-	NodeID      string                 `json:"nodeId"`
-	SessionID   string                 `json:"sessionId"`
-	ItemID      string                 `json:"itemId"`
-	At          time.Time              `json:"at"`
-	Validation  []ValidationMinutes    `json:"validation,omitempty"`
+	Commit          string              `json:"commit"`
+	TreeHash        string              `json:"treeHash"`
+	RunnerImage     string              `json:"runnerImage"`
+	SuiteHash       string              `json:"suiteHash"`
+	SessionID       string              `json:"sessionId"`
+	TestsRun        int                 `json:"testsRun"`
+	TestsPassed     int                 `json:"testsPassed"`
+	TestsFailed     int                 `json:"testsFailed"`
+	ArtifactDigests []string            `json:"artifactDigests"`
+	At              time.Time           `json:"at"`
+	Commands        []ValidationCommand `json:"commands"`
+	Reports         []ValidationReport  `json:"reports"`
 }
 
-// ValidationStepResult is one named step of .runsheet/validate.yml as it
-// ran: its command, the hash of the suite it covered, its exit code, how
-// long it took, tests parsed from its output (Go test JSON or JUnit) —
-// left out when the step reports none — and any artifacts' digests.
-type ValidationStepResult struct {
-	Step        string   `json:"step"`
-	Command     string   `json:"command"`
-	SuiteHash   string   `json:"suiteHash"`
-	ExitCode    int      `json:"exitCode"`
-	Ms          int64    `json:"ms"`
-	TestsRun    int      `json:"testsRun,omitempty"`
-	TestsPassed int      `json:"testsPassed,omitempty"`
-	TestsFailed int      `json:"testsFailed,omitempty"`
-	Artifacts   []string `json:"artifacts,omitempty"`
+// ValidationCommand is one step of .runsheet/validate.yml as it ran:
+// the suite (the step's name), its command, exit code and duration.
+type ValidationCommand struct {
+	Suite      string `json:"suite"`
+	Command    string `json:"command"`
+	ExitCode   int    `json:"exitCode"`
+	DurationMs int64  `json:"durationMs"`
+}
+
+// ValidationReport is one suite's raw test report (Go test JSON or
+// JUnit), as its results file held it.
+type ValidationReport struct {
+	Suite   string `json:"suite"`
+	Content string `json:"content"`
 }
 
 // ValidationMinutes is one step's cost for the usage record and the
@@ -3540,87 +3546,85 @@ func isTransient(err error) bool {
 	return true
 }
 
-// RecordValidationAttestation uploads one build's validation run
-// (runsheet ADR 032, the goal ci-uploads-test-evidence's attestation
-// endpoint). Call it on WithItemToken's client, so the request carries
-// the item's claim-time token rather than the node's. It tries the
-// mutation
-// recordValidationAttestation(input: RecordValidationAttestationInput!)
-// { status }, carrying aggregateId (itemID), namespace and the
-// attestation; nothing says the endpoint has landed yet (checked
-// 2026-09-28: neither the mutation nor a
-// specs/contracts/recordValidationAttestation.json fixture exist on the
-// running platform — /contracts/index.json, the gateway's introspected
-// Mutation type), so this is built to the shape ADR 032 describes, named
-// here as an assumption for the platform side to confirm or correct. An
-// unknownOperation or schemaMismatch answer falls back to
-// POST /mesh/v1/items/<itemId>/attestation with the attestation as the
-// JSON body; refused the same way (404), the caller gets
-// &Error{Unsupported: true} — log it once per run and keep the
-// attestation at <workdir>.session/attestation.json. A transport failure
-// or a 5xx answer from either path retries (retryOnTransient,
-// AttestationBackoff) before giving up.
-func (c *Client) RecordValidationAttestation(ctx context.Context, itemID string, att ValidationAttestation) error {
-	const field = "recordValidationAttestation"
+// RecordValidationAttestation uploads one build's validation run for
+// the platform to sign (runsheet ADR 032, As built (items 3 and 33)): on
+// the node's own token,
+// `mutation($id: UUID!, $in: Map!) { recordValidationAttestation(workItemId: $id, input: $in) }`
+// with id the item and in the attestation — no selection set, the
+// answer is a Map (specs/contracts/recordValidationAttestation.json,
+// copied from runsheet's, is the contract and its fixture), returned as
+// the platform's receipt. Whether the Mutation type has the field is
+// asked by introspection once and kept for ScalingProbeEvery
+// (takesAttestations): a platform without it is &Error{Unsupported:
+// true} and nothing is sent. A platform with it that refuses ("<sha> is
+// not the head of <branch> …") is a *Error carrying its words, a
+// refusal (IsRefusal), never Unsupported. A transport failure or a 5xx
+// answer retries (retryOnTransient, AttestationBackoff) before giving
+// up. There is no REST path.
+func (c *Client) RecordValidationAttestation(ctx context.Context, itemID string, att ValidationAttestation) (map[string]any, error) {
+	if !c.takesAttestations(ctx) {
+		return nil, &Error{Message: "gateway: the platform's Mutation has no recordValidationAttestation", Unsupported: true}
+	}
 	body, err := json.Marshal(att)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	var am map[string]any
-	if err := json.Unmarshal(body, &am); err != nil {
-		return err
+	var in map[string]any
+	if err := json.Unmarshal(body, &in); err != nil {
+		return nil, err
 	}
-	return retryOnTransient(ctx, func() error {
-		in := map[string]any{"aggregateId": itemID, "namespace": NS, "attestation": am}
-		q := `mutation($in: RecordValidationAttestationInput!) { recordValidationAttestation(input: $in) { status } }`
-		err := c.Query(ctx, q, map[string]any{"in": in}, nil)
-		if err == nil {
-			return nil
-		}
-		var ge *Error
-		if !errors.As(err, &ge) || (!unknownOperation(ge.Message, field) && !schemaMismatch(ge.Message, field)) {
-			return err
-		}
-		restErr := c.postAttestation(ctx, itemID, body)
-		if restErr == nil {
-			return nil
-		}
-		if isNotFound(restErr) {
-			return &Error{Message: fmt.Sprintf("gateway: neither %s nor its REST fallback exist: %v", field, restErr), Unsupported: true}
-		}
-		return restErr
+	var out struct {
+		Receipt map[string]any `json:"recordValidationAttestation"`
+	}
+	q := `mutation($id: UUID!, $in: Map!) { recordValidationAttestation(workItemId: $id, input: $in) }`
+	err = retryOnTransient(ctx, func() error {
+		return c.Query(ctx, q, map[string]any{"id": itemID, "in": in}, &out)
 	})
+	if err != nil {
+		return nil, err
+	}
+	return out.Receipt, nil
 }
 
-// postAttestation is RecordValidationAttestation's fallback for a
-// platform whose schema does not yet have the mutation: the same
-// attestation, as ci-uploads-test-evidence's REST path would carry it.
-func (c *Client) postAttestation(ctx context.Context, itemID string, body []byte) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/mesh/v1/items/"+url.PathEscape(itemID)+"/attestation", bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	tok, err := c.Bearer(ctx)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+tok)
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		return nil
-	}
-	return &httpError{Status: resp.StatusCode, Text: resp.Status, Body: strings.TrimSpace(string(raw))}
+// attestationProbe is the cached answer to whether the gateway's
+// Mutation type has recordValidationAttestation, and when it was asked.
+type attestationProbe struct {
+	mu    sync.Mutex
+	at    time.Time
+	takes bool
 }
 
-// isNotFound reports whether err is postAttestation's 404 — the REST
-// fallback does not exist either.
-func isNotFound(err error) bool {
-	var he *httpError
-	return errors.As(err, &he) && he.Status == http.StatusNotFound
+// takesAttestations says whether the gateway's Mutation type has
+// recordValidationAttestation taking workItemId and input — asked by
+// introspection and kept for ScalingProbeEvery, as takesCommit is. A
+// failed probe is a no, kept as long.
+func (c *Client) takesAttestations(ctx context.Context) bool {
+	p := &c.attestationSchema
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := c.now()
+	if !p.at.IsZero() && now.Sub(p.at) < ScalingProbeEvery {
+		return p.takes
+	}
+	var out struct {
+		Type *struct {
+			Fields []struct {
+				Name string `json:"name"`
+				Args []struct {
+					Name string `json:"name"`
+				} `json:"args"`
+			} `json:"fields"`
+		} `json:"__type"`
+	}
+	p.at, p.takes = now, false
+	q := `{ __type(name: "Mutation") { fields { name args { name } } } }`
+	if err := c.Query(ctx, q, nil, &out); err != nil || out.Type == nil {
+		return false
+	}
+	for _, f := range out.Type.Fields {
+		if f.Name == "recordValidationAttestation" {
+			p.takes = true
+		}
+	}
+	return p.takes
 }

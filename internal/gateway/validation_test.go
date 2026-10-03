@@ -1,12 +1,19 @@
 package gateway_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
+	"os"
+	"reflect"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -17,22 +24,145 @@ import (
 
 func sampleAttestation() gateway.ValidationAttestation {
 	return gateway.ValidationAttestation{
-		Commit:      "abc123def456",
-		Tree:        "tree789",
-		RunnerImage: "host:mini",
-		Sandboxed:   false,
-		Steps: []gateway.ValidationStepResult{
-			{Step: "lint", Command: "golangci-lint run", SuiteHash: "sha-lint", ExitCode: 0, Ms: 1200},
-			{Step: "unit", Command: "go test ./...", SuiteHash: "sha-unit", ExitCode: 0, Ms: 45000, TestsRun: 120, TestsPassed: 120},
+		Commit:          "abc123def456",
+		TreeHash:        "tree789",
+		RunnerImage:     "host:mini",
+		SuiteHash:       "sha-validate-yml",
+		SessionID:       "session-1",
+		TestsRun:        120,
+		TestsPassed:     120,
+		ArtifactDigests: []string{},
+		At:              time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC),
+		Commands: []gateway.ValidationCommand{
+			{Suite: "lint", Command: "golangci-lint run", ExitCode: 0, DurationMs: 1200},
+			{Suite: "unit", Command: "go test ./...", ExitCode: 0, DurationMs: 45000},
 		},
-		NodeID:    nodeID,
-		SessionID: "session-1",
-		ItemID:    itemID,
-		At:        time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC),
-		Validation: []gateway.ValidationMinutes{
-			{Step: "lint", Ms: 1200, ExitCode: 0},
-			{Step: "unit", Ms: 45000, ExitCode: 0},
-		},
+		Reports: []gateway.ValidationReport{{Suite: "unit", Content: `{"Action":"pass"}`}},
+	}
+}
+
+// attestationFixture is specs/contracts/recordValidationAttestation.json,
+// copied byte for byte from runsheet's: the call's input and the answer.
+type attestationFixture struct {
+	Field string `json:"field"`
+	Input struct {
+		WorkItemID string         `json:"workItemId"`
+		Input      map[string]any `json:"input"`
+	} `json:"input"`
+	InputType string         `json:"inputType"`
+	Result    map[string]any `json:"result"`
+}
+
+func readAttestationFixture(t *testing.T) attestationFixture {
+	t.Helper()
+	raw, err := os.ReadFile("../../specs/contracts/recordValidationAttestation.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fx attestationFixture
+	if err := json.Unmarshal(raw, &fx); err != nil {
+		t.Fatal(err)
+	}
+	return fx
+}
+
+// queryLog sits in front of the fake and keeps every GraphQL query sent.
+type queryLog struct {
+	mu      sync.Mutex
+	queries []string
+}
+
+func (l *queryLog) proxy(t *testing.T, f *gatewaytest.Fake) string {
+	t.Helper()
+	target, _ := url.Parse(f.URL())
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req struct {
+			Query string `json:"query"`
+		}
+		_ = json.Unmarshal(body, &req)
+		l.mu.Lock()
+		l.queries = append(l.queries, req.Query)
+		l.mu.Unlock()
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		proxy.ServeHTTP(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
+func (l *queryLog) containing(s string) []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []string
+	for _, q := range l.queries {
+		if strings.Contains(q, s) {
+			out = append(out, q)
+		}
+	}
+	return out
+}
+
+func readsNamed(f *gatewaytest.Fake, name string) int {
+	n := 0
+	for _, r := range f.Reads {
+		if r.Name == name {
+			n++
+		}
+	}
+	return n
+}
+
+// The contract fixture round-trips: its input.input, read into a
+// ValidationAttestation and sent through the fake, lands as the
+// recorded call's workItemId and input exactly, in the platform's
+// argument shape (workItemId: UUID!, input: Map!) — never an input
+// object — and the fake's answer is the fixture's result.
+func TestRecordValidationAttestationSendsTheContractFixture(t *testing.T) {
+	fx := readAttestationFixture(t)
+	if fx.Field != "recordValidationAttestation" || fx.InputType != "(workItemId: UUID!, input: Map!)" {
+		t.Fatalf("fixture = %s %s", fx.Field, fx.InputType)
+	}
+	f := gatewaytest.New("rs_test")
+	defer f.Close()
+	f.AttestationReceipt = fx.Result
+	var log queryLog
+	gw := gateway.New(log.proxy(t, f), "rs_test")
+
+	raw, _ := json.Marshal(fx.Input.Input)
+	var att gateway.ValidationAttestation
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&att); err != nil {
+		t.Fatalf("the fixture's input is not a ValidationAttestation: %v", err)
+	}
+	receipt, err := gw.RecordValidationAttestation(context.Background(), fx.Input.WorkItemID, att)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	calls := f.CallsNamed("recordValidationAttestation")
+	if len(calls) != 1 {
+		t.Fatalf("calls = %+v", calls)
+	}
+	if calls[0].Input["workItemId"] != fx.Input.WorkItemID {
+		t.Fatalf("workItemId = %v, want %s", calls[0].Input["workItemId"], fx.Input.WorkItemID)
+	}
+	var sent, want any
+	b, _ := json.Marshal(calls[0].Input["input"])
+	_ = json.Unmarshal(b, &sent)
+	_ = json.Unmarshal(raw, &want)
+	if !reflect.DeepEqual(sent, want) {
+		t.Fatalf("input sent = %s\nfixture's  = %s", b, raw)
+	}
+	if !reflect.DeepEqual(receipt, fx.Result) {
+		t.Fatalf("receipt = %+v, want %+v", receipt, fx.Result)
+	}
+	qs := log.containing("mutation")
+	if len(qs) != 1 || !strings.Contains(qs[0], "recordValidationAttestation(workItemId: $id, input: $in)") ||
+		strings.Contains(qs[0], "RecordValidationAttestationInput") {
+		t.Fatalf("mutations sent = %q", qs)
 	}
 }
 
@@ -47,59 +177,98 @@ func TestRecordValidationAttestationSendsTheAttestationOnTheNodesToken(t *testin
 
 	gw := gateway.New(f.URL(), nodeToken)
 	att := sampleAttestation()
-	if err := gw.RecordValidationAttestation(context.Background(), itemID, att); err != nil {
+	if _, err := gw.RecordValidationAttestation(context.Background(), itemID, att); err != nil {
 		t.Fatal(err)
 	}
-
 	calls := f.CallsNamed("recordValidationAttestation")
-	if len(calls) != 1 {
+	if len(calls) != 1 || calls[0].Bearer != nodeToken || calls[0].Input["workItemId"] != itemID {
 		t.Fatalf("calls = %+v", calls)
 	}
-	in := calls[0].Input
-	if in["aggregateId"] != itemID || in["namespace"] != "runsheet" {
+	in, _ := calls[0].Input["input"].(map[string]any)
+	for _, gone := range []string{"nodeId", "itemId", "tree", "sandboxed", "steps", "validation"} {
+		if _, ok := in[gone]; ok {
+			t.Fatalf("input carries %q, which the platform never takes: %+v", gone, in)
+		}
+	}
+	cmds, _ := in["commands"].([]any)
+	if len(cmds) != 2 || in["treeHash"] != "tree789" || in["suiteHash"] != "sha-validate-yml" {
 		t.Fatalf("input = %+v", in)
-	}
-	a, ok := in["attestation"].(map[string]any)
-	if !ok {
-		t.Fatalf("no attestation on the input: %+v", in)
-	}
-	if a["commit"] != att.Commit || a["tree"] != att.Tree || a["runnerImage"] != att.RunnerImage ||
-		a["sandboxed"] != att.Sandboxed || a["nodeId"] != att.NodeID || a["sessionId"] != att.SessionID ||
-		a["itemId"] != att.ItemID {
-		t.Fatalf("attestation = %+v", a)
-	}
-	steps, ok := a["steps"].([]any)
-	if !ok || len(steps) != 2 {
-		t.Fatalf("attestation steps = %+v", a["steps"])
-	}
-	first, _ := steps[0].(map[string]any)
-	if first["step"] != "lint" || first["command"] != "golangci-lint run" || first["suiteHash"] != "sha-lint" || first["exitCode"] != float64(0) {
-		t.Fatalf("attestation steps[0] = %+v", first)
-	}
-	validation, ok := a["validation"].([]any)
-	if !ok || len(validation) != 2 {
-		t.Fatalf("attestation validation = %+v", a["validation"])
 	}
 }
 
-// A platform without the mutation (and without the REST fallback, as
-// none of them serve it yet) is IsUnsupported.
-func TestRecordValidationAttestationOnAnOldPlatformIsUnsupported(t *testing.T) {
+// A platform whose Mutation has no recordValidationAttestation is
+// IsUnsupported, and nothing is sent.
+func TestRecordValidationAttestationWithoutTheMutationIsUnsupportedAndSendsNothing(t *testing.T) {
 	f := gatewaytest.New("rs_test")
 	defer f.Close()
 	f.Unsupported["recordValidationAttestation"] = true
 	claimedItem(f)
+	var log queryLog
+	gw := gateway.New(log.proxy(t, f), "rs_test")
 
-	gw := gateway.New(f.URL(), "rs_test")
-	err := gw.RecordValidationAttestation(context.Background(), itemID, sampleAttestation())
+	_, err := gw.RecordValidationAttestation(context.Background(), itemID, sampleAttestation())
 	if !gateway.IsUnsupported(err) {
 		t.Fatalf("err = %v, want IsUnsupported", err)
+	}
+	if n := len(f.CallsNamed("recordValidationAttestation")); n != 0 {
+		t.Fatalf("recordValidationAttestation calls = %d, want 0", n)
+	}
+	if qs := log.containing("mutation"); len(qs) != 0 {
+		t.Fatalf("mutations sent = %q", qs)
+	}
+}
+
+// A platform that has the mutation and refuses the upload answers in its
+// own words: the error carries them, is a refusal and is never
+// unsupported.
+func TestRecordValidationAttestationRefusedCarriesThePlatformsWords(t *testing.T) {
+	const words = "recordValidationAttestation: abc is not the head of mesh/x (GitHub has def)"
+	f := gatewaytest.New("rs_test")
+	defer f.Close()
+	f.Refuse["recordValidationAttestation"] = words
+	claimedItem(f)
+	gw := gateway.New(f.URL(), "rs_test")
+
+	_, err := gw.RecordValidationAttestation(context.Background(), itemID, sampleAttestation())
+	if err == nil || !strings.Contains(err.Error(), words) {
+		t.Fatalf("err = %v, want the platform's words", err)
+	}
+	if gateway.IsUnsupported(err) || !gateway.IsRefusal(err) {
+		t.Fatalf("err = %v: unsupported %v, refusal %v", err, gateway.IsUnsupported(err), gateway.IsRefusal(err))
+	}
+	if n := len(f.CallsNamed("recordValidationAttestation")); n != 1 {
+		t.Fatalf("calls = %d, want 1", n)
+	}
+}
+
+// The Mutation introspection is asked once and kept for
+// ScalingProbeEvery: two uploads, one read.
+func TestRecordValidationAttestationProbesTheMutationOnce(t *testing.T) {
+	f := gatewaytest.New("rs_test")
+	defer f.Close()
+	claimedItem(f)
+	gw := gateway.New(f.URL(), "rs_test")
+	now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
+	gw.Now = func() time.Time { return now }
+
+	for i := 0; i < 2; i++ {
+		if _, err := gw.RecordValidationAttestation(context.Background(), itemID, sampleAttestation()); err != nil {
+			t.Fatal(err)
+		}
+		now = now.Add(gateway.ScalingProbeEvery / 3)
+	}
+	if n := readsNamed(f, "__type Mutation"); n != 1 {
+		t.Fatalf("Mutation introspection reads = %d, want 1", n)
+	}
+	if n := len(f.CallsNamed("recordValidationAttestation")); n != 2 {
+		t.Fatalf("calls = %d, want 2", n)
 	}
 }
 
 // A transport or 5xx failure is retried with backoff (shortened here so
 // the test runs fast) before the call is given up on; two 503s then a
-// success is three calls, and RecordValidationAttestation returns nil.
+// success is three mutation posts, and RecordValidationAttestation
+// returns nil.
 func TestRecordValidationAttestationRetriesTransientErrors(t *testing.T) {
 	orig := gateway.AttestationBackoff
 	gateway.AttestationBackoff = []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond}
@@ -108,20 +277,24 @@ func TestRecordValidationAttestationRetriesTransientErrors(t *testing.T) {
 	var calls int32
 	mux := http.NewServeMux()
 	mux.HandleFunc("/graphql", func(w http.ResponseWriter, r *http.Request) {
-		n := atomic.AddInt32(&calls, 1)
-		if n <= 2 {
+		body, _ := io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		if bytes.Contains(body, []byte("__type")) {
+			_, _ = w.Write([]byte(`{"data": {"__type": {"fields": [{"name": "recordValidationAttestation", "args": [{"name": "workItemId"}, {"name": "input"}]}]}}}`))
+			return
+		}
+		if n := atomic.AddInt32(&calls, 1); n <= 2 {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_, _ = w.Write([]byte("service unavailable"))
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"data": {"recordValidationAttestation": {"status": "ok"}}}`))
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
 	gw := gateway.New(srv.URL, "rs_test")
-	if err := gw.RecordValidationAttestation(context.Background(), itemID, sampleAttestation()); err != nil {
+	if _, err := gw.RecordValidationAttestation(context.Background(), itemID, sampleAttestation()); err != nil {
 		t.Fatal(err)
 	}
 	if got := atomic.LoadInt32(&calls); got != 3 {
