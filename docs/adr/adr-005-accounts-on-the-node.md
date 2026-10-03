@@ -975,3 +975,49 @@ Tests: `noheadroom_test.go` — `TestNoHeadroomOpenNamesKindAdapterAndResetsAt`,
 `TestNoHeadroomWithoutUntilRechecksAfterTenMinutes`,
 `TestNoCredentialHoldsEveryKindAndHeadroomItsOwn`,
 `TestNoHeadroomSaidOncePerGoal`.
+
+## Amendment — 2026-10-03 (goal `no-headroom-is-a-hold-not-a-claim-loop`, item 2): every claim path consults the hold
+
+**Decision.** Every place the loop starts a session asks
+`NoCredentials.Holds(project, kind, adapter)` before it chooses an
+account or claims, by the session's own kind:
+
+| path | kind | project | adapter | passed over as |
+|---|---|---|---|---|
+| `claimReady` | `build` | `goalProject` | the loop's | `item` |
+| `evaluateHeld` | `evaluate` | `goalProject` | claude-code — held only when Codex is no way round (`Loop.evaluationHeld`: no `CodexRoom`, or Codex held too) | `evaluation` |
+| `rebaseRequested` | `rebase` | `goalProject` | the loop's | `rebase` |
+| `planRequested` | `plan` | the goal's | the loop's | `plan` |
+| `researchDue` | `research` | the direction's | the loop's | `research` |
+
+A held pass calls `passOver(goal, kind, priority, reason)` — a
+direction under its direction id, priority `""` (research has none;
+`heldReason` names no priority for it and calls no account unserved) —
+so `holding.unclaimed` names it, and `NoCredential.Say` once per goal
+(or direction) per run. A held direction is not offered:
+`ClaimDirectionResearch` is not called, and a direction already
+researching here is skipped before `Holds`, so it never spends the
+probe. A kind's hold holds that kind alone (a plan hold leaves the
+project's items claimable); the kind-`""` no-credential hold holds every
+kind, research included. The probe stands as item 1 made it: at the
+until one claim per (project, kind, adapter) goes through and the rest
+wait on its read.
+
+What the refusal releases: the runner releases the item with
+`accounts: <reason>` (`ReleaseWorkItem`, attempts unchanged), logging
+only `no issued <adapter> credential has headroom; released` — the
+reason is said once, by `NoteHeadroom`. The planner treats
+`ErrNoHeadroom` as it treats `ErrNoCredential`: a hold, not a try
+(`Planner.attempts` unchanged, no `no plan after` line); the gateway
+has no plan release, so the claim lapses. An evaluation is not a claim —
+an item in `evaluating` cannot be released — so its refused Claude open
+leaves it in evaluating, and the hold keeps the next ticks from opening
+again.
+
+Tests: `noheadroom_loop_test.go` —
+`TestNoHeadroomLoopReleasesAndHoldsItemsAndPlans`,
+`TestNoHeadroomHoldLiftsAtResetsAtWithOneProbe`,
+`TestNoHeadroomHoldsResearchUntilItsUntil`,
+`TestNoCredentialHoldsResearch`, `TestNoHeadroomPlanHoldIsItsOwnKind`,
+`TestNoHeadroomPlannerCountsNoAttempt`,
+`TestNoHeadroomHoldsEvaluationsUntilItsUntil`.

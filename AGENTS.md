@@ -403,7 +403,19 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   alone, `accounts: no account serves <priority> work (<label> serves
   urgent and high, …); <n> item(s) left unclaimed until one does`, and
   the holding reason (`heldReason`, the goal's waiting_reason) says
-  `<label> serves only urgent and high`.
+  `<label> serves only urgent and high`. When the node's own choice had
+  headroom but the claim-time read refuses every issued credential
+  (`ErrNoHeadroom`), the refusal is **a hold per project, kind and
+  adapter** until the earliest `resets_at` among the refused
+  credentials, else 10 minutes: what was claimed is released (an item by
+  `ReleaseWorkItem`, attempts unchanged; a plan's claim lapses, no try
+  counted), and every claim path — `claimReady` (build),
+  `evaluateHeld` (evaluate, unless Codex has room), `rebaseRequested`
+  (rebase), `planRequested` (plan), `researchDue` (research, the
+  direction not offered) — asks `NoCredentials.Holds` first, passes the
+  work over on `holding.unclaimed` and says the reason once per goal or
+  direction; at the until **one probe** claims and the rest wait on its
+  read (adr-005's amendments 2026-10-03).
   **The claim-time read** (`internal/node/credentials.go`, adr-005):
   every one-shot session opens its account through
   `Credentials.Open`, which asks the platform (`gateway.Session`: the

@@ -354,8 +354,14 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		return nil
 	}
 	if errors.Is(err, ErrNoAccount) {
-		// no issued account has headroom: the item waits, not fails
-		r.logf("item %s: %v; released", label, err)
+		// no issued account has headroom: the item waits, not fails; an
+		// ErrNoHeadroom's reason is said once for the goal
+		// (NoCredentials.NoteHeadroom), not on every release
+		if nh, ok := NoHeadroomOf(err); ok {
+			r.logf("item %s: no issued %s credential has headroom; released", label, nh.Adapter)
+		} else {
+			r.logf("item %s: %v; released", label, err)
+		}
 		if rerr := r.GW.ReleaseWorkItem(ctx, item.ID, sc.NodeID, "accounts: "+err.Error()); rerr != nil {
 			r.logf("item %s: release: %v", label, rerr)
 		}
