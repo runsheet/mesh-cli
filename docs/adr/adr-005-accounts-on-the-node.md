@@ -976,6 +976,17 @@ Tests: `noheadroom_test.go` — `TestNoHeadroomOpenNamesKindAdapterAndResetsAt`,
 `TestNoCredentialHoldsEveryKindAndHeadroomItsOwn`,
 `TestNoHeadroomSaidOncePerGoal`.
 
+**The research release** (same date, the goal's item 3). The director
+opens its session's credential before it fetches a repo or writes the
+context (`Director.Research`). A read refused with `ErrNoCredential` or
+`ErrNoAccount` (an `ErrNoHeadroom`) fetches nothing, runs no session and
+hands in an empty research — `RecordDirectionResearch` at 0 cents, no
+usage, its notes `no issued credential has headroom` (with the
+error's own text) or the no-credential reason — and returns nil, so the
+platform lets the direction's claim go and the hold `Open` noted keeps
+it unclaimed. Any other read error is returned as before, nothing handed
+in. Tests: `research_refused_test.go`.
+
 ## Amendment — 2026-10-03 (goal `no-headroom-is-a-hold-not-a-claim-loop`, item 2): every claim path consults the hold
 
 **Decision.** Every place the loop starts a session asks

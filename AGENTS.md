@@ -111,7 +111,14 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   refuses it outside the hours, inside the gap, when the direction is
   off or archived, or when another node holds it, so *a refusal is the
   ordinary answer and is not logged as an error*. A session that wins
-  the claim reads the direction, the repos and the context; a `propose`
+  the claim opens its credential first (`Credentials.Open`, before
+  `ProjectRepos` and any `WS.Fetch`): a refused read — none issued
+  (`ErrNoCredential`) or none with headroom (`ErrNoAccount`) — logs
+  `<project>/<direction>: <err>; handing in an empty research` and hands
+  in an empty research costing nothing, no usage, its notes `no issued
+  credential has headroom` or the no-credential text, so the direction
+  is not left claimed while the hold keeps it unclaimed. Then it reads
+  the direction, the repos and the context; a `propose`
   direction's session pitches and answers (`ParsePitches`: problem,
   evidence, bet, scope, estimate, risks, alternatives, signal, and its
   answers to open questions on earlier pitches) and a `set` one

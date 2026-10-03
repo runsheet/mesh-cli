@@ -98,13 +98,26 @@ func ResearchDir(root, projectSlug, directionSlug string) string {
 }
 
 // Research runs one research session on a direction whose claim this
-// node holds, and hands in what it came to against that direction. An
-// error means nothing was handed in — the claim goes stale and another
-// tick, or another node, tries again.
+// node holds, and hands in what it came to against that direction. The
+// session's credential is opened before the repos are fetched or the
+// context written: a refused read — no credential issued, or none with
+// headroom (ErrNoCredential, ErrNoAccount) — hands in an empty research
+// costing nothing, so the direction is not left claimed, and returns
+// nil; Credentials.Open has noted the hold. Any other error means
+// nothing was handed in — the claim goes stale and another tick, or
+// another node, tries again.
 func (d *Director) Research(ctx context.Context, direction gateway.Direction, project gateway.Project, scope Scope) error {
 	if len(project.RepoIDs) == 0 {
 		return fmt.Errorf("project %s has no repos enrolled; nothing to research", project.Slug)
 	}
+	// the credential first: a read refused for want of a credential, or
+	// of headroom on the ones issued, fetches nothing and lets the claim go
+	acct, err := d.Credentials.Open(withSubject(ctx, scope, project.ID, project.Slug), gateway.SessionRef{Kind: string(harness.KindResearch), DirectionID: direction.ID}, scope.NodeID, Adapter(d.Harness))
+	if err != nil {
+		return d.refused(ctx, direction, project, scope, err)
+	}
+	acct.SetLabel("project "+project.Slug, string(harness.KindResearch))
+	defer unlessDetached(ctx, acct.Cleanup)
 	all, err := d.GW.ProjectRepos(ctx, project.RepoIDs)
 	if err != nil {
 		return fmt.Errorf("repos: %w", err)
@@ -165,13 +178,7 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 		Kind: harness.KindResearch, Workspace: dir, Prompt: prompt, MaxBudgetUSD: budget,
 		Label: project.Slug + "/" + direction.Slug + " research", Timeout: d.Timeout, MCPServers: d.MCP, Model: d.Model,
 	}
-	acct, err := d.Credentials.Open(withSubject(ctx, scope, project.ID, project.Slug), gateway.SessionRef{Kind: string(harness.KindResearch), DirectionID: direction.ID}, scope.NodeID, Adapter(d.Harness))
-	if err != nil {
-		return err
-	}
 	acct.SetContextBytes(written.Bytes)
-	acct.SetLabel("project "+project.Slug, string(harness.KindResearch))
-	defer unlessDetached(ctx, acct.Cleanup)
 	acct.Apply(&job)
 	job.Meta = harness.SessionMeta{NodeID: scope.NodeID, DirectionID: direction.ID, TempDirs: sessionTempDirs(job, acct)}
 	d.logf("%s/%s: researching in %s (%d repos, room for %d), budget $%.2f (%s)", project.Slug, direction.Slug, dir, len(dirs), room, budget, budgetSource)
@@ -182,6 +189,30 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 	// carried it
 	defer acct.Finish(ctx, result)
 	return d.handIn(ctx, direction, project, scope, dir, acct, result, err)
+}
+
+// noHeadroomNote is the research's notes for a read refused for want
+// of headroom on every issued credential.
+const noHeadroomNote = "no issued credential has headroom"
+
+// refused is Research's answer to a credential read that failed. A read
+// that issued nothing, or nothing with headroom, hands in an empty
+// research at no cost — there was no session, so no usage — and lets
+// the direction's claim go; anything else is returned as it came.
+func (d *Director) refused(ctx context.Context, direction gateway.Direction, project gateway.Project, scope Scope, err error) error {
+	_, noCredential := NoCredentialOf(err)
+	if !noCredential && !errors.Is(err, ErrNoAccount) {
+		return err
+	}
+	note := err.Error()
+	if !noCredential && !strings.Contains(note, noHeadroomNote) {
+		note = noHeadroomNote + ": " + note
+	}
+	d.logf("%s/%s: %v; handing in an empty research", project.Slug, direction.Slug, err)
+	if hand := d.pitchFallback(d.GW.RecordDirectionResearch(ctx, direction.ID, scope.NodeID, gateway.Research{}, 0, note, nil)); hand != nil {
+		return fmt.Errorf("%w (and handing in the empty research failed: %v)", err, hand)
+	}
+	return nil
 }
 
 // handIn is what follows a research session, however this process came
