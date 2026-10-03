@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -50,6 +51,9 @@ type Planner struct {
 
 	mu       sync.Mutex
 	attempts map[string]int
+	// fallback says once per run that the platform issues no plan
+	// tokens (adr-022): the planner's own, apart from the items'.
+	fallback TokenFallback
 }
 
 // MaxPlanAttempts is how many unreadable plans a goal gets before the
@@ -310,19 +314,39 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 		return err
 	}
 	dir := PlanDir(p.WorkRoot, goal.Slug)
-	dirs := map[string]string{}
-	for name, r := range repos {
-		sub := filepath.Join("repos", r.Name)
-		if err := p.WS.Fetch(ctx, name, filepath.Join(dir, sub)); err != nil {
-			return fmt.Errorf("fetch %s: %w", name, err)
-		}
-		dirs[name] = sub
-	}
 	names := make([]string, 0, len(repos))
 	for name := range repos {
 		names = append(names, name)
 	}
 	sort.Strings(names)
+	// the goal's own GitHub tokens, one per repo, before anything
+	// fetches: each checkout reaches its repo on its own row through its
+	// own helper, never the operator's gh (adr-022); nil on an old
+	// platform, which fetches on the operator's gh as before
+	toks, err := p.planTokens(ctx, goal, scope.NodeID, names)
+	if err != nil {
+		return err
+	}
+	dirs := map[string]string{}
+	for _, name := range names {
+		sub := filepath.Join("repos", repos[name].Name)
+		path := filepath.Join(dir, sub)
+		if toks != nil {
+			if err := p.WS.Authorize(ctx, PlanRepoSpec(name, path), toks[name]); err != nil {
+				return fmt.Errorf("authorize %s: %w", name, err)
+			}
+		}
+		if err := p.WS.Fetch(ctx, name, path); err != nil {
+			return fmt.Errorf("fetch %s: %w", name, err)
+		}
+		dirs[name] = sub
+	}
+	// the session's own GH_TOKEN: the first repo's row by sorted name,
+	// where exactly one is asked for (adr-022)
+	var sessionTok *gateway.GitHubToken
+	if toks != nil {
+		sessionTok = toks[names[0]]
+	}
 	cx, err := FetchContext(ctx, p.GW, scope.Name(), project.Slug, ContextOptions{Budget: p.contextBudget(), Repos: names, Checkouts: checkoutsUnder(dir, dirs), Goal: &goal, Logf: p.logf})
 	if err != nil {
 		p.logf("goal %s: context unavailable: %v", goal.Slug, err)
@@ -381,7 +405,7 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 	budget, budgetSource := p.budgetWithSource(&goal)
 	p.logf("goal %s: planning in %s (%d repos), budget $%.2f (%s)", goal.Slug, dir, len(repos), budget, budgetSource)
 	ctx = withSubject(ctx, scope, goal.ProjectID, project.Slug)
-	items, reasons, flags, questions, cost, acct, err := p.ask(ctx, goal, scope.NodeID, dir, budget, in, repos, merged, goalItems, replacing)
+	items, reasons, flags, questions, cost, acct, err := p.ask(ctx, goal, scope.NodeID, dir, budget, in, repos, merged, goalItems, replacing, sessionTok)
 	acct.SetContextBytes(written.Bytes)
 	acct.SetLabel("goal "+goal.Slug, string(harness.KindPlan))
 	// the session's usage report rides the plan's hand-in; Finish logs it
@@ -399,7 +423,7 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 		in.Rejected = flags
 		var again float64
 		var second *SessionAccount
-		items, reasons, flags, questions, again, second, err = p.ask(ctx, goal, scope.NodeID, dir, budget, in, repos, merged, goalItems, replacing)
+		items, reasons, flags, questions, again, second, err = p.ask(ctx, goal, scope.NodeID, dir, budget, in, repos, merged, goalItems, replacing, sessionTok)
 		defer second.Finish(ctx, harness.Result{})
 		second.SetContextBytes(written.Bytes)
 		second.SetLabel("goal "+goal.Slug, string(harness.KindPlan))
@@ -425,6 +449,35 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 	// every other and rewires the replaced item's dependents onto these
 	// (runsheet ADR 023), so the node neither cancels nor recreates them
 	return p.handIn(ctx, goal, items, reasons, questions, cost, acct)
+}
+
+// planTokens reads the goal's plan GitHub tokens (adr-022), keyed by
+// each of names (owner/name). A refusal, or a repo with no row, is an
+// error naming it, before any fetch; an old platform
+// (gateway.IsUnsupported) is nil, nil, said once per run: the fetch
+// runs on the operator's gh as before.
+func (p *Planner) planTokens(ctx context.Context, goal gateway.Goal, nodeID string, names []string) (map[string]*gateway.GitHubToken, error) {
+	rows, err := p.GW.PlanGitHubTokens(ctx, goal.ID, nodeID)
+	if gateway.IsUnsupported(err) {
+		p.fallback.NotePlan(goal.Slug, p.logf)
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("plan github token: %w", err)
+	}
+	byRepo := map[string]*gateway.GitHubToken{}
+	for i := range rows {
+		byRepo[strings.ToLower(rows[i].Repository)] = &rows[i]
+	}
+	toks := map[string]*gateway.GitHubToken{}
+	for _, name := range names {
+		tok := byRepo[strings.ToLower(name)]
+		if tok == nil {
+			return nil, fmt.Errorf("plan github token: the platform issued none for %s", name)
+		}
+		toks[name] = tok
+	}
+	return toks, nil
 }
 
 // replacingItem is the goal's item a narrow re-plan replaces
@@ -515,7 +568,7 @@ func (p *Planner) handIn(ctx context.Context, goal gateway.Goal, items []gateway
 // hostReadingAcceptance, sameAcceptanceAsFailed against goalItems), its questions for the person, the session's cost and its account, whose usage report is built as the
 // session ends: the caller hands it in and Finishes it. An error means
 // there is no graph to hand in.
-func (p *Planner) ask(ctx context.Context, goal gateway.Goal, nodeID, dir string, budget float64, in harness.PlanInput, repos map[string]gateway.Repo, merged []int, goalItems []gateway.WorkItem, replacing *gateway.WorkItem) ([]gateway.PlannedItem, map[int]string, []string, []harness.PlanQuestion, float64, *SessionAccount, error) {
+func (p *Planner) ask(ctx context.Context, goal gateway.Goal, nodeID, dir string, budget float64, in harness.PlanInput, repos map[string]gateway.Repo, merged []int, goalItems []gateway.WorkItem, replacing *gateway.WorkItem, tok *gateway.GitHubToken) ([]gateway.PlannedItem, map[int]string, []string, []harness.PlanQuestion, float64, *SessionAccount, error) {
 	job := harness.Job{Kind: harness.KindPlan, Workspace: dir, Prompt: harness.PlanPrompt(in), MaxBudgetUSD: budget, Label: goal.Slug + " plan", Timeout: p.Timeout, MCPServers: p.MCP, Model: p.Model}
 	acct, err := p.Credentials.Open(ctx, gateway.SessionRef{Kind: string(harness.KindPlan), GoalID: goal.ID}, nodeID, Adapter(p.Harness))
 	if err != nil {
@@ -524,6 +577,18 @@ func (p *Planner) ask(ctx context.Context, goal gateway.Goal, nodeID, dir string
 		return nil, nil, nil, nil, 0, nil, err
 	}
 	defer unlessDetached(ctx, acct.Cleanup)
+	if tok != nil {
+		// gh in the session runs on the goal's token and a config dir of
+		// its own, never the operator's login (adr-022)
+		ghDir, err := NewGHConfigDir()
+		if err != nil {
+			return nil, nil, nil, nil, 0, acct, fmt.Errorf("gh config dir: %w", err)
+		}
+		// a session left running for the next node keeps it: the node
+		// that ends it removes it (TempDirs)
+		defer unlessDetached(ctx, func() { os.RemoveAll(ghDir) })
+		job.Env = SessionEnv(tok, ghDir)
+	}
 	acct.Apply(&job)
 	job.Meta = harness.SessionMeta{NodeID: nodeID, GoalID: goal.ID, TempDirs: sessionTempDirs(job, acct)}
 	// the session outlives this process: a restart adopts it (ADR 009)

@@ -212,6 +212,72 @@ func TestFetchCarriesBaseRefHistory(t *testing.T) {
 	}
 }
 
+// A plan's checkout Authorize made empty is fetched with git alone —
+// no `gh repo clone`, so no gh login — and lands on origin's default
+// branch, not whichever branch sorts first (adr-022).
+func TestFetchIntoAnAuthorizedCheckout(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	// no gh anywhere: a clone through it would fail
+	t.Setenv("PATH", filepath.Dir(mustLookPath(t, "git")))
+	root := t.TempDir()
+	origin := filepath.Join(root, "acme", "widgets.git")
+	git := func(dir string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	os.MkdirAll(filepath.Dir(origin), 0o755)
+	git(root, "init", "--bare", "-b", "main", origin)
+	seed := filepath.Join(root, "seed")
+	git(root, "clone", "-q", origin, seed)
+	os.WriteFile(filepath.Join(seed, "f"), []byte("main"), 0o644)
+	git(seed, "add", "f")
+	git(seed, "commit", "-q", "-m", "on main")
+	git(seed, "push", "-q", "origin", "HEAD:main")
+	git(seed, "commit", "-q", "--allow-empty", "-m", "on a side branch")
+	git(seed, "push", "-q", "origin", "HEAD:aaa-side")
+
+	g := &Git{GitHubURL: "file://" + root}
+	dir := filepath.Join(root, "plan", "repos", "widgets")
+	tok := &gateway.GitHubToken{Token: "ghs_plan", ExpiresAt: time.Now().Add(time.Hour), Repository: "acme/widgets"}
+	if err := g.Authorize(context.Background(), PlanRepoSpec("acme/widgets", dir), tok); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Fetch(context.Background(), "acme/widgets", dir); err != nil {
+		t.Fatal(err)
+	}
+	if log := git(dir, "log", "--format=%s"); log != "on main" {
+		t.Fatalf("log after fetch:\n%s", log)
+	}
+	// and again, as the next plan of the goal refreshes it
+	if err := g.Authorize(context.Background(), PlanRepoSpec("acme/widgets", dir), tok); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Fetch(context.Background(), "acme/widgets", dir); err != nil {
+		t.Fatal(err)
+	}
+	if log := git(dir, "log", "--format=%s"); log != "on main" {
+		t.Fatalf("log after refetch:\n%s", log)
+	}
+}
+
+func mustLookPath(t *testing.T, name string) string {
+	t.Helper()
+	p, err := exec.LookPath(name)
+	if err != nil {
+		t.Skip("no " + name)
+	}
+	return p
+}
+
 // PushedHead reads back what origin has for the branch after a fetch,
 // and refuses a branch that does not contain the base: a branch pushed
 // without the rebase, or not pushed at all.

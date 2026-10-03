@@ -91,14 +91,31 @@ session gets the empty `GH_CONFIG_DIR` and no token at all, since its
 items' checkouts carry their own. A token near its expiry is renewed and
 the helper rewritten, so a long session does not lose its push. A token
 the platform refuses fails the item — it is not run on your login
-instead. The planner and the director, which read a whole project's
-repos rather than one item's, still fetch on the node's own `gh` login.
+instead.
+
+The planner reads a whole project's repos rather than one item's, so it
+asks for the goal's own tokens (`planGitHubToken`, adr-022): one per
+repo of the project, minted through each repo's own account's
+installation, read-only. Each repo's checkout under
+`~/.mesh/work/<goal-slug>/plan/repos/` gets its own row on its own
+credential helper before it is fetched — with `git`, never `gh repo
+clone` — and the session gets `GH_TOKEN` (the first repo's by sorted
+name) and a fresh, empty `GH_CONFIG_DIR`. A node whose user never
+logged `gh` into GitHub plans; the operator's `gh` login is not
+consulted. A
+repo the platform issues no token for — the App is not installed on its
+account — is the plan's error, naming the repo, before any session
+opens. The director's research still fetches on the node's own `gh`
+login until it reads `researchGitHubToken` the same way.
 
 **The fallback.** A platform that has not yet rolled out the mutation
 (its schema does not know `issueItemRepoToken`) gets the old behaviour:
 the item runs on the operator's own `gh` and `git` credentials, exactly
 as before, and the node logs once per run — not once per item — that
-the platform issues no item GitHub tokens. The rollout is not a flag
+the platform issues no item GitHub tokens. A platform without
+`planGitHubToken` plans on the operator's `gh` as before, said once per
+run: `goal <slug>: platform issues no plan token; fetching on the
+operator's gh`. The rollout is not a flag
 day; once every platform serves the mutation the fallback goes.
 
 ### Models

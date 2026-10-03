@@ -61,6 +61,9 @@ func seed(t *testing.T) *gatewaytest.Fake {
 	f.Bodies["acme/mesh/adr-001"] = "# ADR 001"
 	f.Bodies["acme/mesh/prd"] = "# PRD"
 	f.Bodies["acme/mesh/agents"] = "# AGENTS"
+	// plans fetch on the operator's gh unless a test serves the goal's
+	// plan tokens (plan_token_test.go, adr-022)
+	f.Unsupported["planGitHubToken"] = true
 	t.Cleanup(f.Close)
 	return f
 }
@@ -86,12 +89,19 @@ type fakeWS struct {
 	// events are Authorize (with its token), Prepare, Diff and Push in
 	// the order they came
 	events []string
+	// authorized are Authorize's calls, "<repo> <token> <dir>"; repoOps
+	// are Authorize and Fetch by repo, "authorize <repo> <token>" and
+	// "fetch <repo>", in the order they came (a plan's fetch, adr-022)
+	authorized []string
+	repoOps    []string
 }
 
 func (w *fakeWS) Authorize(_ context.Context, spec WorkspaceSpec, tok *gateway.GitHubToken) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.events = append(w.events, "authorize "+tok.Token)
+	w.authorized = append(w.authorized, spec.Repo+" "+tok.Token+" "+spec.Dir())
+	w.repoOps = append(w.repoOps, "authorize "+spec.Repo+" "+tok.Token)
 	return nil
 }
 
@@ -142,6 +152,7 @@ func (w *fakeWS) Fetch(_ context.Context, repo, dir string) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.fetched = append(w.fetched, repo+" → "+dir)
+	w.repoOps = append(w.repoOps, "fetch "+repo)
 	return os.MkdirAll(dir, 0o755)
 }
 

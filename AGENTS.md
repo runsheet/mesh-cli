@@ -827,8 +827,16 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   does not know the mutation the node falls back to the operator's own
   `gh`/`git` credentials and logs that once per run (`TokenFallback`) —
   the rollout is not a flag day; a refused token fails the item instead.
-  The planner's and the director's project-wide fetches stay on the
-  operator's `gh` and `git`.
+  The planner's project-wide fetch runs on the goal's own tokens
+  (`PlanGitHubTokens`, adr-022): each repo's plan checkout
+  `Authorize`d on its row (`PlanRepoSpec`) before `Fetch`, so `git
+  fetch` and never `gh repo clone`, and the session `SessionEnv` of the
+  first sorted repo's row with a fresh `GH_CONFIG_DIR`; a refusal or a
+  repo with no row is the plan's error naming it, before any session; a
+  platform without the read plans on the operator's `gh`, said once per
+  run (`TokenFallback.NotePlan`). The director's research fetch stays
+  on the operator's `gh` and `git` until it reads
+  `ResearchGitHubTokens`.
 - A change to what the node reports or claims changes the platform's
   contract too; land the platform side first (a process reacts only to
   events after its deploy).
