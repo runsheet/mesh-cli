@@ -81,6 +81,22 @@ func IsBuiltin(name string) bool {
 	return name == Builtin || name == builtinAlias
 }
 
+// workTools are the hosted mesh-work tools a session ends by calling
+// (mesh-cli ADR-023, sessions finish by tool call): served on the same
+// /mcp as the built-in, so named mcp__mesh-context__<tool>.
+var workTools = map[string]bool{
+	"mesh_finish":   true,
+	"mesh_fail":     true,
+	"mesh_verdict":  true,
+	"mesh_plan":     true,
+	"mesh_progress": true,
+}
+
+// IsWorkTool says whether name, a tool's own name without its
+// mcp__<server>__ prefix, is one of the hosted mesh-work tools whose
+// inputs the harness keeps on Result.WorkCalls.
+func IsWorkTool(name string) bool { return workTools[name] }
+
 // Tool is one tool of the claim-time read (trd §3 Tools). Secrets holds a
 // header (remote) or env (local) key and its value; it wins over the same
 // key in Headers or Env and its value is never written anywhere but the

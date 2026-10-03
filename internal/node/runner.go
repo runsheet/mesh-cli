@@ -328,7 +328,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	mcp := r.mcp(ctx)
 	in := harness.PromptInput{
 		GoalSlug: res.Goal.Slug, GoalTitle: res.Goal.Title, GoalStatement: res.Goal.Statement, GoalAcceptance: res.Goal.Acceptance,
-		Seq: item.Seq, Title: item.Title, Brief: item.Brief, Acceptance: item.Acceptance,
+		Seq: item.Seq, ItemID: item.ID, Title: item.Title, Brief: item.Brief, Acceptance: item.Acceptance,
 		Repo: res.Repo.FullName(), Branch: spec.Branch, BaseRef: spec.BaseRef, ContextDir: contextDir, ContextFiles: files,
 		Attempts: item.Attempts, Evaluation: item.Evaluation, FailedClauses: failed, Project: orgName + "/" + res.Project.Slug, MeshContext: len(mcp) > 0,
 		LastSession: r.State.LastSession(item.ID),
@@ -609,10 +609,27 @@ func (r *Runner) afterBuild(ctx context.Context, b *buildRun, result harness.Res
 	b.report(ctx, result.Text)
 	b.reportToolUse(ctx, result)
 
-	if evidence, ok := harness.ParseAlreadyDone(result.Text); ok {
+	// the session's end is its mesh_finish or mesh_fail call when it made
+	// one (ADR-023): the final message need not be formatted, or there at
+	// all; with neither, the text is parsed as before and that is logged
+	fin := finishCallOf(result)
+	if fin.fail != "" {
+		return r.fail(ctx, item, errors.New(b.acct.Redact(fin.fail)))
+	}
+	if !fin.called {
+		r.logf("item %s: no mesh_finish call; parsed the final message", label)
+	}
+	evidence, already := fin.evidence, fin.evidence != ""
+	if !fin.called {
+		evidence, already = harness.ParseAlreadyDone(result.Text)
+	}
+	if already {
 		// main already holds the work (adr-003): no push, no branch, and
 		// the evaluator checks the evidence on the base ref
-		if err := b.acct.Carried(r.GW.FinishWorkItemAlreadyDone(ctx, item.ID, truncate(evidence, 4000), b.cost.delta(), b.acct.Report(result))); err != nil {
+		if err := b.acct.Carried(r.GW.FinishWorkItemAlreadyDone(ctx, item.ID, truncate(b.acct.Redact(evidence), 4000), b.cost.delta(), b.acct.Report(result))); err != nil {
+			if fin.handedIn(err) {
+				return r.finishedByTool(ctx, b)
+			}
 			return fmt.Errorf("finish %s: %w", label, err)
 		}
 		r.logf("item %s: finished already done ($%.2f): %s", label, result.CostUSD, truncate(evidence, 200))
@@ -666,9 +683,71 @@ func (r *Runner) afterBuild(ctx context.Context, b *buildRun, result harness.Res
 		r.uploadAttestation(ctx, b, att)
 	}
 	if err := b.acct.Carried(r.validationUsage(r.GW.FinishWorkItem(ctx, item.ID, b.spec.Branch, sha, b.cost.delta(), b.acct.Report(result)))); err != nil {
+		if fin.handedIn(err) {
+			return r.finishedByTool(ctx, b)
+		}
 		return fmt.Errorf("finish %s: %w", label, err)
 	}
 	r.logf("item %s: finished %s@%s ($%.2f)", label, b.spec.Branch, short(sha), result.CostUSD)
+	b.endGoal(ctx)
+	return nil
+}
+
+// finishCall is a build session's end as its mesh-work tool calls say
+// it (ADR-023, sessions finish by tool call): called when it called
+// mesh_finish — evidence set for outcome already_done — and fail the
+// error of a mesh_fail call made with no mesh_finish.
+type finishCall struct {
+	called   bool
+	evidence string
+	fail     string
+}
+
+// finishCallOf reads result.WorkCalls for the session's finish. A
+// mesh_finish with outcome already_done and no evidence is no finish:
+// the final message is parsed for it instead. The branch and head_sha
+// the session names are not trusted: the node pushes its own checkout
+// and hands in the head it pushed.
+func finishCallOf(result harness.Result) finishCall {
+	if in, ok := result.WorkCalls["mesh_finish"]; ok {
+		if workArg(in, "outcome") != gateway.OutcomeAlreadyDone {
+			return finishCall{called: true}
+		}
+		if ev := workArg(in, "evidence"); ev != "" {
+			return finishCall{called: true, evidence: ev}
+		}
+		return finishCall{}
+	}
+	if in, ok := result.WorkCalls["mesh_fail"]; ok {
+		msg := workArg(in, "error")
+		if msg == "" {
+			msg = cmp.Or(workArg(in, "reason"), "no reason given")
+		}
+		return finishCall{called: true, fail: "mesh_fail: " + msg}
+	}
+	return finishCall{}
+}
+
+// workArg is a work tool input's string argument, trimmed ("" when it is
+// absent or not a string).
+func workArg(in map[string]any, key string) string {
+	v, _ := in[key].(string)
+	return strings.TrimSpace(v)
+}
+
+// handedIn says whether the node's own finish, refused with err, was
+// refused because the session's mesh_finish call already moved the item
+// on the platform: a refusal (never a transport failure or an older
+// platform's unknown field) after a call.
+func (f finishCall) handedIn(err error) bool {
+	return f.called && gateway.IsRefusal(err) && !gateway.IsUnsupported(err)
+}
+
+// finishedByTool is a build the platform's hosted mesh_finish already
+// handed in: the node's own finish was refused for the item's state, so
+// the build is done, not failed.
+func (r *Runner) finishedByTool(ctx context.Context, b *buildRun) error {
+	r.logf("item %s: finished by tool call on the platform", b.label)
 	b.endGoal(ctx)
 	return nil
 }

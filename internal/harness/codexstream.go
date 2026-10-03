@@ -58,6 +58,9 @@ type CodexItem struct {
 	// Result's byte length is read for LargestToolResults.
 	Error  json.RawMessage `json:"error"`
 	Result json.RawMessage `json:"result"`
+	// Arguments is an mcp_tool_call's input, kept on Result.WorkCalls
+	// for a mesh-work tool.
+	Arguments json.RawMessage `json:"arguments"`
 	// Status is in_progress, completed or failed (declined, for a
 	// command).
 	Status string `json:"status"`
@@ -121,7 +124,8 @@ func (p CodexPrice) Cost(u CodexUsage) float64 {
 // item.completed. Each is also counted on Result.ToolNames, keyed
 // <server>__<tool>, and on Result.DocumentsFetched when it is a
 // mesh_document or mesh_search call on the built-in (goal
-// context-is-fetched-not-shipped). A status of "completed" counts Clean, and one of "failed" counts an error,
+// context-is-fetched-not-shipped), and a mesh-work tool's arguments
+// kept on Result.WorkCalls by its tool (ADR-023). A status of "completed" counts Clean, and one of "failed" counts an error,
 // the item's error text kept as the server's FirstError (else its
 // result's text, else the status), and one with no error but a result
 // counted Answered too (codexToolAnswered: the tool replied) — the call still counts on ToolCalls
@@ -216,6 +220,7 @@ func parseCodexStream(r io.Reader, model string, price func(string) (CodexPrice,
 				stat := res.toolStat(server)
 				stat.Calls++
 				res.countToolName(server, ev.Item.ToolName)
+				res.keepWorkCall(ev.Item.ToolName, ev.Item.Arguments)
 				key := ev.Item.ID
 				if key == "" {
 					key = server

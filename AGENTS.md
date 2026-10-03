@@ -108,7 +108,22 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `REBASE FAILED: <why>`, the builder never pushes and checks main
   first, ending with `ALREADY DONE: <evidence>` when the acceptance
   already holds there (`ParseAlreadyDone`; the runner then finishes the
-  item `already_done` with no push, adr-003). Change wording
+  item `already_done` with no push, adr-003). The builder ends by
+  calling the hosted `mesh_finish(item_id, branch, head_sha)` — or
+  `mesh_finish(item_id, outcome=already_done, evidence)`, or
+  `mesh_fail(item_id, error)` — on `mesh-context` (BuildPrompt's
+  `# Finish by tool call`): the harness keeps each mesh-work tool's input
+  (`tools.IsWorkTool`: mesh_finish, mesh_fail, mesh_verdict, mesh_plan,
+  mesh_progress) on `Result.WorkCalls` by tool name, from Claude's
+  `tool_use` and Codex's `mcp_tool_call` alike, and `Runner.afterBuild`
+  takes a `mesh_finish` call as the finish whatever the final message
+  says (`finishCallOf`; the node still pushes and hands in the head it
+  pushed), a `mesh_fail` call as the item's failure, and with no call
+  parses the text as before, logging `item <label>: no mesh_finish call;
+  parsed the final message` once per session; a finish the platform
+  refuses after a call is `finished by tool call on the platform`, not a
+  failure (ADR-023, finish by tool call; the evaluator's `mesh_verdict`
+  and the planner's `mesh_plan` are its item 5). Change wording
   freely; never the contract. (A later goal moves the guidance onto the
   platform as agent definitions.)
 - `internal/latchkey/` + `internal/auth/token.go`: the machine
