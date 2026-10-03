@@ -124,7 +124,7 @@ func TestToolsAgainstGateway(t *testing.T) {
 // event, calls a tool.
 func TestServerWithFakeSession(t *testing.T) {
 	f, h := seed(t)
-	srv := &Server{Instructions: Instructions, Tools: h.Tools()}
+	srv := &Server{Instructions: Instructions, Tools: h.Tools(), Channel: true}
 	toServerR, toServerW := io.Pipe()     // session → server
 	fromServerR, fromServerW := io.Pipe() // server → session
 	ctx, cancel := context.WithCancel(context.Background())

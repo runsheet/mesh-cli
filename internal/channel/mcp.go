@@ -5,201 +5,22 @@
 // through tools that are thin calls on the gateway.
 package channel
 
-import (
-	"bufio"
-	"context"
-	"encoding/json"
-	"fmt"
-	"io"
-	"sync"
+import "projectmesh.io/mesh-cli/internal/meshmcp"
 
-	"projectmesh.io/mesh-cli/internal/version"
-)
+// The stdio MCP server lives in internal/meshmcp, shared with `mesh mcp`
+// (ADR-023, mesh mcp); channel mode is the one that sets Channel.
 
 // ServerName is the MCP server's name: `--dangerously-load-development-channels server:mesh`.
-const ServerName = "mesh"
+const ServerName = meshmcp.ServerName
 
 // Tool is one MCP tool: its schema and its handler.
-type Tool struct {
-	Name        string
-	Description string
-	Schema      map[string]any
-	Call        func(ctx context.Context, args map[string]any) (string, error)
-}
+type Tool = meshmcp.Tool
 
-// Server is a stdio MCP server with the channel capability.
-type Server struct {
-	Instructions string
-	Tools        []Tool
-
-	mu  sync.Mutex
-	out io.Writer
-}
-
-type rpcMessage struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      json.RawMessage `json:"id,omitempty"`
-	Method  string          `json:"method,omitempty"`
-	Params  json.RawMessage `json:"params,omitempty"`
-	Result  any             `json:"result,omitempty"`
-	Error   *rpcError       `json:"error,omitempty"`
-}
-
-type rpcError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
-}
-
-func (s *Server) write(m rpcMessage) error {
-	m.JSONRPC = "2.0"
-	b, err := json.Marshal(m)
-	if err != nil {
-		return err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.out == nil {
-		return fmt.Errorf("channel: not connected")
-	}
-	_, err = s.out.Write(append(b, '\n'))
-	return err
-}
-
-// Push sends one channel event into the session: content is the body,
-// meta's entries become attributes of the <channel> tag (identifier keys).
-func (s *Server) Push(content string, meta map[string]string) error {
-	params := map[string]any{"content": content}
-	if len(meta) > 0 {
-		params["meta"] = meta
-	}
-	return s.write(rpcMessage{Method: "notifications/claude/channel", Params: mustJSON(params)})
-}
-
-func mustJSON(v any) json.RawMessage {
-	b, _ := json.Marshal(v)
-	return b
-}
-
-// Serve speaks newline-delimited JSON-RPC on in/out until in ends or ctx
-// is done.
-func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
-	s.mu.Lock()
-	s.out = out
-	s.mu.Unlock()
-	sc := bufio.NewScanner(in)
-	sc.Buffer(make([]byte, 0, 64*1024), 16<<20)
-	lines := make(chan []byte)
-	errc := make(chan error, 1)
-	go func() {
-		defer close(lines)
-		for sc.Scan() {
-			line := append([]byte(nil), sc.Bytes()...)
-			select {
-			case lines <- line:
-			case <-ctx.Done():
-				return
-			}
-		}
-		errc <- sc.Err()
-	}()
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case line, ok := <-lines:
-			if !ok {
-				select {
-				case err := <-errc:
-					return err
-				default:
-					return nil
-				}
-			}
-			if err := s.handle(ctx, line); err != nil {
-				return err
-			}
-		}
-	}
-}
-
-func (s *Server) handle(ctx context.Context, raw []byte) error {
-	var msg rpcMessage
-	if err := json.Unmarshal(raw, &msg); err != nil {
-		return nil // not ours to fail on
-	}
-	if len(msg.ID) == 0 {
-		return nil // a notification (initialized, cancelled): nothing to answer
-	}
-	switch msg.Method {
-	case "initialize":
-		var p struct {
-			ProtocolVersion string `json:"protocolVersion"`
-		}
-		_ = json.Unmarshal(msg.Params, &p)
-		if p.ProtocolVersion == "" {
-			p.ProtocolVersion = "2025-06-18"
-		}
-		return s.write(rpcMessage{ID: msg.ID, Result: map[string]any{
-			"protocolVersion": p.ProtocolVersion,
-			"capabilities": map[string]any{
-				"tools":        map[string]any{},
-				"experimental": map[string]any{"claude/channel": map[string]any{}},
-			},
-			"serverInfo":   map[string]any{"name": ServerName, "version": version.Resolved()},
-			"instructions": s.Instructions,
-		}})
-	case "ping":
-		return s.write(rpcMessage{ID: msg.ID, Result: map[string]any{}})
-	case "tools/list":
-		tools := make([]map[string]any, 0, len(s.Tools))
-		for _, t := range s.Tools {
-			tools = append(tools, map[string]any{"name": t.Name, "description": t.Description, "inputSchema": t.Schema})
-		}
-		return s.write(rpcMessage{ID: msg.ID, Result: map[string]any{"tools": tools}})
-	case "tools/call":
-		var p struct {
-			Name      string         `json:"name"`
-			Arguments map[string]any `json:"arguments"`
-		}
-		if err := json.Unmarshal(msg.Params, &p); err != nil {
-			return s.write(rpcMessage{ID: msg.ID, Error: &rpcError{Code: -32602, Message: "invalid params"}})
-		}
-		for _, t := range s.Tools {
-			if t.Name != p.Name {
-				continue
-			}
-			text, err := t.Call(ctx, p.Arguments)
-			if err != nil {
-				return s.write(rpcMessage{ID: msg.ID, Result: map[string]any{
-					"content": []map[string]any{{"type": "text", "text": err.Error()}}, "isError": true,
-				}})
-			}
-			return s.write(rpcMessage{ID: msg.ID, Result: map[string]any{
-				"content": []map[string]any{{"type": "text", "text": text}},
-			}})
-		}
-		return s.write(rpcMessage{ID: msg.ID, Error: &rpcError{Code: -32601, Message: "unknown tool " + p.Name}})
-	default:
-		return s.write(rpcMessage{ID: msg.ID, Error: &rpcError{Code: -32601, Message: "method not found"}})
-	}
-}
+// Server is the stdio MCP server; channel mode sets Channel.
+type Server = meshmcp.Server
 
 // ObjectSchema builds a JSON schema for an object of string/int/bool
 // properties, with the required names.
 func ObjectSchema(props map[string]string, required ...string) map[string]any {
-	p := map[string]any{}
-	for name, desc := range props {
-		typ := "string"
-		switch {
-		case name == "cost_cents" || name == "seq":
-			typ = "integer"
-		case name == "passed":
-			typ = "boolean"
-		}
-		p[name] = map[string]any{"type": typ, "description": desc}
-	}
-	if required == nil {
-		required = []string{}
-	}
-	return map[string]any{"type": "object", "properties": p, "required": required}
+	return meshmcp.ObjectSchema(props, required...)
 }
