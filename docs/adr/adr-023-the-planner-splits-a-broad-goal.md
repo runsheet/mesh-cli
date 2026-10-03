@@ -96,3 +96,34 @@ draft of a `split` answer naming that repo.
   gateway half (`ProjectIndex.maxItems`, `ProposeGoalSplit`,
   `SetGoalCheckpoints`) and the node's hand-in of a `split` answer are
   later items of this goal and amend it.
+
+## Amendment 2026-10-03: the gateway half (item 2)
+
+`internal/gateway` gains `Project.MaxItems`/`DefaultMaxItems` (8) and
+`Project.ItemCap()` (the planner's cap, rule (a)); `Client.GoalDraft`
+and `Client.ProposeGoalSplit` to send a `split` answer's goal drafts as
+`proposeGoalSplit(input: ProposeGoalSplitInput!)`, sent only when
+`Client.TakesGoalSplit` finds `proposeGoalSplit` on the gateway's
+`Mutation` type (introspected and cached, ADR-010's pattern for an
+optional mutation — `takesAttestations`, `TakesPlanQuestions`); and
+`Client.SetGoalCheckpoints`, calling the live `setGoalCheckpoints`
+mutation directly for rule (c)'s goal-level `pr` checkpoint.
+
+**`ProjectIndex.maxItems` is not yet requested over the wire.** ADR-010
+rule 4 fails the generator on an allow-listed field the committed
+`schema.json` lacks, and rule 1 only ever refreshes that file from the
+live gateway (`https://api.runsheet.dev/graphql`) — never by hand
+ahead of the platform. Introspected directly on 2026-10-03,
+`ProjectIndex` has no `maxItems` field and `Mutation` has no
+`proposeGoalSplit`: the platform half, goal `a-goal-fits-in-eight-items`
+(runsheet/runsheet), is still `queued`. So `fields/ProjectIndex.txt`
+cannot gain `maxItems?` yet — doing so before the platform ships the
+field would fail `go generate`, or worse, claim a selection the
+platform refuses, exactly the `secondOpinion` incident ADR-010's own
+amendment warns against. `Project.ItemCap()` returns `DefaultMaxItems`
+(8) until the field is in `schema.json` and the allow-list and a
+refresh follow it; `ProposeGoalSplit` against today's platform is
+`IsUnsupported` (via `TakesGoalSplit`) and sends nothing, so the
+planner's `split` answer is not lost, only not yet relayed.
+`setGoalCheckpoints` needed neither gate: it is already on the public
+schema.
