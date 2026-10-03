@@ -20,8 +20,8 @@ import (
 // the tool's answer, `<tool> refused: <reason>`, never a transport
 // error.
 
-// AskPrefix opens the progress note mesh_ask reports until the hosted
-// mesh_ask exists (the goal's item 6).
+// AskPrefix opens the progress note mesh_ask reports when the platform
+// serves no hosted mesh_ask (ADR-023, Hosted path).
 const AskPrefix = "question: "
 
 // SwitchReason is the release reason mesh_switch gives the item it
@@ -220,6 +220,9 @@ func (p *Personal) progress(ctx context.Context, args map[string]any) (string, e
 	if note == "" {
 		return "", errors.New("note: a note is required")
 	}
+	if p.Join.Hosted.Use(ctx) {
+		return p.Join.hosted(ctx, "mesh_progress", ProgressArgs(h.ItemID, note))
+	}
 	cents, _ := args["costCents"].(float64)
 	if err := p.Join.GW.ReportWorkItemProgress(ctx, h.ItemID, note, int(cents), ""); err != nil {
 		return refused("mesh_progress", err), nil
@@ -227,8 +230,8 @@ func (p *Personal) progress(ctx context.Context, args map[string]any) (string, e
 	return fmt.Sprintf("noted on %s/%d", h.Goal, h.Seq), nil
 }
 
-// ask is mesh_ask: the question as a progress note opening `question: `
-// until the hosted mesh_ask exists.
+// ask is mesh_ask: the hosted mesh_ask when the platform serves it, else
+// the question as a progress note opening `question: `.
 func (p *Personal) ask(ctx context.Context, args map[string]any) (string, error) {
 	h, err := p.pick(args, "item")
 	if err != nil {
@@ -237,6 +240,9 @@ func (p *Personal) ask(ctx context.Context, args map[string]any) (string, error)
 	q := str(args, "question")
 	if q == "" {
 		return "", errors.New("question: a question is required")
+	}
+	if p.Join.Hosted.Use(ctx) {
+		return p.Join.hosted(ctx, "mesh_ask", AskArgs(h.ItemID, q))
 	}
 	if err := p.Join.GW.ReportWorkItemProgress(ctx, h.ItemID, AskPrefix+q, 0, ""); err != nil {
 		return refused("mesh_ask", err), nil
@@ -252,14 +258,22 @@ func (p *Personal) finish(ctx context.Context, args map[string]any) (string, err
 	if err != nil {
 		return "", err
 	}
+	hosted := p.Join.Hosted.Use(ctx)
 	if str(args, "outcome") == "already_done" {
-		if err := p.Join.GW.FinishWorkItemAlreadyDone(ctx, h.ItemID, str(args, "evidence"), 0, nil); err != nil {
+		ans := fmt.Sprintf("finished %s/%d already_done", h.Goal, h.Seq)
+		if hosted {
+			text, err := p.Join.Hosted.Call(ctx, "mesh_finish", FinishDoneArgs(h.ItemID, str(args, "evidence")))
+			if err != nil {
+				return hostedRefused("mesh_finish", err)
+			}
+			ans = text
+		} else if err := p.Join.GW.FinishWorkItemAlreadyDone(ctx, h.ItemID, str(args, "evidence"), 0, nil); err != nil {
 			return refused("mesh_finish", err), nil
 		}
 		if err := p.Join.drop(h.ItemID); err != nil {
 			return "", fmt.Errorf("state: %w", err)
 		}
-		return fmt.Sprintf("finished %s/%d already_done", h.Goal, h.Seq), nil
+		return ans, nil
 	}
 	st := checkout(ctx, h)
 	head, err := p.Join.WS.Push(ctx, h.Path, h.Branch)
@@ -270,13 +284,19 @@ func (p *Personal) finish(ctx context.Context, args map[string]any) (string, err
 	if err != nil {
 		return refused("mesh_finish", fmt.Errorf("push %s: %w", h.Branch, err)), nil
 	}
-	if err := p.Join.GW.FinishWorkItem(ctx, h.ItemID, h.Branch, head, 0, nil); err != nil {
+	ans := fmt.Sprintf("finished %s/%d: pushed %s at %s", h.Goal, h.Seq, h.Branch, head)
+	if hosted {
+		text, err := p.Join.Hosted.Call(ctx, "mesh_finish", FinishArgs(h.ItemID, h.Branch, head))
+		if err != nil {
+			return hostedRefused("mesh_finish", err)
+		}
+		ans = fmt.Sprintf("pushed %s at %s; %s", h.Branch, head, text)
+	} else if err := p.Join.GW.FinishWorkItem(ctx, h.ItemID, h.Branch, head, 0, nil); err != nil {
 		return refused("mesh_finish", err), nil
 	}
 	if err := p.Join.drop(h.ItemID); err != nil {
 		return "", fmt.Errorf("state: %w", err)
 	}
-	ans := fmt.Sprintf("finished %s/%d: pushed %s at %s", h.Goal, h.Seq, h.Branch, head)
 	if st.Uncommitted {
 		ans += "; uncommitted changes in " + h.Path + " were not pushed"
 	}
@@ -293,8 +313,12 @@ func (p *Personal) release(ctx context.Context, args map[string]any) (string, er
 	if reason == "" {
 		return "", errors.New("reason: a reason is required")
 	}
-	if ans, err := p.giveBack(ctx, "mesh_release", h, reason); ans != "" || err != nil {
+	text, ans, err := p.giveBack(ctx, "mesh_release", h, reason)
+	if ans != "" || err != nil {
 		return ans, err
+	}
+	if text != "" {
+		return text, nil
 	}
 	if h.Paired {
 		return fmt.Sprintf("left %s/%d: %s (paired: its holder keeps the claim)", h.Goal, h.Seq, reason), nil
@@ -302,27 +326,72 @@ func (p *Personal) release(ctx context.Context, args map[string]any) (string, er
 	return fmt.Sprintf("released %s/%d: %s", h.Goal, h.Seq, reason), nil
 }
 
-// giveBack releases h and drops it from the state file: a refusal is
-// the answer, "" when released. A paired item is only dropped: its
-// claim is the holder's, not ours to give back.
-func (p *Personal) giveBack(ctx context.Context, tool string, h HeldItem, reason string) (string, error) {
+// giveBack releases h and drops it from the state file: text is the
+// hosted mesh_release's, a refusal is the answer, "" when released. A
+// paired item is only dropped: its claim is the holder's, not ours to
+// give back.
+func (p *Personal) giveBack(ctx context.Context, tool string, h HeldItem, reason string) (text, ans string, err error) {
 	if h.Paired {
 		if err := p.Join.drop(h.ItemID); err != nil {
-			return "", fmt.Errorf("state: %w", err)
+			return "", "", fmt.Errorf("state: %w", err)
 		}
-		return "", nil
+		return "", "", nil
 	}
 	nodeID, err := p.nodeID(ctx)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	if err := p.Join.GW.ReleaseWorkItem(ctx, h.ItemID, nodeID, reason); err != nil {
-		return refused(tool, err), nil
+	text, err = p.Join.release(ctx, h.ItemID, nodeID, reason)
+	var he *HostedError
+	switch {
+	case errors.As(err, &he):
+		return "", tool + " refused: " + he.Text, nil
+	case err != nil:
+		return "", refused(tool, err), nil
 	}
 	if err := p.Join.drop(h.ItemID); err != nil {
-		return "", fmt.Errorf("state: %w", err)
+		return "", "", fmt.Errorf("state: %w", err)
 	}
-	return "", nil
+	return text, "", nil
+}
+
+// release gives the item back: hosted mesh_release, answering its text,
+// when the platform serves it, else releaseWorkItem.
+func (j *Join) release(ctx context.Context, itemID, nodeID, reason string) (string, error) {
+	if j.Hosted.Use(ctx) {
+		return j.Hosted.Call(ctx, "mesh_release", ReleaseArgs(itemID, reason))
+	}
+	return "", j.GW.ReleaseWorkItem(ctx, itemID, nodeID, reason)
+}
+
+// note reports a progress note: hosted mesh_progress when the platform
+// serves it, else reportWorkItemProgress.
+func (j *Join) note(ctx context.Context, itemID, note string) error {
+	if j.Hosted.Use(ctx) {
+		_, err := j.Hosted.Call(ctx, "mesh_progress", ProgressArgs(itemID, note))
+		return err
+	}
+	return j.GW.ReportWorkItemProgress(ctx, itemID, note, 0, "")
+}
+
+// hosted calls a hosted work tool and relays its text; its isError is
+// the answer `<tool> refused: <text>`.
+func (j *Join) hosted(ctx context.Context, tool string, args map[string]any) (string, error) {
+	text, err := j.Hosted.Call(ctx, tool, args)
+	if err != nil {
+		return hostedRefused(tool, err)
+	}
+	return text, nil
+}
+
+// hostedRefused is a hosted call's failure as the tool's answer: the
+// hosted tool's own text when it answered isError, else the error.
+func hostedRefused(tool string, err error) (string, error) {
+	var he *HostedError
+	if errors.As(err, &he) {
+		return tool + " refused: " + he.Text, nil
+	}
+	return refused(tool, err), nil
 }
 
 // switchItem is mesh_switch: push the held item's branch when it has
@@ -365,10 +434,10 @@ func (p *Personal) switchItem(ctx context.Context, args map[string]any) (string,
 	if n > 0 {
 		note += fmt.Sprintf(" (%s pushed, %d commit(s) past %s)", h.Branch, n, baseOf(h))
 	}
-	if err := p.Join.GW.ReportWorkItemProgress(ctx, h.ItemID, note, 0, ""); err != nil {
-		return refused("mesh_switch", err), nil
+	if err := p.Join.note(ctx, h.ItemID, note); err != nil {
+		return hostedRefused("mesh_switch", err)
 	}
-	if ans, err := p.giveBack(ctx, "mesh_switch", h, SwitchReason); ans != "" || err != nil {
+	if _, ans, err := p.giveBack(ctx, "mesh_switch", h, SwitchReason); ans != "" || err != nil {
 		return ans, err
 	}
 	pair, _ := args["pair"].(bool)

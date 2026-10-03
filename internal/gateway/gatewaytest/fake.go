@@ -206,6 +206,14 @@ type Fake struct {
 	// leaves it evaluating. Off, the fake refuses it as the platform does
 	// today ("item is evaluating, not running").
 	PairedFinish bool
+	// HostedWorkTools is the platform's /mcp serving the hosted work
+	// tools (mesh-cli ADR-023, Hosted path): tools/list names mesh_claim,
+	// mesh_progress, mesh_ask, mesh_finish and mesh_release beside the
+	// context tools, and tools/call applies each as its mutation does
+	// (mcp.go). Off, /mcp serves the context tools alone.
+	HostedWorkTools bool
+	// MCPHits counts /mcp requests.
+	MCPHits int
 	// Claims is every claimWorkItem the fake was sent, refused or not
 	// (Calls holds only the ones it took): whether a node asked.
 	Claims []Call
@@ -357,6 +365,7 @@ func New(token string) *Fake {
 	mux.HandleFunc("/graphql", f.graphql)
 	mux.HandleFunc("/mesh/v1/", f.mesh)
 	mux.HandleFunc("/prologue/v1/", f.prologue)
+	mux.HandleFunc("/mcp", f.mcp)
 	f.Server = httptest.NewServer(mux)
 	return f
 }
