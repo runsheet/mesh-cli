@@ -30,11 +30,17 @@ type Registrar struct {
 	// node.yaml's orgs (ResolveScopes). The per-org path reads it, and
 	// the owner path when its answer is nil.
 	Resolve func(ctx context.Context) (Scopes, error)
-	// AnyOrg is an org id for the owner registration's orgId, which the
-	// platform ignores on the owner contract: the first of the token's
-	// person's orgs, unrestricted, or "" when there is none. No
-	// restriction applies, since the answer is what names the orgs.
-	AnyOrg func(ctx context.Context) (string, error)
+	// ConfiguredOrg is an org id for the owner registration's orgId: an
+	// org the node is configured to serve, never an arbitrary one of the
+	// token's person's. When node.yaml's orgs: names any, it is the id of
+	// the first of the token's person's orgs matching one of them
+	// (ConfiguredOrgID); when orgs: is empty, the first of the person's
+	// orgs, unrestricted, as before; when orgs: names some but none
+	// matches, "" and no error — Register notes it
+	// (noConfiguredOrgNote), never sending an unconfigured org. The
+	// platform ignores orgId on the owner contract: the answer is what
+	// names the orgs served.
+	ConfiguredOrg func(ctx context.Context) (string, error)
 	// RegisterOwner is the one registration on the owner contract: the
 	// node's own id, an org id the platform ignores, and the owner's id
 	// to send as ownerId — the enterprise's (ResolveEnterprise) on
@@ -327,6 +333,40 @@ func SaveAdoption(cfg *Config, r Registered, save func() error) error {
 // until a heartbeat's answer names its orgs; it never registers per org.
 const FallbackLine = "register: the platform took owner but answered nil; keeping the owner contract and the orgs node.yaml names until a heartbeat answers"
 
+// noConfiguredOrgNote is logged when node.yaml's orgs: names an org
+// none of the token's person's orgs matches: the owner registration
+// sends no orgId rather than an arbitrary one of the person's orgs.
+const noConfiguredOrgNote = "register: none of the orgs node.yaml names is one of the person's; sending no orgId"
+
+// ConfiguredOrgID is the org id the owner registration's orgId sends,
+// from the token's person's orgs and node.yaml's orgs: restriction —
+// never an org the node is not configured to serve. When configured
+// names any, it is the id of the first of orgs whose Login or
+// TenantSlug matches one of configured (case-insensitive, trimmed, the
+// same rule ResolveScopes applies), and matched is true; none matching
+// is "" and matched false. When configured is empty, it is the id of
+// the first of orgs, unrestricted, as before (matched true), or "" and
+// matched false when orgs is empty.
+func ConfiguredOrgID(orgs []gateway.Org, configured []string) (id string, matched bool) {
+	if len(configured) == 0 {
+		if len(orgs) == 0 {
+			return "", false
+		}
+		return orgs[0].ID, true
+	}
+	want := map[string]bool{}
+	for _, o := range configured {
+		want[strings.ToLower(strings.TrimSpace(o))] = true
+	}
+	for _, o := range orgs {
+		login, slug := strings.ToLower(o.Login), strings.ToLower(o.TenantSlug)
+		if want[login] || want[slug] {
+			return o.ID, true
+		}
+	}
+	return "", false
+}
+
 // OwnedNodeID is the id the node registers under on the owner
 // contract: node.yaml's node_id when set, else
 // gateway.NodeOwnerID(kind, ownerID, slug) — the platform's own formula
@@ -348,7 +388,7 @@ func OwnedNodeID(cfg *Config, kind, ownerID string) string {
 // Register registers the node. The probe comes first. A platform that
 // does not take `owner` gets today's path exactly: Resolve, then
 // RegisterIn per org, no owner sent. One that does gets one
-// RegisterOwner under OwnedNodeID (orgId from AnyOrg), and its answer's
+// RegisterOwner under OwnedNodeID (orgId from ConfiguredOrg), and its answer's
 // scopes, restricted by restrict, are what the node serves: node.yaml's
 // orgs are checked against the answer, never against the person's
 // orgs, so a restriction naming an enterprise org the person is not in
@@ -380,9 +420,12 @@ func Register(ctx context.Context, r Registrar, cfg *Config, restrict []string) 
 		reg.Notes = append(fieldNote, reg.Notes...)
 		return reg, err
 	}
-	orgID, err := r.AnyOrg(ctx)
+	orgID, err := r.ConfiguredOrg(ctx)
 	if err != nil {
 		return Registered{}, err
+	}
+	if orgID == "" && len(restrict) > 0 {
+		fieldNote = append(fieldNote, noConfiguredOrgNote)
 	}
 	ownerID, resolved, err := ownerIDFor(ctx, r, cfg)
 	if err != nil {

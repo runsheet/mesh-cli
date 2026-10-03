@@ -43,7 +43,7 @@ func miniFake(t *testing.T) *gatewaytest.Fake {
 	t.Cleanup(f.Close)
 	f.UserID = miniAdminID
 	f.Enterprises[miniAnythinkID] = gatewaytest.Enterprise{Slug: "anythink", DisplayName: "Anythink", Admins: []string{miniAdminID}}
-	// runsheet first: AnyOrg's pick (the owner contract's orgId, which
+	// runsheet first: ConfiguredOrg's pick (the owner contract's orgId, which
 	// the platform ignores) must not land on grapevine, or the live
 	// row would carry its orgId despite serving none of it.
 	f.Orgs = []map[string]any{

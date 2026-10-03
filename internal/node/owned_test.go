@@ -52,7 +52,7 @@ func (s *steps) registrar() Registrar {
 			}
 			return s.scopes, nil
 		},
-		AnyOrg: func(context.Context) (string, error) {
+		ConfiguredOrg: func(context.Context) (string, error) {
 			s.did = append(s.did, "any org")
 			return "33333333-3333-4333-8333-333333333333", nil
 		},

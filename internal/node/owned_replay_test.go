@@ -14,13 +14,13 @@ import (
 
 // replayRegistrar is mesh node start's registrar on a gateway client:
 // the probe, the person's orgs restricted by node.yaml (ResolveScopes),
-// the person's first org as AnyOrg — as v0.2.264 sent it — and the one
-// owner registration.
+// the person's first org as ConfiguredOrg — as v0.2.264 sent it — and
+// the one owner registration.
 func replayRegistrar(gw *gateway.Client, cfg *Config) Registrar {
 	return Registrar{
 		TakesOwner: gw.TakesOwner,
 		Resolve:    func(ctx context.Context) (Scopes, error) { return ResolveScopes(ctx, gw, cfg) },
-		AnyOrg: func(ctx context.Context) (string, error) {
+		ConfiguredOrg: func(ctx context.Context) (string, error) {
 			orgs, err := gw.MyOrgs(ctx)
 			if err != nil || len(orgs) == 0 {
 				return "", err

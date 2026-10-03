@@ -251,15 +251,20 @@ func registrar(gw *gateway.Client, cfg *node.Config) node.Registrar {
 		LegacyOrgs: func(ctx context.Context) ([]gateway.Org, error) { return gw.MyOrgs(ctx) },
 		Retire:     gw.RetireNode,
 		Resolve:    func(ctx context.Context) (node.Scopes, error) { return node.ResolveScopes(ctx, gw, cfg) },
-		AnyOrg: func(ctx context.Context) (string, error) {
+		ConfiguredOrg: func(ctx context.Context) (string, error) {
 			orgs, err := gw.MyOrgs(ctx)
 			if err != nil {
 				return "", fmt.Errorf("my orgs: %w", err)
 			}
-			if len(orgs) == 0 {
-				return "", nil
+			if len(cfg.Orgs) == 0 {
+				// no restriction: the first org, unrestricted, as before
+				if len(orgs) == 0 {
+					return "", nil
+				}
+				return orgs[0].ID, nil
 			}
-			return orgs[0].ID, nil
+			id, _ := node.ConfiguredOrgID(orgs, cfg.Orgs)
+			return id, nil
 		},
 		RegisterOwner: func(ctx context.Context, nodeID, orgID, ownerID string) (*gateway.NodeAnswer, error) {
 			return gw.RegisterNode(ctx, gateway.RegisterNodeInput{NodeID: nodeID, OrgID: orgID, OwnerID: ownerID, Name: cfg.Name, Slug: cfg.Slug,
