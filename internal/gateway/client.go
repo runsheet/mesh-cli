@@ -123,6 +123,10 @@ type Client struct {
 	// holdingSchema is whether the gateway's heartbeat input was last
 	// found to take `holding` (see HeartbeatNode, takesHolding).
 	holdingSchema holdingProbe
+	// holdingUnclaimedUntilSchema is whether the gateway's
+	// HeartbeatNodeInput's `holding.unclaimed` element type was last
+	// found to take `until` (see takesHoldingUnclaimedUntil).
+	holdingUnclaimedUntilSchema holdingProbe
 	// commitSchema is whether the gateway's heartbeat input was last
 	// found to take `commit` (see takesCommit).
 	commitSchema commitProbe
@@ -1747,6 +1751,13 @@ type HoldingUnclaimed struct {
 	Kind   string `json:"kind"` // "item" or "plan"
 	Count  int    `json:"count"`
 	Reason string `json:"reason"`
+	// Until is when this hold lifts, zero for one with none (adr-005's
+	// amendment 2026-10-03, goal no-headroom-is-a-hold-not-a-claim-loop,
+	// item 4). The reason text already names it (ErrNoHeadroom.Error);
+	// this is the structured copy, sent only when the gateway's
+	// HeartbeatNodeInput's `holding.unclaimed` element type has it
+	// (takesHoldingUnclaimedUntil).
+	Until time.Time `json:"until,omitzero"`
 }
 
 // AdoptedSession is one entry of the heartbeat's `adopted`: the item the
@@ -1893,7 +1904,11 @@ func (c *Client) HeartbeatNode(ctx context.Context, nodeID, version string, runn
 			if h.Unclaimed == nil {
 				h.Unclaimed = []HoldingUnclaimed{}
 			}
-			in["holding"] = &h
+			if c.takesHoldingUnclaimedUntil(ctx) {
+				in["holding"] = &h
+			} else {
+				in["holding"] = holdingWithoutUnclaimedUntil(h)
+			}
 		}
 		if x.Commit != "" && c.takesCommit(ctx) {
 			in["commit"] = x.Commit
@@ -2074,6 +2089,85 @@ func (c *Client) takesHolding(ctx context.Context) bool {
 	for _, f := range out.Type.InputFields {
 		if f.Name == "holding" {
 			p.takes = true
+		}
+	}
+	return p.takes
+}
+
+// holdingWithoutUnclaimedUntil is h with each unclaimed entry's `until`
+// dropped from the wire shape, for a platform whose holding.unclaimed
+// element type does not take it yet (see takesHoldingUnclaimedUntil):
+// an unknown field refuses the whole heartbeat (see HeartbeatNode).
+func holdingWithoutUnclaimedUntil(h Holding) map[string]any {
+	b, _ := json.Marshal(h)
+	m := map[string]any{}
+	_ = json.Unmarshal(b, &m)
+	if list, ok := m["unclaimed"].([]any); ok {
+		for _, e := range list {
+			if em, ok := e.(map[string]any); ok {
+				delete(em, "until")
+			}
+		}
+	}
+	return m
+}
+
+// takesHoldingUnclaimedUntil says whether the gateway's
+// HeartbeatNodeInput's `holding` field's `unclaimed` list carries a
+// `until` field on its element type — asked once by introspection and
+// kept for ScalingProbeEvery, the same as takesLimitsPriorities
+// (ADR-004: the node must not send a field the platform does not
+// accept; adr-005's amendment 2026-10-03,
+// `holding.unclaimed[].until`).
+func (c *Client) takesHoldingUnclaimedUntil(ctx context.Context) bool {
+	p := &c.holdingUnclaimedUntilSchema
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := c.now()
+	if !p.at.IsZero() && now.Sub(p.at) < ScalingProbeEvery {
+		return p.takes
+	}
+	type chainType struct {
+		Kind        string `json:"kind"`
+		InputFields []struct {
+			Name string `json:"name"`
+		} `json:"inputFields"`
+		OfType *chainType `json:"ofType"`
+	}
+	type nestedField struct {
+		Name string    `json:"name"`
+		Type chainType `json:"type"`
+	}
+	var out struct {
+		Type *struct {
+			InputFields []struct {
+				Name string `json:"name"`
+				Type struct {
+					InputFields []nestedField `json:"inputFields"`
+				} `json:"type"`
+			} `json:"inputFields"`
+		} `json:"__type"`
+	}
+	p.at, p.takes = now, false
+	q := `{ __type(name: "HeartbeatNodeInput") { inputFields { name type { inputFields { name type { kind inputFields { name } ofType { kind inputFields { name } ofType { kind inputFields { name } } } } } } } } }`
+	if err := c.Query(ctx, q, nil, &out); err != nil || out.Type == nil {
+		return false
+	}
+	for _, f := range out.Type.InputFields {
+		if f.Name != "holding" {
+			continue
+		}
+		for _, hf := range f.Type.InputFields {
+			if hf.Name != "unclaimed" {
+				continue
+			}
+			for t := &hf.Type; t != nil; t = t.OfType {
+				for _, sf := range t.InputFields {
+					if sf.Name == "until" {
+						p.takes = true
+					}
+				}
+			}
 		}
 	}
 	return p.takes
