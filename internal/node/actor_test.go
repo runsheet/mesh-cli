@@ -45,9 +45,9 @@ func (g *actorGW) ReportWorkItemProgress(ctx context.Context, itemID, note strin
 	return g.Gateway.ReportWorkItemProgress(ctx, itemID, note, costCents, sessionID)
 }
 
-func (g *actorGW) FinishWorkItem(ctx context.Context, itemID, branch, headSha string, costCents int, usage *gateway.UsageReport) error {
+func (g *actorGW) FinishWorkItem(ctx context.Context, itemID, branch, headSha string, costCents int, usage *gateway.UsageReport, description ...string) error {
 	g.note("finishWorkItem", ctx)
-	return g.Gateway.FinishWorkItem(ctx, itemID, branch, headSha, costCents, usage)
+	return g.Gateway.FinishWorkItem(ctx, itemID, branch, headSha, costCents, usage, description...)
 }
 
 // A build's claim, progress and finish act as agent:builder@<slug>, the

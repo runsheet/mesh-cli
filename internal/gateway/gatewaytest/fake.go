@@ -139,6 +139,11 @@ type Fake struct {
 	// no `actor`, introspection leaves it out, and a command of the five
 	// carrying it is refused with "Unknown field".
 	NoActor bool
+	// NoDescription is a platform older than every-actor-has-a-name item
+	// 3: its FinishWorkItemInput has no `description`, introspection
+	// leaves it out, and a finishWorkItem carrying it is refused with
+	// "Unknown field".
+	NoDescription bool
 	// GoalSplit is a platform whose Mutation has proposeGoalSplit
 	// (ADR-023, the size rule): false, as the platform is today (goal
 	// a-goal-fits-in-eight-items is still queued), leaves the field out
@@ -559,6 +564,9 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 			if n == gateway.ActorField && f.NoActor {
 				continue
 			}
+			if n == gateway.DescriptionField && f.NoDescription {
+				continue
+			}
 			fields = append(fields, map[string]any{"name": n})
 		}
 		writeData(w, map[string]any{"__type": map[string]any{"inputFields": fields}})
@@ -649,6 +657,12 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 		if t, ok := actorMutations[m[2]]; ok && f.NoActor {
 			if _, ok := in[gateway.ActorField]; ok {
 				writeErrors(w, 200, fmt.Sprintf(`Variable "$in" got invalid value; Unknown field "actor" is not defined by type %q.`, t))
+				return
+			}
+		}
+		if m[2] == "finishWorkItem" && f.NoDescription {
+			if _, ok := in[gateway.DescriptionField]; ok {
+				writeErrors(w, 200, `Variable "$in" got invalid value; Unknown field "description" is not defined by type "FinishWorkItemInput".`)
 				return
 			}
 		}
@@ -1423,6 +1437,9 @@ func (f *Fake) apply(name string, in map[string]any) error {
 			return fmt.Errorf("no such item")
 		}
 		outcome, _ := in["outcome"].(string)
+		if d, ok := in[gateway.DescriptionField]; ok {
+			item[gateway.DescriptionField] = d
+		}
 		if f.PairedFinish && item["status"] == "evaluating" && (outcome == "" || outcome == "built") && in["branch"] != nil && in["branch"] == item["branch"] {
 			item["headSha"] = in["headSha"]
 			item["costCents"] = toInt(item["costCents"]) + toInt(in["costCents"])

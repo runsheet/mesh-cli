@@ -169,7 +169,11 @@ type Client struct {
 	// actorSchema is, per input type, whether the gateway's command input
 	// was last found to take `actor` (see withActor).
 	actorSchema actorProbes
-	Now         func() time.Time
+	// descriptionSchema is whether the gateway's FinishWorkItemInput was
+	// last found to take `description` (see withDescription,
+	// every-actor-has-a-name item 3).
+	descriptionSchema holdingProbe
+	Now               func() time.Time
 }
 
 // New returns a client for baseURL (scheme+host, no trailing slash) with
@@ -2517,24 +2521,50 @@ func (c *Client) ReportWorkItemProgress(ctx context.Context, itemID, note string
 	return c.Mutate(ctx, "reportWorkItemProgress", itemID, map[string]any{"note": note, "costCents": costCents, "sessionId": sessionID})
 }
 
+// DescriptionField is FinishWorkItemInput's key for the PR body the
+// platform opens the pull request with (FinishDescription, the node's
+// every-actor-has-a-name item 3): who built the item, who it was paired
+// with, and that the evaluator is named by the evaluation's own actor.
+// Sent only when the platform's input takes it (withDescription).
+const DescriptionField = "description"
+
+// withDescription puts description's first non-empty value on in as
+// DescriptionField when the platform's FinishWorkItemInput takes it —
+// introspected once and kept for ScalingProbeEvery, as withActor is. A
+// platform without the field gets the finish without it, never an
+// error.
+func (c *Client) withDescription(ctx context.Context, in map[string]any, description []string) {
+	if len(description) == 0 || description[0] == "" {
+		return
+	}
+	if c.takesInputField(ctx, &c.descriptionSchema, "FinishWorkItemInput", DescriptionField) {
+		in[DescriptionField] = description[0]
+	}
+}
+
 // FinishWorkItem records the pushed branch: the outcome built, which
 // the platform takes as the default, so the input is the one a platform
 // without outcomes knows. usage is the build session's usage report,
 // carried as `usage` when non-nil (see UsageReport, ErrNoUsageLedger).
-func (c *Client) FinishWorkItem(ctx context.Context, itemID, branch, headSha string, costCents int, usage *UsageReport) error {
-	return c.mutateWithUsage(ctx, "finishWorkItem", itemID, map[string]any{"branch": branch, "headSha": headSha, "costCents": costCents}, usage)
+// description, given and non-empty, is the PR body (DescriptionField).
+func (c *Client) FinishWorkItem(ctx context.Context, itemID, branch, headSha string, costCents int, usage *UsageReport, description ...string) error {
+	in := map[string]any{"branch": branch, "headSha": headSha, "costCents": costCents}
+	c.withDescription(ctx, in, description)
+	return c.mutateWithUsage(ctx, "finishWorkItem", itemID, in, usage)
 }
 
 // FinishWorkItemAlreadyDone finishes the item with no branch: main
 // already holds its work, and evidence — the merged PR URLs and/or
 // commit SHAs on the base ref, with a line on why — is what the
 // evaluator checks against the acceptance (mesh ADR 003 decision 1).
-// usage is the build session's usage report, as FinishWorkItem's.
-func (c *Client) FinishWorkItemAlreadyDone(ctx context.Context, itemID, evidence string, costCents int, usage *UsageReport) error {
+// usage and description are as FinishWorkItem's.
+func (c *Client) FinishWorkItemAlreadyDone(ctx context.Context, itemID, evidence string, costCents int, usage *UsageReport, description ...string) error {
 	if strings.TrimSpace(evidence) == "" {
 		return errors.New("gateway: an already_done finish needs evidence")
 	}
-	return c.mutateWithUsage(ctx, "finishWorkItem", itemID, map[string]any{"outcome": OutcomeAlreadyDone, "evidence": evidence, "costCents": costCents}, usage)
+	in := map[string]any{"outcome": OutcomeAlreadyDone, "evidence": evidence, "costCents": costCents}
+	c.withDescription(ctx, in, description)
+	return c.mutateWithUsage(ctx, "finishWorkItem", itemID, in, usage)
 }
 
 // FailWorkItem records the failure.
