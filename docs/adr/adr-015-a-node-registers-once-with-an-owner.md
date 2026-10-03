@@ -1,5 +1,5 @@
 ---
-summary: The node registers with an owner (a person by default, or `enterprise` for shared infra), and registerNode/heartbeatNode answer with the node's one id and its scopes — the orgs it serves — so the node stops deriving them by re-reading the person's orgs; a platform whose schema does not take `owner` keeps today's per-org registration, and one that takes it but answers nil keeps the owner contract.
+summary: The node registers with an owner (a person by default, or `enterprise` for shared infra), and registerNode/heartbeatNode answer with the node's one id and its scopes — the orgs it serves — so the node stops deriving them by re-reading the person's orgs; a platform whose schema takes neither `ownerKind` nor `owner` keeps today's per-org registration, and one that takes it but answers nil keeps the owner contract.
 status: accepted
 ---
 
@@ -327,3 +327,39 @@ the one id, a `ClaimWorkItem` in each of registerNode.json's three orgs
 on it, and heartbeatNode.json's fourth org claimed from on the next
 tick with no restart. All run with `go test ./internal/node -run
 '^TestOwned'`.
+
+## The owner field is ownerKind (2026-10-03)
+
+The platform's `RegisterNodeInput` spells the owner kind `ownerKind`
+(runsheet goal registernode-answers-with-the-node-it-made), not
+`owner` as this ADR first wrote it. A node that probed for `owner`
+alone found none on the live platform and stayed on the per-org
+contract forever — the Mini's row in Grapevine, an org outside its
+enterprise (goal the-mini-serves-its-enterprise-and-nothing-else).
+
+**The probe accepts either spelling.** `Client.OwnerField` introspects
+`RegisterNodeInput` once per `ScalingProbeEvery` and answers
+`ownerKind`, `owner` (a platform before it), or `""`; `ownerKind`
+wins where both are present. `TakesOwner` is `OwnerField != ""`, so
+whichever side deploys first, the probe is true once both have.
+
+**RegisterNode sends the one the schema has**, never both:
+`RegisterNodeInput.Owner` goes out under `OwnerField`'s name.
+
+**ownerId is the owner's id.** The owner contract requires `ownerId`
+to name the owner itself — the person's user id for a person, the
+enterprise's id for an enterprise — and the platform admits an
+enterprise registration only from an admin of that enterprise
+(`adminOnEnterprise(ownerId)`). The node resolves an enterprise's id
+from node.yaml's `enterprise:` through `Client.MyEnterprises`
+(`myEnterprises`, a Map scalar decoded like `myOrgs`). The node
+retires its own legacy per-org rows with `Client.RetireNode`
+(`retireNode`) once it registers on the owner path.
+
+The fake (`gatewaytest`) lists `ownerKind` by default and `owner` when
+`OwnerFieldLegacy`; `UnknownFields` hides either spelling. It serves
+`myEnterprises` from `Fake.Enterprises` the caller admins, refuses an
+enterprise registration whose `ownerId` the caller does not admin with
+an error naming `adminOnEnterprise`, and serves `retireNode` (the row's
+status `retired`; an unknown id `no such node`). Tests:
+`internal/gateway/ownerfield_test.go`.

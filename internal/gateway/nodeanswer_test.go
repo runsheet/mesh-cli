@@ -146,7 +146,7 @@ func TestRegisterNodeAnswerFromFixture(t *testing.T) {
 	got, err := gw.RegisterNode(context.Background(), gateway.RegisterNodeInput{
 		NodeID: str(in, "aggregateId"), OrgID: str(in, "orgId"), OwnerID: str(in, "ownerId"),
 		Name: str(in, "name"), Slug: str(in, "slug"), Harnesses: strs(in, "harnesses"),
-		Capacity: num(in, "capacity"), Version: str(in, "version"), Owner: str(in, "owner"),
+		Capacity: num(in, "capacity"), Version: str(in, "version"), Owner: str(in, "ownerKind"),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -154,7 +154,7 @@ func TestRegisterNodeAnswerFromFixture(t *testing.T) {
 	answersEqual(t, got, fx.strictAnswer(t))
 
 	calls := f.CallsNamed("registerNode")
-	if len(calls) != 1 || calls[0].Input["owner"] != str(in, "owner") {
+	if len(calls) != 1 || calls[0].Input["ownerKind"] != str(in, "ownerKind") {
 		t.Fatalf("registerNode calls = %+v", calls)
 	}
 }
@@ -199,7 +199,7 @@ func TestNodeAnswerNilWithoutOwnerOrScopes(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("registerNode calls = %+v", calls)
 	}
-	if _, sent := calls[0].Input["owner"]; sent {
+	if _, sent := calls[0].Input["ownerKind"]; sent {
 		t.Fatalf("registerNode sent owner with Owner empty: %+v", calls[0].Input)
 	}
 
@@ -278,7 +278,7 @@ func TestMyOrgsIsAMapScalar(t *testing.T) {
 }
 
 // TakesOwner says whether the platform's RegisterNodeInput has an
-// `owner` field, by introspection.
+// owner field, by introspection (ownerfield_test.go for the spellings).
 func TestTakesOwner(t *testing.T) {
 	f := gatewaytest.New("rs_test")
 	defer f.Close()
@@ -292,6 +292,7 @@ func TestTakesOwnerFalseOnAnOlderPlatform(t *testing.T) {
 	f := gatewaytest.New("rs_test")
 	defer f.Close()
 	f.UnknownFields["owner"] = true
+	f.UnknownFields["ownerKind"] = true
 	gw := gateway.New(f.URL(), "rs_test")
 	if gw.TakesOwner(context.Background()) {
 		t.Fatal("TakesOwner = true, want false")
