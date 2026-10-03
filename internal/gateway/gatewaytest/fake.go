@@ -348,6 +348,13 @@ func (f *Fake) Item(id string) map[string]any {
 	return copyRow(f.WorkItems[id])
 }
 
+// Goal is a copy of the goal's row, read under the fake's lock.
+func (f *Fake) Goal(id string) map[string]any {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return copyRow(f.Goals[id])
+}
+
 func copyRow(r map[string]any) map[string]any {
 	if r == nil {
 		return nil
@@ -1427,7 +1434,7 @@ func (f *Fake) apply(name string, in map[string]any) error {
 		direction["answers"] = in["answers"]
 		direction["researchCostCents"] = toInt(in["costCents"])
 		direction["researchNotes"] = in["notes"]
-	case "pauseGoal", "resumeGoal", "cancelGoal", "approveGraph", "planGoal", "requestPlan", "claimPlan":
+	case "pauseGoal", "resumeGoal", "cancelGoal", "approveGraph", "planGoal", "requestPlan", "claimPlan", "releasePlan":
 		if f.Goals[id] == nil {
 			return fmt.Errorf("no such goal")
 		}
@@ -1456,6 +1463,24 @@ func (f *Fake) apply(name string, in map[string]any) error {
 				return fmt.Errorf("another node is planning it")
 			}
 			f.Goals[id]["plannerNodeId"] = in["nodeId"]
+			f.Goals[id]["planClaimedAt"] = time.Now().UTC().Format(time.RFC3339)
+		case "releasePlan":
+			// adr-022, A fetch that fails is reported: the claim is
+			// cleared, the goal stays in planning, and the note is its
+			// planError. nodeId is required, as on ReleaseWorkItemInput,
+			// and only the holder may release.
+			node, _ := in["nodeId"].(string)
+			if node == "" {
+				return fmt.Errorf("releasePlan: nodeId is required")
+			}
+			if held, _ := f.Goals[id]["plannerNodeId"].(string); held != "" && held != node {
+				return fmt.Errorf("the plan claim is not node %s's", node)
+			}
+			if f.Goals[id]["status"] != "planning" {
+				return fmt.Errorf("goal is %s, not planning", f.Goals[id]["status"])
+			}
+			f.Goals[id]["plannerNodeId"], f.Goals[id]["planClaimedAt"] = nil, nil
+			f.Goals[id]["planError"] = in["note"]
 		}
 	}
 	return nil

@@ -834,7 +834,15 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   first sorted repo's row with a fresh `GH_CONFIG_DIR`; a refusal or a
   repo with no row is the plan's error naming it, before any session; a
   platform without the read plans on the operator's `gh`, said once per
-  run (`TokenFallback.NotePlan`). The director's research fetch stays
+  run (`TokenFallback.NotePlan`). A plan that fails there — the token,
+  the `Authorize` or the `Fetch` (`PlanFetchError{Repo, Err}`) — is
+  reported, not left to lapse: `ReleasePlan(goal, node, <err>)`
+  (mutation `releasePlan`, `{nodeId, note}`) releases the plan claim
+  with the error, the goal's `planError` on the platform, logged `goal
+  <slug>: fetch failed: <err>; plan claim released`, no try counted
+  against `MaxPlanAttempts`; a platform without it is said once per run
+  (`takes no plan release`) and the try counted, a refused release
+  logged with its error (adr-022, A fetch that fails is reported). The director's research fetch stays
   on the operator's `gh` and `git` until it reads
   `ResearchGitHubTokens`.
 - A change to what the node reports or claims changes the platform's

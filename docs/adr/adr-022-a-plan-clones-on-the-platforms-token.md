@@ -134,3 +134,35 @@ removed when the session ends unless it detached. An old platform
 per run by the planner's own `TokenFallback` (`NotePlan`): `goal <slug>:
 platform issues no plan token; fetching on the operator's gh`. The
 director's research is item 3.
+
+## A fetch that fails is reported
+
+Item 4 of the goal. A plan that fails before its session opens — a plan
+token refused or missing for a repo, a checkout's `Authorize`, or its
+`Fetch` (`gh repo clone … exit status 4` on the grapevine node) — is a
+`*PlanFetchError{Repo, Err}` from `Planner.plan`, and `Planner.Plan`
+hands the claim back with it: mutation `releasePlan` on the goal id,
+`{nodeId, note}`, the shape of `releaseWorkItem`, the note the error's
+own text (`fetch acme/widgets: …`, `plan github token: … acme/gadgets`).
+The node logs `goal <slug>: fetch failed: <err>; plan claim released`
+and counts no try against `MaxPlanAttempts`: the platform holds the
+record now, and the loop's `planRequested` claims again on its tick as
+before, so a failure that repeats is repeated to the platform each time
+instead of a silent claim that lapses every 30 minutes.
+
+A platform without `releasePlan` (`IsUnsupported`) is said once per run
+— `goal <slug>: the platform takes no plan release; the claim lapses
+and the try counts` — and the try counted as before; a release the
+platform refuses is logged with its error (`plan release refused: …`)
+and the try counted. The no-credential and no-headroom holds
+(`NoCredentialOf`, `NoHeadroomOf`) are unchanged: they come after the
+fetch and are holds, not failures.
+
+**The platform half is runsheet's.** `releasePlan` clears the goal's
+plan claim (`planClaimedAt`, the claiming node), keeps it in
+`planning`, and records the note as the goal's `planError`, which
+`GoalIndex` shows; on the second identical `planError` it raises a
+Needs-you row for the org's admins naming the repo and the error. The
+gatewaytest fake mirrors the first part (`releasePlan` in `apply`,
+`Unsupported["releasePlan"]` refusing the field); the Needs-you row and
+its e2e are runsheet's to land, first, under the contract rule.

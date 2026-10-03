@@ -2385,6 +2385,23 @@ func (c *Client) ReleaseWorkItem(ctx context.Context, itemID, nodeID, reason str
 	return c.Mutate(ctx, "releaseWorkItem", itemID, map[string]any{"nodeId": nodeID, "note": reason})
 }
 
+// ReleasePlan hands back a goal's plan claim this node holds, with why:
+// a fetch or a plan token that failed before the session opened
+// (adr-022, A fetch that fails is reported). The platform clears the
+// claim, keeps the goal in planning and records the note as the goal's
+// planError — on a second identical one, a Needs-you row for the org's
+// admins (runsheet's half). The shape of ReleaseWorkItem; a platform
+// without the mutation answers IsUnsupported.
+func (c *Client) ReleasePlan(ctx context.Context, goalID, nodeID, reason string) error {
+	const field = "releasePlan"
+	err := c.Mutate(ctx, field, goalID, map[string]any{"nodeId": nodeID, "note": reason})
+	var ge *Error
+	if errors.As(err, &ge) && (unknownOperation(ge.Message, field) || schemaMismatch(ge.Message, field)) {
+		return &Error{Message: ge.Message, Unsupported: true}
+	}
+	return err
+}
+
 // EvaluateChoice is the evaluate path's choice of evaluator for an item
 // (goal one-evaluator-for-ordinary-work): EvaluatedModel is the tier the
 // deciding evaluation ran on, recorded as evaluatedModel. A zero value

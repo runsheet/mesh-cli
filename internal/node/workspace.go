@@ -997,6 +997,9 @@ type Gateway interface {
 	FinishWorkItemAlreadyDone(ctx context.Context, itemID, evidence string, costCents int, usage *gateway.UsageReport) error
 	FailWorkItem(ctx context.Context, itemID, errMsg string) error
 	ReleaseWorkItem(ctx context.Context, itemID, nodeID, reason string) error
+	// ReleasePlan hands back a goal's plan claim with why, the goal's
+	// planError on the platform (adr-022, A fetch that fails is reported).
+	ReleasePlan(ctx context.Context, goalID, nodeID, reason string) error
 	IssueItemRepoToken(ctx context.Context, itemID, nodeID string) (*gateway.GitHubToken, error)
 	// PlanGitHubTokens / ResearchGitHubTokens are IssueItemRepoToken for
 	// a plan's or a direction's own fetch (adr-022): one token per repo

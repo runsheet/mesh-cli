@@ -54,7 +54,23 @@ type Planner struct {
 	// fallback says once per run that the platform issues no plan
 	// tokens (adr-022): the planner's own, apart from the items'.
 	fallback TokenFallback
+	// noRelease says once per run that the platform takes no
+	// releasePlan (adr-022, A fetch that fails is reported).
+	noRelease sync.Once
 }
+
+// PlanFetchError is a plan's failure before its session opens: a repo's
+// plan token refused or missing, its checkout's authorization, or its
+// fetch (adr-022). Repo is the owner/name it names, "" when the
+// platform's refusal named none we could pick out; Err is the whole
+// error, its text the release's note.
+type PlanFetchError struct {
+	Repo string
+	Err  error
+}
+
+func (e *PlanFetchError) Error() string { return e.Err.Error() }
+func (e *PlanFetchError) Unwrap() error { return e.Err }
 
 // MaxPlanAttempts is how many unreadable plans a goal gets before the
 // planner stops trying (until the node restarts).
@@ -103,15 +119,33 @@ func (p *Planner) Plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 	}
 	err := p.plan(ctx, goal, scope)
 	if _, ok := NoCredentialOf(err); ok {
-		// no credential issued is a hold, not a try: the platform has no
-		// release for a plan claim, so it lapses, and the loop asks again
-		// once Loop.NoCredential's re-check is due
+		// no credential issued is a hold, not a try: the claim lapses,
+		// and the loop asks again once Loop.NoCredential's re-check is due
 		return err
 	}
 	if _, ok := NoHeadroomOf(err); ok {
 		// issued credentials with no headroom are a hold too, until the
 		// earliest resets: the claim lapses and no try is counted
 		return err
+	}
+	var fe *PlanFetchError
+	if errors.As(err, &fe) && ctx.Err() == nil {
+		// a fetch or a plan token that failed before the session opened
+		// is reported: the claim is released with the error, the goal's
+		// planError on the platform, which holds the record from here —
+		// no try is counted (adr-022, A fetch that fails is reported)
+		rerr := p.GW.ReleasePlan(ctx, goal.ID, scope.NodeID, err.Error())
+		switch {
+		case rerr == nil:
+			p.logf("goal %s: fetch failed: %v; plan claim released", goal.Slug, err)
+			return err
+		case gateway.IsUnsupported(rerr):
+			p.noRelease.Do(func() {
+				p.logf("goal %s: the platform takes no plan release; the claim lapses and the try counts (said once per run)", goal.Slug)
+			})
+		default:
+			p.logf("goal %s: fetch failed: %v; plan release refused: %v", goal.Slug, err, rerr)
+		}
 	}
 	if err != nil && ctx.Err() == nil {
 		p.mu.Lock()
@@ -333,11 +367,11 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 		path := filepath.Join(dir, sub)
 		if toks != nil {
 			if err := p.WS.Authorize(ctx, PlanRepoSpec(name, path), toks[name]); err != nil {
-				return fmt.Errorf("authorize %s: %w", name, err)
+				return &PlanFetchError{Repo: name, Err: fmt.Errorf("authorize %s: %w", name, err)}
 			}
 		}
 		if err := p.WS.Fetch(ctx, name, path); err != nil {
-			return fmt.Errorf("fetch %s: %w", name, err)
+			return &PlanFetchError{Repo: name, Err: fmt.Errorf("fetch %s: %w", name, err)}
 		}
 		dirs[name] = sub
 	}
@@ -452,8 +486,8 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 }
 
 // planTokens reads the goal's plan GitHub tokens (adr-022), keyed by
-// each of names (owner/name). A refusal, or a repo with no row, is an
-// error naming it, before any fetch; an old platform
+// each of names (owner/name). A refusal, or a repo with no row, is a
+// *PlanFetchError naming it, before any fetch; an old platform
 // (gateway.IsUnsupported) is nil, nil, said once per run: the fetch
 // runs on the operator's gh as before.
 func (p *Planner) planTokens(ctx context.Context, goal gateway.Goal, nodeID string, names []string) (map[string]*gateway.GitHubToken, error) {
@@ -463,7 +497,15 @@ func (p *Planner) planTokens(ctx context.Context, goal gateway.Goal, nodeID stri
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("plan github token: %w", err)
+		// the platform's refusal names the repo it could not reach
+		fe := &PlanFetchError{Err: fmt.Errorf("plan github token: %w", err)}
+		for _, name := range names {
+			if strings.Contains(strings.ToLower(err.Error()), strings.ToLower(name)) {
+				fe.Repo = name
+				break
+			}
+		}
+		return nil, fe
 	}
 	byRepo := map[string]*gateway.GitHubToken{}
 	for i := range rows {
@@ -473,7 +515,7 @@ func (p *Planner) planTokens(ctx context.Context, goal gateway.Goal, nodeID stri
 	for _, name := range names {
 		tok := byRepo[strings.ToLower(name)]
 		if tok == nil {
-			return nil, fmt.Errorf("plan github token: the platform issued none for %s", name)
+			return nil, &PlanFetchError{Repo: name, Err: fmt.Errorf("plan github token: the platform issued none for %s", name)}
 		}
 		toks[name] = tok
 	}

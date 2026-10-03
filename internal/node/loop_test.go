@@ -94,6 +94,8 @@ type fakeWS struct {
 	// "fetch <repo>", in the order they came (a plan's fetch, adr-022)
 	authorized []string
 	repoOps    []string
+	// fetchErr, when set, is what every Fetch answers
+	fetchErr error
 }
 
 func (w *fakeWS) Authorize(_ context.Context, spec WorkspaceSpec, tok *gateway.GitHubToken) error {
@@ -153,6 +155,9 @@ func (w *fakeWS) Fetch(_ context.Context, repo, dir string) error {
 	defer w.mu.Unlock()
 	w.fetched = append(w.fetched, repo+" → "+dir)
 	w.repoOps = append(w.repoOps, "fetch "+repo)
+	if w.fetchErr != nil {
+		return w.fetchErr
+	}
 	return os.MkdirAll(dir, 0o755)
 }
 
