@@ -38,7 +38,7 @@ func TestPlanPromptHostRule(t *testing.T) {
 			}
 		}
 	}
-	if !strings.Contains(reask, "goes in the goal's acceptance. "+planHostRule+" "+planSplitRule+" Write the whole graph again") {
+	if !strings.Contains(reask, "goes in the goal's acceptance. "+planHostRule+" "+planSplitRule+" "+planSizeRule+" "+planCloseOutRule+" "+planCutOverRule+" "+planRepoRule+" Write the whole graph again") {
 		t.Errorf("the re-ask does not restate the host rule:\n%s", reask)
 	}
 }
@@ -147,6 +147,60 @@ func TestPlanPromptReplacingItem(t *testing.T) {
 	}
 	if strings.Index(sec, "RegisterNode pins") > strings.Index(sec, "transfersNode applies") {
 		t.Error("failed clauses are not oldest first")
+	}
+}
+
+// An item's `precondition` is kept, like `atomic`; without one it is
+// empty (ADR-023, planCutOverRule).
+func TestParsePlanPrecondition(t *testing.T) {
+	items, err := ParsePlan("```json\n" + `{"items": [{"seq": 1, "title": "Ship", "repo": "o/r", "acceptance": "the release is cut", "precondition": "a person confirms the release in production"}, {"seq": 2, "title": "Other", "repo": "o/r"}]}` + "\n```")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if items[0].Precondition != "a person confirms the release in production" {
+		t.Errorf("precondition = %q, want the clause", items[0].Precondition)
+	}
+	if items[1].Precondition != "" {
+		t.Errorf("an item without precondition has %q", items[1].Precondition)
+	}
+}
+
+// ParsePlanSplit reads a `split` answer of goal drafts, each with its
+// slug, title, statement, acceptance and repo (ADR-023, planSizeRule);
+// an `items` answer with no `split` is ok=false, not an empty split.
+func TestParsePlanSplit(t *testing.T) {
+	text := "Over the cap.\n\n```json\n" + `{"split": [{"slug": "a-goal", "title": "A goal", "statement": "A is true", "acceptance": "a test proves it", "repo": "o/r"}, {"slug": "b-goal", "title": "B goal", "statement": "B is true", "acceptance": "a test proves it", "repo": "o/r2"}]}` + "\n```"
+	drafts, ok := ParsePlanSplit(text)
+	if !ok {
+		t.Fatal("ok = false, want true")
+	}
+	if len(drafts) != 2 {
+		t.Fatalf("drafts = %+v, want 2", drafts)
+	}
+	if drafts[0] != (GoalDraft{Slug: "a-goal", Title: "A goal", Statement: "A is true", Acceptance: "a test proves it", Repo: "o/r"}) {
+		t.Errorf("draft 0 = %+v", drafts[0])
+	}
+	if drafts[1].Slug != "b-goal" || drafts[1].Repo != "o/r2" {
+		t.Errorf("draft 1 = %+v", drafts[1])
+	}
+	itemsText := "```json\n" + `{"items": [{"seq": 1, "title": "T", "repo": "o/r"}]}` + "\n```"
+	if got, ok := ParsePlanSplit(itemsText); ok {
+		t.Errorf("an items answer read as a split: %+v", got)
+	}
+}
+
+// ParsePlanCheckpoints reads `checkpoints` beside `items`, like
+// ParsePlanQuestions; a graph with none has none (ADR-023,
+// planCutOverRule).
+func TestParsePlanCheckpoints(t *testing.T) {
+	text := "```json\n" + `{"items": [{"seq": 1, "title": "T", "repo": "o/r"}], "checkpoints": ["pr"]}` + "\n```"
+	got := ParsePlanCheckpoints(text)
+	if len(got) != 1 || got[0] != "pr" {
+		t.Fatalf("checkpoints = %+v, want [pr]", got)
+	}
+	none := ParsePlanCheckpoints("```json\n" + `{"items": [{"seq": 1, "title": "T", "repo": "o/r"}]}` + "\n```")
+	if none != nil {
+		t.Fatalf("no checkpoints read as %+v", none)
 	}
 }
 
@@ -355,12 +409,67 @@ func TestPlanPromptRejected(t *testing.T) {
 	p := PlanPrompt(PlanInput{GoalSlug: "g", GoalTitle: "G", Org: "o", Project: "p", Rejected: []string{"item 1 (Ship): a check on its own pull request (`deploy / verify`)"}})
 	for _, want := range []string{
 		"## Your last answer was flagged\n\nThe node checked your graph before handing it in and flagged these items — an acceptance naming what no evaluator can see or a reading of the host as a merge gate, or a model the scorecard says does not work on its repo:\n\n- item 1 (Ship): a check on its own pull request (`deploy / verify`)\n\n",
-		"Work like that becomes its own item in the right repo, or goes in the goal's acceptance. " + planHostRule + " " + planSplitRule + " Write the whole graph again with those acceptances and models rewritten; this is the last ask.\n",
+		"Work like that becomes its own item in the right repo, or goes in the goal's acceptance. " + planHostRule + " " + planSplitRule + " " + planSizeRule + " " + planCloseOutRule + " " + planCutOverRule + " " + planRepoRule + " Write the whole graph again with those acceptances and models rewritten; this is the last ask.\n",
 	} {
 		if !strings.Contains(p, want) {
 			t.Errorf("plan prompt lacks %q", want)
 		}
 	}
+}
+
+// ADR-023's planner half: rule 3 and the re-ask carry the four rules —
+// size, close-out, cut-over, repo — each on its own line after
+// planSplitRule; a PlanInput naming MaxItems renders it in rule 2, and
+// an over-cap re-ask asks for `split`, not `items`.
+func TestPlanPromptFourRules(t *testing.T) {
+	first := PlanPrompt(PlanInput{GoalSlug: "g", GoalTitle: "G", Org: "o", Project: "p"})
+	reask := PlanPrompt(PlanInput{GoalSlug: "g", GoalTitle: "G", Org: "o", Project: "p", Rejected: []string{"the plan has 12 items; the project's cap is 8"}})
+	rule3 := func(p string) string {
+		i, j := strings.Index(p, "\n3. "), strings.Index(p, "\n4. ")
+		if i < 0 || j < i {
+			t.Fatalf("no rule 3:\n%s", p)
+		}
+		return p[i : j+1]
+	}
+	for name, text := range map[string]string{"rule 3": rule3(first), "re-ask rule 3": rule3(reask)} {
+		for _, rule := range []string{planSplitRule, planSizeRule, planCloseOutRule, planCutOverRule, planRepoRule} {
+			if !strings.Contains(text, rule) {
+				t.Errorf("%s lacks a rule:\n%s", name, text)
+			}
+		}
+		i := strings.Index(text, planSplitRule)
+		j := strings.Index(text, planSizeRule)
+		if i < 0 || j < i {
+			t.Errorf("%s: planSizeRule does not follow planSplitRule:\n%s", name, text)
+		}
+	}
+	if !strings.Contains(reask, planSplitRule+" "+planSizeRule+" "+planCloseOutRule+" "+planCutOverRule+" "+planRepoRule) {
+		t.Errorf("the re-ask does not carry the four rules after planSplitRule:\n%s", reask)
+	}
+	capped := PlanPrompt(PlanInput{GoalSlug: "g", GoalTitle: "G", Org: "o", Project: "p", MaxItems: 8})
+	if !strings.Contains(rule3Rule2(t, capped), "Two to 8 items") {
+		t.Errorf("rule 2 does not name the cap:\n%s", capped)
+	}
+	overCap := PlanPrompt(PlanInput{GoalSlug: "g", GoalTitle: "G", Org: "o", Project: "p", MaxItems: 8, OverCap: true,
+		Rejected: []string{"the plan has 12 items; the project's cap is 8"}})
+	i := strings.Index(overCap, "## Your last answer was flagged")
+	if i < 0 {
+		t.Fatalf("no re-ask:\n%s", overCap)
+	}
+	if reaskText := overCap[i:]; !strings.Contains(reaskText, "answer `split`, not `items`") {
+		t.Errorf("an over-cap re-ask does not ask for split, not items:\n%s", reaskText)
+	} else if strings.Contains(reaskText, "Write the whole graph again") {
+		t.Errorf("an over-cap re-ask still asks to rewrite the items graph:\n%s", reaskText)
+	}
+}
+
+// rule3Rule2 returns rule 2's line of the prompt.
+func rule3Rule2(t *testing.T, p string) string {
+	i, j := strings.Index(p, "\n2. "), strings.Index(p, "\n3. ")
+	if i < 0 || j < i {
+		t.Fatalf("no rule 2:\n%s", p)
+	}
+	return p[i : j+1]
 }
 
 // The services line is its own section before the rules, in the build,

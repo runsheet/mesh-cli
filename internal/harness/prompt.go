@@ -573,6 +573,14 @@ type PlanInput struct {
 	// `atomic` item with a reason.
 	Replacing        *ExistingItem
 	ReplacingClauses []FailedClause
+	// MaxItems is the project's cap on one plan's graph (ADR-023,
+	// planSizeRule; default 8 when 0): rule 2 names it, and OverCap's
+	// re-ask asks for a split against it.
+	MaxItems int
+	// OverCap says the plan this re-ask replaces had more items than
+	// MaxItems: the re-ask asks the planner to answer `split` — goal
+	// drafts, not items (ADR-023, planSizeRule).
+	OverCap bool
 }
 
 // ModelEvidence is one repo/model row of the scorecard: how often that
@@ -622,6 +630,10 @@ type PlannedSpec struct {
 	// Atomic is the planner's reason an item cannot be halved (a schema
 	// change); it exempts the item from the split once (ADR-021).
 	Atomic string `json:"atomic"`
+	// Precondition is a clause that waits on a person's confirmation or a
+	// production observation (ADR-023, planCutOverRule): never its own
+	// item, but carried on the item that depends on it.
+	Precondition string `json:"precondition"`
 }
 
 // PlannedDep is one entry of an item's depends_on: the seq it waits on
@@ -678,6 +690,31 @@ const planHostRule = "An item's acceptance names only what a pull request can ch
 // shrink. A failed item is never recreated at the same acceptance; it is
 // replaced by items that partition it, or carries `atomic` once.
 const planSplitRule = "A lineage's attempts shrink: a re-plan never recreates a failed item with the same acceptance — the node's plan check refuses it. Replace the failed item with two or more items whose acceptance clauses partition the original's: every clause of the original lands in exactly one new item and none is dropped, each new item a pull request one evaluation can check, and the new items naming their dependency on each other with `because`. An item that cannot be halved (a schema change, one migration) may carry `\"atomic\": \"<reason>\"` and is exempt once; the second time it fails it must be split."
+
+// planSizeRule is the planner's half of ADR-023's size rule: a plan with
+// more than the project's maxItems is not sent as items. Told the cap
+// is exceeded, the planner answers `split` instead of `items` — goal
+// drafts the node proposes as goals of their own.
+const planSizeRule = "A plan with more than the project's maxItems is not sent as items: when the node tells you the cap is exceeded, answer `split` instead of `items` — goal drafts, each `{\"slug\", \"title\", \"statement\", \"acceptance\", \"repo\"}`, each at most maxItems items and naming one repo — and the node proposes them as goals. Size rule (Chris, 2026-10-03: goals are too broad to finish): one repo, at most eight items, one pull request per item, and every acceptance clause names how it is checked."
+
+// planCloseOutRule is the planner's half of ADR-023's close-out rule: an
+// item whose acceptance only amends documents to describe landed work
+// is refused, because docs land in the pull request of the change they
+// describe (AGENTS.md), not in an item of their own.
+const planCloseOutRule = "An item whose acceptance only amends documents to describe landed work — \"read as one design,\" \"describe what landed,\" amending an ADR's status alone — is refused: docs land in the pull request of the change they describe (AGENTS.md). Fold the clause into the item whose change it describes; it is never an item of its own."
+
+// planCutOverRule is the planner's half of ADR-023's cut-over rule: a
+// clause that waits on a person or a production observation is never
+// an item, because no builder can open that gate; it rides the
+// dependent item as a precondition, or the goal as a `pr` checkpoint.
+// release-tag-mirrors item 14 is the rule's example: a clause asking a
+// person to confirm in production, failed three times by a builder that
+// never could satisfy it.
+const planCutOverRule = "A clause that waits on a person's confirmation or a production observation is never an item: no builder can open that gate. It becomes `\"precondition\": \"<clause>\"` on the item that depends on it, or, when it is the goal's own wait rather than one item's, a `pr` checkpoint on the goal written beside items as `\"checkpoints\": [\"pr\"]`. (release-tag-mirrors item 14 failed three times on exactly this: a person confirming in production — a gate no builder could open.)"
+
+// planRepoRule is the planner's half of ADR-023's repo rule: an item
+// naming a repo other than the goal's repo belongs to a different goal.
+const planRepoRule = "An item naming a repo other than the goal's repo is a different goal: leave it out of this plan, or make it a draft of a `split` answer naming that repo."
 
 // knownSearchTool reports whether name (by prefix, case-insensitive) is
 // a search tool the prompts know by name — brave, perplexity — and, if
@@ -760,7 +797,16 @@ func PlanPrompt(in PlanInput) string {
 		for _, r := range in.Rejected {
 			fmt.Fprintf(&b, "- %s\n", strings.TrimSpace(r))
 		}
-		b.WriteString("\n" + planAcceptanceRule + " " + planHostRule + " " + planSplitRule + " Write the whole graph again with those acceptances and models rewritten; this is the last ask.\n\n")
+		b.WriteString("\n" + planAcceptanceRule + " " + planHostRule + " " + planSplitRule + " " + planSizeRule + " " + planCloseOutRule + " " + planCutOverRule + " " + planRepoRule)
+		if in.OverCap {
+			cap := in.MaxItems
+			if cap <= 0 {
+				cap = 8
+			}
+			fmt.Fprintf(&b, " Your graph has more items than the project's cap of %d: answer `split`, not `items` — goal drafts partitioning the goal, each at most %d items and one repo; this is the last ask.\n\n", cap, cap)
+		} else {
+			b.WriteString(" Write the whole graph again with those acceptances and models rewritten; this is the last ask.\n\n")
+		}
 	}
 	if len(in.Existing) > 0 {
 		b.WriteString("## The items so far\n\nYour plan replaces only the live items; merged items stay. Merged items are done: your items may depend on their seqs. Failed and cancelled items stay in the record; do their work again differently if it is still needed. Anything still live is replaced by your plan.\n\n")
@@ -851,11 +897,19 @@ func PlanPrompt(in PlanInput) string {
 	b.WriteString("Leave out work main already has. When main may already hold an item's work but you cannot tell it satisfies the acceptance, keep the item and say in its brief that an already_done check is expected: the builder checks main first and, if the acceptance holds there, finishes it already_done with the merged PRs or commits as evidence instead of building it again.\n\n")
 	b.WriteString("# Rules\n\n")
 	b.WriteString("1. Read before you plan: what exists, what the design says, where the goal's work lands, and what main already holds (above).\n")
-	b.WriteString("2. Each item is one fresh session's work in one repo on one branch: small enough to finish and evaluate in one sitting, large enough to be worth a pull request. Two to eight items.\n")
+	maxItems := in.MaxItems
+	if maxItems <= 0 {
+		maxItems = 8
+	}
+	fmt.Fprintf(&b, "2. Each item is one fresh session's work in one repo on one branch: small enough to finish and evaluate in one sitting, large enough to be worth a pull request. Two to %d items.\n", maxItems)
 	b.WriteString("3. Each item's brief says what to do and where, naming files and functions where it helps; its acceptance is what an evaluator can check — a test that passes, a command's output, a document with named sections — never a feeling.\n")
 	b.WriteString("   " + planAcceptanceRule + "\n")
 	b.WriteString("   " + planHostRule + "\n")
 	b.WriteString("   " + planSplitRule + "\n")
+	b.WriteString("   " + planSizeRule + "\n")
+	b.WriteString("   " + planCloseOutRule + "\n")
+	b.WriteString("   " + planCutOverRule + "\n")
+	b.WriteString("   " + planRepoRule + "\n")
 	if in.MeshContext {
 		b.WriteString("   Each item's brief names, by slug, the two or three documents the builder must fetch with `mesh_document` — found with `mesh_search` while you plan. You search before you read, same as the builder will.\n")
 	}
@@ -1034,6 +1088,73 @@ func ParsePlanQuestions(text string) []PlanQuestion {
 			q.Clause, q.Question = strings.TrimSpace(q.Clause), strings.TrimSpace(q.Question)
 			if q.Clause != "" && q.Question != "" {
 				out = append(out, q)
+			}
+		}
+		return out
+	}
+	return nil
+}
+
+// GoalDraft is one goal-sized slice of a plan over the project's cap
+// (ADR-023, planSizeRule): the planner's `split` answer is a list of
+// these, each at most the project's maxItems and one repo, for the
+// node to propose as goals of their own (ProposeGoalSplit).
+type GoalDraft struct {
+	Slug       string `json:"slug"`
+	Title      string `json:"title"`
+	Statement  string `json:"statement"`
+	Acceptance string `json:"acceptance"`
+	Repo       string `json:"repo"`
+}
+
+// ParsePlanSplit reads a planner's `split` answer — `{"split": [...]}`
+// beside, or instead of, `items` — from the same candidates ParsePlan
+// reads (planCandidates). ok is false when no candidate has a `split`
+// array, so a graph answered as `items` (no `split` at all) is not
+// mistaken for an empty split, and a `split` answer with no `items` is
+// not a parse error the way ParsePlan would call it.
+func ParsePlanSplit(text string) (drafts []GoalDraft, ok bool) {
+	for _, raw := range planCandidates(text) {
+		var wrapped struct {
+			Split []GoalDraft `json:"split"`
+		}
+		if err := json.Unmarshal([]byte(raw), &wrapped); err != nil || wrapped.Split == nil {
+			continue
+		}
+		var out []GoalDraft
+		for _, d := range wrapped.Split {
+			d.Slug, d.Title = strings.TrimSpace(d.Slug), strings.TrimSpace(d.Title)
+			d.Statement, d.Acceptance = strings.TrimSpace(d.Statement), strings.TrimSpace(d.Acceptance)
+			d.Repo = strings.TrimSpace(d.Repo)
+			if d.Slug == "" || d.Title == "" || d.Repo == "" {
+				continue
+			}
+			out = append(out, d)
+		}
+		return out, true
+	}
+	return nil, false
+}
+
+// ParsePlanCheckpoints reads the `checkpoints` beside `items` in the
+// planner's graph (ADR-023, planCutOverRule): a `pr` checkpoint says the
+// goal itself waits on a person to confirm the pull request (or its
+// effect in production) rather than putting that wait on one item. From
+// the same candidates ParsePlan reads, in ParsePlanQuestions's own
+// style; a graph with none has none.
+func ParsePlanCheckpoints(text string) []string {
+	for _, raw := range planCandidates(text) {
+		var wrapped struct {
+			Items       []json.RawMessage `json:"items"`
+			Checkpoints []string          `json:"checkpoints"`
+		}
+		if err := json.Unmarshal([]byte(raw), &wrapped); err != nil || len(wrapped.Items) == 0 {
+			continue
+		}
+		var out []string
+		for _, c := range wrapped.Checkpoints {
+			if c = strings.TrimSpace(c); c != "" {
+				out = append(out, c)
 			}
 		}
 		return out
