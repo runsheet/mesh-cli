@@ -31,18 +31,23 @@ type Reads interface {
 	GoalWorkItems(ctx context.Context, goalID string) ([]gateway.WorkItem, error)
 }
 
-// Personal is the server's state: the gateway and the items this
-// server holds (empty until mesh_join claims one).
+// Personal is the server's state: the gateway and, once set, Join,
+// which mesh_join claims and prepares an item with (nil answers `not
+// yet available`) and whose state file mesh_status reads.
 type Personal struct {
-	GW Reads
+	GW   Reads
+	Join *Join
 
-	mu   sync.Mutex
-	held []gateway.WorkItem
+	mu sync.Mutex
 }
 
 // NewServer is `mesh mcp`'s server over gw: no channel capability.
 func NewServer(gw Reads) *Server {
-	p := &Personal{GW: gw}
+	return (&Personal{GW: gw}).Server()
+}
+
+// Server is the personal server over p: no channel capability.
+func (p *Personal) Server() *Server {
 	return &Server{Instructions: Instructions, Tools: p.Tools()}
 }
 
@@ -57,7 +62,7 @@ func (p *Personal) Tools() []Tool {
 			Call:   p.status},
 		{Name: "mesh_join", Description: "Claim a goal's item and prepare its checkout on the item's branch; answers the path, brief, acceptance and context. pair joins the branch another holder works on.",
 			Schema: ObjectSchema(map[string]string{"goal": "the goal's slug", "item": "the item's seq (the next ready one when omitted)", "pair": "work the same branch as its holder"}, "goal"),
-			Call:   notYet},
+			Call:   p.join},
 		{Name: "mesh_switch", Description: "Leave the item you hold — push, note and release it — and join another.",
 			Schema: ObjectSchema(map[string]string{"goal": "the goal's slug to join", "item": "the item's seq", "note": "why you are switching"}, "goal"),
 			Call:   notYet},
@@ -136,15 +141,37 @@ func (p *Personal) goals(ctx context.Context, args map[string]any) (string, erro
 	return b.String(), nil
 }
 
-func (p *Personal) status(context.Context, map[string]any) (string, error) {
+func (p *Personal) join(ctx context.Context, args map[string]any) (string, error) {
+	if p.Join == nil {
+		return NotYetAvailable, nil
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if len(p.held) == 0 {
+	return p.Join.call(ctx, args)
+}
+
+// status lists the items mcp-state.json records as held.
+func (p *Personal) status(context.Context, map[string]any) (string, error) {
+	var held []HeldItem
+	if p.Join != nil {
+		path, err := p.Join.statePath()
+		if err != nil {
+			return "", err
+		}
+		p.mu.Lock()
+		s, err := ReadState(path)
+		p.mu.Unlock()
+		if err != nil {
+			return "", fmt.Errorf("state: %w", err)
+		}
+		held = s.Held
+	}
+	if len(held) == 0 {
 		return "holding no item: mesh_join takes one", nil
 	}
 	var b strings.Builder
-	for _, it := range p.held {
-		fmt.Fprintf(&b, "%s %d %s (%s) %s\n", it.GoalID, it.Seq, it.Title, it.Status, it.Branch)
+	for _, h := range held {
+		fmt.Fprintf(&b, "%s %d %s %s\n", h.Goal, h.Seq, h.Branch, h.Path)
 	}
 	return b.String(), nil
 }
