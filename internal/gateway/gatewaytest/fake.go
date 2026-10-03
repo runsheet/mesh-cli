@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"regexp"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -230,6 +231,18 @@ type Fake struct {
 	// heartbeatNode's answer (nodeId, owner, scopes) in Answer's place —
 	// a contract fixture's own bytes, not the fake's re-encoding of them.
 	AnswerJSON json.RawMessage
+	// OwnerFieldLegacy is a platform before runsheet goal
+	// registernode-answers-with-the-node-it-made, which spelled
+	// RegisterNodeInput's owner kind `owner`: introspection lists
+	// `owner` in place of `ownerKind`, and a registerNode carrying the
+	// other spelling is refused with "Unknown field".
+	OwnerFieldLegacy bool
+	// Enterprises by id: the enterprises the platform knows, each with
+	// its admins' user ids. myEnterprises serves those the caller
+	// (UserID) admins, and a registerNode with owner kind "enterprise"
+	// is refused unless its ownerId is one of them (the platform's
+	// adminOnEnterprise(ownerId)).
+	Enterprises map[string]Enterprise
 
 	requests int
 }
@@ -240,6 +253,13 @@ func (f *Fake) Requests() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.requests
+}
+
+// Enterprise is one of the fake's enterprises.
+type Enterprise struct {
+	Slug        string
+	DisplayName string
+	Admins      []string
 }
 
 // New starts a fake accepting the given bearer token.
@@ -254,7 +274,7 @@ func New(token string) *Fake {
 		GitHubTokens: map[string]map[string]any{}, Unsupported: map[string]bool{},
 		Agents: map[string]map[string]any{}, UnknownFields: map[string]bool{},
 		SessionCredentials: map[string][]map[string]any{}, SessionTools: map[string][]map[string]any{},
-		Scorecard: map[string]map[string]any{},
+		Scorecard: map[string]map[string]any{}, Enterprises: map[string]Enterprise{},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/graphql", f.graphql)
@@ -434,6 +454,12 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeData(w, map[string]any{"__type": f.heartbeatInputType()})
+	case strings.Contains(q, "myEnterprises"):
+		if msg := f.FailReads["myEnterprises"]; msg != "" {
+			writeErrors(w, 200, msg)
+			return
+		}
+		writeData(w, map[string]any{"myEnterprises": f.myEnterprises()})
 	case strings.Contains(q, "myOrgs"):
 		if msg := f.FailReads["myOrgs"]; msg != "" {
 			writeErrors(w, 200, msg)
@@ -779,19 +805,49 @@ func (f *Fake) heartbeatInputType() map[string]any {
 }
 
 // registerNodeInputType is RegisterNodeInput as introspection answers
-// it: every field a registration may carry, `owner` among them unless
-// UnknownFields["owner"] (a platform before
+// it: every field a registration may carry, the owner kind among them
+// as `ownerKind` — `owner` when OwnerFieldLegacy — unless UnknownFields
+// names that spelling (UnknownFields["owner"] and
+// UnknownFields["ownerKind"] both set is a platform before
 // the-node-serves-its-owners-orgs). Unsupported["__type"] refuses the
 // probe.
 func (f *Fake) registerNodeInputType() map[string]any {
 	var fields []any
-	for _, name := range []string{"aggregateId", "namespace", "orgId", "ownerId", "name", "slug", "harnesses", "capacity", "version", "owner"} {
+	for _, name := range []string{"aggregateId", "namespace", "orgId", "ownerId", "name", "slug", "harnesses", "capacity", "version", f.ownerField()} {
 		if f.UnknownFields[name] {
 			continue
 		}
 		fields = append(fields, map[string]any{"name": name, "type": map[string]any{"kind": "SCALAR"}})
 	}
 	return map[string]any{"inputFields": fields}
+}
+
+// ownerField is the spelling of RegisterNodeInput's owner kind the
+// fake's schema has (before UnknownFields hides it).
+func (f *Fake) ownerField() string {
+	if f.OwnerFieldLegacy {
+		return "owner"
+	}
+	return "ownerKind"
+}
+
+// myEnterprises is the enterprises the caller (UserID) admins, as
+// myEnterprises' Map rows.
+func (f *Fake) myEnterprises() []map[string]any {
+	ids := make([]string, 0, len(f.Enterprises))
+	for id := range f.Enterprises {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	rows := []map[string]any{}
+	for _, id := range ids {
+		e := f.Enterprises[id]
+		if !slices.Contains(e.Admins, f.UserID) {
+			continue
+		}
+		rows = append(rows, map[string]any{"id": id, "slug": e.Slug, "displayName": e.DisplayName, "tenantSlug": e.Slug, "status": "active"})
+	}
+	return rows
 }
 
 // usageReportInputType is UsageReportInput as introspection answers
@@ -1156,11 +1212,33 @@ func (f *Fake) apply(name string, in map[string]any) error {
 		}
 		return applyRebase(name, item, in)
 	case "registerNode":
+		// the owner kind under the spelling the schema does not have is
+		// refused as the platform refuses an unknown input field
+		for _, k := range []string{"owner", "ownerKind"} {
+			if _, ok := in[k]; ok && (k != f.ownerField() || f.UnknownFields[k]) {
+				return fmt.Errorf(`Variable "$in" got invalid value; Unknown field %q is not defined by type "RegisterNodeInput".`, k)
+			}
+		}
+		kind, _ := in[f.ownerField()].(string)
+		if kind == "enterprise" {
+			ownerID, _ := in["ownerId"].(string)
+			if e, ok := f.Enterprises[ownerID]; !ok || !slices.Contains(e.Admins, f.UserID) {
+				return fmt.Errorf("registerNode: permission denied: adminOnEnterprise(%s): the caller is not an admin of the enterprise", ownerID)
+			}
+		}
 		row := map[string]any{"id": id, "status": "online", "running": 0}
 		for k, v := range in {
 			row[k] = v
 		}
+		if kind != "" {
+			row["ownerKind"] = kind
+		}
 		f.Nodes[id] = row
+	case "retireNode":
+		if f.Nodes[id] == nil {
+			return fmt.Errorf("no such node")
+		}
+		f.Nodes[id]["status"] = "retired"
 	case "heartbeatNode":
 		if f.Nodes[id] == nil {
 			return fmt.Errorf("node not registered")
