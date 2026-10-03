@@ -455,3 +455,40 @@ func splitRefusal(replaced gateway.WorkItem, items int) string {
 	root, _ := lineageOf(replaced)
 	return fmt.Sprintf("narrow re-plan of item %d (lineage %d) answered %d item(s) and no split; refused", replaced.Seq, root, items)
 }
+
+// The node's check of a plan for the repo rule (ADR-023 (d),
+// `planRepoRule`): an item naming a repo other than the goal's is a
+// different goal. goalRepo is the goal's own repo — Goal.RepoID among
+// the project's repos when the platform names one, else the project's
+// one repo when it has exactly one; the caller passes hasGoalRepo false,
+// and these are not called, when neither resolves one (the project's own
+// check that an item names one of the project's repos, in readPlan,
+// stands either way).
+
+// otherRepoItems flags each item whose mapped repo is not goalRepo's.
+// Each flag names the item, its repo and the goal's, for the planner's
+// re-ask; none means every item is on the goal's own repo.
+func otherRepoItems(specs []harness.PlannedSpec, itemRepo map[int]gateway.Repo, goalRepo gateway.Repo) []string {
+	var flags []string
+	for _, sp := range specs {
+		r := itemRepo[sp.Seq]
+		if r.ID == goalRepo.ID {
+			continue
+		}
+		flags = append(flags, fmt.Sprintf("item %d (%s): names repo %s, not the goal's %s — a different goal: leave it out, or make it a draft of a split", sp.Seq, strings.TrimSpace(sp.Title), r.FullName(), goalRepo.FullName()))
+	}
+	return flags
+}
+
+// otherRepoRefusal is the planner error a final answer (the re-ask's, or
+// an adopted session's) that still names a repo other than goalRepo's
+// is, like reLand.refusal: the first such item's repo, outside the
+// goal's own. "" when none is left.
+func otherRepoRefusal(specs []harness.PlannedSpec, itemRepo map[int]gateway.Repo, goalRepo gateway.Repo) string {
+	for _, sp := range specs {
+		if r := itemRepo[sp.Seq]; r.ID != goalRepo.ID {
+			return fmt.Sprintf("plan names repo %s outside the goal's %s; a different goal; refused", r.FullName(), goalRepo.FullName())
+		}
+	}
+	return ""
+}

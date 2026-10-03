@@ -229,6 +229,33 @@ func (p *Planner) projectRepoMap(ctx context.Context, goal gateway.Goal, scope S
 	return project, repos, nil
 }
 
+// goalRepo is the goal's own repo for the repo rule (ADR-023 (d),
+// planRepoRule, item 6): Goal.RepoID among the project's repos when the
+// platform names one (GoalIndex.repoId — always "" today, since the
+// field is not yet in fields/GoalIndex.txt: ADR-010, a field the
+// platform has not shipped cannot be selected), else the project's one
+// repo when it has exactly one. ok is false when neither resolves one —
+// several repos and no named one — and the rule does not apply (the
+// project's own check, that an item names one of the project's repos,
+// stands either way).
+func goalRepo(goal gateway.Goal, project *gateway.Project, repos map[string]gateway.Repo) (gateway.Repo, bool) {
+	if id := strings.TrimSpace(goal.RepoID); id != "" {
+		for _, r := range repos {
+			if r.ID == id {
+				return r, true
+			}
+		}
+	}
+	if len(project.RepoIDs) == 1 {
+		for _, r := range repos {
+			if r.ID == project.RepoIDs[0] {
+				return r, true
+			}
+		}
+	}
+	return gateway.Repo{}, false
+}
+
 // evidence reads the project's scorecard (item 5, model choice by
 // evidence) and builds its per-repo, per-model rows. A platform without
 // the query, or a scorecard whose shape carries none of the keys a row
@@ -487,7 +514,8 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 	budget, budgetSource := p.budgetWithSource(&goal)
 	p.logf("goal %s: planning in %s (%d repos), budget $%.2f (%s)", goal.Slug, dir, len(repos), budget, budgetSource)
 	ctx = withSubject(ctx, scope, goal.ProjectID, project.Slug)
-	items, reasons, flags, questions, cost, acct, err := p.ask(ctx, goal, scope.NodeID, dir, budget, in, repos, merged, goalItems, replacing, sessionTok)
+	gr, hasGoalRepo := goalRepo(goal, project, repos)
+	items, reasons, flags, questions, cost, acct, err := p.ask(ctx, goal, scope.NodeID, dir, budget, in, repos, merged, goalItems, replacing, sessionTok, gr, hasGoalRepo)
 	acct.SetContextBytes(written.Bytes)
 	acct.SetLabel("goal "+goal.Slug, string(harness.KindPlan))
 	// the session's usage report rides the plan's hand-in; Finish logs it
@@ -505,7 +533,7 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 		in.Rejected = flags
 		var again float64
 		var second *SessionAccount
-		items, reasons, flags, questions, again, second, err = p.ask(ctx, goal, scope.NodeID, dir, budget, in, repos, merged, goalItems, replacing, sessionTok)
+		items, reasons, flags, questions, again, second, err = p.ask(ctx, goal, scope.NodeID, dir, budget, in, repos, merged, goalItems, replacing, sessionTok, gr, hasGoalRepo)
 		defer second.Finish(ctx, harness.Result{})
 		second.SetContextBytes(written.Bytes)
 		second.SetLabel("goal "+goal.Slug, string(harness.KindPlan))
@@ -658,7 +686,7 @@ func (p *Planner) handIn(ctx context.Context, goal gateway.Goal, items []gateway
 // hostReadingAcceptance, sameAcceptanceAsFailed against goalItems), its questions for the person, the session's cost and its account, whose usage report is built as the
 // session ends: the caller hands it in and Finishes it. An error means
 // there is no graph to hand in.
-func (p *Planner) ask(ctx context.Context, goal gateway.Goal, nodeID, dir string, budget float64, in harness.PlanInput, repos map[string]gateway.Repo, merged []int, goalItems []gateway.WorkItem, replacing *gateway.WorkItem, tok *gateway.GitHubToken) ([]gateway.PlannedItem, map[int]string, []string, []harness.PlanQuestion, float64, *SessionAccount, error) {
+func (p *Planner) ask(ctx context.Context, goal gateway.Goal, nodeID, dir string, budget float64, in harness.PlanInput, repos map[string]gateway.Repo, merged []int, goalItems []gateway.WorkItem, replacing *gateway.WorkItem, tok *gateway.GitHubToken, gr gateway.Repo, hasGoalRepo bool) ([]gateway.PlannedItem, map[int]string, []string, []harness.PlanQuestion, float64, *SessionAccount, error) {
 	acct, err := p.Credentials.Open(ctx, gateway.SessionRef{Kind: string(harness.KindPlan), GoalID: goal.ID}, nodeID, Adapter(p.Harness))
 	if err != nil {
 		// an ErrNoCredential among them: no session starts, and the loop
@@ -711,7 +739,7 @@ func (p *Planner) ask(ctx context.Context, goal gateway.Goal, nodeID, dir string
 	if note := acct.UseNote(result); note != "" && err == nil {
 		p.logf("goal %s: %s", goal.Slug, note)
 	}
-	items, reasons, flags, questions, cost, err := p.readPlan(ctx, goal, dir, acct, result, err, repos, merged, in.Evidence, goalItems, replacing, len(in.Rejected) > 0)
+	items, reasons, flags, questions, cost, err := p.readPlan(ctx, goal, dir, acct, result, err, repos, merged, in.Evidence, goalItems, replacing, len(in.Rejected) > 0, gr, hasGoalRepo)
 	return items, reasons, flags, questions, cost, acct, err
 }
 
@@ -722,9 +750,10 @@ func (p *Planner) ask(ctx context.Context, goal gateway.Goal, nodeID, dir string
 // (final: the re-ask's, or an adopted session's, which is not asked
 // again) that still recreates a failed item at its acceptance, or, on a
 // narrow re-plan (replacing set), still does not split the replaced
-// item, is not handed in: it is an error naming the lineage (ADR-021's
-// amendments).
-func (p *Planner) readPlan(ctx context.Context, goal gateway.Goal, dir string, acct *SessionAccount, result harness.Result, err error, repos map[string]gateway.Repo, merged []int, evidence []harness.ModelEvidence, goalItems []gateway.WorkItem, replacing *gateway.WorkItem, final bool) ([]gateway.PlannedItem, map[int]string, []string, []harness.PlanQuestion, float64, error) {
+// item, or still names a repo other than the goal's own (hasGoalRepo,
+// ADR-023 (d)), is not handed in: it is an error naming the lineage or
+// the repo (ADR-021's amendments, ADR-023).
+func (p *Planner) readPlan(ctx context.Context, goal gateway.Goal, dir string, acct *SessionAccount, result harness.Result, err error, repos map[string]gateway.Repo, merged []int, evidence []harness.ModelEvidence, goalItems []gateway.WorkItem, replacing *gateway.WorkItem, final bool, gr gateway.Repo, hasGoalRepo bool) ([]gateway.PlannedItem, map[int]string, []string, []harness.PlanQuestion, float64, error) {
 	// logged before a done ctx returns: a deadline kills the unit too,
 	// and a detach kills nothing
 	logKilled(p.logf, "goal "+goal.Slug, result.KilledPerSession(), result.KillError)
@@ -783,19 +812,29 @@ func (p *Planner) readPlan(ctx context.Context, goal gateway.Goal, dir string, a
 	if replacing != nil {
 		unsplit = notASplit(specs, *replacing)
 	}
-	if final && (len(relanded) > 0 || unsplit != "") {
-		why := make([]string, 0, len(relanded)+1)
+	otherRepoRefused := ""
+	if hasGoalRepo {
+		otherRepoRefused = otherRepoRefusal(specs, itemRepo, gr)
+	}
+	if final && (len(relanded) > 0 || unsplit != "" || otherRepoRefused != "") {
+		why := make([]string, 0, len(relanded)+2)
 		for _, r := range relanded {
 			why = append(why, r.refusal())
 		}
 		if unsplit != "" {
 			why = append(why, splitRefusal(*replacing, len(specs)))
 		}
+		if otherRepoRefused != "" {
+			why = append(why, otherRepoRefused)
+		}
 		return nil, nil, nil, nil, 0, errors.New(strings.Join(why, "; "))
 	}
 	flags = append(flags, sameAcceptanceAsFailed(specs, goalItems)...)
 	if unsplit != "" {
 		flags = append(flags, unsplit)
+	}
+	if hasGoalRepo {
+		flags = append(flags, otherRepoItems(specs, itemRepo, gr)...)
 	}
 	return items, reasons, flags, harness.ParsePlanQuestions(result.Text), result.CostUSD, nil
 }
@@ -880,7 +919,8 @@ func (p *Planner) AdoptPlan(ctx context.Context, goal gateway.Goal, scope Scope,
 	}
 	p.logf("goal %s: adopted its %s planner session (pid %d)", goal.Slug, s.Liveness(), s.State.PID)
 	result, err := at.Attach(ctx, s.Dir, nil)
-	items, reasons, flags, questions, cost, err := p.readPlan(ctx, goal, s.State.Workspace, nil, result, err, repos, merged, p.evidence(ctx, goal.Slug, scope, project), goalItems, replacing, true)
+	gr, hasGoalRepo := goalRepo(goal, project, repos)
+	items, reasons, flags, questions, cost, err := p.readPlan(ctx, goal, s.State.Workspace, nil, result, err, repos, merged, p.evidence(ctx, goal.Slug, scope, project), goalItems, replacing, true, gr, hasGoalRepo)
 	if err != nil {
 		return err
 	}
