@@ -14,12 +14,15 @@ type PromptInput struct {
 	GoalStatement  string
 	GoalAcceptance string
 	Seq            int
-	Title          string
-	Brief          string
-	Acceptance     string
-	Repo           string // owner/name
-	Branch         string
-	BaseRef        string
+	// ItemID is the item's platform id, the item_id the session hands
+	// mesh_finish; empty, the prompt names it by its goal and seq.
+	ItemID     string
+	Title      string
+	Brief      string
+	Acceptance string
+	Repo       string // owner/name
+	Branch     string
+	BaseRef    string
 	// ContextDir is where the goal's context documents were written
 	// (relative to the workspace), empty when there were none.
 	ContextDir string
@@ -131,7 +134,23 @@ func BuildPrompt(in PromptInput) string {
 	b.WriteString("5. Do not push, open pull requests, or touch anything outside this workspace. The node pushes the branch when you are done.\n")
 	b.WriteString("6. Design keeps pace with code: if your change alters an aggregate, a policy, a process, or a public contract (a gateway field, an API, a console route), amend the ADR or TRD section that describes it on this branch; a decision no ADR covers gets a new ADR at the next free number in this repo. A new document carries frontmatter with a one-line `summary:`.\n")
 	b.WriteString("7. End with a short summary of what you did and how the acceptance was checked.\n")
+	finishByToolCall(&b, in)
 	return b.String()
+}
+
+// finishByToolCall tells the builder to end by calling the hosted
+// mesh_finish tool (mesh-cli ADR-023): the call is the finish, and the
+// final message's `ALREADY DONE:` line stays the fallback contract the
+// node parses when the session made no call.
+func finishByToolCall(b *strings.Builder, in PromptInput) {
+	item := in.ItemID
+	if item == "" {
+		item = fmt.Sprintf("<the id of item %d of %s>", in.Seq, in.GoalSlug)
+	}
+	b.WriteString("\n# Finish by tool call\n\n")
+	fmt.Fprintf(b, "End the session by calling the mesh-context server's `mesh_finish` tool, once, as your last action: `mesh_finish(item_id=%q, branch=%q, head_sha=<the commit your branch ends on, `git rev-parse HEAD`>)` when you built it, or `mesh_finish(item_id=%q, outcome=\"already_done\", evidence=<the merged PRs or commits and why>)` when main already holds it. ", item, in.Branch, item)
+	b.WriteString("When the work cannot be done, call `mesh_fail(item_id, error=<why>)` instead. The call is the finish: the node pushes the branch and hands it in. ")
+	fmt.Fprintf(b, "If the tool is not there or the call errors, finish in your final message instead — an already-done item with its `%s` line, as above — and the node reads that.\n", AlreadyDoneLine)
 }
 
 // AlreadyDoneLine starts the line a build session ends with when main

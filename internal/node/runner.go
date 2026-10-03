@@ -321,7 +321,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	mcp := r.mcp(ctx)
 	in := harness.PromptInput{
 		GoalSlug: res.Goal.Slug, GoalTitle: res.Goal.Title, GoalStatement: res.Goal.Statement, GoalAcceptance: res.Goal.Acceptance,
-		Seq: item.Seq, Title: item.Title, Brief: item.Brief, Acceptance: item.Acceptance,
+		Seq: item.Seq, ItemID: item.ID, Title: item.Title, Brief: item.Brief, Acceptance: item.Acceptance,
 		Repo: res.Repo.FullName(), Branch: spec.Branch, BaseRef: spec.BaseRef, ContextDir: contextDir, ContextFiles: files,
 		Attempts: item.Attempts, Evaluation: item.Evaluation, FailedClauses: failed, Project: orgName + "/" + res.Project.Slug, MeshContext: len(mcp) > 0,
 		LastSession: r.State.LastSession(item.ID),

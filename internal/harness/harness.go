@@ -207,6 +207,15 @@ type Result struct {
 	// (<sessionId>:<server>:<n>), so len(ToolCallIDs[s]) always equals
 	// ToolCalls[s]. Nil exactly when ToolCalls is.
 	ToolCallIDs map[string][]string
+	// WorkCalls is the input of each hosted mesh-work tool the session
+	// called (tools.IsWorkTool: mesh_finish, mesh_fail, mesh_verdict,
+	// mesh_plan, mesh_progress), keyed by the tool's own name without
+	// its mcp__<server>__ prefix, the last call's input winning: a
+	// Claude tool_use block's input, a Codex mcp_tool_call's arguments.
+	// The node reads a session's end from it before the final message
+	// (mesh-cli ADR-023, sessions finish by tool call); nil when the
+	// session called none.
+	WorkCalls map[string]map[string]any
 	// Tools is each MCP server's calls, errors and wall time (trd §3
 	// Tools): a Claude tool_use whose tool_result carried is_error true,
 	// or a Codex mcp_tool_call whose status was failed, counts an error;

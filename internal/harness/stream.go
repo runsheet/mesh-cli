@@ -7,6 +7,8 @@ import (
 	"io"
 	"strings"
 	"time"
+
+	"projectmesh.io/mesh-cli/internal/tools"
 )
 
 // Event is one line of `claude -p --output-format stream-json --verbose`.
@@ -44,6 +46,9 @@ type Event struct {
 			// string, or a list of {type:"text", text}. See
 			// toolResultText.
 			ResultContent json.RawMessage `json:"content"`
+			// Input is a tool_use block's input, kept on
+			// Result.WorkCalls for a mesh-work tool.
+			Input json.RawMessage `json:"input"`
 		} `json:"content"`
 		// Usage is an assistant event's own turn's token counts (its
 		// share, not the session's running total).
@@ -131,6 +136,25 @@ func (r *Result) countToolCall(server, id string) string {
 	return id
 }
 
+// keepWorkCall keeps a mesh-work tool's input on WorkCalls under tool
+// (tools.IsWorkTool), the last call winning; any other tool, or an input
+// that is not a JSON object, is left. An absent input is an empty one.
+func (r *Result) keepWorkCall(tool string, input json.RawMessage) {
+	if !tools.IsWorkTool(tool) {
+		return
+	}
+	args := map[string]any{}
+	if len(input) > 0 && string(input) != "null" {
+		if err := json.Unmarshal(input, &args); err != nil {
+			return
+		}
+	}
+	if r.WorkCalls == nil {
+		r.WorkCalls = map[string]map[string]any{}
+	}
+	r.WorkCalls[tool] = args
+}
+
 // now is the parser's clock, for Result.Tools' wall time: Claude Code's
 // stream events carry no timestamps, so tests override it.
 var now = time.Now
@@ -195,6 +219,8 @@ func capText(s string, n int) string {
 // <server>__<tool> with the prologue alias folded into mesh-context,
 // and on Result.DocumentsFetched when it is a mesh_document or
 // mesh_search call on the built-in (goal context-is-fetched-not-shipped).
+// A mesh-work tool's tool_use (tools.IsWorkTool) keeps its input on
+// Result.WorkCalls by the tool's own name (ADR-023).
 //
 // Every assistant event's own message.usage (input + cache_read +
 // cache_creation) is that turn's input tokens, counted once per
@@ -281,6 +307,7 @@ func ParseStream(r io.Reader, onEvent func(Event)) Result {
 						res.toolStat(server).Calls++
 						pending[id] = pendingCall{server: server, start: now()}
 						res.countToolName(server, mcpToolName(c.Name))
+						res.keepWorkCall(mcpToolName(c.Name), c.Input)
 					}
 				}
 			}
