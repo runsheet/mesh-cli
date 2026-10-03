@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
+	"projectmesh.io/mesh-cli/internal/tools"
 )
 
 // UsageQuery is what `mesh node usage` reads out of node.log: the
@@ -198,8 +199,12 @@ var usageKindOrder = []string{"build", "evaluate", "rebase", "plan", "research"}
 // the sessions that fetched any, `-` when none did, and how many
 // sessions those were (`fetched by tool`; the count is omitted from a
 // record at zero, so a session that fetched none and one from a node
-// older than the count read alike) — and the count of records that did
-// not parse.
+// older than the count read alike), the calls the kind's sessions made
+// to every tool but the built-in (`tool calls`, summed over
+// Report.Tools) and the distinct tools those were (`tools called`,
+// comma-joined, `-` when none) — so research's Brave calls read without
+// the console (ADR-006's amendment 2026-10-03) — and the count of
+// records that did not parse.
 func (u UsageReading) Lines() []string {
 	span := "-"
 	if n := len(u.Records); n > 0 {
@@ -231,12 +236,22 @@ func (u UsageReading) Lines() []string {
 	})
 	var buf bytes.Buffer
 	w := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "kind\tsessions\tinput tokens median\tinput tokens mean\tcache read %\tcontext bytes median\twith context bytes\tdocuments fetched median\tfetched by tool")
+	fmt.Fprintln(w, "kind\tsessions\tinput tokens median\tinput tokens mean\tcache read %\tcontext bytes median\twith context bytes\tdocuments fetched median\tfetched by tool\ttool calls\ttools called")
 	for _, k := range kinds {
 		recs := byKind[k]
 		var inputs, ctx, docs []int64
-		var total, cached int64
+		var total, cached, toolCalls int64
+		var called []string
 		for _, r := range recs {
+			for _, t := range r.Report.Tools {
+				if tools.IsBuiltin(t.Tool) {
+					continue
+				}
+				toolCalls += t.Calls
+				if t.Calls > 0 && !slices.Contains(called, t.Tool) {
+					called = append(called, t.Tool)
+				}
+			}
 			// the report's inputTokens already holds its cache reads and writes
 			in := r.Report.InputTokens
 			inputs = append(inputs, in)
@@ -259,7 +274,12 @@ func (u UsageReading) Lines() []string {
 		if len(docs) > 0 {
 			docsMedian = strconv.FormatInt(median(docs), 10)
 		}
-		fmt.Fprintf(w, "%s\t%d\t%d\t%d\t%s\t%s\t%d\t%s\t%d\n", k, len(recs), median(inputs), total/int64(len(recs)), share, ctxMedian, len(ctx), docsMedian, len(docs))
+		calledList := "-"
+		if len(called) > 0 {
+			slices.Sort(called)
+			calledList = strings.Join(called, ",")
+		}
+		fmt.Fprintf(w, "%s\t%d\t%d\t%d\t%s\t%s\t%d\t%s\t%d\t%d\t%s\n", k, len(recs), median(inputs), total/int64(len(recs)), share, ctxMedian, len(ctx), docsMedian, len(docs), toolCalls, calledList)
 	}
 	w.Flush()
 	for _, l := range strings.Split(strings.TrimRight(buf.String(), "\n"), "\n") {

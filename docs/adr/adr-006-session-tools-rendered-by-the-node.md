@@ -361,3 +361,35 @@ before claiming and pass the direction or goal over on
 `holding.unclaimed` with the decline's reason while the runtimes are
 unchanged (`DeclineHold`). Decision 8 now reads: rebase and channel
 sessions keep the built-in alone.
+
+## Amendment — 2026-10-03 (goal the-director-and-the-planner-get-their-tools, item 4)
+
+**The subject rule.** Decision 11's `aggregateId` was "the item": a
+plan or research session has none, so its priced calls went out on an
+empty id. A priced call is now recorded on the session's *subject* —
+its item, else its goal (a plan), else its direction (research)
+(`SessionAccount.subject`, from the claim's `SessionRef`) — and the
+logged fallback names it with its noun and kind, `usage: tool <tool>
+on goal|direction|item <id> (<kind>): call <id>, <n>¢`. The platform's
+`recordToolUsage` must take a goal or direction id as the aggregate
+for these records to land; until it does, a refusal is logged per call
+as any other failed record is, never the session's failure.
+
+**Where a plan's or research's use note lands.** The `tools: …
+served, never called` / `first call errored` note (`UseNote`) rides
+the research hand-in: `Director.handIn` appends it on its own line to
+the `notes` of `RecordDirectionResearch` — the parsed research's and
+the unreadable session's empty one alike (`withUseNote`) — so the
+direction's record says `tools: brave served, never called` when the
+session did not search. `planGoal` takes no notes (its input has
+`items`, `questions`, cost and usage), so a plan's note stays the
+labelled node.log line `goal <slug>: tools: …` that item 2 added; the
+unlabelled duplicate `Finish` logged for every session without an item
+is gone.
+
+**`mesh node usage` shows tool calls per kind.** `UsageReading.Lines`
+gains two columns from each record's `tools` rows: `tool calls`, the
+calls summed over every row but the built-in (`tools.IsBuiltin`, so
+`mesh-context` and its old name are left out), and `tools called`, the
+distinct tools with a call, comma-joined, `-` when none — research's
+Brave and Perplexity calls read off node.log without the console.

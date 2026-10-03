@@ -336,3 +336,28 @@ func TestUseNoteNamesTheBuiltinFirstUnderEitherName(t *testing.T) {
 		}
 	}
 }
+
+// A research session's hand-in carries the same tool-use note in its
+// notes, so the direction's record says it never searched.
+func TestResearchNotesItsToolUse(t *testing.T) {
+	f := seed(t)
+	f.SessionTools[dirID] = []map[string]any{braveTool()}
+	h := &fakeHarness{text: "```json\n{\"goals\": []}\n```", toolCalls: map[string]int{"mesh-context": 2}}
+	_, loop, logs := toolDirector(t, f, h)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	loop.Tick(ctx)
+	loop.wg.Wait()
+
+	calls := f.CallsNamed("recordDirectionResearch")
+	if len(calls) != 1 {
+		t.Fatalf("hand-ins: %+v\n%s", calls, logs.String())
+	}
+	notes, _ := calls[0].Input["notes"].(string)
+	if notes != "0 proposed\ntools: brave served, never called" {
+		t.Fatalf("notes = %q", notes)
+	}
+	if strings.Contains(notes, braveSecret) || strings.Contains(logs.String(), braveSecret) {
+		t.Fatal("brave's secret reported or logged")
+	}
+}

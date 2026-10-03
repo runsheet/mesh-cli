@@ -479,7 +479,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   and `mesh node usage` (`ReadUsage`, `usagereading.go`) reads them back
   into sessions, input tokens, cache reads, context bytes and documents
   fetched by tool (`documentsFetched`: `mesh_document` and `mesh_search`
-  calls, with `toolNames` beside it on the report) by kind for a window
+  calls, with `toolNames` beside it on the report), and `tool calls` and
+  `tools called` (every tool but the built-in, from `tools`) by kind for a window
   (adr-016's amendments).
 - **Codex** (`internal/harness/codex.go`, goals `codex-adapter` and
   `codex-sessions-reach-the-context-tool`): the
@@ -776,8 +777,9 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `tool_use` named `mcp__<server>__…`, Codex's completed
   `mcp_tool_call`, each call's id on `Result.ToolCallIDs`), and after a
   build or evaluate session `SessionAccount.Finish` sends one
-  `RecordToolUsage(itemID, toolCallId, tool, report)` (mutation
-  `recordToolUsage`) per call of a rendered tool with
+  `RecordToolUsage(subject, toolCallId, tool, report)` (mutation
+  `recordToolUsage`; the subject the item, else the plan's goal, else
+  the research's direction, ADR-006's amendment 2026-10-03) per call of a rendered tool with
   `pricePerCallCents > 0` — the session's report at the tool's price,
   no tokens, no actual cost; mesh-context and unpriced tools are none.
   A platform without `recordToolUsage` is said once per run and each
@@ -793,7 +795,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   console tool never called, or whose first call errored, and any other
   server that errored — the built-in `mesh-context` first — is named by
   `SessionTools.UseNote` — a build's progress note, the evaluation's
-  notes, a plan's or research's log line (ADR-006 amendments
+  notes, the research hand-in's notes and its log line, a plan's log
+  line (`planGoal` takes no notes) (ADR-006 amendments
   2026-09-28).
 - **Models are per kind of session.** `Models` in `~/.mesh/node.yaml`
   (`default`, `build`, `evaluate`, `plan`, `channel`, `research`,

@@ -811,3 +811,59 @@ func TestPlanDeclinesARequiredToolItCannotStart(t *testing.T) {
 		t.Fatalf("a decline counted %d tries", tries)
 	}
 }
+
+// checkToolUsageOn is the fake's recordToolUsage inputs: one per call
+// id of the priced search tool, each on aggregate.
+func checkToolUsageOn(t *testing.T, f *gatewaytest.Fake, aggregate string) {
+	t.Helper()
+	if len(f.ToolUsage) != 2 {
+		t.Fatalf("tool usage = %v, want two", f.ToolUsage)
+	}
+	ids := map[any]bool{}
+	for _, u := range f.ToolUsage {
+		rep, _ := u["usage"].(map[string]any)
+		if u["aggregateId"] != aggregate || u["tool"] != "search" || rep["listCostCents"] != 3.0 || rep["actualCostCents"] != 0.0 ||
+			rep["inputTokens"] != 0.0 || rep["sessionId"] != "s-1" {
+			t.Fatalf("tool usage = %v", u)
+		}
+		ids[u["toolCallId"]] = true
+	}
+	if len(ids) != 2 || !ids["toolu_search_1"] || !ids["toolu_search_2"] {
+		t.Fatalf("toolCallIds = %v", ids)
+	}
+}
+
+// A research session's priced tool calls are usage records on its
+// direction, one per call id (ADR-006's amendment 2026-10-03, the
+// subject rule): it has no item to record them on.
+func TestResearchPricedToolCallsAreUsageRecords(t *testing.T) {
+	f := seed(t)
+	priced := remoteTool()
+	priced["pricePerCallCents"] = 3
+	f.SessionTools[dirID] = []map[string]any{priced, localTool()}
+	h := &fakeHarness{text: "```json\n{\"goals\": []}\n```", toolCalls: map[string]int{"search": 2, "fs-tools": 5, "mesh-context": 4}}
+	_, loop, logs := toolDirector(t, f, h)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	loop.Tick(ctx)
+	loop.wg.Wait()
+
+	if len(h.jobs) != 1 {
+		t.Fatalf("jobs: %+v\n%s", h.jobs, logs.String())
+	}
+	checkToolUsageOn(t, f, dirID)
+}
+
+// A plan session's priced tool calls are usage records on its goal.
+func TestPlanPricedToolCallsAreUsageRecords(t *testing.T) {
+	f := seed(t)
+	priced := remoteTool()
+	priced["pricePerCallCents"] = 3
+	f.SessionTools[goalID] = []map[string]any{priced, localTool()}
+	h := &fakeHarness{text: planTokenJSON, toolCalls: map[string]int{"search": 2, "fs-tools": 5, "mesh-context": 4}}
+	pl, _, logs := toolPlanner(t, f, h)
+	if err := pl.Plan(context.Background(), shipIt(), scopesOf(pl.Cfg)[0]); err != nil {
+		t.Fatalf("plan: %v\n%s", err, logs.String())
+	}
+	checkToolUsageOn(t, f, goalID)
+}
