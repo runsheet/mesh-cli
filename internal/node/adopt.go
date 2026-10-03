@@ -174,7 +174,7 @@ func (l *Loop) AdoptSessions(ctx context.Context, found []FoundSession) int {
 			note := "session adopted by the restarted node (" + s.Liveness() + ")"
 			hctx := ctx
 			if kind == harness.KindBuild || kind == harness.KindRebase {
-				hctx = gateway.WithActor(ctx, gateway.RoleBuilder, agentSlug(l.Cfg))
+				hctx = actorContext(ctx, l.Cfg, gateway.RoleBuilder)
 			}
 			if err := l.GW.ReportWorkItemProgress(hctx, s.State.ItemID, note, 0, s.State.SessionID); err != nil {
 				l.logf("item %s: adopted heartbeat: %v", s.State.ItemID, err)
