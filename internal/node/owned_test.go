@@ -313,8 +313,9 @@ func TestOwnedRegisterLegacyPerOrgWithNoOwner(t *testing.T) {
 
 // With TakesOwner true and a nil answer (the platform half-deployed):
 // the probe chose the contract, so the node keeps it — one owner
-// registration, no per-org one, the person's orgs never read, the one
-// id kept, no scopes until a heartbeat answers — and the fallback said.
+// registration, no per-org one, the one id kept — and serves the orgs
+// it served per org, read through Resolve after the owner registration,
+// until a heartbeat answers; the fallback said.
 func TestOwnedRegisterNilAnswerKeepsTheOwnerContract(t *testing.T) {
 	cfg := ownedCfg()
 	s := &steps{takes: true, answer: nil, scopes: personScopes(t, cfg)}
@@ -322,11 +323,11 @@ func TestOwnedRegisterNilAnswerKeepsTheOwnerContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"probe", "any org", "owner 22222222-2222-4222-8222-222222222222"}; !slices.Equal(s.did, want) {
+	if want := []string{"probe", "any org", "owner 22222222-2222-4222-8222-222222222222", "resolve"}; !slices.Equal(s.did, want) {
 		t.Fatalf("did %q, want %q (no per-org registration)", s.did, want)
 	}
-	if reg.Owned == nil || reg.Owned.NodeID != "22222222-2222-4222-8222-222222222222" || len(reg.Scopes) != 0 || reg.Answer != nil {
-		t.Fatalf("registered %+v, want the owner contract on the one id with no scopes yet", reg)
+	if reg.Owned == nil || reg.Owned.NodeID != "22222222-2222-4222-8222-222222222222" || !slices.Equal(reg.Scopes, s.scopes) || reg.Answer != nil {
+		t.Fatalf("registered %+v, want the owner contract on the one id serving the per-org scopes", reg)
 	}
 	if reg.Contract() != ContractOwner {
 		t.Fatalf("contract %q, want %q", reg.Contract(), ContractOwner)
@@ -340,6 +341,51 @@ func TestOwnedRegisterNilAnswerKeepsTheOwnerContract(t *testing.T) {
 	}
 	if cfg.Contract != ContractOwner || cfg.OwnedID() != "22222222-2222-4222-8222-222222222222" {
 		t.Fatalf("saved contract %q id %q, want the owner contract on the one id (saved %v)", cfg.Contract, cfg.OwnedID(), saved)
+	}
+}
+
+// The 2026-10-03 canary: node.yaml's orgs name grapevine, the person's
+// first org is foghornid, the platform takes ownerKind and answers nil.
+// The node keeps the owner contract under its one id and serves
+// grapevine on its per-org id — what Resolve gave — never none; a
+// Resolve that fails is noted and serves none, on the owner contract
+// still.
+func TestOwnedRegisterNilAnswerKeepsThePerOrgScopes(t *testing.T) {
+	cfg := ownedCfg()
+	cfg.Orgs = []string{"grapevine"}
+	gv, err := cfg.NodeIDIn("dddddddd-4444-4444-8444-dddddddddddd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved := Scopes{{Slug: "grapevine", ID: "dddddddd-4444-4444-8444-dddddddddddd", NodeID: gv}}
+	s := &steps{takes: true, answer: nil, scopes: resolved}
+	reg, err := Register(context.Background(), s.registrar(), cfg, cfg.Orgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reg.Contract() != ContractOwner || reg.Owned.NodeID != "22222222-2222-4222-8222-222222222222" {
+		t.Fatalf("contract %q id %q, want the owner contract on the owned id", reg.Contract(), reg.Owned.NodeID)
+	}
+	if !slices.Equal(reg.Scopes, resolved) || !slices.Equal(reg.Scopes.Names(), []string{"grapevine"}) {
+		t.Fatalf("scopes %+v, want what Resolve returned (grapevine)", reg.Scopes)
+	}
+	if !slices.Contains(reg.Notes, FallbackLine) || !strings.Contains(FallbackLine, "keeping the owner contract and the orgs node.yaml names until a heartbeat answers") {
+		t.Fatalf("notes %q, want the reworded fallback", reg.Notes)
+	}
+	if line := StartLine(cfg, reg); !strings.HasSuffix(line, "serving grapevine") {
+		t.Fatalf("start line %q, want serving grapevine", line)
+	}
+
+	s = &steps{takes: true, answer: nil, resolveErr: errors.New("my orgs: timeout")}
+	reg, err = Register(context.Background(), s.registrar(), cfg, cfg.Orgs)
+	if err != nil {
+		t.Fatalf("Register = %v, want a Resolve error noted, not fatal", err)
+	}
+	if reg.Contract() != ContractOwner || len(reg.Scopes) != 0 {
+		t.Fatalf("contract %q scopes %+v, want the owner contract serving none", reg.Contract(), reg.Scopes)
+	}
+	if want := "orgs: my orgs: timeout; serving none until a heartbeat answers"; !slices.Contains(reg.Notes, want) {
+		t.Fatalf("notes %q, want %q", reg.Notes, want)
 	}
 }
 
@@ -766,7 +812,7 @@ func TestOwnedRegistrationLinesNameTheOwnerFirst(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines = RegistrationLines(cfg, reg)
-	if len(lines) != 2 || !strings.Contains(lines[0], " owned by ") || !strings.HasSuffix(lines[0], "serving none") || lines[1] != FallbackLine {
+	if len(lines) != 2 || !strings.Contains(lines[0], " owned by ") || !strings.HasSuffix(lines[0], "serving runsheet, wardroomid") || lines[1] != FallbackLine {
 		t.Fatalf("lines %q, want the owner line first, then the fallback", lines)
 	}
 }

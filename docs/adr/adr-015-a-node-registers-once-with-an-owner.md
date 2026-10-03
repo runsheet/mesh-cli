@@ -1,5 +1,5 @@
 ---
-summary: The node registers with an owner (a person by default, or `enterprise` for shared infra), and registerNode/heartbeatNode answer with the node's one id and its scopes — the orgs it serves — so the node stops deriving them by re-reading the person's orgs; a platform whose schema takes neither `ownerKind` nor `owner` keeps today's per-org registration, and one that takes it but answers nil keeps the owner contract.
+summary: The node registers with an owner (a person by default, or `enterprise` for shared infra), and registerNode/heartbeatNode answer with the node's one id and its scopes — the orgs it serves — so the node stops deriving them by re-reading the person's orgs; a platform whose schema takes neither `ownerKind` nor `owner` keeps today's per-org registration, and one that takes it but answers nil keeps the owner contract, serving the orgs node.yaml names until an answer names them.
 status: accepted
 ---
 
@@ -187,15 +187,16 @@ until a heartbeat's answer names an org — never the per-org path, never
 a failed registration (`TestOwnedRegisterEmptyAnswerIsNotNil`,
 `TestOwnedRegisterUnmatchedRestrictionIsNotFatal`). **The probe chooses
 the contract, never the answer**: a nil answer after a positive probe
-keeps the owner contract. The node logs `FallbackLine` — `register: the
-platform took owner but answered nil; keeping the owner contract and the
-last scopes until a heartbeat answers` — and is owned all the same: its
-one id (`OwnedNodeID`), the owner's kind from node.yaml, `contract:
-owner` and `node_id` saved, and its last scopes, which at a start are
-none. It makes no per-org registration and never reads the person's
-orgs; the loop heartbeats the one id and the first answer that names
-orgs is what it serves (`TestOwnedRegisterNilAnswerKeepsTheOwnerContract`).
-The sequence is: the probe; **one** owner registration; nothing else. An
+keeps the owner contract. The node logs `FallbackLine` and is owned all
+the same: its one id (`OwnedNodeID`), the owner's kind from node.yaml,
+`contract: owner` and `node_id` saved. What it serves until an answer
+names its orgs is amended below (2026-10-03): the orgs node.yaml names,
+resolved as the per-org contract resolves them — never none at a start.
+It makes no per-org registration; the loop heartbeats the one id and the
+first answer that names orgs is what it serves
+(`TestOwnedRegisterNilAnswerKeepsTheOwnerContract`).
+The sequence is: the probe; **one** owner registration; on a nil answer
+`Resolve`; nothing else. An
 earlier draft (item 27) fell back per org on a nil answer, registering a
 Node per org after the owner registration and saving `contract:
 per-org`; that let a nil answer undo the probe's choice, and was
@@ -269,7 +270,9 @@ made.
 
 **Nil versus empty.** A **nil** answer — and only nil — is a
 half-deployed platform: `FallbackLine`, and the node stays on the owner
-contract under its one id with its last scopes — never the per-org path. A
+contract under its one id, serving at a start the orgs node.yaml names
+(2026-10-03, below) and after it its last scopes — never the per-org
+registration. A
 **non-nil** answer is the owner contract whatever it names: its scopes,
 restricted by node.yaml's `orgs:` (`ServedFrom`, never fatal, an
 unmatched restriction logged), are what the node serves — an answer
@@ -509,3 +512,52 @@ a rollback on a refusal naming the owner id is not final.
 
 Tests: `internal/node/owned_adopt_test.go`,
 `internal/commands/nodestart_adopt_test.go`.
+
+## A nil answer keeps the orgs node.yaml names (2026-10-03)
+
+2026-10-03 13:51Z, the grapevine node took v0.2.264 as the canary. The
+hot swap worked, the owner registration was refused naming an id, the
+node adopted it, confirmed the update — and logged `node grapevine
+(grapevine) owned by person, serving none`. The platform takes
+`ownerKind` but answers registerNode with no scopes yet (runsheet goal
+registernode-answers-with-the-node-it-made), and on a nil answer the
+node kept "the last scopes", which on a first owner registration are
+none. It claimed nothing until a person put `contract: per-org` back by
+hand. The rule "keep the last scopes" was right for a heartbeat and
+wrong for a start: at a start there is nothing to keep.
+
+**At a start a nil answer serves what the per-org contract served.**
+When the probe takes owner and `RegisterOwner` answers nil, `Register`
+calls `Registrar.Resolve` — `ResolveScopes`: the token's person's orgs,
+restricted by node.yaml's `orgs:`, exactly as the per-org contract
+resolves them — and returns those as `Registered.Scopes`, each on its
+**per-org node id** (`Config.NodeIDIn`), so the claims land on the rows
+that served those orgs before. The node is still on the owner contract:
+`Owned.NodeID` is the one owned id, `contract: owner` is saved, the
+loop heartbeats that id once per tick, and no per-org registration is
+made. `FallbackLine` now reads `register: the platform took owner but
+answered nil; keeping the owner contract and the orgs node.yaml names
+until a heartbeat answers`, and the start line names those orgs
+(`serving grapevine`), never `serving none`.
+
+**Until an answer names them.** `Loop.TakeAnswer` with a nil answer
+keeps the loop's scopes as before, so a heartbeat under the owned id
+answered nil leaves the resolved orgs served; the first non-nil answer
+replaces them whole, on the answer's one id. `OwnedReloader` never
+resolves again, so the orgs served on a nil-answering platform are those
+resolved at the start.
+
+**A Resolve that fails is noted, not fatal.** `orgs: <err>; serving
+none until a heartbeat answers` follows `FallbackLine`, and the node
+keeps the owner contract with no scopes, as before this amendment — the
+probe still chooses the contract.
+
+Tests: `internal/node/owned_test.go`
+(`TestOwnedRegisterNilAnswerKeepsTheOwnerContract`,
+`TestOwnedRegisterNilAnswerKeepsThePerOrgScopes`,
+`TestOwnedTakeAnswerNilKeepsScopes`) and
+`internal/node/owned_replay_test.go`
+(`TestOwnedReplay20261003ClaimsGrapevine`: a `gatewaytest.Fake` that
+takes `ownerKind` with a nil `Answer`, node.yaml's orgs `[grapevine]`,
+the person's first org foghornid — the node starts `serving grapevine`
+and its first tick claims grapevine's item on grapevine's per-org id).
