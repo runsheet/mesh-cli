@@ -1,0 +1,7 @@
+{
+  "data": {
+    "workItemIndexs": [
+      {"id": "i1", "status": "review", "firstClaimedAt": "2026-10-03T06:00:00Z", "nodeId": "n3", "orgId": "org-a"}
+    ]
+  }
+}

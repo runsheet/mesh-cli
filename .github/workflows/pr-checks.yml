@@ -62,6 +62,9 @@ jobs:
       - name: mirror-token-reading.sh
         run: scripts/mirror-token-reading_test.sh
 
+      - name: mini-owner-reading.sh
+        run: scripts/mini-owner-reading_test.sh
+
       - name: release-on-merge.sh
         run: scripts/release-on-merge_test.sh
 
