@@ -404,12 +404,22 @@ with no `enterprise:` is refused naming the fix (`` add `enterprise:
 `person` is refused too. `mesh node register --owner enterprise
 --enterprise <slug or id>` writes both at once.
 
+The first owner registration resolves a slug to the enterprise's id
+through `myEnterprises` — the token must be an admin's of that
+enterprise; a slug it does not administer refuses the start, naming
+the slug and the token's enterprises — and caches it in node.yaml as
+`enterprise_id:`, beside `node_id:`, so a later start on a token that
+cannot list enterprises still registers. The id is what the
+registration sends as `ownerId`; `owner_id:` (the person) is left as it
+is. Naming another enterprise in `enterprise:` means deleting
+`enterprise_id:` (`mesh node register --enterprise` does it for you).
+
 The node registers once with its owner and takes the orgs it serves
 from the platform's answer to that registration and to every
 heartbeat since, never by re-reading the person's orgs. An org
 attached to the owner later, or a hand-over from a person to an
 enterprise, is picked up on the next heartbeat, no restart — logged
-`owner changed: Chris → anythink`. `orgs:` in node.yaml still
+`owner changed: Chris → anythink (enterprise)`. `orgs:` in node.yaml still
 restricts which of the answer's orgs the node serves; a name it does
 not meet is logged, never fatal, and a changed served set is logged
 too (`orgs a, b → a, b, c`).
@@ -435,6 +445,7 @@ orgs, on the owner contract:
 
 ```
 node mini (runsheet-mini) owned by Chris, serving runsheet, wardroomid, grapevine
+node mini (runsheet-mini) owned by anythink (enterprise), serving runsheet, wardroomid
 ```
 
 or, on the legacy path:
@@ -442,6 +453,26 @@ or, on the legacy path:
 ```
 node mini (runsheet-mini) per org, serving runsheet, wardroomid, grapevine
 ```
+
+followed by the owner field the platform took — `owner contract: field
+ownerKind`, `owner contract: field owner`, or that it takes neither and
+the node registers per org.
+
+The first registration answered on the owner path after a per-org one
+retires the node's legacy per-org rows itself (`retireNode`), so an org
+outside the owner — Grapevine, for the Mini — stops listing the node
+the same hour. The ids are the node's own, each derived from `(org,
+slug)` for every org the answer names and every org of the token's
+person; the owned id is never one. One line each, after the start line:
+
+```
+retired legacy node 0d6c…-… (org grapevine)
+legacy node 9a1e…-… (org runsheet): no such node
+```
+
+The second shape is a refusal — already retired, never registered —
+and is not fatal. A restart already on the owner contract, a nil answer
+and the per-org path retire nothing.
 
 `mesh node status` says the same, beside the org's nodes:
 

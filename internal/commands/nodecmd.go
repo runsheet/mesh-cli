@@ -1,6 +1,8 @@
 package commands
 
 import (
+	"github.com/google/uuid"
+
 	"context"
 	"errors"
 	"fmt"
@@ -10,12 +12,13 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"projectmesh.io/mesh-cli/internal/crash"
 	"strings"
 	"sync"
 	"syscall"
 	"text/tabwriter"
 	"time"
+
+	"projectmesh.io/mesh-cli/internal/crash"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -196,6 +199,13 @@ var nodeRegisterCmd = &cobra.Command{
 		cfg.Latchkey, cfg.LatchkeyClient = prev.Latchkey, prev.LatchkeyClient
 		cfg.NodeID = prev.NodeID
 		cfg.Owner, cfg.Enterprise = owner, enterprise
+		// the contract it was on decides whether this registration retires
+		// the legacy per-org rows (only on the move to the owner contract);
+		// the cached enterprise id holds only for the same enterprise
+		cfg.Contract = prev.Contract
+		if enterprise == prev.Enterprise {
+			cfg.EnterpriseID = prev.EnterpriseID
+		}
 		reg, err := node.Register(ctx, registrar(gw, cfg), cfg, cfg.Orgs)
 		if err != nil {
 			return err
@@ -218,12 +228,27 @@ var nodeRegisterCmd = &cobra.Command{
 }
 
 // registrar is node.Register's steps on the platform client: the
-// `owner` probe, the orgs of the token's person, the one registration
-// on the owner contract (the node's own id, the owner's kind) and the
-// legacy registration per org.
+// owner probe and the field it found, the orgs of the token's person,
+// the enterprise's id from its slug (myEnterprises), the one
+// registration on the owner contract (the node's own id, the owner's id
+// and kind), the legacy registration per org, and the retirement of the
+// legacy per-org rows on the move to the owner contract.
 func registrar(gw *gateway.Client, cfg *node.Config) node.Registrar {
 	return node.Registrar{
 		TakesOwner: gw.TakesOwner,
+		OwnerField: gw.OwnerField,
+		ResolveEnterprise: func(ctx context.Context, slugOrID string) (string, error) {
+			if _, err := uuid.Parse(strings.TrimSpace(slugOrID)); err == nil {
+				return strings.TrimSpace(slugOrID), nil
+			}
+			es, err := gw.MyEnterprises(ctx)
+			if err != nil {
+				return "", fmt.Errorf("enterprise %q: my enterprises: %w", slugOrID, err)
+			}
+			return node.FindEnterprise(slugOrID, es)
+		},
+		LegacyOrgs: func(ctx context.Context) ([]gateway.Org, error) { return gw.MyOrgs(ctx) },
+		Retire:     gw.RetireNode,
 		Resolve:    func(ctx context.Context) (node.Scopes, error) { return node.ResolveScopes(ctx, gw, cfg) },
 		AnyOrg: func(ctx context.Context) (string, error) {
 			orgs, err := gw.MyOrgs(ctx)
@@ -235,8 +260,8 @@ func registrar(gw *gateway.Client, cfg *node.Config) node.Registrar {
 			}
 			return orgs[0].ID, nil
 		},
-		RegisterOwner: func(ctx context.Context, nodeID, orgID string) (*gateway.NodeAnswer, error) {
-			return gw.RegisterNode(ctx, gateway.RegisterNodeInput{NodeID: nodeID, OrgID: orgID, OwnerID: cfg.OwnerID, Name: cfg.Name, Slug: cfg.Slug,
+		RegisterOwner: func(ctx context.Context, nodeID, orgID, ownerID string) (*gateway.NodeAnswer, error) {
+			return gw.RegisterNode(ctx, gateway.RegisterNodeInput{NodeID: nodeID, OrgID: orgID, OwnerID: ownerID, Name: cfg.Name, Slug: cfg.Slug,
 				Harnesses: []string{"claude-code"}, Capacity: cfg.Capacity.Max, Version: version.Resolved(), Owner: cfg.OwnerKind()})
 		},
 		RegisterIn: func(ctx context.Context, scopes node.Scopes) error { return registerIn(ctx, gw, cfg, scopes) },
