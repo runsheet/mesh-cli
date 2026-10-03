@@ -16,8 +16,11 @@ import (
 
 // TestPersonalServerOverStdio drives `mesh mcp`'s server as Claude Code
 // would: initialize, tools/list and a mesh_goals call over a stdin/stdout
-// pair, against the fake gateway.
+// pair, against the fake gateway. It also asserts the personal node has
+// registered by the time the first reply comes back, well before
+// tools/list answers (ADR-015's owner form, ADR-023 mesh mcp).
 func TestPersonalServerOverStdio(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	f := gatewaytest.New("rs_test")
 	defer f.Close()
 	f.Orgs = []map[string]any{{"id": "org-1", "login": "acme"}}
@@ -64,6 +67,11 @@ func TestPersonalServerOverStdio(t *testing.T) {
 	}
 	if _, ok := init["capabilities"].(map[string]any)["experimental"]; ok {
 		t.Errorf("mesh mcp advertises the channel capability: %v", init["capabilities"])
+	}
+	// the personal node registers before Serve answers its first
+	// request at all (ADR-015's owner form, ADR-023 mesh mcp)
+	if calls := f.CallsNamed("registerNode"); len(calls) != 1 {
+		t.Fatalf("registerNode calls by the time initialize answered = %d, want 1", len(calls))
 	}
 	// a notification is not answered
 	_, _ = inW.Write([]byte(`{"jsonrpc":"2.0","method":"notifications/initialized"}` + "\n"))
