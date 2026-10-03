@@ -23,8 +23,9 @@ import (
 // validation.go is a build's validation (runsheet ADR 032, goal
 // node-attests-its-validation): after a session commits and before the
 // node pushes, the repository's .runsheet/validate.yml runs on the
-// commit the item finishes with — the steps the branch's diff touches
-// plus every `always` one — in the session's pod when the node has a
+// commit the item finishes with — the suites the branch's diff affects
+// (validate.Select: no paths is every change), none included, plus every
+// `always` one — in the session's pod when the node has a
 // sandbox, else on the host, saying so. The attestation it produces is
 // written beside the session and uploaded on the item's token after the
 // push; a failing step gives the builder one more turn, then fails the
@@ -155,7 +156,10 @@ func (r *Runner) validateBuild(ctx context.Context, b *buildRun, v *buildValidat
 }
 
 // runValidation runs the steps the branch's diff selects on HEAD and
-// builds, keeps and writes that run's attestation.
+// builds, keeps and writes that run's attestation — when it selects none
+// too, an attestation of no commands, so the verify step finds one for
+// the head and never answers missing for "nothing affected" (goal
+// the-nodes-attestation-reaches-the-platform, rule d).
 func (r *Runner) runValidation(ctx context.Context, b *buildRun, v *buildValidation) (validate.Attestation, error) {
 	cfg, err := validate.Load(b.dir)
 	if err != nil {
@@ -174,7 +178,11 @@ func (r *Runner) runValidation(ctx context.Context, b *buildRun, v *buildValidat
 	for i, s := range steps {
 		names[i] = s.Name
 	}
-	r.logf("item %s: validation on %s: %s", b.label, short(head), strings.Join(names, ", "))
+	ran := strings.Join(names, ", ")
+	if ran == "" {
+		ran = "no suite affected"
+	}
+	r.logf("item %s: validation on %s: %s", b.label, short(head), ran)
 	results, err := validate.Run(ctx, steps, v.runner, validate.Options{Dir: b.dir})
 	if err != nil {
 		return validate.Attestation{}, err
@@ -361,8 +369,10 @@ func (r *Runner) validationUsage(err error) error {
 // gatewayAttestation is validate's attestation in the platform's input
 // shape (specs/contracts/recordValidationAttestation.json), field for
 // field: one command per step, the tests summed over the steps, each
-// artifact as "<path>@sha256:<digest>", the validate.yml's hash as the
-// suite hash, and a report per step that parsed one. Whether it ran
+// artifact as "<path>@sha256:<digest>", the validate.yml's SuiteHash
+// (the platform's canonical hash) as the suite hash, and a report per
+// step that kept one — 256 KiB in all. No step run is no command: an
+// empty list, never left out. Whether it ran
 // sandboxed, the node and the item stay on the local attestation: the
 // platform reads the runner from runnerImage and the node from the
 // bearer.

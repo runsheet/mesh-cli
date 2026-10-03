@@ -1,5 +1,5 @@
 ---
-summary: A repository opts into attested validation with `.runsheet/validate.yml` — named steps, each a command, an "affected by" path list, a timeout, artifacts to digest and where its test results are; `internal/validate` loads it, selects the steps a diff touches plus the always ones, runs them and produces the signed-shape `Attestation`. Built ahead of runsheet ADR 032 landing on mesh-context, to the shape the goal's brief describes.
+summary: A repository opts into attested validation with `.runsheet/validate.yml` in the platform's schema — `suites:`, each a name, kind, command, paths, reports and jobs, plus the node's own timeout, always, artifacts and results; `internal/validate` loads it, selects the suites a diff affects (a suite with no paths is affected by every change) plus the always ones, runs them and produces the `Attestation`, whose suite hash is the platform's canonical `validatespec.SuiteHash` of the file. Amended 2026-10-03 from the first `steps:` shape built ahead of runsheet ADR 032.
 status: accepted
 ---
 
@@ -99,6 +99,68 @@ usage record's per-step validation minutes.
 on `**/*.go`, `go.mod`, `go.sum` — the same three commands
 `go vet ./... && go build ./cmd/mesh/ && go test ./...` AGENTS.md
 already asks of every change, now declared rather than only documented.
+
+## Amended 2026-10-03: the platform's schema and hash
+
+Goal `the-nodes-attestation-reaches-the-platform`, item 4. ADR 032 is
+now indexed (The file: `.runsheet/validate.yml`), and the first shape
+above disagreed with it in the two places a pull request's verify step
+reads: runsheet's own file is `suites:`, which loaded here as zero
+steps, and the step hash above is not the hash the verify step
+compares — it answers `wrong_suite` unless the attestation's
+`suiteHash` equals `validatespec.SuiteHash` of validate.yml at the
+base, and unless every suite `validatespec.Affected` names ran with
+exit 0 (ADR 032, decision 2). So:
+
+**The schema is the platform's.** `validate.Load`/`Parse` read
+`suites:`, each entry `name`, `kind` (`lint | typecheck | unit | build
+| integration`, `validate.Kind`), `command`, `paths` (repo-relative
+globs; none means every change), `reports` (files the command writes)
+and `jobs` (the CI check names it stands in for, the platform's), and
+beside them the node's own `timeout`, `always`, `artifacts` and
+`results`. `steps:` is read as a deprecated alias of the same shape, so
+an old file still loads. Unknown keys are ignored. What the platform's
+`Parse` refuses is refused here too — a suite with no name or command,
+a repeated name, a kind not among the five, a path `protected.Clean`
+refuses — except a missing kind, let through for an old `steps:` file.
+Names, kinds, commands and paths are trimmed and paths deduplicated,
+as the platform's are.
+
+**Selection is the platform's `Affected` plus `always`.**
+`validate.Select` takes every suite with no paths, every suite marked
+`always`, and every suite one of whose paths matches a changed file, in
+the file's order. It may take none — a diff that no suite's paths
+match — and the run still produces and uploads an attestation whose
+commands are empty (ADR-014's amendment): with nothing affected, the
+verify step has nothing to find missing. `validate.Match` reads a bare
+filename at any depth and a trailing `**` as zero or more segments,
+which is never narrower than `platform/protected`'s matching, so the
+node never runs fewer suites than the platform counts as affected.
+
+**The suite hash is the file's canonical hash.**
+`validate.SuiteHash(content)` (and `Config.Hash`) is the lower-case hex
+sha256 of `json.Marshal` of the canonical suites in file order, each
+`{name, kind, command, paths}` — `canonicalSuite` in
+`internal/validate/hash.go`, copied from runsheet/runsheet
+`platform/validatespec/validatespec.go` at
+`1d08f03b6c84804ef46d3e9306424400057b03df` with the same fields, order,
+tags and a nil `paths` written `[]`. A comment, a blank line, key order,
+`reports`, `jobs`, `timeout`, `always`, `artifacts` and `results` leave
+it; `name`, `kind`, `command`, `paths` and the suites' order change it
+(`TestSuiteHashIsTheCanonicalSuitesNotTheBytes`). It is pinned against
+the platform's own answer for runsheet's validate.yml
+(`testdata/runsheet-validate.yml`, `84015ff3…`,
+`TestSuiteHashIsThePlatformsOnRunsheetsFile`). The per-step hash of
+matched files and `StepResult.suiteHash` are gone; the attestation's
+`validation.hash` is the file's `SuiteHash`.
+
+**Reports.** A step's report is its `results` file or stdout, else the
+`reports:` files it names that exist, cut so a run's reports are at
+most 256 KiB in all (ADR 032).
+
+This repository's `.runsheet/validate.yml` is `suites:`, `vet` kind
+`lint`, `build` kind `build`, `unit` kind `unit`, keeping `always`,
+`timeout` and `results`.
 
 ## Consequences
 

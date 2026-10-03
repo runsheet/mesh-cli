@@ -3,27 +3,27 @@
 // session finishes with, and produces the attestation the platform signs
 // (runsheet ADR 032, goal node-attests-its-validation).
 //
-// As of 2026-09-28 neither ADR 032 nor the goal ci-uploads-test-evidence
-// is indexed on mesh-context, so this package is built to the shape the
-// item's brief describes rather than the ADR's own text; a later item
-// should reconcile the two once the document lands.
+// The file is the platform's (runsheet ADR 032, The file:
+// .runsheet/validate.yml; platform/validatespec) plus the node's own
+// keys — timeout, always, artifacts, results:
 //
-// A repository opts in with a `.runsheet/validate.yml` at its root:
-//
-//	steps:
+//	suites:
 //	  - name: vet
+//	    kind: lint
 //	    command: go vet ./...
-//	    always: true
 //	  - name: unit
+//	    kind: unit
 //	    command: go test -json ./...
 //	    paths: ["**/*.go", "go.mod", "go.sum"]
 //	    timeout: 15m
 //	    results: stdout
 //
+// `steps:` is read as a deprecated alias of `suites:`.
+//
 // Load reads it (ErrNoValidation when the file is absent, not a failure
-// the caller need treat as an error); Select picks the steps a diff
-// touches plus every step marked always; Run executes the selection
+// the caller need treat as an error); Select picks the suites a diff
+// touches, every suite with no paths and every one marked always; Run executes the selection
 // through a Runner (HostRunner ships one that runs `sh -c` in the
 // workspace); Build turns the results into an Attestation with every
-// field the platform expects.
+// field the platform expects, the file's SuiteHash among them.
 package validate

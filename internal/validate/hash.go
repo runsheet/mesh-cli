@@ -1,10 +1,9 @@
 package validate
 
 import (
-	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
+	"encoding/json"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -12,38 +11,52 @@ import (
 	"strings"
 )
 
-// SuiteHash is a step's command and the git ls-tree-style blob hashes of
-// every file its paths match, sha256'd together — it changes exactly
-// when the command or an affected file's content changes.
-func SuiteHash(dir string, step Step) (string, error) {
-	files, err := matchingFiles(dir, step.Paths)
-	if err != nil {
-		return "", err
-	}
-	h := sha256.New()
-	h.Write([]byte(step.Command))
-	h.Write([]byte{0})
-	for _, f := range files {
-		blob, err := blobHash(filepath.Join(dir, f))
-		if err != nil {
-			return "", err
-		}
-		fmt.Fprintf(h, "%s %s\n", blob, f)
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
+// canonicalSuite is what the suite hash covers: what runs and when, not
+// where its reports land, which CI jobs it stands in for, nor this node's
+// own timeout, always, artifacts and results. Copied from runsheet/runsheet
+// platform/validatespec/validatespec.go (canonicalSuite and Spec.Hash) at
+// commit 1d08f03b6c84804ef46d3e9306424400057b03df: the same fields in the
+// same order with the same tags, so json.Marshal writes the same bytes.
+type canonicalSuite struct {
+	Name    string   `json:"name"`
+	Kind    Kind     `json:"kind"`
+	Command string   `json:"command"`
+	Paths   []string `json:"paths"`
 }
 
-// blobHash is the git blob object id (sha1) of a file's content, the
-// same value `git hash-object <path>` or `git ls-tree` would report.
-func blobHash(path string) (string, error) {
-	data, err := os.ReadFile(path)
+// SuiteHash is the platform's validatespec.SuiteHash of validate.yml's
+// content: the lower-case hex sha256 of the canonical suites — name,
+// kind, command and paths, suites and paths in the order written — so a
+// comment, a blank line, indentation, key order or any other key leaves
+// it unchanged, and any change to what runs or when does not. A pull
+// request's verify step answers wrong_suite unless the attestation's
+// suiteHash equals it at the base (runsheet ADR 032, decision 2). An
+// invalid file is an error.
+func SuiteHash(content []byte) (string, error) {
+	cfg, err := Parse(content)
 	if err != nil {
 		return "", err
 	}
-	s := sha1.New()
-	fmt.Fprintf(s, "blob %d\x00", len(data))
-	s.Write(data)
-	return hex.EncodeToString(s.Sum(nil)), nil
+	return cfg.Hash(), nil
+}
+
+// Hash is SuiteHash of an already parsed config.
+func (c Config) Hash() string {
+	canon := make([]canonicalSuite, 0, len(c.Steps))
+	for _, s := range c.Steps {
+		paths := s.Paths
+		if paths == nil {
+			paths = []string{}
+		}
+		canon = append(canon, canonicalSuite{Name: s.Name, Kind: s.Kind, Command: s.Command, Paths: paths})
+	}
+	b, err := json.Marshal(canon)
+	if err != nil {
+		// strings and slices of strings always marshal
+		panic(err)
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
 }
 
 // matchingFiles walks dir (skipping .git) and returns every regular

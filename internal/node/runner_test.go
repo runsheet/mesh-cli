@@ -19,6 +19,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/gateway/gatewaytest"
 	"projectmesh.io/mesh-cli/internal/harness"
 	"projectmesh.io/mesh-cli/internal/sandbox"
+	"projectmesh.io/mesh-cli/internal/validate"
 )
 
 // tokenGW hands out a sequence of GitHub tokens, the last one repeated,
@@ -533,14 +534,17 @@ func TestBuildFinishesAlreadyDoneWithoutAPush(t *testing.T) {
 
 // validateYML declares an always step and two path-scoped ones: api's
 // fails while api/broken exists.
-const validateYML = `steps:
+const validateYML = `suites:
   - name: vet
+    kind: lint
     command: sleep 0.02
     always: true
   - name: api
+    kind: unit
     command: sleep 0.02 && test ! -e api/broken
     paths: ["api/**"]
   - name: web
+    kind: unit
     command: sleep 0.02
     paths: ["web/**"]
 `
@@ -697,6 +701,87 @@ func attestationSteps(t *testing.T, call gatewaytest.Call) []string {
 		names = append(names, c.(map[string]any)["suite"].(string))
 	}
 	return names
+}
+
+// pathsOnlyYML is a validate.yml every suite of which names paths: a
+// change none of them match affects none.
+const pathsOnlyYML = `suites:
+  - name: api
+    kind: unit
+    command: sleep 0.02
+    paths: ["api/**"]
+  - name: web
+    kind: unit
+    command: sleep 0.02
+    paths: ["web/**"]
+  - name: e2e
+    kind: integration
+    command: sleep 0.02
+    paths: ["e2e/**", "api/**"]
+    jobs: [shard (e2e 1/3)]
+`
+
+// uploadedAttestation is the one recordValidationAttestation call's input.
+func uploadedAttestation(t *testing.T, f *gatewaytest.Fake) map[string]any {
+	t.Helper()
+	atts := f.CallsNamed("recordValidationAttestation")
+	if len(atts) != 1 {
+		t.Fatalf("recordValidationAttestation calls = %d, want 1", len(atts))
+	}
+	a, _ := atts[0].Input["input"].(map[string]any)
+	return a
+}
+
+// Rule (d): a diff no suite's paths match runs nothing — and still
+// uploads one attestation, its commands empty and its suiteHash the
+// file's, so the verify step answers on it and never "missing".
+func TestAttestationUploadedWhenNothingIsAffected(t *testing.T) {
+	r, _, _, f, item, _ := validatingRunner(t, map[string]string{".runsheet/validate.yml": pathsOnlyYML},
+		map[string]string{"docs/notes.md": "a note\n"})
+	if err := r.RunItem(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	a := uploadedAttestation(t, f)
+	commands, ok := a["commands"].([]any)
+	if !ok || len(commands) != 0 {
+		t.Fatalf("commands = %#v, want an empty list", a["commands"])
+	}
+	want, err := validate.SuiteHash([]byte(pathsOnlyYML))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a["suiteHash"] != want {
+		t.Fatalf("suiteHash = %v, want the file's %s", a["suiteHash"], want)
+	}
+	if n := len(f.CallsNamed("finishWorkItem")); n != 1 {
+		t.Fatalf("finishWorkItem calls = %d", n)
+	}
+}
+
+// A diff some suites' paths match runs those, and the attestation's
+// commands name exactly them, in the file's order.
+func TestAttestationNamesTheSubsetRun(t *testing.T) {
+	r, _, _, f, item, _ := validatingRunner(t, map[string]string{".runsheet/validate.yml": pathsOnlyYML},
+		map[string]string{"api/handler.go": "package api\n"})
+	if err := r.RunItem(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	a := uploadedAttestation(t, f)
+	var names []string
+	for _, c := range a["commands"].([]any) {
+		row := c.(map[string]any)
+		names = append(names, row["suite"].(string))
+		if row["exitCode"] != float64(0) {
+			t.Fatalf("command = %v", row)
+		}
+	}
+	if got := strings.Join(names, ","); got != "api,e2e" {
+		t.Fatalf("commands name %s, want api,e2e", got)
+	}
+	want, _ := validate.SuiteHash([]byte(pathsOnlyYML))
+	if a["suiteHash"] != want {
+		t.Fatalf("suiteHash = %v, want %s", a["suiteHash"], want)
+	}
 }
 
 // A build whose commit touches api/ runs the always step and api's —
