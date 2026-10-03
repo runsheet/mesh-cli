@@ -43,6 +43,44 @@ checkout made locally and reports through the same tools a node uses.
    Code's tool list and a `/mesh` skill written against it do not
    change shape as they land.
 
+## `mesh_join`
+
+Amended 2026-10-03 (item 3). `mesh_join(goal, item?)`
+(`internal/meshmcp/join.go`, `Join`) resolves the goal by slug among
+the orgs `myOrgs` names and the item by seq — the goal's first `ready`
+item, lowest seq, when none is given — and claims it with
+`claimWorkItem(itemId, <personal node>, "claude-code")`, the node's
+path until the hosted `mesh_claim` (item 6). A refused claim is the
+tool's answer, `claim refused: <reason>`, not a transport error. Then
+it does what channel mode's `readyChannelItem` does:
+
+- **Where the checkout lands.** `~/.mesh/work/<goal>/<seq>` on branch
+  `mesh/<goal>-<seq>` from the item's base ref (`node.WorkspaceSpec`,
+  `node.BranchName`, `node.PrepareWithRetry`), unless the cwd rule
+  applies.
+- **The cwd rule.** When the server's working directory is inside a git
+  checkout whose `origin` names the item's repo (`OriginNames`: an
+  https, ssh or path URL ending in `<owner>/<name>`, `.git` or not, any
+  case), that checkout's top is the workspace instead: fetched, the
+  branch checked out there, the context written under its
+  `.mesh/context`. Its `origin` URL is left as the person set it.
+- **The credential rule.** The item's own token (`issueItemRepoToken`,
+  `node.NewItemCred`) goes on the checkout's own credential helper for
+  GitHub (`node.WriteCredentialHelper`: in `.git/config`, an empty
+  helper first, then the token's) — never the person's global config.
+  A platform without item tokens falls back to the person's own `gh`
+  and `git`, said once (`node.TokenFallback`), as a node's does.
+- **What it answers.** After `node.FetchContext` (the item's repo, its
+  goal, the checkout) and `node.WriteContext`: JSON `{path, branch,
+  brief, acceptance, context: [files written], item: {id, goal, seq,
+  title}}`. The held item is recorded in `~/.mesh/mcp-state.json`
+  (`{held: [{itemId, goal, seq, path, branch, claimedAt}]}`), which
+  `mesh_status` lists. A workspace that cannot be made releases the
+  claim (`releaseWorkItem`) and answers the error.
+
+The personal node the claim names is node.yaml's `node_id` until the
+personal node's registration (item 2) answers its own.
+
 ## Consequences
 
 - Channel mode is unchanged on the wire: its server still advertises

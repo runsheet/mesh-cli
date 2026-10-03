@@ -132,9 +132,13 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `ObjectSchema`) channel mode and `mesh mcp` share — only channel mode
   sets `Server.Channel`, advertising `claude/channel` — and `mesh mcp`'s
   personal tools (`NewServer`, `Personal`: `mesh_goals` and
-  `mesh_status` read the gateway, `mesh_join`, `mesh_switch`,
-  `mesh_progress`, `mesh_ask`, `mesh_finish`, `mesh_release` answer
-  `not yet available` until the goal's later items), served by
+  `mesh_status` read the gateway and `~/.mesh/mcp-state.json`,
+  `mesh_join` claims an item and makes its checkout in
+  `~/.mesh/work/<goal>/<seq>` — or the cwd when it is the item's repo —
+  on the item token, with the context written (`join.go`, `Join`),
+  `mesh_switch`, `mesh_progress`, `mesh_ask`, `mesh_finish`,
+  `mesh_release` answer `not yet available` until the goal's later
+  items), served by
   `internal/commands/mcpcmd.go` on `platformClient` (ADR-023, mesh mcp).
   **A draining node claims nothing** (`Loop.Drain`): see the drain
   below. node.yaml's `claim: {unmerged_per_repo: N}` (`ClaimConfig`,

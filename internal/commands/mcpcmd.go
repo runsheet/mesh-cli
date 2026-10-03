@@ -2,6 +2,8 @@ package commands
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
@@ -9,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"projectmesh.io/mesh-cli/internal/meshmcp"
+	"projectmesh.io/mesh-cli/internal/node"
 )
 
 // mcpCmd is `mesh mcp`: Mesh inside Claude Code, added once with
@@ -31,6 +34,24 @@ var mcpCmd = &cobra.Command{
 		}
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
-		return meshmcp.NewServer(gw).Serve(ctx, os.Stdin, os.Stdout)
+		logf := func(format string, a ...any) { fmt.Fprintf(os.Stderr, "mesh mcp: "+format+"\n", a...) }
+		p := &meshmcp.Personal{GW: gw, Join: &meshmcp.Join{
+			GW: gw, WS: &node.Git{Log: os.Stderr}, NodeID: mcpNodeID,
+			Fallback: &node.TokenFallback{}, Logf: logf,
+		}}
+		return p.Server().Serve(ctx, os.Stdin, os.Stdout)
 	},
+}
+
+// mcpNodeID is the node mesh_join claims for: node.yaml's node id until
+// the personal node's registration (the goal's item 2) answers its own.
+func mcpNodeID(context.Context) (string, error) {
+	cfg, err := node.LoadConfig()
+	if err != nil {
+		return "", err
+	}
+	if cfg.NodeID == "" {
+		return "", errors.New("no node registered on this machine yet")
+	}
+	return cfg.NodeID, nil
 }
