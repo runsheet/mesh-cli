@@ -61,6 +61,12 @@ type Config struct {
 	// cached (item 3 of this goal); until then it is the slug or id as
 	// written here.
 	Enterprise string `yaml:"enterprise,omitempty"`
+	// EnterpriseID is Enterprise resolved to an id through myEnterprises
+	// at the first owner registration, cached so a later start on a
+	// token that cannot list enterprises still registers (ADR-015's
+	// amendment 2026-10-03). Written by SaveRegistration beside node_id;
+	// sent as the registration's ownerId.
+	EnterpriseID string `yaml:"enterprise_id,omitempty"`
 	// Capacity is how many items the node runs at once: a plain number
 	// (fixed) or {min, max}, between which the node scales by the
 	// headroom left in its plan's windows (adr-004).
@@ -690,10 +696,15 @@ func (o Owner) String() string {
 	return "owned by " + name
 }
 
-// Who is the owner's name alone — "Chris", "anythink" — falling back
-// to "<kind> <id>" when Name is empty: what the log lines name.
+// Who is the owner's name alone — "Chris", "anythink (enterprise)", an
+// enterprise named with its kind — falling back to "<kind> <id>" when
+// Name is empty: what the log lines name.
 func (o Owner) Who() string {
-	return strings.TrimPrefix(o.String(), "owned by ")
+	who := strings.TrimPrefix(o.String(), "owned by ")
+	if o.Kind == "enterprise" && o.Name != "" {
+		who += " (enterprise)"
+	}
+	return who
 }
 
 // Reloaded is what Loop.Reload reads: the capacity (0 keeps the loop's),
