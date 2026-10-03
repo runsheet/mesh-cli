@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"reflect"
@@ -570,5 +571,243 @@ func TestToolUsageOnAnOlderPlatformDoesNotFailTheItem(t *testing.T) {
 		if !strings.Contains(logs.String(), "usage: tool search on item "+item1+" (build): call "+id+", 3¢") {
 			t.Errorf("call %s not logged:\n%s", id, logs.String())
 		}
+	}
+}
+
+const dockerSecret = "key-docker-9a1f02"
+
+// dockerTool is a required local tool on docker; brave and perplexity
+// (braveTool, perplexityTool) are the search tools a project attaches
+// for the planner and director roles.
+func dockerTool() map[string]any {
+	return map[string]any{"id": "t-dock", "slug": "crawler", "name": "Crawler", "kind": "local_mcp", "need": "required", "runtime": "docker", "command": "example/crawler",
+		"account": map[string]any{"id": "a-dock", "label": "crawler"},
+		"headers": []any{}, "env": []any{map[string]any{"name": "CRAWLER_KEY", "value": dockerSecret}}}
+}
+
+// assertSearchTools checks a session got brave and perplexity beside
+// mesh-context, their secrets in its env and Job.Secrets alone.
+func assertSearchTools(t *testing.T, job harness.Job, logs string) {
+	t.Helper()
+	for _, n := range []string{"mesh-context", "brave", "perplexity"} {
+		if job.MCPServers[n] == nil {
+			t.Errorf("MCPServers has no %s: %v", n, job.MCPServers)
+		}
+	}
+	var names []string
+	for _, tl := range job.Tools {
+		names = append(names, tl.Name)
+	}
+	if !reflect.DeepEqual(names, []string{"brave", "perplexity"}) {
+		t.Errorf("Tools = %v", names)
+	}
+	if v, _ := envOf(job.Env, tools.EnvName("brave", "X-Subscription-Token")); v != braveSecret {
+		t.Errorf("brave's key in env = %q", v)
+	}
+	if v, _ := envOf(job.Env, tools.EnvName("perplexity", "Authorization")); v != perplexitySecret {
+		t.Errorf("perplexity's key in env = %q", v)
+	}
+	mcp := fmt.Sprint(job.MCPServers)
+	argv := strings.Join((&harness.ClaudeCode{}).Args(job), " ")
+	for _, s := range []string{braveSecret, perplexitySecret} {
+		if strings.Contains(mcp, s) {
+			t.Errorf("secret %s in MCPServers: %s", s, mcp)
+		}
+		if strings.Contains(argv, s) {
+			t.Errorf("secret %s on argv", s)
+		}
+		if strings.Contains(logs, s) {
+			t.Errorf("secret %s in the node log:\n%s", s, logs)
+		}
+		if !slicesContain(job.Secrets, s) {
+			t.Errorf("secret %s not in Job.Secrets", s)
+		}
+	}
+	if !strings.Contains(logs, "tools brave perplexity") {
+		t.Errorf("log names no tools:\n%s", logs)
+	}
+}
+
+// toolDirector is a Director on the fake with mesh-context, the node's
+// runtimes (npx alone) and a loop sharing its Declines, as nodecmd wires
+// them.
+func toolDirector(t *testing.T, f *gatewaytest.Fake, h *fakeHarness) (*Director, *Loop, *syncBuf) {
+	t.Helper()
+	f.Projects[projID]["repoIds"] = []string{repoID}
+	direction(f, dirID, projID, "overnight", "Find what people pay for.", 3)
+	gw := gateway.New(f.URL(), "rs_test")
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: Fixed(1), OwnerID: f.UserID}
+	ws := &fakeWS{root: t.TempDir()}
+	logs := &syncBuf{}
+	lookPath := func(file string) (string, error) {
+		if file == "npx" {
+			return "/usr/bin/npx", nil
+		}
+		return "", os.ErrNotExist
+	}
+	dir := &Director{Credentials: testCreds(gw), GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, MaxBudgetUSD: 4,
+		MCP: MeshContextMCP(f.URL(), "rs_test"), Declines: &Declines{}, Log: log.New(logs, "", 0)}
+	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Interval: time.Hour, Log: dir.Log, LookPath: lookPath, Declines: dir.Declines,
+		Dispatch: func(context.Context, gateway.WorkItem) {},
+		Research: func(ctx context.Context, dn gateway.Direction, p gateway.Project, sc Scope) {
+			_ = dir.Research(ctx, dn, p, sc)
+		}}
+	dir.Runtimes = loop.ToolRuntimes
+	return dir, loop, logs
+}
+
+// A research session on a project with Brave and Perplexity attached
+// for the director gets both beside mesh-context (trd §3 Tools: every
+// role selects).
+func TestResearchGetsItsToolsBesideMeshContext(t *testing.T) {
+	f := seed(t)
+	f.SessionTools[dirID] = []map[string]any{braveTool(), perplexityTool()}
+	h := &fakeHarness{text: "```json\n{\"goals\": []}\n```"}
+	_, loop, logs := toolDirector(t, f, h)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	loop.Tick(ctx)
+	loop.wg.Wait()
+
+	if len(h.jobs) != 1 || h.jobs[0].Kind != harness.KindResearch {
+		t.Fatalf("jobs: %+v\n%s", h.jobs, logs.String())
+	}
+	assertSearchTools(t, h.jobs[0], logs.String())
+	if n := len(f.CallsNamed("recordDirectionResearch")); n != 1 {
+		t.Fatalf("%d hand-ins", n)
+	}
+}
+
+// A research session whose required tool needs a runtime the node lacks
+// starts no agent: it hands in an empty research naming why, and the
+// loop does not offer the direction again while the runtimes stand.
+func TestResearchDeclinesARequiredToolItCannotStart(t *testing.T) {
+	f := seed(t)
+	f.SessionTools[dirID] = []map[string]any{braveTool(), dockerTool()}
+	h := &fakeHarness{text: "```json\n{\"goals\": []}\n```"}
+	dir, loop, logs := toolDirector(t, f, h)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	loop.Tick(ctx)
+	loop.wg.Wait()
+	loop.Tick(ctx)
+	loop.wg.Wait()
+
+	if len(h.jobs) != 0 {
+		t.Fatalf("a session ran: %+v", h.jobs)
+	}
+	calls := f.CallsNamed("recordDirectionResearch")
+	if len(calls) != 1 {
+		t.Fatalf("hand-ins: %+v\n%s", calls, logs.String())
+	}
+	note, _ := calls[0].Input["notes"].(string)
+	if !strings.Contains(note, "required tool crawler needs docker") {
+		t.Fatalf("the hand-in's note = %q (input %v)", note, calls[0].Input)
+	}
+	if len(dir.WS.(*fakeWS).fetched) != 0 {
+		t.Fatal("fetched before declining")
+	}
+	if n := len(f.CallsNamed("claimDirectionResearch")); n != 1 {
+		t.Fatalf("the declined direction was offered %d times", n)
+	}
+	if strings.Contains(logs.String(), dockerSecret) {
+		t.Fatal("a declined tool's secret in the log")
+	}
+}
+
+// toolPlanner is a Planner on the fake with mesh-context, the node's
+// runtimes (npx alone) and a loop sharing its Declines.
+func toolPlanner(t *testing.T, f *gatewaytest.Fake, h *fakeHarness) (*Planner, *Loop, *syncBuf) {
+	t.Helper()
+	f.Goals[goalID]["status"] = "planning"
+	f.Projects[projID]["repoIds"] = []string{repoID}
+	gw := gateway.New(f.URL(), "rs_test")
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: Fixed(1), OwnerID: f.UserID}
+	ws := &fakeWS{root: t.TempDir()}
+	logs := &syncBuf{}
+	lookPath := func(file string) (string, error) {
+		if file == "npx" {
+			return "/usr/bin/npx", nil
+		}
+		return "", os.ErrNotExist
+	}
+	pl := &Planner{Credentials: testCreds(gw), GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root,
+		MCP: MeshContextMCP(f.URL(), "rs_test"), Declines: &Declines{}, Log: log.New(logs, "", 0)}
+	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Interval: time.Hour, Log: pl.Log, LookPath: lookPath, Declines: pl.Declines,
+		Dispatch: func(context.Context, gateway.WorkItem) {},
+		Plan: func(ctx context.Context, g gateway.Goal, sc Scope) {
+			_ = pl.Plan(ctx, g, sc)
+		}}
+	pl.Runtimes = loop.ToolRuntimes
+	return pl, loop, logs
+}
+
+// A plan session gets the tools attached for the planner beside
+// mesh-context.
+func TestPlanGetsItsToolsBesideMeshContext(t *testing.T) {
+	f := seed(t)
+	f.SessionTools[goalID] = []map[string]any{braveTool(), perplexityTool()}
+	h := &fakeHarness{text: planTokenJSON}
+	pl, _, logs := toolPlanner(t, f, h)
+	if err := pl.Plan(context.Background(), shipIt(), scopesOf(pl.Cfg)[0]); err != nil {
+		t.Fatalf("plan: %v\n%s", err, logs.String())
+	}
+	if len(h.jobs) != 1 || h.jobs[0].Kind != harness.KindPlan {
+		t.Fatalf("jobs: %+v", h.jobs)
+	}
+	assertSearchTools(t, h.jobs[0], logs.String())
+	if n := len(f.CallsNamed("planGoal")); n != 1 {
+		t.Fatalf("%d plans handed in", n)
+	}
+}
+
+// A plan session whose required tool needs a runtime the node lacks
+// starts no agent: the plan claim goes back with the reason, no try is
+// counted, and the loop leaves the goal unclaimed with the reason on
+// its holding line while the runtimes stand.
+func TestPlanDeclinesARequiredToolItCannotStart(t *testing.T) {
+	f := seed(t)
+	f.SessionTools[goalID] = []map[string]any{braveTool(), dockerTool()}
+	h := &fakeHarness{text: planTokenJSON}
+	pl, loop, logs := toolPlanner(t, f, h)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	loop.Tick(ctx)
+	loop.wg.Wait()
+	loop.Tick(ctx)
+	loop.wg.Wait()
+
+	if len(h.jobs) != 0 {
+		t.Fatalf("a session ran: %+v", h.jobs)
+	}
+	if n := len(f.CallsNamed("planGoal")); n != 0 {
+		t.Fatalf("%d plans handed in", n)
+	}
+	if n := len(f.CallsNamed("claimPlan")); n != 1 {
+		t.Fatalf("the declined goal's plan was claimed %d times\n%s", n, logs.String())
+	}
+	rel := f.CallsNamed("releasePlan")
+	if len(rel) != 1 || !strings.Contains(fmt.Sprint(rel[0].Input["note"]), "required tool crawler needs docker") {
+		t.Fatalf("releasePlan: %+v", rel)
+	}
+	held := false
+	if hd := loop.Holding(); hd != nil {
+		for _, u := range hd.Unclaimed {
+			if u.GoalID == goalID && u.Kind == "plan" && strings.Contains(u.Reason, "required tool crawler needs docker") {
+				held = true
+			}
+		}
+	}
+	if !held {
+		t.Fatalf("no holding line names the decline: %+v", loop.Holding())
+	}
+	if !strings.Contains(logs.String(), "declined, tools: required tool crawler needs docker") {
+		t.Fatalf("log:\n%s", logs.String())
+	}
+	pl.mu.Lock()
+	tries := pl.attempts[goalID]
+	pl.mu.Unlock()
+	if tries != 0 {
+		t.Fatalf("a decline counted %d tries", tries)
 	}
 }

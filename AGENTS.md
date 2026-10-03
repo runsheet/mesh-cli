@@ -632,14 +632,19 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   its `tools` (`[]tools.Tool`, secrets decrypted for the claiming
   node); a platform without `tools` gets none and is asked for
   credentials alone from then on. `Loop.Runtimes()` is what the last
-  probe found. Build and evaluate sessions get theirs
-  (`SelectTools` by role and runtimes, `SessionTools.Apply`: mesh-context
+  probe found. Build, evaluate, plan and research sessions get theirs
+  (`SelectTools` by `tools.RoleFor(kind)` — builder, evaluator, planner,
+  director — and runtimes, `SessionTools.Apply`: mesh-context
   plus each tool in `Job.MCPServers`, secret values in `Job.Env` and
   `Job.Secrets` only, the tools on `Job.Tools` for Codex); a
   nice-to-have tool the node cannot start is omitted and noted on the
-  item, a required one releases the item and `Declines` keeps the loop
-  off it while the runtimes are unchanged. Plan, research, rebase and
-  channel sessions keep mesh-context alone. `tools.IsBuiltin(name)`
+  item (logged for a plan or research), a required one releases the
+  item — a plan's claim goes back by `releasePlan` (`ToolsDeclinedError`,
+  no try counted), a research hands in an empty one with the reason as
+  its note — and `Declines` keeps the loop off the item, goal or
+  direction while the runtimes are unchanged, the reason on the plan's
+  holding line. Rebase and channel sessions keep mesh-context alone.
+  `tools.IsBuiltin(name)`
   knows the built-in by its current name and, until 2026-10-28, its old
   one, `prologue` — read only from a session an older node started and
   this one adopted (`Evaluator.toolBroken`, `UseNote`); a console tool

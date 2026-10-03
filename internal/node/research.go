@@ -15,6 +15,7 @@ import (
 
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/harness"
+	"projectmesh.io/mesh-cli/internal/tools"
 )
 
 // Director is the session that acts on one direction of a project
@@ -38,8 +39,17 @@ type Director struct {
 	WS       Workspacer
 	Cfg      *Config
 	WorkRoot string
-	// MCP are the MCP servers the session gets (mesh-context).
+	// MCP is the built-in MCP server the session gets (mesh-context);
+	// the tools attached for the director role are rendered beside it
+	// (SelectTools, trd §3 Tools).
 	MCP map[string]any
+	// Runtimes are the tool runtimes the node has now (Loop.ToolRuntimes;
+	// nil: none), which a local tool needs to start.
+	Runtimes func() []string
+	// Declines remembers a direction not researched for a required tool
+	// whose runtime the node lacks, so the loop does not offer it again
+	// while the runtimes are unchanged (nil: not remembered).
+	Declines *Declines
 	// MaxBudgetUSD caps the research session (5 by default).
 	MaxBudgetUSD float64
 	// Budgets is node.yaml's `budgets:` in force, read live (ADR 012,
@@ -128,6 +138,17 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 	}
 	acct.SetLabel("project "+project.Slug, string(harness.KindResearch))
 	defer unlessDetached(ctx, acct.Cleanup)
+	// the tools attached for the director role, beside mesh-context: a
+	// required one this node cannot start hands in an empty research
+	// before anything is fetched, and the loop leaves the direction to a
+	// node that can
+	runtimes := d.runtimes()
+	st := SelectTools(d.MCP, acct.Tools, tools.RoleFor(string(harness.KindResearch)), runtimes)
+	if len(st.Missing) > 0 {
+		reason := st.DeclineReason()
+		d.Declines.Record(direction.ID, st.Missing, runtimes, time.Now())
+		return d.emptyResearch(ctx, direction, project, scope, errors.New("declined, "+reason), reason)
+	}
 	all, err := d.GW.ProjectRepos(ctx, project.RepoIDs)
 	if err != nil {
 		return fmt.Errorf("repos: %w", err)
@@ -221,6 +242,16 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 	}
 	acct.SetContextBytes(written.Bytes)
 	acct.Apply(&job)
+	if err := st.UseTools(&job, d.MCP, acct); err != nil {
+		return d.emptyResearch(ctx, direction, project, scope, fmt.Errorf("tools: %w", err), "tools: "+err.Error())
+	}
+	label := project.Slug + "/" + direction.Slug
+	if len(st.Use) > 0 {
+		d.logf("%s: tools %s", label, st.Names())
+	}
+	if note := st.OmittedNote(); note != "" {
+		d.logf("%s: %s", label, note)
+	}
 	job.Meta = harness.SessionMeta{NodeID: scope.NodeID, DirectionID: direction.ID, TempDirs: sessionTempDirs(job, acct)}
 	d.logf("%s/%s: researching in %s (%d repos, room for %d), budget $%.2f (%s)", project.Slug, direction.Slug, dir, len(dirs), room, budget, budgetSource)
 	// the session outlives this process: a restart adopts it (ADR 009)
@@ -229,7 +260,17 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 	// the usage report rides the hand-in; Finish logs it when nothing
 	// carried it
 	defer acct.Finish(ctx, result)
+	if note := acct.UseNote(result); note != "" && err == nil {
+		d.logf("%s: %s", label, note)
+	}
 	return d.handIn(ctx, direction, project, scope, dir, acct, result, err)
+}
+
+func (d *Director) runtimes() []string {
+	if d.Runtimes == nil {
+		return nil
+	}
+	return d.Runtimes()
 }
 
 // researchTokens reads the direction's research GitHub tokens
