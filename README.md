@@ -105,8 +105,17 @@ logged `gh` into GitHub plans; the operator's `gh` login is not
 consulted. A
 repo the platform issues no token for — the App is not installed on its
 account — is the plan's error, naming the repo, before any session
-opens. The director's research still fetches on the node's own `gh`
-login until it reads `researchGitHubToken` the same way.
+opens.
+
+The director's research fetches the same way, on the direction's own
+tokens (`researchGitHubToken`, adr-022): one per repo of the project,
+each checkout authorized on its own row before it is fetched, and the
+session's `GH_TOKEN` (the first repo's by sorted name) and its own
+`GH_CONFIG_DIR` — the operator's `gh` login is never consulted. A repo
+the platform issues no token for, or a refused read, hands in an empty
+research naming the repo rather than failing the claim, so the
+direction is not left held; an old platform falls back to the
+operator's `gh`, said once per run.
 
 **The fallback.** A platform that has not yet rolled out the mutation
 (its schema does not know `issueItemRepoToken`) gets the old behaviour:
@@ -215,6 +224,14 @@ node simply offers each one every tick. Being refused — outside the
 hours, inside the gap, the direction switched off, another node holding
 it — is the ordinary answer. Two directions of one project take their
 turns on their own hours, without waiting for each other.
+
+Its fetch runs on the platform's own token, not the operator's `gh`
+login (`researchGitHubToken`, adr-022): one row per repo of the
+project, each checkout authorized before it is fetched, and the session
+on `GH_TOKEN` with a fresh `GH_CONFIG_DIR`. A repo the platform issues
+no token for hands in an empty research naming it rather than failing
+the claim, and an old platform falls back to the operator's `gh` once
+per run.
 
 A direction's **mode** is its own (runsheet ADR 022). A `set` direction
 turns its proposals into goals up to the room, so a node does not offer

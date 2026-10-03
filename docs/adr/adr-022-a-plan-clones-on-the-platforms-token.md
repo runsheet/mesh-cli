@@ -183,6 +183,21 @@ session detached.
 An old platform (`IsUnsupported`) still fetches on the operator's `gh`.
 The Director's own `TokenFallback` (`NoteResearch`) says so once:
 `direction <project>/<slug>: platform issues no research token;
-fetching on the operator's gh`. Turning a refused read into an empty
-hand-in, so the direction's claim is not held, is a later item of the
-goal.
+fetching on the operator's gh`.
+
+## Amendment 2026-10-03: a refused research token hands in an empty research
+
+A refused read — the platform naming a repo it will not clone for
+(`no GitHub installation reaches <owner/name>`), or a project repo the
+answer has no row for — no longer fails `Director.Research` outright:
+`refusedToken` logs `<project>/<direction>: <err>; handing in an empty
+research` and hands in an empty one through
+`RecordDirectionResearch(direction.ID, node, gateway.Research{}, 0,
+note, nil)` — `note` the error's own text, which names the repo — the
+same way `refused` does for a refused credential (both now go through
+the shared `emptyResearch`), then returns nil: no session ran, nothing
+to cost or report, and the direction's claim is let go rather than held
+for the platform's 45-minute timer. An old platform's `IsUnsupported` is
+unaffected — `researchTokens` answers `nil, nil` for it, before
+`refusedToken` is ever reached, and the fetch runs on the operator's
+`gh` as before.

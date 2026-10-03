@@ -112,30 +112,25 @@ func TestDirectorFetchesOnTheDirectionsTokens(t *testing.T) {
 	}
 }
 
-// A repo the platform issues no token for, or a refused read, is the
-// research's error naming the repo, before any fetch and any session.
-func TestDirectorRefusedTokenNamesTheRepo(t *testing.T) {
+// A repo the platform issues no token for, or a refused read, hands in
+// an empty research naming the repo rather than failing: no fetch, no
+// session, and the direction's claim is let go (assertEmptyHandIn).
+func TestDirectorRefusedTokenHandsInEmptyResearch(t *testing.T) {
 	t.Run("no row", func(t *testing.T) {
-		f, d, ws, h, cfg, _ := researchTokenSeed(t)
+		f, d, ws, h, cfg, logs := researchTokenSeed(t)
 		f.ResearchGitHubTokens[dirID] = f.ResearchGitHubTokens[dirID][:1] // widgets alone
-		err := d.Research(context.Background(), overnight(dirID, "overnight"), researchProject(), scopesOf(cfg)[0])
-		if err == nil || !strings.Contains(err.Error(), "acme/gadgets") {
-			t.Fatalf("research error = %v, want one naming acme/gadgets", err)
+		if err := d.Research(context.Background(), overnight(dirID, "overnight"), researchProject(), scopesOf(cfg)[0]); err != nil {
+			t.Fatalf("a refused token is handed in, not an error: %v\n%s", err, logs.String())
 		}
-		if len(h.jobs) != 0 || len(ws.repoOps) != 0 {
-			t.Fatalf("sessions %d, workspace calls %q: want none", len(h.jobs), ws.repoOps)
-		}
+		assertEmptyHandIn(t, f, ws, h, "acme/gadgets")
 	})
 	t.Run("refused", func(t *testing.T) {
-		f, d, ws, h, cfg, _ := researchTokenSeed(t)
+		f, d, ws, h, cfg, logs := researchTokenSeed(t)
 		f.Refuse["researchGitHubToken"] = "no GitHub installation reaches acme/gadgets"
-		err := d.Research(context.Background(), overnight(dirID, "overnight"), researchProject(), scopesOf(cfg)[0])
-		if err == nil || !strings.Contains(err.Error(), "research github token") || !strings.Contains(err.Error(), "acme/gadgets") {
-			t.Fatalf("research error = %v, want one naming acme/gadgets", err)
+		if err := d.Research(context.Background(), overnight(dirID, "overnight"), researchProject(), scopesOf(cfg)[0]); err != nil {
+			t.Fatalf("a refused token is handed in, not an error: %v\n%s", err, logs.String())
 		}
-		if len(h.jobs) != 0 || len(ws.repoOps) != 0 {
-			t.Fatalf("sessions %d, workspace calls %q: want none", len(h.jobs), ws.repoOps)
-		}
+		assertEmptyHandIn(t, f, ws, h, "acme/gadgets")
 	})
 }
 

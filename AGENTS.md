@@ -118,7 +118,13 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   in an empty research costing nothing, no usage, its notes `no issued
   credential has headroom` or the no-credential text, so the direction
   is not left claimed while the hold keeps it unclaimed. Then it reads
-  the direction, the repos and the context; a `propose`
+  the direction's own GitHub tokens (`researchTokens`, adr-022) — one
+  per repo of the project, each checkout `Authorize`d on its row before
+  `Fetch`, the session's `GH_TOKEN` the first sorted repo's with its own
+  `GH_CONFIG_DIR`, the operator's `gh` never consulted — and a refused
+  read, or a repo with no row, hands in an empty research naming it
+  (`refusedToken`) the same way a refused credential does; it then
+  fetches the repos and reads the context; a `propose`
   direction's session pitches and answers (`ParsePitches`: problem,
   evidence, bet, scope, estimate, risks, alternatives, signal, and its
   answers to open questions on earlier pitches) and a `set` one
@@ -842,9 +848,16 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   <slug>: fetch failed: <err>; plan claim released`, no try counted
   against `MaxPlanAttempts`; a platform without it is said once per run
   (`takes no plan release`) and the try counted, a refused release
-  logged with its error (adr-022, A fetch that fails is reported). The director's research fetch stays
-  on the operator's `gh` and `git` until it reads
-  `ResearchGitHubTokens`.
+  logged with its error (adr-022, A fetch that fails is reported). The director's research fetch runs
+  the same way (`Director.researchTokens`, adr-022): each repo's
+  research checkout `Authorize`d on its row before `Fetch`, the
+  session's `SessionEnv` of the first sorted repo's row with a fresh
+  `GH_CONFIG_DIR`, the operator's `gh` never consulted; a refused read,
+  or a repo with no row, hands in an empty research naming the repo
+  (`refusedToken`) rather than failing the claim, the same way a
+  refused credential does, so the direction is not left held; an old
+  platform researches on the operator's `gh` as before, said once per
+  run (`TokenFallback.NoteResearch`).
 - A change to what the node reports or claims changes the platform's
   contract too; land the platform side first (a process reacts only to
   events after its deploy).
