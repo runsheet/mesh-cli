@@ -727,6 +727,12 @@ it served.
 Tests: `internal/selfupdate/state_test.go`
 (`TestBeginUpdateRecordsServed`, `TestRollbackNamesFewerOrgs`,
 `TestFewerOrgs`), `internal/node/selfupdate_served_test.go`.
+The canary's replay is `internal/node/canary_e2e_test.go`: v0.2.263
+per org → v0.2.264 on the owner contract against a platform that
+takes `ownerKind` and answers no scopes keeps serving grapevine and
+confirms (`TestCanaryReplayKeepsServingAndConfirms`), and coming up
+serving none is not confirmed and rolls back naming the orgs
+(`TestCanaryReplayServingNoneRollsBack`).
 
 ## Consequences
 
