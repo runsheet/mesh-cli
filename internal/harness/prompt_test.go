@@ -165,6 +165,43 @@ func TestParsePlanQuestions(t *testing.T) {
 
 // The planner chooses each item's model by the rubric, and the graph is
 // still the last thing it writes.
+// A research session served Brave and Perplexity is told, beside
+// mesh-context, when to reach for them — a source for a Scout note or a
+// pitch's evidence — and cites what it found; with no tools served, no
+// section at all (goal the-director-and-the-planner-get-their-tools).
+func TestResearchPromptNamesItsTools(t *testing.T) {
+	p := ResearchPrompt(ResearchInput{Org: "o", Project: "p", Direction: "d", Room: 1,
+		Tools: []ToolHint{{Name: "brave"}, {Name: "perplexity"}}})
+	for _, want := range []string{"# Your tools", "brave", "perplexity", "source", "evidence", "ref"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("research prompt lacks %q:\n%s", want, p)
+		}
+	}
+	if strings.Contains(p, "served, never called") {
+		t.Error("research prompt names the use-note's own phrase, which belongs on the item, not the prompt")
+	}
+	none := ResearchPrompt(ResearchInput{Org: "o", Project: "p", Direction: "d", Room: 1})
+	if strings.Contains(none, "# Your tools") {
+		t.Errorf("research prompt with no tools served shows the heading anyway:\n%s", none)
+	}
+}
+
+// The planner gets the same section, shorter: a known search tool's use
+// is search before naming a library or a version the brief relies on.
+func TestPlanPromptNamesItsTools(t *testing.T) {
+	p := PlanPrompt(PlanInput{GoalSlug: "g", GoalTitle: "G", Org: "o", Project: "p",
+		Tools: []ToolHint{{Name: "brave"}, {Name: "perplexity"}}})
+	for _, want := range []string{"# Your tools", "brave", "perplexity", "library", "version"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("plan prompt lacks %q:\n%s", want, p)
+		}
+	}
+	none := PlanPrompt(PlanInput{GoalSlug: "g", GoalTitle: "G", Org: "o", Project: "p"})
+	if strings.Contains(none, "# Your tools") {
+		t.Errorf("plan prompt with no tools served shows the heading anyway:\n%s", none)
+	}
+}
+
 func TestPlanPromptModelRubric(t *testing.T) {
 	p := PlanPrompt(PlanInput{GoalSlug: "g", GoalTitle: "G", Org: "o", Project: "p"})
 	for _, want := range []string{

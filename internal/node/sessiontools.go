@@ -164,6 +164,19 @@ func redactToolValues(s string, t tools.Tool) string {
 	return s
 }
 
+// toolHints is a session's served tools (SessionTools.Use) as the
+// prompt's own shape (harness.ToolHint): the name alone — what to use
+// it for is the prompt's own rubric to write, by the tool's name, not
+// anything the node holds (goal
+// the-director-and-the-planner-get-their-tools).
+func toolHints(ts []tools.Tool) []harness.ToolHint {
+	hints := make([]harness.ToolHint, len(ts))
+	for i, t := range ts {
+		hints[i] = harness.ToolHint{Name: t.Name}
+	}
+	return hints
+}
+
 // Names are the rendered tools' names, for a log line: names only, never
 // a config or a value.
 func (st SessionTools) Names() string {
