@@ -34,10 +34,26 @@ type Registrar struct {
 	// restriction applies, since the answer is what names the orgs.
 	AnyOrg func(ctx context.Context) (string, error)
 	// RegisterOwner is the one registration on the owner contract: the
-	// node's own id, an org id the platform ignores, the owner's kind.
-	RegisterOwner func(ctx context.Context, nodeID, orgID string) (*gateway.NodeAnswer, error)
+	// node's own id, an org id the platform ignores, and the owner's id
+	// to send as ownerId — the enterprise's (ResolveEnterprise) on
+	// `owner: enterprise`, node.yaml's owner_id for a person.
+	RegisterOwner func(ctx context.Context, nodeID, orgID, ownerID string) (*gateway.NodeAnswer, error)
 	// RegisterIn registers one Node per org, as before owners.
 	RegisterIn func(ctx context.Context, scopes Scopes) error
+	// OwnerField is the owner field the platform's RegisterNodeInput
+	// takes — "ownerKind", "owner" or "" (gateway.Client.OwnerField) —
+	// said once per registration as OwnerFieldLine. Nil says nothing.
+	OwnerField func(ctx context.Context) string
+	// ResolveEnterprise is node.yaml's `enterprise:` slug as an id
+	// (gateway.Client.MyEnterprises, by slug or tenantSlug). Asked only
+	// when the slug is not already an id and no enterprise_id is cached.
+	ResolveEnterprise func(ctx context.Context, slugOrID string) (string, error)
+	// LegacyOrgs is the token's person's orgs, unrestricted (MyOrgs): with
+	// the answer's orgs, where the node may have a legacy per-org row.
+	LegacyOrgs func(ctx context.Context) ([]gateway.Org, error)
+	// Retire retires one of the node's own legacy per-org rows
+	// (gateway.Client.RetireNode). Nil retires nothing.
+	Retire func(ctx context.Context, nodeID string) error
 }
 
 // Registered is Register's result: the scopes to serve and, on the
@@ -55,6 +71,11 @@ type Registered struct {
 	// the caller to log after StartLine, so node.log's first line after
 	// the start lines is always the owner and the orgs (ADR-015).
 	Notes []string
+	// EnterpriseID is the enterprise id this registration resolved from
+	// node.yaml's `enterprise:` slug, "" when none was resolved (an id
+	// as written, a cached enterprise_id, a person's node); SaveRegistration
+	// caches it in node.yaml as enterprise_id.
+	EnterpriseID string
 }
 
 // Contract is the contract the registration made: ContractOwner when
@@ -78,6 +99,118 @@ func StartLine(cfg *Config, r Registered) string {
 	return fmt.Sprintf("node %s (%s) per org, serving %s", cfg.Name, cfg.Slug, orgsOrNone(r.Scopes))
 }
 
+// OwnerFieldLine names the owner field the platform's RegisterNodeInput
+// took on this registration: `owner contract: field ownerKind`, `owner
+// contract: field owner`, or that it takes neither and the node
+// registers per org.
+func OwnerFieldLine(field string) string {
+	if field == "" {
+		return "owner contract: no owner field (registerNode takes neither ownerKind nor owner); registering per org"
+	}
+	return "owner contract: field " + field
+}
+
+// enterpriseNotAdmin is the refusal of an `enterprise:` the token's
+// person does not administer.
+const enterpriseNotAdmin = "enterprise %q: not one of the token's enterprises (%s) — the token must be an enterprise admin's"
+
+// EnterpriseNotFound is ResolveEnterprise's refusal of slug, naming the
+// enterprises the token's person does administer.
+func EnterpriseNotFound(slug string, es []gateway.Enterprise) error {
+	var names []string
+	for _, e := range es {
+		names = append(names, e.Slug)
+	}
+	listed := "none"
+	if len(names) > 0 {
+		listed = strings.Join(names, ", ")
+	}
+	return fmt.Errorf(enterpriseNotAdmin, slug, listed)
+}
+
+// FindEnterprise is slugOrID's id among es: an id is itself, else the
+// enterprise whose slug or tenantSlug matches it, case-insensitive; no
+// match is EnterpriseNotFound.
+func FindEnterprise(slugOrID string, es []gateway.Enterprise) (string, error) {
+	slugOrID = strings.TrimSpace(slugOrID)
+	if _, err := uuid.Parse(slugOrID); err == nil {
+		return slugOrID, nil
+	}
+	for _, e := range es {
+		if strings.EqualFold(e.Slug, slugOrID) || (e.TenantSlug != "" && strings.EqualFold(e.TenantSlug, slugOrID)) {
+			return e.ID, nil
+		}
+	}
+	return "", EnterpriseNotFound(slugOrID, es)
+}
+
+// ownerIDFor is the ownerId the owner registration sends: node.yaml's
+// owner_id for a person; for an enterprise its id — `enterprise:` when
+// it is one, else the cached enterprise_id, else ResolveEnterprise once,
+// cached on cfg for the rest of the process and returned as resolved
+// for SaveRegistration to write. owner_id (the person) is never touched,
+// so OwnedNodeID keeps converging.
+func ownerIDFor(ctx context.Context, r Registrar, cfg *Config) (id, resolved string, err error) {
+	if cfg.OwnerKind() != "enterprise" {
+		return cfg.OwnerID, "", nil
+	}
+	ent := strings.TrimSpace(cfg.Enterprise)
+	if _, err := uuid.Parse(ent); err == nil {
+		return ent, "", nil
+	}
+	if cfg.EnterpriseID != "" {
+		return cfg.EnterpriseID, "", nil
+	}
+	if r.ResolveEnterprise == nil {
+		return "", "", fmt.Errorf("enterprise %q: no way to resolve it to an id", ent)
+	}
+	id, err = r.ResolveEnterprise(ctx, ent)
+	if err != nil {
+		return "", "", err
+	}
+	cfg.EnterpriseID = id
+	return id, id, nil
+}
+
+// retireLegacy retires the node's own legacy per-org rows: NodeIDIn of
+// every org the answer names and every org of the token's person
+// (LegacyOrgs), each once, never the owned id. Each id is derived from
+// (org, slug), so it is this node's and never another's. One note per
+// id: `retired legacy node <id> (org <name>)`, or a refusal — already
+// retired, no such node — as `legacy node <id> (org <name>): <err>`,
+// never fatal.
+func retireLegacy(ctx context.Context, r Registrar, cfg *Config, a *gateway.NodeAnswer, owned string) []string {
+	type org struct{ id, name string }
+	var orgs []org
+	for _, sa := range a.Scopes {
+		orgs = append(orgs, org{sa.OrgID, Scope{Login: sa.Login, Slug: sa.Slug}.Name()})
+	}
+	var notes []string
+	if r.LegacyOrgs != nil {
+		person, err := r.LegacyOrgs(ctx)
+		if err != nil {
+			notes = append(notes, fmt.Sprintf("legacy nodes: my orgs: %v; retiring those of the answer's orgs alone", err))
+		}
+		for _, o := range person {
+			orgs = append(orgs, org{o.ID, o.Name()})
+		}
+	}
+	seen := map[string]bool{owned: true}
+	for _, o := range orgs {
+		id, err := cfg.NodeIDIn(o.id)
+		if err != nil || seen[id] {
+			continue
+		}
+		seen[id] = true
+		if err := r.Retire(ctx, id); err != nil {
+			notes = append(notes, fmt.Sprintf("legacy node %s (org %s): %v", id, o.name, err))
+			continue
+		}
+		notes = append(notes, fmt.Sprintf("retired legacy node %s (org %s)", id, o.name))
+	}
+	return notes
+}
+
 // RegistrationLines is what a start logs of its registration, in
 // order: StartLine first — node.log's first line after the start lines
 // names the owner and the orgs — then the registration's Notes.
@@ -96,6 +229,10 @@ func SaveRegistration(cfg *Config, r Registered, save func() error) error {
 	cfg.Contract = contract
 	if r.Owned != nil && r.Owned.NodeID != "" && cfg.NodeID != r.Owned.NodeID {
 		cfg.NodeID, changed = r.Owned.NodeID, true
+	}
+	if r.EnterpriseID != "" {
+		// Register cached it on cfg already; the file has not got it yet
+		cfg.EnterpriseID, changed = r.EnterpriseID, true
 	}
 	if !changed {
 		return nil
@@ -144,27 +281,52 @@ func OwnedNodeID(cfg *Config) string {
 // naming no org, or a restriction matching none of the orgs it names,
 // is noted and the node serves none until a heartbeat's answer names
 // one — never the per-org path, never a failed registration.
+//
+// On `owner: enterprise` the ownerId sent is the enterprise's id
+// (ownerIDFor: resolved once, cached as enterprise_id). The first
+// non-nil answer after a per-org contract — node.yaml's contract as it
+// was before this registration — retires the node's legacy per-org rows
+// (retireLegacy), one note each; a restart already on the owner
+// contract, a nil answer and the per-org path retire nothing.
 func Register(ctx context.Context, r Registrar, cfg *Config, restrict []string) (Registered, error) {
+	was := cfg.ContractKind()
+	var fieldNote []string
+	if r.OwnerField != nil {
+		fieldNote = []string{OwnerFieldLine(r.OwnerField(ctx))}
+	}
 	if !r.TakesOwner(ctx) {
-		return perOrg(ctx, r)
+		reg, err := perOrg(ctx, r)
+		reg.Notes = append(fieldNote, reg.Notes...)
+		return reg, err
 	}
 	orgID, err := r.AnyOrg(ctx)
 	if err != nil {
 		return Registered{}, err
 	}
+	ownerID, resolved, err := ownerIDFor(ctx, r, cfg)
+	if err != nil {
+		return Registered{}, fmt.Errorf("register (owner %s): %w", cfg.OwnerKind(), err)
+	}
 	id := OwnedNodeID(cfg)
-	answer, err := r.RegisterOwner(ctx, id, orgID)
+	answer, err := r.RegisterOwner(ctx, id, orgID, ownerID)
 	if err != nil {
 		return Registered{}, fmt.Errorf("register (owner %s): %w", cfg.OwnerKind(), err)
 	}
 	if answer == nil {
 		owned := &Owned{NodeID: id, Owner: Owner{Kind: cfg.OwnerKind()}}
-		return Registered{Owned: owned, Notes: []string{FallbackLine}}, nil
+		return Registered{Owned: owned, Notes: append(fieldNote, FallbackLine), EnterpriseID: resolved}, nil
 	}
-	reg := Registered{Owned: &Owned{NodeID: answer.NodeID, Owner: OwnerFrom(answer)}, Answer: answer}
+	reg := Registered{Owned: &Owned{NodeID: answer.NodeID, Owner: OwnerFrom(answer)}, Answer: answer, Notes: fieldNote, EnterpriseID: resolved}
 	var note error
 	if reg.Scopes, note = ServedFrom(answer, restrict); note != nil {
 		reg.Notes = append(reg.Notes, fmt.Sprintf("orgs: %v", note))
+	}
+	if was != ContractOwner && r.Retire != nil {
+		owned := answer.NodeID
+		if owned == "" {
+			owned = id
+		}
+		reg.Notes = append(reg.Notes, retireLegacy(ctx, r, cfg, answer, owned)...)
 	}
 	return reg, nil
 }

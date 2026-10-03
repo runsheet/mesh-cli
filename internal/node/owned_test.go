@@ -32,6 +32,8 @@ type steps struct {
 	scopes     Scopes
 	resolveErr error
 	did        []string
+	// ownerIDs is each ownerId RegisterOwner was sent, in order
+	ownerIDs []string
 }
 
 func (s *steps) registrar() Registrar {
@@ -51,8 +53,9 @@ func (s *steps) registrar() Registrar {
 			s.did = append(s.did, "any org")
 			return "33333333-3333-4333-8333-333333333333", nil
 		},
-		RegisterOwner: func(_ context.Context, nodeID, orgID string) (*gateway.NodeAnswer, error) {
+		RegisterOwner: func(_ context.Context, nodeID, orgID, ownerID string) (*gateway.NodeAnswer, error) {
 			s.did = append(s.did, "owner "+nodeID)
+			s.ownerIDs = append(s.ownerIDs, ownerID)
 			return s.answer, nil
 		},
 		RegisterIn: func(_ context.Context, scopes Scopes) error {
@@ -180,7 +183,7 @@ func TestOwnedTakeAnswerHandOver(t *testing.T) {
 	handed := answerFixture(t, "registerNode.json")
 	handed.Owner = gateway.NodeOwner{Kind: "enterprise", ID: "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb", Name: "anythink"}
 	loop.TakeAnswer(handed)
-	if want := "owner changed: Chris → anythink"; !slices.Contains(logLines(buf), want) {
+	if want := "owner changed: Chris → anythink (enterprise)"; !slices.Contains(logLines(buf), want) {
 		t.Fatalf("log lacks %q:\n%s", want, buf)
 	}
 	if loop.Owned.Owner.Kind != "enterprise" || loop.Owned.Owner.Name != "anythink" {
@@ -557,7 +560,7 @@ func TestOwnedLoopClaimsFromEveryAnsweredOrgAndAFourthWithNoRestart(t *testing.T
 	}
 	for _, want := range []string{
 		"orgs runsheet, wardroomid, grapevine → runsheet, wardroomid, grapevine, foghornid",
-		"owner changed: Chris → anythink",
+		"owner changed: Chris → anythink (enterprise)",
 	} {
 		if !slices.Contains(logLines(&buf), want) {
 			t.Fatalf("log lacks %q:\n%s", want, buf.String())
