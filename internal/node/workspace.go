@@ -393,10 +393,38 @@ func HasCommitSince(dir, base string) func() bool {
 func (g *Git) Push(ctx context.Context, dir, branch string) (string, error) {
 	// --force-with-lease: a reworked branch was rebased; a fresh one is
 	// unaffected, and a remote that moved under us still refuses
-	if _, err := g.run(ctx, dir, "git", "push", "-u", "--force-with-lease", "origin", branch); err != nil {
+	if out, err := g.run(ctx, dir, "git", "push", "-u", "--force-with-lease", "origin", branch); err != nil {
+		if PushRefusal(out) {
+			return "", &PushRefusedError{Branch: branch, Output: strings.TrimSpace(out), Err: err}
+		}
 		return "", err
 	}
 	return g.run(ctx, dir, "git", "rev-parse", "HEAD")
+}
+
+// PushRefusedError is git refusing a push because the branch moved on
+// origin — the lease is stale or the update was rejected — as against a
+// transport failure: the remote answered, and the answer was no. A pair
+// working the holder's branch (ADR-023, Pairing) meets it when the
+// holder pushed first; it is fixed by a rebase, never by a retry.
+type PushRefusedError struct {
+	Branch string
+	// Output is git's own words.
+	Output string
+	Err    error
+}
+
+func (e *PushRefusedError) Error() string {
+	return fmt.Sprintf("git push --force-with-lease origin %s refused: the branch moved on origin: %s", e.Branch, e.Output)
+}
+
+func (e *PushRefusedError) Unwrap() error { return e.Err }
+
+// PushRefusal reports whether git's push output is a refusal by the
+// remote — `stale info` (the lease) or `rejected` — rather than a
+// failure to reach it.
+func PushRefusal(out string) bool {
+	return strings.Contains(out, "stale info") || strings.Contains(out, "rejected")
 }
 
 // PushedHead implements Workspacer.

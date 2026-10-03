@@ -88,12 +88,14 @@ Amended 2026-10-03 (item 4). The rest of the list is served
 A tool's `item` names the held item — its id, its seq, or `goal/seq` —
 and defaults to the one held item; with several held it is required.
 `mesh mcp` commits nothing itself. Every refusal from the gateway, and
-a push the remote refuses, is the tool's answer `<tool> refused:
-<reason>`, not a transport error, and leaves the item held.
+a push that fails, is the tool's answer `<tool> refused: <reason>`, not
+a transport error, and leaves the item held — except a push git refuses
+because the branch moved on origin, which is answered `push refused:`
+(Pairing, below).
 
 | Tool | What it does | Gateway call |
 |---|---|---|
-| `mesh_join(goal, item?, pair?)` | claims and prepares the checkout (above) | `claimWorkItem`, `issueItemRepoToken`, the context reads |
+| `mesh_join(goal, item?, pair?)` | claims and prepares the checkout (above); `pair` joins a held item's branch with no claim (Pairing) | `claimWorkItem`, `issueItemRepoToken`, the context reads |
 | `mesh_status()` | each held item's goal, seq, path, branch, base, `uncommitted` (`git status --porcelain` non-empty) and `commitsPastBase` (`git rev-list --count origin/<base>..HEAD`) | none: the state file and the checkouts |
 | `mesh_progress(item?, note, costCents?)` | a progress note on the item | `reportWorkItemProgress` |
 | `mesh_ask(item?, question)` | the question as a progress note opening `question: `, until the hosted `mesh_ask` exists (item 6) | `reportWorkItemProgress` |
@@ -105,13 +107,61 @@ The tests (`internal/meshmcp/flow_test.go`) run join → work → finish and
 join → switch → join against `gatewaytest.New` and a bare origin served
 by `gatewaytest.GitHub`.
 
+## Pairing
+
+Amended 2026-10-03 (item 5). `mesh_join(goal, item?, pair: true)` (and
+`mesh_switch`'s `pair`) joins an item another node holds — its status
+`claimed`, `running`, `in_progress`, `evaluating` or `review` and its
+`nodeId` not the personal node's (`heldByOther`) — as a second pair of
+hands on the same branch:
+
+- **Same branch.** The checkout is prepared exactly as a holder's
+  (`node.PrepareWithRetry`): origin fetched and `mesh/<goal>-<seq>`
+  checked out at its remote head when the holder has pushed it (from the
+  base when not yet), the item token on the checkout's own helper via
+  `issueItemRepoToken`. The platform refusing the pair that token — it
+  hands an item's token only to its holder today — is the answer `pair
+  refused: <reason>`; nothing is claimed or released.
+- **No second claim.** No `claimWorkItem` is sent; the holder's claim
+  stands, until the hosted `paired` field exists to record a pair on
+  the item. The state record carries `paired: true`, which
+  `mesh_status` shows and the join's answer carries. `pair` on an item
+  nobody holds is an ordinary join: it is claimed. Because the claim is
+  not the pair's, `mesh_release` and `mesh_switch` on a paired item drop
+  it from the state and send no `releaseWorkItem` (`left <goal>/<seq>:
+  <reason> (paired: its holder keeps the claim)`).
+- **Lease semantics.** `mesh_finish` and `mesh_switch` push with
+  `node.Git.Push`'s `-u --force-with-lease` as before: the lease is the
+  checkout's own `origin/<branch>`, so a push over commits the checkout
+  has not seen — the holder pushed first — is refused by git, never
+  forced over them. `Push` tells that refusal (git's output naming
+  `stale info` or `rejected`) from a transport failure by a typed error,
+  `*node.PushRefusedError` (its message `git push --force-with-lease
+  origin <branch> refused: the branch moved on origin: <git's words>`),
+  and the tool answers `push refused: the branch moved on origin; run
+  git pull --rebase in <path> and finish again` (`switch again` for
+  `mesh_switch`): the item stays held and no `finishWorkItem` is sent.
+  After the rebase the push fast-forwards and the finish goes through.
+  A pair's `finishWorkItem` after the holder's lands on an item already
+  `evaluating`; the platform takes it once the hosted `paired` field
+  does (the fake's `PairedFinish`) and refuses it today, which is the
+  answer `mesh_finish refused: …` with the branch pushed.
+
+The tests (`internal/meshmcp/pair_test.go`) run holder and pair against
+one `gatewaytest.New` and bare origin: the pair's join sends no claim
+(`Fake.Claims`) and lands on the holder's head, a stale finish is
+refused with origin unchanged, and the finish after `git pull --rebase`
+is sent; `internal/node`'s `TestPushRefusedWhenTheRemoteMoved` checks
+the typed error.
+
 ## Consequences
 
 - Channel mode is unchanged on the wire: its server still advertises
   the channel capability and its tools are the same.
 - `mesh mcp` is the client half; the personal node it registers
   (ADR-015's owner form, kind personal, capacity 1), mesh_join's
-  checkout on the item token and pairing are later items of the goal, each amending this ADR.
+  checkout on the item token and pairing are later items of the goal, each amending this ADR
+  (pairing: item 5, below).
 - Usage of a `mesh mcp` session is the person's Claude Code's own; it
   goes to their personal subscription credential once the node is
   registered.

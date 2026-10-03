@@ -67,7 +67,7 @@ func (p *Personal) Tools() []Tool {
 			Schema: ObjectSchema(map[string]string{"goal": "the goal's slug", "item": "the item's seq (the next ready one when omitted)", "pair": "work the same branch as its holder"}, "goal"),
 			Call:   p.join},
 		{Name: "mesh_switch", Description: "Leave the item you hold — push its commits, note why and release it — and join another; answers the join.",
-			Schema: ObjectSchema(map[string]string{"goal": "the goal's slug to join", "item": "the item's seq to join (the next ready one when omitted)", "note": "why you are switching", "from": "the held item to leave (" + itemArg + "); required when several are held"}, "goal"),
+			Schema: ObjectSchema(map[string]string{"goal": "the goal's slug to join", "item": "the item's seq to join (the next ready one when omitted)", "note": "why you are switching", "pair": "work the same branch as its holder", "from": "the held item to leave (" + itemArg + "); required when several are held"}, "goal"),
 			Call:   p.work(p.switchItem)},
 		{Name: "mesh_progress", Description: "Report progress on the item you hold: one short note.",
 			Schema: ObjectSchema(map[string]string{"item": itemArg, "note": "what happened, one line", "costCents": "what the work cost, in cents"}, "note"),

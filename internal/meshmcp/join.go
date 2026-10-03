@@ -58,6 +58,8 @@ type JoinAnswer struct {
 	Acceptance string   `json:"acceptance"`
 	Context    []string `json:"context"`
 	Item       JoinItem `json:"item"`
+	// Paired is a pair's join: the holder's branch, no claim.
+	Paired bool `json:"paired,omitempty"`
 }
 
 // JoinItem names the joined item.
@@ -78,6 +80,9 @@ type HeldItem struct {
 	// Base is the item's base ref: mesh_status counts commits past it.
 	Base      string    `json:"base,omitempty"`
 	ClaimedAt time.Time `json:"claimedAt"`
+	// Paired is a join with pair:true on an item another node holds: the
+	// holder's branch, no claim of this node's (ADR-023, Pairing).
+	Paired bool `json:"paired,omitempty"`
 }
 
 // State is mcp-state.json: the items held, for mesh_status.
@@ -245,7 +250,8 @@ func (j *Join) call(ctx context.Context, args map[string]any) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return j.answer(j.run(ctx, slug, seq, ""))
+	pair, _ := args["pair"].(bool)
+	return j.answer(j.run(ctx, slug, seq, "", pair))
 }
 
 // answer renders a join's result as the tool's answer.
@@ -254,6 +260,10 @@ func (j *Join) answer(ans *JoinAnswer, err error) (string, error) {
 		var refused *ClaimRefused
 		if errors.As(err, &refused) {
 			return refused.Error(), nil
+		}
+		var pairRefused *PairRefused
+		if errors.As(err, &pairRefused) {
+			return pairRefused.Error(), nil
 		}
 		return "", err
 	}
@@ -270,15 +280,32 @@ type ClaimRefused struct{ Reason string }
 
 func (e *ClaimRefused) Error() string { return "claim refused: " + e.Reason }
 
+// PairRefused is the platform refusing a pair the item's token: the
+// tool's answer, not a transport error.
+type PairRefused struct{ Reason string }
+
+func (e *PairRefused) Error() string { return "pair refused: " + e.Reason }
+
+// heldStatuses are the statuses in which an item has a holder a pair
+// can join.
+var heldStatuses = map[string]bool{"claimed": true, "running": true, "in_progress": true, "evaluating": true, "review": true}
+
+// heldByOther reports whether another node than nodeID holds the item.
+func heldByOther(item gateway.WorkItem, nodeID string) bool {
+	return heldStatuses[item.Status] && item.NodeID != "" && item.NodeID != nodeID
+}
+
 // Run claims the goal's item (seq, or its first ready one at 0) and
 // prepares its workspace.
 func (j *Join) Run(ctx context.Context, slug string, seq int) (*JoinAnswer, error) {
-	return j.run(ctx, slug, seq, "")
+	return j.run(ctx, slug, seq, "", false)
 }
 
 // run is Run, passing over the item exclude when choosing the first
-// ready one: mesh_switch never joins the item it just released.
-func (j *Join) run(ctx context.Context, slug string, seq int, exclude string) (*JoinAnswer, error) {
+// ready one: mesh_switch never joins the item it just released. With
+// pair, an item another node holds is joined on its holder's branch and
+// not claimed (ADR-023, Pairing); one nobody holds is claimed as ever.
+func (j *Join) run(ctx context.Context, slug string, seq int, exclude string, pair bool) (*JoinAnswer, error) {
 	goal, orgName, err := j.findGoal(ctx, slug)
 	if err != nil {
 		return nil, err
@@ -291,14 +318,21 @@ func (j *Join) run(ctx context.Context, slug string, seq int, exclude string) (*
 	if err != nil {
 		return nil, fmt.Errorf("personal node: %w", err)
 	}
-	if err := j.GW.ClaimWorkItem(ctx, item.ID, nodeID, JoinHarness); err != nil {
+	paired := pair && heldByOther(*item, nodeID)
+	if paired {
+		j.logf("item %s: pairing with node %s on its branch; no claim", item.ID, item.NodeID)
+	} else if err := j.GW.ClaimWorkItem(ctx, item.ID, nodeID, JoinHarness); err != nil {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
 		return nil, &ClaimRefused{Reason: err.Error()}
 	}
-	ans, err := j.prepare(ctx, *item, nodeID, orgName)
+	ans, err := j.prepare(ctx, *item, nodeID, orgName, paired)
 	if err != nil {
+		if paired {
+			// the claim is the holder's: nothing of ours to give back
+			return nil, err
+		}
 		// the claim is given back: a workspace that could not be made
 		// leaves nothing for the person to work in
 		if rerr := j.GW.ReleaseWorkItem(ctx, item.ID, nodeID, "mesh_join: "+err.Error()); rerr != nil {
@@ -309,7 +343,7 @@ func (j *Join) run(ctx context.Context, slug string, seq int, exclude string) (*
 	return ans, nil
 }
 
-func (j *Join) prepare(ctx context.Context, item gateway.WorkItem, nodeID, orgName string) (*JoinAnswer, error) {
+func (j *Join) prepare(ctx context.Context, item gateway.WorkItem, nodeID, orgName string, paired bool) (*JoinAnswer, error) {
 	res, err := node.Resolve(ctx, j.GW, item)
 	if err != nil {
 		return nil, fmt.Errorf("resolve: %w", err)
@@ -330,6 +364,9 @@ func (j *Join) prepare(ctx context.Context, item gateway.WorkItem, nodeID, orgNa
 	scopes := node.Scopes{{ID: item.OrgID, NodeID: nodeID}}
 	cred, err := node.NewItemCred(ctx, j.GW, ws, scopes, item, spec, j.Fallback, j.logf)
 	if err != nil {
+		if paired && ctx.Err() == nil {
+			return nil, &PairRefused{Reason: err.Error()}
+		}
 		return nil, err
 	}
 	dir, err := node.PrepareWithRetry(ctx, ws, spec, cred, j.logf)
@@ -353,11 +390,11 @@ func (j *Join) prepare(ctx context.Context, item gateway.WorkItem, nodeID, orgNa
 	if index := filepath.Join(dir, node.ContextDir, node.IndexFile); fileExists(index) {
 		files = append(files, index)
 	}
-	if err := j.hold(HeldItem{ItemID: item.ID, Goal: res.Goal.Slug, Seq: item.Seq, Path: dir, Branch: spec.Branch, Base: spec.BaseRef, ClaimedAt: time.Now().UTC()}); err != nil {
+	if err := j.hold(HeldItem{ItemID: item.ID, Goal: res.Goal.Slug, Seq: item.Seq, Path: dir, Branch: spec.Branch, Base: spec.BaseRef, ClaimedAt: time.Now().UTC(), Paired: paired}); err != nil {
 		return nil, fmt.Errorf("state: %w", err)
 	}
 	return &JoinAnswer{Path: dir, Branch: spec.Branch, Brief: item.Brief, Acceptance: item.Acceptance, Context: files,
-		Item: JoinItem{ID: item.ID, Goal: res.Goal.Slug, Seq: item.Seq, Title: item.Title}}, nil
+		Item: JoinItem{ID: item.ID, Goal: res.Goal.Slug, Seq: item.Seq, Title: item.Title}, Paired: paired}, nil
 }
 
 func fileExists(path string) bool {
