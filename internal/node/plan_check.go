@@ -300,6 +300,91 @@ func hostReadingPhrase(sentence string) string {
 	return strings.TrimSpace(sentence[start:end])
 }
 
+// The node's check of a plan for a docs-only close-out (ADR-023's
+// amendment, the planner's half planCloseOutRule): an item whose title
+// or acceptance reads as restating what already landed, with no code or
+// test check of its own. The check is lexical like hostReadingAcceptance;
+// the evaluator's unverifiable-clause rule is the backstop for what it
+// misses.
+var (
+	closeOutPhrases = []*regexp.Regexp{
+		regexp.MustCompile(`(?i)reads? as one design`),
+		regexp.MustCompile(`(?i)describes? what landed`),
+		regexp.MustCompile(`(?i)records? (?:that|what)\b.*\b(?:landed|merged|shipped)\b`),
+		// ADR before status/frontmatter ("ADR 018 status accepted") or
+		// status/frontmatter before ADR ("the status of ADR-018 to
+		// accepted", "the status on ADR 018 is accepted")
+		regexp.MustCompile(`(?i)\bADR[\w-]*\b[^.;\n]*\b(?:status|frontmatter)\b[^.;\n]*\b(?:accepted|superseded)\b`),
+		regexp.MustCompile(`(?i)\b(?:status|frontmatter)\b[^.;\n]*\b(?:of|on)\b[^.;\n]*\bADR[\w-]*\b[^.;\n]*\b(?:to|is)\b[^.;\n]*\b(?:accepted|superseded)\b`),
+		regexp.MustCompile(`(?i)docs?-only`),
+		regexp.MustCompile(`(?i)close-?out`),
+	}
+	codeOrTestCheck = []*regexp.Regexp{
+		regexp.MustCompile(`(?i)\bgo (?:test|build|vet)\b`),
+		regexp.MustCompile(`(?i)\bnpm test\b`),
+		// "make" as a command (`make test`, `make build`), never the
+		// English verb ("make sense", "make it accepted")
+		regexp.MustCompile(`(?i)\bmake (?:test|build|check|lint|install)\b`),
+		regexp.MustCompile(`_test\.go\b`),
+		regexp.MustCompile(`\.(?:go|ts|sh)\b`),
+	}
+	backtickedCommand = regexp.MustCompile("`([^`\n]+)`")
+	mdReadCommand     = regexp.MustCompile(`(?i)^(?:grep|cat|ls)\b.*\.md\b`)
+	// a bare document filename in backticks ("`README.md`"), not a
+	// command: no spaces, ending in .md
+	bareMDFile = regexp.MustCompile(`(?i)^[\w./-]+\.md$`)
+)
+
+// closeOutAcceptance flags each item whose title or acceptance matches
+// a close-out phrase (closeOutPhrases) and whose acceptance names no
+// code or test check (hasCodeOrTestCheck): a docs-only close-out that
+// restates landed work in prose rather than a pull request an evaluator
+// can check. An ADR amended beside its own code or test check is not
+// flagged. Each flag names the item and the phrase, for the planner's
+// re-ask; none means the plan is clean.
+func closeOutAcceptance(specs []harness.PlannedSpec) []string {
+	var flags []string
+	for _, sp := range specs {
+		phrase := closeOutPhrase(strings.TrimSpace(sp.Title) + "\n" + sp.Acceptance)
+		if phrase == "" || hasCodeOrTestCheck(sp.Acceptance) {
+			continue
+		}
+		flags = append(flags, fmt.Sprintf("item %d (%s): a docs-only close-out — its acceptance only amends documents to describe landed work (%q); docs land in the pull request of the change they describe (AGENTS.md): fold the clause into that item", sp.Seq, strings.TrimSpace(sp.Title), phrase))
+	}
+	return flags
+}
+
+// closeOutPhrase is the first close-out phrase s matches, or "".
+func closeOutPhrase(s string) string {
+	for _, re := range closeOutPhrases {
+		if m := re.FindString(s); m != "" {
+			return m
+		}
+	}
+	return ""
+}
+
+// hasCodeOrTestCheck says acc names a code or test check: go test,
+// build or vet, npm test, a make command (`make test`, `make build`,
+// never the English verb), a _test.go or .go/.ts/.sh file, or a
+// backticked command other than grep, cat or ls on a .md file — a bare
+// backticked document filename (`README.md`) is not a command.
+func hasCodeOrTestCheck(acc string) bool {
+	for _, re := range codeOrTestCheck {
+		if re.MatchString(acc) {
+			return true
+		}
+	}
+	for _, m := range backtickedCommand.FindAllStringSubmatch(acc, -1) {
+		cmd := strings.TrimSpace(m[1])
+		if mdReadCommand.MatchString(cmd) || bareMDFile.MatchString(cmd) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
 // The node's check of a plan for a re-land (ADR-021, its amendment): a
 // lineage's attempts shrink, so a new item whose acceptance is a failed
 // item's of the goal, word for word once normalised, is the same scope
