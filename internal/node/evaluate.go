@@ -298,7 +298,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 		// evaluating cannot be released (the platform releases a claimed or
 		// running one): a required tool this node cannot start leaves it
 		// unevaluated, and the loop does not try again while that holds.
-		st = SelectTools(e.MCP, acct.Tools, string(harness.KindEvaluate), runtimes)
+		st = SelectTools(e.MCP, acct.Tools, tools.RoleFor(string(harness.KindEvaluate)), runtimes)
 		if len(st.Missing) > 0 {
 			e.Declines.Record(item.ID, st.Missing, runtimes, time.Now())
 			return fmt.Errorf("declined, %s", st.DeclineReason())

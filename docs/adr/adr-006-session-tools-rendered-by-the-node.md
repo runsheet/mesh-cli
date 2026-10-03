@@ -299,3 +299,38 @@ and the `recordToolUsage` bullet in "Priced tool calls" each said
 `Prologue` where they meant the built-in; both now say `mesh-context`.
 Nothing about what is rendered, approved or reported changes — only
 the word.
+
+## Amendment — 2026-10-03 (goal the-director-and-the-planner-get-their-tools, item 1)
+
+Decision 2's "Select by role" named no roles; `forRole` matched
+whatever string a caller passed against whatever string an attachment
+carried, and the two callers (`Runner.RunItem`, `Evaluator.Evaluate`)
+each passed the session kind — `build`, `evaluate` — as the role. A
+tool's `roles` are the console's own list (runsheet trd §6j,
+`ToolAttachment`): a subset of `planner`, `builder`, `evaluator`,
+`director`, `rebase`, stored lower case in that order. `build` and
+`evaluate` are neither of those, so an attachment for `builder` or
+`evaluator` was served to nobody, and `planner`, `director` and
+`rebase` were never asked for at all — the planner and the director
+each kept the built-in alone (decision 8).
+
+`internal/tools` now holds the roles themselves: `Roles` is that list,
+in that order; `RoleFor(kind)` is the console role a session of kind
+selects by — `build`→`builder`, `evaluate`→`evaluator`, `plan`→`planner`,
+`research`→`director`, `rebase`→`rebase` — and an unknown kind,
+including a role already in `Roles`, returns itself. `forRole` runs
+every tool role and the role asked for through `RoleFor` before
+comparing them, so an attachment written in either spelling — the
+console's or the old kind names mesh-specs trd §3 documented — serves
+the same kind. The two callers now pass `tools.RoleFor(string(kind))`
+instead of the bare kind string.
+
+This is the one place the roles live; it does not change what the
+platform serves. The gateway's claim-time read (decision 7) carries no
+`roles` on a served tool — the platform has already filtered by role
+before the row ever reaches the node — so `Roles` and `RoleFor` matter
+for `forRole`'s own tests and for keeping this list and the console's
+in step, not for filtering anything the platform already filtered.
+Wiring the planner and the director through `RoleFor` to actually
+select and render tools is the next item of this goal; this one only
+gives them a role to select by.

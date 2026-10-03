@@ -35,6 +35,34 @@ var (
 // adapterBinary is the CLI each adapter runs.
 var adapterBinary = map[string]string{"claude-code": "claude", "codex": "codex"}
 
+// Roles are the console's attachment roles, in the order a
+// ToolAttachment stores them (runsheet trd §6j): a subset of these, or
+// none for every role.
+var Roles = []string{"planner", "builder", "evaluator", "director", "rebase"}
+
+// roleForKind maps a session kind to the console role it selects tools
+// for; also the old spellings mesh-specs trd §3 documented before the
+// console's roles existed, so a tool attached under either name serves
+// the same kind.
+var roleForKind = map[string]string{
+	"build":    "builder",
+	"evaluate": "evaluator",
+	"plan":     "planner",
+	"research": "director",
+	"rebase":   "rebase",
+}
+
+// RoleFor is the console role a session of kind selects tools for:
+// build selects as builder, evaluate as evaluator, plan as planner,
+// research as director, rebase as rebase. An unknown kind — including
+// one of Roles already — returns itself.
+func RoleFor(kind string) string {
+	if r, ok := roleForKind[kind]; ok {
+		return r
+	}
+	return kind
+}
+
 // Builtin is the server the node attaches to every session itself; a
 // console tool of that name is a clash (trd §3 Tools, mesh-context is
 // built in).
@@ -143,12 +171,18 @@ func runtimeName(r string) string {
 	return r
 }
 
+// forRole accepts a tool's roles in either spelling — the console's
+// (builder, evaluator, planner, director, rebase) or the old kind names
+// mesh-specs trd §3 documented (build, evaluate, plan, research) — as
+// aliases of the same role, so an attachment written either way serves
+// the same kind.
 func forRole(t Tool, role string) bool {
 	if len(t.Roles) == 0 {
 		return true
 	}
+	role = RoleFor(role)
 	for _, r := range t.Roles {
-		if r == role {
+		if RoleFor(r) == role {
 			return true
 		}
 	}

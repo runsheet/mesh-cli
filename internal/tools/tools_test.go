@@ -267,6 +267,57 @@ func TestSelect(t *testing.T) {
 	}
 }
 
+// Each role in Roles is served to its own session kind alone: a tool
+// attached for one role never reaches the other four kinds.
+func TestEachRoleIsServedToItsKindAlone(t *testing.T) {
+	kinds := []string{"build", "evaluate", "plan", "research", "rebase"}
+	for _, role := range Roles {
+		tool := Tool{Name: role + "-tool", Transport: Remote, URL: "https://x", Roles: []string{role}}
+		for _, kind := range kinds {
+			use, _, _ := Select([]Tool{tool}, RoleFor(kind), nil)
+			got := len(use) == 1
+			want := RoleFor(kind) == role
+			if got != want {
+				t.Errorf("role %s, kind %s (RoleFor=%s): served = %v, want %v", role, kind, RoleFor(kind), got, want)
+			}
+		}
+	}
+}
+
+// The old kind names mesh-specs trd §3 documented still serve, whether
+// spelled on the tool's roles or passed as the session's role.
+func TestOldRoleSpellingsStillServe(t *testing.T) {
+	if got := RoleFor("build"); got != "builder" {
+		t.Errorf(`RoleFor("build") = %q, want "builder"`, got)
+	}
+	if got := RoleFor("evaluate"); got != "evaluator" {
+		t.Errorf(`RoleFor("evaluate") = %q, want "evaluator"`, got)
+	}
+	if got := RoleFor("plan"); got != "planner" {
+		t.Errorf(`RoleFor("plan") = %q, want "planner"`, got)
+	}
+	if got := RoleFor("research"); got != "director" {
+		t.Errorf(`RoleFor("research") = %q, want "director"`, got)
+	}
+	if got := RoleFor("rebase"); got != "rebase" {
+		t.Errorf(`RoleFor("rebase") = %q, want "rebase"`, got)
+	}
+	if got := RoleFor("mystery"); got != "mystery" {
+		t.Errorf(`RoleFor("mystery") = %q, want "mystery" (unknown kind returns itself)`, got)
+	}
+
+	// an old-spelled role on the tool serves the new-named role passed in
+	oldSpelled := Tool{Name: "old", Transport: Remote, URL: "https://x", Roles: []string{"research"}}
+	if use, _, _ := Select([]Tool{oldSpelled}, "director", nil); len(use) != 1 {
+		t.Fatalf("tool with roles [research] not served to role director: %v", use)
+	}
+	// a new-named role on the tool serves the old-spelled role passed in
+	newSpelled := Tool{Name: "new", Transport: Remote, URL: "https://x", Roles: []string{"director"}}
+	if use, _, _ := Select([]Tool{newSpelled}, "research", nil); len(use) != 1 {
+		t.Fatalf("tool with roles [director] not served to role research: %v", use)
+	}
+}
+
 func TestProbe(t *testing.T) {
 	onPath := map[string]bool{"npx": true, "docker": true, "claude": true}
 	look := func(n string) (string, error) {
