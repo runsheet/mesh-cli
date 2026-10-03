@@ -241,14 +241,22 @@ func (l *Loop) selfUpdate(ctx context.Context) {
 	}()
 }
 
-// desiredVersion is the version the platform asks this node to run: the
-// first non-empty one over its node in each served org. ok is false when
-// no read went through. A platform without the field is asked nothing,
-// logged once.
+// desiredVersion is the version the platform asks this node to run: on
+// the owner contract its own id first (a node serving no org still
+// hears a pin or a downgrade), then the first non-empty one over its
+// node in each served org not already read — the owner contract gives
+// every scope the same id, so each distinct id is read once. ok is
+// false when no read went through. A platform without the field is
+// asked nothing, logged once.
 func (l *Loop) desiredVersion(ctx context.Context) (string, bool) {
 	ok := false
-	for _, sc := range l.Scopes {
-		v, err := l.GW.GetDesiredVersion(ctx, sc.NodeID)
+	read := map[string]bool{}
+	ask := func(id, name string) (v string, done bool) {
+		if id == "" || read[id] {
+			return "", false
+		}
+		read[id] = true
+		v, err := l.GW.GetDesiredVersion(ctx, id)
 		if gateway.IsUnsupported(err) {
 			l.mu.Lock()
 			logged := l.desiredUnsupported
@@ -260,11 +268,19 @@ func (l *Loop) desiredVersion(ctx context.Context) (string, bool) {
 			return "", true
 		}
 		if err != nil {
-			l.logf("desired version of %s: %v", sc.Name(), err)
-			continue
+			l.logf("desired version of %s: %v", name, err)
+			return "", false
 		}
 		ok = true
-		if v != "" {
+		return v, v != ""
+	}
+	if owned := l.owned(); owned != nil {
+		if v, done := ask(owned.NodeID, "the node"); done {
+			return v, true
+		}
+	}
+	for _, sc := range l.Scopes {
+		if v, done := ask(sc.NodeID, sc.Name()); done {
 			return v, true
 		}
 	}
@@ -299,7 +315,7 @@ func (l *Loop) update(ctx context.Context, from, to string) {
 	ours := false
 	if l.sandboxed() {
 		ours = !l.Draining()
-		l.logf("self-update: %s verified; draining (sandboxed sessions end with the node)", to)
+		l.logf("self-update: %s verified; sandboxed node: draining before the swap because its pods end with the node (sandbox: %s)", to, l.Sandbox.Mode)
 		if err := l.DrainAndWait(ctx); err != nil {
 			l.mu.Lock()
 			l.updating = false
@@ -309,7 +325,7 @@ func (l *Loop) update(ctx context.Context, from, to string) {
 			return
 		}
 	} else {
-		l.logf("self-update: %s verified; swapping and restarting, sessions left running", to)
+		l.logf("self-update: %s verified; no drain: swapping and restarting, sessions left running for the new binary to adopt", to)
 	}
 	err = l.Update.Begin(from, to)
 	if err == nil {

@@ -57,8 +57,9 @@ machine token or an `rs_*` console token and checks that the caller is
 the node holding the item; a GitHub token is refused outright, which is
 what every upload up to v0.2.208 got back (the item token client,
 `WithItemToken`, went with that fix). A platform without the endpoint is said
-once per run (`ValidationNotices`); any other error is a progress note
-on the item. Either keeps a copy at `<workdir>.attestation.json`, which
+once per run (`ValidationNotices`); a 429 or 5xx answer retries with
+backoff, honouring a `Retry-After` header, and only then is it, or any
+other error, a progress note on the item. Either keeps a copy at `<workdir>.attestation.json`, which
 the session directory's removal leaves. Artifacts go to the gateway as
 `<path>@sha256:<digest>`.
 

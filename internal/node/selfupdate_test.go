@@ -141,7 +141,7 @@ func TestSelfUpdateSwapsAndExitsWithoutWaiting(t *testing.T) {
 	p := newPriorityFake(t)
 	p.addGoal(orgID, "g", "normal")
 	p.addItem(orgID, "g", "long-one", 1, false)
-	loop, u, release, _ := p.updateLoop("")
+	loop, u, release, logs := p.updateLoop("")
 	defer close(release)
 	// the build runs in the node's context, as every session Run starts
 	loop.Tick(loop.Context(context.Background()))
@@ -162,6 +162,11 @@ func TestSelfUpdateSwapsAndExitsWithoutWaiting(t *testing.T) {
 	if loop.Draining() {
 		t.Fatal("the update drained")
 	}
+	out := logs.String()
+	if !strings.Contains(out, "self-update: v1.1.0 verified; no drain: swapping and restarting, sessions left running for the new binary to adopt") ||
+		!strings.Contains(out, "1 session(s) left for it to adopt") || strings.Contains(out, "draining") {
+		t.Fatalf("log does not say the sessions are left for the new binary:\n%s", out)
+	}
 	want := []string{"confirm", "fetch v1.1.0", "image v1.1.0 running", "begin v1.0.0 v1.1.0", "swap mesh v1.1.0 running"}
 	if got := u.Events(); strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("events %q, want %q", got, want)
@@ -175,7 +180,7 @@ func TestSelfUpdateSandboxedDrainsThenSwapsThenRestarts(t *testing.T) {
 	p := newPriorityFake(t)
 	p.addGoal(orgID, "g", "normal")
 	p.addItem(orgID, "g", "long-one", 1, false)
-	loop, u, release, _ := p.updateLoop("")
+	loop, u, release, logs := p.updateLoop("")
 	loop.Sandbox = &gateway.SandboxInfo{Mode: SandboxOn}
 	loop.Tick(context.Background())
 	if loop.Running() != 1 {
@@ -210,6 +215,10 @@ func TestSelfUpdateSandboxedDrainsThenSwapsThenRestarts(t *testing.T) {
 	want := []string{"confirm", "fetch v1.1.0", "image v1.1.0 running", "begin v1.0.0 v1.1.0", "swap mesh v1.1.0 drained"}
 	if got := u.Events(); strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("events %q, want %q", got, want)
+	}
+	// the drain says why: the pods end with the node
+	if out := logs.String(); strings.Count(out, "self-update: v1.1.0 verified; sandboxed node: draining before the swap because its pods end with the node (sandbox: on)") != 1 {
+		t.Fatalf("want one line naming why it drains:\n%s", out)
 	}
 }
 
@@ -445,6 +454,52 @@ func TestGetDesiredVersion(t *testing.T) {
 	nodes, err := gw.Nodes(context.Background(), orgID)
 	if err != nil || len(nodes) != 1 || nodes[0].DesiredVersion != "v1.4.0" {
 		t.Fatalf("Nodes = %+v, %v", nodes, err)
+	}
+}
+
+// (c) On the owner contract a node serving no org (Scopes nil) still
+// reads desiredVersion by its own id: asked to run an older version
+// than the one it is on, it follows the downgrade — the grapevine
+// node's canary, goal an-update-that-serves-no-org-is-not-confirmed.
+func TestSelfUpdateServingNoneFollowsADowngrade(t *testing.T) {
+	p := newPriorityFake(t)
+	loop, u, release, _ := p.updateLoop("")
+	defer close(release)
+	loop.Owned = &Owned{NodeID: p.scopes[0].NodeID}
+	loop.Scopes = nil
+	loop.Version = "v1.1.0"
+	p.Nodes[p.scopes[0].NodeID]["desiredVersion"] = "v1.0.0"
+	done := make(chan error, 1)
+	go func() { done <- loop.Run(context.Background()) }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrRestartForUpdate) {
+			t.Fatalf("Run = %v, want ErrRestartForUpdate", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not follow the downgrade")
+	}
+	want := []string{"confirm", "fetch v1.0.0", "image v1.0.0 running", "begin v1.1.0 v1.0.0", "swap mesh v1.0.0 running"}
+	if got := u.Events(); strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("events %q, want %q", got, want)
+	}
+}
+
+// desiredVersion reads the owner contract's one id once, not once per
+// scope, even when the node serves several orgs under it.
+func TestDesiredVersionReadsTheOwnedIDOnce(t *testing.T) {
+	p := newPriorityFake(t)
+	loop, _, release, _ := p.updateLoop("")
+	defer close(release)
+	owned := p.scopes[0].NodeID
+	s0, s1 := p.scopes[0], p.scopes[1]
+	s1.NodeID = owned // the owner contract gives every scope the same id
+	loop.Owned = &Owned{NodeID: owned}
+	loop.Scopes = Scopes{s0, s1}
+	loop.Tick(context.Background())
+	loop.updateWG.Wait()
+	if got := p.ReadsNamed("nodeIndex"); len(got) != 1 {
+		t.Fatalf("desiredVersion reads = %d, want 1: %+v", len(got), got)
 	}
 }
 

@@ -27,7 +27,8 @@ type Registrar struct {
 	// has an owner field, `ownerKind` or `owner` (gateway.Client.TakesOwner).
 	TakesOwner func(ctx context.Context) bool
 	// Resolve lists the orgs of the token's person, restricted by
-	// node.yaml's orgs (ResolveScopes). Only the per-org path reads it.
+	// node.yaml's orgs (ResolveScopes). The per-org path reads it, and
+	// the owner path when its answer is nil.
 	Resolve func(ctx context.Context) (Scopes, error)
 	// AnyOrg is an org id for the owner registration's orgId, which the
 	// platform ignores on the owner contract: the first of the token's
@@ -321,10 +322,10 @@ func SaveAdoption(cfg *Config, r Registered, save func() error) error {
 
 // FallbackLine is logged when the platform takes `owner` but answers
 // the owner registration nil: a half-deployed platform. The probe chose
-// the contract, so the node stays on it — its one id, its last scopes
-// (none at a start) — until a heartbeat answers; it never registers per
-// org.
-const FallbackLine = "register: the platform took owner but answered nil; keeping the owner contract and the last scopes until a heartbeat answers"
+// the contract, so the node stays on it under its one id, serving the
+// orgs node.yaml names as the per-org contract resolves them (Resolve),
+// until a heartbeat's answer names its orgs; it never registers per org.
+const FallbackLine = "register: the platform took owner but answered nil; keeping the owner contract and the orgs node.yaml names until a heartbeat answers"
 
 // OwnedNodeID is the id the node registers under on the owner
 // contract: node.yaml's node_id when set, else
@@ -353,7 +354,9 @@ func OwnedNodeID(cfg *Config, kind, ownerID string) string {
 // orgs, so a restriction naming an enterprise org the person is not in
 // holds. The probe alone chooses the contract: a nil answer from it
 // notes FallbackLine and keeps the owner contract under the node's one
-// id with no scopes yet — never Resolve, never RegisterIn — so the loop
+// id, serving what Resolve gives — node.yaml's orgs among the person's,
+// each on its per-org id, as the per-org contract served them; a Resolve
+// error is noted and serves none — never RegisterIn, so the loop
 // heartbeats that id and takes the first answer that names its orgs. A
 // non-nil answer is the owner contract whatever it names: an answer
 // naming no org, or a restriction matching none of the orgs it names,
@@ -407,7 +410,17 @@ func Register(ctx context.Context, r Registrar, cfg *Config, restrict []string) 
 	}
 	if answer == nil {
 		owned := &Owned{NodeID: id, Owner: Owner{Kind: cfg.OwnerKind()}}
-		return Registered{Owned: owned, Notes: append(fieldNote, FallbackLine), EnterpriseID: resolved, IDSource: source, adopted: adopted}, nil
+		reg := Registered{Owned: owned, Notes: append(fieldNote, FallbackLine), EnterpriseID: resolved, IDSource: source, adopted: adopted}
+		// the orgs it served per org, on their per-org ids, so its claims
+		// land on the rows that served them (ADR-015, 2026-10-03)
+		if r.Resolve != nil {
+			scopes, err := r.Resolve(ctx)
+			if err != nil {
+				reg.Notes = append(reg.Notes, fmt.Sprintf("orgs: %v; serving none until a heartbeat answers", err))
+			}
+			reg.Scopes = scopes
+		}
+		return reg, nil
 	}
 	reg := Registered{Owned: &Owned{NodeID: answer.NodeID, Owner: OwnerFrom(answer)}, Answer: answer, Notes: fieldNote, EnterpriseID: resolved, IDSource: source, adopted: adopted}
 	var note error

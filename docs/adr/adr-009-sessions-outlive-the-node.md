@@ -1,12 +1,13 @@
 ---
-summary: A session's unit and output file, not the node process, own a session — a node shutting down detaches from its host Claude sessions (Job.Outlive) instead of stopping them, and on start, before its first claim, the node finds every `<workdir>.session/state.json` naming it, heartbeats each item at once, follows each session from its saved offset (or reads the file of one that ended while no node ran) and runs the same tail the live path runs — push and FinishWorkItem, the verdict, the plan, the research, the rebase — removing the session directory only once the end is handled; the heartbeat carries the optional `adopted [{itemId, kind, since}]`; and claims, not only sessions, outlive the node — a plan or research claim is recorded under `<work root>/.claims/` the moment it is granted, removed once its session's end is handled, and a starting node re-claims each one with no session (same node id, inside PlanClaimTTL) and runs it fresh, one log line each.
+summary: A session's unit and output file, not the node process, own a session — a node shutting down detaches from its host Claude sessions (Job.Outlive) instead of stopping them, and on start, before its first claim, the node finds every `<workdir>.session/state.json` naming it, heartbeats each item at once, follows each session from its saved offset (or reads the file of one that ended while no node ran) and runs the same tail the live path runs — push and FinishWorkItem, the verdict, the plan, the research, the rebase — removing the session directory only once the end is handled; the heartbeat carries the optional `adopted [{itemId, kind, since}]`, with `goalId`, `directionId`, `sessionId` and `alive` beside them, re-read every heartbeat and sent only when the platform's schema takes them; and claims, not only sessions, outlive the node — a plan or research claim is recorded under `<work root>/.claims/` the moment it is granted, removed once its session's end is handled, and a starting node re-claims each one with no session (same node id, inside PlanClaimTTL) and runs it fresh, one log line each.
 status: accepted
 ---
 
 # ADR-009: Sessions outlive the node
 
 (Amended 2026-10-03: Claims — claims, not only sessions, outlive the
-node.)
+node; and the heartbeat — `adopted` carries `goalId`, `directionId`,
+`sessionId` and `alive` beside `itemId`, `kind` and `since`.)
 
 ## Context
 
@@ -82,10 +83,24 @@ process that started it is only its first reader.**
   session directory and its temp dirs (`harness.RemoveSession`) once
   the item is finished or failed.
 - **The heartbeat.** `gateway.HeartbeatExtras.Adopted`
-  (`[]AdoptedSession{ItemID, Kind, Since}`) is the optional heartbeat
-  field `adopted: [{itemId, kind, since}]`, sent only when set, like
-  `draining`: the adopted sessions that have not yet ended. `itemId` is
-  a plan's goal id and a research session's direction id.
+  (`[]AdoptedSession{ItemID, Kind, Since, GoalID, DirectionID,
+  SessionID, Alive}`) is the optional heartbeat field `adopted:
+  [{itemId, kind, since}]`, sent only when set, like `draining`: the
+  adopted sessions that have not yet ended. `itemId` is a plan's goal
+  id and a research session's direction id, kept as-is for an older
+  platform. Beside it, so a person watching can tell an adopted plan or
+  research session from a dead claim: `goalId` on a plan entry and
+  `directionId` on a research entry (both equal to `itemId`), the
+  agent's own session id once its session's `state.json` names one, and
+  whether its unit still runs. These four are sent only when the
+  gateway's `HeartbeatNodeInput`'s `adopted` element type takes them —
+  introspected and cached an hour like the other ADR-004 probes
+  (`takesAdoptedFields`); an older schema gets the entry as before,
+  `{itemId, kind, since}` alone. `Loop.Adopted()` re-reads each adopted
+  session's `state.json` for `sessionId` and calls its unit's `Alive`
+  on every call, so both the id the agent names after its session opens
+  and the session ending reach the very next heartbeat, not only the
+  one the restart itself sent.
 
 ## Claims (amendment 2026-10-03)
 
@@ -131,6 +146,25 @@ two swaps, nothing planned until 04:00:44Z.
   plan and research claims are re-opened; builds and evaluations are
   re-run from the platform's record — a held item with no session by
   `Loop.Adopt`, an item in evaluating on this node by the next tick.
+  No claim file is written for a build or an evaluation: the platform's
+  record is theirs. `swap_e2e_test.go` proves research and evaluations
+  across a self-update's swap, `claims_test.go` plans.
+- **The log says which way an update goes.** An unsandboxed node's
+  self-update logs `self-update: <to> verified; no drain: swapping and
+  restarting, sessions left running for the new binary to adopt`; a
+  sandboxed one still drains first and says why — `self-update: <to>
+  verified; sandboxed node: draining before the swap because its pods
+  end with the node (sandbox: on)`.
+- **The proof** is the grapevine replay (`hotswap_plans_test.go`):
+  four plans claimed, the binary swapped — once through a release
+  signed on a virtual Sigstore and verified by the `ReleaseUpdater` —
+  before any session opened, and again after two had; the new process
+  adopts the open two, re-opens the rest by the same node id, and every
+  plan reaches `planGoal` inside `PlanClaimTTL`, no claim re-taken.
+  `gatewaytest.Fake` holds the platform's rule for it: `planClaimedAt`
+  stamped on a fresh claim and kept on the holder's re-claim, another
+  node refused while `PlanClaimTTL` (settable, default 30 minutes) has
+  not passed since it.
 
 ## Limits
 

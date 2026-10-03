@@ -177,6 +177,12 @@ type Fake struct {
 	// answers the element type without it, so a heartbeat carrying
 	// Holding.Unclaimed[].Until sends the entry without `until`.
 	NoUnclaimedUntil bool
+	// NoAdoptedFields is a platform whose `adopted` element type has
+	// none of goalId, directionId, sessionId and alive (mesh-cli ADR-009
+	// amendment): introspection answers the element type without them,
+	// so a heartbeat carrying an AdoptedSession with any of the four set
+	// sends the entry without them, itemId, kind and since alone.
+	NoAdoptedFields bool
 	// RefuseReleases answers every releaseWorkItem with a refusal and
 	// changes nothing, as a platform that will not take a node's release.
 	// By default the fake follows the contract (trd §1): a node releases
@@ -269,8 +275,36 @@ type Fake struct {
 	// <sent>` (platform/aggregates/node.go), and recorded in Calls as
 	// the platform saw it; one under RegistersAt registers.
 	RegistersAt string
+	// PlanClaimTTL is how long a plan claim keeps another node off the
+	// goal, as runsheet goal.go's PlanClaimTTL: claimPlan by another node
+	// is refused while the holder's planClaimedAt is within it (or the
+	// claim has no planClaimedAt) and takes the claim once it has passed.
+	// The holder may always claim again, and its planClaimedAt is kept.
+	// Zero is DefaultPlanClaimTTL.
+	PlanClaimTTL time.Duration
+	// Now is the fake's clock for planClaimedAt and the TTL; nil is
+	// time.Now.
+	Now func() time.Time
 
 	requests int
+}
+
+// DefaultPlanClaimTTL is the platform's PlanClaimTTL (runsheet goal.go).
+const DefaultPlanClaimTTL = 30 * time.Minute
+
+// PlanClaimTTLInForce is PlanClaimTTL, or DefaultPlanClaimTTL when unset.
+func (f *Fake) PlanClaimTTLInForce() time.Duration {
+	if f.PlanClaimTTL > 0 {
+		return f.PlanClaimTTL
+	}
+	return DefaultPlanClaimTTL
+}
+
+func (f *Fake) now() time.Time {
+	if f.Now != nil {
+		return f.Now()
+	}
+	return time.Now()
 }
 
 // Requests is how many GraphQL requests the fake has been sent, refused
@@ -915,18 +949,34 @@ func (f *Fake) repoFullName(repoID string) string {
 // when UnknownFields["priorities"] (a platform before adr-005's
 // amendment 2026-10, `limits[].priorities`); `holding.unclaimed`'s
 // element type without `until` when NoUnclaimedUntil (a platform
-// before adr-005's amendment 2026-10-03, `holding.unclaimed[].until`).
-// Unsupported["__type"] refuses the probe.
+// before adr-005's amendment 2026-10-03, `holding.unclaimed[].until`);
+// `adopted`'s element type without goalId, directionId, sessionId and
+// alive when NoAdoptedFields (a platform before mesh-cli ADR-009's
+// amendment). Unsupported["__type"] refuses the probe.
 func (f *Fake) heartbeatInputType() map[string]any {
 	field := func(name string) map[string]any {
 		return map[string]any{"name": name}
 	}
 	var fields []any
-	for _, name := range []string{"aggregateId", "namespace", "version", "running", "draining", "updateError", "limits", "scaling", "runtimes", "adapters", "holding", "commit"} {
+	for _, name := range []string{"aggregateId", "namespace", "version", "running", "draining", "updateError", "limits", "scaling", "runtimes", "adapters", "holding", "commit", "adopted"} {
 		if f.UnknownFields[name] {
 			continue
 		}
 		row := map[string]any{"name": name, "type": map[string]any{"kind": "SCALAR"}}
+		if name == "adopted" {
+			var sub []any
+			for _, n := range []string{"itemId", "kind", "since", "goalId", "directionId", "sessionId", "alive"} {
+				switch n {
+				case "itemId", "kind", "since":
+					sub = append(sub, field(n))
+				default:
+					if !f.NoAdoptedFields {
+						sub = append(sub, field(n))
+					}
+				}
+			}
+			row["type"] = map[string]any{"kind": "LIST", "ofType": map[string]any{"kind": "NON_NULL", "ofType": map[string]any{"kind": "INPUT_OBJECT", "inputFields": sub}}}
+		}
 		if name == "scaling" {
 			var sub []any
 			for _, n := range []string{"capacity", "min", "max", "reason", "accounts"} {
@@ -1263,12 +1313,17 @@ func (f *Fake) apply(name string, in map[string]any) error {
 		// a claimed rebase's session reports on the item in review: the
 		// rebase's heartbeat (runsheet ADR 008), its cents on the item
 		rebasing := item["status"] == "review" && item["rebaseState"] == "claimed"
-		if item["status"] != "claimed" && item["status"] != "running" && !rebasing {
+		// an evaluation's session reports on the item in evaluating — an
+		// adopted one's "session adopted by the restarted node" — and the
+		// status is left where it is, as the platform leaves it
+		evaluating := item["status"] == "evaluating"
+		if item["status"] != "claimed" && item["status"] != "running" && !rebasing && !evaluating {
 			return fmt.Errorf("item is %s, not running", item["status"])
 		}
-		if rebasing {
+		switch {
+		case rebasing:
 			item["rebaseHeartbeats"] = toInt(item["rebaseHeartbeats"]) + 1
-		} else {
+		case !evaluating:
 			item["status"] = "running"
 		}
 		item["costCents"] = toInt(item["costCents"]) + toInt(in["costCents"])
@@ -1490,11 +1545,22 @@ func (f *Fake) apply(name string, in map[string]any) error {
 				f.Goals[id]["replacingItemId"] = r
 			}
 		case "claimPlan":
-			if held, _ := f.Goals[id]["plannerNodeId"].(string); held != "" && held != in["nodeId"] {
-				return fmt.Errorf("another node is planning it")
+			// runsheet goal.go: the holder re-claims at will and keeps
+			// its planClaimedAt; another node only once PlanClaimTTL has
+			// passed since it, when the claim is its, freshly stamped
+			held, _ := f.Goals[id]["plannerNodeId"].(string)
+			if held != "" && held == in["nodeId"] {
+				if at, _ := f.Goals[id]["planClaimedAt"].(string); at != "" {
+					break
+				}
+			} else if held != "" {
+				at, err := time.Parse(time.RFC3339, fmt.Sprint(f.Goals[id]["planClaimedAt"]))
+				if err != nil || f.now().Sub(at) < f.PlanClaimTTLInForce() {
+					return fmt.Errorf("another node is planning it")
+				}
 			}
 			f.Goals[id]["plannerNodeId"] = in["nodeId"]
-			f.Goals[id]["planClaimedAt"] = time.Now().UTC().Format(time.RFC3339)
+			f.Goals[id]["planClaimedAt"] = f.now().UTC().Format(time.RFC3339)
 		case "releasePlan":
 			// adr-022, A fetch that fails is reported: the claim is
 			// cleared, the goal stays in planning, and the note is its

@@ -368,3 +368,99 @@ func TestFindSessionsOnlyThisNodes(t *testing.T) {
 		t.Fatalf("missing root: %+v, %v", found, err)
 	}
 }
+
+// An adopted plan session's heartbeat entry gains its sessionId once
+// state.json names one, and flips alive to false once its unit ends —
+// both read fresh on every heartbeat, not just the one the restart
+// itself sent (mesh-cli ADR-009 amendment).
+func TestAdoptedPlanGainsSessionIDAndLiveness(t *testing.T) {
+	f, cfg := claimsFake(t)
+	const goal = "dddddddd-1111-4111-8111-00000000a001"
+	addPlanningGoal(f, goal, "plantest")
+	root := t.TempDir()
+	sdir := filepath.Join(root, "plans", "plantest.session")
+	if err := os.MkdirAll(sdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	pid := cmd.Process.Pid
+	t.Cleanup(func() { cmd.Process.Kill(); cmd.Wait() })
+	if err := sessionunit.WriteState(sdir, sessionunit.State{NodeID: cfg.NodeID, GoalID: goal, Kind: string(harness.KindPlan), StartedAt: time.Now(), PID: pid}); err != nil {
+		t.Fatal(err)
+	}
+	found, err := FindSessions(root, []string{cfg.NodeID})
+	if err != nil || len(found) != 1 {
+		t.Fatalf("found: %+v, %v", found, err)
+	}
+
+	gw := gateway.New(f.URL(), "rs_test")
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if _, err := gw.RegisterNode(ctx, gateway.RegisterNodeInput{NodeID: cfg.NodeID, OrgID: orgID, OwnerID: f.UserID, Name: "n", Slug: "n", Harnesses: []string{"claude-code"}, Capacity: 1, Version: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	logger := log.New(os.Stderr, "", 0)
+	release := make(chan struct{})
+	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Version: "test", Interval: time.Hour, Log: logger,
+		Dispatch: func(context.Context, gateway.WorkItem) {}}
+	loop.AdoptSession = func(ctx context.Context, s FoundSession) { <-release }
+	if n := loop.AdoptSessions(ctx, found); n != 1 {
+		t.Fatalf("adopted %d", n)
+	}
+
+	lastAdopted := func() map[string]any {
+		hb := f.CallsNamed("heartbeatNode")
+		adopted, _ := hb[len(hb)-1].Input["adopted"].([]any)
+		if len(adopted) != 1 {
+			t.Fatalf("heartbeat adopted = %#v", hb[len(hb)-1].Input["adopted"])
+		}
+		a, ok := adopted[0].(map[string]any)
+		if !ok {
+			t.Fatalf("entry = %#v", adopted[0])
+		}
+		return a
+	}
+
+	loop.Tick(ctx)
+	a := lastAdopted()
+	if a["itemId"] != goal || a["goalId"] != goal || a["kind"] != "plan" || a["since"] == "" {
+		t.Fatalf("entry = %#v", a)
+	}
+	if _, has := a["sessionId"]; has {
+		t.Fatalf("sessionId before the agent named one: %#v", a)
+	}
+	if a["alive"] != true {
+		t.Fatalf("alive = %#v, want true", a["alive"])
+	}
+
+	st, err := sessionunit.ReadState(sdir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.SessionID = "sess-plan-1"
+	if err := sessionunit.WriteState(sdir, st); err != nil {
+		t.Fatal(err)
+	}
+	loop.Tick(ctx)
+	a = lastAdopted()
+	if a["sessionId"] != "sess-plan-1" || a["alive"] != true {
+		t.Fatalf("entry after the session named itself = %#v", a)
+	}
+
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	cmd.Wait()
+	waitFor(t, func() bool { return !(FoundSession{Dir: sdir, State: st}).Alive() })
+	loop.Tick(ctx)
+	a = lastAdopted()
+	if a["sessionId"] != "sess-plan-1" || a["alive"] != false {
+		t.Fatalf("entry after the unit ended = %#v", a)
+	}
+
+	close(release)
+	loop.wg.Wait()
+}
