@@ -75,7 +75,13 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   close-out item — amending documents alone to say the branches read as
   one design or describe what landed — is refused, docs landing in the
   pull request of the change they describe, folded into that item
-  instead (`planCloseOutRule`); a clause waiting on a person's
+  instead (`planCloseOutRule`; the node's `closeOutAcceptance` flags an
+  item whose title or acceptance matches a close-out phrase and whose
+  acceptance names no code or test check — a `go test`/`go build`/`go
+  vet`, a `.go`/`.ts`/`.sh` file, `npm test`, `make`, or a backticked
+  command other than `grep`/`cat`/`ls` on a `.md` — for the re-ask,
+  appended beside `hostReadingAcceptance`; an ADR amended beside its own
+  code or test check is never flagged, ADR-023's amendment); a clause waiting on a person's
   confirmation or a production observation is never an item, becoming
   `"precondition": "<clause>"` on the item that depends on it
   (`PlannedSpec.Precondition`, kept by `ParsePlan`) or a `pr` checkpoint

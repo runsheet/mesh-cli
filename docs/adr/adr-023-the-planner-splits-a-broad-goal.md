@@ -135,3 +135,35 @@ to the allow-list and regenerates (the same pattern as
 `ProjectIndex.maxItems`). The unit tests construct `gateway.Goal{RepoID:
 ...}` directly, as the planner's own callers do, so the rule is fully
 exercised node-side without the wire selection.
+
+## Amendment 2026-10-03: the plan check's close-out rule (item 4)
+
+**The check.** `closeOutAcceptance(specs)`
+(`internal/node/plan_check.go`) flags an item whose title or acceptance
+matches a close-out phrase — "reads as one design," "describes what
+landed," "records that/what … landed/merged/shipped," an ADR's status
+or frontmatter moved to accepted or superseded, "docs-only," "close-out"
+— **and** whose acceptance names no code or test check: no `go test`,
+`go build`, `go vet`, a `_test.go`, `.go`, `.ts` or `.sh` file, `npm
+test`, `make`, or a backticked command other than `grep`, `cat` or `ls`
+on a `.md` file (`hasCodeOrTestCheck`). Both conditions are lexical,
+like `hostReadingAcceptance`; the evaluator's unverifiable-clause rule
+is the backstop for what this check misses. An ADR whose status line
+moves beside its own code or test check is never flagged — the clause
+rides a real change, not a close-out of its own.
+
+The flag: `item N (title): a docs-only close-out — its acceptance only
+amends documents to describe landed work (<phrase>); docs land in the
+pull request of the change they describe (AGENTS.md): fold the clause
+into that item`. It is appended in `readPlan` beside
+`hostReadingAcceptance`, so the re-ask carries it with
+`planCloseOutRule` the same way a host reading carries `planHostRule`
+(ADR-020). A second answer that still carries a close-out item is
+handed in with the flag logged, as ADR-020's reading flags are; the
+evaluator's rule is the backstop.
+
+the-fleet-stalls-loudly's item 22 — "the landed branches read as one
+design: README, ADR 017 and the TRD describe the stall report," an
+acceptance of document sections alone — is the fixture this check is
+built against, folded into item 19's own acceptance in the clean graph
+(`internal/node/plan_closeout_test.go`).

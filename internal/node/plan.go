@@ -683,7 +683,8 @@ func (p *Planner) handIn(ctx context.Context, goal gateway.Goal, items []gateway
 // ask runs one planner session on in and reads its graph: the items
 // mapped onto the project's repos, each item's model_reason by seq, the
 // check's flags on their acceptance (unverifiableAcceptance,
-// hostReadingAcceptance, sameAcceptanceAsFailed against goalItems), its questions for the person, the session's cost and its account, whose usage report is built as the
+// hostReadingAcceptance, closeOutAcceptance, sameAcceptanceAsFailed
+// against goalItems), its questions for the person, the session's cost and its account, whose usage report is built as the
 // session ends: the caller hands it in and Finishes it. An error means
 // there is no graph to hand in.
 func (p *Planner) ask(ctx context.Context, goal gateway.Goal, nodeID, dir string, budget float64, in harness.PlanInput, repos map[string]gateway.Repo, merged []int, goalItems []gateway.WorkItem, replacing *gateway.WorkItem, tok *gateway.GitHubToken, gr gateway.Repo, hasGoalRepo bool) ([]gateway.PlannedItem, map[int]string, []string, []harness.PlanQuestion, float64, *SessionAccount, error) {
@@ -806,6 +807,7 @@ func (p *Planner) readPlan(ctx context.Context, goal gateway.Goal, dir string, a
 	}
 	flags := unverifiableAcceptance(specs, itemRepo, repos)
 	flags = append(flags, hostReadingAcceptance(specs)...)
+	flags = append(flags, closeOutAcceptance(specs)...)
 	flags = append(flags, modelAgainstEvidence(specs, evidence)...)
 	relanded := reLands(specs, goalItems)
 	unsplit := ""
