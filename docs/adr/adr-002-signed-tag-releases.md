@@ -619,6 +619,48 @@ create — on the mirror (`GH_REPO=runsheet/mesh`) and on the source
 (`GH_REPO=runsheet/mesh-cli`, `--verify-tag` instead of `--target`)
 alike.
 
+## Amendment: a rollback on a refusal naming the owner id is not final (goal `a-node-takes-the-id-the-platform-names`, 2026-10-03)
+
+On 2026-10-03 the grapevine node's update to v0.2.248 rolled back with
+`v0.2.248 did not confirm within 5m0s: register (owner person):
+RegisterNode: node grapevine registers at
+18a8b766-18f3-5e73-b4cf-efb91c01946a, the id its form names, not
+47a08dd9-…`, and the rule above — a rolled-back version is not tried
+again until the platform asks for another — left it on v0.2.247 for
+good. The binary was fine; the id it registered under was not, and the
+platform had named the right one. ADR-015's 2026-10-03 section has the
+node adopt that id and keep it in node.yaml (`node_id`) before the
+rollback, so the same version would now register and confirm. The
+rollback rule gains one exception:
+
+- **`update.json` carries `retryAfterAdopt`.** `StateFile.NoteConfirmError`
+  sets it when the reason names an id — `registers at <uuid>`,
+  `selfupdate.NamesID`, parsed in the package itself, which imports
+  nothing from `internal/node` — and a later reason naming none does
+  not clear it. `Rollback` keeps it; `BeginUpdate` and `Confirm` clear
+  it. The confirm window records each refused registration's own text
+  (`confirmWindow.retry` → `NoteConfirmError(err.Error())`), so the id
+  is in `confirmError` and in the rollback's `lastError`.
+- **Such a rollback is not final.** `node.CheckStart` gives
+  `StartCheck.Final = rolledBackAt set && !retryAfterAdopt`, and when
+  the flag is set `StartCheck.RetryNow` and a `Reason` ending ` (owner
+  id adopted; the update is tried again)` — the heartbeat's
+  `updateError` says so. `Loop.NoteUpdateFailure(version, reason, final,
+  retryNow)` seeds the loop, and `selfUpdate` skips the `updateRetry`
+  wait for that version once: the next tick that reads it as the
+  desired version starts the update again. That attempt is a fresh
+  `BeginUpdate`, so a second rollback of it — whatever it names — is
+  final as before.
+- The exception helps only a rollback read by a binary that has it: the
+  binary that rolls back writes the flag, but the previous binary reads
+  it, so v0.2.247 still treats its v0.2.248 rollback as final; the
+  release after it is a new desired version and is tried anyway.
+
+Tests: `internal/selfupdate/state_test.go`,
+`internal/node/selfupdate_adopt_test.go`,
+`internal/commands/nodestart_test.go`
+(`TestConfirmWindowRecordsTheRefusalNamingAnID`).
+
 ## Consequences
 
 - Renaming an asset, the workflow file, or the repo breaks every
