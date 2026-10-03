@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/google/uuid"
@@ -76,6 +77,51 @@ type Registered struct {
 	// as written, a cached enterprise_id, a person's node); SaveRegistration
 	// caches it in node.yaml as enterprise_id.
 	EnterpriseID string
+	// IDSource is how the owner id was arrived at — IDDerived when
+	// OwnedNodeID computed it, IDAdopted when a refusal named it
+	// (AdoptedID) — and node.yaml's node_id_source as it was when the
+	// registration went under the saved node_id. SaveRegistration writes
+	// it.
+	IDSource string
+	// adopted is set when this registration adopted the id a refusal
+	// named: cfg.NodeID already holds it, so SaveRegistration saves.
+	adopted bool
+}
+
+// How the owner id was arrived at (Registered.IDSource, node.yaml's
+// node_id_source).
+const (
+	IDDerived = "derived"
+	IDAdopted = "adopted"
+)
+
+// registersAt is the platform's refusal of an owner registration under
+// an id other than the one it derives (platform/aggregates/node.go):
+// `node <slug> registers at <uuid>, the id its form names, not <uuid>`.
+var registersAt = regexp.MustCompile(`registers at ([0-9A-Fa-f-]{36})`)
+
+// AdoptedID is the id a refused registration names — the uuid after
+// `registers at ` in err's text — and whether there is one: false for a
+// nil error, a refusal that names none, or one whose id does not parse.
+func AdoptedID(err error) (string, bool) {
+	if err == nil {
+		return "", false
+	}
+	m := registersAt.FindStringSubmatch(err.Error())
+	if m == nil {
+		return "", false
+	}
+	id, perr := uuid.Parse(m[1])
+	if perr != nil {
+		return "", false
+	}
+	return id.String(), true
+}
+
+// AdoptionNote is the note a registration that adopted the platform's
+// id logs after StartLine.
+func AdoptionNote(adopted, sent string) string {
+	return fmt.Sprintf("owner id adopted from the platform: %s (derived %s)", adopted, sent)
 }
 
 // Contract is the contract the registration made: ContractOwner when
@@ -234,6 +280,13 @@ func SaveRegistration(cfg *Config, r Registered, save func() error) error {
 		// Register cached it on cfg already; the file has not got it yet
 		cfg.EnterpriseID, changed = r.EnterpriseID, true
 	}
+	if r.adopted {
+		// Register set cfg.NodeID to the adopted id already
+		changed = true
+	}
+	if r.IDSource != "" && cfg.NodeIDSource != r.IDSource {
+		cfg.NodeIDSource, changed = r.IDSource, true
+	}
 	if !changed {
 		return nil
 	}
@@ -242,6 +295,26 @@ func SaveRegistration(cfg *Config, r Registered, save func() error) error {
 	}
 	if err := save(); err != nil {
 		return fmt.Errorf("save node.yaml (contract %s, node id %s): %w", contract, cfg.NodeID, err)
+	}
+	return nil
+}
+
+// SaveAdoption saves the id a registration adopted when the retry under
+// it was refused too: node.yaml's node_id and node_id_source, never the
+// contract, which no registration made — so the next start, or the
+// confirm window's next attempt, registers under the adopted id, and a
+// move to the owner contract still retires the legacy rows when one
+// goes through. A registration that adopted nothing saves nothing.
+func SaveAdoption(cfg *Config, r Registered, save func() error) error {
+	if !r.adopted || r.Owned == nil {
+		return nil
+	}
+	cfg.NodeID, cfg.NodeIDSource = r.Owned.NodeID, IDAdopted
+	if save == nil {
+		save = cfg.Save
+	}
+	if err := save(); err != nil {
+		return fmt.Errorf("save node.yaml (adopted node id %s): %w", cfg.NodeID, err)
 	}
 	return nil
 }
@@ -255,7 +328,8 @@ const FallbackLine = "register: the platform took owner but answered nil; keepin
 
 // OwnedNodeID is the id the node registers under on the owner
 // contract: node.yaml's node_id when set, else one from (owner, slug),
-// so it converges, else a fresh one.
+// so it converges, else a fresh one. Registered.IDSource names the
+// latter two IDDerived.
 func OwnedNodeID(cfg *Config) string {
 	if cfg.NodeID != "" {
 		return cfg.NodeID
@@ -307,16 +381,31 @@ func Register(ctx context.Context, r Registrar, cfg *Config, restrict []string) 
 	if err != nil {
 		return Registered{}, fmt.Errorf("register (owner %s): %w", cfg.OwnerKind(), err)
 	}
+	source := cfg.NodeIDSource
+	if cfg.NodeID == "" {
+		source = IDDerived
+	}
 	id := OwnedNodeID(cfg)
 	answer, err := r.RegisterOwner(ctx, id, orgID, ownerID)
+	adopted := false
+	if named, ok := AdoptedID(err); ok && named != id {
+		fieldNote = append(fieldNote, AdoptionNote(named, id))
+		id, source, adopted = named, IDAdopted, true
+		cfg.NodeID = id
+		answer, err = r.RegisterOwner(ctx, id, orgID, ownerID)
+	}
 	if err != nil {
-		return Registered{}, fmt.Errorf("register (owner %s): %w", cfg.OwnerKind(), err)
+		var partial Registered
+		if adopted {
+			partial = Registered{Owned: &Owned{NodeID: id, Owner: Owner{Kind: cfg.OwnerKind()}}, Notes: fieldNote, EnterpriseID: resolved, IDSource: source, adopted: true}
+		}
+		return partial, fmt.Errorf("register (owner %s): %w", cfg.OwnerKind(), err)
 	}
 	if answer == nil {
 		owned := &Owned{NodeID: id, Owner: Owner{Kind: cfg.OwnerKind()}}
-		return Registered{Owned: owned, Notes: append(fieldNote, FallbackLine), EnterpriseID: resolved}, nil
+		return Registered{Owned: owned, Notes: append(fieldNote, FallbackLine), EnterpriseID: resolved, IDSource: source, adopted: adopted}, nil
 	}
-	reg := Registered{Owned: &Owned{NodeID: answer.NodeID, Owner: OwnerFrom(answer)}, Answer: answer, Notes: fieldNote, EnterpriseID: resolved}
+	reg := Registered{Owned: &Owned{NodeID: answer.NodeID, Owner: OwnerFrom(answer)}, Answer: answer, Notes: fieldNote, EnterpriseID: resolved, IDSource: source, adopted: adopted}
 	var note error
 	if reg.Scopes, note = ServedFrom(answer, restrict); note != nil {
 		reg.Notes = append(reg.Notes, fmt.Sprintf("orgs: %v", note))

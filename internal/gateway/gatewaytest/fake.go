@@ -253,6 +253,13 @@ type Fake struct {
 	// is refused unless its ownerId is one of them (the platform's
 	// adminOnEnterprise(ownerId)).
 	Enterprises map[string]Enterprise
+	// RegistersAt is the id the platform derives for the node's owner
+	// row (ids.NodeOwnerID). When set, a registerNode under any other
+	// aggregateId is refused with the platform's own wording, `node
+	// <slug> registers at <RegistersAt>, the id its form names, not
+	// <sent>` (platform/aggregates/node.go), and recorded in Calls as
+	// the platform saw it; one under RegistersAt registers.
+	RegistersAt string
 
 	requests int
 }
@@ -619,6 +626,12 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 			}
 			f.Calls = append(f.Calls, Call{Name: m[2], Input: in, At: time.Now(), Bearer: bearer})
 			writeData(w, map[string]any{m[2]: tok})
+			return
+		}
+		if id, _ := in["aggregateId"].(string); m[2] == "registerNode" && f.RegistersAt != "" && id != f.RegistersAt {
+			slug, _ := in["slug"].(string)
+			f.Calls = append(f.Calls, Call{Name: m[2], Input: in, At: time.Now(), Bearer: bearer})
+			writeErrors(w, 200, fmt.Sprintf("node %s registers at %s, the id its form names, not %s", slug, f.RegistersAt, id))
 			return
 		}
 		if err := f.apply(m[2], in); err != nil {

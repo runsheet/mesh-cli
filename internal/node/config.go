@@ -40,6 +40,12 @@ type Config struct {
 	// scopes — NodeID is unused: each Scope keeps its own per-org id
 	// from NodeIDIn instead.
 	NodeID string `yaml:"node_id,omitempty"`
+	// NodeIDSource is how NodeID was arrived at on the owner contract:
+	// "derived" (OwnedNodeID computed it) or "adopted" (a refused
+	// registration named it, AdoptedID). Written by SaveRegistration;
+	// unchanged by a start that registers under the saved node_id
+	// (ADR-015's amendment 2026-10-03).
+	NodeIDSource string `yaml:"node_id_source,omitempty"`
 	// Contract is the registration the node last made (ADR-015,
 	// Registration and the loop; TRD §3 step 1): ContractOwner when the
 	// platform answered the owner registration, ContractPerOrg when it

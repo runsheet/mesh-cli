@@ -208,6 +208,7 @@ var nodeRegisterCmd = &cobra.Command{
 		}
 		reg, err := node.Register(ctx, registrar(gw, cfg), cfg, cfg.Orgs)
 		if err != nil {
+			_ = node.SaveAdoption(cfg, reg, nil)
 			return err
 		}
 		// a fresh cfg: the contract is always new to it, so this saves
@@ -912,6 +913,14 @@ func registerNode(ctx context.Context, cmd *cobra.Command, logger *log.Logger, u
 		}
 		got, err := node.Register(regCtx, registrar(gw, cfg), cfg, cfg.Orgs)
 		if err != nil {
+			// an id the refusal named is kept even when the retry under
+			// it was refused too: the next attempt registers under it
+			for _, note := range got.Notes {
+				logger.Print(note)
+			}
+			if serr := node.SaveAdoption(cfg, got, nil); serr != nil {
+				logger.Print(serr)
+			}
 			return err
 		}
 		// the contract and the node's one id are kept: the next start

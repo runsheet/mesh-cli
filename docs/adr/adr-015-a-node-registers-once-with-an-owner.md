@@ -419,3 +419,50 @@ on a registration retried in the confirm window, so a change of the
 probe's answer is said.
 
 Tests: `internal/node/owned_enterprise_test.go`.
+
+## A node takes the id the platform names (2026-10-03)
+
+v0.2.248 was the first node to take the owner contract against the
+real platform, and its owner id was refused: the node derived it as
+`gateway.NodeID(owner, slug)`, the platform as `ids.NodeOwnerID(kind,
+owner, slug)`, and the platform refuses a registration under any other
+id, naming its own — `node grapevine registers at
+18a8b766-18f3-5e73-b4cf-efb91c01946a, the id its form names, not
+47a08dd9-bafb-5c64-bb16-7e806f0b1b95` (platform/aggregates/node.go).
+Deriving it the platform's way is one rule; this one is that a drift
+never strands a node (`internal/node/owned.go`, `Register`).
+
+**A refusal that names an id is adopted, and retried once.** When
+`RegisterOwner` is refused and `AdoptedID(err)` finds a uuid after
+`registers at ` that differs from the id sent, `Register` sets
+`cfg.NodeID` to it, notes `owner id adopted from the platform: <adopted>
+(derived <sent>)` on `Registered.Notes` (logged after the start line by
+`RegistrationLines`) and calls `RegisterOwner` once more under the
+adopted id. A refusal naming no id, or naming the id sent, is returned
+at once with no retry; a second refusal is returned as any other — no
+third call.
+
+**The adopted id is kept even when the retry is refused.** We chose the
+partial result: `Register` returns, beside the second refusal, a
+`Registered` whose `Owned.NodeID` is the adopted id, `IDSource` adopted
+and the note; the caller (`mesh node start`'s register closure, `mesh
+node register`) logs the notes and saves it with `SaveAdoption`, which
+writes `node_id` and `node_id_source` alone — never `contract`, which no
+registration made, so a move to the owner contract still retires the
+legacy rows when one goes through. The next attempt — the confirm
+window's next retry or the next start — registers under the adopted id.
+
+**How the id was arrived at is recorded.** `Registered.IDSource` and
+node.yaml's `node_id_source` are `derived` when `OwnedNodeID` computed
+the id (no `node_id` saved) and `adopted` after an adoption;
+`SaveRegistration` writes it, and a start that registers under the saved
+`node_id` leaves it as it was.
+
+**The fake replays it.** `gatewaytest.Fake.RegistersAt`, when set,
+refuses a `registerNode` under any other `aggregateId` with the
+platform's exact wording naming `RegistersAt` and the sent id — the
+refused call recorded in `Calls`, as the platform saw it — and registers
+one under it.
+
+Tests: `internal/node/owned_adopt_test.go`,
+`internal/commands/nodestart_adopt_test.go`.
