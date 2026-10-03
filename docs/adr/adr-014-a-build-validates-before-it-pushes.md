@@ -99,10 +99,30 @@ Whether the platform has the mutation is an introspection probe,
 `{ __type(name: "Mutation") { fields { name args { name } } } }`, asked
 once and kept for `ScalingProbeEvery` (`takesAttestations`): only a
 Mutation without the field is `Unsupported` — the once-per-run "takes
-no attestations yet" — and nothing is sent. A platform with it that
-refuses ("<sha> is not the head of <branch> (GitHub has <sha>)") is a
-refusal in its own words, a progress note on the item, never
-unsupported. There is no REST path: none exists on the platform.
+no attestations yet" — and nothing is sent. There is no REST path: none
+exists on the platform.
+
+*Amended 2026-10-03 (goal the-nodes-attestation-reaches-the-platform,
+item 3).* An upload lands in one of three outcomes, in `uploadAttestation`.
+Uploaded: the platform's considered answer, logged and done. Absent:
+`IsUnsupported` — checked first, since such an error is also a
+refusal — is the once-per-run "takes no attestations yet" alone, never a
+note on the item; this is reserved for an *observed* absence, the probe
+answering with no `recordValidationAttestation` field — a probe that
+cannot be answered at all (the introspection query itself fails, a
+transport error or a 5xx) is not cached and reaches `uploadAttestation`
+as its own error, never read as the mutation being missing. Refused: a
+platform that has the mutation and refuses it (`IsRefusal`), in its own
+words — "<sha> is not the head of <branch> (GitHub has <sha>)", a tree
+mismatch, the item held by no node, the App not installed — is a note
+on the item, `validation attestation refused by the platform: <words>`,
+verbatim, and the same words logged; never unsupported. A 429 or 5xx
+answer retries with backoff, honouring a `Retry-After` header
+(`retryOnTransient`, `AttestationBackoff`); spent, it is wrapped `after
+N retries: <last answer>` and lands as any other failure would —
+`validation attestation: upload failed: <error>`, a note on the item,
+never the item's own failure. In every case — uploaded, absent, refused
+or failed — a copy stays at `<workdir>.attestation.json`.
 
 **A failing step** stops the run (the first failure) and gets the
 builder **one** more turn, with `harness.ValidationRetryPrompt`: the
