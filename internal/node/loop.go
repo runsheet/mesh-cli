@@ -144,10 +144,11 @@ type Loop struct {
 	// them, so one installed while the node runs is reported without a
 	// restart. Nil probes nothing and reports neither.
 	LookPath func(file string) (string, error)
-	// Declines are the items a session here declined for a required tool
-	// whose runtime the node lacks (trd §3 Tools): neither claimed nor
-	// evaluated again while the runtimes are unchanged. The build and
-	// evaluate sessions record into the same one; nil declines nothing.
+	// Declines are the items, goals and directions a session here
+	// declined for a required tool whose runtime the node lacks (trd §3
+	// Tools): neither claimed, evaluated, planned nor researched again
+	// while the runtimes are unchanged. The build, evaluate, plan and
+	// research sessions record into the same one; nil declines nothing.
 	Declines *Declines
 	// Sandbox is the heartbeat's `sandbox` — the mode, runtime and image
 	// sessions run in (OpenSandbox, ADR 007); nil sends none.
@@ -1581,6 +1582,13 @@ func (l *Loop) planRequested(ctx context.Context) {
 			continue
 		}
 		l.mu.Unlock()
+		// a planner session here declined a required tool whose runtime
+		// is still missing: the goal waits for a node that has it
+		runtimes, _ := l.Runtimes()
+		if why, ok := l.Declines.Held(g.ID, runtimes, time.Now()); ok {
+			l.passOver(g.ID, "plan", priorityName(gateway.PriorityRank(g.Priority)), why, time.Time{})
+			continue
+		}
 		if why, until, ok := l.NoCredential.Holds(g.ProjectID, string(harness.KindPlan), l.adapter()); ok {
 			l.passOver(g.ID, "plan", priorityName(gateway.PriorityRank(g.Priority)), why, until)
 			l.NoCredential.Say(g.ID, why, until)
@@ -1681,6 +1689,13 @@ func (l *Loop) researchDue(ctx context.Context) {
 			busy := l.researching[d.ID]
 			l.mu.Unlock()
 			if busy {
+				continue
+			}
+			// a director session here declined a required tool whose
+			// runtime is still missing: the direction is not offered
+			runtimes, _ := l.Runtimes()
+			if why, ok := l.Declines.Held(d.ID, runtimes, time.Now()); ok {
+				l.passOver(d.ID, "research", "", why, time.Time{})
 				continue
 			}
 			// the project's claim-time read refused research (none

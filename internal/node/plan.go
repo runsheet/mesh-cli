@@ -14,6 +14,7 @@ import (
 
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/harness"
+	"projectmesh.io/mesh-cli/internal/tools"
 )
 
 // Planner is the session that compiles a goal into its graph (mesh-specs
@@ -28,8 +29,17 @@ type Planner struct {
 	WS       Workspacer
 	Cfg      *Config
 	WorkRoot string
-	// MCP are the MCP servers the session gets (mesh-context).
+	// MCP is the built-in MCP server the session gets (mesh-context);
+	// the tools attached for the planner role are rendered beside it
+	// (SelectTools, trd §3 Tools).
 	MCP map[string]any
+	// Runtimes are the tool runtimes the node has now (Loop.ToolRuntimes;
+	// nil: none), which a local tool needs to start.
+	Runtimes func() []string
+	// Declines remembers a goal not planned for a required tool whose
+	// runtime the node lacks, so the loop does not claim its plan again
+	// while the runtimes are unchanged (nil: not remembered).
+	Declines *Declines
 	// MaxBudgetUSD caps the planning session (5 by default).
 	MaxBudgetUSD float64
 	// Budgets is node.yaml's `budgets:` in force, read live (ADR 012,
@@ -72,9 +82,31 @@ type PlanFetchError struct {
 func (e *PlanFetchError) Error() string { return e.Err.Error() }
 func (e *PlanFetchError) Unwrap() error { return e.Err }
 
+// ToolsDeclinedError is a plan declined before its session opens: a
+// tool attached for the planner role is required and needs a runtime
+// this node lacks (trd §3 Tools). Reason is SessionTools.DeclineReason.
+type ToolsDeclinedError struct {
+	Reason string
+}
+
+func (e *ToolsDeclinedError) Error() string { return "declined, " + e.Reason }
+
+// ToolsDeclined reports whether err is a session declined for its tools.
+func ToolsDeclined(err error) bool {
+	var td *ToolsDeclinedError
+	return errors.As(err, &td)
+}
+
 // MaxPlanAttempts is how many unreadable plans a goal gets before the
 // planner stops trying (until the node restarts).
 const MaxPlanAttempts = 3
+
+func (p *Planner) runtimes() []string {
+	if p.Runtimes == nil {
+		return nil
+	}
+	return p.Runtimes()
+}
 
 func (p *Planner) logf(format string, args ...any) {
 	if p.Log != nil {
@@ -126,6 +158,22 @@ func (p *Planner) Plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 	if _, ok := NoHeadroomOf(err); ok {
 		// issued credentials with no headroom are a hold too, until the
 		// earliest resets: the claim lapses and no try is counted
+		return err
+	}
+	var td *ToolsDeclinedError
+	if errors.As(err, &td) {
+		// a required tool this node cannot start is a hold, not a try:
+		// the claim goes back for a node that can (or lapses on a
+		// platform without releasePlan), and Declines keeps the loop off
+		// the goal while the runtimes are unchanged
+		switch rerr := p.GW.ReleasePlan(ctx, goal.ID, scope.NodeID, td.Reason); {
+		case rerr == nil:
+			p.logf("goal %s: %v; plan claim released", goal.Slug, err)
+		case gateway.IsUnsupported(rerr):
+			p.logf("goal %s: %v; the claim lapses", goal.Slug, err)
+		default:
+			p.logf("goal %s: %v; plan release refused: %v", goal.Slug, err, rerr)
+		}
 		return err
 	}
 	var fe *PlanFetchError
@@ -619,6 +667,15 @@ func (p *Planner) ask(ctx context.Context, goal gateway.Goal, nodeID, dir string
 		return nil, nil, nil, nil, 0, nil, err
 	}
 	defer unlessDetached(ctx, acct.Cleanup)
+	// the tools attached for the planner role, beside mesh-context: a
+	// required one this node cannot start starts no session, and the
+	// goal's plan is left for a node that can
+	runtimes := p.runtimes()
+	st := SelectTools(p.MCP, acct.Tools, tools.RoleFor(string(harness.KindPlan)), runtimes)
+	if len(st.Missing) > 0 {
+		p.Declines.Record(goal.ID, st.Missing, runtimes, time.Now())
+		return nil, nil, nil, nil, 0, nil, &ToolsDeclinedError{Reason: st.DeclineReason()}
+	}
 	if tok != nil {
 		// gh in the session runs on the goal's token and a config dir of
 		// its own, never the operator's login (adr-022)
@@ -632,11 +689,23 @@ func (p *Planner) ask(ctx context.Context, goal gateway.Goal, nodeID, dir string
 		job.Env = SessionEnv(tok, ghDir)
 	}
 	acct.Apply(&job)
+	if err := st.UseTools(&job, p.MCP, acct); err != nil {
+		return nil, nil, nil, nil, 0, acct, fmt.Errorf("tools: %w", err)
+	}
+	if len(st.Use) > 0 {
+		p.logf("goal %s: tools %s", goal.Slug, st.Names())
+	}
+	if note := st.OmittedNote(); note != "" {
+		p.logf("goal %s: %s", goal.Slug, note)
+	}
 	job.Meta = harness.SessionMeta{NodeID: nodeID, GoalID: goal.ID, TempDirs: sessionTempDirs(job, acct)}
 	// the session outlives this process: a restart adopts it (ADR 009)
 	job.Outlive = true
 	result, err := p.Harness.Run(ctx, job, nil)
 	acct.Report(result)
+	if note := acct.UseNote(result); note != "" && err == nil {
+		p.logf("goal %s: %s", goal.Slug, note)
+	}
 	items, reasons, flags, questions, cost, err := p.readPlan(ctx, goal, dir, acct, result, err, repos, merged, in.Evidence, goalItems, replacing, len(in.Rejected) > 0)
 	return items, reasons, flags, questions, cost, acct, err
 }

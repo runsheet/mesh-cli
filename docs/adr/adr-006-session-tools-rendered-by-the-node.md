@@ -334,3 +334,30 @@ in step, not for filtering anything the platform already filtered.
 Wiring the planner and the director through `RoleFor` to actually
 select and render tools is the next item of this goal; this one only
 gives them a role to select by.
+
+Item 2 wires them. `Director.Research` (`internal/node/research.go`)
+and `Planner.ask` (`internal/node/plan.go`) call `SelectTools` with
+`tools.RoleFor(string(harness.KindResearch))` (`director`) and
+`tools.RoleFor(string(harness.KindPlan))` (`planner`) on the tools the
+claim-time read hands them — `researchTools` for the direction,
+`planTools` for the goal, read with the credentials by
+`Credentials.Open` as an item's are — against the node's runtimes
+(`Director.Runtimes`, `Planner.Runtimes`, `Loop.ToolRuntimes`), and
+render the kept ones beside mesh-context with `SessionTools.UseTools`,
+so their calls reach the usage report and `RecordToolUsage` the way a
+build's do. The session logs `<label>: tools <names>`, the omitted
+nice-to-haves (`OmittedNote`) and, after it ends, the never-called or
+first-errored ones (`UseNote`); a plan or research has no item to note
+them on, so each is a node.log line. A required tool the node cannot start
+is a decline, as for an item (decision 9), recorded in the loop's one
+`Declines` under the direction's or the goal's id: the director hands
+in an empty research — no agent, no cost — with `DeclineReason` as its
+note, before anything is fetched, so the direction's claim is not held;
+the planner starts no agent and returns `ToolsDeclinedError`, which
+`Plan` answers by `releasePlan` with the reason (on a platform without
+it the claim lapses) and counts no try, as `ErrNoCredential` counts
+none. `Loop.researchDue` and `Loop.planRequested` ask `Declines.Held`
+before claiming and pass the direction or goal over on
+`holding.unclaimed` with the decline's reason while the runtimes are
+unchanged (`DeclineHold`). Decision 8 now reads: rebase and channel
+sessions keep the built-in alone.

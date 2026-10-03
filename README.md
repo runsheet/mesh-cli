@@ -1080,9 +1080,14 @@ node runs is reported without a restart.
 **How tools reach the session.** At claim the node reads the session's
 credentials and its `tools` (name, remote `url`/`headers` or local
 `runtime`/`command`/`args`/`env`, `required`, `roles`) in one read, and
-keeps the tools whose `roles` include the session's (`build`,
-`evaluate`; plan, research and rebase sessions keep mesh-context alone
-for now). Each agent gets them in its own format:
+keeps the tools whose `roles` include the session's — `builder` for a
+build, `evaluator` for an evaluation, `planner` for a plan, `director`
+for research (`tools.RoleFor`); rebase and channel sessions keep
+mesh-context alone for now. A plan or research session that cannot
+start a required tool starts no agent: the plan's claim is released
+with the reason, the research hands in an empty one naming it, and the
+node leaves that goal or direction alone while its runtimes are
+unchanged. Each agent gets them in its own format:
 
 - **Claude Code**: `--mcp-config` with `mcpServers` — mesh-context plus one
   entry per tool, `{type: http, url, headers}` remote or `{command, args,

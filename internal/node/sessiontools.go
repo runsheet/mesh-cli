@@ -213,8 +213,9 @@ func (st SessionTools) UseTools(job *harness.Job, builtin map[string]any, acct *
 	return nil
 }
 
-// Declines are the items this node declined for a required tool whose
-// runtime it lacks (trd §3 Tools): the loop does not claim one again
+// Declines are the items (and goals' plans, directions' research) this
+// node declined for a required tool whose runtime it lacks (trd §3
+// Tools), by id: the loop does not claim one again
 // while the node's runtimes are those it declined on, for DeclineHold at
 // most. Safe for concurrent use; the zero value is ready.
 type Declines struct {
@@ -228,6 +229,9 @@ type decline struct {
 	key      string
 	runtimes string
 	at       time.Time
+	// reason is the decline's own words (SessionTools.DeclineReason),
+	// for a holding line.
+	reason string
 }
 
 func runtimeKey(runtimes []string) string {
@@ -245,6 +249,7 @@ func (d *Declines) Record(itemID string, missing []tools.Omission, runtimes []st
 	for _, o := range missing {
 		ts = append(ts, o.Tool+"@"+o.Runtime)
 	}
+	reason := SessionTools{Missing: missing}.DeclineReason()
 	sort.Strings(ts)
 	rk := runtimeKey(runtimes)
 	d.mu.Lock()
@@ -252,27 +257,34 @@ func (d *Declines) Record(itemID string, missing []tools.Omission, runtimes []st
 	if d.m == nil {
 		d.m = map[string]decline{}
 	}
-	d.m[itemID] = decline{key: fmt.Sprintf("%s|%s|%s", itemID, strings.Join(ts, ","), rk), runtimes: rk, at: now}
+	d.m[itemID] = decline{key: fmt.Sprintf("%s|%s|%s", itemID, strings.Join(ts, ","), rk), runtimes: rk, at: now, reason: reason}
 }
 
 // Holds reports whether itemID stays declined on a node with runtimes
 // at now; a decline whose runtimes changed or whose hold ran out is
 // forgotten.
 func (d *Declines) Holds(itemID string, runtimes []string, now time.Time) bool {
+	_, ok := d.Held(itemID, runtimes, now)
+	return ok
+}
+
+// Held is Holds with the decline's reason ("tools: tool … needs
+// docker"), for the holding line of a goal or direction passed over.
+func (d *Declines) Held(id string, runtimes []string, now time.Time) (string, bool) {
 	if d == nil {
-		return false
+		return "", false
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	dc, ok := d.m[itemID]
+	dc, ok := d.m[id]
 	if !ok {
-		return false
+		return "", false
 	}
 	if dc.runtimes != runtimeKey(runtimes) || now.Sub(dc.at) >= DeclineHold {
-		delete(d.m, itemID)
-		return false
+		delete(d.m, id)
+		return "", false
 	}
-	return true
+	return dc.reason, true
 }
 
 // ToolTrimSettings are the Claude Code settings beside a session's MCP
