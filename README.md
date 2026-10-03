@@ -419,7 +419,10 @@ node.yaml records which registration the node made as `contract:`:
 it serves) when the platform answered the owner registration, or
 `contract: per-org` (legacy — one node id per org, from `(org,
 slug)`) when it did not, because the platform's `RegisterNodeInput`
-has no `owner` at all. `mesh node status` and the rollback reporter
+has no owner field under either spelling — `ownerKind`, the
+platform's, or `owner`, a platform before it (`OwnerField`); the node
+sends whichever the schema has, with `ownerId` the owner's id (the
+enterprise's for an enterprise). `mesh node status` and the rollback reporter
 (the self-update confirm path) heartbeat the same way the last
 registration recorded: once, under the one id, on the owner contract;
 per org on the legacy one. An org with no GitHub login — `grapevine`,
