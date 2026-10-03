@@ -347,7 +347,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	// service that does not come up leaves it unevaluated, and the loop
 	// does not try again while that holds; a missing optional one is in
 	// the verdict's notes.
-	pod, err := OpenSessionPod(ctx, e.Sandbox, dir, job.Label, harness.KindEvaluate, e.logf)
+	pod, err := OpenSessionPod(ctx, e.Sandbox, dir, job.Label, harness.KindEvaluate, sandbox.GitIdentity{}, e.logf)
 	defer pod.Close()
 	if err != nil {
 		return fmt.Errorf("services: %w", err)

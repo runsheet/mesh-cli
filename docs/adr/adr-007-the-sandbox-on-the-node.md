@@ -145,9 +145,8 @@ implementing it that the spec leaves open or that differ in detail.
   required service refused for its registry makes no pod at all, so
   nothing is pulled. A `.mesh/services.yml` that cannot be read is a
   required service that failed.
-- **Git identity.** The session's `.gitconfig` carries the operator's
-  `user.name`/`user.email`, read from the host's global git config at
-  start, since the session no longer reads the host's.
+- **Git identity.** The session's `.gitconfig` carries the session's
+  agent identity, never the operator's (amended 2026-10-03, below).
 
 ### Amendment 2026-09-28: a build's validation runs in the session's pod
 
@@ -180,3 +179,18 @@ built-in's old name, left unfixed in this decision after the rename
 reached the node's own attachment (`adr-006`'s 2026-09-28 amendment).
 It now says the mesh-context bearer; nothing about where the config is
 written or how it is read changes.
+
+## Amendment — 2026-10-03 (goal every-actor-has-a-name, item 2)
+
+"Git identity" said the session's `.gitconfig` carries the operator's
+`user.name`/`user.email`, read from the host's global git config at
+start. It no longer does: no session commits as the node's owner. The
+`.gitconfig` names the session's agent, `Mesh <role> (<slug>)
+<mesh-<role>+<slug>@runsheet.dev>`, passed to `Sandbox.Open` per session
+(`sandbox.GitIdentity`); `sandbox.Config.GitName`/`GitEmail` and
+`nodecmd.go`'s `gitIdentity` are gone. The checkout's hooks directory
+(`<workdir>.hooks`, its `prepare-commit-msg` adding the paired person's
+`Co-Authored-By`) is mounted read-only beside the workspace, and the
+`GIT_AUTHOR_*`/`GIT_COMMITTER_*` variables are allowed into the pod.
+An evaluation's pod gets no identity. [ADR-024](adr-024-a-session-commits-as-its-agent.md)
+is the decision.
