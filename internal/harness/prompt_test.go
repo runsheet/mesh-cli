@@ -338,8 +338,10 @@ func TestPlanPromptModelRubric(t *testing.T) {
 			t.Errorf("plan prompt lacks %q", want)
 		}
 	}
-	if !strings.HasSuffix(p, "\"model\": \"sonnet\", \"model_reason\": \"…\", \"files\": [\"…\"], \"writes_shared_docs\": true}], \"questions\": []}\n```\n") {
-		t.Error("the plan prompt no longer ends with the JSON example")
+	// the JSON example, the fallback contract, is followed only by the
+	// tool-call finish (ADR-023)
+	if !strings.Contains(p, "\"model\": \"sonnet\", \"model_reason\": \"…\", \"files\": [\"…\"], \"writes_shared_docs\": true}], \"questions\": []}\n```\n\n# Finish by tool call\n\nEnd the session by calling the mesh-context server's `mesh_plan` tool") {
+		t.Error("the plan prompt no longer ends with the JSON example and the mesh_plan finish")
 	}
 }
 
@@ -586,7 +588,7 @@ func TestPromptsCarryTheServicesLine(t *testing.T) {
 	if want := "The diff is empty: the branch changed nothing.\n\n# Services\n\n" + line + "\n\n# Rules\n\n1. Judge"; !strings.Contains(eval, want) {
 		t.Errorf("evaluate prompt lacks\n%s\n---\n%s", want, eval)
 	}
-	if !strings.HasSuffix(strings.TrimSpace(eval), "Pass only when every clause of the acceptance you can check holds.") || !strings.Contains(eval, "`"+VerdictPass+"` or `"+VerdictFail+"`") {
+	if !strings.Contains(eval, "Pass only when every clause of the acceptance you can check holds.\n\n# Finish by tool call\n\nEnd the session by calling the mesh-context server's `mesh_verdict` tool") || !strings.Contains(eval, "`"+VerdictPass+"` or `"+VerdictFail+"`") {
 		t.Error("the verdict contract line moved")
 	}
 	rebase := RebasePrompt(RebaseInput{GoalSlug: "g", GoalTitle: "G", Seq: 1, Title: "T", Repo: "o/r", Branch: "b", BaseRef: "main", Services: line})
@@ -682,5 +684,35 @@ func TestBuildPromptNotesToFoldIn(t *testing.T) {
 	}
 	if strings.Index(p, "## Brief") > strings.Index(p, "## Notes to fold in") {
 		t.Fatal("the notes come after the brief")
+	}
+}
+
+// The evaluator and the planner end by calling mesh_verdict and
+// mesh_plan, their final-message contracts kept as the fallback the node
+// parses when no call was made (ADR-023).
+func TestPromptsFinishByToolCall(t *testing.T) {
+	eval := EvaluatePrompt(EvaluateInput{ItemID: "item-7", GoalSlug: "g", GoalTitle: "G", Seq: 1, Title: "T", Repo: "o/r", Branch: "b", BaseRef: "main"})
+	for _, want := range []string{
+		"`mesh_verdict(item_id=\"item-7\", passed=<true or false>, notes=<your review>, failed_clauses=[{\"clause\":",
+		"readings=[{\"clause\": <a host clause>, \"reading\":",
+		"`" + VerdictPass + "` or `" + VerdictFail + "`",
+		ClauseFailed, ClauseReading,
+	} {
+		if !strings.Contains(eval, want) {
+			t.Errorf("evaluate prompt lacks %q", want)
+		}
+	}
+	plan := PlanPrompt(PlanInput{GoalID: "goal-3", GoalSlug: "g", GoalTitle: "G", Org: "o", Project: "p"})
+	for _, want := range []string{
+		"`mesh_plan(goal_id=\"goal-3\", items=<the graph's items>, questions=<its questions>)`",
+		"End your final message with the graph as a JSON object in a ```json fenced block",
+		"Write the ```json fenced block in your final message as well",
+	} {
+		if !strings.Contains(plan, want) {
+			t.Errorf("plan prompt lacks %q", want)
+		}
+	}
+	if p := PlanPrompt(PlanInput{GoalSlug: "g"}); !strings.Contains(p, "mesh_plan(goal_id=\"<the id of goal g>\"") {
+		t.Error("a plan prompt with no goal id does not name the goal by its slug")
 	}
 }
