@@ -73,7 +73,7 @@ func TestProbeSessionE2E(t *testing.T) {
 	t.Setenv("MESH_DECOY", "decoy")
 	t.Setenv("GH_TOKEN", "ghp_operator")
 	sb := &Sandbox{Runtime: rt, Config: Config{Image: image, Limits: Limits{CPUs: 1, Memory: "1g", Pids: 512}, Network: DefaultNetwork()}}
-	sess, err := sb.Open("e2e/1", "build")
+	sess, err := sb.Open("e2e/1", "build", GitIdentity{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +183,7 @@ func TestServicesSidecarsE2E(t *testing.T) {
 	label := fmt.Sprintf("e2e-services/%d", time.Now().UnixNano())
 	sb := &Sandbox{Runtime: rt, Config: Config{Image: image, Limits: Limits{CPUs: 1, Memory: "1g", Pids: 512},
 		ServicesLimits: Limits{CPUs: 2, Memory: "2g"}, Network: DefaultNetwork()}}
-	sess, err := sb.Open(label, "build")
+	sess, err := sb.Open(label, "build", GitIdentity{})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -19,14 +20,13 @@ func testSandbox(t *testing.T, rt Runtime) *Sandbox {
 		Image:   "ghcr.io/runsheet/mesh-node:v1",
 		Limits:  Limits{CPUs: DefaultCPUs, Memory: DefaultMemory, Pids: DefaultPids},
 		Network: DefaultNetwork(),
-		GitName: "Op", GitEmail: "op@example.com",
 	}}
 }
 
 func runOnce(t *testing.T, f *Fake, env []string) (*Session, AgentSpec, string) {
 	t.Helper()
 	sb := testSandbox(t, f)
-	sess, err := sb.Open("ship-it/2", "build")
+	sess, err := sb.Open("ship-it/2", "build", GitIdentity{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,7 +234,7 @@ func TestSessionCleansUp(t *testing.T) {
 		}
 	}
 	gc, _ := os.ReadFile(filepath.Join(sess.Home, ".gitconfig"))
-	if !strings.Contains(string(gc), "email = op@example.com") {
+	if strings.Contains(string(gc), "[user]") || !strings.Contains(string(gc), "directory = *") {
 		t.Fatalf(".gitconfig = %s", gc)
 	}
 	if err := sess.Close(); err != nil {
@@ -289,7 +289,7 @@ func TestRunReturnsALimitKill(t *testing.T) {
 		return Exit{Code: 137, OOMKilled: true}, nil
 	}}
 	sb := testSandbox(t, f)
-	sess, _ := sb.Open("x/1", "build")
+	sess, _ := sb.Open("x/1", "build", GitIdentity{})
 	defer sess.Close()
 	err := sess.Run(context.Background(), RunSpec{Workspace: t.TempDir(), Stdout: io.Discard, Timeout: time.Hour})
 	var le *LimitError
@@ -318,5 +318,45 @@ func TestRegistryAllowed(t *testing.T) {
 		if got := RegistryAllowed(Registry(image), DefaultRegistries); got != want {
 			t.Errorf("%s: %v, want %v", image, got, want)
 		}
+	}
+}
+
+// Open writes the agent identity it is given into the session's
+// .gitconfig — never the operator's — and mounts the checkout's hooks
+// directory read-only at its own path (ADR-024).
+func TestOpenWritesTheAgentIdentity(t *testing.T) {
+	f := &Fake{}
+	sb := testSandbox(t, f)
+	hooks := t.TempDir()
+	sess, err := sb.Open("ship-it/2", "build", GitIdentity{Name: "Mesh builder (mini)", Email: "mesh-builder+mini@runsheet.dev", HooksDir: hooks})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	gc, err := os.ReadFile(filepath.Join(sess.Home, ".gitconfig"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "[user]\n\tname = \"Mesh builder (mini)\"\n\temail = \"mesh-builder+mini@runsheet.dev\"\n[safe]\n\tdirectory = *\n"
+	if string(gc) != want {
+		t.Fatalf(".gitconfig = %q, want %q", gc, want)
+	}
+	cmd := exec.Command("git", "config", "--file", filepath.Join(sess.Home, ".gitconfig"), "user.name")
+	if out, err := cmd.Output(); err != nil || strings.TrimSpace(string(out)) != "Mesh builder (mini)" {
+		t.Fatalf("git reads user.name %q: %v", out, err)
+	}
+	ws := t.TempDir()
+	if err := sess.Run(context.Background(), RunSpec{Workspace: ws, Command: []string{"claude", "-p"}, Stdin: strings.NewReader("prompt")}); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(f.Agents[0].Mounts, Mount{Source: hooks, Target: hooks, ReadOnly: true}) {
+		t.Fatalf("mounts = %+v, want the hooks %s read-only", f.Agents[0].Mounts, hooks)
+	}
+}
+
+func TestGitIdentityFromEnv(t *testing.T) {
+	got := GitIdentityFromEnv([]string{"GH_TOKEN=x", "GIT_AUTHOR_NAME=Mesh rebase (mini)", "GIT_AUTHOR_EMAIL=mesh-rebase+mini@runsheet.dev"})
+	if got != (GitIdentity{Name: "Mesh rebase (mini)", Email: "mesh-rebase+mini@runsheet.dev"}) {
+		t.Fatalf("got %+v", got)
 	}
 }

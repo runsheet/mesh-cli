@@ -40,7 +40,7 @@ func TestSplitLimits(t *testing.T) {
 func TestStartRefusedRequiredMakesNoPod(t *testing.T) {
 	rt := &Fake{}
 	sb := &Sandbox{Runtime: rt, TempDir: t.TempDir()}
-	sess, err := sb.Open("g/1", "build")
+	sess, err := sb.Open("g/1", "build", GitIdentity{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +88,7 @@ func TestStartWaitsForHealth(t *testing.T) {
 		return errors.New("connection refused")
 	}
 	sb := &Sandbox{Runtime: rt, TempDir: t.TempDir(), Config: Config{Image: "node-image"}}
-	sess, err := sb.Open("g/1", "build")
+	sess, err := sb.Open("g/1", "build", GitIdentity{})
 	if err != nil {
 		t.Fatal(err)
 	}

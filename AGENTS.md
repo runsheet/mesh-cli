@@ -799,6 +799,17 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   Postgres and MySQL/MariaDB, and a disallowed registry returned
   `Refused` with a note. Pure parsing; the fixtures are under
   `internal/sandbox/testdata/` (their `.mesh/` needs `git add -f`).
+- **A session commits as its agent** (`internal/node/identity.go`,
+  docs/adr/adr-024): `AgentIdentity(role, slug)` is `Mesh <role>
+  (<slug>) <mesh-<role>+<slug>@runsheet.dev>`; the Runner and the
+  Rebaser call `Workspacer.Identify` after `Prepare` — `git config
+  --local user.name/user.email`, `core.hooksPath` to `<workdir>.hooks`
+  whose `prepare-commit-msg` adds one `Co-Authored-By` per `Pairers`
+  (node.yaml `pair: [{name, email}]` until the platform serves a paired
+  field) with `git interpret-trailers --if-exists addIfDifferent` — and
+  put `GIT_AUTHOR_*`/`GIT_COMMITTER_*` on `Job.Env`; the sandbox's
+  `.gitconfig` is the same agent (`Sandbox.Open`'s `GitIdentity`, the
+  hooks mounted read-only), never the operator's. Evaluations get none.
 - **Session units** (`internal/sessionunit/`, mesh-specs ADR 008,
   `docs/adr/adr-008-sessions-in-their-own-unit.md`): a host `claude -p`
   is not the node's child. `ClaudeCode.Run` starts it through a `Unit`
@@ -992,7 +1003,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   events after its deploy).
 - Tests that render the context index or the prompts assert exact rows
   and lines; update them with the change, not around it.
-- Commits carry no Co-Authored-By trailer in this repo.
+- A commit's only Co-Authored-By trailer is the paired person the node
+  sets; a session adds none of its own.
 - **Release path** (adr-002, amendment `node-releases-on-merge`): a
   merge to main touching `cmd/`, `internal/`, `images/node/`, `go.mod`
   or `go.sum` is tagged by `release-on-merge.yml`

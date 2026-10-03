@@ -99,6 +99,8 @@ type fakeWS struct {
 	repoOps    []string
 	// fetchErr, when set, is what every Fetch answers
 	fetchErr error
+	// identified are Identify's identities, in order
+	identified []Identity
 }
 
 func (w *fakeWS) Authorize(_ context.Context, spec WorkspaceSpec, tok *gateway.GitHubToken) error {
@@ -107,6 +109,15 @@ func (w *fakeWS) Authorize(_ context.Context, spec WorkspaceSpec, tok *gateway.G
 	w.events = append(w.events, "authorize "+tok.Token)
 	w.authorized = append(w.authorized, spec.Repo+" "+tok.Token+" "+spec.Dir())
 	w.repoOps = append(w.repoOps, "authorize "+spec.Repo+" "+tok.Token)
+	return nil
+}
+
+// Identify records the identity; events stay as they were, the
+// identity is gitWS's to make real.
+func (w *fakeWS) Identify(_ context.Context, dir string, id Identity) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.identified = append(w.identified, id)
 	return nil
 }
 

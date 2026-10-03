@@ -26,12 +26,13 @@ type SessionPod struct {
 // services, as before. A services.yml that cannot be read is a required
 // service that failed. The error is the sandbox itself failing (the
 // HOME, the pod) or ctx ending; the pod, when there is one, is still
-// closed by the caller.
-func OpenSessionPod(ctx context.Context, sb *sandbox.Sandbox, dir, label string, kind harness.Kind, logf func(string, ...any)) (*SessionPod, error) {
+// closed by the caller. git is the session's commit identity (ADR-024),
+// empty for an evaluation's read-only checkout.
+func OpenSessionPod(ctx context.Context, sb *sandbox.Sandbox, dir, label string, kind harness.Kind, git sandbox.GitIdentity, logf func(string, ...any)) (*SessionPod, error) {
 	if sb == nil {
 		return nil, nil
 	}
-	sess, err := sb.Open(label, string(kind))
+	sess, err := sb.Open(label, string(kind), git)
 	if err != nil {
 		return nil, err
 	}

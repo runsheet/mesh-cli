@@ -120,7 +120,11 @@ func (vr validator) start(ctx context.Context, t validationTarget) (*buildValida
 	sess := t.pod
 	if sess == nil {
 		// an adopted session's pod ended with the node before it
-		s, err := vr.Sandbox.Open(t.label, "validate")
+		var git sandbox.GitIdentity
+		if t.job != nil {
+			git = sandbox.GitIdentityFromEnv(t.job.Env)
+		}
+		s, err := vr.Sandbox.Open(t.label, "validate", git)
 		if err != nil {
 			return nil, err
 		}
