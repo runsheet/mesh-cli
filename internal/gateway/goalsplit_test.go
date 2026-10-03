@@ -2,6 +2,7 @@ package gateway_test
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
@@ -25,6 +26,35 @@ func TestItemCapDefaultsToEight(t *testing.T) {
 func TestItemCapHonoursTheProjectsOwn(t *testing.T) {
 	if got := (gateway.Project{MaxItems: 5}).ItemCap(); got != 5 {
 		t.Fatalf("ItemCap() = %d, want 5", got)
+	}
+}
+
+// Project.MaxItems decodes a served `maxItems` by its json tag. This is
+// the decode path alone: the live gateway does not yet serve
+// ProjectIndex.maxItems (see client.go's comment on Project.MaxItems
+// and ADR-023's amendment), so fields/ProjectIndex.txt has no
+// `maxItems?` yet and the Client's own project query never asks for
+// it — once it does, this is the shape the answer arrives in.
+func TestProjectMaxItemsDecodesAServedValue(t *testing.T) {
+	var p gateway.Project
+	if err := json.Unmarshal([]byte(`{"maxItems": 5}`), &p); err != nil {
+		t.Fatal(err)
+	}
+	if p.MaxItems != 5 {
+		t.Fatalf("MaxItems = %d, want 5", p.MaxItems)
+	}
+	if got := p.ItemCap(); got != 5 {
+		t.Fatalf("ItemCap() = %d, want 5", got)
+	}
+
+	// An older platform (no maxItems in the response) decodes to the
+	// zero value, and ItemCap falls back to DefaultMaxItems.
+	var p2 gateway.Project
+	if err := json.Unmarshal([]byte(`{"id": "p1"}`), &p2); err != nil {
+		t.Fatal(err)
+	}
+	if got := p2.ItemCap(); got != gateway.DefaultMaxItems {
+		t.Fatalf("ItemCap() = %d, want DefaultMaxItems", got)
 	}
 }
 
