@@ -23,7 +23,7 @@ type Owned struct {
 // (Register) is read without a gateway.
 type Registrar struct {
 	// TakesOwner is the probe: whether the platform's RegisterNodeInput
-	// has `owner` (gateway.Client.TakesOwner).
+	// has an owner field, `ownerKind` or `owner` (gateway.Client.TakesOwner).
 	TakesOwner func(ctx context.Context) bool
 	// Resolve lists the orgs of the token's person, restricted by
 	// node.yaml's orgs (ResolveScopes). Only the per-org path reads it.

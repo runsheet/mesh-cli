@@ -130,8 +130,8 @@ type Client struct {
 	// commitSchema is whether the gateway's heartbeat input was last
 	// found to take `commit` (see takesCommit).
 	commitSchema commitProbe
-	// ownerSchema is whether the gateway's RegisterNodeInput was last
-	// found to take `owner` (see TakesOwner).
+	// ownerSchema is which owner field the gateway's RegisterNodeInput
+	// was last found to have (see OwnerField).
 	ownerSchema ownerProbe
 	// toolErrorSchema is whether the gateway's usage report's `tools`
 	// entry was last found to take `error` (see takesToolError).
@@ -695,6 +695,42 @@ func (c *Client) MyOrgs(ctx context.Context) ([]Org, error) {
 		}
 	}
 	return orgs, nil
+}
+
+// Enterprise is one enterprise the person administers (myEnterprises).
+type Enterprise struct {
+	ID          string `json:"id"`
+	Slug        string `json:"slug"`
+	DisplayName string `json:"displayName"`
+	TenantSlug  string `json:"tenantSlug"`
+	Status      string `json:"status"`
+}
+
+// MyEnterprises lists the enterprises the person administers.
+// myEnterprises is a Map scalar (schema.json), so it takes no
+// selection: decoded as MyOrgs decodes myOrgs.
+func (c *Client) MyEnterprises(ctx context.Context) ([]Enterprise, error) {
+	var out struct {
+		MyEnterprises json.RawMessage `json:"myEnterprises"`
+	}
+	if err := c.Query(ctx, `{ myEnterprises }`, nil, &out); err != nil {
+		return nil, err
+	}
+	var es []Enterprise
+	if len(out.MyEnterprises) == 0 || string(out.MyEnterprises) == "null" {
+		return nil, nil
+	}
+	// The Map scalar arrives as a JSON array, or as a string holding one.
+	if err := json.Unmarshal(out.MyEnterprises, &es); err != nil {
+		var s string
+		if err2 := json.Unmarshal(out.MyEnterprises, &s); err2 != nil {
+			return nil, fmt.Errorf("gateway: decode myEnterprises: %w", err)
+		}
+		if err := json.Unmarshal([]byte(s), &es); err != nil {
+			return nil, fmt.Errorf("gateway: decode myEnterprises: %w", err)
+		}
+	}
+	return es, nil
 }
 
 // OrgByLogin finds one of the person's orgs by its GitHub login.
@@ -1485,8 +1521,15 @@ type RegisterNodeInput struct {
 	// (mesh-specs, goal the-node-serves-its-owners-orgs): a person's
 	// node serves every org they are in, an enterprise's every org the
 	// enterprise has. Sent only when set and the platform's
-	// RegisterNodeInput takes it (TakesOwner), so an older platform's
-	// registerNode still accepts today's per-org call.
+	// RegisterNodeInput takes it (TakesOwner), under the field its
+	// schema has (OwnerField: `ownerKind`, or `owner` on a platform
+	// before registernode-answers-with-the-node-it-made), so an older
+	// platform's registerNode still accepts today's per-org call.
+	//
+	// The owner contract requires OwnerID to be the owner's id: the
+	// person's for a person, the enterprise's for an enterprise (the
+	// platform checks adminOnEnterprise(ownerId)). The node resolves an
+	// enterprise's id from node.yaml's `enterprise:` (MyEnterprises).
 	Owner string
 }
 
@@ -1596,32 +1639,43 @@ func (c *Client) RegisterNode(ctx context.Context, in RegisterNodeInput) (*NodeA
 		"orgId": in.OrgID, "ownerId": in.OwnerID, "name": in.Name, "slug": in.Slug,
 		"harnesses": harnesses, "capacity": in.Capacity, "version": in.Version,
 	}
-	if in.Owner != "" && c.TakesOwner(ctx) {
-		input["owner"] = in.Owner
+	if in.Owner != "" {
+		if field := c.OwnerField(ctx); field != "" {
+			input[field] = in.Owner
+		}
 	}
 	return c.mutateForAnswer(ctx, "registerNode", in.NodeID, input)
 }
 
-// ownerProbe is the cached answer to whether RegisterNodeInput has an
-// `owner` field, and when it was asked.
+// ownerProbe is the cached answer to which owner field
+// RegisterNodeInput has, and when it was asked.
 type ownerProbe struct {
 	mu    sync.Mutex
 	at    time.Time
-	takes bool
+	field string
 }
 
-// TakesOwner says whether the gateway's RegisterNodeInput has an
-// `owner` field — asked by introspection and kept for
-// ScalingProbeEvery, the same as takesScaling: an older platform's
-// registerNode would refuse the whole call on an input field it does
-// not know. A failed probe is a no, kept as long.
+// TakesOwner says whether the gateway's RegisterNodeInput has an owner
+// field under either spelling (OwnerField).
 func (c *Client) TakesOwner(ctx context.Context) bool {
+	return c.OwnerField(ctx) != ""
+}
+
+// OwnerField is the name the gateway's RegisterNodeInput gives the
+// node's owner kind: "ownerKind" (the platform's, runsheet goal
+// registernode-answers-with-the-node-it-made), "owner" (a platform
+// before it), or "" for a platform with neither — asked by
+// introspection and kept for ScalingProbeEvery, the same as
+// takesScaling: an older platform's registerNode would refuse the
+// whole call on an input field it does not know. A failed probe is
+// "", kept as long. Where both are present ownerKind wins.
+func (c *Client) OwnerField(ctx context.Context) string {
 	p := &c.ownerSchema
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := c.now()
 	if !p.at.IsZero() && now.Sub(p.at) < ScalingProbeEvery {
-		return p.takes
+		return p.field
 	}
 	var out struct {
 		Type *struct {
@@ -1630,17 +1684,27 @@ func (c *Client) TakesOwner(ctx context.Context) bool {
 			} `json:"inputFields"`
 		} `json:"__type"`
 	}
-	p.at, p.takes = now, false
+	p.at, p.field = now, ""
 	q := `{ __type(name: "RegisterNodeInput") { inputFields { name } } }`
 	if err := c.Query(ctx, q, nil, &out); err != nil || out.Type == nil {
-		return false
+		return ""
 	}
 	for _, f := range out.Type.InputFields {
-		if f.Name == "owner" {
-			p.takes = true
+		switch {
+		case f.Name == "ownerKind":
+			p.field = "ownerKind"
+		case f.Name == "owner" && p.field == "":
+			p.field = "owner"
 		}
 	}
-	return p.takes
+	return p.field
+}
+
+// RetireNode retires a node row (retireNode): the platform marks it
+// retired and stops listing it as live. The node retires its own
+// legacy per-org rows with it once it registers on the owner path.
+func (c *Client) RetireNode(ctx context.Context, nodeID string) error {
+	return c.Mutate(ctx, "retireNode", nodeID, map[string]any{})
 }
 
 // HeartbeatExtras are what a heartbeat reports beyond liveness. Each is
