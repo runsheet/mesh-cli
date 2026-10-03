@@ -1,0 +1,59 @@
+{
+  "description": "The hosted work tools `mesh mcp` calls on the platform's /mcp (tools/call over JSON-RPC, Bearer the person's own token) when its tools/list names all five: mesh_claim, mesh_progress, mesh_ask, mesh_finish and mesh_release (mesh-cli ADR-023, Hosted path). Each entry is one tool: its name, the arguments mesh-cli sends — exactly these keys, no others — and an example of the text answer it relays to Claude Code. A refusal is the tool's result with isError true and the reason as its text; mesh-cli answers `<tool> refused: <text>` (`claim refused: <text>` for mesh_claim, `pair refused: <text>` for a pair's). mesh_claim names the item by its goal's slug and seq, the others by the item's id. node is the personal node the person registered on this machine (one person may have several), which the platform checks the bearer owns. pair is true when the item is held by another node and the person joins its branch as a second pair of hands: the platform records the pair and claims nothing. The runsheet goal mesh-work-tools-on-the-hosted-mcp-server builds against this file. internal/meshmcp/hosted_test.go asserts the client sends these keys.",
+  "tools": [
+    {
+      "name": "mesh_claim",
+      "arguments": {
+        "goal": "ship-it",
+        "item": 1,
+        "pair": false,
+        "node": "22222222-2222-4222-8222-222222222222"
+      },
+      "answer": "claimed ship-it/1 for node 22222222-2222-4222-8222-222222222222"
+    },
+    {
+      "name": "mesh_progress",
+      "arguments": {
+        "item": "eeeeeeee-1111-4111-8111-eeeeeeeeeeee",
+        "note": "the failing test is written"
+      },
+      "answer": "noted"
+    },
+    {
+      "name": "mesh_ask",
+      "arguments": {
+        "item": "eeeeeeee-1111-4111-8111-eeeeeeeeeeee",
+        "question": "Should the test live in api/ or api/internal/?"
+      },
+      "answer": "asked; the answer comes back on the item"
+    },
+    {
+      "name": "mesh_finish",
+      "arguments": {
+        "item": "eeeeeeee-1111-4111-8111-eeeeeeeeeeee",
+        "branch": "mesh/ship-it-1",
+        "headSha": "3f2a9c41d0b7e65a8f1c2d3e4b5a69788c7d6e5f"
+      },
+      "answer": "finished: the item is evaluating",
+      "alternatives": [
+        {
+          "outcome": "already_done",
+          "arguments": {
+            "item": "eeeeeeee-1111-4111-8111-eeeeeeeeeeee",
+            "outcome": "already_done",
+            "evidence": "https://github.com/acme/widgets/pull/12 merged the test"
+          },
+          "answer": "finished: the item is evaluating"
+        }
+      ]
+    },
+    {
+      "name": "mesh_release",
+      "arguments": {
+        "item": "eeeeeeee-1111-4111-8111-eeeeeeeeeeee",
+        "reason": "blocked on the schema change"
+      },
+      "answer": "released"
+    }
+  ]
+}

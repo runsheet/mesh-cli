@@ -146,7 +146,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   its branch with no claim, `paired` in the state, and a push git
   refuses because the branch moved (`node.PushRefusedError`) is
   `push refused: …; run git pull --rebase in <path> and finish again`,
-  the item still held — ADR-023 Pairing), served by
+  the item still held — ADR-023 Pairing; the hosted work tools when
+  `/mcp` serves them, `hosted.go`, ADR-023 Hosted path), served by
   `internal/commands/mcpcmd.go` on `platformClient` (ADR-023, mesh mcp).
   `skills/mesh/SKILL.md` is the `/mesh` skill Claude Code runs against
   these tools, embedded (`internal/meshmcp/skill.go`'s `Skill()`, by way
@@ -939,6 +940,13 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   does not know the mutation the node falls back to the operator's own
   `gh`/`git` credentials and logs that once per run (`TokenFallback`) —
   the rollout is not a flag day; a refused token fails the item instead.
+  `mesh mcp`'s work tools have a second fallback of the same shape: they
+  call the platform's hosted `mesh_claim`, `mesh_progress`, `mesh_ask`,
+  `mesh_finish` and `mesh_release` on `/mcp` when its `tools/list`
+  names all five (`meshmcp.Hosted`, re-probed hourly; the arguments in
+  `specs/contracts/hostedworktools.json`), else today's mutations, said
+  once per run on stderr, `the platform serves no hosted work tools;
+  using claimWorkItem` (`HostedFallbackLine`; ADR-023, Hosted path).
   The planner's project-wide fetch runs on the goal's own tokens
   (`PlanGitHubTokens`, adr-022): each repo's plan checkout
   `Authorize`d on its row (`PlanRepoSpec`) before `Fetch`, so `git

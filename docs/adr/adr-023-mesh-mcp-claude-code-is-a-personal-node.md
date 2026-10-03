@@ -62,8 +62,8 @@ Amended 2026-10-03 (item 3). `mesh_join(goal, item?)`
 (`internal/meshmcp/join.go`, `Join`) resolves the goal by slug among
 the orgs `myOrgs` names and the item by seq — the goal's first `ready`
 item, lowest seq, when none is given — and claims it with
-`claimWorkItem(itemId, <personal node>, "claude-code")`, the node's
-path until the hosted `mesh_claim` (item 6). A refused claim is the
+`claimWorkItem(itemId, <personal node>, "claude-code")`, or the hosted
+`mesh_claim` when the platform serves it (Hosted path, below). A refused claim is the
 tool's answer, `claim refused: <reason>`, not a transport error. Then
 it does what channel mode's `readyChannelItem` does:
 
@@ -111,7 +111,7 @@ because the branch moved on origin, which is answered `push refused:`
 | `mesh_join(goal, item?, pair?)` | claims and prepares the checkout (above); `pair` joins a held item's branch with no claim (Pairing) | `claimWorkItem`, `issueItemRepoToken`, the context reads |
 | `mesh_status()` | each held item's goal, seq, path, branch, base, `uncommitted` (`git status --porcelain` non-empty) and `commitsPastBase` (`git rev-list --count origin/<base>..HEAD`) | none: the state file and the checkouts |
 | `mesh_progress(item?, note, costCents?)` | a progress note on the item | `reportWorkItemProgress` |
-| `mesh_ask(item?, question)` | the question as a progress note opening `question: `, until the hosted `mesh_ask` exists (item 6) | `reportWorkItemProgress` |
+| `mesh_ask(item?, question)` | the question as a progress note opening `question: ` when the platform serves no hosted `mesh_ask` (Hosted path) | `reportWorkItemProgress` |
 | `mesh_finish(item?, outcome?, evidence?)` | pushes the branch as committed (`node.Git.Push`, `-u --force-with-lease`), reads its head and finishes the item, then drops it from the state; `outcome: already_done` pushes nothing and sends the evidence | `finishWorkItem(itemId, branch, head, 0)`, or `finishWorkItem` with `outcome: already_done` |
 | `mesh_release(item?, reason)` | gives the item back and drops it | `releaseWorkItem(itemId, nodeId, reason)` |
 | `mesh_switch(goal, item?, note?, from?)` | leaves the held item (`from`, defaulted as `item` is): pushes its branch when it has commits past base, reports the note (default `switching to <goal>[/<seq>]`), releases it with reason `switched`, then joins the target — never the item it just left — and answers the join | `reportWorkItemProgress`, `releaseWorkItem`, then mesh_join's |
@@ -166,6 +166,44 @@ one `gatewaytest.New` and bare origin: the pair's join sends no claim
 refused with origin unchanged, and the finish after `git pull --rebase`
 is sent; `internal/node`'s `TestPushRefusedWhenTheRemoteMoved` checks
 the typed error.
+
+## Hosted path
+
+Amended 2026-10-03 (item 6). The platform's `/mcp` — the URL
+`node.MeshContextMCP` builds, Bearer the person's own token — is to
+serve the work tools itself (runsheet goal
+`mesh-work-tools-on-the-hosted-mcp-server`). `internal/meshmcp/hosted.go`
+(`Hosted`) is an HTTP MCP client to it: `initialize`, then `tools/list`,
+and whether all five of `mesh_claim`, `mesh_progress`, `mesh_ask`,
+`mesh_finish` and `mesh_release` are named (`Hosted.Serves`). `mesh mcp`
+asks at its start and a work tool asks again once the answer is an hour
+old (`HostedProbeEvery`); a probe that fails is a no.
+
+- **Served.** mesh_join's claim is `mesh_claim {goal, item, pair,
+  node}` — the goal's slug, the item's seq, whether this join pairs with
+  the item's holder (the platform records the pair and claims nothing),
+  and the personal node, which the platform checks the bearer owns,
+  since one person may run several. `mesh_progress {item, note}`,
+  `mesh_ask {item, question}`, `mesh_finish {item, branch, headSha}`
+  (after the push, as before; `{item, outcome: "already_done",
+  evidence}` with no push), and `mesh_release {item, reason}` — mesh_switch's
+  note and release too — name the item by its id and relay the tool's
+  text as the answer (a finish's prefixed `pushed <branch> at <sha>; `).
+  A result with `isError` is the refusal: `<tool> refused: <text>`,
+  `claim refused: <text>`, or `pair refused: <text>` for a pair's.
+  `specs/contracts/hostedworktools.json` records each tool's arguments
+  and an example answer for the platform to build against;
+  `hosted_test.go` holds the client to its keys.
+- **Not served.** The GraphQL mutations of the sections above stay, and
+  one line, `mesh mcp: the platform serves no hosted work tools; using
+  claimWorkItem`, goes to stderr once per run (`HostedFallbackLine`) —
+  the second fallback beside the item token's `TokenFallback`, so the
+  rollout is not a flag day either.
+
+`gatewaytest.Fake` serves `/mcp` (`mcp.go`): the context tools always,
+and with `HostedWorkTools` the five, each applied as its mutation is
+(`mesh_claim` → `claimWorkItem`, `mesh_ask` → a `question: ` progress
+note) and recorded under its own name, never the mutation's.
 
 ## Skill
 

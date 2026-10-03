@@ -46,6 +46,10 @@ type Join struct {
 	Cwd string
 	// Fallback says once that the platform issues no item token.
 	Fallback *node.TokenFallback
+	// Hosted is the platform's /mcp: its mesh_claim and work tools when
+	// it serves them, else the mutations, said once (ADR-023, Hosted
+	// path). Nil is the mutations, nothing said.
+	Hosted *Hosted
 	// Logf is where the plumbing's lines go (never stdout).
 	Logf func(string, ...any)
 }
@@ -319,13 +323,8 @@ func (j *Join) run(ctx context.Context, slug string, seq int, exclude string, pa
 		return nil, fmt.Errorf("personal node: %w", err)
 	}
 	paired := pair && heldByOther(*item, nodeID)
-	if paired {
-		j.logf("item %s: pairing with node %s on its branch; no claim", item.ID, item.NodeID)
-	} else if err := j.GW.ClaimWorkItem(ctx, item.ID, nodeID, JoinHarness); err != nil {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		return nil, &ClaimRefused{Reason: err.Error()}
+	if err := j.claim(ctx, goal.Slug, *item, nodeID, paired); err != nil {
+		return nil, err
 	}
 	ans, err := j.prepare(ctx, *item, nodeID, orgName, paired)
 	if err != nil {
@@ -335,12 +334,46 @@ func (j *Join) run(ctx context.Context, slug string, seq int, exclude string, pa
 		}
 		// the claim is given back: a workspace that could not be made
 		// leaves nothing for the person to work in
-		if rerr := j.GW.ReleaseWorkItem(ctx, item.ID, nodeID, "mesh_join: "+err.Error()); rerr != nil {
+		if _, rerr := j.release(ctx, item.ID, nodeID, "mesh_join: "+err.Error()); rerr != nil {
 			j.logf("item %s: release: %v", item.ID, rerr)
 		}
 		return nil, err
 	}
 	return ans, nil
+}
+
+// claim claims the item for nodeID: hosted mesh_claim when the
+// platform serves it — a pair's join too, pair true, so the platform
+// records the pair — else claimWorkItem, and a pair's join nothing.
+func (j *Join) claim(ctx context.Context, slug string, item gateway.WorkItem, nodeID string, paired bool) error {
+	if paired {
+		j.logf("item %s: pairing with node %s on its branch; no claim of ours", item.ID, item.NodeID)
+	}
+	if j.Hosted.Use(ctx) {
+		_, err := j.Hosted.Call(ctx, "mesh_claim", ClaimArgs(slug, item.Seq, paired, nodeID))
+		var he *HostedError
+		switch {
+		case err == nil:
+			return nil
+		case ctx.Err() != nil:
+			return ctx.Err()
+		case errors.As(err, &he) && paired:
+			return &PairRefused{Reason: he.Text}
+		case errors.As(err, &he):
+			return &ClaimRefused{Reason: he.Text}
+		}
+		return fmt.Errorf("mesh_claim: %w", err)
+	}
+	if paired {
+		return nil
+	}
+	if err := j.GW.ClaimWorkItem(ctx, item.ID, nodeID, JoinHarness); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return &ClaimRefused{Reason: err.Error()}
+	}
+	return nil
 }
 
 func (j *Join) prepare(ctx context.Context, item gateway.WorkItem, nodeID, orgName string, paired bool) (*JoinAnswer, error) {

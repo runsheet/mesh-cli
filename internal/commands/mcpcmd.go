@@ -37,9 +37,13 @@ var mcpCmd = &cobra.Command{
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		logf := func(format string, a ...any) { fmt.Fprintf(os.Stderr, "mesh mcp: "+format+"\n", a...) }
+		// the platform's /mcp is asked for its work tools at the start, and
+		// again hourly as the tools are used (ADR-023, Hosted path)
+		hosted := meshmcp.NewHosted(gw)
+		go hosted.Serves(ctx)
 		p := &meshmcp.Personal{GW: gw, Join: &meshmcp.Join{
 			GW: gw, WS: &node.Git{Log: os.Stderr}, NodeID: mcpNodeID,
-			Fallback: &node.TokenFallback{}, Logf: logf,
+			Fallback: &node.TokenFallback{}, Hosted: hosted, Logf: logf,
 		}}
 		return p.Server().Serve(ctx, os.Stdin, os.Stdout)
 	},
