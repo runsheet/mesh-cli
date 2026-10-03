@@ -64,6 +64,9 @@ func seed(t *testing.T) *gatewaytest.Fake {
 	// plans fetch on the operator's gh unless a test serves the goal's
 	// plan tokens (plan_token_test.go, adr-022)
 	f.Unsupported["planGitHubToken"] = true
+	// and research the same, unless a test serves the direction's
+	// research tokens (research_token_test.go, adr-022)
+	f.Unsupported["researchGitHubToken"] = true
 	t.Cleanup(f.Close)
 	return f
 }

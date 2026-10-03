@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -60,6 +62,10 @@ type Director struct {
 	// noPitches says once per Director that the platform takes no
 	// pitches (gateway.ErrNoPitches), however many sessions hand in.
 	noPitches sync.Once
+	// fallback says once per Director that the platform issues no
+	// research tokens (adr-022): the director's own, apart from the
+	// items' and the planner's.
+	fallback TokenFallback
 }
 
 func (d *Director) logf(format string, args ...any) {
@@ -123,15 +129,34 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 		return fmt.Errorf("repos: %w", err)
 	}
 	dir := ResearchDir(d.WorkRoot, project.Slug, direction.Slug)
-	dirs := map[string]string{}
-	var names []string
+	byName := map[string]gateway.Repo{}
+	names := make([]string, 0, len(all))
 	for _, r := range all {
-		sub := filepath.Join("repos", r.Name)
-		if err := d.WS.Fetch(ctx, r.FullName(), filepath.Join(dir, sub)); err != nil {
-			return fmt.Errorf("fetch %s: %w", r.FullName(), err)
-		}
-		dirs[r.FullName()] = sub
+		byName[r.FullName()] = r
 		names = append(names, r.FullName())
+	}
+	sort.Strings(names)
+	// the direction's own GitHub tokens, one per repo, before anything
+	// fetches: each checkout reaches its repo on its own row, never the
+	// operator's gh (adr-022); nil on an old platform, which fetches on
+	// the operator's gh as before
+	toks, err := d.researchTokens(ctx, direction, project, scope.NodeID, names)
+	if err != nil {
+		return err
+	}
+	dirs := map[string]string{}
+	for _, name := range names {
+		sub := filepath.Join("repos", byName[name].Name)
+		path := filepath.Join(dir, sub)
+		if toks != nil {
+			if err := d.WS.Authorize(ctx, ResearchRepoSpec(name, path), toks[name]); err != nil {
+				return fmt.Errorf("authorize %s: %w", name, err)
+			}
+		}
+		if err := d.WS.Fetch(ctx, name, path); err != nil {
+			return fmt.Errorf("fetch %s: %w", name, err)
+		}
+		dirs[name] = sub
 	}
 	cx, err := FetchContext(ctx, d.GW, scope.Name(), project.Slug, ContextOptions{Budget: d.contextBudget(), Repos: names, Checkouts: checkoutsUnder(dir, dirs), Logf: d.logf})
 	if err != nil {
@@ -178,6 +203,18 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 		Kind: harness.KindResearch, Workspace: dir, Prompt: prompt, MaxBudgetUSD: budget,
 		Label: project.Slug + "/" + direction.Slug + " research", Timeout: d.Timeout, MCPServers: d.MCP, Model: d.Model,
 	}
+	if toks != nil {
+		// gh in the session runs on the first sorted repo's token and a
+		// config dir of its own, never the operator's login (adr-022)
+		ghDir, err := NewGHConfigDir()
+		if err != nil {
+			return fmt.Errorf("gh config dir: %w", err)
+		}
+		// a session left running for the next node keeps it: the node
+		// that ends it removes it (TempDirs)
+		defer unlessDetached(ctx, func() { os.RemoveAll(ghDir) })
+		job.Env = SessionEnv(toks[names[0]], ghDir)
+	}
 	acct.SetContextBytes(written.Bytes)
 	acct.Apply(&job)
 	job.Meta = harness.SessionMeta{NodeID: scope.NodeID, DirectionID: direction.ID, TempDirs: sessionTempDirs(job, acct)}
@@ -189,6 +226,35 @@ func (d *Director) Research(ctx context.Context, direction gateway.Direction, pr
 	// carried it
 	defer acct.Finish(ctx, result)
 	return d.handIn(ctx, direction, project, scope, dir, acct, result, err)
+}
+
+// researchTokens reads the direction's research GitHub tokens
+// (adr-022), keyed by each of names (owner/name). A refusal, or a repo
+// with no row, is an error naming it, before any fetch; an old platform
+// (gateway.IsUnsupported) is nil, nil, said once per Director: the
+// fetch runs on the operator's gh as before.
+func (d *Director) researchTokens(ctx context.Context, direction gateway.Direction, project gateway.Project, nodeID string, names []string) (map[string]*gateway.GitHubToken, error) {
+	rows, err := d.GW.ResearchGitHubTokens(ctx, direction.ID, nodeID)
+	if gateway.IsUnsupported(err) {
+		d.fallback.NoteResearch(project.Slug+"/"+direction.Slug, d.logf)
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("research github token: %w", err)
+	}
+	byRepo := map[string]*gateway.GitHubToken{}
+	for i := range rows {
+		byRepo[strings.ToLower(rows[i].Repository)] = &rows[i]
+	}
+	toks := map[string]*gateway.GitHubToken{}
+	for _, name := range names {
+		tok := byRepo[strings.ToLower(name)]
+		if tok == nil {
+			return nil, fmt.Errorf("research github token: the platform issued none for %s", name)
+		}
+		toks[name] = tok
+	}
+	return toks, nil
 }
 
 // noHeadroomNote is the research's notes for a read refused for want

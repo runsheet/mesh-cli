@@ -167,6 +167,21 @@ func (f *TokenFallback) NotePlan(goalSlug string, logf func(string, ...any)) {
 	f.once.Do(say)
 }
 
+// NoteResearch is NotePlan for a research session's fetch on a
+// platform without researchGitHubToken (adr-022), keyed by the
+// direction (<project>/<slug>): the operator's own gh, said once per
+// Director.
+func (f *TokenFallback) NoteResearch(direction string, logf func(string, ...any)) {
+	say := func() {
+		logf("direction %s: platform issues no research token; fetching on the operator's gh", direction)
+	}
+	if f == nil {
+		say()
+		return
+	}
+	f.once.Do(say)
+}
+
 // ItemCred is an item's GitHub token on its workspace, renewed before it
 // expires. A nil *ItemCred is the old platform's fallback: the
 // operator's own gh and git credentials, as before.

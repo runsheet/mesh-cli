@@ -166,3 +166,23 @@ Needs-you row for the org's admins naming the repo and the error. The
 gatewaytest fake mirrors the first part (`releasePlan` in `apply`,
 `Unsupported["releasePlan"]` refusing the field); the Needs-you row and
 its e2e are runsheet's to land, first, under the contract rule.
+
+## Amendment 2026-10-03: the director fetches on the read
+
+The director now does what the planner does. `Director.Research` reads
+`ResearchGitHubTokens(direction, node)` after `Credentials.Open` and
+`ProjectRepos` and before any fetch. For each repo, in sorted
+`owner/name` order, it calls `Workspacer.Authorize(ResearchRepoSpec(repo,
+<research dir>/repos/<name>), row)` and then `Fetch`. A refusal, or a
+repo with no row in the answer, returns an error naming the repo
+(`research github token: … <owner/name>`) before any session opens.
+The session's `job.Env` is `SessionEnv(<first sorted repo's row>,
+NewGHConfigDir())`. The dir is removed when the session ends, unless the
+session detached.
+
+An old platform (`IsUnsupported`) still fetches on the operator's `gh`.
+The Director's own `TokenFallback` (`NoteResearch`) says so once:
+`direction <project>/<slug>: platform issues no research token;
+fetching on the operator's gh`. Turning a refused read into an empty
+hand-in, so the direction's claim is not held, is a later item of the
+goal.
