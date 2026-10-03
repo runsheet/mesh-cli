@@ -1,5 +1,5 @@
 ---
-summary: After a build session commits and before the push, the node runs the repository's `.runsheet/validate.yml` on HEAD — the steps the branch's diff selects plus the always ones — in the session's pod (runner image by digest, sandboxed) or on the host (`host:<hostname>`, unsandboxed, the session's env less its secrets), writes the attestation to `<workdir>.session/attestation.json` and uploads it on the item's token after the push; a failing step gets the builder one retry turn, then fails the item `validation failed: step <name> exited <code>`, and every step's time rides the usage record's `validation`.
+summary: After a build session commits and before the push, the node runs the repository's `.runsheet/validate.yml` on HEAD — the steps the branch's diff selects plus the always ones — in the session's pod (runner image by digest, sandboxed) or on the host (`host:<hostname>`, unsandboxed, the session's env less its secrets), writes the attestation to `<workdir>.session/attestation.json` and uploads it on the node's own token after the push, as `recordValidationAttestation(workItemId, input)` in the platform's shape (`specs/contracts/recordValidationAttestation.json`, introspected, no REST path); a failing step gets the builder one retry turn, then fails the item `validation failed: step <name> exited <code>`, and every step's time rides the usage record's `validation`.
 status: accepted
 ---
 
@@ -62,6 +62,38 @@ on the item. Either keeps a copy at `<workdir>.attestation.json`, which
 the session directory's removal leaves. Artifacts go to the gateway as
 `<path>@sha256:<digest>`.
 
+*Amended 2026-10-03 (goal the-nodes-attestation-reaches-the-platform,
+item 1).* Every upload until now went nowhere: the node sent
+`recordValidationAttestation(input: RecordValidationAttestationInput!)`
+with `{aggregateId, namespace, attestation}`, a type the platform never
+had, then a REST path the platform never had either, and said "the
+platform takes no attestations yet". The call is now the
+platform's own (runsheet ADR 032, As built (items 3 and 33)):
+`mutation($id: UUID!, $in: Map!) { recordValidationAttestation(workItemId: $id, input: $in) }`,
+no selection set (the answer is a Map, the platform's receipt), with
+`in` `{commit, treeHash, runnerImage, suiteHash, sessionId, testsRun,
+testsPassed, testsFailed, artifactDigests, at, commands [{suite,
+command, exitCode, durationMs}], reports [{suite, content}]}`
+(`gateway.ValidationAttestation`, converted by `gatewayAttestation`: one
+command per step, the tests summed over the steps, `suiteHash` the
+validate.yml's hash, a report per step whose results it parsed —
+`validate.StepResult.Report`, the raw file or stdout, up to 256 KiB).
+The node id, the item id, the tree's old name, `sandboxed` and the
+per-step rows stay on the local attestation: the platform takes the
+holder from the bearer and the item from `workItemId`. The contract is
+`specs/contracts/recordValidationAttestation.json`, copied byte for
+byte from runsheet's (served at
+`https://api.runsheet.dev/contracts/recordValidationAttestation.json`),
+and `gateway`'s tests round-trip its input through `gatewaytest`.
+Whether the platform has the mutation is an introspection probe,
+`{ __type(name: "Mutation") { fields { name args { name } } } }`, asked
+once and kept for `ScalingProbeEvery` (`takesAttestations`): only a
+Mutation without the field is `Unsupported` — the once-per-run "takes
+no attestations yet" — and nothing is sent. A platform with it that
+refuses ("<sha> is not the head of <branch> (GitHub has <sha>)") is a
+refusal in its own words, a progress note on the item, never
+unsupported. There is no REST path: none exists on the platform.
+
 **A failing step** stops the run (the first failure) and gets the
 builder **one** more turn, with `harness.ValidationRetryPrompt`: the
 step, its command, exit code and the end of its output, and ADR 012's
@@ -96,7 +128,4 @@ is validate.yml's.
   the evaluator sees only commits that passed it.
 - A build costs its steps' wall time before the push; `validation`
   minutes are the scorecard's "validation minutes spent".
-- Until the platform issues a gateway token per item, the item's
-  GitHub token is the bearer the upload carries (#318's assumption);
-  the platform side confirms or corrects it.
 - Until Podman is on the mini, its attestations say `host:<hostname>`.
