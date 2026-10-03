@@ -46,6 +46,10 @@ func PlanRepoSpec(repo, dir string) WorkspaceSpec {
 	return WorkspaceSpec{Repo: repo, Path: dir}
 }
 
+// ResearchRepoSpec is PlanRepoSpec for a research session's read-only
+// checkout: the direction's token on that checkout alone (adr-022).
+func ResearchRepoSpec(repo, dir string) WorkspaceSpec { return PlanRepoSpec(repo, dir) }
+
 // BranchName is the branch an item works on: mesh/<goal-slug>-<seq>.
 func BranchName(goalSlug string, seq int) string {
 	return fmt.Sprintf("mesh/%s-%d", goalSlug, seq)
