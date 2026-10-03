@@ -168,6 +168,12 @@ type Fake struct {
 	// answers the element type without it, so a heartbeat carrying
 	// Holding.Unclaimed[].Until sends the entry without `until`.
 	NoUnclaimedUntil bool
+	// NoAdoptedFields is a platform whose `adopted` element type has
+	// none of goalId, directionId, sessionId and alive (mesh-cli ADR-009
+	// amendment): introspection answers the element type without them,
+	// so a heartbeat carrying an AdoptedSession with any of the four set
+	// sends the entry without them, itemId, kind and since alone.
+	NoAdoptedFields bool
 	// RefuseReleases answers every releaseWorkItem with a refusal and
 	// changes nothing, as a platform that will not take a node's release.
 	// By default the fake follows the contract (trd §1): a node releases
@@ -897,18 +903,34 @@ func (f *Fake) repoFullName(repoID string) string {
 // when UnknownFields["priorities"] (a platform before adr-005's
 // amendment 2026-10, `limits[].priorities`); `holding.unclaimed`'s
 // element type without `until` when NoUnclaimedUntil (a platform
-// before adr-005's amendment 2026-10-03, `holding.unclaimed[].until`).
-// Unsupported["__type"] refuses the probe.
+// before adr-005's amendment 2026-10-03, `holding.unclaimed[].until`);
+// `adopted`'s element type without goalId, directionId, sessionId and
+// alive when NoAdoptedFields (a platform before mesh-cli ADR-009's
+// amendment). Unsupported["__type"] refuses the probe.
 func (f *Fake) heartbeatInputType() map[string]any {
 	field := func(name string) map[string]any {
 		return map[string]any{"name": name}
 	}
 	var fields []any
-	for _, name := range []string{"aggregateId", "namespace", "version", "running", "draining", "updateError", "limits", "scaling", "runtimes", "adapters", "holding", "commit"} {
+	for _, name := range []string{"aggregateId", "namespace", "version", "running", "draining", "updateError", "limits", "scaling", "runtimes", "adapters", "holding", "commit", "adopted"} {
 		if f.UnknownFields[name] {
 			continue
 		}
 		row := map[string]any{"name": name, "type": map[string]any{"kind": "SCALAR"}}
+		if name == "adopted" {
+			var sub []any
+			for _, n := range []string{"itemId", "kind", "since", "goalId", "directionId", "sessionId", "alive"} {
+				switch n {
+				case "itemId", "kind", "since":
+					sub = append(sub, field(n))
+				default:
+					if !f.NoAdoptedFields {
+						sub = append(sub, field(n))
+					}
+				}
+			}
+			row["type"] = map[string]any{"kind": "LIST", "ofType": map[string]any{"kind": "NON_NULL", "ofType": map[string]any{"kind": "INPUT_OBJECT", "inputFields": sub}}}
+		}
 		if name == "scaling" {
 			var sub []any
 			for _, n := range []string{"capacity", "min", "max", "reason", "accounts"} {

@@ -5,6 +5,24 @@
     "namespace": "runsheet",
     "version": "v0.2.200",
     "running": 3,
+    "adopted": [
+      {
+        "itemId": "goal-1",
+        "goalId": "goal-1",
+        "kind": "plan",
+        "since": "2026-10-03T03:30:35Z",
+        "sessionId": "session-1",
+        "alive": true
+      },
+      {
+        "itemId": "direction-1",
+        "directionId": "direction-1",
+        "kind": "research",
+        "since": "2026-10-03T03:30:35Z",
+        "sessionId": "session-2",
+        "alive": false
+      }
+    ],
     "holding": {
       "mode": "paced",
       "summary": "paced: urgent and high only, 3 item(s), no research; 1 item(s) and 0 plan(s) left unclaimed",
