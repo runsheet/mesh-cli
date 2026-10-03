@@ -389,6 +389,21 @@ enterprise has, on the enterprise's own credentials, and an org
 outside the enterprise only by an explicit share from an enterprise
 admin.
 
+`owner: enterprise` names no enterprise by itself: node.yaml also needs
+`enterprise:`, the enterprise's slug (as the console shows it) or its
+id, beside it:
+
+```yaml
+owner: enterprise
+enterprise: anythink
+```
+
+`LoadConfig` refuses the one without the other: `owner: enterprise`
+with no `enterprise:` is refused naming the fix (`` add `enterprise:
+<slug or id>` ``), and `enterprise:` set with `owner:` empty or
+`person` is refused too. `mesh node register --owner enterprise
+--enterprise <slug or id>` writes both at once.
+
 The node registers once with its owner and takes the orgs it serves
 from the platform's answer to that registration and to every
 heartbeat since, never by re-reading the person's orgs. An org

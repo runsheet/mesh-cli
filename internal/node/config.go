@@ -55,6 +55,12 @@ type Config struct {
 	// node serves every org the enterprise has). LoadConfig rejects
 	// any other value.
 	Owner string `yaml:"owner,omitempty"`
+	// Enterprise is the enterprise that owns this node, by slug or id,
+	// required when Owner is "enterprise" — LoadConfig refuses one
+	// without the other. Resolved to an id once at registration,
+	// cached (item 3 of this goal); until then it is the slug or id as
+	// written here.
+	Enterprise string `yaml:"enterprise,omitempty"`
 	// Capacity is how many items the node runs at once: a plain number
 	// (fixed) or {min, max}, between which the node scales by the
 	// headroom left in its plan's windows (adr-004).
@@ -907,7 +913,23 @@ func LoadConfig() (*Config, error) {
 	if c.Owner != "" && c.Owner != "person" && c.Owner != "enterprise" {
 		return nil, fmt.Errorf(`%s: owner: %q is neither "person" nor "enterprise"`, path, c.Owner)
 	}
+	if err := c.ValidateOwner(); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
 	return &c, nil
+}
+
+// ValidateOwner checks Owner and Enterprise agree: an enterprise owner
+// must name the enterprise it belongs to (`enterprise:`), and
+// `enterprise:` is only ever set for one.
+func (c *Config) ValidateOwner() error {
+	if c.Owner == "enterprise" && strings.TrimSpace(c.Enterprise) == "" {
+		return errors.New("owner: enterprise names no enterprise — add `enterprise: <slug or id>` (the enterprise that owns this node, e.g. enterprise: anythink)")
+	}
+	if c.Enterprise != "" && c.Owner != "enterprise" {
+		return errors.New("enterprise: is set but owner: is not enterprise — set owner: enterprise or remove enterprise:")
+	}
+	return nil
 }
 
 // ErrRetired is the refusal of a node.yaml key the node no longer

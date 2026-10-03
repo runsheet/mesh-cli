@@ -19,6 +19,9 @@ func TestModelLoadConfigOwner(t *testing.T) {
 			if owner != "" {
 				body += "owner: " + owner + "\n"
 			}
+			if owner == "enterprise" {
+				body += "enterprise: anythink\n"
+			}
 			writeNodeYAML(t, body)
 			cfg, err := LoadConfig()
 			if err != nil {
