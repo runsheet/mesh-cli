@@ -615,3 +615,45 @@ Tests: `internal/gateway` (the `TakesNodeKind` probe, cached and
 decided by introspection the same way as `TakesOwner`), and
 `internal/node/personal_test.go` (a registration's input carries `kind`
 `personal` when the platform's schema has it, none when it does not).
+
+## A session's commands name their actor (2026-10-03)
+
+Goal every-actor-has-a-name: today the activity feed says `node:<id>`
+for planner, builder and evaluator alike. A node registers once with an
+owner (above); the sessions it runs are agents of that node, and each
+names itself on the commands it sends. This section is the gateway
+half; the node's wiring (which session carries which role) extends it.
+
+**The shape.** `actor` is a string input field,
+`agent:<role>@<slug>` — `<role>` one of `builder`, `evaluator`,
+`planner` (`gateway.Role`: `RoleBuilder`, `RoleEvaluator`,
+`RolePlanner`) and `<slug>` the node's slug. A caller marks its context
+with `gateway.WithActor(ctx, role, slug)`; `gateway.ActorFrom(ctx)`
+answers the string. `gateway.ActorField` is `"actor"`.
+
+**Where it rides.** `Client.MutateFields` puts it on the input of five
+commands when the ctx carries one: `claimWorkItem`,
+`reportWorkItemProgress`, `finishWorkItem` (its already-done path
+too, which shares `FinishWorkItemInput`), `evaluateWorkItem` (its
+no-verdict path too) and `planGoal`. No other command carries it, and a
+ctx without `WithActor` carries none — `mesh mcp`'s pass-through work
+tools (ADR-023) act as the person, not an agent, and send no actor.
+The platform half (runsheet trd §6a) records it on the event.
+
+**The introspection gate.** The key is sent only when the platform's
+input type takes it: `ClaimWorkItemInput`,
+`ReportWorkItemProgressInput`, `FinishWorkItemInput`,
+`EvaluateWorkItemInput` and `PlanGoalInput` are each introspected
+(`__type(name: $t)`) once and the answer kept per type for
+`ScalingProbeEvery`, as `UsageReportInput`'s tool `error` is. A probe
+that fails, or a type without `actor`, sends the input without it —
+never an error. The client never sends the key to be refused and
+resends: a refused attempt would be recorded carrying it. `actor` is an
+input, not a selection, so `fields/*.txt` and the generated selections
+are unchanged.
+
+Tests: `internal/gateway/actor_test.go` (each role's actor on all five
+commands; none, and no error, on a platform without the field —
+`gatewaytest.Fake.NoActor`, whose inputs refuse the key, so a client
+that skipped the probe fails loudly; the probe kept an hour; none with
+no `WithActor`).
