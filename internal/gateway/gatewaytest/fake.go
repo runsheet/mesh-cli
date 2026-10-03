@@ -83,6 +83,16 @@ type Fake struct {
 	// (token, expiresAt, repository); only the node holding the item's
 	// claim is given it.
 	GitHubTokens map[string]map[string]any
+	// PlanGitHubTokens maps a goal id to its planGitHubToken answer: one
+	// row per repo enrolled in the goal's project ({token, expiresAt,
+	// repository}); only the node holding the goal's plan claim
+	// (plannerNodeId) is given them, and a project repo with no row
+	// among them refuses the whole read, naming it (adr-022).
+	PlanGitHubTokens map[string][]map[string]any
+	// ResearchGitHubTokens is PlanGitHubTokens for a direction's
+	// researchGitHubToken answer, keyed by direction id and held by its
+	// own research claim (researchNodeId).
+	ResearchGitHubTokens map[string][]map[string]any
 	// TokenNodeID is the node the caller's credential names; the platform
 	// hands an item's token only to the node holding its claim. Empty
 	// skips the check.
@@ -272,6 +282,7 @@ func New(token string) *Fake {
 		Repos:      map[string]map[string]any{}, Accounts: map[string]map[string]any{}, Nodes: map[string]map[string]any{},
 		Documents: map[string][]map[string]any{}, Bodies: map[string]string{}, Refuse: map[string]string{}, FailReads: map[string]string{},
 		GitHubTokens: map[string]map[string]any{}, Unsupported: map[string]bool{},
+		PlanGitHubTokens: map[string][]map[string]any{}, ResearchGitHubTokens: map[string][]map[string]any{},
 		Agents: map[string]map[string]any{}, UnknownFields: map[string]bool{},
 		SessionCredentials: map[string][]map[string]any{}, SessionTools: map[string][]map[string]any{},
 		Scorecard: map[string]map[string]any{}, Enterprises: map[string]Enterprise{},
@@ -365,6 +376,10 @@ var (
 	// query specially instead, as it already does for scorecard and the
 	// claim-time credentials read.
 	priorAttemptsRe = regexp.MustCompile(`\{\s*workItemIndex\s*\(\s*namespace:\s*"runsheet"\s*,\s*id:\s*"([^"]+)"\s*\)\s*\{\s*evaluations\s*\{`)
+	// a plan's or a direction's own GitHub tokens (adr-022):
+	// query($id: UUID!) { planGitHubToken(goalId: $id) } /
+	// researchGitHubToken(directionId: $id)
+	githubTokenRe = regexp.MustCompile(`\{\s*(planGitHubToken|researchGitHubToken)\s*\(\s*(\w+):\s*\$id\s*\)\s*\}`)
 )
 
 func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
@@ -629,6 +644,10 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 			f.sessionRead(w, m[1], m[2], m[3], req.Variables)
 			return
 		}
+		if m := githubTokenRe.FindStringSubmatch(q); m != nil {
+			f.githubTokens(w, m[1], m[2], req.Variables)
+			return
+		}
 		if m := priorAttemptsRe.FindStringSubmatch(q); m != nil {
 			f.Reads = append(f.Reads, Call{Name: "workItemIndex", Input: map[string]any{"id": m[1]}})
 			if f.NoEvaluations {
@@ -735,6 +754,117 @@ func (f *Fake) sessionRead(w http.ResponseWriter, credField, arg, toolsField str
 		f.Calls = append(f.Calls, Call{Name: toolsField, Input: in, At: time.Now()})
 	}
 	writeData(w, data)
+}
+
+// githubTokens answers planGitHubToken(goalId)/researchGitHubToken(directionId)
+// (adr-022): the schema's "Cannot query field" when Unsupported names
+// the field — an older platform, the node's cue to fall back to the
+// operator's gh — a named refusal from Refuse, a refusal naming the
+// node when TokenNodeID is set and holds neither the goal's plan claim
+// nor the direction's research claim, else one row per repo enrolled
+// in the project; a project repo with no row among them is a refusal
+// naming it, "no GitHub installation reaches <owner/name>", rather than
+// a partial list.
+func (f *Fake) githubTokens(w http.ResponseWriter, field, arg string, vars map[string]any) {
+	id, _ := vars["id"].(string)
+	in := map[string]any{arg: id}
+	if f.Unsupported[field] {
+		writeErrors(w, 200, fmt.Sprintf("Cannot query field %q on type \"Query\".", field))
+		return
+	}
+	if msg := f.Refuse[field]; msg != "" {
+		writeErrors(w, 200, msg)
+		return
+	}
+	var projectID string
+	var rows []map[string]any
+	switch field {
+	case "planGitHubToken":
+		goal := f.Goals[id]
+		if goal == nil {
+			writeErrors(w, 200, "no such goal")
+			return
+		}
+		if held, _ := goal["plannerNodeId"].(string); f.TokenNodeID != "" && held != f.TokenNodeID {
+			writeErrors(w, 200, fmt.Sprintf("the goal is not node %s's to plan", f.TokenNodeID))
+			return
+		}
+		projectID, _ = goal["projectId"].(string)
+		rows = f.PlanGitHubTokens[id]
+	case "researchGitHubToken":
+		direction := f.Directions[id]
+		if direction == nil {
+			writeErrors(w, 200, "no such direction")
+			return
+		}
+		if held, _ := direction["researchNodeId"].(string); f.TokenNodeID != "" && held != f.TokenNodeID {
+			writeErrors(w, 200, fmt.Sprintf("the direction is not node %s's to research", f.TokenNodeID))
+			return
+		}
+		projectID, _ = direction["projectId"].(string)
+		rows = f.ResearchGitHubTokens[id]
+	}
+	have := map[string]bool{}
+	for _, row := range rows {
+		if name, _ := row["repository"].(string); name != "" {
+			have[name] = true
+		}
+	}
+	for _, name := range f.projectRepoNames(projectID) {
+		if !have[name] {
+			writeErrors(w, 200, fmt.Sprintf("no GitHub installation reaches %s", name))
+			return
+		}
+	}
+	out := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, copyRow(row))
+	}
+	f.Calls = append(f.Calls, Call{Name: field, Input: in, At: time.Now()})
+	writeData(w, map[string]any{field: out})
+}
+
+// projectRepoNames is a project's repos as owner/name, in repoIds
+// order — the same composition ProjectRepos reads client-side, done
+// here server-side for githubTokens' missing-installation check.
+func (f *Fake) projectRepoNames(projectID string) []string {
+	project := f.Projects[projectID]
+	if project == nil {
+		return nil
+	}
+	var ids []string
+	switch v := project["repoIds"].(type) {
+	case []string:
+		ids = v
+	case []any:
+		for _, e := range v {
+			if s, ok := e.(string); ok {
+				ids = append(ids, s)
+			}
+		}
+	}
+	names := make([]string, 0, len(ids))
+	for _, id := range ids {
+		names = append(names, f.repoFullName(id))
+	}
+	return names
+}
+
+// repoFullName is one repo's owner/name, its owner its own account's
+// login (never the org's) — a repo or account with no row resolves to
+// whatever it has, so a missing fixture still names something.
+func (f *Fake) repoFullName(repoID string) string {
+	repo := f.Repos[repoID]
+	if repo == nil {
+		return repoID
+	}
+	name, _ := repo["name"].(string)
+	if acc := f.Accounts[fmt.Sprint(repo["accountId"])]; acc != nil {
+		if login, _ := acc["login"].(string); login != "" {
+			return login + "/" + name
+		}
+	}
+	return name
 }
 
 // heartbeatInputType is HeartbeatNodeInput as introspection answers it:

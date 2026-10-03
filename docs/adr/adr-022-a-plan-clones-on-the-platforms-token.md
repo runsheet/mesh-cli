@@ -1,0 +1,117 @@
+---
+summary: A plan or research session's fetch runs on a token the platform issues for it — planGitHubToken(goalId) / researchGitHubToken(directionId), one row per repo of the project — never the operator's own gh login; a repo with no installation is a refusal naming it, and an old platform means the fallback ADR-001 already has.
+status: accepted
+---
+
+# ADR-022: A plan clones on the platform's token
+
+## Context
+
+Chris, 2026-10-03: "grapevine is still stuck in planning." Read on the
+Mini at 05:11Z, in the grapevine node's log (user `grapevine`, node.yaml
+`contract: per-org`, orgs `[grapevine]`): every plan claim ended at the
+fetch — `gh repo clone GrapevineNetwork/mobile … exit status 4` and
+gh's own line, "populate the GH_TOKEN environment variable with a
+GitHub API authentication token" — because that user had never run `gh
+auth login`. Five goals (four handbooks and the QR-code goal) were
+claimed, failed at the clone, held, and re-claimed every 30 minutes for
+two hours; the platform saw only `planning`, and the node reported
+nothing, since a fetch failure before the session opens is neither an
+attempt nor a usage row.
+
+ADR-001 gave a build this immunity already: the node asks the platform
+for the item's own GitHub token, scoped to the item's one repo through
+the App installation, and the operator's `gh` is never consulted. A
+plan and a research session did not: `Planner.Plan` and the director's
+research fetch the project's repos with `Workspacer`'s `gh repo clone`,
+on whatever `gh` the node's own user happens to be logged into — so a
+node set up for an org whose user never logged into GitHub cannot plan
+at all, and a node that *can* plan does so on a person's own token with
+every scope that person has, not the project's.
+
+## Decision
+
+**The read.** The node asks for a plan's or a direction's own GitHub
+tokens, the way `IssueItemRepoToken` asks for an item's:
+
+```
+query($id: UUID!) { planGitHubToken(goalId: $id) }
+query($id: UUID!) { researchGitHubToken(directionId: $id) }
+```
+
+each answering a JSON list — a Map scalar, as `itemCredentials` and the
+rest of the claim-time read are (ADR-006) — one row per repo enrolled
+in the project the goal or the direction belongs to:
+`{token, expiresAt, repository}`. Every row is minted from that repo's
+own account's GitHub App installation (an org links several GitHub
+accounts: the owner of a row's repo, never the project's or the org's
+own account) and scoped read-only to it — a plan or a research session
+only fetches, it never pushes, so contents:write is not asked for.
+`Client.PlanGitHubTokens(ctx, goalID, nodeID)` and
+`Client.ResearchGitHubTokens(ctx, directionID, nodeID)` decode every row
+into the existing `gateway.GitHubToken{Token, ExpiresAt, Repository}` —
+callers depend on that type, not the wire shape, which follows the
+platform if it lands differently (ADR-001's rule); `nodeID` is kept for
+the interface, since the platform knows the node from the bearer, as
+`Session` and `IssueItemRepoToken` already do. Both are on the
+`node.Gateway` seam beside `IssueItemRepoToken`.
+
+**Only the claim holder is answered.** `planGitHubToken` is refused to
+any node but the one `ClaimPlan` recorded as the goal's planner, and
+`researchGitHubToken` to any but the one holding the direction's
+research claim — the same rule `issueItemRepoToken` applies to an
+item's builder. Refused either way, the error is `gateway.IsRefusal`,
+never `IsUnsupported`.
+
+**A repo with no installation is a refusal, by name, not a partial
+list.** When any repo enrolled in the project has no token to give —
+the App is not installed on its account — the whole read refuses
+rather than silently answering fewer rows than the project has repos,
+naming the repo: `no GitHub installation reaches <owner/name>`. A
+partial list would let the fetch silently skip a repo the plan needs
+instead of surfacing the gap where a person can fix it.
+
+**An old platform.** A platform without `planGitHubToken` or
+`researchGitHubToken` answers the schema's "Cannot query field", which
+`IsUnsupported` reports — `gatewaytest.Fake`'s `Unsupported["..."]`
+mirrors it exactly as it does `itemCredentials`/`itemTools` in
+`sessionRead`. The rollout is not a flag day: the caller falls back to
+the operator's own `gh` login and says so once per run, ADR-001's
+existing rule (`node.TokenFallback`) — not a new one for planning.
+
+**On the session.** The fetch and the session both get `GH_TOKEN` and a
+private `GH_CONFIG_DIR`, the way `ghcred.go` puts them on every item
+session: the node's git credential helper on the plan's or the
+research's own checkout, never the operator's global one or their `gh`
+login. A project whose repos span more than one GitHub account has more
+than one row; since one checkout's `origin` reaches one repo, the
+session's `GH_TOKEN` is the first repo's row by sorted `repository`
+name when the fetch itself needs a single ambient token (a tool call,
+not a `git` remote already carrying its own helper) — each checkout
+still reaches its *own* repo through its *own* row's helper, sorted
+order only decides which row is "the" token where exactly one is
+asked for.
+
+**Contract fixture.** `specs/contracts/planGitHubToken.json` is the
+shape, read-only is enough (runsheet serves `researchGitHubToken` the
+same shape, named in the description) — the platform side of the
+contract, the way `heartbeatNode.json` and `registerNode.json` are.
+
+## Consequences
+
+- A node whose operator never ran `gh auth login` can plan and research
+  once the platform's App installations cover the project's repos — the
+  grapevine failure (`gh repo clone … exit status 4`) cannot recur from
+  a missing ambient login.
+- A plan or a research session's git access is read-only and scoped to
+  the project's own repos, never a person's full GitHub scope.
+- This item lands the gateway client, the fake, the contracts fixture
+  and this ADR; wiring the planner's and the director's fetch and
+  session onto the read, and reporting a fetch failure as `planError`
+  with a Needs-you row on the second identical failure, are later items
+  of goal `a-plan-clones-on-the-platforms-token` (acceptance points 2
+  and 3). Until they land, the planner's and the director's own
+  project-wide fetches stay on the operator's `gh` and `git`, unchanged.
+- A platform that does not yet serve either field costs nothing new: the
+  existing fallback and its once-per-run log line carry planning and
+  research exactly as they carry a build.

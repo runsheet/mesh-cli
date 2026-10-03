@@ -2598,6 +2598,59 @@ func (c *Client) IssueItemRepoToken(ctx context.Context, itemID, nodeID string) 
 	return &GitHubToken{Token: t.Token, ExpiresAt: exp, Repository: t.Repo}, nil
 }
 
+// PlanGitHubTokens asks the platform for a goal's plan-session GitHub
+// tokens: one row per repo enrolled in the goal's project, each minted
+// from that repo's own GitHub App installation and scoped to it — the
+// way IssueItemRepoToken is scoped to an item's one repo (adr-022).
+// Only the node holding the goal's plan claim is given them (anything
+// else is a refusal, IsRefusal); a platform without the field answers
+// IsUnsupported, and the caller falls back to the operator's own
+// GitHub login. nodeID is kept for the interface: the platform knows
+// the node from the bearer.
+func (c *Client) PlanGitHubTokens(ctx context.Context, goalID, nodeID string) ([]GitHubToken, error) {
+	_ = nodeID
+	return c.sessionGitHubTokens(ctx, "planGitHubToken", "goalId", goalID)
+}
+
+// ResearchGitHubTokens is PlanGitHubTokens for a direction's research
+// session, held by its own research claim rather than a goal's plan
+// claim.
+func (c *Client) ResearchGitHubTokens(ctx context.Context, directionID, nodeID string) ([]GitHubToken, error) {
+	_ = nodeID
+	return c.sessionGitHubTokens(ctx, "researchGitHubToken", "directionId", directionID)
+}
+
+// sessionGitHubTokens runs the claim-time GitHub token read for a plan
+// or research session: field(arg: $id) answers a list of rows, one per
+// repo — {token, expiresAt, repository} — decoded whole into
+// GitHubToken.
+func (c *Client) sessionGitHubTokens(ctx context.Context, field, arg, id string) ([]GitHubToken, error) {
+	var out map[string]any
+	q := fmt.Sprintf("query($id: UUID!) { %s(%s: $id) }", field, arg)
+	if err := c.Query(ctx, q, map[string]any{"id": id}, &out); err != nil {
+		var ge *Error
+		if errors.As(err, &ge) && (unknownOperation(ge.Message, field) || schemaMismatch(ge.Message, field)) {
+			return nil, &Error{Message: ge.Message, Unsupported: true}
+		}
+		return nil, err
+	}
+	rows := rowsOf(out[field])
+	toks := make([]GitHubToken, 0, len(rows))
+	for _, row := range rows {
+		token := str(row, "token")
+		repo := str(row, "repository")
+		if token == "" {
+			return nil, fmt.Errorf("gateway: %s: no token for repo %q", field, repo)
+		}
+		exp, err := time.Parse(time.RFC3339Nano, str(row, "expiresAt"))
+		if err != nil {
+			return nil, fmt.Errorf("gateway: %s: expiresAt %q: %w", field, str(row, "expiresAt"), err)
+		}
+		toks = append(toks, GitHubToken{Token: token, ExpiresAt: exp, Repository: repo})
+	}
+	return toks, nil
+}
+
 // schemaMismatch is a GraphQL validation error about how the node called
 // an operation — the shape of its arguments or variables — rather than
 // an answer from it. On 2026-09-24 the node called issueItemRepoToken
