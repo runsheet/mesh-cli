@@ -522,7 +522,7 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 	}
 	replacing := p.replacingItem(goal, goalItems)
 	in := harness.PlanInput{
-		GoalSlug: goal.Slug, GoalTitle: goal.Title, Statement: goal.Statement, Acceptance: goal.Acceptance, BudgetCents: goal.BudgetCents,
+		GoalID: goal.ID, GoalSlug: goal.Slug, GoalTitle: goal.Title, Statement: goal.Statement, Acceptance: goal.Acceptance, BudgetCents: goal.BudgetCents,
 		Org: scope.Name(), Project: project.Slug, Repos: dirs, ContextDir: contextDir, ContextFiles: files, Blocked: goal.PausedReason,
 		Existing: existing, NextSeq: nextSeq, MeshContext: len(p.MCP) > 0, Evidence: p.evidence(ctx, goal.Slug, scope, project),
 		// the project's cap on a plan's items, read at claim time
@@ -895,18 +895,28 @@ func (p *Planner) readPlan(ctx context.Context, goal gateway.Goal, dir string, a
 		return nil, nil, nil, nil, nil, nil, nil, 0, fmt.Errorf("planner session: %w", acct.RedactErr(err))
 	}
 	result.Text = acct.Redact(result.Text)
+	// the plan is the session's mesh_plan call when it made one (ADR-023),
+	// rendered as the block its final message would carry so every check
+	// below reads it as it reads the text; with none, the text is parsed
+	graph, called := harness.PlanCall(result.WorkCalls["mesh_plan"])
+	if called {
+		graph = acct.Redact(graph)
+	} else {
+		graph = result.Text
+		p.logf("plan %s: %s", goal.Slug, noPlanCallLine)
+	}
 	// a `split` answer — goal drafts in place of a graph over the
 	// project's cap (ADR-023 (a)) — is read first: it has no items
-	if drafts, ok := harness.ParsePlanSplit(result.Text); ok {
+	if drafts, ok := harness.ParsePlanSplit(graph); ok {
 		gd, err := splitDrafts(drafts, repos, cap)
 		if err != nil {
 			return nil, nil, nil, nil, nil, nil, nil, 0, err
 		}
 		return nil, nil, nil, nil, nil, gd, nil, result.CostUSD, nil
 	}
-	specs, err := harness.ParsePlan(result.Text, merged...)
+	specs, err := harness.ParsePlan(graph, merged...)
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, nil, 0, fmt.Errorf("planner session (%s): %w: %s", result.SessionID, err, truncate(result.Text, 300))
+		return nil, nil, nil, nil, nil, nil, nil, 0, fmt.Errorf("planner session (%s): %w: %s", result.SessionID, err, truncate(graph, 300))
 	}
 	items := make([]gateway.PlannedItem, 0, len(specs))
 	itemRepo := map[int]gateway.Repo{}
@@ -1011,8 +1021,12 @@ func (p *Planner) readPlan(ctx context.Context, goal gateway.Goal, dir string, a
 	if hasGoalRepo {
 		flags = append(flags, otherRepoItems(specs, itemRepo, gr)...)
 	}
-	return items, reasons, flags, harness.ParsePlanQuestions(result.Text), harness.ParsePlanCheckpoints(result.Text), nil, added, result.CostUSD, nil
+	return items, reasons, flags, harness.ParsePlanQuestions(graph), harness.ParsePlanCheckpoints(graph), nil, added, result.CostUSD, nil
 }
+
+// noPlanCallLine is logged once per planner session that made no
+// mesh_plan call, its final message parsed instead (ADR-023).
+const noPlanCallLine = "no mesh_plan call; parsed the final message"
 
 // explainedDeps keeps the item's dependencies that carry a because and
 // drops the rest, logging each (trd §5 phase 2, the dependency rubric):
