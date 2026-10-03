@@ -320,9 +320,14 @@ func (v *buildValidation) usage() []gateway.ValidationMinutes {
 // or an rs_* console token and refuses a GitHub one, and it is the node
 // holding the item it checks (runsheet gateway/attestation.go,
 // attestingNode); the item's ghs_* token is for git and GitHub alone. A
-// platform whose Mutation has no recordValidationAttestation is said once
-// per run; a refusal — the platform's own words — or any other failure is
-// a note on the item, never its failure. Either keeps a copy at <workdir>.attestation.json, which the
+// platform whose Mutation has no recordValidationAttestation is
+// IsUnsupported and said once per run; that is checked first, because
+// such an error is also a refusal (gateway.IsUnsupported's doc). A
+// platform that has the mutation and refuses the upload (IsRefusal) is
+// a note on the item quoting its words verbatim. A spent retry (the
+// mutation existed but every attempt failed transiently) or any other
+// failure is a note on the item too, never the item's own failure.
+// Either way a copy stays at <workdir>.attestation.json, which the
 // session directory's removal leaves.
 func (r *Runner) uploadAttestation(ctx context.Context, b *buildRun, att validate.Attestation) {
 	r.validator().upload(ctx, b.target(), att)
@@ -344,6 +349,10 @@ func (vr validator) upload(ctx context.Context, t validationTarget, att validate
 		once(vr.Notices.attestation(), func() {
 			vr.logf("validation: the platform takes no attestations yet; each is kept beside its checkout as %s (said once, for every item this run)", AttestationFile)
 		})
+	case gateway.IsRefusal(err):
+		note := "validation attestation refused by the platform: " + err.Error()
+		r.logf("item %s: validation attestation refused: %s", b.label, err.Error())
+		b.report(ctx, note)
 	default:
 		note := "validation attestation: upload failed: " + t.redact(err).Error()
 		vr.logf("%s: %s", t.prefix, note)

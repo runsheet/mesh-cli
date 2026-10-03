@@ -146,6 +146,12 @@ type Fake struct {
 	// GraphQL error, as the platform refuses a commit that is not the
 	// branch head.
 	AttestationReceipt map[string]any
+	// RateLimit429 names a mutation the fake answers with a bare HTTP 429
+	// ("rate limited", no GraphQL error body) every time it is sent — for
+	// a test of the retry-and-give-up path (retryOnTransient,
+	// AttestationBackoff); never combined with Refuse or Unsupported for
+	// the same mutation.
+	RateLimit429 map[string]bool
 	// NoUsageTools refuses a `usage` report carrying `tools` (the
 	// per-tool calls) with "Unknown field", as a platform older than
 	// tools-show-their-use whose UsageReportInput has only the total.
@@ -1779,8 +1785,15 @@ func (f *Fake) mutationType() map[string]any {
 // (specs/contracts/recordValidationAttestation.json): an input-object
 // shape is the schema error production answers, every call is recorded
 // with workItemId and input, and success answers AttestationReceipt.
+// RateLimit429 answers a bare 429 before any of that, every time, for a
+// test of the retry-and-give-up path.
 func (f *Fake) recordValidationAttestation(w http.ResponseWriter, q string, vars map[string]any, bearer string) {
 	const field = "recordValidationAttestation"
+	if f.RateLimit429[field] {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte("rate limited"))
+		return
+	}
 	if f.Unsupported[field] {
 		writeErrors(w, 200, fmt.Sprintf("Cannot query field %q on type \"Mutation\".", field))
 		return
