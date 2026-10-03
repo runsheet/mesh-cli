@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+
+	"projectmesh.io/mesh-cli/internal/node"
 )
 
 // The work tools (ADR-023, Work tools): mesh_status, mesh_switch and the
@@ -25,6 +27,13 @@ const AskPrefix = "question: "
 // SwitchReason is the release reason mesh_switch gives the item it
 // leaves.
 const SwitchReason = "switched"
+
+// pushRefused is a finish's or switch's answer to a push git refused
+// because the branch moved on origin (node.PushRefusedError) — a pair's
+// holder pushed first: the item stays held, nothing is sent.
+func pushRefused(h HeldItem, again string) string {
+	return "push refused: the branch moved on origin; run git pull --rebase in " + h.Path + " and " + again + " again"
+}
 
 // refused is the tool's answer to a refusal.
 func refused(tool string, err error) string {
@@ -254,6 +263,10 @@ func (p *Personal) finish(ctx context.Context, args map[string]any) (string, err
 	}
 	st := checkout(ctx, h)
 	head, err := p.Join.WS.Push(ctx, h.Path, h.Branch)
+	var moved *node.PushRefusedError
+	if errors.As(err, &moved) {
+		return pushRefused(h, "finish"), nil
+	}
 	if err != nil {
 		return refused("mesh_finish", fmt.Errorf("push %s: %w", h.Branch, err)), nil
 	}
@@ -283,12 +296,22 @@ func (p *Personal) release(ctx context.Context, args map[string]any) (string, er
 	if ans, err := p.giveBack(ctx, "mesh_release", h, reason); ans != "" || err != nil {
 		return ans, err
 	}
+	if h.Paired {
+		return fmt.Sprintf("left %s/%d: %s (paired: its holder keeps the claim)", h.Goal, h.Seq, reason), nil
+	}
 	return fmt.Sprintf("released %s/%d: %s", h.Goal, h.Seq, reason), nil
 }
 
 // giveBack releases h and drops it from the state file: a refusal is
-// the answer, "" when released.
+// the answer, "" when released. A paired item is only dropped: its
+// claim is the holder's, not ours to give back.
 func (p *Personal) giveBack(ctx context.Context, tool string, h HeldItem, reason string) (string, error) {
+	if h.Paired {
+		if err := p.Join.drop(h.ItemID); err != nil {
+			return "", fmt.Errorf("state: %w", err)
+		}
+		return "", nil
+	}
 	nodeID, err := p.nodeID(ctx)
 	if err != nil {
 		return "", err
@@ -323,7 +346,12 @@ func (p *Personal) switchItem(ctx context.Context, args map[string]any) (string,
 		return "", fmt.Errorf("%s: %w", h.Path, err)
 	}
 	if n > 0 {
-		if _, err := p.Join.WS.Push(ctx, h.Path, h.Branch); err != nil {
+		_, err := p.Join.WS.Push(ctx, h.Path, h.Branch)
+		var moved *node.PushRefusedError
+		if errors.As(err, &moved) {
+			return pushRefused(h, "switch"), nil
+		}
+		if err != nil {
 			return refused("mesh_switch", fmt.Errorf("push %s: %w", h.Branch, err)), nil
 		}
 	}
@@ -343,5 +371,6 @@ func (p *Personal) switchItem(ctx context.Context, args map[string]any) (string,
 	if ans, err := p.giveBack(ctx, "mesh_switch", h, SwitchReason); ans != "" || err != nil {
 		return ans, err
 	}
-	return p.Join.answer(p.Join.run(ctx, slug, seq, h.ItemID))
+	pair, _ := args["pair"].(bool)
+	return p.Join.answer(p.Join.run(ctx, slug, seq, h.ItemID, pair))
 }

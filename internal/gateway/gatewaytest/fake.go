@@ -205,6 +205,16 @@ type Fake struct {
 	// item's rebase while it is in review. Off, the fake refuses it as
 	// runsheet's gateway/itemtoken.go does today.
 	RebaseTokens bool
+	// PairedFinish is the platform half of pairing (mesh-cli ADR-023,
+	// Pairing) the hosted paired field will bring: a built finish of an
+	// item already in evaluating, on the branch it was finished on,
+	// records the new head — the pair finishing after its holder — and
+	// leaves it evaluating. Off, the fake refuses it as the platform does
+	// today ("item is evaluating, not running").
+	PairedFinish bool
+	// Claims is every claimWorkItem the fake was sent, refused or not
+	// (Calls holds only the ones it took): whether a node asked.
+	Claims []Call
 	// EmptyHeads are head shas that carry nothing past their base: a
 	// built finish on one takes runsheet's empty-finish route
 	// (empties-go-back-to-the-builder) — back to ready, attempts+1,
@@ -683,6 +693,9 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 			// status alone, and the whole call is refused before it runs
 			writeErrors(w, 200, `Cannot query field "nodeId" on type "CommandResult".`)
 			return
+		}
+		if m[2] == "claimWorkItem" {
+			f.Claims = append(f.Claims, Call{Name: m[2], Input: in, At: time.Now(), Bearer: bearer})
 		}
 		if msg := f.Refuse[m[2]]; msg != "" {
 			writeErrors(w, 200, msg)
@@ -1367,10 +1380,15 @@ func (f *Fake) apply(name string, in map[string]any) error {
 		if item == nil {
 			return fmt.Errorf("no such item")
 		}
+		outcome, _ := in["outcome"].(string)
+		if f.PairedFinish && item["status"] == "evaluating" && (outcome == "" || outcome == "built") && in["branch"] != nil && in["branch"] == item["branch"] {
+			item["headSha"] = in["headSha"]
+			item["costCents"] = toInt(item["costCents"]) + toInt(in["costCents"])
+			return nil
+		}
 		if item["status"] != "claimed" && item["status"] != "running" {
 			return fmt.Errorf("item is %s, not running", item["status"])
 		}
-		outcome, _ := in["outcome"].(string)
 		switch {
 		case outcome == "" || outcome == "built":
 			if in["branch"] == nil || in["branch"] == "" {
@@ -1683,6 +1701,16 @@ func applyRebase(name string, item, in map[string]any) error {
 		item["status"], item["lastError"], item["rebaseState"] = "ready", in["reason"], "none"
 	}
 	return nil
+}
+
+// HeldBy marks the item running on nodeID: held by another node, as a
+// pair finds it (mesh-cli ADR-023, Pairing).
+func (f *Fake) HeldBy(itemID, nodeID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if item := f.WorkItems[itemID]; item != nil {
+		item["status"], item["nodeId"] = "running", nodeID
+	}
 }
 
 func (f *Fake) issueItemRepoToken(in map[string]any) (map[string]any, error) {
