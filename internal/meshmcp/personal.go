@@ -7,6 +7,8 @@ import (
 	"sync"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
+	"projectmesh.io/mesh-cli/internal/node"
+	"projectmesh.io/mesh-cli/internal/version"
 )
 
 // The personal server: `mesh mcp`, Mesh inside Claude Code on the
@@ -34,6 +36,15 @@ type Reads interface {
 	GoalWorkItems(ctx context.Context, goalID string) ([]gateway.WorkItem, error)
 }
 
+// PersonalGateway is what `mesh mcp` needs of the gateway: the hosted
+// reads (Reads) and the personal node's registration
+// (node.RegisterPersonalGateway, ADR-015's owner form) — *gateway.Client
+// has both.
+type PersonalGateway interface {
+	Reads
+	node.RegisterPersonalGateway
+}
+
 // Personal is the server's state: the gateway and, once set, Join,
 // which mesh_join claims and prepares an item with and whose state file
 // the work tools read (nil answers `not yet available`).
@@ -44,9 +55,18 @@ type Personal struct {
 	mu sync.Mutex
 }
 
-// NewServer is `mesh mcp`'s server over gw: no channel capability.
-func NewServer(gw Reads) *Server {
-	return (&Personal{GW: gw}).Server()
+// NewServer is `mesh mcp`'s server over gw: no channel capability. Its
+// personal node (ADR-015's owner form, kind personal, capacity 1,
+// ADR-023 mesh mcp) registers once, reused on a later start, before
+// Serve answers its first request.
+func NewServer(gw PersonalGateway) *Server {
+	p := &Personal{GW: gw}
+	s := p.Server()
+	s.Register = func(ctx context.Context) error {
+		_, err := node.RegisterPersonal(ctx, gw, version.Resolved())
+		return err
+	}
+	return s
 }
 
 // Server is the personal server over p: no channel capability.
