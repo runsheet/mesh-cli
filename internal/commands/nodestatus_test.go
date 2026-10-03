@@ -61,6 +61,23 @@ func TestStatusHeartbeatCarriesCommit(t *testing.T) {
 	}
 }
 
+// `mesh node status` names `mesh mcp`'s personal node when
+// ~/.mesh/personal-node.json holds one (ADR-023, mesh mcp).
+func TestNodeStatusNamesPersonalNode(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if line := personalNodeStatusLine(); line != "" {
+		t.Fatalf("personalNodeStatusLine with no file = %q, want empty", line)
+	}
+	pn := node.PersonalNode{ID: "node-123", Name: "mini (Claude Code)"}
+	if err := node.SavePersonalNode(pn); err != nil {
+		t.Fatal(err)
+	}
+	line := personalNodeStatusLine()
+	if !strings.Contains(line, "personal node:") || !strings.Contains(line, pn.Name) || !strings.Contains(line, pn.ID) {
+		t.Fatalf("personalNodeStatusLine = %q", line)
+	}
+}
+
 const statusOwnerID = "18a8b766-18f3-5e73-b4cf-efb91c01946a"
 
 // `mesh node status` names node.yaml's node_id and how it was arrived
