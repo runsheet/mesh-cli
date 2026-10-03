@@ -46,7 +46,7 @@ func startAgainst(t *testing.T, f *gatewaytest.Fake) string {
 	// the platform answers with the node's own id: the signed-in
 	// owner's node of this slug
 	f.UserID = "ffffffff-1111-4111-8111-ffffffffffff"
-	f.Answer.NodeID = gateway.NodeID(uuid.MustParse(f.UserID), "mini").String()
+	f.Answer.NodeID = gateway.NodeOwnerID("person", uuid.MustParse(f.UserID), "mini").String()
 	unit, mode, once := hostUnit, nodeModeFlag, nodeOnceFlag
 	hostUnit = func() sessionunit.Unit { return sessionunit.Detached{} }
 	nodeModeFlag, nodeOnceFlag = "poll", true

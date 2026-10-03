@@ -27,12 +27,14 @@ const (
 	miniGrapevineID = "a6666666-1111-4111-8111-111111111111"
 )
 
-// miniOwnedID is the node's one id on the owner contract: from (owner,
-// slug), so OwnedNodeID computes the same id the first registration
-// sends as its aggregateId — the fake's registerNode answer names it
-// too, so the row a second start registers under is the row the first
-// one made (ADR-015, OwnedNodeID).
-var miniOwnedID = gateway.NodeID(uuid.MustParse(miniAdminID), "runsheet-mini").String()
+// miniOwnedID is the node's one id on the owner contract:
+// gateway.NodeOwnerID(kind, owner, slug) over the enterprise's id, not
+// the admin person's — the Mini is owned by anythink — so OwnedNodeID
+// computes the same id the first registration sends as its aggregateId;
+// the fake's registerNode answer names it too, so the row a second
+// start registers under is the row the first one made (ADR-015,
+// OwnedNodeID).
+var miniOwnedID = gateway.NodeOwnerID("enterprise", uuid.MustParse(miniAnythinkID), "runsheet-mini").String()
 
 // miniFake is the platform for the Mini's story.
 func miniFake(t *testing.T) *gatewaytest.Fake {

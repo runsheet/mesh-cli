@@ -1,6 +1,8 @@
 package gateway
 
 import (
+	"encoding/json"
+	"os"
 	"testing"
 
 	"github.com/google/uuid"
@@ -27,6 +29,45 @@ func TestNodeIDMatchesPlatformDerivation(t *testing.T) {
 	}
 	if got, want := ProjectID(org, "mesh"), uuid.NewSHA1(ns, []byte("project:"+org.String()+":mesh")); got != want {
 		t.Fatalf("ProjectID = %s, want %s", got, want)
+	}
+}
+
+// NodeOwnerID is the platform's own formula (platform/ids/node.go,
+// NodeOwnerID): specs/contracts/registerNode.json's ownerNodeId object
+// carries a worked example — never invented here — and this is the
+// contract the fixture and the platform are tested against (ADR-015,
+// 2026-10-03).
+func TestNodeOwnerIDMatchesFixtureExample(t *testing.T) {
+	raw, err := os.ReadFile("../../specs/contracts/registerNode.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fx struct {
+		OwnerNodeID struct {
+			Namespace string `json:"namespace"`
+			Kind      string `json:"kind"`
+			Owner     string `json:"owner"`
+			Slug      string `json:"slug"`
+			ID        string `json:"id"`
+		} `json:"ownerNodeId"`
+	}
+	if err := json.Unmarshal(raw, &fx); err != nil {
+		t.Fatal(err)
+	}
+	if fx.OwnerNodeID.ID == "" {
+		t.Fatal("registerNode.json: no ownerNodeId")
+	}
+	if fx.OwnerNodeID.Namespace != idNamespace.String() {
+		t.Fatalf("ownerNodeId.namespace = %q, want the client's own %s", fx.OwnerNodeID.Namespace, idNamespace)
+	}
+	owner := uuid.MustParse(fx.OwnerNodeID.Owner)
+	got := NodeOwnerID(fx.OwnerNodeID.Kind, owner, fx.OwnerNodeID.Slug)
+	if got.String() != fx.OwnerNodeID.ID {
+		t.Fatalf("NodeOwnerID(%q, %s, %q) = %s, want the fixture's %s", fx.OwnerNodeID.Kind, owner, fx.OwnerNodeID.Slug, got, fx.OwnerNodeID.ID)
+	}
+	// an empty kind reads as person
+	if NodeOwnerID("", owner, fx.OwnerNodeID.Slug) != NodeOwnerID("person", owner, fx.OwnerNodeID.Slug) {
+		t.Fatal("NodeOwnerID(\"\", ...) must read as person")
 	}
 }
 

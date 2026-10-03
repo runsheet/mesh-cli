@@ -418,6 +418,44 @@ neither ownerKind nor owner); registering per org` — at start, and again
 on a registration retried in the confirm window, so a change of the
 probe's answer is said.
 
+## The node derives the owner row's id as the platform does (2026-10-03)
+
+`v0.2.248` made the owner probe accept `ownerKind` and, for the first
+time, took the owner contract against the real platform — and derived
+the owner row's id its own way: `OwnedNodeID` was `gateway.NodeID(owner,
+slug)`, the per-org formula with the owner's uuid in the org's place.
+The platform refused it, naming the id its own formula names
+(`platform/ids/node.go`,
+`NodeOwnerID(kind, owner, slug) = uuid5(idNamespace, "node:"+kind+":"+owner.String()+":"+slug)`,
+`kind` "" read as "person") — the grapevine node's heartbeat said
+`node grapevine registers at 18a8b766-18f3-5e73-b4cf-efb91c01946a, the
+id its form names, not 47a08dd9-bafb-5c64-bb16-7e806f0b1b95`.
+
+**The formula and the namespace join the contract.** `gateway.NodeOwnerID`
+(`internal/gateway/ids.go`) is the same formula over the same namespace
+mesh-cli already holds for `NodeID`, `GoalID` and `ProjectID`
+(`7b3c1d2e-4f5a-4b6c-8d7e-9f0a1b2c3d4e`). `OwnedNodeID` now takes the
+owner kind and the ownerId the registration actually sends — `Register`
+already resolves it (`ownerIDFor`): the enterprise's id on `owner:
+enterprise`, node.yaml's `owner_id` for a person — so an enterprise
+node derives from its enterprise id, never the admin person's.
+`specs/contracts/registerNode.json` carries a worked example as a
+top-level `ownerNodeId` object (`namespace`, `formula`, `kind`,
+`owner`, `slug`, `id`), and `input.aggregateId`/`answer.nodeId` are that
+same id, so the fixture is self-consistent; `internal/gateway/ids_test.go`
+and `internal/node/owned_test.go` assert both sides of the formula
+against it.
+
+**The live id did not reproduce.** The planner could not derive
+`18a8b766-18f3-5e73-b4cf-efb91c01946a` from `(person, the owner id the
+node sent, grapevine)` under this formula and namespace — so the
+deployed platform may feed `NodeOwnerID` a different owner uuid than
+the node's own `owner_id` (a resolved account id, perhaps, rather than
+the person's). The runsheet goal `registernode-answers-with-the-node-it-made`
+is to fix the fixture on its side to the same worked example; this
+goal's item 2 (adopting the id a refusal names, and retrying once)
+covers any drift that remains between the two formulas.
+
 Tests: `internal/node/owned_enterprise_test.go`.
 
 ## A node takes the id the platform names (2026-10-03)
