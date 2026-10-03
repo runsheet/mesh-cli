@@ -1,0 +1,9 @@
+{
+  "data": {
+    "nodeIndexs": [
+      {"id": "n1", "status": "retired", "orgId": "grape-1", "ownerId": null},
+      {"id": "n2", "status": "retired", "orgId": "ward-1", "ownerId": null},
+      {"id": "n3", "status": "active", "orgId": "org-a", "ownerId": "ent-1", "ownerKind": "enterprise"}
+    ]
+  }
+}

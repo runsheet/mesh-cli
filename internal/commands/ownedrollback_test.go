@@ -67,7 +67,7 @@ func TestOwnedStatusNilAnswerStaysOnTheOneID(t *testing.T) {
 	if !slices.Equal(p.beats, []string{ownedNode}) || p.myOrgs != 0 || len(out.Scopes) != 0 {
 		t.Errorf("beats %v, MyOrgs %d, scopes %v; want one heartbeat under %s, no orgs", p.beats, p.myOrgs, out.Scopes.Names(), ownedNode)
 	}
-	if line := ownedStatusLine(out); !strings.Contains(line, "answered no orgs") {
+	if line := ownedStatusLine(cfg, out); !strings.Contains(line, "answered no orgs") {
 		t.Errorf("status line %q", line)
 	}
 }

@@ -363,3 +363,59 @@ enterprise registration whose `ownerId` the caller does not admin with
 an error naming `adminOnEnterprise`, and serves `retireNode` (the row's
 status `retired`; an unknown id `no such node`). Tests:
 `internal/gateway/ownerfield_test.go`.
+
+## The enterprise is named, and the legacy rows retire themselves (2026-10-03)
+
+The section above gives the node `ownerKind` and the client its
+`MyEnterprises` and `RetireNode`; this one is how the node uses them
+(`internal/node/owned.go`, `Register`; `internal/commands/nodecmd.go`,
+`registrar`).
+
+**The enterprise is resolved once and cached.** On `owner: enterprise`
+the owner registration's `ownerId` is the enterprise's id
+(`ownerIDFor`): node.yaml's `enterprise:` when it is a uuid, else
+node.yaml's `enterprise_id:` when cached, else
+`Registrar.ResolveEnterprise` — `myEnterprises` searched by slug or
+tenantSlug, case-insensitive (`FindEnterprise`) — once per process. A
+slug the token's person does not administer is a fatal registration
+error, `enterprise "<slug>": not one of the token's enterprises (<slugs>)
+— the token must be an enterprise admin's`. The resolved id is cached on
+the config at once and written to node.yaml as `enterprise_id:` by
+`SaveRegistration` beside `node_id:`, so a later start on a token that
+cannot list enterprises still registers. `owner_id:` (the person) is
+never overwritten: `OwnedNodeID` keeps converging on the same id. A
+person's node sends `owner_id:` as before. `mesh node register` keeps
+`enterprise_id:` only for the same `enterprise:`.
+
+**The legacy rows retire themselves.** The first non-nil answer on the
+owner path after a per-org contract — node.yaml's `contract:` as it was
+when the registration began — retires the node's own legacy per-org
+rows (`retireLegacy`, `Registrar.Retire` → `retireNode`): `NodeIDIn(org)`
+for every org the answer names and every org of the token's person
+(`Registrar.LegacyOrgs`, `myOrgs` unrestricted), each once, the owned id
+never. Each id is derived from (org, slug), so it is always this node's
+own row and never another node's. Each is one note on
+`Registered.Notes`, logged after the start line and printed by `mesh
+node register`: `retired legacy node <id> (org <name>)`, or a refusal —
+already retired, `no such node` — as `legacy node <id> (org <name>):
+<err>`, never fatal. The per-org path never retires, nor a nil answer
+(the platform half-deployed), nor a registration whose contract was
+already owner — a restart does not re-sweep. A nil answer saves the
+owner contract all the same, so a node whose first owner registration
+was answered nil keeps its legacy rows until a person retires them
+(`runsheet nodes retire`); the platform answers once it takes the owner
+field, so this is the half-deployed platform's case alone. The contract's transition
+is the trigger; nothing else is recorded.
+
+**The log names the owner and its field.** `Owner.Who` names an
+enterprise with its kind — `node mini (runsheet-mini) owned by anythink
+(enterprise), serving …`, `owner changed: Chris → anythink
+(enterprise)` — and a person bare. Every registration notes the owner
+field the platform's `RegisterNodeInput` took (`Registrar.OwnerField`,
+`OwnerFieldLine`): `owner contract: field ownerKind`, `owner contract:
+field owner`, or `owner contract: no owner field (registerNode takes
+neither ownerKind nor owner); registering per org` — at start, and again
+on a registration retried in the confirm window, so a change of the
+probe's answer is said.
+
+Tests: `internal/node/owned_enterprise_test.go`.

@@ -1,6 +1,8 @@
 package commands
 
 import (
+	"github.com/google/uuid"
+
 	"context"
 	"errors"
 	"fmt"
@@ -10,12 +12,13 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"projectmesh.io/mesh-cli/internal/crash"
 	"strings"
 	"sync"
 	"syscall"
 	"text/tabwriter"
 	"time"
+
+	"projectmesh.io/mesh-cli/internal/crash"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -37,6 +40,8 @@ var (
 	nodeNameFlag           string
 	nodeSlugFlag           string
 	nodeCapacityFlag       int
+	nodeOwnerFlag          string
+	nodeEnterpriseFlag     string
 	nodeIntervalFlag       time.Duration
 	nodeStallFlag          time.Duration
 	nodeTurnTimeoutFlag    time.Duration
@@ -149,6 +154,25 @@ var nodeRegisterCmd = &cobra.Command{
 		if strings.TrimSpace(nodeNameFlag) == "" {
 			return errors.New("--name <name> is required")
 		}
+		// the owner and the enterprise, --flag over a prior registration's
+		// (`mesh node login` or an earlier `mesh node register`), validated
+		// before any network call: a bad combination refuses here, not
+		// after a wasted sign-in
+		owner, enterprise := strings.TrimSpace(nodeOwnerFlag), strings.TrimSpace(nodeEnterpriseFlag)
+		prev, err := node.LoadSettings()
+		if err != nil {
+			prev = &node.Config{}
+		}
+		if owner == "" {
+			owner = prev.Owner
+		}
+		if enterprise == "" {
+			enterprise = prev.Enterprise
+		}
+		if err := (&node.Config{Owner: owner, Enterprise: enterprise}).ValidateOwner(); err != nil {
+			path, _ := node.ConfigPath()
+			return fmt.Errorf("%s: %w", path, err)
+		}
 		gw, err := platformClient()
 		if err != nil {
 			return err
@@ -171,10 +195,16 @@ var nodeRegisterCmd = &cobra.Command{
 		}
 		cfg := &node.Config{Gateway: gw.BaseURL, Orgs: nodeOrgsFlag, OwnerID: me, Slug: slug, Name: strings.TrimSpace(nodeNameFlag), Capacity: node.Fixed(nodeCapacityFlag)}
 		// registering again must not drop what `mesh node login` recorded
-		// nor the owner and the node's one id a registration before it had
-		if prev, err := node.LoadSettings(); err == nil {
-			cfg.Latchkey, cfg.LatchkeyClient = prev.Latchkey, prev.LatchkeyClient
-			cfg.Owner, cfg.NodeID = prev.Owner, prev.NodeID
+		// nor the node's one id a registration before it had
+		cfg.Latchkey, cfg.LatchkeyClient = prev.Latchkey, prev.LatchkeyClient
+		cfg.NodeID = prev.NodeID
+		cfg.Owner, cfg.Enterprise = owner, enterprise
+		// the contract it was on decides whether this registration retires
+		// the legacy per-org rows (only on the move to the owner contract);
+		// the cached enterprise id holds only for the same enterprise
+		cfg.Contract = prev.Contract
+		if enterprise == prev.Enterprise {
+			cfg.EnterpriseID = prev.EnterpriseID
 		}
 		reg, err := node.Register(ctx, registrar(gw, cfg), cfg, cfg.Orgs)
 		if err != nil {
@@ -198,12 +228,27 @@ var nodeRegisterCmd = &cobra.Command{
 }
 
 // registrar is node.Register's steps on the platform client: the
-// `owner` probe, the orgs of the token's person, the one registration
-// on the owner contract (the node's own id, the owner's kind) and the
-// legacy registration per org.
+// owner probe and the field it found, the orgs of the token's person,
+// the enterprise's id from its slug (myEnterprises), the one
+// registration on the owner contract (the node's own id, the owner's id
+// and kind), the legacy registration per org, and the retirement of the
+// legacy per-org rows on the move to the owner contract.
 func registrar(gw *gateway.Client, cfg *node.Config) node.Registrar {
 	return node.Registrar{
 		TakesOwner: gw.TakesOwner,
+		OwnerField: gw.OwnerField,
+		ResolveEnterprise: func(ctx context.Context, slugOrID string) (string, error) {
+			if _, err := uuid.Parse(strings.TrimSpace(slugOrID)); err == nil {
+				return strings.TrimSpace(slugOrID), nil
+			}
+			es, err := gw.MyEnterprises(ctx)
+			if err != nil {
+				return "", fmt.Errorf("enterprise %q: my enterprises: %w", slugOrID, err)
+			}
+			return node.FindEnterprise(slugOrID, es)
+		},
+		LegacyOrgs: func(ctx context.Context) ([]gateway.Org, error) { return gw.MyOrgs(ctx) },
+		Retire:     gw.RetireNode,
 		Resolve:    func(ctx context.Context) (node.Scopes, error) { return node.ResolveScopes(ctx, gw, cfg) },
 		AnyOrg: func(ctx context.Context) (string, error) {
 			orgs, err := gw.MyOrgs(ctx)
@@ -215,8 +260,8 @@ func registrar(gw *gateway.Client, cfg *node.Config) node.Registrar {
 			}
 			return orgs[0].ID, nil
 		},
-		RegisterOwner: func(ctx context.Context, nodeID, orgID string) (*gateway.NodeAnswer, error) {
-			return gw.RegisterNode(ctx, gateway.RegisterNodeInput{NodeID: nodeID, OrgID: orgID, OwnerID: cfg.OwnerID, Name: cfg.Name, Slug: cfg.Slug,
+		RegisterOwner: func(ctx context.Context, nodeID, orgID, ownerID string) (*gateway.NodeAnswer, error) {
+			return gw.RegisterNode(ctx, gateway.RegisterNodeInput{NodeID: nodeID, OrgID: orgID, OwnerID: ownerID, Name: cfg.Name, Slug: cfg.Slug,
 				Harnesses: []string{"claude-code"}, Capacity: cfg.Capacity.Max, Version: version.Resolved(), Owner: cfg.OwnerKind()})
 		},
 		RegisterIn: func(ctx context.Context, scopes node.Scopes) error { return registerIn(ctx, gw, cfg, scopes) },
@@ -258,7 +303,7 @@ var nodeStatusCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if line := ownedStatusLine(out); line != "" {
+		if line := ownedStatusLine(cfg, out); line != "" {
 			fmt.Println(line)
 		}
 		scopes := out.Scopes
@@ -351,12 +396,17 @@ func dash(s string) string {
 // ownedStatusLine is what `mesh node status` says of the owner contract:
 // the owner and the orgs it serves, an orgs restriction the answer did
 // not meet, or — on a nil answer — that the platform named none this
-// time. A per-org node says nothing here.
-func ownedStatusLine(out node.Outside) string {
+// time (naming node.yaml's own `enterprise:` when the node is one, since
+// the answer carries none to fall back on). A per-org node says nothing
+// here.
+func ownedStatusLine(cfg *node.Config, out node.Outside) string {
 	if !out.Owned {
 		return ""
 	}
 	if out.Answer == nil {
+		if cfg != nil && cfg.Enterprise != "" {
+			return fmt.Sprintf("owner: %s (enterprise), the platform answered no orgs on this heartbeat", cfg.Enterprise)
+		}
 		return "owner contract: the platform answered no orgs on this heartbeat"
 	}
 	o := node.OwnerFrom(out.Answer)
@@ -1586,6 +1636,8 @@ func init() {
 	nodeRegisterCmd.Flags().StringVar(&nodeNameFlag, "name", "", "the node's name as the console shows it")
 	nodeRegisterCmd.Flags().StringVar(&nodeSlugFlag, "slug", "", "the node's slug (default: from --name); the node id derives from it")
 	nodeRegisterCmd.Flags().IntVar(&nodeCapacityFlag, "capacity", 1, "concurrent sessions")
+	nodeRegisterCmd.Flags().StringVar(&nodeOwnerFlag, "owner", "", `the node's owner: "person" (default, bring your own infra) or "enterprise" (shared infra; requires --enterprise)`)
+	nodeRegisterCmd.Flags().StringVar(&nodeEnterpriseFlag, "enterprise", "", "the enterprise that owns this node, by slug or id (required with --owner enterprise)")
 	nodeStartCmd.Flags().DurationVar(&nodeIntervalFlag, "interval", 30*time.Second, "heartbeat and claim interval")
 	nodeStartCmd.Flags().DurationVar(&nodeStallFlag, "stall", 10*time.Minute, "channel mode: re-push a held item the idle session has reported nothing on for this long")
 	nodeStartCmd.Flags().DurationVar(&nodeTurnTimeoutFlag, "turn-timeout", 45*time.Minute, "channel mode: kill and restart a busy session that has reported nothing on its item for this long (0 never)")
