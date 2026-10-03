@@ -63,7 +63,30 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `atomic` item let through unless that item's brief opened `atomic:`,
   and a second answer still re-landing is refused — `PlanGoal` not
   called; the reason rides the brief's first line `atomic: <reason>`,
-  `gateway.BriefWithAtomic`/`AtomicReason`), the director ends with its pitches and answers in one for a
+  `gateway.BriefWithAtomic`/`AtomicReason`), and its rule 3 and re-ask
+  carrying four more rules after `planSplitRule`: a plan over the
+  project's `maxItems` is answered `split` — goal drafts, each
+  `{slug, title, statement, acceptance, repo}`, each at most `maxItems`
+  items and one repo, for the node to propose as goals (`planSizeRule`,
+  `PlanInput.MaxItems` naming the cap in rule 2, `OverCap` turning the
+  re-ask into an ask for `split`, `GoalDraft`, `ParsePlanSplit` reading
+  `{"split": [...]}` from the same candidates as `ParsePlan`, so a
+  `split` answer with no `items` is not a parse error); a docs-only
+  close-out item — amending documents alone to say the branches read as
+  one design or describe what landed — is refused, docs landing in the
+  pull request of the change they describe, folded into that item
+  instead (`planCloseOutRule`); a clause waiting on a person's
+  confirmation or a production observation is never an item, becoming
+  `"precondition": "<clause>"` on the item that depends on it
+  (`PlannedSpec.Precondition`, kept by `ParsePlan`) or a `pr` checkpoint
+  on the goal beside `items` as `"checkpoints": ["pr"]`
+  (`ParsePlanCheckpoints`, read like `ParsePlanQuestions`;
+  release-tag-mirrors item 14's gate no builder could open is the
+  example, `planCutOverRule`); and an item naming a repo other than the
+  goal's is a different goal, left out or drafted into the `split`
+  (`planRepoRule`; ADR-023 — the node's plan check, the gateway's
+  `maxItems`/`ProposeGoalSplit`/`SetGoalCheckpoints` and the hand-in of
+  a `split` answer are later items of the same goal), the director ends with its pitches and answers in one for a
   propose-mode direction, its proposals in one for a set-mode one, the rebase session
   ends with `REBASED: <sha>` and `RESOLVED: <files>` or
   `REBASE FAILED: <why>`, the builder never pushes and checks main
