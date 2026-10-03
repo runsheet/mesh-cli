@@ -26,11 +26,24 @@ type WorkspaceSpec struct {
 	Repo     string // owner/name
 	Branch   string
 	BaseRef  string
+	// Path, when set, is the checkout's directory outright: a plan's
+	// read-only checkout under PlanDir/repos/<name> (PlanRepoSpec),
+	// which no goal and seq name.
+	Path string
 }
 
 // Dir is the workspace directory.
 func (s WorkspaceSpec) Dir() string {
+	if s.Path != "" {
+		return s.Path
+	}
 	return filepath.Join(s.Root, s.GoalSlug, fmt.Sprint(s.Seq))
+}
+
+// PlanRepoSpec is a plan's read-only checkout of repo at dir, for
+// Authorize: the goal's token on that checkout alone (adr-022).
+func PlanRepoSpec(repo, dir string) WorkspaceSpec {
+	return WorkspaceSpec{Repo: repo, Path: dir}
 }
 
 // BranchName is the branch an item works on: mesh/<goal-slug>-<seq>.
@@ -69,8 +82,10 @@ type Workspacer interface {
 	ChangedPaths(ctx context.Context, dir, base string) ([]string, error)
 	// Fetch clones repo (owner/name) into dir, shallow but with the
 	// default branch's last FetchDepth commits, or refreshes a clone
-	// already there: a read-only copy for the planner, whose `git log`
-	// is how it sees what main already holds (adr-003 decision 2).
+	// already there — an empty one Authorize made included, fetched on
+	// its own helper with no `gh` — a read-only copy for the planner,
+	// whose `git log` is how it sees what main already holds (adr-003
+	// decision 2, adr-022).
 	Fetch(ctx context.Context, repo, dir string) error
 	// PushedHead fetches origin and returns the head of origin/branch —
 	// what a session pushed, read back — or an error when origin/base is
@@ -328,7 +343,10 @@ func (g *Git) Fetch(ctx context.Context, repo, dir string) error {
 		_, err := g.run(ctx, filepath.Dir(dir), "gh", "repo", "clone", repo, dir, "--", "--depth", strconv.Itoa(FetchDepth))
 		return err
 	}
-	if _, err := g.run(ctx, dir, "git", "fetch", "--depth", strconv.Itoa(FetchDepth), "origin"); err != nil {
+	// origin's HEAD by name: a checkout Authorize made empty has no
+	// branch tracking the default one, so a bare `fetch origin` would
+	// leave FETCH_HEAD on whichever branch sorts first
+	if _, err := g.run(ctx, dir, "git", "fetch", "--depth", strconv.Itoa(FetchDepth), "origin", "HEAD"); err != nil {
 		return err
 	}
 	_, err := g.run(ctx, dir, "git", "reset", "--hard", "FETCH_HEAD")

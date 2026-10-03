@@ -115,3 +115,22 @@ contract, the way `heartbeatNode.json` and `registerNode.json` are.
 - A platform that does not yet serve either field costs nothing new: the
   existing fallback and its once-per-run log line carry planning and
   research exactly as they carry a build.
+
+## Amendment 2026-10-03: the planner fetches on the read
+
+Item 2 of the goal wires the planner. `Planner.plan` reads
+`PlanGitHubTokens` after the project's repos and before any fetch; for
+each repo, in sorted order, `Workspacer.Authorize(PlanRepoSpec(repo,
+<plan dir>/repos/<name>), row)` makes the checkout — empty, origin the
+https URL, the checkout's own credential helper on the row — and then
+`Fetch` takes its `git fetch` branch, never `gh repo clone`. `Git.Fetch`
+fetches `origin HEAD` by name, since an `Authorize`d checkout has no
+branch tracking the default one. A refusal, or a repo the answer has no
+row for, is the plan's error naming the repo, returned before any
+session opens (item 4 of the goal reports it). The session's `job.Env`
+is `SessionEnv(<first sorted repo's row>, NewGHConfigDir())`, the dir
+removed when the session ends unless it detached. An old platform
+(`IsUnsupported`) fetches on the operator's `gh` as before, said once
+per run by the planner's own `TokenFallback` (`NotePlan`): `goal <slug>:
+platform issues no plan token; fetching on the operator's gh`. The
+director's research is item 3.

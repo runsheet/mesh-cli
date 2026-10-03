@@ -152,6 +152,21 @@ func (f *TokenFallback) Note(itemID string, logf func(string, ...any)) {
 	f.once.Do(say)
 }
 
+// NotePlan is Note for a plan's fetch on a platform without
+// planGitHubToken (adr-022): the operator's own gh, said once per run.
+// A planner keeps its own TokenFallback, so the items' notice never
+// swallows the plan's.
+func (f *TokenFallback) NotePlan(goalSlug string, logf func(string, ...any)) {
+	say := func() {
+		logf("goal %s: platform issues no plan token; fetching on the operator's gh", goalSlug)
+	}
+	if f == nil {
+		say()
+		return
+	}
+	f.once.Do(say)
+}
+
 // ItemCred is an item's GitHub token on its workspace, renewed before it
 // expires. A nil *ItemCred is the old platform's fallback: the
 // operator's own gh and git credentials, as before.
