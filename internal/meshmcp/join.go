@@ -70,11 +70,13 @@ type JoinItem struct {
 
 // HeldItem is one item `mesh mcp` holds, in mcp-state.json.
 type HeldItem struct {
-	ItemID    string    `json:"itemId"`
-	Goal      string    `json:"goal"`
-	Seq       int       `json:"seq"`
-	Path      string    `json:"path"`
-	Branch    string    `json:"branch"`
+	ItemID string `json:"itemId"`
+	Goal   string `json:"goal"`
+	Seq    int    `json:"seq"`
+	Path   string `json:"path"`
+	Branch string `json:"branch"`
+	// Base is the item's base ref: mesh_status counts commits past it.
+	Base      string    `json:"base,omitempty"`
 	ClaimedAt time.Time `json:"claimedAt"`
 }
 
@@ -131,6 +133,34 @@ func (j *Join) hold(h HeldItem) error {
 		}
 	}
 	s.Held = append(kept, h)
+	return writeState(path, s)
+}
+
+// drop removes the item from the state file.
+func (j *Join) drop(itemID string) error {
+	path, err := j.statePath()
+	if err != nil {
+		return err
+	}
+	s, err := ReadState(path)
+	if err != nil {
+		return err
+	}
+	kept := s.Held[:0]
+	for _, o := range s.Held {
+		if o.ItemID != itemID {
+			kept = append(kept, o)
+		}
+	}
+	s.Held = kept
+	return writeState(path, s)
+}
+
+// writeState writes s to path atomically.
+func writeState(path string, s State) error {
+	if s.Held == nil {
+		s.Held = []HeldItem{}
+	}
 	b, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err
@@ -166,16 +196,16 @@ func (j *Join) findGoal(ctx context.Context, slug string) (*gateway.Goal, string
 	return nil, "", fmt.Errorf("no goal %q in your orgs", slug)
 }
 
-// findItem is the goal's item at seq, or its first ready one when seq
-// is 0.
-func (j *Join) findItem(ctx context.Context, g *gateway.Goal, seq int) (*gateway.WorkItem, error) {
+// findItem is the goal's item at seq, or its first ready one but
+// exclude's when seq is 0.
+func (j *Join) findItem(ctx context.Context, g *gateway.Goal, seq int, exclude string) (*gateway.WorkItem, error) {
 	items, err := j.GW.GoalWorkItems(ctx, g.ID)
 	if err != nil {
 		return nil, fmt.Errorf("items of %s: %w", g.Slug, err)
 	}
 	sort.Slice(items, func(a, b int) bool { return items[a].Seq < items[b].Seq })
 	for _, it := range items {
-		if (seq != 0 && it.Seq == seq) || (seq == 0 && it.Status == "ready") {
+		if (seq != 0 && it.Seq == seq) || (seq == 0 && it.Status == "ready" && it.ID != exclude) {
 			return &it, nil
 		}
 	}
@@ -215,7 +245,11 @@ func (j *Join) call(ctx context.Context, args map[string]any) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	ans, err := j.Run(ctx, slug, seq)
+	return j.answer(j.run(ctx, slug, seq, ""))
+}
+
+// answer renders a join's result as the tool's answer.
+func (j *Join) answer(ans *JoinAnswer, err error) (string, error) {
 	if err != nil {
 		var refused *ClaimRefused
 		if errors.As(err, &refused) {
@@ -239,11 +273,17 @@ func (e *ClaimRefused) Error() string { return "claim refused: " + e.Reason }
 // Run claims the goal's item (seq, or its first ready one at 0) and
 // prepares its workspace.
 func (j *Join) Run(ctx context.Context, slug string, seq int) (*JoinAnswer, error) {
+	return j.run(ctx, slug, seq, "")
+}
+
+// run is Run, passing over the item exclude when choosing the first
+// ready one: mesh_switch never joins the item it just released.
+func (j *Join) run(ctx context.Context, slug string, seq int, exclude string) (*JoinAnswer, error) {
 	goal, orgName, err := j.findGoal(ctx, slug)
 	if err != nil {
 		return nil, err
 	}
-	item, err := j.findItem(ctx, goal, seq)
+	item, err := j.findItem(ctx, goal, seq, exclude)
 	if err != nil {
 		return nil, err
 	}
@@ -313,7 +353,7 @@ func (j *Join) prepare(ctx context.Context, item gateway.WorkItem, nodeID, orgNa
 	if index := filepath.Join(dir, node.ContextDir, node.IndexFile); fileExists(index) {
 		files = append(files, index)
 	}
-	if err := j.hold(HeldItem{ItemID: item.ID, Goal: res.Goal.Slug, Seq: item.Seq, Path: dir, Branch: spec.Branch, ClaimedAt: time.Now().UTC()}); err != nil {
+	if err := j.hold(HeldItem{ItemID: item.ID, Goal: res.Goal.Slug, Seq: item.Seq, Path: dir, Branch: spec.Branch, Base: spec.BaseRef, ClaimedAt: time.Now().UTC()}); err != nil {
 		return nil, fmt.Errorf("state: %w", err)
 	}
 	return &JoinAnswer{Path: dir, Branch: spec.Branch, Brief: item.Brief, Acceptance: item.Acceptance, Context: files,

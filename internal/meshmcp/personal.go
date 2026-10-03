@@ -13,13 +13,16 @@ import (
 
 // The personal server: `mesh mcp`, Mesh inside Claude Code on the
 // person's own credential (ADR-023, mesh mcp). It proxies the hosted
-// reads; the work tools are named from the first release and answer
-// `not yet available` until the goal's later items fill them in.
+// reads; with a Join it claims and works items (join.go, work.go), and
+// without one the work tools answer `not yet available`.
 
 // Instructions is what Claude Code is told of the personal server.
 const Instructions = `Mesh's goals and work items, on your own login. ` +
 	`mesh_goals lists the live goals and their open items; mesh_join takes one to work on, mesh_status says what you hold. ` +
 	`Report with mesh_progress, ask with mesh_ask, end with mesh_finish or mesh_release.`
+
+// itemArg describes a work tool's `item` argument.
+const itemArg = "the held item: its id, seq or goal/seq (the one held item when omitted)"
 
 // NotYetAvailable is the answer of a tool this release names but does
 // not yet serve.
@@ -43,8 +46,8 @@ type PersonalGateway interface {
 }
 
 // Personal is the server's state: the gateway and, once set, Join,
-// which mesh_join claims and prepares an item with (nil answers `not
-// yet available`) and whose state file mesh_status reads.
+// which mesh_join claims and prepares an item with and whose state file
+// the work tools read (nil answers `not yet available`).
 type Personal struct {
 	GW   Reads
 	Join *Join
@@ -77,32 +80,28 @@ func (p *Personal) Tools() []Tool {
 		{Name: "mesh_goals", Description: "List the live goals of the orgs you reach and their open work items. Use it to find an item to join.",
 			Schema: ObjectSchema(map[string]string{"org": "only this org's login", "goal": "only this goal's slug"}),
 			Call:   p.goals},
-		{Name: "mesh_status", Description: "The items this Claude Code session holds through Mesh: each one's goal, seq, title, status and branch.",
+		{Name: "mesh_status", Description: "The items this Claude Code session holds through Mesh: each one's goal, seq, path, branch, whether the checkout has uncommitted changes and its commits past base.",
 			Schema: ObjectSchema(nil),
-			Call:   p.status},
+			Call:   p.statusTool},
 		{Name: "mesh_join", Description: "Claim a goal's item and prepare its checkout on the item's branch; answers the path, brief, acceptance and context. pair joins the branch another holder works on.",
 			Schema: ObjectSchema(map[string]string{"goal": "the goal's slug", "item": "the item's seq (the next ready one when omitted)", "pair": "work the same branch as its holder"}, "goal"),
 			Call:   p.join},
-		{Name: "mesh_switch", Description: "Leave the item you hold — push, note and release it — and join another.",
-			Schema: ObjectSchema(map[string]string{"goal": "the goal's slug to join", "item": "the item's seq", "note": "why you are switching"}, "goal"),
-			Call:   notYet},
+		{Name: "mesh_switch", Description: "Leave the item you hold — push its commits, note why and release it — and join another; answers the join.",
+			Schema: ObjectSchema(map[string]string{"goal": "the goal's slug to join", "item": "the item's seq to join (the next ready one when omitted)", "note": "why you are switching", "from": "the held item to leave (" + itemArg + "); required when several are held"}, "goal"),
+			Call:   p.work(p.switchItem)},
 		{Name: "mesh_progress", Description: "Report progress on the item you hold: one short note.",
-			Schema: ObjectSchema(map[string]string{"item_id": "the work item id", "note": "what happened, one line"}, "item_id", "note"),
-			Call:   notYet},
+			Schema: ObjectSchema(map[string]string{"item": itemArg, "note": "what happened, one line", "costCents": "what the work cost, in cents"}, "note"),
+			Call:   p.work(p.progress)},
 		{Name: "mesh_ask", Description: "Ask the goal's people a question about the item you hold; the answer comes back on the item.",
-			Schema: ObjectSchema(map[string]string{"item_id": "the work item id", "question": "the question, one or two sentences"}, "item_id", "question"),
-			Call:   notYet},
-		{Name: "mesh_finish", Description: "The item's branch is pushed: record it and end the item. If main already holds the work, finish with outcome already_done and the evidence.",
-			Schema: ObjectSchema(map[string]string{"item_id": "the work item id", "outcome": "built (the default) or already_done", "evidence": "for already_done: the PRs or commits on main that satisfy the acceptance"}, "item_id"),
-			Call:   notYet},
+			Schema: ObjectSchema(map[string]string{"item": itemArg, "question": "the question, one or two sentences"}, "question"),
+			Call:   p.work(p.ask)},
+		{Name: "mesh_finish", Description: "Commit your work first: this pushes the item's branch as committed, records it and ends the item. If main already holds the work, finish with outcome already_done and the evidence.",
+			Schema: ObjectSchema(map[string]string{"item": itemArg, "outcome": "built (the default) or already_done", "evidence": "for already_done: the PRs or commits on main that satisfy the acceptance"}),
+			Call:   p.work(p.finish)},
 		{Name: "mesh_release", Description: "Give the item you hold back to the platform unfinished, with the reason.",
-			Schema: ObjectSchema(map[string]string{"item_id": "the work item id", "reason": "why it is given back"}, "item_id", "reason"),
-			Call:   notYet},
+			Schema: ObjectSchema(map[string]string{"item": itemArg, "reason": "why it is given back"}, "reason"),
+			Call:   p.work(p.release)},
 	}
-}
-
-func notYet(context.Context, map[string]any) (string, error) {
-	return NotYetAvailable, nil
 }
 
 // liveGoal is a goal still to be worked: not ended.
@@ -168,32 +167,6 @@ func (p *Personal) join(ctx context.Context, args map[string]any) (string, error
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.Join.call(ctx, args)
-}
-
-// status lists the items mcp-state.json records as held.
-func (p *Personal) status(context.Context, map[string]any) (string, error) {
-	var held []HeldItem
-	if p.Join != nil {
-		path, err := p.Join.statePath()
-		if err != nil {
-			return "", err
-		}
-		p.mu.Lock()
-		s, err := ReadState(path)
-		p.mu.Unlock()
-		if err != nil {
-			return "", fmt.Errorf("state: %w", err)
-		}
-		held = s.Held
-	}
-	if len(held) == 0 {
-		return "holding no item: mesh_join takes one", nil
-	}
-	var b strings.Builder
-	for _, h := range held {
-		fmt.Fprintf(&b, "%s %d %s %s\n", h.Goal, h.Seq, h.Branch, h.Path)
-	}
-	return b.String(), nil
 }
 
 func str(args map[string]any, key string) string {
