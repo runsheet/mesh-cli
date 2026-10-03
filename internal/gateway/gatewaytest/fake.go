@@ -133,6 +133,12 @@ type Fake struct {
 	// `replaceItem` (before the narrow re-plan): introspection leaves it
 	// out and a requestPlan carrying it is refused with "Unknown field".
 	NoReplaceItem bool
+	// NoActor is a platform older than every-actor-has-a-name: its
+	// ClaimWorkItemInput, ReportWorkItemProgressInput,
+	// FinishWorkItemInput, EvaluateWorkItemInput and PlanGoalInput have
+	// no `actor`, introspection leaves it out, and a command of the five
+	// carrying it is refused with "Unknown field".
+	NoActor bool
 	// GoalSplit is a platform whose Mutation has proposeGoalSplit
 	// (ADR-023, the size rule): false, as the platform is today (goal
 	// a-goal-fits-in-eight-items is still queued), leaves the field out
@@ -511,8 +517,11 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var fields []any
-		for _, n := range []string{"aggregateId", "namespace", "passed", "notes", "costCents", "usage", gateway.NoVerdictField, gateway.NoVerdictReasonField, gateway.FailedClausesField} {
+		for _, n := range []string{"aggregateId", "namespace", "passed", "notes", "costCents", "usage", gateway.NoVerdictField, gateway.NoVerdictReasonField, gateway.FailedClausesField, gateway.ActorField} {
 			if (n == gateway.NoVerdictField || n == gateway.NoVerdictReasonField) && f.NoNoVerdict {
+				continue
+			}
+			if n == gateway.ActorField && f.NoActor {
 				continue
 			}
 			if n == gateway.FailedClausesField && f.NoFailedClauses {
@@ -528,8 +537,26 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		fields := []any{}
-		for _, n := range []string{"aggregateId", "by", "costCents", "items", "namespace", "usage", gateway.PlanQuestionsField} {
+		for _, n := range []string{"aggregateId", "by", "costCents", "items", "namespace", "usage", gateway.PlanQuestionsField, gateway.ActorField} {
 			if n == gateway.PlanQuestionsField && !f.PlanQuestions {
+				continue
+			}
+			if n == gateway.ActorField && f.NoActor {
+				continue
+			}
+			fields = append(fields, map[string]any{"name": n})
+		}
+		writeData(w, map[string]any{"__type": map[string]any{"inputFields": fields}})
+	case strings.Contains(q, "__type(") && actorInputFields[fmt.Sprint(req.Variables["t"])] != nil:
+		t := fmt.Sprint(req.Variables["t"])
+		f.Reads = append(f.Reads, Call{Name: "__type " + t, Input: map[string]any{}})
+		if f.Unsupported["__type"] {
+			writeErrors(w, 200, "GraphQL introspection is not allowed")
+			return
+		}
+		fields := []any{}
+		for _, n := range append(actorInputFields[t], gateway.ActorField) {
+			if n == gateway.ActorField && f.NoActor {
 				continue
 			}
 			fields = append(fields, map[string]any{"name": n})
@@ -618,6 +645,12 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 			// refusal an absent recordValidationAttestation gets
 			writeErrors(w, 200, fmt.Sprintf("Cannot query field %q on type \"Mutation\".", m[2]))
 			return
+		}
+		if t, ok := actorMutations[m[2]]; ok && f.NoActor {
+			if _, ok := in[gateway.ActorField]; ok {
+				writeErrors(w, 200, fmt.Sprintf(`Variable "$in" got invalid value; Unknown field "actor" is not defined by type %q.`, t))
+				return
+			}
 		}
 		if m[2] == "requestPlan" {
 			by, _ := in["by"].(string)
@@ -1890,4 +1923,23 @@ func (f *Fake) recordValidationAttestation(w http.ResponseWriter, q string, vars
 		receipt = map[string]any{"status": "ok", "commit": in["commit"]}
 	}
 	writeData(w, map[string]any{field: receipt})
+}
+
+// actorInputFields are the input fields, beside `actor`, the fake's
+// introspection names for the command inputs that carry the actor and
+// had no case of their own (every-actor-has-a-name).
+var actorInputFields = map[string][]string{
+	"ClaimWorkItemInput":          {"aggregateId", "namespace", "nodeId", "harness"},
+	"ReportWorkItemProgressInput": {"aggregateId", "namespace", "note", "costCents", "sessionId", "usage"},
+	"FinishWorkItemInput":         {"aggregateId", "namespace", "branch", "headSha", "outcome", "evidence", "description", "costCents", "usage"},
+}
+
+// actorMutations are the five commands that carry the actor, and the
+// input type a NoActor platform names when refusing one.
+var actorMutations = map[string]string{
+	"claimWorkItem":          "ClaimWorkItemInput",
+	"reportWorkItemProgress": "ReportWorkItemProgressInput",
+	"finishWorkItem":         "FinishWorkItemInput",
+	"evaluateWorkItem":       "EvaluateWorkItemInput",
+	"planGoal":               "PlanGoalInput",
 }

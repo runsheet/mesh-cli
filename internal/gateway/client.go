@@ -166,7 +166,10 @@ type Client struct {
 	// goalSplitSchema is whether the gateway's Mutation was last found to
 	// have proposeGoalSplit (see TakesGoalSplit).
 	goalSplitSchema holdingProbe
-	Now             func() time.Time
+	// actorSchema is, per input type, whether the gateway's command input
+	// was last found to take `actor` (see withActor).
+	actorSchema actorProbes
+	Now         func() time.Time
 }
 
 // New returns a client for baseURL (scheme+host, no trailing slash) with
@@ -363,6 +366,7 @@ func (c *Client) MutateFields(ctx context.Context, field, aggregateID string, in
 	for k, v := range input {
 		in[k] = v
 	}
+	c.withActor(ctx, field, in)
 	typ := strings.ToUpper(field[:1]) + field[1:] + "Input"
 	q := fmt.Sprintf("mutation($in: %s!) { %s(input: $in) { %s } }", typ, field, fields)
 	if out == nil {
