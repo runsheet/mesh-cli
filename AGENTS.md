@@ -692,7 +692,11 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   image by `sandbox.ImageDigest`) or on the host (`host:<hostname>`,
   the session's env less its secrets). The attestation goes to
   `<workdir>.session/attestation.json` and, after the push, to
-  `RecordValidationAttestation` on the item's token. A failing step
+  `RecordValidationAttestation` on the node's own token —
+  `recordValidationAttestation(workItemId, input)`, the shape of
+  `specs/contracts/recordValidationAttestation.json` (runsheet's,
+  byte for byte), asked of the Mutation's introspection once an hour,
+  no REST path. A failing step
   gets one retry turn (`harness.ValidationRetryPrompt`, the session
   resumed when it can be), then `FailWorkItem` with `validation failed:
   step <name> exited <code>`; per-step ms ride the usage report's

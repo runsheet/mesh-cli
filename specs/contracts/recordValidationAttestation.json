@@ -1,0 +1,44 @@
+{
+  "field": "recordValidationAttestation",
+  "input": {
+    "input": {
+      "artifactDigests": [
+        "sha256:beef"
+      ],
+      "at": "2026-01-01T00:00:00Z",
+      "commands": [
+        {
+          "command": "go test ./platform/...",
+          "durationMs": 61000,
+          "exitCode": 0,
+          "suite": "unit"
+        }
+      ],
+      "commit": "commit-71a0008ac0678b43aff3c9228a7fbdf8919a17dd",
+      "reports": [
+        {
+          "content": "{\"Action\":\"pass\"}",
+          "suite": "unit"
+        }
+      ],
+      "runnerImage": "ghcr.io/runsheet/mesh-node@sha256:0123",
+      "sessionId": "beta-build",
+      "suiteHash": "ff3098b20936d93f1f5fee43633b8e90c04ad98b71e22f15e839afa988200fa6",
+      "testsFailed": 0,
+      "testsPassed": 12,
+      "testsRun": 12,
+      "treeHash": "tree-38dc1c892fe1a2581ba77fed6ec2d2a29ee3d33f"
+    },
+    "workItemId": "00000000-0000-4000-8000-0000000c0003"
+  },
+  "inputType": "(workItemId: UUID!, input: Map!)",
+  "kind": "mutation",
+  "result": {
+    "branch": "mesh/beta-1",
+    "commit": "commit-71a0008ac0678b43aff3c9228a7fbdf8919a17dd",
+    "keyId": "ed25519:KEYID",
+    "signature": "SIGNATURE",
+    "status": "ok",
+    "testEvidenceId": "00000000-0000-4000-8000-0000000fffff"
+  }
+}
