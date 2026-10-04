@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
@@ -797,4 +798,79 @@ func sharedFile(a, b map[string]bool) string {
 	}
 	sort.Strings(both)
 	return both[0]
+}
+
+// The node's check of a plan for the goal's shared documents (ADR-023's
+// amendment, planSharedDocsRule): one item of the goal writes its ADR,
+// TRD section, AGENTS.md and README; every other item's brief says not
+// to touch them.
+
+// sharedDocsWriter is the seq of the item that writes the goal's shared
+// documents: the item marked `writes_shared_docs` (PlannedSpec's field,
+// item 1 of the goal); when none is marked, the highest-seq item no
+// other item depends on — a sink of the plan's own declared graph; 0
+// when specs is empty. When more than one item is marked, the
+// highest-seq of them writes, and sharedDocsWriterFlags names the rest
+// for the planner's re-ask.
+func sharedDocsWriter(specs []harness.PlannedSpec) int {
+	writer := 0
+	for _, sp := range specs {
+		if sp.WritesSharedDocs && sp.Seq > writer {
+			writer = sp.Seq
+		}
+	}
+	if writer > 0 {
+		return writer
+	}
+	dependedOn := map[int]bool{}
+	for _, sp := range specs {
+		for _, d := range sp.DependsOn {
+			dependedOn[d.Seq] = true
+		}
+	}
+	for _, sp := range specs {
+		if !dependedOn[sp.Seq] && sp.Seq > writer {
+			writer = sp.Seq
+		}
+	}
+	return writer
+}
+
+// sharedDocsWriterFlags flags more than one item marked
+// `writes_shared_docs`, like otherRepoItems, for the planner's re-ask;
+// nil when at most one item claims it.
+func sharedDocsWriterFlags(specs []harness.PlannedSpec) []string {
+	var marked []string
+	for _, sp := range specs {
+		if sp.WritesSharedDocs {
+			marked = append(marked, strconv.Itoa(sp.Seq))
+		}
+	}
+	if len(marked) < 2 {
+		return nil
+	}
+	return []string{fmt.Sprintf("items %s both claim the shared documents; one writes them", joinAnd(marked))}
+}
+
+// joinAnd joins parts with commas and "and" before the last, like
+// "1, 2 and 3"; two parts join with "and" alone.
+func joinAnd(parts []string) string {
+	if len(parts) == 1 {
+		return parts[0]
+	}
+	return strings.Join(parts[:len(parts)-1], ", ") + " and " + parts[len(parts)-1]
+}
+
+// sharedDocsSiblings is every item of specs but the writer's, by seq,
+// for BriefWithSharedDocsWriter to list.
+func sharedDocsSiblings(specs []harness.PlannedSpec, writer int) []gateway.SharedDocsSibling {
+	siblings := make([]gateway.SharedDocsSibling, 0, len(specs))
+	for _, sp := range specs {
+		if sp.Seq == writer {
+			continue
+		}
+		siblings = append(siblings, gateway.SharedDocsSibling{Seq: sp.Seq, Title: strings.TrimSpace(sp.Title)})
+	}
+	sort.Slice(siblings, func(i, j int) bool { return siblings[i].Seq < siblings[j].Seq })
+	return siblings
 }
