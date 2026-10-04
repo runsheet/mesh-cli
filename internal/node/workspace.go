@@ -113,6 +113,12 @@ type Git struct {
 	Log io.Writer
 	// GitHubURL is GitHub's base URL (GitHubURL when empty).
 	GitHubURL string
+	// LockRoot is where the per-repo fetch locks live, under
+	// <LockRoot>/.locks/ (ADR-023, fetches of one repo are serialised on
+	// the node). Empty, Prepare takes its spec's Root and every other
+	// call the checkout's grandparent — the work root for an item's
+	// <root>/<goal>/<seq>.
+	LockRoot string
 }
 
 func (g *Git) githubURL() string {
@@ -162,14 +168,15 @@ func (g *Git) run(ctx context.Context, dir string, name string, args ...string) 
 // Prepare implements Workspacer.
 func (g *Git) Prepare(ctx context.Context, spec WorkspaceSpec) (string, error) {
 	dir := spec.Dir()
+	root, key := g.lockRoot(spec.Root, dir), RepoLockKey(spec.Repo)
 	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
 		if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
 			return "", err
 		}
-		if _, err := g.run(ctx, filepath.Dir(dir), "gh", "repo", "clone", spec.Repo, dir); err != nil {
+		if _, err := g.fetchLocked(ctx, root, key, filepath.Dir(dir), "gh", "repo", "clone", spec.Repo, dir); err != nil {
 			return "", err
 		}
-	} else if _, err := g.run(ctx, dir, "git", "fetch", "--prune", "origin"); err != nil {
+	} else if _, err := g.fetchLocked(ctx, root, key, dir, "git", "fetch", "--prune", "origin"); err != nil {
 		return "", err
 	}
 	base := spec.BaseRef
@@ -181,9 +188,9 @@ func (g *Git) Prepare(ctx context.Context, spec WorkspaceSpec) (string, error) {
 		base = strings.TrimPrefix(out, "origin/")
 	}
 	if spec.Branch == "" {
-		return dir, g.CheckoutBase(ctx, dir, base)
+		return dir, g.checkoutBase(ctx, root, key, dir, base)
 	}
-	if err := g.baseHistory(ctx, dir, base); err != nil {
+	if err := g.baseHistory(ctx, root, key, dir, base); err != nil {
 		return "", err
 	}
 	// a branch pushed by an earlier attempt (or just finished, for its
@@ -212,12 +219,16 @@ func (g *Git) Prepare(ctx context.Context, spec WorkspaceSpec) (string, error) {
 // fetched the base explicitly and a shallow one unshallowed, so every
 // cited SHA can be looked up.
 func (g *Git) CheckoutBase(ctx context.Context, dir, base string) error {
+	return g.checkoutBase(ctx, g.lockRoot("", dir), g.repoKeyOf(ctx, dir), dir, base)
+}
+
+func (g *Git) checkoutBase(ctx context.Context, root, key, dir, base string) error {
 	refspec := "+refs/heads/" + base + ":refs/remotes/origin/" + base
 	args := []string{"fetch", "--quiet", "origin", refspec}
 	if out, err := g.run(ctx, dir, "git", "rev-parse", "--is-shallow-repository"); err == nil && out == "true" {
 		args = []string{"fetch", "--quiet", "--unshallow", "origin", refspec}
 	}
-	if _, err := g.run(ctx, dir, "git", args...); err != nil {
+	if _, err := g.fetchLocked(ctx, root, key, dir, "git", args...); err != nil {
 		return err
 	}
 	_, err := g.run(ctx, dir, "git", "checkout", "--quiet", "--detach", "origin/"+base)
@@ -229,9 +240,9 @@ func (g *Git) CheckoutBase(ctx context.Context, dir, base string) error {
 // base branch fetched by name (a single-branch clone lacks it) and, in a
 // shallow checkout, its last FetchDepth commits when it has fewer (never
 // shortened: a deeper history an evaluation fetched stays).
-func (g *Git) baseHistory(ctx context.Context, dir, base string) error {
+func (g *Git) baseHistory(ctx context.Context, root, key, dir, base string) error {
 	refspec := "+refs/heads/" + base + ":refs/remotes/origin/" + base
-	if _, err := g.run(ctx, dir, "git", "fetch", "--quiet", "origin", refspec); err != nil {
+	if _, err := g.fetchLocked(ctx, root, key, dir, "git", "fetch", "--quiet", "origin", refspec); err != nil {
 		return err
 	}
 	if out, err := g.run(ctx, dir, "git", "rev-parse", "--is-shallow-repository"); err != nil || out != "true" {
@@ -242,7 +253,7 @@ func (g *Git) baseHistory(ctx context.Context, dir, base string) error {
 			return nil
 		}
 	}
-	_, err := g.run(ctx, dir, "git", "fetch", "--quiet", "--depth="+strconv.Itoa(FetchDepth), "origin", refspec)
+	_, err := g.fetchLocked(ctx, root, key, dir, "git", "fetch", "--quiet", "--depth="+strconv.Itoa(FetchDepth), "origin", refspec)
 	return err
 }
 
@@ -305,8 +316,9 @@ const deepenRounds = 3
 // deepening a shallow checkout in a fixed number of steps. A branch that
 // still shares none yields a *NoMergeBaseError.
 func (g *Git) EnsureMergeBase(ctx context.Context, dir, base string) error {
+	root, key := g.lockRoot("", dir), g.repoKeyOf(ctx, dir)
 	remote := "refs/remotes/origin/" + base
-	if _, err := g.run(ctx, dir, "git", "fetch", "--quiet", "origin", "+refs/heads/"+base+":"+remote); err != nil {
+	if _, err := g.fetchLocked(ctx, root, key, dir, "git", "fetch", "--quiet", "origin", "+refs/heads/"+base+":"+remote); err != nil {
 		return err
 	}
 	has := func() bool {
@@ -322,7 +334,7 @@ func (g *Git) EnsureMergeBase(ctx context.Context, dir, base string) error {
 	}
 	step := FetchDepth
 	for i := 0; i < deepenRounds && shallow(); i++ {
-		if _, err := g.run(ctx, dir, "git", "fetch", "--quiet", "--deepen="+strconv.Itoa(step), "origin"); err != nil {
+		if _, err := g.fetchLocked(ctx, root, key, dir, "git", "fetch", "--quiet", "--deepen="+strconv.Itoa(step), "origin"); err != nil {
 			return err
 		}
 		if has() {
@@ -332,7 +344,7 @@ func (g *Git) EnsureMergeBase(ctx context.Context, dir, base string) error {
 	}
 	// a repository the deepening completed is no longer shallow: nothing to unshallow
 	if shallow() {
-		if _, err := g.run(ctx, dir, "git", "fetch", "--quiet", "--unshallow", "origin"); err != nil {
+		if _, err := g.fetchLocked(ctx, root, key, dir, "git", "fetch", "--quiet", "--unshallow", "origin"); err != nil {
 			return err
 		}
 		if has() {
@@ -345,17 +357,18 @@ func (g *Git) EnsureMergeBase(ctx context.Context, dir, base string) error {
 
 // Fetch implements Workspacer.
 func (g *Git) Fetch(ctx context.Context, repo, dir string) error {
+	root, key := g.lockRoot("", dir), RepoLockKey(repo)
 	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
 		if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
 			return err
 		}
-		_, err := g.run(ctx, filepath.Dir(dir), "gh", "repo", "clone", repo, dir, "--", "--depth", strconv.Itoa(FetchDepth))
+		_, err := g.fetchLocked(ctx, root, key, filepath.Dir(dir), "gh", "repo", "clone", repo, dir, "--", "--depth", strconv.Itoa(FetchDepth))
 		return err
 	}
 	// origin's HEAD by name: a checkout Authorize made empty has no
 	// branch tracking the default one, so a bare `fetch origin` would
 	// leave FETCH_HEAD on whichever branch sorts first
-	if _, err := g.run(ctx, dir, "git", "fetch", "--depth", strconv.Itoa(FetchDepth), "origin", "HEAD"); err != nil {
+	if _, err := g.fetchLocked(ctx, root, key, dir, "git", "fetch", "--depth", strconv.Itoa(FetchDepth), "origin", "HEAD"); err != nil {
 		return err
 	}
 	_, err := g.run(ctx, dir, "git", "reset", "--hard", "FETCH_HEAD")
@@ -434,7 +447,7 @@ func PushRefusal(out string) bool {
 
 // PushedHead implements Workspacer.
 func (g *Git) PushedHead(ctx context.Context, dir, branch, base string) (string, error) {
-	if _, err := g.run(ctx, dir, "git", "fetch", "--prune", "origin"); err != nil {
+	if _, err := g.fetchLocked(ctx, g.lockRoot("", dir), g.repoKeyOf(ctx, dir), dir, "git", "fetch", "--prune", "origin"); err != nil {
 		return "", err
 	}
 	head, err := g.run(ctx, dir, "git", "rev-parse", "refs/remotes/origin/"+branch)

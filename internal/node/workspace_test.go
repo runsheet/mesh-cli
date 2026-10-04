@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -553,5 +555,154 @@ func TestPushRefusedWhenTheRemoteMoved(t *testing.T) {
 	git(pair, "remote", "set-url", "origin", filepath.Join(root, "gone.git"))
 	if _, err := g.Push(context.Background(), pair, "mesh/g-1"); err == nil || errors.As(err, &refused) {
 		t.Fatalf("an unreachable remote: %v", err)
+	}
+}
+
+// lockTestOrigin is a bare origin with a seeded main under a fresh root,
+// and a `gh` on PATH that clones it with git: `gh repo clone` takes no
+// local path. It returns the root and the origin.
+func lockTestOrigin(t *testing.T) (string, string) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	root := t.TempDir()
+	origin := filepath.Join(root, "origin.git")
+	git := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, out)
+		}
+	}
+	git(root, "init", "--bare", "-b", "main", origin)
+	seed := filepath.Join(root, "seed")
+	git(root, "clone", "-q", origin, seed)
+	for i := 0; i < 3; i++ {
+		os.WriteFile(filepath.Join(seed, "a"), []byte(strconv.Itoa(i)), 0o644)
+		git(seed, "add", "a")
+		git(seed, "commit", "-q", "-m", "a"+strconv.Itoa(i))
+	}
+	git(seed, "push", "-q", "origin", "HEAD:main")
+	bin := filepath.Join(root, "bin")
+	os.MkdirAll(bin, 0o755)
+	gh := "#!/bin/sh\n# gh repo clone <repo> <dir> [-- <git clone flags>]\nshift 2\nrepo=$1; dir=$2; shift 2\n[ \"$1\" = \"--\" ] && shift\nexec git clone -q \"$@\" \"$repo\" \"$dir\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(gh), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return root, origin
+}
+
+// prepareAtOnce runs Prepare for every spec at the same instant and
+// returns each one's error.
+func prepareAtOnce(specs []WorkspaceSpec) []error {
+	errs := make([]error, len(specs))
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i, spec := range specs {
+		wg.Add(1)
+		go func(i int, spec WorkspaceSpec) {
+			defer wg.Done()
+			<-start
+			_, errs[i] = (&Git{}).Prepare(context.Background(), spec)
+		}(i, spec)
+	}
+	close(start)
+	wg.Wait()
+	return errs
+}
+
+// Four items of one repo prepared at once — the grapevine node's four
+// claims within seconds, 2026-10-03 — all succeed, and none fails on a
+// ref another fetch was writing: their fetches run under the repo's lock.
+func TestPrepareFourItemsOfOneRepoAtOnce(t *testing.T) {
+	root, origin := lockTestOrigin(t)
+	var specs []WorkspaceSpec
+	for seq := 1; seq <= 4; seq++ {
+		specs = append(specs, WorkspaceSpec{Root: root, GoalSlug: "g", Seq: seq, Repo: origin, Branch: BranchName("g", seq), BaseRef: "main"})
+	}
+	for round := 0; round < 2; round++ { // a clone each, then a fetch each
+		for i, err := range prepareAtOnce(specs) {
+			if err != nil {
+				t.Fatalf("round %d: prepare seq %d: %v", round, i+1, err)
+			}
+		}
+	}
+	for _, spec := range specs {
+		if _, err := os.Stat(filepath.Join(spec.Dir(), ".git")); err != nil {
+			t.Fatalf("seq %d: no clone of its own: %v", spec.Seq, err)
+		}
+	}
+}
+
+// Four prepares of the one spec at once — one checkout, every fetch
+// into the same refs — never fail on `cannot lock ref`: any error left
+// is the checkout's own, not a remote-tracking ref two fetches wrote.
+func TestPrepareOneSpecFourTimesAtOnce(t *testing.T) {
+	root, origin := lockTestOrigin(t)
+	spec := WorkspaceSpec{Root: root, GoalSlug: "g", Seq: 1, Repo: origin, Branch: "mesh/g-1", BaseRef: "main"}
+	if _, err := (&Git{}).Prepare(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	// origin's main moves, so every fetch has refs/remotes/origin/main to write
+	seed := filepath.Join(root, "seed")
+	for _, args := range [][]string{{"commit", "-q", "--allow-empty", "-m", "moved"}, {"push", "-q", "origin", "HEAD:main"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = seed
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	specs := []WorkspaceSpec{spec, spec, spec, spec}
+	for i, err := range prepareAtOnce(specs) {
+		if err != nil && strings.Contains(err.Error(), "cannot lock ref") {
+			t.Fatalf("prepare %d failed on a ref lock: %v", i, err)
+		}
+		if err != nil {
+			t.Logf("prepare %d: %v", i, err)
+		}
+	}
+}
+
+// Prepare leaves the repo's lock file under <root>/.locks/ and lets it
+// go: a non-blocking exclusive flock on it succeeds once Prepare returns.
+func TestPrepareReleasesTheRepoLock(t *testing.T) {
+	root, origin := lockTestOrigin(t)
+	spec := WorkspaceSpec{Root: root, GoalSlug: "g", Seq: 1, Repo: origin, Branch: "mesh/g-1", BaseRef: "main"}
+	if _, err := (&Git{}).Prepare(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	path := RepoLockPath(root, RepoLockKey(origin))
+	if filepath.Dir(path) != filepath.Join(root, LocksDir) {
+		t.Fatalf("lock file %s is not under %s", path, filepath.Join(root, LocksDir))
+	}
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatalf("no lock file after Prepare: %v", err)
+	}
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatalf("the repo lock is still held after Prepare: %v", err)
+	}
+	syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+}
+
+// The lock key is owner/name however the repo is spelt, so a clone by
+// owner/name and a fetch read back from origin's URL share one lock.
+func TestRepoLockKey(t *testing.T) {
+	for _, in := range []string{"Runsheet/Mesh-CLI", "https://github.com/runsheet/mesh-cli.git", "git@github.com:runsheet/mesh-cli.git", "https://github.com/runsheet/mesh-cli"} {
+		if got := RepoLockKey(in); got != "runsheet/mesh-cli" {
+			t.Errorf("RepoLockKey(%q) = %q", in, got)
+		}
+	}
+	if got := RepoLockPath("/w", "runsheet/mesh-cli"); got != "/w/.locks/runsheet--mesh-cli.lock" {
+		t.Errorf("RepoLockPath = %s", got)
+	}
+	if got := RepoLockKey("/tmp/x/origin.git"); got != "/tmp/x/origin" {
+		t.Errorf("a path keys as itself: %s", got)
 	}
 }
