@@ -522,6 +522,80 @@ func TestOpenRemembersEveryIssuedCredential(t *testing.T) {
 	}
 }
 
+// unsupportedGW answers every Session read as the platform not knowing
+// the operation (gateway.IsUnsupported): Open falls back to
+// ErrNoCredential but never reconciles on it.
+type unsupportedGW struct{}
+
+func (unsupportedGW) Session(context.Context, gateway.SessionRef, string) (*gateway.Session, error) {
+	return nil, &gateway.Error{Unsupported: true}
+}
+func (unsupportedGW) RecordToolUsage(context.Context, string, string, string, gateway.UsageReport) error {
+	return nil
+}
+
+// Open on a read issuing A, then a read for the same adapter and
+// project issuing only B, leaves A withdrawn — omitted by Known.Accounts
+// — and logs it (adr-005's amendment 2026-10-03, a withdrawn account
+// leaves the report).
+func TestOpenWithdrawsALabelAbsentFromTheNextRead(t *testing.T) {
+	gw := &credsGW{issued: []gateway.Credential{{ID: "cred-a", Label: "A", Kind: AccountSubscription, Secret: "sk-ant-oat01-A"}}}
+	known, err := OpenKnownAccounts(filepath.Join(t.TempDir(), "accounts.json"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs syncBuf
+	now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
+	c := &Credentials{GW: gw, Known: known, Now: func() time.Time { return now }, Log: log.New(&logs, "", 0)}
+	ctx := withSubject(context.Background(), Scope{Login: "acme", Slug: "acme"}, "proj-1", "mesh")
+	ref := gateway.SessionRef{Kind: "build", ItemID: item1}
+
+	s, err := c.Open(ctx, ref, "n", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Cleanup()
+
+	gw.issued = []gateway.Credential{{ID: "cred-b", Label: "B", Kind: AccountSubscription, Secret: "sk-ant-oat01-B"}}
+	s, err = c.Open(ctx, ref, "n", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Cleanup()
+
+	accts := known.Accounts(now)
+	if len(accts) != 1 || accts[0].Label != "B" {
+		t.Fatalf("accounts = %+v, want only B", accts)
+	}
+	if !strings.Contains(logs.String(), "accounts: A withdrawn (not issued by the mesh read)") {
+		t.Errorf("log missing the withdrawal line:\n%s", logs.String())
+	}
+}
+
+// An unsupported read (gateway.IsUnsupported) withdraws nothing: the
+// platform named nothing about what is still issued.
+func TestOpenOnUnsupportedReadWithdrawsNothing(t *testing.T) {
+	known, err := OpenKnownAccounts(filepath.Join(t.TempDir(), "accounts.json"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
+	if err := known.NoteFor(AccountConfig{Label: "A", Kind: AccountSubscription, ID: "cred-a"}, "proj-1", now); err != nil {
+		t.Fatal(err)
+	}
+	c := &Credentials{GW: unsupportedGW{}, Known: known, Now: func() time.Time { return now }, Log: log.New(io.Discard, "", 0)}
+	ctx := withSubject(context.Background(), Scope{Login: "acme", Slug: "acme"}, "proj-1", "mesh")
+	ref := gateway.SessionRef{Kind: "build", ItemID: item1}
+
+	if _, err := c.Open(ctx, ref, "n", ""); !isNoCredential(err) {
+		t.Fatalf("Open = %v, want ErrNoCredential", err)
+	}
+	accts := known.Accounts(now)
+	if len(accts) != 1 || accts[0].Label != "A" {
+		t.Fatalf("accounts = %+v, want A untouched", accts)
+	}
+}
+
 // The store's file on disk, after an Open that issued a secret, never
 // carries that secret.
 func TestKnownAccountsFileHasNoSecret(t *testing.T) {

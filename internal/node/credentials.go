@@ -202,14 +202,25 @@ func (c *Credentials) Open(ctx context.Context, ref gateway.SessionRef, nodeID, 
 	case read != nil:
 		issued, s.Tools = read.Credentials, read.Tools
 	}
+	// a read that neither errored nor was unsupported is the platform's
+	// answer about standing: a label it does not name for this adapter
+	// and project is withdrawn at once (adr-005's amendment 2026-10-03, a
+	// withdrawn account leaves the report); never on an unsupported or
+	// failed read, which names nothing about what is still issued
+	reconcile := !unsupported && read != nil
 	// only what the read issued for this adapter may run the session,
 	// never node.yaml nor the harness's own account (adr-005's
 	// amendments 2026-10); an unsupported read issued nothing
 	subj := subjectFrom(ctx)
 	if !slices.ContainsFunc(issued, func(cr gateway.Credential) bool { return IssuedAccount(cr).AdapterOf() == adapter }) {
 		for _, cr := range issued {
-			if err := c.Known.Note(IssuedAccount(cr), c.now()); err != nil {
+			if err := c.Known.NoteFor(IssuedAccount(cr), subj.projectID, c.now()); err != nil {
 				c.logf("known accounts: %v", err)
+			}
+		}
+		if reconcile {
+			for _, label := range c.Known.Reconcile(adapter, subj.projectID, nil, c.now()) {
+				c.logf("accounts: %s withdrawn (not issued by the %s read)", label, c.projectSlug(ctx, subj))
 			}
 		}
 		nc := &ErrNoCredential{Org: cmp.Or(subj.org, "(unknown)"), Project: c.projectSlug(ctx, subj), ProjectID: subj.projectID, Adapter: adapter}
@@ -226,7 +237,7 @@ func (c *Credentials) Open(ctx context.Context, ref gateway.SessionRef, nodeID, 
 	room := map[string]float64{}
 	for _, cr := range issued {
 		a := IssuedAccount(cr)
-		if err := c.Known.Note(a, c.now()); err != nil {
+		if err := c.Known.NoteFor(a, subj.projectID, c.now()); err != nil {
 			c.logf("known accounts: %v", err)
 		}
 		if a.AdapterOf() != adapter {
@@ -242,6 +253,11 @@ func (c *Credentials) Open(ctx context.Context, ref gateway.SessionRef, nodeID, 
 			room[a.Label] = left
 		}
 		accounts = append(accounts, a)
+	}
+	if reconcile {
+		for _, label := range c.Known.Reconcile(adapter, subj.projectID, refused, c.now()) {
+			c.logf("accounts: %s withdrawn (not issued by the %s read)", label, c.projectSlug(ctx, subj))
+		}
 	}
 	choose := chooserFrom(ctx)
 	if choose == nil {

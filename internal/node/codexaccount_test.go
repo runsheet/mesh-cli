@@ -239,12 +239,12 @@ func TestOpenChoosesByAdapter(t *testing.T) {
 	if _, err := c.Open(context.Background(), ref, "n", ""); !isNoCredential(err) || !strings.Contains(err.Error(), "no claude-code credential") {
 		t.Fatalf("a codex-only read for a Claude session = %v, want ErrNoCredential", err)
 	}
-	gw.issued = []gateway.Credential{claudeSub()}
-	if _, err := c.Open(context.Background(), ref, "n", AdapterCodex); !isNoCredential(err) || !strings.Contains(err.Error(), "no codex credential") {
-		t.Fatalf("an anthropic-only read for a Codex session = %v, want ErrNoCredential", err)
-	}
 
-	// the known accounts note the codex ones with their adapter, and no secret
+	// the known accounts note the codex ones with their adapter, and no
+	// secret — checked here, before the read below withdraws them
+	// (Reconcile, adr-005's amendment 2026-10-03): an anthropic-only read
+	// for a Codex session names no codex credential, so it withdraws
+	// every known codex label once it runs.
 	var codex []string
 	for _, a := range known.Accounts(time.Now()) {
 		if a.IsCodex() {
@@ -256,6 +256,11 @@ func TestOpenChoosesByAdapter(t *testing.T) {
 	}
 	if out := logs.String(); strings.Contains(out, codexRefresh) || strings.Contains(out, codexKey) {
 		t.Errorf("a secret is in the log:\n%s", out)
+	}
+
+	gw.issued = []gateway.Credential{claudeSub()}
+	if _, err := c.Open(context.Background(), ref, "n", AdapterCodex); !isNoCredential(err) || !strings.Contains(err.Error(), "no codex credential") {
+		t.Fatalf("an anthropic-only read for a Codex session = %v, want ErrNoCredential", err)
 	}
 }
 
