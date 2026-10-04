@@ -649,7 +649,11 @@ func TestLoopSchedulesOnKnownLabelsAfterRestart(t *testing.T) {
 	p.addItem(orgID, "steady", "normal-1", 1, false)
 	loop, _, _ := p.pacedLoop(2, reading(0.2, 0.97))
 	loop.Known = known
-	loop.Limits.Observe("max20", reading(0.97, 0.2))
+	// max20, paced, has the later reset: the holdback keeps it, not
+	// shhemail
+	paced := reading(0.97, 0.2)
+	paced.SevenDay.ResetsAt = weekOver.Add(time.Hour)
+	loop.Limits.Observe("max20", paced)
 	loop.Limits.Observe("shhemail", reading(0.1, 0.2))
 	var on string
 	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) {

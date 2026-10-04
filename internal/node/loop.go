@@ -277,6 +277,10 @@ type Loop struct {
 	// priorities alone (AccountConfig.Serves): its own line in
 	// logWaiting.
 	unserved map[string]map[string]int
+	// heldBackFor is the work this tick left unclaimed because the
+	// holdback kept the one subscription that would take it for urgent
+	// work (heldBack): its own line in logWaiting.
+	heldBackFor *holdbackWait
 	// unclaimed is the ready work this pass left for headroom, one entry
 	// per goal and kind (passOver), folded into holding at the tick's
 	// end. Tick alone touches it.
@@ -973,6 +977,7 @@ func (l *Loop) Tick(ctx context.Context) {
 		// with no account to run on is left for a later tick
 		l.waiting = map[string]int{}
 		l.unserved = map[string]map[string]int{}
+		l.heldBackFor = nil
 		l.unclaimed = nil
 		l.evaluateHeld(ctx)
 		l.rebaseRequested(ctx)
@@ -1215,6 +1220,10 @@ func (l *Loop) withAccount(ctx context.Context, what, priority string, choose fu
 	if !ok {
 		switch {
 		case what == "":
+		case l.waiting != nil && l.noteHeldBack(accounts, readings, priority, what, func(h AccountConfig) bool {
+			_, ok := choose(l.spendable([]AccountConfig{h}, pressing, item), readings)
+			return ok
+		}):
 		case l.unserved != nil && unservedOnly(accounts, func(all []AccountConfig) bool {
 			_, ok := choose(l.spendable(all, pressing, item), readings)
 			return ok
@@ -1243,6 +1252,54 @@ func (l *Loop) withAccount(ctx context.Context, what, priority string, choose fu
 	// an issued account rides ctx for its label alone (runsOn, the
 	// heartbeat's slots): Credentials.Open opens what the read issues
 	return WithAccount(ctx, a), true
+}
+
+// holdbackWait is what the holdback left unclaimed this tick: the
+// account it kept, the earliest reset among the others (when the hold
+// can lift), and the work by kind.
+type holdbackWait struct {
+	label  string
+	until  time.Time
+	counts map[string]int
+}
+
+// noteHeldBack counts what toward the holdback's line when the holdback
+// is why no account was chosen: a subscription serving priority is
+// held back (heldBack) and, listed alone, fits would take the work.
+func (l *Loop) noteHeldBack(accounts []AccountConfig, readings map[string]harness.RateLimit, priority, what string, fits func(AccountConfig) bool) bool {
+	if priority == "urgent" {
+		return false
+	}
+	now, cfg := l.now(), l.Thresholds()
+	var subs []AccountConfig
+	for _, a := range accounts {
+		if a.Kind == AccountSubscription && a.Serves(priority) {
+			subs = append(subs, a)
+		}
+	}
+	h, ok := heldBack(now, subs, readings, cfg)
+	if !ok || !fits(h) {
+		return false
+	}
+	if l.heldBackFor == nil || l.heldBackFor.label != h.Label {
+		w := &holdbackWait{label: h.Label, counts: map[string]int{}}
+		for _, a := range subs {
+			if a.Label == h.Label {
+				continue
+			}
+			r := readings[a.Label]
+			at := pace(now, r, cfg.For(a)).resumeAt
+			if at.IsZero() {
+				at = latestReset(r)
+			}
+			if !at.IsZero() && (w.until.IsZero() || at.Before(w.until)) {
+				w.until = at
+			}
+		}
+		l.heldBackFor = w
+	}
+	l.heldBackFor.counts[what]++
+	return true
 }
 
 // unservedOnly says the accounts' priorities alone left the work
@@ -1303,6 +1360,13 @@ func (l *Loop) logWaiting() {
 		if len(l.unserved[p]) > 0 {
 			l.logf("accounts: no account serves %s work (%s); %s left unclaimed until one does", p, servesLabels(judged), countKinds(l.unserved[p]))
 		}
+	}
+	if w := l.heldBackFor; w != nil {
+		until := "one of them resets"
+		if !w.until.IsZero() {
+			until = w.until.UTC().Format(time.RFC3339)
+		}
+		l.logf("accounts: %s held back for urgent work (the others within 10%% of stop); %s left unclaimed until %s", w.label, countKinds(w.counts), until)
 	}
 	if len(l.waiting) == 0 {
 		return
