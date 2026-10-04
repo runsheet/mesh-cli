@@ -54,6 +54,12 @@ type Loop struct {
 	// its graph and returns when the plan is handed in — or not, in
 	// which case the next tick offers it again. Optional.
 	Plan func(ctx context.Context, goal gateway.Goal, scope Scope)
+	// PlanReleased says a goal's plan claim was released for a repeated
+	// refusal and its row has not changed since, with the refusal's text
+	// (Planner.Released; ADR-023, a refused plan is released, not
+	// re-planned): such a goal is passed over and held, never claimed.
+	// Optional; nil releases none.
+	PlanReleased func(goal gateway.Goal) (reason string, ok bool)
 	// Research reads one direction of a project and proposes the goals
 	// it asks for (runsheet trd §6c). The claim is taken here, before it
 	// runs; the platform refuses it outside the direction's hours,
@@ -1675,12 +1681,14 @@ func (l *Loop) planRequested(ctx context.Context) {
 		return
 	}
 	var requested []planningGoal
+	listed := map[string]bool{} // the orgs whose goals were read
 	for _, sc := range l.Scopes {
 		goals, err := l.goals(ctx, sc)
 		if err != nil {
 			l.logf("list goals of %s: %v", sc.Name(), err)
 			continue
 		}
+		listed[sc.Name()] = true
 		for _, g := range goals {
 			if g.Status == "planning" {
 				requested = append(requested, planningGoal{goal: g, scope: sc})
@@ -1688,6 +1696,7 @@ func (l *Loop) planRequested(ctx context.Context) {
 		}
 	}
 	planOrder(requested)
+	l.clearReleasedPlans(requested, listed)
 	for _, r := range requested {
 		g, sc := r.goal, r.scope
 		l.mu.Lock()
@@ -1709,6 +1718,14 @@ func (l *Loop) planRequested(ctx context.Context) {
 		if why, until, ok := l.NoCredential.Holds(g.ProjectID, string(harness.KindPlan), l.adapter()); ok {
 			l.passOver(g.ID, "plan", priorityName(gateway.PriorityRank(g.Priority)), why, until)
 			l.NoCredential.Say(g.ID, why, until)
+			continue
+		}
+		// a plan released for a repeated refusal waits for the goal's row
+		// to change: no account, no claim (ADR-023, a refused plan is
+		// released, not re-planned)
+		if reason, ok := l.planReleased(g); ok {
+			l.passOver(g.ID, "plan", priorityName(gateway.PriorityRank(g.Priority)), reason, time.Time{})
+			l.NoteHeld(HeldGoal{GoalID: g.ID, Slug: g.Slug, Org: sc.Name(), Kind: "plan", Reason: reason, Since: l.heldSince(g.ID, "plan")})
 			continue
 		}
 		actx, ok := l.accountFor(ctx, priorityName(gateway.PriorityRank(g.Priority)), true, "plan")
@@ -1737,6 +1754,42 @@ func (l *Loop) planRequested(ctx context.Context) {
 		l.recordClaim(ClaimRecord{NodeID: sc.NodeID, Kind: harness.KindPlan, GoalID: g.ID, ScopeID: sc.ID, Name: g.Slug})
 		l.startPlan(actx, g, sc)
 	}
+}
+
+// planReleased is PlanReleased's answer for g, false with no hook.
+func (l *Loop) planReleased(g gateway.Goal) (string, bool) {
+	if l.PlanReleased == nil {
+		return "", false
+	}
+	return l.PlanReleased(g)
+}
+
+// clearReleasedPlans clears the plan hold of every goal of a listed org
+// that is no longer released: its row changed, or it left planning.
+func (l *Loop) clearReleasedPlans(requested []planningGoal, listed map[string]bool) {
+	still := map[string]bool{}
+	for _, r := range requested {
+		if _, ok := l.planReleased(r.goal); ok {
+			still[r.goal.ID] = true
+		}
+	}
+	for _, h := range l.HeldGoals() {
+		if h.Kind == "plan" && listed[h.Org] && !still[h.GoalID] {
+			l.ClearHeld(h.GoalID, "plan")
+		}
+	}
+}
+
+// heldSince is when goal and kind was first held, now when it is not.
+func (l *Loop) heldSince(goalID, kind string) time.Time {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, h := range l.held {
+		if h.GoalID == goalID && h.Kind == kind {
+			return h.Since
+		}
+	}
+	return l.now()
 }
 
 // researchDue offers every live direction of the served orgs to the
