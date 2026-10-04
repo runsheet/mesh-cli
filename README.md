@@ -1239,6 +1239,29 @@ level again, it is the plan's. The scaling report (`Loop.Scaling`,
 reports scaling while it is held back or hot, `fixed` again once level
 and quiet. A host with no probe (not Linux) never backs off.
 
+The heartbeat's `scaling` carries the same host reading (`host
+{load, cores, temperatureC, hot}`) when the platform's schema takes it,
+nil when there is none, so the console's Nodes page and
+`mesh_health_nodes` can show why a node is running fewer sessions than
+its plan-window figure affords. `mesh node status` shows it beside the
+node's row and a `host:` line naming the thresholds in force:
+
+```
+host: load_per_core_max 1.5, package_temp_max_c 90
+ORG        NAME  SLUG       STATUS  RUNNING  CAPACITY                                                  VERSION  LAST_SEEN
+runsheet   mini  mini *     online  3        4/1–8 (host hot: load 55/18 cores) — host load 55 / 18 cores, 101°C  1.4.0   …
+```
+
+and once it has cooled:
+
+```
+ORG        NAME  SLUG       STATUS  RUNNING  CAPACITY                                     VERSION  LAST_SEEN
+runsheet   mini  mini *     online  8        8/1–8 (max) — host load 9 / 18 cores, 70°C  1.4.0   …
+```
+
+— a host with no thermal zone to read shows `no temperature` in place
+of a figure.
+
 ### Tools
 
 A session gets the tools its project and role have, configured in the

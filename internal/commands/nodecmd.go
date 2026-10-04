@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -323,6 +324,7 @@ var nodeStatusCmd = &cobra.Command{
 		}
 		local, draining := localNodeState(state)
 		fmt.Println(local)
+		fmt.Println(hostConfigLine(cfg.Host))
 		scaling, scales := localScaling(state)
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 		fmt.Fprintln(w, "ORG\tNAME\tSLUG\tSTATUS\tRUNNING\tCAPACITY\tVERSION\tLAST_SEEN")
@@ -502,6 +504,21 @@ func localNodeState(state node.RunState) (string, bool) {
 	default:
 		return fmt.Sprintf("This machine: node running (pid %d).", pid), false
 	}
+}
+
+// hostConfigLine is `mesh node status`'s `host:` line: the thresholds
+// node.yaml's `host:` block is in force with, defaults applied
+// (HostConfig.Effective), so what judges the host hot is visible beside
+// its reading on the node row (adr-004's amendment 2026-10-03).
+func hostConfigLine(h node.HostConfig) string {
+	h = h.Effective()
+	return fmt.Sprintf("host: load_per_core_max %s, package_temp_max_c %s", hostStatusNum(h.LoadPerCoreMax), hostStatusNum(h.PackageTempMaxC))
+}
+
+// hostStatusNum is a host: threshold as hostConfigLine shows it: "1.5",
+// "90" — never a trailing ".0".
+func hostStatusNum(f float64) string {
+	return strconv.FormatFloat(f, 'f', -1, 64)
 }
 
 // localScaling is the capacity the node on this machine has in force

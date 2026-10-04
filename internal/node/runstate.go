@@ -70,9 +70,12 @@ func (s RunState) Stopped(pid int) {
 }
 
 // WriteScaling leaves a ranged node's capacity in force for `mesh node
-// status`; a fixed one (ranged false) removes it.
+// status`; a fixed one (ranged false) leaves it only while the host
+// back-off has something to show — hot, or still climbing back toward
+// the plan figure (Capacity < Max) — and removes it otherwise (adr-004's
+// amendment 2026-10-03).
 func (s RunState) WriteScaling(sc Scaling, ranged bool) error {
-	if !ranged {
+	if !ranged && !(sc.Host != nil && (sc.Host.Hot || sc.Capacity < sc.Max)) {
 		if err := os.Remove(s.ScalingPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
