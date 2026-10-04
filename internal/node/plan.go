@@ -67,6 +67,15 @@ type Planner struct {
 	// noRelease says once per run that the platform takes no
 	// releasePlan (adr-022, A fetch that fails is reported).
 	noRelease sync.Once
+	// lastRefusal is each goal's last plan-check refusal, normalised, and
+	// released the goals whose plan claim a second identical one released
+	// (ADR-023, a refused plan is released, not re-planned); kept under
+	// the work root too (PlanRefusalsPath), so a fresh Planner and a
+	// restarted node read the same.
+	lastRefusal map[string]string
+	released    map[string]releasedPlan
+	// noGoalRelease says once that the platform takes no releaseGoalPlan.
+	noGoalRelease sync.Once
 }
 
 // PlanFetchError is a plan's failure before its session opens: a repo's
@@ -148,10 +157,23 @@ func (p *Planner) Plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 	}
 	tries := p.attempts[goal.ID]
 	p.mu.Unlock()
+	// a goal released for a repeated refusal is not planned again until
+	// its row changes (ADR-023, a refused plan is released, not re-planned)
+	p.forgetChanged(goal)
+	if reason, ok := p.Released(goal); ok {
+		return &PlanRefused{Goal: goal.Slug, Reason: reason, Released: true}
+	}
 	if tries >= MaxPlanAttempts {
 		return nil // said so already
 	}
 	err := p.plan(ctx, goal, scope)
+	if pr, ok := PlanRefusedOf(err); ok && ctx.Err() == nil {
+		// the same refusal twice running releases the claim: no third
+		// session, no further try counted
+		if rel := p.refused(ctx, goal, scope, pr); rel.Released {
+			return rel
+		}
+	}
 	if _, ok := NoCredentialOf(err); ok {
 		// no credential issued is a hold, not a try: the claim lapses,
 		// and the loop asks again once Loop.NoCredential's re-check is due
@@ -929,7 +951,7 @@ func (p *Planner) readPlan(ctx context.Context, goal gateway.Goal, dir string, a
 		if otherRepoRefused != "" {
 			why = append(why, otherRepoRefused)
 		}
-		return nil, nil, nil, nil, nil, nil, 0, errors.New(strings.Join(why, "; "))
+		return nil, nil, nil, nil, nil, nil, 0, &PlanRefused{Goal: goal.Slug, Reason: strings.Join(why, "; ")}
 	}
 	if over != "" {
 		flags = append(flags, over)
