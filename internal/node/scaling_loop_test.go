@@ -375,7 +375,7 @@ func TestScalingHeartbeat(t *testing.T) {
 	if len(told) != 2 || bare(told[1]) != (Scaling{Capacity: 2, Min: 1, Max: 4, Reason: ReasonMax}) {
 		t.Fatalf("Scaled was told %+v", told)
 	}
-	if got := told[1].String(); got != "2/1–4 (max)" {
+	if got := told[1].String(); got != "2/1–4 (max) — host load 0.5 / 8 cores, no temperature" {
 		t.Fatalf("status shows %q", got)
 	}
 
@@ -396,5 +396,37 @@ func TestScalingHeartbeat(t *testing.T) {
 	}
 	if fixedTold != 2 {
 		t.Fatalf("Scaled told %d times, want 2", fixedTold)
+	}
+}
+
+// The heartbeat's scaling carries the host's own reading mapped onto
+// gateway.HostScaling — for a ranged node and for a fixed one alike,
+// while the host backs it off — and carries none at all with no
+// Machine to read (adr-004's amendment 2026-10-03).
+func TestHeartbeatCarriesHostScaling(t *testing.T) {
+	probe := newHostProbe(55)
+	probe.set(55, 101, true)
+	want := gateway.HostScaling{Load: 55, Cores: 18, TemperatureC: 101, Hot: true}
+
+	ranged := hostScaled(t, Capacity{Min: 1, Max: 8}, 8, probe)
+	ranged.at(0)
+	hb := ranged.loop.heartbeatScaling(ranged.loop.Scaling())
+	if hb.Reason != "host hot: load 55/18 cores" || hb.Host == nil || *hb.Host != want {
+		t.Fatalf("ranged: scaling %+v", hb)
+	}
+
+	fixed := hostScaled(t, Fixed(4), 4, probe)
+	fixed.at(0)
+	hb = fixed.loop.heartbeatScaling(fixed.loop.Scaling())
+	if hb.Reason != "host hot: load 55/18 cores" || hb.Host == nil || *hb.Host != want {
+		t.Fatalf("fixed: scaling %+v", hb)
+	}
+
+	none := newScaled(t, Capacity{Min: 1, Max: 8}, false)
+	none.loop.Machine = nil
+	none.at(0)
+	hb = none.loop.heartbeatScaling(none.loop.Scaling())
+	if hb.Host != nil {
+		t.Fatalf("no machine: host %+v, want nil", hb.Host)
 	}
 }

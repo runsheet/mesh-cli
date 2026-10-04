@@ -109,3 +109,37 @@ func TestNodeStatusShowsScaling(t *testing.T) {
 		t.Fatal("a stopped node shows scaling")
 	}
 }
+
+// `mesh node status` over a node.scaling fixture with a Host reading
+// shows the host hot reason and figures on the node's row, and a
+// `host:` line naming node.yaml's thresholds (adr-004's amendment
+// 2026-10-03).
+func TestNodeStatusShowsHost(t *testing.T) {
+	state := node.RunState{Dir: t.TempDir()}
+	pid := os.Getpid()
+	if err := state.Started(pid); err != nil {
+		t.Fatal(err)
+	}
+	hot := node.Scaling{Capacity: 1, Min: 1, Max: 8, Reason: "host hot: load 55/18 cores",
+		Host: &node.HostReport{Load: 55, Cores: 18, TempC: 101, HasTemp: true, Hot: true}}
+	if err := state.WriteScaling(hot, true); err != nil {
+		t.Fatal(err)
+	}
+	sc, ok := localScaling(state)
+	if !ok {
+		t.Fatal("no scaling fixture read back")
+	}
+	got := sc.String()
+	for _, want := range []string{"host hot: load 55/18 cores", "host load 55 / 18 cores, 101°C"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("scaling %q does not contain %q", got, want)
+		}
+	}
+
+	line := hostConfigLine(node.HostConfig{})
+	for _, want := range []string{"load_per_core_max 1.5", "package_temp_max_c 90"} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("host line %q does not contain %q", line, want)
+		}
+	}
+}

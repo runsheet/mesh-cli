@@ -34,7 +34,14 @@ type Scaling struct {
 // Heartbeat is s as the heartbeat's `scaling` carries it.
 func (s Scaling) Heartbeat() *gateway.Scaling {
 	// Accounts is [] rather than nil: the platform refuses a null list
-	return &gateway.Scaling{Capacity: s.Capacity, Min: s.Min, Max: s.Max, Reason: string(s.Reason), Accounts: []gateway.AccountScaling{}}
+	out := &gateway.Scaling{Capacity: s.Capacity, Min: s.Min, Max: s.Max, Reason: string(s.Reason), Accounts: []gateway.AccountScaling{}}
+	if s.Host != nil {
+		out.Host = &gateway.HostScaling{Load: s.Host.Load, Cores: s.Host.Cores, Hot: s.Host.Hot}
+		if s.Host.HasTemp {
+			out.Host.TemperatureC = s.Host.TempC
+		}
+	}
+	return out
 }
 
 // ReasonFixed is a fixed capacity's reason, which the heartbeat's
@@ -66,11 +73,23 @@ func (l *Loop) heartbeatScaling(s Scaling, ranged bool) *gateway.Scaling {
 }
 
 // String is s as `mesh node status` shows it: in-force/min–max (reason).
-// A reason not yet known (the scaler has not run) is left out.
+// A reason not yet known (the scaler has not run) is left out. A Host
+// reading, when there is one, is appended as its own clause — `— host
+// load <load> / <cores> cores, <temp>°C`, or `no temperature` where the
+// host has no thermal zone to read — whether or not it is what backed
+// the capacity off, so a reading just climbing back from one still
+// shows it (adr-004's amendment 2026-10-03).
 func (s Scaling) String() string {
 	out := fmt.Sprintf("%d/%d–%d", s.Capacity, s.Min, s.Max)
 	if s.Reason != "" {
 		out += " (" + string(s.Reason) + ")"
+	}
+	if s.Host != nil {
+		temp := "no temperature"
+		if s.Host.HasTemp {
+			temp = hostNum(s.Host.TempC) + "°C"
+		}
+		out += fmt.Sprintf(" — host load %s / %d cores, %s", hostNum(s.Host.Load), s.Host.Cores, temp)
 	}
 	return out
 }
