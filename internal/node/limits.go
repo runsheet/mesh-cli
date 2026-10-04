@@ -278,6 +278,20 @@ func (s *Limits) Observe(account string, rl *harness.RateLimit) {
 	s.accounts[account] = *rl
 }
 
+// Forget drops any reading held for account: called when Reconcile
+// withdraws a label (adr-005's amendment 2026-10-03, a withdrawn account
+// leaves the report), so its last reading does not linger in the
+// heartbeat's `limits[]` once the platform no longer issues it. A nil
+// *Limits forgets nothing.
+func (s *Limits) Forget(account string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.accounts, account)
+}
+
 // CodexAccountPrefix keys a Codex account's readings in Limits
 // (CodexLimitsAccount): kept apart from the Claude accounts', they are
 // on the heartbeat but never pace, stop or scale a Claude session

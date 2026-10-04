@@ -113,3 +113,130 @@ func TestKnownAccountsRoundTripsPrioritiesAndPace(t *testing.T) {
 		t.Errorf("PaceFiveHour = %v, want 0.5", got.PaceFiveHour)
 	}
 }
+
+// A label absent from a same-adapter same-project read is withdrawn and
+// omitted by Accounts (adr-005's amendment 2026-10-03, a withdrawn
+// account leaves the report): Reconcile marks it and returns it as
+// newly withdrawn.
+func TestReconcileWithdrawsAnAbsentLabelAndAccountsOmitsIt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "accounts.json")
+	now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
+	k, err := OpenKnownAccounts(path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const proj = "proj-1"
+	if err := k.NoteFor(AccountConfig{Label: "kept", Kind: AccountSubscription, ID: "cred-a"}, proj, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := k.NoteFor(AccountConfig{Label: "gone", Kind: AccountSubscription, ID: "cred-b"}, proj, now); err != nil {
+		t.Fatal(err)
+	}
+
+	withdrawn := k.Reconcile("", proj, []AccountConfig{{Label: "kept", Kind: AccountSubscription, ID: "cred-a"}}, now)
+	if len(withdrawn) != 1 || withdrawn[0] != "gone" {
+		t.Fatalf("withdrawn = %v, want [gone]", withdrawn)
+	}
+
+	accts := k.Accounts(now)
+	if len(accts) != 1 || accts[0].Label != "kept" {
+		t.Fatalf("accounts = %+v, want only kept", accts)
+	}
+
+	// a second Reconcile over the same absence withdraws nothing new
+	if again := k.Reconcile("", proj, []AccountConfig{{Label: "kept", Kind: AccountSubscription, ID: "cred-a"}}, now.Add(time.Hour)); len(again) != 0 {
+		t.Errorf("second reconcile withdrew %v, want none (already withdrawn)", again)
+	}
+}
+
+// A label of another adapter, or of a project the read does not name,
+// is untouched by Reconcile.
+func TestReconcileLeavesOtherAdaptersAndProjectsUntouched(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "accounts.json")
+	now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
+	k, err := OpenKnownAccounts(path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := k.NoteFor(AccountConfig{Label: "codex-acct", Kind: AccountSubscription, ID: "cred-c", Adapter: AdapterCodex}, "proj-1", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := k.NoteFor(AccountConfig{Label: "other-project", Kind: AccountSubscription, ID: "cred-d"}, "proj-2", now); err != nil {
+		t.Fatal(err)
+	}
+
+	// a claude-code read for proj-1 naming nothing issued leaves the
+	// codex account (another adapter) and the other project's account
+	// (not named by this read) alone
+	withdrawn := k.Reconcile(AdapterClaudeCode, "proj-1", nil, now)
+	if len(withdrawn) != 0 {
+		t.Fatalf("withdrawn = %v, want none", withdrawn)
+	}
+	accts := k.Accounts(now)
+	if len(accts) != 2 {
+		t.Fatalf("accounts = %+v, want both untouched", accts)
+	}
+}
+
+// A re-issued label is reported again with withdrawnAt cleared.
+func TestNoteForClearsWithdrawnAt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "accounts.json")
+	now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
+	k, err := OpenKnownAccounts(path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const proj = "proj-1"
+	if err := k.NoteFor(AccountConfig{Label: "max20", Kind: AccountSubscription, ID: "cred-a"}, proj, now); err != nil {
+		t.Fatal(err)
+	}
+	if withdrawn := k.Reconcile("", proj, nil, now); len(withdrawn) != 1 || withdrawn[0] != "max20" {
+		t.Fatalf("withdrawn = %v, want [max20]", withdrawn)
+	}
+	if accts := k.Accounts(now); len(accts) != 0 {
+		t.Fatalf("accounts = %+v, want none while withdrawn", accts)
+	}
+
+	later := now.Add(time.Minute)
+	if err := k.NoteFor(AccountConfig{Label: "max20", Kind: AccountSubscription, ID: "cred-a"}, proj, later); err != nil {
+		t.Fatal(err)
+	}
+	accts := k.Accounts(later)
+	if len(accts) != 1 || accts[0].Label != "max20" {
+		t.Fatalf("accounts = %+v, want max20 reported again", accts)
+	}
+}
+
+// The withdrawn row stays in the saved file (the ledger) and survives a
+// reload from disk.
+func TestWithdrawnRowSurvivesSaveAndReload(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "accounts.json")
+	now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
+	k1, err := OpenKnownAccounts(path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const proj = "proj-1"
+	if err := k1.NoteFor(AccountConfig{Label: "max20", Kind: AccountSubscription, ID: "cred-a"}, proj, now); err != nil {
+		t.Fatal(err)
+	}
+	if withdrawn := k1.Reconcile("", proj, nil, now); len(withdrawn) != 1 {
+		t.Fatalf("withdrawn = %v, want one", withdrawn)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "max20") || !strings.Contains(string(data), "withdrawnAt") {
+		t.Fatalf("the withdrawn row is missing from the file:\n%s", data)
+	}
+
+	k2, err := OpenKnownAccounts(path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if accts := k2.Accounts(now); len(accts) != 0 {
+		t.Fatalf("accounts after reload = %+v, want the withdrawal to survive", accts)
+	}
+}
