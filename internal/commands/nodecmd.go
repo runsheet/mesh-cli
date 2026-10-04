@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -350,6 +351,11 @@ var nodeStatusCmd = &cobra.Command{
 		if err := w.Flush(); err != nil {
 			return err
 		}
+		if rows, ok := localStanding(state); ok {
+			for _, line := range standingLines(rows) {
+				fmt.Println(line)
+			}
+		}
 		if held, ok := localHeld(state); ok {
 			heldGoalsSection(os.Stdout, held)
 		}
@@ -546,6 +552,58 @@ func localHeld(state node.RunState) ([]node.HeldGoal, bool) {
 	}
 	held, _ := state.Held()
 	return held, true
+}
+
+// localStanding is each scheduled account's clock standing as the last
+// tick left it (state.Standing), and true when a node runs here — the
+// same pid rule as localScaling and localHeld; false (and nil) when no
+// node runs here (goal every-subscription-lands-full-at-its-reset,
+// item 6).
+func localStanding(state node.RunState) ([]node.AccountStanding, bool) {
+	pid, err := state.PID()
+	if err != nil || !processAlive(pid) {
+		return nil, false
+	}
+	rows, _ := state.Standing()
+	return rows, true
+}
+
+// standingLines is `mesh node status`'s account standing table, one
+// line per account in label order: each window's own use against its
+// target line and how far behind or ahead it stands, the seven-day
+// window's reset, push and the account's pace mode when either applies
+// (goal every-subscription-lands-full-at-its-reset, item 6). Nothing
+// with no rows.
+func standingLines(rows []node.AccountStanding) []string {
+	out := make([]string, 0, len(rows))
+	for _, a := range rows {
+		line := fmt.Sprintf("account %s: week %s used, target %s (%s), resets %s; five-hour %s/%s (%s)",
+			a.Label, standingPct(a.SevenDay.Utilization), standingPct(a.SevenDay.Target), standingDistance(a.SevenDay.Distance),
+			formatHeldTime(a.SevenDay.ResetsAt),
+			standingPct(a.FiveHour.Utilization), standingPct(a.FiveHour.Target), standingDistance(a.FiveHour.Distance))
+		if a.Push {
+			line += "; push"
+		}
+		if a.Mode != "" {
+			line += "; " + a.Mode
+		}
+		out = append(out, line)
+	}
+	return out
+}
+
+// standingPct is a clock-standing fraction as a whole percent.
+func standingPct(f float64) string { return fmt.Sprintf("%.0f%%", f*100) }
+
+// standingDistance is a window's Distance as `mesh node status` shows
+// it: how far behind (negative) or ahead (positive) of the target
+// line, as a whole percent with the word.
+func standingDistance(d float64) string {
+	word := "behind"
+	if d > 0 {
+		word = "ahead"
+	}
+	return fmt.Sprintf("%.0f%% %s", math.Abs(d)*100, word)
 }
 
 // heldGoalsSection is `mesh node status`'s report of the goals this
@@ -869,6 +927,13 @@ func nodeStart(cmd *cobra.Command, args []string, logger *log.Logger) error {
 	loop.Shares = func(rows []node.HoldingOrg) {
 		if err := state.WriteShares(rows); err != nil {
 			logger.Printf("shares state: %v", err)
+		}
+	}
+	// and each scheduled account's clock standing (goal
+	// every-subscription-lands-full-at-its-reset, item 6)
+	loop.Standing = func(rows []node.AccountStanding) {
+		if err := state.WriteStanding(rows); err != nil {
+			logger.Printf("standing state: %v", err)
 		}
 	}
 	defer onDrainSignal(func() {
