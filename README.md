@@ -1103,6 +1103,17 @@ so it spends down to its target instead of leaving the window's last
 hours unused — and the trailing `paced`/`stopped` is the account's own
 mode when its reading puts it there.
 
+Spending every subscription down to its line at once would leave all
+of them stopped together, with days left on their weekly windows and
+nothing to claim but an API key: once every subscription but one is
+within 10% of `stop`, the one with the latest reset is **held back**
+for urgent work alone, so one subscription always has headroom. The
+tick logs it in place of the ordinary no-headroom line:
+
+```
+accounts: max-ci held back for urgent work (the others within 10% of stop); 2 item(s) left unclaimed until 2026-10-10T14:00:00Z
+```
+
 ### Capacity that scales with headroom
 
 `capacity` in `~/.mesh/node.yaml` is a plain number or a range:
