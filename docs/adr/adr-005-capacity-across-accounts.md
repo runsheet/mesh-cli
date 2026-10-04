@@ -1,5 +1,5 @@
 ---
-summary: A ranged node's capacity is the sum of what every account it may use can afford — per subscription, adr-004's windows rule on its own measured burn; per API key, its money left today (daily cap $50, monthly cap $1,000, the project's daily budget, list-price dollars) over the hours left today at its measured dollars per slot-hour, with the last 10% of the daily cap for urgent/high work and a hard stop at a cap — clamped to [min, max] and the machine, one step per 5 minutes; the heartbeat's `scaling` reports capacity, min, max, reason and each account's slots when the gateway's schema takes it; generalises ADR-004.
+summary: A ranged node's capacity is the sum of what every account it may use can afford — per subscription, adr-004's windows rule on its own measured burn, with a subscription behind its clock target **pushed** to `stop` in a window's last 20% of time instead of left to waste it; per API key, its money left today (daily cap $50, monthly cap $1,000, the project's daily budget, list-price dollars) over the hours left today at its measured dollars per slot-hour, with the last 10% of the daily cap for urgent/high work and a hard stop at a cap — clamped to [min, max] and the machine, one step per 5 minutes; the heartbeat's `scaling` reports capacity, min, max, reason and each account's slots when the gateway's schema takes it; generalises ADR-004.
 status: accepted
 ---
 
@@ -252,5 +252,6 @@ what it was paying for. So the scaler **pushes**:
   stopped.
 
 The heartbeat's `scaling.accounts[]` carries the `push` reason as any
-other; a `push` field on the wire is the goal's later items (`limits`
-and `mesh node status`), not this one.
+other; a dedicated `push` field rode the wire separately, on `limits[]`
+(item 5) and in `mesh node status` (item 6) — see
+`adr-005-accounts-on-the-node.md`'s amendments of the same goal.

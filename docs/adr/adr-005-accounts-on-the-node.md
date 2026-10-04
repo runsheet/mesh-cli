@@ -1,5 +1,5 @@
 ---
-summary: A node's sessions run on the Claude accounts the platform issues the claimed session (the claim-time read: itemCredentials, planCredentials, researchCredentials; an api key at its cap never chosen), with node.yaml's `accounts:` and `codex.accounts` retired and refused at start (amendments 2026-10-02: a session runs only on an issued credential, the start logs which projects have none open to the node, and the node.yaml fallback is gone — a platform without the read is an ErrNoCredential hold, never the operator's login), and every session's usage report rides the command that ends it (`usage` on finishWorkItem, evaluateWorkItem, planGoal, finishWorkItemRebase, recordDirectionResearch; each priced tool call on recordToolUsage; else one log line); the secret reaches the session in its environment only (CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY), with a temporary CLAUDE_CONFIG_DIR per session removed after, the inherited auth variables stripped, and the secret redacted from every log, error and report; each session runs on the account ChooseAccount picks by headroom and the spending order (subscriptions first, API only for urgent/high work or when subscriptions are stopped and work waits), and no account with headroom means no claim.
+summary: A node's sessions run on the Claude accounts the platform issues the claimed session (the claim-time read: itemCredentials, planCredentials, researchCredentials; an api key at its cap never chosen), with node.yaml's `accounts:` and `codex.accounts` retired and refused at start (amendments 2026-10-02: a session runs only on an issued credential, the start logs which projects have none open to the node, and the node.yaml fallback is gone — a platform without the read is an ErrNoCredential hold, never the operator's login), and every session's usage report rides the command that ends it (`usage` on finishWorkItem, evaluateWorkItem, planGoal, finishWorkItemRebase, recordDirectionResearch; each priced tool call on recordToolUsage; else one log line); the secret reaches the session in its environment only (CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY), with a temporary CLAUDE_CONFIG_DIR per session removed after, the inherited auth variables stripped, and the secret redacted from every log, error and report; each session runs on the account ChooseAccount picks by standing against a clock — each window's target line, the fraction of it elapsed less `reserve`, and the account furthest behind its own chosen first, ahead-of-target accounts last, subscriptions before API keys as before — with the holdback keeping the subscription with the latest reset for urgent work once every other is within 10% of `stop`, so one account always has headroom (goal every-subscription-lands-full-at-its-reset).
 status: accepted
 ---
 
@@ -1105,17 +1105,19 @@ live reading, or whose reset has passed, stands at zero throughout —
 elapsed, target, utilization, distance and push — never a stale
 pace point or a stale percentage.
 
-This item lands the clock itself — `LimitsConfig.Reserve`, `stop`
+This item landed the clock itself — `LimitsConfig.Reserve`, `stop`
 0.98, `WindowStanding`, `Standing`, `StandingOf`, and the tests
 proving the target line, the push rule and the expired-window zeroing
 in `internal/node/limits_test.go`. The decisions that spend the
-clock's reading follow as later items of the same goal:
+clock's reading landed as the same goal's later items, each with its
+own amendment below:
 
 - **item 2** — `ChooseAccount` orders accounts by `Distance`, furthest
   behind first; an account ahead of its own target is chosen only when
   every other is also ahead or stopped.
-- **item 3** — the scaler (ADR-004) adds capacity for an account that
-  is `Push`ed — behind its line with a fifth of its window's length or
+- **item 3** (`adr-005-capacity-across-accounts.md`'s amendment of the
+  same date) — the scaler adds capacity for an account that is
+  `Push`ed — behind its line with a fifth of its window's length or
   less remaining — so it lands near its target by reset instead of
   leaving the window's last hours unspent.
 - **item 4** — the holdback: once every subscription but one sits
@@ -1251,3 +1253,52 @@ accounts' standing, in label order, their `Distance` matching
 (`internal/commands/nodestatus_test.go`) — the status output's account
 lines against a RunState's `node.standing`, nothing with none written
 and nothing once the node has stopped.
+
+## Amendment — 2026-10-03 (goal every-subscription-lands-full-at-its-reset, item 5): limits[].target, distance, push
+
+Item 1 landed the clock itself; this item puts each Claude account's
+standing on the heartbeat, beside today's utilization and resets, the
+same way `limits[].priorities` rode it (amendment 2026-10-02, item 4
+above) — copying its pattern of a gated, best-effort field.
+
+**`gateway.Limits` gains three pointers**: `Target *float64`,
+`Distance *float64` and `Push *bool` (each `json:"…,omitempty"`,
+pointers so a known `0` or `false` still goes out — `omitempty` on a
+bare `float64`/`bool` would drop them). `Limits.Heartbeat(known
+[]AccountConfig, now time.Time, cfg LimitsConfig)`
+(`internal/node/limits.go`) gains the clock's two inputs — `Loop.Tick`
+calls it as `l.limitsStore().Heartbeat(l.Known.Accounts(l.now()),
+l.now(), l.Thresholds())` — and fills the three from
+`StandingOf(now, rl, cfg.For(known account))` for every account but a
+Codex one (`CodexAccountPrefix`), which carries none: the clock does
+not pace Codex. `Standing` itself gains `Target float64`, the account's
+own line — the seven-day window's `Target` when it has a reading, else
+the five-hour's, the same window `Distance` already fell back to.
+
+**Gated on the platform's schema, the way `priorities` is**:
+`Client.takesLimitsPriorities` is generalised into `limitsFields(ctx)
+map[string]bool`, one introspection of `HeartbeatNodeInput`'s `limits`
+element type's field names, kept for `ScalingProbeEvery` like every
+other heartbeat gate; `takesLimitsPriorities` stays as a thin wrapper
+(`limitsFields(ctx)["priorities"]`) for its one caller. `HeartbeatNode`
+sends every limits row through `limitsWithout(x.Limits,
+c.limitsFields(ctx))`, which marshals each row and drops whichever of
+`priorities`, `target`, `distance` and `push` the probe did not find —
+independently: an older platform missing only `priorities` still gets
+the other three, and one serving only `priorities` (unlikely, but the
+probe does not assume they ship together) gets that alone.
+
+**The platform half is owed to runsheet/runsheet**:
+`NodeAccountLimitsInput` needs `target`, `distance` (`Float`, nullable)
+and `push` (`Boolean`, nullable), and the Nodes page's per-account
+gauge needs to plot the line beside the utilization bar.
+
+Tests: `TestHeartbeatStanding` (`internal/node/limits_test.go`) — a
+Claude account at 10% seven-day use with 50% of the week elapsed gets
+`Target` 0.45, `Distance` −0.35, `Push` false, and a Codex account gets
+nil for all three; `TestHeartbeatLimitsTargetDistancePush`
+(`internal/gateway/limits_test.go`, a `gatewaytest.Fake`) — the full
+schema sends all three with `priorities`, `UnknownFields["target"]`,
+`["distance"]` and `["push"]` together drop the three but keep
+`priorities`, and `UnknownFields["priorities"]` alone drops it but
+keeps the three.

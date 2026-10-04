@@ -1045,7 +1045,7 @@ paced or stopped — and logs it — only when every subscription is:
   at most half its capacity (never less than one) at once; it plans only
   urgent and high goals and starts no research. Evaluations and rebases
   go on.
-- **Stopped** — either window at `limits.stop` (95%) or past it, or a
+- **Stopped** — either window at `limits.stop` (98%) or past it, or a
   status other than `allowed` (`allowed_warning`, `rejected`): nothing
   new starts — no item, plan, research or rebase, and no evaluation —
   as in a drain, but the sessions running finish and the process stays
@@ -1069,18 +1069,21 @@ Every heartbeat carries the latest reading of each account as `limits`
 `fiveHour` and `sevenDay` windows (utilization, `resetsAt`) and
 `observedAt` — for the console to show (runsheet
 `limits-on-the-console`); it is left out until a session has reported
-one.
+one. A Claude account's row also carries `target`, `distance` and
+`push` — its standing against the clock's time-proportional target
+line — when the platform's schema takes them; a Codex account carries
+none of the three.
 
 The log says each crossing once, not every tick:
 
 ```
 limits: paced until 2026-09-25T15:00:00Z: five-hour window at 85% (pace 80%) — only urgent and high goals are claimed and planned, at most 2 item(s) at once, and no research
-limits: stopped until 2026-09-26T14:00:00Z: seven-day window at 96% (stop 95%) — nothing new is started; 1 session(s) to finish
+limits: stopped until 2026-09-26T14:00:00Z: seven-day window at 99% (stop 98%) — nothing new is started; 1 session(s) to finish
 limits: back to normal (was stopped)
 ```
 
 and a change to the thresholds in node.yaml as `limits: pace five-hour
-80% → 50%, stop 95% → 95%`.
+80% → 50%, stop 98% → 95%`.
 
 Each subscription is paced against a clock too, not just the brake
 above: a target line, the fraction of the window already elapsed less
@@ -1099,6 +1102,17 @@ the window left before reset — the scaler (below) gives it extra slots
 so it spends down to its target instead of leaving the window's last
 hours unused — and the trailing `paced`/`stopped` is the account's own
 mode when its reading puts it there.
+
+Spending every subscription down to its line at once would leave all
+of them stopped together, with days left on their weekly windows and
+nothing to claim but an API key: once every subscription but one is
+within 10% of `stop`, the one with the latest reset is **held back**
+for urgent work alone, so one subscription always has headroom. The
+tick logs it in place of the ordinary no-headroom line:
+
+```
+accounts: max-ci held back for urgent work (the others within 10% of stop); 2 item(s) left unclaimed until 2026-10-10T14:00:00Z
+```
 
 ### Capacity that scales with headroom
 
