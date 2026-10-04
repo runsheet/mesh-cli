@@ -221,3 +221,27 @@ records them; `TakesGoalSplit` is false against a fake without
 `GoalSplit` and true against one with it; `ProposeGoalSplit` against a
 fake without it is `IsUnsupported` and sends nothing; and
 `SetGoalCheckpoints` sends the list and the fake's goal row holds it.
+
+## Amendment 2026-10-03: ItemCap defaults to 8 until the platform serves maxItems
+
+Item 8. `gateway.Project` gains `MaxItems int` (json `maxItems`),
+`const DefaultMaxItems = 8` and `Project.ItemCap()`: the project's own
+`MaxItems` when it is above 0, else `DefaultMaxItems`. `ItemCap` is the
+planner's cap for rule (a) — the node's size rule reads it, never
+`MaxItems` directly — so a plan is held to eight items on every platform
+today.
+
+**`maxItems?` is not yet in `fields/ProjectIndex.txt`**, so `MaxItems`
+is always 0 from a fetched project and `ItemCap` always 8. ADR-010's
+rule is platform-first: the committed `schema.json` is refreshed only
+from the live gateway, and the generator fails on an allow-listed field
+that schema lacks. Introspected at `https://api.runsheet.dev/graphql`
+on 2026-10-03, and again while building this item on 2026-10-04,
+`ProjectIndex` has no `maxItems`. `maxItems?` joins
+`fields/ProjectIndex.txt` in a follow-up once a `schema.json` refreshed
+from the live gateway carries `ProjectIndex.maxItems` — the platform
+goal `a-goal-fits-in-eight-items` (runsheet/runsheet) — and then no node
+code changes: `ItemCap` already prefers the served value.
+`internal/gateway/itemcap_test.go` proves the default, the project's own
+cap, and `Client.Project` against the gatewaytest fake (which serves no
+`maxItems`, as today's platform) answering `ItemCap() == 8`.

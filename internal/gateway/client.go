@@ -1273,6 +1273,25 @@ type Project struct {
 	// from an older platform (`?` in fields/ProjectIndex.txt; goal
 	// one-evaluator-for-ordinary-work).
 	ProtectedPaths []string `json:"protectedPaths"`
+	// MaxItems is the project's cap on a plan's items (ADR-023 rule
+	// (a)). It is 0 from a platform not serving ProjectIndex.maxItems —
+	// every platform today, and the allow-list does not ask for it yet
+	// (ADR-023's amendment, ADR-010) — so read ItemCap, never this.
+	MaxItems int `json:"maxItems"`
+}
+
+// DefaultMaxItems is a project's cap on a plan's items when the
+// platform serves no maxItems of its own (ADR-023, the size rule: one
+// repo, at most eight items, one pull request per item).
+const DefaultMaxItems = 8
+
+// ItemCap is the planner's cap on a plan's items: the project's own
+// MaxItems when set, else DefaultMaxItems.
+func (p Project) ItemCap() int {
+	if p.MaxItems > 0 {
+		return p.MaxItems
+	}
+	return DefaultMaxItems
 }
 
 // Project reads one project by id.
