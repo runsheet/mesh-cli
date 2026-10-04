@@ -1300,3 +1300,45 @@ schema sends all three with `priorities`, `UnknownFields["target"]`,
 `["distance"]` and `["push"]` together drop the three but keep
 `priorities`, and `UnknownFields["priorities"]` alone drops it but
 keeps the three.
+
+## Amendment — 2026-10-04 (goal `a-node-says-which-sessions-it-takes`, item 6): `holding.kinds`
+
+**Decision.** `gateway.Holding` gains `Kinds []string` (wire `kinds`,
+always a list, never omitted): the kinds of session this node takes
+(node.yaml's `takes:`, `Takes.Kinds()`), in their fixed order — every
+kind when node.yaml names none (ADR-025). `HoldingReport` takes a
+`kinds []harness.Kind` parameter, copies the names onto `Holding.Kinds`,
+and, when fewer than every kind is taken, prefixes the summary with
+`takes <list>; ` (e.g. `takes evaluate; normal: up to 4 item(s)`) —
+nothing extra when every kind is taken. `Loop.Tick` passes
+`l.Takes().Kinds()`.
+
+Sending it is gated the same way `holding.orgs` is
+(`takesHoldingOrgs`): `takesHoldingKinds` introspects
+`HeartbeatNodeInput`'s `holding` field's type for a `kinds` input field,
+cached for `ScalingProbeEvery`; a platform whose holding type lacks it
+gets the rest of `holding` with `kinds` dropped (`holdingWithout`), not
+a refused heartbeat — the summary text, with its `takes <list>; `
+prefix, still goes. The fixture fake's `NoHoldingKinds` switch
+(`gatewaytest.Fake`) drops `kinds` from the introspected holding type's
+fields the same way `NoHoldingOrgs` drops `orgs`, so a test can prove
+the strip without a schema change.
+
+`mesh node status` prints the same kinds, from node.yaml directly
+rather than the heartbeat, as a `Takes: <Takes.String()>` line right
+after `This machine:` (`takesStatusLine`).
+
+This is the platform half ADR-025 left as a note: the console's node
+page and a goal's `waitingReason` can now name a kind no online node
+takes, once runsheet reads `holding.kinds`. Nothing on the platform
+changes here.
+
+Tests: `TestHoldingReportKinds` (`internal/node/holding_test.go`: the
+report's `Kinds` and the summary's `takes <list>; ` prefix, present with
+fewer than every kind and absent with every kind); `TestHeartbeatHoldingKinds`
+(`internal/node/holding_loop_test.go`: a loop tick against a fake whose
+holding schema has `kinds` sends `holding.kinds = ["evaluate"]`, and
+against a fake without it sends no `kinds` key, in both cases with the
+summary's `takes evaluate; ` prefix); `TestTakesStatusLine`
+(`internal/commands/nodestatus_test.go`: the printed line for a list, a
+capped mapping, and node.yaml leaving `takes:` out).

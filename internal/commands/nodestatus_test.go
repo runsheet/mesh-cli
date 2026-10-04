@@ -125,6 +125,28 @@ func TestOwnedStatusLineNodeIDPerOrg(t *testing.T) {
 	}
 }
 
+// `mesh node status` prints the kinds node.yaml's `takes:` claims right
+// after "This machine:" (ADR-025, item 6): every kind when left out, the
+// list when it names some, the cap beside a kind that has one.
+func TestTakesStatusLine(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		takes node.Takes
+		want  string
+	}{
+		{"a list", node.Takes{{Kind: "evaluate"}}, "Takes: evaluate"},
+		{"a capped mapping", node.Takes{{Kind: "evaluate", Cap: 2}}, "Takes: evaluate (at most 2)"},
+		{"left out", nil, "Takes: every kind"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &node.Config{Takes: tc.takes}
+			if got := takesStatusLine(cfg); got != tc.want {
+				t.Errorf("takesStatusLine = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // Against a real client and the fake platform: a heartbeat under the
 // owner contract answers normally, and the status line still carries
 // the node id line node.yaml records, derived or adopted.
