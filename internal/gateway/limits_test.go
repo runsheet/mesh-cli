@@ -67,6 +67,72 @@ func TestHeartbeatCarriesLimits(t *testing.T) {
 	}
 }
 
+// A heartbeat's limits carry the account's standing against the
+// clock's target line — target, distance, push — gated on the
+// platform's schema the way priorities is (adr-005's amendment
+// 2026-10-03).
+func TestHeartbeatLimitsTargetDistancePush(t *testing.T) {
+	target, distance, push := 0.45, -0.35, false
+	x := gateway.HeartbeatExtras{Limits: []gateway.Limits{{
+		Account: "max-20x", Status: "allowed", ObservedAt: time.Now(),
+		Priorities: []string{"urgent", "high"},
+		Target:     &target, Distance: &distance, Push: &push,
+	}}}
+
+	t.Run("full schema: target, distance and push ride the limits row", func(t *testing.T) {
+		f, gw := registeredFake(t)
+		if _, err := gw.HeartbeatNode(context.Background(), limitsNode, "v1", 1, x); err != nil {
+			t.Fatal(err)
+		}
+		hb := f.CallsNamed("heartbeatNode")
+		limits, _ := hb[len(hb)-1].Input["limits"].([]any)
+		l := limits[0].(map[string]any)
+		if l["target"] != 0.45 || l["distance"] != -0.35 || l["push"] != false || l["priorities"] == nil {
+			t.Fatalf("limits[0] = %#v", l)
+		}
+	})
+
+	t.Run("an older platform without target, distance or push: dropped, priorities kept", func(t *testing.T) {
+		f, gw := registeredFake(t)
+		f.UnknownFields["target"], f.UnknownFields["distance"], f.UnknownFields["push"] = true, true, true
+		if _, err := gw.HeartbeatNode(context.Background(), limitsNode, "v1", 1, x); err != nil {
+			t.Fatal(err)
+		}
+		hb := f.CallsNamed("heartbeatNode")
+		limits, _ := hb[len(hb)-1].Input["limits"].([]any)
+		l := limits[0].(map[string]any)
+		if _, ok := l["target"]; ok {
+			t.Fatalf("limits[0] carried target: %#v", l)
+		}
+		if _, ok := l["distance"]; ok {
+			t.Fatalf("limits[0] carried distance: %#v", l)
+		}
+		if _, ok := l["push"]; ok {
+			t.Fatalf("limits[0] carried push: %#v", l)
+		}
+		if l["priorities"] == nil {
+			t.Fatalf("limits[0] lost priorities: %#v", l)
+		}
+	})
+
+	t.Run("an older platform without priorities alone: target, distance and push still sent", func(t *testing.T) {
+		f, gw := registeredFake(t)
+		f.UnknownFields["priorities"] = true
+		if _, err := gw.HeartbeatNode(context.Background(), limitsNode, "v1", 1, x); err != nil {
+			t.Fatal(err)
+		}
+		hb := f.CallsNamed("heartbeatNode")
+		limits, _ := hb[len(hb)-1].Input["limits"].([]any)
+		l := limits[0].(map[string]any)
+		if l["target"] != 0.45 || l["distance"] != -0.35 || l["push"] != false {
+			t.Fatalf("limits[0] = %#v", l)
+		}
+		if _, ok := l["priorities"]; ok {
+			t.Fatalf("limits[0] carried priorities: %#v", l)
+		}
+	})
+}
+
 // A heartbeat without limits has no limits key, so a platform that
 // does not know the field still takes it.
 func TestHeartbeatWithoutLimitsOmitsThem(t *testing.T) {

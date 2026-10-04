@@ -1111,7 +1111,10 @@ func (f *Fake) repoFullName(repoID string) string {
 // UnknownFields["holding"] (a platform before node-says-why-work-waits);
 // `limits`'s element type (NodeAccountLimitsInput) without `priorities`
 // when UnknownFields["priorities"] (a platform before adr-005's
-// amendment 2026-10, `limits[].priorities`); `holding.unclaimed`'s
+// amendment 2026-10, `limits[].priorities`), and without `target`,
+// `distance` or `push` when UnknownFields names each one (a platform
+// before adr-005's amendment 2026-10-03, `limits[].target`, `distance`,
+// `push`); `holding.unclaimed`'s
 // element type without `until` when NoUnclaimedUntil (a platform
 // before adr-005's amendment 2026-10-03, `holding.unclaimed[].until`);
 // `adopted`'s element type without goalId, directionId, sessionId and
@@ -1177,7 +1180,7 @@ func (f *Fake) heartbeatInputType() map[string]any {
 		}
 		if name == "limits" {
 			var sub []any
-			for _, n := range []string{"account", "status", "rateLimitType", "resetsAt", "overageStatus", "isUsingOverage", "fiveHour", "sevenDay", "observedAt", "priorities"} {
+			for _, n := range []string{"account", "status", "rateLimitType", "resetsAt", "overageStatus", "isUsingOverage", "fiveHour", "sevenDay", "observedAt", "priorities", "target", "distance", "push"} {
 				if !f.UnknownFields[n] {
 					sub = append(sub, field(n))
 				}

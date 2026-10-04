@@ -1049,7 +1049,7 @@ func (l *Loop) Tick(ctx context.Context) {
 	// the heartbeat goes out before this tick's pass, so its holding is
 	// the last pass's decision (nil before the first; a draining node,
 	// which makes no pass, keeps sending its last one unchanged)
-	extras := gateway.HeartbeatExtras{Draining: l.Draining(), UpdateError: l.UpdateError(), Limits: l.limitsStore().Heartbeat(l.Known.Accounts(l.now())), Runtimes: runtimes, Adapters: adapters, Sandbox: l.Sandbox, Reason: l.Condition(), Adopted: l.Adopted(), Holding: l.Holding(), Commit: l.Commit}
+	extras := gateway.HeartbeatExtras{Draining: l.Draining(), UpdateError: l.UpdateError(), Limits: l.limitsStore().Heartbeat(l.Known.Accounts(l.now()), l.now(), l.Thresholds()), Runtimes: runtimes, Adapters: adapters, Sandbox: l.Sandbox, Reason: l.Condition(), Adopted: l.Adopted(), Holding: l.Holding(), Commit: l.Commit}
 	scaling, ranged := l.Scaling()
 	extras.Scaling = l.heartbeatScaling(scaling, ranged)
 	if l.Scaled != nil {
