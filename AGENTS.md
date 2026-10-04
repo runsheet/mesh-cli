@@ -572,7 +572,20 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   direction not offered) — asks `NoCredentials.Holds` first, passes the
   work over on `holding.unclaimed` and says the reason once per goal or
   direction; at the until **one probe** claims and the rest wait on its
-  read (adr-005's amendments 2026-10-03).
+  read (adr-005's amendments 2026-10-03). **A claim refused for
+  budget, pause or approval is a hold** (`internal/node/claimhold.go`,
+  ADR-024): `claimReady` classes a `ClaimWorkItem` refusal by
+  `claimHoldKind` (`budget`, `pause`, `approval`, else `""`), notes the
+  goal in `Loop.ClaimHolds` with its row from the tick's GoalIndex read,
+  records it by `NoteHeld` (kind `item`, reason `<kind>: <message>`)
+  and logs once `claim: <org> goal <slug> held (<kind>): <message>; not
+  asked again until the goal changes`; before `accountFor` an item of a
+  held goal is passed over silently, until the goal's `updatedAt`
+  changes (else its status and paused reason, on an older platform) or
+  the refused item leaves the ready listing for a tick and is listed
+  again — then `ClearHeld` and `claim: <org> goal <slug> hold lifted`,
+  and the item is claimed that tick. Any other refusal is still `not
+  ours`, asked again next tick (`claimhold_loop_test.go`).
   **The claim-time read** (`internal/node/credentials.go`, adr-005):
   every one-shot session opens its account through
   `Credentials.Open`, which asks the platform (`gateway.Session`: the
