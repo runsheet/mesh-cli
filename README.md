@@ -838,7 +838,15 @@ available on Bedrock, Vertex or Foundry; Team/Enterprise orgs must enable
 `claude -p "<prompt>" --output-format stream-json --verbose --max-budget-usd <budget>`
 in `~/.mesh/work/<goal-slug>/<seq>` (cloned with your `gh`, branch
 `mesh/<goal-slug>-<seq>` from the base ref), with the goal's mesh-context
-context written under `.mesh/context/` (excluded from git). The budget is
+context written under `.mesh/context/` (excluded from git). Each item's
+checkout is an independent clone with its own object store — no shared
+mirror, no `git worktree` — so two items never write each other's refs;
+and every `gh repo clone` and `git fetch` of one repo on the node runs
+under a per-repo lock, a process-wide mutex plus an exclusive `flock` on
+`~/.mesh/work/.locks/<owner>--<name>.lock`, released before any checkout,
+so two sessions (or two node processes) fetching one repo at once never
+fail on `cannot lock ref` (ADR-023,
+`docs/adr/adr-023-fetches-of-one-repo-are-serialised-on-the-node.md`). The budget is
 the smallest of the goal's remaining budget, node.yaml's `budgets:` for
 build and the item's model (see "Session budgets" above), and
 `--max-budget-usd`. The node
