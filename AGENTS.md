@@ -480,6 +480,25 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `ObserveSpend`); `Loop.spendable` narrows every choice — no key at
   its cap, the last 10% of a key's day for urgent/high, and for an item
   only an account with a slot free.
+- **Held goals are a record** (`internal/node/held.go`, goal
+  a-refused-plan-is-released-not-replanned): `HeldGoal{GoalID, Slug,
+  Org, Kind, Reason, Since, Until}` is a goal this node holds off
+  claiming for — a plan claim released by a refusal that keeps
+  repeating, or an item claim refused for budget, pause or approval,
+  held until the goal's row changes — `Kind` `plan` or `item`.
+  `Loop.NoteHeld` replaces any entry of the same `GoalID` and `Kind`
+  and logs `held: <org> goal <slug> (<kind>): <reason>` the first time
+  a goal and kind is held, not on a later update of the same one;
+  `Loop.ClearHeld` removes it and logs `held: <org> goal <slug>
+  (<kind>) released`; `Loop.HeldGoals()` is every entry, sorted by org,
+  slug, kind. `Loop.Held func([]HeldGoal)` is told them every tick, as
+  `Scaled` is told the capacity in force; `mesh node start` sets it to
+  `RunState.WriteHeld`, which leaves them atomically at
+  `~/.mesh/node.held` beside `node.scaling` (an empty list removes the
+  file, as an unranged `WriteScaling` does), read back by
+  `RunState.Held`; `Stopped` removes it. `mesh node status` prints them,
+  while a node runs here, as a **Held goals** table — org, goal, kind,
+  since, until, why — or `Held goals: none.` with nothing held.
 - **The rebase** (`internal/node/rebase.go`, runsheet ADR 008): an item
   whose pull request conflicts in a way the integrator could not
   resolve itself carries `rebase_state: requested`. Every tick the loop

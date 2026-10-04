@@ -1228,6 +1228,11 @@ type Goal struct {
 	// selected); the node falls back to the project's own repo when it
 	// has exactly one (internal/node.goalRepo).
 	RepoID string `json:"repoId"`
+	// UpdatedAt is when the goal row last changed — the row's own change,
+	// not a plan session's: a claim held for budget, pause or approval
+	// waits on it (goal a-refused-plan-is-released-not-replanned). Zero
+	// from an older platform (`?` in fields/GoalIndex.txt).
+	UpdatedAt time.Time `json:"updatedAt"`
 }
 
 // PriorityRank orders goal priorities, most pressing first: urgent 0,
@@ -3057,6 +3062,22 @@ func (c *Client) RequestPlanReplacing(ctx context.Context, goalID, by, itemID st
 // while another node holds it.
 func (c *Client) ClaimPlan(ctx context.Context, goalID, nodeID string) error {
 	return c.Mutate(ctx, "claimPlan", goalID, map[string]any{"nodeId": nodeID})
+}
+
+// ReleaseGoalPlan hands back a goal's plan claim this node holds because
+// the plan check refused it twice running, with the same (normalised)
+// text both times: the node plans no third session, and the reason is
+// the refusal's text (goal a-refused-plan-is-released-not-replanned).
+// The shape of ReleasePlan; a platform without the mutation answers
+// IsUnsupported, a refusal IsRefusal.
+func (c *Client) ReleaseGoalPlan(ctx context.Context, goalID, nodeID, reason string) error {
+	const field = "releaseGoalPlan"
+	err := c.Mutate(ctx, field, goalID, map[string]any{"nodeId": nodeID, "reason": reason})
+	var ge *Error
+	if errors.As(err, &ge) && (unknownOperation(ge.Message, field) || schemaMismatch(ge.Message, field)) {
+		return &Error{Message: ge.Message, Unsupported: true}
+	}
+	return err
 }
 
 // GoalProposal is one goal a research session proposes (runsheet trd

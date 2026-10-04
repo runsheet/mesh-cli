@@ -72,6 +72,11 @@ type Loop struct {
 	// (optional: `mesh node start` leaves it in ~/.mesh for `mesh node
 	// status`).
 	Scaled func(s Scaling, ranged bool)
+	// Held is told each tick the goals this node holds off claiming for
+	// (NoteHeld, ClearHeld), as Scaled is told the capacity in force
+	// (optional: `mesh node start` leaves it in ~/.mesh for `mesh node
+	// status`, goal a-refused-plan-is-released-not-replanned).
+	Held func([]HeldGoal)
 	// AfterTick runs at the end of every tick (optional).
 	AfterTick func(ctx context.Context)
 	// Reload is asked at the top of every tick for the capacity, the
@@ -240,6 +245,10 @@ type Loop struct {
 	// holding is the last pass's holding report (HoldingReport), which
 	// the next tick's heartbeat carries; nil before the first pass.
 	holding *gateway.Holding
+	// held is the goals this node holds off claiming for, by GoalID and
+	// Kind (NoteHeld, ClearHeld; goal
+	// a-refused-plan-is-released-not-replanned).
+	held []HeldGoal
 	// tickGoals holds each org's goals as read this tick, so the claim,
 	// the planner and the director share one GoalIndex read per org.
 	tickGoals map[string]goalsRead
@@ -847,6 +856,9 @@ func (l *Loop) Tick(ctx context.Context) {
 	extras.Scaling = l.heartbeatScaling(scaling, ranged)
 	if l.Scaled != nil {
 		l.Scaled(scaling, ranged)
+	}
+	if l.Held != nil {
+		l.Held(l.HeldGoals())
 	}
 	beat := false
 	if owned := l.owned(); owned != nil {

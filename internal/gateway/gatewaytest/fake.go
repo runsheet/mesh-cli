@@ -159,6 +159,15 @@ type Fake struct {
 	// not, with its replaceItem ("" for a whole re-plan); refuse one
 	// with Refuse["requestPlan"].
 	PlanRequests []PlanRequest
+	// PlanReleases is every releaseGoalPlan the fake was sent: a plan
+	// claim given up with the refusal's text as the reason (goal
+	// a-refused-plan-is-released-not-replanned).
+	PlanReleases []PlanRelease
+	// ClaimRefusals maps an item id to the message claimWorkItem answers
+	// for it as the gateway error, the item left ready (goal
+	// a-refused-plan-is-released-not-replanned): a claim refused for
+	// budget, pause or approval.
+	ClaimRefusals map[string]string
 	// AttestationReceipt is what recordValidationAttestation answers on
 	// success — a test sets the contract fixture's result; nil answers
 	// {status: ok, commit: <the input's commit>}. Unsupported[
@@ -409,6 +418,11 @@ func (f *Fake) URL() string { return f.Server.URL }
 // and the item a narrow re-plan replaces ("" for a whole one).
 type PlanRequest struct {
 	GoalID, By, ReplaceItem string
+}
+
+// PlanRelease is one releaseGoalPlan the fake was sent.
+type PlanRelease struct {
+	GoalID, NodeID, Reason string
 }
 
 // RequestPlans returns every requestPlan the fake was sent, refused ones
@@ -1428,6 +1442,9 @@ func (f *Fake) apply(name string, in map[string]any) error {
 		if item == nil {
 			return fmt.Errorf("no such item")
 		}
+		if msg, ok := f.ClaimRefusals[id]; ok {
+			return fmt.Errorf("%s", msg)
+		}
 		if item["status"] == "claimed" && item["nodeId"] == in["nodeId"] {
 			return nil
 		}
@@ -1724,6 +1741,18 @@ func (f *Fake) apply(name string, in map[string]any) error {
 			f.Goals[id]["plannerNodeId"], f.Goals[id]["planClaimedAt"] = nil, nil
 			f.Goals[id]["planError"] = in["note"]
 		}
+	case "releaseGoalPlan":
+		// a second identical (normalised) plan-check refusal: the node
+		// gives the claim up with the refusal's text as the reason,
+		// recorded for a test to find, and clears whatever claimPlan set
+		// (goal a-refused-plan-is-released-not-replanned).
+		if f.Goals[id] == nil {
+			return fmt.Errorf("no such goal")
+		}
+		node, _ := in["nodeId"].(string)
+		reason, _ := in["reason"].(string)
+		f.PlanReleases = append(f.PlanReleases, PlanRelease{GoalID: id, NodeID: node, Reason: reason})
+		f.Goals[id]["plannerNodeId"], f.Goals[id]["planClaimedAt"] = nil, nil
 	}
 	return nil
 }
