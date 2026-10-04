@@ -174,6 +174,31 @@ half-capacity rule applies when every subscription is paced. The
 capacity in force still bounds how many items run at once, and a ranged
 node at its min still offers only urgent/high items to the choice.
 
+### Amendment 2026-10-03: the host's own load and temperature
+
+*The node backs off a hot host*: the scaler also weighs the machine's
+own load average and package temperature against node.yaml's `host:`
+thresholds (`load_per_core_max`, `package_temp_max_c`), lowering the
+capacity in force while either is exceeded and raising it back once
+the host is quiet, for a ranged node and a fixed one alike. The
+heartbeat's `scaling` gains an optional `host { load, cores,
+temperatureC, hot }` (`gateway.HostScaling`) alongside `accounts[]` —
+the 1-minute load average, the core count it is a ratio of, the
+package temperature in Celsius (omitted where the host has no thermal
+zone to read) and whether either crossed its threshold — so the
+console's Nodes page and `mesh node status` can show why a node is
+running fewer sessions than its plan-window figure would otherwise
+afford. It rides the same gate as `accounts`: `gateway.Client.takesScaling`
+extends its introspection of `HeartbeatNodeInput`'s `scaling` to also
+ask whether that type's `inputFields` include `host`, cached for the
+same `ScalingProbeEvery` and re-asked the same way — a `scaling`
+without `host` gets the rest of the fields (capacity, min, max, reason
+and accounts) with no `host` key, and a scalar `scaling` (a Map or
+JSON) is taken to accept any shape, `host` included. A `Scaling` with
+a nil `Host` — the ordinary case for a node whose host is not hot —
+sends no `host` key whatever the schema takes, so a heartbeat from
+before this amendment is unchanged byte for byte.
+
 ## Consequences
 
 - A fixed `capacity: N` node is unchanged: same file, same claims, no

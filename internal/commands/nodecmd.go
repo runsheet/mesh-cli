@@ -962,6 +962,7 @@ func runPollMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *
 	second := codexSecondOpinion(cfg, loop, workRoot, logger)
 	loop.Evaluate = evaluateWith(gw, cfg, h, second, loop, workRoot, fallback, accounts, logger)
 	loop.Plan = planWith(gw, cfg, h, loop, workRoot, accounts, logger)
+	loop.PlanReleased = (&node.Planner{WorkRoot: workRoot, Log: logger}).Released
 	loop.Research = researchWith(gw, cfg, h, loop, workRoot, accounts, logger)
 	loop.Rebase = rebaseWith(gw, cfg, h, loop, loop.CurrentScopes, workRoot, fallback, accounts, logger)
 	logger.Printf("poll mode: node %s (%s) for %s, capacity %s, every %s", cfg.Name, cfg.Slug, strings.Join(scopes.Names(), ", "), cfg.Capacity, loop.Interval)
@@ -1339,6 +1340,7 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 	found := adoptSessions(ctx, gw, cfg, oneShot, second, loop, &node.Runner{GW: gw, Harness: oneShot, WS: ws, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, Fallback: fallback, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Condition: loop.NoteCondition, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Log: logger}, workRoot, fallback, accounts, logger)
 	loop.Evaluate = evaluateWith(gw, cfg, observed(loop, logger), second, loop, workRoot, fallback, accounts, logger)
 	loop.Plan = planWith(gw, cfg, observed(loop, logger), loop, workRoot, accounts, logger)
+	loop.PlanReleased = (&node.Planner{WorkRoot: workRoot, Log: logger}).Released
 	loop.Research = researchWith(gw, cfg, observed(loop, logger), loop, workRoot, accounts, logger)
 	loop.Rebase = rebaseWith(gw, cfg, observed(loop, logger), loop, loop.CurrentScopes, workRoot, fallback, accounts, logger)
 	reopenClaims(ctx, loop, workRoot, found, logger)
@@ -1611,9 +1613,13 @@ func saidByEvaluator(err error) bool {
 // saidOnce is an error node.log has said already, once for its goal: a
 // claim-time read that issued no credential for the session's adapter
 // (node.NoCredentials.Say), or a plan declined for a required tool
-// (node.ToolsDeclined, which the planner logs).
+// (node.ToolsDeclined, which the planner logs), or a plan released for a
+// refusal repeated (node.PlanRefused.Released, which the planner logs).
 func saidOnce(err error) bool {
 	_, ok := node.NoCredentialOf(err)
+	if pr, released := node.PlanRefusedOf(err); released && pr.Released {
+		return true // the planner logged the release
+	}
 	return ok || node.ToolsDeclined(err)
 }
 
