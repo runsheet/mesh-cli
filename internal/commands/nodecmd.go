@@ -348,6 +348,9 @@ var nodeStatusCmd = &cobra.Command{
 		if err := w.Flush(); err != nil {
 			return err
 		}
+		if held, ok := localHeld(state); ok {
+			heldGoalsSection(os.Stdout, held)
+		}
 		if _, ok := sessionunit.Default().(sessionunit.SystemdScope); ok {
 			printScopes(ctx, gw, sessionunit.HostSystemctl{})
 		}
@@ -506,6 +509,49 @@ func localScaling(state node.RunState) (node.Scaling, bool) {
 		return node.Scaling{}, false
 	}
 	return state.Scaling()
+}
+
+// localHeld is the goals the node on this machine holds off claiming
+// for, as its last tick left them (state.Held), and true when a node
+// runs here — the same pid rule as localScaling — whether or not it
+// holds any; false (and nil) when no node runs here.
+func localHeld(state node.RunState) ([]node.HeldGoal, bool) {
+	pid, err := state.PID()
+	if err != nil || !processAlive(pid) {
+		return nil, false
+	}
+	held, _ := state.Held()
+	return held, true
+}
+
+// heldGoalsSection is `mesh node status`'s report of the goals this
+// node holds off claiming for (HeldGoal, goal
+// a-refused-plan-is-released-not-replanned): a table naming each
+// goal's org, kind, since, until and why, or "Held goals: none."
+// with nothing held.
+func heldGoalsSection(out io.Writer, held []node.HeldGoal) {
+	if len(held) == 0 {
+		fmt.Fprintln(out, "Held goals: none.")
+		return
+	}
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Held goals")
+	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "ORG\tGOAL\tKIND\tSINCE\tUNTIL\tWHY")
+	for _, h := range held {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", h.Org, h.Slug, h.Kind, formatHeldTime(h.Since), formatHeldTime(h.Until), h.Reason)
+	}
+	_ = w.Flush()
+}
+
+// formatHeldTime is a HeldGoal's Since or Until on the status table:
+// RFC 3339, or "-" for Until when the hold has none (a budget or pause
+// refusal holds until the goal's row changes, not a fixed time).
+func formatHeldTime(t time.Time) string {
+	if t.IsZero() {
+		return "-"
+	}
+	return t.Format(time.RFC3339)
 }
 
 var nodeDrainCmd = &cobra.Command{
@@ -763,6 +809,14 @@ func nodeStart(cmd *cobra.Command, args []string, logger *log.Logger) error {
 	loop.Scaled = func(s node.Scaling, ranged bool) {
 		if err := state.WriteScaling(s, ranged); err != nil {
 			logger.Printf("scaling state: %v", err)
+		}
+	}
+	// the goals this node holds off claiming for are left beside the
+	// pidfile too, for `mesh node status` (goal
+	// a-refused-plan-is-released-not-replanned)
+	loop.Held = func(h []node.HeldGoal) {
+		if err := state.WriteHeld(h); err != nil {
+			logger.Printf("held state: %v", err)
 		}
 	}
 	defer onDrainSignal(func() {
