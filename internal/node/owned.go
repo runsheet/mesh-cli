@@ -590,6 +590,7 @@ func (l *Loop) TakeAnswer(a *gateway.NodeAnswer) {
 	l.mu.Lock()
 	l.Scopes = scopes
 	l.mu.Unlock()
+	l.takeAnswerShares(a)
 }
 
 // owned is the loop's Owned under its lock.

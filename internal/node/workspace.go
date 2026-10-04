@@ -1040,6 +1040,10 @@ type Gateway interface {
 	// ReleasePlan hands back a goal's plan claim with why, the goal's
 	// planError on the platform (adr-022, A fetch that fails is reported).
 	ReleasePlan(ctx context.Context, goalID, nodeID, reason string) error
+	// ReleaseGoalPlan hands back a plan claim the check refused twice
+	// with the same text, the text its reason (ADR-023, a refused plan is
+	// released, not re-planned); IsUnsupported on an old platform.
+	ReleaseGoalPlan(ctx context.Context, goalID, nodeID, reason string) error
 	IssueItemRepoToken(ctx context.Context, itemID, nodeID string) (*gateway.GitHubToken, error)
 	// PlanGitHubTokens / ResearchGitHubTokens are IssueItemRepoToken for
 	// a plan's or a direction's own fetch (adr-022): one token per repo

@@ -62,6 +62,13 @@ lineage — `item <seq> (<title>): the same acceptance as failed item
 <n> (lineage <root>, attempt <k>); split it` — and the re-ask carries
 `planSplitRule`. The re-ask is the last ask, as for ADR-020's flags.
 
+A refusal that repeats is not planned a third time: the node keeps each
+goal's last refusal, and a second identical one (normalised) releases
+the plan claim with the refusal's text as the reason
+(`releaseGoalPlan`) and holds the goal until its row changes —
+`adr-023-a-refused-plan-is-released-not-replanned.md` (ADR-023, a
+refused plan is released, not re-planned).
+
 **`atomic: <reason>`.** An item that cannot be halved — a schema change,
 one migration — may carry `"atomic": "<reason>"` in the graph
 (`PlannedSpec.Atomic`, kept by `ParsePlan`). It is exempt from the
