@@ -673,3 +673,128 @@ func projectRepo(repos map[string]gateway.Repo, name string) (gateway.Repo, bool
 	}
 	return gateway.Repo{}, false
 }
+
+// addedDep is a dependency the plan check added (goal
+// items-that-share-a-file-are-planned-in-a-line): item Seq now depends
+// on item On because both name File, a code file.
+type addedDep struct {
+	Seq, On int
+	File    string
+}
+
+// because is the dependency's because, as briefWithDeps writes it.
+func (d addedDep) because() string {
+	return fmt.Sprintf("the plan check found both name %s; it starts from item %d's merged work", d.File, d.On)
+}
+
+// String is the pair as the hand-in's summary names it: `3→2 internal/x.go`.
+func (d addedDep) String() string { return fmt.Sprintf("%d→%d %s", d.Seq, d.On, d.File) }
+
+// sharedCodeFiles chains sibling items that name the same code file
+// (harness.ExpectedFiles, never a harness.IsDocumentPath — the shared
+// documents are one writer's, planSharedDocsRule) with no dependency
+// between them in either direction, transitively through DependsOn:
+// the later item depends on the earlier, so the second starts from the
+// first's merged work rather than conflicting with it. Each added
+// dependency joins the working graph at once, so a third item sharing
+// the file chains behind the second and no cycle is made; one per pair,
+// naming the first shared file. Paths compare case-sensitively after a
+// leading `./` is trimmed. Only a path that names a file counts
+// (namesCodeFile): never a repo's owner/name, a URL's host and path or
+// a `./pkg/...` pattern, which every brief opening "In owner/repo, …"
+// would otherwise share. Items of different repos share no file.
+func sharedCodeFiles(specs []harness.PlannedSpec) []addedDep {
+	sorted := append([]harness.PlannedSpec(nil), specs...)
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Seq < sorted[j].Seq })
+	deps := map[int]map[int]bool{}
+	files := make([]map[string]bool, len(sorted))
+	for i, sp := range sorted {
+		deps[sp.Seq] = map[int]bool{}
+		for _, d := range sp.DependsOn {
+			deps[sp.Seq][d.Seq] = true
+		}
+		files[i] = map[string]bool{}
+		for _, f := range harness.ExpectedFiles(sp) {
+			// a path read from the brief's prose may end its sentence
+			f = strings.TrimPrefix(strings.TrimRight(f, ".,;:"), "./")
+			if namesCodeFile(f) {
+				files[i][f] = true
+			}
+		}
+	}
+	reaches := func(from, to int) bool {
+		seen := map[int]bool{}
+		stack := []int{from}
+		for len(stack) > 0 {
+			n := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+			if n == to {
+				return true
+			}
+			if seen[n] {
+				continue
+			}
+			seen[n] = true
+			for d := range deps[n] {
+				stack = append(stack, d)
+			}
+		}
+		return false
+	}
+	var added []addedDep
+	for j := range sorted {
+		later := sorted[j]
+		// the nearest earlier item first, so a third sharer chains
+		// behind the second rather than beside it
+		for i := j - 1; i >= 0; i-- {
+			earlier := sorted[i]
+			if earlier.Seq == later.Seq {
+				continue
+			}
+			if earlier.Repo != later.Repo {
+				continue
+			}
+			shared := sharedFile(files[i], files[j])
+			if shared == "" || reaches(later.Seq, earlier.Seq) || reaches(earlier.Seq, later.Seq) {
+				continue
+			}
+			deps[later.Seq][earlier.Seq] = true
+			added = append(added, addedDep{Seq: later.Seq, On: earlier.Seq, File: shared})
+		}
+	}
+	return added
+}
+
+// namesCodeFile reports whether p, trimmed, is a repo-relative path to
+// a code file: not a document (harness.IsDocumentPath), its last
+// segment carrying an extension, no `...` package pattern, and its
+// first segment no host — a dotted name such as api.runsheet.dev, a
+// leading dot (.github) being a directory, not a host. An owner/name
+// repo, a URL and `./internal/node/...` are never a file.
+func namesCodeFile(p string) bool {
+	if p == "" || harness.IsDocumentPath(p) || strings.Contains(p, "...") || strings.Contains(p, "://") {
+		return false
+	}
+	segs := strings.Split(p, "/")
+	if first := segs[0]; len(segs) > 1 && !strings.HasPrefix(first, ".") && strings.Contains(first, ".") {
+		return false
+	}
+	base := segs[len(segs)-1]
+	dot := strings.LastIndex(base, ".")
+	return dot > 0 && dot < len(base)-1
+}
+
+// sharedFile is the first path, sorted, in both a and b; "" for none.
+func sharedFile(a, b map[string]bool) string {
+	var both []string
+	for f := range a {
+		if b[f] {
+			both = append(both, f)
+		}
+	}
+	if len(both) == 0 {
+		return ""
+	}
+	sort.Strings(both)
+	return both[0]
+}
