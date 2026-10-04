@@ -28,6 +28,20 @@ func reading(five, seven float64) *harness.RateLimit {
 		SevenDay: harness.RateLimitWindow{Utilization: seven, ResetsAt: weekOver}, ObservedAt: t0}
 }
 
+// halfWeekOver is 3.5 days after t0: a seven-day window's reset there
+// has half the week elapsed, so its clock target is 0.5 less the
+// default reserve.
+var halfWeekOver = t0.Add(84 * time.Hour)
+
+// readingHalfWeek is an allowed plan standing at t0 with the seven-day
+// window at that use and its reset 3.5 days out — half the week gone
+// — for the clock rule's tests (goal every-subscription-lands-full-at-its-reset).
+func readingHalfWeek(seven float64) *harness.RateLimit {
+	return &harness.RateLimit{Status: "allowed", RateLimitType: "seven_day", ResetsAt: halfWeekOver,
+		FiveHour: harness.RateLimitWindow{Utilization: 0, ResetsAt: fiveOver},
+		SevenDay: harness.RateLimitWindow{Utilization: seven, ResetsAt: halfWeekOver}, ObservedAt: t0}
+}
+
 // clock is a settable Loop.Now.
 type clock struct {
 	mu  sync.Mutex

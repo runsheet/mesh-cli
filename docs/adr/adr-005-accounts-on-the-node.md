@@ -1139,3 +1139,35 @@ seven-day reading; `TestLimitsDefaults` and
 `TestLoopTakesLimitsFromNodeYAML` — `Thresholds()` default Reserve
 0.05 and Stop 0.98, node.yaml's `reserve`/`stop` loading and
 reloading, and a `reserve` over 1 read as a percent.
+
+## Amendment — 2026-10-03 (goal every-subscription-lands-full-at-its-reset, item 2)
+
+**Landed.** `ChooseAccount` (`internal/node/select.go`) ranks the
+subscriptions that fit by `StandingOf(now, r, cfg.For(a)).Distance`,
+most negative (furthest behind the target line) first, in place of the
+old headroom ranking (the lower of its two windows' raw use). An
+account ahead of its line (`Distance >= 0`) is chosen only once every
+fitting subscription is also ahead, and then the least ahead of them —
+one comparison, `Distance` ascending, does both: a behind account
+always sorts before an ahead one, and among several ahead the smallest
+wins. An account never read keeps `Distance -1`, so it is still read
+as full headroom and sorts first. A tie goes to the account listed
+first. Every api-key rule — urgent/high before a paced subscription,
+the api only once every subscription serving the priority is stopped
+and work waits — is unchanged; `Credentials.Open`'s chooser and
+`accountToFinish` reuse `ChooseAccount`, so they rank subscriptions the
+same way. The old `used` helper (lowest of five-hour/seven-day
+utilization, a window past its reset counting as zero) is gone — it
+had no other caller.
+
+Tests: `TestChooseAccount` (`internal/node/select_test.go`) —
+three subscriptions at seven-day use 0.10/0.50/0.80 with every
+seven-day reset 3.5 days out (half the week elapsed, `readingHalfWeek`
+in `internal/node/limits_test.go`) pick the 0.10 one, then — the 0.10
+account removed — the 0.50 one; one account ahead of its line (0.70
+use at 50% elapsed) is skipped for one behind (0.30), whichever is
+listed second; two accounts both ahead pick the least ahead; the
+pre-existing api-key cases (`normal work never gets the api while a
+subscription has headroom`, `high work takes the api over paced
+subscriptions`, `all subscriptions exhausted and work waits: the api`,
+`the api stopped too`) are unchanged.

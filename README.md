@@ -405,12 +405,16 @@ credentials the platform issues for the session — a read that answers
 with none for the session's adapter is a hold (4, below), never
 node.yaml or the machine's own login:
 
-1. Subscriptions first: of those with headroom, the one with the most —
-   the lowest use of its five-hour and seven-day windows. An account
-   past `limits.stop`, or whose status is not `allowed`, takes nothing
-   until its window resets; one past `limits.pace_five_hour` takes only
-   urgent and high work. An account no session has run on yet has its
-   full headroom.
+1. Subscriptions first: of those with headroom, the one furthest
+   behind its target line — the window's elapsed fraction less
+   `limits.reserve`, read on whichever of its five-hour and seven-day
+   windows has a reading (the seven-day one when both do); an account
+   ahead of its line is chosen last, and then the least ahead of them
+   (goal every-subscription-lands-full-at-its-reset). An account past
+   `limits.stop`, or whose status is not `allowed`, takes nothing until
+   its window resets; one past `limits.pace_five_hour` takes only
+   urgent and high work. An account no session has run on yet is the
+   furthest behind its line, so it still has full headroom.
 2. An API key only for urgent or high work (before a paced
    subscription), or when every subscription is stopped — or, on a
    ranged node, has no slot free (see Capacity across accounts) — and

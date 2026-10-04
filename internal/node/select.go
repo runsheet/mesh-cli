@@ -8,22 +8,24 @@ import (
 )
 
 // ChooseAccount picks the account a session of that priority runs on,
-// by headroom and the spending order (adr-005, trd §3 Capacity across
-// accounts):
+// by standing against the clock and the spending order (adr-005, trd
+// §3 Capacity across accounts, goal every-subscription-lands-full-at-its-reset):
 //
 //   - An account that does not serve the work's priority
-//     (AccountConfig.Serves) is never picked, whatever its headroom: a
+//     (AccountConfig.Serves) is never picked, whatever its standing: a
 //     subscription reserved for urgent and high work sits idle for the
 //     rest (adr-005's amendment 2026-10).
 //   - An account is judged by pace on its latest reading: stopped (past
 //     cfg.Stop in either window, or a status not allowed, until its
 //     reset) it takes nothing; paced (past its own pace point, else
 //     cfg.PaceFiveHour: LimitsConfig.For) it takes only urgent and high
-//     work. An account never seen yet has its full
-//     headroom.
-//   - Subscriptions first: of those that fit, the one with the most
-//     headroom — the lowest of max(five-hour, seven-day) use, a window
-//     past its reset counting as unused; a tie goes to the one listed
+//     work. An account never seen yet is the furthest behind its line
+//     (Distance −1), so it still has full headroom.
+//   - Subscriptions first: of those that fit, the one furthest behind
+//     its time-proportional target line — StandingOf's Distance, most
+//     negative first; an account ahead of its line (Distance ≥ 0) is
+//     chosen only when every fitting subscription is also ahead, and
+//     then the least ahead of them; a tie goes to the one listed
 //     first.
 //   - An api account only for urgent or high work, or when every
 //     subscription serving the priority is stopped and workWaits (an item, plan, evaluation
@@ -36,9 +38,9 @@ import (
 func ChooseAccount(now time.Time, accounts []AccountConfig, readings map[string]harness.RateLimit, cfg LimitsConfig, priority string, workWaits bool) (AccountConfig, bool) {
 	pressing := priority == "urgent" || priority == "high"
 	type fit struct {
-		a    AccountConfig
-		mode paceMode
-		used float64
+		a        AccountConfig
+		mode     paceMode
+		distance float64
 	}
 	var subs, apis []fit
 	exhausted := true // every subscription serving it stopped (vacuously, none)
@@ -46,9 +48,10 @@ func ChooseAccount(now time.Time, accounts []AccountConfig, readings map[string]
 		if !a.Serves(priority) {
 			continue
 		}
-		f := fit{a: a, mode: paceNormal}
+		f := fit{a: a, mode: paceNormal, distance: -1} // never seen: furthest behind
 		if r, seen := readings[a.Label]; seen {
-			f.mode, f.used = pace(now, r, cfg.For(a)).mode, used(now, r)
+			f.mode = pace(now, r, cfg.For(a)).mode
+			f.distance = StandingOf(now, r, cfg.For(a)).Distance
 		}
 		if a.Kind == AccountSubscription && f.mode != paceStopped {
 			exhausted = false
@@ -65,7 +68,7 @@ func ChooseAccount(now time.Time, accounts []AccountConfig, readings map[string]
 	best := func(fits []fit, mode paceMode) (AccountConfig, bool) {
 		var out *fit
 		for i := range fits {
-			if f := &fits[i]; f.mode == mode && (out == nil || f.used < out.used) {
+			if f := &fits[i]; f.mode == mode && (out == nil || f.distance < out.distance) {
 				out = f
 			}
 		}
@@ -85,18 +88,6 @@ func ChooseAccount(now time.Time, accounts []AccountConfig, readings map[string]
 		}
 	}
 	return best(subs, pacePaced) // only a pressing session keeps a paced one
-}
-
-// used is how much of its plan a reading says is spent: the larger of
-// its two windows, a window whose reset has come counting for nothing.
-func used(now time.Time, r harness.RateLimit) float64 {
-	live := func(w harness.RateLimitWindow) float64 {
-		if !w.ResetsAt.IsZero() && !now.Before(w.ResetsAt) {
-			return 0
-		}
-		return w.Utilization
-	}
-	return max(live(r.FiveHour), live(r.SevenDay))
 }
 
 type accountKey struct{}
