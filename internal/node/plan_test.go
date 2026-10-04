@@ -589,7 +589,15 @@ func TestPlannerDropsUnexplainedDependencies(t *testing.T) {
 	if deps := fourth["dependsOn"].([]any); len(deps) != 0 {
 		t.Fatalf("item 4 dependsOn = %v, want none", deps)
 	}
-	if third["brief"] != "Call Foo.\n\nDepends on #1 because uses the Foo type item 1 adds." || fourth["brief"] != "Record it." {
+	// item 4, the highest-seq item nothing else depends on (the goal
+	// gives none a `writes_shared_docs`), writes the goal's shared
+	// documents; the rest are told not to (goal
+	// items-that-share-a-file-are-planned-in-a-line).
+	wantThird := "Call Foo.\n\nDepends on #1 because uses the Foo type item 1 adds.\n\n" +
+		`Do not edit the goal's shared documents (ADRs, TRD sections, AGENTS.md, README, the goal doc): item 4 writes them. Leave what you would have added as a note on this item with mesh_progress, opening "for the docs writer:".`
+	wantFourth := "Record it.\n\n" +
+		`Writes the goal's shared documents: the ADR, the TRD section, AGENTS.md and README. Fold in the notes left on items 1 (Foo type), 2 (Same file), 3 (Use Foo) (each item's last note opening "for the docs writer:", read with mesh_items, and its merged pull request's description).`
+	if third["brief"] != wantThird || fourth["brief"] != wantFourth {
 		t.Fatalf("briefs: %q, %q", third["brief"], fourth["brief"])
 	}
 	for _, row := range rows {

@@ -933,6 +933,13 @@ func (p *Planner) readPlan(ctx context.Context, goal gateway.Goal, dir string, a
 		}
 		because[a.Seq][a.On] = a.because()
 	}
+	// one item writes the goal's shared documents; every other item's
+	// brief says not to touch them (goal
+	// items-that-share-a-file-are-planned-in-a-line, planSharedDocsRule).
+	// The writer gets no added dependency from this: the stamp is on the
+	// brief alone.
+	sharedWriter := sharedDocsWriter(specs)
+	sharedSiblings := sharedDocsSiblings(specs, sharedWriter)
 	for _, sp := range specs {
 		r, ok := projectRepo(repos, sp.Repo)
 		if !ok {
@@ -952,13 +959,22 @@ func (p *Planner) readPlan(ctx context.Context, goal gateway.Goal, dir string, a
 			model = ""
 		}
 		reasons[sp.Seq] = strings.TrimSpace(sp.ModelReason)
-		items = append(items, gateway.PlannedItem{Seq: sp.Seq, Title: strings.TrimSpace(sp.Title), Brief: gateway.BriefWithAtomic(gateway.BriefWithPrecondition(briefWithDeps(sp.Brief, deps, because), sp.Precondition), sp.Atomic), Acceptance: strings.TrimSpace(sp.Acceptance), DependsOn: deps, DependsBecause: because, RepoID: r.ID, BaseRef: base, Model: model, Precondition: strings.Join(strings.Fields(sp.Precondition), " ")})
+		brief := gateway.BriefWithAtomic(gateway.BriefWithPrecondition(briefWithDeps(sp.Brief, deps, because), sp.Precondition), sp.Atomic)
+		if sharedWriter > 0 {
+			if sp.Seq == sharedWriter {
+				brief = gateway.BriefWithSharedDocsWriter(brief, sharedSiblings)
+			} else {
+				brief = gateway.BriefWithoutSharedDocs(brief, sharedWriter)
+			}
+		}
+		items = append(items, gateway.PlannedItem{Seq: sp.Seq, Title: strings.TrimSpace(sp.Title), Brief: brief, Acceptance: strings.TrimSpace(sp.Acceptance), DependsOn: deps, DependsBecause: because, RepoID: r.ID, BaseRef: base, Model: model, Precondition: strings.Join(strings.Fields(sp.Precondition), " ")})
 	}
 	flags := unverifiableAcceptance(specs, itemRepo, repos)
 	flags = append(flags, hostReadingAcceptance(specs)...)
 	flags = append(flags, closeOutAcceptance(specs)...)
 	flags = append(flags, cutOverAcceptance(specs)...)
 	flags = append(flags, modelAgainstEvidence(specs, evidence)...)
+	flags = append(flags, sharedDocsWriterFlags(specs)...)
 	relanded := reLands(specs, goalItems)
 	unsplit := ""
 	if replacing != nil {

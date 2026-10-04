@@ -15,6 +15,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -970,6 +971,108 @@ func BriefWithPrecondition(brief, clause string) string {
 		return preconditionPrefix + " " + clause
 	}
 	return preconditionPrefix + " " + clause + "\n\n" + brief
+}
+
+// SharedDocsSibling is an item whose last note the goal's shared-docs
+// writer folds in: its seq and title, for the paragraph
+// BriefWithSharedDocsWriter lists them under (goal
+// items-that-share-a-file-are-planned-in-a-line, planSharedDocsRule).
+type SharedDocsSibling struct {
+	Seq   int
+	Title string
+}
+
+// sharedDocsWriterPrefix opens the paragraph BriefWithSharedDocsWriter
+// appends to the writer's brief; SharedDocsWriterOf looks for it.
+const sharedDocsWriterPrefix = "Writes the goal's shared documents:"
+
+// sharedDocsFoldInPrefix and sharedDocsFoldInSuffix bracket the list of
+// siblings in that paragraph; SharedDocsSiblings reads it back.
+const (
+	sharedDocsFoldInPrefix = "Fold in the notes left on items "
+	sharedDocsFoldInSuffix = ` (each item's last note opening "for the docs writer:", read with mesh_items, and its merged pull request's description).`
+)
+
+// sharedDocsSiblingSeq finds each sibling's seq in the list
+// BriefWithSharedDocsWriter writes between sharedDocsFoldInPrefix and
+// sharedDocsFoldInSuffix: a number immediately before its `(title)`.
+var sharedDocsSiblingSeq = regexp.MustCompile(`(\d+)\s*\(`)
+
+// BriefWithSharedDocsWriter is brief with the paragraph marking it as
+// the item that writes the goal's shared documents (the ADR, the TRD
+// section, AGENTS.md and README) appended, naming siblings by seq and
+// title so the builder (item 4 of the goal) knows whose notes to fold
+// in; brief unchanged when siblings is empty — the writer gets no
+// paragraph when it has no sibling to fold in.
+func BriefWithSharedDocsWriter(brief string, siblings []SharedDocsSibling) string {
+	brief = strings.TrimSpace(brief)
+	if len(siblings) == 0 {
+		return brief
+	}
+	names := make([]string, len(siblings))
+	for i, s := range siblings {
+		names[i] = fmt.Sprintf("%d (%s)", s.Seq, strings.TrimSpace(s.Title))
+	}
+	paragraph := sharedDocsWriterPrefix + " the ADR, the TRD section, AGENTS.md and README. " +
+		sharedDocsFoldInPrefix + strings.Join(names, ", ") + sharedDocsFoldInSuffix
+	if brief == "" {
+		return paragraph
+	}
+	return brief + "\n\n" + paragraph
+}
+
+// sharedDocsNoEditPrefix and sharedDocsNoEditMiddle bracket the
+// writer's seq in the paragraph BriefWithoutSharedDocs appends.
+const (
+	sharedDocsNoEditPrefix = "Do not edit the goal's shared documents (ADRs, TRD sections, AGENTS.md, README, the goal doc): item "
+	sharedDocsNoEditMiddle = ` writes them. Leave what you would have added as a note on this item with mesh_progress, opening "for the docs writer:".`
+)
+
+// BriefWithoutSharedDocs is brief with the paragraph telling the item
+// not to touch the goal's shared documents appended, naming writer as
+// the item that does (goal items-that-share-a-file-are-planned-in-a-line);
+// brief unchanged when writer is not positive.
+func BriefWithoutSharedDocs(brief string, writer int) string {
+	brief = strings.TrimSpace(brief)
+	if writer <= 0 {
+		return brief
+	}
+	paragraph := fmt.Sprintf("%s%d%s", sharedDocsNoEditPrefix, writer, sharedDocsNoEditMiddle)
+	if brief == "" {
+		return paragraph
+	}
+	return brief + "\n\n" + paragraph
+}
+
+// SharedDocsWriterOf reports whether brief carries the paragraph
+// BriefWithSharedDocsWriter appends: this item is the goal's
+// shared-docs writer.
+func SharedDocsWriterOf(brief string) bool {
+	return strings.Contains(brief, sharedDocsWriterPrefix)
+}
+
+// SharedDocsSiblings reads back the seqs BriefWithSharedDocsWriter
+// listed under "Fold in the notes left on items" — the items whose
+// last "for the docs writer:" note and merged pull request this item
+// folds in — or nil when brief carries none.
+func SharedDocsSiblings(brief string) []int {
+	i := strings.Index(brief, sharedDocsFoldInPrefix)
+	if i < 0 {
+		return nil
+	}
+	rest := brief[i+len(sharedDocsFoldInPrefix):]
+	j := strings.Index(rest, sharedDocsFoldInSuffix)
+	if j < 0 {
+		return nil
+	}
+	list := rest[:j]
+	var seqs []int
+	for _, m := range sharedDocsSiblingSeq.FindAllStringSubmatch(list, -1) {
+		if n, err := strconv.Atoi(m[1]); err == nil {
+			seqs = append(seqs, n)
+		}
+	}
+	return seqs
 }
 
 // The outcomes a WorkItem finishes with (mesh ADR 003 decision 1).
