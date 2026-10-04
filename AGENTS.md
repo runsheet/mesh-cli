@@ -88,7 +88,18 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   on the goal beside `items` as `"checkpoints": ["pr"]`
   (`ParsePlanCheckpoints`, read like `ParsePlanQuestions`;
   release-tag-mirrors item 14's gate no builder could open is the
-  example, `planCutOverRule`); and an item naming a repo other than the
+  example, `planCutOverRule`; the node's `cutOverAcceptance` flags a
+  sentence waiting on a person or production — "the operator deletes",
+  "in production", "STEP 0 reading", "the gate is closed" and the like,
+  a `Measure:` item exempt — for the re-ask, beside
+  `closeOutAcceptance`; a `precondition` rides the brief's first line
+  `precondition: <clause>`, after `atomic:`'s
+  (`gateway.BriefWithPrecondition`/`PreconditionOf`), and is sent as
+  the item's `precondition` only when `PlannedItemInput` takes it
+  (`TakesItemPrecondition`); a `pr` checkpoint the goal lacks is set by
+  `SetGoalCheckpoints` before `PlanGoal`, logged `goal <slug>: pr
+  checkpoint set: a person approves each pull request`, any other value
+  logged and dropped, ADR-023's amendment); and an item naming a repo other than the
   goal's is a different goal, left out or drafted into the `split`
   (`planRepoRule`; ADR-023 (d) — the node's plan check,
   `internal/node/plan_check.go`'s `otherRepoItems(specs, itemRepo,

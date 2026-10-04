@@ -149,6 +149,9 @@ type Client struct {
 	// questionsSchema is whether the gateway's planGoal input was last
 	// seen to take questions, kept for ScalingProbeEvery.
 	questionsSchema holdingProbe
+	// preconditionSchema is whether the gateway's PlannedItemInput was
+	// last seen with `precondition`, and when (TakesItemPrecondition).
+	preconditionSchema holdingProbe
 	// limitsPrioritiesSchema is whether the gateway's heartbeat `limits`
 	// list input was last found to take `priorities` (see
 	// takesLimitsPriorities).
@@ -915,6 +918,45 @@ func BriefWithAtomic(brief, reason string) string {
 		return atomicPrefix + " " + reason
 	}
 	return atomicPrefix + " " + reason + "\n\n" + brief
+}
+
+// preconditionPrefix opens a brief's line naming a clause the item waits
+// on — a person's confirmation or a production observation no builder
+// can open (ADR-023's amendment, the cut-over rule) — after atomic's
+// line when the brief has one.
+const preconditionPrefix = "precondition:"
+
+// PreconditionOf is the clause on a brief's `precondition: <clause>`
+// line — its first line, or its first after an `atomic:` one — or ""
+// when the brief carries none.
+func PreconditionOf(brief string) string {
+	brief = strings.TrimSpace(brief)
+	if AtomicReason(brief) != "" {
+		_, rest, _ := strings.Cut(brief, "\n")
+		brief = strings.TrimSpace(rest)
+	}
+	first, _, _ := strings.Cut(brief, "\n")
+	first = strings.TrimSpace(first)
+	if len(first) < len(preconditionPrefix) || !strings.EqualFold(first[:len(preconditionPrefix)], preconditionPrefix) {
+		return ""
+	}
+	return strings.TrimSpace(first[len(preconditionPrefix):])
+}
+
+// BriefWithPrecondition is brief with `precondition: <clause>` as its
+// first line, so the item's record carries what it waits on wherever
+// planGoal takes no field for it; a brief unchanged when clause is
+// empty. BriefWithAtomic over it puts atomic's line first.
+func BriefWithPrecondition(brief, clause string) string {
+	clause = strings.Join(strings.Fields(clause), " ")
+	brief = strings.TrimSpace(brief)
+	if clause == "" {
+		return brief
+	}
+	if brief == "" {
+		return preconditionPrefix + " " + clause
+	}
+	return preconditionPrefix + " " + clause + "\n\n" + brief
 }
 
 // The outcomes a WorkItem finishes with (mesh ADR 003 decision 1).
@@ -2952,6 +2994,25 @@ type PlannedItem struct {
 	// dependency uses, by seq (trd §1 WorkItem depends_on): the node
 	// keeps it and PlanGoal does not send it to the platform.
 	DependsBecause map[int]string `json:"-"`
+	// Precondition is the clause the item waits on — a person's
+	// confirmation or a production observation (ADR-023's amendment, the
+	// cut-over rule). It rides the brief's first line
+	// (BriefWithPrecondition) always, and PlanGoal sends it as the item's
+	// `precondition` only when PlannedItemInput takes it
+	// (TakesItemPrecondition).
+	Precondition string `json:"precondition,omitempty"`
+}
+
+// ItemPreconditionField is PlannedItemInput's field for the clause an
+// item waits on (ADR-023's amendment, the cut-over rule).
+const ItemPreconditionField = "precondition"
+
+// TakesItemPrecondition is whether the gateway's PlannedItemInput has
+// `precondition` (introspected, kept for ScalingProbeEvery): a platform
+// without it is never sent the field, and the clause rides the brief
+// alone.
+func (c *Client) TakesItemPrecondition(ctx context.Context) bool {
+	return c.takesInputField(ctx, &c.preconditionSchema, "PlannedItemInput", ItemPreconditionField)
 }
 
 // RequestPlan asks the planner for the goal's graph: the goal waits in
@@ -3269,6 +3330,13 @@ func (c *Client) RecordDirectionResearch(ctx context.Context, directionID, nodeI
 // gateway whose PlanGoalInput takes them (TakesPlanQuestions); the
 // caller says them otherwise.
 func (c *Client) PlanGoal(ctx context.Context, goalID, by string, items []PlannedItem, costCents int, usage *UsageReport, questions ...PlanQuestion) error {
+	withPrecondition := false
+	for _, it := range items {
+		if it.Precondition != "" {
+			withPrecondition = c.TakesItemPrecondition(ctx)
+			break
+		}
+	}
 	send := func(withModel bool) error {
 		list := make([]map[string]any, 0, len(items))
 		for _, it := range items {
@@ -3282,6 +3350,9 @@ func (c *Client) PlanGoal(ctx context.Context, goalID, by string, items []Planne
 			}
 			if withModel && it.Model != "" {
 				row["model"] = it.Model
+			}
+			if withPrecondition && it.Precondition != "" {
+				row[ItemPreconditionField] = it.Precondition
 			}
 			list = append(list, row)
 		}

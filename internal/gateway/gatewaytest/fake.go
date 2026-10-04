@@ -129,6 +129,11 @@ type Fake struct {
 	// (ADR-020); without it, as the platform is today, the field is
 	// left out of the introspection and refused on planGoal.
 	PlanQuestions bool
+	// ItemPrecondition is a platform whose PlannedItemInput has
+	// `precondition` (ADR-023's amendment, the cut-over rule); without
+	// it, as the platform is today, the field is left out of the
+	// introspection and a planGoal item carrying it is refused.
+	ItemPrecondition bool
 	// NoReplaceItem is a platform whose RequestPlanInput has no
 	// `replaceItem` (before the narrow re-plan): introspection leaves it
 	// out and a requestPlan carrying it is refused with "Unknown field".
@@ -552,6 +557,20 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 			fields = append(fields, map[string]any{"name": n})
 		}
 		writeData(w, map[string]any{"__type": map[string]any{"inputFields": fields}})
+	case strings.Contains(q, "__type(") && req.Variables["t"] == "PlannedItemInput":
+		f.Reads = append(f.Reads, Call{Name: "__type PlannedItemInput", Input: map[string]any{}})
+		if f.Unsupported["__type"] {
+			writeErrors(w, 200, "GraphQL introspection is not allowed")
+			return
+		}
+		fields := []any{}
+		for _, n := range []string{"acceptance", "agentSlug", "baseRef", "brief", "dependsOn", "model", "replacesDependents", "repoId", "seq", "title", gateway.ItemPreconditionField} {
+			if n == gateway.ItemPreconditionField && !f.ItemPrecondition {
+				continue
+			}
+			fields = append(fields, map[string]any{"name": n})
+		}
+		writeData(w, map[string]any{"__type": map[string]any{"inputFields": fields}})
 	case strings.Contains(q, "__type(") && actorInputFields[fmt.Sprint(req.Variables["t"])] != nil:
 		t := fmt.Sprint(req.Variables["t"])
 		f.Reads = append(f.Reads, Call{Name: "__type " + t, Input: map[string]any{}})
@@ -679,6 +698,17 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 		if _, ok := in[gateway.PlanQuestionsField]; ok && m[2] == "planGoal" && !f.PlanQuestions {
 			writeErrors(w, 200, `Variable "$in" got invalid value; Unknown field "questions" is not defined by type "PlanGoalInput".`)
 			return
+		}
+		if m[2] == "planGoal" && !f.ItemPrecondition {
+			items, _ := in["items"].([]any)
+			for _, it := range items {
+				if row, _ := it.(map[string]any); row != nil {
+					if _, ok := row[gateway.ItemPreconditionField]; ok {
+						writeErrors(w, 200, `Variable "$in" got invalid value; Unknown field "precondition" is not defined by type "PlannedItemInput".`)
+						return
+					}
+				}
+			}
 		}
 		if m[2] == "evaluateWorkItem" {
 			// the platform's input, as runsheet ADR 035 defines it:
