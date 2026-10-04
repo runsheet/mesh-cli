@@ -62,7 +62,17 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `WorkItem.LineageRootSeq`/`LineageAttempt`, for the re-ask, an
   `atomic` item let through unless that item's brief opened `atomic:`,
   and a second answer still re-landing is refused — `PlanGoal` not
-  called; the reason rides the brief's first line `atomic: <reason>`,
+  called, the refusal a `*PlanRefused` (`PlanRefusedOf`); the same
+  refusal twice running for a goal (`normaliseRefusal`, the last kept in
+  `.plans/refusals.json` under the work root) releases the plan claim
+  with its text, `releaseGoalPlan`, logged `goal <slug>: plan refused
+  twice with the same reason; released, not re-planned: <reason>` (a
+  platform without it `platform has no releaseGoalPlan; held on the
+  node`, once), and `planRequested` passes the goal over and holds it,
+  a `HeldGoal` of kind `plan`, while `Planner.Released` — the goal's
+  `updatedAt` unchanged, else still in planning — says so
+  (`Loop.PlanReleased`; ADR-023, a refused plan is released, not
+  re-planned); the reason rides the brief's first line `atomic: <reason>`,
   `gateway.BriefWithAtomic`/`AtomicReason`), and its rule 3 and re-ask
   carrying four more rules after `planSplitRule`: a plan over the
   project's `maxItems` is answered `split` — goal drafts, each
