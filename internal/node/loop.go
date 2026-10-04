@@ -247,8 +247,9 @@ type Loop struct {
 	sharesUnknown map[string]bool
 	// answerShares is the owner answer's per-org shares (ADR-023): set
 	// when the last answer carried a non-zero Shares on any scope, over
-	// node.yaml's shares: in Weights() (answerSharesSet); an answer with
-	// none leaves it as it was.
+	// node.yaml's shares: in Weights() (answerSharesSet); an answer
+	// whose scopes are all 0 clears it, falling back to node.yaml's
+	// shares: (or nil) from then on.
 	answerShares    map[string]int
 	answerSharesSet bool
 	// sharesBothPresent records whether the platform's shares and
@@ -1423,7 +1424,7 @@ func (l *Loop) reload(ctx context.Context) {
 			}
 		}
 		was := map[string]int{}
-		for org, w := range l.Weights() {
+		for org, w := range l.nodeYAMLWeights() {
 			if served[org] {
 				was[org] = w
 			}

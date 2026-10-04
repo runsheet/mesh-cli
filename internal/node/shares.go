@@ -183,23 +183,31 @@ func sharesFromAnswer(a *gateway.NodeAnswer) (map[string]int, bool) {
 // once on change as `shares (platform) <old> → <new>`; with node.yaml's
 // shares: also in force, `shares: the platform's weights are in force;
 // node.yaml's shares: ignored` logs once per change into that state. An
-// answer with none is not logged and leaves things as they were.
+// answer whose scopes are all Shares 0 clears any platform weights
+// already in force — Weights() falls back to node.yaml's shares: (or
+// nil) from then on — logged the same way, `shares (platform) <old> →
+// none`; with none in force yet, it leaves things as they were and
+// logs nothing.
 func (l *Loop) takeAnswerShares(a *gateway.NodeAnswer) {
 	weights, any := sharesFromAnswer(a)
-	if !any {
-		return
-	}
 	l.mu.Lock()
 	was, wasSet := l.answerShares, l.answerSharesSet
 	l.mu.Unlock()
-	if !wasSet || !sharesEqual(was, weights) {
-		l.logf("shares (platform) %s → %s", sharesString(was), sharesString(weights))
+	var oldRep, newRep map[string]int
+	if wasSet {
+		oldRep = was
 	}
-	bothNow := len(l.nodeYAMLWeights()) > 0
+	if any {
+		newRep = weights
+	}
+	if !sharesEqual(oldRep, newRep) {
+		l.logf("shares (platform) %s → %s", sharesString(oldRep), sharesString(newRep))
+	}
+	bothNow := any && len(l.nodeYAMLWeights()) > 0
 	l.mu.Lock()
 	bothWas := l.sharesBothPresent
 	l.sharesBothPresent = bothNow
-	l.answerShares, l.answerSharesSet = weights, true
+	l.answerShares, l.answerSharesSet = weights, any
 	l.mu.Unlock()
 	if bothNow && !bothWas {
 		l.logf("shares: the platform's weights are in force; node.yaml's shares: ignored")

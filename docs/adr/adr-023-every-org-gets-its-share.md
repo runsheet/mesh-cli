@@ -61,16 +61,23 @@ shares). `Loop.TakeAnswer` reads it (`takeAnswerShares`,
 `internal/node/shares.go`) into a weights map keyed by `Scope.Name()`
 when any scope of the answer carries a non-zero `Shares` — an answer
 whose scopes are all 0 (an older platform, or an enterprise with no
-`shares` set) leaves node.yaml's `shares:` in force and is not logged.
-Once the answer has carried any, it takes node.yaml's `shares:` over in
-`Weights()` from then on, logged once on change as `shares (platform)
-<old> → <new>`, rendered like node.yaml's own line, nothing when an
-answer repeats unchanged; with node.yaml's `shares:` also in force,
-`shares: the platform's weights are in force; node.yaml's shares:
-ignored` logs once, on the change into that state, not on every
-heartbeat it holds. Nothing is persisted to node.yaml — the platform's
-shares live only in the loop, taken afresh at every registration and
-heartbeat.
+`shares` set), with no platform shares in force yet, leaves node.yaml's
+`shares:` in force and is not logged. Once the answer has carried any,
+it takes node.yaml's `shares:` over in `Weights()` from then on, logged
+once on change as `shares (platform) <old> → <new>`, rendered like
+node.yaml's own line, nothing when an answer repeats unchanged; with
+node.yaml's `shares:` also in force, `shares: the platform's weights
+are in force; node.yaml's shares: ignored` logs once, on the change
+into that state, not on every heartbeat it holds. An answer whose
+scopes are all 0 arriving once the platform's shares are in force
+clears them the same way — `Weights()` falls back to node.yaml's
+`shares:` (or nil) from then on, logged `shares (platform) <old> →
+none`. Nothing is persisted to node.yaml — the platform's shares live
+only in the loop, taken afresh at every registration and heartbeat.
+node.yaml's own reload compares a tick's `shares:` against node.yaml's
+own last value, never against `Weights()`'s effective one, so a
+platform override in force does not make an unchanged node.yaml log a
+change on every tick.
 
 **What an org holds.** The loop records, per session, the org it counts
 toward (`Loop.sessionOrg`, subject → org id), set where a build, a plan

@@ -114,6 +114,81 @@ func TestSharesPrecedence(t *testing.T) {
 	}
 }
 
+// TestAnswerSharesClearsOnAllZero: once the platform's shares are in
+// force, an answer whose scopes are all Shares 0 clears them — Weights()
+// falls back to node.yaml's shares: again — logged the same way as a
+// change, `shares (platform) <old> → none`; a further all-zero answer
+// logs nothing more, since there is nothing left to clear.
+func TestAnswerSharesClearsOnAllZero(t *testing.T) {
+	var buf bytes.Buffer
+	cfg := ownedCfg()
+	cfg.Shares = map[string]int{"a": 5, "b": 1}
+	a := sharesAnswer(0, 0)
+	scopes, err := ScopesFromAnswer(a, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loop := &Loop{Cfg: cfg, Scopes: scopes, Owned: &Owned{NodeID: a.NodeID, Owner: OwnerFrom(a)}, Log: log.New(&buf, "", 0)}
+
+	loop.TakeAnswer(sharesAnswer(3, 1))
+	if got := loop.Weights(); !sharesEqual(got, map[string]int{"a": 3, "b": 1}) {
+		t.Fatalf("weights after the platform's shares = %v, want a:3 b:1", got)
+	}
+	buf.Reset()
+
+	loop.TakeAnswer(sharesAnswer(0, 0))
+	if got := loop.Weights(); !sharesEqual(got, map[string]int{"a": 5, "b": 1}) {
+		t.Fatalf("weights after the all-zero answer = %v, want node.yaml's a:5 b:1 back in force", got)
+	}
+	if !strings.Contains(buf.String(), "shares (platform) a 3, b 1 → none") {
+		t.Fatalf("no `shares (platform) … → none` line clearing the override:\n%s", &buf)
+	}
+
+	before := buf.Len()
+	loop.TakeAnswer(sharesAnswer(0, 0))
+	if buf.Len() != before {
+		t.Fatalf("a further all-zero answer logged something: %q", buf.String()[before:])
+	}
+	if got := loop.Weights(); !sharesEqual(got, map[string]int{"a": 5, "b": 1}) {
+		t.Fatalf("weights after the second all-zero answer = %v, want node.yaml's a:5 b:1 still", got)
+	}
+}
+
+// TestReloadUnchangedWithPlatformSharesInForce: once the platform's
+// shares are in force, reloading an unchanged node.yaml (no shares:,
+// or the same shares: as before) logs nothing on successive ticks — the
+// reload compares node.yaml's own last value, not Weights()'s effective
+// one, so the platform's override being different from node.yaml's is
+// never mistaken for a node.yaml change.
+func TestReloadUnchangedWithPlatformSharesInForce(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeNodeYAML(t, "slug: box\nname: Box\ncapacity: 1\nshares: {a: 1, b: 1}\n")
+
+	var logs strings.Builder
+	loop := &Loop{Cfg: &Config{Capacity: Fixed(1)}, Scopes: Scopes{{Login: "a", ID: "org-a"}, {Login: "b", ID: "org-b"}}, Log: log.New(&logs, "", 0)}
+	loop.Reload = OwnedReloader(LoadConfig)
+
+	loop.reload(context.Background())
+	logs.Reset()
+
+	loop.TakeAnswer(sharesAnswer(3, 1))
+	if got := loop.Weights(); !sharesEqual(got, map[string]int{"a": 3, "b": 1}) {
+		t.Fatalf("weights after the platform's shares = %v, want a:3 b:1", got)
+	}
+	logs.Reset()
+
+	for i := 0; i < 3; i++ {
+		loop.reload(context.Background())
+		if got := logs.String(); got != "" {
+			t.Fatalf("reload %d of an unchanged node.yaml logged %q, want nothing", i+1, got)
+		}
+		if got := loop.Weights(); !sharesEqual(got, map[string]int{"a": 3, "b": 1}) {
+			t.Fatalf("weights after reload %d = %v, want the platform's a:3 b:1 still", i+1, got)
+		}
+	}
+}
+
 // TestClaimReadyPlatformShares is the end-to-end case: a fake answering
 // shares acme:3 globex:1 on the heartbeat, capacity 4, both orgs with
 // ready normal-priority work — the weights alone decide, so acme claims
