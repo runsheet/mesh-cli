@@ -1134,7 +1134,7 @@ func (l *Loop) Tick(ctx context.Context) {
 		// with no accounts configured this is the operator's own login,
 		// one implicit account: normal, and unknown until a reading
 		accounts, readings := l.accounts()
-		h := HoldingReport(l.now(), accounts, readings, l.Thresholds(), l.Capacity(), p, l.unclaimed, l.shareRows())
+		h := HoldingReport(l.now(), accounts, readings, l.Thresholds(), l.Capacity(), p, l.unclaimed, l.shareRows(), l.Takes().Kinds())
 		l.mu.Lock()
 		l.holding = &h
 		l.mu.Unlock()

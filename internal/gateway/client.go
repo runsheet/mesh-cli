@@ -132,6 +132,9 @@ type Client struct {
 	// holdingOrgsSchema is whether the gateway's HeartbeatNodeInput's
 	// `holding` was last found to take `orgs` (see takesHoldingOrgs).
 	holdingOrgsSchema holdingProbe
+	// holdingKindsSchema is whether the gateway's HeartbeatNodeInput's
+	// `holding` was last found to take `kinds` (see takesHoldingKinds).
+	holdingKindsSchema holdingProbe
 	// commitSchema is whether the gateway's heartbeat input was last
 	// found to take `commit` (see takesCommit).
 	commitSchema commitProbe
@@ -2071,6 +2074,11 @@ type Holding struct {
 	// Always a list, [] when there are none; sent only when the
 	// gateway's holding input takes `orgs` (takesHoldingOrgs).
 	Orgs []HoldingOrg `json:"orgs"`
+	// Kinds is the kinds of session this node takes (node.yaml's
+	// `takes:`), in Takes.Kinds' fixed order — every kind when node.yaml
+	// names none. Always a list, never empty; sent only when the
+	// gateway's holding input takes `kinds` (takesHoldingKinds, ADR-025).
+	Kinds []string `json:"kinds"`
 }
 
 // HoldingOrg is one served org's row of the holding report: Org its
@@ -2317,11 +2325,14 @@ func (c *Client) HeartbeatNode(ctx context.Context, nodeID, version string, runn
 			if h.Orgs == nil {
 				h.Orgs = []HoldingOrg{}
 			}
-			until, orgs := c.takesHoldingUnclaimedUntil(ctx), c.takesHoldingOrgs(ctx)
-			if until && orgs {
+			if h.Kinds == nil {
+				h.Kinds = []string{}
+			}
+			until, orgs, kinds := c.takesHoldingUnclaimedUntil(ctx), c.takesHoldingOrgs(ctx), c.takesHoldingKinds(ctx)
+			if until && orgs && kinds {
 				in["holding"] = &h
 			} else {
-				in["holding"] = holdingWithout(h, until, orgs)
+				in["holding"] = holdingWithout(h, until, orgs, kinds)
 			}
 		}
 		if x.Commit != "" && c.takesCommit(ctx) {
@@ -2516,10 +2527,10 @@ func (c *Client) takesHolding(ctx context.Context) bool {
 
 // holdingWithout is h's wire shape less what the platform does not take
 // yet: each unclaimed entry's `until` unless until (see
-// takesHoldingUnclaimedUntil), and `orgs` unless orgs (see
-// takesHoldingOrgs). An unknown field refuses the whole heartbeat (see
-// HeartbeatNode).
-func holdingWithout(h Holding, until, orgs bool) map[string]any {
+// takesHoldingUnclaimedUntil), `orgs` unless orgs (see
+// takesHoldingOrgs), and `kinds` unless kinds (see takesHoldingKinds).
+// An unknown field refuses the whole heartbeat (see HeartbeatNode).
+func holdingWithout(h Holding, until, orgs, kinds bool) map[string]any {
 	b, _ := json.Marshal(h)
 	m := map[string]any{}
 	_ = json.Unmarshal(b, &m)
@@ -2532,6 +2543,9 @@ func holdingWithout(h Holding, until, orgs bool) map[string]any {
 	}
 	if !orgs {
 		delete(m, "orgs")
+	}
+	if !kinds {
+		delete(m, "kinds")
 	}
 	return m
 }
@@ -2580,6 +2594,57 @@ func (c *Client) takesHoldingOrgs(ctx context.Context) bool {
 		}
 		for _, hf := range fields {
 			if hf.Name == "orgs" {
+				p.takes = true
+			}
+		}
+	}
+	return p.takes
+}
+
+// takesHoldingKinds says whether the gateway's HeartbeatNodeInput's
+// `holding` field takes `kinds` — asked once by introspection and kept
+// for ScalingProbeEvery, the same as takesHoldingOrgs (ADR-025, the
+// kinds of session this node takes).
+func (c *Client) takesHoldingKinds(ctx context.Context) bool {
+	p := &c.holdingKindsSchema
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := c.now()
+	if !p.at.IsZero() && now.Sub(p.at) < ScalingProbeEvery {
+		return p.takes
+	}
+	var out struct {
+		Type *struct {
+			InputFields []struct {
+				Name string `json:"name"`
+				Type struct {
+					InputFields []struct {
+						Name string `json:"name"`
+					} `json:"inputFields"`
+					OfType *struct {
+						InputFields []struct {
+							Name string `json:"name"`
+						} `json:"inputFields"`
+					} `json:"ofType"`
+				} `json:"type"`
+			} `json:"inputFields"`
+		} `json:"__type"`
+	}
+	p.at, p.takes = now, false
+	q := `{ __type(name: "HeartbeatNodeInput") { inputFields { name type { inputFields { name } ofType { inputFields { name } } } } } }`
+	if err := c.Query(ctx, q, nil, &out); err != nil || out.Type == nil {
+		return false
+	}
+	for _, f := range out.Type.InputFields {
+		if f.Name != "holding" {
+			continue
+		}
+		fields := f.Type.InputFields
+		if f.Type.OfType != nil {
+			fields = append(fields, f.Type.OfType.InputFields...)
+		}
+		for _, hf := range fields {
+			if hf.Name == "kinds" {
 				p.takes = true
 			}
 		}
