@@ -17,7 +17,10 @@ const (
 	ReasonMax          Reason = "max"
 	ReasonWeeklyPace   Reason = "weekly pace"
 	ReasonFiveHourPace Reason = "five-hour pace"
-	ReasonMachineLoad  Reason = "machine load"
+	// ReasonLowMemory is the growth cap of a machine short of memory
+	// (MinFreeMemory); a hot host's load and temperature are the
+	// back-off's (hostbackoff.go), not the scaler's.
+	ReasonLowMemory Reason = "low memory"
 )
 
 const (
@@ -117,7 +120,7 @@ type Scaler struct {
 	Min, Max int
 	// Now is the clock; time.Now when nil.
 	Now func() time.Time
-	// Machine caps the target by the host's load and memory; nil is no cap.
+	// Machine caps the target by the host's free memory; nil is no cap.
 	Machine MachineProbe
 
 	samples []headroomSample
@@ -199,7 +202,8 @@ func (s *Scaler) slots(w window, now time.Time) float64 {
 
 // Target is the capacity the windows afford — the smaller of the two
 // windows' slots, clamped to [Min, Max] — then capped by the machine at
-// running (no growth) when it is busy, and the reason for it.
+// running (no growth) when it is short of memory, and the reason for it.
+// Load and temperature are the host back-off's (hostbackoff.go).
 func (s *Scaler) Target(running int) (int, Reason) {
 	now := s.now()
 	target, reason := s.Max, ReasonMax
@@ -213,8 +217,8 @@ func (s *Scaler) Target(running int) (int, Reason) {
 		target = max(int(best), s.Min)
 	}
 	if s.Machine != nil {
-		if m, err := s.Machine.Read(); err == nil && m.Busy() && running < target {
-			target, reason = max(running, 0), ReasonMachineLoad
+		if m, err := s.Machine.Read(); err == nil && m.ShortOfMemory() && running < target {
+			target, reason = max(running, 0), ReasonLowMemory
 		}
 	}
 	return target, reason
