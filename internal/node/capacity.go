@@ -3,6 +3,8 @@ package node
 import (
 	"math"
 	"time"
+
+	"projectmesh.io/mesh-cli/internal/harness"
 )
 
 // The accounts scaler (adr-005-capacity-across-accounts): adr-004's
@@ -18,6 +20,10 @@ const (
 	ReasonDailyCap      Reason = "daily cap"
 	ReasonMonthlyCap    Reason = "monthly cap"
 	ReasonProjectBudget Reason = "project budget"
+	// ReasonPush is a subscription whose slots the push raised: a window
+	// behind its line in its last fifth of time (adr-005-capacity-across-
+	// accounts, amendment 2026-10-03).
+	ReasonPush Reason = "push"
 )
 
 const (
@@ -48,6 +54,10 @@ type CapacityAccount struct {
 	MonthlyCapUSD         float64
 	Project               string
 	ProjectDailyBudgetUSD float64
+	// PaceFiveHour and PaceSevenDay are a subscription's own pace points
+	// (a credential's windowTargets), 0 none: where set, the window's
+	// target line for the push in place of the time-proportional one.
+	PaceFiveHour, PaceSevenDay float64
 }
 
 func (a CapacityAccount) dailyCap() float64 {
@@ -92,6 +102,12 @@ type AccountSlots struct {
 	Kind   string
 	Slots  Slots
 	Reason Reason
+	// Push is set when the push raised a subscription's slots (Reason
+	// ReasonPush); PushWindow names the window pushed ("seven-day" or
+	// "five-hour") and PushStanding its standing then.
+	Push         bool
+	PushWindow   string
+	PushStanding WindowStanding
 }
 
 // AccountsTarget is the capacity the accounts afford, why, how many of
@@ -116,10 +132,14 @@ type AccountsScaler struct {
 	Min, Max int
 	// Now is the clock; time.Now when nil.
 	Now func() time.Time
-	// Machine caps the target by the host's load and memory; nil is no cap.
+	// Machine caps the target by the host's free memory; nil is no cap.
 	Machine MachineProbe
 	// Location is where a day and a month begin and end; UTC when nil.
 	Location *time.Location
+	// Limits are the thresholds in force (the loop's Thresholds), for
+	// the push: a subscription's window behind its line in its last
+	// fifth is spent up to Limits.Stop. Zero is the defaults.
+	Limits LimitsConfig
 
 	windows map[string]*Scaler
 	spend   map[string][]spendSample
@@ -200,18 +220,52 @@ func (s *AccountsScaler) startOfDay(t time.Time) time.Time {
 // subscriptionSlots is the smaller of a subscription's windows' slots,
 // as adr-004 counts them, and the window that sets it. No reading sets
 // no bound (+Inf, max).
-func (s *AccountsScaler) subscriptionSlots(name string, now time.Time) (float64, Reason) {
+//
+// The push (adr-005-capacity-across-accounts, amendment 2026-10-03): a
+// window whose standing says Push — its last fifth of time, the account
+// behind its target line — affords slots spending its room up to
+// Limits.Stop rather than to its own target, and at least one more than
+// it would unpushed, so a push shows even while burn is unmeasured. A
+// window at or past the stop affords none, pushed or not. With a window
+// pushed it returns the pushed count too and the pushed window and its
+// standing (nil when none is); Target takes the push only when it
+// raises the account's whole slots.
+func (s *AccountsScaler) subscriptionSlots(a CapacityAccount, now time.Time) (float64, Reason, float64, *AccountSlots) {
 	best, why := math.Inf(1), ReasonMax
-	w := s.windows[name]
+	w := s.windows[a.Name]
 	if w == nil {
-		return best, why
+		return best, why, best, nil
 	}
+	cfg := s.Limits.Thresholds()
+	pushedBest := math.Inf(1)
+	var pushed *AccountSlots
 	for _, win := range []window{sevenDay, fiveHour} {
-		if n := w.slots(win, now); n < best {
+		n := w.slots(win, now)
+		if n < best {
 			best, why = n, win.reason()
 		}
+		p := n
+		if last := w.last(win); last != nil {
+			point := a.PaceSevenDay
+			if win == fiveHour {
+				point = a.PaceFiveHour
+			}
+			st := windowStanding(now, harness.RateLimitWindow{Utilization: last.Utilization, ResetsAt: last.ResetsAt},
+				win.length(), pacePointFraction(point), cfg)
+			if st.Push {
+				if last.Utilization >= cfg.Stop {
+					p = 0
+				} else {
+					p = math.Max(w.slotsTo(win, now, cfg.Stop), math.Floor(n+1e-9)+1)
+				}
+				if pushed == nil {
+					pushed = &AccountSlots{Push: true, PushWindow: win.String(), PushStanding: st}
+				}
+			}
+		}
+		pushedBest = math.Min(pushedBest, p)
 	}
-	return best, why
+	return best, why, pushedBest, pushed
 }
 
 // apiSlots is what a key affords from its money left today — the
@@ -290,8 +344,12 @@ func (s *AccountsScaler) Target(accounts []CapacityAccount, running int) Account
 			t, n := whole(total), whole(normal)
 			as.Slots, as.Reason = Slots{Normal: n, UrgentOnly: t - n}, why
 		} else {
-			n, why := s.subscriptionSlots(a.Name, now)
+			n, why, p, pushed := s.subscriptionSlots(a, now)
 			as.Slots, as.Reason = Slots{Normal: whole(n)}, why
+			if pushed != nil && whole(p) > whole(n) {
+				as.Slots.Normal, as.Reason = whole(p), ReasonPush
+				as.Push, as.PushWindow, as.PushStanding = true, pushed.PushWindow, pushed.PushStanding
+			}
 		}
 		sum += as.Slots.Total()
 		urgent += as.Slots.UrgentOnly
@@ -306,8 +364,8 @@ func (s *AccountsScaler) Target(accounts []CapacityAccount, running int) Account
 		out.Capacity, out.Reason = s.Min, ReasonMin
 	}
 	if s.Machine != nil {
-		if m, err := s.Machine.Read(); err == nil && m.Busy() && running < out.Capacity {
-			out.Capacity, out.Reason = max(running, 0), ReasonMachineLoad
+		if m, err := s.Machine.Read(); err == nil && m.ShortOfMemory() && running < out.Capacity {
+			out.Capacity, out.Reason = max(running, 0), ReasonLowMemory
 		}
 	}
 	out.UrgentOnly = min(urgent, out.Capacity)

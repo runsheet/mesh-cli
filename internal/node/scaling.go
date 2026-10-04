@@ -21,18 +21,27 @@ const ScaleEvery = time.Minute
 type WindowSource func() (Windows, bool)
 
 // Scaling is a ranged node's capacity in force, its range and why it is
-// what it is — what the heartbeat's `scaling` carries.
+// what it is — what the heartbeat's `scaling` carries — and the host as
+// last read (nil before a reading, or with no Machine).
 type Scaling struct {
-	Capacity int    `json:"capacity"`
-	Min      int    `json:"min"`
-	Max      int    `json:"max"`
-	Reason   Reason `json:"reason"`
+	Capacity int         `json:"capacity"`
+	Min      int         `json:"min"`
+	Max      int         `json:"max"`
+	Reason   Reason      `json:"reason"`
+	Host     *HostReport `json:"host,omitempty"`
 }
 
 // Heartbeat is s as the heartbeat's `scaling` carries it.
 func (s Scaling) Heartbeat() *gateway.Scaling {
 	// Accounts is [] rather than nil: the platform refuses a null list
-	return &gateway.Scaling{Capacity: s.Capacity, Min: s.Min, Max: s.Max, Reason: string(s.Reason), Accounts: []gateway.AccountScaling{}}
+	out := &gateway.Scaling{Capacity: s.Capacity, Min: s.Min, Max: s.Max, Reason: string(s.Reason), Accounts: []gateway.AccountScaling{}}
+	if s.Host != nil {
+		out.Host = &gateway.HostScaling{Load: s.Host.Load, Cores: s.Host.Cores, Hot: s.Host.Hot}
+		if s.Host.HasTemp {
+			out.Host.TemperatureC = s.Host.TempC
+		}
+	}
+	return out
 }
 
 // ReasonFixed is a fixed capacity's reason, which the heartbeat's
@@ -64,11 +73,23 @@ func (l *Loop) heartbeatScaling(s Scaling, ranged bool) *gateway.Scaling {
 }
 
 // String is s as `mesh node status` shows it: in-force/min–max (reason).
-// A reason not yet known (the scaler has not run) is left out.
+// A reason not yet known (the scaler has not run) is left out. A Host
+// reading, when there is one, is appended as its own clause — `— host
+// load <load> / <cores> cores, <temp>°C`, or `no temperature` where the
+// host has no thermal zone to read — whether or not it is what backed
+// the capacity off, so a reading just climbing back from one still
+// shows it (adr-004's amendment 2026-10-03).
 func (s Scaling) String() string {
 	out := fmt.Sprintf("%d/%d–%d", s.Capacity, s.Min, s.Max)
 	if s.Reason != "" {
 		out += " (" + string(s.Reason) + ")"
+	}
+	if s.Host != nil {
+		temp := "no temperature"
+		if s.Host.HasTemp {
+			temp = hostNum(s.Host.TempC) + "°C"
+		}
+		out += fmt.Sprintf(" — host load %s / %d cores, %s", hostNum(s.Host.Load), s.Host.Cores, temp)
 	}
 	return out
 }
@@ -78,9 +99,12 @@ type scaleState struct {
 	scaler *Scaler
 	// accounts is the accounts scaler, run instead of scaler when
 	// node.yaml lists accounts; target is its last target (targeted).
-	accounts  *AccountsScaler
-	target    AccountsTarget
-	targeted  bool
+	accounts *AccountsScaler
+	target   AccountsTarget
+	targeted bool
+	// pushed is the accounts the push raised at the last run, so its
+	// log line is said once per crossing.
+	pushed    map[string]bool
 	evaluated time.Time
 	stepped   time.Time
 	reason    Reason
@@ -94,32 +118,49 @@ func (l *Loop) rangeLocked() Capacity {
 	return l.Cfg.Capacity
 }
 
-// Scaling is the capacity in force, the range and the reason, and true,
-// when node.yaml's capacity is a range; a fixed node has none.
+// Scaling is the capacity in force, the range, the reason and the host,
+// and true, when node.yaml's capacity is a range or a hot host holds a
+// fixed one back — then its range is 1 to N and its reason the host's;
+// a fixed node level and quiet has none. While the back-off holds, its
+// reason is the plan's.
 func (l *Loop) Scaling() (Scaling, bool) {
 	capacity := l.Capacity()
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	r := l.rangeLocked()
+	host := l.backoff.report()
 	if !r.IsRange() {
-		return Scaling{}, false
+		if !l.backoff.active() {
+			return Scaling{}, false
+		}
+		return Scaling{Capacity: capacity, Min: 1, Max: r.Max, Reason: l.backoff.reason, Host: host}, true
 	}
-	return Scaling{Capacity: capacity, Min: r.Min, Max: r.Max, Reason: l.scaling.reason}, true
+	reason := l.scaling.reason
+	if l.backoff.active() {
+		reason = l.backoff.reason
+	}
+	return Scaling{Capacity: capacity, Min: r.Min, Max: r.Max, Reason: reason, Host: host}, true
 }
 
 // atMin says a ranged node is at (or, held by the machine, below) its
-// min: it claims only urgent and high items there.
+// min: it claims only urgent and high items there. A fixed node held
+// back by a hot host is never at its min: the back-off is its own rule.
 func (l *Loop) atMin() bool {
-	s, ok := l.Scaling()
-	return ok && s.Capacity <= s.Min
+	l.mu.Lock()
+	ranged := l.rangeLocked().IsRange()
+	l.mu.Unlock()
+	s, _ := l.Scaling()
+	return ranged && s.Capacity <= s.Min
 }
 
 // setRange takes node.yaml's capacity as read again. A fixed one is in
 // force as it is; a range clamps the capacity in force into it at once,
 // and the scaler goes on from there.
 func (l *Loop) setRange(c Capacity) {
-	was := l.Capacity()
 	l.mu.Lock()
+	// the plan figure, not what a hot host holds it to: the back-off
+	// stays a layer over whatever the plan becomes
+	was := l.planLocked()
 	old := l.rangeLocked()
 	l.capRange = c
 	l.mu.Unlock()

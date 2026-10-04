@@ -216,6 +216,12 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   and no read) holds fresh claims for a repo with N items in `review`,
   counted from the node's own listing, never `RepoIndex.reviewPile`;
   started work there is still claimed (ADR-017).
+  node.yaml's `takes:` (`Takes`: a list of kinds or a per-kind cap map,
+  re-read each tick, `Loop.Takes`; left out, every kind) skips a kind
+  not taken before its claim path lists anything — `claimReady`,
+  `evaluateHeld`, `rebaseRequested`, `planRequested`, `researchDue`
+  return at `takesKind` — logged on change `takes: <old> → <new>`
+  (ADR-025).
   **Every org gets its share** (`internal/node/shares.go`, ADR-023,
   amending ADR-017's order): `claimReady` orders the pooled ready items
   by `shareOrder(ready, Floors(Capacity(), Scopes, Weights()),
@@ -536,7 +542,13 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   (`ledger.go`, `~/.mesh/ledger.json`, local time, fed by
   `ObserveSpend`); `Loop.spendable` narrows every choice — no key at
   its cap, the last 10% of a key's day for urgent/high, and for an item
-  only an account with a slot free.
+  only an account with a slot free. **A hot host backs it off**
+  (`hostbackoff.go`, ADR-023): every tick, while `MachineReading.Hot`
+  at node.yaml's `host:` thresholds, the capacity in force drops one
+  slot (to max(min, 1); a fixed node's 1) and `claimReady` is skipped;
+  quiet, it climbs one slot per `HostRecoverEvery` back to the plan
+  figure, `Scaling.Host` carrying the reading; the scalers keep only
+  the free-memory cap (`low memory`).
 - **Held goals are a record** (`internal/node/held.go`, goal
   a-refused-plan-is-released-not-replanned): `HeldGoal{GoalID, Slug,
   Org, Kind, Reason, Since, Until}` is a goal this node holds off

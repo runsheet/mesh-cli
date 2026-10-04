@@ -85,7 +85,7 @@ func TestAccountsNodeGrowsToTheSumAndSpendsInOrder(t *testing.T) {
 	stepsOf(t, n.capacityEvery(0, 25*time.Minute), func(d time.Duration) int {
 		return min(1+int(d/(5*time.Minute)), 5)
 	})
-	if got, _ := n.loop.Scaling(); got != (Scaling{Capacity: 5, Min: 1, Max: 8, Reason: ReasonAccounts}) {
+	if got, _ := n.loop.Scaling(); bare(got) != (Scaling{Capacity: 5, Min: 1, Max: 8, Reason: ReasonAccounts}) {
 		t.Fatalf("scaling = %+v", got)
 	}
 	slots, _ := n.loop.AccountSlots()

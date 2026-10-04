@@ -242,10 +242,17 @@ type Loop struct {
 	// says otherwise (claimSet).
 	claim    ClaimConfig
 	claimSet bool
+	// takes is node.yaml's `takes:` block in force: Cfg's until Reload
+	// says otherwise (takesSet); read through Takes() and takesKind.
+	takes    Takes
+	takesSet bool
 	// host is node.yaml's `host:` block in force, defaults filled: Cfg's
 	// until Reload says otherwise (hostSet).
 	host    HostConfig
 	hostSet bool
+	// backoff is the host back-off over the plan figure (hostBackoff,
+	// ADR-023 the node backs off a hot host).
+	backoff hostState
 	// shares is node.yaml's `shares:` weights in force (ADR-023): Cfg's
 	// until Reload says otherwise (sharesSet); read through Weights().
 	shares    map[string]int
@@ -527,6 +534,9 @@ func planOrder(goals []planningGoal) {
 // items in review is not claimed either; started work there is
 // (ADR-017, Per-repo limit on unmerged work).
 func (l *Loop) claimReady(ctx context.Context, free, normalFree, maxRank int) {
+	if !l.takesKind(harness.KindBuild) {
+		return
+	}
 	var ready []readyItem
 	limit := l.UnmergedPerRepo()
 	listed := make([][]gateway.WorkItem, len(l.Scopes))
@@ -923,6 +933,7 @@ func (l *Loop) Tick(ctx context.Context) {
 	l.reload(ctx)
 	l.probe()
 	l.scale()
+	l.hostBackoff()
 	runtimes, adapters := l.Runtimes()
 	// the heartbeat goes out before this tick's pass, so its holding is
 	// the last pass's decision (nil before the first; a draining node,
@@ -995,7 +1006,8 @@ func (l *Loop) Tick(ctx context.Context) {
 		// the urgent-only slots (the reserve at the end of an api key's
 		// day) are not for normal and low work
 		normalFree := min(free, l.Capacity()-l.urgentOnly()-l.Running())
-		if free > 0 {
+		// a hot host claims nothing new; what runs runs on
+		if free > 0 && !l.hostHot() {
 			l.claimReady(ctx, free, normalFree, claimRank)
 		}
 		l.logWaiting()
@@ -1057,18 +1069,13 @@ func (l *Loop) Resume() {
 }
 
 // Capacity is the number of items this node runs at once: the capacity
-// in force, as last read or scaled. Before the first tick a ranged node
-// has its min; once scaling, a busy machine may hold it below (even 0).
+// in force, as last read or scaled, less what a hot host holds back
+// (hostBackoff). Before the first tick a ranged node has its min; once
+// scaling, a machine short of memory may hold it below (even 0).
 func (l *Loop) Capacity() int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.capacity > 0 || l.scaling.scaler != nil {
-		return l.capacity
-	}
-	if r := l.rangeLocked(); r.IsRange() {
-		return r.Min
-	}
-	return l.rangeLocked().Max
+	return l.inForceLocked(l.planLocked())
 }
 
 // Thresholds are the limits thresholds in force, as last read.
@@ -1479,6 +1486,14 @@ func (l *Loop) reload(ctx context.Context) {
 		l.claim, l.claimSet = *got.Claim, true
 		l.mu.Unlock()
 	}
+	if got.Takes != nil {
+		if was, now := l.Takes(), *got.Takes; was.String() != now.String() {
+			l.logf("takes: %s → %s", was, now)
+		}
+		l.mu.Lock()
+		l.takes, l.takesSet = *got.Takes, true
+		l.mu.Unlock()
+	}
 	if got.Host != nil {
 		was, now := l.HostThresholds(), got.Host.Effective()
 		if now.LoadPerCoreMax != was.LoadPerCoreMax {
@@ -1622,7 +1637,7 @@ func sameOrgs(a, b Scopes) bool {
 // one). The verdict moves the item on;
 // an evaluation that ends without one leaves it here for the next tick.
 func (l *Loop) evaluateHeld(ctx context.Context) {
-	if l.Evaluate == nil {
+	if l.Evaluate == nil || !l.takesKind(harness.KindEvaluate) {
 		return
 	}
 	var held []readyItem
@@ -1705,7 +1720,7 @@ func (l *Loop) evaluateHeld(ctx context.Context) {
 // node holds it, or it is no longer requested — is the ordinary answer
 // and is not logged as an error.
 func (l *Loop) rebaseRequested(ctx context.Context) {
-	if l.Rebase == nil {
+	if l.Rebase == nil || !l.takesKind(harness.KindRebase) {
 		return
 	}
 	var requested []readyItem
@@ -1780,7 +1795,7 @@ func (l *Loop) rebaseRequested(ctx context.Context) {
 // the orgs (planOrder), each on the account chosen for its priority. A
 // goal no account has headroom for is left for later.
 func (l *Loop) planRequested(ctx context.Context) {
-	if l.Plan == nil {
+	if l.Plan == nil || !l.takesKind(harness.KindPlan) {
 		return
 	}
 	var requested []planningGoal
@@ -1902,7 +1917,7 @@ func (l *Loop) heldSince(goalID, kind string) time.Time {
 // refusal is not logged as an error. Each direction is offered on its
 // own, so two directions of one project take their turns independently.
 func (l *Loop) researchDue(ctx context.Context) {
-	if l.Research == nil {
+	if l.Research == nil || !l.takesKind(harness.KindResearch) {
 		return
 	}
 	for _, sc := range l.Scopes {

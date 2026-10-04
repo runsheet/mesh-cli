@@ -17,7 +17,10 @@ const (
 	ReasonMax          Reason = "max"
 	ReasonWeeklyPace   Reason = "weekly pace"
 	ReasonFiveHourPace Reason = "five-hour pace"
-	ReasonMachineLoad  Reason = "machine load"
+	// ReasonLowMemory is the growth cap of a machine short of memory
+	// (MinFreeMemory); a hot host's load and temperature are the
+	// back-off's (hostbackoff.go), not the scaler's.
+	ReasonLowMemory Reason = "low memory"
 )
 
 const (
@@ -96,6 +99,20 @@ func (w window) floorBurn() float64 {
 	return FloorBurnSevenDay
 }
 
+func (w window) length() time.Duration {
+	if w == fiveHour {
+		return fiveHourLength
+	}
+	return sevenDayLength
+}
+
+func (w window) String() string {
+	if w == fiveHour {
+		return "five-hour"
+	}
+	return "seven-day"
+}
+
 func (w window) reason() Reason {
 	if w == fiveHour {
 		return ReasonFiveHourPace
@@ -117,7 +134,7 @@ type Scaler struct {
 	Min, Max int
 	// Now is the clock; time.Now when nil.
 	Now func() time.Time
-	// Machine caps the target by the host's load and memory; nil is no cap.
+	// Machine caps the target by the host's free memory; nil is no cap.
 	Machine MachineProbe
 
 	samples []headroomSample
@@ -182,14 +199,18 @@ func (s *Scaler) burn(w window) float64 {
 // the burn measured: (target − utilization) / minutes to reset / burn.
 // A window with no reading, or past its reset, sets no bound (+Inf).
 func (s *Scaler) slots(w window, now time.Time) float64 {
-	var last *WindowReading
-	for i := len(s.samples) - 1; i >= 0 && last == nil; i-- {
-		last = w.of(s.samples[i].windows)
-	}
+	return s.slotsTo(w, now, w.target())
+}
+
+// slotsTo is slots spending the window up to target rather than its
+// own: the push (adr-005-capacity-across-accounts, 2026-10-03) spends a
+// window behind its line in its last fifth up to the stop.
+func (s *Scaler) slotsTo(w window, now time.Time, target float64) float64 {
+	last := s.last(w)
 	if last == nil || !last.ResetsAt.After(now) {
 		return math.Inf(1)
 	}
-	room := w.target() - last.Utilization
+	room := target - last.Utilization
 	if room <= 0 {
 		return 0
 	}
@@ -197,9 +218,20 @@ func (s *Scaler) slots(w window, now time.Time) float64 {
 	return room / minutes / s.burn(w)
 }
 
+// last is a window's latest reading, nil when none was fed.
+func (s *Scaler) last(w window) *WindowReading {
+	for i := len(s.samples) - 1; i >= 0; i-- {
+		if r := w.of(s.samples[i].windows); r != nil {
+			return r
+		}
+	}
+	return nil
+}
+
 // Target is the capacity the windows afford — the smaller of the two
 // windows' slots, clamped to [Min, Max] — then capped by the machine at
-// running (no growth) when it is busy, and the reason for it.
+// running (no growth) when it is short of memory, and the reason for it.
+// Load and temperature are the host back-off's (hostbackoff.go).
 func (s *Scaler) Target(running int) (int, Reason) {
 	now := s.now()
 	target, reason := s.Max, ReasonMax
@@ -213,8 +245,8 @@ func (s *Scaler) Target(running int) (int, Reason) {
 		target = max(int(best), s.Min)
 	}
 	if s.Machine != nil {
-		if m, err := s.Machine.Read(); err == nil && m.Busy() && running < target {
-			target, reason = max(running, 0), ReasonMachineLoad
+		if m, err := s.Machine.Read(); err == nil && m.ShortOfMemory() && running < target {
+			target, reason = max(running, 0), ReasonLowMemory
 		}
 	}
 	return target, reason
