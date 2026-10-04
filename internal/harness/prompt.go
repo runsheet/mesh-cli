@@ -50,6 +50,38 @@ type PromptInput struct {
 	// (sandbox.ServicesLine): the ready ones on 127.0.0.1 and the
 	// missing ones; empty when there are none.
 	Services string
+	// FoldNotes are the notes the goal's other items left for this one,
+	// the shared-docs writer (gateway.SharedDocsWriterOf): each sibling
+	// whose last note opens "for the docs writer:", in seq order. Empty
+	// for every other item (ADR-025).
+	FoldNotes []ItemNote
+}
+
+// ItemNote is a sibling item's note for the shared-docs writer: its
+// seq, title, last note and pull request URL (empty when it has none).
+type ItemNote struct {
+	Seq   int
+	Title string
+	Note  string
+	PRURL string
+}
+
+// foldNotesSection is the writer's "Notes to fold in" section: one
+// line per sibling's note, and the merged pull request descriptions as
+// the other source (ADR-025).
+func foldNotesSection(b *strings.Builder, notes []ItemNote) {
+	if len(notes) == 0 {
+		return
+	}
+	b.WriteString("## Notes to fold in\n\nThis item writes the goal's shared documents. The other items left these notes for it; fold each into the documents:\n\n")
+	for _, n := range notes {
+		fmt.Fprintf(b, "- item %d (%s): %s", n.Seq, n.Title, strings.TrimSpace(n.Note))
+		if n.PRURL != "" {
+			fmt.Fprintf(b, " (%s)", n.PRURL)
+		}
+		b.WriteString("\n")
+	}
+	b.WriteString("\nEach sibling's merged pull request description is the other source: read it for what the note leaves out.\n\n")
 }
 
 // servicesSection is the prompt's Services section, when there are any.
@@ -86,6 +118,7 @@ func BuildPrompt(in PromptInput) string {
 			b.WriteString("Fetch the documents the brief names before you build; search for anything else.\n\n")
 		}
 	}
+	foldNotesSection(&b, in.FoldNotes)
 	if strings.TrimSpace(in.Acceptance) != "" {
 		fmt.Fprintf(&b, "## Acceptance (this item)\n\n%s\n\n", strings.TrimSpace(in.Acceptance))
 	}
