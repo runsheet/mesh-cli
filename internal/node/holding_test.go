@@ -289,3 +289,33 @@ func TestHoldingReportKinds(t *testing.T) {
 		t.Fatalf("kinds = %#v, want every kind", rep.Kinds)
 	}
 }
+
+// A withdrawn account (Reconcile) is gone from Known.Accounts, and
+// HoldingReport — taking that list, never KnownAccounts itself — names
+// only what is left (adr-005's amendment 2026-10-03, a withdrawn account
+// leaves the report).
+func TestHoldingReportOmitsWithdrawnAccount(t *testing.T) {
+	now := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+	known := &KnownAccounts{}
+	const proj = "proj-1"
+	if err := known.NoteFor(AccountConfig{Label: "max20", Kind: AccountSubscription}, proj, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := known.NoteFor(AccountConfig{Label: "shhemail", Kind: AccountSubscription}, proj, now); err != nil {
+		t.Fatal(err)
+	}
+
+	withdrawn := known.Reconcile("", proj, []AccountConfig{{Label: "shhemail", Kind: AccountSubscription}}, now)
+	if len(withdrawn) != 1 || withdrawn[0] != "max20" {
+		t.Fatalf("withdrawn = %v, want [max20]", withdrawn)
+	}
+
+	accounts := known.Accounts(now)
+	readings := map[string]harness.RateLimit{"max20": {Status: "allowed", ObservedAt: now}, "shhemail": {Status: "allowed", ObservedAt: now}}
+	cfg := LimitsConfig{}
+	p := nodePace(now, accounts, readings, cfg)
+	rep := HoldingReport(now, accounts, readings, cfg, 4, p, nil, nil, nil)
+	if len(rep.Accounts) != 1 || rep.Accounts[0].Account != "shhemail" {
+		t.Fatalf("accounts = %#v, want only shhemail", rep.Accounts)
+	}
+}

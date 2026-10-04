@@ -472,6 +472,44 @@ func TestHeartbeatStanding(t *testing.T) {
 	}
 }
 
+// A withdrawn account's reading is forgotten (Credentials.Open's
+// Reconcile+Forget, adr-005's amendment 2026-10-03), so the heartbeat's
+// limits[] carries only what is still known.
+func TestLimitsHeartbeatOmitsWithdrawnAccount(t *testing.T) {
+	now := t0
+	known := &KnownAccounts{}
+	const proj = "proj-1"
+	if err := known.NoteFor(AccountConfig{Label: "max20", Kind: AccountSubscription}, proj, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := known.NoteFor(AccountConfig{Label: "shhemail", Kind: AccountSubscription}, proj, now); err != nil {
+		t.Fatal(err)
+	}
+
+	limits := &Limits{}
+	limits.Observe("max20", &harness.RateLimit{Status: "allowed", ObservedAt: now})
+	limits.Observe("shhemail", &harness.RateLimit{Status: "allowed", ObservedAt: now})
+
+	withdrawn := known.Reconcile("", proj, []AccountConfig{{Label: "shhemail", Kind: AccountSubscription}}, now)
+	for _, label := range withdrawn {
+		limits.Forget(limitsAccountKey("", label))
+	}
+	if len(withdrawn) != 1 || withdrawn[0] != "max20" {
+		t.Fatalf("withdrawn = %v, want [max20]", withdrawn)
+	}
+
+	byAccount := map[string]gateway.Limits{}
+	for _, l := range limits.Heartbeat(known.Accounts(now), now, LimitsConfig{}) {
+		byAccount[l.Account] = l
+	}
+	if _, ok := byAccount["max20"]; ok {
+		t.Fatalf("withdrawn account still in heartbeat limits: %+v", byAccount)
+	}
+	if _, ok := byAccount["shhemail"]; !ok {
+		t.Fatalf("issued account missing from heartbeat limits: %+v", byAccount)
+	}
+}
+
 // Ticks in one mode log its crossing once: into paced, into stopped,
 // back to normal — each a single line however many ticks it lasts.
 func TestLoopLogsEachCrossingOnce(t *testing.T) {
