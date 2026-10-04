@@ -1012,7 +1012,11 @@ probe. A kind's hold holds that kind alone (a plan hold leaves the
 project's items claimable); the kind-`""` no-credential hold holds every
 kind, research included. The probe stands as item 1 made it: at the
 until one claim per (project, kind, adapter) goes through and the rest
-wait on its read.
+wait on its read. Beside these, `claimReady` holds a goal whose
+`ClaimWorkItem` the platform refused for budget, pause or approval
+(`ClaimHolds`, ADR-024): passed over as `item` with no until, asked
+again only once the goal's row changes or the refused item is listed
+claimable again.
 
 What the refusal releases: the runner releases the item with
 `accounts: <reason>` (`ReleaseWorkItem`, attempts unchanged), logging

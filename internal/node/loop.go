@@ -249,6 +249,11 @@ type Loop struct {
 	// Kind (NoteHeld, ClearHeld; goal
 	// a-refused-plan-is-released-not-replanned).
 	held []HeldGoal
+	// ClaimHolds is the goals whose items are not asked for again after
+	// a claim refused for budget, pause or approval (ADR-024).
+	ClaimHolds ClaimHolds
+	// tickListed is the ids of this tick's ready listing (claimReady).
+	tickListed map[string]bool
 	// tickGoals holds each org's goals as read this tick, so the claim,
 	// the planner and the director share one GoalIndex read per org.
 	tickGoals map[string]goalsRead
@@ -474,11 +479,12 @@ func (l *Loop) claimReady(ctx context.Context, free, normalFree, maxRank int) {
 	var ready []readyItem
 	limit := l.UnmergedPerRepo()
 	listed := make([][]gateway.WorkItem, len(l.Scopes))
-	anyReady := false
+	anyReady, complete := false, true
 	for i, sc := range l.Scopes {
 		items, err := l.GW.ReadyWorkItems(ctx, sc.ID)
 		if err != nil {
 			l.logf("list ready items of %s: %v", sc.Name(), err)
+			complete = false
 			continue
 		}
 		listed[i] = items
@@ -513,6 +519,7 @@ func (l *Loop) claimReady(ctx context.Context, free, normalFree, maxRank int) {
 		}
 	}
 	claimOrder(ready)
+	l.noteUnlisted(listed, complete)
 	held := map[string]bool{} // repos whose hold this tick has logged
 	for _, r := range ready {
 		if free <= 0 {
@@ -524,6 +531,9 @@ func (l *Loop) claimReady(ctx context.Context, free, normalFree, maxRank int) {
 		l.mu.Unlock()
 		if already {
 			continue
+		}
+		if l.claimHeld(ctx, sc, item, r.rank) {
+			continue // refused for budget, pause or approval: the goal has not changed
 		}
 		if runtimes, _ := l.Runtimes(); l.Declines.Holds(item.ID, runtimes, time.Now()) {
 			continue // a required tool needs a runtime still missing here
@@ -564,7 +574,9 @@ func (l *Loop) claimReady(ctx context.Context, free, normalFree, maxRank int) {
 			continue
 		}
 		if err := l.GW.ClaimWorkItem(actorContext(ctx, l.Cfg, gateway.RoleBuilder), item.ID, sc.NodeID, l.Harness); err != nil {
-			if gateway.IsRefusal(err) {
+			if kind := claimHoldKind(err.Error()); kind != "" && gateway.IsRefusal(err) {
+				l.holdClaim(ctx, sc, item, kind, err.Error())
+			} else if gateway.IsRefusal(err) {
 				l.logf("%s item %d %q: not ours (%v)", sc.Name(), item.Seq, item.Title, err)
 			} else {
 				l.logf("%s claim item %d: %v", sc.Name(), item.Seq, err)
