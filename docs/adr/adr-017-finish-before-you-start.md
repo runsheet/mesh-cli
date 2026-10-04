@@ -195,3 +195,11 @@ listing instead because:
 If the platform documents them and the node needs a signal it cannot
 derive from `review` (a pile the node does not list, or a pressure the
 integrator measures), this section is the place to revisit.
+
+## Amendment 2026-10-04: floors before priority
+
+[ADR-023](adr-023-every-org-gets-its-share.md) puts per-org floors in
+front of this order: an org holding fewer sessions than its floor is
+claimed for first (its best item by this ADR's order), and only the
+slots left go in this order across orgs. Within an org, and above the
+floors, this ADR's order is unchanged.

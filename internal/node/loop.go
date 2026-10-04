@@ -190,6 +190,10 @@ type Loop struct {
 	planning    map[string]bool
 	researching map[string]bool
 	rebasing    map[string]bool
+	// sessionOrg is the org each build, plan and research session counts
+	// toward, by subject (item, goal or direction id): heldByOrg's count
+	// against the org's floor (ADR-023).
+	sessionOrg map[string]string
 	// adopted are the sessions taken over from the process before this
 	// one that have not yet ended, by subject: the heartbeat's `adopted`,
 	// its SessionID and Alive re-read from the found session's state on
@@ -323,6 +327,9 @@ type readyItem struct {
 	item  gateway.WorkItem
 	scope Scope
 	rank  int
+	// floor is set on an item shareOrder took for its org's floor (the
+	// floor, and held what the org held before it); 0 for the rest.
+	floor, held int
 }
 
 // finishFirstAttempts bounds the finish-first preference (ADR-017): an
@@ -467,7 +474,8 @@ func planOrder(goals []planningGoal) {
 
 // claimReady lists every served org's ready items, joins each to its
 // goal's priority (one GoalIndex read per org, none for an org with
-// nothing ready) and claims them in claimOrder until free runs out, each
+// nothing ready) and claims them in shareOrder — an org below its floor
+// first, then claimOrder across orgs (ADR-023) — until free runs out, each
 // on the account chosen for its priority; items of a goal ranked past
 // maxRank are left, and normal and low items take no more than
 // normalFree of the free slots. An item no account has headroom for is
@@ -518,7 +526,11 @@ func (l *Loop) claimReady(ctx context.Context, free, normalFree, maxRank int) {
 			}
 		}
 	}
-	claimOrder(ready)
+	// every org's floor first, then priority across orgs (ADR-023); the
+	// org's count goes up with each claim so one tick does not overshoot
+	// a floor the next item is taken for
+	orgHeld := l.heldByOrg()
+	ready = shareOrder(ready, Floors(l.Capacity(), l.Scopes, l.Weights()), orgHeld)
 	l.noteUnlisted(listed, complete)
 	held := map[string]bool{} // repos whose hold this tick has logged
 	for _, r := range ready {
@@ -593,8 +605,14 @@ func (l *Loop) claimReady(ctx context.Context, free, normalFree, maxRank int) {
 			// does not overshoot the limit
 			unmerged[item.RepoID]++
 		}
-		l.logf("%s: claimed item %d %q", sc.Name(), item.Seq, item.Title)
-		l.start(actx, item)
+		org := sc.ID
+		if len(l.Scopes) > 1 && r.floor > 0 && orgHeld[org] < r.floor {
+			l.logf("%s: claimed item %d %q (below its floor of %d, holding %d)", sc.Name(), item.Seq, item.Title, r.floor, orgHeld[org])
+		} else {
+			l.logf("%s: claimed item %d %q", sc.Name(), item.Seq, item.Title)
+		}
+		orgHeld[org]++
+		l.start(actx, item, org)
 	}
 }
 
@@ -1780,6 +1798,7 @@ func (l *Loop) Adopt(ctx context.Context, item gateway.WorkItem) bool {
 		return false
 	}
 	l.running[item.ID] = true
+	l.countForLocked(item.ID, item.OrgID)
 	l.mu.Unlock()
 	l.logf("adopted held item %d %q", item.Seq, item.Title)
 	// already held: it runs on the account serving its goal's priority
@@ -1807,9 +1826,10 @@ func (l *Loop) goalPriority(ctx context.Context, goalID string) string {
 	return priorityName(gateway.PriorityRank(g.Priority))
 }
 
-func (l *Loop) start(ctx context.Context, item gateway.WorkItem) {
+func (l *Loop) start(ctx context.Context, item gateway.WorkItem, org string) {
 	l.mu.Lock()
 	l.running[item.ID] = true
+	l.countForLocked(item.ID, org)
 	l.mu.Unlock()
 	l.run(ctx, item)
 }
@@ -1840,6 +1860,7 @@ func (l *Loop) run(ctx context.Context, item gateway.WorkItem) {
 			l.mu.Lock()
 			delete(l.running, item.ID)
 			delete(l.runningOn, item.ID)
+			delete(l.sessionOrg, item.ID)
 			l.mu.Unlock()
 			if l.Release != nil {
 				l.Release(item)

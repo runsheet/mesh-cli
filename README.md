@@ -625,7 +625,17 @@ mesh node start [--mode channel|poll] [--interval 30s] [--unattended] [--max-bud
 Every interval the node heartbeats (`HeartbeatNode`), lists the `ready`
 work items of every org it serves and claims up to its free capacity
 (`ClaimWorkItem`; the aggregate refuses a second claimant, so two nodes
-never run one item). It claims them in one order across the orgs: by
+never run one item). A node serving several orgs divides its capacity
+into a **floor** per org — equal shares by default, the largest
+remainder to the orgs in listed order (capacity 4 over two orgs is 2
+and 2; capacity 5 is 3 and 2; capacity 1 is 1 and 0) — and claims first
+for an org holding fewer sessions than its floor while it has ready
+work, its best item first whatever another org's priority; the org's
+builds, plans and research count as its sessions, evaluations and
+rebases do not. A floor is not a ceiling: an org with nothing ready
+leaves its slots to the rest, and once every org is at its floor (or
+has nothing ready) the slots left go in one order across the orgs
+([ADR-023](docs/adr/adr-023-every-org-gets-its-share.md)): by
 their goal's priority — urgent, high, normal, low; a goal with none is
 normal — then, within a priority, finish before you start: an item with
 work already begun on a branch (an open pull request, an evaluation, a
@@ -650,8 +660,10 @@ a re-evaluation) is still claimed and other repos are unaffected; left
 out or 0 there is no limit, and it is re-read every tick (see Unmerged
 work per repo below).
 The attempt bound guards the class order within a priority; across
-priorities the order is strict, so a steady stream of urgent work keeps a
-low goal's items, plans and evaluations waiting.
+priorities the order is strict above the floors, so a steady stream of
+urgent work keeps a low goal's items, plans and evaluations waiting —
+but never another org's floor. A build taken for a floor is logged
+`<org>: claimed item N "title" (below its floor of F, holding H)`.
 Rebases follow it too (see The rebase session below).
 Capacity and the orgs served are re-read at the top of every tick, so
 neither needs a restart: `capacity` comes from `~/.mesh/node.yaml` as

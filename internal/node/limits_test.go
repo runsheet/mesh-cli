@@ -172,7 +172,8 @@ func TestPaceDecides(t *testing.T) {
 
 // Past 80% of the five-hour window, with capacity 4, one normal and
 // three urgent/high items ready: only urgent and high are claimed, at
-// most 2; only the urgent/high goal is planned; no research.
+// most 2 — acme's best and globex's, each org below its floor of 2
+// (ADR-023); only the urgent/high goal is planned; no research.
 func TestLoopPacedClaimsUrgentAndHighAtHalfCapacity(t *testing.T) {
 	p := newPriorityFake(t)
 	p.addGoal(orgID, "steady", "normal")
@@ -188,8 +189,8 @@ func TestLoopPacedClaimsUrgentAndHighAtHalfCapacity(t *testing.T) {
 	loop, logs, _ := p.pacedLoop(4, reading(0.85, 0.3))
 
 	claimed := p.claimedBy(loop)
-	if strings.Join(claimed, ",") != "urgent-1,urgent-2" {
-		t.Fatalf("paced claimed %v, want urgent-1,urgent-2", claimed)
+	if strings.Join(claimed, ",") != "urgent-1,high-1" {
+		t.Fatalf("paced claimed %v, want urgent-1,high-1", claimed)
 	}
 	if got := started(logs.String(), "planning goal"); strings.Join(got, ",") != "plan-high" {
 		t.Fatalf("paced planned %v, want plan-high only", got)
