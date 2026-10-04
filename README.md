@@ -845,7 +845,10 @@ and every `gh repo clone` and `git fetch` of one repo on the node runs
 under a per-repo lock, a process-wide mutex plus an exclusive `flock` on
 `~/.mesh/work/.locks/<owner>--<name>.lock`, released before any checkout,
 so two sessions (or two node processes) fetching one repo at once never
-fail on `cannot lock ref` (ADR-023,
+fail on `cannot lock ref`; a fetch that still fails with `cannot lock
+ref` or `unable to update local ref` — a git outside the lock's reach —
+is retried up to three times with a short backoff and logged once
+(ADR-023,
 `docs/adr/adr-023-fetches-of-one-repo-are-serialised-on-the-node.md`). The budget is
 the smallest of the goal's remaining budget, node.yaml's `budgets:` for
 build and the item's model (see "Session budgets" above), and

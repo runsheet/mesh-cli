@@ -111,6 +111,10 @@ const FetchDepth = 300
 // its item's token, any other on the operator's own credentials.
 type Git struct {
 	Log io.Writer
+	// Logf, when set, takes the node's log lines about a fetch's own
+	// retries — one line per retried fetch, when it finally succeeds or
+	// finally gives up (ADR-023's Retry section). Nil is silent.
+	Logf func(string, ...any)
 	// GitHubURL is GitHub's base URL (GitHubURL when empty).
 	GitHubURL string
 	// LockRoot is where the per-repo fetch locks live, under
@@ -119,6 +123,10 @@ type Git struct {
 	// call the checkout's grandparent — the work root for an item's
 	// <root>/<goal>/<seq>.
 	LockRoot string
+	// exec, when set, replaces the real git/gh invocation: tests wrap it
+	// to inject a failure and delegate to realRun for the rest. Nil is
+	// the real one.
+	exec func(ctx context.Context, dir, name string, args ...string) (string, error)
 }
 
 func (g *Git) githubURL() string {
@@ -152,6 +160,15 @@ func (g *Git) Authorize(ctx context.Context, spec WorkspaceSpec, tok *gateway.Gi
 }
 
 func (g *Git) run(ctx context.Context, dir string, name string, args ...string) (string, error) {
+	if g.exec != nil {
+		return g.exec(ctx, dir, name, args...)
+	}
+	return g.realRun(ctx, dir, name, args...)
+}
+
+// realRun is the real git/gh invocation: run dispatches to it, or to
+// g.exec when a test has set one.
+func (g *Git) realRun(ctx context.Context, dir string, name string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
@@ -163,6 +180,19 @@ func (g *Git) run(ctx context.Context, dir string, name string, args ...string) 
 		return string(out), fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// IsRefLockFailure reports whether err is git refusing a ref update
+// because another process was writing the same ref at the same moment —
+// "cannot lock ref" or "unable to update local ref" in its text, the two
+// lines the grapevine node's log carried before fetches of one repo were
+// serialised on the node (ADR-023).
+func IsRefLockFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "cannot lock ref") || strings.Contains(s, "unable to update local ref")
 }
 
 // Prepare implements Workspacer.

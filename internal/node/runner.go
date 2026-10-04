@@ -171,6 +171,15 @@ func (r *Runner) logf(format string, args ...any) {
 	}
 }
 
+// wireGitLogf gives a *Git WS its Logf, once, so a retried fetch's one
+// line (ADR-023's Retry section) reaches the node's own log through
+// r.logf, as every other line of the item does.
+func (r *Runner) wireGitLogf() {
+	if g, ok := r.WS.(*Git); ok && g.Logf == nil {
+		g.Logf = r.logf
+	}
+}
+
 // kindModelBudget is node.yaml's budgets: figure for kind and model —
 // live, through r.Budgets, when set; else Cfg's own, read once at start.
 func (r *Runner) kindModelBudget(kind, model string) (float64, string) {
@@ -255,6 +264,7 @@ func (c *costReporter) delta() int {
 // cancelled ctx (the node's own shutdown) leaves the item as it is for a
 // retry.
 func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
+	r.wireGitLogf()
 	// every command the build sends acts as its builder (ADR-015)
 	ctx = actorContext(ctx, r.Cfg, gateway.RoleBuilder)
 	res, err := Resolve(ctx, r.GW, item)
