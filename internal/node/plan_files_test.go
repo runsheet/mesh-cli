@@ -156,6 +156,47 @@ func TestPlanCheckDifferentFilesStayIndependent(t *testing.T) {
 	}
 }
 
+// (2) on briefs: items with no files whose briefs share the repo's
+// owner/name, a URL and a `./pkg/...` pattern but name different code
+// files stay independent — none of those is a file.
+func TestPlanCheckDifferentFilesInBriefsStayIndependent(t *testing.T) {
+	items, logs := planFilesOnce(t, filesPlan(t,
+		filesItem{seq: 1, brief: "In runsheet/mesh-cli, change `internal/a.go` against api.runsheet.dev/graphql; `go test ./internal/node/...` passes."},
+		filesItem{seq: 2, brief: "In runsheet/mesh-cli, change `internal/b.go` against api.runsheet.dev/graphql; `go test ./internal/node/...` passes."},
+	))
+	for seq := 1; seq <= 2; seq++ {
+		if got := dependsOn(items[seq]); len(got) != 0 {
+			t.Errorf("item %d dependsOn = %v, want none", seq, got)
+		}
+	}
+	if want := "planned, 2 items, none added by the plan check"; !strings.Contains(logs, want) {
+		t.Errorf("log lacks %q:\n%s", want, logs)
+	}
+}
+
+// namesCodeFile: a file path is a code file; a repo, a host, a package
+// pattern, a directory and a document are not.
+func TestPlanCheckNamesCodeFile(t *testing.T) {
+	for p, want := range map[string]bool{
+		"internal/node/plan_check.go":      true,
+		"platform/loomgen/registry_gen.go": true,
+		".github/workflows/ci.yml":         true,
+		"main.go":                          true,
+		"runsheet/mesh-cli":                false,
+		"api.runsheet.dev/graphql":         false,
+		"github.com/acme/widgets/x.go":     false,
+		"internal/node/...":                false,
+		"internal/node":                    false,
+		"AGENTS.md":                        false,
+		"docs/adr/adr-023.go":              false,
+		"":                                 false,
+	} {
+		if got := namesCodeFile(p); got != want {
+			t.Errorf("namesCodeFile(%q) = %v, want %v", p, got, want)
+		}
+	}
+}
+
 // (6) Negative: two items sharing only documents — AGENTS.md and an
 // ADR — are not chained; the shared documents are one writer's.
 func TestPlanCheckSharedDocumentsAreNotChained(t *testing.T) {
@@ -224,6 +265,8 @@ func TestSharedCodeFiles(t *testing.T) {
 		{"transitively", []harness.PlannedSpec{spec(1, []string{"a.go"}), spec(2, []string{"c.go"}, 1), spec(3, []string{"a.go"}, 2)}, nil},
 		{"one per pair, the first file", []harness.PlannedSpec{spec(1, []string{"b.go", "a.go"}), spec(2, []string{"a.go", "b.go"})}, []addedDep{{Seq: 2, On: 1, File: "a.go"}}},
 		{"case-sensitive", []harness.PlannedSpec{spec(1, []string{"A.go"}), spec(2, []string{"a.go"})}, nil},
+		{"different repos", []harness.PlannedSpec{{Seq: 1, Repo: "acme/a", Files: []string{"x.go"}}, {Seq: 2, Repo: "acme/b", Files: []string{"x.go"}}}, nil},
+		{"a sentence's full stop", []harness.PlannedSpec{{Seq: 1, Brief: "Change internal/x.go."}, {Seq: 2, Brief: "Then internal/x.go, too."}}, []addedDep{{Seq: 2, On: 1, File: "internal/x.go"}}},
 		{"out of order", []harness.PlannedSpec{spec(2, []string{"a.go"}), spec(1, []string{"a.go"})}, []addedDep{{Seq: 2, On: 1, File: "a.go"}}},
 	}
 	for _, c := range cases {

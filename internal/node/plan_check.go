@@ -699,7 +699,10 @@ func (d addedDep) String() string { return fmt.Sprintf("%d→%d %s", d.Seq, d.On
 // dependency joins the working graph at once, so a third item sharing
 // the file chains behind the second and no cycle is made; one per pair,
 // naming the first shared file. Paths compare case-sensitively after a
-// leading `./` is trimmed.
+// leading `./` is trimmed. Only a path that names a file counts
+// (namesCodeFile): never a repo's owner/name, a URL's host and path or
+// a `./pkg/...` pattern, which every brief opening "In owner/repo, …"
+// would otherwise share. Items of different repos share no file.
 func sharedCodeFiles(specs []harness.PlannedSpec) []addedDep {
 	sorted := append([]harness.PlannedSpec(nil), specs...)
 	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Seq < sorted[j].Seq })
@@ -712,8 +715,9 @@ func sharedCodeFiles(specs []harness.PlannedSpec) []addedDep {
 		}
 		files[i] = map[string]bool{}
 		for _, f := range harness.ExpectedFiles(sp) {
-			f = strings.TrimPrefix(f, "./")
-			if f != "" && !harness.IsDocumentPath(f) {
+			// a path read from the brief's prose may end its sentence
+			f = strings.TrimPrefix(strings.TrimRight(f, ".,;:"), "./")
+			if namesCodeFile(f) {
 				files[i][f] = true
 			}
 		}
@@ -747,6 +751,9 @@ func sharedCodeFiles(specs []harness.PlannedSpec) []addedDep {
 			if earlier.Seq == later.Seq {
 				continue
 			}
+			if earlier.Repo != later.Repo {
+				continue
+			}
 			shared := sharedFile(files[i], files[j])
 			if shared == "" || reaches(later.Seq, earlier.Seq) || reaches(earlier.Seq, later.Seq) {
 				continue
@@ -756,6 +763,25 @@ func sharedCodeFiles(specs []harness.PlannedSpec) []addedDep {
 		}
 	}
 	return added
+}
+
+// namesCodeFile reports whether p, trimmed, is a repo-relative path to
+// a code file: not a document (harness.IsDocumentPath), its last
+// segment carrying an extension, no `...` package pattern, and its
+// first segment no host — a dotted name such as api.runsheet.dev, a
+// leading dot (.github) being a directory, not a host. An owner/name
+// repo, a URL and `./internal/node/...` are never a file.
+func namesCodeFile(p string) bool {
+	if p == "" || harness.IsDocumentPath(p) || strings.Contains(p, "...") || strings.Contains(p, "://") {
+		return false
+	}
+	segs := strings.Split(p, "/")
+	if first := segs[0]; len(segs) > 1 && !strings.HasPrefix(first, ".") && strings.Contains(first, ".") {
+		return false
+	}
+	base := segs[len(segs)-1]
+	dot := strings.LastIndex(base, ".")
+	return dot > 0 && dot < len(base)-1
 }
 
 // sharedFile is the first path, sorted, in both a and b; "" for none.
