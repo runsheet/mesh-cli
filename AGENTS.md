@@ -521,7 +521,13 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   (`ledger.go`, `~/.mesh/ledger.json`, local time, fed by
   `ObserveSpend`); `Loop.spendable` narrows every choice — no key at
   its cap, the last 10% of a key's day for urgent/high, and for an item
-  only an account with a slot free.
+  only an account with a slot free. **A hot host backs it off**
+  (`hostbackoff.go`, ADR-023): every tick, while `MachineReading.Hot`
+  at node.yaml's `host:` thresholds, the capacity in force drops one
+  slot (to max(min, 1); a fixed node's 1) and `claimReady` is skipped;
+  quiet, it climbs one slot per `HostRecoverEvery` back to the plan
+  figure, `Scaling.Host` carrying the reading; the scalers keep only
+  the free-memory cap (`low memory`).
 - **Held goals are a record** (`internal/node/held.go`, goal
   a-refused-plan-is-released-not-replanned): `HeldGoal{GoalID, Slug,
   Org, Kind, Reason, Since, Until}` is a goal this node holds off
