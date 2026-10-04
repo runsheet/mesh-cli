@@ -221,6 +221,28 @@ func (l *Loop) UnmergedPerRepo() int {
 	return l.Cfg.Claim.UnmergedPerRepo
 }
 
+// Takes is node.yaml's `takes:` block in force: as last reloaded, else
+// Cfg's — the zero value, every kind, with neither.
+func (l *Loop) Takes() Takes {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.takesSet {
+		return l.takes
+	}
+	if l.Cfg == nil {
+		return nil
+	}
+	return l.Cfg.Takes
+}
+
+// takesKind says whether this node claims a session of kind under the
+// takes: in force. A claim path whose kind is not taken returns before
+// it lists anything or asks the platform, so nothing is claimed and
+// released (ADR-025).
+func (l *Loop) takesKind(kind harness.Kind) bool {
+	return l.Takes().Takes(kind)
+}
+
 // HostThresholds is node.yaml's `host:` block in force, defaults
 // filled: as last reloaded, else Cfg's.
 func (l *Loop) HostThresholds() HostConfig {

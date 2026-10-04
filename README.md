@@ -689,6 +689,9 @@ fresh claim until one merges, while its started work (rework, a rebase,
 a re-evaluation) is still claimed and other repos are unaffected; left
 out or 0 there is no limit, and it is re-read every tick (see Unmerged
 work per repo below).
+node.yaml's `takes:` names the kinds of session the node claims — left
+out, every kind — and a kind it does not take is never listed or claimed
+(see Which sessions a node takes below).
 The attempt bound guards the class order within a priority; across
 priorities the order is strict above the floors, so a steady stream of
 urgent work keeps a low goal's items, plans and evaluations waiting —
@@ -1476,6 +1479,35 @@ context budget, `claim:` is read again every tick without a restart,
 and a change is logged (`claim: unmerged_per_repo 0 → 7`). With the key
 left out no `review` listing is read at all
 ([ADR-017](docs/adr/adr-017-finish-before-you-start.md)).
+
+### Which sessions a node takes
+
+A node claims every kind of session — build, evaluate, rebase, plan,
+research — unless node.yaml's `takes:` names the ones it takes, so one
+machine can be the evaluator and another never evaluate
+([ADR-025](docs/adr/adr-025-a-node-says-which-sessions-it-takes.md)):
+
+```yaml
+takes: [build, rebase, plan, research]   # the AI node: never evaluates
+# or, on the CI machine:
+takes: {evaluate: 3}                     # evaluates only, at most three at once
+```
+
+Left out, every kind is taken. A kind not in the known five is refused
+when node.yaml is loaded, naming it, and `takes: []` is refused too.
+A kind the node does not take is skipped before anything is listed or
+asked of the platform: no claim is made and released, and its listing
+(the ready items, the goals in planning, the evaluating items, the
+requested rebases, the directions) is not read. Like `claim:`, `takes:`
+is read again every tick without a restart, and a change is logged once
+at the tick it takes effect (`takes: every kind → evaluate`).
+
+A machine that takes `evaluate` runs the repo's tests and its
+`.runsheet/validate.yml` suites, so it needs what a build does short of
+writing code: the repos' toolchains (Go, Node, …), podman or docker for
+their services, `git` and the `claude` (or `codex`) CLI. It needs no
+GitHub login or Claude account of its own: the item's token and the
+session's credentials are issued by the platform at claim.
 
 ### Tool results
 
