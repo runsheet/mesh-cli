@@ -236,6 +236,15 @@ type Loop struct {
 	// says otherwise (claimSet).
 	claim    ClaimConfig
 	claimSet bool
+	// shares is node.yaml's `shares:` weights in force (ADR-023): Cfg's
+	// until Reload says otherwise (sharesSet); read through Weights().
+	shares    map[string]int
+	sharesSet bool
+	// sharesUnknown is the set of org names the last tick's `shares:`
+	// named that this node does not serve, so a name already logged as
+	// "is not a served org" is not logged again while it keeps appearing
+	// unchanged; a name that drops out and comes back logs again.
+	sharesUnknown map[string]bool
 	// paced is the pacing mode last logged, so a crossing is logged once.
 	paced paceMode
 	// waiting counts, by kind, the work this tick left unclaimed because
@@ -1372,6 +1381,51 @@ func (l *Loop) reload(ctx context.Context) {
 		}
 		l.mu.Lock()
 		l.claim, l.claimSet = *got.Claim, true
+		l.mu.Unlock()
+	}
+	if got.SharesRead {
+		served := map[string]bool{}
+		for _, sc := range l.Scopes {
+			served[sc.Name()] = true
+		}
+		var unknown []string
+		filtered := map[string]int{}
+		for org, w := range got.Shares {
+			if !served[org] {
+				unknown = append(unknown, org)
+				continue
+			}
+			filtered[org] = w
+		}
+		if len(filtered) == 0 {
+			filtered = nil
+		}
+		sort.Strings(unknown)
+		l.mu.Lock()
+		alreadyLogged := l.sharesUnknown
+		l.mu.Unlock()
+		nowUnknown := map[string]bool{}
+		for _, org := range unknown {
+			nowUnknown[org] = true
+			if !alreadyLogged[org] {
+				l.logf("shares: %s is not a served org", org)
+			}
+		}
+		was := map[string]int{}
+		for org, w := range l.Weights() {
+			if served[org] {
+				was[org] = w
+			}
+		}
+		if len(was) == 0 {
+			was = nil
+		}
+		if now := filtered; !sharesEqual(was, now) {
+			l.logf("shares %s → %s", sharesString(was), sharesString(now))
+		}
+		l.mu.Lock()
+		l.shares, l.sharesSet = filtered, true
+		l.sharesUnknown = nowUnknown
 		l.mu.Unlock()
 	}
 	if got.OrgsRead {

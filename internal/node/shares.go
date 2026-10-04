@@ -1,6 +1,12 @@
 package node
 
-import "projectmesh.io/mesh-cli/internal/gateway"
+import (
+	"fmt"
+	"sort"
+	"strings"
+
+	"projectmesh.io/mesh-cli/internal/gateway"
+)
 
 // Every org gets its share of a node (ADR-023, amending ADR-017's
 // order): a node serving several orgs divides its capacity into a floor
@@ -113,9 +119,64 @@ func shareOrder(ready []readyItem, floors, held map[string]int) []readyItem {
 }
 
 // Weights are the shares Floors divides capacity by, keyed by the org's
-// Name(): nil, equal shares, until node.yaml's `shares:` and the owner
-// answer's feed it.
-func (l *Loop) Weights() map[string]int { return nil }
+// Name(): node.yaml's `shares:`, reloaded each tick (Loop.reload) over
+// Cfg's before the first tick; nil is equal shares. The owner answer's
+// `shares` (a later item of the goal) will take it over node.yaml's.
+func (l *Loop) Weights() map[string]int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.sharesSet {
+		return cloneShares(l.shares)
+	}
+	if l.Cfg == nil {
+		return nil
+	}
+	return cloneShares(l.Cfg.Shares)
+}
+
+// cloneShares copies a weights map so Weights never hands out the
+// loop's own.
+func cloneShares(m map[string]int) map[string]int {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]int, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
+// sharesEqual compares two weight maps.
+func sharesEqual(a, b map[string]int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if b[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
+// sharesString renders a weights map for a reload log line: "a 3, b 1",
+// sorted by org, or "none" when empty.
+func sharesString(m map[string]int) string {
+	if len(m) == 0 {
+		return "none"
+	}
+	orgs := make([]string, 0, len(m))
+	for org := range m {
+		orgs = append(orgs, org)
+	}
+	sort.Strings(orgs)
+	parts := make([]string, len(orgs))
+	for i, org := range orgs {
+		parts[i] = fmt.Sprintf("%s %d", org, m[org])
+	}
+	return strings.Join(parts, ", ")
+}
 
 // countForLocked records that the session of subject (an item, a goal's plan
 // or a direction's research) counts toward org's share. l.mu is held.

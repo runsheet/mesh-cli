@@ -11,6 +11,31 @@ import (
 	"projectmesh.io/mesh-cli/internal/gateway"
 )
 
+// Weights() is node.yaml's Shares, a copy so a caller cannot mutate the
+// loop's own; a reloaded value (sharesSet) takes it over Cfg's, and
+// with neither it is nil — equal shares (ADR-023).
+func TestWeightsFromConfig(t *testing.T) {
+	loop := &Loop{Cfg: &Config{Shares: map[string]int{"a": 3, "b": 1}}}
+	if got := loop.Weights(); !sharesEqual(got, map[string]int{"a": 3, "b": 1}) {
+		t.Fatalf("weights from Cfg = %v, want a:3 b:1", got)
+	}
+	got := loop.Weights()
+	got["a"] = 99
+	if again := loop.Weights(); again["a"] != 3 {
+		t.Fatal("Weights handed out a live map, not a copy")
+	}
+
+	loop.shares, loop.sharesSet = map[string]int{"a": 5}, true
+	if got := loop.Weights(); !sharesEqual(got, map[string]int{"a": 5}) {
+		t.Fatalf("weights after reload = %v, want a:5 alone, over Cfg's", got)
+	}
+
+	empty := &Loop{}
+	if got := empty.Weights(); got != nil {
+		t.Fatalf("weights with no Cfg and no reload = %v, want nil", got)
+	}
+}
+
 func TestFloors(t *testing.T) {
 	two := Scopes{{Login: "a", ID: "org-a"}, {Slug: "b", ID: "org-b"}}
 	cases := []struct {
@@ -193,6 +218,44 @@ func TestClaimReadySharesEvaluationsDoNotCount(t *testing.T) {
 	}
 	if got := p.claimsByOrg(loop); got[orgID] != 2 || got[org2] != 2 {
 		t.Fatalf("claims by org %v, want A 2 and B 2\n%s", got, logs)
+	}
+}
+
+// node.yaml's `shares:` sets the floors' weights: two orgs, capacity 4,
+// shares acme:3 globex:1, each with four ready items of a normal goal —
+// no priority difference, so the weights alone decide: acme claims
+// three, globex one. The shares are loaded from a real node.yaml
+// through the loop's own reload path (Tick → reload), not set on Cfg
+// directly, so the wiring from disk to Weights() to claimOrder is
+// proved end to end.
+func TestClaimReadySharesWeightsFromNodeYAML(t *testing.T) {
+	p := newPriorityFake(t)
+	p.addGoal(orgID, "fire", "normal")
+	p.addGoal(org2, "steady", "normal")
+	for i := 1; i <= 4; i++ {
+		p.addItem(orgID, "fire", fmt.Sprintf("a-%d", i), i, false)
+		p.addItem(org2, "steady", fmt.Sprintf("b-%d", i), i, false)
+	}
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeNodeYAML(t, "slug: box\nname: Box\ncapacity: 4\nshares: {acme: 3, globex: 1}\n")
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var logs strings.Builder
+	loop := &Loop{GW: gateway.New(p.URL(), "rs_test"), Cfg: cfg, Scopes: p.scopes,
+		Interval: time.Hour, Harness: "claude-code", Log: log.New(&logs, "", 0),
+		Dispatch: func(context.Context, gateway.WorkItem) {}}
+	loop.Reload = Reloader(loop.GW, cfg, p.scopes, LoadConfig, func(context.Context, Scope) error { return nil })
+
+	if got := p.claimsByOrg(loop); got[orgID] != 3 || got[org2] != 1 {
+		t.Fatalf("claims by org %v, want acme 3 and globex 1\n%s", got, &logs)
+	}
+	if got := loop.Weights(); !sharesEqual(got, map[string]int{"acme": 3, "globex": 1}) {
+		t.Fatalf("weights after the reload %v, want acme:3 globex:1", got)
 	}
 }
 

@@ -295,6 +295,30 @@ func TestCodexProviderValidate(t *testing.T) {
 	}
 }
 
+// node.yaml's `shares:` loads into Config.Shares, and a zero or
+// negative weight is refused naming the org (ADR-023).
+func TestSharesValidate(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	writeNodeYAML(t, "slug: mini\nname: mini\ncapacity: 1\nshares: {a: 3, b: 1}\n")
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Shares["a"] != 3 || cfg.Shares["b"] != 1 || len(cfg.Shares) != 2 {
+		t.Fatalf("shares loaded as %v, want a:3 b:1", cfg.Shares)
+	}
+
+	writeNodeYAML(t, "slug: mini\nname: mini\ncapacity: 1\nshares: {a: 0}\n")
+	if _, err := LoadConfig(); err == nil || !strings.Contains(err.Error(), "shares: a:") {
+		t.Fatalf("shares: {a: 0} err = %v, want a refusal naming a", err)
+	}
+
+	writeNodeYAML(t, "slug: mini\nname: mini\ncapacity: 1\nshares: {a: -1}\n")
+	if _, err := LoadConfig(); err == nil || !strings.Contains(err.Error(), "shares: a:") {
+		t.Fatalf("shares: {a: -1} err = %v, want a refusal naming a", err)
+	}
+}
+
 // An org with no GitHub login is named by its slug where a prompt or the
 // context fetch names the project's org, never as a blank.
 func TestScopesNameOfFallsBackToSlug(t *testing.T) {
