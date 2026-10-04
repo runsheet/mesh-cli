@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -27,6 +28,8 @@ import (
 // serves every org its owner belongs to (a Node per org on the platform,
 // id from (org, slug)), or only those in Orgs when set. The single-org
 // fields are what older registrations wrote; read as Orgs of one.
+// `host:` is `{load_per_core_max: 1.5, package_temp_max_c: 90}` by
+// default; either threshold left out, or set to 0, takes its default.
 type Config struct {
 	Gateway string `yaml:"gateway,omitempty"`
 	// Orgs restricts the node to these logins; empty is every org of the owner.
@@ -143,6 +146,12 @@ type Config struct {
 	// enterprise's own `shares` (a later item) takes it over when both
 	// are present.
 	Shares map[string]int `yaml:"shares,omitempty"`
+	// Host is node.yaml's `host:` block (HostConfig): the load and
+	// package-temperature thresholds past which the machine is judged
+	// hot (ADR-004's amendment, the-node-backs-off-a-hot-host) — left
+	// out, or a field left zero, takes its default, read again every
+	// tick like the claim limits.
+	Host HostConfig `yaml:"host,omitempty"`
 }
 
 // ClaimConfig is node.yaml's `claim:` block. UnmergedPerRepo is the most
@@ -159,6 +168,52 @@ func (c ClaimConfig) Validate() error {
 		return errors.New("claim.unmerged_per_repo: a limit cannot be negative")
 	}
 	return nil
+}
+
+// DefaultLoadPerCoreMax and DefaultPackageTempMaxC are host.load_per_core_max's
+// and host.package_temp_max_c's defaults, in force when node.yaml leaves the
+// `host:` section, or either field, out or zero.
+const (
+	DefaultLoadPerCoreMax  = 1.5
+	DefaultPackageTempMaxC = 90.0
+)
+
+// HostConfig is node.yaml's `host:` block: the load-per-core and
+// package-temperature thresholds past which the scaler judges the
+// machine hot and backs capacity off (ADR-004's amendment,
+// the-node-backs-off-a-hot-host). A field left out, or zero, takes its
+// default (Effective).
+type HostConfig struct {
+	LoadPerCoreMax  float64 `yaml:"load_per_core_max,omitempty"`
+	PackageTempMaxC float64 `yaml:"package_temp_max_c,omitempty"`
+}
+
+// Effective is h with each zero field at its default.
+func (h HostConfig) Effective() HostConfig {
+	if h.LoadPerCoreMax == 0 {
+		h.LoadPerCoreMax = DefaultLoadPerCoreMax
+	}
+	if h.PackageTempMaxC == 0 {
+		h.PackageTempMaxC = DefaultPackageTempMaxC
+	}
+	return h
+}
+
+// Validate refuses a negative threshold, naming the key.
+func (h HostConfig) Validate() error {
+	if h.LoadPerCoreMax < 0 {
+		return errors.New("host.load_per_core_max: cannot be negative")
+	}
+	if h.PackageTempMaxC < 0 {
+		return errors.New("host.package_temp_max_c: cannot be negative")
+	}
+	return nil
+}
+
+// hostNum is how a host: threshold is shown in a reload's log line:
+// "1.5", "90", "2" — never a trailing ".0".
+func hostNum(f float64) string {
+	return strconv.FormatFloat(f, 'f', -1, 64)
 }
 
 // ValidateShares refuses a zero or negative weight, naming the org. Map
@@ -761,6 +816,9 @@ type Reloaded struct {
 	// node.yaml at all this tick.
 	Shares     map[string]int
 	SharesRead bool
+	// Host is node.yaml's `host:` block, defaults filled; nil keeps the
+	// loop's.
+	Host *HostConfig
 }
 
 // Spending is what the node may spend on: node.yaml's project budgets
@@ -870,11 +928,12 @@ func joinReasons(errs []error) error {
 // capacity, the limits, the accounts and budgets, the context budget,
 // the claim limits and the orgs restriction.
 func reloadedFrom(c *Config) Reloaded {
-	limits, budget, claim := c.Limits, c.Context, c.Claim
+	limits, budget, claim, host := c.Limits, c.Context, c.Claim, c.Host
 	return Reloaded{Capacity: c.Capacity, Limits: &limits, Context: &budget, Claim: &claim,
 		Spending: &Spending{ProjectBudgets: c.ProjectBudgets, Budgets: c.Budgets},
 		Orgs:     c.Orgs, OrgsRead: true,
-		Shares: c.Shares, SharesRead: true}
+		Shares: c.Shares, SharesRead: true,
+		Host: &host}
 }
 
 // OwnedReloader is Loop.Reload for a node registered once with its
@@ -959,6 +1018,9 @@ func LoadConfig() (*Config, error) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	if err := ValidateShares(c.Shares); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	if err := c.Host.Validate(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	if c.Owner != "" && c.Owner != "person" && c.Owner != "enterprise" {

@@ -219,7 +219,8 @@ func TestProcMachine(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root+"/proc/loadavg", "3.47 2.10 1.90 2/812 12345\n")
 	writeFile(t, root+"/proc/meminfo", "MemTotal:       16318548 kB\nMemFree:          512000 kB\nMemAvailable:    1048576 kB\n")
-	m, err := ProcMachine{Root: root}.Read()
+	pm := ProcMachine{Root: root}
+	m, err := pm.Read()
 	if err != nil {
 		t.Fatal(err)
 	}
