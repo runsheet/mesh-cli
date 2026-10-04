@@ -119,10 +119,30 @@ func shareOrder(ready []readyItem, floors, held map[string]int) []readyItem {
 }
 
 // Weights are the shares Floors divides capacity by, keyed by the org's
-// Name(): node.yaml's `shares:`, reloaded each tick (Loop.reload) over
-// Cfg's before the first tick; nil is equal shares. The owner answer's
-// `shares` (a later item of the goal) will take it over node.yaml's.
+// Name(): the owner answer's `shares` (ADR-023's amendment) when the
+// last answer carried any, else node.yaml's `shares:` (reloaded each
+// tick, Loop.reload, over Cfg's before the first tick), else nil — equal
+// shares.
 func (l *Loop) Weights() map[string]int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.answerSharesSet {
+		return cloneShares(l.answerShares)
+	}
+	if l.sharesSet {
+		return cloneShares(l.shares)
+	}
+	if l.Cfg == nil {
+		return nil
+	}
+	return cloneShares(l.Cfg.Shares)
+}
+
+// nodeYAMLWeights is what Weights() would answer without the owner
+// answer's shares: node.yaml's, as last reloaded, or Cfg's before the
+// first reload, or nil. It is how takeAnswerShares tells whether
+// node.yaml's shares: is in force beside the platform's.
+func (l *Loop) nodeYAMLWeights() map[string]int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.sharesSet {
@@ -132,6 +152,58 @@ func (l *Loop) Weights() map[string]int {
 		return nil
 	}
 	return cloneShares(l.Cfg.Shares)
+}
+
+// sharesFromAnswer is the owner answer's per-org shares (ADR-023),
+// keyed by Scope.Name(), and whether any scope carried a non-zero
+// Shares: an answer with none — an older platform, or every scope's
+// Shares 0 — leaves node.yaml's shares: in force, and sharesFromAnswer
+// answers false.
+func sharesFromAnswer(a *gateway.NodeAnswer) (map[string]int, bool) {
+	if a == nil {
+		return nil, false
+	}
+	weights := make(map[string]int, len(a.Scopes))
+	any := false
+	for _, sa := range a.Scopes {
+		weights[Scope{Login: sa.Login, Slug: sa.Slug}.Name()] = sa.Shares
+		if sa.Shares != 0 {
+			any = true
+		}
+	}
+	if !any {
+		return nil, false
+	}
+	return weights, true
+}
+
+// takeAnswerShares takes the owner answer's shares into the loop
+// (ADR-023's amendment): when any scope carries a non-zero Shares, it
+// takes node.yaml's `shares:` over in Weights() from then on, logged
+// once on change as `shares (platform) <old> → <new>`; with node.yaml's
+// shares: also in force, `shares: the platform's weights are in force;
+// node.yaml's shares: ignored` logs once per change into that state. An
+// answer with none is not logged and leaves things as they were.
+func (l *Loop) takeAnswerShares(a *gateway.NodeAnswer) {
+	weights, any := sharesFromAnswer(a)
+	if !any {
+		return
+	}
+	l.mu.Lock()
+	was, wasSet := l.answerShares, l.answerSharesSet
+	l.mu.Unlock()
+	if !wasSet || !sharesEqual(was, weights) {
+		l.logf("shares (platform) %s → %s", sharesString(was), sharesString(weights))
+	}
+	bothNow := len(l.nodeYAMLWeights()) > 0
+	l.mu.Lock()
+	bothWas := l.sharesBothPresent
+	l.sharesBothPresent = bothNow
+	l.answerShares, l.answerSharesSet = weights, true
+	l.mu.Unlock()
+	if bothNow && !bothWas {
+		l.logf("shares: the platform's weights are in force; node.yaml's shares: ignored")
+	}
 }
 
 // cloneShares copies a weights map so Weights never hands out the

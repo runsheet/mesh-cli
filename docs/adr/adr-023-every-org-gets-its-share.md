@@ -39,19 +39,38 @@ machine.
   capacity 4 over two orgs is 2 and 2, at weights 3:1 it is 3 and 1,
   capacity 5 is 3 and 2 and capacity 1 is 1 and 0.
 
-**Weights.** `Loop.Weights()` is node.yaml's `shares:` block
-(`Config.Shares map[string]int`, keyed by a served org's login or, for
-one with none, its slug — as `orgs:` names it), re-read every tick like
-the claim limits and logged on change (`shares acme 1, globex 1 → acme
-3, globex 1`, each side `none` when unset); a zero or negative weight
-is refused at load naming the org (`shares: acme: must be a positive
-integer`), and a weight naming an org this node does not serve is
-logged once (`shares: ghost is not a served org`) and dropped.
-node.yaml's `shares:` is a person's own node's setting, for the orgs
-they belong to by hand; an enterprise splitting a node across its orgs
-sets it on the enterprise instead, read as part of the owner contract's
-answer (item 4 of this goal) and taking node.yaml's `shares:` over when
-both are present — the platform half, not a node.yaml concern.
+**Weights.** `Loop.Weights()`'s precedence is the platform's shares when
+the owner answer carried any, else node.yaml's `shares:`, else nil —
+equal shares.
+
+node.yaml's `shares:` block (`Config.Shares map[string]int`, keyed by a
+served org's login or, for one with none, its slug — as `orgs:` names
+it) is re-read every tick like the claim limits and logged on change
+(`shares acme 1, globex 1 → acme 3, globex 1`, each side `none` when
+unset); a zero or negative weight is refused at load naming the org
+(`shares: acme: must be a positive integer`), and a weight naming an
+org this node does not serve is logged once (`shares: ghost is not a
+served org`) and dropped. It is a person's own node's setting, for the
+orgs they belong to by hand.
+
+An enterprise splitting a node across its orgs sets it on the
+enterprise instead: `ScopeAnswer.Shares` (`internal/gateway/client.go`,
+ADR-015's amendment) rides every scope of the registration and
+heartbeat answer, 0 meaning the platform set none there (equal
+shares). `Loop.TakeAnswer` reads it (`takeAnswerShares`,
+`internal/node/shares.go`) into a weights map keyed by `Scope.Name()`
+when any scope of the answer carries a non-zero `Shares` — an answer
+whose scopes are all 0 (an older platform, or an enterprise with no
+`shares` set) leaves node.yaml's `shares:` in force and is not logged.
+Once the answer has carried any, it takes node.yaml's `shares:` over in
+`Weights()` from then on, logged once on change as `shares (platform)
+<old> → <new>`, rendered like node.yaml's own line, nothing when an
+answer repeats unchanged; with node.yaml's `shares:` also in force,
+`shares: the platform's weights are in force; node.yaml's shares:
+ignored` logs once, on the change into that state, not on every
+heartbeat it holds. Nothing is persisted to node.yaml — the platform's
+shares live only in the loop, taken afresh at every registration and
+heartbeat.
 
 **What an org holds.** The loop records, per session, the org it counts
 toward (`Loop.sessionOrg`, subject → org id), set where a build, a plan
@@ -113,8 +132,8 @@ or `shares: none recorded` when the file is absent.
   research still do not count against capacity.
 - At capacity 1 over two orgs the first listed org's floor is the one
   slot: while it has ready work and holds nothing, its item goes before
-  another org's urgent one. Weights (a later item) are how an enterprise
-  says otherwise.
+  another org's urgent one. Weights — node.yaml's `shares:` or, for an
+  enterprise, the owner answer's — are how an enterprise says otherwise.
 - An item taken for a floor and then skipped (a hold, no account) is
   not replaced by the org's next item in the floor section this tick;
   the org's other items keep their place in the priority section, and
@@ -122,6 +141,5 @@ or `shares: none recorded` when the file is absent.
 - Plans and evaluations keep their own priority orders (`planOrder`,
   `evaluateOrder`); only build claims are divided.
 - `mesh node status` and the heartbeat's holding report show floor,
-  held and ready per org (Reporting, above) and node.yaml's `shares`
-  weights (Weights, above); the owner answer's `shares` weights (over
-  node.yaml's) are a later item of the goal.
+  held and ready per org (Reporting, above) and both node.yaml's
+  `shares` weights and the owner answer's (Weights, above).
