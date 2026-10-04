@@ -1381,7 +1381,17 @@ func (l *Loop) reload(ctx context.Context) {
 	if got.Limits != nil {
 		was, now := l.Thresholds(), got.Limits.Thresholds()
 		if now != was {
-			l.logf("limits: pace five-hour %s → %s, stop %s → %s", pct(was.PaceFiveHour), pct(now.PaceFiveHour), pct(was.Stop), pct(now.Stop))
+			var parts []string
+			if was.PaceFiveHour != now.PaceFiveHour {
+				parts = append(parts, fmt.Sprintf("pace five-hour %s → %s", pct(was.PaceFiveHour), pct(now.PaceFiveHour)))
+			}
+			if was.Stop != now.Stop {
+				parts = append(parts, fmt.Sprintf("stop %s → %s", pct(was.Stop), pct(now.Stop)))
+			}
+			if was.Reserve != now.Reserve {
+				parts = append(parts, fmt.Sprintf("reserve %s → %s", pct(was.Reserve), pct(now.Reserve)))
+			}
+			l.logf("limits: %s", strings.Join(parts, ", "))
 		}
 		l.mu.Lock()
 		l.limits, l.limitsSet = *got.Limits, true

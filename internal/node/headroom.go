@@ -99,6 +99,20 @@ func (w window) floorBurn() float64 {
 	return FloorBurnSevenDay
 }
 
+func (w window) length() time.Duration {
+	if w == fiveHour {
+		return fiveHourLength
+	}
+	return sevenDayLength
+}
+
+func (w window) String() string {
+	if w == fiveHour {
+		return "five-hour"
+	}
+	return "seven-day"
+}
+
 func (w window) reason() Reason {
 	if w == fiveHour {
 		return ReasonFiveHourPace
@@ -185,19 +199,33 @@ func (s *Scaler) burn(w window) float64 {
 // the burn measured: (target − utilization) / minutes to reset / burn.
 // A window with no reading, or past its reset, sets no bound (+Inf).
 func (s *Scaler) slots(w window, now time.Time) float64 {
-	var last *WindowReading
-	for i := len(s.samples) - 1; i >= 0 && last == nil; i-- {
-		last = w.of(s.samples[i].windows)
-	}
+	return s.slotsTo(w, now, w.target())
+}
+
+// slotsTo is slots spending the window up to target rather than its
+// own: the push (adr-005-capacity-across-accounts, 2026-10-03) spends a
+// window behind its line in its last fifth up to the stop.
+func (s *Scaler) slotsTo(w window, now time.Time, target float64) float64 {
+	last := s.last(w)
 	if last == nil || !last.ResetsAt.After(now) {
 		return math.Inf(1)
 	}
-	room := w.target() - last.Utilization
+	room := target - last.Utilization
 	if room <= 0 {
 		return 0
 	}
 	minutes := math.Max(last.ResetsAt.Sub(now).Minutes(), 1)
 	return room / minutes / s.burn(w)
+}
+
+// last is a window's latest reading, nil when none was fed.
+func (s *Scaler) last(w window) *WindowReading {
+	for i := len(s.samples) - 1; i >= 0; i-- {
+		if r := w.of(s.samples[i].windows); r != nil {
+			return r
+		}
+	}
+	return nil
 }
 
 // Target is the capacity the windows afford — the smaller of the two

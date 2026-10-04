@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 	"fmt"
+	"math"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -25,6 +26,20 @@ func reading(five, seven float64) *harness.RateLimit {
 	return &harness.RateLimit{Status: "allowed", RateLimitType: "five_hour", ResetsAt: fiveOver,
 		FiveHour: harness.RateLimitWindow{Utilization: five, ResetsAt: fiveOver},
 		SevenDay: harness.RateLimitWindow{Utilization: seven, ResetsAt: weekOver}, ObservedAt: t0}
+}
+
+// halfWeekOver is 3.5 days after t0: a seven-day window's reset there
+// has half the week elapsed, so its clock target is 0.5 less the
+// default reserve.
+var halfWeekOver = t0.Add(84 * time.Hour)
+
+// readingHalfWeek is an allowed plan standing at t0 with the seven-day
+// window at that use and its reset 3.5 days out — half the week gone
+// — for the clock rule's tests (goal every-subscription-lands-full-at-its-reset).
+func readingHalfWeek(seven float64) *harness.RateLimit {
+	return &harness.RateLimit{Status: "allowed", RateLimitType: "seven_day", ResetsAt: halfWeekOver,
+		FiveHour: harness.RateLimitWindow{Utilization: 0, ResetsAt: fiveOver},
+		SevenDay: harness.RateLimitWindow{Utilization: seven, ResetsAt: halfWeekOver}, ObservedAt: t0}
 }
 
 // clock is a settable Loop.Now.
@@ -145,8 +160,8 @@ func TestPaceDecides(t *testing.T) {
 	}{
 		{"low", *reading(0.5, 0.5), LimitsConfig{}, t0, paceNormal, time.Time{}},
 		{"five-hour at 80%", *reading(0.80, 0.5), LimitsConfig{}, t0, pacePaced, fiveOver},
-		{"five-hour at 95%", *reading(0.95, 0.5), LimitsConfig{}, t0, paceStopped, fiveOver},
-		{"seven-day at 96%", *reading(0.85, 0.96), LimitsConfig{}, t0, paceStopped, weekOver},
+		{"five-hour at 98%", *reading(0.98, 0.5), LimitsConfig{}, t0, paceStopped, fiveOver},
+		{"seven-day at 99%", *reading(0.85, 0.99), LimitsConfig{}, t0, paceStopped, weekOver},
 		{"allowed_warning", status("allowed_warning"), LimitsConfig{}, t0, pacePaced, t0.Add(30 * time.Minute)},
 		{"rejected", status("rejected"), LimitsConfig{}, t0, paceStopped, t0.Add(30 * time.Minute)},
 		{"paced past its reset", *reading(0.85, 0.5), LimitsConfig{}, fiveOver, paceNormal, time.Time{}},
@@ -209,7 +224,7 @@ func TestLoopPacedClaimsUrgentAndHighAtHalfCapacity(t *testing.T) {
 // uncancelled. Once the clock passes the reset it claims again.
 func TestLoopStoppedStartsNothingAndResumesAtReset(t *testing.T) {
 	stoppers := map[string]func() *harness.RateLimit{
-		"seven-day 96%": func() *harness.RateLimit { return reading(0.3, 0.96) },
+		"seven-day 99%": func() *harness.RateLimit { return reading(0.3, 0.99) },
 		"rejected":      func() *harness.RateLimit { r := reading(0.3, 0.3); r.Status = "rejected"; return r },
 	}
 	for name, stopper := range stoppers {
@@ -308,14 +323,125 @@ func TestLoopTakesLimitsFromNodeYAML(t *testing.T) {
 	if got := p.claimedBy(loop); strings.Join(got, ",") != "normal-1" {
 		t.Fatalf("at the defaults, claimed %v", got)
 	}
-	for _, want := range []string{"limits: paced until", "limits: pace five-hour 50% → 80%, stop 90% → 95%", "limits: back to normal (was paced)"} {
+	for _, want := range []string{"limits: paced until", "limits: pace five-hour 50% → 80%, stop 90% → 98%", "limits: back to normal (was paced)"} {
 		if !strings.Contains(logs.String(), want) {
 			t.Fatalf("log lacks %q:\n%s", want, logs)
 		}
 	}
-	if th := (LimitsConfig{}).Thresholds(); th.PaceFiveHour != DefaultPaceFiveHour || th.Stop != DefaultStop {
+	if th := (LimitsConfig{}).Thresholds(); th.PaceFiveHour != DefaultPaceFiveHour || th.Stop != DefaultStop || th.Reserve != DefaultReserve {
 		t.Fatalf("defaults = %+v", th)
 	}
+}
+
+// LimitsConfig's defaults — reserve 0.05, stop 0.98 — and node.yaml's
+// own values, a percent or a fraction, loaded through LoadConfig and the
+// live reload alike.
+func TestLimitsDefaults(t *testing.T) {
+	if th := (LimitsConfig{}).Thresholds(); th.Reserve != 0.05 || th.Stop != 0.98 {
+		t.Fatalf("defaults = %+v, want reserve 0.05, stop 0.98", th)
+	}
+	if th := (LimitsConfig{Reserve: 10}).Thresholds(); th.Reserve != 0.10 {
+		t.Fatalf("reserve: 10 = %v, want 0.10 (read as a percent)", th.Reserve)
+	}
+
+	p := newPriorityFake(t)
+	p.register()
+	loop, _, _ := p.liveLoop(t, "slug: box\nname: Box\norgs: [acme]\ncapacity: 1\nlimits:\n  reserve: 0.10\n  stop: 0.97\n")
+	loop.Tick(context.Background())
+	loop.wg.Wait()
+	if th := loop.Thresholds(); th.Reserve != 0.10 || th.Stop != 0.97 {
+		t.Fatalf("thresholds = %+v, want reserve 0.10, stop 0.97", th)
+	}
+}
+
+// approx is whether a and b are within 1e-9 of each other: the clock's
+// own float arithmetic, not a flaky comparison.
+func approx(a, b float64) bool { return math.Abs(a-b) < 1e-9 }
+
+// StandingOf, the pure clock: each window's elapsed fraction, target
+// line, distance from it and push, against the seven-day window — the
+// window every example names, since it is the one the goal balances.
+// Both windows take the time-proportional target by default; only a
+// pace point of their own (a credential's windowTargets, or an
+// explicit node.yaml one) replaces it.
+func TestStanding(t *testing.T) {
+	length := sevenDayLength
+	at := func(fraction float64) time.Time { return t0.Add(time.Duration(fraction * float64(length))) }
+
+	for _, c := range []struct {
+		name                                  string
+		resetsAt                              time.Time
+		use                                   float64
+		cfg                                   LimitsConfig
+		wantElapsed, wantTarget, wantDistance float64
+		wantPush                              bool
+	}{
+		{"50% elapsed, 10% use", at(0.5), 0.10, LimitsConfig{}, 0.5, 0.45, -0.35, false},
+		{"10% left, 60% use: push", at(0.1), 0.60, LimitsConfig{}, 0.9, 0.85, -0.25, true},
+		{"10% left, 90% use: ahead, no push", at(0.1), 0.90, LimitsConfig{}, 0.9, 0.85, 0.05, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r := harness.RateLimit{SevenDay: harness.RateLimitWindow{Utilization: c.use, ResetsAt: c.resetsAt}}
+			s := StandingOf(t0, r, c.cfg)
+			if !approx(s.SevenDay.Elapsed, c.wantElapsed) || !approx(s.SevenDay.Target, c.wantTarget) ||
+				!approx(s.SevenDay.Distance, c.wantDistance) || s.SevenDay.Push != c.wantPush {
+				t.Fatalf("seven-day = %+v, want elapsed %v target %v distance %v push %v",
+					s.SevenDay, c.wantElapsed, c.wantTarget, c.wantDistance, c.wantPush)
+			}
+		})
+	}
+
+	// a credential's own pace point replaces the time-proportional line
+	// outright, whatever the elapsed fraction.
+	t.Run("pace point overrides the line", func(t *testing.T) {
+		r := harness.RateLimit{SevenDay: harness.RateLimitWindow{Utilization: 0.2, ResetsAt: at(0.3)}}
+		s := StandingOf(t0, r, LimitsConfig{PaceSevenDay: 0.5})
+		if !approx(s.SevenDay.Target, 0.5) {
+			t.Fatalf("target = %v, want 0.5 regardless of elapsed", s.SevenDay.Target)
+		}
+	})
+
+	// a window whose reset has passed reads as freshly reset: elapsed,
+	// target and utilization all zero, not the stale percentage.
+	t.Run("past its reset", func(t *testing.T) {
+		r := harness.RateLimit{SevenDay: harness.RateLimitWindow{Utilization: 0.77, ResetsAt: t0.Add(-time.Hour)}}
+		s := StandingOf(t0, r, LimitsConfig{})
+		if s.SevenDay.Elapsed != 0 || s.SevenDay.Target != 0 || s.SevenDay.Utilization != 0 {
+			t.Fatalf("past reset = %+v, want elapsed/target/utilization all 0", s.SevenDay)
+		}
+	})
+
+	// with no seven-day reading the account's own Distance is the
+	// five-hour window's.
+	t.Run("no seven-day reading", func(t *testing.T) {
+		r := harness.RateLimit{FiveHour: harness.RateLimitWindow{Utilization: 0.3, ResetsAt: t0.Add(2 * time.Hour)}}
+		s := StandingOf(t0, r, LimitsConfig{})
+		if !approx(s.Distance, s.FiveHour.Distance) {
+			t.Fatalf("account distance = %v, want the five-hour window's %v", s.Distance, s.FiveHour.Distance)
+		}
+	})
+
+	// the five-hour window takes the time-proportional target by default
+	// too — pace_five_hour's flat 0.80 (LimitsConfig.Thresholds) paces
+	// the node's old brake, never Standing's line, when no pace point of
+	// its own is set.
+	t.Run("five-hour window, no pace point: time-proportional, not the flat pace default", func(t *testing.T) {
+		r := harness.RateLimit{FiveHour: harness.RateLimitWindow{Utilization: 0.10, ResetsAt: t0.Add(fiveHourLength / 2)}}
+		s := StandingOf(t0, r, LimitsConfig{})
+		if !approx(s.FiveHour.Elapsed, 0.5) || !approx(s.FiveHour.Target, 0.45) || !approx(s.FiveHour.Distance, -0.35) {
+			t.Fatalf("five-hour = %+v, want elapsed 0.5 target 0.45 distance -0.35 (not the flat 0.80 pace default)", s.FiveHour)
+		}
+	})
+
+	// a pace point on an expired window is not retained: a stale reading
+	// stands at zero, never the pace point, and never pushes.
+	t.Run("pace point on a window past its reset: zero, no push", func(t *testing.T) {
+		r := harness.RateLimit{SevenDay: harness.RateLimitWindow{Utilization: 0.9, ResetsAt: t0.Add(-time.Hour)}}
+		s := StandingOf(t0, r, LimitsConfig{PaceSevenDay: 0.5})
+		if s.SevenDay.Elapsed != 0 || s.SevenDay.Target != 0 || s.SevenDay.Utilization != 0 || s.SevenDay.Push {
+			t.Fatalf("past reset with a pace point = %+v, want elapsed/target/utilization 0 and no push", s.SevenDay)
+		}
+	})
 }
 
 // Ticks in one mode log its crossing once: into paced, into stopped,
@@ -326,7 +452,7 @@ func TestLoopLogsEachCrossingOnce(t *testing.T) {
 	for range 3 {
 		loop.Tick(context.Background())
 	}
-	stop := reading(0.97, 0.1)
+	stop := reading(0.99, 0.1)
 	stop.ObservedAt = t0.Add(time.Second)
 	loop.Limits.Observe(DefaultAccount, stop)
 	for range 3 {
@@ -374,7 +500,7 @@ func TestLoopPacedStillEvaluatesAndRebases(t *testing.T) {
 		starts bool
 	}{
 		{"paced", reading(0.85, 0.3), true},
-		{"stopped", reading(0.3, 0.96), false},
+		{"stopped", reading(0.3, 0.99), false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			p := newPriorityFake(t)
@@ -495,7 +621,7 @@ func TestLoopChoosesAmongIssuedAccounts(t *testing.T) {
 		t.Fatalf("chose %+v (ok=%v, chosen=%v), want shhemail", a, ok, chosen)
 	}
 
-	stopped := reading(0.97, 0.2)
+	stopped := reading(0.99, 0.2)
 	stopped.ObservedAt = t0.Add(time.Minute)
 	loop.Limits.Observe("max20", stopped)
 	loop.Limits.Observe("shhemail", stopped)
@@ -545,9 +671,9 @@ func TestLoopWithoutIssuedAccountsJudgesDefault(t *testing.T) {
 		p := newPriorityFake(t)
 		loop, _, _ := p.pacedLoop(2, reading(0.2, 0.3))
 		loop.Known = known
-		loop.Limits.Observe("/home/mini/.claude", reading(0.2, 0.97))
+		loop.Limits.Observe("/home/mini/.claude", reading(0.2, 0.99))
 		accounts, readings := loop.accounts()
-		if labels(accounts) != DefaultAccount || len(readings) != 1 || readings[DefaultAccount].SevenDay.Utilization != 0.97 {
+		if labels(accounts) != DefaultAccount || len(readings) != 1 || readings[DefaultAccount].SevenDay.Utilization != 0.99 {
 			t.Fatalf("%s: accounts %s, readings %+v", name, labels(accounts), readings)
 		}
 		if m := loop.pacing().mode; m != paceStopped {

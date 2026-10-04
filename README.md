@@ -405,12 +405,16 @@ credentials the platform issues for the session — a read that answers
 with none for the session's adapter is a hold (4, below), never
 node.yaml or the machine's own login:
 
-1. Subscriptions first: of those with headroom, the one with the most —
-   the lowest use of its five-hour and seven-day windows. An account
-   past `limits.stop`, or whose status is not `allowed`, takes nothing
-   until its window resets; one past `limits.pace_five_hour` takes only
-   urgent and high work. An account no session has run on yet has its
-   full headroom.
+1. Subscriptions first: of those with headroom, the one furthest
+   behind its target line — the window's elapsed fraction less
+   `limits.reserve`, read on whichever of its five-hour and seven-day
+   windows has a reading (the seven-day one when both do); an account
+   ahead of its line is chosen last, and then the least ahead of them
+   (goal every-subscription-lands-full-at-its-reset). An account past
+   `limits.stop`, or whose status is not `allowed`, takes nothing until
+   its window resets; one past `limits.pace_five_hour` takes only
+   urgent and high work. An account no session has run on yet is the
+   furthest behind its line, so it still has full headroom.
 2. An API key only for urgent or high work (before a paced
    subscription), or when every subscription is stopped — or, on a
    ranged node, has no slot free (see Capacity across accounts) — and
@@ -1049,7 +1053,8 @@ value over 1 is read as a percent):
 ```yaml
 limits:
   pace_five_hour: 0.80
-  stop: 0.95
+  stop: 0.98
+  reserve: 0.05
 ```
 
 Every heartbeat carries the latest reading of each account as `limits`
@@ -1150,7 +1155,13 @@ key by its money left under its caps and the project's budget.
 - **A subscription** affords the smaller over its windows of (target −
   utilization) ÷ minutes to reset ÷ its burn per slot-minute — the
   targets 0.90 five-hour and 0.95 seven-day, the burn measured over the
-  last 30 minutes of *its own* sessions.
+  last 30 minutes of *its own* sessions. **The push:** in a window's
+  last 20% of time, a subscription still behind its target line
+  (elapsed fraction less `reserve`) affords (`stop` − utilization) ÷
+  minutes to reset ÷ burn instead, and at least one slot more than it
+  otherwise would, so it lands near full at reset — reason `push`,
+  logged once as `capacity: pushing <label> (seven-day window 92%
+  elapsed, 70% used, target 87%)`; a window at `stop` affords nothing.
 - **An API key** affords its money left today ÷ hours left today ÷ its
   dollars per slot-hour (measured the same way; $10 before there is
   data). The money left is the least of the daily cap less today's
@@ -1264,6 +1275,13 @@ runsheet   mini  mini *     online  8        8/1–8 (max) — host load 9 / 18 
 
 — a host with no thermal zone to read shows `no temperature` in place
 of a figure.
+
+`scripts/host-backoff-reading.sh` takes the same reading by hand — the
+load, cores, package temperature and `mesh node status`'s capacity line
+— with `--interval S --count N` to repeat it, so an operator can watch
+capacity fall under CI and climb back once the host is quiet. One run's
+output is recorded, whatever its numbers, in
+`docs/measurements/host-backoff-reading.md`.
 
 ### Tools
 

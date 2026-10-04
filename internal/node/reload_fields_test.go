@@ -59,7 +59,7 @@ func TestReloadLimitsFromDisk(t *testing.T) {
 
 	writeNodeYAML(t, reloadYAML+"limits: {pace_five_hour: 80, stop: 95}\n")
 	wantReloadLines(t, "after the edit", tickLines(t, loop, logs), "limits: pace five-hour 70% → 80%, stop 90% → 95%")
-	if got := loop.Thresholds(); got != (LimitsConfig{PaceFiveHour: 0.80, Stop: 0.95}) {
+	if got := loop.Thresholds(); got != (LimitsConfig{PaceFiveHour: 0.80, Stop: 0.95, Reserve: DefaultReserve}) {
 		t.Fatalf("thresholds in force %+v, want 80%%/95%%", got)
 	}
 }

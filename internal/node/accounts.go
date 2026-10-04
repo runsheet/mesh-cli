@@ -120,6 +120,8 @@ func (a AccountConfig) capacity(budgets map[string]float64) CapacityAccount {
 	if a.Kind == AccountAPI {
 		c.DailyCapUSD, c.MonthlyCapUSD = a.Caps()
 		c.Project, c.ProjectDailyBudgetUSD = a.Project, budgets[a.Project]
+	} else {
+		c.PaceFiveHour, c.PaceSevenDay = a.PaceFiveHour, a.PaceSevenDay
 	}
 	return c
 }
