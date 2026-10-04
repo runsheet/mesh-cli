@@ -108,14 +108,50 @@ func (l *Loop) accountsTarget(r Capacity, accounts []AccountConfig, slotMinutes 
 	scaler := st.accounts
 	scaler.Min, scaler.Max = r.Min, r.Max
 	l.mu.Unlock()
+	scaler.Limits = l.Thresholds()
 
 	scaler.Observe(observed)
 	t := scaler.Target(caps, running)
 
 	l.mu.Lock()
 	st.target, st.targeted = t, true
+	was := st.pushed
+	st.pushed = map[string]bool{}
+	for _, a := range t.Accounts {
+		if a.Push {
+			st.pushed[a.Name] = true
+		}
+	}
 	l.mu.Unlock()
+	for _, a := range t.Accounts {
+		if a.Push && !was[a.Name] {
+			l.logf("%s", PushLine(a))
+		}
+	}
 	return t.Capacity, t.Reason
+}
+
+// PushLine is the log line of an account the push starts on, said once
+// per crossing: `capacity: pushing <label> (seven-day window 92%
+// elapsed, 70% used, target 87%)`.
+func PushLine(a AccountSlots) string {
+	st := a.PushStanding
+	return fmt.Sprintf("capacity: pushing %s (%s window %s elapsed, %s used, target %s)",
+		a.Name, a.PushWindow, pct(st.Elapsed), pct(st.Utilization), pct(st.Target))
+}
+
+// Pushed is the accounts the push raised at the accounts scaler's last
+// run, sorted as node.yaml lists them.
+func (l *Loop) Pushed() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []string
+	for _, a := range l.scaling.target.Accounts {
+		if a.Push {
+			out = append(out, a.Name)
+		}
+	}
+	return out
 }
 
 // AccountSlots are each account's slots as the accounts scaler last
@@ -219,6 +255,28 @@ func (l *Loop) UnmergedPerRepo() int {
 		return 0
 	}
 	return l.Cfg.Claim.UnmergedPerRepo
+}
+
+// Takes is node.yaml's `takes:` block in force: as last reloaded, else
+// Cfg's — the zero value, every kind, with neither.
+func (l *Loop) Takes() Takes {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.takesSet {
+		return l.takes
+	}
+	if l.Cfg == nil {
+		return nil
+	}
+	return l.Cfg.Takes
+}
+
+// takesKind says whether this node claims a session of kind under the
+// takes: in force. A claim path whose kind is not taken returns before
+// it lists anything or asks the platform, so nothing is claimed and
+// released (ADR-025).
+func (l *Loop) takesKind(kind harness.Kind) bool {
+	return l.Takes().Takes(kind)
 }
 
 // HostThresholds is node.yaml's `host:` block in force, defaults

@@ -223,6 +223,12 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   and no read) holds fresh claims for a repo with N items in `review`,
   counted from the node's own listing, never `RepoIndex.reviewPile`;
   started work there is still claimed (ADR-017).
+  node.yaml's `takes:` (`Takes`: a list of kinds or a per-kind cap map,
+  re-read each tick, `Loop.Takes`; left out, every kind) skips a kind
+  not taken before its claim path lists anything — `claimReady`,
+  `evaluateHeld`, `rebaseRequested`, `planRequested`, `researchDue`
+  return at `takesKind` — logged on change `takes: <old> → <new>`
+  (ADR-025).
   **Every org gets its share** (`internal/node/shares.go`, ADR-023,
   amending ADR-017's order): `claimReady` orders the pooled ready items
   by `shareOrder(ready, Floors(Capacity(), Scopes, Weights()),

@@ -99,9 +99,12 @@ type scaleState struct {
 	scaler *Scaler
 	// accounts is the accounts scaler, run instead of scaler when
 	// node.yaml lists accounts; target is its last target (targeted).
-	accounts  *AccountsScaler
-	target    AccountsTarget
-	targeted  bool
+	accounts *AccountsScaler
+	target   AccountsTarget
+	targeted bool
+	// pushed is the accounts the push raised at the last run, so its
+	// log line is said once per crossing.
+	pushed    map[string]bool
 	evaluated time.Time
 	stepped   time.Time
 	reason    Reason

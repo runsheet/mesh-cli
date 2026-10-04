@@ -19,7 +19,7 @@ import (
 const reloadYAML = "slug: box\nname: Box\norgs: [acme]\ncapacity: 1\n"
 
 // reloadPrefixes are how a reload's log lines begin, one per field.
-var reloadPrefixes = []string{"limits:", "accounts ", "account ", "budget ", "project budget ", "context:", "claim:", "shares ", "shares:", "orgs ", "host:"}
+var reloadPrefixes = []string{"limits:", "accounts ", "account ", "budget ", "project budget ", "context:", "claim:", "shares ", "shares:", "orgs ", "host:", "takes:"}
 
 // tickLines runs one tick and returns the lines it logged.
 func tickLines(t *testing.T, loop *Loop, logs *strings.Builder) []string {
@@ -59,7 +59,7 @@ func TestReloadLimitsFromDisk(t *testing.T) {
 
 	writeNodeYAML(t, reloadYAML+"limits: {pace_five_hour: 80, stop: 95}\n")
 	wantReloadLines(t, "after the edit", tickLines(t, loop, logs), "limits: pace five-hour 70% → 80%, stop 90% → 95%")
-	if got := loop.Thresholds(); got != (LimitsConfig{PaceFiveHour: 0.80, Stop: 0.95}) {
+	if got := loop.Thresholds(); got != (LimitsConfig{PaceFiveHour: 0.80, Stop: 0.95, Reserve: DefaultReserve}) {
 		t.Fatalf("thresholds in force %+v, want 80%%/95%%", got)
 	}
 }
@@ -122,6 +122,35 @@ func TestReloadClaimFromDisk(t *testing.T) {
 	if got := loop.UnmergedPerRepo(); got != 2 {
 		t.Fatalf("unmerged_per_repo in force %d, want 2", got)
 	}
+}
+
+// node.yaml's `takes:` is reloaded every tick like the claim limits:
+// the first tick claims a build, node.yaml rewritten to `takes:
+// [evaluate]` the next claims none, logged once as `takes: <old> →
+// <new>`, with no restart (ADR-025).
+func TestReloadTakesFromDisk(t *testing.T) {
+	p := newPriorityFake(t)
+	p.addGoal(orgID, "run", "normal")
+	p.addItem(orgID, "run", "ready-1", 1, false)
+	p.addItem(orgID, "run", "ready-2", 2, false)
+	loop, _, logs := p.liveLoop(t, reloadYAML)
+	before := len(p.CallsNamed("claimWorkItem"))
+	wantReloadLines(t, "first tick", tickLines(t, loop, logs))
+	if n := len(p.CallsNamed("claimWorkItem")) - before; n != 1 {
+		t.Fatalf("first tick claimed %d builds, want 1", n)
+	}
+
+	writeNodeYAML(t, reloadYAML+"takes: [evaluate]\n")
+	before = len(p.CallsNamed("claimWorkItem"))
+	wantReloadLines(t, "after the edit", tickLines(t, loop, logs), "takes: every kind → evaluate")
+	if n := len(p.CallsNamed("claimWorkItem")) - before; n != 0 {
+		t.Fatalf("second tick claimed %d builds under takes: [evaluate]", n)
+	}
+	if got := loop.Takes().String(); got != "evaluate" {
+		t.Fatalf("takes in force %q, want evaluate", got)
+	}
+
+	wantReloadLines(t, "unchanged", tickLines(t, loop, logs))
 }
 
 // node.yaml's `host:` block is reloaded every tick like the claim

@@ -242,6 +242,10 @@ type Loop struct {
 	// says otherwise (claimSet).
 	claim    ClaimConfig
 	claimSet bool
+	// takes is node.yaml's `takes:` block in force: Cfg's until Reload
+	// says otherwise (takesSet); read through Takes() and takesKind.
+	takes    Takes
+	takesSet bool
 	// host is node.yaml's `host:` block in force, defaults filled: Cfg's
 	// until Reload says otherwise (hostSet).
 	host    HostConfig
@@ -526,6 +530,9 @@ func planOrder(goals []planningGoal) {
 // items in review is not claimed either; started work there is
 // (ADR-017, Per-repo limit on unmerged work).
 func (l *Loop) claimReady(ctx context.Context, free, normalFree, maxRank int) {
+	if !l.takesKind(harness.KindBuild) {
+		return
+	}
 	var ready []readyItem
 	limit := l.UnmergedPerRepo()
 	listed := make([][]gateway.WorkItem, len(l.Scopes))
@@ -1374,7 +1381,17 @@ func (l *Loop) reload(ctx context.Context) {
 	if got.Limits != nil {
 		was, now := l.Thresholds(), got.Limits.Thresholds()
 		if now != was {
-			l.logf("limits: pace five-hour %s → %s, stop %s → %s", pct(was.PaceFiveHour), pct(now.PaceFiveHour), pct(was.Stop), pct(now.Stop))
+			var parts []string
+			if was.PaceFiveHour != now.PaceFiveHour {
+				parts = append(parts, fmt.Sprintf("pace five-hour %s → %s", pct(was.PaceFiveHour), pct(now.PaceFiveHour)))
+			}
+			if was.Stop != now.Stop {
+				parts = append(parts, fmt.Sprintf("stop %s → %s", pct(was.Stop), pct(now.Stop)))
+			}
+			if was.Reserve != now.Reserve {
+				parts = append(parts, fmt.Sprintf("reserve %s → %s", pct(was.Reserve), pct(now.Reserve)))
+			}
+			l.logf("limits: %s", strings.Join(parts, ", "))
 		}
 		l.mu.Lock()
 		l.limits, l.limitsSet = *got.Limits, true
@@ -1403,6 +1420,14 @@ func (l *Loop) reload(ctx context.Context) {
 		}
 		l.mu.Lock()
 		l.claim, l.claimSet = *got.Claim, true
+		l.mu.Unlock()
+	}
+	if got.Takes != nil {
+		if was, now := l.Takes(), *got.Takes; was.String() != now.String() {
+			l.logf("takes: %s → %s", was, now)
+		}
+		l.mu.Lock()
+		l.takes, l.takesSet = *got.Takes, true
 		l.mu.Unlock()
 	}
 	if got.Host != nil {
@@ -1548,7 +1573,7 @@ func sameOrgs(a, b Scopes) bool {
 // one). The verdict moves the item on;
 // an evaluation that ends without one leaves it here for the next tick.
 func (l *Loop) evaluateHeld(ctx context.Context) {
-	if l.Evaluate == nil {
+	if l.Evaluate == nil || !l.takesKind(harness.KindEvaluate) {
 		return
 	}
 	var held []readyItem
@@ -1631,7 +1656,7 @@ func (l *Loop) evaluateHeld(ctx context.Context) {
 // node holds it, or it is no longer requested — is the ordinary answer
 // and is not logged as an error.
 func (l *Loop) rebaseRequested(ctx context.Context) {
-	if l.Rebase == nil {
+	if l.Rebase == nil || !l.takesKind(harness.KindRebase) {
 		return
 	}
 	var requested []readyItem
@@ -1706,7 +1731,7 @@ func (l *Loop) rebaseRequested(ctx context.Context) {
 // the orgs (planOrder), each on the account chosen for its priority. A
 // goal no account has headroom for is left for later.
 func (l *Loop) planRequested(ctx context.Context) {
-	if l.Plan == nil {
+	if l.Plan == nil || !l.takesKind(harness.KindPlan) {
 		return
 	}
 	var requested []planningGoal
@@ -1828,7 +1853,7 @@ func (l *Loop) heldSince(goalID, kind string) time.Time {
 // refusal is not logged as an error. Each direction is offered on its
 // own, so two directions of one project take their turns independently.
 func (l *Loop) researchDue(ctx context.Context) {
-	if l.Research == nil {
+	if l.Research == nil || !l.takesKind(harness.KindResearch) {
 		return
 	}
 	for _, sc := range l.Scopes {

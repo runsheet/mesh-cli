@@ -405,12 +405,16 @@ credentials the platform issues for the session — a read that answers
 with none for the session's adapter is a hold (4, below), never
 node.yaml or the machine's own login:
 
-1. Subscriptions first: of those with headroom, the one with the most —
-   the lowest use of its five-hour and seven-day windows. An account
-   past `limits.stop`, or whose status is not `allowed`, takes nothing
-   until its window resets; one past `limits.pace_five_hour` takes only
-   urgent and high work. An account no session has run on yet has its
-   full headroom.
+1. Subscriptions first: of those with headroom, the one furthest
+   behind its target line — the window's elapsed fraction less
+   `limits.reserve`, read on whichever of its five-hour and seven-day
+   windows has a reading (the seven-day one when both do); an account
+   ahead of its line is chosen last, and then the least ahead of them
+   (goal every-subscription-lands-full-at-its-reset). An account past
+   `limits.stop`, or whose status is not `allowed`, takes nothing until
+   its window resets; one past `limits.pace_five_hour` takes only
+   urgent and high work. An account no session has run on yet is the
+   furthest behind its line, so it still has full headroom.
 2. An API key only for urgent or high work (before a paced
    subscription), or when every subscription is stopped — or, on a
    ranged node, has no slot free (see Capacity across accounts) — and
@@ -689,6 +693,9 @@ fresh claim until one merges, while its started work (rework, a rebase,
 a re-evaluation) is still claimed and other repos are unaffected; left
 out or 0 there is no limit, and it is re-read every tick (see Unmerged
 work per repo below).
+node.yaml's `takes:` names the kinds of session the node claims — left
+out, every kind — and a kind it does not take is never listed or claimed
+(see Which sessions a node takes below).
 The attempt bound guards the class order within a priority; across
 priorities the order is strict above the floors, so a steady stream of
 urgent work keeps a low goal's items, plans and evaluations waiting —
@@ -1046,7 +1053,8 @@ value over 1 is read as a percent):
 ```yaml
 limits:
   pace_five_hour: 0.80
-  stop: 0.95
+  stop: 0.98
+  reserve: 0.05
 ```
 
 Every heartbeat carries the latest reading of each account as `limits`
@@ -1147,7 +1155,13 @@ key by its money left under its caps and the project's budget.
 - **A subscription** affords the smaller over its windows of (target −
   utilization) ÷ minutes to reset ÷ its burn per slot-minute — the
   targets 0.90 five-hour and 0.95 seven-day, the burn measured over the
-  last 30 minutes of *its own* sessions.
+  last 30 minutes of *its own* sessions. **The push:** in a window's
+  last 20% of time, a subscription still behind its target line
+  (elapsed fraction less `reserve`) affords (`stop` − utilization) ÷
+  minutes to reset ÷ burn instead, and at least one slot more than it
+  otherwise would, so it lands near full at reset — reason `push`,
+  logged once as `capacity: pushing <label> (seven-day window 92%
+  elapsed, 70% used, target 87%)`; a window at `stop` affords nothing.
 - **An API key** affords its money left today ÷ hours left today ÷ its
   dollars per slot-hour (measured the same way; $10 before there is
   data). The money left is the least of the daily cap less today's
@@ -1261,6 +1275,13 @@ runsheet   mini  mini *     online  8        8/1–8 (max) — host load 9 / 18 
 
 — a host with no thermal zone to read shows `no temperature` in place
 of a figure.
+
+`scripts/host-backoff-reading.sh` takes the same reading by hand — the
+load, cores, package temperature and `mesh node status`'s capacity line
+— with `--interval S --count N` to repeat it, so an operator can watch
+capacity fall under CI and climb back once the host is quiet. One run's
+output is recorded, whatever its numbers, in
+`docs/measurements/host-backoff-reading.md`.
 
 ### Tools
 
@@ -1476,6 +1497,35 @@ context budget, `claim:` is read again every tick without a restart,
 and a change is logged (`claim: unmerged_per_repo 0 → 7`). With the key
 left out no `review` listing is read at all
 ([ADR-017](docs/adr/adr-017-finish-before-you-start.md)).
+
+### Which sessions a node takes
+
+A node claims every kind of session — build, evaluate, rebase, plan,
+research — unless node.yaml's `takes:` names the ones it takes, so one
+machine can be the evaluator and another never evaluate
+([ADR-025](docs/adr/adr-025-a-node-says-which-sessions-it-takes.md)):
+
+```yaml
+takes: [build, rebase, plan, research]   # the AI node: never evaluates
+# or, on the CI machine:
+takes: {evaluate: 3}                     # evaluates only, at most three at once
+```
+
+Left out, every kind is taken. A kind not in the known five is refused
+when node.yaml is loaded, naming it, and `takes: []` is refused too.
+A kind the node does not take is skipped before anything is listed or
+asked of the platform: no claim is made and released, and its listing
+(the ready items, the goals in planning, the evaluating items, the
+requested rebases, the directions) is not read. Like `claim:`, `takes:`
+is read again every tick without a restart, and a change is logged once
+at the tick it takes effect (`takes: every kind → evaluate`).
+
+A machine that takes `evaluate` runs the repo's tests and its
+`.runsheet/validate.yml` suites, so it needs what a build does short of
+writing code: the repos' toolchains (Go, Node, …), podman or docker for
+their services, `git` and the `claude` (or `codex`) CLI. It needs no
+GitHub login or Claude account of its own: the item's token and the
+session's credentials are issued by the platform at claim.
 
 ### Tool results
 

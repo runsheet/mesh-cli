@@ -30,6 +30,9 @@ import (
 // fields are what older registrations wrote; read as Orgs of one.
 // `host:` is `{load_per_core_max: 1.5, package_temp_max_c: 90}` by
 // default; either threshold left out, or set to 0, takes its default.
+// `takes:` names the kinds of session (build, evaluate, rebase, plan,
+// research) this node claims, as a list or a per-kind cap map; left
+// out, every kind, as before (goal a-node-says-which-sessions-it-takes).
 type Config struct {
 	Gateway string `yaml:"gateway,omitempty"`
 	// Orgs restricts the node to these logins; empty is every org of the owner.
@@ -152,6 +155,11 @@ type Config struct {
 	// out, or a field left zero, takes its default, read again every
 	// tick like the claim limits.
 	Host HostConfig `yaml:"host,omitempty"`
+	// Takes is node.yaml's `takes:` block (Takes): which kinds of
+	// session this node claims, and each kind's own cap — read again
+	// every tick like the claim limits. Left out, every kind (Takes.Takes
+	// is true for anything).
+	Takes Takes `yaml:"takes,omitempty"`
 }
 
 // ClaimConfig is node.yaml's `claim:` block. UnmergedPerRepo is the most
@@ -168,6 +176,202 @@ func (c ClaimConfig) Validate() error {
 		return errors.New("claim.unmerged_per_repo: a limit cannot be negative")
 	}
 	return nil
+}
+
+// KnownKinds are the five kinds a node session can be, in the order
+// Takes.Kinds returns when node.yaml names none.
+var KnownKinds = []harness.Kind{
+	harness.KindBuild, harness.KindEvaluate, harness.KindRebase, harness.KindPlan, harness.KindResearch,
+}
+
+// knownKindNames is KnownKinds joined for an error message.
+func knownKindNames() string {
+	names := make([]string, len(KnownKinds))
+	for i, k := range KnownKinds {
+		names[i] = string(k)
+	}
+	return strings.Join(names, ", ")
+}
+
+// isKnownKind says whether kind is one of KnownKinds.
+func isKnownKind(kind string) bool {
+	for _, k := range KnownKinds {
+		if string(k) == kind {
+			return true
+		}
+	}
+	return false
+}
+
+// TakeKind is one entry of Takes: a kind this node claims, and its own
+// cap — 0 for none.
+type TakeKind struct {
+	Kind string
+	Cap  int
+}
+
+// Takes is node.yaml's `takes:` block: the kinds of session (harness.Kind)
+// this node claims, in the order node.yaml named them, each with its own
+// cap or none — read from a sequence (`takes: [evaluate]`) or a mapping
+// of kind to cap (`takes: {evaluate: 3}`). The zero value (`takes:` left
+// out) takes every kind, uncapped: Takes.Takes is true for anything and
+// Kinds lists KnownKinds.
+type Takes []TakeKind
+
+// Takes says whether this node claims a session of kind: true for every
+// kind when node.yaml named none.
+func (t Takes) Takes(kind harness.Kind) bool {
+	if len(t) == 0 {
+		return true
+	}
+	for _, k := range t {
+		if k.Kind == string(kind) {
+			return true
+		}
+	}
+	return false
+}
+
+// Cap is the cap node.yaml set on kind, and whether it set one — false
+// when kind is uncapped (named with no cap, or not named, or named by a
+// bare list).
+func (t Takes) Cap(kind harness.Kind) (int, bool) {
+	for _, k := range t {
+		if k.Kind == string(kind) {
+			if k.Cap > 0 {
+				return k.Cap, true
+			}
+			return 0, false
+		}
+	}
+	return 0, false
+}
+
+// Kinds lists the kinds this node takes, in the order node.yaml named
+// them — or KnownKinds, build first, when it names none.
+func (t Takes) Kinds() []harness.Kind {
+	if len(t) == 0 {
+		return KnownKinds
+	}
+	out := make([]harness.Kind, len(t))
+	for i, k := range t {
+		out[i] = harness.Kind(k.Kind)
+	}
+	return out
+}
+
+// String is how Takes is logged and shown: "evaluate (at most 3), plan",
+// or "every kind" when node.yaml named none.
+func (t Takes) String() string {
+	if len(t) == 0 {
+		return "every kind"
+	}
+	parts := make([]string, len(t))
+	for i, k := range t {
+		if k.Cap > 0 {
+			parts[i] = fmt.Sprintf("%s (at most %d)", k.Kind, k.Cap)
+		} else {
+			parts[i] = k.Kind
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
+// Validate refuses an unknown kind, naming it and the five known ones,
+// and an empty, non-nil takes: (node.yaml wrote `takes: []`, which would
+// claim nothing; leave the key out instead to take every kind). A cap
+// under 1 is refused as the mapping shape is parsed (Takes.UnmarshalYAML),
+// since only that shape ever gives one.
+func (t Takes) Validate() error {
+	if t == nil {
+		return nil
+	}
+	if len(t) == 0 {
+		return errors.New("takes: names no kind; leave it out to take every kind")
+	}
+	for _, k := range t {
+		if !isKnownKind(k.Kind) {
+			return fmt.Errorf("takes: unknown kind %q (one of %s)", k.Kind, knownKindNames())
+		}
+	}
+	return nil
+}
+
+// UnmarshalYAML takes a sequence of kind names (`takes: [evaluate]`,
+// uncapped) or a mapping of kind to cap (`takes: {evaluate: 3}`),
+// keeping the order node.yaml wrote them in so the loop can render it
+// back. A mapping's cap under 1 is refused here, since that shape always
+// gives one; an unknown kind or an empty takes: is Validate's to refuse,
+// once the whole file is read.
+func (t *Takes) UnmarshalYAML(n *yaml.Node) error {
+	switch n.Kind {
+	case yaml.SequenceNode:
+		var kinds []string
+		if err := n.Decode(&kinds); err != nil {
+			return fmt.Errorf("takes: %w", err)
+		}
+		out := make(Takes, 0, len(kinds))
+		for _, k := range kinds {
+			out = append(out, TakeKind{Kind: k})
+		}
+		*t = out
+		return nil
+	case yaml.MappingNode:
+		if len(n.Content)%2 != 0 {
+			return errors.New("takes: an invalid mapping")
+		}
+		out := make(Takes, 0, len(n.Content)/2)
+		for i := 0; i < len(n.Content); i += 2 {
+			var kind string
+			if err := n.Content[i].Decode(&kind); err != nil {
+				return fmt.Errorf("takes: %w", err)
+			}
+			var cap int
+			if err := n.Content[i+1].Decode(&cap); err != nil {
+				return fmt.Errorf("takes: %w", err)
+			}
+			if cap < 1 {
+				return fmt.Errorf("takes: %s: cap %d must be at least 1", kind, cap)
+			}
+			out = append(out, TakeKind{Kind: kind, Cap: cap})
+		}
+		*t = out
+		return nil
+	default:
+		return errors.New("takes: want a list of kinds or a mapping of kind to cap")
+	}
+}
+
+// MarshalYAML writes Takes back as it was read: a sequence of kind names
+// when no entry has a cap, else a mapping of kind to cap in the same
+// order — so a node.yaml using either shape saves back unchanged.
+func (t Takes) MarshalYAML() (any, error) {
+	capped := false
+	for _, k := range t {
+		if k.Cap > 0 {
+			capped = true
+			break
+		}
+	}
+	if !capped {
+		kinds := make([]string, len(t))
+		for i, k := range t {
+			kinds[i] = k.Kind
+		}
+		return kinds, nil
+	}
+	node := &yaml.Node{Kind: yaml.MappingNode}
+	for _, k := range t {
+		var keyNode, valNode yaml.Node
+		if err := keyNode.Encode(k.Kind); err != nil {
+			return nil, err
+		}
+		if err := valNode.Encode(k.Cap); err != nil {
+			return nil, err
+		}
+		node.Content = append(node.Content, &keyNode, &valNode)
+	}
+	return node, nil
 }
 
 // DefaultLoadPerCoreMax and DefaultPackageTempMaxC are host.load_per_core_max's
@@ -819,6 +1023,8 @@ type Reloaded struct {
 	// Host is node.yaml's `host:` block, defaults filled; nil keeps the
 	// loop's.
 	Host *HostConfig
+	// Takes is node.yaml's `takes:` block; nil keeps the loop's.
+	Takes *Takes
 }
 
 // Spending is what the node may spend on: node.yaml's project budgets
@@ -928,12 +1134,13 @@ func joinReasons(errs []error) error {
 // capacity, the limits, the accounts and budgets, the context budget,
 // the claim limits and the orgs restriction.
 func reloadedFrom(c *Config) Reloaded {
-	limits, budget, claim, host := c.Limits, c.Context, c.Claim, c.Host
+	limits, budget, claim, host, takes := c.Limits, c.Context, c.Claim, c.Host, c.Takes
 	return Reloaded{Capacity: c.Capacity, Limits: &limits, Context: &budget, Claim: &claim,
 		Spending: &Spending{ProjectBudgets: c.ProjectBudgets, Budgets: c.Budgets},
 		Orgs:     c.Orgs, OrgsRead: true,
 		Shares: c.Shares, SharesRead: true,
-		Host: &host}
+		Host:  &host,
+		Takes: &takes}
 }
 
 // OwnedReloader is Loop.Reload for a node registered once with its
@@ -1012,6 +1219,9 @@ func LoadConfig() (*Config, error) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	if err := c.Claim.Validate(); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	if err := c.Takes.Validate(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	if err := c.Context.Validate(); err != nil {
