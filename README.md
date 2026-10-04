@@ -1188,6 +1188,28 @@ Each account's own slots (`Loop.AccountSlots`) are kept for the
 heartbeat's per-account slots, which it carries once the platform
 accepts them.
 
+### Backing off a hot host
+
+`host:` in `~/.mesh/node.yaml` sets the thresholds past which this
+machine is judged hot — CI and other tenants can share it with the
+node without either knowing:
+
+```yaml
+host:
+  load_per_core_max: 1.5    # default; the 1-minute load average ÷ CPU count
+  package_temp_max_c: 90    # default, °C; the package thermal zone, when there is one
+```
+
+Either left out, or set to 0, takes its default. Read again every
+tick like the rest of node.yaml, and a change logged once —
+`host: load_per_core_max 1.5 → 2`. The node reads the package
+temperature from the `x86_pkg_temp` or `TCPU` thermal zone under
+`/sys/class/thermal` (Linux only; absent elsewhere, or with neither
+zone, logged once rather than every tick). This item alone declares
+the thresholds and the reading; the scaler backing capacity off while
+either is past its threshold, and climbing it back once the host is
+quiet, is further work on the same goal.
+
 ### Tools
 
 A session gets the tools its project and role have, configured in the

@@ -236,6 +236,10 @@ type Loop struct {
 	// says otherwise (claimSet).
 	claim    ClaimConfig
 	claimSet bool
+	// host is node.yaml's `host:` block in force, defaults filled: Cfg's
+	// until Reload says otherwise (hostSet).
+	host    HostConfig
+	hostSet bool
 	// shares is node.yaml's `shares:` weights in force (ADR-023): Cfg's
 	// until Reload says otherwise (sharesSet); read through Weights().
 	shares    map[string]int
@@ -1381,6 +1385,18 @@ func (l *Loop) reload(ctx context.Context) {
 		}
 		l.mu.Lock()
 		l.claim, l.claimSet = *got.Claim, true
+		l.mu.Unlock()
+	}
+	if got.Host != nil {
+		was, now := l.HostThresholds(), got.Host.Effective()
+		if now.LoadPerCoreMax != was.LoadPerCoreMax {
+			l.logf("host: load_per_core_max %s → %s", hostNum(was.LoadPerCoreMax), hostNum(now.LoadPerCoreMax))
+		}
+		if now.PackageTempMaxC != was.PackageTempMaxC {
+			l.logf("host: package_temp_max_c %s → %s", hostNum(was.PackageTempMaxC), hostNum(now.PackageTempMaxC))
+		}
+		l.mu.Lock()
+		l.host, l.hostSet = now, true
 		l.mu.Unlock()
 	}
 	if got.SharesRead {

@@ -221,6 +221,20 @@ func (l *Loop) UnmergedPerRepo() int {
 	return l.Cfg.Claim.UnmergedPerRepo
 }
 
+// HostThresholds is node.yaml's `host:` block in force, defaults
+// filled: as last reloaded, else Cfg's.
+func (l *Loop) HostThresholds() HostConfig {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.hostSet {
+		return l.host
+	}
+	if l.Cfg == nil {
+		return HostConfig{}.Effective()
+	}
+	return l.Cfg.Host.Effective()
+}
+
 // orNone is s, or "(none)" when it is empty.
 func orNone(s string) string {
 	if s == "" {

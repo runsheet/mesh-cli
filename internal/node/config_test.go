@@ -319,6 +319,41 @@ func TestSharesValidate(t *testing.T) {
 	}
 }
 
+// node.yaml's `host:` block loads its two thresholds, defaulting each
+// left out or zero to 1.5 and 90 (ADR-004's amendment,
+// the-node-backs-off-a-hot-host); a negative value is refused naming
+// the field.
+func TestLoadConfigHost(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	writeNodeYAML(t, "slug: mini\nname: mini\ncapacity: 1\n")
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Host.Effective(); got != (HostConfig{LoadPerCoreMax: 1.5, PackageTempMaxC: 90}) {
+		t.Fatalf("no host: section, defaults %+v, want 1.5/90", got)
+	}
+
+	writeNodeYAML(t, "slug: mini\nname: mini\ncapacity: 1\nhost: {load_per_core_max: 2, package_temp_max_c: 85}\n")
+	cfg, err = LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Host.Effective(); got != (HostConfig{LoadPerCoreMax: 2, PackageTempMaxC: 85}) {
+		t.Fatalf("host: {2, 85} loaded as %+v, want 2/85", got)
+	}
+
+	writeNodeYAML(t, "slug: mini\nname: mini\ncapacity: 1\nhost: {load_per_core_max: -1}\n")
+	if _, err := LoadConfig(); err == nil || !strings.Contains(err.Error(), "host.load_per_core_max") {
+		t.Fatalf("host.load_per_core_max: -1 err = %v, want a refusal naming it", err)
+	}
+
+	writeNodeYAML(t, "slug: mini\nname: mini\ncapacity: 1\nhost: {package_temp_max_c: -1}\n")
+	if _, err := LoadConfig(); err == nil || !strings.Contains(err.Error(), "host.package_temp_max_c") {
+		t.Fatalf("host.package_temp_max_c: -1 err = %v, want a refusal naming it", err)
+	}
+}
+
 // An org with no GitHub login is named by its slug where a prompt or the
 // context fetch names the project's org, never as a blank.
 func TestScopesNameOfFallsBackToSlug(t *testing.T) {

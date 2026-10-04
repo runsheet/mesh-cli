@@ -19,7 +19,7 @@ import (
 const reloadYAML = "slug: box\nname: Box\norgs: [acme]\ncapacity: 1\n"
 
 // reloadPrefixes are how a reload's log lines begin, one per field.
-var reloadPrefixes = []string{"limits:", "accounts ", "account ", "budget ", "project budget ", "context:", "claim:", "shares ", "shares:", "orgs "}
+var reloadPrefixes = []string{"limits:", "accounts ", "account ", "budget ", "project budget ", "context:", "claim:", "shares ", "shares:", "orgs ", "host:"}
 
 // tickLines runs one tick and returns the lines it logged.
 func tickLines(t *testing.T, loop *Loop, logs *strings.Builder) []string {
@@ -122,6 +122,33 @@ func TestReloadClaimFromDisk(t *testing.T) {
 	if got := loop.UnmergedPerRepo(); got != 2 {
 		t.Fatalf("unmerged_per_repo in force %d, want 2", got)
 	}
+}
+
+// node.yaml's `host:` block is reloaded every tick like the claim
+// limits, and each threshold's change is logged once, by itself, as
+// `host: <field> <old> → <new>`; a field left alone logs nothing
+// (ADR-004's amendment, the-node-backs-off-a-hot-host).
+func TestReloadHostFromDisk(t *testing.T) {
+	loop, _, logs := newPriorityFake(t).liveLoop(t, reloadYAML)
+	wantReloadLines(t, "first tick", tickLines(t, loop, logs))
+	if got := loop.HostThresholds(); got != (HostConfig{LoadPerCoreMax: 1.5, PackageTempMaxC: 90}) {
+		t.Fatalf("host thresholds in force %+v, want the defaults 1.5/90", got)
+	}
+
+	writeNodeYAML(t, reloadYAML+"host: {load_per_core_max: 2}\n")
+	wantReloadLines(t, "load_per_core_max edited", tickLines(t, loop, logs), "host: load_per_core_max 1.5 → 2")
+	if got := loop.HostThresholds(); got != (HostConfig{LoadPerCoreMax: 2, PackageTempMaxC: 90}) {
+		t.Fatalf("host thresholds in force %+v, want 2/90", got)
+	}
+
+	writeNodeYAML(t, reloadYAML+"host: {load_per_core_max: 2, package_temp_max_c: 85}\n")
+	wantReloadLines(t, "package_temp_max_c edited", tickLines(t, loop, logs), "host: package_temp_max_c 90 → 85")
+	if got := loop.HostThresholds(); got != (HostConfig{LoadPerCoreMax: 2, PackageTempMaxC: 85}) {
+		t.Fatalf("host thresholds in force %+v, want 2/85", got)
+	}
+
+	writeNodeYAML(t, reloadYAML+"host: {load_per_core_max: 2, package_temp_max_c: 85}\n")
+	wantReloadLines(t, "unchanged", tickLines(t, loop, logs))
 }
 
 // node.yaml's `shares:` is reloaded every tick like the claim limits,
