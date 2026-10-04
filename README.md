@@ -1045,7 +1045,7 @@ paced or stopped — and logs it — only when every subscription is:
   at most half its capacity (never less than one) at once; it plans only
   urgent and high goals and starts no research. Evaluations and rebases
   go on.
-- **Stopped** — either window at `limits.stop` (95%) or past it, or a
+- **Stopped** — either window at `limits.stop` (98%) or past it, or a
   status other than `allowed` (`allowed_warning`, `rejected`): nothing
   new starts — no item, plan, research or rebase, and no evaluation —
   as in a drain, but the sessions running finish and the process stays
@@ -1078,12 +1078,12 @@ The log says each crossing once, not every tick:
 
 ```
 limits: paced until 2026-09-25T15:00:00Z: five-hour window at 85% (pace 80%) — only urgent and high goals are claimed and planned, at most 2 item(s) at once, and no research
-limits: stopped until 2026-09-26T14:00:00Z: seven-day window at 96% (stop 95%) — nothing new is started; 1 session(s) to finish
+limits: stopped until 2026-09-26T14:00:00Z: seven-day window at 99% (stop 98%) — nothing new is started; 1 session(s) to finish
 limits: back to normal (was stopped)
 ```
 
 and a change to the thresholds in node.yaml as `limits: pace five-hour
-80% → 50%, stop 95% → 95%`.
+80% → 50%, stop 98% → 95%`.
 
 Each subscription is paced against a clock too, not just the brake
 above: a target line, the fraction of the window already elapsed less
