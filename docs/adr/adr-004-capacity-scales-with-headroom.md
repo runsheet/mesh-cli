@@ -113,7 +113,7 @@ Each target carries why it is what it is:
 | `max` | both windows afford max or more (or there is no reading) |
 | `weekly pace` | the seven-day window sets it |
 | `five-hour pace` | the five-hour window sets it (below the seven-day's) |
-| `machine load` | the machine capped it at the running count |
+| `machine load` | the machine capped it at the running count (load since the 2026-10-03 amendment is the host back-off's; memory is `low memory`) |
 
 ### The heartbeat's `scaling`
 
@@ -214,3 +214,17 @@ before this amendment is unchanged byte for byte.
   `HeartbeatNode { …, scaling? }`) and §3 (Pacing by the plan's limits:
   capacity as a range and the rule above) need this same amendment once
   that repo can be reached from a goal's items.
+
+## Amendment 2026-10-03: the machine-load growth cap is the host back-off
+
+Goal `the-node-backs-off-a-hot-host`, [ADR-023](adr-023-the-node-backs-off-a-hot-host.md).
+The target's machine-load cap — no growth past the running count while
+the 1-minute load is at or above the CPU count, reason `machine load` —
+is replaced by the **host back-off**, a layer over this ADR's target run
+every tick: while the load per core is past node.yaml's
+`host.load_per_core_max` (default 1.5) or the package temperature past
+`host.package_temp_max_c` (default 90°C), the capacity in force drops one
+slot per tick to `max(min, 1)` and nothing new is claimed; quiet, it
+climbs one slot per five quiet minutes back to this ADR's figure, never
+above it. The free-memory cap stays on the target, with its own reason
+`low memory`. `ReasonMachineLoad` is gone.

@@ -54,3 +54,21 @@ platform.
   in step with it); that is the platform's half, left with runsheet.
 - A fixed node now pays the hour-cached `HeartbeatNodeInput`
   introspection that only ranged and multi-account nodes paid before.
+
+## Amendment 2026-10-03
+
+Goal `the-node-backs-off-a-hot-host` (item 4). A fixed `capacity: N`
+node backing off a hot host (ADR-004's amendment, ADR-023) is still a
+fixed node by this ADR's rule: `heartbeatScaling` sends its capacity in
+force as before, `min` and `max` both `N` — except while the back-off
+holds it, when `reason` is the host's (`host hot: load 55/18 cores`, or
+`host hot: 101°C`) rather than `fixed`, and `scaling.host` carries the
+reading that produced it (`Scaling.Host` mapped onto
+`gateway.HostScaling`, as it already does for a ranged node). Level
+again and quiet, the heartbeat reports `fixed` with no `host` key, as
+it always has. `~/.mesh/node.scaling` — which this ADR left to a ranged
+node only — is written for a fixed one too while the back-off has
+something to show (`RunState.WriteScaling`: `Host != nil && (Hot ||
+Capacity < Max)`), so `mesh node status` shows a backed-off fixed
+node's row the same way a ranged one's, and removes it once the node
+is level and quiet again.

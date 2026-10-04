@@ -241,8 +241,8 @@ func TestAccountsScalerMachineLoad(t *testing.T) {
 		why  Reason
 	}{
 		{"idle", idle, 9, ReasonAccounts},
-		{"high load", fakeMachine{m: MachineReading{Load1: 8, CPUs: 8, MemAvailable: 8 << 30}}, 3, ReasonMachineLoad},
-		{"2 GB free", fakeMachine{m: MachineReading{Load1: 1, CPUs: 8, MemAvailable: 2 << 30}}, 3, ReasonMachineLoad},
+		{"high load is the back-off's", fakeMachine{m: MachineReading{Load1: 8, CPUs: 8, MemAvailable: 8 << 30}}, 9, ReasonAccounts},
+		{"2 GB free", fakeMachine{m: MachineReading{Load1: 1, CPUs: 8, MemAvailable: 2 << 30}}, 3, ReasonLowMemory},
 	} {
 		s, c := newTestAccountsScaler(1, 12, headroomT0, tc.m)
 		twoSubsOneKey(s, c)

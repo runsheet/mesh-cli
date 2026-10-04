@@ -116,7 +116,7 @@ type AccountsScaler struct {
 	Min, Max int
 	// Now is the clock; time.Now when nil.
 	Now func() time.Time
-	// Machine caps the target by the host's load and memory; nil is no cap.
+	// Machine caps the target by the host's free memory; nil is no cap.
 	Machine MachineProbe
 	// Location is where a day and a month begin and end; UTC when nil.
 	Location *time.Location
@@ -306,8 +306,8 @@ func (s *AccountsScaler) Target(accounts []CapacityAccount, running int) Account
 		out.Capacity, out.Reason = s.Min, ReasonMin
 	}
 	if s.Machine != nil {
-		if m, err := s.Machine.Read(); err == nil && m.Busy() && running < out.Capacity {
-			out.Capacity, out.Reason = max(running, 0), ReasonMachineLoad
+		if m, err := s.Machine.Read(); err == nil && m.ShortOfMemory() && running < out.Capacity {
+			out.Capacity, out.Reason = max(running, 0), ReasonLowMemory
 		}
 	}
 	out.UrgentOnly = min(urgent, out.Capacity)
