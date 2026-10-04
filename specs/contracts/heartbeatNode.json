@@ -1,5 +1,5 @@
 {
-  "description": "heartbeatNode: every heartbeat carries the platform's answer to who owns the node and which orgs it now serves too, not only at registration — an enterprise's node picks up an org attached later with no restart. Each scope's shares is the enterprise's per-org weight — a setting on the enterprise the platform serves as part of the owner contract, absent or 0 meaning equal shares; foghornid carries none here, serving equally with whatever floor the node computes for the rest. The runsheet goal a-node-has-an-owner serves this same shape at /contracts/heartbeatNode.json — the platform side of the contract. Its input's `holding.orgs` is each served org's share of the node (mesh-cli ADR-023, Reporting): `org` (its login, else slug), `orgId`, `floor` (the slots its weight gives it), `held` (the builds, plans and research it holds there) and `ready` (the ready items its last listing returned, -1 when that read failed); always a list, sent only when the platform's holding input takes `orgs`.",
+  "description": "heartbeatNode: every heartbeat carries the platform's answer to who owns the node and which orgs it now serves too, not only at registration — an enterprise's node picks up an org attached later with no restart. Each scope's shares is the enterprise's per-org weight — a setting on the enterprise the platform serves as part of the owner contract, absent or 0 meaning equal shares; foghornid carries none here, serving equally with whatever floor the node computes for the rest. The runsheet goal a-node-has-an-owner serves this same shape at /contracts/heartbeatNode.json — the platform side of the contract. Its input's `holding.orgs` is each served org's share of the node (mesh-cli ADR-023, Reporting): `org` (its login, else slug), `orgId`, `floor` (the slots its weight gives it), `held` (the builds, plans and research it holds there) and `ready` (the ready items its last listing returned, -1 when that read failed); always a list, sent only when the platform's holding input takes `orgs`. Its `holding.kinds` is the kinds of session the node takes (mesh-cli ADR-025): kind names alone, no cap, in the fixed order build, evaluate, rebase, plan, research — every kind when node.yaml names none; always a list, sent only when the platform's holding input takes `kinds`, and the summary opens `takes <kinds>; ` when fewer than every kind is taken.",
   "input": {
     "aggregateId": "b99be3f5-2f54-54a7-9af5-49d9bfc96744",
     "namespace": "runsheet",
@@ -25,7 +25,8 @@
     ],
     "holding": {
       "mode": "paced",
-      "summary": "paced: urgent and high only, 3 item(s), no research; 1 item(s) and 0 plan(s) left unclaimed",
+      "kinds": ["build", "rebase", "plan", "research"],
+      "summary": "takes build, rebase, plan, research; paced: urgent and high only, 3 item(s), no research; 1 item(s) and 0 plan(s) left unclaimed",
       "until": "2026-10-03T03:00:00Z",
       "accounts": [
         {

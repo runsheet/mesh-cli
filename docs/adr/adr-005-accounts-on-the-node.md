@@ -1306,7 +1306,10 @@ keeps the three.
 **Decision.** `gateway.Holding` gains `Kinds []string` (wire `kinds`,
 always a list, never omitted): the kinds of session this node takes
 (node.yaml's `takes:`, `Takes.Kinds()`), in their fixed order — every
-kind when node.yaml names none (ADR-025). `HoldingReport` takes a
+kind when node.yaml names none (ADR-025). The names alone: a per-kind
+cap (`takes: {evaluate: 2}`) is not on the wire — `["evaluate"]` either
+way — and shows only on `mesh node status` and in `holding.unclaimed`'s
+reason when it holds work back. `HoldingReport` takes a
 `kinds []harness.Kind` parameter, copies the names onto `Holding.Kinds`,
 and, when fewer than every kind is taken, prefixes the summary with
 `takes <list>; ` (e.g. `takes evaluate; normal: up to 4 item(s)`) —
@@ -1341,4 +1344,10 @@ holding schema has `kinds` sends `holding.kinds = ["evaluate"]`, and
 against a fake without it sends no `kinds` key, in both cases with the
 summary's `takes evaluate; ` prefix); `TestTakesStatusLine`
 (`internal/commands/nodestatus_test.go`: the printed line for a list, a
-capped mapping, and node.yaml leaving `takes:` out).
+capped mapping, and node.yaml leaving `takes:` out);
+`TestStatusPrintsTakesAgainstFake` (the same: `mesh node status` itself
+run against the fake on each node.yaml read from disk, the line after
+`This machine:` exactly `Takes: evaluate`, `Takes: evaluate (at most
+2)` or `Takes: every kind`). `specs/contracts/heartbeatNode.json` shows
+`holding.kinds` and the summary's prefix, and
+`internal/gateway/holding_test.go` decodes them from it.
