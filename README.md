@@ -518,6 +518,18 @@ the row stays for the ledger, but the account is left out of
 amendment 2026-10-03, a withdrawn account leaves the report). The 24-hour
 prune is still the only deletion.
 
+The platform's own credential read is preferred: every tick, before
+the heartbeat, the loop reads each served org's `credentialIndexs` and
+withdraws a known label whose row is `disabled` or `deleted`, whose
+`allowedNodeIds` name other nodes but not this one, or that no row
+names any more — logged `accounts: <label> withdrawn (platform:
+<why>)`, gone from that very heartbeat. A platform that refuses the
+read is said once (`credentials: the platform does not serve
+credentialIndexs to this node; withdrawals come from the claim-time
+read`) and the claim-time inference above is the only source; a
+failed read withdraws nothing that tick (adr-005's amendment
+2026-10-03, item 2).
+
 ### Who owns a node
 
 A node has an owner — a person or an enterprise

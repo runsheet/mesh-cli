@@ -1,5 +1,5 @@
 ---
-summary: A node's sessions run on the Claude accounts the platform issues the claimed session (the claim-time read: itemCredentials, planCredentials, researchCredentials; an api key at its cap never chosen), with node.yaml's `accounts:` and `codex.accounts` retired and refused at start (amendments 2026-10-02: a session runs only on an issued credential, the start logs which projects have none open to the node, and the node.yaml fallback is gone — a platform without the read is an ErrNoCredential hold, never the operator's login), and every session's usage report rides the command that ends it (`usage` on finishWorkItem, evaluateWorkItem, planGoal, finishWorkItemRebase, recordDirectionResearch; each priced tool call on recordToolUsage; else one log line); the secret reaches the session in its environment only (CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY), with a temporary CLAUDE_CONFIG_DIR per session removed after, the inherited auth variables stripped, and the secret redacted from every log, error and report; each session runs on the account ChooseAccount picks by standing against a clock — each window's target line, the fraction of it elapsed less `reserve`, and the account furthest behind its own chosen first, ahead-of-target accounts last, subscriptions before API keys as before — with the holdback keeping the subscription with the latest reset for urgent work once every other is within 10% of `stop`, so one account always has headroom (goal every-subscription-lands-full-at-its-reset); a label a claim-time read no longer names for its adapter and project is withdrawn at once — kept in accounts.json for the ledger, dropped from Accounts(now) and so from the heartbeat's holding and limits — and re-issue clears it (goal a-withdrawn-account-leaves-the-node).
+summary: A node's sessions run on the Claude accounts the platform issues the claimed session (the claim-time read: itemCredentials, planCredentials, researchCredentials; an api key at its cap never chosen), with node.yaml's `accounts:` and `codex.accounts` retired and refused at start (amendments 2026-10-02: a session runs only on an issued credential, the start logs which projects have none open to the node, and the node.yaml fallback is gone — a platform without the read is an ErrNoCredential hold, never the operator's login), and every session's usage report rides the command that ends it (`usage` on finishWorkItem, evaluateWorkItem, planGoal, finishWorkItemRebase, recordDirectionResearch; each priced tool call on recordToolUsage; else one log line); the secret reaches the session in its environment only (CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY), with a temporary CLAUDE_CONFIG_DIR per session removed after, the inherited auth variables stripped, and the secret redacted from every log, error and report; each session runs on the account ChooseAccount picks by standing against a clock — each window's target line, the fraction of it elapsed less `reserve`, and the account furthest behind its own chosen first, ahead-of-target accounts last, subscriptions before API keys as before — with the holdback keeping the subscription with the latest reset for urgent work once every other is within 10% of `stop`, so one account always has headroom (goal every-subscription-lands-full-at-its-reset); a label a claim-time read no longer names for its adapter and project is withdrawn at once — kept in accounts.json for the ledger, dropped from Accounts(now) and so from the heartbeat's holding and limits — and re-issue clears it (goal a-withdrawn-account-leaves-the-node); the platform's credential read (credentialIndexs: status, allowedNodeIds) is read every tick and preferred, the claim-read inference its fallback when the read is refused.
 status: accepted
 ---
 
@@ -1436,3 +1436,59 @@ re-issue reports a reading, same as any newly issued account.
 `TestOpenOnUnsupportedReadWithdrawsNothing`. `holding_test.go`:
 `TestHoldingReportOmitsWithdrawnAccount`. `limits_test.go`:
 `TestLimitsHeartbeatOmitsWithdrawnAccount`.
+
+## Amendment — 2026-10-03 (goal a-withdrawn-account-leaves-the-node, item 2): the platform's credential read is preferred, the claim-read inference is the fallback
+
+**What the platform says today.** The heartbeat answer carries no
+credentials: `heartbeatNode` returns `DispatchResult { status }` in
+`internal/gateway/schema.json`, and the node's `NodeAnswer` (the
+owned node's reading of it) is `nodeId`, `owner` and `scopes` alone.
+The read that does carry a credential's standing is `credentialIndexs`
+(`gateway.Client.Credentials(ctx, orgID) []CredentialRow`, the org's
+rows and its enterprise's): `status` (active, disabled, deleted) and
+`allowedNodeIds` (empty is any node). `mesh node start` already reads
+it once for coverage (`ReportCoverage`).
+
+**Decision.** That read is the preferred signal, taken every tick
+before the heartbeat extras are built (the tick is the heartbeat's
+cadence: one heartbeat per tick). `Loop.reconcileCredentials` reads
+`Credentials` for every served scope (`Loop.CurrentScopes`, the scopes
+`ReportCoverage` reads) — `Credentials` joins the loop's `Gateway`
+interface — and hands the rows to
+`KnownAccounts.ReconcileRows(rows, nodeID, now) []Withdrawal`: every
+known label not yet withdrawn whose row (matched by `ID`, else by
+label) has a status other than `active`, or whose `allowedNodeIds` are
+non-empty and lack the node's id, is marked `WithdrawnAt = now`; so is
+a label no row names at all, but only when the read served rows (an
+empty answer is not taken as "everything withdrawn"). A row with no
+status, from a platform that does not say, is not judged. A row never
+clears `WithdrawnAt`: re-issue (`NoteFor`) alone does, as item 1 says.
+`nodeID` is the owned node's one id; on a legacy per-org node a row
+allowed on its own org's id counts as allowed. Each withdrawn label's
+reading is `Forget`-ten in `Limits` and the loop logs `accounts:
+<label> withdrawn (platform: <disabled|deleted|not allowed on this
+node|not served>)`.
+
+The heartbeat carries the *last pass's* holding, built before the
+withdrawal, so `Loop.dropWithdrawn` takes every account `Known` now
+holds withdrawn (`KnownAccounts.Withdrawn`) out of it before the
+extras are built — the same tick's heartbeat omits the label from
+`holding.accounts` and `limits[]`, whether the credential read or a
+claim-time read since the last pass withdrew it.
+
+**The fallback.** A refused or unknown read (`gateway.IsRefusal`) is
+said once per run, `credentials: the platform does not serve
+credentialIndexs to this node; withdrawals come from the claim-time
+read` (`CredentialReadRefused`), and item 1's `Reconcile` in
+`Credentials.Open` stays the only source. Any other failed read is
+logged, `credentials: org <org>: <err>; nothing withdrawn this tick`,
+and nothing is withdrawn — a partial read is never reconciled.
+
+**Tests.** `known_test.go`:
+`TestReconcileRowsWithdrawsByStatusAndAllowedNodes` (disabled, deleted,
+not allowed on this node; active and allowed untouched),
+`TestReconcileRowsLeavesActiveAndNeverReinstates`,
+`TestReconcileRowsAbsentLabel`. `withdrawn_loop_test.go`, on
+`gatewaytest.Fake`: `TestTickWithdrawsADisabledCredential`,
+`TestTickWithdrawsACredentialNotAllowedOnThisNode`,
+`TestTickFallsBackToTheClaimReadWhenCredentialsAreRefused`.
