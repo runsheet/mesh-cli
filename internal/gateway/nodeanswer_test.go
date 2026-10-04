@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"regexp"
+	"strings"
 	"testing"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
@@ -243,6 +244,101 @@ func TestNodeAnswerRefusedIsKept(t *testing.T) {
 	}
 	if calls := f.CallsNamed("heartbeatNode"); len(calls) != 3 {
 		t.Fatalf("heartbeatNode landed %d times, want 3", len(calls))
+	}
+}
+
+// Each fixture's scopes carry the enterprise's per-org weight (goal
+// every-org-gets-its-share-of-a-node, item 3): registerNode.json names
+// runsheet 2, wardroomid 1, grapevine 1; heartbeatNode.json adds
+// foghornid 0 (equal shares). The fixture tests above already decode
+// these through gw.RegisterNode/HeartbeatNode and compare the whole
+// ScopeAnswer, Shares included; this test names the expectation
+// explicitly so a fixture edit that drops a weight fails here, not only
+// on a struct-equality mismatch.
+func TestNodeAnswerSharesFromFixtures(t *testing.T) {
+	want := map[string]map[string]int{
+		"registerNode.json":  {"runsheet": 2, "wardroomid": 1, "grapevine": 1},
+		"heartbeatNode.json": {"runsheet": 2, "wardroomid": 1, "grapevine": 1, "foghornid": 0},
+	}
+	for name, byLogin := range want {
+		fx := loadAnswerFixture(t, name)
+		a := fx.strictAnswer(t)
+		if len(a.Scopes) != len(byLogin) {
+			t.Fatalf("%s: scopes = %+v, want %d entries", name, a.Scopes, len(byLogin))
+		}
+		for _, sc := range a.Scopes {
+			login := sc.Login
+			if login == "" {
+				login = sc.Slug
+			}
+			wantShares, ok := byLogin[login]
+			if !ok {
+				t.Fatalf("%s: unexpected scope %+v", name, sc)
+			}
+			if sc.Shares != wantShares {
+				t.Fatalf("%s: scope %s shares = %d, want %d", name, login, sc.Shares, wantShares)
+			}
+		}
+	}
+}
+
+// takesScopeShares asks DispatchResult's `scopes` element type for
+// `shares`, kept an hour: a platform whose type lacks it
+// (NoScopeShares) gets registerNode's and heartbeatNode's selection
+// without `shares` and still answers the rest of the scope, while one
+// whose type has it gets `shares` asked for and returned.
+func TestTakesScopeSharesFalseAsksWithoutShares(t *testing.T) {
+	f := gatewaytest.New("rs_test")
+	defer f.Close()
+	f.NoScopeShares = true
+	f.Answer = &gateway.NodeAnswer{
+		NodeID: "n1",
+		Owner:  gateway.NodeOwner{Kind: "person", ID: "p", Name: "P"},
+		Scopes: []gateway.ScopeAnswer{{OrgID: orgID, Login: "runsheet", Slug: "runsheet", AccountID: "a1", Shares: 2}},
+	}
+	gw := gateway.New(f.URL(), "rs_test")
+	ctx := context.Background()
+
+	answer, err := gw.RegisterNode(ctx, gateway.RegisterNodeInput{NodeID: "n1", OrgID: orgID, Name: "n", Slug: "n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer == nil || len(answer.Scopes) != 1 || answer.Scopes[0].Shares != 0 {
+		t.Fatalf("answer = %+v, want one scope with Shares 0 (not asked for)", answer)
+	}
+	calls := f.CallsNamed("registerNode")
+	if len(calls) != 1 {
+		t.Fatalf("registerNode calls = %+v", calls)
+	}
+	if strings.Contains(calls[0].Query, "shares") {
+		t.Fatalf("registerNode query asked for shares on a platform without it: %s", calls[0].Query)
+	}
+}
+
+func TestTakesScopeSharesTrueAsksWithShares(t *testing.T) {
+	f := gatewaytest.New("rs_test")
+	defer f.Close()
+	f.Answer = &gateway.NodeAnswer{
+		NodeID: "n1",
+		Owner:  gateway.NodeOwner{Kind: "person", ID: "p", Name: "P"},
+		Scopes: []gateway.ScopeAnswer{{OrgID: orgID, Login: "runsheet", Slug: "runsheet", AccountID: "a1", Shares: 2}},
+	}
+	gw := gateway.New(f.URL(), "rs_test")
+	ctx := context.Background()
+
+	answer, err := gw.RegisterNode(ctx, gateway.RegisterNodeInput{NodeID: "n1", OrgID: orgID, Name: "n", Slug: "n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer == nil || len(answer.Scopes) != 1 || answer.Scopes[0].Shares != 2 {
+		t.Fatalf("answer = %+v, want one scope with Shares 2", answer)
+	}
+	calls := f.CallsNamed("registerNode")
+	if len(calls) != 1 {
+		t.Fatalf("registerNode calls = %+v", calls)
+	}
+	if !strings.Contains(calls[0].Query, "shares") {
+		t.Fatalf("registerNode query did not ask for shares on a platform with it: %s", calls[0].Query)
 	}
 }
 
