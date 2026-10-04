@@ -71,7 +71,19 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `PlanInput.MaxItems` naming the cap in rule 2, `OverCap` turning the
   re-ask into an ask for `split`, `GoalDraft`, `ParsePlanSplit` reading
   `{"split": [...]}` from the same candidates as `ParsePlan`, so a
-  `split` answer with no `items` is not a parse error); a docs-only
+  `split` answer with no `items` is not a parse error; the node's
+  `overCap(specs, cap)` flags a graph over `project.ItemCap()`, read at
+  claim time into `MaxItems` — 8 until the platform serves `maxItems` —
+  for the re-ask with `OverCap` set, a final answer still over it
+  refused (`overCapRefusal`), nothing handed in; `readPlan` reads a
+  `split` answer first, each draft with a slug, title and acceptance
+  naming exactly one of the project's repos (`splitDrafts`) or the
+  answer refused naming the cap, and `handInSplit` sends the drafts with
+  `ProposeGoalSplit` when `TakesGoalSplit`, `planGoal` never called,
+  logging `goal <slug>: over the cap (N items > M); proposed a split
+  into K goals: …`, else logs each `plan <goal>: proposed goal <slug>:
+  <title>` and errs, the goal left in planning; ADR-023's amendment
+  2026-10-04); a docs-only
   close-out item — amending documents alone to say the branches read as
   one design or describe what landed — is refused, docs landing in the
   pull request of the change they describe, folded into that item

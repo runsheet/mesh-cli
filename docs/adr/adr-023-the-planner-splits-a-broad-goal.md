@@ -288,3 +288,56 @@ secret, failed three times — is the fixture
 (`internal/node/plan_cutover_test.go`): flagged, re-asked, and handed in
 with the gate as the item's precondition and a `pr` checkpoint on the
 goal.
+
+## Amendment 2026-10-04: the node's half of the size rule — overCap, the split re-ask, ProposeGoalSplit
+
+Item 3. **The check.** `overCap(specs, cap)`
+(`internal/node/plan_check.go`) flags a graph of more than `cap` items:
+`the plan has N items, over the project's cap of M: do not send items —
+answer `split`: goal drafts (slug, title, statement, acceptance, repo),
+each at most M items and one repo`; it is empty when the graph fits.
+`Planner.plan` reads the cap from the project at claim time,
+`project.ItemCap()` (8 until the platform serves `maxItems`), into
+`PlanInput.MaxItems`, so rule 2 names it.
+
+**The re-ask.** `readPlan` appends the flag beside the others, and
+`Planner.plan`, re-asking on any flag as before, sets `in.OverCap` when
+the first answer had more than the cap: the re-ask's last sentence asks
+for `split` rather than the whole graph again. A final answer — the
+re-ask's, or an adopted session's — still over the cap is refused like a
+re-land (`overCapRefusal`: `plan has N items, over the project's cap of
+M, and was not answered `split`; refused`), nothing handed in.
+
+**The split answer.** `readPlan` reads `harness.ParsePlanSplit` before
+`ParsePlan`: a `split` answer — on the re-ask, at once, or from an
+adopted session — comes back as `[]gateway.GoalDraft` in place of
+items (`splitDrafts`). Each draft must carry a slug, a title and an
+acceptance and name exactly one of the project's repos, mapped as an
+item's repo is (`projectRepo`: owner/name, or a bare name); its repo id
+rides `RepoID`. At most the cap's items is a promise the draft's
+acceptance makes, not something the node can count. A draft naming two
+repos or none of the project's is the whole answer's refusal, naming
+the cap; the goal-repo rule (d) does not apply to drafts, since a draft
+on another repo is exactly where (d) sends such work.
+
+**The hand-in.** `Planner.handInSplit`: when `GW.TakesGoalSplit`, the
+drafts go to `ProposeGoalSplit(goalID, by, drafts, Cents(cost),
+usage)` through `acct.Carried`, the session's usage riding it as
+`PlanGoal`'s does, and node.log says `goal <slug>: over the cap (N items
+> M); proposed a split into K goals: <slug>, <slug>`; `planGoal` is
+never called. A platform without `proposeGoalSplit` is told nothing:
+each draft is logged `plan <goal>: proposed goal <slug>: <title>` and
+the plan's error — `plan has N items, over the cap of M; split into K
+goals proposed, which this platform cannot take` — leaves the goal in
+planning and says so, as an unreadable plan does.
+
+`internal/node/plan_cap_test.go` proves it against the gatewaytest
+fake: a 12-item first answer on a project of `maxItems` 8 asks a second
+session carrying the flag and the split ask; a `split` second answer of
+two drafts (5 and 7 items by their statements, one repo each) is one
+`proposeGoalSplit` call carrying both drafts' slug, title, statement,
+acceptance and repoId, with no `planGoal`; no served `maxItems` caps at
+8; a second 12-item answer is refused naming the cap with nothing handed
+in; a draft naming two repos is refused; a fake without `GoalSplit`
+logs each draft and returns the error; and an 8-item answer is handed
+in with `planGoal` as before.
