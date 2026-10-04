@@ -1023,6 +1023,10 @@ type Gateway interface {
 	MyOrgs(ctx context.Context) ([]gateway.Org, error)
 	HeartbeatNode(ctx context.Context, nodeID, version string, running int, extras ...gateway.HeartbeatExtras) (*gateway.NodeAnswer, error)
 	GetDesiredVersion(ctx context.Context, nodeID string) (string, error)
+	// Credentials is an org's credentialIndexs rows (and its
+	// enterprise's): the loop reconciles the accounts it knows against
+	// their standing each tick (reconcileCredentials).
+	Credentials(ctx context.Context, orgID string) ([]gateway.CredentialRow, error)
 	ReadyWorkItems(ctx context.Context, orgID string) ([]gateway.WorkItem, error)
 	GoalWorkItems(ctx context.Context, goalID string) ([]gateway.WorkItem, error)
 	OrgWorkItems(ctx context.Context, orgID, status string) ([]gateway.WorkItem, error)

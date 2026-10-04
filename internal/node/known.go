@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"projectmesh.io/mesh-cli/internal/gateway"
 )
 
 // KnownFor is how long the node remembers an account the platform issued
@@ -249,6 +251,90 @@ func (k *KnownAccounts) Reconcile(adapter, projectID string, issued []AccountCon
 		_ = k.saveLocked()
 	}
 	return withdrawn
+}
+
+// Withdrawn reports whether label is known and withdrawn (Reconcile,
+// ReconcileRows); a nil *KnownAccounts withdraws nothing.
+func (k *KnownAccounts) Withdrawn(label string) bool {
+	if k == nil {
+		return false
+	}
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	_ = k.loadLocked()
+	e := k.accounts[label]
+	return e != nil && !e.WithdrawnAt.IsZero()
+}
+
+// Withdrawal is one label ReconcileRows withdrew and why: the row's
+// status (disabled, deleted), "not allowed on this node", or "not
+// served" for a label no row names.
+type Withdrawal struct {
+	Label   string
+	Adapter string
+	Reason  string
+}
+
+// ReconcileRows is the platform's credential read (credentialIndexs,
+// every served org's rows) taken as the truth about standing (adr-005's
+// amendment 2026-10-03, item 2): every known label not yet withdrawn
+// whose row — matched by ID, else by label — has a status other than
+// active (an empty one, from a platform that does not say, is not
+// judged), or whose AllowedNodeIDs name nodes but not nodeID, is marked
+// WithdrawnAt = now; so is a label no row names, when rows is not empty
+// (an empty answer says nothing a refusal would not). The caller passes
+// only a complete read: a failed one is never reconciled. It never
+// clears WithdrawnAt — re-issue (NoteFor) alone does — and returns the
+// labels newly withdrawn, first noted first, saving when there are any.
+func (k *KnownAccounts) ReconcileRows(rows []gateway.CredentialRow, nodeID string, now time.Time) []Withdrawal {
+	if k == nil {
+		return nil
+	}
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if err := k.loadLocked(); err != nil {
+		return nil
+	}
+	byID := make(map[string]gateway.CredentialRow, len(rows))
+	byLabel := make(map[string]gateway.CredentialRow, len(rows))
+	for _, r := range rows {
+		if r.ID != "" {
+			byID[r.ID] = r
+		}
+		if r.Label != "" {
+			byLabel[r.Label] = r
+		}
+	}
+	var out []Withdrawal
+	for _, label := range k.order {
+		e := k.accounts[label]
+		if e == nil || !e.WithdrawnAt.IsZero() {
+			continue
+		}
+		row, ok := byID[e.ID]
+		if !ok || e.ID == "" {
+			row, ok = byLabel[label]
+		}
+		reason := ""
+		switch {
+		case !ok && len(rows) > 0:
+			reason = "not served"
+		case !ok:
+		case row.Status != "" && row.Status != "active":
+			reason = row.Status
+		case len(row.AllowedNodeIDs) > 0 && !slices.Contains(row.AllowedNodeIDs, nodeID):
+			reason = "not allowed on this node"
+		}
+		if reason == "" {
+			continue
+		}
+		e.WithdrawnAt = now
+		out = append(out, Withdrawal{Label: label, Adapter: e.Adapter, Reason: reason})
+	}
+	if len(out) > 0 {
+		_ = k.saveLocked()
+	}
+	return out
 }
 
 // IssuedAccountLines is what `mesh node start` logs of the accounts the
