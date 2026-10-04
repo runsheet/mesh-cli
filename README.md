@@ -1262,6 +1262,13 @@ runsheet   mini  mini *     online  8        8/1–8 (max) — host load 9 / 18 
 — a host with no thermal zone to read shows `no temperature` in place
 of a figure.
 
+`scripts/host-backoff-reading.sh` takes the same reading by hand — the
+load, cores, package temperature and `mesh node status`'s capacity line
+— with `--interval S --count N` to repeat it, so an operator can watch
+capacity fall under CI and climb back once the host is quiet. One run's
+output is recorded, whatever its numbers, in
+`docs/measurements/host-backoff-reading.md`.
+
 ### Tools
 
 A session gets the tools its project and role have, configured in the
