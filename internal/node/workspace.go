@@ -1087,6 +1087,9 @@ type Gateway interface {
 	ClaimDirectionResearch(ctx context.Context, directionID, nodeID string) error
 	RequestedRebases(ctx context.Context, orgID string) ([]gateway.WorkItem, error)
 	ClaimWorkItemRebase(ctx context.Context, itemID, nodeID string) error
+	// ClaimWorkItemEvaluation is the claim a node that did not build an
+	// item makes to evaluate it (goal a-node-says-which-sessions-it-takes).
+	ClaimWorkItemEvaluation(ctx context.Context, itemID, nodeID string) error
 	FinishWorkItemRebase(ctx context.Context, itemID, headSha string, resolvedFiles []string, usage *gateway.UsageReport) error
 	FailWorkItemRebase(ctx context.Context, itemID, reason string) error
 	RecordDirectionResearch(ctx context.Context, directionID, nodeID string, research gateway.Research, costCents int, notes string, usage *gateway.UsageReport) error

@@ -2747,6 +2747,16 @@ func (c *Client) ClaimWorkItemRebase(ctx context.Context, itemID, nodeID string)
 	return c.Mutate(ctx, "claimWorkItemRebase", itemID, map[string]any{"nodeId": nodeID})
 }
 
+// ClaimWorkItemEvaluation takes an item's evaluation: the lock on who
+// evaluates it, as ClaimWorkItem's is the lock on who builds it — the
+// claim a node that did not build the item makes to evaluate it
+// (goal a-node-says-which-sessions-it-takes). The same node again
+// converges; another node holding it, or an item not in evaluating, is
+// refused with a gateway.Error.
+func (c *Client) ClaimWorkItemEvaluation(ctx context.Context, itemID, nodeID string) error {
+	return c.Mutate(ctx, "claimWorkItemEvaluation", itemID, map[string]any{"nodeId": nodeID})
+}
+
 // FinishWorkItemRebase records a rebase a node's session pushed: the new
 // head and the files it resolved. The item goes back into its repo's
 // merge queue, attempts untouched. The command carries no cost; the
