@@ -855,7 +855,7 @@ build and the item's model (see "Session budgets" above), and
 `--max-budget-usd`. The node
 reports progress every minute (`ReportWorkItemProgress` with the cents
 since the last report), pushes the branch with your credentials and
-`FinishWorkItem`s — or `FailWorkItem`s. `--once` runs one tick.
+`FinishWorkItem`s — or `FailWorkItem`s; a workspace that cannot be prepared releases the claim instead (`ReleaseWorkItem` with `workspace: <error>`, attempts unchanged, the item held off this node for ten minutes; docs/adr/adr-024-a-workspace-failure-releases-the-claim.md). `--once` runs one tick.
 
 In both modes `--unattended` adds `--dangerously-skip-permissions` so a
 session never waits on a permission prompt — only on a machine you trust

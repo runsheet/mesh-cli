@@ -201,7 +201,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   credential — Latchkey's device flow, the rotating refresh grant, and
   the `~/.mesh/token` that holds either shape behind one `TokenSource`
   (latchkey `adr-machine-identity`).
-- `internal/node/`: the loop (`runner`), the workspace — each item an
+- `internal/node/`: the loop (`runner`; a workspace that cannot be prepared before the harness starts — `PrepareWithRetry`, `Identify`, `WriteContext` — releases the claim with `workspace: <error>` by `ReleaseOnWorkspace`, never `FailWorkItem` unless the release is refused, and `Declines.HoldFor` keeps the item off the node for `WorkspaceReleaseHold`, ten minutes; ADR-024, a workspace failure releases the claim), the workspace — each item an
   independent clone at `~/.mesh/work/<goal>/<seq>`, every `gh repo
   clone` and `git fetch` `Git` runs going through `fetchLocked` under a
   per-repo fetch lock (`repolock.go`: a process-wide mutex keyed by
