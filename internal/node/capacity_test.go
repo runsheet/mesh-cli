@@ -1,6 +1,7 @@
 package node
 
 import (
+	"math"
 	"testing"
 	"time"
 )
@@ -241,8 +242,8 @@ func TestAccountsScalerMachineLoad(t *testing.T) {
 		why  Reason
 	}{
 		{"idle", idle, 9, ReasonAccounts},
-		{"high load", fakeMachine{m: MachineReading{Load1: 8, CPUs: 8, MemAvailable: 8 << 30}}, 3, ReasonMachineLoad},
-		{"2 GB free", fakeMachine{m: MachineReading{Load1: 1, CPUs: 8, MemAvailable: 2 << 30}}, 3, ReasonMachineLoad},
+		{"high load is the back-off's", fakeMachine{m: MachineReading{Load1: 8, CPUs: 8, MemAvailable: 8 << 30}}, 9, ReasonAccounts},
+		{"2 GB free", fakeMachine{m: MachineReading{Load1: 1, CPUs: 8, MemAvailable: 2 << 30}}, 3, ReasonLowMemory},
 	} {
 		s, c := newTestAccountsScaler(1, 12, headroomT0, tc.m)
 		twoSubsOneKey(s, c)
@@ -316,5 +317,94 @@ func TestAccountsScalerRateAcrossMidnight(t *testing.T) {
 	s.Observe(map[string]AccountReading{"api-c": {SpentTodayUSD: 30, SlotMinutes: 40}})
 	if r := s.dollarsPerSlotHour("api-c"); r != FloorDollarsPerSlotHour {
 		t.Fatalf("rate with no spend = %v, want the floor", r)
+	}
+}
+
+// pushAt feeds one subscription's seven-day window, resetting 7 days
+// after headroomT0, for half an hour from at: its use rising 0.005 to
+// use on 2 slots, a measured burn. It returns the scaler and the clock
+// at the half hour's end.
+func pushAt(t *testing.T, at time.Duration, use float64, acc CapacityAccount, max int) (*AccountsScaler, AccountsTarget) {
+	t.Helper()
+	s, c := newTestAccountsScaler(1, max, headroomT0.Add(at), nil)
+	feedAccounts(s, c, map[string]fed{
+		acc.Name: {seven: &rise{use - 0.005, use, headroomT0.Add(7 * 24 * time.Hour)}, slots: 2},
+	})
+	return s, s.Target([]CapacityAccount{acc}, 0)
+}
+
+// The push (adr-005-capacity-across-accounts, amendment 2026-10-03): a
+// subscription behind its line in a window's last fifth of time gets
+// more slots than its own target affords; one at or above its line does
+// not.
+func TestAccountsScalerPush(t *testing.T) {
+	// 2 days in at 50%: the line is 2/7 − 5% ≈ 24%, so ahead, and far
+	// from the window's last fifth anyway.
+	_, early := pushAt(t, 2*24*time.Hour, 0.50, subA, 20)
+	a := early.Accounts[0]
+	if a.Push || a.Reason == ReasonPush {
+		t.Fatalf("2 days in: pushed %+v", a)
+	}
+
+	// 6 days 12 hours in, the same use: the line is ≈ 88%, 50% is
+	// behind it, and the window has 11½ hours left — its last fifth.
+	s, late := pushAt(t, 6*24*time.Hour+12*time.Hour, 0.50, subA, 20)
+	b := late.Accounts[0]
+	plain := int(math.Floor(s.windows[subA.Name].slots(sevenDay, s.now())))
+	if !b.Push || b.Reason != ReasonPush {
+		t.Fatalf("6d12h at 50%%: not pushed %+v", b)
+	}
+	if b.Slots.Normal <= a.Slots.Normal || b.Slots.Normal <= plain {
+		t.Fatalf("6d12h at 50%%: %d slots, want more than %d (2 days in) and %d (unpushed)", b.Slots.Normal, a.Slots.Normal, plain)
+	}
+	if b.PushWindow != "seven-day" || b.PushStanding.Target < 0.87 || b.PushStanding.Target > 0.89 {
+		t.Fatalf("pushed window %q standing %+v", b.PushWindow, b.PushStanding)
+	}
+
+	// At 90% the account is at or above its line of 0.98×elapsed−0.05:
+	// ahead, not pushed, its slots what its own target affords.
+	s, ahead := pushAt(t, 6*24*time.Hour+12*time.Hour, 0.90, subA, 20)
+	c := ahead.Accounts[0]
+	plain = int(math.Floor(s.windows[subA.Name].slots(sevenDay, s.now())))
+	if c.Push || c.Reason == ReasonPush || c.Slots.Normal != plain {
+		t.Fatalf("6d12h at 90%%: %+v, want unpushed %d", c, plain)
+	}
+}
+
+// The pushed sum is still clamped to Max, and a window at or past the
+// stop affords nothing, pushed or not.
+func TestAccountsScalerPushClampedAndStopped(t *testing.T) {
+	at := 6*24*time.Hour + 12*time.Hour
+	s, c := newTestAccountsScaler(1, 10, headroomT0.Add(at), nil)
+	reset := headroomT0.Add(7 * 24 * time.Hour)
+	feedAccounts(s, c, map[string]fed{
+		subA.Name: {seven: &rise{0.495, 0.50, reset}, slots: 2},
+		subB.Name: {seven: &rise{0.495, 0.50, reset}, slots: 2},
+	})
+	got := s.Target([]CapacityAccount{subA, subB}, 0)
+	if got.Capacity != 10 || got.Reason != ReasonMax {
+		t.Fatalf("pushed pair: capacity %d (%s), want 10 (max)", got.Capacity, got.Reason)
+	}
+	for _, a := range got.Accounts {
+		if !a.Push || a.Slots.Normal > 10 {
+			t.Fatalf("pushed pair: %+v", a)
+		}
+	}
+
+	// A pace point above the stop keeps the account behind its line at
+	// 98.5% use, so its standing says push; the stop still holds.
+	stopped := CapacityAccount{Name: "max-s", Kind: AccountSubscription, PaceSevenDay: 0.995}
+	_, st := pushAt(t, at, 0.985, stopped, 10)
+	if a := st.Accounts[0]; a.Slots.Total() != 0 || a.Push {
+		t.Fatalf("stopped: %+v, want no slots", a)
+	}
+}
+
+func TestPushLine(t *testing.T) {
+	got := PushLine(AccountSlots{Name: "max-a", Push: true, PushWindow: "seven-day",
+		PushStanding: WindowStanding{Elapsed: 0.92, Utilization: 0.70, Target: 0.87}})
+	want := "capacity: pushing max-a (seven-day window 92% elapsed, 70% used, target 87%)"
+	if got != want {
+		t.Fatalf("got %q\nwant %q", got, want)
 	}
 }

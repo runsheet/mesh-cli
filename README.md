@@ -1097,10 +1097,10 @@ out a target from the same windows the node reads for its limits:
    for the five-hour window**.
 3. **Slots** per window: the affordable rate / the burn per slot.
 4. **The target** is the smaller of the two, clamped to `[min, max]`,
-   and capped by **machine load**: when the 1-minute load average is at
-   or above the CPU count, or free memory is 2 GB or less (CI runs on
+   and capped by **free memory**: when it is 2 GB or less (CI runs on
    the same machine), the node grows no further than the sessions it
-   already runs.
+   already runs. The machine's load and temperature are [the
+   back-off's](#backing-off-a-hot-host), a layer over this target.
 
 The capacity in force moves toward the target **one step at a time, at
 most once every 5 minutes**. A shrink only stops claiming — a running
@@ -1113,7 +1113,8 @@ claimed.** Each move is logged once with its reason:
 | `max` | both windows afford `max` or more (or nothing has been read yet) |
 | `weekly pace` | the seven-day window |
 | `five-hour pace` | the five-hour window |
-| `machine load` | the machine's load or memory |
+| `low memory` | the machine's free memory |
+| `host hot: …` | [the host back-off](#backing-off-a-hot-host) |
 
 ```
 capacity 1 → 2: max (target 4, 1 running)
@@ -1151,7 +1152,13 @@ key by its money left under its caps and the project's budget.
 - **A subscription** affords the smaller over its windows of (target −
   utilization) ÷ minutes to reset ÷ its burn per slot-minute — the
   targets 0.90 five-hour and 0.95 seven-day, the burn measured over the
-  last 30 minutes of *its own* sessions.
+  last 30 minutes of *its own* sessions. **The push:** in a window's
+  last 20% of time, a subscription still behind its target line
+  (elapsed fraction less `reserve`) affords (`stop` − utilization) ÷
+  minutes to reset ÷ burn instead, and at least one slot more than it
+  otherwise would, so it lands near full at reset — reason `push`,
+  logged once as `capacity: pushing <label> (seven-day window 92%
+  elapsed, 70% used, target 87%)`; a window at `stop` affords nothing.
 - **An API key** affords its money left today ÷ hours left today ÷ its
   dollars per slot-hour (measured the same way; $10 before there is
   data). The money left is the least of the daily cap less today's
@@ -1160,7 +1167,8 @@ key by its money left under its caps and the project's budget.
   daily cap is for urgent and high work only**; a key at either cap
   affords nothing — the hard stop.
 - **Capacity** is the sum of every account's slots, clamped to `[min,
-  max]` and held at the sessions running when the machine is busy;
+  max]` and held at the sessions running when the machine is short of
+  memory (a hot host is [the back-off's](#backing-off-a-hot-host));
   one step per 5 minutes, a shrink never stops a running session, and
   at `min` only urgent and high items are claimed.
 
@@ -1184,7 +1192,8 @@ says what set the capacity:
 | reason | set by |
 | --- | --- |
 | `max` / `min` | the range clamped the sum |
-| `machine load` | the machine's load or memory |
+| `low memory` | the machine's free memory |
+| `host hot: …` | [the host back-off](#backing-off-a-hot-host) |
 | `five-hour pace` / `weekly pace` | every account, by that window |
 | `daily cap` / `monthly cap` / `project budget` | every account, by that money |
 | `accounts` | the sum of several different bounds |
@@ -1210,10 +1219,66 @@ tick like the rest of node.yaml, and a change logged once —
 `host: load_per_core_max 1.5 → 2`. The node reads the package
 temperature from the `x86_pkg_temp` or `TCPU` thermal zone under
 `/sys/class/thermal` (Linux only; absent elsewhere, or with neither
-zone, logged once rather than every tick). This item alone declares
-the thresholds and the reading; the scaler backing capacity off while
-either is past its threshold, and climbing it back once the host is
-quiet, is further work on the same goal.
+zone, logged once rather than every tick).
+
+**The back-off** (ADR-023, the node backs off a hot host) is a layer
+over the plan figure — what the scaler or the accounts scaler steps
+toward for a range, `N` for a fixed `capacity: N` — run **every tick**,
+before claiming, not once a minute:
+
+- **Hot** — the load per core past `load_per_core_max`, or the package
+  temperature past `package_temp_max_c`: the capacity in force drops
+  **one slot per tick down**, to `min` (never below 1; a fixed node's
+  floor is 1), and **nothing new is claimed** while it is hot. Running
+  sessions are never stopped.
+- **Quiet** — both under: the capacity climbs **one slot per five quiet
+  minutes up**, back to the plan figure and never above it. A hot tick
+  starts the five minutes again.
+
+Each step is logged once:
+
+```
+capacity 4 → 3: host hot: load 55/18 cores
+capacity 3 → 4: host quiet 5m
+```
+
+While it holds the capacity the scaling reason is the host's (`host
+hot: load 55/18 cores`, or `host hot: 101°C` for the temperature alone);
+level again, it is the plan's. The scaling report (`Loop.Scaling`,
+`~/.mesh/node.scaling`) carries the host as last read — `load`,
+`cores`, `tempC` when a zone was read, and `hot` — and a fixed node
+reports scaling while it is held back or hot, `fixed` again once level
+and quiet. A host with no probe (not Linux) never backs off.
+
+The heartbeat's `scaling` carries the same host reading (`host
+{load, cores, temperatureC, hot}`) when the platform's schema takes it,
+nil when there is none, so the console's Nodes page and
+`mesh_health_nodes` can show why a node is running fewer sessions than
+its plan-window figure affords. `mesh node status` shows it beside the
+node's row and a `host:` line naming the thresholds in force:
+
+```
+host: load_per_core_max 1.5, package_temp_max_c 90
+ORG        NAME  SLUG       STATUS  RUNNING  CAPACITY                                                  VERSION  LAST_SEEN
+runsheet   mini  mini *     online  3        4/1–8 (host hot: load 55/18 cores) — host load 55 / 18 cores, 101°C  1.4.0   …
+```
+
+and once it has cooled:
+
+```
+ORG        NAME  SLUG       STATUS  RUNNING  CAPACITY                                     VERSION  LAST_SEEN
+runsheet   mini  mini *     online  8        8/1–8 (max) — host load 9 / 18 cores, 70°C  1.4.0   …
+```
+
+— a host with no thermal zone to read shows `no temperature` in place
+of a figure.
+
+`scripts/host-backoff-reading.sh` takes the same reading by hand — the
+load, cores, package temperature and `mesh node status`'s capacity line
+— with `--interval S --count N` to repeat it, so an operator can watch
+capacity fall under CI and climb back once the host is quiet. One run's
+output is recorded, whatever its numbers, in
+`docs/measurements/host-backoff-reading.md`.
 
 ### Tools
 

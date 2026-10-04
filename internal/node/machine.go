@@ -40,6 +40,12 @@ func (m MachineReading) BusyAt(h HostConfig) bool {
 	return (m.CPUs > 0 && m.Load1/float64(m.CPUs) >= h.LoadPerCoreMax) || m.MemAvailable <= MinFreeMemory
 }
 
+// ShortOfMemory says free memory is at or below MinFreeMemory: the
+// scalers' growth cap (ReasonLowMemory).
+func (m MachineReading) ShortOfMemory() bool {
+	return m.MemAvailable <= MinFreeMemory
+}
+
 // Busy says the machine can take no more sessions: load at or above one
 // per core (ADR-004's own threshold, unrelated to node.yaml's host:
 // load_per_core_max, which backs the scaler off earlier, at its own
