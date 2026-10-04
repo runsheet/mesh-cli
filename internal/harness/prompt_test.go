@@ -12,7 +12,7 @@ func TestPlanPromptAcceptanceTheEvaluatorCanSee(t *testing.T) {
 		"   An item's acceptance names only what the evaluator can see at evaluation time, on that item's branch, in that item's repository: tests, commands and their output, file contents. It never names a CI check on the item's own pull request (the pull request opens only after evaluation passes), a deploy, or a file in another repository. Work like that becomes its own item in the right repo, or goes in the goal's acceptance.\n",
 		"4. depends_on names earlier seqs",
 		"9. End your final message with the graph as a JSON object in a ```json fenced block, and nothing after it. Its `questions` is empty unless a clause of the goal is one no pull request can satisfy (rule 3); each is {\"clause\": \"…\", \"question\": \"…\"}, for the person to answer:\n",
-		"```json\n{\"items\": [{\"seq\": 1, \"title\": \"…\", \"brief\": \"…\", \"acceptance\": \"…\", \"depends_on\": [], \"repo\": \"owner/name\", \"base_ref\": \"main\", \"model\": \"sonnet\", \"model_reason\": \"…\"}, {\"seq\": 2, \"title\": \"…\", \"brief\": \"…\", \"acceptance\": \"…\", \"depends_on\": [{\"seq\": 1, \"because\": \"uses the … item 1 adds\"}], \"repo\": \"owner/name\", \"base_ref\": \"main\", \"model\": \"sonnet\", \"model_reason\": \"…\"}], \"questions\": []}\n```\n",
+		"```json\n{\"items\": [{\"seq\": 1, \"title\": \"…\", \"brief\": \"…\", \"acceptance\": \"…\", \"depends_on\": [], \"repo\": \"owner/name\", \"base_ref\": \"main\", \"model\": \"sonnet\", \"model_reason\": \"…\", \"files\": [\"…\"]}, {\"seq\": 2, \"title\": \"…\", \"brief\": \"…\", \"acceptance\": \"…\", \"depends_on\": [{\"seq\": 1, \"because\": \"uses the … item 1 adds\"}], \"repo\": \"owner/name\", \"base_ref\": \"main\", \"model\": \"sonnet\", \"model_reason\": \"…\", \"files\": [\"…\"], \"writes_shared_docs\": true}], \"questions\": []}\n```\n",
 	} {
 		if !strings.Contains(p, want) {
 			t.Errorf("plan prompt lacks %q", want)
@@ -38,7 +38,7 @@ func TestPlanPromptHostRule(t *testing.T) {
 			}
 		}
 	}
-	if !strings.Contains(reask, "goes in the goal's acceptance. "+planHostRule+" "+planSplitRule+" "+planSizeRule+" "+planCloseOutRule+" "+planCutOverRule+" "+planRepoRule+" Write the whole graph again") {
+	if !strings.Contains(reask, "goes in the goal's acceptance. "+planHostRule+" "+planSplitRule+" "+planSizeRule+" "+planCloseOutRule+" "+planCutOverRule+" "+planRepoRule+" "+planFilesRule+" "+planSharedDocsRule+" Write the whole graph again") {
 		t.Errorf("the re-ask does not restate the host rule:\n%s", reask)
 	}
 }
@@ -91,6 +91,76 @@ func TestParsePlanAtomic(t *testing.T) {
 	}
 	if items[1].Atomic != "" {
 		t.Errorf("an item without atomic has %q", items[1].Atomic)
+	}
+}
+
+// ParsePlan keeps an item's `files` and `writes_shared_docs`; an item
+// naming neither has an empty Files and a false WritesSharedDocs
+// (goal items-that-share-a-file-are-planned-in-a-line, item 1).
+func TestParsePlanFilesAndWritesSharedDocs(t *testing.T) {
+	items, err := ParsePlan("```json\n" + `{"items": [
+		{"seq": 1, "title": "Build the thing", "repo": "o/r", "files": ["internal/node/plan_check.go", "internal/node/plan_check_test.go"]},
+		{"seq": 2, "title": "Write the docs", "repo": "o/r", "writes_shared_docs": true, "depends_on": [{"seq": 1, "because": "folds in item 1's notes"}]}
+	]}` + "\n```")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"internal/node/plan_check.go", "internal/node/plan_check_test.go"}; !slicesEqual(items[0].Files, want) {
+		t.Errorf("files = %v, want %v", items[0].Files, want)
+	}
+	if items[0].WritesSharedDocs {
+		t.Error("item 1 does not write the shared docs")
+	}
+	if len(items[1].Files) != 0 {
+		t.Errorf("item 2 names no files, got %v", items[1].Files)
+	}
+	if !items[1].WritesSharedDocs {
+		t.Error("item 2 writes the shared docs")
+	}
+}
+
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// ExpectedFiles falls back to the paths named in the item's brief when
+// it names no files of its own, deduplicated and sorted; a bare
+// AGENTS.md is found too, with no path.
+func TestExpectedFilesFallsBackToTheBrief(t *testing.T) {
+	sp := PlannedSpec{Brief: "Change `internal/node/plan_check.go` and its test `internal/node/plan_check_test.go`, and mention `internal/node/plan_check.go` again; also update AGENTS.md."}
+	want := []string{"AGENTS.md", "internal/node/plan_check.go", "internal/node/plan_check_test.go"}
+	if got := ExpectedFiles(sp); !slicesEqual(got, want) {
+		t.Errorf("ExpectedFiles = %v, want %v", got, want)
+	}
+	withFiles := PlannedSpec{Files: []string{"b.go", "a.go"}, Brief: "mentions `c.go` too"}
+	if got := ExpectedFiles(withFiles); !slicesEqual(got, []string{"a.go", "b.go"}) {
+		t.Errorf("ExpectedFiles with Files set = %v, want Files alone, sorted", got)
+	}
+}
+
+// IsDocumentPath is true for a document — markdown, a docs/ or specs/
+// path, the bare AGENTS.md/README.md — and false for code, generated or
+// not.
+func TestIsDocumentPath(t *testing.T) {
+	for path, want := range map[string]bool{
+		"AGENTS.md":                        true,
+		"README.md":                        true,
+		"docs/adr/adr-023.md":              true,
+		"specs/trd/6a.md":                  true,
+		"internal/node/plan_check.go":      false,
+		"platform/loomgen/registry_gen.go": false,
+	} {
+		if got := IsDocumentPath(path); got != want {
+			t.Errorf("IsDocumentPath(%q) = %v, want %v", path, got, want)
+		}
 	}
 }
 
@@ -268,7 +338,7 @@ func TestPlanPromptModelRubric(t *testing.T) {
 			t.Errorf("plan prompt lacks %q", want)
 		}
 	}
-	if !strings.HasSuffix(p, "\"model\": \"sonnet\", \"model_reason\": \"…\"}], \"questions\": []}\n```\n") {
+	if !strings.HasSuffix(p, "\"model\": \"sonnet\", \"model_reason\": \"…\", \"files\": [\"…\"], \"writes_shared_docs\": true}], \"questions\": []}\n```\n") {
 		t.Error("the plan prompt no longer ends with the JSON example")
 	}
 }
@@ -313,7 +383,7 @@ func TestPlanPromptDependencyRubric(t *testing.T) {
 		for _, want := range []string{
 			"4. depends_on names earlier seqs whose branches must be merged first; items with no dependency between them run in parallel.\n   " + planDependencyRule + "\n",
 			"An item depends on another only when it uses something that item creates or changes — a type, command, field, function, file or endpoint — and could not be built against main without it.",
-			"Sharing a repository or touching the same file is not a dependency",
+			"Sharing a repository is not a dependency; sharing a code file is, and the node adds it when the planner did not; sharing a document is not.",
 			"Order by importance is priority, not dependency.",
 			"Prefer a wide, shallow graph",
 			"A final docs item depends only on the items whose results it records.",
@@ -409,7 +479,7 @@ func TestPlanPromptRejected(t *testing.T) {
 	p := PlanPrompt(PlanInput{GoalSlug: "g", GoalTitle: "G", Org: "o", Project: "p", Rejected: []string{"item 1 (Ship): a check on its own pull request (`deploy / verify`)"}})
 	for _, want := range []string{
 		"## Your last answer was flagged\n\nThe node checked your graph before handing it in and flagged these items — an acceptance naming what no evaluator can see or a reading of the host as a merge gate, or a model the scorecard says does not work on its repo:\n\n- item 1 (Ship): a check on its own pull request (`deploy / verify`)\n\n",
-		"Work like that becomes its own item in the right repo, or goes in the goal's acceptance. " + planHostRule + " " + planSplitRule + " " + planSizeRule + " " + planCloseOutRule + " " + planCutOverRule + " " + planRepoRule + " Write the whole graph again with those acceptances and models rewritten; this is the last ask.\n",
+		"Work like that becomes its own item in the right repo, or goes in the goal's acceptance. " + planHostRule + " " + planSplitRule + " " + planSizeRule + " " + planCloseOutRule + " " + planCutOverRule + " " + planRepoRule + " " + planFilesRule + " " + planSharedDocsRule + " Write the whole graph again with those acceptances and models rewritten; this is the last ask.\n",
 	} {
 		if !strings.Contains(p, want) {
 			t.Errorf("plan prompt lacks %q", want)
@@ -460,6 +530,34 @@ func TestPlanPromptFourRules(t *testing.T) {
 		t.Errorf("an over-cap re-ask does not ask for split, not items:\n%s", reaskText)
 	} else if strings.Contains(reaskText, "Write the whole graph again") {
 		t.Errorf("an over-cap re-ask still asks to rewrite the items graph:\n%s", reaskText)
+	}
+}
+
+// The goal items-that-share-a-file-are-planned-in-a-line's two rules —
+// files, and one writer of the shared documents — are in rule 3 of
+// every plan and again in the re-ask, like the four rules above.
+func TestPlanPromptFilesAndSharedDocsRules(t *testing.T) {
+	first := PlanPrompt(PlanInput{GoalSlug: "g", GoalTitle: "G", Org: "o", Project: "p"})
+	reask := PlanPrompt(PlanInput{GoalSlug: "g", GoalTitle: "G", Org: "o", Project: "p", Rejected: []string{"the plan has 12 items; the project's cap is 8"}})
+	rule3 := func(p string) string {
+		i, j := strings.Index(p, "\n3. "), strings.Index(p, "\n4. ")
+		if i < 0 || j < i {
+			t.Fatalf("no rule 3:\n%s", p)
+		}
+		return p[i : j+1]
+	}
+	for name, text := range map[string]string{"rule 3": rule3(first), "re-ask rule 3": rule3(reask)} {
+		for _, rule := range []string{planFilesRule, planSharedDocsRule} {
+			if !strings.Contains(text, rule) {
+				t.Errorf("%s lacks a rule:\n%s", name, text)
+			}
+		}
+		if i, j := strings.Index(text, planRepoRule), strings.Index(text, planFilesRule); i < 0 || j < i {
+			t.Errorf("%s: planFilesRule does not follow planRepoRule:\n%s", name, text)
+		}
+	}
+	if !strings.Contains(reask, planRepoRule+" "+planFilesRule+" "+planSharedDocsRule) {
+		t.Errorf("the re-ask does not carry the two rules after planRepoRule:\n%s", reask)
 	}
 }
 

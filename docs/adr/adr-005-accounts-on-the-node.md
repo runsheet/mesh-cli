@@ -1,5 +1,5 @@
 ---
-summary: A node's sessions run on the Claude accounts the platform issues the claimed session (the claim-time read: itemCredentials, planCredentials, researchCredentials; an api key at its cap never chosen), with node.yaml's `accounts:` and `codex.accounts` retired and refused at start (amendments 2026-10-02: a session runs only on an issued credential, the start logs which projects have none open to the node, and the node.yaml fallback is gone — a platform without the read is an ErrNoCredential hold, never the operator's login), and every session's usage report rides the command that ends it (`usage` on finishWorkItem, evaluateWorkItem, planGoal, finishWorkItemRebase, recordDirectionResearch; each priced tool call on recordToolUsage; else one log line); the secret reaches the session in its environment only (CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY), with a temporary CLAUDE_CONFIG_DIR per session removed after, the inherited auth variables stripped, and the secret redacted from every log, error and report; each session runs on the account ChooseAccount picks by headroom and the spending order (subscriptions first, API only for urgent/high work or when subscriptions are stopped and work waits), and no account with headroom means no claim.
+summary: A node's sessions run on the Claude accounts the platform issues the claimed session (the claim-time read: itemCredentials, planCredentials, researchCredentials; an api key at its cap never chosen), with node.yaml's `accounts:` and `codex.accounts` retired and refused at start (amendments 2026-10-02: a session runs only on an issued credential, the start logs which projects have none open to the node, and the node.yaml fallback is gone — a platform without the read is an ErrNoCredential hold, never the operator's login), and every session's usage report rides the command that ends it (`usage` on finishWorkItem, evaluateWorkItem, planGoal, finishWorkItemRebase, recordDirectionResearch; each priced tool call on recordToolUsage; else one log line); the secret reaches the session in its environment only (CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY), with a temporary CLAUDE_CONFIG_DIR per session removed after, the inherited auth variables stripped, and the secret redacted from every log, error and report; each session runs on the account ChooseAccount picks by standing against a clock — each window's target line, the fraction of it elapsed less `reserve`, and the account furthest behind its own chosen first, ahead-of-target accounts last, subscriptions before API keys as before — with the holdback keeping the subscription with the latest reset for urgent work once every other is within 10% of `stop`, so one account always has headroom (goal every-subscription-lands-full-at-its-reset).
 status: accepted
 ---
 
@@ -1105,17 +1105,19 @@ live reading, or whose reset has passed, stands at zero throughout —
 elapsed, target, utilization, distance and push — never a stale
 pace point or a stale percentage.
 
-This item lands the clock itself — `LimitsConfig.Reserve`, `stop`
+This item landed the clock itself — `LimitsConfig.Reserve`, `stop`
 0.98, `WindowStanding`, `Standing`, `StandingOf`, and the tests
 proving the target line, the push rule and the expired-window zeroing
 in `internal/node/limits_test.go`. The decisions that spend the
-clock's reading follow as later items of the same goal:
+clock's reading landed as the same goal's later items, each with its
+own amendment below:
 
 - **item 2** — `ChooseAccount` orders accounts by `Distance`, furthest
   behind first; an account ahead of its own target is chosen only when
   every other is also ahead or stopped.
-- **item 3** — the scaler (ADR-004) adds capacity for an account that
-  is `Push`ed — behind its line with a fifth of its window's length or
+- **item 3** (`adr-005-capacity-across-accounts.md`'s amendment of the
+  same date) — the scaler adds capacity for an account that is
+  `Push`ed — behind its line with a fifth of its window's length or
   less remaining — so it lands near its target by reset instead of
   leaving the window's last hours unspent.
 - **item 4** — the holdback: once every subscription but one sits
