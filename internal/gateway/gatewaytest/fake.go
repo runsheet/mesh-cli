@@ -28,6 +28,11 @@ type Call struct {
 	At time.Time
 	// Bearer is the token the request carried.
 	Bearer string
+	// Query is the mutation's raw GraphQL document, for a test that
+	// must assert on the selection the client sent — a field probed
+	// for and included only when the schema takes it (takesScopeShares
+	// and the like) rather than one carried as input.
+	Query string
 }
 
 // Fake is the server and its state. Rows are maps with camelCase keys,
@@ -224,6 +229,13 @@ type Fake struct {
 	// so a heartbeat carrying an AdoptedSession with any of the four set
 	// sends the entry without them, itemId, kind and since alone.
 	NoAdoptedFields bool
+	// NoScopeShares is a platform whose registerNode/heartbeatNode
+	// payload's `scopes` element type has no `shares` (goal
+	// every-org-gets-its-share-of-a-node, item 3): introspection on
+	// DispatchResult answers the scopes element type without it, so the
+	// node asks for the scopes selection without `shares` and every
+	// scope answers Shares 0.
+	NoScopeShares bool
 	// RefuseReleases answers every releaseWorkItem with a refusal and
 	// changes nothing, as a platform that will not take a node's release.
 	// By default the fake follows the contract (trd §1): a node releases
@@ -636,6 +648,13 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeData(w, map[string]any{"__type": f.mutationType()})
+	case strings.Contains(q, `__type(name: "DispatchResult")`):
+		f.Reads = append(f.Reads, Call{Name: "__type DispatchResult", Input: map[string]any{}})
+		if f.Unsupported["__type"] {
+			writeErrors(w, 200, "GraphQL introspection is not allowed")
+			return
+		}
+		writeData(w, map[string]any{"__type": f.dispatchResultType()})
 	case strings.HasPrefix(q, "mutation") && strings.Contains(q, "recordValidationAttestation("):
 		f.recordValidationAttestation(w, q, req.Variables, bearer)
 	case strings.Contains(q, "__type("):
@@ -836,7 +855,7 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 		if f.After != nil {
 			f.After(m[2], in)
 		}
-		f.Calls = append(f.Calls, Call{Name: m[2], Input: in, At: time.Now(), Bearer: bearer})
+		f.Calls = append(f.Calls, Call{Name: m[2], Input: in, At: time.Now(), Bearer: bearer, Query: q})
 		if usage, ok := in["usage"].(map[string]any); ok && finishingMutations[m[2]] {
 			f.SessionUsage = append(f.SessionUsage, Call{Name: m[2], Input: copyRow(usage), At: time.Now()})
 		}
@@ -1190,6 +1209,37 @@ func (f *Fake) registerNodeInputType() map[string]any {
 	return map[string]any{"inputFields": fields}
 }
 
+// dispatchResultType is DispatchResult as introspection answers it:
+// the shared mutation payload type registerNode and heartbeatNode
+// return their hand-selected fields on, its `scopes` field a list of
+// an element type carrying orgId, login, slug and accountId, plus
+// `shares` unless NoScopeShares (a platform before
+// every-org-gets-its-share-of-a-node item 3). Unsupported["__type"]
+// refuses the probe.
+func (f *Fake) dispatchResultType() map[string]any {
+	names := []string{"orgId", "login", "slug", "accountId"}
+	if !f.NoScopeShares {
+		names = append(names, "shares")
+	}
+	var scopeFields []any
+	for _, n := range names {
+		scopeFields = append(scopeFields, map[string]any{"name": n})
+	}
+	scopesType := map[string]any{
+		"kind": "LIST",
+		"ofType": map[string]any{
+			"kind": "NON_NULL",
+			"ofType": map[string]any{
+				"kind":   "OBJECT",
+				"fields": scopeFields,
+			},
+		},
+	}
+	return map[string]any{"fields": []any{
+		map[string]any{"name": "scopes", "type": scopesType},
+	}}
+}
+
 // ownerField is the spelling of RegisterNodeInput's owner kind the
 // fake's schema has (before UnknownFields hides it).
 func (f *Fake) ownerField() string {
@@ -1431,6 +1481,9 @@ func (f *Fake) mutationPayload(name, q string) map[string]any {
 	scopes := make([]map[string]any, len(f.Answer.Scopes))
 	for i, s := range f.Answer.Scopes {
 		scopes[i] = map[string]any{"orgId": s.OrgID, "login": s.Login, "slug": s.Slug, "accountId": s.AccountID}
+		if selected("shares") {
+			scopes[i]["shares"] = s.Shares
+		}
 	}
 	payload["nodeId"] = f.Answer.NodeID
 	payload["owner"] = map[string]any{"kind": f.Answer.Owner.Kind, "id": f.Answer.Owner.ID, "name": f.Answer.Owner.Name}

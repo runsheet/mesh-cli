@@ -724,3 +724,47 @@ lines, with pairers and with none; a `Runner` test against
 `description` names the builder's actor and a pairer, that
 `Fake.NoDescription` omits the key while the finish still succeeds, and
 that an already-done finish carries the same description).
+
+## ScopeAnswer carries `shares` (2026-10-03)
+
+Goal `every-org-gets-its-share-of-a-node` item 3: a shared node divides
+its capacity into per-org floors, equal by default or weighted by the
+enterprise's own setting. The weight rides the same owner answer this
+ADR already defines (`NodeAnswer.Scopes`), not a separate read.
+
+**The shape.** `ScopeAnswer` gains `Shares int` (`json:"shares"`) — the
+enterprise's per-org weight, `0` when the platform sends none or omits
+the field (equal shares). `nodeAnswerFields` is the hand-written
+selection `RegisterNode`/`HeartbeatNode` ask the payload for beside
+`status` (this ADR's `mutateForAnswer`); an older platform's `scopes`
+element type without `shares` refuses the *whole* selection on an
+unknown field, the same failure mode `TakesOwner` and `TakesNodeKind`
+guard against, so the node must not ask for it blind.
+
+**The probe.** `Client.takesScopeShares(ctx)` introspects
+`DispatchResult` — the shared mutation payload type `registerNode` and
+`heartbeatNode` return their hand-selected fields on — once, follows
+its `scopes` field's element type through any `NON_NULL`/`LIST`
+wrapper, and answers whether that type carries `shares`; the answer is
+kept for `ScalingProbeEvery`, the same cadence as
+`takesHoldingUnclaimedUntil`, and a failed probe is `false`, kept just
+as long. `nodeAnswerFieldsFor(ctx)` picks
+`scopes { orgId login slug accountId shares }` when the probe says yes,
+else today's selection with no `shares` — `fields_gen.go` is untouched,
+since this answer is hand-selected, not a generated entity (ADR-010).
+
+**The fixtures.** `specs/contracts/registerNode.json` and
+`heartbeatNode.json` give every scope in the answer a `shares` integer
+(runsheet 2, wardroomid 1, grapevine 1; heartbeatNode's fourth,
+foghornid, 0) and each fixture's description names `shares` as the
+enterprise's per-org weight, a setting on the enterprise the platform
+serves as part of the owner contract, absent or 0 meaning equal shares.
+
+Tests: `internal/gateway/nodeanswer_test.go`
+(`TestNodeAnswerSharesFromFixtures` decodes both fixtures and checks
+each scope's `Shares` by login; `TestTakesScopeSharesFalseAsksWithoutShares`
+and `TestTakesScopeSharesTrueAsksWithShares` assert, via
+`gatewaytest.Fake.NoScopeShares` and the recorded `Call.Query`, that the
+selection sent omits or carries `shares` to match what the platform's
+`scopes` element type has, and that the decoded answer's `Shares`
+follows).

@@ -179,6 +179,10 @@ type Client struct {
 	// last found to take `description` (see withDescription,
 	// every-actor-has-a-name item 3).
 	descriptionSchema holdingProbe
+	// scopeSharesSchema is whether the gateway's registerNode/heartbeatNode
+	// payload's `scopes` element type was last found to take `shares`
+	// (see takesScopeShares).
+	scopeSharesSchema holdingProbe
 	Now               func() time.Time
 }
 
@@ -1693,18 +1697,41 @@ type NodeOwner struct {
 
 // ScopeAnswer is one org the NodeAnswer's node now serves: the org's
 // id, its GitHub login (empty for an org without one, named by Slug
-// instead), its tenant slug and the node's account id in it.
+// instead), its tenant slug, the node's account id in it, and Shares —
+// the enterprise's per-org weight (0 when the platform sent none,
+// equal shares; goal every-org-gets-its-share-of-a-node), sent only
+// when the gateway's scopes element type has it (takesScopeShares).
 type ScopeAnswer struct {
 	OrgID     string `json:"orgId"`
 	Login     string `json:"login"`
 	Slug      string `json:"slug"`
 	AccountID string `json:"accountId"`
+	Shares    int    `json:"shares"`
 }
 
 // nodeAnswerFields is what RegisterNode and HeartbeatNode ask their
 // mutation's payload for beyond status: the platform's answer to who
-// owns the node and which orgs it now serves.
+// owns the node and which orgs it now serves. `scopes { shares }` is
+// asked for only when takesScopeShares finds the payload's scopes
+// element type has it — see nodeAnswerFieldsFor.
 const nodeAnswerFields = "nodeId owner { kind id name } scopes { orgId login slug accountId }"
+
+// nodeAnswerFieldsWithShares is nodeAnswerFields with `shares` added to
+// the scopes selection, asked for only once takesScopeShares finds the
+// platform's payload takes it: an older platform refuses the whole
+// selection on an unknown field ("Cannot query field"), so the node
+// must not ask for it blind.
+const nodeAnswerFieldsWithShares = "nodeId owner { kind id name } scopes { orgId login slug accountId shares }"
+
+// nodeAnswerFieldsFor is nodeAnswerFields, or
+// nodeAnswerFieldsWithShares when the gateway's scopes element type
+// takes `shares` (takesScopeShares).
+func (c *Client) nodeAnswerFieldsFor(ctx context.Context) string {
+	if c.takesScopeShares(ctx) {
+		return nodeAnswerFieldsWithShares
+	}
+	return nodeAnswerFields
+}
 
 // nodeAnswerPayload is nodeAnswerFields' shape, decoded from the
 // mutation's payload.
@@ -1745,7 +1772,7 @@ func (c *Client) mutateForAnswer(ctx context.Context, field, aggregateID string,
 		return nil, c.Mutate(ctx, field, aggregateID, input)
 	}
 	var payload nodeAnswerPayload
-	err := c.MutateFields(ctx, field, aggregateID, input, "status "+nodeAnswerFields, &payload)
+	err := c.MutateFields(ctx, field, aggregateID, input, "status "+c.nodeAnswerFieldsFor(ctx), &payload)
 	if err == nil {
 		return payload.asAnswer(), nil
 	}
@@ -2474,6 +2501,59 @@ func (c *Client) takesHoldingUnclaimedUntil(ctx context.Context) bool {
 					if sf.Name == "until" {
 						p.takes = true
 					}
+				}
+			}
+		}
+	}
+	return p.takes
+}
+
+// takesScopeShares says whether the gateway's registerNode/heartbeatNode
+// payload's `scopes` field's element type carries a `shares` field —
+// asked once by introspection on DispatchResult, the shared mutation
+// payload type every dispatch-style mutation (registerNode and
+// heartbeatNode among them) returns its hand-selected fields on, and
+// kept for ScalingProbeEvery, the same as takesHoldingUnclaimedUntil
+// (goal every-org-gets-its-share-of-a-node, item 3: the enterprise's
+// per-org weight). A failed probe is a no, kept as long — an older
+// platform's scopes carry no `shares` and nodeAnswerFieldsFor must not
+// ask for it blind, since an unknown field refuses the whole selection.
+func (c *Client) takesScopeShares(ctx context.Context) bool {
+	p := &c.scopeSharesSchema
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := c.now()
+	if !p.at.IsZero() && now.Sub(p.at) < ScalingProbeEvery {
+		return p.takes
+	}
+	type elemType struct {
+		Kind   string `json:"kind"`
+		Fields []struct {
+			Name string `json:"name"`
+		} `json:"fields"`
+		OfType *elemType `json:"ofType"`
+	}
+	var out struct {
+		Type *struct {
+			Fields []struct {
+				Name string   `json:"name"`
+				Type elemType `json:"type"`
+			} `json:"fields"`
+		} `json:"__type"`
+	}
+	p.at, p.takes = now, false
+	q := `{ __type(name: "DispatchResult") { fields { name type { kind fields { name } ofType { kind fields { name } ofType { kind fields { name } } } } } } }`
+	if err := c.Query(ctx, q, nil, &out); err != nil || out.Type == nil {
+		return false
+	}
+	for _, f := range out.Type.Fields {
+		if f.Name != "scopes" {
+			continue
+		}
+		for t := &f.Type; t != nil; t = t.OfType {
+			for _, sf := range t.Fields {
+				if sf.Name == "shares" {
+					p.takes = true
 				}
 			}
 		}
