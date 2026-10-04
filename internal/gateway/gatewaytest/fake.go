@@ -2025,14 +2025,21 @@ func writeErrors(w http.ResponseWriter, code int, msg string) {
 
 // mutationType is the Mutation type's introspection as the
 // attestation probe reads it: recordValidationAttestation(workItemId,
-// input), unless Unsupported names it; proposeGoalSplit(input) too,
-// when GoalSplit is set (ADR-023's gateway amendment).
+// input), unless Unsupported names it; claimWorkItemEvaluation, unless
+// Unsupported names it (ADR-025); proposeGoalSplit(input) too, when
+// GoalSplit is set (ADR-023's gateway amendment).
 func (f *Fake) mutationType() map[string]any {
 	fields := []any{}
 	if !f.Unsupported["recordValidationAttestation"] {
 		fields = append(fields, map[string]any{
 			"name": "recordValidationAttestation",
 			"args": []any{map[string]any{"name": "workItemId"}, map[string]any{"name": "input"}},
+		})
+	}
+	if !f.Unsupported["claimWorkItemEvaluation"] {
+		fields = append(fields, map[string]any{
+			"name": "claimWorkItemEvaluation",
+			"args": []any{map[string]any{"name": "in"}},
 		})
 	}
 	if f.GoalSplit && !f.Unsupported["proposeGoalSplit"] {

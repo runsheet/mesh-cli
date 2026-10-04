@@ -30,12 +30,15 @@ func TestLoopEvaluatesFinishedItems(t *testing.T) {
 	if _, err := gw.RegisterNode(context.Background(), gateway.RegisterNodeInput{NodeID: cfg.NodeID, OrgID: orgID, OwnerID: f.UserID, Name: "n", Slug: "test-node"}); err != nil {
 		t.Fatal(err)
 	}
-	// item 1 finished here; item 2 is another node's, not ours to judge
+	// item 1 finished here; item 2's evaluation another node has
+	// claimed, so the claim is refused and it is not ours to judge
+	// (ADR-025)
 	f.WorkItems[item1]["status"] = "evaluating"
 	f.WorkItems[item1]["nodeId"] = cfg.NodeID
 	f.WorkItems[item1]["branch"] = "mesh/ship-it-1"
 	f.WorkItems[item2]["status"] = "evaluating"
 	f.WorkItems[item2]["nodeId"] = "33333333-3333-4333-8333-333333333333"
+	f.WorkItems[item2]["evaluationNodeId"] = "33333333-3333-4333-8333-333333333333"
 	f.WorkItems[item2]["branch"] = "mesh/ship-it-2"
 
 	ws := &fakeWS{root: t.TempDir()}

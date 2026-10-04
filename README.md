@@ -1552,6 +1552,34 @@ their services, `git` and the `claude` (or `codex`) CLI. It needs no
 GitHub login or Claude account of its own: the item's token and the
 session's credentials are issued by the platform at claim.
 
+#### An evaluate-only machine
+
+A node with `takes: [evaluate]` evaluates what other nodes built: for
+every item in `evaluating` that another node holds, it claims the
+evaluation with `claimWorkItemEvaluation` before the session starts —
+refused, another node has it, and that is the ordinary answer — and an
+item it holds itself it evaluates with no claim, as before. A platform
+whose schema has no `claimWorkItemEvaluation` leaves the node to its own
+items, said once: `the platform takes no evaluation claim; evaluating
+only what this node holds`.
+
+The evaluator checks out the item's branch, runs its acceptance and the
+`.runsheet/validate.yml` suites the change touches, so the machine needs:
+
+- the toolchains the project's validate suites run — Go, Node, Python,
+  whatever each repo's `.runsheet/validate.yml` names;
+- docker (or podman) when a validate suite or a declared service needs it;
+- `claude`, and optionally `codex` for evaluations on the Codex family;
+- `mesh node login`, for the machine credential in `~/.mesh/token`.
+
+No `gh` login and no Claude account of its own: the item's GitHub token
+and the session's Claude (or Codex) credential come from the platform at
+claim time (ADR-005, ADR-022). On bob, the CI slot limit
+(`~/bin/ci-slot.sh`, `~/.ci-slots/limit`) is honoured by the validate
+suites themselves, which take a slot as CI does; the node knows nothing
+of it, and `takes: {evaluate: N}` bounds only how many evaluations it
+runs at once.
+
 ### Tool results
 
 One `go test ./...` log or file dump can put 100 KB into a session's

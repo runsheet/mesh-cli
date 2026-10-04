@@ -276,6 +276,9 @@ type Loop struct {
 	sharesBothPresent bool
 	// paced is the pacing mode last logged, so a crossing is logged once.
 	paced paceMode
+	// noEvaluationClaimSaid is set once the run has said the platform
+	// takes no claimWorkItemEvaluation (evaluateHeld, ADR-025).
+	noEvaluationClaimSaid bool
 	// waiting counts, by kind, the work this tick left unclaimed because
 	// no account had headroom for it: logged once at the tick's end.
 	waiting map[string]int
@@ -1740,16 +1743,23 @@ func sameOrgs(a, b Scopes) bool {
 	return true
 }
 
-// evaluateHeld starts an evaluation of every item this node finished
-// that no evaluation here is running on, most urgent goal first across
-// the orgs (evaluateOrder; the goals are read only for an org holding
-// one). The verdict moves the item on;
-// an evaluation that ends without one leaves it here for the next tick.
+// evaluateHeld starts an evaluation of every item in evaluating in the
+// served orgs that no evaluation here is running on, most urgent goal
+// first across the orgs (evaluateOrder; the goals are read only for an
+// org with one). An item this node holds is evaluated with no claim; one
+// another node holds, or none, is claimed first with
+// ClaimWorkItemEvaluation — the lock across nodes, so an evaluate-only
+// node evaluates what others built (ADR-025). A refusal is the ordinary
+// answer, another node has it, and is not logged as an error. A platform
+// without the claim leaves this node to its own items, said once per
+// run. The verdict moves the item on; an evaluation that ends without
+// one leaves it here for the next tick.
 func (l *Loop) evaluateHeld(ctx context.Context) {
 	if l.Evaluate == nil || !l.takesKind(harness.KindEvaluate) {
 		return
 	}
 	var held []readyItem
+	claims := 0 // -1 no claim taken, 1 taken, 0 not yet asked
 	for _, sc := range l.Scopes {
 		rows, err := l.GW.OrgWorkItems(ctx, sc.ID, "evaluating")
 		if err != nil {
@@ -1759,7 +1769,22 @@ func (l *Loop) evaluateHeld(ctx context.Context) {
 		var rank func(string) int
 		for _, it := range rows {
 			if it.NodeID != sc.NodeID {
-				continue
+				if claims == 0 {
+					claims = -1
+					if l.GW.TakesEvaluationClaim(ctx) {
+						claims = 1
+					}
+				}
+				if claims < 0 {
+					l.mu.Lock()
+					said := l.noEvaluationClaimSaid
+					l.noEvaluationClaimSaid = true
+					l.mu.Unlock()
+					if !said {
+						l.logf("the platform takes no evaluation claim; evaluating only what this node holds")
+					}
+					continue
+				}
 			}
 			if rank == nil {
 				rank = l.goalRanks(ctx, sc, "evaluated")
@@ -1810,6 +1835,28 @@ func (l *Loop) evaluateHeld(ctx context.Context) {
 		l.mu.Lock()
 		l.evaluating[item.ID] = true
 		l.mu.Unlock()
+		if sc := h.scope; item.NodeID != sc.NodeID {
+			// the claim is the lock across nodes: refused, another node
+			// has it
+			if err := l.GW.ClaimWorkItemEvaluation(ctx, item.ID, sc.NodeID); err != nil {
+				l.mu.Lock()
+				delete(l.evaluating, item.ID)
+				l.mu.Unlock()
+				if !gateway.IsRefusal(err) {
+					l.logf("%s: claim the evaluation of item %d: %v", sc.Name(), item.Seq, err)
+				}
+				continue
+			}
+			// read again: the claim made the item this node's, and the
+			// evaluator (and an adoption after a restart) judges by the
+			// item's nodeId
+			if fresh, err := l.GW.WorkItem(ctx, item.ID); err == nil && fresh != nil {
+				item = *fresh
+			} else {
+				item.NodeID = sc.NodeID
+			}
+			l.logf("%s: claimed the evaluation of item %d %q", sc.Name(), item.Seq, item.Title)
+		}
 		capped.started()
 		l.logf("evaluating item %d %q", item.Seq, item.Title)
 		l.wg.Add(1)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -229,4 +230,137 @@ func holdsFor(unclaimed []gateway.HoldingUnclaimed, goal, kind, reason string) b
 		}
 	}
 	return false
+}
+
+// otherNode is a node id that is not this node's in either org.
+const otherNode = "node-elsewhere"
+
+// takesOtherFake is takesFake with its evaluating item held by another
+// node — built and finished on a machine that does not evaluate.
+func takesOtherFake(t *testing.T) *priorityFake {
+	p := takesFake(t)
+	p.WorkItems["held-3"]["nodeId"] = otherNode
+	return p
+}
+
+// takesRun is takesTick returning the loop, its log and the items the
+// Evaluate func was started on.
+func takesRun(t *testing.T, p *priorityFake, takes Takes) (*Loop, string, []gateway.WorkItem) {
+	t.Helper()
+	loop, logs := p.loop(2)
+	loop.Cfg.Takes = takes
+	var mu sync.Mutex
+	var evaluated []gateway.WorkItem
+	loop.Evaluate = func(_ context.Context, it gateway.WorkItem) {
+		mu.Lock()
+		evaluated = append(evaluated, it)
+		mu.Unlock()
+	}
+	loop.Rebase = func(context.Context, gateway.WorkItem) {}
+	loop.Tick(context.Background())
+	loop.wg.Wait()
+	return loop, logs.String(), evaluated
+}
+
+// claimCalls are every claim the fake was sent, of any kind.
+func claimCalls(p *priorityFake) []string {
+	var out []string
+	for _, c := range p.Calls {
+		if strings.HasPrefix(c.Name, "claim") {
+			out = append(out, c.Name)
+		}
+	}
+	return out
+}
+
+// The goal's acceptance (2): an evaluate-only node offered a build, a
+// plan, a rebase and an evaluation another node holds makes one claim,
+// the evaluation's, and evaluates the item as its own.
+func TestTakesEvaluateOnlyClaimsAnotherNodesEvaluation(t *testing.T) {
+	p := takesOtherFake(t)
+	_, _, evaluated := takesRun(t, p, Takes{{Kind: "evaluate"}})
+	if got := claimCalls(p); len(got) != 1 || got[0] != "claimWorkItemEvaluation" {
+		t.Fatalf("claims = %v, want exactly [claimWorkItemEvaluation]", got)
+	}
+	if len(p.Claims) != 1 {
+		t.Fatalf("claims attempted = %+v, want one", p.Claims)
+	}
+	for _, name := range []string{"claimWorkItem", "claimPlan", "claimWorkItemRebase", "claimDirectionResearch"} {
+		if n := len(p.CallsNamed(name)); n != 0 {
+			t.Errorf("%d %s call(s) under takes: [evaluate]", n, name)
+		}
+	}
+	c := p.CallsNamed("claimWorkItemEvaluation")[0]
+	if c.Input["aggregateId"] != "held-3" || c.Input["nodeId"] != p.scopes[1].NodeID {
+		t.Errorf("claimWorkItemEvaluation input = %v, want held-3 by %s", c.Input, p.scopes[1].NodeID)
+	}
+	if len(evaluated) != 1 || evaluated[0].ID != "held-3" {
+		t.Fatalf("evaluated = %+v, want held-3", evaluated)
+	}
+	// read again after the claim: the evaluator judges by the item's
+	// nodeId, now this node's
+	if evaluated[0].NodeID != p.scopes[1].NodeID {
+		t.Errorf("evaluated item's nodeId = %q, want this node's %q", evaluated[0].NodeID, p.scopes[1].NodeID)
+	}
+}
+
+// A refused evaluation claim — another node has it — starts nothing and
+// leaves the item out of the loop's evaluating set, and is not an error.
+func TestTakesRefusedEvaluationClaimStartsNothing(t *testing.T) {
+	p := takesOtherFake(t)
+	p.WorkItems["held-3"]["evaluationNodeId"] = otherNode
+	loop, logs, evaluated := takesRun(t, p, Takes{{Kind: "evaluate"}})
+	// a refused mutation is not in Calls; Claims records every attempt
+	if len(p.Claims) != 1 || p.Claims[0].Name != "claimWorkItemEvaluation" {
+		t.Fatalf("claims attempted = %+v, want one claimWorkItemEvaluation", p.Claims)
+	}
+	if len(evaluated) != 0 {
+		t.Errorf("Evaluate started on %+v after a refused claim", evaluated)
+	}
+	loop.mu.Lock()
+	left := loop.evaluating["held-3"]
+	loop.mu.Unlock()
+	if left {
+		t.Error("held-3 left in the loop's evaluating set after a refused claim")
+	}
+	if strings.Contains(logs, "claim the evaluation") {
+		t.Errorf("a refusal logged as an error:\n%s", logs)
+	}
+}
+
+// With no takes: key a node still evaluates what it holds itself, with
+// no claim: it already holds the item.
+func TestTakesEveryKindEvaluatesItsOwnWithoutClaim(t *testing.T) {
+	p := takesFake(t)
+	_, _, evaluated := takesRun(t, p, nil)
+	if n := len(p.CallsNamed("claimWorkItemEvaluation")); n != 0 {
+		t.Errorf("%d claimWorkItemEvaluation call(s) for an item this node holds", n)
+	}
+	if len(evaluated) != 1 || evaluated[0].ID != "held-3" {
+		t.Errorf("evaluated = %+v, want held-3", evaluated)
+	}
+}
+
+// A platform whose Mutation has no claimWorkItemEvaluation: an item
+// another node holds is left alone, said once per run.
+func TestTakesNoEvaluationClaimOnThePlatform(t *testing.T) {
+	p := takesOtherFake(t)
+	p.Unsupported = map[string]bool{"claimWorkItemEvaluation": true}
+	loop, logs := p.loop(2)
+	loop.Cfg.Takes = Takes{{Kind: "evaluate"}}
+	var evaluated atomic.Bool
+	loop.Evaluate = func(context.Context, gateway.WorkItem) { evaluated.Store(true) }
+	for range 2 {
+		loop.Tick(context.Background())
+		loop.wg.Wait()
+	}
+	if evaluated.Load() {
+		t.Error("an item another node holds was evaluated without the claim")
+	}
+	if n := len(p.CallsNamed("claimWorkItemEvaluation")); n != 0 {
+		t.Errorf("%d claimWorkItemEvaluation call(s) to a platform without it", n)
+	}
+	if n := strings.Count(logs.String(), "takes no evaluation claim"); n != 1 {
+		t.Errorf("%q logged %d times over two ticks, want once:\n%s", "takes no evaluation claim", n, logs.String())
+	}
 }

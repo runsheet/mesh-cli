@@ -1090,6 +1090,9 @@ type Gateway interface {
 	// ClaimWorkItemEvaluation is the claim a node that did not build an
 	// item makes to evaluate it (goal a-node-says-which-sessions-it-takes).
 	ClaimWorkItemEvaluation(ctx context.Context, itemID, nodeID string) error
+	// TakesEvaluationClaim is whether the platform has it: without it a
+	// node evaluates only what it holds (ADR-025).
+	TakesEvaluationClaim(ctx context.Context) bool
 	FinishWorkItemRebase(ctx context.Context, itemID, headSha string, resolvedFiles []string, usage *gateway.UsageReport) error
 	FailWorkItemRebase(ctx context.Context, itemID, reason string) error
 	RecordDirectionResearch(ctx context.Context, directionID, nodeID string, research gateway.Research, costCents int, notes string, usage *gateway.UsageReport) error

@@ -1,12 +1,12 @@
 ---
-summary: node.yaml's `takes:` names the kinds of session a node claims — a list (`[evaluate]`) or a per-kind cap map (`{evaluate: 3}`), left out every kind — and the loop skips a kind not taken before it lists or asks the platform, read live every tick, a capped kind held at its cap and named on the holding report; the heartbeat will carry the kinds as `holding.kinds` so the platform can name a kind no online node takes.
+summary: node.yaml's `takes:` names the kinds of session a node claims — a list (`[evaluate]`) or a per-kind cap map (`{evaluate: 3}`), left out every kind — and the loop skips a kind not taken before it lists or asks the platform, read live every tick, a capped kind held at its cap and named on the holding report; the heartbeat will carry the kinds as `holding.kinds` so the platform can name a kind no online node takes; an evaluating node claims another node's evaluation with `claimWorkItemEvaluation` when the platform has it.
 status: accepted
 ---
 
 # ADR-025: A node says which sessions it takes
 
 2026-10-04, goal `a-node-says-which-sessions-it-takes` (item 3; the
-cap, decision 4, item 5).
+cross-node evaluation claim, item 4; the cap, decision 4, item 5).
 
 ## Context
 
@@ -78,9 +78,22 @@ once the gateway's schema takes it, introspected like `holding.orgs`.
 
 ## Consequences
 
-- An evaluate-only node evaluates nothing until the platform lets it
-  claim another node's evaluation: the cross-node evaluation claim is
-  item 4 of the goal.
+- **The cross-node claim** (item 4 of the goal): `evaluateHeld` takes
+  every item in `evaluating` of a served org. One this node holds is
+  evaluated with no claim, as before; one another node holds, or none,
+  is claimed with `claimWorkItemEvaluation` (`GW.ClaimWorkItemEvaluation`)
+  before the session starts — marked in the loop's evaluating set first
+  and cleared on a refusal, as `rebaseRequested` does, the refusal the
+  ordinary answer and not logged, any other error logged — then read
+  again, so the item reaches the evaluator (and an adoption after a
+  restart) with this node's `nodeId`. The claim is asked only when the
+  gateway's `Mutation` has `claimWorkItemEvaluation`
+  (`TakesEvaluationClaim`, introspected and kept an hour); without it
+  the node evaluates only what it holds, said once per run: `the
+  platform takes no evaluation claim; evaluating only what this node
+  holds`. A node that builds and evaluates claims other nodes'
+  evaluations too: the platform's claim is the lock, and the builder's
+  own evaluation, made with no claim, is the platform's to fence.
 - The per-kind cap (`takes: {evaluate: 2}` under capacity 4) is item 5
   (amended above, decision 4).
 - `mesh node status` printing the kinds taken, and the heartbeat carrying
