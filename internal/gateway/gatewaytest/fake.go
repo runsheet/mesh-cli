@@ -1105,7 +1105,9 @@ func (f *Fake) repoFullName(repoID string) string {
 // every field a heartbeat may carry, `commit` among them, less
 // UnknownFields — `scaling`
 // without `accounts` when that is unknown, as the platform before
-// adr-005's per-account slots; `holding` left out entirely when
+// adr-005's per-account slots, and without `host` when
+// UnknownFields["host"] (a platform before adr-004's amendment
+// 2026-10-03); `holding` left out entirely when
 // UnknownFields["holding"] (a platform before node-says-why-work-waits);
 // `limits`'s element type (NodeAccountLimitsInput) without `priorities`
 // when UnknownFields["priorities"] (a platform before adr-005's
@@ -1141,7 +1143,7 @@ func (f *Fake) heartbeatInputType() map[string]any {
 		}
 		if name == "scaling" {
 			var sub []any
-			for _, n := range []string{"capacity", "min", "max", "reason", "accounts"} {
+			for _, n := range []string{"capacity", "min", "max", "reason", "accounts", "host"} {
 				if !f.UnknownFields[n] {
 					sub = append(sub, field(n))
 				}
