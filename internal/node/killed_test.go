@@ -298,7 +298,7 @@ func TestPlanAndResearchExpiredContextKilledIsLogged(t *testing.T) {
 
 	var logs bytes.Buffer
 	p := &Planner{Log: log.New(&logs, "", 0)}
-	if _, _, _, _, _, err := p.readPlan(ctx, gateway.Goal{Slug: "ship-it"}, t.TempDir(), nil, result, context.DeadlineExceeded, nil, nil, nil, nil, nil, false, gateway.Repo{}, false); err == nil {
+	if _, _, _, _, _, _, err := p.readPlan(ctx, gateway.Goal{Slug: "ship-it"}, t.TempDir(), nil, result, context.DeadlineExceeded, nil, nil, nil, nil, nil, false, gateway.Repo{}, false); err == nil {
 		t.Fatal("an expired plan hands in nothing")
 	}
 	if !strings.Contains(logs.String(), "goal ship-it"+line) {

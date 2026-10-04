@@ -245,3 +245,46 @@ code changes: `ItemCap` already prefers the served value.
 `internal/gateway/itemcap_test.go` proves the default, the project's own
 cap, and `Client.Project` against the gatewaytest fake (which serves no
 `maxItems`, as today's platform) answering `ItemCap() == 8`.
+
+## Amendment 2026-10-04: the plan check's cut-over rule (item 5)
+
+**The check.** `cutOverAcceptance(specs)`
+(`internal/node/plan_check.go`) flags each item with a sentence of its
+acceptance that waits on a person or production: "a/the
+person/operator/owner/human confirms/approves/deletes/runs/flips," "in
+production," "once a/the run/release/deploy," "a v\*/live/real run
+reads/shows/mirrors," "the gate is open/closed," "STEP 0 reading,"
+"after the platform/runsheet half lands." A `Measure:` item is exempt,
+as for the host rule (ADR-020). The flag — `item N (title): its
+acceptance waits on a person or production ("<sentence>", …), a gate no
+builder can open; make it `precondition` on the item that needs it, or
+a `pr` checkpoint on the goal` — is appended in `readPlan` beside
+`closeOutAcceptance`, so the re-ask carries it with `planCutOverRule`.
+A second answer still carrying one is handed in with the flag logged;
+the evaluator's unverifiable-clause rule is the backstop.
+
+**The brief line.** A planned item's `precondition` rides its brief's
+first line, `precondition: <clause>` — after `atomic:`'s line when the
+item has one (`gateway.BriefWithPrecondition`, `gateway.PreconditionOf`,
+mirroring `BriefWithAtomic`/`AtomicReason`) — so the item's record
+carries the gate on every platform. It is also sent as the item's
+`precondition` field (`gateway.PlannedItem.Precondition`) only when the
+gateway's `PlannedItemInput` takes it (`Client.TakesItemPrecondition`,
+introspected and kept an hour like `questions`); the gatewaytest fake's
+`ItemPrecondition` serves the field, and without it a `planGoal` item
+carrying it is refused, as the platform is today.
+
+**The pr checkpoint.** `"checkpoints"` beside `items`
+(`harness.ParsePlanCheckpoints`) naming `pr`, on a goal whose
+`Checkpoints` lacks it, makes `handIn` call `SetGoalCheckpoints(goal,
+by, goal.Checkpoints + "pr")` before `PlanGoal`, logged `goal <slug>: pr
+checkpoint set: a person approves each pull request`; a refusal is
+logged and the graph still lands. Any other value is logged `plan
+checkpoint "<value>" is not one the node sets (pr); dropped`.
+
+release-tag-mirrors item 14 — the cleanup after the flip, its
+acceptance gated on a STEP 0 reading and on the operator deleting the
+secret, failed three times — is the fixture
+(`internal/node/plan_cutover_test.go`): flagged, re-asked, and handed in
+with the gate as the item's precondition and a `pr` checkpoint on the
+goal.

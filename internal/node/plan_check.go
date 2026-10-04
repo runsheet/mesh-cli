@@ -577,3 +577,45 @@ func otherRepoRefusal(specs []harness.PlannedSpec, itemRepo map[int]gateway.Repo
 	}
 	return ""
 }
+
+// The node's check of a plan for the cut-over rule (ADR-023 (c),
+// `planCutOverRule`): a sentence of an item's acceptance that waits on a
+// person's confirmation or a production observation is a gate no
+// builder can open — release-tag-mirrors item 14 failed three times on
+// one. The check is lexical like hostReadingAcceptance, and a `Measure:`
+// item is exempt as there.
+var cutOverPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)\b(?:a|the) (?:person|operator|owner|human) (?:confirms?|approves?|deletes?|runs?|flips?)\b`),
+	regexp.MustCompile(`(?i)\bin production\b`),
+	regexp.MustCompile(`(?i)\bonce (?:a|the) (?:run|release|deploy)\b`),
+	regexp.MustCompile(`(?i)\ba (?:v\*|live|real) run (?:reads|shows|mirrors)\b`),
+	regexp.MustCompile(`(?i)\bthe gate is (?:open|closed)\b`),
+	regexp.MustCompile(`(?i)\bSTEP 0 reading\b`),
+	regexp.MustCompile(`(?i)\bafter the (?:platform|runsheet) half lands\b`),
+}
+
+// cutOverAcceptance flags each item with a sentence of its acceptance
+// that waits on a person or production (cutOverPatterns), unless the
+// item is a `Measure:` one. Each flag names the item and the sentences,
+// for the planner's re-ask; none means the plan is clean.
+func cutOverAcceptance(specs []harness.PlannedSpec) []string {
+	var flags []string
+	for _, sp := range specs {
+		if measureTitle.MatchString(strings.TrimSpace(sp.Title)) {
+			continue
+		}
+		var sentences []string
+		for _, sentence := range sentenceEnd.Split(sp.Acceptance, -1) {
+			for _, re := range cutOverPatterns {
+				if re.MatchString(sentence) {
+					sentences = append(sentences, fmt.Sprintf("%q", strings.TrimSpace(sentence)))
+					break
+				}
+			}
+		}
+		if len(sentences) > 0 {
+			flags = append(flags, fmt.Sprintf("item %d (%s): its acceptance waits on a person or production (%s), a gate no builder can open; make it `precondition` on the item that needs it, or a `pr` checkpoint on the goal", sp.Seq, strings.TrimSpace(sp.Title), strings.Join(sentences, ", ")))
+		}
+	}
+	return flags
+}

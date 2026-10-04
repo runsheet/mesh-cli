@@ -1067,6 +1067,10 @@ type Gateway interface {
 	// TakesPlanQuestions is whether PlanGoal can carry the planner's
 	// questions for the person (ADR-020).
 	TakesPlanQuestions(ctx context.Context) bool
+	// SetGoalCheckpoints sets the goal's checkpoints: a plan's `pr`
+	// checkpoint is set before PlanGoal (ADR-023's amendment, the cut-over
+	// rule).
+	SetGoalCheckpoints(ctx context.Context, goalID, by string, checkpoints []string) error
 	Project(ctx context.Context, id string) (*gateway.Project, error)
 	Projects(ctx context.Context, orgID string) ([]gateway.Project, error)
 	Directions(ctx context.Context, orgID, projectID string) ([]gateway.Direction, error)
