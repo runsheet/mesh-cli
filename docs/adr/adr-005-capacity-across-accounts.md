@@ -218,3 +218,39 @@ slot per five quiet minutes back to the accounts' figure. The free-memory
 cap stays on the target, reason `low memory`; the reasons table's
 `machine load` row reads `low memory`, and `host hot: …` is the
 back-off's.
+
+## Amendment — 2026-10-03 (goal every-subscription-lands-full-at-its-reset, item 3): the push
+
+The targets 0.95 and 0.90 spread a window; at its end they leave the
+rest unspent. A subscription behind its line late in a window wastes
+what it was paying for. So the scaler **pushes**:
+
+- For each of a subscription's windows, `AccountsScaler` turns its last
+  reading into its standing at the scaler's own clock (ADR-005 accounts
+  on the node, the clock rule: `windowStanding`, the target line the
+  elapsed fraction less `limits.reserve`, or the credential's own pace
+  point for that window where it has one). The window is **pushed**
+  when its standing says Push: at most 20% of its length left and its
+  use below its line.
+- A pushed window affords `(limits.stop − utilization) ÷ minutes to
+  reset ÷ burn` instead of `(0.95 or 0.90 − utilization) ÷ …`, and at
+  least one slot more than it would unpushed, so a push shows even
+  while the burn is unmeasured. A window at or past `limits.stop`
+  affords nothing, pushed or not. The account's slots are still the
+  smaller over its windows.
+- When the push raises the account's whole slots, its `AccountSlots`
+  carries `Push: true`, `Reason: push` (`ReasonPush`) and the pushed
+  window and standing; an account at or above its line gets today's
+  count. The node logs `capacity: pushing <label> (seven-day window 92%
+  elapsed, 70% used, target 87%)` once per crossing into the push, and
+  `Loop.Pushed` names the accounts pushed at the last run.
+- `AccountsScaler.Limits` is the loop's `Thresholds()`, set by
+  `accountsTarget` on every run, so a reloaded `stop` or `reserve`
+  takes effect on the next minute.
+- The sum is still clamped to `[min, max]` and to the machine, and the
+  pace's hard stop stays above it: a pushed account at `stop` is
+  stopped.
+
+The heartbeat's `scaling.accounts[]` carries the `push` reason as any
+other; a `push` field on the wire is the goal's later items (`limits`
+and `mesh node status`), not this one.

@@ -1148,7 +1148,13 @@ key by its money left under its caps and the project's budget.
 - **A subscription** affords the smaller over its windows of (target −
   utilization) ÷ minutes to reset ÷ its burn per slot-minute — the
   targets 0.90 five-hour and 0.95 seven-day, the burn measured over the
-  last 30 minutes of *its own* sessions.
+  last 30 minutes of *its own* sessions. **The push:** in a window's
+  last 20% of time, a subscription still behind its target line
+  (elapsed fraction less `reserve`) affords (`stop` − utilization) ÷
+  minutes to reset ÷ burn instead, and at least one slot more than it
+  otherwise would, so it lands near full at reset — reason `push`,
+  logged once as `capacity: pushing <label> (seven-day window 92%
+  elapsed, 70% used, target 87%)`; a window at `stop` affords nothing.
 - **An API key** affords its money left today ÷ hours left today ÷ its
   dollars per slot-hour (measured the same way; $10 before there is
   data). The money left is the least of the daily cap less today's
