@@ -149,6 +149,10 @@ func pacePointFraction(v float64) float64 {
 // when either window's is set.
 type Standing struct {
 	FiveHour, SevenDay WindowStanding
+	// Target is the line the account itself stands against: the
+	// seven-day window's Target when it has a reading, else the
+	// five-hour's — the same window Distance falls back to.
+	Target float64
 	// Distance is negative behind the account's own target, positive
 	// ahead of it.
 	Distance float64
@@ -168,9 +172,9 @@ func StandingOf(now time.Time, r harness.RateLimit, cfg LimitsConfig) Standing {
 		FiveHour: windowStanding(now, r.FiveHour, fiveHourLength, fiveHourPoint, cfg),
 		SevenDay: windowStanding(now, r.SevenDay, sevenDayLength, sevenDayPoint, cfg),
 	}
-	s.Distance = s.FiveHour.Distance
+	s.Target, s.Distance = s.FiveHour.Target, s.FiveHour.Distance
 	if !r.SevenDay.ResetsAt.IsZero() {
-		s.Distance = s.SevenDay.Distance
+		s.Target, s.Distance = s.SevenDay.Target, s.SevenDay.Distance
 	}
 	s.Push = s.FiveHour.Push || s.SevenDay.Push
 	return s
@@ -336,11 +340,17 @@ func (s *Limits) all() map[string]harness.RateLimit {
 // names it serves (a Codex account's own label, its "codex:" prefix
 // stripped) — empty for one serving all, or one known has not heard the
 // platform issue — so the Nodes page's account gauges can show what
-// each serves (adr-005's amendment 2026-10, `limits[].priorities`).
-func (s *Limits) Heartbeat(known []AccountConfig) []gateway.Limits {
+// each serves (adr-005's amendment 2026-10, `limits[].priorities`), and
+// each Claude account's standing against the clock rule's target line —
+// Target, Distance, Push, from Standing(now, rl, cfg.For(account)) — a
+// Codex account carrying none of the three, since the clock does not
+// pace it (adr-005's amendment 2026-10-03).
+func (s *Limits) Heartbeat(known []AccountConfig, now time.Time, cfg LimitsConfig) []gateway.Limits {
 	priorities := make(map[string][]string, len(known))
+	configs := make(map[string]AccountConfig, len(known))
 	for _, a := range known {
 		priorities[a.Label] = a.Priorities
+		configs[a.Label] = a
 	}
 	readings := s.all()
 	accounts := make([]string, 0, len(readings))
@@ -351,12 +361,18 @@ func (s *Limits) Heartbeat(known []AccountConfig) []gateway.Limits {
 	out := make([]gateway.Limits, 0, len(accounts))
 	for _, a := range accounts {
 		rl := readings[a]
-		out = append(out, gateway.Limits{
+		label := strings.TrimPrefix(a, CodexAccountPrefix)
+		l := gateway.Limits{
 			Account: a, Status: rl.Status, RateLimitType: rl.RateLimitType, ResetsAt: rl.ResetsAt,
 			OverageStatus: rl.OverageStatus, IsUsingOverage: rl.IsUsingOverage,
 			FiveHour: limitWindow(rl.FiveHour), SevenDay: limitWindow(rl.SevenDay), ObservedAt: rl.ObservedAt,
-			Priorities: priorities[strings.TrimPrefix(a, CodexAccountPrefix)],
-		})
+			Priorities: priorities[label],
+		}
+		if !strings.HasPrefix(a, CodexAccountPrefix) {
+			st := StandingOf(now, rl, cfg.For(configs[label]))
+			l.Target, l.Distance, l.Push = &st.Target, &st.Distance, &st.Push
+		}
+		out = append(out, l)
 	}
 	return out
 }

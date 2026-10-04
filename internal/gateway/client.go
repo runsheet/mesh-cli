@@ -156,10 +156,10 @@ type Client struct {
 	// preconditionSchema is whether the gateway's PlannedItemInput was
 	// last seen with `precondition`, and when (TakesItemPrecondition).
 	preconditionSchema holdingProbe
-	// limitsPrioritiesSchema is whether the gateway's heartbeat `limits`
-	// list input was last found to take `priorities` (see
-	// takesLimitsPriorities).
-	limitsPrioritiesSchema holdingProbe
+	// limitsFieldsSchema is the set of field names the gateway's
+	// heartbeat `limits` list input type was last found to take —
+	// priorities, target, distance, push among them (see limitsFields).
+	limitsFieldsSchema limitsFieldsProbe
 	// replaceItemSchema is whether the gateway's requestPlan input was
 	// last seen to take replaceItem, kept for ScalingProbeEvery.
 	replaceItemSchema holdingProbe
@@ -2225,6 +2225,19 @@ type Limits struct {
 	// takesLimitsPriorities; adr-005's amendment 2026-10,
 	// `limits[].priorities`).
 	Priorities []string `json:"priorities,omitempty"`
+	// Target, Distance and Push are the account's standing against the
+	// clock rule's target line (internal/node's Standing/StandingOf,
+	// adr-005's amendment 2026-10-03): the window's time-proportional
+	// target less the reserve (or a credential's own pace point),
+	// Distance (utilization less Target, negative behind it) and
+	// whether the account is Push-ed in the window's last fifth. Nil
+	// for a Codex account, which the clock does not pace. Pointers so a
+	// known 0 or false is still sent; nil when the node has no reading
+	// to stand against. Sent only when the gateway's
+	// NodeAccountLimitsInput has them (limitsFields).
+	Target   *float64 `json:"target,omitempty"`
+	Distance *float64 `json:"distance,omitempty"`
+	Push     *bool    `json:"push,omitempty"`
 }
 
 // LimitWindow is one of the plan's windows: how much of it is used, as
@@ -2249,11 +2262,7 @@ func (c *Client) HeartbeatNode(ctx context.Context, nodeID, version string, runn
 			in["updateError"] = x.UpdateError
 		}
 		if len(x.Limits) > 0 {
-			if c.takesLimitsPriorities(ctx) {
-				in["limits"] = x.Limits
-			} else {
-				in["limits"] = limitsWithoutPriorities(x.Limits)
-			}
+			in["limits"] = limitsWithout(x.Limits, c.limitsFields(ctx))
 		}
 		if x.Scaling != nil {
 			switch takes, accounts, host := c.takesScaling(ctx); {
@@ -2692,35 +2701,50 @@ func (c *Client) takesScopeShares(ctx context.Context) bool {
 	return p.takes
 }
 
-// limitsWithoutPriorities is limits with its `priorities` dropped from
-// the wire shape, for a platform whose NodeAccountLimitsInput does not
-// take it yet: an unknown field refuses the whole heartbeat (see
-// HeartbeatNode).
-func limitsWithoutPriorities(limits []Limits) []map[string]any {
+// limitsWithout is limits with each of priorities, target, distance and
+// push dropped from the wire shape where known lacks it, for a
+// platform whose NodeAccountLimitsInput does not take it yet: an
+// unknown field refuses the whole heartbeat (see HeartbeatNode).
+func limitsWithout(limits []Limits, known map[string]bool) []map[string]any {
 	out := make([]map[string]any, len(limits))
 	for i, l := range limits {
 		b, _ := json.Marshal(l)
 		m := map[string]any{}
 		_ = json.Unmarshal(b, &m)
-		delete(m, "priorities")
+		for _, k := range []string{"priorities", "target", "distance", "push"} {
+			if !known[k] {
+				delete(m, k)
+			}
+		}
 		out[i] = m
 	}
 	return out
 }
 
-// takesLimitsPriorities says whether the gateway's HeartbeatNodeInput's
-// `limits` list carries a `priorities` field on its element type —
-// asked once by introspection and kept for ScalingProbeEvery, the same
-// as takesScaling (ADR-004: the node must not send a field the platform
-// does not accept). A failed probe is a no, kept as long
-// (adr-005's amendment 2026-10, `limits[].priorities`).
-func (c *Client) takesLimitsPriorities(ctx context.Context) bool {
-	p := &c.limitsPrioritiesSchema
+// limitsFieldsProbe is the cached set of field names the gateway's
+// heartbeat `limits` list input type was last found to take, and when
+// it was asked.
+type limitsFieldsProbe struct {
+	mu     sync.Mutex
+	at     time.Time
+	fields map[string]bool
+}
+
+// limitsFields says which fields the gateway's HeartbeatNodeInput's
+// `limits` list carries on its element type — priorities, target,
+// distance, push among them — asked once by introspection and kept for
+// ScalingProbeEvery, the same as takesScaling (ADR-004: the node must
+// not send a field the platform does not accept). A failed probe takes
+// nothing, kept as long (adr-005's amendment 2026-10,
+// `limits[].priorities`; amended 2026-10-03, `limits[].target`,
+// `distance`, `push`).
+func (c *Client) limitsFields(ctx context.Context) map[string]bool {
+	p := &c.limitsFieldsSchema
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := c.now()
 	if !p.at.IsZero() && now.Sub(p.at) < ScalingProbeEvery {
-		return p.takes
+		return p.fields
 	}
 	type typeRef struct {
 		Kind        string `json:"kind"`
@@ -2737,10 +2761,10 @@ func (c *Client) takesLimitsPriorities(ctx context.Context) bool {
 			} `json:"inputFields"`
 		} `json:"__type"`
 	}
-	p.at, p.takes = now, false
+	p.at, p.fields = now, map[string]bool{}
 	q := `{ __type(name: "HeartbeatNodeInput") { inputFields { name type { kind inputFields { name } ofType { kind inputFields { name } ofType { kind inputFields { name } } } } } } }`
 	if err := c.Query(ctx, q, nil, &out); err != nil || out.Type == nil {
-		return false
+		return p.fields
 	}
 	for _, f := range out.Type.InputFields {
 		if f.Name != "limits" {
@@ -2748,13 +2772,19 @@ func (c *Client) takesLimitsPriorities(ctx context.Context) bool {
 		}
 		for t := &f.Type; t != nil; t = t.OfType {
 			for _, sf := range t.InputFields {
-				if sf.Name == "priorities" {
-					p.takes = true
-				}
+				p.fields[sf.Name] = true
 			}
 		}
 	}
-	return p.takes
+	return p.fields
+}
+
+// takesLimitsPriorities says whether the gateway's HeartbeatNodeInput's
+// `limits` list carries a `priorities` field on its element type — a
+// thin wrapper over limitsFields (adr-005's amendment 2026-10,
+// `limits[].priorities`).
+func (c *Client) takesLimitsPriorities(ctx context.Context) bool {
+	return c.limitsFields(ctx)["priorities"]
 }
 
 // adoptedWithoutNewFields is adopted with goalId, directionId,

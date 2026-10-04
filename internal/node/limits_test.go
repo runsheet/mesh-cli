@@ -444,6 +444,34 @@ func TestStanding(t *testing.T) {
 	})
 }
 
+// The heartbeat gives each Claude account its standing against the
+// clock's target line (adr-005's amendment 2026-10-03,
+// `limits[].target`, `distance`, `push`); a Codex account carries none
+// of the three, since the clock does not pace it.
+func TestHeartbeatStanding(t *testing.T) {
+	limits := &Limits{}
+	limits.Observe("max-cloud", &harness.RateLimit{Status: "allowed",
+		SevenDay: harness.RateLimitWindow{Utilization: 0.10, ResetsAt: t0.Add(sevenDayLength / 2)}, ObservedAt: t0})
+	limits.Observe(CodexLimitsAccount("chatgpt-pro"), &harness.RateLimit{Status: "allowed",
+		FiveHour: harness.RateLimitWindow{Utilization: 0.5, ResetsAt: t0.Add(time.Hour)}, ObservedAt: t0})
+
+	byAccount := map[string]gateway.Limits{}
+	for _, l := range limits.Heartbeat(nil, t0, LimitsConfig{}) {
+		byAccount[l.Account] = l
+	}
+	claude := byAccount["max-cloud"]
+	if claude.Target == nil || claude.Distance == nil || claude.Push == nil {
+		t.Fatalf("claude account carries nil standing: %+v", claude)
+	}
+	if !approx(*claude.Target, 0.45) || !approx(*claude.Distance, -0.35) || *claude.Push {
+		t.Fatalf("standing = target %v distance %v push %v, want 0.45 -0.35 false", *claude.Target, *claude.Distance, *claude.Push)
+	}
+	codex := byAccount["codex:chatgpt-pro"]
+	if codex.Target != nil || codex.Distance != nil || codex.Push != nil {
+		t.Fatalf("codex account carries standing: %+v", codex)
+	}
+}
+
 // Ticks in one mode log its crossing once: into paced, into stopped,
 // back to normal — each a single line however many ticks it lasts.
 func TestLoopLogsEachCrossingOnce(t *testing.T) {

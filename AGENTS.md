@@ -532,14 +532,22 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   each one-shot harness and the channel session's `OnRateLimit`), and
   `pace` judges each account: *paced* at `limits.pace_five_hour` of the
   five-hour window (urgent/high work only, no research), *stopped* at
-  `limits.stop` of either window or a status not `allowed` (nothing on
-  it) until the window's reset. Every start picks its account
+  `limits.stop` (0.98) of either window or a status not `allowed`
+  (nothing on it) until the window's reset. **Each account is also
+  paced against a clock, not just the brake** (goal
+  every-subscription-lands-full-at-its-reset): `Standing`/`StandingOf`
+  turns a reading into each window's target line — its elapsed fraction
+  less `limits.reserve` (default 0.05), or the credential's own pace
+  point where it has one — and the account's `Distance` from it,
+  negative **behind** the line (room to spend) and positive ahead of it
+  (spent too fast); `Push` marks an account still behind with a fifth or
+  less of the window left before reset. Every start picks its account
   (`ChooseAccount`, below); the node's own mode (`nodePace`, the most
   lenient subscription) halves the capacity when paced, and a crossing
   is logged once. A Codex session's readings land under
   `codex:<account>` (`CodexLimitsAccount`, `ObserveLimitsAs`):
-  `Limits.Readings` leaves them out, so they never pace, stop, choose
-  or scale a Claude session; the heartbeat carries them.
+  `Limits.Readings` leaves them out, so they never pace, stop, choose,
+  scale or stand against the clock; the heartbeat carries them.
 - **The scale** (`internal/node/headroom.go`, `scaling.go`, adr-004):
   a node.yaml `capacity: {min, max}` runs the `Scaler` once a minute
   inside the tick (`Loop.scale`, by `Loop.Now`) on the highest
@@ -556,7 +564,14 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   api key by its money left under `daily_cap`/`monthly_cap` and the
   project's `project_budgets`, from the spend ledger
   (`ledger.go`, `~/.mesh/ledger.json`, local time, fed by
-  `ObserveSpend`); `Loop.spendable` narrows every choice — no key at
+  `ObserveSpend`). **The push**: a subscription window behind its
+  target line (`Standing`'s `Push`, above) with a fifth or less of its
+  length left affords `(stop − utilization) ÷ minutes to reset ÷ burn`
+  in place of the ordinary target's rate, and at least one slot more
+  than unpushed, so it lands near full at reset instead of wasting the
+  window's last hours (`ReasonPush`, `capacity.go`; logged once per
+  crossing, `capacity: pushing <label> (…)`, `Loop.Pushed`).
+  `Loop.spendable` narrows every choice — no key at
   its cap, the last 10% of a key's day for urgent/high, and for an item
   only an account with a slot free. **A hot host backs it off**
   (`hostbackoff.go`, ADR-023): every tick, while `MachineReading.Hot`
@@ -609,12 +624,23 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   the secret in its env only, a temp `CLAUDE_CONFIG_DIR` removed by
   `Cleanup`, `Job.Unset` of the inherited auth variables and
   `Job.Secrets` to redact; `MESH_ACCOUNT` makes `Account` key limits by
-  label. **Which account** (`internal/node/select.go`, adr-005): before
-  every claim — item, plan, research, rebase — and every evaluation the
-  loop calls `ChooseAccount` (subscriptions first, the most headroom;
-  an api account only for urgent/high work or when every subscription
-  is stopped and work waits) and hands the choice to the session on its
-  context (`WithAccount` → `OpenAccount`). **An account serves named
+  label. **Which account** (`internal/node/select.go`, adr-005, goal
+  every-subscription-lands-full-at-its-reset): before every claim —
+  item, plan, research, rebase — and every evaluation the loop calls
+  `ChooseAccount` (subscriptions ordered by `Standing`'s `Distance`
+  behind their target line, furthest behind first; an account ahead of
+  its line is chosen only once every other fitting subscription is also
+  ahead or stopped, then the least ahead of them; an account never read
+  stands as full headroom; an api account only for urgent/high work or
+  when every subscription is stopped and work waits) and hands the
+  choice to the session on its context (`WithAccount` → `OpenAccount`).
+  **The holdback**: once every subscription serving the priority but
+  one sits within 10% of `stop`, the one with the latest reset is
+  **held back** — excluded from `ChooseAccount` below urgent priority —
+  so the node is never left with every subscription stopped at once
+  (`heldBack`; logged `accounts: <label> held back for urgent work
+  (the others within 10% of stop); <n> item(s) left unclaimed until
+  <earliest reset>`). **An account serves named
   priorities** (`AccountConfig.Priorities`, `Serves`; empty serves all,
   research's `""` runs anywhere): `ChooseAccount`, `accountToFinish`'s
   fallback and `codexChooser` never pick one for work it does not
