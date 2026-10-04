@@ -1,9 +1,12 @@
 package commands
 
 import (
+	"bytes"
 	"context"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/gateway/gatewaytest"
@@ -158,5 +161,62 @@ func TestStatusLineNodeIDAgainstFake(t *testing.T) {
 				t.Errorf("status line %q, want it to contain %q", line, tc.want)
 			}
 		})
+	}
+}
+
+// `mesh node status` prints a Held goals table — ORG, GOAL, KIND,
+// SINCE, UNTIL and WHY — for the goals this node holds off claiming
+// for (goal a-refused-plan-is-released-not-replanned, item 2).
+func TestHeldGoalsSectionTable(t *testing.T) {
+	since := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
+	until := since.Add(5 * time.Hour)
+	held := []node.HeldGoal{
+		{GoalID: "g1", Slug: "loom", Org: "acme", Kind: "plan", Reason: "refused: same clause twice", Since: since},
+		{GoalID: "g2", Slug: "steady", Org: "acme", Kind: "item", Reason: "budget paused", Since: since, Until: until},
+	}
+	var out bytes.Buffer
+	heldGoalsSection(&out, held)
+	got := out.String()
+	for _, want := range []string{"Held goals", "ORG", "GOAL", "KIND", "SINCE", "UNTIL", "WHY",
+		"acme", "loom", "plan", "refused: same clause twice",
+		"steady", "item", "budget paused", since.Format(time.RFC3339), until.Format(time.RFC3339)} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("Held goals section missing %q:\n%s", want, got)
+		}
+	}
+}
+
+// With nothing held, the section is just "Held goals: none."
+func TestHeldGoalsSectionNone(t *testing.T) {
+	var out bytes.Buffer
+	heldGoalsSection(&out, nil)
+	if got := strings.TrimSpace(out.String()); got != "Held goals: none." {
+		t.Fatalf("Held goals section = %q, want %q", got, "Held goals: none.")
+	}
+}
+
+// localHeld only reports held goals, and only true, while a node runs
+// here — the same pid rule as localScaling.
+func TestLocalHeldPidRule(t *testing.T) {
+	state := node.RunState{Dir: t.TempDir()}
+	if _, ok := localHeld(state); ok {
+		t.Fatal("localHeld with no node running")
+	}
+	pid := os.Getpid()
+	if err := state.Started(pid); err != nil {
+		t.Fatal(err)
+	}
+	if held, ok := localHeld(state); !ok || len(held) != 0 {
+		t.Fatalf("localHeld with a node running but nothing held = %+v, %v, want [], true", held, ok)
+	}
+	if err := state.WriteHeld([]node.HeldGoal{{GoalID: "g1", Kind: "plan"}}); err != nil {
+		t.Fatal(err)
+	}
+	if held, ok := localHeld(state); !ok || len(held) != 1 {
+		t.Fatalf("localHeld = %+v, %v, want one entry", held, ok)
+	}
+	state.Stopped(pid)
+	if _, ok := localHeld(state); ok {
+		t.Fatal("localHeld after the node stopped")
 	}
 }

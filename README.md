@@ -603,7 +603,18 @@ capacity too. `mesh node status` heartbeats once and lists the org's nodes, abov
 line naming the credential this machine runs on — the machine, its org
 and operator, and when its access token is next refreshed, or the rs_*
 console token it is still on — and a line for the node process on this
-machine: running (its pid), draining, or none (see Drain below).
+machine: running (its pid), draining, or none (see Drain below). While
+a node runs here it also prints a **Held goals** section — a table of
+org, goal, kind (`plan` or `item`), since, until and why for every goal
+the node holds off claiming for (a plan claim released by a repeating
+refusal, or an item claim refused for budget, pause or approval), or
+`Held goals: none.` with nothing held; it reads `~/.mesh/node.held`,
+written each tick beside `node.scaling`. node.log says the same, as
+each is first noted (`held: <org> goal <slug> (<kind>): <reason>`) and
+as it is released (`held: <org> goal <slug> (<kind>) released`) — the
+node's own account of what it did, the kind of line
+[ADR-019](docs/adr/adr-019-the-node-writes-its-own-log.md) keeps in
+node.log rather than sessions.log.
 
 ### Start
 
