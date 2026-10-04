@@ -708,9 +708,13 @@ func TestOwnedStartHandsTheAnswerToTheLoop(t *testing.T) {
 		return &Config{Slug: "mini", Name: mini, Capacity: Fixed(2), Orgs: []string{"runsheet"}}, nil
 	})
 	loop.TakeAnswer(reg.Answer)
-	if buf.Len() != 0 {
+	// the answer's shares (registerNode.json's fixture) are new to the
+	// loop, so taking it logs that line alone — no orgs or owner change,
+	// since this is the registration's own answer, not yet a reload
+	if got := strings.TrimSpace(buf.String()); got != "shares (platform) none → grapevine 1, runsheet 2, wardroomid 1" {
 		t.Fatalf("taking the registration's own answer logged:\n%s", buf.String())
 	}
+	buf.Reset()
 	loop.Tick(context.Background())
 	loop.wg.Wait()
 	if len(gw.beatsNow()) != 1 {

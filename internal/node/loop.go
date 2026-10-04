@@ -54,6 +54,12 @@ type Loop struct {
 	// its graph and returns when the plan is handed in — or not, in
 	// which case the next tick offers it again. Optional.
 	Plan func(ctx context.Context, goal gateway.Goal, scope Scope)
+	// PlanReleased says a goal's plan claim was released for a repeated
+	// refusal and its row has not changed since, with the refusal's text
+	// (Planner.Released; ADR-023, a refused plan is released, not
+	// re-planned): such a goal is passed over and held, never claimed.
+	// Optional; nil releases none.
+	PlanReleased func(goal gateway.Goal) (reason string, ok bool)
 	// Research reads one direction of a project and proposes the goals
 	// it asks for (runsheet trd §6c). The claim is taken here, before it
 	// runs; the platform refuses it outside the direction's hours,
@@ -252,6 +258,18 @@ type Loop struct {
 	// "is not a served org" is not logged again while it keeps appearing
 	// unchanged; a name that drops out and comes back logs again.
 	sharesUnknown map[string]bool
+	// answerShares is the owner answer's per-org shares (ADR-023): set
+	// when the last answer carried a non-zero Shares on any scope, over
+	// node.yaml's shares: in Weights() (answerSharesSet); an answer
+	// whose scopes are all 0 clears it, falling back to node.yaml's
+	// shares: (or nil) from then on.
+	answerShares    map[string]int
+	answerSharesSet bool
+	// sharesBothPresent records whether the platform's shares and
+	// node.yaml's shares: were both in force as of the last answer, so
+	// the "node.yaml's shares: ignored" line logs once per change into
+	// that state, not every tick it holds.
+	sharesBothPresent bool
 	// paced is the pacing mode last logged, so a crossing is logged once.
 	paced paceMode
 	// waiting counts, by kind, the work this tick left unclaimed because
@@ -1428,7 +1446,7 @@ func (l *Loop) reload(ctx context.Context) {
 			}
 		}
 		was := map[string]int{}
-		for org, w := range l.Weights() {
+		for org, w := range l.nodeYAMLWeights() {
 			if served[org] {
 				was[org] = w
 			}
@@ -1443,6 +1461,7 @@ func (l *Loop) reload(ctx context.Context) {
 		l.shares, l.sharesSet = filtered, true
 		l.sharesUnknown = nowUnknown
 		l.mu.Unlock()
+		l.noteSharesBoth()
 	}
 	if got.OrgsRead {
 		l.mu.Lock()
@@ -1691,12 +1710,14 @@ func (l *Loop) planRequested(ctx context.Context) {
 		return
 	}
 	var requested []planningGoal
+	listed := map[string]bool{} // the orgs whose goals were read
 	for _, sc := range l.Scopes {
 		goals, err := l.goals(ctx, sc)
 		if err != nil {
 			l.logf("list goals of %s: %v", sc.Name(), err)
 			continue
 		}
+		listed[sc.Name()] = true
 		for _, g := range goals {
 			if g.Status == "planning" {
 				requested = append(requested, planningGoal{goal: g, scope: sc})
@@ -1704,6 +1725,7 @@ func (l *Loop) planRequested(ctx context.Context) {
 		}
 	}
 	planOrder(requested)
+	l.clearReleasedPlans(requested, listed)
 	for _, r := range requested {
 		g, sc := r.goal, r.scope
 		l.mu.Lock()
@@ -1725,6 +1747,14 @@ func (l *Loop) planRequested(ctx context.Context) {
 		if why, until, ok := l.NoCredential.Holds(g.ProjectID, string(harness.KindPlan), l.adapter()); ok {
 			l.passOver(g.ID, "plan", priorityName(gateway.PriorityRank(g.Priority)), why, until)
 			l.NoCredential.Say(g.ID, why, until)
+			continue
+		}
+		// a plan released for a repeated refusal waits for the goal's row
+		// to change: no account, no claim (ADR-023, a refused plan is
+		// released, not re-planned)
+		if reason, ok := l.planReleased(g); ok {
+			l.passOver(g.ID, "plan", priorityName(gateway.PriorityRank(g.Priority)), reason, time.Time{})
+			l.NoteHeld(HeldGoal{GoalID: g.ID, Slug: g.Slug, Org: sc.Name(), Kind: "plan", Reason: reason, Since: l.heldSince(g.ID, "plan")})
 			continue
 		}
 		actx, ok := l.accountFor(ctx, priorityName(gateway.PriorityRank(g.Priority)), true, "plan")
@@ -1753,6 +1783,42 @@ func (l *Loop) planRequested(ctx context.Context) {
 		l.recordClaim(ClaimRecord{NodeID: sc.NodeID, Kind: harness.KindPlan, GoalID: g.ID, ScopeID: sc.ID, Name: g.Slug})
 		l.startPlan(actx, g, sc)
 	}
+}
+
+// planReleased is PlanReleased's answer for g, false with no hook.
+func (l *Loop) planReleased(g gateway.Goal) (string, bool) {
+	if l.PlanReleased == nil {
+		return "", false
+	}
+	return l.PlanReleased(g)
+}
+
+// clearReleasedPlans clears the plan hold of every goal of a listed org
+// that is no longer released: its row changed, or it left planning.
+func (l *Loop) clearReleasedPlans(requested []planningGoal, listed map[string]bool) {
+	still := map[string]bool{}
+	for _, r := range requested {
+		if _, ok := l.planReleased(r.goal); ok {
+			still[r.goal.ID] = true
+		}
+	}
+	for _, h := range l.HeldGoals() {
+		if h.Kind == "plan" && listed[h.Org] && !still[h.GoalID] {
+			l.ClearHeld(h.GoalID, "plan")
+		}
+	}
+}
+
+// heldSince is when goal and kind was first held, now when it is not.
+func (l *Loop) heldSince(goalID, kind string) time.Time {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, h := range l.held {
+		if h.GoalID == goalID && h.Kind == kind {
+			return h.Since
+		}
+	}
+	return l.now()
 }
 
 // researchDue offers every live direction of the served orgs to the
