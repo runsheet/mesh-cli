@@ -206,6 +206,22 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   and no read) holds fresh claims for a repo with N items in `review`,
   counted from the node's own listing, never `RepoIndex.reviewPile`;
   started work there is still claimed (ADR-017).
+  **Every org gets its share** (`internal/node/shares.go`, ADR-023,
+  amending ADR-017's order): `claimReady` orders the pooled ready items
+  by `shareOrder(ready, Floors(Capacity(), Scopes, Weights()),
+  heldByOrg())` — floor first, then priority: an org holding fewer
+  sessions than its floor with ready work has its best item (by
+  `claimOrder`) claimed before any other org's whatever the priority,
+  the org furthest below first, then everything left in `claimOrder`.
+  `Floors` splits capacity by weight (keyed by the org's `Name()`,
+  missing or zero is 1, nil equal shares; `Loop.Weights` is nil until
+  node.yaml's and the owner answer's `shares` feed it), the largest
+  remainder to the orgs in listed order. `Loop.sessionOrg` (subject →
+  org) is set where builds, plans and research are marked —
+  `start`/`Adopt`, `startPlan`/`startResearch`, `AdoptSessions` by the
+  state's node id — and cleared with them; `heldByOrg` counts those
+  three, never evaluations or rebases. A claim for a floor logs
+  `<org>: claimed item N "title" (below its floor of F, holding H)`.
 - **A death names itself** (`internal/crash/`): `defer crash.Guard()`
   at the top of `mesh node start` and of every goroutine the node
   starts turns a panic into one node.log line, `mesh node: fatal:
