@@ -1071,6 +1071,12 @@ type Gateway interface {
 	// checkpoint is set before PlanGoal (ADR-023's amendment, the cut-over
 	// rule).
 	SetGoalCheckpoints(ctx context.Context, goalID, by string, checkpoints []string) error
+	// ProposeGoalSplit hands in the planner's `split` answer — goal
+	// drafts in place of a graph over the project's item cap — and
+	// TakesGoalSplit is whether the platform has it (ADR-023, the size
+	// rule).
+	ProposeGoalSplit(ctx context.Context, goalID, by string, drafts []gateway.GoalDraft, costCents int, usage *gateway.UsageReport) error
+	TakesGoalSplit(ctx context.Context) bool
 	Project(ctx context.Context, id string) (*gateway.Project, error)
 	Projects(ctx context.Context, orgID string) ([]gateway.Project, error)
 	Directions(ctx context.Context, orgID, projectID string) ([]gateway.Direction, error)

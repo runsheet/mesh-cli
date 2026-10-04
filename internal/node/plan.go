@@ -503,6 +503,9 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 		GoalSlug: goal.Slug, GoalTitle: goal.Title, Statement: goal.Statement, Acceptance: goal.Acceptance, BudgetCents: goal.BudgetCents,
 		Org: scope.Name(), Project: project.Slug, Repos: dirs, ContextDir: contextDir, ContextFiles: files, Blocked: goal.PausedReason,
 		Existing: existing, NextSeq: nextSeq, MeshContext: len(p.MCP) > 0, Evidence: p.evidence(ctx, goal.Slug, scope, project),
+		// the project's cap on a plan's items, read at claim time
+		// (ADR-023 (a); 8 until the platform serves maxItems)
+		MaxItems: project.ItemCap(),
 	}
 	if replacing != nil {
 		// a narrow re-plan (runsheet ADR 023's third rung): the planner is
@@ -517,7 +520,7 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 	p.logf("goal %s: planning in %s (%d repos), budget $%.2f (%s)", goal.Slug, dir, len(repos), budget, budgetSource)
 	ctx = withSubject(ctx, scope, goal.ProjectID, project.Slug)
 	gr, hasGoalRepo := goalRepo(goal, project, repos)
-	items, reasons, flags, questions, checkpoints, cost, acct, err := p.ask(ctx, goal, scope.NodeID, dir, budget, in, repos, merged, goalItems, replacing, sessionTok, gr, hasGoalRepo)
+	items, reasons, flags, questions, checkpoints, drafts, cost, acct, err := p.ask(ctx, goal, scope.NodeID, dir, budget, in, repos, merged, goalItems, replacing, sessionTok, gr, hasGoalRepo)
 	acct.SetContextBytes(written.Bytes)
 	acct.SetLabel("goal "+goal.Slug, string(harness.KindPlan))
 	// the session's usage report rides the plan's hand-in; Finish logs it
@@ -526,6 +529,9 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 	if err != nil {
 		return err
 	}
+	if drafts != nil {
+		return p.handInSplit(ctx, goal, drafts, 0, in.MaxItems, cost, acct)
+	}
 	if len(flags) > 0 {
 		// adr-004: an acceptance no evaluator can see is the plan's error,
 		// ADR-020: so is a reading of the host as a merge gate, and
@@ -533,9 +539,12 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 		// is asked once more with what was flagged
 		p.logf("goal %s: plan names what no evaluator can see; asking again: %s", goal.Slug, strings.Join(flags, " | "))
 		in.Rejected = flags
+		// ADR-023 (a): a graph over the cap is asked for `split` instead
+		over := len(items)
+		in.OverCap = over > in.MaxItems
 		var again float64
 		var second *SessionAccount
-		items, reasons, flags, questions, checkpoints, again, second, err = p.ask(ctx, goal, scope.NodeID, dir, budget, in, repos, merged, goalItems, replacing, sessionTok, gr, hasGoalRepo)
+		items, reasons, flags, questions, checkpoints, drafts, again, second, err = p.ask(ctx, goal, scope.NodeID, dir, budget, in, repos, merged, goalItems, replacing, sessionTok, gr, hasGoalRepo)
 		defer second.Finish(ctx, harness.Result{})
 		second.SetContextBytes(written.Bytes)
 		second.SetLabel("goal "+goal.Slug, string(harness.KindPlan))
@@ -547,6 +556,12 @@ func (p *Planner) plan(ctx context.Context, goal gateway.Goal, scope Scope) erro
 		cost += again
 		if err != nil {
 			return err
+		}
+		if drafts != nil {
+			if !in.OverCap {
+				over = 0
+			}
+			return p.handInSplit(ctx, goal, drafts, over, in.MaxItems, cost, acct)
 		}
 		if len(flags) > 0 {
 			// adr-004: the second plan is handed in as it stands; the
@@ -717,20 +732,58 @@ func (p *Planner) wantsPRCheckpoint(goal gateway.Goal, checkpoints []string) boo
 	return true
 }
 
+// handInSplit hands the planner's `split` answer in with
+// ProposeGoalSplit, carrying the session's usage report as handIn does
+// (ADR-023 (a)): n is how many items the graph over the cap had (0 when
+// no graph came first, as for a split answered at once or adopted). A
+// platform without proposeGoalSplit is told nothing: each draft is
+// logged and the error leaves the goal in planning and says so, as an
+// unreadable plan does.
+func (p *Planner) handInSplit(ctx context.Context, goal gateway.Goal, drafts []gateway.GoalDraft, n, cap int, cost float64, acct *SessionAccount) error {
+	by := ""
+	if p.Cfg != nil {
+		by = p.Cfg.OwnerID
+	}
+	slugs := make([]string, 0, len(drafts))
+	for _, d := range drafts {
+		slugs = append(slugs, d.Slug)
+	}
+	over := fmt.Sprintf("over the cap of %d", cap)
+	if n > 0 {
+		over = fmt.Sprintf("over the cap (%d items > %d)", n, cap)
+	}
+	if !p.GW.TakesGoalSplit(ctx) {
+		for _, d := range drafts {
+			p.logf("plan %s: proposed goal %s: %s", goal.Slug, d.Slug, d.Title)
+		}
+		if n > 0 {
+			return fmt.Errorf("plan has %d items, over the cap of %d; split into %d goals proposed, which this platform cannot take", n, cap, len(drafts))
+		}
+		return fmt.Errorf("plan answered over the cap of %d; split into %d goals proposed, which this platform cannot take", cap, len(drafts))
+	}
+	if err := acct.Carried(p.GW.ProposeGoalSplit(ctx, goal.ID, by, drafts, Cents(cost), acct.Report(harness.Result{}))); err != nil {
+		return fmt.Errorf("propose the split: %w", err)
+	}
+	p.logf("goal %s: %s; proposed a split into %d goals: %s", goal.Slug, over, len(drafts), strings.Join(slugs, ", "))
+	return nil
+}
+
 // ask runs one planner session on in and reads its graph: the items
 // mapped onto the project's repos, each item's model_reason by seq, the
 // check's flags on their acceptance (unverifiableAcceptance,
 // hostReadingAcceptance, closeOutAcceptance, cutOverAcceptance,
 // sameAcceptanceAsFailed
-// against goalItems), its questions for the person and checkpoints for the goal, the session's cost and its account, whose usage report is built as the
+// against goalItems, overCap against in.MaxItems), its questions for
+// the person and checkpoints for the goal — or, for a `split` answer,
+// its goal drafts in place of all of those (ADR-023 (a)) — the session's cost and its account, whose usage report is built as the
 // session ends: the caller hands it in and Finishes it. An error means
 // there is no graph to hand in.
-func (p *Planner) ask(ctx context.Context, goal gateway.Goal, nodeID, dir string, budget float64, in harness.PlanInput, repos map[string]gateway.Repo, merged []int, goalItems []gateway.WorkItem, replacing *gateway.WorkItem, tok *gateway.GitHubToken, gr gateway.Repo, hasGoalRepo bool) ([]gateway.PlannedItem, map[int]string, []string, []harness.PlanQuestion, []string, float64, *SessionAccount, error) {
+func (p *Planner) ask(ctx context.Context, goal gateway.Goal, nodeID, dir string, budget float64, in harness.PlanInput, repos map[string]gateway.Repo, merged []int, goalItems []gateway.WorkItem, replacing *gateway.WorkItem, tok *gateway.GitHubToken, gr gateway.Repo, hasGoalRepo bool) ([]gateway.PlannedItem, map[int]string, []string, []harness.PlanQuestion, []string, []gateway.GoalDraft, float64, *SessionAccount, error) {
 	acct, err := p.Credentials.Open(ctx, gateway.SessionRef{Kind: string(harness.KindPlan), GoalID: goal.ID}, nodeID, Adapter(p.Harness))
 	if err != nil {
 		// an ErrNoCredential among them: no session starts, and the loop
 		// leaves the goal's plan unclaimed (Loop.NoCredential)
-		return nil, nil, nil, nil, nil, 0, nil, err
+		return nil, nil, nil, nil, nil, nil, 0, nil, err
 	}
 	defer unlessDetached(ctx, acct.Cleanup)
 	// the tools attached for the planner role, beside mesh-context: a
@@ -742,7 +795,7 @@ func (p *Planner) ask(ctx context.Context, goal gateway.Goal, nodeID, dir string
 	st := SelectTools(p.MCP, acct.Tools, tools.RoleFor(string(harness.KindPlan)), runtimes)
 	if len(st.Missing) > 0 {
 		p.Declines.Record(goal.ID, st.Missing, runtimes, time.Now())
-		return nil, nil, nil, nil, nil, 0, nil, &ToolsDeclinedError{Reason: st.DeclineReason()}
+		return nil, nil, nil, nil, nil, nil, 0, nil, &ToolsDeclinedError{Reason: st.DeclineReason()}
 	}
 	// Tools: the served tools, so PlanPrompt can name them and say when
 	// to search.
@@ -753,7 +806,7 @@ func (p *Planner) ask(ctx context.Context, goal gateway.Goal, nodeID, dir string
 		// its own, never the operator's login (adr-022)
 		ghDir, err := NewGHConfigDir()
 		if err != nil {
-			return nil, nil, nil, nil, nil, 0, acct, fmt.Errorf("gh config dir: %w", err)
+			return nil, nil, nil, nil, nil, nil, 0, acct, fmt.Errorf("gh config dir: %w", err)
 		}
 		// a session left running for the next node keeps it: the node
 		// that ends it removes it (TempDirs)
@@ -762,7 +815,7 @@ func (p *Planner) ask(ctx context.Context, goal gateway.Goal, nodeID, dir string
 	}
 	acct.Apply(&job)
 	if err := st.UseTools(&job, p.MCP, acct); err != nil {
-		return nil, nil, nil, nil, nil, 0, acct, fmt.Errorf("tools: %w", err)
+		return nil, nil, nil, nil, nil, nil, 0, acct, fmt.Errorf("tools: %w", err)
 	}
 	if len(st.Use) > 0 {
 		p.logf("goal %s: tools %s", goal.Slug, st.Names())
@@ -778,8 +831,8 @@ func (p *Planner) ask(ctx context.Context, goal gateway.Goal, nodeID, dir string
 	if note := acct.UseNote(result); note != "" && err == nil {
 		p.logf("goal %s: %s", goal.Slug, note)
 	}
-	items, reasons, flags, questions, checkpoints, cost, err := p.readPlan(ctx, goal, dir, acct, result, err, repos, merged, in.Evidence, goalItems, replacing, len(in.Rejected) > 0, gr, hasGoalRepo)
-	return items, reasons, flags, questions, checkpoints, cost, acct, err
+	items, reasons, flags, questions, checkpoints, drafts, cost, err := p.readPlan(ctx, goal, dir, acct, result, err, repos, merged, in.Evidence, goalItems, replacing, len(in.Rejected) > 0, gr, hasGoalRepo, in.MaxItems)
+	return items, reasons, flags, questions, checkpoints, drafts, cost, acct, err
 }
 
 // readPlan is what follows a planner session, however this process came
@@ -792,40 +845,44 @@ func (p *Planner) ask(ctx context.Context, goal gateway.Goal, nodeID, dir string
 // item, or still names a repo other than the goal's own (hasGoalRepo,
 // ADR-023 (d)), is not handed in: it is an error naming the lineage or
 // the repo (ADR-021's amendments, ADR-023).
-func (p *Planner) readPlan(ctx context.Context, goal gateway.Goal, dir string, acct *SessionAccount, result harness.Result, err error, repos map[string]gateway.Repo, merged []int, evidence []harness.ModelEvidence, goalItems []gateway.WorkItem, replacing *gateway.WorkItem, final bool, gr gateway.Repo, hasGoalRepo bool) ([]gateway.PlannedItem, map[int]string, []string, []harness.PlanQuestion, []string, float64, error) {
+func (p *Planner) readPlan(ctx context.Context, goal gateway.Goal, dir string, acct *SessionAccount, result harness.Result, err error, repos map[string]gateway.Repo, merged []int, evidence []harness.ModelEvidence, goalItems []gateway.WorkItem, replacing *gateway.WorkItem, final bool, gr gateway.Repo, hasGoalRepo bool, cap int) ([]gateway.PlannedItem, map[int]string, []string, []harness.PlanQuestion, []string, []gateway.GoalDraft, float64, error) {
 	// logged before a done ctx returns: a deadline kills the unit too,
 	// and a detach kills nothing
 	logKilled(p.logf, "goal "+goal.Slug, result.KilledPerSession(), result.KillError)
+	if cap <= 0 {
+		cap = gateway.DefaultMaxItems
+	}
 	if ctx.Err() != nil {
-		return nil, nil, nil, nil, nil, 0, ctx.Err()
+		return nil, nil, nil, nil, nil, nil, 0, ctx.Err()
 	}
 	defer harness.RemoveSession(dir)
 	if errors.Is(err, context.DeadlineExceeded) {
-		return nil, nil, nil, nil, nil, 0, fmt.Errorf("planner session ran out of time (%s)", p.Timeout)
+		return nil, nil, nil, nil, nil, nil, 0, fmt.Errorf("planner session ran out of time (%s)", p.Timeout)
 	}
 	if err != nil {
-		return nil, nil, nil, nil, nil, 0, fmt.Errorf("planner session: %w", acct.RedactErr(err))
+		return nil, nil, nil, nil, nil, nil, 0, fmt.Errorf("planner session: %w", acct.RedactErr(err))
 	}
 	result.Text = acct.Redact(result.Text)
+	// a `split` answer — goal drafts in place of a graph over the
+	// project's cap (ADR-023 (a)) — is read first: it has no items
+	if drafts, ok := harness.ParsePlanSplit(result.Text); ok {
+		gd, err := splitDrafts(drafts, repos, cap)
+		if err != nil {
+			return nil, nil, nil, nil, nil, nil, 0, err
+		}
+		return nil, nil, nil, nil, nil, gd, result.CostUSD, nil
+	}
 	specs, err := harness.ParsePlan(result.Text, merged...)
 	if err != nil {
-		return nil, nil, nil, nil, nil, 0, fmt.Errorf("planner session (%s): %w: %s", result.SessionID, err, truncate(result.Text, 300))
+		return nil, nil, nil, nil, nil, nil, 0, fmt.Errorf("planner session (%s): %w: %s", result.SessionID, err, truncate(result.Text, 300))
 	}
 	items := make([]gateway.PlannedItem, 0, len(specs))
 	itemRepo := map[int]gateway.Repo{}
 	reasons := map[int]string{}
 	for _, sp := range specs {
-		r, ok := repos[sp.Repo]
+		r, ok := projectRepo(repos, sp.Repo)
 		if !ok {
-			// a bare name, when it is one of the project's
-			for name, cand := range repos {
-				if strings.EqualFold(cand.Name, sp.Repo) || strings.EqualFold(name, sp.Repo) {
-					r, ok = cand, true
-				}
-			}
-		}
-		if !ok {
-			return nil, nil, nil, nil, nil, 0, fmt.Errorf("item %d names repo %q, not one of the project's", sp.Seq, sp.Repo)
+			return nil, nil, nil, nil, nil, nil, 0, fmt.Errorf("item %d names repo %q, not one of the project's", sp.Seq, sp.Repo)
 		}
 		itemRepo[sp.Seq] = r
 		base := strings.TrimSpace(sp.BaseRef)
@@ -857,8 +914,12 @@ func (p *Planner) readPlan(ctx context.Context, goal gateway.Goal, dir string, a
 	if hasGoalRepo {
 		otherRepoRefused = otherRepoRefusal(specs, itemRepo, gr)
 	}
-	if final && (len(relanded) > 0 || unsplit != "" || otherRepoRefused != "") {
-		why := make([]string, 0, len(relanded)+2)
+	over := overCap(specs, cap)
+	if final && (len(relanded) > 0 || unsplit != "" || otherRepoRefused != "" || over != "") {
+		why := make([]string, 0, len(relanded)+3)
+		if over != "" {
+			why = append(why, overCapRefusal(len(specs), cap))
+		}
 		for _, r := range relanded {
 			why = append(why, r.refusal())
 		}
@@ -868,7 +929,10 @@ func (p *Planner) readPlan(ctx context.Context, goal gateway.Goal, dir string, a
 		if otherRepoRefused != "" {
 			why = append(why, otherRepoRefused)
 		}
-		return nil, nil, nil, nil, nil, 0, errors.New(strings.Join(why, "; "))
+		return nil, nil, nil, nil, nil, nil, 0, errors.New(strings.Join(why, "; "))
+	}
+	if over != "" {
+		flags = append(flags, over)
 	}
 	flags = append(flags, sameAcceptanceAsFailed(specs, goalItems)...)
 	if unsplit != "" {
@@ -877,7 +941,7 @@ func (p *Planner) readPlan(ctx context.Context, goal gateway.Goal, dir string, a
 	if hasGoalRepo {
 		flags = append(flags, otherRepoItems(specs, itemRepo, gr)...)
 	}
-	return items, reasons, flags, harness.ParsePlanQuestions(result.Text), harness.ParsePlanCheckpoints(result.Text), result.CostUSD, nil
+	return items, reasons, flags, harness.ParsePlanQuestions(result.Text), harness.ParsePlanCheckpoints(result.Text), nil, result.CostUSD, nil
 }
 
 // explainedDeps keeps the item's dependencies that carry a because and
@@ -962,9 +1026,12 @@ func (p *Planner) AdoptPlan(ctx context.Context, goal gateway.Goal, scope Scope,
 	p.logf("goal %s: adopted its %s planner session (pid %d)", goal.Slug, s.Liveness(), s.State.PID)
 	result, err := at.Attach(ctx, s.Dir, nil)
 	gr, hasGoalRepo := goalRepo(goal, project, repos)
-	items, reasons, flags, questions, checkpoints, cost, err := p.readPlan(ctx, goal, s.State.Workspace, nil, result, err, repos, merged, p.evidence(ctx, goal.Slug, scope, project), goalItems, replacing, true, gr, hasGoalRepo)
+	items, reasons, flags, questions, checkpoints, drafts, cost, err := p.readPlan(ctx, goal, s.State.Workspace, nil, result, err, repos, merged, p.evidence(ctx, goal.Slug, scope, project), goalItems, replacing, true, gr, hasGoalRepo, project.ItemCap())
 	if err != nil {
 		return err
+	}
+	if drafts != nil {
+		return p.handInSplit(ctx, goal, drafts, 0, project.ItemCap(), cost, nil)
 	}
 	if len(flags) > 0 {
 		p.logf("goal %s: adopted plan names what no evaluator can see; handing it in: %s", goal.Slug, strings.Join(flags, " | "))
