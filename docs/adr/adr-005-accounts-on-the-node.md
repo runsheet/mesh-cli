@@ -1171,3 +1171,44 @@ pre-existing api-key cases (`normal work never gets the api while a
 subscription has headroom`, `high work takes the api over paced
 subscriptions`, `all subscriptions exhausted and work waits: the api`,
 `the api stopped too`) are unchanged.
+
+## Amendment — 2026-10-03 (goal every-subscription-lands-full-at-its-reset, item 4): the holdback
+
+**Decision.** The clock rule spends every subscription toward its
+line, so without a brake on the brake all of them would reach `stop`
+in the same hours and every session would fall to an api key or
+nothing — what the anythink enterprise saw on 2026-09-25 and
+2026-10-02. So one subscription is held back: among the subscriptions
+serving the work's priority, when there are two or more and every one
+but one has used (the larger of its two live windows, `used`) at least
+`stop − 0.10`, the one with the latest reset — its seven-day
+`resetsAt`, else its five-hour one with no seven-day reading, the last
+listed on a tie — is kept for urgent work (`heldBack`,
+`internal/node/select.go`). An account never read is not within 10% of
+stop. `ChooseAccount` removes the held account from the candidates for
+any priority but `urgent` — normal, low and high all wait — before the
+item 2 ordering runs, so the order among the accounts left is
+unchanged. The held account is not stopped: the api-key rule's
+"every subscription serving the priority is stopped" is judged as
+before, so the holdback never by itself moves normal work onto an api
+key. `accountToFinish`'s pressing fallback asks as `high`, so an
+evaluation or rebase of normal work waits for it too.
+
+**Why work waits.** The 2026-09-28 amendment's one line per tick gains
+a sibling: when the holdback is why nothing was chosen — the held
+account, listed alone, would have taken the work — the tick logs
+`accounts: <label> held back for urgent work (the others within 10% of
+stop); <n> item(s) left unclaimed until <earliest reset>` (the earliest
+time any other subscription resumes: its pace's resume, else its
+reset) in place of `no account has headroom`; the holding report's
+entries are unchanged.
+
+Tests: `TestHoldback` (`internal/node/select_test.go`) — two within
+10% of stop and the third, resetting last, waits for urgent (normal
+and high get none, urgent gets it); only one within, no hold, normal
+work goes to the furthest behind; the held one is the latest reset,
+not the least used; the holdback never sends normal work to an api
+key; a never-read account, a tie and the five-hour fallback.
+`TestHoldbackLoopKeepsTheLatestResetForUrgentWork` — three issued
+subscriptions in the holdback state: the normal item stays ready, the
+line is logged, and the urgent item runs on the held account.
