@@ -44,6 +44,16 @@ func ChooseAccount(now time.Time, accounts []AccountConfig, readings map[string]
 	}
 	var subs, apis []fit
 	exhausted := true // every subscription serving it stopped (vacuously, none)
+	held, holding := AccountConfig{}, false
+	if priority != "urgent" {
+		var serving []AccountConfig
+		for _, a := range accounts {
+			if a.Kind == AccountSubscription && a.Serves(priority) {
+				serving = append(serving, a)
+			}
+		}
+		held, holding = heldBack(now, serving, readings, cfg)
+	}
 	for _, a := range accounts {
 		if !a.Serves(priority) {
 			continue
@@ -55,6 +65,9 @@ func ChooseAccount(now time.Time, accounts []AccountConfig, readings map[string]
 		}
 		if a.Kind == AccountSubscription && f.mode != paceStopped {
 			exhausted = false
+		}
+		if holding && a.Label == held.Label {
+			continue // kept for urgent work; not stopped, so exhausted stands
 		}
 		if f.mode == paceStopped || (f.mode == pacePaced && !pressing) {
 			continue
@@ -88,6 +101,62 @@ func ChooseAccount(now time.Time, accounts []AccountConfig, readings map[string]
 		}
 	}
 	return best(subs, pacePaced) // only a pressing session keeps a paced one
+}
+
+// holdbackMargin is how near cfg.Stop a subscription's use must be for
+// it to count toward the holdback (heldBack).
+const holdbackMargin = 0.10
+
+// heldBack is the subscription kept for urgent work (goal
+// every-subscription-lands-full-at-its-reset, item 4): among subs — the
+// subscriptions serving the work's priority — when there are two or
+// more and every one but one has used(now, r) >= cfg.Stop − 0.10, the
+// one with the latest reset: its seven-day ResetsAt, else its
+// five-hour one with no seven-day reading; the last listed on a tie.
+// An account never read is not within 10% of stop. ok is false when
+// nothing is held back.
+func heldBack(now time.Time, subs []AccountConfig, readings map[string]harness.RateLimit, cfg LimitsConfig) (AccountConfig, bool) {
+	if len(subs) < 2 {
+		return AccountConfig{}, false
+	}
+	near := cfg.Thresholds().Stop - holdbackMargin
+	within := 0
+	var latest time.Time
+	var out AccountConfig
+	for i, a := range subs {
+		r, seen := readings[a.Label]
+		if seen && used(now, r) >= near {
+			within++
+		}
+		if reset := latestReset(r); i == 0 || !reset.Before(latest) {
+			latest, out = reset, a
+		}
+	}
+	if within < len(subs)-1 {
+		return AccountConfig{}, false
+	}
+	return out, true
+}
+
+// latestReset is the reset the holdback ranks a reading by: its
+// seven-day window's, else its five-hour one's; zero for none.
+func latestReset(r harness.RateLimit) time.Time {
+	if !r.SevenDay.ResetsAt.IsZero() {
+		return r.SevenDay.ResetsAt
+	}
+	return r.FiveHour.ResetsAt
+}
+
+// used is how much of its plan a reading says is spent: the larger of
+// its two windows, a window whose reset has come counting for nothing.
+func used(now time.Time, r harness.RateLimit) float64 {
+	live := func(w harness.RateLimitWindow) float64 {
+		if !w.ResetsAt.IsZero() && !now.Before(w.ResetsAt) {
+			return 0
+		}
+		return w.Utilization
+	}
+	return max(live(r.FiveHour), live(r.SevenDay))
 }
 
 type accountKey struct{}

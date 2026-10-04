@@ -414,7 +414,14 @@ node.yaml or the machine's own login:
    `limits.stop`, or whose status is not `allowed`, takes nothing until
    its window resets; one past `limits.pace_five_hour` takes only
    urgent and high work. An account no session has run on yet is the
-   furthest behind its line, so it still has full headroom.
+   furthest behind its line, so it still has full headroom. **The
+   holdback:** once every subscription but one is within 10% of
+   `limits.stop`, the one with the latest reset is kept for urgent work
+   — normal, low and high work wait rather than spend it, and never
+   fall to an API key through it — so one subscription always has
+   headroom; the log says `accounts: <label> held back for urgent work
+   (the others within 10% of stop); <n> item(s) left unclaimed until
+   <earliest reset>`.
 2. An API key only for urgent or high work (before a paced
    subscription), or when every subscription is stopped — or, on a
    ranged node, has no slot free (see Capacity across accounts) — and
