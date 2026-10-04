@@ -221,7 +221,7 @@ func TestHeartbeatOfAFixedNodeIsUnchanged(t *testing.T) {
 	if _, err := gw.HeartbeatNode(context.Background(), limitsNode, "v1", 2, gateway.HeartbeatExtras{}); err != nil {
 		t.Fatal(err)
 	}
-	want := `{"query":"mutation($in: HeartbeatNodeInput!) { heartbeatNode(input: $in) { status nodeId owner { kind id name } scopes { orgId login slug accountId } } }","variables":{"in":{"aggregateId":"` + limitsNode + `","namespace":"runsheet","running":2,"version":"v1"}}}`
+	want := `{"query":"mutation($in: HeartbeatNodeInput!) { heartbeatNode(input: $in) { status nodeId owner { kind id name } scopes { orgId login slug accountId shares } } }","variables":{"in":{"aggregateId":"` + limitsNode + `","namespace":"runsheet","running":2,"version":"v1"}}}`
 	if len(rec.sent) != 1 || rec.sent[0] != want {
 		t.Fatalf("sent %q\nwant %q", rec.sent, want)
 	}
