@@ -1082,6 +1082,24 @@ limits: back to normal (was stopped)
 and a change to the thresholds in node.yaml as `limits: pace five-hour
 80% → 50%, stop 95% → 95%`.
 
+Each subscription is paced against a clock too, not just the brake
+above: a target line, the fraction of the window already elapsed less
+a small reserve (`limits.reserve`, default 0.05), and how far the
+account's own use stands from it — behind (room to spend) or ahead
+(spent too fast). `mesh node status` prints it, one line per account
+after the capacity line:
+
+```
+account max-mini: week 61% used, target 64% (3% behind), resets 2026-10-10T14:00:00Z; five-hour 42%/58% (16% behind)
+account max-ci: week 88% used, target 64% (24% ahead), resets 2026-10-10T09:00:00Z; five-hour 70%/58% (12% ahead); push; paced
+```
+
+`push` marks an account still behind its line with a fifth or less of
+the window left before reset — the scaler (below) gives it extra slots
+so it spends down to its target instead of leaving the window's last
+hours unused — and the trailing `paced`/`stopped` is the account's own
+mode when its reading puts it there.
+
 ### Capacity that scales with headroom
 
 `capacity` in `~/.mesh/node.yaml` is a plain number or a range:

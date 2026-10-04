@@ -67,6 +67,7 @@ func (s RunState) Stopped(pid int) {
 	_ = os.Remove(s.ScalingPath())
 	_ = os.Remove(s.HeldPath())
 	_ = os.Remove(s.SharesPath())
+	_ = os.Remove(s.StandingPath())
 }
 
 // WriteScaling leaves a ranged node's capacity in force for `mesh node
@@ -136,6 +137,46 @@ func (s RunState) Shares() ([]HoldingOrg, bool) {
 		return nil, false
 	}
 	var rows []HoldingOrg
+	if json.Unmarshal(data, &rows) != nil {
+		return nil, false
+	}
+	return rows, true
+}
+
+// StandingPath is each scheduled account's clock standing as of the
+// last tick: node.standing (goal
+// every-subscription-lands-full-at-its-reset, item 6).
+func (s RunState) StandingPath() string { return filepath.Join(s.Dir, "node.standing") }
+
+// WriteStanding leaves each scheduled account's clock standing for
+// `mesh node status`, atomic like WriteScaling; an empty list removes
+// the file.
+func (s RunState) WriteStanding(rows []AccountStanding) error {
+	if len(rows) == 0 {
+		if err := os.Remove(s.StandingPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
+	data, err := json.Marshal(rows)
+	if err != nil {
+		return err
+	}
+	tmp := s.StandingPath() + ".tmp"
+	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, s.StandingPath())
+}
+
+// Standing reads what WriteStanding left; false when nothing is there
+// or it cannot be read.
+func (s RunState) Standing() ([]AccountStanding, bool) {
+	data, err := os.ReadFile(s.StandingPath())
+	if err != nil {
+		return nil, false
+	}
+	var rows []AccountStanding
 	if json.Unmarshal(data, &rows) != nil {
 		return nil, false
 	}

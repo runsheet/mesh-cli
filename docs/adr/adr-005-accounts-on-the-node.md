@@ -1212,3 +1212,42 @@ key; a never-read account, a tie and the five-hour fallback.
 `TestHoldbackLoopKeepsTheLatestResetForUrgentWork` — three issued
 subscriptions in the holdback state: the normal item stays ready, the
 line is logged, and the urgent item runs on the held account.
+
+## Amendment — 2026-10-03 (goal every-subscription-lands-full-at-its-reset, item 6): `mesh node status`
+
+**Decision.** The clock rule's standing is not only the heartbeat's
+(item 5) — the node leaves it on the machine too, beside node.scaling,
+for `mesh node status` to show without a round trip to the platform.
+Every tick, `Loop.Standing` (optional, like `Scaled` and `Held`) is
+told `StandingAccounts(now, scheduled, readings, thresholds)`: each
+scheduled account with a reading, `StandingOf`'s windows and overall
+`Distance`/`Push` beside its `Label`, `Kind` and `Mode` — `"paced"` or
+`"stopped"` when the account's own reading puts it there (`pace`), `""`
+otherwise — in label order. `mesh node start` wires it to
+`RunState.WriteStanding`, atomic like `WriteScaling`, leaving the rows
+at `~/.mesh/node.standing`; an empty list removes the file, as does
+`Stopped` (the pidfile gone, the standing it described no longer
+current). `mesh node status` reads it back with `RunState.Standing`
+under the same pid rule as `localScaling`/`localHeld` — nothing when no
+node runs on this machine — and prints one line per account, after the
+capacity line:
+
+```
+account max-mini: week 61% used, target 64% (3% behind), resets 2026-10-10T14:00:00Z; five-hour 42%/58% (16% behind)
+account max-ci: week 88% used, target 64% (24% ahead), resets 2026-10-10T09:00:00Z; five-hour 70%/58% (12% ahead); push; paced
+```
+
+`push` and the pace mode (`paced`/`stopped`) are appended only when
+set; an account at its line (`Mode` `""`, `Push` false) carries
+neither. No account with a reading prints no lines at all — the same
+silence `holding.unclaimed` with nothing held keeps.
+
+Tests: `TestRunStateStanding` (`internal/node/standing_test.go`) —
+`WriteStanding`/`Standing` round-trip, an empty write removes the file,
+and `Stopped` removes it too; `TestLoopWritesStanding` — a tick with
+two issued accounts' readings calls the `Standing` hook with both
+accounts' standing, in label order, their `Distance` matching
+`StandingOf`'s own math; `TestNodeStatusShowsStanding`
+(`internal/commands/nodestatus_test.go`) — the status output's account
+lines against a RunState's `node.standing`, nothing with none written
+and nothing once the node has stopped.
