@@ -817,7 +817,7 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 			writeErrors(w, 200, `Cannot query field "nodeId" on type "CommandResult".`)
 			return
 		}
-		if m[2] == "claimWorkItem" {
+		if m[2] == "claimWorkItem" || m[2] == "claimWorkItemEvaluation" {
 			f.Claims = append(f.Claims, Call{Name: m[2], Input: in, At: time.Now(), Bearer: bearer})
 		}
 		if msg := f.Refuse[m[2]]; msg != "" {
@@ -1514,6 +1514,23 @@ func (f *Fake) apply(name string, in map[string]any) error {
 			return fmt.Errorf("item is %s, not ready", item["status"])
 		}
 		item["status"], item["nodeId"], item["harness"] = "claimed", in["nodeId"], in["harness"]
+	case "claimWorkItemEvaluation":
+		if item == nil {
+			return fmt.Errorf("no such item")
+		}
+		if item["status"] != "evaluating" {
+			return fmt.Errorf("item is %s, not evaluating", item["status"])
+		}
+		// a node that did not build the item takes its evaluation
+		// (goal a-node-says-which-sessions-it-takes): the holder is
+		// tracked apart from `nodeId`, which still names the builder
+		// until this claim succeeds, then the evaluator — the same
+		// field issueItemRepoToken reads as "its builder, then its
+		// evaluator"
+		if holder, _ := item["evaluationNodeId"].(string); holder != "" && holder != in["nodeId"] {
+			return fmt.Errorf("node %s has claimed the evaluation", holder)
+		}
+		item["evaluationNodeId"], item["nodeId"] = in["nodeId"], in["nodeId"]
 	case "reportWorkItemProgress":
 		if item == nil {
 			return fmt.Errorf("no such item")
