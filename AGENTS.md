@@ -181,7 +181,14 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   Its entity selections are generated (`fields_gen.go`, never hand-edited)
   from `schema.json` and `fields/<Type>.txt` (one name per line, sorted,
   `?` for optional): add a line, `go generate ./internal/gateway/...`
-  (mesh-cli ADR-010).
+  (mesh-cli ADR-010). `ClaimWorkItemEvaluation(ctx, itemID, nodeID)` is
+  the claim a node that did not build an item makes to evaluate it,
+  modelled on `ClaimWorkItemRebase`: the same node again converges,
+  another node or an item not `evaluating` is refused with a
+  `gateway.Error` (`IsRefusal`); the `gatewaytest` fake takes it the
+  same way, recording it in `Calls` and `Claims` as `claimWorkItem`
+  does (goal `a-node-says-which-sessions-it-takes`; the node's own
+  claim loop is a later item of the same goal).
   `internal/channel/`: channel mode (one session per org, turns).
   `internal/meshmcp/`: the stdio MCP server (`Server`, `Tool`,
   `ObjectSchema`) channel mode and `mesh mcp` share — only channel mode

@@ -8,22 +8,24 @@ import (
 )
 
 // ChooseAccount picks the account a session of that priority runs on,
-// by headroom and the spending order (adr-005, trd §3 Capacity across
-// accounts):
+// by standing against the clock and the spending order (adr-005, trd
+// §3 Capacity across accounts, goal every-subscription-lands-full-at-its-reset):
 //
 //   - An account that does not serve the work's priority
-//     (AccountConfig.Serves) is never picked, whatever its headroom: a
+//     (AccountConfig.Serves) is never picked, whatever its standing: a
 //     subscription reserved for urgent and high work sits idle for the
 //     rest (adr-005's amendment 2026-10).
 //   - An account is judged by pace on its latest reading: stopped (past
 //     cfg.Stop in either window, or a status not allowed, until its
 //     reset) it takes nothing; paced (past its own pace point, else
 //     cfg.PaceFiveHour: LimitsConfig.For) it takes only urgent and high
-//     work. An account never seen yet has its full
-//     headroom.
-//   - Subscriptions first: of those that fit, the one with the most
-//     headroom — the lowest of max(five-hour, seven-day) use, a window
-//     past its reset counting as unused; a tie goes to the one listed
+//     work. An account never seen yet is the furthest behind its line
+//     (Distance −1), so it still has full headroom.
+//   - Subscriptions first: of those that fit, the one furthest behind
+//     its time-proportional target line — StandingOf's Distance, most
+//     negative first; an account ahead of its line (Distance ≥ 0) is
+//     chosen only when every fitting subscription is also ahead, and
+//     then the least ahead of them; a tie goes to the one listed
 //     first.
 //   - An api account only for urgent or high work, or when every
 //     subscription serving the priority is stopped and workWaits (an item, plan, evaluation
@@ -36,22 +38,36 @@ import (
 func ChooseAccount(now time.Time, accounts []AccountConfig, readings map[string]harness.RateLimit, cfg LimitsConfig, priority string, workWaits bool) (AccountConfig, bool) {
 	pressing := priority == "urgent" || priority == "high"
 	type fit struct {
-		a    AccountConfig
-		mode paceMode
-		used float64
+		a        AccountConfig
+		mode     paceMode
+		distance float64
 	}
 	var subs, apis []fit
 	exhausted := true // every subscription serving it stopped (vacuously, none)
+	held, holding := AccountConfig{}, false
+	if priority != "urgent" {
+		var serving []AccountConfig
+		for _, a := range accounts {
+			if a.Kind == AccountSubscription && a.Serves(priority) {
+				serving = append(serving, a)
+			}
+		}
+		held, holding = heldBack(now, serving, readings, cfg)
+	}
 	for _, a := range accounts {
 		if !a.Serves(priority) {
 			continue
 		}
-		f := fit{a: a, mode: paceNormal}
+		f := fit{a: a, mode: paceNormal, distance: -1} // never seen: furthest behind
 		if r, seen := readings[a.Label]; seen {
-			f.mode, f.used = pace(now, r, cfg.For(a)).mode, used(now, r)
+			f.mode = pace(now, r, cfg.For(a)).mode
+			f.distance = StandingOf(now, r, cfg.For(a)).Distance
 		}
 		if a.Kind == AccountSubscription && f.mode != paceStopped {
 			exhausted = false
+		}
+		if holding && a.Label == held.Label {
+			continue // kept for urgent work; not stopped, so exhausted stands
 		}
 		if f.mode == paceStopped || (f.mode == pacePaced && !pressing) {
 			continue
@@ -65,7 +81,7 @@ func ChooseAccount(now time.Time, accounts []AccountConfig, readings map[string]
 	best := func(fits []fit, mode paceMode) (AccountConfig, bool) {
 		var out *fit
 		for i := range fits {
-			if f := &fits[i]; f.mode == mode && (out == nil || f.used < out.used) {
+			if f := &fits[i]; f.mode == mode && (out == nil || f.distance < out.distance) {
 				out = f
 			}
 		}
@@ -85,6 +101,50 @@ func ChooseAccount(now time.Time, accounts []AccountConfig, readings map[string]
 		}
 	}
 	return best(subs, pacePaced) // only a pressing session keeps a paced one
+}
+
+// holdbackMargin is how near cfg.Stop a subscription's use must be for
+// it to count toward the holdback (heldBack).
+const holdbackMargin = 0.10
+
+// heldBack is the subscription kept for urgent work (goal
+// every-subscription-lands-full-at-its-reset, item 4): among subs — the
+// subscriptions serving the work's priority — when there are two or
+// more and every one but one has used(now, r) >= cfg.Stop − 0.10, the
+// one with the latest reset: its seven-day ResetsAt, else its
+// five-hour one with no seven-day reading; the last listed on a tie.
+// An account never read is not within 10% of stop. ok is false when
+// nothing is held back.
+func heldBack(now time.Time, subs []AccountConfig, readings map[string]harness.RateLimit, cfg LimitsConfig) (AccountConfig, bool) {
+	if len(subs) < 2 {
+		return AccountConfig{}, false
+	}
+	near := cfg.Thresholds().Stop - holdbackMargin
+	within := 0
+	var latest time.Time
+	var out AccountConfig
+	for i, a := range subs {
+		r, seen := readings[a.Label]
+		if seen && used(now, r) >= near {
+			within++
+		}
+		if reset := latestReset(r); i == 0 || !reset.Before(latest) {
+			latest, out = reset, a
+		}
+	}
+	if within < len(subs)-1 {
+		return AccountConfig{}, false
+	}
+	return out, true
+}
+
+// latestReset is the reset the holdback ranks a reading by: its
+// seven-day window's, else its five-hour one's; zero for none.
+func latestReset(r harness.RateLimit) time.Time {
+	if !r.SevenDay.ResetsAt.IsZero() {
+		return r.SevenDay.ResetsAt
+	}
+	return r.FiveHour.ResetsAt
 }
 
 // used is how much of its plan a reading says is spent: the larger of
