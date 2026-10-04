@@ -334,6 +334,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		Repo: res.Repo.FullName(), Branch: spec.Branch, BaseRef: spec.BaseRef, ContextDir: contextDir, ContextFiles: files,
 		Attempts: item.Attempts, Evaluation: item.Evaluation, FailedClauses: failed, Project: orgName + "/" + res.Project.Slug, MeshContext: len(mcp) > 0,
 		LastSession: r.State.LastSession(item.ID),
+		FoldNotes:   r.foldNotes(ctx, item, label),
 	}
 	job := harness.Job{Kind: harness.KindBuild, Workspace: dir, MaxBudgetUSD: budget, Label: label, MCPServers: mcp, Model: model}
 	// past 60% of its budget with nothing committed the session is handed
@@ -880,4 +881,43 @@ func (r *Runner) contextBudget() ContextConfig {
 		return ContextConfig{}.Effective()
 	}
 	return r.Cfg.Context.Effective()
+}
+
+// docsWriterNote opens a note an item leaves for its goal's shared-docs
+// writer (gateway.BriefWithoutSharedDocs asks for it).
+const docsWriterNote = "for the docs writer:"
+
+// foldNotes is what the goal's shared-docs writer folds in (ADR-025):
+// for an item whose brief marks it the writer
+// (gateway.SharedDocsWriterOf), each sibling gateway.SharedDocsSiblings
+// names whose last note opens "for the docs writer:", with its pull
+// request, in seq order. Any other item, or a goal whose items cannot
+// be read, gets none: the brief still names the siblings, and the
+// session reads them with mesh_items.
+func (r *Runner) foldNotes(ctx context.Context, item gateway.WorkItem, label string) []harness.ItemNote {
+	if !gateway.SharedDocsWriterOf(item.Brief) {
+		return nil
+	}
+	seqs := gateway.SharedDocsSiblings(item.Brief)
+	if len(seqs) == 0 {
+		return nil
+	}
+	items, err := r.GW.GoalWorkItems(ctx, item.GoalID)
+	if err != nil {
+		r.logf("item %s: siblings' notes unread, building on the brief alone: %v", label, err)
+		return nil
+	}
+	bySeq := make(map[int]gateway.WorkItem, len(items))
+	for _, it := range items {
+		bySeq[it.Seq] = it
+	}
+	var notes []harness.ItemNote
+	for _, seq := range seqs {
+		it, ok := bySeq[seq]
+		if !ok || !strings.HasPrefix(strings.TrimSpace(it.LastNote), docsWriterNote) {
+			continue
+		}
+		notes = append(notes, harness.ItemNote{Seq: it.Seq, Title: it.Title, Note: strings.TrimSpace(it.LastNote), PRURL: it.PRURL})
+	}
+	return notes
 }

@@ -662,3 +662,25 @@ func TestPromptsNameMeshContext(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildPromptNotesToFoldIn(t *testing.T) {
+	in := PromptInput{GoalSlug: "g", GoalTitle: "G", Seq: 3, Title: "Docs", Brief: "write the ADR", Repo: "o/r", Branch: "b", BaseRef: "main"}
+	if p := BuildPrompt(in); strings.Contains(p, "## Notes to fold in") {
+		t.Fatalf("no notes, yet the section:\n%s", p)
+	}
+	in.FoldNotes = []ItemNote{
+		{Seq: 1, Title: "Harness rules", Note: "for the docs writer: name planFilesRule", PRURL: "https://github.com/o/r/pull/1"},
+		{Seq: 2, Title: "Plan check", Note: "for the docs writer: name sharedCodeFiles"},
+	}
+	p := BuildPrompt(in)
+	want := "## Notes to fold in\n\nThis item writes the goal's shared documents. The other items left these notes for it; fold each into the documents:\n\n" +
+		"- item 1 (Harness rules): for the docs writer: name planFilesRule (https://github.com/o/r/pull/1)\n" +
+		"- item 2 (Plan check): for the docs writer: name sharedCodeFiles\n" +
+		"\nEach sibling's merged pull request description is the other source: read it for what the note leaves out.\n\n"
+	if !strings.Contains(p, want) {
+		t.Fatalf("want the section\n%s\nin\n%s", want, p)
+	}
+	if strings.Index(p, "## Brief") > strings.Index(p, "## Notes to fold in") {
+		t.Fatal("the notes come after the brief")
+	}
+}
