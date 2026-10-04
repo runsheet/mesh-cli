@@ -172,6 +172,9 @@ type Client struct {
 	// goalSplitSchema is whether the gateway's Mutation was last found to
 	// have proposeGoalSplit (see TakesGoalSplit).
 	goalSplitSchema holdingProbe
+	// evaluationClaimSchema is whether the gateway's Mutation was last
+	// found to have claimWorkItemEvaluation (see TakesEvaluationClaim).
+	evaluationClaimSchema holdingProbe
 	// actorSchema is, per input type, whether the gateway's command input
 	// was last found to take `actor` (see withActor).
 	actorSchema actorProbes
@@ -2755,6 +2758,40 @@ func (c *Client) ClaimWorkItemRebase(ctx context.Context, itemID, nodeID string)
 // refused with a gateway.Error.
 func (c *Client) ClaimWorkItemEvaluation(ctx context.Context, itemID, nodeID string) error {
 	return c.Mutate(ctx, "claimWorkItemEvaluation", itemID, map[string]any{"nodeId": nodeID})
+}
+
+// TakesEvaluationClaim is whether the gateway's Mutation type has
+// claimWorkItemEvaluation — asked by introspection and kept for
+// ScalingProbeEvery, as TakesGoalSplit asks after proposeGoalSplit: a
+// node evaluates an item another node holds only once the platform
+// takes the claim (goal a-node-says-which-sessions-it-takes, ADR-025).
+// A failed probe is a no, kept as long.
+func (c *Client) TakesEvaluationClaim(ctx context.Context) bool {
+	p := &c.evaluationClaimSchema
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := c.now()
+	if !p.at.IsZero() && now.Sub(p.at) < ScalingProbeEvery {
+		return p.takes
+	}
+	var out struct {
+		Type *struct {
+			Fields []struct {
+				Name string `json:"name"`
+			} `json:"fields"`
+		} `json:"__type"`
+	}
+	p.at, p.takes = now, false
+	q := `{ __type(name: "Mutation") { fields { name } } }`
+	if err := c.Query(ctx, q, nil, &out); err != nil || out.Type == nil {
+		return false
+	}
+	for _, f := range out.Type.Fields {
+		if f.Name == "claimWorkItemEvaluation" {
+			p.takes = true
+		}
+	}
+	return p.takes
 }
 
 // FinishWorkItemRebase records a rebase a node's session pushed: the new
