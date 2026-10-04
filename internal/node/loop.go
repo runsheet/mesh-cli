@@ -1439,6 +1439,7 @@ func (l *Loop) reload(ctx context.Context) {
 		l.shares, l.sharesSet = filtered, true
 		l.sharesUnknown = nowUnknown
 		l.mu.Unlock()
+		l.noteSharesBoth()
 	}
 	if got.OrgsRead {
 		l.mu.Lock()

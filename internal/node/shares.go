@@ -203,11 +203,25 @@ func (l *Loop) takeAnswerShares(a *gateway.NodeAnswer) {
 	if !sharesEqual(oldRep, newRep) {
 		l.logf("shares (platform) %s → %s", sharesString(oldRep), sharesString(newRep))
 	}
-	bothNow := any && len(l.nodeYAMLWeights()) > 0
+	l.mu.Lock()
+	l.answerShares, l.answerSharesSet = weights, any
+	l.mu.Unlock()
+	l.noteSharesBoth()
+}
+
+// noteSharesBoth logs the transition into both the platform's shares
+// and node.yaml's shares: being in force at once, `shares: the
+// platform's weights are in force; node.yaml's shares: ignored`, once
+// per change into that state (ADR-023) — called after either side's
+// weights change, so either side gaining or losing them is caught.
+func (l *Loop) noteSharesBoth() {
+	l.mu.Lock()
+	answerSet := l.answerSharesSet
+	l.mu.Unlock()
+	bothNow := answerSet && len(l.nodeYAMLWeights()) > 0
 	l.mu.Lock()
 	bothWas := l.sharesBothPresent
 	l.sharesBothPresent = bothNow
-	l.answerShares, l.answerSharesSet = weights, any
 	l.mu.Unlock()
 	if bothNow && !bothWas {
 		l.logf("shares: the platform's weights are in force; node.yaml's shares: ignored")

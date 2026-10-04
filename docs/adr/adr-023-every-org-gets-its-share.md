@@ -31,8 +31,8 @@ machine.
 - `capacity` is the capacity in force (`Loop.Capacity()`);
 - `weights` is keyed by the org's `Name()` (its login, or its slug when
   it has none); a missing or zero weight is 1 and nil weights are equal
-  shares. `Loop.Weights()` answers nil today; node.yaml's `shares:` and
-  the owner answer's `shares` feed it in later items of the goal;
+  shares. `Loop.Weights()`'s own precedence — the platform's shares,
+  node.yaml's `shares:`, else nil — is the **Weights** paragraph below;
 - each org gets `capacity × weight / total` rounded down, and the slots
   the rounding leaves go one each to the largest remainders, the orgs
   in listed order on a tie, so the floors sum to the capacity:
@@ -68,7 +68,10 @@ once on change as `shares (platform) <old> → <new>`, rendered like
 node.yaml's own line, nothing when an answer repeats unchanged; with
 node.yaml's `shares:` also in force, `shares: the platform's weights
 are in force; node.yaml's shares: ignored` logs once, on the change
-into that state, not on every heartbeat it holds. An answer whose
+into that state, not on every heartbeat it holds — from either side:
+an owner answer arriving while node.yaml's `shares:` is already set,
+or node.yaml gaining a `shares:` block on a later reload while the
+platform's are already in force. An answer whose
 scopes are all 0 arriving once the platform's shares are in force
 clears them the same way — `Weights()` falls back to node.yaml's
 `shares:` (or nil) from then on, logged `shares (platform) <old> →

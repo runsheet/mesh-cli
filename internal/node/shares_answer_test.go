@@ -189,6 +189,38 @@ func TestReloadUnchangedWithPlatformSharesInForce(t *testing.T) {
 	}
 }
 
+// TestReloadSharesIgnoredWhilePlatformInForce: node.yaml gaining a
+// shares: block while the platform's shares are already in force logs
+// the "ignored" line too — not only an owner answer arriving while
+// node.yaml's shares: is already set.
+func TestReloadSharesIgnoredWhilePlatformInForce(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeNodeYAML(t, "slug: box\nname: Box\ncapacity: 1\n")
+
+	var logs strings.Builder
+	loop := &Loop{Cfg: &Config{Capacity: Fixed(1)}, Scopes: Scopes{{Login: "a", ID: "org-a"}, {Login: "b", ID: "org-b"}}, Log: log.New(&logs, "", 0)}
+	loop.Reload = OwnedReloader(LoadConfig)
+
+	loop.reload(context.Background())
+	logs.Reset()
+
+	loop.TakeAnswer(sharesAnswer(3, 1))
+	if strings.Contains(logs.String(), "ignored") {
+		t.Fatalf("logged the ignored line with no node.yaml shares: yet:\n%s", &logs)
+	}
+	logs.Reset()
+
+	writeNodeYAML(t, "slug: box\nname: Box\ncapacity: 1\nshares: {a: 1, b: 1}\n")
+	loop.reload(context.Background())
+	if !strings.Contains(logs.String(), "shares: the platform's weights are in force; node.yaml's shares: ignored") {
+		t.Fatalf("no `ignored` line when node.yaml gained shares: with the platform's already in force:\n%s", &logs)
+	}
+	if got := loop.Weights(); !sharesEqual(got, map[string]int{"a": 3, "b": 1}) {
+		t.Fatalf("weights = %v, want the platform's a:3 b:1 still in force", got)
+	}
+}
+
 // TestClaimReadyPlatformShares is the end-to-end case: a fake answering
 // shares acme:3 globex:1 on the heartbeat, capacity 4, both orgs with
 // ready normal-priority work — the weights alone decide, so acme claims
