@@ -11,12 +11,14 @@ import (
 	"projectmesh.io/mesh-cli/internal/gateway"
 )
 
-// switchMachine is a MachineProbe that can be switched: busy or idle, as the test sets it.
+// switchMachine is a MachineProbe that can be switched: short of memory
+// (busy) or idle, as the test sets it. Its load stays quiet: a hot host
+// is the back-off's (hostbackoff_test.go).
 type switchMachine struct{ busy atomic.Bool }
 
 func (m *switchMachine) Read() (MachineReading, error) {
 	if m.busy.Load() {
-		return MachineReading{Load1: 16, CPUs: 8, MemAvailable: 8 << 30}, nil
+		return MachineReading{Load1: 0.5, CPUs: 8, MemAvailable: 1 << 30}, nil
 	}
 	return MachineReading{Load1: 0.5, CPUs: 8, MemAvailable: 8 << 30}, nil
 }
@@ -138,7 +140,7 @@ func TestScalingStepsUpToMaxAndDownToMin(t *testing.T) {
 	stepsOf(t, s.capacityEvery(0, 14*time.Minute), func(d time.Duration) int {
 		return min(1+int(d/(5*time.Minute)), 3)
 	})
-	if got, ok := s.loop.Scaling(); !ok || got != (Scaling{Capacity: 3, Min: 1, Max: 3, Reason: ReasonMax}) {
+	if got, ok := s.loop.Scaling(); !ok || bare(got) != (Scaling{Capacity: 3, Min: 1, Max: 3, Reason: ReasonMax}) {
 		t.Fatalf("scaling = %+v, %v", got, ok)
 	}
 
@@ -153,7 +155,7 @@ func TestScalingStepsUpToMaxAndDownToMin(t *testing.T) {
 		}
 		return 1
 	})
-	if got, _ := s.loop.Scaling(); got != (Scaling{Capacity: 1, Min: 1, Max: 3, Reason: ReasonWeeklyPace}) {
+	if got, _ := s.loop.Scaling(); bare(got) != (Scaling{Capacity: 1, Min: 1, Max: 3, Reason: ReasonWeeklyPace}) {
 		t.Fatalf("scaling = %+v", got)
 	}
 	for _, line := range []string{"capacity 1–3: scaling by the plan's windows from 1", "capacity 1 → 2: max", "capacity 2 → 3: max",
@@ -286,7 +288,7 @@ func TestScalingReloadClampsIntoTheNewRange(t *testing.T) {
 	writeNodeYAML(t, "slug: box\nname: Box\norgs: [acme]\ncapacity: {min: 1, max: 2}\n")
 	c.Set(t0.Add(30 * time.Second))
 	loop.Tick(context.Background())
-	if got, ok := loop.Scaling(); !ok || got != (Scaling{Capacity: 2, Min: 1, Max: 2, Reason: ReasonMax}) {
+	if got, ok := loop.Scaling(); !ok || bare(got) != (Scaling{Capacity: 2, Min: 1, Max: 2, Reason: ReasonMax}) {
 		t.Fatalf("after reload to {1, 2}: %+v", got)
 	}
 	if !strings.Contains(logs.String(), "capacity 3 → 2: clamped into 1–2") {
@@ -305,8 +307,8 @@ func TestScalingReloadClampsIntoTheNewRange(t *testing.T) {
 	}
 }
 
-// A busy machine holds a ranged node at what it runs: no growth, with
-// the reason `machine load`.
+// A machine short of memory holds a ranged node at what it runs: no
+// growth, with the reason `low memory`.
 func TestScalingBusyMachineHoldsAtRunning(t *testing.T) {
 	s := newScaled(t, Capacity{Min: 1, Max: 3}, true)
 	s.addGoal(orgID, "hot", "high")
@@ -318,8 +320,8 @@ func TestScalingBusyMachineHoldsAtRunning(t *testing.T) {
 	for d := time.Duration(0); d <= 15*time.Minute; d += time.Minute {
 		claimed = append(claimed, s.at(d)...)
 	}
-	if got, _ := s.loop.Scaling(); got.Capacity != 1 || got.Reason != ReasonMachineLoad || strings.Join(claimed, ",") != "h1" {
-		t.Fatalf("busy: scaling %+v, claimed %v; want 1 for machine load, h1", got, claimed)
+	if got, _ := s.loop.Scaling(); got.Capacity != 1 || got.Reason != ReasonLowMemory || strings.Join(claimed, ",") != "h1" {
+		t.Fatalf("busy: scaling %+v, claimed %v; want 1 for low memory, h1", got, claimed)
 	}
 }
 
@@ -370,7 +372,7 @@ func TestScalingHeartbeat(t *testing.T) {
 	if !ok || s["capacity"] != 2.0 || s["min"] != 1.0 || s["max"] != 4.0 || s["reason"] != "max" {
 		t.Fatalf("ranged heartbeat scaling = %#v, %v", v, ok)
 	}
-	if len(told) != 2 || told[1] != (Scaling{Capacity: 2, Min: 1, Max: 4, Reason: ReasonMax}) {
+	if len(told) != 2 || bare(told[1]) != (Scaling{Capacity: 2, Min: 1, Max: 4, Reason: ReasonMax}) {
 		t.Fatalf("Scaled was told %+v", told)
 	}
 	if got := told[1].String(); got != "2/1–4 (max)" {

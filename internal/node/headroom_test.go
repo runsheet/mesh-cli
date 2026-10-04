@@ -197,8 +197,8 @@ func TestScalerMachineLoadCaps(t *testing.T) {
 		why  Reason
 	}{
 		{"idle", fakeMachine{m: idle}, 4, ReasonMax},
-		{"high load", fakeMachine{m: MachineReading{Load1: 8.2, CPUs: 8, MemAvailable: 8 << 30}}, 2, ReasonMachineLoad},
-		{"under 2 GB free", fakeMachine{m: MachineReading{Load1: 1, CPUs: 8, MemAvailable: 1 << 30}}, 2, ReasonMachineLoad},
+		{"high load is the back-off's", fakeMachine{m: MachineReading{Load1: 8.2, CPUs: 8, MemAvailable: 8 << 30}}, 4, ReasonMax},
+		{"under 2 GB free", fakeMachine{m: MachineReading{Load1: 1, CPUs: 8, MemAvailable: 1 << 30}}, 2, ReasonLowMemory},
 		{"unreadable", fakeMachine{err: errors.New("no /proc")}, 4, ReasonMax},
 	} {
 		if n, why := under(tc.m).Target(2); n != tc.want || why != tc.why {

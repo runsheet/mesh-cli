@@ -246,6 +246,9 @@ type Loop struct {
 	// until Reload says otherwise (hostSet).
 	host    HostConfig
 	hostSet bool
+	// backoff is the host back-off over the plan figure (hostBackoff,
+	// ADR-023 the node backs off a hot host).
+	backoff hostState
 	// shares is node.yaml's `shares:` weights in force (ADR-023): Cfg's
 	// until Reload says otherwise (sharesSet); read through Weights().
 	shares    map[string]int
@@ -919,6 +922,7 @@ func (l *Loop) Tick(ctx context.Context) {
 	l.reload(ctx)
 	l.probe()
 	l.scale()
+	l.hostBackoff()
 	runtimes, adapters := l.Runtimes()
 	// the heartbeat goes out before this tick's pass, so its holding is
 	// the last pass's decision (nil before the first; a draining node,
@@ -990,7 +994,8 @@ func (l *Loop) Tick(ctx context.Context) {
 		// the urgent-only slots (the reserve at the end of an api key's
 		// day) are not for normal and low work
 		normalFree := min(free, l.Capacity()-l.urgentOnly()-l.Running())
-		if free > 0 {
+		// a hot host claims nothing new; what runs runs on
+		if free > 0 && !l.hostHot() {
 			l.claimReady(ctx, free, normalFree, claimRank)
 		}
 		l.logWaiting()
@@ -1052,18 +1057,13 @@ func (l *Loop) Resume() {
 }
 
 // Capacity is the number of items this node runs at once: the capacity
-// in force, as last read or scaled. Before the first tick a ranged node
-// has its min; once scaling, a busy machine may hold it below (even 0).
+// in force, as last read or scaled, less what a hot host holds back
+// (hostBackoff). Before the first tick a ranged node has its min; once
+// scaling, a machine short of memory may hold it below (even 0).
 func (l *Loop) Capacity() int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.capacity > 0 || l.scaling.scaler != nil {
-		return l.capacity
-	}
-	if r := l.rangeLocked(); r.IsRange() {
-		return r.Min
-	}
-	return l.rangeLocked().Max
+	return l.inForceLocked(l.planLocked())
 }
 
 // Thresholds are the limits thresholds in force, as last read.
