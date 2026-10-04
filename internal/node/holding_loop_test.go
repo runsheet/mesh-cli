@@ -9,7 +9,7 @@ import (
 
 // holdingLoop is priorityFake's loop at t0 on two subscriptions: mesh -
 // max20 paced at 85% of its five-hour window, and claude - shhemail
-// exhausted at 97% of its seven-day one.
+// exhausted at 99% of its seven-day one.
 func (p *priorityFake) holdingLoop(capacity int) (*Loop, *strings.Builder) {
 	loop, logs, _ := p.pacedLoop(capacity, reading(0.1, 0.1))
 	loop.Limits = &Limits{}
@@ -18,7 +18,7 @@ func (p *priorityFake) holdingLoop(capacity int) (*Loop, *strings.Builder) {
 		{Label: "claude - shhemail", Kind: AccountSubscription},
 	}...)
 	loop.Limits.Observe("mesh - max20", reading(0.85, 0.2))
-	loop.Limits.Observe("claude - shhemail", reading(0.1, 0.97))
+	loop.Limits.Observe("claude - shhemail", reading(0.1, 0.99))
 	return loop, logs
 }
 

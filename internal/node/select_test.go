@@ -32,7 +32,7 @@ func TestChooseAccount(t *testing.T) {
 		{"never seen is full headroom", []AccountConfig{maxA, maxB}, readings{"max-a": *reading(0.1, 0.1)}, "normal", true, "max-b"},
 		{"a tie goes to the first listed", []AccountConfig{maxA, maxB}, nil, "normal", true, "max-a"},
 		{"a window past its reset is unused", []AccountConfig{maxA, maxB}, readings{"max-a": *reading(0.1, 0.1), "max-b": {Status: "allowed", FiveHour: harness.RateLimitWindow{Utilization: 0.7, ResetsAt: t0.Add(-time.Minute)}, ObservedAt: t0.Add(-5 * time.Hour)}}, "normal", true, "max-b"},
-		{"past stop is skipped", []AccountConfig{maxA, maxB}, readings{"max-a": *reading(0.1, 0.96), "max-b": *reading(0.5, 0.5)}, "normal", true, "max-b"},
+		{"past stop is skipped", []AccountConfig{maxA, maxB}, readings{"max-a": *reading(0.1, 0.99), "max-b": *reading(0.5, 0.5)}, "normal", true, "max-b"},
 		{"rejected is skipped", []AccountConfig{maxA, maxB}, readings{"max-a": rejected, "max-b": *reading(0.5, 0.5)}, "urgent", true, "max-b"},
 		{"paced takes no normal work", []AccountConfig{maxA}, readings{"max-a": *reading(0.85, 0.1)}, "normal", true, ""},
 		{"paced takes urgent work", []AccountConfig{maxA}, readings{"max-a": *reading(0.85, 0.1)}, "urgent", true, "max-a"},
@@ -40,12 +40,12 @@ func TestChooseAccount(t *testing.T) {
 		{"low work never gets the api while a subscription is only paced", []AccountConfig{maxA, key}, readings{"max-a": *reading(0.85, 0.1)}, "low", true, ""},
 		{"high work takes a subscription with headroom first", []AccountConfig{key, maxA}, readings{"max-a": *reading(0.5, 0.1)}, "high", true, "max-a"},
 		{"high work takes the api over paced subscriptions", []AccountConfig{maxA, maxB, key}, readings{"max-a": *reading(0.85, 0.1), "max-b": *reading(0.9, 0.1)}, "high", true, "key"},
-		{"urgent work takes the api when subscriptions are stopped", []AccountConfig{maxA, key}, readings{"max-a": *reading(0.97, 0.1)}, "urgent", false, "key"},
-		{"all subscriptions exhausted and work waits: the api", []AccountConfig{maxA, maxB, key}, readings{"max-a": *reading(0.97, 0.1), "max-b": rejected}, "normal", true, "key"},
-		{"all subscriptions exhausted, nothing waits: no api", []AccountConfig{maxA, maxB, key}, readings{"max-a": *reading(0.97, 0.1), "max-b": rejected}, "low", false, ""},
+		{"urgent work takes the api when subscriptions are stopped", []AccountConfig{maxA, key}, readings{"max-a": *reading(0.99, 0.1)}, "urgent", false, "key"},
+		{"all subscriptions exhausted and work waits: the api", []AccountConfig{maxA, maxB, key}, readings{"max-a": *reading(0.99, 0.1), "max-b": rejected}, "normal", true, "key"},
+		{"all subscriptions exhausted, nothing waits: no api", []AccountConfig{maxA, maxB, key}, readings{"max-a": *reading(0.99, 0.1), "max-b": rejected}, "low", false, ""},
 		{"only an api account, work waits", []AccountConfig{key}, nil, "normal", true, "key"},
-		{"the api stopped too", []AccountConfig{maxA, key}, readings{"max-a": *reading(0.97, 0.1), "key": rejected}, "urgent", true, ""},
-		{"nothing fits", []AccountConfig{maxA, maxB}, readings{"max-a": *reading(0.97, 0.1), "max-b": rejected}, "urgent", true, ""},
+		{"the api stopped too", []AccountConfig{maxA, key}, readings{"max-a": *reading(0.99, 0.1), "key": rejected}, "urgent", true, ""},
+		{"nothing fits", []AccountConfig{maxA, maxB}, readings{"max-a": *reading(0.99, 0.1), "max-b": rejected}, "urgent", true, ""},
 		{"no accounts", nil, nil, "urgent", true, ""},
 	} {
 		got, ok := ChooseAccount(t0, c.accounts, c.readings, LimitsConfig{}, c.priority, c.workWaits)
@@ -77,7 +77,7 @@ func TestLoopClaimsNothingWithoutHeadroomThenClaimsOnTheFreedAccount(t *testing.
 	p.addPlanning(orgID, "planned", "normal")
 	loop, logs, _ := p.pacedLoop(2, nil)
 	knowAccounts(loop, accounts...)
-	loop.Limits.Observe("max-a", reading(0.97, 0.1))
+	loop.Limits.Observe("max-a", reading(0.99, 0.1))
 	rejected := reading(0.3, 0.3)
 	rejected.Status = "rejected"
 	loop.Limits.Observe("max-b", rejected)
@@ -147,7 +147,7 @@ func TestAccountToFinishKeepsTheSpendingOrder(t *testing.T) {
 	}{
 		{"fresh", reading(0.1, 0.1), "max-a", true},
 		{"paced", reading(0.85, 0.3), "max-a", true},
-		{"stopped", reading(0.3, 0.96), "key", true},
+		{"stopped", reading(0.3, 0.99), "key", true},
 	} {
 		loop := &Loop{Cfg: &Config{}, Limits: &Limits{}, Now: func() time.Time { return t0 }}
 		knowAccounts(loop, maxA, key)
@@ -161,7 +161,7 @@ func TestAccountToFinishKeepsTheSpendingOrder(t *testing.T) {
 	// nothing but a stopped subscription: nothing
 	loop := &Loop{Cfg: &Config{}, Limits: &Limits{}, Now: func() time.Time { return t0 }}
 	knowAccounts(loop, maxA)
-	loop.Limits.Observe("max-a", reading(0.3, 0.96))
+	loop.Limits.Observe("max-a", reading(0.3, 0.99))
 	if _, ok := loop.accountToFinish(context.Background(), "normal", "evaluation"); ok {
 		t.Error("a stopped subscription took an evaluation")
 	}

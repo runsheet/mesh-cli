@@ -86,7 +86,7 @@ func TestChooseAccountExhaustedIsOverServingSubscriptions(t *testing.T) {
 		{"no subscription serves normal: the api", []AccountConfig{a, key}, nil, "normal", true, "key"},
 		{"no subscription serves normal, nothing waits: none", []AccountConfig{a, key}, nil, "normal", false, ""},
 		{"a serving subscription with headroom: not the api", []AccountConfig{a, b, key}, nil, "normal", true, "b"},
-		{"the serving subscription stopped: the api", []AccountConfig{a, b, key}, readings{"b": *reading(0.97, 0.1)}, "normal", true, "key"},
+		{"the serving subscription stopped: the api", []AccountConfig{a, b, key}, readings{"b": *reading(0.99, 0.1)}, "normal", true, "key"},
 		{"an api key reserved for urgent: not for normal", []AccountConfig{a, urgentKey}, nil, "normal", true, ""},
 		{"an api key reserved for urgent: for urgent over a paced one", []AccountConfig{a, urgentKey}, readings{"a": *reading(0.85, 0.1)}, "urgent", true, "urgent-key"},
 	} {
