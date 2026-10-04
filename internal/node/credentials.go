@@ -220,6 +220,7 @@ func (c *Credentials) Open(ctx context.Context, ref gateway.SessionRef, nodeID, 
 		}
 		if reconcile {
 			for _, label := range c.Known.Reconcile(adapter, subj.projectID, nil, c.now()) {
+				c.Limits.Forget(limitsAccountKey(adapter, label))
 				c.logf("accounts: %s withdrawn (not issued by the %s read)", label, c.projectSlug(ctx, subj))
 			}
 		}
@@ -256,6 +257,7 @@ func (c *Credentials) Open(ctx context.Context, ref gateway.SessionRef, nodeID, 
 	}
 	if reconcile {
 		for _, label := range c.Known.Reconcile(adapter, subj.projectID, refused, c.now()) {
+			c.Limits.Forget(limitsAccountKey(adapter, label))
 			c.logf("accounts: %s withdrawn (not issued by the %s read)", label, c.projectSlug(ctx, subj))
 		}
 	}
@@ -437,10 +439,18 @@ func (s *SessionAccount) label() string {
 // limitsKey is the key the session's limits are kept under in Limits:
 // the label, or for a Codex session CodexLimitsAccount of it.
 func (s *SessionAccount) limitsKey() string {
-	if s.Adapter == AdapterCodex {
-		return CodexLimitsAccount(s.account.Label)
+	return limitsAccountKey(s.Adapter, s.label())
+}
+
+// limitsAccountKey is the key a label's reading is kept under in Limits
+// for adapter: the label, or for codex CodexLimitsAccount of it. Used to
+// Forget a withdrawn label's reading so it does not linger in the
+// heartbeat (adr-005's amendment 2026-10-03).
+func limitsAccountKey(adapter, label string) string {
+	if adapter == AdapterCodex {
+		return CodexLimitsAccount(label)
 	}
-	return s.label()
+	return label
 }
 
 // Apply puts the account on the job, as AccountSession.Apply does, and
