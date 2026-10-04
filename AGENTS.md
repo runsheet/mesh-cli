@@ -135,7 +135,38 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   field yet, so it is always "" until `fields/GoalIndex.txt` gains
   `repoId?`, which the gateway's `maxItems`/`ProposeGoalSplit`/
   `SetGoalCheckpoints` and the hand-in of a `split` answer are later
-  items of the same goal to land), the director ends with its pitches and answers in one for a
+  items of the same goal to land); and two more after it, the planner
+  naming each item's files and one writer of the shared documents
+  (ADR-025, `docs/adr/adr-025-items-that-share-a-file-are-planned-in-a-line.md`):
+  `planFilesRule` — each item lists `files`
+  (`PlannedSpec.Files`, json `files`; `ExpectedFiles` reads them, else
+  the paths its brief names; `IsDocumentPath` says which are documents:
+  `.md`/`.mdx`/`.txt`, under `docs/`/`specs/`/`.mesh/`, the bare
+  AGENTS.md/README.md/CLAUDE.md), and `planDependencyRule` says sharing
+  a code file is a dependency the node adds, sharing a document is not —
+  and `planSharedDocsRule` — the ADR, the TRD section, AGENTS.md and
+  README are written by one item marked `"writes_shared_docs": true`
+  (`PlannedSpec.WritesSharedDocs`), every other brief saying not to and
+  to leave a `mesh_progress` note opening `for the docs writer:`; the
+  node's plan check, `readPlan` after `explainedDeps`, runs
+  `sharedCodeFiles(specs)` — two items of one repo naming the same code
+  file (`namesCodeFile`) with no dependency either way, transitively,
+  get one, the later on the earlier, `Depends on #N because the plan
+  check found both name <file>; …` on its brief, documents never
+  chained — and `sharedDocsWriter(specs)` — the marked item, else the
+  highest-seq item nothing depends on, two marked flagged for the
+  re-ask (`sharedDocsWriterFlags`) — whose brief
+  `gateway.BriefWithSharedDocsWriter` stamps with its siblings and every
+  other's `gateway.BriefWithoutSharedDocs`, read back by
+  `gateway.SharedDocsWriterOf`/`SharedDocsSiblings`; `handIn`'s
+  `planned, N items` line ends `, K dependencies added by the plan
+  check (3→2 internal/x.go; …)` or `, none added by the plan check`;
+  and the writer's build prompt carries `PromptInput.FoldNotes`
+  (`harness.ItemNote`), each sibling's `lastNote` opening `for the docs
+  writer:` with its `prUrl`, the runner's `foldNotes` reading
+  `GoalWorkItems`, rendered after the brief as `## Notes to fold in`;
+  no platform half, the mesh-specs TRD §3 paragraph owed to a follow-up),
+  the director ends with its pitches and answers in one for a
   propose-mode direction, its proposals in one for a set-mode one, the rebase session
   ends with `REBASED: <sha>` and `RESOLVED: <files>` or
   `REBASE FAILED: <why>`, the builder never pushes and checks main
