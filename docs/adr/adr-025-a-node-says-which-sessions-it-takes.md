@@ -1,11 +1,12 @@
 ---
-summary: node.yaml's `takes:` names the kinds of session a node claims — a list (`[evaluate]`) or a per-kind cap map (`{evaluate: 3}`), left out every kind — and the loop skips a kind not taken before it lists or asks the platform, read live every tick; the heartbeat will carry the kinds as `holding.kinds` so the platform can name a kind no online node takes.
+summary: node.yaml's `takes:` names the kinds of session a node claims — a list (`[evaluate]`) or a per-kind cap map (`{evaluate: 3}`), left out every kind — and the loop skips a kind not taken before it lists or asks the platform, read live every tick, a capped kind held at its cap and named on the holding report; the heartbeat will carry the kinds as `holding.kinds` so the platform can name a kind no online node takes.
 status: accepted
 ---
 
 # ADR-025: A node says which sessions it takes
 
-2026-10-04, goal `a-node-says-which-sessions-it-takes` (item 3).
+2026-10-04, goal `a-node-says-which-sessions-it-takes` (item 3; the
+cap, decision 4, item 5).
 
 ## Context
 
@@ -46,8 +47,22 @@ capacity, models and budgets per kind, but not say which kinds it takes.
    (`Reloaded.Takes`, `Loop.Takes()`), and a change is logged once, at
    the tick it takes effect: `takes: every kind → evaluate`. No restart,
    no drain; a session already running finishes.
-4. A per-kind cap bounds that kind inside the node's capacity (item 5 of
-   the goal enforces it).
+4. **The cap.** A per-kind cap bounds that kind inside the node's
+   capacity: `takes: {evaluate: 2}` under capacity 4 runs at most two
+   evaluations at once. `Loop.runningOf(kind)` counts the loop's own
+   map of the kind (`running` for build, `evaluating`, `rebasing`,
+   `planning`, `researching`) and `Loop.kindRoom(kind)` is the cap less
+   that. Each claim path reads the room once at its start and lowers it
+   with each start it makes (`kindCap`), so a tick never overshoots —
+   not even when a session ends within the tick. For build the Tick
+   lowers `free` to the room before `claimReady`; for the kinds capacity
+   does not bound the cap is the only bound. Work the cap holds back is
+   passed over, once per goal and kind, with the reason `at node.yaml's
+   takes cap of N <kind>(s)` (`evaluation(s)` for evaluate) on the
+   holding report's `unclaimed`, and logged once per kind per tick:
+   `takes: evaluate at its cap of 2; 3 waiting`. It is not claimed and
+   released: an evaluation stays in evaluating, an item ready, a goal in
+   planning.
 
 ## The platform half
 
@@ -66,7 +81,8 @@ once the gateway's schema takes it, introspected like `holding.orgs`.
 - An evaluate-only node evaluates nothing until the platform lets it
   claim another node's evaluation: the cross-node evaluation claim is
   item 4 of the goal.
-- The per-kind cap (`takes: {evaluate: 2}` under capacity 4) is item 5.
+- The per-kind cap (`takes: {evaluate: 2}` under capacity 4) is item 5
+  (amended above, decision 4).
 - `mesh node status` printing the kinds taken, and the heartbeat carrying
   `holding.kinds`, are item 6.
 - A node that takes `evaluate` still needs what an evaluation does: the

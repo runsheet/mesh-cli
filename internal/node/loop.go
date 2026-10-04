@@ -585,16 +585,21 @@ func (l *Loop) claimReady(ctx context.Context, free, normalFree, maxRank int) {
 	ready = shareOrder(ready, Floors(l.Capacity(), l.Scopes, l.Weights()), orgHeld)
 	l.noteUnlisted(listed, complete)
 	held := map[string]bool{} // repos whose hold this tick has logged
+	capped := l.takesCap(harness.KindBuild)
+	defer l.logCapped(capped)
 	for _, r := range ready {
-		if free <= 0 {
-			break
-		}
 		item, sc := r.item, r.scope
 		l.mu.Lock()
 		already := l.running[item.ID]
 		l.mu.Unlock()
 		if already {
 			continue
+		}
+		if l.capFull(capped, item.GoalID, "item", priorityName(r.rank)) {
+			continue
+		}
+		if free <= 0 {
+			break
 		}
 		if l.claimHeld(ctx, sc, item, r.rank) {
 			continue // refused for budget, pause or approval: the goal has not changed
@@ -664,6 +669,7 @@ func (l *Loop) claimReady(ctx context.Context, free, normalFree, maxRank int) {
 			l.logf("%s: claimed item %d %q", sc.Name(), item.Seq, item.Title)
 		}
 		orgHeld[org]++
+		capped.started()
 		l.start(actx, item, org)
 	}
 }
@@ -699,6 +705,103 @@ func (l *Loop) Running() int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return len(l.running)
+}
+
+// runningOf is the number of sessions of kind this node runs: builds
+// (running), evaluations, rebases, plans and research, each from the
+// loop's own map.
+func (l *Loop) runningOf(kind harness.Kind) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	switch kind {
+	case harness.KindBuild:
+		return len(l.running)
+	case harness.KindEvaluate:
+		return len(l.evaluating)
+	case harness.KindRebase:
+		return len(l.rebasing)
+	case harness.KindPlan:
+		return len(l.planning)
+	case harness.KindResearch:
+		return len(l.researching)
+	}
+	return 0
+}
+
+// kindRoom is how many more sessions of kind node.yaml's takes: cap
+// leaves room for — the cap less what runs — and whether kind is
+// capped at all (ADR-025, the cap).
+func (l *Loop) kindRoom(kind harness.Kind) (int, bool) {
+	limit, ok := l.Takes().Cap(kind)
+	if !ok {
+		return 0, false
+	}
+	return max(limit-l.runningOf(kind), 0), true
+}
+
+// kindCap is a claim path's takes: cap for one tick: the room counted
+// once, at the path's start, and lowered by each start, so a session
+// that ends within the tick never makes room for one more until the
+// next tick and one tick never overshoots.
+type kindCap struct {
+	kind    harness.Kind
+	capped  bool
+	limit   int
+	room    int
+	waiting int
+}
+
+// takesCap reads kind's cap and room for this tick.
+func (l *Loop) takesCap(kind harness.Kind) *kindCap {
+	room, ok := l.kindRoom(kind)
+	limit, _ := l.Takes().Cap(kind)
+	return &kindCap{kind: kind, capped: ok, limit: limit, room: room}
+}
+
+// capFull says whether the cap holds the next session of the kind back:
+// it is passed over with the cap's reason, said once per goal and kind
+// on the holding report.
+func (l *Loop) capFull(c *kindCap, goalID, unclaimedKind, priority string) bool {
+	if !c.capped || c.room > 0 {
+		return false
+	}
+	c.waiting++
+	l.passOver(goalID, unclaimedKind, priority, c.reason(), time.Time{})
+	return true
+}
+
+// started counts one start of the kind against the tick's room.
+func (c *kindCap) started() {
+	if c.capped {
+		c.room--
+	}
+}
+
+// reason is the cap's holding reason.
+func (c *kindCap) reason() string {
+	return fmt.Sprintf("at node.yaml's takes cap of %d %s(s)", c.limit, kindNoun(c.kind))
+}
+
+// logCapped says once per kind and tick what the cap held back.
+func (l *Loop) logCapped(c *kindCap) {
+	if c.waiting > 0 {
+		l.logf("takes: %s at its cap of %d; %d waiting", c.kind, c.limit, c.waiting)
+	}
+}
+
+// buildCapped says whether node.yaml's takes: cap on build is what
+// leaves no room: claimReady still runs to name the items it holds.
+func (l *Loop) buildCapped() bool {
+	room, ok := l.kindRoom(harness.KindBuild)
+	return ok && room == 0
+}
+
+// kindNoun names one session of kind in a holding reason.
+func kindNoun(kind harness.Kind) string {
+	if kind == harness.KindEvaluate {
+		return "evaluation"
+	}
+	return string(kind)
 }
 
 // RunningIDs lists the items in flight.
@@ -1001,8 +1104,14 @@ func (l *Loop) Tick(ctx context.Context) {
 		// the urgent-only slots (the reserve at the end of an api key's
 		// day) are not for normal and low work
 		normalFree := min(free, l.Capacity()-l.urgentOnly()-l.Running())
+		// node.yaml's takes: cap on build bounds the free slots inside
+		// the capacity; claimReady passes over what it holds back
+		if room, ok := l.kindRoom(harness.KindBuild); ok && room < free {
+			free = room
+			normalFree = min(normalFree, free)
+		}
 		// a hot host claims nothing new; what runs runs on
-		if free > 0 && !l.hostHot() {
+		if (free > 0 || l.buildCapped()) && !l.hostHot() {
 			l.claimReady(ctx, free, normalFree, claimRank)
 		}
 		l.logWaiting()
@@ -1585,6 +1694,8 @@ func (l *Loop) evaluateHeld(ctx context.Context) {
 		}
 	}
 	evaluateOrder(held)
+	capped := l.takesCap(harness.KindEvaluate)
+	defer l.logCapped(capped)
 	for _, h := range held {
 		item := h.item
 		l.mu.Lock()
@@ -1596,6 +1707,9 @@ func (l *Loop) evaluateHeld(ctx context.Context) {
 			continue
 		}
 		l.mu.Unlock()
+		if l.capFull(capped, item.GoalID, "evaluation", priorityName(h.rank)) {
+			continue
+		}
 		if runtimes, _ := l.Runtimes(); l.Declines.Holds(item.ID, runtimes, time.Now()) {
 			continue
 		}
@@ -1622,6 +1736,7 @@ func (l *Loop) evaluateHeld(ctx context.Context) {
 		l.mu.Lock()
 		l.evaluating[item.ID] = true
 		l.mu.Unlock()
+		capped.started()
 		l.logf("evaluating item %d %q", item.Seq, item.Title)
 		l.wg.Add(1)
 		go func(ctx context.Context, item gateway.WorkItem) {
@@ -1665,6 +1780,8 @@ func (l *Loop) rebaseRequested(ctx context.Context) {
 		}
 	}
 	rebaseOrder(requested)
+	capped := l.takesCap(harness.KindRebase)
+	defer l.logCapped(capped)
 	for _, r := range requested {
 		item, sc := r.item, r.scope
 		l.mu.Lock()
@@ -1676,6 +1793,9 @@ func (l *Loop) rebaseRequested(ctx context.Context) {
 			continue
 		}
 		l.mu.Unlock()
+		if l.capFull(capped, item.GoalID, "rebase", priorityName(r.rank)) {
+			continue
+		}
 		if why, until, ok := l.NoCredential.Holds(l.goalProject(ctx, sc, item), string(harness.KindRebase), l.adapter()); ok {
 			// no credential open to this node, or none with headroom:
 			// the rebase waits, said once for the goal
@@ -1700,6 +1820,7 @@ func (l *Loop) rebaseRequested(ctx context.Context) {
 			}
 			continue
 		}
+		capped.started()
 		l.logf("%s: rebasing item %d %q", sc.Name(), item.Seq, item.Title)
 		l.wg.Add(1)
 		go func(ctx context.Context, item gateway.WorkItem) {
@@ -1741,6 +1862,8 @@ func (l *Loop) planRequested(ctx context.Context) {
 	}
 	planOrder(requested)
 	l.clearReleasedPlans(requested, listed)
+	capped := l.takesCap(harness.KindPlan)
+	defer l.logCapped(capped)
 	for _, r := range requested {
 		g, sc := r.goal, r.scope
 		l.mu.Lock()
@@ -1752,6 +1875,9 @@ func (l *Loop) planRequested(ctx context.Context) {
 			continue
 		}
 		l.mu.Unlock()
+		if l.capFull(capped, g.ID, "plan", priorityName(gateway.PriorityRank(g.Priority))) {
+			continue
+		}
 		// a planner session here declined a required tool whose runtime
 		// is still missing: the goal waits for a node that has it
 		runtimes, _ := l.Runtimes()
@@ -1792,6 +1918,7 @@ func (l *Loop) planRequested(ctx context.Context) {
 			}
 			continue
 		}
+		capped.started()
 		l.logf("%s: planning goal %q", sc.Name(), g.Slug)
 		// on disk before the session opens: a node that exits before then
 		// leaves the claim for the next process to re-open (ADR 009, Claims)
@@ -1846,6 +1973,8 @@ func (l *Loop) researchDue(ctx context.Context) {
 	if l.Research == nil || !l.takesKind(harness.KindResearch) {
 		return
 	}
+	capped := l.takesCap(harness.KindResearch)
+	defer l.logCapped(capped)
 	for _, sc := range l.Scopes {
 		directions, err := l.GW.Directions(ctx, sc.ID, "")
 		if err != nil {
@@ -1897,6 +2026,9 @@ func (l *Loop) researchDue(ctx context.Context) {
 			if busy {
 				continue
 			}
+			if l.capFull(capped, d.ID, "research", "") {
+				continue
+			}
 			// a director session here declined a required tool whose
 			// runtime is still missing: the direction is not offered
 			runtimes, _ := l.Runtimes()
@@ -1940,6 +2072,7 @@ func (l *Loop) researchDue(ctx context.Context) {
 				}
 				continue
 			}
+			capped.started()
 			l.logf("%s: researching %q", sc.Name(), p.Slug+"/"+d.Slug)
 			l.recordClaim(ClaimRecord{NodeID: sc.NodeID, Kind: harness.KindResearch, DirectionID: d.ID, ScopeID: sc.ID, Name: p.Slug + "/" + d.Slug})
 			l.startResearch(actx, d, p, sc)

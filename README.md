@@ -1502,6 +1502,24 @@ requested rebases, the directions) is not read. Like `claim:`, `takes:`
 is read again every tick without a restart, and a change is logged once
 at the tick it takes effect (`takes: every kind → evaluate`).
 
+A number beside a kind caps it: the node runs at most that many
+sessions of the kind at once, inside its capacity, and a kind named
+with no number (or in the list form) is uncapped:
+
+```yaml
+capacity: 4
+takes: {build: 4, evaluate: 2}   # four builds, but never more than two evaluations at once
+```
+
+The cap counts what runs here and what the tick has started, so one
+tick never overshoots it; a build's cap lowers the free slots before
+any claim, and a cap on a kind capacity does not bound (evaluations,
+rebases, plans, research) holds that kind alone. Work the cap holds
+back stays where it is — ready, in evaluating, in planning — and is
+named on the heartbeat's holding report (`at node.yaml's takes cap of
+2 evaluation(s)`) and in node.log once a tick (`takes: evaluate at its
+cap of 2; 3 waiting`).
+
 A machine that takes `evaluate` runs the repo's tests and its
 `.runsheet/validate.yml` suites, so it needs what a build does short of
 writing code: the repos' toolchains (Go, Node, …), podman or docker for

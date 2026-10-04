@@ -220,8 +220,12 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   re-read each tick, `Loop.Takes`; left out, every kind) skips a kind
   not taken before its claim path lists anything — `claimReady`,
   `evaluateHeld`, `rebaseRequested`, `planRequested`, `researchDue`
-  return at `takesKind` — logged on change `takes: <old> → <new>`
-  (ADR-025).
+  return at `takesKind` — logged on change `takes: <old> → <new>`;
+  a kind's cap (`Takes.Cap`) bounds it inside capacity — `runningOf`/
+  `kindRoom`, the room read once per path and lowered by each start, a
+  build's `free` cut to it in Tick — and what it holds back is passed
+  over as `at node.yaml's takes cap of N <kind>(s)`, logged `takes:
+  <kind> at its cap of N; M waiting` once a tick (ADR-025).
   **Every org gets its share** (`internal/node/shares.go`, ADR-023,
   amending ADR-017's order): `claimReady` orders the pooled ready items
   by `shareOrder(ready, Floors(Capacity(), Scopes, Weights()),
