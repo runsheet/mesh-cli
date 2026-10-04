@@ -619,3 +619,57 @@ func cutOverAcceptance(specs []harness.PlannedSpec) []string {
 	}
 	return flags
 }
+
+// overCap is the size rule's flag (ADR-023 (a), planSizeRule): a graph
+// of more than cap items is not handed in as items; the re-ask asks for
+// `split` — goal drafts — instead. "" when the graph fits.
+func overCap(specs []harness.PlannedSpec, cap int) string {
+	if len(specs) <= cap {
+		return ""
+	}
+	return fmt.Sprintf("the plan has %d items, over the project's cap of %d: do not send items — answer `split`: goal drafts (slug, title, statement, acceptance, repo), each at most %d items and one repo", len(specs), cap, cap)
+}
+
+// overCapRefusal is what a final answer still over the cap is, like
+// reLand.refusal: nothing is handed in.
+func overCapRefusal(n, cap int) string {
+	return fmt.Sprintf("plan has %d items, over the project's cap of %d, and was not answered `split`; refused", n, cap)
+}
+
+// splitDrafts checks a `split` answer's drafts and maps each onto the
+// project's repos, as readPlan maps an item's: each needs a slug, a
+// title and an acceptance and names exactly one of the project's repos
+// (at most cap items is a promise the draft's acceptance makes, not
+// something the node can count). A draft that fails is the whole
+// answer's refusal, naming the cap.
+func splitDrafts(drafts []harness.GoalDraft, repos map[string]gateway.Repo, cap int) ([]gateway.GoalDraft, error) {
+	if len(drafts) == 0 {
+		return nil, fmt.Errorf("split answer has no draft with a slug, a title and a repo; each draft is at most %d items and one repo; refused", cap)
+	}
+	out := make([]gateway.GoalDraft, 0, len(drafts))
+	for _, d := range drafts {
+		if d.Slug == "" || d.Title == "" || d.Acceptance == "" {
+			return nil, fmt.Errorf("split draft %q has no slug, title or acceptance; each draft is at most %d items and one repo; refused", d.Slug, cap)
+		}
+		r, ok := projectRepo(repos, d.Repo)
+		if !ok {
+			return nil, fmt.Errorf("split draft %s names repo %q, not one of the project's; each draft is at most %d items and one repo; refused", d.Slug, d.Repo, cap)
+		}
+		out = append(out, gateway.GoalDraft{Slug: d.Slug, Title: d.Title, Statement: d.Statement, Acceptance: d.Acceptance, RepoID: r.ID})
+	}
+	return out, nil
+}
+
+// projectRepo is the project's repo name names: owner/name, else a bare
+// name when it is one of the project's.
+func projectRepo(repos map[string]gateway.Repo, name string) (gateway.Repo, bool) {
+	if r, ok := repos[name]; ok {
+		return r, true
+	}
+	for full, cand := range repos {
+		if strings.EqualFold(cand.Name, name) || strings.EqualFold(full, name) {
+			return cand, true
+		}
+	}
+	return gateway.Repo{}, false
+}
