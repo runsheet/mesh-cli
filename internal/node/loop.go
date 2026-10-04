@@ -245,6 +245,18 @@ type Loop struct {
 	// "is not a served org" is not logged again while it keeps appearing
 	// unchanged; a name that drops out and comes back logs again.
 	sharesUnknown map[string]bool
+	// answerShares is the owner answer's per-org shares (ADR-023): set
+	// when the last answer carried a non-zero Shares on any scope, over
+	// node.yaml's shares: in Weights() (answerSharesSet); an answer
+	// whose scopes are all 0 clears it, falling back to node.yaml's
+	// shares: (or nil) from then on.
+	answerShares    map[string]int
+	answerSharesSet bool
+	// sharesBothPresent records whether the platform's shares and
+	// node.yaml's shares: were both in force as of the last answer, so
+	// the "node.yaml's shares: ignored" line logs once per change into
+	// that state, not every tick it holds.
+	sharesBothPresent bool
 	// paced is the pacing mode last logged, so a crossing is logged once.
 	paced paceMode
 	// waiting counts, by kind, the work this tick left unclaimed because
@@ -1412,7 +1424,7 @@ func (l *Loop) reload(ctx context.Context) {
 			}
 		}
 		was := map[string]int{}
-		for org, w := range l.Weights() {
+		for org, w := range l.nodeYAMLWeights() {
 			if served[org] {
 				was[org] = w
 			}
@@ -1427,6 +1439,7 @@ func (l *Loop) reload(ctx context.Context) {
 		l.shares, l.sharesSet = filtered, true
 		l.sharesUnknown = nowUnknown
 		l.mu.Unlock()
+		l.noteSharesBoth()
 	}
 	if got.OrgsRead {
 		l.mu.Lock()
