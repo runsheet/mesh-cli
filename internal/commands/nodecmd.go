@@ -351,6 +351,13 @@ var nodeStatusCmd = &cobra.Command{
 		if held, ok := localHeld(state); ok {
 			heldGoalsSection(os.Stdout, held)
 		}
+		if pid, err := state.PID(); err == nil && processAlive(pid) {
+			rows, _ := state.Shares()
+			fmt.Println()
+			for _, line := range sharesLines(rows) {
+				fmt.Println(line)
+			}
+		}
 		if _, ok := sessionunit.Default().(sessionunit.SystemdScope); ok {
 			printScopes(ctx, gw, sessionunit.HostSystemctl{})
 		}
@@ -542,6 +549,28 @@ func heldGoalsSection(out io.Writer, held []node.HeldGoal) {
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", h.Org, h.Slug, h.Kind, formatHeldTime(h.Since), formatHeldTime(h.Until), h.Reason)
 	}
 	_ = w.Flush()
+}
+
+// sharesLines is `mesh node status`'s table of each served org's share
+// of the node as its last pass left it in node.shares (ADR-023,
+// Reporting): ORG, FLOOR, HELD and READY, a ready read that failed shown
+// as "-"; "shares: none recorded" with no rows.
+func sharesLines(rows []node.HoldingOrg) []string {
+	if len(rows) == 0 {
+		return []string{"shares: none recorded"}
+	}
+	var b strings.Builder
+	w := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "ORG\tFLOOR\tHELD\tREADY")
+	for _, r := range rows {
+		ready := fmt.Sprint(r.Ready)
+		if r.Ready < 0 {
+			ready = "-"
+		}
+		fmt.Fprintf(w, "%s\t%d\t%d\t%s\n", r.Org, r.Floor, r.Held, ready)
+	}
+	_ = w.Flush()
+	return strings.Split(strings.TrimRight(b.String(), "\n"), "\n")
 }
 
 // formatHeldTime is a HeldGoal's Since or Until on the status table:
@@ -817,6 +846,12 @@ func nodeStart(cmd *cobra.Command, args []string, logger *log.Logger) error {
 	loop.Held = func(h []node.HeldGoal) {
 		if err := state.WriteHeld(h); err != nil {
 			logger.Printf("held state: %v", err)
+		}
+	}
+	// and each served org's floor, held and ready (ADR-023, Reporting)
+	loop.Shares = func(rows []node.HoldingOrg) {
+		if err := state.WriteShares(rows); err != nil {
+			logger.Printf("shares state: %v", err)
 		}
 	}
 	defer onDrainSignal(func() {

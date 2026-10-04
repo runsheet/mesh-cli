@@ -1,5 +1,5 @@
 {
-  "description": "heartbeatNode: every heartbeat carries the platform's answer to who owns the node and which orgs it now serves too, not only at registration — an enterprise's node picks up an org attached later with no restart. The runsheet goal a-node-has-an-owner serves this same shape at /contracts/heartbeatNode.json — the platform side of the contract.",
+  "description": "heartbeatNode: every heartbeat carries the platform's answer to who owns the node and which orgs it now serves too, not only at registration — an enterprise's node picks up an org attached later with no restart. The runsheet goal a-node-has-an-owner serves this same shape at /contracts/heartbeatNode.json — the platform side of the contract. Its input's `holding.orgs` is each served org's share of the node (mesh-cli ADR-023, Reporting): `org` (its login, else slug), `orgId`, `floor` (the slots its weight gives it), `held` (the builds, plans and research it holds there) and `ready` (the ready items its last listing returned, -1 when that read failed); always a list, sent only when the platform's holding input takes `orgs`.",
   "input": {
     "aggregateId": "b99be3f5-2f54-54a7-9af5-49d9bfc96744",
     "namespace": "runsheet",
@@ -43,6 +43,22 @@
           "count": 1,
           "reason": "no issued credential has headroom for build on org runsheet's project mesh (max20 exhausted until 2026-10-03T03:00:00Z)",
           "until": "2026-10-03T03:00:00Z"
+        }
+      ],
+      "orgs": [
+        {
+          "org": "runsheet",
+          "orgId": "0f3b8a1e-2c4d-4e6f-8a9b-0c1d2e3f4a5b",
+          "floor": 2,
+          "held": 1,
+          "ready": 3
+        },
+        {
+          "org": "wardroomid",
+          "orgId": "7c2e9d40-1b3a-4f5e-9d8c-6a7b8c9d0e1f",
+          "floor": 2,
+          "held": 2,
+          "ready": 0
         }
       ]
     }

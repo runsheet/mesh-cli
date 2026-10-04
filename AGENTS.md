@@ -221,7 +221,14 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `start`/`Adopt`, `startPlan`/`startResearch`, `AdoptSessions` by the
   state's node id — and cleared with them; `heldByOrg` counts those
   three, never evaluations or rebases. A claim for a floor logs
-  `<org>: claimed item N "title" (below its floor of F, holding H)`.
+  `<org>: claimed item N "title" (below its floor of F, holding H)`. Each
+  pass's rows per org — `gateway.HoldingOrg{org, orgId, floor, held,
+  ready}`, ready -1 when the org's read failed — ride the holding report
+  as `holding.orgs` (only when the gateway's holding input takes `orgs`,
+  `takesHoldingOrgs`) and `Loop.Shares` → `RunState.WriteShares` →
+  `~/.mesh/node.shares`, printed by `mesh node status` as `ORG FLOOR
+  HELD READY` (`sharesLines`) or `shares: none recorded` (ADR-023,
+  Reporting).
 - **A death names itself** (`internal/crash/`): `defer crash.Guard()`
   at the top of `mesh node start` and of every goroutine the node
   starts turns a panic into one node.log line, `mesh node: fatal:

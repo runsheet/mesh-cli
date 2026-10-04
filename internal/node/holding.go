@@ -32,12 +32,15 @@ type Unclaimed struct {
 // that the console shows in place of the node's log line. Pure: now and
 // readings are the same the loop paces by (Limits.Readings), capacity is
 // the slots in force, p is the node's own aggregate pacing (nodePace)
-// and unclaimed is the ready work passed over this pass.
-func HoldingReport(now time.Time, accounts []AccountConfig, readings map[string]harness.RateLimit, cfg LimitsConfig, capacity int, p pacing, unclaimed []Unclaimed) gateway.Holding {
+// and unclaimed is the ready work passed over this pass; orgs is each
+// served org's floor, held and ready (holdingOrgs, ADR-023 Reporting),
+// carried as given, [] when nil.
+func HoldingReport(now time.Time, accounts []AccountConfig, readings map[string]harness.RateLimit, cfg LimitsConfig, capacity int, p pacing, unclaimed []Unclaimed, orgs []gateway.HoldingOrg) gateway.Holding {
 	out := gateway.Holding{
 		Mode:      p.mode.String(),
 		Accounts:  []gateway.HoldingAccount{},
 		Unclaimed: []gateway.HoldingUnclaimed{},
+		Orgs:      append([]gateway.HoldingOrg{}, orgs...),
 	}
 
 	allExhausted := len(accounts) > 0

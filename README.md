@@ -614,7 +614,14 @@ each is first noted (`held: <org> goal <slug> (<kind>): <reason>`) and
 as it is released (`held: <org> goal <slug> (<kind>) released`) — the
 node's own account of what it did, the kind of line
 [ADR-019](docs/adr/adr-019-the-node-writes-its-own-log.md) keeps in
-node.log rather than sessions.log.
+node.log rather than sessions.log. After it comes the **shares** table
+— `ORG FLOOR HELD READY`, one row per served org: the floor its share of
+the capacity gives it, the builds, plans and research it holds here, and
+its ready items as last listed (`-` when that read failed) — read from
+`~/.mesh/node.shares`, written each pass, or `shares: none recorded`
+when there is none; the heartbeat's holding report carries the same rows
+as `holding.orgs`
+([ADR-023](docs/adr/adr-023-every-org-gets-its-share.md), Reporting).
 
 ### Start
 

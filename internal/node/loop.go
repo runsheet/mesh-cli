@@ -77,6 +77,10 @@ type Loop struct {
 	// (optional: `mesh node start` leaves it in ~/.mesh for `mesh node
 	// status`, goal a-refused-plan-is-released-not-replanned).
 	Held func([]HeldGoal)
+	// Shares is told at the end of each pass every served org's floor,
+	// held and ready (ADR-023, Reporting), the rows the holding report's
+	// orgs carries; `mesh node start` leaves them in node.shares.
+	Shares func([]HoldingOrg)
 	// AfterTick runs at the end of every tick (optional).
 	AfterTick func(ctx context.Context)
 	// Reload is asked at the top of every tick for the capacity, the
@@ -249,6 +253,10 @@ type Loop struct {
 	// holding is the last pass's holding report (HoldingReport), which
 	// the next tick's heartbeat carries; nil before the first pass.
 	holding *gateway.Holding
+	// readyByOrg is the ready items each org's listing returned on the
+	// last claim pass, by org id, an org whose read failed left out
+	// (noteReady; ADR-023, Reporting).
+	readyByOrg map[string]int
 	// held is the goals this node holds off claiming for, by GoalID and
 	// Kind (NoteHeld, ClearHeld; goal
 	// a-refused-plan-is-released-not-replanned).
@@ -487,17 +495,20 @@ func (l *Loop) claimReady(ctx context.Context, free, normalFree, maxRank int) {
 	var ready []readyItem
 	limit := l.UnmergedPerRepo()
 	listed := make([][]gateway.WorkItem, len(l.Scopes))
+	failed := make([]bool, len(l.Scopes))
 	anyReady, complete := false, true
 	for i, sc := range l.Scopes {
 		items, err := l.GW.ReadyWorkItems(ctx, sc.ID)
 		if err != nil {
 			l.logf("list ready items of %s: %v", sc.Name(), err)
 			complete = false
+			failed[i] = true
 			continue
 		}
 		listed[i] = items
 		anyReady = anyReady || len(items) > 0
 	}
+	l.noteReady(l.Scopes, listed, failed)
 	// A repo's unmerged work is counted over every served org — one with
 	// nothing ready, or whose ready read failed, may still hold review
 	// items of a repo another org has fresh work in — and only on a tick
@@ -955,10 +966,13 @@ func (l *Loop) Tick(ctx context.Context) {
 		// with no accounts configured this is the operator's own login,
 		// one implicit account: normal, and unknown until a reading
 		accounts, readings := l.accounts()
-		h := HoldingReport(l.now(), accounts, readings, l.Thresholds(), l.Capacity(), p, l.unclaimed)
+		h := HoldingReport(l.now(), accounts, readings, l.Thresholds(), l.Capacity(), p, l.unclaimed, l.shareRows())
 		l.mu.Lock()
 		l.holding = &h
 		l.mu.Unlock()
+		if l.Shares != nil {
+			l.Shares(h.Orgs)
+		}
 	}
 	if l.AfterTick != nil {
 		l.AfterTick(ctx)

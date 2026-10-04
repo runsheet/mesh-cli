@@ -1,5 +1,7 @@
 package node
 
+import "projectmesh.io/mesh-cli/internal/gateway"
+
 // Every org gets its share of a node (ADR-023, amending ADR-017's
 // order): a node serving several orgs divides its capacity into a floor
 // per org, claims first for an org holding fewer sessions than its floor
@@ -160,4 +162,50 @@ func (l *Loop) orgOfNode(nodeID string) string {
 		}
 	}
 	return ""
+}
+
+// HoldingOrg is one served org's share of the node as reported: its
+// floor, the sessions it holds and its ready items (ADR-023, Reporting),
+// the heartbeat's holding.orgs and node.shares alike.
+type HoldingOrg = gateway.HoldingOrg
+
+// holdingOrgs is one row per served org, in listed order: its floor by
+// Floors, what it holds by heldByOrg and its ready items by ready, keyed
+// by org id — -1 for an org whose ready read failed or that has not
+// been listed yet. Always a list, [] with no org.
+func holdingOrgs(scopes Scopes, floors, held, ready map[string]int) []HoldingOrg {
+	out := []HoldingOrg{}
+	for _, sc := range scopes {
+		n, ok := ready[sc.ID]
+		if !ok {
+			n = -1
+		}
+		out = append(out, HoldingOrg{Org: sc.Name(), OrgID: sc.ID, Floor: floors[sc.ID], Held: held[sc.ID], Ready: n})
+	}
+	return out
+}
+
+// shareRows is holdingOrgs on the loop as it stands: the capacity in
+// force, the weights, the sessions held now and the ready counts
+// claimReady last listed.
+func (l *Loop) shareRows() []HoldingOrg {
+	held := l.heldByOrg()
+	l.mu.Lock()
+	ready := l.readyByOrg
+	l.mu.Unlock()
+	return holdingOrgs(l.Scopes, Floors(l.Capacity(), l.Scopes, l.Weights()), held, ready)
+}
+
+// noteReady records the ready items each org's listing returned this
+// claim pass, keyed by org id; an org whose read failed is left out.
+func (l *Loop) noteReady(scopes Scopes, listed [][]gateway.WorkItem, failed []bool) {
+	ready := make(map[string]int, len(scopes))
+	for i, sc := range scopes {
+		if !failed[i] {
+			ready[sc.ID] = len(listed[i])
+		}
+	}
+	l.mu.Lock()
+	l.readyByOrg = ready
+	l.mu.Unlock()
 }

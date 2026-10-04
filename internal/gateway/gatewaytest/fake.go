@@ -214,6 +214,10 @@ type Fake struct {
 	// answers the element type without it, so a heartbeat carrying
 	// Holding.Unclaimed[].Until sends the entry without `until`.
 	NoUnclaimedUntil bool
+	// NoHoldingOrgs is a platform whose holding input has no `orgs`
+	// (mesh-cli ADR-023, Reporting): introspection answers the holding
+	// type without it, so a heartbeat's holding goes without `orgs`.
+	NoHoldingOrgs bool
 	// NoAdoptedFields is a platform whose `adopted` element type has
 	// none of goalId, directionId, sessionId and alive (mesh-cli ADR-009
 	// amendment): introspection answers the element type without them,
@@ -1127,7 +1131,10 @@ func (f *Fake) heartbeatInputType() map[string]any {
 		}
 		if name == "holding" {
 			var sub []any
-			for _, n := range []string{"mode", "summary", "until", "accounts", "unclaimed"} {
+			for _, n := range []string{"mode", "summary", "until", "accounts", "unclaimed", "orgs"} {
+				if n == "orgs" && f.NoHoldingOrgs {
+					continue
+				}
 				if n == "unclaimed" {
 					var usub []any
 					for _, un := range []string{"goalId", "kind", "count", "reason", "until"} {

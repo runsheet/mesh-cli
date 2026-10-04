@@ -66,6 +66,7 @@ func (s RunState) Stopped(pid int) {
 	_ = os.Remove(s.DrainingPath())
 	_ = os.Remove(s.ScalingPath())
 	_ = os.Remove(s.HeldPath())
+	_ = os.Remove(s.SharesPath())
 }
 
 // WriteScaling leaves a ranged node's capacity in force for `mesh node
@@ -100,6 +101,42 @@ func (s RunState) Scaling() (Scaling, bool) {
 		return Scaling{}, false
 	}
 	return sc, true
+}
+
+// SharesPath is each served org's floor, held and ready as of the last
+// pass: node.shares (ADR-023, Reporting).
+func (s RunState) SharesPath() string { return filepath.Join(s.Dir, "node.shares") }
+
+// WriteShares leaves each served org's floor, held and ready for `mesh
+// node status`, atomic like WriteScaling; rows are written as given, []
+// with no org served.
+func (s RunState) WriteShares(rows []HoldingOrg) error {
+	if rows == nil {
+		rows = []HoldingOrg{}
+	}
+	data, err := json.Marshal(rows)
+	if err != nil {
+		return err
+	}
+	tmp := s.SharesPath() + ".tmp"
+	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, s.SharesPath())
+}
+
+// Shares reads what WriteShares left; false when nothing is there or it
+// cannot be read.
+func (s RunState) Shares() ([]HoldingOrg, bool) {
+	data, err := os.ReadFile(s.SharesPath())
+	if err != nil {
+		return nil, false
+	}
+	var rows []HoldingOrg
+	if json.Unmarshal(data, &rows) != nil {
+		return nil, false
+	}
+	return rows, true
 }
 
 // ErrNoNode is PID's answer when no pidfile is there.
