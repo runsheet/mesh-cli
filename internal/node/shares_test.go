@@ -224,7 +224,10 @@ func TestClaimReadySharesEvaluationsDoNotCount(t *testing.T) {
 // node.yaml's `shares:` sets the floors' weights: two orgs, capacity 4,
 // shares acme:3 globex:1, each with four ready items of a normal goal —
 // no priority difference, so the weights alone decide: acme claims
-// three, globex one.
+// three, globex one. The shares are loaded from a real node.yaml
+// through the loop's own reload path (Tick → reload), not set on Cfg
+// directly, so the wiring from disk to Weights() to claimOrder is
+// proved end to end.
 func TestClaimReadySharesWeightsFromNodeYAML(t *testing.T) {
 	p := newPriorityFake(t)
 	p.addGoal(orgID, "fire", "normal")
@@ -233,10 +236,26 @@ func TestClaimReadySharesWeightsFromNodeYAML(t *testing.T) {
 		p.addItem(orgID, "fire", fmt.Sprintf("a-%d", i), i, false)
 		p.addItem(org2, "steady", fmt.Sprintf("b-%d", i), i, false)
 	}
-	loop, logs := p.sharesLoop(4)
-	loop.Cfg.Shares = map[string]int{"acme": 3, "globex": 1}
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeNodeYAML(t, "slug: box\nname: Box\ncapacity: 4\nshares: {acme: 3, globex: 1}\n")
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var logs strings.Builder
+	loop := &Loop{GW: gateway.New(p.URL(), "rs_test"), Cfg: cfg, Scopes: p.scopes,
+		Interval: time.Hour, Harness: "claude-code", Log: log.New(&logs, "", 0),
+		Dispatch: func(context.Context, gateway.WorkItem) {}}
+	loop.Reload = Reloader(loop.GW, cfg, p.scopes, LoadConfig, func(context.Context, Scope) error { return nil })
+
 	if got := p.claimsByOrg(loop); got[orgID] != 3 || got[org2] != 1 {
-		t.Fatalf("claims by org %v, want acme 3 and globex 1\n%s", got, logs)
+		t.Fatalf("claims by org %v, want acme 3 and globex 1\n%s", got, &logs)
+	}
+	if got := loop.Weights(); !sharesEqual(got, map[string]int{"acme": 3, "globex": 1}) {
+		t.Fatalf("weights after the reload %v, want acme:3 globex:1", got)
 	}
 }
 

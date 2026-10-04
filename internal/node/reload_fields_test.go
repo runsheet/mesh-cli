@@ -162,7 +162,9 @@ func TestReloadSharesFromDisk(t *testing.T) {
 
 // A weight naming an org the node does not serve is logged once and
 // ignored: it is dropped from Weights(), the served org's own weight
-// still in force.
+// still in force. node.yaml left unchanged after that — ghost still
+// named in it — logs the warning no further: "an unchanged file logs
+// nothing" holds even when the file names an unserved org.
 func TestReloadSharesUnservedOrgIgnored(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	writeNodeYAML(t, "slug: box\nname: Box\ncapacity: 1\nshares: {a: 2, ghost: 5}\n")
@@ -175,8 +177,23 @@ func TestReloadSharesUnservedOrgIgnored(t *testing.T) {
 	if got := loop.Weights(); !sharesEqual(got, map[string]int{"a": 2}) {
 		t.Fatalf("weights %v, want a:2 alone (ghost dropped)", got)
 	}
-	if got := logs.String(); !strings.Contains(got, "shares: ghost is not a served org") {
-		t.Fatalf("logged %q, want the unserved-org line", got)
+	if got := logs.String(); strings.Count(got, "shares: ghost is not a served org") != 1 {
+		t.Fatalf("logged %q, want the unserved-org line exactly once", got)
+	}
+	logs.Reset()
+
+	// the same file, unchanged, reloaded again: ghost is still unserved
+	// but already logged, and the shares themselves did not change —
+	// nothing is logged on this tick.
+	loop.reload(context.Background())
+	if got := logs.String(); got != "" {
+		t.Fatalf("second tick of the unchanged file logged %q, want nothing", got)
+	}
+
+	// a third tick, still unchanged: the ghost line stays said once.
+	loop.reload(context.Background())
+	if got := logs.String(); got != "" {
+		t.Fatalf("third tick of the unchanged file logged %q, want nothing", got)
 	}
 }
 

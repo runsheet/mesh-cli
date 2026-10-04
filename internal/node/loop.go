@@ -240,6 +240,11 @@ type Loop struct {
 	// until Reload says otherwise (sharesSet); read through Weights().
 	shares    map[string]int
 	sharesSet bool
+	// sharesUnknown is the set of org names the last tick's `shares:`
+	// named that this node does not serve, so a name already logged as
+	// "is not a served org" is not logged again while it keeps appearing
+	// unchanged; a name that drops out and comes back logs again.
+	sharesUnknown map[string]bool
 	// paced is the pacing mode last logged, so a crossing is logged once.
 	paced paceMode
 	// waiting counts, by kind, the work this tick left unclaimed because
@@ -1396,14 +1401,31 @@ func (l *Loop) reload(ctx context.Context) {
 			filtered = nil
 		}
 		sort.Strings(unknown)
+		l.mu.Lock()
+		alreadyLogged := l.sharesUnknown
+		l.mu.Unlock()
+		nowUnknown := map[string]bool{}
 		for _, org := range unknown {
-			l.logf("shares: %s is not a served org", org)
+			nowUnknown[org] = true
+			if !alreadyLogged[org] {
+				l.logf("shares: %s is not a served org", org)
+			}
 		}
-		if was, now := l.Weights(), filtered; !sharesEqual(was, now) {
+		was := map[string]int{}
+		for org, w := range l.Weights() {
+			if served[org] {
+				was[org] = w
+			}
+		}
+		if len(was) == 0 {
+			was = nil
+		}
+		if now := filtered; !sharesEqual(was, now) {
 			l.logf("shares %s → %s", sharesString(was), sharesString(now))
 		}
 		l.mu.Lock()
 		l.shares, l.sharesSet = filtered, true
+		l.sharesUnknown = nowUnknown
 		l.mu.Unlock()
 	}
 	if got.OrgsRead {
