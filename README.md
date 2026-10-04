@@ -1880,9 +1880,13 @@ makes it wait. So the planner (and the replanner) follows one rule:
 - **An item depends on another only when it uses something that item
   creates or changes** — a type, command, field, function, file or
   endpoint — and could not be built against `main` without it.
-- **Sharing a repository or touching the same file is not a dependency.**
-  The merge queue rebases each pull request, and the scheduler's overlap
-  hold covers conflicts.
+- **Sharing a repository is not a dependency; sharing a code file is,
+  and the node adds it.** Each item names the `files` it expects to
+  change. When two items of one repo name the same code file and neither
+  depends on the other, the node's plan check (`sharedCodeFiles`) makes
+  the later depend on the earlier, so the second starts from the first's
+  merged work. **Sharing a document is not a dependency**: documents
+  never chain, because one item writes them (below).
 - **Order by importance is priority, not dependency.** An item that
   matters more is not a reason for another to wait on it.
 - **Prefer a wide, shallow graph**, so that as many items as possible are
@@ -1901,6 +1905,24 @@ The node's plan validation drops any dependency without a `because`, and
 logs it, before `PlanGoal`. The reason stays on the node: it is added to
 the dependent item's brief, and is not sent to the platform, which still
 receives `depends_on` as seqs.
+
+**One item writes the goal's shared documents.** These are the ADR, the
+TRD section, AGENTS.md and README. The planner marks the writer
+`"writes_shared_docs": true`: the last item, or one that depends on the
+rest. With none marked, the node picks the highest-seq item nothing
+depends on. The writer's brief lists every sibling by seq and title.
+Every other item's brief says not to edit those documents. Instead it
+leaves what it would have added as a `mesh_progress` note opening
+`for the docs writer:`. When the writer is built, its prompt carries
+those notes after the brief, under `## Notes to fold in`: one line per
+sibling, `item <seq> (<title>): <note>`, with the sibling's pull
+request. Each sibling's merged pull request description is the other
+source.
+
+The hand-in's `planned, N items` line in node.log ends with one of two
+things: `K dependencies added by the plan check (3→2 internal/x.go; …)`,
+or `none added by the plan check`. See
+[ADR-025](docs/adr/adr-025-items-that-share-a-file-are-planned-in-a-line.md).
 
 The case that made the rule: in goal `node-plans-from-the-truth`, item #29
 waited on four items it did not use, so it ran only after all of them had
