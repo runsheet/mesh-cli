@@ -1046,7 +1046,8 @@ value over 1 is read as a percent):
 ```yaml
 limits:
   pace_five_hour: 0.80
-  stop: 0.95
+  stop: 0.98
+  reserve: 0.05
 ```
 
 Every heartbeat carries the latest reading of each account as `limits`

@@ -32,7 +32,7 @@ func TestHoldingReportPacedAndExhausted(t *testing.T) {
 			Status:     "allowed_warning",
 			ObservedAt: now,
 			FiveHour:   harness.RateLimitWindow{Utilization: 0.1, ResetsAt: fiveOver},
-			SevenDay:   harness.RateLimitWindow{Utilization: 0.97, ResetsAt: weekOver},
+			SevenDay:   harness.RateLimitWindow{Utilization: 0.99, ResetsAt: weekOver},
 		},
 	}
 	cfg := LimitsConfig{}

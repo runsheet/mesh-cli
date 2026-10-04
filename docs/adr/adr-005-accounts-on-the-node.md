@@ -1083,3 +1083,59 @@ in RFC 3339); `TestHeartbeatOmitsUnclaimedUntilTheSchemaLacks`
 (`internal/gateway/holding_test.go`: a schema without the field gets the
 entry with no `until` key, and the heartbeat is still recorded; the next
 probe, once the schema has it, sends it).
+
+## Amendment — 2026-10-03 (goal every-subscription-lands-full-at-its-reset, item 1): the clock rule
+
+**Decision.** A subscription is paced against a clock, not just a
+brake: each window has a target line, the fraction of its length
+already elapsed, less a small reserve held back for urgent work
+(`LimitsConfig.Reserve`, `reserve` in node.yaml, default 0.05 —
+`DefaultReserve`). An account's own standing against that line
+(`Standing`/`WindowStanding`, `internal/node/limits.go`) is its
+`Distance` — live utilization less the target, negative behind the
+line (room to spend) and positive ahead of it (spent too fast) — and
+whether it is `Push`ed: behind the line with at most a fifth of the
+window's length left before reset. `stop` rises from 0.95 to 0.98
+(`DefaultStop`): the brake still exists, now only for the last 2% of a
+window, so the clock — not the old 95% ceiling — governs the other 98.
+A credential's own pace point for a window (`PaceFiveHour`/
+`PaceSevenDay` > 0, a platform `windowTargets` row) replaces the
+time-proportional target for that window outright; a window with no
+live reading, or whose reset has passed, stands at zero throughout —
+elapsed, target, utilization, distance and push — never a stale
+pace point or a stale percentage.
+
+This item lands the clock itself — `LimitsConfig.Reserve`, `stop`
+0.98, `WindowStanding`, `Standing`, `StandingOf`, and the tests
+proving the target line, the push rule and the expired-window zeroing
+in `internal/node/limits_test.go`. The decisions that spend the
+clock's reading follow as later items of the same goal:
+
+- **item 2** — `ChooseAccount` orders accounts by `Distance`, furthest
+  behind first; an account ahead of its own target is chosen only when
+  every other is also ahead or stopped.
+- **item 3** — the scaler (ADR-004) adds capacity for an account that
+  is `Push`ed — behind its line with a fifth of its window's length or
+  less remaining — so it lands near its target by reset instead of
+  leaving the window's last hours unspent.
+- **item 4** — the holdback: once every subscription but one sits
+  within 10% of `stop`, the account with the latest reset among them is
+  not chosen for work below urgent priority, so the node is never left
+  with every subscription stopped at once.
+- **item 5** — the heartbeat's `limits[]` rows carry each account's
+  `target`, `distance` and `push` alongside today's utilization and
+  resets, gated on the schema the way `limits[].priorities` is
+  (`takesLimitsPriorities`).
+- **item 6** — `mesh node status` prints each account's target,
+  distance and push beside its existing utilization.
+
+Tests: `TestStanding` (`internal/node/limits_test.go`) — the target
+line and distance at 50% and 90% elapsed, push in a window's last
+tenth while behind and not while ahead, a credential's pace point
+replacing the line regardless of elapsed, a window past its reset
+reading zero throughout even with a pace point set, and the account's
+own `Distance` falling back to the five-hour window's with no
+seven-day reading; `TestLimitsDefaults` and
+`TestLoopTakesLimitsFromNodeYAML` — `Thresholds()` default Reserve
+0.05 and Stop 0.98, node.yaml's `reserve`/`stop` loading and
+reloading, and a `reserve` over 1 read as a percent.

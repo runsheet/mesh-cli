@@ -23,6 +23,11 @@ type LimitsConfig struct {
 	PaceFiveHour float64 `yaml:"pace_five_hour,omitempty"`
 	// Stop is either window's use past which the node starts nothing new.
 	Stop float64 `yaml:"stop,omitempty"`
+	// Reserve is the fraction of a window's time-proportional target
+	// line held back for urgent work (Standing): the target is the
+	// window's elapsed fraction less Reserve, so an account never spends
+	// the clock's own cushion on ordinary work.
+	Reserve float64 `yaml:"reserve,omitempty"`
 	// PaceSevenDay is the seven-day window's use past which an account
 	// takes only urgent and high work: never node.yaml's, only an
 	// account's own pace point (For); 0 is none.
@@ -46,7 +51,8 @@ func (c LimitsConfig) For(a AccountConfig) LimitsConfig {
 // The thresholds when node.yaml names none.
 const (
 	DefaultPaceFiveHour = 0.80
-	DefaultStop         = 0.95
+	DefaultStop         = 0.98
+	DefaultReserve      = 0.05
 )
 
 // Thresholds is the block with its defaults filled in.
@@ -61,7 +67,113 @@ func (c LimitsConfig) Thresholds() LimitsConfig {
 		return v
 	}
 	return LimitsConfig{PaceFiveHour: fraction(c.PaceFiveHour, DefaultPaceFiveHour), Stop: fraction(c.Stop, DefaultStop),
-		PaceSevenDay: fraction(c.PaceSevenDay, 0)}
+		Reserve: fraction(c.Reserve, DefaultReserve), PaceSevenDay: fraction(c.PaceSevenDay, 0)}
+}
+
+// fiveHourLength and sevenDayLength are the two windows' own lengths,
+// for Standing's elapsed fraction.
+const (
+	fiveHourLength = 5 * time.Hour
+	sevenDayLength = 7 * 24 * time.Hour
+)
+
+// WindowStanding is one window's reading turned into the clock rule's
+// terms: where it is against its own target line. Negative Distance is
+// behind the line (room to spend), positive is ahead (spent too fast).
+type WindowStanding struct {
+	// Elapsed is the fraction of the window's length gone by, 0 to 1.
+	Elapsed float64
+	// Target is the line the window should be at by now: its elapsed
+	// fraction less the reserve, clamped to [0, stop] — or, when the
+	// account's own pace point for this window is set, that point
+	// outright, in place of the time-proportional line.
+	Target float64
+	// Utilization is the window's live use; 0 once its reset has passed.
+	Utilization float64
+	// Distance is Utilization − Target: negative behind the line,
+	// positive ahead of it.
+	Distance float64
+	// Push is set in the window's last fifth, while it is behind.
+	Push bool
+	// ResetsAt is the window's own reset time, as read.
+	ResetsAt time.Time
+}
+
+// windowStanding is one window of a reading turned into its standing at
+// now. pacePoint is the account's own pace point for this window, read
+// before LimitsConfig.Thresholds fills in the node-wide pacing
+// defaults — 0 is none, the ordinary case, in which the target is the
+// time-proportional line; only a credential's own windowTargets (or an
+// operator's explicit node.yaml pace point) past 0 replaces it outright.
+// A window with no reading or whose reset has passed reads as freshly
+// reset: elapsed, target, utilization and push all zero, whatever
+// pacePoint says — a stale reading names no standing to push on.
+func windowStanding(now time.Time, w harness.RateLimitWindow, length time.Duration, pacePoint float64, cfg LimitsConfig) WindowStanding {
+	if w.ResetsAt.IsZero() || !w.ResetsAt.After(now) {
+		return WindowStanding{ResetsAt: w.ResetsAt}
+	}
+	elapsed := clampUnit(1 - w.ResetsAt.Sub(now).Seconds()/length.Seconds())
+	target := clamp(elapsed-cfg.Reserve, 0, cfg.Stop)
+	if pacePoint > 0 {
+		target = pacePoint
+	}
+	distance := w.Utilization - target
+	push := distance < 0 && w.ResetsAt.Sub(now) <= length/5
+	return WindowStanding{Elapsed: elapsed, Target: target, Utilization: w.Utilization, Distance: distance, Push: push, ResetsAt: w.ResetsAt}
+}
+
+// clamp bounds v to [lo, hi].
+func clamp(v, lo, hi float64) float64 {
+	return min(max(v, lo), hi)
+}
+
+// clampUnit bounds v to [0, 1].
+func clampUnit(v float64) float64 { return clamp(v, 0, 1) }
+
+// pacePointFraction reads a pace point the same way Thresholds reads a
+// threshold: 0 or less is none, over 1 is a percent.
+func pacePointFraction(v float64) float64 {
+	if v <= 0 {
+		return 0
+	}
+	if v > 1 {
+		return v / 100
+	}
+	return v
+}
+
+// Standing is a reading turned into the clock rule's terms (goal
+// every-subscription-lands-full-at-its-reset, item 1): each window's own
+// standing, and the account's own Distance and Push — the seven-day
+// window's Distance when it has a reading, else the five-hour's; Push
+// when either window's is set.
+type Standing struct {
+	FiveHour, SevenDay WindowStanding
+	// Distance is negative behind the account's own target, positive
+	// ahead of it.
+	Distance float64
+	Push     bool
+}
+
+// StandingOf turns a reading into Standing at now, against cfg (already
+// LimitsConfig.For(account), so a credential's own windowTargets reach
+// this as PaceFiveHour/PaceSevenDay). The pace points are read before
+// Thresholds fills in the node-wide pacing defaults (pace_five_hour's
+// 0.80), so an account with no pace point of its own still gets the
+// time-proportional target line on both windows, not a flat default.
+func StandingOf(now time.Time, r harness.RateLimit, cfg LimitsConfig) Standing {
+	fiveHourPoint, sevenDayPoint := pacePointFraction(cfg.PaceFiveHour), pacePointFraction(cfg.PaceSevenDay)
+	cfg = cfg.Thresholds()
+	s := Standing{
+		FiveHour: windowStanding(now, r.FiveHour, fiveHourLength, fiveHourPoint, cfg),
+		SevenDay: windowStanding(now, r.SevenDay, sevenDayLength, sevenDayPoint, cfg),
+	}
+	s.Distance = s.FiveHour.Distance
+	if !r.SevenDay.ResetsAt.IsZero() {
+		s.Distance = s.SevenDay.Distance
+	}
+	s.Push = s.FiveHour.Push || s.SevenDay.Push
+	return s
 }
 
 // DefaultAccount names the account of a node whose sessions run on the

@@ -66,7 +66,7 @@ func newReloadFailNode(t *testing.T) *reloadFailNode {
 	}
 	n.capacity, n.limits = loop.Capacity(), loop.Thresholds()
 	n.context, n.scopes = loop.ContextBudget(), strings.Join(loop.CurrentScopes().Logins(), ",")
-	if n.capacity != 3 || n.limits != (LimitsConfig{PaceFiveHour: 0.5, Stop: 0.9}) ||
+	if n.capacity != 3 || n.limits != (LimitsConfig{PaceFiveHour: 0.5, Stop: 0.9, Reserve: DefaultReserve}) ||
 		n.context != (ContextConfig{BytesMax: 131072, DocBytesMax: 32768}) || n.scopes != "acme" {
 		t.Fatalf("the good tick is not in force: capacity %d, limits %+v, context %+v, orgs %s",
 			n.capacity, n.limits, n.context, n.scopes)
@@ -163,7 +163,7 @@ func TestReloadFailMyOrgsKeepsTheOrgsAndAppliesNodeYAML(t *testing.T) {
 	if got := n.loop.Capacity(); got != 5 {
 		t.Fatalf("capacity %d with MyOrgs failing, want node.yaml's 5", got)
 	}
-	if got := n.loop.Thresholds(); got != (LimitsConfig{PaceFiveHour: 0.6, Stop: 0.95}) {
+	if got := n.loop.Thresholds(); got != (LimitsConfig{PaceFiveHour: 0.6, Stop: 0.95, Reserve: DefaultReserve}) {
 		t.Fatalf("limits %+v, want node.yaml's", got)
 	}
 	if got := n.loop.ContextBudget(); got.BytesMax != 65536 {
