@@ -165,6 +165,7 @@ func (l *Loop) dropClaim(kind harness.Kind, subject string) {
 // the plan handed in, released, or held — unless ctx is done: a planner
 // the node let go of keeps its record for the next process.
 func (l *Loop) startPlan(ctx context.Context, g gateway.Goal, sc Scope) {
+	l.countFor(g.ID, sc.ID)
 	l.wg.Add(1)
 	go func(ctx context.Context, g gateway.Goal, sc Scope) {
 		defer crash.Guard()
@@ -173,6 +174,7 @@ func (l *Loop) startPlan(ctx context.Context, g gateway.Goal, sc Scope) {
 			unlessDetached(ctx, func() { l.dropClaim(harness.KindPlan, g.ID) })
 			l.mu.Lock()
 			delete(l.planning, g.ID)
+			delete(l.sessionOrg, g.ID)
 			l.mu.Unlock()
 			l.notify()
 		}()
@@ -183,6 +185,7 @@ func (l *Loop) startPlan(ctx context.Context, g gateway.Goal, sc Scope) {
 // startResearch runs the director on a direction already marked in
 // l.researching, as startPlan runs the planner.
 func (l *Loop) startResearch(ctx context.Context, d gateway.Direction, p gateway.Project, sc Scope) {
+	l.countFor(d.ID, sc.ID)
 	l.wg.Add(1)
 	go func(ctx context.Context, d gateway.Direction, p gateway.Project, sc Scope) {
 		defer crash.Guard()
@@ -191,6 +194,7 @@ func (l *Loop) startResearch(ctx context.Context, d gateway.Direction, p gateway
 			unlessDetached(ctx, func() { l.dropClaim(harness.KindResearch, d.ID) })
 			l.mu.Lock()
 			delete(l.researching, d.ID)
+			delete(l.sessionOrg, d.ID)
 			l.mu.Unlock()
 			l.notify()
 		}()

@@ -169,6 +169,10 @@ func (l *Loop) AdoptSessions(ctx context.Context, found []FoundSession) int {
 			session.DirectionID = subject
 		}
 		l.adopted[subject] = adoptedEntry{session: session, found: s}
+		if kind == harness.KindBuild || kind == harness.KindPlan || kind == harness.KindResearch {
+			// it counts toward the share of the org its node id is in
+			l.countForLocked(subject, l.orgOfNode(s.State.NodeID))
+		}
 		l.mu.Unlock()
 		if s.State.ItemID != "" && kind != harness.KindPlan && kind != harness.KindResearch {
 			note := "session adopted by the restarted node (" + s.Liveness() + ")"
@@ -199,6 +203,7 @@ func (l *Loop) AdoptSessions(ctx context.Context, found []FoundSession) int {
 				l.mu.Lock()
 				delete(held, subject)
 				delete(l.adopted, subject)
+				delete(l.sessionOrg, subject)
 				if kind == harness.KindBuild {
 					delete(l.runningOn, subject)
 				}
