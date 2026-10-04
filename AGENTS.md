@@ -317,9 +317,14 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   accounts, as `{capacity: N, min: N, max: N, reason: fixed}`, so a
   capacity changed in node.yaml reaches the platform on the next
   heartbeat and not only at the next registration (mesh-cli ADR-018;
-  before it only a range or several accounts sent it) — sent only when the gateway's
+  before it only a range or several accounts sent it) — and `host
+  {load, cores, temperatureC, hot}` beside `accounts`, the machine's
+  own load average, core count, package temperature and whether
+  either crossed node.yaml's `host:` threshold, nil when the node's
+  own isn't hot (`gateway.HostScaling`, adr-004's amendment
+  2026-10-03; The node backs off a hot host) — sent only when the gateway's
   schema has the field (introspected, kept an hour: adr-005
-  §Heartbeat); both for runsheet goal
+  §Heartbeat, `host` the same way via `takesScaling`); both for runsheet goal
   `limits-on-the-console` — and `runtimes` and `adapters` — the tool
   runtimes (npx, uvx, docker) and agent CLIs (claude-code, codex)
   `Loop.LookPath` finds, probed every tick, for `tools-in-the-console`

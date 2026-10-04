@@ -195,6 +195,91 @@ func TestHeartbeatScalingWithoutAccountsTheSchemaLacks(t *testing.T) {
 	}
 }
 
+// hostScaling is a ranged node whose capacity backed off from the
+// host's own load and package temperature (adr-004's amendment
+// 2026-10-03).
+func hostScaling() *gateway.Scaling {
+	sc := accountsScaling()
+	sc.Reason = "host hot: load 55/18 cores"
+	sc.Host = &gateway.HostScaling{Load: 55, Cores: 18, TemperatureC: 101, Hot: true}
+	return sc
+}
+
+// A gateway whose HeartbeatNodeInput's scaling lists `host` gets the
+// host figures that backed the capacity off: load, cores, temperature
+// and whether it is judged hot (adr-004's amendment 2026-10-03).
+func TestHeartbeatCarriesHostScalingTheSchemaTakes(t *testing.T) {
+	f, gw := registeredFake(t)
+	if _, err := gw.HeartbeatNode(context.Background(), limitsNode, "v1", 4, gateway.HeartbeatExtras{Scaling: hostScaling()}); err != nil {
+		t.Fatal(err)
+	}
+	hb := f.CallsNamed("heartbeatNode")
+	if len(hb) != 1 {
+		t.Fatalf("heartbeats: %+v", hb)
+	}
+	s, _ := hb[0].Input["scaling"].(map[string]any)
+	host, ok := s["host"].(map[string]any)
+	if !ok {
+		t.Fatalf("scaling.host = %#v", s["host"])
+	}
+	for k, want := range map[string]any{"load": 55.0, "cores": 18.0, "temperatureC": 101.0, "hot": true} {
+		if host[k] != want {
+			t.Fatalf("scaling.host.%s = %#v, want %#v", k, host[k], want)
+		}
+	}
+	if s["reason"] != "host hot: load 55/18 cores" {
+		t.Fatalf("scaling.reason = %#v", s["reason"])
+	}
+}
+
+// A gateway whose scaling lacks `host` (a platform before adr-004's
+// amendment 2026-10-03) gets the rest of scaling — capacity, min, max,
+// reason and accounts — with no `host` key, and accepts the
+// heartbeat.
+func TestHeartbeatOmitsHostTheSchemaLacks(t *testing.T) {
+	f, gw := registeredFake(t)
+	f.UnknownFields["host"] = true
+	if _, err := gw.HeartbeatNode(context.Background(), limitsNode, "v1", 4, gateway.HeartbeatExtras{Scaling: hostScaling()}); err != nil {
+		t.Fatal(err)
+	}
+	hb := f.CallsNamed("heartbeatNode")
+	if len(hb) != 1 {
+		t.Fatalf("heartbeats: %+v", hb)
+	}
+	s, _ := hb[0].Input["scaling"].(map[string]any)
+	if _, ok := s["host"]; ok {
+		t.Fatalf("sent host the schema lacks: %#v", s["host"])
+	}
+	accounts, ok := s["accounts"].([]any)
+	if !ok || len(accounts) != 3 {
+		t.Fatalf("scaling.accounts = %#v, want the three accounts still", s["accounts"])
+	}
+	for k, want := range map[string]any{"capacity": 5.0, "min": 1.0, "max": 8.0, "reason": "host hot: load 55/18 cores"} {
+		if s[k] != want {
+			t.Fatalf("scaling.%s = %#v, want %#v", k, s[k], want)
+		}
+	}
+}
+
+// A Scaling with a nil Host sends no `host` key even when the schema
+// takes it: the request is unchanged from before this field existed
+// (adr-004's amendment 2026-10-03); TestHeartbeatOfAFixedNodeIsUnchanged
+// below still passes unmodified, since it sends no Scaling at all.
+func TestHeartbeatScalingOmitsNilHost(t *testing.T) {
+	f, gw := registeredFake(t)
+	if _, err := gw.HeartbeatNode(context.Background(), limitsNode, "v1", 4, gateway.HeartbeatExtras{Scaling: accountsScaling()}); err != nil {
+		t.Fatal(err)
+	}
+	hb := f.CallsNamed("heartbeatNode")
+	if len(hb) != 1 {
+		t.Fatalf("heartbeats: %+v", hb)
+	}
+	s, _ := hb[0].Input["scaling"].(map[string]any)
+	if _, ok := s["host"]; ok {
+		t.Fatalf("sent host for a nil Host: %#v", s["host"])
+	}
+}
+
 // bodies records every request body the client sends.
 type bodies struct {
 	mu   sync.Mutex

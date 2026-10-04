@@ -2056,7 +2056,10 @@ type SandboxInfo struct {
 // adr-005-capacity-across-accounts),
 // and each account's slots as the accounts scaler last counted them —
 // none before it has, or on a platform whose `scaling` has no
-// `accounts`.
+// `accounts`. Host is the machine's own reading (load, cores,
+// temperature, whether it is judged hot) that backed the capacity off,
+// nil when the node has none or the platform's `scaling` has no
+// `host` (adr-004's amendment 2026-10-03).
 type Scaling struct {
 	Capacity int    `json:"capacity"`
 	Min      int    `json:"min"`
@@ -2067,6 +2070,19 @@ type Scaling struct {
 	// (go-apis/loom nested-optional-lists-are-nullable), and an omitted or
 	// null list had the whole heartbeat refused (2026-09-28).
 	Accounts []AccountScaling `json:"accounts"`
+	Host     *HostScaling     `json:"host,omitempty"`
+}
+
+// HostScaling is the machine's own reading that the scaler weighed
+// against node.yaml's `host:` thresholds: the 1-minute load average,
+// the core count it is a ratio of, the package temperature in Celsius
+// (omitted where the host has no thermal zone to read), and whether
+// either crossed its threshold (adr-004's amendment 2026-10-03).
+type HostScaling struct {
+	Load         float64 `json:"load"`
+	Cores        int     `json:"cores"`
+	TemperatureC float64 `json:"temperatureC,omitempty"`
+	Hot          bool    `json:"hot"`
 }
 
 // AccountScaling is one account's share of the capacity: its label and
@@ -2134,7 +2150,7 @@ func (c *Client) HeartbeatNode(ctx context.Context, nodeID, version string, runn
 			}
 		}
 		if x.Scaling != nil {
-			switch takes, accounts := c.takesScaling(ctx); {
+			switch takes, accounts, host := c.takesScaling(ctx); {
 			case !takes:
 			case !accounts:
 				// a platform whose scaling has no accounts field refuses the
@@ -2146,6 +2162,9 @@ func (c *Client) HeartbeatNode(ctx context.Context, nodeID, version string, runn
 				sc := *x.Scaling
 				if sc.Accounts == nil {
 					sc.Accounts = []AccountScaling{}
+				}
+				if !host {
+					sc.Host = nil
 				}
 				in["scaling"] = &sc
 			}
@@ -2257,12 +2276,14 @@ func (c *Client) takesCommit(ctx context.Context) bool {
 }
 
 // scalingProbe is the cached answer: whether heartbeatNode's input has
-// `scaling`, whether that has `accounts`, and when it was asked.
+// `scaling`, whether that has `accounts`, whether it has `host`
+// (adr-004's amendment 2026-10-03), and when it was asked.
 type scalingProbe struct {
 	mu       sync.Mutex
 	at       time.Time
 	takes    bool
 	accounts bool
+	host     bool
 }
 
 func (c *Client) now() time.Time {
@@ -2273,18 +2294,19 @@ func (c *Client) now() time.Time {
 }
 
 // takesScaling says whether the gateway's HeartbeatNodeInput has a
-// `scaling` field, and whether that takes `accounts` — asked once by
+// `scaling` field, whether that takes `accounts`, and whether it takes
+// `host` (adr-004's amendment 2026-10-03) — asked once by
 // introspection and kept for ScalingProbeEvery (ADR-004: the node must
 // not send a field the platform does not accept). A failed probe is a
 // no, kept as long: the heartbeat goes on without the field. A scalar
 // `scaling` (a Map or JSON) takes any shape.
-func (c *Client) takesScaling(ctx context.Context) (bool, bool) {
+func (c *Client) takesScaling(ctx context.Context) (bool, bool, bool) {
 	p := &c.scalingSchema
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := c.now()
 	if !p.at.IsZero() && now.Sub(p.at) < ScalingProbeEvery {
-		return p.takes, p.accounts
+		return p.takes, p.accounts, p.host
 	}
 	type typeRef struct {
 		Kind        string `json:"kind"`
@@ -2306,10 +2328,10 @@ func (c *Client) takesScaling(ctx context.Context) (bool, bool) {
 			} `json:"inputFields"`
 		} `json:"__type"`
 	}
-	p.at, p.takes, p.accounts = now, false, false
+	p.at, p.takes, p.accounts, p.host = now, false, false, false
 	q := `{ __type(name: "HeartbeatNodeInput") { inputFields { name type { kind inputFields { name } ofType { kind inputFields { name } } } } } }`
 	if err := c.Query(ctx, q, nil, &out); err != nil || out.Type == nil {
-		return false, false
+		return false, false, false
 	}
 	for _, f := range out.Type.InputFields {
 		if f.Name != "scaling" {
@@ -2321,15 +2343,18 @@ func (c *Client) takesScaling(ctx context.Context) (bool, bool) {
 			kind, fields = f.Type.OfType.Kind, f.Type.OfType.InputFields
 		}
 		if kind == "SCALAR" {
-			p.accounts = true
+			p.accounts, p.host = true, true
 		}
 		for _, sf := range fields {
 			if sf.Name == "accounts" {
 				p.accounts = true
 			}
+			if sf.Name == "host" {
+				p.host = true
+			}
 		}
 	}
-	return p.takes, p.accounts
+	return p.takes, p.accounts, p.host
 }
 
 // holdingProbe is the cached answer to whether an input type has a
