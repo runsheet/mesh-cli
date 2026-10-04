@@ -251,7 +251,8 @@ func (c *costReporter) delta() int {
 
 // RunItem is the whole of one claimed item: resolve, workspace, context,
 // session, progress, push, finish — or fail, or release it when GitHub
-// refuses the item's token through every retry (ReleaseOnCredential). A
+// refuses the item's token through every retry (ReleaseOnCredential) or
+// its workspace cannot be prepared (ReleaseOnWorkspace, ADR-024). A
 // cancelled ctx (the node's own shutdown) leaves the item as it is for a
 // retry.
 func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
@@ -275,14 +276,18 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		sc, _ := r.Scopes.ByOrg(item.OrgID)
 		return ReleaseOnCredential(ctx, r.GW, item.ID, sc.NodeID, ce, r.logf)
 	}
+	// a workspace that cannot be prepared is the node's condition, not
+	// the item's: the claim is released with the error, never failed
+	// (ADR-024, a workspace failure releases the claim)
+	nodeID := func() string { sc, _ := r.Scopes.ByOrg(item.OrgID); return sc.NodeID }
 	if err != nil {
-		return r.fail(ctx, item, fmt.Errorf("workspace: %w", err))
+		return r.releaseWorkspace(ctx, item.ID, label, nodeID(), err)
 	}
 	// the session commits as its agent with the pairers' trailers, never
 	// as the node's owner (ADR-024)
 	ident := identityFor(r.Cfg, tools.RoleFor(string(harness.KindBuild)), item, res.Goal)
 	if err := r.WS.Identify(ctx, dir, ident); err != nil {
-		return r.fail(ctx, item, fmt.Errorf("workspace: %w", err))
+		return r.releaseWorkspace(ctx, item.ID, label, nodeID(), err)
 	}
 
 	orgName := r.Scopes.NameOf(item.OrgID)
@@ -293,7 +298,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	}
 	files, written, err := WriteContext(dir, cx)
 	if err != nil {
-		return r.fail(ctx, item, fmt.Errorf("write context: %w", err))
+		return r.releaseWorkspace(ctx, item.ID, label, nodeID(), fmt.Errorf("write context: %w", err))
 	}
 	r.logf("item %s: %s", label, written.Line())
 	if w := written.TargetWarning(); w != "" {

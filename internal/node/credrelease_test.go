@@ -181,23 +181,24 @@ func TestCredentialReleaseRefusedFailsTheItem(t *testing.T) {
 	}
 }
 
-// (5) A workspace error that is not GitHub refusing the credential still
-// fails the item, and nothing is released.
-func TestNonCredentialWorkspaceErrorStillFailsTheItem(t *testing.T) {
+// (5) A workspace error that is not GitHub refusing the credential is
+// not retried as one, and is released with `workspace: <error>` rather
+// than failed (ADR-024, a workspace failure releases the claim).
+func TestNonCredentialWorkspaceErrorReleasesTheItem(t *testing.T) {
 	f := seed(t)
 	run := runRefused(t, f, 1, errors.New("no base ref and no origin default branch: exit status 128"))
 	var ce *CredentialError
 	if run.err == nil || errors.As(run.err, &ce) {
 		t.Fatalf("err = %v", run.err)
 	}
-	if n := len(f.CallsNamed("releaseWorkItem")); n != 0 {
-		t.Fatalf("ReleaseWorkItem called %d times", n)
+	if n := len(f.CallsNamed("failWorkItem")); n != 0 {
+		t.Fatalf("FailWorkItem called %d times", n)
 	}
-	if len(f.CallsNamed("failWorkItem")) != 1 || run.row["status"] != "failed" {
+	if len(f.CallsNamed("releaseWorkItem")) != 1 || run.row["status"] != "ready" {
 		t.Fatalf("row: %v", run.row)
 	}
-	if last, _ := run.row["lastError"].(string); !strings.Contains(last, "no base ref") {
-		t.Fatalf("last error = %q", last)
+	if note, _ := run.row["lastNote"].(string); note != "workspace: no base ref and no origin default branch: exit status 128" {
+		t.Fatalf("last note = %q", note)
 	}
 }
 

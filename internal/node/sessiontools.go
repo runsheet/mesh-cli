@@ -245,6 +245,11 @@ type decline struct {
 	// reason is the decline's own words (SessionTools.DeclineReason),
 	// for a holding line.
 	reason string
+	// hold is how long it stands, DeclineHold when zero; anyRuntimes
+	// keeps it whatever the runtimes become (a workspace release, which
+	// no runtime explains).
+	hold        time.Duration
+	anyRuntimes bool
 }
 
 func runtimeKey(runtimes []string) string {
@@ -273,6 +278,21 @@ func (d *Declines) Record(itemID string, missing []tools.Omission, runtimes []st
 	d.m[itemID] = decline{key: fmt.Sprintf("%s|%s|%s", itemID, strings.Join(ts, ","), rk), runtimes: rk, at: now, reason: reason}
 }
 
+// HoldFor keeps the node off id for hold from now whatever its
+// runtimes, with reason for the holding line — the hold after a
+// workspace release (WorkspaceReleaseHold, ADR-024).
+func (d *Declines) HoldFor(id, reason string, now time.Time, hold time.Duration) {
+	if d == nil {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.m == nil {
+		d.m = map[string]decline{}
+	}
+	d.m[id] = decline{key: id, at: now, reason: reason, hold: hold, anyRuntimes: true}
+}
+
 // Holds reports whether itemID stays declined on a node with runtimes
 // at now; a decline whose runtimes changed or whose hold ran out is
 // forgotten.
@@ -293,7 +313,11 @@ func (d *Declines) Held(id string, runtimes []string, now time.Time) (string, bo
 	if !ok {
 		return "", false
 	}
-	if dc.runtimes != runtimeKey(runtimes) || now.Sub(dc.at) >= DeclineHold {
+	hold := dc.hold
+	if hold == 0 {
+		hold = DeclineHold
+	}
+	if (!dc.anyRuntimes && dc.runtimes != runtimeKey(runtimes)) || now.Sub(dc.at) >= hold {
 		delete(d.m, id)
 		return "", false
 	}
