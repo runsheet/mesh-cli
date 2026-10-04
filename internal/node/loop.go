@@ -87,6 +87,11 @@ type Loop struct {
 	// held and ready (ADR-023, Reporting), the rows the holding report's
 	// orgs carries; `mesh node start` leaves them in node.shares.
 	Shares func([]HoldingOrg)
+	// Standing is told each tick every scheduled account's clock
+	// standing (StandingAccounts; optional: `mesh node start` leaves it
+	// in node.standing, for `mesh node status`, goal
+	// every-subscription-lands-full-at-its-reset, item 6).
+	Standing func([]AccountStanding)
 	// AfterTick runs at the end of every tick (optional).
 	AfterTick func(ctx context.Context)
 	// Reload is asked at the top of every tick for the capacity, the
@@ -1049,6 +1054,9 @@ func (l *Loop) Tick(ctx context.Context) {
 	}
 	if l.Held != nil {
 		l.Held(l.HeldGoals())
+	}
+	if l.Standing != nil {
+		l.Standing(StandingAccounts(l.now(), l.scheduled(), l.limitsStore().Readings(), l.Thresholds()))
 	}
 	beat := false
 	if owned := l.owned(); owned != nil {

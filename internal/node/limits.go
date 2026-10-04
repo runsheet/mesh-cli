@@ -176,6 +176,44 @@ func StandingOf(now time.Time, r harness.RateLimit, cfg LimitsConfig) Standing {
 	return s
 }
 
+// AccountStanding is one scheduled account's clock standing as `mesh
+// node status` shows it (goal every-subscription-lands-full-at-its-reset,
+// item 6): Standing's windows and overall Distance/Push beside the
+// account's own Label and Kind, and Mode — "paced" or "stopped" when
+// the account's own reading puts it there (pace), "" otherwise.
+type AccountStanding struct {
+	Label, Kind        string
+	FiveHour, SevenDay WindowStanding
+	Distance           float64
+	Push               bool
+	Mode               string
+}
+
+// StandingAccounts is the clock standing of every account among
+// accounts that has a reading in readings, in label order: what the
+// loop leaves beside node.scaling each tick for `mesh node status`
+// (Loop.Standing). An account with no reading names no standing — it
+// has spent nothing to judge.
+func StandingAccounts(now time.Time, accounts []AccountConfig, readings map[string]harness.RateLimit, cfg LimitsConfig) []AccountStanding {
+	out := make([]AccountStanding, 0, len(accounts))
+	for _, a := range accounts {
+		r, ok := readings[a.Label]
+		if !ok {
+			continue
+		}
+		acfg := cfg.For(a)
+		s := StandingOf(now, r, acfg)
+		mode := ""
+		if p := pace(now, r, acfg); p.mode != paceNormal {
+			mode = p.mode.String()
+		}
+		out = append(out, AccountStanding{Label: a.Label, Kind: a.Kind, FiveHour: s.FiveHour, SevenDay: s.SevenDay,
+			Distance: s.Distance, Push: s.Push, Mode: mode})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Label < out[j].Label })
+	return out
+}
+
 // DefaultAccount names the account of a node whose sessions run on the
 // CLI's own config directory.
 const DefaultAccount = "default"

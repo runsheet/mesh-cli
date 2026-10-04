@@ -245,3 +245,63 @@ func TestSharesLines(t *testing.T) {
 		t.Fatalf("absent node.shares = %q", got)
 	}
 }
+
+// `mesh node status` prints each account's clock standing — week use,
+// target line, distance and push — in label order, from node.standing;
+// nothing with no node.standing, or with no node running at all (goal
+// every-subscription-lands-full-at-its-reset, item 6).
+func TestNodeStatusShowsStanding(t *testing.T) {
+	state := node.RunState{Dir: t.TempDir()}
+	if _, ok := localStanding(state); ok {
+		t.Fatal("a node that has not ticked shows standing")
+	}
+	pid := os.Getpid()
+	if err := state.Started(pid); err != nil {
+		t.Fatal(err)
+	}
+	if rows, ok := localStanding(state); !ok || len(rows) != 0 {
+		t.Fatalf("localStanding with a node running but no node.standing = %+v, %v, want [], true", rows, ok)
+	}
+	rows := []node.AccountStanding{
+		{Label: "max-a", Kind: node.AccountSubscription,
+			SevenDay: node.WindowStanding{Utilization: 0.10, Target: 0.45, Distance: -0.35}, Distance: -0.35},
+		{Label: "max-b", Kind: node.AccountSubscription,
+			SevenDay: node.WindowStanding{Utilization: 0.70, Target: 0.45, Distance: 0.25}, Distance: 0.25, Push: true},
+	}
+	if err := state.WriteStanding(rows); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := localStanding(state)
+	if !ok {
+		t.Fatal("localStanding: not ok with a node running and node.standing written")
+	}
+	lines := strings.Join(standingLines(got), "\n")
+	for _, want := range []string{
+		"account max-a: week 10% used, target 45% (35% behind)",
+		"account max-b: week 70% used, target 45% (25% ahead)",
+	} {
+		if !strings.Contains(lines, want) {
+			t.Fatalf("standing lines missing %q:\n%s", want, lines)
+		}
+	}
+	for _, line := range strings.Split(lines, "\n") {
+		if strings.HasPrefix(line, "account max-b:") && !strings.Contains(line, "push") {
+			t.Fatalf("max-b's line has no push: %q", line)
+		}
+		if strings.HasPrefix(line, "account max-a:") && strings.Contains(line, "push") {
+			t.Fatalf("max-a's line should have no push: %q", line)
+		}
+	}
+
+	if err := state.WriteStanding(nil); err != nil {
+		t.Fatal(err)
+	}
+	if rows, ok := localStanding(state); !ok || len(rows) != 0 {
+		t.Fatalf("localStanding after an empty WriteStanding = %+v, %v, want [], true", rows, ok)
+	}
+
+	state.Stopped(pid)
+	if _, ok := localStanding(state); ok {
+		t.Fatal("localStanding after the node stopped")
+	}
+}
