@@ -2,10 +2,13 @@ package node
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
+	"projectmesh.io/mesh-cli/internal/harness"
 )
 
 // node.yaml's `takes:` (ADR-025): a kind the node does not take is
@@ -122,4 +125,108 @@ func TestTakesLeftOutTakesEveryKind(t *testing.T) {
 	if got := loop.Takes().String(); got != "every kind" {
 		t.Errorf("Takes() = %q, want every kind", got)
 	}
+}
+
+// (a) capacity 4, takes: {evaluate: 2}, four items held here in
+// evaluating: one tick starts exactly two evaluations, the next
+// heartbeat's holding names the cap for the other two, and once one
+// ends the next tick starts a third.
+func TestTakesCapBoundsEvaluations(t *testing.T) {
+	p := newPriorityFake(t)
+	p.addGoal(orgID, "held", "normal")
+	for i := 1; i <= 4; i++ {
+		p.addHeld(orgID, "held", fmt.Sprintf("held-%d", i), i)
+	}
+	p.register()
+	loop, logs := p.loop(4)
+	loop.Cfg.Takes = Takes{{Kind: "evaluate", Cap: 2}}
+	var started atomic.Int32
+	release := make(chan struct{})
+	loop.Evaluate = func(context.Context, gateway.WorkItem) {
+		started.Add(1)
+		<-release
+	}
+	defer func() { close(release); loop.wg.Wait() }()
+
+	loop.Tick(context.Background())
+	waitFor(t, func() bool { return started.Load() == 2 })
+	if n := loop.runningOf(harness.KindEvaluate); n != 2 {
+		t.Fatalf("%d evaluations running after one tick, want 2", n)
+	}
+	if !strings.Contains(logs.String(), "takes: evaluate at its cap of 2; 2 waiting") {
+		t.Errorf("no cap line in the log:\n%s", logs)
+	}
+
+	// the next tick's heartbeat carries this one's holding; still at
+	// the cap, it starts nothing
+	loop.Tick(context.Background())
+	u := unclaimedOf(t, p.lastHolding())["held/evaluation"]
+	if u == nil || !strings.Contains(fmt.Sprint(u["reason"]), "takes cap of 2") {
+		t.Fatalf("holding.unclaimed held/evaluation = %#v, want the takes cap", u)
+	}
+	if u["count"] != float64(2) {
+		t.Errorf("held/evaluation count = %v, want 2", u["count"])
+	}
+	if n := loop.runningOf(harness.KindEvaluate); n != 2 {
+		t.Fatalf("%d evaluations running after a second tick at the cap, want 2", n)
+	}
+
+	release <- struct{}{}
+	waitFor(t, func() bool { return loop.runningOf(harness.KindEvaluate) == 1 })
+	loop.Tick(context.Background())
+	waitFor(t, func() bool { return started.Load() == 3 })
+	if n := loop.runningOf(harness.KindEvaluate); n != 2 {
+		t.Errorf("%d evaluations running after one ended, want 2", n)
+	}
+	if n := started.Load(); n != 3 {
+		t.Errorf("%d evaluations started in all, want 3", n)
+	}
+}
+
+// (b) capacity 3, takes: {build: 1}, three ready items: one tick
+// claims one.
+func TestTakesCapBoundsBuilds(t *testing.T) {
+	p := newPriorityFake(t)
+	p.addGoal(orgID, "run", "normal")
+	for i := 1; i <= 3; i++ {
+		p.addItem(orgID, "run", fmt.Sprintf("ready-%d", i), i, false)
+	}
+	loop, _ := p.loop(3)
+	loop.Cfg.Takes = Takes{{Kind: "build", Cap: 1}}
+	loop.Tick(context.Background())
+	loop.wg.Wait()
+	if n := len(p.CallsNamed("claimWorkItem")); n != 1 {
+		t.Errorf("%d claimWorkItem calls under takes: {build: 1}, want 1", n)
+	}
+	if u := loop.Holding(); u == nil || !holdsFor(u.Unclaimed, "run", "item", "takes cap of 1 build(s)") {
+		t.Errorf("holding = %+v, want the build cap on run", u)
+	}
+}
+
+// (c) a cap on a kind capacity does not bound: takes: {plan: 1} with
+// two goals in planning claims one plan.
+func TestTakesCapBoundsPlans(t *testing.T) {
+	p := newPriorityFake(t)
+	p.addPlanning(orgID, "plan-a", "normal")
+	p.addPlanning(orgID, "plan-b", "normal")
+	loop, _ := p.loop(2)
+	loop.Cfg.Takes = Takes{{Kind: "plan", Cap: 1}}
+	release := make(chan struct{})
+	loop.Plan = func(context.Context, gateway.Goal, Scope) { <-release }
+	loop.Tick(context.Background())
+	close(release)
+	loop.wg.Wait()
+	if n := len(p.CallsNamed("claimPlan")); n != 1 {
+		t.Errorf("%d claimPlan calls under takes: {plan: 1}, want 1", n)
+	}
+}
+
+// holdsFor says whether unclaimed names goal and kind with reason.
+func holdsFor(unclaimed []gateway.HoldingUnclaimed, goal, kind, reason string) bool {
+	for _, u := range unclaimed {
+		if u.GoalID == goal && u.Kind == kind && strings.Contains(u.Reason, reason) {
+			return true
+		}
+	}
+	return false
 }
