@@ -204,3 +204,17 @@ amount, so a cap means the same on every key.
   runs ADR-004's `Scaler`. `Loop.AccountSlots` holds each account's
   slots, and the heartbeat carries them (§Heartbeat) once the platform
   half — runsheet accepting `scaling.accounts[]` — is in its schema.
+
+## Amendment 2026-10-03: the machine-load growth cap is the host back-off
+
+Goal `the-node-backs-off-a-hot-host`, [ADR-023](adr-023-the-node-backs-off-a-hot-host.md),
+as ADR-004's amendment of the same date. `AccountsScaler.Target` no
+longer holds the sum at the running count for the machine's load: the
+host back-off, run every tick over the accounts' figure, lowers the
+capacity in force one slot per tick while the host is hot (load per core
+past `host.load_per_core_max`, or the package temperature past
+`host.package_temp_max_c`), claims nothing new meanwhile, and climbs one
+slot per five quiet minutes back to the accounts' figure. The free-memory
+cap stays on the target, reason `low memory`; the reasons table's
+`machine load` row reads `low memory`, and `host hot: …` is the
+back-off's.
