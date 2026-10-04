@@ -1069,7 +1069,10 @@ Every heartbeat carries the latest reading of each account as `limits`
 `fiveHour` and `sevenDay` windows (utilization, `resetsAt`) and
 `observedAt` — for the console to show (runsheet
 `limits-on-the-console`); it is left out until a session has reported
-one.
+one. A Claude account's row also carries `target`, `distance` and
+`push` — its standing against the clock's time-proportional target
+line — when the platform's schema takes them; a Codex account carries
+none of the three.
 
 The log says each crossing once, not every tick:
 

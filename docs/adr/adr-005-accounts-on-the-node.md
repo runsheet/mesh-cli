@@ -1251,3 +1251,52 @@ accounts' standing, in label order, their `Distance` matching
 (`internal/commands/nodestatus_test.go`) — the status output's account
 lines against a RunState's `node.standing`, nothing with none written
 and nothing once the node has stopped.
+
+## Amendment — 2026-10-03 (goal every-subscription-lands-full-at-its-reset, item 5): limits[].target, distance, push
+
+Item 1 landed the clock itself; this item puts each Claude account's
+standing on the heartbeat, beside today's utilization and resets, the
+same way `limits[].priorities` rode it (amendment 2026-10-02, item 4
+above) — copying its pattern of a gated, best-effort field.
+
+**`gateway.Limits` gains three pointers**: `Target *float64`,
+`Distance *float64` and `Push *bool` (each `json:"…,omitempty"`,
+pointers so a known `0` or `false` still goes out — `omitempty` on a
+bare `float64`/`bool` would drop them). `Limits.Heartbeat(known
+[]AccountConfig, now time.Time, cfg LimitsConfig)`
+(`internal/node/limits.go`) gains the clock's two inputs — `Loop.Tick`
+calls it as `l.limitsStore().Heartbeat(l.Known.Accounts(l.now()),
+l.now(), l.Thresholds())` — and fills the three from
+`StandingOf(now, rl, cfg.For(known account))` for every account but a
+Codex one (`CodexAccountPrefix`), which carries none: the clock does
+not pace Codex. `Standing` itself gains `Target float64`, the account's
+own line — the seven-day window's `Target` when it has a reading, else
+the five-hour's, the same window `Distance` already fell back to.
+
+**Gated on the platform's schema, the way `priorities` is**:
+`Client.takesLimitsPriorities` is generalised into `limitsFields(ctx)
+map[string]bool`, one introspection of `HeartbeatNodeInput`'s `limits`
+element type's field names, kept for `ScalingProbeEvery` like every
+other heartbeat gate; `takesLimitsPriorities` stays as a thin wrapper
+(`limitsFields(ctx)["priorities"]`) for its one caller. `HeartbeatNode`
+sends every limits row through `limitsWithout(x.Limits,
+c.limitsFields(ctx))`, which marshals each row and drops whichever of
+`priorities`, `target`, `distance` and `push` the probe did not find —
+independently: an older platform missing only `priorities` still gets
+the other three, and one serving only `priorities` (unlikely, but the
+probe does not assume they ship together) gets that alone.
+
+**The platform half is owed to runsheet/runsheet**:
+`NodeAccountLimitsInput` needs `target`, `distance` (`Float`, nullable)
+and `push` (`Boolean`, nullable), and the Nodes page's per-account
+gauge needs to plot the line beside the utilization bar.
+
+Tests: `TestHeartbeatStanding` (`internal/node/limits_test.go`) — a
+Claude account at 10% seven-day use with 50% of the week elapsed gets
+`Target` 0.45, `Distance` −0.35, `Push` false, and a Codex account gets
+nil for all three; `TestHeartbeatLimitsTargetDistancePush`
+(`internal/gateway/limits_test.go`, a `gatewaytest.Fake`) — the full
+schema sends all three with `priorities`, `UnknownFields["target"]`,
+`["distance"]` and `["push"]` together drop the three but keep
+`priorities`, and `UnknownFields["priorities"]` alone drops it but
+keeps the three.
