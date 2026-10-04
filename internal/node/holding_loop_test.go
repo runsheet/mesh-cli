@@ -212,6 +212,53 @@ func TestDrainingNodeSendsTheLastHolding(t *testing.T) {
 	}
 }
 
+// The heartbeat's holding carries the kinds this node takes as `kinds`
+// only while the gateway's holding input takes it, and the summary
+// always opens with "takes <list>; " when fewer than every kind is
+// taken, whether or not the platform reads the structured field
+// (ADR-025, item 6). Two separate fakes, one with the field and one
+// without, since the gateway's probe answer is cached for an hour and
+// the Gateway interface the loop holds does not expose a clock to force
+// a re-probe.
+func TestHeartbeatHoldingKinds(t *testing.T) {
+	run := func(t *testing.T, noKinds bool) (sentKinds []any, hasKinds bool, summary string) {
+		p := newPriorityFake(t)
+		p.NoHoldingKinds = noKinds
+		p.addGoal(orgID, "steady", "normal")
+		p.addItem(orgID, "steady", "normal-1", 1, false)
+		loop, _, _ := p.pacedLoop(4, reading(0.1, 0.1))
+		loop.Cfg.Takes = Takes{{Kind: "evaluate"}}
+
+		loop.Tick(context.Background())
+		loop.Tick(context.Background())
+		loop.wg.Wait()
+
+		h := p.lastHolding()
+		k, ok := h["kinds"]
+		list, _ := k.([]any)
+		s, _ := h["summary"].(string)
+		return list, ok, s
+	}
+
+	want := "takes evaluate; "
+
+	kinds, ok, summary := run(t, false)
+	if !ok || len(kinds) != 1 || kinds[0] != "evaluate" {
+		t.Fatalf("holding.kinds = %#v, ok=%v, want [evaluate]", kinds, ok)
+	}
+	if !strings.HasPrefix(summary, want) {
+		t.Fatalf("summary = %q, want prefix %q", summary, want)
+	}
+
+	_, ok, summary = run(t, true)
+	if ok {
+		t.Fatalf("holding.kinds sent despite NoHoldingKinds")
+	}
+	if !strings.HasPrefix(summary, want) {
+		t.Fatalf("summary = %q, want prefix %q", summary, want)
+	}
+}
+
 // knowAccounts has the loop know accounts as the claim-time read issued
 // them (Known): the only accounts it schedules on, since node.yaml names
 // none. An account with no id gets one from its label.

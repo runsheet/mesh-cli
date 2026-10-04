@@ -1612,6 +1612,12 @@ suites themselves, which take a slot as CI does; the node knows nothing
 of it, and `takes: {evaluate: N}` bounds only how many evaluations it
 runs at once.
 
+`mesh node status` prints a `Takes: …` line right after `This machine:`
+— `Takes: every kind`, or `Takes: evaluate (at most 3)` — and the
+heartbeat's holding summary opens with `takes <list>; ` and carries the
+same kinds as `holding.kinds` once the platform's schema reads it, so
+the console can say a kind no online node takes is why a goal waits.
+
 ### Tool results
 
 One `go test ./...` log or file dump can put 100 KB into a session's

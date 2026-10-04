@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -122,6 +123,85 @@ func TestOwnedStatusLineNodeIDPerOrg(t *testing.T) {
 	line := ownedStatusLine(cfg, node.Outside{Owned: false})
 	if line != "" {
 		t.Errorf("status line %q, want empty on the per-org path", line)
+	}
+}
+
+// `mesh node status` prints the kinds node.yaml's `takes:` claims right
+// after "This machine:" (ADR-025, item 6): every kind when left out, the
+// list when it names some, the cap beside a kind that has one.
+func TestTakesStatusLine(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		takes node.Takes
+		want  string
+	}{
+		{"a list", node.Takes{{Kind: "evaluate"}}, "Takes: evaluate"},
+		{"a capped mapping", node.Takes{{Kind: "evaluate", Cap: 2}}, "Takes: evaluate (at most 2)"},
+		{"left out", nil, "Takes: every kind"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &node.Config{Takes: tc.takes}
+			if got := takesStatusLine(cfg); got != tc.want {
+				t.Errorf("takesStatusLine = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// `mesh node status` itself, run against the fake platform on a
+// node.yaml read from disk: the line right after "This machine:" is
+// exactly the kinds `takes:` names — a list, a capped mapping, or every
+// kind when the key is left out (ADR-025, item 6).
+func TestStatusPrintsTakesAgainstFake(t *testing.T) {
+	const org = "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+	for _, tc := range []struct {
+		name  string
+		takes string
+		want  string
+	}{
+		{"a list", "takes: [evaluate]\n", "Takes: evaluate"},
+		{"a capped mapping", "takes: {evaluate: 2}\n", "Takes: evaluate (at most 2)"},
+		{"left out", "", "Takes: every kind"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("PATH", t.TempDir())
+			f := gatewaytest.New("rs_test")
+			t.Cleanup(f.Close)
+			t.Setenv("MESH_GATEWAY", f.URL())
+			t.Setenv("MESH_TOKEN", "rs_test")
+			f.UserID = "ffffffff-1111-4111-8111-ffffffffffff"
+			f.Orgs = []map[string]any{{"id": org, "tenantSlug": "runsheet"}}
+			f.Answer = &gateway.NodeAnswer{NodeID: statusOwnerID, Owner: gateway.NodeOwner{Kind: "person", ID: f.UserID, Name: "Chris"},
+				Scopes: []gateway.ScopeAnswer{{OrgID: org, Login: "runsheet"}}}
+			gw := gateway.New(f.URL(), "rs_test")
+			if _, err := gw.RegisterNode(context.Background(), gateway.RegisterNodeInput{NodeID: statusOwnerID, OrgID: org, OwnerID: f.UserID, Name: "mini", Slug: "runsheet-mini", Owner: "person", Capacity: 1, Version: "v1"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Join(home, ".mesh"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			yaml := "slug: runsheet-mini\nname: mini\nowner_id: " + f.UserID + "\nnode_id: " + statusOwnerID + "\ncontract: owner\nsandbox: off\n" + tc.takes
+			if err := os.WriteFile(filepath.Join(home, ".mesh", "node.yaml"), []byte(yaml), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var runErr error
+			out := captureStdout(func() { runErr = nodeStatusCmd.RunE(nodeStatusCmd, nil) })
+			if runErr != nil {
+				t.Fatalf("mesh node status: %v\n%s", runErr, out)
+			}
+			lines := strings.Split(out, "\n")
+			for i, line := range lines {
+				if strings.HasPrefix(line, "This machine:") {
+					if i+1 >= len(lines) || lines[i+1] != tc.want {
+						t.Fatalf("line after %q is not %q:\n%s", line, tc.want, out)
+					}
+					return
+				}
+			}
+			t.Fatalf("no \"This machine:\" line:\n%s", out)
+		})
 	}
 }
 
