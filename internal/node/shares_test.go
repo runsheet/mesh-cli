@@ -213,3 +213,45 @@ func TestClaimReadySharesCountBuilds(t *testing.T) {
 		t.Fatalf("held by org after the builds %v, sessionOrg %v", got, loop.sessionOrg)
 	}
 }
+
+// A tick tells Shares each org's floor, held and ready, and node.shares
+// written by RunState.WriteShares reads back the same rows (ADR-023,
+// Reporting); Stopped removes it.
+func TestWriteShares(t *testing.T) {
+	p := sharesFake(t, true)
+	release := make(chan struct{})
+	loop, logs := p.sharesLoop(4)
+	loop.Dispatch = func(context.Context, gateway.WorkItem) { <-release }
+	state := RunState{Dir: t.TempDir()}
+	if _, ok := state.Shares(); ok {
+		t.Fatal("shares before any tick")
+	}
+	loop.Shares = func(rows []HoldingOrg) {
+		if err := state.WriteShares(rows); err != nil {
+			t.Fatal(err)
+		}
+	}
+	loop.Tick(context.Background())
+	close(release)
+	loop.wg.Wait()
+	rows, ok := state.Shares()
+	if !ok || len(rows) != 2 {
+		t.Fatalf("shares = %+v, %v\n%s", rows, ok, logs)
+	}
+	want := []HoldingOrg{
+		{Org: p.scopes[0].Name(), OrgID: orgID, Floor: 2, Held: 2, Ready: 4},
+		{Org: p.scopes[1].Name(), OrgID: org2, Floor: 2, Held: 2, Ready: 2},
+	}
+	for i := range want {
+		if rows[i] != want[i] {
+			t.Fatalf("shares[%d] = %+v, want %+v", i, rows[i], want[i])
+		}
+	}
+	if h := loop.Holding(); h == nil || len(h.Orgs) != 2 || h.Orgs[1] != want[1] {
+		t.Fatalf("holding orgs = %+v", h)
+	}
+	state.Stopped(0)
+	if _, ok := state.Shares(); ok {
+		t.Fatal("node.shares left after Stopped")
+	}
+}

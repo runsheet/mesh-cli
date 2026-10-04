@@ -128,6 +128,9 @@ type Client struct {
 	// HeartbeatNodeInput's `holding.unclaimed` element type was last
 	// found to take `until` (see takesHoldingUnclaimedUntil).
 	holdingUnclaimedUntilSchema holdingProbe
+	// holdingOrgsSchema is whether the gateway's HeartbeatNodeInput's
+	// `holding` was last found to take `orgs` (see takesHoldingOrgs).
+	holdingOrgsSchema holdingProbe
 	// commitSchema is whether the gateway's heartbeat input was last
 	// found to take `commit` (see takesCommit).
 	commitSchema commitProbe
@@ -1957,6 +1960,24 @@ type Holding struct {
 	// Unclaimed is always a list, [] when nothing was passed over this
 	// pass.
 	Unclaimed []HoldingUnclaimed `json:"unclaimed"`
+	// Orgs is each served org's share of the node (mesh-cli ADR-023,
+	// Reporting): its floor, the sessions it holds and its ready items.
+	// Always a list, [] when there are none; sent only when the
+	// gateway's holding input takes `orgs` (takesHoldingOrgs).
+	Orgs []HoldingOrg `json:"orgs"`
+}
+
+// HoldingOrg is one served org's row of the holding report: Org its
+// Name() (login, else slug), OrgID its id, Floor the slots Floors gives
+// it, Held the builds, plans and research it holds here (heldByOrg) and
+// Ready the ready items its last listing returned — -1 when that read
+// failed, so the floor and held still show (ADR-023, Reporting).
+type HoldingOrg struct {
+	Org   string `json:"org"`
+	OrgID string `json:"orgId"`
+	Floor int    `json:"floor"`
+	Held  int    `json:"held"`
+	Ready int    `json:"ready"`
 }
 
 // HoldingAccount is one account's standing in the holding report: its
@@ -2159,10 +2180,14 @@ func (c *Client) HeartbeatNode(ctx context.Context, nodeID, version string, runn
 			if h.Unclaimed == nil {
 				h.Unclaimed = []HoldingUnclaimed{}
 			}
-			if c.takesHoldingUnclaimedUntil(ctx) {
+			if h.Orgs == nil {
+				h.Orgs = []HoldingOrg{}
+			}
+			until, orgs := c.takesHoldingUnclaimedUntil(ctx), c.takesHoldingOrgs(ctx)
+			if until && orgs {
 				in["holding"] = &h
 			} else {
-				in["holding"] = holdingWithoutUnclaimedUntil(h)
+				in["holding"] = holdingWithout(h, until, orgs)
 			}
 		}
 		if x.Commit != "" && c.takesCommit(ctx) {
@@ -2349,22 +2374,77 @@ func (c *Client) takesHolding(ctx context.Context) bool {
 	return p.takes
 }
 
-// holdingWithoutUnclaimedUntil is h with each unclaimed entry's `until`
-// dropped from the wire shape, for a platform whose holding.unclaimed
-// element type does not take it yet (see takesHoldingUnclaimedUntil):
-// an unknown field refuses the whole heartbeat (see HeartbeatNode).
-func holdingWithoutUnclaimedUntil(h Holding) map[string]any {
+// holdingWithout is h's wire shape less what the platform does not take
+// yet: each unclaimed entry's `until` unless until (see
+// takesHoldingUnclaimedUntil), and `orgs` unless orgs (see
+// takesHoldingOrgs). An unknown field refuses the whole heartbeat (see
+// HeartbeatNode).
+func holdingWithout(h Holding, until, orgs bool) map[string]any {
 	b, _ := json.Marshal(h)
 	m := map[string]any{}
 	_ = json.Unmarshal(b, &m)
-	if list, ok := m["unclaimed"].([]any); ok {
+	if list, ok := m["unclaimed"].([]any); ok && !until {
 		for _, e := range list {
 			if em, ok := e.(map[string]any); ok {
 				delete(em, "until")
 			}
 		}
 	}
+	if !orgs {
+		delete(m, "orgs")
+	}
 	return m
+}
+
+// takesHoldingOrgs says whether the gateway's HeartbeatNodeInput's
+// `holding` field takes `orgs` — asked once by introspection and kept
+// for ScalingProbeEvery, the same as takesHoldingUnclaimedUntil
+// (mesh-cli ADR-023, Reporting).
+func (c *Client) takesHoldingOrgs(ctx context.Context) bool {
+	p := &c.holdingOrgsSchema
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := c.now()
+	if !p.at.IsZero() && now.Sub(p.at) < ScalingProbeEvery {
+		return p.takes
+	}
+	var out struct {
+		Type *struct {
+			InputFields []struct {
+				Name string `json:"name"`
+				Type struct {
+					InputFields []struct {
+						Name string `json:"name"`
+					} `json:"inputFields"`
+					OfType *struct {
+						InputFields []struct {
+							Name string `json:"name"`
+						} `json:"inputFields"`
+					} `json:"ofType"`
+				} `json:"type"`
+			} `json:"inputFields"`
+		} `json:"__type"`
+	}
+	p.at, p.takes = now, false
+	q := `{ __type(name: "HeartbeatNodeInput") { inputFields { name type { inputFields { name } ofType { inputFields { name } } } } } }`
+	if err := c.Query(ctx, q, nil, &out); err != nil || out.Type == nil {
+		return false
+	}
+	for _, f := range out.Type.InputFields {
+		if f.Name != "holding" {
+			continue
+		}
+		fields := f.Type.InputFields
+		if f.Type.OfType != nil {
+			fields = append(fields, f.Type.OfType.InputFields...)
+		}
+		for _, hf := range fields {
+			if hf.Name == "orgs" {
+				p.takes = true
+			}
+		}
+	}
+	return p.takes
 }
 
 // takesHoldingUnclaimedUntil says whether the gateway's

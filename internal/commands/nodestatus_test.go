@@ -220,3 +220,28 @@ func TestLocalHeldPidRule(t *testing.T) {
 		t.Fatal("localHeld after the node stopped")
 	}
 }
+
+// `mesh node status`'s shares table: the header and one row per org as
+// node.shares left them, a failed ready read as "-", and the line for
+// no node.shares at all (ADR-023, Reporting).
+func TestSharesLines(t *testing.T) {
+	got := sharesLines([]node.HoldingOrg{
+		{Org: "runsheet", OrgID: "org-r", Floor: 2, Held: 1, Ready: 3},
+		{Org: "wardroomid", OrgID: "org-w", Floor: 2, Held: 2, Ready: 0},
+		{Org: "quiet", OrgID: "org-q", Floor: 0, Held: 0, Ready: -1},
+	})
+	want := []string{
+		"ORG         FLOOR  HELD  READY",
+		"runsheet    2      1     3",
+		"wardroomid  2      2     0",
+		"quiet       0      0     -",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("sharesLines =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	state := node.RunState{Dir: t.TempDir()}
+	rows, _ := state.Shares()
+	if got := sharesLines(rows); len(got) != 1 || got[0] != "shares: none recorded" {
+		t.Fatalf("absent node.shares = %q", got)
+	}
+}

@@ -1,7 +1,11 @@
 package gateway_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -169,4 +173,69 @@ func unclaimedEntry(t *testing.T, in map[string]any) map[string]any {
 		t.Fatalf("unclaimed[0] = %#v", unclaimed[0])
 	}
 	return entry
+}
+
+// The heartbeat carries holding.orgs, each org's floor, held and ready,
+// only while the gateway's holding input takes `orgs` (ADR-023,
+// Reporting); and heartbeatNode.json's input holding decodes into
+// Holding with its orgs, no key the client does not know.
+func TestHeartbeatHoldingOrgs(t *testing.T) {
+	f, gw := registeredFake(t)
+	h := holding()
+	h.Orgs = []gateway.HoldingOrg{
+		{Org: "runsheet", OrgID: "org-r", Floor: 2, Held: 1, Ready: 3},
+		{Org: "wardroomid", OrgID: "org-w", Floor: 2, Held: 2, Ready: 0},
+	}
+	if _, err := gw.HeartbeatNode(context.Background(), limitsNode, "v1", 1, gateway.HeartbeatExtras{Holding: h}); err != nil {
+		t.Fatal(err)
+	}
+	hb := f.CallsNamed("heartbeatNode")
+	sent, _ := hb[len(hb)-1].Input["holding"].(map[string]any)
+	orgs, ok := sent["orgs"].([]any)
+	if !ok || len(orgs) != 2 {
+		t.Fatalf("holding.orgs = %#v", sent["orgs"])
+	}
+	if o := orgs[1].(map[string]any); o["org"] != "wardroomid" || o["orgId"] != "org-w" || o["floor"] != 2.0 || o["held"] != 2.0 || o["ready"] != 0.0 {
+		t.Fatalf("orgs[1] = %#v", o)
+	}
+
+	// a platform whose holding input lacks `orgs`: the next probe sees
+	// it gone and the field is dropped, the rest of holding sent
+	f.NoHoldingOrgs = true
+	gw.Now = func() time.Time { return time.Now().Add(gateway.ScalingProbeEvery) }
+	if _, err := gw.HeartbeatNode(context.Background(), limitsNode, "v1", 1, gateway.HeartbeatExtras{Holding: h}); err != nil {
+		t.Fatal(err)
+	}
+	hb = f.CallsNamed("heartbeatNode")
+	sent, _ = hb[len(hb)-1].Input["holding"].(map[string]any)
+	if _, ok := sent["orgs"]; ok || sent["mode"] != "paced" {
+		t.Fatalf("holding without orgs = %#v", sent)
+	}
+
+	data, err := os.ReadFile("../../specs/contracts/heartbeatNode.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fx struct {
+		Description string `json:"description"`
+		Input       struct {
+			Holding json.RawMessage `json:"holding"`
+		} `json:"input"`
+	}
+	if err := json.Unmarshal(data, &fx); err != nil {
+		t.Fatal(err)
+	}
+	dec := json.NewDecoder(bytes.NewReader(fx.Input.Holding))
+	dec.DisallowUnknownFields()
+	var got gateway.Holding
+	if err := dec.Decode(&got); err != nil {
+		t.Fatalf("fixture holding: %v", err)
+	}
+	want := gateway.HoldingOrg{Org: "runsheet", OrgID: "0f3b8a1e-2c4d-4e6f-8a9b-0c1d2e3f4a5b", Floor: 2, Held: 1, Ready: 3}
+	if len(got.Orgs) != 2 || got.Orgs[0] != want {
+		t.Fatalf("fixture holding.orgs = %+v", got.Orgs)
+	}
+	if !strings.Contains(fx.Description, "holding.orgs") {
+		t.Fatal("fixture description does not name holding.orgs")
+	}
 }

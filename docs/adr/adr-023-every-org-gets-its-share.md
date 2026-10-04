@@ -68,6 +68,27 @@ slots to the others. A claim made for a floor on a node serving more
 than one org logs `<org>: claimed item N "title" (below its floor of F,
 holding H)`; the held count is the tick's own, raised with each claim.
 
+**Reporting.** Each served org's share is reported as data, one row per
+org in listed order: `org` (its `Name()`), `orgId`, `floor` (from
+`Floors` on the capacity in force), `held` (`heldByOrg`: its builds,
+plans and research) and `ready` (the ready items its listing returned
+on the last claim pass, recorded by `claimReady`). An org whose ready
+read failed, or that has not been listed yet, reports `ready: -1`
+rather than being left out, so its floor and held still show; the
+count is the last listing's, so a tick with no free slot (which lists
+nothing) keeps the previous one. The rows ride the heartbeat's holding
+report as `holding.orgs` (`gateway.HoldingOrg`, always a list, `[]`
+with no org), sent only when the gateway's holding input takes `orgs`
+(`takesHoldingOrgs`, introspected and kept an hour like
+`holding.unclaimed[].until`; dropped otherwise, the rest of `holding`
+sent); `specs/contracts/heartbeatNode.json` documents the field. The
+loop hands the same rows to `Loop.Shares` at the end of each pass, and
+`mesh node start` leaves them in `~/.mesh/node.shares`
+(`RunState.WriteShares`, atomic like `node.scaling`, removed on stop),
+which `mesh node status` prints while a node runs here as an `ORG
+FLOOR HELD READY` table (`sharesLines`; a failed read's ready as `-`),
+or `shares: none recorded` when the file is absent.
+
 ## Consequences
 
 - Two orgs at capacity 4, one with urgent work and one with normal:
@@ -86,6 +107,6 @@ holding H)`; the held count is the tick's own, raised with each claim.
   the next tick re-computes the floors.
 - Plans and evaluations keep their own priority orders (`planOrder`,
   `evaluateOrder`); only build claims are divided.
-- `mesh node status` and the heartbeat's holding report showing floor,
-  held and ready per org, and the `shares` weights, are later items of
-  the goal.
+- `mesh node status` and the heartbeat's holding report show floor,
+  held and ready per org (Reporting, above); the `shares` weights are a
+  later item of the goal.
