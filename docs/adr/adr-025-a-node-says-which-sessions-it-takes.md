@@ -1,5 +1,5 @@
 ---
-summary: node.yaml's `takes:` names the kinds of session a node claims — a list (`[evaluate]`) or a per-kind cap map (`{evaluate: 3}`), left out every kind — and the loop skips a kind not taken before it lists or asks the platform, read live every tick, a capped kind held at its cap and named on the holding report; the heartbeat will carry the kinds as `holding.kinds` so the platform can name a kind no online node takes; an evaluating node claims another node's evaluation with `claimWorkItemEvaluation` when the platform has it.
+summary: node.yaml's `takes:` names the kinds of session a node claims — a list (`[evaluate]`) or a per-kind cap map (`{evaluate: 3}`), left out every kind — and the loop skips a kind not taken before it lists or asks the platform, read live every tick, a capped kind held at its cap and named on the holding report; the heartbeat carries the kinds, names alone, as `holding.kinds` so the platform can name a kind no online node takes; an evaluating node claims another node's evaluation with `claimWorkItemEvaluation` when the platform has it.
 status: accepted
 ---
 
@@ -68,13 +68,23 @@ capacity, models and budgets per kind, but not say which kinds it takes.
 
 An evaluation waits on the node that built the item. If that node does
 not take `evaluate`, nothing on the platform says so today, and the item
-waits silently. The heartbeat's holding report should carry the kinds the
-node takes as **`holding.kinds`** — a list of kind names, every kind when
-node.yaml names none, each with its cap when it has one — so the console's
-node page shows them and a goal's unclaimed reason can name a kind no
-online node takes. That field, and the platform reading it, are
-runsheet/runsheet's half and are not changed here; the node sends it only
-once the gateway's schema takes it, introspected like `holding.orgs`.
+waits silently. The heartbeat's holding report carries the kinds the
+node takes as **`holding.kinds`**, the field the platform half reads: a
+list of kind names (`[]string`) and nothing else — no per-kind cap — in
+the fixed order build, evaluate, rebase, plan, research, every kind when
+node.yaml names none, always a list (`["evaluate"]` for `takes:
+[evaluate]` and for `takes: {evaluate: 2}` alike). A cap stays the node's
+own business: it shows on `mesh node status` (`Takes: evaluate (at most
+2)`) and, when it holds work back, on `holding.unclaimed`'s reason. With
+the kinds the console's node page shows them and a goal's unclaimed
+reason can name a kind no online node takes. The node sends `kinds` only
+when the gateway's `HeartbeatNodeInput` `holding` input type has the
+field (`takesHoldingKinds`, introspected and kept `ScalingProbeEvery`
+like `holding.orgs`), dropping it otherwise; the holding summary says
+the same in words either way, opening `takes <kinds>; ` when fewer than
+every kind is taken (`takes evaluate; normal: up to 4 item(s)`).
+`specs/contracts/heartbeatNode.json` shows the field. The platform
+reading it is runsheet/runsheet's half and is not changed here.
 
 ## Consequences
 
@@ -96,8 +106,9 @@ once the gateway's schema takes it, introspected like `holding.orgs`.
   own evaluation, made with no claim, is the platform's to fence.
 - The per-kind cap (`takes: {evaluate: 2}` under capacity 4) is item 5
   (amended above, decision 4).
-- `mesh node status` printing the kinds taken, and the heartbeat carrying
-  `holding.kinds`, are item 6.
+- `mesh node status` prints the kinds taken as `Takes: <kinds>` after the
+  `This machine:` line (`Takes: every kind`, `Takes: evaluate (at most
+  2)`), and the heartbeat carries `holding.kinds` (above): item 6.
 - A node that takes `evaluate` still needs what an evaluation does: the
   repos' toolchains, docker or podman for their services, and the
   credentials the platform issues at claim (README, Which sessions a

@@ -34,13 +34,21 @@ type Unclaimed struct {
 // the slots in force, p is the node's own aggregate pacing (nodePace)
 // and unclaimed is the ready work passed over this pass; orgs is each
 // served org's floor, held and ready (holdingOrgs, ADR-023 Reporting),
-// carried as given, [] when nil.
-func HoldingReport(now time.Time, accounts []AccountConfig, readings map[string]harness.RateLimit, cfg LimitsConfig, capacity int, p pacing, unclaimed []Unclaimed, orgs []gateway.HoldingOrg) gateway.Holding {
+// carried as given, [] when nil; kinds is the kinds of session this node
+// takes (Takes.Kinds, in their fixed order — every kind when node.yaml
+// names none), carried onto Holding.Kinds and, when fewer than every
+// kind, prefixed onto the summary as "takes <list>; " (ADR-025, item 6).
+func HoldingReport(now time.Time, accounts []AccountConfig, readings map[string]harness.RateLimit, cfg LimitsConfig, capacity int, p pacing, unclaimed []Unclaimed, orgs []gateway.HoldingOrg, kinds []harness.Kind) gateway.Holding {
+	kindNames := make([]string, len(kinds))
+	for i, k := range kinds {
+		kindNames[i] = string(k)
+	}
 	out := gateway.Holding{
 		Mode:      p.mode.String(),
 		Accounts:  []gateway.HoldingAccount{},
 		Unclaimed: []gateway.HoldingUnclaimed{},
 		Orgs:      append([]gateway.HoldingOrg{}, orgs...),
+		Kinds:     kindNames,
 	}
 
 	allExhausted := len(accounts) > 0
@@ -77,6 +85,11 @@ func HoldingReport(now time.Time, accounts []AccountConfig, readings map[string]
 	}
 	out.Until = until
 
+	var prefix string
+	if len(kindNames) > 0 && len(kindNames) < len(KnownKinds) {
+		prefix = "takes " + strings.Join(kindNames, ", ") + "; "
+	}
+
 	switch {
 	case allExhausted:
 		out.Summary = fmt.Sprintf("no headroom: nothing claimed until %s", until.Format(time.RFC3339))
@@ -87,6 +100,7 @@ func HoldingReport(now time.Time, accounts []AccountConfig, readings map[string]
 	default:
 		out.Summary = fmt.Sprintf("normal: up to %d item(s)", capacity)
 	}
+	out.Summary = prefix + out.Summary
 	if len(unclaimed) > 0 {
 		out.Summary += fmt.Sprintf("; %d item(s) and %d plan(s) left unclaimed", items, plans)
 	}

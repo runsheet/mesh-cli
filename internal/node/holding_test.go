@@ -40,7 +40,7 @@ func TestHoldingReportPacedAndExhausted(t *testing.T) {
 	if p.mode != pacePaced {
 		t.Fatalf("nodePace = %v, want paced", p.mode)
 	}
-	rep := HoldingReport(now, accounts, readings, cfg, 6, p, nil, nil)
+	rep := HoldingReport(now, accounts, readings, cfg, 6, p, nil, nil, nil)
 	if rep.Mode != "paced" {
 		t.Fatalf("mode = %q, want paced", rep.Mode)
 	}
@@ -85,7 +85,7 @@ func TestHoldingReportEveryAccountExhausted(t *testing.T) {
 	if p.mode != paceStopped {
 		t.Fatalf("nodePace = %v, want stopped", p.mode)
 	}
-	rep := HoldingReport(now, accounts, readings, cfg, 6, p, nil, nil)
+	rep := HoldingReport(now, accounts, readings, cfg, 6, p, nil, nil, nil)
 	want := "no headroom: nothing claimed until " + earlier.Format(time.RFC3339)
 	if !strings.HasPrefix(rep.Summary, "no headroom: nothing claimed until ") {
 		t.Fatalf("summary = %q, want prefix %q", rep.Summary, "no headroom: nothing claimed until ")
@@ -108,7 +108,7 @@ func TestHoldingReportUnknownAccountTakesEverything(t *testing.T) {
 	accounts := []AccountConfig{{Label: "fresh", Kind: AccountSubscription}}
 	cfg := LimitsConfig{}
 	p := nodePace(now, accounts, nil, cfg)
-	rep := HoldingReport(now, accounts, nil, cfg, 4, p, nil, nil)
+	rep := HoldingReport(now, accounts, nil, cfg, 4, p, nil, nil, nil)
 	if len(rep.Accounts) != 1 {
 		t.Fatalf("accounts = %#v", rep.Accounts)
 	}
@@ -148,7 +148,7 @@ func TestHoldingReportNamesUnclaimedWork(t *testing.T) {
 		{GoalID: "goal-1", Kind: "item", Count: 2, Reason: "no account has headroom"},
 		{GoalID: "goal-2", Kind: "plan", Count: 1, Reason: "no account has headroom"},
 	}
-	rep := HoldingReport(now, accounts, readings, cfg, 4, p, unclaimed, nil)
+	rep := HoldingReport(now, accounts, readings, cfg, 4, p, unclaimed, nil, nil)
 	want := "normal: up to 4 item(s); 2 item(s) and 1 plan(s) left unclaimed"
 	if rep.Summary != want {
 		t.Fatalf("summary = %q, want %q", rep.Summary, want)
@@ -176,7 +176,7 @@ func TestHoldingReportCarriesUnclaimedUntil(t *testing.T) {
 		{GoalID: "goal-1", Kind: "item", Count: 1, Reason: "no issued credential has headroom", Until: holdUntil},
 		{GoalID: "goal-2", Kind: "plan", Count: 1, Reason: "the node is at its min"},
 	}
-	rep := HoldingReport(now, accounts, readings, cfg, 4, p, unclaimed, nil)
+	rep := HoldingReport(now, accounts, readings, cfg, 4, p, unclaimed, nil, nil)
 	if !rep.Until.Equal(holdUntil) {
 		t.Fatalf("report.Until = %v, want %v (the earliest of the hold and the account's reset)", rep.Until, holdUntil)
 	}
@@ -218,7 +218,7 @@ func TestHoldingReportAPIAccountKindAndResearch(t *testing.T) {
 	accounts := []AccountConfig{{Label: "key", Kind: AccountAPI}}
 	cfg := LimitsConfig{}
 	p := nodePace(now, accounts, nil, cfg)
-	rep := HoldingReport(now, accounts, nil, cfg, 4, p, nil, nil)
+	rep := HoldingReport(now, accounts, nil, cfg, 4, p, nil, nil, nil)
 	a := rep.Accounts[0]
 	if a.Kind != "api_key" {
 		t.Fatalf("kind = %q, want api_key", a.Kind)
@@ -236,7 +236,7 @@ func TestHoldingReportOrgs(t *testing.T) {
 	scopes := Scopes{{Login: "runsheet", ID: "org-r"}, {Slug: "wardroomid", ID: "org-w"}, {Login: "quiet", ID: "org-q"}}
 	floors := Floors(5, scopes, nil)
 	rows := holdingOrgs(scopes, floors, map[string]int{"org-r": 1, "org-w": 2}, map[string]int{"org-r": 3, "org-w": 0})
-	rep := HoldingReport(now, nil, nil, LimitsConfig{}, 5, nodePace(now, nil, nil, LimitsConfig{}), nil, rows)
+	rep := HoldingReport(now, nil, nil, LimitsConfig{}, 5, nodePace(now, nil, nil, LimitsConfig{}), nil, rows, nil)
 	want := []gateway.HoldingOrg{
 		{Org: "runsheet", OrgID: "org-r", Floor: 2, Held: 1, Ready: 3},
 		{Org: "wardroomid", OrgID: "org-w", Floor: 2, Held: 2, Ready: 0},
@@ -255,8 +255,37 @@ func TestHoldingReportOrgs(t *testing.T) {
 		t.Fatalf("wire shape: %s", b)
 	}
 	// no org served is still a list
-	b, _ = json.Marshal(HoldingReport(now, nil, nil, LimitsConfig{}, 5, nodePace(now, nil, nil, LimitsConfig{}), nil, nil))
+	b, _ = json.Marshal(HoldingReport(now, nil, nil, LimitsConfig{}, 5, nodePace(now, nil, nil, LimitsConfig{}), nil, nil, nil))
 	if !strings.Contains(string(b), `"orgs":[]`) {
 		t.Fatalf("no orgs: %s", b)
+	}
+}
+
+// The holding report carries the kinds this node takes, in Takes.Kinds'
+// fixed order, on Holding.Kinds, and prefixes the summary with "takes
+// <list>; " when fewer than every kind is taken; with every kind the
+// summary carries no prefix (ADR-025, item 6).
+func TestHoldingReportKinds(t *testing.T) {
+	now := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+	accounts := []AccountConfig{{Label: "max20", Kind: AccountSubscription}}
+	readings := map[string]harness.RateLimit{"max20": {Status: "allowed", ObservedAt: now}}
+	cfg := LimitsConfig{}
+	p := nodePace(now, accounts, readings, cfg)
+
+	rep := HoldingReport(now, accounts, readings, cfg, 4, p, nil, nil, []harness.Kind{harness.KindEvaluate})
+	if len(rep.Kinds) != 1 || rep.Kinds[0] != "evaluate" {
+		t.Fatalf("kinds = %#v, want [evaluate]", rep.Kinds)
+	}
+	want := "takes evaluate; normal: up to 4 item(s)"
+	if rep.Summary != want {
+		t.Fatalf("summary = %q, want %q", rep.Summary, want)
+	}
+
+	rep = HoldingReport(now, accounts, readings, cfg, 4, p, nil, nil, KnownKinds)
+	if strings.HasPrefix(rep.Summary, "takes ") {
+		t.Fatalf("summary = %q, want no takes prefix with every kind taken", rep.Summary)
+	}
+	if len(rep.Kinds) != len(KnownKinds) {
+		t.Fatalf("kinds = %#v, want every kind", rep.Kinds)
 	}
 }

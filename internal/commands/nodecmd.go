@@ -325,6 +325,7 @@ var nodeStatusCmd = &cobra.Command{
 		}
 		local, draining := localNodeState(state)
 		fmt.Println(local)
+		fmt.Println(takesStatusLine(cfg))
 		fmt.Println(hostConfigLine(cfg.Host))
 		scaling, scales := localScaling(state)
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
@@ -510,6 +511,14 @@ func localNodeState(state node.RunState) (string, bool) {
 	default:
 		return fmt.Sprintf("This machine: node running (pid %d).", pid), false
 	}
+}
+
+// takesStatusLine is `mesh node status`'s line naming the kinds of
+// session node.yaml's `takes:` claims on this machine, printed after the
+// "This machine:" line (ADR-025, item 6): "Takes: every kind" when
+// node.yaml names none, "Takes: evaluate (at most 2)" for a cap.
+func takesStatusLine(cfg *node.Config) string {
+	return "Takes: " + cfg.Takes.String()
 }
 
 // hostConfigLine is `mesh node status`'s `host:` line: the thresholds

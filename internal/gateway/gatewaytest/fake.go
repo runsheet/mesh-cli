@@ -223,6 +223,10 @@ type Fake struct {
 	// (mesh-cli ADR-023, Reporting): introspection answers the holding
 	// type without it, so a heartbeat's holding goes without `orgs`.
 	NoHoldingOrgs bool
+	// NoHoldingKinds is a platform whose holding input has no `kinds`
+	// (ADR-025, item 6): introspection answers the holding type without
+	// it, so a heartbeat's holding goes without `kinds`.
+	NoHoldingKinds bool
 	// NoAdoptedFields is a platform whose `adopted` element type has
 	// none of goalId, directionId, sessionId and alive (mesh-cli ADR-009
 	// amendment): introspection answers the element type without them,
@@ -1155,8 +1159,11 @@ func (f *Fake) heartbeatInputType() map[string]any {
 		}
 		if name == "holding" {
 			var sub []any
-			for _, n := range []string{"mode", "summary", "until", "accounts", "unclaimed", "orgs"} {
+			for _, n := range []string{"mode", "summary", "until", "accounts", "unclaimed", "orgs", "kinds"} {
 				if n == "orgs" && f.NoHoldingOrgs {
+					continue
+				}
+				if n == "kinds" && f.NoHoldingKinds {
 					continue
 				}
 				if n == "unclaimed" {

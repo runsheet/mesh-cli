@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -237,5 +238,14 @@ func TestHeartbeatHoldingOrgs(t *testing.T) {
 	}
 	if !strings.Contains(fx.Description, "holding.orgs") {
 		t.Fatal("fixture description does not name holding.orgs")
+	}
+	if want := []string{"build", "rebase", "plan", "research"}; !reflect.DeepEqual(got.Kinds, want) {
+		t.Fatalf("fixture holding.kinds = %q, want %q", got.Kinds, want)
+	}
+	if !strings.HasPrefix(got.Summary, "takes build, rebase, plan, research; ") {
+		t.Fatalf("fixture holding.summary = %q", got.Summary)
+	}
+	if !strings.Contains(fx.Description, "holding.kinds") {
+		t.Fatal("fixture description does not name holding.kinds")
 	}
 }
