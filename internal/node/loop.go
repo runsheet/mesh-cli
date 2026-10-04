@@ -284,6 +284,9 @@ type Loop struct {
 	// noEvaluationClaimSaid is set once the run has said the platform
 	// takes no claimWorkItemEvaluation (evaluateHeld, ADR-025).
 	noEvaluationClaimSaid bool
+	// noCredentialReadSaid is set once the run has said the platform
+	// does not serve credentialIndexs (reconcileCredentials).
+	noCredentialReadSaid bool
 	// waiting counts, by kind, the work this tick left unclaimed because
 	// no account had headroom for it: logged once at the tick's end.
 	waiting map[string]int
@@ -1046,6 +1049,10 @@ func (l *Loop) Tick(ctx context.Context) {
 	l.scale()
 	l.hostBackoff()
 	runtimes, adapters := l.Runtimes()
+	// the platform's word on standing first, so a withdrawn account is
+	// gone from this heartbeat's limits and holding
+	l.reconcileCredentials(ctx)
+	l.dropWithdrawn()
 	// the heartbeat goes out before this tick's pass, so its holding is
 	// the last pass's decision (nil before the first; a draining node,
 	// which makes no pass, keeps sending its last one unchanged)
@@ -1469,6 +1476,81 @@ func (l *Loop) passOver(goalID, kind, priority, held string, until time.Time) {
 	accounts, readings := l.accounts()
 	rows := holdingAccounts(l.now(), accounts, readings, l.Thresholds(), l.Capacity())
 	l.unclaimed = append(l.unclaimed, Unclaimed{GoalID: goalID, Kind: kind, Count: 1, Reason: heldReason(priority, held, rows), Until: until})
+}
+
+// CredentialReadRefused is said once per run when the platform will
+// not serve the loop's credential read: withdrawals then come only from
+// the claim-time read (Credentials.Open's Reconcile).
+const CredentialReadRefused = "credentials: the platform does not serve credentialIndexs to this node; withdrawals come from the claim-time read"
+
+// reconcileCredentials reads every served org's credentialIndexs rows
+// and withdraws the known labels the platform says are disabled,
+// deleted, not allowed on this node, or no longer there
+// (KnownAccounts.ReconcileRows; adr-005's amendment 2026-10-03, item 2):
+// each one's reading is forgotten, and dropWithdrawn takes it out of the
+// last pass's holding, so the heartbeat about to go out carries
+// neither. A
+// refused or unknown read is said once per run and leaves the
+// claim-time read as the only source; any other failed read is logged
+// and nothing is withdrawn on this tick.
+func (l *Loop) reconcileCredentials(ctx context.Context) {
+	if l.Known == nil || len(l.Known.Accounts(l.now())) == 0 {
+		return
+	}
+	scopes := l.CurrentScopes()
+	if len(scopes) == 0 {
+		return
+	}
+	nodeID := scopes[0].NodeID
+	if owned := l.owned(); owned != nil {
+		nodeID = owned.NodeID
+	}
+	var rows []gateway.CredentialRow
+	for _, sc := range scopes {
+		got, err := l.GW.Credentials(ctx, sc.ID)
+		if gateway.IsRefusal(err) {
+			if !l.noCredentialReadSaid {
+				l.noCredentialReadSaid = true
+				l.logf("%s", CredentialReadRefused)
+			}
+			return
+		}
+		if err != nil {
+			l.logf("credentials: org %s: %v; nothing withdrawn this tick", sc.Name(), err)
+			return
+		}
+		// a legacy node has an id per org: a row allowed on this org's
+		// id is allowed on the node
+		for _, r := range got {
+			if sc.NodeID != nodeID && slices.Contains(r.AllowedNodeIDs, sc.NodeID) {
+				r.AllowedNodeIDs = nil
+			}
+			rows = append(rows, r)
+		}
+	}
+	withdrawn := l.Known.ReconcileRows(rows, nodeID, l.now())
+	if len(withdrawn) == 0 {
+		return
+	}
+	for _, w := range withdrawn {
+		l.limitsStore().Forget(limitsAccountKey(w.Adapter, w.Label))
+		l.logf("accounts: %s withdrawn (platform: %s)", w.Label, w.Reason)
+	}
+}
+
+// dropWithdrawn takes every account Known now holds withdrawn — by the
+// credential read or by a claim-time read since the last pass — out of
+// the last pass's holding, which the heartbeat about to go out carries.
+func (l *Loop) dropWithdrawn() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	h := l.holding
+	if h == nil || !slices.ContainsFunc(h.Accounts, func(a gateway.HoldingAccount) bool { return l.Known.Withdrawn(a.Account) }) {
+		return
+	}
+	kept := *h
+	kept.Accounts = slices.DeleteFunc(slices.Clone(h.Accounts), func(a gateway.HoldingAccount) bool { return l.Known.Withdrawn(a.Account) })
+	l.holding = &kept
 }
 
 // Holding is the last pass's holding report, which the next heartbeat

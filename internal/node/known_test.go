@@ -3,9 +3,12 @@ package node
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"projectmesh.io/mesh-cli/internal/gateway"
 )
 
 // A restart reloads the labels a previous run's store saved.
@@ -238,5 +241,86 @@ func TestWithdrawnRowSurvivesSaveAndReload(t *testing.T) {
 	}
 	if accts := k2.Accounts(now); len(accts) != 0 {
 		t.Fatalf("accounts after reload = %+v, want the withdrawal to survive", accts)
+	}
+}
+
+// reconcileRowsStore knows one label per case, each issued by ID.
+func reconcileRowsStore(t *testing.T, now time.Time, labels ...string) *KnownAccounts {
+	t.Helper()
+	k := &KnownAccounts{}
+	for _, l := range labels {
+		if err := k.Note(AccountConfig{Label: l, Kind: AccountSubscription, ID: "cred-" + l}, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return k
+}
+
+// ReconcileRows withdraws a disabled, a deleted and a not-allowed label,
+// leaves an active and allowed one, and says why each went.
+func TestReconcileRowsWithdrawsByStatusAndAllowedNodes(t *testing.T) {
+	now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
+	k := reconcileRowsStore(t, now, "disabled", "deleted", "elsewhere", "here", "kept")
+	rows := []gateway.CredentialRow{
+		{ID: "cred-disabled", Label: "disabled", Status: "disabled"},
+		{ID: "cred-deleted", Label: "deleted", Status: "deleted"},
+		{ID: "cred-elsewhere", Label: "elsewhere", Status: "active", AllowedNodeIDs: []string{"other-node"}},
+		{ID: "cred-here", Label: "here", Status: "active", AllowedNodeIDs: []string{"other-node", "this-node"}},
+		{ID: "cred-kept", Label: "renamed on the platform", Status: "active"},
+	}
+	got := k.ReconcileRows(rows, "this-node", now)
+	want := []Withdrawal{
+		{Label: "disabled", Reason: "disabled"},
+		{Label: "deleted", Reason: "deleted"},
+		{Label: "elsewhere", Reason: "not allowed on this node"},
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("withdrawn = %+v, want %+v", got, want)
+	}
+	var left []string
+	for _, a := range k.Accounts(now) {
+		left = append(left, a.Label)
+	}
+	if !slices.Equal(left, []string{"here", "kept"}) {
+		t.Fatalf("accounts = %v, want the active and allowed ones", left)
+	}
+	if again := k.ReconcileRows(rows, "this-node", now.Add(time.Hour)); len(again) != 0 {
+		t.Fatalf("a second call withdrew %+v again", again)
+	}
+}
+
+// An active, allowed row withdraws nothing, and a later row reading
+// active does not bring back a withdrawn label: re-issue alone does.
+func TestReconcileRowsLeavesActiveAndNeverReinstates(t *testing.T) {
+	now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
+	k := reconcileRowsStore(t, now, "max20")
+	active := []gateway.CredentialRow{{ID: "cred-max20", Label: "max20", Status: "active"}}
+	if got := k.ReconcileRows(active, "n", now); len(got) != 0 {
+		t.Fatalf("withdrew %+v from an active row", got)
+	}
+	k.ReconcileRows([]gateway.CredentialRow{{ID: "cred-max20", Status: "disabled"}}, "n", now)
+	k.ReconcileRows(active, "n", now)
+	if !k.Withdrawn("max20") || len(k.Accounts(now)) != 0 {
+		t.Fatal("an active row reinstated a withdrawn label")
+	}
+	if err := k.Note(AccountConfig{Label: "max20", Kind: AccountSubscription, ID: "cred-max20"}, now); err != nil {
+		t.Fatal(err)
+	}
+	if k.Withdrawn("max20") || len(k.Accounts(now)) != 1 {
+		t.Fatal("re-issue did not clear the withdrawal")
+	}
+}
+
+// A label no row names is withdrawn when rows were served, and kept
+// when the read served none.
+func TestReconcileRowsAbsentLabel(t *testing.T) {
+	now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
+	k := reconcileRowsStore(t, now, "gone")
+	if got := k.ReconcileRows(nil, "n", now); len(got) != 0 {
+		t.Fatalf("an empty read withdrew %+v", got)
+	}
+	got := k.ReconcileRows([]gateway.CredentialRow{{ID: "cred-other", Label: "other", Status: "active"}}, "n", now)
+	if !slices.Equal(got, []Withdrawal{{Label: "gone", Reason: "not served"}}) {
+		t.Fatalf("withdrawn = %+v, want gone, not served", got)
 	}
 }

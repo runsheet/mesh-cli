@@ -573,7 +573,10 @@ func (g *ownedGW) ClaimWorkItem(_ context.Context, itemID, nodeID, _ string) err
 }
 
 func (g *ownedGW) GetDesiredVersion(context.Context, string) (string, error) { return "", nil }
-func (g *ownedGW) Goals(context.Context, string) ([]gateway.Goal, error)     { return nil, nil }
+func (g *ownedGW) Credentials(context.Context, string) ([]gateway.CredentialRow, error) {
+	return nil, nil
+}
+func (g *ownedGW) Goals(context.Context, string) ([]gateway.Goal, error) { return nil, nil }
 func (g *ownedGW) GoalWorkItems(context.Context, string) ([]gateway.WorkItem, error) {
 	return nil, nil
 }
