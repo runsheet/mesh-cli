@@ -236,6 +236,10 @@ type Loop struct {
 	// says otherwise (claimSet).
 	claim    ClaimConfig
 	claimSet bool
+	// shares is node.yaml's `shares:` weights in force (ADR-023): Cfg's
+	// until Reload says otherwise (sharesSet); read through Weights().
+	shares    map[string]int
+	sharesSet bool
 	// paced is the pacing mode last logged, so a crossing is logged once.
 	paced paceMode
 	// waiting counts, by kind, the work this tick left unclaimed because
@@ -1372,6 +1376,34 @@ func (l *Loop) reload(ctx context.Context) {
 		}
 		l.mu.Lock()
 		l.claim, l.claimSet = *got.Claim, true
+		l.mu.Unlock()
+	}
+	if got.SharesRead {
+		served := map[string]bool{}
+		for _, sc := range l.Scopes {
+			served[sc.Name()] = true
+		}
+		var unknown []string
+		filtered := map[string]int{}
+		for org, w := range got.Shares {
+			if !served[org] {
+				unknown = append(unknown, org)
+				continue
+			}
+			filtered[org] = w
+		}
+		if len(filtered) == 0 {
+			filtered = nil
+		}
+		sort.Strings(unknown)
+		for _, org := range unknown {
+			l.logf("shares: %s is not a served org", org)
+		}
+		if was, now := l.Weights(), filtered; !sharesEqual(was, now) {
+			l.logf("shares %s → %s", sharesString(was), sharesString(now))
+		}
+		l.mu.Lock()
+		l.shares, l.sharesSet = filtered, true
 		l.mu.Unlock()
 	}
 	if got.OrgsRead {

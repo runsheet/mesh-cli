@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"log"
 	"slices"
 	"strings"
 	"testing"
@@ -18,7 +19,7 @@ import (
 const reloadYAML = "slug: box\nname: Box\norgs: [acme]\ncapacity: 1\n"
 
 // reloadPrefixes are how a reload's log lines begin, one per field.
-var reloadPrefixes = []string{"limits:", "accounts ", "account ", "budget ", "project budget ", "context:", "claim:", "orgs "}
+var reloadPrefixes = []string{"limits:", "accounts ", "account ", "budget ", "project budget ", "context:", "claim:", "shares ", "shares:", "orgs "}
 
 // tickLines runs one tick and returns the lines it logged.
 func tickLines(t *testing.T, loop *Loop, logs *strings.Builder) []string {
@@ -120,6 +121,62 @@ func TestReloadClaimFromDisk(t *testing.T) {
 	wantReloadLines(t, "after the edit", tickLines(t, loop, logs), "claim: unmerged_per_repo 0 → 2")
 	if got := loop.UnmergedPerRepo(); got != 2 {
 		t.Fatalf("unmerged_per_repo in force %d, want 2", got)
+	}
+}
+
+// node.yaml's `shares:` is reloaded every tick like the claim limits,
+// and a change is logged once as `shares <old> → <new>` (ADR-023). It
+// reads through OwnedReloader, which never touches MyOrgs, so the loop
+// serves two scopes named a and b directly.
+func TestReloadSharesFromDisk(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeNodeYAML(t, "slug: box\nname: Box\ncapacity: 1\nshares: {a: 1, b: 1}\n")
+
+	var logs strings.Builder
+	loop := &Loop{Cfg: &Config{Capacity: Fixed(1)}, Scopes: Scopes{{Login: "a", ID: "org-a"}, {Login: "b", ID: "org-b"}}, Log: log.New(&logs, "", 0)}
+	loop.Reload = OwnedReloader(LoadConfig)
+
+	loop.reload(context.Background())
+	if got := loop.Weights(); !sharesEqual(got, map[string]int{"a": 1, "b": 1}) {
+		t.Fatalf("weights after the first tick %v, want a:1 b:1", got)
+	}
+	logs.Reset()
+
+	writeNodeYAML(t, "slug: box\nname: Box\ncapacity: 1\nshares: {a: 3, b: 1}\n")
+	loop.reload(context.Background())
+	if got := strings.TrimSpace(logs.String()); got != "shares a 1, b 1 → a 3, b 1" {
+		t.Fatalf("after the edit, logged %q, want the shares change line", got)
+	}
+	if got := loop.Weights(); !sharesEqual(got, map[string]int{"a": 3, "b": 1}) {
+		t.Fatalf("weights after the edit %v, want a:3 b:1", got)
+	}
+	logs.Reset()
+
+	writeNodeYAML(t, "slug: box\nname: Box\ncapacity: 1\nshares: {a: 3, b: 1}\n")
+	loop.reload(context.Background())
+	if got := logs.String(); got != "" {
+		t.Fatalf("node.yaml unchanged logged %q", got)
+	}
+}
+
+// A weight naming an org the node does not serve is logged once and
+// ignored: it is dropped from Weights(), the served org's own weight
+// still in force.
+func TestReloadSharesUnservedOrgIgnored(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	writeNodeYAML(t, "slug: box\nname: Box\ncapacity: 1\nshares: {a: 2, ghost: 5}\n")
+
+	var logs strings.Builder
+	loop := &Loop{Cfg: &Config{Capacity: Fixed(1)}, Scopes: Scopes{{Login: "a", ID: "org-a"}}, Log: log.New(&logs, "", 0)}
+	loop.Reload = OwnedReloader(LoadConfig)
+	loop.reload(context.Background())
+
+	if got := loop.Weights(); !sharesEqual(got, map[string]int{"a": 2}) {
+		t.Fatalf("weights %v, want a:2 alone (ghost dropped)", got)
+	}
+	if got := logs.String(); !strings.Contains(got, "shares: ghost is not a served org") {
+		t.Fatalf("logged %q, want the unserved-org line", got)
 	}
 }
 

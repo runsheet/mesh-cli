@@ -512,6 +512,28 @@ restricts which of the answer's orgs the node serves; a name it does
 not meet is logged, never fatal, and a changed served set is logged
 too (`orgs a, b → a, b, c`).
 
+`shares:` in node.yaml divides this node's capacity into a floor per
+served org for a person's node — equal shares when it is left out
+([ADR-023](docs/adr/adr-023-every-org-gets-its-share.md), Floors and
+Every org gets its share above):
+
+```yaml
+shares:
+  acme: 3     # weight, a positive integer — floors by capacity × weight / total
+  globex: 1
+```
+
+A weight is keyed by the org's login, or its slug when it has none, as
+`orgs:` names it; zero or negative is refused at load naming the org
+(`shares: acme: must be a positive integer`), and a weight naming an
+org this node does not serve is logged once (`shares: ghost is not a
+served org`) and ignored. Re-read every tick like the claim limits, so
+an edit needs no restart; a change is logged
+(`shares acme 1, globex 1 → acme 3, globex 1`). An enterprise's own
+`shares` on the owner contract — a later item of the goal — takes it
+over node.yaml's when both are present; node.yaml's is what a person's
+own node, serving the orgs they belong to, sets by hand.
+
 node.yaml records which registration the node made as `contract:`:
 `contract: owner` (one node id, under `node_id:`, shared by every org
 it serves) when the platform answered the owner registration, or
@@ -633,7 +655,8 @@ Every interval the node heartbeats (`HeartbeatNode`), lists the `ready`
 work items of every org it serves and claims up to its free capacity
 (`ClaimWorkItem`; the aggregate refuses a second claimant, so two nodes
 never run one item). A node serving several orgs divides its capacity
-into a **floor** per org — equal shares by default, the largest
+into a **floor** per org — equal shares by default, or by weight when
+node.yaml's `shares:` (below) names one, the largest
 remainder to the orgs in listed order (capacity 4 over two orgs is 2
 and 2; capacity 5 is 3 and 2; capacity 1 is 1 and 0) — and claims first
 for an org holding fewer sessions than its floor while it has ready

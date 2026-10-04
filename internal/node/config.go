@@ -136,6 +136,13 @@ type Config struct {
 	// Claim is node.yaml's `claim:` block (ClaimConfig), read again
 	// every tick like the context budget.
 	Claim ClaimConfig `yaml:"claim,omitempty"`
+	// Shares is node.yaml's `shares:` block: the weight Floors divides
+	// capacity by, keyed by a served org's login (or its slug when it
+	// has none, as Orgs names it) — a person's node's own setting for
+	// ADR-023's floors, read again every tick like the claim limits; an
+	// enterprise's own `shares` (a later item) takes it over when both
+	// are present.
+	Shares map[string]int `yaml:"shares,omitempty"`
 }
 
 // ClaimConfig is node.yaml's `claim:` block. UnmergedPerRepo is the most
@@ -150,6 +157,18 @@ type ClaimConfig struct {
 func (c ClaimConfig) Validate() error {
 	if c.UnmergedPerRepo < 0 {
 		return errors.New("claim.unmerged_per_repo: a limit cannot be negative")
+	}
+	return nil
+}
+
+// ValidateShares refuses a zero or negative weight, naming the org. Map
+// order is arbitrary, so with more than one bad weight only one is
+// named; either is a refusal.
+func ValidateShares(shares map[string]int) error {
+	for org, w := range shares {
+		if w <= 0 {
+			return fmt.Errorf("shares: %s: must be a positive integer", org)
+		}
 	}
 	return nil
 }
@@ -737,6 +756,11 @@ type Reloaded struct {
 	// node applies it to the platform's answer (TakeAnswer).
 	Orgs     []string
 	OrgsRead bool
+	// Shares is node.yaml's `shares:` weights, read when SharesRead; nil
+	// is no weights set (equal shares), distinct from not having read
+	// node.yaml at all this tick.
+	Shares     map[string]int
+	SharesRead bool
 }
 
 // Spending is what the node may spend on: node.yaml's project budgets
@@ -751,13 +775,14 @@ type Spending struct {
 // Reloader is Loop.Reload for a node started on cfg and scopes: every
 // tick it reads node.yaml again through load (LoadConfig when nil) for
 // the capacity, the limits thresholds, the accounts and project budgets,
-// the context budget, the claim limits and the orgs restriction, and asks MyOrgs for the orgs
+// the context budget, the claim limits, the shares weights and the orgs
+// restriction, and asks MyOrgs for the orgs
 // the owner belongs to. An org seen for the first time is registered in
 // through register (a Node there, as start does) before it is served —
 // one that fails to register is tried again next tick; an org no longer
 // listed, or no longer in the restriction, is dropped. A node.yaml that
-// cannot be read keeps the last good capacity, limits, accounts, context
-// and claim limits and restriction; a MyOrgs that fails, or leaves
+// cannot be read keeps the last good capacity, limits, accounts, context,
+// claim limits, shares and restriction; a MyOrgs that fails, or leaves
 // nothing to serve, keeps the orgs as they were — and a node.yaml read
 // well is still returned, so the operator's edit does not wait on the
 // gateway. The reasons a reload could not be applied come back as one
@@ -848,7 +873,8 @@ func reloadedFrom(c *Config) Reloaded {
 	limits, budget, claim := c.Limits, c.Context, c.Claim
 	return Reloaded{Capacity: c.Capacity, Limits: &limits, Context: &budget, Claim: &claim,
 		Spending: &Spending{ProjectBudgets: c.ProjectBudgets, Budgets: c.Budgets},
-		Orgs:     c.Orgs, OrgsRead: true}
+		Orgs:     c.Orgs, OrgsRead: true,
+		Shares: c.Shares, SharesRead: true}
 }
 
 // OwnedReloader is Loop.Reload for a node registered once with its
@@ -930,6 +956,9 @@ func LoadConfig() (*Config, error) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	if err := c.Context.Validate(); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	if err := ValidateShares(c.Shares); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	if c.Owner != "" && c.Owner != "person" && c.Owner != "enterprise" {
