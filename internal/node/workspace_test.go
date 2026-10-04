@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -704,5 +705,160 @@ func TestRepoLockKey(t *testing.T) {
 	}
 	if got := RepoLockKey("/tmp/x/origin.git"); got != "/tmp/x/origin" {
 		t.Errorf("a path keys as itself: %s", got)
+	}
+}
+
+// IsRefLockFailure matches git refusing a ref update because another
+// process was writing the same ref at the same moment — the two lines
+// the grapevine node's log carried, 2026-10-03, before fetches of one
+// repo were serialised on the node (ADR-023) — and nothing else.
+func TestIsRefLockFailure(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{
+			"item 1's cannot lock ref",
+			errors.New("workspace: git fetch --quiet origin +refs/heads/main:refs/remotes/origin/main: exit status 1: error: cannot lock ref 'refs/remotes/origin/main': is at d843d265…"),
+			true,
+		},
+		{
+			"item 2's unable to update local ref",
+			errors.New("git fetch --prune origin: … error: cannot lock ref 'refs/remotes/origin/main': is at c67b5444… but expected d843d265… (unable to update local ref)"),
+			true,
+		},
+		{"not found", errors.New("gh repo clone runsheet/mesh-cli: exit status 1: Repository not found"), false},
+	}
+	for _, c := range cases {
+		if got := IsRefLockFailure(c.err); got != c.want {
+			t.Errorf("%s: IsRefLockFailure() = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// refLockBackoffError is the ref-lock failure text the brief gives, the
+// shape fetchLocked retries on.
+const refLockBackoffError = "git fetch --quiet origin: exit status 1: error: cannot lock ref 'refs/remotes/origin/main': is at d843d265 but expected c67b4444 (unable to update local ref)"
+
+// noRefLockSleep makes refLockBackoff instant for a test, restored after.
+func noRefLockSleep(t *testing.T) {
+	t.Helper()
+	prev := refLockSleep
+	refLockSleep = func(context.Context, time.Duration) error { return nil }
+	t.Cleanup(func() { refLockSleep = prev })
+}
+
+// refLockLogLines is every line of log containing "git refused a ref
+// lock".
+func refLockLogLines(log []string) []string {
+	var out []string
+	for _, l := range log {
+		if strings.Contains(l, "git refused a ref lock") {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// A fetch refused twice with `cannot lock ref` and succeeding the third
+// try is not a failed Prepare: the retry is inside the one fetch helper,
+// logged once, naming the try it succeeded on.
+func TestFetchRetriesARefLockFailureAndSucceeds(t *testing.T) {
+	root, origin := lockTestOrigin(t)
+	spec := WorkspaceSpec{Root: root, GoalSlug: "g", Seq: 1, Repo: origin, Branch: "mesh/g-1", BaseRef: "main"}
+	if _, err := (&Git{}).Prepare(context.Background(), spec); err != nil {
+		t.Fatalf("seed prepare: %v", err)
+	}
+	noRefLockSleep(t)
+
+	var log []string
+	g := &Git{Logf: func(f string, a ...any) { log = append(log, fmt.Sprintf(f, a...)) }}
+	pruneCalls := 0
+	g.exec = func(ctx context.Context, dir, name string, args ...string) (string, error) {
+		if name == "git" && len(args) >= 2 && args[0] == "fetch" && args[1] == "--prune" {
+			pruneCalls++
+			if pruneCalls <= 2 {
+				return "", errors.New(refLockBackoffError)
+			}
+		}
+		return g.realRun(ctx, dir, name, args...)
+	}
+	if _, err := g.Prepare(context.Background(), spec); err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	if pruneCalls != 3 {
+		t.Fatalf("the fetch ran %d times, want 3", pruneCalls)
+	}
+	lines := refLockLogLines(log)
+	if len(lines) != 1 {
+		t.Fatalf("log lines with 'git refused a ref lock' = %v, want exactly 1", lines)
+	}
+	if !strings.Contains(lines[0], "try 3") {
+		t.Fatalf("log line = %q, want it to name try 3", lines[0])
+	}
+}
+
+// A fetch refused three times with `cannot lock ref` gives up: Prepare
+// fails with an error IsRefLockFailure reports true, and the log names
+// giving up after three tries, once.
+func TestFetchGivesUpAfterThreeRefLockFailures(t *testing.T) {
+	root, origin := lockTestOrigin(t)
+	spec := WorkspaceSpec{Root: root, GoalSlug: "g", Seq: 1, Repo: origin, Branch: "mesh/g-1", BaseRef: "main"}
+	if _, err := (&Git{}).Prepare(context.Background(), spec); err != nil {
+		t.Fatalf("seed prepare: %v", err)
+	}
+	noRefLockSleep(t)
+
+	var log []string
+	g := &Git{Logf: func(f string, a ...any) { log = append(log, fmt.Sprintf(f, a...)) }}
+	pruneCalls := 0
+	g.exec = func(ctx context.Context, dir, name string, args ...string) (string, error) {
+		if name == "git" && len(args) >= 2 && args[0] == "fetch" && args[1] == "--prune" {
+			pruneCalls++
+			return "", errors.New(refLockBackoffError)
+		}
+		return g.realRun(ctx, dir, name, args...)
+	}
+	_, err := g.Prepare(context.Background(), spec)
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	if !IsRefLockFailure(err) {
+		t.Fatalf("err = %v, want IsRefLockFailure", err)
+	}
+	if pruneCalls != 3 {
+		t.Fatalf("the fetch ran %d times, want 3", pruneCalls)
+	}
+	lines := refLockLogLines(log)
+	if len(lines) != 1 {
+		t.Fatalf("log lines with 'git refused a ref lock' = %v, want exactly 1", lines)
+	}
+	if !strings.Contains(lines[0], "gave up after 3 tries") {
+		t.Fatalf("log line = %q, want it to say giving up after 3 tries", lines[0])
+	}
+}
+
+// A non-lock error is returned at once, with no retry: the fetch helper
+// runs exactly once.
+func TestFetchReturnsANonLockErrorAtOnce(t *testing.T) {
+	root, origin := lockTestOrigin(t)
+	spec := WorkspaceSpec{Root: root, GoalSlug: "g", Seq: 1, Repo: origin, Branch: "mesh/g-1", BaseRef: "main"}
+	calls := 0
+	g := &Git{}
+	g.exec = func(ctx context.Context, dir, name string, args ...string) (string, error) {
+		calls++
+		return "", errors.New("gh repo clone " + origin + ": exit status 1: Repository not found")
+	}
+	_, err := g.Prepare(context.Background(), spec)
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	if IsRefLockFailure(err) {
+		t.Fatalf("err = %v, want it not to be a ref-lock failure", err)
+	}
+	if calls != 1 {
+		t.Fatalf("exec called %d times, want 1", calls)
 	}
 }

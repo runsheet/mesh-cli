@@ -105,3 +105,40 @@ never write the mirror's refs").
   `git fetch` in a workspace is not serialised.
 - A fetch that still fails on a ref lock — another git outside the
   node — is item 2's retry to absorb.
+
+## Retry
+
+The lock keeps two of the node's own fetches of one repo from
+colliding; it does nothing for a `git fetch` or `gh repo clone` that
+still fails on a ref another process — outside the node, or inside it
+on a path the lock does not cover — was writing at the same instant.
+`Git.fetchLocked` retries such a failure in place, inside the lock it
+already holds, before it ever reaches the caller:
+
+- **The match**, `IsRefLockFailure(err error) bool`: the error's text
+  contains `cannot lock ref` or `unable to update local ref` — the two
+  lines the grapevine node's log carried (above). Any other error is
+  returned at once, with no retry.
+- **The tries**: up to `refLockRetries = 3` attempts of the one
+  command, waiting `refLockBackoff = []time.Duration{200ms, 500ms,
+  1s}` between them — the wait through a package-level `refLockSleep`
+  func variable, substitutable in tests, as `credentialSleep` is in
+  `ghcred.go`. A cancelled context stops the retry at once.
+- **The log**: one line per retried fetch, when it finally succeeds or
+  finally gives up — never one per try — of the form `workspace <dir>:
+  git refused a ref lock for <repo> <n> time(s), <succeeded on try N |
+  gave up after 3 tries>: <last error>`, through `Git.Logf`, which the
+  Runner wires to its own `logf` (nil is silent, as every other caller
+  of `Git` that sets no `Logf` is).
+- **The seam**: `Git`'s unexported `exec` field replaces the real
+  git/gh invocation (nil is the real one, `Git.realRun`), so a test
+  injects the failure on the first two tries of a `Prepare` against a
+  local bare remote and lets the third delegate through, proving the
+  real fetch ran three times and the log carries exactly the one line
+  naming `try 3`; a second test injects it three times and sees
+  `gave up after 3 tries`; a third proves a `Repository not found`
+  error is returned after one execution, no retry.
+- **What it does not retry**: the credential retry in
+  `PrepareWithRetry` (ghcred.go) sits above this and is unchanged — a
+  GitHub token GitHub has not yet honoured is a different failure from
+  two gits racing one ref, and the two retries never interact.

@@ -122,16 +122,78 @@ func (g *Git) repoKeyOf(ctx context.Context, dir string) string {
 	return abs
 }
 
+// refLockRetries is how many times a fetch or clone is tried before
+// giving up on a ref lock failure (ADR-023's Retry section).
+const refLockRetries = 3
+
+// refLockBackoff is the wait before each retry, one per retry.
+var refLockBackoff = []time.Duration{200 * time.Millisecond, 500 * time.Millisecond, 1 * time.Second}
+
+// refLockSleep waits d or until ctx ends; tests substitute it, as
+// credentialSleep does in ghcred.go.
+var refLockSleep = func(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
 // fetchLocked runs one command that writes refs from the remote — a
 // `git fetch` or a `gh repo clone` — in dir under the per-repo lock of
 // key at root, released as soon as it returns: never held across a
 // checkout, a session or a push. Every such command of Git goes through
-// here, so a retry has one place to live.
+// here, so a retry has one place to live: a failure IsRefLockFailure is
+// retried up to refLockRetries times with refLockBackoff between tries —
+// another session fetching the same repo at the same moment, not a
+// failure of this one — and logged once, when it finally succeeds or
+// finally gives up (ADR-023's Retry section). A cancelled ctx stops the
+// retry; any other error is returned at once.
 func (g *Git) fetchLocked(ctx context.Context, root, key, dir, name string, args ...string) (string, error) {
 	unlock, err := lockRepo(ctx, root, key)
 	if err != nil {
 		return "", err
 	}
 	defer unlock()
-	return g.run(ctx, dir, name, args...)
+	var out string
+	var lastErr error
+	fails := 0
+	for attempt := 1; attempt <= refLockRetries; attempt++ {
+		out, err = g.run(ctx, dir, name, args...)
+		if err == nil {
+			if fails > 0 {
+				g.logRefLockRetry(dir, key, fails, fmt.Sprintf("succeeded on try %d", attempt), lastErr)
+			}
+			return out, nil
+		}
+		if !IsRefLockFailure(err) {
+			return out, err
+		}
+		fails++
+		lastErr = err
+		if attempt == refLockRetries {
+			g.logRefLockRetry(dir, key, fails, fmt.Sprintf("gave up after %d tries", refLockRetries), lastErr)
+			return out, err
+		}
+		if ctx.Err() != nil {
+			return out, err
+		}
+		if sleepErr := refLockSleep(ctx, refLockBackoff[attempt-1]); sleepErr != nil {
+			return out, err
+		}
+	}
+	return out, lastErr
+}
+
+// logRefLockRetry writes fetchLocked's one line about a retried fetch:
+// "workspace <dir>: git refused a ref lock for <repo> <n> time(s),
+// <outcome>: <last error>".
+func (g *Git) logRefLockRetry(dir, repo string, fails int, outcome string, lastErr error) {
+	if g.Logf == nil {
+		return
+	}
+	g.Logf("workspace %s: git refused a ref lock for %s %d time(s), %s: %v", dir, repo, fails, outcome, lastErr)
 }
