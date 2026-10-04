@@ -474,6 +474,50 @@ the node's log too, one `<label>: usage <kind> {…}` JSON line per
 session, whether its finishing command carried it, refused it or — a
 session that ends in a failure — never sent it (see [Usage](#usage)).
 
+### accounts.json
+
+`~/.mesh/accounts.json` is every account a claim-time read has issued
+this node lately — label, kind, platform id, adapter, caps, the
+priorities it serves and its own pace point, never the secret — so the
+loop can schedule on issued accounts across a restart, before the first
+claim reads them again. One row per label:
+
+```json
+{
+  "accounts": [
+    {
+      "label": "max20",
+      "kind": "subscription",
+      "id": "cred-123",
+      "issuedAt": "2026-10-04T12:00:00Z",
+      "projectIds": ["proj-1"]
+    },
+    {
+      "label": "Temp - Subsciprtion",
+      "kind": "subscription",
+      "id": "cred-456",
+      "issuedAt": "2026-10-03T03:00:00Z",
+      "withdrawnAt": "2026-10-03T03:54:00Z",
+      "projectIds": ["proj-1"]
+    }
+  ]
+}
+```
+
+`issuedAt` is when the row was last noted (a session was given this
+credential); past `KnownFor` (24h) of it the row is dropped on the next
+save. `projectIds` are the projects whose claim-time reads have issued
+the label (empty for a row written before project scoping, read as
+every project). **`withdrawnAt`** is set the moment a claim-time read
+for the label's adapter and one of its `projectIds` answers without
+naming it — a credential deleted or disabled on the platform, or one no
+longer attached to that project — rather than waiting out the 24 hours:
+the row stays for the ledger, but the account is left out of
+`Accounts(now)` and so out of the heartbeat's `holding.accounts` and
+`limits[]` until it is issued again, which clears `withdrawnAt` (adr-005's
+amendment 2026-10-03, a withdrawn account leaves the report). The 24-hour
+prune is still the only deletion.
+
 ### Who owns a node
 
 A node has an owner — a person or an enterprise

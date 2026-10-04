@@ -1,5 +1,5 @@
 ---
-summary: A node's sessions run on the Claude accounts the platform issues the claimed session (the claim-time read: itemCredentials, planCredentials, researchCredentials; an api key at its cap never chosen), with node.yaml's `accounts:` and `codex.accounts` retired and refused at start (amendments 2026-10-02: a session runs only on an issued credential, the start logs which projects have none open to the node, and the node.yaml fallback is gone — a platform without the read is an ErrNoCredential hold, never the operator's login), and every session's usage report rides the command that ends it (`usage` on finishWorkItem, evaluateWorkItem, planGoal, finishWorkItemRebase, recordDirectionResearch; each priced tool call on recordToolUsage; else one log line); the secret reaches the session in its environment only (CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY), with a temporary CLAUDE_CONFIG_DIR per session removed after, the inherited auth variables stripped, and the secret redacted from every log, error and report; each session runs on the account ChooseAccount picks by standing against a clock — each window's target line, the fraction of it elapsed less `reserve`, and the account furthest behind its own chosen first, ahead-of-target accounts last, subscriptions before API keys as before — with the holdback keeping the subscription with the latest reset for urgent work once every other is within 10% of `stop`, so one account always has headroom (goal every-subscription-lands-full-at-its-reset).
+summary: A node's sessions run on the Claude accounts the platform issues the claimed session (the claim-time read: itemCredentials, planCredentials, researchCredentials; an api key at its cap never chosen), with node.yaml's `accounts:` and `codex.accounts` retired and refused at start (amendments 2026-10-02: a session runs only on an issued credential, the start logs which projects have none open to the node, and the node.yaml fallback is gone — a platform without the read is an ErrNoCredential hold, never the operator's login), and every session's usage report rides the command that ends it (`usage` on finishWorkItem, evaluateWorkItem, planGoal, finishWorkItemRebase, recordDirectionResearch; each priced tool call on recordToolUsage; else one log line); the secret reaches the session in its environment only (CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY), with a temporary CLAUDE_CONFIG_DIR per session removed after, the inherited auth variables stripped, and the secret redacted from every log, error and report; each session runs on the account ChooseAccount picks by standing against a clock — each window's target line, the fraction of it elapsed less `reserve`, and the account furthest behind its own chosen first, ahead-of-target accounts last, subscriptions before API keys as before — with the holdback keeping the subscription with the latest reset for urgent work once every other is within 10% of `stop`, so one account always has headroom (goal every-subscription-lands-full-at-its-reset); a label a claim-time read no longer names for its adapter and project is withdrawn at once — kept in accounts.json for the ledger, dropped from Accounts(now) and so from the heartbeat's holding and limits — and re-issue clears it (goal a-withdrawn-account-leaves-the-node).
 status: accepted
 ---
 
@@ -1353,3 +1353,86 @@ run against the fake on each node.yaml read from disk, the line after
 2)` or `Takes: every kind`). `specs/contracts/heartbeatNode.json` shows
 `holding.kinds` and the summary's prefix, and
 `internal/gateway/holding_test.go` decodes them from it.
+
+## Amendment — 2026-10-03 (goal a-withdrawn-account-leaves-the-node, item 1): a withdrawn account leaves the report
+
+**The problem.** `KnownAccounts` (`internal/node/known.go`,
+`~/.mesh/accounts.json`) remembers every account a claim-time read has
+issued for `KnownFor` (24h), so the loop can schedule on issued
+accounts across restarts. Nothing told it an account was withdrawn: a
+credential deleted or disabled on the platform simply stopped being
+named by the next read, and the node had no way to tell "not named this
+time" from "not read yet" — the label stayed in `Accounts(now)`, and so
+in the heartbeat's `holding` and `limits`, as `unknown` for the rest of
+the 24 hours. Chris saw this on the Mini (2026-10-03): a deleted
+`Temp - Subsciprtion` and two disabled accounts kept showing as held
+accounts on the Node page a heartbeat after the platform's own read had
+stopped naming them.
+
+**Decision.** The platform's claim-time answer for an adapter and
+project is the truth about that pair's standing, taken at once, not
+waited out: `knownAccount` gains `WithdrawnAt time.Time` and
+`ProjectIDs []string` (the projects whose reads have issued the label).
+`KnownAccounts.NoteFor(a, projectID, now)` — `Note(a, now)` is
+`NoteFor(a, "", now)`, kept for the callers that predate project
+scoping — adds `projectID` to the entry's `ProjectIDs` when it is new
+and clears `WithdrawnAt`: a re-issued label is known again.
+`KnownAccounts.Reconcile(adapter, projectID string, issued
+[]AccountConfig, now time.Time) []string` takes every known label whose
+adapter is `adapter`, whose `ProjectIDs` contain `projectID` (or are
+empty — a row written before this change, read as scoped to every
+project) and that is not among `issued`, and sets `WithdrawnAt = now`
+the first time only, so the earliest withdrawal survives a later call
+with the same absence; it returns the labels newly withdrawn by that
+call. The row stays in `accounts.json` for the ledger — the 24-hour
+prune (`pruneLocked`) is still the only deletion — but
+`KnownAccounts.Accounts(now)` skips any entry with a non-zero
+`WithdrawnAt`.
+
+Project-scoped, because an org's credential serves only the projects it
+names (`CredentialRow.ProjectIDs`): a read for project A naming nothing
+for an adapter says nothing about project B's credential of the same
+adapter, so it must never withdraw it.
+
+`Credentials.Open` (`internal/node/credentials.go`) calls `Reconcile`
+once per read that neither errored nor was unsupported (`read != nil`)
+— never on an unsupported or failed read, which says nothing about what
+is still issued — after every issued credential of the read is noted,
+on both branches: the branch that found no credential for the session's
+adapter (every known label of that adapter and project is withdrawn,
+since the read named none of them) and the ordinary branch (every known
+label not among the read's issued accounts of that adapter). Each
+withdrawn label is logged once, `accounts: <label> withdrawn (not
+issued by the <project> read)`.
+
+Because `holding.go`'s `holdingAccounts` (via `Loop.Holding()`) and
+`Limits.Heartbeat` are given `Known.Accounts(now)` as the accounts to
+report on, a withdrawn label dropped from that list is dropped from
+`holding.accounts` with no change to `holdingAccounts` itself. The
+`limits[]` field is different: `Limits.Heartbeat` lists every account
+it has ever been given a reading for (`Limits.accounts`, in memory,
+never pruned), not only the ones in its `known` parameter — `known`
+only supplies each one's priorities and standing config, by design,
+since a reading under a label `Known` never heard of (the implicit
+`DefaultAccount` on a node with no `accounts:` block) must still be
+reported, with empty priorities. So a withdrawn label's last reading
+would otherwise linger in `limits[]` for the life of the process.
+`Limits` gains `Forget(account string)`, dropping any reading held for
+it; `Credentials.Open` calls it, keyed the way a session's own reading
+is (`limitsAccountKey(adapter, label)`, the Codex prefix for that
+adapter), at the same two call sites that log the withdrawal. The next
+heartbeat's `limits[]` then carries only what is still known.
+
+Re-issue — the label named again by a later read — clears `WithdrawnAt`
+(`NoteFor`) and reports again; nothing un-forgets a reading early, so a
+re-issued account's `limits[]` row returns once its first session after
+re-issue reports a reading, same as any newly issued account.
+
+**Tests.** `known_test.go`:
+`TestReconcileWithdrawsAnAbsentLabelAndAccountsOmitsIt`,
+`TestReconcileLeavesOtherAdaptersAndProjectsUntouched`,
+`TestNoteForClearsWithdrawnAt`, `TestWithdrawnRowSurvivesSaveAndReload`.
+`credentials_test.go`: `TestOpenWithdrawsALabelAbsentFromTheNextRead`,
+`TestOpenOnUnsupportedReadWithdrawsNothing`. `holding_test.go`:
+`TestHoldingReportOmitsWithdrawnAccount`. `limits_test.go`:
+`TestLimitsHeartbeatOmitsWithdrawnAccount`.
