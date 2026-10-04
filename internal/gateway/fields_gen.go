@@ -80,6 +80,7 @@ var goalRequired = []string{
 var goalOptional = []string{
 	"narrowReplans",
 	"replacingItemId",
+	"updatedAt",
 }
 
 // goalFields is the selection of goalRequired.

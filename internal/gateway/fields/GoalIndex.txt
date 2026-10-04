@@ -18,3 +18,4 @@ spentCents
 statement
 status
 title
+updatedAt?
