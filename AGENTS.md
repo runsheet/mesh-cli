@@ -214,8 +214,15 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `claimOrder`) claimed before any other org's whatever the priority,
   the org furthest below first, then everything left in `claimOrder`.
   `Floors` splits capacity by weight (keyed by the org's `Name()`,
-  missing or zero is 1, nil equal shares; `Loop.Weights` is nil until
-  node.yaml's and the owner answer's `shares` feed it), the largest
+  missing or zero is 1, nil equal shares; `Loop.Weights` is node.yaml's
+  `shares:` (`Config.Shares map[string]int`, keyed by a served org's
+  login or slug, re-read every tick like the claim limits and logged
+  on change as `shares <old> → <new>`, each side sorted `a 3, b 1` or
+  `none`; a zero or negative weight refused at load naming the org,
+  `shares: <org>: must be a positive integer`; a weight naming an org
+  this node does not serve logged once, `shares: <org> is not a served
+  org`, and dropped), over by the owner answer's `shares` when the
+  platform's schema carries it (a later item of the goal)), the largest
   remainder to the orgs in listed order. `Loop.sessionOrg` (subject →
   org) is set where builds, plans and research are marked —
   `start`/`Adopt`, `startPlan`/`startResearch`, `AdoptSessions` by the
