@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -653,6 +654,85 @@ type PlannedSpec struct {
 	// production observation (ADR-023, planCutOverRule): never its own
 	// item, but carried on the item that depends on it.
 	Precondition string `json:"precondition"`
+	// Files are the repo-relative paths this item expects to change
+	// (planFilesRule, goal items-that-share-a-file-are-planned-in-a-line):
+	// the node's plan check chains two items that name the same code
+	// file with no dependency between them, the later on the earlier.
+	Files []string `json:"files"`
+	// WritesSharedDocs marks the one item of the goal that writes its
+	// shared documents — the ADR, the TRD section, AGENTS.md, README
+	// (planSharedDocsRule); every other item's brief says not to touch
+	// them and to leave what it would have added as a note instead.
+	WritesSharedDocs bool `json:"writes_shared_docs"`
+}
+
+// IsDocumentPath reports whether p is a document rather than code: a
+// markdown, mdx or text file, anything under docs/, specs/ or .mesh/,
+// or the bare AGENTS.md, README.md, CLAUDE.md — the shared documents
+// planSharedDocsRule assigns to one item. Generated code such as
+// registry_gen.go is code, not a document, whatever directory it sits
+// in.
+func IsDocumentPath(p string) bool {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return false
+	}
+	base := p
+	if i := strings.LastIndex(p, "/"); i >= 0 {
+		base = p[i+1:]
+	}
+	switch base {
+	case "AGENTS.md", "README.md", "CLAUDE.md":
+		return true
+	}
+	for _, ext := range []string{".md", ".mdx", ".txt"} {
+		if strings.HasSuffix(p, ext) {
+			return true
+		}
+	}
+	for _, dir := range []string{"docs/", "specs/", ".mesh/"} {
+		if strings.HasPrefix(p, dir) {
+			return true
+		}
+	}
+	return false
+}
+
+// filePathPattern finds a repo-relative path in prose, as
+// internal/node/plan_check.go's pathPattern does: segments joined by
+// slashes, the first starting with a letter, digit or underscore.
+// bareDocPattern finds a bare AGENTS.md, README.md or CLAUDE.md, which
+// filePathPattern misses for want of a slash.
+var (
+	filePathPattern = regexp.MustCompile(`[A-Za-z0-9_][\w.-]*(?:/[\w.-]+)+`)
+	bareDocPattern  = regexp.MustCompile(`\b(?:AGENTS|README|CLAUDE)\.md\b`)
+)
+
+// ExpectedFiles is the repo-relative paths sp's item expects to change:
+// Files when the planner named them, else every path (or bare
+// AGENTS.md/README.md/CLAUDE.md) findable in its brief, deduplicated
+// and sorted — the planner's brief already names files in its own
+// text more often than not, so a plan with no Files still has
+// something for the node's plan check to chain on (planFilesRule).
+func ExpectedFiles(sp PlannedSpec) []string {
+	var found []string
+	if len(sp.Files) > 0 {
+		found = sp.Files
+	} else {
+		found = append(found, filePathPattern.FindAllString(sp.Brief, -1)...)
+		found = append(found, bareDocPattern.FindAllString(sp.Brief, -1)...)
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, len(found))
+	for _, p := range found {
+		if p = strings.TrimSpace(p); p == "" || seen[p] {
+			continue
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // PlannedDep is one entry of an item's depends_on: the seq it waits on
@@ -693,7 +773,7 @@ func (d *PlannedDep) UnmarshalJSON(b []byte) error {
 // alone, which TestOnlyGoalDocWritesTheGoalDoc holds to.
 const planGoalDocRule = "Plan no item for the goal's own document: when the goal ends the node writes it itself, under the project's specs, from the platform's record of every item and its pull request. An item that records the goal's outcome is work nobody needs. The documents an item changes are the ones its own change makes wrong - an ADR, a TRD section, a README."
 
-const planDependencyRule = "An item depends on another only when it uses something that item creates or changes — a type, command, field, function, file or endpoint — and could not be built against main without it. Sharing a repository or touching the same file is not a dependency: the merge queue rebases, and the scheduler's overlap hold covers conflicts. Order by importance is priority, not dependency. Prefer a wide, shallow graph: the node runs up to 6 items at once and readies every item whose dependencies merged. A final docs item depends only on the items whose results it records. Each dependency carries a one-line `because` naming what is used, as {\"seq\": 3, \"because\": \"uses the Foo type item 3 adds\"}; a dependency without one is dropped."
+const planDependencyRule = "An item depends on another only when it uses something that item creates or changes — a type, command, field, function, file or endpoint — and could not be built against main without it. Sharing a repository is not a dependency; sharing a code file is, and the node adds it when the planner did not; sharing a document is not. Order by importance is priority, not dependency. Prefer a wide, shallow graph: the node runs up to 6 items at once and readies every item whose dependencies merged. A final docs item depends only on the items whose results it records. Each dependency carries a one-line `because` naming what is used, as {\"seq\": 3, \"because\": \"uses the Foo type item 3 adds\"}; a dependency without one is dropped."
 
 // planAcceptanceRule is the planner's side of adr-004: an item's
 // acceptance names only what its evaluator can see.
@@ -734,6 +814,25 @@ const planCutOverRule = "A clause that waits on a person's confirmation or a pro
 // planRepoRule is the planner's half of ADR-023's repo rule: an item
 // naming a repo other than the goal's repo belongs to a different goal.
 const planRepoRule = "An item naming a repo other than the goal's repo is a different goal: leave it out of this plan, or make it a draft of a `split` answer naming that repo."
+
+// planFilesRule is the planner's half of this goal's file rule (goal
+// items-that-share-a-file-are-planned-in-a-line, item 1; the pattern of
+// a planner-half rule beside the node's own check is ADR-020's
+// planHostRule and ADR-023's planRepoRule): each item names the files
+// it expects to change, so the node's plan check — item 2 of the same
+// goal — can chain two items that would otherwise conflict.
+const planFilesRule = "Each item lists in `files` the repo-relative paths it expects to change. Two items naming the same code file with no dependency between them are chained by the node's plan check — the later depends on the earlier, so the second starts from the first's merged work rather than conflicting with it. Items sharing only a document path are not chained: a document is never worth serialising a goal over (see the next rule)."
+
+// planSharedDocsRule is the planner's other half of the same goal: a
+// goal's shared documents are never written by more than one item at
+// once, since every item touching the same document is exactly the
+// conflict planFilesRule chains code files to avoid — but a document is
+// never worth serialising a whole goal over, so instead one item is
+// named the writer and the rest leave notes for it to fold in. The
+// goal's own document stays the node's own, never an item's
+// (planGoalDocRule, above); writes_shared_docs is for the rest — the
+// ADR, the TRD section, AGENTS.md, README.
+const planSharedDocsRule = "A goal's shared documents — the ADR, the TRD section, AGENTS.md, README — are written by one item, marked `\"writes_shared_docs\": true`: the last item, or one that depends on every other item. Every other item's brief says not to edit them, and to leave what it would have added as a note on the item instead (`mesh_progress`), for the writer to fold in."
 
 // knownSearchTool reports whether name (by prefix, case-insensitive) is
 // a search tool the prompts know by name — brave, perplexity — and, if
@@ -816,7 +915,7 @@ func PlanPrompt(in PlanInput) string {
 		for _, r := range in.Rejected {
 			fmt.Fprintf(&b, "- %s\n", strings.TrimSpace(r))
 		}
-		b.WriteString("\n" + planAcceptanceRule + " " + planHostRule + " " + planSplitRule + " " + planSizeRule + " " + planCloseOutRule + " " + planCutOverRule + " " + planRepoRule)
+		b.WriteString("\n" + planAcceptanceRule + " " + planHostRule + " " + planSplitRule + " " + planSizeRule + " " + planCloseOutRule + " " + planCutOverRule + " " + planRepoRule + " " + planFilesRule + " " + planSharedDocsRule)
 		if in.OverCap {
 			cap := in.MaxItems
 			if cap <= 0 {
@@ -929,6 +1028,8 @@ func PlanPrompt(in PlanInput) string {
 	b.WriteString("   " + planCloseOutRule + "\n")
 	b.WriteString("   " + planCutOverRule + "\n")
 	b.WriteString("   " + planRepoRule + "\n")
+	b.WriteString("   " + planFilesRule + "\n")
+	b.WriteString("   " + planSharedDocsRule + "\n")
 	if in.MeshContext {
 		b.WriteString("   Each item's brief names, by slug, the two or three documents the builder must fetch with `mesh_document` — found with `mesh_search` while you plan. You search before you read, same as the builder will.\n")
 	}
@@ -953,7 +1054,7 @@ func PlanPrompt(in PlanInput) string {
 	}
 	b.WriteString("   A model whose first-pass on a repo is under 0.5 over five or more items is not chosen for that repo; prefer the model with the best first-pass at the lowest cost per item; the goal docs in the context name models that worked.\n")
 	b.WriteString("9. End your final message with the graph as a JSON object in a ```json fenced block, and nothing after it. Its `questions` is empty unless a clause of the goal is one no pull request can satisfy (rule 3); each is {\"clause\": \"…\", \"question\": \"…\"}, for the person to answer:\n\n")
-	b.WriteString("```json\n{\"items\": [{\"seq\": 1, \"title\": \"…\", \"brief\": \"…\", \"acceptance\": \"…\", \"depends_on\": [], \"repo\": \"owner/name\", \"base_ref\": \"main\", \"model\": \"sonnet\", \"model_reason\": \"…\"}, {\"seq\": 2, \"title\": \"…\", \"brief\": \"…\", \"acceptance\": \"…\", \"depends_on\": [{\"seq\": 1, \"because\": \"uses the … item 1 adds\"}], \"repo\": \"owner/name\", \"base_ref\": \"main\", \"model\": \"sonnet\", \"model_reason\": \"…\"}], \"questions\": []}\n```\n")
+	b.WriteString("```json\n{\"items\": [{\"seq\": 1, \"title\": \"…\", \"brief\": \"…\", \"acceptance\": \"…\", \"depends_on\": [], \"repo\": \"owner/name\", \"base_ref\": \"main\", \"model\": \"sonnet\", \"model_reason\": \"…\", \"files\": [\"…\"]}, {\"seq\": 2, \"title\": \"…\", \"brief\": \"…\", \"acceptance\": \"…\", \"depends_on\": [{\"seq\": 1, \"because\": \"uses the … item 1 adds\"}], \"repo\": \"owner/name\", \"base_ref\": \"main\", \"model\": \"sonnet\", \"model_reason\": \"…\", \"files\": [\"…\"], \"writes_shared_docs\": true}], \"questions\": []}\n```\n")
 	return b.String()
 }
 
