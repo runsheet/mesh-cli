@@ -100,27 +100,26 @@ type WindowStanding struct {
 }
 
 // windowStanding is one window of a reading turned into its standing at
-// now. pacePoint is the account's own pace point for this window — 0 is
-// none, the ordinary case, in which the target is the time-proportional
-// line; pace_five_hour's default (0.80, LimitsConfig.Thresholds) makes
-// the five-hour window's target that flat line always, since a
-// five-hour pace point apart from it does not exist today.
+// now. pacePoint is the account's own pace point for this window, read
+// before LimitsConfig.Thresholds fills in the node-wide pacing
+// defaults — 0 is none, the ordinary case, in which the target is the
+// time-proportional line; only a credential's own windowTargets (or an
+// operator's explicit node.yaml pace point) past 0 replaces it outright.
+// A window with no reading or whose reset has passed reads as freshly
+// reset: elapsed, target, utilization and push all zero, whatever
+// pacePoint says — a stale reading names no standing to push on.
 func windowStanding(now time.Time, w harness.RateLimitWindow, length time.Duration, pacePoint float64, cfg LimitsConfig) WindowStanding {
-	elapsed := 0.0
-	if !w.ResetsAt.IsZero() && w.ResetsAt.After(now) {
-		elapsed = clampUnit(1 - w.ResetsAt.Sub(now).Seconds()/length.Seconds())
+	if w.ResetsAt.IsZero() || !w.ResetsAt.After(now) {
+		return WindowStanding{ResetsAt: w.ResetsAt}
 	}
+	elapsed := clampUnit(1 - w.ResetsAt.Sub(now).Seconds()/length.Seconds())
 	target := clamp(elapsed-cfg.Reserve, 0, cfg.Stop)
 	if pacePoint > 0 {
 		target = pacePoint
 	}
-	utilization := 0.0
-	if w.ResetsAt.IsZero() || w.ResetsAt.After(now) {
-		utilization = w.Utilization
-	}
-	distance := utilization - target
-	push := distance < 0 && !w.ResetsAt.IsZero() && w.ResetsAt.Sub(now) <= length/5
-	return WindowStanding{Elapsed: elapsed, Target: target, Utilization: utilization, Distance: distance, Push: push, ResetsAt: w.ResetsAt}
+	distance := w.Utilization - target
+	push := distance < 0 && w.ResetsAt.Sub(now) <= length/5
+	return WindowStanding{Elapsed: elapsed, Target: target, Utilization: w.Utilization, Distance: distance, Push: push, ResetsAt: w.ResetsAt}
 }
 
 // clamp bounds v to [lo, hi].
@@ -130,6 +129,18 @@ func clamp(v, lo, hi float64) float64 {
 
 // clampUnit bounds v to [0, 1].
 func clampUnit(v float64) float64 { return clamp(v, 0, 1) }
+
+// pacePointFraction reads a pace point the same way Thresholds reads a
+// threshold: 0 or less is none, over 1 is a percent.
+func pacePointFraction(v float64) float64 {
+	if v <= 0 {
+		return 0
+	}
+	if v > 1 {
+		return v / 100
+	}
+	return v
+}
 
 // Standing is a reading turned into the clock rule's terms (goal
 // every-subscription-lands-full-at-its-reset, item 1): each window's own
@@ -146,12 +157,16 @@ type Standing struct {
 
 // StandingOf turns a reading into Standing at now, against cfg (already
 // LimitsConfig.For(account), so a credential's own windowTargets reach
-// this as PaceFiveHour/PaceSevenDay).
+// this as PaceFiveHour/PaceSevenDay). The pace points are read before
+// Thresholds fills in the node-wide pacing defaults (pace_five_hour's
+// 0.80), so an account with no pace point of its own still gets the
+// time-proportional target line on both windows, not a flat default.
 func StandingOf(now time.Time, r harness.RateLimit, cfg LimitsConfig) Standing {
+	fiveHourPoint, sevenDayPoint := pacePointFraction(cfg.PaceFiveHour), pacePointFraction(cfg.PaceSevenDay)
 	cfg = cfg.Thresholds()
 	s := Standing{
-		FiveHour: windowStanding(now, r.FiveHour, fiveHourLength, cfg.PaceFiveHour, cfg),
-		SevenDay: windowStanding(now, r.SevenDay, sevenDayLength, cfg.PaceSevenDay, cfg),
+		FiveHour: windowStanding(now, r.FiveHour, fiveHourLength, fiveHourPoint, cfg),
+		SevenDay: windowStanding(now, r.SevenDay, sevenDayLength, sevenDayPoint, cfg),
 	}
 	s.Distance = s.FiveHour.Distance
 	if !r.SevenDay.ResetsAt.IsZero() {

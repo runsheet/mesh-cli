@@ -346,10 +346,10 @@ func approx(a, b float64) bool { return math.Abs(a-b) < 1e-9 }
 
 // StandingOf, the pure clock: each window's elapsed fraction, target
 // line, distance from it and push, against the seven-day window — the
-// window every example names, since it is the one the goal balances
-// (pace_five_hour's default makes the five-hour window's target the
-// flat 80% line always, never time-proportional: fiveHourPacePoint in
-// windowStanding).
+// window every example names, since it is the one the goal balances.
+// Both windows take the time-proportional target by default; only a
+// pace point of their own (a credential's windowTargets, or an
+// explicit node.yaml one) replaces it.
 func TestStanding(t *testing.T) {
 	length := sevenDayLength
 	at := func(fraction float64) time.Time { return t0.Add(time.Duration(fraction * float64(length))) }
@@ -404,6 +404,28 @@ func TestStanding(t *testing.T) {
 		s := StandingOf(t0, r, LimitsConfig{})
 		if !approx(s.Distance, s.FiveHour.Distance) {
 			t.Fatalf("account distance = %v, want the five-hour window's %v", s.Distance, s.FiveHour.Distance)
+		}
+	})
+
+	// the five-hour window takes the time-proportional target by default
+	// too — pace_five_hour's flat 0.80 (LimitsConfig.Thresholds) paces
+	// the node's old brake, never Standing's line, when no pace point of
+	// its own is set.
+	t.Run("five-hour window, no pace point: time-proportional, not the flat pace default", func(t *testing.T) {
+		r := harness.RateLimit{FiveHour: harness.RateLimitWindow{Utilization: 0.10, ResetsAt: t0.Add(fiveHourLength / 2)}}
+		s := StandingOf(t0, r, LimitsConfig{})
+		if !approx(s.FiveHour.Elapsed, 0.5) || !approx(s.FiveHour.Target, 0.45) || !approx(s.FiveHour.Distance, -0.35) {
+			t.Fatalf("five-hour = %+v, want elapsed 0.5 target 0.45 distance -0.35 (not the flat 0.80 pace default)", s.FiveHour)
+		}
+	})
+
+	// a pace point on an expired window is not retained: a stale reading
+	// stands at zero, never the pace point, and never pushes.
+	t.Run("pace point on a window past its reset: zero, no push", func(t *testing.T) {
+		r := harness.RateLimit{SevenDay: harness.RateLimitWindow{Utilization: 0.9, ResetsAt: t0.Add(-time.Hour)}}
+		s := StandingOf(t0, r, LimitsConfig{PaceSevenDay: 0.5})
+		if s.SevenDay.Elapsed != 0 || s.SevenDay.Target != 0 || s.SevenDay.Utilization != 0 || s.SevenDay.Push {
+			t.Fatalf("past reset with a pace point = %+v, want elapsed/target/utilization 0 and no push", s.SevenDay)
 		}
 	})
 }
