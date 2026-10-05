@@ -75,6 +75,58 @@ func UpsertTOMLTableFile(path, table string, body []byte) (before, after []byte,
 	return before, after, nil
 }
 
+// Markers is the begin/end pair a marked section of marker m is spliced
+// between — `<!-- mesh:begin (written by mesh mcp install; edits inside
+// are overwritten) -->` … `<!-- mesh:end -->` for m "mesh" (ADR-025's
+// amendment, item 3).
+func Markers(marker string) (begin, end []byte) {
+	return []byte("<!-- " + marker + ":begin (written by mesh mcp install; edits inside are overwritten) -->"),
+		[]byte("<!-- " + marker + ":end -->")
+}
+
+// UpsertMarked replaces the span from begin to end (inclusive) in src
+// with begin, body and end, keeping every byte outside it; absent, the
+// section is appended after one blank line. Begin with no matching end
+// is an error naming it unmatched.
+func UpsertMarked(src, body, begin, end []byte) ([]byte, error) {
+	section := make([]byte, 0, len(begin)+len(body)+len(end)+2)
+	section = append(section, begin...)
+	section = append(section, '\n')
+	section = append(section, bytes.TrimRight(body, "\n")...)
+	section = append(section, '\n')
+	section = append(section, end...)
+
+	bi := bytes.Index(src, begin)
+	if bi == -1 {
+		if len(bytes.TrimSpace(src)) == 0 {
+			return append(section, '\n'), nil
+		}
+		out := append(bytes.TrimRight(src, "\n"), '\n', '\n')
+		return append(append(out, section...), '\n'), nil
+	}
+	rest := src[bi+len(begin):]
+	ei := bytes.Index(rest, end)
+	if ei == -1 {
+		return nil, fmt.Errorf("upsert marked: %q begun at offset %d has no matching %q", begin, bi, end)
+	}
+	spanEnd := bi + len(begin) + ei + len(end)
+	return splice(src, edit{bi, spanEnd, section}), nil
+}
+
+// UpsertMarkedFile is UpsertJSONFile for UpsertMarked.
+func UpsertMarkedFile(path, marker string, body []byte) (before, after []byte, err error) {
+	before, err = readFile(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	begin, end := Markers(marker)
+	after, err = UpsertMarked(before, body, begin, end)
+	if err != nil {
+		return nil, nil, named(path, err)
+	}
+	return before, after, nil
+}
+
 // UpsertJSON sets the entry at keys in the JSON document src to value,
 // keeping every byte outside the entry's span.
 func UpsertJSON(src []byte, keys []string, value []byte) ([]byte, error) {

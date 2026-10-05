@@ -119,16 +119,20 @@ func planMCP(home, exe string, c Client, opts PlanOptions) (Change, error) {
 }
 
 func planInstruction(home string, c Client, f InstructionFile, opts PlanOptions) (Change, error) {
-	if f.Kind != Whole {
-		return Change{}, errors.New(c.Name + ": " + f.Path + ": a marked section is not written yet")
-	}
 	path := filepath.Join(c.ConfigDir(home), filepath.FromSlash(f.Path))
 	want := f.Body()
-	before, err := readFile(path)
+	exists, err := present(path)
 	if err != nil {
 		return Change{}, err
 	}
-	exists, err := present(path)
+	if f.Kind == MarkedSection {
+		before, after, err := UpsertMarkedFile(path, f.Marker, want)
+		if err != nil {
+			return Change{}, err
+		}
+		return Change{Client: c.Name, What: f.Path, Path: path, Exists: exists, Before: before, After: after}, nil
+	}
+	before, err := readFile(path)
 	if err != nil {
 		return Change{}, err
 	}
