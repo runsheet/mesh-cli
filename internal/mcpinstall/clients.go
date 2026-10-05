@@ -35,13 +35,35 @@ const (
 )
 
 // InstructionFile is one file of a client's instructions, Path relative
-// to the client's ConfigDir. Body renders it; a row with no Body is
-// recorded (ADR-025) and written by a later item of the goal.
+// to the client's ConfigDir — or, when Abs is set, to whatever Abs
+// resolves (Cursor's project rule, below: a project-scoped file with
+// no sensible place under ConfigDir's home). Body renders it; a row
+// with no Body is recorded (ADR-025) and written by a later item of
+// the goal.
 type InstructionFile struct {
 	Path   string
 	Kind   InstructionKind
 	Marker string
+	Abs    func() (string, error)
 	Body   func() []byte
+}
+
+// Getwd is os.Getwd; a test overrides it so a project-scoped
+// instruction file (Cursor's rule) is never written into the repo
+// checkout running the test.
+var Getwd = os.Getwd
+
+// cwdPath is an InstructionFile.Abs that resolves rel under Getwd() —
+// Cursor's rule, `.cursor/rules/mesh.mdc`, is read only from the
+// project Cursor has open, so it is written there, not under home.
+func cwdPath(rel string) func() (string, error) {
+	return func() (string, error) {
+		wd, err := Getwd()
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(wd, filepath.FromSlash(rel)), nil
+	}
 }
 
 // Client is one row of the install table (ADR-025): where a client
@@ -170,6 +192,7 @@ func Clients(skill func() []byte) []Client {
 			Instructions: []InstructionFile{
 				{Path: "skills/mesh/SKILL.md", Kind: Whole, Body: renderBody("cursor", "skills/mesh/SKILL.md", skill)},
 				{Path: "commands/mesh.md", Kind: Whole, Body: renderBody("cursor", "commands/mesh.md", skill)},
+				{Path: "rules/mesh.mdc", Kind: Whole, Abs: cwdPath(".cursor/rules/mesh.mdc"), Body: renderBody("cursor", "rules/mesh.mdc", skill)},
 			},
 			Binaries: []string{"cursor", "cursor-agent"},
 			EnvRef:   func(name string) string { return "${env:" + name + "}" },

@@ -55,7 +55,7 @@ func TestRenderCarriesEveryToolAndForm(t *testing.T) {
 
 	for client, paths := range map[string][]string{
 		"codex":  {"prompts/mesh.md", "AGENTS.md"},
-		"cursor": {"skills/mesh/SKILL.md", "commands/mesh.md"},
+		"cursor": {"skills/mesh/SKILL.md", "commands/mesh.md", "rules/mesh.mdc"},
 	} {
 		rs, err := Render(client, skill)
 		if err != nil {
@@ -76,6 +76,91 @@ func TestRenderCarriesEveryToolAndForm(t *testing.T) {
 			if strings.Contains(body, "claude mcp add") {
 				t.Fatalf("%s %s: still has a claude mcp add line:\n%s", client, path, body)
 			}
+		}
+	}
+}
+
+// TestRenderConvertsEveryFormHeading proves each `## \`/mesh <form>
+// ...\`` heading SKILL.md names converts, per client, to that client's
+// own form: Codex's `/prompts:mesh <form>`, its `$ARGUMENTS` suffix
+// exactly when the skill's own heading carries an argument hint (`<`
+// or `[`); Cursor's unchanged `/mesh <form>`, args and all, since
+// Cursor keeps the skill's own form names (ADR-025's amendment, item
+// 3). Checked per heading, not a generic substring, so a form whose
+// conversion is wrong or missing fails by name.
+func TestRenderConvertsEveryFormHeading(t *testing.T) {
+	skill := meshmcp.Skill()
+	_, body, err := parseSkill(skill)
+	if err != nil {
+		t.Fatal(err)
+	}
+	headingRe := regexp.MustCompile("(?m)^## `/mesh (\\w+)([^`]*)`")
+	heads := headingRe.FindAllStringSubmatch(body, -1)
+	if len(heads) == 0 {
+		t.Fatal("no `## ` form heading found in the skill")
+	}
+
+	codexRS, err := Render("codex", skill)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cursorRS, err := Render("cursor", skill)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, h := range heads {
+		form, args := h[1], h[2]
+		takesArgs := strings.ContainsAny(args, "<[")
+
+		codexWant := "## `/prompts:mesh " + form
+		if takesArgs {
+			codexWant += " $ARGUMENTS"
+		}
+		codexWant += "`"
+		cursorWant := "## `/mesh " + form + args + "`"
+
+		for _, path := range []string{"prompts/mesh.md", "AGENTS.md"} {
+			cb := bodyOf(t, codexRS, path)
+			if !strings.Contains(cb, codexWant) {
+				t.Fatalf("codex %s: form %q: want heading %q:\n%s", path, form, codexWant, cb)
+			}
+		}
+		for _, path := range []string{"skills/mesh/SKILL.md", "commands/mesh.md", "rules/mesh.mdc"} {
+			cb := bodyOf(t, cursorRS, path)
+			if !strings.Contains(cb, cursorWant) {
+				t.Fatalf("cursor %s: form %q: want heading %q:\n%s", path, form, cursorWant, cb)
+			}
+		}
+	}
+}
+
+// TestRenderCodexConvertsInlineMention proves an inline, non-heading
+// mention of a `/mesh <form>` — SKILL.md's switch section says
+// "answering like `/mesh join`" in prose — converts the same as the
+// heading does: Codex's rendered files carry no `/mesh ` form mention
+// Codex cannot run, only `/prompts:mesh` ones (ADR-025's amendment,
+// item 3: the substitution catches prose, not only headings).
+func TestRenderCodexConvertsInlineMention(t *testing.T) {
+	skill := meshmcp.Skill()
+	_, body, err := parseSkill(skill)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body, "`/mesh join`") {
+		t.Fatal("fixture assumption failed: SKILL.md no longer has the inline `/mesh join` mention; update this test")
+	}
+	rs, err := Render("codex", skill)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"prompts/mesh.md", "AGENTS.md"} {
+		cb := bodyOf(t, rs, path)
+		if strings.Contains(cb, "`/mesh ") {
+			t.Fatalf("%s: still has an unconverted `/mesh ` mention:\n%s", path, cb)
+		}
+		if !strings.Contains(cb, "/prompts:mesh join $ARGUMENTS") {
+			t.Fatalf("%s: inline mention did not convert to /prompts:mesh join $ARGUMENTS:\n%s", path, cb)
 		}
 	}
 }
@@ -150,11 +235,31 @@ func TestRenderCursorKeepsMeshForm(t *testing.T) {
 	if !strings.Contains(skillFile, "from Cursor") {
 		t.Fatalf("cursor skill does not name Cursor:\n%s", skillFile)
 	}
-	for _, path := range []string{"skills/mesh/SKILL.md", "commands/mesh.md"} {
+	for _, path := range []string{"skills/mesh/SKILL.md", "commands/mesh.md", "rules/mesh.mdc"} {
 		body := bodyOf(t, rs, path)
 		if !strings.Contains(body, "## `/mesh join <goal> [seq] [--pair]`") {
 			t.Fatalf("%s: lost the /mesh join heading:\n%s", path, body)
 		}
+	}
+}
+
+// TestRenderCursorRuleHasAlwaysApply proves Cursor's rule file carries
+// the frontmatter Cursor's project rules require — `alwaysApply: true`
+// so the rule is always in context, no `globs` match needed — and
+// Cursor names, never Claude's (ADR-025's amendment, item 3: Cursor's
+// one file-based rule mechanism is a project rule, `.cursor/rules/
+// *.mdc`; its "User Rules" are a UI setting with no file).
+func TestRenderCursorRuleHasAlwaysApply(t *testing.T) {
+	rs, err := Render("cursor", meshmcp.Skill())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule := bodyOf(t, rs, "rules/mesh.mdc")
+	if !strings.HasPrefix(rule, "---\n") || !strings.Contains(rule, "\nalwaysApply: true\n") {
+		t.Fatalf("cursor rule lacks alwaysApply: true frontmatter:\n%s", rule)
+	}
+	if !strings.Contains(rule, "from Cursor") {
+		t.Fatalf("cursor rule does not name Cursor:\n%s", rule)
 	}
 }
 
