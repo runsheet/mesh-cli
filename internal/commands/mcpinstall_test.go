@@ -21,7 +21,10 @@ import (
 // never clobbering, re-running a no-op, --dry-run writing nothing.
 
 // installHome is a temp HOME with no client env and an empty PATH, so
-// Detect sees only the config dirs a test makes.
+// Detect sees only the config dirs a test makes. It is also the
+// current directory mcpinstall.Getwd answers, so Cursor's project rule
+// (written under the project the person has open, not home) lands
+// inside it rather than in this package's own checkout.
 func installHome(t *testing.T, dirs ...string) string {
 	t.Helper()
 	home := t.TempDir()
@@ -29,6 +32,9 @@ func installHome(t *testing.T, dirs ...string) string {
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
 	t.Setenv("CODEX_HOME", "")
 	t.Setenv("PATH", t.TempDir())
+	prevGetwd := mcpinstall.Getwd
+	mcpinstall.Getwd = func() (string, error) { return home, nil }
+	t.Cleanup(func() { mcpinstall.Getwd = prevGetwd })
 	for _, d := range dirs {
 		if err := os.MkdirAll(filepath.Join(home, d), 0o755); err != nil {
 			t.Fatal(err)
@@ -472,14 +478,17 @@ func TestMcpInstallCodexReplacesAStaleMeshSection(t *testing.T) {
 }
 
 // TestMcpInstallCursorWritesTheRuleAndCommand proves item 3: --client
-// cursor writes the rule (a user skill, ADR-025's table) and command
-// files at the paths ADR-025's rows name.
+// cursor writes the user skill, the project rule and the command files
+// at the paths ADR-025's rows name — the rule under the current
+// directory (mcpinstall.Getwd, here installHome's own temp dir), since
+// Cursor's rule mechanism is project-scoped.
 func TestMcpInstallCursorWritesTheRuleAndCommand(t *testing.T) {
 	home := installHome(t, ".cursor")
 	out := mustInstall(t, false, "cursor")
 
 	skill := filepath.Join(home, ".cursor", "skills", "mesh", "SKILL.md")
 	command := filepath.Join(home, ".cursor", "commands", "mesh.md")
+	rule := filepath.Join(home, ".cursor", "rules", "mesh.mdc")
 	skillBody := read(t, skill)
 	if !bytes.HasPrefix(skillBody, []byte("---\nname: mesh\n")) {
 		t.Fatalf("cursor skill lacks frontmatter:\n%s", skillBody)
@@ -491,7 +500,14 @@ func TestMcpInstallCursorWritesTheRuleAndCommand(t *testing.T) {
 	if !bytes.Contains(commandBody, []byte("mesh_finish")) {
 		t.Fatalf("cursor command lacks a tool name:\n%s", commandBody)
 	}
-	for _, line := range []string{"cursor: wrote " + skill, "cursor: wrote " + command} {
+	ruleBody := read(t, rule)
+	if !bytes.Contains(ruleBody, []byte("alwaysApply: true")) {
+		t.Fatalf("cursor rule lacks alwaysApply: true:\n%s", ruleBody)
+	}
+	if !bytes.Contains(ruleBody, []byte("mesh_finish")) {
+		t.Fatalf("cursor rule lacks a tool name:\n%s", ruleBody)
+	}
+	for _, line := range []string{"cursor: wrote " + skill, "cursor: wrote " + command, "cursor: wrote " + rule} {
 		if !strings.Contains(out, line) {
 			t.Fatalf("output lacks %q:\n%s", line, out)
 		}
@@ -521,6 +537,7 @@ func TestMcpInstallDryRunCoversEveryInstructionFile(t *testing.T) {
 		filepath.Join(home, ".codex", "AGENTS.md"),
 		filepath.Join(home, ".cursor", "skills", "mesh", "SKILL.md"),
 		filepath.Join(home, ".cursor", "commands", "mesh.md"),
+		filepath.Join(home, ".cursor", "rules", "mesh.mdc"),
 	}
 	for _, f := range files {
 		if !strings.Contains(out, "+++ "+f+"\n") || !strings.Contains(out, "would write "+f) {
