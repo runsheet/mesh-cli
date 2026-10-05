@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -69,6 +70,8 @@ var (
 	mcpInstallForce   bool
 	mcpInstallDryRun  bool
 	mcpInstallClients []string
+	mcpInstallRemote  bool
+	mcpInstallURL     string
 )
 
 // mcpExecutable is the running mesh binary, the command every client's
@@ -82,6 +85,10 @@ var mcpExecutable = os.Executable
 // skill (meshmcp.Skill; ADR-023, Skill). --client picks the clients
 // (default: every one Detect finds), --dry-run prints each diff and
 // writes nothing, --force overwrites an instruction file that differs.
+// --remote writes the hosted server's entry instead — the gateway's
+// /mcp, or --url — signed in by OAuth when its issuer offers dynamic
+// registration, else a bearer read from $MESH_TOKEN, never a token in a
+// file (ADR-025, Remote).
 // A file it cannot parse, or one that differs without --force, is
 // reported and left alone, the other clients still written, and the
 // command ends with status 1.
@@ -116,7 +123,23 @@ var mcpInstallCmd = &cobra.Command{
 			return errors.New("no client found; pass --client")
 		}
 
-		changes, planErr := mcpinstall.Plan(home, exe, clients, mcpinstall.PlanOptions{Force: mcpInstallForce})
+		opts := mcpinstall.PlanOptions{Force: mcpInstallForce}
+		if mcpInstallRemote {
+			opts.Remote, opts.URL = true, strings.TrimSpace(mcpInstallURL)
+			if opts.URL == "" {
+				opts.URL = node.MeshMCPURL(gatewayURL())
+			}
+			// discovered once, for every client
+			ctx := cmd.Context()
+			if ctx == nil {
+				ctx = context.Background()
+			}
+			opts.Auth = mcpinstall.DiscoverAuth(ctx, opts.URL)
+			fmt.Fprintf(out, "url: %s\nauth: %s\n", opts.URL, opts.Auth.Describe())
+		} else if mcpInstallURL != "" {
+			return errors.New("--url needs --remote")
+		}
+		changes, planErr := mcpinstall.Plan(home, exe, clients, opts)
 		if !mcpInstallDryRun {
 			if err := mcpinstall.Apply(changes); err != nil {
 				return err
@@ -141,7 +164,12 @@ var mcpInstallCmd = &cobra.Command{
 			}
 		}
 		for _, c := range clients {
-			if c.Name == "claude" && !claudeWritten {
+			if _, oauth := opts.Auth.(mcpinstall.OAuth); oauth && c.Name == "codex" {
+				fmt.Fprintf(out, "codex: sign in with `codex mcp login %s`\n", mcpinstall.ServerName)
+			}
+			if c.Name == "claude" && !claudeWritten && mcpInstallRemote {
+				fmt.Fprintf(out, "\nAdd mesh to Claude Code by hand with:\n\n  %s\n", claudeRemoteAdd(opts))
+			} else if c.Name == "claude" && !claudeWritten {
 				fmt.Fprintf(out, "\nAdd mesh mcp to Claude Code by hand with:\n\n  claude mcp add --scope user mesh -- %s mcp\n", exe)
 			}
 		}
@@ -151,6 +179,15 @@ var mcpInstallCmd = &cobra.Command{
 		}
 		return nil
 	},
+}
+
+// claudeRemoteAdd is the `claude mcp add` line for the remote entry.
+func claudeRemoteAdd(opts mcpinstall.PlanOptions) string {
+	line := "claude mcp add --scope user --transport http mesh " + opts.URL
+	if b, ok := opts.Auth.(mcpinstall.Bearer); ok {
+		line += ` --header "Authorization: Bearer ${` + b.EnvVar + `}"`
+	}
+	return line
 }
 
 // unjoin is the errors errors.Join joined, or err alone.
@@ -168,5 +205,7 @@ func init() {
 	mcpInstallCmd.Flags().BoolVar(&mcpInstallForce, "force", false, "overwrite an instruction file that differs from the one mesh-cli ships")
 	mcpInstallCmd.Flags().BoolVar(&mcpInstallDryRun, "dry-run", false, "print every file and diff the install would write; write nothing")
 	mcpInstallCmd.Flags().StringSliceVar(&mcpInstallClients, "client", nil, "claude, codex, cursor or all (repeatable or a comma list; default every client found)")
+	mcpInstallCmd.Flags().BoolVar(&mcpInstallRemote, "remote", false, "write the hosted server's entry (no local binary): OAuth when the issuer registers clients, else a bearer from $"+mcpinstall.BearerEnvVar)
+	mcpInstallCmd.Flags().StringVar(&mcpInstallURL, "url", "", "the MCP URL for --remote (default: the gateway's /mcp)")
 	mcpCmd.AddCommand(mcpInstallCmd)
 }

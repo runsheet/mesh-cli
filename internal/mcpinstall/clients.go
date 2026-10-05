@@ -2,7 +2,6 @@ package mcpinstall
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -66,6 +65,14 @@ type Client struct {
 	Instructions []InstructionFile
 	// Binaries are the client's CLIs; Detect finds one on PATH.
 	Binaries []string
+	// RemoteType is a JSON client's `type` for a remote (streamable
+	// HTTP) entry, empty when its documented remote entry has none;
+	// EnvRef is how its headers name an environment variable (Claude
+	// Code `${VAR}`, Cursor `${env:VAR}`). A TOML client names the
+	// bearer's variable with bearer_token_env_var instead (ADR-025,
+	// Remote).
+	RemoteType string
+	EnvRef     func(name string) string
 }
 
 // ServerName is the name mesh's entry is kept under in every client.
@@ -133,7 +140,9 @@ func Clients(skill func() []byte) []Client {
 			Instructions: []InstructionFile{
 				{Path: "skills/mesh/SKILL.md", Kind: Whole, Body: skill},
 			},
-			Binaries: []string{"claude"},
+			Binaries:   []string{"claude"},
+			RemoteType: "http",
+			EnvRef:     func(name string) string { return "${" + name + "}" },
 		},
 		{
 			// Codex keeps MCP servers in $CODEX_HOME/config.toml
@@ -163,6 +172,7 @@ func Clients(skill func() []byte) []Client {
 				{Path: "commands/mesh.md", Kind: Whole},
 			},
 			Binaries: []string{"cursor", "cursor-agent"},
+			EnvRef:   func(name string) string { return "${env:" + name + "}" },
 		},
 	}
 }
@@ -214,9 +224,6 @@ func Detected(all []Client, home string) []Client {
 	return out
 }
 
-// ErrRemoteNotBuilt is --remote before the goal's remote item lands.
-var ErrRemoteNotBuilt = errors.New("a remote entry is not built yet")
-
 // stdioEntry is a JSON stdio server, in the order both Claude Code's and
 // Cursor's documentation show it.
 type stdioEntry struct {
@@ -227,10 +234,7 @@ type stdioEntry struct {
 
 // Entry is the client's entry for `<exe> mcp` over stdio in its format:
 // a JSON object for JSON clients, a TOML table body for TOML ones.
-func (c Client) Entry(exe string, remote bool) ([]byte, error) {
-	if remote {
-		return nil, ErrRemoteNotBuilt
-	}
+func (c Client) Entry(exe string) ([]byte, error) {
 	switch c.Format {
 	case TOML:
 		return []byte("command = " + TOMLString(exe) + "\nargs = [" + TOMLString("mcp") + "]\n"), nil
