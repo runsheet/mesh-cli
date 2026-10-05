@@ -260,7 +260,14 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   of `skills/mesh/embed.go` colocated with the file) and written by
   `mesh mcp install` to `$CLAUDE_CONFIG_DIR/skills/mesh/SKILL.md`, else
   `~/.claude/skills/mesh/SKILL.md`, refusing to overwrite a file that
-  differs unless `--force` (ADR-023, Skill).
+  differs unless `--force` (ADR-023, Skill). `mesh mcp install
+  --client claude|codex|cursor|all [--dry-run]` works from one table,
+  `internal/mcpinstall/clients.go`'s `Clients()` — each row a client's
+  config dir, MCP file, format, entry keys or TOML table, instruction
+  files and binaries (`Detect`) — `Plan` upserting each file
+  (`Change`, never clobbering; an `*UnparseableError` printed `<path>:
+  cannot parse (<err>); left alone`, exit 1) and `Apply` writing it
+  (ADR-025, mesh mcp install is one table per client).
   **A draining node claims nothing** (`Loop.Drain`): see the drain
   below. node.yaml's `claim: {unmerged_per_repo: N}` (`ClaimConfig`,
   re-read each tick, `Loop.UnmergedPerRepo`; absent or 0 is no limit

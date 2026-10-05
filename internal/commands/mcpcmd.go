@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"projectmesh.io/mesh-cli/internal/mcpinstall"
 	"projectmesh.io/mesh-cli/internal/meshmcp"
 	"projectmesh.io/mesh-cli/internal/node"
 )
@@ -62,62 +62,108 @@ func mcpNodeID(context.Context) (string, error) {
 	return cfg.NodeID, nil
 }
 
-var mcpInstallForce bool
+var (
+	mcpInstallForce   bool
+	mcpInstallDryRun  bool
+	mcpInstallClients []string
+)
 
-// mcpInstallCmd is `mesh mcp install`: writes the embedded `/mesh` skill
-// (skills/mesh/SKILL.md, meshmcp.Skill) to Claude Code's skills
-// directory (ADR-023, Skill) — $CLAUDE_CONFIG_DIR/skills/mesh/SKILL.md
-// when set, else ~/.claude/skills/mesh/SKILL.md — refusing to overwrite
-// a file that differs unless --force.
+// mcpExecutable is the running mesh binary, the command every client's
+// entry runs; tests see the test binary.
+var mcpExecutable = os.Executable
+
+// mcpInstallCmd is `mesh mcp install`: for each client of the install
+// table (mcpinstall.Clients, ADR-025) — claude, codex, cursor — writes
+// its MCP entry for `<this binary> mcp` into its own config file and
+// format, and its instruction files rendered from the embedded `/mesh`
+// skill (meshmcp.Skill; ADR-023, Skill). --client picks the clients
+// (default: every one Detect finds), --dry-run prints each diff and
+// writes nothing, --force overwrites an instruction file that differs.
+// A file it cannot parse, or one that differs without --force, is
+// reported and left alone, the other clients still written, and the
+// command ends with status 1.
 var mcpInstallCmd = &cobra.Command{
 	Use:   "install",
-	Short: "Write the /mesh skill to Claude Code's skills directory",
-	Args:  cobra.NoArgs,
+	Short: "Add mesh mcp and the /mesh instructions to Claude Code, Codex and Cursor",
+	Long: "mesh mcp install writes each client's MCP server entry for `mesh mcp` and its\n" +
+		"instructions: Claude Code's ~/.claude.json and /mesh skill, Codex's\n" +
+		"$CODEX_HOME/config.toml, Cursor's ~/.cursor/mcp.json. Every other entry is left\n" +
+		"byte-for-byte; re-running changes nothing.",
+	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		path, err := skillInstallPath()
+		out := cmd.OutOrStdout()
+		home, err := os.UserHomeDir()
 		if err != nil {
 			return err
 		}
-		want := meshmcp.Skill()
-		if existing, err := os.ReadFile(path); err == nil {
-			if bytes.Equal(existing, want) {
-				fmt.Println(path, "is already up to date")
-			} else if !mcpInstallForce {
-				return fmt.Errorf("%s already exists and differs from the skill mesh-cli ships; pass --force to overwrite it", path)
-			} else {
-				if err := node.WriteFile(path, want); err != nil {
-					return err
-				}
-				fmt.Println("overwrote", path)
-			}
-		} else if errors.Is(err, os.ErrNotExist) {
-			if err := node.WriteFile(path, want); err != nil {
-				return err
-			}
-			fmt.Println("wrote", path)
-		} else {
+		exe, err := mcpExecutable()
+		if err != nil {
 			return err
 		}
-		fmt.Println("\nAdd mesh mcp to Claude Code with:\n\n  claude mcp add mesh -- mesh mcp")
+		if exe, err = filepath.Abs(exe); err != nil {
+			return err
+		}
+		all := mcpinstall.Clients(meshmcp.Skill)
+		var clients []mcpinstall.Client
+		if len(mcpInstallClients) > 0 {
+			if clients, err = mcpinstall.Select(all, mcpInstallClients); err != nil {
+				return err
+			}
+		} else if clients = mcpinstall.Detected(all, home); len(clients) == 0 {
+			return errors.New("no client found; pass --client")
+		}
+
+		changes, planErr := mcpinstall.Plan(home, exe, clients, mcpinstall.PlanOptions{Force: mcpInstallForce})
+		if !mcpInstallDryRun {
+			if err := mcpinstall.Apply(changes); err != nil {
+				return err
+			}
+		}
+		claudeWritten := false
+		for _, c := range changes {
+			if mcpInstallDryRun {
+				fmt.Fprint(out, mcpinstall.Diff(c.Path, c.Before, c.After))
+			}
+			fmt.Fprintf(out, "%s: %s %s\n", c.Client, c.Status(mcpInstallDryRun), c.Path)
+			claudeWritten = claudeWritten || (c.Client == "claude" && c.What == "mcp")
+		}
+		left := 0
+		for _, err := range unjoin(planErr) {
+			left++
+			var u *mcpinstall.UnparseableError
+			if errors.As(err, &u) {
+				fmt.Fprintf(out, "%s: cannot parse (%v); left alone\n", u.Path, u.Err)
+			} else {
+				fmt.Fprintf(out, "%v; left alone\n", err)
+			}
+		}
+		for _, c := range clients {
+			if c.Name == "claude" && !claudeWritten {
+				fmt.Fprintf(out, "\nAdd mesh mcp to Claude Code by hand with:\n\n  claude mcp add --scope user mesh -- %s mcp\n", exe)
+			}
+		}
+		if left > 0 {
+			cmd.SilenceUsage = true
+			return fmt.Errorf("%d file(s) left alone", left)
+		}
 		return nil
 	},
 }
 
-// skillInstallPath is $CLAUDE_CONFIG_DIR/skills/mesh/SKILL.md, else
-// ~/.claude/skills/mesh/SKILL.md.
-func skillInstallPath() (string, error) {
-	dir := os.Getenv("CLAUDE_CONFIG_DIR")
-	if dir == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", err
-		}
-		dir = filepath.Join(home, ".claude")
+// unjoin is the errors errors.Join joined, or err alone.
+func unjoin(err error) []error {
+	if err == nil {
+		return nil
 	}
-	return filepath.Join(dir, "skills", "mesh", "SKILL.md"), nil
+	if j, ok := err.(interface{ Unwrap() []error }); ok {
+		return j.Unwrap()
+	}
+	return []error{err}
 }
 
 func init() {
-	mcpInstallCmd.Flags().BoolVar(&mcpInstallForce, "force", false, "overwrite a skill file that differs from the one mesh-cli ships")
+	mcpInstallCmd.Flags().BoolVar(&mcpInstallForce, "force", false, "overwrite an instruction file that differs from the one mesh-cli ships")
+	mcpInstallCmd.Flags().BoolVar(&mcpInstallDryRun, "dry-run", false, "print every file and diff the install would write; write nothing")
+	mcpInstallCmd.Flags().StringSliceVar(&mcpInstallClients, "client", nil, "claude, codex, cursor or all (repeatable or a comma list; default every client found)")
 	mcpCmd.AddCommand(mcpInstallCmd)
 }
