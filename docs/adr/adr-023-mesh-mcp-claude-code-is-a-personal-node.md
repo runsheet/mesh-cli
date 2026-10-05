@@ -241,11 +241,11 @@ instructions; see ADR-025 (`adr-025-mesh-mcp-install-is-one-table-per-client.md`
 The skill is the one source every client's instructions render
 from (ADR-025's item 3 amendment): Claude's is `Skill()` whole,
 unchanged; Codex's prompt and AGENTS.md section and Cursor's user
-skill and command are `mcpinstall.Render(client, Skill())`, the
-client-specific lines — the add command, "from Claude Code", the
-`/mesh` form names — substituted rather than copied, so the five
-everyday forms and the `mesh_*` tools they name can never drift
-between clients.
+skill, command and project rule are `mcpinstall.Render(client,
+Skill())`, the client-specific lines — the add command, "from Claude
+Code", every `/mesh <form>` mention, heading or inline — substituted
+rather than copied, so the five everyday forms and the `mesh_*` tools
+they name can never drift between clients.
 
 README's "Work a goal from Claude Code, Codex or Cursor" section (the
 first `## ` after the title, from item 1, renamed by item 3) walks
