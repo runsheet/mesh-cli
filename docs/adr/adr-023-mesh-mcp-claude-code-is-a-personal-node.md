@@ -238,11 +238,20 @@ skill is one two-line routine.
 Amended 2026-10-05: `mesh mcp install` is now one table of clients —
 Claude Code, Codex and Cursor — writing each one's MCP entry and
 instructions; see ADR-025 (`adr-025-mesh-mcp-install-is-one-table-per-client.md`).
+The skill is the one source every client's instructions render
+from (ADR-025's item 3 amendment): Claude's is `Skill()` whole,
+unchanged; Codex's prompt and AGENTS.md section and Cursor's user
+skill and command are `mcpinstall.Render(client, Skill())`, the
+client-specific lines — the add command, "from Claude Code", the
+`/mesh` form names — substituted rather than copied, so the five
+everyday forms and the `mesh_*` tools they name can never drift
+between clients.
 
-README's "Work a goal from Claude Code" section (the first `## ` after
-the title, from item 1) walks both lines, the checkout location, the
-personal node, pairing and the `push refused` message with one example
-transcript line per `/mesh` form.
+README's "Work a goal from Claude Code, Codex or Cursor" section (the
+first `## ` after the title, from item 1, renamed by item 3) walks
+both lines, the checkout location, the personal node, pairing and the
+`push refused` message with one example transcript line per `/mesh`
+form.
 
 ## Consequences
 

@@ -7,28 +7,47 @@ gateway (`https://api.runsheet.dev/graphql`) as the machine credential
 Latchkey issued it — or, until the estate has moved over, as the person
 whose console token it holds. No gRPC, no relay, no shared secret.
 
-## Work a goal from Claude Code
+## Work a goal from Claude Code, Codex or Cursor
 
-`mesh mcp` is Mesh inside Claude Code: a stdio MCP server on your own
-login (the credential in `~/.mesh/token` — `mesh node login`'s Latchkey
-credential or an `rs_*` token). Install it, with the `/mesh` skill:
+`mesh mcp` is Mesh inside your agent of choice: a stdio MCP server on
+your own login (the credential in `~/.mesh/token` — `mesh node
+login`'s Latchkey credential or an `rs_*` token). Install it, with its
+instructions, into whichever client you use:
 
 ```bash
 mesh mcp install --client claude
+mesh mcp install --client codex
+mesh mcp install --client cursor
 ```
 
-`mesh mcp install` writes the `mesh` server entry (`<this binary> mcp`
-over stdio) into `~/.claude.json`'s `mcpServers` and `skills/mesh/SKILL.md`
-to `$CLAUDE_CONFIG_DIR/skills/mesh/SKILL.md`, or
-`~/.claude/skills/mesh/SKILL.md` when that is unset, so Claude Code
-answers `/mesh`. `--client codex` writes `[mcp_servers.mesh]` into
-`$CODEX_HOME/config.toml` and `--client cursor` the entry in
-`~/.cursor/mcp.json`; with no `--client` it installs into every client
-it finds. Every other entry is left byte-for-byte, a config it cannot
-parse is reported and left alone, re-running changes nothing, and
-`--dry-run` prints each diff and writes nothing. It refuses to
-overwrite a skill that differs from the one mesh-cli ships unless you
-pass `--force` (docs/adr/adr-025-mesh-mcp-install-is-one-table-per-client.md).
+With no `--client` it installs into every client it finds on the
+machine (config dir present, or its binary on `PATH`); `--client all`
+is every client regardless. Each writes two things from one source
+(`skills/mesh/SKILL.md`, embedded): the `mesh` server entry
+(`<this binary> mcp` over stdio) in the client's own config file and
+format, and the same instructions rendered for how that client reads
+them —
+
+- **claude**: `~/.claude.json`'s `mcpServers.mesh` (or
+  `$CLAUDE_CONFIG_DIR/.claude.json`), and the skill itself at
+  `$CLAUDE_CONFIG_DIR/skills/mesh/SKILL.md`, or
+  `~/.claude/skills/mesh/SKILL.md` when that is unset.
+- **codex**: `[mcp_servers.mesh]` in `$CODEX_HOME/config.toml` (or
+  `~/.codex/config.toml`), a custom prompt at
+  `$CODEX_HOME/prompts/mesh.md` (`/prompts:mesh <form> $ARGUMENTS`),
+  and a `mesh`-marked section spliced into `$CODEX_HOME/AGENTS.md` —
+  the rest of that file, yours, is untouched.
+- **cursor**: `~/.cursor/mcp.json`'s `mcpServers.mesh`, a user skill at
+  `~/.cursor/skills/mesh/SKILL.md` and a command at
+  `~/.cursor/commands/mesh.md`, both keeping the `/mesh` form Claude
+  Code uses.
+
+Every other entry, and every byte outside a marked section, is left
+byte-for-byte; a config it cannot parse is reported and left alone;
+re-running changes nothing. `--dry-run` prints every file's diff and
+writes nothing. It refuses to overwrite a whole instruction file that
+differs from the one mesh-cli ships unless you pass `--force`
+(docs/adr/adr-025-mesh-mcp-install-is-one-table-per-client.md).
 
 With no local binary to run, `mesh mcp install --remote` writes each
 client's remote-server entry for the hosted tools at the gateway's
@@ -40,11 +59,12 @@ entry naming the variable (`${MESH_TOKEN}` for Claude Code,
 `${env:MESH_TOKEN}` for Cursor, `bearer_token_env_var` for Codex) and
 never holding a token; export `MESH_TOKEN` where the client runs.
 
-With both in place Claude Code has `mesh_goals`, `mesh_join`,
-`mesh_switch`, `mesh_status`, `mesh_progress`, `mesh_ask`,
-`mesh_finish` and `mesh_release`
+With it in place, Claude Code, Codex and Cursor alike have
+`mesh_goals`, `mesh_join`, `mesh_switch`, `mesh_status`,
+`mesh_progress`, `mesh_ask`, `mesh_finish` and `mesh_release`
 (docs/adr/adr-023-mesh-mcp-claude-code-is-a-personal-node.md), and the
-`/mesh` skill is the five everyday forms:
+same five everyday forms — `/mesh <form>` in Claude Code and Cursor,
+`/prompts:mesh <form> $ARGUMENTS` in Codex:
 
 - **`/mesh goals`** — `mesh_goals`: the live goals of the orgs you
   reach and their open items.
