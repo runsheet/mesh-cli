@@ -226,7 +226,12 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   another node or an item not `evaluating` is refused with a
   `gateway.Error` (`IsRefusal`); the `gatewaytest` fake takes it the
   same way, recording it in `Calls` and `Claims` as `claimWorkItem`
-  does (goal `a-node-says-which-sessions-it-takes`). The loop's
+  does (goal `a-node-says-which-sessions-it-takes`). On a machine
+  credential every `RegisterNode` carries `RegisterNodeInput.CredentialID`
+  (`node.Registrar.CredentialID`, the token's machine id) as
+  `credentialId` only when `TakesNodeCredential` says the schema has it,
+  and a `not yours` refusal names the id sent (`node.NotYoursLine`;
+  ADR-015's amendment 2026-10-07, runsheet#2290). The loop's
   `evaluateHeld` makes it for an `evaluating` item another node (or
   none) holds before the evaluation starts, re-reading the item after
   it, a refusal ordinary and silent; only when the `Mutation` has it

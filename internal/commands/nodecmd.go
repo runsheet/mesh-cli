@@ -245,6 +245,7 @@ func registrar(gw *gateway.Client, cfg *node.Config) node.Registrar {
 	credID := nodeCredentialID(cred)
 	return node.Registrar{
 		CredentialID: credID,
+		Machine:      cred.IsMachine(),
 		CredentialLine: func(ctx context.Context) string {
 			return node.CredentialLine(cred.IsMachine(), credID, credID != "" && gw.TakesNodeCredential(ctx))
 		},

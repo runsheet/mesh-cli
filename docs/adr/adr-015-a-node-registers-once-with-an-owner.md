@@ -1,5 +1,5 @@
 ---
-summary: The node registers with an owner (a person by default, or `enterprise` for shared infra), and registerNode/heartbeatNode answer with the node's one id and its scopes — the orgs it serves — so the node stops deriving them by re-reading the person's orgs; a platform whose schema takes neither `ownerKind` nor `owner` keeps today's per-org registration, and one that takes it but answers nil keeps the owner contract, serving the orgs node.yaml names until an answer names them.
+summary: The node registers with an owner (a person by default, or `enterprise` for shared infra), and registerNode/heartbeatNode answer with the node's one id and its scopes — the orgs it serves — so the node stops deriving them by re-reading the person's orgs; a platform whose schema takes neither `ownerKind` nor `owner` keeps today's per-org registration, and one that takes it but answers nil keeps the owner contract, serving the orgs node.yaml names until an answer names them; on a Latchkey machine credential every registerNode sends its machine id as credentialId (when the gateway's schema takes it), and a `not yours` refusal names the id sent.
 status: accepted
 ---
 
@@ -768,3 +768,59 @@ and `TestTakesScopeSharesTrueAsksWithShares` assert, via
 selection sent omits or carries `shares` to match what the platform's
 `scopes` element type has, and that the decoded answer's `Shares`
 follows).
+
+## Amendment 2026-10-07: the node names its credential
+
+Goal `the-node-registers-with-its-own-credential-id`. The platform's
+`registersNode` (runsheet `gateway/scope_node.go`, the machine branch;
+runsheet#2290, #2294, #2248, its ADR 039's 2026-10-06 section) refuses a
+machine bearer's registration unless the input's `credentialId` is the
+bearer's own machine id, and once the owner row names a credential a
+heartbeat or a claim passes only from that machine (`machineIsNode`).
+The node never sent it, so a node on `mesh node login`'s credential was
+refused `registerNode: not yours`.
+
+**The field.** `RegisterNodeInput.CredentialID`, sent as
+`credentialId` (`gateway.NodeCredentialField`) only when set and when
+the introspected `RegisterNodeInput` takes it — `Client.TakesNodeCredential`,
+probed once and cached an hour as `TakesNodeKind` is. A gateway before
+runsheet#2290 has no such field: the node leaves it out and says so in
+the registration's credential line, `credential: machine <id>;
+credentialId left out: …`. The owner registration and every per-org
+registration carry it.
+
+**Where the id comes from.** `node.Registrar.CredentialID` is set by
+`mesh node start`'s registrar (`nodeCredentialID`) from `~/.mesh/token`:
+on a token of kind `machine`, its `machineId`, else the access token's
+`sub` after `machine:`; on an `rs_*` console token, nothing — a person
+bearer sending a credential the row does not name is refused by the
+aggregate. `Registrar.Machine` says the token is a machine's. Nothing
+else about registration changes: owner, ownerKind, slug, kind and orgs
+are as before. Registration logs one `CredentialLine`: `sent as
+credentialId`, left out, no id on a machine token, or the console token.
+
+**A refusal names what was sent.** A registration refused `not yours`
+on a machine token has `NotYoursLine` appended to its error, which
+node.log carries: `sent credentialId <id> (the machine id in
+~/.mesh/token); compare it with the node row's credential_id on the
+console (Nodes → <slug>); …`, or, with no id, `sent no credentialId:
+the token file has no machineId and the access token's sub is not
+machine:<id>`.
+
+**The fake.** `gatewaytest.Fake.TakesNodeCredential` lists
+`credentialId` on `RegisterNodeInput` and records it on the row; unset,
+a registration carrying it is refused as an unknown field.
+`NodeCredentialID` makes the fake's bearer that machine: a
+registerNode whose `credentialId` is absent or another's, and a
+heartbeat on a row naming another credential, are refused `not yours`.
+
+**What it needs.** The gateway at runsheet#2290 or later. The
+runbook — `mesh node login`, restart, confirm `serving <org>` and no
+`not yours` in node.log, clear the console's version pin — is in the
+README, `Registering on a machine credential`.
+
+Tests: `internal/gateway/nodecredential_test.go` (both shapes, the
+probe, the refusal), `internal/commands/nodestart_credentialid_test.go`
+(machineId, the `sub` fallback, an `rs_*` token),
+`internal/node/owned_notyours_test.go` (`NotYoursLine`, and Register
+against the fake refused on another credential and on none).
