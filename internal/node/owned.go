@@ -62,6 +62,16 @@ type Registrar struct {
 	// Retire retires one of the node's own legacy per-org rows
 	// (gateway.Client.RetireNode). Nil retires nothing.
 	Retire func(ctx context.Context, nodeID string) error
+	// CredentialID is the machine id of the node's own Latchkey
+	// credential, empty on a console token: sent on every registerNode
+	// (RegisterOwner and RegisterIn put it on RegisterNodeInput) so the
+	// owner row names this machine and heartbeats and claims pass the
+	// gateway's machineIsNode rule (runsheet#2290, adr-039).
+	CredentialID string
+	// CredentialLine says once per registration which credential the
+	// node registers on and whether credentialId went (CredentialLine's
+	// function of the same name). Nil says nothing.
+	CredentialLine func(ctx context.Context) string
 }
 
 // Registered is Register's result: the scopes to serve and, on the
@@ -161,6 +171,24 @@ func OwnerFieldLine(field string) string {
 		return "owner contract: no owner field (registerNode takes neither ownerKind nor owner); registering per org"
 	}
 	return "owner contract: field " + field
+}
+
+// CredentialLine names the credential a registration went on, as
+// OwnerFieldLine names the owner field: `credential: machine <id> sent
+// as credentialId`; on a gateway whose RegisterNodeInput has no
+// credentialId, that it was left out; on a machine credential whose id
+// could not be read, that none was sent; and on a console token
+// `credential: rs_* console token, no credentialId`.
+func CredentialLine(machine bool, id string, taken bool) string {
+	switch {
+	case !machine:
+		return "credential: rs_* console token, no credentialId"
+	case id == "":
+		return "credential: machine with no machine id in the token file or its access token; no credentialId"
+	case !taken:
+		return "credential: machine " + id + "; credentialId left out: the gateway's RegisterNodeInput has no credentialId (a gateway before runsheet#2290)"
+	}
+	return "credential: machine " + id + " sent as credentialId"
 }
 
 // enterpriseNotAdmin is the refusal of an `enterprise:` the token's
@@ -414,6 +442,9 @@ func Register(ctx context.Context, r Registrar, cfg *Config, restrict []string) 
 	var fieldNote []string
 	if r.OwnerField != nil {
 		fieldNote = []string{OwnerFieldLine(r.OwnerField(ctx))}
+	}
+	if r.CredentialLine != nil {
+		fieldNote = append(fieldNote, r.CredentialLine(ctx))
 	}
 	if !r.TakesOwner(ctx) {
 		reg, err := perOrg(ctx, r)
