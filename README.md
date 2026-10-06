@@ -111,6 +111,41 @@ session never begins on a token about to die. Revoke the machine in the
 Latchkey console (Machines) or `mesh node logout` to drop it here; either
 way your own sign-in is untouched.
 
+**Registering on a machine credential.** On a machine credential the
+node sends its machine id — the token file's `machineId`, else the
+access token's `sub` after `machine:` — as `credentialId` on every
+`registerNode`; an `rs_*` token sends none. The owner row then names the
+machine, and heartbeats and claims pass only from it (the gateway's
+`machineIsNode` rule). This needs the gateway at runsheet#2290 or later:
+an older gateway's `RegisterNodeInput` has no `credentialId`, so the
+node probes the schema once, leaves the field out and logs
+`credential: machine <id>; credentialId left out: …` — a machine
+registered that way is refused `not yours` by a gateway that does check.
+Registration logs which credential it used: `credential: machine <id>
+sent as credentialId`, or `credential: rs_* console token, no
+credentialId`. To move a node onto its machine credential:
+
+1. `mesh node login` on the node (it writes `~/.mesh/token` with
+   `kind: "machine"` and its `machineId`);
+2. restart it — `mesh node start`, or `systemctl --user restart` /
+   `launchctl kickstart -k` of its service;
+3. confirm in `~/.mesh/node.log` the registration line, `node <name>
+   (<slug>) owned by …, serving <org>`, the `sent as credentialId` line
+   and no `not yours`;
+4. clear the version pin (`desiredVersion`) on the console so the node
+   follows releases again.
+
+A `register (owner person): registerNode: not yours — sent credentialId
+<id> …` line means the gateway refused the machine on that row: the
+owner row names another credential, or the operator who ran
+`mesh node login` does not keep the row. Compare the id it names with
+the row's `credential_id` on the console (Nodes → the node's slug). A
+row naming another machine's credential needs `mesh node login` on that
+machine, or the row's credential cleared by its keeper (runsheet
+ADR 039, the clear); `sent no credentialId` means the token file has no
+`machineId` and its access token's `sub` is not `machine:<id>` — log in
+again.
+
 **An `rs_*` console token (the fallback).** Mint one under **Settings →
 Tokens** on the runsheet console and save it:
 
