@@ -18,7 +18,11 @@
     "harnesses": ["claude-code"],
     "capacity": 4,
     "version": "v0.2.200",
-    "ownerKind": "person"
+    "ownerKind": "person",
+    "credentialId": "86e228b4-5c1d-4e2a-9b3f-0a1b2c3d4e5f"
+  },
+  "inputNotes": {
+    "credentialId": "the Latchkey machine id of the node's own credential (the uuid after \"machine:\" in the bearer's sub): a machine bearer sends its machine id, and the platform's registersNode refuses one that names another; a person's rs_* bearer sends none. Sent only when the gateway's RegisterNodeInput takes it (runsheet#2290 and later)."
   },
   "answer": {
     "nodeId": "b99be3f5-2f54-54a7-9af5-49d9bfc96744",
