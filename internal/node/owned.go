@@ -68,10 +68,44 @@ type Registrar struct {
 	// owner row names this machine and heartbeats and claims pass the
 	// gateway's machineIsNode rule (runsheet#2290, adr-039).
 	CredentialID string
+	// Machine is whether the node's token is a Latchkey machine
+	// credential (token file kind "machine"): a `not yours` refusal on
+	// one is explained by NotYoursLine, even with no CredentialID.
+	Machine bool
 	// CredentialLine says once per registration which credential the
 	// node registers on and whether credentialId went (CredentialLine's
 	// function of the same name). Nil says nothing.
 	CredentialLine func(ctx context.Context) string
+}
+
+// NotYoursLine is what an operator needs beside a registration the
+// gateway refused `not yours` on a machine credential (runsheet#2290's
+// registersNode machine branch): the credentialId the node sent — the
+// machine id in ~/.mesh/token — and where to compare it with the owner
+// row's credential_id; or, when none was sent, why the token yielded
+// none. "" for a nil error, one that does not say `not yours`, or a
+// console token.
+func NotYoursLine(err error, credentialID string, machine bool, slug string) string {
+	if err == nil || !machine || !strings.Contains(err.Error(), "not yours") {
+		return ""
+	}
+	row := "the node row's credential_id on the console (Nodes → " + slug + ")"
+	if credentialID == "" {
+		return "sent no credentialId: the token file has no machineId and the access token's sub is not machine:<id>; " +
+			"run mesh node login on this machine, then compare its machine id with " + row
+	}
+	return "sent credentialId " + credentialID + " (the machine id in ~/.mesh/token); compare it with " + row +
+		"; a row naming another credential needs mesh node login on that machine or the row's credential cleared"
+}
+
+// explainNotYours appends NotYoursLine to a registration's error, so the
+// line reaches node.log with it; any other error is returned as it is.
+func explainNotYours(err error, r Registrar, cfg *Config) error {
+	line := NotYoursLine(err, r.CredentialID, r.Machine, cfg.Slug)
+	if line == "" {
+		return err
+	}
+	return fmt.Errorf("%w — %s", err, line)
 }
 
 // Registered is Register's result: the scopes to serve and, on the
@@ -449,7 +483,7 @@ func Register(ctx context.Context, r Registrar, cfg *Config, restrict []string) 
 	if !r.TakesOwner(ctx) {
 		reg, err := perOrg(ctx, r)
 		reg.Notes = append(fieldNote, reg.Notes...)
-		return reg, err
+		return reg, explainNotYours(err, r, cfg)
 	}
 	orgID, err := r.ConfiguredOrg(ctx)
 	if err != nil {
@@ -480,7 +514,7 @@ func Register(ctx context.Context, r Registrar, cfg *Config, restrict []string) 
 		if adopted {
 			partial = Registered{Owned: &Owned{NodeID: id, Owner: Owner{Kind: cfg.OwnerKind()}}, Notes: fieldNote, EnterpriseID: resolved, IDSource: source, adopted: true}
 		}
-		return partial, fmt.Errorf("register (owner %s): %w", cfg.OwnerKind(), err)
+		return partial, explainNotYours(fmt.Errorf("register (owner %s): %w", cfg.OwnerKind(), err), r, cfg)
 	}
 	if answer == nil {
 		owned := &Owned{NodeID: id, Owner: Owner{Kind: cfg.OwnerKind()}}
