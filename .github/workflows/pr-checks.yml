@@ -8,8 +8,24 @@ name: PR Checks (mesh-cli)
 on:
   pull_request:
     branches: [main]
+    # a change to documents alone — specs, docs, a README, the goal docs
+    # Mesh writes — needs no check
+    paths-ignore:
+      - 'specs/**'
+      - 'docs/**'
+      - '**/*.md'
   push:
     branches: [main]
+    paths-ignore:
+      - 'specs/**'
+      - 'docs/**'
+      - '**/*.md'
+
+# a second push to the same branch supersedes the run in flight (2026-10-07:
+# the home CI box queued dozens of runs for heads that no longer existed)
+concurrency:
+  group: pr-checks-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
