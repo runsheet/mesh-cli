@@ -236,8 +236,18 @@ var nodeRegisterCmd = &cobra.Command{
 // registration on the owner contract (the node's own id, the owner's id
 // and kind), the legacy registration per org, and the retirement of the
 // legacy per-org rows on the move to the owner contract.
+//
+// Its CredentialID is the machine id of the client's own credential
+// (nodeCredentialID), sent as credentialId on every registerNode; a
+// console token sends none.
 func registrar(gw *gateway.Client, cfg *node.Config) node.Registrar {
+	cred := clientCredential(gw)
+	credID := nodeCredentialID(cred)
 	return node.Registrar{
+		CredentialID: credID,
+		CredentialLine: func(ctx context.Context) string {
+			return node.CredentialLine(cred.IsMachine(), credID, credID != "" && gw.TakesNodeCredential(ctx))
+		},
 		TakesOwner: gw.TakesOwner,
 		OwnerField: gw.OwnerField,
 		ResolveEnterprise: func(ctx context.Context, slugOrID string) (string, error) {
@@ -270,18 +280,20 @@ func registrar(gw *gateway.Client, cfg *node.Config) node.Registrar {
 		},
 		RegisterOwner: func(ctx context.Context, nodeID, orgID, ownerID string) (*gateway.NodeAnswer, error) {
 			return gw.RegisterNode(ctx, gateway.RegisterNodeInput{NodeID: nodeID, OrgID: orgID, OwnerID: ownerID, Name: cfg.Name, Slug: cfg.Slug,
-				Harnesses: []string{"claude-code"}, Capacity: cfg.Capacity.Max, Version: version.Resolved(), Owner: cfg.OwnerKind()})
+				Harnesses: []string{"claude-code"}, Capacity: cfg.Capacity.Max, Version: version.Resolved(), Owner: cfg.OwnerKind(), CredentialID: credID})
 		},
 		RegisterIn: func(ctx context.Context, scopes node.Scopes) error { return registerIn(ctx, gw, cfg, scopes) },
 	}
 }
 
 // registerIn registers the node in every scope (a Node per org, id from
-// (org, slug); registering again is a heartbeat).
+// (org, slug); registering again is a heartbeat), each naming the
+// client's machine credential as credentialId when it is one.
 func registerIn(ctx context.Context, gw *gateway.Client, cfg *node.Config, scopes node.Scopes) error {
+	credID := nodeCredentialID(clientCredential(gw))
 	for _, sc := range scopes {
 		if _, err := gw.RegisterNode(ctx, gateway.RegisterNodeInput{NodeID: sc.NodeID, OrgID: sc.ID, OwnerID: cfg.OwnerID, Name: cfg.Name, Slug: cfg.Slug,
-			Harnesses: []string{"claude-code"}, Capacity: cfg.Capacity.Max, Version: version.Resolved()}); err != nil {
+			Harnesses: []string{"claude-code"}, Capacity: cfg.Capacity.Max, Version: version.Resolved(), CredentialID: credID}); err != nil {
 			return fmt.Errorf("register in %s: %w", sc.Name(), err)
 		}
 	}
