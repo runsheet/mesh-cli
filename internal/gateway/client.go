@@ -144,6 +144,9 @@ type Client struct {
 	// nodeKindSchema is whether the gateway's RegisterNodeInput was last
 	// found to take `kind` (see TakesNodeKind).
 	nodeKindSchema holdingProbe
+	// nodeCredentialSchema is whether the gateway's RegisterNodeInput
+	// was last found to take `credentialId` (see TakesNodeCredential).
+	nodeCredentialSchema holdingProbe
 	// toolErrorSchema is whether the gateway's usage report's `tools`
 	// entry was last found to take `error` (see takesToolError).
 	toolErrorSchema toolErrorProbe
@@ -1778,11 +1781,24 @@ type RegisterNodeInput struct {
 	// NodeKindField, so an older platform's registerNode still accepts
 	// the call unchanged.
 	Kind string
+	// CredentialID is the Latchkey machine id of the node's own
+	// credential — the uuid after "machine:" in a machine bearer's sub —
+	// which the platform's registersNode rule requires a machine bearer
+	// to name (runsheet#2290; adr-039, a machine registers only on its
+	// own credential). Sent as `credentialId` (NodeCredentialField) only
+	// when set and the platform's RegisterNodeInput takes it
+	// (TakesNodeCredential): a person's rs_* bearer never sends one, and
+	// an older gateway's registerNode still accepts the call unchanged.
+	CredentialID string
 }
 
 // NodeKindField is the name RegisterNodeInput gives the node's own
 // kind.
 const NodeKindField = "kind"
+
+// NodeCredentialField is the name RegisterNodeInput gives the node's
+// own machine credential id.
+const NodeCredentialField = "credentialId"
 
 // NodeAnswer is the platform's answer to a registration or a heartbeat:
 // the node's single id, its owner and the scopes (orgs) it now serves
@@ -1921,6 +1937,9 @@ func (c *Client) RegisterNode(ctx context.Context, in RegisterNodeInput) (*NodeA
 	if in.Kind != "" && c.TakesNodeKind(ctx) {
 		input[NodeKindField] = in.Kind
 	}
+	if in.CredentialID != "" && c.TakesNodeCredential(ctx) {
+		input[NodeCredentialField] = in.CredentialID
+	}
 	return c.mutateForAnswer(ctx, "registerNode", in.NodeID, input)
 }
 
@@ -1931,6 +1950,14 @@ func (c *Client) RegisterNode(ctx context.Context, in RegisterNodeInput) (*NodeA
 // not know.
 func (c *Client) TakesNodeKind(ctx context.Context) bool {
 	return c.takesInputField(ctx, &c.nodeKindSchema, "RegisterNodeInput", NodeKindField)
+}
+
+// TakesNodeCredential says whether the gateway's RegisterNodeInput has
+// a `credentialId` field (NodeCredentialField) — asked by
+// introspection and kept for ScalingProbeEvery, as TakesNodeKind: a
+// gateway before runsheet#2290 would refuse the whole call on it.
+func (c *Client) TakesNodeCredential(ctx context.Context) bool {
+	return c.takesInputField(ctx, &c.nodeCredentialSchema, "RegisterNodeInput", NodeCredentialField)
 }
 
 // ownerProbe is the cached answer to which owner field

@@ -343,6 +343,22 @@ type Fake struct {
 	// (the default) is a platform before that field: a registerNode
 	// carrying `kind` is refused with "Unknown field".
 	TakesNodeKind bool
+	// TakesNodeCredential says whether the fake's RegisterNodeInput has
+	// `credentialId` (gateway.NodeCredentialField), the Latchkey machine
+	// id of the node's own credential. Unset (the default) is a
+	// platform before runsheet#2290: introspection does not list it and
+	// a registerNode carrying it is refused with "Unknown field". When
+	// taken, the node row records it as sent.
+	TakesNodeCredential bool
+	// NodeCredentialID, when set, makes the fake's bearer (Token) a
+	// machine credential whose machine id it is, modelling the machine
+	// branch of runsheet gateway/scope_node.go's registersNode: a
+	// registerNode on that bearer whose input's `credentialId` is
+	// absent or differs from it — and a heartbeatNode for a row whose
+	// recorded credentialId differs from it — is refused
+	// `<mutation>: not yours`, recorded in Calls as the platform saw it.
+	// Item bearers are not machines and are never refused for it.
+	NodeCredentialID string
 	// Enterprises by id: the enterprises the platform knows, each with
 	// its admins' user ids. myEnterprises serves those the caller
 	// (UserID) admins, and a registerNode with owner kind "enterprise"
@@ -852,6 +868,11 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 			writeErrors(w, 200, fmt.Sprintf("node %s registers at %s, the id its form names, not %s", slug, f.RegistersAt, id))
 			return
 		}
+		if msg := f.notYours(m[2], in, bearer); msg != "" {
+			f.Calls = append(f.Calls, Call{Name: m[2], Input: in, At: time.Now(), Bearer: bearer, Query: q})
+			writeErrors(w, 200, msg)
+			return
+		}
 		if err := f.apply(m[2], in); err != nil {
 			writeErrors(w, 200, err.Error())
 			return
@@ -1199,6 +1220,31 @@ func (f *Fake) heartbeatInputType() map[string]any {
 	return map[string]any{"inputFields": fields}
 }
 
+// notYours is the machine branch of the platform's registersNode and
+// heartbeat rules (runsheet gateway/scope_node.go) when NodeCredentialID
+// is set: the fake's Token is that machine's bearer, a registerNode on
+// it must name it as credentialId, and a heartbeatNode is refused for a
+// row whose recorded credentialId is another's. "" lets the call run.
+func (f *Fake) notYours(name string, in map[string]any, bearer string) string {
+	if f.NodeCredentialID == "" || bearer != f.Token {
+		return ""
+	}
+	switch name {
+	case "registerNode":
+		if sent, _ := in[gateway.NodeCredentialField].(string); sent != f.NodeCredentialID {
+			return "registerNode: not yours"
+		}
+	case "heartbeatNode":
+		id, _ := in["aggregateId"].(string)
+		if row := f.Nodes[id]; row != nil {
+			if held, _ := row[gateway.NodeCredentialField].(string); held != "" && held != f.NodeCredentialID {
+				return "heartbeatNode: not yours"
+			}
+		}
+	}
+	return ""
+}
+
 // registerNodeInputType is RegisterNodeInput as introspection answers
 // it: every field a registration may carry, the owner kind among them
 // as `ownerKind` — `owner` when OwnerFieldLegacy — unless UnknownFields
@@ -1210,6 +1256,9 @@ func (f *Fake) registerNodeInputType() map[string]any {
 	names := []string{"aggregateId", "namespace", "orgId", "ownerId", "name", "slug", "harnesses", "capacity", "version", f.ownerField()}
 	if f.TakesNodeKind {
 		names = append(names, gateway.NodeKindField)
+	}
+	if f.TakesNodeCredential {
+		names = append(names, gateway.NodeCredentialField)
 	}
 	var fields []any
 	for _, name := range names {
@@ -1687,6 +1736,9 @@ func (f *Fake) apply(name string, in map[string]any) error {
 		}
 		if _, ok := in[gateway.NodeKindField]; ok && (!f.TakesNodeKind || f.UnknownFields[gateway.NodeKindField]) {
 			return fmt.Errorf(`Variable "$in" got invalid value; Unknown field %q is not defined by type "RegisterNodeInput".`, gateway.NodeKindField)
+		}
+		if _, ok := in[gateway.NodeCredentialField]; ok && (!f.TakesNodeCredential || f.UnknownFields[gateway.NodeCredentialField]) {
+			return fmt.Errorf(`Variable "$in" got invalid value; Unknown field %q is not defined by type "RegisterNodeInput".`, gateway.NodeCredentialField)
 		}
 		kind, _ := in[f.ownerField()].(string)
 		if kind == "enterprise" {
