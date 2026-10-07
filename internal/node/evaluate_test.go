@@ -165,6 +165,9 @@ type fakeCodexH struct {
 	// sandbox, when set, is Result.SandboxBroken: every command the run
 	// made failed on bubblewrap.
 	sandbox string
+	// workCalls are the mesh-work tool inputs a run reports
+	// (Result.WorkCalls, ADR-023).
+	workCalls map[string]map[string]any
 }
 
 func (h *fakeCodexH) Name() string { return "codex" }
@@ -183,7 +186,7 @@ func (h *fakeCodexH) Run(ctx context.Context, job harness.Job, on func(harness.P
 		}
 		calls[server] = s.Calls
 	}
-	return harness.Result{Success: h.err == nil, Text: h.text, CostUSD: h.cost, RateLimit: h.rl, Usage: h.usage, Tools: tools, ToolCalls: calls, SandboxBroken: h.sandbox}, h.err
+	return harness.Result{Success: h.err == nil, Text: h.text, CostUSD: h.cost, RateLimit: h.rl, Usage: h.usage, Tools: tools, ToolCalls: calls, SandboxBroken: h.sandbox, WorkCalls: h.workCalls}, h.err
 }
 
 func (h *fakeCodexH) runs() int {

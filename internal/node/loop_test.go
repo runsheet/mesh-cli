@@ -224,6 +224,9 @@ type fakeHarness struct {
 	turns                             int
 	inputPerTurnMean, inputPerTurnMax int64
 	largestToolResults                []harness.ToolResultSize
+	// workCalls are the mesh-work tool inputs a run reports
+	// (Result.WorkCalls, ADR-023).
+	workCalls map[string]map[string]any
 }
 
 func (h *fakeHarness) Name() string { return "claude-code" }
@@ -256,7 +259,7 @@ func (h *fakeHarness) Run(ctx context.Context, job harness.Job, on func(harness.
 			ids[server] = append(ids[server], fmt.Sprintf("toolu_%s_%d", server, i+1))
 		}
 	}
-	res := harness.Result{Success: true, Text: text, CostUSD: 1.25, SessionID: "s-1", ToolCalls: h.toolCalls, ToolCallIDs: ids, Tools: h.tools}
+	res := harness.Result{Success: true, Text: text, CostUSD: 1.25, SessionID: "s-1", ToolCalls: h.toolCalls, ToolCallIDs: ids, Tools: h.tools, WorkCalls: h.workCalls}
 	if h.turns > 0 {
 		res.Turns, res.InputPerTurnMean, res.InputPerTurnMax, res.LargestToolResults = h.turns, h.inputPerTurnMean, h.inputPerTurnMax, h.largestToolResults
 	}

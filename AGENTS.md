@@ -186,16 +186,32 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   parses the text as before, logging `item <label>: no mesh_finish call;
   parsed the final message` once per session; a finish the platform
   refuses after a call is `finished by tool call on the platform`, not a
-  failure (ADR-023, finish by tool call; the evaluator's `mesh_verdict`
-  and the planner's `mesh_plan` are its item 5). Both finish calls carry
+  failure (ADR-023, finish by tool call). The evaluator ends the same
+  way by `mesh_verdict(item_id, passed, notes, failed_clauses: [{clause,
+  satisfy}], readings: [{clause, reading}])` (EvaluatePrompt's
+  `# Finish by tool call`): `verdictOf`, on the first evaluation and
+  the second opinion of either family, takes the call as the verdict
+  with an empty final message (`harness.VerdictCall`, its readings
+  appended to the notes as `READING:` lines so `logReadings` and
+  `NoteSameClause` run as on the text), parses the text with no call,
+  logging `item <label>: no mesh_verdict call; parsed the final message`
+  once per session, and with neither is no verdict; an
+  `EvaluateWorkItem` refused after a call is `evaluated by tool call on
+  the platform`. The planner ends by `mesh_plan(goal_id, items,
+  questions)` (PlanPrompt's `# Finish by tool call`): `readPlan`
+  renders the call as the fenced block (`harness.PlanCall`) and reads
+  it through `ParsePlan` and every plan check, else parses the text,
+  logging `plan <goal>: no mesh_plan call; parsed the final message`.
+  The `VERDICT:`/`FAILED:`/`READING:` lines and the fenced JSON stay
+  load-bearing as the fallbacks. Both `mesh_finish` calls carry
   a `description` — the PR body `FinishDescription` renders
   (`internal/node/finishdesc.go`): a `## Who` section naming who built
   the item (its actor, model and adapter) and who it was paired with,
   the evaluator left to `EvaluateWorkItem`'s own actor rather than named
   here — sent only when the introspected `FinishWorkItemInput` takes
   `description` (every-actor-has-a-name item 3, adr-015's amendment).
-  Change wording
-  freely; never the contract. (A later goal moves the guidance onto the
+  Change wording freely; never the contract. (A later goal moves the
+  guidance onto the
   platform as agent definitions.)
 - `internal/latchkey/` + `internal/auth/token.go`: the machine
   credential — Latchkey's device flow, the rotating refresh grant, and
