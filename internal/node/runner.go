@@ -541,6 +541,28 @@ func (b *buildRun) reportToolUse(ctx context.Context, result harness.Result) {
 	}
 }
 
+// reportHandoff sends the session's last mesh_progress note again when it
+// opens docsWriterNote, after the node's own notes (the final text, the
+// tool use, the attestation) and before the finish, so the item's last
+// note is the hand-off the docs writer reads and not the node's.
+func (b *buildRun) reportHandoff(ctx context.Context, result harness.Result) {
+	if note := handoffNote(result); note != "" {
+		b.report(ctx, note)
+	}
+}
+
+// handoffNote is the session's last mesh_progress note when it opens
+// docsWriterNote, else "".
+func handoffNote(result harness.Result) string {
+	call := result.WorkCalls["mesh_progress"]
+	note, _ := call["note"].(string)
+	note = strings.TrimSpace(note)
+	if !strings.HasPrefix(strings.ToLower(note), docsWriterNote) {
+		return ""
+	}
+	return note
+}
+
 // run runs the session through start — Harness.Run or Attach — with
 // the item's heartbeat every ProgressEvery and its token renewed.
 func (b *buildRun) run(ctx context.Context, start func(onProgress func(harness.Progress)) (harness.Result, error)) (harness.Result, error) {
@@ -713,6 +735,7 @@ func (r *Runner) afterBuild(ctx context.Context, b *buildRun, result harness.Res
 			rep.Validation = v.usage()
 		}
 	}
+	b.reportHandoff(ctx, result)
 	if err := b.acct.Carried(r.validationUsage(r.GW.FinishWorkItem(ctx, item.ID, b.spec.Branch, sha, b.cost.delta(), b.acct.Report(result), b.description(ctx)))); err != nil {
 		if fin.handedIn(err) {
 			return r.finishedByTool(ctx, b)

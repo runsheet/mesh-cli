@@ -137,3 +137,43 @@ func TestBuildFinishedByToolCallOnThePlatform(t *testing.T) {
 		t.Fatalf("logs lack the tool-call finish:\n%s", logs)
 	}
 }
+
+// A session's last mesh_progress note opening "for the docs writer:" is
+// sent again after the node's own notes (its final text, the tool use)
+// and before the finish, so it is the item's last note the docs writer
+// folds in (ADR-025), never buried under the node's.
+func TestBuildHandoffNoteIsTheLastNoteBeforeTheFinish(t *testing.T) {
+	handoff := "for the docs writer: push, then attest, then finish"
+	f := seed(t)
+	r, _, item, _ := runnerOnFake(t, f, &resultHarness{result: harness.Result{Success: true, Text: "Built it.", WorkCalls: map[string]map[string]any{
+		"mesh_progress": {"item_id": item1, "note": handoff},
+		"mesh_finish":   {"item_id": item1, "branch": "mesh/g-1", "head_sha": "abc123def456"},
+	}}}, nil)
+	r.Log = log.New(&syncBuf{}, "", 0)
+	if err := r.RunItem(context.Background(), item); err != nil {
+		t.Fatalf("RunItem: %v", err)
+	}
+	last := ""
+	for _, c := range f.Calls {
+		switch c.Name {
+		case "reportWorkItemProgress":
+			last, _ = c.Input["note"].(string)
+		case "finishWorkItem":
+			if last != handoff {
+				t.Fatalf("last note before finishWorkItem = %q, want %q", last, handoff)
+			}
+			return
+		}
+	}
+	t.Fatal("no finishWorkItem call")
+}
+
+// A note not opening the prefix is not sent again.
+func TestHandoffNoteNeedsThePrefix(t *testing.T) {
+	if got := handoffNote(harness.Result{WorkCalls: map[string]map[string]any{"mesh_progress": {"note": "tests written"}}}); got != "" {
+		t.Fatalf("handoffNote = %q, want none", got)
+	}
+	if got := handoffNote(harness.Result{}); got != "" {
+		t.Fatalf("handoffNote of no call = %q", got)
+	}
+}
