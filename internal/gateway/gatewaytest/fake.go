@@ -194,7 +194,8 @@ type Fake struct {
 	// answers transiently before it answers as it otherwise would — for a
 	// test of the retry-then-succeed path (retryOnTransient,
 	// AttestationRetryFor). TransientAs says how, per mutation: "503"
-	// (the default, a bare 503), "429" (a bare 429) or "close" (the
+	// (the default, a bare 503), "graphql503" (a GraphQL error body with
+	// HTTP 503), "429" (a bare 429) or "close" (the
 	// connection closed with no answer, a transport error). A transient
 	// answer is not recorded in Calls.
 	TransientFirst map[string]int
@@ -2272,6 +2273,8 @@ func (f *Fake) answeredTransiently(w http.ResponseWriter, field string) bool {
 			}
 		}
 		panic(http.ErrAbortHandler)
+	case "graphql503":
+		writeErrors(w, http.StatusServiceUnavailable, "upstream unavailable")
 	case "429":
 		w.WriteHeader(http.StatusTooManyRequests)
 		_, _ = w.Write([]byte("rate limited"))

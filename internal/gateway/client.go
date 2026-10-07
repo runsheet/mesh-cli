@@ -4464,15 +4464,16 @@ var AttestationRetryFor = 2 * time.Minute
 // AttestationWaits is the waits retryOnTransient plans between attempts
 // against an answer that is transient every time and names no
 // Retry-After, under budget and the AttestationBackoff table — the
-// table's entries in order, its last repeated, the last wait cut to what
-// is left of the budget — ignoring the time the attempts themselves
+// table's entries in order, its last repeated, up to the first wait that
+// would reach the end of the budget, after which no attempt is made —
+// ignoring the time the attempts themselves
 // take. Their sum never exceeds budget.
 func AttestationWaits(budget time.Duration) []time.Duration {
 	var waits []time.Duration
 	var spent time.Duration
-	for retry := 0; spent < budget; retry++ {
-		d := min(backoffAt(retry), budget-spent)
-		if d <= 0 {
+	for retry := 0; ; retry++ {
+		d := backoffAt(retry)
+		if d <= 0 || spent+d >= budget {
 			break
 		}
 		waits = append(waits, d)
@@ -4503,11 +4504,14 @@ func retryOnTransient(ctx context.Context, fn func() error) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		left := time.Until(deadline)
-		if left <= 0 {
+		// Another attempt is made only when it can start inside the
+		// budget: a wait that would reach the deadline spends it, and the
+		// last answer is returned now rather than after one more request.
+		wait := retryDelay(err, retries)
+		if wait >= time.Until(deadline) {
 			return fmt.Errorf("after %d retries over %s: %w", retries, time.Since(start).Round(time.Millisecond), err)
 		}
-		t := time.NewTimer(min(retryDelay(err, retries), left))
+		t := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
 			t.Stop()
@@ -4537,15 +4541,15 @@ func largestBackoff() time.Duration {
 
 // isTransient reports whether err is worth retrying: a transport failure
 // that never reached the gateway, a 5xx or 429 httpError, or a GraphQL
-// *Error the gateway (or a proxy in front of it) wrapped with a 429
-// status. Any other GraphQL *Error — a refusal, an unsupported
+// *Error the gateway (or a proxy in front of it) wrapped with a 5xx or
+// 429 status. Any other GraphQL *Error — a refusal, an unsupported
 // operation, a validation error the schema itself raised, all answered
 // with an ordinary 200 — is the gateway's considered answer, not a blip,
 // and is never retried.
 func isTransient(err error) bool {
 	var ge *Error
 	if errors.As(err, &ge) {
-		return ge.Status == http.StatusTooManyRequests
+		return !ge.Unsupported && (ge.Status >= 500 || ge.Status == http.StatusTooManyRequests)
 	}
 	var he *httpError
 	if errors.As(err, &he) {
