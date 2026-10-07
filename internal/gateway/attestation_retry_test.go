@@ -152,7 +152,7 @@ func TestAttestationRetryWaitsStayInsideTheBudget(t *testing.T) {
 	if len(waits) <= len(gateway.AttestationBackoff) {
 		t.Fatalf("planned waits %v, want the table's last entry repeated", waits)
 	}
-	want := []time.Duration{2 * time.Second, 5 * time.Second, 10 * time.Second, 20 * time.Second, 30 * time.Second, 30 * time.Second, 23 * time.Second}
+	want := []time.Duration{2 * time.Second, 5 * time.Second, 10 * time.Second, 20 * time.Second, 30 * time.Second, 30 * time.Second}
 	if len(waits) != len(want) {
 		t.Fatalf("planned waits = %v, want %v", waits, want)
 	}
@@ -160,5 +160,44 @@ func TestAttestationRetryWaitsStayInsideTheBudget(t *testing.T) {
 		if waits[i] != want[i] {
 			t.Fatalf("planned waits = %v, want %v", waits, want)
 		}
+	}
+}
+
+// A GraphQL error body the gateway answered with HTTP 503 is transient,
+// not a refusal: retried, then success.
+func TestAttestationRetryGraphQL503ThenSucceeds(t *testing.T) {
+	shortenAttestationRetry(t, 5*time.Second, time.Millisecond)
+	f, gw := attestationFake(t)
+	f.TransientFirst = map[string]int{attestationField: 2}
+	f.TransientAs = map[string]string{attestationField: "graphql503"}
+
+	if _, err := gw.RecordValidationAttestation(context.Background(), itemID, sampleAttestation()); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(f.CallsNamed(attestationField)); got != 1 {
+		t.Fatalf("recorded calls = %d, want 1", got)
+	}
+}
+
+// A wait that would reach the end of the budget spends it: the last
+// answer is returned then, and no request starts past the budget.
+func TestAttestationRetryStartsNoAttemptPastTheBudget(t *testing.T) {
+	shortenAttestationRetry(t, 100*time.Millisecond, 30*time.Millisecond, time.Second)
+	f, gw := attestationFake(t)
+	f.RateLimit429 = map[string]bool{attestationField: true}
+
+	start := time.Now()
+	_, err := gw.RecordValidationAttestation(context.Background(), itemID, sampleAttestation())
+	took := time.Since(start)
+	if err == nil || !strings.Contains(err.Error(), "after 1 retries") {
+		t.Fatalf("err = %v, want the last 429 after 1 retry", err)
+	}
+	// One probe, the first attempt, one retry after 30ms; the next wait
+	// (1s) would pass the 100ms budget, so it returns without it.
+	if got := f.Requests(); got != 3 {
+		t.Fatalf("requests = %d, want 3 (one probe and two attempts)", got)
+	}
+	if took > 500*time.Millisecond {
+		t.Fatalf("returned after %v, want before the budget's end plus a request", took)
 	}
 }
