@@ -36,10 +36,23 @@ import (
 type Config struct {
 	Gateway string `yaml:"gateway,omitempty"`
 	// Orgs restricts the node to these logins; empty is every org of the owner.
-	Orgs      []string `yaml:"orgs,omitempty"`
-	OrgLogin  string   `yaml:"org,omitempty"`
-	OrgID     string   `yaml:"org_id,omitempty"`
-	AccountID string   `yaml:"account_id,omitempty"`
+	Orgs []string `yaml:"orgs,omitempty"`
+	// OrgLogin is `org:`. With owner: org it is the org that owns this
+	// node, by slug or id, required — LoadConfig refuses one without
+	// the other — and resolved to an id once at registration, cached
+	// as OrgID (goal node-yaml-says-owner-org). Without it, it is only
+	// an older single-org registration's login, written beside org_id
+	// and account_id and read as Orgs of one; `org:` with neither
+	// owner: org nor account_id is refused.
+	OrgLogin string `yaml:"org,omitempty"`
+	// OrgID is `org_id:`. With owner: org it is OrgLogin resolved to an
+	// id from the machine token's orgs read at the first owner
+	// registration — never signIn — cached so a later start registers
+	// without the read, as EnterpriseID is, and sent as the
+	// registration's ownerId. Without it, an older single-org
+	// registration's org id.
+	OrgID     string `yaml:"org_id,omitempty"`
+	AccountID string `yaml:"account_id,omitempty"`
 	// NodeID is the node's own single id, from the platform's NodeAnswer
 	// (goal the-node-serves-its-owners-orgs, item 12). On the legacy
 	// per-org path — a platform that answers with neither owner nor
@@ -68,9 +81,10 @@ type Config struct {
 	Pair []Pairer `yaml:"pair,omitempty"`
 	// Owner is the node's ownership model: "" or "person" (the
 	// default, bring-your-own infra — the node serves every org its
-	// token's person belongs to) or "enterprise" (shared infra — the
-	// node serves every org the enterprise has). LoadConfig rejects
-	// any other value.
+	// token's person belongs to), "enterprise" (shared infra — the
+	// node serves every org the enterprise has) or "org" (a company's
+	// own box — the node serves that one org and no other). LoadConfig
+	// rejects any other value.
 	Owner string `yaml:"owner,omitempty"`
 	// Enterprise is the enterprise that owns this node, by slug or id,
 	// required when Owner is "enterprise" — LoadConfig refuses one
@@ -828,12 +842,14 @@ func (s Scopes) Names() []string {
 	return out
 }
 
-// OwnerKind is "person" or "enterprise": Owner empty or "person" is a
-// person's node (bring-your-own infra), "enterprise" is shared infra.
-// LoadConfig has already rejected any other value.
+// OwnerKind is "person", "enterprise" or "org": Owner empty or
+// "person" is a person's node (bring-your-own infra), "enterprise" is
+// shared infra, "org" is one org's own box. LoadConfig has already
+// rejected any other value.
 func (c *Config) OwnerKind() string {
-	if c.Owner == "enterprise" {
-		return "enterprise"
+	switch c.Owner {
+	case "enterprise", "org":
+		return c.Owner
 	}
 	return "person"
 }
@@ -962,8 +978,8 @@ func missingOrgs(want, found map[string]bool) []string {
 	return missing
 }
 
-// Owner is the node's owner, read off a NodeAnswer: a person or an
-// enterprise, its id and its display name.
+// Owner is the node's owner, read off a NodeAnswer: a person, an
+// enterprise or an org, its id and its display name.
 type Owner struct {
 	Kind string
 	ID   string
@@ -985,13 +1001,14 @@ func (o Owner) String() string {
 	return "owned by " + name
 }
 
-// Who is the owner's name alone — "Chris", "anythink (enterprise)", an
-// enterprise named with its kind — falling back to "<kind> <id>" when
-// Name is empty: what the log lines name.
+// Who is the owner's name alone — "Chris", "anythink (enterprise)",
+// "Grapevine (org)", an enterprise or an org named with its kind —
+// falling back to "<kind> <id>" when Name is empty: what the log lines
+// name.
 func (o Owner) Who() string {
 	who := strings.TrimPrefix(o.String(), "owned by ")
-	if o.Kind == "enterprise" && o.Name != "" {
-		who += " (enterprise)"
+	if (o.Kind == "enterprise" || o.Kind == "org") && o.Name != "" {
+		who += " (" + o.Kind + ")"
 	}
 	return who
 }
@@ -1207,7 +1224,7 @@ func LoadConfig() (*Config, error) {
 		}
 		return nil, fmt.Errorf("%s is incomplete: re-run `mesh node register`", path)
 	}
-	if len(c.Orgs) == 0 && c.OrgLogin != "" {
+	if len(c.Orgs) == 0 && c.OrgLogin != "" && c.Owner != "org" {
 		c.Orgs = []string{c.OrgLogin} // an older, single-org registration
 	}
 	for p, b := range c.ProjectBudgets {
@@ -1233,8 +1250,10 @@ func LoadConfig() (*Config, error) {
 	if err := c.Host.Validate(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
-	if c.Owner != "" && c.Owner != "person" && c.Owner != "enterprise" {
-		return nil, fmt.Errorf(`%s: owner: %q is neither "person" nor "enterprise"`, path, c.Owner)
+	switch c.Owner {
+	case "", "person", "enterprise", "org":
+	default:
+		return nil, fmt.Errorf(`%s: owner: %q is not "person", "enterprise" or "org"`, path, c.Owner)
 	}
 	if err := c.ValidateOwner(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
@@ -1242,15 +1261,23 @@ func LoadConfig() (*Config, error) {
 	return &c, nil
 }
 
-// ValidateOwner checks Owner and Enterprise agree: an enterprise owner
-// must name the enterprise it belongs to (`enterprise:`), and
-// `enterprise:` is only ever set for one.
+// ValidateOwner checks Owner, Enterprise and Org agree: an enterprise
+// owner must name the enterprise it belongs to (`enterprise:`), an org
+// owner the org (`org:`), and each is only ever set for its own kind.
 func (c *Config) ValidateOwner() error {
 	if c.Owner == "enterprise" && strings.TrimSpace(c.Enterprise) == "" {
 		return errors.New("owner: enterprise names no enterprise — add `enterprise: <slug or id>` (the enterprise that owns this node, e.g. enterprise: anythink)")
 	}
 	if c.Enterprise != "" && c.Owner != "enterprise" {
 		return errors.New("enterprise: is set but owner: is not enterprise — set owner: enterprise or remove enterprise:")
+	}
+	if c.Owner == "org" && strings.TrimSpace(c.OrgLogin) == "" {
+		return errors.New("owner: org names no org — add `org: <slug or id>` (the org that owns this node, e.g. org: grapevine)")
+	}
+	// An older single-org registration wrote org: beside account_id;
+	// it still loads, read as Orgs of one.
+	if c.OrgLogin != "" && c.Owner != "org" && c.AccountID == "" {
+		return errors.New("org: is set but owner: is not org — set owner: org or remove org:")
 	}
 	return nil
 }
