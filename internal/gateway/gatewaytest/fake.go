@@ -383,6 +383,12 @@ type Fake struct {
 	// `<mutation>: not yours`, recorded in Calls as the platform saw it.
 	// Item bearers are not machines and are never refused for it.
 	NodeCredentialID string
+	// RefusesMachineSignIn, with NodeCredentialID set, makes a signIn on
+	// the machine bearer answer `signIn: a person's own, not a machine's`
+	// as the platform does; the call is still counted in SignInCalls and
+	// recorded in Calls. Opt-in because existing node-start tests set
+	// NodeCredentialID and still sign in; unset keeps them green.
+	RefusesMachineSignIn bool
 	// Enterprises by id: the enterprises the platform knows, each with
 	// its admins' user ids. myEnterprises serves those the caller
 	// (UserID) admins, and a registerNode with owner kind "enterprise"
@@ -587,6 +593,12 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case strings.HasPrefix(q, "mutation { signIn"):
 		f.SignInCalls++
+		f.Calls = append(f.Calls, Call{Name: "signIn", Input: map[string]any{}, At: time.Now(), Bearer: bearer})
+		if f.RefusesMachineSignIn && f.NodeCredentialID != "" && bearer == f.Token {
+			// signIn is a person's mutation; the platform refuses a machine.
+			writeErrors(w, http.StatusOK, "signIn: a person's own, not a machine's")
+			return
+		}
 		writeData(w, map[string]any{"signIn": map[string]any{"id": f.UserID}})
 	case strings.Contains(q, `__type(name: "UsageReportInput")`):
 		f.Reads = append(f.Reads, Call{Name: "__type UsageReportInput", Input: map[string]any{}})
