@@ -824,3 +824,64 @@ probe, the refusal), `internal/commands/nodestart_credentialid_test.go`
 (machineId, the `sub` fallback, an `rs_*` token),
 `internal/node/owned_notyours_test.go` (`NotYoursLine`, and Register
 against the fake refused on another credential and on none).
+
+## Amendment 2026-10-08: an org owns a node
+
+Goal `node-yaml-says-owner-org`, the node half of runsheet goal
+`a-node-is-owned-by-an-org`. A node's owner is one of person,
+enterprise and **org**. A person's node is derived onto every org the
+person is in, so the Mini — Chris's node restricted to Grapevine in
+node.yaml — was listed by runsheet, wardroomid and the rest as serving
+them "via membership", and a Grapevine admin who is not Chris could not
+own a node for Grapevine at all. The legacy per-org row is not the
+answer: it registers only on a person's token, and a node past v0.2.247
+runs on a machine credential.
+
+**node.yaml.** `owner: org` with `org: <slug|id>`, required together
+(`Config.ValidateOwner`; `org:` with another owner is refused unless an
+older single-org registration wrote it beside `account_id:`).
+`Config.OrgID` (`org_id:`) caches the resolved id, as `enterprise_id:`
+does.
+
+**The registration.** For `owner: org`, `mesh node start` never calls
+`signIn`: the owner is the org, not a person. `ownerIDFor` takes `org:`
+when it is an id, else the cached `org_id`, else `Registrar.ResolveOrg`
+once — the machine token's orgs read (`gateway.Client.MyOrgs`, the read
+the node already makes for its serving line), matched by slug, tenant
+slug, login or id (`node.FindOrg`; none matching refuses, naming the
+token's orgs) — cached on the config and returned as
+`Registered.OrgID`, which `SaveRegistration` writes as `org_id`. The
+registration sends `ownerKind: org`, `ownerId` and `orgId` both the
+org's id (never `ConfiguredOrg`'s pick), and `credentialId` the machine
+id as every registration on a machine credential does, under
+`OwnedNodeID` = `gateway.NodeOwnerID("org", orgId, slug)`, the
+platform's `ids.NodeOwnerID`. The start line names the org with its
+kind: `node mini (runsheet-mini) owned by Grapevine (org), serving
+grapevine`. `mesh node register --owner org` keeps a prior node.yaml's
+`org:` and `org_id:` and signs no one in either.
+
+**The gateway it needs.** `gateway.Client.TakesOwnerOrg` introspects
+`RegisterNodeInput`'s owner field (`ownerKind`, else `owner`) for an
+enum carrying `org`, cached an hour like `TakesNodeKind`; the gateway
+that first takes it is named once, `gateway.OwnerOrgGateway` (today
+`runsheet with a-node-is-owned-by-an-org`, the release that carries it
+once it ships). On a gateway without it `mesh node start` sends no
+`registerNode` and exits non-zero with one line,
+`node.ErrOwnerOrgGateway`: `owner: org needs a gateway that takes
+ownerKind org (<OwnerOrgGateway>); this gateway does not`. While an
+update is confirming the refusal is retried inside the confirm window
+like any other registration failure.
+
+**The fake.** `gatewaytest.Fake.OwnerKinds` is the owner enum it
+serves (person, enterprise and org when unset); a `registerNode` with
+`ownerKind: org` on one of its `Orgs` is answered
+`NodeOwnerID("org", ownerId, slug)`, owned by that org and serving it
+alone; `SignInCalls` counts `signIn`.
+
+Tests: `internal/commands/nodestart_ownerorg_test.go` (the start on a
+machine token: ownerKind, ownerId, credentialId, node.yaml's
+`node_id`/`node_id_source`/`org_id`, no `signIn`, a second start on the
+cached id; the one-line refusal with no `registerNode`),
+`internal/node/owner_org_e2e_test.go` (`Register` resolves once,
+`FindOrg`, the start line), `internal/node/org_config_test.go`,
+`internal/gateway/ownerorg_test.go`.
