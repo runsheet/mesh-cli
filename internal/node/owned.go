@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -56,6 +57,11 @@ type Registrar struct {
 	// (gateway.Client.MyEnterprises, by slug or tenantSlug). Asked only
 	// when the slug is not already an id and no enterprise_id is cached.
 	ResolveEnterprise func(ctx context.Context, slugOrID string) (string, error)
+	// ResolveOrg is node.yaml's `org:` slug as an id on `owner: org`,
+	// from the machine token's orgs read (gateway.Client.MyOrgs, by
+	// slug, tenantSlug, login or id; FindOrg) — never signIn. Asked
+	// only when the slug is not already an id and no org_id is cached.
+	ResolveOrg func(ctx context.Context, slugOrID string) (string, error)
 	// LegacyOrgs is the token's person's orgs, unrestricted (MyOrgs): with
 	// the answer's orgs, where the node may have a legacy per-org row.
 	LegacyOrgs func(ctx context.Context) ([]gateway.Org, error)
@@ -128,6 +134,10 @@ type Registered struct {
 	// as written, a cached enterprise_id, a person's node); SaveRegistration
 	// caches it in node.yaml as enterprise_id.
 	EnterpriseID string
+	// OrgID is the org id this registration resolved from node.yaml's
+	// `org:` slug on `owner: org`, "" when none was resolved (an id as
+	// written, a cached org_id); SaveRegistration caches it as org_id.
+	OrgID string
 	// IDSource is how the owner id was arrived at — IDDerived when
 	// OwnedNodeID computed it, IDAdopted when a refusal named it
 	// (AdoptedID) — and node.yaml's node_id_source as it was when the
@@ -259,13 +269,52 @@ func FindEnterprise(slugOrID string, es []gateway.Enterprise) (string, error) {
 	return "", EnterpriseNotFound(slugOrID, es)
 }
 
+// ErrOwnerOrgGateway refuses `mesh node start` on `owner: org` when the
+// gateway's RegisterNodeInput takes no ownerKind org
+// (gateway.Client.TakesOwnerOrg): one line naming the gateway it needs
+// (gateway.OwnerOrgGateway), checked before any registerNode is sent.
+var ErrOwnerOrgGateway = errors.New("owner: org needs a gateway that takes ownerKind org (" + gateway.OwnerOrgGateway + "); this gateway does not")
+
+// orgNotFound is ResolveOrg's refusal of an `org:` none of the token's
+// orgs matches.
+const orgNotFound = "org %q: not one of the token's orgs (%s) — the machine credential must be one of the org's"
+
+// FindOrg is slugOrID's id among orgs: an id is itself, else the org
+// whose slug, tenantSlug or login matches it, case-insensitive; no match
+// names the orgs the token does reach.
+func FindOrg(slugOrID string, orgs []gateway.Org) (string, error) {
+	slugOrID = strings.TrimSpace(slugOrID)
+	if _, err := uuid.Parse(slugOrID); err == nil {
+		return slugOrID, nil
+	}
+	var names []string
+	for _, o := range orgs {
+		for _, n := range []string{o.Slug, o.TenantSlug, o.Login} {
+			if n != "" && strings.EqualFold(n, slugOrID) {
+				return o.ID, nil
+			}
+		}
+		names = append(names, o.Name())
+	}
+	listed := "none"
+	if len(names) > 0 {
+		listed = strings.Join(names, ", ")
+	}
+	return "", fmt.Errorf(orgNotFound, slugOrID, listed)
+}
+
 // ownerIDFor is the ownerId the owner registration sends: node.yaml's
-// owner_id for a person; for an enterprise its id — `enterprise:` when
+// owner_id for a person; for an org its id — `org:` when it is one, else
+// the cached org_id, else ResolveOrg once, cached on cfg and returned as
+// resolved; for an enterprise its id — `enterprise:` when
 // it is one, else the cached enterprise_id, else ResolveEnterprise once,
 // cached on cfg for the rest of the process and returned as resolved
 // for SaveRegistration to write. owner_id (the person) is never touched,
 // so OwnedNodeID keeps converging.
 func ownerIDFor(ctx context.Context, r Registrar, cfg *Config) (id, resolved string, err error) {
+	if cfg.OwnerKind() == "org" {
+		return orgOwnerID(ctx, r, cfg)
+	}
 	if cfg.OwnerKind() != "enterprise" {
 		return cfg.OwnerID, "", nil
 	}
@@ -284,6 +333,26 @@ func ownerIDFor(ctx context.Context, r Registrar, cfg *Config) (id, resolved str
 		return "", "", err
 	}
 	cfg.EnterpriseID = id
+	return id, id, nil
+}
+
+// orgOwnerID is ownerIDFor on `owner: org` (goal node-yaml-says-owner-org).
+func orgOwnerID(ctx context.Context, r Registrar, cfg *Config) (id, resolved string, err error) {
+	org := strings.TrimSpace(cfg.OrgLogin)
+	if _, err := uuid.Parse(org); err == nil {
+		return org, "", nil
+	}
+	if cfg.OrgID != "" {
+		return cfg.OrgID, "", nil
+	}
+	if r.ResolveOrg == nil {
+		return "", "", fmt.Errorf("org %q: no way to resolve it to an id", org)
+	}
+	id, err = r.ResolveOrg(ctx, org)
+	if err != nil {
+		return "", "", err
+	}
+	cfg.OrgID = id
 	return id, id, nil
 }
 
@@ -348,6 +417,10 @@ func SaveRegistration(cfg *Config, r Registered, save func() error) error {
 	if r.EnterpriseID != "" {
 		// Register cached it on cfg already; the file has not got it yet
 		cfg.EnterpriseID, changed = r.EnterpriseID, true
+	}
+	if r.OrgID != "" {
+		// Register cached it on cfg already, as EnterpriseID
+		cfg.OrgID, changed = r.OrgID, true
 	}
 	if r.adopted {
 		// Register set cfg.NodeID to the adopted id already
@@ -485,16 +558,25 @@ func Register(ctx context.Context, r Registrar, cfg *Config, restrict []string) 
 		reg.Notes = append(fieldNote, reg.Notes...)
 		return reg, explainNotYours(err, r, cfg)
 	}
-	orgID, err := r.ConfiguredOrg(ctx)
-	if err != nil {
-		return Registered{}, err
-	}
-	if orgID == "" && len(restrict) > 0 {
-		fieldNote = append(fieldNote, noConfiguredOrgNote)
-	}
 	ownerID, resolved, err := ownerIDFor(ctx, r, cfg)
 	if err != nil {
 		return Registered{}, fmt.Errorf("register (owner %s): %w", cfg.OwnerKind(), err)
+	}
+	var orgID string
+	if cfg.OwnerKind() == "org" {
+		// the org owns it: the one org it serves is the orgId it sends
+		orgID = ownerID
+	} else {
+		if orgID, err = r.ConfiguredOrg(ctx); err != nil {
+			return Registered{}, err
+		}
+		if orgID == "" && len(restrict) > 0 {
+			fieldNote = append(fieldNote, noConfiguredOrgNote)
+		}
+	}
+	entID, orgResolved := resolved, ""
+	if cfg.OwnerKind() == "org" {
+		entID, orgResolved = "", resolved
 	}
 	source := cfg.NodeIDSource
 	if cfg.NodeID == "" {
@@ -512,13 +594,13 @@ func Register(ctx context.Context, r Registrar, cfg *Config, restrict []string) 
 	if err != nil {
 		var partial Registered
 		if adopted {
-			partial = Registered{Owned: &Owned{NodeID: id, Owner: Owner{Kind: cfg.OwnerKind()}}, Notes: fieldNote, EnterpriseID: resolved, IDSource: source, adopted: true}
+			partial = Registered{Owned: &Owned{NodeID: id, Owner: Owner{Kind: cfg.OwnerKind()}}, Notes: fieldNote, EnterpriseID: entID, OrgID: orgResolved, IDSource: source, adopted: true}
 		}
 		return partial, explainNotYours(fmt.Errorf("register (owner %s): %w", cfg.OwnerKind(), err), r, cfg)
 	}
 	if answer == nil {
 		owned := &Owned{NodeID: id, Owner: Owner{Kind: cfg.OwnerKind()}}
-		reg := Registered{Owned: owned, Notes: append(fieldNote, FallbackLine), EnterpriseID: resolved, IDSource: source, adopted: adopted}
+		reg := Registered{Owned: owned, Notes: append(fieldNote, FallbackLine), EnterpriseID: entID, OrgID: orgResolved, IDSource: source, adopted: adopted}
 		// the orgs it served per org, on their per-org ids, so its claims
 		// land on the rows that served them (ADR-015, 2026-10-03)
 		if r.Resolve != nil {
@@ -530,7 +612,7 @@ func Register(ctx context.Context, r Registrar, cfg *Config, restrict []string) 
 		}
 		return reg, nil
 	}
-	reg := Registered{Owned: &Owned{NodeID: answer.NodeID, Owner: OwnerFrom(answer)}, Answer: answer, Notes: fieldNote, EnterpriseID: resolved, IDSource: source, adopted: adopted}
+	reg := Registered{Owned: &Owned{NodeID: answer.NodeID, Owner: OwnerFrom(answer)}, Answer: answer, Notes: fieldNote, EnterpriseID: entID, OrgID: orgResolved, IDSource: source, adopted: adopted}
 	var note error
 	if reg.Scopes, note = ServedFrom(answer, restrict); note != nil {
 		reg.Notes = append(reg.Notes, fmt.Sprintf("orgs: %v", note))

@@ -126,14 +126,30 @@ sent as credentialId`, or `credential: rs_* console token, no
 credentialId`. To move a node onto its machine credential:
 
 1. `mesh node login` on the node (it writes `~/.mesh/token` with
-   `kind: "machine"` and its `machineId`);
+   `kind: "machine"` and its `machineId`), and say who owns it in
+   `~/.mesh/node.yaml` — for a company's own box, the org (see Who owns
+   a node below):
+
+   ```yaml
+   owner: org
+   org: grapevine
+   ```
+
 2. restart it — `mesh node start`, or `systemctl --user restart` /
    `launchctl kickstart -k` of its service;
 3. confirm in `~/.mesh/node.log` the registration line, `node <name>
-   (<slug>) owned by …, serving <org>`, the `sent as credentialId` line
-   and no `not yours`;
+   (<slug>) owned by …, serving <org>` — with `owner: org`, `node mini
+   (runsheet-mini) owned by Grapevine (org), serving grapevine` — the
+   `sent as credentialId` line and no `not yours`; node.yaml now holds
+   `node_id`, `node_id_source` and, for `owner: org`, `org_id`;
 4. clear the version pin (`desiredVersion`) on the console so the node
    follows releases again.
+
+`owner: org` needs a gateway that takes `ownerKind` `org` (runsheet goal
+a-node-is-owned-by-an-org, `gateway.OwnerOrgGateway`); on one that does
+not, step 2's start exits non-zero with one line and registers nothing:
+`owner: org needs a gateway that takes ownerKind org (runsheet with
+a-node-is-owned-by-an-org); this gateway does not`.
 
 A `register (owner person): registerNode: not yours — sent credentialId
 <id> …` line means the gateway refused the machine on that row: the
@@ -567,7 +583,7 @@ failed read withdraws nothing that tick (adr-005's amendment
 
 ### Who owns a node
 
-A node has an owner — a person or an enterprise
+A node has an owner — a person, an enterprise or an org
 (`internal/node/owned.go`, `internal/commands/nodecmd.go`,
 [ADR-015](docs/adr/adr-015-a-node-registers-once-with-an-owner.md)).
 node.yaml's `owner:` says which: empty or `person` (the default) is
@@ -578,6 +594,35 @@ leaves an org when the person does, exactly as it always has.
 enterprise has, on the enterprise's own credentials, and an org
 outside the enterprise only by an explicit share from an enterprise
 admin.
+
+`owner: org` is one company's own box — the node serves that org and
+no other, whoever operates the machine: an org admin can own a node for
+their org, and no other org lists it "via membership". It
+names the org beside it, by slug (or login, tenant slug) or id:
+
+```yaml
+owner: org
+org: grapevine
+```
+
+`LoadConfig` refuses `owner: org` with no `org:`, and `org:` with any
+other owner (unless an older single-org registration wrote it beside
+`account_id:`). The registration needs no person: on a machine
+credential it never calls `signIn`. The first start resolves the slug
+to the org's id from the machine token's orgs read (`myOrgs`, the read
+the node already makes for the orgs it serves; `node.FindOrg`) — a slug
+the token does not reach refuses the start naming the token's orgs —
+and caches it in node.yaml as `org_id:` beside `node_id:` and
+`node_id_source:`; a later start registers on the cached id without the
+read. It sends `ownerKind: org`, `ownerId` the org's id, `orgId` the
+same, and `credentialId` the machine id, under the node id
+`NodeOwnerID("org", orgId, slug)` the platform derives. The start line
+reads `node mini (runsheet-mini) owned by Grapevine (org), serving
+grapevine`. A gateway whose `ownerKind` enum lacks `org`
+(`TakesOwnerOrg`, before runsheet's a-node-is-owned-by-an-org) refuses
+the start with one line, before any `registerNode`: `owner: org needs a
+gateway that takes ownerKind org (runsheet with
+a-node-is-owned-by-an-org); this gateway does not`.
 
 `owner: enterprise` names no enterprise by itself: node.yaml also needs
 `enterprise:`, the enterprise's slug (as the console shows it) or its
@@ -658,6 +703,7 @@ orgs, on the owner contract:
 ```
 node mini (runsheet-mini) owned by Chris, serving runsheet, wardroomid, grapevine
 node mini (runsheet-mini) owned by anythink (enterprise), serving runsheet, wardroomid
+node mini (runsheet-mini) owned by Grapevine (org), serving grapevine
 ```
 
 or, on the legacy path:

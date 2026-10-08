@@ -731,6 +731,9 @@ type Org struct {
 	// the-node-serves-its-owners-orgs): the node shows it in Login's
 	// place wherever the org has none.
 	TenantSlug string `json:"tenantSlug"`
+	// Slug is the org's own slug where myOrgs carries one: what
+	// node.yaml's `org:` names on `owner: org` (node.FindOrg).
+	Slug string `json:"slug"`
 }
 
 // Name is what to show a person for this org: Login, or TenantSlug

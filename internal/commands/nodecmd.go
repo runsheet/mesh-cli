@@ -171,7 +171,12 @@ var nodeRegisterCmd = &cobra.Command{
 		if enterprise == "" {
 			enterprise = prev.Enterprise
 		}
-		if err := (&node.Config{Owner: owner, Enterprise: enterprise}).ValidateOwner(); err != nil {
+		// owner: org keeps the org a prior node.yaml named
+		org := ""
+		if owner == "org" {
+			org = prev.OrgLogin
+		}
+		if err := (&node.Config{Owner: owner, Enterprise: enterprise, OrgLogin: org}).ValidateOwner(); err != nil {
 			path, _ := node.ConfigPath()
 			return fmt.Errorf("%s: %w", path, err)
 		}
@@ -181,8 +186,13 @@ var nodeRegisterCmd = &cobra.Command{
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
-		me, err := gw.SignIn(ctx)
-		if err != nil {
+		// an org-owned node has no person to sign in (the org owns it)
+		var me string
+		if owner == "org" {
+			if !gw.TakesOwnerOrg(ctx) {
+				return node.ErrOwnerOrgGateway
+			}
+		} else if me, err = gw.SignIn(ctx); err != nil {
 			return err
 		}
 		slug := strings.TrimSpace(nodeSlugFlag)
@@ -207,6 +217,9 @@ var nodeRegisterCmd = &cobra.Command{
 		cfg.Contract = prev.Contract
 		if enterprise == prev.Enterprise {
 			cfg.EnterpriseID = prev.EnterpriseID
+		}
+		if org != "" {
+			cfg.OrgLogin, cfg.OrgID = org, prev.OrgID
 		}
 		reg, err := node.Register(ctx, registrar(gw, cfg), cfg, cfg.Orgs)
 		if err != nil {
@@ -260,6 +273,17 @@ func registrar(gw *gateway.Client, cfg *node.Config) node.Registrar {
 				return "", fmt.Errorf("enterprise %q: my enterprises: %w", slugOrID, err)
 			}
 			return node.FindEnterprise(slugOrID, es)
+		},
+		// owner: org — the machine token's orgs read, never signIn
+		ResolveOrg: func(ctx context.Context, slugOrID string) (string, error) {
+			if _, err := uuid.Parse(strings.TrimSpace(slugOrID)); err == nil {
+				return strings.TrimSpace(slugOrID), nil
+			}
+			orgs, err := gw.MyOrgs(ctx)
+			if err != nil {
+				return "", fmt.Errorf("org %q: my orgs: %w", slugOrID, err)
+			}
+			return node.FindOrg(slugOrID, orgs)
 		},
 		LegacyOrgs: func(ctx context.Context) ([]gateway.Org, error) { return gw.MyOrgs(ctx) },
 		Retire:     gw.RetireNode,
@@ -1145,7 +1169,13 @@ func registerNode(ctx context.Context, cmd *cobra.Command, logger *log.Logger, u
 	register := func(ctx context.Context) error {
 		regCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 		defer cancel()
-		if cfg.OwnerID == "" {
+		if cfg.OwnerKind() == "org" {
+			// the org is the owner: no person is signed in, and a gateway
+			// that cannot take ownerKind org is refused before registering
+			if !gw.TakesOwnerOrg(regCtx) {
+				return node.ErrOwnerOrgGateway
+			}
+		} else if cfg.OwnerID == "" {
 			owner, err := gw.SignIn(regCtx)
 			if err != nil {
 				return err
