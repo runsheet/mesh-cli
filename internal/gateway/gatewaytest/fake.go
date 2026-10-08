@@ -17,6 +17,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	"projectmesh.io/mesh-cli/internal/gateway"
 )
 
@@ -337,6 +339,17 @@ type Fake struct {
 	// `owner` in place of `ownerKind`, and a registerNode carrying the
 	// other spelling is refused with "Unknown field".
 	OwnerFieldLegacy bool
+	// OwnerKinds are the values of the owner field's enum
+	// (NodeOwnerKind) as introspection answers them; nil is person,
+	// enterprise and org — a platform with runsheet goal
+	// a-node-is-owned-by-an-org. A test drops `org` to be a platform
+	// before it: a registerNode whose owner kind is not among them is
+	// refused as GraphQL refuses an enum value it does not have.
+	OwnerKinds []string
+	// SignInCalls counts signIn mutations, so a test can show a
+	// registration that never signs in (an org-owned node resolves its
+	// org from myOrgs).
+	SignInCalls int
 	// TakesNodeKind says whether the fake's RegisterNodeInput has `kind`
 	// (gateway.NodeKindField), the node's own kind — "personal" for
 	// `mesh mcp`'s node (ADR-015's owner form, ADR-023 mesh mcp). Unset
@@ -562,6 +575,7 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 	f.requests++
 	switch {
 	case strings.HasPrefix(q, "mutation { signIn"):
+		f.SignInCalls++
 		writeData(w, map[string]any{"signIn": map[string]any{"id": f.UserID}})
 	case strings.Contains(q, `__type(name: "UsageReportInput")`):
 		f.Reads = append(f.Reads, Call{Name: "__type UsageReportInput", Input: map[string]any{}})
@@ -661,6 +675,17 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeData(w, map[string]any{"__type": f.registerNodeInputType()})
+	case strings.Contains(q, "__type(") && req.Variables["t"] == "NodeOwnerKind":
+		f.Reads = append(f.Reads, Call{Name: "__type NodeOwnerKind", Input: map[string]any{}})
+		if f.Unsupported["__type"] {
+			writeErrors(w, 200, "GraphQL introspection is not allowed")
+			return
+		}
+		var values []any
+		for _, k := range f.ownerKinds() {
+			values = append(values, map[string]any{"name": k})
+		}
+		writeData(w, map[string]any{"__type": map[string]any{"enumValues": values}})
 	case strings.Contains(q, `__type(name: "Mutation")`):
 		f.Reads = append(f.Reads, Call{Name: "__type Mutation", Input: map[string]any{}})
 		if f.Unsupported["__type"] {
@@ -884,7 +909,7 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 		if usage, ok := in["usage"].(map[string]any); ok && finishingMutations[m[2]] {
 			f.SessionUsage = append(f.SessionUsage, Call{Name: m[2], Input: copyRow(usage), At: time.Now()})
 		}
-		writeData(w, map[string]any{m[2]: f.mutationPayload(m[2], q)})
+		writeData(w, map[string]any{m[2]: f.mutationPayload(m[2], q, in)})
 	default:
 		if m := scorecardRe.FindStringSubmatch(q); m != nil {
 			f.Reads = append(f.Reads, Call{Name: "scorecard", Input: map[string]any{"orgId": m[1]}})
@@ -1265,7 +1290,11 @@ func (f *Fake) registerNodeInputType() map[string]any {
 		if f.UnknownFields[name] {
 			continue
 		}
-		fields = append(fields, map[string]any{"name": name, "type": map[string]any{"kind": "SCALAR"}})
+		typ := map[string]any{"kind": "SCALAR"}
+		if name == f.ownerField() {
+			typ = map[string]any{"kind": "ENUM", "name": "NodeOwnerKind"}
+		}
+		fields = append(fields, map[string]any{"name": name, "type": typ})
 	}
 	return map[string]any{"inputFields": fields}
 }
@@ -1308,6 +1337,52 @@ func (f *Fake) ownerField() string {
 		return "owner"
 	}
 	return "ownerKind"
+}
+
+// ownerKinds is OwnerKinds, or person, enterprise and org when unset.
+func (f *Fake) ownerKinds() []string {
+	if f.OwnerKinds != nil {
+		return f.OwnerKinds
+	}
+	return []string{"person", "enterprise", "org"}
+}
+
+// org is the fake's org row (Orgs) of id, or nil.
+func (f *Fake) org(id string) map[string]any {
+	for _, o := range f.Orgs {
+		if o["id"] == id {
+			return o
+		}
+	}
+	return nil
+}
+
+// orgOwnedAnswer is the platform's answer to an org-owned node's
+// registerNode (runsheet goal a-node-is-owned-by-an-org): the node id
+// NodeOwnerID("org", ownerId, slug), the org as its owner and exactly
+// that org as its one scope.
+func (f *Fake) orgOwnedAnswer(in map[string]any) *gateway.NodeAnswer {
+	ownerID, _ := in["ownerId"].(string)
+	slug, _ := in["slug"].(string)
+	o := f.org(ownerID)
+	str := func(k string) string { s, _ := o[k].(string); return s }
+	name := str("name")
+	if name == "" {
+		name = str("login")
+	}
+	if name == "" {
+		name = str("slug")
+	}
+	tenant := str("tenantSlug")
+	if tenant == "" {
+		tenant = str("slug")
+	}
+	id, _ := uuid.Parse(ownerID)
+	return &gateway.NodeAnswer{
+		NodeID: gateway.NodeOwnerID("org", id, slug).String(),
+		Owner:  gateway.NodeOwner{Kind: "org", ID: ownerID, Name: name},
+		Scopes: []gateway.ScopeAnswer{{OrgID: ownerID, Login: str("login"), Slug: tenant}},
+	}
 }
 
 // myEnterprises is the enterprises the caller (UserID) admins, as
@@ -1513,11 +1588,12 @@ var finishingMutations = map[string]bool{
 // {"status": "ok"} for any command, plus f.Answer's nodeId, owner and
 // scopes on registerNode and heartbeatNode (runsheet goal
 // a-node-has-an-owner) — nil leaves the payload at status alone, as a
-// platform before that goal does.
+// platform before that goal does, except for a registerNode with owner
+// kind org, answered by orgOwnedAnswer.
 //
 // Only what the query selects is answered, as GraphQL does: a payload
 // asked for `status` alone gets status alone.
-func (f *Fake) mutationPayload(name, q string) map[string]any {
+func (f *Fake) mutationPayload(name, q string, in map[string]any) map[string]any {
 	payload := map[string]any{"status": "ok"}
 	if name != "registerNode" && name != "heartbeatNode" {
 		return payload
@@ -1536,18 +1612,22 @@ func (f *Fake) mutationPayload(name, q string) map[string]any {
 		}
 		return payload
 	}
-	if f.Answer == nil || !selected("nodeId") {
+	answer := f.Answer
+	if kind, _ := in[f.ownerField()].(string); answer == nil && name == "registerNode" && kind == "org" {
+		answer = f.orgOwnedAnswer(in)
+	}
+	if answer == nil || !selected("nodeId") {
 		return payload
 	}
-	scopes := make([]map[string]any, len(f.Answer.Scopes))
-	for i, s := range f.Answer.Scopes {
+	scopes := make([]map[string]any, len(answer.Scopes))
+	for i, s := range answer.Scopes {
 		scopes[i] = map[string]any{"orgId": s.OrgID, "login": s.Login, "slug": s.Slug, "accountId": s.AccountID}
 		if selected("shares") {
 			scopes[i]["shares"] = s.Shares
 		}
 	}
-	payload["nodeId"] = f.Answer.NodeID
-	payload["owner"] = map[string]any{"kind": f.Answer.Owner.Kind, "id": f.Answer.Owner.ID, "name": f.Answer.Owner.Name}
+	payload["nodeId"] = answer.NodeID
+	payload["owner"] = map[string]any{"kind": answer.Owner.Kind, "id": answer.Owner.ID, "name": answer.Owner.Name}
 	payload["scopes"] = scopes
 	return payload
 }
@@ -1741,6 +1821,15 @@ func (f *Fake) apply(name string, in map[string]any) error {
 			return fmt.Errorf(`Variable "$in" got invalid value; Unknown field %q is not defined by type "RegisterNodeInput".`, gateway.NodeCredentialField)
 		}
 		kind, _ := in[f.ownerField()].(string)
+		if kind != "" && !slices.Contains(f.ownerKinds(), kind) {
+			return fmt.Errorf(`Variable "$in" got invalid value %q at "in.%s"; Value %q does not exist in "NodeOwnerKind" enum.`, kind, f.ownerField(), kind)
+		}
+		if kind == "org" {
+			ownerID, _ := in["ownerId"].(string)
+			if f.org(ownerID) == nil {
+				return fmt.Errorf("registerNode: permission denied: adminOnOrg(%s): the caller is not an admin of the org", ownerID)
+			}
+		}
 		if kind == "enterprise" {
 			ownerID, _ := in["ownerId"].(string)
 			if e, ok := f.Enterprises[ownerID]; !ok || !slices.Contains(e.Admins, f.UserID) {
