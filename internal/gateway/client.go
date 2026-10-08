@@ -4446,49 +4446,110 @@ type ValidationMinutes struct {
 }
 
 // AttestationBackoff is the wait between RecordValidationAttestation's
-// retries of a transport failure or a 429/5xx answer (retryOnTransient)
-// — one entry per retry, so up to len(AttestationBackoff) retries beyond
-// the first attempt, and the cap a Retry-After header's wait is held to
-// (retryDelay). A test shortens it to run fast.
-var AttestationBackoff = []time.Duration{2 * time.Second, 10 * time.Second, 30 * time.Second}
+// retries of a transport failure or a 429/5xx answer (retryOnTransient):
+// entry i is the wait after the (i+1)th failed attempt, growing toward
+// the last entry, which is repeated for every retry past the table, and
+// is the cap a Retry-After header's wait is held to (retryDelay). How
+// many retries there are is AttestationRetryFor's, not the table's. A
+// test shortens both to run fast.
+var AttestationBackoff = []time.Duration{2 * time.Second, 5 * time.Second, 10 * time.Second, 20 * time.Second, 30 * time.Second}
+
+// AttestationRetryFor is the time budget of RecordValidationAttestation's
+// retries, counted from the first attempt: another attempt is made while
+// the budget allows one, each wait cut short so it never ends past the
+// budget, and once it is spent the last answer is returned. A test
+// shortens it to run fast.
+var AttestationRetryFor = 2 * time.Minute
+
+// AttestationWaits is the waits retryOnTransient plans between attempts
+// against an answer that is transient every time and names no
+// Retry-After, under budget and the AttestationBackoff table — the
+// table's entries in order, its last repeated, up to the first wait that
+// would reach the end of the budget, after which no attempt is made —
+// ignoring the time the attempts themselves
+// take. Their sum never exceeds budget.
+func AttestationWaits(budget time.Duration) []time.Duration {
+	var waits []time.Duration
+	var spent time.Duration
+	for retry := 0; ; retry++ {
+		d := backoffAt(retry)
+		if d <= 0 || spent+d >= budget {
+			break
+		}
+		waits = append(waits, d)
+		spent += d
+	}
+	return waits
+}
 
 // retryOnTransient calls fn, retrying on a transport error or a 429/5xx
-// answer (isTransient) up to len(AttestationBackoff) more times with
-// that backoff between attempts, honouring a Retry-After header in place
-// of the table's entry for the attempt (retryDelay); a refusal, an
-// unsupported operation, or success returns at once — the gateway's
-// considered answer is not retried, only its absence. The retries spent
-// with no success return the last answer wrapped so it reads "after N
-// retries: <last answer>" (errors.As still reaches the wrapped error).
+// answer (isTransient) while AttestationRetryFor, counted from the first
+// attempt, allows another attempt, waiting the AttestationBackoff
+// table's entry for the retry between attempts — a Retry-After header
+// honoured in its place (retryDelay) — and never past the budget; a
+// refusal, an unsupported operation, or success returns at once — the
+// gateway's considered answer is not retried, only its absence. The
+// budget spent with no success returns the last answer wrapped so it
+// reads "after N retries over <elapsed>: <last answer>" (errors.As still
+// reaches the wrapped error); the context ending first returns
+// ctx.Err().
 func retryOnTransient(ctx context.Context, fn func() error) error {
-	var err error
-	for attempt := 0; ; attempt++ {
-		err = fn()
+	start := time.Now()
+	deadline := start.Add(AttestationRetryFor)
+	for retries := 0; ; retries++ {
+		err := fn()
 		if err == nil || !isTransient(err) {
 			return err
 		}
-		if attempt >= len(AttestationBackoff) {
-			return fmt.Errorf("after %d retries: %w", len(AttestationBackoff), err)
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
+		// Another attempt is made only when it can start inside the
+		// budget: a wait that would reach the deadline spends it, and the
+		// last answer is returned now rather than after one more request.
+		wait := retryDelay(err, retries)
+		if wait >= time.Until(deadline) {
+			return fmt.Errorf("after %d retries over %s: %w", retries, time.Since(start).Round(time.Millisecond), err)
+		}
+		t := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
+			t.Stop()
 			return ctx.Err()
-		case <-time.After(retryDelay(err, attempt)):
+		case <-t.C:
 		}
 	}
 }
 
+// backoffAt is the table's wait before retry n (0-based): its entry,
+// else its last.
+func backoffAt(n int) time.Duration {
+	if len(AttestationBackoff) == 0 {
+		return 0
+	}
+	return AttestationBackoff[min(n, len(AttestationBackoff)-1)]
+}
+
+// largestBackoff is the table's largest entry, the cap on a Retry-After.
+func largestBackoff() time.Duration {
+	var d time.Duration
+	for _, b := range AttestationBackoff {
+		d = max(d, b)
+	}
+	return d
+}
+
 // isTransient reports whether err is worth retrying: a transport failure
 // that never reached the gateway, a 5xx or 429 httpError, or a GraphQL
-// *Error the gateway (or a proxy in front of it) wrapped with a 429
-// status. Any other GraphQL *Error — a refusal, an unsupported
+// *Error the gateway (or a proxy in front of it) wrapped with a 5xx or
+// 429 status. Any other GraphQL *Error — a refusal, an unsupported
 // operation, a validation error the schema itself raised, all answered
 // with an ordinary 200 — is the gateway's considered answer, not a blip,
 // and is never retried.
 func isTransient(err error) bool {
 	var ge *Error
 	if errors.As(err, &ge) {
-		return ge.Status == http.StatusTooManyRequests
+		return !ge.Unsupported && (ge.Status >= 500 || ge.Status == http.StatusTooManyRequests)
 	}
 	var he *httpError
 	if errors.As(err, &he) {
@@ -4502,12 +4563,9 @@ func isTransient(err error) bool {
 // instead, capped at the table's largest entry so a generous header
 // cannot stall the upload far past what the table would.
 func retryDelay(err error, attempt int) time.Duration {
-	d := AttestationBackoff[attempt]
+	d := backoffAt(attempt)
 	if ra := retryAfterOf(err); ra > 0 {
-		d = ra
-		if largest := AttestationBackoff[len(AttestationBackoff)-1]; d > largest {
-			d = largest
-		}
+		d = min(ra, largestBackoff())
 	}
 	return d
 }
@@ -4544,9 +4602,10 @@ func retryAfterOf(err error) time.Duration {
 // refusal (IsRefusal), never Unsupported. A transport failure or a
 // 429/5xx answer — an httpError, or a GraphQL error body a proxy
 // wrapped with that status — retries with backoff, honouring a
-// Retry-After header (retryOnTransient, AttestationBackoff), before
-// giving up and returning the last answer wrapped as "after N retries:
-// <last answer>". There is no REST path.
+// Retry-After header, for up to AttestationRetryFor (retryOnTransient,
+// AttestationBackoff), before giving up and returning the last answer
+// wrapped as "after N retries over <elapsed>: <last answer>". There is
+// no REST path.
 func (c *Client) RecordValidationAttestation(ctx context.Context, itemID string, att ValidationAttestation) (map[string]any, error) {
 	takes, err := c.takesAttestations(ctx)
 	if err != nil {

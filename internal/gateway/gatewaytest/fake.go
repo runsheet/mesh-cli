@@ -190,6 +190,17 @@ type Fake struct {
 	// AttestationBackoff); never combined with Refuse or Unsupported for
 	// the same mutation.
 	RateLimit429 map[string]bool
+	// TransientFirst is, per mutation, how many leading calls the fake
+	// answers transiently before it answers as it otherwise would — for a
+	// test of the retry-then-succeed path (retryOnTransient,
+	// AttestationRetryFor). TransientAs says how, per mutation: "503"
+	// (the default, a bare 503), "graphql503" (a GraphQL error body with
+	// HTTP 503), "429" (a bare 429) or "close" (the
+	// connection closed with no answer, a transport error). A transient
+	// answer is not recorded in Calls.
+	TransientFirst map[string]int
+	TransientAs    map[string]string
+	transientSent  map[string]int
 	// NoUsageTools refuses a `usage` report carrying `tools` (the
 	// per-tool calls) with "Unknown field", as a platform older than
 	// tools-show-their-use whose UsageReportInput has only the total.
@@ -2208,12 +2219,16 @@ func (f *Fake) mutationType() map[string]any {
 // shape is the schema error production answers, every call is recorded
 // with workItemId and input, and success answers AttestationReceipt.
 // RateLimit429 answers a bare 429 before any of that, every time, for a
-// test of the retry-and-give-up path.
+// test of the retry-and-give-up path, and TransientFirst the first N
+// calls transiently, for the retry-then-succeed path.
 func (f *Fake) recordValidationAttestation(w http.ResponseWriter, q string, vars map[string]any, bearer string) {
 	const field = "recordValidationAttestation"
 	if f.RateLimit429[field] {
 		w.WriteHeader(http.StatusTooManyRequests)
 		_, _ = w.Write([]byte("rate limited"))
+		return
+	}
+	if f.answeredTransiently(w, field) {
 		return
 	}
 	if f.Unsupported[field] {
@@ -2236,6 +2251,38 @@ func (f *Fake) recordValidationAttestation(w http.ResponseWriter, q string, vars
 		receipt = map[string]any{"status": "ok", "commit": in["commit"]}
 	}
 	writeData(w, map[string]any{field: receipt})
+}
+
+// answeredTransiently answers field's call transiently while fewer than
+// TransientFirst[field] have been, as TransientAs[field] says, and
+// reports whether it did.
+func (f *Fake) answeredTransiently(w http.ResponseWriter, field string) bool {
+	if f.transientSent[field] >= f.TransientFirst[field] {
+		return false
+	}
+	if f.transientSent == nil {
+		f.transientSent = map[string]int{}
+	}
+	f.transientSent[field]++
+	switch f.TransientAs[field] {
+	case "close":
+		if hj, ok := w.(http.Hijacker); ok {
+			if conn, _, err := hj.Hijack(); err == nil {
+				_ = conn.Close()
+				return true
+			}
+		}
+		panic(http.ErrAbortHandler)
+	case "graphql503":
+		writeErrors(w, http.StatusServiceUnavailable, "upstream unavailable")
+	case "429":
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte("rate limited"))
+	default:
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("service unavailable"))
+	}
+	return true
 }
 
 // actorInputFields are the input fields, beside `actor`, the fake's
