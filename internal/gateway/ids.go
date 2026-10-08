@@ -14,8 +14,9 @@ func NodeID(orgID uuid.UUID, slug string) uuid.UUID {
 }
 
 // NodeOwnerID is the Node aggregate id for a slug under an owner on the
-// owner contract (platform/ids/node.go, NodeOwnerID): kind is "person"
-// or "enterprise", an empty kind reading as "person". This is the
+// owner contract (platform/ids/node.go, NodeOwnerID): kind is "person",
+// "enterprise" or "org" (owner the org's id, runsheet goal
+// a-node-is-owned-by-an-org), an empty kind reading as "person". This is the
 // formula the platform derives a registration's aggregate id by, and
 // refuses a registerNode whose aggregateId is not this — never NodeID,
 // which is the per-org formula with the owner's uuid in the org's

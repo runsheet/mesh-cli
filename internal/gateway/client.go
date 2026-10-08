@@ -147,6 +147,9 @@ type Client struct {
 	// nodeCredentialSchema is whether the gateway's RegisterNodeInput
 	// was last found to take `credentialId` (see TakesNodeCredential).
 	nodeCredentialSchema holdingProbe
+	// ownerOrgSchema is whether the gateway's RegisterNodeInput owner
+	// kind was last found to take `org` (see TakesOwnerOrg).
+	ownerOrgSchema holdingProbe
 	// toolErrorSchema is whether the gateway's usage report's `tools`
 	// entry was last found to take `error` (see takesToolError).
 	toolErrorSchema toolErrorProbe
@@ -1761,7 +1764,7 @@ type RegisterNodeInput struct {
 	Harnesses []string
 	Capacity  int
 	Version   string
-	// Owner is the node's ownership model — "person" or "enterprise"
+	// Owner is the node's ownership model — "person", "enterprise" or "org" (TakesOwnerOrg)
 	// (mesh-specs, goal the-node-serves-its-owners-orgs): a person's
 	// node serves every org they are in, an enterprise's every org the
 	// enterprise has. Sent only when set and the platform's
@@ -1812,10 +1815,10 @@ type NodeAnswer struct {
 	Scopes []ScopeAnswer `json:"scopes"`
 }
 
-// NodeOwner is the NodeAnswer's owner: a person or an enterprise, its
+// NodeOwner is the NodeAnswer's owner: a person, an enterprise or an org, its
 // id and its display name.
 type NodeOwner struct {
-	Kind string `json:"kind"` // "person" or "enterprise"
+	Kind string `json:"kind"` // "person", "enterprise" or "org"
 	ID   string `json:"id"`
 	Name string `json:"name"`
 }
@@ -1958,6 +1961,93 @@ func (c *Client) TakesNodeKind(ctx context.Context) bool {
 // gateway before runsheet#2290 would refuse the whole call on it.
 func (c *Client) TakesNodeCredential(ctx context.Context) bool {
 	return c.takesInputField(ctx, &c.nodeCredentialSchema, "RegisterNodeInput", NodeCredentialField)
+}
+
+// OwnerOrgGateway names the gateway that first takes ownerKind `org`
+// on RegisterNodeInput: the platform half of an org-owned node, runsheet
+// goal a-node-is-owned-by-an-org. It is the goal while that has not
+// merged; when it ships, this becomes the release that carries it, in
+// this one place.
+const OwnerOrgGateway = "runsheet with a-node-is-owned-by-an-org"
+
+// TakesOwnerOrg says whether the gateway's RegisterNodeInput takes
+// `org` as an owner kind: the owner field (OwnerField) is an ENUM whose
+// values include `org`. A gateway without the field, one whose enum
+// lacks `org`, or a failed probe is a no — asked by introspection and
+// kept for ScalingProbeEvery, as TakesNodeKind. A registerNode with
+// ownerKind org on a gateway before a-node-is-owned-by-an-org is
+// refused, so the node asks before it sends one (OwnerOrgGateway).
+func (c *Client) TakesOwnerOrg(ctx context.Context) bool {
+	field := c.OwnerField(ctx)
+	p := &c.ownerOrgSchema
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := c.now()
+	if !p.at.IsZero() && now.Sub(p.at) < ScalingProbeEvery {
+		return p.takes
+	}
+	p.at, p.takes = now, false
+	if field == "" {
+		return false
+	}
+	type typeRef struct {
+		Kind   string `json:"kind"`
+		Name   string `json:"name"`
+		OfType *struct {
+			Kind   string `json:"kind"`
+			Name   string `json:"name"`
+			OfType *struct {
+				Kind string `json:"kind"`
+				Name string `json:"name"`
+			} `json:"ofType"`
+		} `json:"ofType"`
+	}
+	var out struct {
+		Type *struct {
+			InputFields []struct {
+				Name string  `json:"name"`
+				Type typeRef `json:"type"`
+			} `json:"inputFields"`
+		} `json:"__type"`
+	}
+	q := `query($t: String!) { __type(name: $t) { inputFields { name type { kind name ofType { kind name ofType { kind name } } } } } }`
+	if err := c.Query(ctx, q, map[string]any{"t": "RegisterNodeInput"}, &out); err != nil || out.Type == nil {
+		return false
+	}
+	enum := ""
+	for _, f := range out.Type.InputFields {
+		if f.Name != field {
+			continue
+		}
+		// the named type under NON_NULL wrappers
+		switch t := f.Type; {
+		case t.Kind == "ENUM":
+			enum = t.Name
+		case t.OfType != nil && t.OfType.Kind == "ENUM":
+			enum = t.OfType.Name
+		case t.OfType != nil && t.OfType.OfType != nil && t.OfType.OfType.Kind == "ENUM":
+			enum = t.OfType.OfType.Name
+		}
+	}
+	if enum == "" {
+		return false
+	}
+	var values struct {
+		Type *struct {
+			EnumValues []struct {
+				Name string `json:"name"`
+			} `json:"enumValues"`
+		} `json:"__type"`
+	}
+	if err := c.Query(ctx, `query($t: String!) { __type(name: $t) { enumValues { name } } }`, map[string]any{"t": enum}, &values); err != nil || values.Type == nil {
+		return false
+	}
+	for _, v := range values.Type.EnumValues {
+		if v.Name == "org" {
+			p.takes = true
+		}
+	}
+	return p.takes
 }
 
 // ownerProbe is the cached answer to which owner field
