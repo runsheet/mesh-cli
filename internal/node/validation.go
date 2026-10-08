@@ -319,6 +319,60 @@ func (v *buildValidation) usage() []gateway.ValidationMinutes {
 	return out
 }
 
+// attestPushed is every session's end after its last push (goal
+// the-node-attests-the-head-it-pushed): the attestation it uploads names
+// exactly sha — the head origin has — and that commit's tree. When the
+// last run validated another commit (the push landed a different sha, or
+// nothing ran yet, as after a rebase) sha is checked out and validated
+// again first, saying why, so the platform is never handed a commit that
+// is no longer the head. It returns once the upload has completed —
+// recorded, refused, unsupported or failed — so the caller reports the
+// session finished only after it; an error is a run that produced no
+// attestation for sha, never the item's failure.
+// attestPushed is the build's attestation of the head it pushed: a run
+// that produced none for sha is logged and a note, never the item's
+// failure.
+func (r *Runner) attestPushed(ctx context.Context, b *buildRun, v *buildValidation, sha string) {
+	if _, err := r.validator().attestPushed(ctx, b.target(), v, sha); err != nil {
+		msg := "validation: " + b.acct.RedactErr(err).Error() + "; no attestation for " + short(sha)
+		r.logf("item %s: %s", b.label, msg)
+		b.report(ctx, msg)
+	}
+}
+
+func (vr validator) attestPushed(ctx context.Context, t validationTarget, v *buildValidation, sha string) (attestOutcome, error) {
+	var att validate.Attestation
+	if n := len(v.runs); n > 0 {
+		att = v.runs[n-1]
+	}
+	if att.Commit != sha {
+		if att.Commit != "" {
+			vr.logf("%s: validation ran on %s, the push is %s; validating %s", t.prefix, short(att.Commit), short(sha), short(sha))
+		}
+		if err := checkoutHead(ctx, t.dir, sha); err != nil {
+			return attestOutcome{}, err
+		}
+		var err error
+		if att, err = vr.run(ctx, t, v); err != nil {
+			return attestOutcome{}, err
+		}
+		if att.Commit != sha {
+			return attestOutcome{}, fmt.Errorf("validated %s, not the pushed %s", short(att.Commit), short(sha))
+		}
+	}
+	return vr.upload(ctx, t, att), nil
+}
+
+// attestOutcome is what an upload came to: recorded with the receipt's
+// status, refused with the gateway's words, or neither (unsupported or
+// failed, Err set).
+type attestOutcome struct {
+	Recorded bool
+	Status   string
+	Refused  string
+	Err      error
+}
+
 // uploadAttestation hands the platform the run's attestation to sign,
 // on the node's own token — the gateway takes a Latchkey machine token
 // or an rs_* console token and refuses a GitHub one, and it is the node
@@ -333,31 +387,41 @@ func (v *buildValidation) usage() []gateway.ValidationMinutes {
 // failure is a note on the item too, never the item's own failure. In
 // every case — uploaded, refused, unsupported or failed — a copy stays
 // at <workdir>.attestation.json, which the session directory's removal
-// leaves.
-func (r *Runner) uploadAttestation(ctx context.Context, b *buildRun, att validate.Attestation) {
-	r.validator().upload(ctx, b.target(), att)
+// leaves. The log says `attestation recorded <sha> <suites> <status>`
+// or `attestation refused <reason>`.
+func (r *Runner) uploadAttestation(ctx context.Context, b *buildRun, att validate.Attestation) attestOutcome {
+	return r.validator().upload(ctx, b.target(), att)
 }
 
-func (vr validator) upload(ctx context.Context, t validationTarget, att validate.Attestation) {
+func (vr validator) upload(ctx context.Context, t validationTarget, att validate.Attestation) attestOutcome {
 	rec := vr.attester()
 	var err error
+	var receipt map[string]any
 	if rec == nil {
 		err = &gateway.Error{Message: "the node's gateway takes no attestations", Unsupported: true}
 	} else {
-		_, err = rec.RecordValidationAttestation(ctx, t.item.ID, gatewayAttestation(att))
+		receipt, err = rec.RecordValidationAttestation(ctx, t.item.ID, gatewayAttestation(att))
 	}
+	var out attestOutcome
 	switch {
 	case err == nil:
-		vr.logf("%s: validation attestation for %s uploaded", t.prefix, short(att.Commit))
+		status, _ := receipt["status"].(string)
+		if status == "" {
+			status = "no status"
+		}
+		out = attestOutcome{Recorded: true, Status: status}
+		vr.logf("%s: attestation recorded %s %s %s", t.prefix, short(att.Commit), attestedSuites(att), status)
 	case gateway.IsUnsupported(err):
+		out.Err = err
 		once(vr.Notices.attestation(), func() {
 			vr.logf("validation: the platform takes no attestations yet; each is kept beside its checkout as %s (said once, for every item this run)", AttestationFile)
 		})
 	case gateway.IsRefusal(err):
-		note := "validation attestation refused by the platform: " + err.Error()
-		vr.logf("%s: validation attestation refused: %s", t.prefix, err.Error())
-		t.report(ctx, note)
+		out = attestOutcome{Refused: err.Error(), Err: err}
+		vr.logf("%s: attestation refused %s", t.prefix, err.Error())
+		t.report(ctx, "validation attestation refused by the platform: "+err.Error())
 	default:
+		out.Err = err
 		note := "validation attestation: upload failed: " + t.redact(err).Error()
 		vr.logf("%s: %s", t.prefix, note)
 		t.report(ctx, note)
@@ -365,6 +429,20 @@ func (vr validator) upload(ctx context.Context, t validationTarget, att validate
 	if err := writeAttestationAt(t.dir+".attestation.json", att); err != nil {
 		vr.logf("%s: validation: %v", t.prefix, err)
 	}
+	return out
+}
+
+// attestedSuites are the attestation's steps comma-joined, or `no suite
+// affected` when it ran none.
+func attestedSuites(att validate.Attestation) string {
+	names := make([]string, len(att.Steps))
+	for i, s := range att.Steps {
+		names[i] = s.Name
+	}
+	if len(names) == 0 {
+		return "no suite affected"
+	}
+	return strings.Join(names, ",")
 }
 
 // ValidationNotices are the node's once-per-run validation notices,
