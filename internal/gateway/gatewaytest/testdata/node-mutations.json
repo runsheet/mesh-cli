@@ -1,0 +1,70 @@
+{
+  "description": "Per node mutation and bearer kind (a person's rs_* console token or a Latchkey machine credential), the input fields the gateway requires and the ones it refuses. Transcribed from runsheet ADR 039 and the rule table in runsheet's gateway/scope_node.go; refreshed from runsheet's specs/contracts/node-mutations.json (mesh-cli ADR-026).",
+  "kind": "rules",
+  "mutations": {
+    "claimWorkItem": {
+      "inputType": "ClaimWorkItemInput",
+      "machine": {
+        "refused": [],
+        "required": [
+          "aggregateId",
+          "namespace",
+          "nodeId"
+        ]
+      },
+      "person": {
+        "refused": [],
+        "required": [
+          "aggregateId",
+          "namespace",
+          "nodeId"
+        ]
+      }
+    },
+    "heartbeatNode": {
+      "inputType": "HeartbeatNodeInput",
+      "machine": {
+        "refused": [],
+        "required": [
+          "aggregateId",
+          "namespace"
+        ]
+      },
+      "person": {
+        "refused": [],
+        "required": [
+          "aggregateId",
+          "namespace"
+        ]
+      }
+    },
+    "registerNode": {
+      "inputType": "RegisterNodeInput",
+      "machine": {
+        "refused": [
+          "replacesCredentialId"
+        ],
+        "required": [
+          "aggregateId",
+          "credentialId",
+          "name",
+          "namespace",
+          "slug"
+        ]
+      },
+      "person": {
+        "refused": [
+          "credentialId",
+          "owner"
+        ],
+        "required": [
+          "aggregateId",
+          "name",
+          "namespace",
+          "slug"
+        ]
+      }
+    }
+  },
+  "source": "runsheet/runsheet specs/contracts/node-mutations.json"
+}
