@@ -135,7 +135,7 @@ func saveToken(tok string) error {
 	gw := gateway.New(gatewayURL(), strings.TrimSpace(tok))
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	id, err := gw.SignIn(ctx)
+	id, err := gw.SignIn(ctx) // guarded: an rs_* console token (SaveToken refuses any other), !cred.IsMachine()
 	if err != nil {
 		return fmt.Errorf("token saved, but the gateway refused it: %w", err)
 	}
@@ -186,13 +186,19 @@ var nodeRegisterCmd = &cobra.Command{
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
-		// an org-owned node has no person to sign in (the org owns it)
+		// an org-owned node has no person to sign in (the org owns it); a
+		// machine credential's owner is its operator, never signIn's
 		var me string
+		cred := clientCredential(gw)
 		if owner == "org" {
 			if !gw.TakesOwnerOrg(ctx) {
 				return node.ErrOwnerOrgGateway
 			}
-		} else if me, err = gw.SignIn(ctx); err != nil {
+		} else if !cred.IsMachine() {
+			if me, err = gw.SignIn(ctx); err != nil { // guarded: !cred.IsMachine()
+				return err
+			}
+		} else if me, err = machineOwnerID(cred, owner); err != nil {
 			return err
 		}
 		slug := strings.TrimSpace(nodeSlugFlag)
@@ -241,6 +247,25 @@ var nodeRegisterCmd = &cobra.Command{
 		fmt.Printf("Registered node %s (%s) in %s, capacity %s. Saved %s.\nStart it with: mesh node start\n", cfg.Name, slug, strings.Join(reg.Scopes.Names(), ", "), cfg.Capacity, path)
 		return nil
 	},
+}
+
+// machineOwnerID is the owner id of a node on a machine credential: the
+// operator the machine acts for — the token file's userId, else the
+// access token's operator.sub — never signIn, which the platform refuses
+// for a machine bearer (`signIn: a person's own, not a machine's`). An
+// enterprise-owned node registers on the enterprise's id, so a machine
+// that names no operator is refused only when the owner is a person.
+func machineOwnerID(cred *auth.Credential, ownerKind string) (string, error) {
+	id := strings.TrimSpace(cred.Machine.UserID)
+	if id == "" {
+		if claims, err := latchkey.ParseClaims(cred.Machine.AccessToken); err == nil {
+			id = strings.TrimSpace(claims.Operator.Sub)
+		}
+	}
+	if id == "" && ownerKind != "enterprise" {
+		return "", errors.New("the machine credential names no operator (userId or the access token's operator.sub); set owner_id in node.yaml or run `mesh node login` again")
+	}
+	return id, nil
 }
 
 // registrar is node.Register's steps on the platform client: the
@@ -1175,8 +1200,16 @@ func registerNode(ctx context.Context, cmd *cobra.Command, logger *log.Logger, u
 			if !gw.TakesOwnerOrg(regCtx) {
 				return node.ErrOwnerOrgGateway
 			}
-		} else if cfg.OwnerID == "" {
-			owner, err := gw.SignIn(regCtx)
+		} else if cred := clientCredential(gw); cfg.OwnerID == "" && cred.IsMachine() {
+			// signIn is a person's mutation, refused for a machine bearer:
+			// the owner is the operator the machine acts for
+			owner, err := machineOwnerID(cred, cfg.OwnerKind())
+			if err != nil {
+				return err
+			}
+			cfg.OwnerID = owner
+		} else if cfg.OwnerID == "" && !cred.IsMachine() {
+			owner, err := gw.SignIn(regCtx) // guarded: !cred.IsMachine()
 			if err != nil {
 				return err
 			}
