@@ -71,15 +71,16 @@ func TestRegisterNotYoursNamesTheCredentialSent(t *testing.T) {
 	}
 }
 
-// A machine token that yielded no id sends none, is refused, and says
-// why none was sent.
+// A machine token that yielded no id sends none and is refused: the
+// node-mutations rule requires credentialId on a machine bearer, and the
+// refusal names the field and the bearer kind.
 func TestRegisterNotYoursWithNoCredentialID(t *testing.T) {
 	f := gatewaytest.New("rs_test")
 	defer f.Close()
 	f.TakesNodeCredential = true
 	f.NodeCredentialID = "aaaaaaaa-0000-4000-8000-000000000000"
 	_, err := Register(context.Background(), fakeRegistrar(f, "", true), ownedCfg(), nil)
-	if err == nil || !strings.Contains(err.Error(), "not yours") || !strings.Contains(err.Error(), "sent no credentialId") {
-		t.Fatalf("Register error = %v, want not yours and sent no credentialId", err)
+	if err == nil || !strings.Contains(err.Error(), "credentialId is required on a machine bearer") {
+		t.Fatalf("Register error = %v, want credentialId is required on a machine bearer", err)
 	}
 }
