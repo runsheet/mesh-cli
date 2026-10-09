@@ -51,7 +51,7 @@ func registerInputs(t *testing.T, f *gatewaytest.Fake) []map[string]any {
 // bearer's registration without it (runsheet#2290).
 func TestNodeStartOnMachineTokenSendsCredentialID(t *testing.T) {
 	f := credentialFake(t)
-	access := machineJWT("machine:" + credMachine)
+	access := machineOperatorJWT("machine:"+credMachine, f.UserID)
 	f.Token = access
 	f.TakesNodeCredential = true
 	f.NodeCredentialID = credMachine
@@ -106,7 +106,7 @@ func TestNodeCredentialIDFallsBackToAccessTokenSub(t *testing.T) {
 // RegisterNodeInput: the machine registers without it and says why.
 func TestNodeStartLeavesCredentialIDOutOnAnOlderGateway(t *testing.T) {
 	f := credentialFake(t)
-	access := machineJWT("machine:" + credMachine)
+	access := machineOperatorJWT("machine:"+credMachine, f.UserID)
 	f.Token = access
 	f.TakesNodeCredential = false
 	logs := startAgainstOn(t, f, machineToken(t, access, credMachine))
