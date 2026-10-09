@@ -7,6 +7,7 @@ package gatewaytest
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -790,6 +791,13 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 			writeErrors(w, 200, fmt.Sprintf("Cannot query field %q on type \"Mutation\".", m[2]))
 			return
 		}
+		// the recorded rule of the node's mutations (mesh-cli ADR-026),
+		// by bearer kind, before anything else of the mutation runs
+		if msg := f.ruleRefusal(m[2], in, bearer); msg != "" {
+			f.Calls = append(f.Calls, Call{Name: m[2], Input: in, At: time.Now(), Bearer: bearer, Query: q})
+			writeErrors(w, 200, msg)
+			return
+		}
 		if m[2] == "proposeGoalSplit" && !f.GoalSplit {
 			// goal a-goal-fits-in-eight-items is still queued: the
 			// platform's Mutation has no proposeGoalSplit yet, the same
@@ -1285,6 +1293,103 @@ func (f *Fake) heartbeatInputType() map[string]any {
 		fields = append(fields, row)
 	}
 	return map[string]any{"inputFields": fields}
+}
+
+// BearerKind is the kind of bearer the fake sees: "machine" for its
+// Token while NodeCredentialID makes it a machine credential, else
+// "person" (item bearers included).
+func (f *Fake) BearerKind(bearer string) string {
+	if f.NodeCredentialID != "" && bearer == f.Token {
+		return "machine"
+	}
+	return "person"
+}
+
+// ruleRefusal checks a registerNode, heartbeatNode or claimWorkItem input
+// against testdata/node-mutations.json's rule for the bearer's kind and
+// answers the refusal naming the field and the kind, "" when it passes
+// or the mutation has no rule. A field the fake's schema does not have
+// is never required, and one a knob makes the schema predate
+// (schemaPredates) is left to the schema's "Unknown field", as a
+// platform before it answers.
+func (f *Fake) ruleRefusal(name string, in map[string]any, bearer string) string {
+	switch name {
+	case "registerNode", "heartbeatNode", "claimWorkItem":
+	default:
+		return ""
+	}
+	rules, err := NodeMutationRules()
+	if err != nil {
+		return "node-mutations fixture: " + err.Error()
+	}
+	rule, ok := rules.Mutations[name]
+	if !ok {
+		return ""
+	}
+	kind := f.BearerKind(bearer)
+	br := rule.Person
+	if kind == "machine" {
+		br = rule.Machine
+	}
+	known := BearerRule{}
+	for _, fld := range br.Required {
+		if f.schemaHas(name, fld) {
+			known.Required = append(known.Required, fld)
+		}
+	}
+	for _, fld := range br.Refused {
+		if !f.schemaPredates(name, fld) {
+			known.Refused = append(known.Refused, fld)
+		}
+	}
+	var fe *FieldError
+	if err := known.Check(name, kind, in); errors.As(err, &fe) {
+		return fmt.Sprintf("%s: %s is %s on a %s bearer", fe.Mutation, fe.Field, fe.Reason, fe.Bearer)
+	}
+	return ""
+}
+
+// schemaHas is whether the fake's input type for mutation has field, by
+// the knobs that model an older platform's schema.
+func (f *Fake) schemaHas(mutation, field string) bool {
+	if f.UnknownFields[field] {
+		return false
+	}
+	if mutation != "registerNode" {
+		return true
+	}
+	switch field {
+	case "owner", "ownerKind":
+		return field == f.ownerField()
+	case gateway.NodeKindField:
+		return f.TakesNodeKind
+	case gateway.NodeCredentialField:
+		return f.TakesNodeCredential
+	}
+	return true
+}
+
+// schemaPredates is whether a knob makes the fake's schema one before
+// the rule refusing field: the field hidden by UnknownFields, a
+// credentialId or kind the schema does not take, or OwnerFieldLegacy's
+// `owner`, there the owner kind's own spelling and the field to send.
+// A refused field it carries is answered by the schema, not the rule.
+func (f *Fake) schemaPredates(mutation, field string) bool {
+	if f.UnknownFields[field] {
+		return true
+	}
+	if mutation != "registerNode" {
+		return false
+	}
+	switch field {
+	case "owner":
+		return f.OwnerFieldLegacy
+	case gateway.NodeKindField:
+		return !f.TakesNodeKind
+	case gateway.NodeCredentialField:
+		return !f.TakesNodeCredential
+	}
+	return false
 }
 
 // notYours is the machine branch of the platform's registersNode and

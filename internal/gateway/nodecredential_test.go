@@ -33,11 +33,14 @@ func registerWithCredential(t *testing.T, f *gatewaytest.Fake, credentialID stri
 }
 
 // A machine's registration names its own credential when the schema
-// takes credentialId, and the row records it.
+// takes credentialId, and the row records it. The bearer is the machine
+// (NodeCredentialID): a person's bearer sending credentialId is refused
+// by the node-mutations rule.
 func TestRegisterNodeSendsCredentialIDWhenSetAndTaken(t *testing.T) {
 	f := gatewaytest.New("rs_test")
 	defer f.Close()
 	f.TakesNodeCredential = true
+	f.NodeCredentialID = machineID
 	in := registerWithCredential(t, f, machineID)
 	if in[gateway.NodeCredentialField] != machineID {
 		t.Fatalf("registerNode credentialId = %v, want %s: %+v", in[gateway.NodeCredentialField], machineID, in)
