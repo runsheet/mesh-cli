@@ -490,6 +490,29 @@ func (g *Git) PushedHead(ctx context.Context, dir, branch, base string) (string,
 	return head, nil
 }
 
+// FetchHead fetches origin's branch into dir under the per-repo fetch
+// lock (ADR-023) and makes sure head is there: the head a refusal named
+// as newer than the one pushed (goal the-node-attests-the-head-it-pushed).
+// A head the branch no longer leads to is asked for by its sha; one origin
+// does not have is an error.
+func (g *Git) FetchHead(ctx context.Context, dir, branch, head string) error {
+	root, key := g.lockRoot("", dir), g.repoKeyOf(ctx, dir)
+	refspec := "+refs/heads/" + branch + ":refs/remotes/origin/" + branch
+	if _, err := g.fetchLocked(ctx, root, key, dir, "git", "fetch", "--quiet", "origin", refspec); err != nil {
+		return err
+	}
+	if _, err := g.run(ctx, dir, "git", "cat-file", "-e", head+"^{commit}"); err == nil {
+		return nil
+	}
+	if _, err := g.fetchLocked(ctx, root, key, dir, "git", "fetch", "--quiet", "origin", head); err != nil {
+		return fmt.Errorf("origin's %s has no %s: %w", branch, short(head), err)
+	}
+	if _, err := g.run(ctx, dir, "git", "cat-file", "-e", head+"^{commit}"); err != nil {
+		return fmt.Errorf("origin's %s has no %s", branch, short(head))
+	}
+	return nil
+}
+
 // ContextDir is where the goal's context documents land in a workspace.
 const ContextDir = ".mesh/context"
 

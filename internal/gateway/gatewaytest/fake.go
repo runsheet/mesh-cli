@@ -81,6 +81,14 @@ type Fake struct {
 	// Refuse maps a mutation name to a refusal message (returned as a
 	// GraphQL error) — for tests of "someone else has it".
 	Refuse map[string]string
+	// RefuseOnce queues, per mutation, refusals each answered to one call
+	// in turn before Refuse and the ordinary answer: the first call gets
+	// the first message, the second the next, and a call past the queue
+	// is answered as it otherwise would be. Only recordValidationAttestation
+	// reads it — a refusal naming a newer head, then a recorded upload
+	// (goal the-node-attests-the-head-it-pushed). A test queueing one while
+	// the node runs uses RefuseNext, under the fake's lock.
+	RefuseOnce map[string][]string
 	// FailReads maps an index list name (goalIndexs) or a get
 	// (workItemIndex) to an error it answers with instead of rows; a
 	// list's key may name one where, workItemIndexs/status=review, to
@@ -497,6 +505,17 @@ func (f *Fake) RequestPlans() []PlanRequest {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]PlanRequest(nil), f.PlanRequests...)
+}
+
+// RefuseNext queues msg on RefuseOnce[mutation] under the fake's lock,
+// for a test that learns the words while the node runs.
+func (f *Fake) RefuseNext(mutation, msg string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.RefuseOnce == nil {
+		f.RefuseOnce = map[string][]string{}
+	}
+	f.RefuseOnce[mutation] = append(f.RefuseOnce[mutation], msg)
 }
 
 func (f *Fake) CallsNamed(name string) []Call {
@@ -2254,6 +2273,11 @@ func (f *Fake) recordValidationAttestation(w http.ResponseWriter, q string, vars
 	id, _ := vars["id"].(string)
 	in, _ := vars["in"].(map[string]any)
 	f.Calls = append(f.Calls, Call{Name: field, Input: map[string]any{"workItemId": id, "input": in}, At: time.Now(), Bearer: bearer})
+	if q := f.RefuseOnce[field]; len(q) > 0 {
+		f.RefuseOnce[field] = q[1:]
+		writeErrors(w, 200, q[0])
+		return
+	}
 	if msg := f.Refuse[field]; msg != "" {
 		writeErrors(w, 200, msg)
 		return

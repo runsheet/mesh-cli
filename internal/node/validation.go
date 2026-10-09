@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -329,8 +330,13 @@ func (v *buildValidation) usage() []gateway.ValidationMinutes {
 // recorded, refused, unsupported or failed — so the caller reports the
 // session finished only after it; an error is a run that produced no
 // attestation for sha, never the item's failure.
-// attestPushed is the build's attestation of the head it pushed: a run
-// that produced none for sha is logged and a note, never the item's
+//
+// A refusal naming a newer head — `<sha> is not the head of <branch>
+// (GitHub has <X>)`, another push landed on the branch after this one —
+// is answered once (answerNewerHead): X fetched, validated and attested.
+//
+// Runner.attestPushed is the build's attestation of the head it pushed: a
+// run that produced none for sha is logged and a note, never the item's
 // failure.
 func (r *Runner) attestPushed(ctx context.Context, b *buildRun, v *buildValidation, sha string) {
 	if _, err := r.validator().attestPushed(ctx, b.target(), v, sha); err != nil {
@@ -360,13 +366,108 @@ func (vr validator) attestPushed(ctx context.Context, t validationTarget, v *bui
 			return attestOutcome{}, fmt.Errorf("validated %s, not the pushed %s", short(att.Commit), short(sha))
 		}
 	}
-	return vr.upload(ctx, t, att), nil
+	out := vr.upload(ctx, t, att)
+	out.Pushed = att
+	if branch, newer, ok := newerHead(out.Refused, sha); ok {
+		vr.answerNewerHead(ctx, t, v, branch, newer)
+	}
+	return out, nil
+}
+
+// notTheHead is the gateway's refusal of a commit that is no longer its
+// branch's head (runsheet gateway/attestation.go, the holder rule):
+// `<sha> is not the head of <branch> (GitHub has <X>)`.
+var notTheHead = regexp.MustCompile(`([0-9a-f]{7,64}) is not the head of (\S+) \(GitHub has ([0-9a-f]{7,64})\)`)
+
+// newerHead reads a refusal naming another head than sha: the branch and
+// the head GitHub has, ok false for any other refusal or one naming sha
+// itself.
+func newerHead(refused, sha string) (branch, head string, ok bool) {
+	m := notTheHead.FindStringSubmatch(refused)
+	if m == nil || m[3] == sha {
+		return "", "", false
+	}
+	return m[2], m[3], true
+}
+
+// answerNewerHead answers a refusal naming a newer head, once: head is
+// fetched from origin's branch under the per-repo fetch lock, checked out
+// detached, validated exactly as the pushed head was and its attestation
+// uploaded. A head that cannot be fetched, a validation that fails or
+// cannot run on it, or a second refusal of any kind is logged `attestation
+// refused <reason>` and the session finishes as it would have: never the
+// item's failure, never asked again. The checkout goes back where it was.
+func (vr validator) answerNewerHead(ctx context.Context, t validationTarget, v *buildValidation, branch, head string) {
+	vr.logf("%s: the platform names a newer head of %s, %s; validating it once", t.prefix, branch, short(head))
+	refused := func(why string) {
+		msg := fmt.Sprintf("newer head %s: %s", short(head), why)
+		vr.logf("%s: attestation refused %s", t.prefix, msg)
+		t.report(ctx, "validation attestation refused: "+msg)
+	}
+	back, err := gitPosition(ctx, t.dir)
+	if err != nil {
+		refused(err.Error())
+		return
+	}
+	defer func() {
+		if err := checkoutHead(ctx, t.dir, back); err != nil {
+			vr.logf("%s: validation: back to %s: %v", t.prefix, back, err)
+		}
+	}()
+	if err := vr.headFetcher().FetchHead(ctx, t.dir, branch, head); err != nil {
+		refused("fetch: " + t.redact(err).Error())
+		return
+	}
+	if err := checkoutHead(ctx, t.dir, head); err != nil {
+		refused(err.Error())
+		return
+	}
+	att, err := vr.run(ctx, t, v)
+	if err != nil {
+		refused("validation: " + t.redact(err).Error())
+		return
+	}
+	if att.Commit != head {
+		refused(fmt.Sprintf("validated %s, not %s", short(att.Commit), short(head)))
+		return
+	}
+	if failed, ok := failedStep(att); ok {
+		refused((&validationFailure{Step: failed}).Error())
+		return
+	}
+	vr.upload(ctx, t, att)
+}
+
+// headFetcher fetches a branch's head into a checkout (*Git); the
+// validator's Workspacer when it is one, else a plain Git.
+type headFetcher interface {
+	FetchHead(ctx context.Context, dir, branch, head string) error
+}
+
+func (vr validator) headFetcher() headFetcher {
+	if f, ok := vr.WS.(headFetcher); ok {
+		return f
+	}
+	return &Git{}
+}
+
+// gitPosition is where the checkout is: its branch's name, else (a
+// detached HEAD) its commit.
+func gitPosition(ctx context.Context, dir string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "symbolic-ref", "--quiet", "--short", "HEAD")
+	cmd.Dir = dir
+	if out, err := cmd.Output(); err == nil {
+		return strings.TrimSpace(string(out)), nil
+	}
+	return gitHead(ctx, dir)
 }
 
 // attestOutcome is what an upload came to: recorded with the receipt's
 // status, refused with the gateway's words, or neither (unsupported or
 // failed, Err set).
 type attestOutcome struct {
+	// Pushed is the run attestPushed uploaded: the pushed head's.
+	Pushed   validate.Attestation
 	Recorded bool
 	Status   string
 	Refused  string
