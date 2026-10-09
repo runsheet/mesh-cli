@@ -329,8 +329,7 @@ func registrar(gw *gateway.Client, cfg *node.Config) node.Registrar {
 			return id, nil
 		},
 		RegisterOwner: func(ctx context.Context, nodeID, orgID, ownerID string) (*gateway.NodeAnswer, error) {
-			return gw.RegisterNode(ctx, gateway.RegisterNodeInput{NodeID: nodeID, OrgID: orgID, OwnerID: ownerID, Name: cfg.Name, Slug: cfg.Slug,
-				Harnesses: []string{"claude-code"}, Capacity: cfg.Capacity.Max, Version: version.Resolved(), Owner: cfg.OwnerKind(), CredentialID: credID})
+			return gw.RegisterNode(ctx, node.RegisterInput(cfg, nodeID, orgID, ownerID, cfg.OwnerKind(), credID, version.Resolved()))
 		},
 		RegisterIn: func(ctx context.Context, scopes node.Scopes) error { return registerIn(ctx, gw, cfg, scopes) },
 	}
@@ -342,8 +341,7 @@ func registrar(gw *gateway.Client, cfg *node.Config) node.Registrar {
 func registerIn(ctx context.Context, gw *gateway.Client, cfg *node.Config, scopes node.Scopes) error {
 	credID := nodeCredentialID(clientCredential(gw))
 	for _, sc := range scopes {
-		if _, err := gw.RegisterNode(ctx, gateway.RegisterNodeInput{NodeID: sc.NodeID, OrgID: sc.ID, OwnerID: cfg.OwnerID, Name: cfg.Name, Slug: cfg.Slug,
-			Harnesses: []string{"claude-code"}, Capacity: cfg.Capacity.Max, Version: version.Resolved(), CredentialID: credID}); err != nil {
+		if _, err := gw.RegisterNode(ctx, node.RegisterInput(cfg, sc.NodeID, sc.ID, cfg.OwnerID, "", credID, version.Resolved())); err != nil {
 			return fmt.Errorf("register in %s: %w", sc.Name(), err)
 		}
 	}

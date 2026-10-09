@@ -382,6 +382,16 @@ func (c *Client) Mutate(ctx context.Context, field, aggregateID string, input ma
 	return c.MutateFields(ctx, field, aggregateID, input, "status", nil)
 }
 
+// MutationInput is the input Mutate sends: aggregateId and namespace
+// from aggregateID, then input's fields (the actor aside).
+func MutationInput(aggregateID string, input map[string]any) map[string]any {
+	in := map[string]any{"aggregateId": aggregateID, "namespace": NS}
+	for k, v := range input {
+		in[k] = v
+	}
+	return in
+}
+
 // MutateFields is Mutate with the mutation's payload selection named by
 // fields (beside `status`, always asked for) and decoded into out — nil
 // discards it, as Mutate does. A field the platform's payload type does
@@ -389,10 +399,7 @@ func (c *Client) Mutate(ctx context.Context, field, aggregateID string, input ma
 // caller decides what that means (RegisterNode and HeartbeatNode read
 // it as no answer, not an error).
 func (c *Client) MutateFields(ctx context.Context, field, aggregateID string, input map[string]any, fields string, out any) error {
-	in := map[string]any{"aggregateId": aggregateID, "namespace": NS}
-	for k, v := range input {
-		in[k] = v
-	}
+	in := MutationInput(aggregateID, input)
 	c.withActor(ctx, field, in)
 	typ := strings.ToUpper(field[:1]) + field[1:] + "Input"
 	q := fmt.Sprintf("mutation($in: %s!) { %s(input: $in) { %s } }", typ, field, fields)
@@ -1927,6 +1934,22 @@ const NodeAnswerRetry = 10 * time.Minute
 // platform's answer to who owns it and which orgs it now serves (nil
 // on a platform that does not answer that yet).
 func (c *Client) RegisterNode(ctx context.Context, in RegisterNodeInput) (*NodeAnswer, error) {
+	ownerField := ""
+	if in.Owner != "" {
+		ownerField = c.OwnerField(ctx)
+	}
+	takesKind := in.Kind != "" && c.TakesNodeKind(ctx)
+	takesCredential := in.CredentialID != "" && c.TakesNodeCredential(ctx)
+	return c.mutateForAnswer(ctx, "registerNode", in.NodeID, RegisterNodeFields(in, ownerField, takesKind, takesCredential))
+}
+
+// RegisterNodeFields is the registerNode input RegisterNode sends for
+// in, less the aggregateId and namespace Mutate sets (MutationInput),
+// on a schema whose owner field is ownerField ("" none) and which takes
+// `kind` and `credentialId` as the two flags say. Pure, so a test can
+// check what the node sends against the recorded rule fixture without
+// a gateway (mesh-cli ADR-026).
+func RegisterNodeFields(in RegisterNodeInput, ownerField string, takesKind, takesCredential bool) map[string]any {
 	harnesses := in.Harnesses
 	if harnesses == nil {
 		harnesses = []string{}
@@ -1935,18 +1958,16 @@ func (c *Client) RegisterNode(ctx context.Context, in RegisterNodeInput) (*NodeA
 		"orgId": in.OrgID, "ownerId": in.OwnerID, "name": in.Name, "slug": in.Slug,
 		"harnesses": harnesses, "capacity": in.Capacity, "version": in.Version,
 	}
-	if in.Owner != "" {
-		if field := c.OwnerField(ctx); field != "" {
-			input[field] = in.Owner
-		}
+	if in.Owner != "" && ownerField != "" {
+		input[ownerField] = in.Owner
 	}
-	if in.Kind != "" && c.TakesNodeKind(ctx) {
+	if in.Kind != "" && takesKind {
 		input[NodeKindField] = in.Kind
 	}
-	if in.CredentialID != "" && c.TakesNodeCredential(ctx) {
+	if in.CredentialID != "" && takesCredential {
 		input[NodeCredentialField] = in.CredentialID
 	}
-	return c.mutateForAnswer(ctx, "registerNode", in.NodeID, input)
+	return input
 }
 
 // TakesNodeKind says whether the gateway's RegisterNodeInput has a

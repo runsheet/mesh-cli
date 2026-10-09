@@ -84,6 +84,18 @@ type Registrar struct {
 	CredentialLine func(ctx context.Context) string
 }
 
+// RegisterInput is the registerNode a node with cfg sends for nodeID
+// in orgID: owner is the owner kind on the owner contract (cfg.OwnerKind,
+// "" on the legacy per-org one), credentialID the machine id of its
+// Latchkey credential ("" on a console token). `mesh node start`'s
+// RegisterOwner and RegisterIn both build it here, so the tests that
+// check it against the gateway's rule fixture check what is sent
+// (mesh-cli ADR-026).
+func RegisterInput(cfg *Config, nodeID, orgID, ownerID, owner, credentialID, version string) gateway.RegisterNodeInput {
+	return gateway.RegisterNodeInput{NodeID: nodeID, OrgID: orgID, OwnerID: ownerID, Name: cfg.Name, Slug: cfg.Slug,
+		Harnesses: []string{"claude-code"}, Capacity: cfg.Capacity.Max, Version: version, Owner: owner, CredentialID: credentialID}
+}
+
 // NotYoursLine is what an operator needs beside a registration the
 // gateway refused `not yours` on a machine credential (runsheet#2290's
 // registersNode machine branch): the credentialId the node sent — the
