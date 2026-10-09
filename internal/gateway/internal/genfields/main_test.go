@@ -1,6 +1,9 @@
 package main
 
 import (
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -59,4 +62,61 @@ func TestGenerateRefusesAnUnsortedList(t *testing.T) {
 	if err := generate(schema, fields, out); err == nil || !strings.Contains(err.Error(), "out of order") {
 		t.Fatalf("err = %v, want out of order", err)
 	}
+}
+
+func TestRefreshRules(t *testing.T) {
+	const canonical = "{\n  \"a\": 1,\n  \"b\": {\n    \"x\": [\n      \"<y>\"\n    ],\n    \"z\": true\n  }\n}\n"
+	const unsorted = `{"b":{"z":true,"x":["<y>"]},"a":1}`
+	const old = "{\"old\": true}\n"
+	serve := func(status int, body string) string {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(status)
+			io.WriteString(w, body)
+		}))
+		t.Cleanup(srv.Close)
+		return srv.URL
+	}
+	run := func(t *testing.T, status int, body, initial string) (changed bool, err error, got string) {
+		path := filepath.Join(t.TempDir(), "node-mutations.json")
+		if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		changed, err = refreshRules(serve(status, body), path)
+		b, rerr := os.ReadFile(path)
+		if rerr != nil {
+			t.Fatal(rerr)
+		}
+		return changed, err, string(b)
+	}
+
+	t.Run("changed body with unsorted keys is rewritten canonically", func(t *testing.T) {
+		changed, err, got := run(t, 200, unsorted, old)
+		if err != nil || !changed || got != canonical {
+			t.Fatalf("changed=%v err=%v got=%q", changed, err, got)
+		}
+	})
+	t.Run("identical body leaves the file", func(t *testing.T) {
+		changed, err, got := run(t, 200, unsorted, canonical)
+		if err != nil || changed || got != canonical {
+			t.Fatalf("changed=%v err=%v got=%q", changed, err, got)
+		}
+	})
+	t.Run("404 leaves the file and is no error", func(t *testing.T) {
+		changed, err, got := run(t, 404, "not found", old)
+		if err != nil || changed || got != old {
+			t.Fatalf("changed=%v err=%v got=%q", changed, err, got)
+		}
+	})
+	t.Run("500 is an error and leaves the file", func(t *testing.T) {
+		changed, err, got := run(t, 500, "boom", old)
+		if err == nil || changed || got != old {
+			t.Fatalf("changed=%v err=%v got=%q", changed, err, got)
+		}
+	})
+	t.Run("malformed body is an error and leaves the file", func(t *testing.T) {
+		changed, err, got := run(t, 200, `{"a":`, old)
+		if err == nil || changed || got != old {
+			t.Fatalf("changed=%v err=%v got=%q", changed, err, got)
+		}
+	})
 }
