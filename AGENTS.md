@@ -247,7 +247,16 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   (`node.Registrar.CredentialID`, the token's machine id) as
   `credentialId` only when `TakesNodeCredential` says the schema has it,
   and a `not yours` refusal names the id sent (`node.NotYoursLine`;
-  ADR-015's amendment 2026-10-07, runsheet#2290). The loop's
+  ADR-015's amendment 2026-10-07, runsheet#2290). The `gatewaytest`
+  fake checks every `registerNode`, `heartbeatNode` and `claimWorkItem`
+  input against `internal/gateway/gatewaytest/testdata/node-mutations.json`
+  — per mutation and bearer kind (person or machine) the fields the
+  gateway requires and refuses — refusing a miss or a refused field by
+  name, and `TestNodeMutationsOnBothBearers` runs the node's register,
+  heartbeat and claim on both kinds (mesh-cli ADR-026).
+  A change to a node mutation's rule regenerates node-mutations.json in runsheet (specs/contracts/, from gateway/scope_node.go, checked by TestContracts) and arrives here through the schema-refresh pull request;
+  `genfields -refresh-rules` rewrites the copy — never hand-edit it
+  to make a test pass. The loop's
   `evaluateHeld` makes it for an `evaluating` item another node (or
   none) holds before the evaluation starts, re-reading the item after
   it, a refusal ordinary and silent; only when the `Mutation` has it

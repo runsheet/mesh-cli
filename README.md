@@ -2567,6 +2567,19 @@ regenerated file. CI never reads the live gateway; the daily
 `schema-refresh` workflow (`.github/workflows/schema-refresh.yml`, also
 run by hand) does, and opens or updates the PR on `bot/schema-refresh`.
 
+The same pull request carries the node mutations' rule fixture,
+`internal/gateway/gatewaytest/testdata/node-mutations.json`: per
+`registerNode`, `heartbeatNode` and `claimWorkItem` and per bearer kind
+(a person's `rs_*` token or a machine credential), the input fields the
+gateway requires and refuses. runsheet generates it
+(`specs/contracts/node-mutations.json`, checked by its TestContracts)
+and `go run ./internal/genfields -refresh-rules` rewrites the committed
+copy. The `gatewaytest` fake refuses any of those inputs that breaks
+the rule for its bearer, naming the field and the kind, so a field the
+gateway starts to require fails `go test` here rather than refusing a
+node in production (docs/adr/adr-026). A rule change arrives only
+through that pull request: never hand-edit the copy to make a test pass.
+
 ## Release
 
 Releases are cut on merge. Every merge to `main` that changes the node
