@@ -1,0 +1,69 @@
+{
+  "kind": "rules",
+  "mutations": {
+    "claimWorkItem": {
+      "inputType": "ClaimWorkItemInput",
+      "machine": {
+        "refused": [],
+        "required": [
+          "aggregateId",
+          "namespace"
+        ]
+      },
+      "person": {
+        "refused": [],
+        "required": [
+          "aggregateId",
+          "namespace"
+        ]
+      }
+    },
+    "heartbeatNode": {
+      "inputType": "HeartbeatNodeInput",
+      "machine": {
+        "refused": [],
+        "required": [
+          "aggregateId",
+          "namespace"
+        ]
+      },
+      "person": {
+        "refused": [],
+        "required": [
+          "aggregateId",
+          "namespace"
+        ]
+      }
+    },
+    "registerNode": {
+      "inputType": "RegisterNodeInput",
+      "machine": {
+        "refused": [
+          "replacesCredentialId"
+        ],
+        "required": [
+          "aggregateId",
+          "credentialId",
+          "name",
+          "namespace",
+          "ownerKind",
+          "slug"
+        ]
+      },
+      "person": {
+        "refused": [
+          "credentialId",
+          "owner"
+        ],
+        "required": [
+          "aggregateId",
+          "name",
+          "namespace",
+          "ownerKind",
+          "slug"
+        ]
+      }
+    }
+  },
+  "source": "gateway/scope_node.go, gateway/scope_workitem.go"
+}
