@@ -389,6 +389,9 @@ var nodeStatusCmd = &cobra.Command{
 		fmt.Println(local)
 		fmt.Println(takesStatusLine(cfg))
 		fmt.Println(hostConfigLine(cfg.Host))
+		if line, ok := attestationsStatusLine(state, time.Now()); ok {
+			fmt.Println(line)
+		}
 		scaling, scales := localScaling(state)
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 		fmt.Fprintln(w, "ORG\tNAME\tSLUG\tSTATUS\tRUNNING\tCAPACITY\tVERSION\tLAST_SEEN")
@@ -596,6 +599,20 @@ func hostConfigLine(h node.HostConfig) string {
 // "90" — never a trailing ".0".
 func hostStatusNum(f float64) string {
 	return strconv.FormatFloat(f, 'f', -1, 64)
+}
+
+// attestationsStatusLine is `mesh node status`'s count of the hour's
+// attestation outcomes as the node left them in node.attestations,
+// `attestations: 2 recorded, 1 refused (last hour)`, and true; false
+// when no node on this machine has left any. The file outlives the
+// process, so a node stopped inside the hour still shows its last.
+func attestationsStatusLine(state node.RunState, now time.Time) (string, bool) {
+	rows, ok := state.Attestations()
+	if !ok {
+		return "", false
+	}
+	rec, ref := node.CountAttestations(rows, now)
+	return fmt.Sprintf("attestations: %d recorded, %d refused (last hour)", rec, ref), true
 }
 
 // localScaling is the capacity the node on this machine has in force
@@ -979,6 +996,12 @@ func nodeStart(cmd *cobra.Command, args []string, logger *log.Logger) error {
 		return fmt.Errorf("pidfile: %w", err)
 	}
 	defer state.Stopped(pid)
+	// every session's recorded and refused attestations, counted for the
+	// hour: the health line carries them and node.attestations keeps them
+	// for `mesh node status` (goal the-node-attests-the-head-it-pushed)
+	attestations := &node.AttestationCounts{State: &state}
+	validationNotices.Counts = attestations
+	loop.Attestations = attestations
 	// a ranged capacity in force is left beside the pidfile for
 	// `mesh node status`; a fixed one leaves nothing
 	loop.Scaled = func(s node.Scaling, ranged bool) {
