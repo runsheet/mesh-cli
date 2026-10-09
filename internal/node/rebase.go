@@ -468,11 +468,12 @@ func (r *Rebaser) validateRebased(ctx context.Context, rb *rebaseRun, acct *Sess
 		return
 	}
 	defer v.close()
-	if _, err := vr.attestPushed(ctx, t, v, head); err != nil {
+	out, err := vr.attestPushed(ctx, t, v, head)
+	if err != nil {
 		note(err)
 		return
 	}
-	if failed, ok := failedStep(v.runs[len(v.runs)-1]); ok {
+	if failed, ok := failedStep(out.Pushed); ok {
 		rb.report(ctx, fmt.Sprintf("validation step %s exited %d on %s; the run was uploaded for the platform to judge", failed.Name, failed.ExitCode, short(head)))
 	}
 }
