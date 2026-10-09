@@ -1766,6 +1766,25 @@ heartbeat's holding summary opens with `takes <list>; ` and carries the
 same kinds as `holding.kinds` once the platform's schema reads it, so
 the console can say a kind no online node takes is why a goal waits.
 
+### Attestations: the head it pushed
+
+After the last push of a build, a rework or a rebase the node attests
+exactly the sha it pushed — validated again first when the push landed
+another commit than the one `.runsheet/validate.yml` ran on — with that
+commit's tree hash, and only then reports the session finished, so the
+item is still this node's while the platform signs. A refusal `<sha> is
+not the head of <branch> (GitHub has X)` is answered once: X fetched,
+validated and attested. A 429, a 5xx or a transport error is retried
+for two minutes (waits 2s, 5s, 10s, 20s, 30s, the last repeated); a
+refusal is not retried, and an attestation never fails an item.
+node.log says `attestation recorded <sha> <suites> <status>` or
+`attestation refused <reason>`, the health line ends `attestations
+recorded <n> refused <m> (1h)`, and `mesh node status` prints
+`attestations: <n> recorded, <m> refused (last hour)`. The gateway's
+half is runsheet goal `an-attestation-is-about-a-commit-not-an-item-state`:
+until it is deployed every upload is refused, which the counts show.
+ADR-014 (its 2026-10-09 amendment) has the detail.
+
 ### Tool results
 
 One `go test ./...` log or file dump can put 100 KB into a session's
