@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
 // RunState is what a running node leaves beside its config for the
@@ -253,4 +255,145 @@ func (s *RunState) ClearLastSession(itemID string) {
 		return
 	}
 	_ = os.Remove(s.LastSessionPath(itemID))
+}
+
+// AttestationsPath is the node's attestation outcomes of the last hour:
+// node.attestations (goal the-node-attests-the-head-it-pushed, item 8).
+// It outlives the process, so a node restarted inside the hour counts
+// on from it.
+func (s RunState) AttestationsPath() string { return filepath.Join(s.Dir, "node.attestations") }
+
+// AttestationOutcome is one upload's end: recorded by the platform, or
+// refused with its words (never an unsupported or failed upload).
+type AttestationOutcome struct {
+	At      time.Time `json:"at"`
+	Refused bool      `json:"refused,omitempty"`
+}
+
+// AttestationWindow is how far back the counts reach: the trailing hour.
+const AttestationWindow = time.Hour
+
+// WriteAttestations leaves the outcomes for `mesh node status`, atomic
+// like WriteScaling.
+func (s RunState) WriteAttestations(rows []AttestationOutcome) error {
+	if rows == nil {
+		rows = []AttestationOutcome{}
+	}
+	if err := os.MkdirAll(s.Dir, 0o700); err != nil {
+		return err
+	}
+	data, err := json.Marshal(rows)
+	if err != nil {
+		return err
+	}
+	tmp := s.AttestationsPath() + ".tmp"
+	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, s.AttestationsPath())
+}
+
+// Attestations reads what WriteAttestations left; false when nothing is
+// there or it cannot be read.
+func (s RunState) Attestations() ([]AttestationOutcome, bool) {
+	data, err := os.ReadFile(s.AttestationsPath())
+	if err != nil {
+		return nil, false
+	}
+	var rows []AttestationOutcome
+	if json.Unmarshal(data, &rows) != nil {
+		return nil, false
+	}
+	return rows, true
+}
+
+// CountAttestations is how many of rows were recorded and refused in
+// the hour before now.
+func CountAttestations(rows []AttestationOutcome, now time.Time) (recorded, refused int) {
+	for _, r := range rows {
+		if now.Sub(r.At) > AttestationWindow || r.At.After(now) {
+			continue
+		}
+		if r.Refused {
+			refused++
+		} else {
+			recorded++
+		}
+	}
+	return recorded, refused
+}
+
+// AttestationCounts counts the node's `attestation recorded` and
+// `attestation refused` outcomes over the trailing hour, shared by every
+// session's validator (ValidationNotices.Counts) and read by the loop's
+// health line. With State set each outcome is left at node.attestations
+// for `mesh node status`, and the first use reads back what a previous
+// process left. A nil *AttestationCounts counts nothing.
+type AttestationCounts struct {
+	State *RunState
+	// Now is the clock (time.Now when nil).
+	Now func() time.Time
+
+	mu     sync.Mutex
+	loaded bool
+	rows   []AttestationOutcome
+}
+
+func (c *AttestationCounts) now() time.Time {
+	if c.Now != nil {
+		return c.Now()
+	}
+	return time.Now()
+}
+
+// load reads back the state file once, under c.mu.
+func (c *AttestationCounts) load() {
+	if c.loaded {
+		return
+	}
+	c.loaded = true
+	if c.State != nil {
+		if rows, ok := c.State.Attestations(); ok {
+			c.rows = append(rows, c.rows...)
+		}
+	}
+}
+
+// Note counts one outcome now: recorded, or refused.
+func (c *AttestationCounts) Note(refused bool) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.load()
+	now := c.now()
+	kept := c.rows[:0]
+	for _, r := range c.rows {
+		if now.Sub(r.At) <= AttestationWindow {
+			kept = append(kept, r)
+		}
+	}
+	c.rows = append(kept, AttestationOutcome{At: now, Refused: refused})
+	if c.State != nil {
+		_ = c.State.WriteAttestations(c.rows)
+	}
+}
+
+// Hour is the recorded and refused counts of the hour before now.
+func (c *AttestationCounts) Hour() (recorded, refused int) {
+	if c == nil {
+		return 0, 0
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.load()
+	return CountAttestations(c.rows, c.now())
+}
+
+// HealthLine is the health line's attestation part:
+// `attestations recorded <n> refused <m> (1h)`.
+func (c *AttestationCounts) HealthLine() string {
+	rec, ref := c.Hour()
+	return fmt.Sprintf("attestations recorded %d refused %d (1h)", rec, ref)
 }

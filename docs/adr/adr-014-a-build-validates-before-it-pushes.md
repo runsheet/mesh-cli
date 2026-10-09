@@ -1,5 +1,5 @@
 ---
-summary: After a build session commits and before the push, the node runs the repository's `.runsheet/validate.yml` on HEAD — the steps the branch's diff selects plus the always ones — in the session's pod (runner image by digest, sandboxed) or on the host (`host:<hostname>`, unsandboxed, the session's env less its secrets), writes the attestation to `<workdir>.session/attestation.json` and uploads it on the node's own token after the push, as `recordValidationAttestation(workItemId, input)` in the platform's shape (`specs/contracts/recordValidationAttestation.json`, introspected, no REST path); a failing step gets the builder one retry turn, then fails the item `validation failed: step <name> exited <code>`, and every step's time rides the usage record's `validation`.
+summary: After a build session commits and before the push, the node runs the repository's `.runsheet/validate.yml` on HEAD — the steps the branch's diff selects plus the always ones — in the session's pod (runner image by digest, sandboxed) or on the host (`host:<hostname>`, unsandboxed, the session's env less its secrets), writes the attestation to `<workdir>.session/attestation.json` and uploads it on the node's own token after the push, as `recordValidationAttestation(workItemId, input)` in the platform's shape (`specs/contracts/recordValidationAttestation.json`, introspected, no REST path); a failing step gets the builder one retry turn, then fails the item `validation failed: step <name> exited <code>`, and every step's time rides the usage record's `validation`. Amended 2026-10-09: after the last push of a build, rework or rebase the node attests exactly the pushed sha (validated again if it is not the one validated) before it reports finished, answers a `not the head (GitHub has X)` refusal once by validating and attesting X, retries a 429/5xx/transport error for 2 minutes, never fails an item for an attestation, and counts recorded and refused for the hour — pairing with runsheet goal `an-attestation-is-about-a-commit-not-an-item-state`.
 status: accepted
 ---
 
@@ -179,6 +179,70 @@ the mutation the once-per-run notice (shared with the Runner,
 and no attestation. There is no retry turn and no `validation` usage
 on the rebase's report. A repository with no validate.yml logs `no
 validation declared` once and finishes as before.
+
+**The head it pushed** (amended 2026-10-09, goal
+`the-node-attests-the-head-it-pushed`, items 5–8; pairs with runsheet
+goal `an-attestation-is-about-a-commit-not-an-item-state`, the gateway's
+acceptance change). Until this amendment no attestation was ever
+recorded: the node validated, attested, pushed once more and reported
+the build finished, so the gateway (runsheet gateway/attestation.go,
+the holder rule) saw a sha that was no longer the branch's head, or an
+item already in `evaluating` or `review`, and refused every one. The
+order is now, for a build, a rework (a build of an item that failed
+its evaluation, the same `Runner.afterBuild`) and a rebase alike:
+
+1. **the final push** — `Workspacer.Push` for a build or rework, the
+   rebase's `--force-with-lease` read back by `PushedHead`;
+2. **validate the pushed sha if it differs from the validated one**
+   (`attestPushed`): the last run's commit is not the push's — the
+   push landed another sha, or nothing ran yet, as after a rebase — so
+   the pushed sha is checked out and validated first, logged
+   `validation ran on <a>, the push is <b>; validating <b>`;
+3. **attest that exact sha with its tree hash**: the attestation's
+   `commit` is the pushed head and `treeHash` that commit's tree, never
+   a commit validated before a later push;
+4. **finish** — `FinishWorkItem` (build, rework) or
+   `FinishWorkItemRebase` — only once the upload has completed,
+   recorded, refused, unsupported or failed, so the item is still this
+   node's while the platform signs.
+
+**The newer-head answer, once.** A refusal naming another head, `<sha>
+is not the head of <branch> (GitHub has X)` — another push landed on the
+branch after this one — is answered once (`answerNewerHead`): fetch X
+under the per-repo fetch lock, validate X exactly as the pushed head
+was, attest X. A head that cannot be fetched, a validation that fails
+or cannot run on it, or a second refusal of any kind is logged
+`attestation refused <reason>` and the session finishes as it would
+have; it is never asked again, and the checkout goes back where it was.
+
+**The retry.** An upload that meets a 429, a 5xx or a transport error
+is retried with backoff (`retryOnTransient`) for
+`AttestationRetryFor` = 2 minutes from the first attempt, waiting 2s,
+5s, 10s, 20s, 30s (`AttestationBackoff`), the last repeated, a
+`Retry-After` header honoured and capped at the last; once the two
+minutes are spent the last answer is logged and the session moves on.
+A refusal — the gateway's considered answer — is not retried, nor is
+an unsupported mutation. **An attestation never fails an item**: every
+outcome, a refusal and a spent retry included, is a log line and a
+note on the item, and the finish follows.
+
+**The log lines** say what the gateway recorded:
+`attestation recorded <sha> <suites> <status>` — the short sha, the
+suites comma-joined (`no suite affected` for none) and the receipt's
+status — or `attestation refused <reason>`, the gateway's words
+verbatim (a newer head's refusals prefixed `newer head <X>:`).
+
+**The hourly counts.** Every `attestation recorded` and `attestation
+refused` is counted over the trailing hour (`AttestationCounts`, shared
+by every session through `ValidationNotices.Counts`, kept at
+`~/.mesh/node.attestations` so a restart inside the hour counts on).
+The node's health line, logged on the first tick and every 15 minutes
+(`DefaultHealthEvery`), ends `attestations recorded <n> refused <m>
+(1h)` — `health: 1 of 2 running, attestations recorded 2 refused 1
+(1h)` — and `mesh node status` prints `attestations: <n> recorded, <m>
+refused (last hour)`. A run of refusals with no recorded beside it is
+the sign the gateway's half, `an-attestation-is-about-a-commit-not-an-item-state`,
+is not deployed.
 
 ## Consequences
 

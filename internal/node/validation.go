@@ -402,6 +402,7 @@ func (vr validator) answerNewerHead(ctx context.Context, t validationTarget, v *
 	refused := func(why string) {
 		msg := fmt.Sprintf("newer head %s: %s", short(head), why)
 		vr.logf("%s: attestation refused %s", t.prefix, msg)
+		vr.Notices.count(true)
 		t.report(ctx, "validation attestation refused: "+msg)
 	}
 	back, err := gitPosition(ctx, t.dir)
@@ -512,6 +513,7 @@ func (vr validator) upload(ctx context.Context, t validationTarget, att validate
 		}
 		out = attestOutcome{Recorded: true, Status: status}
 		vr.logf("%s: attestation recorded %s %s %s", t.prefix, short(att.Commit), attestedSuites(att), status)
+		vr.Notices.count(false)
 	case gateway.IsUnsupported(err):
 		out.Err = err
 		once(vr.Notices.attestation(), func() {
@@ -520,6 +522,7 @@ func (vr validator) upload(ctx context.Context, t validationTarget, att validate
 	case gateway.IsRefusal(err):
 		out = attestOutcome{Refused: err.Error(), Err: err}
 		vr.logf("%s: attestation refused %s", t.prefix, err.Error())
+		vr.Notices.count(true)
 		t.report(ctx, "validation attestation refused by the platform: "+err.Error())
 	default:
 		out.Err = err
@@ -547,9 +550,19 @@ func attestedSuites(att validate.Attestation) string {
 }
 
 // ValidationNotices are the node's once-per-run validation notices,
-// shared by every copy of its Runner.
+// shared by every copy of its Runner, and the attestation outcomes it
+// counts for the health line and `mesh node status` (Counts; nil counts
+// nothing).
 type ValidationNotices struct {
 	noAttestation, noValidationUsage sync.Once
+	Counts                           *AttestationCounts
+}
+
+// count notes one attestation outcome on the shared counts.
+func (n *ValidationNotices) count(refused bool) {
+	if n != nil {
+		n.Counts.Note(refused)
+	}
 }
 
 // once says through say once per run (every time on a nil receiver).

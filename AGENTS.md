@@ -1012,6 +1012,20 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   before `FinishWorkItemRebase`; ADR 032 carries no attestation across a
   rebase): the same steps and upload, a failing step logged and still
   uploaded, never the rebase's failure (adr-014, After a rebase).
+  After the last push of a build, rework or rebase the node attests
+  exactly the pushed sha (`attestPushed`, validated again when the
+  push is not the commit validated) before the finish, answers a
+  `<sha> is not the head of <branch> (GitHub has X)` refusal once by
+  fetching, validating and attesting X (`answerNewerHead`), and the
+  upload retries a 429/5xx/transport error for `AttestationRetryFor`,
+  2 minutes; an attestation never fails an item. `attestation recorded
+  <sha> <suites> <status>` and `attestation refused <reason>` are
+  counted for the hour (`AttestationCounts`, `ValidationNotices.Counts`,
+  `~/.mesh/node.attestations`): the loop's health line, every
+  `DefaultHealthEvery`, ends `attestations recorded <n> refused <m>
+  (1h)` and `mesh node status` prints `attestations: <n> recorded, <m>
+  refused (last hour)` (adr-014's amendment 2026-10-09; the gateway's
+  half is runsheet goal an-attestation-is-about-a-commit-not-an-item-state).
 - **Services** (`internal/sandbox/services.go`, mesh-specs ADR 007):
   `Resolve(repoDir, allowed)` reads what a repository declares, first
   found wins — `.mesh/services.yml`, else the `services:` of its

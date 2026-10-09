@@ -92,6 +92,14 @@ type Loop struct {
 	// in node.standing, for `mesh node status`, goal
 	// every-subscription-lands-full-at-its-reset, item 6).
 	Standing func([]AccountStanding)
+	// Attestations counts the node's recorded and refused attestations
+	// over the trailing hour (the validators' ValidationNotices.Counts);
+	// the health line carries them. Nil counts none.
+	Attestations *AttestationCounts
+	// HealthEvery is how often the tick logs the health line
+	// (HealthLine); 0 is DefaultHealthEvery.
+	HealthEvery time.Duration
+	lastHealth  time.Time
 	// AfterTick runs at the end of every tick (optional).
 	AfterTick func(ctx context.Context)
 	// Reload is asked at the top of every tick for the capacity, the
@@ -1068,6 +1076,7 @@ func (l *Loop) Tick(ctx context.Context) {
 	if l.Standing != nil {
 		l.Standing(StandingAccounts(l.now(), l.scheduled(), l.limitsStore().Readings(), l.Thresholds()))
 	}
+	l.health()
 	beat := false
 	if owned := l.owned(); owned != nil {
 		// one node, one heartbeat: its answer is the orgs served now and
@@ -1223,6 +1232,32 @@ func (l *Loop) limitsStore() *Limits {
 		l.Limits = &Limits{}
 	}
 	return l.Limits
+}
+
+// DefaultHealthEvery is how often the health line is logged when
+// HealthEvery is left at 0.
+const DefaultHealthEvery = 15 * time.Minute
+
+// HealthLine is the node's periodic health line: the builds running
+// against the capacity in force and the hour's attestation outcomes,
+// `health: <running> of <capacity> running, attestations recorded <n>
+// refused <m> (1h)`.
+func (l *Loop) HealthLine() string {
+	return fmt.Sprintf("health: %d of %d running, %s", l.Running(), l.Capacity(), l.Attestations.HealthLine())
+}
+
+// health logs HealthLine on the first tick and every HealthEvery after.
+func (l *Loop) health() {
+	every := l.HealthEvery
+	if every <= 0 {
+		every = DefaultHealthEvery
+	}
+	now := l.now()
+	if !l.lastHealth.IsZero() && now.Sub(l.lastHealth) < every {
+		return
+	}
+	l.lastHealth = now
+	l.logf("%s", l.HealthLine())
 }
 
 func (l *Loop) now() time.Time {
