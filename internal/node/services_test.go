@@ -383,3 +383,29 @@ func TestRequiredServiceFailingEvaluateAndRebase(t *testing.T) {
 	}
 	assertPodsGone(t, rt, sb)
 }
+
+// OpenSessionPod names the image ref the session's agent container runs
+// — the same ref OpenSandbox logged once at startup — so a pull far
+// into a run is traced to the session that hit it.
+func TestOpenSessionPodLogsTheImageRef(t *testing.T) {
+	rt := &sandbox.Fake{}
+	sb := &sandbox.Sandbox{Runtime: rt, Config: SandboxConfig{}.Settings("v1"), TempDir: t.TempDir()}
+	var logged []string
+	logf := func(f string, a ...any) { logged = append(logged, fmt.Sprintf(f, a...)) }
+
+	pod, err := OpenSessionPod(context.Background(), sb, t.TempDir(), "ship-it/1", harness.KindBuild, sandbox.GitIdentity{}, logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pod.Close()
+
+	var found bool
+	for _, l := range logged {
+		if strings.Contains(l, sb.Config.Image) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no log line names the image %q: %v", sb.Config.Image, logged)
+	}
+}

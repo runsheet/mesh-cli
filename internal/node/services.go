@@ -27,7 +27,11 @@ type SessionPod struct {
 // service that failed. The error is the sandbox itself failing (the
 // HOME, the pod) or ctx ending; the pod, when there is one, is still
 // closed by the caller. git is the session's commit identity (ADR-024),
-// empty for an evaluation's read-only checkout.
+// empty for an evaluation's read-only checkout. Once the session's HOME
+// is open, before any service or the agent, logf names the image ref
+// this session's agent container runs — the one OpenSandbox logged once
+// at startup, repeated per session so a pull far into a run (a local-only
+// image gone stale, a registry refusal) is traced to the session it hit.
 func OpenSessionPod(ctx context.Context, sb *sandbox.Sandbox, dir, label string, kind harness.Kind, git sandbox.GitIdentity, logf func(string, ...any)) (*SessionPod, error) {
 	if sb == nil {
 		return nil, nil
@@ -36,6 +40,7 @@ func OpenSessionPod(ctx context.Context, sb *sandbox.Sandbox, dir, label string,
 	if err != nil {
 		return nil, err
 	}
+	logf("sandbox: session %s — image %s", label, sb.Config.Image)
 	p := &SessionPod{Session: sess}
 	svcs, err := sandbox.Resolve(dir, sb.Config.Registries)
 	if err != nil {
