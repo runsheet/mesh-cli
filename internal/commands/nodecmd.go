@@ -1713,7 +1713,7 @@ var sessionSandbox *sandbox.Sandbox
 // oneShotHarness is `claude -p` for a session that ends with its turn:
 // poll-mode builds and every evaluation.
 func oneShotHarness() *harness.ClaudeCode {
-	h := &harness.ClaudeCode{Stderr: sessionsOut, Sandbox: sessionSandbox}
+	h := &harness.ClaudeCode{Stderr: sessionsOut, Sandbox: sessionSandbox, MeshBinary: meshBinary()}
 	if nodeUnattended {
 		h.ExtraArgs = []string{"--dangerously-skip-permissions"}
 	}
