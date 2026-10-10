@@ -134,6 +134,11 @@ type Git struct {
 	// call the checkout's grandparent — the work root for an item's
 	// <root>/<goal>/<seq>.
 	LockRoot string
+	// ReposRoot is where the node's one clone per repo lives, as
+	// <ReposRoot>/<owner>/<name> (mesh ADR 017): a new item's checkout
+	// is a `git worktree add` on it. Empty, it is "repos" beside the
+	// spec's Root — ~/.mesh/repos for ~/.mesh/work (ReposRoot()).
+	ReposRoot string
 	// exec, when set, replaces the real git/gh invocation: tests wrap it
 	// to inject a failure and delegate to realRun for the rest. Nil is
 	// the real one.
@@ -206,11 +211,47 @@ func IsRefLockFailure(err error) bool {
 	return strings.Contains(s, "cannot lock ref") || strings.Contains(s, "unable to update local ref")
 }
 
-// Prepare implements Workspacer.
+// SharedClonePath is repo's one clone on the node under reposRoot:
+// <reposRoot>/<owner>/<name> for a GitHub repo however it is spelt; any
+// other remote — a path, as tests pass — one directory named by the
+// lock file's rule (mesh ADR 017).
+func SharedClonePath(reposRoot, repo string) string {
+	key := RepoLockKey(repo)
+	if strings.Count(key, "/") == 1 && !strings.HasPrefix(key, "/") && !strings.Contains(key, ":") {
+		return filepath.Join(reposRoot, key)
+	}
+	return filepath.Join(reposRoot, repoFileName(key))
+}
+
+// sharedClone is the clone spec's new checkout is a worktree of, or ""
+// when spec takes a clone of its own: a checkout named outright (a plan,
+// research or evaluation checkout, Path set), one with no branch, or one
+// with no repos root to keep the clone under.
+func (g *Git) sharedClone(spec WorkspaceSpec) string {
+	if spec.Path != "" || spec.Branch == "" || spec.Repo == "" {
+		return ""
+	}
+	reposRoot := g.ReposRoot
+	if reposRoot == "" {
+		if spec.Root == "" {
+			return ""
+		}
+		reposRoot = filepath.Join(filepath.Dir(spec.Root), "repos")
+	}
+	return SharedClonePath(reposRoot, spec.Repo)
+}
+
+// Prepare implements Workspacer. A new item's checkout is a worktree of
+// the repo's one clone on the node (addWorktree, mesh ADR 017); a
+// checkout already there — a worktree, or a full clone from before the
+// shared clone — is fetched and checked out in place.
 func (g *Git) Prepare(ctx context.Context, spec WorkspaceSpec) (string, error) {
 	dir := spec.Dir()
 	root, key := g.lockRoot(spec.Root, dir), RepoLockKey(spec.Repo)
 	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
+		if clone := g.sharedClone(spec); clone != "" {
+			return g.addWorktree(ctx, root, key, clone, spec)
+		}
 		if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
 			return "", err
 		}
@@ -249,6 +290,70 @@ func (g *Git) Prepare(ctx context.Context, spec WorkspaceSpec) (string, error) {
 		return dir, nil
 	}
 	if _, err := g.run(ctx, dir, "git", "checkout", "--quiet", "-B", spec.Branch, "origin/"+base); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+// syncSharedClone makes clone current under the per-repo lock of key:
+// `gh repo clone` when there is none yet, else `git fetch --prune
+// origin`, the choice made inside the lock so two first items of a repo
+// clone it once. A clone that fails is removed before the lock goes, so
+// the next prepare clones again rather than fetching into half a repo.
+func (g *Git) syncSharedClone(ctx context.Context, root, key, repo, clone string) error {
+	unlock, err := lockRepo(ctx, root, key)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if _, err := os.Stat(filepath.Join(clone, ".git")); err == nil {
+		_, err := g.fetchRetrying(ctx, key, clone, "git", "fetch", "--prune", "origin")
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(clone), 0o755); err != nil {
+		return err
+	}
+	if _, err := g.fetchRetrying(ctx, key, filepath.Dir(clone), "gh", "repo", "clone", repo, clone); err != nil {
+		os.RemoveAll(clone)
+		return err
+	}
+	return nil
+}
+
+// addWorktree makes spec's new checkout a worktree of clone (mesh ADR
+// 017): the clone fetched under the lock, then — the lock released —
+// `git worktree add` on the item's branch, continued as Prepare
+// continues a checkout's: origin/<branch> when it was pushed, else a
+// local branch an interrupted attempt left in the clone, else a new one
+// from origin/<base>. A registration whose directory is gone (a sweep
+// interrupted, a directory removed by hand) is pruned first, so git does
+// not refuse the path or the branch.
+func (g *Git) addWorktree(ctx context.Context, root, key, clone string, spec WorkspaceSpec) (string, error) {
+	dir := spec.Dir()
+	if err := g.syncSharedClone(ctx, root, key, spec.Repo, clone); err != nil {
+		return "", err
+	}
+	base := spec.BaseRef
+	if base == "" {
+		out, err := g.run(ctx, clone, "git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+		if err != nil {
+			return "", fmt.Errorf("no base ref and no origin default branch: %w", err)
+		}
+		base = strings.TrimPrefix(out, "origin/")
+	}
+	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
+		return "", err
+	}
+	if _, err := g.run(ctx, clone, "git", "worktree", "prune"); err != nil {
+		return "", err
+	}
+	args := []string{"worktree", "add", "--quiet", "-B", spec.Branch, dir, "origin/" + base}
+	if _, err := g.run(ctx, clone, "git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/"+spec.Branch); err == nil {
+		args = []string{"worktree", "add", "--quiet", "-B", spec.Branch, dir, "origin/" + spec.Branch}
+	} else if _, err := g.run(ctx, clone, "git", "rev-parse", "--verify", "--quiet", "refs/heads/"+spec.Branch); err == nil {
+		args = []string{"worktree", "add", "--quiet", dir, spec.Branch}
+	}
+	if _, err := g.run(ctx, clone, "git", args...); err != nil {
 		return "", err
 	}
 	return dir, nil
