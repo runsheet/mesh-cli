@@ -1885,6 +1885,14 @@ one yet.
   (`ReleaseWorkItem`, attempt not counted) with the reason, the
   heartbeat's `reason` names the limit and the item for an hour, and
   the node does not claim the item again for that hour.
+- **Cleanup.** A session's HOME, pod, containers and their volumes go
+  when it ends, whichever way: `Session.Close` falls back to `podman
+  unshare rm -rf` for what the agent left the node cannot remove, and
+  logs `sandbox: session <label>: close: <err>` when even that fails.
+  A node start sweeps what an earlier process left — every `mesh-home-*`
+  directory no running container mounts, every mesh pod with no running
+  container, every exited mesh container — and logs `sandbox: swept N
+  homes, M pods, K containers at start (L homes in use)`.
 - **The heartbeat** carries `sandbox {mode, runtime, image}`.
 
 node.yaml's `sandbox:` — every key optional:
@@ -1930,6 +1938,16 @@ path against runsheet's Postgres and a Redis fixture — and checks
 whether anything still uses `latchkey-e2e-pg`: see
 [docs/e2e-sandbox.md](docs/e2e-sandbox.md) for running it, the live run
 on the mini and retiring that container.
+
+Podman's own process keeps the node's `HOME`, `USER`, `LOGNAME`,
+`PATH`, `XDG_*`, `CONTAINERS_*` and `TMPDIR` whatever a session's env
+sets, so rootless podman always looks in the node user's image store;
+the session's temporary `HOME` (and any other of those names it sets)
+reaches the container as `--env HOME=<value>`, every other variable as
+a bare `--env NAME` (ADR-007, Env by name). `TestLocalOnlyImageE2E`
+checks it on a real pod: a session starts from an image only the local
+store holds, under a registry name that cannot resolve, and podman
+never tries to pull it.
 
 ### Node image
 

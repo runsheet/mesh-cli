@@ -249,6 +249,12 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `ProjectRepos`, each owned by its own account's login, never the
   org's account: an org links several GitHub accounts (the runsheet
   org's loom project lives at go-apis/loom). `internal/gateway/client.go`: the platform client.
+  Every read — a query, and the `issueItemRepoToken`/`planGitHubToken`/
+  `researchGitHubToken` mints — retries a transport error, timeout, 429
+  or 5xx (`retryRead`: `ReadRetryFor` 2m, `ReadTryTimeout` 30s,
+  `ReadBackoff`), every other mutation sent once; a spent window is
+  `after N tries over D: …`, a claim-time read's item failed with it
+  (ADR-028, a gateway read retries a blip).
   Its entity selections are generated (`fields_gen.go`, never hand-edited)
   from `schema.json` and `fields/<Type>.txt` (one name per line, sorted,
   `?` for optional): add a line, `go generate ./internal/gateway/...`
@@ -1129,7 +1135,15 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   node's condition: the runner releases the item, holds it off
   (`Declines`) and `Loop.NoteCondition` puts the reason on the
   heartbeat for `ConditionHold`; the heartbeat also carries `sandbox
-  {mode, runtime, image}`. Channel-mode sessions and Codex are not in
+  {mode, runtime, image}`. `Session.Close` removes the pods
+  (`RemoveArgs`: the containers with `--volumes`, then the pod) and the
+  HOME (`removeHome`: RemoveAll, u+w, `Runtime.RemoveTree`), logging
+  `sandbox: session <label>: close: <err>`; `mesh node start`, after
+  adoption, runs `node.SweepSandbox` → `sandbox.Sweep` (exited mesh
+  containers, mesh pods with no running container, `mesh-home-*` dirs no
+  running container mounts) and logs `sandbox: swept N homes, M pods, K
+  containers at start (L homes in use)` (ADR-007's amendment
+  2026-10-10). Channel-mode sessions and Codex are not in
   the pod yet.
 - **Sidecars** (`internal/sandbox/sidecars.go`, `internal/node/services.go`,
   mesh-specs ADR 007 Services): build, evaluate and rebase call
