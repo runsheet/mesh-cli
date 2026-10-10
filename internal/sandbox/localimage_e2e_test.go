@@ -3,9 +3,12 @@
 package sandbox
 
 import (
+	"bytes"
 	"context"
+	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 // unresolvableRef names image under a registry host that cannot
@@ -41,8 +44,55 @@ func localOnlyImage(t *testing.T, ctx context.Context, image string) string {
 	return ref
 }
 
-// localOnlyImage is called only by MESH_SANDBOX_E2E=1 tests yet to land.
-var _ = localOnlyImage
+// TestLocalOnlyImageE2E starts a session from an image the node user's
+// store holds only under an unresolvable registry name: the agent's
+// container runs and podman's stderr says no "Trying to pull". The
+// session's env carries HOME=<its temporary home>, so a podman that
+// took the container's HOME for its own would look in an empty store
+// and pull (the dl360, 2026-10-10); podmanEnv keeps the node's. It
+// needs podman and the node image (MESH_SANDBOX_IMAGE, else
+// mesh-node:dev), so it runs only with MESH_SANDBOX_E2E=1.
+func TestLocalOnlyImageE2E(t *testing.T) {
+	if os.Getenv("MESH_SANDBOX_E2E") != "1" {
+		t.Skip("MESH_SANDBOX_E2E=1 runs a real pod")
+	}
+	base := os.Getenv("MESH_SANDBOX_IMAGE")
+	if base == "" {
+		base = DefaultImage("dev")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	rt := &Podman{}
+	if _, err := rt.Version(ctx); err != nil {
+		t.Fatalf("podman: %v", err)
+	}
+	image := localOnlyImage(t, ctx, base)
+
+	sb := &Sandbox{Runtime: rt, Config: Config{Image: image, Limits: Limits{CPUs: 1, Memory: "1g", Pids: 512}, Network: DefaultNetwork()}}
+	sess, err := sb.Open("e2e/local-only", "build", GitIdentity{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	var out, errb bytes.Buffer
+	err = sess.Run(ctx, RunSpec{
+		Workspace: t.TempDir(),
+		Env:       []string{"HOME=/tmp/x"},
+		Command:   []string{"sh", "-c", "echo local-only-ok"},
+		Stdout:    &out, Stderr: &errb,
+	})
+	if strings.Contains(errb.String(), "Trying to pull") {
+		t.Errorf("podman pulled %s; stderr:\n%s", image, errb.String())
+	}
+	if err != nil {
+		t.Fatalf("run %s: %v\n%s", image, err, errb.String())
+	}
+	if !strings.Contains(out.String(), "local-only-ok") {
+		t.Errorf("agent stdout = %q, want local-only-ok", out.String())
+	}
+	t.Logf("session ran from %s with no pull", image)
+}
 
 // TestUnresolvableRef proves unresolvableRef keeps an image ref's tag
 // and image name while substituting a registry host that can never
