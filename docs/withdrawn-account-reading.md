@@ -10,7 +10,7 @@ Command:
 scripts/withdrawn-account-reading.sh --node mini
 ```
 
-Taken: 2026-10-04T22:40:30Z
+Taken: 2026-10-04T22:40:30Z.
 
 Mini's version at the time (from its nodeIndexs row, org `projectmesh-io`,
 `46873dfe-4c8a-59a4-949f-c82aa6065962`, status `offline`): `v0.2.286` —
