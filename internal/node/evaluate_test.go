@@ -810,7 +810,7 @@ func TestTwoEvaluatorsOnAProtectedPath(t *testing.T) {
 	// the checkout's own .mesh/config.yml protected_paths
 	f, ev, claude, codex, _, _ = familyFixture(t, "normal", "sonnet", "Also holds.\nVERDICT: PASS", "Holds.\nVERDICT: PASS")
 	ws := ev.WS.(*fakeWS)
-	writeMeshConfig(t, WorkspaceSpec{Root: ws.root, GoalSlug: "ship-it", Seq: 1}.Dir(), "protected_paths:\n  - schema.json\n  - internal/gateway/fields/\n")
+	writeMeshConfig(t, EvalWorkspaceSpec(ws.root, "ship-it", 1, "", "", "").Dir(), "protected_paths:\n  - schema.json\n  - internal/gateway/fields/\n")
 	ws.changed = []string{"README.md", "internal/gateway/fields/WorkItemIndex.txt"}
 	evaluateItem1(t, f, ev)
 	if codex.runs() != 1 || len(claude.jobs) != 1 {
@@ -823,7 +823,7 @@ func TestTwoEvaluatorsOnAProtectedPath(t *testing.T) {
 	// and a checkout whose protected_paths the diff misses gets one
 	f, ev, claude, codex, _, _ = familyFixture(t, "normal", "sonnet", "Also holds.\nVERDICT: PASS", "Holds.\nVERDICT: PASS")
 	ws = ev.WS.(*fakeWS)
-	writeMeshConfig(t, WorkspaceSpec{Root: ws.root, GoalSlug: "ship-it", Seq: 1}.Dir(), "protected_paths: [schema.json]\n")
+	writeMeshConfig(t, EvalWorkspaceSpec(ws.root, "ship-it", 1, "", "", "").Dir(), "protected_paths: [schema.json]\n")
 	ws.changed = []string{"docs/handbook.md"}
 	evaluateItem1(t, f, ev)
 	if codex.runs() != 1 || len(claude.jobs) != 0 {
@@ -839,7 +839,7 @@ func TestTwoEvaluatorsOnAProtectedPath(t *testing.T) {
 func TestSecondOpinionAlways(t *testing.T) {
 	f, ev, claude, codex, _, _ := familyFixture(t, "normal", "sonnet", "Also holds.\nVERDICT: PASS", "Holds.\nVERDICT: PASS")
 	ws := ev.WS.(*fakeWS)
-	dir := WorkspaceSpec{Root: ws.root, GoalSlug: "ship-it", Seq: 1}.Dir()
+	dir := EvalWorkspaceSpec(ws.root, "ship-it", 1, "", "", "").Dir()
 	writeMeshConfig(t, dir, "second_opinion: always\n")
 	evaluateItem1(t, f, ev)
 	if len(ws.prepared) != 1 || ws.prepared[0].Dir() != dir {
@@ -850,5 +850,51 @@ func TestSecondOpinionAlways(t *testing.T) {
 	}
 	if in := assertChoice(t, f, "gpt-6-luna", "evaluators: two — second_opinion: always"); in["passed"] != true {
 		t.Fatalf("recorded %+v", in)
+	}
+}
+
+// An evaluation prepares and authorizes a checkout of its own, never
+// the build's: its read token on the build's credential helper would
+// refuse the build's push (goal a-build-pushes-before-it-finishes).
+func TestEvaluationPreparesItsOwnCheckout(t *testing.T) {
+	f := seed(t)
+	gw := gateway.New(f.URL(), "rs_test")
+	cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "test-node", NodeID: gateway.NodeID(mustUUID(orgID), "test-node").String(), Capacity: Fixed(1)}
+	if _, err := gw.RegisterNode(context.Background(), gateway.RegisterNodeInput{NodeID: cfg.NodeID, OrgID: orgID, OwnerID: f.UserID, Name: "n", Slug: "test-node"}); err != nil {
+		t.Fatal(err)
+	}
+	f.WorkItems[item1]["status"] = "evaluating"
+	f.WorkItems[item1]["nodeId"] = cfg.NodeID
+	f.WorkItems[item1]["branch"] = "mesh/ship-it-1"
+
+	ws := &fakeWS{root: t.TempDir()}
+	h := &fakeHarness{text: "Holds.\n\nVERDICT: PASS"}
+	ev := &Evaluator{Credentials: testCreds(gw), GW: gw, Harness: h, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, MCP: MeshContextMCP(f.URL(), "rs_test"), MaxBudgetUSD: 2, Log: log.New(os.Stderr, "", 0)}
+	item, err := gw.WorkItem(context.Background(), item1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ev.Evaluate(context.Background(), *item); err != nil {
+		t.Fatal(err)
+	}
+
+	build := WorkspaceSpec{Root: ws.root, GoalSlug: "ship-it", Seq: 1, Repo: "acme/widgets", Branch: "mesh/ship-it-1", BaseRef: "main"}.Dir()
+	eval := EvalWorkspaceSpec(ws.root, "ship-it", 1, "acme/widgets", "mesh/ship-it-1", "main").Dir()
+	if eval == build {
+		t.Fatalf("the evaluation's dir is the build's: %s", eval)
+	}
+	if len(ws.prepared) != 1 || ws.prepared[0].Dir() != eval {
+		t.Fatalf("prepared %+v, want %s", ws.prepared, eval)
+	}
+	if len(ws.authorized) == 0 {
+		t.Fatal("the evaluation's checkout was never authorized")
+	}
+	for _, a := range ws.authorized {
+		if !strings.HasSuffix(a, " "+eval) || strings.HasSuffix(a, " "+build) {
+			t.Fatalf("authorized %q, want the evaluation's %s, never the build's %s", a, eval, build)
+		}
+	}
+	if len(h.jobs) != 1 || h.jobs[0].Workspace != eval {
+		t.Fatalf("job workspace %+v, want %s", h.jobs, eval)
 	}
 }
