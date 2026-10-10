@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# A fake podman for the "clean" fixture: one running pod, one running
+# container mounting the fixture's one mesh-home dir, nothing exited.
+set -euo pipefail
+
+home="${MESH_HOME_ROOT:?MESH_HOME_ROOT must be set}"
+
+case "$1 $2" in
+  "ps --format")
+    jq -n --arg home "$home/mesh-home-aaa" '[
+      {"Names": ["mesh-abc-agent"], "Mounts": [$home], "State": "running", "Pod": "pod-abc"}
+    ]'
+    ;;
+  "pod ps")
+    jq -n '[
+      {"Name": "mesh-abc", "Status": "Running"}
+    ]'
+    ;;
+  *)
+    if [[ "$1 $2" == "ps -a" ]]; then
+      jq -n '[]'
+    else
+      echo "fake podman: unexpected args: $*" >&2
+      exit 1
+    fi
+    ;;
+esac
