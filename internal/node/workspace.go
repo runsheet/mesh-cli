@@ -40,6 +40,17 @@ func (s WorkspaceSpec) Dir() string {
 	return filepath.Join(s.Root, s.GoalSlug, fmt.Sprint(s.Seq))
 }
 
+// EvalWorkspaceSpec is an evaluation's checkout of an item: its own
+// clone at <root>/<goal>/<seq>-eval, beside the build's <root>/<goal>/<seq>,
+// so the evaluation's Authorize writes its read token on a credential
+// helper the build's push never reads (goal
+// a-build-pushes-before-it-finishes). Root stays the work root, so the
+// per-repo fetch lock is the build's (ADR-023).
+func EvalWorkspaceSpec(root, goalSlug string, seq int, repo, branch, baseRef string) WorkspaceSpec {
+	return WorkspaceSpec{Root: root, GoalSlug: goalSlug, Seq: seq, Repo: repo, Branch: branch, BaseRef: baseRef,
+		Path: filepath.Join(root, goalSlug, fmt.Sprintf("%d-eval", seq))}
+}
+
 // PlanRepoSpec is a plan's read-only checkout of repo at dir, for
 // Authorize: the goal's token on that checkout alone (adr-022).
 func PlanRepoSpec(repo, dir string) WorkspaceSpec {
