@@ -21,6 +21,7 @@ import (
 
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/harness"
+	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/selfupdate"
 )
 
@@ -1380,6 +1381,22 @@ func ReposRoot() (string, error) {
 		return "", err
 	}
 	return filepath.Join(home, ".mesh", "repos"), nil
+}
+
+// StoreRoot is ~/.mesh/store, the node's package store and cache
+// (mesh-specs ADR 017 §3), on the filesystem of WorkRoot.
+func StoreRoot() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".mesh", "store"), nil
+}
+
+// PackageStores are the node's one pnpm store and one npm cache under
+// root, which every session of the node installs against.
+func PackageStores(root string) sandbox.Stores {
+	return sandbox.Stores{Pnpm: filepath.Join(root, "pnpm"), Npm: filepath.Join(root, "npm")}
 }
 
 // Slugify turns a name into a slug: lowercase, [a-z0-9-], no doubles.

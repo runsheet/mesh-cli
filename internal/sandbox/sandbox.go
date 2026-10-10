@@ -63,7 +63,53 @@ const ToolEnvPrefix = "MESH_TOOL_"
 // BaseEnv are the variables the sandbox sets itself for every session.
 // DISABLE_AUTOUPDATER keeps claude from updating itself: the node image's
 // own ENV says so too, but --unsetenv-all drops the image's variables.
-var BaseEnv = []string{"PATH", "HOME", "LANG", "TZ", "TERM", "CLAUDE_CONFIG_DIR", "MESH_ITEM", "MESH_SESSION_KIND", "DISABLE_AUTOUPDATER"}
+// The package variables are set only when the node names its Stores.
+var BaseEnv = []string{"PATH", "HOME", "LANG", "TZ", "TERM", "CLAUDE_CONFIG_DIR", "MESH_ITEM", "MESH_SESSION_KIND", "DISABLE_AUTOUPDATER", "npm_config_store_dir", "pnpm_config_store_dir", "PNPM_HOME", "npm_config_cache"}
+
+// Stores are the node's package store and cache, one of each per node and
+// shared by every session (mesh-specs ADR 017 §3): Pnpm is pnpm's
+// content-addressable store (npm_config_store_dir, and
+// pnpm_config_store_dir for pnpm 11 on, which reads no npm_config_
+// variable and would otherwise put it under PNPM_HOME/store; PNPM_HOME,
+// its global bin dir, the same dir), Npm the npm cache
+// (npm_config_cache). Neither holds a credential. Empty is
+// none: the session installs into its throwaway HOME as before.
+//
+// Each is its own bind mount in the pod, separate from the workspace's.
+// link(2) refuses to cross mounts (EXDEV) even on one filesystem, so
+// inside a pod pnpm falls back from hardlinking to copying into
+// node_modules: what the shared store saves there is the download, not
+// the disk. Mounting a parent of both the store and the workspace would
+// let pnpm hardlink, but it would hand the session every other item's
+// worktree, which ADR 017 §2 refuses. A session on the host — one bind of
+// nothing — hardlinks from the same store.
+type Stores struct {
+	Pnpm string
+	Npm  string
+}
+
+// dirs are the stores' directories that are set.
+func (st Stores) dirs() []string {
+	var d []string
+	for _, p := range []string{st.Pnpm, st.Npm} {
+		if p != "" {
+			d = append(d, p)
+		}
+	}
+	return d
+}
+
+// Env is the stores' variables.
+func (st Stores) Env() []string {
+	var e []string
+	if st.Pnpm != "" {
+		e = append(e, "npm_config_store_dir="+st.Pnpm, "pnpm_config_store_dir="+st.Pnpm, "PNPM_HOME="+st.Pnpm)
+	}
+	if st.Npm != "" {
+		e = append(e, "npm_config_cache="+st.Npm)
+	}
+	return e
+}
 
 // Config is a node's sandbox: the image, the agent's and the services'
 // limits, the registries services may come from, and the network policy.
@@ -78,6 +124,9 @@ type Config struct {
 	// ServiceTimeout bounds the wait for the services' health checks
 	// (DefaultServiceTimeout when 0).
 	ServiceTimeout time.Duration
+	// Stores are the node's package store and cache every session
+	// installs against (ADR 017 §3).
+	Stores Stores
 }
 
 // Sandbox opens sessions on a runtime.
@@ -150,6 +199,13 @@ var unsafeName = regexp.MustCompile(`[^a-z0-9-]+`)
 // naming git's identity and the empty gh and Claude config directories
 // it is given.
 func (s *Sandbox) Open(label, kind string, git GitIdentity) (*Session, error) {
+	// the node's stores are made on first use: a bind mount's source
+	// must exist
+	for _, d := range s.Config.Stores.dirs() {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			return nil, fmt.Errorf("sandbox: package store: %w", err)
+		}
+	}
 	home, err := os.MkdirTemp(s.TempDir, HomePrefix)
 	if err != nil {
 		return nil, fmt.Errorf("sandbox: home: %w", err)
@@ -222,7 +278,8 @@ func (s *Session) ClaudeConfigDir() string { return filepath.Join(s.Home, ".clau
 func (s *Session) GHConfigDir() string { return filepath.Join(s.Home, ".config", "gh") }
 
 // Env is the pod's whole environment, built from the allow-list: the
-// sandbox's own BaseEnv, then those of jobEnv's variables AllowedEnv or
+// sandbox's own BaseEnv — the node's package stores among them, the same
+// for every session — then those of jobEnv's variables AllowedEnv or
 // ToolEnvPrefix admits — with the gh config dir moved under the HOME.
 // Nothing comes from the node's own environment.
 func (s *Session) Env(jobEnv []string) []string {
@@ -241,6 +298,7 @@ func (s *Session) Env(jobEnv []string) []string {
 		"MESH_SESSION_KIND=" + s.Kind,
 		"DISABLE_AUTOUPDATER=1",
 	}
+	out = append(out, s.sb.Config.Stores.Env()...)
 	for _, kv := range jobEnv {
 		name, _, ok := strings.Cut(kv, "=")
 		if !ok || !Allowed(name) {
@@ -274,7 +332,8 @@ func Allowed(name string) bool {
 // clone's object store), and the checkout's hooks directory, when it has
 // one, read-only. A full clone mounts no common dir; nothing else of the
 // clone — its parent, its work tree, another item's worktree — is ever
-// mounted.
+// mounted. The node's package store and cache are mounted read-write,
+// each at its own path (Stores, ADR 017 §3).
 func (s *Session) Mounts(workspace string) []Mount {
 	m := []Mount{
 		{Source: workspace, Target: workspace},
@@ -286,6 +345,9 @@ func (s *Session) Mounts(workspace string) []Mount {
 		s.sb.logf("sandbox: %v; mounting the workspace alone", err)
 	} else if common != "" {
 		m = append(m, Mount{Source: common, Target: common})
+	}
+	for _, d := range s.sb.Config.Stores.dirs() {
+		m = append(m, Mount{Source: d, Target: d})
 	}
 	// the checkout's hooks, which its core.hooksPath names (ADR-024)
 	if s.hooks != "" {
