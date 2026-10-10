@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -312,8 +313,40 @@ func (p *Podman) ProbeTCP(ctx context.Context, pod Pod, image string, port int) 
 	return err
 }
 
-// Remove implements Runtime: the pod and all its containers, forced.
+// RemoveArgs are the podman calls that remove a pod, in order: first
+// the session's own containers in it — the agent's, the sidecars', all
+// named `<pod>-…` — with their anonymous volumes (`podman rm
+// --volumes`), then the pod itself, forced, with whatever is left (its
+// infra container, which podman removes only with the pod).
+func RemoveArgs(pod Pod) [][]string {
+	return [][]string{
+		{"rm", "--force", "--volumes", "--time", "5",
+			"--filter", "pod=" + pod.Name, "--filter", "name=^" + regexp.QuoteMeta(pod.Name) + "-"},
+		{"pod", "rm", "--force", "--time", "5", pod.Name},
+	}
+}
+
+// Remove implements Runtime: the pod, all its containers and their
+// anonymous volumes, forced. Every call runs; their errors are joined.
 func (p *Podman) Remove(ctx context.Context, pod Pod) error {
-	_, err := p.output(ctx, []string{"pod", "rm", "--force", "--time", "5", pod.Name}, nil)
+	var errs []error
+	for _, args := range RemoveArgs(pod) {
+		if _, err := p.output(ctx, args, nil); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// RemoveTreeArgs is `podman unshare rm -rf <path>`: rm run inside the
+// node user's user namespace, as root there, so the subuid-owned and
+// read-only files a pod left are its to remove.
+func RemoveTreeArgs(path string) []string {
+	return []string{"unshare", "rm", "-rf", "--", path}
+}
+
+// RemoveTree implements Runtime.
+func (p *Podman) RemoveTree(ctx context.Context, path string) error {
+	_, err := p.output(ctx, RemoveTreeArgs(path), nil)
 	return err
 }

@@ -147,7 +147,7 @@ func OpenSandbox(ctx context.Context, c SandboxConfig, rt sandbox.Runtime, versi
 	if logf != nil {
 		logf("sandbox: on — %s, image %s, agent %g cpus / %s / %d pids", ver, cfg.Image, cfg.Limits.CPUs, cfg.Limits.Memory, cfg.Limits.Pids)
 	}
-	return &sandbox.Sandbox{Runtime: rt, Config: cfg}, &gateway.SandboxInfo{Mode: SandboxOn, Runtime: ver, Image: cfg.Image}, nil
+	return &sandbox.Sandbox{Runtime: rt, Config: cfg, Logf: logf}, &gateway.SandboxInfo{Mode: SandboxOn, Runtime: ver, Image: cfg.Image}, nil
 }
 
 // EnsureImage makes the node image of version — the one node.yaml's
