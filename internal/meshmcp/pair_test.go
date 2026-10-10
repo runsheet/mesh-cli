@@ -76,7 +76,7 @@ func TestPairJoinsTheHoldersBranchWithoutAClaim(t *testing.T) {
 	if got := gitIn(t, pair.Path, "rev-parse", "HEAD"); got != originHead {
 		t.Fatalf("pair at %s, origin's branch at %s", got, originHead)
 	}
-	if helpers := gitIn(t, pair.Path, "config", "--local", "--get-all", "credential."+w.github+".helper"); !strings.Contains(helpers, "ghs_item") {
+	if helpers := gitIn(t, pair.Path, "config", "--worktree", "--get-all", "credential."+w.github+".helper"); !strings.Contains(helpers, "ghs_item") {
 		t.Fatalf("pair's helpers: %q", helpers)
 	}
 

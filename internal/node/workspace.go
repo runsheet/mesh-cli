@@ -154,10 +154,23 @@ func (g *Git) githubURL() string {
 
 // Authorize implements Workspacer: origin becomes the repo's https URL
 // (a `gh repo clone` may have left an ssh one, on the operator's key)
-// and the checkout's own credential helper answers with tok.
+// and the checkout's own credential helper answers with tok — a
+// worktree's in its own config.worktree, never the shared clone's
+// config (writeHelper). A new item's checkout that Prepare would make a
+// worktree is made one here, the shared clone cloned or fetched on tok
+// by the environment, so the helper has its worktree to go in.
 func (g *Git) Authorize(ctx context.Context, spec WorkspaceSpec, tok *gateway.GitHubToken) error {
+	if tok == nil || !tokenShape.MatchString(tok.Token) {
+		return fmt.Errorf("github token: missing or malformed")
+	}
 	dir := spec.Dir()
 	origin := g.githubURL() + "/" + spec.Repo + ".git"
+	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil && g.sharedClone(spec) != "" {
+		tctx := withGitToken(ctx, g.githubURL(), tok)
+		if _, err := g.addWorktree(tctx, g.lockRoot(spec.Root, dir), RepoLockKey(spec.Repo), g.sharedClone(spec), spec); err != nil {
+			return err
+		}
+	}
 	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
 		// no clone yet: an empty checkout Prepare fetches into
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -187,7 +200,7 @@ func (g *Git) run(ctx context.Context, dir string, name string, args ...string) 
 func (g *Git) realRun(ctx context.Context, dir string, name string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd.Env = append(append(os.Environ(), "GIT_TERMINAL_PROMPT=0"), gitTokenEnv(ctx)...)
 	out, err := cmd.CombinedOutput()
 	if g.Log != nil {
 		fmt.Fprintf(g.Log, "$ %s %s\n%s", name, strings.Join(args, " "), out)
@@ -323,14 +336,27 @@ func (g *Git) syncSharedClone(ctx context.Context, root, key, repo, clone string
 		return err
 	}
 	defer unlock()
+	// on an item's token (withGitToken) the clone is git's over https,
+	// as an authorized checkout's fetch is; else the operator's gh
+	tokened := gitTokenEnv(ctx) != nil
+	origin := g.githubURL() + "/" + repo + ".git"
 	if _, err := os.Stat(filepath.Join(clone, ".git")); err == nil {
+		if tokened {
+			if _, err := g.run(ctx, clone, "git", "remote", "set-url", "origin", origin); err != nil {
+				return err
+			}
+		}
 		_, err := g.fetchRetrying(ctx, key, clone, "git", "fetch", "--prune", "origin")
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(clone), 0o755); err != nil {
 		return err
 	}
-	if _, err := g.fetchRetrying(ctx, key, filepath.Dir(clone), "gh", "repo", "clone", repo, clone); err != nil {
+	cloneCmd := []string{"gh", "repo", "clone", repo, clone}
+	if tokened {
+		cloneCmd = []string{"git", "clone", "--quiet", origin, clone}
+	}
+	if _, err := g.fetchRetrying(ctx, key, filepath.Dir(clone), cloneCmd[0], cloneCmd[1:]...); err != nil {
 		os.RemoveAll(clone)
 		return err
 	}
@@ -338,9 +364,10 @@ func (g *Git) syncSharedClone(ctx context.Context, root, key, repo, clone string
 }
 
 // addWorktree makes spec's new checkout a worktree of clone (mesh ADR
-// 017): the clone fetched under the lock, then — the lock released —
-// `git worktree add` on the item's branch, continued as Prepare
-// continues a checkout's: origin/<branch> when it was pushed, else a
+// 017): the clone fetched under the lock, then — under it again, so no
+// other item's prune lands mid-add — `git worktree add` on the item's
+// branch, extensions.worktreeConfig enabled for its credential helper,
+// continued as Prepare continues a checkout's: origin/<branch> when it was pushed, else a
 // local branch an interrupted attempt left in the clone, else a new one
 // from origin/<base>. A registration whose directory is gone (a sweep
 // interrupted, a directory removed by hand) is pruned first, so git does
@@ -359,6 +386,17 @@ func (g *Git) addWorktree(ctx context.Context, root, key, clone string, spec Wor
 		base = strings.TrimPrefix(out, "origin/")
 	}
 	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
+		return "", err
+	}
+	// the prune and the add under the repo's lock: another item's prune
+	// while this add is half done removes its .git/worktrees/<name>, and
+	// git config writes to the clone's one config file collide
+	unlock, err := lockRepo(ctx, root, key)
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
+	if _, err := g.run(ctx, clone, "git", "config", "--local", "extensions.worktreeConfig", "true"); err != nil {
 		return "", err
 	}
 	if _, err := g.run(ctx, clone, "git", "worktree", "prune"); err != nil {
@@ -1348,10 +1386,11 @@ func WriteContext(dir string, cx *Context) ([]string, ContextWritten, error) {
 }
 
 func excludeFromGit(dir, pattern string) error {
-	info := filepath.Join(dir, ".git", "info")
-	if st, err := os.Stat(filepath.Join(dir, ".git")); err != nil || !st.IsDir() {
+	common := commonGitDir(dir)
+	if common == "" {
 		return nil // not a git checkout (tests)
 	}
+	info := filepath.Join(common, "info")
 	if err := os.MkdirAll(info, 0o755); err != nil {
 		return err
 	}
@@ -1372,6 +1411,41 @@ func excludeFromGit(dir, pattern string) error {
 	}
 	_, err = f.WriteString(pattern + "\n")
 	return err
+}
+
+// commonGitDir is the git dir whose info/exclude the checkout in dir
+// reads: its own .git, or for a worktree the shared clone's (git reads
+// info/exclude from the common dir), "" when dir is no checkout.
+func commonGitDir(dir string) string {
+	dotgit := filepath.Join(dir, ".git")
+	st, err := os.Stat(dotgit)
+	if err != nil {
+		return ""
+	}
+	if st.IsDir() {
+		return dotgit
+	}
+	b, err := os.ReadFile(dotgit)
+	if err != nil {
+		return ""
+	}
+	gitdir, ok := strings.CutPrefix(strings.TrimSpace(string(b)), "gitdir:")
+	if !ok {
+		return ""
+	}
+	gitdir = strings.TrimSpace(gitdir)
+	if !filepath.IsAbs(gitdir) {
+		gitdir = filepath.Join(dir, gitdir)
+	}
+	c, err := os.ReadFile(filepath.Join(gitdir, "commondir"))
+	if err != nil {
+		return gitdir
+	}
+	common := strings.TrimSpace(string(c))
+	if !filepath.IsAbs(common) {
+		common = filepath.Join(gitdir, common)
+	}
+	return filepath.Clean(common)
 }
 
 // Gateway is what the node needs of the platform; *gateway.Client is one.

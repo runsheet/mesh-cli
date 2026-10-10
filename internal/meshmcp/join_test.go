@@ -168,7 +168,7 @@ func TestJoinPreparesTheCheckoutOnTheItemToken(t *testing.T) {
 	if got := gitIn(t, a.Path, "rev-parse", "--abbrev-ref", "HEAD"); got != "mesh/ship-it-1" {
 		t.Fatalf("HEAD is %s", got)
 	}
-	cfg := exec.Command("git", "config", "--local", "--get-all", "credential."+w.github+".helper")
+	cfg := exec.Command("git", "config", "--worktree", "--get-all", "credential."+w.github+".helper")
 	cfg.Dir = a.Path
 	out, err := cfg.Output()
 	if err != nil {
@@ -226,7 +226,7 @@ func TestJoinUsesTheCwdWhenItIsTheRepo(t *testing.T) {
 	if got := gitIn(t, clone, "rev-parse", "--abbrev-ref", "HEAD"); got != "mesh/ship-it-1" {
 		t.Fatalf("HEAD is %s", got)
 	}
-	if helpers := gitIn(t, clone, "config", "--local", "--get-all", "credential."+w.github+".helper"); !strings.Contains(helpers, "ghs_item") {
+	if helpers := gitIn(t, clone, "config", "--worktree", "--get-all", "credential."+w.github+".helper"); !strings.Contains(helpers, "ghs_item") {
 		t.Fatalf("helpers: %q", helpers)
 	}
 	if got := gitIn(t, clone, "remote", "get-url", "origin"); got != w.origin {

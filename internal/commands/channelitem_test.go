@@ -172,7 +172,7 @@ func TestChannelRefreshesAHeldItemsToken(t *testing.T) {
 	if got := ready.Cred.Token().Token; got != "ghs_renewed" {
 		t.Fatalf("token after refresh = %s", got)
 	}
-	helpers, _ := w.git(ready.Meta["workspace"], "config", "--local", "--get-all", "credential."+w.ws.GitHubURL+".helper")
+	helpers, _ := w.git(ready.Meta["workspace"], "config", "--worktree", "--get-all", "credential."+w.ws.GitHubURL+".helper")
 	if strings.Contains(helpers, "ghs_item") || !strings.Contains(helpers, "ghs_renewed") {
 		t.Fatalf("helpers after refresh:\n%s", helpers)
 	}
@@ -204,7 +204,7 @@ func TestChannelDispatchFallsBackOnAnOldPlatform(t *testing.T) {
 	if len(logs) != 1 || !strings.Contains(logs[0], "operator's own gh login") {
 		t.Fatalf("the fallback must be said once: %q", logs)
 	}
-	helpers, _ := w.git(ready.Meta["workspace"], "config", "--local", "--get-all", "credential."+w.ws.GitHubURL+".helper")
+	helpers, _ := w.git(ready.Meta["workspace"], "config", "--worktree", "--get-all", "credential."+w.ws.GitHubURL+".helper")
 	// the empty helper first (trimmed away here) drops the operator's global one
 	if want := "!GH_CONFIG_DIR='" + operatorGH + "' gh auth git-credential"; helpers != want {
 		t.Fatalf("fallback helpers = %q, want %q", helpers, want)

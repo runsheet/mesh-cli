@@ -161,7 +161,8 @@ func TestAuthorizedWorkspaceReachesOnlyItsRepo(t *testing.T) {
 	if err := g.Authorize(ctx, spec, g2); err != nil {
 		t.Fatal(err)
 	}
-	helpers := must(dir, "config", "--local", "--get-all", "credential."+srv.URL+".helper")
+	// the checkout is a worktree of the shared clone: its helper is its own
+	helpers := must(dir, "config", "--worktree", "--get-all", "credential."+srv.URL+".helper")
 	if strings.Contains(helpers, "ghs_item") || !strings.Contains(helpers, "ghs_renewed") {
 		t.Fatalf("helpers after renewal:\n%s", helpers)
 	}
@@ -1186,6 +1187,122 @@ func TestPrepareKeepsAFullCloneAlreadyThere(t *testing.T) {
 	}
 	if _, err := os.Stat(repos); !os.IsNotExist(err) {
 		t.Fatalf("a shared clone was made for a full clone already there: %v", err)
+	}
+}
+
+// twoTokenedWorktrees authorizes and prepares items 1 and 2 of one repo,
+// each on its own token, against a stand-in GitHub over a local bare
+// origin: the two worktrees of one shared clone (mesh ADR 017).
+func twoTokenedWorktrees(t *testing.T) (g *Git, specs [2]WorkspaceSpec, toks [2]*gateway.GitHubToken, clone, base string) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	root := t.TempDir()
+	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(root, "gitconfig"))
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	for _, kv := range []string{"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t", "GIT_TERMINAL_PROMPT=0"} {
+		k, v, _ := strings.Cut(kv, "=")
+		t.Setenv(k, v)
+	}
+	// no gh anywhere: a tokened shared clone is git's
+	t.Setenv("PATH", filepath.Dir(mustLookPath(t, "git")))
+	srvRoot := filepath.Join(root, "srv")
+	bare := filepath.Join(srvRoot, "acme/widgets.git")
+	seed := filepath.Join(root, "seed")
+	for _, c := range [][]string{{"init", "--quiet", "--bare", "-b", "main", bare}, {"init", "--quiet", "-b", "main", seed}, {"-C", seed, "commit", "--quiet", "--allow-empty", "-m", "a"}, {"-C", seed, "push", "--quiet", bare, "HEAD:main"}} {
+		if out, err := exec.Command("git", c...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", c, err, out)
+		}
+	}
+	srv := gatewaytest.GitHub(t, srvRoot, map[string]string{"ghs_one": "acme/widgets", "ghs_two": "acme/widgets"})
+	g = &Git{GitHubURL: srv.URL, ReposRoot: filepath.Join(root, "repos")}
+	ctx := context.Background()
+	for i, name := range []string{"ghs_one", "ghs_two"} {
+		seq := i + 1
+		specs[i] = WorkspaceSpec{Root: filepath.Join(root, "work"), GoalSlug: "g", Seq: seq, Repo: "acme/widgets", Branch: BranchName("g", seq), BaseRef: "main"}
+		toks[i] = &gateway.GitHubToken{Token: name, ExpiresAt: time.Now().Add(time.Hour), Repository: "acme/widgets"}
+		if err := g.Authorize(ctx, specs[i], toks[i]); err != nil {
+			t.Fatalf("authorize seq %d: %v", seq, err)
+		}
+		if _, err := g.Prepare(ctx, specs[i]); err != nil {
+			t.Fatalf("prepare seq %d: %v", seq, err)
+		}
+		if !isWorktree(specs[i].Dir()) {
+			t.Fatalf("seq %d is not a worktree", seq)
+		}
+	}
+	return g, specs, toks, SharedClonePath(g.ReposRoot, "acme/widgets"), srv.URL
+}
+
+func gitOut(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s in %s: %v: %s", strings.Join(args, " "), dir, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// Two worktrees of one repo authorized on different tokens each answer
+// with their own, from their own config.worktree; the shared clone's
+// config holds neither token (mesh ADR 017).
+func TestWorktreesCarryTheirOwnTokenAndTheSharedCloneNone(t *testing.T) {
+	_, specs, toks, clone, base := twoTokenedWorktrees(t)
+	key := "credential." + base + ".helper"
+	one := gitOut(t, specs[0].Dir(), "config", "--worktree", "--get", key)
+	two := gitOut(t, specs[1].Dir(), "config", "--worktree", "--get", key)
+	if one == two {
+		t.Fatalf("both worktrees answer with %q", one)
+	}
+	if !strings.Contains(one, toks[0].Token) || strings.Contains(one, toks[1].Token) {
+		t.Fatalf("seq 1's helper: %q", one)
+	}
+	if !strings.Contains(two, toks[1].Token) || strings.Contains(two, toks[0].Token) {
+		t.Fatalf("seq 2's helper: %q", two)
+	}
+	shared := gitOut(t, clone, "config", "--local", "--list")
+	for _, tok := range toks {
+		if strings.Contains(shared, tok.Token) {
+			t.Fatalf("the shared clone's config holds %s:\n%s", tok.Token, shared)
+		}
+	}
+	if !strings.Contains(shared, "extensions.worktreeconfig=true") {
+		t.Fatalf("the shared clone has no extensions.worktreeConfig:\n%s", shared)
+	}
+	// and each worktree's fetch and push go out on its own token
+	for i, spec := range specs {
+		os.WriteFile(filepath.Join(spec.Dir(), "f"), []byte(spec.Branch), 0o644)
+		gitOut(t, spec.Dir(), "add", "f")
+		gitOut(t, spec.Dir(), "commit", "--quiet", "-m", "f")
+		if _, err := (&Git{GitHubURL: base}).Push(context.Background(), spec.Dir(), spec.Branch); err != nil {
+			t.Fatalf("push seq %d: %v", i+1, err)
+		}
+	}
+}
+
+// ForPush's rewrite of one worktree's helper, just before its push,
+// leaves the other worktree's helper as it was.
+func TestForPushInOneWorktreeLeavesTheOtherAlone(t *testing.T) {
+	g, specs, toks, _, base := twoTokenedWorktrees(t)
+	key := "credential." + base + ".helper"
+	before := gitOut(t, specs[1].Dir(), "config", "--worktree", "--get-all", key)
+	// something since wrote another token into seq 1's helper
+	if err := g.Authorize(context.Background(), specs[0], &gateway.GitHubToken{Token: "ghs_stray", ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	cred := &ItemCred{ws: g, spec: specs[0], itemID: "item-1", nodeID: "node", tok: toks[0]}
+	if _, err := cred.ForPush(context.Background()); err != nil {
+		t.Fatalf("ForPush: %v", err)
+	}
+	one := gitOut(t, specs[0].Dir(), "config", "--worktree", "--get-all", key)
+	if !strings.Contains(one, toks[0].Token) || strings.Contains(one, "ghs_stray") {
+		t.Fatalf("seq 1's helper after ForPush: %q", one)
+	}
+	if after := gitOut(t, specs[1].Dir(), "config", "--worktree", "--get-all", key); after != before {
+		t.Fatalf("seq 2's helper changed:\nbefore %q\nafter  %q", before, after)
 	}
 }
 
