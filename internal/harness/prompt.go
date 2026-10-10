@@ -182,7 +182,7 @@ func finishByToolCall(b *strings.Builder, in PromptInput) {
 		item = fmt.Sprintf("<the id of item %d of %s>", in.Seq, in.GoalSlug)
 	}
 	b.WriteString("\n# Finish by tool call\n\n")
-	fmt.Fprintf(b, "End the session by calling the mesh-context server's `mesh_finish` tool, once, as your last action: `mesh_finish(item_id=%q, branch=%q, head_sha=<the commit your branch ends on, `git rev-parse HEAD`>)` when you built it, or `mesh_finish(item_id=%q, outcome=\"already_done\", evidence=<the merged PRs or commits and why>)` when main already holds it. ", item, in.Branch, item)
+	fmt.Fprintf(b, "End the session by calling the %s server's `mesh_finish` tool (the node's own; the mesh-context server's is not yours to call), once, as your last action: `mesh_finish(item_id=%q, branch=%q, head_sha=<the commit your branch ends on, `git rev-parse HEAD`>)` when you built it, or `mesh_finish(item_id=%q, outcome=\"already_done\", evidence=<the merged PRs or commits and why>)` when main already holds it. ", NodeWorkMCP, item, in.Branch, item)
 	b.WriteString("When the work cannot be done, call `mesh_fail(item_id, error=<why>)` instead. The call is the finish: the node pushes the branch and hands it in. ")
 	fmt.Fprintf(b, "If the tool is not there or the call errors, finish in your final message instead — an already-done item with its `%s` line, as above — and the node reads that.\n", AlreadyDoneLine)
 }
