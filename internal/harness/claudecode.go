@@ -44,6 +44,10 @@ type ClaudeCode struct {
 	// Unit runs a host session outside the node process (ADR 008); nil is
 	// sessionunit.Default() — a systemd user scope, else detached.
 	Unit sessionunit.Unit
+	// MeshBinary is the mesh executable a host build session's own
+	// finish tools run from (NodeWorkMCP, `mesh session-tools`); empty is
+	// this process's executable.
+	MeshBinary string
 }
 
 // Name implements Harness.
@@ -74,7 +78,14 @@ func (c *ClaudeCode) Args(job Job) []string {
 			args = append(args, "--settings", string(cfg))
 		}
 	}
-	args = append(args, MCPArgs(job.MCPServers)...)
+	if nodeFinishes(job) {
+		// a build finishes on the node's own tools, never the hosted
+		// ones: the node pushes before the finish is handed in
+		args = append(args, MCPArgs(withNodeWork(job.MCPServers, c.hostWorkServer()))...)
+		args = append(args, "--disallowedTools", strings.Join(HostedFinishTools, ","))
+	} else {
+		args = append(args, MCPArgs(job.MCPServers)...)
+	}
 	args = append(args, c.ExtraArgs...)
 	return args
 }
@@ -114,18 +125,32 @@ func mcpConfig(servers map[string]any) ([]byte, string, bool) {
 
 // SandboxArgs is Args for a session in a pod: the same, but the MCP
 // config is the file at mcpPath (under the session's HOME) rather than
-// inline, so the mesh-context bearer is on no command line.
+// inline, so the mesh-context bearer is on no command line. A build's
+// own finish tools run as WorkScript beside that file (sandboxServers).
 func (c *ClaudeCode) SandboxArgs(job Job, mcpPath string) []string {
-	servers := job.MCPServers
+	servers := sandboxServers(job, mcpPath)
+	finishes := nodeFinishes(job)
 	job.MCPServers = nil
 	args := c.Args(job)
 	if _, allowed, ok := mcpConfig(servers); ok {
 		// the MCP flags go where Args puts them, before ExtraArgs
 		at := len(args) - len(c.ExtraArgs)
 		mcp := []string{"--mcp-config", mcpPath, "--allowedTools", allowed}
+		if finishes {
+			mcp = append(mcp, "--disallowedTools", strings.Join(HostedFinishTools, ","))
+		}
 		args = append(args[:at:at], append(mcp, args[at:]...)...)
 	}
 	return args
+}
+
+// sandboxServers is a pod session's mcp.json servers at mcpPath: the
+// job's, and for a build NodeWorkMCP as WorkScript beside the file.
+func sandboxServers(job Job, mcpPath string) map[string]any {
+	if !nodeFinishes(job) {
+		return job.MCPServers
+	}
+	return withNodeWork(job.MCPServers, sandboxWorkServer(mcpPath))
 }
 
 // Run implements Harness. The session runs in its own unit
@@ -553,7 +578,15 @@ func (c *ClaudeCode) runSandboxed(ctx context.Context, job Job, onProgress func(
 	}
 	var err error
 	mcpPath := ""
-	if cfg, _, ok := mcpConfig(job.MCPServers); ok {
+	if len(job.MCPServers) > 0 {
+		mcpPath = filepath.Join(sess.Home, "mcp.json")
+		if nodeFinishes(job) {
+			if _, err = sess.WriteFile(workScriptName, WorkScript()); err != nil {
+				return Result{}, fmt.Errorf("harness claude-code: work tools: %w", err)
+			}
+		}
+	}
+	if cfg, _, ok := mcpConfig(sandboxServers(job, mcpPath)); ok {
 		if mcpPath, err = sess.WriteFile("mcp.json", cfg); err != nil {
 			return Result{}, fmt.Errorf("harness claude-code: mcp config: %w", err)
 		}
