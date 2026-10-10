@@ -383,3 +383,32 @@ func TestRequiredServiceFailingEvaluateAndRebase(t *testing.T) {
 	}
 	assertPodsGone(t, rt, sb)
 }
+
+// Every sandboxed session logs, before its services and its agent, the
+// image ref its agent runs: `sandbox: session <label> — image <ref>`.
+func TestOpenSessionPodLogsTheImage(t *testing.T) {
+	const ref = "ghcr.io/runsheet/mesh-node:v0.2.335"
+	rt := &sandbox.Fake{}
+	sb := &sandbox.Sandbox{Runtime: rt, Config: SandboxConfig{}.Settings("v0.2.335"), TempDir: t.TempDir()}
+	sb.Config.Image = ref
+	var lines []string
+	logf := func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
+	pod, err := OpenSessionPod(context.Background(), sb, t.TempDir(), "ship-it#1", harness.KindBuild, sandbox.GitIdentity{}, logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pod.Close()
+	want := "sandbox: session ship-it#1 — image " + ref
+	var found int
+	for _, l := range lines {
+		if strings.Contains(l, "ship-it#1") && strings.Contains(l, ref) {
+			found++
+			if l != want {
+				t.Fatalf("line = %q, want %q", l, want)
+			}
+		}
+	}
+	if found != 1 {
+		t.Fatalf("lines naming the session and its image: %d, want 1: %q", found, lines)
+	}
+}
