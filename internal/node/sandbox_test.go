@@ -137,7 +137,7 @@ func TestSandboxOffRunsThePlainExecPath(t *testing.T) {
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	h := &harness.ClaudeCode{Binary: bin, ExtraArgs: []string{"--dangerously-skip-permissions"}, Sandbox: sb}
+	h := &harness.ClaudeCode{Binary: bin, ExtraArgs: []string{"--dangerously-skip-permissions"}, Sandbox: sb, MeshBinary: "mesh"}
 	ws := t.TempDir()
 	job := harness.Job{Kind: harness.KindBuild, Workspace: ws, Prompt: "do it", Model: "sonnet", MaxBudgetUSD: 2.5,
 		MCPServers: map[string]any{"mesh-context": map[string]any{"type": "http", "url": "https://gw/mcp"}}}
@@ -152,8 +152,9 @@ func TestSandboxOffRunsThePlainExecPath(t *testing.T) {
 	want := strings.Join([]string{
 		"-p", "--output-format", "stream-json", "--verbose",
 		"--model", "sonnet", "--max-budget-usd", "2.50",
-		"--mcp-config", `{"mcpServers":{"mesh-context":{"type":"http","url":"https://gw/mcp"}}}`,
-		"--allowedTools", "mcp__mesh-context__*",
+		"--mcp-config", `{"mcpServers":{"mesh-context":{"type":"http","url":"https://gw/mcp"},"mesh-node":{"args":["session-tools"],"command":"mesh","type":"stdio"}}}`,
+		"--allowedTools", "mcp__mesh-context__*,mcp__mesh-node__*",
+		"--disallowedTools", "mcp__mesh-context__mesh_finish,mcp__mesh-context__mesh_fail",
 		"--dangerously-skip-permissions",
 	}, "\n") + "\n"
 	wsReal, _ := filepath.EvalSymlinks(ws)
