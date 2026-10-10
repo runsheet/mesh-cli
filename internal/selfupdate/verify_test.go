@@ -268,3 +268,28 @@ func TestVerifyPlatformReleaseIdentity(t *testing.T) {
 		t.Fatalf("the platform SAN under the Actions issuer: Verify = %v, want ErrIdentity", err)
 	}
 }
+
+// ADR 017's platform SAN, signed under another issuer — the Actions
+// issuer, or one unrelated to either accepted pair — is refused:
+// Policy.Identities binds each SAN to its own issuer, never any-issuer
+// x any-SAN (mesh-specs ADR 017, mesh-cli ADR-002's amendment).
+func TestVerifyPlatformSANUnderAnotherIssuerRefused(t *testing.T) {
+	for _, issuer := range []string{Issuer, "https://evil.example"} {
+		f := newFixtureFor(t, "v0.5.600")
+		f.rel.Bundle = signSumsIssuer(t, f.vs, RunsheetIdentityPrefix+"v0.5.600", issuer, f.rel.Sums)
+		if err := Verify(f.rel, f.policy); !errors.Is(err, ErrIdentity) {
+			t.Fatalf("issuer %s: Verify = %v, want ErrIdentity", issuer, err)
+		}
+	}
+}
+
+// A release signed by an identity unrelated to either accepted pair —
+// its own SAN under its own issuer, neither the Actions nor the
+// platform one — is refused the same way.
+func TestVerifyUnrelatedIdentityRefused(t *testing.T) {
+	f := newFixture(t)
+	f.rel.Bundle = signSumsIssuer(t, f.vs, "https://evil.example/pwned", "https://evil.example", f.rel.Sums)
+	if err := Verify(f.rel, f.policy); !errors.Is(err, ErrIdentity) {
+		t.Fatalf("Verify = %v, want ErrIdentity", err)
+	}
+}
