@@ -1203,10 +1203,11 @@ func WriteContext(dir string, cx *Context) ([]string, ContextWritten, error) {
 }
 
 func excludeFromGit(dir, pattern string) error {
-	info := filepath.Join(dir, ".git", "info")
-	if st, err := os.Stat(filepath.Join(dir, ".git")); err != nil || !st.IsDir() {
+	common := commonGitDir(dir)
+	if common == "" {
 		return nil // not a git checkout (tests)
 	}
+	info := filepath.Join(common, "info")
 	if err := os.MkdirAll(info, 0o755); err != nil {
 		return err
 	}
@@ -1227,6 +1228,41 @@ func excludeFromGit(dir, pattern string) error {
 	}
 	_, err = f.WriteString(pattern + "\n")
 	return err
+}
+
+// commonGitDir is the git dir whose info/exclude the checkout in dir
+// reads: its own .git, or for a worktree the shared clone's (git reads
+// info/exclude from the common dir), "" when dir is no checkout.
+func commonGitDir(dir string) string {
+	dotgit := filepath.Join(dir, ".git")
+	st, err := os.Stat(dotgit)
+	if err != nil {
+		return ""
+	}
+	if st.IsDir() {
+		return dotgit
+	}
+	b, err := os.ReadFile(dotgit)
+	if err != nil {
+		return ""
+	}
+	gitdir, ok := strings.CutPrefix(strings.TrimSpace(string(b)), "gitdir:")
+	if !ok {
+		return ""
+	}
+	gitdir = strings.TrimSpace(gitdir)
+	if !filepath.IsAbs(gitdir) {
+		gitdir = filepath.Join(dir, gitdir)
+	}
+	c, err := os.ReadFile(filepath.Join(gitdir, "commondir"))
+	if err != nil {
+		return gitdir
+	}
+	common := strings.TrimSpace(string(c))
+	if !filepath.IsAbs(common) {
+		common = filepath.Join(gitdir, common)
+	}
+	return filepath.Clean(common)
 }
 
 // Gateway is what the node needs of the platform; *gateway.Client is one.
