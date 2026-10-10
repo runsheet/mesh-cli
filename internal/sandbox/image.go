@@ -132,10 +132,11 @@ func BuildImage(ctx context.Context, run Runner, ref, version string, keep ...st
 // linux/arm64 into one manifest list tagged
 // ghcr.io/runsheet/mesh-node:<version> (DefaultImage), a release unit's
 // step 4 — the public ghcr every node pulls from (mesh-specs ADR 017 §4,
-// §7), with MESH_VERSION version as BuildImage's build does. ref, when
-// given, must be that same tag: a release names no other image. It is to
-// answer the multi-arch index's digest; until the push lands it answers
-// "" and the build's error.
+// §7), from the Containerfile the binary embeds (images/node/Containerfile),
+// with MESH_VERSION version as BuildImage's build does. ref, when given,
+// must be that same tag: a release names no other image. It is to answer
+// the multi-arch index's digest; until the push lands it answers "" and
+// the build's error, wrapped with why() as BuildImage's is.
 func PushImage(ctx context.Context, run Runner, ref, version string) (string, error) {
 	if !tagRE.MatchString(version) {
 		return "", fmt.Errorf("node image: version %q is not an image tag", version)
@@ -145,10 +146,20 @@ func PushImage(ctx context.Context, run Runner, ref, version string) (string, er
 		return "", fmt.Errorf("node image %s: a release pushes %s", ref, tag)
 	}
 	ref = tag
+	dir, err := os.MkdirTemp("", "mesh-node-image-")
+	if err != nil {
+		return "", err
+	}
+	defer os.RemoveAll(dir)
+	file := filepath.Join(dir, "Containerfile")
+	if err := os.WriteFile(file, nodeimage.Containerfile, 0o644); err != nil {
+		return "", err
+	}
 	if out, err := run(ctx, imageBinary, "build",
 		"--platform", "linux/amd64,linux/arm64",
 		"--manifest", ref,
-		"--build-arg", "MESH_VERSION="+version); err != nil {
+		"--file", file,
+		"--build-arg", "MESH_VERSION="+version, dir); err != nil {
 		return "", fmt.Errorf("node image %s: multi-platform build failed: %s", ref, why(out, err))
 	}
 	return "", nil

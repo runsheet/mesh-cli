@@ -187,6 +187,35 @@ func TestPushImagePassesMeshVersion(t *testing.T) {
 	}
 }
 
+// PushImage builds from the Containerfile the binary embeds, which is
+// images/node/Containerfile byte for byte (mesh-specs ADR 017 §4 step 4).
+func TestPushImageFromTheContainerfile(t *testing.T) {
+	f := &fakeRuntime{}
+	if _, err := PushImage(context.Background(), f.run, "ghcr.io/runsheet/mesh-node:v1.2.3", "v1.2.3"); err != nil {
+		t.Fatal(err)
+	}
+	want, err := os.ReadFile("../../images/node/Containerfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(f.built, want) {
+		t.Error("the build's Containerfile is not images/node/Containerfile")
+	}
+}
+
+// A failed build is the error, wrapped with why() as BuildImage's is, and
+// an empty digest: nothing to push.
+func TestPushImageFailedBuildIsTheError(t *testing.T) {
+	f := &fakeRuntime{buildErr: true}
+	digest, err := PushImage(context.Background(), f.run, "ghcr.io/runsheet/mesh-node:v1.2.3", "v1.2.3")
+	if err == nil || !strings.Contains(err.Error(), "no space left") {
+		t.Fatalf("err = %v; want the build's reason", err)
+	}
+	if digest != "" {
+		t.Errorf("digest = %q; want empty", digest)
+	}
+}
+
 // PushImage's build is tagged ghcr.io/runsheet/mesh-node:<version>, the
 // public ghcr the fleet pulls from (mesh-specs ADR 017 §7); a ref naming
 // another image, or a version that is no tag, builds nothing.
