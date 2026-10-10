@@ -59,9 +59,6 @@ func (f *fakeRuntime) run(_ context.Context, name string, args ...string) ([]byt
 		if args[1] != "push" {
 			break
 		}
-		if f.pushErr {
-			return []byte("Error: writing manifest: denied"), errors.New("exit status 125")
-		}
 		for i, a := range args {
 			switch a {
 			case "--authfile":
@@ -72,10 +69,16 @@ func (f *fakeRuntime) run(_ context.Context, name string, args ...string) ([]byt
 				}
 				f.pushedAuth = b
 			case "--digestfile":
+				if f.pushErr {
+					continue
+				}
 				if err := os.WriteFile(args[i+1], []byte(f.digest), 0o644); err != nil {
 					return nil, err
 				}
 			}
+		}
+		if f.pushErr {
+			return []byte("Error: writing manifest: denied"), errors.New("exit status 125")
 		}
 	case "images":
 		return []byte(strings.Join(f.images, "\n") + "\n"), nil
@@ -473,16 +476,25 @@ func TestPushImagePushesUnderATempAuthFileAndAnswersTheDigest(t *testing.T) {
 	}
 }
 
-// A refused push is PushImage's error, answers no digest and leaves no
-// auth file; with no token nothing is built or pushed.
+// A refused push is PushImage's error, naming the push, answers no
+// digest and leaves no temp auth dir behind; with no token nothing is
+// built or pushed.
 func TestPushImageFailedPushIsTheError(t *testing.T) {
 	f := &fakeRuntime{pushErr: true}
 	digest, err := PushImage(context.Background(), f.run, "", "v1.2.3", "ghs_secret")
-	if err == nil || !strings.Contains(err.Error(), "denied") {
-		t.Fatalf("err = %v; want the push's reason", err)
+	if err == nil || !strings.Contains(err.Error(), "push failed") || !strings.Contains(err.Error(), "denied") {
+		t.Fatalf("err = %v; want the push named, with its reason", err)
 	}
 	if digest != "" {
 		t.Errorf("digest = %q; want empty", digest)
+	}
+	if f.pushedAuthFile == "" {
+		t.Fatal("the push was given no --authfile")
+	}
+	if dir := filepath.Dir(f.pushedAuthFile); dir == os.TempDir() {
+		t.Errorf("auth file %s is not in a temp dir of its own", f.pushedAuthFile)
+	} else if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Errorf("the auth file's dir %s is left behind after a failed push (stat: %v)", dir, err)
 	}
 
 	f = &fakeRuntime{digest: testDigest}
