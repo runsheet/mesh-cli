@@ -3,6 +3,7 @@
 package sandbox
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -21,6 +22,27 @@ func unresolvableRef(image string) string {
 	}
 	return "mesh-local.invalid/" + path
 }
+
+// localOnlyImage tags image under unresolvableRef(image) in the node
+// user's store and returns the new ref, so a podman run of it can only
+// be served locally. Cleanup removes the new tag alone, never image.
+// Only MESH_SANDBOX_E2E=1 tests call it.
+func localOnlyImage(t *testing.T, ctx context.Context, image string) string {
+	t.Helper()
+	ref := unresolvableRef(image)
+	if out, err := ExecRunner(ctx, imageBinary, "tag", image, ref); err != nil {
+		t.Fatalf("podman tag %s %s: %v: %s", image, ref, err, strings.TrimSpace(string(out)))
+	}
+	t.Cleanup(func() {
+		if out, err := ExecRunner(context.Background(), imageBinary, "rmi", ref); err != nil {
+			t.Logf("podman rmi %s: %v: %s", ref, err, strings.TrimSpace(string(out)))
+		}
+	})
+	return ref
+}
+
+// localOnlyImage is called only by MESH_SANDBOX_E2E=1 tests yet to land.
+var _ = localOnlyImage
 
 // TestUnresolvableRef proves unresolvableRef keeps an image ref's tag
 // and image name while substituting a registry host that can never
