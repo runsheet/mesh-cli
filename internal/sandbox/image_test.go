@@ -171,6 +171,22 @@ func TestPushImageIsMultiPlatform(t *testing.T) {
 	}
 }
 
+// PushImage's build carries MESH_VERSION version, as BuildImage's does
+// (images/node/Containerfile reads it to stamp the image).
+func TestPushImagePassesMeshVersion(t *testing.T) {
+	f := &fakeRuntime{}
+	if _, err := PushImage(context.Background(), f.run, "ghcr.io/runsheet/mesh-node:v1.2.3", "v1.2.3"); err != nil {
+		t.Fatal(err)
+	}
+	b := f.called("build")
+	if len(b) != 1 {
+		t.Fatalf("builds = %q; want one", b)
+	}
+	if !slices.Contains(strings.Fields(b[0]), "--build-arg") || !strings.Contains(b[0], "MESH_VERSION=v1.2.3") {
+		t.Errorf("build args = %q; want --build-arg MESH_VERSION=v1.2.3", b[0])
+	}
+}
+
 // PushImage's build is tagged ghcr.io/runsheet/mesh-node:<version>, the
 // public ghcr the fleet pulls from (mesh-specs ADR 017 §7); a ref naming
 // another image, or a version that is no tag, builds nothing.
