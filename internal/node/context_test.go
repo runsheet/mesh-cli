@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/gateway/gatewaytest"
@@ -624,7 +625,11 @@ func TestContextWritten(t *testing.T) {
 // an INDEX.md past the cap — must not ride along: the directory is
 // cleared and the bytes reported are the bytes on disk, none.
 func TestContextReadFailureClearsAReusedCheckout(t *testing.T) {
-	// nothing listens here: the documents read fails
+	// nothing listens here: the documents read fails, once its retries'
+	// window — shortened so the test runs fast — is spent
+	orig := gateway.ReadRetryFor
+	gateway.ReadRetryFor = 50 * time.Millisecond
+	t.Cleanup(func() { gateway.ReadRetryFor = orig })
 	gw := gateway.New("http://127.0.0.1:1", "rs_test")
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, ".git", "info"), 0o755); err != nil {
