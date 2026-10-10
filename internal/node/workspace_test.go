@@ -880,3 +880,122 @@ func TestEvalWorkspaceSpecIsNotTheBuilds(t *testing.T) {
 		t.Fatalf("eval spec %+v", eval)
 	}
 }
+
+// A build and an evaluation of the same goal/seq on one node: the build
+// prepares the item's checkout on its write token, the evaluation then
+// prepares its own on the read token the platform issues it, and the
+// build's credential helper still answers with the write token — so the
+// build's push after it goes out on the token it was claimed with (goal
+// a-build-pushes-before-it-finishes; the dl360 refusals, ADR-027).
+func TestEvaluationLeavesTheBuildsCredentialHelper(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	root := t.TempDir()
+	global := filepath.Join(root, "gitconfig")
+	os.WriteFile(global, nil, 0o644)
+	t.Setenv("GIT_CONFIG_GLOBAL", global)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	for _, kv := range []string{"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t", "GIT_TERMINAL_PROMPT=0"} {
+		k, v, _ := strings.Cut(kv, "=")
+		t.Setenv(k, v)
+	}
+	must := func(dir string, stdin string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Stdin = strings.NewReader(stdin)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	srvRoot := filepath.Join(root, "srv")
+	bare := filepath.Join(srvRoot, "acme/widgets.git")
+	must(root, "", "init", "--quiet", "--bare", "-b", "main", bare)
+	seedDir := filepath.Join(root, "seed")
+	must(root, "", "init", "--quiet", "-b", "main", seedDir)
+	os.WriteFile(filepath.Join(seedDir, "a"), []byte("a"), 0o644)
+	must(seedDir, "", "add", "a")
+	must(seedDir, "", "commit", "--quiet", "-m", "a")
+	must(seedDir, "", "push", "--quiet", bare, "HEAD:main")
+	srv := gatewaytest.GitHub(t, srvRoot, map[string]string{"ghs_build_write": "acme/widgets", "ghs_eval_read": "acme/widgets"})
+
+	// the platform: the build's token issued at claim, the evaluator's
+	// once the item is evaluating, both to this node
+	f := seed(t)
+	gw := gateway.New(f.URL(), "rs_test")
+	nodeID := gateway.NodeID(mustUUID(orgID), "test-node").String()
+	exp := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	issue := func(status, token string) *gateway.GitHubToken {
+		t.Helper()
+		f.WorkItems[item1]["status"], f.WorkItems[item1]["nodeId"] = status, nodeID
+		f.GitHubTokens[item1] = map[string]any{"token": token, "expiresAt": exp, "repo": "acme/widgets"}
+		tok, err := gw.IssueItemRepoToken(context.Background(), item1, nodeID)
+		if err != nil {
+			t.Fatalf("issue %s token: %v", status, err)
+		}
+		if tok.Token != token {
+			t.Fatalf("issued %q, want %q", tok.Token, token)
+		}
+		return tok
+	}
+
+	ctx := context.Background()
+	work := filepath.Join(root, "work")
+	g := &Git{GitHubURL: srv.URL}
+	branch := BranchName("ship-it", 1)
+
+	build := WorkspaceSpec{Root: work, GoalSlug: "ship-it", Seq: 1, Repo: "acme/widgets", Branch: branch, BaseRef: "main"}
+	if err := g.Authorize(ctx, build, issue("running", "ghs_build_write")); err != nil {
+		t.Fatal(err)
+	}
+	buildDir, err := g.Prepare(ctx, build)
+	if err != nil {
+		t.Fatalf("build prepare: %v", err)
+	}
+	os.WriteFile(filepath.Join(buildDir, "b"), []byte("b"), 0o644)
+	must(buildDir, "", "add", "b")
+	must(buildDir, "", "commit", "--quiet", "-m", "b")
+
+	// the evaluation prepares before the build has pushed: the dl360 order
+	eval := EvalWorkspaceSpec(work, "ship-it", 1, "acme/widgets", branch, "main")
+	if err := g.Authorize(ctx, eval, issue("evaluating", "ghs_eval_read")); err != nil {
+		t.Fatal(err)
+	}
+	evalDir, err := g.Prepare(ctx, eval)
+	if err != nil {
+		t.Fatalf("evaluation prepare: %v", err)
+	}
+
+	fill := func(dir string) string {
+		t.Helper()
+		out := must(dir, "url="+srv.URL+"/acme/widgets.git\n\n", "credential", "fill")
+		for _, line := range strings.Split(out, "\n") {
+			if p, ok := strings.CutPrefix(line, "password="); ok {
+				return p
+			}
+		}
+		t.Fatalf("credential fill in %s answered no password:\n%s", dir, out)
+		return ""
+	}
+	if got := fill(buildDir); got != "ghs_build_write" {
+		t.Fatalf("the build's helper answers %q after the evaluation prepared, want ghs_build_write", got)
+	}
+	if evalDir == buildDir {
+		t.Fatalf("the evaluation prepared the build's checkout %s", buildDir)
+	}
+	if got := fill(evalDir); got != "ghs_eval_read" {
+		t.Fatalf("the evaluation's helper answers %q, want ghs_eval_read", got)
+	}
+
+	// and the build's push goes out on it
+	sha, err := g.Push(ctx, buildDir, branch)
+	if err != nil {
+		t.Fatalf("the build's push after the evaluation prepared: %v", err)
+	}
+	if got := must(root, "", "--git-dir", bare, "rev-parse", branch); got != sha {
+		t.Fatalf("pushed %s, origin has %s", sha, got)
+	}
+}
