@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -85,6 +86,17 @@ type Sandbox struct {
 	Config  Config
 	// TempDir is where temporary HOMEs are made ("" is os.TempDir).
 	TempDir string
+	// Logf is where the sandbox says what it fell back on (nil is the
+	// standard logger).
+	Logf func(format string, args ...any)
+}
+
+func (sb *Sandbox) logf(format string, args ...any) {
+	if sb != nil && sb.Logf != nil {
+		sb.Logf(format, args...)
+		return
+	}
+	log.Printf(format, args...)
 }
 
 // Session is one agent session's sandbox: its temporary HOME, made on
@@ -256,12 +268,24 @@ func Allowed(name string) bool {
 }
 
 // Mounts are the pod's only host paths, each at its own path: the
-// workspace and the session's HOME read-write, and the checkout's hooks
-// directory, when it has one, read-only.
+// workspace and the session's HOME read-write, the shared git common
+// directory of a workspace that is a worktree read-write (mesh-specs ADR
+// 017, so its `.git` file resolves in the pod and its commits land in the
+// clone's object store), and the checkout's hooks directory, when it has
+// one, read-only. A full clone mounts no common dir; nothing else of the
+// clone — its parent, its work tree, another item's worktree — is ever
+// mounted.
 func (s *Session) Mounts(workspace string) []Mount {
 	m := []Mount{
 		{Source: workspace, Target: workspace},
 		{Source: s.Home, Target: s.Home},
+	}
+	// A workspace whose common dir cannot be read is mounted as a full
+	// clone would be: logged, and today's list, rather than no session.
+	if common, err := GitCommonDir(workspace); err != nil {
+		s.sb.logf("sandbox: %v; mounting the workspace alone", err)
+	} else if common != "" {
+		m = append(m, Mount{Source: common, Target: common})
 	}
 	// the checkout's hooks, which its core.hooksPath names (ADR-024)
 	if s.hooks != "" {
