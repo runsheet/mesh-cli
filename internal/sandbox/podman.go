@@ -85,8 +85,16 @@ func PodCreateArgs(spec PodSpec) []string {
 }
 
 // KeepIDUserns is the --userns value that maps the host user onto the
-// given uid:gid inside the pod.
+// given uid:gid inside the pod. A zero uid or gid is an image that
+// declares no user (ImageUser found none to read) and falls back to
+// DefaultImageUID, so the pod never maps onto root inside.
 func KeepIDUserns(uid, gid int) string {
+	if uid == 0 {
+		uid = DefaultImageUID
+	}
+	if gid == 0 {
+		gid = DefaultImageUID
+	}
 	return fmt.Sprintf("keep-id:uid=%d,gid=%d", uid, gid)
 }
 
