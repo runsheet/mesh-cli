@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -78,6 +79,10 @@ var (
 // entry runs; tests see the test binary.
 var mcpExecutable = os.Executable
 
+// mcpDiscoverAuth asks the MCP URL how it is signed into; tests answer
+// without the network.
+var mcpDiscoverAuth = mcpinstall.DiscoverAuth
+
 // mcpInstallCmd is `mesh mcp install`: for each client of the install
 // table (mcpinstall.Clients, ADR-025) — claude, codex, cursor — writes
 // its MCP entry for `<this binary> mcp` into its own config file and
@@ -134,7 +139,7 @@ var mcpInstallCmd = &cobra.Command{
 			if ctx == nil {
 				ctx = context.Background()
 			}
-			opts.Auth = mcpinstall.DiscoverAuth(ctx, opts.URL)
+			opts.Auth = mcpDiscoverAuth(ctx, opts.URL)
 			fmt.Fprintf(out, "url: %s\nauth: %s\n", opts.URL, opts.Auth.Describe())
 		} else if mcpInstallURL != "" {
 			return errors.New("--url needs --remote")
@@ -181,6 +186,63 @@ var mcpInstallCmd = &cobra.Command{
 	},
 }
 
+var mcpDoctorJSON bool
+
+// mcpDoctorCmd is `mesh mcp doctor`: for each client of the install
+// table found on this machine (mcpinstall.Detected), whether its MCP
+// file holds mesh's entry and the binary or URL it points at — read
+// only, an unparseable file reported and left alone (ADR-025). --json
+// prints the []mcpinstall.Report.
+var mcpDoctorCmd = &cobra.Command{
+	Use:   "doctor",
+	Short: "Say, per client found, whether mesh is configured and what it points at",
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		out := cmd.OutOrStdout()
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return err
+		}
+		reports := mcpinstall.Doctor(mcpinstall.Clients(meshmcp.Skill), home)
+		if mcpDoctorJSON {
+			if reports == nil {
+				reports = []mcpinstall.Report{}
+			}
+			enc := json.NewEncoder(out)
+			enc.SetIndent("", "  ")
+			return enc.Encode(reports)
+		}
+		if len(reports) == 0 {
+			fmt.Fprintln(out, "no client found")
+		}
+		for _, r := range reports {
+			fmt.Fprintln(out, doctorLine(r))
+		}
+		return nil
+	},
+}
+
+// doctorLine is one client's line: `<client>: configured <binary or
+// url> (<path>)`, `<client>: missing in <path>`, or `<client>:
+// unparseable <path> (<err>); left alone`.
+func doctorLine(r mcpinstall.Report) string {
+	switch r.Status {
+	case mcpinstall.Configured:
+		target := r.Command
+		if r.URL != "" {
+			target = r.URL
+		}
+		if target == "" {
+			target = "(no command or url)"
+		}
+		return fmt.Sprintf("%s: configured %s (%s)", r.Client, target, r.Path)
+	case mcpinstall.Unparseable:
+		return fmt.Sprintf("%s: unparseable %s (%s); left alone", r.Client, r.Path, r.Error)
+	default:
+		return fmt.Sprintf("%s: %s in %s", r.Client, r.Status, r.Path)
+	}
+}
+
 // claudeRemoteAdd is the `claude mcp add` line for the remote entry.
 func claudeRemoteAdd(opts mcpinstall.PlanOptions) string {
 	line := "claude mcp add --scope user --transport http mesh " + opts.URL
@@ -208,4 +270,6 @@ func init() {
 	mcpInstallCmd.Flags().BoolVar(&mcpInstallRemote, "remote", false, "write the hosted server's entry (no local binary): OAuth when the issuer registers clients, else a bearer from $"+mcpinstall.BearerEnvVar)
 	mcpInstallCmd.Flags().StringVar(&mcpInstallURL, "url", "", "the MCP URL for --remote (default: the gateway's /mcp)")
 	mcpCmd.AddCommand(mcpInstallCmd)
+	mcpDoctorCmd.Flags().BoolVar(&mcpDoctorJSON, "json", false, "print the reports as JSON")
+	mcpCmd.AddCommand(mcpDoctorCmd)
 }
