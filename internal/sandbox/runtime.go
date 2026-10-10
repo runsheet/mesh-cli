@@ -39,6 +39,10 @@ type PodSpec struct {
 	Image string
 	// Network is what the pod may reach (NetworkPolicy).
 	Network NetworkPolicy
+	// UID and GID are the image's declared user (ImageUser), the user
+	// the host user is mapped onto inside the pod; zero is
+	// DefaultImageUID (KeepIDUserns).
+	UID, GID int
 }
 
 // Pod is a created pod.
