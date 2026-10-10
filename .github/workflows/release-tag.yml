@@ -60,54 +60,6 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build:
-    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
-    runs-on: [self-hosted, mini]
-    permissions:
-      contents: read
-    strategy:
-      fail-fast: true
-      matrix:
-        include:
-          - goos: linux
-            goarch: amd64
-            asset_name: mesh-linux-amd64
-          - goos: linux
-            goarch: arm64
-            asset_name: mesh-linux-arm64
-          - goos: darwin
-            goarch: arm64
-            asset_name: mesh-darwin-arm64
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: false   # the mini keeps Go's caches on disk; packing them for GitHub's cache ran zstd 40+ min per job (2026-09-26)
-
-      - name: Build binary
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: "0"
-          ASSET: ${{ matrix.asset_name }}
-        run: |
-          mkdir -p dist
-          go build -trimpath \
-            -ldflags "-s -w -X projectmesh.io/mesh-cli/internal/version.Version=${GITHUB_REF_NAME} -X projectmesh.io/mesh-cli/internal/version.Sha=${GITHUB_SHA::7}" \
-            -o "dist/${ASSET}" ./cmd/mesh/
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.asset_name }}
-          path: dist/${{ matrix.asset_name }}
-          if-no-files-found: error
-
   image:
     name: Node image ${{ github.ref_name }}
     runs-on: [self-hosted, mini]
@@ -182,7 +134,7 @@ jobs:
 
   publish:
     name: Sign and publish ${{ github.ref_name }}
-    needs: [build, image]
+    needs: [image]
     runs-on: [self-hosted, mini]
     permissions:
       contents: write
@@ -191,7 +143,7 @@ jobs:
     steps:
       # scripts/mirror-release.sh and dist/mirror/README.md live in the
       # repo tree, which this job otherwise never checks out. Runs first:
-      # it wipes the workspace, and Download artifacts below has not yet
+      # it wipes the workspace, and the build below has not yet
       # created release/. Full history (not just the tag's commit) so
       # release-notes.sh can walk <previous-tag>..<tag>.
       - name: Checkout code (full history, for the release notes)
@@ -199,15 +151,28 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
+      # The three binaries are built here, in this job, not handed over
+      # from a build matrix as Actions artifacts: Go cross-compiles, and
+      # the artifact store is a quota (500 MB on the free plan) that
+      # stopped every release for a day on 2026-10-10 ("Artifact storage
+      # quota has been hit"). Nothing of a release's bytes passes through
+      # it now. The signing identity is this workflow's, unchanged.
+      - name: Set up Go
+        uses: actions/setup-go@v5
         with:
-          # Only the binaries: build-push-action also uploads the image's
-          # build record (<repo>~<id>.dockerbuild), which this action
-          # cannot download (v0.0.0-runsheet-test.2, run 36244616825).
-          pattern: mesh-*
-          path: release
-          merge-multiple: true
+          go-version-file: go.mod
+          cache: false   # the runner keeps Go's caches on disk
+
+      - name: Build the three assets
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          mkdir -p release
+          for target in linux/amd64 linux/arm64 darwin/arm64; do
+            GOOS="${target%/*}" GOARCH="${target#*/}" go build -trimpath \
+              -ldflags "-s -w -X projectmesh.io/mesh-cli/internal/version.Version=${GITHUB_REF_NAME} -X projectmesh.io/mesh-cli/internal/version.Sha=${GITHUB_SHA::7}" \
+              -o "release/mesh-${target%/*}-${target#*/}" ./cmd/mesh/
+          done
 
       - name: Check the three assets
         working-directory: release
