@@ -57,11 +57,31 @@ on the same token.
    - with neither, the text is parsed as before (`ParseAlreadyDone`)
      and one line, `item <label>: no mesh_finish call; parsed the final
      message`, is logged for the session.
-   When the hosted tool has already moved the item on the platform, the
-   node's own finish is refused for the item's state: a refusal
-   (`gateway.IsRefusal`, not `IsUnsupported`) after a `mesh_finish`
-   call is logged `item <label>: finished by tool call on the platform`
-   and the build is handed in, not failed.
+   **Amended 2026-10-10** (goal `a-build-pushes-before-it-finishes`,
+   items 4 and 5): the build's finish is recorded by the node after the
+   push, and by the node alone. A node build session finishes on the
+   node's own stdio MCP server, `mesh-node` (`harness.NodeWorkMCP`:
+   `mesh session-tools` on the host, a Node script beside `mcp.json` in
+   a pod), whose `mesh_finish` and `mesh_fail` answer at once and record
+   nothing; the hosted `mcp__mesh-context__mesh_finish` and
+   `mcp__mesh-context__mesh_fail` are `--disallowedTools` for a build
+   (`ClaudeCode.Args`, `SandboxArgs`). The call still lands on
+   `Result.WorkCalls` by the tool's own name, and `Runner.afterBuild`
+   takes it in this order: validate, `Workspacer.Push`, and only once
+   the push has returned the sha it pushed, `FinishWorkItem` on that
+   sha (or, with no push, `FinishWorkItemAlreadyDone`). A push that
+   fails is the build's failure — `FailWorkItem` with `push
+   <branch>: <err>`, no finish of either kind sent, the branch left for
+   a retry: a finish whose push failed is not a finish. With nothing
+   recorded by the session's call, a refusal of the node's finish is
+   the finish's error; the old reading of it as the hosted tool's
+   finish (`finishedByTool`, `item <label>: finished by tool call on the
+   platform`) is retired. Before this the hosted call reported the
+   finish first, the evaluation of the item claimed its checkout and
+   rewrote the credential helper with a read token, and the build's
+   push was refused (`Write access to repository not granted`).
+   Evaluation and plan sessions keep the hosted `mesh_verdict` and
+   `mesh_plan` (Decisions 3 and 4).
 3. **The evaluator ends by `mesh_verdict`** (item 5 of the goal).
    `EvaluatePrompt`'s `# Finish by tool call` tells the session to call
    `mesh_verdict(item_id, passed, notes, failed_clauses: [{clause,

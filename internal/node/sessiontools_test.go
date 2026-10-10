@@ -98,7 +98,8 @@ func TestBuildGetsItsToolsBesideMeshContext(t *testing.T) {
 			allowed = args[i+1]
 		}
 	}
-	if allowed != "mcp__fs-tools__*,mcp__mesh-context__*,mcp__search__*" {
+	// mesh-node: a build finishes on the node's own tools
+	if allowed != "mcp__fs-tools__*,mcp__mesh-context__*,mcp__mesh-node__*,mcp__search__*" {
 		t.Errorf("--allowedTools = %q (args %v)", allowed, args)
 	}
 	if v, _ := envOf(job.Env, tools.EnvName("search", "Authorization")); v != searchSecret {
@@ -203,7 +204,14 @@ func TestItemWithNoToolsRunsOnMeshContextAlone(t *testing.T) {
 		}
 	}
 	args := (&harness.ClaudeCode{}).Args(job)
-	if got := args[len(args)-1]; got != "mcp__mesh-context__*" {
+	got := ""
+	for i, a := range args {
+		if a == "--allowedTools" && i+1 < len(args) {
+			got = args[i+1]
+		}
+	}
+	// mesh-node: a build finishes on the node's own tools
+	if got != "mcp__mesh-context__*,mcp__mesh-node__*" {
 		t.Fatalf("--allowedTools = %q", got)
 	}
 }

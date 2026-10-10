@@ -198,6 +198,28 @@ the helper rewritten, so a long session does not lose its push. A token
 the platform refuses fails the item — it is not run on your login
 instead.
 
+The push is the node's, after the session, and it goes out on the
+build's own write token: just before it the node rewrites the
+checkout's helper with the token it was issued at claim (or that
+token's refresh), so nothing written there since can be the one used.
+An evaluation of the item works in a checkout of its own,
+`~/.mesh/work/<goal>/<seq>-eval`, and never touches the build's helper
+(ADR-027). A build session finishes on the node's own `mesh-node`
+server, whose `mesh_finish` records nothing (the hosted one is
+disallowed for builds): the order is **push → attest → finish**, and
+node.log states it, `item <goal>/<seq>: pushed <sha>; finished <branch>
+($x)`. A push GitHub refuses for its credential — `remote: Write access
+to repository not granted` — is re-issued once and tried again; still
+refused it fails the build, the branch left for a retry and no finish
+recorded, logged with the token's access as issued, never the token:
+
+```
+item ship-it/3: push refused (access write, issued 2026-10-10T04:35:56Z, expires 2026-10-10T05:35:56Z): remote: Write access to repository not granted.; not finished
+```
+
+ADR-014 (its 2026-10-10 amendment) and ADR-023 (Decision 2) have the
+detail.
+
 The planner reads a whole project's repos rather than one item's, so it
 asks for the goal's own tokens (`planGitHubToken`, adr-022): one per
 repo of the project, minted through each repo's own account's
@@ -1768,7 +1790,8 @@ the console can say a kind no online node takes is why a goal waits.
 
 ### Attestations: the head it pushed
 
-After the last push of a build, a rework or a rebase the node attests
+After the last push of a build, a rework or a rebase — the push on the
+build's own write token, above — the node attests
 exactly the sha it pushed — validated again first when the push landed
 another commit than the one `.runsheet/validate.yml` ran on — with that
 commit's tree hash, and only then reports the session finished, so the
