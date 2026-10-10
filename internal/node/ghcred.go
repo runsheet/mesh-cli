@@ -69,10 +69,17 @@ func writeHelper(ctx context.Context, dir, base, helper string) error {
 	key := "credential." + strings.TrimRight(base, "/") + ".helper"
 	scope := "--local"
 	if isWorktree(dir) {
-		cmd := exec.CommandContext(ctx, "git", "config", "--local", "extensions.worktreeConfig", "true")
-		cmd.Dir = dir
-		if out, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("git config extensions.worktreeConfig: %w: %s", err, strings.TrimSpace(string(out)))
+		// addWorktree enables it under the repo's lock; a worktree made
+		// before it did gets it here, read first so no two items write
+		// the clone's one config at once when it is already there
+		get := exec.CommandContext(ctx, "git", "config", "--local", "--type=bool", "--get", "extensions.worktreeConfig")
+		get.Dir = dir
+		if out, err := get.Output(); err != nil || strings.TrimSpace(string(out)) != "true" {
+			cmd := exec.CommandContext(ctx, "git", "config", "--local", "extensions.worktreeConfig", "true")
+			cmd.Dir = dir
+			if out, err := cmd.CombinedOutput(); err != nil {
+				return fmt.Errorf("git config extensions.worktreeConfig: %w: %s", err, strings.TrimSpace(string(out)))
+			}
 		}
 		scope = "--worktree"
 	}

@@ -364,9 +364,10 @@ func (g *Git) syncSharedClone(ctx context.Context, root, key, repo, clone string
 }
 
 // addWorktree makes spec's new checkout a worktree of clone (mesh ADR
-// 017): the clone fetched under the lock, then — the lock released —
-// `git worktree add` on the item's branch, continued as Prepare
-// continues a checkout's: origin/<branch> when it was pushed, else a
+// 017): the clone fetched under the lock, then — under it again, so no
+// other item's prune lands mid-add — `git worktree add` on the item's
+// branch, extensions.worktreeConfig enabled for its credential helper,
+// continued as Prepare continues a checkout's: origin/<branch> when it was pushed, else a
 // local branch an interrupted attempt left in the clone, else a new one
 // from origin/<base>. A registration whose directory is gone (a sweep
 // interrupted, a directory removed by hand) is pruned first, so git does
@@ -385,6 +386,17 @@ func (g *Git) addWorktree(ctx context.Context, root, key, clone string, spec Wor
 		base = strings.TrimPrefix(out, "origin/")
 	}
 	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
+		return "", err
+	}
+	// the prune and the add under the repo's lock: another item's prune
+	// while this add is half done removes its .git/worktrees/<name>, and
+	// git config writes to the clone's one config file collide
+	unlock, err := lockRepo(ctx, root, key)
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
+	if _, err := g.run(ctx, clone, "git", "config", "--local", "extensions.worktreeConfig", "true"); err != nil {
 		return "", err
 	}
 	if _, err := g.run(ctx, clone, "git", "worktree", "prune"); err != nil {
