@@ -101,6 +101,9 @@ type Session struct {
 	started *Pod
 	// hooks is the checkout's hooks directory, mounted beside it.
 	hooks string
+	// image is the image ref the session's agent runs, the Sandbox's
+	// Config.Image when it was opened.
+	image string
 }
 
 // GitIdentity is a session's commit identity: the agent its .gitconfig
@@ -170,7 +173,7 @@ func (s *Sandbox) Open(label, kind string, git GitIdentity) (*Session, error) {
 	if len(name) > 40 {
 		name = name[:40]
 	}
-	return &Session{sb: s, Home: home, Label: label, Kind: kind, hooks: git.HooksDir, name: "mesh-" + name + "-" + hex.EncodeToString(rnd[:])}, nil
+	return &Session{sb: s, Home: home, Label: label, Kind: kind, hooks: git.HooksDir, image: s.Config.Image, name: "mesh-" + name + "-" + hex.EncodeToString(rnd[:])}, nil
 }
 
 // gitConfigValue quotes v for a .gitconfig line: `Mesh builder (mini)`
@@ -179,6 +182,15 @@ func (s *Sandbox) Open(label, kind string, git GitIdentity) (*Session, error) {
 func gitConfigValue(v string) string {
 	v = strings.NewReplacer("\r", "", "\n", "", `\`, `\\`, `"`, `\"`).Replace(v)
 	return `"` + v + `"`
+}
+
+// Image is the image ref the session's agent runs.
+func (s *Session) Image() string { return s.image }
+
+// Describe names the session and its image for the node's log:
+// `session <label> — image <ref>`.
+func (s *Session) Describe() string {
+	return "session " + s.Label + " — image " + s.image
 }
 
 // WriteFile writes data at rel under the session's HOME and returns its
