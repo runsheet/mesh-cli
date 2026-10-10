@@ -203,7 +203,9 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	} else if branch == "" {
 		branch = res.Branch()
 	}
-	spec := WorkspaceSpec{Root: e.WorkRoot, GoalSlug: res.Goal.Slug, Seq: item.Seq, Repo: res.Repo.FullName(), Branch: branch, BaseRef: res.BaseRef()}
+	// a checkout of its own, never the build's: its Authorize must not
+	// rewrite the credential helper the build's push reads
+	spec := EvalWorkspaceSpec(e.WorkRoot, res.Goal.Slug, item.Seq, res.Repo.FullName(), branch, res.BaseRef())
 	// the item's own GitHub token, as its builder had
 	cred, err := NewItemCred(ctx, e.GW, e.WS, e.Scopes, item, spec, e.Fallback, e.logf)
 	if err != nil {
