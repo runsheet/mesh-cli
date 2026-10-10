@@ -342,3 +342,18 @@ func TestSandboxEnsureImage(t *testing.T) {
 		t.Fatal("sandbox: on without podman ensured no image and no error")
 	}
 }
+
+// The node fills its sandbox's stores: one pnpm store and one npm cache
+// under ~/.mesh/store, beside ~/.mesh/work (mesh-specs ADR 017 §3).
+func TestOpenSandboxNamesThePackageStores(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	sb, _, err := OpenSandbox(context.Background(), SandboxConfig{}, &sandbox.Fake{}, "v1", nil)
+	if err != nil || sb == nil {
+		t.Fatalf("open: %v %v", sb, err)
+	}
+	want := sandbox.Stores{Pnpm: filepath.Join(home, ".mesh", "store", "pnpm"), Npm: filepath.Join(home, ".mesh", "store", "npm")}
+	if sb.Config.Stores != want {
+		t.Errorf("stores = %+v, want %+v", sb.Config.Stores, want)
+	}
+}

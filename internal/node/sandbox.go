@@ -144,6 +144,13 @@ func OpenSandbox(ctx context.Context, c SandboxConfig, rt sandbox.Runtime, versi
 		return nil, &gateway.SandboxInfo{Mode: SandboxOff}, nil
 	}
 	cfg := c.Settings(version)
+	if root, err := StoreRoot(); err != nil {
+		if logf != nil {
+			logf("sandbox: no package store (%v); sessions install into their own HOME", err)
+		}
+	} else {
+		cfg.Stores = PackageStores(root)
+	}
 	if logf != nil {
 		logf("sandbox: on — %s, image %s, agent %g cpus / %s / %d pids", ver, cfg.Image, cfg.Limits.CPUs, cfg.Limits.Memory, cfg.Limits.Pids)
 	}
