@@ -3,6 +3,8 @@ package sandbox
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -132,12 +134,16 @@ func BuildImage(ctx context.Context, run Runner, ref, version string, keep ...st
 // linux/arm64 into one manifest list tagged
 // ghcr.io/runsheet/mesh-node:<version> (DefaultImage), a release unit's
 // step 4 — the public ghcr every node pulls from (mesh-specs ADR 017 §4,
-// §7). ref, when given, must be that same tag: a release names no other
-// image. It is to answer the multi-arch index's digest; until the push
-// lands it answers "" and the build's error. The build is of the
-// Containerfile the binary embeds (images/node/Containerfile), written to
-// a temporary file passed by --file and removed after, as BuildImage's.
-func PushImage(ctx context.Context, run Runner, ref, version string) (string, error) {
+// §7) — pushes it, and answers the multi-arch index's digest. ref, when
+// given, must be that same tag: a release names no other image. The
+// build is of the Containerfile the binary embeds
+// (images/node/Containerfile), written to a temporary file passed by
+// --file and removed after, as BuildImage's. The push is on token, the
+// App-minted GitHub token the release item is issued (`packages: write`,
+// ADR 017 §4): written as an auth.json under a temporary directory of its
+// own, never the build context, passed by --authfile, and removed with
+// the digest file once the push returns.
+func PushImage(ctx context.Context, run Runner, ref, version, token string) (string, error) {
 	if !tagRE.MatchString(version) {
 		return "", fmt.Errorf("node image: version %q is not an image tag", version)
 	}
@@ -146,6 +152,9 @@ func PushImage(ctx context.Context, run Runner, ref, version string) (string, er
 		return "", fmt.Errorf("node image %s: a release pushes %s", ref, tag)
 	}
 	ref = tag
+	if strings.TrimSpace(token) == "" {
+		return "", fmt.Errorf("node image %s: no registry token to push with", ref)
+	}
 	dir, err := os.MkdirTemp("", "mesh-node-image-")
 	if err != nil {
 		return "", err
@@ -161,7 +170,51 @@ func PushImage(ctx context.Context, run Runner, ref, version string) (string, er
 		"--build-arg", "MESH_VERSION="+version, dir); err != nil {
 		return "", fmt.Errorf("node image %s: multi-platform build failed: %s", ref, why(out, err))
 	}
-	return "", nil
+	return pushManifest(ctx, run, ref, token)
+}
+
+// pushManifest pushes the manifest list ref, every platform's image with
+// it, on token, and answers the digest podman wrote. The auth file and
+// the digest file lie in a temporary directory removed before it
+// returns, whatever the push did.
+func pushManifest(ctx context.Context, run Runner, ref, token string) (string, error) {
+	dir, err := os.MkdirTemp("", "mesh-node-push-")
+	if err != nil {
+		return "", err
+	}
+	defer os.RemoveAll(dir)
+	auth, err := registryAuth(ref, token)
+	if err != nil {
+		return "", err
+	}
+	authFile := filepath.Join(dir, "auth.json")
+	if err := os.WriteFile(authFile, auth, 0o600); err != nil {
+		return "", err
+	}
+	digestFile := filepath.Join(dir, "digest")
+	if out, err := run(ctx, imageBinary, "manifest", "push", "--all",
+		"--authfile", authFile, "--digestfile", digestFile,
+		ref, "docker://"+ref); err != nil {
+		return "", fmt.Errorf("node image %s: push failed: %s", ref, why(out, err))
+	}
+	b, err := os.ReadFile(digestFile)
+	if err != nil {
+		return "", fmt.Errorf("node image %s: pushed, but no digest: %w", ref, err)
+	}
+	d := strings.TrimSpace(string(b))
+	if !strings.HasPrefix(d, "sha256:") {
+		return "", fmt.Errorf("node image %s: pushed, but the digest %q is not sha256:…", ref, d)
+	}
+	return d, nil
+}
+
+// registryAuth is the containers auth.json logging in to ref's registry
+// with a GitHub installation token, whose user is x-access-token.
+func registryAuth(ref, token string) ([]byte, error) {
+	host, _, _ := strings.Cut(ref, "/")
+	return json.Marshal(map[string]any{"auths": map[string]any{
+		host: map[string]string{"auth": base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))},
+	}})
 }
 
 // ImageDigest is ref's digest as the runtime holds it (`podman image

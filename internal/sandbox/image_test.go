@@ -3,8 +3,11 @@ package sandbox
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -23,6 +26,13 @@ type fakeRuntime struct {
 	rmiFail  map[string]bool
 	images   []string
 	built    []byte
+	// digest is what a manifest push writes to its --digestfile;
+	// pushErr fails the push. pushedAuth is the --authfile's contents
+	// and pushedAuthFile its path, read during the push.
+	digest         string
+	pushErr        bool
+	pushedAuth     []byte
+	pushedAuthFile string
 }
 
 func (f *fakeRuntime) run(_ context.Context, name string, args ...string) ([]byte, error) {
@@ -44,6 +54,28 @@ func (f *fakeRuntime) run(_ context.Context, name string, args ...string) ([]byt
 		}
 		if f.buildErr {
 			return []byte("Error: no space left on device"), errors.New("exit status 1")
+		}
+	case "manifest":
+		if args[1] != "push" {
+			break
+		}
+		if f.pushErr {
+			return []byte("Error: writing manifest: denied"), errors.New("exit status 125")
+		}
+		for i, a := range args {
+			switch a {
+			case "--authfile":
+				f.pushedAuthFile = args[i+1]
+				b, err := os.ReadFile(args[i+1])
+				if err != nil {
+					return nil, err
+				}
+				f.pushedAuth = b
+			case "--digestfile":
+				if err := os.WriteFile(args[i+1], []byte(f.digest), 0o644); err != nil {
+					return nil, err
+				}
+			}
 		}
 	case "images":
 		return []byte(strings.Join(f.images, "\n") + "\n"), nil
@@ -158,8 +190,8 @@ func TestBuildImageFromTheContainerfile(t *testing.T) {
 // PushImage builds the node image for both platforms a sandboxed node
 // may run on, so the manifest list it pushes serves either.
 func TestPushImageIsMultiPlatform(t *testing.T) {
-	f := &fakeRuntime{}
-	if _, err := PushImage(context.Background(), f.run, "ghcr.io/runsheet/mesh-node:v1.2.3", "v1.2.3"); err != nil {
+	f := &fakeRuntime{digest: testDigest}
+	if _, err := PushImage(context.Background(), f.run, "ghcr.io/runsheet/mesh-node:v1.2.3", "v1.2.3", "ghs_test"); err != nil {
 		t.Fatal(err)
 	}
 	b := f.called("build")
@@ -175,8 +207,8 @@ func TestPushImageIsMultiPlatform(t *testing.T) {
 // --file: what the build reads during the call is
 // images/node/Containerfile byte for byte, and the file is gone after.
 func TestPushImageBuildsTheEmbeddedContainerfile(t *testing.T) {
-	f := &fakeRuntime{}
-	if _, err := PushImage(context.Background(), f.run, "", "v1.2.3"); err != nil {
+	f := &fakeRuntime{digest: testDigest}
+	if _, err := PushImage(context.Background(), f.run, "", "v1.2.3", "ghs_test"); err != nil {
 		t.Fatal(err)
 	}
 	b := f.called("build")
@@ -206,7 +238,7 @@ func TestPushImageBuildsTheEmbeddedContainerfile(t *testing.T) {
 // A failed build is PushImage's error, and it answers no digest.
 func TestPushImageFailedBuildIsTheError(t *testing.T) {
 	f := &fakeRuntime{buildErr: true}
-	digest, err := PushImage(context.Background(), f.run, "", "v1.2.3")
+	digest, err := PushImage(context.Background(), f.run, "", "v1.2.3", "ghs_test")
 	if err == nil || !strings.Contains(err.Error(), "no space left") {
 		t.Fatalf("err = %v; want the build's reason", err)
 	}
@@ -219,8 +251,8 @@ func TestPushImageFailedBuildIsTheError(t *testing.T) {
 // public ghcr the fleet pulls from (mesh-specs ADR 017 §7); a ref naming
 // another image, or a version that is no tag, builds nothing.
 func TestPushImageTagsTheVersion(t *testing.T) {
-	f := &fakeRuntime{}
-	if _, err := PushImage(context.Background(), f.run, "", "v0.2.300"); err != nil {
+	f := &fakeRuntime{digest: testDigest}
+	if _, err := PushImage(context.Background(), f.run, "", "v0.2.300", "ghs_test"); err != nil {
 		t.Fatal(err)
 	}
 	b := f.called("build")
@@ -236,7 +268,7 @@ func TestPushImageTagsTheVersion(t *testing.T) {
 		{"", "not a tag!"},
 	} {
 		f := &fakeRuntime{}
-		if _, err := PushImage(context.Background(), f.run, c.ref, c.version); err == nil {
+		if _, err := PushImage(context.Background(), f.run, c.ref, c.version, "ghs_test"); err == nil {
 			t.Errorf("PushImage(%q, %q) = nil error; want a refusal", c.ref, c.version)
 		}
 		if len(f.calls) != 0 {
@@ -393,5 +425,71 @@ func TestImageUser(t *testing.T) {
 	}
 	if _, _, err := ImageUser(context.Background(), failing, "x"); err == nil || !strings.Contains(err.Error(), "no such image") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+const testDigest = "sha256:0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0"
+
+// PushImage pushes the manifest list with every platform on an auth file
+// holding the token, in a temporary directory gone once it returns, and
+// answers exactly the digest the push reported.
+func TestPushImagePushesUnderATempAuthFileAndAnswersTheDigest(t *testing.T) {
+	f := &fakeRuntime{digest: testDigest + "\n"}
+	digest, err := PushImage(context.Background(), f.run, "", "v0.2.300", "ghs_secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if digest != testDigest {
+		t.Errorf("digest = %q; want %q", digest, testDigest)
+	}
+	p := f.called("manifest")
+	if len(p) != 1 {
+		t.Fatalf("pushes = %q; want one", p)
+	}
+	args := strings.Fields(p[0])
+	ref := "ghcr.io/runsheet/mesh-node:v0.2.300"
+	if !slices.Contains(args, "--all") || args[len(args)-2] != ref || args[len(args)-1] != "docker://"+ref {
+		t.Errorf("push = %q; want manifest push --all ... %s docker://%s", p[0], ref, ref)
+	}
+	var auth struct {
+		Auths map[string]struct{ Auth string } `json:"auths"`
+	}
+	if err := json.Unmarshal(f.pushedAuth, &auth); err != nil {
+		t.Fatalf("auth file %q: %v", f.pushedAuth, err)
+	}
+	if got := auth.Auths["ghcr.io"].Auth; got != base64.StdEncoding.EncodeToString([]byte("x-access-token:ghs_secret")) {
+		t.Errorf("ghcr.io auth = %q; want x-access-token:ghs_secret", got)
+	}
+	dir := filepath.Dir(f.pushedAuthFile)
+	if !strings.HasPrefix(dir, os.TempDir()) {
+		t.Errorf("auth file %s is not under the temp dir %s", f.pushedAuthFile, os.TempDir())
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Errorf("the auth file's dir %s is left behind (stat: %v)", dir, err)
+	}
+	b := f.called("build")
+	if len(b) != 1 || strings.Contains(b[0], dir) {
+		t.Errorf("build = %q; the auth file's dir %s is not to be its context", b, dir)
+	}
+}
+
+// A refused push is PushImage's error, answers no digest and leaves no
+// auth file; with no token nothing is built or pushed.
+func TestPushImageFailedPushIsTheError(t *testing.T) {
+	f := &fakeRuntime{pushErr: true}
+	digest, err := PushImage(context.Background(), f.run, "", "v1.2.3", "ghs_secret")
+	if err == nil || !strings.Contains(err.Error(), "denied") {
+		t.Fatalf("err = %v; want the push's reason", err)
+	}
+	if digest != "" {
+		t.Errorf("digest = %q; want empty", digest)
+	}
+
+	f = &fakeRuntime{digest: testDigest}
+	if _, err := PushImage(context.Background(), f.run, "", "v1.2.3", " "); err == nil {
+		t.Error("PushImage with no token = nil error; want a refusal")
+	}
+	if len(f.calls) != 0 {
+		t.Errorf("PushImage with no token ran %q; want nothing", f.calls)
 	}
 }
