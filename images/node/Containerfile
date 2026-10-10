@@ -82,10 +82,10 @@ ENV PATH=/usr/local/go/bin:/home/mesh/go/bin:/usr/local/sbin:/usr/local/bin:/usr
     DISABLE_AUTOUPDATER=1 \
     LANG=C.UTF-8
 
-# A non-root user; the node runs the pod with --userns=keep-id, so files a
-# session writes in its workspace belong to the operator.
-RUN useradd --create-home --uid 1000 --shell /bin/bash mesh
-USER mesh
+# A non-root user; the node runs the pod with --userns keep-id:uid=1000,gid=1000, so
+# the session's HOME, workspace and context files the operator writes map to this uid:gid.
+RUN useradd --create-home --uid 1000 --user-group --shell /bin/bash mesh
+USER 1000:1000
 WORKDIR /home/mesh
 
 # nftables is checked by its package, not `nft --version`: nft opens a
