@@ -1188,3 +1188,147 @@ func TestPrepareKeepsAFullCloneAlreadyThere(t *testing.T) {
 		t.Fatalf("a shared clone was made for a full clone already there: %v", err)
 	}
 }
+
+// recordingGit is a Git on repos whose every command is recorded.
+func recordingGit(repos string) (*Git, func() []string) {
+	var mu sync.Mutex
+	var cmds []string
+	g := &Git{ReposRoot: repos}
+	g.exec = func(ctx context.Context, dir, name string, args ...string) (string, error) {
+		mu.Lock()
+		cmds = append(cmds, name+" "+strings.Join(args, " "))
+		mu.Unlock()
+		return g.realRun(ctx, dir, name, args...)
+	}
+	return g, func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), cmds...)
+	}
+}
+
+// RemoveWorkspace on one of two worktrees removes it by `git worktree
+// remove --force` and `git worktree prune`: its directory is gone and
+// unlisted, the other worktree still works, the shared clone stays
+// (mesh ADR 017).
+func TestRemoveWorkspaceRemovesOneWorktreeNeverTheClone(t *testing.T) {
+	root, origin := lockTestOrigin(t)
+	work, repos := filepath.Join(root, "work"), filepath.Join(root, "repos")
+	g, cmds := recordingGit(repos)
+	clone := SharedClonePath(repos, origin)
+	var dirs []string
+	for seq := 1; seq <= 2; seq++ {
+		spec := WorkspaceSpec{Root: work, GoalSlug: "g", Seq: seq, Repo: origin, Branch: BranchName("g", seq), BaseRef: "main"}
+		dir, err := g.Prepare(context.Background(), spec)
+		if err != nil {
+			t.Fatalf("prepare seq %d: %v", seq, err)
+		}
+		dirs = append(dirs, dir)
+	}
+	if err := g.RemoveWorkspace(context.Background(), dirs[0]); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if _, err := os.Stat(dirs[0]); !os.IsNotExist(err) {
+		t.Fatalf("the removed worktree %s is still there: %v", dirs[0], err)
+	}
+	if fi, err := os.Stat(filepath.Join(clone, ".git")); err != nil || !fi.IsDir() {
+		t.Fatalf("the shared clone's .git: %v", err)
+	}
+	list, err := exec.Command("git", "-C", clone, "worktree", "list").Output()
+	if err != nil || strings.Contains(string(list), dirs[0]) || !strings.Contains(string(list), dirs[1]) {
+		t.Fatalf("worktree list names the removed one or lost the other: %s %v", list, err)
+	}
+	if out, err := exec.Command("git", "-C", dirs[1], "status", "--short").CombinedOutput(); err != nil {
+		t.Fatalf("the other worktree: %v: %s", err, out)
+	}
+	out, err := exec.Command("git", "-C", dirs[1], "branch", "--show-current").Output()
+	if err != nil || strings.TrimSpace(string(out)) != BranchName("g", 2) {
+		t.Fatalf("the other worktree on %q: %v", out, err)
+	}
+	var removed, pruned bool
+	for _, c := range cmds() {
+		if c == "git worktree remove --force "+dirs[0] {
+			removed = true
+		}
+		if removed && c == "git worktree prune" {
+			pruned = true
+		}
+	}
+	if !removed || !pruned {
+		t.Fatalf("commands lack worktree remove --force then prune:\n%s", strings.Join(cmds(), "\n"))
+	}
+}
+
+// A worktree removed by hand — a sweep interrupted after its rm — is
+// pruned by RemoveWorkspace, so the same branch prepares again.
+func TestRemoveWorkspaceAfterAnInterruptedSweep(t *testing.T) {
+	root, origin := lockTestOrigin(t)
+	work, repos := filepath.Join(root, "work"), filepath.Join(root, "repos")
+	g, cmds := recordingGit(repos)
+	spec := WorkspaceSpec{Root: work, GoalSlug: "g", Seq: 1, Repo: origin, Branch: BranchName("g", 1), BaseRef: "main"}
+	dir, err := g.Prepare(context.Background(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.RemoveWorkspace(context.Background(), dir); err != nil {
+		t.Fatalf("remove after the rm: %v", err)
+	}
+	pruned := false
+	for _, c := range cmds() {
+		if c == "git worktree prune" {
+			pruned = true
+		}
+	}
+	if !pruned {
+		t.Fatalf("no worktree prune:\n%s", strings.Join(cmds(), "\n"))
+	}
+	list, _ := exec.Command("git", "-C", SharedClonePath(repos, origin), "worktree", "list").Output()
+	if strings.Contains(string(list), dir) {
+		t.Fatalf("the removed worktree is still registered: %s", list)
+	}
+	// listed above even while prunable: its absence is the prune
+	if _, err := g.Prepare(context.Background(), spec); err != nil {
+		t.Fatalf("prepare the same branch again: %v", err)
+	}
+	out, err := exec.Command("git", "-C", dir, "branch", "--show-current").Output()
+	if err != nil || strings.TrimSpace(string(out)) != spec.Branch {
+		t.Fatalf("prepared again on %q: %v", out, err)
+	}
+}
+
+// A full clone from before the shared clone is removed outright.
+func TestRemoveWorkspaceRemovesAFullClone(t *testing.T) {
+	root, origin := lockTestOrigin(t)
+	work, repos := filepath.Join(root, "work"), filepath.Join(root, "repos")
+	dir := filepath.Join(work, "g", "1")
+	if out, err := exec.Command("git", "clone", "-q", origin, dir).CombinedOutput(); err != nil {
+		t.Fatalf("clone: %v: %s", err, out)
+	}
+	if err := (&Git{ReposRoot: repos}).RemoveWorkspace(context.Background(), dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("the full clone is still there: %v", err)
+	}
+}
+
+// RemoveWorkspace refuses the shared clone itself.
+func TestRemoveWorkspaceRefusesTheSharedClone(t *testing.T) {
+	root, origin := lockTestOrigin(t)
+	work, repos := filepath.Join(root, "work"), filepath.Join(root, "repos")
+	g := &Git{ReposRoot: repos}
+	spec := WorkspaceSpec{Root: work, GoalSlug: "g", Seq: 1, Repo: origin, Branch: BranchName("g", 1), BaseRef: "main"}
+	if _, err := g.Prepare(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	clone := SharedClonePath(repos, origin)
+	if err := g.RemoveWorkspace(context.Background(), clone); err == nil {
+		t.Fatal("removed the shared clone")
+	}
+	if _, err := os.Stat(filepath.Join(clone, ".git")); err != nil {
+		t.Fatalf("the shared clone: %v", err)
+	}
+}
