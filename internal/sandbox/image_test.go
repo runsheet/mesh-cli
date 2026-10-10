@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -167,6 +168,36 @@ func TestPushImageIsMultiPlatform(t *testing.T) {
 	}
 	if !strings.Contains(b[0], "linux/amd64") || !strings.Contains(b[0], "linux/arm64") {
 		t.Errorf("build args = %q; want both linux/amd64 and linux/arm64", b[0])
+	}
+}
+
+// PushImage's build is tagged ghcr.io/runsheet/mesh-node:<version>, the
+// public ghcr the fleet pulls from (mesh-specs ADR 017 §7); a ref naming
+// another image, or a version that is no tag, builds nothing.
+func TestPushImageTagsTheVersion(t *testing.T) {
+	f := &fakeRuntime{}
+	if _, err := PushImage(context.Background(), f.run, "", "v0.2.300"); err != nil {
+		t.Fatal(err)
+	}
+	b := f.called("build")
+	if len(b) != 1 {
+		t.Fatalf("builds = %q; want one", b)
+	}
+	if !slices.Contains(strings.Fields(b[0]), "ghcr.io/runsheet/mesh-node:v0.2.300") {
+		t.Errorf("build args = %q; want the tag ghcr.io/runsheet/mesh-node:v0.2.300", b[0])
+	}
+
+	for _, c := range []struct{ ref, version string }{
+		{"ghcr.io/someone/else:v0.2.300", "v0.2.300"},
+		{"", "not a tag!"},
+	} {
+		f := &fakeRuntime{}
+		if _, err := PushImage(context.Background(), f.run, c.ref, c.version); err == nil {
+			t.Errorf("PushImage(%q, %q) = nil error; want a refusal", c.ref, c.version)
+		}
+		if len(f.calls) != 0 {
+			t.Errorf("PushImage(%q, %q) ran %q; want nothing", c.ref, c.version, f.calls)
+		}
 	}
 }
 
