@@ -83,6 +83,23 @@ func TestPodMountsOnlyWorkspaceAndHome(t *testing.T) {
 	}
 }
 
+// PodCreateArgs maps the host user onto the image's user: the declared
+// uid:gid, else DefaultImageUID for a spec carrying none.
+func TestPodCreateArgsUserns(t *testing.T) {
+	for _, tc := range []struct {
+		spec PodSpec
+		want string
+	}{
+		{PodSpec{Name: "p", UID: 1000, GID: 1000}, "keep-id:uid=1000,gid=1000"},
+		{PodSpec{Name: "p"}, "keep-id:uid=1000,gid=1000"},
+		{PodSpec{Name: "p", UID: 1001, GID: 1002}, "keep-id:uid=1001,gid=1002"},
+	} {
+		if got := flagAfter(PodCreateArgs(tc.spec), "--userns"); got != tc.want {
+			t.Errorf("PodCreateArgs(uid %d, gid %d) --userns = %q, want %q", tc.spec.UID, tc.spec.GID, got, tc.want)
+		}
+	}
+}
+
 func TestKeepIDUserns(t *testing.T) {
 	for _, tc := range []struct {
 		uid, gid int
@@ -251,7 +268,7 @@ func TestNetworkRefusesTheLAN(t *testing.T) {
 	if !strings.HasPrefix(net, "pasta:") || !strings.Contains(net, "--no-map-gw") || strings.Contains(net, "map-host-loopback") {
 		t.Fatalf("pod network = %q", net)
 	}
-	if !slices.Contains(args, "--no-hosts") || flagAfter(args, "--userns") != "keep-id" {
+	if !slices.Contains(args, "--no-hosts") || flagAfter(args, "--userns") != "keep-id:uid=1000,gid=1000" {
 		t.Fatalf("pod args = %v", args)
 	}
 	init := NetworkInitArgs(Pod{Name: "p"}, "img")

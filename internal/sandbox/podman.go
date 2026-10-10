@@ -66,11 +66,13 @@ func (p *Podman) Version(ctx context.Context) (string, error) {
 }
 
 // PodCreateArgs is `podman pod create` for spec: rootless with the
-// operator's uid kept, on pasta with no route to the host's loopback or
+// host user mapped onto the image's user (spec.UID:GID, KeepIDUserns),
+// so the HOME, workspace and context the node writes are the agent's
+// own inside, on pasta with no route to the host's loopback or
 // gateway (no --map-gw, no host.containers.internal), DNS through the
 // forwarder the rules allow.
 func PodCreateArgs(spec PodSpec) []string {
-	args := []string{"pod", "create", "--name", spec.Name, "--userns", "keep-id",
+	args := []string{"pod", "create", "--name", spec.Name, "--userns", KeepIDUserns(spec.UID, spec.GID),
 		"--network", "pasta:--no-map-gw,--dns-forward," + DNSForward,
 		"--dns", DNSForward, "--no-hosts"}
 	keys := make([]string, 0, len(spec.Labels))
