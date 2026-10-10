@@ -84,6 +84,12 @@ func PodCreateArgs(spec PodSpec) []string {
 	return args
 }
 
+// KeepIDUserns is the --userns value that maps the host user onto the
+// given uid:gid inside the pod.
+func KeepIDUserns(uid, gid int) string {
+	return fmt.Sprintf("keep-id:uid=%d,gid=%d", uid, gid)
+}
+
 // NetworkInitArgs is the init container that loads the network rules
 // (on stdin) into the pod's network namespace: NET_ADMIN in the pod's
 // user namespace only, and gone once they are loaded.
