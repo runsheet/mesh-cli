@@ -114,6 +114,35 @@ type Runtime interface {
 	// remove: the last resort for a session HOME the agent left that
 	// the node cannot remove itself.
 	RemoveTree(ctx context.Context, path string) error
+	// ListContainers lists every container of the node user's store, in any
+	// state, with the host paths a running one mounts (Sweep).
+	ListContainers(ctx context.Context) ([]Container, error)
+	// ListPods lists every pod of the node user's store (Sweep).
+	ListPods(ctx context.Context) ([]PodInfo, error)
+	// RemoveContainer removes a container and its anonymous volumes,
+	// forced.
+	RemoveContainer(ctx context.Context, name string) error
+}
+
+// Container is one container as the runtime lists it.
+type Container struct {
+	Name string
+	// Pod is the name of the pod it is in, "" for none.
+	Pod    string
+	Labels map[string]string
+	// Running is the runtime's state "running".
+	Running bool
+	// Infra is a pod's infra container, which runs as long as the pod
+	// does and is removed only with it.
+	Infra bool
+	// Mounts are the host paths bound into it.
+	Mounts []string
+}
+
+// PodInfo is one pod as the runtime lists it.
+type PodInfo struct {
+	Name   string
+	Labels map[string]string
 }
 
 // LimitError is a session killed by its sandbox's limits — memory,
