@@ -45,6 +45,7 @@ It runs, with `MESH_SANDBOX_E2E=1`, every `E2E` test of
 | test | what it shows |
 |------|---------------|
 | `TestProbeSessionE2E` | a session cannot read `~/.config/gh`, `~/.mesh/token`, another workspace or the Docker socket; its env is the allow-list; HTTPS out works, the LAN and the host do not |
+| `TestLocalOnlyImageE2E` | a session starts from a local-only image under an unresolvable registry name (`localOnlyImage` retags the node image as `mesh-local.invalid/…`) with no pull: the agent runs and podman's stderr has no `Trying to pull`, though the session's env sets its own `HOME` — podman keeps the node's (`podmanEnv`) |
 | `TestServicesSidecarsE2E` | the sandbox package alone: Postgres and Redis sidecars health-checked and reachable on 127.0.0.1, the pod gone after |
 | `TestSandboxedSessionsE2E` | the node's own path, for **a build (`Runner.RunItem`) and its evaluation (`Evaluator.Evaluate`)**: `OpenSessionPod` resolves the checkout's services, starts the sidecars, waits for their health checks; the ClaudeCode harness runs a stub agent in the pod (`ClaudeCode.SandboxBinary`) which reaches Postgres on 127.0.0.1:5432 (its SSLRequest answered) or Redis on 127.0.0.1:6379 (`PING` → `+PONG`) and says `VERDICT: PASS`; the evaluation is recorded passed; afterwards `podman pod ls` and `podman ps -a` hold nothing of the session and no session HOME is left |
 
@@ -84,6 +85,37 @@ Postgres (`build OK 127.0.0.1:5432`) and a Redis-speaking listener
 (`evaluate OK 127.0.0.1:6379`); and the script's latchkey check, whose
 output is under [Retiring latchkey-e2e-pg](#retiring-latchkey-e2e-pg).
 The first run with podman pastes its output here.
+
+**Recorded run, `TestLocalOnlyImageE2E`** (item 10 of
+`podman-keeps-the-nodes-home`, 2026-10-10). Not run on podman: the
+builder's host (`mesh-podman-keeps-the-nodes-home-10-744eecad-0`, Linux
+6.8.0-146, x86_64) has no podman (`podman: command not found`) and no
+`sudo` to install it, so no pod could start and podman's stderr could
+not be read for `Trying to pull`. What was run there:
+
+```
+$ MESH_SANDBOX_E2E=1 go test -count=1 -run TestLocalOnlyImageE2E -v ./internal/sandbox/
+=== RUN   TestLocalOnlyImageE2E
+    localimage_e2e_test.go:65: podman: podman --version: exec: "podman": executable file not found in $PATH
+--- FAIL: TestLocalOnlyImageE2E (0.00s)
+FAIL
+
+$ go test -count=1 -run 'PodmanEnv|Env' -v ./internal/sandbox/
+--- PASS: TestAgentEnvIsTheAllowList (0.00s)
+--- PASS: TestPodmanEnvKeepsTheNodesPassthrough (0.00s)
+--- PASS: TestGitIdentityFromEnv (0.00s)
+ok  	projectmesh.io/mesh-cli/internal/sandbox
+```
+
+Item 9 had put the test behind an `e2e` build tag, so neither this
+command nor `scripts/e2e-sandbox.sh` (which passes no tags) compiled
+it — `go test` said `no tests to run`. The tag is gone: the test now
+skips on `MESH_SANDBOX_E2E` alone, as the others here do. The unit test that holds
+the cause — a container `HOME=/tmp/x` against a node `HOME=/home/node`
+leaves podman's `HOME=/home/node` and the container's on `--env HOME` —
+passes; the pull itself is unproven until a host with rootless podman
+runs `MESH_SANDBOX_ENSURE=skip scripts/e2e-sandbox.sh` (or the command
+above) and pastes its output here, in place of this paragraph.
 
 ## Live run on the mini
 

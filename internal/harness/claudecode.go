@@ -574,7 +574,7 @@ func (c *ClaudeCode) runSandboxed(ctx context.Context, job Job, onProgress func(
 		if sess, err = c.Sandbox.Open(job.Label, string(job.Kind), sandbox.GitIdentityFromEnv(job.Env)); err != nil {
 			return Result{}, fmt.Errorf("harness claude-code: %w", err)
 		}
-		defer sess.Close()
+		defer sess.CloseAndLog()
 	}
 	var err error
 	mcpPath := ""

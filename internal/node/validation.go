@@ -129,7 +129,11 @@ func (vr validator) start(ctx context.Context, t validationTarget) (*buildValida
 		if err != nil {
 			return nil, err
 		}
-		sess, v.close = s, func() { _ = s.Close() }
+		sess, v.close = s, func() {
+			if err := s.Close(); err != nil {
+				vr.logf("%s", sandbox.CloseLine(s.Label, err))
+			}
+		}
 	}
 	var env []string
 	if t.job != nil {

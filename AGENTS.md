@@ -1129,7 +1129,15 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   node's condition: the runner releases the item, holds it off
   (`Declines`) and `Loop.NoteCondition` puts the reason on the
   heartbeat for `ConditionHold`; the heartbeat also carries `sandbox
-  {mode, runtime, image}`. Channel-mode sessions and Codex are not in
+  {mode, runtime, image}`. `Session.Close` removes the pods
+  (`RemoveArgs`: the containers with `--volumes`, then the pod) and the
+  HOME (`removeHome`: RemoveAll, u+w, `Runtime.RemoveTree`), logging
+  `sandbox: session <label>: close: <err>`; `mesh node start`, after
+  adoption, runs `node.SweepSandbox` → `sandbox.Sweep` (exited mesh
+  containers, mesh pods with no running container, `mesh-home-*` dirs no
+  running container mounts) and logs `sandbox: swept N homes, M pods, K
+  containers at start (L homes in use)` (ADR-007's amendment
+  2026-10-10). Channel-mode sessions and Codex are not in
   the pod yet.
 - **Sidecars** (`internal/sandbox/sidecars.go`, `internal/node/services.go`,
   mesh-specs ADR 007 Services): build, evaluate and rebase call

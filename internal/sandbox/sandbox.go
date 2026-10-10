@@ -150,7 +150,7 @@ var unsafeName = regexp.MustCompile(`[^a-z0-9-]+`)
 // naming git's identity and the empty gh and Claude config directories
 // it is given.
 func (s *Sandbox) Open(label, kind string, git GitIdentity) (*Session, error) {
-	home, err := os.MkdirTemp(s.TempDir, "mesh-home-")
+	home, err := os.MkdirTemp(s.TempDir, HomePrefix)
 	if err != nil {
 		return nil, fmt.Errorf("sandbox: home: %w", err)
 	}
@@ -373,7 +373,7 @@ func (s *Session) createPod(ctx context.Context) (Pod, error) {
 	s.mu.Unlock()
 	pod, err := s.sb.Runtime.CreatePod(ctx, PodSpec{
 		Name:    name,
-		Labels:  map[string]string{"mesh.session": s.Label, "mesh.kind": s.Kind},
+		Labels:  map[string]string{SessionLabel: s.Label, "mesh.kind": s.Kind},
 		Image:   cfg.Image,
 		Network: cfg.Network,
 	})
@@ -420,7 +420,9 @@ func (s *Session) remove(ctx context.Context, pod Pod) {
 	}
 }
 
-// Close removes any pod still standing and the session's HOME.
+// Close removes any pod still standing — its containers and their
+// anonymous volumes with it — and the session's HOME, and returns every
+// removal that failed, joined.
 func (s *Session) Close() error {
 	s.mu.Lock()
 	pods := append([]Pod(nil), s.pods...)
@@ -433,10 +435,78 @@ func (s *Session) Close() error {
 		}
 		cancel()
 	}
-	if err := os.RemoveAll(s.Home); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := s.sb.removeHome(ctx, s.Home); err != nil {
 		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
+}
+
+// CloseLine is the log line of a session whose Close failed.
+func CloseLine(label string, err error) string {
+	return fmt.Sprintf("sandbox: session %s: close: %s", label, strings.ReplaceAll(err.Error(), "\n", "; "))
+}
+
+// CloseAndLog is Close with its error logged through the sandbox's
+// Logf as CloseLine, for a caller with nothing else to do with it.
+func (s *Session) CloseAndLog() {
+	if err := s.Close(); err != nil {
+		s.sb.logf("%s", CloseLine(s.Label, err))
+	}
+}
+
+// removeHome removes a session's HOME whatever the agent left in it:
+// a plain RemoveAll; failing that, the tree made writable (Go's module
+// cache is 0555 directories of 0444 files) and RemoveAll again; failing
+// that, the runtime's removal inside its user namespace, for files the
+// pod's mapped users own. The error names every step that failed.
+func (sb *Sandbox) removeHome(ctx context.Context, home string) error {
+	if home == "" {
+		return nil
+	}
+	err := removeAll(home)
+	if err == nil {
+		return nil
+	}
+	makeWritable(home)
+	err2 := removeAll(home)
+	if err2 == nil {
+		return nil
+	}
+	if err3 := sb.Runtime.RemoveTree(ctx, home); err3 != nil {
+		return fmt.Errorf("remove home %s: %w; in the user namespace: %w", home, err2, err3)
+	}
+	if _, err := os.Lstat(home); !os.IsNotExist(err) {
+		return fmt.Errorf("remove home %s: %w; still there after the removal in the user namespace", home, err2)
+	}
+	return nil
+}
+
+// removeAll is os.RemoveAll; tests stand in a failing one, as files a
+// subuid owns make it fail on a node.
+var removeAll = os.RemoveAll
+
+// makeWritable gives the owner write and search on every directory of
+// the tree it can reach, so its entries can be removed. What it cannot
+// change (another uid's) is left for the user namespace.
+func makeWritable(root string) {
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if d == nil || !d.IsDir() {
+			return nil
+		}
+		if info, ierr := d.Info(); ierr == nil {
+			_ = os.Chmod(path, info.Mode().Perm()|0o700)
+		}
+		if err != nil {
+			// A directory unreadable before the chmod: walk it again now.
+			if path != root {
+				makeWritable(path)
+			}
+			return filepath.SkipDir
+		}
+		return nil
+	})
 }
 
 // tailBuffer keeps the last max bytes written to it.

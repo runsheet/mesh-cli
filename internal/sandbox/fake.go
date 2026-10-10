@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"sync"
 )
@@ -21,6 +22,21 @@ type Fake struct {
 	Sidecars   []SidecarSpec
 	Removed    []string
 	Calls      []string
+	// Trees are the paths RemoveTree was asked to remove.
+	Trees []string
+	// Running and Standing are the store ListContainers and ListPods list: the
+	// containers in any state and the pods. Remove drops a pod and its
+	// containers from them, RemoveContainer a container. ListErr fails
+	// both listings.
+	Running  []Container
+	Standing []PodInfo
+	ListErr  error
+	// RemovedContainers are the containers RemoveContainer was asked to
+	// remove.
+	RemovedContainers []string
+	// RemoveErr fails Remove; RemoveTreeErr fails RemoveTree.
+	RemoveErr     error
+	RemoveTreeErr error
 	// Agent is the agent's container: it gets the spec and returns the
 	// exit (nil: exit 0, nothing written).
 	Agent func(ctx context.Context, spec AgentSpec) (Exit, error)
@@ -125,6 +141,72 @@ func (f *Fake) Remove(_ context.Context, pod Pod) error {
 	f.call("remove " + pod.Name)
 	f.mu.Lock()
 	f.Removed = append(f.Removed, pod.Name)
+	if f.RemoveErr == nil {
+		var cs []Container
+		for _, c := range f.Running {
+			if c.Pod != pod.Name {
+				cs = append(cs, c)
+			}
+		}
+		var ps []PodInfo
+		for _, p := range f.Standing {
+			if p.Name != pod.Name {
+				ps = append(ps, p)
+			}
+		}
+		f.Running, f.Standing = cs, ps
+	}
 	f.mu.Unlock()
+	return f.RemoveErr
+}
+
+// RemoveTree implements Runtime: it records the path and removes it as
+// the node user can, unless RemoveTreeErr fails it.
+func (f *Fake) RemoveTree(_ context.Context, path string) error {
+	f.call("remove-tree " + path)
+	f.mu.Lock()
+	f.Trees = append(f.Trees, path)
+	f.mu.Unlock()
+	if f.RemoveTreeErr != nil {
+		return f.RemoveTreeErr
+	}
+	return os.RemoveAll(path)
+}
+
+// ListContainers implements Runtime.
+func (f *Fake) ListContainers(context.Context) ([]Container, error) {
+	f.call("containers")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.ListErr != nil {
+		return nil, f.ListErr
+	}
+	return append([]Container(nil), f.Running...), nil
+}
+
+// ListPods implements Runtime.
+func (f *Fake) ListPods(context.Context) ([]PodInfo, error) {
+	f.call("pods")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.ListErr != nil {
+		return nil, f.ListErr
+	}
+	return append([]PodInfo(nil), f.Standing...), nil
+}
+
+// RemoveContainer implements Runtime.
+func (f *Fake) RemoveContainer(_ context.Context, name string) error {
+	f.call("remove-container " + name)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.RemovedContainers = append(f.RemovedContainers, name)
+	var cs []Container
+	for _, c := range f.Running {
+		if c.Name != name {
+			cs = append(cs, c)
+		}
+	}
+	f.Running = cs
 	return nil
 }
