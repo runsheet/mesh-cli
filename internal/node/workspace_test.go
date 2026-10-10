@@ -862,3 +862,21 @@ func TestFetchReturnsANonLockErrorAtOnce(t *testing.T) {
 		t.Fatalf("exec called %d times, want 1", calls)
 	}
 }
+
+// The evaluation's checkout is not the build's: for the same goal, seq
+// and repo the two specs name two directories, and only the eval's
+// moves (the build, rework and rebase keep <root>/<goal>/<seq>).
+func TestEvalWorkspaceSpecIsNotTheBuilds(t *testing.T) {
+	root := t.TempDir()
+	build := WorkspaceSpec{Root: root, GoalSlug: "ship-it", Seq: 3, Repo: "acme/widgets", Branch: "mesh/ship-it-3", BaseRef: "main"}
+	eval := EvalWorkspaceSpec(root, "ship-it", 3, "acme/widgets", "mesh/ship-it-3", "main")
+	if eval.Dir() == build.Dir() {
+		t.Fatalf("eval dir %s is the build's", eval.Dir())
+	}
+	if build.Dir() != filepath.Join(root, "ship-it", "3") || eval.Dir() != filepath.Join(root, "ship-it", "3-eval") {
+		t.Fatalf("build %s, eval %s", build.Dir(), eval.Dir())
+	}
+	if eval.Root != root || eval.Repo != build.Repo || eval.Branch != build.Branch || eval.BaseRef != build.BaseRef {
+		t.Fatalf("eval spec %+v", eval)
+	}
+}

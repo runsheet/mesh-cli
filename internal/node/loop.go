@@ -1930,6 +1930,17 @@ func (l *Loop) evaluateHeld(ctx context.Context) {
 			l.mu.Unlock()
 			continue
 		}
+		// a build of the item still running on this node has not pushed
+		// yet (its session may have handed the item in through the
+		// platform's finish tool before the node's push): an evaluation
+		// started now would rewrite the shared checkout's credentials
+		// with its read token and the push would be refused "Write
+		// access to repository not granted" (dl360, 2026-10-10). The
+		// item waits here for the next tick, until the build has ended.
+		if l.running[item.ID] {
+			l.mu.Unlock()
+			continue
+		}
 		l.mu.Unlock()
 		if l.capFull(capped, item.GoalID, "evaluation", priorityName(h.rank)) {
 			continue
