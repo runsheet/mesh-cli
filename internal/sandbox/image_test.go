@@ -171,6 +171,50 @@ func TestPushImageIsMultiPlatform(t *testing.T) {
 	}
 }
 
+// PushImage builds the Containerfile the binary embeds, passed by
+// --file: what the build reads during the call is
+// images/node/Containerfile byte for byte, and the file is gone after.
+func TestPushImageBuildsTheEmbeddedContainerfile(t *testing.T) {
+	f := &fakeRuntime{}
+	if _, err := PushImage(context.Background(), f.run, "", "v1.2.3"); err != nil {
+		t.Fatal(err)
+	}
+	b := f.called("build")
+	if len(b) != 1 {
+		t.Fatalf("builds = %q; want one", b)
+	}
+	args := strings.Fields(b[0])
+	i := slices.Index(args, "--file")
+	if i < 0 || i+1 >= len(args) {
+		t.Fatalf("build args = %q; want --file <Containerfile>", b[0])
+	}
+	if !slices.Contains(args, "MESH_VERSION=v1.2.3") {
+		t.Errorf("build args = %q; want --build-arg MESH_VERSION=v1.2.3", b[0])
+	}
+	want, err := os.ReadFile("../../images/node/Containerfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(f.built, want) {
+		t.Error("the build's --file is not images/node/Containerfile")
+	}
+	if _, err := os.Stat(args[i+1]); !os.IsNotExist(err) {
+		t.Errorf("the Containerfile %s is left behind (stat: %v)", args[i+1], err)
+	}
+}
+
+// A failed build is PushImage's error, and it answers no digest.
+func TestPushImageFailedBuildIsTheError(t *testing.T) {
+	f := &fakeRuntime{buildErr: true}
+	digest, err := PushImage(context.Background(), f.run, "", "v1.2.3")
+	if err == nil || !strings.Contains(err.Error(), "no space left") {
+		t.Fatalf("err = %v; want the build's reason", err)
+	}
+	if digest != "" {
+		t.Errorf("digest = %q; want empty", digest)
+	}
+}
+
 // PushImage's build is tagged ghcr.io/runsheet/mesh-node:<version>, the
 // public ghcr the fleet pulls from (mesh-specs ADR 017 §7); a ref naming
 // another image, or a version that is no tag, builds nothing.
