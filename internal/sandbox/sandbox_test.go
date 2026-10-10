@@ -115,6 +115,66 @@ func TestKeepIDUserns(t *testing.T) {
 	}
 }
 
+// stubPodman is a Podman whose Exec records every call's args and
+// answers the image inspect with user (or inspectErr), every other
+// call with nothing.
+func stubPodman(user string, inspectErr error) (*Podman, *[][]string) {
+	var calls [][]string
+	return &Podman{Exec: func(_ context.Context, args, _ []string, _ io.Reader, stdout, _ io.Writer) error {
+		calls = append(calls, append([]string(nil), args...))
+		if len(args) > 1 && args[0] == "image" && args[1] == "inspect" {
+			if inspectErr != nil {
+				return inspectErr
+			}
+			_, _ = io.WriteString(stdout, user+"\n")
+		}
+		return nil
+	}}, &calls
+}
+
+// CreatePod reads the image's declared user through `podman image
+// inspect --format {{.Config.User}} <image>` and maps the host user
+// onto that uid:gid.
+func TestCreatePodReadsTheImageUser(t *testing.T) {
+	const image = "ghcr.io/runsheet/mesh-node:v1"
+	p, calls := stubPodman("1001:1002", nil)
+	if _, err := p.CreatePod(context.Background(), PodSpec{Name: "p", Image: image}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"image", "inspect", "--format", "{{.Config.User}}", image}
+	if len(*calls) < 2 || !slices.Equal((*calls)[0], want) {
+		t.Fatalf("first call = %v, want %v", *calls, want)
+	}
+	create := (*calls)[1]
+	if len(create) < 2 || create[0] != "pod" || create[1] != "create" {
+		t.Fatalf("second call = %v, want pod create", create)
+	}
+	if got := flagAfter(create, "--userns"); got != "keep-id:uid=1001,gid=1002" {
+		t.Errorf("pod create --userns = %q, want keep-id:uid=1001,gid=1002", got)
+	}
+}
+
+// An inspect that fails is no reason not to make the pod: it maps onto
+// DefaultImageUID.
+func TestCreatePodFallsBackWhenTheInspectFails(t *testing.T) {
+	p, calls := stubPodman("", errors.New("no such image"))
+	if _, err := p.CreatePod(context.Background(), PodSpec{Name: "p", Image: "missing:v1"}); err != nil {
+		t.Fatal(err)
+	}
+	var create []string
+	for _, c := range *calls {
+		if len(c) > 1 && c[0] == "pod" && c[1] == "create" {
+			create = c
+		}
+	}
+	if create == nil {
+		t.Fatalf("no pod create among %v", *calls)
+	}
+	if got := flagAfter(create, "--userns"); got != "keep-id:uid=1000,gid=1000" {
+		t.Errorf("pod create --userns = %q, want keep-id:uid=1000,gid=1000", got)
+	}
+}
+
 // The agent's environment is built from the allow-list: the node's own
 // variables never reach it, nor any job variable outside the list.
 func TestAgentEnvIsTheAllowList(t *testing.T) {
