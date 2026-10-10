@@ -154,10 +154,23 @@ func (g *Git) githubURL() string {
 
 // Authorize implements Workspacer: origin becomes the repo's https URL
 // (a `gh repo clone` may have left an ssh one, on the operator's key)
-// and the checkout's own credential helper answers with tok.
+// and the checkout's own credential helper answers with tok — a
+// worktree's in its own config.worktree, never the shared clone's
+// config (writeHelper). A new item's checkout that Prepare would make a
+// worktree is made one here, the shared clone cloned or fetched on tok
+// by the environment, so the helper has its worktree to go in.
 func (g *Git) Authorize(ctx context.Context, spec WorkspaceSpec, tok *gateway.GitHubToken) error {
+	if tok == nil || !tokenShape.MatchString(tok.Token) {
+		return fmt.Errorf("github token: missing or malformed")
+	}
 	dir := spec.Dir()
 	origin := g.githubURL() + "/" + spec.Repo + ".git"
+	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil && g.sharedClone(spec) != "" {
+		tctx := withGitToken(ctx, g.githubURL(), tok)
+		if _, err := g.addWorktree(tctx, g.lockRoot(spec.Root, dir), RepoLockKey(spec.Repo), g.sharedClone(spec), spec); err != nil {
+			return err
+		}
+	}
 	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
 		// no clone yet: an empty checkout Prepare fetches into
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -187,7 +200,7 @@ func (g *Git) run(ctx context.Context, dir string, name string, args ...string) 
 func (g *Git) realRun(ctx context.Context, dir string, name string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd.Env = append(append(os.Environ(), "GIT_TERMINAL_PROMPT=0"), gitTokenEnv(ctx)...)
 	out, err := cmd.CombinedOutput()
 	if g.Log != nil {
 		fmt.Fprintf(g.Log, "$ %s %s\n%s", name, strings.Join(args, " "), out)
@@ -309,14 +322,27 @@ func (g *Git) syncSharedClone(ctx context.Context, root, key, repo, clone string
 		return err
 	}
 	defer unlock()
+	// on an item's token (withGitToken) the clone is git's over https,
+	// as an authorized checkout's fetch is; else the operator's gh
+	tokened := gitTokenEnv(ctx) != nil
+	origin := g.githubURL() + "/" + repo + ".git"
 	if _, err := os.Stat(filepath.Join(clone, ".git")); err == nil {
+		if tokened {
+			if _, err := g.run(ctx, clone, "git", "remote", "set-url", "origin", origin); err != nil {
+				return err
+			}
+		}
 		_, err := g.fetchRetrying(ctx, key, clone, "git", "fetch", "--prune", "origin")
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(clone), 0o755); err != nil {
 		return err
 	}
-	if _, err := g.fetchRetrying(ctx, key, filepath.Dir(clone), "gh", "repo", "clone", repo, clone); err != nil {
+	cloneCmd := []string{"gh", "repo", "clone", repo, clone}
+	if tokened {
+		cloneCmd = []string{"git", "clone", "--quiet", origin, clone}
+	}
+	if _, err := g.fetchRetrying(ctx, key, filepath.Dir(clone), cloneCmd[0], cloneCmd[1:]...); err != nil {
 		os.RemoveAll(clone)
 		return err
 	}

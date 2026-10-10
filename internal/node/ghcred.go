@@ -60,12 +60,25 @@ func WriteCredentialHelper(ctx context.Context, dir, base string, tok *gateway.G
 }
 
 // writeHelper makes helper the only credential helper the checkout in
-// dir uses for base.
+// dir uses for base. A full clone's goes in its own .git/config
+// (--local); a worktree's local config is its shared clone's, read by
+// every item of the repo, so a worktree's goes in its own
+// config.worktree (--worktree, extensions.worktreeConfig enabled on the
+// clone) and one item's token never answers for another's (mesh ADR 017).
 func writeHelper(ctx context.Context, dir, base, helper string) error {
 	key := "credential." + strings.TrimRight(base, "/") + ".helper"
+	scope := "--local"
+	if isWorktree(dir) {
+		cmd := exec.CommandContext(ctx, "git", "config", "--local", "extensions.worktreeConfig", "true")
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("git config extensions.worktreeConfig: %w: %s", err, strings.TrimSpace(string(out)))
+		}
+		scope = "--worktree"
+	}
 	// not through Git.run: its log would carry the token
 	gitConfig := func(args ...string) error {
-		cmd := exec.CommandContext(ctx, "git", append([]string{"config", "--local"}, args...)...)
+		cmd := exec.CommandContext(ctx, "git", append([]string{"config", scope}, args...)...)
 		cmd.Dir = dir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("git config %s: %w: %s", args[0], err, strings.TrimSpace(string(out)))
@@ -83,6 +96,42 @@ func writeHelper(ctx context.Context, dir, base, helper string) error {
 		return err
 	}
 	return gitConfig("--add", key, helper)
+}
+
+// isWorktree reports whether dir is a git worktree — its .git a file
+// naming the clone's — rather than a clone of its own.
+func isWorktree(dir string) bool {
+	fi, err := os.Stat(filepath.Join(dir, ".git"))
+	return err == nil && !fi.IsDir()
+}
+
+type gitTokenKey struct{}
+
+// gitToken is what withGitToken puts on a ctx.
+type gitToken struct{ base, helper string }
+
+// withGitToken makes every command Git runs under ctx answer base with
+// tok alone, by the environment (GIT_CONFIG_COUNT), never a config file
+// or the command line: how the shared clone is cloned and fetched on the
+// token of the item it is for, leaving the token behind for no other
+// item (mesh ADR 017). A missing or malformed token adds nothing.
+func withGitToken(ctx context.Context, base string, tok *gateway.GitHubToken) context.Context {
+	if tok == nil || !tokenShape.MatchString(tok.Token) {
+		return ctx
+	}
+	return context.WithValue(ctx, gitTokenKey{}, gitToken{strings.TrimRight(base, "/"), credentialHelper(tok.Token)})
+}
+
+// gitTokenEnv is the environment withGitToken asks for, or nil.
+func gitTokenEnv(ctx context.Context) []string {
+	t, ok := ctx.Value(gitTokenKey{}).(gitToken)
+	if !ok {
+		return nil
+	}
+	key := "credential." + t.base + ".helper"
+	return []string{"GIT_CONFIG_COUNT=2",
+		"GIT_CONFIG_KEY_0=" + key, "GIT_CONFIG_VALUE_0=",
+		"GIT_CONFIG_KEY_1=" + key, "GIT_CONFIG_VALUE_1=" + t.helper}
 }
 
 // OperatorGHConfigDir is where the operator's own gh keeps its login,
