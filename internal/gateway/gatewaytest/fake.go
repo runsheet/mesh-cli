@@ -6,6 +6,7 @@
 package gatewaytest
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -199,17 +200,25 @@ type Fake struct {
 	// AttestationBackoff); never combined with Refuse or Unsupported for
 	// the same mutation.
 	RateLimit429 map[string]bool
-	// TransientFirst is, per mutation, how many leading calls the fake
-	// answers transiently before it answers as it otherwise would — for a
-	// test of the retry-then-succeed path (retryOnTransient,
-	// AttestationRetryFor). TransientAs says how, per mutation: "503"
-	// (the default, a bare 503), "graphql503" (a GraphQL error body with
-	// HTTP 503), "429" (a bare 429) or "close" (the
-	// connection closed with no answer, a transport error). A transient
+	// TransientFirst is, per mutation or claim-time read field
+	// (itemCredentials, planCredentials, researchCredentials,
+	// planGitHubToken, researchGitHubToken), how many leading calls the
+	// fake answers transiently before it answers as it otherwise would —
+	// for a test of the retry-then-succeed path (retryOnTransient,
+	// retryRead) or, with a count past the window, the give-up path.
+	// TransientAs says how, per field: "503" (the default, a bare 503),
+	// "graphql503" (a GraphQL error body with HTTP 503), "429" (a bare
+	// 429), "close" (the connection closed with no answer, a transport
+	// error) or "stall" (no answer until the client gives the try up, as
+	// gateway.ReadTryTimeout does, or StallFor passes — a gateway rolling
+	// over in a deploy; the fake's lock is let go meanwhile). A transient
 	// answer is not recorded in Calls.
 	TransientFirst map[string]int
 	TransientAs    map[string]string
 	transientSent  map[string]int
+	// StallFor caps a "stall" answer's wait when the client never gives
+	// up; zero is 10 seconds.
+	StallFor time.Duration
 	// NoUsageTools refuses a `usage` report carrying `tools` (the
 	// per-tool calls) with "Unknown field", as a platform older than
 	// tools-show-their-use whose UsageReportInput has only the total.
@@ -744,7 +753,7 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 		}
 		writeData(w, map[string]any{"__type": f.dispatchResultType()})
 	case strings.HasPrefix(q, "mutation") && strings.Contains(q, "recordValidationAttestation("):
-		f.recordValidationAttestation(w, q, req.Variables, bearer)
+		f.recordValidationAttestation(w, r, q, req.Variables, bearer)
 	case strings.Contains(q, "__type("):
 		f.Reads = append(f.Reads, Call{Name: "__type", Input: map[string]any{}})
 		if f.Unsupported["__type"] {
@@ -768,6 +777,9 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 		m := mutationRe.FindStringSubmatch(q)
 		if m == nil {
 			writeErrors(w, 200, "unknown mutation")
+			return
+		}
+		if f.answeredTransiently(w, r, m[2]) {
 			return
 		}
 		in, _ := req.Variables["in"].(map[string]any)
@@ -975,10 +987,16 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if m := sessionReadRe.FindStringSubmatch(q); m != nil {
+			if f.answeredTransiently(w, r, m[1]) {
+				return
+			}
 			f.sessionRead(w, m[1], m[2], m[3], req.Variables)
 			return
 		}
 		if m := githubTokenRe.FindStringSubmatch(q); m != nil {
+			if f.answeredTransiently(w, r, m[1]) {
+				return
+			}
 			f.githubTokens(w, m[1], m[2], req.Variables)
 			return
 		}
@@ -2357,14 +2375,14 @@ func (f *Fake) mutationType() map[string]any {
 // RateLimit429 answers a bare 429 before any of that, every time, for a
 // test of the retry-and-give-up path, and TransientFirst the first N
 // calls transiently, for the retry-then-succeed path.
-func (f *Fake) recordValidationAttestation(w http.ResponseWriter, q string, vars map[string]any, bearer string) {
+func (f *Fake) recordValidationAttestation(w http.ResponseWriter, r *http.Request, q string, vars map[string]any, bearer string) {
 	const field = "recordValidationAttestation"
 	if f.RateLimit429[field] {
 		w.WriteHeader(http.StatusTooManyRequests)
 		_, _ = w.Write([]byte("rate limited"))
 		return
 	}
-	if f.answeredTransiently(w, field) {
+	if f.answeredTransiently(w, r, field) {
 		return
 	}
 	if f.Unsupported[field] {
@@ -2397,7 +2415,7 @@ func (f *Fake) recordValidationAttestation(w http.ResponseWriter, q string, vars
 // answeredTransiently answers field's call transiently while fewer than
 // TransientFirst[field] have been, as TransientAs[field] says, and
 // reports whether it did.
-func (f *Fake) answeredTransiently(w http.ResponseWriter, field string) bool {
+func (f *Fake) answeredTransiently(w http.ResponseWriter, r *http.Request, field string) bool {
 	if f.transientSent[field] >= f.TransientFirst[field] {
 		return false
 	}
@@ -2406,6 +2424,18 @@ func (f *Fake) answeredTransiently(w http.ResponseWriter, field string) bool {
 	}
 	f.transientSent[field]++
 	switch f.TransientAs[field] {
+	case "stall":
+		// the caller holds f.mu: let it go while the request hangs, so
+		// the client's next try and the node's other calls are served
+		wait := cmp.Or(f.StallFor, 10*time.Second)
+		f.mu.Unlock()
+		select {
+		case <-r.Context().Done():
+		case <-time.After(wait):
+		}
+		f.mu.Lock()
+		w.WriteHeader(http.StatusGatewayTimeout)
+		_, _ = w.Write([]byte("stalled"))
 	case "close":
 		if hj, ok := w.(http.Hijacker); ok {
 			if conn, _, err := hj.Hijack(); err == nil {

@@ -249,6 +249,12 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `ProjectRepos`, each owned by its own account's login, never the
   org's account: an org links several GitHub accounts (the runsheet
   org's loom project lives at go-apis/loom). `internal/gateway/client.go`: the platform client.
+  Every read — a query, and the `issueItemRepoToken`/`planGitHubToken`/
+  `researchGitHubToken` mints — retries a transport error, timeout, 429
+  or 5xx (`retryRead`: `ReadRetryFor` 2m, `ReadTryTimeout` 30s,
+  `ReadBackoff`), every other mutation sent once; a spent window is
+  `after N tries over D: …`, a claim-time read's item failed with it
+  (ADR-028, a gateway read retries a blip).
   Its entity selections are generated (`fields_gen.go`, never hand-edited)
   from `schema.json` and `fields/<Type>.txt` (one name per line, sorted,
   `?` for optional): add a line, `go generate ./internal/gateway/...`
