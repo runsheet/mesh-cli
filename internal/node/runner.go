@@ -607,7 +607,11 @@ func (b *buildRun) run(ctx context.Context, start func(onProgress func(harness.P
 // afterBuild is what follows a build session, however this process came
 // to hold it: the item released on a sandbox limit, failed on an error
 // or an unsuccessful end, finished already done (no push: main holds the
-// work), or pushed and finished. A cancelled ctx — the
+// work), or pushed and finished — in that order: the finish is the
+// node's alone (the session's mesh_finish lands on the node's own
+// server and records nothing), handed in only on the head Push
+// returned, and a push that fails is the item's failure with no finish
+// sent, the branch left for a retry (ADR-023 Decision 2). A cancelled ctx — the
 // node shutting down — leaves the item and its still-running session
 // for the next node to adopt. Once the item is finished or failed the
 // session directory goes.
@@ -680,9 +684,6 @@ func (r *Runner) afterBuild(ctx context.Context, b *buildRun, result harness.Res
 		// main already holds the work (adr-003): no push, no branch, and
 		// the evaluator checks the evidence on the base ref
 		if err := b.acct.Carried(r.GW.FinishWorkItemAlreadyDone(ctx, item.ID, truncate(b.acct.Redact(evidence), 4000), b.cost.delta(), b.acct.Report(result), b.description(ctx))); err != nil {
-			if fin.handedIn(err) {
-				return r.finishedByTool(ctx, b)
-			}
 			return fmt.Errorf("finish %s: %w", label, err)
 		}
 		r.logf("item %s: finished already done ($%.2f): %s", label, result.CostUSD, truncate(evidence, 200))
@@ -723,9 +724,14 @@ func (r *Runner) afterBuild(ctx context.Context, b *buildRun, result harness.Res
 	if err := b.cred.Refresh(ctx); err != nil {
 		r.logf("item %s: %v", label, err) // the token held may yet serve
 	}
+	// the push is part of the build: no finish is sent until it has
+	// returned the head it pushed, and a refused push is the build's
+	// failure, named, never a finish
 	sha, err := r.WS.Push(ctx, b.dir, b.spec.Branch)
 	if err != nil {
-		return r.fail(ctx, item, fmt.Errorf("push: %w", err))
+		err = b.acct.RedactErr(err)
+		b.report(ctx, fmt.Sprintf("push %s: %v", b.spec.Branch, err))
+		return r.fail(ctx, item, fmt.Errorf("push %s: %w", b.spec.Branch, err))
 	}
 	if v != nil {
 		// after the last push and before the finish: the platform signs for
@@ -737,9 +743,6 @@ func (r *Runner) afterBuild(ctx context.Context, b *buildRun, result harness.Res
 	}
 	b.reportHandoff(ctx, result)
 	if err := b.acct.Carried(r.validationUsage(r.GW.FinishWorkItem(ctx, item.ID, b.spec.Branch, sha, b.cost.delta(), b.acct.Report(result), b.description(ctx)))); err != nil {
-		if fin.handedIn(err) {
-			return r.finishedByTool(ctx, b)
-		}
 		return fmt.Errorf("finish %s: %w", label, err)
 	}
 	r.logf("item %s: finished %s@%s ($%.2f)", label, b.spec.Branch, short(sha), result.CostUSD)
@@ -787,23 +790,6 @@ func finishCallOf(result harness.Result) finishCall {
 func workArg(in map[string]any, key string) string {
 	v, _ := in[key].(string)
 	return strings.TrimSpace(v)
-}
-
-// handedIn says whether the node's own finish, refused with err, was
-// refused because the session's mesh_finish call already moved the item
-// on the platform: a refusal (never a transport failure or an older
-// platform's unknown field) after a call.
-func (f finishCall) handedIn(err error) bool {
-	return f.called && gateway.IsRefusal(err) && !gateway.IsUnsupported(err)
-}
-
-// finishedByTool is a build the platform's hosted mesh_finish already
-// handed in: the node's own finish was refused for the item's state, so
-// the build is done, not failed.
-func (r *Runner) finishedByTool(ctx context.Context, b *buildRun) error {
-	r.logf("item %s: finished by tool call on the platform", b.label)
-	b.endGoal(ctx)
-	return nil
 }
 
 // handedBack records what a handed-back session spent its budget on

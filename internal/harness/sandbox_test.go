@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -17,12 +18,13 @@ import (
 // stdin, the stream read from its stdout, the MCP config a file under
 // the temporary HOME rather than inline, and no host binary looked up.
 func TestClaudeCodeRunsInTheSandbox(t *testing.T) {
-	var mcpFile []byte
+	var mcpFile, script []byte
 	var stdin []byte
 	f := &sandbox.Fake{Agent: func(ctx context.Context, spec sandbox.AgentSpec) (sandbox.Exit, error) {
 		stdin, _ = io.ReadAll(spec.Stdin)
 		if p := flagAt(spec.Command, "--mcp-config"); p != "" {
 			mcpFile, _ = os.ReadFile(p)
+			script, _ = os.ReadFile(filepath.Join(filepath.Dir(p), workScriptName))
 		}
 		io.WriteString(spec.Stdout, `{"type":"system","subtype":"init","session_id":"s1"}`+"\n")
 		io.WriteString(spec.Stdout, `{"type":"result","subtype":"success","is_error":false,"result":"done","session_id":"s1","total_cost_usd":0.2}`+"\n")
@@ -55,8 +57,13 @@ func TestClaudeCodeRunsInTheSandbox(t *testing.T) {
 			t.Fatalf("the mesh-context bearer is on the command line: %v", spec.Command)
 		}
 	}
-	if spec.Command[len(spec.Command)-1] != "--dangerously-skip-permissions" || flagAt(spec.Command, "--allowedTools") != "mcp__mesh-context__*" {
+	if spec.Command[len(spec.Command)-1] != "--dangerously-skip-permissions" || flagAt(spec.Command, "--allowedTools") != "mcp__mesh-context__*,mcp__mesh-node__*" ||
+		flagAt(spec.Command, "--disallowedTools") != "mcp__mesh-context__mesh_finish,mcp__mesh-context__mesh_fail" {
 		t.Fatalf("command = %v", spec.Command)
+	}
+	// a build's own finish tools: node running the script beside mcp.json
+	if !strings.Contains(string(mcpFile), `"mesh-node"`) || !strings.Contains(string(mcpFile), filepath.Join(home, workScriptName)) || !bytes.Equal(script, WorkScript()) {
+		t.Fatalf("mcp config %s, script %d bytes", mcpFile, len(script))
 	}
 	if !slices.Contains(spec.Env, "CLAUDE_CONFIG_DIR="+filepath.Join(home, ".claude")) || slices.Contains(spec.Env, "NOT_ALLOWED=1") {
 		t.Fatalf("env = %v", spec.Env)

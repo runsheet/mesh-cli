@@ -83,6 +83,19 @@ func TestPodMountsOnlyWorkspaceAndHome(t *testing.T) {
 	}
 }
 
+func TestKeepIDUserns(t *testing.T) {
+	for _, tc := range []struct {
+		uid, gid int
+		want     string
+	}{
+		{uid: 1000, gid: 1000, want: "keep-id:uid=1000,gid=1000"},
+	} {
+		if got := KeepIDUserns(tc.uid, tc.gid); got != tc.want {
+			t.Errorf("KeepIDUserns(%d, %d) = %q, want %q", tc.uid, tc.gid, got, tc.want)
+		}
+	}
+}
+
 // The agent's environment is built from the allow-list: the node's own
 // variables never reach it, nor any job variable outside the list.
 func TestAgentEnvIsTheAllowList(t *testing.T) {

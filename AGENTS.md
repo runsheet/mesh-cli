@@ -184,9 +184,12 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   says (`finishCallOf`; the node still pushes and hands in the head it
   pushed), a `mesh_fail` call as the item's failure, and with no call
   parses the text as before, logging `item <label>: no mesh_finish call;
-  parsed the final message` once per session; a finish the platform
-  refuses after a call is `finished by tool call on the platform`, not a
-  failure (ADR-023, finish by tool call). The evaluator ends the same
+  parsed the final message` once per session; the call records nothing
+  (a build's `mesh_finish` is the node's own `mesh-node` server's), so
+  the node validates, pushes, and only on the sha `Push` returned sends
+  `FinishWorkItem` — a push that fails fails the item `push <branch>:
+  <err>` with no finish sent, and a refused finish is an error (ADR-023,
+  finish by tool call, Decision 2 amended 2026-10-10). The evaluator ends the same
   way by `mesh_verdict(item_id, passed, notes, failed_clauses: [{clause,
   satisfy}], readings: [{clause, reading}])` (EvaluatePrompt's
   `# Finish by tool call`): `verdictOf`, on the first evaluation and
