@@ -30,6 +30,12 @@ const (
 	PreTransferIdentityPrefix = "https://github.com/projectmesh-io/mesh-cli/.github/workflows/release-tag.yml@refs/tags/"
 	// Issuer is GitHub Actions' OIDC issuer.
 	Issuer = "https://token.actions.githubusercontent.com"
+	// RunsheetIssuer is runsheet's OIDC issuer, the platform-held identity
+	// a release shipped from a node is signed under (mesh-specs ADR 017).
+	RunsheetIssuer = "https://oidc.runsheet.dev"
+	// RunsheetIdentityPrefix + the tag is the SAN of a release a node
+	// shipped: runsheet's release unit of runsheet/mesh-cli on that tag.
+	RunsheetIdentityPrefix = "https://runsheet.dev/releases/runsheet/mesh-cli@refs/tags/"
 )
 
 // preTransferTags are the tags released under the old owner, signed by
@@ -39,14 +45,19 @@ var preTransferTags = map[string]bool{
 	"v0.0.0-selfupdate-test.1": true, // 97fb5fb, released 2026-09-25
 }
 
+// Identity is one signing identity Verify accepts: the certificate's SAN
+// must equal SAN exactly and its OIDC issuer must equal Issuer exactly.
+type Identity struct {
+	Issuer string
+	SAN    string
+}
+
 // Policy is what Verify requires of a release's signature. Production uses
 // ReleasePolicy; tests build one around a virtual Sigstore.
 type Policy struct {
-	// Identities are the certificate SANs accepted; the SAN must equal
-	// one of them exactly.
-	Identities []string
-	// Issuer is the exact OIDC issuer required.
-	Issuer string
+	// Identities are the issuer and SAN pairs accepted; the certificate
+	// must match one of them exactly, issuer and SAN alike.
+	Identities []Identity
 	// TrustedMaterial yields the Sigstore roots (Fulcio, Rekor, CT logs,
 	// TSAs) the bundle must chain to.
 	TrustedMaterial func() (root.TrustedMaterial, error)
@@ -57,18 +68,23 @@ type Policy struct {
 }
 
 // ReleasePolicy is the policy for version: signed by runsheet/mesh-cli's
-// release-tag.yml on the tag version (or, for a tag released before the
-// transfer, the old owner's: PreTransferIdentityPrefix), issued to GitHub Actions, chained
-// to Sigstore's public good instance (its trusted root fetched over TUF
-// from the root embedded in sigstore-go, cached under ~/.mesh/sigstore).
+// release-tag.yml on the tag version, issued to GitHub Actions, or by
+// runsheet's release unit on that tag, issued by RunsheetIssuer — both
+// accepted through ADR 017's cut-over, for N=3 node-shipped releases —
+// (and, for a tag released before the transfer, the old owner's
+// release-tag.yml: PreTransferIdentityPrefix), chained to Sigstore's
+// public good instance (its trusted root fetched over TUF from the root
+// embedded in sigstore-go, cached under ~/.mesh/sigstore).
 func ReleasePolicy(version string) Policy {
-	ids := []string{IdentityPrefix + version}
+	ids := []Identity{
+		{Issuer: Issuer, SAN: IdentityPrefix + version},
+		{Issuer: RunsheetIssuer, SAN: RunsheetIdentityPrefix + version},
+	}
 	if preTransferTags[version] {
-		ids = append(ids, PreTransferIdentityPrefix+version)
+		ids = append(ids, Identity{Issuer: Issuer, SAN: PreTransferIdentityPrefix + version})
 	}
 	return Policy{
 		Identities:      ids,
-		Issuer:          Issuer,
 		TrustedMaterial: publicGoodRoot,
 	}
 }
@@ -106,7 +122,7 @@ func Verify(rel *Release, p Policy) error {
 			return refuse(ErrMissingAsset, nil, "release %s has no %s", rel.Version, a.name)
 		}
 	}
-	if len(p.Identities) == 0 || p.Issuer == "" || p.TrustedMaterial == nil {
+	if len(p.Identities) == 0 || p.TrustedMaterial == nil {
 		return refuse(ErrSignature, nil, "no signing policy")
 	}
 	if err := verifySignature(rel, p); err != nil {
@@ -133,13 +149,13 @@ func verifySignature(rel *Release, p Policy) error {
 	if err != nil {
 		return fmt.Errorf("sigstore verifier: %w", err)
 	}
-	// Each identity is an exact SAN; the certificate must match one.
+	// Each identity is an exact issuer and SAN; the certificate must match one.
 	popts := []verify.PolicyOption{}
-	for _, san := range p.Identities {
-		if san == "" {
+	for _, ident := range p.Identities {
+		if ident.Issuer == "" || ident.SAN == "" {
 			return refuse(ErrSignature, nil, "no signing policy")
 		}
-		id, err := verify.NewShortCertificateIdentity(p.Issuer, "", san, "")
+		id, err := verify.NewShortCertificateIdentity(ident.Issuer, "", ident.SAN, "")
 		if err != nil {
 			return fmt.Errorf("sigstore identity: %w", err)
 		}

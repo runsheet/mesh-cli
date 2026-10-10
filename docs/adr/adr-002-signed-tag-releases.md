@@ -1,5 +1,5 @@
 ---
-summary: Nodes update only from tag-cut releases of runsheet/mesh-cli whose SHA256SUMS is signed keyless by runsheet/mesh-cli release-tag.yml's GitHub OIDC identity (tags released before the repo left projectmesh-io also under the old identity); the asset names and that identity are the updater's contract. The same tag pushes and cosign-signs the node image ghcr.io/runsheet/mesh-node:<tag>, which the node pulls before it swaps. An upgrade swaps and restarts the node at once, and the new process adopts the sessions the old one left running; a sandboxed node alone still drains first. Every merge to main that changes cmd/, internal/, images/node/ or go.mod/go.sum is tagged automatically by release-on-merge.yml, pushing with RELEASE_TAG_TOKEN.
+summary: Nodes update only from tag-cut releases of runsheet/mesh-cli whose SHA256SUMS is signed keyless by runsheet/mesh-cli release-tag.yml's GitHub OIDC identity (tags released before the repo left projectmesh-io also under the old identity), and — through mesh-specs ADR 017's cut-over, for N=3 node-shipped releases — also by the platform identity (issuer https://oidc.runsheet.dev, SAN https://runsheet.dev/releases/runsheet/mesh-cli@refs/tags/<tag>); the asset names and that identity are the updater's contract. The same tag pushes and cosign-signs the node image ghcr.io/runsheet/mesh-node:<tag>, which the node pulls before it swaps. An upgrade swaps and restarts the node at once, and the new process adopts the sessions the old one left running; a sandboxed node alone still drains first. Every merge to main that changes cmd/, internal/, images/node/ or go.mod/go.sum is tagged automatically by release-on-merge.yml, pushing with RELEASE_TAG_TOKEN.
 status: accepted
 ---
 
@@ -733,6 +733,42 @@ takes `ownerKind` and answers no scopes keeps serving grapevine and
 confirms (`TestCanaryReplayKeepsServingAndConfirms`), and coming up
 serving none is not confirmed and rolls back naming the orgs
 (`TestCanaryReplayServingNoneRollsBack`).
+
+## Amendment: the platform release identity (goal releases-ship-from-a-node, 2026-10-10)
+
+[ADR 017](https://github.com/runsheet/mesh-specs/blob/main/specs/adr-017-releases-ship-from-a-node.md)
+moves the mesh-cli release off GitHub Actions: a node's release unit
+builds and signs it, keyless on public-good Sigstore as before, under an
+identity the platform holds. The identity the updater trusts is this
+ADR's contract, so `ReleasePolicy(tag)` now accepts two, each an exact
+issuer and an exact SAN, never a prefix match:
+
+| | issuer | SAN |
+| --- | --- | --- |
+| Actions (`release-tag.yml`) | `https://token.actions.githubusercontent.com` | `https://github.com/runsheet/mesh-cli/.github/workflows/release-tag.yml@refs/tags/<tag>` |
+| platform (ADR 017) | `https://oidc.runsheet.dev` | `https://runsheet.dev/releases/runsheet/mesh-cli@refs/tags/<tag>` |
+
+Both are constants in `internal/selfupdate/verify.go`: `Issuer` and
+`IdentityPrefix` for Actions, `RunsheetIssuer` and
+`RunsheetIdentityPrefix` for the platform. `Policy.Identities` is a
+list of `Identity{Issuer, SAN}` pairs, and a certificate must match one
+pair whole, so the platform's SAN under the Actions issuer is refused,
+as is the reverse. The pre-transfer tags keep their third pair (the
+projectmesh-io SAN under the Actions issuer).
+
+**The cut-over (ADR 017 §3).** A release cut the old way ships this
+verifier first. No node signs anything until the fleet reports that
+release or later. Releases then ship from a node under the platform
+identity alone, and nodes keep accepting both identities for **N = 3**
+consecutive node-shipped releases that the fleet adopted. The fourth
+node-shipped release's verifier drops the Actions pair for every new tag,
+keeping it only for a closed set of the tags `release-tag.yml` already
+signed, the same way `preTransferTags` works. That drop is a later
+amendment here.
+
+Tests: `internal/selfupdate/verify_test.go`
+(`TestReleasePolicyAcceptsTheActionsAndRunsheetIdentities`,
+`TestReleasePolicyPreTransferTags`, `TestVerifyPlatformReleaseIdentity`).
 
 ## Consequences
 
