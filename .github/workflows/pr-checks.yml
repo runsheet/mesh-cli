@@ -81,6 +81,9 @@ jobs:
       - name: mini-owner-reading.sh
         run: scripts/mini-owner-reading_test.sh
 
+      - name: withdrawn-account-reading.sh
+        run: scripts/withdrawn-account-reading_test.sh
+
       - name: release-on-merge.sh
         run: scripts/release-on-merge_test.sh
 

@@ -1,0 +1,19 @@
+{
+  "data": {
+    "nodeIndexs": [
+      {
+        "id": "node-1",
+        "slug": "mini",
+        "status": "active",
+        "orgId": "org-1",
+        "version": "0.3.0",
+        "holdingAccounts": [
+          {"account": "Temp - Subsciprtion", "status": "ok"}
+        ],
+        "limits": [
+          {"account": "Temp - Subsciprtion", "status": "unknown"}
+        ]
+      }
+    ]
+  }
+}
