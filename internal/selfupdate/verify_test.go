@@ -244,6 +244,17 @@ func TestVerifyRefuses(t *testing.T) {
 	}
 }
 
+// A tag signed by the ADR 017 platform identity — RunsheetIdentityPrefix's
+// SAN, issued by RunsheetIssuer — verifies under ReleasePolicy's
+// identities (ADR 017's cut-over).
+func TestVerifyPlatformIdentity(t *testing.T) {
+	f := newFixtureFor(t, "v0.4.500")
+	f.rel.Bundle = selfupdatetest.SignSums(t, f.vs, RunsheetIdentityPrefix+"v0.4.500", RunsheetIssuer, f.rel.Sums)
+	if err := Verify(f.rel, f.policy); err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+}
+
 // A tag signed by runsheet's release unit under oidc.runsheet.dev
 // verifies (ADR 017's cut-over); its SAN under the Actions issuer does not.
 func TestVerifyPlatformReleaseIdentity(t *testing.T) {
