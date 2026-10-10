@@ -148,8 +148,45 @@ func TestAgentEnvIsTheAllowList(t *testing.T) {
 	if v, _ := lastValue(penv, "GH_TOKEN"); v != "ghs_item" {
 		t.Fatalf("podman env GH_TOKEN = %q", v)
 	}
-	if v, _ := lastValue(penv, "HOME"); v != sess.Home {
-		t.Fatalf("podman env HOME = %q: the container's must win", v)
+	if v, _ := lastValue(penv, "HOME"); v == sess.Home {
+		t.Fatalf("podman env HOME = %q: the container's must not reach podman", v)
+	}
+}
+
+func TestPodmanEnvKeepsTheNodesPassthrough(t *testing.T) {
+	node := []string{"HOME=/home/node", "USER=node", "XDG_RUNTIME_DIR=/run/user/1000", "CONTAINERS_STORAGE_CONF=/etc/s.conf", "PATH=/usr/bin"}
+	for _, name := range []string{"HOME", "USER", "XDG_RUNTIME_DIR", "CONTAINERS_STORAGE_CONF"} {
+		container := []string{name + "=/tmp/x", "GH_TOKEN=t"}
+		penv := podmanEnv(node, container)
+		var got []string
+		for _, kv := range penv {
+			if k, _, _ := strings.Cut(kv, "="); k == name {
+				got = append(got, kv)
+			}
+		}
+		want := ""
+		for _, kv := range node {
+			if strings.HasPrefix(kv, name+"=") {
+				want = kv
+			}
+		}
+		if len(got) != 1 || got[0] != want {
+			t.Fatalf("%s in podman env = %v, want only %q", name, got, want)
+		}
+		if v, _ := lastValue(penv, "GH_TOKEN"); v != "t" {
+			t.Fatalf("podman env GH_TOKEN = %q", v)
+		}
+		if v, _ := lastValue(penv, "XDG_RUNTIME_DIR"); v != "/run/user/1000" && name != "XDG_RUNTIME_DIR" {
+			t.Fatalf("XDG_RUNTIME_DIR = %q", v)
+		}
+		args := strings.Join(AgentRunArgs(Pod{Name: "p"}, AgentSpec{Name: "a", Image: "img", Env: container}), " ")
+		if !strings.Contains(args, "--env "+name+"=/tmp/x") || !strings.Contains(args, "--env GH_TOKEN ") || strings.Contains(args, "GH_TOKEN=") {
+			t.Fatalf("args = %s", args)
+		}
+		sargs := strings.Join(SidecarRunArgs(Pod{Name: "p"}, SidecarSpec{Name: "s", Image: "img", Env: container}), " ")
+		if !strings.Contains(sargs, "--env "+name+"=/tmp/x") || strings.Contains(sargs, "GH_TOKEN=") {
+			t.Fatalf("sidecar args = %s", sargs)
+		}
 	}
 }
 

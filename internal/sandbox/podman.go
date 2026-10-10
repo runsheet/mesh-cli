@@ -116,10 +116,7 @@ func AgentRunArgs(pod Pod, spec AgentSpec) []string {
 	if spec.Workdir != "" {
 		args = append(args, "--workdir", spec.Workdir)
 	}
-	for _, kv := range spec.Env {
-		name, _, _ := strings.Cut(kv, "=")
-		args = append(args, "--env", name)
-	}
+	args = append(args, envArgs(spec.Env)...)
 	args = append(args, spec.Image)
 	return append(args, spec.Command...)
 }
@@ -137,10 +134,7 @@ func SidecarRunArgs(pod Pod, spec SidecarSpec) []string {
 	args := []string{"run", "-d", "--pod", pod.Name, "--name", SidecarName(pod, spec.Name),
 		"--security-opt", "no-new-privileges", "--pull", "missing"}
 	args = append(args, LimitArgs(spec.Limits)...)
-	for _, kv := range spec.Env {
-		name, _, _ := strings.Cut(kv, "=")
-		args = append(args, "--env", name)
-	}
+	args = append(args, envArgs(spec.Env)...)
 	args = append(args, spec.Image)
 	return append(args, spec.Command...)
 }
@@ -165,26 +159,54 @@ func LimitArgs(l Limits) []string {
 // its storage and runtime directory; the container sees none of them.
 var podmanPassthrough = []string{"PATH", "HOME", "USER", "LOGNAME", "XDG_RUNTIME_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "CONTAINERS_CONF", "CONTAINERS_STORAGE_CONF", "TMPDIR"}
 
+func isPassthrough(name string) bool {
+	for _, p := range podmanPassthrough {
+		if name == p {
+			return true
+		}
+	}
+	return false
+}
+
+// envArgs are the --env arguments for a container's variables: a bare
+// `--env NAME` (value read from podman's environment, so a secret stays
+// off the command line), except a podmanPassthrough name, whose value in
+// podman's environment is the node's and so is given as `--env NAME=value`.
+func envArgs(env []string) []string {
+	var args []string
+	for _, kv := range env {
+		name, _, _ := strings.Cut(kv, "=")
+		if isPassthrough(name) {
+			args = append(args, "--env", kv)
+		} else {
+			args = append(args, "--env", name)
+		}
+	}
+	return args
+}
+
 // podmanEnv is podman's own process environment: what it needs from the
 // node's, then the values of the container's variables, which
-// `--env NAME` reads from here. A container variable of the same name
-// wins; the container gets only what its --env names.
+// `--env NAME` reads from here. The node's passthrough values always win
+// and a container variable named in podmanPassthrough is never added —
+// rootless podman finds its storage by HOME and XDG_*, so the container's
+// HOME (a temporary directory) must not be podman's. The container gets
+// those through `--env NAME=value` (envArgs).
 func podmanEnv(environ, container []string) []string {
-	have := map[string]bool{}
-	for _, kv := range container {
-		name, _, _ := strings.Cut(kv, "=")
-		have[name] = true
-	}
 	var out []string
 	for _, kv := range environ {
 		name, _, _ := strings.Cut(kv, "=")
-		for _, p := range podmanPassthrough {
-			if name == p && !have[name] {
-				out = append(out, kv)
-			}
+		if isPassthrough(name) {
+			out = append(out, kv)
 		}
 	}
-	return append(out, container...)
+	for _, kv := range container {
+		name, _, _ := strings.Cut(kv, "=")
+		if !isPassthrough(name) {
+			out = append(out, kv)
+		}
+	}
+	return out
 }
 
 // CreatePod implements Runtime: the pod, then its network rules. A pod
@@ -204,9 +226,8 @@ func (p *Podman) CreatePod(ctx context.Context, spec PodSpec) (Pod, error) {
 // RunAgent implements Runtime. The container is left for Remove, so its
 // state can be read: an exit of 137 asks whether it was the OOM killer.
 func (p *Podman) RunAgent(ctx context.Context, pod Pod, spec AgentSpec) (Exit, error) {
-	// podman's own env carries HOME for its storage; the container's
-	// HOME is --env HOME from the same process, so the container's value
-	// must win there — podmanEnv puts it last
+	// podman's own env keeps the node's HOME/XDG_* for its storage; the
+	// container's HOME reaches it as --env HOME=value (AgentRunArgs)
 	err := p.run(ctx, AgentRunArgs(pod, spec), podmanEnv(os.Environ(), spec.Env), spec.Stdin, spec.Stdout, spec.Stderr)
 	if err == nil {
 		return Exit{}, nil
