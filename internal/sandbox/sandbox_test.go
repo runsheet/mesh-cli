@@ -89,6 +89,7 @@ func TestKeepIDUserns(t *testing.T) {
 		want     string
 	}{
 		{uid: 1000, gid: 1000, want: "keep-id:uid=1000,gid=1000"},
+		{uid: 1001, gid: 1002, want: "keep-id:uid=1001,gid=1002"},
 	} {
 		if got := KeepIDUserns(tc.uid, tc.gid); got != tc.want {
 			t.Errorf("KeepIDUserns(%d, %d) = %q, want %q", tc.uid, tc.gid, got, tc.want)
