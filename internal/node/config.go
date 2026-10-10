@@ -1372,6 +1372,16 @@ func WorkRoot() (string, error) {
 	return filepath.Join(home, ".mesh", "work"), nil
 }
 
+// ReposRoot is ~/.mesh/repos, beside the work root: the node's one clone
+// per repo, each item's checkout a worktree of it (mesh ADR 017).
+func ReposRoot() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".mesh", "repos"), nil
+}
+
 // Slugify turns a name into a slug: lowercase, [a-z0-9-], no doubles.
 func Slugify(name string) string {
 	var b strings.Builder
