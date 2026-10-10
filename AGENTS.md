@@ -231,10 +231,27 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   credential — Latchkey's device flow, the rotating refresh grant, and
   the `~/.mesh/token` that holds either shape behind one `TokenSource`
   (latchkey `adr-machine-identity`).
-- `internal/node/`: the loop (`runner`; a workspace that cannot be prepared before the harness starts — `PrepareWithRetry`, `Identify`, `WriteContext` — releases the claim with `workspace: <error>` by `ReleaseOnWorkspace`, never `FailWorkItem` unless the release is refused, and `Declines.HoldFor` keeps the item off the node for `WorkspaceReleaseHold`, ten minutes; ADR-024, a workspace failure releases the claim), the workspace — each item an
-  independent clone at `~/.mesh/work/<goal>/<seq>` — its evaluation's
+- `internal/node/`: the loop (`runner`; a workspace that cannot be prepared before the harness starts — `PrepareWithRetry`, `Identify`, `WriteContext` — releases the claim with `workspace: <error>` by `ReleaseOnWorkspace`, never `FailWorkItem` unless the release is refused, and `Declines.HoldFor` keeps the item off the node for `WorkspaceReleaseHold`, ten minutes; ADR-024, a workspace failure releases the claim), the workspace — each new item's
+  `~/.mesh/work/<goal>/<seq>` a `git worktree add` of one shared clone
+  per repo at `~/.mesh/repos/<owner>/<name>` (`ReposRoot()`,
+  `Git.ReposRoot`, `SharedClonePath`; `syncSharedClone` clones it once
+  — `gh repo clone`, or `git clone` on an issued item token — and
+  fetches it under the per-repo lock, then `addWorktree`; ADR-028,
+  `docs/adr/adr-028-one-clone-per-repo-one-worktree-per-item.md`,
+  following mesh-specs ADR 017), each worktree's credential helper its
+  own `git config --worktree` (`writeHelper`,
+  `extensions.worktreeConfig` on the clone, whose config holds no
+  token), a rework reusing its worktree and keeping unpushed commits,
+  a full clone from before the layout used in place until swept, and
+  `Git.RemoveWorkspace` the sweep's remover — a worktree by `git
+  worktree remove --force` + `git worktree prune` under the repo's
+  lock, a full clone by RemoveAll, a path under the repos root refused,
+  never the shared clone — its evaluation's
   at `<goal>/<seq>-eval` (`EvalWorkspaceSpec`, the same Root, ADR-027),
-  so an evaluation never rewrites the build's helper — every `gh repo
+  a clone of its own, as are the goal doc's `<goal>/0` on the base and
+  plan and research checkouts (`Git.sharedClone` returns ""), so an
+  evaluation never rewrites the build's helper and git is never asked
+  for a branch another worktree holds — every `gh repo
   clone` and `git fetch` `Git` runs going through `fetchLocked` under a
   per-repo fetch lock (`repolock.go`: a process-wide mutex keyed by
   `RepoLockKey`, owner/name, and an exclusive flock on
@@ -1121,7 +1138,14 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `harness.ClaudeCode` runs `claude` in the session's own rootless
   Podman pod (`Sandbox.Open` → `Session.Run` → `Close`) from the node
   image: mounts only the workspace and a temporary HOME (the MCP config
-  file, `CLAUDE_CONFIG_DIR`, `GH_CONFIG_DIR`, `.gitconfig`), an env
+  file, `CLAUDE_CONFIG_DIR`, `GH_CONFIG_DIR`, `.gitconfig`) — and, for
+  a worktree, its shared clone's git dir read-write at its own path
+  (`sandbox.GitCommonDir`, "" for a full clone), and the node's one
+  pnpm store and npm cache, `~/.mesh/store/{pnpm,npm}` (`StoreRoot()`,
+  `PackageStores`, `sandbox.Stores`: `npm_config_store_dir`,
+  `pnpm_config_store_dir`, `PNPM_HOME`, `npm_config_cache` in
+  `BaseEnv`; separate mounts, so pnpm copies rather than hardlinks in
+  a pod, EXDEV, ADR-028) — an env
   from the allow-list (`AllowedEnv`, `MESH_TOOL_*`, `BaseEnv`; never
   the node's), `--cpus/--memory/--pids-limit` from node.yaml
   `sandbox:` (`SandboxConfig.Settings`), and nftables rules an init

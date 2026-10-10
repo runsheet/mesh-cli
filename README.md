@@ -939,12 +939,24 @@ available on Bedrock, Vertex or Foundry; Team/Enterprise orgs must enable
 
 **Poll mode** (`--mode poll`). Each claimed item runs its own
 `claude -p "<prompt>" --output-format stream-json --verbose --max-budget-usd <budget>`
-in `~/.mesh/work/<goal-slug>/<seq>` (cloned with your `gh`, branch
+in `~/.mesh/work/<goal-slug>/<seq>` (a worktree of the repo's clone, cloned with your `gh`, branch
 `mesh/<goal-slug>-<seq>` from the base ref), with the goal's mesh-context
-context written under `.mesh/context/` (excluded from git). Each item's
-checkout is an independent clone with its own object store — no shared
-mirror, no `git worktree` — so two items never write each other's refs;
-and every `gh repo clone` and `git fetch` of one repo on the node runs
+context written under `.mesh/context/` (excluded from git). The node
+keeps one clone per repo at `~/.mesh/repos/<owner>/<name>`, cloned by
+the repo's first item and fetched by every later one, and makes each new
+item's checkout a `git worktree add` of it: the objects are shared, the
+files, index and HEAD are the item's own, and git checks a branch out in
+one worktree only. Each worktree's credential helper is its own
+(`git config --worktree`); the shared clone's config holds no token. A
+rework reuses its worktree; an evaluation's `<seq>-eval`, the goal doc's
+`<goal>/0` and plan and research checkouts stay clones of their own; a
+full clone left by an older node is used as it is until swept. The sweep
+removes a finished item's worktree with `git worktree remove --force`
+and `git worktree prune`, never the shared clone. Every session installs
+against one pnpm store and one npm cache per node, `~/.mesh/store/pnpm`
+and `~/.mesh/store/npm` (ADR-028,
+`docs/adr/adr-028-one-clone-per-repo-one-worktree-per-item.md`, after
+mesh-specs ADR 017). Every `gh repo clone` and `git fetch` of one repo on the node runs
 under a per-repo lock, a process-wide mutex plus an exclusive `flock` on
 `~/.mesh/work/.locks/<owner>--<name>.lock`, released before any checkout,
 so two sessions (or two node processes) fetching one repo at once never
