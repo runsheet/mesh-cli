@@ -33,8 +33,17 @@ implementing it that the spec leaves open or that differ in detail.
   as `--env NAME` with the values in podman's own process environment,
   and `--unsetenv-all` drops the image's and podman's defaults, so no
   secret is on a command line and nothing else reaches the agent.
-  Podman's process keeps only what it needs to find its storage
-  (`PATH`, `HOME`, `XDG_RUNTIME_DIR`, …); the container's `HOME` wins.
+  Podman's process keeps only what it needs to find its storage —
+  the node's `podmanPassthrough` values, `PATH`, `HOME`, `USER`,
+  `LOGNAME`, `XDG_*`, `CONTAINERS_*` and `TMPDIR` — and keeps the
+  node's whatever the container sets: rootless podman finds its store
+  by `HOME` and `XDG_*`, and a session's temporary `HOME` there sent
+  podman to an empty store and a pull it could not make (the dl360,
+  2026-10-10; goal podman-keeps-the-nodes-home). A container variable
+  with a passthrough name reaches the container as `--env NAME=value`
+  instead (`envArgs`; its value is a path, never a secret), and every
+  other variable stays a bare `--env NAME` read from podman's
+  environment (`podmanEnv`).
 - **node.yaml keys are flat**: `sandbox.{mode, cpus, memory, pids,
   services_cpus, services_memory, registries, image, service_timeout}` rather than the
   spec's nested `limits {…}` / `services_budget {…}`; `sandbox: off`

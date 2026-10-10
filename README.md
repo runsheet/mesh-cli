@@ -1931,6 +1931,16 @@ whether anything still uses `latchkey-e2e-pg`: see
 [docs/e2e-sandbox.md](docs/e2e-sandbox.md) for running it, the live run
 on the mini and retiring that container.
 
+Podman's own process keeps the node's `HOME`, `USER`, `LOGNAME`,
+`PATH`, `XDG_*`, `CONTAINERS_*` and `TMPDIR` whatever a session's env
+sets, so rootless podman always looks in the node user's image store;
+the session's temporary `HOME` (and any other of those names it sets)
+reaches the container as `--env HOME=<value>`, every other variable as
+a bare `--env NAME` (ADR-007, Env by name). `TestLocalOnlyImageE2E`
+checks it on a real pod: a session starts from an image only the local
+store holds, under a registry name that cannot resolve, and podman
+never tries to pull it.
+
 ### Node image
 
 Every sandboxed session runs one image, versioned with the node:
