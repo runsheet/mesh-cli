@@ -3,11 +3,13 @@ package sandbox
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -312,8 +314,175 @@ func (p *Podman) ProbeTCP(ctx context.Context, pod Pod, image string, port int) 
 	return err
 }
 
-// Remove implements Runtime: the pod and all its containers, forced.
+// RemoveArgs are the podman calls that remove a pod, in order: first
+// the session's own containers in it — the agent's, the sidecars', all
+// named `<pod>-…` — with their anonymous volumes (`podman rm
+// --volumes`), then the pod itself, forced, with whatever is left (its
+// infra container, which podman removes only with the pod).
+func RemoveArgs(pod Pod) [][]string {
+	return [][]string{
+		{"rm", "--force", "--volumes", "--time", "5",
+			"--filter", "pod=" + pod.Name, "--filter", "name=^" + regexp.QuoteMeta(pod.Name) + "-"},
+		{"pod", "rm", "--force", "--time", "5", pod.Name},
+	}
+}
+
+// Remove implements Runtime: the pod, all its containers and their
+// anonymous volumes, forced. Every call runs; their errors are joined.
 func (p *Podman) Remove(ctx context.Context, pod Pod) error {
-	_, err := p.output(ctx, []string{"pod", "rm", "--force", "--time", "5", pod.Name}, nil)
+	var errs []error
+	for _, args := range RemoveArgs(pod) {
+		if _, err := p.output(ctx, args, nil); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// RemoveTreeArgs is `podman unshare rm -rf <path>`: rm run inside the
+// node user's user namespace, as root there, so the subuid-owned and
+// read-only files a pod left are its to remove.
+func RemoveTreeArgs(path string) []string {
+	return []string{"unshare", "rm", "-rf", "--", path}
+}
+
+// RemoveTree implements Runtime.
+func (p *Podman) RemoveTree(ctx context.Context, path string) error {
+	_, err := p.output(ctx, RemoveTreeArgs(path), nil)
+	return err
+}
+
+// ContainersArgs lists every container, any state, as JSON.
+func ContainersArgs() []string { return []string{"ps", "--all", "--format", "json"} }
+
+// InspectArgs reads the named containers' full records (their mounts'
+// host sources), as JSON.
+func InspectArgs(names []string) []string {
+	return append([]string{"container", "inspect", "--format", "json"}, names...)
+}
+
+// PodsArgs lists every pod as JSON.
+func PodsArgs() []string { return []string{"pod", "ps", "--format", "json"} }
+
+// RemoveContainerArgs removes one container and its anonymous volumes.
+func RemoveContainerArgs(name string) []string {
+	return []string{"rm", "--force", "--volumes", "--time", "5", name}
+}
+
+// psEntry is one row of `podman ps --format json`.
+type psEntry struct {
+	Names   []string          `json:"Names"`
+	PodName string            `json:"PodName"`
+	State   string            `json:"State"`
+	IsInfra bool              `json:"IsInfra"`
+	Labels  map[string]string `json:"Labels"`
+}
+
+// inspectEntry is the part of `podman container inspect` Sweep reads.
+type inspectEntry struct {
+	Name   string `json:"Name"`
+	Mounts []struct {
+		Source string `json:"Source"`
+	} `json:"Mounts"`
+}
+
+// ParseContainers reads `podman ps --all --format json` (the mounts are
+// filled from the inspect, ParseInspectMounts).
+func ParseContainers(out string) ([]Container, error) {
+	if strings.TrimSpace(out) == "" {
+		return nil, nil
+	}
+	var rows []psEntry
+	if err := json.Unmarshal([]byte(out), &rows); err != nil {
+		return nil, fmt.Errorf("podman ps: %w", err)
+	}
+	cs := make([]Container, 0, len(rows))
+	for _, r := range rows {
+		name := ""
+		if len(r.Names) > 0 {
+			name = r.Names[0]
+		}
+		cs = append(cs, Container{Name: name, Pod: r.PodName, Labels: r.Labels,
+			Running: strings.EqualFold(r.State, "running"), Infra: r.IsInfra})
+	}
+	return cs, nil
+}
+
+// ParseInspectMounts reads `podman container inspect --format json` into
+// each container's mounted host paths, by name.
+func ParseInspectMounts(out string) (map[string][]string, error) {
+	var rows []inspectEntry
+	if err := json.Unmarshal([]byte(out), &rows); err != nil {
+		return nil, fmt.Errorf("podman container inspect: %w", err)
+	}
+	m := map[string][]string{}
+	for _, r := range rows {
+		for _, mt := range r.Mounts {
+			if mt.Source != "" {
+				m[strings.TrimPrefix(r.Name, "/")] = append(m[strings.TrimPrefix(r.Name, "/")], mt.Source)
+			}
+		}
+	}
+	return m, nil
+}
+
+// ParsePods reads `podman pod ps --format json`.
+func ParsePods(out string) ([]PodInfo, error) {
+	if strings.TrimSpace(out) == "" {
+		return nil, nil
+	}
+	var rows []PodInfo
+	if err := json.Unmarshal([]byte(out), &rows); err != nil {
+		return nil, fmt.Errorf("podman pod ps: %w", err)
+	}
+	return rows, nil
+}
+
+// ListContainers implements Runtime: every container, and for the running
+// ones the host paths they mount.
+func (p *Podman) ListContainers(ctx context.Context) ([]Container, error) {
+	out, err := p.output(ctx, ContainersArgs(), nil)
+	if err != nil {
+		return nil, err
+	}
+	cs, err := ParseContainers(out)
+	if err != nil {
+		return nil, err
+	}
+	var running []string
+	for _, c := range cs {
+		if c.Running && c.Name != "" {
+			running = append(running, c.Name)
+		}
+	}
+	if len(running) == 0 {
+		return cs, nil
+	}
+	out, err = p.output(ctx, InspectArgs(running), nil)
+	if err != nil {
+		return nil, err
+	}
+	mounts, err := ParseInspectMounts(out)
+	if err != nil {
+		return nil, err
+	}
+	for i := range cs {
+		cs[i].Mounts = mounts[cs[i].Name]
+	}
+	return cs, nil
+}
+
+// ListPods implements Runtime.
+func (p *Podman) ListPods(ctx context.Context) ([]PodInfo, error) {
+	out, err := p.output(ctx, PodsArgs(), nil)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePods(out)
+}
+
+// RemoveContainer implements Runtime.
+func (p *Podman) RemoveContainer(ctx context.Context, name string) error {
+	_, err := p.output(ctx, RemoveContainerArgs(name), nil)
 	return err
 }

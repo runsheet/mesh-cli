@@ -412,3 +412,25 @@ func TestOpenSessionPodLogsTheImage(t *testing.T) {
 		t.Fatalf("lines naming the session and its image: %d, want 1: %q", found, lines)
 	}
 }
+
+// A Close that cannot remove what the session left is logged through
+// the node's logf, `sandbox: session <label>: close: <err>`, never dropped.
+func TestSessionPodCloseLogsAFailure(t *testing.T) {
+	rt := &sandbox.Fake{}
+	sb := &sandbox.Sandbox{Runtime: rt, Config: SandboxConfig{}.Settings("v1"), TempDir: t.TempDir()}
+	var lines []string
+	logf := func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
+	pod, err := OpenSessionPod(context.Background(), sb, t.TempDir(), "ship-it#1", harness.KindBuild, sandbox.GitIdentity{}, logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pod.Session.Start(context.Background(), nil, 0); err != nil {
+		t.Fatal(err)
+	}
+	rt.RemoveErr = errors.New("podman pod: pod is busy")
+	lines = nil
+	pod.Close()
+	if len(lines) != 1 || lines[0] != "sandbox: session ship-it#1: close: podman pod: pod is busy" {
+		t.Fatalf("lines = %q", lines)
+	}
+}
