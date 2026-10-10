@@ -1280,6 +1280,12 @@ func renderOwnGoal(b *strings.Builder, lg *LiveGoal, cell func(string) string, l
 	}
 }
 
+// MeshMCPURL is the platform's /mcp beside the gateway at gatewayURL —
+// what mesh-context and `mesh mcp install --remote` point at.
+func MeshMCPURL(gatewayURL string) string {
+	return strings.TrimRight(gatewayURL, "/") + "/mcp"
+}
+
 // MeshContextMCP is the MCP server a session gets for mesh-context: the
 // platform's /mcp with the node's own token, so the session reads what
 // the node's operator may.
@@ -1288,7 +1294,7 @@ func MeshContextMCP(gatewayURL, token string) map[string]any {
 		return nil
 	}
 	return map[string]any{"mesh-context": map[string]any{
-		"type": "http", "url": strings.TrimRight(gatewayURL, "/") + "/mcp",
+		"type": "http", "url": MeshMCPURL(gatewayURL),
 		"headers": map[string]string{"Authorization": "Bearer " + token},
 	}}
 }

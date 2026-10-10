@@ -53,8 +53,11 @@ func (e *DiffersError) Error() string {
 type PlanOptions struct {
 	// Force overwrites a whole instruction file that differs.
 	Force bool
-	// Remote writes the hosted server's entry instead of `<exe> mcp`.
+	// Remote writes the hosted server's entry at URL, signed in by
+	// Auth, instead of `<exe> mcp` (ADR-025, Remote).
 	Remote bool
+	URL    string
+	Auth   RemoteAuth
 }
 
 // Plan reads each client's files and returns the change for each — its
@@ -88,7 +91,13 @@ func Plan(home, exe string, clients []Client, opts PlanOptions) ([]Change, error
 }
 
 func planMCP(home, exe string, c Client, opts PlanOptions) (Change, error) {
-	entry, err := c.Entry(exe, opts.Remote)
+	var entry []byte
+	var err error
+	if opts.Remote {
+		entry, err = RemoteEntry(c, opts.URL, opts.Auth)
+	} else {
+		entry, err = c.Entry(exe)
+	}
 	if err != nil {
 		return Change{}, err
 	}

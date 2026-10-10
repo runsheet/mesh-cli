@@ -336,7 +336,12 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   files and binaries (`Detect`) — `Plan` upserting each file
   (`Change`, never clobbering; an `*UnparseableError` printed `<path>:
   cannot parse (<err>); left alone`, exit 1) and `Apply` writing it
-  (ADR-025, mesh mcp install is one table per client).
+  (ADR-025, mesh mcp install is one table per client); `--remote
+  [--url]` writes `RemoteEntry` for the gateway's `/mcp`
+  (`node.MeshMCPURL`) instead, `DiscoverAuth` asked once — OAuth, the
+  URL alone, when the issuer's metadata has a `registration_endpoint`,
+  else a bearer naming `$MESH_TOKEN` (`BearerEnvVar`), never a token in
+  a file (ADR-025, Remote).
   **A draining node claims nothing** (`Loop.Drain`): see the drain
   below. node.yaml's `claim: {unmerged_per_repo: N}` (`ClaimConfig`,
   re-read each tick, `Loop.UnmergedPerRepo`; absent or 0 is no limit

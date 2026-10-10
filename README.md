@@ -30,6 +30,16 @@ parse is reported and left alone, re-running changes nothing, and
 overwrite a skill that differs from the one mesh-cli ships unless you
 pass `--force` (docs/adr/adr-025-mesh-mcp-install-is-one-table-per-client.md).
 
+With no local binary to run, `mesh mcp install --remote` writes each
+client's remote-server entry for the hosted tools at the gateway's
+`/mcp` (`https://api.runsheet.dev/mcp`, or `--url`). It asks the
+server's OAuth metadata once and prints the answer: `auth: oauth` when
+the issuer offers dynamic registration — the entry is the URL alone and
+the client signs you in — else `auth: bearer from $MESH_TOKEN`, the
+entry naming the variable (`${MESH_TOKEN}` for Claude Code,
+`${env:MESH_TOKEN}` for Cursor, `bearer_token_env_var` for Codex) and
+never holding a token; export `MESH_TOKEN` where the client runs.
+
 With both in place Claude Code has `mesh_goals`, `mesh_join`,
 `mesh_switch`, `mesh_status`, `mesh_progress`, `mesh_ask`,
 `mesh_finish` and `mesh_release`

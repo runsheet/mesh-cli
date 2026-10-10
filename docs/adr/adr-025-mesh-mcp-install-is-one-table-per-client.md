@@ -40,8 +40,8 @@ that round-trips them through a map loses what it does not understand.
    TOML `command = "…"` / `args = ["mcp"]` quoted as the Codex harness
    quotes (`TOMLString`). Every instruction file renders from
    `meshmcp.Skill()`; a row whose `Body` is nil is recorded here and
-   written by item 3 of the goal. `--remote` (item 4) is
-   `ErrRemoteNotBuilt` until then.
+   written by item 3 of the goal. `--remote` (item 4) writes
+   `RemoteEntry` instead: see Remote below.
 3. **Never clobber.** `Plan(home, exe, clients, opts)` reads each file
    and upserts with item 1's `UpsertJSONFile`/`UpsertTOMLTableFile`:
    an existing `mesh` entry's span replaced in place, every other byte
@@ -101,6 +101,52 @@ What the documentation said that shapes the rows:
   commands are being migrated to skills (`/migrate-to-skills`) and the
   docs no longer name `~/.cursor/commands`, which the row keeps for
   Cursor versions before it.
+
+## Remote
+
+2026-10-05, item 4. `mesh mcp install --remote` is the no-binary path:
+each chosen client gets an entry for the hosted MCP server instead of
+`<exe> mcp`, and the instruction files are written as for a local
+install.
+
+1. **The URL** is `--url`, else the gateway's `/mcp` beside the
+   configured gateway (`--gateway`, `$MESH_GATEWAY`, node.yaml's
+   `gateway`, else `https://api.runsheet.dev`), built by
+   `node.MeshMCPURL` — the same URL mesh-context sessions get.
+2. **Discovery, once.** `mcpinstall.DiscoverAuth(ctx, url)` reads the
+   server's protected-resource metadata (RFC 9728:
+   `/.well-known/oauth-protected-resource` inserted before the URL's
+   path, then at the host's root), and for each of its
+   `authorization_servers` the issuer's metadata (RFC 8414
+   `oauth-authorization-server`, then `openid-configuration`, path
+   inserted then appended). A `registration_endpoint` (RFC 7591) is
+   `OAuth{Issuer}`; anything else — no metadata, no issuer, no
+   registration, a network error, ten seconds passing — is
+   `Bearer{EnvVar: "MESH_TOKEN"}` (`BearerEnvVar`, the variable the
+   mesh CLI itself prefers over `~/.mesh/token`). The command prints
+   `url: <url>` and `auth: oauth (dynamic registration at <issuer>)` or
+   `auth: bearer from $MESH_TOKEN`. Dynamic registration is Latchkey's
+   goal `an-mcp-client-signs-in-with-one-click` (its ADR 006, proposed
+   on 2026-10-05, not landed): until its issuers serve
+   `registration_endpoint`, discovery answers bearer.
+3. **Never a token in a file** (ADR-006: secrets in the environment
+   only, the config holds the name). A bearer entry names
+   `MESH_TOKEN` in the client's own reference form; the person exports
+   it (e.g. an `rs_*` console token) where the client runs. An OAuth
+   entry is the URL alone: Claude Code and Cursor discover the issuer
+   from the URL themselves, and Codex's `auth` defaults to `oauth`, so
+   the install prints a `codex: sign in with … codex mcp login mesh` line.
+4. **The rows' remote shapes** (`RemoteEntry(client, url, auth)`; a
+   JSON row's `RemoteType` and `EnvRef`, a TOML row's
+   `bearer_token_env_var`). An existing `mesh` entry — stdio or
+   remote — is replaced in place by the same upsert, so moving between
+   the two is one re-run.
+
+| Client | Bearer entry | OAuth entry | Documentation (fetched) |
+|---|---|---|---|
+| claude | `mcpServers.mesh` = `{"type":"http","url":"<url>","headers":{"Authorization":"Bearer ${MESH_TOKEN}"}}` — `${VAR}` expanded in `url` and `headers`; credential variables such as `ANTHROPIC_API_KEY` read as empty there, `MESH_TOKEN` is not one | `{"type":"http","url":"<url>"}` — OAuth discovered from RFC 9728/8414 metadata | https://code.claude.com/docs/en/mcp (2026-10-05) |
+| codex | `[mcp_servers.mesh]` `url = "<url>"`, `bearer_token_env_var = "MESH_TOKEN"` | `url = "<url>"` alone (`auth` defaults to `oauth`; `codex mcp login mesh`) | https://learn.chatgpt.com/docs/extend/mcp?surface=cli (2026-10-05) |
+| cursor | `mcpServers.mesh` = `{"url":"<url>","headers":{"Authorization":"Bearer ${env:MESH_TOKEN}"}}` — remote entries carry no `type` in the docs; `${env:NAME}` interpolation | `{"url":"<url>"}` — `auth` (`CLIENT_ID`/`CLIENT_SECRET`) only for a static client, scopes discovered from `/.well-known/oauth-authorization-server` | https://cursor.com/docs/context/mcp (2026-10-05) |
 
 ## Consequences
 

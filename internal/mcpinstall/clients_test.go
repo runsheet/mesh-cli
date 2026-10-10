@@ -44,7 +44,7 @@ func TestClientPathsHonourTheirEnv(t *testing.T) {
 func TestEntryInEachFormat(t *testing.T) {
 	exe := `/opt/me "quoted"/mesh`
 	for _, c := range Clients(skillText) {
-		b, err := c.Entry(exe, false)
+		b, err := c.Entry(exe)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -66,9 +66,6 @@ func TestEntryInEachFormat(t *testing.T) {
 		}
 		if e.Command != exe || !reflect.DeepEqual(e.Args, []string{"mcp"}) {
 			t.Fatalf("%s: entry %q", c.Name, b)
-		}
-		if _, err := c.Entry(exe, true); err != ErrRemoteNotBuilt {
-			t.Fatalf("%s: remote: %v", c.Name, err)
 		}
 	}
 }
