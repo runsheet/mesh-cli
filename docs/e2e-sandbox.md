@@ -94,9 +94,9 @@ builder's host (`mesh-podman-keeps-the-nodes-home-10-744eecad-0`, Linux
 not be read for `Trying to pull`. What was run there:
 
 ```
-$ MESH_SANDBOX_E2E=1 go test -count=1 -tags e2e -run TestLocalOnlyImageE2E -v ./internal/sandbox/
+$ MESH_SANDBOX_E2E=1 go test -count=1 -run TestLocalOnlyImageE2E -v ./internal/sandbox/
 === RUN   TestLocalOnlyImageE2E
-    localimage_e2e_test.go:67: podman: podman --version: exec: "podman": executable file not found in $PATH
+    localimage_e2e_test.go:65: podman: podman --version: exec: "podman": executable file not found in $PATH
 --- FAIL: TestLocalOnlyImageE2E (0.00s)
 FAIL
 
@@ -107,8 +107,10 @@ $ go test -count=1 -run 'PodmanEnv|Env' -v ./internal/sandbox/
 ok  	projectmesh.io/mesh-cli/internal/sandbox
 ```
 
-The test is behind the `e2e` build tag (without `-tags e2e` it is not
-compiled and `go test` says `no tests to run`). The unit test that holds
+Item 9 had put the test behind an `e2e` build tag, so neither this
+command nor `scripts/e2e-sandbox.sh` (which passes no tags) compiled
+it — `go test` said `no tests to run`. The tag is gone: the test now
+skips on `MESH_SANDBOX_E2E` alone, as the others here do. The unit test that holds
 the cause — a container `HOME=/tmp/x` against a node `HOME=/home/node`
 leaves podman's `HOME=/home/node` and the container's on `--env HOME` —
 passes; the pull itself is unproven until a host with rootless podman
