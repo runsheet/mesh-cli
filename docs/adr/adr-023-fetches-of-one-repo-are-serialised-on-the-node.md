@@ -90,6 +90,13 @@ session every other item's objects and refs. The clones cost disk and a
 full fetch each; the goal accepts that (its acceptance (1): "clones that
 never write the mirror's refs").
 
+**Amended 2026-10-10 by ADR-028**
+(`adr-028-one-clone-per-repo-one-worktree-per-item.md`, after mesh-specs
+ADR 017): the layout above is superseded. A new item's checkout is a
+`git worktree add` of one clone per repo at `~/.mesh/repos/<owner>/<name>`,
+cloned and fetched under this ADR's lock, and the pod mounts the
+worktree's shared git dir beside it. The lock stands as it is.
+
 ## Consequences
 
 - Four items of one repo prepared at once (`TestPrepareFourItemsOfOneRepoAtOnce`)
