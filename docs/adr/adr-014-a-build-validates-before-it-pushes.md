@@ -206,6 +206,40 @@ its evaluation, the same `Runner.afterBuild`) and a rebase alike:
    recorded, refused, unsupported or failed, so the item is still this
    node's while the platform signs.
 
+**The push's token** (amended 2026-10-10, goal
+`a-build-pushes-before-it-finishes`, item 3; amends step 1). On the
+dl360 nodes most builds were refused at the push, `remote: Write access
+to repository not granted`: validation in a pod took long enough that
+the finish was reported first, and the evaluation's `Authorize` had
+rewritten the checkout's credential helper with its read token by the
+time the push ran. The finish now waits for the push (ADR-023, Decision
+2 amended 2026-10-10) and an evaluation has a checkout of its own
+(ADR-027); the push also no longer trusts whatever the helper says. The
+order of a build or a rework is **push → attest → finish**:
+
+1. **push on the claim's write token** — `Runner.pushBuild`:
+   `ItemCred.ForPush` rewrites the checkout's helper with the build's
+   own token, the one issued at claim or its `Refresh` (renewed first
+   when it is within five minutes of expiry), just before
+   `Workspacer.Push`, so a token issued afterwards — an evaluation's
+   read token — is never the one used. A push GitHub refuses for its
+   credential (`IsCredentialRefusal`, which now knows `Write access to
+   repository not granted`) is re-issued once (`ItemCred.Reissue`) and
+   tried again. Still refused, it is the build's failure, a
+   `*PushCredentialError` naming the repo, the branch and the token's
+   access as issued (`gateway.GitHubToken.Access`: the platform's
+   `access`, else its permissions' `contents`), its issue time and its
+   expiry — never the token, which is scrubbed from git's words —
+   `FailWorkItem` with it, no finish of either kind, the branch left
+   for a retry; logged `item <label>: push refused (access <a>, issued
+   <t>, expires <t>): <git's words>; not finished`. Any other failure is
+   `push <branch>: <err>`, logged `…; not finished` the same way;
+2. **attest** the pushed sha, steps 2 and 3 above;
+3. **finish** — `FinishWorkItem` on the sha the push returned, logged
+   `item <label>: pushed <sha>; finished <branch> ($x)` (read by `mesh
+   node usage` as a build's end, as the old `finished <branch>@<sha>`
+   line still is).
+
 **The newer-head answer, once.** A refusal naming another head, `<sha>
 is not the head of <branch> (GitHub has X)` — another push landed on the
 branch after this one — is answered once (`answerNewerHead`): fetch X

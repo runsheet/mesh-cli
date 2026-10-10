@@ -84,7 +84,7 @@ var (
 	usageRecordLine = regexp.MustCompile(`^(.+?): usage ([a-z]+) (?:priority=(\S+) evaluators=(\d+) )?(\{.*)$`)
 	// sessionEndLine is a labelled session's end with its cost:
 	// finished (build), evaluation, rebased.
-	sessionEndLine = regexp.MustCompile(`^(item \S+): (finished|evaluation|rebased) .*?\(\$(\d+\.\d\d)\)`)
+	sessionEndLine = regexp.MustCompile(`^(item \S+): (?:pushed \S+; )?(finished|evaluation|rebased) .*?\(\$(\d+\.\d\d)\)`)
 )
 
 var sessionEndKind = map[string]string{"finished": "build", "evaluation": "evaluate", "rebased": "rebase"}

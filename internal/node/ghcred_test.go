@@ -73,7 +73,7 @@ func TestRunnerRetriesAFetchRefusedOnceWithAFreshToken(t *testing.T) {
 	if tg.Issued() != 2 {
 		t.Fatalf("IssueItemRepoToken called %d times, want 2", tg.Issued())
 	}
-	if got := strings.Join(fws.Events(), ","); got != "authorize ghs_first,prepare refused,authorize ghs_second,prepare,push" {
+	if got := strings.Join(fws.Events(), ","); got != "authorize ghs_first,prepare refused,authorize ghs_second,prepare,authorize ghs_second,push" {
 		t.Fatalf("workspace events = %s", got)
 	}
 	if tok, _ := envOf(h.jobs[0].Env, "GH_TOKEN"); tok != "ghs_second" {
@@ -217,6 +217,7 @@ func TestIsCredentialRefusal(t *testing.T) {
 		"fatal: unable to access 'https://github.com/acme/widgets.git/': The requested URL returned error: 401":     true,
 		"remote: Invalid username or password.\nfatal: Authentication failed for 'https://github.com/acme/widgets'": true,
 		"HTTP 403: Resource not accessible by integration":                                                          true,
+		"git push -u --force-with-lease origin mesh/g-1: remote: Write access to repository not granted.":           true,
 		"git checkout --quiet -B mesh/x origin/main: exit status 128: fatal: invalid reference: origin/main":        false,
 		"no base ref and no origin default branch: exit status 1":                                                   false,
 		"git fetch: exit status 128: fatal: bad object 4031abc":                                                     false,
