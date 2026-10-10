@@ -66,10 +66,12 @@ func TestReferenceReleaseRefused(t *testing.T) {
 			p.Identities = other.Identities
 		}, ErrIdentity, "not signed by release-tag.yml"},
 		{"another workflow's identity", func(rel *Release, p *Policy) {
-			p.Identities = []string{strings.Replace(PreTransferIdentityPrefix, "release-tag.yml", "cli-release.yml", 1) + referenceTag}
+			p.Identities = []Identity{{Issuer: Issuer, SAN: strings.Replace(PreTransferIdentityPrefix, "release-tag.yml", "cli-release.yml", 1) + referenceTag}}
 		}, ErrIdentity, "not signed by release-tag.yml"},
 		{"another issuer", func(rel *Release, p *Policy) {
-			p.Issuer = "https://accounts.google.com"
+			for i := range p.Identities {
+				p.Identities[i].Issuer = "https://accounts.google.com"
+			}
 		}, ErrIdentity, "not signed by release-tag.yml"},
 		{"edited SHA256SUMS", func(rel *Release, p *Policy) {
 			// One hex digit of the first sum, as a swapped binary would need.

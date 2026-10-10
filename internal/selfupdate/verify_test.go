@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -83,29 +84,46 @@ func newFixtureFor(t *testing.T, testVersion string) fixture {
 
 func TestReleasePolicyIsTheWorkflowIdentity(t *testing.T) {
 	p := ReleasePolicy("v0.9.0")
-	if want := []string{"https://github.com/runsheet/mesh-cli/.github/workflows/release-tag.yml@refs/tags/v0.9.0"}; strings.Join(p.Identities, " ") != strings.Join(want, " ") {
-		t.Errorf("Identities = %q, want %q", p.Identities, want)
-	}
-	if p.Issuer != "https://token.actions.githubusercontent.com" {
-		t.Errorf("Issuer = %q", p.Issuer)
+	if len(p.Identities) == 0 || p.Identities[0] != (Identity{
+		Issuer: "https://token.actions.githubusercontent.com",
+		SAN:    "https://github.com/runsheet/mesh-cli/.github/workflows/release-tag.yml@refs/tags/v0.9.0",
+	}) {
+		t.Errorf("Identities = %q, want the Actions identity first", p.Identities)
 	}
 	if p.TrustedMaterial == nil || p.withoutSCTs {
 		t.Error("the release policy must use the public-good root and require SCTs")
 	}
 }
 
-// A tag released before the transfer is accepted under either owner's
-// release-tag.yml; every other tag under runsheet's alone.
-func TestReleasePolicyPreTransferTags(t *testing.T) {
-	p := ReleasePolicy("v0.0.0-selfupdate-test.1")
-	want := []string{
-		"https://github.com/runsheet/mesh-cli/.github/workflows/release-tag.yml@refs/tags/v0.0.0-selfupdate-test.1",
-		PreTransferIdentityPrefix + "v0.0.0-selfupdate-test.1",
+// Through ADR 017's cut-over a tag is accepted under exactly two
+// identities, each its own issuer and exact SAN: release-tag.yml's on
+// GitHub Actions and runsheet's release unit's on oidc.runsheet.dev.
+func TestReleasePolicyAcceptsTheActionsAndRunsheetIdentities(t *testing.T) {
+	p := ReleasePolicy("v0.2.300")
+	want := []Identity{
+		{Issuer: "https://token.actions.githubusercontent.com", SAN: "https://github.com/runsheet/mesh-cli/.github/workflows/release-tag.yml@refs/tags/v0.2.300"},
+		{Issuer: "https://oidc.runsheet.dev", SAN: "https://runsheet.dev/releases/runsheet/mesh-cli@refs/tags/v0.2.300"},
 	}
-	if strings.Join(p.Identities, " ") != strings.Join(want, " ") {
+	if !slices.Equal(p.Identities, want) {
 		t.Errorf("Identities = %q, want %q", p.Identities, want)
 	}
-	if got := ReleasePolicy("v0.0.0-selfupdate-test.2").Identities; len(got) != 1 || got[0] != IdentityPrefix+"v0.0.0-selfupdate-test.2" {
+}
+
+// A tag released before the transfer is accepted under either owner's
+// release-tag.yml as well as runsheet's release unit; every other tag
+// under runsheet/mesh-cli's two alone.
+func TestReleasePolicyPreTransferTags(t *testing.T) {
+	const tag = "v0.0.0-selfupdate-test.1"
+	want := []Identity{
+		{Issuer: Issuer, SAN: "https://github.com/runsheet/mesh-cli/.github/workflows/release-tag.yml@refs/tags/" + tag},
+		{Issuer: RunsheetIssuer, SAN: RunsheetIdentityPrefix + tag},
+		{Issuer: Issuer, SAN: PreTransferIdentityPrefix + tag},
+	}
+	if got := ReleasePolicy(tag).Identities; !slices.Equal(got, want) {
+		t.Errorf("Identities = %q, want %q", got, want)
+	}
+	other := "v0.0.0-selfupdate-test.2"
+	if got := ReleasePolicy(other).Identities; len(got) != 2 || got[0].SAN != IdentityPrefix+other || got[1].SAN != RunsheetIdentityPrefix+other {
 		t.Errorf("a tag outside the pre-transfer set: Identities = %q", got)
 	}
 }
@@ -157,7 +175,7 @@ func TestVerifyGoodRelease(t *testing.T) {
 func TestVerifyBinaryModeSums(t *testing.T) {
 	f := newFixture(t)
 	f.rel.Sums = bytes.ReplaceAll(f.rel.Sums, []byte("  mesh-"), []byte(" *mesh-"))
-	f.rel.Bundle = signSums(t, f.vs, f.policy.Identities[0], f.rel.Sums)
+	f.rel.Bundle = signSums(t, f.vs, f.policy.Identities[0].SAN, f.rel.Sums)
 	if err := Verify(f.rel, f.policy); err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
@@ -187,14 +205,14 @@ func TestVerifyRefuses(t *testing.T) {
 			f.rel.Bundle = signSums(t, f.vs, IdentityPrefix+"v1.2.2", f.rel.Sums)
 		}, ErrIdentity, "not signed by release-tag.yml"},
 		{"bundle from another issuer", func(t *testing.T, f *fixture) {
-			f.rel.Bundle = signSumsIssuer(t, f.vs, f.policy.Identities[0], "https://accounts.google.com", f.rel.Sums)
+			f.rel.Bundle = signSumsIssuer(t, f.vs, f.policy.Identities[0].SAN, "https://accounts.google.com", f.rel.Sums)
 		}, ErrIdentity, "not signed by release-tag.yml"},
 		{"bundle from an untrusted Sigstore", func(t *testing.T, f *fixture) {
 			other, err := ca.NewVirtualSigstore()
 			if err != nil {
 				t.Fatal(err)
 			}
-			f.rel.Bundle = signSums(t, other, f.policy.Identities[0], f.rel.Sums)
+			f.rel.Bundle = signSums(t, other, f.policy.Identities[0].SAN, f.rel.Sums)
 		}, ErrSignature, "signature does not verify"},
 		{"bundle is not a bundle", func(t *testing.T, f *fixture) {
 			f.rel.Bundle = []byte(`{"mediaType":"nope"}`)
@@ -223,5 +241,34 @@ func TestVerifyRefuses(t *testing.T) {
 				t.Errorf("Reason = %q, want it to contain %q", r, tc.reason)
 			}
 		})
+	}
+}
+
+// A tag signed by runsheet's release unit under oidc.runsheet.dev
+// verifies (ADR 017's cut-over); its SAN under the Actions issuer does not.
+func TestVerifyPlatformReleaseIdentity(t *testing.T) {
+	f := newFixtureFor(t, "v0.2.300")
+	f.rel.Bundle = signSumsIssuer(t, f.vs, RunsheetIdentityPrefix+"v0.2.300", RunsheetIssuer, f.rel.Sums)
+	if err := Verify(f.rel, f.policy); err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	f.rel.Bundle = signSumsIssuer(t, f.vs, RunsheetIdentityPrefix+"v0.2.300", Issuer, f.rel.Sums)
+	if err := Verify(f.rel, f.policy); !errors.Is(err, ErrIdentity) {
+		t.Fatalf("the platform SAN under the Actions issuer: Verify = %v, want ErrIdentity", err)
+	}
+}
+
+// Through the cut-over an Actions-signed release (release-tag.yml under
+// GitHub's issuer) still verifies under ReleasePolicy; its SAN under
+// oidc.runsheet.dev does not.
+func TestVerifyActionsReleaseUnderReleasePolicy(t *testing.T) {
+	f := newFixtureFor(t, "v0.2.300")
+	f.rel.Bundle = signSumsIssuer(t, f.vs, IdentityPrefix+"v0.2.300", Issuer, f.rel.Sums)
+	if err := Verify(f.rel, f.policy); err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	f.rel.Bundle = signSumsIssuer(t, f.vs, IdentityPrefix+"v0.2.300", RunsheetIssuer, f.rel.Sums)
+	if err := Verify(f.rel, f.policy); !errors.Is(err, ErrIdentity) {
+		t.Fatalf("the Actions SAN under the runsheet issuer: Verify = %v, want ErrIdentity", err)
 	}
 }
