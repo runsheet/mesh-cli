@@ -150,7 +150,7 @@ var unsafeName = regexp.MustCompile(`[^a-z0-9-]+`)
 // naming git's identity and the empty gh and Claude config directories
 // it is given.
 func (s *Sandbox) Open(label, kind string, git GitIdentity) (*Session, error) {
-	home, err := os.MkdirTemp(s.TempDir, "mesh-home-")
+	home, err := os.MkdirTemp(s.TempDir, HomePrefix)
 	if err != nil {
 		return nil, fmt.Errorf("sandbox: home: %w", err)
 	}
@@ -373,7 +373,7 @@ func (s *Session) createPod(ctx context.Context) (Pod, error) {
 	s.mu.Unlock()
 	pod, err := s.sb.Runtime.CreatePod(ctx, PodSpec{
 		Name:    name,
-		Labels:  map[string]string{"mesh.session": s.Label, "mesh.kind": s.Kind},
+		Labels:  map[string]string{SessionLabel: s.Label, "mesh.kind": s.Kind},
 		Image:   cfg.Image,
 		Network: cfg.Network,
 	})

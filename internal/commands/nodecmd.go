@@ -1143,6 +1143,9 @@ func runPollMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *
 	// sessions the process before this one started run on in their own
 	// units: each is taken up where it is, before anything is claimed
 	found := adoptSessions(ctx, gw, cfg, h, second, loop, runner, workRoot, fallback, accounts, logger)
+	// what sandboxed sessions of that process left — they write no state,
+	// so nothing above adopts them — is swept (ADR-007's amendment)
+	node.SweepSandbox(ctx, sessionSandbox, logger.Printf)
 	// plan and research claims it held but had not opened are taken again
 	reopenClaims(ctx, loop, workRoot, found, logger)
 	// items this node held when it last stopped are taken up again: a
@@ -1526,6 +1529,7 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 	// share what has been said once per item
 	second := codexSecondOpinion(cfg, loop, workRoot, logger)
 	found := adoptSessions(ctx, gw, cfg, oneShot, second, loop, &node.Runner{GW: gw, Harness: oneShot, WS: ws, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, Fallback: fallback, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Condition: loop.NoteCondition, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Log: logger}, workRoot, fallback, accounts, logger)
+	node.SweepSandbox(ctx, sessionSandbox, logger.Printf)
 	loop.Evaluate = evaluateWith(gw, cfg, observed(loop, logger), second, loop, workRoot, fallback, accounts, logger)
 	loop.Plan = planWith(gw, cfg, observed(loop, logger), loop, workRoot, accounts, logger)
 	loop.PlanReleased = (&node.Planner{WorkRoot: workRoot, Log: logger}).Released
