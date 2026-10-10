@@ -225,10 +225,13 @@ func SharedClonePath(reposRoot, repo string) string {
 
 // sharedClone is the clone spec's new checkout is a worktree of, or ""
 // when spec takes a clone of its own: a checkout named outright (a plan,
-// research or evaluation checkout, Path set), one with no branch, or one
-// with no repos root to keep the clone under.
+// research or evaluation checkout, Path set), one with no branch, the
+// goal doc's <goal>/0 on the base branch itself (Seq 0, Branch ==
+// BaseRef: the shared clone has the default branch checked out, and git
+// checks a branch out in one worktree only), or one with no repos root
+// to keep the clone under.
 func (g *Git) sharedClone(spec WorkspaceSpec) string {
-	if spec.Path != "" || spec.Branch == "" || spec.Repo == "" {
+	if spec.Path != "" || spec.Branch == "" || spec.Repo == "" || spec.Seq == 0 || spec.Branch == spec.BaseRef {
 		return ""
 	}
 	reposRoot := g.ReposRoot
