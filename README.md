@@ -11,19 +11,24 @@ whose console token it holds. No gRPC, no relay, no shared secret.
 
 `mesh mcp` is Mesh inside Claude Code: a stdio MCP server on your own
 login (the credential in `~/.mesh/token` — `mesh node login`'s Latchkey
-credential or an `rs_*` token). Add it once, then install the `/mesh`
-skill:
+credential or an `rs_*` token). Install it, with the `/mesh` skill:
 
 ```bash
-claude mcp add mesh -- mesh mcp
-mesh mcp install
+mesh mcp install --client claude
 ```
 
-`mesh mcp install` writes `skills/mesh/SKILL.md` to
-`$CLAUDE_CONFIG_DIR/skills/mesh/SKILL.md`, or `~/.claude/skills/mesh/SKILL.md`
-when that is unset, so Claude Code answers `/mesh`. It refuses to
-overwrite a file that differs from the one mesh-cli ships unless you
-pass `--force`.
+`mesh mcp install` writes the `mesh` server entry (`<this binary> mcp`
+over stdio) into `~/.claude.json`'s `mcpServers` and `skills/mesh/SKILL.md`
+to `$CLAUDE_CONFIG_DIR/skills/mesh/SKILL.md`, or
+`~/.claude/skills/mesh/SKILL.md` when that is unset, so Claude Code
+answers `/mesh`. `--client codex` writes `[mcp_servers.mesh]` into
+`$CODEX_HOME/config.toml` and `--client cursor` the entry in
+`~/.cursor/mcp.json`; with no `--client` it installs into every client
+it finds. Every other entry is left byte-for-byte, a config it cannot
+parse is reported and left alone, re-running changes nothing, and
+`--dry-run` prints each diff and writes nothing. It refuses to
+overwrite a skill that differs from the one mesh-cli ships unless you
+pass `--force` (docs/adr/adr-025-mesh-mcp-install-is-one-table-per-client.md).
 
 With both in place Claude Code has `mesh_goals`, `mesh_join`,
 `mesh_switch`, `mesh_status`, `mesh_progress`, `mesh_ask`,

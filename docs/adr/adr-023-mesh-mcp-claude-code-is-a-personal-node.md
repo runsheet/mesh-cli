@@ -235,6 +235,10 @@ file already there that differs from `Skill()` is left alone unless
 `claude mcp add mesh -- mesh mcp` line, so installing the tool and the
 skill is one two-line routine.
 
+Amended 2026-10-05: `mesh mcp install` is now one table of clients —
+Claude Code, Codex and Cursor — writing each one's MCP entry and
+instructions; see ADR-025 (`adr-025-mesh-mcp-install-is-one-table-per-client.md`).
+
 README's "Work a goal from Claude Code" section (the first `## ` after
 the title, from item 1) walks both lines, the checkout location, the
 personal node, pairing and the `push refused` message with one example
