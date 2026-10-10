@@ -1,5 +1,5 @@
 ---
-summary: How mesh-cli implements mesh-specs ADR 007 — internal/sandbox's Runtime (Podman, a test Fake) runs claude in a per-session pod with two mounts, an allow-listed env passed to podman by name, node.yaml's flat sandbox keys (mode, cpus, memory, pids, services_cpus, services_memory, registries, image), a mode left out following `podman --version` while an explicit on fails closed at start, a limit kill (OOM, pids, the runtime's timeout backstop) released as the node's condition with the heartbeat's reason, service sidecars started and health-checked in the session's pod before the agent (a required one failing releases the claim, an optional one is a note), the node image (images/node/Containerfile, embedded) pulled for the new version before a self-update or `mesh node update` drains — a failed pull an updateError with no drain and no swap, `sandbox.image: build` building it locally — the pod mapping the host user onto the image's declared user (`--userns keep-id:uid=<image uid>,gid=<image gid>`, 1000 when it declares none; podman 4.3 or later), and channel mode and Codex not yet sandboxed.
+summary: How mesh-cli implements mesh-specs ADR 007 — internal/sandbox's Runtime (Podman, a test Fake) runs claude in a per-session pod with two mounts, an allow-listed env passed to podman by name, node.yaml's flat sandbox keys (mode, cpus, memory, pids, services_cpus, services_memory, registries, image), a mode left out following `podman --version` while an explicit on fails closed at start, a limit kill (OOM, pids, the runtime's timeout backstop) released as the node's condition with the heartbeat's reason, service sidecars started and health-checked in the session's pod before the agent (a required one failing releases the claim, an optional one is a note), the node image (images/node/Containerfile, embedded) pulled for the new version before a self-update or `mesh node update` drains — a failed pull an updateError with no drain and no swap, `sandbox.image: build` building it locally — the pod mapping the host user onto the image's declared user (`--userns keep-id:uid=<image uid>,gid=<image gid>`, 1000 when it declares none; podman 4.3 or later), a session's HOME, pod, containers and volumes removed on every way it ends — `Session.Close` sure of the HOME (RemoveAll, then u+w, then `podman unshare rm -rf`) and logging what it could not remove — and a node start sweeping (`sandbox.Sweep`) the mesh-home dirs no running container mounts, the mesh pods with no running container and the exited mesh containers an earlier process left, and channel mode and Codex not yet sandboxed.
 status: accepted
 ---
 
@@ -231,3 +231,62 @@ user are the agent's own inside.
 keep-id's `uid=` and `gid=` options need **podman 4.3 or later**; that
 is the sandbox's floor. An older podman refuses the flag at `pod
 create`, and the session errors as a pod that cannot be made does.
+
+## Amendment — 2026-10-10 (goal a-sessions-temporary-home-is-removed-when-its-pod-ends)
+
+On the dl360 (2026-10-10) sandboxed sessions left 370 `/tmp/mesh-home-*`
+directories, 150 GB, in a day — 14 in use — and exited containers and
+pods with nothing running. "One package, one interface" said
+`Session.Close` removes anything left and the HOME; it tried, with a bare
+`os.RemoveAll` whose error was dropped, and what the agent writes into
+its HOME — Go's 0555/0444 module cache, files keep-id's mapped subuids
+own — made it fail. A node killed or restarted left the rest: a
+sandboxed session writes no session state, so adoption never sees it.
+
+- **Close is sure, and says when it is not.** `Session.Close` removes
+  every pod the session made with `Runtime.Remove` — `Podman.Remove` runs
+  `RemoveArgs`: `podman rm --force --volumes --time 5 --filter
+  pod=<pod> --filter name=^<pod>-` (the agent's and the sidecars' own
+  containers with their anonymous volumes), then `podman pod rm --force
+  --time 5 <pod>` — and the HOME with `removeHome`: `os.RemoveAll`;
+  failing that the tree made owner-writable and `RemoveAll` again;
+  failing that the runtime's new `RemoveTree`, `podman unshare rm -rf
+  <path>`, inside the node user's user namespace where the subuid-owned
+  files are its own, then the path checked gone. Close returns every
+  failure joined, and the node never drops it: `SessionPod.Close`, the
+  harness's own session (`Session.CloseAndLog`) and a validation's own
+  session log `sandbox: session <label>: close: <err>` (`CloseLine`)
+  through the node's logger (`OpenSandbox` sets `Sandbox.Logf`).
+- **Every way a session ends tears it down**, each proved by a test with
+  the `Fake` and a sandbox whose `TempDir` is the test's
+  (`internal/node/sandbox_teardown_test.go`: no `mesh-home-*` left, every
+  pod made removed): a build that finishes, an evaluation that finishes,
+  a hand-back (a required service down, released before any agent), a
+  limit kill, a drain (the node's context cancelled while the agent
+  runs), the harness's own session, and a validation that opens its own.
+- **A node start sweeps what an earlier process left.**
+  `sandbox.Sweep(ctx, rt, tempDir) (SweepResult, error)`
+  (`internal/sandbox/sweep.go`) reads the store with the Runtime's new
+  `ListContainers` (`podman ps --all --format json`, a running one's
+  host mounts from `podman container inspect`) and `ListPods` (`podman
+  pod ps --format json`) and removes, in order: every exited container of
+  a session — labelled `mesh.session`, named `mesh-…`, or in a mesh pod —
+  by `RemoveContainer` (`podman rm --force --volumes`), so its anonymous
+  volumes go; every mesh pod (labelled `mesh.session` or named `mesh-…`)
+  with no running container but its infra, by `Remove`; and every
+  `mesh-home-*` directory directly under the sandbox's `TempDir`, owned
+  by the node's user, that no running container mounts (the directory
+  or a path inside it), by `removeHome`. A HOME a running container
+  mounts — a session still running — is counted in use and never
+  touched; another node user's HOME in a shared `/tmp` is that node's
+  to sweep against its own store; a listing that fails sweeps nothing,
+  since without it a HOME in use cannot be told from a stale one.
+  `node.SweepSandbox` runs it in `mesh node start`, poll and channel
+  mode alike, after the sessions of the process before are adopted and
+  before the first tick, and logs `sandbox: swept N homes, M pods, K
+  containers at start (L homes in use)` (`SweepResult.Line`), a failed
+  removal as `sandbox: sweep at start: <err>`. `sandbox: off` sweeps
+  nothing.
+
+The hourly cron the dl360 ran in the meantime (`/etc/cron.hourly/mesh-home-sweep`)
+has the same shape and goes once this lands there.
