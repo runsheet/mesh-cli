@@ -282,6 +282,23 @@ func TestSessionCleansUp(t *testing.T) {
 	}
 }
 
+// A session names the image its agent runs, and Describe says so.
+func TestSessionNamesItsImage(t *testing.T) {
+	sb := testSandbox(t, &Fake{})
+	sb.Config.Image = "ghcr.io/runsheet/mesh-node:v0.2.335"
+	sess, err := sb.Open("ship-it/1", "build", GitIdentity{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	if got := sess.Image(); got != "ghcr.io/runsheet/mesh-node:v0.2.335" {
+		t.Fatalf("Image() = %q", got)
+	}
+	if got, want := sess.Describe(), "session ship-it/1 — image ghcr.io/runsheet/mesh-node:v0.2.335"; got != want {
+		t.Fatalf("Describe() = %q, want %q", got, want)
+	}
+}
+
 // A kill by a limit is a *LimitError; any other exit an *ExitError.
 func TestLimitKillsAreTyped(t *testing.T) {
 	l := Limits{CPUs: 2, Memory: "6g", Pids: 4096}
