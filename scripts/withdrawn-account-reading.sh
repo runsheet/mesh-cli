@@ -55,7 +55,7 @@ nearly every org this token can see) — the orgId(s) of the rows kept
 are then the orgs credentials are read for. In live mode each org's own enterprise (its
 orgIndex's enterpriseId, when the platform serves one) is read too and
 its credentials folded in, the way a node's own claim-time read does
-(gateway/credentialindex.go) -- an enterprise-scoped credential like
+(gateway/credentialindex.go) — an enterprise-scoped credential like
 `Temp - Subsciprtion` would otherwise never be matched and read
 "unknown" instead of what it really is.
 
@@ -66,7 +66,7 @@ token, else the accessToken of the Latchkey machine credential JSON
 there — the way mesh itself does. It is used as stored; this script
 never refreshes it. holdingAccounts is always asked for as `{ account
 status }`; `limits` is appended and dropped again when the platform
-refuses the field ("Cannot query field" -- it is not served on
+refuses the field ("Cannot query field" — it is not served on
 NodeIndex yet) so an older platform still reads.
 
 --fixture-dir DIR skips the network and the token entirely: it reads
@@ -74,7 +74,7 @@ NodeIndex yet) so an older platform still reads.
   DIR/node.json                 the nodeIndexs query's response
   DIR/credentials-<ORGID>.json  the credentialIndexs response for org
                                  <ORGID>, one file per org read (the
-                                 default orgs, or each --org given) --
+                                 default orgs, or each --org given) —
                                  write in whatever an enterprise's
                                  credentials would also contribute,
                                  since fixture mode does no separate
