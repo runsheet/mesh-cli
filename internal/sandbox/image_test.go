@@ -265,3 +265,42 @@ func TestImageDigest(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// ImageUser asks podman for the image's declared user and parses it as
+// uid:gid; an empty answer or a name it cannot resolve to a uid falls
+// back to DefaultImageUID for both, and a failed inspect is an error.
+func TestImageUser(t *testing.T) {
+	for _, c := range []struct {
+		name, user string
+		wantUID    int
+		wantGID    int
+	}{
+		{"uid only", "1000", 1000, 1000},
+		{"uid:gid same", "1000:1000", 1000, 1000},
+		{"uid:gid different", "1001:1002", 1001, 1002},
+		{"empty", "", DefaultImageUID, DefaultImageUID},
+		{"a name", "mesh", DefaultImageUID, DefaultImageUID},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			var got string
+			run := func(_ context.Context, name string, args ...string) ([]byte, error) {
+				got = name + " " + strings.Join(args, " ")
+				return []byte(c.user + "\n"), nil
+			}
+			uid, gid, err := ImageUser(context.Background(), run, "ghcr.io/runsheet/mesh-node:v1")
+			if err != nil || uid != c.wantUID || gid != c.wantGID {
+				t.Fatalf("ImageUser(%q) = %d, %d, %v; want %d, %d", c.user, uid, gid, err, c.wantUID, c.wantGID)
+			}
+			if got != "podman image inspect --format {{.Config.User}} ghcr.io/runsheet/mesh-node:v1" {
+				t.Fatalf("ran %q", got)
+			}
+		})
+	}
+
+	failing := func(context.Context, string, ...string) ([]byte, error) {
+		return []byte("Error: no such image"), errors.New("exit status 125")
+	}
+	if _, _, err := ImageUser(context.Background(), failing, "x"); err == nil || !strings.Contains(err.Error(), "no such image") {
+		t.Fatalf("err = %v", err)
+	}
+}
