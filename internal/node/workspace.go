@@ -230,6 +230,12 @@ func SharedClonePath(reposRoot, repo string) string {
 // BaseRef: the shared clone has the default branch checked out, and git
 // checks a branch out in one worktree only), or one with no repos root
 // to keep the clone under.
+//
+// Those stay full clones, never worktrees, so none of them asks git to
+// check out a branch another worktree holds: an evaluation's <seq>-eval
+// checks out the build's branch in a clone of its own (ADR-027), the
+// goal doc and a no-branch spec (CheckoutBase, detached) the base, and
+// a plan or research checkout stays a clone as ADR 017 §6 decides.
 func (g *Git) sharedClone(spec WorkspaceSpec) string {
 	if spec.Path != "" || spec.Branch == "" || spec.Repo == "" || spec.Seq == 0 || spec.Branch == spec.BaseRef {
 		return ""
@@ -277,6 +283,14 @@ func (g *Git) Prepare(ctx context.Context, spec WorkspaceSpec) (string, error) {
 	}
 	if err := g.baseHistory(ctx, root, key, dir, base); err != nil {
 		return "", err
+	}
+	// a rework of the same checkout — a worktree or a full clone — whose
+	// local branch is the pushed one or ahead of it keeps its unpushed
+	// commits: the push still fast-forwards (mesh ADR 017 §2)
+	if _, err := g.run(ctx, dir, "git", "merge-base", "--is-ancestor", "origin/"+spec.Branch, "refs/heads/"+spec.Branch); err == nil {
+		if _, err := g.run(ctx, dir, "git", "checkout", "--quiet", spec.Branch); err == nil {
+			return dir, nil
+		}
 	}
 	// a branch pushed by an earlier attempt (or just finished, for its
 	// evaluation) is continued, not restarted: the evaluator's notes say
