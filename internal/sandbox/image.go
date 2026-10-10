@@ -128,6 +128,19 @@ func BuildImage(ctx context.Context, run Runner, ref, version string, keep ...st
 	return img, nil
 }
 
+// PushImage builds the release's node image ref for linux/amd64 and
+// linux/arm64 into one manifest list named ref, a release unit's step 4
+// (mesh-specs ADR 017 §4, §7). It is to answer the multi-arch index's
+// digest; until the push lands it answers "" and the build's error.
+func PushImage(ctx context.Context, run Runner, ref, version string) (string, error) {
+	if out, err := run(ctx, imageBinary, "build",
+		"--platform", "linux/amd64,linux/arm64",
+		"--manifest", ref); err != nil {
+		return "", fmt.Errorf("node image %s: multi-platform build failed: %s", ref, why(out, err))
+	}
+	return "", nil
+}
+
 // ImageDigest is ref's digest as the runtime holds it (`podman image
 // inspect --format {{.Digest}}`): the runner image a sandboxed
 // validation's attestation names.

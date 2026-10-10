@@ -27,7 +27,7 @@ mesh node: 2026/09/28 11:00:00 item ship-it/1: usage evaluate {"sessionId":"s3",
 mesh node: 2026/09/28 12:00:00 goal ship-it: planned, 3 items ($0.90)
 mesh node: 2026/09/28 12:00:00 goal ship-it: usage plan {"sessionId":"s4","inputTokens":80000,"cacheReadTokens":60000,"listCostCents":90,"contextBytes":4000}
 mesh node: 2026/09/28 13:00:00 goal other: usage plan {"sessionId":"s5","inputTokens":20000,"cacheReadTokens":0,"listCostCents":10,"contextBytes":2000}
-mesh node: 2026/09/28 14:00:00 item ship-it/4: finished mesh/ship-it-4@0badf00d ($0.76)
+mesh node: 2026/09/28 14:00:00 item ship-it/4: pushed 0badf00d; finished mesh/ship-it-4 ($0.76)
 mesh node: 2026/09/28 14:00:01 usage: {"sessionId":"s6","inputTokens":7000,"cacheReadTokens":7000,"listCostCents":77}
 mesh node: 2026/09/28 15:00:00 item ship-it/3: usage build {"sessionId":"s7","inputTo
 mesh node: 2026/09/29 00:00:00 item ship-it/5: usage build {"sessionId":"s8","inputTokens":5000,"cacheReadTokens":1000,"listCostCents":5,"contextBytes":3000}

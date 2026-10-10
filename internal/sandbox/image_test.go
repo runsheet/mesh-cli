@@ -154,6 +154,22 @@ func TestBuildImageFromTheContainerfile(t *testing.T) {
 	}
 }
 
+// PushImage builds the node image for both platforms a sandboxed node
+// may run on, so the manifest list it pushes serves either.
+func TestPushImageIsMultiPlatform(t *testing.T) {
+	f := &fakeRuntime{}
+	if _, err := PushImage(context.Background(), f.run, "ghcr.io/runsheet/mesh-node:v1.2.3", "v1.2.3"); err != nil {
+		t.Fatal(err)
+	}
+	b := f.called("build")
+	if len(b) != 1 {
+		t.Fatalf("builds = %q; want one", b)
+	}
+	if !strings.Contains(b[0], "linux/amd64") || !strings.Contains(b[0], "linux/arm64") {
+		t.Errorf("build args = %q; want both linux/amd64 and linux/arm64", b[0])
+	}
+}
+
 // (d) Older mesh-node tags are removed; the new one and the one the
 // running node still uses are kept; one a container holds is said.
 func TestEnsureImagePrunesOlderTags(t *testing.T) {

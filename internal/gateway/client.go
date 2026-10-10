@@ -3411,6 +3411,12 @@ type GitHubToken struct {
 	ExpiresAt time.Time
 	// Repository is the one repo the token reaches, as owner/name.
 	Repository string
+	// Access is what the platform says the token may do on the repo
+	// (`write`, `read`), from its `access`, else its permissions'
+	// `contents`; "" when it says neither.
+	Access string
+	// IssuedAt is when the node was handed the token.
+	IssuedAt time.Time
 }
 
 // IssueItemRepoToken asks the platform for the item's GitHub token; only
@@ -3425,9 +3431,11 @@ func (c *Client) IssueItemRepoToken(ctx context.Context, itemID, nodeID string) 
 	// node id is not an argument (runsheet gateway/itemtoken.go).
 	var out struct {
 		IssueItemRepoToken *struct {
-			Token     string `json:"token"`
-			ExpiresAt string `json:"expiresAt"`
-			Repo      string `json:"repo"`
+			Token       string         `json:"token"`
+			ExpiresAt   string         `json:"expiresAt"`
+			Repo        string         `json:"repo"`
+			Access      string         `json:"access"`
+			Permissions map[string]any `json:"permissions"`
 		} `json:"issueItemRepoToken"`
 	}
 	q := `mutation($id: UUID!) { issueItemRepoToken(workItemId: $id) }`
@@ -3446,7 +3454,11 @@ func (c *Client) IssueItemRepoToken(ctx context.Context, itemID, nodeID string) 
 	if err != nil {
 		return nil, fmt.Errorf("gateway: %s: expiresAt %q: %w", field, t.ExpiresAt, err)
 	}
-	return &GitHubToken{Token: t.Token, ExpiresAt: exp, Repository: t.Repo}, nil
+	access := t.Access
+	if access == "" {
+		access, _ = t.Permissions["contents"].(string)
+	}
+	return &GitHubToken{Token: t.Token, ExpiresAt: exp, Repository: t.Repo, Access: access, IssuedAt: time.Now()}, nil
 }
 
 // PlanGitHubTokens asks the platform for a goal's plan-session GitHub
