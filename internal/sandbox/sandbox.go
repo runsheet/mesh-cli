@@ -63,7 +63,53 @@ const ToolEnvPrefix = "MESH_TOOL_"
 // BaseEnv are the variables the sandbox sets itself for every session.
 // DISABLE_AUTOUPDATER keeps claude from updating itself: the node image's
 // own ENV says so too, but --unsetenv-all drops the image's variables.
-var BaseEnv = []string{"PATH", "HOME", "LANG", "TZ", "TERM", "CLAUDE_CONFIG_DIR", "MESH_ITEM", "MESH_SESSION_KIND", "DISABLE_AUTOUPDATER"}
+// The package variables are set only when the node names its Stores.
+var BaseEnv = []string{"PATH", "HOME", "LANG", "TZ", "TERM", "CLAUDE_CONFIG_DIR", "MESH_ITEM", "MESH_SESSION_KIND", "DISABLE_AUTOUPDATER", "npm_config_store_dir", "pnpm_config_store_dir", "PNPM_HOME", "npm_config_cache"}
+
+// Stores are the node's package store and cache, one of each per node and
+// shared by every session (mesh-specs ADR 017 §3): Pnpm is pnpm's
+// content-addressable store (npm_config_store_dir, and
+// pnpm_config_store_dir for pnpm 11 on, which reads no npm_config_
+// variable and would otherwise put it under PNPM_HOME/store; PNPM_HOME,
+// its global bin dir, the same dir), Npm the npm cache
+// (npm_config_cache). Neither holds a credential. Empty is
+// none: the session installs into its throwaway HOME as before.
+//
+// Each is its own bind mount in the pod, separate from the workspace's.
+// link(2) refuses to cross mounts (EXDEV) even on one filesystem, so
+// inside a pod pnpm falls back from hardlinking to copying into
+// node_modules: what the shared store saves there is the download, not
+// the disk. Mounting a parent of both the store and the workspace would
+// let pnpm hardlink, but it would hand the session every other item's
+// worktree, which ADR 017 §2 refuses. A session on the host — one bind of
+// nothing — hardlinks from the same store.
+type Stores struct {
+	Pnpm string
+	Npm  string
+}
+
+// dirs are the stores' directories that are set.
+func (st Stores) dirs() []string {
+	var d []string
+	for _, p := range []string{st.Pnpm, st.Npm} {
+		if p != "" {
+			d = append(d, p)
+		}
+	}
+	return d
+}
+
+// Env is the stores' variables.
+func (st Stores) Env() []string {
+	var e []string
+	if st.Pnpm != "" {
+		e = append(e, "npm_config_store_dir="+st.Pnpm, "pnpm_config_store_dir="+st.Pnpm, "PNPM_HOME="+st.Pnpm)
+	}
+	if st.Npm != "" {
+		e = append(e, "npm_config_cache="+st.Npm)
+	}
+	return e
+}
 
 // Config is a node's sandbox: the image, the agent's and the services'
 // limits, the registries services may come from, and the network policy.
@@ -78,6 +124,9 @@ type Config struct {
 	// ServiceTimeout bounds the wait for the services' health checks
 	// (DefaultServiceTimeout when 0).
 	ServiceTimeout time.Duration
+	// Stores are the node's package store and cache every session
+	// installs against (ADR 017 §3).
+	Stores Stores
 }
 
 // Sandbox opens sessions on a runtime.
@@ -150,7 +199,14 @@ var unsafeName = regexp.MustCompile(`[^a-z0-9-]+`)
 // naming git's identity and the empty gh and Claude config directories
 // it is given.
 func (s *Sandbox) Open(label, kind string, git GitIdentity) (*Session, error) {
-	home, err := os.MkdirTemp(s.TempDir, "mesh-home-")
+	// the node's stores are made on first use: a bind mount's source
+	// must exist
+	for _, d := range s.Config.Stores.dirs() {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			return nil, fmt.Errorf("sandbox: package store: %w", err)
+		}
+	}
+	home, err := os.MkdirTemp(s.TempDir, HomePrefix)
 	if err != nil {
 		return nil, fmt.Errorf("sandbox: home: %w", err)
 	}
@@ -222,7 +278,8 @@ func (s *Session) ClaudeConfigDir() string { return filepath.Join(s.Home, ".clau
 func (s *Session) GHConfigDir() string { return filepath.Join(s.Home, ".config", "gh") }
 
 // Env is the pod's whole environment, built from the allow-list: the
-// sandbox's own BaseEnv, then those of jobEnv's variables AllowedEnv or
+// sandbox's own BaseEnv — the node's package stores among them, the same
+// for every session — then those of jobEnv's variables AllowedEnv or
 // ToolEnvPrefix admits — with the gh config dir moved under the HOME.
 // Nothing comes from the node's own environment.
 func (s *Session) Env(jobEnv []string) []string {
@@ -241,6 +298,7 @@ func (s *Session) Env(jobEnv []string) []string {
 		"MESH_SESSION_KIND=" + s.Kind,
 		"DISABLE_AUTOUPDATER=1",
 	}
+	out = append(out, s.sb.Config.Stores.Env()...)
 	for _, kv := range jobEnv {
 		name, _, ok := strings.Cut(kv, "=")
 		if !ok || !Allowed(name) {
@@ -274,7 +332,8 @@ func Allowed(name string) bool {
 // clone's object store), and the checkout's hooks directory, when it has
 // one, read-only. A full clone mounts no common dir; nothing else of the
 // clone — its parent, its work tree, another item's worktree — is ever
-// mounted.
+// mounted. The node's package store and cache are mounted read-write,
+// each at its own path (Stores, ADR 017 §3).
 func (s *Session) Mounts(workspace string) []Mount {
 	m := []Mount{
 		{Source: workspace, Target: workspace},
@@ -286,6 +345,9 @@ func (s *Session) Mounts(workspace string) []Mount {
 		s.sb.logf("sandbox: %v; mounting the workspace alone", err)
 	} else if common != "" {
 		m = append(m, Mount{Source: common, Target: common})
+	}
+	for _, d := range s.sb.Config.Stores.dirs() {
+		m = append(m, Mount{Source: d, Target: d})
 	}
 	// the checkout's hooks, which its core.hooksPath names (ADR-024)
 	if s.hooks != "" {
@@ -373,7 +435,7 @@ func (s *Session) createPod(ctx context.Context) (Pod, error) {
 	s.mu.Unlock()
 	pod, err := s.sb.Runtime.CreatePod(ctx, PodSpec{
 		Name:    name,
-		Labels:  map[string]string{"mesh.session": s.Label, "mesh.kind": s.Kind},
+		Labels:  map[string]string{SessionLabel: s.Label, "mesh.kind": s.Kind},
 		Image:   cfg.Image,
 		Network: cfg.Network,
 	})
@@ -420,7 +482,9 @@ func (s *Session) remove(ctx context.Context, pod Pod) {
 	}
 }
 
-// Close removes any pod still standing and the session's HOME.
+// Close removes any pod still standing — its containers and their
+// anonymous volumes with it — and the session's HOME, and returns every
+// removal that failed, joined.
 func (s *Session) Close() error {
 	s.mu.Lock()
 	pods := append([]Pod(nil), s.pods...)
@@ -433,10 +497,78 @@ func (s *Session) Close() error {
 		}
 		cancel()
 	}
-	if err := os.RemoveAll(s.Home); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := s.sb.removeHome(ctx, s.Home); err != nil {
 		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
+}
+
+// CloseLine is the log line of a session whose Close failed.
+func CloseLine(label string, err error) string {
+	return fmt.Sprintf("sandbox: session %s: close: %s", label, strings.ReplaceAll(err.Error(), "\n", "; "))
+}
+
+// CloseAndLog is Close with its error logged through the sandbox's
+// Logf as CloseLine, for a caller with nothing else to do with it.
+func (s *Session) CloseAndLog() {
+	if err := s.Close(); err != nil {
+		s.sb.logf("%s", CloseLine(s.Label, err))
+	}
+}
+
+// removeHome removes a session's HOME whatever the agent left in it:
+// a plain RemoveAll; failing that, the tree made writable (Go's module
+// cache is 0555 directories of 0444 files) and RemoveAll again; failing
+// that, the runtime's removal inside its user namespace, for files the
+// pod's mapped users own. The error names every step that failed.
+func (sb *Sandbox) removeHome(ctx context.Context, home string) error {
+	if home == "" {
+		return nil
+	}
+	err := removeAll(home)
+	if err == nil {
+		return nil
+	}
+	makeWritable(home)
+	err2 := removeAll(home)
+	if err2 == nil {
+		return nil
+	}
+	if err3 := sb.Runtime.RemoveTree(ctx, home); err3 != nil {
+		return fmt.Errorf("remove home %s: %w; in the user namespace: %w", home, err2, err3)
+	}
+	if _, err := os.Lstat(home); !os.IsNotExist(err) {
+		return fmt.Errorf("remove home %s: %w; still there after the removal in the user namespace", home, err2)
+	}
+	return nil
+}
+
+// removeAll is os.RemoveAll; tests stand in a failing one, as files a
+// subuid owns make it fail on a node.
+var removeAll = os.RemoveAll
+
+// makeWritable gives the owner write and search on every directory of
+// the tree it can reach, so its entries can be removed. What it cannot
+// change (another uid's) is left for the user namespace.
+func makeWritable(root string) {
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if d == nil || !d.IsDir() {
+			return nil
+		}
+		if info, ierr := d.Info(); ierr == nil {
+			_ = os.Chmod(path, info.Mode().Perm()|0o700)
+		}
+		if err != nil {
+			// A directory unreadable before the chmod: walk it again now.
+			if path != root {
+				makeWritable(path)
+			}
+			return filepath.SkipDir
+		}
+		return nil
+	})
 }
 
 // tailBuffer keeps the last max bytes written to it.

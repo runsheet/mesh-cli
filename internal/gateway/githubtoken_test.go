@@ -85,7 +85,11 @@ func TestIssueItemRepoTokenRefusedIsNotUnsupported(t *testing.T) {
 	if !gateway.IsRefusal(err) || gateway.IsUnsupported(err) {
 		t.Fatalf("refused: err = %v, want a refusal that is not unsupported", err)
 	}
-	// a transport failure is neither
+	// a transport failure is neither — retried as a read, for a window
+	// shortened here so the test runs fast
+	orig := gateway.ReadRetryFor
+	gateway.ReadRetryFor = 50 * time.Millisecond
+	t.Cleanup(func() { gateway.ReadRetryFor = orig })
 	f.Close()
 	_, err = gw.IssueItemRepoToken(ctx, itemID, nodeID)
 	if err == nil || gateway.IsRefusal(err) || gateway.IsUnsupported(err) {

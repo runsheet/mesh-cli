@@ -144,10 +144,35 @@ func OpenSandbox(ctx context.Context, c SandboxConfig, rt sandbox.Runtime, versi
 		return nil, &gateway.SandboxInfo{Mode: SandboxOff}, nil
 	}
 	cfg := c.Settings(version)
+	if root, err := StoreRoot(); err != nil {
+		if logf != nil {
+			logf("sandbox: no package store (%v); sessions install into their own HOME", err)
+		}
+	} else {
+		cfg.Stores = PackageStores(root)
+	}
 	if logf != nil {
 		logf("sandbox: on — %s, image %s, agent %g cpus / %s / %d pids", ver, cfg.Image, cfg.Limits.CPUs, cfg.Limits.Memory, cfg.Limits.Pids)
 	}
-	return &sandbox.Sandbox{Runtime: rt, Config: cfg}, &gateway.SandboxInfo{Mode: SandboxOn, Runtime: ver, Image: cfg.Image}, nil
+	return &sandbox.Sandbox{Runtime: rt, Config: cfg, Logf: logf}, &gateway.SandboxInfo{Mode: SandboxOn, Runtime: ver, Image: cfg.Image}, nil
+}
+
+// SweepSandbox is the sandbox's start-up sweep (ADR-007's amendment
+// 2026-10-10): run after the sessions of the process before this one are
+// adopted and before the first tick, it removes the HOMEs, pods and
+// containers sandboxed sessions left — they write no session state, so
+// adoption never sees them — keeping every HOME a running container
+// mounts, and logs one line of what it did. No sandbox sweeps nothing.
+func SweepSandbox(ctx context.Context, sb *sandbox.Sandbox, logf func(string, ...any)) sandbox.SweepResult {
+	if sb == nil || sb.Runtime == nil {
+		return sandbox.SweepResult{}
+	}
+	res, err := sandbox.Sweep(ctx, sb.Runtime, sb.TempDir)
+	if err != nil {
+		logf("sandbox: sweep at start: %s", strings.ReplaceAll(err.Error(), "\n", "; "))
+	}
+	logf("%s", res.Line())
+	return res
 }
 
 // EnsureImage makes the node image of version — the one node.yaml's

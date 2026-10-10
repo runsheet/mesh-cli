@@ -1449,3 +1449,125 @@ func TestRemoveWorkspaceRefusesTheSharedClone(t *testing.T) {
 		t.Fatalf("the shared clone: %v", err)
 	}
 }
+
+func worktreeAdds(cmds []string) int {
+	n := 0
+	for _, c := range cmds {
+		if strings.HasPrefix(c, "git worktree add ") {
+			n++
+		}
+	}
+	return n
+}
+
+// testGit runs git in dir as a committer, failing the test on an error.
+func testGit(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// A rework prepares the same item spec again: the worktree already there
+// is reused — no second `worktree add` — and a commit made in it since,
+// on top of what was pushed, is still HEAD (mesh ADR 017 §2).
+func TestPrepareReusesAnItemsWorktreeOnRework(t *testing.T) {
+	root, origin := lockTestOrigin(t)
+	g, cmds := recordingGit(filepath.Join(root, "repos"))
+	spec := WorkspaceSpec{Root: filepath.Join(root, "work"), GoalSlug: "g", Seq: 1, Repo: origin, Branch: "mesh/g-1", BaseRef: "main"}
+	dir, err := g.Prepare(context.Background(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := worktreeAdds(cmds()); n != 1 {
+		t.Fatalf("first prepare: %d worktree add(s), want 1", n)
+	}
+	testGit(t, dir, "commit", "-q", "--allow-empty", "-m", "pushed")
+	testGit(t, dir, "push", "-q", "origin", "mesh/g-1")
+	testGit(t, dir, "commit", "-q", "--allow-empty", "-m", "unpushed")
+	local := testGit(t, dir, "rev-parse", "HEAD")
+
+	before := len(cmds())
+	if got, err := g.Prepare(context.Background(), spec); err != nil || got != dir {
+		t.Fatalf("second prepare: %v %s", err, got)
+	}
+	if c := cmds()[before:]; worktreeAdds(c) != 0 {
+		t.Fatalf("second prepare added a worktree:\n%s", strings.Join(c, "\n"))
+	}
+	if head := testGit(t, dir, "rev-parse", "HEAD"); head != local {
+		t.Fatalf("HEAD %s, want the unpushed commit %s", head, local)
+	}
+	if b := testGit(t, dir, "branch", "--show-current"); b != "mesh/g-1" {
+		t.Fatalf("branch %s", b)
+	}
+}
+
+// A full clone from before the upgrade at the item's directory is
+// fetched and checked out as before: no `worktree add`, and it ends on
+// the item's branch (mesh ADR 017 §5).
+func TestPrepareAFullCloneAddsNoWorktree(t *testing.T) {
+	root, origin := lockTestOrigin(t)
+	g, cmds := recordingGit(filepath.Join(root, "repos"))
+	spec := WorkspaceSpec{Root: filepath.Join(root, "work"), GoalSlug: "g", Seq: 1, Repo: origin, Branch: "mesh/g-1", BaseRef: "main"}
+	testGit(t, root, "clone", "-q", origin, spec.Dir())
+	if _, err := g.Prepare(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if c := cmds(); worktreeAdds(c) != 0 {
+		t.Fatalf("a full clone was given a worktree:\n%s", strings.Join(c, "\n"))
+	}
+	if b := testGit(t, spec.Dir(), "branch", "--show-current"); b != "mesh/g-1" {
+		t.Fatalf("branch %s, want mesh/g-1", b)
+	}
+	if fi, err := os.Stat(filepath.Join(spec.Dir(), ".git")); err != nil || !fi.IsDir() {
+		t.Fatalf("the full clone's .git: %v", err)
+	}
+}
+
+// With an item's worktree on branch B, an evaluation's checkout of B
+// (EvalWorkspaceSpec, ADR-027) and a spec with no branch prepare
+// without error — neither asks git for a branch another worktree holds,
+// each its own clone — and the item's worktree stays on B. A plan's
+// checkout stays a clone too (ADR 017 §6).
+func TestPrepareEvalAndBaseCheckoutsBesideAWorktree(t *testing.T) {
+	root, origin := lockTestOrigin(t)
+	work := filepath.Join(root, "work")
+	g, _ := recordingGit(filepath.Join(root, "repos"))
+	item := WorkspaceSpec{Root: work, GoalSlug: "g", Seq: 1, Repo: origin, Branch: "mesh/g-1", BaseRef: "main"}
+	dir, err := g.Prepare(context.Background(), item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	testGit(t, dir, "commit", "-q", "--allow-empty", "-m", "built")
+	testGit(t, dir, "push", "-q", "origin", "mesh/g-1")
+	built := testGit(t, dir, "rev-parse", "HEAD")
+
+	eval := EvalWorkspaceSpec(work, "g", 1, origin, "mesh/g-1", "main")
+	evalDir, err := g.Prepare(context.Background(), eval)
+	if err != nil {
+		t.Fatalf("prepare the evaluation's checkout: %v", err)
+	}
+	if head := testGit(t, evalDir, "rev-parse", "HEAD"); head != built {
+		t.Fatalf("evaluation HEAD %s, want the build's %s", head, built)
+	}
+	base := WorkspaceSpec{Root: work, GoalSlug: "g", Seq: 2, Repo: origin, BaseRef: "main"}
+	if _, err := g.Prepare(context.Background(), base); err != nil {
+		t.Fatalf("prepare the no-branch checkout: %v", err)
+	}
+	if b := testGit(t, dir, "branch", "--show-current"); b != "mesh/g-1" {
+		t.Fatalf("the item's worktree is on %q, want mesh/g-1", b)
+	}
+
+	plan := PlanRepoSpec(origin, filepath.Join(root, "plan", "repos", "origin"))
+	if _, err := g.Prepare(context.Background(), plan); err != nil {
+		t.Fatalf("prepare the plan's checkout: %v", err)
+	}
+	if fi, err := os.Stat(filepath.Join(plan.Dir(), ".git")); err != nil || !fi.IsDir() {
+		t.Fatalf("the plan checkout's .git is not a directory: %v", err)
+	}
+}
