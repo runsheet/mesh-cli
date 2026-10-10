@@ -625,7 +625,7 @@ func TestPrepareFourItemsOfOneRepoAtOnce(t *testing.T) {
 	for seq := 1; seq <= 4; seq++ {
 		specs = append(specs, WorkspaceSpec{Root: root, GoalSlug: "g", Seq: seq, Repo: origin, Branch: BranchName("g", seq), BaseRef: "main"})
 	}
-	for round := 0; round < 2; round++ { // a clone each, then a fetch each
+	for round := 0; round < 2; round++ { // a worktree each of one clone, then a fetch each
 		for i, err := range prepareAtOnce(specs) {
 			if err != nil {
 				t.Fatalf("round %d: prepare seq %d: %v", round, i+1, err)
@@ -634,7 +634,7 @@ func TestPrepareFourItemsOfOneRepoAtOnce(t *testing.T) {
 	}
 	for _, spec := range specs {
 		if _, err := os.Stat(filepath.Join(spec.Dir(), ".git")); err != nil {
-			t.Fatalf("seq %d: no clone of its own: %v", spec.Seq, err)
+			t.Fatalf("seq %d: no checkout of its own: %v", spec.Seq, err)
 		}
 	}
 }
@@ -997,5 +997,338 @@ func TestEvaluationLeavesTheBuildsCredentialHelper(t *testing.T) {
 	}
 	if got := must(root, "", "--git-dir", bare, "rev-parse", branch); got != sha {
 		t.Fatalf("pushed %s, origin has %s", sha, got)
+	}
+}
+
+// Two items of one repo prepared in turn share one clone under
+// ReposRoot: one `gh repo clone`, two `git worktree add`, and each item's
+// directory a worktree — its `.git` a file — on its own branch
+// (mesh ADR 017).
+func TestPrepareTwoItemsOfOneRepoAreWorktreesOfOneClone(t *testing.T) {
+	root, origin := lockTestOrigin(t)
+	work, repos := filepath.Join(root, "work"), filepath.Join(root, "repos")
+	var mu sync.Mutex
+	var cmds []string
+	g := &Git{ReposRoot: repos}
+	g.exec = func(ctx context.Context, dir, name string, args ...string) (string, error) {
+		mu.Lock()
+		cmds = append(cmds, name+" "+strings.Join(args, " "))
+		mu.Unlock()
+		return g.realRun(ctx, dir, name, args...)
+	}
+	clone := SharedClonePath(repos, origin)
+	for seq := 1; seq <= 2; seq++ {
+		spec := WorkspaceSpec{Root: work, GoalSlug: "g", Seq: seq, Repo: origin, Branch: BranchName("g", seq), BaseRef: "main"}
+		dir, err := g.Prepare(context.Background(), spec)
+		if err != nil || dir != spec.Dir() {
+			t.Fatalf("prepare seq %d: %v %s", seq, err, dir)
+		}
+		fi, err := os.Stat(filepath.Join(dir, ".git"))
+		if err != nil || fi.IsDir() {
+			t.Fatalf("seq %d: .git is not a file: %v", seq, err)
+		}
+		out, err := exec.Command("git", "-C", dir, "branch", "--show-current").Output()
+		if err != nil || strings.TrimSpace(string(out)) != spec.Branch {
+			t.Fatalf("seq %d: branch %q, want %s: %v", seq, out, spec.Branch, err)
+		}
+		common, err := exec.Command("git", "-C", dir, "rev-parse", "--path-format=absolute", "--git-common-dir").Output()
+		if err != nil || strings.TrimSpace(string(common)) != filepath.Join(clone, ".git") {
+			t.Fatalf("seq %d: common dir %q, want the clone's %s: %v", seq, common, clone, err)
+		}
+	}
+	entries, err := os.ReadDir(repos)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("clones under ReposRoot: %v %v, want one", entries, err)
+	}
+	if fi, err := os.Stat(filepath.Join(clone, ".git")); err != nil || !fi.IsDir() {
+		t.Fatalf("the shared clone %s: %v", clone, err)
+	}
+	clones, adds := 0, 0
+	for _, c := range cmds {
+		if strings.HasPrefix(c, "gh repo clone ") {
+			clones++
+		}
+		if strings.HasPrefix(c, "git worktree add ") {
+			adds++
+		}
+	}
+	if clones != 1 || adds != 2 {
+		t.Fatalf("%d clone(s) and %d worktree add(s), want 1 and 2:\n%s", clones, adds, strings.Join(cmds, "\n"))
+	}
+}
+
+// An ended goal's doc checkout, <goal>/0 on the base branch itself
+// (RecordEndedGoal's spec), stays off the worktree path: the shared clone
+// has the base checked out, and git refuses a branch in two worktrees.
+// It is prepared as its own clone after an item's worktree exists.
+func TestPrepareGoalDocAfterAWorktreeIsItsOwnClone(t *testing.T) {
+	root, origin := lockTestOrigin(t)
+	work, repos := filepath.Join(root, "work"), filepath.Join(root, "repos")
+	g := &Git{ReposRoot: repos}
+	item := WorkspaceSpec{Root: work, GoalSlug: "g", Seq: 1, Repo: origin, Branch: BranchName("g", 1), BaseRef: "main"}
+	if _, err := g.Prepare(context.Background(), item); err != nil {
+		t.Fatalf("prepare item: %v", err)
+	}
+	doc := WorkspaceSpec{Root: work, GoalSlug: "g", Seq: 0, Repo: origin, Branch: "main", BaseRef: "main"}
+	dir, err := g.Prepare(context.Background(), doc)
+	if err != nil || dir != doc.Dir() {
+		t.Fatalf("prepare the goal doc's checkout: %v %s", err, dir)
+	}
+	if fi, err := os.Stat(filepath.Join(dir, ".git")); err != nil || !fi.IsDir() {
+		t.Fatalf("<goal>/0's .git is not a clone's directory: %v", err)
+	}
+	out, err := exec.Command("git", "-C", dir, "branch", "--show-current").Output()
+	if err != nil || strings.TrimSpace(string(out)) != "main" {
+		t.Fatalf("<goal>/0 on %q, want main: %v", out, err)
+	}
+	list, err := exec.Command("git", "-C", SharedClonePath(repos, origin), "worktree", "list").Output()
+	if err != nil || strings.Contains(string(list), doc.Dir()) {
+		t.Fatalf("the shared clone's worktrees name <goal>/0: %s %v", list, err)
+	}
+}
+
+// A new item whose branch an earlier attempt pushed is a worktree on
+// origin/<branch>, continued, not restarted onto the base.
+func TestPrepareWorktreeContinuesAPushedBranch(t *testing.T) {
+	root, origin := lockTestOrigin(t)
+	seed := filepath.Join(root, "seed")
+	for _, args := range [][]string{{"commit", "-q", "--allow-empty", "-m", "earlier attempt"}, {"push", "-q", "origin", "HEAD:mesh/g-1"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = seed
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	pushed, _ := exec.Command("git", "-C", seed, "rev-parse", "HEAD").Output()
+	spec := WorkspaceSpec{Root: filepath.Join(root, "work"), GoalSlug: "g", Seq: 1, Repo: origin, Branch: "mesh/g-1", BaseRef: "main"}
+	dir, err := (&Git{}).Prepare(context.Background(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head, _ := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
+	if strings.TrimSpace(string(head)) != strings.TrimSpace(string(pushed)) {
+		t.Fatalf("head %s, want the pushed %s", head, pushed)
+	}
+}
+
+// Every clone and fetch of the shared clone runs while the repo's lock
+// is held: both halves of it — the process's mutex and the flock on
+// <root>/.locks/<key>.lock — are taken when the command starts.
+func TestSharedCloneIsClonedAndFetchedUnderTheRepoLock(t *testing.T) {
+	root, origin := lockTestOrigin(t)
+	work, repos := filepath.Join(root, "work"), filepath.Join(root, "repos")
+	clone := SharedClonePath(repos, origin)
+	key := RepoLockKey(origin)
+	lockPath := RepoLockPath(work, key)
+	g := &Git{ReposRoot: repos}
+	var onClone []string
+	g.exec = func(ctx context.Context, dir, name string, args ...string) (string, error) {
+		cmd := name + " " + strings.Join(args, " ")
+		cloning := name == "gh" && len(args) > 0 && args[0] == "repo"
+		fetching := name == "git" && len(args) > 0 && args[0] == "fetch" && dir == clone
+		if cloning || fetching {
+			onClone = append(onClone, cmd)
+			v, ok := repoLocks.Load(key)
+			if !ok || v.(*sync.Mutex).TryLock() {
+				t.Errorf("%s ran without the process's repo mutex", cmd)
+				if ok {
+					v.(*sync.Mutex).Unlock()
+				}
+			}
+			f, err := os.OpenFile(lockPath, os.O_RDWR, 0)
+			if err != nil {
+				t.Errorf("%s ran with no lock file: %v", cmd, err)
+			} else {
+				if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err == nil {
+					t.Errorf("%s ran without the repo's flock", cmd)
+					syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+				}
+				f.Close()
+			}
+		}
+		return g.realRun(ctx, dir, name, args...)
+	}
+	for seq := 1; seq <= 2; seq++ {
+		spec := WorkspaceSpec{Root: work, GoalSlug: "g", Seq: seq, Repo: origin, Branch: BranchName("g", seq), BaseRef: "main"}
+		if _, err := g.Prepare(context.Background(), spec); err != nil {
+			t.Fatalf("prepare seq %d: %v", seq, err)
+		}
+	}
+	if len(onClone) != 2 || !strings.HasPrefix(onClone[0], "gh repo clone") || !strings.HasPrefix(onClone[1], "git fetch --prune origin") {
+		t.Fatalf("commands on the shared clone = %q, want its clone then its fetch", onClone)
+	}
+	f, err := os.OpenFile(lockPath, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatalf("the repo lock is still held after Prepare: %v", err)
+	}
+	syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+}
+
+// A legacy full clone already at the item's directory is used as it is:
+// fetched in place, no shared clone made, its `.git` still a directory.
+func TestPrepareKeepsAFullCloneAlreadyThere(t *testing.T) {
+	root, origin := lockTestOrigin(t)
+	work, repos := filepath.Join(root, "work"), filepath.Join(root, "repos")
+	spec := WorkspaceSpec{Root: work, GoalSlug: "g", Seq: 1, Repo: origin, Branch: "mesh/g-1", BaseRef: "main"}
+	if out, err := exec.Command("git", "clone", "-q", origin, spec.Dir()).CombinedOutput(); err != nil {
+		t.Fatalf("clone: %v: %s", err, out)
+	}
+	if _, err := (&Git{ReposRoot: repos}).Prepare(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Stat(filepath.Join(spec.Dir(), ".git")); err != nil || !fi.IsDir() {
+		t.Fatalf("the full clone's .git: %v", err)
+	}
+	if _, err := os.Stat(repos); !os.IsNotExist(err) {
+		t.Fatalf("a shared clone was made for a full clone already there: %v", err)
+	}
+}
+
+// recordingGit is a Git on repos whose every command is recorded.
+func recordingGit(repos string) (*Git, func() []string) {
+	var mu sync.Mutex
+	var cmds []string
+	g := &Git{ReposRoot: repos}
+	g.exec = func(ctx context.Context, dir, name string, args ...string) (string, error) {
+		mu.Lock()
+		cmds = append(cmds, name+" "+strings.Join(args, " "))
+		mu.Unlock()
+		return g.realRun(ctx, dir, name, args...)
+	}
+	return g, func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), cmds...)
+	}
+}
+
+// RemoveWorkspace on one of two worktrees removes it by `git worktree
+// remove --force` and `git worktree prune`: its directory is gone and
+// unlisted, the other worktree still works, the shared clone stays
+// (mesh ADR 017).
+func TestRemoveWorkspaceRemovesOneWorktreeNeverTheClone(t *testing.T) {
+	root, origin := lockTestOrigin(t)
+	work, repos := filepath.Join(root, "work"), filepath.Join(root, "repos")
+	g, cmds := recordingGit(repos)
+	clone := SharedClonePath(repos, origin)
+	var dirs []string
+	for seq := 1; seq <= 2; seq++ {
+		spec := WorkspaceSpec{Root: work, GoalSlug: "g", Seq: seq, Repo: origin, Branch: BranchName("g", seq), BaseRef: "main"}
+		dir, err := g.Prepare(context.Background(), spec)
+		if err != nil {
+			t.Fatalf("prepare seq %d: %v", seq, err)
+		}
+		dirs = append(dirs, dir)
+	}
+	if err := g.RemoveWorkspace(context.Background(), dirs[0]); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if _, err := os.Stat(dirs[0]); !os.IsNotExist(err) {
+		t.Fatalf("the removed worktree %s is still there: %v", dirs[0], err)
+	}
+	if fi, err := os.Stat(filepath.Join(clone, ".git")); err != nil || !fi.IsDir() {
+		t.Fatalf("the shared clone's .git: %v", err)
+	}
+	list, err := exec.Command("git", "-C", clone, "worktree", "list").Output()
+	if err != nil || strings.Contains(string(list), dirs[0]) || !strings.Contains(string(list), dirs[1]) {
+		t.Fatalf("worktree list names the removed one or lost the other: %s %v", list, err)
+	}
+	if out, err := exec.Command("git", "-C", dirs[1], "status", "--short").CombinedOutput(); err != nil {
+		t.Fatalf("the other worktree: %v: %s", err, out)
+	}
+	out, err := exec.Command("git", "-C", dirs[1], "branch", "--show-current").Output()
+	if err != nil || strings.TrimSpace(string(out)) != BranchName("g", 2) {
+		t.Fatalf("the other worktree on %q: %v", out, err)
+	}
+	var removed, pruned bool
+	for _, c := range cmds() {
+		if c == "git worktree remove --force "+dirs[0] {
+			removed = true
+		}
+		if removed && c == "git worktree prune" {
+			pruned = true
+		}
+	}
+	if !removed || !pruned {
+		t.Fatalf("commands lack worktree remove --force then prune:\n%s", strings.Join(cmds(), "\n"))
+	}
+}
+
+// A worktree removed by hand — a sweep interrupted after its rm — is
+// pruned by RemoveWorkspace, so the same branch prepares again.
+func TestRemoveWorkspaceAfterAnInterruptedSweep(t *testing.T) {
+	root, origin := lockTestOrigin(t)
+	work, repos := filepath.Join(root, "work"), filepath.Join(root, "repos")
+	g, cmds := recordingGit(repos)
+	spec := WorkspaceSpec{Root: work, GoalSlug: "g", Seq: 1, Repo: origin, Branch: BranchName("g", 1), BaseRef: "main"}
+	dir, err := g.Prepare(context.Background(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.RemoveWorkspace(context.Background(), dir); err != nil {
+		t.Fatalf("remove after the rm: %v", err)
+	}
+	pruned := false
+	for _, c := range cmds() {
+		if c == "git worktree prune" {
+			pruned = true
+		}
+	}
+	if !pruned {
+		t.Fatalf("no worktree prune:\n%s", strings.Join(cmds(), "\n"))
+	}
+	list, _ := exec.Command("git", "-C", SharedClonePath(repos, origin), "worktree", "list").Output()
+	if strings.Contains(string(list), dir) {
+		t.Fatalf("the removed worktree is still registered: %s", list)
+	}
+	// listed above even while prunable: its absence is the prune
+	if _, err := g.Prepare(context.Background(), spec); err != nil {
+		t.Fatalf("prepare the same branch again: %v", err)
+	}
+	out, err := exec.Command("git", "-C", dir, "branch", "--show-current").Output()
+	if err != nil || strings.TrimSpace(string(out)) != spec.Branch {
+		t.Fatalf("prepared again on %q: %v", out, err)
+	}
+}
+
+// A full clone from before the shared clone is removed outright.
+func TestRemoveWorkspaceRemovesAFullClone(t *testing.T) {
+	root, origin := lockTestOrigin(t)
+	work, repos := filepath.Join(root, "work"), filepath.Join(root, "repos")
+	dir := filepath.Join(work, "g", "1")
+	if out, err := exec.Command("git", "clone", "-q", origin, dir).CombinedOutput(); err != nil {
+		t.Fatalf("clone: %v: %s", err, out)
+	}
+	if err := (&Git{ReposRoot: repos}).RemoveWorkspace(context.Background(), dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("the full clone is still there: %v", err)
+	}
+}
+
+// RemoveWorkspace refuses the shared clone itself.
+func TestRemoveWorkspaceRefusesTheSharedClone(t *testing.T) {
+	root, origin := lockTestOrigin(t)
+	work, repos := filepath.Join(root, "work"), filepath.Join(root, "repos")
+	g := &Git{ReposRoot: repos}
+	spec := WorkspaceSpec{Root: work, GoalSlug: "g", Seq: 1, Repo: origin, Branch: BranchName("g", 1), BaseRef: "main"}
+	if _, err := g.Prepare(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	clone := SharedClonePath(repos, origin)
+	if err := g.RemoveWorkspace(context.Background(), clone); err == nil {
+		t.Fatal("removed the shared clone")
+	}
+	if _, err := os.Stat(filepath.Join(clone, ".git")); err != nil {
+		t.Fatalf("the shared clone: %v", err)
 	}
 }

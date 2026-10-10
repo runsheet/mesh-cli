@@ -45,8 +45,13 @@ func RepoLockKey(repo string) string {
 // owner--name.lock; any other key is made a file name by the same rule,
 // its separators and colons replaced.
 func RepoLockPath(root, key string) string {
-	name := strings.NewReplacer("/", "--", "\\", "--", ":", "_").Replace(strings.Trim(key, "/"))
-	return filepath.Join(root, LocksDir, name+".lock")
+	return filepath.Join(root, LocksDir, repoFileName(key)+".lock")
+}
+
+// repoFileName is key made one file name: its separators and colons
+// replaced, owner/name becoming owner--name.
+func repoFileName(key string) string {
+	return strings.NewReplacer("/", "--", "\\", "--", ":", "_").Replace(strings.Trim(key, "/"))
 }
 
 // lockRoot is the root the lock files of dir's repo live under:
@@ -158,7 +163,14 @@ func (g *Git) fetchLocked(ctx context.Context, root, key, dir, name string, args
 		return "", err
 	}
 	defer unlock()
+	return g.fetchRetrying(ctx, key, dir, name, args...)
+}
+
+// fetchRetrying is fetchLocked's body, for a caller already holding the
+// per-repo lock of key: the command run with the ref-lock retry.
+func (g *Git) fetchRetrying(ctx context.Context, key, dir, name string, args ...string) (string, error) {
 	var out string
+	var err error
 	var lastErr error
 	fails := 0
 	for attempt := 1; attempt <= refLockRetries; attempt++ {
