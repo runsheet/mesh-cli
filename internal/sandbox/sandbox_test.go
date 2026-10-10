@@ -245,6 +245,11 @@ func TestAgentEnvIsTheAllowList(t *testing.T) {
 	}
 }
 
+// TestPodmanEnvKeepsTheNodesPassthrough pins the rule from both sides
+// (ADR-007, Env by name): a container env with HOME=/tmp/x against a
+// node env with HOME=/home/node leaves podman's own HOME=/home/node,
+// while AgentRunArgs and SidecarRunArgs give the container
+// `--env HOME=/tmp/x` and a non-passthrough name a bare `--env NAME`.
 func TestPodmanEnvKeepsTheNodesPassthrough(t *testing.T) {
 	node := []string{"HOME=/home/node", "USER=node", "XDG_RUNTIME_DIR=/run/user/1000", "CONTAINERS_STORAGE_CONF=/etc/s.conf", "PATH=/usr/bin"}
 	for _, name := range []string{"HOME", "USER", "XDG_RUNTIME_DIR", "CONTAINERS_STORAGE_CONF"} {
@@ -276,7 +281,7 @@ func TestPodmanEnvKeepsTheNodesPassthrough(t *testing.T) {
 			t.Fatalf("args = %s", args)
 		}
 		sargs := strings.Join(SidecarRunArgs(Pod{Name: "p"}, SidecarSpec{Name: "s", Image: "img", Env: container}), " ")
-		if !strings.Contains(sargs, "--env "+name+"=/tmp/x") || strings.Contains(sargs, "GH_TOKEN=") {
+		if !strings.Contains(sargs, "--env "+name+"=/tmp/x") || !strings.Contains(sargs, "--env GH_TOKEN ") || strings.Contains(sargs, "GH_TOKEN=") {
 			t.Fatalf("sidecar args = %s", sargs)
 		}
 	}
