@@ -116,25 +116,32 @@ func TestBuildFailsOnTheMeshFailCall(t *testing.T) {
 	}
 }
 
-// stateRefusingGW refuses the node's own finish the way the platform
-// does once the hosted mesh_finish moved the item to evaluating.
+// stateRefusingGW refuses the node's finish for the item's state.
 type stateRefusingGW struct{ Gateway }
 
 func (stateRefusingGW) FinishWorkItem(context.Context, string, string, string, int, *gateway.UsageReport, ...string) error {
 	return &gateway.Error{Message: "finishWorkItem: item is evaluating, not running"}
 }
 
-// The platform's hosted tool already handed the item in: the node's
-// refused finish is no failure.
-func TestBuildFinishedByToolCallOnThePlatform(t *testing.T) {
-	_, fails, pushed, logs := runFinish(t, harness.Result{Success: true, WorkCalls: map[string]map[string]any{
+// The session's mesh_finish is the node's own and records nothing, so a
+// refusal of the node's finish after one is the finish's error, never
+// taken for a finish the platform already has (ADR-023 Decision 2).
+func TestBuildRefusedFinishAfterTheCallIsAnError(t *testing.T) {
+	f := seed(t)
+	r, ws, item, _ := runnerOnFake(t, f, &resultHarness{result: harness.Result{Success: true, WorkCalls: map[string]map[string]any{
 		"mesh_finish": {"item_id": item1, "branch": "mesh/g-1", "head_sha": "abc123def456"},
-	}}, func(g Gateway) Gateway { return stateRefusingGW{g} })
-	if len(pushed) != 1 || fails != 0 {
-		t.Fatalf("pushed %v, fails %d", pushed, fails)
+	}}}, func(g Gateway) Gateway { return stateRefusingGW{g} })
+	logs := &syncBuf{}
+	r.Log = log.New(logs, "", 0)
+	err := r.RunItem(context.Background(), item)
+	if err == nil || !strings.Contains(err.Error(), "item is evaluating") {
+		t.Fatalf("RunItem = %v, want the refused finish", err)
 	}
-	if !strings.Contains(logs, "finished by tool call on the platform") {
-		t.Fatalf("logs lack the tool-call finish:\n%s", logs)
+	if len(ws.pushed) != 1 {
+		t.Fatalf("pushed %v", ws.pushed)
+	}
+	if strings.Contains(logs.String(), "finished by tool call on the platform") {
+		t.Fatalf("a refused finish was taken for the hosted tool's:\n%s", logs)
 	}
 }
 
