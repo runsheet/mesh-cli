@@ -28,6 +28,12 @@ func TestSandboxImageBuildRunsPodmanBuild(t *testing.T) {
 	if img.Ref == "" {
 		t.Fatalf("Image.Ref = %q; want the built image's ref", img.Ref)
 	}
+	if !img.Built {
+		t.Fatalf("Image.Built = false; want true for sandbox.image: build (img=%+v)", img)
+	}
+	if img.Pulled {
+		t.Fatalf("Image.Pulled = true; want false for sandbox.image: build (img=%+v)", img)
+	}
 	if b := r.sub("build"); len(b) != 1 {
 		t.Fatalf("builds = %q; want exactly one podman build", b)
 	}
