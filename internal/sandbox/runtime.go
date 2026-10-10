@@ -106,8 +106,14 @@ type Runtime interface {
 	// ProbeTCP connects to 127.0.0.1:port inside the pod, from a
 	// short-lived container of image; an error is nothing listening.
 	ProbeTCP(ctx context.Context, pod Pod, image string, port int) error
-	// Remove removes the pod and every container in it.
+	// Remove removes the pod, every container in it and the containers'
+	// anonymous volumes.
 	Remove(ctx context.Context, pod Pod) error
+	// RemoveTree removes path from inside the runtime's user namespace,
+	// where files the pod's mapped users own are the node user's to
+	// remove: the last resort for a session HOME the agent left that
+	// the node cannot remove itself.
+	RemoveTree(ctx context.Context, path string) error
 }
 
 // LimitError is a session killed by its sandbox's limits — memory,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"sync"
 )
@@ -21,6 +22,11 @@ type Fake struct {
 	Sidecars   []SidecarSpec
 	Removed    []string
 	Calls      []string
+	// Trees are the paths RemoveTree was asked to remove.
+	Trees []string
+	// RemoveErr fails Remove; RemoveTreeErr fails RemoveTree.
+	RemoveErr     error
+	RemoveTreeErr error
 	// Agent is the agent's container: it gets the spec and returns the
 	// exit (nil: exit 0, nothing written).
 	Agent func(ctx context.Context, spec AgentSpec) (Exit, error)
@@ -126,5 +132,18 @@ func (f *Fake) Remove(_ context.Context, pod Pod) error {
 	f.mu.Lock()
 	f.Removed = append(f.Removed, pod.Name)
 	f.mu.Unlock()
-	return nil
+	return f.RemoveErr
+}
+
+// RemoveTree implements Runtime: it records the path and removes it as
+// the node user can, unless RemoveTreeErr fails it.
+func (f *Fake) RemoveTree(_ context.Context, path string) error {
+	f.call("remove-tree " + path)
+	f.mu.Lock()
+	f.Trees = append(f.Trees, path)
+	f.mu.Unlock()
+	if f.RemoveTreeErr != nil {
+		return f.RemoveTreeErr
+	}
+	return os.RemoveAll(path)
 }

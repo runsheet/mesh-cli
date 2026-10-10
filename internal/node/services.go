@@ -18,6 +18,8 @@ import (
 type SessionPod struct {
 	Session  *sandbox.Session
 	Statuses []sandbox.ServiceStatus
+	// logf is the node's log, where a Close that fails says so.
+	logf func(string, ...any)
 }
 
 // OpenSessionPod resolves the services the checkout at dir declares
@@ -37,7 +39,7 @@ func OpenSessionPod(ctx context.Context, sb *sandbox.Sandbox, dir, label string,
 		return nil, err
 	}
 	logf("sandbox: %s", sess.Describe())
-	p := &SessionPod{Session: sess}
+	p := &SessionPod{Session: sess, logf: logf}
 	svcs, err := sandbox.Resolve(dir, sb.Config.Registries)
 	if err != nil {
 		p.Statuses = []sandbox.ServiceStatus{{Name: sandbox.ServicesFile, Image: "-", Required: true, Why: err.Error()}}
@@ -74,10 +76,15 @@ func OpenSessionPod(ctx context.Context, sb *sandbox.Sandbox, dir, label string,
 	return p, nil
 }
 
-// Close removes the pod, its sidecars and the session's HOME.
+// Close removes the pod, its sidecars, their volumes and the session's
+// HOME; what it could not remove is logged, `sandbox: session <label>:
+// close: <err>`, never dropped.
 func (p *SessionPod) Close() {
-	if p != nil && p.Session != nil {
-		_ = p.Session.Close()
+	if p == nil || p.Session == nil {
+		return
+	}
+	if err := p.Session.Close(); err != nil && p.logf != nil {
+		p.logf("%s", sandbox.CloseLine(p.Session.Label, err))
 	}
 }
 
