@@ -272,10 +272,83 @@ func (c *ItemCred) Reissue(ctx context.Context) error {
 	return nil
 }
 
+// ForPush makes the checkout's credential helper answer with the
+// build's own token — the one issued at claim, or its Refresh — and
+// answers it: whatever else wrote into the helper since (an evaluation's
+// read token, a later issue) is overwritten, so a push can only ever go
+// out on the build's write token. Nil on the fallback.
+func (c *ItemCred) ForPush(ctx context.Context) (*gateway.GitHubToken, error) {
+	if c == nil {
+		return nil, nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var refreshErr error
+	if GitHubTokenNeedsRefresh(c.tok) {
+		tok, err := c.gw.IssueItemRepoToken(ctx, c.itemID, c.nodeID)
+		if err == nil {
+			c.tok = tok
+		} else {
+			refreshErr = fmt.Errorf("refresh github token: %w", err) // the token held may yet serve
+		}
+	}
+	if err := c.ws.Authorize(ctx, c.spec, c.tok); err != nil {
+		return c.tok, errors.Join(refreshErr, fmt.Errorf("github token for the push: %w", err))
+	}
+	return c.tok, refreshErr
+}
+
+// PushCredentialError is a build's push GitHub refused on the item's
+// token, after one re-issue: the build's failure, the branch left for a
+// retry and no finish recorded. It names the repo, the branch and the
+// token's access, issue time and expiry, never the token.
+type PushCredentialError struct {
+	Repo, Branch string
+	Token        TokenFacts
+	Cause        error
+}
+
+func (e *PushCredentialError) Error() string {
+	return fmt.Sprintf("push %s to %s refused on the item token (%s): %v", e.Branch, e.Repo, e.Token, e.Cause)
+}
+
+func (e *PushCredentialError) Unwrap() error { return e.Cause }
+
+// TokenFacts is what may be said of an item token in a log or an error:
+// its access as the platform issued it, when it was issued and when it
+// expires — never the token.
+type TokenFacts struct {
+	Access              string
+	IssuedAt, ExpiresAt time.Time
+}
+
+// FactsOf is tok's TokenFacts (zero for nil, the fallback).
+func FactsOf(tok *gateway.GitHubToken) TokenFacts {
+	if tok == nil {
+		return TokenFacts{}
+	}
+	return TokenFacts{Access: tok.Access, IssuedAt: tok.IssuedAt, ExpiresAt: tok.ExpiresAt}
+}
+
+// String is `access write, issued <t>, expires <t>`; an access the
+// platform did not say is `access unknown`, the operator's fallback
+// `the operator's login`.
+func (f TokenFacts) String() string {
+	if f == (TokenFacts{}) {
+		return "the operator's login"
+	}
+	access := f.Access
+	if access == "" {
+		access = "unknown"
+	}
+	return fmt.Sprintf("access %s, issued %s, expires %s", access, expiryText(f.IssuedAt), expiryText(f.ExpiresAt))
+}
+
 // credentialRefusal is what git and gh print when GitHub will not let
 // the credential in: a private repo the token cannot see is "not
-// found", a token it does not honour a 401 or 403.
-var credentialRefusal = regexp.MustCompile(`(?i)repository not found|could not read from remote repository|authentication failed|invalid username or password|(http|error:?|status:?)\s*40[13]\b|\b40[13] (forbidden|unauthorized)|permission to .* denied`)
+// found", a token it does not honour a 401 or 403, and a read token
+// pushed with "Write access to repository not granted".
+var credentialRefusal = regexp.MustCompile(`(?i)repository not found|write access to repository not granted|could not read from remote repository|authentication failed|invalid username or password|(http|error:?|status:?)\s*40[13]\b|\b40[13] (forbidden|unauthorized)|permission to .* denied`)
 
 // IsCredentialRefusal reports whether err is git (or gh) refused by
 // GitHub on its credential rather than any other failure.

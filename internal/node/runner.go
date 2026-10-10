@@ -721,17 +721,14 @@ func (r *Runner) afterBuild(ctx context.Context, b *buildRun, result harness.Res
 			return r.fail(ctx, item, fmt.Errorf("validation: %w", err))
 		}
 	}
-	if err := b.cred.Refresh(ctx); err != nil {
-		r.logf("item %s: %v", label, err) // the token held may yet serve
-	}
 	// the push is part of the build: no finish is sent until it has
 	// returned the head it pushed, and a refused push is the build's
 	// failure, named, never a finish
-	sha, err := r.WS.Push(ctx, b.dir, b.spec.Branch)
+	sha, err := r.pushBuild(ctx, b)
 	if err != nil {
 		err = b.acct.RedactErr(err)
-		b.report(ctx, fmt.Sprintf("push %s: %v", b.spec.Branch, err))
-		return r.fail(ctx, item, fmt.Errorf("push %s: %w", b.spec.Branch, err))
+		b.report(ctx, err.Error())
+		return r.fail(ctx, item, err)
 	}
 	if v != nil {
 		// after the last push and before the finish: the platform signs for
@@ -745,9 +742,56 @@ func (r *Runner) afterBuild(ctx context.Context, b *buildRun, result harness.Res
 	if err := b.acct.Carried(r.validationUsage(r.GW.FinishWorkItem(ctx, item.ID, b.spec.Branch, sha, b.cost.delta(), b.acct.Report(result), b.description(ctx)))); err != nil {
 		return fmt.Errorf("finish %s: %w", label, err)
 	}
-	r.logf("item %s: finished %s@%s ($%.2f)", label, b.spec.Branch, short(sha), result.CostUSD)
+	r.logf("item %s: pushed %s; finished %s ($%.2f)", label, short(sha), b.spec.Branch, result.CostUSD)
 	b.endGoal(ctx)
 	return nil
+}
+
+// pushBuild pushes the build's branch on the build's own write token:
+// the checkout's helper is rewritten with the token issued at claim (or
+// its Refresh) just before the push (ItemCred.ForPush), so a token
+// issued afterwards — an evaluation's read token — is never the one
+// used. A push GitHub refuses for its credential is re-issued once and
+// tried again; still refused it is a *PushCredentialError naming the
+// repo, the branch and the token's access, issue time and expiry, and
+// logged `push refused (<token>): <git's words>; not finished`. Any
+// other failure is `push <branch>: <err>`. The token is scrubbed from
+// whatever git said.
+func (r *Runner) pushBuild(ctx context.Context, b *buildRun) (string, error) {
+	branch := b.spec.Branch
+	tok, err := b.cred.ForPush(ctx)
+	if err != nil {
+		r.logf("item %s: %v", b.label, err) // the token held may yet serve
+	}
+	var seen []string
+	if tok != nil {
+		seen = append(seen, tok.Token)
+	}
+	sha, err := r.WS.Push(ctx, b.dir, branch)
+	if err != nil && b.cred != nil && IsCredentialRefusal(err) && ctx.Err() == nil {
+		r.logf("item %s: push refused (%s): %v; re-issuing the token once", b.label, FactsOf(tok), scrubbed(err, seen))
+		if rerr := b.cred.Reissue(ctx); rerr != nil {
+			r.logf("item %s: %v", b.label, rerr)
+		} else {
+			tok = b.cred.Token()
+			seen = append(seen, tok.Token)
+			sha, err = r.WS.Push(ctx, b.dir, branch)
+		}
+	}
+	if err == nil {
+		return sha, nil
+	}
+	err = scrubbed(err, seen)
+	if b.cred != nil && IsCredentialRefusal(err) {
+		repo := b.spec.Repo
+		if tok != nil && tok.Repository != "" {
+			repo = tok.Repository
+		}
+		r.logf("item %s: push refused (%s): %v; not finished", b.label, FactsOf(tok), err)
+		return "", &PushCredentialError{Repo: repo, Branch: branch, Token: FactsOf(tok), Cause: err}
+	}
+	r.logf("item %s: push %s: %v; not finished", b.label, branch, err)
+	return "", fmt.Errorf("push %s: %w", branch, err)
 }
 
 // finishCall is a build session's end as its mesh-work tool calls say

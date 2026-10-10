@@ -76,8 +76,10 @@ func TestBuildPushRefusedFailsTheItemWithNoFinish(t *testing.T) {
 	if err == nil {
 		t.Fatalf("RunItem: want the push's failure\n%s", logs)
 	}
-	if len(ws.finishesAtPush) != 1 {
-		t.Fatalf("pushes = %d, want 1", len(ws.finishesAtPush))
+	// refused for its credential: the token re-issued once and the push
+	// tried again, neither with a finish before it
+	if len(ws.finishesAtPush) != 2 || ws.finishesAtPush[0] != 0 || ws.finishesAtPush[1] != 0 {
+		t.Fatalf("finishWorkItem calls seen at each push = %v, want two pushes with none before them", ws.finishesAtPush)
 	}
 	// FinishWorkItem and FinishWorkItemAlreadyDone are both finishWorkItem
 	if c := f.CallsNamed("finishWorkItem"); len(c) != 0 {

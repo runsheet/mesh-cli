@@ -142,7 +142,7 @@ func TestBuildSessionRunsOnTheItemsToken(t *testing.T) {
 	if _, err := os.Stat(ghDir); !os.IsNotExist(err) {
 		t.Fatalf("GH_CONFIG_DIR %s outlived its session: %v", ghDir, err)
 	}
-	if got := strings.Join(ws.Events(), ","); got != "authorize ghs_item1,prepare,push" {
+	if got := strings.Join(ws.Events(), ","); got != "authorize ghs_item1,prepare,authorize ghs_item1,push" {
 		t.Fatalf("workspace events = %s", got)
 	}
 }
