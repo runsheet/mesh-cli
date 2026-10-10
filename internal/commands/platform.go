@@ -9,6 +9,7 @@ import (
 
 	"projectmesh.io/mesh-cli/internal/auth"
 	"projectmesh.io/mesh-cli/internal/gateway"
+	"projectmesh.io/mesh-cli/internal/latchkey"
 	"projectmesh.io/mesh-cli/internal/node"
 )
 
@@ -50,6 +51,33 @@ func tokenSource() (*auth.Source, error) {
 		return nil, err
 	}
 	return auth.NewSource(cred, refreshMachine), nil
+}
+
+// clientCredential is the credential gw speaks on when its source is
+// ~/.mesh/token's (tokenSource), else nil.
+func clientCredential(gw *gateway.Client) *auth.Credential {
+	if src, ok := gw.Source.(*auth.Source); ok {
+		return src.Credential()
+	}
+	return nil
+}
+
+// nodeCredentialID is the machine id a node registers with as
+// credentialId (runsheet#2290): "" for no credential or an rs_* console
+// token, else the token file's machineId, else the access token's sub
+// after "machine:" (latchkey.Claims.MachineID), else "".
+func nodeCredentialID(cred *auth.Credential) string {
+	if !cred.IsMachine() {
+		return ""
+	}
+	if id := strings.TrimSpace(cred.Machine.MachineID); id != "" {
+		return id
+	}
+	claims, err := latchkey.ParseClaims(cred.Machine.AccessToken)
+	if err != nil {
+		return ""
+	}
+	return claims.MachineID()
 }
 
 // credentialLine is the one line `mesh node status` opens with: which of

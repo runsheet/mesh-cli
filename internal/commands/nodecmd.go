@@ -135,7 +135,7 @@ func saveToken(tok string) error {
 	gw := gateway.New(gatewayURL(), strings.TrimSpace(tok))
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	id, err := gw.SignIn(ctx)
+	id, err := gw.SignIn(ctx) // guarded: an rs_* console token (SaveToken refuses any other), !cred.IsMachine()
 	if err != nil {
 		return fmt.Errorf("token saved, but the gateway refused it: %w", err)
 	}
@@ -171,7 +171,12 @@ var nodeRegisterCmd = &cobra.Command{
 		if enterprise == "" {
 			enterprise = prev.Enterprise
 		}
-		if err := (&node.Config{Owner: owner, Enterprise: enterprise}).ValidateOwner(); err != nil {
+		// owner: org keeps the org a prior node.yaml named
+		org := ""
+		if owner == "org" {
+			org = prev.OrgLogin
+		}
+		if err := (&node.Config{Owner: owner, Enterprise: enterprise, OrgLogin: org}).ValidateOwner(); err != nil {
 			path, _ := node.ConfigPath()
 			return fmt.Errorf("%s: %w", path, err)
 		}
@@ -181,8 +186,19 @@ var nodeRegisterCmd = &cobra.Command{
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
-		me, err := gw.SignIn(ctx)
-		if err != nil {
+		// an org-owned node has no person to sign in (the org owns it); a
+		// machine credential's owner is its operator, never signIn's
+		var me string
+		cred := clientCredential(gw)
+		if owner == "org" {
+			if !gw.TakesOwnerOrg(ctx) {
+				return node.ErrOwnerOrgGateway
+			}
+		} else if !cred.IsMachine() {
+			if me, err = gw.SignIn(ctx); err != nil { // guarded: !cred.IsMachine()
+				return err
+			}
+		} else if me, err = machineOwnerID(cred, owner); err != nil {
 			return err
 		}
 		slug := strings.TrimSpace(nodeSlugFlag)
@@ -208,6 +224,9 @@ var nodeRegisterCmd = &cobra.Command{
 		if enterprise == prev.Enterprise {
 			cfg.EnterpriseID = prev.EnterpriseID
 		}
+		if org != "" {
+			cfg.OrgLogin, cfg.OrgID = org, prev.OrgID
+		}
 		reg, err := node.Register(ctx, registrar(gw, cfg), cfg, cfg.Orgs)
 		if err != nil {
 			_ = node.SaveAdoption(cfg, reg, nil)
@@ -230,14 +249,44 @@ var nodeRegisterCmd = &cobra.Command{
 	},
 }
 
+// machineOwnerID is the owner id of a node on a machine credential: the
+// operator the machine acts for — the token file's userId, else the
+// access token's operator.sub — never signIn, which the platform refuses
+// for a machine bearer (`signIn: a person's own, not a machine's`). An
+// enterprise-owned node registers on the enterprise's id, so a machine
+// that names no operator is refused only when the owner is a person.
+func machineOwnerID(cred *auth.Credential, ownerKind string) (string, error) {
+	id := strings.TrimSpace(cred.Machine.UserID)
+	if id == "" {
+		if claims, err := latchkey.ParseClaims(cred.Machine.AccessToken); err == nil {
+			id = strings.TrimSpace(claims.Operator.Sub)
+		}
+	}
+	if id == "" && ownerKind != "enterprise" {
+		return "", errors.New("the machine credential names no operator (userId or the access token's operator.sub); set owner_id in node.yaml or run `mesh node login` again")
+	}
+	return id, nil
+}
+
 // registrar is node.Register's steps on the platform client: the
 // owner probe and the field it found, the orgs of the token's person,
 // the enterprise's id from its slug (myEnterprises), the one
 // registration on the owner contract (the node's own id, the owner's id
 // and kind), the legacy registration per org, and the retirement of the
 // legacy per-org rows on the move to the owner contract.
+//
+// Its CredentialID is the machine id of the client's own credential
+// (nodeCredentialID), sent as credentialId on every registerNode; a
+// console token sends none.
 func registrar(gw *gateway.Client, cfg *node.Config) node.Registrar {
+	cred := clientCredential(gw)
+	credID := nodeCredentialID(cred)
 	return node.Registrar{
+		CredentialID: credID,
+		Machine:      cred.IsMachine(),
+		CredentialLine: func(ctx context.Context) string {
+			return node.CredentialLine(cred.IsMachine(), credID, credID != "" && gw.TakesNodeCredential(ctx))
+		},
 		TakesOwner: gw.TakesOwner,
 		OwnerField: gw.OwnerField,
 		ResolveEnterprise: func(ctx context.Context, slugOrID string) (string, error) {
@@ -249,6 +298,17 @@ func registrar(gw *gateway.Client, cfg *node.Config) node.Registrar {
 				return "", fmt.Errorf("enterprise %q: my enterprises: %w", slugOrID, err)
 			}
 			return node.FindEnterprise(slugOrID, es)
+		},
+		// owner: org — the machine token's orgs read, never signIn
+		ResolveOrg: func(ctx context.Context, slugOrID string) (string, error) {
+			if _, err := uuid.Parse(strings.TrimSpace(slugOrID)); err == nil {
+				return strings.TrimSpace(slugOrID), nil
+			}
+			orgs, err := gw.MyOrgs(ctx)
+			if err != nil {
+				return "", fmt.Errorf("org %q: my orgs: %w", slugOrID, err)
+			}
+			return node.FindOrg(slugOrID, orgs)
 		},
 		LegacyOrgs: func(ctx context.Context) ([]gateway.Org, error) { return gw.MyOrgs(ctx) },
 		Retire:     gw.RetireNode,
@@ -269,19 +329,19 @@ func registrar(gw *gateway.Client, cfg *node.Config) node.Registrar {
 			return id, nil
 		},
 		RegisterOwner: func(ctx context.Context, nodeID, orgID, ownerID string) (*gateway.NodeAnswer, error) {
-			return gw.RegisterNode(ctx, gateway.RegisterNodeInput{NodeID: nodeID, OrgID: orgID, OwnerID: ownerID, Name: cfg.Name, Slug: cfg.Slug,
-				Harnesses: []string{"claude-code"}, Capacity: cfg.Capacity.Max, Version: version.Resolved(), Owner: cfg.OwnerKind()})
+			return gw.RegisterNode(ctx, node.RegisterInput(cfg, nodeID, orgID, ownerID, cfg.OwnerKind(), credID, version.Resolved()))
 		},
 		RegisterIn: func(ctx context.Context, scopes node.Scopes) error { return registerIn(ctx, gw, cfg, scopes) },
 	}
 }
 
 // registerIn registers the node in every scope (a Node per org, id from
-// (org, slug); registering again is a heartbeat).
+// (org, slug); registering again is a heartbeat), each naming the
+// client's machine credential as credentialId when it is one.
 func registerIn(ctx context.Context, gw *gateway.Client, cfg *node.Config, scopes node.Scopes) error {
+	credID := nodeCredentialID(clientCredential(gw))
 	for _, sc := range scopes {
-		if _, err := gw.RegisterNode(ctx, gateway.RegisterNodeInput{NodeID: sc.NodeID, OrgID: sc.ID, OwnerID: cfg.OwnerID, Name: cfg.Name, Slug: cfg.Slug,
-			Harnesses: []string{"claude-code"}, Capacity: cfg.Capacity.Max, Version: version.Resolved()}); err != nil {
+		if _, err := gw.RegisterNode(ctx, node.RegisterInput(cfg, sc.NodeID, sc.ID, cfg.OwnerID, "", credID, version.Resolved())); err != nil {
 			return fmt.Errorf("register in %s: %w", sc.Name(), err)
 		}
 	}
@@ -327,6 +387,9 @@ var nodeStatusCmd = &cobra.Command{
 		fmt.Println(local)
 		fmt.Println(takesStatusLine(cfg))
 		fmt.Println(hostConfigLine(cfg.Host))
+		if line, ok := attestationsStatusLine(state, time.Now()); ok {
+			fmt.Println(line)
+		}
 		scaling, scales := localScaling(state)
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 		fmt.Fprintln(w, "ORG\tNAME\tSLUG\tSTATUS\tRUNNING\tCAPACITY\tVERSION\tLAST_SEEN")
@@ -534,6 +597,20 @@ func hostConfigLine(h node.HostConfig) string {
 // "90" — never a trailing ".0".
 func hostStatusNum(f float64) string {
 	return strconv.FormatFloat(f, 'f', -1, 64)
+}
+
+// attestationsStatusLine is `mesh node status`'s count of the hour's
+// attestation outcomes as the node left them in node.attestations,
+// `attestations: 2 recorded, 1 refused (last hour)`, and true; false
+// when no node on this machine has left any. The file outlives the
+// process, so a node stopped inside the hour still shows its last.
+func attestationsStatusLine(state node.RunState, now time.Time) (string, bool) {
+	rows, ok := state.Attestations()
+	if !ok {
+		return "", false
+	}
+	rec, ref := node.CountAttestations(rows, now)
+	return fmt.Sprintf("attestations: %d recorded, %d refused (last hour)", rec, ref), true
 }
 
 // localScaling is the capacity the node on this machine has in force
@@ -917,6 +994,12 @@ func nodeStart(cmd *cobra.Command, args []string, logger *log.Logger) error {
 		return fmt.Errorf("pidfile: %w", err)
 	}
 	defer state.Stopped(pid)
+	// every session's recorded and refused attestations, counted for the
+	// hour: the health line carries them and node.attestations keeps them
+	// for `mesh node status` (goal the-node-attests-the-head-it-pushed)
+	attestations := &node.AttestationCounts{State: &state}
+	validationNotices.Counts = attestations
+	loop.Attestations = attestations
 	// a ranged capacity in force is left beside the pidfile for
 	// `mesh node status`; a fixed one leaves nothing
 	loop.Scaled = func(s node.Scaling, ranged bool) {
@@ -1132,8 +1215,22 @@ func registerNode(ctx context.Context, cmd *cobra.Command, logger *log.Logger, u
 	register := func(ctx context.Context) error {
 		regCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 		defer cancel()
-		if cfg.OwnerID == "" {
-			owner, err := gw.SignIn(regCtx)
+		if cfg.OwnerKind() == "org" {
+			// the org is the owner: no person is signed in, and a gateway
+			// that cannot take ownerKind org is refused before registering
+			if !gw.TakesOwnerOrg(regCtx) {
+				return node.ErrOwnerOrgGateway
+			}
+		} else if cred := clientCredential(gw); cfg.OwnerID == "" && cred.IsMachine() {
+			// signIn is a person's mutation, refused for a machine bearer:
+			// the owner is the operator the machine acts for
+			owner, err := machineOwnerID(cred, cfg.OwnerKind())
+			if err != nil {
+				return err
+			}
+			cfg.OwnerID = owner
+		} else if cfg.OwnerID == "" && !cred.IsMachine() {
+			owner, err := gw.SignIn(regCtx) // guarded: !cred.IsMachine()
 			if err != nil {
 				return err
 			}
@@ -1616,7 +1713,7 @@ var sessionSandbox *sandbox.Sandbox
 // oneShotHarness is `claude -p` for a session that ends with its turn:
 // poll-mode builds and every evaluation.
 func oneShotHarness() *harness.ClaudeCode {
-	h := &harness.ClaudeCode{Stderr: sessionsOut, Sandbox: sessionSandbox}
+	h := &harness.ClaudeCode{Stderr: sessionsOut, Sandbox: sessionSandbox, MeshBinary: meshBinary()}
 	if nodeUnattended {
 		h.ExtraArgs = []string{"--dangerously-skip-permissions"}
 	}

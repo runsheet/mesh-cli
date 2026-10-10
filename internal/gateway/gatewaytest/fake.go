@@ -7,6 +7,7 @@ package gatewaytest
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
 )
@@ -79,6 +82,14 @@ type Fake struct {
 	// Refuse maps a mutation name to a refusal message (returned as a
 	// GraphQL error) — for tests of "someone else has it".
 	Refuse map[string]string
+	// RefuseOnce queues, per mutation, refusals each answered to one call
+	// in turn before Refuse and the ordinary answer: the first call gets
+	// the first message, the second the next, and a call past the queue
+	// is answered as it otherwise would be. Only recordValidationAttestation
+	// reads it — a refusal naming a newer head, then a recorded upload
+	// (goal the-node-attests-the-head-it-pushed). A test queueing one while
+	// the node runs uses RefuseNext, under the fake's lock.
+	RefuseOnce map[string][]string
 	// FailReads maps an index list name (goalIndexs) or a get
 	// (workItemIndex) to an error it answers with instead of rows; a
 	// list's key may name one where, workItemIndexs/status=review, to
@@ -188,6 +199,17 @@ type Fake struct {
 	// AttestationBackoff); never combined with Refuse or Unsupported for
 	// the same mutation.
 	RateLimit429 map[string]bool
+	// TransientFirst is, per mutation, how many leading calls the fake
+	// answers transiently before it answers as it otherwise would — for a
+	// test of the retry-then-succeed path (retryOnTransient,
+	// AttestationRetryFor). TransientAs says how, per mutation: "503"
+	// (the default, a bare 503), "graphql503" (a GraphQL error body with
+	// HTTP 503), "429" (a bare 429) or "close" (the
+	// connection closed with no answer, a transport error). A transient
+	// answer is not recorded in Calls.
+	TransientFirst map[string]int
+	TransientAs    map[string]string
+	transientSent  map[string]int
 	// NoUsageTools refuses a `usage` report carrying `tools` (the
 	// per-tool calls) with "Unknown field", as a platform older than
 	// tools-show-their-use whose UsageReportInput has only the total.
@@ -337,12 +359,45 @@ type Fake struct {
 	// `owner` in place of `ownerKind`, and a registerNode carrying the
 	// other spelling is refused with "Unknown field".
 	OwnerFieldLegacy bool
+	// OwnerKinds are the values of the owner field's enum
+	// (NodeOwnerKind) as introspection answers them; nil is person,
+	// enterprise and org — a platform with runsheet goal
+	// a-node-is-owned-by-an-org. A test drops `org` to be a platform
+	// before it: a registerNode whose owner kind is not among them is
+	// refused as GraphQL refuses an enum value it does not have.
+	OwnerKinds []string
+	// SignInCalls counts signIn mutations, so a test can show a
+	// registration that never signs in (an org-owned node resolves its
+	// org from myOrgs).
+	SignInCalls int
 	// TakesNodeKind says whether the fake's RegisterNodeInput has `kind`
 	// (gateway.NodeKindField), the node's own kind — "personal" for
 	// `mesh mcp`'s node (ADR-015's owner form, ADR-023 mesh mcp). Unset
 	// (the default) is a platform before that field: a registerNode
 	// carrying `kind` is refused with "Unknown field".
 	TakesNodeKind bool
+	// TakesNodeCredential says whether the fake's RegisterNodeInput has
+	// `credentialId` (gateway.NodeCredentialField), the Latchkey machine
+	// id of the node's own credential. Unset (the default) is a
+	// platform before runsheet#2290: introspection does not list it and
+	// a registerNode carrying it is refused with "Unknown field". When
+	// taken, the node row records it as sent.
+	TakesNodeCredential bool
+	// NodeCredentialID, when set, makes the fake's bearer (Token) a
+	// machine credential whose machine id it is, modelling the machine
+	// branch of runsheet gateway/scope_node.go's registersNode: a
+	// registerNode on that bearer whose input's `credentialId` is
+	// absent or differs from it — and a heartbeatNode for a row whose
+	// recorded credentialId differs from it — is refused
+	// `<mutation>: not yours`, recorded in Calls as the platform saw it.
+	// Item bearers are not machines and are never refused for it.
+	NodeCredentialID string
+	// RefusesMachineSignIn, with NodeCredentialID set, makes a signIn on
+	// the machine bearer answer `signIn: a person's own, not a machine's`
+	// as the platform does; the call is still counted in SignInCalls and
+	// recorded in Calls. Opt-in because existing node-start tests set
+	// NodeCredentialID and still sign in; unset keeps them green.
+	RefusesMachineSignIn bool
 	// Enterprises by id: the enterprises the platform knows, each with
 	// its admins' user ids. myEnterprises serves those the caller
 	// (UserID) admins, and a registerNode with owner kind "enterprise"
@@ -453,6 +508,17 @@ func (f *Fake) RequestPlans() []PlanRequest {
 	return append([]PlanRequest(nil), f.PlanRequests...)
 }
 
+// RefuseNext queues msg on RefuseOnce[mutation] under the fake's lock,
+// for a test that learns the words while the node runs.
+func (f *Fake) RefuseNext(mutation, msg string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.RefuseOnce == nil {
+		f.RefuseOnce = map[string][]string{}
+	}
+	f.RefuseOnce[mutation] = append(f.RefuseOnce[mutation], msg)
+}
+
 func (f *Fake) CallsNamed(name string) []Call {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -546,6 +612,13 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 	f.requests++
 	switch {
 	case strings.HasPrefix(q, "mutation { signIn"):
+		f.SignInCalls++
+		f.Calls = append(f.Calls, Call{Name: "signIn", Input: map[string]any{}, At: time.Now(), Bearer: bearer})
+		if f.RefusesMachineSignIn && f.NodeCredentialID != "" && bearer == f.Token {
+			// signIn is a person's mutation; the platform refuses a machine.
+			writeErrors(w, http.StatusOK, "signIn: a person's own, not a machine's")
+			return
+		}
 		writeData(w, map[string]any{"signIn": map[string]any{"id": f.UserID}})
 	case strings.Contains(q, `__type(name: "UsageReportInput")`):
 		f.Reads = append(f.Reads, Call{Name: "__type UsageReportInput", Input: map[string]any{}})
@@ -645,6 +718,17 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeData(w, map[string]any{"__type": f.registerNodeInputType()})
+	case strings.Contains(q, "__type(") && req.Variables["t"] == "NodeOwnerKind":
+		f.Reads = append(f.Reads, Call{Name: "__type NodeOwnerKind", Input: map[string]any{}})
+		if f.Unsupported["__type"] {
+			writeErrors(w, 200, "GraphQL introspection is not allowed")
+			return
+		}
+		var values []any
+		for _, k := range f.ownerKinds() {
+			values = append(values, map[string]any{"name": k})
+		}
+		writeData(w, map[string]any{"__type": map[string]any{"enumValues": values}})
 	case strings.Contains(q, `__type(name: "Mutation")`):
 		f.Reads = append(f.Reads, Call{Name: "__type Mutation", Input: map[string]any{}})
 		if f.Unsupported["__type"] {
@@ -705,6 +789,13 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 		}
 		if f.Unsupported[m[2]] {
 			writeErrors(w, 200, fmt.Sprintf("Cannot query field %q on type \"Mutation\".", m[2]))
+			return
+		}
+		// the recorded rule of the node's mutations (mesh-cli ADR-026),
+		// by bearer kind, before anything else of the mutation runs
+		if msg := f.ruleRefusal(m[2], in, bearer); msg != "" {
+			f.Calls = append(f.Calls, Call{Name: m[2], Input: in, At: time.Now(), Bearer: bearer, Query: q})
+			writeErrors(w, 200, msg)
 			return
 		}
 		if m[2] == "proposeGoalSplit" && !f.GoalSplit {
@@ -852,6 +943,11 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 			writeErrors(w, 200, fmt.Sprintf("node %s registers at %s, the id its form names, not %s", slug, f.RegistersAt, id))
 			return
 		}
+		if msg := f.notYours(m[2], in, bearer); msg != "" {
+			f.Calls = append(f.Calls, Call{Name: m[2], Input: in, At: time.Now(), Bearer: bearer, Query: q})
+			writeErrors(w, 200, msg)
+			return
+		}
 		if err := f.apply(m[2], in); err != nil {
 			writeErrors(w, 200, err.Error())
 			return
@@ -863,7 +959,7 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 		if usage, ok := in["usage"].(map[string]any); ok && finishingMutations[m[2]] {
 			f.SessionUsage = append(f.SessionUsage, Call{Name: m[2], Input: copyRow(usage), At: time.Now()})
 		}
-		writeData(w, map[string]any{m[2]: f.mutationPayload(m[2], q)})
+		writeData(w, map[string]any{m[2]: f.mutationPayload(m[2], q, in)})
 	default:
 		if m := scorecardRe.FindStringSubmatch(q); m != nil {
 			f.Reads = append(f.Reads, Call{Name: "scorecard", Input: map[string]any{"orgId": m[1]}})
@@ -1199,6 +1295,128 @@ func (f *Fake) heartbeatInputType() map[string]any {
 	return map[string]any{"inputFields": fields}
 }
 
+// BearerKind is the kind of bearer the fake sees: "machine" for its
+// Token while NodeCredentialID makes it a machine credential, else
+// "person" (item bearers included).
+func (f *Fake) BearerKind(bearer string) string {
+	if f.NodeCredentialID != "" && bearer == f.Token {
+		return "machine"
+	}
+	return "person"
+}
+
+// ruleRefusal checks a registerNode, heartbeatNode or claimWorkItem input
+// against testdata/node-mutations.json's rule for the bearer's kind and
+// answers the refusal naming the field and the kind, "" when it passes
+// or the mutation has no rule. A field the fake's schema does not have
+// is never required, and one a knob makes the schema predate
+// (schemaPredates) is left to the schema's "Unknown field", as a
+// platform before it answers.
+func (f *Fake) ruleRefusal(name string, in map[string]any, bearer string) string {
+	switch name {
+	case "registerNode", "heartbeatNode", "claimWorkItem":
+	default:
+		return ""
+	}
+	rules, err := NodeMutationRules()
+	if err != nil {
+		return "node-mutations fixture: " + err.Error()
+	}
+	rule, ok := rules.Mutations[name]
+	if !ok {
+		return ""
+	}
+	kind := f.BearerKind(bearer)
+	br := rule.Person
+	if kind == "machine" {
+		br = rule.Machine
+	}
+	known := BearerRule{}
+	for _, fld := range br.Required {
+		if f.schemaHas(name, fld) {
+			known.Required = append(known.Required, fld)
+		}
+	}
+	for _, fld := range br.Refused {
+		if !f.schemaPredates(name, fld) {
+			known.Refused = append(known.Refused, fld)
+		}
+	}
+	var fe *FieldError
+	if err := known.Check(name, kind, in); errors.As(err, &fe) {
+		return fmt.Sprintf("%s: %s is %s on a %s bearer", fe.Mutation, fe.Field, fe.Reason, fe.Bearer)
+	}
+	return ""
+}
+
+// schemaHas is whether the fake's input type for mutation has field, by
+// the knobs that model an older platform's schema.
+func (f *Fake) schemaHas(mutation, field string) bool {
+	if f.UnknownFields[field] {
+		return false
+	}
+	if mutation != "registerNode" {
+		return true
+	}
+	switch field {
+	case "owner", "ownerKind":
+		return field == f.ownerField()
+	case gateway.NodeKindField:
+		return f.TakesNodeKind
+	case gateway.NodeCredentialField:
+		return f.TakesNodeCredential
+	}
+	return true
+}
+
+// schemaPredates is whether a knob makes the fake's schema one before
+// the rule refusing field: the field hidden by UnknownFields, a
+// credentialId or kind the schema does not take, or OwnerFieldLegacy's
+// `owner`, there the owner kind's own spelling and the field to send.
+// A refused field it carries is answered by the schema, not the rule.
+func (f *Fake) schemaPredates(mutation, field string) bool {
+	if f.UnknownFields[field] {
+		return true
+	}
+	if mutation != "registerNode" {
+		return false
+	}
+	switch field {
+	case "owner":
+		return f.OwnerFieldLegacy
+	case gateway.NodeKindField:
+		return !f.TakesNodeKind
+	case gateway.NodeCredentialField:
+		return !f.TakesNodeCredential
+	}
+	return false
+}
+
+// notYours is the machine branch of the platform's registersNode and
+// heartbeat rules (runsheet gateway/scope_node.go) when NodeCredentialID
+// is set: the fake's Token is that machine's bearer, a registerNode on
+// it must name it as credentialId, and a heartbeatNode is refused for a
+// row whose recorded credentialId is another's. "" lets the call run.
+func (f *Fake) notYours(name string, in map[string]any, bearer string) string {
+	if f.NodeCredentialID == "" || bearer != f.Token {
+		return ""
+	}
+	switch name {
+	case "registerNode":
+		if sent, _ := in[gateway.NodeCredentialField].(string); sent != f.NodeCredentialID {
+			return "registerNode: not yours"
+		}
+	case "heartbeatNode":
+		id, _ := in["aggregateId"].(string)
+		if row := f.Nodes[id]; row != nil {
+			if held, _ := row[gateway.NodeCredentialField].(string); held != "" && held != f.NodeCredentialID {
+				return "heartbeatNode: not yours"
+			}
+		}
+	}
+	return ""
+}
+
 // registerNodeInputType is RegisterNodeInput as introspection answers
 // it: every field a registration may carry, the owner kind among them
 // as `ownerKind` — `owner` when OwnerFieldLegacy — unless UnknownFields
@@ -1211,12 +1429,19 @@ func (f *Fake) registerNodeInputType() map[string]any {
 	if f.TakesNodeKind {
 		names = append(names, gateway.NodeKindField)
 	}
+	if f.TakesNodeCredential {
+		names = append(names, gateway.NodeCredentialField)
+	}
 	var fields []any
 	for _, name := range names {
 		if f.UnknownFields[name] {
 			continue
 		}
-		fields = append(fields, map[string]any{"name": name, "type": map[string]any{"kind": "SCALAR"}})
+		typ := map[string]any{"kind": "SCALAR"}
+		if name == f.ownerField() {
+			typ = map[string]any{"kind": "ENUM", "name": "NodeOwnerKind"}
+		}
+		fields = append(fields, map[string]any{"name": name, "type": typ})
 	}
 	return map[string]any{"inputFields": fields}
 }
@@ -1259,6 +1484,52 @@ func (f *Fake) ownerField() string {
 		return "owner"
 	}
 	return "ownerKind"
+}
+
+// ownerKinds is OwnerKinds, or person, enterprise and org when unset.
+func (f *Fake) ownerKinds() []string {
+	if f.OwnerKinds != nil {
+		return f.OwnerKinds
+	}
+	return []string{"person", "enterprise", "org"}
+}
+
+// org is the fake's org row (Orgs) of id, or nil.
+func (f *Fake) org(id string) map[string]any {
+	for _, o := range f.Orgs {
+		if o["id"] == id {
+			return o
+		}
+	}
+	return nil
+}
+
+// orgOwnedAnswer is the platform's answer to an org-owned node's
+// registerNode (runsheet goal a-node-is-owned-by-an-org): the node id
+// NodeOwnerID("org", ownerId, slug), the org as its owner and exactly
+// that org as its one scope.
+func (f *Fake) orgOwnedAnswer(in map[string]any) *gateway.NodeAnswer {
+	ownerID, _ := in["ownerId"].(string)
+	slug, _ := in["slug"].(string)
+	o := f.org(ownerID)
+	str := func(k string) string { s, _ := o[k].(string); return s }
+	name := str("name")
+	if name == "" {
+		name = str("login")
+	}
+	if name == "" {
+		name = str("slug")
+	}
+	tenant := str("tenantSlug")
+	if tenant == "" {
+		tenant = str("slug")
+	}
+	id, _ := uuid.Parse(ownerID)
+	return &gateway.NodeAnswer{
+		NodeID: gateway.NodeOwnerID("org", id, slug).String(),
+		Owner:  gateway.NodeOwner{Kind: "org", ID: ownerID, Name: name},
+		Scopes: []gateway.ScopeAnswer{{OrgID: ownerID, Login: str("login"), Slug: tenant}},
+	}
 }
 
 // myEnterprises is the enterprises the caller (UserID) admins, as
@@ -1464,11 +1735,12 @@ var finishingMutations = map[string]bool{
 // {"status": "ok"} for any command, plus f.Answer's nodeId, owner and
 // scopes on registerNode and heartbeatNode (runsheet goal
 // a-node-has-an-owner) — nil leaves the payload at status alone, as a
-// platform before that goal does.
+// platform before that goal does, except for a registerNode with owner
+// kind org, answered by orgOwnedAnswer.
 //
 // Only what the query selects is answered, as GraphQL does: a payload
 // asked for `status` alone gets status alone.
-func (f *Fake) mutationPayload(name, q string) map[string]any {
+func (f *Fake) mutationPayload(name, q string, in map[string]any) map[string]any {
 	payload := map[string]any{"status": "ok"}
 	if name != "registerNode" && name != "heartbeatNode" {
 		return payload
@@ -1487,18 +1759,22 @@ func (f *Fake) mutationPayload(name, q string) map[string]any {
 		}
 		return payload
 	}
-	if f.Answer == nil || !selected("nodeId") {
+	answer := f.Answer
+	if kind, _ := in[f.ownerField()].(string); answer == nil && name == "registerNode" && kind == "org" {
+		answer = f.orgOwnedAnswer(in)
+	}
+	if answer == nil || !selected("nodeId") {
 		return payload
 	}
-	scopes := make([]map[string]any, len(f.Answer.Scopes))
-	for i, s := range f.Answer.Scopes {
+	scopes := make([]map[string]any, len(answer.Scopes))
+	for i, s := range answer.Scopes {
 		scopes[i] = map[string]any{"orgId": s.OrgID, "login": s.Login, "slug": s.Slug, "accountId": s.AccountID}
 		if selected("shares") {
 			scopes[i]["shares"] = s.Shares
 		}
 	}
-	payload["nodeId"] = f.Answer.NodeID
-	payload["owner"] = map[string]any{"kind": f.Answer.Owner.Kind, "id": f.Answer.Owner.ID, "name": f.Answer.Owner.Name}
+	payload["nodeId"] = answer.NodeID
+	payload["owner"] = map[string]any{"kind": answer.Owner.Kind, "id": answer.Owner.ID, "name": answer.Owner.Name}
 	payload["scopes"] = scopes
 	return payload
 }
@@ -1688,7 +1964,19 @@ func (f *Fake) apply(name string, in map[string]any) error {
 		if _, ok := in[gateway.NodeKindField]; ok && (!f.TakesNodeKind || f.UnknownFields[gateway.NodeKindField]) {
 			return fmt.Errorf(`Variable "$in" got invalid value; Unknown field %q is not defined by type "RegisterNodeInput".`, gateway.NodeKindField)
 		}
+		if _, ok := in[gateway.NodeCredentialField]; ok && (!f.TakesNodeCredential || f.UnknownFields[gateway.NodeCredentialField]) {
+			return fmt.Errorf(`Variable "$in" got invalid value; Unknown field %q is not defined by type "RegisterNodeInput".`, gateway.NodeCredentialField)
+		}
 		kind, _ := in[f.ownerField()].(string)
+		if kind != "" && !slices.Contains(f.ownerKinds(), kind) {
+			return fmt.Errorf(`Variable "$in" got invalid value %q at "in.%s"; Value %q does not exist in "NodeOwnerKind" enum.`, kind, f.ownerField(), kind)
+		}
+		if kind == "org" {
+			ownerID, _ := in["ownerId"].(string)
+			if f.org(ownerID) == nil {
+				return fmt.Errorf("registerNode: permission denied: adminOnOrg(%s): the caller is not an admin of the org", ownerID)
+			}
+		}
 		if kind == "enterprise" {
 			ownerID, _ := in["ownerId"].(string)
 			if e, ok := f.Enterprises[ownerID]; !ok || !slices.Contains(e.Admins, f.UserID) {
@@ -2067,12 +2355,16 @@ func (f *Fake) mutationType() map[string]any {
 // shape is the schema error production answers, every call is recorded
 // with workItemId and input, and success answers AttestationReceipt.
 // RateLimit429 answers a bare 429 before any of that, every time, for a
-// test of the retry-and-give-up path.
+// test of the retry-and-give-up path, and TransientFirst the first N
+// calls transiently, for the retry-then-succeed path.
 func (f *Fake) recordValidationAttestation(w http.ResponseWriter, q string, vars map[string]any, bearer string) {
 	const field = "recordValidationAttestation"
 	if f.RateLimit429[field] {
 		w.WriteHeader(http.StatusTooManyRequests)
 		_, _ = w.Write([]byte("rate limited"))
+		return
+	}
+	if f.answeredTransiently(w, field) {
 		return
 	}
 	if f.Unsupported[field] {
@@ -2086,6 +2378,11 @@ func (f *Fake) recordValidationAttestation(w http.ResponseWriter, q string, vars
 	id, _ := vars["id"].(string)
 	in, _ := vars["in"].(map[string]any)
 	f.Calls = append(f.Calls, Call{Name: field, Input: map[string]any{"workItemId": id, "input": in}, At: time.Now(), Bearer: bearer})
+	if q := f.RefuseOnce[field]; len(q) > 0 {
+		f.RefuseOnce[field] = q[1:]
+		writeErrors(w, 200, q[0])
+		return
+	}
 	if msg := f.Refuse[field]; msg != "" {
 		writeErrors(w, 200, msg)
 		return
@@ -2095,6 +2392,38 @@ func (f *Fake) recordValidationAttestation(w http.ResponseWriter, q string, vars
 		receipt = map[string]any{"status": "ok", "commit": in["commit"]}
 	}
 	writeData(w, map[string]any{field: receipt})
+}
+
+// answeredTransiently answers field's call transiently while fewer than
+// TransientFirst[field] have been, as TransientAs[field] says, and
+// reports whether it did.
+func (f *Fake) answeredTransiently(w http.ResponseWriter, field string) bool {
+	if f.transientSent[field] >= f.TransientFirst[field] {
+		return false
+	}
+	if f.transientSent == nil {
+		f.transientSent = map[string]int{}
+	}
+	f.transientSent[field]++
+	switch f.TransientAs[field] {
+	case "close":
+		if hj, ok := w.(http.Hijacker); ok {
+			if conn, _, err := hj.Hijack(); err == nil {
+				_ = conn.Close()
+				return true
+			}
+		}
+		panic(http.ErrAbortHandler)
+	case "graphql503":
+		writeErrors(w, http.StatusServiceUnavailable, "upstream unavailable")
+	case "429":
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte("rate limited"))
+	default:
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("service unavailable"))
+	}
+	return true
 }
 
 // actorInputFields are the input fields, beside `actor`, the fake's

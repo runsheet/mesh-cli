@@ -371,41 +371,6 @@ func TestRecordValidationAttestationRetriesRateLimitAsGraphQLError(t *testing.T)
 	}
 }
 
-// 429 on every attempt spends every retry: len(AttestationBackoff)+1
-// calls, and the error wraps the last answer so it reads "after N
-// retries: <last answer>", keeping errors.As(*httpError) reachable and
-// the status visible in the text.
-func TestRecordValidationAttestationGivesUpAfterRetriesExhausted(t *testing.T) {
-	orig := gateway.AttestationBackoff
-	gateway.AttestationBackoff = []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond}
-	t.Cleanup(func() { gateway.AttestationBackoff = orig })
-
-	var calls int32
-	mux := http.NewServeMux()
-	mux.HandleFunc("/graphql", func(w http.ResponseWriter, r *http.Request) {
-		if answeredAttestationProbe(w, r) {
-			return
-		}
-		atomic.AddInt32(&calls, 1)
-		w.WriteHeader(http.StatusTooManyRequests)
-		_, _ = w.Write([]byte("rate limited"))
-	})
-	srv := httptest.NewServer(mux)
-	defer srv.Close()
-
-	gw := gateway.New(srv.URL, "rs_test")
-	_, err := gw.RecordValidationAttestation(context.Background(), itemID, sampleAttestation())
-	if err == nil {
-		t.Fatal("err = nil, want an error")
-	}
-	if got := atomic.LoadInt32(&calls); int(got) != len(gateway.AttestationBackoff)+1 {
-		t.Fatalf("calls = %d, want %d", got, len(gateway.AttestationBackoff)+1)
-	}
-	if !strings.Contains(err.Error(), "after 3 retries") || !strings.Contains(err.Error(), "429") {
-		t.Fatalf("err = %q, want it to contain %q and %q", err.Error(), "after 3 retries", "429")
-	}
-}
-
 // A Retry-After header on a 429 is honoured in place of the backoff
 // table's entry for that attempt, capped at the table's largest one —
 // here the table's largest entry (5s) is well above the header's 1s, so

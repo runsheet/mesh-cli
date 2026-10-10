@@ -203,7 +203,9 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	} else if branch == "" {
 		branch = res.Branch()
 	}
-	spec := WorkspaceSpec{Root: e.WorkRoot, GoalSlug: res.Goal.Slug, Seq: item.Seq, Repo: res.Repo.FullName(), Branch: branch, BaseRef: res.BaseRef()}
+	// a checkout of its own, never the build's: its Authorize must not
+	// rewrite the credential helper the build's push reads
+	spec := EvalWorkspaceSpec(e.WorkRoot, res.Goal.Slug, item.Seq, res.Repo.FullName(), branch, res.BaseRef())
 	// the item's own GitHub token, as its builder had
 	cred, err := NewItemCred(ctx, e.GW, e.WS, e.Scopes, item, spec, e.Fallback, e.logf)
 	if err != nil {
@@ -249,7 +251,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	}
 	prior := e.priorAttempts(ctx, item, label)
 	in := harness.EvaluateInput{
-		GoalSlug: res.Goal.Slug, GoalTitle: res.Goal.Title, GoalAcceptance: res.Goal.Acceptance,
+		ItemID: item.ID, GoalSlug: res.Goal.Slug, GoalTitle: res.Goal.Title, GoalAcceptance: res.Goal.Acceptance,
 		Seq: item.Seq, Title: item.Title, Brief: item.Brief, Acceptance: item.Acceptance,
 		Repo: res.Repo.FullName(), Branch: branch, BaseRef: spec.BaseRef, Diff: diff,
 		ContextDir: contextDir, ContextFiles: files, Project: orgName + "/" + res.Project.Slug, MeshContext: len(e.MCP) > 0,
@@ -499,6 +501,9 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 	var notes string
 	// the clauses the deciding session failed, for the retry to fix
 	var clauses []harness.FailedClause
+	// verdictCalled: the deciding session ended by a mesh_verdict call
+	// (ADR-023), which the hosted tool may have recorded already
+	var verdictCalled bool
 	cost := result.CostUSD
 	if blind, what, broken := e.unreadable(result, acct, ev.adopted); broken {
 		other := ev.fam.other(e)
@@ -528,11 +533,14 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 		e.Blind.Forget(item.ID)
 		head = fmt.Sprintf("%s (first attempt, %s): no verdict — %s", ev.fam.name(), ev.fam.shortModel(), blind)
 		blindOn = blind
-		fam, passed, notes, clauses = other, op.passed, op.notes, op.clauses
+		fam, passed, notes, clauses, verdictCalled = other, op.passed, op.notes, op.clauses, op.called
 		cost += op.cost
 	} else {
 		var ok bool
-		passed, notes, ok = harness.ParseVerdict(result.Text)
+		passed, notes, clauses, verdictCalled, ok = verdictOf(result, acct.Redact)
+		if !verdictCalled {
+			e.logf("item %s: %s", label, noVerdictCallLine)
+		}
 		if !ok {
 			return e.noVerdict(ctx, ev, "no VERDICT line: "+truncate(result.Text, 300), cost, usage, func() error {
 				return fmt.Errorf("evaluator session reached no verdict (%s): %s%s", result.SessionID, truncate(result.Text, 300), keptAt(result))
@@ -542,7 +550,6 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 		if notes == "" {
 			notes = "(no notes)"
 		}
-		clauses = harness.ParseFailedClauses(result.Text)
 	}
 	// a host reading is recorded, not failed: it rides the notes, and
 	// node.log says so (ADR-020)
@@ -683,6 +690,13 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 	}
 	acct.SetEvaluation(ev.res.Goal.Priority, evaluators)
 	if err := acct.Carried(e.GW.EvaluateWorkItem(ctx, item.ID, passed, notes, failed, Cents(cost), usage, gateway.EvaluateChoice{EvaluatedModel: fam.model})); err != nil {
+		if verdictCalled && gateway.IsRefusal(err) && !gateway.IsUnsupported(err) {
+			// the hosted mesh_verdict already recorded it, so the item is
+			// no longer evaluating (ADR-023)
+			left.Forget(item.ID)
+			e.logf("item %s: evaluated by tool call on the platform", label)
+			return nil
+		}
 		return fmt.Errorf("record verdict: %w", err)
 	}
 	left.Forget(item.ID)
@@ -864,6 +878,8 @@ type opinion struct {
 	acct *SessionAccount
 	// clauses are the acceptance clauses it failed, empty on a pass
 	clauses []harness.FailedClause
+	// called: its verdict came from a mesh_verdict call (ADR-023)
+	called bool
 }
 
 // secondOpinion runs the evaluation's job on the other family (on):
@@ -938,19 +954,49 @@ func (e *Evaluator) secondOpinion(ctx context.Context, ev evalRun, on family, jo
 			op.unavailable = "saw no context (" + harness.Redact(blind, job.Secrets...) + ")"
 			break
 		}
-		passed, notes, ok := harness.ParseVerdict(acct.Redact(result.Text))
+		passed, notes, clauses, called, ok := verdictOf(result, acct.Redact)
+		if !called {
+			e.logf("item %s: %s: %s", label, role, noVerdictCallLine)
+		}
 		if !ok {
 			op.unavailable = "no verdict: " + truncate(acct.Redact(harness.Redact(result.Text, job.Secrets...)), 300)
 			break
 		}
-		op.passed = passed
+		op.passed, op.called = passed, called
 		op.notes = strings.TrimSpace(harness.Redact(notes, job.Secrets...))
 		if op.notes == "" {
 			op.notes = "(no notes)"
 		}
-		op.clauses = harness.ParseFailedClauses(acct.Redact(result.Text))
+		op.clauses = clauses
 	}
 	return op
+}
+
+// noVerdictCallLine is logged once per evaluator session that made no
+// mesh_verdict call, its final message parsed instead (ADR-023).
+const noVerdictCallLine = "no mesh_verdict call; parsed the final message"
+
+// verdictOf reads a session's verdict: its mesh_verdict call's input when
+// it made one with a readable passed (harness.VerdictCall; called true),
+// accepted whatever the final message says, else the final message's
+// VERDICT line, the notes above it and its FAILED lines, as before
+// (ADR-023, finish by tool call). ok is false when neither gives one —
+// no verdict. redact is applied to what either says.
+func verdictOf(result harness.Result, redact func(string) string) (passed bool, notes string, clauses []harness.FailedClause, called, ok bool) {
+	if in, has := result.WorkCalls["mesh_verdict"]; has {
+		if passed, notes, clauses, ok := harness.VerdictCall(in); ok {
+			for i := range clauses {
+				clauses[i].Clause, clauses[i].Satisfy = redact(clauses[i].Clause), redact(clauses[i].Satisfy)
+			}
+			return passed, redact(notes), clauses, true, true
+		}
+	}
+	text := redact(result.Text)
+	passed, notes, ok = harness.ParseVerdict(text)
+	if !ok {
+		return false, "", nil, false, false
+	}
+	return passed, notes, harness.ParseFailedClauses(text), false, true
 }
 
 // ErrNoContext is an evaluation that saw no context — its built-in

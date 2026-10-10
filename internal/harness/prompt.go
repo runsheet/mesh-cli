@@ -182,7 +182,7 @@ func finishByToolCall(b *strings.Builder, in PromptInput) {
 		item = fmt.Sprintf("<the id of item %d of %s>", in.Seq, in.GoalSlug)
 	}
 	b.WriteString("\n# Finish by tool call\n\n")
-	fmt.Fprintf(b, "End the session by calling the mesh-context server's `mesh_finish` tool, once, as your last action: `mesh_finish(item_id=%q, branch=%q, head_sha=<the commit your branch ends on, `git rev-parse HEAD`>)` when you built it, or `mesh_finish(item_id=%q, outcome=\"already_done\", evidence=<the merged PRs or commits and why>)` when main already holds it. ", item, in.Branch, item)
+	fmt.Fprintf(b, "End the session by calling the %s server's `mesh_finish` tool (the node's own; the mesh-context server's is not yours to call), once, as your last action: `mesh_finish(item_id=%q, branch=%q, head_sha=<the commit your branch ends on, `git rev-parse HEAD`>)` when you built it, or `mesh_finish(item_id=%q, outcome=\"already_done\", evidence=<the merged PRs or commits and why>)` when main already holds it. ", NodeWorkMCP, item, in.Branch, item)
 	b.WriteString("When the work cannot be done, call `mesh_fail(item_id, error=<why>)` instead. The call is the finish: the node pushes the branch and hands it in. ")
 	fmt.Fprintf(b, "If the tool is not there or the call errors, finish in your final message instead — an already-done item with its `%s` line, as above — and the node reads that.\n", AlreadyDoneLine)
 }
@@ -231,6 +231,9 @@ func ParseAlreadyDone(text string) (evidence string, ok bool) {
 // EvaluateInput is what an evaluation prompt is made of: the item, the
 // goal's acceptance, and the branch's diff from its base.
 type EvaluateInput struct {
+	// ItemID is the item's platform id, the item_id the session hands
+	// mesh_verdict; empty, the prompt names it by its goal and seq.
+	ItemID         string
 	GoalSlug       string
 	GoalTitle      string
 	GoalAcceptance string
@@ -434,7 +437,22 @@ func EvaluatePrompt(in EvaluateInput) string {
 		n += 2
 	}
 	fmt.Fprintf(&b, "%d. End your final message with a short review — what holds, what does not, what is unverifiable, and exactly what a retry must fix. When you fail it, write one line per failed acceptance clause, `%s <the clause, as the acceptance words it> %s %s <what would satisfy it>`, above the verdict; a clause that does not say what would satisfy it is dropped, so write both halves. Then one last line that is either `%s` or `%s`. Pass only when every clause of the acceptance you can check holds.\n", n, ClauseFailed, ClauseSep, ClauseSatisfy, VerdictPass, VerdictFail)
+	verdictByToolCall(&b, in)
 	return b.String()
+}
+
+// verdictByToolCall tells the evaluator to end by calling the hosted
+// mesh_verdict tool (mesh-cli ADR-023): the call is the verdict, and the
+// final message's `VERDICT:`, `FAILED:` and `READING:` lines stay the
+// fallback contract the node parses when the session made no call.
+func verdictByToolCall(b *strings.Builder, in EvaluateInput) {
+	item := in.ItemID
+	if item == "" {
+		item = fmt.Sprintf("<the id of item %d of %s>", in.Seq, in.GoalSlug)
+	}
+	b.WriteString("\n# Finish by tool call\n\n")
+	fmt.Fprintf(b, "End the session by calling the mesh-context server's `mesh_verdict` tool, once, as your last action: `mesh_verdict(item_id=%q, passed=<true or false>, notes=<your review>, failed_clauses=[{\"clause\": <the clause, as the acceptance words it>, \"satisfy\": <what would satisfy it>}], readings=[{\"clause\": <a host clause>, \"reading\": <what you measured, when, under what load>}])` — `failed_clauses` one entry per failed clause when you fail it, else empty; `readings` one per host clause (rule 6). The call is the verdict. ", item)
+	fmt.Fprintf(b, "Write the review and its lines in your final message as well: if the tool is not there or the call errors, the node reads the `%s` or `%s` line, the `%s` lines and the `%s` lines from it.\n", VerdictPass, VerdictFail, ClauseFailed, ClauseReading)
 }
 
 // ParseFailedClauses reads the FAILED/SATISFY lines of an evaluator's
@@ -583,6 +601,9 @@ type ToolHint struct {
 }
 
 type PlanInput struct {
+	// GoalID is the goal's platform id, the goal_id the session hands
+	// mesh_plan; empty, the prompt names it by its slug.
+	GoalID      string
 	GoalSlug    string
 	GoalTitle   string
 	Statement   string
@@ -1088,7 +1109,22 @@ func PlanPrompt(in PlanInput) string {
 	b.WriteString("   A model whose first-pass on a repo is under 0.5 over five or more items is not chosen for that repo; prefer the model with the best first-pass at the lowest cost per item; the goal docs in the context name models that worked.\n")
 	b.WriteString("9. End your final message with the graph as a JSON object in a ```json fenced block, and nothing after it. Its `questions` is empty unless a clause of the goal is one no pull request can satisfy (rule 3); each is {\"clause\": \"…\", \"question\": \"…\"}, for the person to answer:\n\n")
 	b.WriteString("```json\n{\"items\": [{\"seq\": 1, \"title\": \"…\", \"brief\": \"…\", \"acceptance\": \"…\", \"depends_on\": [], \"repo\": \"owner/name\", \"base_ref\": \"main\", \"model\": \"sonnet\", \"model_reason\": \"…\", \"files\": [\"…\"]}, {\"seq\": 2, \"title\": \"…\", \"brief\": \"…\", \"acceptance\": \"…\", \"depends_on\": [{\"seq\": 1, \"because\": \"uses the … item 1 adds\"}], \"repo\": \"owner/name\", \"base_ref\": \"main\", \"model\": \"sonnet\", \"model_reason\": \"…\", \"files\": [\"…\"], \"writes_shared_docs\": true}], \"questions\": []}\n```\n")
+	planByToolCall(&b, in)
 	return b.String()
+}
+
+// planByToolCall tells the planner to end by calling the hosted
+// mesh_plan tool (mesh-cli ADR-023): the call is the plan, and the
+// final message's fenced JSON stays the fallback contract the node
+// parses when the session made no call.
+func planByToolCall(b *strings.Builder, in PlanInput) {
+	goal := in.GoalID
+	if goal == "" {
+		goal = fmt.Sprintf("<the id of goal %s>", in.GoalSlug)
+	}
+	b.WriteString("\n# Finish by tool call\n\n")
+	fmt.Fprintf(b, "End the session by calling the mesh-context server's `mesh_plan` tool, once, as your last action: `mesh_plan(goal_id=%q, items=<the graph's items>, questions=<its questions>)`, each item the same object as in the JSON block above (seq, title, brief, acceptance, depends_on, repo, base_ref, model, model_reason, and atomic or precondition when it has one), and `checkpoints` or `split` beside them when rule 3 asks for them. The call is the plan. ", goal)
+	b.WriteString("Write the ```json fenced block in your final message as well: if the tool is not there or the call errors, the node reads the graph from it.\n")
 }
 
 // spent says whether an item of the plan before is one a re-plan may not

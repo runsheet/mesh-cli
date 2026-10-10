@@ -111,6 +111,57 @@ session never begins on a token about to die. Revoke the machine in the
 Latchkey console (Machines) or `mesh node logout` to drop it here; either
 way your own sign-in is untouched.
 
+**Registering on a machine credential.** On a machine credential the
+node sends its machine id — the token file's `machineId`, else the
+access token's `sub` after `machine:` — as `credentialId` on every
+`registerNode`; an `rs_*` token sends none. The owner row then names the
+machine, and heartbeats and claims pass only from it (the gateway's
+`machineIsNode` rule). This needs the gateway at runsheet#2290 or later:
+an older gateway's `RegisterNodeInput` has no `credentialId`, so the
+node probes the schema once, leaves the field out and logs
+`credential: machine <id>; credentialId left out: …` — a machine
+registered that way is refused `not yours` by a gateway that does check.
+Registration logs which credential it used: `credential: machine <id>
+sent as credentialId`, or `credential: rs_* console token, no
+credentialId`. To move a node onto its machine credential:
+
+1. `mesh node login` on the node (it writes `~/.mesh/token` with
+   `kind: "machine"` and its `machineId`), and say who owns it in
+   `~/.mesh/node.yaml` — for a company's own box, the org (see Who owns
+   a node below):
+
+   ```yaml
+   owner: org
+   org: grapevine
+   ```
+
+2. restart it — `mesh node start`, or `systemctl --user restart` /
+   `launchctl kickstart -k` of its service;
+3. confirm in `~/.mesh/node.log` the registration line, `node <name>
+   (<slug>) owned by …, serving <org>` — with `owner: org`, `node mini
+   (runsheet-mini) owned by Grapevine (org), serving grapevine` — the
+   `sent as credentialId` line and no `not yours`; node.yaml now holds
+   `node_id`, `node_id_source` and, for `owner: org`, `org_id`;
+4. clear the version pin (`desiredVersion`) on the console so the node
+   follows releases again.
+
+`owner: org` needs a gateway that takes `ownerKind` `org` (runsheet goal
+a-node-is-owned-by-an-org, `gateway.OwnerOrgGateway`); on one that does
+not, step 2's start exits non-zero with one line and registers nothing:
+`owner: org needs a gateway that takes ownerKind org (runsheet with
+a-node-is-owned-by-an-org); this gateway does not`.
+
+A `register (owner person): registerNode: not yours — sent credentialId
+<id> …` line means the gateway refused the machine on that row: the
+owner row names another credential, or the operator who ran
+`mesh node login` does not keep the row. Compare the id it names with
+the row's `credential_id` on the console (Nodes → the node's slug). A
+row naming another machine's credential needs `mesh node login` on that
+machine, or the row's credential cleared by its keeper (runsheet
+ADR 039, the clear); `sent no credentialId` means the token file has no
+`machineId` and its access token's `sub` is not `machine:<id>` — log in
+again.
+
 **An `rs_*` console token (the fallback).** Mint one under **Settings →
 Tokens** on the runsheet console and save it:
 
@@ -146,6 +197,28 @@ items' checkouts carry their own. A token near its expiry is renewed and
 the helper rewritten, so a long session does not lose its push. A token
 the platform refuses fails the item — it is not run on your login
 instead.
+
+The push is the node's, after the session, and it goes out on the
+build's own write token: just before it the node rewrites the
+checkout's helper with the token it was issued at claim (or that
+token's refresh), so nothing written there since can be the one used.
+An evaluation of the item works in a checkout of its own,
+`~/.mesh/work/<goal>/<seq>-eval`, and never touches the build's helper
+(ADR-027). A build session finishes on the node's own `mesh-node`
+server, whose `mesh_finish` records nothing (the hosted one is
+disallowed for builds): the order is **push → attest → finish**, and
+node.log states it, `item <goal>/<seq>: pushed <sha>; finished <branch>
+($x)`. A push GitHub refuses for its credential — `remote: Write access
+to repository not granted` — is re-issued once and tried again; still
+refused it fails the build, the branch left for a retry and no finish
+recorded, logged with the token's access as issued, never the token:
+
+```
+item ship-it/3: push refused (access write, issued 2026-10-10T04:35:56Z, expires 2026-10-10T05:35:56Z): remote: Write access to repository not granted.; not finished
+```
+
+ADR-014 (its 2026-10-10 amendment) and ADR-023 (Decision 2) have the
+detail.
 
 The planner reads a whole project's repos rather than one item's, so it
 asks for the goal's own tokens (`planGitHubToken`, adr-022): one per
@@ -532,7 +605,7 @@ failed read withdraws nothing that tick (adr-005's amendment
 
 ### Who owns a node
 
-A node has an owner — a person or an enterprise
+A node has an owner — a person, an enterprise or an org
 (`internal/node/owned.go`, `internal/commands/nodecmd.go`,
 [ADR-015](docs/adr/adr-015-a-node-registers-once-with-an-owner.md)).
 node.yaml's `owner:` says which: empty or `person` (the default) is
@@ -543,6 +616,35 @@ leaves an org when the person does, exactly as it always has.
 enterprise has, on the enterprise's own credentials, and an org
 outside the enterprise only by an explicit share from an enterprise
 admin.
+
+`owner: org` is one company's own box — the node serves that org and
+no other, whoever operates the machine: an org admin can own a node for
+their org, and no other org lists it "via membership". It
+names the org beside it, by slug (or login, tenant slug) or id:
+
+```yaml
+owner: org
+org: grapevine
+```
+
+`LoadConfig` refuses `owner: org` with no `org:`, and `org:` with any
+other owner (unless an older single-org registration wrote it beside
+`account_id:`). The registration needs no person: on a machine
+credential it never calls `signIn`. The first start resolves the slug
+to the org's id from the machine token's orgs read (`myOrgs`, the read
+the node already makes for the orgs it serves; `node.FindOrg`) — a slug
+the token does not reach refuses the start naming the token's orgs —
+and caches it in node.yaml as `org_id:` beside `node_id:` and
+`node_id_source:`; a later start registers on the cached id without the
+read. It sends `ownerKind: org`, `ownerId` the org's id, `orgId` the
+same, and `credentialId` the machine id, under the node id
+`NodeOwnerID("org", orgId, slug)` the platform derives. The start line
+reads `node mini (runsheet-mini) owned by Grapevine (org), serving
+grapevine`. A gateway whose `ownerKind` enum lacks `org`
+(`TakesOwnerOrg`, before runsheet's a-node-is-owned-by-an-org) refuses
+the start with one line, before any `registerNode`: `owner: org needs a
+gateway that takes ownerKind org (runsheet with
+a-node-is-owned-by-an-org); this gateway does not`.
 
 `owner: enterprise` names no enterprise by itself: node.yaml also needs
 `enterprise:`, the enterprise's slug (as the console shows it) or its
@@ -623,6 +725,7 @@ orgs, on the owner contract:
 ```
 node mini (runsheet-mini) owned by Chris, serving runsheet, wardroomid, grapevine
 node mini (runsheet-mini) owned by anythink (enterprise), serving runsheet, wardroomid
+node mini (runsheet-mini) owned by Grapevine (org), serving grapevine
 ```
 
 or, on the legacy path:
@@ -838,13 +941,24 @@ available on Bedrock, Vertex or Foundry; Team/Enterprise orgs must enable
 `claude -p "<prompt>" --output-format stream-json --verbose --max-budget-usd <budget>`
 in `~/.mesh/work/<goal-slug>/<seq>` (cloned with your `gh`, branch
 `mesh/<goal-slug>-<seq>` from the base ref), with the goal's mesh-context
-context written under `.mesh/context/` (excluded from git). The budget is
+context written under `.mesh/context/` (excluded from git). Each item's
+checkout is an independent clone with its own object store — no shared
+mirror, no `git worktree` — so two items never write each other's refs;
+and every `gh repo clone` and `git fetch` of one repo on the node runs
+under a per-repo lock, a process-wide mutex plus an exclusive `flock` on
+`~/.mesh/work/.locks/<owner>--<name>.lock`, released before any checkout,
+so two sessions (or two node processes) fetching one repo at once never
+fail on `cannot lock ref`; a fetch that still fails with `cannot lock
+ref` or `unable to update local ref` — a git outside the lock's reach —
+is retried up to three times with a short backoff and logged once
+(ADR-023,
+`docs/adr/adr-023-fetches-of-one-repo-are-serialised-on-the-node.md`). The budget is
 the smallest of the goal's remaining budget, node.yaml's `budgets:` for
 build and the item's model (see "Session budgets" above), and
 `--max-budget-usd`. The node
 reports progress every minute (`ReportWorkItemProgress` with the cents
 since the last report), pushes the branch with your credentials and
-`FinishWorkItem`s — or `FailWorkItem`s. `--once` runs one tick.
+`FinishWorkItem`s — or `FailWorkItem`s; a workspace that cannot be prepared releases the claim instead (`ReleaseWorkItem` with `workspace: <error>`, attempts unchanged, the item held off this node for ten minutes; docs/adr/adr-024-a-workspace-failure-releases-the-claim.md). `--once` runs one tick.
 
 In both modes `--unattended` adds `--dangerously-skip-permissions` so a
 session never waits on a permission prompt — only on a machine you trust
@@ -1674,6 +1788,26 @@ heartbeat's holding summary opens with `takes <list>; ` and carries the
 same kinds as `holding.kinds` once the platform's schema reads it, so
 the console can say a kind no online node takes is why a goal waits.
 
+### Attestations: the head it pushed
+
+After the last push of a build, a rework or a rebase — the push on the
+build's own write token, above — the node attests
+exactly the sha it pushed — validated again first when the push landed
+another commit than the one `.runsheet/validate.yml` ran on — with that
+commit's tree hash, and only then reports the session finished, so the
+item is still this node's while the platform signs. A refusal `<sha> is
+not the head of <branch> (GitHub has X)` is answered once: X fetched,
+validated and attested. A 429, a 5xx or a transport error is retried
+for two minutes (waits 2s, 5s, 10s, 20s, 30s, the last repeated); a
+refusal is not retried, and an attestation never fails an item.
+node.log says `attestation recorded <sha> <suites> <status>` or
+`attestation refused <reason>`, the health line ends `attestations
+recorded <n> refused <m> (1h)`, and `mesh node status` prints
+`attestations: <n> recorded, <m> refused (last hour)`. The gateway's
+half is runsheet goal `an-attestation-is-about-a-commit-not-an-item-state`:
+until it is deployed every upload is refused, which the counts show.
+ADR-014 (its 2026-10-09 amendment) has the detail.
+
 ### Tool results
 
 One `go test ./...` log or file dump can put 100 KB into a session's
@@ -2455,6 +2589,19 @@ public: no token) and rewrites `schema.json`; commit it with the
 regenerated file. CI never reads the live gateway; the daily
 `schema-refresh` workflow (`.github/workflows/schema-refresh.yml`, also
 run by hand) does, and opens or updates the PR on `bot/schema-refresh`.
+
+The same pull request carries the node mutations' rule fixture,
+`internal/gateway/gatewaytest/testdata/node-mutations.json`: per
+`registerNode`, `heartbeatNode` and `claimWorkItem` and per bearer kind
+(a person's `rs_*` token or a machine credential), the input fields the
+gateway requires and refuses. runsheet generates it
+(`specs/contracts/node-mutations.json`, checked by its TestContracts)
+and `go run ./internal/genfields -refresh-rules` rewrites the committed
+copy. The `gatewaytest` fake refuses any of those inputs that breaks
+the rule for its bearer, naming the field and the kind, so a field the
+gateway starts to require fails `go test` here rather than refusing a
+node in production (docs/adr/adr-026). A rule change arrives only
+through that pull request: never hand-edit the copy to make a test pass.
 
 ## Release
 

@@ -3,11 +3,14 @@ package node
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -553,5 +556,446 @@ func TestPushRefusedWhenTheRemoteMoved(t *testing.T) {
 	git(pair, "remote", "set-url", "origin", filepath.Join(root, "gone.git"))
 	if _, err := g.Push(context.Background(), pair, "mesh/g-1"); err == nil || errors.As(err, &refused) {
 		t.Fatalf("an unreachable remote: %v", err)
+	}
+}
+
+// lockTestOrigin is a bare origin with a seeded main under a fresh root,
+// and a `gh` on PATH that clones it with git: `gh repo clone` takes no
+// local path. It returns the root and the origin.
+func lockTestOrigin(t *testing.T) (string, string) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	root := t.TempDir()
+	origin := filepath.Join(root, "origin.git")
+	git := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, out)
+		}
+	}
+	git(root, "init", "--bare", "-b", "main", origin)
+	seed := filepath.Join(root, "seed")
+	git(root, "clone", "-q", origin, seed)
+	for i := 0; i < 3; i++ {
+		os.WriteFile(filepath.Join(seed, "a"), []byte(strconv.Itoa(i)), 0o644)
+		git(seed, "add", "a")
+		git(seed, "commit", "-q", "-m", "a"+strconv.Itoa(i))
+	}
+	git(seed, "push", "-q", "origin", "HEAD:main")
+	bin := filepath.Join(root, "bin")
+	os.MkdirAll(bin, 0o755)
+	gh := "#!/bin/sh\n# gh repo clone <repo> <dir> [-- <git clone flags>]\nshift 2\nrepo=$1; dir=$2; shift 2\n[ \"$1\" = \"--\" ] && shift\nexec git clone -q \"$@\" \"$repo\" \"$dir\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(gh), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return root, origin
+}
+
+// prepareAtOnce runs Prepare for every spec at the same instant and
+// returns each one's error.
+func prepareAtOnce(specs []WorkspaceSpec) []error {
+	errs := make([]error, len(specs))
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i, spec := range specs {
+		wg.Add(1)
+		go func(i int, spec WorkspaceSpec) {
+			defer wg.Done()
+			<-start
+			_, errs[i] = (&Git{}).Prepare(context.Background(), spec)
+		}(i, spec)
+	}
+	close(start)
+	wg.Wait()
+	return errs
+}
+
+// Four items of one repo prepared at once — the grapevine node's four
+// claims within seconds, 2026-10-03 — all succeed, and none fails on a
+// ref another fetch was writing: their fetches run under the repo's lock.
+func TestPrepareFourItemsOfOneRepoAtOnce(t *testing.T) {
+	root, origin := lockTestOrigin(t)
+	var specs []WorkspaceSpec
+	for seq := 1; seq <= 4; seq++ {
+		specs = append(specs, WorkspaceSpec{Root: root, GoalSlug: "g", Seq: seq, Repo: origin, Branch: BranchName("g", seq), BaseRef: "main"})
+	}
+	for round := 0; round < 2; round++ { // a clone each, then a fetch each
+		for i, err := range prepareAtOnce(specs) {
+			if err != nil {
+				t.Fatalf("round %d: prepare seq %d: %v", round, i+1, err)
+			}
+		}
+	}
+	for _, spec := range specs {
+		if _, err := os.Stat(filepath.Join(spec.Dir(), ".git")); err != nil {
+			t.Fatalf("seq %d: no clone of its own: %v", spec.Seq, err)
+		}
+	}
+}
+
+// Four prepares of the one spec at once — one checkout, every fetch
+// into the same refs — never fail on `cannot lock ref`: any error left
+// is the checkout's own, not a remote-tracking ref two fetches wrote.
+func TestPrepareOneSpecFourTimesAtOnce(t *testing.T) {
+	root, origin := lockTestOrigin(t)
+	spec := WorkspaceSpec{Root: root, GoalSlug: "g", Seq: 1, Repo: origin, Branch: "mesh/g-1", BaseRef: "main"}
+	if _, err := (&Git{}).Prepare(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	// origin's main moves, so every fetch has refs/remotes/origin/main to write
+	seed := filepath.Join(root, "seed")
+	for _, args := range [][]string{{"commit", "-q", "--allow-empty", "-m", "moved"}, {"push", "-q", "origin", "HEAD:main"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = seed
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	specs := []WorkspaceSpec{spec, spec, spec, spec}
+	for i, err := range prepareAtOnce(specs) {
+		if err != nil && strings.Contains(err.Error(), "cannot lock ref") {
+			t.Fatalf("prepare %d failed on a ref lock: %v", i, err)
+		}
+		if err != nil {
+			t.Logf("prepare %d: %v", i, err)
+		}
+	}
+}
+
+// Prepare leaves the repo's lock file under <root>/.locks/ and lets it
+// go: a non-blocking exclusive flock on it succeeds once Prepare returns.
+func TestPrepareReleasesTheRepoLock(t *testing.T) {
+	root, origin := lockTestOrigin(t)
+	spec := WorkspaceSpec{Root: root, GoalSlug: "g", Seq: 1, Repo: origin, Branch: "mesh/g-1", BaseRef: "main"}
+	if _, err := (&Git{}).Prepare(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	path := RepoLockPath(root, RepoLockKey(origin))
+	if filepath.Dir(path) != filepath.Join(root, LocksDir) {
+		t.Fatalf("lock file %s is not under %s", path, filepath.Join(root, LocksDir))
+	}
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatalf("no lock file after Prepare: %v", err)
+	}
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatalf("the repo lock is still held after Prepare: %v", err)
+	}
+	syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+}
+
+// The lock key is owner/name however the repo is spelt, so a clone by
+// owner/name and a fetch read back from origin's URL share one lock.
+func TestRepoLockKey(t *testing.T) {
+	for _, in := range []string{"Runsheet/Mesh-CLI", "https://github.com/runsheet/mesh-cli.git", "git@github.com:runsheet/mesh-cli.git", "https://github.com/runsheet/mesh-cli"} {
+		if got := RepoLockKey(in); got != "runsheet/mesh-cli" {
+			t.Errorf("RepoLockKey(%q) = %q", in, got)
+		}
+	}
+	if got := RepoLockPath("/w", "runsheet/mesh-cli"); got != "/w/.locks/runsheet--mesh-cli.lock" {
+		t.Errorf("RepoLockPath = %s", got)
+	}
+	if got := RepoLockKey("/tmp/x/origin.git"); got != "/tmp/x/origin" {
+		t.Errorf("a path keys as itself: %s", got)
+	}
+}
+
+// IsRefLockFailure matches git refusing a ref update because another
+// process was writing the same ref at the same moment — the two lines
+// the grapevine node's log carried, 2026-10-03, before fetches of one
+// repo were serialised on the node (ADR-023) — and nothing else.
+func TestIsRefLockFailure(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{
+			"item 1's cannot lock ref",
+			errors.New("workspace: git fetch --quiet origin +refs/heads/main:refs/remotes/origin/main: exit status 1: error: cannot lock ref 'refs/remotes/origin/main': is at d843d265…"),
+			true,
+		},
+		{
+			"item 2's unable to update local ref",
+			errors.New("git fetch --prune origin: … error: cannot lock ref 'refs/remotes/origin/main': is at c67b5444… but expected d843d265… (unable to update local ref)"),
+			true,
+		},
+		{"not found", errors.New("gh repo clone runsheet/mesh-cli: exit status 1: Repository not found"), false},
+	}
+	for _, c := range cases {
+		if got := IsRefLockFailure(c.err); got != c.want {
+			t.Errorf("%s: IsRefLockFailure() = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// refLockBackoffError is the ref-lock failure text the brief gives, the
+// shape fetchLocked retries on.
+const refLockBackoffError = "git fetch --quiet origin: exit status 1: error: cannot lock ref 'refs/remotes/origin/main': is at d843d265 but expected c67b4444 (unable to update local ref)"
+
+// noRefLockSleep makes refLockBackoff instant for a test, restored after.
+func noRefLockSleep(t *testing.T) {
+	t.Helper()
+	prev := refLockSleep
+	refLockSleep = func(context.Context, time.Duration) error { return nil }
+	t.Cleanup(func() { refLockSleep = prev })
+}
+
+// refLockLogLines is every line of log containing "git refused a ref
+// lock".
+func refLockLogLines(log []string) []string {
+	var out []string
+	for _, l := range log {
+		if strings.Contains(l, "git refused a ref lock") {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// A fetch refused twice with `cannot lock ref` and succeeding the third
+// try is not a failed Prepare: the retry is inside the one fetch helper,
+// logged once, naming the try it succeeded on.
+func TestFetchRetriesARefLockFailureAndSucceeds(t *testing.T) {
+	root, origin := lockTestOrigin(t)
+	spec := WorkspaceSpec{Root: root, GoalSlug: "g", Seq: 1, Repo: origin, Branch: "mesh/g-1", BaseRef: "main"}
+	if _, err := (&Git{}).Prepare(context.Background(), spec); err != nil {
+		t.Fatalf("seed prepare: %v", err)
+	}
+	noRefLockSleep(t)
+
+	var log []string
+	g := &Git{Logf: func(f string, a ...any) { log = append(log, fmt.Sprintf(f, a...)) }}
+	pruneCalls := 0
+	g.exec = func(ctx context.Context, dir, name string, args ...string) (string, error) {
+		if name == "git" && len(args) >= 2 && args[0] == "fetch" && args[1] == "--prune" {
+			pruneCalls++
+			if pruneCalls <= 2 {
+				return "", errors.New(refLockBackoffError)
+			}
+		}
+		return g.realRun(ctx, dir, name, args...)
+	}
+	if _, err := g.Prepare(context.Background(), spec); err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	if pruneCalls != 3 {
+		t.Fatalf("the fetch ran %d times, want 3", pruneCalls)
+	}
+	lines := refLockLogLines(log)
+	if len(lines) != 1 {
+		t.Fatalf("log lines with 'git refused a ref lock' = %v, want exactly 1", lines)
+	}
+	if !strings.Contains(lines[0], "try 3") {
+		t.Fatalf("log line = %q, want it to name try 3", lines[0])
+	}
+}
+
+// A fetch refused three times with `cannot lock ref` gives up: Prepare
+// fails with an error IsRefLockFailure reports true, and the log names
+// giving up after three tries, once.
+func TestFetchGivesUpAfterThreeRefLockFailures(t *testing.T) {
+	root, origin := lockTestOrigin(t)
+	spec := WorkspaceSpec{Root: root, GoalSlug: "g", Seq: 1, Repo: origin, Branch: "mesh/g-1", BaseRef: "main"}
+	if _, err := (&Git{}).Prepare(context.Background(), spec); err != nil {
+		t.Fatalf("seed prepare: %v", err)
+	}
+	noRefLockSleep(t)
+
+	var log []string
+	g := &Git{Logf: func(f string, a ...any) { log = append(log, fmt.Sprintf(f, a...)) }}
+	pruneCalls := 0
+	g.exec = func(ctx context.Context, dir, name string, args ...string) (string, error) {
+		if name == "git" && len(args) >= 2 && args[0] == "fetch" && args[1] == "--prune" {
+			pruneCalls++
+			return "", errors.New(refLockBackoffError)
+		}
+		return g.realRun(ctx, dir, name, args...)
+	}
+	_, err := g.Prepare(context.Background(), spec)
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	if !IsRefLockFailure(err) {
+		t.Fatalf("err = %v, want IsRefLockFailure", err)
+	}
+	if pruneCalls != 3 {
+		t.Fatalf("the fetch ran %d times, want 3", pruneCalls)
+	}
+	lines := refLockLogLines(log)
+	if len(lines) != 1 {
+		t.Fatalf("log lines with 'git refused a ref lock' = %v, want exactly 1", lines)
+	}
+	if !strings.Contains(lines[0], "gave up after 3 tries") {
+		t.Fatalf("log line = %q, want it to say giving up after 3 tries", lines[0])
+	}
+}
+
+// A non-lock error is returned at once, with no retry: the fetch helper
+// runs exactly once.
+func TestFetchReturnsANonLockErrorAtOnce(t *testing.T) {
+	root, origin := lockTestOrigin(t)
+	spec := WorkspaceSpec{Root: root, GoalSlug: "g", Seq: 1, Repo: origin, Branch: "mesh/g-1", BaseRef: "main"}
+	calls := 0
+	g := &Git{}
+	g.exec = func(ctx context.Context, dir, name string, args ...string) (string, error) {
+		calls++
+		return "", errors.New("gh repo clone " + origin + ": exit status 1: Repository not found")
+	}
+	_, err := g.Prepare(context.Background(), spec)
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	if IsRefLockFailure(err) {
+		t.Fatalf("err = %v, want it not to be a ref-lock failure", err)
+	}
+	if calls != 1 {
+		t.Fatalf("exec called %d times, want 1", calls)
+	}
+}
+
+// The evaluation's checkout is not the build's: for the same goal, seq
+// and repo the two specs name two directories, and only the eval's
+// moves (the build, rework and rebase keep <root>/<goal>/<seq>).
+func TestEvalWorkspaceSpecIsNotTheBuilds(t *testing.T) {
+	root := t.TempDir()
+	build := WorkspaceSpec{Root: root, GoalSlug: "ship-it", Seq: 3, Repo: "acme/widgets", Branch: "mesh/ship-it-3", BaseRef: "main"}
+	eval := EvalWorkspaceSpec(root, "ship-it", 3, "acme/widgets", "mesh/ship-it-3", "main")
+	if eval.Dir() == build.Dir() {
+		t.Fatalf("eval dir %s is the build's", eval.Dir())
+	}
+	if build.Dir() != filepath.Join(root, "ship-it", "3") || eval.Dir() != filepath.Join(root, "ship-it", "3-eval") {
+		t.Fatalf("build %s, eval %s", build.Dir(), eval.Dir())
+	}
+	if eval.Root != root || eval.Repo != build.Repo || eval.Branch != build.Branch || eval.BaseRef != build.BaseRef {
+		t.Fatalf("eval spec %+v", eval)
+	}
+}
+
+// A build and an evaluation of the same goal/seq on one node: the build
+// prepares the item's checkout on its write token, the evaluation then
+// prepares its own on the read token the platform issues it, and the
+// build's credential helper still answers with the write token — so the
+// build's push after it goes out on the token it was claimed with (goal
+// a-build-pushes-before-it-finishes; the dl360 refusals, ADR-027).
+func TestEvaluationLeavesTheBuildsCredentialHelper(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	root := t.TempDir()
+	global := filepath.Join(root, "gitconfig")
+	os.WriteFile(global, nil, 0o644)
+	t.Setenv("GIT_CONFIG_GLOBAL", global)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	for _, kv := range []string{"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t", "GIT_TERMINAL_PROMPT=0"} {
+		k, v, _ := strings.Cut(kv, "=")
+		t.Setenv(k, v)
+	}
+	must := func(dir string, stdin string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Stdin = strings.NewReader(stdin)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	srvRoot := filepath.Join(root, "srv")
+	bare := filepath.Join(srvRoot, "acme/widgets.git")
+	must(root, "", "init", "--quiet", "--bare", "-b", "main", bare)
+	seedDir := filepath.Join(root, "seed")
+	must(root, "", "init", "--quiet", "-b", "main", seedDir)
+	os.WriteFile(filepath.Join(seedDir, "a"), []byte("a"), 0o644)
+	must(seedDir, "", "add", "a")
+	must(seedDir, "", "commit", "--quiet", "-m", "a")
+	must(seedDir, "", "push", "--quiet", bare, "HEAD:main")
+	srv := gatewaytest.GitHub(t, srvRoot, map[string]string{"ghs_build_write": "acme/widgets", "ghs_eval_read": "acme/widgets"})
+
+	// the platform: the build's token issued at claim, the evaluator's
+	// once the item is evaluating, both to this node
+	f := seed(t)
+	gw := gateway.New(f.URL(), "rs_test")
+	nodeID := gateway.NodeID(mustUUID(orgID), "test-node").String()
+	exp := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	issue := func(status, token string) *gateway.GitHubToken {
+		t.Helper()
+		f.WorkItems[item1]["status"], f.WorkItems[item1]["nodeId"] = status, nodeID
+		f.GitHubTokens[item1] = map[string]any{"token": token, "expiresAt": exp, "repo": "acme/widgets"}
+		tok, err := gw.IssueItemRepoToken(context.Background(), item1, nodeID)
+		if err != nil {
+			t.Fatalf("issue %s token: %v", status, err)
+		}
+		if tok.Token != token {
+			t.Fatalf("issued %q, want %q", tok.Token, token)
+		}
+		return tok
+	}
+
+	ctx := context.Background()
+	work := filepath.Join(root, "work")
+	g := &Git{GitHubURL: srv.URL}
+	branch := BranchName("ship-it", 1)
+
+	build := WorkspaceSpec{Root: work, GoalSlug: "ship-it", Seq: 1, Repo: "acme/widgets", Branch: branch, BaseRef: "main"}
+	if err := g.Authorize(ctx, build, issue("running", "ghs_build_write")); err != nil {
+		t.Fatal(err)
+	}
+	buildDir, err := g.Prepare(ctx, build)
+	if err != nil {
+		t.Fatalf("build prepare: %v", err)
+	}
+	os.WriteFile(filepath.Join(buildDir, "b"), []byte("b"), 0o644)
+	must(buildDir, "", "add", "b")
+	must(buildDir, "", "commit", "--quiet", "-m", "b")
+
+	// the evaluation prepares before the build has pushed: the dl360 order
+	eval := EvalWorkspaceSpec(work, "ship-it", 1, "acme/widgets", branch, "main")
+	if err := g.Authorize(ctx, eval, issue("evaluating", "ghs_eval_read")); err != nil {
+		t.Fatal(err)
+	}
+	evalDir, err := g.Prepare(ctx, eval)
+	if err != nil {
+		t.Fatalf("evaluation prepare: %v", err)
+	}
+
+	fill := func(dir string) string {
+		t.Helper()
+		out := must(dir, "url="+srv.URL+"/acme/widgets.git\n\n", "credential", "fill")
+		for _, line := range strings.Split(out, "\n") {
+			if p, ok := strings.CutPrefix(line, "password="); ok {
+				return p
+			}
+		}
+		t.Fatalf("credential fill in %s answered no password:\n%s", dir, out)
+		return ""
+	}
+	if got := fill(buildDir); got != "ghs_build_write" {
+		t.Fatalf("the build's helper answers %q after the evaluation prepared, want ghs_build_write", got)
+	}
+	if evalDir == buildDir {
+		t.Fatalf("the evaluation prepared the build's checkout %s", buildDir)
+	}
+	if got := fill(evalDir); got != "ghs_eval_read" {
+		t.Fatalf("the evaluation's helper answers %q, want ghs_eval_read", got)
+	}
+
+	// and the build's push goes out on it
+	sha, err := g.Push(ctx, buildDir, branch)
+	if err != nil {
+		t.Fatalf("the build's push after the evaluation prepared: %v", err)
+	}
+	if got := must(root, "", "--git-dir", bare, "rev-parse", branch); got != sha {
+		t.Fatalf("pushed %s, origin has %s", sha, got)
 	}
 }

@@ -1,5 +1,5 @@
 ---
-summary: The node registers with an owner (a person by default, or `enterprise` for shared infra), and registerNode/heartbeatNode answer with the node's one id and its scopes — the orgs it serves — so the node stops deriving them by re-reading the person's orgs; a platform whose schema takes neither `ownerKind` nor `owner` keeps today's per-org registration, and one that takes it but answers nil keeps the owner contract, serving the orgs node.yaml names until an answer names them.
+summary: The node registers with an owner (a person by default, or `enterprise` for shared infra), and registerNode/heartbeatNode answer with the node's one id and its scopes — the orgs it serves — so the node stops deriving them by re-reading the person's orgs; a platform whose schema takes neither `ownerKind` nor `owner` keeps today's per-org registration, and one that takes it but answers nil keeps the owner contract, serving the orgs node.yaml names until an answer names them; on a Latchkey machine credential every registerNode sends its machine id as credentialId (when the gateway's schema takes it), and a `not yours` refusal names the id sent.
 status: accepted
 ---
 
@@ -768,3 +768,138 @@ and `TestTakesScopeSharesTrueAsksWithShares` assert, via
 selection sent omits or carries `shares` to match what the platform's
 `scopes` element type has, and that the decoded answer's `Shares`
 follows).
+
+## Amendment 2026-10-07: the node names its credential
+
+Goal `the-node-registers-with-its-own-credential-id`. The platform's
+`registersNode` (runsheet `gateway/scope_node.go`, the machine branch;
+runsheet#2290, #2294, #2248, its ADR 039's 2026-10-06 section) refuses a
+machine bearer's registration unless the input's `credentialId` is the
+bearer's own machine id, and once the owner row names a credential a
+heartbeat or a claim passes only from that machine (`machineIsNode`).
+The node never sent it, so a node on `mesh node login`'s credential was
+refused `registerNode: not yours`.
+
+**The field.** `RegisterNodeInput.CredentialID`, sent as
+`credentialId` (`gateway.NodeCredentialField`) only when set and when
+the introspected `RegisterNodeInput` takes it — `Client.TakesNodeCredential`,
+probed once and cached an hour as `TakesNodeKind` is. A gateway before
+runsheet#2290 has no such field: the node leaves it out and says so in
+the registration's credential line, `credential: machine <id>;
+credentialId left out: …`. The owner registration and every per-org
+registration carry it.
+
+**Where the id comes from.** `node.Registrar.CredentialID` is set by
+`mesh node start`'s registrar (`nodeCredentialID`) from `~/.mesh/token`:
+on a token of kind `machine`, its `machineId`, else the access token's
+`sub` after `machine:`; on an `rs_*` console token, nothing — a person
+bearer sending a credential the row does not name is refused by the
+aggregate. `Registrar.Machine` says the token is a machine's. Nothing
+else about registration changes: owner, ownerKind, slug, kind and orgs
+are as before. Registration logs one `CredentialLine`: `sent as
+credentialId`, left out, no id on a machine token, or the console token.
+
+**A refusal names what was sent.** A registration refused `not yours`
+on a machine token has `NotYoursLine` appended to its error, which
+node.log carries: `sent credentialId <id> (the machine id in
+~/.mesh/token); compare it with the node row's credential_id on the
+console (Nodes → <slug>); …`, or, with no id, `sent no credentialId:
+the token file has no machineId and the access token's sub is not
+machine:<id>`.
+
+**The fake.** `gatewaytest.Fake.TakesNodeCredential` lists
+`credentialId` on `RegisterNodeInput` and records it on the row; unset,
+a registration carrying it is refused as an unknown field.
+`NodeCredentialID` makes the fake's bearer that machine: a
+registerNode whose `credentialId` is absent or another's, and a
+heartbeat on a row naming another credential, are refused `not yours`.
+
+**What it needs.** The gateway at runsheet#2290 or later. The
+runbook — `mesh node login`, restart, confirm `serving <org>` and no
+`not yours` in node.log, clear the console's version pin — is in the
+README, `Registering on a machine credential`.
+
+Tests: `internal/gateway/nodecredential_test.go` (both shapes, the
+probe, the refusal), `internal/commands/nodestart_credentialid_test.go`
+(machineId, the `sub` fallback, an `rs_*` token),
+`internal/node/owned_notyours_test.go` (`NotYoursLine`, and Register
+against the fake refused on another credential and on none).
+
+## Amendment 2026-10-08: an org owns a node
+
+Goal `node-yaml-says-owner-org`, the node half of runsheet goal
+`a-node-is-owned-by-an-org`. A node's owner is one of person,
+enterprise and **org**. A person's node is derived onto every org the
+person is in, so the Mini — Chris's node restricted to Grapevine in
+node.yaml — was listed by runsheet, wardroomid and the rest as serving
+them "via membership", and a Grapevine admin who is not Chris could not
+own a node for Grapevine at all. The legacy per-org row is not the
+answer: it registers only on a person's token, and a node past v0.2.247
+runs on a machine credential.
+
+**node.yaml.** `owner: org` with `org: <slug|id>`, required together
+(`Config.ValidateOwner`; `org:` with another owner is refused unless an
+older single-org registration wrote it beside `account_id:`).
+`Config.OrgID` (`org_id:`) caches the resolved id, as `enterprise_id:`
+does.
+
+**The registration.** For `owner: org`, `mesh node start` never calls
+`signIn`: the owner is the org, not a person. `ownerIDFor` takes `org:`
+when it is an id, else the cached `org_id`, else `Registrar.ResolveOrg`
+once — the machine token's orgs read (`gateway.Client.MyOrgs`, the read
+the node already makes for its serving line), matched by slug, tenant
+slug, login or id (`node.FindOrg`; none matching refuses, naming the
+token's orgs) — cached on the config and returned as
+`Registered.OrgID`, which `SaveRegistration` writes as `org_id`. The
+registration sends `ownerKind: org`, `ownerId` and `orgId` both the
+org's id (never `ConfiguredOrg`'s pick), and `credentialId` the machine
+id as every registration on a machine credential does, under
+`OwnedNodeID` = `gateway.NodeOwnerID("org", orgId, slug)`, the
+platform's `ids.NodeOwnerID`. The start line names the org with its
+kind: `node mini (runsheet-mini) owned by Grapevine (org), serving
+grapevine`. `mesh node register --owner org` keeps a prior node.yaml's
+`org:` and `org_id:` and signs no one in either.
+
+**The gateway it needs.** `gateway.Client.TakesOwnerOrg` introspects
+`RegisterNodeInput`'s owner field (`ownerKind`, else `owner`) for an
+enum carrying `org`, cached an hour like `TakesNodeKind`; the gateway
+that first takes it is named once, `gateway.OwnerOrgGateway` (today
+`runsheet with a-node-is-owned-by-an-org`, the release that carries it
+once it ships). On a gateway without it `mesh node start` sends no
+`registerNode` and exits non-zero with one line,
+`node.ErrOwnerOrgGateway`: `owner: org needs a gateway that takes
+ownerKind org (<OwnerOrgGateway>); this gateway does not`. While an
+update is confirming the refusal is retried inside the confirm window
+like any other registration failure.
+
+**The fake.** `gatewaytest.Fake.OwnerKinds` is the owner enum it
+serves (person, enterprise and org when unset); a `registerNode` with
+`ownerKind: org` on one of its `Orgs` is answered
+`NodeOwnerID("org", ownerId, slug)`, owned by that org and serving it
+alone; `SignInCalls` counts `signIn`.
+
+Tests: `internal/commands/nodestart_ownerorg_test.go` (the start on a
+machine token: ownerKind, ownerId, credentialId, node.yaml's
+`node_id`/`node_id_source`/`org_id`, no `signIn`, a second start on the
+cached id; the one-line refusal with no `registerNode`),
+`internal/node/owner_org_e2e_test.go` (`Register` resolves once,
+`FindOrg`, the start line), `internal/node/org_config_test.go`,
+`internal/gateway/ownerorg_test.go`.
+
+## Amendment 2026-10-09: registerNode's rule is a shared fixture
+
+Goal `the-node-and-the-gateway-share-one-register-contract` (mesh-cli
+ADR-026). The 2026-10-07 amendment's `credentialId` was the third time
+the node and the gateway disagreed on registration with both halves'
+tests green. registerNode's rule per bearer kind — required on a
+machine bearer: `aggregateId`, `namespace`, `name`, `slug`,
+`credentialId`; refused on a person bearer: `credentialId`, `owner` —
+is now recorded in `internal/gateway/gatewaytest/testdata/node-mutations.json`,
+beside heartbeatNode's and claimWorkItem's, generated by runsheet as
+`specs/contracts/node-mutations.json` and refreshed here by the
+schema-refresh pull request. The `gatewaytest` fake checks every
+registration against it by bearer kind, so a machine register without
+`credentialId` fails `TestMachineRegisterWithoutCredentialIDFails`, and
+`TestNodeMutationsOnBothBearers` registers, heartbeats and claims on a
+person and a machine bearer. A rule change is a regenerated fixture,
+never a hand edit of the copy.

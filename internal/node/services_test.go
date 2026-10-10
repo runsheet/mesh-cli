@@ -301,7 +301,7 @@ func TestServicesPodRemovedOnEveryExit(t *testing.T) {
 		gw := gateway.New(f.URL(), "rs_test")
 		cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: Fixed(1)}
 		ws := &fakeWS{root: t.TempDir()}
-		writeServices(t, filepath.Join(ws.root, "ship-it", "1"), servicesYML)
+		writeServices(t, EvalWorkspaceSpec(ws.root, "ship-it", 1, "", "", "").Dir(), servicesYML)
 		seen := fakeAgent(rt, func(ctx context.Context) (sandbox.Exit, error) { <-ctx.Done(); return sandbox.Exit{Code: 137}, nil })
 		ev := &Evaluator{Credentials: testCreds(gw), GW: gw, Harness: &harness.ClaudeCode{Sandbox: sb}, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, Timeout: 200 * time.Millisecond, Sandbox: sb, Log: log.New(os.Stderr, "", 0)}
 		var item gateway.WorkItem
@@ -352,7 +352,7 @@ func TestRequiredServiceFailingEvaluateAndRebase(t *testing.T) {
 	f := seed(t)
 	f.WorkItems[item1]["status"] = "evaluating"
 	ws := &fakeWS{root: t.TempDir()}
-	writeServices(t, filepath.Join(ws.root, "ship-it", "1"), servicesYML)
+	writeServices(t, EvalWorkspaceSpec(ws.root, "ship-it", 1, "", "", "").Dir(), servicesYML)
 	seen := fakeAgent(rt, nil)
 	ev := &Evaluator{Credentials: testCreds(gateway.New(f.URL(), "rs_test")), GW: gateway.New(f.URL(), "rs_test"), Harness: &harness.ClaudeCode{Sandbox: sb}, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, Sandbox: sb, Declines: &Declines{}}
 	err := ev.Evaluate(context.Background(), item)
@@ -382,4 +382,33 @@ func TestRequiredServiceFailingEvaluateAndRebase(t *testing.T) {
 		t.Fatalf("rebase fails: %+v", fails)
 	}
 	assertPodsGone(t, rt, sb)
+}
+
+// Every sandboxed session logs, before its services and its agent, the
+// image ref its agent runs: `sandbox: session <label> — image <ref>`.
+func TestOpenSessionPodLogsTheImage(t *testing.T) {
+	const ref = "ghcr.io/runsheet/mesh-node:v0.2.335"
+	rt := &sandbox.Fake{}
+	sb := &sandbox.Sandbox{Runtime: rt, Config: SandboxConfig{}.Settings("v0.2.335"), TempDir: t.TempDir()}
+	sb.Config.Image = ref
+	var lines []string
+	logf := func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
+	pod, err := OpenSessionPod(context.Background(), sb, t.TempDir(), "ship-it#1", harness.KindBuild, sandbox.GitIdentity{}, logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pod.Close()
+	want := "sandbox: session ship-it#1 — image " + ref
+	var found int
+	for _, l := range lines {
+		if strings.Contains(l, "ship-it#1") && strings.Contains(l, ref) {
+			found++
+			if l != want {
+				t.Fatalf("line = %q, want %q", l, want)
+			}
+		}
+	}
+	if found != 1 {
+		t.Fatalf("lines naming the session and its image: %d, want 1: %q", found, lines)
+	}
 }

@@ -116,24 +116,71 @@ func TestBuildFailsOnTheMeshFailCall(t *testing.T) {
 	}
 }
 
-// stateRefusingGW refuses the node's own finish the way the platform
-// does once the hosted mesh_finish moved the item to evaluating.
+// stateRefusingGW refuses the node's finish for the item's state.
 type stateRefusingGW struct{ Gateway }
 
 func (stateRefusingGW) FinishWorkItem(context.Context, string, string, string, int, *gateway.UsageReport, ...string) error {
 	return &gateway.Error{Message: "finishWorkItem: item is evaluating, not running"}
 }
 
-// The platform's hosted tool already handed the item in: the node's
-// refused finish is no failure.
-func TestBuildFinishedByToolCallOnThePlatform(t *testing.T) {
-	_, fails, pushed, logs := runFinish(t, harness.Result{Success: true, WorkCalls: map[string]map[string]any{
+// The session's mesh_finish is the node's own and records nothing, so a
+// refusal of the node's finish after one is the finish's error, never
+// taken for a finish the platform already has (ADR-023 Decision 2).
+func TestBuildRefusedFinishAfterTheCallIsAnError(t *testing.T) {
+	f := seed(t)
+	r, ws, item, _ := runnerOnFake(t, f, &resultHarness{result: harness.Result{Success: true, WorkCalls: map[string]map[string]any{
 		"mesh_finish": {"item_id": item1, "branch": "mesh/g-1", "head_sha": "abc123def456"},
-	}}, func(g Gateway) Gateway { return stateRefusingGW{g} })
-	if len(pushed) != 1 || fails != 0 {
-		t.Fatalf("pushed %v, fails %d", pushed, fails)
+	}}}, func(g Gateway) Gateway { return stateRefusingGW{g} })
+	logs := &syncBuf{}
+	r.Log = log.New(logs, "", 0)
+	err := r.RunItem(context.Background(), item)
+	if err == nil || !strings.Contains(err.Error(), "item is evaluating") {
+		t.Fatalf("RunItem = %v, want the refused finish", err)
 	}
-	if !strings.Contains(logs, "finished by tool call on the platform") {
-		t.Fatalf("logs lack the tool-call finish:\n%s", logs)
+	if len(ws.pushed) != 1 {
+		t.Fatalf("pushed %v", ws.pushed)
+	}
+	if strings.Contains(logs.String(), "finished by tool call on the platform") {
+		t.Fatalf("a refused finish was taken for the hosted tool's:\n%s", logs)
+	}
+}
+
+// A session's last mesh_progress note opening "for the docs writer:" is
+// sent again after the node's own notes (its final text, the tool use)
+// and before the finish, so it is the item's last note the docs writer
+// folds in (ADR-025), never buried under the node's.
+func TestBuildHandoffNoteIsTheLastNoteBeforeTheFinish(t *testing.T) {
+	handoff := "for the docs writer: push, then attest, then finish"
+	f := seed(t)
+	r, _, item, _ := runnerOnFake(t, f, &resultHarness{result: harness.Result{Success: true, Text: "Built it.", WorkCalls: map[string]map[string]any{
+		"mesh_progress": {"item_id": item1, "note": handoff},
+		"mesh_finish":   {"item_id": item1, "branch": "mesh/g-1", "head_sha": "abc123def456"},
+	}}}, nil)
+	r.Log = log.New(&syncBuf{}, "", 0)
+	if err := r.RunItem(context.Background(), item); err != nil {
+		t.Fatalf("RunItem: %v", err)
+	}
+	last := ""
+	for _, c := range f.Calls {
+		switch c.Name {
+		case "reportWorkItemProgress":
+			last, _ = c.Input["note"].(string)
+		case "finishWorkItem":
+			if last != handoff {
+				t.Fatalf("last note before finishWorkItem = %q, want %q", last, handoff)
+			}
+			return
+		}
+	}
+	t.Fatal("no finishWorkItem call")
+}
+
+// A note not opening the prefix is not sent again.
+func TestHandoffNoteNeedsThePrefix(t *testing.T) {
+	if got := handoffNote(harness.Result{WorkCalls: map[string]map[string]any{"mesh_progress": {"note": "tests written"}}}); got != "" {
+		t.Fatalf("handoffNote = %q, want none", got)
+	}
+	if got := handoffNote(harness.Result{}); got != "" {
+		t.Fatalf("handoffNote of no call = %q", got)
 	}
 }

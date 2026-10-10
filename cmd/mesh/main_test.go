@@ -1,11 +1,18 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"projectmesh.io/mesh-cli/internal/gateway"
+	"projectmesh.io/mesh-cli/internal/gateway/gatewaytest"
+	"projectmesh.io/mesh-cli/internal/node"
 )
 
 // The test binary is mesh itself when MESH_TEST_MAIN is set, so a test
@@ -43,4 +50,54 @@ func TestToolTrim(t *testing.T) {
 	if !strings.HasSuffix(got, lines[len(lines)-1]+"\n") {
 		t.Errorf("does not end with the last line: %q", got[len(got)-100:])
 	}
+}
+
+// `mesh node status` over a state dir holding the hour's attestation
+// outcomes — two recorded and one refused inside the hour, one recorded
+// older — prints their counts (goal the-node-attests-the-head-it-pushed,
+// item 8).
+func TestNodeStatusShowsAttestationCounts(t *testing.T) {
+	const (
+		org    = "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+		user   = "ffffffff-1111-4111-8111-ffffffffffff"
+		nodeID = "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb"
+	)
+	home := t.TempDir()
+	f := gatewaytest.New("rs_test")
+	t.Cleanup(f.Close)
+	f.UserID = user
+	f.Orgs = []map[string]any{{"id": org, "tenantSlug": "runsheet"}}
+	f.Answer = &gateway.NodeAnswer{NodeID: nodeID, Owner: gateway.NodeOwner{Kind: "person", ID: user, Name: "Chris"},
+		Scopes: []gateway.ScopeAnswer{{OrgID: org, Login: "runsheet"}}}
+	gw := gateway.New(f.URL(), "rs_test")
+	if _, err := gw.RegisterNode(context.Background(), gateway.RegisterNodeInput{NodeID: nodeID, OrgID: org, OwnerID: user, Name: "mini", Slug: "runsheet-mini", Owner: "person", Capacity: 1, Version: "v1"}); err != nil {
+		t.Fatal(err)
+	}
+	state := node.RunState{Dir: filepath.Join(home, ".mesh")}
+	now := time.Now()
+	if err := state.WriteAttestations([]node.AttestationOutcome{
+		{At: now.Add(-2 * time.Hour)},
+		{At: now.Add(-40 * time.Minute)},
+		{At: now.Add(-20 * time.Minute), Refused: true},
+		{At: now.Add(-5 * time.Minute)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	yaml := "slug: runsheet-mini\nname: mini\nowner_id: " + user + "\nnode_id: " + nodeID + "\ncontract: owner\nsandbox: off\n"
+	if err := os.WriteFile(filepath.Join(home, ".mesh", "node.yaml"), []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(os.Args[0], "node", "status")
+	cmd.Env = append(os.Environ(), "MESH_TEST_MAIN=1", "HOME="+home, "PATH="+t.TempDir(), "MESH_GATEWAY="+f.URL(), "MESH_TOKEN=rs_test")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("mesh node status: %v\n%s", err, out)
+	}
+	want := "attestations: 2 recorded, 1 refused (last hour)"
+	for _, line := range strings.Split(string(out), "\n") {
+		if line == want {
+			return
+		}
+	}
+	t.Fatalf("no %q line:\n%s", want, out)
 }

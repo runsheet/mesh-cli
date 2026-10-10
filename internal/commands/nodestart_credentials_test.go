@@ -32,11 +32,18 @@ const (
 // on no systemd scope of this machine's.
 func startAgainst(t *testing.T, f *gatewaytest.Fake) string {
 	t.Helper()
+	return startAgainstOn(t, f, "rs_test")
+}
+
+// startAgainstOn is startAgainst on token as MESH_TOKEN: an rs_* console
+// token, or a machine credential's JSON.
+func startAgainstOn(t *testing.T, f *gatewaytest.Fake, token string) string {
+	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("PATH", t.TempDir())
 	t.Setenv("MESH_GATEWAY", f.URL())
-	t.Setenv("MESH_TOKEN", "rs_test")
+	t.Setenv("MESH_TOKEN", token)
 	if err := os.MkdirAll(filepath.Join(home, ".mesh"), 0o700); err != nil {
 		t.Fatal(err)
 	}

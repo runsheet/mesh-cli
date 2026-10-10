@@ -475,13 +475,14 @@ func (h *pushingRebaseHarness) Head() string {
 
 // attestingRebase runs one requested rebase of item1 on a real checkout
 // of an origin holding repoFiles, its session committing files, and
-// returns the fake, the session and node.log.
-func attestingRebase(t *testing.T, repoFiles, files map[string]string) (*gatewaytest.Fake, *pushingRebaseHarness, string) {
+// returns the fake, the session, node.log and the origin.
+func attestingRebase(t *testing.T, repoFiles, files map[string]string) (*gatewaytest.Fake, *pushingRebaseHarness, string, string) {
 	t.Helper()
 	f := seed(t)
 	requestRebase(f, item1, "mesh/ship-it-1")
 	root := t.TempDir()
-	ws := &rebaseGitWS{&gitWS{fakeWS: &fakeWS{root: root}, t: t, origin: originRepo(t, repoFiles)}}
+	origin := originRepo(t, repoFiles)
+	ws := &rebaseGitWS{&gitWS{fakeWS: &fakeWS{root: root}, t: t, origin: origin}}
 	h := &pushingRebaseHarness{t: t, files: files}
 	logs := &syncBuf{}
 	loop, _ := rebaseNodeOn(t, f, "test-node", h, ws, root, logs)
@@ -489,7 +490,7 @@ func attestingRebase(t *testing.T, repoFiles, files map[string]string) (*gateway
 	defer cancel()
 	loop.Tick(ctx)
 	loop.wg.Wait()
-	return f, h, logs.String()
+	return f, h, logs.String(), origin
 }
 
 // callOrder is the index of each named mutation's first call in f.
@@ -511,7 +512,7 @@ func callOrder(f *gatewaytest.Fake, names ...string) map[string]int {
 // rebase is finished with it (runsheet ADR 032, The honesty check, rule
 // 1: the head before the rebase never reaches main).
 func TestRebaseAttestsThePushedHead(t *testing.T) {
-	f, h, logs := attestingRebase(t, withValidation(), map[string]string{"api/api.go": "package api\n\nconst X = 1\n"})
+	f, h, logs, origin := attestingRebase(t, withValidation(), map[string]string{"api/api.go": "package api\n\nconst X = 1\n"})
 	head := h.Head()
 	if len(head) != 40 {
 		t.Fatalf("the session pushed no head: %q\n%s", head, logs)
@@ -523,6 +524,9 @@ func TestRebaseAttestsThePushedHead(t *testing.T) {
 	in, _ := atts[0].Input["input"].(map[string]any)
 	if in["commit"] != head || atts[0].Input["workItemId"] != item1 {
 		t.Fatalf("attestation: commit %v item %v, want %s %s", in["commit"], atts[0].Input["workItemId"], head, item1)
+	}
+	if tree := gitRun(t, origin, "rev-parse", head+"^{tree}"); in["treeHash"] != tree {
+		t.Fatalf("attestation treeHash = %v, %s^{tree} is %s", in["treeHash"], short(head), tree)
 	}
 	if atts[0].Bearer != f.Token {
 		t.Fatalf("bearer = %q, want the node's own token", atts[0].Bearer)
@@ -537,7 +541,7 @@ func TestRebaseAttestsThePushedHead(t *testing.T) {
 	if at := callOrder(f, "recordValidationAttestation", "finishWorkItemRebase"); at["recordValidationAttestation"] > at["finishWorkItemRebase"] {
 		t.Fatalf("the attestation (call %d) must come before the finish (call %d)", at["recordValidationAttestation"], at["finishWorkItemRebase"])
 	}
-	if !strings.Contains(logs, "rebase ship-it/1: validation attestation for "+short(head)+" uploaded") {
+	if !strings.Contains(logs, "rebase ship-it/1: attestation recorded "+short(head)+" vet,api ok") {
 		t.Fatalf("node.log:\n%s", logs)
 	}
 }
@@ -545,7 +549,7 @@ func TestRebaseAttestsThePushedHead(t *testing.T) {
 // A repository with no validate.yml says so and finishes the rebase as
 // before, uploading nothing.
 func TestRebaseWithoutValidationAttestsNothing(t *testing.T) {
-	f, h, logs := attestingRebase(t, nil, map[string]string{"api/api.go": "package api\n\nconst X = 1\n"})
+	f, h, logs, _ := attestingRebase(t, nil, map[string]string{"api/api.go": "package api\n\nconst X = 1\n"})
 	if n := len(f.CallsNamed("recordValidationAttestation")); n != 0 {
 		t.Fatalf("attestations = %d, want none", n)
 	}
@@ -561,7 +565,7 @@ func TestRebaseWithoutValidationAttestsNothing(t *testing.T) {
 // job is the head: the step is logged, the run is still uploaded for the
 // platform to refuse or record, and the rebase is finished.
 func TestRebaseFailingStepStillAttestsAndFinishes(t *testing.T) {
-	f, h, logs := attestingRebase(t, withValidation(), map[string]string{"api/broken": "x\n"})
+	f, h, logs, _ := attestingRebase(t, withValidation(), map[string]string{"api/broken": "x\n"})
 	atts := f.CallsNamed("recordValidationAttestation")
 	if len(atts) != 1 {
 		t.Fatalf("attestations = %d, want 1\n%s", len(atts), logs)

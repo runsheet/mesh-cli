@@ -144,6 +144,12 @@ type Client struct {
 	// nodeKindSchema is whether the gateway's RegisterNodeInput was last
 	// found to take `kind` (see TakesNodeKind).
 	nodeKindSchema holdingProbe
+	// nodeCredentialSchema is whether the gateway's RegisterNodeInput
+	// was last found to take `credentialId` (see TakesNodeCredential).
+	nodeCredentialSchema holdingProbe
+	// ownerOrgSchema is whether the gateway's RegisterNodeInput owner
+	// kind was last found to take `org` (see TakesOwnerOrg).
+	ownerOrgSchema holdingProbe
 	// toolErrorSchema is whether the gateway's usage report's `tools`
 	// entry was last found to take `error` (see takesToolError).
 	toolErrorSchema toolErrorProbe
@@ -376,6 +382,16 @@ func (c *Client) Mutate(ctx context.Context, field, aggregateID string, input ma
 	return c.MutateFields(ctx, field, aggregateID, input, "status", nil)
 }
 
+// MutationInput is the input Mutate sends: aggregateId and namespace
+// from aggregateID, then input's fields (the actor aside).
+func MutationInput(aggregateID string, input map[string]any) map[string]any {
+	in := map[string]any{"aggregateId": aggregateID, "namespace": NS}
+	for k, v := range input {
+		in[k] = v
+	}
+	return in
+}
+
 // MutateFields is Mutate with the mutation's payload selection named by
 // fields (beside `status`, always asked for) and decoded into out — nil
 // discards it, as Mutate does. A field the platform's payload type does
@@ -383,10 +399,7 @@ func (c *Client) Mutate(ctx context.Context, field, aggregateID string, input ma
 // caller decides what that means (RegisterNode and HeartbeatNode read
 // it as no answer, not an error).
 func (c *Client) MutateFields(ctx context.Context, field, aggregateID string, input map[string]any, fields string, out any) error {
-	in := map[string]any{"aggregateId": aggregateID, "namespace": NS}
-	for k, v := range input {
-		in[k] = v
-	}
+	in := MutationInput(aggregateID, input)
 	c.withActor(ctx, field, in)
 	typ := strings.ToUpper(field[:1]) + field[1:] + "Input"
 	q := fmt.Sprintf("mutation($in: %s!) { %s(input: $in) { %s } }", typ, field, fields)
@@ -725,6 +738,9 @@ type Org struct {
 	// the-node-serves-its-owners-orgs): the node shows it in Login's
 	// place wherever the org has none.
 	TenantSlug string `json:"tenantSlug"`
+	// Slug is the org's own slug where myOrgs carries one: what
+	// node.yaml's `org:` names on `owner: org` (node.FindOrg).
+	Slug string `json:"slug"`
 }
 
 // Name is what to show a person for this org: Login, or TenantSlug
@@ -1758,7 +1774,7 @@ type RegisterNodeInput struct {
 	Harnesses []string
 	Capacity  int
 	Version   string
-	// Owner is the node's ownership model — "person" or "enterprise"
+	// Owner is the node's ownership model — "person", "enterprise" or "org" (TakesOwnerOrg)
 	// (mesh-specs, goal the-node-serves-its-owners-orgs): a person's
 	// node serves every org they are in, an enterprise's every org the
 	// enterprise has. Sent only when set and the platform's
@@ -1778,11 +1794,24 @@ type RegisterNodeInput struct {
 	// NodeKindField, so an older platform's registerNode still accepts
 	// the call unchanged.
 	Kind string
+	// CredentialID is the Latchkey machine id of the node's own
+	// credential — the uuid after "machine:" in a machine bearer's sub —
+	// which the platform's registersNode rule requires a machine bearer
+	// to name (runsheet#2290; adr-039, a machine registers only on its
+	// own credential). Sent as `credentialId` (NodeCredentialField) only
+	// when set and the platform's RegisterNodeInput takes it
+	// (TakesNodeCredential): a person's rs_* bearer never sends one, and
+	// an older gateway's registerNode still accepts the call unchanged.
+	CredentialID string
 }
 
 // NodeKindField is the name RegisterNodeInput gives the node's own
 // kind.
 const NodeKindField = "kind"
+
+// NodeCredentialField is the name RegisterNodeInput gives the node's
+// own machine credential id.
+const NodeCredentialField = "credentialId"
 
 // NodeAnswer is the platform's answer to a registration or a heartbeat:
 // the node's single id, its owner and the scopes (orgs) it now serves
@@ -1796,10 +1825,10 @@ type NodeAnswer struct {
 	Scopes []ScopeAnswer `json:"scopes"`
 }
 
-// NodeOwner is the NodeAnswer's owner: a person or an enterprise, its
+// NodeOwner is the NodeAnswer's owner: a person, an enterprise or an org, its
 // id and its display name.
 type NodeOwner struct {
-	Kind string `json:"kind"` // "person" or "enterprise"
+	Kind string `json:"kind"` // "person", "enterprise" or "org"
 	ID   string `json:"id"`
 	Name string `json:"name"`
 }
@@ -1905,6 +1934,22 @@ const NodeAnswerRetry = 10 * time.Minute
 // platform's answer to who owns it and which orgs it now serves (nil
 // on a platform that does not answer that yet).
 func (c *Client) RegisterNode(ctx context.Context, in RegisterNodeInput) (*NodeAnswer, error) {
+	ownerField := ""
+	if in.Owner != "" {
+		ownerField = c.OwnerField(ctx)
+	}
+	takesKind := in.Kind != "" && c.TakesNodeKind(ctx)
+	takesCredential := in.CredentialID != "" && c.TakesNodeCredential(ctx)
+	return c.mutateForAnswer(ctx, "registerNode", in.NodeID, RegisterNodeFields(in, ownerField, takesKind, takesCredential))
+}
+
+// RegisterNodeFields is the registerNode input RegisterNode sends for
+// in, less the aggregateId and namespace Mutate sets (MutationInput),
+// on a schema whose owner field is ownerField ("" none) and which takes
+// `kind` and `credentialId` as the two flags say. Pure, so a test can
+// check what the node sends against the recorded rule fixture without
+// a gateway (mesh-cli ADR-026).
+func RegisterNodeFields(in RegisterNodeInput, ownerField string, takesKind, takesCredential bool) map[string]any {
 	harnesses := in.Harnesses
 	if harnesses == nil {
 		harnesses = []string{}
@@ -1913,15 +1958,16 @@ func (c *Client) RegisterNode(ctx context.Context, in RegisterNodeInput) (*NodeA
 		"orgId": in.OrgID, "ownerId": in.OwnerID, "name": in.Name, "slug": in.Slug,
 		"harnesses": harnesses, "capacity": in.Capacity, "version": in.Version,
 	}
-	if in.Owner != "" {
-		if field := c.OwnerField(ctx); field != "" {
-			input[field] = in.Owner
-		}
+	if in.Owner != "" && ownerField != "" {
+		input[ownerField] = in.Owner
 	}
-	if in.Kind != "" && c.TakesNodeKind(ctx) {
+	if in.Kind != "" && takesKind {
 		input[NodeKindField] = in.Kind
 	}
-	return c.mutateForAnswer(ctx, "registerNode", in.NodeID, input)
+	if in.CredentialID != "" && takesCredential {
+		input[NodeCredentialField] = in.CredentialID
+	}
+	return input
 }
 
 // TakesNodeKind says whether the gateway's RegisterNodeInput has a
@@ -1931,6 +1977,101 @@ func (c *Client) RegisterNode(ctx context.Context, in RegisterNodeInput) (*NodeA
 // not know.
 func (c *Client) TakesNodeKind(ctx context.Context) bool {
 	return c.takesInputField(ctx, &c.nodeKindSchema, "RegisterNodeInput", NodeKindField)
+}
+
+// TakesNodeCredential says whether the gateway's RegisterNodeInput has
+// a `credentialId` field (NodeCredentialField) — asked by
+// introspection and kept for ScalingProbeEvery, as TakesNodeKind: a
+// gateway before runsheet#2290 would refuse the whole call on it.
+func (c *Client) TakesNodeCredential(ctx context.Context) bool {
+	return c.takesInputField(ctx, &c.nodeCredentialSchema, "RegisterNodeInput", NodeCredentialField)
+}
+
+// OwnerOrgGateway names the gateway that first takes ownerKind `org`
+// on RegisterNodeInput: the platform half of an org-owned node, runsheet
+// goal a-node-is-owned-by-an-org. It is the goal while that has not
+// merged; when it ships, this becomes the release that carries it, in
+// this one place.
+const OwnerOrgGateway = "runsheet with a-node-is-owned-by-an-org"
+
+// TakesOwnerOrg says whether the gateway's RegisterNodeInput takes
+// `org` as an owner kind: the owner field (OwnerField) is an ENUM whose
+// values include `org`. A gateway without the field, one whose enum
+// lacks `org`, or a failed probe is a no — asked by introspection and
+// kept for ScalingProbeEvery, as TakesNodeKind. A registerNode with
+// ownerKind org on a gateway before a-node-is-owned-by-an-org is
+// refused, so the node asks before it sends one (OwnerOrgGateway).
+func (c *Client) TakesOwnerOrg(ctx context.Context) bool {
+	field := c.OwnerField(ctx)
+	p := &c.ownerOrgSchema
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := c.now()
+	if !p.at.IsZero() && now.Sub(p.at) < ScalingProbeEvery {
+		return p.takes
+	}
+	p.at, p.takes = now, false
+	if field == "" {
+		return false
+	}
+	type typeRef struct {
+		Kind   string `json:"kind"`
+		Name   string `json:"name"`
+		OfType *struct {
+			Kind   string `json:"kind"`
+			Name   string `json:"name"`
+			OfType *struct {
+				Kind string `json:"kind"`
+				Name string `json:"name"`
+			} `json:"ofType"`
+		} `json:"ofType"`
+	}
+	var out struct {
+		Type *struct {
+			InputFields []struct {
+				Name string  `json:"name"`
+				Type typeRef `json:"type"`
+			} `json:"inputFields"`
+		} `json:"__type"`
+	}
+	q := `query($t: String!) { __type(name: $t) { inputFields { name type { kind name ofType { kind name ofType { kind name } } } } } }`
+	if err := c.Query(ctx, q, map[string]any{"t": "RegisterNodeInput"}, &out); err != nil || out.Type == nil {
+		return false
+	}
+	enum := ""
+	for _, f := range out.Type.InputFields {
+		if f.Name != field {
+			continue
+		}
+		// the named type under NON_NULL wrappers
+		switch t := f.Type; {
+		case t.Kind == "ENUM":
+			enum = t.Name
+		case t.OfType != nil && t.OfType.Kind == "ENUM":
+			enum = t.OfType.Name
+		case t.OfType != nil && t.OfType.OfType != nil && t.OfType.OfType.Kind == "ENUM":
+			enum = t.OfType.OfType.Name
+		}
+	}
+	if enum == "" {
+		return false
+	}
+	var values struct {
+		Type *struct {
+			EnumValues []struct {
+				Name string `json:"name"`
+			} `json:"enumValues"`
+		} `json:"__type"`
+	}
+	if err := c.Query(ctx, `query($t: String!) { __type(name: $t) { enumValues { name } } }`, map[string]any{"t": enum}, &values); err != nil || values.Type == nil {
+		return false
+	}
+	for _, v := range values.Type.EnumValues {
+		if v.Name == "org" {
+			p.takes = true
+		}
+	}
+	return p.takes
 }
 
 // ownerProbe is the cached answer to which owner field
@@ -3270,6 +3411,12 @@ type GitHubToken struct {
 	ExpiresAt time.Time
 	// Repository is the one repo the token reaches, as owner/name.
 	Repository string
+	// Access is what the platform says the token may do on the repo
+	// (`write`, `read`), from its `access`, else its permissions'
+	// `contents`; "" when it says neither.
+	Access string
+	// IssuedAt is when the node was handed the token.
+	IssuedAt time.Time
 }
 
 // IssueItemRepoToken asks the platform for the item's GitHub token; only
@@ -3284,9 +3431,11 @@ func (c *Client) IssueItemRepoToken(ctx context.Context, itemID, nodeID string) 
 	// node id is not an argument (runsheet gateway/itemtoken.go).
 	var out struct {
 		IssueItemRepoToken *struct {
-			Token     string `json:"token"`
-			ExpiresAt string `json:"expiresAt"`
-			Repo      string `json:"repo"`
+			Token       string         `json:"token"`
+			ExpiresAt   string         `json:"expiresAt"`
+			Repo        string         `json:"repo"`
+			Access      string         `json:"access"`
+			Permissions map[string]any `json:"permissions"`
 		} `json:"issueItemRepoToken"`
 	}
 	q := `mutation($id: UUID!) { issueItemRepoToken(workItemId: $id) }`
@@ -3305,7 +3454,11 @@ func (c *Client) IssueItemRepoToken(ctx context.Context, itemID, nodeID string) 
 	if err != nil {
 		return nil, fmt.Errorf("gateway: %s: expiresAt %q: %w", field, t.ExpiresAt, err)
 	}
-	return &GitHubToken{Token: t.Token, ExpiresAt: exp, Repository: t.Repo}, nil
+	access := t.Access
+	if access == "" {
+		access, _ = t.Permissions["contents"].(string)
+	}
+	return &GitHubToken{Token: t.Token, ExpiresAt: exp, Repository: t.Repo, Access: access, IssuedAt: time.Now()}, nil
 }
 
 // PlanGitHubTokens asks the platform for a goal's plan-session GitHub
@@ -4329,49 +4482,110 @@ type ValidationMinutes struct {
 }
 
 // AttestationBackoff is the wait between RecordValidationAttestation's
-// retries of a transport failure or a 429/5xx answer (retryOnTransient)
-// — one entry per retry, so up to len(AttestationBackoff) retries beyond
-// the first attempt, and the cap a Retry-After header's wait is held to
-// (retryDelay). A test shortens it to run fast.
-var AttestationBackoff = []time.Duration{2 * time.Second, 10 * time.Second, 30 * time.Second}
+// retries of a transport failure or a 429/5xx answer (retryOnTransient):
+// entry i is the wait after the (i+1)th failed attempt, growing toward
+// the last entry, which is repeated for every retry past the table, and
+// is the cap a Retry-After header's wait is held to (retryDelay). How
+// many retries there are is AttestationRetryFor's, not the table's. A
+// test shortens both to run fast.
+var AttestationBackoff = []time.Duration{2 * time.Second, 5 * time.Second, 10 * time.Second, 20 * time.Second, 30 * time.Second}
+
+// AttestationRetryFor is the time budget of RecordValidationAttestation's
+// retries, counted from the first attempt: another attempt is made while
+// the budget allows one, each wait cut short so it never ends past the
+// budget, and once it is spent the last answer is returned. A test
+// shortens it to run fast.
+var AttestationRetryFor = 2 * time.Minute
+
+// AttestationWaits is the waits retryOnTransient plans between attempts
+// against an answer that is transient every time and names no
+// Retry-After, under budget and the AttestationBackoff table — the
+// table's entries in order, its last repeated, up to the first wait that
+// would reach the end of the budget, after which no attempt is made —
+// ignoring the time the attempts themselves
+// take. Their sum never exceeds budget.
+func AttestationWaits(budget time.Duration) []time.Duration {
+	var waits []time.Duration
+	var spent time.Duration
+	for retry := 0; ; retry++ {
+		d := backoffAt(retry)
+		if d <= 0 || spent+d >= budget {
+			break
+		}
+		waits = append(waits, d)
+		spent += d
+	}
+	return waits
+}
 
 // retryOnTransient calls fn, retrying on a transport error or a 429/5xx
-// answer (isTransient) up to len(AttestationBackoff) more times with
-// that backoff between attempts, honouring a Retry-After header in place
-// of the table's entry for the attempt (retryDelay); a refusal, an
-// unsupported operation, or success returns at once — the gateway's
-// considered answer is not retried, only its absence. The retries spent
-// with no success return the last answer wrapped so it reads "after N
-// retries: <last answer>" (errors.As still reaches the wrapped error).
+// answer (isTransient) while AttestationRetryFor, counted from the first
+// attempt, allows another attempt, waiting the AttestationBackoff
+// table's entry for the retry between attempts — a Retry-After header
+// honoured in its place (retryDelay) — and never past the budget; a
+// refusal, an unsupported operation, or success returns at once — the
+// gateway's considered answer is not retried, only its absence. The
+// budget spent with no success returns the last answer wrapped so it
+// reads "after N retries over <elapsed>: <last answer>" (errors.As still
+// reaches the wrapped error); the context ending first returns
+// ctx.Err().
 func retryOnTransient(ctx context.Context, fn func() error) error {
-	var err error
-	for attempt := 0; ; attempt++ {
-		err = fn()
+	start := time.Now()
+	deadline := start.Add(AttestationRetryFor)
+	for retries := 0; ; retries++ {
+		err := fn()
 		if err == nil || !isTransient(err) {
 			return err
 		}
-		if attempt >= len(AttestationBackoff) {
-			return fmt.Errorf("after %d retries: %w", len(AttestationBackoff), err)
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
+		// Another attempt is made only when it can start inside the
+		// budget: a wait that would reach the deadline spends it, and the
+		// last answer is returned now rather than after one more request.
+		wait := retryDelay(err, retries)
+		if wait >= time.Until(deadline) {
+			return fmt.Errorf("after %d retries over %s: %w", retries, time.Since(start).Round(time.Millisecond), err)
+		}
+		t := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
+			t.Stop()
 			return ctx.Err()
-		case <-time.After(retryDelay(err, attempt)):
+		case <-t.C:
 		}
 	}
 }
 
+// backoffAt is the table's wait before retry n (0-based): its entry,
+// else its last.
+func backoffAt(n int) time.Duration {
+	if len(AttestationBackoff) == 0 {
+		return 0
+	}
+	return AttestationBackoff[min(n, len(AttestationBackoff)-1)]
+}
+
+// largestBackoff is the table's largest entry, the cap on a Retry-After.
+func largestBackoff() time.Duration {
+	var d time.Duration
+	for _, b := range AttestationBackoff {
+		d = max(d, b)
+	}
+	return d
+}
+
 // isTransient reports whether err is worth retrying: a transport failure
 // that never reached the gateway, a 5xx or 429 httpError, or a GraphQL
-// *Error the gateway (or a proxy in front of it) wrapped with a 429
-// status. Any other GraphQL *Error — a refusal, an unsupported
+// *Error the gateway (or a proxy in front of it) wrapped with a 5xx or
+// 429 status. Any other GraphQL *Error — a refusal, an unsupported
 // operation, a validation error the schema itself raised, all answered
 // with an ordinary 200 — is the gateway's considered answer, not a blip,
 // and is never retried.
 func isTransient(err error) bool {
 	var ge *Error
 	if errors.As(err, &ge) {
-		return ge.Status == http.StatusTooManyRequests
+		return !ge.Unsupported && (ge.Status >= 500 || ge.Status == http.StatusTooManyRequests)
 	}
 	var he *httpError
 	if errors.As(err, &he) {
@@ -4385,12 +4599,9 @@ func isTransient(err error) bool {
 // instead, capped at the table's largest entry so a generous header
 // cannot stall the upload far past what the table would.
 func retryDelay(err error, attempt int) time.Duration {
-	d := AttestationBackoff[attempt]
+	d := backoffAt(attempt)
 	if ra := retryAfterOf(err); ra > 0 {
-		d = ra
-		if largest := AttestationBackoff[len(AttestationBackoff)-1]; d > largest {
-			d = largest
-		}
+		d = min(ra, largestBackoff())
 	}
 	return d
 }
@@ -4427,9 +4638,10 @@ func retryAfterOf(err error) time.Duration {
 // refusal (IsRefusal), never Unsupported. A transport failure or a
 // 429/5xx answer — an httpError, or a GraphQL error body a proxy
 // wrapped with that status — retries with backoff, honouring a
-// Retry-After header (retryOnTransient, AttestationBackoff), before
-// giving up and returning the last answer wrapped as "after N retries:
-// <last answer>". There is no REST path.
+// Retry-After header, for up to AttestationRetryFor (retryOnTransient,
+// AttestationBackoff), before giving up and returning the last answer
+// wrapped as "after N retries over <elapsed>: <last answer>". There is
+// no REST path.
 func (c *Client) RecordValidationAttestation(ctx context.Context, itemID string, att ValidationAttestation) (map[string]any, error) {
 	takes, err := c.takesAttestations(ctx)
 	if err != nil {

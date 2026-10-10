@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -319,6 +320,161 @@ func (v *buildValidation) usage() []gateway.ValidationMinutes {
 	return out
 }
 
+// attestPushed is every session's end after its last push (goal
+// the-node-attests-the-head-it-pushed): the attestation it uploads names
+// exactly sha — the head origin has — and that commit's tree. When the
+// last run validated another commit (the push landed a different sha, or
+// nothing ran yet, as after a rebase) sha is checked out and validated
+// again first, saying why, so the platform is never handed a commit that
+// is no longer the head. It returns once the upload has completed —
+// recorded, refused, unsupported or failed — so the caller reports the
+// session finished only after it; an error is a run that produced no
+// attestation for sha, never the item's failure.
+//
+// A refusal naming a newer head — `<sha> is not the head of <branch>
+// (GitHub has <X>)`, another push landed on the branch after this one —
+// is answered once (answerNewerHead): X fetched, validated and attested.
+//
+// Runner.attestPushed is the build's attestation of the head it pushed: a
+// run that produced none for sha is logged and a note, never the item's
+// failure.
+func (r *Runner) attestPushed(ctx context.Context, b *buildRun, v *buildValidation, sha string) {
+	if _, err := r.validator().attestPushed(ctx, b.target(), v, sha); err != nil {
+		msg := "validation: " + b.acct.RedactErr(err).Error() + "; no attestation for " + short(sha)
+		r.logf("item %s: %s", b.label, msg)
+		b.report(ctx, msg)
+	}
+}
+
+func (vr validator) attestPushed(ctx context.Context, t validationTarget, v *buildValidation, sha string) (attestOutcome, error) {
+	var att validate.Attestation
+	if n := len(v.runs); n > 0 {
+		att = v.runs[n-1]
+	}
+	if att.Commit != sha {
+		if att.Commit != "" {
+			vr.logf("%s: validation ran on %s, the push is %s; validating %s", t.prefix, short(att.Commit), short(sha), short(sha))
+		}
+		if err := checkoutHead(ctx, t.dir, sha); err != nil {
+			return attestOutcome{}, err
+		}
+		var err error
+		if att, err = vr.run(ctx, t, v); err != nil {
+			return attestOutcome{}, err
+		}
+		if att.Commit != sha {
+			return attestOutcome{}, fmt.Errorf("validated %s, not the pushed %s", short(att.Commit), short(sha))
+		}
+	}
+	out := vr.upload(ctx, t, att)
+	out.Pushed = att
+	if branch, newer, ok := newerHead(out.Refused, sha); ok {
+		vr.answerNewerHead(ctx, t, v, branch, newer)
+	}
+	return out, nil
+}
+
+// notTheHead is the gateway's refusal of a commit that is no longer its
+// branch's head (runsheet gateway/attestation.go, the holder rule):
+// `<sha> is not the head of <branch> (GitHub has <X>)`.
+var notTheHead = regexp.MustCompile(`([0-9a-f]{7,64}) is not the head of (\S+) \(GitHub has ([0-9a-f]{7,64})\)`)
+
+// newerHead reads a refusal naming another head than sha: the branch and
+// the head GitHub has, ok false for any other refusal or one naming sha
+// itself.
+func newerHead(refused, sha string) (branch, head string, ok bool) {
+	m := notTheHead.FindStringSubmatch(refused)
+	if m == nil || m[3] == sha {
+		return "", "", false
+	}
+	return m[2], m[3], true
+}
+
+// answerNewerHead answers a refusal naming a newer head, once: head is
+// fetched from origin's branch under the per-repo fetch lock, checked out
+// detached, validated exactly as the pushed head was and its attestation
+// uploaded. A head that cannot be fetched, a validation that fails or
+// cannot run on it, or a second refusal of any kind is logged `attestation
+// refused <reason>` and the session finishes as it would have: never the
+// item's failure, never asked again. The checkout goes back where it was.
+func (vr validator) answerNewerHead(ctx context.Context, t validationTarget, v *buildValidation, branch, head string) {
+	vr.logf("%s: the platform names a newer head of %s, %s; validating it once", t.prefix, branch, short(head))
+	refused := func(why string) {
+		msg := fmt.Sprintf("newer head %s: %s", short(head), why)
+		vr.logf("%s: attestation refused %s", t.prefix, msg)
+		vr.Notices.count(true)
+		t.report(ctx, "validation attestation refused: "+msg)
+	}
+	back, err := gitPosition(ctx, t.dir)
+	if err != nil {
+		refused(err.Error())
+		return
+	}
+	defer func() {
+		if err := checkoutHead(ctx, t.dir, back); err != nil {
+			vr.logf("%s: validation: back to %s: %v", t.prefix, back, err)
+		}
+	}()
+	if err := vr.headFetcher().FetchHead(ctx, t.dir, branch, head); err != nil {
+		refused("fetch: " + t.redact(err).Error())
+		return
+	}
+	if err := checkoutHead(ctx, t.dir, head); err != nil {
+		refused(err.Error())
+		return
+	}
+	att, err := vr.run(ctx, t, v)
+	if err != nil {
+		refused("validation: " + t.redact(err).Error())
+		return
+	}
+	if att.Commit != head {
+		refused(fmt.Sprintf("validated %s, not %s", short(att.Commit), short(head)))
+		return
+	}
+	if failed, ok := failedStep(att); ok {
+		refused((&validationFailure{Step: failed}).Error())
+		return
+	}
+	vr.upload(ctx, t, att)
+}
+
+// headFetcher fetches a branch's head into a checkout (*Git); the
+// validator's Workspacer when it is one, else a plain Git.
+type headFetcher interface {
+	FetchHead(ctx context.Context, dir, branch, head string) error
+}
+
+func (vr validator) headFetcher() headFetcher {
+	if f, ok := vr.WS.(headFetcher); ok {
+		return f
+	}
+	return &Git{}
+}
+
+// gitPosition is where the checkout is: its branch's name, else (a
+// detached HEAD) its commit.
+func gitPosition(ctx context.Context, dir string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "symbolic-ref", "--quiet", "--short", "HEAD")
+	cmd.Dir = dir
+	if out, err := cmd.Output(); err == nil {
+		return strings.TrimSpace(string(out)), nil
+	}
+	return gitHead(ctx, dir)
+}
+
+// attestOutcome is what an upload came to: recorded with the receipt's
+// status, refused with the gateway's words, or neither (unsupported or
+// failed, Err set).
+type attestOutcome struct {
+	// Pushed is the run attestPushed uploaded: the pushed head's.
+	Pushed   validate.Attestation
+	Recorded bool
+	Status   string
+	Refused  string
+	Err      error
+}
+
 // uploadAttestation hands the platform the run's attestation to sign,
 // on the node's own token — the gateway takes a Latchkey machine token
 // or an rs_* console token and refuses a GitHub one, and it is the node
@@ -333,31 +489,43 @@ func (v *buildValidation) usage() []gateway.ValidationMinutes {
 // failure is a note on the item too, never the item's own failure. In
 // every case — uploaded, refused, unsupported or failed — a copy stays
 // at <workdir>.attestation.json, which the session directory's removal
-// leaves.
-func (r *Runner) uploadAttestation(ctx context.Context, b *buildRun, att validate.Attestation) {
-	r.validator().upload(ctx, b.target(), att)
+// leaves. The log says `attestation recorded <sha> <suites> <status>`
+// or `attestation refused <reason>`.
+func (r *Runner) uploadAttestation(ctx context.Context, b *buildRun, att validate.Attestation) attestOutcome {
+	return r.validator().upload(ctx, b.target(), att)
 }
 
-func (vr validator) upload(ctx context.Context, t validationTarget, att validate.Attestation) {
+func (vr validator) upload(ctx context.Context, t validationTarget, att validate.Attestation) attestOutcome {
 	rec := vr.attester()
 	var err error
+	var receipt map[string]any
 	if rec == nil {
 		err = &gateway.Error{Message: "the node's gateway takes no attestations", Unsupported: true}
 	} else {
-		_, err = rec.RecordValidationAttestation(ctx, t.item.ID, gatewayAttestation(att))
+		receipt, err = rec.RecordValidationAttestation(ctx, t.item.ID, gatewayAttestation(att))
 	}
+	var out attestOutcome
 	switch {
 	case err == nil:
-		vr.logf("%s: validation attestation for %s uploaded", t.prefix, short(att.Commit))
+		status, _ := receipt["status"].(string)
+		if status == "" {
+			status = "no status"
+		}
+		out = attestOutcome{Recorded: true, Status: status}
+		vr.logf("%s: attestation recorded %s %s %s", t.prefix, short(att.Commit), attestedSuites(att), status)
+		vr.Notices.count(false)
 	case gateway.IsUnsupported(err):
+		out.Err = err
 		once(vr.Notices.attestation(), func() {
 			vr.logf("validation: the platform takes no attestations yet; each is kept beside its checkout as %s (said once, for every item this run)", AttestationFile)
 		})
 	case gateway.IsRefusal(err):
-		note := "validation attestation refused by the platform: " + err.Error()
-		vr.logf("%s: validation attestation refused: %s", t.prefix, err.Error())
-		t.report(ctx, note)
+		out = attestOutcome{Refused: err.Error(), Err: err}
+		vr.logf("%s: attestation refused %s", t.prefix, err.Error())
+		vr.Notices.count(true)
+		t.report(ctx, "validation attestation refused by the platform: "+err.Error())
 	default:
+		out.Err = err
 		note := "validation attestation: upload failed: " + t.redact(err).Error()
 		vr.logf("%s: %s", t.prefix, note)
 		t.report(ctx, note)
@@ -365,12 +533,36 @@ func (vr validator) upload(ctx context.Context, t validationTarget, att validate
 	if err := writeAttestationAt(t.dir+".attestation.json", att); err != nil {
 		vr.logf("%s: validation: %v", t.prefix, err)
 	}
+	return out
+}
+
+// attestedSuites are the attestation's steps comma-joined, or `no suite
+// affected` when it ran none.
+func attestedSuites(att validate.Attestation) string {
+	names := make([]string, len(att.Steps))
+	for i, s := range att.Steps {
+		names[i] = s.Name
+	}
+	if len(names) == 0 {
+		return "no suite affected"
+	}
+	return strings.Join(names, ",")
 }
 
 // ValidationNotices are the node's once-per-run validation notices,
-// shared by every copy of its Runner.
+// shared by every copy of its Runner, and the attestation outcomes it
+// counts for the health line and `mesh node status` (Counts; nil counts
+// nothing).
 type ValidationNotices struct {
 	noAttestation, noValidationUsage sync.Once
+	Counts                           *AttestationCounts
+}
+
+// count notes one attestation outcome on the shared counts.
+func (n *ValidationNotices) count(refused bool) {
+	if n != nil {
+		n.Counts.Note(refused)
+	}
 }
 
 // once says through say once per run (every time on a nil receiver).

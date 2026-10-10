@@ -57,24 +57,88 @@ on the same token.
    - with neither, the text is parsed as before (`ParseAlreadyDone`)
      and one line, `item <label>: no mesh_finish call; parsed the final
      message`, is logged for the session.
-   When the hosted tool has already moved the item on the platform, the
-   node's own finish is refused for the item's state: a refusal
-   (`gateway.IsRefusal`, not `IsUnsupported`) after a `mesh_finish`
-   call is logged `item <label>: finished by tool call on the platform`
-   and the build is handed in, not failed.
-3. **The evaluator ends by `mesh_verdict`, the planner by
-   `mesh_plan`** (item 5 of the goal): the evaluator's verdict and
-   failed clauses, and the planner's graph, are read from those calls'
-   inputs first; `VERDICT:` and the fenced JSON stay as the parsed
-   fallback, logged once per session the same way. Until item 5 lands
-   they are parsed from the text alone.
+   **Amended 2026-10-10** (goal `a-build-pushes-before-it-finishes`,
+   items 4 and 5): the build's finish is recorded by the node after the
+   push, and by the node alone. A node build session finishes on the
+   node's own stdio MCP server, `mesh-node` (`harness.NodeWorkMCP`:
+   `mesh session-tools` on the host, a Node script beside `mcp.json` in
+   a pod), whose `mesh_finish` and `mesh_fail` answer at once and record
+   nothing; the hosted `mcp__mesh-context__mesh_finish` and
+   `mcp__mesh-context__mesh_fail` are `--disallowedTools` for a build
+   (`ClaudeCode.Args`, `SandboxArgs`). The call still lands on
+   `Result.WorkCalls` by the tool's own name, and `Runner.afterBuild`
+   takes it in this order: validate, `Workspacer.Push`, and only once
+   the push has returned the sha it pushed, `FinishWorkItem` on that
+   sha (or, with no push, `FinishWorkItemAlreadyDone`). A push that
+   fails is the build's failure — `FailWorkItem` with `push
+   <branch>: <err>`, no finish of either kind sent, the branch left for
+   a retry: a finish whose push failed is not a finish. With nothing
+   recorded by the session's call, a refusal of the node's finish is
+   the finish's error; the old reading of it as the hosted tool's
+   finish (`finishedByTool`, `item <label>: finished by tool call on the
+   platform`) is retired. Before this the hosted call reported the
+   finish first, the evaluation of the item claimed its checkout and
+   rewrote the credential helper with a read token, and the build's
+   push was refused (`Write access to repository not granted`).
+   Evaluation and plan sessions keep the hosted `mesh_verdict` and
+   `mesh_plan` (Decisions 3 and 4).
+3. **The evaluator ends by `mesh_verdict`** (item 5 of the goal).
+   `EvaluatePrompt`'s `# Finish by tool call` tells the session to call
+   `mesh_verdict(item_id, passed, notes, failed_clauses: [{clause,
+   satisfy}], readings: [{clause, reading}])` and to write its review
+   and its `VERDICT: PASS|FAIL`, `FAILED: … || SATISFY: …` and
+   `READING: … || …` lines in the final message as well — the fallback
+   contract, unchanged. `verdictOf` reads a session's verdict, in
+   `Evaluator.afterEvaluate` for the first evaluation and in
+   `secondOpinion` for a blind attempt's retry and the second opinion,
+   on Claude and Codex alike:
+   - a `mesh_verdict` call with a readable `passed` (a bool, or
+     `"true"`/`"false"`) is the verdict, accepted with an empty final
+     message (`harness.VerdictCall`): its `notes`, each `readings` entry
+     appended to them as a `READING:` line — so `logReadings`, the notes'
+     truncation that keeps readings, and `NoteSameClause` on a repeated
+     clause run exactly as on the text path — and its `failed_clauses`,
+     both halves required, duplicates dropped, at most `ClauseMax`
+     (none given: the notes' `FAILED:` lines are read), all redacted
+     like the text;
+   - with no call the final message is parsed as before
+     (`ParseVerdict`, `ParseFailedClauses`) and one line, `item <label>:
+     no mesh_verdict call; parsed the final message` (a second session's
+     with its role, `item <label>: second opinion: …`), is logged per
+     session;
+   - with neither, it is no verdict (`noVerdict`, runsheet ADR 035), as
+     before.
+   A refusal of the node's `EvaluateWorkItem` after the deciding
+   session's `mesh_verdict` call is the hosted tool having recorded it:
+   logged `item <label>: evaluated by tool call on the platform`, not an
+   error.
+4. **The planner ends by `mesh_plan`** (item 5). `PlanPrompt`'s
+   `# Finish by tool call` tells the session to call `mesh_plan(goal_id,
+   items, questions)`, each item the object the JSON block carries
+   (seq, title, brief, acceptance, depends_on, repo, base_ref, model,
+   model_reason, atomic, precondition), `checkpoints` or `split` beside
+   them when rule 3 asks, and to write the fenced block in the final
+   message as well — the fallback contract, unchanged. In
+   `Planner.readPlan` a `mesh_plan` call with `items` or `split` is
+   rendered as the fenced block its message would end with
+   (`harness.PlanCall`; an array sent as a JSON string decoded first)
+   and read by `ParsePlan` and `ParsePlanQuestions` into the same
+   `PlannedSpec`s, then through the same checks — the repo map, the model
+   rubric (`PlannableModel`), `explainedDeps`, `hostReadingAcceptance`,
+   `closeOutAcceptance`, `sameAcceptanceAsFailed`, `reLands`,
+   `notASplit`, `otherRepoItems` — so a plan by call and a plan by text
+   cannot differ in what is handed in. With no call the text is parsed
+   and one line, `plan <goal>: no mesh_plan call; parsed the final
+   message`, is logged per session. A `planGoal` refused after a call is
+   still the plan's error, as before.
 
 ## Consequences
 
 - A session that ran out of turns after its finish call, or whose
   closing prose broke the format, still hands its work in.
 - The final-message contracts in `internal/harness/prompt.go` are kept,
-  unchanged: an older platform without the hosted tools, a Codex
+  unchanged and load-bearing — `VERDICT: PASS|FAIL`, the `FAILED:` and
+  `READING:` lines, the planner's fenced JSON, `ALREADY DONE:`: an older platform without the hosted tools, a Codex
   session whose MCP failed, or a model that forgets the call ends as
   before, and the fallback log line says how often that happens.
 - The node still pushes and still reads back what it pushed; the tool

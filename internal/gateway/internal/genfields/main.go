@@ -31,13 +31,26 @@ import (
 func main() {
 	refresh := flag.Bool("refresh", false, "introspect the gateway and write the schema file (no token needed: the schema is public)")
 	url := flag.String("url", "https://api.runsheet.dev/graphql", "the gateway's GraphQL endpoint, for -refresh")
+	refreshRulesFlag := flag.Bool("refresh-rules", false, "fetch runsheet's node-mutations.json and rewrite the committed copy canonically when it changes")
+	rulesURL := flag.String("rules-url", defaultRulesURL, "where runsheet publishes node-mutations.json, for -refresh-rules")
+	rulesPath := flag.String("rules", "gatewaytest/testdata/node-mutations.json", "the committed copy of node-mutations.json")
 	schemaPath := flag.String("schema", "schema.json", "the committed schema")
 	fieldsDir := flag.String("fields", "fields", "the directory of per-entity allow-lists, <Type>.txt")
 	out := flag.String("out", "fields_gen.go", "the generated Go file")
 	flag.Parse()
 
 	var err error
-	if *refresh {
+	if *refreshRulesFlag {
+		var changed bool
+		changed, err = refreshRules(*rulesURL, *rulesPath)
+		if err == nil {
+			if changed {
+				fmt.Println("genfields: updated", *rulesPath)
+			} else {
+				fmt.Println("genfields:", *rulesPath, "is up to date")
+			}
+		}
+	} else if *refresh {
 		err = refreshSchema(*url, *schemaPath)
 	} else {
 		err = generate(*schemaPath, *fieldsDir, *out)
@@ -46,6 +59,59 @@ func main() {
 		fmt.Fprintln(os.Stderr, "genfields:", err)
 		os.Exit(1)
 	}
+}
+
+// defaultRulesURL is where runsheet publishes the node mutations' rule
+// fixture (docs/adr/adr-026-the-node-and-the-gateway-share-one-rule-fixture.md).
+const defaultRulesURL = "https://raw.githubusercontent.com/runsheet/runsheet/main/specs/contracts/node-mutations.json"
+
+// refreshRules fetches the rule fixture from url and, when it differs,
+// rewrites path in the canonical form: sorted keys, 2-space indent, a
+// trailing newline. A 404 means runsheet does not publish it yet: the
+// file is left alone and that is no error. Any other failure leaves the
+// file untouched and is returned.
+func refreshRules(url, path string) (changed bool, err error) {
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return false, err
+	}
+	switch resp.StatusCode {
+	case http.StatusOK:
+	case http.StatusNotFound:
+		fmt.Fprintf(os.Stderr, "genfields: %s: runsheet does not publish it yet (404); %s left as it is\n", url, path)
+		return false, nil
+	default:
+		return false, fmt.Errorf("%s: %s: %s", url, resp.Status, bytes.TrimSpace(raw))
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var v any
+	if err := dec.Decode(&v); err != nil {
+		return false, fmt.Errorf("%s: %w", url, err)
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return false, fmt.Errorf("%s: trailing data after the JSON document", url)
+	}
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(v); err != nil { // map keys are written sorted
+		return false, err
+	}
+	if old, err := os.ReadFile(path); err == nil && bytes.Equal(old, buf.Bytes()) {
+		return false, nil
+	}
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // Schema is schema.json: every object, interface and input type the

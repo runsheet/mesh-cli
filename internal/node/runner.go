@@ -18,7 +18,6 @@ import (
 	"projectmesh.io/mesh-cli/internal/harness"
 	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/tools"
-	"projectmesh.io/mesh-cli/internal/validate"
 )
 
 // Resolved is a work item with its goal, project and repo read.
@@ -171,6 +170,15 @@ func (r *Runner) logf(format string, args ...any) {
 	}
 }
 
+// wireGitLogf gives a *Git WS its Logf, once, so a retried fetch's one
+// line (ADR-023's Retry section) reaches the node's own log through
+// r.logf, as every other line of the item does.
+func (r *Runner) wireGitLogf() {
+	if g, ok := r.WS.(*Git); ok && g.Logf == nil {
+		g.Logf = r.logf
+	}
+}
+
 // kindModelBudget is node.yaml's budgets: figure for kind and model —
 // live, through r.Budgets, when set; else Cfg's own, read once at start.
 func (r *Runner) kindModelBudget(kind, model string) (float64, string) {
@@ -251,10 +259,12 @@ func (c *costReporter) delta() int {
 
 // RunItem is the whole of one claimed item: resolve, workspace, context,
 // session, progress, push, finish — or fail, or release it when GitHub
-// refuses the item's token through every retry (ReleaseOnCredential). A
+// refuses the item's token through every retry (ReleaseOnCredential) or
+// its workspace cannot be prepared (ReleaseOnWorkspace, ADR-024). A
 // cancelled ctx (the node's own shutdown) leaves the item as it is for a
 // retry.
 func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
+	r.wireGitLogf()
 	// every command the build sends acts as its builder (ADR-015)
 	ctx = actorContext(ctx, r.Cfg, gateway.RoleBuilder)
 	res, err := Resolve(ctx, r.GW, item)
@@ -275,14 +285,18 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		sc, _ := r.Scopes.ByOrg(item.OrgID)
 		return ReleaseOnCredential(ctx, r.GW, item.ID, sc.NodeID, ce, r.logf)
 	}
+	// a workspace that cannot be prepared is the node's condition, not
+	// the item's: the claim is released with the error, never failed
+	// (ADR-024, a workspace failure releases the claim)
+	nodeID := func() string { sc, _ := r.Scopes.ByOrg(item.OrgID); return sc.NodeID }
 	if err != nil {
-		return r.fail(ctx, item, fmt.Errorf("workspace: %w", err))
+		return r.releaseWorkspace(ctx, item.ID, label, nodeID(), err)
 	}
 	// the session commits as its agent with the pairers' trailers, never
 	// as the node's owner (ADR-024)
 	ident := identityFor(r.Cfg, tools.RoleFor(string(harness.KindBuild)), item, res.Goal)
 	if err := r.WS.Identify(ctx, dir, ident); err != nil {
-		return r.fail(ctx, item, fmt.Errorf("workspace: %w", err))
+		return r.releaseWorkspace(ctx, item.ID, label, nodeID(), err)
 	}
 
 	orgName := r.Scopes.NameOf(item.OrgID)
@@ -293,7 +307,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	}
 	files, written, err := WriteContext(dir, cx)
 	if err != nil {
-		return r.fail(ctx, item, fmt.Errorf("write context: %w", err))
+		return r.releaseWorkspace(ctx, item.ID, label, nodeID(), fmt.Errorf("write context: %w", err))
 	}
 	r.logf("item %s: %s", label, written.Line())
 	if w := written.TargetWarning(); w != "" {
@@ -527,6 +541,28 @@ func (b *buildRun) reportToolUse(ctx context.Context, result harness.Result) {
 	}
 }
 
+// reportHandoff sends the session's last mesh_progress note again when it
+// opens docsWriterNote, after the node's own notes (the final text, the
+// tool use, the attestation) and before the finish, so the item's last
+// note is the hand-off the docs writer reads and not the node's.
+func (b *buildRun) reportHandoff(ctx context.Context, result harness.Result) {
+	if note := handoffNote(result); note != "" {
+		b.report(ctx, note)
+	}
+}
+
+// handoffNote is the session's last mesh_progress note when it opens
+// docsWriterNote, else "".
+func handoffNote(result harness.Result) string {
+	call := result.WorkCalls["mesh_progress"]
+	note, _ := call["note"].(string)
+	note = strings.TrimSpace(note)
+	if !strings.HasPrefix(strings.ToLower(note), docsWriterNote) {
+		return ""
+	}
+	return note
+}
+
 // run runs the session through start — Harness.Run or Attach — with
 // the item's heartbeat every ProgressEvery and its token renewed.
 func (b *buildRun) run(ctx context.Context, start func(onProgress func(harness.Progress)) (harness.Result, error)) (harness.Result, error) {
@@ -571,7 +607,11 @@ func (b *buildRun) run(ctx context.Context, start func(onProgress func(harness.P
 // afterBuild is what follows a build session, however this process came
 // to hold it: the item released on a sandbox limit, failed on an error
 // or an unsuccessful end, finished already done (no push: main holds the
-// work), or pushed and finished. A cancelled ctx — the
+// work), or pushed and finished — in that order: the finish is the
+// node's alone (the session's mesh_finish lands on the node's own
+// server and records nothing), handed in only on the head Push
+// returned, and a push that fails is the item's failure with no finish
+// sent, the branch left for a retry (ADR-023 Decision 2). A cancelled ctx — the
 // node shutting down — leaves the item and its still-running session
 // for the next node to adopt. Once the item is finished or failed the
 // session directory goes.
@@ -644,9 +684,6 @@ func (r *Runner) afterBuild(ctx context.Context, b *buildRun, result harness.Res
 		// main already holds the work (adr-003): no push, no branch, and
 		// the evaluator checks the evidence on the base ref
 		if err := b.acct.Carried(r.GW.FinishWorkItemAlreadyDone(ctx, item.ID, truncate(b.acct.Redact(evidence), 4000), b.cost.delta(), b.acct.Report(result), b.description(ctx))); err != nil {
-			if fin.handedIn(err) {
-				return r.finishedByTool(ctx, b)
-			}
 			return fmt.Errorf("finish %s: %w", label, err)
 		}
 		r.logf("item %s: finished already done ($%.2f): %s", label, result.CostUSD, truncate(evidence, 200))
@@ -661,10 +698,9 @@ func (r *Runner) afterBuild(ctx context.Context, b *buildRun, result harness.Res
 		b.report(ctx, "validation: "+err.Error())
 		return r.fail(ctx, item, fmt.Errorf("validation: %w", err))
 	}
-	var att validate.Attestation
 	if v != nil {
 		defer v.close()
-		att, err = r.validateBuild(ctx, b, v, result)
+		_, err = r.validateBuild(ctx, b, v, result)
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -685,29 +721,77 @@ func (r *Runner) afterBuild(ctx context.Context, b *buildRun, result harness.Res
 			return r.fail(ctx, item, fmt.Errorf("validation: %w", err))
 		}
 	}
-	if err := b.cred.Refresh(ctx); err != nil {
-		r.logf("item %s: %v", label, err) // the token held may yet serve
-	}
-	sha, err := r.WS.Push(ctx, b.dir, b.spec.Branch)
+	// the push is part of the build: no finish is sent until it has
+	// returned the head it pushed, and a refused push is the build's
+	// failure, named, never a finish
+	sha, err := r.pushBuild(ctx, b)
 	if err != nil {
-		return r.fail(ctx, item, fmt.Errorf("push: %w", err))
+		err = b.acct.RedactErr(err)
+		b.report(ctx, err.Error())
+		return r.fail(ctx, item, err)
 	}
 	if v != nil {
-		// uploaded after the push: the platform signs for a commit that exists
-		if att.Commit != sha {
-			r.logf("item %s: validation ran on %s, the push is %s", label, short(att.Commit), short(sha))
+		// after the last push and before the finish: the platform signs for
+		// the head it can see while the item is still this node's
+		r.attestPushed(ctx, b, v, sha)
+		if rep := b.acct.Report(result); rep != nil {
+			rep.Validation = v.usage()
 		}
-		r.uploadAttestation(ctx, b, att)
 	}
+	b.reportHandoff(ctx, result)
 	if err := b.acct.Carried(r.validationUsage(r.GW.FinishWorkItem(ctx, item.ID, b.spec.Branch, sha, b.cost.delta(), b.acct.Report(result), b.description(ctx)))); err != nil {
-		if fin.handedIn(err) {
-			return r.finishedByTool(ctx, b)
-		}
 		return fmt.Errorf("finish %s: %w", label, err)
 	}
-	r.logf("item %s: finished %s@%s ($%.2f)", label, b.spec.Branch, short(sha), result.CostUSD)
+	r.logf("item %s: pushed %s; finished %s ($%.2f)", label, short(sha), b.spec.Branch, result.CostUSD)
 	b.endGoal(ctx)
 	return nil
+}
+
+// pushBuild pushes the build's branch on the build's own write token:
+// the checkout's helper is rewritten with the token issued at claim (or
+// its Refresh) just before the push (ItemCred.ForPush), so a token
+// issued afterwards — an evaluation's read token — is never the one
+// used. A push GitHub refuses for its credential is re-issued once and
+// tried again; still refused it is a *PushCredentialError naming the
+// repo, the branch and the token's access, issue time and expiry, and
+// logged `push refused (<token>): <git's words>; not finished`. Any
+// other failure is `push <branch>: <err>`. The token is scrubbed from
+// whatever git said.
+func (r *Runner) pushBuild(ctx context.Context, b *buildRun) (string, error) {
+	branch := b.spec.Branch
+	tok, err := b.cred.ForPush(ctx)
+	if err != nil {
+		r.logf("item %s: %v", b.label, err) // the token held may yet serve
+	}
+	var seen []string
+	if tok != nil {
+		seen = append(seen, tok.Token)
+	}
+	sha, err := r.WS.Push(ctx, b.dir, branch)
+	if err != nil && b.cred != nil && IsCredentialRefusal(err) && ctx.Err() == nil {
+		r.logf("item %s: push refused (%s): %v; re-issuing the token once", b.label, FactsOf(tok), scrubbed(err, seen))
+		if rerr := b.cred.Reissue(ctx); rerr != nil {
+			r.logf("item %s: %v", b.label, rerr)
+		} else {
+			tok = b.cred.Token()
+			seen = append(seen, tok.Token)
+			sha, err = r.WS.Push(ctx, b.dir, branch)
+		}
+	}
+	if err == nil {
+		return sha, nil
+	}
+	err = scrubbed(err, seen)
+	if b.cred != nil && IsCredentialRefusal(err) {
+		repo := b.spec.Repo
+		if tok != nil && tok.Repository != "" {
+			repo = tok.Repository
+		}
+		r.logf("item %s: push refused (%s): %v; not finished", b.label, FactsOf(tok), err)
+		return "", &PushCredentialError{Repo: repo, Branch: branch, Token: FactsOf(tok), Cause: err}
+	}
+	r.logf("item %s: push %s: %v; not finished", b.label, branch, err)
+	return "", fmt.Errorf("push %s: %w", branch, err)
 }
 
 // finishCall is a build session's end as its mesh-work tool calls say
@@ -750,23 +834,6 @@ func finishCallOf(result harness.Result) finishCall {
 func workArg(in map[string]any, key string) string {
 	v, _ := in[key].(string)
 	return strings.TrimSpace(v)
-}
-
-// handedIn says whether the node's own finish, refused with err, was
-// refused because the session's mesh_finish call already moved the item
-// on the platform: a refusal (never a transport failure or an older
-// platform's unknown field) after a call.
-func (f finishCall) handedIn(err error) bool {
-	return f.called && gateway.IsRefusal(err) && !gateway.IsUnsupported(err)
-}
-
-// finishedByTool is a build the platform's hosted mesh_finish already
-// handed in: the node's own finish was refused for the item's state, so
-// the build is done, not failed.
-func (r *Runner) finishedByTool(ctx context.Context, b *buildRun) error {
-	r.logf("item %s: finished by tool call on the platform", b.label)
-	b.endGoal(ctx)
-	return nil
 }
 
 // handedBack records what a handed-back session spent its budget on

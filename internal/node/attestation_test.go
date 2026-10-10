@@ -99,9 +99,10 @@ func TestAttestationUnsupportedIsNotedOncePerRun(t *testing.T) {
 // limited until the backoff gives up — is a note on the item naming
 // the retries and the last answer, never the absent-mutation notice.
 func TestAttestationRetryGivesUpWithANote(t *testing.T) {
-	orig := gateway.AttestationBackoff
-	gateway.AttestationBackoff = []time.Duration{time.Millisecond, time.Millisecond}
-	t.Cleanup(func() { gateway.AttestationBackoff = orig })
+	origFor, origTable := gateway.AttestationRetryFor, gateway.AttestationBackoff
+	gateway.AttestationRetryFor = 20 * time.Millisecond
+	gateway.AttestationBackoff = []time.Duration{time.Millisecond, 2 * time.Millisecond}
+	t.Cleanup(func() { gateway.AttestationRetryFor, gateway.AttestationBackoff = origFor, origTable })
 
 	f := seed(t)
 	f.RateLimit429 = map[string]bool{"recordValidationAttestation": true}
@@ -114,5 +115,8 @@ func TestAttestationRetryGivesUpWithANote(t *testing.T) {
 	}
 	if strings.Contains(logs.String(), "takes no attestations yet") {
 		t.Fatalf("log mentions the absent-mutation notice on a spent retry: %s", logs.String())
+	}
+	if st := f.Item(item1)["status"]; st == "failed" {
+		t.Fatalf("item status = %v after a spent retry, want not failed", st)
 	}
 }

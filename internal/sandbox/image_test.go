@@ -154,6 +154,22 @@ func TestBuildImageFromTheContainerfile(t *testing.T) {
 	}
 }
 
+// PushImage builds the node image for both platforms a sandboxed node
+// may run on, so the manifest list it pushes serves either.
+func TestPushImageIsMultiPlatform(t *testing.T) {
+	f := &fakeRuntime{}
+	if _, err := PushImage(context.Background(), f.run, "ghcr.io/runsheet/mesh-node:v1.2.3", "v1.2.3"); err != nil {
+		t.Fatal(err)
+	}
+	b := f.called("build")
+	if len(b) != 1 {
+		t.Fatalf("builds = %q; want one", b)
+	}
+	if !strings.Contains(b[0], "linux/amd64") || !strings.Contains(b[0], "linux/arm64") {
+		t.Errorf("build args = %q; want both linux/amd64 and linux/arm64", b[0])
+	}
+}
+
 // (d) Older mesh-node tags are removed; the new one and the one the
 // running node still uses are kept; one a container holds is said.
 func TestEnsureImagePrunesOlderTags(t *testing.T) {
@@ -208,7 +224,7 @@ func TestContainerfileToolchains(t *testing.T) {
 	for _, want := range []string{"git", "go.dev/dl/go", "nodejs.org/dist", "npm install -g", "python3", "python3-pip", "astral-sh/uv",
 		"corepack enable", "make", "gcc", " gh", "gh --version",
 		"@anthropic-ai/claude-code@", "@openai/codex@", "DISABLE_AUTOUPDATER=1", "check_for_update_on_startup = false",
-		"ca-certificates", "nftables", "dpkg-query -W nftables", "useradd", "USER mesh"} {
+		"ca-certificates", "nftables", "dpkg-query -W nftables", "useradd", "USER 1000:1000"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("Containerfile has no %q", want)
 		}
@@ -262,6 +278,45 @@ func TestImageDigest(t *testing.T) {
 		return []byte("Error: no such image"), errors.New("exit status 125")
 	}
 	if _, err := ImageDigest(context.Background(), failing, "x"); err == nil || !strings.Contains(err.Error(), "no such image") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// ImageUser asks podman for the image's declared user and parses it as
+// uid:gid; an empty answer or a name it cannot resolve to a uid falls
+// back to DefaultImageUID for both, and a failed inspect is an error.
+func TestImageUser(t *testing.T) {
+	for _, c := range []struct {
+		name, user string
+		wantUID    int
+		wantGID    int
+	}{
+		{"uid only", "1000", 1000, 1000},
+		{"uid:gid same", "1000:1000", 1000, 1000},
+		{"uid:gid different", "1001:1002", 1001, 1002},
+		{"empty", "", DefaultImageUID, DefaultImageUID},
+		{"a name", "mesh", DefaultImageUID, DefaultImageUID},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			var got string
+			run := func(_ context.Context, name string, args ...string) ([]byte, error) {
+				got = name + " " + strings.Join(args, " ")
+				return []byte(c.user + "\n"), nil
+			}
+			uid, gid, err := ImageUser(context.Background(), run, "ghcr.io/runsheet/mesh-node:v1")
+			if err != nil || uid != c.wantUID || gid != c.wantGID {
+				t.Fatalf("ImageUser(%q) = %d, %d, %v; want %d, %d", c.user, uid, gid, err, c.wantUID, c.wantGID)
+			}
+			if got != "podman image inspect --format {{.Config.User}} ghcr.io/runsheet/mesh-node:v1" {
+				t.Fatalf("ran %q", got)
+			}
+		})
+	}
+
+	failing := func(context.Context, string, ...string) ([]byte, error) {
+		return []byte("Error: no such image"), errors.New("exit status 125")
+	}
+	if _, _, err := ImageUser(context.Background(), failing, "x"); err == nil || !strings.Contains(err.Error(), "no such image") {
 		t.Fatalf("err = %v", err)
 	}
 }

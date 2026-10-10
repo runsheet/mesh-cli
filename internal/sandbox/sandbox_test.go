@@ -83,6 +83,20 @@ func TestPodMountsOnlyWorkspaceAndHome(t *testing.T) {
 	}
 }
 
+func TestKeepIDUserns(t *testing.T) {
+	for _, tc := range []struct {
+		uid, gid int
+		want     string
+	}{
+		{uid: 1000, gid: 1000, want: "keep-id:uid=1000,gid=1000"},
+		{uid: 1001, gid: 1002, want: "keep-id:uid=1001,gid=1002"},
+	} {
+		if got := KeepIDUserns(tc.uid, tc.gid); got != tc.want {
+			t.Errorf("KeepIDUserns(%d, %d) = %q, want %q", tc.uid, tc.gid, got, tc.want)
+		}
+	}
+}
+
 // The agent's environment is built from the allow-list: the node's own
 // variables never reach it, nor any job variable outside the list.
 func TestAgentEnvIsTheAllowList(t *testing.T) {
@@ -148,8 +162,45 @@ func TestAgentEnvIsTheAllowList(t *testing.T) {
 	if v, _ := lastValue(penv, "GH_TOKEN"); v != "ghs_item" {
 		t.Fatalf("podman env GH_TOKEN = %q", v)
 	}
-	if v, _ := lastValue(penv, "HOME"); v != sess.Home {
-		t.Fatalf("podman env HOME = %q: the container's must win", v)
+	if v, _ := lastValue(penv, "HOME"); v == sess.Home {
+		t.Fatalf("podman env HOME = %q: the container's must not reach podman", v)
+	}
+}
+
+func TestPodmanEnvKeepsTheNodesPassthrough(t *testing.T) {
+	node := []string{"HOME=/home/node", "USER=node", "XDG_RUNTIME_DIR=/run/user/1000", "CONTAINERS_STORAGE_CONF=/etc/s.conf", "PATH=/usr/bin"}
+	for _, name := range []string{"HOME", "USER", "XDG_RUNTIME_DIR", "CONTAINERS_STORAGE_CONF"} {
+		container := []string{name + "=/tmp/x", "GH_TOKEN=t"}
+		penv := podmanEnv(node, container)
+		var got []string
+		for _, kv := range penv {
+			if k, _, _ := strings.Cut(kv, "="); k == name {
+				got = append(got, kv)
+			}
+		}
+		want := ""
+		for _, kv := range node {
+			if strings.HasPrefix(kv, name+"=") {
+				want = kv
+			}
+		}
+		if len(got) != 1 || got[0] != want {
+			t.Fatalf("%s in podman env = %v, want only %q", name, got, want)
+		}
+		if v, _ := lastValue(penv, "GH_TOKEN"); v != "t" {
+			t.Fatalf("podman env GH_TOKEN = %q", v)
+		}
+		if v, _ := lastValue(penv, "XDG_RUNTIME_DIR"); v != "/run/user/1000" && name != "XDG_RUNTIME_DIR" {
+			t.Fatalf("XDG_RUNTIME_DIR = %q", v)
+		}
+		args := strings.Join(AgentRunArgs(Pod{Name: "p"}, AgentSpec{Name: "a", Image: "img", Env: container}), " ")
+		if !strings.Contains(args, "--env "+name+"=/tmp/x") || !strings.Contains(args, "--env GH_TOKEN ") || strings.Contains(args, "GH_TOKEN=") {
+			t.Fatalf("args = %s", args)
+		}
+		sargs := strings.Join(SidecarRunArgs(Pod{Name: "p"}, SidecarSpec{Name: "s", Image: "img", Env: container}), " ")
+		if !strings.Contains(sargs, "--env "+name+"=/tmp/x") || strings.Contains(sargs, "GH_TOKEN=") {
+			t.Fatalf("sidecar args = %s", sargs)
+		}
 	}
 }
 
@@ -242,6 +293,23 @@ func TestSessionCleansUp(t *testing.T) {
 	}
 	if _, err := os.Stat(sess.Home); !os.IsNotExist(err) {
 		t.Fatalf("home outlived its session: %v", err)
+	}
+}
+
+// A session names the image its agent runs, and Describe says so.
+func TestSessionNamesItsImage(t *testing.T) {
+	sb := testSandbox(t, &Fake{})
+	sb.Config.Image = "ghcr.io/runsheet/mesh-node:v0.2.335"
+	sess, err := sb.Open("ship-it/1", "build", GitIdentity{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	if got := sess.Image(); got != "ghcr.io/runsheet/mesh-node:v0.2.335" {
+		t.Fatalf("Image() = %q", got)
+	}
+	if got, want := sess.Describe(), "session ship-it/1 — image ghcr.io/runsheet/mesh-node:v0.2.335"; got != want {
+		t.Fatalf("Describe() = %q, want %q", got, want)
 	}
 }
 

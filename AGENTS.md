@@ -184,24 +184,64 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   says (`finishCallOf`; the node still pushes and hands in the head it
   pushed), a `mesh_fail` call as the item's failure, and with no call
   parses the text as before, logging `item <label>: no mesh_finish call;
-  parsed the final message` once per session; a finish the platform
-  refuses after a call is `finished by tool call on the platform`, not a
-  failure (ADR-023, finish by tool call; the evaluator's `mesh_verdict`
-  and the planner's `mesh_plan` are its item 5). Both finish calls carry
+  parsed the final message` once per session; the call records nothing
+  (a build's `mesh_finish` is the node's own `mesh-node` server's), so
+  the node validates, pushes, and only on the sha `Push` returned sends
+  `FinishWorkItem` — a push that fails fails the item `push <branch>:
+  <err>` with no finish sent, and a refused finish is an error (ADR-023,
+  finish by tool call, Decision 2 amended 2026-10-10). The push is
+  `Runner.pushBuild`: `ItemCred.ForPush` rewrites the checkout's helper
+  with the build's own token (issued at claim, or its `Refresh`) just
+  before `Workspacer.Push`, so a token written there since is never
+  used; a push refused for its credential (`IsCredentialRefusal`, `Write
+  access to repository not granted` among them) is `Reissue`d once and
+  retried, and still refused is a `*PushCredentialError` naming the
+  repo, branch and the token's access, issue time and expiry
+  (`TokenFacts`, `gateway.GitHubToken.Access`/`IssuedAt`), never the
+  token; logged `item <label>: pushed <sha>; finished <branch> ($x)` or
+  `item <label>: push refused (<token facts>): <git's words>; not
+  finished` (ADR-014's amendment 2026-10-10: push → attest → finish). The evaluator ends the same
+  way by `mesh_verdict(item_id, passed, notes, failed_clauses: [{clause,
+  satisfy}], readings: [{clause, reading}])` (EvaluatePrompt's
+  `# Finish by tool call`): `verdictOf`, on the first evaluation and
+  the second opinion of either family, takes the call as the verdict
+  with an empty final message (`harness.VerdictCall`, its readings
+  appended to the notes as `READING:` lines so `logReadings` and
+  `NoteSameClause` run as on the text), parses the text with no call,
+  logging `item <label>: no mesh_verdict call; parsed the final message`
+  once per session, and with neither is no verdict; an
+  `EvaluateWorkItem` refused after a call is `evaluated by tool call on
+  the platform`. The planner ends by `mesh_plan(goal_id, items,
+  questions)` (PlanPrompt's `# Finish by tool call`): `readPlan`
+  renders the call as the fenced block (`harness.PlanCall`) and reads
+  it through `ParsePlan` and every plan check, else parses the text,
+  logging `plan <goal>: no mesh_plan call; parsed the final message`.
+  The `VERDICT:`/`FAILED:`/`READING:` lines and the fenced JSON stay
+  load-bearing as the fallbacks. Both `mesh_finish` calls carry
   a `description` — the PR body `FinishDescription` renders
   (`internal/node/finishdesc.go`): a `## Who` section naming who built
   the item (its actor, model and adapter) and who it was paired with,
   the evaluator left to `EvaluateWorkItem`'s own actor rather than named
   here — sent only when the introspected `FinishWorkItemInput` takes
   `description` (every-actor-has-a-name item 3, adr-015's amendment).
-  Change wording
-  freely; never the contract. (A later goal moves the guidance onto the
+  Change wording freely; never the contract. (A later goal moves the
+  guidance onto the
   platform as agent definitions.)
 - `internal/latchkey/` + `internal/auth/token.go`: the machine
   credential — Latchkey's device flow, the rotating refresh grant, and
   the `~/.mesh/token` that holds either shape behind one `TokenSource`
   (latchkey `adr-machine-identity`).
-- `internal/node/`: the loop (`runner`), the workspace and the project's
+- `internal/node/`: the loop (`runner`; a workspace that cannot be prepared before the harness starts — `PrepareWithRetry`, `Identify`, `WriteContext` — releases the claim with `workspace: <error>` by `ReleaseOnWorkspace`, never `FailWorkItem` unless the release is refused, and `Declines.HoldFor` keeps the item off the node for `WorkspaceReleaseHold`, ten minutes; ADR-024, a workspace failure releases the claim), the workspace — each item an
+  independent clone at `~/.mesh/work/<goal>/<seq>` — its evaluation's
+  at `<goal>/<seq>-eval` (`EvalWorkspaceSpec`, the same Root, ADR-027),
+  so an evaluation never rewrites the build's helper — every `gh repo
+  clone` and `git fetch` `Git` runs going through `fetchLocked` under a
+  per-repo fetch lock (`repolock.go`: a process-wide mutex keyed by
+  `RepoLockKey`, owner/name, and an exclusive flock on
+  `<root>/.locks/<owner>--<name>.lock`, `Git.LockRoot` else the spec's
+  Root else the checkout's grandparent; released before any checkout,
+  never held across a session or a push; ADR-023, fetches of one repo
+  are serialised on the node) — and the project's
   context (`workspace.go`: `FetchContext`, `RenderIndex`, ADR-015 — on disk only the instructions of the session's own repos (`ContextOptions.Repos`), keyed by repo and path — a slug several repos share, as every AGENTS.md's `agents` is, read from the session's own checkout (`ContextOptions.Checkouts`), never by slug from the gateway, which answers one repo's body for all — each as `instructions-<owner>-<repo>-<path>.md` (`contextFileName`: the path without `.md`, so one repo's two paths of one slug are two files), and, in INDEX.md, its own goal (`ContextOptions.Goal`: statement, acceptance, items; none for research); no ADR, PRD or TRD body is fetched; INDEX.md is a screen with no document table and no other goal — what is on disk, `mesh_search`/`mesh_document`/`mesh_documents`/`mesh_projects`/`mesh_items` for the rest, the ADRs and TRD binding, one count line; node.yaml `context:` (`ContextConfig`, re-read each tick, `Loop.ContextBudget`) `bytes_max` is the cap, default 80KB, INDEX.md included, an instructions document past it left whole to INDEX.md as binding, to fetch (`Context.Dropped`), and the cap held on what is written — `RenderIndex` never past the room the files leave (the goal's item table cut at a row with the rest to `mesh_items`, then its statement and acceptance; at last a cut), `Context.fit` again in `WriteContext`, which measures what it rendered and writes nothing past the cap, and clears `.mesh/context` first, an empty context included; past the 40KB target (`ContextBytesTarget`) a session logs `ContextWritten.TargetWarning`; `doc_bytes_max` holds each instructions document),
   evaluate, plan and research sessions, the service install (`launchd` /
   `systemd --user`). A project's repos — for the planner, the director
@@ -218,7 +258,21 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   another node or an item not `evaluating` is refused with a
   `gateway.Error` (`IsRefusal`); the `gatewaytest` fake takes it the
   same way, recording it in `Calls` and `Claims` as `claimWorkItem`
-  does (goal `a-node-says-which-sessions-it-takes`). The loop's
+  does (goal `a-node-says-which-sessions-it-takes`). On a machine
+  credential every `RegisterNode` carries `RegisterNodeInput.CredentialID`
+  (`node.Registrar.CredentialID`, the token's machine id) as
+  `credentialId` only when `TakesNodeCredential` says the schema has it,
+  and a `not yours` refusal names the id sent (`node.NotYoursLine`;
+  ADR-015's amendment 2026-10-07, runsheet#2290). The `gatewaytest`
+  fake checks every `registerNode`, `heartbeatNode` and `claimWorkItem`
+  input against `internal/gateway/gatewaytest/testdata/node-mutations.json`
+  — per mutation and bearer kind (person or machine) the fields the
+  gateway requires and refuses — refusing a miss or a refused field by
+  name, and `TestNodeMutationsOnBothBearers` runs the node's register,
+  heartbeat and claim on both kinds (mesh-cli ADR-026).
+  A change to a node mutation's rule regenerates node-mutations.json in runsheet (specs/contracts/, from gateway/scope_node.go, checked by TestContracts) and arrives here through the schema-refresh pull request;
+  `genfields -refresh-rules` rewrites the copy — never hand-edit it
+  to make a test pass. The loop's
   `evaluateHeld` makes it for an `evaluating` item another node (or
   none) holds before the evaluation starts, re-reading the item after
   it, a refusal ordinary and silent; only when the `Mutation` has it
@@ -983,6 +1037,20 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   before `FinishWorkItemRebase`; ADR 032 carries no attestation across a
   rebase): the same steps and upload, a failing step logged and still
   uploaded, never the rebase's failure (adr-014, After a rebase).
+  After the last push of a build, rework or rebase the node attests
+  exactly the pushed sha (`attestPushed`, validated again when the
+  push is not the commit validated) before the finish, answers a
+  `<sha> is not the head of <branch> (GitHub has X)` refusal once by
+  fetching, validating and attesting X (`answerNewerHead`), and the
+  upload retries a 429/5xx/transport error for `AttestationRetryFor`,
+  2 minutes; an attestation never fails an item. `attestation recorded
+  <sha> <suites> <status>` and `attestation refused <reason>` are
+  counted for the hour (`AttestationCounts`, `ValidationNotices.Counts`,
+  `~/.mesh/node.attestations`): the loop's health line, every
+  `DefaultHealthEvery`, ends `attestations recorded <n> refused <m>
+  (1h)` and `mesh node status` prints `attestations: <n> recorded, <m>
+  refused (last hour)` (adr-014's amendment 2026-10-09; the gateway's
+  half is runsheet goal an-attestation-is-about-a-commit-not-an-item-state).
 - **Services** (`internal/sandbox/services.go`, mesh-specs ADR 007):
   `Resolve(repoDir, allowed)` reads what a repository declares, first
   found wins — `.mesh/services.yml`, else the `services:` of its

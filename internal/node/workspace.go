@@ -40,6 +40,17 @@ func (s WorkspaceSpec) Dir() string {
 	return filepath.Join(s.Root, s.GoalSlug, fmt.Sprint(s.Seq))
 }
 
+// EvalWorkspaceSpec is an evaluation's checkout of an item: its own
+// clone at <root>/<goal>/<seq>-eval, beside the build's <root>/<goal>/<seq>,
+// so the evaluation's Authorize writes its read token on a credential
+// helper the build's push never reads (goal
+// a-build-pushes-before-it-finishes). Root stays the work root, so the
+// per-repo fetch lock is the build's (ADR-023).
+func EvalWorkspaceSpec(root, goalSlug string, seq int, repo, branch, baseRef string) WorkspaceSpec {
+	return WorkspaceSpec{Root: root, GoalSlug: goalSlug, Seq: seq, Repo: repo, Branch: branch, BaseRef: baseRef,
+		Path: filepath.Join(root, goalSlug, fmt.Sprintf("%d-eval", seq))}
+}
+
 // PlanRepoSpec is a plan's read-only checkout of repo at dir, for
 // Authorize: the goal's token on that checkout alone (adr-022).
 func PlanRepoSpec(repo, dir string) WorkspaceSpec {
@@ -111,8 +122,22 @@ const FetchDepth = 300
 // its item's token, any other on the operator's own credentials.
 type Git struct {
 	Log io.Writer
+	// Logf, when set, takes the node's log lines about a fetch's own
+	// retries — one line per retried fetch, when it finally succeeds or
+	// finally gives up (ADR-023's Retry section). Nil is silent.
+	Logf func(string, ...any)
 	// GitHubURL is GitHub's base URL (GitHubURL when empty).
 	GitHubURL string
+	// LockRoot is where the per-repo fetch locks live, under
+	// <LockRoot>/.locks/ (ADR-023, fetches of one repo are serialised on
+	// the node). Empty, Prepare takes its spec's Root and every other
+	// call the checkout's grandparent — the work root for an item's
+	// <root>/<goal>/<seq>.
+	LockRoot string
+	// exec, when set, replaces the real git/gh invocation: tests wrap it
+	// to inject a failure and delegate to realRun for the rest. Nil is
+	// the real one.
+	exec func(ctx context.Context, dir, name string, args ...string) (string, error)
 }
 
 func (g *Git) githubURL() string {
@@ -146,6 +171,15 @@ func (g *Git) Authorize(ctx context.Context, spec WorkspaceSpec, tok *gateway.Gi
 }
 
 func (g *Git) run(ctx context.Context, dir string, name string, args ...string) (string, error) {
+	if g.exec != nil {
+		return g.exec(ctx, dir, name, args...)
+	}
+	return g.realRun(ctx, dir, name, args...)
+}
+
+// realRun is the real git/gh invocation: run dispatches to it, or to
+// g.exec when a test has set one.
+func (g *Git) realRun(ctx context.Context, dir string, name string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
@@ -159,17 +193,31 @@ func (g *Git) run(ctx context.Context, dir string, name string, args ...string) 
 	return strings.TrimSpace(string(out)), nil
 }
 
+// IsRefLockFailure reports whether err is git refusing a ref update
+// because another process was writing the same ref at the same moment —
+// "cannot lock ref" or "unable to update local ref" in its text, the two
+// lines the grapevine node's log carried before fetches of one repo were
+// serialised on the node (ADR-023).
+func IsRefLockFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "cannot lock ref") || strings.Contains(s, "unable to update local ref")
+}
+
 // Prepare implements Workspacer.
 func (g *Git) Prepare(ctx context.Context, spec WorkspaceSpec) (string, error) {
 	dir := spec.Dir()
+	root, key := g.lockRoot(spec.Root, dir), RepoLockKey(spec.Repo)
 	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
 		if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
 			return "", err
 		}
-		if _, err := g.run(ctx, filepath.Dir(dir), "gh", "repo", "clone", spec.Repo, dir); err != nil {
+		if _, err := g.fetchLocked(ctx, root, key, filepath.Dir(dir), "gh", "repo", "clone", spec.Repo, dir); err != nil {
 			return "", err
 		}
-	} else if _, err := g.run(ctx, dir, "git", "fetch", "--prune", "origin"); err != nil {
+	} else if _, err := g.fetchLocked(ctx, root, key, dir, "git", "fetch", "--prune", "origin"); err != nil {
 		return "", err
 	}
 	base := spec.BaseRef
@@ -181,9 +229,9 @@ func (g *Git) Prepare(ctx context.Context, spec WorkspaceSpec) (string, error) {
 		base = strings.TrimPrefix(out, "origin/")
 	}
 	if spec.Branch == "" {
-		return dir, g.CheckoutBase(ctx, dir, base)
+		return dir, g.checkoutBase(ctx, root, key, dir, base)
 	}
-	if err := g.baseHistory(ctx, dir, base); err != nil {
+	if err := g.baseHistory(ctx, root, key, dir, base); err != nil {
 		return "", err
 	}
 	// a branch pushed by an earlier attempt (or just finished, for its
@@ -212,12 +260,16 @@ func (g *Git) Prepare(ctx context.Context, spec WorkspaceSpec) (string, error) {
 // fetched the base explicitly and a shallow one unshallowed, so every
 // cited SHA can be looked up.
 func (g *Git) CheckoutBase(ctx context.Context, dir, base string) error {
+	return g.checkoutBase(ctx, g.lockRoot("", dir), g.repoKeyOf(ctx, dir), dir, base)
+}
+
+func (g *Git) checkoutBase(ctx context.Context, root, key, dir, base string) error {
 	refspec := "+refs/heads/" + base + ":refs/remotes/origin/" + base
 	args := []string{"fetch", "--quiet", "origin", refspec}
 	if out, err := g.run(ctx, dir, "git", "rev-parse", "--is-shallow-repository"); err == nil && out == "true" {
 		args = []string{"fetch", "--quiet", "--unshallow", "origin", refspec}
 	}
-	if _, err := g.run(ctx, dir, "git", args...); err != nil {
+	if _, err := g.fetchLocked(ctx, root, key, dir, "git", args...); err != nil {
 		return err
 	}
 	_, err := g.run(ctx, dir, "git", "checkout", "--quiet", "--detach", "origin/"+base)
@@ -229,9 +281,9 @@ func (g *Git) CheckoutBase(ctx context.Context, dir, base string) error {
 // base branch fetched by name (a single-branch clone lacks it) and, in a
 // shallow checkout, its last FetchDepth commits when it has fewer (never
 // shortened: a deeper history an evaluation fetched stays).
-func (g *Git) baseHistory(ctx context.Context, dir, base string) error {
+func (g *Git) baseHistory(ctx context.Context, root, key, dir, base string) error {
 	refspec := "+refs/heads/" + base + ":refs/remotes/origin/" + base
-	if _, err := g.run(ctx, dir, "git", "fetch", "--quiet", "origin", refspec); err != nil {
+	if _, err := g.fetchLocked(ctx, root, key, dir, "git", "fetch", "--quiet", "origin", refspec); err != nil {
 		return err
 	}
 	if out, err := g.run(ctx, dir, "git", "rev-parse", "--is-shallow-repository"); err != nil || out != "true" {
@@ -242,7 +294,7 @@ func (g *Git) baseHistory(ctx context.Context, dir, base string) error {
 			return nil
 		}
 	}
-	_, err := g.run(ctx, dir, "git", "fetch", "--quiet", "--depth="+strconv.Itoa(FetchDepth), "origin", refspec)
+	_, err := g.fetchLocked(ctx, root, key, dir, "git", "fetch", "--quiet", "--depth="+strconv.Itoa(FetchDepth), "origin", refspec)
 	return err
 }
 
@@ -305,8 +357,9 @@ const deepenRounds = 3
 // deepening a shallow checkout in a fixed number of steps. A branch that
 // still shares none yields a *NoMergeBaseError.
 func (g *Git) EnsureMergeBase(ctx context.Context, dir, base string) error {
+	root, key := g.lockRoot("", dir), g.repoKeyOf(ctx, dir)
 	remote := "refs/remotes/origin/" + base
-	if _, err := g.run(ctx, dir, "git", "fetch", "--quiet", "origin", "+refs/heads/"+base+":"+remote); err != nil {
+	if _, err := g.fetchLocked(ctx, root, key, dir, "git", "fetch", "--quiet", "origin", "+refs/heads/"+base+":"+remote); err != nil {
 		return err
 	}
 	has := func() bool {
@@ -322,7 +375,7 @@ func (g *Git) EnsureMergeBase(ctx context.Context, dir, base string) error {
 	}
 	step := FetchDepth
 	for i := 0; i < deepenRounds && shallow(); i++ {
-		if _, err := g.run(ctx, dir, "git", "fetch", "--quiet", "--deepen="+strconv.Itoa(step), "origin"); err != nil {
+		if _, err := g.fetchLocked(ctx, root, key, dir, "git", "fetch", "--quiet", "--deepen="+strconv.Itoa(step), "origin"); err != nil {
 			return err
 		}
 		if has() {
@@ -332,7 +385,7 @@ func (g *Git) EnsureMergeBase(ctx context.Context, dir, base string) error {
 	}
 	// a repository the deepening completed is no longer shallow: nothing to unshallow
 	if shallow() {
-		if _, err := g.run(ctx, dir, "git", "fetch", "--quiet", "--unshallow", "origin"); err != nil {
+		if _, err := g.fetchLocked(ctx, root, key, dir, "git", "fetch", "--quiet", "--unshallow", "origin"); err != nil {
 			return err
 		}
 		if has() {
@@ -345,17 +398,18 @@ func (g *Git) EnsureMergeBase(ctx context.Context, dir, base string) error {
 
 // Fetch implements Workspacer.
 func (g *Git) Fetch(ctx context.Context, repo, dir string) error {
+	root, key := g.lockRoot("", dir), RepoLockKey(repo)
 	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
 		if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
 			return err
 		}
-		_, err := g.run(ctx, filepath.Dir(dir), "gh", "repo", "clone", repo, dir, "--", "--depth", strconv.Itoa(FetchDepth))
+		_, err := g.fetchLocked(ctx, root, key, filepath.Dir(dir), "gh", "repo", "clone", repo, dir, "--", "--depth", strconv.Itoa(FetchDepth))
 		return err
 	}
 	// origin's HEAD by name: a checkout Authorize made empty has no
 	// branch tracking the default one, so a bare `fetch origin` would
 	// leave FETCH_HEAD on whichever branch sorts first
-	if _, err := g.run(ctx, dir, "git", "fetch", "--depth", strconv.Itoa(FetchDepth), "origin", "HEAD"); err != nil {
+	if _, err := g.fetchLocked(ctx, root, key, dir, "git", "fetch", "--depth", strconv.Itoa(FetchDepth), "origin", "HEAD"); err != nil {
 		return err
 	}
 	_, err := g.run(ctx, dir, "git", "reset", "--hard", "FETCH_HEAD")
@@ -434,7 +488,7 @@ func PushRefusal(out string) bool {
 
 // PushedHead implements Workspacer.
 func (g *Git) PushedHead(ctx context.Context, dir, branch, base string) (string, error) {
-	if _, err := g.run(ctx, dir, "git", "fetch", "--prune", "origin"); err != nil {
+	if _, err := g.fetchLocked(ctx, g.lockRoot("", dir), g.repoKeyOf(ctx, dir), dir, "git", "fetch", "--prune", "origin"); err != nil {
 		return "", err
 	}
 	head, err := g.run(ctx, dir, "git", "rev-parse", "refs/remotes/origin/"+branch)
@@ -445,6 +499,29 @@ func (g *Git) PushedHead(ctx context.Context, dir, branch, base string) (string,
 		return "", fmt.Errorf("origin/%s at %s does not contain origin/%s", branch, short(head), base)
 	}
 	return head, nil
+}
+
+// FetchHead fetches origin's branch into dir under the per-repo fetch
+// lock (ADR-023) and makes sure head is there: the head a refusal named
+// as newer than the one pushed (goal the-node-attests-the-head-it-pushed).
+// A head the branch no longer leads to is asked for by its sha; one origin
+// does not have is an error.
+func (g *Git) FetchHead(ctx context.Context, dir, branch, head string) error {
+	root, key := g.lockRoot("", dir), g.repoKeyOf(ctx, dir)
+	refspec := "+refs/heads/" + branch + ":refs/remotes/origin/" + branch
+	if _, err := g.fetchLocked(ctx, root, key, dir, "git", "fetch", "--quiet", "origin", refspec); err != nil {
+		return err
+	}
+	if _, err := g.run(ctx, dir, "git", "cat-file", "-e", head+"^{commit}"); err == nil {
+		return nil
+	}
+	if _, err := g.fetchLocked(ctx, root, key, dir, "git", "fetch", "--quiet", "origin", head); err != nil {
+		return fmt.Errorf("origin's %s has no %s: %w", branch, short(head), err)
+	}
+	if _, err := g.run(ctx, dir, "git", "cat-file", "-e", head+"^{commit}"); err != nil {
+		return fmt.Errorf("origin's %s has no %s", branch, short(head))
+	}
+	return nil
 }
 
 // ContextDir is where the goal's context documents land in a workspace.

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	nodeimage "projectmesh.io/mesh-cli/images/node"
@@ -127,6 +128,19 @@ func BuildImage(ctx context.Context, run Runner, ref, version string, keep ...st
 	return img, nil
 }
 
+// PushImage builds the release's node image ref for linux/amd64 and
+// linux/arm64 into one manifest list named ref, a release unit's step 4
+// (mesh-specs ADR 017 §4, §7). It is to answer the multi-arch index's
+// digest; until the push lands it answers "" and the build's error.
+func PushImage(ctx context.Context, run Runner, ref, version string) (string, error) {
+	if out, err := run(ctx, imageBinary, "build",
+		"--platform", "linux/amd64,linux/arm64",
+		"--manifest", ref); err != nil {
+		return "", fmt.Errorf("node image %s: multi-platform build failed: %s", ref, why(out, err))
+	}
+	return "", nil
+}
+
 // ImageDigest is ref's digest as the runtime holds it (`podman image
 // inspect --format {{.Digest}}`): the runner image a sandboxed
 // validation's attestation names.
@@ -140,6 +154,41 @@ func ImageDigest(ctx context.Context, run Runner, ref string) (string, error) {
 		return "", fmt.Errorf("node image %s: no digest", ref)
 	}
 	return d, nil
+}
+
+// DefaultImageUID is the uid (and gid) ImageUser falls back to: the
+// image's declared uid:gid when it has one, else the mesh image's own
+// (images/node/Containerfile's USER mesh, uid 1000) — a name such as
+// "mesh" cannot be resolved to a uid without running the image.
+const DefaultImageUID = 1000
+
+// ImageUser is ref's declared user (`podman image inspect --format
+// {{.Config.User}}`), as uid:gid: "1000" is uid 1000, gid defaulting to
+// the uid; "1001:1002" is uid 1001, gid 1002; empty, or a name such as
+// "mesh" that is not a plain uid[:gid], falls back to DefaultImageUID
+// for both. A failed inspect is returned wrapped, naming ref.
+func ImageUser(ctx context.Context, run Runner, ref string) (uid, gid int, err error) {
+	out, err := run(ctx, imageBinary, "image", "inspect", "--format", "{{.Config.User}}", ref)
+	if err != nil {
+		return 0, 0, fmt.Errorf("node image %s: inspect failed: %s", ref, why(out, err))
+	}
+	user := strings.TrimSpace(string(out))
+	if user == "" {
+		return DefaultImageUID, DefaultImageUID, nil
+	}
+	uidPart, gidPart, hasGid := strings.Cut(user, ":")
+	u, err := strconv.Atoi(uidPart)
+	if err != nil {
+		return DefaultImageUID, DefaultImageUID, nil
+	}
+	if !hasGid {
+		return u, u, nil
+	}
+	g, err := strconv.Atoi(gidPart)
+	if err != nil {
+		return DefaultImageUID, DefaultImageUID, nil
+	}
+	return u, g, nil
 }
 
 // prune removes every mesh-node tag not in keep.

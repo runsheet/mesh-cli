@@ -41,6 +41,9 @@ var mcpCmd = &cobra.Command{
 		// again hourly as the tools are used (ADR-023, Hosted path)
 		hosted := meshmcp.NewHosted(gw)
 		go hosted.Serves(ctx)
+		// the personal node is the person's own, on their own login, never
+		// a machine's: it registers nothing through registrar and so
+		// sends no credentialId (runsheet#2290 asks it of a machine alone)
 		p := &meshmcp.Personal{GW: gw, Join: &meshmcp.Join{
 			GW: gw, WS: &node.Git{Log: os.Stderr}, NodeID: mcpNodeID,
 			Fallback: &node.TokenFallback{}, Hosted: hosted, Logf: logf,

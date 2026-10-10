@@ -36,6 +36,7 @@ func OpenSessionPod(ctx context.Context, sb *sandbox.Sandbox, dir, label string,
 	if err != nil {
 		return nil, err
 	}
+	logf("sandbox: %s", sess.Describe())
 	p := &SessionPod{Session: sess}
 	svcs, err := sandbox.Resolve(dir, sb.Config.Registries)
 	if err != nil {
