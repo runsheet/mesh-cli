@@ -289,29 +289,60 @@ func unknownOperation(msg, field string) bool {
 	return false
 }
 
-// Query posts one GraphQL document and decodes `data` into out.
+// Query posts one GraphQL document and decodes `data` into out. A read
+// — a `query` document, or a mutation every root field of which is on
+// retriedMutations — is retried on a transient answer (retryRead: a
+// transport failure or timeout, a 429 or 5xx) for up to ReadRetryFor,
+// each try under its own ReadTryTimeout; every other mutation — a
+// claim, a finish, a heartbeat — is sent exactly once.
 func (c *Client) Query(ctx context.Context, query string, vars map[string]any, out any) error {
 	body, err := json.Marshal(map[string]any{"query": query, "variables": vars})
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/graphql", bytes.NewReader(body))
+	var data json.RawMessage
+	if retriesRead(query) {
+		err = retryRead(ctx, func(ctx context.Context) error {
+			var err error
+			data, err = c.post(ctx, body)
+			return err
+		})
+	} else {
+		data, err = c.post(ctx, body)
+	}
 	if err != nil {
 		return err
+	}
+	if out != nil && len(data) > 0 {
+		return json.Unmarshal(data, out)
+	}
+	return nil
+}
+
+// post sends one GraphQL request body and returns its `data`: a GraphQL
+// error is a *Error (carrying the status when it was not 2xx), a non-2xx
+// answer with none an *httpError.
+func (c *Client) post(ctx context.Context, body []byte) (json.RawMessage, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/graphql", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	tok, err := c.Bearer(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+tok)
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer resp.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if err != nil {
+		return nil, err
+	}
 	var env struct {
 		Data   json.RawMessage `json:"data"`
 		Errors []struct {
@@ -320,9 +351,9 @@ func (c *Client) Query(ctx context.Context, query string, vars map[string]any, o
 	}
 	if jsonErr := json.Unmarshal(raw, &env); jsonErr != nil {
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			return &httpError{Status: resp.StatusCode, Text: resp.Status, Body: strings.TrimSpace(string(raw)), RetryAfter: parseRetryAfter(resp)}
+			return nil, &httpError{Status: resp.StatusCode, Text: resp.Status, Body: strings.TrimSpace(string(raw)), RetryAfter: parseRetryAfter(resp)}
 		}
-		return fmt.Errorf("gateway: decode response: %w", jsonErr)
+		return nil, fmt.Errorf("gateway: decode response: %w", jsonErr)
 	}
 	if len(env.Errors) > 0 {
 		ge := &Error{Message: env.Errors[0].Message}
@@ -330,15 +361,12 @@ func (c *Client) Query(ctx context.Context, query string, vars map[string]any, o
 			ge.Status = resp.StatusCode
 			ge.RetryAfter = parseRetryAfter(resp)
 		}
-		return ge
+		return nil, ge
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return &httpError{Status: resp.StatusCode, Text: resp.Status, RetryAfter: parseRetryAfter(resp)}
+		return nil, &httpError{Status: resp.StatusCode, Text: resp.Status, RetryAfter: parseRetryAfter(resp)}
 	}
-	if out != nil && len(env.Data) > 0 {
-		return json.Unmarshal(env.Data, out)
-	}
-	return nil
+	return env.Data, nil
 }
 
 // parseRetryAfter reads a Retry-After header as whole seconds, the only
@@ -4147,7 +4175,24 @@ func (c *Client) contextGet(ctx context.Context, path, accept string) ([]byte, e
 	return raw, nil
 }
 
+// contextGetAt GETs one mesh-context path, retrying a transport failure
+// or a 429/5xx answer as Query retries a read (retryRead); the window
+// spent returns "after N tries over <elapsed>: <last answer>" as err.
 func (c *Client) contextGetAt(ctx context.Context, path, accept string) (raw []byte, status int, statusText string, err error) {
+	err = retryRead(ctx, func(ctx context.Context) error {
+		var err error
+		raw, status, statusText, err = c.contextGetOnce(ctx, path, accept)
+		return err
+	})
+	if err != nil {
+		return nil, 0, "", err
+	}
+	return raw, status, statusText, nil
+}
+
+// contextGetOnce is one try of contextGetAt: a 429 or 5xx answer is an
+// httpError, any other status returned for contextGet to judge.
+func (c *Client) contextGetOnce(ctx context.Context, path, accept string) (raw []byte, status int, statusText string, err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+path, nil)
 	if err != nil {
 		return nil, 0, "", err
@@ -4163,7 +4208,13 @@ func (c *Client) contextGetAt(ctx context.Context, path, accept string) (raw []b
 		return nil, 0, "", err
 	}
 	defer resp.Body.Close()
-	raw, _ = io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	raw, err = io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if err != nil {
+		return nil, 0, "", err
+	}
+	if resp.StatusCode >= 500 || resp.StatusCode == http.StatusTooManyRequests {
+		return raw, resp.StatusCode, resp.Status, &httpError{Status: resp.StatusCode, Text: resp.Status, Body: strings.TrimSpace(string(raw)), RetryAfter: parseRetryAfter(resp)}
+	}
 	return raw, resp.StatusCode, resp.Status, nil
 }
 
@@ -4508,7 +4559,7 @@ func AttestationWaits(budget time.Duration) []time.Duration {
 	var waits []time.Duration
 	var spent time.Duration
 	for retry := 0; ; retry++ {
-		d := backoffAt(retry)
+		d := backoffAt(AttestationBackoff, retry)
 		if d <= 0 || spent+d >= budget {
 			break
 		}
@@ -4530,46 +4581,211 @@ func AttestationWaits(budget time.Duration) []time.Duration {
 // reaches the wrapped error); the context ending first returns
 // ctx.Err().
 func retryOnTransient(ctx context.Context, fn func() error) error {
+	tries, elapsed, spent, err := retryTransient(ctx, AttestationRetryFor, AttestationBackoff, 0, func(context.Context) error { return fn() })
+	if spent {
+		return fmt.Errorf("after %d retries over %s: %w", tries-1, elapsed.Round(time.Millisecond), err)
+	}
+	return err
+}
+
+// ReadRetryFor is the time budget of a read's retries (retryRead),
+// counted from the first try, under the same rule as
+// AttestationRetryFor. A test shortens it to run fast.
+var ReadRetryFor = 2 * time.Minute
+
+// ReadBackoff is the wait between a read's tries, read as
+// AttestationBackoff is: entry i after the (i+1)th failed try, the last
+// repeated, the largest the cap on a Retry-After. A test shortens it.
+var ReadBackoff = []time.Duration{1 * time.Second, 2 * time.Second, 5 * time.Second, 10 * time.Second, 20 * time.Second}
+
+// ReadTryTimeout bounds each try of a read, well under ReadRetryFor, so
+// one stalled call — a gateway rolling over in a deploy — cannot spend
+// the whole window; the caller's ctx still bounds everything. A test
+// shortens it.
+var ReadTryTimeout = 30 * time.Second
+
+// retriedMutations are the mutations safe to send again: each asks the
+// platform to mint a credential for a claim the node already holds, and
+// a second answer only replaces the first. Every other mutation — a
+// claim, a finish, a fail, a release, an evaluation, a plan, a
+// heartbeat, a registration, a usage record — is a command sent once.
+var retriedMutations = map[string]bool{
+	"issueItemRepoToken":  true,
+	"planGitHubToken":     true,
+	"researchGitHubToken": true,
+}
+
+// retryRead calls fn as retryOnTransient does, on ReadRetryFor and
+// ReadBackoff, each try under a context of its own bounded by
+// ReadTryTimeout. The window spent with no success returns the last
+// answer wrapped as "after N tries over <elapsed>: <last answer>", N
+// counting the first try (errors.As still reaches the wrapped *Error or
+// httpError); the caller's ctx ending first returns ctx.Err().
+func retryRead(ctx context.Context, fn func(context.Context) error) error {
+	tries, elapsed, spent, err := retryTransient(ctx, ReadRetryFor, ReadBackoff, ReadTryTimeout, fn)
+	if spent {
+		return fmt.Errorf("after %d tries over %s: %w", tries, elapsed.Round(time.Millisecond), err)
+	}
+	return err
+}
+
+// retryTransient is the loop under retryOnTransient and retryRead: it
+// calls fn — under a per-try context of tryTimeout when that is set —
+// until it succeeds, answers something not transient (isTransient), or
+// budget, counted from the first try, leaves no room for the next wait
+// (retryDelay over backoff), which is spent: the last answer is
+// returned with spent set. tries counts every call of fn.
+func retryTransient(ctx context.Context, budget time.Duration, backoff []time.Duration, tryTimeout time.Duration, fn func(context.Context) error) (tries int, elapsed time.Duration, spent bool, err error) {
 	start := time.Now()
-	deadline := start.Add(AttestationRetryFor)
-	for retries := 0; ; retries++ {
-		err := fn()
+	deadline := start.Add(budget)
+	for {
+		tries++
+		err = tryOnce(ctx, tryTimeout, fn)
 		if err == nil || !isTransient(err) {
-			return err
+			return tries, time.Since(start), false, err
 		}
 		if ctx.Err() != nil {
-			return ctx.Err()
+			return tries, time.Since(start), false, ctx.Err()
 		}
 		// Another attempt is made only when it can start inside the
 		// budget: a wait that would reach the deadline spends it, and the
 		// last answer is returned now rather than after one more request.
-		wait := retryDelay(err, retries)
+		wait := retryDelay(backoff, err, tries-1)
 		if wait >= time.Until(deadline) {
-			return fmt.Errorf("after %d retries over %s: %w", retries, time.Since(start).Round(time.Millisecond), err)
+			return tries, time.Since(start), true, err
 		}
 		t := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
 			t.Stop()
-			return ctx.Err()
+			return tries, time.Since(start), false, ctx.Err()
 		case <-t.C:
 		}
 	}
 }
 
+// tryOnce calls fn under a context bounded by timeout, ctx itself when
+// timeout is 0.
+func tryOnce(ctx context.Context, timeout time.Duration, fn func(context.Context) error) error {
+	if timeout <= 0 {
+		return fn(ctx)
+	}
+	tctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	return fn(tctx)
+}
+
+// retriesRead reports whether a GraphQL document is a read Query
+// retries: a `query` (or the shorthand `{ … }`), or a mutation whose
+// every root field is on retriedMutations. A subscription, or a
+// document it cannot read, is not.
+func retriesRead(doc string) bool {
+	doc = strings.TrimSpace(stripComments(doc))
+	if strings.HasPrefix(doc, "{") {
+		return true
+	}
+	kw := doc
+	if i := strings.IndexFunc(doc, func(r rune) bool { return !isNameRune(r) }); i >= 0 {
+		kw = doc[:i]
+	}
+	switch kw {
+	case "query":
+		return true
+	case "mutation":
+		fields := rootFields(doc)
+		if len(fields) == 0 {
+			return false
+		}
+		for _, f := range fields {
+			if !retriedMutations[f] {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+// rootFields is the names of an operation's top-level selections — the
+// field, not its alias — skipping the variables' parentheses, nested
+// selections, arguments and strings.
+func rootFields(doc string) []string {
+	var fields []string
+	braces, parens := 0, 0
+	for i := 0; i < len(doc); i++ {
+		switch ch := doc[i]; {
+		case ch == '"':
+			for i++; i < len(doc) && doc[i] != '"'; i++ {
+				if doc[i] == '\\' {
+					i++
+				}
+			}
+		case ch == '(':
+			parens++
+		case ch == ')':
+			parens--
+		case ch == '{':
+			braces++
+		case ch == '}':
+			braces--
+		case braces == 1 && parens == 0 && isNameRune(rune(ch)):
+			j := i
+			for j < len(doc) && isNameRune(rune(doc[j])) {
+				j++
+			}
+			name := doc[i:j]
+			k := j
+			for k < len(doc) && (doc[k] == ' ' || doc[k] == '\t' || doc[k] == '\n' || doc[k] == '\r' || doc[k] == ',') {
+				k++
+			}
+			if k < len(doc) && doc[k] == ':' {
+				// An alias: the field is the next name.
+				i = k
+				continue
+			}
+			fields = append(fields, name)
+			i = j - 1
+		}
+	}
+	return fields
+}
+
+// stripComments drops GraphQL `#` comments to the end of their line.
+func stripComments(doc string) string {
+	if !strings.Contains(doc, "#") {
+		return doc
+	}
+	var b strings.Builder
+	for _, line := range strings.SplitAfter(doc, "\n") {
+		if i := strings.IndexByte(line, '#'); i >= 0 {
+			b.WriteString(line[:i])
+			if strings.HasSuffix(line, "\n") {
+				b.WriteByte('\n')
+			}
+			continue
+		}
+		b.WriteString(line)
+	}
+	return b.String()
+}
+
+func isNameRune(r rune) bool {
+	return r == '_' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9'
+}
+
 // backoffAt is the table's wait before retry n (0-based): its entry,
 // else its last.
-func backoffAt(n int) time.Duration {
-	if len(AttestationBackoff) == 0 {
+func backoffAt(table []time.Duration, n int) time.Duration {
+	if len(table) == 0 {
 		return 0
 	}
-	return AttestationBackoff[min(n, len(AttestationBackoff)-1)]
+	return table[min(n, len(table)-1)]
 }
 
 // largestBackoff is the table's largest entry, the cap on a Retry-After.
-func largestBackoff() time.Duration {
+func largestBackoff(table []time.Duration) time.Duration {
 	var d time.Duration
-	for _, b := range AttestationBackoff {
+	for _, b := range table {
 		d = max(d, b)
 	}
 	return d
@@ -4594,14 +4810,14 @@ func isTransient(err error) bool {
 	return true
 }
 
-// retryDelay is the wait before the next attempt: the table's entry for
+// retryDelay is the wait before the next attempt: table's entry for
 // attempt, unless the last answer named a Retry-After, which is honoured
 // instead, capped at the table's largest entry so a generous header
-// cannot stall the upload far past what the table would.
-func retryDelay(err error, attempt int) time.Duration {
-	d := backoffAt(attempt)
+// cannot stall the call far past what the table would.
+func retryDelay(table []time.Duration, err error, attempt int) time.Duration {
+	d := backoffAt(table, attempt)
 	if ra := retryAfterOf(err); ra > 0 {
-		d = min(ra, largestBackoff())
+		d = min(ra, largestBackoff(table))
 	}
 	return d
 }
