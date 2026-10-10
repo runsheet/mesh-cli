@@ -301,7 +301,7 @@ func TestServicesPodRemovedOnEveryExit(t *testing.T) {
 		gw := gateway.New(f.URL(), "rs_test")
 		cfg := &Config{OrgLogin: "acme", OrgID: orgID, AccountID: acctID, Slug: "n", NodeID: "22222222-2222-4222-8222-222222222222", Capacity: Fixed(1)}
 		ws := &fakeWS{root: t.TempDir()}
-		writeServices(t, filepath.Join(ws.root, "ship-it", "1"), servicesYML)
+		writeServices(t, EvalWorkspaceSpec(ws.root, "ship-it", 1, "", "", "").Dir(), servicesYML)
 		seen := fakeAgent(rt, func(ctx context.Context) (sandbox.Exit, error) { <-ctx.Done(); return sandbox.Exit{Code: 137}, nil })
 		ev := &Evaluator{Credentials: testCreds(gw), GW: gw, Harness: &harness.ClaudeCode{Sandbox: sb}, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, Timeout: 200 * time.Millisecond, Sandbox: sb, Log: log.New(os.Stderr, "", 0)}
 		var item gateway.WorkItem
@@ -352,7 +352,7 @@ func TestRequiredServiceFailingEvaluateAndRebase(t *testing.T) {
 	f := seed(t)
 	f.WorkItems[item1]["status"] = "evaluating"
 	ws := &fakeWS{root: t.TempDir()}
-	writeServices(t, filepath.Join(ws.root, "ship-it", "1"), servicesYML)
+	writeServices(t, EvalWorkspaceSpec(ws.root, "ship-it", 1, "", "", "").Dir(), servicesYML)
 	seen := fakeAgent(rt, nil)
 	ev := &Evaluator{Credentials: testCreds(gateway.New(f.URL(), "rs_test")), GW: gateway.New(f.URL(), "rs_test"), Harness: &harness.ClaudeCode{Sandbox: sb}, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, Sandbox: sb, Declines: &Declines{}}
 	err := ev.Evaluate(context.Background(), item)
