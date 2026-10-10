@@ -21,8 +21,12 @@ func TestSandboxImageBuildRunsPodmanBuild(t *testing.T) {
 	}
 
 	r := &imageRunner{}
-	if _, err := cfg.EnsureImage(ctx, r.run, "v1.1.0", "v1.0.0"); err != nil {
+	img, err := cfg.EnsureImage(ctx, r.run, "v1.1.0", "v1.0.0")
+	if err != nil {
 		t.Fatal(err)
+	}
+	if img.Ref == "" {
+		t.Fatalf("Image.Ref = %q; want the built image's ref", img.Ref)
 	}
 	if b := r.sub("build"); len(b) != 1 {
 		t.Fatalf("builds = %q; want exactly one podman build", b)
