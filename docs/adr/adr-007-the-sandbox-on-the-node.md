@@ -1,5 +1,5 @@
 ---
-summary: How mesh-cli implements mesh-specs ADR 007 — internal/sandbox's Runtime (Podman, a test Fake) runs claude in a per-session pod with two mounts, an allow-listed env passed to podman by name, node.yaml's flat sandbox keys (mode, cpus, memory, pids, services_cpus, services_memory, registries, image), a mode left out following `podman --version` while an explicit on fails closed at start, a limit kill (OOM, pids, the runtime's timeout backstop) released as the node's condition with the heartbeat's reason, service sidecars started and health-checked in the session's pod before the agent (a required one failing releases the claim, an optional one is a note), the node image (images/node/Containerfile, embedded) pulled for the new version before a self-update or `mesh node update` drains — a failed pull an updateError with no drain and no swap, `sandbox.image: build` building it locally — and channel mode and Codex not yet sandboxed.
+summary: How mesh-cli implements mesh-specs ADR 007 — internal/sandbox's Runtime (Podman, a test Fake) runs claude in a per-session pod with two mounts, an allow-listed env passed to podman by name, node.yaml's flat sandbox keys (mode, cpus, memory, pids, services_cpus, services_memory, registries, image), a mode left out following `podman --version` while an explicit on fails closed at start, a limit kill (OOM, pids, the runtime's timeout backstop) released as the node's condition with the heartbeat's reason, service sidecars started and health-checked in the session's pod before the agent (a required one failing releases the claim, an optional one is a note), the node image (images/node/Containerfile, embedded) pulled for the new version before a self-update or `mesh node update` drains — a failed pull an updateError with no drain and no swap, `sandbox.image: build` building it locally — the pod mapping the host user onto the image's declared user (`--userns keep-id:uid=<image uid>,gid=<image gid>`, 1000 when it declares none; podman 4.3 or later), and channel mode and Codex not yet sandboxed.
 status: accepted
 ---
 
@@ -194,3 +194,31 @@ start. It no longer does: no session commits as the node's owner. The
 `GIT_AUTHOR_*`/`GIT_COMMITTER_*` variables are allowed into the pod.
 An evaluation's pod gets no identity. [ADR-024](adr-024-a-session-commits-as-its-agent.md)
 is the decision.
+
+## Amendment — 2026-10-10 (goal the-agent-container-owns-its-home)
+
+The pod maps the host user onto the image's user:
+`--userns keep-id:uid=<image uid>,gid=<image gid>`, where it used to
+pass a bare `--userns keep-id`. `Podman.CreatePod` reads the image's
+declared user with `sandbox.ImageUser` (`podman image inspect --format
+{{.Config.User}} <image>`) on the Podman's own run path, fills
+`PodSpec.UID`/`GID`, and `PodCreateArgs` formats the flag with
+`KeepIDUserns`. An image that declares no user, or one by name only,
+falls back to `DefaultImageUID`, 1000 — the node image declares `USER
+1000:1000` (images/node/Containerfile) — and an inspect that fails
+uses 1000 too and makes the pod anyway: a missing image is the agent
+run's error to report, not the mapping's.
+
+Why: on the dl360 (2026-10-10) the nodes run as Linux users uid 1002
+and 1003. A bare `keep-id` maps the host user onto the same uid inside
+— 1002 — while the agent runs as the image's 1000, and the session
+HOME the node makes 0700 with 0600 files was unreadable: every
+sandboxed session died at its first read, `Invalid MCP configuration:
+EACCES: permission denied, open '/tmp/mesh-home-…/mcp.json'`. It only
+ever worked for a uid-1000 operator. Mapped onto the image's user, the
+HOME, the workspace and the context files the node writes as the host
+user are the agent's own inside.
+
+keep-id's `uid=` and `gid=` options need **podman 4.3 or later**; that
+is the sandbox's floor. An older podman refuses the flag at `pod
+create`, and the session errors as a pod that cannot be made does.

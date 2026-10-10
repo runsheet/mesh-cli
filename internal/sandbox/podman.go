@@ -42,6 +42,15 @@ func (p *Podman) run(ctx context.Context, args, env []string, stdin io.Reader, s
 	return cmd.Run()
 }
 
+// runner is a Runner over the Podman's own run path (Exec when tests
+// stub it), for the image helpers: name is always podman, so only the
+// args are passed on.
+func (p *Podman) runner(ctx context.Context, _ string, args ...string) ([]byte, error) {
+	var out bytes.Buffer
+	err := p.run(ctx, args, podmanEnv(os.Environ(), nil), nil, &out, &out)
+	return out.Bytes(), err
+}
+
 // output runs a short podman command and returns its stdout, with its
 // stderr in the error.
 func (p *Podman) output(ctx context.Context, args []string, stdin io.Reader) (string, error) {
@@ -227,7 +236,18 @@ func podmanEnv(environ, container []string) []string {
 
 // CreatePod implements Runtime: the pod, then its network rules. A pod
 // whose rules will not load is removed and not used.
+// The pod maps the host user onto the image's declared user, read by
+// ImageUser (`podman image inspect --format {{.Config.User}}`) when the
+// spec names none; an inspect that fails falls back to DefaultImageUID
+// and the pod is made anyway.
 func (p *Podman) CreatePod(ctx context.Context, spec PodSpec) (Pod, error) {
+	if spec.UID == 0 && spec.GID == 0 {
+		uid, gid, err := ImageUser(ctx, p.runner, spec.Image)
+		if err != nil {
+			uid, gid = DefaultImageUID, DefaultImageUID
+		}
+		spec.UID, spec.GID = uid, gid
+	}
 	if _, err := p.output(ctx, PodCreateArgs(spec), nil); err != nil {
 		return Pod{}, err
 	}
