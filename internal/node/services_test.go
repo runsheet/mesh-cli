@@ -399,13 +399,17 @@ func TestOpenSessionPodLogsTheImageRef(t *testing.T) {
 	}
 	defer pod.Close()
 
+	if sb.Config.Image == "" {
+		t.Fatal("the configured image ref is empty")
+	}
+	want := "sandbox: session ship-it/1 — image " + sb.Config.Image
 	var found bool
 	for _, l := range logged {
-		if strings.Contains(l, sb.Config.Image) {
+		if l == want {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("no log line names the image %q: %v", sb.Config.Image, logged)
+		t.Fatalf("no log line %q: %v", want, logged)
 	}
 }
