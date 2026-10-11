@@ -818,14 +818,11 @@ func (d *PlannedDep) UnmarshalJSON(b []byte) error {
 
 // planDependencyRule is the planner's dependency rubric (trd §5 phase
 // 2): an item waits for another only when it uses what that one builds.
-// planGoalDocRule keeps the planner out of the goal's own document. The
-// node writes it itself when the goal ends (RecordEndedGoal, ADR 003
-// decision 4) - straight to the default branch, regenerated from the
-// platform's own rows, no item and no pull request. An item that writes it
-// as well is work nobody needs, and two such items in one plan conflict
-// with each other over the one file. The path is named in goaldoc.go
-// alone, which TestOnlyGoalDocWritesTheGoalDoc holds to.
-const planGoalDocRule = "Plan no item for the goal's own document: when the goal ends the node writes it itself, under the project's specs, from the platform's record of every item and its pull request. An item that records the goal's outcome is work nobody needs. The documents an item changes are the ones its own change makes wrong - an ADR, a TRD section, a README."
+// planGoalDocRule keeps the planner from planning goal documents. Goals
+// keep no document in the repository since 2026-10-12: the goal's record
+// is on the platform (its summary, items, pull requests and evidence),
+// so an item that writes one is work nobody reads.
+const planGoalDocRule = "Plan no item for a goal document: goals keep no document in the repository; the goal's record is on the platform — its summary, items, pull requests and evidence. The documents an item changes are the ones its own change makes wrong - an ADR, a TRD section, a README."
 
 const planDependencyRule = "An item depends on another only when it uses something that item creates or changes — a type, command, field, function, file or endpoint — and could not be built against main without it. Sharing a repository is not a dependency; sharing a code file is, and the node adds it when the planner did not; sharing a document is not. Order by importance is priority, not dependency. Prefer a wide, shallow graph: the node runs up to 6 items at once and readies every item whose dependencies merged. A final docs item depends only on the items whose results it records. Each dependency carries a one-line `because` naming what is used, as {\"seq\": 3, \"because\": \"uses the Foo type item 3 adds\"}; a dependency without one is dropped."
 

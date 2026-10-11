@@ -87,9 +87,9 @@ type Workspacer interface {
 	// starts, so none commits as the node's owner.
 	Identify(ctx context.Context, dir string, id Identity) error
 	// Commit stages paths and commits them with msg when anything
-	// changed. Only the goal's document at the goal's end uses it
-	// (RecordEndedGoal, on the default branch); a build's branch is
-	// committed by its session.
+	// changed. The node itself commits nothing today (goal documents
+	// were retired 2026-10-12); a build's branch is committed by its
+	// session.
 	Commit(ctx context.Context, dir string, paths []string, msg string) error
 	// Push pushes branch to origin and returns its head sha.
 	Push(ctx context.Context, dir, branch string) (string, error)

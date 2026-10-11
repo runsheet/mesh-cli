@@ -272,8 +272,8 @@ func (h *Handler) items(ctx context.Context, args map[string]any) (string, error
 
 // record hands a milestone's summary to the platform as a progress
 // note on the item. It writes no file and makes no commit: status lives
-// on the platform, and the goal doc is written once, when the goal
-// finishes (ADR 003, decision 4).
+// on the platform, as does the goal's record (goals keep no document in
+// the repository since 2026-10-12).
 func (h *Handler) record(ctx context.Context, args map[string]any) (string, error) {
 	id, summary := str(args, "item_id"), str(args, "summary")
 	if id == "" || summary == "" {
