@@ -64,8 +64,9 @@ func TestMeshHomeReadingClean(t *testing.T) {
 	if !containsLine(out, "ok") {
 		t.Fatalf("clean fixture: expected a bare \"ok\" line, got:\n%s", out)
 	}
-	if strings.Contains(out, "stale") {
-		t.Fatalf("clean fixture: expected no \"stale\", got:\n%s", out)
+	// A line, not a substring: the checkout's own path may say "stale".
+	if containsLine(out, "stale") || strings.Contains(out, "reason=") {
+		t.Fatalf("clean fixture: expected no \"stale\" line, got:\n%s", out)
 	}
 	if !strings.Contains(out, "mesh-home-aaa\tbytes=") || !strings.Contains(out, "mounted=yes") {
 		t.Fatalf("clean fixture: expected mesh-home-aaa reported as mounted, got:\n%s", out)
