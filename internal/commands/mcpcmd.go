@@ -190,12 +190,15 @@ var mcpDoctorJSON bool
 
 // mcpDoctorCmd is `mesh mcp doctor`: for each client of the install
 // table found on this machine (mcpinstall.Detected), whether its MCP
-// file holds mesh's entry and the binary or URL it points at — read
-// only, an unparseable file reported and left alone (ADR-025). --json
-// prints the []mcpinstall.Report.
+// file holds mesh's entry and the binary or URL it points at, and each
+// instruction file current, stale or missing — read only, an
+// unparseable file reported and left alone (ADR-025, Doctor). --json
+// prints the []mcpinstall.Report. It exits 1 when any client found is
+// not Healthy: its entry missing or unparseable, or an instruction
+// stale or missing.
 var mcpDoctorCmd = &cobra.Command{
 	Use:   "doctor",
-	Short: "Say, per client found, whether mesh is configured and what it points at",
+	Short: "Say, per client found, whether mesh is configured, what it points at and whether its instructions are current",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		out := cmd.OutOrStdout()
@@ -210,13 +213,29 @@ var mcpDoctorCmd = &cobra.Command{
 			}
 			enc := json.NewEncoder(out)
 			enc.SetIndent("", "  ")
-			return enc.Encode(reports)
+			if err := enc.Encode(reports); err != nil {
+				return err
+			}
+		} else {
+			if len(reports) == 0 {
+				fmt.Fprintln(out, "no client found")
+			}
+			for _, r := range reports {
+				fmt.Fprintln(out, doctorLine(r))
+				for _, i := range r.Instructions {
+					fmt.Fprintf(out, "  %s: %s\n", i.Path, i.Status)
+				}
+			}
 		}
-		if len(reports) == 0 {
-			fmt.Fprintln(out, "no client found")
-		}
+		var unhealthy []string
 		for _, r := range reports {
-			fmt.Fprintln(out, doctorLine(r))
+			if !r.Healthy() {
+				unhealthy = append(unhealthy, r.Client)
+			}
+		}
+		if len(unhealthy) > 0 {
+			cmd.SilenceUsage = true
+			return fmt.Errorf("not configured and current: %s; run mesh mcp install", strings.Join(unhealthy, ", "))
 		}
 		return nil
 	},

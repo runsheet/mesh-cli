@@ -49,6 +49,25 @@ writes nothing. It refuses to overwrite a whole instruction file that
 differs from the one mesh-cli ships unless you pass `--force`
 (docs/adr/adr-025-mesh-mcp-install-is-one-table-per-client.md).
 
+`mesh mcp doctor` checks it afterwards, reading only: for each client it
+finds, a line saying whether mesh is configured and what it points at,
+then one line per instruction file, `current`, `stale` or `missing` —
+
+```text
+codex: configured /usr/local/bin/mesh (/home/you/.codex/config.toml)
+  /home/you/.codex/prompts/mesh.md: current
+  /home/you/.codex/AGENTS.md: stale
+cursor: missing in /home/you/.cursor/mcp.json
+```
+
+A whole file is current when it is byte-for-byte what this binary
+renders; the AGENTS.md section when the text between its markers is —
+what you wrote outside them never counts. `--json` prints the same as a
+list of reports (`client`, `status`, `command`, `url`, `path`, `error`,
+`instructions`). It exits 1 when any client found is not configured and
+current — an entry missing or unparseable, an instruction stale or
+missing — so `mesh mcp install` again is the fix; 0 otherwise.
+
 With no local binary to run, `mesh mcp install --remote` writes each
 client's remote-server entry for the hosted tools at the gateway's
 `/mcp` (`https://api.runsheet.dev/mcp`, or `--url`). It asks the

@@ -373,7 +373,12 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   (`node.MeshMCPURL`) instead, `DiscoverAuth` asked once — OAuth, the
   URL alone, when the issuer's metadata has a `registration_endpoint`,
   else a bearer naming `$MESH_TOKEN` (`BearerEnvVar`), never a token in
-  a file (ADR-025, Remote).
+  a file (ADR-025, Remote). `mesh mcp doctor [--json]`
+  (`mcpinstall.Doctor`, `Report`) reads the same table: per client
+  found its entry `configured`/`missing`/`unparseable` with the binary
+  or URL, and each instruction file `current`/`stale`/`missing` — a
+  marked section judged only between its markers — exiting 1 unless
+  every report is `Healthy` (ADR-025, Doctor).
   **A draining node claims nothing** (`Loop.Drain`): see the drain
   below. **Capacity counts the live sessions** (ADR-029,
   `internal/node/liveproc.go`): `Loop.Live` (`LiveProbe{Systemctl,

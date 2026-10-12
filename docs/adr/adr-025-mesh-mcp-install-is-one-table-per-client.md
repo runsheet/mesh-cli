@@ -1,5 +1,5 @@
 ---
-summary: `mesh mcp install --client claude|codex|cursor|all [--dry-run]` writes each client's stdio MCP entry for `<this binary> mcp` and its instruction files from one table (`mcpinstall.Clients()`), one row per client taken from its documentation on a recorded date — an existing mesh entry updated in place, every other byte kept, an unparseable file reported and left alone, a dry run printing every diff and writing nothing.
+summary: `mesh mcp install --client claude|codex|cursor|all [--dry-run]` writes each client's stdio MCP entry for `<this binary> mcp` and its instruction files from one table (`mcpinstall.Clients()`), one row per client taken from its documentation on a recorded date — an existing mesh entry updated in place, every other byte kept, an unparseable file reported and left alone, a dry run printing every diff and writing nothing; `mesh mcp doctor` reads the same table, each client's entry configured or missing and each instruction file current, stale or missing, exiting 1 unless all are configured and current.
 status: accepted
 ---
 
@@ -193,6 +193,49 @@ install.
 | codex | `[mcp_servers.mesh]` `url = "<url>"`, `bearer_token_env_var = "MESH_TOKEN"` | `url = "<url>"` alone (`auth` defaults to `oauth`; `codex mcp login mesh`) | https://learn.chatgpt.com/docs/extend/mcp?surface=cli (2026-10-05) |
 | cursor | `mcpServers.mesh` = `{"url":"<url>","headers":{"Authorization":"Bearer ${env:MESH_TOKEN}"}}` — remote entries carry no `type` in the docs; `${env:NAME}` interpolation | `{"url":"<url>"}` — `auth` (`CLIENT_ID`/`CLIENT_SECRET`) only for a static client, scopes discovered from `/.well-known/oauth-authorization-server` | https://cursor.com/docs/context/mcp (2026-10-05) |
 
+## Doctor
+
+2026-10-12, items 6 and 7. `mesh mcp doctor [--json]` says, per
+client found, whether mesh is configured, what it points at, and
+whether its instructions are current. It reads the same table as the
+install and never writes.
+
+1. **Detection.** `Doctor(clients, home)` reports the rows `Detected`
+   finds — the client's config dir exists, or one of its `Binaries` is
+   on `PATH` — in the table's order. A client not found is not
+   mentioned; none found prints `no client found` (`[]` with `--json`).
+2. **The entry.** The client's MCP file (`MCPPath`) is read in its own
+   format at `MCPKeys` (JSON) or `TOMLTable` (TOML): an object there is
+   `configured`, nothing there — or no file, or an empty one —
+   `missing`, a file that does not parse `unparseable` with the
+   parser's error, left alone.
+3. **Binary or URL.** A configured entry's `command` is the binary a
+   stdio install points at, its `url` the server a `--remote` install
+   points at; the line is `<client>: configured <binary or url>
+   (<path>)`, `<client>: missing in <path>`, or `<client>: unparseable
+   <path> (<err>); left alone`.
+4. **Instructions.** Each `InstructionFile` of the row with a `Body` is
+   rendered and compared (`instructionReports`), one line `  <path>:
+   <status>` under its client's: a `Whole` file is `current` when it
+   is byte-equal to the rendered body, else `stale`; a `MarkedSection`
+   file is `current` when the text between its `Markers` lines is
+   exactly what `UpsertMarked` writes there (the rendered section, its
+   trailing newlines trimmed, between one newline each side), `stale`
+   when it differs or its begin marker has no end, and `missing` when
+   the file or the begin marker is absent. Text outside the markers is
+   the person's and never affects the status. A whole file absent is
+   `missing`.
+5. **`--json`** prints `[]mcpinstall.Report` — `client`, `status`,
+   `command`, `url`, `path`, `error`, and `instructions`, each
+   `{path, status}` — the same reports the lines are made from.
+6. **Exit codes.** 0 when every client found is `Report.Healthy`:
+   its entry `configured` and every instruction `current` (no client
+   found is 0). Otherwise 1, with `not configured and current: <clients>;
+   run mesh mcp install` on stderr — an entry `missing` or
+   `unparseable`, an instruction `stale` or `missing` alike, since each
+   is one `mesh mcp install` away from right (an unparseable file is
+   the exception: it needs the person first). `--json` exits the same.
+
 ## Consequences
 
 - A client's file format or path changing is one row and one date
@@ -201,7 +244,8 @@ install.
   the upsert is a read-modify-write of one span, and a person running
   install while Claude Code is open may need to run it again.
 - Every row now has a `Body`, Codex's and Cursor's rendered through
-  item 3's `Render`; `mesh mcp doctor` (item 5) reads the same table.
+  item 3's `Render`; `mesh mcp doctor` (Doctor, above) reads the same
+  table and renders the same bodies to judge them current.
 - A marked section is never refused for differing (unlike a whole
   file): re-running always lands the current skill's text inside the
   markers, even after a person edited it there by hand.
