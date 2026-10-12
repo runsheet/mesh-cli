@@ -53,9 +53,8 @@ func TestBuildPromptWithoutClausesIsUnchanged(t *testing.T) {
 	}
 }
 
-// The planner is kept out of the goal's own document: the node writes it
-// when the goal ends, so an item that records the outcome is waste, and two
-// of them conflict over one file.
+// The planner plans no goal document: goals keep none in the repository
+// (retired 2026-10-12), so an item that writes one is waste.
 func TestPlanPromptPlansNoGoalDocItem(t *testing.T) {
 	p := PlanPrompt(PlanInput{GoalSlug: "g", GoalTitle: "G", Statement: "s", Acceptance: "a",
 		Repos: map[string]string{"o/r": "r"}})
@@ -67,7 +66,7 @@ func TestPlanPromptPlansNoGoalDocItem(t *testing.T) {
 			t.Errorf("the plan prompt still invites a goal-doc item: %q", gone)
 		}
 	}
-	if !strings.Contains(p, "when the goal ends the node writes it itself") {
-		t.Error("the rule does not say the node writes the document itself")
+	if !strings.Contains(p, "goals keep no document in the repository") {
+		t.Error("the rule does not say goals keep no document")
 	}
 }

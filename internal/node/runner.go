@@ -687,7 +687,6 @@ func (r *Runner) afterBuild(ctx context.Context, b *buildRun, result harness.Res
 			return fmt.Errorf("finish %s: %w", label, err)
 		}
 		r.logf("item %s: finished already done ($%.2f): %s", label, result.CostUSD, truncate(evidence, 200))
-		b.endGoal(ctx)
 		return nil
 	}
 	// the repository's validation on the commit the item finishes with
@@ -743,7 +742,6 @@ func (r *Runner) afterBuild(ctx context.Context, b *buildRun, result harness.Res
 		return fmt.Errorf("finish %s: %w", label, err)
 	}
 	r.logf("item %s: pushed %s; finished %s ($%.2f)", label, short(sha), b.spec.Branch, result.CostUSD)
-	b.endGoal(ctx)
 	return nil
 }
 
@@ -857,15 +855,6 @@ func (b *buildRun) handedBack(ctx context.Context, result harness.Result) {
 	note := "handed back with nothing committed: " + spent
 	r.logf("item %s: %s", b.label, note)
 	b.report(ctx, note)
-}
-
-// endGoal follows a finish: a goal that ended with the item gets its
-// final document, and nothing that goes wrong there fails the item.
-func (b *buildRun) endGoal(ctx context.Context) {
-	r := b.r
-	if err := RecordEndedGoal(ctx, r.GW, r.WS, r.WorkRoot, r.Scopes.NameOf(b.item.OrgID), b.res.Goal.ID, r.logf); err != nil {
-		r.logf("item %s: goal doc: %v", b.label, err)
-	}
 }
 
 // AdoptItem takes up a build session a node process before this one

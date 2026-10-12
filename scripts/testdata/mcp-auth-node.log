@@ -1,0 +1,12 @@
+mesh node: 2026/10/10 04:00:22 mesh node v0.2.230, pid 8821, config /home/mesh/.mesh/node.yaml
+mesh node: 2026/10/10 05:00:00 item goal-a/3: mesh-context: first call errored: MCP server "mesh-context" rejected the Authorization header in its config (update it, then run /mcp to reconnect)
+mesh node: 2026/10/10 07:15:32 tick: claimed 0, running 2
+mesh node: 2026/10/10 08:02:10 item goal-a/5: mesh-context: first call errored: MCP server "mesh-context" rejected the Authorization header in its config (update it, then run /mcp to reconnect)
+mesh node: 2026/10/10 09:40:58 item goal-a/5: finished mesh/goal-a-5 ($0.42)
+mesh node: 2026/10/10 12:00:00 item goal-b/1: mesh-context: first call errored: MCP server "mesh-context" rejected the Authorization header in its config (update it, then run /mcp to reconnect)
+  panic: runtime error, continuation line with no timestamp prefix
+mesh node: 2026/10/10 23:59:59 tick: claimed 1, running 3
+mesh node: 2026/10/11 00:00:01 item goal-c/2: mesh-context: first call errored: MCP server "mesh-context" rejected the Authorization header in its config (update it, then run /mcp to reconnect)
+mesh node: 2026/10/11 05:59:00 item goal-c/4: mesh-context: first call errored: MCP server "mesh-context" rejected the Authorization header in its config (update it, then run /mcp to reconnect)
+mesh node: 2026/10/11 06:00:00 item goal-c/6: mesh-context: first call errored: MCP server "mesh-context" rejected the Authorization header in its config (update it, then run /mcp to reconnect)
+mesh node: 2026/10/11 07:00:00 item goal-c/7: mesh-context: first call errored: MCP server "mesh-context" rejected the Authorization header in its config (update it, then run /mcp to reconnect)

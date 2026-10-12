@@ -1058,36 +1058,6 @@ func TestPrepareTwoItemsOfOneRepoAreWorktreesOfOneClone(t *testing.T) {
 	}
 }
 
-// An ended goal's doc checkout, <goal>/0 on the base branch itself
-// (RecordEndedGoal's spec), stays off the worktree path: the shared clone
-// has the base checked out, and git refuses a branch in two worktrees.
-// It is prepared as its own clone after an item's worktree exists.
-func TestPrepareGoalDocAfterAWorktreeIsItsOwnClone(t *testing.T) {
-	root, origin := lockTestOrigin(t)
-	work, repos := filepath.Join(root, "work"), filepath.Join(root, "repos")
-	g := &Git{ReposRoot: repos}
-	item := WorkspaceSpec{Root: work, GoalSlug: "g", Seq: 1, Repo: origin, Branch: BranchName("g", 1), BaseRef: "main"}
-	if _, err := g.Prepare(context.Background(), item); err != nil {
-		t.Fatalf("prepare item: %v", err)
-	}
-	doc := WorkspaceSpec{Root: work, GoalSlug: "g", Seq: 0, Repo: origin, Branch: "main", BaseRef: "main"}
-	dir, err := g.Prepare(context.Background(), doc)
-	if err != nil || dir != doc.Dir() {
-		t.Fatalf("prepare the goal doc's checkout: %v %s", err, dir)
-	}
-	if fi, err := os.Stat(filepath.Join(dir, ".git")); err != nil || !fi.IsDir() {
-		t.Fatalf("<goal>/0's .git is not a clone's directory: %v", err)
-	}
-	out, err := exec.Command("git", "-C", dir, "branch", "--show-current").Output()
-	if err != nil || strings.TrimSpace(string(out)) != "main" {
-		t.Fatalf("<goal>/0 on %q, want main: %v", out, err)
-	}
-	list, err := exec.Command("git", "-C", SharedClonePath(repos, origin), "worktree", "list").Output()
-	if err != nil || strings.Contains(string(list), doc.Dir()) {
-		t.Fatalf("the shared clone's worktrees name <goal>/0: %s %v", list, err)
-	}
-}
-
 // A new item whose branch an earlier attempt pushed is a worktree on
 // origin/<branch>, continued, not restarted onto the base.
 func TestPrepareWorktreeContinuesAPushedBranch(t *testing.T) {
