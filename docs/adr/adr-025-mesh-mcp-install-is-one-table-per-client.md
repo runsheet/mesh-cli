@@ -91,19 +91,16 @@ that round-trips them through a map loses what it does not understand.
    byte outside; `planInstruction` calls it for a `MarkedSection` row
    instead of the whole-file `--force` rule, so a marked section is
    always upserted, never refused for differing.
-7. **Cursor's rule is a project rule, not a user one (item 3's
-   amendment).** Cursor's "User Rules" are a Customize → Rules setting
-   in the app, not a file on disk (docs.cursor.com/docs, fetched
-   2026-10-05: "User Rules are global preferences defined in Customize
-   → Rules … not file-based"); its one file-based rule mechanism is a
-   **project** rule, `.cursor/rules/*.mdc`, read only from a project
-   Cursor has open. `InstructionFile` gained `Abs func() (string,
-   error)`, used instead of `ConfigDir(home)` when set; Cursor's rule
-   row's `Abs` is `cwdPath(".cursor/rules/mesh.mdc")` — `mcpinstall.Getwd`
-   (`os.Getwd`, overridable so a test never writes into its own
-   checkout) joined with the relative path — so the rule lands in the
-   project the person runs `mesh mcp install` from, the same project
-   they open in Cursor, while the skill and command stay user-level.
+7. **Cursor gets no rule file (item 3's amendment, review 2026-10-12).**
+   Cursor's "User Rules" are a Customize → Rules setting in the app,
+   not a file on disk (docs.cursor.com/docs, fetched 2026-10-05); its
+   one file-based rule mechanism is a **project** rule,
+   `.cursor/rules/*.mdc`. `mesh mcp install` is a per-user install, so
+   it never writes into the directory it runs from — a rule dropped
+   into whatever repository the person stands in could be committed
+   there by accident. The user skill and command carry the
+   instructions; a project rule, if ever wanted, is its own explicit
+   flag.
 
 ## The table
 
@@ -114,7 +111,7 @@ that day.
 |---|---|---|---|---|---|---|
 | claude | `$CLAUDE_CONFIG_DIR/.claude.json`, else `~/.claude.json` (user scope) | JSON | `mcpServers.mesh` = `{"type":"stdio","command":"<exe>","args":["mcp"]}` | `$CLAUDE_CONFIG_DIR/skills/mesh/SKILL.md`, else `~/.claude/skills/mesh/SKILL.md` (whole) | `~/.claude` (or `$CLAUDE_CONFIG_DIR`) exists, or `claude` on PATH | https://code.claude.com/docs/en/mcp, https://code.claude.com/docs/en/skills (2026-10-05) |
 | codex | `$CODEX_HOME/config.toml`, else `~/.codex/config.toml` | TOML | `[mcp_servers.mesh]` `command = "<exe>"`, `args = ["mcp"]` | `$CODEX_HOME/prompts/mesh.md` (whole; invoked `/prompts:mesh <form> $ARGUMENTS`), `$CODEX_HOME/AGENTS.md` (marked section, marker `mesh`: `` <!-- mesh:begin (written by mesh mcp install; edits inside are overwritten) --> `` … `` <!-- mesh:end --> ``) | `$CODEX_HOME` (or `~/.codex`) exists, or `codex` on PATH | https://learn.chatgpt.com/docs/extend/mcp?surface=cli, https://learn.chatgpt.com/docs/custom-prompts, https://learn.chatgpt.com/docs/agent-configuration/agents-md (2026-10-05) |
-| cursor | `~/.cursor/mcp.json` | JSON | `mcpServers.mesh` = `{"type":"stdio","command":"<exe>","args":["mcp"]}` | `~/.cursor/skills/mesh/SKILL.md` (whole), `~/.cursor/commands/mesh.md` (whole), `.cursor/rules/mesh.mdc` under the current directory (whole; frontmatter `description`, `alwaysApply: true`) | `~/.cursor` exists, or `cursor`/`cursor-agent` on PATH | https://cursor.com/docs/context/mcp, https://cursor.com/docs/context/skills, https://cursor.com/docs/context/rules (2026-10-05) |
+| cursor | `~/.cursor/mcp.json` | JSON | `mcpServers.mesh` = `{"type":"stdio","command":"<exe>","args":["mcp"]}` | `~/.cursor/skills/mesh/SKILL.md` (whole), `~/.cursor/commands/mesh.md` (whole) | `~/.cursor` exists, or `cursor`/`cursor-agent` on PATH | https://cursor.com/docs/context/mcp, https://cursor.com/docs/context/skills, https://cursor.com/docs/context/rules (2026-10-05) |
 
 What the documentation said that shapes the rows:
 
@@ -143,10 +140,9 @@ What the documentation said that shapes the rows:
   instructions every client gets. Cursor's one file-based rule is a
   **project** rule, `.cursor/rules/*.mdc` (`description`, `alwaysApply`,
   `globs` frontmatter), "version-controlled with your codebase" and
-  read only from the project Cursor has open — item 3's row writes
-  `mesh.mdc` there, `alwaysApply: true`, under the current directory
-  rather than home, satisfying the goal's "user-level rule" wording
-  with the one rule mechanism Cursor actually has on disk. Custom
+  read only from the project Cursor has open — so the install writes
+  none (decision 7): it is per-user, and the user skill and command
+  carry the instructions. Custom
   commands are being migrated to skills (`/migrate-to-skills`) and the
   docs no longer name `~/.cursor/commands`, which the row keeps for
   Cursor versions before it.
