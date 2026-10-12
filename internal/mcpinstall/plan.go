@@ -120,13 +120,6 @@ func planMCP(home, exe string, c Client, opts PlanOptions) (Change, error) {
 
 func planInstruction(home string, c Client, f InstructionFile, opts PlanOptions) (Change, error) {
 	path := filepath.Join(c.ConfigDir(home), filepath.FromSlash(f.Path))
-	if f.Abs != nil {
-		p, err := f.Abs()
-		if err != nil {
-			return Change{}, err
-		}
-		path = p
-	}
 	want := f.Body()
 	exists, err := present(path)
 	if err != nil {

@@ -38,12 +38,9 @@ them —
   and a `mesh`-marked section spliced into `$CODEX_HOME/AGENTS.md` —
   the rest of that file, yours, is untouched.
 - **cursor**: `~/.cursor/mcp.json`'s `mcpServers.mesh`, a user skill at
-  `~/.cursor/skills/mesh/SKILL.md`, a command at
-  `~/.cursor/commands/mesh.md`, and a project rule at
-  `.cursor/rules/mesh.mdc` under the current directory (`alwaysApply:
-  true`) — Cursor's "User Rules" are a Customize → Rules setting, not
-  a file, so the one file-based rule it has is project-scoped — all
-  three keeping the `/mesh` form Claude Code uses.
+  `~/.cursor/skills/mesh/SKILL.md` and a command at
+  `~/.cursor/commands/mesh.md`, both keeping the `/mesh` form Claude
+  Code uses. Nothing is written under the directory you run it from.
 
 Every other entry, and every byte outside a marked section, is left
 byte-for-byte; a config it cannot parse is reported and left alone;
