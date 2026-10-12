@@ -1,0 +1,27 @@
+[
+  {
+    "name": "mesh-node-keep-newest-ten",
+    "action": {"type": "Keep"},
+    "mostRecentVersions": {
+      "packageNamePrefixes": ["mesh-node"],
+      "keepCount": 10
+    }
+  },
+  {
+    "name": "mesh-node-keep-tagged-30d",
+    "action": {"type": "Keep"},
+    "condition": {
+      "tagState": "tagged",
+      "packageNamePrefixes": ["mesh-node"],
+      "newerThan": "30d"
+    }
+  },
+  {
+    "name": "mesh-node-delete-the-rest",
+    "action": {"type": "Delete"},
+    "condition": {
+      "tagState": "any",
+      "packageNamePrefixes": ["mesh-node"]
+    }
+  }
+]
