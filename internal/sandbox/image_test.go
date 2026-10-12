@@ -100,18 +100,26 @@ func (f *fakeRuntime) called(sub string) []string {
 	return out
 }
 
-// (a) The image is ghcr.io/runsheet/mesh-node:<node version>; the
-// setting `build` is that same tag, built; any other is used as given.
+// (a) The image is the Artifact Registry mesh-node:<node version>; the
+// setting `build` is that same tag, built; a bare repository (ghcr, the
+// fallback) gets the version as its tag; a full ref is used as given.
 func TestImageRefIsTheNodeVersion(t *testing.T) {
 	for _, c := range []struct {
 		setting, version, want string
 		build                  bool
 	}{
-		{"", "v1.2.0", "ghcr.io/runsheet/mesh-node:v1.2.0", false},
-		{"", "v0.0.0-selfupdate-test.1", "ghcr.io/runsheet/mesh-node:v0.0.0-selfupdate-test.1", false},
-		{"", "dev", "ghcr.io/runsheet/mesh-node:dev", false},
-		{"build", "v1.2.0", "ghcr.io/runsheet/mesh-node:v1.2.0", true},
+		{"", "v1.2.3", "us-central1-docker.pkg.dev/runsheet-prod/runsheet/mesh-node:v1.2.3", false},
+		{"", "v1.2.0", "us-central1-docker.pkg.dev/runsheet-prod/runsheet/mesh-node:v1.2.0", false},
+		{"", "v0.0.0-selfupdate-test.1", "us-central1-docker.pkg.dev/runsheet-prod/runsheet/mesh-node:v0.0.0-selfupdate-test.1", false},
+		{"", "dev", "us-central1-docker.pkg.dev/runsheet-prod/runsheet/mesh-node:dev", false},
+		{"build", "v1.2.0", "us-central1-docker.pkg.dev/runsheet-prod/runsheet/mesh-node:v1.2.0", true},
+		{"ghcr.io/runsheet/mesh-node", "v1.2.3", "ghcr.io/runsheet/mesh-node:v1.2.3", false},
+		{" ghcr.io/runsheet/mesh-node ", "", "ghcr.io/runsheet/mesh-node:dev", false},
+		{"localhost:5000/mesh-node", "v1.2.3", "localhost:5000/mesh-node:v1.2.3", false},
+		{"ghcr.io/runsheet/mesh-node:v1.0.0", "v1.2.3", "ghcr.io/runsheet/mesh-node:v1.0.0", false},
 		{"registry.example.com/team/node:7", "v1.2.0", "registry.example.com/team/node:7", false},
+		{"localhost:5000/mesh-node:7", "v1.2.0", "localhost:5000/mesh-node:7", false},
+		{"ghcr.io/runsheet/mesh-node@sha256:" + strings.Repeat("a", 64), "v1.2.3", "ghcr.io/runsheet/mesh-node@sha256:" + strings.Repeat("a", 64), false},
 	} {
 		ref, build, err := ImageRef(c.setting, c.version)
 		if err != nil || ref != c.want || build != c.build {
@@ -121,6 +129,9 @@ func TestImageRefIsTheNodeVersion(t *testing.T) {
 	for _, v := range []string{"v1.2.0+meta", "../x", ".v1"} {
 		if _, _, err := ImageRef("", v); err == nil {
 			t.Errorf("ImageRef(%q): no error", v)
+		}
+		if _, _, err := ImageRef("ghcr.io/runsheet/mesh-node", v); err == nil {
+			t.Errorf("ImageRef(ghcr, %q): no error", v)
 		}
 	}
 }
@@ -250,8 +261,9 @@ func TestPushImageFailedBuildIsTheError(t *testing.T) {
 	}
 }
 
-// PushImage's build is tagged ghcr.io/runsheet/mesh-node:<version>, the
-// public ghcr the fleet pulls from (mesh-specs ADR 017 §7); a ref naming
+// PushImage's build is still tagged ghcr.io/runsheet/mesh-node:<version>,
+// not the Artifact Registry default nodes pull (the release unit's push
+// moves in a later step); a ref naming
 // another image, or a version that is no tag, builds nothing.
 func TestPushImageTagsTheVersion(t *testing.T) {
 	f := &fakeRuntime{digest: testDigest}
@@ -264,6 +276,12 @@ func TestPushImageTagsTheVersion(t *testing.T) {
 	}
 	if !slices.Contains(strings.Fields(b[0]), "ghcr.io/runsheet/mesh-node:v0.2.300") {
 		t.Errorf("build args = %q; want the tag ghcr.io/runsheet/mesh-node:v0.2.300", b[0])
+	}
+	if p := f.called("manifest"); len(p) != 1 || !strings.Contains(p[0], "ghcr.io/runsheet/mesh-node:v0.2.300") {
+		t.Errorf("pushes = %q; want ghcr.io/runsheet/mesh-node:v0.2.300", p)
+	}
+	if _, err := PushImage(context.Background(), (&fakeRuntime{}).run, DefaultImage("v0.2.300"), "v0.2.300", "ghs_test"); err == nil {
+		t.Errorf("PushImage(%q) = nil error; want a refusal: a release pushes ghcr", DefaultImage("v0.2.300"))
 	}
 
 	for _, c := range []struct{ ref, version string }{
@@ -280,27 +298,28 @@ func TestPushImageTagsTheVersion(t *testing.T) {
 	}
 }
 
-// (d) Older mesh-node tags are removed; the new one and the one the
+// (d) Older DefaultImageRepo tags are removed; the new one and the one the
 // running node still uses are kept; one a container holds is said.
 func TestEnsureImagePrunesOlderTags(t *testing.T) {
+	r := DefaultImageRepo
 	f := &fakeRuntime{
 		images: []string{
-			"ghcr.io/runsheet/mesh-node:v1.0.0",
-			"ghcr.io/runsheet/mesh-node:v1.1.0",
-			"ghcr.io/runsheet/mesh-node:v1.2.0",
-			"ghcr.io/runsheet/mesh-node:<none>",
-			"ghcr.io/runsheet/mesh-node:dev",
+			r + ":v1.0.0",
+			r + ":v1.1.0",
+			r + ":v1.2.0",
+			r + ":<none>",
+			r + ":dev",
 		},
-		rmiFail: map[string]bool{"ghcr.io/runsheet/mesh-node:dev": true},
+		rmiFail: map[string]bool{r + ":dev": true},
 	}
-	img, err := EnsureImage(context.Background(), f.run, "ghcr.io/runsheet/mesh-node:v1.2.0", "ghcr.io/runsheet/mesh-node:v1.1.0")
+	img, err := EnsureImage(context.Background(), f.run, r+":v1.2.0", r+":v1.1.0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"ghcr.io/runsheet/mesh-node:v1.0.0"}; strings.Join(img.Removed, ",") != strings.Join(want, ",") {
+	if want := []string{r + ":v1.0.0"}; strings.Join(img.Removed, ",") != strings.Join(want, ",") {
 		t.Errorf("removed = %q; want %q", img.Removed, want)
 	}
-	if len(img.Kept) != 1 || !strings.HasPrefix(img.Kept[0], "ghcr.io/runsheet/mesh-node:dev: ") {
+	if len(img.Kept) != 1 || !strings.HasPrefix(img.Kept[0], r+":dev: ") {
 		t.Errorf("kept = %q; want dev, in use", img.Kept)
 	}
 	for _, c := range f.called("rmi") {
@@ -308,7 +327,7 @@ func TestEnsureImagePrunesOlderTags(t *testing.T) {
 			t.Errorf("removed %q", c)
 		}
 	}
-	if l := f.called("images"); len(l) != 1 || !strings.Contains(l[0], "--filter reference=ghcr.io/runsheet/mesh-node") {
+	if l := f.called("images"); len(l) != 1 || !strings.Contains(l[0], "--filter reference="+r) {
 		t.Errorf("list = %q", l)
 	}
 }

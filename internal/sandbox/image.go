@@ -44,17 +44,45 @@ const imageBinary = "podman"
 var tagRE = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$`)
 
 // ImageRef is the image node.yaml's `sandbox.image` names for a node at
-// version: empty is DefaultImage(version); `build` is that same ref,
-// built here (build is true); anything else is used as given.
+// version: empty is DefaultImage(version), the Artifact Registry path;
+// `build` is that same ref, built here (build is true); a bare repository
+// (ghcr.io/runsheet/mesh-node, the fallback) gets the version as its tag;
+// a full ref — repo:tag or repo@sha256:… — is used as given.
 func ImageRef(setting, version string) (ref string, build bool, err error) {
-	switch strings.TrimSpace(setting) {
-	case "", ImageBuild:
-		if version != "" && !tagRE.MatchString(version) {
-			return "", false, fmt.Errorf("node image: version %q is not an image tag", version)
+	setting = strings.TrimSpace(setting)
+	switch {
+	case setting == "" || setting == ImageBuild:
+		if err := checkTag(version); err != nil {
+			return "", false, err
 		}
 		return DefaultImage(version), setting == ImageBuild, nil
+	case bareRepo(setting):
+		if err := checkTag(version); err != nil {
+			return "", false, err
+		}
+		if version == "" {
+			version = "dev"
+		}
+		return setting + ":" + version, false, nil
 	}
 	return setting, false, nil
+}
+
+// checkTag refuses a version that is no image tag; empty is dev.
+func checkTag(version string) error {
+	if version != "" && !tagRE.MatchString(version) {
+		return fmt.Errorf("node image: version %q is not an image tag", version)
+	}
+	return nil
+}
+
+// bareRepo: ref names a repository with neither a tag nor a digest. A
+// colon before the last slash is a registry's port, not a tag.
+func bareRepo(ref string) bool {
+	if strings.Contains(ref, "@") {
+		return false
+	}
+	return !strings.Contains(ref[strings.LastIndex(ref, "/")+1:], ":")
 }
 
 // Image is what EnsureImage or BuildImage did.
@@ -95,8 +123,9 @@ func (img Image) Summary() string {
 	return b.String()
 }
 
-// EnsureImage pulls ref and then removes every other
-// ghcr.io/runsheet/mesh-node tag on this machine but ref and keep
+// EnsureImage pulls ref — by default the public Artifact Registry
+// image, DefaultImageRepo — and then removes every other
+// DefaultImageRepo tag on this machine but ref and keep
 // (the image the running node's sessions are still using). A failed pull
 // is the error, and nothing is built in its place or removed.
 func EnsureImage(ctx context.Context, run Runner, ref string, keep ...string) (Image, error) {
@@ -132,9 +161,10 @@ func BuildImage(ctx context.Context, run Runner, ref, version string, keep ...st
 
 // PushImage builds the release's node image for linux/amd64 and
 // linux/arm64 into one manifest list tagged
-// ghcr.io/runsheet/mesh-node:<version> (DefaultImage), a release unit's
-// step 4 — the public ghcr every node pulls from (mesh-specs ADR 017 §4,
-// §7) — pushes it, and answers the multi-arch index's digest. ref, when
+// ghcr.io/runsheet/mesh-node:<version> (GHCRImageRepo, not the
+// Artifact Registry DefaultImageRepo nodes now pull: the release unit's
+// push moves in a later step), a release unit's step 4 (mesh-specs
+// ADR 017 §4, §7) — pushes it, and answers the multi-arch index's digest. ref, when
 // given, must be that same tag: a release names no other image. The
 // build is of the Containerfile the binary embeds
 // (images/node/Containerfile), written to a temporary file passed by
@@ -147,7 +177,7 @@ func PushImage(ctx context.Context, run Runner, ref, version, token string) (str
 	if !tagRE.MatchString(version) {
 		return "", fmt.Errorf("node image: version %q is not an image tag", version)
 	}
-	tag := DefaultImage(version)
+	tag := GHCRImageRepo + ":" + version
 	if ref != "" && ref != tag {
 		return "", fmt.Errorf("node image %s: a release pushes %s", ref, tag)
 	}

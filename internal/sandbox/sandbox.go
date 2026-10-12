@@ -24,8 +24,15 @@ const (
 	DefaultPids           = 4096
 	DefaultServicesCPUs   = 2.0
 	DefaultServicesMemory = "4g"
-	// DefaultImageRepo is the node image; its tag is the node's version.
-	DefaultImageRepo = "ghcr.io/runsheet/mesh-node"
+	// DefaultImageRepo is the node image on Artifact Registry in
+	// runsheet-prod, readable by anyone, so a node with no registry login
+	// pulls it; its tag is the node's version. ghcr is used only when
+	// node.yaml's `sandbox.image` names it (GHCRImageRepo).
+	DefaultImageRepo = "us-central1-docker.pkg.dev/runsheet-prod/runsheet/mesh-node"
+	// GHCRImageRepo is the node image's former home, a private GitHub
+	// package: the fallback a node.yaml may still name, and where a
+	// release unit's PushImage pushes until that push moves too.
+	GHCRImageRepo = "ghcr.io/runsheet/mesh-node"
 	// DefaultPath is the agent's PATH in the node image.
 	DefaultPath = "/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 	// TimeoutGrace is how much longer than the session's own timeout the
