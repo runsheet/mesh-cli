@@ -166,7 +166,7 @@ func TestNodeUpdateDrainsBeforeItSwaps(t *testing.T) {
 	if want := updateTo + " after 0 drains"; strings.Join(f.images, ",") != want {
 		t.Fatalf("images ensured = %q, want %q", f.images, want)
 	}
-	if out := f.out.String(); !strings.Contains(out, "Node image: ghcr.io/runsheet/mesh-node:"+updateTo+" (pulled); removed ghcr.io/runsheet/mesh-node:v1.0.0") {
+	if out := f.out.String(); !strings.Contains(out, "Node image: us-central1-docker.pkg.dev/runsheet-prod/runsheet/mesh-node:"+updateTo+" (pulled); removed us-central1-docker.pkg.dev/runsheet-prod/runsheet/mesh-node:v1.0.0") {
 		t.Fatalf("output does not name the node image:\n%s", out)
 	}
 }
