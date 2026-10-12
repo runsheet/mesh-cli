@@ -208,6 +208,9 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	spec := EvalWorkspaceSpec(e.WorkRoot, res.Goal.Slug, item.Seq, res.Repo.FullName(), branch, res.BaseRef())
 	// the item's own GitHub token, as its builder had
 	cred, err := NewItemCred(ctx, e.GW, e.WS, e.Scopes, item, spec, e.Fallback, e.logf)
+	if we := WorkspaceErrorOf(err); we != nil {
+		return e.releaseInfrastructure(ctx, item, label, we)
+	}
 	if err != nil {
 		return err
 	}
@@ -1546,4 +1549,22 @@ func (e *Evaluator) contextBudget() ContextConfig {
 		return ContextConfig{}.Effective()
 	}
 	return e.Cfg.Context.Effective()
+}
+
+// releaseInfrastructure answers an evaluation whose token could not be
+// written into its checkout (NewItemCred's *WorkspaceError): the item
+// is released as an infrastructure hold (ReleaseOnInfrastructure) and
+// held off this node for WorkspaceReleaseHold. A release the platform
+// refuses — it releases only a claimed or running item — leaves the
+// item in evaluating, never failed, as an evaluation that could not
+// start always has.
+func (e *Evaluator) releaseInfrastructure(ctx context.Context, item gateway.WorkItem, label string, we *WorkspaceError) error {
+	sc, _ := e.Scopes.ByOrg(item.OrgID)
+	err := ReleaseOnInfrastructure(ctx, e.GW, item.ID, sc.NodeID, label, we, func(string) {
+		e.logf("item %s: not evaluated, the node's condition; left in evaluating", label)
+	}, e.logf)
+	if ctx.Err() == nil {
+		holdInfrastructure(e.Declines, item.ID, label, we, e.logf)
+	}
+	return err
 }
