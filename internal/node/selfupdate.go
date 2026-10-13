@@ -324,9 +324,9 @@ func (l *Loop) desiredVersion(ctx context.Context) (string, bool) {
 // leaves it on its binary — then swaps the binary in and restarts at
 // once: every session that outlives the node runs on in its own unit,
 // and the new process adopts it (adr-009, adr-002). Run then returns
-// ErrRestartForUpdate. A sandboxed node's sessions end with it (their
-// pod is not yet their unit), so it still drains first and swaps once
-// they have ended. A failure resumes a drain the update began and is
+// ErrRestartForUpdate. A sandboxed node is no different: its sessions'
+// agents run detached in their pods, which outlive the node as a unit
+// does (adr-007's and adr-009's amendments 2026-10-13). A failure is
 // reported on the heartbeat.
 func (l *Loop) update(ctx context.Context, from, to string) {
 	defer l.updateWG.Done()
@@ -345,27 +345,13 @@ func (l *Loop) update(ctx context.Context, from, to string) {
 		}
 		l.logf("self-update: %s", img.Summary())
 	}
-	ours := false
-	if l.sandboxed() {
-		ours = !l.Draining()
-		l.logf("self-update: %s verified; sandboxed node: draining before the swap because its pods end with the node (sandbox: %s)", to, l.Sandbox.Mode)
-		if err := l.DrainAndWait(ctx); err != nil {
-			l.mu.Lock()
-			l.updating = false
-			l.mu.Unlock()
-			l.logf("self-update to %s: %v; not updated", to, err)
-			l.notify()
-			return
-		}
-	} else {
-		l.logf("self-update: %s verified; no drain: swapping and restarting, sessions left running for the new binary to adopt", to)
-	}
+	l.logf("self-update: %s verified; no drain: swapping and restarting, sessions left running for the new binary to adopt%s", to, l.sandboxNote())
 	err = l.Update.Begin(from, to, l.CurrentScopes().Names())
 	if err == nil {
 		err = l.Update.Swap(bin)
 	}
 	if err != nil {
-		l.updateFailed(ctx, from, to, err, ours)
+		l.updateFailed(ctx, from, to, err, false)
 		return
 	}
 	l.mu.Lock()
@@ -378,10 +364,14 @@ func (l *Loop) update(ctx context.Context, from, to string) {
 	l.notify()
 }
 
-// sandboxed reports whether the node runs its sessions in pods, which
-// end with the node: a self-update then drains before it swaps.
-func (l *Loop) sandboxed() bool {
-	return l.Sandbox != nil && l.Sandbox.Mode == SandboxOn
+// sandboxNote names the sandbox mode on the no-drain line when the node
+// runs its sessions in pods, so node.log says the pods were carried
+// across too.
+func (l *Loop) sandboxNote() string {
+	if l.Sandbox == nil || l.Sandbox.Mode != SandboxOn {
+		return ""
+	}
+	return " (sandbox: " + string(l.Sandbox.Mode) + ")"
 }
 
 // updateFailed records a failed update: the state file and the heartbeat

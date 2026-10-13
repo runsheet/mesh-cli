@@ -501,8 +501,9 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   upgrade` cancels every context the node runs sessions in
   (`Loop.Context`), each `Job.Outlive` session detaches, `Run` returns
   `ErrRestart` without waiting and `mesh node start` execs its binary
-  again; the new process adopts. `DrainAndWait(ctx)` is the drain only a
-  sandboxed node's self-update still blocks on; `Resume` undoes a drain
+  again; the new process adopts. `DrainAndWait(ctx)` is a drain that
+  blocks until every session ends — the loop's self-update no longer
+  calls it, sandboxed or not; `Resume` undoes a drain
   that has not yet ended `Run`. The heartbeat's extras (`gateway.HeartbeatExtras`: `draining`,
   `updateError`, `limits` — the latest Claude plan limits per
   account, each with the priorities the known account serves
@@ -592,8 +593,28 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   file: a result finishes it, none fails it with its last text. The
   session dir goes (`harness.RemoveSession`) only once the end is
   handled. The heartbeat's optional `adopted [{itemId, kind, since}]`
-  lists them while they run. Sandboxed and Codex sessions still end
-  with the node. **Claims outlive the node too** (`claims.go`, ADR-009
+  lists them while they run. **A sandboxed session outlives the node
+  in its pod** (ADR-009's and ADR-007's amendments 2026-10-13, goal
+  a-sandboxed-session-outlives-the-node): with `ClaudeCode.DetachSandboxed`
+  (set by `mesh node start` with a sandbox) an `Outlive` job's agent
+  runs detached (`Session.StartDetached`, `podman run -d` named
+  `sandbox.AgentName(pod)`, its prompt in `<workdir>.session/.prompt`,
+  removed after the first event, its streams `output.jsonl` and
+  `stderr.log`), `state.json` `runner: podman`
+  (`sessionunit.SandboxRunner`), pid 0, `unit`/`container` the agent's
+  container, `pod` and `home`; a cancel `Session.Detach`es, leaving pod,
+  sidecars and HOME. `FindSessionsIn(root, ids, sb)` judges a sandboxed
+  session by its container (`AgentState`; `Kill` = `StopAgent`;
+  `Remove` = `harness.RemoveSandboxedSession`, the pod, HOME and
+  session dir), `ClaudeCode.Attach` follows it by its container,
+  `Runner.AdoptItem` reattaches pod and HOME (`Sandbox.Reattach`, else
+  `ReattachHome`; `harness.WithPodKept`) so validation runs there and
+  both go after the finish, `SweepSandbox` keeps found sessions' pods,
+  containers and HOMEs (`sandbox.SweepKeeping`), and `LiveProbe.Sandbox`
+  counts a sandboxed build by its container.
+  `sandboxed_swap_e2e_test.go` proves an upgrade mid sandboxed build
+  finishing on the new node. Codex sessions still end with the node.
+  **Claims outlive the node too** (`claims.go`, ADR-009
   Claims): a plan or research claim is recorded as a `ClaimRecord` in
   `<root>/.claims/` (`Loop.ClaimsDir`) the moment it is granted and
   removed once its session's end is handled (kept when the context is
@@ -610,7 +631,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   resolved executable keeping `<path>.prev` and `Run` returns
   `ErrRestartForUpdate` at once — no drain, its sessions left for the
   new binary to adopt — so the process exits 0 for its service to start
-  it (a sandboxed node drains before the swap: its pods end with it). A refusal resumes, heartbeats `updateError`
+  it — a sandboxed node too, its line ending ` (sandbox: on)`, its pods
+  carried across (ADR-002's amendment 2026-10-13). A refusal heartbeats `updateError`
   and waits an hour on that version. `mesh node start` counts starts in
   `~/.mesh/update.json` (`CheckStart`): the third unconfirmed one rolls
   back to `.prev`, reports it and exits 0; the first heartbeat confirms
@@ -1466,6 +1488,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `~/bin/mesh.new` and `mesh node upgrade --binary ~/bin/mesh.new`: the
   binary is swapped (`.prev` kept), the node restarts at once and
   adopts its running `claude -p` sessions (README, "Upgrading a node
-  without ending sessions"). A channel-mode session and a sandboxed
-  one still end with the node: for those, `mv` it over `~/bin/mesh`
-  and `mesh node drain` instead.
+  without ending sessions"). A sandboxed node's build sessions are
+  adopted too (`mesh node upgrade` still asks it for `--force`); a
+  channel-mode session still ends with the node: for that, `mv` it over
+  `~/bin/mesh` and `mesh node drain` instead.

@@ -173,16 +173,20 @@ func TestSelfUpdateSwapsAndExitsWithoutWaiting(t *testing.T) {
 	}
 }
 
-// A sandboxed node's sessions end with it (their pod is not yet their
-// unit): its update still drains — the running build finishes first —
-// then swaps and restarts.
-func TestSelfUpdateSandboxedDrainsThenSwapsThenRestarts(t *testing.T) {
+// A sandboxed node takes the same no-drain path: its sessions' agents
+// run detached in their pods, which outlive the node (adr-007's and
+// adr-009's amendments 2026-10-13), so Run returns ErrRestartForUpdate
+// at once with the build still running — DrainAndWait never called, the
+// swap made with the build running — and the no-drain line names the
+// sandbox.
+func TestSelfUpdateSandboxedSwapsWithoutDraining(t *testing.T) {
 	p := newPriorityFake(t)
 	p.addGoal(orgID, "g", "normal")
 	p.addItem(orgID, "g", "long-one", 1, false)
 	loop, u, release, logs := p.updateLoop("")
+	defer close(release)
 	loop.Sandbox = &gateway.SandboxInfo{Mode: SandboxOn}
-	loop.Tick(context.Background())
+	loop.Tick(loop.Context(context.Background()))
 	if loop.Running() != 1 {
 		t.Fatalf("running = %d, want 1", loop.Running())
 	}
@@ -191,34 +195,24 @@ func TestSelfUpdateSandboxedDrainsThenSwapsThenRestarts(t *testing.T) {
 	go func() { done <- loop.Run(context.Background()) }()
 	select {
 	case err := <-done:
-		t.Fatalf("Run returned %v with a build running", err)
-	case <-time.After(200 * time.Millisecond):
-	}
-	if !loop.Draining() {
-		t.Fatal("not draining while the update waits")
-	}
-	for _, e := range u.Events() {
-		if strings.HasPrefix(e, "swap") || strings.HasPrefix(e, "begin") {
-			t.Fatalf("swapped with a build running: %v", u.Events())
-		}
-	}
-	close(release)
-	select {
-	case err := <-done:
 		if !errors.Is(err, ErrRestartForUpdate) {
 			t.Fatalf("Run = %v, want ErrRestartForUpdate", err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("Run did not return after the update")
+		t.Fatal("Run waited for the running sandboxed build")
 	}
-	// the new version's node image is pulled before the drain begins
-	want := []string{"confirm", "fetch v1.1.0", "image v1.1.0 running", "begin v1.0.0 v1.1.0", "swap mesh v1.1.0 drained"}
+	// DrainAndWait drains first: a sandboxed update never drained
+	if loop.Draining() {
+		t.Fatal("the sandboxed update drained")
+	}
+	want := []string{"confirm", "fetch v1.1.0", "image v1.1.0 running", "begin v1.0.0 v1.1.0", "swap mesh v1.1.0 running"}
 	if got := u.Events(); strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("events %q, want %q", got, want)
 	}
-	// the drain says why: the pods end with the node
-	if out := logs.String(); strings.Count(out, "self-update: v1.1.0 verified; sandboxed node: draining before the swap because its pods end with the node (sandbox: on)") != 1 {
-		t.Fatalf("want one line naming why it drains:\n%s", out)
+	out := logs.String()
+	if strings.Count(out, "self-update: v1.1.0 verified; no drain: swapping and restarting, sessions left running for the new binary to adopt (sandbox: on)") != 1 ||
+		!strings.Contains(out, "1 session(s) left for it to adopt") || strings.Contains(out, "draining") {
+		t.Fatalf("want one no-drain line naming the sandbox:\n%s", out)
 	}
 }
 

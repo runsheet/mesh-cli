@@ -1,5 +1,5 @@
 ---
-summary: How mesh-cli implements mesh-specs ADR 007 — the node image carrying Postgres and headless Chromium beside Go, Node and Python (scripts/image-tools-check.sh run in it by TestImageToolsE2E), internal/sandbox's Runtime (Podman, a test Fake) runs claude in a per-session pod with two mounts, an allow-listed env passed to podman by name, node.yaml's flat sandbox keys (mode, cpus, memory, pids, services_cpus, services_memory, registries, image), a mode left out following `podman --version` while an explicit on fails closed at start, a limit kill (OOM, pids, the runtime's timeout backstop) released as the node's condition with the heartbeat's reason, service sidecars started and health-checked in the session's pod before the agent (a required one failing releases the claim, an optional one is a note), the node image (images/node/Containerfile, embedded) pulled for the new version before a self-update or `mesh node update` drains — a failed pull an updateError with no drain and no swap, the pull on a registry credential the platform brokers (`nodeRegistryToken`) written to a temporary auth.json passed by --authfile and removed after, `sandbox.image: build` building it locally — the pod mapping the host user onto the image's declared user (`--userns keep-id:uid=<image uid>,gid=<image gid>`, 1000 when it declares none; podman 4.3 or later), a session's HOME, pod, containers and volumes removed on every way it ends — `Session.Close` sure of the HOME (RemoveAll, then u+w, then `podman unshare rm -rf`) and logging what it could not remove — and a node start sweeping (`sandbox.Sweep`) the mesh-home dirs no running container mounts, the mesh pods with no running container and the exited mesh containers an earlier process left, and channel mode and Codex not yet sandboxed.
+summary: How mesh-cli implements mesh-specs ADR 007 — the node image carrying Postgres and headless Chromium beside Go, Node and Python (scripts/image-tools-check.sh run in it by TestImageToolsE2E), internal/sandbox's Runtime (Podman, a test Fake) runs claude in a per-session pod with two mounts, an allow-listed env passed to podman by name, node.yaml's flat sandbox keys (mode, cpus, memory, pids, services_cpus, services_memory, registries, image), a mode left out following `podman --version` while an explicit on fails closed at start, a limit kill (OOM, pids, the runtime's timeout backstop) released as the node's condition with the heartbeat's reason, service sidecars started and health-checked in the session's pod before the agent (a required one failing releases the claim, an optional one is a note), the node image (images/node/Containerfile, embedded) pulled for the new version before a self-update swaps or `mesh node update` drains — a failed pull an updateError with no drain and no swap, the pull on a registry credential the platform brokers (`nodeRegistryToken`) written to a temporary auth.json passed by --authfile and removed after, `sandbox.image: build` building it locally — the pod mapping the host user onto the image's declared user (`--userns keep-id:uid=<image uid>,gid=<image gid>`, 1000 when it declares none; podman 4.3 or later), a session's HOME, pod, containers and volumes removed on every way it ends — `Session.Close` sure of the HOME (RemoveAll, then u+w, then `podman unshare rm -rf`) and logging what it could not remove — and a node start sweeping (`sandbox.Sweep`) the mesh-home dirs no running container mounts, the mesh pods with no running container and the exited mesh containers an earlier process left, a sandboxed Outlive session's pod its unit — the agent run detached (`podman run -d`, streams on `<workdir>.session/` files), `state.json` naming the pod, container and HOME, the pod and HOME left standing when the node lets go, kept by the start-up sweep, and reattached by the adopting node, so a sandboxed node's self-update no longer drains — and channel mode and Codex not yet sandboxed.
 status: accepted
 ---
 
@@ -94,7 +94,9 @@ implementing it that the spec leaves open or that differ in detail.
   drain: `sandbox.EnsureImage(ctx, runner, ref, keep…)` pulls the ref
   and removes every other `ghcr.io/runsheet/mesh-node` tag but the
   new one and the running version's (its sessions still use it until
-  the drain ends them; the next update removes it). The runner is
+  they end; the next update removes it). Since 2026-10-13 a
+  self-update swaps without a drain, sandboxed or not (below); the
+  pull still comes first. The runner is
   injected (`sandbox.Runner`; `ExecRunner` in the node). A failed pull
   is returned: the self-update refuses the version with it as
   `updateError`, the command exits non-zero, nothing is drained or
@@ -244,7 +246,9 @@ pods with nothing running. "One package, one interface" said
 `os.RemoveAll` whose error was dropped, and what the agent writes into
 its HOME — Go's 0555/0444 module cache, files keep-id's mapped subuids
 own — made it fail. A node killed or restarted left the rest: a
-sandboxed session writes no session state, so adoption never sees it.
+sandboxed session wrote no session state then, so no later process
+could find it to adopt (since 2026-10-13 it does: the pod is the
+session's unit, below).
 
 - **Close is sure, and says when it is not.** `Session.Close` removes
   every pod the session made with `Runtime.Remove` — `Podman.Remove` runs
@@ -392,3 +396,56 @@ sandboxed node could not ensure its image unless its operator had run
   `TestEnsureImagePullsOnTheGatewaysRegistryToken` (`internal/node`)
   prove the `--authfile`, its login and its removal after a pull that
   succeeds and one that fails.
+
+## Amendment 2026-10-13: the pod is the session's unit (goal a-sandboxed-session-outlives-the-node)
+
+A sandboxed session ran its agent attached — `podman run -i`, the node
+holding its stdin and stdout — and wrote no session state, so it ended
+with its node and no later process could adopt it; a sandboxed node's
+self-update drained first, waiting out its longest build. mesh-specs
+ADR 008 makes a session's unit, not the node, its owner; for a
+sandboxed session that unit is now its pod (mesh-cli ADR-009's
+amendment of the same date, Sandboxed sessions):
+
+- **The agent runs detached.** A sandboxed `Job.Outlive` session
+  (`ClaudeCode.DetachSandboxed`, set by `mesh node start` with a
+  sandbox) starts its agent with `Session.StartDetached` →
+  `Runtime.StartAgent` — `podman run -d` (`StartAgentArgs`) in the
+  session's pod, beside its sidecars, under the same limits, mounts,
+  env and `--userns keep-id` as an attached run (the dl360's podman shim
+  rewrites that flag and is unaffected) — its stdin, stdout and stderr
+  redirected inside the container to `<workdir>.session/.prompt`,
+  `output.jsonl` and `stderr.log`, each file's directory mounted at its
+  own path. The container is named `sandbox.AgentName(pod)`
+  (`<pod>-agent`); `AgentState` (`podman container inspect`),
+  `StopAgent` (`podman stop --time 10`) and `WaitAgent` find, read and
+  stop it by that name from any process.
+- **`state.json`.** The session writes the host session's state file
+  with `runner: podman` (`sessionunit.SandboxRunner`), `pid` 0, `unit`
+  and `container` the agent's container, and `pod` and `home`: what a
+  node after this one needs, and never a secret. The prompt file is
+  removed after the agent's first event.
+- **Letting go.** The node's cancel `Detach`es the session: `Close`
+  after it removes nothing, so the pod, its sidecars and the HOME stand
+  while the agent works. Only the session's own timeout stops it
+  (`--timeout` on the container, and the attacher at `startedAt +
+  timeout`).
+- **Adoption and the sweep.** `FindSessionsIn(root, ids, sb)` finds it
+  and judges it by its container; `Runner.AdoptItem` reattaches the pod
+  and HOME (`Sandbox.Reattach`, or `ReattachHome` when the pod is gone)
+  so validation runs in them, then removes both after the finish. A
+  session that is no longer the node's is stopped and its pod, HOME and
+  session directory removed (`harness.RemoveSandboxedSession`). The
+  start-up sweep above runs after adoption and keeps every found
+  session's pod, containers and HOME, running or exited
+  (`sandbox.SweepKeeping`); the HOME rule — a `mesh-home-*` no running
+  container mounts is swept — still holds for everything else.
+- **The self-update does not drain.** With the pod outliving the node,
+  `Loop.update` swaps at once on a sandboxed node too (ADR-009's
+  amendment), logging the no-drain line with ` (sandbox: on)`.
+  `TestSandboxedSelfUpdateMidSessionFinishesOnTheNewNode` proves an
+  upgrade mid-session on `sandbox.Fake`: the agent runs on, the new
+  loop adopts and finishes it, the item's heartbeats never stall.
+- An attached run (`Session.Run`) remains for every session that is not
+  `Outlive` — validation steps, channel mode — and those still end with
+  the node.
