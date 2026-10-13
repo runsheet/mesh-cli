@@ -233,7 +233,9 @@ func TestSelfUpdateFailedImagePullIsAnUpdateError(t *testing.T) {
 	u.imageErr = errors.New("node image ghcr.io/runsheet/mesh-node:v1.1.0: pull failed: Error: initializing source: unauthorized")
 	loop.Tick(context.Background())
 	loop.updateWG.Wait()
-	want := []string{"confirm", "fetch v1.1.0", "image v1.1.0 running", "refuse v1.1.0: " + u.imageErr.Error()}
+	// a refused pull's reason opens with its environment kind (ADR-030)
+	reason := "image_pull_refused: " + u.imageErr.Error()
+	want := []string{"confirm", "fetch v1.1.0", "image v1.1.0 running", "refuse v1.1.0: " + reason}
 	if got := u.Events(); strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("events %q, want %q", got, want)
 	}
@@ -246,7 +248,7 @@ func TestSelfUpdateFailedImagePullIsAnUpdateError(t *testing.T) {
 	if c := p.CallsNamed("claimWorkItem"); len(c) != 1 || c[0].Input["aggregateId"] != "after" {
 		t.Fatalf("claims after the failed pull: %+v", c)
 	}
-	if got := p.lastHeartbeat()["updateError"]; got != u.imageErr.Error() {
+	if got := p.lastHeartbeat()["updateError"]; got != reason {
 		t.Fatalf("heartbeat updateError = %v", got)
 	}
 }
