@@ -190,6 +190,18 @@ func TestHostBackoffNilMachine(t *testing.T) {
 	}
 }
 
+// hostState.report() carries the node user's own slice's CPU pressure
+// avg60 alongside the host-wide reading.
+func TestHostStateReportCarriesSliceCPUPressure(t *testing.T) {
+	h := hostState{read: true, reading: MachineReading{
+		Load1: 10, CPUs: 18, SliceCPUSomeAvg60: 42, HasSliceCPUPressure: true,
+	}}
+	r := h.report()
+	if r == nil || !r.HasSliceCPUPressure || r.SliceCPUSomeAvg60 != 42 {
+		t.Fatalf("report() = %+v, want HasSliceCPUPressure true, SliceCPUSomeAvg60 42", r)
+	}
+}
+
 func equalInts(a, b []int) bool {
 	if len(a) != len(b) {
 		return false
@@ -200,4 +212,101 @@ func equalInts(a, b []int) bool {
 		}
 	}
 	return true
+}
+
+// setPressure sets the load and the node user's slice's CPU pressure
+// some avg60, the slice read.
+func (h *hostProbe) setPressure(load, avg60 float64) {
+	h.mu.Lock()
+	h.m.Load1, h.m.SliceCPUSomeAvg60, h.m.HasSliceCPUPressure = load, avg60, true
+	h.mu.Unlock()
+}
+
+// With the slice's CPU pressure read the host is judged by it (ADR-031):
+// load 3.0 per core with pressure 10% backs nothing off; pressure 31%
+// past host.cpu_some_avg60_max (25) does, the reason naming it.
+func TestHostBackoffJudgesBySlicePressure(t *testing.T) {
+	probe := newHostProbe(54)
+	probe.setPressure(54, 10)
+	s := hostScaled(t, Capacity{Min: 2, Max: 8}, 8, probe)
+	for m := 0; m < 3; m++ {
+		s.at(time.Duration(m) * time.Minute)
+	}
+	if n := s.loop.Capacity(); n != 8 || s.loop.hostHot() || strings.Contains(s.logs.String(), "host hot") {
+		t.Fatalf("load 3.0/core, pressure 10%%: capacity %d, hot %v, logs:\n%s", n, s.loop.hostHot(), s.logs)
+	}
+
+	probe.setPressure(9, 31)
+	s.at(3 * time.Minute)
+	sc, _ := s.loop.Scaling()
+	if sc.Capacity != 7 || sc.Reason != "host hot: cpu pressure 31%/25%" {
+		t.Fatalf("pressure 31%%: scaling %+v", sc)
+	}
+	if !strings.Contains(s.logs.String(), "capacity 8 → 7: host hot: cpu pressure 31%/25%\n") {
+		t.Fatalf("logs:\n%s", s.logs)
+	}
+}
+
+// Once hot, the host is quiet only below host.quiet_fraction (0.8) of
+// the threshold: pressure 22% — under 25, over 20 — stays hot; 19% is
+// quiet. Without PSI the load per core has the same band: 1.3 stays
+// hot after 1.6, 1.1 is quiet.
+func TestHostBackoffHysteresis(t *testing.T) {
+	probe := newHostProbe(9)
+	probe.setPressure(9, 31)
+	s := hostScaled(t, Capacity{Min: 2, Max: 8}, 8, probe)
+	s.at(0)
+	probe.setPressure(9, 22)
+	s.at(time.Minute)
+	if !s.loop.hostHot() || s.loop.Capacity() != 6 {
+		t.Fatalf("pressure 22%% after 31%%: hot %v capacity %d, want hot at 6", s.loop.hostHot(), s.loop.Capacity())
+	}
+	probe.setPressure(9, 19)
+	s.at(2 * time.Minute)
+	if s.loop.hostHot() || s.loop.Capacity() != 6 {
+		t.Fatalf("pressure 19%%: hot %v capacity %d, want quiet at 6", s.loop.hostHot(), s.loop.Capacity())
+	}
+	// quiet, 22% is not enough to be hot again
+	probe.setPressure(9, 22)
+	s.at(3 * time.Minute)
+	if s.loop.hostHot() {
+		t.Fatal("pressure 22% from quiet: hot, want quiet")
+	}
+
+	h := HostConfig{}.Effective()
+	for _, tc := range []struct {
+		load   float64
+		wasHot bool
+		want   bool
+	}{
+		{1.6 * 18, false, true},
+		{1.3 * 18, true, true},
+		{1.3 * 18, false, false},
+		{1.1 * 18, true, false},
+	} {
+		if hot, _ := (MachineReading{Load1: tc.load, CPUs: 18}).Hot(h, tc.wasHot); hot != tc.want {
+			t.Fatalf("load %.1f/18, was hot %v: hot %v, want %v", tc.load, tc.wasHot, hot, tc.want)
+		}
+	}
+}
+
+// Two hot ticks within HostStepEvery take one slot, not two; the next
+// is taken a minute after the first.
+func TestHostBackoffStepsOncePerMinute(t *testing.T) {
+	probe := newHostProbe(9)
+	probe.setPressure(9, 40)
+	s := hostScaled(t, Capacity{Min: 2, Max: 8}, 8, probe)
+	s.at(0)
+	s.at(30 * time.Second)
+	if n := s.loop.Capacity(); n != 7 {
+		t.Fatalf("two hot ticks 30s apart: capacity %d, want 7", n)
+	}
+	s.at(59 * time.Second)
+	if n := s.loop.Capacity(); n != 7 {
+		t.Fatalf("+59s: capacity %d, want 7", n)
+	}
+	s.at(time.Minute)
+	if n := s.loop.Capacity(); n != 6 {
+		t.Fatalf("+1m: capacity %d, want 6", n)
+	}
 }

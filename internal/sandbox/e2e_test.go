@@ -139,6 +139,10 @@ func TestProbeSessionE2E(t *testing.T) {
 	sort.Strings(env)
 	// the shell itself sets PWD, SHLVL and _ ; everything else is ours
 	allowed := append(append([]string{}, BaseEnv...), AllowedEnv...)
+	for _, kv := range LimitEnv(sb.Config.Limits) {
+		name, _, _ := strings.Cut(kv, "=")
+		allowed = append(allowed, name)
+	}
 	for _, name := range env {
 		if slices.Contains([]string{"PWD", "SHLVL", "_", "OLDPWD"}, name) {
 			continue
@@ -149,6 +153,44 @@ func TestProbeSessionE2E(t *testing.T) {
 	}
 	if slices.Contains(env, "MESH_DECOY") {
 		t.Errorf("MESH_DECOY reached the pod")
+	}
+}
+
+// TestLimitEnvE2E runs a real pod with Limits{CPUs: 2} and reads
+// GOMAXPROCS back out of the container's own environment: the tools
+// inside see the --cpus limit, not the host's core count. It needs
+// podman and the node image, so it runs only with MESH_SANDBOX_E2E=1.
+func TestLimitEnvE2E(t *testing.T) {
+	if os.Getenv("MESH_SANDBOX_E2E") != "1" {
+		t.Skip("MESH_SANDBOX_E2E=1 runs a real pod")
+	}
+	image := os.Getenv("MESH_SANDBOX_IMAGE")
+	if image == "" {
+		image = DefaultImage("dev")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	rt := &Podman{}
+	if _, err := rt.Version(ctx); err != nil {
+		t.Fatalf("podman: %v", err)
+	}
+	sb := &Sandbox{Runtime: rt, Config: Config{Image: image, Limits: Limits{CPUs: 2, Memory: "1g", Pids: 512}, Network: DefaultNetwork()}}
+	sess, err := sb.Open("e2e/limitenv", "build", GitIdentity{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	var out, errb bytes.Buffer
+	err = sess.Run(ctx, RunSpec{
+		Workspace: t.TempDir(),
+		Command:   []string{"sh", "-c", "env | grep GOMAXPROCS"},
+		Stdout:    &out, Stderr: &errb,
+	})
+	if err != nil {
+		t.Fatalf("run: %v\n%s", err, errb.String())
+	}
+	if got := strings.TrimSpace(out.String()); got != "GOMAXPROCS=2" {
+		t.Fatalf("env | grep GOMAXPROCS = %q, want GOMAXPROCS=2", got)
 	}
 }
 
