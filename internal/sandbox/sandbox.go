@@ -165,6 +165,9 @@ type Session struct {
 	// image is the image ref the session's agent runs, the Sandbox's
 	// Config.Image when it was opened.
 	image string
+	// detached is a session whose agent outlives the node process: Close
+	// leaves its pods and HOME to whoever Reattaches it.
+	detached bool
 }
 
 // GitIdentity is a session's commit identity: the agent its .gitconfig
@@ -392,12 +395,8 @@ func (s *Session) Run(ctx context.Context, spec RunSpec) error {
 		}
 	}
 	defer s.remove(ctx, pod)
-	name := pod.Name
 
-	timeout := 0
-	if spec.Timeout > 0 {
-		timeout = int((spec.Timeout + TimeoutGrace) / time.Second)
-	}
+	timeout := runtimeTimeout(spec.Timeout)
 	tail := &tailBuffer{max: 8 << 10}
 	stderr := io.Writer(tail)
 	if spec.Stderr != nil {
@@ -405,7 +404,7 @@ func (s *Session) Run(ctx context.Context, spec RunSpec) error {
 	}
 	start := time.Now()
 	exit, err := s.sb.Runtime.RunAgent(ctx, pod, AgentSpec{
-		Name:           name + "-agent",
+		Name:           AgentName(pod),
 		Image:          cfg.Image,
 		Workdir:        spec.Workspace,
 		Mounts:         s.Mounts(spec.Workspace),
@@ -424,6 +423,139 @@ func (s *Session) Run(ctx context.Context, spec RunSpec) error {
 		return fmt.Errorf("sandbox: run: %w", err)
 	}
 	return classify(exit, time.Since(start), spec.Timeout, cfg.Limits, tail.String())
+}
+
+// AgentName is the name of the agent's container in a pod.
+func AgentName(pod Pod) string { return pod.Name + "-agent" }
+
+// runtimeTimeout is the runtime's --timeout backstop for a session of
+// timeout, in seconds: TimeoutGrace past it; 0 for none.
+func runtimeTimeout(timeout time.Duration) int {
+	if timeout <= 0 {
+		return 0
+	}
+	return int((timeout + TimeoutGrace) / time.Second)
+}
+
+// DetachedSpec is an agent started to outlive the node process: Run's
+// spec with the streams as host files rather than pipes. StdinFile is
+// the prompt; StdoutFile and StderrFile are where the agent writes
+// (the session's `<workdir>.session/output.jsonl` and `stderr.log`).
+// Each file's directory is mounted into the agent's container at its
+// own path.
+type DetachedSpec struct {
+	Workspace  string
+	Env        []string
+	Command    []string
+	Timeout    time.Duration
+	StdinFile  string
+	StdoutFile string
+	StderrFile string
+}
+
+// DetachedAgent names a started detached agent: its pod and container,
+// what a node after this one needs to find, wait on and stop it.
+type DetachedAgent struct {
+	Pod  Pod
+	Name string
+}
+
+// StartDetached starts the agent in the session's pod — the one Start
+// made with its services, else a new one — detached (Runtime.StartAgent)
+// and returns at once. The pod stays the session's: Close removes it
+// unless the session is Detached first. A start that fails removes the
+// pod.
+func (s *Session) StartDetached(ctx context.Context, spec DetachedSpec) (DetachedAgent, error) {
+	cfg := s.sb.Config
+	s.mu.Lock()
+	started := s.started
+	s.started = nil
+	s.mu.Unlock()
+	var pod Pod
+	if started != nil {
+		pod = *started
+	} else {
+		var err error
+		if pod, err = s.createPod(ctx); err != nil {
+			return DetachedAgent{}, err
+		}
+	}
+	name := AgentName(pod)
+	if err := s.sb.Runtime.StartAgent(ctx, pod, AgentSpec{
+		Name:           name,
+		Image:          cfg.Image,
+		Workdir:        spec.Workspace,
+		Mounts:         s.Mounts(spec.Workspace),
+		Env:            s.Env(spec.Env),
+		Command:        spec.Command,
+		Limits:         cfg.Limits,
+		TimeoutSeconds: runtimeTimeout(spec.Timeout),
+		StdinFile:      spec.StdinFile,
+		StdoutFile:     spec.StdoutFile,
+		StderrFile:     spec.StderrFile,
+	}); err != nil {
+		s.remove(ctx, pod)
+		return DetachedAgent{}, fmt.Errorf("sandbox: start: %w", err)
+	}
+	return DetachedAgent{Pod: pod, Name: name}, nil
+}
+
+// Ended is a detached agent's end as the session's error, as Run
+// classifies an attached one: nil, a *LimitError or an *ExitError.
+// elapsed is how long it ran, timeout the session's own, stderr the
+// tail of what it wrote there (for the pids heuristic).
+func (s *Session) Ended(exit Exit, elapsed, timeout time.Duration, stderr string) error {
+	return classify(exit, elapsed, timeout, s.sb.Config.Limits, stderr)
+}
+
+// Detach leaves the session's pods and HOME to outlive this process:
+// Close after it removes nothing. A node that detaches has recorded
+// the pod and HOME, so the next one can Reattach them.
+func (s *Session) Detach() {
+	s.mu.Lock()
+	s.detached = true
+	s.mu.Unlock()
+}
+
+// Pods are the session's pods still standing.
+func (s *Session) Pods() []Pod {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]Pod(nil), s.pods...)
+}
+
+// Reattach is the session an earlier node process detached: its pod and
+// HOME, whose Close removes both as an opened session's does.
+func (sb *Sandbox) Reattach(pod Pod, home, label string) *Session {
+	return &Session{sb: sb, Home: home, Label: label, name: pod.Name, image: sb.Config.Image, pods: []Pod{pod}}
+}
+
+// WaitAgent polls the named agent's state every interval until it is
+// no longer running, and returns how it ended. A cancelled ctx returns
+// ctx.Err(); a container the runtime no longer has, ErrNoAgent.
+func WaitAgent(ctx context.Context, rt Runtime, name string, every time.Duration) (Exit, error) {
+	if every <= 0 {
+		every = time.Second
+	}
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		st, err := rt.AgentState(ctx, name)
+		if err != nil {
+			if ctx.Err() != nil {
+				return Exit{}, ctx.Err()
+			}
+			return Exit{}, err
+		}
+		if !st.Running && st.Status != "created" {
+			return st.Exit, nil
+		}
+		select {
+		case <-ctx.Done():
+			return Exit{}, ctx.Err()
+		case <-t.C:
+		}
+	}
 }
 
 // createPod makes the session's next pod and its network rules, kept
@@ -485,10 +617,16 @@ func (s *Session) remove(ctx context.Context, pod Pod) {
 // Close removes any pod still standing — its containers and their
 // anonymous volumes with it — and the session's HOME, and returns every
 // removal that failed, joined.
+//
+// A Detached session's Close removes nothing: its agent runs on.
 func (s *Session) Close() error {
 	s.mu.Lock()
 	pods := append([]Pod(nil), s.pods...)
+	detached := s.detached
 	s.mu.Unlock()
+	if detached {
+		return nil
+	}
 	var errs []error
 	for _, p := range pods {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
