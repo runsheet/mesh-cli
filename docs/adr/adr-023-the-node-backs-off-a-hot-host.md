@@ -1,5 +1,5 @@
 ---
-summary: A node backs off a hot host — every tick, while the 1-minute load per core is past node.yaml's host.load_per_core_max (1.5) or the package temperature past host.package_temp_max_c (90°C), the capacity in force drops one slot to max(min, 1) and nothing new is claimed; quiet, it climbs one slot per five quiet minutes back to the plan figure (the scaler's, or a fixed N), never above; the reason is `host hot: load 55/18 cores` or `host hot: 101°C` and the scaling report carries the host's load, cores and temperature. Replaces ADR-004's and ADR-005's machine-load growth cap.
+summary: A node backs off a hot host — every tick, while the 1-minute load per core is past node.yaml's host.load_per_core_max (1.5) or the package temperature past host.package_temp_max_c (90°C), the capacity in force drops one slot to max(min, 1) and nothing new is claimed; quiet, it climbs one slot per five quiet minutes back to the plan figure (the scaler's, or a fixed N), never above; the reason is `host hot: load 55/18 cores` or `host hot: 101°C` and the scaling report carries the host's load, cores and temperature. Replaces ADR-004's and ADR-005's machine-load growth cap. Amended by ADR-031: with the slice's CPU pressure read the host is hot by host.cpu_some_avg60_max (25%) in place of load per core, stays hot down to host.quiet_fraction (0.8) of the threshold, and drops at most one slot per minute.
 status: accepted
 ---
 
@@ -23,6 +23,14 @@ That never shrinks a node, does nothing for a fixed `capacity: N`, runs
 once a minute at most, and knows nothing of temperature.
 
 ## Decision
+
+*Amended by [ADR-031](adr-031-a-sessions-load-matches-its-cpu-limit.md)
+(2026-10-13):* when the node user's slice's CPU pressure is read the host
+is hot by `host.cpu_some_avg60_max` (default 25%, `host hot: cpu pressure
+31%/25%`) and load per core is judged only without it; once hot it stays
+hot down to `host.quiet_fraction` (0.8) of its threshold; and the
+back-off drops at most one slot per `HostStepEvery` (1 minute), not one
+per tick. The bullets below stand otherwise.
 
 - **Thresholds.** node.yaml `host: {load_per_core_max: 1.5,
   package_temp_max_c: 90}`, defaults filled, reloaded every tick. The
