@@ -324,6 +324,84 @@ type PriorAttempt struct {
 	Notes   string
 }
 
+// RetryTurn is what a resumed or fresh retry turn needs after the node's
+// validation or an evaluator failed the item it just judged (goal
+// a-failed-check-returns-to-the-session-that-built-it): what failed —
+// either a validation step (Step, Command, ExitCode, Output, as
+// ValidationRetryPrompt took them) or an evaluation's failed clauses
+// (Clauses) and review (Notes) — where it was judged (Branch, HeadSHA,
+// ChangedPaths), and the item's acceptance, verbatim. Exactly one of
+// Step or Clauses is set; a turn with neither still gets where it was
+// judged and the acceptance.
+type RetryTurn struct {
+	// Step, Command, ExitCode and Output are a failed validation step's
+	// (ADR-014); Step is empty for an evaluation failure.
+	Step     string
+	Command  string
+	ExitCode int
+	Output   string
+	// Clauses and Notes are an evaluation's failed clauses, each with
+	// what would satisfy it, and its review; Clauses is empty for a
+	// validation failure.
+	Clauses []FailedClause
+	Notes   string
+	// Branch and HeadSHA are the branch and the commit that was judged.
+	Branch, HeadSHA string
+	// ChangedPaths are the paths that commit changed against its base.
+	ChangedPaths []string
+	// Acceptance is the item's acceptance, verbatim.
+	Acceptance string
+}
+
+// RetryTurnPrompt is the one message a resumed or fresh retry turn gets:
+// what failed, where it was judged, and the item's acceptance verbatim.
+// ValidationRetryPrompt is a call of it for a validation failure, trimming
+// Output's tail the same way; an evaluation failure instead lists each
+// failed clause with what would satisfy it, as the build prompt's
+// "Previous attempt" section does, beside the evaluator's own review.
+// Ends with ADR 012's hand-back words: fix it and commit, or commit what
+// works and hand back; never push — the node validates the new commit
+// and pushes it.
+func RetryTurnPrompt(in RetryTurn) string {
+	var b strings.Builder
+	switch {
+	case in.Step != "":
+		const tailMax = 3000
+		output := in.Output
+		if len(output) > tailMax {
+			output = "…" + output[len(output)-tailMax:]
+		}
+		output = strings.TrimRight(output, "\n")
+		fmt.Fprintf(&b, "The repository's validation failed on your commit: step %s (`%s`) exited %d.\n\n", in.Step, in.Command, in.ExitCode)
+		if output != "" {
+			fmt.Fprintf(&b, "The end of its output:\n\n```\n%s\n```\n\n", output)
+		}
+	case len(in.Clauses) > 0 || strings.TrimSpace(in.Notes) != "":
+		if notes := strings.TrimSpace(in.Notes); notes != "" {
+			fmt.Fprintf(&b, "An independent evaluator rejected this: %s\n\n", notes)
+		}
+		if len(in.Clauses) > 0 {
+			b.WriteString("Every clause it failed, with what would satisfy it:\n\n")
+			for _, c := range in.Clauses {
+				fmt.Fprintf(&b, "- **%s** — satisfied by: %s\n", c.Clause, c.Satisfy)
+			}
+			b.WriteString("\n")
+		}
+	}
+	if in.Branch != "" || in.HeadSHA != "" {
+		fmt.Fprintf(&b, "This was judged on branch `%s` at `%s`", in.Branch, in.HeadSHA)
+		if len(in.ChangedPaths) > 0 {
+			fmt.Fprintf(&b, ", which changed: %s", strings.Join(in.ChangedPaths, ", "))
+		}
+		b.WriteString(".\n\n")
+	}
+	if a := strings.TrimSpace(in.Acceptance); a != "" {
+		fmt.Fprintf(&b, "## Acceptance\n\n%s\n\n", a)
+	}
+	b.WriteString("Fix it and commit. If you cannot fix it in this turn, commit what works with a message naming what is done and what is not, and hand back — do not start new work. Never push: the node validates your new commit and pushes it.")
+	return b.String()
+}
+
 // evaluateUnverifiableRule is the evaluator's side of adr-004: a clause
 // it cannot see at evaluation time is unverifiable, not failed.
 // evaluateRetryRule is the evaluator's side of a retry: an item that has

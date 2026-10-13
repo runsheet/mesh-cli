@@ -48,6 +48,41 @@ func TestCodexArgs(t *testing.T) {
 	}
 }
 
+// A job with Resume set runs `codex exec resume <id>`, with the same
+// --json/--sandbox/-c flags as a fresh exec, the resume subcommand and
+// its session id coming after them and before the trailing `-`; a job
+// with no Resume is unchanged (TestCodexArgs, above).
+func TestCodexArgsResume(t *testing.T) {
+	c := &Codex{ExtraArgs: []string{"--skip-git-repo-check"}}
+	job := Job{Prompt: "fix it", Model: "gpt-6-sol", Resume: "33333333-3333-3333-3333-333333333333"}
+	want := []string{"exec", "--json", "--sandbox", "workspace-write", "-c", "sandbox_workspace_write.network_access=true",
+		"--model", "gpt-6-sol", "--skip-git-repo-check", "resume", job.Resume, "-"}
+	if got := c.Args(job); !reflect.DeepEqual(got, want) {
+		t.Fatalf("resume args\n got %q\nwant %q", got, want)
+	}
+	fresh := (&Codex{}).Args(Job{Model: "gpt-6-sol"})
+	resumed := (&Codex{}).Args(Job{Model: "gpt-6-sol", Resume: "sess-1"})
+	for _, flag := range []string{"--json", "--sandbox", "workspace-write", "-c", "sandbox_workspace_write.network_access=true"} {
+		if !containsStr(fresh, flag) || !containsStr(resumed, flag) {
+			t.Fatalf("resume %q and fresh %q do not share flag %q", resumed, fresh, flag)
+		}
+	}
+	for _, a := range resumed {
+		if strings.Contains(a, "fix it") {
+			t.Fatalf("argv carries the prompt: %q", a)
+		}
+	}
+}
+
+func containsStr(ss []string, s string) bool {
+	for _, x := range ss {
+		if x == s {
+			return true
+		}
+	}
+	return false
+}
+
 // An evaluation session's sandboxed commands get the network: without
 // `sandbox_workspace_write.network_access=true` Codex's seccomp filter
 // refuses socket() and no test that binds loopback can run (ADR 011,

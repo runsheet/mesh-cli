@@ -716,3 +716,57 @@ func TestPromptsFinishByToolCall(t *testing.T) {
 		t.Error("a plan prompt with no goal id does not name the goal by its slug")
 	}
 }
+
+// A validation failure's retry turn names the step, its command, exit
+// code and output, where it was judged, and the item's acceptance.
+func TestRetryTurnPromptValidation(t *testing.T) {
+	p := RetryTurnPrompt(RetryTurn{
+		Step: "unit", Command: "go test ./...", ExitCode: 1, Output: "FAIL ./api TestThing\n",
+		Branch: "mesh/ship-it-1", HeadSHA: "abc123", ChangedPaths: []string{"internal/api/handler.go"},
+		Acceptance: "go test ./... passes",
+	})
+	for _, want := range []string{
+		"step unit (`go test ./...`) exited 1",
+		"FAIL ./api TestThing",
+		"mesh/ship-it-1",
+		"abc123",
+		"internal/api/handler.go",
+		"go test ./... passes",
+		"Fix it and commit",
+		"hand back",
+		"Never push",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("validation retry turn prompt lacks %q:\n%s", want, p)
+		}
+	}
+}
+
+// An evaluation failure's retry turn names each failed clause with what
+// would satisfy it, the evaluator's own review, where it was judged, and
+// the item's acceptance.
+func TestRetryTurnPromptEvaluation(t *testing.T) {
+	p := RetryTurnPrompt(RetryTurn{
+		Clauses: []FailedClause{
+			{Clause: "go vet ./... passes", Satisfy: "no vet error on the branch"},
+			{Clause: "the endpoint returns 404 for a missing id", Satisfy: "a test proving it"},
+		},
+		Notes:      "The handler panics on a missing id instead of returning 404.",
+		Branch:     "mesh/ship-it-1",
+		HeadSHA:    "def456",
+		Acceptance: "go vet ./... passes; the endpoint returns 404 for a missing id",
+	})
+	for _, want := range []string{
+		"go vet ./... passes",
+		"no vet error on the branch",
+		"the endpoint returns 404 for a missing id",
+		"a test proving it",
+		"panics on a missing id",
+		"def456",
+		"Fix it and commit",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("evaluation retry turn prompt lacks %q:\n%s", want, p)
+		}
+	}
+}
