@@ -1,0 +1,19 @@
+mesh node: 2026/10/12 03:00:00 mesh node v0.2.240, pid 4821, config /home/mesh/.mesh/node.yaml
+mesh node: 2026/10/12 03:00:00 no update pending
+mesh node: 2026/10/12 03:05:00 tick: claimed 0, running 0
+mesh node: 2026/10/12 03:10:00 item sandbox-swap/1: build on sonnet, budget $3.00 (node.yaml build)
+mesh node: 2026/10/12 03:12:00 item sandbox-swap/2: build on opus, budget $5.00 (node.yaml build)
+mesh node: 2026/10/12 04:00:00 self-update: v0.2.241 verified; no drain: swapping and restarting, sessions left running for the new binary to adopt (sandbox: on)
+mesh node: 2026/10/12 04:00:01 self-update: v0.2.241 is in place; exiting for the service to start it, 2 session(s) left for it to adopt
+mesh node: 2026/10/12 04:00:05 mesh node v0.2.241, pid 5102, config /home/mesh/.mesh/node.yaml
+mesh node: 2026/10/12 04:00:05 no update pending
+mesh node: 2026/10/12 04:00:17 item sandbox-swap/1: adopted its running session (container mesh-session-build-sandbox-swap-1-abcd, from byte 1200)
+mesh node: 2026/10/12 04:00:22 item sandbox-swap/2: adopted its running session (container mesh-session-build-sandbox-swap-2-efgh, from byte 800)
+mesh node: 2026/10/12 04:15:40 item sandbox-swap/1: pushed abc1234; finished mesh/sandbox-swap-1 ($0.38)
+mesh node: 2026/10/12 04:20:00 item sandbox-swap/3: build on haiku, budget $2.00 (node.yaml build)
+mesh node: 2026/10/12 04:45:12 item sandbox-swap/2: pushed def5678; finished mesh/sandbox-swap-2 ($0.51)
+mesh node: 2026/10/12 05:30:00 self-update: v0.2.242 verified; no drain: swapping and restarting, sessions left running for the new binary to adopt (sandbox: on)
+mesh node: 2026/10/12 05:30:02 self-update: v0.2.242 is in place; exiting for the service to start it, 1 session(s) left for it to adopt
+mesh node: 2026/10/12 05:30:10 mesh node v0.2.242, pid 6200, config /home/mesh/.mesh/node.yaml
+mesh node: 2026/10/12 05:30:10 no update pending
+mesh node: 2026/10/12 05:35:00 tick: claimed 0, running 0
