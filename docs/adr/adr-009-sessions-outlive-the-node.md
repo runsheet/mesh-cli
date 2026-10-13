@@ -1,5 +1,5 @@
 ---
-summary: A session's unit and output file, not the node process, own a session — a node shutting down detaches from its host Claude sessions (Job.Outlive) instead of stopping them, and on start, before its first claim, the node finds every `<workdir>.session/state.json` naming it, heartbeats each item at once, follows each session from its saved offset (or reads the file of one that ended while no node ran) and runs the same tail the live path runs — push and FinishWorkItem, the verdict, the plan, the research, the rebase — removing the session directory only once the end is handled; the heartbeat carries the optional `adopted [{itemId, kind, since}]`, with `goalId`, `directionId`, `sessionId` and `alive` beside them, re-read every heartbeat and sent only when the platform's schema takes them; and claims, not only sessions, outlive the node — a plan or research claim is recorded under `<work root>/.claims/` the moment it is granted, removed once its session's end is handled, and a starting node re-claims each one with no session (same node id, inside PlanClaimTTL) and runs it fresh, one log line each.
+summary: A session's unit and output file, not the node process, own a session — a node shutting down detaches from its Claude sessions (Job.Outlive) instead of stopping them, a host session in its scope and a sandboxed one in its pod (its agent run detached, state.json naming the pod, container and HOME, so a sandboxed node's self-update no longer drains), and on start, before its first claim, the node finds every `<workdir>.session/state.json` naming it, heartbeats each item at once, follows each session from its saved offset (or reads the file of one that ended while no node ran) and runs the same tail the live path runs — push and FinishWorkItem, the verdict, the plan, the research, the rebase — removing the session directory only once the end is handled; the heartbeat carries the optional `adopted [{itemId, kind, since}]`, with `goalId`, `directionId`, `sessionId` and `alive` beside them, re-read every heartbeat and sent only when the platform's schema takes them; and claims, not only sessions, outlive the node — a plan or research claim is recorded under `<work root>/.claims/` the moment it is granted, removed once its session's end is handled, and a starting node re-claims each one with no session (same node id, inside PlanClaimTTL) and runs it fresh, one log line each.
 status: accepted
 ---
 
@@ -7,7 +7,10 @@ status: accepted
 
 (Amended 2026-10-03: Claims — claims, not only sessions, outlive the
 node; and the heartbeat — `adopted` carries `goalId`, `directionId`,
-`sessionId` and `alive` beside `itemId`, `kind` and `since`.)
+`sessionId` and `alive` beside `itemId`, `kind` and `since`. Amended
+2026-10-13: Sandboxed sessions — a sandboxed session outlives the node
+in its pod and is adopted like a host one, and the self-update no
+longer drains a sandboxed node.)
 
 ## Context
 
@@ -34,8 +37,9 @@ process that started it is only its first reader.**
   `Run` returns `ctx.Err()` at once; only the job's own `Timeout` stops
   the unit. The session's temporary `CLAUDE_CONFIG_DIR` and
   `GH_CONFIG_DIR` are left to it too (`unlessDetached`), their paths in
-  `state.json` as `tempDirs`. A sandboxed or Codex session still ends
-  with its context: the pod becomes the unit in a later goal.
+  `state.json` as `tempDirs`. A sandboxed session's pod is its unit
+  and outlives the node the same way (Sandboxed sessions, amendment
+  2026-10-13, below); a Codex session still ends with its context.
 - **The offset.** `state.json`'s `offset` is saved after every event
   the node has read and passed on (item 1 saved it at most once a
   second), so an adopting node reports nothing twice.
@@ -149,12 +153,12 @@ two swaps, nothing planned until 04:00:44Z.
   No claim file is written for a build or an evaluation: the platform's
   record is theirs. `swap_e2e_test.go` proves research and evaluations
   across a self-update's swap, `claims_test.go` plans.
-- **The log says which way an update goes.** An unsandboxed node's
-  self-update logs `self-update: <to> verified; no drain: swapping and
-  restarting, sessions left running for the new binary to adopt`; a
-  sandboxed one still drains first and says why — `self-update: <to>
-  verified; sandboxed node: draining before the swap because its pods
-  end with the node (sandbox: on)`.
+- **The log says which way an update goes.** A node's self-update
+  logs `self-update: <to> verified; no drain: swapping and restarting,
+  sessions left running for the new binary to adopt`; a sandboxed
+  node's line ends ` (sandbox: on)`, since its pods are carried across
+  too. Until 2026-10-13 a sandboxed node drained first instead
+  (Sandboxed sessions, below).
 - **The proof** is the grapevine replay (`hotswap_plans_test.go`):
   four plans claimed, the binary swapped — once through a release
   signed on a virtual Sigstore and verified by the `ReleaseUpdater` —
@@ -165,6 +169,64 @@ two swaps, nothing planned until 04:00:44Z.
   stamped on a fresh claim and kept on the holder's re-claim, another
   node refused while `PlanClaimTTL` (settable, default 30 minutes) has
   not passed since it.
+
+## Sandboxed sessions (amendment 2026-10-13)
+
+Goal `a-sandboxed-session-outlives-the-node`. Until now a sandboxed
+session ran its agent attached (`podman run -i`, the node holding its
+pipes), wrote no `state.json`, and ended with its node; a sandboxed
+node's self-update therefore drained first (`DrainAndWait`), waiting
+out its longest build. The pod is now the session's unit, as a scope is
+a host session's (mesh-cli ADR-007's amendment of the same date):
+
+- **Letting go.** A sandboxed `Job.Outlive` job (`ClaudeCode.Sandbox`
+  set and `DetachSandboxed`, which `mesh node start` turns on with a
+  sandbox) starts its agent detached — `Session.StartDetached`,
+  `podman run -d` in the session's pod, its stdin the prompt in
+  `<workdir>.session/.prompt` (removed after the agent's first event),
+  its stdout and stderr `output.jsonl` and `stderr.log` — and writes
+  `state.json` with `runner: podman` (`sessionunit.SandboxRunner`), no
+  pid (`0`), `unit` and `container` the agent's container
+  (`sandbox.AgentName`), and its `pod` and `home`. A cancelled context
+  returns `ctx.Err()` and `Session.Detach` leaves the pod, its sidecars
+  and the HOME standing; the job's own timeout stops the container at
+  `startedAt + timeout`.
+- **Finding and judging.** `FindSessionsIn(root, ids, sb)` gives each
+  found session the node's sandbox: a sandboxed one is alive by its
+  container (`Runtime.AgentState`), `Kill` stops it (`StopAgent`), and
+  `Remove` — every adopter's "no longer this node's" path — is
+  `harness.RemoveSandboxedSession`: the container stopped, its pod and
+  HOME removed with the session directory. The start-up sweep keeps
+  every found session's pod, containers and HOME
+  (`SweepSandbox` → `sandbox.SweepKeeping`), and the live probe
+  (ADR-029) counts a sandboxed build by its container.
+- **Attaching.** `ClaudeCode.Attach` follows `output.jsonl` from the
+  saved offset while the container runs (`WaitAgent`), and at its end
+  removes the pod and HOME (`Sandbox.Reattach`). `Runner.AdoptItem`
+  reattaches them as the build's own pod instead
+  (`Sandbox.Reattach`, else `ReattachHome` when the pod is gone;
+  `harness.WithPodKept`), so ADR-014's validation runs in that session
+  and the pod and HOME go only after the finish, unless the node lets
+  go again.
+- **The self-update no longer drains a sandboxed node.** `Loop.update`
+  takes one path whatever the sandbox: verify, ensure the image, swap,
+  and `ErrRestartForUpdate` at once, its no-drain line ending
+  ` (sandbox: on)`. `DrainAndWait` is no longer called by the loop.
+  `mesh node update` still drains (it always did, sandbox or not), and
+  `mesh node upgrade`'s `--force` for a sandboxed node is unchanged
+  here.
+- **The proof** is `internal/node/sandboxed_swap_e2e_test.go`
+  (`TestSandboxedSelfUpdateMidSessionFinishesOnTheNewNode`) on
+  `sandbox.Fake` and `gatewaytest.Fake`: a sandboxed build running when
+  the release updater swaps, `Run` returning without waiting, the
+  agent's container still running, the next loop adopting it, no gap
+  between the item's heartbeats (`gatewaytest.Call.At`) past the stall
+  window, and the item pushed and finished by the new loop with one
+  claim. `sandbox_adopt_test.go` proves the find, sweep, adopt and
+  remove paths; `selfupdate_test.go`'s
+  `TestSelfUpdateSandboxedSwapsWithoutDraining` the update itself.
+- Channel mode and Codex sessions are not in a pod and still end with
+  the node.
 
 ## Limits
 

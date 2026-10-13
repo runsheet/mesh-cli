@@ -771,6 +771,28 @@ Tests: `internal/selfupdate/verify_test.go`
 `TestReleasePolicyPreTransferTags`, `TestVerifyPlatformReleaseIdentity`,
 `TestVerifyActionsReleaseUnderReleasePolicy`).
 
+## Amendment: a sandboxed node swaps without a drain too (goal a-sandboxed-session-outlives-the-node, 2026-10-13)
+
+The two places above that keep a drain for a sandboxed node — the
+Decision's "A sandboxed node still drains first (`DrainAndWait`)" and
+the restart-and-adopt amendment's "A node whose sandbox is on drains
+first as before" — no longer hold. A sandboxed session's pod is now its
+unit (mesh-cli ADR-007's and ADR-009's amendments of this date): its
+agent runs detached, its `state.json` names its pod, container and
+HOME, and the next process adopts it. `Loop.update` therefore takes one
+path for every node — verify, ensure the image, `Begin`, swap,
+`ErrRestartForUpdate` at once — logging `self-update: <to> verified; no
+drain: swapping and restarting, sessions left running for the new
+binary to adopt (sandbox: on)` on a sandboxed node. A failed swap no
+longer has a drain to resume. The start count, the confirm window and
+the rollback are unchanged. `mesh node update` still drains, and `mesh
+node upgrade` still asks `--force` of a sandboxed node, until a change
+of their own.
+
+Tests: `internal/node/selfupdate_test.go`
+(`TestSelfUpdateSandboxedSwapsWithoutDraining`),
+`internal/node/sandboxed_swap_e2e_test.go`.
+
 ## Consequences
 
 - Renaming an asset, the workflow file, or the repo breaks every

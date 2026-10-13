@@ -1073,8 +1073,8 @@ well, a field sent only while draining; until the platform's node record
 keeps it (runsheet `update-nodes-from-console`), the drain is known on
 the machine alone.
 
-Swapping the binary on the mini by a drain — for a sandboxed or a
-channel-mode node, whose sessions do not outlive it (anything else:
+Swapping the binary on the mini by a drain — for a channel-mode node,
+whose sessions do not outlive it (anything else:
 `mesh node upgrade`, next section; a released version: `mesh node
 update`, under Release):
 
@@ -2877,7 +2877,8 @@ left for an hour. A verified one swaps the executable atomically,
 keeping the one it replaced as `<path>.prev`, and exits 0 at once — no
 drain: its sessions run on and the new process adopts them (see
 [Upgrading a node without ending sessions](#upgrading-a-node-without-ending-sessions);
-a sandboxed node drains first). systemd (`Restart=always`) or launchd
+a sandboxed node too: its sessions' pods run on and are adopted).
+systemd (`Restart=always`) or launchd
 (`KeepAlive`) starts the new binary, whose first heartbeat reports the
 new version and confirms the update. `~/.mesh/update.json` counts the starts of a new binary: one
 that fails to start twice is rolled back — the third start puts `.prev`
