@@ -754,7 +754,7 @@ func TestRetryTurnPromptEvaluation(t *testing.T) {
 		Notes:      "The handler panics on a missing id instead of returning 404.",
 		Branch:     "mesh/ship-it-1",
 		HeadSHA:    "def456",
-		Acceptance: "go vet ./... passes; the endpoint returns 404 for a missing id",
+		Acceptance: "The service builds with `go build ./...` and ships a CHANGELOG entry.",
 	})
 	for _, want := range []string{
 		"go vet ./... passes",
@@ -763,6 +763,7 @@ func TestRetryTurnPromptEvaluation(t *testing.T) {
 		"a test proving it",
 		"panics on a missing id",
 		"def456",
+		"## Acceptance\n\nThe service builds with `go build ./...` and ships a CHANGELOG entry.",
 		"Fix it and commit",
 	} {
 		if !strings.Contains(p, want) {
