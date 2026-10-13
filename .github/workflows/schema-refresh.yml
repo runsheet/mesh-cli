@@ -16,14 +16,13 @@ permissions:
 
 jobs:
   refresh:
-    runs-on: [self-hosted, mini]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          cache: false   # the mini keeps Go's caches on disk
 
       - name: refresh schema.json from the gateway
         working-directory: internal/gateway
