@@ -84,12 +84,30 @@ func (m MachineReading) Busy() bool {
 	return m.BusyAt(HostConfig{LoadPerCoreMax: 1})
 }
 
-// Hot says the machine is past h's thresholds, and why: load over
-// h.LoadPerCoreMax per core wins when both load and temperature are
-// past theirs, since it is read every tick and never absent the way a
-// thermal zone can be. Quiet (false) carries no reason.
-func (m MachineReading) Hot(h HostConfig) (bool, Reason) {
-	if m.CPUs > 0 && m.Load1/float64(m.CPUs) > h.LoadPerCoreMax {
+// Hot says the machine is past h's thresholds, and why (ADR-031,
+// amending ADR-023). With the node user's slice's CPU pressure read the
+// host is judged by it — some avg60 past h.CPUSomeAvg60Max, `host hot:
+// cpu pressure 31%/25%` — and load per core is not looked at; without
+// it, by the 1-minute load per core past h.LoadPerCoreMax, `host hot:
+// load 55/18 cores`. Either wins over the package temperature past
+// h.PackageTempMaxC, `host hot: 101°C`. wasHot is the last judgement:
+// once hot, the pressure (or load) keeps the host hot down to
+// h.QuietFraction of its threshold, so a reading that flaps around the
+// threshold is one hot spell, not many. The temperature has no such
+// band: it moves slowly. Quiet (false) carries no reason.
+func (m MachineReading) Hot(h HostConfig, wasHot bool) (bool, Reason) {
+	h = h.Effective()
+	over := func(v, threshold float64) bool {
+		if wasHot {
+			return v >= threshold*h.QuietFraction
+		}
+		return v > threshold
+	}
+	if m.HasSliceCPUPressure {
+		if over(m.SliceCPUSomeAvg60, h.CPUSomeAvg60Max) {
+			return true, Reason(fmt.Sprintf("host hot: cpu pressure %.0f%%/%s%%", m.SliceCPUSomeAvg60, hostNum(h.CPUSomeAvg60Max)))
+		}
+	} else if m.CPUs > 0 && over(m.PerCore(), h.LoadPerCoreMax) {
 		return true, Reason(fmt.Sprintf("host hot: load %s/%d cores", loadFigure(m.Load1), m.CPUs))
 	}
 	if m.HasTemp && m.PackageTempC > h.PackageTempMaxC {

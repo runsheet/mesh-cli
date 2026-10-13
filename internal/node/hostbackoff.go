@@ -5,14 +5,21 @@ import (
 	"time"
 )
 
-// The host back-off (docs/adr/adr-023-the-node-backs-off-a-hot-host):
-// a layer over the plan figure — the scaler's capacity for a range, N
-// for a fixed `capacity: N` — run every tick before claiming. While the
-// machine is hot (MachineReading.Hot at node.yaml's `host:` thresholds)
-// the capacity in force drops one slot per tick down to max(min, 1) and
-// nothing new is claimed; once it is quiet it climbs one slot per
-// HostRecoverEvery of continuous quiet back to the plan figure, never
-// above it. Running sessions are never touched.
+// The host back-off (docs/adr/adr-023-the-node-backs-off-a-hot-host,
+// amended by adr-031-a-sessions-load-matches-its-cpu-limit): a layer
+// over the plan figure — the scaler's capacity for a range, N for a
+// fixed `capacity: N` — run every tick before claiming. While the
+// machine is hot (MachineReading.Hot at node.yaml's `host:` thresholds,
+// the slice's CPU pressure when read, with a quiet band below the
+// threshold once hot) nothing new is claimed and the capacity in force
+// drops one slot per HostStepEvery down to max(min, 1); once it is quiet
+// it climbs one slot per HostRecoverEvery of continuous quiet back to
+// the plan figure, never above it. Running sessions are never touched.
+
+// HostStepEvery is the least time between two slots the back-off takes
+// while the host stays hot: a tick runs more often than a minute, and
+// a minute's average needs a minute to answer a step (ADR-031).
+const HostStepEvery = time.Minute
 
 // HostRecoverEvery is how long the host must stay quiet for each slot
 // the back-off gives back.
@@ -58,7 +65,10 @@ type hostState struct {
 	hot        bool
 	reason     Reason
 	quietSince time.Time
-	backedOff  int
+	// steppedAt is when the back-off last took a slot; the next is
+	// HostStepEvery after it.
+	steppedAt time.Time
+	backedOff int
 	// tempAbsentSaid is set once `host: no package temperature zone`
 	// has been logged.
 	tempAbsentSaid bool
@@ -120,7 +130,8 @@ func (l *Loop) hostHot() bool {
 }
 
 // hostBackoff reads the machine and moves the back-off one step: one
-// slot down while hot, one up per HostRecoverEvery of quiet. No Machine
+// slot down per HostStepEvery while hot, one up per HostRecoverEvery of
+// quiet. No Machine
 // (a non-Linux host) or a failed read changes nothing.
 func (l *Loop) hostBackoff() {
 	if l.Machine == nil {
@@ -131,11 +142,11 @@ func (l *Loop) hostBackoff() {
 		return
 	}
 	thresholds := l.HostThresholds()
-	hot, why := m.Hot(thresholds)
 	now := l.now()
 
 	l.mu.Lock()
 	st := &l.backoff
+	hot, why := m.Hot(thresholds, st.hot)
 	sayTempAbsent := !m.HasTemp && !st.tempAbsentSaid
 	if sayTempAbsent {
 		st.tempAbsentSaid = true
@@ -148,8 +159,9 @@ func (l *Loop) hostBackoff() {
 	var line string
 	if hot {
 		st.reason, st.quietSince = why, time.Time{}
-		if was > l.hostFloorLocked() {
+		if was > l.hostFloorLocked() && (st.steppedAt.IsZero() || now.Sub(st.steppedAt) >= HostStepEvery) {
 			st.backedOff++
+			st.steppedAt = now
 			line = fmt.Sprintf("capacity %d → %d: %s", was, was-1, why)
 		}
 	} else if st.backedOff > 0 {

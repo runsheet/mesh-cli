@@ -211,7 +211,7 @@ func TestMachineReadingHot(t *testing.T) {
 		{"quiet", MachineReading{Load1: 9, CPUs: 18, PackageTempC: 70, HasTemp: true}, defaults, false, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			hot, reason := tc.m.Hot(tc.h)
+			hot, reason := tc.m.Hot(tc.h, false)
 			if hot != tc.want || reason != tc.reason {
 				t.Fatalf("Hot() = (%v, %q), want (%v, %q)", hot, reason, tc.want, tc.reason)
 			}

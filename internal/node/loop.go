@@ -1806,6 +1806,12 @@ func (l *Loop) reload(ctx context.Context) {
 		if now.OverloadPerCore != was.OverloadPerCore {
 			l.logf("host: overload_per_core %s → %s", hostNum(was.OverloadPerCore), hostNum(now.OverloadPerCore))
 		}
+		if now.CPUSomeAvg60Max != was.CPUSomeAvg60Max {
+			l.logf("host: cpu_some_avg60_max %s → %s", hostNum(was.CPUSomeAvg60Max), hostNum(now.CPUSomeAvg60Max))
+		}
+		if now.QuietFraction != was.QuietFraction {
+			l.logf("host: quiet_fraction %s → %s", hostNum(was.QuietFraction), hostNum(now.QuietFraction))
+		}
 		if now.OverloadCPUSomeAvg60 != was.OverloadCPUSomeAvg60 {
 			l.logf("host: overload_cpu_some_avg60 %s → %s", hostNum(was.OverloadCPUSomeAvg60), hostNum(now.OverloadCPUSomeAvg60))
 		}
