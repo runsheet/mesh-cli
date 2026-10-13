@@ -533,6 +533,13 @@ func (sb *Sandbox) Reattach(pod Pod, home, label string) *Session {
 	return &Session{sb: sb, Home: home, Label: label, name: pod.Name, image: sb.Config.Image, pods: []Pod{pod}}
 }
 
+// ReattachHome is Reattach for a session whose pod is gone but whose
+// HOME is not: its Close removes the HOME alone, and a pod it makes
+// (Run) is named after name as the session's next one.
+func (sb *Sandbox) ReattachHome(name, home, label string) *Session {
+	return &Session{sb: sb, Home: home, Label: label, name: name, image: sb.Config.Image}
+}
+
 // WaitAgent polls the named agent's state every interval until it is
 // no longer running, and returns how it ended. A cancelled ctx returns
 // ctx.Err(); a container the runtime no longer has, ErrNoAgent.

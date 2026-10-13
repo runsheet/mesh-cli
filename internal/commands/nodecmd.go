@@ -1060,6 +1060,10 @@ func nodeStart(cmd *cobra.Command, args []string, logger *log.Logger) error {
 		sb.Config.TZ = os.Getenv("TZ")
 	}
 	sessionSandbox, loop.Sandbox = sb, sbInfo
+	if loop.Live != nil {
+		// a sandboxed build is counted by its container (ADR-029)
+		loop.Live.Sandbox = sb
+	}
 	// every one-shot session's account comes from the platform's
 	// claim-time read, node.yaml the fallback, and every one reports
 	// its usage record (adr-005); each fallback is said once per run
@@ -1154,9 +1158,10 @@ func runPollMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *
 	// sessions the process before this one started run on in their own
 	// units: each is taken up where it is, before anything is claimed
 	found := adoptSessions(ctx, gw, cfg, h, second, loop, runner, workRoot, fallback, accounts, logger)
-	// what sandboxed sessions of that process left — they write no state,
-	// so nothing above adopts them — is swept (ADR-007's amendment)
-	node.SweepSandbox(ctx, sessionSandbox, logger.Printf)
+	// what sandboxed sessions of that process left and nothing above
+	// adopts is swept; an adopted one's pod and HOME are kept (ADR-007's
+	// amendment, ADR 009)
+	node.SweepSandbox(ctx, sessionSandbox, found, logger.Printf)
 	// plan and research claims it held but had not opened are taken again
 	reopenClaims(ctx, loop, workRoot, found, logger)
 	// items this node held when it last stopped are taken up again: a
@@ -1540,7 +1545,7 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 	// share what has been said once per item
 	second := codexSecondOpinion(cfg, loop, workRoot, logger)
 	found := adoptSessions(ctx, gw, cfg, oneShot, second, loop, &node.Runner{GW: gw, Harness: oneShot, WS: ws, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, Fallback: fallback, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Condition: loop.NoteCondition, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Machine: loop.Machine, Host: loop.HostThresholds, Log: logger}, workRoot, fallback, accounts, logger)
-	node.SweepSandbox(ctx, sessionSandbox, logger.Printf)
+	node.SweepSandbox(ctx, sessionSandbox, found, logger.Printf)
 	loop.Evaluate = evaluateWith(gw, cfg, observed(loop, logger), second, loop, workRoot, fallback, accounts, logger)
 	loop.Plan = planWith(gw, cfg, observed(loop, logger), loop, workRoot, accounts, logger)
 	loop.PlanReleased = (&node.Planner{WorkRoot: workRoot, Log: logger}).Released
@@ -1728,7 +1733,9 @@ var sessionSandbox *sandbox.Sandbox
 // oneShotHarness is `claude -p` for a session that ends with its turn:
 // poll-mode builds and every evaluation.
 func oneShotHarness() *harness.ClaudeCode {
-	h := &harness.ClaudeCode{Stderr: sessionsOut, Sandbox: sessionSandbox, MeshBinary: meshBinary()}
+	// a sandboxed session's agent runs detached in its pod and outlives
+	// the node like a host one: the next node adopts it (ADR 009)
+	h := &harness.ClaudeCode{Stderr: sessionsOut, Sandbox: sessionSandbox, MeshBinary: meshBinary(), DetachSandboxed: sessionSandbox != nil}
 	if nodeUnattended {
 		h.ExtraArgs = []string{"--dangerously-skip-permissions"}
 	}
@@ -1905,7 +1912,7 @@ func adoptSessions(ctx context.Context, gw *gateway.Client, cfg *node.Config, h 
 			ids = append(ids, id)
 		}
 	}
-	found, err := node.FindSessions(workRoot, ids)
+	found, err := node.FindSessionsIn(workRoot, ids, sessionSandbox)
 	if err != nil {
 		logger.Printf("adopt: %v", err)
 	}

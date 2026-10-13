@@ -39,7 +39,7 @@ func TestStartUpSweepLogsWhatItSwept(t *testing.T) {
 	var lines []string
 	logf := func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
 
-	SweepSandbox(context.Background(), sb, logf)
+	SweepSandbox(context.Background(), sb, nil, logf)
 
 	want := "sandbox: swept 1 homes, 1 pods, 1 containers at start (1 homes in use)"
 	if !slices.Contains(lines, want) {
@@ -59,7 +59,7 @@ func TestStartUpSweepLogsWhatItSwept(t *testing.T) {
 // No sandbox (`sandbox: off`) sweeps and logs nothing.
 func TestStartUpSweepWithNoSandbox(t *testing.T) {
 	var lines []string
-	SweepSandbox(context.Background(), nil, func(f string, a ...any) { lines = append(lines, f) })
+	SweepSandbox(context.Background(), nil, nil, func(f string, a ...any) { lines = append(lines, f) })
 	if len(lines) != 0 {
 		t.Fatalf("logged %q", lines)
 	}

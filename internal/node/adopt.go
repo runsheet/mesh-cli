@@ -11,9 +11,11 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/harness"
+	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/sessionunit"
 )
 
@@ -29,6 +31,59 @@ type FoundSession struct {
 	// Unit is the unit the session runs in; nil is the one its state's
 	// runner names.
 	Unit sessionunit.Unit
+	// Sandbox is the node's sandbox, through which a sandboxed session's
+	// container is read, stopped and its pod and HOME removed (nil: no
+	// sandbox, and a sandboxed session reads as ended).
+	Sandbox *sandbox.Sandbox
+}
+
+// Sandboxed is a session whose agent runs detached in its own pod: its
+// unit is the container its state names.
+func (s FoundSession) Sandboxed() bool { return s.State.Runner == sessionunit.SandboxRunner }
+
+// sandboxCall bounds one runtime call on a found session's container.
+const sandboxCall = 30 * time.Second
+
+// containerAlive is whether a sandboxed session's container still runs.
+// A runtime that cannot answer is taken as running: only the container
+// gone, or exited, ends it.
+func (s FoundSession) containerAlive() bool {
+	if s.Sandbox == nil || s.Sandbox.Runtime == nil || s.State.Container == "" {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), sandboxCall)
+	defer cancel()
+	st, err := s.Sandbox.Runtime.AgentState(ctx, s.State.Container)
+	if err != nil {
+		return !errors.Is(err, sandbox.ErrNoAgent)
+	}
+	return st.Running || st.Status == "created"
+}
+
+// Remove removes what the session leaves on the host: a sandboxed one's
+// container stopped and its pod and HOME removed
+// (harness.RemoveSandboxedSession), then its session directory and temp
+// dirs (harness.RemoveSession).
+func (s FoundSession) Remove() error {
+	if s.Sandboxed() {
+		return harness.RemoveSandboxedSession(s.Sandbox, s.State.Workspace)
+	}
+	return harness.RemoveSession(s.State.Workspace)
+}
+
+// standingPod is whether the runtime still has the sandboxed session's
+// pod (false when it cannot say).
+func (s FoundSession) standingPod() bool {
+	if s.Sandbox == nil || s.Sandbox.Runtime == nil || s.State.Pod == "" {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), sandboxCall)
+	defer cancel()
+	pods, err := s.Sandbox.Runtime.ListPods(ctx)
+	if err != nil {
+		return false
+	}
+	return slices.ContainsFunc(pods, func(p sandbox.PodInfo) bool { return p.Name == s.State.Pod })
 }
 
 // unit is the unit the session runs in, by its state's runner.
@@ -46,8 +101,14 @@ func (s FoundSession) handle() sessionunit.Handle {
 	return sessionunit.Handle{PID: s.State.PID, UnitName: s.State.Unit}
 }
 
-// Alive is whether the session's process still runs.
-func (s FoundSession) Alive() bool { return s.State.PID > 0 && s.unit().Alive(s.handle()) }
+// Alive is whether the session's process — a sandboxed one's
+// container — still runs.
+func (s FoundSession) Alive() bool {
+	if s.Sandboxed() {
+		return s.containerAlive()
+	}
+	return s.State.PID > 0 && s.unit().Alive(s.handle())
+}
 
 // Liveness is "running" or "ended", for the log.
 func (s FoundSession) Liveness() string {
@@ -61,7 +122,18 @@ func (s FoundSession) Liveness() string {
 // and whatever the agent left running there, which may outlive claude —
 // and returns what it killed besides claude (ADR 008, The session's
 // end). A unit already gone is nothing and no error.
+//
+// A sandboxed session's container is stopped (its pod and HOME stay for
+// Remove, or the start-up sweep); it reports no processes.
 func (s FoundSession) Kill() ([]sessionunit.Process, error) {
+	if s.Sandboxed() {
+		if !s.containerAlive() {
+			return nil, nil
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), sandboxCall)
+		defer cancel()
+		return nil, s.Sandbox.Runtime.StopAgent(ctx, s.State.Container)
+	}
 	if s.State.PID <= 0 && s.State.Unit == "" {
 		return nil, nil
 	}
@@ -85,6 +157,14 @@ func (s FoundSession) Subject() string {
 // inside (a session directory is its sibling), nor is a session
 // directory; an unreadable state file is skipped.
 func FindSessions(root string, nodeIDs []string) ([]FoundSession, error) {
+	return FindSessionsIn(root, nodeIDs, nil)
+}
+
+// FindSessionsIn is FindSessions on a node whose sessions may run in sb's
+// pods: each found session carries sb, so a sandboxed one — host and
+// sandboxed alike, every kind — is read, stopped and removed by its
+// container (mesh-cli ADR 009, ADR 007).
+func FindSessionsIn(root string, nodeIDs []string, sb *sandbox.Sandbox) ([]FoundSession, error) {
 	var found []FoundSession
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -98,7 +178,7 @@ func FindSessions(root string, nodeIDs []string) ([]FoundSession, error) {
 		}
 		if strings.HasSuffix(d.Name(), ".session") {
 			if st, err := sessionunit.ReadState(path); err == nil && slices.Contains(nodeIDs, st.NodeID) && st.NodeID != "" {
-				found = append(found, FoundSession{Dir: path, State: st})
+				found = append(found, FoundSession{Dir: path, State: st, Sandbox: sb})
 			}
 			return filepath.SkipDir
 		}
@@ -188,7 +268,11 @@ func (l *Loop) AdoptSessions(ctx context.Context, found []FoundSession) int {
 		if s.State.SessionID != "" {
 			sessionNote = fmt.Sprintf(", session %s", s.State.SessionID)
 		}
-		l.logf("adopted a %s session of %s (pid %d, %s%s)", kind, subject, s.State.PID, s.Liveness(), sessionNote)
+		where := fmt.Sprintf("pid %d", s.State.PID)
+		if s.Sandboxed() {
+			where = "container " + s.State.Container
+		}
+		l.logf("adopted a %s session of %s (%s, %s%s)", kind, subject, where, s.Liveness(), sessionNote)
 		n++
 		l.wg.Add(1)
 		go func(s FoundSession) {
@@ -352,7 +436,7 @@ func (a AdoptWith) adopt(ctx context.Context, s FoundSession) error {
 	}
 	drop := func() error {
 		stopFound(a.logf, s.State.Kind+" session of "+s.Subject(), s)
-		return harness.RemoveSession(s.State.Workspace)
+		return s.Remove()
 	}
 	switch harness.Kind(s.State.Kind) {
 	case harness.KindBuild, harness.KindEvaluate, harness.KindRebase:

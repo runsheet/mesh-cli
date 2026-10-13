@@ -176,7 +176,7 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 	// agent; the pod and its sidecars go on every way out. A required one
 	// that does not come up gives the rebase up, naming it.
 	pod, err := OpenSessionPod(ctx, r.Sandbox, dir, job.Label, harness.KindRebase, ident.Sandbox(dir), r.logf)
-	defer pod.Close()
+	defer pod.Close() // nothing, once the harness detached the session (Session.Detach)
 	if err != nil {
 		return fail(fmt.Errorf("services: %w", err))
 	}
@@ -420,7 +420,7 @@ func (r *Rebaser) AdoptRebase(ctx context.Context, item gateway.WorkItem, s Foun
 	if item.RebaseState != "claimed" || item.RebaseNodeID != "" && item.RebaseNodeID != s.State.NodeID {
 		r.logf("item %s: adopted rebase is no longer this node's (%s); stopped", item.ID, item.RebaseState)
 		stopFound(r.logf, "item "+item.ID, s)
-		return harness.RemoveSession(s.State.Workspace)
+		return s.Remove()
 	}
 	rb := &rebaseRun{r: r, item: item, label: item.ID, dir: s.State.Workspace, sessionID: s.State.SessionID}
 	res, err := Resolve(ctx, r.GW, item)

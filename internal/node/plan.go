@@ -1085,7 +1085,7 @@ func (p *Planner) AdoptPlan(ctx context.Context, goal gateway.Goal, scope Scope,
 	if goal.Status != "planning" {
 		p.logf("goal %s: adopted plan is no longer wanted (%s); stopped", goal.Slug, goal.Status)
 		stopFound(p.logf, "goal "+goal.Slug, s)
-		return harness.RemoveSession(s.State.Workspace)
+		return s.Remove()
 	}
 	project, repos, err := p.projectRepoMap(ctx, goal, scope)
 	if err != nil {
@@ -1104,7 +1104,7 @@ func (p *Planner) AdoptPlan(ctx context.Context, goal gateway.Goal, scope Scope,
 	at, ok := p.Harness.(harness.Attacher)
 	if !ok {
 		stopFound(p.logf, "goal "+goal.Slug, s)
-		harness.RemoveSession(s.State.Workspace)
+		s.Remove()
 		return errNoAttach
 	}
 	p.logf("goal %s: adopted its %s planner session (pid %d)", goal.Slug, s.Liveness(), s.State.PID)

@@ -160,14 +160,23 @@ func OpenSandbox(ctx context.Context, c SandboxConfig, rt sandbox.Runtime, versi
 // SweepSandbox is the sandbox's start-up sweep (ADR-007's amendment
 // 2026-10-10): run after the sessions of the process before this one are
 // adopted and before the first tick, it removes the HOMEs, pods and
-// containers sandboxed sessions left — they write no session state, so
-// adoption never sees them — keeping every HOME a running container
-// mounts, and logs one line of what it did. No sandbox sweeps nothing.
-func SweepSandbox(ctx context.Context, sb *sandbox.Sandbox, logf func(string, ...any)) sandbox.SweepResult {
+// containers sandboxed sessions left, keeping every HOME a running
+// container mounts and — whatever their state — the pod, its containers
+// and the HOME of every found sandboxed session, which adoption reads,
+// validates in and removes at its end (mesh-cli ADR 009). It logs one
+// line of what it did. No sandbox sweeps nothing.
+func SweepSandbox(ctx context.Context, sb *sandbox.Sandbox, found []FoundSession, logf func(string, ...any)) sandbox.SweepResult {
 	if sb == nil || sb.Runtime == nil {
 		return sandbox.SweepResult{}
 	}
-	res, err := sandbox.Sweep(ctx, sb.Runtime, sb.TempDir)
+	var keep sandbox.Keep
+	for _, s := range found {
+		if s.Sandboxed() {
+			keep.Pods = append(keep.Pods, s.State.Pod)
+			keep.Homes = append(keep.Homes, s.State.Home)
+		}
+	}
+	res, err := sandbox.SweepKeeping(ctx, sb.Runtime, sb.TempDir, keep)
 	if err != nil {
 		logf("sandbox: sweep at start: %s", strings.ReplaceAll(err.Error(), "\n", "; "))
 	}
