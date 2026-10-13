@@ -1781,6 +1781,9 @@ func (l *Loop) reload(ctx context.Context) {
 		if now.OverloadCPUSomeAvg60 != was.OverloadCPUSomeAvg60 {
 			l.logf("host: overload_cpu_some_avg60 %s → %s", hostNum(was.OverloadCPUSomeAvg60), hostNum(now.OverloadCPUSomeAvg60))
 		}
+		if now.StarveAfter != was.StarveAfter {
+			l.logf("host: starve_after %s → %s", was.StarveAfter, now.StarveAfter)
+		}
 		l.mu.Lock()
 		l.host, l.hostSet = now, true
 		l.mu.Unlock()

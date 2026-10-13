@@ -57,12 +57,16 @@ func lostByRead(item *gateway.WorkItem, nodeID string) string {
 	return ""
 }
 
-// claimWatch is a build's lost-claim check: the session's ctx and the
-// reason it was given up, if it was.
+// claimWatch is a build's lost-claim and starve checks: the session's
+// ctx and the reason it was given up, if it was — its claim lost (why,
+// with the host's overload reason when it was overloaded at the time),
+// or starved on an overloaded host (starvedWhy).
 type claimWatch struct {
-	cancel context.CancelCauseFunc
-	mu     sync.Mutex
-	why    string
+	cancel     context.CancelCauseFunc
+	mu         sync.Mutex
+	why        string
+	overload   string
+	starvedWhy string
 }
 
 // newClaimWatch derives the session's ctx from ctx, cancelled with
@@ -76,15 +80,60 @@ func newClaimWatch(ctx context.Context) (context.Context, *claimWatch) {
 // ErrClaimLost, which stops and kills its unit. The first reason is
 // kept.
 func (w *claimWatch) lose(why string) {
+	w.loseOverloaded(why, "")
+}
+
+// loseOverloaded is lose with the host's overload reason at the time,
+// "" when the host was not overloaded: the platform stalled the item,
+// but the host starved it (ADR-029).
+func (w *claimWatch) loseOverloaded(why, overload string) {
 	if w == nil || why == "" {
 		return
 	}
 	w.mu.Lock()
-	if w.why == "" {
-		w.why = why
+	if w.why == "" && w.starvedWhy == "" {
+		w.why, w.overload = why, overload
 	}
 	w.mu.Unlock()
 	w.cancel(ErrClaimLost)
+}
+
+// starve gives the session up as starved on an overloaded host: its ctx
+// is cancelled with ErrStarved, which stops and kills its unit, and the
+// item is released with the overload reason (afterStarved). A claim
+// already lost stays lost.
+func (w *claimWatch) starve(overload string) {
+	if w == nil || overload == "" {
+		return
+	}
+	w.mu.Lock()
+	if w.why == "" && w.starvedWhy == "" {
+		w.starvedWhy = overload
+	}
+	w.mu.Unlock()
+	w.cancel(ErrStarved)
+}
+
+// starved is the overload reason the session was starved for, "" when
+// it was not.
+func (w *claimWatch) starved() string {
+	if w == nil {
+		return ""
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.starvedWhy
+}
+
+// overloadAtLoss is the host's overload reason when the claim was lost,
+// "" when the host was not overloaded then.
+func (w *claimWatch) overloadAtLoss() string {
+	if w == nil {
+		return ""
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.overload
 }
 
 // lost is the reason the session was given up, "" while it is held.
@@ -112,22 +161,39 @@ func (w *claimWatch) release() {
 func (b *buildRun) checkClaim(ctx context.Context) bool {
 	if it, err := b.r.GW.WorkItem(ctx, b.item.ID); err == nil {
 		if why := lostByRead(it, b.nodeID); why != "" {
-			b.watch.lose(why)
+			b.watch.loseOverloaded(why, b.overloadNow())
 			return false
 		}
 	}
 	if why := lostRefusal(b.report(ctx, "")); why != "" {
-		b.watch.lose(why)
+		b.watch.loseOverloaded(why, b.overloadNow())
 		return false
 	}
 	return true
+}
+
+// overloadNow is the host's overload reason now, "" when it is not
+// overloaded: a claim the platform gave up while the host starved the
+// session says so, so the item is not blamed (ADR-029).
+func (b *buildRun) overloadNow() string {
+	if over, why := b.r.overloaded(); over {
+		return why
+	}
+	return ""
 }
 
 // afterLost ends a build whose claim the node lost: what its unit's kill
 // found is logged, its session directory goes, and nothing is sent for
 // the item — no fail, no finish, no release: it is not the node's. It
 // is no error of the node's either: the platform gave the item up.
+//
+// A claim lost while the host was overloaded names the overload too —
+// `claim lost (item is ready; host overloaded: load/core …)` — so the
+// operator sees the item was not to blame (ADR-029).
 func (r *Runner) afterLost(b *buildRun, why string, result harness.Result) error {
+	if over := b.watch.overloadAtLoss(); over != "" {
+		why += "; " + over
+	}
 	r.logf("item %s: claim lost (%s); session stopped", b.label, why)
 	logKilled(r.logf, "item "+b.label, result.KilledPerSession(), result.KillError)
 	_ = harness.RemoveSession(b.dir)
