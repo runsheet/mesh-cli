@@ -136,9 +136,9 @@ func assertNothingSent(t *testing.T, calls func(string) int) {
 	}
 }
 
-// liveSession waits for the build's session under root to be running
+// runningBuildSession waits for the build's session under root to be running
 // and to have read its output, and returns it.
-func liveSession(t *testing.T, root, nodeID string) FoundSession {
+func runningBuildSession(t *testing.T, root, nodeID string) FoundSession {
 	t.Helper()
 	var found []FoundSession
 	waitFor(t, func() bool {
@@ -188,7 +188,7 @@ func runLostHost(t *testing.T, c lostCase, refusalOnly bool) {
 	done := make(chan error, 1)
 	go func() { done <- r.RunItem(context.Background(), item) }()
 
-	s := liveSession(t, ws.root, r.Cfg.NodeID)
+	s := runningBuildSession(t, ws.root, r.Cfg.NodeID)
 	if rf != nil {
 		rf.armed.Store(true)
 	}
@@ -303,7 +303,7 @@ func TestLostClaimFreesTheSlot(t *testing.T) {
 			defer cancel()
 
 			loop.Tick(ctx)
-			liveSession(t, root, cfg.NodeID)
+			runningBuildSession(t, root, cfg.NodeID)
 			if n := loop.Running(); n != 1 {
 				t.Fatalf("Running() = %d, want 1", n)
 			}
@@ -339,7 +339,7 @@ func TestLostClaimFreesTheSlot(t *testing.T) {
 			}
 			assertNothingSent(t, func(m string) int { return len(f.CallsNamed(m)) })
 			// the new session ends the same way, so nothing is left
-			liveSession(t, root, cfg.NodeID)
+			runningBuildSession(t, root, cfg.NodeID)
 			f.SetItem(claimed, map[string]any{"status": "cancelled"})
 			loop.wg.Wait()
 			assertNothingSent(t, func(m string) int { return len(f.CallsNamed(m)) })
@@ -365,7 +365,7 @@ func TestLostClaimStopsAdoptedBuild(t *testing.T) {
 	ctx1, stop1 := context.WithCancel(context.Background())
 	ran1 := make(chan error, 1)
 	go func() { ran1 <- loop1.Run(ctx1) }()
-	s := liveSession(t, root, cfg.NodeID)
+	s := runningBuildSession(t, root, cfg.NodeID)
 	stop1()
 	select {
 	case <-ran1:
