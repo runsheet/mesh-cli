@@ -229,7 +229,13 @@ type Loop struct {
 	// one of them again from the start.
 	adopted    map[string]adoptedEntry
 	adoptedIDs map[string]bool
-	wg         sync.WaitGroup
+	// resumed are the retry turns running now — a build session taken up
+	// again after a failed check, or a fresh one started with the same
+	// message — by a key NoteRetryTurn hands out: the heartbeat's
+	// `resumed` (Loop.Resumed).
+	resumed   map[uint64]resumedEntry
+	resumedID uint64
+	wg        sync.WaitGroup
 	// draining is set by Drain: nothing new is started, and Run returns
 	// once every session of any kind has ended.
 	draining bool
@@ -1069,7 +1075,7 @@ func (l *Loop) Tick(ctx context.Context) {
 	// the heartbeat goes out before this tick's pass, so its holding is
 	// the last pass's decision (nil before the first; a draining node,
 	// which makes no pass, keeps sending its last one unchanged)
-	extras := gateway.HeartbeatExtras{Draining: l.Draining(), UpdateError: l.UpdateError(), Limits: l.limitsStore().Heartbeat(l.Known.Accounts(l.now()), l.now(), l.Thresholds()), Runtimes: runtimes, Adapters: adapters, Sandbox: l.Sandbox, Reason: l.Condition(), Adopted: l.Adopted(), Holding: l.Holding(), Commit: l.Commit}
+	extras := gateway.HeartbeatExtras{Draining: l.Draining(), UpdateError: l.UpdateError(), Limits: l.limitsStore().Heartbeat(l.Known.Accounts(l.now()), l.now(), l.Thresholds()), Runtimes: runtimes, Adapters: adapters, Sandbox: l.Sandbox, Reason: l.Condition(), Adopted: l.Adopted(), Resumed: l.Resumed(), Holding: l.Holding(), Commit: l.Commit}
 	scaling, ranged := l.Scaling()
 	extras.Scaling = l.heartbeatScaling(scaling, ranged)
 	if l.Scaled != nil {
@@ -2503,4 +2509,54 @@ func (l *Loop) adapter() string {
 		return AdapterCodex
 	}
 	return AdapterClaudeCode
+}
+
+// resumedEntry is one retry turn kept in Loop.resumed, in the order noted.
+type resumedEntry struct {
+	seq     uint64
+	session gateway.ResumedSession
+}
+
+// NoteRetryTurn records a retry turn on itemID — a session of kind taken
+// up again by sessionID, or a fresh one when fresh — so every heartbeat
+// carries it as `resumed` until the returned done func runs. done removes
+// the entry and is safe to call more than once.
+func (l *Loop) NoteRetryTurn(itemID, kind, sessionID string, fresh bool) (done func()) {
+	l.mu.Lock()
+	if l.resumed == nil {
+		l.resumed = map[uint64]resumedEntry{}
+	}
+	l.resumedID++
+	key := l.resumedID
+	l.resumed[key] = resumedEntry{seq: key, session: gateway.ResumedSession{ItemID: itemID, Kind: kind, SessionID: sessionID, Fresh: fresh}}
+	l.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			l.mu.Lock()
+			delete(l.resumed, key)
+			l.mu.Unlock()
+		})
+	}
+}
+
+// Resumed is the heartbeat's `resumed`: the retry turns noted by
+// NoteRetryTurn whose done func has not yet run, oldest first; nil when
+// there are none.
+func (l *Loop) Resumed() []gateway.ResumedSession {
+	l.mu.Lock()
+	entries := make([]resumedEntry, 0, len(l.resumed))
+	for _, e := range l.resumed {
+		entries = append(entries, e)
+	}
+	l.mu.Unlock()
+	if len(entries) == 0 {
+		return nil
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].seq < entries[j].seq })
+	out := make([]gateway.ResumedSession, len(entries))
+	for i, e := range entries {
+		out[i] = e.session
+	}
+	return out
 }
