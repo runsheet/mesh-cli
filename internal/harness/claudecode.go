@@ -346,7 +346,8 @@ func RemoveSession(workdir string) error {
 // saved into st as it advances; watch, when set, sees every event. ctx
 // done stops the unit — unless outlive and parent is done too (the node
 // shutting down), when the reading stops and the session is left
-// running: detached. Every other end kills the unit once the output is
+// running: detached — unless parent's cause is ErrStopSession, which
+// stops it. Every other end kills the unit once the output is
 // read, and res.Killed is what that kill (or the stop before it) found.
 func (c *ClaudeCode) follow(ctx, parent context.Context, outlive bool, end *unitEnd, dir string, st *sessionunit.State, from int64, secrets []string, onProgress func(Progress), watch func(Event)) (res Result, detached bool, waitErr error, errBuf *bytes.Buffer, rawOut *capBuffer) {
 	unit, h := end.unit, end.h
@@ -361,7 +362,7 @@ func (c *ClaudeCode) follow(ctx, parent context.Context, outlive bool, end *unit
 	go func() {
 		select {
 		case <-ctx.Done():
-			if outlive && parent.Err() != nil {
+			if outlive && parent.Err() != nil && !StopRequested(parent) {
 				detach.Store(true)
 				stopReading()
 				return

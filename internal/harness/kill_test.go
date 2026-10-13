@@ -128,6 +128,52 @@ func TestKillOnCancel(t *testing.T) {
 	assertKilledOnce(t, u, res)
 }
 
+// An Outlive session whose ctx is cancelled with ErrStopSession as its
+// cause is not detached for the next node: the node gave up on it, so
+// its unit is killed once, as at any end, and the Result says what the
+// kill found.
+func TestKillOnStopSessionOutlive(t *testing.T) {
+	u := &killUnit{leftovers: leftovers}
+	h := &ClaudeCode{Binary: slowClaude(t), Unit: u}
+	ctx, cancel := context.WithCancelCause(context.Background())
+	var once sync.Once
+	res, err := h.Run(ctx, Job{Kind: KindBuild, Workspace: t.TempDir(), Outlive: true, Env: []string{"SLOW_EVENTS=100", "SLOW_SLEEP=0.1"}},
+		func(Progress) { once.Do(func() { cancel(ErrStopSession) }) })
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want canceled", err)
+	}
+	assertKilledOnce(t, u, res)
+}
+
+// A plain cancel of an Outlive session still detaches: the node shutting
+// down leaves it for the next process, and nothing kills it.
+func TestOutliveCancelStillDetaches(t *testing.T) {
+	u := &killUnit{leftovers: leftovers}
+	h := &ClaudeCode{Binary: slowClaude(t), Unit: u}
+	ctx, cancel := context.WithCancel(context.Background())
+	var once sync.Once
+	var pid int
+	ws := t.TempDir()
+	_, err := h.Run(ctx, Job{Kind: KindBuild, Workspace: ws, Outlive: true, Env: []string{"SLOW_EVENTS=100", "SLOW_SLEEP=0.1"}},
+		func(Progress) {
+			once.Do(func() {
+				if st, err := sessionunit.ReadState(sessionunit.Dir(ws)); err == nil {
+					pid = st.PID
+				}
+				cancel()
+			})
+		})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want canceled", err)
+	}
+	if n := u.killCalls(); n != 0 {
+		t.Fatalf("Kill called %d times; a shutdown detaches", n)
+	}
+	if pid > 0 {
+		_ = u.Detached.Stop(sessionunit.Handle{PID: pid})
+	}
+}
+
 // The job's Timeout kills the unit once, and Run returns the deadline.
 func TestKillOnTimeout(t *testing.T) {
 	u := &killUnit{leftovers: leftovers}

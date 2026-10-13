@@ -449,7 +449,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 
 	// the session outlives this process: a restart adopts it (ADR 009)
 	job.Outlive = true
-	b := &buildRun{r: r, item: item, res: res, label: label, spec: spec, dir: dir, cred: cred, acct: acct, runtimes: runtimes, ident: ident, model: model, lastText: "session started", job: &job, pod: pod, started: time.Now()}
+	b := &buildRun{r: r, item: item, res: res, label: label, spec: spec, dir: dir, cred: cred, acct: acct, runtimes: runtimes, ident: ident, model: model, lastText: "session started", job: &job, pod: pod, started: time.Now(), nodeID: sc.NodeID}
 	b.report(ctx, "session started: "+spec.Branch+" on "+modelName(model))
 	if note := st.OmittedNote(); note != "" {
 		r.logf("item %s: %s", label, note)
@@ -459,8 +459,8 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		r.logf("item %s: %s", label, note)
 		b.report(ctx, note)
 	}
-	result, runErr := b.run(ctx, func(onProgress func(harness.Progress)) (harness.Result, error) {
-		return r.Harness.Run(ctx, job, onProgress)
+	result, runErr := b.run(ctx, func(sctx context.Context, onProgress func(harness.Progress)) (harness.Result, error) {
+		return r.Harness.Run(sctx, job, onProgress)
 	})
 	// the usage report rides the finish (afterBuild); Finish logs it when
 	// nothing carried it
@@ -493,6 +493,12 @@ type buildRun struct {
 	pod     *SessionPod
 	started time.Time
 
+	// nodeID is the node id the item is held by, for the lost-claim
+	// check; watch is that check's hold on the session's ctx (lost.go),
+	// set while the session runs.
+	nodeID string
+	watch  *claimWatch
+
 	mu        sync.Mutex
 	lastText  string
 	sessionID string
@@ -523,17 +529,20 @@ func (b *buildRun) description(ctx context.Context) string {
 }
 
 // report is the item's heartbeat: the note (the session's last text when
-// empty), the cents since the last one and the session id.
-func (b *buildRun) report(ctx context.Context, note string) {
+// empty), the cents since the last one and the session id. Its error is
+// the platform's answer, for the lost-claim check (lostRefusal).
+func (b *buildRun) report(ctx context.Context, note string) error {
 	b.mu.Lock()
 	n, sid := note, b.sessionID
 	if n == "" {
 		n = b.lastText
 	}
 	b.mu.Unlock()
-	if err := b.r.GW.ReportWorkItemProgress(ctx, b.item.ID, truncate(n, 2000), b.cost.delta(), sid); err != nil {
+	err := b.r.GW.ReportWorkItemProgress(ctx, b.item.ID, truncate(n, 2000), b.cost.delta(), sid)
+	if err != nil {
 		b.r.logf("item %s: progress: %v", b.label, err)
 	}
+	return err
 }
 
 // reportToolUse notes on the item the served tools the session never
@@ -569,13 +578,20 @@ func handoffNote(result harness.Result) string {
 }
 
 // run runs the session through start — Harness.Run or Attach — with
-// the item's heartbeat every ProgressEvery and its token renewed.
-func (b *buildRun) run(ctx context.Context, start func(onProgress func(harness.Progress)) (harness.Result, error)) (harness.Result, error) {
+// the item's heartbeat every ProgressEvery and its token renewed. Each
+// tick also checks the node still holds the item (checkClaim): a claim
+// lost — the item read back terminal, cancelled, ready or another
+// node's, or its heartbeat refused as not held — cancels the session's
+// ctx with ErrClaimLost, which stops its unit and kills what it holds.
+func (b *buildRun) run(ctx context.Context, start func(ctx context.Context, onProgress func(harness.Progress)) (harness.Result, error)) (harness.Result, error) {
 	every := b.r.ProgressEvery
 	if every <= 0 {
 		every = 60 * time.Second
 	}
-	tickCtx, stopTicker := context.WithCancel(ctx)
+	sctx, watch := newClaimWatch(ctx)
+	defer watch.release()
+	b.watch = watch
+	tickCtx, stopTicker := context.WithCancel(sctx)
 	defer stopTicker()
 	go func() {
 		defer crash.Guard()
@@ -586,7 +602,9 @@ func (b *buildRun) run(ctx context.Context, start func(onProgress func(harness.P
 			case <-tickCtx.Done():
 				return
 			case <-t.C:
-				b.report(tickCtx, "")
+				if !b.checkClaim(tickCtx) {
+					return
+				}
 				// a session may outlive its token's hour
 				if err := b.cred.Refresh(tickCtx); err != nil && tickCtx.Err() == nil {
 					b.r.logf("item %s: %v", b.label, err)
@@ -594,7 +612,7 @@ func (b *buildRun) run(ctx context.Context, start func(onProgress func(harness.P
 			}
 		}
 	}()
-	return start(func(p harness.Progress) {
+	return start(sctx, func(p harness.Progress) {
 		b.mu.Lock()
 		if p.Text != "" {
 			b.lastText = b.acct.Redact(p.Text)
@@ -626,6 +644,10 @@ func (r *Runner) afterBuild(ctx context.Context, b *buildRun, result harness.Res
 	// end (ADR 008, The session's end): a line in the log — logged before
 	// a done ctx returns, since a deadline kills the unit too — and a
 	// note on the item. A detach kills nothing.
+	if why := b.watch.lost(); why != "" && ctx.Err() == nil {
+		// the item is no longer the node's: stopped, and nothing sent
+		return r.afterLost(b, why, result)
+	}
 	killedNote := logKilled(r.logf, "item "+label, result.KilledPerSession(), result.KillError)
 	if ctx.Err() != nil {
 		r.logf("item %s: node shutting down; its session is left for the next node to adopt", label)
@@ -705,6 +727,9 @@ func (r *Runner) afterBuild(ctx context.Context, b *buildRun, result harness.Res
 	if v != nil {
 		defer v.close()
 		_, err = r.validateBuild(ctx, b, v, result)
+		if errors.Is(err, ErrClaimLost) {
+			return nil
+		}
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -901,10 +926,10 @@ func (r *Runner) AdoptItem(ctx context.Context, item gateway.WorkItem, s FoundSe
 	// the finish description names the same agent and pairers the
 	// session committed as, though this process did not start it
 	ident := identityFor(r.Cfg, tools.RoleFor(string(harness.KindBuild)), item, res.Goal)
-	b := &buildRun{r: r, item: item, res: res, label: label, spec: spec, dir: s.State.Workspace, cred: cred, runtimes: r.runtimes(), ident: ident, model: s.State.Model, lastText: "session adopted", sessionID: s.State.SessionID}
+	b := &buildRun{r: r, item: item, res: res, label: label, spec: spec, dir: s.State.Workspace, cred: cred, runtimes: r.runtimes(), ident: ident, model: s.State.Model, lastText: "session adopted", sessionID: s.State.SessionID, nodeID: s.State.NodeID}
 	r.logf("item %s: adopted its %s session (pid %d, from byte %d)", label, s.Liveness(), s.State.PID, s.State.Offset)
-	result, runErr := b.run(ctx, func(onProgress func(harness.Progress)) (harness.Result, error) {
-		return at.Attach(ctx, s.Dir, onProgress)
+	result, runErr := b.run(ctx, func(sctx context.Context, onProgress func(harness.Progress)) (harness.Result, error) {
+		return at.Attach(sctx, s.Dir, onProgress)
 	})
 	return r.afterBuild(ctx, b, result, runErr)
 }
