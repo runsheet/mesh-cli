@@ -1768,6 +1768,12 @@ func (l *Loop) reload(ctx context.Context) {
 		if now.PackageTempMaxC != was.PackageTempMaxC {
 			l.logf("host: package_temp_max_c %s → %s", hostNum(was.PackageTempMaxC), hostNum(now.PackageTempMaxC))
 		}
+		if now.OverloadPerCore != was.OverloadPerCore {
+			l.logf("host: overload_per_core %s → %s", hostNum(was.OverloadPerCore), hostNum(now.OverloadPerCore))
+		}
+		if now.OverloadCPUSomeAvg60 != was.OverloadCPUSomeAvg60 {
+			l.logf("host: overload_cpu_some_avg60 %s → %s", hostNum(was.OverloadCPUSomeAvg60), hostNum(now.OverloadCPUSomeAvg60))
+		}
 		l.mu.Lock()
 		l.host, l.hostSet = now, true
 		l.mu.Unlock()

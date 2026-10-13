@@ -90,6 +90,67 @@ func TestProcMachineLoadavgOnly(t *testing.T) {
 	}
 }
 
+// ProcMachine.Read parses /proc/pressure/cpu's `some` line's avg10 and
+// avg60, and PerCore gives the load average per core.
+func TestProcMachineReadsCPUPressure(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root+"/proc/loadavg", "3.60 3.00 2.50 2/812 12345\n")
+	writeFile(t, root+"/proc/meminfo", "MemAvailable:    8388608 kB\n")
+	writeFile(t, root+"/proc/pressure/cpu", "some avg10=12.34 avg60=45.67 avg300=10.00 total=98765\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n")
+
+	m, err := (&ProcMachine{Root: root}).Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !m.HasCPUPressure || m.CPUSomeAvg10 != 12.34 || m.CPUSomeAvg60 != 45.67 {
+		t.Fatalf("read %+v, want some avg10 12.34, avg60 45.67", m)
+	}
+	if got := m.PerCore(); got != m.Load1/float64(m.CPUs) {
+		t.Fatalf("PerCore() = %v, want Load1/CPUs = %v", got, m.Load1/float64(m.CPUs))
+	}
+}
+
+// No /proc/pressure/cpu at all (a kernel without PSI) is not an error:
+// HasCPUPressure is false, and the rest of the reading still comes
+// through.
+func TestProcMachineNoCPUPressure(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root+"/proc/loadavg", "1.00 1.00 1.00 1/100 1\n")
+	writeFile(t, root+"/proc/meminfo", "MemAvailable:    8388608 kB\n")
+
+	m, err := (&ProcMachine{Root: root}).Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.HasCPUPressure || m.CPUSomeAvg10 != 0 || m.CPUSomeAvg60 != 0 {
+		t.Fatalf("read %+v, want no CPU pressure", m)
+	}
+	if m.Load1 != 1 || m.MemAvailable != 8388608*1024 {
+		t.Fatalf("read %+v, want the load and memory still read", m)
+	}
+}
+
+// Overloaded is true, with a reason naming load per core, the raw
+// load, the cores and the CPU pressure, once load per core passes
+// host.overload_per_core; false below it.
+func TestMachineReadingOverloaded(t *testing.T) {
+	h := HostConfig{OverloadPerCore: 1.0}
+	over := MachineReading{Load1: 138.24, CPUs: 96, CPUSomeAvg60: 71, HasCPUPressure: true}
+	hot, reason := over.Overloaded(h)
+	if !hot {
+		t.Fatalf("Overloaded() = false, want true for load/core %v", over.PerCore())
+	}
+	if want := "host overloaded: load/core 1.44 (138.2 on 96 cores), cpu some avg60 71%"; string(reason) != want {
+		t.Fatalf("reason = %q, want %q", reason, want)
+	}
+
+	under := MachineReading{Load1: 72, CPUs: 96}
+	hot, reason = under.Overloaded(h)
+	if hot || reason != "" {
+		t.Fatalf("Overloaded() = (%v, %q), want (false, \"\") for load/core %v", hot, reason, under.PerCore())
+	}
+}
+
 // Hot judges load first — "host hot: load 55/18 cores", the average
 // formatted whole at 10 or more — then, only when load is under its
 // threshold, the package temperature; load wins when both are past

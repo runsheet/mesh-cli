@@ -1265,9 +1265,20 @@ func (f *Fake) heartbeatInputType() map[string]any {
 		if name == "scaling" {
 			var sub []any
 			for _, n := range []string{"capacity", "min", "max", "reason", "accounts", "host"} {
-				if !f.UnknownFields[n] {
-					sub = append(sub, field(n))
+				if f.UnknownFields[n] {
+					continue
 				}
+				if n == "host" {
+					var hsub []any
+					for _, hn := range []string{"load", "cores", "temperatureC", "hot", "perCore", "cpuSomeAvg60"} {
+						if !f.UnknownFields[hn] {
+							hsub = append(hsub, field(hn))
+						}
+					}
+					sub = append(sub, map[string]any{"name": n, "type": map[string]any{"kind": "INPUT_OBJECT", "inputFields": hsub}})
+					continue
+				}
+				sub = append(sub, field(n))
 			}
 			row["type"] = map[string]any{"kind": "INPUT_OBJECT", "inputFields": sub}
 		}
