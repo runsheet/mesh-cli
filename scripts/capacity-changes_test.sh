@@ -18,6 +18,7 @@ output=$(./scripts/capacity-changes.sh "$fixture")
 
 # Expected output:
 # 2026-10-13 with:
+#   - capacity 4→5 (bare, other)
 #   - capacity 5→6 (host hot)
 #   - capacity 6→5 (host hot)
 #   - capacity 5→4 (host hot)
@@ -30,12 +31,11 @@ output=$(./scripts/capacity-changes.sh "$fixture")
 #   - capacity 6→5 (other)
 #   - capacity 5→4 (host hot)
 #   - capacity 4→3 (host quiet)
-# Total on 2026-10-13: 12 changes (5 host hot, 3 host quiet, 4 other)
-# Wait, let me recount:
+# Total on 2026-10-13: 13 changes
 #   Host hot: capacity 5→6, 6→5, 5→4, 4→3, 3→2, 5→4 = 6
 #   Host quiet: capacity 2→3, 3→4, 4→5, 4→3 = 4
-#   Other: capacity 5→6 (clamped), 6→5 = 2
-# Total: 12
+#   Other: capacity 4→5 (bare), 5→6 (clamped), 6→5 = 3
+# Total: 13
 
 # 2026-10-14 with:
 #   - capacity 2→3 (host quiet)
@@ -55,10 +55,10 @@ echo ""
 if echo "$output" | grep -q "^2026-10-13"; then
   line=$(echo "$output" | grep "^2026-10-13")
   echo "2026-10-13 line: $line"
-  if echo "$line" | grep -q "12 (host hot 6, host quiet 4, other 2)"; then
+  if echo "$line" | grep -q "13 (host hot 6, host quiet 4, other 3)"; then
     echo "ok: 2026-10-13 has correct counts"
   else
-    fail "2026-10-13 line does not have expected counts (12 total, 6 host hot, 4 host quiet, 2 other):
+    fail "2026-10-13 line does not have expected counts (13 total, 6 host hot, 4 host quiet, 3 other):
 $line"
   fi
 else
