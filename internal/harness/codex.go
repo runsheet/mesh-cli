@@ -218,6 +218,16 @@ func (c *Codex) Name() string { return "codex" }
 // (httptest, a local server for npm test) and no `gh` can run, and an
 // evaluation could only guess (ADR 011, amendment 2026-09-29). Every
 // Codex session today is an evaluation.
+//
+// Job.Resume (a retry turn, goal
+// a-failed-check-returns-to-the-session-that-built-it) is `codex exec
+// [OPTIONS] resume <id> -`: exec's own flags (--json, --sandbox, -c,
+// --model, ExtraArgs) precede the subcommand, as its
+// `override_usage` has it, `codex exec [OPTIONS] <COMMAND> [ARGS]`,
+// and resume's own PROMPT positional takes `-` for stdin exactly as
+// exec's top-level one does (codex-rs/exec/src/cli.rs's Command enum,
+// ResumeArgsRaw; verified via context7, /openai/codex, 2026-10-13). A
+// job with no Resume is unchanged.
 func (c *Codex) Args(job Job) []string {
 	args := []string{"exec", "--json", "--sandbox", "workspace-write"}
 	args = append(args, SandboxNetwork...)
@@ -225,6 +235,9 @@ func (c *Codex) Args(job Job) []string {
 		args = append(args, "--model", job.Model)
 	}
 	args = append(args, c.ExtraArgs...)
+	if job.Resume != "" {
+		args = append(args, "resume", job.Resume)
+	}
 	return append(args, "-")
 }
 
