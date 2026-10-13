@@ -43,9 +43,13 @@ go test ./...
 go test ./...
 ```
 
-All Go checks run in CI on every PR via `.github/workflows/pr-checks.yml`,
-which also asserts the gateway directories remain archived (`! [ -d
-internal/gateways/discord ]` and friends).
+There is no GitHub CI on pull requests. Every check (vet, build, the Go
+tests, gofmt, the generated gateway fields, the script tests, and the
+INV-02 archival checks) is a suite in `.runsheet/validate.yml`. The Mesh
+node runs those suites on each change and attests the result before it
+pushes (runsheet ADR 032). GitHub Actions only releases, on GitHub-hosted
+runners. The repo is public, so the home box's self-hosted runners take
+none of its jobs.
 
 ## Editing the proto contract
 

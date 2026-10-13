@@ -56,7 +56,7 @@ concurrency:
 jobs:
   tag:
     name: Tag the merge
-    runs-on: [self-hosted, mini]
+    runs-on: ubuntu-latest
     env:
       DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
     steps:

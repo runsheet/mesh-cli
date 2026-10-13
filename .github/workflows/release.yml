@@ -21,7 +21,7 @@ permissions:
 jobs:
   release:
     name: Trigger CLI Release
-    runs-on: [self-hosted, mini]
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -30,7 +30,6 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          cache: false   # the mini keeps Go's caches on disk; packing them for GitHub's cache ran zstd 40+ min per job (2026-09-26)
 
       - name: Build (all platforms)
         run: |
