@@ -301,6 +301,22 @@ func (d *Declines) Holds(itemID string, runtimes []string, now time.Time) bool {
 	return ok
 }
 
+// HeldUntil is Held with when the decline lifts.
+func (d *Declines) HeldUntil(id string, runtimes []string, now time.Time) (string, time.Time, bool) {
+	why, ok := d.Held(id, runtimes, now)
+	if !ok {
+		return "", time.Time{}, false
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	dc := d.m[id]
+	hold := dc.hold
+	if hold == 0 {
+		hold = DeclineHold
+	}
+	return why, dc.at.Add(hold), true
+}
+
 // Held is Holds with the decline's reason ("tools: tool … needs
 // docker"), for the holding line of a goal or direction passed over.
 func (d *Declines) Held(id string, runtimes []string, now time.Time) (string, bool) {

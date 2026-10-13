@@ -628,6 +628,7 @@ func (l *Loop) claimReady(ctx context.Context, free, normalFree, maxRank int) {
 			continue // refused for budget, pause or approval: the goal has not changed
 		}
 		if runtimes, _ := l.Runtimes(); l.Declines.Holds(item.ID, runtimes, time.Now()) {
+			l.passOverInfrastructure(item.GoalID, "item", item.ID)
 			continue // a required tool needs a runtime still missing here
 		}
 		if why, until, ok := l.NoCredential.Holds(l.goalProject(ctx, sc, item), string(harness.KindBuild), l.adapter()); ok {
@@ -1513,6 +1514,34 @@ func (l *Loop) passOver(goalID, kind, priority, held string, until time.Time) {
 	l.unclaimed = append(l.unclaimed, Unclaimed{GoalID: goalID, Kind: kind, Count: 1, Reason: heldReason(priority, held, rows), Until: until})
 }
 
+// passOverInfrastructure records, on the holding report, an item this
+// node holds off after an infrastructure release (ReleaseOnInfrastructure):
+// kind and goal as passOver's, the reason the hold's own `infrastructure:
+// <error>` — not prefixed with the priority, so the console's summary
+// names it — and Until the hold's end — and answers whether it did. Any
+// other decline is left unreported, as before.
+func (l *Loop) passOverInfrastructure(goalID, kind, itemID string) bool {
+	runtimes, _ := l.Runtimes()
+	why, until, ok := l.Declines.HeldUntil(itemID, runtimes, time.Now())
+	if !ok || !strings.HasPrefix(why, InfrastructurePrefix) {
+		return false
+	}
+	for i := range l.unclaimed {
+		if u := &l.unclaimed[i]; u.GoalID == goalID && u.Kind == kind && strings.HasPrefix(u.Reason, InfrastructurePrefix) {
+			u.Count++
+			if !strings.Contains(u.Reason, why) {
+				u.Reason += "; " + why
+			}
+			if until.Before(u.Until) {
+				u.Until = until
+			}
+			return true
+		}
+	}
+	l.unclaimed = append(l.unclaimed, Unclaimed{GoalID: goalID, Kind: kind, Count: 1, Reason: why, Until: until})
+	return true
+}
+
 // CredentialReadRefused is said once per run when the platform will
 // not serve the loop's credential read: withdrawals then come only from
 // the claim-time read (Credentials.Open's Reconcile).
@@ -1946,6 +1975,7 @@ func (l *Loop) evaluateHeld(ctx context.Context) {
 			continue
 		}
 		if runtimes, _ := l.Runtimes(); l.Declines.Holds(item.ID, runtimes, time.Now()) {
+			l.passOverInfrastructure(item.GoalID, "evaluation", item.ID)
 			continue
 		}
 		if why, until, ok := l.evaluationHeld(l.goalProject(ctx, h.scope, item), priorityName(h.rank)); ok {
@@ -2051,6 +2081,11 @@ func (l *Loop) rebaseRequested(ctx context.Context) {
 		}
 		l.mu.Unlock()
 		if l.capFull(capped, item.GoalID, "rebase", priorityName(r.rank)) {
+			continue
+		}
+		if l.passOverInfrastructure(item.GoalID, "rebase", item.ID) {
+			// released as an infrastructure hold: not this node's again
+			// until the hold ends
 			continue
 		}
 		if why, until, ok := l.NoCredential.Holds(l.goalProject(ctx, sc, item), string(harness.KindRebase), l.adapter()); ok {

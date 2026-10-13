@@ -277,6 +277,11 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	spec := WorkspaceSpec{Root: r.WorkRoot, GoalSlug: res.Goal.Slug, Seq: item.Seq, Repo: res.Repo.FullName(), Branch: res.Branch(), BaseRef: res.BaseRef()}
 	// the item's own GitHub token, on the checkout before it is cloned
 	cred, err := NewItemCred(ctx, r.GW, r.WS, r.Scopes, item, spec, r.Fallback, r.logf)
+	if we := WorkspaceErrorOf(err); we != nil {
+		// the token could not be written into the repo cache: the
+		// node's fault, released as an infrastructure hold, never failed
+		return r.releaseInfrastructure(ctx, item, label, we)
+	}
 	if err != nil {
 		return r.fail(ctx, item, err)
 	}
@@ -880,6 +885,12 @@ func (r *Runner) AdoptItem(ctx context.Context, item gateway.WorkItem, s FoundSe
 	// the item's token on the checkout again: the session's pushes, and
 	// the node's, need a live one
 	cred, err := NewItemCred(ctx, r.GW, r.WS, r.Scopes, item, spec, r.Fallback, r.logf)
+	if we := WorkspaceErrorOf(err); we != nil {
+		// the session runs on, unadopted: stopped, as an item no longer
+		// this node's is, before the claim goes back
+		stopFound(r.logf, "item "+item.ID, s)
+		return r.releaseInfrastructure(ctx, item, label, we)
+	}
 	if err != nil {
 		return r.fail(ctx, item, err)
 	}

@@ -271,9 +271,49 @@ func NewItemCred(ctx context.Context, gw Gateway, ws Workspacer, scopes Scopes, 
 		return nil, fmt.Errorf("github token: issued for %s, the item is on %s", tok.Repository, spec.Repo)
 	}
 	if err := ws.Authorize(ctx, spec, tok); err != nil {
-		return nil, fmt.Errorf("github token: %w", err)
+		// the platform issued the token; writing it into the checkout
+		// failed here — a stale lock in the repo cache, a disk — and that
+		// is the node's condition, not the item's
+		return nil, &WorkspaceError{Repo: spec.Repo, Path: RepoCachePath(ws, spec), Err: err}
 	}
 	return &ItemCred{gw: gw, ws: ws, spec: spec, itemID: item.ID, nodeID: sc.NodeID, tok: tok}, nil
+}
+
+// WorkspaceError is NewItemCred's local failure: the platform issued the
+// item's token and the node could not write it into the checkout
+// (Workspacer.Authorize — `git remote set-url` on the repo cache, a
+// config lock a dead process left behind). It reads as before, `github
+// token: <git's words>`, and is released as an infrastructure hold
+// (ReleaseOnInfrastructure), never failed; a token the platform refused
+// stays a plain error.
+type WorkspaceError struct {
+	Repo string // owner/name
+	Path string // the repo cache the token was written into
+	Err  error
+}
+
+func (e *WorkspaceError) Error() string { return "github token: " + e.Err.Error() }
+func (e *WorkspaceError) Unwrap() error { return e.Err }
+
+// WorkspaceErrorOf is err's *WorkspaceError, or nil.
+func WorkspaceErrorOf(err error) *WorkspaceError {
+	var we *WorkspaceError
+	if errors.As(err, &we) {
+		return we
+	}
+	return nil
+}
+
+// RepoCachePath is where spec's checkout keeps its git config: the
+// repo's one shared clone for a worktree (ADR-028), else the checkout
+// itself (its own clone: an evaluation, a full clone from before).
+func RepoCachePath(ws Workspacer, spec WorkspaceSpec) string {
+	if g, ok := ws.(*Git); ok {
+		if p := g.sharedClone(spec); p != "" {
+			return p
+		}
+	}
+	return spec.Dir()
 }
 
 // Token is the current token (nil on the fallback).

@@ -75,7 +75,10 @@ type Rebaser struct {
 	// Notices say once per run that the platform takes no attestations,
 	// shared with the node's Runner.
 	Notices *ValidationNotices
-	Log     *log.Logger
+	// Declines keeps the node off an item it released as an
+	// infrastructure hold, shared with the loop (nil: no hold).
+	Declines *Declines
+	Log      *log.Logger
 }
 
 func (r *Rebaser) logf(format string, args ...any) {
@@ -125,6 +128,9 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 	spec := WorkspaceSpec{Root: r.WorkRoot, GoalSlug: res.Goal.Slug, Seq: item.Seq, Repo: res.Repo.FullName(), Branch: branch, BaseRef: res.BaseRef()}
 	// the item's own GitHub token: the push is the session's whole point
 	cred, err := NewItemCred(ctx, r.GW, r.WS, r.Scopes, item, spec, r.Fallback, r.logf)
+	if we := WorkspaceErrorOf(err); we != nil {
+		return rb.releaseInfrastructure(ctx, we)
+	}
 	if err != nil {
 		return fail(err)
 	}
@@ -290,6 +296,23 @@ func (rb *rebaseRun) fail(ctx context.Context, cause error) error {
 	return cause
 }
 
+// releaseInfrastructure answers a rebase whose token could not be
+// written into the repo cache (NewItemCred's *WorkspaceError): released
+// as an infrastructure hold (ReleaseOnInfrastructure) and held off this
+// node for WorkspaceReleaseHold; a release the platform refuses is the
+// rebase's failure with the same reason, as every rebase that could not
+// start has been.
+func (rb *rebaseRun) releaseInfrastructure(ctx context.Context, we *WorkspaceError) error {
+	sc, _ := rb.r.Scopes.ByOrg(rb.item.OrgID)
+	err := ReleaseOnInfrastructure(ctx, rb.r.GW, rb.item.ID, sc.NodeID, rb.label, we, func(reason string) {
+		rb.fail(ctx, errors.New(reason))
+	}, rb.r.logf)
+	if ctx.Err() == nil {
+		holdInfrastructure(rb.r.Declines, rb.item.ID, rb.label, we, rb.r.logf)
+	}
+	return err
+}
+
 // run runs the session through start — Harness.Run or Attach — with the
 // rebase's heartbeat every ProgressEvery and its token renewed.
 func (rb *rebaseRun) run(ctx context.Context, start func(onProgress func(harness.Progress)) (harness.Result, error)) (harness.Result, error) {
@@ -411,6 +434,10 @@ func (r *Rebaser) AdoptRebase(ctx context.Context, item gateway.WorkItem, s Foun
 	rb.base = res.BaseRef()
 	spec := WorkspaceSpec{Root: r.WorkRoot, GoalSlug: res.Goal.Slug, Seq: item.Seq, Repo: res.Repo.FullName(), Branch: rb.branch, BaseRef: rb.base}
 	if rb.cred, err = NewItemCred(ctx, r.GW, r.WS, r.Scopes, item, spec, r.Fallback, r.logf); err != nil {
+		if we := WorkspaceErrorOf(err); we != nil {
+			stopFound(r.logf, "item "+item.ID, s)
+			return rb.releaseInfrastructure(ctx, we)
+		}
 		return rb.fail(ctx, err)
 	}
 	at, ok := r.Harness.(harness.Attacher)
