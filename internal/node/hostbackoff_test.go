@@ -190,6 +190,18 @@ func TestHostBackoffNilMachine(t *testing.T) {
 	}
 }
 
+// hostState.report() carries the node user's own slice's CPU pressure
+// avg60 alongside the host-wide reading.
+func TestHostStateReportCarriesSliceCPUPressure(t *testing.T) {
+	h := hostState{read: true, reading: MachineReading{
+		Load1: 10, CPUs: 18, SliceCPUSomeAvg60: 42, HasSliceCPUPressure: true,
+	}}
+	r := h.report()
+	if r == nil || !r.HasSliceCPUPressure || r.SliceCPUSomeAvg60 != 42 {
+		t.Fatalf("report() = %+v, want HasSliceCPUPressure true, SliceCPUSomeAvg60 42", r)
+	}
+}
+
 func equalInts(a, b []int) bool {
 	if len(a) != len(b) {
 		return false

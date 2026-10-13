@@ -1,6 +1,8 @@
 package node
 
 import (
+	"fmt"
+	"os"
 	"testing"
 )
 
@@ -124,6 +126,45 @@ func TestProcMachineNoCPUPressure(t *testing.T) {
 	}
 	if m.HasCPUPressure || m.CPUSomeAvg10 != 0 || m.CPUSomeAvg60 != 0 {
 		t.Fatalf("read %+v, want no CPU pressure", m)
+	}
+	if m.Load1 != 1 || m.MemAvailable != 8388608*1024 {
+		t.Fatalf("read %+v, want the load and memory still read", m)
+	}
+}
+
+// ProcMachine.Read also parses the node user's own cgroup v2 slice's
+// cpu.pressure under user.slice/user-<uid>.slice, distinct from the
+// host-wide /proc/pressure/cpu.
+func TestProcMachineReadsSliceCPUPressure(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root+"/proc/loadavg", "3.60 3.00 2.50 2/812 12345\n")
+	writeFile(t, root+"/proc/meminfo", "MemAvailable:    8388608 kB\n")
+	slicePath := fmt.Sprintf("%s/sys/fs/cgroup/user.slice/user-%d.slice/cpu.pressure", root, os.Getuid())
+	writeFile(t, slicePath, "some avg10=12.50 avg60=30.00 avg300=5.00 total=4321\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n")
+
+	m, err := (&ProcMachine{Root: root}).Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !m.HasSliceCPUPressure || m.SliceCPUSomeAvg10 != 12.5 || m.SliceCPUSomeAvg60 != 30 {
+		t.Fatalf("read %+v, want slice some avg10 12.5, avg60 30, HasSliceCPUPressure true", m)
+	}
+}
+
+// No user.slice/user-<uid>.slice/cpu.pressure (cgroup v1, or off
+// Linux) is not an error: HasSliceCPUPressure is false, and the rest
+// of the reading still comes through.
+func TestProcMachineNoSliceCPUPressure(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root+"/proc/loadavg", "1.00 1.00 1.00 1/100 1\n")
+	writeFile(t, root+"/proc/meminfo", "MemAvailable:    8388608 kB\n")
+
+	m, err := (&ProcMachine{Root: root}).Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.HasSliceCPUPressure || m.SliceCPUSomeAvg10 != 0 || m.SliceCPUSomeAvg60 != 0 {
+		t.Fatalf("read %+v, want no slice CPU pressure", m)
 	}
 	if m.Load1 != 1 || m.MemAvailable != 8388608*1024 {
 		t.Fatalf("read %+v, want the load and memory still read", m)
