@@ -17,8 +17,9 @@ import (
 const MinFreeMemory = 2 << 30
 
 // MachineReading is the host as last read: the 1-minute load average,
-// the CPU count, the memory available in bytes, and the package
-// thermal zone's temperature when one was found.
+// the CPU count, the memory available in bytes, the package thermal
+// zone's temperature when one was found, and the CPU pressure from
+// /proc/pressure/cpu when the host has PSI.
 type MachineReading struct {
 	Load1        float64
 	CPUs         int
@@ -30,6 +31,25 @@ type MachineReading struct {
 	// found and read. False off Linux, with no /sys/class/thermal, or
 	// with no zone of either type — none of that is an error.
 	HasTemp bool
+	// CPUSomeAvg10 and CPUSomeAvg60 are /proc/pressure/cpu's `some`
+	// line's avg10 and avg60: the share of the last 10 and 60 seconds
+	// some task spent stalled on CPU, as a percentage. Meaningful only
+	// when HasCPUPressure.
+	CPUSomeAvg10 float64
+	CPUSomeAvg60 float64
+	// HasCPUPressure says /proc/pressure/cpu was found and read. False
+	// off Linux, or on a kernel built without PSI (no
+	// /proc/pressure/cpu) — not an error.
+	HasCPUPressure bool
+}
+
+// PerCore is the 1-minute load average per core: Load1 / CPUs, 0 with
+// no CPU count.
+func (m MachineReading) PerCore() float64 {
+	if m.CPUs <= 0 {
+		return 0
+	}
+	return m.Load1 / float64(m.CPUs)
 }
 
 // BusyAt says the machine is at or past h's load threshold — the
@@ -75,6 +95,29 @@ func loadFigure(load1 float64) string {
 		return fmt.Sprintf("%.0f", load1)
 	}
 	return fmt.Sprintf("%.1f", load1)
+}
+
+// Overloaded says the machine is past h's overload threshold — load
+// per core above h.OverloadPerCore, or, when h.OverloadCPUSomeAvg60 is
+// set and a reading was taken, CPU pressure's some avg60 above it — and
+// a reason line naming load per core, the raw load, the cores, and the
+// CPU pressure when read: `host overloaded: load/core 1.44 (138.2 on
+// 96 cores), cpu some avg60 71%`. Quiet (false) carries no reason. This
+// is a session's own starvation reading, distinct from Hot/BusyAt,
+// which the scaler's back-off judges by (ADR, overload-threshold).
+func (m MachineReading) Overloaded(h HostConfig) (bool, string) {
+	h = h.Effective()
+	perCore := m.PerCore()
+	overLoad := m.CPUs > 0 && perCore > h.OverloadPerCore
+	overPressure := h.OverloadCPUSomeAvg60 > 0 && m.HasCPUPressure && m.CPUSomeAvg60 > h.OverloadCPUSomeAvg60
+	if !overLoad && !overPressure {
+		return false, ""
+	}
+	reason := fmt.Sprintf("host overloaded: load/core %.2f (%.1f on %d cores)", perCore, m.Load1, m.CPUs)
+	if m.HasCPUPressure {
+		reason += fmt.Sprintf(", cpu some avg60 %.0f%%", m.CPUSomeAvg60)
+	}
+	return true, reason
 }
 
 // MachineProbe reads the host; an error sets no cap.
@@ -130,10 +173,53 @@ func (p *ProcMachine) Read() (MachineReading, error) {
 			}
 			m.MemAvailable = kb * 1024
 			m.PackageTempC, m.HasTemp = p.readPackageTemp()
+			m.CPUSomeAvg10, m.CPUSomeAvg60, m.HasCPUPressure = p.readCPUPressure()
 			return m, nil
 		}
 	}
 	return m, errors.New("/proc/meminfo has no MemAvailable")
+}
+
+// readCPUPressure reads Root's /proc/pressure/cpu and parses the
+// `some` line's avg10 and avg60: the share of the last 10 and 60
+// seconds some task spent stalled on CPU. No /proc/pressure/cpu (a
+// kernel without PSI, or a host entirely off Linux) or no `some` line
+// is not an error: it answers no reading.
+func (p *ProcMachine) readCPUPressure() (avg10, avg60 float64, ok bool) {
+	data, err := os.ReadFile(filepath.Join(p.Root, "proc", "pressure", "cpu"))
+	if err != nil {
+		return 0, 0, false
+	}
+	sc := bufio.NewScanner(bytes.NewReader(data))
+	for sc.Scan() {
+		f := strings.Fields(sc.Text())
+		if len(f) == 0 || f[0] != "some" {
+			continue
+		}
+		var a10, a60 float64
+		var have10, have60 bool
+		for _, kv := range f[1:] {
+			k, v, found := strings.Cut(kv, "=")
+			if !found {
+				continue
+			}
+			switch k {
+			case "avg10":
+				if a10, err = strconv.ParseFloat(v, 64); err == nil {
+					have10 = true
+				}
+			case "avg60":
+				if a60, err = strconv.ParseFloat(v, 64); err == nil {
+					have60 = true
+				}
+			}
+		}
+		if have10 && have60 {
+			return a10, a60, true
+		}
+		return 0, 0, false
+	}
+	return 0, 0, false
 }
 
 // readPackageTemp scans Root's thermal zones for the one typed

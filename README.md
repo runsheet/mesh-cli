@@ -1451,9 +1451,13 @@ node without either knowing:
 host:
   load_per_core_max: 1.5    # default; the 1-minute load average ÷ CPU count
   package_temp_max_c: 90    # default, °C; the package thermal zone, when there is one
+  overload_per_core: 1.0    # default; past it a silent session is starved, not failed
+  overload_cpu_some_avg60: 70  # optional, %; /proc/pressure/cpu's some avg60 (0 or absent: not judged)
+  starve_after: 15m         # default; how long a build may say nothing on an overloaded host
 ```
 
-Either left out, or set to 0, takes its default. Read again every
+Each left out, or set to 0, takes its default (`overload_cpu_some_avg60`
+has none: zero turns that half of the check off). Read again every
 tick like the rest of node.yaml, and a change logged once —
 `host: load_per_core_max 1.5 → 2`. The node reads the package
 temperature from the `x86_pkg_temp` or `TCPU` thermal zone under
@@ -1518,6 +1522,33 @@ load, cores, package temperature and `mesh node status`'s capacity line
 capacity fall under CI and climb back once the host is quiet. One run's
 output is recorded, whatever its numbers, in
 `docs/measurements/host-backoff-reading.md`.
+
+### A starved session is released, not failed
+
+`overload_per_core` and `overload_cpu_some_avg60` say when the host is
+**overloaded** — too busy for a session to be blamed for going quiet
+(`MachineReading.Overloaded`, its reason `host overloaded: load/core
+1.44 (138.2 on 96 cores), cpu some avg60 71%`). A build whose stream
+has said nothing for `starve_after` while the host reads overloaded is
+stopped — its unit and every process in it killed, its pod closed, its
+slot freed — and its item released with the note `stalled: host
+overloaded: …`: a release, so no attempt is charged (ADR-029). node.log
+says `item <label>: stalled on an overloaded host; released: <reason>`.
+A silent session on a host that is not overloaded runs on as before.
+When the platform stalls an item first (its 45-minute heartbeat
+window) while the host is overloaded, the node's `claim lost (…)` line
+names the overload too.
+
+### Capacity counts live sessions
+
+The capacity check counts the build sessions **alive on the host** —
+active `mesh-session-build-*` scopes, else the work root's session
+state files whose pid is alive — not only the ones the node tracks:
+`free = capacity − max(running, live)`. An orphan this node's item no
+longer claims is stopped by the periodic sweep and logged `capacity:
+orphan: stopped …`; past capacity the node claims nothing and says
+`capacity: <n> live agent sessions (<m> orphans) against capacity
+<c>; claiming nothing` (ADR-029).
 
 ### Tools
 

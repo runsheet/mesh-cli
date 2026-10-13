@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/crash"
@@ -120,6 +121,13 @@ type Runner struct {
 	// MeshBinary is the mesh executable a session's tool-trim hook runs
 	// ("" is `mesh` on the session's PATH).
 	MeshBinary string
+	// Machine reads the host for the starve check (starve.go): a build
+	// silent for host.starve_after while it reads overloaded is stopped
+	// and released. nil never judges the host overloaded.
+	Machine MachineProbe
+	// Host is node.yaml's `host:` in force (Loop.HostThresholds); nil is
+	// Cfg's own, read once at start.
+	Host func() HostConfig
 	// Inspect runs `podman image inspect` for a sandboxed validation's
 	// runner image digest (nil: sandbox.ExecRunner).
 	Inspect sandbox.Runner
@@ -498,6 +506,9 @@ type buildRun struct {
 	// set while the session runs.
 	nodeID string
 	watch  *claimWatch
+	// lastHeard is when the session's stream last said something, in
+	// unix nanoseconds, for the starve check (starve.go).
+	lastHeard atomic.Int64
 
 	mu        sync.Mutex
 	lastText  string
@@ -591,6 +602,7 @@ func (b *buildRun) run(ctx context.Context, start func(ctx context.Context, onPr
 	sctx, watch := newClaimWatch(ctx)
 	defer watch.release()
 	b.watch = watch
+	b.heard()
 	tickCtx, stopTicker := context.WithCancel(sctx)
 	defer stopTicker()
 	go func() {
@@ -602,7 +614,7 @@ func (b *buildRun) run(ctx context.Context, start func(ctx context.Context, onPr
 			case <-tickCtx.Done():
 				return
 			case <-t.C:
-				if !b.checkClaim(tickCtx) {
+				if !b.checkClaim(tickCtx) || !b.checkStarved() {
 					return
 				}
 				// a session may outlive its token's hour
@@ -613,6 +625,7 @@ func (b *buildRun) run(ctx context.Context, start func(ctx context.Context, onPr
 		}
 	}()
 	return start(sctx, func(p harness.Progress) {
+		b.heard()
 		b.mu.Lock()
 		if p.Text != "" {
 			b.lastText = b.acct.Redact(p.Text)
@@ -647,6 +660,10 @@ func (r *Runner) afterBuild(ctx context.Context, b *buildRun, result harness.Res
 	if why := b.watch.lost(); why != "" && ctx.Err() == nil {
 		// the item is no longer the node's: stopped, and nothing sent
 		return r.afterLost(b, why, result)
+	}
+	if why := b.watch.starved(); why != "" && ctx.Err() == nil {
+		// the host starved it: stopped, and released with the overload
+		return r.afterStarved(ctx, b, why, result)
 	}
 	killedNote := logKilled(r.logf, "item "+label, result.KilledPerSession(), result.KillError)
 	if ctx.Err() != nil {

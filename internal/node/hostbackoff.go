@@ -20,13 +20,28 @@ const HostRecoverEvery = 5 * time.Minute
 
 // HostReport is the host as the scaling report carries it: the
 // 1-minute load, the cores, the package temperature when one was read,
-// and whether it is past node.yaml's thresholds.
+// whether it is past node.yaml's thresholds, and the CPU pressure's
+// some avg60 when the host has PSI.
 type HostReport struct {
 	Load    float64 `json:"load"`
 	Cores   int     `json:"cores"`
 	TempC   float64 `json:"tempC,omitempty"`
 	HasTemp bool    `json:"hasTemp,omitempty"`
 	Hot     bool    `json:"hot"`
+	// CPUSomeAvg60 is /proc/pressure/cpu's `some avg60`, meaningful only
+	// when HasCPUPressure.
+	CPUSomeAvg60   float64 `json:"cpuSomeAvg60,omitempty"`
+	HasCPUPressure bool    `json:"hasCPUPressure,omitempty"`
+}
+
+// PerCore is the 1-minute load average per core: Load / Cores, 0 with
+// no cores — computed rather than stored, so a report taken before
+// this field existed still compares equal by value.
+func (h HostReport) PerCore() float64 {
+	if h.Cores <= 0 {
+		return 0
+	}
+	return h.Load / float64(h.Cores)
 }
 
 // hostState is the back-off as last judged: the reading, whether it was
@@ -50,7 +65,8 @@ func (h hostState) report() *HostReport {
 		return nil
 	}
 	m := h.reading
-	return &HostReport{Load: m.Load1, Cores: m.CPUs, TempC: m.PackageTempC, HasTemp: m.HasTemp, Hot: h.hot}
+	return &HostReport{Load: m.Load1, Cores: m.CPUs, TempC: m.PackageTempC, HasTemp: m.HasTemp, Hot: h.hot,
+		CPUSomeAvg60: m.CPUSomeAvg60, HasCPUPressure: m.HasCPUPressure}
 }
 
 // active says the back-off holds the capacity or the host is hot: the

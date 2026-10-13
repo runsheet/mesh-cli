@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Every field Reload carries is proved live from disk: a node loop
@@ -160,23 +161,35 @@ func TestReloadTakesFromDisk(t *testing.T) {
 func TestReloadHostFromDisk(t *testing.T) {
 	loop, _, logs := newPriorityFake(t).liveLoop(t, reloadYAML)
 	wantReloadLines(t, "first tick", tickLines(t, loop, logs))
-	if got := loop.HostThresholds(); got != (HostConfig{LoadPerCoreMax: 1.5, PackageTempMaxC: 90}) {
-		t.Fatalf("host thresholds in force %+v, want the defaults 1.5/90", got)
+	if got := loop.HostThresholds(); got != (HostConfig{LoadPerCoreMax: 1.5, PackageTempMaxC: 90, OverloadPerCore: 1, StarveAfter: 15 * time.Minute}) {
+		t.Fatalf("host thresholds in force %+v, want the defaults 1.5/90/1", got)
 	}
 
 	writeNodeYAML(t, reloadYAML+"host: {load_per_core_max: 2}\n")
 	wantReloadLines(t, "load_per_core_max edited", tickLines(t, loop, logs), "host: load_per_core_max 1.5 → 2")
-	if got := loop.HostThresholds(); got != (HostConfig{LoadPerCoreMax: 2, PackageTempMaxC: 90}) {
-		t.Fatalf("host thresholds in force %+v, want 2/90", got)
+	if got := loop.HostThresholds(); got != (HostConfig{LoadPerCoreMax: 2, PackageTempMaxC: 90, OverloadPerCore: 1, StarveAfter: 15 * time.Minute}) {
+		t.Fatalf("host thresholds in force %+v, want 2/90/1", got)
 	}
 
 	writeNodeYAML(t, reloadYAML+"host: {load_per_core_max: 2, package_temp_max_c: 85}\n")
 	wantReloadLines(t, "package_temp_max_c edited", tickLines(t, loop, logs), "host: package_temp_max_c 90 → 85")
-	if got := loop.HostThresholds(); got != (HostConfig{LoadPerCoreMax: 2, PackageTempMaxC: 85}) {
-		t.Fatalf("host thresholds in force %+v, want 2/85", got)
+	if got := loop.HostThresholds(); got != (HostConfig{LoadPerCoreMax: 2, PackageTempMaxC: 85, OverloadPerCore: 1, StarveAfter: 15 * time.Minute}) {
+		t.Fatalf("host thresholds in force %+v, want 2/85/1", got)
 	}
 
-	writeNodeYAML(t, reloadYAML+"host: {load_per_core_max: 2, package_temp_max_c: 85}\n")
+	writeNodeYAML(t, reloadYAML+"host: {load_per_core_max: 2, package_temp_max_c: 85, overload_per_core: 1.2}\n")
+	wantReloadLines(t, "overload_per_core edited", tickLines(t, loop, logs), "host: overload_per_core 1 → 1.2")
+	if got := loop.HostThresholds(); got != (HostConfig{LoadPerCoreMax: 2, PackageTempMaxC: 85, OverloadPerCore: 1.2, StarveAfter: 15 * time.Minute}) {
+		t.Fatalf("host thresholds in force %+v, want 2/85/1.2", got)
+	}
+
+	writeNodeYAML(t, reloadYAML+"host: {load_per_core_max: 2, package_temp_max_c: 85, overload_per_core: 1.2, starve_after: 10m}\n")
+	wantReloadLines(t, "starve_after edited", tickLines(t, loop, logs), "host: starve_after 15m0s → 10m0s")
+	if got := loop.HostThresholds(); got.StarveAfter != 10*time.Minute {
+		t.Fatalf("host thresholds in force %+v, want starve_after 10m", got)
+	}
+
+	writeNodeYAML(t, reloadYAML+"host: {load_per_core_max: 2, package_temp_max_c: 85, overload_per_core: 1.2, starve_after: 10m}\n")
 	wantReloadLines(t, "unchanged", tickLines(t, loop, logs))
 }
 

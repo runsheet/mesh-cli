@@ -294,7 +294,7 @@ func TestSandboxEnsureImage(t *testing.T) {
 	ctx := context.Background()
 
 	r := &imageRunner{}
-	img, err := sandboxOf(t, "sandbox: {}\n").EnsureImage(ctx, r.run, "v1.1.0", "v1.0.0")
+	img, err := sandboxOf(t, "sandbox: {}\n").EnsureImage(ctx, r.run, "v1.1.0", "v1.0.0", nil)
 	if err != nil || img.Ref != "ghcr.io/runsheet/mesh-node:v1.1.0" || !img.Pulled {
 		t.Fatalf("default = %+v, %v", img, err)
 	}
@@ -303,7 +303,7 @@ func TestSandboxEnsureImage(t *testing.T) {
 	}
 
 	r = &imageRunner{}
-	img, err = sandboxOf(t, "sandbox:\n  image: build\n").EnsureImage(ctx, r.run, "v1.1.0", "v1.0.0")
+	img, err = sandboxOf(t, "sandbox:\n  image: build\n").EnsureImage(ctx, r.run, "v1.1.0", "v1.0.0", nil)
 	if err != nil || img.Ref != "ghcr.io/runsheet/mesh-node:v1.1.0" || !img.Built {
 		t.Fatalf("build = %+v, %v", img, err)
 	}
@@ -322,23 +322,23 @@ func TestSandboxEnsureImage(t *testing.T) {
 	}
 
 	r = &imageRunner{}
-	img, err = sandboxOf(t, "sandbox:\n  image: registry.example.com/node:7\n").EnsureImage(ctx, r.run, "v1.1.0", "v1.0.0")
+	img, err = sandboxOf(t, "sandbox:\n  image: registry.example.com/node:7\n").EnsureImage(ctx, r.run, "v1.1.0", "v1.0.0", nil)
 	if err != nil || img.Ref != "registry.example.com/node:7" {
 		t.Fatalf("given = %+v, %v", img, err)
 	}
 
 	r = &imageRunner{}
-	img, err = sandboxOf(t, "sandbox: off\n").EnsureImage(ctx, r.run, "v1.1.0", "v1.0.0")
+	img, err = sandboxOf(t, "sandbox: off\n").EnsureImage(ctx, r.run, "v1.1.0", "v1.0.0", nil)
 	if err != nil || img.Skipped != "sandbox: off" || len(r.calls) != 0 {
 		t.Fatalf("off = %+v, %v, calls %q; want nothing asked", img, err, r.calls)
 	}
 
 	r = &imageRunner{noPodman: true}
-	img, err = sandboxOf(t, "sandbox: {}\n").EnsureImage(ctx, r.run, "v1.1.0", "v1.0.0")
+	img, err = sandboxOf(t, "sandbox: {}\n").EnsureImage(ctx, r.run, "v1.1.0", "v1.0.0", nil)
 	if err != nil || img.Skipped == "" || len(r.sub("pull")) != 0 {
 		t.Fatalf("no podman = %+v, %v", img, err)
 	}
-	if _, err := sandboxOf(t, "sandbox: on\n").EnsureImage(ctx, r.run, "v1.1.0", "v1.0.0"); err == nil {
+	if _, err := sandboxOf(t, "sandbox: on\n").EnsureImage(ctx, r.run, "v1.1.0", "v1.0.0", nil); err == nil {
 		t.Fatal("sandbox: on without podman ensured no image and no error")
 	}
 }

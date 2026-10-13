@@ -183,8 +183,10 @@ func SweepSandbox(ctx context.Context, sb *sandbox.Sandbox, logf func(string, ..
 // other mesh-node tag removed. `sandbox: off` asks nothing, nor does a
 // mode left out on a machine whose runtime does not answer (the node
 // there runs off); both are Image.Skipped. Every other failure is the
-// error: the update does not go ahead on it.
-func (c SandboxConfig) EnsureImage(ctx context.Context, run sandbox.Runner, version, running string) (sandbox.Image, error) {
+// error: the update does not go ahead on it. A pull is on the registry
+// credential broker gives (RegistryBrokerOf; nil pulls on podman's own
+// login), by --authfile (sandbox.EnsureImage).
+func (c SandboxConfig) EnsureImage(ctx context.Context, run sandbox.Runner, version, running string, broker sandbox.RegistryBroker) (sandbox.Image, error) {
 	mode := strings.ToLower(c.Mode)
 	if mode == SandboxOff {
 		return sandbox.Image{Skipped: "sandbox: off"}, nil
@@ -210,7 +212,34 @@ func (c SandboxConfig) EnsureImage(ctx context.Context, run sandbox.Runner, vers
 	if build {
 		return sandbox.BuildImage(ctx, run, ref, version, keep...)
 	}
-	return sandbox.EnsureImage(ctx, run, ref, keep...)
+	return sandbox.EnsureImage(ctx, run, ref, broker, keep...)
+}
+
+// RegistryTokens is the platform's read of a node's registry credential
+// (gateway.Client.NodeRegistryToken).
+type RegistryTokens interface {
+	NodeRegistryToken(ctx context.Context, registry string) (*gateway.RegistryToken, error)
+}
+
+// RegistryBrokerOf is the node image pull's broker on the platform: the
+// credential nodeRegistryToken gives for the image's registry. A
+// platform without the read, or with none for the registry, gives none,
+// and the pull goes on podman's own login as before (ADR-007's amendment
+// 2026-10-13); any other error is the broker's, named if the pull fails.
+func RegistryBrokerOf(p RegistryTokens) sandbox.RegistryBroker {
+	if p == nil {
+		return nil
+	}
+	return func(ctx context.Context, registry string) (*sandbox.RegistryCredential, error) {
+		tok, err := p.NodeRegistryToken(ctx, registry)
+		if gateway.IsUnsupported(err) {
+			return nil, nil
+		}
+		if err != nil || tok == nil {
+			return nil, err
+		}
+		return &sandbox.RegistryCredential{Username: tok.Username, Secret: tok.Token}, nil
+	}
 }
 
 // LimitReason is what a session killed by its sandbox's limits is

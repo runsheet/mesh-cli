@@ -406,7 +406,7 @@ func TestScalingHeartbeat(t *testing.T) {
 func TestHeartbeatCarriesHostScaling(t *testing.T) {
 	probe := newHostProbe(55)
 	probe.set(55, 101, true)
-	want := gateway.HostScaling{Load: 55, Cores: 18, TemperatureC: 101, Hot: true}
+	want := gateway.HostScaling{Load: 55, Cores: 18, TemperatureC: 101, Hot: true, PerCore: 55.0 / 18}
 
 	ranged := hostScaled(t, Capacity{Min: 1, Max: 8}, 8, probe)
 	ranged.at(0)
