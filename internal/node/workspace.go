@@ -339,7 +339,14 @@ func (g *Git) Prepare(ctx context.Context, spec WorkspaceSpec) (string, error) {
 	// a branch pushed by an earlier attempt (or just finished, for its
 	// evaluation) is continued, not restarted: the evaluator's notes say
 	// what to fix, and the push must fast-forward
-	if _, err := g.run(ctx, dir, "git", "checkout", "--quiet", "--no-track", "-B", spec.Branch, "origin/"+spec.Branch); err == nil {
+	// tracking origin's branch (a pair's `git pull --rebase` needs it),
+	// written to .git/config — a worktree's shared one — only when the
+	// branch does not track it already
+	track := "--track"
+	if g.tracksOrigin(ctx, dir, spec.Branch) {
+		track = "--no-track"
+	}
+	if _, err := g.run(ctx, dir, "git", "checkout", "--quiet", track, "-B", spec.Branch, "origin/"+spec.Branch); err == nil {
 		return dir, nil
 	}
 	// a local branch from an attempt that was interrupted before its push
@@ -350,9 +357,9 @@ func (g *Git) Prepare(ctx context.Context, spec WorkspaceSpec) (string, error) {
 		}
 		return dir, nil
 	}
-	// --no-track here and in addWorktree: tracking is branch.<b>.* in a
-	// worktree's shared .git/config, so it is left to Push, which sets it
-	// once (the base was never the branch's upstream anyway)
+	// --no-track from the base, here and in addWorktree: tracking is
+	// branch.<b>.* in a worktree's shared .git/config, so it is left to
+	// Push, which sets it once (the base is never the branch's upstream)
 	if _, err := g.run(ctx, dir, "git", "checkout", "--quiet", "--no-track", "-B", spec.Branch, "origin/"+base); err != nil {
 		return "", err
 	}
@@ -446,7 +453,7 @@ func (g *Git) addWorktree(ctx context.Context, root, key, clone string, spec Wor
 	}
 	args := []string{"worktree", "add", "--quiet", "--no-track", "-B", spec.Branch, dir, "origin/" + base}
 	if _, err := g.run(ctx, clone, "git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/"+spec.Branch); err == nil {
-		args = []string{"worktree", "add", "--quiet", "--no-track", "-B", spec.Branch, dir, "origin/" + spec.Branch}
+		args = []string{"worktree", "add", "--quiet", "--track", "-B", spec.Branch, dir, "origin/" + spec.Branch}
 	} else if _, err := g.run(ctx, clone, "git", "rev-parse", "--verify", "--quiet", "refs/heads/"+spec.Branch); err == nil {
 		args = []string{"worktree", "add", "--quiet", dir, spec.Branch}
 	}
