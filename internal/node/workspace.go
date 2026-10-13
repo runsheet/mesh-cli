@@ -339,7 +339,14 @@ func (g *Git) Prepare(ctx context.Context, spec WorkspaceSpec) (string, error) {
 	// a branch pushed by an earlier attempt (or just finished, for its
 	// evaluation) is continued, not restarted: the evaluator's notes say
 	// what to fix, and the push must fast-forward
-	if _, err := g.run(ctx, dir, "git", "checkout", "--quiet", "-B", spec.Branch, "origin/"+spec.Branch); err == nil {
+	// tracking origin's branch (a pair's `git pull --rebase` needs it),
+	// written to .git/config — a worktree's shared one — only when the
+	// branch does not track it already
+	track := "--track"
+	if g.tracksOrigin(ctx, dir, spec.Branch) {
+		track = "--no-track"
+	}
+	if _, err := g.run(ctx, dir, "git", "checkout", "--quiet", track, "-B", spec.Branch, "origin/"+spec.Branch); err == nil {
 		return dir, nil
 	}
 	// a local branch from an attempt that was interrupted before its push
@@ -350,7 +357,10 @@ func (g *Git) Prepare(ctx context.Context, spec WorkspaceSpec) (string, error) {
 		}
 		return dir, nil
 	}
-	if _, err := g.run(ctx, dir, "git", "checkout", "--quiet", "-B", spec.Branch, "origin/"+base); err != nil {
+	// --no-track from the base, here and in addWorktree: tracking is
+	// branch.<b>.* in a worktree's shared .git/config, so it is left to
+	// Push, which sets it once (the base is never the branch's upstream)
+	if _, err := g.run(ctx, dir, "git", "checkout", "--quiet", "--no-track", "-B", spec.Branch, "origin/"+base); err != nil {
 		return "", err
 	}
 	return dir, nil
@@ -372,9 +382,13 @@ func (g *Git) syncSharedClone(ctx context.Context, root, key, repo, clone string
 	tokened := gitTokenEnv(ctx) != nil
 	origin := g.githubURL() + "/" + repo + ".git"
 	if _, err := os.Stat(filepath.Join(clone, ".git")); err == nil {
+		// read first: the steady state — origin already the https URL —
+		// writes nothing to the clone's one .git/config (as sharedOrigin)
 		if tokened {
-			if _, err := g.run(ctx, clone, "git", "remote", "set-url", "origin", origin); err != nil {
-				return err
+			if cur, err := g.run(ctx, clone, "git", "remote", "get-url", "origin"); err != nil || strings.TrimSpace(cur) != origin {
+				if _, err := g.run(ctx, clone, "git", "remote", "set-url", "origin", origin); err != nil {
+					return err
+				}
 			}
 		}
 		_, err := g.fetchRetrying(ctx, key, clone, "git", "fetch", "--prune", "origin")
@@ -427,15 +441,19 @@ func (g *Git) addWorktree(ctx context.Context, root, key, clone string, spec Wor
 		return "", err
 	}
 	defer unlock()
-	if _, err := g.run(ctx, clone, "git", "config", "--local", "extensions.worktreeConfig", "true"); err != nil {
-		return "", err
+	// enabled once per clone: read first, so a clone that has it writes
+	// nothing to its .git/config
+	if out, err := g.run(ctx, clone, "git", "config", "--local", "--type=bool", "--get", "extensions.worktreeConfig"); err != nil || strings.TrimSpace(out) != "true" {
+		if _, err := g.run(ctx, clone, "git", "config", "--local", "extensions.worktreeConfig", "true"); err != nil {
+			return "", err
+		}
 	}
 	if _, err := g.run(ctx, clone, "git", "worktree", "prune"); err != nil {
 		return "", err
 	}
-	args := []string{"worktree", "add", "--quiet", "-B", spec.Branch, dir, "origin/" + base}
+	args := []string{"worktree", "add", "--quiet", "--no-track", "-B", spec.Branch, dir, "origin/" + base}
 	if _, err := g.run(ctx, clone, "git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/"+spec.Branch); err == nil {
-		args = []string{"worktree", "add", "--quiet", "-B", spec.Branch, dir, "origin/" + spec.Branch}
+		args = []string{"worktree", "add", "--quiet", "--track", "-B", spec.Branch, dir, "origin/" + spec.Branch}
 	} else if _, err := g.run(ctx, clone, "git", "rev-parse", "--verify", "--quiet", "refs/heads/"+spec.Branch); err == nil {
 		args = []string{"worktree", "add", "--quiet", dir, spec.Branch}
 	}
@@ -800,13 +818,31 @@ func HasCommitSince(dir, base string) func() bool {
 func (g *Git) Push(ctx context.Context, dir, branch string) (string, error) {
 	// --force-with-lease: a reworked branch was rebased; a fresh one is
 	// unaffected, and a remote that moved under us still refuses
-	if out, err := g.run(ctx, dir, "git", "push", "-u", "--force-with-lease", "origin", branch); err != nil {
+	// -u only until the branch tracks origin's: `push -u` rewrites
+	// branch.<b>.* in .git/config — a worktree's shared clone's — on
+	// every push, so a push of a branch already tracking writes none
+	args := []string{"push", "--force-with-lease", "origin", branch}
+	if !g.tracksOrigin(ctx, dir, branch) {
+		args = []string{"push", "-u", "--force-with-lease", "origin", branch}
+	}
+	if out, err := g.run(ctx, dir, "git", args...); err != nil {
 		if PushRefusal(out) {
 			return "", &PushRefusedError{Branch: branch, Output: strings.TrimSpace(out), Err: err}
 		}
 		return "", err
 	}
 	return g.run(ctx, dir, "git", "rev-parse", "HEAD")
+}
+
+// tracksOrigin reports whether branch's upstream in dir is already
+// origin's branch of the same name.
+func (g *Git) tracksOrigin(ctx context.Context, dir, branch string) bool {
+	remote, err := g.run(ctx, dir, "git", "config", "--get", "branch."+branch+".remote")
+	if err != nil || strings.TrimSpace(remote) != "origin" {
+		return false
+	}
+	merge, err := g.run(ctx, dir, "git", "config", "--get", "branch."+branch+".merge")
+	return err == nil && strings.TrimSpace(merge) == "refs/heads/"+branch
 }
 
 // PushRefusedError is git refusing a push because the branch moved on

@@ -1608,3 +1608,129 @@ func TestPrepareEvalAndBaseCheckoutsBesideAWorktree(t *testing.T) {
 		t.Fatalf("the plan checkout's .git is not a directory: %v", err)
 	}
 }
+
+// Identify on two worktrees of one clone writes each one's identity and
+// hooks dir into its own config.worktree: each reads its own, and the
+// shared clone's .git/config names neither — no last writer's
+// core.hooksPath for every item of the repo, no race for its lock.
+func TestIdentifyWritesEachWorktreesOwnConfigNotTheSharedClones(t *testing.T) {
+	g, specs, _, clone, _ := twoTokenedWorktrees(t)
+	var ids []Identity
+	for _, slug := range []string{"one", "two"} {
+		name, email := AgentIdentity("builder", slug)
+		ids = append(ids, Identity{Name: name, Email: email})
+	}
+	for i, spec := range specs {
+		if err := g.Identify(context.Background(), spec.Dir(), ids[i]); err != nil {
+			t.Fatalf("identify seq %d: %v", i+1, err)
+		}
+	}
+	for i, spec := range specs {
+		if got := gitOut(t, spec.Dir(), "config", "user.email"); got != ids[i].Email {
+			t.Fatalf("seq %d user.email %q, want %q", i+1, got, ids[i].Email)
+		}
+		if got := gitOut(t, spec.Dir(), "config", "user.name"); got != ids[i].Name {
+			t.Fatalf("seq %d user.name %q, want %q", i+1, got, ids[i].Name)
+		}
+		if got := gitOut(t, spec.Dir(), "config", "core.hooksPath"); got != HooksDir(spec.Dir()) {
+			t.Fatalf("seq %d core.hooksPath %q, want %q", i+1, got, HooksDir(spec.Dir()))
+		}
+	}
+	shared, err := os.ReadFile(filepath.Join(clone, ".git", "config"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"name =", "email =", "hookspath"} {
+		if strings.Contains(strings.ToLower(string(shared)), key) {
+			t.Fatalf("the shared clone's .git/config holds %q:\n%s", key, shared)
+		}
+	}
+	// and each commits as its own agent
+	for i, spec := range specs {
+		os.WriteFile(filepath.Join(spec.Dir(), "f"), []byte(spec.Branch), 0o644)
+		gitOut(t, spec.Dir(), "add", "f")
+		cmd := exec.Command("git", "commit", "--quiet", "-m", "f")
+		cmd.Dir = spec.Dir()
+		// as a session's env would not: the config alone names the agent
+		cmd.Env = withoutGitIdentityEnv(os.Environ())
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("commit seq %d: %v: %s", i+1, err, out)
+		}
+		if got := gitOut(t, spec.Dir(), "log", "-1", "--format=%ae"); got != ids[i].Email {
+			t.Fatalf("seq %d committed as %q, want %q", i+1, got, ids[i].Email)
+		}
+	}
+}
+
+func withoutGitIdentityEnv(env []string) []string {
+	var out []string
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "GIT_AUTHOR_") || strings.HasPrefix(kv, "GIT_COMMITTER_") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
+// With the clone's origin already the https URL and worktreeConfig
+// already on, a new session of the same repo — Authorize, Prepare,
+// Identify on a tokened worktree — leaves the shared clone's .git/config
+// byte-identical and runs no `remote set-url` and no `config --local`
+// write; a push of a branch already tracking origin's writes none
+// either. The shared config is written once per clone, not per session.
+func TestASecondSessionLeavesTheSharedConfigAlone(t *testing.T) {
+	g, specs, toks, clone, base := twoTokenedWorktrees(t)
+	ctx := context.Background()
+	if got := gitOut(t, clone, "remote", "get-url", "origin"); got != base+"/acme/widgets.git" {
+		t.Fatalf("shared origin %q after the first sessions", got)
+	}
+	cfgPath := filepath.Join(clone, ".git", "config")
+	before, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, cmds := recordingGit(g.ReposRoot)
+	rec.GitHubURL = g.GitHubURL
+	spec := WorkspaceSpec{Root: specs[0].Root, GoalSlug: "h", Seq: 3, Repo: "acme/widgets", Branch: BranchName("h", 3), BaseRef: "main"}
+	if err := rec.Authorize(ctx, spec, toks[0]); err != nil {
+		t.Fatalf("authorize: %v", err)
+	}
+	if _, err := rec.Prepare(ctx, spec); err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	if !isWorktree(spec.Dir()) {
+		t.Fatal("the third session's checkout is not a worktree")
+	}
+	name, email := AgentIdentity("builder", "three")
+	if err := rec.Identify(ctx, spec.Dir(), Identity{Name: name, Email: email}); err != nil {
+		t.Fatalf("identify: %v", err)
+	}
+	after, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("the shared clone's .git/config changed:\nbefore\n%s\nafter\n%s", before, after)
+	}
+	for _, c := range cmds() {
+		if strings.HasPrefix(c, "git remote set-url") || (strings.HasPrefix(c, "git config --local") && !strings.Contains(c, "--get")) {
+			t.Fatalf("the second session wrote the shared config: %q\n%s", c, strings.Join(cmds(), "\n"))
+		}
+	}
+	// the first push sets the branch's upstream once; the next writes none
+	os.WriteFile(filepath.Join(spec.Dir(), "f"), []byte("x"), 0o644)
+	gitOut(t, spec.Dir(), "add", "f")
+	gitOut(t, spec.Dir(), "commit", "--quiet", "-m", "f")
+	if _, err := rec.Push(ctx, spec.Dir(), spec.Branch); err != nil {
+		t.Fatalf("push: %v", err)
+	}
+	pushed, _ := os.ReadFile(cfgPath)
+	gitOut(t, spec.Dir(), "commit", "--quiet", "--allow-empty", "-m", "g")
+	if _, err := rec.Push(ctx, spec.Dir(), spec.Branch); err != nil {
+		t.Fatalf("second push: %v", err)
+	}
+	if again, _ := os.ReadFile(cfgPath); string(again) != string(pushed) {
+		t.Fatalf("a push of a tracking branch rewrote the shared config:\nbefore\n%s\nafter\n%s", pushed, again)
+	}
+}
