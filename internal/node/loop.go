@@ -735,10 +735,32 @@ func (l *Loop) logf(format string, args ...any) {
 
 // Running is the number of items this node is building: what counts
 // against capacity. Evaluations, plans, research and rebases do not.
+// A retry turn noted by NoteRetryTurn is building too: counted once by
+// its item, so a turn inside the build that holds its item adds nothing
+// and one whose item no build holds adds one.
 func (l *Loop) Running() int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return len(l.running)
+	return l.buildingLocked()
+}
+
+// buildingLocked is Running with l.mu held: the items in running and
+// those of the noted retry turns, each item once.
+func (l *Loop) buildingLocked() int {
+	n := len(l.running)
+	var extra map[string]bool
+	for _, e := range l.resumed {
+		item := e.session.ItemID
+		if l.running[item] || extra[item] {
+			continue
+		}
+		if extra == nil {
+			extra = map[string]bool{}
+		}
+		extra[item] = true
+		n++
+	}
+	return n
 }
 
 // runningOf is the number of sessions of kind this node runs: builds
@@ -749,7 +771,7 @@ func (l *Loop) runningOf(kind harness.Kind) int {
 	defer l.mu.Unlock()
 	switch kind {
 	case harness.KindBuild:
-		return len(l.running)
+		return l.buildingLocked()
 	case harness.KindEvaluate:
 		return len(l.evaluating)
 	case harness.KindRebase:
@@ -1001,7 +1023,7 @@ func (l *Loop) drained() bool {
 
 // sessions counts every session in flight, of any kind; l.mu is held.
 func (l *Loop) sessions() int {
-	return len(l.running) + len(l.evaluating) + len(l.planning) + len(l.researching) + len(l.rebasing)
+	return l.buildingLocked() + len(l.evaluating) + len(l.planning) + len(l.researching) + len(l.rebasing)
 }
 
 func (l *Loop) wakeup() chan struct{} {
