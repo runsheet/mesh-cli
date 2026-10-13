@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/harness"
@@ -131,13 +132,31 @@ func (g *Git) Identify(ctx context.Context, dir string, id Identity) error {
 		scope = "--worktree"
 	}
 	for _, kv := range [][2]string{{"user.name", id.Name}, {"user.email", id.Email}, {"core.hooksPath", hooks}} {
-		cmd := exec.CommandContext(ctx, "git", "config", scope, kv[0], kv[1])
-		cmd.Dir = dir
-		if out, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("git config %s: %w: %s", kv[0], err, strings.TrimSpace(string(out)))
+		if out, err := g.gitConfigWrite(ctx, dir, scope, kv[0], kv[1]); err != nil {
+			return fmt.Errorf("git config %s: %w: %s", kv[0], err, strings.TrimSpace(out))
 		}
 	}
 	return nil
+}
+
+// gitConfigWrite runs `git config scope key value` in dir, retrying once
+// when the first attempt fails on a lock ClearStaleGitLock finds stale:
+// Identify's writes do not go through Git.run (its log would carry no
+// secret, but there is no reason to write every identity config call to
+// it), so the lock-contention message is read from the command's own
+// output, not from err.
+func (g *Git) gitConfigWrite(ctx context.Context, dir, scope, key, value string) (string, error) {
+	run := func() (string, error) {
+		cmd := exec.CommandContext(ctx, "git", "config", scope, key, value)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+	out, err := run()
+	if err != nil && IsGitLockFailureText(out) && ClearStaleGitLock(dir, out, StaleGitLockAge, time.Now(), g.Logf) {
+		out, err = run()
+	}
+	return out, err
 }
 
 // prepareCommitMsg is the hook: one `git interpret-trailers` per pairer,
