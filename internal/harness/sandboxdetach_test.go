@@ -84,7 +84,7 @@ func detachedSession(t *testing.T, f *sandbox.Fake, sb *sandbox.Sandbox) (ws, di
 		t.Fatal(err)
 	}
 	dir = sessionunit.Dir(ws)
-	c := &ClaudeCode{Sandbox: sb}
+	c := &ClaudeCode{Sandbox: sb, DetachSandboxed: true}
 	tmp := t.TempDir()
 	job := Job{Kind: KindBuild, Label: "g/1", Workspace: ws, Prompt: "build it", Model: "opus", Timeout: time.Hour, Outlive: true,
 		Meta: SessionMeta{NodeID: "node-1", ItemID: "item-1", TempDirs: []string{tmp}}}
@@ -173,7 +173,7 @@ func TestAttachFollowsARunningSandboxedSession(t *testing.T) {
 	f, sb := detachedFake(t)
 	_, dir, st := detachedSession(t, f, sb)
 
-	c := &ClaudeCode{Sandbox: sb}
+	c := &ClaudeCode{Sandbox: sb, DetachSandboxed: true}
 	var p progressLog
 	done := make(chan ranResult, 1)
 	go func() {
@@ -231,7 +231,7 @@ func TestAttachReadsAnExitedSandboxedSession(t *testing.T) {
 	appendOutput(t, dir, evTwo, evResult)
 	f.EndAgent(st.Container, sandbox.Exit{Code: 1})
 
-	c := &ClaudeCode{Sandbox: sb}
+	c := &ClaudeCode{Sandbox: sb, DetachSandboxed: true}
 	var p progressLog
 	res, err := c.Attach(context.Background(), dir, p.on)
 	if err != nil || res.Text != "done" || res.SessionID != "s1" {
@@ -251,7 +251,7 @@ func TestAttachReadsAnExitedSandboxedSession(t *testing.T) {
 	if err := f2.Remove(context.Background(), sandbox.Pod{Name: st2.Pod}); err != nil {
 		t.Fatal(err)
 	}
-	res, err = (&ClaudeCode{Sandbox: sb2}).Attach(context.Background(), dir2, nil)
+	res, err = (&ClaudeCode{Sandbox: sb2, DetachSandboxed: true}).Attach(context.Background(), dir2, nil)
 	if err != nil || !res.Success || res.Text != "done" {
 		t.Fatalf("attach with the container gone = %+v, %v", res, err)
 	}
@@ -267,7 +267,7 @@ func TestAttachPastItsTimeoutStopsTheContainer(t *testing.T) {
 	if err := sessionunit.WriteState(dir, st); err != nil {
 		t.Fatal(err)
 	}
-	res, err := (&ClaudeCode{Sandbox: sb}).Attach(context.Background(), dir, nil)
+	res, err := (&ClaudeCode{Sandbox: sb, DetachSandboxed: true}).Attach(context.Background(), dir, nil)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("attach = %+v, %v; want the deadline", res, err)
 	}
@@ -290,7 +290,7 @@ func TestAttachDetachesOnCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan ranResult, 1)
 	go func() {
-		res, err := (&ClaudeCode{Sandbox: sb}).Attach(ctx, dir, nil)
+		res, err := (&ClaudeCode{Sandbox: sb, DetachSandboxed: true}).Attach(ctx, dir, nil)
 		done <- ranResult{res, err}
 	}()
 	time.Sleep(200 * time.Millisecond)
@@ -335,7 +335,7 @@ func TestSandboxedOutliveRunEnds(t *testing.T) {
 	ws := filepath.Join(t.TempDir(), "goal", "1")
 	os.MkdirAll(ws, 0o755)
 	dir := sessionunit.Dir(ws)
-	c := &ClaudeCode{Sandbox: sb}
+	c := &ClaudeCode{Sandbox: sb, DetachSandboxed: true}
 	done := make(chan ranResult, 1)
 	go func() {
 		res, err := c.Run(context.Background(), Job{Kind: KindBuild, Label: "g/1", Workspace: ws, Prompt: "p", Outlive: true}, nil)
@@ -364,8 +364,29 @@ func TestSandboxedOutliveRunEnds(t *testing.T) {
 	f2, sb2 := detachedFake(t)
 	ws2 := filepath.Join(t.TempDir(), "goal", "2")
 	os.MkdirAll(ws2, 0o755)
-	_, err = (&ClaudeCode{Sandbox: sb2}).Run(context.Background(), Job{Kind: KindBuild, Label: "g/2", Workspace: ws2, Prompt: "p", Outlive: true, Timeout: 300 * time.Millisecond}, nil)
+	_, err = (&ClaudeCode{Sandbox: sb2, DetachSandboxed: true}).Run(context.Background(), Job{Kind: KindBuild, Label: "g/2", Workspace: ws2, Prompt: "p", Outlive: true, Timeout: 300 * time.Millisecond}, nil)
 	if !errors.Is(err, context.DeadlineExceeded) || len(f2.StoppedAgents()) != 1 || !strings.HasSuffix(f2.StoppedAgents()[0], "-agent") {
 		t.Fatalf("timeout: %v, stopped %v", err, f2.StoppedAgents())
+	}
+}
+
+// Without DetachSandboxed an Outlive sandboxed job runs attached as
+// before: its pod removed on return, nothing left in the session dir.
+func TestSandboxedOutliveRunsAttachedUntilTheNodeAdopts(t *testing.T) {
+	f, sb := detachedFake(t)
+	f.Agent = func(ctx context.Context, spec sandbox.AgentSpec) (sandbox.Exit, error) {
+		spec.Stdout.Write([]byte(evInit + "\n" + evResult + "\n"))
+		return sandbox.Exit{}, nil
+	}
+	ws := t.TempDir()
+	res, err := (&ClaudeCode{Sandbox: sb}).Run(context.Background(), Job{Kind: KindBuild, Label: "g/1", Workspace: ws, Prompt: "p", Outlive: true}, nil)
+	if err != nil || !res.Success || res.Text != "done" {
+		t.Fatalf("run = %+v, %v", res, err)
+	}
+	if len(f.Detached) != 0 || len(f.Agents) != 1 || len(f.Removed) != 1 {
+		t.Fatalf("detached %d, attached %d, removed %v", len(f.Detached), len(f.Agents), f.Removed)
+	}
+	if _, err := os.Stat(sessionunit.Dir(ws)); !os.IsNotExist(err) {
+		t.Fatalf("session dir: %v", err)
 	}
 }

@@ -44,6 +44,11 @@ type ClaudeCode struct {
 	// Unit runs a host session outside the node process (ADR 008); nil is
 	// sessionunit.Default() — a systemd user scope, else detached.
 	Unit sessionunit.Unit
+	// DetachSandboxed runs a sandboxed Outlive job's agent detached
+	// (runDetached), so it outlives the node as a host session does
+	// (ADR 009). Off, a sandboxed session ends with its context as
+	// before: a node turns it on only once it adopts sandboxed sessions.
+	DetachSandboxed bool
 	// MeshBinary is the mesh executable a host build session's own
 	// finish tools run from (NodeWorkMCP, `mesh session-tools`); empty is
 	// this process's executable.
@@ -620,7 +625,7 @@ func (c *ClaudeCode) runSandboxed(ctx context.Context, job Job, onProgress func(
 			return Result{}, fmt.Errorf("harness claude-code: mcp config: %w", err)
 		}
 	}
-	if job.Outlive && job.Workspace != "" {
+	if c.DetachSandboxed && job.Outlive && job.Workspace != "" {
 		return c.runDetached(ctx, job, sess, mcpPath, onProgress)
 	}
 	if job.Timeout > 0 {

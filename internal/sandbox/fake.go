@@ -31,6 +31,8 @@ type Fake struct {
 	Sidecars []SidecarSpec
 	Removed  []string
 	Calls    []string
+	// cancels stop a running detached Agent (StopAgent).
+	cancels map[string]context.CancelFunc
 	// Trees are the paths RemoveTree was asked to remove.
 	Trees []string
 	// Running and Standing are the store ListContainers and ListPods list: the
@@ -99,12 +101,24 @@ func (f *Fake) RunAgent(ctx context.Context, pod Pod, spec AgentSpec) (Exit, err
 
 // StartAgent implements Runtime: the agent is recorded and stands as a
 // running container of the pod, mounting what StartAgentArgs mounts.
+// With Agent set it runs detached, as the container would: on the
+// spec's stream files, its ctx cancelled by StopAgent, and its exit
+// the container's end (EndAgent). Without, the container runs until a
+// test ends or stops it.
 func (f *Fake) StartAgent(_ context.Context, pod Pod, spec AgentSpec) error {
 	f.call("start-agent " + pod.Name)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.StartErr != nil {
 		return f.StartErr
+	}
+	if f.Agent != nil {
+		ctx, cancel := context.WithCancel(context.Background())
+		if f.cancels == nil {
+			f.cancels = map[string]context.CancelFunc{}
+		}
+		f.cancels[spec.Name] = cancel
+		go f.runDetached(ctx, f.Agent, spec)
 	}
 	f.Detached = append(f.Detached, spec)
 	var mounts []string
@@ -123,6 +137,50 @@ func (f *Fake) StartAgent(_ context.Context, pod Pod, spec AgentSpec) error {
 	}
 	f.Standing = append(f.Standing, PodInfo{Name: pod.Name})
 	return nil
+}
+
+// runDetached runs agent on spec's stream files to its end, which ends
+// the container — unless StopAgent already ended it.
+func (f *Fake) runDetached(ctx context.Context, agent func(context.Context, AgentSpec) (Exit, error), spec AgentSpec) {
+	run := spec
+	var files []*os.File
+	open := func(path string, flag int) *os.File {
+		if path == "" {
+			return nil
+		}
+		fh, err := os.OpenFile(path, flag, 0o600)
+		if err != nil {
+			return nil
+		}
+		files = append(files, fh)
+		return fh
+	}
+	if fh := open(spec.StdinFile, os.O_RDONLY); fh != nil {
+		run.Stdin = fh
+	}
+	if fh := open(spec.StdoutFile, os.O_WRONLY|os.O_APPEND); fh != nil {
+		run.Stdout = fh
+	} else {
+		run.Stdout = io.Discard
+	}
+	if fh := open(spec.StderrFile, os.O_WRONLY|os.O_APPEND); fh != nil {
+		run.Stderr = fh
+	} else {
+		run.Stderr = io.Discard
+	}
+	exit, err := agent(ctx, run)
+	for _, fh := range files {
+		fh.Close()
+	}
+	if err != nil && exit.Code == 0 {
+		exit.Code = 125
+	}
+	f.mu.Lock()
+	_, stopped := f.States[spec.Name]
+	f.mu.Unlock()
+	if !stopped {
+		f.EndAgent(spec.Name, exit)
+	}
 }
 
 // AgentState implements Runtime: States' entry for name, else the
@@ -175,6 +233,9 @@ func (f *Fake) StopAgent(_ context.Context, name string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.Stopped = append(f.Stopped, name)
+	if cancel := f.cancels[name]; cancel != nil {
+		cancel()
+	}
 	for i, c := range f.Running {
 		if c.Name == name {
 			f.Running[i].Running = false
