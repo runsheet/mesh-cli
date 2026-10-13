@@ -6,6 +6,7 @@ package harness
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"time"
 
@@ -106,8 +107,24 @@ type Job struct {
 	// Timeout stops it. The session directory is also left when the
 	// session ends, for the node to remove (RemoveSession) once it has
 	// handled the end. A host Claude session only: a sandboxed or Codex
-	// one still ends with its ctx.
+	// one still ends with its ctx. A ctx cancelled with a cause that Is
+	// ErrStopSession is no shutdown: the unit is stopped and killed as at
+	// any other end (StopRequested).
 	Outlive bool
+}
+
+// ErrStopSession, as the cause of a session's cancelled ctx
+// (context.WithCancelCause), stops an Outlive session instead of
+// detaching it: the node gave up on the session — its claim lost, its
+// item no longer the node's — and nothing will adopt it, so its unit is
+// killed with everything the agent started there (mesh-cli ADR-008, The
+// session's end).
+var ErrStopSession = errors.New("session stopped")
+
+// StopRequested is whether ctx was cancelled with ErrStopSession as its
+// cause.
+func StopRequested(ctx context.Context) bool {
+	return ctx.Err() != nil && errors.Is(context.Cause(ctx), ErrStopSession)
 }
 
 // Attacher is a harness that can take up a session a node process
