@@ -919,6 +919,12 @@ func nodeStart(cmd *cobra.Command, args []string, logger *log.Logger) error {
 		LookPath: exec.LookPath,
 		// an item declined for a runtime it lacks is not taken again
 		Declines: &node.Declines{}}
+	// capacity counts the agent sessions alive on the host, orphans
+	// included, and stops an orphan no item of this node's claims
+	loop.Live = &node.LiveProbe{Root: workRoot}
+	if _, ok := hostUnit().(sessionunit.SystemdScope); ok {
+		loop.Live.Systemctl = sessionunit.HostSystemctl{}
+	}
 	// every session's list-price cost lands in the ledger, kept on
 	// disk: the api keys' caps and the project budgets count it
 	// (adr-005-capacity-across-accounts)
