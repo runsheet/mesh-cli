@@ -1253,6 +1253,73 @@ func TestWorktreesCarryTheirOwnTokenAndTheSharedCloneNone(t *testing.T) {
 	}
 }
 
+// Two items of one repo authorizing at once never race for the shared
+// clone's .git/config: a worktree's origin is read without a lock, and
+// changed only under the repo's lock by one writer (2026-10-12, every
+// latchkey item on dl360-anythink failed "could not lock config file …
+// File exists" from an unlocked `git remote set-url` per worktree).
+func TestAuthorizeWorktreesOfOneRepoNeverRaceForTheSharedConfig(t *testing.T) {
+	g, specs, toks, clone, base := twoTokenedWorktrees(t)
+	want := base + "/acme/widgets.git"
+	// as a `gh repo clone` on the operator's key leaves it
+	gitOut(t, clone, "remote", "set-url", "origin", "git@github.com:acme/widgets.git")
+	var mu sync.Mutex
+	inFlight, maxInFlight, setURLs := 0, 0, 0
+	g.exec = func(ctx context.Context, dir, name string, args ...string) (string, error) {
+		isSet := name == "git" && len(args) >= 2 && args[0] == "remote" && args[1] == "set-url"
+		if isSet {
+			mu.Lock()
+			inFlight++
+			setURLs++
+			if inFlight > maxInFlight {
+				maxInFlight = inFlight
+			}
+			mu.Unlock()
+			time.Sleep(20 * time.Millisecond) // widen any overlap
+		}
+		out, err := g.realRun(ctx, dir, name, args...)
+		if isSet {
+			mu.Lock()
+			inFlight--
+			mu.Unlock()
+		}
+		return out, err
+	}
+	var wg sync.WaitGroup
+	errs := make(chan error, 40)
+	// each item re-authorizes its own worktree in turn (one item owns
+	// one worktree); the two items run at once, as on a busy node
+	for i := range specs {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			for round := 0; round < 20; round++ {
+				if err := g.Authorize(context.Background(), specs[i], toks[i]); err != nil {
+					errs <- fmt.Errorf("authorize seq %d round %d: %w", i+1, round, err)
+					return
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	if maxInFlight > 1 {
+		t.Fatalf("%d set-url ran at once on the shared clone's config", maxInFlight)
+	}
+	if setURLs != 1 {
+		t.Fatalf("set-url ran %d times, want once: the rest read it already set", setURLs)
+	}
+	if got := gitOut(t, clone, "remote", "get-url", "origin"); strings.TrimSpace(got) != want {
+		t.Fatalf("shared origin %q, want %q", got, want)
+	}
+	if _, err := os.Stat(filepath.Join(clone, ".git", "config.lock")); err == nil {
+		t.Fatal("a config.lock was left behind")
+	}
+}
+
 // ForPush's rewrite of one worktree's helper, just before its push,
 // leaves the other worktree's helper as it was.
 func TestForPushInOneWorktreeLeavesTheOtherAlone(t *testing.T) {
