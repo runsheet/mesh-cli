@@ -55,6 +55,12 @@ func (e *validationFailure) Error() string {
 	return fmt.Sprintf("validation failed: step %s exited %d", e.Step.Name, e.Step.ExitCode)
 }
 
+// EnvironmentKind is the failing step's (docs/adr/adr-030): a timeout or
+// a missing tool is the node's, not the code's; a code failure none.
+func (e *validationFailure) EnvironmentKind() validate.EnvironmentKind {
+	return e.Step.EnvironmentKind
+}
+
 // validator runs a checkout's validation and uploads its attestation
 // for whichever session it follows: a build's (Runner.validator) or a
 // rebase's (Rebaser.validator), each on the node's own gateway.
@@ -233,7 +239,8 @@ func (vr validator) run(ctx context.Context, t validationTarget, v *buildValidat
 	}
 	changed, err := vr.changedPaths(ctx, t)
 	if err != nil {
-		return validate.Attestation{}, fmt.Errorf("changed paths: %w", err)
+		// a base fetch GitHub refused is credential_refused (adr-030)
+		return validate.Attestation{}, validate.Classify(fmt.Errorf("changed paths: %w", err))
 	}
 	head, err := gitHead(ctx, t.dir)
 	if err != nil {
@@ -261,7 +268,11 @@ func (vr validator) run(ctx context.Context, t validationTarget, v *buildValidat
 	}
 	v.runs = append(v.runs, att)
 	for _, s := range results {
-		vr.logf("%s: validation step %s exited %d in %dms", t.prefix, s.Name, s.ExitCode, s.DurationMs)
+		kind := ""
+		if s.EnvironmentKind != "" {
+			kind = " (" + string(s.EnvironmentKind) + ")"
+		}
+		vr.logf("%s: validation step %s exited %d in %dms%s", t.prefix, s.Name, s.ExitCode, s.DurationMs, kind)
 	}
 	if err := writeAttestation(sessionunit.Dir(t.dir), att); err != nil {
 		vr.logf("%s: validation: %v", t.prefix, err)
@@ -667,7 +678,9 @@ func (r *Runner) validationUsage(err error) error {
 // field: one command per step, the tests summed over the steps, each
 // artifact as "<path>@sha256:<digest>", the validate.yml's SuiteHash
 // (the platform's canonical hash) as the suite hash, and a report per
-// step that kept one — 256 KiB in all. No step run is no command: an
+// step that kept one — 256 KiB in all. A command that failed on the
+// node carries its environmentKind (docs/adr/adr-030), left out for a
+// pass or a code failure. No step run is no command: an
 // empty list, never left out. Whether it ran
 // sandboxed, the node and the item stay on the local attestation: the
 // platform reads the runner from runnerImage and the node from the
@@ -681,6 +694,7 @@ func gatewayAttestation(att validate.Attestation) gateway.ValidationAttestation 
 	for _, s := range att.Steps {
 		out.Commands = append(out.Commands, gateway.ValidationCommand{
 			Suite: s.Name, Command: s.Command, ExitCode: s.ExitCode, DurationMs: s.DurationMs,
+			EnvironmentKind: string(s.EnvironmentKind),
 		})
 		out.TestsRun += s.TestsRun
 		out.TestsPassed += s.TestsPassed

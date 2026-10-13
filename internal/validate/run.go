@@ -94,6 +94,9 @@ const outputCap = 8 * 1024
 // Run runs each step through runner in order, recording a StepResult for
 // each. The first step whose command errors or exits non-zero stops the
 // run (its result is still recorded) unless opts.ContinueOnFailure.
+// A failing step carries its EnvironmentKind (EnvironmentKindOf of its
+// exit and the runner's error), and the runner's error is returned
+// classified (Classify).
 // Each step's report is cut to what is left of reportCap after the
 // steps before it.
 func Run(ctx context.Context, steps []Step, runner Runner, opts Options) ([]StepResult, error) {
@@ -131,10 +134,13 @@ func Run(ctx context.Context, steps []Step, runner Runner, opts Options) ([]Step
 			TimedOut:    exitCode == 124,
 			Artifacts:   artifacts,
 		}
+		if exitCode != 0 || runErr != nil {
+			sr.EnvironmentKind = EnvironmentKindOf(sr, runErr)
+		}
 		results = append(results, sr)
 
 		if runErr != nil {
-			return results, runErr
+			return results, Classify(runErr)
 		}
 		if exitCode != 0 && !opts.ContinueOnFailure {
 			return results, nil

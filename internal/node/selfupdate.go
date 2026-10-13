@@ -12,6 +12,7 @@ import (
 
 	"projectmesh.io/mesh-cli/internal/gateway"
 	"projectmesh.io/mesh-cli/internal/selfupdate"
+	"projectmesh.io/mesh-cli/internal/validate"
 	"projectmesh.io/mesh-cli/internal/version"
 )
 
@@ -338,7 +339,8 @@ func (l *Loop) update(ctx context.Context, from, to string) {
 	if l.Image != nil {
 		img, err := l.Image(ctx, to)
 		if err != nil {
-			l.updateFailed(ctx, from, to, err, false)
+			// a registry refusing the pull says image_pull_refused (adr-030)
+			l.updateFailed(ctx, from, to, kindedText(validate.Classify(err)), false)
 			return
 		}
 		l.logf("self-update: %s", img.Summary())
@@ -587,3 +589,18 @@ func (c StartCheck) String() string {
 	}
 	return ""
 }
+
+// kindedText is err whose text opens with its environment kind
+// (validate.Reason) — the updateError a heartbeat carries — still
+// wrapping err; err itself when it has none.
+func kindedText(err error) error {
+	if validate.Kinded(err) == "" {
+		return err
+	}
+	return &kindedError{err}
+}
+
+type kindedError struct{ err error }
+
+func (e *kindedError) Error() string { return validate.Reason(e.err) }
+func (e *kindedError) Unwrap() error { return e.err }

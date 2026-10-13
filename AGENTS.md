@@ -653,10 +653,24 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `SandboxConfig.EnsureImage` → `sandbox.EnsureImage`/`BuildImage` on
   an injected `Runner`): pull `ghcr.io/runsheet/mesh-node:<version>`
   (node.yaml `sandbox.image`: empty that, `build` built here, else as
-  given), prune older tags but the running one's. A failed pull is an
-  `updateError`: no drain, no swap, never a silent build. `sandbox:
+  given), prune older tags but the running one's. The pull is on the
+  platform's registry credential: `RegistryBrokerOf` asks
+  `nodeRegistryToken(registry)` for the image's registry
+  (`sandbox.RegistryHost`) and `pullImage` passes it by `--authfile` on
+  a temporary `auth.json`, removed after the pull; a platform without the
+  read, or none for the registry, pulls on podman's own login (ADR-007's
+  amendment 2026-10-13). A failed pull is an
+  `updateError` — a refused one opening `image_pull_refused: `
+  (`kindedText`, ADR-030): no drain, no swap, never a silent build. `sandbox:
   off` pulls nothing. release-tag.yml's `image` job pushes and
-  cosign-signs it before `publish`.
+  cosign-signs it before `publish`. The image carries, beside Go, Node
+  LTS with npm, Python, `gh` and the agent CLIs, a Postgres 17 server
+  (`initdb`/`pg_ctl`/`psql` linked into `/usr/local/bin`, the sandbox's
+  own PATH; no cluster made) and Debian's headless `chromium` — what
+  latchkey's conformance, the console's `npm run check` and runsheet's
+  integration shard need — proven inside the built image by
+  `scripts/image-tools-check.sh` (`TestImageToolsE2E`, `-tags e2e`;
+  `docs/e2e-sandbox.md`).
 - **The pace** (`internal/node/limits.go`, trd §3 Pacing by the plan's
   limits): every session's `rate_limit_event` lands in `Loop.Limits`
   (latest per account — its `MESH_ACCOUNT` label, else
@@ -1118,6 +1132,30 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   (1h)` and `mesh node status` prints `attestations: <n> recorded, <m>
   refused (last hour)` (adr-014's amendment 2026-10-09; the gateway's
   half is runsheet goal an-attestation-is-about-a-commit-not-an-item-state).
+  The validator's fetches — the diff's base (`changedPaths`) and a newer
+  head (`fetchHead`) — run on `ItemCred.ForFetch`'s token and the build's
+  push on `ForPush`'s, each by `OnItemToken` (`GIT_CONFIG_COUNT` at the
+  command's scope, never the shared clone's config), whatever the
+  checkout's helper holds by then (ADR-001's amendment). **An
+  environment failure names its kind** (`internal/validate/envkind.go`,
+  `docs/adr/adr-030-an-environment-failure-names-its-kind.md`): the
+  closed set `validate.EnvironmentKind` — `step_timeout` (a step's exit
+  124), `tool_missing` (127), `credential_refused`
+  (`validate.IsCredentialRefusal`, which `IsCredentialRefusal` reads, or
+  a `*CredentialError`/`*PushCredentialError`) and `image_pull_refused`
+  (`validate.IsImagePullRefusal`: an error, or podman's exit 125, naming
+  a refused pull) — classified by `EnvironmentKindOf(step, err)`, set on
+  a failing `StepResult.EnvironmentKind` by `validate.Run` (its runner
+  error `Classify`d), sent as the attestation command's
+  `environmentKind` (`gateway.ValidationCommand`, the contract's second
+  command; left out for a pass or a code failure), and opening every
+  reason as `<kind>: ` (`validate.WithKind`/`Reason`/`KindOfReason`) —
+  `Runner.fail`'s `failWorkItem`, `ReleaseOnCredential`'s
+  `releaseWorkItem`, a refused pull's `updateError`; node.log's step
+  line ends ` (<kind>)`. Any other non-zero exit carries none; the
+  platform half, runsheet goal
+  an-item-that-fails-on-its-environment-is-parked-not-replanned, parks
+  on it.
 - **Services** (`internal/sandbox/services.go`, mesh-specs ADR 007):
   `Resolve(repoDir, allowed)` reads what a repository declares, first
   found wins — `.mesh/services.yml`, else the `services:` of its

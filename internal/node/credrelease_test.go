@@ -28,7 +28,7 @@ func fourTokens() *tokenGW {
 // the expiry in RFC 3339, the refusals and git's answer — with no token.
 func credentialReasonOK(t *testing.T, reason string) {
 	t.Helper()
-	if want := "github credential: acme/widgets token expiring 2036-09-24T11:11:55Z refused 4 times: "; !strings.HasPrefix(reason, want) {
+	if want := "credential_refused: github credential: acme/widgets token expiring 2036-09-24T11:11:55Z refused 4 times: "; !strings.HasPrefix(reason, want) {
 		t.Fatalf("reason %q, want it to start %q", reason, want)
 	}
 	if !strings.Contains(reason, "Repository not found") {
