@@ -1,0 +1,24 @@
+2026-10-13T08:00:00Z mesh node: register: node-uuid
+2026-10-13T08:05:00Z mesh node: capacity 4 → 5
+2026-10-13T08:15:00Z mesh node: capacity 5 → 6: host hot: load 120/96 cores
+2026-10-13T08:20:00Z mesh node: capacity 6 → 5: host hot: load 125/96 cores
+2026-10-13T08:25:00Z mesh node: capacity 5 → 4: host hot: load 130/96 cores
+2026-10-13T08:30:00Z mesh node: capacity 4 → 3: host hot: 45.2°C
+2026-10-13T08:35:00Z mesh node: capacity 3 → 2: host hot: 46.1°C
+2026-10-13T09:00:00Z mesh node: capacity 2 → 3: host quiet 5m
+2026-10-13T09:05:00Z mesh node: capacity 3 → 4: host quiet 5m
+2026-10-13T09:10:00Z mesh node: capacity 4 → 5: host quiet 5m
+2026-10-13T09:15:00Z mesh node: capacity 5 → 6: clamped into 4–6
+2026-10-13T09:20:00Z mesh node: some other log line
+2026-10-13T10:00:00Z mesh node: capacity 6 → 5: other reason
+2026-10-13T10:05:00Z mesh node: capacity 5 → 4: host hot: load 140/96 cores
+2026-10-13T10:10:00Z mesh node: capacity 4 → 3: host quiet 10m
+2026-10-14T08:00:00Z mesh node: restarted
+2026-10-14T08:05:00Z mesh node: capacity 2 → 3: host quiet 5m
+2026-10-14T08:10:00Z mesh node: capacity 3 → 4: host quiet 5m
+2026-10-14T08:15:00Z mesh node: capacity 4 → 5: host hot: 48.5°C
+2026-10-14T08:20:00Z mesh node: capacity 5 → 6: host hot: load 150/96 cores
+2026-10-14T08:25:00Z mesh node: capacity 6 → 7: clamped into 4–8
+2026-10-14T08:30:00Z mesh node: capacity 7 → 6: host quiet 15m
+2026-10-14T08:35:00Z mesh node: capacity 6 → 5: other
+2026-10-14T08:40:00Z mesh node: done
