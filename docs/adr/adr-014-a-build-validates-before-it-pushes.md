@@ -128,10 +128,15 @@ or failed — a copy stays at `<workdir>.attestation.json`.
 builder **one** more turn, with `harness.ValidationRetryPrompt`: the
 step, its command, exit code and the end of its output, and ADR 012's
 hand-back rule — fix it and commit, or commit what works and hand
-back; never push. A host Claude session whose id is known is resumed
-(`Job.Resume`, the hand-back's own mechanism) on the budget left; a
-sandboxed or Codex one, or one with no id, is a fresh session with the
-failure after its brief. The turn has no hand-back of its own and does
+back; never push. The build's own session is resumed (`Job.Resume`,
+the hand-back's own mechanism) on the budget left — host or sandboxed,
+Claude or Codex — with that one message (`harness.RetryTurnPrompt`:
+the step, the head it ran on, the item's acceptance); one that cannot
+be is a fresh session with the failure after its brief, logged and
+noted `session not resumed (<reason>)`, and the turn rides the
+heartbeat's `resumed` (amended 2026-10-13 by ADR-030,
+`adr-030-a-failed-check-resumes-the-session-that-built-it.md`, which
+also resumes the session for a retry after a failed evaluation). The turn has no hand-back of its own and does
 not outlive the node (`Outlive` false): a restart during it leaves the
 item to the platform's stall window rather than letting an adoption
 grant a second retry. An adopted build gets no retry turn. The new HEAD

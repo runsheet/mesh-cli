@@ -414,6 +414,27 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `~/.mesh/node.shares`, printed by `mesh node status` as `ORG FLOOR
   HELD READY` (`sharesLines`) or `shares: none recorded` (ADR-023,
   Reporting).
+- **A failed check resumes the session that built it** (ADR-030,
+  `docs/adr/adr-030-a-failed-check-resumes-the-session-that-built-it.md`):
+  every build keeps its session in `ResumeStore` (`RunState.Resumes()`,
+  `~/.mesh/resume/<item>/`: `ResumeRecord{sessionId, adapter,
+  credentialId, worktree, transcript, keptAt}` and the transcript's copy,
+  ids and paths only; `Runner.keepSession` before the account and pod
+  go; `Sweep` forgets merged/cancelled/failed/superseded items or past
+  `ResumeKeepFor`, 7 days). A failing validation step (ADR-014) and a
+  claim whose last evaluation failed (`retryAfterEvaluation`,
+  `internal/node/retryturn.go`) resume it — `Job.Resume`, the
+  transcript restored by `harness.RestoreTranscript`, same adapter,
+  credential and worktree (`Runner.resumable`) — with one message,
+  `harness.RetryTurnPrompt` (what failed, where, the acceptance); else
+  a fresh session gets the build prompt and the same message, logged
+  and noted `item <label>: session not resumed (<reason>); fresh session
+  with the failure` (`no record`, `adapter changed`, `credential
+  changed`, `worktree gone`, `transcript missing`, `session not found`).
+  Each retry turn is `Loop.NoteRetryTurn`'d: the heartbeat's `resumed
+  [{itemId, kind, sessionId, fresh}]` (`takesResumed`) and one session
+  in `Loop.Running`, each item once. `internal/node/resume_e2e_test.go`
+  runs it end to end.
 - **A death names itself** (`internal/crash/`): `defer crash.Guard()`
   at the top of `mesh node start` and of every goroutine the node
   starts turns a panic into one node.log line, `mesh node: fatal:
