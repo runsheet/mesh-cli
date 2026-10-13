@@ -777,9 +777,15 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `Loop.spendable` narrows every choice — no key at
   its cap, the last 10% of a key's day for urgent/high, and for an item
   only an account with a slot free. **A hot host backs it off**
-  (`hostbackoff.go`, ADR-023): every tick, while `MachineReading.Hot`
-  at node.yaml's `host:` thresholds, the capacity in force drops one
-  slot (to max(min, 1); a fixed node's 1) and `claimReady` is skipped;
+  (`hostbackoff.go`, ADR-023, amended by ADR-031): every tick, while
+  `MachineReading.Hot` at node.yaml's `host:` thresholds — the node
+  user's slice's CPU pressure past `host.cpu_some_avg60_max` (default
+  25, `host hot: cpu pressure 31%/25%`) when it is read, else load per
+  core past `load_per_core_max`, then the package temperature — and,
+  once hot, until the pressure or load falls below `host.quiet_fraction`
+  (0.8) of its threshold, `claimReady` is skipped and the capacity in
+  force drops one slot per `HostStepEvery` (1 minute; to max(min, 1), a
+  fixed node's 1);
   quiet, it climbs one slot per `HostRecoverEvery` back to the plan
   figure, `Scaling.Host` carrying the reading; the scalers keep only
   the free-memory cap (`low memory`). **An overloaded host starves a
@@ -1300,7 +1306,10 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   a pod, EXDEV, ADR-028) — an env
   from the allow-list (`AllowedEnv`, `MESH_TOOL_*`, `BaseEnv`; never
   the node's), `--cpus/--memory/--pids-limit` from node.yaml
-  `sandbox:` (`SandboxConfig.Settings`), and nftables rules an init
+  `sandbox:` (`SandboxConfig.Settings`) with the limit told to the
+  tools inside — `GOMAXPROCS`, `OMP_NUM_THREADS` and `MAKEFLAGS=-j<n>`
+  at the ceiling of `--cpus` (`LimitEnv`, a name the spec's env sets
+  left alone; ADR-031) — and nftables rules an init
   container loads (`NetworkPolicy.Ruleset`: the LAN, the host and the
   special ranges refused, 443/80 out). `Runtime` is `Podman` or the
   test `Fake`. `OpenSandbox` decides at start: `sandbox: off` is nil
