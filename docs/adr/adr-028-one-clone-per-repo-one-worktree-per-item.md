@@ -75,7 +75,15 @@ credential helper with `git config --worktree` after enabling
 `extensions.worktreeConfig` on the shared clone; a full clone keeps
 `--local`. The shared clone's own config holds no token, so one item's
 token is never left behind for the next, and `ItemCred.ForPush`'s
-rewrite of one worktree's helper leaves the other's alone. The sandbox
+rewrite of one worktree's helper leaves the other's alone.
+The shared clone's own config holds no session's values at all: origin
+and `extensions.worktreeConfig`, written once per clone under the
+repo's lock after a read, and each branch's tracking; the agent's
+identity and hooks go in `config.worktree` as the helper does, the
+token on a command's `GIT_CONFIG_*` environment, a stale `config.lock`
+is removed after a minute, and a wait on the repo lock names its
+holder ([ADR-030, a session never writes the shared clone's
+config](adr-030-a-session-never-writes-the-shared-clones-config.md)). The sandbox
 mounts the clone's whole `.git` (below), so a session could read a
 sibling worktree's `config.worktree`; it is a token for the same repo,
 an hour long.
