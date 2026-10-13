@@ -86,3 +86,36 @@ func TestRestoreTranscriptUnknownAdapter(t *testing.T) {
 		t.Fatal("expected an error for an unknown adapter")
 	}
 }
+
+// TranscriptPath finds what RestoreTranscript places, for both adapters,
+// and nothing where there is none.
+func TestTranscriptPathFindsWhatRestorePlaces(t *testing.T) {
+	src := t.TempDir()
+	ws := t.TempDir()
+	claude := filepath.Join(src, "s.jsonl")
+	rollout := filepath.Join(src, "rollout-2026-10-13T10-00-00-th-1.jsonl")
+	for _, p := range []string{claude, rollout} {
+		if err := os.WriteFile(p, []byte("{}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cdir, xdir := t.TempDir(), t.TempDir()
+	if got := TranscriptPath(cdir, "claude-code", ws, "sid"); got != "" {
+		t.Fatalf("empty config dir: %q", got)
+	}
+	if err := RestoreTranscript(cdir, "claude-code", ws, "sid", claude); err != nil {
+		t.Fatal(err)
+	}
+	if got := TranscriptPath(cdir, "claude-code", ws, "sid"); got == "" {
+		t.Fatal("claude transcript not found")
+	}
+	if err := RestoreTranscript(xdir, "codex", ws, "th-1", rollout); err != nil {
+		t.Fatal(err)
+	}
+	if got := TranscriptPath(xdir, "codex", ws, "th-1"); filepath.Base(got) != filepath.Base(rollout) {
+		t.Fatalf("codex rollout = %q", got)
+	}
+	if got := TranscriptPath(xdir, "codex", ws, "th-2"); got != "" {
+		t.Fatalf("another thread's rollout: %q", got)
+	}
+}
