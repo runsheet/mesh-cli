@@ -12,7 +12,14 @@ const (
 	OutputFile = "output.jsonl"
 	StderrFile = "stderr.log"
 	StateFile  = "state.json"
+	// PromptFile is a sandboxed session's prompt, which its detached
+	// container reads from the file; removed once the agent has spoken.
+	PromptFile = ".prompt"
 )
+
+// SandboxRunner is the Runner of a session whose agent runs detached in
+// its own pod: its unit is the container.
+const SandboxRunner = "podman"
 
 // Dir is the session directory of a work dir: its sibling
 // `<workdir>.session`, outside the git checkout.
@@ -39,9 +46,18 @@ type State struct {
 	// Harness is the agent ("claude-code").
 	Harness string `json:"harness,omitempty"`
 	// Runner is the Unit's Name; PID and Unit where the session runs.
-	Runner    string    `json:"runner"`
-	PID       int       `json:"pid"`
-	Unit      string    `json:"unit"`
+	// A sandboxed session's is SandboxRunner: no pid, its Unit the
+	// agent's container, beside it the Pod and the Home it was given.
+	Runner string `json:"runner"`
+	PID    int    `json:"pid"`
+	Unit   string `json:"unit"`
+	// Pod, Container and Home are a sandboxed session's pod, its agent's
+	// container and its temporary HOME on the host (mesh-specs ADR 007):
+	// what a later node reattaches to wait on, stop and remove. Paths and
+	// names only.
+	Pod       string    `json:"pod,omitempty"`
+	Container string    `json:"container,omitempty"`
+	Home      string    `json:"home,omitempty"`
 	Workspace string    `json:"workspace"`
 	StartedAt time.Time `json:"startedAt"`
 	// TimeoutSeconds is the session's wall-clock cap from StartedAt; 0 is
