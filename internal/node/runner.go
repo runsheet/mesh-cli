@@ -135,10 +135,16 @@ type Runner struct {
 	// Notices say once per run that the platform takes no validation
 	// attestations, or no per-step minutes, yet (nil: every item).
 	Notices *ValidationNotices
+	// RetryTurns notes a validation retry turn for the heartbeat while
+	// it runs (Loop.NoteRetryTurn): the item, the session kind, the
+	// session id it resumes ("" fresh) and whether it is fresh; the func
+	// it returns ends the note. nil notes nothing.
+	RetryTurns func(itemID, kind, sessionID string, fresh bool) (done func())
 	// Resumes keeps each finished build's session id and transcript for
 	// the item's retry to resume (resumestore.go, goal
-	// a-failed-check-returns-to-the-session-that-built-it); nil keeps
-	// nothing.
+	// a-failed-check-returns-to-the-session-that-built-it), and a retry
+	// turn puts its kept transcript back when the session's own is gone;
+	// nil keeps and restores nothing.
 	Resumes *ResumeStore
 	Log     *log.Logger
 }

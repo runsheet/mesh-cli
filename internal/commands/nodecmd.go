@@ -1136,7 +1136,7 @@ func runPollMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *
 		rs := st.Resumes()
 		resumes = &rs
 	}
-	runner := &node.Runner{GW: gw, Harness: h, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, MCPFunc: func(ctx context.Context) map[string]any { return meshContextMCP(ctx, gw) }, MaxBudgetUSD: nodeMaxBudgetFlag, Model: nodeModels.For("build"), Fallback: fallback, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Condition: loop.NoteCondition, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Sandbox: sessionSandbox, MeshBinary: meshBinary(), State: state, Resumes: resumes, Notices: validationNotices, Machine: loop.Machine, Host: loop.HostThresholds, Log: logger}
+	runner := &node.Runner{GW: gw, Harness: h, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, MCPFunc: func(ctx context.Context) map[string]any { return meshContextMCP(ctx, gw) }, MaxBudgetUSD: nodeMaxBudgetFlag, Model: nodeModels.For("build"), Fallback: fallback, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Condition: loop.NoteCondition, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Sandbox: sessionSandbox, MeshBinary: meshBinary(), State: state, Notices: validationNotices, Machine: loop.Machine, Host: loop.HostThresholds, RetryTurns: loop.NoteRetryTurn, Resumes: resumes, Log: logger}
 	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) {
 		r := *runner
 		r.Scopes = loop.CurrentScopes() // an org served since start is known to its build

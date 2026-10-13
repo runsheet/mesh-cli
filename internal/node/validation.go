@@ -187,7 +187,7 @@ func (r *Runner) validateBuild(ctx context.Context, b *buildRun, v *buildValidat
 	vf := &validationFailure{Step: failed}
 	r.logf("item %s: %v; one more turn", b.label, vf)
 	b.report(ctx, vf.Error()+"; the builder gets one more turn")
-	res, runErr, ran := r.retryTurn(ctx, b, failed)
+	res, runErr, ran := r.retryTurn(ctx, b, failed, att.Commit)
 	if !ran {
 		return att, vf
 	}
@@ -282,12 +282,20 @@ func (vr validator) run(ctx context.Context, t validationTarget, v *buildValidat
 
 // retryTurn is the builder's one more turn after a failing step (ADR
 // 012's hand-back words: fix it and commit, or commit what works and
-// hand back): the session resumed with ValidationRetryPrompt on the
-// budget left when it is a host Claude one whose id is known, else a
-// fresh session told the failure after its brief. An adopted session,
-// whose job this process never had, gets none (ran false). The turn does
-// not outlive the node: it is the node's, inside the build's tail.
-func (r *Runner) retryTurn(ctx context.Context, b *buildRun, failed validate.StepResult) (res harness.Result, err error, ran bool) {
+// hand back), on the budget left: one message (RetryTurnPrompt) naming
+// the failed step, the head it ran on and the item's acceptance. The
+// build session is resumed with it — a host Claude session, a sandboxed
+// one in its own pod (whose HOME still holds the transcript, else it is
+// restored from the resume store), a Codex one by `codex exec resume` —
+// and when it cannot be (no session id, an adapter without resume, the
+// agent refusing the id) a fresh session gets the brief and the same
+// message, saying so in node.log and on the item (goal
+// a-failed-check-returns-to-the-session-that-built-it). The turn is
+// noted for the heartbeat (RetryTurns) while it runs. An adopted
+// session, whose job this process never had, gets none (ran false). The
+// turn does not outlive the node: it is the node's, inside the build's
+// tail.
+func (r *Runner) retryTurn(ctx context.Context, b *buildRun, failed validate.StepResult, head string) (res harness.Result, err error, ran bool) {
 	if b.job == nil {
 		r.logf("item %s: an adopted session gets no retry turn", b.label)
 		return harness.Result{}, nil, false
@@ -300,14 +308,49 @@ func (r *Runner) retryTurn(ctx context.Context, b *buildRun, failed validate.Ste
 	if turn.Timeout > 0 {
 		turn.Timeout = max(turn.Timeout-time.Since(b.started), 5*time.Minute)
 	}
-	prompt := harness.ValidationRetryPrompt(failed.Name, failed.Command, failed.ExitCode, failed.Output)
-	if sid := b.session(); sid != "" && r.Sandbox == nil && Adapter(r.Harness) == AdapterClaudeCode {
-		turn.Resume, turn.Prompt = sid, prompt
-	} else {
-		turn.Resume, turn.Prompt = "", b.job.Prompt+"\n\n# Your last session's validation failed\n\n"+prompt
+	acceptance := b.item.Acceptance
+	if acceptance == "" && b.res != nil {
+		acceptance = b.res.Item.Acceptance
 	}
+	msg := harness.RetryTurnPrompt(harness.RetryTurn{Step: failed.Name, Command: failed.Command, ExitCode: failed.ExitCode, Output: failed.Output,
+		Branch: b.spec.Branch, HeadSHA: head, Acceptance: acceptance})
+	fresh := func(why string) {
+		note := "session not resumed (" + why + "); fresh session with the failure"
+		r.logf("item %s: %s", b.label, note)
+		b.report(ctx, note)
+		turn.Resume, turn.Prompt = "", b.job.Prompt+"\n\n# Your last session's validation failed\n\n"+msg
+	}
+	sid := b.session()
+	if why := r.unresumable(b, sid); why != "" {
+		fresh(why)
+	} else {
+		turn.Resume, turn.Prompt = sid, msg
+	}
+	done := r.noteRetryTurn(b.item.ID, turn.Resume)
+	defer func() { done() }()
 	b.cost.carry()
-	res, err = b.run(ctx, func(sctx context.Context, onProgress func(harness.Progress)) (harness.Result, error) {
+	res, err = r.runTurn(ctx, b, turn)
+	if turn.Resume != "" && ctx.Err() == nil && res.SessionID == "" && (err != nil || !res.Success) {
+		// the agent never took the session up: the id is unknown to it
+		why := "the agent did not resume session " + sid
+		if err != nil {
+			why += ": " + b.acct.RedactErr(err).Error()
+		} else if t := strings.TrimSpace(res.Text); t != "" {
+			why += ": " + strings.SplitN(t, "\n", 2)[0]
+		}
+		fresh(why)
+		done()
+		done = r.noteRetryTurn(b.item.ID, "")
+		b.cost.carry()
+		res, err = r.runTurn(ctx, b, turn)
+	}
+	return res, err, true
+}
+
+// runTurn runs a retry turn's job on the build's harness, its cost and
+// session id observed as the build's.
+func (r *Runner) runTurn(ctx context.Context, b *buildRun, turn harness.Job) (harness.Result, error) {
+	res, err := b.run(ctx, func(sctx context.Context, onProgress func(harness.Progress)) (harness.Result, error) {
 		return r.Harness.Run(sctx, turn, onProgress)
 	})
 	b.cost.observe(res.CostUSD)
@@ -316,7 +359,94 @@ func (r *Runner) retryTurn(ctx context.Context, b *buildRun, failed validate.Ste
 		b.sessionID = res.SessionID
 		b.mu.Unlock()
 	}
-	return res, err, true
+	return res, err
+}
+
+// noteRetryTurn notes a retry turn on itemID for the heartbeat
+// (RetryTurns, Loop.NoteRetryTurn): resuming sessionID, else fresh. Its
+// done func is never nil.
+func (r *Runner) noteRetryTurn(itemID, sessionID string) func() {
+	if r.RetryTurns == nil {
+		return func() {}
+	}
+	if done := r.RetryTurns(itemID, string(harness.KindBuild), sessionID, sessionID == ""); done != nil {
+		return done
+	}
+	return func() {}
+}
+
+// unresumable is why the build session sid cannot be resumed for the
+// retry turn, "" when it can: no session id, or an adapter with no
+// resume. A sandboxed session resumes in its own pod and a host one in
+// its own CLAUDE_CONFIG_DIR or CODEX_HOME; when the transcript is gone
+// from there the resume store's copy is put back (RestoreTranscript) —
+// one that cannot be is left to the agent, whose refusal of the id is
+// the fresh fallback.
+func (r *Runner) unresumable(b *buildRun, sid string) string {
+	if sid == "" {
+		return "no session id"
+	}
+	adapter := ""
+	if r.Harness != nil {
+		adapter = r.Harness.Name()
+	}
+	if adapter != AdapterClaudeCode && adapter != AdapterCodex {
+		return "adapter " + adapter + " has no resume"
+	}
+	r.restoreTranscript(b, adapter, sid)
+	return ""
+}
+
+// restoreTranscript puts the resume store's kept transcript of sid back
+// in the turn's config dir when the session's own is not there.
+func (r *Runner) restoreTranscript(b *buildRun, adapter, sid string) {
+	if r.Resumes == nil {
+		return
+	}
+	dir := turnConfigDir(b, adapter)
+	if dir == "" || hasTranscript(dir, adapter, sid) {
+		return
+	}
+	rec, ok := r.Resumes.Lookup(b.item.ID)
+	if !ok || rec.SessionID != sid || rec.Transcript == "" {
+		return
+	}
+	if err := harness.RestoreTranscript(dir, adapter, b.dir, sid, rec.Transcript); err != nil {
+		r.logf("item %s: %v", b.label, err)
+		return
+	}
+	r.logf("item %s: restored the transcript of session %s", b.label, sid)
+}
+
+// turnConfigDir is where the build session's agent keeps its
+// transcripts: the pod's CLAUDE_CONFIG_DIR for a sandboxed session, else
+// the job's CLAUDE_CONFIG_DIR or CODEX_HOME; "" when the job names none.
+func turnConfigDir(b *buildRun, adapter string) string {
+	if adapter == AdapterClaudeCode && b.pod != nil && b.pod.Session != nil {
+		return b.pod.Session.ClaudeConfigDir()
+	}
+	key := "CLAUDE_CONFIG_DIR"
+	if adapter == AdapterCodex {
+		key = "CODEX_HOME"
+	}
+	for _, kv := range b.job.Env {
+		if k, v, ok := strings.Cut(kv, "="); ok && k == key {
+			return v
+		}
+	}
+	return ""
+}
+
+// hasTranscript says dir holds sid's transcript where the adapter's
+// resume reads it: projects/<workspace>/<sid>.jsonl for Claude Code,
+// sessions/YYYY/MM/DD/rollout-…-<sid>.jsonl for Codex.
+func hasTranscript(dir, adapter, sid string) bool {
+	pattern := filepath.Join(dir, "projects", "*", sid+".jsonl")
+	if adapter == AdapterCodex {
+		pattern = filepath.Join(dir, "sessions", "*", "*", "*", "rollout-*"+sid+"*")
+	}
+	m, _ := filepath.Glob(pattern)
+	return len(m) > 0
 }
 
 // usage is every run's time per step, summed over the runs (the first
