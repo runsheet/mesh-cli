@@ -1249,13 +1249,16 @@ func (f *Fake) repoFullName(repoID string) string {
 // before adr-005's amendment 2026-10-03, `holding.unclaimed[].until`);
 // `adopted`'s element type without goalId, directionId, sessionId and
 // alive when NoAdoptedFields (a platform before mesh-cli ADR-009's
-// amendment). Unsupported["__type"] refuses the probe.
+// amendment); `resumed` left out when UnknownFields["resumed"] (a
+// platform before goal a-failed-check-returns-to-the-session-that-built-it,
+// which refuses a heartbeat carrying it). Unsupported["__type"] refuses
+// the probe.
 func (f *Fake) heartbeatInputType() map[string]any {
 	field := func(name string) map[string]any {
 		return map[string]any{"name": name}
 	}
 	var fields []any
-	for _, name := range []string{"aggregateId", "namespace", "version", "running", "draining", "updateError", "limits", "scaling", "runtimes", "adapters", "holding", "commit", "adopted"} {
+	for _, name := range []string{"aggregateId", "namespace", "version", "running", "draining", "updateError", "limits", "scaling", "runtimes", "adapters", "holding", "commit", "adopted", "resumed"} {
 		if f.UnknownFields[name] {
 			continue
 		}

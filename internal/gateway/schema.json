@@ -1693,6 +1693,7 @@
         {"name": "planSevenDayPct", "type": "Float"},
         {"name": "planSevenDayResetsAt", "type": "Time"},
         {"name": "planStatus", "type": "String"},
+        {"name": "resumed", "type": "[ResumedSessionInput!]"},
         {"name": "running", "type": "Long"},
         {"name": "scaling", "type": "NodeScalingInput"},
         {"name": "version", "type": "String"}
@@ -5183,6 +5184,16 @@
         {"name": "aggregateId", "type": "UUID!"},
         {"name": "headSha", "type": "String!"},
         {"name": "namespace", "type": "Namespace!"}
+      ]
+    },
+    {
+      "name": "ResumedSessionInput",
+      "kind": "INPUT_OBJECT",
+      "fields": [
+        {"name": "fresh", "type": "Boolean!"},
+        {"name": "itemId", "type": "UUID!"},
+        {"name": "kind", "type": "String!"},
+        {"name": "sessionId", "type": "String"}
       ]
     },
     {
