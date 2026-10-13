@@ -135,6 +135,11 @@ type Runner struct {
 	// Notices say once per run that the platform takes no validation
 	// attestations, or no per-step minutes, yet (nil: every item).
 	Notices *ValidationNotices
+	// Resumes keeps each finished build's session id and transcript for
+	// the item's retry to resume (resumestore.go, goal
+	// a-failed-check-returns-to-the-session-that-built-it); nil keeps
+	// nothing.
+	Resumes *ResumeStore
 	Log     *log.Logger
 }
 
@@ -679,6 +684,9 @@ func (r *Runner) afterBuild(ctx context.Context, b *buildRun, result harness.Res
 		b.sessionID = result.SessionID
 		b.mu.Unlock()
 	}
+	// kept before the deferred RemoveSession takes the session dir, and
+	// with it the transcript a retry resumes from
+	r.keepResume(b)
 	if killedNote != "" {
 		b.report(ctx, killedNote)
 	}
