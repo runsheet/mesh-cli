@@ -179,7 +179,9 @@ func (g *Git) Authorize(ctx context.Context, spec WorkspaceSpec, tok *gateway.Gi
 		if _, err := g.run(ctx, dir, "git", "init", "--quiet"); err != nil {
 			return err
 		}
-		if _, err := g.run(ctx, dir, "git", "remote", "add", "origin", origin); err != nil {
+		if _, err := g.withStaleLockRetry(dir, func() (string, error) {
+			return g.run(ctx, dir, "git", "remote", "add", "origin", origin)
+		}); err != nil {
 			return err
 		}
 	} else if isWorktree(dir) {
@@ -189,7 +191,9 @@ func (g *Git) Authorize(ctx context.Context, spec WorkspaceSpec, tok *gateway.Gi
 		if err := g.sharedOrigin(ctx, g.lockRoot(spec.Root, dir), RepoLockKey(spec.Repo), dir, origin); err != nil {
 			return err
 		}
-	} else if _, err := g.run(ctx, dir, "git", "remote", "set-url", "origin", origin); err != nil {
+	} else if _, err := g.withStaleLockRetry(dir, func() (string, error) {
+		return g.run(ctx, dir, "git", "remote", "set-url", "origin", origin)
+	}); err != nil {
 		return err
 	}
 	return WriteCredentialHelper(ctx, dir, g.githubURL(), tok)
@@ -215,7 +219,9 @@ func (g *Git) sharedOrigin(ctx context.Context, root, key, dir, origin string) e
 	if cur, err := g.run(ctx, dir, "git", "remote", "get-url", "origin"); err == nil && strings.TrimSpace(cur) == origin {
 		return nil
 	}
-	_, err = g.run(ctx, dir, "git", "remote", "set-url", "origin", origin)
+	_, err = g.withStaleLockRetry(dir, func() (string, error) {
+		return g.run(ctx, dir, "git", "remote", "set-url", "origin", origin)
+	})
 	return err
 }
 
@@ -386,7 +392,9 @@ func (g *Git) syncSharedClone(ctx context.Context, root, key, repo, clone string
 		// writes nothing to the clone's one .git/config (as sharedOrigin)
 		if tokened {
 			if cur, err := g.run(ctx, clone, "git", "remote", "get-url", "origin"); err != nil || strings.TrimSpace(cur) != origin {
-				if _, err := g.run(ctx, clone, "git", "remote", "set-url", "origin", origin); err != nil {
+				if _, err := g.withStaleLockRetry(clone, func() (string, error) {
+					return g.run(ctx, clone, "git", "remote", "set-url", "origin", origin)
+				}); err != nil {
 					return err
 				}
 			}
@@ -444,7 +452,9 @@ func (g *Git) addWorktree(ctx context.Context, root, key, clone string, spec Wor
 	// enabled once per clone: read first, so a clone that has it writes
 	// nothing to its .git/config
 	if out, err := g.run(ctx, clone, "git", "config", "--local", "--type=bool", "--get", "extensions.worktreeConfig"); err != nil || strings.TrimSpace(out) != "true" {
-		if _, err := g.run(ctx, clone, "git", "config", "--local", "extensions.worktreeConfig", "true"); err != nil {
+		if _, err := g.withStaleLockRetry(clone, func() (string, error) {
+			return g.run(ctx, clone, "git", "config", "--local", "extensions.worktreeConfig", "true")
+		}); err != nil {
 			return "", err
 		}
 	}

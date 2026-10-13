@@ -1,6 +1,11 @@
 package node
 
-import "regexp"
+import (
+	"os"
+	"path/filepath"
+	"regexp"
+	"time"
+)
 
 // configLockRe matches git's "could not lock config file <path>: File
 // exists", the message IsGitLockFailure saw on a stale .git/config.lock in
@@ -46,4 +51,64 @@ func GitLockPath(msg string) (string, bool) {
 		return m[1], true
 	}
 	return "", false
+}
+
+// StaleGitLockAge is how long a git lock file sits untouched before
+// ClearStaleGitLock treats it as abandoned rather than contended: a
+// crashed or killed process's lock outlives it, and nothing else on the
+// node ever removes it (goal
+// a-shared-clone-is-never-written-by-two-sessions-at-once).
+const StaleGitLockAge = time.Minute
+
+// ClearStaleGitLock reads msg as git's lock-contention message (as
+// GitLockPath does) and, when the lock file it names — resolved
+// against dir when git named it relative to the command's own working
+// directory, as it does for a checkout's own ".git/config" (a worktree's
+// config.worktree is always named absolute) — is on disk and older than
+// maxAge as of now, removes it and logs through logf (nil, silent)
+// "removed stale git lock <path> (age <d>)", reporting true. A lock
+// younger than maxAge — a write genuinely still running — is left in
+// place and reported false, as is a message GitLockPath finds nothing
+// in, or a lock file already gone.
+func ClearStaleGitLock(dir, msg string, maxAge time.Duration, now time.Time, logf func(format string, args ...any)) bool {
+	path, ok := GitLockPath(msg)
+	if !ok {
+		return false
+	}
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(dir, path)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	age := now.Sub(info.ModTime())
+	if age < maxAge {
+		return false
+	}
+	if err := os.Remove(path); err != nil {
+		return false
+	}
+	if logf != nil {
+		logf("removed stale git lock %s (age %s)", path, age.Round(time.Second))
+	}
+	return true
+}
+
+// withStaleLockRetry runs fn — a write already wrapped by Git.run in dir,
+// so a lock-contention failure is text in its own err.Error() — and, on
+// such a failure, clears the lock when ClearStaleGitLock finds it stale
+// and runs fn once more. Any other failure, or a lock too young to clear
+// (a live write, not an abandoned one), returns fn's first result
+// unchanged, so a caller still releases it as an infrastructure hold
+// (ADR-024) just as before this retry existed.
+func (g *Git) withStaleLockRetry(dir string, fn func() (string, error)) (string, error) {
+	out, err := fn()
+	if err == nil || !IsGitLockFailure(err) {
+		return out, err
+	}
+	if !ClearStaleGitLock(dir, err.Error(), StaleGitLockAge, time.Now(), g.Logf) {
+		return out, err
+	}
+	return fn()
 }
