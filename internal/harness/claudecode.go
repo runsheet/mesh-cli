@@ -44,6 +44,11 @@ type ClaudeCode struct {
 	// Unit runs a host session outside the node process (ADR 008); nil is
 	// sessionunit.Default() — a systemd user scope, else detached.
 	Unit sessionunit.Unit
+	// DetachSandboxed runs a sandboxed Outlive job's agent detached
+	// (runDetached), so it outlives the node as a host session does
+	// (ADR 009). Off, a sandboxed session ends with its context as
+	// before: a node turns it on only once it adopts sandboxed sessions.
+	DetachSandboxed bool
 	// MeshBinary is the mesh executable a host build session's own
 	// finish tools run from (NodeWorkMCP, `mesh session-tools`); empty is
 	// this process's executable.
@@ -276,7 +281,7 @@ func (c *ClaudeCode) runHost(ctx context.Context, job Job, onProgress func(Progr
 	if err != nil {
 		return Result{}, fmt.Errorf("harness claude-code: start: %w", err)
 	}
-	st := job.state(unit, h, c.Name())
+	st := job.state(unit.Name(), h, c.Name())
 	end := &unitEnd{unit: unit, h: h}
 	if err := sessionunit.WriteState(dir, st); err != nil {
 		// never followed: the whole unit goes, as at any end, and the
@@ -301,6 +306,9 @@ func (c *ClaudeCode) Attach(ctx context.Context, dir string, onProgress func(Pro
 	st, err := sessionunit.ReadState(dir)
 	if err != nil {
 		return Result{}, fmt.Errorf("harness claude-code: attach: %w", err)
+	}
+	if st.Runner == sessionunit.SandboxRunner {
+		return c.attachSandboxed(ctx, dir, st, onProgress)
 	}
 	var unit sessionunit.Unit = sessionunit.Detached{}
 	if st.Runner == (sessionunit.SystemdScope{}).Name() {
@@ -350,7 +358,6 @@ func RemoveSession(workdir string) error {
 // stops it. Every other end kills the unit once the output is
 // read, and res.Killed is what that kill (or the stop before it) found.
 func (c *ClaudeCode) follow(ctx, parent context.Context, outlive bool, end *unitEnd, dir string, st *sessionunit.State, from int64, secrets []string, onProgress func(Progress), watch func(Event)) (res Result, detached bool, waitErr error, errBuf *bytes.Buffer, rawOut *capBuffer) {
-	unit, h := end.unit, end.h
 	errBuf, rawOut = &bytes.Buffer{}, &capBuffer{max: 64 << 10}
 	readCtx, stopReading := context.WithCancel(context.Background())
 	defer stopReading()
@@ -371,7 +378,7 @@ func (c *ClaudeCode) follow(ctx, parent context.Context, outlive bool, end *unit
 		case <-ended:
 		}
 	}()
-	alive := func() bool { return unit.Alive(h) }
+	alive := end.alive
 
 	var stderr io.Writer = errBuf
 	if c.Stderr != nil {
@@ -423,7 +430,7 @@ func (c *ClaudeCode) follow(ctx, parent context.Context, outlive bool, end *unit
 		<-errDone
 		return res, true, nil, errBuf, rawOut
 	}
-	waitErr = h.Wait(context.Background())
+	waitErr = end.wait()
 	<-errDone
 	// the whole output is read: a node that adopts after this reports
 	// nothing twice
@@ -437,18 +444,42 @@ func (c *ClaudeCode) follow(ctx, parent context.Context, outlive bool, end *unit
 
 // unitEnd is a session's unit killed once, whichever end comes first — a
 // cancel, the timeout, the hand-back's stop or the leader's own exit —
-// and what the kill found.
+// and what the kill found. A sandboxed session's unit is its agent's
+// container (agent): alive, waited on and stopped by name.
 type unitEnd struct {
 	unit   sessionunit.Unit
 	h      sessionunit.Handle
+	agent  *podAgent
 	once   sync.Once
 	killed []sessionunit.Process
 	err    error
 }
 
+// alive is whether the session still runs.
+func (e *unitEnd) alive() bool {
+	if e.agent != nil {
+		return e.agent.alive()
+	}
+	return e.unit.Alive(e.h)
+}
+
+// wait waits for the session's end and returns its exit as an error.
+func (e *unitEnd) wait() error {
+	if e.agent != nil {
+		return e.agent.wait()
+	}
+	return e.h.Wait(context.Background())
+}
+
 // kill kills the unit, or waits for the kill already under way.
 func (e *unitEnd) kill() {
-	e.once.Do(func() { e.killed, e.err = e.unit.Kill(e.h) })
+	e.once.Do(func() {
+		if e.agent != nil {
+			e.err = e.agent.stop()
+			return
+		}
+		e.killed, e.err = e.unit.Kill(e.h)
+	})
 }
 
 // ended puts the kill's report on res. A kill that failed is never the
@@ -458,7 +489,9 @@ func (c *ClaudeCode) ended(e *unitEnd, res Result) Result {
 	res.Killed = e.killed
 	if e.err != nil {
 		msg := fmt.Sprintf("kill unit %s: %v", e.h.UnitName, e.err)
-		if e.h.UnitName == "" {
+		if e.agent != nil {
+			msg = fmt.Sprintf("stop container %s: %v", e.agent.name, e.err)
+		} else if e.h.UnitName == "" {
 			msg = fmt.Sprintf("kill session %d: %v", e.h.PID, e.err)
 		}
 		if c.Stderr != nil {
@@ -543,7 +576,7 @@ func (m SessionMeta) subject(label string) string {
 
 // state is the job's state file on its start: identity, unit and
 // limits, and nothing of its prompt, environment or secrets.
-func (job Job) state(unit sessionunit.Unit, h sessionunit.Handle, harness string) sessionunit.State {
+func (job Job) state(runner string, h sessionunit.Handle, harness string) sessionunit.State {
 	acct := job.Meta.Account
 	if acct == "" {
 		for _, kv := range job.Env {
@@ -555,7 +588,7 @@ func (job Job) state(unit sessionunit.Unit, h sessionunit.Handle, harness string
 	return sessionunit.State{
 		NodeID: job.Meta.NodeID, ItemID: job.Meta.ItemID, GoalID: job.Meta.GoalID, DirectionID: job.Meta.DirectionID,
 		Attempt: job.Meta.Attempt, Kind: string(job.Kind), Label: job.Label, Model: job.Model, Account: acct,
-		Harness: harness, Runner: unit.Name(), PID: h.PID, Unit: h.UnitName, Workspace: job.Workspace,
+		Harness: harness, Runner: runner, PID: h.PID, Unit: h.UnitName, Workspace: job.Workspace,
 		StartedAt: time.Now().UTC(), TimeoutSeconds: int(job.Timeout / time.Second), MaxBudgetUSD: job.MaxBudgetUSD,
 		TempDirs: job.Meta.TempDirs,
 	}
@@ -591,6 +624,9 @@ func (c *ClaudeCode) runSandboxed(ctx context.Context, job Job, onProgress func(
 		if mcpPath, err = sess.WriteFile("mcp.json", cfg); err != nil {
 			return Result{}, fmt.Errorf("harness claude-code: mcp config: %w", err)
 		}
+	}
+	if c.DetachSandboxed && job.Outlive && job.Workspace != "" {
+		return c.runDetached(ctx, job, sess, mcpPath, onProgress)
 	}
 	if job.Timeout > 0 {
 		var cancel context.CancelFunc

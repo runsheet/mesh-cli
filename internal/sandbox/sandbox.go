@@ -517,6 +517,9 @@ func (s *Session) Detach() {
 	s.mu.Unlock()
 }
 
+// Runtime is the runtime the session's pods run on.
+func (s *Session) Runtime() Runtime { return s.sb.Runtime }
+
 // Pods are the session's pods still standing.
 func (s *Session) Pods() []Pod {
 	s.mu.Lock()
