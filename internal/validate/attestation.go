@@ -27,6 +27,9 @@ type StepResult struct {
 	Report    string     `json:"report,omitempty"`
 	TimedOut  bool       `json:"timedOut,omitempty"`
 	Artifacts []Artifact `json:"artifacts,omitempty"`
+	// EnvironmentKind is why the step failed on the node rather than on
+	// the code (EnvironmentKindOf): empty for a pass or a code failure.
+	EnvironmentKind EnvironmentKind `json:"environmentKind,omitempty"`
 }
 
 // Artifact is one digested file a step named on Step.Artifacts.

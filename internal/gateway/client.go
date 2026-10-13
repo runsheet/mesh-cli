@@ -4608,12 +4608,16 @@ type ValidationAttestation struct {
 }
 
 // ValidationCommand is one step of .runsheet/validate.yml as it ran:
-// the suite (the step's name), its command, exit code and duration.
+// the suite (the step's name), its command, exit code and duration, and
+// — for a step that failed on the node, not the code — its
+// environmentKind (step_timeout, tool_missing, credential_refused,
+// image_pull_refused; mesh-cli docs/adr/adr-030), left out otherwise.
 type ValidationCommand struct {
-	Suite      string `json:"suite"`
-	Command    string `json:"command"`
-	ExitCode   int    `json:"exitCode"`
-	DurationMs int64  `json:"durationMs"`
+	Suite           string `json:"suite"`
+	Command         string `json:"command"`
+	ExitCode        int    `json:"exitCode"`
+	DurationMs      int64  `json:"durationMs"`
+	EnvironmentKind string `json:"environmentKind,omitempty"`
 }
 
 // ValidationReport is one suite's raw test report (Go test JSON or

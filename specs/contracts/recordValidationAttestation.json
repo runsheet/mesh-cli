@@ -12,6 +12,13 @@
           "durationMs": 61000,
           "exitCode": 0,
           "suite": "unit"
+        },
+        {
+          "command": "npm run check",
+          "durationMs": 40,
+          "environmentKind": "tool_missing",
+          "exitCode": 127,
+          "suite": "types"
         }
       ],
       "commit": "commit-71a0008ac0678b43aff3c9228a7fbdf8919a17dd",

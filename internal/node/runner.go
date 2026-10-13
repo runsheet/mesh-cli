@@ -19,6 +19,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/harness"
 	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/tools"
+	"projectmesh.io/mesh-cli/internal/validate"
 )
 
 // Resolved is a work item with its goal, project and repo read.
@@ -957,8 +958,10 @@ func (r *Runner) fail(ctx context.Context, item gateway.WorkItem, cause error) e
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	r.logf("item %s: failed: %v", item.ID, cause)
-	if err := r.GW.FailWorkItem(ctx, item.ID, truncate(cause.Error(), 2000)); err != nil && !errors.Is(err, context.Canceled) {
+	// an environment failure's reason opens with its kind (adr-030)
+	reason := validate.Reason(cause)
+	r.logf("item %s: failed: %s", item.ID, reason)
+	if err := r.GW.FailWorkItem(ctx, item.ID, truncate(reason, 2000)); err != nil && !errors.Is(err, context.Canceled) {
 		r.logf("item %s: fail: %v", item.ID, err)
 	}
 	return cause

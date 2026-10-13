@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
+	"projectmesh.io/mesh-cli/internal/validate"
 )
 
 // GitHubURL is where a workspace's repos live; Git.GitHubURL overrides
@@ -455,6 +456,11 @@ func (e *PushCredentialError) Error() string {
 
 func (e *PushCredentialError) Unwrap() error { return e.Cause }
 
+// EnvironmentKind is credential_refused (docs/adr/adr-030).
+func (e *PushCredentialError) EnvironmentKind() validate.EnvironmentKind {
+	return validate.CredentialRefused
+}
+
 // TokenFacts is what may be said of an item token in a log or an error:
 // its access as the platform issued it, when it was issued and when it
 // expires — never the token.
@@ -485,16 +491,11 @@ func (f TokenFacts) String() string {
 	return fmt.Sprintf("access %s, issued %s, expires %s", access, expiryText(f.IssuedAt), expiryText(f.ExpiresAt))
 }
 
-// credentialRefusal is what git and gh print when GitHub will not let
-// the credential in: a private repo the token cannot see is "not
-// found", a token it does not honour a 401 or 403, and a read token
-// pushed with "Write access to repository not granted".
-var credentialRefusal = regexp.MustCompile(`(?i)repository not found|write access to repository not granted|could not read from remote repository|authentication failed|invalid username or password|(http|error:?|status:?)\s*40[13]\b|\b40[13] (forbidden|unauthorized)|permission to .* denied`)
-
 // IsCredentialRefusal reports whether err is git (or gh) refused by
-// GitHub on its credential rather than any other failure.
+// GitHub on its credential rather than any other failure — by its words,
+// validate.IsCredentialRefusal, the environment kind credential_refused.
 func IsCredentialRefusal(err error) bool {
-	return err != nil && credentialRefusal.MatchString(err.Error())
+	return err != nil && validate.IsCredentialRefusal(err.Error())
 }
 
 // CredentialError is a workspace GitHub refused on the item's token
@@ -513,6 +514,12 @@ func (e *CredentialError) Error() string {
 
 func (e *CredentialError) Unwrap() error { return e.Cause }
 
+// EnvironmentKind is credential_refused: the node's credential, never
+// the item's code (docs/adr/adr-030).
+func (e *CredentialError) EnvironmentKind() validate.EnvironmentKind {
+	return validate.CredentialRefused
+}
+
 // Reason is what the item is released with: the repo, the token's
 // expiry, how many tokens were refused and git's (scrubbed) answer —
 // never the token.
@@ -525,14 +532,17 @@ func (e *CredentialError) Reason() string {
 // unchanged) instead of failing it: the credential is the node's
 // condition, not the item's (mesh-specs trd §3). A platform that refuses
 // the release would leave the item held by a node that has stopped
-// working on it, so then the item is failed with the same reason. It
-// answers the error the item's session ends with.
+// working on it, so then the item is failed with the same reason. The
+// reason opens with its environment kind, `credential_refused: github
+// credential: …` (validate.WithKind, docs/adr/adr-030), for the platform
+// to park the item rather than re-plan it. It answers the error the
+// item's session ends with.
 func ReleaseOnCredential(ctx context.Context, gw Gateway, itemID, nodeID string, ce *CredentialError, logf func(string, ...any)) error {
 	cause := fmt.Errorf("workspace: %w", ce)
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	reason := truncate(ce.Reason(), 2000)
+	reason := truncate(validate.WithKind(validate.CredentialRefused, ce.Reason()), 2000)
 	err := gw.ReleaseWorkItem(ctx, itemID, nodeID, reason)
 	if err == nil {
 		logf("item %s: released, the node's condition: %s", itemID, reason)

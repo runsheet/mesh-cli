@@ -1866,6 +1866,42 @@ half is runsheet goal `an-attestation-is-about-a-commit-not-an-item-state`:
 until it is deployed every upload is refused, which the counts show.
 ADR-014 (its 2026-10-09 amendment) has the detail.
 
+### Credentials on fetch, push and pull
+
+Every git command the node runs for an item goes out on the item's own
+token as the platform (the broker) issues it at that moment, never on
+what the checkout's helper holds by then: the validator's fetches — the
+diff's base and a newer head — take `ItemCred.ForFetch`, the build's
+push `ItemCred.ForPush` (renewed near expiry, re-issued once on a
+refusal), each run under `OnItemToken`, the token by `GIT_CONFIG_COUNT`
+at the command's scope and never in the shared clone's config (ADR-001's
+and ADR-028's). The sandbox image is pulled on the platform's registry
+credential (Node image, above).
+
+### Environment failures
+
+A validation that fails on the node rather than on the code says so
+with an **environment kind**, a closed set the platform reads to park
+the item as an infrastructure hold instead of re-planning it (ADR-030;
+the platform half is runsheet goal
+`an-item-that-fails-on-its-environment-is-parked-not-replanned`):
+
+| kind | detected by |
+|------|-------------|
+| `step_timeout` | a step's exit 124: killed at its timeout (the host runner and the pod alike) |
+| `tool_missing` | a step's exit 127: the shell found no such command (`tsc` with no `node_modules`) |
+| `credential_refused` | git or gh refused by GitHub on the item's token (`Repository not found`, a 401/403, `Write access to repository not granted`) |
+| `image_pull_refused` | the registry refusing the sandbox image's pull: the node's own pull, or podman's exit 125 on a run that could not pull |
+
+The kind rides the attestation's command as `environmentKind`
+(`specs/contracts/recordValidationAttestation.json`) and opens every
+reason the node sends with it — `failWorkItem`'s
+(`tool_missing: validation failed: step check exited 127`),
+`releaseWorkItem`'s (`credential_refused: github credential: …`) and a
+self-update's `updateError`. node.log's `validation step <name> exited
+<code> in <ms>ms` ends ` (<kind>)`. Any other non-zero exit is a code
+failure and carries no kind.
+
 ### Tool results
 
 One `go test ./...` log or file dump can put 100 KB into a session's
@@ -2018,8 +2054,17 @@ ghcr.io/runsheet/mesh-node:<version>     # e.g. ghcr.io/runsheet/mesh-node:v0.4.
 It is built from [`images/node/Containerfile`](images/node/Containerfile),
 which the binary embeds: Debian with `git`, Go at go.mod's version, Node
 LTS with `npm` and corepack, Python 3 with `pip` and `uv`, `make` and a C
-toolchain, `gh`, `nftables`, `ca-certificates`, and the `claude` and
-`codex` CLIs, each at a version pinned in the file. The agents do not
+toolchain, a Postgres 17 server (`initdb`, `pg_ctl`, `psql`, linked into
+`/usr/local/bin` so a session's own PATH finds them; no cluster is made,
+a step starts its own) and Debian's headless `chromium` (amd64 and arm64
+alike), `gh`, `nftables`, `ca-certificates`, and the `claude` and
+`codex` CLIs, each at a version pinned in the file — what latchkey's
+conformance step, the console's `npm run check` and runsheet's
+integration shard need. `scripts/image-tools-check.sh` proves them
+inside the image (`npm ci && npx tsc --version` in a fixture package, a
+Postgres server answering `select 1`, `chromium --headless --version`),
+run by `go test -tags e2e ./internal/sandbox -run TestImageToolsE2E`
+on the image built from the embedded Containerfile. The agents do not
 update themselves (`DISABLE_AUTOUPDATER=1`, codex's
 `check_for_update_on_startup = false`, and a root-owned install), the
 user is the non-root `mesh`, and no secret is in it: a session is given
@@ -2057,8 +2102,14 @@ version. Nothing is built in its place unless node.yaml says so.
 
 `mesh node update <the running version>` ensures the running version's
 image and nothing else — how a node set to `build` makes its first one.
-While the repository is private so is the package: `podman login
-ghcr.io` with a token that can read it, or `sandbox.image: build`. To
+**The pull is on a registry credential from the platform**: the node asks
+`nodeRegistryToken(registry)` for the image's registry (`ghcr.io`) and
+pulls with `--authfile` on a temporary `auth.json`, removed once the
+pull returns, never in an image or a build context. A platform without
+the read, or with no credential for the registry, leaves the pull on
+podman's own login (`podman login ghcr.io`, or `sandbox.image: build`)
+as before. A pull the registry refuses is the update's `updateError`,
+opening `image_pull_refused: ` (below). To
 build it by hand:
 
 ```sh

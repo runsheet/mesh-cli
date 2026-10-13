@@ -90,7 +90,8 @@ func TestBuildPushRefusedFailsTheItemWithNoFinish(t *testing.T) {
 		t.Fatalf("failWorkItem called %d times, want 1", len(fails))
 	}
 	msg, _ := fails[0].Input["error"].(string)
-	if !strings.HasPrefix(msg, "push mesh/") || !strings.Contains(msg, "Write access to repository not granted") {
-		t.Fatalf("failWorkItem error = %q, want it to name the push", msg)
+	// a credential refusal opens with its environment kind (ADR-030)
+	if !strings.HasPrefix(msg, "credential_refused: push mesh/") || !strings.Contains(msg, "Write access to repository not granted") {
+		t.Fatalf("failWorkItem error = %q, want it to name the push and its kind", msg)
 	}
 }
