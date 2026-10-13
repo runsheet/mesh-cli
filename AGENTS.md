@@ -241,7 +241,21 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   following mesh-specs ADR 017), each worktree's credential helper its
   own `git config --worktree` (`writeHelper`,
   `extensions.worktreeConfig` on the clone, whose config holds no
-  token), a rework reusing its worktree and keeping unpushed commits,
+  token), and nothing else of a session's in the shared clone's
+  `.git/config` (ADR-030,
+  `docs/adr/adr-030-a-session-never-writes-the-shared-clones-config.md`):
+  `Identify`'s `user.name`/`user.email`/`core.hooksPath` go
+  `--worktree` too, the item token rides each command's `GIT_CONFIG_*`
+  env (`withGitToken`, `OnItemToken`), origin and
+  `extensions.worktreeConfig` are read first and written once per clone
+  under the repo lock (`sharedOrigin`, `syncSharedClone`,
+  `addWorktree`), a git lock older than a minute is removed — `removed
+  stale git lock <path> (age <d>)` — and the write retried once
+  (`ClearStaleGitLock`, `withStaleLockRetry`), and a wait on the repo
+  lock logs `repo lock <key>: waiting on <goal>/<seq> (pid <n>, held
+  <d>)` (`WithLockHolder`, `SetRepoLockLogf`);
+  `TestConcurrentSessionsOnOneRepoE2E` (`-tags e2e`) starts two sessions
+  of one repo at once twenty times over, a rework reusing its worktree and keeping unpushed commits,
   a full clone from before the layout used in place until swept, and
   `Git.RemoveWorkspace` the sweep's remover — a worktree by `git
   worktree remove --force` + `git worktree prune` under the repo's
