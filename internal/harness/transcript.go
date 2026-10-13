@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -120,4 +121,63 @@ func TranscriptPath(configDir, adapter, workspace, sessionID string) string {
 		}
 	}
 	return ""
+}
+
+// TranscriptSource is where a session's own transcript lies under its
+// configDir after it ran, the file RestoreTranscript puts back: Claude
+// Code's `<configDir>/projects/<encoded-workspace>/<sessionID>.jsonl`, or
+// Codex's rollout file naming sessionID under `<configDir>/sessions/`. An
+// error when there is none.
+func TranscriptSource(configDir, adapter, workspace, sessionID string) (string, error) {
+	if configDir == "" || sessionID == "" {
+		return "", errors.New("harness: transcript: no config dir or session id")
+	}
+	switch adapter {
+	case "codex":
+		matches, _ := filepath.Glob(filepath.Join(configDir, "sessions", "*", "*", "*", "rollout-*"+sessionID+"*.jsonl*"))
+		for _, m := range matches {
+			if codexRolloutName.MatchString(filepath.Base(m)) {
+				return m, nil
+			}
+		}
+		return "", fmt.Errorf("harness: transcript: no codex rollout for %s", sessionID)
+	case "claude-code":
+		slug, err := projectSlug(workspace)
+		if err != nil {
+			return "", fmt.Errorf("harness: transcript: %w", err)
+		}
+		p := filepath.Join(configDir, "projects", slug, sessionID+".jsonl")
+		if _, err := os.Stat(p); err != nil {
+			return "", fmt.Errorf("harness: transcript: %w", err)
+		}
+		return p, nil
+	}
+	return "", fmt.Errorf("harness: transcript: unknown adapter %q", adapter)
+}
+
+// ErrUnknownSession is a resume the agent refused because it has no
+// session of that id: Claude Code's `No conversation found with session
+// ID`, Codex's missing rollout.
+var ErrUnknownSession = errors.New("harness: no such session to resume")
+
+// unknownSessionWords are what the agents say when a --resume names a
+// session they cannot find.
+var unknownSessionWords = []string{"no conversation found", "no rollout found", "thread not found", "session not found", "no such session"}
+
+// IsUnknownSession says err is a resume refused for an unknown session:
+// ErrUnknownSession, or an agent's own words for it.
+func IsUnknownSession(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrUnknownSession) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	for _, w := range unknownSessionWords {
+		if strings.Contains(msg, w) {
+			return true
+		}
+	}
+	return false
 }
