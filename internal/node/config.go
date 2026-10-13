@@ -401,6 +401,11 @@ const (
 	DefaultOverloadPerCore = 1.0
 )
 
+// DefaultStarveAfter is host.starve_after's default: a build silent
+// this long on an overloaded host is stopped and released, a third of
+// the platform's 45-minute stall.
+const DefaultStarveAfter = 15 * time.Minute
+
 // HostConfig is node.yaml's `host:` block: the load-per-core and
 // package-temperature thresholds past which the scaler judges the
 // machine hot and backs capacity off (ADR-004's amendment,
@@ -420,6 +425,11 @@ type HostConfig struct {
 	// true, in addition to the load-per-core check. Left out or zero,
 	// Overloaded never judges by CPU pressure alone.
 	OverloadCPUSomeAvg60 float64 `yaml:"overload_cpu_some_avg60,omitempty"`
+	// StarveAfter is host.starve_after: how long a build may write
+	// nothing to its stream before, on an overloaded host, the node
+	// stops it and releases its item (starve.go). Default
+	// DefaultStarveAfter, well inside the platform's 45-minute stall.
+	StarveAfter time.Duration `yaml:"starve_after,omitempty"`
 }
 
 // Effective is h with each zero field at its default; OverloadCPUSomeAvg60
@@ -433,6 +443,9 @@ func (h HostConfig) Effective() HostConfig {
 	}
 	if h.OverloadPerCore == 0 {
 		h.OverloadPerCore = DefaultOverloadPerCore
+	}
+	if h.StarveAfter == 0 {
+		h.StarveAfter = DefaultStarveAfter
 	}
 	return h
 }
@@ -450,6 +463,9 @@ func (h HostConfig) Validate() error {
 	}
 	if h.OverloadCPUSomeAvg60 < 0 {
 		return errors.New("host.overload_cpu_some_avg60: cannot be negative")
+	}
+	if h.StarveAfter < 0 {
+		return errors.New("host.starve_after: cannot be negative")
 	}
 	return nil
 }

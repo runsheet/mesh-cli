@@ -343,7 +343,19 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   else a bearer naming `$MESH_TOKEN` (`BearerEnvVar`), never a token in
   a file (ADR-025, Remote).
   **A draining node claims nothing** (`Loop.Drain`): see the drain
-  below. node.yaml's `claim: {unmerged_per_repo: N}` (`ClaimConfig`,
+  below. **Capacity counts the live sessions** (ADR-029,
+  `internal/node/liveproc.go`): `Loop.Live` (`LiveProbe{Systemctl,
+  Root, Find, SweepEvery}`) counts the build sessions alive on the host
+  each tick — active `mesh-session-build-*` scopes, else
+  `FoundSessions` of kind build whose pid is alive — and `free =
+  Capacity() − max(Running(), live)`, orphans included, logged once per
+  change `capacity: <n> live agent sessions (<m> orphans) against
+  capacity <c>; claiming nothing` (`Loop.LiveSessions()`); every
+  `SweepEvery` ticks (default 5) an untracked live build whose item is
+  terminal, unknown, or another node's while a state file of ours names
+  it is stopped (`judgeItem`, `stopScope`, `FoundSession.Kill`), logged
+  `capacity: orphan: stopped <unit> (…)`; a sibling node's scope on the
+  same host is neither counted nor stopped. node.yaml's `claim: {unmerged_per_repo: N}` (`ClaimConfig`,
   re-read each tick, `Loop.UnmergedPerRepo`; absent or 0 is no limit
   and no read) holds fresh claims for a repo with N items in `review`,
   counted from the node's own listing, never `RepoIndex.reviewPile`;
@@ -699,7 +711,27 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   slot (to max(min, 1); a fixed node's 1) and `claimReady` is skipped;
   quiet, it climbs one slot per `HostRecoverEvery` back to the plan
   figure, `Scaling.Host` carrying the reading; the scalers keep only
-  the free-memory cap (`low memory`).
+  the free-memory cap (`low memory`). **An overloaded host starves a
+  session, and the item is not blamed** (ADR-029,
+  `docs/adr/adr-029-a-session-the-node-gives-up-on-is-stopped.md`):
+  `MachineReading.Overloaded(HostConfig)` is true past node.yaml's
+  `host.overload_per_core` (default 1.0, `PerCore()` = load1 ÷ cores)
+  or, when set, `host.overload_cpu_some_avg60` (`/proc/pressure/cpu`),
+  its reason `host overloaded: load/core 1.44 (138.2 on 96 cores), cpu
+  some avg60 71%`, and the heartbeat's `scaling.host` carries `perCore`
+  and `cpuSomeAvg60` when the schema takes them; a build whose stream
+  (the last event passed on, or `output.jsonl`'s last write) has said
+  nothing for `host.starve_after` (default 15m, `HostConfig.StarveAfter`,
+  reloaded and logged `host: starve_after <old> → <new>`) while the host
+  reads overloaded at that tick (`internal/node/starve.go`,
+  `checkStarved` after `checkClaim`; `Runner.Machine`, `Runner.Host`) is
+  cancelled with `ErrStarved` (an `ErrStopSession`: unit stopped and
+  killed, pod closed, slot freed) and `afterStarved` sends
+  `ReleaseWorkItem` noted `stalled: <reason>` — a release, no attempt
+  charged — logged `item <label>: stalled on an overloaded host;
+  released: <reason>`; a silent build on a host not overloaded runs on.
+  A claim lost while the host is overloaded names it in `afterLost`'s
+  line, `claim lost (item is ready; host overloaded: …)`.
 - **Held goals are a record** (`internal/node/held.go`, goal
   a-refused-plan-is-released-not-replanned): `HeldGoal{GoalID, Slug,
   Org, Kind, Reason, Since, Until}` is a goal this node holds off
@@ -1144,7 +1176,20 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   whose subject is no longer the node's is `FoundSession.Kill`ed and
   logged the same way; the directory is
   removed when `Run` returns — unless the job is `Outlive`: see the
-  adoption.
+  adoption. **A build the node gives up on is stopped, not detached**
+  (ADR-029, `internal/node/lost.go`): every `ProgressEvery` it reads its
+  item back (`lostByRead`: terminal, cancelled, ready/pending, or
+  claimed/running on another node id) and heartbeats only while held,
+  a heartbeat refused as not held (`lostRefusal`) losing it too; the
+  session's ctx is cancelled with `ErrClaimLost`, which `Is`
+  `harness.ErrStopSession`, so `ClaudeCode.follow` kills an `Outlive`
+  unit (`harness.StopRequested`) where a plain cancel still detaches;
+  `afterLost` logs `item <label>: claim lost (<why>); session stopped`
+  and sends nothing, and the slot frees as `RunItem`/`AdoptItem`
+  return, a pod by its deferred `SessionPod.Close`
+  (`gatewaytest.Fake.SetItem` sets a row as the platform would). A
+  build starved on an overloaded host is stopped the same way and
+  released (`ErrStarved`, see the hot host under the scale).
 - **The sandbox** (`internal/sandbox/`, mesh-specs ADR 007,
   `docs/adr/adr-007-the-sandbox-on-the-node.md`): with a sandbox,
   `harness.ClaudeCode` runs `claude` in the session's own rootless
