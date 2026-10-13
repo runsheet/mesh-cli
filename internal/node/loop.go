@@ -191,6 +191,10 @@ type Loop struct {
 	// work root; ReopenClaims, mesh-cli ADR 009 Claims). Empty records
 	// nothing. A record is not a session: the drain does not wait on it.
 	ClaimsDir string
+	// Live counts the build sessions alive on the host, orphans
+	// included, against the capacity and sweeps the orphans
+	// (liveproc.go). Nil counts the tracked builds alone.
+	Live *LiveProbe
 
 	mu sync.Mutex
 	// answer is the platform's last NodeAnswer (TakeAnswer); restrict is
@@ -1125,9 +1129,12 @@ func (l *Loop) Tick(ctx context.Context) {
 		l.rebaseRequested(ctx)
 		l.planRequested(ctx)
 		l.researchDue(ctx)
-		free := l.Capacity() - l.Running()
+		// the slots taken are the tracked builds or, when more run on
+		// the host, the live agent sessions, orphans included (LiveProbe)
+		inUse := l.inUse(ctx)
+		free := l.Capacity() - inUse
 		if p.mode == pacePaced {
-			free = pacedFree(free, l.Capacity(), l.Running())
+			free = pacedFree(free, l.Capacity(), inUse)
 		}
 		// a ranged node at its min builds only urgent and high goals
 		claimRank := gateway.PriorityRank("low")
@@ -1136,7 +1143,7 @@ func (l *Loop) Tick(ctx context.Context) {
 		}
 		// the urgent-only slots (the reserve at the end of an api key's
 		// day) are not for normal and low work
-		normalFree := min(free, l.Capacity()-l.urgentOnly()-l.Running())
+		normalFree := min(free, l.Capacity()-l.urgentOnly()-inUse)
 		// node.yaml's takes: cap on build bounds the free slots inside
 		// the capacity; claimReady passes over what it holds back
 		if room, ok := l.kindRoom(harness.KindBuild); ok && room < free {
