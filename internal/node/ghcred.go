@@ -379,19 +379,54 @@ func (c *ItemCred) ForPush(ctx context.Context) (*gateway.GitHubToken, error) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	var refreshErr error
-	if GitHubTokenNeedsRefresh(c.tok) {
-		tok, err := c.gw.IssueItemRepoToken(ctx, c.itemID, c.nodeID)
-		if err == nil {
-			c.tok = tok
-		} else {
-			refreshErr = fmt.Errorf("refresh github token: %w", err) // the token held may yet serve
-		}
-	}
+	refreshErr := c.renewLocked(ctx)
 	if err := c.ws.Authorize(ctx, c.spec, c.tok); err != nil {
 		return c.tok, errors.Join(refreshErr, fmt.Errorf("github token for the push: %w", err))
 	}
 	return c.tok, refreshErr
+}
+
+// ForFetch is the item's token for a fetch the node runs itself — the
+// validator's diff base and the newer head it answers — asked of the
+// platform again when it is near expiry, as ForPush's is. It writes
+// nothing: the caller runs git under OnItemToken, so the fetch never
+// leans on whatever the checkout's helper holds by then. Nil on the
+// fallback.
+func (c *ItemCred) ForFetch(ctx context.Context) (*gateway.GitHubToken, error) {
+	if c == nil {
+		return nil, nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.tok, c.renewLocked(ctx)
+}
+
+// renewLocked asks the platform for a fresh token when the one held is
+// near expiry; a refusal is answered and the token held kept, since it
+// may yet serve. c.mu is held.
+func (c *ItemCred) renewLocked(ctx context.Context) error {
+	if !GitHubTokenNeedsRefresh(c.tok) {
+		return nil
+	}
+	tok, err := c.gw.IssueItemRepoToken(ctx, c.itemID, c.nodeID)
+	if err != nil {
+		return fmt.Errorf("refresh github token: %w", err)
+	}
+	c.tok = tok
+	return nil
+}
+
+// OnItemToken is ctx with every git command ws runs under it answering
+// GitHub with tok alone, by the environment (withGitToken), never a
+// config file: a push or fetch goes out on the token the platform issued
+// whatever the checkout's helper or the shared clone holds (mesh ADR
+// 017). A nil tok, the fallback, is ctx.
+func OnItemToken(ctx context.Context, ws Workspacer, tok *gateway.GitHubToken) context.Context {
+	base := GitHubURL
+	if g, ok := ws.(*Git); ok {
+		base = g.githubURL()
+	}
+	return withGitToken(ctx, base, tok)
 }
 
 // PushCredentialError is a build's push GitHub refused on the item's

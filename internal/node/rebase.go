@@ -480,7 +480,7 @@ func (r *Rebaser) validator() validator {
 func (r *Rebaser) validateRebased(ctx context.Context, rb *rebaseRun, acct *SessionAccount, head string) {
 	vr := r.validator()
 	t := validationTarget{item: rb.item, dir: rb.dir, base: rb.base, prefix: "rebase " + rb.label, label: rb.label + " rebase",
-		job: rb.job, pod: rb.podSession(), session: rb.sid, redact: acct.RedactErr, report: rb.report}
+		job: rb.job, pod: rb.podSession(), session: rb.sid, redact: acct.RedactErr, report: rb.report, cred: rb.cred}
 	note := func(err error) {
 		msg := "validation: " + acct.RedactErr(err).Error() + "; no attestation for " + short(head)
 		r.logf("%s: %s", t.prefix, msg)

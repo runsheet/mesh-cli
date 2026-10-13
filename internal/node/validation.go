@@ -84,6 +84,9 @@ type validationTarget struct {
 	session func() string
 	redact  func(error) error
 	report  func(ctx context.Context, note string)
+	// cred is the item's token, every fetch the validator runs going out
+	// on it (ForFetch, OnItemToken); nil on the fallback.
+	cred *ItemCred
 }
 
 func (r *Runner) validator() validator {
@@ -93,7 +96,7 @@ func (r *Runner) validator() validator {
 // target is the build as its validation needs it.
 func (b *buildRun) target() validationTarget {
 	return validationTarget{item: b.item, dir: b.dir, base: b.spec.BaseRef, prefix: "item " + b.label, label: b.label,
-		job: b.job, pod: b.podSession(), session: b.session, redact: b.acct.RedactErr, report: func(ctx context.Context, note string) { b.report(ctx, note) }}
+		job: b.job, pod: b.podSession(), session: b.session, redact: b.acct.RedactErr, report: func(ctx context.Context, note string) { b.report(ctx, note) }, cred: b.cred}
 }
 
 // startValidation reads the checkout's validate.yml and readies the
@@ -228,7 +231,7 @@ func (vr validator) run(ctx context.Context, t validationTarget, v *buildValidat
 	if err != nil {
 		return validate.Attestation{}, err
 	}
-	changed, err := vr.WS.ChangedPaths(ctx, t.dir, t.base)
+	changed, err := vr.changedPaths(ctx, t)
 	if err != nil {
 		return validate.Attestation{}, fmt.Errorf("changed paths: %w", err)
 	}
@@ -424,7 +427,7 @@ func (vr validator) answerNewerHead(ctx context.Context, t validationTarget, v *
 			vr.logf("%s: validation: back to %s: %v", t.prefix, back, err)
 		}
 	}()
-	if err := vr.headFetcher().FetchHead(ctx, t.dir, branch, head); err != nil {
+	if err := vr.fetchHead(ctx, t, branch, head); err != nil {
 		refused("fetch: " + t.redact(err).Error())
 		return
 	}
@@ -459,6 +462,32 @@ func (vr validator) headFetcher() headFetcher {
 		return f
 	}
 	return &Git{}
+}
+
+// changedPaths is the diff against t's base, the base fetched on the
+// item's token.
+func (vr validator) changedPaths(ctx context.Context, t validationTarget) ([]string, error) {
+	return vr.WS.ChangedPaths(vr.onItemToken(ctx, t), t.dir, t.base)
+}
+
+// fetchHead fetches origin's branch and head into t's checkout on the
+// item's token.
+func (vr validator) fetchHead(ctx context.Context, t validationTarget, branch, head string) error {
+	return vr.headFetcher().FetchHead(vr.onItemToken(ctx, t), t.dir, branch, head)
+}
+
+// onItemToken is ctx with the validator's git on the item's token, asked
+// of the platform when near expiry (ItemCred.ForFetch): the fetches of
+// the diff's base and of a newer head go out on it, never on what the
+// checkout's helper holds by then — an evaluation's checkout, a rebase's
+// or a token since expired. A token that cannot be renewed is logged and
+// the one held used; the fallback is ctx.
+func (vr validator) onItemToken(ctx context.Context, t validationTarget) context.Context {
+	tok, err := t.cred.ForFetch(ctx)
+	if err != nil {
+		vr.logf("%s: validation: %v", t.prefix, err)
+	}
+	return OnItemToken(ctx, vr.WS, tok)
 }
 
 // gitPosition is where the checkout is: its branch's name, else (a
