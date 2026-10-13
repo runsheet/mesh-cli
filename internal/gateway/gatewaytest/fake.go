@@ -110,6 +110,11 @@ type Fake struct {
 	// researchGitHubToken answer, keyed by direction id and held by its
 	// own research claim (researchNodeId).
 	ResearchGitHubTokens map[string][]map[string]any
+	// RegistryTokens maps a registry host to the nodeRegistryToken
+	// answer ({registry, username, token, expiresAt}); a host with none
+	// answers null. Unsupported["nodeRegistryToken"] is an older
+	// platform.
+	RegistryTokens map[string]map[string]any
 	// TokenNodeID is the node the caller's credential names; the platform
 	// hands an item's token only to the node holding its claim. Empty
 	// skips the check.
@@ -599,6 +604,9 @@ var (
 	// query($id: UUID!) { planGitHubToken(goalId: $id) } /
 	// researchGitHubToken(directionId: $id)
 	githubTokenRe = regexp.MustCompile(`\{\s*(planGitHubToken|researchGitHubToken)\s*\(\s*(\w+):\s*\$id\s*\)\s*\}`)
+	// the node's registry credential: query($registry: String!) {
+	// nodeRegistryToken(registry: $registry) }
+	registryTokenRe = regexp.MustCompile(`\{\s*nodeRegistryToken\s*\(\s*registry:\s*\$registry\s*\)\s*\}`)
 )
 
 func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
@@ -991,6 +999,10 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			f.sessionRead(w, m[1], m[2], m[3], req.Variables)
+			return
+		}
+		if registryTokenRe.MatchString(q) {
+			f.registryToken(w, req.Variables, bearer)
 			return
 		}
 		if m := githubTokenRe.FindStringSubmatch(q); m != nil {
@@ -2497,4 +2509,28 @@ var actorMutations = map[string]string{
 	"finishWorkItem":         "FinishWorkItemInput",
 	"evaluateWorkItem":       "EvaluateWorkItemInput",
 	"planGoal":               "PlanGoalInput",
+}
+
+// registryToken answers nodeRegistryToken(registry): the schema's
+// "Cannot query field" when Unsupported names it, a refusal from Refuse,
+// else RegistryTokens' row for the registry, or null; every ask is in
+// Calls.
+func (f *Fake) registryToken(w http.ResponseWriter, vars map[string]any, bearer string) {
+	const field = "nodeRegistryToken"
+	registry, _ := vars["registry"].(string)
+	if f.Unsupported[field] {
+		writeErrors(w, 200, fmt.Sprintf("Cannot query field %q on type \"Query\".", field))
+		return
+	}
+	f.Calls = append(f.Calls, Call{Name: field, Input: map[string]any{"registry": registry}, At: time.Now(), Bearer: bearer})
+	row := f.RegistryTokens[registry]
+	if msg := f.Refuse[field]; msg != "" {
+		writeErrors(w, 200, msg)
+		return
+	}
+	var answer any
+	if row != nil {
+		answer = row
+	}
+	writeData(w, map[string]any{field: answer})
 }

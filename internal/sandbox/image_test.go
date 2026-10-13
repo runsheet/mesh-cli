@@ -33,12 +33,26 @@ type fakeRuntime struct {
 	pushErr        bool
 	pushedAuth     []byte
 	pushedAuthFile string
+	// pulledAuth is a pull's --authfile contents, read during the pull,
+	// and pulledAuthFile its path.
+	pulledAuth     []byte
+	pulledAuthFile string
 }
 
 func (f *fakeRuntime) run(_ context.Context, name string, args ...string) ([]byte, error) {
 	f.calls = append(f.calls, name+" "+strings.Join(args, " "))
 	switch args[0] {
 	case "pull":
+		for i, a := range args {
+			if a == "--authfile" {
+				f.pulledAuthFile = args[i+1]
+				b, err := os.ReadFile(args[i+1])
+				if err != nil {
+					return nil, err
+				}
+				f.pulledAuth = b
+			}
+		}
 		if f.pullErr {
 			return []byte("Trying to pull...\nError: initializing source: unauthorized"), errors.New("exit status 125")
 		}
@@ -127,7 +141,7 @@ func TestImageRefIsTheNodeVersion(t *testing.T) {
 
 func TestEnsureImagePulls(t *testing.T) {
 	f := &fakeRuntime{images: []string{"ghcr.io/runsheet/mesh-node:v1.2.0"}}
-	img, err := EnsureImage(context.Background(), f.run, "ghcr.io/runsheet/mesh-node:v1.2.0")
+	img, err := EnsureImage(context.Background(), f.run, "ghcr.io/runsheet/mesh-node:v1.2.0", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +163,7 @@ func TestEnsureImagePulls(t *testing.T) {
 // nothing is pruned.
 func TestEnsureImageFailedPullIsTheError(t *testing.T) {
 	f := &fakeRuntime{pullErr: true, images: []string{"ghcr.io/runsheet/mesh-node:v1.1.0"}}
-	_, err := EnsureImage(context.Background(), f.run, "ghcr.io/runsheet/mesh-node:v1.2.0")
+	_, err := EnsureImage(context.Background(), f.run, "ghcr.io/runsheet/mesh-node:v1.2.0", nil)
 	if err == nil || !strings.Contains(err.Error(), "pull failed: Error: initializing source: unauthorized") {
 		t.Fatalf("err = %v; want the pull's reason", err)
 	}
@@ -293,7 +307,7 @@ func TestEnsureImagePrunesOlderTags(t *testing.T) {
 		},
 		rmiFail: map[string]bool{"ghcr.io/runsheet/mesh-node:dev": true},
 	}
-	img, err := EnsureImage(context.Background(), f.run, "ghcr.io/runsheet/mesh-node:v1.2.0", "ghcr.io/runsheet/mesh-node:v1.1.0")
+	img, err := EnsureImage(context.Background(), f.run, "ghcr.io/runsheet/mesh-node:v1.2.0", nil, "ghcr.io/runsheet/mesh-node:v1.1.0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -503,5 +517,107 @@ func TestPushImageFailedPushIsTheError(t *testing.T) {
 	}
 	if len(f.calls) != 0 {
 		t.Errorf("PushImage with no token ran %q; want nothing", f.calls)
+	}
+}
+
+// authOf decodes an auth.json's login to host as user:secret.
+func authOf(t *testing.T, b []byte, host string) string {
+	t.Helper()
+	var doc struct {
+		Auths map[string]struct {
+			Auth string `json:"auth"`
+		} `json:"auths"`
+	}
+	if err := json.Unmarshal(b, &doc); err != nil {
+		t.Fatalf("auth.json %s: %v", b, err)
+	}
+	raw, err := base64.StdEncoding.DecodeString(doc.Auths[host].Auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
+// The node image is pulled on the broker's credential for its registry:
+// the broker is asked for ghcr.io, the pull carries --authfile whose
+// auth.json logs in to ghcr.io with it, and the file is gone once the
+// pull returns — after a pull that succeeds and after one that fails
+// (ADR-007's amendment 2026-10-13).
+func TestEnsureImagePullsOnTheBrokersCredential(t *testing.T) {
+	const ref = "ghcr.io/runsheet/mesh-node:dev"
+	for _, fail := range []bool{false, true} {
+		var asked []string
+		broker := func(_ context.Context, registry string) (*RegistryCredential, error) {
+			asked = append(asked, registry)
+			return &RegistryCredential{Secret: "ghs_packages_read"}, nil
+		}
+		f := &fakeRuntime{pullErr: fail}
+		_, err := EnsureImage(context.Background(), f.run, ref, broker)
+		if fail != (err != nil) {
+			t.Fatalf("fail=%v: err = %v", fail, err)
+		}
+		if !slices.Equal(asked, []string{"ghcr.io"}) {
+			t.Errorf("fail=%v: broker asked %q; want ghcr.io once", fail, asked)
+		}
+		p := f.called("pull")
+		if len(p) != 1 || p[0] != "podman pull --authfile "+f.pulledAuthFile+" "+ref {
+			t.Fatalf("fail=%v: pulls = %q", fail, p)
+		}
+		if got := authOf(t, f.pulledAuth, "ghcr.io"); got != "x-access-token:ghs_packages_read" {
+			t.Errorf("fail=%v: auth.json logs in as %q", fail, got)
+		}
+		if _, err := os.Stat(f.pulledAuthFile); !os.IsNotExist(err) {
+			t.Errorf("fail=%v: %s left after the pull (%v)", fail, f.pulledAuthFile, err)
+		}
+		if _, err := os.Stat(filepath.Dir(f.pulledAuthFile)); !os.IsNotExist(err) {
+			t.Errorf("fail=%v: the auth dir is left after the pull (%v)", fail, err)
+		}
+	}
+}
+
+// A credential with its own user logs in as it; a broker with none, or
+// no broker, pulls with no --authfile, as a public image needs; a
+// broker's error is named should the pull then fail.
+func TestEnsureImagePullWithoutACredential(t *testing.T) {
+	f := &fakeRuntime{}
+	broker := func(context.Context, string) (*RegistryCredential, error) {
+		return &RegistryCredential{Username: "robot", Secret: "s3cret"}, nil
+	}
+	if _, err := EnsureImage(context.Background(), f.run, "registry.example.com:5000/node:7", broker); err != nil {
+		t.Fatal(err)
+	}
+	if got := authOf(t, f.pulledAuth, "registry.example.com:5000"); got != "robot:s3cret" {
+		t.Errorf("auth = %q", got)
+	}
+
+	for _, b := range []RegistryBroker{nil, func(context.Context, string) (*RegistryCredential, error) { return nil, nil }} {
+		f := &fakeRuntime{}
+		if _, err := EnsureImage(context.Background(), f.run, "docker.io/library/alpine:3", b); err != nil {
+			t.Fatal(err)
+		}
+		if p := f.called("pull"); len(p) != 1 || p[0] != "podman pull docker.io/library/alpine:3" {
+			t.Errorf("pulls = %q; want no --authfile", p)
+		}
+	}
+
+	f = &fakeRuntime{pullErr: true}
+	_, err := EnsureImage(context.Background(), f.run, "ghcr.io/runsheet/mesh-node:dev",
+		func(context.Context, string) (*RegistryCredential, error) { return nil, errors.New("gateway down") })
+	if err == nil || !strings.Contains(err.Error(), "unauthorized (registry credential: gateway down)") {
+		t.Errorf("err = %v", err)
+	}
+}
+
+func TestRegistryHost(t *testing.T) {
+	for ref, want := range map[string]string{
+		"ghcr.io/runsheet/mesh-node:dev":   "ghcr.io",
+		"localhost/node:1":                 "localhost",
+		"registry.example.com:5000/node:7": "registry.example.com:5000",
+		"library/alpine:3":                 "docker.io",
+		"alpine":                           "docker.io",
+	} {
+		if got := RegistryHost(ref); got != want {
+			t.Errorf("RegistryHost(%q) = %q; want %q", ref, got, want)
+		}
 	}
 }

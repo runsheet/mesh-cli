@@ -1,5 +1,5 @@
 ---
-summary: How mesh-cli implements mesh-specs ADR 007 — the node image carrying Postgres and headless Chromium beside Go, Node and Python (scripts/image-tools-check.sh run in it by TestImageToolsE2E), internal/sandbox's Runtime (Podman, a test Fake) runs claude in a per-session pod with two mounts, an allow-listed env passed to podman by name, node.yaml's flat sandbox keys (mode, cpus, memory, pids, services_cpus, services_memory, registries, image), a mode left out following `podman --version` while an explicit on fails closed at start, a limit kill (OOM, pids, the runtime's timeout backstop) released as the node's condition with the heartbeat's reason, service sidecars started and health-checked in the session's pod before the agent (a required one failing releases the claim, an optional one is a note), the node image (images/node/Containerfile, embedded) pulled for the new version before a self-update or `mesh node update` drains — a failed pull an updateError with no drain and no swap, `sandbox.image: build` building it locally — the pod mapping the host user onto the image's declared user (`--userns keep-id:uid=<image uid>,gid=<image gid>`, 1000 when it declares none; podman 4.3 or later), a session's HOME, pod, containers and volumes removed on every way it ends — `Session.Close` sure of the HOME (RemoveAll, then u+w, then `podman unshare rm -rf`) and logging what it could not remove — and a node start sweeping (`sandbox.Sweep`) the mesh-home dirs no running container mounts, the mesh pods with no running container and the exited mesh containers an earlier process left, and channel mode and Codex not yet sandboxed.
+summary: How mesh-cli implements mesh-specs ADR 007 — the node image carrying Postgres and headless Chromium beside Go, Node and Python (scripts/image-tools-check.sh run in it by TestImageToolsE2E), internal/sandbox's Runtime (Podman, a test Fake) runs claude in a per-session pod with two mounts, an allow-listed env passed to podman by name, node.yaml's flat sandbox keys (mode, cpus, memory, pids, services_cpus, services_memory, registries, image), a mode left out following `podman --version` while an explicit on fails closed at start, a limit kill (OOM, pids, the runtime's timeout backstop) released as the node's condition with the heartbeat's reason, service sidecars started and health-checked in the session's pod before the agent (a required one failing releases the claim, an optional one is a note), the node image (images/node/Containerfile, embedded) pulled for the new version before a self-update or `mesh node update` drains — a failed pull an updateError with no drain and no swap, the pull on a registry credential the platform brokers (`nodeRegistryToken`) written to a temporary auth.json passed by --authfile and removed after, `sandbox.image: build` building it locally — the pod mapping the host user onto the image's declared user (`--userns keep-id:uid=<image uid>,gid=<image gid>`, 1000 when it declares none; podman 4.3 or later), a session's HOME, pod, containers and volumes removed on every way it ends — `Session.Close` sure of the HOME (RemoveAll, then u+w, then `podman unshare rm -rf`) and logging what it could not remove — and a node start sweeping (`sandbox.Sweep`) the mesh-home dirs no running container mounts, the mesh pods with no running container and the exited mesh containers an earlier process left, and channel mode and Codex not yet sandboxed.
 status: accepted
 ---
 
@@ -336,3 +336,59 @@ it exited 1 on untouched main and every item failed on its environment.
   (docs/e2e-sandbox.md, Tools check). The image's own build checks
   `initdb`/`pg_ctl`/`psql --version` and `chromium` by its package, as
   it does nftables: the arm64 build runs under qemu-user.
+
+## Amendment 2026-10-13: the image is pulled on a registry credential from the broker
+
+`ghcr.io/runsheet/mesh-node` refuses anonymous pulls (mesh-cli ADR-002's
+amendment, "The package is private while the repository is"), and the
+node pulled it with a bare `podman pull <ref>`: on goal budget-pause the
+pull of `ghcr.io/runsheet/mesh-node:dev` was `unauthorized`, so a
+sandboxed node could not ensure its image unless its operator had run
+`podman login ghcr.io` by hand. The pull is now authenticated the way
+`PushImage`'s push already is:
+
+- **The credential comes from the broker, the platform.**
+  `sandbox.EnsureImage(ctx, run, ref, broker, keep...)` asks its
+  `RegistryBroker` for `RegistryHost(ref)` — the ref's first component
+  when it names a host, else `docker.io`. On the node the broker is
+  `node.RegistryBrokerOf(gateway.Client)`, which reads
+  `nodeRegistryToken(registry: String!): Map` →
+  `{registry, username, token, expiresAt}`
+  (`gateway.Client.NodeRegistryToken`): for `ghcr.io`, a GitHub App
+  installation token with `packages: read` on the node image's package,
+  issued to the node the bearer names. No item is held when an update
+  ensures its image, so the item's `issueItemRepoToken` (contents on one
+  repo) is not the source; nor is any token the node already has —
+  neither the gateway's schema nor `specs/contracts` carried a registry
+  credential before this. `SandboxConfig.EnsureImage` takes the broker;
+  `ensureNodeImage` (`mesh node update`, `mesh node upgrade`, the
+  self-update's `Loop.Image`) passes `RegistryBrokerOf` on
+  `platformClient()`.
+- **On an auth file of its own.** The credential is written as a
+  containers `auth.json` logging in to that registry (`registryAuthAs`;
+  user `x-access-token` when the broker names none) in a fresh temporary
+  directory, passed by `podman pull --authfile <file> <ref>`, and the
+  directory removed once the pull returns, whether it pulled or failed.
+  It is never in the image, a build context, the operator's
+  `~/.config/containers/auth.json` or a session's HOME.
+- **An image that needs no credential still pulls.** A broker with none
+  for the registry (a null answer), a platform without
+  `nodeRegistryToken` (`IsUnsupported`), a nil broker (no
+  `~/.mesh/token` to ask on) — each pulls with no `--authfile`, on
+  podman's own login, as before. A broker that errs is not the pull's
+  failure: the pull goes as podman's login has it, and if that fails its
+  error ends `(registry credential: <the broker's error>)`.
+- **A session's pod does not pull the node image on a credential.** The
+  agent and validation containers run with `--pull missing`
+  (`internal/sandbox/podman.go`), so they use the image the update
+  ensured; a node whose image is missing at session start still pulls it
+  anonymously there and fails as before. Service sidecars pull only
+  public images (mesh-specs ADR 007, Services), anonymously.
+- **The platform half.** `nodeRegistryToken` is a platform field this
+  change reads before the platform serves it; until it does every pull
+  goes as before, so the rollout is not a flag day. The fake gateway
+  answers it from `RegistryTokens` (`gatewaytest`).
+  `TestEnsureImagePullsOnTheBrokersCredential` (`internal/sandbox`) and
+  `TestEnsureImagePullsOnTheGatewaysRegistryToken` (`internal/node`)
+  prove the `--authfile`, its login and its removal after a pull that
+  succeeds and one that fails.

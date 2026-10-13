@@ -199,7 +199,7 @@ func TestEnsureImageE2E(t *testing.T) {
 	case "none":
 		keep = ""
 	}
-	img, err := cfg.EnsureImage(ctx, sandbox.ExecRunner, "dev", keep)
+	img, err := cfg.EnsureImage(ctx, sandbox.ExecRunner, "dev", keep, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -3562,6 +3562,55 @@ func (c *Client) ResearchGitHubTokens(ctx context.Context, directionID, nodeID s
 	return c.sessionGitHubTokens(ctx, "researchGitHubToken", "directionId", directionID)
 }
 
+// RegistryToken is a credential that reads images from one registry,
+// as nodeRegistryToken answers it.
+type RegistryToken struct {
+	// Registry is the host the credential logs in to (`ghcr.io`).
+	Registry string
+	// Username is the login's user; "" is a GitHub token's
+	// x-access-token.
+	Username string
+	Token    string
+	// ExpiresAt is zero when the platform names no expiry.
+	ExpiresAt time.Time
+}
+
+// NodeRegistryToken asks the platform for a credential this node pulls
+// images from registry with — for ghcr.io, a GitHub App installation
+// token with packages:read on the node image's package (mesh-cli
+// ADR-007's amendment 2026-10-13). The node is known from the bearer;
+// nodeRegistryToken(registry: String!): Map answers {registry, username,
+// token, expiresAt}, null or no token when it has none for the registry
+// (nil, nil here). A platform without the field answers IsUnsupported.
+func (c *Client) NodeRegistryToken(ctx context.Context, registry string) (*RegistryToken, error) {
+	const field = "nodeRegistryToken"
+	var out map[string]any
+	q := `query($registry: String!) { nodeRegistryToken(registry: $registry) }`
+	if err := c.Query(ctx, q, map[string]any{"registry": registry}, &out); err != nil {
+		var ge *Error
+		if errors.As(err, &ge) && (unknownOperation(ge.Message, field) || schemaMismatch(ge.Message, field)) {
+			return nil, &Error{Message: ge.Message, Unsupported: true}
+		}
+		return nil, err
+	}
+	row, _ := out[field].(map[string]any)
+	if row == nil || str(row, "token") == "" {
+		return nil, nil
+	}
+	tok := &RegistryToken{Registry: str(row, "registry"), Username: str(row, "username"), Token: str(row, "token")}
+	if tok.Registry == "" {
+		tok.Registry = registry
+	}
+	if e := str(row, "expiresAt"); e != "" {
+		exp, err := time.Parse(time.RFC3339Nano, e)
+		if err != nil {
+			return nil, fmt.Errorf("gateway: %s: expiresAt %q: %w", field, e, err)
+		}
+		tok.ExpiresAt = exp
+	}
+	return tok, nil
+}
+
 // sessionGitHubTokens runs the claim-time GitHub token read for a plan
 // or research session: field(arg: $id) answers a list of rows, one per
 // repo — {token, expiresAt, repository} — decoded whole into
