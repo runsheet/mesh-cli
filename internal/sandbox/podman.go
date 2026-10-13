@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -191,6 +192,7 @@ func agentArgs(mode string, pod Pod, spec AgentSpec, mounts []Mount) []string {
 		"--cap-drop", "all", "--security-opt", "no-new-privileges",
 		"--pull", "missing", "--unsetenv-all"}
 	args = append(args, LimitArgs(spec.Limits)...)
+	args = append(args, limitEnvArgs(spec.Limits, spec.Env)...)
 	if spec.TimeoutSeconds > 0 {
 		args = append(args, "--timeout", strconv.Itoa(spec.TimeoutSeconds))
 	}
@@ -220,6 +222,7 @@ func SidecarRunArgs(pod Pod, spec SidecarSpec) []string {
 	args := []string{"run", "-d", "--pod", pod.Name, "--name", SidecarName(pod, spec.Name),
 		"--security-opt", "no-new-privileges", "--pull", "missing"}
 	args = append(args, LimitArgs(spec.Limits)...)
+	args = append(args, limitEnvArgs(spec.Limits, spec.Env)...)
 	args = append(args, envArgs(spec.Env)...)
 	args = append(args, spec.Image)
 	return append(args, spec.Command...)
@@ -237,6 +240,48 @@ func LimitArgs(l Limits) []string {
 	}
 	if l.Pids > 0 {
 		args = append(args, "--pids-limit", strconv.Itoa(l.Pids))
+	}
+	return args
+}
+
+// LimitEnv tells the tools inside the container about --cpus, so Go,
+// OpenMP and make fan out to the limit rather than the host's own core
+// count: GOMAXPROCS, OMP_NUM_THREADS (GNU nproc honours it) and
+// MAKEFLAGS=-j<n>, all at ceil(l.CPUs), at least 1; none when CPUs is
+// not set.
+func LimitEnv(l Limits) []string {
+	if l.CPUs <= 0 {
+		return nil
+	}
+	n := int(math.Ceil(l.CPUs))
+	if n < 1 {
+		n = 1
+	}
+	v := strconv.Itoa(n)
+	return []string{"GOMAXPROCS=" + v, "OMP_NUM_THREADS=" + v, "MAKEFLAGS=-j" + v}
+}
+
+// limitEnvArgs is LimitEnv(l) as `--env NAME=value` (not envArgs: these
+// are not secrets and are not in podman's own environment, so the value
+// goes straight on the command line), skipping a name env already sets
+// explicitly — the item's or repo's own value wins over the derived one.
+func limitEnvArgs(l Limits, env []string) []string {
+	derived := LimitEnv(l)
+	if len(derived) == 0 {
+		return nil
+	}
+	set := make(map[string]bool, len(env))
+	for _, kv := range env {
+		name, _, _ := strings.Cut(kv, "=")
+		set[name] = true
+	}
+	var args []string
+	for _, kv := range derived {
+		name, _, _ := strings.Cut(kv, "=")
+		if set[name] {
+			continue
+		}
+		args = append(args, "--env", kv)
 	}
 	return args
 }
