@@ -330,7 +330,7 @@ func TestLoadConfigHost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := cfg.Host.Effective(); got != (HostConfig{LoadPerCoreMax: 1.5, PackageTempMaxC: 90, OverloadPerCore: 1}) {
+	if got := cfg.Host.Effective(); got != (HostConfig{LoadPerCoreMax: 1.5, PackageTempMaxC: 90, OverloadPerCore: 1, StarveAfter: 15 * time.Minute}) {
 		t.Fatalf("no host: section, defaults %+v, want 1.5/90/1", got)
 	}
 
@@ -339,17 +339,22 @@ func TestLoadConfigHost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := cfg.Host.Effective(); got != (HostConfig{LoadPerCoreMax: 2, PackageTempMaxC: 85, OverloadPerCore: 1}) {
+	if got := cfg.Host.Effective(); got != (HostConfig{LoadPerCoreMax: 2, PackageTempMaxC: 85, OverloadPerCore: 1, StarveAfter: 15 * time.Minute}) {
 		t.Fatalf("host: {2, 85} loaded as %+v, want 2/85/1", got)
 	}
 
-	writeNodeYAML(t, "slug: mini\nname: mini\ncapacity: 1\nhost: {overload_per_core: 1.2, overload_cpu_some_avg60: 70}\n")
+	writeNodeYAML(t, "slug: mini\nname: mini\ncapacity: 1\nhost: {overload_per_core: 1.2, overload_cpu_some_avg60: 70, starve_after: 10m}\n")
 	cfg, err = LoadConfig()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := cfg.Host.Effective(); got != (HostConfig{LoadPerCoreMax: 1.5, PackageTempMaxC: 90, OverloadPerCore: 1.2, OverloadCPUSomeAvg60: 70}) {
+	if got := cfg.Host.Effective(); got != (HostConfig{LoadPerCoreMax: 1.5, PackageTempMaxC: 90, OverloadPerCore: 1.2, OverloadCPUSomeAvg60: 70, StarveAfter: 10 * time.Minute}) {
 		t.Fatalf("host: {overload_per_core: 1.2, overload_cpu_some_avg60: 70} loaded as %+v", got)
+	}
+
+	writeNodeYAML(t, "slug: mini\nname: mini\ncapacity: 1\nhost: {starve_after: -1m}\n")
+	if _, err := LoadConfig(); err == nil || !strings.Contains(err.Error(), "host.starve_after") {
+		t.Fatalf("host.starve_after: -1m err = %v, want a refusal naming it", err)
 	}
 
 	writeNodeYAML(t, "slug: mini\nname: mini\ncapacity: 1\nhost: {load_per_core_max: -1}\n")
