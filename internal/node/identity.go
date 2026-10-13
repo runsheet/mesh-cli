@@ -107,10 +107,14 @@ func (id Identity) Sandbox(dir string) sandbox.GitIdentity {
 func HooksDir(dir string) string { return filepath.Clean(dir) + ".hooks" }
 
 // Identify implements Workspacer: the checkout's own config names the
-// agent (`git config --local user.name/user.email`) and its
-// core.hooksPath is HooksDir, whose prepare-commit-msg adds each
-// pairer's Co-Authored-By unless the message carries it already. With
-// no pairer the hook adds nothing.
+// agent (user.name/user.email) and its core.hooksPath is HooksDir,
+// whose prepare-commit-msg adds each pairer's Co-Authored-By unless the
+// message carries it already. With no pairer the hook adds nothing. A
+// full clone's go in its .git/config (--local); a worktree's local
+// config is its shared clone's — one file every item of the repo reads,
+// whose lock two sessions raced for and whose core.hooksPath the last
+// writer won for all — so a worktree's go in its own config.worktree
+// (--worktree), as its credential helper does (writeHelper).
 func (g *Git) Identify(ctx context.Context, dir string, id Identity) error {
 	hooks := HooksDir(dir)
 	if err := os.MkdirAll(hooks, 0o755); err != nil {
@@ -119,8 +123,15 @@ func (g *Git) Identify(ctx context.Context, dir string, id Identity) error {
 	if err := os.WriteFile(filepath.Join(hooks, "prepare-commit-msg"), []byte(prepareCommitMsg(id.Pairers)), 0o755); err != nil {
 		return fmt.Errorf("identify: %w", err)
 	}
+	scope := "--local"
+	if isWorktree(dir) {
+		if err := ensureWorktreeConfig(ctx, dir); err != nil {
+			return fmt.Errorf("identify: %w", err)
+		}
+		scope = "--worktree"
+	}
 	for _, kv := range [][2]string{{"user.name", id.Name}, {"user.email", id.Email}, {"core.hooksPath", hooks}} {
-		cmd := exec.CommandContext(ctx, "git", "config", "--local", kv[0], kv[1])
+		cmd := exec.CommandContext(ctx, "git", "config", scope, kv[0], kv[1])
 		cmd.Dir = dir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("git config %s: %w: %s", kv[0], err, strings.TrimSpace(string(out)))
