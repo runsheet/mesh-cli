@@ -145,6 +145,29 @@ func (f *Fake) AgentState(_ context.Context, name string) (AgentState, error) {
 	return AgentState{}, fmt.Errorf("%w: %s", ErrNoAgent, name)
 }
 
+// EndAgent ends a detached agent as its own exit would: the container
+// stops running and AgentState answers exit from then on.
+func (f *Fake) EndAgent(name string, exit Exit) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i, c := range f.Running {
+		if c.Name == name {
+			f.Running[i].Running = false
+		}
+	}
+	if f.States == nil {
+		f.States = map[string]AgentState{}
+	}
+	f.States[name] = AgentState{Status: "exited", Exit: exit}
+}
+
+// StoppedAgents are the names StopAgent was asked to stop so far.
+func (f *Fake) StoppedAgents() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.Stopped...)
+}
+
 // StopAgent implements Runtime: the container stops, exiting 143 as
 // SIGTERM ends it, unless States already names how it ended.
 func (f *Fake) StopAgent(_ context.Context, name string) error {
