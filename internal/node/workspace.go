@@ -182,10 +182,41 @@ func (g *Git) Authorize(ctx context.Context, spec WorkspaceSpec, tok *gateway.Gi
 		if _, err := g.run(ctx, dir, "git", "remote", "add", "origin", origin); err != nil {
 			return err
 		}
+	} else if isWorktree(dir) {
+		// a worktree's origin is its shared clone's: one .git/config
+		// every item of the repo reads and writes, so it is changed only
+		// under the repo's lock, and only when it differs (sharedOrigin)
+		if err := g.sharedOrigin(ctx, g.lockRoot(spec.Root, dir), RepoLockKey(spec.Repo), dir, origin); err != nil {
+			return err
+		}
 	} else if _, err := g.run(ctx, dir, "git", "remote", "set-url", "origin", origin); err != nil {
 		return err
 	}
 	return WriteCredentialHelper(ctx, dir, g.githubURL(), tok)
+}
+
+// sharedOrigin makes the shared clone's origin, seen from the worktree
+// dir, the repo's https URL. Two items of one repo authorize at once on
+// a busy node, and an unlocked `git remote set-url` from each raced for
+// the clone's .git/config.lock — "could not lock config file … File
+// exists" failed every item of the loser's goal (latchkey,
+// 2026-10-12). The URL is read first, which takes no lock and is all
+// the steady state needs; a change is made under the repo's lock and
+// read again inside it, so one writer sets it and the rest see it set.
+func (g *Git) sharedOrigin(ctx context.Context, root, key, dir, origin string) error {
+	if cur, err := g.run(ctx, dir, "git", "remote", "get-url", "origin"); err == nil && strings.TrimSpace(cur) == origin {
+		return nil
+	}
+	unlock, err := lockRepo(ctx, root, key)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if cur, err := g.run(ctx, dir, "git", "remote", "get-url", "origin"); err == nil && strings.TrimSpace(cur) == origin {
+		return nil
+	}
+	_, err = g.run(ctx, dir, "git", "remote", "set-url", "origin", origin)
+	return err
 }
 
 func (g *Git) run(ctx context.Context, dir string, name string, args ...string) (string, error) {
