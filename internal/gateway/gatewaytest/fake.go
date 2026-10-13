@@ -2255,6 +2255,19 @@ func (f *Fake) SetItem(itemID string, fields map[string]any) {
 	}
 }
 
+// SetNode sets fields on a registered node's row as the platform would
+// on its own — a desired version asked for while the node runs — with
+// no mutation recorded in Calls.
+func (f *Fake) SetNode(nodeID string, fields map[string]any) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if node := f.Nodes[nodeID]; node != nil {
+		for k, v := range fields {
+			node[k] = v
+		}
+	}
+}
+
 // HeldBy marks the item running on nodeID: held by another node, as a
 // pair finds it (mesh-cli ADR-023, Pairing).
 func (f *Fake) HeldBy(itemID, nodeID string) {
