@@ -176,6 +176,9 @@ type Client struct {
 	// `adopted` element type was last found to take goalId, directionId,
 	// sessionId and alive (see takesAdoptedFields).
 	adoptedFieldsSchema holdingProbe
+	// resumedSchema is whether the gateway's HeartbeatNodeInput was last
+	// found to have `resumed` (see takesResumed).
+	resumedSchema holdingProbe
 	// attestationSchema is whether the gateway's Mutation was last found
 	// to have recordValidationAttestation (see takesAttestations).
 	attestationSchema attestationProbe
@@ -2205,6 +2208,13 @@ type HeartbeatExtras struct {
 	// before it rather than starting them (mesh-specs ADR 008, mesh-cli
 	// ADR 009); none sends no key.
 	Adopted []AdoptedSession
+	// Resumed are the build sessions a retry took up again after a failed
+	// check — resumed, or started fresh with the same message when the
+	// old one could not be (goal a-failed-check-returns-to-the-session-
+	// that-built-it), so the platform's busy counts include them. None
+	// sends no key; set, it is sent only when the gateway's
+	// HeartbeatNodeInput has `resumed` (takesResumed).
+	Resumed []ResumedSession
 	// Holding is the node's holding decision as data — why ready work
 	// waits, not just a log line (runsheet goal
 	// node-says-why-work-waits): each account's status, reset time and
@@ -2323,6 +2333,17 @@ type AdoptedSession struct {
 	DirectionID string    `json:"directionId,omitempty"`
 	SessionID   string    `json:"sessionId,omitempty"`
 	Alive       bool      `json:"alive"`
+}
+
+// ResumedSession is one entry of the heartbeat's `resumed`: the item a
+// retry is building, its kind, the agent's session id the retry took up
+// (or the fresh one's) and Fresh, whether the old session could not be
+// resumed and the retry started a new one with the same message.
+type ResumedSession struct {
+	ItemID    string `json:"itemId"`
+	Kind      string `json:"kind"`
+	SessionID string `json:"sessionId"`
+	Fresh     bool   `json:"fresh"`
 }
 
 // SandboxInfo is the heartbeat's `sandbox`: the mode (on or off), the
@@ -2502,6 +2523,9 @@ func (c *Client) HeartbeatNode(ctx context.Context, nodeID, version string, runn
 			} else {
 				in["adopted"] = adoptedWithoutNewFields(x.Adopted)
 			}
+		}
+		if len(x.Resumed) > 0 && c.takesResumed(ctx) {
+			in["resumed"] = x.Resumed
 		}
 		if x.Holding != nil && c.takesHolding(ctx) {
 			h := *x.Holding
@@ -3140,6 +3164,39 @@ func (c *Client) takesAdoptedFields(ctx context.Context) bool {
 					p.takes = true
 				}
 			}
+		}
+	}
+	return p.takes
+}
+
+// takesResumed says whether the gateway's HeartbeatNodeInput has
+// `resumed` — asked once by introspection and kept for
+// ScalingProbeEvery, as takesAdoptedFields is (ADR-004: the node must
+// not send a field the platform does not accept). A failed probe is a
+// no, kept as long, and the heartbeat goes without the key.
+func (c *Client) takesResumed(ctx context.Context) bool {
+	p := &c.resumedSchema
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := c.now()
+	if !p.at.IsZero() && now.Sub(p.at) < ScalingProbeEvery {
+		return p.takes
+	}
+	var out struct {
+		Type *struct {
+			InputFields []struct {
+				Name string `json:"name"`
+			} `json:"inputFields"`
+		} `json:"__type"`
+	}
+	p.at, p.takes = now, false
+	q := `{ __type(name: "HeartbeatNodeInput") { inputFields { name } } }`
+	if err := c.Query(ctx, q, nil, &out); err != nil || out.Type == nil {
+		return false
+	}
+	for _, f := range out.Type.InputFields {
+		if f.Name == "resumed" {
+			p.takes = true
 		}
 	}
 	return p.takes
