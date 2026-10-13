@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"projectmesh.io/mesh-cli/internal/harness"
+	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/sessionunit"
 )
 
@@ -32,8 +33,12 @@ type LiveProbe struct {
 	// Root is the work root the sessions' state files are under.
 	Root string
 	// Find lists the sessions under Root naming one of ids
-	// (FindSessions when nil).
+	// (FindSessionsIn on Sandbox when nil).
 	Find func(root string, ids []string) ([]FoundSession, error)
+	// Sandbox is the node's sandbox: a build running detached in its pod
+	// has no scope and no pid, and is counted by its container among
+	// the found sessions, with systemd or without (nil: none).
+	Sandbox *sandbox.Sandbox
 	// SweepEvery is the ticks between orphan sweeps
 	// (DefaultLiveSweepEvery when 0 or less).
 	SweepEvery int
@@ -178,6 +183,24 @@ func (p *LiveProbe) list(ids []string) ([]liveSession, error) {
 			}
 			out = append(out, liveSession{Item: subject, Unit: unit})
 		}
+		if p.Sandbox == nil {
+			return out, nil
+		}
+		// a sandboxed build runs in no scope: its container, once
+		found, err := p.find(ids)
+		if err != nil {
+			return nil, err
+		}
+		for i := range found {
+			s := found[i]
+			if !s.Sandboxed() || harness.Kind(s.State.Kind) != harness.KindBuild || !s.Alive() {
+				continue
+			}
+			if slices.ContainsFunc(out, func(o liveSession) bool { return o.Item == s.State.ItemID }) {
+				continue
+			}
+			out = append(out, liveSession{Item: s.State.ItemID, Found: &s})
+		}
 		return out, nil
 	}
 	found, err := p.find(ids)
@@ -196,11 +219,16 @@ func (p *LiveProbe) list(ids []string) ([]liveSession, error) {
 }
 
 func (p *LiveProbe) find(ids []string) ([]FoundSession, error) {
-	find := p.Find
-	if find == nil {
-		find = FindSessions
+	if p.Find == nil {
+		return FindSessionsIn(p.Root, ids, p.Sandbox)
 	}
-	return find(p.Root, ids)
+	found, err := p.Find(p.Root, ids)
+	for i := range found {
+		if found[i].Sandbox == nil {
+			found[i].Sandbox = p.Sandbox
+		}
+	}
+	return found, err
 }
 
 // sweepOrphans looks each untracked live session up on the platform and

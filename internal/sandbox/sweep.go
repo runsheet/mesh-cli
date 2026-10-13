@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -41,7 +42,28 @@ func (r SweepResult) Line() string {
 // fails sweeps nothing — without it, a HOME in use cannot be told from a
 // stale one; a removal that fails is in the error and the sweep goes on.
 func Sweep(ctx context.Context, rt Runtime, tempDir string) (SweepResult, error) {
+	return SweepKeeping(ctx, rt, tempDir, Keep{})
+}
+
+// Keep is what a sweep leaves whatever state it is in: the pods (and
+// every container in them) and HOMEs of sessions the node is about to
+// adopt, whose agent may have exited while no node ran — its exit is
+// still to be read, its HOME still to validate in.
+type Keep struct {
+	Pods  []string
+	Homes []string
+}
+
+// SweepKeeping is Sweep leaving keep's pods, their containers and its
+// HOMEs alone; a kept HOME counts as in use.
+func SweepKeeping(ctx context.Context, rt Runtime, tempDir string, keep Keep) (SweepResult, error) {
 	var res SweepResult
+	keptPod := map[string]bool{}
+	for _, p := range keep.Pods {
+		if p != "" {
+			keptPod[p] = true
+		}
+	}
 	if tempDir == "" {
 		tempDir = os.TempDir()
 	}
@@ -72,7 +94,7 @@ func Sweep(ctx context.Context, rt Runtime, tempDir string) (SweepResult, error)
 	}
 	var errs []error
 	for _, c := range containers {
-		if c.Running || c.Infra || c.Name == "" {
+		if c.Running || c.Infra || c.Name == "" || keptPod[c.Pod] {
 			continue
 		}
 		if !isMesh(c.Name, c.Labels) && !meshPod[c.Pod] {
@@ -85,7 +107,7 @@ func Sweep(ctx context.Context, rt Runtime, tempDir string) (SweepResult, error)
 		res.Containers++
 	}
 	for _, p := range pods {
-		if !meshPod[p.Name] || live[p.Name] {
+		if !meshPod[p.Name] || live[p.Name] || keptPod[p.Name] {
 			continue
 		}
 		if err := rt.Remove(ctx, Pod{Name: p.Name}); err != nil {
@@ -108,7 +130,7 @@ func Sweep(ctx context.Context, rt Runtime, tempDir string) (SweepResult, error)
 		if info, err := e.Info(); err != nil || !ownedByNode(info) {
 			continue
 		}
-		if mountedUnder(home, mounted) {
+		if mountedUnder(home, mounted) || slices.ContainsFunc(keep.Homes, func(k string) bool { return k != "" && filepath.Clean(k) == home }) {
 			res.HomesInUse++
 			continue
 		}

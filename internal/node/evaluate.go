@@ -356,7 +356,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	// does not try again while that holds; a missing optional one is in
 	// the verdict's notes.
 	pod, err := OpenSessionPod(ctx, e.Sandbox, dir, job.Label, harness.KindEvaluate, sandbox.GitIdentity{}, e.logf)
-	defer pod.Close()
+	defer pod.Close() // nothing, once the harness detached the session (Session.Detach)
 	if err != nil {
 		return fmt.Errorf("services: %w", err)
 	}
@@ -846,7 +846,7 @@ func (e *Evaluator) AdoptEvaluation(ctx context.Context, item gateway.WorkItem, 
 	if item.Status != "evaluating" || item.NodeID != s.State.NodeID {
 		e.logf("item %s: adopted evaluation is no longer this node's (%s); stopped", item.ID, item.Status)
 		stopFound(e.logf, "item "+item.ID, s)
-		return harness.RemoveSession(s.State.Workspace)
+		return s.Remove()
 	}
 	res, err := Resolve(ctx, e.GW, item)
 	if err != nil {
@@ -855,7 +855,7 @@ func (e *Evaluator) AdoptEvaluation(ctx context.Context, item gateway.WorkItem, 
 	at, ok := e.Harness.(harness.Attacher)
 	if !ok {
 		stopFound(e.logf, "item "+item.ID, s)
-		harness.RemoveSession(s.State.Workspace)
+		s.Remove()
 		return errNoAttach
 	}
 	label := fmt.Sprintf("%s/%d", res.Goal.Slug, item.Seq)

@@ -448,6 +448,9 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	// the checkout's services, started in the session's pod before its
 	// agent; the pod and its sidecars go on every way out
 	pod, err := OpenSessionPod(ctx, r.Sandbox, dir, label, harness.KindBuild, ident.Sandbox(dir), r.logf)
+	// a session the harness detached at the node's shutdown runs on in
+	// its pod, its services and HOME (Session.Detach makes this Close
+	// nothing): the node that adopts it removes them
 	defer pod.Close()
 	if err != nil {
 		return r.fail(ctx, item, fmt.Errorf("services: %w", err))
@@ -972,7 +975,7 @@ func (r *Runner) AdoptItem(ctx context.Context, item gateway.WorkItem, s FoundSe
 	if item.Status != "claimed" && item.Status != "running" || item.NodeID != s.State.NodeID {
 		r.logf("item %s: adopted session is no longer this node's (%s); stopped", item.ID, item.Status)
 		stopFound(r.logf, "item "+item.ID, s)
-		return harness.RemoveSession(s.State.Workspace)
+		return s.Remove()
 	}
 	res, err := Resolve(ctx, r.GW, item)
 	if err != nil {
@@ -1001,11 +1004,44 @@ func (r *Runner) AdoptItem(ctx context.Context, item gateway.WorkItem, s FoundSe
 	// session committed as, though this process did not start it
 	ident := identityFor(r.Cfg, tools.RoleFor(string(harness.KindBuild)), item, res.Goal)
 	b := &buildRun{r: r, item: item, res: res, label: label, spec: spec, dir: s.State.Workspace, cred: cred, runtimes: r.runtimes(), ident: ident, model: s.State.Model, lastText: "session adopted", sessionID: s.State.SessionID, nodeID: s.State.NodeID}
-	r.logf("item %s: adopted its %s session (pid %d, from byte %d)", label, s.Liveness(), s.State.PID, s.State.Offset)
+	where := fmt.Sprintf("pid %d", s.State.PID)
+	attachCtx := func(c context.Context) context.Context { return c }
+	if pod := r.adoptedPod(s); pod != nil {
+		// the session's pod and HOME, kept past the agent's end for the
+		// validation in it, go once the build is handed in — unless this
+		// node lets go of the session in turn
+		b.pod, where = pod, "container "+s.State.Container
+		attachCtx = harness.WithPodKept
+		defer unlessDetached(ctx, pod.Close)
+	}
+	r.logf("item %s: adopted its %s session (%s, from byte %d)", label, s.Liveness(), where, s.State.Offset)
 	result, runErr := b.run(ctx, func(sctx context.Context, onProgress func(harness.Progress)) (harness.Result, error) {
-		return at.Attach(sctx, s.Dir, onProgress)
+		return at.Attach(attachCtx(sctx), s.Dir, onProgress)
 	})
 	return r.afterBuild(ctx, b, result, runErr)
+}
+
+// adoptedPod is an adopted sandboxed build's session reattached: its
+// HOME, which validation runs in, and its pod, both removed by its Close.
+// A pod already gone leaves the HOME alone to reattach (validation's
+// steps run in pods of their own either way, Session.Run). Nil for a
+// host session, a node with no sandbox, or a HOME already gone —
+// validation then opens a fresh session of its own (validator.start),
+// and Attach's end removes what is left.
+func (r *Runner) adoptedPod(s FoundSession) *SessionPod {
+	if !s.Sandboxed() || r.Sandbox == nil || s.State.Home == "" {
+		return nil
+	}
+	if _, err := os.Stat(s.State.Home); err != nil {
+		return nil
+	}
+	var sess *sandbox.Session
+	if s.standingPod() {
+		sess = r.Sandbox.Reattach(sandbox.Pod{Name: s.State.Pod}, s.State.Home, s.State.Label)
+	} else {
+		sess = r.Sandbox.ReattachHome(s.State.Pod, s.State.Home, s.State.Label)
+	}
+	return &SessionPod{Session: sess, logf: r.logf}
 }
 
 func (r *Runner) fail(ctx context.Context, item gateway.WorkItem, cause error) error {

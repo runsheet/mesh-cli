@@ -531,7 +531,7 @@ func (d *Director) AdoptResearch(ctx context.Context, direction gateway.Directio
 	at, ok := d.Harness.(harness.Attacher)
 	if !ok {
 		stopFound(d.logf, project.Slug+"/"+direction.Slug, s)
-		harness.RemoveSession(s.State.Workspace)
+		s.Remove()
 		return errNoAttach
 	}
 	d.logf("%s/%s: adopted its %s research session (pid %d)", project.Slug, direction.Slug, s.Liveness(), s.State.PID)

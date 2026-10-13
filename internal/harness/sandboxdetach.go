@@ -119,7 +119,7 @@ func (c *ClaudeCode) attachSandboxed(ctx context.Context, dir string, st session
 		return res, parent.Err()
 	}
 	os.Remove(filepath.Join(dir, sessionunit.PromptFile))
-	if st.Pod != "" || st.Home != "" {
+	if (st.Pod != "" || st.Home != "") && !podKept(ctx) {
 		sess.CloseAndLog()
 		st.Pod, st.Container, st.Home = "", "", ""
 		_ = sessionunit.WriteState(dir, st)
@@ -128,6 +128,24 @@ func (c *ClaudeCode) attachSandboxed(ctx context.Context, dir string, st session
 		return res, le
 	}
 	return finishClaude(ctx, Job{Timeout: timeout}, res, waitErr, errBuf, rawOut)
+}
+
+// podKeptKey marks a ctx whose caller closes the adopted session's pod
+// and HOME itself (WithPodKept).
+type podKeptKey struct{}
+
+// WithPodKept is ctx for an Attach whose caller has reattached the
+// session's pod and HOME and closes them once its own tail is done — a
+// build's validation runs in that HOME after the agent's end — so
+// Attach's end leaves them, and the state still names them for a node
+// that adopts the session again before the caller's close.
+func WithPodKept(ctx context.Context) context.Context {
+	return context.WithValue(ctx, podKeptKey{}, true)
+}
+
+func podKept(ctx context.Context) bool {
+	v, _ := ctx.Value(podKeptKey{}).(bool)
+	return v
 }
 
 // RemoveSandboxedSession is RemoveSession for a session that may run in
