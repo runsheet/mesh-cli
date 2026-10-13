@@ -352,12 +352,12 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	// list instead of mining them out of Evaluation's prose. Unread records
 	// are not fatal: the build runs on the prose alone, as it did before.
 	var failed []harness.FailedClause
+	latest := gateway.PriorAttempt{}
 	if item.Attempts > 0 {
 		was, err := r.GW.WorkItemPriorAttempts(ctx, item.ID)
 		if err != nil {
 			r.logf("item %s: earlier evaluations unread, building on the notes alone: %v", label, err)
 		}
-		latest := gateway.PriorAttempt{}
 		for _, p := range was {
 			if p.Attempt >= latest.Attempt {
 				latest = p
@@ -467,11 +467,40 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	r.toolResults(&job)
 	in.Services = pod.Prompt()
 	job.Prompt = harness.BuildPrompt(in)
+	// a retry after a failed evaluation is the next turn of the session
+	// that built the item when this node kept it, else a fresh session
+	// told the same failure, saying why
+	turn, retrying := retryAfterEvaluation(item, latest)
+	freshPrompt, notResumed := job.Prompt, ""
+	if retrying {
+		turn.Branch = spec.Branch
+		turn.HeadSHA, _ = gitHead(ctx, dir)
+		turn.ChangedPaths, _ = r.WS.ChangedPaths(ctx, dir, spec.BaseRef)
+		freshPrompt = freshRetryPrompt(job.Prompt, turn)
+		rec, why := r.resumable(item.ID, label, dir, acct, pod)
+		if why == "" {
+			job.Resume = rec.SessionID
+			job.Prompt = harness.RetryTurnPrompt(turn)
+			r.logf("item %s: resuming session %s with the failure", label, rec.SessionID)
+		} else {
+			notResumed = notResumedLine(label, why)
+			job.Prompt = freshPrompt
+		}
+	}
 
 	// the session outlives this process: a restart adopts it (ADR 009)
 	job.Outlive = true
 	b := &buildRun{r: r, item: item, res: res, label: label, spec: spec, dir: dir, cred: cred, acct: acct, runtimes: runtimes, ident: ident, model: model, lastText: "session started", job: &job, pod: pod, started: time.Now(), nodeID: sc.NodeID}
 	b.report(ctx, "session started: "+spec.Branch+" on "+modelName(model))
+	endRetry := func() {}
+	if retrying {
+		endRetry = r.noteRetry(item.ID, job.Resume, job.Resume == "")
+	}
+	defer func() { endRetry() }()
+	if notResumed != "" {
+		r.logf("%s", notResumed)
+		b.report(ctx, notResumed)
+	}
 	if note := st.OmittedNote(); note != "" {
 		r.logf("item %s: %s", label, note)
 		b.report(ctx, note)
@@ -481,7 +510,18 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		b.report(ctx, note)
 	}
 	result, runErr := b.run(ctx, func(sctx context.Context, onProgress func(harness.Progress)) (harness.Result, error) {
-		return r.Harness.Run(sctx, job, onProgress)
+		res, err := r.Harness.Run(sctx, job, onProgress)
+		if job.Resume != "" && sctx.Err() == nil && harness.IsUnknownSession(err) {
+			// the agent has no such session: fresh, once, with the failure
+			line := notResumedLine(label, notResumedUnknownAgent)
+			r.logf("%s", line)
+			b.report(ctx, line)
+			endRetry()
+			endRetry = r.noteRetry(item.ID, "", true)
+			job.Resume, job.Prompt = "", freshPrompt
+			res, err = r.Harness.Run(sctx, job, onProgress)
+		}
+		return res, err
 	})
 	// the usage report rides the finish (afterBuild); Finish logs it when
 	// nothing carried it

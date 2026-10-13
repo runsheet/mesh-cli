@@ -10,14 +10,15 @@ import (
 )
 
 // keepResume keeps the finished build's session in the runner's resume
-// store (Runner.Resumes) — its id, adapter, credential and worktree, and
+// store (Runner.Resumes, else State's) — its id, adapter, credential and worktree, and
 // a copy of its transcript — so a retry of the item can resume it after
 // the session dir is gone. afterBuild calls it once the session's end is
 // handled here, before its deferred RemoveSession; a node shutting down
 // (the session left for adoption), a lost claim and a starved session
 // never reach it. A Keep that fails is logged, never the item's failure.
 func (r *Runner) keepResume(b *buildRun) {
-	if r.Resumes == nil {
+	store := r.resumes()
+	if store == nil {
 		return
 	}
 	sid := b.session()
@@ -26,7 +27,7 @@ func (r *Runner) keepResume(b *buildRun) {
 	}
 	adapter := Adapter(r.Harness)
 	rec := ResumeRecord{SessionID: sid, Adapter: adapter, CredentialID: b.acct.credentialID(), Worktree: b.dir}
-	if err := r.Resumes.Keep(b.item.ID, rec, sessionTranscript(b, adapter, sid)); err != nil {
+	if err := store.Keep(b.item.ID, rec, sessionTranscript(b, adapter, sid)); err != nil {
 		r.logf("item %s: resume record not kept: %v", b.label, err)
 	}
 }

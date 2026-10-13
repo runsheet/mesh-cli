@@ -957,3 +957,12 @@ func reportWindow(w harness.RateLimitWindow) (*float64, *time.Time) {
 	at := w.ResetsAt.UTC()
 	return &u, &at
 }
+
+// CredentialID is the issued credential the session runs on, "" for none
+// (a nil session included).
+func (s *SessionAccount) CredentialID() string {
+	if s == nil {
+		return ""
+	}
+	return s.account.ID
+}
