@@ -330,7 +330,7 @@ func TestLoadConfigHost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := cfg.Host.Effective(); got != (HostConfig{LoadPerCoreMax: 1.5, PackageTempMaxC: 90, OverloadPerCore: 1, StarveAfter: 15 * time.Minute}) {
+	if got := cfg.Host.Effective(); got != (HostConfig{LoadPerCoreMax: 1.5, PackageTempMaxC: 90, OverloadPerCore: 1, CPUSomeAvg60Max: 25, QuietFraction: 0.8, StarveAfter: 15 * time.Minute}) {
 		t.Fatalf("no host: section, defaults %+v, want 1.5/90/1", got)
 	}
 
@@ -339,7 +339,7 @@ func TestLoadConfigHost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := cfg.Host.Effective(); got != (HostConfig{LoadPerCoreMax: 2, PackageTempMaxC: 85, OverloadPerCore: 1, StarveAfter: 15 * time.Minute}) {
+	if got := cfg.Host.Effective(); got != (HostConfig{LoadPerCoreMax: 2, PackageTempMaxC: 85, OverloadPerCore: 1, CPUSomeAvg60Max: 25, QuietFraction: 0.8, StarveAfter: 15 * time.Minute}) {
 		t.Fatalf("host: {2, 85} loaded as %+v, want 2/85/1", got)
 	}
 
@@ -348,7 +348,7 @@ func TestLoadConfigHost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := cfg.Host.Effective(); got != (HostConfig{LoadPerCoreMax: 1.5, PackageTempMaxC: 90, OverloadPerCore: 1.2, OverloadCPUSomeAvg60: 70, StarveAfter: 10 * time.Minute}) {
+	if got := cfg.Host.Effective(); got != (HostConfig{LoadPerCoreMax: 1.5, PackageTempMaxC: 90, OverloadPerCore: 1.2, CPUSomeAvg60Max: 25, QuietFraction: 0.8, OverloadCPUSomeAvg60: 70, StarveAfter: 10 * time.Minute}) {
 		t.Fatalf("host: {overload_per_core: 1.2, overload_cpu_some_avg60: 70} loaded as %+v", got)
 	}
 
@@ -375,6 +375,40 @@ func TestLoadConfigHost(t *testing.T) {
 	writeNodeYAML(t, "slug: mini\nname: mini\ncapacity: 1\nhost: {overload_cpu_some_avg60: -1}\n")
 	if _, err := LoadConfig(); err == nil || !strings.Contains(err.Error(), "host.overload_cpu_some_avg60") {
 		t.Fatalf("host.overload_cpu_some_avg60: -1 err = %v, want a refusal naming it", err)
+	}
+}
+
+// host.cpu_some_avg60_max and host.quiet_fraction (ADR-031) default to
+// 25 and 0.8, load as given, and are refused negative — quiet_fraction
+// past 1 too — naming the key.
+func TestLoadConfigHostPressure(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	writeNodeYAML(t, "slug: mini\nname: mini\ncapacity: 1\n")
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Host.Effective(); got.CPUSomeAvg60Max != 25 || got.QuietFraction != 0.8 {
+		t.Fatalf("no host: section, pressure %v quiet %v, want 25 and 0.8", got.CPUSomeAvg60Max, got.QuietFraction)
+	}
+
+	writeNodeYAML(t, "slug: mini\nname: mini\ncapacity: 1\nhost: {cpu_some_avg60_max: 40, quiet_fraction: 0.5}\n")
+	if cfg, err = LoadConfig(); err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Host.Effective(); got.CPUSomeAvg60Max != 40 || got.QuietFraction != 0.5 {
+		t.Fatalf("host: {40, 0.5} loaded as %+v", got)
+	}
+
+	for _, tc := range []struct{ yaml, key string }{
+		{"host: {cpu_some_avg60_max: -1}", "host.cpu_some_avg60_max"},
+		{"host: {quiet_fraction: -0.1}", "host.quiet_fraction"},
+		{"host: {quiet_fraction: 1.5}", "host.quiet_fraction"},
+	} {
+		writeNodeYAML(t, "slug: mini\nname: mini\ncapacity: 1\n"+tc.yaml+"\n")
+		if _, err := LoadConfig(); err == nil || !strings.Contains(err.Error(), tc.key) {
+			t.Fatalf("%s: err = %v, want a refusal naming %s", tc.yaml, err, tc.key)
+		}
 	}
 }
 

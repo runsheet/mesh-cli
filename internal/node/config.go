@@ -29,8 +29,9 @@ import (
 // serves every org its owner belongs to (a Node per org on the platform,
 // id from (org, slug)), or only those in Orgs when set. The single-org
 // fields are what older registrations wrote; read as Orgs of one.
-// `host:` is `{load_per_core_max: 1.5, package_temp_max_c: 90}` by
-// default; either threshold left out, or set to 0, takes its default.
+// `host:` is `{load_per_core_max: 1.5, package_temp_max_c: 90,
+// cpu_some_avg60_max: 25, quiet_fraction: 0.8}` by default; a threshold
+// left out, or set to 0, takes its default.
 // `takes:` names the kinds of session (build, evaluate, rebase, plan,
 // research) this node claims, as a list or a per-kind cap map; left
 // out, every kind, as before (goal a-node-says-which-sessions-it-takes).
@@ -401,6 +402,17 @@ const (
 	DefaultOverloadPerCore = 1.0
 )
 
+// DefaultCPUSomeAvg60Max is host.cpu_some_avg60_max's default: the node
+// user's slice's CPU pressure some avg60, as a percentage, past which
+// the host is hot when the slice's pressure is read (ADR-031).
+// DefaultQuietFraction is host.quiet_fraction's default: once hot, the
+// host is quiet again only below this fraction of the threshold that
+// judges it — pressure or load per core (ADR-031, hysteresis).
+const (
+	DefaultCPUSomeAvg60Max = 25.0
+	DefaultQuietFraction   = 0.8
+)
+
 // DefaultStarveAfter is host.starve_after's default: a build silent
 // this long on an overloaded host is stopped and released, a third of
 // the platform's 45-minute stall.
@@ -420,6 +432,16 @@ type HostConfig struct {
 	// OverloadPerCore is host.overload_per_core: the load-per-core past
 	// which Overloaded is true. Default DefaultOverloadPerCore.
 	OverloadPerCore float64 `yaml:"overload_per_core,omitempty"`
+	// CPUSomeAvg60Max is host.cpu_some_avg60_max: the node user's
+	// slice's cpu.pressure some avg60 (a percentage) past which the host
+	// is hot. When the slice's pressure is read it judges the host in
+	// place of LoadPerCoreMax (ADR-031). Default DefaultCPUSomeAvg60Max.
+	CPUSomeAvg60Max float64 `yaml:"cpu_some_avg60_max,omitempty"`
+	// QuietFraction is host.quiet_fraction: once hot, the host stays hot
+	// until its pressure (or, without PSI, its load per core) falls
+	// below this fraction of the threshold. At most 1. Default
+	// DefaultQuietFraction.
+	QuietFraction float64 `yaml:"quiet_fraction,omitempty"`
 	// OverloadCPUSomeAvg60 is host.overload_cpu_some_avg60: the CPU
 	// pressure's some avg60 (a percentage) past which Overloaded is
 	// true, in addition to the load-per-core check. Left out or zero,
@@ -444,6 +466,12 @@ func (h HostConfig) Effective() HostConfig {
 	if h.OverloadPerCore == 0 {
 		h.OverloadPerCore = DefaultOverloadPerCore
 	}
+	if h.CPUSomeAvg60Max == 0 {
+		h.CPUSomeAvg60Max = DefaultCPUSomeAvg60Max
+	}
+	if h.QuietFraction == 0 {
+		h.QuietFraction = DefaultQuietFraction
+	}
 	if h.StarveAfter == 0 {
 		h.StarveAfter = DefaultStarveAfter
 	}
@@ -460,6 +488,15 @@ func (h HostConfig) Validate() error {
 	}
 	if h.OverloadPerCore < 0 {
 		return errors.New("host.overload_per_core: cannot be negative")
+	}
+	if h.CPUSomeAvg60Max < 0 {
+		return errors.New("host.cpu_some_avg60_max: cannot be negative")
+	}
+	if h.QuietFraction < 0 {
+		return errors.New("host.quiet_fraction: cannot be negative")
+	}
+	if h.QuietFraction > 1 {
+		return errors.New("host.quiet_fraction: cannot be more than 1")
 	}
 	if h.OverloadCPUSomeAvg60 < 0 {
 		return errors.New("host.overload_cpu_some_avg60: cannot be negative")
