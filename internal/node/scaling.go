@@ -36,9 +36,12 @@ func (s Scaling) Heartbeat() *gateway.Scaling {
 	// Accounts is [] rather than nil: the platform refuses a null list
 	out := &gateway.Scaling{Capacity: s.Capacity, Min: s.Min, Max: s.Max, Reason: string(s.Reason), Accounts: []gateway.AccountScaling{}}
 	if s.Host != nil {
-		out.Host = &gateway.HostScaling{Load: s.Host.Load, Cores: s.Host.Cores, Hot: s.Host.Hot}
+		out.Host = &gateway.HostScaling{Load: s.Host.Load, Cores: s.Host.Cores, Hot: s.Host.Hot, PerCore: s.Host.PerCore()}
 		if s.Host.HasTemp {
 			out.Host.TemperatureC = s.Host.TempC
+		}
+		if s.Host.HasCPUPressure {
+			out.Host.CPUSomeAvg60 = s.Host.CPUSomeAvg60
 		}
 	}
 	return out

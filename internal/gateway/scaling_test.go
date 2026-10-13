@@ -261,6 +261,72 @@ func TestHeartbeatOmitsHostTheSchemaLacks(t *testing.T) {
 	}
 }
 
+// hostOverloadScaling is a ranged node whose host carries the
+// overload-threshold readings: load per core and CPU pressure.
+func hostOverloadScaling() *gateway.Scaling {
+	sc := hostScaling()
+	sc.Host.PerCore = 55.0 / 18
+	sc.Host.CPUSomeAvg60 = 71
+	return sc
+}
+
+// A gateway whose host type lists `perCore` and `cpuSomeAvg60` gets
+// both figures beside load, cores, temperature and hot (adr-004's
+// overload-threshold amendment).
+func TestHeartbeatCarriesHostPerCoreTheSchemaTakes(t *testing.T) {
+	f, gw := registeredFake(t)
+	if _, err := gw.HeartbeatNode(context.Background(), limitsNode, "v1", 4, gateway.HeartbeatExtras{Scaling: hostOverloadScaling()}); err != nil {
+		t.Fatal(err)
+	}
+	hb := f.CallsNamed("heartbeatNode")
+	s, _ := hb[0].Input["scaling"].(map[string]any)
+	host, _ := s["host"].(map[string]any)
+	for k, want := range map[string]any{"load": 55.0, "cores": 18.0, "hot": true, "perCore": 55.0 / 18, "cpuSomeAvg60": 71.0} {
+		if host[k] != want {
+			t.Fatalf("scaling.host.%s = %#v, want %#v", k, host[k], want)
+		}
+	}
+}
+
+// A gateway whose host type lacks `perCore` (a platform before the
+// overload-threshold amendment) gets the rest of host — load, cores,
+// temperature, hot and cpuSomeAvg60 when it takes that — with no
+// `perCore` key, and accepts the heartbeat; each of the two fields is
+// dropped on its own.
+func TestHeartbeatOmitsHostPerCoreTheSchemaLacks(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		missing string
+	}{
+		{"no perCore", "perCore"},
+		{"no cpuSomeAvg60", "cpuSomeAvg60"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, gw := registeredFake(t)
+			f.UnknownFields[tc.missing] = true
+			if _, err := gw.HeartbeatNode(context.Background(), limitsNode, "v1", 4, gateway.HeartbeatExtras{Scaling: hostOverloadScaling()}); err != nil {
+				t.Fatal(err)
+			}
+			hb := f.CallsNamed("heartbeatNode")
+			s, _ := hb[0].Input["scaling"].(map[string]any)
+			host, ok := s["host"].(map[string]any)
+			if !ok {
+				t.Fatalf("scaling.host = %#v, want the rest of host still", s["host"])
+			}
+			if _, ok := host[tc.missing]; ok {
+				t.Fatalf("sent %s the schema lacks: %#v", tc.missing, host[tc.missing])
+			}
+			other := map[string]string{"perCore": "cpuSomeAvg60", "cpuSomeAvg60": "perCore"}[tc.missing]
+			if host[other] == nil {
+				t.Fatalf("dropped %s too: host = %#v", other, host)
+			}
+			if host["load"] != 55.0 || host["cores"] != 18.0 || host["hot"] != true {
+				t.Fatalf("host = %#v, want load/cores/hot still", host)
+			}
+		})
+	}
+}
+
 // A Scaling with a nil Host sends no `host` key even when the schema
 // takes it: the request is unchanged from before this field existed
 // (adr-004's amendment 2026-10-03); TestHeartbeatOfAFixedNodeIsUnchanged

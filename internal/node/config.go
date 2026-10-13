@@ -389,31 +389,50 @@ func (t Takes) MarshalYAML() (any, error) {
 	return node, nil
 }
 
-// DefaultLoadPerCoreMax and DefaultPackageTempMaxC are host.load_per_core_max's
-// and host.package_temp_max_c's defaults, in force when node.yaml leaves the
-// `host:` section, or either field, out or zero.
+// DefaultLoadPerCoreMax, DefaultPackageTempMaxC and DefaultOverloadPerCore
+// are host.load_per_core_max's, host.package_temp_max_c's and
+// host.overload_per_core's defaults, in force when node.yaml leaves the
+// `host:` section, or that field, out or zero.
+// host.overload_cpu_some_avg60 has no default: left out or zero, it is
+// not judged at all, Overloaded going by load per core alone.
 const (
 	DefaultLoadPerCoreMax  = 1.5
 	DefaultPackageTempMaxC = 90.0
+	DefaultOverloadPerCore = 1.0
 )
 
 // HostConfig is node.yaml's `host:` block: the load-per-core and
 // package-temperature thresholds past which the scaler judges the
 // machine hot and backs capacity off (ADR-004's amendment,
-// the-node-backs-off-a-hot-host). A field left out, or zero, takes its
-// default (Effective).
+// the-node-backs-off-a-hot-host), and the load-per-core and, optionally,
+// CPU-pressure thresholds past which a session is judged starved by an
+// overloaded host rather than failed on its own (MachineReading.Overloaded).
+// A field left out, or zero, takes its default (Effective) — except
+// OverloadCPUSomeAvg60, whose zero disables that half of the check.
 type HostConfig struct {
 	LoadPerCoreMax  float64 `yaml:"load_per_core_max,omitempty"`
 	PackageTempMaxC float64 `yaml:"package_temp_max_c,omitempty"`
+	// OverloadPerCore is host.overload_per_core: the load-per-core past
+	// which Overloaded is true. Default DefaultOverloadPerCore.
+	OverloadPerCore float64 `yaml:"overload_per_core,omitempty"`
+	// OverloadCPUSomeAvg60 is host.overload_cpu_some_avg60: the CPU
+	// pressure's some avg60 (a percentage) past which Overloaded is
+	// true, in addition to the load-per-core check. Left out or zero,
+	// Overloaded never judges by CPU pressure alone.
+	OverloadCPUSomeAvg60 float64 `yaml:"overload_cpu_some_avg60,omitempty"`
 }
 
-// Effective is h with each zero field at its default.
+// Effective is h with each zero field at its default; OverloadCPUSomeAvg60
+// has none and stays zero (disabled).
 func (h HostConfig) Effective() HostConfig {
 	if h.LoadPerCoreMax == 0 {
 		h.LoadPerCoreMax = DefaultLoadPerCoreMax
 	}
 	if h.PackageTempMaxC == 0 {
 		h.PackageTempMaxC = DefaultPackageTempMaxC
+	}
+	if h.OverloadPerCore == 0 {
+		h.OverloadPerCore = DefaultOverloadPerCore
 	}
 	return h
 }
@@ -425,6 +444,12 @@ func (h HostConfig) Validate() error {
 	}
 	if h.PackageTempMaxC < 0 {
 		return errors.New("host.package_temp_max_c: cannot be negative")
+	}
+	if h.OverloadPerCore < 0 {
+		return errors.New("host.overload_per_core: cannot be negative")
+	}
+	if h.OverloadCPUSomeAvg60 < 0 {
+		return errors.New("host.overload_cpu_some_avg60: cannot be negative")
 	}
 	return nil
 }
