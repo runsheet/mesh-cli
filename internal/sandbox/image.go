@@ -95,17 +95,91 @@ func (img Image) Summary() string {
 	return b.String()
 }
 
+// RegistryCredential is a login to one image registry: the user and the
+// secret podman sends it. A GitHub installation token's user is
+// x-access-token (RegistryTokenUser).
+type RegistryCredential struct {
+	Username string
+	Secret   string
+}
+
+// RegistryTokenUser is the user a GitHub token logs in to ghcr.io as.
+const RegistryTokenUser = "x-access-token"
+
+// RegistryBroker asks the broker — the platform — for a credential that
+// reads images from registry (a host, `ghcr.io`). nil with no error is
+// none to give: the pull goes as podman's own login has it, which for a
+// public image is anonymous.
+type RegistryBroker func(ctx context.Context, registry string) (*RegistryCredential, error)
+
+// RegistryHost is the registry ref is pulled from: its first path
+// component when that names a host (a dot, a port or localhost), else
+// docker.io, as podman resolves a bare name.
+func RegistryHost(ref string) string {
+	host, rest, ok := strings.Cut(ref, "/")
+	if !ok || rest == "" {
+		return "docker.io"
+	}
+	if strings.ContainsAny(host, ".:") || host == "localhost" {
+		return host
+	}
+	return "docker.io"
+}
+
 // EnsureImage pulls ref and then removes every other
 // ghcr.io/runsheet/mesh-node tag on this machine but ref and keep
 // (the image the running node's sessions are still using). A failed pull
 // is the error, and nothing is built in its place or removed.
-func EnsureImage(ctx context.Context, run Runner, ref string, keep ...string) (Image, error) {
-	if out, err := run(ctx, imageBinary, "pull", ref); err != nil {
-		return Image{Ref: ref}, fmt.Errorf("node image %s: pull failed: %s", ref, why(out, err))
+//
+// The pull is on the credential broker gives for ref's registry, as
+// PushImage's push is on its token: an auth.json in a temporary directory
+// of its own, passed by --authfile and removed once the pull returns,
+// whatever it did — never in the image or a build context. A nil broker,
+// or one with no credential for the registry, pulls without --authfile;
+// a broker that errs is named in the pull's error should the pull then
+// fail.
+func EnsureImage(ctx context.Context, run Runner, ref string, broker RegistryBroker, keep ...string) (Image, error) {
+	if err := pullImage(ctx, run, ref, broker); err != nil {
+		return Image{Ref: ref}, err
 	}
 	img := Image{Ref: ref, Pulled: true}
 	img.Removed, img.Kept = prune(ctx, run, append([]string{ref}, keep...))
 	return img, nil
+}
+
+// pullImage is `podman pull ref`, with --authfile when broker has a
+// credential for ref's registry.
+func pullImage(ctx context.Context, run Runner, ref string, broker RegistryBroker) error {
+	var cred *RegistryCredential
+	var brokerErr error
+	if broker != nil {
+		cred, brokerErr = broker(ctx, RegistryHost(ref))
+	}
+	args := []string{"pull"}
+	if cred != nil && cred.Secret != "" {
+		dir, err := os.MkdirTemp("", "mesh-node-pull-")
+		if err != nil {
+			return err
+		}
+		defer os.RemoveAll(dir)
+		auth, err := registryAuthAs(RegistryHost(ref), cred.Username, cred.Secret)
+		if err != nil {
+			return err
+		}
+		authFile := filepath.Join(dir, "auth.json")
+		if err := os.WriteFile(authFile, auth, 0o600); err != nil {
+			return err
+		}
+		args = append(args, "--authfile", authFile)
+	}
+	if out, err := run(ctx, imageBinary, append(args, ref)...); err != nil {
+		reason := why(out, err)
+		if brokerErr != nil {
+			reason += " (registry credential: " + brokerErr.Error() + ")"
+		}
+		return fmt.Errorf("node image %s: pull failed: %s", ref, reason)
+	}
+	return nil
 }
 
 // BuildImage builds ref on this machine from the Containerfile the binary
@@ -212,8 +286,17 @@ func pushManifest(ctx context.Context, run Runner, ref, token string) (string, e
 // with a GitHub installation token, whose user is x-access-token.
 func registryAuth(ref, token string) ([]byte, error) {
 	host, _, _ := strings.Cut(ref, "/")
+	return registryAuthAs(host, RegistryTokenUser, token)
+}
+
+// registryAuthAs is the containers auth.json logging in to host as user
+// with secret; an empty user is RegistryTokenUser.
+func registryAuthAs(host, user, secret string) ([]byte, error) {
+	if user == "" {
+		user = RegistryTokenUser
+	}
 	return json.Marshal(map[string]any{"auths": map[string]any{
-		host: map[string]string{"auth": base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))},
+		host: map[string]string{"auth": base64.StdEncoding.EncodeToString([]byte(user + ":" + secret))},
 	}})
 }
 

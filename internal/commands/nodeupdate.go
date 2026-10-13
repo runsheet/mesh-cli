@@ -221,13 +221,20 @@ func (u *nodeUpdate) image(ctx context.Context, version string) error {
 
 // ensureNodeImage is SandboxConfig.EnsureImage on this machine: node.yaml
 // as it stands now, podman run as a command, the running version's image
-// kept.
+// kept, the pull on the registry credential the platform issues this
+// node (nodeRegistryToken, node.RegistryBrokerOf; ADR-007's amendment
+// 2026-10-13). With no credential in ~/.mesh/token to ask on, the pull
+// goes on podman's own login.
 func ensureNodeImage(ctx context.Context, want string) (sandbox.Image, error) {
 	cfg, err := node.LoadSettings()
 	if err != nil {
 		return sandbox.Image{}, err
 	}
-	return cfg.Sandbox.EnsureImage(ctx, sandbox.ExecRunner, want, version.Resolved())
+	var broker sandbox.RegistryBroker
+	if client, err := platformClient(); err == nil {
+		broker = node.RegistryBrokerOf(client)
+	}
+	return cfg.Sandbox.EnsureImage(ctx, sandbox.ExecRunner, want, version.Resolved(), broker)
 }
 
 // keep writes a verified binary into a new temporary directory for

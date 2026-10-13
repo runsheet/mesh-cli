@@ -21,7 +21,7 @@ func TestSandboxImageBuildRunsPodmanBuild(t *testing.T) {
 	}
 
 	r := &imageRunner{}
-	img, err := cfg.EnsureImage(ctx, r.run, "v1.1.0", "v1.0.0")
+	img, err := cfg.EnsureImage(ctx, r.run, "v1.1.0", "v1.0.0", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
