@@ -166,11 +166,14 @@ pod has no podman and no root, so it could not build the image. What
 it ran instead, in that same image: the Containerfile's new packages'
 Debian trixie amd64 debs (`postgresql-17` 17.11-0+deb13u1,
 `chromium` 150.0.7871.181-1~deb13u1 and the 158 packages they pull in
-that the image lacks) unpacked with `dpkg-deb -x` into `/tmp/root`,
-on PATH and `LD_LIBRARY_PATH`:
+that the image lacks) unpacked with `dpkg-deb -x` into `/tmp/root`, the
+server's binaries linked into a directory on PATH as the Containerfile
+links them into `/usr/local/bin`, `chromium` a shim to
+`/tmp/root/usr/lib/chromium/chromium`, the libraries on
+`LD_LIBRARY_PATH`:
 
 ```
-$ PATH=/tmp/shim:/tmp/root/usr/lib/postgresql/17/bin:$PATH LD_LIBRARY_PATH=… scripts/image-tools-check.sh; echo "exit $?"
+$ PATH=/tmp/shim:/tmp/lbin:$PATH LD_LIBRARY_PATH=… scripts/image-tools-check.sh; echo "exit $?"
 PASS node: node v24.21.0, npm 11.19.0, npm ci && npx tsc --version: Version 5.6.3
 PASS postgres: postgres (PostgreSQL) 17.11 (Debian 17.11-0+deb13u1), select 1 = 1 as mesh
 PASS chrome: Chromium 150.0.7871.181; chromium --headless --dump-dom rendered a page

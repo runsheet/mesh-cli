@@ -79,7 +79,7 @@ implementing it that the spec leaves open or that differ in detail.
   Debian with git, Go at go.mod's version (a test holds them together),
   Node LTS with npm and corepack, Python 3 with pip and uv, make and a C
   toolchain, gh, nftables, ca-certificates, a Postgres server
-  (`postgresql-17`, `initdb`/`pg_ctl`/`psql` on PATH, no cluster made)
+  (`postgresql-17`, `initdb`/`pg_ctl`/`psql` in `/usr/local/bin`, no cluster made)
   and headless Chromium (Debian's `chromium`) — amended 2026-10-13,
   below — and the claude and codex CLIs, each at a version pinned in
   the file; a non-root user `mesh`;
@@ -303,9 +303,11 @@ it exited 1 on untouched main and every item failed on its environment.
 
 - **In the image.** `postgresql-${PG_MAJOR}` and
   `postgresql-client-${PG_MAJOR}` (`PG_MAJOR=17`, trixie's) with
-  `/usr/lib/postgresql/${PG_MAJOR}/bin` on the image's PATH, so
-  `initdb`, `pg_ctl`, `postgres` and `psql` answer to the session's
-  non-root user; `create_main_cluster = false` before the install, so
+  `/usr/lib/postgresql/${PG_MAJOR}/bin`'s binaries linked into
+  `/usr/local/bin` — on the session's PATH, which is
+  `sandbox.DefaultPath` and not the image's ENV (`--unsetenv-all`),
+  ahead of `/usr/bin`'s pg_wrapper — so `initdb`, `pg_ctl`, `postgres`
+  and `psql` answer to the session's non-root user; `create_main_cluster = false` before the install, so
   the image holds no cluster and no running server — a check runs
   `initdb` into a temp dir of its own and starts it on a unix socket
   there. And `chromium` (with `fonts-liberation`), `/usr/bin/chromium`.

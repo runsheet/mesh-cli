@@ -2,8 +2,8 @@
 #
 # One image carries the toolchains a session may use — git, Go, Node/npm
 # (corepack for pnpm/yarn), Python 3 with pip and uv, make and a C
-# toolchain, gh, a Postgres server and headless Chromium — and the agent CLIs, claude and codex, at the versions
-# pinned below. It is tagged with the node's version,
+# toolchain, gh, a Postgres server and headless Chromium — and the
+# agent CLIs, claude and codex, at the versions pinned below. It is tagged with the node's version,
 # ghcr.io/runsheet/mesh-node:<version>, built by release-tag.yml on
 # the same tag as the binary, and `mesh node update` and the node's
 # self-update pull it before they drain. `sandbox.image: build` in
@@ -55,15 +55,18 @@ RUN apt-get update \
 # against them (latchkey's conformance needs both). Debian's own:
 # chromium is built for amd64 and arm64 alike, where Chrome for Testing
 # ships no linux arm64. No cluster is made here: a check runs initdb
-# into a temp dir as the session's user, initdb and pg_ctl on PATH from
-# /usr/lib/postgresql/${PG_MAJOR}/bin (scripts/image-tools-check.sh).
+# into a temp dir as the session's user. The server's binaries are
+# linked into /usr/local/bin, which is on the sandbox's own PATH
+# (sandbox.DefaultPath: --unsetenv-all drops the image's ENV) ahead of
+# /usr/bin's pg_wrapper (scripts/image-tools-check.sh).
 RUN mkdir -p /etc/postgresql-common/createcluster.d \
  && echo 'create_main_cluster = false' > /etc/postgresql-common/createcluster.d/no-main-cluster.conf \
  && apt-get update \
  && apt-get install -y --no-install-recommends \
       "postgresql-${PG_MAJOR}" "postgresql-client-${PG_MAJOR}" \
       chromium fonts-liberation \
- && rm -rf /var/lib/apt/lists/*
+ && rm -rf /var/lib/apt/lists/* \
+ && ln -s /usr/lib/postgresql/${PG_MAJOR}/bin/* /usr/local/bin/
 
 # Go, the version go.mod names.
 RUN arch="${TARGETARCH:-$(dpkg --print-architecture)}" \
@@ -93,7 +96,7 @@ RUN npm install -g --no-fund --no-audit --allow-scripts=@anthropic-ai/claude-cod
  && mkdir -p /etc/codex \
  && printf 'check_for_update_on_startup = false\n' > /etc/codex/config.toml
 
-ENV PATH=/usr/local/go/bin:/home/mesh/go/bin:/usr/lib/postgresql/${PG_MAJOR}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+ENV PATH=/usr/local/go/bin:/home/mesh/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     DISABLE_AUTOUPDATER=1 \
     LANG=C.UTF-8
 
