@@ -1,0 +1,144 @@
+---
+title: "ADR-030: A failed check resumes the session that built it"
+summary: The node keeps each item's last build session — id, adapter, credential, worktree and a copy of its transcript — in ~/.mesh/resume until the item is merged, cancelled, failed or superseded, or seven days; a failing validation step and a retry after a failed evaluation resume that session (`claude --resume`, `codex exec resume`) with one message — what failed, where, the item's acceptance — under the same credential and worktree, else run a fresh session with the brief and the same message and log `item <label>: session not resumed (<reason>); fresh session with the failure`; validation re-runs on the new head, and every retry turn rides the heartbeat's `resumed` and counts as one build session.
+status: accepted
+---
+
+# ADR-030: A failed check resumes the session that built it
+
+2026-10-13, goal `a-failed-check-returns-to-the-session-that-built-it`
+(items 2, 4, 5, 7–11 and 6). Amends ADR-014 (a failing step's retry
+turn), ADR-008 (what a session's end leaves) and ADR-029 (capacity
+counts the build sessions); follows ADR-012's hand-back, which is where
+`Job.Resume` came from. (ADR-030 is the third decision at this number:
+`adr-030-a-session-never-writes-the-shared-clones-config.md` and
+`adr-030-an-environment-failure-names-its-kind.md` landed beside it.)
+
+## Context
+
+A poll-mode build is one `claude -p` (or `codex exec`). When the node's
+validation failed, ADR-014's retry turn resumed only a host Claude
+session; a sandboxed or Codex one got a fresh session told the failure
+after its brief. When the evaluator failed the item, the next claim was a
+fresh session at full context cost — the largest single spend per item —
+that re-derived everything and often repeated the same mistake. The
+evaluator's findings reached the next evaluator (ADR-020) but never the
+builder that could act on them, and nothing on the node remembered which
+session built the item once its session directory was removed (ADR-008).
+
+## Decision
+
+**The resume store** (`internal/node/resumestore.go`). `ResumeStore`
+(`RunState.Resumes()`, `~/.mesh/resume/<url-escaped item id>/`) keeps one
+`ResumeRecord` per item — `itemId`, `sessionId` (Claude Code's
+session_id, Codex's thread id), `adapter` (`claude-code` or `codex`),
+`credentialId` (the issued credential, adr-005; "" on the machine's own
+login), `worktree` (`~/.mesh/work/<goal>/<seq>`), `transcript` and
+`keptAt` — beside a copy of the session's transcript under its source's
+own name (a Codex rollout's name carries the date
+`harness.RestoreTranscript` reads). Ids and paths only: never a token,
+a secret or an env value. `Keep` replaces an item's record whole (built
+in a temp dir and renamed in), `Lookup` reads it, `Forget` removes it.
+Every build keeps its record after its end is handled and before the
+account's config dir and the pod are removed (`Runner.keepSession`,
+`harness.TranscriptSource`); a node shutting down keeps nothing, its
+session left running for the next process to adopt (ADR-009).
+
+**Its lifetime.** A record lives until the item is merged or given up:
+`ResumeStore.Sweep(ctx, statusOf, now)` forgets a record whose item reads
+`merged`, `cancelled`, `failed` or `superseded` (`resumeDone`), or that
+was kept more than `ResumeKeepFor` — seven days, past which the agent's
+own session has long expired — and keeps one whose status read errs, as
+the start-up sweep leaves a scope it cannot judge.
+
+**When a retry resumes.** Two checks hand a failure back:
+
+1. *A failing validation step* (ADR-014): the build's own session, in
+   the same run. Any `claude-code` or `codex` build whose session id is
+   known resumes — a host one in its config dir, a sandboxed one in its
+   own pod (the kept transcript put back in the pod's
+   `CLAUDE_CONFIG_DIR` from the store when it is gone), a Codex one by
+   `codex exec resume <id>` on the build's own `CODEX_HOME`.
+2. *A retry after a failed evaluation*: a claim of an item with
+   `attempts > 0` whose latest recorded evaluation failed
+   (`retryAfterEvaluation`, `internal/node/retryturn.go`). It resumes the
+   kept session when the record is this node's, on the harness's
+   adapter, on the claim's credential, in the checkout this claim was
+   given (ADR-028: one worktree per item, kept for its rework), and its
+   transcript restores into the new session's config dir — the account's
+   `CLAUDE_CONFIG_DIR`/`CODEX_HOME`, or the pod's (`Runner.resumable`,
+   `harness.RestoreTranscript`). The turn runs under that credential, in
+   that worktree, on the item's token as any build does.
+
+**When it starts fresh, and saying why.** Otherwise the retry runs a
+fresh session whose prompt is the build prompt, then `# The last attempt
+failed` (for an evaluation; `# Your last session's validation failed`
+for a step) and the same one message, and node.log and the item's
+progress note both say
+
+    item <label>: session not resumed (<reason>); fresh session with the failure
+
+with the reason one of `no record` (a restart lost it, another node
+built the item, or it was swept), `adapter changed`, `credential
+changed`, `worktree gone`, `transcript missing`, `session not found` (the
+agent refused the id: `harness.IsUnknownSession`, Claude's `No
+conversation found with session ID`, Codex's missing rollout — the
+fresh session is run once, in the same claim), or, for a validation
+turn, `no session id` / an adapter with no resume / `the agent did not
+resume session <id>: <its words>`.
+
+**One message** (`harness.RetryTurnPrompt`, `harness.RetryTurn`): what
+failed — the step, its command, exit code and the end of its output, or
+each failed clause with its `SATISFY` text and the evaluator's review —
+where — the branch, the head that was judged and its changed paths — and
+the item's acceptance verbatim, with ADR-012's hand-back words: fix it
+and commit, or commit what works and hand back; never push. A resumed
+session gets it alone, never the brief again.
+
+**Validation re-runs on the new head.** The retry's commit goes through
+the normal build tail: validated (ADR-014), pushed, attested on exactly
+the pushed sha, finished. A turn that lands no new commit is the
+failure it was.
+
+**The heartbeat and capacity.** Every retry turn — validation's or
+evaluation's, resumed or fresh — is noted for its length
+(`Loop.NoteRetryTurn`, wired as the Runner's retry-turn hook) and rides
+each heartbeat as `resumed [{itemId, kind, sessionId, fresh}]`
+(`gateway.HeartbeatExtras.Resumed`, `ResumedSession`), sent only when
+the gateway's `HeartbeatNodeInput` has `resumed` (`takesResumed`,
+introspected and kept an hour; an older platform gets no key and no
+error). `Loop.Running` — the heartbeat's busy count, `runningOf(build)`
+and the drain's sessions — counts the items of running builds and of
+noted retry turns, each item once, so a turn inside its build is one
+session and a turn on its own is one too (busy-counts-every-session-kind).
+
+`internal/node/resume_e2e_test.go` runs all of it on the fake gateway
+and a real checkout: a failing step resumed in the same session and the
+new head validated and attested; a failed evaluation re-claimed on the
+same node resuming the kept session; the same retry after a restart with
+the record deleted, and with the credential changed, running fresh with
+the same message and the `session not resumed (` line; and the heartbeat
+during each retry turn carrying it while the loop counts one session.
+
+## Consequences
+
+- A retry spends the next turn of a session that already holds the
+  item's context instead of a cold start; the builder sees the
+  evaluator's clauses and review, not only the next evaluator.
+- `~/.mesh/resume` holds transcripts — the agent's own record of the
+  session, as sensitive as the session directory it outlives. They stay
+  on the node, mode 0600, and go with the item or after seven days.
+- A retry claimed by another node, or after the record was lost, is no
+  worse than before: a fresh session, now told the failure, and the
+  reason is on the item for whoever reads it.
+- A sandboxed session's pod does not outlive its build; its transcript
+  does, in the store, which is what a later pod resumes from. A Codex
+  session resumes by its thread id on a fresh `CODEX_HOME` the rollout is
+  restored into.
+- The platform half — `HeartbeatNodeInput.resumed: [ResumedSessionInput!]`
+  — is runsheet's to add; until then the busy count still includes the
+  turn through `Running`.
+- Not doing: changing the evaluator, or talking to a session mid-run
+  (the ask/answer path, goal
+  a-builder-asks-and-the-answer-resumes-its-session, reuses this
+  store and `Job.Resume`).

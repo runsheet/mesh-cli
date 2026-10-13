@@ -326,6 +326,7 @@ func (r *Runner) retryTurn(ctx context.Context, b *buildRun, failed validate.Ste
 	} else {
 		turn.Resume, turn.Prompt = sid, msg
 	}
+	// the turn rides the heartbeat's `resumed` while it runs (ADR-030)
 	done := r.noteRetryTurn(b.item.ID, turn.Resume)
 	defer func() { done() }()
 	b.cost.carry()
