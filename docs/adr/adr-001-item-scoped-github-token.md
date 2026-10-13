@@ -78,6 +78,22 @@ living an hour.
   renewed, and `Authorize` rewrites the helper. The runner checks on its
   progress ticker and again before it pushes. `GH_TOKEN`, fixed when the
   session started, is not renewed; git's helper is.
+- **The git the node runs itself goes out on the token by the
+  environment, not the helper** (amended 2026-10-13, goal
+  `a-node-validates-every-enrolled-repo-with-the-tools-it-needs`, item
+  2). The validator's fetches — the diff's base (`ChangedPaths`) and a
+  newer head it answers (`FetchHead`) — had run on whatever the
+  checkout's helper held by then: a token since expired, a rebase's or
+  another session's, and GitHub refused them. Now the validator asks for
+  the item's token with `ItemCred.ForFetch` (renewed near expiry, as
+  `ForPush` is, writing nothing) and the builder's push takes the one
+  `ForPush` answers, and each git command runs under `OnItemToken`:
+  `withGitToken`'s `GIT_CONFIG_COUNT` entries, an empty
+  `credential.<base>.helper` and the token's, at command scope above
+  every config file. No token is written for it anywhere, so the shared
+  clone's config still holds none (mesh-cli ADR-028).
+  `TestValidatorFetchAndBuilderPushRunOnTheBrokersItemToken` proves both
+  on a stand-in GitHub that refuses the checkout's stale helper.
 - A refusal fails the item (the evaluator returns the error and retries
   on the next tick). An item the platform will not give a token to is
   not run on the operator's login instead. Only `IsUnsupported` takes

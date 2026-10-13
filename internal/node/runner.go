@@ -812,7 +812,7 @@ func (r *Runner) pushBuild(ctx context.Context, b *buildRun) (string, error) {
 	if tok != nil {
 		seen = append(seen, tok.Token)
 	}
-	sha, err := r.WS.Push(ctx, b.dir, branch)
+	sha, err := r.WS.Push(OnItemToken(ctx, r.WS, tok), b.dir, branch)
 	if err != nil && b.cred != nil && IsCredentialRefusal(err) && ctx.Err() == nil {
 		r.logf("item %s: push refused (%s): %v; re-issuing the token once", b.label, FactsOf(tok), scrubbed(err, seen))
 		if rerr := b.cred.Reissue(ctx); rerr != nil {
@@ -820,7 +820,7 @@ func (r *Runner) pushBuild(ctx context.Context, b *buildRun) (string, error) {
 		} else {
 			tok = b.cred.Token()
 			seen = append(seen, tok.Token)
-			sha, err = r.WS.Push(ctx, b.dir, branch)
+			sha, err = r.WS.Push(OnItemToken(ctx, r.WS, tok), b.dir, branch)
 		}
 	}
 	if err == nil {
