@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -126,14 +127,74 @@ func NetworkInitArgs(pod Pod, image string) []string {
 // podman's own environment (AgentProcessEnv), so no secret is on a
 // command line; --unsetenv-all drops the image's and podman's defaults.
 func AgentRunArgs(pod Pod, spec AgentSpec) []string {
-	args := []string{"run", "-i", "--pod", pod.Name, "--name", spec.Name,
+	args := agentArgs("-i", pod, spec, spec.Mounts)
+	args = append(args, spec.Image)
+	return append(args, spec.Command...)
+}
+
+// StartAgentArgs is `podman run -d` for a detached agent (StartAgent):
+// AgentRunArgs' flags — the pod, limits, --timeout, mounts, env by
+// name — with -d for -i, the directory of each stream file mounted
+// read-write at its own path unless a mount already holds it, and the
+// command run by `sh -c` with its stdin, stdout and stderr redirected
+// to those files. The shell execs the command, so the container's exit
+// is the agent's. The streams' paths are on the command line, never a
+// secret.
+func StartAgentArgs(pod Pod, spec AgentSpec) []string {
+	mounts := append([]Mount(nil), spec.Mounts...)
+	for _, f := range []string{spec.StdinFile, spec.StdoutFile, spec.StderrFile} {
+		if f == "" {
+			continue
+		}
+		dir := filepath.Dir(f)
+		if !mountsHold(mounts, dir) {
+			mounts = append(mounts, Mount{Source: dir, Target: dir})
+		}
+	}
+	args := agentArgs("-d", pod, spec, mounts)
+	args = append(args, spec.Image, "/bin/sh", "-c", detachedScript(spec), "mesh-agent")
+	return append(args, spec.Command...)
+}
+
+// detachedScript execs "$@" with its streams on the spec's files.
+func detachedScript(spec AgentSpec) string {
+	file := func(f string) string {
+		if f == "" {
+			return "/dev/null"
+		}
+		return shellQuote(f)
+	}
+	return `exec "$@" <` + file(spec.StdinFile) + ` >` + file(spec.StdoutFile) + ` 2>` + file(spec.StderrFile)
+}
+
+// shellQuote quotes s for sh as one word.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// mountsHold says whether dir is a mount's target or inside one.
+func mountsHold(mounts []Mount, dir string) bool {
+	dir = filepath.Clean(dir)
+	for _, m := range mounts {
+		t := filepath.Clean(m.Target)
+		if !m.ReadOnly && (dir == t || strings.HasPrefix(dir, t+string(filepath.Separator))) {
+			return true
+		}
+	}
+	return false
+}
+
+// agentArgs are the agent's `podman run` flags up to its image: mode is
+// -i (attached) or -d (detached).
+func agentArgs(mode string, pod Pod, spec AgentSpec, mounts []Mount) []string {
+	args := []string{"run", mode, "--pod", pod.Name, "--name", spec.Name,
 		"--cap-drop", "all", "--security-opt", "no-new-privileges",
 		"--pull", "missing", "--unsetenv-all"}
 	args = append(args, LimitArgs(spec.Limits)...)
 	if spec.TimeoutSeconds > 0 {
 		args = append(args, "--timeout", strconv.Itoa(spec.TimeoutSeconds))
 	}
-	for _, m := range spec.Mounts {
+	for _, m := range mounts {
 		opt := "rw"
 		if m.ReadOnly {
 			opt = "ro"
@@ -143,9 +204,7 @@ func AgentRunArgs(pod Pod, spec AgentSpec) []string {
 	if spec.Workdir != "" {
 		args = append(args, "--workdir", spec.Workdir)
 	}
-	args = append(args, envArgs(spec.Env)...)
-	args = append(args, spec.Image)
-	return append(args, spec.Command...)
+	return append(args, envArgs(spec.Env)...)
 }
 
 // SidecarName is the container name of a service in a pod.
@@ -281,6 +340,80 @@ func (p *Podman) RunAgent(ctx context.Context, pod Pod, spec AgentSpec) (Exit, e
 		}
 	}
 	return exit, nil
+}
+
+// StartAgent implements Runtime: `podman run -d` (StartAgentArgs), with
+// podman's own env as RunAgent's — the node's HOME/XDG_* for its store,
+// the container's values for its `--env NAME`s. It returns once podman
+// has started the container.
+func (p *Podman) StartAgent(ctx context.Context, pod Pod, spec AgentSpec) error {
+	var errb bytes.Buffer
+	if err := p.run(ctx, StartAgentArgs(pod, spec), podmanEnv(os.Environ(), spec.Env), nil, io.Discard, &errb); err != nil {
+		if msg := strings.TrimSpace(errb.String()); msg != "" {
+			return fmt.Errorf("podman run %s: %s", spec.Name, msg)
+		}
+		return fmt.Errorf("podman run %s: %w", spec.Name, err)
+	}
+	return nil
+}
+
+// AgentStateArgs reads one container's record as JSON.
+func AgentStateArgs(name string) []string {
+	return []string{"container", "inspect", "--format", "json", name}
+}
+
+// StopAgentArgs stops one container, SIGKILL after 10 seconds.
+func StopAgentArgs(name string) []string {
+	return []string{"stop", "--time", "10", name}
+}
+
+// ParseAgentState reads `podman container inspect --format json` of one
+// container: its State's Status, Running, ExitCode and OOMKilled. An
+// empty list is ErrNoAgent.
+func ParseAgentState(out string) (AgentState, error) {
+	var rows []struct {
+		State struct {
+			Status    string `json:"Status"`
+			Running   bool   `json:"Running"`
+			ExitCode  int    `json:"ExitCode"`
+			OOMKilled bool   `json:"OOMKilled"`
+		} `json:"State"`
+	}
+	if strings.TrimSpace(out) == "" {
+		return AgentState{}, ErrNoAgent
+	}
+	if err := json.Unmarshal([]byte(out), &rows); err != nil {
+		return AgentState{}, fmt.Errorf("podman container inspect: %w", err)
+	}
+	if len(rows) == 0 {
+		return AgentState{}, ErrNoAgent
+	}
+	st := rows[0].State
+	return AgentState{Status: st.Status, Running: st.Running,
+		Exit: Exit{Code: st.ExitCode, OOMKilled: st.OOMKilled}}, nil
+}
+
+// noSuchContainer is podman's word for a name it does not have.
+var noSuchContainer = regexp.MustCompile(`(?i)no such (container|object)`)
+
+// AgentState implements Runtime.
+func (p *Podman) AgentState(ctx context.Context, name string) (AgentState, error) {
+	out, err := p.output(ctx, AgentStateArgs(name), nil)
+	if err != nil {
+		if noSuchContainer.MatchString(err.Error()) {
+			return AgentState{}, fmt.Errorf("%w: %s", ErrNoAgent, name)
+		}
+		return AgentState{}, err
+	}
+	return ParseAgentState(out)
+}
+
+// StopAgent implements Runtime. A container already gone is no error.
+func (p *Podman) StopAgent(ctx context.Context, name string) error {
+	if _, err := p.output(ctx, StopAgentArgs(name), nil); err != nil && !noSuchContainer.MatchString(err.Error()) {
+		return err
+	}
+	return nil
 }
 
 // AddSidecar implements Runtime.

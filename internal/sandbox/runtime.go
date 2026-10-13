@@ -10,6 +10,7 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 )
@@ -68,6 +69,14 @@ type AgentSpec struct {
 	Stdin          io.Reader
 	Stdout         io.Writer
 	Stderr         io.Writer
+	// StdinFile, StdoutFile and StderrFile are a detached agent's
+	// streams (StartAgent): host paths, each mounted at its own path by
+	// its directory, the prompt read from the first and the agent's
+	// output written to the others, so the session's end is read from a
+	// file and not from a pipe to the node. Empty is /dev/null.
+	StdinFile  string
+	StdoutFile string
+	StderrFile string
 }
 
 // SidecarSpec is a service container in a pod: it shares the pod's
@@ -88,6 +97,19 @@ type Exit struct {
 	OOMKilled bool
 }
 
+// AgentState is a detached agent's container as the runtime reads it.
+type AgentState struct {
+	// Status is the runtime's own word: "running", "exited", "created"…
+	Status  string
+	Running bool
+	// Exit is how it ended; meaningful once it is not Running.
+	Exit Exit
+}
+
+// ErrNoAgent is a container the runtime does not have: removed, or
+// never started.
+var ErrNoAgent = errors.New("sandbox: no such agent container")
+
 // Runtime creates and removes pods and runs containers in them.
 type Runtime interface {
 	// Version is the runtime's name and version ("podman 5.2.1"); an
@@ -97,6 +119,17 @@ type Runtime interface {
 	// RunAgent runs the agent's container to its end. A non-zero exit is
 	// in Exit, not the error; the error is the runtime failing.
 	RunAgent(ctx context.Context, pod Pod, spec AgentSpec) (Exit, error)
+	// StartAgent starts the agent's container detached (`podman run -d`):
+	// it runs on, under its own --timeout, whatever becomes of the node
+	// process, its streams in spec's StdinFile/StdoutFile/StderrFile.
+	StartAgent(ctx context.Context, pod Pod, spec AgentSpec) error
+	// AgentState reads a container by name: running, or exited with its
+	// code and whether the OOM killer ended it. A container the runtime
+	// does not have is ErrNoAgent.
+	AgentState(ctx context.Context, name string) (AgentState, error)
+	// StopAgent stops a container by name (SIGTERM, then SIGKILL after
+	// a grace) and leaves it for Remove, so its exit can still be read.
+	StopAgent(ctx context.Context, name string) error
 	// AddSidecar starts a service in the pod, pulling its image when the
 	// node does not have it yet (and keeping it: the pull is cached).
 	AddSidecar(ctx context.Context, pod Pod, spec SidecarSpec) error
@@ -167,3 +200,8 @@ type ExitError struct {
 }
 
 func (e *ExitError) Error() string { return fmt.Sprintf("sandbox: agent exited %d", e.Code) }
+
+var (
+	_ Runtime = (*Podman)(nil)
+	_ Runtime = (*Fake)(nil)
+)

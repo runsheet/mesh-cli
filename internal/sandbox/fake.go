@@ -19,9 +19,18 @@ type Fake struct {
 	VersionErr error
 	Pods       []PodSpec
 	Agents     []AgentSpec
-	Sidecars   []SidecarSpec
-	Removed    []string
-	Calls      []string
+	// Detached are the agents StartAgent started; each is also a running
+	// container in Running, mounting its spec's host paths, in a pod in
+	// Standing. States, when it names one, is what AgentState answers
+	// for it; Stopped are the names StopAgent was asked to stop.
+	// StartErr fails StartAgent.
+	Detached []AgentSpec
+	States   map[string]AgentState
+	Stopped  []string
+	StartErr error
+	Sidecars []SidecarSpec
+	Removed  []string
+	Calls    []string
 	// Trees are the paths RemoveTree was asked to remove.
 	Trees []string
 	// Running and Standing are the store ListContainers and ListPods list: the
@@ -86,6 +95,75 @@ func (f *Fake) RunAgent(ctx context.Context, pod Pod, spec AgentSpec) (Exit, err
 		return Exit{}, nil
 	}
 	return agent(ctx, spec)
+}
+
+// StartAgent implements Runtime: the agent is recorded and stands as a
+// running container of the pod, mounting what StartAgentArgs mounts.
+func (f *Fake) StartAgent(_ context.Context, pod Pod, spec AgentSpec) error {
+	f.call("start-agent " + pod.Name)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.StartErr != nil {
+		return f.StartErr
+	}
+	f.Detached = append(f.Detached, spec)
+	var mounts []string
+	args := StartAgentArgs(pod, spec)
+	for i, a := range args {
+		if a == "--volume" && i+1 < len(args) {
+			src, _, _ := strings.Cut(args[i+1], ":")
+			mounts = append(mounts, src)
+		}
+	}
+	f.Running = append(f.Running, Container{Name: spec.Name, Pod: pod.Name, Running: true, Mounts: mounts})
+	for _, p := range f.Standing {
+		if p.Name == pod.Name {
+			return nil
+		}
+	}
+	f.Standing = append(f.Standing, PodInfo{Name: pod.Name})
+	return nil
+}
+
+// AgentState implements Runtime: States' entry for name, else the
+// container's own state in Running, else ErrNoAgent.
+func (f *Fake) AgentState(_ context.Context, name string) (AgentState, error) {
+	f.call("agent-state " + name)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if st, ok := f.States[name]; ok {
+		return st, nil
+	}
+	for _, c := range f.Running {
+		if c.Name == name {
+			if c.Running {
+				return AgentState{Status: "running", Running: true}, nil
+			}
+			return AgentState{Status: "exited"}, nil
+		}
+	}
+	return AgentState{}, fmt.Errorf("%w: %s", ErrNoAgent, name)
+}
+
+// StopAgent implements Runtime: the container stops, exiting 143 as
+// SIGTERM ends it, unless States already names how it ended.
+func (f *Fake) StopAgent(_ context.Context, name string) error {
+	f.call("stop-agent " + name)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.Stopped = append(f.Stopped, name)
+	for i, c := range f.Running {
+		if c.Name == name {
+			f.Running[i].Running = false
+		}
+	}
+	if st, ok := f.States[name]; !ok || st.Running {
+		if f.States == nil {
+			f.States = map[string]AgentState{}
+		}
+		f.States[name] = AgentState{Status: "exited", Exit: Exit{Code: 143}}
+	}
+	return nil
 }
 
 // AddSidecar implements Runtime.
