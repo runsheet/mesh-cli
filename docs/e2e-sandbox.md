@@ -1,5 +1,5 @@
 ---
-summary: The sandboxed-sessions e2e — scripts/e2e-sandbox.sh builds or pulls the node image through EnsureImage, runs the probe, sidecar and node-path e2e tests (a build and its evaluation on runsheet's Postgres and on a Redis fixture, no pod left after), the operator's live checklist on the mini, and the check-then-remove-by-hand runbook for retiring latchkey-e2e-pg.
+summary: The sandboxed-sessions e2e — scripts/e2e-sandbox.sh builds or pulls the node image through EnsureImage, runs the probe, sidecar and node-path e2e tests (a build and its evaluation on runsheet's Postgres and on a Redis fixture, no pod left after), the operator's live checklist on the mini, the image tools check (TestImageToolsE2E: node/npm with npm ci && npx tsc, Postgres, headless Chromium, with today's image's failing output), and the check-then-remove-by-hand runbook for retiring latchkey-e2e-pg.
 ---
 
 # The sandbox e2e
@@ -116,6 +116,72 @@ leaves podman's `HOME=/home/node` and the container's on `--env HOME` —
 passes; the pull itself is unproven until a host with rootless podman
 runs `MESH_SANDBOX_ENSURE=skip scripts/e2e-sandbox.sh` (or the command
 above) and pastes its output here, in place of this paragraph.
+
+## Tools check
+
+What an enrolled repo's checks need from the image — Node with npm,
+a Postgres server, a headless browser — is checked inside it by
+`scripts/image-tools-check.sh`, and the test that builds the image and
+runs it there is **`TestImageToolsE2E`**
+(`internal/sandbox/tools_e2e_test.go`, under the `e2e` build tag):
+
+```sh
+go test -tags e2e -run TestImageToolsE2E -v ./internal/sandbox/
+# or on an image already here:
+MESH_TOOLS_IMAGE=ghcr.io/runsheet/mesh-node:<version> go test -tags e2e -run TestImageToolsE2E -v ./internal/sandbox/
+# or the script alone, in any image or on a host:
+podman run --rm --security-opt label=disable -v "$PWD:/check:ro" <image> \
+  bash /check/scripts/image-tools-check.sh /check/images/node/testdata/tools-fixture
+```
+
+Without `MESH_TOOLS_IMAGE` the test builds the embedded Containerfile
+as `localhost/mesh-node-tools-e2e:test` — never a `mesh-node` tag, so
+no prune touches the node's own — runs the script in it as the image's
+user `mesh` (uid 1000), and removes the tag after. It skips without
+podman. The script prints one line per check and exits 1 when any
+failed:
+
+| check | what it runs |
+|-------|--------------|
+| `node` | `node --version`, `npm --version`, and `npm ci && npx tsc --version` in a copy of `images/node/testdata/tools-fixture` (a lockfile pinning `typescript` 5.6.3) |
+| `postgres` | `initdb` into a temp dir as the session's user, `pg_ctl start` on a unix socket there, `psql -c 'select 1'`, stopped and removed after |
+| `chrome` | the first of `chromium`, `chromium-browser`, `google-chrome`, `chrome` on PATH: `--headless --version`, then a headless `--dump-dom` of a `data:` page |
+
+**Today's image fails it** (2026-10-13, item 1 of
+`a-node-validates-every-enrolled-repo-with-the-tools-it-needs`). Run
+as `mesh` inside the node image this build session's own pod ran on
+dl360-anythink — node v0.2.403, whose `images/node/Containerfile` is
+byte for byte main's at 86511b9, i.e. `ghcr.io/runsheet/mesh-node:v0.2.403`:
+
+```
+$ scripts/image-tools-check.sh; echo "exit $?"
+PASS node: node v24.21.0, npm 11.19.0, npm ci && npx tsc --version: Version 5.6.3
+FAIL postgres: initdb not on PATH
+FAIL chrome: no chromium, chromium-browser, google-chrome or chrome on PATH
+exit 1
+```
+
+**The amended image passes it, unproven in podman.** The builder's
+pod has no podman and no root, so it could not build the image. What
+it ran instead, in that same image: the Containerfile's new packages'
+Debian trixie amd64 debs (`postgresql-17` 17.11-0+deb13u1,
+`chromium` 150.0.7871.181-1~deb13u1 and the 158 packages they pull in
+that the image lacks) unpacked with `dpkg-deb -x` into `/tmp/root`, the
+server's binaries linked into a directory on PATH as the Containerfile
+links them into `/usr/local/bin`, `chromium` a shim to
+`/tmp/root/usr/lib/chromium/chromium`, the libraries on
+`LD_LIBRARY_PATH`:
+
+```
+$ PATH=/tmp/shim:/tmp/lbin:$PATH LD_LIBRARY_PATH=… scripts/image-tools-check.sh; echo "exit $?"
+PASS node: node v24.21.0, npm 11.19.0, npm ci && npx tsc --version: Version 5.6.3
+PASS postgres: postgres (PostgreSQL) 17.11 (Debian 17.11-0+deb13u1), select 1 = 1 as mesh
+PASS chrome: Chromium 150.0.7871.181; chromium --headless --dump-dom rendered a page
+exit 0
+```
+
+The first host with podman to run `TestImageToolsE2E` pastes its
+output here, in place of this paragraph.
 
 ## Live run on the mini
 

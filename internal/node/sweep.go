@@ -53,24 +53,40 @@ func SweepScopes(ctx context.Context, gw Gateway, sc sessionunit.Systemctl, foun
 			logf("sweep: %s left, %s %s is %s on the platform", unit, j.What, j.Subject, j.Status)
 			continue
 		}
-		what, subject, status := j.What, j.Subject, j.Status
-		killed, err := sessionunit.SystemdScope{Systemctl: sc}.Kill(sessionunit.Handle{UnitName: unit})
-		names := make([]string, 0, len(killed))
-		for _, p := range killed {
-			names = append(names, p.String())
-		}
-		list := strings.Join(names, ", ")
-		if list == "" {
-			list = "nothing"
-		}
-		if err != nil {
-			logf("sweep: stopping %s (%s %s, %s on the platform): killed %s: %v", unit, what, subject, status, list, err)
+		if !stopScope(sc, unit, j, "sweep", logf) {
 			continue
 		}
-		logf("sweep: stopped %s (%s %s, %s on the platform): killed %s", unit, what, subject, status, list)
 		stopped++
 	}
 	return stopped
+}
+
+// stopScope kills unit with everything in its cgroup and logs it under
+// prefix — `<prefix>: stopped <unit> (item X, merged on the platform):
+// killed …`, each process named — answering whether the stop went
+// through. The start-up sweep and the live probe's orphan sweep
+// (liveproc.go) share it.
+func stopScope(sc sessionunit.Systemctl, unit string, j scopeJudgement, prefix string, logf func(string, ...any)) bool {
+	killed, err := sessionunit.SystemdScope{Systemctl: sc}.Kill(sessionunit.Handle{UnitName: unit})
+	return logStopped(unit, j, killed, err, prefix, logf)
+}
+
+// logStopped is stopScope's log line for whatever was killed.
+func logStopped(unit string, j scopeJudgement, killed []sessionunit.Process, err error, prefix string, logf func(string, ...any)) bool {
+	names := make([]string, 0, len(killed))
+	for _, p := range killed {
+		names = append(names, p.String())
+	}
+	list := strings.Join(names, ", ")
+	if list == "" {
+		list = "nothing"
+	}
+	if err != nil {
+		logf("%s: stopping %s (%s %s, %s on the platform): killed %s: %v", prefix, unit, j.What, j.Subject, j.Status, list, err)
+		return false
+	}
+	logf("%s: stopped %s (%s %s, %s on the platform): killed %s", prefix, unit, j.What, j.Subject, j.Status, list)
+	return true
 }
 
 // A ScopeVerdict is what the platform's answer makes of a mesh-session
@@ -98,7 +114,10 @@ type scopeJudgement struct {
 	What string
 	// Status is the subject's status on the platform ("unknown" for an
 	// id it has no row for).
-	Status  string
+	Status string
+	// NodeID is the node holding the item on the platform (an item's
+	// session only; "" when none or unread).
+	NodeID  string
 	Verdict ScopeVerdict
 	Err     error
 }
@@ -116,11 +135,7 @@ func judgeScope(ctx context.Context, gw Gateway, unit string) scopeJudgement {
 	live := false
 	switch harness.Kind(kind) {
 	case harness.KindBuild, harness.KindEvaluate, harness.KindRebase:
-		j.What = "item"
-		var item *gateway.WorkItem
-		if item, err = gw.WorkItem(ctx, subject); err == nil {
-			j.Status, live = itemStatus(*item), SessionLive(*item)
-		}
+		return judgeItem(ctx, gw, kind, subject)
 	case harness.KindPlan:
 		j.What = "goal"
 		var goal *gateway.Goal
@@ -143,6 +158,30 @@ func judgeScope(ctx context.Context, gw Gateway, unit string) scopeJudgement {
 		j.Verdict = ScopeLive
 	default:
 		j.Verdict = ScopeTerminal
+	}
+	return j
+}
+
+// judgeItem is judgeScope for a build, evaluate or rebase session of
+// item: the item's status on the platform, the node holding it, and the
+// verdict.
+func judgeItem(ctx context.Context, gw Gateway, kind, item string) scopeJudgement {
+	j := scopeJudgement{Kind: kind, Subject: item, What: "item"}
+	row, err := gw.WorkItem(ctx, item)
+	switch {
+	case errors.Is(err, gateway.ErrNotFound):
+		j.Status, j.Verdict = "unknown", ScopeUnknown
+	case err != nil:
+		j.Verdict, j.Err = ScopeUnread, err
+	default:
+		j.Status, j.NodeID = itemStatus(*row), row.NodeID
+		if harness.Kind(kind) == harness.KindRebase && row.RebaseNodeID != "" {
+			j.NodeID = row.RebaseNodeID
+		}
+		j.Verdict = ScopeTerminal
+		if SessionLive(*row) {
+			j.Verdict = ScopeLive
+		}
 	}
 	return j
 }

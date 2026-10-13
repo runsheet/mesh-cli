@@ -93,7 +93,7 @@ func (r *Runner) validator() validator {
 // target is the build as its validation needs it.
 func (b *buildRun) target() validationTarget {
 	return validationTarget{item: b.item, dir: b.dir, base: b.spec.BaseRef, prefix: "item " + b.label, label: b.label,
-		job: b.job, pod: b.podSession(), session: b.session, redact: b.acct.RedactErr, report: b.report}
+		job: b.job, pod: b.podSession(), session: b.session, redact: b.acct.RedactErr, report: func(ctx context.Context, note string) { b.report(ctx, note) }}
 }
 
 // startValidation reads the checkout's validate.yml and readies the
@@ -181,6 +181,11 @@ func (r *Runner) validateBuild(ctx context.Context, b *buildRun, v *buildValidat
 	res, runErr, ran := r.retryTurn(ctx, b, failed)
 	if !ran {
 		return att, vf
+	}
+	if why := b.watch.lost(); why != "" {
+		// the retry turn's claim was lost: stopped, and nothing sent
+		_ = r.afterLost(b, why, res)
+		return att, ErrClaimLost
 	}
 	b.acct.Report(first)
 	b.acct.Add(res)
@@ -288,8 +293,8 @@ func (r *Runner) retryTurn(ctx context.Context, b *buildRun, failed validate.Ste
 		turn.Resume, turn.Prompt = "", b.job.Prompt+"\n\n# Your last session's validation failed\n\n"+prompt
 	}
 	b.cost.carry()
-	res, err = b.run(ctx, func(onProgress func(harness.Progress)) (harness.Result, error) {
-		return r.Harness.Run(ctx, turn, onProgress)
+	res, err = b.run(ctx, func(sctx context.Context, onProgress func(harness.Progress)) (harness.Result, error) {
+		return r.Harness.Run(sctx, turn, onProgress)
 	})
 	b.cost.observe(res.CostUSD)
 	if res.SessionID != "" {
