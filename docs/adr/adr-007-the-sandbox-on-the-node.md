@@ -1,5 +1,5 @@
 ---
-summary: How mesh-cli implements mesh-specs ADR 007 — internal/sandbox's Runtime (Podman, a test Fake) runs claude in a per-session pod with two mounts, an allow-listed env passed to podman by name, node.yaml's flat sandbox keys (mode, cpus, memory, pids, services_cpus, services_memory, registries, image), a mode left out following `podman --version` while an explicit on fails closed at start, a limit kill (OOM, pids, the runtime's timeout backstop) released as the node's condition with the heartbeat's reason, service sidecars started and health-checked in the session's pod before the agent (a required one failing releases the claim, an optional one is a note), the node image (images/node/Containerfile, embedded) pulled for the new version before a self-update or `mesh node update` drains — a failed pull an updateError with no drain and no swap, `sandbox.image: build` building it locally — the pod mapping the host user onto the image's declared user (`--userns keep-id:uid=<image uid>,gid=<image gid>`, 1000 when it declares none; podman 4.3 or later), a session's HOME, pod, containers and volumes removed on every way it ends — `Session.Close` sure of the HOME (RemoveAll, then u+w, then `podman unshare rm -rf`) and logging what it could not remove — and a node start sweeping (`sandbox.Sweep`) the mesh-home dirs no running container mounts, the mesh pods with no running container and the exited mesh containers an earlier process left, and channel mode and Codex not yet sandboxed.
+summary: How mesh-cli implements mesh-specs ADR 007 — the node image carrying Postgres and headless Chromium beside Go, Node and Python (scripts/image-tools-check.sh run in it by TestImageToolsE2E), internal/sandbox's Runtime (Podman, a test Fake) runs claude in a per-session pod with two mounts, an allow-listed env passed to podman by name, node.yaml's flat sandbox keys (mode, cpus, memory, pids, services_cpus, services_memory, registries, image), a mode left out following `podman --version` while an explicit on fails closed at start, a limit kill (OOM, pids, the runtime's timeout backstop) released as the node's condition with the heartbeat's reason, service sidecars started and health-checked in the session's pod before the agent (a required one failing releases the claim, an optional one is a note), the node image (images/node/Containerfile, embedded) pulled for the new version before a self-update or `mesh node update` drains — a failed pull an updateError with no drain and no swap, `sandbox.image: build` building it locally — the pod mapping the host user onto the image's declared user (`--userns keep-id:uid=<image uid>,gid=<image gid>`, 1000 when it declares none; podman 4.3 or later), a session's HOME, pod, containers and volumes removed on every way it ends — `Session.Close` sure of the HOME (RemoveAll, then u+w, then `podman unshare rm -rf`) and logging what it could not remove — and a node start sweeping (`sandbox.Sweep`) the mesh-home dirs no running container mounts, the mesh pods with no running container and the exited mesh containers an earlier process left, and channel mode and Codex not yet sandboxed.
 status: accepted
 ---
 
@@ -78,8 +78,11 @@ implementing it that the spec leaves open or that differ in detail.
   binary as `nodeimage.Containerfile`; `internal/sandbox/image.go`).
   Debian with git, Go at go.mod's version (a test holds them together),
   Node LTS with npm and corepack, Python 3 with pip and uv, make and a C
-  toolchain, gh, nftables, ca-certificates and the claude and codex
-  CLIs, each at a version pinned in the file; a non-root user `mesh`;
+  toolchain, gh, nftables, ca-certificates, a Postgres server
+  (`postgresql-17`, `initdb`/`pg_ctl`/`psql` on PATH, no cluster made)
+  and headless Chromium (Debian's `chromium`) — amended 2026-10-13,
+  below — and the claude and codex CLIs, each at a version pinned in
+  the file; a non-root user `mesh`;
   no secret. Neither agent updates itself: the CLIs are root-owned
   under `/usr/local`, `DISABLE_AUTOUPDATER=1` is in the image's ENV and
   — since `--unsetenv-all` drops that — in the sandbox's own `BaseEnv`,
@@ -290,3 +293,44 @@ sandboxed session writes no session state, so adoption never sees it.
 
 The hourly cron the dl360 ran in the meantime (`/etc/cron.hourly/mesh-home-sweep`)
 has the same shape and goes once this lands there.
+
+## Amendment 2026-10-13: the image carries Postgres and headless Chromium
+
+Goal `a-node-validates-every-enrolled-repo-with-the-tools-it-needs`,
+item 1. latchkey's `conformance` step (`scripts/time-conformance.sh`)
+needs headless Chrome and a Postgres server; the image had neither, so
+it exited 1 on untouched main and every item failed on its environment.
+
+- **In the image.** `postgresql-${PG_MAJOR}` and
+  `postgresql-client-${PG_MAJOR}` (`PG_MAJOR=17`, trixie's) with
+  `/usr/lib/postgresql/${PG_MAJOR}/bin` on the image's PATH, so
+  `initdb`, `pg_ctl`, `postgres` and `psql` answer to the session's
+  non-root user; `create_main_cluster = false` before the install, so
+  the image holds no cluster and no running server — a check runs
+  `initdb` into a temp dir of its own and starts it on a unix socket
+  there. And `chromium` (with `fonts-liberation`), `/usr/bin/chromium`.
+- **Why Debian's Chromium, not Chrome for Testing.** The image is
+  built for linux/amd64 and linux/arm64 (`PushImage`); Debian trixie
+  builds `chromium` for both, from the same security-updated source,
+  while Chrome for Testing ships no linux arm64 build. A check that
+  looks for `google-chrome` or `chrome` finds neither; one that takes
+  `CHROME_PATH`/`PUPPETEER_EXECUTABLE_PATH` is given
+  `/usr/bin/chromium` by the repo. In a pod Chromium runs with
+  `--no-sandbox`: the pod is the sandbox, and a rootless pod has no
+  user namespace left for Chromium's own.
+- **In the image, not in a repo's `validate.yml`.** A browser and a
+  database server are a machine's packages (apt, root, a few hundred
+  MB), which a session's non-root user cannot install and a
+  `validate.yml` step would download on every run. What a repo can
+  install as its user — its npm packages, a Go module — stays the
+  repo's, in its lockfile.
+- **Proven in the image.** `scripts/image-tools-check.sh` prints one
+  PASS/FAIL line for node/npm with `npm ci && npx tsc --version` in
+  `images/node/testdata/tools-fixture`, for a Postgres server started
+  and `select 1`, and for Chromium's `--headless --version` and a
+  headless `--dump-dom`; `TestImageToolsE2E` (`-tags e2e`,
+  `internal/sandbox/tools_e2e_test.go`) builds the embedded
+  Containerfile, or takes `MESH_TOOLS_IMAGE`, and runs it there
+  (docs/e2e-sandbox.md, Tools check). The image's own build checks
+  `initdb`/`pg_ctl`/`psql --version` and `chromium` by its package, as
+  it does nftables: the arm64 build runs under qemu-user.

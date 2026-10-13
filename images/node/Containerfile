@@ -2,7 +2,7 @@
 #
 # One image carries the toolchains a session may use — git, Go, Node/npm
 # (corepack for pnpm/yarn), Python 3 with pip and uv, make and a C
-# toolchain, gh — and the agent CLIs, claude and codex, at the versions
+# toolchain, gh, a Postgres server and headless Chromium — and the agent CLIs, claude and codex, at the versions
 # pinned below. It is tagged with the node's version,
 # ghcr.io/runsheet/mesh-node:<version>, built by release-tag.yml on
 # the same tag as the binary, and `mesh node update` and the node's
@@ -22,6 +22,7 @@ ARG NODE_VERSION=24.21.0
 ARG UV_VERSION=0.12.19
 ARG CLAUDE_CODE_VERSION=2.1.282
 ARG CODEX_VERSION=0.157.0
+ARG PG_MAJOR=17
 ARG MESH_VERSION=dev
 ARG TARGETARCH
 
@@ -48,6 +49,20 @@ RUN apt-get update \
       > /etc/apt/sources.list.d/github-cli.list \
  && apt-get update \
  && apt-get install -y --no-install-recommends gh \
+ && rm -rf /var/lib/apt/lists/*
+
+# A Postgres server and headless Chromium, for the checks a repo runs
+# against them (latchkey's conformance needs both). Debian's own:
+# chromium is built for amd64 and arm64 alike, where Chrome for Testing
+# ships no linux arm64. No cluster is made here: a check runs initdb
+# into a temp dir as the session's user, initdb and pg_ctl on PATH from
+# /usr/lib/postgresql/${PG_MAJOR}/bin (scripts/image-tools-check.sh).
+RUN mkdir -p /etc/postgresql-common/createcluster.d \
+ && echo 'create_main_cluster = false' > /etc/postgresql-common/createcluster.d/no-main-cluster.conf \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends \
+      "postgresql-${PG_MAJOR}" "postgresql-client-${PG_MAJOR}" \
+      chromium fonts-liberation \
  && rm -rf /var/lib/apt/lists/*
 
 # Go, the version go.mod names.
@@ -78,7 +93,7 @@ RUN npm install -g --no-fund --no-audit --allow-scripts=@anthropic-ai/claude-cod
  && mkdir -p /etc/codex \
  && printf 'check_for_update_on_startup = false\n' > /etc/codex/config.toml
 
-ENV PATH=/usr/local/go/bin:/home/mesh/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+ENV PATH=/usr/local/go/bin:/home/mesh/go/bin:/usr/lib/postgresql/${PG_MAJOR}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     DISABLE_AUTOUPDATER=1 \
     LANG=C.UTF-8
 
@@ -91,8 +106,11 @@ WORKDIR /home/mesh
 # nftables is checked by its package, not `nft --version`: nft opens a
 # netlink socket even for that, and the arm64 build runs under qemu-user,
 # which has no netlink (release-tag.yml's image job failed on it).
+# chromium likewise by its package: the browser under qemu-user is not
+# what this proves; scripts/image-tools-check.sh starts it in the image.
 RUN git --version && go version && node --version && npm --version \
  && python3 --version && uv --version && gh --version && dpkg-query -W nftables \
+ && initdb --version && pg_ctl --version && psql --version && dpkg-query -W chromium \
  && claude --version && codex --version
 
 CMD ["bash"]
