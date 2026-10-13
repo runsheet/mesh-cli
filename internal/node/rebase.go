@@ -121,6 +121,7 @@ func (r *Rebaser) Rebase(ctx context.Context, item gateway.WorkItem) error {
 	}
 	label := fmt.Sprintf("%s/%d", res.Goal.Slug, item.Seq)
 	rb.label = label
+	ctx = WithLockHolder(ctx, label)
 	branch := item.Branch
 	if branch == "" {
 		branch = res.Branch()
@@ -427,6 +428,7 @@ func (r *Rebaser) AdoptRebase(ctx context.Context, item gateway.WorkItem, s Foun
 		return rb.fail(ctx, fmt.Errorf("resolve: %w", err))
 	}
 	rb.label = fmt.Sprintf("%s/%d", res.Goal.Slug, item.Seq)
+	ctx = WithLockHolder(ctx, rb.label)
 	rb.branch = item.Branch
 	if rb.branch == "" {
 		rb.branch = res.Branch()

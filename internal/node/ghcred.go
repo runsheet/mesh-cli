@@ -70,17 +70,8 @@ func writeHelper(ctx context.Context, dir, base, helper string) error {
 	key := "credential." + strings.TrimRight(base, "/") + ".helper"
 	scope := "--local"
 	if isWorktree(dir) {
-		// addWorktree enables it under the repo's lock; a worktree made
-		// before it did gets it here, read first so no two items write
-		// the clone's one config at once when it is already there
-		get := exec.CommandContext(ctx, "git", "config", "--local", "--type=bool", "--get", "extensions.worktreeConfig")
-		get.Dir = dir
-		if out, err := get.Output(); err != nil || strings.TrimSpace(string(out)) != "true" {
-			cmd := exec.CommandContext(ctx, "git", "config", "--local", "extensions.worktreeConfig", "true")
-			cmd.Dir = dir
-			if out, err := cmd.CombinedOutput(); err != nil {
-				return fmt.Errorf("git config extensions.worktreeConfig: %w: %s", err, strings.TrimSpace(string(out)))
-			}
+		if err := ensureWorktreeConfig(ctx, dir); err != nil {
+			return err
 		}
 		scope = "--worktree"
 	}
@@ -104,6 +95,25 @@ func writeHelper(ctx context.Context, dir, base, helper string) error {
 		return err
 	}
 	return gitConfig("--add", key, helper)
+}
+
+// ensureWorktreeConfig makes sure the shared clone of the worktree dir
+// has extensions.worktreeConfig, so `git config --worktree` writes the
+// worktree's own config.worktree. addWorktree enables it under the
+// repo's lock; a worktree made before it did gets it here, read first so
+// the steady state writes nothing to the clone's one .git/config.
+func ensureWorktreeConfig(ctx context.Context, dir string) error {
+	get := exec.CommandContext(ctx, "git", "config", "--local", "--type=bool", "--get", "extensions.worktreeConfig")
+	get.Dir = dir
+	if out, err := get.Output(); err == nil && strings.TrimSpace(string(out)) == "true" {
+		return nil
+	}
+	cmd := exec.CommandContext(ctx, "git", "config", "--local", "extensions.worktreeConfig", "true")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git config extensions.worktreeConfig: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 // isWorktree reports whether dir is a git worktree — its .git a file

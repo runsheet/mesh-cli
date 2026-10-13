@@ -5,10 +5,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
+
+	"projectmesh.io/mesh-cli/internal/gateway"
 )
 
 // LocksDir is where the per-repo fetch locks live under a work root:
@@ -68,13 +72,145 @@ func (g *Git) lockRoot(root, dir string) string {
 	return filepath.Dir(filepath.Dir(dir))
 }
 
+// lockHolderKey carries on a ctx the label of the item a lockRepo call
+// holds the lock for.
+type lockHolderKey struct{}
+
+// WithLockHolder marks ctx with the label of the item its per-repo locks
+// are held for — `<goal>/<seq>` — so a session waiting on one can be told
+// whose it is.
+func WithLockHolder(ctx context.Context, label string) context.Context {
+	return context.WithValue(ctx, lockHolderKey{}, label)
+}
+
+// lockHolderOf is the label WithLockHolder put on ctx, else "unknown".
+func lockHolderOf(ctx context.Context) string {
+	if l, ok := ctx.Value(lockHolderKey{}).(string); ok && l != "" {
+		return l
+	}
+	return "unknown"
+}
+
+// lockRoleOf is the role of ctx's actor (`agent:<role>@<slug>`), else "".
+func lockRoleOf(ctx context.Context) string {
+	a, ok := gateway.ActorFrom(ctx)
+	if !ok {
+		return ""
+	}
+	a = strings.TrimPrefix(a, "agent:")
+	if i := strings.Index(a, "@"); i >= 0 {
+		a = a[:i]
+	}
+	return a
+}
+
+// lockHolder is who holds a per-repo lock: the item's label, the
+// session's role, the process and since when. It is the one line written
+// into the lock file once the flock is taken, and the entry repoHolders
+// keeps for the in-process mutex.
+type lockHolder struct {
+	Label string
+	Role  string
+	PID   int
+	Since time.Time
+}
+
+// line is the holder record as written into the lock file:
+// `label=<l> role=<r> pid=<n> since=<RFC3339Nano>`.
+func (h lockHolder) line() string {
+	role := h.Role
+	if role == "" {
+		role = "-"
+	}
+	return fmt.Sprintf("label=%s role=%s pid=%d since=%s\n", h.Label, role, h.PID, h.Since.UTC().Format(time.RFC3339Nano))
+}
+
+// parseLockHolder reads a holder record back; ok is false for an empty
+// or unreadable file — a lock taken by an older node.
+func parseLockHolder(b []byte) (lockHolder, bool) {
+	var h lockHolder
+	line := strings.TrimSpace(string(b))
+	if i := strings.IndexByte(line, '\n'); i >= 0 {
+		line = line[:i]
+	}
+	for _, f := range strings.Fields(line) {
+		k, v, ok := strings.Cut(f, "=")
+		if !ok {
+			continue
+		}
+		switch k {
+		case "label":
+			h.Label = v
+		case "role":
+			if v != "-" {
+				h.Role = v
+			}
+		case "pid":
+			h.PID, _ = strconv.Atoi(v)
+		case "since":
+			h.Since, _ = time.Parse(time.RFC3339Nano, v)
+		}
+	}
+	return h, h.Label != ""
+}
+
+// waitingLine is what a waiting lockRepo logs about holder h:
+// `waiting on <label> (pid <n>, held <d>)`.
+func (h lockHolder) waitingLine(now time.Time) string {
+	held := "unknown"
+	if !h.Since.IsZero() {
+		held = now.Sub(h.Since).Round(time.Millisecond).String()
+	}
+	return fmt.Sprintf("waiting on %s (pid %d, held %s)", h.Label, h.PID, held)
+}
+
+// repoHolders is who holds each in-process mutex of repoLocks, by key.
+var repoHolders sync.Map // key → lockHolder
+
+// repoLockLogf is the package's logger for the lock's waits: a lockRepo
+// that has to wait logs whom it waits on and, once it has the lock, how
+// long it waited. Nil logs nothing; SetRepoLockLogf sets it.
+var repoLockLogf atomic.Pointer[func(format string, args ...any)]
+
+// SetRepoLockLogf sets the logger a waiting lockRepo writes its lines to
+// (node.log's, set by mesh node start); nil silences it.
+func SetRepoLockLogf(logf func(format string, args ...any)) {
+	if logf == nil {
+		repoLockLogf.Store(nil)
+		return
+	}
+	repoLockLogf.Store(&logf)
+}
+
+func lockLogf(format string, args ...any) {
+	if p := repoLockLogf.Load(); p != nil {
+		(*p)(format, args...)
+	}
+}
+
 // lockRepo takes the per-repo lock: the process's mutex for key, then an
 // exclusive flock on its file under root, so two node processes on one
-// machine are serialised too. The returned func releases both.
+// machine are serialised too. The returned func releases both. Once both
+// are held the holder — ctx's WithLockHolder label, its actor's role,
+// the pid and the time — is written into the lock file (the flock is on
+// the fd, not the content) and kept beside the mutex. A call that has to
+// wait on either logs `repo lock <key>: waiting on <holder> (pid <n>,
+// held <d>)` and, once it has the lock, `repo lock <key>: acquired after
+// <d>`; a free lock logs nothing.
 func lockRepo(ctx context.Context, root, key string) (func(), error) {
+	start := time.Now()
+	waited := false
 	v, _ := repoLocks.LoadOrStore(key, &sync.Mutex{})
 	mu := v.(*sync.Mutex)
-	mu.Lock()
+	if !mu.TryLock() {
+		waited = true
+		h, ok := repoHolders.Load(key)
+		if !ok {
+			h = lockHolder{Label: "unknown", PID: os.Getpid()}
+		}
+		lockLogf("repo lock %s: %s", key, h.(lockHolder).waitingLine(time.Now()))
+		mu.Lock()
+	}
 	path := RepoLockPath(root, key)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		mu.Unlock()
@@ -85,12 +221,35 @@ func lockRepo(ctx context.Context, root, key string) (func(), error) {
 		mu.Unlock()
 		return nil, fmt.Errorf("repo lock: %w", err)
 	}
-	if err := flockCtx(ctx, f); err != nil {
-		f.Close()
-		mu.Unlock()
-		return nil, fmt.Errorf("repo lock %s: %w", path, err)
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		if err != syscall.EWOULDBLOCK && err != syscall.EINTR {
+			f.Close()
+			mu.Unlock()
+			return nil, fmt.Errorf("repo lock %s: %w", path, err)
+		}
+		waited = true
+		b, _ := os.ReadFile(path)
+		h, ok := parseLockHolder(b)
+		if !ok {
+			h = lockHolder{Label: "unknown"}
+		}
+		lockLogf("repo lock %s: %s", key, h.waitingLine(time.Now()))
+		if err := flockCtx(ctx, f); err != nil {
+			f.Close()
+			mu.Unlock()
+			return nil, fmt.Errorf("repo lock %s: %w", path, err)
+		}
+	}
+	holder := lockHolder{Label: lockHolderOf(ctx), Role: lockRoleOf(ctx), PID: os.Getpid(), Since: time.Now()}
+	repoHolders.Store(key, holder)
+	if err := f.Truncate(0); err == nil {
+		f.WriteAt([]byte(holder.line()), 0)
+	}
+	if waited {
+		lockLogf("repo lock %s: acquired after %s", key, time.Since(start).Round(time.Millisecond))
 	}
 	return func() {
+		repoHolders.Delete(key)
 		syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 		f.Close()
 		mu.Unlock()
