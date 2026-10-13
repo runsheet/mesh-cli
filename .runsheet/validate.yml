@@ -22,5 +22,55 @@ suites:
       - "**/*.go"
       - go.mod
       - go.sum
+      # scripts/*_test.go run the shell scripts beside them
+      - "scripts/**"
     timeout: 15m
     results: stdout
+
+  # What pr-checks.yml's lint job ran on GitHub, now the node's: a
+  # mesh-cli change is validated and attested on the node alone (the
+  # repo is public, and the home box's runners take no public repo's
+  # jobs). Nothing of these needs the network beyond Go's modules.
+  - name: gofmt
+    kind: lint
+    command: |
+      PATH="$PATH:/usr/local/go/bin:$HOME/go/bin:$HOME/sdk/go/bin"
+      fmt=$(gofmt -l .)
+      [ -z "$fmt" ] || { echo "not gofmt-clean:"; echo "$fmt"; exit 1; }
+    always: true
+
+  - name: generated
+    kind: lint
+    # fields_gen.go is generated from the committed schema.json and
+    # internal/gateway/fields/*.txt (docs/adr/adr-010)
+    command: PATH="$PATH:/usr/local/go/bin:$HOME/go/bin:$HOME/sdk/go/bin" scripts/check-generated.sh
+    always: true
+
+  - name: scripts
+    kind: unit
+    command: |
+      set -e
+      for t in mirror-release exchange-workflow-token mirror-token mirror-token-reading \
+               mini-owner-reading withdrawn-account-reading release-on-merge \
+               evaluation-cost-by-priority; do
+        echo "== scripts/${t}_test.sh"; bash "scripts/${t}_test.sh"
+      done
+    paths:
+      - "scripts/**"
+      - ".github/**"
+      - "dist/**"
+      - ".runsheet/**"
+    timeout: 10m
+
+  - name: inv-02
+    kind: lint
+    # INV-02 archival is permanent: these four stay deleted, and nothing
+    # imports them again (.planning/REQUIREMENTS.md INV-02)
+    command: |
+      for d in internal/gateways/discord internal/gateways/whatsapp internal/channels internal/accounts; do
+        [ ! -d "$d" ] || { echo "$d must remain archived (INV-02)"; exit 1; }
+      done
+      if grep -rnE '"projectmesh\.io/mesh-cli/internal/(gateways/discord|gateways/whatsapp|channels|accounts)(/[^"]*)?"' --include="*.go" . ; then
+        echo "source imports an archived package (INV-02)"; exit 1
+      fi
+    always: true

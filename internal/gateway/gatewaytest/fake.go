@@ -2216,6 +2216,19 @@ func applyRebase(name string, item, in map[string]any) error {
 	return nil
 }
 
+// SetItem sets fields on the item's row as the platform would on its
+// own — a stall putting it back in ready, a lease handed to another
+// node, a cancel — with no mutation recorded in Calls.
+func (f *Fake) SetItem(itemID string, fields map[string]any) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if item := f.WorkItems[itemID]; item != nil {
+		for k, v := range fields {
+			item[k] = v
+		}
+	}
+}
+
 // HeldBy marks the item running on nodeID: held by another node, as a
 // pair finds it (mesh-cli ADR-023, Pairing).
 func (f *Fake) HeldBy(itemID, nodeID string) {
