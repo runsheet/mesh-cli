@@ -1066,6 +1066,8 @@ func nodeStart(cmd *cobra.Command, args []string, logger *log.Logger) error {
 	// a read that issues no credential for the adapter is a hold, never
 	// the machine's own login: the loop leaves that project's work
 	// unclaimed and says why (adr-005's amendment 2026-10)
+	// a session waiting on a repo lock names its holder in node.log
+	node.SetRepoLockLogf(logger.Printf)
 	loop.NoCredential = &node.NoCredentials{Log: logger, Now: loop.Now}
 	accounts := &node.Credentials{GW: gw, Limits: loop.Limits, Thresholds: loop.Thresholds, Known: known, NoCredential: loop.NoCredential, Log: logger}
 	switch nodeModeFlag {

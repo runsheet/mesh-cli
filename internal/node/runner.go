@@ -280,6 +280,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 		return r.fail(ctx, item, fmt.Errorf("resolve: %w", err))
 	}
 	label := fmt.Sprintf("%s/%d", res.Goal.Slug, item.Seq)
+	ctx = WithLockHolder(ctx, label)
 	r.logf("item %s: %q on %s from %s", label, item.Title, res.Repo.FullName(), res.BaseRef())
 
 	spec := WorkspaceSpec{Root: r.WorkRoot, GoalSlug: res.Goal.Slug, Seq: item.Seq, Repo: res.Repo.FullName(), Branch: res.Branch(), BaseRef: res.BaseRef()}
@@ -923,6 +924,7 @@ func (r *Runner) AdoptItem(ctx context.Context, item gateway.WorkItem, s FoundSe
 		return r.fail(ctx, item, fmt.Errorf("resolve: %w", err))
 	}
 	label := fmt.Sprintf("%s/%d", res.Goal.Slug, item.Seq)
+	ctx = WithLockHolder(ctx, label)
 	spec := WorkspaceSpec{Root: r.WorkRoot, GoalSlug: res.Goal.Slug, Seq: item.Seq, Repo: res.Repo.FullName(), Branch: res.Branch(), BaseRef: res.BaseRef()}
 	// the item's token on the checkout again: the session's pushes, and
 	// the node's, need a live one

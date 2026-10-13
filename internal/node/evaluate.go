@@ -187,6 +187,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 		return fmt.Errorf("resolve: %w", err)
 	}
 	label := fmt.Sprintf("%s/%d", res.Goal.Slug, item.Seq)
+	ctx = WithLockHolder(ctx, label)
 	// the family it runs on, before anything is prepared: a pinned
 	// family with no headroom waits in evaluating (ADR 011)
 	fam, err := e.family(ctx, item, res.Goal.Priority, label)
@@ -858,6 +859,7 @@ func (e *Evaluator) AdoptEvaluation(ctx context.Context, item gateway.WorkItem, 
 		return errNoAttach
 	}
 	label := fmt.Sprintf("%s/%d", res.Goal.Slug, item.Seq)
+	ctx = WithLockHolder(ctx, label)
 	e.logf("item %s: adopted its %s evaluation (pid %d)", label, s.Liveness(), s.State.PID)
 	result, err := at.Attach(ctx, s.Dir, nil)
 	changed, cfg := e.touched(ctx, label, s.State.Workspace, res.BaseRef(), item.Outcome == gateway.OutcomeAlreadyDone)
