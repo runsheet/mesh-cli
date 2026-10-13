@@ -89,3 +89,35 @@ func RestoreTranscript(configDir, adapter, workspace, sessionID, src string) err
 	}
 	return nil
 }
+
+// TranscriptPath is where a finished session's own transcript sits under
+// its configDir — RestoreTranscript's destination read the other way:
+// `<configDir>/projects/<encoded-workspace>/<sessionID>.jsonl` for
+// "claude-code", the rollout file naming sessionID under
+// `<configDir>/sessions/YYYY/MM/DD/` for "codex". "" when there is none
+// (the dir gone, the session never wrote one, an unknown adapter).
+func TranscriptPath(configDir, adapter, workspace, sessionID string) string {
+	if configDir == "" || sessionID == "" {
+		return ""
+	}
+	switch adapter {
+	case "claude-code":
+		slug, err := projectSlug(workspace)
+		if err != nil {
+			return ""
+		}
+		p := filepath.Join(configDir, "projects", slug, sessionID+".jsonl")
+		if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() {
+			return p
+		}
+	case "codex":
+		matches, _ := filepath.Glob(filepath.Join(configDir, "sessions", "*", "*", "*", "rollout-*.jsonl*"))
+		for i := len(matches) - 1; i >= 0; i-- {
+			base := filepath.Base(matches[i])
+			if codexRolloutName.MatchString(base) && strings.Contains(base, sessionID) {
+				return matches[i]
+			}
+		}
+	}
+	return ""
+}

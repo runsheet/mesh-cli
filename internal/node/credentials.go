@@ -428,6 +428,15 @@ func capOr(v, def float64) float64 {
 	return def
 }
 
+// credentialID is the platform credential the session runs on, "" for
+// none (an adopted session, the machine's own login).
+func (s *SessionAccount) credentialID() string {
+	if s == nil {
+		return ""
+	}
+	return s.account.ID
+}
+
 // label is the account the session runs on.
 func (s *SessionAccount) label() string {
 	if s.account.Label != "" {
