@@ -41,6 +41,16 @@ type MachineReading struct {
 	// off Linux, or on a kernel built without PSI (no
 	// /proc/pressure/cpu) — not an error.
 	HasCPUPressure bool
+	// SliceCPUSomeAvg10 and SliceCPUSomeAvg60 are the node user's own
+	// cgroup v2 slice's cpu.pressure `some` line's avg10 and avg60 — the
+	// pressure sessions themselves are under, as opposed to the whole
+	// host's. Meaningful only when HasSliceCPUPressure.
+	SliceCPUSomeAvg10 float64
+	SliceCPUSomeAvg60 float64
+	// HasSliceCPUPressure says user-<uid>.slice's cpu.pressure was found
+	// and read. False on cgroup v1, off Linux, or when the node does not
+	// run under a user slice — not an error.
+	HasSliceCPUPressure bool
 }
 
 // PerCore is the 1-minute load average per core: Load1 / CPUs, 0 with
@@ -174,6 +184,7 @@ func (p *ProcMachine) Read() (MachineReading, error) {
 			m.MemAvailable = kb * 1024
 			m.PackageTempC, m.HasTemp = p.readPackageTemp()
 			m.CPUSomeAvg10, m.CPUSomeAvg60, m.HasCPUPressure = p.readCPUPressure()
+			m.SliceCPUSomeAvg10, m.SliceCPUSomeAvg60, m.HasSliceCPUPressure = p.readSliceCPUPressure()
 			return m, nil
 		}
 	}
@@ -186,7 +197,26 @@ func (p *ProcMachine) Read() (MachineReading, error) {
 // kernel without PSI, or a host entirely off Linux) or no `some` line
 // is not an error: it answers no reading.
 func (p *ProcMachine) readCPUPressure() (avg10, avg60 float64, ok bool) {
-	data, err := os.ReadFile(filepath.Join(p.Root, "proc", "pressure", "cpu"))
+	return parsePressureFile(filepath.Join(p.Root, "proc", "pressure", "cpu"))
+}
+
+// readSliceCPUPressure reads the node user's own cgroup v2 slice's
+// cpu.pressure under Root — the pressure sessions themselves are
+// under, as opposed to the whole host's /proc/pressure/cpu. No such
+// file (cgroup v1, a host off Linux, or the node not run under a user
+// slice) is not an error: it answers no reading.
+func (p *ProcMachine) readSliceCPUPressure() (avg10, avg60 float64, ok bool) {
+	slice := fmt.Sprintf("user-%d.slice", os.Getuid())
+	return parsePressureFile(filepath.Join(p.Root, "sys", "fs", "cgroup", "user.slice", slice, "cpu.pressure"))
+}
+
+// parsePressureFile reads a PSI pressure file (/proc/pressure/cpu or a
+// cgroup's cpu.pressure) and parses its `some` line's avg10 and avg60:
+// the share of the last 10 and 60 seconds some task spent stalled on
+// CPU. A missing file or no `some` line is not an error: it answers no
+// reading.
+func parsePressureFile(path string) (avg10, avg60 float64, ok bool) {
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return 0, 0, false
 	}

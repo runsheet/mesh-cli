@@ -32,6 +32,11 @@ type HostReport struct {
 	// when HasCPUPressure.
 	CPUSomeAvg60   float64 `json:"cpuSomeAvg60,omitempty"`
 	HasCPUPressure bool    `json:"hasCPUPressure,omitempty"`
+	// SliceCPUSomeAvg60 is the node user's own cgroup v2 slice's
+	// cpu.pressure `some avg60`, meaningful only when
+	// HasSliceCPUPressure.
+	SliceCPUSomeAvg60   float64 `json:"sliceCpuSomeAvg60,omitempty"`
+	HasSliceCPUPressure bool    `json:"hasSliceCpuPressure,omitempty"`
 }
 
 // PerCore is the 1-minute load average per core: Load / Cores, 0 with
@@ -66,7 +71,8 @@ func (h hostState) report() *HostReport {
 	}
 	m := h.reading
 	return &HostReport{Load: m.Load1, Cores: m.CPUs, TempC: m.PackageTempC, HasTemp: m.HasTemp, Hot: h.hot,
-		CPUSomeAvg60: m.CPUSomeAvg60, HasCPUPressure: m.HasCPUPressure}
+		CPUSomeAvg60: m.CPUSomeAvg60, HasCPUPressure: m.HasCPUPressure,
+		SliceCPUSomeAvg60: m.SliceCPUSomeAvg60, HasSliceCPUPressure: m.HasSliceCPUPressure}
 }
 
 // active says the back-off holds the capacity or the host is hot: the
