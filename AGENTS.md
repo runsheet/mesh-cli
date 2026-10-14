@@ -1219,6 +1219,66 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   platform half, runsheet goal
   an-item-that-fails-on-its-environment-is-parked-not-replanned, parks
   on it.
+- **Main validation** (`internal/node/mainvalidation.go`,
+  `mainvalidation_loop.go`,
+  `docs/adr/adr-032-a-node-validates-a-merge-batch-candidate.md`; runsheet
+  ADR 048 decision 3, ADR 054's amendment 2026-10-13): the gateway's
+  `internal/gateway/mainvalidation.go` reads `mainValidations(nodeId)`
+  (`MainValidations`: `batches[]` — `MainValidationBatch{MergeBatchID,
+  Number, CandidateBranch, SHA, Attempt, RepoFullName, RepoID, OrgID,
+  DefaultBranch, RequestedAt}` — and `requests[]`, a merged item's
+  `MainValidationRequest`) and sends `Claim`/`Finish`/
+  `FailMergeBatchValidation` (`nodeId` on all three), their WorkItem twins
+  `Claim`/`Finish`/`FailWorkItemMainValidation` (finish and fail take no
+  `nodeId`) and `RecordBatchCandidateAttestation`
+  (`recordValidationAttestation` with `mergeBatchId` as the argument and
+  inside the input; the receipt's `branch` the candidate's), all gated by
+  `TakesMainValidation` (the query and the six mutations, kept
+  `ScalingProbeEvery`; a no sends nothing). The contracts are
+  `specs/contracts/mainValidations.json`, the three batch commands,
+  `recordValidationAttestation-batchCandidate.json` and the three twins —
+  written from the live schema, the `requests[]` shape and the receipt's
+  `branch` still to check against runsheet's. The fake's
+  `SeedMergeBatch`/`SeedMainValidationRequest` serve them, a claim
+  converging on one node and refused for another, a fail releasing it
+  back to `requested`, a finish refusing a sha not the row's.
+  Every tick, after `inUse` and before `claimReady`, while not draining,
+  `Loop.validateBatches` reads each node id's queue and — only when
+  `takes:` takes `evaluate`, a slot is free and the host is not hot —
+  claims each entry of a served org (every batch before any request)
+  under the `evaluate` cap, its run a `mainJob` (`startMainJob`,
+  `runMainJob`) counted in `Running()`, `sessions()` and
+  `runningOf(evaluate)`; a refused claim is ordinary and silent. A batch
+  runs `Loop.ValidateBatch` = `Runner.ValidateCandidate`: the candidate a
+  detached worktree of the shared clone at `<work
+  root>/merge-batches/<mergeBatchId>-<attempt>` (`CandidateDir`,
+  `Git.AddCandidateWorktree`; a fetched head other than the batch's sha
+  `*CandidateHeadError`, nothing run), the suites the diff from
+  `origin/<defaultBranch>` selects plus the `always` ones run in an
+  `OpenSessionPod` pod of kind `validate` with its services
+  (`validator.start`/`run`), attested with `mergeBatchId`. A request runs
+  `Loop.ValidateMain` = `Runner.ValidateMainRequest`: the merge commit at
+  `<root>/main-validations/<workItemId>-<attempt>`
+  (`Git.AddCommitWorktree`; not on the default branch
+  `*CommitNotOnBranchError`), suites by the merge's diff from its first
+  parent (`validationTarget.diffFrom`), attested as the item's, no
+  `mergeBatchId`. Both on the operator's credentials — no repo-keyed
+  token is minted yet — and the worktree removed on every path. Green and
+  red are both finished on the attested sha (the attestation is the
+  verdict); an environment failure (ADR-030), a classified fetch failure,
+  a required service down or any error is failed with `validate.Reason`,
+  releasing the claim. `watchMainClaim` re-claims every
+  `BatchCheckEvery` (default a minute): refused is the claim lost, the
+  run stopped and nothing sent; past `MainValidationClaimAfter` (10
+  minutes) it is stopped and failed. node.log: `batch <repo>#<n> attempt
+  <a>: claimed candidate <branch>@<sha7>`, `… attested green|red
+  (<suites>)`, `… finished`, `… failed: <reason>`, `… stopped: claim lost
+  …|ran past …`; a request's prefix `main <repo>@<sha7> item <seq>: `,
+  its claim line `claimed`; once per run `the platform serves no main
+  validation; validating no merge batch`.
+  `internal/node/mergebatch_e2e_test.go`'s
+  `TestNodeValidatesAMergeBatchCandidate` runs it end to end on the
+  Loop.
 - **Services** (`internal/sandbox/services.go`, mesh-specs ADR 007):
   `Resolve(repoDir, allowed)` reads what a repository declares, first
   found wins — `.mesh/services.yml`, else the `services:` of its
