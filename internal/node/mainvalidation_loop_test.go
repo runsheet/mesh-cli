@@ -286,11 +286,11 @@ func TestBatchClaimLostStopsTheRun(t *testing.T) {
 	}
 }
 
-// A run past the claim's window is stopped and failed with why.
+// A run past the platform's run limit is stopped and failed with why.
 func TestBatchOverrunIsStoppedAndFailed(t *testing.T) {
-	old := MainValidationClaimAfter
-	MainValidationClaimAfter = 50 * time.Millisecond
-	t.Cleanup(func() { MainValidationClaimAfter = old })
+	old := MainValidationRunAfter
+	MainValidationRunAfter = 50 * time.Millisecond
+	t.Cleanup(func() { MainValidationRunAfter = old })
 	loop, f, _, logs := batchLoop(t, oneStepYML("true"), 1)
 	started := make(chan string, 1)
 	loop.ValidateBatch = blockingBatch(started, nil)

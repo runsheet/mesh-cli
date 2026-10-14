@@ -21,7 +21,7 @@ import (
 // the capacity, as a build is — and ends the claim: the attestation is
 // the verdict (ADR 054's amendment 2026-10-13), so green and red alike
 // are finished on the candidate's sha, and only a failure of the node's
-// own — an environment failure, an error, a run past the claim's window
+// own — an environment failure, an error, a run past the platform's run limit
 // — fails it with the reason, which releases the claim for another node.
 // A merged item's main validation (requests[], the main guard asking
 // for a run on its merge commit, ADR 054 decision 3) takes the same
@@ -30,10 +30,16 @@ import (
 // served before any request when the slots are short, since it lands
 // work already built and attested.
 
-// MainValidationClaimAfter is how long the platform holds a batch
-// validation's claim (platform/aggregates/mergebatch_validation.go): a
-// run still going then is stopped and its slot freed.
-var MainValidationClaimAfter = 10 * time.Minute
+// MainValidationRunAfter is how long the platform lets a claimed batch
+// validation run before its timer fails it (runsheet
+// platform/aggregates/workitem_mainvalidation.go MainValidationRunAfter,
+// mergebatch_validation.go MarkMergeBatchValidationStalled): a run still
+// going then is stopped here and its slot freed. The platform's
+// ten-minute MainValidationClaimAfter is how long a *requested*
+// validation waits for a node to claim it, which a run never needs —
+// mirroring that one here stopped runsheet's own twelve-minute suites
+// at ten (dl360, 2026-10-14: batches 33, 35, 36 abandoned).
+var MainValidationRunAfter = 60 * time.Minute
 
 // DefaultBatchCheckEvery is how often a running batch validation reads
 // mainValidations back to see its claim is still the node's.
@@ -56,7 +62,7 @@ type mainValidationGateway interface {
 // validation was stopped.
 var (
 	errBatchClaimLost = errors.New("claim lost")
-	errBatchOverrun   = errors.New("ran past the claim's window")
+	errBatchOverrun   = errors.New("ran past the platform's run limit")
 )
 
 // batchLabel is a batch's log prefix: `batch <repo>#<number> attempt <n>`.
@@ -245,11 +251,11 @@ func (l *Loop) startMainJob(ctx context.Context, j mainJob) bool {
 // on the attested sha whatever the attestation's colour, failed with
 // the reason on anything else. A claim the platform refuses again
 // (watchMainClaim) stops the run and sends nothing; a run past
-// MainValidationClaimAfter is stopped and failed.
+// MainValidationRunAfter is stopped and failed.
 func (l *Loop) runMainJob(ctx context.Context, j mainJob) {
 	lost, stop := context.WithCancelCause(ctx)
 	defer stop(nil)
-	rctx, cancel := context.WithTimeoutCause(lost, MainValidationClaimAfter, errBatchOverrun)
+	rctx, cancel := context.WithTimeoutCause(lost, MainValidationRunAfter, errBatchOverrun)
 	defer cancel()
 	done := make(chan struct{})
 	defer close(done)
@@ -264,7 +270,7 @@ func (l *Loop) runMainJob(ctx context.Context, j mainJob) {
 			l.logf("%s: stopped: %v", j.label, cause)
 			return
 		}
-		reason := fmt.Sprintf("ran past %s, the claim's window; stopped", MainValidationClaimAfter)
+		reason := fmt.Sprintf("ran past %s, the platform's run limit; stopped", MainValidationRunAfter)
 		l.logf("%s: stopped: %s", j.label, reason)
 		l.failMainJob(context.WithoutCancel(ctx), j, reason)
 		return
