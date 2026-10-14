@@ -194,6 +194,15 @@ func (e *Evaluator) failDiff(ctx context.Context, item gateway.WorkItem, label, 
 	return nil
 }
 
+// evaluationNotYours reports whether err is issueItemRepoToken or
+// evaluateWorkItem refused because another node already holds this
+// item's evaluation (ADR-009's "you are not the node evaluating the
+// item") — a gateway refusal naming "not yours", read the same way
+// owned.go's NotYoursLine reads a registration's.
+func evaluationNotYours(err error) bool {
+	return gateway.IsRefusal(err) && strings.Contains(err.Error(), "not yours")
+}
+
 // Evaluate reviews one item in evaluating and records the verdict. An
 // error means no verdict was recorded: the item stays in evaluating and
 // the next tick tries again. A diff the node cannot compute is the
@@ -235,6 +244,13 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	cred, err := NewItemCred(ctx, e.GW, e.WS, e.Scopes, item, spec, e.Fallback, e.logf)
 	if we := WorkspaceErrorOf(err); we != nil {
 		return e.releaseInfrastructure(ctx, item, label, we)
+	}
+	if evaluationNotYours(err) {
+		// another node already converged on this item's evaluation
+		// (ADR-009): no session, no verdict, no release — it is left to
+		// that node, quietly, as a refusal of this ordinary kind always is
+		e.logf("item %s: evaluation is another node's (%v); left to it", label, err)
+		return nil
 	}
 	if err != nil {
 		return err
@@ -733,6 +749,14 @@ func (e *Evaluator) afterEvaluate(ctx context.Context, ev evalRun, result harnes
 			// no longer evaluating (ADR-023)
 			left.Forget(item.ID)
 			e.logf("item %s: evaluated by tool call on the platform", label)
+			return nil
+		}
+		if !verdictCalled && evaluationNotYours(err) {
+			// another node converged on the evaluation while this session
+			// ran; its own verdict (or tool call) is the one of record, and
+			// retrying this one forever would never land it
+			left.Forget(item.ID)
+			e.logf("item %s: verdict refused: another node holds the evaluation", label)
 			return nil
 		}
 		return fmt.Errorf("record verdict: %w", err)

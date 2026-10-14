@@ -99,6 +99,16 @@ living an hour.
   not run on the operator's login instead. Only `IsUnsupported` takes
   the fallback, and that leaves the workspace and environment as they
   were before this ADR.
+
+**Amended 2026-10-15** (goal `an-items-evaluation-runs-on-one-node`, item
+2) — one refusal is not retried: when `issueItemRepoToken` for an
+evaluation is refused `not yours` (ADR 009's "you are not the node
+evaluating the item"; another node already converged on the claim),
+`Evaluator.Evaluate` returns nil, not the error, logging once `item
+<label>: evaluation is another node's (<err>); left to it` — no
+session starts, no verdict is sent and the claim is left alone, so the
+item is simply the other node's to judge. Every other refusal still
+fails the item as before, retried on the next tick.
 - A token GitHub refuses while the workspace is prepared — `Prepare`'s
   clone, fetch or checkout answering `Repository not found`, 401 / 403,
   `Authentication failed` or `Invalid username or password`

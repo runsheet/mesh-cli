@@ -111,7 +111,16 @@ on the same token.
    A refusal of the node's `EvaluateWorkItem` after the deciding
    session's `mesh_verdict` call is the hosted tool having recorded it:
    logged `item <label>: evaluated by tool call on the platform`, not an
-   error.
+   error. A refusal with no call recorded (`verdictCalled` false) and
+   `not yours` in its text (ADR 009's "you are not the node evaluating
+   the item") is the same shape of race lost the other way: another
+   node's own verdict is the one of record, and retrying this session's
+   forever would never land it — logged once `item <label>: verdict
+   refused: another node holds the evaluation`, the item forgotten
+   (`LeftRunning.Forget`) rather than held for a next no-verdict note
+   (mesh-cli goal `an-items-evaluation-runs-on-one-node`, item 2). Any
+   other refusal is still `record verdict: <err>`, an error retried on
+   the next tick.
 4. **The planner ends by `mesh_plan`** (item 5). `PlanPrompt`'s
    `# Finish by tool call` tells the session to call `mesh_plan(goal_id,
    items, questions)`, each item the object the JSON block carries
