@@ -1,0 +1,16 @@
+{
+  "field": "claimWorkItemMainValidation",
+  "input": {
+    "input": {
+      "aggregateId": "00000000-0000-4000-8000-0000000c0007",
+      "harness": "claude-code",
+      "namespace": "runsheet",
+      "nodeId": "00000000-0000-4000-8000-0000000a0001"
+    }
+  },
+  "inputType": "(input: ClaimWorkItemMainValidationInput!)",
+  "kind": "mutation",
+  "result": {
+    "status": "ok"
+  }
+}

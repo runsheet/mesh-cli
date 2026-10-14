@@ -1,0 +1,38 @@
+{
+  "field": "mainValidations",
+  "input": {
+    "nodeId": "00000000-0000-4000-8000-0000000a0001"
+  },
+  "inputType": "(nodeId: UUID!)",
+  "kind": "query",
+  "result": {
+    "batches": [
+      {
+        "attempt": 1,
+        "candidateBranch": "mesh/batch/runsheet/latchkey/12",
+        "defaultBranch": "main",
+        "mergeBatchId": "00000000-0000-4000-8000-0000000b0001",
+        "number": 12,
+        "orgId": "00000000-0000-4000-8000-000000000001",
+        "repoFullName": "runsheet/latchkey",
+        "repoId": "ce9057d5-9745-5083-ab8f-b7a372b258cb",
+        "requestedAt": "2026-10-14T09:12:03Z",
+        "sha": "9f2c4e1a7b3d5f6081a2b3c4d5e6f708192a3b4c"
+      }
+    ],
+    "requests": [
+      {
+        "attempt": 2,
+        "defaultBranch": "main",
+        "goalId": "00000000-0000-4000-8000-0000000d0002",
+        "orgId": "00000000-0000-4000-8000-000000000001",
+        "repoFullName": "runsheet/latchkey",
+        "repoId": "ce9057d5-9745-5083-ab8f-b7a372b258cb",
+        "requestedAt": "2026-10-14T09:20:41Z",
+        "seq": 3,
+        "sha": "4b1d0e9c8a7f6e5d4c3b2a1908f7e6d5c4b3a291",
+        "workItemId": "00000000-0000-4000-8000-0000000c0007"
+      }
+    ]
+  }
+}

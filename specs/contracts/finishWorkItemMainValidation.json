@@ -1,0 +1,15 @@
+{
+  "field": "finishWorkItemMainValidation",
+  "input": {
+    "input": {
+      "aggregateId": "00000000-0000-4000-8000-0000000c0007",
+      "namespace": "runsheet",
+      "sha": "4b1d0e9c8a7f6e5d4c3b2a1908f7e6d5c4b3a291"
+    }
+  },
+  "inputType": "(input: FinishWorkItemMainValidationInput!)",
+  "kind": "mutation",
+  "result": {
+    "status": "ok"
+  }
+}

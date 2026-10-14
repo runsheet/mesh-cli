@@ -1,0 +1,16 @@
+{
+  "field": "failMergeBatchValidation",
+  "input": {
+    "input": {
+      "aggregateId": "00000000-0000-4000-8000-0000000b0001",
+      "namespace": "runsheet",
+      "nodeId": "00000000-0000-4000-8000-0000000a0001",
+      "reason": "workspace: git fetch origin mesh/batch/runsheet/latchkey/12: exit status 128"
+    }
+  },
+  "inputType": "(input: FailMergeBatchValidationInput!)",
+  "kind": "mutation",
+  "result": {
+    "status": "ok"
+  }
+}
