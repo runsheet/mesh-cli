@@ -1429,7 +1429,26 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   evaluation); a required one releases a build, declines an evaluation
   (`Declines`) or fails a rebase, naming it, and no agent starts; a
   required refused one makes no pod at all.
-- Every session gets mesh-context as an MCP server with the node's token and
+- Every session gets mesh-context as an MCP server — the stdio relay
+  `<mesh> mcp-relay --url <MeshMCPURL> --token-file <path>`
+  (`node.MeshContextMCP` → `harness.MeshContextRelay`; `internal/mcprelay`,
+  NDJSON JSON-RPC POSTed on the file's bearer read per request,
+  `Mcp-Session-Id` carried, a 401 re-reading the file once, a forgotten
+  session re-initialised once, a missing or empty file a JSON-RPC error),
+  in a pod `node <HOME>/mesh-context-relay.js <url> <path>`
+  (`harness.RelayScript`, `sandboxRelayServer`), for Codex the same
+  stdio table — on `mesh-context.token`, 0600 in the session's own
+  directory (`harness.PlaceMeshContext`: `<workdir>.session/`, the pod's
+  HOME, the CODEX_HOME, the channel session's own temp dir), written
+  from `gw.Bearer` by `node.TokenFiles` (the harnesses' and
+  `channel.Session`'s `Tokens`, `sessionTokens` in nodecmd.go),
+  rewritten atomically every `TokenRefreshEvery` the bearer rotated,
+  removed when the session's end is handled and left on a detach;
+  `state.json`'s `tokenFile` names it and `ClaudeCode.Attach` keeps an
+  adopted session's (`keepAdopted`) — no bearer in any config, so a
+  session outlives a rotation (ADR-029,
+  `docs/adr/adr-029-a-sessions-mcp-token-is-refreshed-by-the-node.md`;
+  `meshmcp.Hosted` keeps the http form, `node.MeshContextHTTP`) — and
   the project's context on disk under `.mesh/context/` with `INDEX.md`:
   its own repos' instructions, then the screen, then `## Goal` — the
   session's own goal and its items (seq, title, status, repo, branch),

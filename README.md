@@ -1561,6 +1561,20 @@ built-in's old name, is an ordinary tool now; the node reads `prologue`
 as the built-in only in a session an older node started and this one
 adopted, a deprecated alias it drops on 2026-10-28.
 
+**mesh-context goes through a relay.** The built-in is no http entry
+with a bearer header: a session's token would rotate under it and
+Claude Code never re-reads its MCP config, so the session would lose
+its tools mid-build. It is a stdio relay, `mesh mcp-relay --url
+<gateway>/mcp --token-file <path>` (in a pod, `node
+mesh-context-relay.js <url> <path>` from the session's HOME), which
+reads the bearer from the file on every request. The file,
+`mesh-context.token`, is 0600 in the session's own directory
+(`<workdir>.session/`, the pod's HOME, a Codex session's `CODEX_HOME`);
+the node writes it from its own credential when the session starts,
+rewrites it whenever the credential rotates, and removes it when the
+session's end is handled. A node that adopts a session keeps the file
+its `state.json` names (docs/adr/adr-029-a-sessions-mcp-token-is-refreshed-by-the-node.md).
+
 **What the node reports.** Every tick the node looks on its `PATH` for
 the tool runtimes it can start — `npx`, `uvx`, `docker` — and the agent
 CLIs it has — `claude` (claude-code) and `codex` — and its heartbeat

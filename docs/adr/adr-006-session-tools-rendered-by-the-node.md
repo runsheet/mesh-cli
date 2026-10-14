@@ -393,3 +393,30 @@ calls summed over every row but the built-in (`tools.IsBuiltin`, so
 `mesh-context` and its old name are left out), and `tools called`, the
 distinct tools with a call, comma-joined, `-` when none — research's
 Brave and Perplexity calls read off node.log without the console.
+
+## Amendment — 2026-10-14 (goal a-sessions-mcp-token-outlives-the-session, item 3)
+
+**The built-in's bearer lives in a token file, not its config.** Until
+now mesh-context was rendered `{type: http, url: <gw>/mcp, headers:
+{Authorization: Bearer <node token>}}` — for Codex an
+`env_http_headers` variable — with the node's bearer of the moment, and
+a session that outlived that rotating token lost its tools
+([ADR-029](adr-029-a-sessions-mcp-token-is-refreshed-by-the-node.md)).
+It is now the stdio relay `mesh mcp-relay --url <gw>/mcp --token-file
+<path>` (`node.MeshContextMCP`, `harness.MeshContextRelay`) — in a pod
+`node <HOME>/mesh-context-relay.js <url> <path>`
+(`harness.RelayScript`), for Codex a `command`/`args` table with no
+`env_http_headers` — still named `mesh-context`, so its
+`--allowedTools mcp__mesh-context__*` and the node's own finish tools
+are unchanged.
+
+The **token file** — `mesh-context.token`, 0600, written atomically in
+the session's own directory (`<workdir>.session/`, the pod's HOME, the
+CODEX_HOME, the channel session's own temp dir) by `node.TokenFiles`
+from the node's bearer, rewritten every minute it rotated, removed when
+the session's end is handled — is **an exception to secrets in the
+environment only**: the one secret a session's tool reads from a file.
+It is on no command line, in no config (the configs name only its
+path), in no log line and nothing reported on the item; the session can
+read it for its life, as it could the environment, and cannot outlive
+it. Console tools' secrets are unchanged: environment only.
