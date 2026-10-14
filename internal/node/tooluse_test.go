@@ -182,7 +182,7 @@ func TestEvaluationNotesItsToolUse(t *testing.T) {
 	calls, stats := braveErrored()
 	h := &fakeHarness{text: "Fine.\nVERDICT: PASS", toolCalls: calls, tools: stats}
 	logs := &syncBuf{}
-	ev := &Evaluator{GW: gw, Harness: h, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, MCP: MeshContextMCP(f.URL(), "rs_test"),
+	ev := &Evaluator{GW: gw, Harness: h, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, MCP: MeshContextHTTP(f.URL(), "rs_test"),
 		Credentials: &Credentials{GW: gw}, Runtimes: onlyNpx, Declines: &Declines{}, Log: log.New(logs, "", 0)}
 	f.SessionTools[item1] = []map[string]any{braveTool(), perplexityTool()}
 
@@ -214,7 +214,7 @@ func TestEvaluationNotesTheBuiltinsError(t *testing.T) {
 	const msg = "tool call failed for `mesh-context/mesh_document`: 401 Unauthorized"
 	h := &fakeHarness{text: "Fine.\nVERDICT: PASS", toolCalls: map[string]int{"mesh-context": 3},
 		tools: map[string]*harness.ToolStat{"mesh-context": {Calls: 3, Clean: 1, Errors: 2, Wall: 90 * time.Millisecond, FirstError: msg}}}
-	ev := &Evaluator{GW: gw, Harness: h, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, MCP: MeshContextMCP(f.URL(), "rs_test"),
+	ev := &Evaluator{GW: gw, Harness: h, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, MCP: MeshContextHTTP(f.URL(), "rs_test"),
 		Credentials: &Credentials{GW: gw}, Runtimes: onlyNpx, Declines: &Declines{}, Log: log.New(&syncBuf{}, "", 0)}
 
 	if err := ev.Evaluate(context.Background(), item); err != nil {

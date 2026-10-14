@@ -100,6 +100,9 @@ type Job struct {
 	// the work dir (sessionunit.State) so a later node process can adopt
 	// it. Optional: a job without it still runs, its state file thinner.
 	Meta SessionMeta
+	// tokenFile is the session's mesh-context token file once the
+	// harness placed it (placeMeshContext), for its state.json.
+	tokenFile string
 	// Outlive makes the session outlast the node process (mesh-cli ADR
 	// 009): a cancelled ctx — the node shutting down — leaves the unit
 	// running and its session directory in place for the next node to

@@ -1072,6 +1072,9 @@ func nodeStart(cmd *cobra.Command, args []string, logger *log.Logger) error {
 	// unclaimed and says why (adr-005's amendment 2026-10)
 	// a session waiting on a repo lock names its holder in node.log
 	node.SetRepoLockLogf(logger.Printf)
+	// every session's mesh-context relays on a token file kept fresh
+	// from the node's rotating bearer (ADR-029)
+	sessionTokens = &node.TokenFiles{Token: gw.Bearer, Logf: logger.Printf}
 	loop.NoCredential = &node.NoCredentials{Log: logger, Now: loop.Now}
 	accounts := &node.Credentials{GW: gw, Limits: loop.Limits, Thresholds: loop.Thresholds, Known: known, NoCredential: loop.NoCredential, Log: logger}
 	switch nodeModeFlag {
@@ -1513,7 +1516,7 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 	}
 	defer hub.Close()
 
-	sess := &channel.Session{Cfg: cfg, Orgs: scopes.Names(), MCPFunc: func() map[string]any { return meshContextMCP(ctx, gw) }, WorkDir: filepath.Join(workRoot, cfg.Slug), Exe: exe, SockPath: sock, Unattended: nodeUnattended, Model: nodeModels.For("channel"), Stderr: sessionsOut, Log: logger,
+	sess := &channel.Session{Cfg: cfg, Orgs: scopes.Names(), MCPFunc: func() map[string]any { return meshContextMCP(ctx, gw) }, Tokens: tokenKeeper(), WorkDir: filepath.Join(workRoot, cfg.Slug), Exe: exe, SockPath: sock, Unattended: nodeUnattended, Model: nodeModels.For("channel"), Stderr: sessionsOut, Log: logger,
 		OnText:      channelText(log.New(sessionsOut, "mesh node: ", log.LstdFlags)),
 		OnRateLimit: func(rl *harness.RateLimit) { loop.Limits.Observe(node.Account(os.Environ()), rl) }}
 	var sessMu sync.Mutex
@@ -1722,16 +1725,31 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 }
 
 // meshContextMCP is the mesh-context MCP server a session is started
-// with: the credential's bearer as a header, taken (and refreshed) at
-// that moment, so the session has a whole token lifetime ahead of it.
-// Nil when there is no usable bearer — the session then runs without
-// mesh-context.
+// with: this binary's `mesh mcp-relay` to the gateway's /mcp, on a token
+// file the harness places in the session's own directory and
+// sessionTokens keeps fresh from the credential's bearer for as long as
+// the session runs, so a rotation never cuts a session off its tools
+// (mesh-cli ADR-029). Nil when there is no usable bearer — the session
+// then runs without mesh-context.
 func meshContextMCP(ctx context.Context, gw *gateway.Client) map[string]any {
-	tok, err := gw.Bearer(ctx)
-	if err != nil {
+	if _, err := gw.Bearer(ctx); err != nil {
 		return nil
 	}
-	return node.MeshContextMCP(gw.BaseURL, tok)
+	return node.MeshContextMCP(meshBinary(), gw.BaseURL)
+}
+
+// sessionTokens keeps every session's mesh-context token file fresh on
+// the node's bearer (node.TokenFiles, ADR-029): set by `mesh node start`
+// once the platform client is made; nil writes none.
+var sessionTokens *node.TokenFiles
+
+// tokenKeeper is sessionTokens as a harness's TokenKeeper, nil (never a
+// nil pointer in an interface) when there is none.
+func tokenKeeper() harness.TokenKeeper {
+	if sessionTokens == nil {
+		return nil
+	}
+	return sessionTokens
 }
 
 // sessionSandbox is the pod every one-shot session runs in (OpenSandbox);
@@ -1743,7 +1761,7 @@ var sessionSandbox *sandbox.Sandbox
 func oneShotHarness() *harness.ClaudeCode {
 	// a sandboxed session's agent runs detached in its pod and outlives
 	// the node like a host one: the next node adopts it (ADR 009)
-	h := &harness.ClaudeCode{Stderr: sessionsOut, Sandbox: sessionSandbox, MeshBinary: meshBinary(), DetachSandboxed: sessionSandbox != nil}
+	h := &harness.ClaudeCode{Stderr: sessionsOut, Sandbox: sessionSandbox, MeshBinary: meshBinary(), DetachSandboxed: sessionSandbox != nil, Tokens: tokenKeeper()}
 	if nodeUnattended {
 		h.ExtraArgs = []string{"--dangerously-skip-permissions"}
 	}
@@ -1800,7 +1818,7 @@ func codexSecondOpinion(cfg *node.Config, loop *node.Loop, workRoot string, logg
 		}
 		return secondOpinion{blind: &node.OncePer{}, noVerdict: &node.OncePer{}, left: &node.LeftRunning{}}
 	}
-	c := &harness.Codex{Binary: bin, Stderr: sessionsOut, WorkRoot: workRoot}
+	c := &harness.Codex{Binary: bin, Stderr: sessionsOut, WorkRoot: workRoot, Tokens: tokenKeeper()}
 	logger.Printf("codex: evaluations on Codex when an issued Codex credential has headroom, else on Claude; the second opinion on the other family")
 	h := node.ObserveLimits(c, loop.Limits)
 	loop.CodexRoom = (&node.Evaluator{Codex: h, CodexAccounts: loop.CodexCandidates, Limits: loop.Limits, Thresholds: loop.Thresholds}).CodexHeadroom

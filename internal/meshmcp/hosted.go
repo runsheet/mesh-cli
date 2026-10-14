@@ -40,7 +40,8 @@ const HostedFallbackLine = "the platform serves no hosted work tools; using clai
 const HostedProbeEvery = time.Hour
 
 // Hosted is an HTTP MCP client to the gateway's /mcp (the URL
-// node.MeshContextMCP builds), Bearer the person's token.
+// node.MeshContextHTTP builds), Bearer the person's token, taken
+// afresh per request.
 type Hosted struct {
 	// BaseURL is the gateway's: /mcp is appended.
 	BaseURL string
@@ -86,14 +87,16 @@ func (h *Hosted) client() *http.Client {
 	return &http.Client{Timeout: 60 * time.Second}
 }
 
-// endpoint is the /mcp URL and its headers, as node.MeshContextMCP
-// names them for a session.
+// endpoint is the /mcp URL and its headers, as node.MeshContextHTTP
+// names them: a person's client keeps the http form, its bearer read
+// per request, where a node's session goes through the relay (mesh-cli
+// ADR-029).
 func (h *Hosted) endpoint(ctx context.Context) (string, map[string]string, error) {
 	tok, err := h.Source.Token(ctx)
 	if err != nil {
 		return "", nil, fmt.Errorf("token: %w", err)
 	}
-	srv, _ := node.MeshContextMCP(h.BaseURL, tok)["mesh-context"].(map[string]any)
+	srv, _ := node.MeshContextHTTP(h.BaseURL, tok)["mesh-context"].(map[string]any)
 	if srv == nil {
 		return "", nil, errors.New("no gateway URL or token")
 	}

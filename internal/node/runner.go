@@ -481,7 +481,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	if retrying {
 		turn.Branch = spec.Branch
 		turn.HeadSHA, _ = gitHead(ctx, dir)
-		turn.ChangedPaths, _ = r.WS.ChangedPaths(ctx, dir, spec.BaseRef)
+		turn.ChangedPaths = r.retryChangedPaths(ctx, label, dir, spec.BaseRef, defaultBranchOf(res))
 		freshPrompt = freshRetryPrompt(job.Prompt, turn)
 		rec, why := r.resumable(item.ID, label, dir, acct, pod)
 		if why == "" {
@@ -1127,4 +1127,19 @@ func (r *Runner) foldNotes(ctx context.Context, item gateway.WorkItem, label str
 		notes = append(notes, harness.ItemNote{Seq: it.Seq, Title: it.Title, Note: strings.TrimSpace(it.LastNote), PRURL: it.PRURL})
 	}
 	return notes
+}
+
+// retryChangedPaths are the paths the judged head changed against base
+// for a retry turn's message: against def, the repo's default branch,
+// when base — a merged dependency's branch — is gone from origin, said
+// in node.log; none when they cannot be read.
+func (r *Runner) retryChangedPaths(ctx context.Context, label, dir, base, def string) []string {
+	paths, from, err := changedPathsFrom(ctx, r.WS, dir, base, def)
+	if err != nil {
+		return nil
+	}
+	if from != base {
+		r.logf("item %s: retry turn: base %s is gone (merged); changed paths from origin/%s", label, base, from)
+	}
+	return paths
 }

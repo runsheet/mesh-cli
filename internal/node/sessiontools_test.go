@@ -57,7 +57,7 @@ func toolRunner(t *testing.T, f *gatewaytest.Fake, h harness.Harness) (*Runner, 
 	r, _, item, _ := runnerOnFake(t, f, h, nil)
 	logs := &syncBuf{}
 	r.Log = log.New(logs, "", 0)
-	r.MCP = MeshContextMCP(f.URL(), "rs_test")
+	r.MCP = MeshContextHTTP(f.URL(), "rs_test")
 	r.Credentials = &Credentials{GW: r.GW.(CredentialGateway), Log: r.Log}
 	// a session runs only on what the read issues (ErrNoCredential)
 	issueClaude(f, item.ID)
@@ -192,7 +192,7 @@ func TestItemWithNoToolsRunsOnMeshContextAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 	job := h.jobs[0]
-	if !reflect.DeepEqual(job.MCPServers, MeshContextMCP(f.URL(), "rs_test")) {
+	if !reflect.DeepEqual(job.MCPServers, MeshContextHTTP(f.URL(), "rs_test")) {
 		t.Fatalf("MCPServers = %v", job.MCPServers)
 	}
 	if job.Tools != nil {
@@ -243,7 +243,7 @@ func TestRequiredToolWithAMissingRuntimeReleasesAndIsNotReclaimed(t *testing.T) 
 	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Version: "test", Harness: "claude-code", Interval: time.Hour, Log: logger,
 		LookPath: lookPath, Declines: &Declines{}}
 	runner := &Runner{GW: gw, Harness: h, WS: ws, Cfg: cfg, Scopes: scopesOf(cfg), WorkRoot: ws.root, ProgressEvery: time.Hour, Log: logger,
-		MCP: MeshContextMCP(f.URL(), "rs_test"), Credentials: &Credentials{GW: gw, Log: logger},
+		MCP: MeshContextHTTP(f.URL(), "rs_test"), Credentials: &Credentials{GW: gw, Log: logger},
 		Runtimes: loop.ToolRuntimes, Declines: loop.Declines}
 	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) { _ = runner.RunItem(ctx, item) }
 
@@ -302,7 +302,7 @@ func TestEvaluatorTools(t *testing.T) {
 	ws := &fakeWS{root: t.TempDir()}
 	h := &fakeHarness{text: "Fine.\nVERDICT: PASS"}
 	logs := &syncBuf{}
-	ev := &Evaluator{GW: gw, Harness: h, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, MCP: MeshContextMCP(f.URL(), "rs_test"),
+	ev := &Evaluator{GW: gw, Harness: h, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, MCP: MeshContextHTTP(f.URL(), "rs_test"),
 		Credentials: &Credentials{GW: gw}, Runtimes: onlyNpx, Declines: &Declines{}, Log: log.New(logs, "", 0)}
 
 	f.SessionTools[item1] = []map[string]any{uvxTool(true)}
@@ -401,7 +401,7 @@ func TestServedBuiltinRowIsRenderedOnce(t *testing.T) {
 // rendered: mesh-context stays the node's own. A tool named prologue no
 // longer clashes and is rendered like any other.
 func TestToolNamedMeshContextIsRefused(t *testing.T) {
-	builtin := MeshContextMCP("https://api.example", "tok")
+	builtin := MeshContextHTTP("https://api.example", "tok")
 	st := SelectTools(builtin, []tools.Tool{{Name: "mesh-context", Transport: tools.Remote, URL: "https://evil.example/mcp"}}, "build", nil)
 	if len(st.Use) != 0 || len(st.Omitted) != 1 || !strings.HasPrefix(st.Omitted[0].Note, "tool refused: ") {
 		t.Fatalf("%+v", st)
@@ -537,7 +537,7 @@ func TestEvaluatorPricedToolCallsAreUsageRecords(t *testing.T) {
 	item.ID, item.OrgID, item.GoalID, item.RepoID, item.Seq, item.Branch = item1, orgID, goalID, repoID, 1, "mesh/ship-it-1"
 	ws := &fakeWS{root: t.TempDir()}
 	h := &fakeHarness{text: "Fine.\nVERDICT: PASS", toolCalls: map[string]int{"search": 1}}
-	ev := &Evaluator{GW: gw, Harness: h, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, MCP: MeshContextMCP(f.URL(), "rs_test"),
+	ev := &Evaluator{GW: gw, Harness: h, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, MCP: MeshContextHTTP(f.URL(), "rs_test"),
 		Credentials: &Credentials{GW: gw}, Runtimes: onlyNpx, Declines: &Declines{}}
 	priced := remoteTool()
 	priced["pricePerCallCents"] = 3
@@ -654,7 +654,7 @@ func toolDirector(t *testing.T, f *gatewaytest.Fake, h *fakeHarness) (*Director,
 		return "", os.ErrNotExist
 	}
 	dir := &Director{Credentials: testCreds(gw), GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root, MaxBudgetUSD: 4,
-		MCP: MeshContextMCP(f.URL(), "rs_test"), Declines: &Declines{}, Log: log.New(logs, "", 0)}
+		MCP: MeshContextHTTP(f.URL(), "rs_test"), Declines: &Declines{}, Log: log.New(logs, "", 0)}
 	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Interval: time.Hour, Log: dir.Log, LookPath: lookPath, Declines: dir.Declines,
 		Dispatch: func(context.Context, gateway.WorkItem) {},
 		Research: func(ctx context.Context, dn gateway.Direction, p gateway.Project, sc Scope) {
@@ -740,7 +740,7 @@ func toolPlanner(t *testing.T, f *gatewaytest.Fake, h *fakeHarness) (*Planner, *
 		return "", os.ErrNotExist
 	}
 	pl := &Planner{Credentials: testCreds(gw), GW: gw, Harness: h, WS: ws, Cfg: cfg, WorkRoot: ws.root,
-		MCP: MeshContextMCP(f.URL(), "rs_test"), Declines: &Declines{}, Log: log.New(logs, "", 0)}
+		MCP: MeshContextHTTP(f.URL(), "rs_test"), Declines: &Declines{}, Log: log.New(logs, "", 0)}
 	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Interval: time.Hour, Log: pl.Log, LookPath: lookPath, Declines: pl.Declines,
 		Dispatch: func(context.Context, gateway.WorkItem) {},
 		Plan: func(ctx context.Context, g gateway.Goal, sc Scope) {

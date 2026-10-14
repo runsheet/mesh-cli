@@ -24,7 +24,10 @@ import (
 // (Session.Detach); only the job's own Timeout, or ErrStopSession,
 // stops the container. Any other end leaves the pod and HOME to
 // whoever opened sess, and the session directory to RemoveSession.
-func (c *ClaudeCode) runDetached(ctx context.Context, job Job, sess *sandbox.Session, mcpPath string, onProgress func(Progress)) (Result, error) {
+func (c *ClaudeCode) runDetached(ctx context.Context, job Job, sess *sandbox.Session, mcpPath string, onProgress func(Progress), releaseToken func(remove bool)) (Result, error) {
+	// the token file stays for the node that adopts a detached session
+	detachedToken := false
+	defer func() { releaseToken(!detachedToken) }()
 	parent := ctx
 	if job.Timeout > 0 {
 		var cancel context.CancelFunc
@@ -77,6 +80,7 @@ func (c *ClaudeCode) runDetached(ctx context.Context, job Job, sess *sandbox.Ses
 		spoke.Do(func() { os.Remove(prompt) })
 	})
 	if detached {
+		detachedToken = true
 		sess.Detach()
 		return res, parent.Err()
 	}
@@ -102,6 +106,7 @@ func (c *ClaudeCode) attachSandboxed(ctx context.Context, dir string, st session
 		return Result{}, fmt.Errorf("harness claude-code: attach: session %s runs in pod %s, and this node has no sandbox", st.Label, st.Pod)
 	}
 	sess := c.Sandbox.Reattach(sandbox.Pod{Name: st.Pod}, st.Home, st.Label)
+	release := c.keepAdopted(st)
 	timeout := time.Duration(st.TimeoutSeconds) * time.Second
 	parent := ctx
 	if timeout > 0 {
@@ -115,6 +120,7 @@ func (c *ClaudeCode) attachSandboxed(ctx context.Context, dir string, st session
 		timeout: timeout, stderr: filepath.Join(dir, sessionunit.StderrFile),
 	}}
 	res, detached, waitErr, errBuf, rawOut := c.follow(ctx, parent, true, end, dir, &st, st.Offset, nil, onProgress, nil)
+	release(!detached)
 	if detached {
 		return res, parent.Err()
 	}

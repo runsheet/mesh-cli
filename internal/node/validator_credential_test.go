@@ -108,7 +108,7 @@ func TestValidatorFetchAndBuilderPushRunOnTheBrokersItemToken(t *testing.T) {
 	if err := vr.fetchHead(ctx, target, spec.Branch, newer); err != nil {
 		t.Fatalf("validator fetch on the item token: %v\n%s", err, logs.String())
 	}
-	if _, err := vr.changedPaths(ctx, target); err != nil {
+	if _, _, err := vr.changedPaths(ctx, target); err != nil {
 		t.Fatalf("validator diff base fetch on the item token: %v\n%s", err, logs.String())
 	}
 	if issued() <= before {

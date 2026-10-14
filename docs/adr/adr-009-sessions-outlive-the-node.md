@@ -10,7 +10,9 @@ node; and the heartbeat — `adopted` carries `goalId`, `directionId`,
 `sessionId` and `alive` beside `itemId`, `kind` and `since`. Amended
 2026-10-13: Sandboxed sessions — a sandboxed session outlives the node
 in its pod and is adopted like a host one, and the self-update no
-longer drains a sandboxed node.)
+longer drains a sandboxed node. Amended 2026-10-14: Token files — an
+adopting node keeps an adopted session's mesh-context token file
+fresh.)
 
 ## Context
 
@@ -227,6 +229,34 @@ a host session's (mesh-cli ADR-007's amendment of the same date):
   `TestSelfUpdateSandboxedSwapsWithoutDraining` the update itself.
 - Channel mode and Codex sessions are not in a pod and still end with
   the node.
+
+## Token files (amendment 2026-10-14)
+
+Goal `a-sessions-mcp-token-outlives-the-session`
+([ADR-029](adr-029-a-sessions-mcp-token-is-refreshed-by-the-node.md)).
+A session's mesh-context is a relay reading its bearer per request from
+`mesh-context.token` in the session's own directory, which the node
+that started it keeps fresh. A session that outlives that node would
+otherwise be left on a file nobody rewrites, and lose its tools at the
+next rotation, so:
+
+- **state.json names the file.** `sessionunit.State.TokenFile`
+  (`tokenFile`) is the path — `<workdir>.session/mesh-context.token` on
+  the host, `<HOME>/mesh-context.token` in a pod — never the bearer.
+- **A detach leaves it.** A session the node lets go releases its file
+  without removing it (`release(false)`), so the relay keeps a good
+  bearer until the token's own life is out.
+- **The adopter keeps it.** `ClaudeCode.Attach` — host and sandboxed
+  alike, under every adopter (`Runner.AdoptItem`,
+  `Evaluator.AdoptEvaluation`, `Planner.AdoptPlan`,
+  `Director.AdoptResearch`, `Rebaser.AdoptRebase`) — calls its
+  `Tokens.Keep(st.TokenFile)` (`keepAdopted`) as it takes the session
+  up, so the adopting node's `node.TokenFiles` rewrites the file from
+  its own bearer while it follows, removes it once the end is handled,
+  and leaves it again on a second detach. The harness's
+  `TestAdoptedSessionTokenFileIsRefreshed` proves it.
+- A session a node adopts from before this amendment has no
+  `tokenFile`: its mesh-context is the old header and keeps nothing.
 
 ## Limits
 

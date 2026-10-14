@@ -43,6 +43,9 @@ type buildValidation struct {
 	meta   validate.Meta
 	close  func()
 	runs   []validate.Attestation
+	// baseGoneSaid: the build's base was found gone and said so, once
+	// for every run of the build's validation
+	baseGoneSaid bool
 }
 
 // validationFailure is a step that failed on the commit the build
@@ -100,6 +103,10 @@ type validationTarget struct {
 	// cred, is a token its fetches go out on as it is, never renewed.
 	batchID string
 	repoTok *gateway.GitHubToken
+	// defaultBranch is the repo's default branch, the changed paths'
+	// base when base — a merged dependency's branch — is gone from
+	// origin; "" takes no fallback.
+	defaultBranch string
 	// tokenName, set, is whose token cred is (`merge batch 7`): every
 	// fetch goes out on a fresh token or not at all, a renewal refused
 	// being the validation's error naming it (*fetchTokenError), never
@@ -117,8 +124,17 @@ func (r *Runner) validator() validator {
 
 // target is the build as its validation needs it.
 func (b *buildRun) target() validationTarget {
-	return validationTarget{item: b.item, dir: b.dir, base: b.spec.BaseRef, prefix: "item " + b.label, label: b.label,
+	return validationTarget{item: b.item, dir: b.dir, base: b.spec.BaseRef, defaultBranch: defaultBranchOf(b.res), prefix: "item " + b.label, label: b.label,
 		job: b.job, pod: b.podSession(), session: b.session, redact: b.acct.RedactErr, report: func(ctx context.Context, note string) { b.report(ctx, note) }, cred: b.cred}
+}
+
+// defaultBranchOf is res's repo's default branch, "main" when unread,
+// as Resolved.BaseRef falls back.
+func defaultBranchOf(res *Resolved) string {
+	if res != nil && res.Repo != nil && res.Repo.DefaultBranch != "" {
+		return res.Repo.DefaultBranch
+	}
+	return "main"
 }
 
 // startValidation reads the checkout's validate.yml and readies the
@@ -253,7 +269,7 @@ func (vr validator) run(ctx context.Context, t validationTarget, v *buildValidat
 	if err != nil {
 		return validate.Attestation{}, err
 	}
-	changed, err := vr.changedPaths(ctx, t)
+	changed, from, err := vr.changedPaths(ctx, t)
 	var te *fetchTokenError
 	if errors.As(err, &te) {
 		return validate.Attestation{}, err
@@ -261,6 +277,14 @@ func (vr validator) run(ctx context.Context, t validationTarget, v *buildValidat
 	if err != nil {
 		// a base fetch GitHub refused is credential_refused (adr-030)
 		return validate.Attestation{}, validate.Classify(fmt.Errorf("changed paths: %w", err))
+	}
+	if from != t.base && !v.baseGoneSaid {
+		v.baseGoneSaid = true
+		note := fmt.Sprintf("validation: base %s is gone (merged); changed paths from origin/%s", t.base, from)
+		vr.logf("%s: %s", t.prefix, note)
+		if t.report != nil {
+			t.report(ctx, note)
+		}
 	}
 	head, err := gitHead(ctx, t.dir)
 	if err != nil {
@@ -627,16 +651,30 @@ func (vr validator) headFetcher() headFetcher {
 }
 
 // changedPaths is the diff against t's base, the base fetched on the
-// item's token.
-func (vr validator) changedPaths(ctx context.Context, t validationTarget) ([]string, error) {
+// item's token, and the branch it was taken from. A base origin no
+// longer has (*BaseGoneError: a dependency's branch GitHub deleted when
+// it merged mid-build) is not the item's failure: the paths are taken
+// against origin/<default> instead, which then holds the dependency. A
+// squash-merged dependency's commits are not HEAD's ancestors, so they
+// count as changed too — a superset of the suites, which is safe: the
+// attestation names HEAD, what the platform verifies, whatever selected
+// its steps.
+func (vr validator) changedPaths(ctx context.Context, t validationTarget) ([]string, string, error) {
 	if t.diffFrom != "" {
-		return diffNames(ctx, t.dir, t.diffFrom)
+		paths, err := diffNames(ctx, t.dir, t.diffFrom)
+		return paths, t.base, err
 	}
 	fctx, err := vr.fetchContext(ctx, t)
 	if err != nil {
-		return nil, err
+		return nil, t.base, err
 	}
-	return vr.WS.ChangedPaths(fctx, t.dir, t.base)
+	paths, err := vr.WS.ChangedPaths(fctx, t.dir, t.base)
+	var gone *BaseGoneError
+	if err == nil || !errors.As(err, &gone) || t.defaultBranch == "" || t.base == t.defaultBranch {
+		return paths, t.base, err
+	}
+	paths, err = vr.WS.ChangedPaths(fctx, t.dir, t.defaultBranch)
+	return paths, t.defaultBranch, err
 }
 
 // diffNames are the files HEAD changed since from, in dir.

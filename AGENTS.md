@@ -1218,7 +1218,31 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   line ends ` (<kind>)`. Any other non-zero exit carries none; the
   platform half, runsheet goal
   an-item-that-fails-on-its-environment-is-parked-not-replanned, parks
-  on it.
+  on it. **A merged dependency's gone branch fails nothing**
+  (`docs/adr/adr-033-a-gone-base-branch-is-read-as-merged.md`): an
+  item built on a dependency's branch that merged and was deleted
+  mid-build is diffed against the repo's default branch. A base fetch
+  that fails is `*BaseGoneError` only when `git ls-remote --exit-code
+  origin refs/heads/<base>` exits 2 (`Git.baseGone`; a credential or
+  network refusal keeps its own error and kind), and then validation's
+  changed paths (`validationTarget.defaultBranch`, `defaultBranchOf`),
+  the evaluation's diff, changed and protected paths and prompt
+  `BaseRef` (`goneBaseFallback`) and the retry turn's changed paths
+  (`retryChangedPaths`) are taken from `origin/<default>`, and
+  `Git.Prepare` continues a branch already on origin — the evaluation's
+  `<seq>-eval` checkout, a rework — without its base (a new branch
+  still needs it). Each says so: `item <label>: validation: base <dep>
+  is gone (merged); changed paths from origin/<default>` (once per
+  build, and on the item), `item <label>: evaluate: base <dep> is gone
+  (merged); diff from origin/<default>`, `item <label>: retry turn:
+  base <dep> is gone (merged); changed paths from origin/<default>`,
+  `workspace <dir>: base <dep> is gone (merged); continuing
+  origin/<branch>`. A squash-merged dependency's files count as changed
+  too — a superset of suites; the attestation still names HEAD.
+  `internal/node/basegone_e2e_test.go`'s
+  `TestBaseGoneMergedDependencyValidatesOnMainE2E` (`-tags e2e`) deletes
+  the dependency's branch between the build's commit and validation and
+  sees the head attested, finished and evaluated passing.
 - **Main validation** (`internal/node/mainvalidation.go`,
   `mainvalidation_loop.go`,
   `docs/adr/adr-032-a-node-validates-a-merge-batch-candidate.md`; runsheet
@@ -1418,7 +1442,27 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   evaluation); a required one releases a build, declines an evaluation
   (`Declines`) or fails a rebase, naming it, and no agent starts; a
   required refused one makes no pod at all.
-- Every session gets mesh-context as an MCP server with the node's token and
+- Every session gets mesh-context as an MCP server — the stdio relay
+  `<mesh> mcp-relay --url <MeshMCPURL> --token-file <path>`
+  (`node.MeshContextMCP` → `harness.MeshContextRelay`; `internal/mcprelay`,
+  NDJSON JSON-RPC POSTed on the file's bearer read per request,
+  `Mcp-Session-Id` carried, a 401 re-reading the file once, a forgotten
+  session re-initialised once, a missing or empty file a JSON-RPC error),
+  in a pod `node <HOME>/mesh-context-relay.js <url> <path>`
+  (`harness.RelayScript`, `sandboxRelayServer`), for Codex the same
+  stdio table — on `mesh-context.token`, 0600 in the session's own
+  directory (`harness.PlaceMeshContext`: `<workdir>.session/`, the pod's
+  HOME, the CODEX_HOME, the channel session's own temp dir), written
+  from `gw.Bearer` by `node.TokenFiles` (the harnesses' and
+  `channel.Session`'s `Tokens`, `sessionTokens` in nodecmd.go),
+  rewritten atomically every `TokenRefreshEvery` (`auth.RefreshSkew`/4,
+  15s) the bearer rotated, a failed start releasing it,
+  removed when the session's end is handled and left on a detach;
+  `state.json`'s `tokenFile` names it and `ClaudeCode.Attach` keeps an
+  adopted session's (`keepAdopted`) — no bearer in any config, so a
+  session outlives a rotation (ADR-029,
+  `docs/adr/adr-029-a-sessions-mcp-token-is-refreshed-by-the-node.md`;
+  `meshmcp.Hosted` keeps the http form, `node.MeshContextHTTP`) — and
   the project's context on disk under `.mesh/context/` with `INDEX.md`:
   its own repos' instructions, then the screen, then `## Goal` — the
   session's own goal and its items (seq, title, status, repo, branch),

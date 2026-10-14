@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
+	"projectmesh.io/mesh-cli/internal/harness"
 )
 
 // WorkspaceSpec names one item's checkout: ~/.mesh/work/<goal>/<seq>,
@@ -332,7 +334,16 @@ func (g *Git) Prepare(ctx context.Context, spec WorkspaceSpec) (string, error) {
 		return dir, g.checkoutBase(ctx, root, key, dir, base)
 	}
 	if err := g.baseHistory(ctx, root, key, dir, base); err != nil {
-		return "", err
+		// a branch already pushed — its evaluation's own checkout, a
+		// rework — is continued from origin whatever became of its base:
+		// a merged dependency's branch GitHub deleted is no failure
+		// (ADR-033); a new branch still needs it
+		if !g.hasRef(ctx, dir, "refs/remotes/origin/"+spec.Branch) || !g.baseGone(ctx, dir, base) {
+			return "", err
+		}
+		if g.Logf != nil {
+			g.Logf("workspace %s: base %s is gone (merged); continuing origin/%s", dir, base, spec.Branch)
+		}
 	}
 	// a rework of the same checkout — a worktree or a full clone — whose
 	// local branch is the pushed one or ahead of it keeps its unpushed
@@ -724,6 +735,35 @@ func (e *NoMergeBaseError) Error() string {
 	return fmt.Sprintf("branch %s shares no history with origin/%s: it was rebuilt from scratch or from an unrelated root, so there is nothing to diff it against", e.Branch, e.Base)
 }
 
+// BaseGoneError says origin no longer has the base branch: a dependency's
+// branch GitHub deleted when it merged. Only `git ls-remote --exit-code`
+// answering 2 (asked, and no such ref) makes one, so a fetch refused for
+// its credential or the network stays that error (ADR-030).
+type BaseGoneError struct {
+	Base string
+	Err  error // the fetch's own error
+}
+
+func (e *BaseGoneError) Error() string {
+	return fmt.Sprintf("base %s is gone from origin: %v", e.Base, e.Err)
+}
+
+func (e *BaseGoneError) Unwrap() error { return e.Err }
+
+// baseGone asks origin whether it still has refs/heads/<base>: true only
+// when it answered and has none (ls-remote's exit 2).
+func (g *Git) baseGone(ctx context.Context, dir, base string) bool {
+	_, err := g.run(ctx, dir, "git", "ls-remote", "--exit-code", "origin", "refs/heads/"+base)
+	var exit *exec.ExitError
+	return errors.As(err, &exit) && exit.ExitCode() == 2
+}
+
+// hasRef says dir's repository has ref.
+func (g *Git) hasRef(ctx context.Context, dir, ref string) bool {
+	_, err := g.run(ctx, dir, "git", "rev-parse", "--verify", "--quiet", ref)
+	return err == nil
+}
+
 // deepenRounds bounds EnsureMergeBase: this many `--deepen` fetches (the
 // step doubling from FetchDepth), then one `--unshallow`.
 const deepenRounds = 3
@@ -731,11 +771,15 @@ const deepenRounds = 3
 // EnsureMergeBase makes origin/<base> and HEAD share a merge base in dir,
 // fetching the base branch explicitly (a single-branch clone lacks it) and
 // deepening a shallow checkout in a fixed number of steps. A branch that
-// still shares none yields a *NoMergeBaseError.
+// still shares none yields a *NoMergeBaseError; a base origin no longer
+// has, a *BaseGoneError.
 func (g *Git) EnsureMergeBase(ctx context.Context, dir, base string) error {
 	root, key := g.lockRoot("", dir), g.repoKeyOf(ctx, dir)
 	remote := "refs/remotes/origin/" + base
 	if _, err := g.fetchLocked(ctx, root, key, dir, "git", "fetch", "--quiet", "origin", "+refs/heads/"+base+":"+remote); err != nil {
+		if g.baseGone(ctx, dir, base) {
+			return &BaseGoneError{Base: base, Err: err}
+		}
 		return err
 	}
 	has := func() bool {
@@ -1363,14 +1407,34 @@ func MeshMCPURL(gatewayURL string) string {
 	return strings.TrimRight(gatewayURL, "/") + "/mcp"
 }
 
-// MeshContextMCP is the MCP server a session gets for mesh-context: the
-// platform's /mcp with the node's own token, so the session reads what
-// the node's operator may.
-func MeshContextMCP(gatewayURL, token string) map[string]any {
+// MeshContextMCP is the MCP server a session gets for mesh-context:
+// bin's `mesh mcp-relay` to the platform's /mcp on a token file
+// (harness.MeshContextRelay), so the session reads what the node's
+// operator may on the node's bearer of the moment, never one that
+// rotated under it (mesh-cli ADR-029). The entry names no token file
+// and carries no bearer: the harness puts the session's own file in
+// its directory — `<workdir>.session/`, the pod's HOME (where the relay
+// is harness.RelayScript), a Codex session's CODEX_HOME — and the
+// node's TokenFiles keeps it fresh until the session's end is handled.
+func MeshContextMCP(bin, gatewayURL string) map[string]any {
+	if gatewayURL == "" {
+		return nil
+	}
+	if bin == "" {
+		bin = "mesh"
+	}
+	return map[string]any{harness.BuiltinMCP: harness.MeshContextRelay(bin, MeshMCPURL(gatewayURL), "")}
+}
+
+// MeshContextHTTP is mesh-context as the platform's /mcp with token as
+// its header: a person's own CLI client (meshmcp.Hosted), which takes a
+// fresh bearer per request, and a test's harness. No session the node
+// starts gets it: a header outlives no rotation (ADR-029).
+func MeshContextHTTP(gatewayURL, token string) map[string]any {
 	if gatewayURL == "" || token == "" {
 		return nil
 	}
-	return map[string]any{"mesh-context": map[string]any{
+	return map[string]any{harness.BuiltinMCP: map[string]any{
 		"type": "http", "url": MeshMCPURL(gatewayURL),
 		"headers": map[string]string{"Authorization": "Bearer " + token},
 	}}

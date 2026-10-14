@@ -27,11 +27,13 @@ import (
 // MachineKind is Session.Kind for a Latchkey machine credential.
 const MachineKind = "machine"
 
-// refreshSkew is how long before expiry a machine access token is
+// RefreshSkew is how long before expiry a machine access token is
 // renewed. The node talks to the gateway every interval (30s by
 // default), so a minute is ample and stays honest for the short
 // access_ttl a machine may be registered with.
-const refreshSkew = time.Minute
+// A session's mesh-context token file is rewritten well inside it
+// (node.TokenRefreshEvery).
+const RefreshSkew = time.Minute
 
 func tokenPath() (string, error) {
 	home, err := os.UserHomeDir()
@@ -195,7 +197,7 @@ func LockToken() (release func(), err error) {
 }
 
 // NeedsRefresh reports whether a machine credential's access token has
-// expired or expires within refreshSkew. A credential with no recorded
+// expired or expires within RefreshSkew. A credential with no recorded
 // expiry is taken at face value.
 func NeedsRefresh(sess *Session) bool {
 	if sess == nil || sess.AccessToken == "" {
@@ -204,7 +206,7 @@ func NeedsRefresh(sess *Session) bool {
 	if sess.ExpiresAt == nil {
 		return false
 	}
-	return time.Now().Add(refreshSkew).After(*sess.ExpiresAt)
+	return time.Now().Add(RefreshSkew).After(*sess.ExpiresAt)
 }
 
 // Source is the bearer the gateway client sends on each request. A

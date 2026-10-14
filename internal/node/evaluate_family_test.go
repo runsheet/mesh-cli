@@ -429,7 +429,7 @@ func toolRow(t *testing.T, u map[string]any, tool string) map[string]any {
 // and both sessions' tools in the one report.
 func TestCodexWithoutContextIsNotAVerdict(t *testing.T) {
 	f, ev, claude, codex, _, logs := familyFixture(t, "normal", "sonnet", "Holds.\nVERDICT: PASS", "Nothing to read.\nVERDICT: FAIL")
-	ev.MCP = MeshContextMCP(f.URL(), "rs_test")
+	ev.MCP = MeshContextHTTP(f.URL(), "rs_test")
 	codex.tools = noContext(3, "Auth required during MCP startup")
 	claude.tools = map[string]*harness.ToolStat{"mesh-context": {Calls: 2, Wall: 40 * time.Millisecond}}
 	in := evaluateItem1(t, f, ev)
@@ -466,7 +466,7 @@ func TestCodexWithoutContextIsNotAVerdict(t *testing.T) {
 // claim-time read, so the first choice found none.
 func TestClaudeWithoutContextRunsOnCodex(t *testing.T) {
 	f, ev, claude, codex, _, logs := familyFixture(t, "normal", "sonnet", "VERDICT: FAIL", "Holds.\nVERDICT: PASS")
-	ev.MCP = MeshContextMCP(f.URL(), "rs_test")
+	ev.MCP = MeshContextHTTP(f.URL(), "rs_test")
 	known := &KnownAccounts{}
 	ev.CodexAccounts, ev.Credentials.Known = (&Loop{Known: known}).CodexCandidates, known
 	claude.tools = noContext(0, "failed")
@@ -493,7 +493,7 @@ func TestClaudeWithoutContextRunsOnCodex(t *testing.T) {
 // amendment 2026-09-29).
 func TestNoContextWithNoOtherFamilyIsNoVerdict(t *testing.T) {
 	f, ev, claude, codex, _, logs := familyFixture(t, "normal", "sonnet", "VERDICT: FAIL", "VERDICT: PASS")
-	ev.MCP = MeshContextMCP(f.URL(), "rs_test")
+	ev.MCP = MeshContextHTTP(f.URL(), "rs_test")
 	ev.CodexAccounts = (&Loop{Known: &KnownAccounts{}}).CodexCandidates
 	claude.tools = noContext(3, "Auth required")
 	ev.Blind = &OncePer{}
@@ -523,7 +523,7 @@ func TestNoContextWithNoOtherFamilyIsNoVerdict(t *testing.T) {
 func TestNoContextWithNoOtherFamilyWaitsOnAnOlderPlatform(t *testing.T) {
 	f, ev, claude, codex, _, logs := familyFixture(t, "normal", "sonnet", "VERDICT: FAIL", "VERDICT: PASS")
 	f.NoNoVerdict = true
-	ev.MCP = MeshContextMCP(f.URL(), "rs_test")
+	ev.MCP = MeshContextHTTP(f.URL(), "rs_test")
 	ev.CodexAccounts = (&Loop{Known: &KnownAccounts{}}).CodexCandidates
 	claude.tools = noContext(3, "Auth required")
 	ev.Blind, ev.NoVerdict = &OncePer{}, &OncePer{}
@@ -608,7 +608,7 @@ func TestNoVerdictLineOnAnOlderPlatformRecordsNothing(t *testing.T) {
 // the item on what it could not see — so the pass stands, passed=true.
 func TestBlindFirstAttemptThenPassRecordsPassed(t *testing.T) {
 	f, ev, claude, codex, _, _ := familyFixture(t, "high", "sonnet", "Holds.\nVERDICT: PASS", "A clause does not hold.\nVERDICT: FAIL")
-	ev.MCP = MeshContextMCP(f.URL(), "rs_test")
+	ev.MCP = MeshContextHTTP(f.URL(), "rs_test")
 	codex.tools = noContext(0, "prologue: not found")
 	codex.firstOnly = true
 	claude.tools = map[string]*harness.ToolStat{"mesh-context": {Calls: 2}}
@@ -653,7 +653,7 @@ func TestAVerdictIsRecordedAsBefore(t *testing.T) {
 // is recorded as no verdict, never kept as an answer.
 func TestRefusedCallsOnAConnectedContextServerAreNoVerdict(t *testing.T) {
 	f, ev, claude, codex, _, _ := familyFixture(t, "normal", "sonnet", "VERDICT: FAIL", "VERDICT: PASS")
-	ev.MCP = MeshContextMCP(f.URL(), "rs_test")
+	ev.MCP = MeshContextHTTP(f.URL(), "rs_test")
 	ev.CodexAccounts = (&Loop{Known: &KnownAccounts{}}).CodexCandidates
 	stream := `{"type":"system","subtype":"init","model":"claude-sonnet-5","mcp_servers":[{"name":"mesh-context","status":"connected"}]}
 {"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","id":"t1","name":"mcp__mesh-context__mesh_document","input":{"slug":"prd"}}]}}
@@ -677,7 +677,7 @@ func TestRefusedCallsOnAConnectedContextServerAreNoVerdict(t *testing.T) {
 // verdict stands as before.
 func TestSomeContextIsAVerdict(t *testing.T) {
 	f, ev, claude, codex, _, _ := familyFixture(t, "normal", "sonnet", "VERDICT: PASS", "Nothing asserts it.\nVERDICT: FAIL")
-	ev.MCP = MeshContextMCP(f.URL(), "rs_test")
+	ev.MCP = MeshContextHTTP(f.URL(), "rs_test")
 	codex.tools = map[string]*harness.ToolStat{"mesh-context": {Calls: 3, Clean: 2, Errors: 1, FirstError: "timeout"}}
 	in := evaluateItem1(t, f, ev)
 	if codex.runs() != 1 || len(claude.jobs) != 0 || in["passed"] != false || in["notes"] != "Nothing asserts it.\n\nevaluators: one — normal/low goal, no protected path\n(evaluated on Codex gpt-6-luna)\ntools: mesh-context: first call errored: timeout" {
@@ -690,7 +690,7 @@ func TestSomeContextIsAVerdict(t *testing.T) {
 // (tools.IsBuiltin, an alias read until 2026-10-28).
 func TestNoContextUnderTheOldNameIsNotAVerdict(t *testing.T) {
 	f, ev, _, codex, _, logs := familyFixture(t, "normal", "sonnet", "VERDICT: FAIL", "VERDICT: PASS")
-	ev.MCP = MeshContextMCP(f.URL(), "rs_test")
+	ev.MCP = MeshContextHTTP(f.URL(), "rs_test")
 	item, err := ev.GW.WorkItem(context.Background(), item1)
 	if err != nil {
 		t.Fatal(err)
@@ -721,7 +721,7 @@ func TestNoContextUnderTheOldNameIsNotAVerdict(t *testing.T) {
 // sessions only).
 func TestAConsoleToolNamedPrologueFailingIsNotNoContext(t *testing.T) {
 	f, ev, claude, codex, _, logs := familyFixture(t, "normal", "sonnet", "VERDICT: PASS", "VERDICT: FAIL")
-	ev.MCP = MeshContextMCP(f.URL(), "rs_test")
+	ev.MCP = MeshContextHTTP(f.URL(), "rs_test")
 	ev.CodexAccounts = (&Loop{Known: &KnownAccounts{}}).CodexCandidates
 	claude.tools = map[string]*harness.ToolStat{
 		"mesh-context": {Calls: 3},
