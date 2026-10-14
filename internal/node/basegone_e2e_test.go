@@ -135,7 +135,7 @@ func TestBaseGoneMergedDependencyValidatesOnMainE2E(t *testing.T) {
 
 	// the head pushed is the one attested and finished
 	branch := BranchName("ship-it", 2)
-	head := strings.Fields(gitRun(t, root, "ls-remote", "--heads", origin, branch)+" ")[0]
+	head := strings.Fields(gitRun(t, root, "ls-remote", "--heads", origin, branch) + " ")[0]
 	if head == "" {
 		t.Fatalf("origin has no %s\n%s", branch, logs.String())
 	}
