@@ -1,6 +1,6 @@
 ---
 title: "ADR-032: A node validates a merge batch candidate"
-summary: Every tick, beside the evaluations, the node reads mainValidations and claims each merge batch candidate (then each merged item's main validation request) of an org it serves while it has a free slot, runs the repository's .runsheet/validate.yml in the sandbox on exactly the candidate's sha, records the attestation with mergeBatchId, and finishes the batch — green or red, since the attestation is the verdict — failing it with the reason only on an environment failure, an error or a run past the claim's window; each validation counts against capacity and logs `batch <repo>#<n> attempt <a>: …`.
+summary: Every tick, beside the evaluations, the node reads mainValidations and claims each merge batch candidate (then each merged item's main validation request) of an org it serves while it has a free slot, runs the repository's .runsheet/validate.yml in the sandbox on exactly the candidate's sha, records the attestation with mergeBatchId, and finishes the batch — green or red, since the attestation is the verdict — failing it with the reason only on an environment failure, an error or a run past the claim's window; each validation counts against capacity and logs `batch <repo>#<n> attempt <a>: …`. The candidate is fetched on the batch's platform-minted token (the operator's login only on a platform that mints none; a refused mint fails the validation).
 status: accepted
 ---
 
@@ -77,8 +77,9 @@ merge commit out at `<work root>/main-validations/<workItemId>-<attempt>`
 (`Git.AddCommitWorktree`; the default branch need only hold the sha, else
 `*CommitNotOnBranchError`), selects the suites by the merge's diff from
 its first parent, and attests it as the item's, with no `mergeBatchId`.
-The worktree goes on every path. The platform mints no repo-keyed token
-yet, so both run on the operator's credentials.
+The worktree goes on every path. A batch's candidate is fetched on the
+batch's own token, minted by the platform (see the amendment below); a
+merged item's request still runs on the operator's credentials.
 
 **Outcomes.** Green and red alike are **finished** on the attested sha
 (`FinishMergeBatchValidation`, `FinishWorkItemMainValidation`): the
@@ -110,14 +111,69 @@ window; stopped`; for a request the prefix is `main <repo>@<sha7> item
 - Batch validations take node capacity and the `evaluate` cap: a node
   full of builds validates no batch until a slot frees, and `takes:`
   without `evaluate` validates none.
-- The operator's `gh`/`git` credentials fetch the candidate until the
-  platform mints a token keyed by repo; the attestation still names the
-  node's runner image.
+- The candidate is fetched on the platform-minted batch token (the
+  amendment below), the operator's `gh`/`git` login only on a platform
+  that mints none; the attestation still names the node's runner image.
 - The contracts under `specs/contracts/` (`mainValidations.json`, the
   three batch commands, `recordValidationAttestation-batchCandidate.json`,
   the three WorkItem twins) were written from the live schema, not copied
   from runsheet; the `requests[]` entry's shape and the receipt's `branch`
   are to be checked against runsheet's `gateway/mainvalidation.go`.
+
+## Amendment 2026-10-14: the candidate is fetched on the batch's minted token
+
+Goal `the-node-fetches-a-batch-candidate-with-its-minted-token` (items
+1–3), the node's half of runsheet goal
+`a-batch-validation-fetches-with-the-repos-token` (runsheet ADR 009's
+amendment 2026-10-14, `specs/contracts/issueItemRepoToken-batch.json`).
+
+**The mint.** `issueItemRepoToken` takes `mergeBatchId` beside
+`workItemId` — exactly one of the two — and answers the item form's
+`{token, expiresAt, repo, access, permissions}` plus the `mergeBatchId`
+asked about: read access on the batch's one repo, given only to the node
+holding the candidate's validation claim (the platform knows the node by
+the bearer). The client's form is `gateway.IssueMergeBatchRepoToken(ctx,
+batch, nodeID)`, beside `IssueItemRepoToken`; an answer naming another
+batch is refused, and the gatewaytest fake serves it from
+`BatchGitHubTokens` while the batch is claimed (by `TokenNodeID` when
+set).
+
+**The fetch.** `Runner.ValidateCandidate` no longer runs on the
+operator's login: `NewBatchCred` mints the batch's token for the node id
+that claimed the batch and hands it to `validateCandidate` as an
+`ItemCred` whose renewal is the same batch form. Every git command of the
+run that reaches GitHub — the shared clone's sync, the fetch of
+`refs/heads/<candidateBranch>` (`mesh/batch/<owner>/<name>/<n>` as the
+integrator names it) and the diff base's fetch of `origin/<defaultBranch>`
+(`ChangedPaths`) — carries the token by `OnItemToken` (`withGitToken`:
+`GIT_CONFIG_*` on the command, an empty `credential.<github>.helper`
+first, which drops the operator's own helper, then the token's), so it is
+never written to the shared clone's config. Before each of those fetches
+`ItemCred.ForFetch` mints it again when `GitHubTokenNeedsRefresh` says it
+is near expiry. A token whose `repo` is not the batch's is refused. node.log
+says per batch `merge batch <n> (<repo>): candidate fetched on minted
+token (<repo>, <access>)`. A merged item's main validation request is not
+changed: `ValidateMainRequest` still runs on the operator's login.
+
+**The fallback.** A platform whose `issueItemRepoToken` takes no
+`mergeBatchId` (`gateway.IsUnsupported`), or a gateway with no batch form,
+fetches the candidate on the operator's own `gh`/`git` login as before,
+said once per run — `the platform issues no merge batch token; fetching
+candidates on the operator's own login` (`TokenFallback.NoteBatch`, the
+Runner's `BatchFallback`, set in poll and channel mode alike) — and per
+batch `candidate fetched on the operator's own login`. The rollout is not
+a flag day.
+
+**The refusal.** A mint the platform refuses, or that fails, is the
+validation's error, `github token for merge batch <n>: <reason>`: nothing
+is fetched — on the operator's login or on any token — run or attested,
+and the claim is failed with that reason through `failMainJob`
+(`FailMergeBatchValidation`), releasing it for another node. A renewal
+refused before any fetch — the candidate's, or the diff base's after the
+candidate was fetched on a token that has since come near expiry — is the
+same error, `github token for merge batch <n>: refresh github token: …`:
+`onFreshItemToken` answers the renewal's error instead of fetching on the
+held token, so a candidate is fetched on a fresh token or not at all.
 
 ## Proof
 
@@ -152,3 +208,22 @@ window; stopped`; for a request the prefix is `main <repo>@<sha7> item
   the `claimed candidate`, `attested green` and `finished` lines; a
   failing suite is attested red and never green; a merged item's main
   validation request is claimed, attested as the item's and finished.
+- The amendment, the minted token: `internal/gateway/`'s
+  `IssueMergeBatchRepoToken` tests (item 1);
+  `internal/node/mainvalidation_token_test.go` — the mint, its renewal
+  before the candidate's and the base's fetch, the old platform's
+  fallback said once, and a refused mint or renewal fetching nothing and
+  failing the validation (item 2); and end to end
+  `internal/node/mergebatch_e2e_test.go`'s
+  `TestNodeFetchesABatchCandidateOnItsMintedToken` (item 3): the
+  candidate's repo served over HTTP by `git http-backend` behind a
+  server that takes one Basic password alone, the operator's login on
+  the machine as git's global credential helper throughout. With the
+  mint, the server takes `ghs_batch7` alone and is sent nothing else;
+  the node's `Loop.Run` claims the batch, fetches
+  `mesh/batch/acme/widgets/7` on the token, runs validate.yml in the
+  sandbox on the candidate's sha, records the attestation with
+  `mergeBatchId` and finishes it. Without it (`issueItemRepoToken`
+  taking no `mergeBatchId`), the server takes the operator's login alone
+  and the candidate is validated, attested and finished on it, the
+  fallback said. Both run in `go test ./...`.
