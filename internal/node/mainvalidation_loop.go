@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/crash"
@@ -320,11 +321,57 @@ func (l *Loop) watchMainClaim(ctx context.Context, done <-chan struct{}, j mainJ
 	}
 }
 
-// ValidateCandidate is validateCandidate on the operator's own
-// credentials (the platform mints no token for a batch candidate yet):
-// what the loop's ValidateBatch runs.
+// batchTokenMinter is the gateway's batch form of issueItemRepoToken
+// (IssueMergeBatchRepoToken): the client has it, a test's double may not.
+type batchTokenMinter interface {
+	IssueMergeBatchRepoToken(ctx context.Context, batch gateway.MainValidationBatch, nodeID string) (*gateway.GitHubToken, error)
+}
+
+// ValidateCandidate is validateCandidate on the batch's own token
+// (NewBatchCred): what the loop's ValidateBatch runs. A platform that
+// mints none falls back to the operator's login, said once per run; a
+// mint refused or failing is the validation's error, never the
+// operator's login instead.
 func (r *Runner) ValidateCandidate(ctx context.Context, batch gateway.MainValidationBatch) (validate.Attestation, error) {
-	return r.validateCandidate(ctx, batch, nil)
+	cred, err := NewBatchCred(ctx, r.GW, r.Scopes, batch, r.BatchFallback, r.logf)
+	if err != nil {
+		r.logf("%s: %v; not fetched", candidatePrefix(batch), err)
+		return validate.Attestation{}, err
+	}
+	return r.validateCandidate(ctx, batch, cred)
+}
+
+// NewBatchCred mints batch's candidate token (IssueMergeBatchRepoToken)
+// for the node holding its validation claim, renewed by the same form
+// when near expiry (ItemCred.ForFetch, before every fetch). It writes
+// nothing into a checkout: the candidate's fetches carry it by
+// OnItemToken. A platform without the batch form (gateway.IsUnsupported,
+// or a gateway that has none) answers nil, nil, the operator's login,
+// noted once through fb; any other error is `github token for merge
+// batch N: …`.
+func NewBatchCred(ctx context.Context, gw Gateway, scopes Scopes, batch gateway.MainValidationBatch, fb *TokenFallback, logf func(string, ...any)) (*ItemCred, error) {
+	prefix := candidatePrefix(batch)
+	m, ok := gw.(batchTokenMinter)
+	if !ok {
+		fb.NoteBatch(prefix, logf)
+		return nil, nil
+	}
+	sc, _ := scopes.ByOrg(batch.OrgID)
+	issue := func(ctx context.Context) (*gateway.GitHubToken, error) {
+		return m.IssueMergeBatchRepoToken(ctx, batch, sc.NodeID)
+	}
+	tok, err := issue(ctx)
+	if gateway.IsUnsupported(err) {
+		fb.NoteBatch(prefix, logf)
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("github token for merge batch %d: %w", batch.Number, err)
+	}
+	if tok.Repository != "" && !strings.EqualFold(tok.Repository, batch.RepoFullName) {
+		return nil, fmt.Errorf("github token for merge batch %d: issued for %s, the batch is on %s", batch.Number, tok.Repository, batch.RepoFullName)
+	}
+	return &ItemCred{gw: gw, itemID: batch.MergeBatchID, nodeID: sc.NodeID, issue: issue, tok: tok}, nil
 }
 
 // ValidateMainRequest is validateMainRequest on the operator's own

@@ -72,8 +72,9 @@ type candidateWorktrees interface {
 var ErrNoCandidateWorktrees = errors.New("the node's workspace makes no candidate worktrees")
 
 // validateCandidate validates batch's candidate and uploads its
-// attestation: the candidate branch fetched on tok (the repo's token;
-// nil is the operator's own credentials, the fallback) into a fresh
+// attestation: the candidate branch fetched on cred (the batch's minted
+// token, renewed near expiry; nil is the operator's own credentials,
+// the fallback) into a fresh
 // worktree of the shared clone, refused as a *CandidateHeadError when
 // its head is not batch.SHA; the suites the diff from the default branch
 // selects (validate.Select, plus every `always` one) run in the sandbox
@@ -85,23 +86,30 @@ var ErrNoCandidateWorktrees = errors.New("the node's workspace makes no candidat
 // that did not come up — is returned (validate.Kinded reads its kind)
 // with nothing attested, so the caller fails the batch's validation and
 // never calls it red. The worktree is removed on every path.
-func (r *Runner) validateCandidate(ctx context.Context, batch gateway.MainValidationBatch, tok *gateway.GitHubToken) (validate.Attestation, error) {
+func (r *Runner) validateCandidate(ctx context.Context, batch gateway.MainValidationBatch, cred *ItemCred) (validate.Attestation, error) {
 	label := fmt.Sprintf("batch-%d", batch.Number)
-	prefix := fmt.Sprintf("merge batch %d (%s)", batch.Number, batch.RepoFullName)
+	prefix := candidatePrefix(batch)
 	t := validationTarget{
-		item:    gateway.WorkItem{OrgID: batch.OrgID, RepoID: batch.RepoID},
-		dir:     CandidateDir(r.WorkRoot, batch),
-		base:    batch.DefaultBranch,
-		prefix:  prefix,
-		label:   label,
-		session: func() string { return "" },
-		redact:  func(err error) error { return err },
-		report:  func(_ context.Context, note string) { r.logf("%s: %s", prefix, note) },
-		batchID: batch.MergeBatchID,
-		repoTok: tok,
+		item:      gateway.WorkItem{OrgID: batch.OrgID, RepoID: batch.RepoID},
+		dir:       CandidateDir(r.WorkRoot, batch),
+		base:      batch.DefaultBranch,
+		prefix:    prefix,
+		label:     label,
+		session:   func() string { return "" },
+		redact:    func(err error) error { return err },
+		report:    func(_ context.Context, note string) { r.logf("%s: %s", prefix, note) },
+		batchID:   batch.MergeBatchID,
+		cred:      cred,
+		tokenName: fmt.Sprintf("merge batch %d", batch.Number),
 	}
 	return r.validateCommit(ctx, t, mainCommit{repo: batch.RepoFullName, branch: batch.CandidateBranch, sha: batch.SHA, atHead: true,
-		what: "candidate " + batch.CandidateBranch})
+		what: "candidate " + batch.CandidateBranch, token: fmt.Sprintf("merge batch %d", batch.Number)})
+}
+
+// candidatePrefix is a candidate's validation's log prefix: `merge batch
+// <number> (<owner/name>)`.
+func candidatePrefix(batch gateway.MainValidationBatch) string {
+	return fmt.Sprintf("merge batch %d (%s)", batch.Number, batch.RepoFullName)
 }
 
 // MainRequestDir is where a merged item's main validation checks its
@@ -135,17 +143,26 @@ func (r *Runner) validateMainRequest(ctx context.Context, req gateway.MainValida
 		repoTok:  tok,
 	}
 	return r.validateCommit(ctx, t, mainCommit{repo: req.RepoFullName, branch: req.DefaultBranch, sha: req.SHA,
-		what: "merge commit on " + req.DefaultBranch})
+		what: "merge commit on " + req.DefaultBranch, token: fmt.Sprintf("item %d", req.Seq)})
+}
+
+// orUnnamed is s, else `unnamed`: a token whose repo or access the
+// platform did not say.
+func orUnnamed(s string) string {
+	if s == "" {
+		return "unnamed"
+	}
+	return s
 }
 
 // mainCommit is the commit a main validation checks out: sha on
 // repo's branch — its head when atHead (a candidate), else any commit
-// the branch holds (a merge commit main has moved past) — and what the
-// log calls it.
+// the branch holds (a merge commit main has moved past) — what the log
+// calls it, and whose token fetches it (`github token for <token>: …`).
 type mainCommit struct {
 	repo, branch, sha string
 	atHead            bool
-	what              string
+	what, token       string
 }
 
 // validateCommit is a main validation's body, a batch candidate's or a
@@ -174,7 +191,13 @@ func (r *Runner) validateCommit(ctx context.Context, t validationTarget, c mainC
 	if c.atHead {
 		add = wt.AddCandidateWorktree
 	}
-	if err := add(vr.onItemToken(ctx, t), c.repo, dir, c.branch, c.sha); err != nil {
+	fctx, err := vr.onFreshItemToken(ctx, t)
+	if err != nil {
+		err = &fetchTokenError{name: c.token, err: err}
+		r.logf("%s: %v; not fetched", prefix, err)
+		return validate.Attestation{}, err
+	}
+	if err := add(fctx, c.repo, dir, c.branch, c.sha); err != nil {
 		var he *CandidateHeadError
 		var ne *CommitNotOnBranchError
 		if errors.As(err, &he) || errors.As(err, &ne) {
@@ -182,6 +205,13 @@ func (r *Runner) validateCommit(ctx context.Context, t validationTarget, c mainC
 			return validate.Attestation{}, err
 		}
 		return validate.Attestation{}, validate.Classify(fmt.Errorf("fetch %s: %w", c.branch, err))
+	}
+	if c.atHead {
+		if tok := t.cred.Token(); tok != nil {
+			r.logf("%s: candidate fetched on minted token (%s, %s)", prefix, orUnnamed(tok.Repository), orUnnamed(tok.Access))
+		} else if t.repoTok == nil {
+			r.logf("%s: candidate fetched on the operator's own login", prefix)
+		}
 	}
 	if _, err := validate.Load(dir); err != nil {
 		// no validate.yml on the commit is nothing to attest: the caller's

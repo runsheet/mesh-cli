@@ -93,19 +93,25 @@ type validationTarget struct {
 	session func() string
 	redact  func(error) error
 	report  func(ctx context.Context, note string)
-	// cred is the item's token, every fetch the validator runs going out
-	// on it (ForFetch, OnItemToken); nil on the fallback.
+	// cred is the item's token — or a merge batch candidate's
+	// (NewBatchCred) — every fetch the validator runs going out on it
+	// (ForFetch, OnItemToken); nil on the fallback.
 	cred *ItemCred
 	// batchID is the merge batch a candidate's validation attests
 	// (mainvalidation.go): set, there is no item — the upload goes by
-	// RecordBatchCandidateAttestation carrying it — and repoTok, the
-	// repo's token, is what its fetches go out on in cred's place.
+	// RecordBatchCandidateAttestation carrying it. repoTok, set with no
+	// cred, is a token its fetches go out on as it is, never renewed.
 	batchID string
 	repoTok *gateway.GitHubToken
 	// defaultBranch is the repo's default branch, the changed paths'
 	// base when base — a merged dependency's branch — is gone from
 	// origin; "" takes no fallback.
 	defaultBranch string
+	// tokenName, set, is whose token cred is (`merge batch 7`): every
+	// fetch goes out on a fresh token or not at all, a renewal refused
+	// being the validation's error naming it (*fetchTokenError), never
+	// a fetch on the token held (fetchContext).
+	tokenName string
 	// diffFrom, set, is the commit the changed paths are taken from in
 	// base's place: a merged item's merge commit is diffed against its
 	// first parent, since main already holds it (mainvalidation.go).
@@ -264,6 +270,10 @@ func (vr validator) run(ctx context.Context, t validationTarget, v *buildValidat
 		return validate.Attestation{}, err
 	}
 	changed, from, err := vr.changedPaths(ctx, t)
+	var te *fetchTokenError
+	if errors.As(err, &te) {
+		return validate.Attestation{}, err
+	}
 	if err != nil {
 		// a base fetch GitHub refused is credential_refused (adr-030)
 		return validate.Attestation{}, validate.Classify(fmt.Errorf("changed paths: %w", err))
@@ -654,13 +664,16 @@ func (vr validator) changedPaths(ctx context.Context, t validationTarget) ([]str
 		paths, err := diffNames(ctx, t.dir, t.diffFrom)
 		return paths, t.base, err
 	}
-	ctx = vr.onItemToken(ctx, t)
-	paths, err := vr.WS.ChangedPaths(ctx, t.dir, t.base)
+	fctx, err := vr.fetchContext(ctx, t)
+	if err != nil {
+		return nil, t.base, err
+	}
+	paths, err := vr.WS.ChangedPaths(fctx, t.dir, t.base)
 	var gone *BaseGoneError
 	if err == nil || !errors.As(err, &gone) || t.defaultBranch == "" || t.base == t.defaultBranch {
 		return paths, t.base, err
 	}
-	paths, err = vr.WS.ChangedPaths(ctx, t.dir, t.defaultBranch)
+	paths, err = vr.WS.ChangedPaths(fctx, t.dir, t.defaultBranch)
 	return paths, t.defaultBranch, err
 }
 
@@ -684,7 +697,41 @@ func diffNames(ctx context.Context, dir, from string) ([]string, error) {
 // fetchHead fetches origin's branch and head into t's checkout on the
 // item's token.
 func (vr validator) fetchHead(ctx context.Context, t validationTarget, branch, head string) error {
-	return vr.headFetcher().FetchHead(vr.onItemToken(ctx, t), t.dir, branch, head)
+	fctx, err := vr.fetchContext(ctx, t)
+	if err != nil {
+		return err
+	}
+	return vr.headFetcher().FetchHead(fctx, t.dir, branch, head)
+}
+
+// fetchTokenError is a fetch not made because t's token could not be
+// had fresh: `github token for <name>: <why>`.
+type fetchTokenError struct {
+	name string
+	err  error
+}
+
+func (e *fetchTokenError) Error() string {
+	return fmt.Sprintf("github token for %s: %v", e.name, e.err)
+}
+func (e *fetchTokenError) Unwrap() error { return e.err }
+
+// fetchContext is ctx for a fetch of t's: onItemToken, except that a
+// target naming its token (tokenName, a merge batch candidate) is
+// fetched on a fresh one or not at all — a renewal refused before any
+// of its fetches, the candidate's or the diff base's, is a
+// *fetchTokenError, logged `<prefix>: <err>; not fetched`.
+func (vr validator) fetchContext(ctx context.Context, t validationTarget) (context.Context, error) {
+	if t.tokenName == "" {
+		return vr.onItemToken(ctx, t), nil
+	}
+	fctx, err := vr.onFreshItemToken(ctx, t)
+	if err != nil {
+		err = &fetchTokenError{name: t.tokenName, err: err}
+		vr.logf("%s: %v; not fetched", t.prefix, err)
+		return ctx, err
+	}
+	return fctx, nil
 }
 
 // onItemToken is ctx with the validator's git on the item's token, asked
@@ -694,14 +741,26 @@ func (vr validator) fetchHead(ctx context.Context, t validationTarget, branch, h
 // or a token since expired. A token that cannot be renewed is logged and
 // the one held used; the fallback is ctx.
 func (vr validator) onItemToken(ctx context.Context, t validationTarget) context.Context {
+	fctx, err := vr.onFreshItemToken(ctx, t)
+	if err != nil {
+		vr.logf("%s: validation: %v", t.prefix, err)
+		return OnItemToken(ctx, vr.WS, t.cred.Token())
+	}
+	return fctx
+}
+
+// onFreshItemToken is onItemToken that answers a token it could not
+// renew as the error, ctx unchanged: a merge batch candidate is fetched
+// on a fresh token or not at all.
+func (vr validator) onFreshItemToken(ctx context.Context, t validationTarget) (context.Context, error) {
 	if t.cred == nil && t.repoTok != nil {
-		return OnItemToken(ctx, vr.WS, t.repoTok)
+		return OnItemToken(ctx, vr.WS, t.repoTok), nil
 	}
 	tok, err := t.cred.ForFetch(ctx)
 	if err != nil {
-		vr.logf("%s: validation: %v", t.prefix, err)
+		return ctx, err
 	}
-	return OnItemToken(ctx, vr.WS, tok)
+	return OnItemToken(ctx, vr.WS, tok), nil
 }
 
 // gitPosition is where the checkout is: its branch's name, else (a
