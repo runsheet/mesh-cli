@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"projectmesh.io/mesh-cli/internal/crash"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -322,6 +323,9 @@ type Loop struct {
 	// noEvaluationClaimSaid is set once the run has said the platform
 	// takes no claimWorkItemEvaluation (evaluateHeld, ADR-025).
 	noEvaluationClaimSaid bool
+	// evaluationElsewhereSaid are the items this node built whose
+	// evaluation another node claimed, each said once (evaluateHeld).
+	evaluationElsewhereSaid map[string]bool
 	// noMainValidationSaid is set once the run has said the platform
 	// serves no main validation (validateBatches).
 	noMainValidationSaid bool
@@ -1979,13 +1983,16 @@ func sameOrgs(a, b Scopes) bool {
 // evaluateHeld starts an evaluation of every item in evaluating in the
 // served orgs that no evaluation here is running on, most urgent goal
 // first across the orgs (evaluateOrder; the goals are read only for an
-// org with one). An item this node holds is evaluated with no claim; one
-// another node holds, or none, is claimed first with
-// ClaimWorkItemEvaluation — the lock across nodes, so an evaluate-only
-// node evaluates what others built (ADR-025). A refusal is the ordinary
-// answer, another node has it, and is not logged as an error. A platform
-// without the claim leaves this node to its own items, said once per
-// run. The verdict moves the item on; an evaluation that ends without
+// org with one). Every item, the ones this node built included, is
+// claimed first with ClaimWorkItemEvaluation — the one lock across
+// nodes, so an evaluate-only node evaluates what others built and a
+// builder never evaluates beside one that took its item (ADR-025's
+// amendment 2026-10-14; the platform converges for the same node). A
+// refusal is the ordinary answer, another node has it, and is not
+// logged as an error; on an item this node built it is said once per
+// item. A platform without the claim leaves this node to its own items,
+// with no claim, said once per run. An adopted evaluation is already in
+// l.evaluating and is not claimed again. The verdict moves the item on; an evaluation that ends without
 // one leaves it here for the next tick.
 func (l *Loop) evaluateHeld(ctx context.Context) {
 	if l.Evaluate == nil || !l.takesKind(harness.KindEvaluate) {
@@ -2001,13 +2008,13 @@ func (l *Loop) evaluateHeld(ctx context.Context) {
 		}
 		var rank func(string) int
 		for _, it := range rows {
-			if it.NodeID != sc.NodeID {
-				if claims == 0 {
-					claims = -1
-					if l.GW.TakesEvaluationClaim(ctx) {
-						claims = 1
-					}
+			if claims == 0 {
+				claims = -1
+				if l.GW.TakesEvaluationClaim(ctx) {
+					claims = 1
 				}
+			}
+			if it.NodeID != sc.NodeID {
 				if claims < 0 {
 					l.mu.Lock()
 					said := l.noEvaluationClaimSaid
@@ -2080,15 +2087,18 @@ func (l *Loop) evaluateHeld(ctx context.Context) {
 		l.mu.Lock()
 		l.evaluating[item.ID] = true
 		l.mu.Unlock()
-		if sc := h.scope; item.NodeID != sc.NodeID {
-			// the claim is the lock across nodes: refused, another node
-			// has it
+		if sc := h.scope; claims > 0 {
+			// the claim is the lock across nodes, the builder's own
+			// evaluation included: refused, another node has it
+			built := item.NodeID == sc.NodeID
 			if err := l.GW.ClaimWorkItemEvaluation(ctx, item.ID, sc.NodeID); err != nil {
 				l.mu.Lock()
 				delete(l.evaluating, item.ID)
 				l.mu.Unlock()
 				if !gateway.IsRefusal(err) {
 					l.logf("%s: claim the evaluation of item %d: %v", sc.Name(), item.Seq, err)
+				} else if built {
+					l.sayEvaluationElsewhere(ctx, item, err)
 				}
 				continue
 			}
@@ -2118,6 +2128,44 @@ func (l *Loop) evaluateHeld(ctx context.Context) {
 		}(actx, item)
 	}
 }
+
+// sayEvaluationElsewhere says once per item that the evaluation of an
+// item this node built was claimed by another node: `item <goal>/<seq>:
+// evaluation is node <x>'s; not evaluated here`. The holder is the one
+// the refusal names, else the item's nodeId read again when it is not
+// this node's; not an error.
+func (l *Loop) sayEvaluationElsewhere(ctx context.Context, item gateway.WorkItem, refusal error) {
+	l.mu.Lock()
+	if l.evaluationElsewhereSaid == nil {
+		l.evaluationElsewhereSaid = map[string]bool{}
+	}
+	said := l.evaluationElsewhereSaid[item.ID]
+	l.evaluationElsewhereSaid[item.ID] = true
+	l.mu.Unlock()
+	if said {
+		return
+	}
+	holder := ""
+	if m := evaluationHolderRE.FindStringSubmatch(refusal.Error()); m != nil {
+		holder = m[1]
+	} else if fresh, err := l.GW.WorkItem(ctx, item.ID); err == nil && fresh != nil && fresh.NodeID != "" && fresh.NodeID != item.NodeID {
+		holder = fresh.NodeID
+	}
+	slug := item.GoalID
+	if g, err := l.GW.Goal(ctx, item.GoalID); err == nil && g != nil && g.Slug != "" {
+		slug = g.Slug
+	}
+	label := fmt.Sprintf("%s/%d", slug, item.Seq)
+	if holder == "" {
+		l.logf("item %s: evaluation is another node's; not evaluated here", label)
+		return
+	}
+	l.logf("item %s: evaluation is node %s's; not evaluated here", label, holder)
+}
+
+// evaluationHolderRE reads the holder from a claimWorkItemEvaluation
+// refusal, `node <id> has claimed the evaluation`.
+var evaluationHolderRE = regexp.MustCompile(`node (\S+) has claimed the evaluation`)
 
 // rebaseRequested claims every item in the served orgs whose rebase is
 // requested and that no rebase here is on, most urgent goal first across
