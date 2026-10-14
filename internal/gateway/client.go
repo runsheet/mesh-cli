@@ -3564,22 +3564,48 @@ type GitHubToken struct {
 // refusal). A platform without the mutation answers IsUnsupported, and
 // the caller falls back to the operator's own GitHub login.
 func (c *Client) IssueItemRepoToken(ctx context.Context, itemID, nodeID string) (*GitHubToken, error) {
-	const field = "issueItemRepoToken"
 	// The platform serves issueItemRepoToken(workItemId: UUID!): Map —
 	// {token, expiresAt, repo, access, permissions} — not a command with
 	// an input object; the node's claim is what authorises it, so the
 	// node id is not an argument (runsheet gateway/itemtoken.go).
+	q := `mutation($id: UUID!) { issueItemRepoToken(workItemId: $id) }`
+	return c.issueRepoToken(ctx, q, itemID, "item")
+}
+
+// IssueMergeBatchRepoToken asks the platform for a merge batch
+// candidate's GitHub token: the batch form of issueItemRepoToken,
+// issueItemRepoToken(mergeBatchId: UUID!) — the caller names exactly one
+// of workItemId and mergeBatchId — answering the item's shape plus
+// mergeBatchId (runsheet ADR 009's amendment 2026-10-14,
+// specs/contracts/issueItemRepoToken-batch.json). Only the node holding
+// the candidate's validation claim is given one, read access on the
+// batch's repo (anything else is a refusal, IsRefusal). A platform
+// without the field, or whose issueItemRepoToken takes no mergeBatchId,
+// answers IsUnsupported. nodeID is kept for the interface: the platform
+// knows the node from the bearer.
+func (c *Client) IssueMergeBatchRepoToken(ctx context.Context, batch MainValidationBatch, nodeID string) (*GitHubToken, error) {
+	_ = nodeID
+	q := `mutation($id: UUID!) { issueItemRepoToken(mergeBatchId: $id) }`
+	return c.issueRepoToken(ctx, q, batch.MergeBatchID, "merge batch")
+}
+
+// issueRepoToken sends one of issueItemRepoToken's two forms, q naming
+// id as $id, and decodes its answer: {token, expiresAt, repo, access,
+// permissions} and, for a batch, mergeBatchId — which, when the answer
+// names one, must be the batch asked about.
+func (c *Client) issueRepoToken(ctx context.Context, q, id, what string) (*GitHubToken, error) {
+	const field = "issueItemRepoToken"
 	var out struct {
 		IssueItemRepoToken *struct {
-			Token       string         `json:"token"`
-			ExpiresAt   string         `json:"expiresAt"`
-			Repo        string         `json:"repo"`
-			Access      string         `json:"access"`
-			Permissions map[string]any `json:"permissions"`
+			Token        string         `json:"token"`
+			ExpiresAt    string         `json:"expiresAt"`
+			Repo         string         `json:"repo"`
+			Access       string         `json:"access"`
+			Permissions  map[string]any `json:"permissions"`
+			MergeBatchID string         `json:"mergeBatchId"`
 		} `json:"issueItemRepoToken"`
 	}
-	q := `mutation($id: UUID!) { issueItemRepoToken(workItemId: $id) }`
-	if err := c.Query(ctx, q, map[string]any{"id": itemID}, &out); err != nil {
+	if err := c.Query(ctx, q, map[string]any{"id": id}, &out); err != nil {
 		var ge *Error
 		if errors.As(err, &ge) && (unknownOperation(ge.Message, field) || schemaMismatch(ge.Message, field)) {
 			return nil, &Error{Message: ge.Message, Unsupported: true}
@@ -3588,7 +3614,10 @@ func (c *Client) IssueItemRepoToken(ctx context.Context, itemID, nodeID string) 
 	}
 	t := out.IssueItemRepoToken
 	if t == nil || t.Token == "" {
-		return nil, fmt.Errorf("gateway: %s: no token for item %s", field, itemID)
+		return nil, fmt.Errorf("gateway: %s: no token for %s %s", field, what, id)
+	}
+	if what == "merge batch" && t.MergeBatchID != "" && t.MergeBatchID != id {
+		return nil, fmt.Errorf("gateway: %s: asked for merge batch %s, answered for %s", field, id, t.MergeBatchID)
 	}
 	exp, err := time.Parse(time.RFC3339Nano, t.ExpiresAt)
 	if err != nil {
@@ -4775,6 +4804,7 @@ var ReadTryTimeout = 30 * time.Second
 // claim, a finish, a fail, a release, an evaluation, a plan, a
 // heartbeat, a registration, a usage record — is a command sent once.
 var retriedMutations = map[string]bool{
+	// both forms: workItemId and a merge batch's mergeBatchId
 	"issueItemRepoToken":  true,
 	"planGitHubToken":     true,
 	"researchGitHubToken": true,
