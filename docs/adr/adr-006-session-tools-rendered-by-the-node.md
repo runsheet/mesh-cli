@@ -413,7 +413,8 @@ are unchanged.
 The **token file** — `mesh-context.token`, 0600, written atomically in
 the session's own directory (`<workdir>.session/`, the pod's HOME, the
 CODEX_HOME, the channel session's own temp dir) by `node.TokenFiles`
-from the node's bearer, rewritten every minute it rotated, removed when
+from the node's bearer, rewritten within 15 seconds of its rotation
+(`TokenRefreshEvery`, a quarter of the credential's refresh skew), removed when
 the session's end is handled — is **an exception to secrets in the
 environment only**: the one secret a session's tool reads from a file.
 It is on no command line, in no config (the configs name only its

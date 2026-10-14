@@ -1,6 +1,6 @@
 ---
 title: "ADR-029: A session's MCP token is refreshed by the node"
-summary: Every session's mesh-context is a stdio relay to the gateway's /mcp — `mesh mcp-relay --url <gw>/mcp --token-file <path>` on the host, harness.RelayScript under node in a pod — whose bearer is a 0600 file in the session's own directory (`<workdir>.session/`, the pod's HOME, the CODEX_HOME, a temp dir for the channel session) that node.TokenFiles writes from gateway.Client.Bearer at start, rewrites atomically every minute the bearer has rotated, and removes when the session's end is handled; state.json names the file so an adopting node keeps it too; no session config carries a bearer, so a session outlives any one rotation of the node's machine credential.
+summary: Every session's mesh-context is a stdio relay to the gateway's /mcp — `mesh mcp-relay --url <gw>/mcp --token-file <path>` on the host, harness.RelayScript under node in a pod — whose bearer is a 0600 file in the session's own directory (`<workdir>.session/`, the pod's HOME, the CODEX_HOME, a temp dir for the channel session) that node.TokenFiles writes from gateway.Client.Bearer at start, rewrites atomically every 15 seconds (a quarter of the credential's one-minute refresh skew, so the renewed bearer is on disk at least 45 seconds before the old one expires) the bearer has rotated, and removes when the session's end is handled; state.json names the file so an adopting node keeps it too; no session config carries a bearer, so a session outlives any one rotation of the node's machine credential.
 status: accepted
 ---
 
@@ -65,10 +65,17 @@ build of two hours started late in a token's life was certain to.
    `channel.Session.Tokens`; `sessionTokens` in nodecmd.go, set once
    the platform client is made). `Keep(path)` writes the bearer before
    the agent starts — 0600, a temp file renamed over the path, so a
-   relay never reads half a token — and every `TokenRefreshEvery` (a
-   minute, well inside the margin `auth.NeedsRefresh` refreshes the
-   machine credential at) asks again and rewrites a file whose bearer
-   changed. The release removes the file when the session's end is
+   relay never reads half a token — and every `TokenRefreshEvery` asks
+   again and rewrites a file whose bearer changed. The interval is
+   `auth.RefreshSkew / 4`, 15 seconds: the machine credential renews
+   once it is within `auth.RefreshSkew` (a minute) of expiry
+   (`auth.NeedsRefresh`), so the first tick that sees the renewed
+   bearer falls at least 45 seconds before the old one expires,
+   whatever the ticks' phase. An interval equal to the skew is not
+   enough — a tick landing exactly a minute before expiry is still
+   handed the old bearer and the next lands at the expiry. A refresh
+   never makes the file's directory again: a session directory removed
+   under a kept file stays gone. The release removes the file when the session's end is
    handled; a detach releases it without removing it.
 5. **An adopted session's file is kept by its adopter.**
    `ClaudeCode.Attach` keeps the file its state names
@@ -108,7 +115,15 @@ build of two hours started late in a token's life was certain to.
   old token then refused by `gatewaytest.Fake`'s `/mcp` (`SetToken`,
   `MCPRefused`), calls `mesh_progress` and `mesh_finish` through
   `mcprelay.Relay` after the rotation, the finish on the new bearer.
-  `TestTokenFileRewrittenBeforeExpiryAndRemovedAtTheEnd`, the harness's
+  The token file is rewritten there by the keeper's own ticks on a
+  fake clock, nothing calling `Refresh`.
+  `TestTokenFileRewrittenBeforeExpiryAndRemovedAtTheEnd` steps every
+  phase of the ticks against the expiry, a second apart, and sees the
+  renewed bearer in the file at the last tick before it (and that an
+  interval of the skew itself does not); the harness's
+  `TestTokenKeeperReleasedOnAFailedStart` sees a start that fails after
+  the file is placed — a pod's `mcp.json`, a supplied `CODEX_HOME`'s
+  `config.toml` — release the keeper and remove the file; the harness's
   `TestAdoptedSessionTokenFileIsRefreshed`, the rendering tests for
   Claude host and pod and Codex (`internal/harness/meshcontext_test.go`)
   and the channel's `TestSessionMeshContextRelaysOnAKeptTokenFile`

@@ -375,3 +375,52 @@ func TestPlaceMeshContextLeavesOtherEntries(t *testing.T) {
 		t.Fatalf("no keeper named token file %q", tf)
 	}
 }
+
+// sabotageKeeper keeps as rotatingKeeper does and then puts a directory
+// where the session's next file goes, so the start fails right after
+// the token file is placed.
+type sabotageKeeper struct {
+	rotatingKeeper
+	blocks string
+}
+
+func (k *sabotageKeeper) Keep(path string) (func(bool), error) {
+	release, err := k.rotatingKeeper.Keep(path)
+	if err == nil {
+		os.MkdirAll(filepath.Join(filepath.Dir(path), k.blocks), 0o700)
+	}
+	return release, err
+}
+
+// A start that fails after the token file is placed — a pod's mcp.json
+// or a supplied CODEX_HOME's config.toml that cannot be written —
+// releases the keeper and removes the file: no keeper outlives a
+// session that never ran.
+func TestTokenKeeperReleasedOnAFailedStart(t *testing.T) {
+	_, sb := detachedFake(t)
+	k := &sabotageKeeper{blocks: "mcp.json"}
+	_, err := (&ClaudeCode{Sandbox: sb, Tokens: k}).Run(context.Background(), Job{Kind: KindBuild, Label: "g/1", Workspace: t.TempDir(), Prompt: "p", MCPServers: relayServers()}, nil)
+	if err == nil || !strings.Contains(err.Error(), "mcp config") {
+		t.Fatalf("pod run = %v, want the mcp config's failure", err)
+	}
+	paths := k.keptPaths()
+	if len(paths) != 1 {
+		t.Fatalf("kept %v", paths)
+	}
+	if remove, ok := k.releasedAs(paths[0]); !ok || !remove {
+		t.Fatalf("pod start failed: released %v (remove %v)", ok, remove)
+	}
+
+	home := t.TempDir()
+	ck := &sabotageKeeper{blocks: "config.toml"}
+	if _, err := (&Codex{Tokens: ck}).prepareHome(Job{MCPServers: relayServers(), Env: []string{"CODEX_HOME=" + home}}); err == nil {
+		t.Fatal("prepareHome wrote config.toml over a directory")
+	}
+	path := filepath.Join(home, TokenFileName)
+	if remove, ok := ck.releasedAs(path); !ok || !remove {
+		t.Fatalf("codex start failed: released %v (remove %v)", ok, remove)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("token file left after a failed codex start: %v", err)
+	}
+}

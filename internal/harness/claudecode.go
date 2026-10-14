@@ -626,6 +626,15 @@ func (c *ClaudeCode) runSandboxed(ctx context.Context, job Job, onProgress func(
 	var err error
 	mcpPath := ""
 	releaseToken := func(bool) {}
+	// the token file goes on every end but a hand-off to runDetached,
+	// which keeps it for the node that adopts the session — a failed
+	// start included, so no keeper outlives a session that never ran
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			releaseToken(true)
+		}
+	}()
 	if len(job.MCPServers) > 0 {
 		mcpPath = filepath.Join(sess.Home, "mcp.json")
 		if nodeFinishes(job) {
@@ -650,9 +659,9 @@ func (c *ClaudeCode) runSandboxed(ctx context.Context, job Job, onProgress func(
 		}
 	}
 	if c.DetachSandboxed && job.Outlive && job.Workspace != "" {
+		handedOff = true
 		return c.runDetached(ctx, job, sess, mcpPath, onProgress, releaseToken)
 	}
-	defer releaseToken(true)
 	if job.Timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, job.Timeout)

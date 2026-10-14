@@ -9,14 +9,17 @@ import (
 	"sync"
 	"time"
 
+	"projectmesh.io/mesh-cli/internal/auth"
 	"projectmesh.io/mesh-cli/internal/crash"
 )
 
 // TokenRefreshEvery is how often TokenFiles asks for the bearer and
-// rewrites each kept file it changed for: well inside the margin the
-// machine credential refreshes at (auth.NeedsRefresh), so a file never
-// holds a bearer past its life.
-const TokenRefreshEvery = time.Minute
+// rewrites each kept file it changed for: a quarter of the margin the
+// machine credential refreshes at (auth.RefreshSkew, auth.NeedsRefresh),
+// so the first tick after the credential renews falls at least three
+// quarters of that margin before the old bearer's expiry, and a file
+// never holds a bearer past its life (mesh-cli ADR-029).
+const TokenRefreshEvery = auth.RefreshSkew / 4
 
 // TokenFiles keeps every running session's mesh-context token file —
 // the bearer its relay reads per request (`mesh mcp-relay`,
@@ -33,6 +36,10 @@ type TokenFiles struct {
 	Token func(ctx context.Context) (string, error)
 	// Every is the refresh interval; zero is TokenRefreshEvery.
 	Every time.Duration
+	// Ticker, when set, is each kept file's clock in place of
+	// time.NewTicker: its channel and its stop. A test drives the
+	// refresh on a fake clock with it.
+	Ticker func(every time.Duration) (<-chan time.Time, func())
 	// Logf, when set, hears a refresh that failed.
 	Logf func(format string, args ...any)
 
@@ -56,7 +63,7 @@ func (t *TokenFiles) Keep(path string) (func(remove bool), error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := writeTokenFile(path, tok); err != nil {
+	if err := writeTokenFile(path, tok, true); err != nil {
 		return nil, err
 	}
 	k := &keptToken{written: tok, stop: make(chan struct{}), done: make(chan struct{})}
@@ -127,7 +134,7 @@ func (t *TokenFiles) rewrite(path string, k *keptToken, tok string) error {
 	if tok == k.written {
 		return nil
 	}
-	if err := writeTokenFile(path, tok); err != nil {
+	if err := writeTokenFile(path, tok, false); err != nil {
 		return err
 	}
 	k.written = tok
@@ -141,13 +148,13 @@ func (t *TokenFiles) refresh(path string, k *keptToken) {
 	if every <= 0 {
 		every = TokenRefreshEvery
 	}
-	tick := time.NewTicker(every)
-	defer tick.Stop()
+	ticks, stop := t.ticker(every)
+	defer stop()
 	for {
 		select {
 		case <-k.stop:
 			return
-		case <-tick.C:
+		case <-ticks:
 		}
 		tok, err := t.token()
 		if err == nil {
@@ -163,6 +170,14 @@ func (t *TokenFiles) refresh(path string, k *keptToken) {
 	}
 }
 
+func (t *TokenFiles) ticker(every time.Duration) (<-chan time.Time, func()) {
+	if t.Ticker != nil {
+		return t.Ticker(every)
+	}
+	tick := time.NewTicker(every)
+	return tick.C, tick.Stop
+}
+
 func (t *TokenFiles) token() (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -176,11 +191,15 @@ func (t *TokenFiles) token() (string, error) {
 	return tok, nil
 }
 
-// writeTokenFile writes tok at path, 0600, by a rename over it.
-func writeTokenFile(path, tok string) error {
+// writeTokenFile writes tok at path, 0600, by a rename over it. mkdir
+// makes its directory first: Keep's first write does, a refresh never —
+// a session directory removed under a kept file is not made again.
+func writeTokenFile(path, tok string, mkdir bool) error {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
+	if mkdir {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return err
+		}
 	}
 	f, err := os.CreateTemp(dir, ".mesh-context.token-*")
 	if err != nil {

@@ -1571,7 +1571,8 @@ reads the bearer from the file on every request. The file,
 `mesh-context.token`, is 0600 in the session's own directory
 (`<workdir>.session/`, the pod's HOME, a Codex session's `CODEX_HOME`);
 the node writes it from its own credential when the session starts,
-rewrites it whenever the credential rotates, and removes it when the
+rewrites it within 15 seconds of the credential renewing — a minute
+before the old token expires — and removes it when the
 session's end is handled. A node that adopts a session keeps the file
 its `state.json` names (docs/adr/adr-029-a-sessions-mcp-token-is-refreshed-by-the-node.md).
 

@@ -1442,7 +1442,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   HOME, the CODEX_HOME, the channel session's own temp dir), written
   from `gw.Bearer` by `node.TokenFiles` (the harnesses' and
   `channel.Session`'s `Tokens`, `sessionTokens` in nodecmd.go),
-  rewritten atomically every `TokenRefreshEvery` the bearer rotated,
+  rewritten atomically every `TokenRefreshEvery` (`auth.RefreshSkew`/4,
+  15s) the bearer rotated, a failed start releasing it,
   removed when the session's end is handled and left on a detach;
   `state.json`'s `tokenFile` names it and `ClaudeCode.Attach` keeps an
   adopted session's (`keepAdopted`) — no bearer in any config, so a

@@ -532,10 +532,12 @@ func (c *Codex) prepareHome(job Job) (*codexHome, error) {
 		// one, never this harness's own account's endpoint (adr-015)
 		cfg, env, err := codexConfig(job, CodexProvider{})
 		if err != nil {
+			h.release(true)
 			return nil, err
 		}
 		if cfg != "" {
 			if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(cfg), 0o600); err != nil {
+				h.release(true)
 				return nil, err
 			}
 			h.env = append(h.env, env...)
