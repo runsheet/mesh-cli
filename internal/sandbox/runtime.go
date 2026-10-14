@@ -77,6 +77,10 @@ type AgentSpec struct {
 	StdinFile  string
 	StdoutFile string
 	StderrFile string
+	// EnvFile is the `--env-file` that carries Env's podmanPassthrough
+	// variables (HOME, PATH), whose value in podman's own environment is
+	// the node's; the Podman runtime writes it for the run and removes it.
+	EnvFile string
 }
 
 // SidecarSpec is a service container in a pod: it shares the pod's
@@ -87,6 +91,8 @@ type SidecarSpec struct {
 	Env     []string
 	Command []string
 	Limits  Limits
+	// EnvFile is as AgentSpec's.
+	EnvFile string
 }
 
 // Exit is how the agent's container ended.

@@ -248,8 +248,9 @@ func TestAgentEnvIsTheAllowList(t *testing.T) {
 // TestPodmanEnvKeepsTheNodesPassthrough pins the rule from both sides
 // (ADR-007, Env by name): a container env with HOME=/tmp/x against a
 // node env with HOME=/home/node leaves podman's own HOME=/home/node,
-// while AgentRunArgs and SidecarRunArgs give the container
-// `--env HOME=/tmp/x` and a non-passthrough name a bare `--env NAME`.
+// while AgentRunArgs and SidecarRunArgs give the container HOME=/tmp/x
+// by --env-file and a non-passthrough name a bare `--env NAME`: no
+// `--env NAME=value` at all.
 func TestPodmanEnvKeepsTheNodesPassthrough(t *testing.T) {
 	node := []string{"HOME=/home/node", "USER=node", "XDG_RUNTIME_DIR=/run/user/1000", "CONTAINERS_STORAGE_CONF=/etc/s.conf", "PATH=/usr/bin"}
 	for _, name := range []string{"HOME", "USER", "XDG_RUNTIME_DIR", "CONTAINERS_STORAGE_CONF"} {
@@ -276,13 +277,29 @@ func TestPodmanEnvKeepsTheNodesPassthrough(t *testing.T) {
 		if v, _ := lastValue(penv, "XDG_RUNTIME_DIR"); v != "/run/user/1000" && name != "XDG_RUNTIME_DIR" {
 			t.Fatalf("XDG_RUNTIME_DIR = %q", v)
 		}
-		args := strings.Join(AgentRunArgs(Pod{Name: "p"}, AgentSpec{Name: "a", Image: "img", Env: container}), " ")
-		if !strings.Contains(args, "--env "+name+"=/tmp/x") || !strings.Contains(args, "--env GH_TOKEN ") || strings.Contains(args, "GH_TOKEN=") {
-			t.Fatalf("args = %s", args)
+		file, remove, err := passthroughEnvFile(container)
+		if err != nil {
+			t.Fatal(err)
 		}
-		sargs := strings.Join(SidecarRunArgs(Pod{Name: "p"}, SidecarSpec{Name: "s", Image: "img", Env: container}), " ")
-		if !strings.Contains(sargs, "--env "+name+"=/tmp/x") || !strings.Contains(sargs, "--env GH_TOKEN ") || strings.Contains(sargs, "GH_TOKEN=") {
-			t.Fatalf("sidecar args = %s", sargs)
+		b, err := os.ReadFile(file)
+		if err != nil || string(b) != name+"=/tmp/x\n" {
+			t.Fatalf("env file = %q, %v", b, err)
+		}
+		if fi, _ := os.Stat(file); fi.Mode().Perm() != 0o600 {
+			t.Fatalf("env file mode = %v", fi.Mode())
+		}
+		for _, args := range [][]string{
+			AgentRunArgs(Pod{Name: "p"}, AgentSpec{Name: "a", Image: "img", Env: container, EnvFile: file}),
+			SidecarRunArgs(Pod{Name: "p"}, SidecarSpec{Name: "s", Image: "img", Env: container, EnvFile: file}),
+		} {
+			joined := strings.Join(args, " ")
+			if !strings.Contains(joined, "--env-file "+file) || !strings.Contains(joined, "--env GH_TOKEN") || strings.Contains(joined, "=/tmp/x") || strings.Contains(joined, "GH_TOKEN=") || slices.Contains(args, name) {
+				t.Fatalf("args = %s", joined)
+			}
+		}
+		remove()
+		if _, err := os.Stat(file); !os.IsNotExist(err) {
+			t.Fatalf("env file left after remove: %v", err)
 		}
 	}
 }

@@ -141,14 +141,27 @@ func TestDetachedScriptRedirects(t *testing.T) {
 func TestPodmanStartAgentKeepsSecretsInTheEnv(t *testing.T) {
 	t.Setenv("HOME", "/home/node")
 	var gotArgs, gotEnv []string
+	var envFile, envFileBody string
 	p := &Podman{Exec: func(_ context.Context, args, env []string, _ io.Reader, _, _ io.Writer) error {
 		gotArgs, gotEnv = args, env
+		if v := flagValues(args, "--env-file"); len(v) == 1 {
+			envFile = v[0]
+			b, _ := os.ReadFile(envFile)
+			envFileBody = string(b)
+		}
 		return nil
 	}}
 	spec := AgentSpec{Name: "a", Image: "img", Env: []string{"HOME=/tmp/mesh-home-z", "GH_TOKEN=ghs_x"}, Command: []string{"claude"}}
 	if err := p.StartAgent(context.Background(), Pod{Name: "p"}, spec); err != nil {
 		t.Fatal(err)
 	}
+	if envFileBody != "HOME=/tmp/mesh-home-z\n" {
+		t.Fatalf("--env-file %q held %q", envFile, envFileBody)
+	}
+	if _, err := os.Stat(envFile); !os.IsNotExist(err) {
+		t.Fatalf("env file %s left after the run: %v", envFile, err)
+	}
+	spec.EnvFile = envFile
 	if !slices.Equal(gotArgs, StartAgentArgs(Pod{Name: "p"}, spec)) {
 		t.Fatalf("args = %v", gotArgs)
 	}
