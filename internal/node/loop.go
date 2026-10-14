@@ -57,6 +57,12 @@ type Loop struct {
 	// (validateBatches). It counts against capacity while it runs.
 	// Optional; nil validates no batch.
 	ValidateBatch func(ctx context.Context, batch gateway.MainValidationBatch) (validate.Attestation, error)
+	// ValidateMain validates a merged item's merge commit this node
+	// claimed for the main guard (ADR 054 decision 3) and attests it as
+	// the item's, as ValidateBatch does a candidate; it counts against
+	// capacity the same way, offered after every batch. Optional; nil
+	// validates no merge commit.
+	ValidateMain func(ctx context.Context, req gateway.MainValidationRequest) (validate.Attestation, error)
 	// BatchCheckEvery is how often a running batch validation reads its
 	// claim back (DefaultBatchCheckEvery when zero).
 	BatchCheckEvery time.Duration
@@ -227,8 +233,9 @@ type Loop struct {
 	planning    map[string]bool
 	researching map[string]bool
 	rebasing    map[string]bool
-	// validating is the merge batch validations running, by
-	// mergeBatchId: each a session against the capacity (Running).
+	// validating is the main validations running, by mergeBatchId or,
+	// for a merged item's, workItemId: each a session against the
+	// capacity (Running).
 	validating map[string]bool
 	// sessionOrg is the org each build, plan and research session counts
 	// toward, by subject (item, goal or direction id): heldByOrg's count

@@ -49,9 +49,21 @@ func (e *CandidateHeadError) Error() string {
 	return fmt.Sprintf("candidate %s is at %s, not the batch's %s; not validated", e.Branch, short(e.Got), short(e.Want))
 }
 
+// CommitNotOnBranchError is a merged item's merge commit the default
+// branch, as fetched, does not hold: a force-push dropped it, or the
+// request is stale. Nothing is checked out, run or attested.
+type CommitNotOnBranchError struct {
+	Branch, SHA string
+}
+
+func (e *CommitNotOnBranchError) Error() string {
+	return fmt.Sprintf("merge commit %s is not on %s; not validated", short(e.SHA), e.Branch)
+}
+
 // candidateWorktrees makes and removes a candidate's checkout (*Git).
 type candidateWorktrees interface {
 	AddCandidateWorktree(ctx context.Context, repo, dir, branch, sha string) error
+	AddCommitWorktree(ctx context.Context, repo, dir, branch, sha string) error
 	RemoveWorkspace(ctx context.Context, dir string) error
 }
 
@@ -74,17 +86,11 @@ var ErrNoCandidateWorktrees = errors.New("the node's workspace makes no candidat
 // with nothing attested, so the caller fails the batch's validation and
 // never calls it red. The worktree is removed on every path.
 func (r *Runner) validateCandidate(ctx context.Context, batch gateway.MainValidationBatch, tok *gateway.GitHubToken) (validate.Attestation, error) {
-	wt, ok := r.WS.(candidateWorktrees)
-	if !ok {
-		return validate.Attestation{}, ErrNoCandidateWorktrees
-	}
 	label := fmt.Sprintf("batch-%d", batch.Number)
 	prefix := fmt.Sprintf("merge batch %d (%s)", batch.Number, batch.RepoFullName)
-	dir := CandidateDir(r.WorkRoot, batch)
-	vr := r.validator()
 	t := validationTarget{
 		item:    gateway.WorkItem{OrgID: batch.OrgID, RepoID: batch.RepoID},
-		dir:     dir,
+		dir:     CandidateDir(r.WorkRoot, batch),
 		base:    batch.DefaultBranch,
 		prefix:  prefix,
 		label:   label,
@@ -94,6 +100,68 @@ func (r *Runner) validateCandidate(ctx context.Context, batch gateway.MainValida
 		batchID: batch.MergeBatchID,
 		repoTok: tok,
 	}
+	return r.validateCommit(ctx, t, mainCommit{repo: batch.RepoFullName, branch: batch.CandidateBranch, sha: batch.SHA, atHead: true,
+		what: "candidate " + batch.CandidateBranch})
+}
+
+// MainRequestDir is where a merged item's main validation checks its
+// merge commit out under the work root:
+// <root>/main-validations/<workItemId>-<attempt>, beside the batches'.
+func MainRequestDir(root string, req gateway.MainValidationRequest) string {
+	return filepath.Join(root, "main-validations", fmt.Sprintf("%s-%d", req.WorkItemID, req.Attempt))
+}
+
+// validateMainRequest validates a merged item's merge commit on the
+// default branch (runsheet ADR 054 decision 3, the main guard's run on
+// a node) as validateCandidate validates a candidate: the default
+// branch fetched on tok, req.SHA refused as a *CommitNotOnBranchError
+// when the branch does not hold it, and checked out detached; the
+// suites the merge's own diff selects (from its first parent, the
+// default branch before the merge) run; the attestation the item's,
+// RecordValidationAttestation with no mergeBatchId.
+func (r *Runner) validateMainRequest(ctx context.Context, req gateway.MainValidationRequest, tok *gateway.GitHubToken) (validate.Attestation, error) {
+	label := fmt.Sprintf("main-%d", req.Seq)
+	prefix := mainRequestLabel(req)
+	t := validationTarget{
+		item:     gateway.WorkItem{ID: req.WorkItemID, GoalID: req.GoalID, Seq: int(req.Seq), OrgID: req.OrgID, RepoID: req.RepoID},
+		dir:      MainRequestDir(r.WorkRoot, req),
+		base:     req.DefaultBranch,
+		diffFrom: req.SHA + "^1",
+		prefix:   prefix,
+		label:    label,
+		session:  func() string { return "" },
+		redact:   func(err error) error { return err },
+		report:   func(_ context.Context, note string) { r.logf("%s: %s", prefix, note) },
+		repoTok:  tok,
+	}
+	return r.validateCommit(ctx, t, mainCommit{repo: req.RepoFullName, branch: req.DefaultBranch, sha: req.SHA,
+		what: "merge commit on " + req.DefaultBranch})
+}
+
+// mainCommit is the commit a main validation checks out: sha on
+// repo's branch — its head when atHead (a candidate), else any commit
+// the branch holds (a merge commit main has moved past) — and what the
+// log calls it.
+type mainCommit struct {
+	repo, branch, sha string
+	atHead            bool
+	what              string
+}
+
+// validateCommit is a main validation's body, a batch candidate's or a
+// merged item's: c checked out at t.dir, the suites run in the sandbox
+// pod with the checkout's services, else on the host, and the
+// attestation uploaded for t — by mergeBatchId when t.batchID is set,
+// else as t.item's. A red suite is a red attestation and nil; a failure
+// of the node's own is returned with nothing attested. The worktree is
+// removed on every path.
+func (r *Runner) validateCommit(ctx context.Context, t validationTarget, c mainCommit) (validate.Attestation, error) {
+	wt, ok := r.WS.(candidateWorktrees)
+	if !ok {
+		return validate.Attestation{}, ErrNoCandidateWorktrees
+	}
+	dir, prefix := t.dir, t.prefix
+	vr := r.validator()
 	defer func() {
 		if err := wt.RemoveWorkspace(context.WithoutCancel(ctx), dir); err != nil {
 			r.logf("%s: remove %s: %v", prefix, dir, err)
@@ -101,20 +169,25 @@ func (r *Runner) validateCandidate(ctx context.Context, batch gateway.MainValida
 		_ = os.RemoveAll(sessionunit.Dir(dir))
 		_ = os.Remove(dir + ".attestation.json")
 	}()
-	r.logf("%s: validating candidate %s at %s", prefix, batch.CandidateBranch, short(batch.SHA))
-	if err := wt.AddCandidateWorktree(vr.onItemToken(ctx, t), batch.RepoFullName, dir, batch.CandidateBranch, batch.SHA); err != nil {
+	r.logf("%s: validating %s at %s", prefix, c.what, short(c.sha))
+	add := wt.AddCommitWorktree
+	if c.atHead {
+		add = wt.AddCandidateWorktree
+	}
+	if err := add(vr.onItemToken(ctx, t), c.repo, dir, c.branch, c.sha); err != nil {
 		var he *CandidateHeadError
-		if errors.As(err, &he) {
+		var ne *CommitNotOnBranchError
+		if errors.As(err, &he) || errors.As(err, &ne) {
 			r.logf("%s: %v", prefix, err)
 			return validate.Attestation{}, err
 		}
-		return validate.Attestation{}, validate.Classify(fmt.Errorf("fetch candidate %s: %w", batch.CandidateBranch, err))
+		return validate.Attestation{}, validate.Classify(fmt.Errorf("fetch %s: %w", c.branch, err))
 	}
 	if _, err := validate.Load(dir); err != nil {
-		// no validate.yml on the candidate is nothing to attest: the caller's
+		// no validate.yml on the commit is nothing to attest: the caller's
 		return validate.Attestation{}, err
 	}
-	pod, err := OpenSessionPod(ctx, r.Sandbox, dir, label, CandidateKind, sandbox.GitIdentity{}, r.logf)
+	pod, err := OpenSessionPod(ctx, r.Sandbox, dir, t.label, CandidateKind, sandbox.GitIdentity{}, r.logf)
 	defer pod.Close()
 	if err != nil {
 		return validate.Attestation{}, err
@@ -134,8 +207,8 @@ func (r *Runner) validateCandidate(ctx context.Context, batch gateway.MainValida
 	if err != nil {
 		return att, err
 	}
-	if att.Commit != batch.SHA {
-		return att, fmt.Errorf("validated %s, not the candidate's %s", short(att.Commit), short(batch.SHA))
+	if att.Commit != c.sha {
+		return att, fmt.Errorf("validated %s, not the %s %s", short(att.Commit), c.what, short(c.sha))
 	}
 	if failed, ok := failedStep(att); ok && failed.EnvironmentKind != "" {
 		vf := &validationFailure{Step: failed}
@@ -157,6 +230,34 @@ func (r *Runner) validateCandidate(ctx context.Context, batch gateway.MainValida
 // repo's lock. A checkout a crashed run left at dir is removed first.
 // Its fetches go out on whatever token ctx carries (OnItemToken).
 func (g *Git) AddCandidateWorktree(ctx context.Context, repo, dir, branch, sha string) error {
+	return g.addDetachedWorktree(ctx, repo, dir, branch, sha, func(clone, ref string) error {
+		head, err := g.run(ctx, clone, "git", "rev-parse", "--verify", ref+"^{commit}")
+		if err != nil {
+			return err
+		}
+		if head != sha {
+			return &CandidateHeadError{Branch: branch, Want: sha, Got: head}
+		}
+		return nil
+	})
+}
+
+// AddCommitWorktree checks a merged item's merge commit out at dir as
+// AddCandidateWorktree checks a candidate out, but the fetched branch
+// need only hold sha, not end on it: main moves on past a merge. A
+// branch that does not hold it is a *CommitNotOnBranchError.
+func (g *Git) AddCommitWorktree(ctx context.Context, repo, dir, branch, sha string) error {
+	return g.addDetachedWorktree(ctx, repo, dir, branch, sha, func(clone, ref string) error {
+		if _, err := g.run(ctx, clone, "git", "merge-base", "--is-ancestor", sha, ref); err != nil {
+			return &CommitNotOnBranchError{Branch: branch, SHA: sha}
+		}
+		return nil
+	})
+}
+
+// addDetachedWorktree fetches branch into the shared clone, asks check
+// of it, and adds a detached worktree of sha at dir.
+func (g *Git) addDetachedWorktree(ctx context.Context, repo, dir, branch, sha string, check func(clone, ref string) error) error {
 	if _, err := os.Stat(dir); err == nil {
 		if err := g.RemoveWorkspace(ctx, dir); err != nil {
 			return err
@@ -171,12 +272,8 @@ func (g *Git) AddCandidateWorktree(ctx context.Context, repo, dir, branch, sha s
 	if _, err := g.fetchLocked(ctx, root, key, clone, "git", "fetch", "--quiet", "origin", "+refs/heads/"+branch+":"+ref); err != nil {
 		return err
 	}
-	head, err := g.run(ctx, clone, "git", "rev-parse", "--verify", ref+"^{commit}")
-	if err != nil {
+	if err := check(clone, ref); err != nil {
 		return err
-	}
-	if head != sha {
-		return &CandidateHeadError{Branch: branch, Want: sha, Got: head}
 	}
 	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
 		return err
