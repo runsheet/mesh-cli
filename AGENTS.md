@@ -1286,8 +1286,19 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   (`Git.AddCommitWorktree`; not on the default branch
   `*CommitNotOnBranchError`), suites by the merge's diff from its first
   parent (`validationTarget.diffFrom`), attested as the item's, no
-  `mergeBatchId`. Both on the operator's credentials — no repo-keyed
-  token is minted yet — and the worktree removed on every path. Green and
+  `mergeBatchId`. A batch's candidate is fetched on the batch token
+  the platform mints (`gateway.IssueMergeBatchRepoToken`,
+  `issueItemRepoToken(mergeBatchId:)`, read access on its repo for the
+  claim's node; `NewBatchCred` → an `ItemCred` renewed by the same form
+  before each fetch), on every fetch of the run by `OnItemToken`, logged
+  `merge batch <n> (<repo>): candidate fetched on minted token (<repo>,
+  <access>)`; a platform that mints none (`IsUnsupported`) fetches on the
+  operator's login, said once per run (`TokenFallback.NoteBatch`,
+  `Runner.BatchFallback`); a refused mint or renewal — or one
+  `checkBatchToken` refuses, empty, malformed (`tokenShape`) or for
+  another repo — fetches nothing and fails the validation `github token for merge batch <n>: …` (ADR-032's
+  amendment 2026-10-14). A request runs on the operator's credentials.
+  The worktree is removed on every path. Green and
   red are both finished on the attested sha (the attestation is the
   verdict); an environment failure (ADR-030), a classified fetch failure,
   a required service down or any error is failed with `validate.Reason`,
@@ -1302,7 +1313,9 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   validation; validating no merge batch`.
   `internal/node/mergebatch_e2e_test.go`'s
   `TestNodeValidatesAMergeBatchCandidate` runs it end to end on the
-  Loop.
+  Loop, and `TestNodeFetchesABatchCandidateOnItsMintedToken` against a
+  `git http-backend` remote that takes the minted token alone (else, on
+  a platform that mints none, the operator's login alone).
 - **Services** (`internal/sandbox/services.go`, mesh-specs ADR 007):
   `Resolve(repoDir, allowed)` reads what a repository declares, first
   found wins — `.mesh/services.yml`, else the `services:` of its
