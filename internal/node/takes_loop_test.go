@@ -328,13 +328,14 @@ func TestTakesRefusedEvaluationClaimStartsNothing(t *testing.T) {
 	}
 }
 
-// With no takes: key a node still evaluates what it holds itself, with
-// no claim: it already holds the item.
-func TestTakesEveryKindEvaluatesItsOwnWithoutClaim(t *testing.T) {
+// With no takes: key a node still evaluates what it holds itself, and
+// claims it first like any other: the claim is the one lock (ADR-025's
+// amendment 2026-10-14).
+func TestTakesEveryKindClaimsItsOwnEvaluation(t *testing.T) {
 	p := takesFake(t)
 	_, _, evaluated := takesRun(t, p, nil)
-	if n := len(p.CallsNamed("claimWorkItemEvaluation")); n != 0 {
-		t.Errorf("%d claimWorkItemEvaluation call(s) for an item this node holds", n)
+	if n := len(p.CallsNamed("claimWorkItemEvaluation")); n != 1 {
+		t.Errorf("%d claimWorkItemEvaluation call(s) for an item this node built, want 1", n)
 	}
 	if len(evaluated) != 1 || evaluated[0].ID != "held-3" {
 		t.Errorf("evaluated = %+v, want held-3", evaluated)

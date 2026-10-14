@@ -102,8 +102,22 @@ reading it is runsheet/runsheet's half and is not changed here.
   the node evaluates only what it holds, said once per run: `the
   platform takes no evaluation claim; evaluating only what this node
   holds`. A node that builds and evaluates claims other nodes'
-  evaluations too: the platform's claim is the lock, and the builder's
-  own evaluation, made with no claim, is the platform's to fence.
+  evaluations too: the platform's claim is the lock. **Amended
+  2026-10-14** (goal an-items-evaluation-runs-on-one-node): the builder
+  claims its own item's evaluation too. Left unclaimed, a builder
+  evaluated its item while another node, seeing `evaluationNodeId`
+  empty, claimed and evaluated it as well, and the loser's verdict was
+  refused `not yours` (dl360, 2026-10-15, item
+  a-goal-is-done-when-its-last-item-merges/1). Now, when the gateway
+  takes the claim, every item is claimed before its session starts,
+  the builder's own included — the platform converges for the same
+  node — so the claim is the one lock. A refusal on an item this node
+  built means another node has it: the item leaves the loop's
+  evaluating set, no session starts, and it is said once per item, not
+  as an error, `item <goal>/<seq>: evaluation is node <x>'s; not
+  evaluated here`. A platform without the claim keeps the old rule —
+  own items only, with no claim — and an adopted evaluation after a
+  restart is already the loop's and is not claimed again.
 - The per-kind cap (`takes: {evaluate: 2}` under capacity 4) is item 5
   (amended above, decision 4).
 - `mesh node status` prints the kinds taken as `Takes: <kinds>` after the
