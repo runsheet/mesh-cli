@@ -333,7 +333,16 @@ func (g *Git) Prepare(ctx context.Context, spec WorkspaceSpec) (string, error) {
 		return dir, g.checkoutBase(ctx, root, key, dir, base)
 	}
 	if err := g.baseHistory(ctx, root, key, dir, base); err != nil {
-		return "", err
+		// a branch already pushed — its evaluation's own checkout, a
+		// rework — is continued from origin whatever became of its base:
+		// a merged dependency's branch GitHub deleted is no failure
+		// (ADR-033); a new branch still needs it
+		if !g.hasRef(ctx, dir, "refs/remotes/origin/"+spec.Branch) || !g.baseGone(ctx, dir, base) {
+			return "", err
+		}
+		if g.Logf != nil {
+			g.Logf("workspace %s: base %s is gone (merged); continuing origin/%s", dir, base, spec.Branch)
+		}
 	}
 	// a rework of the same checkout — a worktree or a full clone — whose
 	// local branch is the pushed one or ahead of it keeps its unpushed
@@ -746,6 +755,12 @@ func (g *Git) baseGone(ctx context.Context, dir, base string) bool {
 	_, err := g.run(ctx, dir, "git", "ls-remote", "--exit-code", "origin", "refs/heads/"+base)
 	var exit *exec.ExitError
 	return errors.As(err, &exit) && exit.ExitCode() == 2
+}
+
+// hasRef says dir's repository has ref.
+func (g *Git) hasRef(ctx context.Context, dir, ref string) bool {
+	_, err := g.run(ctx, dir, "git", "rev-parse", "--verify", "--quiet", ref)
+	return err == nil
 }
 
 // deepenRounds bounds EnsureMergeBase: this many `--deepen` fetches (the
