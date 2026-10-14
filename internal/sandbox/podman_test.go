@@ -80,8 +80,9 @@ func TestLimitEnvInRunArgs(t *testing.T) {
 // and a variable no list allows, each --env of AgentRunArgs is a bare
 // name from BaseEnv, AllowedEnv, MESH_TOOL_* or LimitEnv — the limit
 // variables included — the disallowed one absent, and the values in
-// podman's own environment; HOME and PATH, whose podman values are the
-// node's, ride the --env-file. The job's CODEX_HOME is the session's
+// podman's own environment — HOME and PATH as much as any: the names
+// are exactly the session's whole env (Session.Env, the limit variables
+// added), with no --env-file. The job's CODEX_HOME is the session's
 // CodexHome, under its HOME, never the host path.
 func TestAgentEnvIsPassedByName(t *testing.T) {
 	f := &Fake{}
@@ -100,7 +101,6 @@ func TestAgentEnvIsPassedByName(t *testing.T) {
 		name, _, _ := strings.Cut(kv, "=")
 		allowed = append(allowed, name)
 	}
-	spec.EnvFile = "/tmp/mesh-env-test"
 	args := AgentRunArgs(Pod{Name: "p"}, spec)
 	names := flagValues(args, "--env")
 	for _, name := range names {
@@ -126,11 +126,28 @@ func TestAgentEnvIsPassedByName(t *testing.T) {
 			}
 		}
 	}
-	if got := flagValues(args, "--env-file"); !slices.Equal(got, []string{spec.EnvFile}) {
-		t.Errorf("--env-file = %v, want [%s] for HOME and PATH", got, spec.EnvFile)
+	if slices.Contains(args, "--env-file") {
+		t.Errorf("--env-file in %v: every variable is passed by name", args)
+	}
+	var whole []string
+	for _, kv := range ContainerEnv(spec.Limits, spec.Env) {
+		name, _, _ := strings.Cut(kv, "=")
+		whole = append(whole, name)
+	}
+	if !slices.Equal(names, whole) || !slices.Contains(names, "HOME") || !slices.Contains(names, "PATH") {
+		t.Errorf("--env names = %v, want the session's whole env by name %v", names, whole)
 	}
 
-	penv := AgentProcessEnv(nil, spec)
+	penv := AgentProcessEnv([]string{"HOME=/home/node", "PATH=/usr/bin"}, spec)
+	for _, kv := range ContainerEnv(spec.Limits, spec.Env) {
+		name, want, _ := strings.Cut(kv, "=")
+		if got, _ := lastValue(penv, name); got != want {
+			t.Errorf("podman env %s = %q, want the session's %q for --env %s", name, got, want, name)
+		}
+	}
+	if v, _ := lastValue(penv, "XDG_DATA_HOME"); v != "/home/node/.local/share" {
+		t.Errorf("podman env XDG_DATA_HOME = %q: podman's store must stay the node's", v)
+	}
 	for _, want := range []string{"OPENAI_API_KEY=sk-codex", "MESH_TOOL_FOO=foo-secret", "GH_TOKEN=ghs_item", "GOMAXPROCS=" + strconv.Itoa(int(math.Ceil(spec.Limits.CPUs)))} {
 		if !slices.Contains(penv, want) {
 			t.Errorf("podman env lacks %s: %v", want, penv)

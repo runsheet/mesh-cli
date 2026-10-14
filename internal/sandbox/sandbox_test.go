@@ -240,66 +240,62 @@ func TestAgentEnvIsTheAllowList(t *testing.T) {
 	if v, _ := lastValue(penv, "GH_TOKEN"); v != "ghs_item" {
 		t.Fatalf("podman env GH_TOKEN = %q", v)
 	}
-	if v, _ := lastValue(penv, "HOME"); v == sess.Home {
-		t.Fatalf("podman env HOME = %q: the container's must not reach podman", v)
+	// the container's HOME is podman's too, read by --env HOME; its store
+	// stays the node's by XDG_DATA_HOME and XDG_CONFIG_HOME
+	if v, _ := lastValue(penv, "HOME"); v != sess.Home {
+		t.Fatalf("podman env HOME = %q, want the session's %q for --env HOME", v, sess.Home)
+	}
+	if v, _ := lastValue(penv, "XDG_DATA_HOME"); v == "" || strings.HasPrefix(v, sess.Home) {
+		t.Fatalf("podman env XDG_DATA_HOME = %q: podman's store must stay the node's", v)
 	}
 }
 
-// TestPodmanEnvKeepsTheNodesPassthrough pins the rule from both sides
-// (ADR-007, Env by name): a container env with HOME=/tmp/x against a
-// node env with HOME=/home/node leaves podman's own HOME=/home/node,
-// while AgentRunArgs and SidecarRunArgs give the container HOME=/tmp/x
-// by --env-file and a non-passthrough name a bare `--env NAME`: no
-// `--env NAME=value` at all.
-func TestPodmanEnvKeepsTheNodesPassthrough(t *testing.T) {
-	node := []string{"HOME=/home/node", "USER=node", "XDG_RUNTIME_DIR=/run/user/1000", "CONTAINERS_STORAGE_CONF=/etc/s.conf", "PATH=/usr/bin"}
-	for _, name := range []string{"HOME", "USER", "XDG_RUNTIME_DIR", "CONTAINERS_STORAGE_CONF"} {
-		container := []string{name + "=/tmp/x", "GH_TOKEN=t"}
-		penv := podmanEnv(node, container)
-		var got []string
-		for _, kv := range penv {
-			if k, _, _ := strings.Cut(kv, "="); k == name {
-				got = append(got, kv)
-			}
+// TestPodmanEnvKeepsTheNodesStore pins the rule from both sides
+// (ADR-007, Env by name): a container env with HOME=/tmp/x and
+// PATH=/sandbox/bin against a node env with HOME=/home/node leaves
+// podman's own HOME and PATH the container's — AgentRunArgs and
+// SidecarRunArgs give them, as every variable, as a bare `--env NAME`,
+// with no `--env NAME=value` and no --env-file — while podman's store
+// stays the node's: XDG_DATA_HOME and XDG_CONFIG_HOME pinned under
+// /home/node, and the node's XDG_RUNTIME_DIR and CONTAINERS_STORAGE_CONF
+// kept whatever the container sets, those never passed to it.
+func TestPodmanEnvKeepsTheNodesStore(t *testing.T) {
+	node := []string{"HOME=/home/node", "USER=node", "XDG_RUNTIME_DIR=/run/user/1000", "CONTAINERS_STORAGE_CONF=/etc/s.conf", "PATH=/usr/bin", "AWS_SECRET_ACCESS_KEY=no"}
+	container := []string{"HOME=/tmp/x", "PATH=/sandbox/bin", "GH_TOKEN=t", "XDG_RUNTIME_DIR=/tmp/run", "CONTAINERS_STORAGE_CONF=/tmp/s.conf"}
+	penv := podmanEnv(node, container)
+	want := map[string]string{
+		"HOME": "/tmp/x", "PATH": "/sandbox/bin", "GH_TOKEN": "t", "USER": "node",
+		"XDG_RUNTIME_DIR": "/run/user/1000", "CONTAINERS_STORAGE_CONF": "/etc/s.conf",
+		"XDG_DATA_HOME": "/home/node/.local/share", "XDG_CONFIG_HOME": "/home/node/.config",
+	}
+	seen := map[string]bool{}
+	for _, kv := range penv {
+		k, v, _ := strings.Cut(kv, "=")
+		if seen[k] {
+			t.Fatalf("%s twice in podman env %v", k, penv)
 		}
-		want := ""
-		for _, kv := range node {
-			if strings.HasPrefix(kv, name+"=") {
-				want = kv
-			}
+		seen[k] = true
+		if w, ok := want[k]; !ok || v != w {
+			t.Fatalf("podman env %s=%q, want %q (%v)", k, v, w, penv)
 		}
-		if len(got) != 1 || got[0] != want {
-			t.Fatalf("%s in podman env = %v, want only %q", name, got, want)
+	}
+	if len(seen) != len(want) {
+		t.Fatalf("podman env = %v, want %v", penv, want)
+	}
+	// a node that sets its own XDG_DATA_HOME keeps it
+	if v, _ := lastValue(podmanEnv(append(node, "XDG_DATA_HOME=/srv/data"), container), "XDG_DATA_HOME"); v != "/srv/data" {
+		t.Fatalf("XDG_DATA_HOME = %q, want the node's /srv/data", v)
+	}
+	for _, args := range [][]string{
+		AgentRunArgs(Pod{Name: "p"}, AgentSpec{Name: "a", Image: "img", Env: container}),
+		SidecarRunArgs(Pod{Name: "p"}, SidecarSpec{Name: "s", Image: "img", Env: container}),
+	} {
+		if got := flagValues(args, "--env"); !slices.Equal(got, []string{"HOME", "PATH", "GH_TOKEN"}) {
+			t.Fatalf("--env = %v, want HOME PATH GH_TOKEN by name: %v", got, args)
 		}
-		if v, _ := lastValue(penv, "GH_TOKEN"); v != "t" {
-			t.Fatalf("podman env GH_TOKEN = %q", v)
-		}
-		if v, _ := lastValue(penv, "XDG_RUNTIME_DIR"); v != "/run/user/1000" && name != "XDG_RUNTIME_DIR" {
-			t.Fatalf("XDG_RUNTIME_DIR = %q", v)
-		}
-		file, remove, err := passthroughEnvFile(container)
-		if err != nil {
-			t.Fatal(err)
-		}
-		b, err := os.ReadFile(file)
-		if err != nil || string(b) != name+"=/tmp/x\n" {
-			t.Fatalf("env file = %q, %v", b, err)
-		}
-		if fi, _ := os.Stat(file); fi.Mode().Perm() != 0o600 {
-			t.Fatalf("env file mode = %v", fi.Mode())
-		}
-		for _, args := range [][]string{
-			AgentRunArgs(Pod{Name: "p"}, AgentSpec{Name: "a", Image: "img", Env: container, EnvFile: file}),
-			SidecarRunArgs(Pod{Name: "p"}, SidecarSpec{Name: "s", Image: "img", Env: container, EnvFile: file}),
-		} {
-			joined := strings.Join(args, " ")
-			if !strings.Contains(joined, "--env-file "+file) || !strings.Contains(joined, "--env GH_TOKEN") || strings.Contains(joined, "=/tmp/x") || strings.Contains(joined, "GH_TOKEN=") || slices.Contains(args, name) {
-				t.Fatalf("args = %s", joined)
-			}
-		}
-		remove()
-		if _, err := os.Stat(file); !os.IsNotExist(err) {
-			t.Fatalf("env file left after remove: %v", err)
+		joined := strings.Join(args, " ")
+		if strings.Contains(joined, "--env-file") || strings.Contains(joined, "=") {
+			t.Fatalf("a value is on the command line: %s", joined)
 		}
 	}
 }
