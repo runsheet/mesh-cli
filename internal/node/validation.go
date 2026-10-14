@@ -99,6 +99,10 @@ type validationTarget struct {
 	// repo's token, is what its fetches go out on in cred's place.
 	batchID string
 	repoTok *gateway.GitHubToken
+	// diffFrom, set, is the commit the changed paths are taken from in
+	// base's place: a merged item's merge commit is diffed against its
+	// first parent, since main already holds it (mainvalidation.go).
+	diffFrom string
 }
 
 func (r *Runner) validator() validator {
@@ -615,7 +619,27 @@ func (vr validator) headFetcher() headFetcher {
 // changedPaths is the diff against t's base, the base fetched on the
 // item's token.
 func (vr validator) changedPaths(ctx context.Context, t validationTarget) ([]string, error) {
+	if t.diffFrom != "" {
+		return diffNames(ctx, t.dir, t.diffFrom)
+	}
 	return vr.WS.ChangedPaths(vr.onItemToken(ctx, t), t.dir, t.base)
+}
+
+// diffNames are the files HEAD changed since from, in dir.
+func diffNames(ctx context.Context, dir, from string) ([]string, error) {
+	cmd := exec.CommandContext(ctx, "git", "diff", "--name-only", from, "HEAD")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("git diff %s: %w", from, err)
+	}
+	var paths []string
+	for _, l := range strings.Split(string(out), "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			paths = append(paths, l)
+		}
+	}
+	return paths, nil
 }
 
 // fetchHead fetches origin's branch and head into t's checkout on the

@@ -22,7 +22,12 @@ import (
 // are finished on the candidate's sha, and only a failure of the node's
 // own — an environment failure, an error, a run past the claim's window
 // — fails it with the reason, which releases the claim for another node.
-// A merged item's main validation (requests[]) is not taken here.
+// A merged item's main validation (requests[], the main guard asking
+// for a run on its merge commit, ADR 054 decision 3) takes the same
+// path through the WorkItem twins of the three commands, its merge
+// commit attested as the item's (validateMainRequest); a batch is
+// served before any request when the slots are short, since it lands
+// work already built and attested.
 
 // MainValidationClaimAfter is how long the platform holds a batch
 // validation's claim (platform/aggregates/mergebatch_validation.go): a
@@ -41,6 +46,9 @@ type mainValidationGateway interface {
 	ClaimMergeBatchValidation(ctx context.Context, batchID, nodeID, harness string) error
 	FinishMergeBatchValidation(ctx context.Context, batchID, nodeID, sha string) error
 	FailMergeBatchValidation(ctx context.Context, batchID, nodeID, reason string) error
+	ClaimWorkItemMainValidation(ctx context.Context, itemID, nodeID, harness string) error
+	FinishWorkItemMainValidation(ctx context.Context, itemID, sha string) error
+	FailWorkItemMainValidation(ctx context.Context, itemID, reason string) error
 }
 
 // errBatchClaimLost and errBatchOverrun are why a running batch
@@ -55,7 +63,59 @@ func batchLabel(b gateway.MainValidationBatch) string {
 	return fmt.Sprintf("batch %s#%d attempt %d", b.RepoFullName, b.Number, b.Attempt)
 }
 
-// Validating is the batch validations running now.
+// mainRequestLabel is a merged item's main validation's log prefix:
+// `main <repo>@<sha short> item <seq>`.
+func mainRequestLabel(r gateway.MainValidationRequest) string {
+	return fmt.Sprintf("main %s@%s item %d", r.RepoFullName, short(r.SHA), r.Seq)
+}
+
+// mainJob is one main validation as the loop runs it, a batch
+// candidate's or a merged item's: its id (the validating key), log
+// prefix and claimed line, the run, and its claim, finish and fail on
+// the platform.
+type mainJob struct {
+	id, label, claimed string
+	run                func(ctx context.Context) (validate.Attestation, error)
+	claim              func(ctx context.Context) error
+	finish             func(ctx context.Context, sha string) error
+	fail               func(ctx context.Context, reason string) error
+}
+
+func batchJob(l *Loop, gw mainValidationGateway, b gateway.MainValidationBatch, nodeID string) mainJob {
+	return mainJob{
+		id: b.MergeBatchID, label: batchLabel(b),
+		claimed: fmt.Sprintf("claimed candidate %s@%s", b.CandidateBranch, short(b.SHA)),
+		run:     func(ctx context.Context) (validate.Attestation, error) { return l.ValidateBatch(ctx, b) },
+		claim: func(ctx context.Context) error {
+			return gw.ClaimMergeBatchValidation(ctx, b.MergeBatchID, nodeID, l.adapter())
+		},
+		finish: func(ctx context.Context, sha string) error {
+			return gw.FinishMergeBatchValidation(ctx, b.MergeBatchID, nodeID, sha)
+		},
+		fail: func(ctx context.Context, reason string) error {
+			return gw.FailMergeBatchValidation(ctx, b.MergeBatchID, nodeID, reason)
+		},
+	}
+}
+
+func requestJob(l *Loop, gw mainValidationGateway, r gateway.MainValidationRequest, nodeID string) mainJob {
+	return mainJob{
+		id: r.WorkItemID, label: mainRequestLabel(r), claimed: "claimed",
+		run: func(ctx context.Context) (validate.Attestation, error) { return l.ValidateMain(ctx, r) },
+		claim: func(ctx context.Context) error {
+			return gw.ClaimWorkItemMainValidation(ctx, r.WorkItemID, nodeID, l.adapter())
+		},
+		finish: func(ctx context.Context, sha string) error {
+			return gw.FinishWorkItemMainValidation(ctx, r.WorkItemID, sha)
+		},
+		fail: func(ctx context.Context, reason string) error {
+			return gw.FailWorkItemMainValidation(ctx, r.WorkItemID, reason)
+		},
+	}
+}
+
+// Validating is the main validations — batch candidates and merged
+// items — running now.
 func (l *Loop) Validating() int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -66,7 +126,7 @@ func (l *Loop) Validating() int {
 // validate batches and the platform serves them; a platform without the
 // fields is said once per run.
 func (l *Loop) mainValidation(ctx context.Context) (mainValidationGateway, bool) {
-	if l.ValidateBatch == nil || !l.takesKind(harness.KindEvaluate) {
+	if (l.ValidateBatch == nil && l.ValidateMain == nil) || !l.takesKind(harness.KindEvaluate) {
 		return nil, false
 	}
 	gw, ok := l.GW.(mainValidationGateway)
@@ -83,89 +143,109 @@ func (l *Loop) mainValidation(ctx context.Context) (mainValidationGateway, bool)
 	return gw, true
 }
 
-// validateBatches claims and starts a batch validation for each served
-// batch candidate while free slots remain, the host is not hot and
-// node.yaml's evaluate cap has room, and answers how many it started.
-// A claim refused — another node holds it, or it waits on none — is
-// the ordinary answer and is not logged as an error.
+// validateBatches claims and starts a main validation for each served
+// batch candidate, then for each served merged item's request, while
+// free slots remain, the host is not hot and node.yaml's evaluate cap
+// has room, and answers how many it started. Every batch is offered
+// before any request. A claim refused — another node holds it, or it
+// waits on none — is the ordinary answer and is not logged as an error.
 func (l *Loop) validateBatches(ctx context.Context, free int) int {
 	gw, ok := l.mainValidation(ctx)
 	if !ok || free <= 0 || l.hostHot() {
 		return 0
 	}
-	capped := l.takesCap(harness.KindEvaluate)
-	served := map[string]Scope{}
-	var nodes []string
+	served := map[string]bool{}
 	for _, sc := range l.CurrentScopes() {
-		served[sc.ID] = sc
+		served[sc.ID] = true
 	}
-	nodes = l.nodeIDs()
-	started := 0
+	// every node id's queue read first, so a batch any of them is served
+	// comes before every request
+	var batches, requests []mainJob
 	seen := map[string]bool{}
-	for _, nodeID := range nodes {
+	for _, nodeID := range l.nodeIDs() {
 		queue, err := gw.MainValidations(ctx, nodeID)
 		if err != nil {
 			l.logf("read main validations: %v", err)
 			continue
 		}
-		for _, b := range queue.Batches {
-			if seen[b.MergeBatchID] {
-				continue
-			}
-			seen[b.MergeBatchID] = true
-			// a batch of an org this node does not serve is not its repo's
-			if _, ok := served[b.OrgID]; !ok {
-				continue
-			}
-			if started >= free || (capped.capped && capped.room <= 0) {
-				return started
-			}
-			l.mu.Lock()
-			if l.validating[b.MergeBatchID] {
-				l.mu.Unlock()
-				continue
-			}
-			if l.validating == nil {
-				l.validating = map[string]bool{}
-			}
-			l.validating[b.MergeBatchID] = true
-			l.mu.Unlock()
-			if err := gw.ClaimMergeBatchValidation(ctx, b.MergeBatchID, nodeID, l.adapter()); err != nil {
-				l.mu.Lock()
-				delete(l.validating, b.MergeBatchID)
-				l.mu.Unlock()
-				if !gateway.IsRefusal(err) {
-					l.logf("%s: claim: %v", batchLabel(b), err)
+		if l.ValidateBatch != nil {
+			for _, b := range queue.Batches {
+				// a batch of an org this node does not serve is not its repo's
+				if seen[b.MergeBatchID] || !served[b.OrgID] {
+					continue
 				}
-				continue
+				seen[b.MergeBatchID] = true
+				batches = append(batches, batchJob(l, gw, b, nodeID))
 			}
-			l.logf("%s: claimed candidate %s@%s", batchLabel(b), b.CandidateBranch, short(b.SHA))
+		}
+		if l.ValidateMain != nil {
+			for _, r := range queue.Requests {
+				if seen[r.WorkItemID] || !served[r.OrgID] {
+					continue
+				}
+				seen[r.WorkItemID] = true
+				requests = append(requests, requestJob(l, gw, r, nodeID))
+			}
+		}
+	}
+	capped := l.takesCap(harness.KindEvaluate)
+	started := 0
+	for _, j := range append(batches, requests...) {
+		if started >= free || (capped.capped && capped.room <= 0) {
+			break
+		}
+		if l.startMainJob(ctx, j) {
 			capped.started()
 			started++
-			l.wg.Add(1)
-			go func(ctx context.Context, b gateway.MainValidationBatch, nodeID string) {
-				defer crash.Guard()
-				defer l.wg.Done()
-				defer func() {
-					l.mu.Lock()
-					delete(l.validating, b.MergeBatchID)
-					l.mu.Unlock()
-					l.notify()
-				}()
-				l.runBatch(ctx, gw, b, nodeID)
-			}(ctx, b, nodeID)
 		}
 	}
 	return started
 }
 
-// runBatch validates b's candidate under its claim and ends the claim:
-// finished on the candidate's sha whatever the attestation's colour,
-// failed with the reason on anything else. A claim the platform
-// refuses again (watchBatchClaim) stops the run and sends nothing; a run past
+// startMainJob claims j and, granted, runs it in its own goroutine,
+// marked validating — a session against the capacity — until it ends.
+func (l *Loop) startMainJob(ctx context.Context, j mainJob) bool {
+	l.mu.Lock()
+	if l.validating[j.id] {
+		l.mu.Unlock()
+		return false
+	}
+	if l.validating == nil {
+		l.validating = map[string]bool{}
+	}
+	l.validating[j.id] = true
+	l.mu.Unlock()
+	if err := j.claim(ctx); err != nil {
+		l.mu.Lock()
+		delete(l.validating, j.id)
+		l.mu.Unlock()
+		if !gateway.IsRefusal(err) {
+			l.logf("%s: claim: %v", j.label, err)
+		}
+		return false
+	}
+	l.logf("%s: %s", j.label, j.claimed)
+	l.wg.Add(1)
+	go func() {
+		defer crash.Guard()
+		defer l.wg.Done()
+		defer func() {
+			l.mu.Lock()
+			delete(l.validating, j.id)
+			l.mu.Unlock()
+			l.notify()
+		}()
+		l.runMainJob(ctx, j)
+	}()
+	return true
+}
+
+// runMainJob validates j under its claim and ends the claim: finished
+// on the attested sha whatever the attestation's colour, failed with
+// the reason on anything else. A claim the platform refuses again
+// (watchMainClaim) stops the run and sends nothing; a run past
 // MainValidationClaimAfter is stopped and failed.
-func (l *Loop) runBatch(ctx context.Context, gw mainValidationGateway, b gateway.MainValidationBatch, nodeID string) {
-	label := batchLabel(b)
+func (l *Loop) runMainJob(ctx context.Context, j mainJob) {
 	lost, stop := context.WithCancelCause(ctx)
 	defer stop(nil)
 	rctx, cancel := context.WithTimeoutCause(lost, MainValidationClaimAfter, errBatchOverrun)
@@ -174,50 +254,51 @@ func (l *Loop) runBatch(ctx context.Context, gw mainValidationGateway, b gateway
 	defer close(done)
 	go func() {
 		defer crash.Guard()
-		l.watchBatchClaim(rctx, done, gw, b, nodeID, stop)
+		l.watchMainClaim(rctx, done, j, stop)
 	}()
 
-	att, err := l.ValidateBatch(rctx, b)
+	att, err := j.run(rctx)
 	if cause := context.Cause(rctx); cause != nil && (errors.Is(cause, errBatchClaimLost) || errors.Is(cause, errBatchOverrun)) {
 		if errors.Is(cause, errBatchClaimLost) {
-			l.logf("%s: stopped: %v", label, cause)
+			l.logf("%s: stopped: %v", j.label, cause)
 			return
 		}
 		reason := fmt.Sprintf("ran past %s, the claim's window; stopped", MainValidationClaimAfter)
-		l.logf("%s: stopped: %s", label, reason)
-		l.failBatch(context.WithoutCancel(ctx), gw, b, nodeID, reason)
+		l.logf("%s: stopped: %s", j.label, reason)
+		l.failMainJob(context.WithoutCancel(ctx), j, reason)
 		return
 	}
 	if err != nil {
-		l.failBatch(context.WithoutCancel(ctx), gw, b, nodeID, validate.Reason(err))
+		l.failMainJob(context.WithoutCancel(ctx), j, validate.Reason(err))
 		return
 	}
 	colour := "green"
 	if _, red := failedStep(att); red {
 		colour = "red"
 	}
-	l.logf("%s: attested %s (%s)", label, colour, attestedSuites(att))
-	if err := gw.FinishMergeBatchValidation(context.WithoutCancel(ctx), b.MergeBatchID, nodeID, att.Commit); err != nil {
-		l.logf("%s: finish refused: %v", label, err)
+	l.logf("%s: attested %s (%s)", j.label, colour, attestedSuites(att))
+	if err := j.finish(context.WithoutCancel(ctx), att.Commit); err != nil {
+		l.logf("%s: finish refused: %v", j.label, err)
 		return
 	}
-	l.logf("%s: finished", label)
+	l.logf("%s: finished", j.label)
 }
 
-// failBatch gives b's claim back with reason and logs it.
-func (l *Loop) failBatch(ctx context.Context, gw mainValidationGateway, b gateway.MainValidationBatch, nodeID, reason string) {
-	l.logf("%s: failed: %s", batchLabel(b), reason)
-	if err := gw.FailMergeBatchValidation(ctx, b.MergeBatchID, nodeID, reason); err != nil {
-		l.logf("%s: fail refused: %v", batchLabel(b), err)
+// failMainJob gives j's claim back with reason and logs it.
+func (l *Loop) failMainJob(ctx context.Context, j mainJob, reason string) {
+	l.logf("%s: failed: %s", j.label, reason)
+	if err := j.fail(ctx, reason); err != nil {
+		l.logf("%s: fail refused: %v", j.label, err)
 	}
 }
 
-// watchBatchClaim asks for b's claim again every BatchCheckEvery while
+// watchMainClaim asks for j's claim again every BatchCheckEvery while
 // the run goes on — the claim converges on the same node, so it changes
 // nothing while the node holds it — and stops the run, errBatchClaimLost,
-// once the platform refuses it: another node holds it, or the batch no
-// longer waits on a node. A claim that errs otherwise says nothing.
-func (l *Loop) watchBatchClaim(ctx context.Context, done <-chan struct{}, gw mainValidationGateway, b gateway.MainValidationBatch, nodeID string, stop context.CancelCauseFunc) {
+// once the platform refuses it: another node holds it, or the
+// validation no longer waits on a node. A claim that errs otherwise
+// says nothing.
+func (l *Loop) watchMainClaim(ctx context.Context, done <-chan struct{}, j mainJob, stop context.CancelCauseFunc) {
 	every := l.BatchCheckEvery
 	if every <= 0 {
 		every = DefaultBatchCheckEvery
@@ -232,7 +313,7 @@ func (l *Loop) watchBatchClaim(ctx context.Context, done <-chan struct{}, gw mai
 			return
 		case <-t.C:
 		}
-		if err := gw.ClaimMergeBatchValidation(ctx, b.MergeBatchID, nodeID, l.adapter()); err != nil && gateway.IsRefusal(err) {
+		if err := j.claim(ctx); err != nil && gateway.IsRefusal(err) {
 			stop(fmt.Errorf("%w: %v", errBatchClaimLost, err))
 			return
 		}
@@ -244,4 +325,10 @@ func (l *Loop) watchBatchClaim(ctx context.Context, done <-chan struct{}, gw mai
 // what the loop's ValidateBatch runs.
 func (r *Runner) ValidateCandidate(ctx context.Context, batch gateway.MainValidationBatch) (validate.Attestation, error) {
 	return r.validateCandidate(ctx, batch, nil)
+}
+
+// ValidateMainRequest is validateMainRequest on the operator's own
+// credentials, as ValidateCandidate: what the loop's ValidateMain runs.
+func (r *Runner) ValidateMainRequest(ctx context.Context, req gateway.MainValidationRequest) (validate.Attestation, error) {
+	return r.validateMainRequest(ctx, req, nil)
 }
