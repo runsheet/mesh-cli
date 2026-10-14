@@ -94,11 +94,17 @@ type expiringMints struct {
 	mu    sync.Mutex
 	toks  []*gateway.GitHubToken
 	mints int
+	// refuseAfter, when set, refuses every mint past that many.
+	refuseAfter int
 }
 
 func (g *expiringMints) IssueMergeBatchRepoToken(ctx context.Context, batch gateway.MainValidationBatch, nodeID string) (*gateway.GitHubToken, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if g.refuseAfter > 0 && g.mints >= g.refuseAfter {
+		g.mints++
+		return nil, &gateway.Error{Message: "the merge batch is not this node's to validate"}
+	}
 	tok := g.toks[min(g.mints, len(g.toks)-1)]
 	g.mints++
 	return tok, nil
@@ -188,6 +194,66 @@ func TestBatchTokenRefusedFailsTheValidation(t *testing.T) {
 	}
 	if reason, _ := fail[0].Input["reason"].(string); !strings.HasPrefix(reason, "github token for merge batch 7: ") {
 		t.Fatalf("reason = %q, want the token's", reason)
+	}
+	if n := len(f.CallsNamed("finishMergeBatchValidation")); n != 0 {
+		t.Fatalf("finish calls = %d, want none", n)
+	}
+	if n := len(batchAttestations(f)); n != 0 {
+		t.Fatalf("attestations = %d, want none", n)
+	}
+}
+
+// staleThenRefused is a gateway whose first mint is near expiry and
+// whose renewal is refused.
+func staleThenRefused(c *gateway.Client) *expiringMints {
+	return &expiringMints{Client: c, refuseAfter: 1, toks: []*gateway.GitHubToken{
+		{Token: "ghs_stale", ExpiresAt: time.Now().Add(time.Minute), Repository: "acme/widgets", Access: "read"},
+	}}
+}
+
+// A near-expiry token whose renewal the platform refuses is the
+// validation's error naming the token: the candidate is not fetched on
+// the stale token nor on the operator's login, and nothing is attested.
+func TestCandidateTokenRefreshRefusedFetchesNothing(t *testing.T) {
+	r, f, batch, _, logs := candidateRunner(t, oneStepYML("true"))
+	w := recordFetches(r)
+	gw := staleThenRefused(r.GW.(*gateway.Client))
+	r.GW = gw
+	_, err := r.ValidateCandidate(context.Background(), batch)
+	if err == nil || !strings.HasPrefix(err.Error(), "github token for merge batch 7: refresh github token: ") {
+		t.Fatalf("err = %v, want the refused refresh naming the batch's token", err)
+	}
+	if gw.mints != 2 {
+		t.Fatalf("mints = %d, want the mint and its refused renewal", gw.mints)
+	}
+	if len(w.fetches) != 0 {
+		t.Fatalf("fetches = %v, want none", w.fetches)
+	}
+	if n := len(f.CallsNamed("recordValidationAttestation")); n != 0 {
+		t.Fatalf("attestations = %d, want none", n)
+	}
+	if !strings.Contains(logs.String(), "merge batch 7 (acme/widgets): github token for merge batch 7: refresh github token: ") {
+		t.Fatalf("no refusal line:\n%s", logs.String())
+	}
+}
+
+// On the loop a refused renewal fails the batch's validation with the
+// token's reason: no fetch, no attestation, no finish.
+func TestBatchTokenRefreshRefusedFailsTheValidation(t *testing.T) {
+	r, f, batch, _, logs := candidateRunner(t, oneStepYML("true"))
+	w := recordFetches(r)
+	r.GW = staleThenRefused(r.GW.(*gateway.Client))
+	loop, f, _, logs := batchLoopOn(t, r, f, batch, logs, 1)
+	tick(loop)
+	fail := f.CallsNamed("failMergeBatchValidation")
+	if len(fail) != 1 {
+		t.Fatalf("fail calls = %d, want 1\n%s", len(fail), logs.String())
+	}
+	if reason, _ := fail[0].Input["reason"].(string); !strings.HasPrefix(reason, "github token for merge batch 7: refresh github token: ") {
+		t.Fatalf("reason = %q, want the token's", reason)
+	}
+	if len(w.fetches) != 0 {
+		t.Fatalf("fetches = %v, want none", w.fetches)
 	}
 	if n := len(f.CallsNamed("finishMergeBatchValidation")); n != 0 {
 		t.Fatalf("finish calls = %d, want none", n)

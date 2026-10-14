@@ -102,7 +102,7 @@ func (r *Runner) validateCandidate(ctx context.Context, batch gateway.MainValida
 		cred:    cred,
 	}
 	return r.validateCommit(ctx, t, mainCommit{repo: batch.RepoFullName, branch: batch.CandidateBranch, sha: batch.SHA, atHead: true,
-		what: "candidate " + batch.CandidateBranch})
+		what: "candidate " + batch.CandidateBranch, token: fmt.Sprintf("merge batch %d", batch.Number)})
 }
 
 // candidatePrefix is a candidate's validation's log prefix: `merge batch
@@ -142,7 +142,7 @@ func (r *Runner) validateMainRequest(ctx context.Context, req gateway.MainValida
 		repoTok:  tok,
 	}
 	return r.validateCommit(ctx, t, mainCommit{repo: req.RepoFullName, branch: req.DefaultBranch, sha: req.SHA,
-		what: "merge commit on " + req.DefaultBranch})
+		what: "merge commit on " + req.DefaultBranch, token: fmt.Sprintf("item %d", req.Seq)})
 }
 
 // orUnnamed is s, else `unnamed`: a token whose repo or access the
@@ -156,12 +156,12 @@ func orUnnamed(s string) string {
 
 // mainCommit is the commit a main validation checks out: sha on
 // repo's branch — its head when atHead (a candidate), else any commit
-// the branch holds (a merge commit main has moved past) — and what the
-// log calls it.
+// the branch holds (a merge commit main has moved past) — what the log
+// calls it, and whose token fetches it (`github token for <token>: …`).
 type mainCommit struct {
 	repo, branch, sha string
 	atHead            bool
-	what              string
+	what, token       string
 }
 
 // validateCommit is a main validation's body, a batch candidate's or a
@@ -190,7 +190,13 @@ func (r *Runner) validateCommit(ctx context.Context, t validationTarget, c mainC
 	if c.atHead {
 		add = wt.AddCandidateWorktree
 	}
-	if err := add(vr.onItemToken(ctx, t), c.repo, dir, c.branch, c.sha); err != nil {
+	fctx, err := vr.onFreshItemToken(ctx, t)
+	if err != nil {
+		err = fmt.Errorf("github token for %s: %w", c.token, err)
+		r.logf("%s: %v; not fetched", prefix, err)
+		return validate.Attestation{}, err
+	}
+	if err := add(fctx, c.repo, dir, c.branch, c.sha); err != nil {
 		var he *CandidateHeadError
 		var ne *CommitNotOnBranchError
 		if errors.As(err, &he) || errors.As(err, &ne) {

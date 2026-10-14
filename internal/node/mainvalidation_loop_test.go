@@ -28,6 +28,13 @@ const (
 func batchLoop(t *testing.T, files map[string]string, capacity int) (*Loop, *gatewaytest.Fake, gateway.MainValidationBatch, *syncBuf) {
 	t.Helper()
 	r, f, batch, _, logs := candidateRunner(t, files)
+	return batchLoopOn(t, r, f, batch, logs, capacity)
+}
+
+// batchLoopOn is batchLoop on candidateRunner's r, validating batches
+// with r.ValidateCandidate.
+func batchLoopOn(t *testing.T, r *Runner, f *gatewaytest.Fake, batch gateway.MainValidationBatch, logs *syncBuf, capacity int) (*Loop, *gatewaytest.Fake, gateway.MainValidationBatch, *syncBuf) {
+	t.Helper()
 	f.WorkItems[item1]["status"] = "pending"
 	gw := gateway.New(f.URL(), "rs_test")
 	cfg := &Config{OrgLogin: "acme", OrgID: orgID, Slug: "n", NodeID: batchNode, Capacity: Fixed(capacity)}
