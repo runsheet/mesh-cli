@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -724,6 +725,29 @@ func (e *NoMergeBaseError) Error() string {
 	return fmt.Sprintf("branch %s shares no history with origin/%s: it was rebuilt from scratch or from an unrelated root, so there is nothing to diff it against", e.Branch, e.Base)
 }
 
+// BaseGoneError says origin no longer has the base branch: a dependency's
+// branch GitHub deleted when it merged. Only `git ls-remote --exit-code`
+// answering 2 (asked, and no such ref) makes one, so a fetch refused for
+// its credential or the network stays that error (ADR-030).
+type BaseGoneError struct {
+	Base string
+	Err  error // the fetch's own error
+}
+
+func (e *BaseGoneError) Error() string {
+	return fmt.Sprintf("base %s is gone from origin: %v", e.Base, e.Err)
+}
+
+func (e *BaseGoneError) Unwrap() error { return e.Err }
+
+// baseGone asks origin whether it still has refs/heads/<base>: true only
+// when it answered and has none (ls-remote's exit 2).
+func (g *Git) baseGone(ctx context.Context, dir, base string) bool {
+	_, err := g.run(ctx, dir, "git", "ls-remote", "--exit-code", "origin", "refs/heads/"+base)
+	var exit *exec.ExitError
+	return errors.As(err, &exit) && exit.ExitCode() == 2
+}
+
 // deepenRounds bounds EnsureMergeBase: this many `--deepen` fetches (the
 // step doubling from FetchDepth), then one `--unshallow`.
 const deepenRounds = 3
@@ -731,11 +755,15 @@ const deepenRounds = 3
 // EnsureMergeBase makes origin/<base> and HEAD share a merge base in dir,
 // fetching the base branch explicitly (a single-branch clone lacks it) and
 // deepening a shallow checkout in a fixed number of steps. A branch that
-// still shares none yields a *NoMergeBaseError.
+// still shares none yields a *NoMergeBaseError; a base origin no longer
+// has, a *BaseGoneError.
 func (g *Git) EnsureMergeBase(ctx context.Context, dir, base string) error {
 	root, key := g.lockRoot("", dir), g.repoKeyOf(ctx, dir)
 	remote := "refs/remotes/origin/" + base
 	if _, err := g.fetchLocked(ctx, root, key, dir, "git", "fetch", "--quiet", "origin", "+refs/heads/"+base+":"+remote); err != nil {
+		if g.baseGone(ctx, dir, base) {
+			return &BaseGoneError{Base: base, Err: err}
+		}
 		return err
 	}
 	has := func() bool {
