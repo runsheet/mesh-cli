@@ -93,6 +93,12 @@ type validationTarget struct {
 	// cred is the item's token, every fetch the validator runs going out
 	// on it (ForFetch, OnItemToken); nil on the fallback.
 	cred *ItemCred
+	// batchID is the merge batch a candidate's validation attests
+	// (mainvalidation.go): set, there is no item — the upload goes by
+	// RecordBatchCandidateAttestation carrying it — and repoTok, the
+	// repo's token, is what its fetches go out on in cred's place.
+	batchID string
+	repoTok *gateway.GitHubToken
 }
 
 func (r *Runner) validator() validator {
@@ -625,6 +631,9 @@ func (vr validator) fetchHead(ctx context.Context, t validationTarget, branch, h
 // or a token since expired. A token that cannot be renewed is logged and
 // the one held used; the fallback is ctx.
 func (vr validator) onItemToken(ctx context.Context, t validationTarget) context.Context {
+	if t.cred == nil && t.repoTok != nil {
+		return OnItemToken(ctx, vr.WS, t.repoTok)
+	}
 	tok, err := t.cred.ForFetch(ctx)
 	if err != nil {
 		vr.logf("%s: validation: %v", t.prefix, err)
@@ -676,18 +685,10 @@ func (r *Runner) uploadAttestation(ctx context.Context, b *buildRun, att validat
 }
 
 func (vr validator) upload(ctx context.Context, t validationTarget, att validate.Attestation) attestOutcome {
-	rec := vr.attester()
-	var err error
-	var receipt map[string]any
-	if rec == nil {
-		err = &gateway.Error{Message: "the node's gateway takes no attestations", Unsupported: true}
-	} else {
-		receipt, err = rec.RecordValidationAttestation(ctx, t.item.ID, gatewayAttestation(att))
-	}
+	status, err := vr.record(ctx, t, att)
 	var out attestOutcome
 	switch {
 	case err == nil:
-		status, _ := receipt["status"].(string)
 		if status == "" {
 			status = "no status"
 		}
@@ -714,6 +715,28 @@ func (vr validator) upload(ctx context.Context, t validationTarget, att validate
 		vr.logf("%s: validation: %v", t.prefix, err)
 	}
 	return out
+}
+
+// record sends att to the platform — an item's by
+// RecordValidationAttestation, a batch candidate's (t.batchID) by
+// RecordBatchCandidateAttestation — and answers the receipt's status.
+func (vr validator) record(ctx context.Context, t validationTarget, att validate.Attestation) (string, error) {
+	unsupported := &gateway.Error{Message: "the node's gateway takes no attestations", Unsupported: true}
+	if t.batchID != "" {
+		rec, ok := vr.GW.(batchAttestationRecorder)
+		if !ok {
+			return "", unsupported
+		}
+		receipt, err := rec.RecordBatchCandidateAttestation(ctx, t.batchID, gatewayAttestation(att))
+		return receipt.Status, err
+	}
+	rec := vr.attester()
+	if rec == nil {
+		return "", unsupported
+	}
+	receipt, err := rec.RecordValidationAttestation(ctx, t.item.ID, gatewayAttestation(att))
+	status, _ := receipt["status"].(string)
+	return status, err
 }
 
 // attestedSuites are the attestation's steps comma-joined, or `no suite
@@ -771,6 +794,12 @@ func (n *ValidationNotices) usage() *sync.Once {
 // attestationRecorder is what uploads an attestation (*gateway.Client).
 type attestationRecorder interface {
 	RecordValidationAttestation(ctx context.Context, itemID string, att gateway.ValidationAttestation) (map[string]any, error)
+}
+
+// batchAttestationRecorder is what uploads a merge batch candidate's
+// attestation (*gateway.Client).
+type batchAttestationRecorder interface {
+	RecordBatchCandidateAttestation(ctx context.Context, batchID string, att gateway.ValidationAttestation) (gateway.BatchAttestationReceipt, error)
 }
 
 // attester is the node's own gateway when it takes attestations, else
