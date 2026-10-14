@@ -100,6 +100,11 @@ type validationTarget struct {
 	// cred, is a token its fetches go out on as it is, never renewed.
 	batchID string
 	repoTok *gateway.GitHubToken
+	// tokenName, set, is whose token cred is (`merge batch 7`): every
+	// fetch goes out on a fresh token or not at all, a renewal refused
+	// being the validation's error naming it (*fetchTokenError), never
+	// a fetch on the token held (fetchContext).
+	tokenName string
 	// diffFrom, set, is the commit the changed paths are taken from in
 	// base's place: a merged item's merge commit is diffed against its
 	// first parent, since main already holds it (mainvalidation.go).
@@ -249,6 +254,10 @@ func (vr validator) run(ctx context.Context, t validationTarget, v *buildValidat
 		return validate.Attestation{}, err
 	}
 	changed, err := vr.changedPaths(ctx, t)
+	var te *fetchTokenError
+	if errors.As(err, &te) {
+		return validate.Attestation{}, err
+	}
 	if err != nil {
 		// a base fetch GitHub refused is credential_refused (adr-030)
 		return validate.Attestation{}, validate.Classify(fmt.Errorf("changed paths: %w", err))
@@ -623,7 +632,11 @@ func (vr validator) changedPaths(ctx context.Context, t validationTarget) ([]str
 	if t.diffFrom != "" {
 		return diffNames(ctx, t.dir, t.diffFrom)
 	}
-	return vr.WS.ChangedPaths(vr.onItemToken(ctx, t), t.dir, t.base)
+	fctx, err := vr.fetchContext(ctx, t)
+	if err != nil {
+		return nil, err
+	}
+	return vr.WS.ChangedPaths(fctx, t.dir, t.base)
 }
 
 // diffNames are the files HEAD changed since from, in dir.
@@ -646,7 +659,41 @@ func diffNames(ctx context.Context, dir, from string) ([]string, error) {
 // fetchHead fetches origin's branch and head into t's checkout on the
 // item's token.
 func (vr validator) fetchHead(ctx context.Context, t validationTarget, branch, head string) error {
-	return vr.headFetcher().FetchHead(vr.onItemToken(ctx, t), t.dir, branch, head)
+	fctx, err := vr.fetchContext(ctx, t)
+	if err != nil {
+		return err
+	}
+	return vr.headFetcher().FetchHead(fctx, t.dir, branch, head)
+}
+
+// fetchTokenError is a fetch not made because t's token could not be
+// had fresh: `github token for <name>: <why>`.
+type fetchTokenError struct {
+	name string
+	err  error
+}
+
+func (e *fetchTokenError) Error() string {
+	return fmt.Sprintf("github token for %s: %v", e.name, e.err)
+}
+func (e *fetchTokenError) Unwrap() error { return e.err }
+
+// fetchContext is ctx for a fetch of t's: onItemToken, except that a
+// target naming its token (tokenName, a merge batch candidate) is
+// fetched on a fresh one or not at all — a renewal refused before any
+// of its fetches, the candidate's or the diff base's, is a
+// *fetchTokenError, logged `<prefix>: <err>; not fetched`.
+func (vr validator) fetchContext(ctx context.Context, t validationTarget) (context.Context, error) {
+	if t.tokenName == "" {
+		return vr.onItemToken(ctx, t), nil
+	}
+	fctx, err := vr.onFreshItemToken(ctx, t)
+	if err != nil {
+		err = &fetchTokenError{name: t.tokenName, err: err}
+		vr.logf("%s: %v; not fetched", t.prefix, err)
+		return ctx, err
+	}
+	return fctx, nil
 }
 
 // onItemToken is ctx with the validator's git on the item's token, asked
