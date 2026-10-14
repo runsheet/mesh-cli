@@ -209,8 +209,15 @@ type Fake struct {
 	// {status: ok, commit, branch: the batch's candidate branch,
 	// mergeBatchId}. Unsupported names any of mainValidations and the six
 	// commands to serve a schema without it.
-	MergeBatches            map[string]map[string]any
-	MainValidationRequests  map[string]map[string]any
+	MergeBatches           map[string]map[string]any
+	MainValidationRequests map[string]map[string]any
+	// BatchGitHubTokens maps a mergeBatchId to the answer of
+	// issueItemRepoToken's batch form, issueItemRepoToken(mergeBatchId:)
+	// (runsheet ADR 009's amendment 2026-10-14): given only to the node
+	// holding the batch's validation claim, the answer's mergeBatchId
+	// set to the batch's. Unsupported["issueItemRepoToken.mergeBatchId"]
+	// serves a platform whose issueItemRepoToken has no such argument.
+	BatchGitHubTokens       map[string]map[string]any
 	BatchAttestationReceipt map[string]any
 	// RateLimit429 names a mutation the fake answers with a bare HTTP 429
 	// ("rate limited", no GraphQL error body) every time it is sent — for
@@ -499,7 +506,7 @@ func New(token string) *Fake {
 		Agents: map[string]map[string]any{}, UnknownFields: map[string]bool{},
 		SessionCredentials: map[string][]map[string]any{}, SessionTools: map[string][]map[string]any{},
 		Scorecard: map[string]map[string]any{}, Enterprises: map[string]Enterprise{},
-		MergeBatches: map[string]map[string]any{}, MainValidationRequests: map[string]map[string]any{},
+		MergeBatches: map[string]map[string]any{}, MainValidationRequests: map[string]map[string]any{}, BatchGitHubTokens: map[string]map[string]any{},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/graphql", f.graphql)
@@ -971,6 +978,13 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 			}
 			id, _ := req.Variables["id"].(string)
 			in = map[string]any{"workItemId": id}
+			if strings.Contains(q, "mergeBatchId:") {
+				if f.Unsupported["issueItemRepoToken.mergeBatchId"] {
+					writeErrors(w, 200, `Unknown argument "mergeBatchId" on field "issueItemRepoToken" of type "Mutation".`)
+					return
+				}
+				in = map[string]any{"mergeBatchId": id}
+			}
 			tok, err := f.issueItemRepoToken(in)
 			if err != nil {
 				writeErrors(w, 200, err.Error())
@@ -2305,6 +2319,9 @@ func (f *Fake) HeldBy(itemID, nodeID string) {
 }
 
 func (f *Fake) issueItemRepoToken(in map[string]any) (map[string]any, error) {
+	if batchID, _ := in["mergeBatchId"].(string); batchID != "" {
+		return f.issueMergeBatchRepoToken(batchID)
+	}
 	id, _ := in["workItemId"].(string)
 	item := f.WorkItems[id]
 	if item == nil {
@@ -2326,6 +2343,34 @@ func (f *Fake) issueItemRepoToken(in map[string]any) (map[string]any, error) {
 		return nil, fmt.Errorf("no GitHub installation reaches the item's repo")
 	}
 	return copyRow(tok), nil
+}
+
+// issueMergeBatchRepoToken is issueItemRepoToken's batch form: the
+// batch must exist and its validation be claimed, by the calling node
+// when TokenNodeID names one.
+func (f *Fake) issueMergeBatchRepoToken(batchID string) (map[string]any, error) {
+	row := f.MergeBatches[batchID]
+	var state, holder any
+	if row != nil {
+		state, holder = row["validationState"], row["validationNodeId"]
+	}
+	switch {
+	case row == nil:
+		return nil, fmt.Errorf("issueItemRepoToken: no merge batch %s: not yours", batchID)
+	case state != "claimed":
+		return nil, fmt.Errorf("issueItemRepoToken: the merge batch's validation is %v, not claimed: not yours", state)
+	case f.TokenNodeID != "" && holder != f.TokenNodeID:
+		return nil, fmt.Errorf("issueItemRepoToken: you are not the node validating the merge batch: not yours")
+	}
+	tok := f.BatchGitHubTokens[batchID]
+	if tok == nil {
+		return nil, fmt.Errorf("no GitHub installation reaches the merge batch's repo")
+	}
+	out := copyRow(tok)
+	if _, ok := out["mergeBatchId"]; !ok {
+		out["mergeBatchId"] = batchID
+	}
+	return out, nil
 }
 
 func toInt(v any) int {
