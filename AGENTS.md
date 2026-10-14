@@ -1270,8 +1270,9 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   `merge batch <n> (<repo>): candidate fetched on minted token (<repo>,
   <access>)`; a platform that mints none (`IsUnsupported`) fetches on the
   operator's login, said once per run (`TokenFallback.NoteBatch`,
-  `Runner.BatchFallback`); a refused mint or renewal fetches nothing and
-  fails the validation `github token for merge batch <n>: …` (ADR-032's
+  `Runner.BatchFallback`); a refused mint or renewal — or one
+  `checkBatchToken` refuses, empty, malformed (`tokenShape`) or for
+  another repo — fetches nothing and fails the validation `github token for merge batch <n>: …` (ADR-032's
   amendment 2026-10-14). A request runs on the operator's credentials.
   The worktree is removed on every path. Green and
   red are both finished on the attested sha (the attestation is the

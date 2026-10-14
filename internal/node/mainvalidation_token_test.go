@@ -374,3 +374,98 @@ func TestBatchBaseFetchTokenRefreshRefusedFailsTheValidation(t *testing.T) {
 		t.Fatalf("attestations = %d, want none", n)
 	}
 }
+
+// A mint that answers a token git cannot carry — one withGitToken would
+// leave off the fetch, so the fetch would go out on the operator's
+// login — fails the validation naming the token: nothing fetched, nothing
+// attested, and on the loop the batch failed with the token's reason.
+func TestBatchTokenMalformedFailsTheValidation(t *testing.T) {
+	r, f, batch, _, logs := candidateRunner(t, oneStepYML("true"))
+	w := recordFetches(r)
+	r.GW = &expiringMints{Client: r.GW.(*gateway.Client), toks: []*gateway.GitHubToken{
+		{Token: "ghs bad\ntoken", ExpiresAt: time.Now().Add(time.Hour), Repository: "acme/widgets", Access: "read"},
+	}}
+	loop, f, _, logs := batchLoopOn(t, r, f, batch, logs, 1)
+	tick(loop)
+	fail := f.CallsNamed("failMergeBatchValidation")
+	if len(fail) != 1 {
+		t.Fatalf("fail calls = %d, want 1\n%s", len(fail), logs.String())
+	}
+	if reason, _ := fail[0].Input["reason"].(string); reason != "github token for merge batch 7: the platform minted a malformed token" {
+		t.Fatalf("reason = %q, want the malformed token's", reason)
+	}
+	if strings.Contains(logs.String(), "ghs bad") {
+		t.Fatalf("node.log carries the token:\n%s", logs.String())
+	}
+	if len(w.fetches) != 0 {
+		t.Fatalf("fetches = %v, want none", w.fetches)
+	}
+	if n := len(f.CallsNamed("finishMergeBatchValidation")); n != 0 {
+		t.Fatalf("finish calls = %d, want none", n)
+	}
+	if n := len(batchAttestations(f)); n != 0 {
+		t.Fatalf("attestations = %d, want none", n)
+	}
+}
+
+// A renewal issued for another repo is refused as the first mint's would
+// be: the near-expiry token is neither replaced nor used, nothing is
+// fetched or attested, and the batch is failed naming both repos.
+func TestBatchTokenRenewedForAnotherRepoFailsTheValidation(t *testing.T) {
+	r, f, batch, _, logs := candidateRunner(t, oneStepYML("true"))
+	w := recordFetches(r)
+	gw := &expiringMints{Client: r.GW.(*gateway.Client), toks: []*gateway.GitHubToken{
+		{Token: "ghs_stale", ExpiresAt: time.Now().Add(time.Minute), Repository: "acme/widgets", Access: "read"},
+		{Token: "ghs_other", ExpiresAt: time.Now().Add(time.Hour), Repository: "acme/gadgets", Access: "read"},
+	}}
+	r.GW = gw
+	loop, f, _, logs := batchLoopOn(t, r, f, batch, logs, 1)
+	tick(loop)
+	if gw.mints != 2 {
+		t.Fatalf("mints = %d, want the mint and its renewal", gw.mints)
+	}
+	fail := f.CallsNamed("failMergeBatchValidation")
+	if len(fail) != 1 {
+		t.Fatalf("fail calls = %d, want 1\n%s", len(fail), logs.String())
+	}
+	want := "github token for merge batch 7: refresh github token: issued for acme/gadgets, the batch is on acme/widgets"
+	if reason, _ := fail[0].Input["reason"].(string); reason != want {
+		t.Fatalf("reason = %q, want %q", reason, want)
+	}
+	if len(w.fetches) != 0 {
+		t.Fatalf("fetches = %v, want none", w.fetches)
+	}
+	if n := len(f.CallsNamed("finishMergeBatchValidation")); n != 0 {
+		t.Fatalf("finish calls = %d, want none", n)
+	}
+	if n := len(batchAttestations(f)); n != 0 {
+		t.Fatalf("attestations = %d, want none", n)
+	}
+}
+
+// A renewal for another repo before the diff base's fetch — the
+// candidate already fetched on the batch's token — fails the validation
+// too: the base is fetched on neither token nor the operator's login.
+func TestBatchBaseFetchRenewedForAnotherRepoFailsTheValidation(t *testing.T) {
+	r, f, batch, _, _ := candidateRunner(t, oneStepYML("true"))
+	w := recordFetches(r)
+	gw := &expiringMints{Client: r.GW.(*gateway.Client), toks: []*gateway.GitHubToken{
+		{Token: "ghs_batch", ExpiresAt: time.Now().Add(time.Hour), Repository: "acme/widgets", Access: "read"},
+		{Token: "ghs_other", ExpiresAt: time.Now().Add(time.Hour), Repository: "acme/gadgets", Access: "read"},
+	}}
+	expireAfterCandidate(w, gw)
+	r.GW = gw
+	_, err := r.ValidateCandidate(context.Background(), batch)
+	if err == nil || !strings.Contains(err.Error(), "issued for acme/gadgets, the batch is on acme/widgets") {
+		t.Fatalf("err = %v, want the wrong-repo renewal", err)
+	}
+	if len(w.fetches) != 1 || helperToken(w.fetches[0]) != "ghs_batch" {
+		t.Fatalf("candidate fetches = %v, want one on ghs_batch", w.fetches)
+	}
+	if len(w.bases) != 0 {
+		t.Fatalf("base fetches = %v, want none", w.bases)
+	}
+	if n := len(f.CallsNamed("recordValidationAttestation")); n != 0 {
+		t.Fatalf("attestations = %d, want none", n)
+	}
+}

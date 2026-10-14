@@ -150,7 +150,12 @@ integrator names it) and the diff base's fetch of `origin/<defaultBranch>`
 first, which drops the operator's own helper, then the token's), so it is
 never written to the shared clone's config. Before each of those fetches
 `ItemCred.ForFetch` mints it again when `GitHubTokenNeedsRefresh` says it
-is near expiry. A token whose `repo` is not the batch's is refused. node.log
+is near expiry. Every mint, the first and each renewal, is checked
+before any fetch can carry it (`checkBatchToken`): an empty token, one
+not shaped like a token (`tokenShape` — which `withGitToken` would
+otherwise silently leave off the command, sending the fetch out on the
+operator's login), or one whose `repo` is not the batch's is refused, and
+a refused renewal leaves the held token unreplaced and unused. node.log
 says per batch `merge batch <n> (<repo>): candidate fetched on minted
 token (<repo>, <access>)`. A merged item's main validation request is not
 changed: `ValidateMainRequest` still runs on the operator's login.
@@ -173,7 +178,11 @@ refused before any fetch — the candidate's, or the diff base's after the
 candidate was fetched on a token that has since come near expiry — is the
 same error, `github token for merge batch <n>: refresh github token: …`:
 `onFreshItemToken` answers the renewal's error instead of fetching on the
-held token, so a candidate is fetched on a fresh token or not at all.
+held token, so a candidate is fetched on a fresh token or not at all. A
+token `checkBatchToken` refuses is the same error with its reason —
+`github token for merge batch <n>: the platform minted a malformed token`,
+`…: refresh github token: issued for <repo>, the batch is on <repo>` — the
+token itself never in it: nothing fetched, run or attested.
 
 ## Proof
 
@@ -212,8 +221,9 @@ held token, so a candidate is fetched on a fresh token or not at all.
   `IssueMergeBatchRepoToken` tests (item 1);
   `internal/node/mainvalidation_token_test.go` — the mint, its renewal
   before the candidate's and the base's fetch, the old platform's
-  fallback said once, and a refused mint or renewal fetching nothing and
-  failing the validation (item 2); and end to end
+  fallback said once, and a refused mint or renewal — or a malformed
+  token, or a renewal for another repo — fetching nothing and failing the
+  validation (item 2, and item 3's retry); and end to end
   `internal/node/mergebatch_e2e_test.go`'s
   `TestNodeFetchesABatchCandidateOnItsMintedToken` (item 3): the
   candidate's repo served over HTTP by `git http-backend` behind a

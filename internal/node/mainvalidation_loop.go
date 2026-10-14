@@ -357,8 +357,16 @@ func NewBatchCred(ctx context.Context, gw Gateway, scopes Scopes, batch gateway.
 		return nil, nil
 	}
 	sc, _ := scopes.ByOrg(batch.OrgID)
+	// every mint, the first and each renewal, is checked before any
+	// fetch can carry it: a token withGitToken would not put on git
+	// would leave the fetch on the operator's login, and one for
+	// another repo is not the batch's
 	issue := func(ctx context.Context) (*gateway.GitHubToken, error) {
-		return m.IssueMergeBatchRepoToken(ctx, batch, sc.NodeID)
+		tok, err := m.IssueMergeBatchRepoToken(ctx, batch, sc.NodeID)
+		if err != nil {
+			return nil, err
+		}
+		return tok, checkBatchToken(batch, tok)
 	}
 	tok, err := issue(ctx)
 	if gateway.IsUnsupported(err) {
@@ -368,10 +376,24 @@ func NewBatchCred(ctx context.Context, gw Gateway, scopes Scopes, batch gateway.
 	if err != nil {
 		return nil, fmt.Errorf("github token for merge batch %d: %w", batch.Number, err)
 	}
-	if tok.Repository != "" && !strings.EqualFold(tok.Repository, batch.RepoFullName) {
-		return nil, fmt.Errorf("github token for merge batch %d: issued for %s, the batch is on %s", batch.Number, tok.Repository, batch.RepoFullName)
-	}
 	return &ItemCred{gw: gw, itemID: batch.MergeBatchID, nodeID: sc.NodeID, issue: issue, tok: tok}, nil
+}
+
+// checkBatchToken refuses a minted token the candidate's fetch cannot go
+// out on alone: none, one not shaped like a token (tokenShape, which
+// withGitToken would silently leave off the fetch), or one issued for
+// another repo than the batch's.
+func checkBatchToken(batch gateway.MainValidationBatch, tok *gateway.GitHubToken) error {
+	if tok == nil || tok.Token == "" {
+		return errors.New("the platform minted no token")
+	}
+	if !tokenShape.MatchString(tok.Token) {
+		return errors.New("the platform minted a malformed token")
+	}
+	if tok.Repository != "" && !strings.EqualFold(tok.Repository, batch.RepoFullName) {
+		return fmt.Errorf("issued for %s, the batch is on %s", tok.Repository, batch.RepoFullName)
+	}
+	return nil
 }
 
 // ValidateMainRequest is validateMainRequest on the operator's own
