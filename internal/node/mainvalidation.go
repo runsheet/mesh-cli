@@ -90,16 +90,17 @@ func (r *Runner) validateCandidate(ctx context.Context, batch gateway.MainValida
 	label := fmt.Sprintf("batch-%d", batch.Number)
 	prefix := candidatePrefix(batch)
 	t := validationTarget{
-		item:    gateway.WorkItem{OrgID: batch.OrgID, RepoID: batch.RepoID},
-		dir:     CandidateDir(r.WorkRoot, batch),
-		base:    batch.DefaultBranch,
-		prefix:  prefix,
-		label:   label,
-		session: func() string { return "" },
-		redact:  func(err error) error { return err },
-		report:  func(_ context.Context, note string) { r.logf("%s: %s", prefix, note) },
-		batchID: batch.MergeBatchID,
-		cred:    cred,
+		item:      gateway.WorkItem{OrgID: batch.OrgID, RepoID: batch.RepoID},
+		dir:       CandidateDir(r.WorkRoot, batch),
+		base:      batch.DefaultBranch,
+		prefix:    prefix,
+		label:     label,
+		session:   func() string { return "" },
+		redact:    func(err error) error { return err },
+		report:    func(_ context.Context, note string) { r.logf("%s: %s", prefix, note) },
+		batchID:   batch.MergeBatchID,
+		cred:      cred,
+		tokenName: fmt.Sprintf("merge batch %d", batch.Number),
 	}
 	return r.validateCommit(ctx, t, mainCommit{repo: batch.RepoFullName, branch: batch.CandidateBranch, sha: batch.SHA, atHead: true,
 		what: "candidate " + batch.CandidateBranch, token: fmt.Sprintf("merge batch %d", batch.Number)})
@@ -192,7 +193,7 @@ func (r *Runner) validateCommit(ctx context.Context, t validationTarget, c mainC
 	}
 	fctx, err := vr.onFreshItemToken(ctx, t)
 	if err != nil {
-		err = fmt.Errorf("github token for %s: %w", c.token, err)
+		err = &fetchTokenError{name: c.token, err: err}
 		r.logf("%s: %v; not fetched", prefix, err)
 		return validate.Attestation{}, err
 	}
