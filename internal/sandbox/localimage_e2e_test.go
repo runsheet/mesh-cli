@@ -47,7 +47,8 @@ func localOnlyImage(t *testing.T, ctx context.Context, image string) string {
 // container runs and podman's stderr says no "Trying to pull". The
 // session's env carries HOME=<its temporary home>, so a podman that
 // took the container's HOME for its own would look in an empty store
-// and pull (the dl360, 2026-10-10); podmanEnv keeps the node's. It
+// and pull (the dl360, 2026-10-10); podmanEnv pins its XDG_DATA_HOME
+// and XDG_CONFIG_HOME to the node's, so it finds the node's store. It
 // needs podman and the node image (MESH_SANDBOX_IMAGE, else
 // mesh-node:dev), so it runs only with MESH_SANDBOX_E2E=1.
 func TestLocalOnlyImageE2E(t *testing.T) {
