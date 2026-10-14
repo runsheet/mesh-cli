@@ -56,7 +56,7 @@ func TestCodexEvaluationReceivesResolvedTools(t *testing.T) {
 	}
 	sa := &SessionAccount{AccountSession: acct}
 	defer sa.Cleanup()
-	builtin := MeshContextMCP("https://api.test", nodeToken)
+	builtin := MeshContextHTTP("https://api.test", nodeToken)
 	job := harness.Job{Kind: harness.KindEvaluate, Workspace: ws, Prompt: "evaluate", MCPServers: builtin, Model: "gpt-6-sol"}
 	sa.Apply(&job)
 	console := []tools.Tool{{Name: "search", Transport: tools.Remote, URL: "https://search.test/mcp",
@@ -143,7 +143,7 @@ func TestCodexEvaluationReceivesResolvedTools(t *testing.T) {
 // 2: the evaluation path is covered).
 func TestCodexEvaluationPreflightsMeshContext(t *testing.T) {
 	f, ev, _, codex, _, _ := familyFixture(t, "normal", "sonnet", "VERDICT: FAIL", "Holds.\nVERDICT: PASS")
-	ev.MCP = MeshContextMCP(f.URL(), "rs_test")
+	ev.MCP = MeshContextHTTP(f.URL(), "rs_test")
 	pf := &fakePreflight{}
 	ev.CodexPreflight = pf.check
 	evaluateItem1(t, f, ev)
@@ -175,7 +175,7 @@ func TestCodexEvaluationPreflightsMeshContext(t *testing.T) {
 // session's verdict stands; nothing runs on the other family.
 func TestAContextToolThatAnsweredIsAVerdict(t *testing.T) {
 	f, ev, claude, codex, _, logs := familyFixture(t, "normal", "sonnet", "VERDICT: PASS", "Missing the test.\nVERDICT: FAIL")
-	ev.MCP = MeshContextMCP(f.URL(), "rs_test")
+	ev.MCP = MeshContextHTTP(f.URL(), "rs_test")
 	codex.tools = map[string]*harness.ToolStat{"mesh-context": {Calls: 2, Errors: 2, Answered: 2, FirstError: "not found"}}
 	in := evaluateItem1(t, f, ev)
 	if codex.runs() != 1 || len(claude.jobs) != 0 || in["passed"] != false {
@@ -186,14 +186,14 @@ func TestAContextToolThatAnsweredIsAVerdict(t *testing.T) {
 	}
 	// one call the tool never answered among them is still an answer
 	f, ev, claude, codex, _, _ = familyFixture(t, "normal", "sonnet", "VERDICT: PASS", "Missing the test.\nVERDICT: FAIL")
-	ev.MCP = MeshContextMCP(f.URL(), "rs_test")
+	ev.MCP = MeshContextHTTP(f.URL(), "rs_test")
 	codex.tools = map[string]*harness.ToolStat{"mesh-context": {Calls: 2, Errors: 2, Answered: 1, FirstError: "timeout"}}
 	if in := evaluateItem1(t, f, ev); len(claude.jobs) != 0 || in["passed"] != false {
 		t.Fatalf("runs claude %d, recorded %+v", len(claude.jobs), in)
 	}
 	// none answered: no context, as before
 	f, ev, claude, codex, _, _ = familyFixture(t, "normal", "sonnet", "Holds.\nVERDICT: PASS", "VERDICT: FAIL")
-	ev.MCP = MeshContextMCP(f.URL(), "rs_test")
+	ev.MCP = MeshContextHTTP(f.URL(), "rs_test")
 	codex.tools = map[string]*harness.ToolStat{"mesh-context": {Calls: 2, Errors: 2, FirstError: "MCP tool call requires approval, but approval policy is never"}}
 	if in := evaluateItem1(t, f, ev); len(claude.jobs) != 1 || in["passed"] != true {
 		t.Fatalf("runs claude %d, recorded %+v", len(claude.jobs), in)
@@ -214,7 +214,7 @@ func TestAContextToolThatAnsweredNotFoundKeepsItsVerdict(t *testing.T) {
 	defer stream.Close()
 	parsed := harness.ParseCodexStream(stream, "gpt-6-luna", nil)
 	f, ev, claude, codex, _, _ := familyFixture(t, "normal", "sonnet", "VERDICT: PASS", "Missing the test.\nVERDICT: FAIL")
-	ev.MCP = MeshContextMCP(f.URL(), "rs_test")
+	ev.MCP = MeshContextHTTP(f.URL(), "rs_test")
 	codex.tools = map[string]*harness.ToolStat{tools.Builtin: parsed.Tools["prologue"]}
 	in := evaluateItem1(t, f, ev)
 	if codex.runs() != 1 || len(claude.jobs) != 0 || in["passed"] != false {
@@ -230,7 +230,7 @@ func TestAContextToolThatAnsweredNotFoundKeepsItsVerdict(t *testing.T) {
 // the node's bearer.
 func TestClaudeEvaluationRendersMeshContext(t *testing.T) {
 	f, ev, claude, codex, _, _ := familyFixture(t, "normal", "sonnet", "Holds.\nVERDICT: PASS", "VERDICT: FAIL")
-	ev.MCP = MeshContextMCP(f.URL(), "rs_test")
+	ev.MCP = MeshContextHTTP(f.URL(), "rs_test")
 	ev.CodexAccounts = (&Loop{Known: &KnownAccounts{}}).CodexCandidates
 	evaluateItem1(t, f, ev)
 	if len(claude.jobs) != 1 || codex.runs() != 0 {
@@ -260,7 +260,7 @@ func TestClaudeEvaluationRendersMeshContext(t *testing.T) {
 // from a variable the session's env sets to the node's bearer.
 func TestCodexEvaluationRendersMeshContext(t *testing.T) {
 	f, ev, claude, codex, _, _ := familyFixture(t, "normal", "sonnet", "VERDICT: FAIL", "Holds.\nVERDICT: PASS")
-	ev.MCP = MeshContextMCP(f.URL(), "rs_test")
+	ev.MCP = MeshContextHTTP(f.URL(), "rs_test")
 	evaluateItem1(t, f, ev)
 	if len(claude.jobs) != 0 || codex.runs() != 1 {
 		t.Fatalf("runs claude %d codex %d", len(claude.jobs), codex.runs())

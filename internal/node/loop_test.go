@@ -514,10 +514,10 @@ func TestRunnerAsksForItsMCPServersPerItem(t *testing.T) {
 	h := &fakeHarness{}
 	calls := 0
 	runner := &Runner{Credentials: testCreds(gw), GW: gw, Harness: h, WS: ws, Cfg: cfg, Scopes: scopesOf(cfg), WorkRoot: ws.root, ProgressEvery: time.Hour,
-		MCP: MeshContextMCP(f.URL(), "stale"),
+		MCP: MeshContextHTTP(f.URL(), "stale"),
 		MCPFunc: func(context.Context) map[string]any {
 			calls++
-			return MeshContextMCP(f.URL(), fmt.Sprintf("machine-token-%d", calls))
+			return MeshContextHTTP(f.URL(), fmt.Sprintf("machine-token-%d", calls))
 		}}
 
 	f.WorkItems[item2]["status"] = "ready"

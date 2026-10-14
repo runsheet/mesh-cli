@@ -91,7 +91,7 @@ func (g *fakeGateway) seen() ([]string, []string) {
 func evaluationJob(t *testing.T, gateway string) harness.Job {
 	t.Helper()
 	job := harness.Job{Kind: harness.KindEvaluate, Workspace: t.TempDir(), Prompt: "evaluate", Model: "gpt-6-sol"}
-	if _, err := (node.SessionTools{}).Apply(&job, node.MeshContextMCP(gateway, "rs_node")); err != nil {
+	if _, err := (node.SessionTools{}).Apply(&job, node.MeshContextHTTP(gateway, "rs_node")); err != nil {
 		t.Fatal(err)
 	}
 	return job

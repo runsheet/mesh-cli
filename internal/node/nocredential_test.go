@@ -179,7 +179,7 @@ func TestUnsupportedReadLoopHoldsOnHoldingUnclaimed(t *testing.T) {
 	store := &NoCredentials{Log: logger}
 	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Version: "test", Harness: "claude-code", Interval: time.Hour, Log: logger, NoCredential: store}
 	runner := &Runner{GW: gw, Harness: h, WS: ws, Cfg: cfg, Scopes: scopesOf(cfg), WorkRoot: ws.root, ProgressEvery: time.Hour, Log: logger,
-		MCP: MeshContextMCP(f.URL(), "rs_test"), Credentials: &Credentials{GW: gw, NoCredential: store, Log: logger}}
+		MCP: MeshContextHTTP(f.URL(), "rs_test"), Credentials: &Credentials{GW: gw, NoCredential: store, Log: logger}}
 	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) { _ = runner.RunItem(ctx, item) }
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -257,7 +257,7 @@ func TestNoCredentialLoopHoldsTheGoalAndSaysWhyOnce(t *testing.T) {
 	store := &NoCredentials{Log: logger, Now: clock}
 	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Version: "test", Harness: "claude-code", Interval: time.Hour, Log: logger, NoCredential: store}
 	runner := &Runner{GW: gw, Harness: h, WS: ws, Cfg: cfg, Scopes: scopesOf(cfg), WorkRoot: ws.root, ProgressEvery: time.Hour, Log: logger,
-		MCP: MeshContextMCP(f.URL(), "rs_test"), Credentials: &Credentials{GW: gw, NoCredential: store, Log: logger}}
+		MCP: MeshContextHTTP(f.URL(), "rs_test"), Credentials: &Credentials{GW: gw, NoCredential: store, Log: logger}}
 	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) { _ = runner.RunItem(ctx, item) }
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -393,7 +393,7 @@ func TestNoCredentialRecheckClaimsOneOfSeveral(t *testing.T) {
 	store.Note(goalID, &ErrNoCredential{Org: "acme", Project: "mesh", ProjectID: projID, Adapter: AdapterClaudeCode})
 	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Version: "test", Harness: "claude-code", Interval: time.Hour, Log: logger, NoCredential: store}
 	runner := &Runner{GW: gw, Harness: h, WS: ws, Cfg: cfg, Scopes: scopesOf(cfg), WorkRoot: ws.root, ProgressEvery: time.Hour, Log: logger,
-		MCP: MeshContextMCP(f.URL(), "rs_test"), Credentials: &Credentials{GW: gw, NoCredential: store, Log: logger}}
+		MCP: MeshContextHTTP(f.URL(), "rs_test"), Credentials: &Credentials{GW: gw, NoCredential: store, Log: logger}}
 	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) { _ = runner.RunItem(ctx, item) }
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -441,7 +441,7 @@ func TestNoCredentialRebaseWaitsAndSaysWhyOnce(t *testing.T) {
 	logs := &syncBuf{}
 	logger := log.New(logs, "", 0)
 	store := &NoCredentials{Log: logger}
-	rb := &Rebaser{GW: gw, Harness: h, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, MCP: MeshContextMCP(f.URL(), "rs_test"), MaxBudgetUSD: 4, ProgressEvery: time.Hour, Log: logger,
+	rb := &Rebaser{GW: gw, Harness: h, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, MCP: MeshContextHTTP(f.URL(), "rs_test"), MaxBudgetUSD: 4, ProgressEvery: time.Hour, Log: logger,
 		Credentials: &Credentials{GW: gw, NoCredential: store, Log: logger}}
 	var errs []error
 	var mu sync.Mutex

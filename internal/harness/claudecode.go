@@ -53,6 +53,10 @@ type ClaudeCode struct {
 	// finish tools run from (NodeWorkMCP, `mesh session-tools`); empty is
 	// this process's executable.
 	MeshBinary string
+	// Tokens keeps each session's mesh-context token file fresh, when
+	// the job's mesh-context is the relay (MeshContextRelay, mesh-cli
+	// ADR-029); an adopted session's too, from its state's TokenFile.
+	Tokens TokenKeeper
 }
 
 // Name implements Harness.
@@ -271,6 +275,12 @@ func (c *ClaudeCode) runHost(ctx context.Context, job Job, onProgress func(Progr
 			os.RemoveAll(dir)
 		}
 	}()
+	job, _, releaseToken, err := placeMeshContext(job, c.Tokens, dir, false, "")
+	if err != nil {
+		return Result{}, fmt.Errorf("harness claude-code: mesh-context token: %w", err)
+	}
+	detachedToken := false
+	defer func() { releaseToken(!detachedToken) }()
 	h, err := unit.Start(sessionunit.Spec{
 		Kind: string(job.Kind), Subject: job.Meta.subject(job.Label),
 		Binary: path, Args: c.Args(job), Dir: job.Workspace,
@@ -292,6 +302,7 @@ func (c *ClaudeCode) runHost(ctx context.Context, job Job, onProgress func(Progr
 	hb.setStop(func() { go end.kill() })
 	res, detached, waitErr, errBuf, rawOut := c.follow(ctx, parent, job.Outlive, end, dir, &st, 0, job.Secrets, onProgress, hb.observe)
 	if detached {
+		detachedToken = true
 		return res, parent.Err()
 	}
 	if hb.Fired() && ctx.Err() == nil {
@@ -318,6 +329,7 @@ func (c *ClaudeCode) Attach(ctx context.Context, dir string, onProgress func(Pro
 		unit = c.Unit
 	}
 	h := sessionunit.Handle{PID: st.PID, UnitName: st.Unit}
+	release := c.keepAdopted(st)
 	parent := ctx
 	if st.TimeoutSeconds > 0 {
 		// the session's own wall clock, from when it started
@@ -326,6 +338,7 @@ func (c *ClaudeCode) Attach(ctx context.Context, dir string, onProgress func(Pro
 		defer cancel()
 	}
 	res, detached, waitErr, errBuf, rawOut := c.follow(ctx, parent, true, &unitEnd{unit: unit, h: h}, dir, &st, st.Offset, nil, onProgress, nil)
+	release(!detached)
 	if detached {
 		return res, parent.Err()
 	}
@@ -590,7 +603,7 @@ func (job Job) state(runner string, h sessionunit.Handle, harness string) sessio
 		Attempt: job.Meta.Attempt, Kind: string(job.Kind), Label: job.Label, Model: job.Model, Account: acct,
 		Harness: harness, Runner: runner, PID: h.PID, Unit: h.UnitName, Workspace: job.Workspace,
 		StartedAt: time.Now().UTC(), TimeoutSeconds: int(job.Timeout / time.Second), MaxBudgetUSD: job.MaxBudgetUSD,
-		TempDirs: job.Meta.TempDirs,
+		TempDirs: job.Meta.TempDirs, TokenFile: job.tokenFile,
 	}
 }
 
@@ -612,11 +625,22 @@ func (c *ClaudeCode) runSandboxed(ctx context.Context, job Job, onProgress func(
 	}
 	var err error
 	mcpPath := ""
+	releaseToken := func(bool) {}
 	if len(job.MCPServers) > 0 {
 		mcpPath = filepath.Join(sess.Home, "mcp.json")
 		if nodeFinishes(job) {
 			if _, err = sess.WriteFile(workScriptName, WorkScript()); err != nil {
 				return Result{}, fmt.Errorf("harness claude-code: work tools: %w", err)
+			}
+		}
+		if _, ok := meshContextRelay(job); ok && c.Tokens != nil {
+			// the pod has no mesh binary: the relay is RelayScript in
+			// its HOME, on a token file there the node keeps fresh
+			if _, err = sess.WriteFile(relayScriptName, RelayScript()); err != nil {
+				return Result{}, fmt.Errorf("harness claude-code: mesh-context relay: %w", err)
+			}
+			if job, _, releaseToken, err = placeMeshContext(job, c.Tokens, sess.Home, true, mcpPath); err != nil {
+				return Result{}, fmt.Errorf("harness claude-code: mesh-context token: %w", err)
 			}
 		}
 	}
@@ -626,8 +650,9 @@ func (c *ClaudeCode) runSandboxed(ctx context.Context, job Job, onProgress func(
 		}
 	}
 	if c.DetachSandboxed && job.Outlive && job.Workspace != "" {
-		return c.runDetached(ctx, job, sess, mcpPath, onProgress)
+		return c.runDetached(ctx, job, sess, mcpPath, onProgress, releaseToken)
 	}
+	defer releaseToken(true)
 	if job.Timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, job.Timeout)

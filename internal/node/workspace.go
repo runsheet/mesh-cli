@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
+	"projectmesh.io/mesh-cli/internal/harness"
 )
 
 // WorkspaceSpec names one item's checkout: ~/.mesh/work/<goal>/<seq>,
@@ -1406,14 +1407,34 @@ func MeshMCPURL(gatewayURL string) string {
 	return strings.TrimRight(gatewayURL, "/") + "/mcp"
 }
 
-// MeshContextMCP is the MCP server a session gets for mesh-context: the
-// platform's /mcp with the node's own token, so the session reads what
-// the node's operator may.
-func MeshContextMCP(gatewayURL, token string) map[string]any {
+// MeshContextMCP is the MCP server a session gets for mesh-context:
+// bin's `mesh mcp-relay` to the platform's /mcp on a token file
+// (harness.MeshContextRelay), so the session reads what the node's
+// operator may on the node's bearer of the moment, never one that
+// rotated under it (mesh-cli ADR-029). The entry names no token file
+// and carries no bearer: the harness puts the session's own file in
+// its directory — `<workdir>.session/`, the pod's HOME (where the relay
+// is harness.RelayScript), a Codex session's CODEX_HOME — and the
+// node's TokenFiles keeps it fresh until the session's end is handled.
+func MeshContextMCP(bin, gatewayURL string) map[string]any {
+	if gatewayURL == "" {
+		return nil
+	}
+	if bin == "" {
+		bin = "mesh"
+	}
+	return map[string]any{harness.BuiltinMCP: harness.MeshContextRelay(bin, MeshMCPURL(gatewayURL), "")}
+}
+
+// MeshContextHTTP is mesh-context as the platform's /mcp with token as
+// its header: a person's own CLI client (meshmcp.Hosted), which takes a
+// fresh bearer per request, and a test's harness. No session the node
+// starts gets it: a header outlives no rotation (ADR-029).
+func MeshContextHTTP(gatewayURL, token string) map[string]any {
 	if gatewayURL == "" || token == "" {
 		return nil
 	}
-	return map[string]any{"mesh-context": map[string]any{
+	return map[string]any{harness.BuiltinMCP: map[string]any{
 		"type": "http", "url": MeshMCPURL(gatewayURL),
 		"headers": map[string]string{"Authorization": "Bearer " + token},
 	}}

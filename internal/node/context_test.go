@@ -57,12 +57,12 @@ func TestContextSizeBudget(t *testing.T) {
 	if !strings.Contains(string(index), "`mesh_document`") || !strings.Contains(string(index), "`mesh_search`") {
 		t.Fatalf("index:\n%s", index)
 	}
-	mcp := MeshContextMCP("https://api.test/", "rs_x")
+	mcp := MeshContextHTTP("https://api.test/", "rs_x")
 	srv := mcp["mesh-context"].(map[string]any)
 	if srv["url"] != "https://api.test/mcp" || srv["headers"].(map[string]string)["Authorization"] != "Bearer rs_x" {
 		t.Fatalf("mcp: %v", mcp)
 	}
-	if MeshContextMCP("", "rs_x") != nil || MeshContextMCP("https://api.test", "") != nil {
+	if MeshContextHTTP("", "rs_x") != nil || MeshContextHTTP("https://api.test", "") != nil {
 		t.Fatal("no gateway or no token: no server")
 	}
 }

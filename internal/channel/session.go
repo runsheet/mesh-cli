@@ -35,6 +35,10 @@ type Session struct {
 	// instead: a credential that refreshes (the node's machine token)
 	// gives each restarted process a live bearer.
 	MCPFunc func() map[string]any
+	// Tokens keeps the mesh-context relay's token file fresh for each
+	// process's life (mesh-cli ADR-029): the session runs for hours,
+	// across many rotations of the node's bearer.
+	Tokens harness.TokenKeeper
 	// WorkDir is ~/.mesh/work/<node-slug>, the session's cwd.
 	WorkDir string
 	// Exe is this binary, registered as the channel server.
@@ -111,13 +115,18 @@ Keep every reply to one or two lines; the log is the platform's, not the termina
 // Args builds the claude command line: print mode with streaming input,
 // so the session lives as long as stdin does.
 func (s *Session) Args(workRoot string) []string {
+	return s.args(workRoot, s.mcp())
+}
+
+// args is Args on servers.
+func (s *Session) args(workRoot string, servers map[string]any) []string {
 	args := []string{"-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
 		"--dangerously-load-development-channels", "server:" + ServerName,
 		"--append-system-prompt", SystemPrompt(s.Cfg, s.Orgs, workRoot)}
 	if s.Model != "" {
 		args = append(args, "--model", s.Model)
 	}
-	args = append(args, harness.MCPArgs(s.mcp())...)
+	args = append(args, harness.MCPArgs(servers)...)
 	if s.Unattended {
 		args = append(args, "--dangerously-skip-permissions")
 	}
@@ -279,7 +288,19 @@ func SessionEnv(environ []string, ghConfigDir string) []string {
 }
 
 func (s *Session) once(ctx context.Context, bin, workRoot string) error {
-	cmd := exec.CommandContext(ctx, bin, s.Args(workRoot)...)
+	// the relay's token file, in a directory of this process's own,
+	// kept fresh while it lives and removed when it exits
+	tokDir, err := os.MkdirTemp("", "mesh-channel-*")
+	if err != nil {
+		return fmt.Errorf("mesh-context token dir: %w", err)
+	}
+	defer os.RemoveAll(tokDir)
+	servers, _, release, err := harness.PlaceMeshContext(s.mcp(), s.Tokens, tokDir, false, "")
+	if err != nil {
+		return fmt.Errorf("mesh-context token: %w", err)
+	}
+	defer release(true)
+	cmd := exec.CommandContext(ctx, bin, s.args(workRoot, servers)...)
 	cmd.Dir = s.WorkDir
 	ghDir, err := node.NewGHConfigDir()
 	if err != nil {

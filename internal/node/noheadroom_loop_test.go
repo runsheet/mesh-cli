@@ -73,7 +73,7 @@ func newHeadroomRig(t *testing.T, capacity int, credsGW func(*gateway.Client) Cr
 	creds := &Credentials{GW: cg, Limits: r.limits, NoCredential: r.store, Now: clock, Log: logger}
 	ws := &fakeWS{root: t.TempDir()}
 	runner := &Runner{GW: gw, Harness: r.h, WS: ws, Cfg: cfg, Scopes: scopesOf(cfg), WorkRoot: ws.root, ProgressEvery: time.Hour, Log: logger,
-		MCP: MeshContextMCP(f.URL(), "rs_test"), Credentials: creds}
+		MCP: MeshContextHTTP(f.URL(), "rs_test"), Credentials: creds}
 	r.pl = &Planner{Credentials: creds, GW: gw, Harness: r.h, WS: ws, Cfg: cfg, WorkRoot: ws.root, MaxBudgetUSD: 4, Log: logger}
 	r.loop = &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Version: "test", Harness: "claude-code", Interval: time.Hour, Log: logger,
 		NoCredential: r.store, Known: known, Limits: r.limits, Now: clock,

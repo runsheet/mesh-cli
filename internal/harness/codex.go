@@ -57,6 +57,10 @@ type Codex struct {
 	// Codex's sandbox (SandboxProbe); nil is this executable's
 	// `mesh sandbox-probe`, which binds a loopback socket.
 	Probe []string
+	// Tokens keeps the session's mesh-context token file, in its
+	// CODEX_HOME, fresh when the job's mesh-context is the relay
+	// (MeshContextRelay, mesh-cli ADR-029).
+	Tokens TokenKeeper
 }
 
 // CodexProvider is an OpenAI-compatible endpoint a Codex session talks
@@ -495,6 +499,10 @@ type codexHome struct {
 	// the job named.
 	login string
 	orig  []byte
+	// tokenFile is the mesh-context relay's token file in dir, and
+	// releaseToken stops keeping it (placeMeshContext); close removes it.
+	tokenFile    string
+	releaseToken func(remove bool)
 }
 
 // prepareHome makes the session's CODEX_HOME. When job.Env carries
@@ -515,6 +523,10 @@ type codexHome struct {
 func (c *Codex) prepareHome(job Job) (*codexHome, error) {
 	if dir := jobCodexHome(job.Env); dir != "" {
 		h := &codexHome{dir: dir}
+		var err error
+		if job, err = h.placeToken(job, c.Tokens); err != nil {
+			return nil, err
+		}
 		// the job's home is an issued credential's (PrepareCodexAccount):
 		// an OpenAI account that names no provider, so it gets the zero
 		// one, never this harness's own account's endpoint (adr-015)
@@ -556,8 +568,12 @@ func (c *Codex) prepareHome(job Job) (*codexHome, error) {
 	}
 	h := &codexHome{dir: dir, owned: true, env: []string{"CODEX_HOME=" + dir}}
 	fail := func(err error) (*codexHome, error) {
+		h.release(true)
 		os.RemoveAll(dir)
 		return nil, err
+	}
+	if job, err = h.placeToken(job, c.Tokens); err != nil {
+		return fail(err)
 	}
 	cfg, env, err := codexConfig(job, c.Account.Provider)
 	if err != nil {
@@ -610,7 +626,27 @@ func jobCodexHome(env []string) string {
 // close writes a refreshed plan login back to its home, and removes the
 // directory the harness made — never one the job named (owned false):
 // its own AccountSession removes that.
+// placeToken puts the job's mesh-context relay on a token file in the
+// home, kept by keeper, and returns the job as config.toml renders it.
+func (h *codexHome) placeToken(job Job, keeper TokenKeeper) (Job, error) {
+	job, path, release, err := placeMeshContext(job, keeper, h.dir, false, "")
+	if err != nil {
+		return job, fmt.Errorf("mesh-context token: %w", err)
+	}
+	h.tokenFile, h.releaseToken = path, release
+	return job, nil
+}
+
+func (h *codexHome) release(remove bool) {
+	if h.releaseToken != nil {
+		h.releaseToken(remove)
+		h.releaseToken = nil
+	}
+}
+
 func (h *codexHome) close() error {
+	// a Codex session ends with the node: its token file goes with it
+	h.release(true)
 	if h.owned {
 		defer os.RemoveAll(h.dir)
 	}
@@ -961,6 +997,10 @@ func (c *Codex) preflightContext(ctx context.Context, bin string, job Job, s *co
 		return nil
 	}
 	url, _ := srv["url"].(string)
+	relayURL, relay := meshContextRelay(job)
+	if relay {
+		url = relayURL
+	}
 	if url == "" {
 		return nil
 	}
@@ -981,7 +1021,27 @@ func (c *Codex) preflightContext(ctx context.Context, bin string, job Job, s *co
 		return fmt.Errorf("codex mcp get %s: %s", BuiltinMCP, truncateRunes(redact(why), 200))
 	}
 
-	// (2) the server answers the headers Codex would send
+	// (2) the server answers the headers Codex would send — through the
+	// relay, the bearer its token file holds
+	if relay {
+		if s.home.tokenFile == "" {
+			return fmt.Errorf("%s relays on no token file", BuiltinMCP)
+		}
+		tok, err := readTokenFile(s.home.tokenFile)
+		if err != nil || tok == "" {
+			return fmt.Errorf("%s's token file %s is missing or empty", BuiltinMCP, s.home.tokenFile)
+		}
+		listCtx, cancelList := context.WithTimeout(ctx, PreflightTimeout)
+		defer cancelList()
+		n, err := mcpListTools(listCtx, url, map[string]string{"Authorization": "Bearer " + tok})
+		if err != nil {
+			return errors.New(Redact(err.Error(), append(s.secrets, tok)...))
+		}
+		if n == 0 {
+			return fmt.Errorf("%s lists no tools", BuiltinMCP)
+		}
+		return nil
+	}
 	_, _, vars, err := codexMCP(codexOwnServers(job), job.Env)
 	if err != nil {
 		return err
