@@ -249,6 +249,20 @@ func (f *TokenFallback) NoteResearch(direction string, logf func(string, ...any)
 	f.once.Do(say)
 }
 
+// NoteBatch is Note for a merge batch candidate's fetch on a platform
+// whose issueItemRepoToken takes no mergeBatchId (mesh-cli ADR-032):
+// the operator's own login, said once per run.
+func (f *TokenFallback) NoteBatch(batch string, logf func(string, ...any)) {
+	say := func() {
+		logf("%s: the platform issues no merge batch token; fetching candidates on the operator's own login (said once, for every batch this run)", batch)
+	}
+	if f == nil {
+		say()
+		return
+	}
+	f.once.Do(say)
+}
+
 // ItemCred is an item's GitHub token on its workspace, renewed before it
 // expires. A nil *ItemCred is the old platform's fallback: the
 // operator's own gh and git credentials, as before.
@@ -258,6 +272,10 @@ type ItemCred struct {
 	spec   WorkspaceSpec
 	itemID string
 	nodeID string
+	// issue, when set, mints the token in place of IssueItemRepoToken:
+	// a merge batch candidate's (NewBatchCred), whose renewals go by the
+	// batch's own form.
+	issue func(ctx context.Context) (*gateway.GitHubToken, error)
 
 	mu  sync.Mutex
 	tok *gateway.GitHubToken
@@ -327,6 +345,15 @@ func RepoCachePath(ws Workspacer, spec WorkspaceSpec) string {
 	return spec.Dir()
 }
 
+// mint asks the platform for a fresh token: the batch's form when c
+// has one, else the item's.
+func (c *ItemCred) mint(ctx context.Context) (*gateway.GitHubToken, error) {
+	if c.issue != nil {
+		return c.issue(ctx)
+	}
+	return c.gw.IssueItemRepoToken(ctx, c.itemID, c.nodeID)
+}
+
 // Token is the current token (nil on the fallback).
 func (c *ItemCred) Token() *gateway.GitHubToken {
 	if c == nil {
@@ -348,7 +375,7 @@ func (c *ItemCred) Refresh(ctx context.Context) error {
 	if !GitHubTokenNeedsRefresh(c.tok) {
 		return nil
 	}
-	tok, err := c.gw.IssueItemRepoToken(ctx, c.itemID, c.nodeID)
+	tok, err := c.mint(ctx)
 	if err != nil {
 		return fmt.Errorf("refresh github token: %w", err)
 	}
@@ -368,7 +395,7 @@ func (c *ItemCred) Reissue(ctx context.Context) error {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	tok, err := c.gw.IssueItemRepoToken(ctx, c.itemID, c.nodeID)
+	tok, err := c.mint(ctx)
 	if err != nil {
 		return fmt.Errorf("reissue github token: %w", err)
 	}
@@ -419,7 +446,7 @@ func (c *ItemCred) renewLocked(ctx context.Context) error {
 	if !GitHubTokenNeedsRefresh(c.tok) {
 		return nil
 	}
-	tok, err := c.gw.IssueItemRepoToken(ctx, c.itemID, c.nodeID)
+	tok, err := c.mint(ctx)
 	if err != nil {
 		return fmt.Errorf("refresh github token: %w", err)
 	}

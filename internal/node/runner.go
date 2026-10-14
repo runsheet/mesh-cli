@@ -90,6 +90,9 @@ type Runner struct {
 	ProgressEvery time.Duration
 	// Fallback is the node's one old-platform notice (nil: every item).
 	Fallback *TokenFallback
+	// BatchFallback is its merge batch candidates' notice, a platform
+	// that mints no batch token (nil: every batch).
+	BatchFallback *TokenFallback
 	// Runtimes are the tool runtimes the node has now (Loop.Runtimes;
 	// nil: none), which a local tool needs to start.
 	Runtimes func() []string

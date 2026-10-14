@@ -45,11 +45,22 @@ func candidateRunner(t *testing.T, files map[string]string) (*Runner, *gatewayte
 		t.Fatal(err)
 	}
 	gitRun(t, root, "clone", "--quiet", origin, clone)
+	// a fetch on a token goes to GitHub's URL for the repo: origin, here
+	github := filepath.Join(root, "github")
+	if err := os.MkdirAll(filepath.Join(github, "acme"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(origin, filepath.Join(github, "acme", "widgets.git")); err != nil {
+		t.Fatal(err)
+	}
 
 	f := seed(t)
 	batch := gateway.MainValidationBatch{MergeBatchID: batchID, Number: 7, CandidateBranch: "mesh/batch-7", SHA: sha, Attempt: 1,
 		RepoFullName: "acme/widgets", RepoID: repoID, OrgID: orgID, DefaultBranch: "main", RequestedAt: time.Now()}
 	f.SeedMergeBatch(batch)
+	// the batch's own token, an hour to live, read access on its repo
+	f.BatchGitHubTokens[batchID] = map[string]any{"token": "ghs_batch7", "expiresAt": time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+		"repo": "acme/widgets", "access": "read"}
 
 	rt := &sandbox.Fake{Agent: func(_ context.Context, spec sandbox.AgentSpec) (sandbox.Exit, error) {
 		cmd := strings.Join(spec.Command, " ")
@@ -62,7 +73,7 @@ func candidateRunner(t *testing.T, files map[string]string) (*Runner, *gatewayte
 	}}
 	logs := &syncBuf{}
 	r := &Runner{
-		GW: gateway.New(f.URL(), "rs_test"), WS: &Git{ReposRoot: repos}, WorkRoot: filepath.Join(root, "work"),
+		GW: gateway.New(f.URL(), "rs_test"), WS: &Git{ReposRoot: repos, GitHubURL: "file://" + github}, WorkRoot: filepath.Join(root, "work"),
 		Log:     log.New(logs, "", 0),
 		Sandbox: &sandbox.Sandbox{Runtime: rt, Config: sandbox.Config{Image: "ghcr.io/runsheet/mesh-node:dev"}, TempDir: t.TempDir()},
 		Inspect: func(context.Context, string, ...string) ([]byte, error) { return []byte("sha256:feedface\n"), nil },

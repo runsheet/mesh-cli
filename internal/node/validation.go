@@ -90,13 +90,14 @@ type validationTarget struct {
 	session func() string
 	redact  func(error) error
 	report  func(ctx context.Context, note string)
-	// cred is the item's token, every fetch the validator runs going out
-	// on it (ForFetch, OnItemToken); nil on the fallback.
+	// cred is the item's token — or a merge batch candidate's
+	// (NewBatchCred) — every fetch the validator runs going out on it
+	// (ForFetch, OnItemToken); nil on the fallback.
 	cred *ItemCred
 	// batchID is the merge batch a candidate's validation attests
 	// (mainvalidation.go): set, there is no item — the upload goes by
-	// RecordBatchCandidateAttestation carrying it — and repoTok, the
-	// repo's token, is what its fetches go out on in cred's place.
+	// RecordBatchCandidateAttestation carrying it. repoTok, set with no
+	// cred, is a token its fetches go out on as it is, never renewed.
 	batchID string
 	repoTok *gateway.GitHubToken
 	// diffFrom, set, is the commit the changed paths are taken from in
