@@ -16,6 +16,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/harness"
 	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/tools"
+	"projectmesh.io/mesh-cli/internal/validate"
 )
 
 // Loop is trd §3: every Interval, heartbeat; list the orgs' ready items;
@@ -50,6 +51,15 @@ type Loop struct {
 	// in which case the next tick offers it again. Optional; nil leaves
 	// evaluation to someone else. It does not count against capacity.
 	Evaluate func(ctx context.Context, item gateway.WorkItem)
+	// ValidateBatch validates a merge batch candidate this node claimed
+	// and uploads its attestation (Runner.ValidateCandidate; runsheet
+	// ADR 048 decision 3): the loop claims, finishes and fails it
+	// (validateBatches). It counts against capacity while it runs.
+	// Optional; nil validates no batch.
+	ValidateBatch func(ctx context.Context, batch gateway.MainValidationBatch) (validate.Attestation, error)
+	// BatchCheckEvery is how often a running batch validation reads its
+	// claim back (DefaultBatchCheckEvery when zero).
+	BatchCheckEvery time.Duration
 	// Plan compiles a goal in planning (in one of the served orgs) into
 	// its graph and returns when the plan is handed in — or not, in
 	// which case the next tick offers it again. Optional.
@@ -217,6 +227,9 @@ type Loop struct {
 	planning    map[string]bool
 	researching map[string]bool
 	rebasing    map[string]bool
+	// validating is the merge batch validations running, by
+	// mergeBatchId: each a session against the capacity (Running).
+	validating map[string]bool
 	// sessionOrg is the org each build, plan and research session counts
 	// toward, by subject (item, goal or direction id): heldByOrg's count
 	// against the org's floor (ADR-023).
@@ -302,6 +315,9 @@ type Loop struct {
 	// noEvaluationClaimSaid is set once the run has said the platform
 	// takes no claimWorkItemEvaluation (evaluateHeld, ADR-025).
 	noEvaluationClaimSaid bool
+	// noMainValidationSaid is set once the run has said the platform
+	// serves no main validation (validateBatches).
+	noMainValidationSaid bool
 	// noCredentialReadSaid is set once the run has said the platform
 	// does not serve credentialIndexs (reconcileCredentials).
 	noCredentialReadSaid bool
@@ -733,15 +749,16 @@ func (l *Loop) logf(format string, args ...any) {
 	}
 }
 
-// Running is the number of items this node is building: what counts
-// against capacity. Evaluations, plans, research and rebases do not.
+// Running is the number of items this node is building and of merge
+// batch candidates it is validating: what counts against capacity.
+// Evaluations, plans, research and rebases do not.
 // A retry turn noted by NoteRetryTurn is building too: counted once by
 // its item, so a turn inside the build that holds its item adds nothing
 // and one whose item no build holds adds one.
 func (l *Loop) Running() int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return l.buildingLocked()
+	return l.buildingLocked() + len(l.validating)
 }
 
 // buildingLocked is Running with l.mu held: the items in running and
@@ -773,7 +790,9 @@ func (l *Loop) runningOf(kind harness.Kind) int {
 	case harness.KindBuild:
 		return l.buildingLocked()
 	case harness.KindEvaluate:
-		return len(l.evaluating)
+		// a batch validation runs under the evaluate cap, as it is
+		// claimed on the evaluation cadence
+		return len(l.evaluating) + len(l.validating)
 	case harness.KindRebase:
 		return len(l.rebasing)
 	case harness.KindPlan:
@@ -1023,7 +1042,7 @@ func (l *Loop) drained() bool {
 
 // sessions counts every session in flight, of any kind; l.mu is held.
 func (l *Loop) sessions() int {
-	return l.buildingLocked() + len(l.evaluating) + len(l.planning) + len(l.researching) + len(l.rebasing)
+	return l.buildingLocked() + len(l.evaluating) + len(l.planning) + len(l.researching) + len(l.rebasing) + len(l.validating)
 }
 
 func (l *Loop) wakeup() chan struct{} {
@@ -1160,6 +1179,9 @@ func (l *Loop) Tick(ctx context.Context) {
 		// the slots taken are the tracked builds or, when more run on
 		// the host, the live agent sessions, orphans included (LiveProbe)
 		inUse := l.inUse(ctx)
+		// a merge batch candidate's validation takes a slot first: it
+		// lands work already built and attested
+		inUse += l.validateBatches(ctx, l.Capacity()-inUse)
 		free := l.Capacity() - inUse
 		if p.mode == pacePaced {
 			free = pacedFree(free, l.Capacity(), inUse)

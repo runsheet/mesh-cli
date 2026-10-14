@@ -1150,6 +1150,9 @@ func runPollMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *
 	// share what has been said once per item
 	second := codexSecondOpinion(cfg, loop, workRoot, logger)
 	loop.Evaluate = evaluateWith(gw, cfg, h, second, loop, workRoot, fallback, accounts, logger)
+	// a merge batch candidate is validated on the build's runner: the
+	// same validate.yml, sandbox and attestation upload (ADR 048)
+	loop.ValidateBatch = runner.ValidateCandidate
 	loop.Plan = planWith(gw, cfg, h, loop, workRoot, accounts, logger)
 	loop.PlanReleased = (&node.Planner{WorkRoot: workRoot, Log: logger}).Released
 	loop.Research = researchWith(gw, cfg, h, loop, workRoot, accounts, logger)
@@ -1547,6 +1550,7 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 	found := adoptSessions(ctx, gw, cfg, oneShot, second, loop, &node.Runner{GW: gw, Harness: oneShot, WS: ws, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, Fallback: fallback, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Condition: loop.NoteCondition, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Machine: loop.Machine, Host: loop.HostThresholds, Log: logger}, workRoot, fallback, accounts, logger)
 	node.SweepSandbox(ctx, sessionSandbox, found, logger.Printf)
 	loop.Evaluate = evaluateWith(gw, cfg, observed(loop, logger), second, loop, workRoot, fallback, accounts, logger)
+	loop.ValidateBatch = (&node.Runner{GW: gw, WS: ws, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, Fallback: fallback, Sandbox: sessionSandbox, Notices: validationNotices, Log: logger}).ValidateCandidate
 	loop.Plan = planWith(gw, cfg, observed(loop, logger), loop, workRoot, accounts, logger)
 	loop.PlanReleased = (&node.Planner{WorkRoot: workRoot, Log: logger}).Released
 	loop.Research = researchWith(gw, cfg, observed(loop, logger), loop, workRoot, accounts, logger)
