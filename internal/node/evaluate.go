@@ -152,6 +152,30 @@ func (e *Evaluator) runtimes() []string {
 	return e.Runtimes()
 }
 
+// goneBaseFallback is def, and true, when err says base — a merged
+// dependency's branch — is gone from origin (*BaseGoneError) and def,
+// the repo's default branch, is another branch to diff against. Any
+// other error, or none, is false: failDiff still records it.
+func goneBaseFallback(err error, base, def string) (string, bool) {
+	var gone *BaseGoneError
+	if err == nil || !errors.As(err, &gone) || def == "" || base == def {
+		return "", false
+	}
+	return def, true
+}
+
+// changedPathsFrom is ws's changed paths in dir against base, else,
+// base gone from origin, against def; and the branch they were taken
+// from.
+func changedPathsFrom(ctx context.Context, ws Workspacer, dir, base, def string) ([]string, string, error) {
+	paths, err := ws.ChangedPaths(ctx, dir, base)
+	if fb, ok := goneBaseFallback(err, base, def); ok {
+		paths, err = ws.ChangedPaths(ctx, dir, fb)
+		return paths, fb, err
+	}
+	return paths, base, err
+}
+
 // failDiff records a diff the node cannot compute as the item's failed
 // evaluation, with the reason for its next builder: no session starts and
 // no account is charged. Retrying would fail the same way forever.
@@ -224,16 +248,25 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 		return fmt.Errorf("workspace: %w", err)
 	}
 	var diff string
+	// diffBase is what the branch is diffed and judged against: the item's
+	// base, else, a merged dependency's branch gone from origin, the
+	// repo's default branch, which then holds the dependency
+	diffBase := spec.BaseRef
 	if !alreadyDone {
-		diff, err = e.WS.Diff(ctx, dir, spec.BaseRef)
+		diff, err = e.WS.Diff(ctx, dir, diffBase)
+		if def, ok := goneBaseFallback(err, diffBase, defaultBranchOf(res)); ok {
+			e.logf("item %s: evaluate: base %s is gone (merged); diff from origin/%s", label, diffBase, def)
+			diffBase = def
+			diff, err = e.WS.Diff(ctx, dir, diffBase)
+		}
 		if err != nil {
 			if ctx.Err() != nil {
 				return fmt.Errorf("diff: %w", err)
 			}
-			return e.failDiff(ctx, item, label, spec.BaseRef, branch, err)
+			return e.failDiff(ctx, item, label, diffBase, branch, err)
 		}
 	}
-	changed, cfg := e.touched(ctx, label, dir, spec.BaseRef, alreadyDone)
+	changed, cfg := e.touched(ctx, label, dir, diffBase, defaultBranchOf(res), alreadyDone)
 	// the same context the builder had: its repo's instructions and its goal
 	orgName := e.Scopes.NameOf(item.OrgID)
 	cx, err := FetchContext(ctx, e.GW, orgName, res.Project.Slug, ContextOptions{Budget: e.contextBudget(), Repos: []string{res.Repo.FullName()}, Checkouts: map[string]string{res.Repo.FullName(): dir}, Goal: res.Goal, Logf: e.logf})
@@ -257,7 +290,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	in := harness.EvaluateInput{
 		ItemID: item.ID, GoalSlug: res.Goal.Slug, GoalTitle: res.Goal.Title, GoalAcceptance: res.Goal.Acceptance,
 		Seq: item.Seq, Title: item.Title, Brief: item.Brief, Acceptance: item.Acceptance,
-		Repo: res.Repo.FullName(), Branch: branch, BaseRef: spec.BaseRef, Diff: diff,
+		Repo: res.Repo.FullName(), Branch: branch, BaseRef: diffBase, Diff: diff,
 		ContextDir: contextDir, ContextFiles: files, Project: orgName + "/" + res.Project.Slug, MeshContext: len(e.MCP) > 0,
 		AlreadyDone: alreadyDone, Evidence: item.Evidence,
 		PriorAttempts: prior,
@@ -452,13 +485,14 @@ type evalRun struct {
 // touched is what the evaluation's choice of evaluators reads from the
 // checkout: the files the branch changed since base (none for an
 // already_done item, which has no diff) and its .mesh/config.yml
-// second_opinion and protected_paths. Unread changed paths are logged and read as none: the
+// second_opinion and protected_paths. A base gone from origin is read
+// against def, the repo's default branch. Unread changed paths are logged and read as none: the
 // item's own protectedFiles still hold.
-func (e *Evaluator) touched(ctx context.Context, label, dir, base string, alreadyDone bool) ([]string, checkoutConfig) {
+func (e *Evaluator) touched(ctx context.Context, label, dir, base, def string, alreadyDone bool) ([]string, checkoutConfig) {
 	var changed []string
 	if !alreadyDone && e.WS != nil {
 		var err error
-		if changed, err = e.WS.ChangedPaths(ctx, dir, base); err != nil {
+		if changed, _, err = changedPathsFrom(ctx, e.WS, dir, base, def); err != nil {
 			e.logf("item %s: changed paths unread, judging protected paths on protectedFiles alone: %v", label, err)
 		}
 	}
@@ -862,7 +896,7 @@ func (e *Evaluator) AdoptEvaluation(ctx context.Context, item gateway.WorkItem, 
 	ctx = WithLockHolder(ctx, label)
 	e.logf("item %s: adopted its %s evaluation (pid %d)", label, s.Liveness(), s.State.PID)
 	result, err := at.Attach(ctx, s.Dir, nil)
-	changed, cfg := e.touched(ctx, label, s.State.Workspace, res.BaseRef(), item.Outcome == gateway.OutcomeAlreadyDone)
+	changed, cfg := e.touched(ctx, label, s.State.Workspace, res.BaseRef(), defaultBranchOf(res), item.Outcome == gateway.OutcomeAlreadyDone)
 	return e.afterEvaluate(ctx, evalRun{item: item, res: res, label: label, model: s.State.Model, fam: family{model: s.State.Model, claude: s.State.Model}, dir: s.State.Workspace, adopted: true, prior: e.priorAttempts(ctx, item, label), changed: changed, setting: cfg.setting(), protected: cfg.ProtectedPaths}, result, err)
 }
 
