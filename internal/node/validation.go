@@ -695,14 +695,26 @@ func (vr validator) fetchHead(ctx context.Context, t validationTarget, branch, h
 // or a token since expired. A token that cannot be renewed is logged and
 // the one held used; the fallback is ctx.
 func (vr validator) onItemToken(ctx context.Context, t validationTarget) context.Context {
+	fctx, err := vr.onFreshItemToken(ctx, t)
+	if err != nil {
+		vr.logf("%s: validation: %v", t.prefix, err)
+		return OnItemToken(ctx, vr.WS, t.cred.Token())
+	}
+	return fctx
+}
+
+// onFreshItemToken is onItemToken that answers a token it could not
+// renew as the error, ctx unchanged: a merge batch candidate is fetched
+// on a fresh token or not at all.
+func (vr validator) onFreshItemToken(ctx context.Context, t validationTarget) (context.Context, error) {
 	if t.cred == nil && t.repoTok != nil {
-		return OnItemToken(ctx, vr.WS, t.repoTok)
+		return OnItemToken(ctx, vr.WS, t.repoTok), nil
 	}
 	tok, err := t.cred.ForFetch(ctx)
 	if err != nil {
-		vr.logf("%s: validation: %v", t.prefix, err)
+		return ctx, err
 	}
-	return OnItemToken(ctx, vr.WS, tok)
+	return OnItemToken(ctx, vr.WS, tok), nil
 }
 
 // gitPosition is where the checkout is: its branch's name, else (a
