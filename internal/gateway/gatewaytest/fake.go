@@ -319,8 +319,10 @@ type Fake struct {
 	// context tools, and tools/call applies each as its mutation does
 	// (mcp.go). Off, /mcp serves the context tools alone.
 	HostedWorkTools bool
-	// MCPHits counts /mcp requests.
-	MCPHits int
+	// MCPHits counts /mcp requests; MCPRefused those refused 401 for
+	// their bearer.
+	MCPHits    int
+	MCPRefused int
 	// Claims is every claimWorkItem the fake was sent, refused or not
 	// (Calls holds only the ones it took): whether a node asked.
 	Claims []Call

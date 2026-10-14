@@ -292,3 +292,90 @@ echo '{"type":"result"`, 1)
 		t.Fatal("the rate_limit_event was not handed on")
 	}
 }
+
+// A stand-in claude that records its command line, an argument a line,
+// then waits on stdin like the real one.
+const argsClaude = `#!/bin/sh
+for a in "$@"; do printf '%s\n' "$a"; done > "$MESH_TEST_OUT.args"
+echo '{"type":"system","subtype":"init","session_id":"s-args"}'
+while IFS= read -r line; do :; done
+exit 0
+`
+
+// The channel session runs for hours across the node bearer's rotations:
+// its mesh-context is the relay on a token file of the process's own,
+// kept by the node (mesh-cli ADR-029) — the bearer in the file and never
+// on the command line — and the file goes when the process does.
+func TestSessionMeshContextRelaysOnAKeptTokenFile(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	out := filepath.Join(dir, "claude")
+	t.Setenv("MESH_TEST_OUT", out)
+	bin := filepath.Join(dir, "claude-bin")
+	if err := os.WriteFile(bin, []byte(argsClaude), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const bearer = "rs_channel_bearer"
+	tokens := &node.TokenFiles{Token: func(context.Context) (string, error) { return bearer, nil }}
+	started := make(chan struct{}, 1)
+	s := &Session{Cfg: &node.Config{Slug: "n"}, Orgs: []string{"acme"}, WorkDir: filepath.Join(dir, "work", "n"), Exe: bin, SockPath: filepath.Join(dir, "node.sock"), Binary: bin,
+		MCPFunc: func() map[string]any { return node.MeshContextMCP("/opt/mesh", "https://api.test") }, Tokens: tokens,
+		OnStart: func() { started <- struct{}{} }}
+	ctx, cancel := context.WithCancel(context.Background())
+	runErr := make(chan error, 1)
+	go func() { runErr <- s.Run(ctx, filepath.Join(dir, "work")) }()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("session did not start")
+	}
+	var args []string
+	waitFor(t, func() bool {
+		b, _ := os.ReadFile(out + ".args")
+		args = strings.Split(strings.TrimSpace(string(b)), "\n")
+		return len(b) > 0
+	})
+	cfg := ""
+	for i, a := range args {
+		if strings.Contains(a, bearer) {
+			t.Fatalf("the bearer is on the command line: %s", a)
+		}
+		if a == "--mcp-config" && i+1 < len(args) {
+			cfg = args[i+1]
+		}
+	}
+	var m struct {
+		MCPServers map[string]struct {
+			Type    string   `json:"type"`
+			Command string   `json:"command"`
+			Args    []string `json:"args"`
+		} `json:"mcpServers"`
+	}
+	if err := json.Unmarshal([]byte(cfg), &m); err != nil {
+		t.Fatalf("--mcp-config %q: %v", cfg, err)
+	}
+	srv := m.MCPServers[harness.BuiltinMCP]
+	if srv.Type != "stdio" || srv.Command != "/opt/mesh" || len(srv.Args) != 5 || srv.Args[0] != harness.RelayCommand ||
+		srv.Args[2] != "https://api.test/mcp" || filepath.Base(srv.Args[4]) != harness.TokenFileName {
+		t.Fatalf("mesh-context = %+v", srv)
+	}
+	path := srv.Args[4]
+	if b, err := os.ReadFile(path); err != nil || strings.TrimSpace(string(b)) != bearer {
+		t.Fatalf("token file %s = %q, %v", path, b, err)
+	}
+	if strings.HasPrefix(path, filepath.Join(dir, "work")) {
+		t.Fatalf("token file %s is in the work root", path)
+	}
+	cancel()
+	select {
+	case <-runErr:
+	case <-time.After(10 * time.Second):
+		t.Fatal("run did not stop")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("token file %s outlived the session: %v", path, err)
+	}
+	if kept := tokens.Kept(); len(kept) != 0 {
+		t.Fatalf("still kept after the session: %v", kept)
+	}
+}

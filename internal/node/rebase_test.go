@@ -52,7 +52,7 @@ func rebaseNodeOn(t *testing.T, f *gatewaytest.Fake, slug string, h harness.Harn
 	if logs != nil {
 		w = log.New(logs, "", 0)
 	}
-	rb := &Rebaser{Credentials: testCreds(gw), GW: gw, Harness: h, WS: ws, Scopes: scopesOf(cfg), WorkRoot: root, MCP: MeshContextMCP(f.URL(), "rs_test"), MaxBudgetUSD: 4, ProgressEvery: time.Hour, Log: w}
+	rb := &Rebaser{Credentials: testCreds(gw), GW: gw, Harness: h, WS: ws, Scopes: scopesOf(cfg), WorkRoot: root, MCP: MeshContextHTTP(f.URL(), "rs_test"), MaxBudgetUSD: 4, ProgressEvery: time.Hour, Log: w}
 	return &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Version: "test", Harness: "claude-code", Interval: time.Hour, Log: w,
 		Dispatch: func(context.Context, gateway.WorkItem) {},
 		Rebase:   func(ctx context.Context, item gateway.WorkItem) { _ = rb.Rebase(ctx, item) }}, cfg

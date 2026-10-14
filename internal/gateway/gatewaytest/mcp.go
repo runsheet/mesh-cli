@@ -27,10 +27,6 @@ func (f *Fake) mcp(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if bearer != f.Token {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
 	var req struct {
 		ID     json.RawMessage `json:"id"`
 		Method string          `json:"method"`
@@ -45,6 +41,11 @@ func (f *Fake) mcp(w http.ResponseWriter, r *http.Request) {
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if bearer != f.Token {
+		f.MCPRefused++
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
 	f.MCPHits++
 	if len(req.ID) == 0 {
 		// a notification: accepted, no reply
@@ -81,6 +82,15 @@ func (f *Fake) mcp(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID, "error": map[string]any{"code": -32601, "message": "method not found: " + req.Method}})
 	}
+}
+
+// SetToken rotates the bearer the fake takes, as the platform's
+// rotation of a machine credential does: the old one is refused from
+// then on, on /mcp as on GraphQL.
+func (f *Fake) SetToken(token string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.Token = token
 }
 
 // mcpCall is one tools/call under f.mu: a work tool applied as its

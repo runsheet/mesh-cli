@@ -43,7 +43,7 @@ func TestLoopEvaluatesFinishedItems(t *testing.T) {
 
 	ws := &fakeWS{root: t.TempDir()}
 	h := &fakeHarness{text: "The test exists and fails for the right reason.\n\nVERDICT: PASS"}
-	ev := &Evaluator{Credentials: testCreds(gw), GW: gw, Harness: h, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, MCP: MeshContextMCP(f.URL(), "rs_test"), MaxBudgetUSD: 2, Log: log.New(os.Stderr, "", 0)}
+	ev := &Evaluator{Credentials: testCreds(gw), GW: gw, Harness: h, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, MCP: MeshContextHTTP(f.URL(), "rs_test"), MaxBudgetUSD: 2, Log: log.New(os.Stderr, "", 0)}
 	loop := &Loop{GW: gw, Cfg: cfg, Scopes: scopesOf(cfg), Version: "test", Harness: "claude-code", Interval: time.Hour, Log: ev.Log,
 		Dispatch: func(context.Context, gateway.WorkItem) {},
 		Evaluate: func(ctx context.Context, item gateway.WorkItem) { _ = ev.Evaluate(ctx, item) }}
@@ -869,7 +869,7 @@ func TestEvaluationPreparesItsOwnCheckout(t *testing.T) {
 
 	ws := &fakeWS{root: t.TempDir()}
 	h := &fakeHarness{text: "Holds.\n\nVERDICT: PASS"}
-	ev := &Evaluator{Credentials: testCreds(gw), GW: gw, Harness: h, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, MCP: MeshContextMCP(f.URL(), "rs_test"), MaxBudgetUSD: 2, Log: log.New(os.Stderr, "", 0)}
+	ev := &Evaluator{Credentials: testCreds(gw), GW: gw, Harness: h, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, MCP: MeshContextHTTP(f.URL(), "rs_test"), MaxBudgetUSD: 2, Log: log.New(os.Stderr, "", 0)}
 	item, err := gw.WorkItem(context.Background(), item1)
 	if err != nil {
 		t.Fatal(err)
