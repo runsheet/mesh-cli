@@ -199,6 +199,19 @@ type Fake struct {
 	// GraphQL error, as the platform refuses a commit that is not the
 	// branch head.
 	AttestationReceipt map[string]any
+	// MergeBatches are merge batch candidates waiting on a node, by
+	// mergeBatchId (SeedMergeBatch), and MainValidationRequests merged
+	// items' main validations, by workItemId (SeedMainValidationRequest):
+	// mainValidations serves those still requested and those the asking
+	// node holds; the claim, finish and fail commands move them
+	// (mainvalidation.go). BatchAttestationReceipt is what a batch
+	// candidate's recordValidationAttestation answers; nil answers
+	// {status: ok, commit, branch: the batch's candidate branch,
+	// mergeBatchId}. Unsupported names any of mainValidations and the six
+	// commands to serve a schema without it.
+	MergeBatches            map[string]map[string]any
+	MainValidationRequests  map[string]map[string]any
+	BatchAttestationReceipt map[string]any
 	// RateLimit429 names a mutation the fake answers with a bare HTTP 429
 	// ("rate limited", no GraphQL error body) every time it is sent — for
 	// a test of the retry-and-give-up path (retryOnTransient,
@@ -486,6 +499,7 @@ func New(token string) *Fake {
 		Agents: map[string]map[string]any{}, UnknownFields: map[string]bool{},
 		SessionCredentials: map[string][]map[string]any{}, SessionTools: map[string][]map[string]any{},
 		Scorecard: map[string]map[string]any{}, Enterprises: map[string]Enterprise{},
+		MergeBatches: map[string]map[string]any{}, MainValidationRequests: map[string]map[string]any{},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/graphql", f.graphql)
@@ -753,6 +767,15 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeData(w, map[string]any{"__type": f.mutationType()})
+	case strings.Contains(q, `__type(name: "Query")`):
+		f.Reads = append(f.Reads, Call{Name: "__type Query", Input: map[string]any{}})
+		if f.Unsupported["__type"] {
+			writeErrors(w, 200, "GraphQL introspection is not allowed")
+			return
+		}
+		writeData(w, map[string]any{"__type": f.queryType()})
+	case strings.Contains(q, "mainValidations(nodeId:"):
+		f.mainValidations(w, req.Variables)
 	case strings.Contains(q, `__type(name: "DispatchResult")`):
 		f.Reads = append(f.Reads, Call{Name: "__type DispatchResult", Input: map[string]any{}})
 		if f.Unsupported["__type"] {
@@ -932,7 +955,7 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 			writeErrors(w, 200, `Cannot query field "nodeId" on type "CommandResult".`)
 			return
 		}
-		if m[2] == "claimWorkItem" || m[2] == "claimWorkItemEvaluation" {
+		if m[2] == "claimWorkItem" || m[2] == "claimWorkItemEvaluation" || m[2] == "claimMergeBatchValidation" || m[2] == "claimWorkItemMainValidation" {
 			f.Claims = append(f.Claims, Call{Name: m[2], Input: in, At: time.Now(), Bearer: bearer})
 		}
 		if msg := f.Refuse[m[2]]; msg != "" {
@@ -1826,6 +1849,9 @@ func (f *Fake) mutationPayload(name, q string, in map[string]any) map[string]any
 func (f *Fake) apply(name string, in map[string]any) error {
 	id, _ := in["aggregateId"].(string)
 	item := f.WorkItems[id]
+	if mainValidationCommands[name] {
+		return f.applyMainValidation(name, in)
+	}
 	switch name {
 	case "recordToolUsage":
 		f.ToolUsage = append(f.ToolUsage, copyRow(in))
@@ -2410,6 +2436,11 @@ func (f *Fake) mutationType() map[string]any {
 			"args": []any{map[string]any{"name": "in"}},
 		})
 	}
+	for _, name := range mainValidationMutations {
+		if !f.Unsupported[name] {
+			fields = append(fields, map[string]any{"name": name, "args": []any{map[string]any{"name": "input"}}})
+		}
+	}
 	if f.GoalSplit && !f.Unsupported["proposeGoalSplit"] {
 		fields = append(fields, map[string]any{
 			"name": "proposeGoalSplit",
@@ -2439,6 +2470,10 @@ func (f *Fake) recordValidationAttestation(w http.ResponseWriter, r *http.Reques
 	}
 	if f.Unsupported[field] {
 		writeErrors(w, 200, fmt.Sprintf("Cannot query field %q on type \"Mutation\".", field))
+		return
+	}
+	if strings.Contains(q, "recordValidationAttestation(mergeBatchId: $id, input: $in)") {
+		f.recordBatchCandidateAttestation(w, vars, bearer)
 		return
 	}
 	if !strings.Contains(q, "recordValidationAttestation(workItemId: $id, input: $in)") || strings.Contains(q, "RecordValidationAttestationInput") {

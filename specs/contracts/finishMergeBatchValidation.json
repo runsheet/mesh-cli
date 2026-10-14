@@ -1,0 +1,16 @@
+{
+  "field": "finishMergeBatchValidation",
+  "input": {
+    "input": {
+      "aggregateId": "00000000-0000-4000-8000-0000000b0001",
+      "namespace": "runsheet",
+      "nodeId": "00000000-0000-4000-8000-0000000a0001",
+      "sha": "9f2c4e1a7b3d5f6081a2b3c4d5e6f708192a3b4c"
+    }
+  },
+  "inputType": "(input: FinishMergeBatchValidationInput!)",
+  "kind": "mutation",
+  "result": {
+    "status": "ok"
+  }
+}

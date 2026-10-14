@@ -1,0 +1,16 @@
+{
+  "field": "claimMergeBatchValidation",
+  "input": {
+    "input": {
+      "aggregateId": "00000000-0000-4000-8000-0000000b0001",
+      "harness": "claude-code",
+      "namespace": "runsheet",
+      "nodeId": "00000000-0000-4000-8000-0000000a0001"
+    }
+  },
+  "inputType": "(input: ClaimMergeBatchValidationInput!)",
+  "kind": "mutation",
+  "result": {
+    "status": "ok"
+  }
+}

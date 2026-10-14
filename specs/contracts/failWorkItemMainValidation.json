@@ -1,0 +1,15 @@
+{
+  "field": "failWorkItemMainValidation",
+  "input": {
+    "input": {
+      "aggregateId": "00000000-0000-4000-8000-0000000c0007",
+      "namespace": "runsheet",
+      "reason": "step_timeout: step unit exited 124"
+    }
+  },
+  "inputType": "(input: FailWorkItemMainValidationInput!)",
+  "kind": "mutation",
+  "result": {
+    "status": "ok"
+  }
+}

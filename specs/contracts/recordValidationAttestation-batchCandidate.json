@@ -1,0 +1,53 @@
+{
+  "field": "recordValidationAttestation",
+  "input": {
+    "input": {
+      "artifactDigests": [
+        "sha256:beef"
+      ],
+      "at": "2026-01-01T00:00:00Z",
+      "commands": [
+        {
+          "command": "go test ./platform/...",
+          "durationMs": 61000,
+          "exitCode": 0,
+          "suite": "unit"
+        },
+        {
+          "command": "npm run check",
+          "durationMs": 40,
+          "environmentKind": "tool_missing",
+          "exitCode": 127,
+          "suite": "types"
+        }
+      ],
+      "commit": "9f2c4e1a7b3d5f6081a2b3c4d5e6f708192a3b4c",
+      "mergeBatchId": "00000000-0000-4000-8000-0000000b0001",
+      "reports": [
+        {
+          "content": "{\"Action\":\"pass\"}",
+          "suite": "unit"
+        }
+      ],
+      "runnerImage": "ghcr.io/runsheet/mesh-node@sha256:0123",
+      "sessionId": "batch-12-validate",
+      "suiteHash": "ff3098b20936d93f1f5fee43633b8e90c04ad98b71e22f15e839afa988200fa6",
+      "testsFailed": 0,
+      "testsPassed": 12,
+      "testsRun": 12,
+      "treeHash": "tree-38dc1c892fe1a2581ba77fed6ec2d2a29ee3d33f"
+    },
+    "mergeBatchId": "00000000-0000-4000-8000-0000000b0001"
+  },
+  "inputType": "(mergeBatchId: UUID, input: Map!)",
+  "kind": "mutation",
+  "result": {
+    "branch": "mesh/batch/runsheet/latchkey/12",
+    "commit": "9f2c4e1a7b3d5f6081a2b3c4d5e6f708192a3b4c",
+    "keyId": "ed25519:KEYID",
+    "mergeBatchId": "00000000-0000-4000-8000-0000000b0001",
+    "signature": "SIGNATURE",
+    "status": "ok",
+    "testEvidenceId": "00000000-0000-4000-8000-0000000ffffe"
+  }
+}

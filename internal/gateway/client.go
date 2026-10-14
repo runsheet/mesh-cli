@@ -188,6 +188,10 @@ type Client struct {
 	// evaluationClaimSchema is whether the gateway's Mutation was last
 	// found to have claimWorkItemEvaluation (see TakesEvaluationClaim).
 	evaluationClaimSchema holdingProbe
+	// mainValidationSchema is whether the gateway was last found to serve
+	// mainValidations and its claim, finish and fail commands (see
+	// TakesMainValidation).
+	mainValidationSchema holdingProbe
 	// actorSchema is, per input type, whether the gateway's command input
 	// was last found to take `actor` (see withActor).
 	actorSchema actorProbes
