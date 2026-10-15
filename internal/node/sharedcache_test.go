@@ -381,3 +381,95 @@ func TestSharedCacheRefusesPathOutsideDst(t *testing.T) {
 		t.Fatalf("err %v, want leaves the tree", err)
 	}
 }
+
+func TestSharedCacheAllHitMaterializeEnforcesTheCap(t *testing.T) {
+	src := &fakeBlobSource{}
+	commit := fakeCommit(7)
+	addFakeTree(src, commit, map[string]string{"a.txt": "alpha\n", "b.txt": "beta\n"})
+	root := t.TempDir()
+	cleaned := 0
+	c := &SharedCache{
+		Root: root, Source: src, MaxBytes: 64 << 10,
+		CleanGo: func(_ context.Context, dir string) error {
+			cleaned++
+			return os.RemoveAll(filepath.Join(dir, "big"))
+		},
+	}
+	ctx := context.Background()
+	if err := c.Materialize(ctx, "acme/widgets", commit, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	if total, _, _ := c.scan(); total > c.MaxBytes {
+		t.Fatalf("cache %d bytes over cap %d after the fill", total, c.MaxBytes)
+	}
+
+	// the Go build cache grows past the cap between two validations
+	goDir := filepath.Join(root, "go")
+	if err := os.MkdirAll(goDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(goDir, "big"), make([]byte, 128<<10), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before := c.Counts()
+	if err := c.Materialize(ctx, "acme/widgets", commit, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	after := c.Counts()
+	if after.BlobMisses != before.BlobMisses || after.TreeMisses != before.TreeMisses {
+		t.Fatalf("second Materialize missed: %+v → %+v", before, after)
+	}
+	total, _, err := c.scan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total > c.MaxBytes {
+		t.Fatalf("all-hit Materialize left the cache %d bytes over cap %d", total, c.MaxBytes)
+	}
+	if cleaned != 1 {
+		t.Fatalf("go clean ran %d times, want 1", cleaned)
+	}
+}
+
+func TestSharedCacheConcurrentCountsSurviveRunStateReload(t *testing.T) {
+	src := &fakeBlobSource{}
+	commit := fakeCommit(8)
+	addFakeTree(src, commit, map[string]string{"a": "a\n", "b": "b\n", "c": "c\n"})
+	state := &RunState{Dir: t.TempDir()}
+	c := &SharedCache{Root: t.TempDir(), Source: src, State: state}
+	ctx := context.Background()
+
+	const n = 16
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs <- c.Materialize(ctx, "acme/widgets", commit, t.TempDir())
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	mem := c.Counts()
+	if got := mem.BlobHits + mem.BlobMisses; got != 3*n {
+		t.Fatalf("blob lookups %d, want %d", got, 3*n)
+	}
+	if got := mem.TreeHits + mem.TreeMisses; got != n {
+		t.Fatalf("tree lookups %d, want %d", got, n)
+	}
+	reloaded := RunState{Dir: state.Dir}
+	got, ok := reloaded.CacheCounts()
+	if !ok || got != mem {
+		t.Fatalf("reloaded counts %+v %v, want the last %+v", got, ok, mem)
+	}
+	left, _ := filepath.Glob(filepath.Join(state.Dir, "*.tmp"))
+	if len(left) != 0 {
+		t.Fatalf("temporary files left: %v", left)
+	}
+}
