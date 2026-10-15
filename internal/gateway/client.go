@@ -815,6 +815,26 @@ func (c *Client) MyOrgs(ctx context.Context) ([]Org, error) {
 	return orgs, nil
 }
 
+// Person is who the bearer resolves to on the gateway (`me`, a
+// UserIndex): a console token's user, a machine token's operator — the
+// identity `mesh mcp doctor` names (runsheet ADR 056, Latchkey ADR 013).
+type Person struct {
+	ID    string `json:"id"`
+	Email string `json:"email"`
+}
+
+// Me reads the person the bearer resolves to; nil when the gateway
+// answers none.
+func (c *Client) Me(ctx context.Context) (*Person, error) {
+	var out struct {
+		Me *Person `json:"me"`
+	}
+	if err := c.Query(ctx, `{ me { id email } }`, nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Me, nil
+}
+
 // Enterprise is one enterprise the person administers (myEnterprises).
 type Enterprise struct {
 	ID          string `json:"id"`
