@@ -1,6 +1,6 @@
 ---
 title: "ADR-030: An environment failure names its kind"
-summary: A validation that fails on the node rather than the code carries one of a closed set of environment kinds — step_timeout (a step's exit 124), tool_missing (exit 127), credential_refused (git or gh refused by GitHub on the item's token), image_pull_refused (the registry refusing the sandbox image's pull) — on the attestation's command as environmentKind and at the head of every failWorkItem, releaseWorkItem and updateError reason as `<kind>: `, so the platform parks the item instead of re-planning it; any other non-zero exit carries none. A tool_missing reason names the missing tool and the step's command (amendment 2026-10-16).
+summary: A validation that fails on the node rather than the code carries one of a closed set of environment kinds — step_timeout (a step's exit 124), tool_missing (exit 127), credential_refused (git or gh refused by GitHub on the item's token), image_pull_refused (the registry refusing the sandbox image's pull), runtime_broken (podman itself unable to start a pod: its rootless storage corrupted or locked, its user namespace refused, or no runtime there at all) — on the attestation's command as environmentKind and at the head of every failWorkItem, releaseWorkItem and updateError reason as `<kind>: `, so the platform parks the item instead of re-planning it; any other non-zero exit carries none. A tool_missing reason names the missing tool and the step's command (amendment 2026-10-16).
 status: accepted
 ---
 
@@ -145,3 +145,69 @@ its `failMergeBatchValidation` reason on the fake gateway naming
 build whose step really exits 127 on the host, its attestation's command
 `environmentKind: tool_missing` with the command and its `failWorkItem`
 reason the same wording.
+
+## Amendment 2026-10-15: `runtime_broken` — a container runtime that cannot start a pod
+
+Goal `a-runtime-that-cannot-start-a-session-stops-claiming`, item 1.
+Between 2026-10-15 23:05 and 2026-10-16 00:49 a root `podman` run on
+grapevine poisoned the node user's rootless storage (memory
+`root-podman-poisons-rootless-storage-2026-10-16`): every sandboxed
+session's pod failed, each reported as a plain code failure and
+retried and re-planned like one, because nothing told the two apart.
+
+`validate.EnvironmentKind` gains a fifth member, `runtime_broken`: the
+container runtime itself unable to start a pod, never the agent's own
+command failing inside one that started fine. `validate.IsRuntimeBroken`
+matches podman's own words for it:
+
+| words | what they mean |
+| --- | --- |
+| `error opening storage` | the rootless store will not open |
+| `creating temporary storage` | … or lock, including an overlay `permission denied` under it |
+| `database configuration mismatch` | the store's own book-keeping disagrees with what is on disk |
+| `readlink …containers/storage…` / `…/overlay/…: no such file or directory` | the store's book-keeping points at a layer that is gone |
+| a `permission denied` naming a path under `containers/storage` or `/overlay/` | the same, scoped to the store's own paths so an unrelated permission failure of the agent's own command is never caught by it |
+| `cannot set up namespace` / `newuidmap` | the user namespace podman needs could not be made |
+
+A pull podman refuses stays `image_pull_refused` (checked first in
+`EnvironmentKindOf`); every other non-zero exit, including an ordinary
+exit 1, stays uncategorised, as before.
+
+**`internal/sandbox` wraps it at the source.** `*sandbox.RuntimeError`
+(`Op`, podman's own words, `Unwrap`) is `validate.RuntimeBroken`'s
+`Kinded`: `Podman.CreatePod` (the pod and its network-rules init
+container), `RunAgent`'s container create and `StartAgent` answer one
+when podman's own output names the runtime rather than the agent's exit
+— including a podman that did not run at all, which `RunAgent` now
+always wraps rather than returning bare. `(*Sandbox).Probe(ctx) error`
+is the cheapest check that the runtime can start a pod at all: its
+version, then a throwaway pod labelled `mesh.probe`, created and removed
+at once; a runtime that cannot answers the same `*RuntimeError`. `Fake`
+gains `CreatePodErr` (honoured by `Probe` alongside `VersionErr`) so
+`internal/node` can break and heal a runtime in a test.
+
+**Where this is headed.** The node side of `claiming stops` — probing
+the runtime before it claims, holding and reporting `runtime_broken` on
+the heartbeat, and the platform parking the item on it — is later items
+of the goal; this item is the typed failure and the probe alone, so
+those items build on a classification that already has its own tests.
+
+### Tests
+
+`internal/validate/envkind_test.go`'s `TestIsRuntimeBroken` (each
+podman phrase above its own kind; an agent's own `permission denied` or
+`readlink` naming no storage path, an image-pull refusal and an
+ordinary test failure none) and the new cases in
+`TestEnvironmentKindOfEachFailure` (podman's 125 with each phrase,
+`runtime_broken`). `internal/sandbox/podman_test.go`'s
+`TestCreatePodWrapsARuntimeBrokenFailure`,
+`TestCreatePodWrapsARuntimeBrokenNetworkRulesFailure`,
+`TestCreatePodLeavesAnOrdinaryNetworkFailureUnwrapped`,
+`TestRunAgentWrapsARuntimeBrokenFailure`,
+`TestRunAgentWrapsAPodmanThatDoesNotRunAtAll`,
+`TestRunAgentLeavesAnOrdinaryExitUnwrapped` and
+`TestStartAgentWrapsARuntimeBrokenFailure`;
+`internal/sandbox/sandbox_test.go`'s `TestProbeOnAHealthyRuntime`,
+`TestProbeOnABrokenRuntime` and
+`TestRuntimeErrorReasonOpensWithItsKind` (`validate.Reason` opens
+`runtime_broken: `).

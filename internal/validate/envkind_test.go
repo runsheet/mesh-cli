@@ -22,10 +22,11 @@ func (r scriptedRunner) Run(_ context.Context, _ string, _ time.Duration, stdout
 }
 
 // Each environment failure — a step's exit 124, its exit 127, a git
-// credential refusal and an image-pull refusal (the node's own pull's
-// error, and podman's 125 on a run that could not pull) — is reported
-// with its kind on the step and on the run's error; a plain exit 1, and
-// a pass, carry none (docs/adr/adr-030).
+// credential refusal, an image-pull refusal (the node's own pull's
+// error, and podman's 125 on a run that could not pull) and a broken
+// runtime (podman's 125 on a rootless store it cannot open, lock or map
+// a namespace for) — is reported with its kind on the step and on the
+// run's error; a plain exit 1, and a pass, carry none (docs/adr/adr-030).
 func TestEnvironmentKindOfEachFailure(t *testing.T) {
 	credErr := errors.New("git fetch origin main: exit status 128: remote: Write access to repository not granted.\nfatal: unable to access 'https://github.com/acme/widgets/': The requested URL returned error: 403")
 	pullErr := errors.New("node image ghcr.io/runsheet/mesh-node:dev: pull failed: Error: initializing source docker://ghcr.io/runsheet/mesh-node:dev: reading manifest dev in ghcr.io/runsheet/mesh-node: unauthorized")
@@ -39,6 +40,9 @@ func TestEnvironmentKindOfEachFailure(t *testing.T) {
 		{"credential refusal", scriptedRunner{code: -1, err: credErr}, CredentialRefused},
 		{"image pull refusal", scriptedRunner{code: -1, err: pullErr}, ImagePullRefused},
 		{"podman could not pull", scriptedRunner{code: 125, output: "Trying to pull ghcr.io/runsheet/mesh-node:dev...\nError: initializing source docker://ghcr.io/runsheet/mesh-node:dev: reading manifest dev in ghcr.io/runsheet/mesh-node: denied"}, ImagePullRefused},
+		{"podman storage corrupted", scriptedRunner{code: 125, output: "Error: error opening storage: layer not known"}, RuntimeBroken},
+		{"podman database mismatch", scriptedRunner{code: 125, output: "Error: database configuration mismatch: expected mount_program=, found mount_program=/usr/bin/fuse-overlayfs"}, RuntimeBroken},
+		{"podman namespace refused", scriptedRunner{code: 125, output: "Error: cannot set up namespace using \"/usr/bin/newuidmap\": exit status 1"}, RuntimeBroken},
 		{"exit 1", scriptedRunner{code: 1, output: "--- FAIL: TestX"}, ""},
 		{"exit 125 not a pull", scriptedRunner{code: 125, output: "Error: no such container"}, ""},
 		{"pass", scriptedRunner{code: 0}, ""},
@@ -73,6 +77,37 @@ func TestHostRunnerMissingToolIsToolMissing(t *testing.T) {
 	}
 	if results[0].ExitCode != 127 || results[0].EnvironmentKind != ToolMissing {
 		t.Fatalf("result = %+v", results[0])
+	}
+}
+
+// IsRuntimeBroken matches podman's own words for a runtime it cannot
+// use — storage it cannot open or lock, a readlink into its own layers
+// finding nothing, a permission refusal on its storage root, or a user
+// namespace it could not set up — and never a plain permission or
+// readlink failure of the agent's own command, which names no storage
+// path (docs/adr/adr-030's amendment).
+func TestIsRuntimeBroken(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		text string
+		want bool
+	}{
+		{"error opening storage", "Error: error opening storage: layer not known", true},
+		{"creating temporary storage", "Error: creating temporary storage: permission denied", true},
+		{"database configuration mismatch", "Error: database configuration mismatch: expected mount_program=, found mount_program=/usr/bin/fuse-overlayfs", true},
+		{"readlink in containers storage", "Error: readlink /home/mesh/.local/share/containers/storage/overlay/1a2b3c: no such file or directory", true},
+		{"readlink in overlay path", "Error: readlink /home/mesh/.local/share/containers/storage/overlay/l/XYZ: no such file or directory", true},
+		{"permission denied under storage root", "Error: mkdir /home/mesh/.local/share/containers/storage/overlay: permission denied", true},
+		{"cannot set up namespace", `Error: cannot set up namespace using "/usr/bin/newuidmap": exit status 1`, true},
+		{"newuidmap missing", "Error: newuidmap: command not found", true},
+		{"agent's own permission denied", "EACCES: permission denied, open '/workspace/foo.txt'", false},
+		{"agent's own readlink", "readlink /workspace/node_modules/.bin/tsc: no such file or directory", false},
+		{"image pull refusal", "Error: initializing source docker://ghcr.io/runsheet/mesh-node:dev: reading manifest dev in ghcr.io/runsheet/mesh-node: unauthorized", false},
+		{"ordinary test failure", "--- FAIL: TestX", false},
+	} {
+		if got := IsRuntimeBroken(tc.text); got != tc.want {
+			t.Errorf("%s: IsRuntimeBroken(%q) = %v, want %v", tc.name, tc.text, got, tc.want)
+		}
 	}
 }
 

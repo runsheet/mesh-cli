@@ -1,7 +1,11 @@
 package sandbox
 
 import (
+	"context"
+	"errors"
+	"io"
 	"math"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -163,5 +167,133 @@ func TestAgentEnvIsPassedByName(t *testing.T) {
 	}
 	if v, _ := lastValue(penv, "CODEX_HOME"); v != sess.CodexHome() {
 		t.Fatalf("podman env CODEX_HOME = %q, want %q", v, sess.CodexHome())
+	}
+}
+
+// CreatePod wraps a `pod create` refused for the rootless store or the
+// user namespace as a *RuntimeError, never a bare error — the
+// classifier (validate.IsRuntimeBroken) reads the same words podman
+// wrote to stderr that p.output already folded into err.
+func TestCreatePodWrapsARuntimeBrokenFailure(t *testing.T) {
+	p := &Podman{Exec: func(_ context.Context, args, _ []string, _ io.Reader, _, stderr io.Writer) error {
+		if len(args) > 1 && args[0] == "pod" && args[1] == "create" {
+			_, _ = io.WriteString(stderr, "Error: database configuration mismatch: expected mount_program=, found mount_program=/usr/bin/fuse-overlayfs")
+			return errors.New("exit status 125")
+		}
+		return nil
+	}}
+	_, err := p.CreatePod(context.Background(), PodSpec{Name: "p", Image: "img"})
+	var re *RuntimeError
+	if !errors.As(err, &re) || re.Op != "pod create" {
+		t.Fatalf("CreatePod err = %v, want a *RuntimeError naming pod create", err)
+	}
+}
+
+// CreatePod's network-rules init container is the same: refused for the
+// runtime, its failure is a *RuntimeError naming "network rules", not
+// the plain-wrapped error an unrelated nft failure would still get.
+func TestCreatePodWrapsARuntimeBrokenNetworkRulesFailure(t *testing.T) {
+	p := &Podman{Exec: func(_ context.Context, args, _ []string, _ io.Reader, _, stderr io.Writer) error {
+		switch {
+		case len(args) > 1 && args[0] == "pod" && args[1] == "create":
+			return nil
+		case len(args) > 0 && args[0] == "run":
+			_, _ = io.WriteString(stderr, "Error: creating temporary storage: permission denied")
+			return errors.New("exit status 125")
+		}
+		return nil
+	}}
+	_, err := p.CreatePod(context.Background(), PodSpec{Name: "p", Image: "img"})
+	var re *RuntimeError
+	if !errors.As(err, &re) || re.Op != "network rules" {
+		t.Fatalf("CreatePod err = %v, want a *RuntimeError naming network rules", err)
+	}
+}
+
+// An ordinary nft failure in the network rules — no runtime words — is
+// still the unwrapped "network rules: …" error, not a *RuntimeError:
+// only podman's own storage/namespace refusals are.
+func TestCreatePodLeavesAnOrdinaryNetworkFailureUnwrapped(t *testing.T) {
+	p := &Podman{Exec: func(_ context.Context, args, _ []string, _ io.Reader, _, stderr io.Writer) error {
+		switch {
+		case len(args) > 1 && args[0] == "pod" && args[1] == "create":
+			return nil
+		case len(args) > 0 && args[0] == "run":
+			_, _ = io.WriteString(stderr, "Error: nft: syntax error")
+			return errors.New("exit status 1")
+		}
+		return nil
+	}}
+	_, err := p.CreatePod(context.Background(), PodSpec{Name: "p", Image: "img"})
+	var re *RuntimeError
+	if errors.As(err, &re) {
+		t.Fatalf("CreatePod err = %v, want no *RuntimeError for an ordinary nft failure", err)
+	}
+	if err == nil || !strings.HasPrefix(err.Error(), "network rules: ") {
+		t.Fatalf("CreatePod err = %v, want it to still open \"network rules: \"", err)
+	}
+}
+
+// RunAgent wraps a container create refused for the runtime's storage
+// or namespace as a *RuntimeError, not the agent's own exit — even
+// though the failure comes back as a real *exec.ExitError, as podman's
+// own non-zero exit does.
+func TestRunAgentWrapsARuntimeBrokenFailure(t *testing.T) {
+	p := &Podman{Exec: func(_ context.Context, _, _ []string, _ io.Reader, _, stderr io.Writer) error {
+		_, _ = io.WriteString(stderr, "Error: error opening storage: layer not known")
+		return exec.Command("false").Run()
+	}}
+	_, err := p.RunAgent(context.Background(), Pod{Name: "p"}, AgentSpec{Name: "a", Image: "img"})
+	var re *RuntimeError
+	if !errors.As(err, &re) || re.Op != "agent run" {
+		t.Fatalf("RunAgent err = %v, want a *RuntimeError naming agent run", err)
+	}
+}
+
+// A podman that does not run at all — no *exec.ExitError, just podman
+// itself never starting — is a *RuntimeError too.
+func TestRunAgentWrapsAPodmanThatDoesNotRunAtAll(t *testing.T) {
+	p := &Podman{Exec: func(context.Context, []string, []string, io.Reader, io.Writer, io.Writer) error {
+		return errors.New(`exec: "podman": executable file not found in $PATH`)
+	}}
+	_, err := p.RunAgent(context.Background(), Pod{Name: "p"}, AgentSpec{Name: "a", Image: "img"})
+	var re *RuntimeError
+	if !errors.As(err, &re) || re.Op != "agent run" {
+		t.Fatalf("RunAgent err = %v, want a *RuntimeError naming agent run", err)
+	}
+}
+
+// An agent that merely exits non-zero for its own reasons — no runtime
+// words on stderr — is still an *exec.ExitError the caller classifies
+// itself (classify, in sandbox.go), never a *RuntimeError.
+func TestRunAgentLeavesAnOrdinaryExitUnwrapped(t *testing.T) {
+	p := &Podman{Exec: func(_ context.Context, _, _ []string, _ io.Reader, _, stderr io.Writer) error {
+		_, _ = io.WriteString(stderr, "--- FAIL: TestX")
+		return exec.Command("false").Run()
+	}}
+	exit, err := p.RunAgent(context.Background(), Pod{Name: "p"}, AgentSpec{Name: "a", Image: "img"})
+	var re *RuntimeError
+	if errors.As(err, &re) {
+		t.Fatalf("RunAgent err = %v, want no *RuntimeError for an ordinary exit", err)
+	}
+	if err != nil {
+		t.Fatalf("RunAgent err = %v, want nil with the exit in Exit", err)
+	}
+	if exit.Code == 0 {
+		t.Fatalf("exit = %+v, want a non-zero code", exit)
+	}
+}
+
+// StartAgent wraps a refusal for the runtime's storage or namespace the
+// same way RunAgent does.
+func TestStartAgentWrapsARuntimeBrokenFailure(t *testing.T) {
+	p := &Podman{Exec: func(_ context.Context, _, _ []string, _ io.Reader, _, stderr io.Writer) error {
+		_, _ = io.WriteString(stderr, `Error: cannot set up namespace using "/usr/bin/newuidmap": exit status 1`)
+		return errors.New("exit status 1")
+	}}
+	err := p.StartAgent(context.Background(), Pod{Name: "p"}, AgentSpec{Name: "a", Image: "img"})
+	var re *RuntimeError
+	if !errors.As(err, &re) || re.Op != "agent start" {
+		t.Fatalf("StartAgent err = %v, want a *RuntimeError naming agent start", err)
 	}
 }

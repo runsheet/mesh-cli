@@ -279,6 +279,39 @@ func gitConfigValue(v string) string {
 	return `"` + v + `"`
 }
 
+// ProbeLabel marks the throwaway pod Probe creates and removes, so a
+// stale one from a killed probe is still recognisable as the node's own
+// rather than a session's.
+const ProbeLabel = "mesh.probe"
+
+// Probe is the cheapest check that the runtime can start a pod to run a
+// session in: its version, then a throwaway pod of the node image's
+// labels, created and removed at once. A runtime that cannot — its
+// rootless storage corrupted or locked, its user namespace refused, or
+// no runtime there to ask at all — answers a *RuntimeError
+// (validate.RuntimeBroken); a healthy one answers nil.
+func (s *Sandbox) Probe(ctx context.Context) error {
+	if _, err := s.Runtime.Version(ctx); err != nil {
+		return asRuntimeError("version", err)
+	}
+	var rnd [4]byte
+	_, _ = rand.Read(rnd[:])
+	spec := PodSpec{
+		Name:    "mesh-probe-" + hex.EncodeToString(rnd[:]),
+		Labels:  map[string]string{ProbeLabel: "1"},
+		Image:   s.Config.Image,
+		Network: s.Config.Network,
+	}
+	pod, err := s.Runtime.CreatePod(ctx, spec)
+	if err != nil {
+		return asRuntimeError("pod create", err)
+	}
+	if err := s.Runtime.Remove(ctx, pod); err != nil {
+		return asRuntimeError("pod remove", err)
+	}
+	return nil
+}
+
 // Image is the image ref the session's agent runs.
 func (s *Session) Image() string { return s.image }
 

@@ -17,6 +17,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"projectmesh.io/mesh-cli/internal/validate"
 )
 
 // Podman is the Runtime of ADR 007: rootless pods, one `podman` call per
@@ -392,6 +394,11 @@ func podmanEnv(environ, container []string) []string {
 // ImageUser (`podman image inspect --format {{.Config.User}}`) when the
 // spec names none; an inspect that fails falls back to DefaultImageUID
 // and the pod is made anyway.
+//
+// A failure of either call is the runtime's own, not the session's: a
+// `pod create` or the network-rules init container refused for the
+// rootless store or the user namespace (validate.IsRuntimeBroken) comes
+// back as a *RuntimeError.
 func (p *Podman) CreatePod(ctx context.Context, spec PodSpec) (Pod, error) {
 	if spec.UID == 0 && spec.GID == 0 {
 		uid, gid, err := ImageUser(ctx, p.runner, spec.Image)
@@ -401,11 +408,17 @@ func (p *Podman) CreatePod(ctx context.Context, spec PodSpec) (Pod, error) {
 		spec.UID, spec.GID = uid, gid
 	}
 	if _, err := p.output(ctx, PodCreateArgs(spec), nil); err != nil {
+		if validate.IsRuntimeBroken(err.Error()) {
+			return Pod{}, &RuntimeError{Op: "pod create", Err: err}
+		}
 		return Pod{}, err
 	}
 	pod := Pod{Name: spec.Name}
 	if _, err := p.output(ctx, NetworkInitArgs(pod, spec.Image), strings.NewReader(spec.Network.Ruleset())); err != nil {
 		_ = p.Remove(context.WithoutCancel(ctx), pod)
+		if validate.IsRuntimeBroken(err.Error()) {
+			return Pod{}, &RuntimeError{Op: "network rules", Err: err}
+		}
 		return Pod{}, fmt.Errorf("network rules: %w", err)
 	}
 	return pod, nil
@@ -413,16 +426,30 @@ func (p *Podman) CreatePod(ctx context.Context, spec PodSpec) (Pod, error) {
 
 // RunAgent implements Runtime. The container is left for Remove, so its
 // state can be read: an exit of 137 asks whether it was the OOM killer.
+//
+// The run's own stderr is also kept to classify a failure: podman
+// refusing to even create the container for its rootless store or user
+// namespace (validate.IsRuntimeBroken) is the runtime's own failure, a
+// *RuntimeError, never the agent's exit; a podman that did not run at
+// all (no *exec.ExitError) is the same.
 func (p *Podman) RunAgent(ctx context.Context, pod Pod, spec AgentSpec) (Exit, error) {
+	var tail bytes.Buffer
+	stderr := io.Writer(&tail)
+	if spec.Stderr != nil {
+		stderr = io.MultiWriter(spec.Stderr, &tail)
+	}
 	// podman's own env keeps the node's XDG_* for its storage; the
 	// container's HOME and PATH are read from it by --env NAME
-	err := p.run(ctx, AgentRunArgs(pod, spec), AgentProcessEnv(os.Environ(), spec), spec.Stdin, spec.Stdout, spec.Stderr)
+	err := p.run(ctx, AgentRunArgs(pod, spec), AgentProcessEnv(os.Environ(), spec), spec.Stdin, spec.Stdout, stderr)
 	if err == nil {
 		return Exit{}, nil
 	}
+	if validate.IsRuntimeBroken(tail.String()) {
+		return Exit{}, &RuntimeError{Op: "agent run", Err: errors.New(strings.TrimSpace(tail.String()))}
+	}
 	var ee *exec.ExitError
 	if !errors.As(err, &ee) {
-		return Exit{}, err
+		return Exit{}, &RuntimeError{Op: "agent run", Err: err}
 	}
 	exit := Exit{Code: ee.ExitCode()}
 	if exit.Code == 137 {
@@ -437,10 +464,18 @@ func (p *Podman) RunAgent(ctx context.Context, pod Pod, spec AgentSpec) (Exit, e
 // podman's own env as RunAgent's — the node's XDG_* for its store,
 // the container's values for its `--env NAME`s. It returns once podman
 // has started the container.
+//
+// A refusal for the rootless store or the user namespace
+// (validate.IsRuntimeBroken) is the runtime's own failure, a
+// *RuntimeError, never the agent's.
 func (p *Podman) StartAgent(ctx context.Context, pod Pod, spec AgentSpec) error {
 	var errb bytes.Buffer
 	if err := p.run(ctx, StartAgentArgs(pod, spec), AgentProcessEnv(os.Environ(), spec), nil, io.Discard, &errb); err != nil {
-		if msg := strings.TrimSpace(errb.String()); msg != "" {
+		msg := strings.TrimSpace(errb.String())
+		if validate.IsRuntimeBroken(msg) {
+			return &RuntimeError{Op: "agent start", Err: errors.New(msg)}
+		}
+		if msg != "" {
 			return fmt.Errorf("podman run %s: %s", spec.Name, msg)
 		}
 		return fmt.Errorf("podman run %s: %w", spec.Name, err)

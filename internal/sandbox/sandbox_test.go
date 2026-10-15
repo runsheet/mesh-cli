@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"projectmesh.io/mesh-cli/internal/validate"
 )
 
 func testSandbox(t *testing.T, rt Runtime) *Sandbox {
@@ -522,5 +524,66 @@ func TestGitIdentityFromEnv(t *testing.T) {
 	got := GitIdentityFromEnv([]string{"GH_TOKEN=x", "GIT_AUTHOR_NAME=Mesh rebase (mini)", "GIT_AUTHOR_EMAIL=mesh-rebase+mini@runsheet.dev"})
 	if got != (GitIdentity{Name: "Mesh rebase (mini)", Email: "mesh-rebase+mini@runsheet.dev"}) {
 		t.Fatalf("got %+v", got)
+	}
+}
+
+// Probe answers nil on a healthy runtime: its version, then a throwaway
+// pod labelled ProbeLabel, created and removed.
+func TestProbeOnAHealthyRuntime(t *testing.T) {
+	f := &Fake{}
+	sb := testSandbox(t, f)
+	if err := sb.Probe(context.Background()); err != nil {
+		t.Fatalf("Probe = %v", err)
+	}
+	if _, ok := f.Called("version"); !ok {
+		t.Fatal("Probe did not ask the runtime's version")
+	}
+	if len(f.Pods) != 1 || f.Pods[0].Labels[ProbeLabel] != "1" {
+		t.Fatalf("Pods = %+v, want one labelled %s", f.Pods, ProbeLabel)
+	}
+	if len(f.Removed) != 1 || f.Removed[0] != f.Pods[0].Name {
+		t.Fatalf("Removed = %v, want the probe's own pod removed", f.Removed)
+	}
+}
+
+// Probe answers a *RuntimeError when the runtime cannot even start a
+// version call or a pod — a Fake with VersionErr or CreatePodErr set,
+// as a node without podman or a poisoned rootless store does
+// (docs/adr/adr-030's amendment, the grapevine incident 2026-10-15/16).
+// A CreatePodErr that is already a *RuntimeError is answered as is.
+func TestProbeOnABrokenRuntime(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		f    *Fake
+	}{
+		{"no runtime at all", &Fake{VersionErr: errors.New(`exec: "podman": executable file not found in $PATH`)}},
+		{"storage broken", &Fake{CreatePodErr: errors.New("Error: error opening storage: layer not known")}},
+		{"already a RuntimeError", &Fake{CreatePodErr: &RuntimeError{Op: "pod create", Err: errors.New(`Error: cannot set up namespace using "/usr/bin/newuidmap": exit status 1`)}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sb := testSandbox(t, tc.f)
+			err := sb.Probe(context.Background())
+			var re *RuntimeError
+			if !errors.As(err, &re) {
+				t.Fatalf("Probe = %v, want a *RuntimeError", err)
+			}
+			if got := validate.Kinded(err); got != validate.RuntimeBroken {
+				t.Fatalf("Kinded(Probe err) = %q, want %q", got, validate.RuntimeBroken)
+			}
+		})
+	}
+}
+
+// A *RuntimeError's reason for the platform opens "runtime_broken: ",
+// so failWorkItem and releaseWorkItem read it as an environment failure
+// like any other kind (docs/adr/adr-030's amendment).
+func TestRuntimeErrorReasonOpensWithItsKind(t *testing.T) {
+	err := &RuntimeError{Op: "pod create", Err: errors.New("Error: error opening storage: layer not known")}
+	want := "runtime_broken: sandbox: runtime: pod create: Error: error opening storage: layer not known"
+	if got := validate.Reason(err); got != want {
+		t.Fatalf("Reason(err) = %q, want %q", got, want)
+	}
+	if !slices.Contains(validate.EnvironmentKinds(), validate.RuntimeBroken) {
+		t.Fatal("validate.EnvironmentKinds() is missing runtime_broken")
 	}
 }
