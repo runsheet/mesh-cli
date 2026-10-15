@@ -264,8 +264,10 @@ var mcpDoctorCmd = &cobra.Command{
 }
 
 // doctorLine is one client's line: `<client>: configured <binary or
-// url> (<path>)`, `<client>: missing in <path>`, or `<client>:
-// unparseable <path> (<err>); left alone`.
+// url> (<path>)`, `<client>: duplicate runsheet entries: runsheet, mesh
+// (<path>); run mesh mcp install`, `<client>: legacy entry mesh
+// (<path>); run mesh mcp install`, `<client>: missing in <path>`, or
+// `<client>: unparseable <path> (<err>); left alone`.
 func doctorLine(r mcpinstall.Report) string {
 	switch r.Status {
 	case mcpinstall.Configured:
@@ -277,6 +279,13 @@ func doctorLine(r mcpinstall.Report) string {
 			target = "(no command or url)"
 		}
 		return fmt.Sprintf("%s: configured %s (%s)", r.Client, target, r.Path)
+	case mcpinstall.Duplicate:
+		names := append([]string{mcpinstall.ServerName}, r.Duplicates...)
+		return fmt.Sprintf("%s: duplicate runsheet entries: %s (%s); run mesh mcp install",
+			r.Client, strings.Join(names, ", "), r.Path)
+	case mcpinstall.Legacy:
+		return fmt.Sprintf("%s: legacy entry %s (%s); run mesh mcp install",
+			r.Client, strings.Join(r.Duplicates, ", "), r.Path)
 	case mcpinstall.Unparseable:
 		return fmt.Sprintf("%s: unparseable %s (%s); left alone", r.Client, r.Path, r.Error)
 	default:
