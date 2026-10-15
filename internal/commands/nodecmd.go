@@ -390,6 +390,7 @@ var nodeStatusCmd = &cobra.Command{
 		if line, ok := attestationsStatusLine(state, time.Now()); ok {
 			fmt.Println(line)
 		}
+		fmt.Println(cacheStatusLine(state, cfg.ValidationCacheCap()))
 		scaling, scales := localScaling(state)
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 		fmt.Fprintln(w, "ORG\tNAME\tSLUG\tSTATUS\tRUNNING\tCAPACITY\tVERSION\tLAST_SEEN")
@@ -611,6 +612,27 @@ func attestationsStatusLine(state node.RunState, now time.Time) (string, bool) {
 	}
 	rec, ref := node.CountAttestations(rows, now)
 	return fmt.Sprintf("attestations: %d recorded, %d refused (last hour)", rec, ref), true
+}
+
+// cacheStatusLine is `mesh node status`'s line for the shared tree
+// cache (item 2, SharedCache): its hit rate, size and cap —
+// `validation cache: 75% hits (30/40), 1.2 GiB of 20.0 GiB` — read
+// from the counts item 2 persists in node.cache and the cache root's
+// size on disk; before any lookup, `validation cache: no lookups
+// yet`.
+func cacheStatusLine(state node.RunState, cap int64) string {
+	counts, _ := state.CacheCounts()
+	hits := counts.BlobHits + counts.TreeHits
+	lookups := hits + counts.BlobMisses + counts.TreeMisses
+	if lookups == 0 {
+		return "validation cache: no lookups yet"
+	}
+	var size int64
+	if root, err := node.SharedCacheRoot(); err == nil {
+		size, _ = (&node.SharedCache{Root: root}).Size()
+	}
+	return fmt.Sprintf("validation cache: %d%% hits (%d/%d), %s of %s",
+		hits*100/lookups, hits, lookups, node.FormatBytes(size), node.FormatBytes(cap))
 }
 
 // localScaling is the capacity the node on this machine has in force
