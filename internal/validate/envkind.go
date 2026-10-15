@@ -25,11 +25,16 @@ const (
 	CredentialRefused EnvironmentKind = "credential_refused"
 	// ImagePullRefused is the sandbox image's registry refusing the pull.
 	ImagePullRefused EnvironmentKind = "image_pull_refused"
+	// DepsInstall is the checkout's declared dependencies not
+	// installing before its suites ran (Install, ADR-013 amendment
+	// 2026-10-15): the suites never ran, so the failure is the
+	// environment's, not the code's.
+	DepsInstall EnvironmentKind = "deps_install"
 )
 
 // EnvironmentKinds is the closed set, in the order the ADR names them.
 func EnvironmentKinds() []EnvironmentKind {
-	return []EnvironmentKind{StepTimeout, ToolMissing, CredentialRefused, ImagePullRefused}
+	return []EnvironmentKind{StepTimeout, ToolMissing, CredentialRefused, ImagePullRefused, DepsInstall}
 }
 
 // Valid says k is one of EnvironmentKinds.

@@ -300,6 +300,21 @@ func (vr validator) run(ctx context.Context, t validationTarget, v *buildValidat
 		ran = "no suite affected"
 	}
 	vr.logf("%s: validation on %s: %s", t.prefix, short(head), ran)
+	// a checkout with declared dependencies and no node_modules — a
+	// merge batch's worktree, a rebase's checkout — installs them
+	// first, through the same runner (ADR-013 amendment 2026-10-15); an
+	// install that fails is the environment's (deps_install), not a
+	// suite's verdict, and the suites do not run
+	if len(steps) > 0 {
+		cmd, took, err := validate.Install(ctx, t.dir, v.runner)
+		if err != nil {
+			vr.logf("%s: validation: %s", t.prefix, validate.Reason(err))
+			return validate.Attestation{}, err
+		}
+		if cmd != "" {
+			vr.logf("%s: validation: dependencies installed with %s in %dms", t.prefix, cmd, took.Milliseconds())
+		}
+	}
 	results, err := validate.Run(ctx, steps, v.runner, validate.Options{Dir: t.dir})
 	if err != nil {
 		return validate.Attestation{}, err
