@@ -436,3 +436,48 @@ func (c *AttestationCounts) HealthLine() string {
 	rec, ref := c.Hour()
 	return fmt.Sprintf("attestations recorded %d refused %d (1h)", rec, ref)
 }
+
+// CachePath is the shared tree cache's hit and miss counts: node.cache
+// (SharedCache). Unlike node.scaling it outlives the process, so the
+// counts run on across restarts for `mesh node status`'s hit rate.
+func (s RunState) CachePath() string { return filepath.Join(s.Dir, "node.cache") }
+
+// CacheCounts is the shared tree cache's hits and misses since the
+// counts began, blobs and trees apart.
+type CacheCounts struct {
+	BlobHits   int64 `json:"blobHits"`
+	BlobMisses int64 `json:"blobMisses"`
+	TreeHits   int64 `json:"treeHits"`
+	TreeMisses int64 `json:"treeMisses"`
+}
+
+// WriteCacheCounts leaves the counts for `mesh node status`, atomic
+// like WriteScaling.
+func (s RunState) WriteCacheCounts(c CacheCounts) error {
+	if err := os.MkdirAll(s.Dir, 0o700); err != nil {
+		return err
+	}
+	data, err := json.Marshal(c)
+	if err != nil {
+		return err
+	}
+	tmp := fmt.Sprintf("%s.%d.tmp", s.CachePath(), os.Getpid())
+	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, s.CachePath())
+}
+
+// CacheCounts reads what WriteCacheCounts left; false when nothing is
+// there or it cannot be read.
+func (s RunState) CacheCounts() (CacheCounts, bool) {
+	data, err := os.ReadFile(s.CachePath())
+	if err != nil {
+		return CacheCounts{}, false
+	}
+	var c CacheCounts
+	if json.Unmarshal(data, &c) != nil {
+		return CacheCounts{}, false
+	}
+	return c, true
+}
