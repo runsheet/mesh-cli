@@ -169,7 +169,7 @@ func TestCodexEvaluationPreflightsMeshContext(t *testing.T) {
 	}
 }
 
-// `prologue: not found` (goal evaluation-reports-no-verdict): the
+// `<alias>: not found` (goal evaluation-reports-no-verdict): the
 // context tool answered every call with an error of its own — a
 // mesh_document slug it does not have — so it was reached, and the
 // session's verdict stands; nothing runs on the other family.
@@ -203,7 +203,7 @@ func TestAContextToolThatAnsweredIsAVerdict(t *testing.T) {
 // The same, driven by the stream the mini recorded
 // (harness/testdata/codex_mcp_not_found.jsonl): its only context call
 // was answered `not found`. The mini's session named the built-in by its
-// old name, `prologue`; a live session names it `mesh-context`, so the
+// old name (tools.BuiltinAlias); a live session names it `mesh-context`, so the
 // parsed stat is the built-in's here. The Codex verdict is recorded as
 // it stands — no `no verdict — ` head, nothing on Claude.
 func TestAContextToolThatAnsweredNotFoundKeepsItsVerdict(t *testing.T) {

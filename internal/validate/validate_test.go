@@ -381,16 +381,18 @@ func TestSuiteHashIsTheCanonicalSuitesNotTheBytes(t *testing.T) {
 	}
 }
 
-// The platform's own hash of runsheet/runsheet's validate.yml (at
-// 1d08f03b6c84804ef46d3e9306424400057b03df), computed by its
-// platform/validatespec.SuiteHash: the node's must be byte for byte the
-// same, or every verify answers wrong_suite.
+// The hash of runsheet/runsheet's validate.yml (at
+// 1d08f03b6c84804ef46d3e9306424400057b03df) with its context server's
+// path glob renamed mesh-context/**: the platform's
+// platform/validatespec.SuiteHash gave 84015ff3… for the file as it was,
+// which this test held until the rename, so the node's hash is the
+// platform's byte for byte, or every verify answers wrong_suite.
 func TestSuiteHashIsThePlatformsOnRunsheetsFile(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("testdata", "runsheet-validate.yml"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	const platform = "84015ff30d2d0be7f7ab0e827a42303b747c8f201b964d4027eee810c1cf64e7"
+	const platform = "6f00acc91231d24081b16586b4f39867359bcd29d03995a7dc7198b8ba78a217"
 	if got := mustHash(t, string(data)); got != platform {
 		t.Fatalf("SuiteHash = %s, the platform's is %s", got, platform)
 	}

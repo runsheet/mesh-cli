@@ -123,19 +123,19 @@ func TestClaudeCodeRefusesClashWithBuiltin(t *testing.T) {
 	}
 }
 
-// prologue is the built-in's old name, a read-side alias until
+// BuiltinAlias is the built-in's old name, a read-side alias until
 // 2026-10-28 (IsBuiltin) and never the clash: a console tool named that
 // is an ordinary tool.
-func TestToolNamedPrologueIsRendered(t *testing.T) {
-	servers, _, err := ClaudeCode(meshContext(), []Tool{{Name: "prologue", Transport: Remote, URL: "https://x"}})
+func TestToolNamedAsTheAliasIsRendered(t *testing.T) {
+	servers, _, err := ClaudeCode(meshContext(), []Tool{{Name: BuiltinAlias(), Transport: Remote, URL: "https://x"}})
 	if err != nil {
-		t.Fatalf("claude: prologue refused: %v", err)
+		t.Fatalf("claude: %s refused: %v", BuiltinAlias(), err)
 	}
-	if _, ok := servers["prologue"]; !ok {
-		t.Fatalf("servers lack prologue: %v", servers)
+	if _, ok := servers[BuiltinAlias()]; !ok {
+		t.Fatalf("servers lack %s: %v", BuiltinAlias(), servers)
 	}
-	if _, err := WriteCodexConfig(t.TempDir(), []Tool{{Name: "prologue", Transport: Remote, URL: "https://x"}}); err != nil {
-		t.Fatalf("codex: prologue refused: %v", err)
+	if _, err := WriteCodexConfig(t.TempDir(), []Tool{{Name: BuiltinAlias(), Transport: Remote, URL: "https://x"}}); err != nil {
+		t.Fatalf("codex: %s refused: %v", BuiltinAlias(), err)
 	}
 }
 
@@ -349,9 +349,9 @@ func TestRedact(t *testing.T) {
 }
 
 // IsBuiltin knows the built-in by its name and, until 2026-10-28, its
-// old one, prologue.
+// old one, BuiltinAlias.
 func TestIsBuiltin(t *testing.T) {
-	for name, want := range map[string]bool{"mesh-context": true, "prologue": true, "search": false, "": false} {
+	for name, want := range map[string]bool{"mesh-context": true, BuiltinAlias(): true, "search": false, "": false} {
 		if got := IsBuiltin(name); got != want {
 			t.Errorf("IsBuiltin(%q) = %v, want %v", name, got, want)
 		}
