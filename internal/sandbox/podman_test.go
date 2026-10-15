@@ -235,13 +235,13 @@ func TestCreatePodLeavesAnOrdinaryNetworkFailureUnwrapped(t *testing.T) {
 }
 
 // RunAgent wraps a container create refused for the runtime's storage
-// or namespace as a *RuntimeError, not the agent's own exit — even
-// though the failure comes back as a real *exec.ExitError, as podman's
-// own non-zero exit does.
+// or namespace as a *RuntimeError, not the agent's own exit — when the
+// failure comes back as podman's own exit, 125 (podmanExitFailedToRun),
+// the one podman ends with when it never ran the command at all.
 func TestRunAgentWrapsARuntimeBrokenFailure(t *testing.T) {
 	p := &Podman{Exec: func(_ context.Context, _, _ []string, _ io.Reader, _, stderr io.Writer) error {
 		_, _ = io.WriteString(stderr, "Error: error opening storage: layer not known")
-		return exec.Command("false").Run()
+		return exec.Command("sh", "-c", "exit 125").Run()
 	}}
 	_, err := p.RunAgent(context.Background(), Pod{Name: "p"}, AgentSpec{Name: "a", Image: "img"})
 	var re *RuntimeError
@@ -281,6 +281,33 @@ func TestRunAgentLeavesAnOrdinaryExitUnwrapped(t *testing.T) {
 	}
 	if exit.Code == 0 {
 		t.Fatalf("exit = %+v, want a non-zero code", exit)
+	}
+}
+
+// An agent's own command exiting 1 is never runtime_broken even when its
+// stderr happens to contain podman's own runtime words — this is the
+// agent's own failing test output, say, printing "error opening
+// storage" as part of what it was testing, not podman refusing to run
+// it. Only podman's own exit, 125, is read for those words at all; an
+// agent's ordinary non-zero exit is read from its code alone and the
+// error is nil, the exit code preserved, exactly as an unrelated
+// failure would be (ADR-030's amendment: runtime_broken is never the
+// agent's own command failing inside a pod that started fine).
+func TestRunAgentExitOneWithRuntimeWordsIsStillAnOrdinaryExit(t *testing.T) {
+	p := &Podman{Exec: func(_ context.Context, _, _ []string, _ io.Reader, _, stderr io.Writer) error {
+		_, _ = io.WriteString(stderr, "--- FAIL: TestIsRuntimeBroken: error opening storage: layer not known")
+		return exec.Command("false").Run()
+	}}
+	exit, err := p.RunAgent(context.Background(), Pod{Name: "p"}, AgentSpec{Name: "a", Image: "img"})
+	var re *RuntimeError
+	if errors.As(err, &re) {
+		t.Fatalf("RunAgent err = %v, want no *RuntimeError for the agent's own exit 1", err)
+	}
+	if err != nil {
+		t.Fatalf("RunAgent err = %v, want nil with the exit in Exit", err)
+	}
+	if exit.Code != 1 {
+		t.Fatalf("exit = %+v, want Code 1", exit)
 	}
 }
 

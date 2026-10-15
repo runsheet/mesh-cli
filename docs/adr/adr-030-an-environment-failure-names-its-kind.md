@@ -177,9 +177,16 @@ exit 1, stays uncategorised, as before.
 (`Op`, podman's own words, `Unwrap`) is `validate.RuntimeBroken`'s
 `Kinded`: `Podman.CreatePod` (the pod and its network-rules init
 container), `RunAgent`'s container create and `StartAgent` answer one
-when podman's own output names the runtime rather than the agent's exit
-— including a podman that did not run at all, which `RunAgent` now
-always wraps rather than returning bare. `(*Sandbox).Probe(ctx) error`
+when podman's own output names the runtime rather than the agent's
+exit — including a podman that did not run at all, which `RunAgent` now
+always wraps rather than returning bare. `RunAgent`'s stderr is also
+the agent's own — the same stream a validation step's output rides — so
+it is read for runtime words only when podman itself is the one that
+failed: its own exit, `podmanExitFailedToRun` (125), or no
+`*exec.ExitError` at all; an agent command that merely exits non-zero
+is read from its code alone, its stderr never searched, so a failing
+test printing podman's own phrases (`error opening storage` among them)
+is still an ordinary exit, never `runtime_broken`. `(*Sandbox).Probe(ctx) error`
 is the cheapest check that the runtime can start a pod at all: its
 version, then a throwaway pod labelled `mesh.probe`, created and removed
 at once; a runtime that cannot answers the same `*RuntimeError`. `Fake`
@@ -205,8 +212,10 @@ ordinary test failure none) and the new cases in
 `TestCreatePodLeavesAnOrdinaryNetworkFailureUnwrapped`,
 `TestRunAgentWrapsARuntimeBrokenFailure`,
 `TestRunAgentWrapsAPodmanThatDoesNotRunAtAll`,
-`TestRunAgentLeavesAnOrdinaryExitUnwrapped` and
-`TestStartAgentWrapsARuntimeBrokenFailure`;
+`TestRunAgentLeavesAnOrdinaryExitUnwrapped`,
+`TestRunAgentExitOneWithRuntimeWordsIsStillAnOrdinaryExit` (an agent's
+own exit 1 with `error opening storage` on its stderr stays `Exit{Code:
+1}`, nil error) and `TestStartAgentWrapsARuntimeBrokenFailure`;
 `internal/sandbox/sandbox_test.go`'s `TestProbeOnAHealthyRuntime`,
 `TestProbeOnABrokenRuntime` and
 `TestRuntimeErrorReasonOpensWithItsKind` (`validate.Reason` opens

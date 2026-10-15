@@ -424,19 +424,29 @@ func (p *Podman) CreatePod(ctx context.Context, spec PodSpec) (Pod, error) {
 	return pod, nil
 }
 
+// podmanExitFailedToRun is the exit podman itself ends with when it
+// never ran the agent's command at all — the same 125 validate's own
+// podmanExit names for a step.
+const podmanExitFailedToRun = 125
+
 // RunAgent implements Runtime. The container is left for Remove, so its
 // state can be read: an exit of 137 asks whether it was the OOM killer.
 //
-// The run's own stderr is also kept to classify a failure: podman
-// refusing to even create the container for its rootless store or user
-// namespace (validate.IsRuntimeBroken) is the runtime's own failure, a
-// *RuntimeError, never the agent's exit; a podman that did not run at
-// all (no *exec.ExitError) is the same.
+// The run's own stderr (its last 8KB, as sandbox.go's own tail) is kept
+// to classify a failure, but only when podman itself is the one that
+// failed: its own exit of 125, or no run at all (no *exec.ExitError).
+// Then, and only then, its words for a rootless store or user namespace
+// it could not open (validate.IsRuntimeBroken) make it the runtime's
+// own failure, a *RuntimeError, never the agent's. An agent command
+// that exits on its own — 125 among them, podman's or not — is read
+// from its exit code alone: its stderr is never searched for runtime
+// words, so an agent's own non-zero exit is never mistaken for the
+// runtime breaking under it.
 func (p *Podman) RunAgent(ctx context.Context, pod Pod, spec AgentSpec) (Exit, error) {
-	var tail bytes.Buffer
-	stderr := io.Writer(&tail)
+	tail := &tailBuffer{max: 8 << 10}
+	stderr := io.Writer(tail)
 	if spec.Stderr != nil {
-		stderr = io.MultiWriter(spec.Stderr, &tail)
+		stderr = io.MultiWriter(spec.Stderr, tail)
 	}
 	// podman's own env keeps the node's XDG_* for its storage; the
 	// container's HOME and PATH are read from it by --env NAME
@@ -444,14 +454,14 @@ func (p *Podman) RunAgent(ctx context.Context, pod Pod, spec AgentSpec) (Exit, e
 	if err == nil {
 		return Exit{}, nil
 	}
-	if validate.IsRuntimeBroken(tail.String()) {
-		return Exit{}, &RuntimeError{Op: "agent run", Err: errors.New(strings.TrimSpace(tail.String()))}
-	}
 	var ee *exec.ExitError
 	if !errors.As(err, &ee) {
 		return Exit{}, &RuntimeError{Op: "agent run", Err: err}
 	}
 	exit := Exit{Code: ee.ExitCode()}
+	if exit.Code == podmanExitFailedToRun && validate.IsRuntimeBroken(tail.String()) {
+		return Exit{}, &RuntimeError{Op: "agent run", Err: errors.New(strings.TrimSpace(tail.String()))}
+	}
 	if exit.Code == 137 {
 		if out, ierr := p.output(context.WithoutCancel(ctx), []string{"inspect", "--format", "{{.State.OOMKilled}}", spec.Name}, nil); ierr == nil {
 			exit.OOMKilled = out == "true"
