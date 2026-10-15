@@ -2,7 +2,7 @@
 // enough GraphQL to run the node's loop and the goal commands against —
 // index lists with EQ wheres, gets by id, and the slice-6 commands with
 // the aggregates' refusals — plus mesh-context's document endpoints
-// (/mesh/v1, with /prologue/v1 kept as the dated alias).
+// under /mesh/v1.
 package gatewaytest
 
 import (
@@ -64,13 +64,9 @@ type Fake struct {
 	// Documents by "org/project" → list rows; Bodies by "org/project/slug".
 	Documents map[string][]map[string]any
 	Bodies    map[string]string
-	// NoMeshV1 answers every /mesh/v1 context request with 404, as a
-	// platform that serves only the /prologue/v1 alias — for a test that
-	// the client falls back to it.
-	NoMeshV1 bool
-	// MeshV1Hits and PrologueV1Hits count the requests each context path
-	// received, for a test to prove which one a read actually used.
-	MeshV1Hits, PrologueV1Hits int
+	// MeshV1Hits counts the /mesh/v1 context requests received, for a
+	// test to prove a 404 is not retried.
+	MeshV1Hits int
 	// ItemBearers are further tokens the fake takes on GraphQL, beside
 	// Token: an item's claim-time token, as RecordValidationAttestation
 	// carries it (WithItemToken).
@@ -513,7 +509,6 @@ func New(token string) *Fake {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/graphql", f.graphql)
 	mux.HandleFunc("/mesh/v1/", f.mesh)
-	mux.HandleFunc("/prologue/v1/", f.prologue)
 	mux.HandleFunc("/mcp", f.mcp)
 	f.Server = httptest.NewServer(mux)
 	return f
@@ -2399,27 +2394,12 @@ func camel(s string) string {
 }
 
 // mesh serves mesh-context's document endpoints under /mesh/v1, the
-// platform's live path.
+// only path the gateway serves.
 func (f *Fake) mesh(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.MeshV1Hits++
-	no := f.NoMeshV1
 	f.mu.Unlock()
-	if no {
-		http.Error(w, "not found", http.StatusNotFound)
-		return
-	}
 	f.context(w, r, "/mesh/v1/projects/")
-}
-
-// prologue serves the same document endpoints under /prologue/v1, kept
-// as the dated alias (mesh-specs trd §6c) so a node on an older
-// platform, or one falling back off a 404 from /mesh/v1, still reads.
-func (f *Fake) prologue(w http.ResponseWriter, r *http.Request) {
-	f.mu.Lock()
-	f.PrologueV1Hits++
-	f.mu.Unlock()
-	f.context(w, r, "/prologue/v1/projects/")
 }
 
 func (f *Fake) context(w http.ResponseWriter, r *http.Request, prefix string) {

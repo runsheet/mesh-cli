@@ -421,3 +421,20 @@ It is on no command line, in no config (the configs name only its
 path), in no log line and nothing reported on the item; the session can
 read it for its life, as it could the environment, and cannot outlive
 it. Console tools' secrets are unchanged: environment only.
+
+## Amendment — 2026-10-15 (goal the-node-calls-the-context-server-runsheet)
+
+The gateway's `contextGet` (`internal/gateway/client.go`) read a
+mesh-context path under `/mesh/v1` and, on a 404, retried the same path
+under `/prologue/v1` — the dated alias, kept for a platform that served
+only the old name, due to go on 2026-10-28 (mesh-specs trd §6c). Every
+platform this node talks to now serves `/mesh/v1`, so the node drops
+the fallback ahead of that date rather than carry a retry path nothing
+exercises. `contextGet` now reads `/mesh/v1` only; a 404 there is an
+ordinary error from `contextGetAt`'s status handling, with no second
+request.
+`gatewaytest.Fake` no longer serves `/prologue/v1` or counts hits to
+it; this repo's gateway package has no `prologue` word left. This is
+the context-read path (decision 7's claim-time tool read is separate);
+the `tools.IsBuiltin` MCP-server-name alias for an adopted session is
+untouched here.
