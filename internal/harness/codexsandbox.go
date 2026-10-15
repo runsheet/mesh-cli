@@ -83,6 +83,7 @@ func (c *Codex) runSandboxed(ctx context.Context, job Job, onProgress func(Progr
 	_, _ = io.Copy(io.Discard, pr) // a stream the parser gave up on still drains
 	res.KeptSessionDir = kept.dir
 	waitErr := <-done
+	kept.flush()
 	if le := (*sandbox.LimitError)(nil); errors.As(waitErr, &le) && ctx.Err() == nil {
 		return res, le
 	}

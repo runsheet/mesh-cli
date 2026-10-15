@@ -773,6 +773,7 @@ func (c *Codex) Run(ctx context.Context, job Job, onProgress func(Progress)) (Re
 	res, failure := c.readStream(io.TeeReader(stdout, kept.stdout(rawOut)), job, onProgress)
 	res.KeptSessionDir = kept.dir
 	waitErr := cmd.Wait()
+	kept.flush()
 	return codexEnd(ctx, res, failure, waitErr, &errBuf, rawOut, secrets, home.dir)
 }
 
@@ -783,6 +784,8 @@ type keptCodex struct {
 	out     *os.File
 	errFile *os.File
 	secrets []string
+	// redactors hold back a partial secret until the stream ends
+	redactors []*streamRedactor
 }
 
 // keepSession opens the session's kept files under WorkRoot, sweeping
@@ -807,6 +810,7 @@ func (c *Codex) keepSession(job Job, secrets []string) *keptCodex {
 }
 
 func (k *keptCodex) close() {
+	k.flush()
 	if k.out != nil {
 		k.out.Close()
 	}
@@ -815,15 +819,29 @@ func (k *keptCodex) close() {
 	}
 }
 
+// flush writes what the redactors held back once the process is done.
+func (k *keptCodex) flush() {
+	for _, r := range k.redactors {
+		_ = r.Flush()
+	}
+	k.redactors = nil
+}
+
+func (k *keptCodex) redacting(w io.Writer) io.Writer {
+	r := newStreamRedactor(w, k.secrets)
+	k.redactors = append(k.redactors, r)
+	return r
+}
+
 // stderr is where the process's stderr goes: buf, and log and the kept
-// file with the secrets redacted.
+// file with the secrets redacted, a secret split across writes too.
 func (k *keptCodex) stderr(buf *bytes.Buffer, log io.Writer) io.Writer {
 	ws := []io.Writer{buf}
 	if log != nil {
-		ws = append(ws, &redactWriter{w: log, secrets: k.secrets})
+		ws = append(ws, k.redacting(log))
 	}
 	if k.errFile != nil {
-		ws = append(ws, &redactWriter{w: k.errFile, secrets: k.secrets})
+		ws = append(ws, k.redacting(k.errFile))
 	}
 	return io.MultiWriter(ws...)
 }
@@ -834,7 +852,7 @@ func (k *keptCodex) stdout(raw *capBuffer) io.Writer {
 	if k.out == nil {
 		return raw
 	}
-	return io.MultiWriter(raw, &redactWriter{w: k.out, secrets: k.secrets})
+	return io.MultiWriter(raw, k.redacting(k.out))
 }
 
 // readStream parses a session's stream, passing what it says on, and

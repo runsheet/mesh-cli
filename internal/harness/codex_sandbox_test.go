@@ -33,7 +33,7 @@ type podmanCall struct {
 
 // codexPodman is a Podman whose Exec records every call and answers the
 // agent's `run -i` with the stream, after writing the secret to its
-// stderr and reading the files the session's CODEX_HOME holds.
+// stderr split across writes, as a pipe may deliver it, and reading the files the session's CODEX_HOME holds.
 func codexPodman(stdin *[]byte, files map[string][]byte) (*sandbox.Podman, func() []podmanCall) {
 	var mu sync.Mutex
 	var calls []podmanCall
@@ -47,7 +47,11 @@ func codexPodman(stdin *[]byte, files map[string][]byte) (*sandbox.Podman, func(
 			for _, f := range []string{"config.toml", "auth.json"} {
 				files[f], _ = os.ReadFile(filepath.Join(home, f))
 			}
-			io.WriteString(stderr, "codex: using token "+codexSecret+"\n")
+			half := len(codexSecret) / 2
+			io.WriteString(stderr, "codex: using token "+codexSecret[:3])
+			io.WriteString(stderr, codexSecret[3:half])
+			io.WriteString(stderr, codexSecret[half:]+"\n")
+			io.WriteString(stderr, "codex: and ends on "+codexSecret[:half])
 			io.WriteString(stdout, codexStream)
 			return nil
 		}
