@@ -5,7 +5,7 @@ description: Work a Mesh goal's items from Claude Code — list goals, join an i
 
 # Work a Mesh goal from Claude Code
 
-`mesh mcp` (added once with `claude mcp add mesh -- mesh mcp`) serves
+`mesh mcp` (added once with `claude mcp add runsheet -- mesh mcp`) serves
 `mesh_goals`, `mesh_join`, `mesh_switch`, `mesh_status`, `mesh_progress`,
 `mesh_ask`, `mesh_finish` and `mesh_release` on your own login. This
 skill is the five everyday forms.
