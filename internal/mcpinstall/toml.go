@@ -62,6 +62,115 @@ func UpsertTOMLTable(src []byte, table string, body []byte) ([]byte, error) {
 	return out, nil
 }
 
+// RemoveTOMLTableFile is RemoveJSONFile for RemoveTOMLTable.
+func RemoveTOMLTableFile(path, table string) (before, after []byte, removed bool, err error) {
+	before, err = readFile(path)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	after, removed, err = RemoveTOMLTable(before, table)
+	if err != nil {
+		return nil, nil, false, named(path, err)
+	}
+	return before, after, removed, nil
+}
+
+// RemoveTOMLTable deletes table (e.g. `mcp_servers.mesh`) from the TOML
+// file src: every run of headers at or under it — `[table]`, its
+// subtables such as `[table.env]` — with their bodies, up to the next
+// header not under it. The comment lines before that header are its
+// own and kept, the blank lines between them go; a run ending the file
+// takes the blank lines before it too. Every other byte is kept. An
+// absent table is src unchanged and false; one defined without its
+// own header (a dotted key, an inline table) is an error, left alone.
+func RemoveTOMLTable(src []byte, table string) ([]byte, bool, error) {
+	keys, err := parseTOMLKey(table)
+	if err != nil || len(keys) == 0 {
+		return nil, false, fmt.Errorf("remove toml: table %q: %v", table, err)
+	}
+	in := map[string]any{}
+	if err := toml.Unmarshal(src, &in); err != nil {
+		return nil, false, &UnparseableError{Err: err}
+	}
+	if _, ok := lookup(in, keys); !ok {
+		return src, false, nil
+	}
+	out := src
+	spans := tomlRemoveSpans(src, keys)
+	for i := len(spans) - 1; i >= 0; i-- {
+		out = splice(out, spans[i])
+	}
+
+	o := map[string]any{}
+	if err := toml.Unmarshal(out, &o); err != nil {
+		return nil, false, fmt.Errorf("remove toml: output does not parse (is %s defined without its own header?): %w", table, err)
+	}
+	if err := checkRemoved("toml", in, o, keys); err != nil {
+		return nil, false, fmt.Errorf("%w (is it defined without its own header?)", err)
+	}
+	return out, true, nil
+}
+
+// tomlRemoveSpans is the edits deleting every run of headers at or
+// under keys, in file order.
+func tomlRemoveSpans(src []byte, keys []string) []edit {
+	under := func(h tomlHeader) bool {
+		return len(h.keys) >= len(keys) && equalKeys(h.keys[:len(keys)], keys)
+	}
+	hs := tomlHeaders(src)
+	var es []edit
+	for i := 0; i < len(hs); i++ {
+		if !under(hs[i]) {
+			continue
+		}
+		start, next := hs[i].start, len(src)
+		for i+1 < len(hs) && under(hs[i+1]) {
+			i++
+		}
+		if i+1 < len(hs) {
+			next = hs[i+1].start
+		}
+		// The run's last line with a key or header on it ends the span,
+		// then the blank lines after it up to a comment or next.
+		end := hs[i].lineEnd
+		for ls := hs[i].lineEnd; ls < next; {
+			le := bytes.IndexByte(src[ls:next], '\n')
+			if le < 0 {
+				le = next
+			} else {
+				le += ls + 1
+			}
+			if line := bytes.TrimSpace(src[ls:le]); len(line) > 0 && line[0] != '#' {
+				end = le
+			}
+			ls = le
+		}
+		for end < next {
+			le := bytes.IndexByte(src[end:next], '\n')
+			if le < 0 {
+				le = next
+			} else {
+				le += end + 1
+			}
+			if len(bytes.TrimSpace(src[end:le])) > 0 {
+				break
+			}
+			end = le
+		}
+		if end == len(src) {
+			for start > 0 {
+				ls := bytes.LastIndexByte(src[:start-1], '\n') + 1
+				if len(bytes.TrimSpace(src[ls:start])) > 0 {
+					break
+				}
+				start = ls
+			}
+		}
+		es = append(es, edit{start, end, nil})
+	}
+	return es
+}
+
 // tomlSpan finds table keys' span: its header line to the next header
 // not under it, less the trailing blank and comment lines.
 func tomlSpan(src []byte, keys []string) (start, end int, ok bool) {
