@@ -3,7 +3,12 @@
     "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   },
   "merge_base_commit": {
-    "sha": "ccccccccccccccccccccccccccccccccccccccc1"
+    "sha": "ccccccccccccccccccccccccccccccccccccccc1",
+    "commit": {
+      "tree": {
+        "sha": "mergetree33333333333333333333333333333"
+      }
+    }
   },
   "status": "ahead",
   "ahead_by": 4,
