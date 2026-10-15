@@ -1079,6 +1079,12 @@ func nodeStart(cmd *cobra.Command, args []string, logger *log.Logger) error {
 			logger.Printf("standing state: %v", err)
 		}
 	}
+	// and the runtime when it cannot start a session (ADR-034)
+	loop.RuntimeChanged = func(rt *node.RuntimeState) {
+		if err := state.WriteRuntime(rt); err != nil {
+			logger.Printf("runtime state: %v", err)
+		}
+	}
 	defer onDrainSignal(func() {
 		if err := state.MarkDraining(); err != nil {
 			logger.Printf("draining marker: %v", err)
@@ -1105,6 +1111,12 @@ func nodeStart(cmd *cobra.Command, args []string, logger *log.Logger) error {
 		sb.Config.TZ = os.Getenv("TZ")
 	}
 	sessionSandbox, loop.Sandbox = sb, sbInfo
+	if sb != nil {
+		// a runtime that cannot start a pod latches the node: it claims
+		// nothing, heartbeats runtime_broken, and probes until it heals
+		// (ADR-034)
+		loop.RuntimeProbe = sb.Probe
+	}
 	if loop.Live != nil {
 		// a sandboxed build is counted by its container (ADR-029)
 		loop.Live.Sandbox = sb
@@ -1198,7 +1210,7 @@ func runPollMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, gw *
 		rs := st.Resumes()
 		resumes = &rs
 	}
-	runner := &node.Runner{GW: gw, Harness: h, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, MCPFunc: func(ctx context.Context) map[string]any { return meshContextMCP(ctx, gw) }, MaxBudgetUSD: nodeMaxBudgetFlag, Model: nodeModels.For("build"), Fallback: fallback, BatchFallback: &node.TokenFallback{}, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Condition: loop.NoteCondition, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Sandbox: sessionSandbox, MeshBinary: meshBinary(), State: state, Notices: validationNotices, Machine: loop.Machine, Host: loop.HostThresholds, RetryTurns: loop.NoteRetryTurn, Resumes: resumes, Log: logger}
+	runner := &node.Runner{GW: gw, Harness: h, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, MCPFunc: func(ctx context.Context) map[string]any { return meshContextMCP(ctx, gw) }, MaxBudgetUSD: nodeMaxBudgetFlag, Model: nodeModels.For("build"), Fallback: fallback, BatchFallback: &node.TokenFallback{}, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Condition: loop.NoteCondition, RuntimeBroken: loop.NoteRuntimeBroken, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Sandbox: sessionSandbox, MeshBinary: meshBinary(), State: state, Notices: validationNotices, Machine: loop.Machine, Host: loop.HostThresholds, RetryTurns: loop.NoteRetryTurn, Resumes: resumes, Log: logger}
 	loop.Dispatch = func(ctx context.Context, item gateway.WorkItem) {
 		r := *runner
 		r.Scopes = loop.CurrentScopes() // an org served since start is known to its build
@@ -1607,10 +1619,10 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 	// one per node: the evaluations of every tick and the adopted ones
 	// share what has been said once per item
 	second := codexSecondOpinion(cfg, loop, workRoot, logger)
-	found := adoptSessions(ctx, gw, cfg, oneShot, second, loop, &node.Runner{GW: gw, Harness: oneShot, WS: ws, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, Fallback: fallback, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Condition: loop.NoteCondition, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Machine: loop.Machine, Host: loop.HostThresholds, Log: logger}, workRoot, fallback, accounts, logger)
+	found := adoptSessions(ctx, gw, cfg, oneShot, second, loop, &node.Runner{GW: gw, Harness: oneShot, WS: ws, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, Fallback: fallback, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Condition: loop.NoteCondition, RuntimeBroken: loop.NoteRuntimeBroken, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Machine: loop.Machine, Host: loop.HostThresholds, Log: logger}, workRoot, fallback, accounts, logger)
 	node.SweepSandbox(ctx, sessionSandbox, found, logger.Printf)
 	loop.Evaluate = evaluateWith(gw, cfg, observed(loop, logger), second, loop, workRoot, fallback, accounts, logger)
-	mainRunner := &node.Runner{GW: gw, WS: ws, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, Fallback: fallback, BatchFallback: &node.TokenFallback{}, Sandbox: sessionSandbox, Notices: validationNotices, Log: logger}
+	mainRunner := &node.Runner{GW: gw, WS: ws, RuntimeBroken: loop.NoteRuntimeBroken, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, Fallback: fallback, BatchFallback: &node.TokenFallback{}, Sandbox: sessionSandbox, Notices: validationNotices, Log: logger}
 	// a pushed commit is validated from GitHub's served diff through the
 	// node's shared cache, else from a worktree of the shared clone
 	if cache, err := node.NewServedDiffCache(cfg, logger.Printf); err != nil {
@@ -2060,7 +2072,7 @@ func researchWith(gw *gateway.Client, cfg *node.Config, h harness.Harness, loop 
 }
 
 func evaluator(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harness.Harness, second secondOpinion, loop *node.Loop, workRoot string, fallback *node.TokenFallback, accounts *node.Credentials, logger *log.Logger) *node.Evaluator {
-	return &node.Evaluator{GW: gw, Harness: h, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, Scopes: loop.CurrentScopes(), WorkRoot: workRoot, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodeEvalBudgetFlag, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("evaluate"), Fallback: fallback, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Sandbox: sessionSandbox, Log: logger,
+	return &node.Evaluator{GW: gw, Harness: h, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, Scopes: loop.CurrentScopes(), WorkRoot: workRoot, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodeEvalBudgetFlag, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("evaluate"), Fallback: fallback, Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, RuntimeBroken: loop.NoteRuntimeBroken, Sandbox: sessionSandbox, Log: logger,
 		Codex: second.h, CodexPreflight: second.preflight, CodexModel: cfg.Codex.CodexModel, CodexAccounts: second.accounts, Waits: second.waits, Blind: second.blind, NoVerdict: second.noVerdict, Splits: &node.OncePer{}, LeftRunning: second.left, Limits: second.limits, Thresholds: second.thresholds}
 }
 
@@ -2069,11 +2081,11 @@ func evaluator(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harn
 var validationNotices = &node.ValidationNotices{}
 
 func rebaser(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harness.Harness, loop *node.Loop, scopes func() node.Scopes, workRoot string, fallback *node.TokenFallback, accounts *node.Credentials, logger *log.Logger) *node.Rebaser {
-	return &node.Rebaser{GW: gw, Harness: h, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, Scopes: scopes(), WorkRoot: workRoot, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodeRebaseBudgetFlag, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("rebase"), Fallback: fallback, Credentials: accounts, Sandbox: sessionSandbox, Notices: validationNotices, Declines: loop.Declines, Log: logger}
+	return &node.Rebaser{GW: gw, Harness: h, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, Scopes: scopes(), WorkRoot: workRoot, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodeRebaseBudgetFlag, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.For("rebase"), Fallback: fallback, Credentials: accounts, Sandbox: sessionSandbox, Notices: validationNotices, Declines: loop.Declines, RuntimeBroken: loop.NoteRuntimeBroken, Log: logger}
 }
 
 func planner(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harness.Harness, loop *node.Loop, workRoot string, accounts *node.Credentials, logger *log.Logger) *node.Planner {
-	return &node.Planner{GW: gw, Harness: h, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, WorkRoot: workRoot, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodePlanBudgetFlag, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.PlanModel(), Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, Log: logger}
+	return &node.Planner{GW: gw, Harness: h, WS: &node.Git{Log: sessionsOut}, Cfg: cfg, WorkRoot: workRoot, MCP: meshContextMCP(ctx, gw), MaxBudgetUSD: nodePlanBudgetFlag, Budgets: loop.KindModelBudget, ContextBudget: loop.ContextBudget, Timeout: nodeSessionTimeoutFlag, Model: nodeModels.PlanModel(), Credentials: accounts, Runtimes: loop.ToolRuntimes, Declines: loop.Declines, RuntimeBroken: loop.NoteRuntimeBroken, Log: logger}
 }
 
 func director(ctx context.Context, gw *gateway.Client, cfg *node.Config, h harness.Harness, loop *node.Loop, workRoot string, accounts *node.Credentials, logger *log.Logger) *node.Director {

@@ -71,6 +71,7 @@ func (s RunState) Stopped(pid int) {
 	_ = os.Remove(s.SharesPath())
 	_ = os.Remove(s.StandingPath())
 	_ = os.Remove(s.FindingsPath())
+	_ = os.Remove(s.RuntimePath())
 }
 
 // WriteScaling leaves a ranged node's capacity in force for `mesh node
