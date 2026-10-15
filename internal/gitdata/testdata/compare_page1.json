@@ -34,6 +34,28 @@
       "blob_url": "https://github.com/octo/widgets/blob/headsha/file2.go",
       "raw_url": "https://github.com/octo/widgets/raw/headsha/file2.go",
       "contents_url": "https://api.github.com/repos/octo/widgets/contents/file2.go?ref=headsha"
+    },
+    {
+      "sha": null,
+      "filename": "file3.go",
+      "status": "removed",
+      "additions": 0,
+      "deletions": 5,
+      "changes": 5,
+      "blob_url": "https://github.com/octo/widgets/blob/basesha/file3.go",
+      "raw_url": "https://github.com/octo/widgets/raw/basesha/file3.go",
+      "contents_url": "https://api.github.com/repos/octo/widgets/contents/file3.go?ref=basesha"
+    },
+    {
+      "sha": "4444444444444444444444444444444444444d",
+      "filename": "file4.go",
+      "status": "modified",
+      "additions": 2,
+      "deletions": 1,
+      "changes": 3,
+      "blob_url": "https://github.com/octo/widgets/blob/headsha/file4.go",
+      "raw_url": "https://github.com/octo/widgets/raw/headsha/file4.go",
+      "contents_url": "https://api.github.com/repos/octo/widgets/contents/file4.go?ref=headsha"
     }
   ]
 }

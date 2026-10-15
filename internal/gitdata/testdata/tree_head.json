@@ -1,0 +1,31 @@
+{
+  "sha": "headtree111111111111111111111111111111",
+  "url": "https://api.github.com/repos/octo/widgets/git/trees/headtree111111111111111111111111111111",
+  "truncated": false,
+  "tree": [
+    {
+      "path": "file1.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "1111111111111111111111111111111111111a",
+      "size": 10,
+      "url": "https://api.github.com/repos/octo/widgets/git/blobs/1111111111111111111111111111111111111a"
+    },
+    {
+      "path": "file2.go",
+      "mode": "100755",
+      "type": "blob",
+      "sha": "2222222222222222222222222222222222222b",
+      "size": 5,
+      "url": "https://api.github.com/repos/octo/widgets/git/blobs/2222222222222222222222222222222222222b"
+    },
+    {
+      "path": "file4.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "4444444444444444444444444444444444444d",
+      "size": 8,
+      "url": "https://api.github.com/repos/octo/widgets/git/blobs/4444444444444444444444444444444444444d"
+    }
+  ]
+}
