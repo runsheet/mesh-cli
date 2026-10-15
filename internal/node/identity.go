@@ -109,8 +109,8 @@ func HooksDir(dir string) string { return filepath.Clean(dir) + ".hooks" }
 
 // Identify implements Workspacer: the checkout's own config names the
 // agent (user.name/user.email) and its core.hooksPath is HooksDir,
-// whose prepare-commit-msg adds each pairer's Co-Authored-By unless the
-// message carries it already. With no pairer the hook adds nothing. A
+// whose prepare-commit-msg drops a Claude Co-Authored-By the session
+// typed and adds each pairer's unless the message carries it already. With no pairer the hook adds nothing. A
 // full clone's go in its .git/config (--local); a worktree's local
 // config is its shared clone's — one file every item of the repo reads,
 // whose lock two sessions raced for and whose core.hooksPath the last
@@ -159,13 +159,23 @@ func (g *Git) gitConfigWrite(ctx context.Context, dir, scope, key, value string)
 	return out, err
 }
 
-// prepareCommitMsg is the hook: one `git interpret-trailers` per pairer,
-// `--if-exists addIfDifferent` so a message that already has that
-// pairer's trailer gains no second one while a second pairer still gets
-// theirs.
+// claudeTrailer is the line prepareCommitMsg drops, as grep -i -E reads
+// it: Claude's own `Co-Authored-By: Claude … <noreply@anthropic.com>`,
+// any case (GitHub's squash merges write `Co-authored-by:`). A pairer
+// named Claude at another email is not it.
+const claudeTrailer = `^co-authored-by:[[:space:]]*claude.*<noreply@anthropic\.com>[[:space:]]*$`
+
+// prepareCommitMsg is the hook: first the message loses every Claude
+// trailer (claudeTrailer) a session typed itself, then one `git
+// interpret-trailers` per pairer, `--if-exists addIfDifferent` so a
+// message that already has that pairer's trailer gains no second one
+// while a second pairer still gets theirs. POSIX sh and grep only: it
+// runs in the pod's image too (ADR-024's amendment 2026-10-15).
 func prepareCommitMsg(pairers []Pairer) string {
 	var b strings.Builder
-	b.WriteString("#!/bin/sh\n# written by mesh node: the paired person's Co-Authored-By (ADR-024)\n")
+	b.WriteString("#!/bin/sh\n# written by mesh node: no Claude trailer, the paired person's Co-Authored-By (ADR-024)\n")
+	fmt.Fprintf(&b, "grep -v -i -E %s \"$1\" > \"$1.mesh\"; [ $? -le 1 ] || { rm -f \"$1.mesh\"; exit 1; }\n", shellQuote(claudeTrailer))
+	b.WriteString("cat \"$1.mesh\" > \"$1\" && rm -f \"$1.mesh\" || exit 1\n")
 	for _, p := range pairers {
 		fmt.Fprintf(&b, "git interpret-trailers --in-place --if-exists addIfDifferent --trailer %s \"$1\" || exit 1\n", shellQuote(p.Trailer()))
 	}
