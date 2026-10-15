@@ -417,6 +417,9 @@ var nodeStatusCmd = &cobra.Command{
 		if err := w.Flush(); err != nil {
 			return err
 		}
+		if rt, ok := localRuntime(state); ok {
+			fmt.Println(runtimeBrokenLine(rt))
+		}
 		if rows, ok := localStanding(state); ok {
 			for _, line := range standingLines(rows) {
 				fmt.Println(line)
@@ -680,6 +683,30 @@ func localStanding(state node.RunState) ([]node.AccountStanding, bool) {
 	}
 	rows, _ := state.Standing()
 	return rows, true
+}
+
+// localRuntime is the node's container runtime as its last tick left it
+// (state.Runtime), and true when a node runs here — the same pid rule
+// as localScaling, localHeld and localStanding — and its latch is set;
+// false (and the zero value) both when no node runs here and when the
+// runtime reads healthy, so the caller prints nothing either way
+// (ADR-034).
+func localRuntime(state node.RunState) (node.RuntimeState, bool) {
+	pid, err := state.PID()
+	if err != nil || !processAlive(pid) {
+		return node.RuntimeState{}, false
+	}
+	return state.Runtime()
+}
+
+// runtimeBrokenLine is `mesh node status`'s line while the node's
+// container runtime cannot start a session (ADR-034): `runtime_broken
+// since <RFC3339>: <reason>` — the reason already scrubbed, one line
+// and truncated by NoteRuntimeBroken before it ever reaches disk — and
+// that the node claims nothing until a probe heals it.
+func runtimeBrokenLine(rt node.RuntimeState) string {
+	return fmt.Sprintf("runtime_broken since %s: %s; the node claims nothing until the runtime heals",
+		formatHeldTime(rt.Since), rt.Reason)
 }
 
 // standingLines is `mesh node status`'s account standing table, one

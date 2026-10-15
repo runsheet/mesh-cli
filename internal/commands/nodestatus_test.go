@@ -385,3 +385,53 @@ func TestNodeStatusShowsStanding(t *testing.T) {
 		t.Fatal("localStanding after the node stopped")
 	}
 }
+
+// `mesh node status` shows the node's container runtime latched broken
+// (ADR-034): a line `runtime_broken since <RFC3339>: <reason>` naming
+// podman's words and that the node claims nothing until it heals; none
+// of it when the state is clear or no node runs here.
+func TestNodeStatusShowsRuntimeBroken(t *testing.T) {
+	state := node.RunState{Dir: t.TempDir()}
+	if _, ok := localRuntime(state); ok {
+		t.Fatal("a node that has not ticked shows a runtime state")
+	}
+	pid := os.Getpid()
+	if err := state.Started(pid); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := localRuntime(state); ok {
+		t.Fatal("localRuntime with a node running but no node.runtime")
+	}
+
+	since := time.Date(2026, 10, 15, 23, 5, 0, 0, time.UTC)
+	rt := &node.RuntimeState{
+		Status: node.RuntimeBrokenStatus,
+		Reason: "runtime: create pod: error opening storage",
+		Since:  since,
+	}
+	if err := state.WriteRuntime(rt); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := localRuntime(state)
+	if !ok {
+		t.Fatal("localRuntime: not ok with a node running and node.runtime written")
+	}
+	line := runtimeBrokenLine(got)
+	for _, want := range []string{"runtime_broken", "error opening storage", since.Format(time.RFC3339), "claims nothing until the runtime heals"} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("runtime broken line missing %q: %q", want, line)
+		}
+	}
+
+	if err := state.WriteRuntime(nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := localRuntime(state); ok {
+		t.Fatal("localRuntime after the runtime healed (WriteRuntime(nil))")
+	}
+
+	state.Stopped(pid)
+	if _, ok := localRuntime(state); ok {
+		t.Fatal("localRuntime after the node stopped")
+	}
+}

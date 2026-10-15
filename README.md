@@ -884,6 +884,13 @@ v1.1.0, differing for 1h1m0s`), or `findings: none` — read from
 checks its disk, reaps stale `/tmp` scratch and dead checkouts, and
 compares its version with the desired one
 ([ADR-034](docs/adr/adr-034-the-quartermaster-keeps-the-node-fit.md)).
+When its container runtime is latched broken — a `*sandbox.RuntimeError`
+out of a session start, or a failed probe, and neither has cleared since —
+it next prints one line, `runtime_broken since <RFC3339>: <reason>; the
+node claims nothing until the runtime heals`, podman's own words for
+`<reason>`; nothing while the runtime reads healthy or no node runs here.
+It reads `~/.mesh/node.runtime`, written each tick beside `node.standing`
+([ADR-034](docs/adr/adr-034-a-node-whose-runtime-is-broken-stops-claiming.md)).
 It also prints a **Held goals** section — a table of
 org, goal, kind (`plan` or `item`), since, until and why for every goal
 the node holds off claiming for (a plan claim released by a repeating
