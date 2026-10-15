@@ -69,6 +69,8 @@ type Runner struct {
 	Cfg      *Config
 	Scopes   Scopes
 	WorkRoot string
+	// BuildCache is a host validation's GOCACHE; "" is BuildCacheDir().
+	BuildCache string
 	// MCP are the MCP servers every session gets (mesh-context).
 	MCP map[string]any
 	// MCPFunc, when set, is asked for them at every item instead: the
