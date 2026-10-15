@@ -452,7 +452,8 @@ type CacheCounts struct {
 }
 
 // WriteCacheCounts leaves the counts for `mesh node status`, atomic
-// like WriteScaling.
+// like WriteScaling, each write through its own temporary file so two
+// writers never rename one another's.
 func (s RunState) WriteCacheCounts(c CacheCounts) error {
 	if err := os.MkdirAll(s.Dir, 0o700); err != nil {
 		return err
@@ -461,11 +462,25 @@ func (s RunState) WriteCacheCounts(c CacheCounts) error {
 	if err != nil {
 		return err
 	}
-	tmp := fmt.Sprintf("%s.%d.tmp", s.CachePath(), os.Getpid())
-	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
+	f, err := os.CreateTemp(s.Dir, filepath.Base(s.CachePath())+".*.tmp")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, s.CachePath())
+	tmp := f.Name()
+	_, err = f.Write(append(data, '\n'))
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Chmod(tmp, 0o600)
+	}
+	if err == nil {
+		err = os.Rename(tmp, s.CachePath())
+	}
+	if err != nil {
+		os.Remove(tmp)
+	}
+	return err
 }
 
 // CacheCounts reads what WriteCacheCounts left; false when nothing is

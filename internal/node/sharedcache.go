@@ -110,7 +110,10 @@ type SharedCache struct {
 	// fills is the miss in flight per key: one fill, the rest wait.
 	fills sync.Map // key → *cacheFill
 
-	countsMu    sync.Mutex
+	countsMu sync.Mutex
+	// persistMu holds a snapshot and its write together, so a later
+	// snapshot is never overwritten on disk by an earlier one.
+	persistMu   sync.Mutex
 	countsOnce  sync.Once
 	counts      CacheCounts
 	overCapSaid bool
@@ -154,6 +157,8 @@ func (c *SharedCache) persistCounts() {
 	if c.State == nil {
 		return
 	}
+	c.persistMu.Lock()
+	defer c.persistMu.Unlock()
 	if err := c.State.WriteCacheCounts(c.Counts()); err != nil {
 		c.logf("cache: counts: %v", err)
 	}
@@ -219,21 +224,19 @@ func objectID(sha string) bool {
 // each from the cached blob, a miss filled first. A file in dst is the
 // node's own copy, writable, its executable bit as the tree says; a
 // symlink is a symlink, a submodule an empty dir. Every entry is
-// counted a hit or a miss, and the counts are persisted after. A
-// Materialize that filled anything enforces the cap after it.
+// counted a hit or a miss, and the counts are persisted after. Every
+// Materialize enforces the cap after it, a hit too: go/ beside the
+// trees grows with every validation, whatever this one filled.
 func (c *SharedCache) Materialize(ctx context.Context, repo, commit, dst string) error {
 	if !objectID(commit) {
 		return fmt.Errorf("cache: %q is not a commit sha", commit)
 	}
-	filled, err := c.materialize(ctx, repo, commit, dst)
+	_, err := c.materialize(ctx, repo, commit, dst)
 	c.persistCounts()
 	if err != nil {
 		return err
 	}
-	if filled && c.MaxBytes > 0 {
-		return c.Enforce(ctx)
-	}
-	return nil
+	return c.Enforce(ctx)
 }
 
 func (c *SharedCache) materialize(ctx context.Context, repo, commit, dst string) (bool, error) {
