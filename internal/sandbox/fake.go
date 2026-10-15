@@ -22,7 +22,7 @@ type Fake struct {
 	// answers one either way).
 	CreatePodErr error
 	Pods         []PodSpec
-	Agents     []AgentSpec
+	Agents       []AgentSpec
 	// Detached are the agents StartAgent started; each is also a running
 	// container in Running, mounting its spec's host paths, in a pod in
 	// Standing. States, when it names one, is what AgentState answers
