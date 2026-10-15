@@ -200,6 +200,55 @@ x = 1
 			want: "",
 		},
 		{
+			name: "only table, its trailing comment through EOF",
+			in:   "[mcp_servers.mesh]\ncommand = \"m\"\n# mesh's note\n",
+			want: "",
+		},
+		{
+			name: "last in the file, its subtable's trailing comments through EOF",
+			in: `[profile]
+name = "p" # p's
+
+[mcp_servers.mesh]
+command = "m"
+# mesh's note
+
+[mcp_servers.mesh.env]
+A = "b"
+# env's note
+
+# and another
+`,
+			want: `[profile]
+name = "p" # p's
+`,
+		},
+		{
+			name: "its trailing comment gone, the next table's comment kept",
+			in: `[a]
+x = 1
+
+[mcp_servers.mesh]
+command = "m"
+# mesh's note
+
+# mesh's other note
+
+# the next table's comment
+# its second line
+[mcp_servers.after]
+url = "https://x"
+`,
+			want: `[a]
+x = 1
+
+# the next table's comment
+# its second line
+[mcp_servers.after]
+url = "https://x"
+`,
+		},
+		{
 			name: "subtable apart from its table",
 			in: `[mcp_servers.mesh.env]
 A = "b"
