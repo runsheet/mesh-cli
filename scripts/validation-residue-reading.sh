@@ -9,23 +9,28 @@
 # measurement (ADR-020's `Measure:` item): it exits 0 and prints what it
 # found for a human to read, never a verdict a build is judged on.
 #
-# Reading taken 2026-10-15 on dl360-anythink (the dev box this item was
-# built on — the goal's own after-release reading on dl360 is the
-# goal's acceptance, not this item's gate): with no node running here
-# and no ~/.mesh/work entries yet, `./scripts/validation-residue-reading.sh --window 0`
+# Reading taken 2026-10-15 22:13 UTC on
+# mesh-a-node-validates-from-a-served-diff-with-a1515f5f-0 (this item's
+# build/evaluation container, not dl360 — the goal's own after-release
+# hour on dl360 is the goal's acceptance, not this item's gate): with no
+# node running here and no ~/.mesh/work entries, `./scripts/validation-residue-reading.sh --window 0`
 # read:
 #   == before
-#   entries: 0
-#   bytes: 0
+#   entries: 5
+#   bytes: 18810001
 #   validation cache: no node running here
 #   == after
-#   entries: 0
-#   bytes: 0
+#   entries: 5
+#   bytes: 18810077
 #   validation cache: no node running here
 #   == difference
 #   new entries: 0
-#   new bytes: 0
+#   new bytes: 76
 #   validations in window: 0
+# (the 76 bytes is the container's own /tmp churning between the two
+# instants, not the scan's doing: scan() now keeps its file list in
+# memory, never writing a scratch file under /tmp, so scanning /tmp no
+# longer counts itself.)
 set -euo pipefail
 
 usage() {
@@ -140,10 +145,11 @@ default_users() {
 
 # scan root...: prints "<entries> <bytes>" for every regular file found
 # under the given roots (existing ones only), filtered to $scan_users
-# when that array is non-empty.
+# when that array is non-empty. Kept entirely in memory (no scratch
+# file under /tmp) so scanning /tmp never counts the scan's own state.
 scan_users=()
 scan() {
-  local tmp count bytes root existing=()
+  local count bytes root existing=()
   for root in "$@"; do
     [ -d "$root" ] && existing+=("$root")
   done
@@ -151,21 +157,22 @@ scan() {
     echo "0 0"
     return 0
   fi
-  tmp="$(mktemp)"
+  local -a files=()
   if [ ${#scan_users[@]} -eq 0 ]; then
-    find "${existing[@]}" -xdev -type f -print0 2>/dev/null | sort -z -u >"$tmp"
+    readarray -d '' files < <(find "${existing[@]}" -xdev -type f -print0 2>/dev/null | sort -z -u)
   else
     local u
-    for u in "${scan_users[@]}"; do
-      find "${existing[@]}" -xdev -type f -user "$u" -print0 2>/dev/null
-    done | sort -z -u >"$tmp"
+    readarray -d '' files < <(
+      for u in "${scan_users[@]}"; do
+        find "${existing[@]}" -xdev -type f -user "$u" -print0 2>/dev/null
+      done | sort -z -u
+    )
   fi
-  count="$(tr -cd '\0' <"$tmp" | wc -c | tr -d ' ')"
+  count=${#files[@]}
   bytes=0
   if [ "$count" -gt 0 ]; then
-    bytes="$(xargs -0 -r stat -c '%s' <"$tmp" | awk '{s+=$1} END{print s+0}')"
+    bytes="$(printf '%s\0' "${files[@]}" | xargs -0 -r stat -c '%s' | awk '{s+=$1} END{print s+0}')"
   fi
-  rm -f "$tmp"
   printf '%s %s\n' "$count" "$bytes"
 }
 
