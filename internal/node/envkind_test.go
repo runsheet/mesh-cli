@@ -72,6 +72,9 @@ func TestValidationEnvironmentKindReachesTheGateway(t *testing.T) {
 			}
 			msg, _ := fails[0].Input["error"].(string)
 			want := fmt.Sprintf("validation failed: step check exited %d", int(tc.code))
+			if tc.want == "tool_missing" {
+				want += ": command not found: mesh-no-such-tool (in `mesh-no-such-tool --version`)"
+			}
 			if tc.want != "" {
 				want = tc.want + ": " + want
 			}
