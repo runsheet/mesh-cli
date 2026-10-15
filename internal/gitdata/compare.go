@@ -26,8 +26,9 @@ type ChangedFile struct {
 	// Mode is the entry's git mode ("100644" regular, "100755"
 	// executable, "120000" symlink, …). GitHub's compare file entries
 	// carry no mode of their own, so Compare reads it from the file's
-	// tree entry: the head tree for every status but removed, the base
-	// tree for a removed file (it has no head entry to read).
+	// tree entry: the head tree for every status but removed, the
+	// merge-base tree for a removed file (it has no head entry to read,
+	// and base...head is against the merge base, never base's tip).
 	Mode string
 }
 
@@ -47,7 +48,12 @@ type CompareResult struct {
 
 type compareResponse struct {
 	MergeBaseCommit struct {
-		SHA string `json:"sha"`
+		SHA    string `json:"sha"`
+		Commit struct {
+			Tree struct {
+				SHA string `json:"sha"`
+			} `json:"tree"`
+		} `json:"commit"`
 	} `json:"merge_base_commit"`
 	Files []struct {
 		Filename         string `json:"filename"`
@@ -86,6 +92,7 @@ func IsDiffTooLarge(err error) bool {
 func (c *Client) Compare(ctx context.Context, repo, base, head string) (CompareResult, error) {
 	u := fmt.Sprintf("%s/repos/%s/compare/%s...%s", c.baseURL(), repo, url.PathEscape(base), url.PathEscape(head))
 	var out CompareResult
+	var mergeBaseTree string
 	for u != "" {
 		var resp compareResponse
 		h, err := c.get(ctx, u, &resp)
@@ -94,6 +101,7 @@ func (c *Client) Compare(ctx context.Context, repo, base, head string) (CompareR
 		}
 		if out.MergeBaseSHA == "" {
 			out.MergeBaseSHA = resp.MergeBaseCommit.SHA
+			mergeBaseTree = resp.MergeBaseCommit.Commit.Tree.SHA
 		}
 		for _, f := range resp.Files {
 			out.Files = append(out.Files, ChangedFile{
@@ -108,17 +116,20 @@ func (c *Client) Compare(ctx context.Context, repo, base, head string) (CompareR
 	if len(out.Files) >= DiffCapFiles {
 		return CompareResult{}, &DiffTooLargeError{Repo: repo, Base: base, Head: head, Files: len(out.Files)}
 	}
-	if err := c.fillModes(ctx, repo, base, head, out.Files); err != nil {
+	if err := c.fillModes(ctx, repo, out.MergeBaseSHA, mergeBaseTree, head, out.Files); err != nil {
 		return CompareResult{}, err
 	}
 	return out, nil
 }
 
-// fillModes sets each file's Mode from the tree it currently lives in:
-// the head tree for every status but removed, the base tree for a
-// removed file. It fetches each tree at most once, and only the trees
-// the files actually need.
-func (c *Client) fillModes(ctx context.Context, repo, base, head string, files []ChangedFile) error {
+// fillModes sets each file's Mode from the tree it lives in on its side
+// of the comparison: the head tree for every status but removed, the
+// merge-base tree for a removed file — never base's tip, which may have
+// changed the file's mode, or dropped it, since head diverged.
+// mergeBaseTree is the tree sha the compare carried, else "" and read
+// from the merge-base commit. It fetches each tree at most once, and
+// only the trees the files actually need.
+func (c *Client) fillModes(ctx context.Context, repo, mergeBase, mergeBaseTree, head string, files []ChangedFile) error {
 	var needHead, needBase bool
 	for _, f := range files {
 		if f.Status == StatusRemoved {
@@ -130,12 +141,17 @@ func (c *Client) fillModes(ctx context.Context, repo, base, head string, files [
 	var headModes, baseModes map[string]string
 	var err error
 	if needHead {
-		if headModes, err = c.pathModes(ctx, repo, head); err != nil {
+		if headModes, err = c.commitModes(ctx, repo, head); err != nil {
 			return err
 		}
 	}
 	if needBase {
-		if baseModes, err = c.pathModes(ctx, repo, base); err != nil {
+		if mergeBaseTree != "" {
+			baseModes, err = c.treeModes(ctx, repo, mergeBaseTree)
+		} else {
+			baseModes, err = c.commitModes(ctx, repo, mergeBase)
+		}
+		if err != nil {
 			return err
 		}
 	}
@@ -149,13 +165,18 @@ func (c *Client) fillModes(ctx context.Context, repo, base, head string, files [
 	return nil
 }
 
-// pathModes is ref's tree flattened to a path -> git mode map.
-func (c *Client) pathModes(ctx context.Context, repo, ref string) (map[string]string, error) {
+// commitModes is ref's tree flattened to a path -> git mode map.
+func (c *Client) commitModes(ctx context.Context, repo, ref string) (map[string]string, error) {
 	commit, err := c.Commit(ctx, repo, ref)
 	if err != nil {
 		return nil, err
 	}
-	entries, err := c.Tree(ctx, repo, commit.TreeSHA)
+	return c.treeModes(ctx, repo, commit.TreeSHA)
+}
+
+// treeModes is a tree flattened to a path -> git mode map.
+func (c *Client) treeModes(ctx context.Context, repo, treeSHA string) (map[string]string, error) {
+	entries, err := c.Tree(ctx, repo, treeSHA)
 	if err != nil {
 		return nil, err
 	}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 )
 
@@ -14,8 +15,10 @@ import (
 // compare_page2.json that carries no files of its own, matching
 // GitHub's own behaviour: a paginated compare's files list lives on
 // its first page alone, the pagination being over its commits list),
-// plus the head and base commits and trees Compare reads each file's
-// mode from.
+// plus the head, base-tip and merge-base commits and trees. The branches
+// diverged: base's tip has since made file3.go executable (100755) where
+// the merge base, and so the comparison, has it a symlink (120000) —
+// head removed it.
 func compareFixtureServer(t *testing.T, withPage2 bool) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
@@ -33,6 +36,8 @@ func compareFixtureServer(t *testing.T, withPage2 bool) *httptest.Server {
 	mux.HandleFunc("/repos/octo/widgets/commits/main", serveFixture(t, "commit_base.json"))
 	mux.HandleFunc("/repos/octo/widgets/git/trees/headtree111111111111111111111111111111", serveFixture(t, "tree_head.json"))
 	mux.HandleFunc("/repos/octo/widgets/git/trees/basetree222222222222222222222222222222", serveFixture(t, "tree_base.json"))
+	mux.HandleFunc("/repos/octo/widgets/commits/ccccccccccccccccccccccccccccccccccccccc1", serveFixture(t, "commit_mergebase.json"))
+	mux.HandleFunc("/repos/octo/widgets/git/trees/mergetree33333333333333333333333333333", serveFixture(t, "tree_mergebase.json"))
 	return httptest.NewServer(mux)
 }
 
@@ -111,7 +116,7 @@ func TestCompareARemovedFile(t *testing.T) {
 		t.Fatalf("removed = %+v", removed)
 	}
 	if removed.Mode != "120000" {
-		t.Fatalf("removed.Mode = %q, want symlink 120000 from the base tree", removed.Mode)
+		t.Fatalf("removed.Mode = %q, want symlink 120000 from the merge-base tree", removed.Mode)
 	}
 }
 
@@ -163,5 +168,65 @@ func TestCompareDiffTooLargePastGitHubsCap(t *testing.T) {
 	_, err = c.Compare(context.Background(), "octo/widgets", "main", "feature")
 	if !IsDiffTooLarge(err) {
 		t.Fatalf("err = %v, IsDiffTooLarge = false", err)
+	}
+}
+
+// TestCompareARemovedFilesModeIsTheMergeBases is the divergent case:
+// base's tip changed file3.go's mode (120000 → 100755) after head
+// branched and deleted it, so base...head removes the merge base's
+// symlink, and Compare must say 120000, never base's 100755. The second
+// half drops the compare's inline merge-base tree sha and expects the
+// same answer by way of the merge-base commit.
+func TestCompareARemovedFilesModeIsTheMergeBases(t *testing.T) {
+	for _, inlineTree := range []bool{true, false} {
+		t.Run(fmt.Sprintf("inline tree %v", inlineTree), func(t *testing.T) {
+			page1, err := os.ReadFile("testdata/compare_page1.json")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !inlineTree {
+				var resp map[string]any
+				if err := json.Unmarshal(page1, &resp); err != nil {
+					t.Fatal(err)
+				}
+				delete(resp["merge_base_commit"].(map[string]any), "commit")
+				if page1, err = json.Marshal(resp); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var baseTipRead bool
+			mux := http.NewServeMux()
+			mux.HandleFunc("/repos/octo/widgets/compare/main...feature", func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.Write(page1)
+			})
+			mux.HandleFunc("/repos/octo/widgets/commits/feature", serveFixture(t, "commit_head.json"))
+			mux.HandleFunc("/repos/octo/widgets/git/trees/headtree111111111111111111111111111111", serveFixture(t, "tree_head.json"))
+			mux.HandleFunc("/repos/octo/widgets/commits/ccccccccccccccccccccccccccccccccccccccc1", serveFixture(t, "commit_mergebase.json"))
+			mux.HandleFunc("/repos/octo/widgets/git/trees/mergetree33333333333333333333333333333", serveFixture(t, "tree_mergebase.json"))
+			mux.HandleFunc("/repos/octo/widgets/commits/main", func(w http.ResponseWriter, r *http.Request) {
+				baseTipRead = true
+				serveFixture(t, "commit_base.json")(w, r)
+			})
+			mux.HandleFunc("/repos/octo/widgets/git/trees/basetree222222222222222222222222222222", serveFixture(t, "tree_base.json"))
+			srv := httptest.NewServer(mux)
+			defer srv.Close()
+
+			c := &Client{BaseURL: srv.URL}
+			got, err := c.Compare(context.Background(), "octo/widgets", "main", "feature")
+			if err != nil {
+				t.Fatalf("Compare: %v", err)
+			}
+			for _, f := range got.Files {
+				if f.Filename == "file3.go" {
+					if f.Mode != "120000" {
+						t.Fatalf("file3.go Mode = %q, want the merge base's 120000 (base's tip has 100755)", f.Mode)
+					}
+				}
+			}
+			if baseTipRead {
+				t.Fatalf("Compare read base's tip; a removed file's mode is the merge base's")
+			}
+		})
 	}
 }
