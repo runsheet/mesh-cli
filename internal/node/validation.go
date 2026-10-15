@@ -55,7 +55,14 @@ type validationFailure struct {
 }
 
 func (e *validationFailure) Error() string {
-	return fmt.Sprintf("validation failed: step %s exited %d", e.Step.Name, e.Step.ExitCode)
+	base := fmt.Sprintf("validation failed: step %s exited %d", e.Step.Name, e.Step.ExitCode)
+	if e.Step.EnvironmentKind != validate.ToolMissing {
+		return base
+	}
+	if tool := validate.MissingTool(e.Step.Output); tool != "" {
+		return fmt.Sprintf("%s: command not found: %s (in `%s`)", base, tool, e.Step.Command)
+	}
+	return fmt.Sprintf("%s: `%s`", base, e.Step.Command)
 }
 
 // EnvironmentKind is the failing step's (docs/adr/adr-030): a timeout or
