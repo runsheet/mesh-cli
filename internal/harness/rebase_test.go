@@ -34,7 +34,7 @@ func TestRebasePromptContract(t *testing.T) {
 	if RebasedLine != "REBASED:" || ResolvedLine != "RESOLVED:" || RebaseFailedLine != "REBASE FAILED:" {
 		t.Fatal("the contract lines changed")
 	}
-	// without Prologue the steps are the runbook, and no tool is named
+	// without mesh-context the steps are the runbook, and no tool is named
 	if q := RebasePrompt(RebaseInput{Branch: "b", BaseRef: "main"}); strings.Contains(q, "mesh_document") || !strings.Contains(q, "mesh-branch-rebase skill's steps") {
 		t.Fatalf("no-context prompt:\n%s", q)
 	}

@@ -3,6 +3,8 @@ package harness
 import (
 	"strings"
 	"testing"
+
+	"projectmesh.io/mesh-cli/internal/tools"
 )
 
 func TestPlanPromptAcceptanceTheEvaluatorCanSee(t *testing.T) {
@@ -438,7 +440,7 @@ func TestEvaluatePromptUnverifiableClause(t *testing.T) {
 }
 
 // A session with mesh-context's tools is told to use mesh_document and
-// mesh_search, not the prologue_* names — in both shapes of the
+// mesh_search, not the alias's <alias>_* names (tools.BuiltinAlias) — in both shapes of the
 // evaluator's context section (with and without a ContextDir).
 func TestEvaluatePromptContextTools(t *testing.T) {
 	withDir := EvaluatePrompt(EvaluateInput{GoalSlug: "g", GoalTitle: "G", Seq: 1, Title: "T", Repo: "o/r", Branch: "b", BaseRef: "main",
@@ -454,8 +456,8 @@ func TestEvaluatePromptContextTools(t *testing.T) {
 				t.Errorf("evaluate prompt lacks %q:\n%s", want, p)
 			}
 		}
-		if strings.Contains(p, "prologue_") {
-			t.Errorf("evaluate prompt still names a prologue_ tool:\n%s", p)
+		if strings.Contains(p, tools.BuiltinAlias()+"_") {
+			t.Errorf("evaluate prompt still names a %s_ tool:\n%s", tools.BuiltinAlias(), p)
 		}
 	}
 }
@@ -469,8 +471,8 @@ func TestPlanPromptContextTools(t *testing.T) {
 			t.Errorf("plan prompt lacks %q:\n%s", want, p)
 		}
 	}
-	if strings.Contains(p, "prologue_") {
-		t.Errorf("plan prompt still names a prologue_ tool:\n%s", p)
+	if strings.Contains(p, tools.BuiltinAlias()+"_") {
+		t.Errorf("plan prompt still names a %s_ tool:\n%s", tools.BuiltinAlias(), p)
 	}
 }
 
@@ -659,8 +661,8 @@ func TestPromptsNameMeshContext(t *testing.T) {
 		if !strings.Contains(p, "mesh-context") {
 			t.Errorf("%s prompt does not name mesh-context:\n%s", name, p)
 		}
-		if strings.Contains(p, "mcp__prologue__") {
-			t.Errorf("%s prompt still names mcp__prologue__:\n%s", name, p)
+		if strings.Contains(p, "mcp__"+tools.BuiltinAlias()+"__") {
+			t.Errorf("%s prompt still names mcp__%s__:\n%s", name, tools.BuiltinAlias(), p)
 		}
 	}
 }
