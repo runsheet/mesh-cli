@@ -1533,12 +1533,12 @@ func renderOwnGoal(b *strings.Builder, lg *LiveGoal, cell func(string) string, l
 }
 
 // MeshMCPURL is the platform's /mcp beside the gateway at gatewayURL —
-// what mesh-context and `mesh mcp install --remote` point at.
+// what runsheet and `mesh mcp install --remote` point at.
 func MeshMCPURL(gatewayURL string) string {
 	return strings.TrimRight(gatewayURL, "/") + "/mcp"
 }
 
-// MeshContextMCP is the MCP server a session gets for mesh-context:
+// MeshContextMCP is the MCP server a session gets for runsheet:
 // bin's `mesh mcp-relay` to the platform's /mcp on a token file
 // (harness.MeshContextRelay), so the session reads what the node's
 // operator may on the node's bearer of the moment, never one that
@@ -1557,7 +1557,7 @@ func MeshContextMCP(bin, gatewayURL string) map[string]any {
 	return map[string]any{harness.BuiltinMCP: harness.MeshContextRelay(bin, MeshMCPURL(gatewayURL), "")}
 }
 
-// MeshContextHTTP is mesh-context as the platform's /mcp with token as
+// MeshContextHTTP is runsheet as the platform's /mcp with token as
 // its header: a person's own CLI client (meshmcp.Hosted), which takes a
 // fresh bearer per request, and a test's harness. No session the node
 // starts gets it: a header outlives no rotation (ADR-029).

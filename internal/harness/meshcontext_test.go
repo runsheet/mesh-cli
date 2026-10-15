@@ -111,7 +111,7 @@ func noBearer(t *testing.T, what, s string) {
 	}
 }
 
-// A host Claude session's mesh-context is the stdio relay on the token
+// A host Claude session's runsheet is the stdio relay on the token
 // file in its own session dir, which the keeper writes before the
 // session starts and removes once it ends; the command line and
 // state.json name the file, never the bearer.
@@ -163,17 +163,17 @@ func TestClaudeHostMeshContextIsTheRelayOnASessionTokenFile(t *testing.T) {
 	srv := job.MCPServers[BuiltinMCP].(map[string]any)
 	if srv["type"] != "stdio" || srv["command"] != "/usr/local/bin/mesh" ||
 		!slices.Equal(srv["args"].([]string), []string{RelayCommand, "--url", relayURL, "--token-file", path}) {
-		t.Fatalf("host mesh-context = %v", srv)
+		t.Fatalf("host runsheet = %v", srv)
 	}
-	if !strings.Contains(args, `"mesh-context":{"args":["mcp-relay","--url","`+relayURL+`","--token-file","`+path+`"]`) {
+	if !strings.Contains(args, `"runsheet":{"args":["mcp-relay","--url","`+relayURL+`","--token-file","`+path+`"]`) {
 		t.Fatalf("--mcp-config does not name the relay: %s", args)
 	}
-	if !strings.Contains(args, "mcp__mesh-context__*") {
-		t.Fatalf("mesh-context's tools not allowed: %s", args)
+	if !strings.Contains(args, "mcp__runsheet__*") {
+		t.Fatalf("runsheet's tools not allowed: %s", args)
 	}
 }
 
-// A pod's mesh-context is RelayScript in its HOME — the pod has no mesh
+// A pod's runsheet is RelayScript in its HOME — the pod has no mesh
 // binary — on the token file in that HOME, the mcp.json naming the file
 // and never the bearer; the file goes when the session ends.
 func TestClaudePodMeshContextIsTheRelayScriptOnAHomeTokenFile(t *testing.T) {
@@ -219,7 +219,7 @@ func TestClaudePodMeshContextIsTheRelayScriptOnAHomeTokenFile(t *testing.T) {
 	home := filepath.Dir(paths[0])
 	if srv.Type != "stdio" || srv.Command != "node" ||
 		!slices.Equal(srv.Args, []string{filepath.Join(home, relayScriptName), relayURL, paths[0]}) {
-		t.Fatalf("pod mesh-context = %+v", srv)
+		t.Fatalf("pod runsheet = %+v", srv)
 	}
 	if _, ok := m.MCPServers[NodeWorkMCP]; !ok {
 		t.Fatalf("a pod build lost its own work tools: %s", cfg)
@@ -303,7 +303,7 @@ func TestAdoptedSessionTokenFileIsRefreshed(t *testing.T) {
 	}
 }
 
-// Codex's config.toml renders mesh-context as the stdio relay on a token
+// Codex's config.toml renders runsheet as the stdio relay on a token
 // file in the session's CODEX_HOME — command and args, no
 // env_http_headers and no bearer — and the file goes with the home.
 func TestCodexMeshContextIsTheRelayOnAHomeTokenFile(t *testing.T) {
@@ -323,7 +323,7 @@ func TestCodexMeshContextIsTheRelayOnAHomeTokenFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	noBearer(t, "config.toml", string(cfg))
-	want := `[mcp_servers.mesh-context]
+	want := `[mcp_servers.runsheet]
 command = "/usr/local/bin/mesh"
 args = ["mcp-relay", "--url", "` + relayURL + `", "--token-file", "` + path + `"]
 default_tools_approval_mode = "approve"
@@ -357,7 +357,7 @@ default_tools_approval_mode = "approve"
 	}
 }
 
-// Servers whose mesh-context is no relay — a test's http entry — and a
+// Servers whose runsheet is no relay — a test's http entry — and a
 // harness with no keeper run as they came.
 func TestPlaceMeshContextLeavesOtherEntries(t *testing.T) {
 	httpSrv := map[string]any{BuiltinMCP: map[string]any{"type": "http", "url": relayURL}}

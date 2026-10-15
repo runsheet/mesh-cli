@@ -64,30 +64,44 @@ func RoleFor(kind string) string {
 }
 
 // Builtin is the server the node attaches to every session itself; a
-// console tool of that name is a clash (trd §3 Tools, mesh-context is
-// built in).
-const Builtin = "mesh-context"
+// console tool of that name is a clash (trd §3 Tools, the context server
+// is built in). Named runsheet since 2026-10-15 (goal
+// the-node-calls-the-context-server-runsheet; ADR-006's amendment).
+const Builtin = "runsheet"
 
-// builtinAlias is the built-in's old name — deprecated 2026-09-28 (goal
-// builtin-is-mesh-context), removed 2026-10-28.
-const builtinAlias = "prologue"
+// builtinAliases are the built-in's old names, newest first, read only —
+// for the stream and state of a session an older node started and this
+// one adopted: mesh-context (2026-09-28 to 2026-10-15) and the name
+// before it.
+var builtinAliases = []string{"mesh-context", "prologue"}
 
-// BuiltinAlias is the built-in's old name (builtinAlias), for a test or
-// a reader that must name it without spelling it out.
-func BuiltinAlias() string { return builtinAlias }
+// BuiltinAliases are the built-in's old names (builtinAliases), newest
+// first.
+func BuiltinAliases() []string { return append([]string(nil), builtinAliases...) }
 
-// IsBuiltin reports whether name is the built-in server: mesh-context,
-// or its old name (builtinAlias) until 2026-10-28 — for reading the
-// stream and state of a session an older node started and this one
-// adopted. Reading only: the clash check (check) refuses Builtin alone,
-// so a console tool named as the alias is an ordinary tool.
+// BuiltinAlias is the built-in's oldest name, for a test or a reader
+// that must name it without spelling it out.
+func BuiltinAlias() string { return builtinAliases[len(builtinAliases)-1] }
+
+// IsBuiltin reports whether name is the built-in server: runsheet, or
+// one of its old names (builtinAliases). Reading only: the clash check
+// (check) refuses Builtin alone, so a console tool named mesh-context or
+// as another alias is an ordinary tool.
 func IsBuiltin(name string) bool {
-	return name == Builtin || name == builtinAlias
+	if name == Builtin {
+		return true
+	}
+	for _, a := range builtinAliases {
+		if name == a {
+			return true
+		}
+	}
+	return false
 }
 
 // workTools are the hosted mesh-work tools a session ends by calling
 // (mesh-cli ADR-023, sessions finish by tool call): served on the same
-// /mcp as the built-in, so named mcp__mesh-context__<tool>.
+// /mcp as the built-in, so named mcp__runsheet__<tool>.
 var workTools = map[string]bool{
 	"mesh_finish":   true,
 	"mesh_fail":     true,

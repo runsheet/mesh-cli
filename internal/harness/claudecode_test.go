@@ -45,12 +45,12 @@ func TestBuildSessionFinishesOnTheNodesOwnTools(t *testing.T) {
 	for name, args := range map[string][]string{"Args": c.Args(build), "SandboxArgs": c.SandboxArgs(build, mcpPath)} {
 		allowed := strings.Split(flagAt(args, "--allowedTools"), ",")
 		denied := strings.Split(flagAt(args, "--disallowedTools"), ",")
-		for _, hosted := range []string{"mcp__mesh-context__mesh_finish", "mcp__mesh-context__mesh_fail"} {
+		for _, hosted := range []string{"mcp__runsheet__mesh_finish", "mcp__runsheet__mesh_fail"} {
 			if toolAllowed(hosted, allowed, denied) {
 				t.Errorf("%s allows %s: allowed %v, disallowed %v", name, hosted, allowed, denied)
 			}
 		}
-		for _, kept := range []string{"mcp__mesh-context__mesh_document", "mcp__mesh-context__mesh_progress", "mcp__mesh-node__mesh_finish", "mcp__mesh-node__mesh_fail"} {
+		for _, kept := range []string{"mcp__runsheet__mesh_document", "mcp__runsheet__mesh_progress", "mcp__mesh-node__mesh_finish", "mcp__mesh-node__mesh_fail"} {
 			if !toolAllowed(kept, allowed, denied) {
 				t.Errorf("%s does not allow %s: allowed %v, disallowed %v", name, kept, allowed, denied)
 			}
@@ -93,7 +93,7 @@ func TestBuildSessionFinishesOnTheNodesOwnTools(t *testing.T) {
 	for _, kind := range []Kind{KindEvaluate, KindPlan} {
 		job := Job{Kind: kind, MCPServers: servers}
 		for name, args := range map[string][]string{"Args": c.Args(job), "SandboxArgs": c.SandboxArgs(job, mcpPath)} {
-			if flagAt(args, "--allowedTools") != "mcp__mesh-context__*" || slices.Contains(args, "--disallowedTools") {
+			if flagAt(args, "--allowedTools") != "mcp__runsheet__*" || slices.Contains(args, "--disallowedTools") {
 				t.Errorf("%s %s = %v", kind, name, args)
 			}
 		}

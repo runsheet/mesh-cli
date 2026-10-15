@@ -23,7 +23,7 @@ type Handler struct {
 	GW  node.Gateway
 	Cfg *node.Config
 	// Scopes are the orgs the node serves: a goal slug is looked up in
-	// each, an item's org names its mesh-context project.
+	// each, an item's org names its context project.
 	Scopes node.Scopes
 	Log    *log.Logger
 	// OnDone is told when an item's session reported finish or fail.

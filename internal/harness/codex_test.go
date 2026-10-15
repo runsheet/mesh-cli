@@ -15,11 +15,11 @@ import (
 	"projectmesh.io/mesh-cli/internal/sessionunit"
 )
 
-// testServers are a job's MCP servers: mesh-context over http with the
+// testServers are a job's MCP servers: runsheet over http with the
 // node's token, and a local stdio server with a secret in its env.
 func testServers() map[string]any {
 	return map[string]any{
-		"mesh-context": map[string]any{"type": "http", "url": "https://api.test/mcp",
+		"runsheet": map[string]any{"type": "http", "url": "https://api.test/mcp",
 			"headers": map[string]string{"Authorization": "Bearer rs_secret"}},
 		"local": map[string]any{"command": "mcp-local", "args": []any{"--root", "."}, "env": map[string]any{"LOCAL_TOKEN": "local-secret"}},
 	}
@@ -131,7 +131,7 @@ args = ["--root", "."]
 env_vars = ["LOCAL_TOKEN"]
 default_tools_approval_mode = "approve"
 
-[mcp_servers.mesh-context]
+[mcp_servers.runsheet]
 url = "https://api.test/mcp"
 env_http_headers = { "Authorization" = "MESH_CODEX_MCP_1_TOKEN" }
 default_tools_approval_mode = "approve"
@@ -653,7 +653,7 @@ func TestCodexRunRedactsToolErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := res.Tools["mesh-context"].FirstError
+	got := res.Tools["runsheet"].FirstError
 	if strings.Contains(got, "api.runsheet.dev") || !strings.Contains(got, Redacted) {
 		t.Fatalf("FirstError = %q, want the secret redacted", got)
 	}

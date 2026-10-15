@@ -71,7 +71,7 @@ type Runner struct {
 	WorkRoot string
 	// BuildCache is a host validation's GOCACHE; "" is BuildCacheDir().
 	BuildCache string
-	// MCP are the MCP servers every session gets (mesh-context).
+	// MCP are the MCP servers every session gets (runsheet).
 	MCP map[string]any
 	// MCPFunc, when set, is asked for them at every item instead: the
 	// node's machine access token expires within the hour, so a build
@@ -433,7 +433,7 @@ func (r *Runner) RunItem(ctx context.Context, item gateway.WorkItem) error {
 	acct.SetLabel("item "+label, string(harness.KindBuild))
 	acct.Apply(&job)
 	job.Meta = harness.SessionMeta{NodeID: sc.NodeID, ItemID: item.ID, GoalID: item.GoalID, Attempt: item.Attempts, TempDirs: sessionTempDirs(job, acct)}
-	// the item's tools, beside the built-in mesh-context: a required one this
+	// the item's tools, beside the built-in runsheet: a required one this
 	// node cannot start hands the item back for a node that can
 	runtimes := r.runtimes()
 	st := SelectTools(mcp, acct.Tools, tools.RoleFor(string(harness.KindBuild)), runtimes)

@@ -9,16 +9,16 @@ import (
 	"projectmesh.io/mesh-cli/internal/sessionunit"
 )
 
-// TokenFileName is a session's mesh-context token file, in its own
+// TokenFileName is a session's runsheet token file, in its own
 // directory: `<workdir>.session/` on the host, the HOME of its pod,
 // the CODEX_HOME of a Codex session (mesh-cli ADR-029).
-const TokenFileName = "mesh-context.token"
+const TokenFileName = "runsheet.token"
 
 // RelayCommand is the mesh subcommand that relays stdio MCP to the
 // gateway's /mcp on a bearer read from a file per request.
 const RelayCommand = "mcp-relay"
 
-// TokenKeeper keeps a session's mesh-context token file fresh: Keep
+// TokenKeeper keeps a session's runsheet token file fresh: Keep
 // writes the bearer at path (0600, atomically) before it returns and
 // rewrites it as the bearer rotates until release. release(true)
 // removes the file — the session's end is handled; release(false)
@@ -27,7 +27,7 @@ type TokenKeeper interface {
 	Keep(path string) (release func(remove bool), err error)
 }
 
-// MeshContextRelay is the mesh-context server a session runs on the
+// MeshContextRelay is the runsheet server a session runs on the
 // host: bin's RelayCommand to url on the bearer in tokenFile. The node
 // renders it with tokenFile empty; the harness names the session's own
 // file (placeMeshContext). No bearer rides it.
@@ -65,7 +65,7 @@ func relayOf(srv any) (url, tokenFile string, ok bool) {
 	return url, tokenFile, url != ""
 }
 
-// meshContextRelay is the job's mesh-context relay, when its built-in
+// meshContextRelay is the job's runsheet relay, when its built-in
 // server is one.
 func meshContextRelay(job Job) (url string, ok bool) {
 	url, _, ok = relayOf(job.MCPServers[BuiltinMCP])
@@ -83,7 +83,7 @@ func withServer(servers map[string]any, name string, srv map[string]any) map[str
 	return out
 }
 
-// PlaceMeshContext points servers' mesh-context relay at the token
+// PlaceMeshContext points servers' runsheet relay at the token
 // file in dir and has keeper keep it, returning the servers as the
 // session runs them, the file's path and its release. Servers whose
 // built-in is not a relay, or no keeper, come back as they are, with no
@@ -141,7 +141,7 @@ func (c *ClaudeCode) keepAdopted(st sessionunit.State) func(bool) {
 	release, err := c.Tokens.Keep(st.TokenFile)
 	if err != nil {
 		if c.Stderr != nil {
-			fmt.Fprintf(c.Stderr, "harness claude-code: attach: mesh-context token: %v\n", err)
+			fmt.Fprintf(c.Stderr, "harness claude-code: attach: runsheet token: %v\n", err)
 		}
 		return func(bool) {}
 	}

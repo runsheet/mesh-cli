@@ -58,7 +58,7 @@ func TestContextSizeBudget(t *testing.T) {
 		t.Fatalf("index:\n%s", index)
 	}
 	mcp := MeshContextHTTP("https://api.test/", "rs_x")
-	srv := mcp["mesh-context"].(map[string]any)
+	srv := mcp["runsheet"].(map[string]any)
 	if srv["url"] != "https://api.test/mcp" || srv["headers"].(map[string]string)["Authorization"] != "Bearer rs_x" {
 		t.Fatalf("mcp: %v", mcp)
 	}

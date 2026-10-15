@@ -46,7 +46,7 @@ type StaticToken string
 // Token returns the bearer.
 func (t StaticToken) Token(context.Context) (string, error) { return string(t), nil }
 
-// Client speaks GraphQL (and mesh-context's JSON) to one gateway as one
+// Client speaks GraphQL (and the context server's JSON) to one gateway as one
 // principal.
 type Client struct {
 	BaseURL string
@@ -234,7 +234,7 @@ func (c *Client) WithItemToken(tok string) *Client {
 	return &Client{BaseURL: c.BaseURL, Source: StaticToken(tok), HTTP: c.HTTP, Now: c.Now}
 }
 
-// Bearer is the token the next request would carry — for the mesh-context
+// Bearer is the token the next request would carry — for the runsheet
 // MCP server a session is started with, which takes a header, not a
 // source.
 func (c *Client) Bearer(ctx context.Context) (string, error) {
@@ -915,7 +915,7 @@ type WorkItem struct {
 	RebaseFiles    []string `json:"rebaseFiles"`
 	RebaseNodeID   string   `json:"rebaseNodeId"`
 	RebasedHeadSHA string   `json:"rebasedHeadSha"`
-	// ProjectID is the mesh-context project the item's goal is in: the scope
+	// ProjectID is the context project the item's goal is in: the scope
 	// its agent resolves in (AgentIDs).
 	ProjectID string `json:"projectId"`
 	// ProtectedFiles are this item's own touched files that matched a
@@ -4331,9 +4331,9 @@ func (c *Client) CancelGoal(ctx context.Context, goalID, by string) error {
 	return c.Mutate(ctx, "cancelGoal", goalID, m)
 }
 
-// ---- mesh-context -------------------------------------------------------
+// ---- the context server ----------------------------------------------
 
-// Document is one row of mesh-context's document list.
+// Document is one row of the context server's document list.
 type Document struct {
 	Slug    string `json:"slug"`
 	Title   string `json:"title"`
@@ -4344,7 +4344,7 @@ type Document struct {
 	Path    string `json:"path"`
 }
 
-// contextGet reads a mesh-context path under /mesh/v1, the only path
+// contextGet reads a context-server path under /mesh/v1, the only path
 // the gateway serves (mesh-specs trd §6c); a 404 is an ordinary error.
 func (c *Client) contextGet(ctx context.Context, path, accept string) ([]byte, error) {
 	raw, status, statusText, err := c.contextGetAt(ctx, "/mesh/v1"+path, accept)
@@ -4357,7 +4357,7 @@ func (c *Client) contextGet(ctx context.Context, path, accept string) ([]byte, e
 	return raw, nil
 }
 
-// contextGetAt GETs one mesh-context path, retrying a transport failure
+// contextGetAt GETs one context-server path, retrying a transport failure
 // or a 429/5xx answer as Query retries a read (retryRead); the window
 // spent returns "after N tries over <elapsed>: <last answer>" as err.
 func (c *Client) contextGetAt(ctx context.Context, path, accept string) (raw []byte, status int, statusText string, err error) {

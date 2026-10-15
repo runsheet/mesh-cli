@@ -24,7 +24,7 @@ const (
 )
 
 func meshContext() map[string]any {
-	return map[string]any{"mesh-context": map[string]any{
+	return map[string]any{"runsheet": map[string]any{
 		"type": "http", "url": "https://api.runsheet.dev/mcp",
 		"headers": map[string]string{"Authorization": "Bearer ${MESH_CONTEXT_TOKEN}"},
 	}}
@@ -51,7 +51,7 @@ func TestClaudeCodeRendersRemoteLocalAndBuiltin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, n := range []string{"mesh-context", "search", "fs-tools"} {
+	for _, n := range []string{"runsheet", "search", "fs-tools"} {
 		if _, ok := servers[n]; !ok {
 			t.Fatalf("servers lack %s: %v", n, servers)
 		}
@@ -85,7 +85,7 @@ func TestClaudeCodeRendersRemoteLocalAndBuiltin(t *testing.T) {
 	}
 
 	args := harness.MCPArgs(servers)
-	if len(args) != 4 || args[2] != "--allowedTools" || args[3] != "mcp__fs-tools__*,mcp__mesh-context__*,mcp__search__*" {
+	if len(args) != 4 || args[2] != "--allowedTools" || args[3] != "mcp__fs-tools__*,mcp__runsheet__*,mcp__search__*" {
 		t.Fatalf("MCPArgs = %v", args)
 	}
 }
@@ -114,12 +114,28 @@ func TestLocalRuntimes(t *testing.T) {
 }
 
 func TestClaudeCodeRefusesClashWithBuiltin(t *testing.T) {
-	_, _, err := ClaudeCode(meshContext(), []Tool{{Name: "mesh-context", Transport: Remote, URL: "https://x"}})
+	_, _, err := ClaudeCode(meshContext(), []Tool{{Name: "runsheet", Transport: Remote, URL: "https://x"}})
 	if err == nil || !strings.Contains(err.Error(), "built-in") {
 		t.Fatalf("err = %v", err)
 	}
-	if _, err := WriteCodexConfig(t.TempDir(), []Tool{{Name: "mesh-context", Transport: Remote, URL: "https://x"}}); err == nil {
-		t.Fatal("codex: clash with mesh-context accepted")
+	if _, err := WriteCodexConfig(t.TempDir(), []Tool{{Name: "runsheet", Transport: Remote, URL: "https://x"}}); err == nil {
+		t.Fatal("codex: clash with runsheet accepted")
+	}
+}
+
+// mesh-context, the built-in's name until 2026-10-15, is an alias read
+// on adoption (IsBuiltin) and never the clash: a console tool named that
+// is an ordinary tool, as runsheet is refused.
+func TestToolNamedMeshContextIsNotAClash(t *testing.T) {
+	servers, _, err := ClaudeCode(meshContext(), []Tool{{Name: "mesh-context", Transport: Remote, URL: "https://x"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := servers["mesh-context"]; !ok {
+		t.Fatalf("servers = %v", servers)
+	}
+	if _, err := WriteCodexConfig(t.TempDir(), []Tool{{Name: "mesh-context", Transport: Remote, URL: "https://x"}}); err != nil {
+		t.Fatalf("codex: %v", err)
 	}
 }
 
@@ -348,10 +364,16 @@ func TestRedact(t *testing.T) {
 	}
 }
 
-// IsBuiltin knows the built-in by its name and, until 2026-10-28, its
-// old one, BuiltinAlias.
+// IsBuiltin knows the built-in by its name, runsheet, and its old ones,
+// mesh-context and BuiltinAlias, read as aliases.
 func TestIsBuiltin(t *testing.T) {
-	for name, want := range map[string]bool{"mesh-context": true, BuiltinAlias(): true, "search": false, "": false} {
+	if Builtin != "runsheet" {
+		t.Fatalf("Builtin = %q", Builtin)
+	}
+	if a := BuiltinAliases(); len(a) != 2 || a[0] != "mesh-context" || a[1] != BuiltinAlias() {
+		t.Fatalf("BuiltinAliases() = %q", a)
+	}
+	for name, want := range map[string]bool{"runsheet": true, "mesh-context": true, BuiltinAlias(): true, "search": false, "": false} {
 		if got := IsBuiltin(name); got != want {
 			t.Errorf("IsBuiltin(%q) = %v, want %v", name, got, want)
 		}

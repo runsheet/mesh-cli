@@ -36,10 +36,10 @@ func perplexityTool() map[string]any {
 // errored with a message echoing the key it was sent, and none for
 // perplexity.
 func braveErrored() (map[string]int, map[string]*harness.ToolStat) {
-	return map[string]int{"brave": 3, "mesh-context": 2},
+	return map[string]int{"brave": 3, "runsheet": 2},
 		map[string]*harness.ToolStat{
-			"brave":        {Calls: 3, Errors: 1, Wall: 1500 * time.Millisecond, FirstError: "401 Unauthorized: token " + braveSecret + " is not valid"},
-			"mesh-context": {Calls: 2, Wall: 40 * time.Millisecond},
+			"brave":    {Calls: 3, Errors: 1, Wall: 1500 * time.Millisecond, FirstError: "401 Unauthorized: token " + braveSecret + " is not valid"},
+			"runsheet": {Calls: 2, Wall: 40 * time.Millisecond},
 		}
 }
 
@@ -48,13 +48,13 @@ func braveErrored() (map[string]int, map[string]*harness.ToolStat) {
 // per-tool rows beside the total, and its note names perplexity as never
 // called and brave's first error, with no secret in it.
 func TestSessionAccountReportsToolsAndNotesTheirUse(t *testing.T) {
-	st := SelectTools(map[string]any{"mesh-context": map[string]any{}}, []tools.Tool{
+	st := SelectTools(map[string]any{"runsheet": map[string]any{}}, []tools.Tool{
 		{Name: "brave", Transport: tools.Remote, URL: "https://brave.example/mcp", Secrets: map[string]string{"X-Subscription-Token": braveSecret}},
 		{Name: "perplexity", Transport: tools.Remote, URL: "https://perplexity.example/mcp", Secrets: map[string]string{"Authorization": "Bearer " + perplexitySecret}},
 	}, string(harness.KindBuild), nil)
 	acct := &SessionAccount{creds: &Credentials{}, started: time.Now()}
 	var job harness.Job
-	if err := st.UseTools(&job, map[string]any{"mesh-context": map[string]any{}}, acct); err != nil {
+	if err := st.UseTools(&job, map[string]any{"runsheet": map[string]any{}}, acct); err != nil {
 		t.Fatal(err)
 	}
 	calls, stats := braveErrored()
@@ -64,7 +64,7 @@ func TestSessionAccountReportsToolsAndNotesTheirUse(t *testing.T) {
 	if rep.ToolCalls != 5 {
 		t.Fatalf("toolCalls = %d", rep.ToolCalls)
 	}
-	want := []gateway.ToolCallReport{{Tool: "brave", Calls: 3, Errors: 1, Ms: 1500, Error: "401 Unauthorized: token [redacted] is not valid"}, {Tool: "mesh-context", Calls: 2, Ms: 40}}
+	want := []gateway.ToolCallReport{{Tool: "brave", Calls: 3, Errors: 1, Ms: 1500, Error: "401 Unauthorized: token [redacted] is not valid"}, {Tool: "runsheet", Calls: 2, Ms: 40}}
 	if len(rep.Tools) != len(want) || rep.Tools[0] != want[0] || rep.Tools[1] != want[1] {
 		t.Fatalf("tools = %+v", rep.Tools)
 	}
@@ -78,7 +78,7 @@ func TestSessionAccountReportsToolsAndNotesTheirUse(t *testing.T) {
 			t.Fatalf("secret %s in the note %q", s, note)
 		}
 	}
-	if strings.Contains(note, "mesh-context") {
+	if strings.Contains(note, "runsheet") {
 		t.Fatalf("the built-in named in the note %q", note)
 	}
 
@@ -200,7 +200,7 @@ func TestEvaluationNotesItsToolUse(t *testing.T) {
 
 // An evaluation whose built-in context tool errored — no console tool
 // served at all — names it and its error text in the notes, and the
-// report's mesh-context row carries that error. (One call answered: a
+// report's runsheet row carries that error. (One call answered: a
 // session whose every call errored is no verdict, ADR 011.)
 func TestEvaluationNotesTheBuiltinsError(t *testing.T) {
 	f := seed(t)
@@ -211,9 +211,9 @@ func TestEvaluationNotesTheBuiltinsError(t *testing.T) {
 	var item gateway.WorkItem
 	item.ID, item.OrgID, item.GoalID, item.RepoID, item.Seq, item.Branch = item1, orgID, goalID, repoID, 1, "mesh/ship-it-1"
 	ws := &fakeWS{root: t.TempDir()}
-	const msg = "tool call failed for `mesh-context/mesh_document`: 401 Unauthorized"
-	h := &fakeHarness{text: "Fine.\nVERDICT: PASS", toolCalls: map[string]int{"mesh-context": 3},
-		tools: map[string]*harness.ToolStat{"mesh-context": {Calls: 3, Clean: 1, Errors: 2, Wall: 90 * time.Millisecond, FirstError: msg}}}
+	const msg = "tool call failed for `runsheet/mesh_document`: 401 Unauthorized"
+	h := &fakeHarness{text: "Fine.\nVERDICT: PASS", toolCalls: map[string]int{"runsheet": 3},
+		tools: map[string]*harness.ToolStat{"runsheet": {Calls: 3, Clean: 1, Errors: 2, Wall: 90 * time.Millisecond, FirstError: msg}}}
 	ev := &Evaluator{GW: gw, Harness: h, WS: ws, Scopes: scopesOf(cfg), WorkRoot: ws.root, MCP: MeshContextHTTP(f.URL(), "rs_test"),
 		Credentials: &Credentials{GW: gw}, Runtimes: onlyNpx, Declines: &Declines{}, Log: log.New(&syncBuf{}, "", 0)}
 
@@ -222,12 +222,12 @@ func TestEvaluationNotesTheBuiltinsError(t *testing.T) {
 	}
 	call := f.CallsNamed("evaluateWorkItem")[0]
 	notes, _ := call.Input["notes"].(string)
-	if !strings.HasSuffix(notes, "\ntools: mesh-context: first call errored: "+msg) {
+	if !strings.HasSuffix(notes, "\ntools: runsheet: first call errored: "+msg) {
 		t.Fatalf("notes = %q", notes)
 	}
 	usage, _ := call.Input["usage"].(map[string]any)
 	rows, _ := usage["tools"].([]any)
-	if row, _ := rows[0].(map[string]any); len(rows) != 1 || row["tool"] != "mesh-context" || row["error"] != msg {
+	if row, _ := rows[0].(map[string]any); len(rows) != 1 || row["tool"] != "runsheet" || row["error"] != msg {
 		t.Fatalf("usage tools = %#v", usage["tools"])
 	}
 }
@@ -238,16 +238,16 @@ func TestEvaluationNotesTheBuiltinsError(t *testing.T) {
 func TestUseNoteNamesTheBuiltin(t *testing.T) {
 	st := SessionTools{Use: []tools.Tool{{Name: "brave", Headers: map[string]string{"X-Key": braveSecret}}}}
 	res := harness.Result{ToolCalls: map[string]int{"brave": 1, "codex_apps": 1}, Tools: map[string]*harness.ToolStat{
-		"brave":        {Calls: 1},
-		"codex_apps":   {Calls: 1, Errors: 1, FirstError: "apps unavailable " + braveSecret},
-		"mesh-context": {Errors: 1, FirstError: "MCP client for `mesh-context` failed to start: Auth required during MCP startup"},
+		"brave":      {Calls: 1},
+		"codex_apps": {Calls: 1, Errors: 1, FirstError: "apps unavailable " + braveSecret},
+		"runsheet":   {Errors: 1, FirstError: "MCP client for `runsheet` failed to start: Auth required during MCP startup"},
 	}}
-	want := "tools: mesh-context served, never called: MCP client for `mesh-context` failed to start: Auth required during MCP startup; codex_apps: first call errored: apps unavailable [redacted]"
+	want := "tools: runsheet served, never called: MCP client for `runsheet` failed to start: Auth required during MCP startup; codex_apps: first call errored: apps unavailable [redacted]"
 	if note := st.UseNote(res, nil); note != want {
 		t.Fatalf("note = %q, want %q", note, want)
 	}
 	// the built-in called cleanly is never named
-	clean := harness.Result{ToolCalls: map[string]int{"mesh-context": 2}, Tools: map[string]*harness.ToolStat{"mesh-context": {Calls: 2}}}
+	clean := harness.Result{ToolCalls: map[string]int{"runsheet": 2}, Tools: map[string]*harness.ToolStat{"runsheet": {Calls: 2}}}
 	if note := (SessionTools{}).UseNote(clean, nil); note != "" {
 		t.Fatalf("clean note = %q", note)
 	}
@@ -256,9 +256,9 @@ func TestUseNoteNamesTheBuiltin(t *testing.T) {
 // Merging a carried session's rows keeps the first non-empty error.
 func TestReportMergeKeepsTheFirstError(t *testing.T) {
 	acct := &SessionAccount{creds: &Credentials{}, started: time.Now()}
-	acct.Report(harness.Result{ToolCalls: map[string]int{"mesh-context": 1}, Tools: map[string]*harness.ToolStat{"mesh-context": {Calls: 1}}})
-	acct.Add(harness.Result{ToolCalls: map[string]int{"mesh-context": 1}, Tools: map[string]*harness.ToolStat{"mesh-context": {Calls: 1, Errors: 1, FirstError: "first"}}})
-	acct.Add(harness.Result{ToolCalls: map[string]int{"mesh-context": 1}, Tools: map[string]*harness.ToolStat{"mesh-context": {Calls: 1, Errors: 1, FirstError: "second"}}})
+	acct.Report(harness.Result{ToolCalls: map[string]int{"runsheet": 1}, Tools: map[string]*harness.ToolStat{"runsheet": {Calls: 1}}})
+	acct.Add(harness.Result{ToolCalls: map[string]int{"runsheet": 1}, Tools: map[string]*harness.ToolStat{"runsheet": {Calls: 1, Errors: 1, FirstError: "first"}}})
+	acct.Add(harness.Result{ToolCalls: map[string]int{"runsheet": 1}, Tools: map[string]*harness.ToolStat{"runsheet": {Calls: 1, Errors: 1, FirstError: "second"}}})
 	if got := acct.report.Tools; len(got) != 1 || got[0].Error != "first" || got[0].Errors != 2 {
 		t.Fatalf("tools = %+v", got)
 	}
@@ -325,7 +325,7 @@ func TestCarriedTakesContextToolsAndDetailTogether(t *testing.T) {
 // its old name too: an adopted session from an older node reports
 // tools.BuiltinAlias (tools.IsBuiltin, an alias read until 2026-10-28).
 func TestUseNoteNamesTheBuiltinFirstUnderEitherName(t *testing.T) {
-	for _, name := range []string{"mesh-context", tools.BuiltinAlias()} {
+	for _, name := range []string{"runsheet", "mesh-context", tools.BuiltinAlias()} {
 		res := harness.Result{Tools: map[string]*harness.ToolStat{
 			"aardvark": {Calls: 1, Errors: 1, FirstError: "down"},
 			name:       {Calls: 1, Errors: 1, FirstError: "401"},
@@ -342,7 +342,7 @@ func TestUseNoteNamesTheBuiltinFirstUnderEitherName(t *testing.T) {
 func TestResearchNotesItsToolUse(t *testing.T) {
 	f := seed(t)
 	f.SessionTools[dirID] = []map[string]any{braveTool()}
-	h := &fakeHarness{text: "```json\n{\"goals\": []}\n```", toolCalls: map[string]int{"mesh-context": 2}}
+	h := &fakeHarness{text: "```json\n{\"goals\": []}\n```", toolCalls: map[string]int{"runsheet": 2}}
 	_, loop, logs := toolDirector(t, f, h)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()

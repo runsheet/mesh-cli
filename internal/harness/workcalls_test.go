@@ -14,7 +14,7 @@ var finishInput = map[string]any{
 	"head_sha": "3f2a9c41d0b7e65a8f1c2d3e4b5a69788c7d6e5f",
 }
 
-// A Claude session that ends by calling mcp__mesh-context__mesh_finish
+// A Claude session that ends by calling mcp__runsheet__mesh_finish
 // keeps the call's input on WorkCalls by the tool's own name, beside
 // mesh_progress's; mesh_document, not a work tool, is not kept
 // (ADR-023, sessions finish by tool call).
@@ -37,8 +37,33 @@ func TestParseStreamKeepsWorkCalls(t *testing.T) {
 	if _, ok := res.WorkCalls["mesh_document"]; ok || len(res.WorkCalls) != 2 {
 		t.Errorf("WorkCalls = %v, want mesh_finish and mesh_progress alone", res.WorkCalls)
 	}
-	if res.ToolCalls["mesh-context"] != 3 {
-		t.Errorf("ToolCalls[mesh-context] = %d, want 3", res.ToolCalls["mesh-context"])
+	if res.ToolCalls["runsheet"] != 3 {
+		t.Errorf("ToolCalls[runsheet] = %d, want 3", res.ToolCalls["runsheet"])
+	}
+}
+
+// A stream whose system/init names the built-in runsheet and one an
+// older node started, naming it mesh-context, both yield the mesh_finish
+// work call, and the old name's calls fold into runsheet on ToolNames and
+// DocumentsFetched (tools.IsBuiltin; ADR-006's amendment 2026-10-15).
+func TestParseStreamWorkCallsUnderEitherBuiltinName(t *testing.T) {
+	raw, err := os.ReadFile("testdata/stream_mesh_finish.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"runsheet", "mesh-context"} {
+		stream := strings.ReplaceAll(string(raw), `"runsheet"`, `"`+name+`"`)
+		stream = strings.ReplaceAll(stream, "mcp__runsheet__", "mcp__"+name+"__")
+		if !strings.Contains(stream, `{"name":"`+name+`","status":"connected"}`) {
+			t.Fatalf("%s: system/init does not name it", name)
+		}
+		res := ParseStream(strings.NewReader(stream), nil)
+		if got := res.WorkCalls["mesh_finish"]; !reflect.DeepEqual(got, finishInput) {
+			t.Errorf("%s: WorkCalls[mesh_finish] = %v, want %v", name, got, finishInput)
+		}
+		if res.ToolNames["runsheet__mesh_finish"] != 1 || res.ToolNames["runsheet__mesh_document"] != 1 || res.DocumentsFetched != 1 {
+			t.Errorf("%s: ToolNames %v, DocumentsFetched %d; want the built-in's calls under runsheet", name, res.ToolNames, res.DocumentsFetched)
+		}
 	}
 }
 
