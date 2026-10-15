@@ -130,32 +130,22 @@ func tomlRemoveSpans(src []byte, keys []string) []edit {
 		if i+1 < len(hs) {
 			next = hs[i+1].start
 		}
-		// The run's last line with a key or header on it ends the span,
-		// then the blank lines after it up to a comment or next.
-		end := hs[i].lineEnd
-		for ls := hs[i].lineEnd; ls < next; {
-			le := bytes.IndexByte(src[ls:next], '\n')
-			if le < 0 {
-				le = next
-			} else {
-				le += ls + 1
+		// The span runs to next, less the comment lines directly above
+		// next's header: those are the next table's. Every other line
+		// before next — keys, blank lines, the run's own trailing
+		// comments, all of it at the end of the file — is the run's.
+		end := next
+		if next < len(src) {
+			for end > hs[i].lineEnd {
+				ls := bytes.LastIndexByte(src[:end-1], '\n') + 1
+				if ls < hs[i].lineEnd {
+					ls = hs[i].lineEnd
+				}
+				if line := bytes.TrimSpace(src[ls:end]); len(line) == 0 || line[0] != '#' {
+					break
+				}
+				end = ls
 			}
-			if line := bytes.TrimSpace(src[ls:le]); len(line) > 0 && line[0] != '#' {
-				end = le
-			}
-			ls = le
-		}
-		for end < next {
-			le := bytes.IndexByte(src[end:next], '\n')
-			if le < 0 {
-				le = next
-			} else {
-				le += end + 1
-			}
-			if len(bytes.TrimSpace(src[end:le])) > 0 {
-				break
-			}
-			end = le
 		}
 		if end == len(src) {
 			for start > 0 {
