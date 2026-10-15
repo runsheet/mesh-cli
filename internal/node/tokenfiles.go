@@ -75,7 +75,14 @@ func (t *TokenFiles) Keep(path string) (func(remove bool), error) {
 	// stops writing, its release removes nothing of the second's
 	t.files[path] = k
 	t.mu.Unlock()
-	go t.refresh(path, k)
+	// the ticker opens before Keep returns, so a tick from then on is
+	// never missed for want of a refresher listening
+	every := t.Every
+	if every <= 0 {
+		every = TokenRefreshEvery
+	}
+	ticks, stopTicks := t.ticker(every)
+	go t.refresh(path, k, ticks, stopTicks)
 	var once sync.Once
 	return func(remove bool) {
 		once.Do(func() {
@@ -141,14 +148,9 @@ func (t *TokenFiles) rewrite(path string, k *keptToken, tok string) error {
 	return nil
 }
 
-func (t *TokenFiles) refresh(path string, k *keptToken) {
+func (t *TokenFiles) refresh(path string, k *keptToken, ticks <-chan time.Time, stop func()) {
 	defer crash.Guard()
 	defer close(k.done)
-	every := t.Every
-	if every <= 0 {
-		every = TokenRefreshEvery
-	}
-	ticks, stop := t.ticker(every)
 	defer stop()
 	for {
 		select {

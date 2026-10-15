@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/tools"
 )
 
@@ -61,6 +62,17 @@ type Codex struct {
 	// CODEX_HOME, fresh when the job's mesh-context is the relay
 	// (MeshContextRelay, mesh-cli ADR-029).
 	Tokens TokenKeeper
+	// Sandbox, when set, runs every session in its own pod (ADR 007), as
+	// ClaudeCode.Sandbox does: the node image's codex, the workspace and
+	// a temporary HOME the only host paths, the session's CODEX_HOME
+	// inside that HOME (Session.CodexHome), the environment the job's
+	// allow-listed variables by name. Nil is `sandbox: off`: codex on
+	// the host, Binary.
+	Sandbox *sandbox.Sandbox
+	// SandboxBinary is the agent's executable in the pod: empty is
+	// `codex` on the node image's PATH; else a path inside the pod, such
+	// as one in the workspace (an e2e's stub agent).
+	SandboxBinary string
 }
 
 // CodexProvider is an OpenAI-compatible endpoint a Codex session talks
@@ -717,6 +729,10 @@ func (s *codexSession) lookup(name string) (string, bool) {
 // UnavailableError when it is a limit); a stream that ends without
 // either turn event is a Result with Success false, as for Claude.
 func (c *Codex) Run(ctx context.Context, job Job, onProgress func(Progress)) (Result, error) {
+	if c.Sandbox != nil || job.Session != nil {
+		// the image's codex in the session's pod: no host binary looked up
+		return c.runSandboxed(ctx, job, onProgress)
+	}
 	bin := c.Binary
 	if bin == "" {
 		bin = "codex"
@@ -731,24 +747,8 @@ func (c *Codex) Run(ctx context.Context, job Job, onProgress func(Progress)) (Re
 	defer s.close()
 	home, secrets := s.home, s.secrets
 
-	var keptDir string
-	var keptOut, keptErrFile *os.File
-	if c.WorkRoot != "" {
-		now := time.Now()
-		if err := SweepKeptSessions(c.WorkRoot, now); err != nil && c.Stderr != nil {
-			fmt.Fprintf(c.Stderr, "harness codex: sweep kept sessions: %v\n", err)
-		}
-		var kErr error
-		if keptDir, keptOut, keptErrFile, kErr = openKeptSession(c.WorkRoot, job, now); kErr != nil {
-			if c.Stderr != nil {
-				fmt.Fprintf(c.Stderr, "harness codex: kept session: %v\n", kErr)
-			}
-			keptDir, keptOut, keptErrFile = "", nil, nil
-		} else {
-			defer keptOut.Close()
-			defer keptErrFile.Close()
-		}
-	}
+	kept := c.keepSession(job, secrets)
+	defer kept.close()
 
 	if job.Timeout > 0 {
 		var cancel context.CancelFunc
@@ -761,14 +761,7 @@ func (c *Codex) Run(ctx context.Context, job Job, onProgress func(Progress)) (Re
 	cmd.Stdin = strings.NewReader(job.Prompt)
 	cmd.WaitDelay = 5 * time.Second
 	var errBuf bytes.Buffer
-	stderrWriters := []io.Writer{&errBuf}
-	if c.Stderr != nil {
-		stderrWriters = append(stderrWriters, &redactWriter{w: c.Stderr, secrets: secrets})
-	}
-	if keptErrFile != nil {
-		stderrWriters = append(stderrWriters, &redactWriter{w: keptErrFile, secrets: secrets})
-	}
-	cmd.Stderr = io.MultiWriter(stderrWriters...)
+	cmd.Stderr = kept.stderr(&errBuf, c.Stderr)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return Result{}, err
@@ -777,13 +770,97 @@ func (c *Codex) Run(ctx context.Context, job Job, onProgress func(Progress)) (Re
 		return Result{}, fmt.Errorf("harness codex: start: %w", err)
 	}
 	rawOut := &capBuffer{max: 64 << 10}
-	var stdoutTee io.Writer = rawOut
-	if keptOut != nil {
-		stdoutTee = io.MultiWriter(rawOut, &redactWriter{w: keptOut, secrets: secrets})
+	res, failure := c.readStream(io.TeeReader(stdout, kept.stdout(rawOut)), job, onProgress)
+	res.KeptSessionDir = kept.dir
+	waitErr := cmd.Wait()
+	kept.flush()
+	return codexEnd(ctx, res, failure, waitErr, &errBuf, rawOut, secrets, home.dir)
+}
+
+// keptCodex is a session's kept stream and stderr (KeepSessionOutput),
+// or nothing when the harness keeps none.
+type keptCodex struct {
+	dir     string
+	out     *os.File
+	errFile *os.File
+	secrets []string
+	// redactors hold back a partial secret until the stream ends
+	redactors []*streamRedactor
+}
+
+// keepSession opens the session's kept files under WorkRoot, sweeping
+// older ones first; a failure keeps nothing and says so.
+func (c *Codex) keepSession(job Job, secrets []string) *keptCodex {
+	k := &keptCodex{secrets: secrets}
+	if c.WorkRoot == "" {
+		return k
 	}
+	now := time.Now()
+	if err := SweepKeptSessions(c.WorkRoot, now); err != nil && c.Stderr != nil {
+		fmt.Fprintf(c.Stderr, "harness codex: sweep kept sessions: %v\n", err)
+	}
+	var err error
+	if k.dir, k.out, k.errFile, err = openKeptSession(c.WorkRoot, job, now); err != nil {
+		if c.Stderr != nil {
+			fmt.Fprintf(c.Stderr, "harness codex: kept session: %v\n", err)
+		}
+		return &keptCodex{secrets: secrets}
+	}
+	return k
+}
+
+func (k *keptCodex) close() {
+	k.flush()
+	if k.out != nil {
+		k.out.Close()
+	}
+	if k.errFile != nil {
+		k.errFile.Close()
+	}
+}
+
+// flush writes what the redactors held back once the process is done.
+func (k *keptCodex) flush() {
+	for _, r := range k.redactors {
+		_ = r.Flush()
+	}
+	k.redactors = nil
+}
+
+func (k *keptCodex) redacting(w io.Writer) io.Writer {
+	r := newStreamRedactor(w, k.secrets)
+	k.redactors = append(k.redactors, r)
+	return r
+}
+
+// stderr is where the process's stderr goes: buf, and log and the kept
+// file with the secrets redacted, a secret split across writes too.
+func (k *keptCodex) stderr(buf *bytes.Buffer, log io.Writer) io.Writer {
+	ws := []io.Writer{buf}
+	if log != nil {
+		ws = append(ws, k.redacting(log))
+	}
+	if k.errFile != nil {
+		ws = append(ws, k.redacting(k.errFile))
+	}
+	return io.MultiWriter(ws...)
+}
+
+// stdout is where the stream is copied as it is read: raw, and the
+// kept file redacted.
+func (k *keptCodex) stdout(raw *capBuffer) io.Writer {
+	if k.out == nil {
+		return raw
+	}
+	return io.MultiWriter(raw, k.redacting(k.out))
+}
+
+// readStream parses a session's stream, passing what it says on, and
+// returns the turn.failed message, if any.
+func (c *Codex) readStream(stdout io.Reader, job Job, onProgress func(Progress)) (Result, string) {
 	var sessionID, failure string
 	price := c.Account.Provider.Price
-	res := parseCodexStream(io.TeeReader(stdout, stdoutTee), job.Model, price, func(ev CodexEvent) {
+	res := parseCodexStream(stdout, job.Model, price, func(ev CodexEvent) {
 		switch ev.Type {
 		case "thread.started":
 			sessionID = ev.ThreadID
@@ -808,14 +885,20 @@ func (c *Codex) Run(ctx context.Context, job Job, onProgress func(Progress)) (Re
 			}
 		}
 	})
-	res.KeptSessionDir = keptDir
-	waitErr := cmd.Wait()
+	return res, failure
+}
+
+// codexEnd is how a session ended, on the host or in a pod: its Result,
+// or the error its turn, its exit, its stderr or its stdout said, every
+// secret redacted. homeDir is the CODEX_HOME its session limits are
+// read from when the stream carried none.
+func codexEnd(ctx context.Context, res Result, failure string, waitErr error, errBuf *bytes.Buffer, rawOut *capBuffer, secrets []string, homeDir string) (Result, error) {
 	// a tool's error text rides the usage report and the item's note
 	for _, stat := range res.Tools {
 		stat.FirstError = Redact(stat.FirstError, secrets...)
 	}
 	if res.RateLimit == nil {
-		if rl, err := ParseCodexSessionLimits(home.dir); err == nil && rl != nil {
+		if rl, err := ParseCodexSessionLimits(homeDir); err == nil && rl != nil {
 			res.RateLimit = rl
 		}
 	}
@@ -834,7 +917,8 @@ func (c *Codex) Run(ctx context.Context, job Job, onProgress func(Progress)) (Re
 	}
 	if waitErr != nil {
 		var exitErr *exec.ExitError
-		if errors.As(waitErr, &exitErr) && res.Success && res.Text != "" {
+		var sbExit *sandbox.ExitError
+		if (errors.As(waitErr, &exitErr) || errors.As(waitErr, &sbExit)) && res.Success && res.Text != "" {
 			// the turn completed and said its piece; the exit is Codex's own
 			res.Success = false
 			return res, nil
