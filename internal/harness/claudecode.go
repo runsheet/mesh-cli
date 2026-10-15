@@ -82,10 +82,8 @@ func (c *ClaudeCode) Args(job Job) []string {
 	if job.MaxBudgetUSD > 0 {
 		args = append(args, "--max-budget-usd", strconv.FormatFloat(job.MaxBudgetUSD, 'f', 2, 64))
 	}
-	if len(job.Settings) > 0 {
-		if cfg, err := json.Marshal(job.Settings); err == nil {
-			args = append(args, "--settings", string(cfg))
-		}
+	if cfg, err := json.Marshal(SessionSettings(job.Settings)); err == nil {
+		args = append(args, "--settings", string(cfg))
 	}
 	if nodeFinishes(job) {
 		// a build finishes on the node's own tools, never the hosted
@@ -97,6 +95,37 @@ func (c *ClaudeCode) Args(job Job) []string {
 	}
 	args = append(args, c.ExtraArgs...)
 	return args
+}
+
+// NoAttributionSettings is the `attribution` block every Claude Code
+// session carries, host or sandbox, every role: no commit trailer, no
+// pull request text, no session link. A session's commits carry only
+// the pairers' Co-Authored-By the node's hook adds (ADR-024), never
+// Claude Code's own `Co-Authored-By: Claude … <noreply@anthropic.com>`
+// or `🤖 Generated with Claude Code`.
+//
+// Claude Code's settings reference
+// (https://code.claude.com/docs/en/settings-reference, "Git and
+// attribution"): an empty `attribution.commit` hides the commit trailer,
+// an empty `attribution.pr` the PR text, and `sessionUrl: false` the
+// session link. The empty-string form, not `attribution: false`, which
+// only newer CLIs (v2.1.281+) take — an older one rejects the whole
+// settings, the tool-trim hook with them; `includeCoAuthoredBy` is
+// deprecated and ignored once `attribution` is set.
+func NoAttributionSettings() map[string]any {
+	return map[string]any{"commit": "", "pr": "", "sessionUrl": false}
+}
+
+// SessionSettings is the job's Settings with NoAttributionSettings as
+// their `attribution`, whatever the job set there: a fresh map, the
+// job's own left as it was.
+func SessionSettings(settings map[string]any) map[string]any {
+	out := make(map[string]any, len(settings)+1)
+	for k, v := range settings {
+		out[k] = v
+	}
+	out["attribution"] = NoAttributionSettings()
+	return out
 }
 
 // MCPArgs is the command line for a set of MCP servers: the config
