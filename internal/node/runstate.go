@@ -70,6 +70,7 @@ func (s RunState) Stopped(pid int) {
 	_ = os.Remove(s.HeldPath())
 	_ = os.Remove(s.SharesPath())
 	_ = os.Remove(s.StandingPath())
+	_ = os.Remove(s.FindingsPath())
 }
 
 // WriteScaling leaves a ranged node's capacity in force for `mesh node
@@ -183,6 +184,44 @@ func (s RunState) Standing() ([]AccountStanding, bool) {
 		return nil, false
 	}
 	return rows, true
+}
+
+// FindingsPath is the quartermaster's last run's findings as of the
+// last tick: node.findings (goal the-quartermaster-keeps-the-nodes-fit).
+func (s RunState) FindingsPath() string { return filepath.Join(s.Dir, "node.findings") }
+
+// WriteFindings leaves the quartermaster's last findings for `mesh node
+// status`, atomic like WriteStanding; an empty list removes the file.
+func (s RunState) WriteFindings(findings []Finding) error {
+	if len(findings) == 0 {
+		if err := os.Remove(s.FindingsPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
+	data, err := json.Marshal(findings)
+	if err != nil {
+		return err
+	}
+	tmp := s.FindingsPath() + ".tmp"
+	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, s.FindingsPath())
+}
+
+// Findings reads what WriteFindings left; false when nothing is there
+// or it cannot be read.
+func (s RunState) Findings() ([]Finding, bool) {
+	data, err := os.ReadFile(s.FindingsPath())
+	if err != nil {
+		return nil, false
+	}
+	var findings []Finding
+	if json.Unmarshal(data, &findings) != nil {
+		return nil, false
+	}
+	return findings, true
 }
 
 // ErrNoNode is PID's answer when no pidfile is there.
