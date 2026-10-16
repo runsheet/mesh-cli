@@ -696,3 +696,14 @@ func (p *Podman) RemoveContainer(ctx context.Context, name string) error {
 	_, err := p.output(ctx, RemoveContainerArgs(name), nil)
 	return err
 }
+
+// ImageExecArgs are ImageExec's arguments: a container removed at its
+// end, with no network and no mount, pulled when missing.
+func ImageExecArgs(image string, cmd []string) []string {
+	return append([]string{"run", "--rm", "--network", "none", image}, cmd...)
+}
+
+// ImageExec implements Runtime.
+func (p *Podman) ImageExec(ctx context.Context, image string, cmd []string) (string, error) {
+	return p.output(ctx, ImageExecArgs(image, cmd), nil)
+}
