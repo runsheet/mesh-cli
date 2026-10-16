@@ -70,6 +70,7 @@ func (s RunState) Stopped(pid int) {
 	_ = os.Remove(s.HeldPath())
 	_ = os.Remove(s.SharesPath())
 	_ = os.Remove(s.StandingPath())
+	_ = os.Remove(s.FindingsPath())
 }
 
 // WriteScaling leaves a ranged node's capacity in force for `mesh node
@@ -183,6 +184,44 @@ func (s RunState) Standing() ([]AccountStanding, bool) {
 		return nil, false
 	}
 	return rows, true
+}
+
+// FindingsPath is the quartermaster's last run's findings as of the
+// last tick: node.findings (goal the-quartermaster-keeps-the-nodes-fit).
+func (s RunState) FindingsPath() string { return filepath.Join(s.Dir, "node.findings") }
+
+// WriteFindings leaves the quartermaster's last findings for `mesh node
+// status`, atomic like WriteStanding; an empty list removes the file.
+func (s RunState) WriteFindings(findings []Finding) error {
+	if len(findings) == 0 {
+		if err := os.Remove(s.FindingsPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
+	data, err := json.Marshal(findings)
+	if err != nil {
+		return err
+	}
+	tmp := s.FindingsPath() + ".tmp"
+	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, s.FindingsPath())
+}
+
+// Findings reads what WriteFindings left; false when nothing is there
+// or it cannot be read.
+func (s RunState) Findings() ([]Finding, bool) {
+	data, err := os.ReadFile(s.FindingsPath())
+	if err != nil {
+		return nil, false
+	}
+	var findings []Finding
+	if json.Unmarshal(data, &findings) != nil {
+		return nil, false
+	}
+	return findings, true
 }
 
 // ErrNoNode is PID's answer when no pidfile is there.
@@ -396,4 +435,64 @@ func (c *AttestationCounts) Hour() (recorded, refused int) {
 func (c *AttestationCounts) HealthLine() string {
 	rec, ref := c.Hour()
 	return fmt.Sprintf("attestations recorded %d refused %d (1h)", rec, ref)
+}
+
+// CachePath is the shared tree cache's hit and miss counts: node.cache
+// (SharedCache). Unlike node.scaling it outlives the process, so the
+// counts run on across restarts for `mesh node status`'s hit rate.
+func (s RunState) CachePath() string { return filepath.Join(s.Dir, "node.cache") }
+
+// CacheCounts is the shared tree cache's hits and misses since the
+// counts began, blobs and trees apart.
+type CacheCounts struct {
+	BlobHits   int64 `json:"blobHits"`
+	BlobMisses int64 `json:"blobMisses"`
+	TreeHits   int64 `json:"treeHits"`
+	TreeMisses int64 `json:"treeMisses"`
+}
+
+// WriteCacheCounts leaves the counts for `mesh node status`, atomic
+// like WriteScaling, each write through its own temporary file so two
+// writers never rename one another's.
+func (s RunState) WriteCacheCounts(c CacheCounts) error {
+	if err := os.MkdirAll(s.Dir, 0o700); err != nil {
+		return err
+	}
+	data, err := json.Marshal(c)
+	if err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(s.Dir, filepath.Base(s.CachePath())+".*.tmp")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	_, err = f.Write(append(data, '\n'))
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Chmod(tmp, 0o600)
+	}
+	if err == nil {
+		err = os.Rename(tmp, s.CachePath())
+	}
+	if err != nil {
+		os.Remove(tmp)
+	}
+	return err
+}
+
+// CacheCounts reads what WriteCacheCounts left; false when nothing is
+// there or it cannot be read.
+func (s RunState) CacheCounts() (CacheCounts, bool) {
+	data, err := os.ReadFile(s.CachePath())
+	if err != nil {
+		return CacheCounts{}, false
+	}
+	var c CacheCounts
+	if json.Unmarshal(data, &c) != nil {
+		return CacheCounts{}, false
+	}
+	return c, true
 }
