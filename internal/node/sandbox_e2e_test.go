@@ -38,7 +38,7 @@ func TestE2EFixturesResolve(t *testing.T) {
 		Name: "postgres", Image: "postgres:17-alpine", Registry: "docker.io",
 		Env: map[string]string{
 			"POSTGRES_PASSWORD": "mysecret",
-			"PGDATA": sandbox.PostgresDefaultPGDATA, "POSTGRES_INITDB_ARGS": sandbox.PostgresDefaultInitdbArgs,
+			"PGDATA":            sandbox.PostgresDefaultPGDATA, "POSTGRES_INITDB_ARGS": sandbox.PostgresDefaultInitdbArgs,
 		},
 		Ports:   []string{"5432:5432"},
 		Command: sandbox.PostgresTuning, Tuned: true,

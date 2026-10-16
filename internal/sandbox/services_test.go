@@ -69,7 +69,7 @@ func TestResolve(t *testing.T) {
 				Name: "postgres", Image: "postgres:17", Registry: "docker.io",
 				Env: map[string]string{
 					"POSTGRES_PASSWORD": "postgres",
-					"PGDATA": PostgresDefaultPGDATA, "POSTGRES_INITDB_ARGS": PostgresDefaultInitdbArgs,
+					"PGDATA":            PostgresDefaultPGDATA, "POSTGRES_INITDB_ARGS": PostgresDefaultInitdbArgs,
 				},
 				Ports:   []string{"5432:5432"},
 				Command: []string{"-c", "max_connections=200"},
