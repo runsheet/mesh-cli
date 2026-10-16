@@ -151,6 +151,27 @@ func (sb *Sandbox) logf(format string, args ...any) {
 	log.Printf(format, args...)
 }
 
+// CodexVersion asks the node image for its codex (`codex --version` in
+// a throwaway container, Runtime.ImageExec) and answers `codex <version>`
+// ("codex 0.157.0"). An error is an image without codex — or one the
+// runtime could not run — and a sandboxed node runs no Codex session
+// then (ADR 007's amendment for Codex).
+func (s *Sandbox) CodexVersion(ctx context.Context) (string, error) {
+	if s == nil || s.Runtime == nil {
+		return "", errors.New("sandbox: off")
+	}
+	out, err := s.Runtime.ImageExec(ctx, s.Config.Image, []string{"codex", "--version"})
+	if err != nil {
+		return "", err
+	}
+	fields := strings.Fields(out)
+	if len(fields) == 0 {
+		return "", fmt.Errorf("codex --version in %s said nothing", s.Config.Image)
+	}
+	// "codex-cli 0.157.0": the last word is the version
+	return "codex " + fields[len(fields)-1], nil
+}
+
 // Session is one agent session's sandbox: its temporary HOME, made on
 // Open and removed on Close, and the pod Run creates and removes.
 type Session struct {
