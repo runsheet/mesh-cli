@@ -240,6 +240,8 @@ func (e *Evaluator) Evaluate(ctx context.Context, item gateway.WorkItem) error {
 	// a checkout of its own, never the build's: its Authorize must not
 	// rewrite the credential helper the build's push reads
 	spec := EvalWorkspaceSpec(e.WorkRoot, res.Goal.Slug, item.Seq, res.Repo.FullName(), branch, res.BaseRef())
+	// live on this node while this runs: no cleanup touches it (HoldWorkspace)
+	defer HoldWorkspace(spec.Dir())()
 	// the item's own GitHub token, as its builder had
 	cred, err := NewItemCred(ctx, e.GW, e.WS, e.Scopes, item, spec, e.Fallback, e.logf)
 	if we := WorkspaceErrorOf(err); we != nil {
