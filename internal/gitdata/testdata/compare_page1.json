@@ -1,0 +1,66 @@
+{
+  "base_commit": {
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "merge_base_commit": {
+    "sha": "ccccccccccccccccccccccccccccccccccccccc1",
+    "commit": {
+      "tree": {
+        "sha": "mergetree33333333333333333333333333333"
+      }
+    }
+  },
+  "status": "ahead",
+  "ahead_by": 4,
+  "behind_by": 0,
+  "total_commits": 4,
+  "commits": [],
+  "files": [
+    {
+      "sha": "1111111111111111111111111111111111111a",
+      "filename": "file1.go",
+      "status": "added",
+      "additions": 10,
+      "deletions": 0,
+      "changes": 10,
+      "blob_url": "https://github.com/octo/widgets/blob/headsha/file1.go",
+      "raw_url": "https://github.com/octo/widgets/raw/headsha/file1.go",
+      "contents_url": "https://api.github.com/repos/octo/widgets/contents/file1.go?ref=headsha",
+      "patch": "@@ -0,0 +1,10 @@\n+package widgets\n"
+    },
+    {
+      "sha": "2222222222222222222222222222222222222b",
+      "filename": "file2.go",
+      "previous_filename": "old2.go",
+      "status": "renamed",
+      "additions": 0,
+      "deletions": 0,
+      "changes": 0,
+      "blob_url": "https://github.com/octo/widgets/blob/headsha/file2.go",
+      "raw_url": "https://github.com/octo/widgets/raw/headsha/file2.go",
+      "contents_url": "https://api.github.com/repos/octo/widgets/contents/file2.go?ref=headsha"
+    },
+    {
+      "sha": null,
+      "filename": "file3.go",
+      "status": "removed",
+      "additions": 0,
+      "deletions": 5,
+      "changes": 5,
+      "blob_url": "https://github.com/octo/widgets/blob/basesha/file3.go",
+      "raw_url": "https://github.com/octo/widgets/raw/basesha/file3.go",
+      "contents_url": "https://api.github.com/repos/octo/widgets/contents/file3.go?ref=basesha"
+    },
+    {
+      "sha": "4444444444444444444444444444444444444d",
+      "filename": "file4.go",
+      "status": "modified",
+      "additions": 2,
+      "deletions": 1,
+      "changes": 3,
+      "blob_url": "https://github.com/octo/widgets/blob/headsha/file4.go",
+      "raw_url": "https://github.com/octo/widgets/raw/headsha/file4.go",
+      "contents_url": "https://api.github.com/repos/octo/widgets/contents/file4.go?ref=headsha"
+    }
+  ]
+}

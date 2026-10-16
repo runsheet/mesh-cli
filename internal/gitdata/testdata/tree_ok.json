@@ -1,0 +1,30 @@
+{
+  "sha": "6b2919a53dd3c3e5b3a98cee04f9622f46f8d2e4",
+  "url": "https://api.github.com/repos/octo/widgets/git/trees/6b2919a53dd3c3e5b3a98cee04f9622f46f8d2e4",
+  "truncated": false,
+  "tree": [
+    {
+      "path": "README.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "95b966ae1c569b8dd995d08a2e8ef5e93b6a0987",
+      "size": 13,
+      "url": "https://api.github.com/repos/octo/widgets/git/blobs/95b966ae1c569b8dd995d08a2e8ef5e93b6a0987"
+    },
+    {
+      "path": "cmd",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+      "url": "https://api.github.com/repos/octo/widgets/git/trees/4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+    },
+    {
+      "path": "cmd/main.go",
+      "mode": "100755",
+      "type": "blob",
+      "sha": "2222222222222222222222222222222222222b",
+      "size": 42,
+      "url": "https://api.github.com/repos/octo/widgets/git/blobs/2222222222222222222222222222222222222b"
+    }
+  ]
+}

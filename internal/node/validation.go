@@ -55,7 +55,14 @@ type validationFailure struct {
 }
 
 func (e *validationFailure) Error() string {
-	return fmt.Sprintf("validation failed: step %s exited %d", e.Step.Name, e.Step.ExitCode)
+	base := fmt.Sprintf("validation failed: step %s exited %d", e.Step.Name, e.Step.ExitCode)
+	if e.Step.EnvironmentKind != validate.ToolMissing {
+		return base
+	}
+	if tool := validate.MissingTool(e.Step.Output); tool != "" {
+		return fmt.Sprintf("%s: command not found: %s (in `%s`)", base, tool, e.Step.Command)
+	}
+	return fmt.Sprintf("%s: `%s`", base, e.Step.Command)
 }
 
 // EnvironmentKind is the failing step's (docs/adr/adr-030): a timeout or
@@ -75,6 +82,11 @@ type validator struct {
 	Inspect sandbox.Runner
 	Notices *ValidationNotices
 	logf    func(format string, args ...any)
+	// WorkRoot is the node's work root, under which a host run's
+	// scratch is made (ScratchRoot, scratch.go); "" is ~/.mesh/work.
+	WorkRoot string
+	// BuildCache is a host run's GOCACHE; "" is BuildCacheDir().
+	BuildCache string
 }
 
 // validationTarget is what a validation needs of the session it
@@ -119,7 +131,7 @@ type validationTarget struct {
 }
 
 func (r *Runner) validator() validator {
-	return validator{GW: r.GW, WS: r.WS, Scopes: r.Scopes, Sandbox: r.Sandbox, Inspect: r.Inspect, Notices: r.Notices, logf: r.logf}
+	return validator{GW: r.GW, WS: r.WS, Scopes: r.Scopes, Sandbox: r.Sandbox, Inspect: r.Inspect, Notices: r.Notices, logf: r.logf, WorkRoot: r.WorkRoot, BuildCache: r.BuildCache}
 }
 
 // target is the build as its validation needs it.
@@ -154,8 +166,36 @@ func (vr validator) start(ctx context.Context, t validationTarget) (*buildValida
 	sc, _ := vr.Scopes.ByOrg(t.item.OrgID)
 	v := &buildValidation{meta: validate.Meta{NodeID: sc.NodeID, ItemID: t.item.ID}, close: func() {}}
 	if vr.Sandbox == nil {
+		// the run's own scratch, removed by close on every path, and the
+		// node's one build cache (scratch.go): nothing of it left in /tmp
+		root, err := ScratchRoot(vr.WorkRoot)
+		if err != nil {
+			return nil, fmt.Errorf("scratch: %w", err)
+		}
+		cache := vr.BuildCache
+		if cache == "" {
+			if cache, err = BuildCacheDir(); err != nil {
+				return nil, fmt.Errorf("build cache: %w", err)
+			}
+		}
+		if err := os.MkdirAll(cache, 0o700); err != nil {
+			return nil, fmt.Errorf("build cache: %w", err)
+		}
+		subject := t.item.ID
+		if t.batchID != "" {
+			subject = t.batchID
+		}
+		scratch, err := MakeScratch(root, "validate", subject)
+		if err != nil {
+			return nil, err
+		}
+		v.close = func() {
+			if err := RemoveScratch(scratch); err != nil {
+				vr.logf("%s: validation: remove scratch %s: %v", t.prefix, scratch, err)
+			}
+		}
 		host, _ := os.Hostname()
-		v.runner = validate.HostRunner{Dir: t.dir, Env: hostValidationEnv(t.job)}
+		v.runner = validate.HostRunner{Dir: t.dir, Env: hostValidationEnv(t.job, scratch, cache)}
 		v.meta.RunnerImage, v.meta.Sandboxed = "host:"+host, false
 		return v, nil
 	}
@@ -1036,11 +1076,13 @@ func gitHead(ctx context.Context, dir string) (string, error) {
 
 // hostValidationEnv is an unsandboxed validation's environment: the
 // session's (the node's, less what the job unsets, plus the job's own)
-// with every variable that carries one of its secrets dropped.
-func hostValidationEnv(job *harness.Job) []string {
+// with every variable that carries one of its secrets dropped, and
+// TMPDIR and GOTMPDIR the run's scratch and GOCACHE the node's build
+// cache, each exactly once (scratchEnv).
+func hostValidationEnv(job *harness.Job, scratch, cache string) []string {
 	env := UserEnv()
 	if job == nil {
-		return env
+		return scratchEnv(env, scratch, cache)
 	}
 	unset := map[string]bool{}
 	for _, n := range job.Unset {
@@ -1054,7 +1096,7 @@ func hostValidationEnv(job *harness.Job) []string {
 		}
 		out = append(out, kv)
 	}
-	return out
+	return scratchEnv(out, scratch, cache)
 }
 
 func carriesSecret(val string, secrets []string) bool {

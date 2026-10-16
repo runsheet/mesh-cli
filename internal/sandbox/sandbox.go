@@ -47,12 +47,15 @@ func DefaultImage(version string) string {
 // AllowedEnv are the variables of a session's own environment (the
 // job's, never the node's) that reach its pod: the item's GitHub token
 // and gh config dir (ADR-001), the account's secret and label (adr-005),
-// the Codex keys, and the session's agent identity (ADR-024). Tool secrets (ADR 006) are allowed by
-// ToolEnvPrefix.
+// the Codex keys and CODEX_HOME, and the session's agent identity
+// (ADR-024). Tool secrets (ADR 006) are allowed by ToolEnvPrefix. The
+// gh config dir and CODEX_HOME are admitted by name only: Session.Env
+// moves each under the session's HOME, so a host path never reaches the
+// pod.
 var AllowedEnv = []string{
 	"GH_TOKEN", "GH_CONFIG_DIR",
 	"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY",
-	"OPENAI_API_KEY", "CODEX_API_KEY",
+	"OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_HOME",
 	"MESH_ACCOUNT",
 	"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL",
 }
@@ -280,10 +283,15 @@ func (s *Session) ClaudeConfigDir() string { return filepath.Join(s.Home, ".clau
 // GHConfigDir is the session's empty GH_CONFIG_DIR, under its HOME.
 func (s *Session) GHConfigDir() string { return filepath.Join(s.Home, ".config", "gh") }
 
+// CodexHome is the session's CODEX_HOME, under its HOME: where a Codex
+// session's config.toml and the issued login's auth.json are placed.
+func (s *Session) CodexHome() string { return filepath.Join(s.Home, ".codex") }
+
 // Env is the pod's whole environment, built from the allow-list: the
 // sandbox's own BaseEnv — the node's package stores among them, the same
 // for every session — then those of jobEnv's variables AllowedEnv or
-// ToolEnvPrefix admits — with the gh config dir moved under the HOME.
+// ToolEnvPrefix admits — with the gh config dir and CODEX_HOME moved
+// under the HOME (GHConfigDir, CodexHome).
 // Nothing comes from the node's own environment.
 func (s *Session) Env(jobEnv []string) []string {
 	tz := s.sb.Config.TZ
@@ -307,8 +315,11 @@ func (s *Session) Env(jobEnv []string) []string {
 		if !ok || !Allowed(name) {
 			continue
 		}
-		if name == "GH_CONFIG_DIR" {
+		switch name {
+		case "GH_CONFIG_DIR":
 			kv = name + "=" + s.GHConfigDir()
+		case "CODEX_HOME":
+			kv = name + "=" + s.CodexHome()
 		}
 		out = append(out, kv)
 	}

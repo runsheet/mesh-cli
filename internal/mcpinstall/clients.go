@@ -154,8 +154,8 @@ func Clients(skill func() []byte) []Client {
 			Format:    TOML,
 			TOMLTable: "mcp_servers." + ServerName,
 			Instructions: []InstructionFile{
-				{Path: "prompts/mesh.md", Kind: Whole},
-				{Path: "AGENTS.md", Kind: MarkedSection, Marker: "mesh"},
+				{Path: "prompts/mesh.md", Kind: Whole, Body: renderBody("codex", "prompts/mesh.md", skill)},
+				{Path: "AGENTS.md", Kind: MarkedSection, Marker: "mesh", Body: renderBody("codex", "AGENTS.md", skill)},
 			},
 			Binaries: []string{"codex"},
 		},
@@ -168,12 +168,30 @@ func Clients(skill func() []byte) []Client {
 			Format:    JSON,
 			MCPKeys:   []string{"mcpServers", ServerName},
 			Instructions: []InstructionFile{
-				{Path: "skills/mesh/SKILL.md", Kind: Whole},
-				{Path: "commands/mesh.md", Kind: Whole},
+				{Path: "skills/mesh/SKILL.md", Kind: Whole, Body: renderBody("cursor", "skills/mesh/SKILL.md", skill)},
+				{Path: "commands/mesh.md", Kind: Whole, Body: renderBody("cursor", "commands/mesh.md", skill)},
 			},
 			Binaries: []string{"cursor", "cursor-agent"},
 			EnvRef:   func(name string) string { return "${env:" + name + "}" },
 		},
+	}
+}
+
+// renderBody is an InstructionFile.Body that renders client's file at
+// path from the skill through Render, so Codex's and Cursor's
+// instructions never drift from SKILL.md (ADR-025's amendment, item 3).
+func renderBody(client, path string, skill func() []byte) func() []byte {
+	return func() []byte {
+		rendered, err := Render(client, skill())
+		if err != nil {
+			panic(fmt.Sprintf("mcpinstall: render %s: %v", client, err))
+		}
+		for _, r := range rendered {
+			if r.Path == path {
+				return r.Body
+			}
+		}
+		panic(fmt.Sprintf("mcpinstall: render %s: no %s", client, path))
 	}
 }
 

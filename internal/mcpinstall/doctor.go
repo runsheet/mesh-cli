@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 
 	"github.com/pelletier/go-toml/v2"
 )
@@ -14,6 +15,14 @@ const (
 	Configured  = "configured"
 	Missing     = "missing"
 	Unparseable = "unparseable"
+)
+
+// Instruction statuses: the file (or, for a MarkedSection, the text
+// between its markers) is what Render gives today, differs, or is not
+// there (Missing, shared with the entry's statuses).
+const (
+	Current = "current"
+	Stale   = "stale"
 )
 
 // Report is `mesh mcp doctor`'s answer for one client found on the
@@ -27,15 +36,30 @@ type Report struct {
 	Path    string `json:"path"`
 	// Error is why an unparseable file could not be read.
 	Error string `json:"error,omitempty"`
-	// Instructions are the client's instruction files, filled by a later
-	// item of the goal (their staleness).
+	// Instructions are the client's instruction files that have a Body,
+	// each current, stale or missing.
 	Instructions []InstructionReport `json:"instructions,omitempty"`
 }
 
-// InstructionReport is one instruction file's state.
+// InstructionReport is one instruction file's state, Path absolute.
 type InstructionReport struct {
 	Path   string `json:"path"`
 	Status string `json:"status"`
+}
+
+// Healthy says the report needs nothing: mesh's entry configured and
+// every instruction current — `mesh mcp doctor` exits 1 otherwise
+// (ADR-025, Doctor).
+func (r Report) Healthy() bool {
+	if r.Status != Configured {
+		return false
+	}
+	for _, i := range r.Instructions {
+		if i.Status != Current {
+			return false
+		}
+	}
+	return true
 }
 
 // Doctor reports, for each client Detected under home, whether mesh's
@@ -51,6 +75,7 @@ func Doctor(clients []Client, home string) []Report {
 
 func doctor(c Client, home string) Report {
 	r := Report{Client: c.Name, Path: c.MCPPath(home), Status: Missing}
+	r.Instructions = instructionReports(c, home)
 	entry, err := readEntry(c, r.Path)
 	if err != nil {
 		r.Status, r.Error = Unparseable, err.Error()
@@ -93,4 +118,57 @@ func readEntry(c Client, path string) (any, error) {
 		v, _ := lookup(doc, c.MCPKeys)
 		return v, nil
 	}
+}
+
+// instructionReports compares each of the client's instruction files
+// that has a Body with what it renders today: a Whole file is current
+// when byte-equal, a MarkedSection current when the text between its
+// markers equals the rendered section — text outside them never
+// counts — and either is missing when the file, or the section, is
+// absent.
+func instructionReports(c Client, home string) []InstructionReport {
+	var out []InstructionReport
+	for _, f := range c.Instructions {
+		if f.Body == nil {
+			continue
+		}
+		path := filepath.Join(c.ConfigDir(home), f.Path)
+		out = append(out, InstructionReport{Path: path, Status: instructionStatus(f, path)})
+	}
+	return out
+}
+
+func instructionStatus(f InstructionFile, path string) string {
+	src, err := readFile(path)
+	if err != nil {
+		return Stale
+	}
+	if src == nil {
+		return Missing
+	}
+	want := f.Body()
+	if f.Kind != MarkedSection {
+		if bytes.Equal(src, want) {
+			return Current
+		}
+		return Stale
+	}
+	begin, end := Markers(f.Marker)
+	bi := bytes.Index(src, begin)
+	if bi == -1 {
+		return Missing
+	}
+	rest := src[bi+len(begin):]
+	ei := bytes.Index(rest, end)
+	if ei == -1 {
+		return Stale
+	}
+	// UpsertMarked writes begin, "\n", the body less its trailing
+	// newlines, "\n", end.
+	inside := rest[:ei]
+	section := append(append([]byte{'\n'}, bytes.TrimRight(want, "\n")...), '\n')
+	if bytes.Equal(inside, section) {
+		return Current
+	}
+	return Stale
 }

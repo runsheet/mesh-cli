@@ -1,0 +1,23 @@
+{
+  "sha": "basetree222222222222222222222222222222",
+  "url": "https://api.github.com/repos/octo/widgets/git/trees/basetree222222222222222222222222222222",
+  "truncated": false,
+  "tree": [
+    {
+      "path": "file3.go",
+      "mode": "100755",
+      "type": "blob",
+      "sha": "3333333333333333333333333333333333333c",
+      "size": 20,
+      "url": "https://api.github.com/repos/octo/widgets/git/blobs/3333333333333333333333333333333333333c"
+    },
+    {
+      "path": "file4.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "4444444444444444444444444444444444444e",
+      "size": 7,
+      "url": "https://api.github.com/repos/octo/widgets/git/blobs/4444444444444444444444444444444444444e"
+    }
+  ]
+}

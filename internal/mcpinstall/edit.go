@@ -75,6 +75,58 @@ func UpsertTOMLTableFile(path, table string, body []byte) (before, after []byte,
 	return before, after, nil
 }
 
+// Markers is the begin/end pair a marked section of marker m is spliced
+// between — `<!-- mesh:begin (written by mesh mcp install; edits inside
+// are overwritten) -->` … `<!-- mesh:end -->` for m "mesh" (ADR-025's
+// amendment, item 3).
+func Markers(marker string) (begin, end []byte) {
+	return []byte("<!-- " + marker + ":begin (written by mesh mcp install; edits inside are overwritten) -->"),
+		[]byte("<!-- " + marker + ":end -->")
+}
+
+// UpsertMarked replaces the span from begin to end (inclusive) in src
+// with begin, body and end, keeping every byte outside it; absent, the
+// section is appended after one blank line. Begin with no matching end
+// is an error naming it unmatched.
+func UpsertMarked(src, body, begin, end []byte) ([]byte, error) {
+	section := make([]byte, 0, len(begin)+len(body)+len(end)+2)
+	section = append(section, begin...)
+	section = append(section, '\n')
+	section = append(section, bytes.TrimRight(body, "\n")...)
+	section = append(section, '\n')
+	section = append(section, end...)
+
+	bi := bytes.Index(src, begin)
+	if bi == -1 {
+		if len(bytes.TrimSpace(src)) == 0 {
+			return append(section, '\n'), nil
+		}
+		out := append(bytes.TrimRight(src, "\n"), '\n', '\n')
+		return append(append(out, section...), '\n'), nil
+	}
+	rest := src[bi+len(begin):]
+	ei := bytes.Index(rest, end)
+	if ei == -1 {
+		return nil, fmt.Errorf("upsert marked: %q begun at offset %d has no matching %q", begin, bi, end)
+	}
+	spanEnd := bi + len(begin) + ei + len(end)
+	return splice(src, edit{bi, spanEnd, section}), nil
+}
+
+// UpsertMarkedFile is UpsertJSONFile for UpsertMarked.
+func UpsertMarkedFile(path, marker string, body []byte) (before, after []byte, err error) {
+	before, err = readFile(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	begin, end := Markers(marker)
+	after, err = UpsertMarked(before, body, begin, end)
+	if err != nil {
+		return nil, nil, named(path, err)
+	}
+	return before, after, nil
+}
+
 // UpsertJSON sets the entry at keys in the JSON document src to value,
 // keeping every byte outside the entry's span.
 func UpsertJSON(src []byte, keys []string, value []byte) ([]byte, error) {
@@ -360,4 +412,92 @@ func without(v any, keys []string) any {
 		delete(m, keys[0])
 	}
 	return m
+}
+
+// RemoveJSONFile reads path (absent is empty) and returns its bytes and
+// RemoveJSON's, an *UnparseableError naming path.
+func RemoveJSONFile(path string, keys []string) (before, after []byte, removed bool, err error) {
+	before, err = readFile(path)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	after, removed, err = RemoveJSON(before, keys)
+	if err != nil {
+		return nil, nil, false, named(path, err)
+	}
+	return before, after, removed, nil
+}
+
+// RemoveJSON deletes the member at keys in the JSON document src — its
+// key, value, the comma joining it to a sibling and the whitespace
+// between them — keeping every other byte; the only member leaves its
+// object `{}`. An absent entry (or an empty src) is src unchanged and
+// false. The inverse of UpsertJSON.
+func RemoveJSON(src []byte, keys []string) ([]byte, bool, error) {
+	if len(keys) == 0 {
+		return nil, false, errors.New("remove json: no keys")
+	}
+	if len(bytes.TrimSpace(src)) == 0 {
+		return src, false, nil
+	}
+	var in any
+	if err := json.Unmarshal(src, &in); err != nil {
+		return nil, false, &UnparseableError{Err: err}
+	}
+	if _, ok := lookup(in, keys); !ok {
+		return src, false, nil
+	}
+	off := skipSpace(src, 0)
+	obj, err := readObject(src, off)
+	if err != nil {
+		return nil, false, &UnparseableError{Err: err}
+	}
+	for _, k := range keys[:len(keys)-1] {
+		m, _ := obj.member(k)
+		if obj, err = readObject(src, m.valStart); err != nil {
+			return nil, false, &UnparseableError{Err: err}
+		}
+	}
+	out := splice(src, obj.remove(keys[len(keys)-1]))
+
+	var o any
+	if err := json.Unmarshal(out, &o); err != nil {
+		return nil, false, fmt.Errorf("remove json: output does not parse: %w", err)
+	}
+	if err := checkRemoved("json", in, o, keys); err != nil {
+		return nil, false, err
+	}
+	return out, true, nil
+}
+
+// remove is the edit deleting key's member from o: the first member up
+// to the next one's key, any other from the end of the one before it,
+// the only one everything between the braces.
+func (o jsonObject) remove(key string) edit {
+	for i, m := range o.members {
+		if m.key != key {
+			continue
+		}
+		switch {
+		case len(o.members) == 1:
+			return edit{o.open + 1, o.close, nil}
+		case i == 0:
+			return edit{m.keyStart, o.members[1].keyStart, nil}
+		default:
+			return edit{o.members[i-1].valEnd, m.valEnd, nil}
+		}
+	}
+	return edit{}
+}
+
+// checkRemoved proves a removal: keys is gone from out, and out is in
+// without it (a parent left empty comparing equal to its absence).
+func checkRemoved(format string, in, out any, keys []string) error {
+	if _, ok := lookup(out, keys); ok {
+		return fmt.Errorf("remove %s: %s is still there", format, strings.Join(keys, "."))
+	}
+	if !reflect.DeepEqual(without(in, keys), without(out, keys)) {
+		return fmt.Errorf("remove %s: the edit changed more than %s", format, strings.Join(keys, "."))
+	}
+	return nil
 }
