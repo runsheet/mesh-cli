@@ -46,11 +46,11 @@ func ScratchRoot(workRoot string) (string, error) {
 // validation: <user cache dir>/mesh/cache/go (os.UserCacheDir:
 // $XDG_CACHE_HOME or ~/.cache on Linux, ~/Library/Caches on macOS).
 func BuildCacheDir() (string, error) {
-	dir, err := os.UserCacheDir()
+	root, err := SharedCacheRoot()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "mesh", "cache", "go"), nil
+	return filepath.Join(root, "go"), nil
 }
 
 // MakeScratch makes a fresh directory for one run under root,

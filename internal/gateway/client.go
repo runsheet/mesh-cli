@@ -4344,20 +4344,12 @@ type Document struct {
 	Path    string `json:"path"`
 }
 
-// contextGet reads a mesh-context path under /mesh/v1, falling back to
-// the same path under /prologue/v1 only when /mesh/v1 answers 404 — an
-// older platform that serves the alias alone. Drop the fallback after
-// 2026-10-28, a month after /mesh/v1 went live (mesh-specs trd §6c).
+// contextGet reads a mesh-context path under /mesh/v1, the only path
+// the gateway serves (mesh-specs trd §6c); a 404 is an ordinary error.
 func (c *Client) contextGet(ctx context.Context, path, accept string) ([]byte, error) {
 	raw, status, statusText, err := c.contextGetAt(ctx, "/mesh/v1"+path, accept)
 	if err != nil {
 		return nil, err
-	}
-	if status == http.StatusNotFound {
-		raw, status, statusText, err = c.contextGetAt(ctx, "/prologue/v1"+path, accept)
-		if err != nil {
-			return nil, err
-		}
 	}
 	if status < 200 || status >= 300 {
 		return nil, fmt.Errorf("context: %s: %s", statusText, strings.TrimSpace(string(raw)))
