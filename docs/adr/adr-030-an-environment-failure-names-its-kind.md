@@ -1,6 +1,6 @@
 ---
 title: "ADR-030: An environment failure names its kind"
-summary: A validation that fails on the node rather than the code carries one of a closed set of environment kinds — step_timeout (a step's exit 124), tool_missing (exit 127), credential_refused (git or gh refused by GitHub on the item's token), image_pull_refused (the registry refusing the sandbox image's pull) — on the attestation's command as environmentKind and at the head of every failWorkItem, releaseWorkItem and updateError reason as `<kind>: `, so the platform parks the item instead of re-planning it; any other non-zero exit carries none.
+summary: A validation that fails on the node rather than the code carries one of a closed set of environment kinds — step_timeout (a step's exit 124), tool_missing (exit 127), credential_refused (git or gh refused by GitHub on the item's token), image_pull_refused (the registry refusing the sandbox image's pull) — on the attestation's command as environmentKind and at the head of every failWorkItem, releaseWorkItem and updateError reason as `<kind>: `, so the platform parks the item instead of re-planning it; any other non-zero exit carries none. A tool_missing reason names the missing tool and the step's command (amendment 2026-10-16).
 status: accepted
 ---
 
@@ -85,6 +85,44 @@ the kind, not the node's.
   read as the environment's. That is the price of reading exits, and the
   platform's hold, not a re-plan, is the cheaper mistake.
 
+## Amendment 2026-10-16: a tool_missing reason names its command
+
+Goal `a-node-low-on-disk-claims-nothing-and-a-missing-tool-is-named`
+(items 1 and 3). Merge batch 17 failed with `tool_missing: validation
+failed: step X exited 127` (anythink node.log, 2026/10/15 17:53 local):
+the kind was right and the reason said nothing of what was missing, so
+the operator had to find the step's command in validate.yml and guess
+which program in it the pod lacked.
+
+A `tool_missing` step's reason now names the missing tool and the
+command it ran:
+
+    tool_missing: validation failed: step <name> exited 127: command not found: <tool> (in `<command>`)
+
+- **The tool** is read from the step's own output by
+  `validate.MissingTool(output)`, in whichever words the shell said it:
+  dash's `sh: 1: <tool>: not found`, POSIX `/bin/sh: <tool>: not found`,
+  bash's `bash: <tool>: command not found`, and Go's exec package's
+  `exec: "<tool>": executable file not found in $PATH` for a step run
+  with no shell. The first match wins.
+- **None matched** — a `make` target or a script that returned 127 for
+  its own reasons — the reason names the command alone:
+  ``validation failed: step <name> exited 127: `<command>` ``.
+- **Every other kind and a code failure** keep their wording,
+  `validation failed: step <name> exited <code>`.
+
+`validationFailure.Error()` (`internal/node/validation.go`) renders it,
+and every path that reports a validation failure goes through
+`validate.Reason`: a build's `failWorkItem`, a merge batch candidate's
+`failMergeBatchValidation` and a main validation's
+`failWorkItemMainValidation` (ADR-032), and node.log's `… not attested`
+and `… failed:` lines. A candidate whose tool is missing is failed, not
+attested red — an environment failure is no verdict on the candidate
+(ADR-032) — so the reason is where the command is named; a build's
+attestation still carries the step's `command` beside `environmentKind:
+tool_missing`. The attestation's shape is unchanged: no field is added,
+the contract is not touched.
+
 ## Tests
 
 `internal/validate/envkind_test.go`'s `TestEnvironmentKindOfEachFailure`
@@ -95,3 +133,15 @@ exit 1 and a pass none) and `TestHostRunnerMissingToolIsToolMissing`;
 command and the `failWorkItem` reason on the fake gateway for 124, 127, a
 refused pull and exit 1) and `TestCredentialReleaseReasonCarriesItsKind`
 (the `releaseWorkItem` reason).
+
+The amendment: `internal/validate/missingtool_test.go`'s
+`TestMissingToolFromOutput` (sh, bash, `/bin/sh`, Go's exec, no match);
+`internal/node/toolmissing_test.go` (the build's reason, the fallback to
+the command, exit 1 unchanged, a candidate not attested); and
+`internal/node/toolmissing_e2e_test.go`'s `TestToolMissingE2E` — a merge
+batch candidate on the node's own Loop whose step exits 127 in the pod,
+its `failMergeBatchValidation` reason on the fake gateway naming
+`tool_missing`, the tool and the command and nothing attested; and a
+build whose step really exits 127 on the host, its attestation's command
+`environmentKind: tool_missing` with the command and its `failWorkItem`
+reason the same wording.

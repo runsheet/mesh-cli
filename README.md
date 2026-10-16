@@ -1578,6 +1578,33 @@ When the platform stalls an item first (its 45-minute heartbeat
 window) while the host is overloaded, the node's `claim lost (…)` line
 names the overload too.
 
+### A node low on disk claims nothing
+
+`disk:` in `~/.mesh/node.yaml` sets the free space under which this
+node claims nothing (ADR-035):
+
+```yaml
+disk:
+  free_min_gb: 10           # default, GiB; free space under it claims nothing
+  path: /home/chris/.mesh/work  # default: the work root
+```
+
+Each left out, or `free_min_gb` 0, takes its default; a negative floor
+is refused at start naming `disk.free_min_gb`. Read again every tick,
+a change logged once — `disk: free_min_gb 10 → 20`. Every tick, before
+any claim, the node reads the path's free space; under the floor it
+claims nothing of **any** kind — builds, evaluations, rebases, plans,
+research, merge batch candidates and main validations — while what
+already runs runs on. It says so once as it crosses, at its first tick
+when it starts under the floor:
+
+```
+disk_low: /home/chris/.mesh/work 3.0GiB free < floor 10.0GiB; claiming nothing
+disk ok: /home/chris/.mesh/work 40.0GiB free >= floor 10.0GiB; claiming again
+```
+
+Free space and the next tick claims again; no restart is needed.
+
 ### Capacity counts live sessions
 
 The capacity check counts the build sessions **alive on the host** —
@@ -1950,11 +1977,19 @@ the platform half is runsheet goal
 The kind rides the attestation's command as `environmentKind`
 (`specs/contracts/recordValidationAttestation.json`) and opens every
 reason the node sends with it — `failWorkItem`'s
-(`tool_missing: validation failed: step check exited 127`),
+(``tool_missing: validation failed: step check exited 127: command not
+found: tsc (in `npm run check`)``),
 `releaseWorkItem`'s (`credential_refused: github credential: …`) and a
 self-update's `updateError`. node.log's `validation step <name> exited
 <code> in <ms>ms` ends ` (<kind>)`. Any other non-zero exit is a code
 failure and carries no kind.
+
+A `tool_missing` reason names the missing tool, read from the shell's
+own "not found" (sh, bash, or Go's `executable file not found in
+$PATH`), and the step's command — ``command not found: <tool> (in
+`<command>`)``, or the command alone when the output names no tool — on
+a build's `failWorkItem` and a merge batch candidate's or main
+validation's failure alike (ADR-030's amendment 2026-10-16).
 
 ### Tool results
 
