@@ -8,9 +8,8 @@ import (
 	"projectmesh.io/mesh-cli/internal/gateway/gatewaytest"
 )
 
-// The document listing is fetched from /mesh/v1 first; /prologue/v1, the
-// dated alias (mesh-specs trd §6c, gone 2026-10-28), is never asked when
-// /mesh/v1 serves it.
+// The document listing is fetched from /mesh/v1, the only path the
+// gateway serves.
 func TestContextDocumentsUsesMeshV1(t *testing.T) {
 	f := gatewaytest.New("rs_test")
 	defer f.Close()
@@ -24,40 +23,23 @@ func TestContextDocumentsUsesMeshV1(t *testing.T) {
 	if len(docs) != 1 || docs[0].Slug != "agents" {
 		t.Fatalf("docs: %+v", docs)
 	}
-	if f.MeshV1Hits != 1 || f.PrologueV1Hits != 0 {
-		t.Fatalf("mesh hits = %d, prologue hits = %d; want 1, 0", f.MeshV1Hits, f.PrologueV1Hits)
+	if f.MeshV1Hits != 1 {
+		t.Fatalf("mesh hits = %d; want 1", f.MeshV1Hits)
 	}
 }
 
-// A 404 from /mesh/v1 — an older platform serving only the alias — is
-// followed by the same path under /prologue/v1.
-func TestContextDocumentsFallsBackToPrologueOn404(t *testing.T) {
+// A 404 from /mesh/v1 is an ordinary error, with no second request.
+func TestContextDocument404IsAnError(t *testing.T) {
 	f := gatewaytest.New("rs_test")
 	defer f.Close()
-	f.NoMeshV1 = true
 	f.Documents["acme/widgets"] = []map[string]any{{"slug": "agents", "title": "AGENTS", "kind": "instructions"}}
-	f.Bodies["acme/widgets/agents"] = "# AGENTS"
 	gw := gateway.New(f.URL(), "rs_test")
 
-	docs, err := gw.ContextDocuments(context.Background(), "acme", "widgets")
-	if err != nil {
-		t.Fatal(err)
+	_, err := gw.ContextDocument(context.Background(), "acme", "widgets", "missing")
+	if err == nil {
+		t.Fatal("want an error for a document the fake does not have")
 	}
-	if len(docs) != 1 || docs[0].Slug != "agents" {
-		t.Fatalf("docs: %+v", docs)
-	}
-	if f.MeshV1Hits != 1 || f.PrologueV1Hits != 1 {
-		t.Fatalf("mesh hits = %d, prologue hits = %d; want 1, 1", f.MeshV1Hits, f.PrologueV1Hits)
-	}
-
-	body, err := gw.ContextDocument(context.Background(), "acme", "widgets", "agents")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if body != "# AGENTS\n" {
-		t.Fatalf("body: %q", body)
-	}
-	if f.MeshV1Hits != 2 || f.PrologueV1Hits != 2 {
-		t.Fatalf("mesh hits = %d, prologue hits = %d; want 2, 2", f.MeshV1Hits, f.PrologueV1Hits)
+	if f.MeshV1Hits != 1 {
+		t.Fatalf("mesh hits = %d; want 1 (no retry)", f.MeshV1Hits)
 	}
 }

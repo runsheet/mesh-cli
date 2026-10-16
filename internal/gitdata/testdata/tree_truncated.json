@@ -1,0 +1,15 @@
+{
+  "sha": "9b1a0c4b7b3f4a2e9c8d7e6f5a4b3c2d1e0f9a8b",
+  "url": "https://api.github.com/repos/octo/widgets/git/trees/9b1a0c4b7b3f4a2e9c8d7e6f5a4b3c2d1e0f9a8b",
+  "truncated": true,
+  "tree": [
+    {
+      "path": "a.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "1111111111111111111111111111111111111a",
+      "size": 10,
+      "url": "https://api.github.com/repos/octo/widgets/git/blobs/1111111111111111111111111111111111111a"
+    }
+  ]
+}
