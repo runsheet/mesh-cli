@@ -413,3 +413,91 @@ func without(v any, keys []string) any {
 	}
 	return m
 }
+
+// RemoveJSONFile reads path (absent is empty) and returns its bytes and
+// RemoveJSON's, an *UnparseableError naming path.
+func RemoveJSONFile(path string, keys []string) (before, after []byte, removed bool, err error) {
+	before, err = readFile(path)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	after, removed, err = RemoveJSON(before, keys)
+	if err != nil {
+		return nil, nil, false, named(path, err)
+	}
+	return before, after, removed, nil
+}
+
+// RemoveJSON deletes the member at keys in the JSON document src — its
+// key, value, the comma joining it to a sibling and the whitespace
+// between them — keeping every other byte; the only member leaves its
+// object `{}`. An absent entry (or an empty src) is src unchanged and
+// false. The inverse of UpsertJSON.
+func RemoveJSON(src []byte, keys []string) ([]byte, bool, error) {
+	if len(keys) == 0 {
+		return nil, false, errors.New("remove json: no keys")
+	}
+	if len(bytes.TrimSpace(src)) == 0 {
+		return src, false, nil
+	}
+	var in any
+	if err := json.Unmarshal(src, &in); err != nil {
+		return nil, false, &UnparseableError{Err: err}
+	}
+	if _, ok := lookup(in, keys); !ok {
+		return src, false, nil
+	}
+	off := skipSpace(src, 0)
+	obj, err := readObject(src, off)
+	if err != nil {
+		return nil, false, &UnparseableError{Err: err}
+	}
+	for _, k := range keys[:len(keys)-1] {
+		m, _ := obj.member(k)
+		if obj, err = readObject(src, m.valStart); err != nil {
+			return nil, false, &UnparseableError{Err: err}
+		}
+	}
+	out := splice(src, obj.remove(keys[len(keys)-1]))
+
+	var o any
+	if err := json.Unmarshal(out, &o); err != nil {
+		return nil, false, fmt.Errorf("remove json: output does not parse: %w", err)
+	}
+	if err := checkRemoved("json", in, o, keys); err != nil {
+		return nil, false, err
+	}
+	return out, true, nil
+}
+
+// remove is the edit deleting key's member from o: the first member up
+// to the next one's key, any other from the end of the one before it,
+// the only one everything between the braces.
+func (o jsonObject) remove(key string) edit {
+	for i, m := range o.members {
+		if m.key != key {
+			continue
+		}
+		switch {
+		case len(o.members) == 1:
+			return edit{o.open + 1, o.close, nil}
+		case i == 0:
+			return edit{m.keyStart, o.members[1].keyStart, nil}
+		default:
+			return edit{o.members[i-1].valEnd, m.valEnd, nil}
+		}
+	}
+	return edit{}
+}
+
+// checkRemoved proves a removal: keys is gone from out, and out is in
+// without it (a parent left empty comparing equal to its absence).
+func checkRemoved(format string, in, out any, keys []string) error {
+	if _, ok := lookup(out, keys); ok {
+		return fmt.Errorf("remove %s: %s is still there", format, strings.Join(keys, "."))
+	}
+	if !reflect.DeepEqual(without(in, keys), without(out, keys)) {
+		return fmt.Errorf("remove %s: the edit changed more than %s", format, strings.Join(keys, "."))
+	}
+	return nil
+}

@@ -84,7 +84,7 @@ func TestClaudeCodeArgs(t *testing.T) {
 	args := c.Args(Job{Prompt: "hi", MaxBudgetUSD: 1.5})
 	// the prompt is not an argument: it goes on stdin, because one
 	// argument may not exceed 128KB and an evaluator's carries a diff
-	want := "-p --output-format stream-json --verbose --max-budget-usd 1.50 --dangerously-skip-permissions"
+	want := `-p --output-format stream-json --verbose --max-budget-usd 1.50 --settings {"attribution":{"commit":"","pr":"","sessionUrl":false}} --dangerously-skip-permissions`
 	if got := strings.Join(args, " "); got != want {
 		t.Fatalf("args = %q, want %q", got, want)
 	}
