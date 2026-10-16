@@ -159,3 +159,121 @@ func TestPodmanArgsOfAWorktreeMountTheCommonDir(t *testing.T) {
 		t.Fatalf("volumes = %v, want %v", vols, want)
 	}
 }
+
+// A validation run given a ValidationCache mounts, beside the workspace
+// and HOME, its scratch and the Go cache read-write and the blob store
+// read-only — nothing else of the cache root — and names TMPDIR,
+// GOTMPDIR and GOCACHE under them, each once.
+func TestMountsOfAValidationRunAddTheCache(t *testing.T) {
+	ws := newFullClone(t)
+	root := t.TempDir()
+	cacheRoot := filepath.Join(root, "cache")
+	for _, d := range []string{"trees", "commits"} {
+		if err := os.MkdirAll(filepath.Join(cacheRoot, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	scratch := filepath.Join(root, "work", ".scratch", "validate-x-1")
+	if err := os.MkdirAll(scratch, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	c := &ValidationCache{Scratch: scratch, GoCache: filepath.Join(cacheRoot, "go"), Blobs: filepath.Join(cacheRoot, "blobs")}
+	f := &Fake{}
+	sb := testSandbox(t, f)
+	sess, err := sb.Open("merge-batch/7", "validate", GitIdentity{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	env := []string{"GH_TOKEN=x", "TMPDIR=/tmp", "GOCACHE=/home/me/.cache/go-build"}
+	if err := sess.Run(context.Background(), RunSpec{Workspace: ws, Env: env, Cache: c, Command: []string{"sh", "-c", "go test ./..."}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.Agents) != 1 {
+		t.Fatalf("agents: %+v", f.Agents)
+	}
+	got := f.Agents[0].Mounts
+	t.Logf("mounts = %+v", got)
+	want := []Mount{
+		{Source: ws, Target: ws},
+		{Source: sess.Home, Target: sess.Home},
+		{Source: scratch, Target: scratch},
+		{Source: c.GoCache, Target: c.GoCache},
+		{Source: c.Blobs, Target: c.Blobs, ReadOnly: true},
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("mounts = %+v, want %+v", got, want)
+	}
+	for _, m := range got {
+		under := m.Source == cacheRoot || strings.HasPrefix(m.Source, cacheRoot+"/")
+		if under && m.Source != c.GoCache && m.Source != c.Blobs {
+			t.Fatalf("mounted %s of the cache root", m.Source)
+		}
+	}
+	for _, d := range []string{c.GoCache, c.Blobs} {
+		if info, err := os.Stat(d); err != nil || !info.IsDir() {
+			t.Fatalf("%s not made for its bind mount: %v", d, err)
+		}
+	}
+	vals := map[string][]string{}
+	for _, kv := range f.Agents[0].Env {
+		k, v, _ := strings.Cut(kv, "=")
+		vals[k] = append(vals[k], v)
+	}
+	for name, v := range map[string]string{"TMPDIR": scratch, "GOTMPDIR": scratch, "GOCACHE": c.GoCache} {
+		if !slices.Equal(vals[name], []string{v}) {
+			t.Fatalf("%s = %v, want [%s]", name, vals[name], v)
+		}
+	}
+	args := AgentRunArgs(Pod{Name: "p"}, f.Agents[0])
+	if !slices.Contains(args, c.Blobs+":"+c.Blobs+":ro") {
+		t.Fatalf("args %v: no read-only --volume of the blob store", args)
+	}
+}
+
+// A run with no ValidationCache — an agent's — mounts none of it and
+// sets none of its variables.
+func TestMountsOfARunWithoutTheCache(t *testing.T) {
+	ws := newFullClone(t)
+	f := &Fake{}
+	sb := testSandbox(t, f)
+	sess, err := sb.Open("ship-it/2", "build", GitIdentity{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	if err := sess.Run(context.Background(), RunSpec{Workspace: ws, Env: []string{"TMPDIR=/tmp"}, Command: []string{"claude"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := f.Agents[0].Mounts, sess.Mounts(ws); !slices.Equal(got, want) {
+		t.Fatalf("mounts = %+v, want %+v", got, want)
+	}
+	for _, kv := range f.Agents[0].Env {
+		if k, _, _ := strings.Cut(kv, "="); k == "TMPDIR" || k == "GOTMPDIR" || k == "GOCACHE" {
+			t.Fatalf("env has %s", kv)
+		}
+	}
+}
+
+// RemoveTree removes a scratch a step left read-only: a 0444 file in a
+// 0555 dir.
+func TestMountsScratchRemovedReadOnly(t *testing.T) {
+	sb := testSandbox(t, &Fake{})
+	dir := filepath.Join(t.TempDir(), "validate-x-1")
+	ro := filepath.Join(dir, "pkg", "mod")
+	if err := os.MkdirAll(ro, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ro, "go.mod"), []byte("module x\n"), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(ro, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	if err := sb.RemoveTree(context.Background(), dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(dir); !os.IsNotExist(err) {
+		t.Fatalf("%s still there: %v", dir, err)
+	}
+}
