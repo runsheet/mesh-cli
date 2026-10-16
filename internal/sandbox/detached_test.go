@@ -136,10 +136,13 @@ func TestDetachedScriptRedirects(t *testing.T) {
 	}
 }
 
-// Podman.StartAgent runs StartAgentArgs with the secret in podman's own
-// environment and the node's HOME kept for its store.
+// Podman.StartAgent runs StartAgentArgs with every value in podman's own
+// environment — the secret, and the container's HOME for its bare
+// --env HOME — and the node's store kept by XDG_DATA_HOME.
 func TestPodmanStartAgentKeepsSecretsInTheEnv(t *testing.T) {
 	t.Setenv("HOME", "/home/node")
+	t.Setenv("XDG_DATA_HOME", "")
+	os.Unsetenv("XDG_DATA_HOME")
 	var gotArgs, gotEnv []string
 	p := &Podman{Exec: func(_ context.Context, args, env []string, _ io.Reader, _, _ io.Writer) error {
 		gotArgs, gotEnv = args, env
@@ -152,7 +155,10 @@ func TestPodmanStartAgentKeepsSecretsInTheEnv(t *testing.T) {
 	if !slices.Equal(gotArgs, StartAgentArgs(Pod{Name: "p"}, spec)) {
 		t.Fatalf("args = %v", gotArgs)
 	}
-	if !slices.Contains(gotEnv, "GH_TOKEN=ghs_x") || !slices.Contains(gotEnv, "HOME=/home/node") || slices.Contains(gotEnv, "HOME=/tmp/mesh-home-z") {
+	if got := flagValues(gotArgs, "--env"); !slices.Equal(got, []string{"HOME", "GH_TOKEN"}) {
+		t.Fatalf("--env = %v", got)
+	}
+	if !slices.Contains(gotEnv, "GH_TOKEN=ghs_x") || !slices.Contains(gotEnv, "HOME=/tmp/mesh-home-z") || !slices.Contains(gotEnv, "XDG_DATA_HOME=/home/node/.local/share") {
 		t.Fatalf("podman env = %v", gotEnv)
 	}
 }

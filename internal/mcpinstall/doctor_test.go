@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"projectmesh.io/mesh-cli/internal/meshmcp"
 )
 
 // doctorHome is a temp HOME with no client env and an empty PATH, so
@@ -86,6 +88,95 @@ func TestDoctorUnparseableIsReportedAndLeftAlone(t *testing.T) {
 	for p, b := range bad {
 		if got, _ := os.ReadFile(p); string(got) != b {
 			t.Fatalf("%s rewritten: %q", p, got)
+		}
+	}
+}
+
+// statuses is the report's instruction statuses by path relative to dir.
+func statuses(t *testing.T, r Report, dir string) map[string]string {
+	t.Helper()
+	got := map[string]string{}
+	for _, i := range r.Instructions {
+		rel, err := filepath.Rel(dir, i.Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got[rel] = i.Status
+	}
+	return got
+}
+
+func TestDoctorInstructionStatuses(t *testing.T) {
+	home := doctorHome(t, ".codex", ".cursor")
+	codex := filepath.Join(home, ".codex")
+	clients := Clients(meshmcp.Skill)
+	var codexRow Client
+	for _, c := range clients {
+		if c.Name == "codex" {
+			codexRow = c
+		}
+	}
+	prompt := codexRow.Instructions[0].Body()
+	section := codexRow.Instructions[1].Body()
+	if err := os.MkdirAll(filepath.Join(codex, "prompts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	begin, end := Markers("mesh")
+
+	cases := []struct {
+		name, prompt, agents string
+		want                 map[string]string
+	}{
+		{"absent", "", "", map[string]string{"prompts/mesh.md": Missing, "AGENTS.md": Missing}},
+		{"current", string(prompt),
+			"mine before\n\n" + string(begin) + "\n" + string(section) + string(end) + "\nmine after\n",
+			map[string]string{"prompts/mesh.md": Current, "AGENTS.md": Current}},
+		{"stale", string(prompt) + "edited\n",
+			string(begin) + "\nold text\n" + string(end) + "\n",
+			map[string]string{"prompts/mesh.md": Stale, "AGENTS.md": Stale}},
+		{"no section", string(prompt), "only mine\n",
+			map[string]string{"prompts/mesh.md": Current, "AGENTS.md": Missing}},
+		{"unmatched begin", string(prompt), string(begin) + "\n" + string(section),
+			map[string]string{"prompts/mesh.md": Current, "AGENTS.md": Stale}},
+	}
+	for _, tc := range cases {
+		for p, body := range map[string]string{"prompts/mesh.md": tc.prompt, "AGENTS.md": tc.agents} {
+			path := filepath.Join(codex, p)
+			os.Remove(path)
+			if body != "" {
+				writeFile(t, path, body)
+			}
+		}
+		var r Report
+		for _, rep := range Doctor(clients, home) {
+			if rep.Client == "codex" {
+				r = rep
+			}
+		}
+		got := statuses(t, r, codex)
+		for p, want := range tc.want {
+			if got[p] != want {
+				t.Errorf("%s: %s = %q, want %q", tc.name, p, got[p], want)
+			}
+		}
+	}
+}
+
+func TestReportHealthy(t *testing.T) {
+	cur := []InstructionReport{{Path: "a", Status: Current}}
+	for _, tc := range []struct {
+		r    Report
+		want bool
+	}{
+		{Report{Status: Configured, Instructions: cur}, true},
+		{Report{Status: Configured}, true},
+		{Report{Status: Missing, Instructions: cur}, false},
+		{Report{Status: Unparseable, Instructions: cur}, false},
+		{Report{Status: Configured, Instructions: []InstructionReport{{Status: Current}, {Status: Stale}}}, false},
+		{Report{Status: Configured, Instructions: []InstructionReport{{Status: Missing}}}, false},
+	} {
+		if got := tc.r.Healthy(); got != tc.want {
+			t.Errorf("%+v.Healthy() = %v, want %v", tc.r, got, tc.want)
 		}
 	}
 }

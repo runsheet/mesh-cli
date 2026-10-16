@@ -310,6 +310,80 @@ func TestUpsertTOMLTableRefusesDottedDefinition(t *testing.T) {
 	}
 }
 
+var meshBegin, meshEnd = Markers("mesh")
+
+func TestUpsertMarkedAppendsAfterOneBlankLine(t *testing.T) {
+	in := []byte("# A person's AGENTS.md\n\nTheir own words.\n")
+	out, err := UpsertMarked(in, []byte("mesh section body"), meshBegin, meshEnd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := string(in) + "\n" + string(meshBegin) + "\nmesh section body\n" + string(meshEnd) + "\n"
+	if string(out) != want {
+		t.Fatalf("got\n%q\nwant\n%q", out, want)
+	}
+	if !bytes.HasPrefix(out, in) {
+		t.Fatal("the person's text was not kept, byte for byte, before the section")
+	}
+}
+
+func TestUpsertMarkedAppendsToEmpty(t *testing.T) {
+	out, err := UpsertMarked(nil, []byte("body"), meshBegin, meshEnd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := string(meshBegin) + "\nbody\n" + string(meshEnd) + "\n"
+	if string(out) != want {
+		t.Fatalf("got %q, want %q", out, want)
+	}
+}
+
+func TestUpsertMarkedReplacesInPlace(t *testing.T) {
+	in := []byte("# Before\n\nabove\n\n" + string(meshBegin) + "\nstale mesh text\n" + string(meshEnd) + "\n\nbelow\n")
+	out, err := UpsertMarked(in, []byte("fresh mesh text"), meshBegin, meshEnd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), "stale mesh text") {
+		t.Fatalf("stale section survived:\n%s", out)
+	}
+	for _, s := range []string{"# Before\n\nabove\n\n", "\n\nbelow\n"} {
+		if !strings.Contains(string(out), s) {
+			t.Fatalf("lost the surrounding text %q:\n%s", s, out)
+		}
+	}
+	// Everything outside the section's span is kept byte for byte.
+	bi := bytes.Index(in, meshBegin)
+	ei := bytes.Index(in, meshEnd) + len(meshEnd)
+	if cutSpan(out, bi, bi+len(string(meshBegin)+"\nfresh mesh text\n"+string(meshEnd))) != cutSpan(in, bi, ei) {
+		t.Fatalf("bytes outside the marked section changed:\n%s", out)
+	}
+	// Idempotent: a second upsert of the same body changes nothing.
+	again, err := UpsertMarked(out, []byte("fresh mesh text"), meshBegin, meshEnd)
+	if err != nil || !bytes.Equal(again, out) {
+		t.Fatalf("second upsert changed the file: %v\n%s", err, again)
+	}
+}
+
+func TestUpsertMarkedRefusesAnUnmatchedBegin(t *testing.T) {
+	in := append(append([]byte{}, meshBegin...), []byte("\nno end here\n")...)
+	if _, err := UpsertMarked(in, []byte("body"), meshBegin, meshEnd); err == nil {
+		t.Fatal("begin with no matching end: want an error")
+	}
+}
+
+func TestUpsertMarkedFileAbsent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "AGENTS.md")
+	before, after, err := UpsertMarkedFile(path, "mesh", []byte("body"))
+	if err != nil || before != nil {
+		t.Fatalf("absent file: %v %q", err, before)
+	}
+	want := string(meshBegin) + "\nbody\n" + string(meshEnd) + "\n"
+	if string(after) != want {
+		t.Fatalf("got %q, want %q", after, want)
+	}
+}
+
 func TestTOMLKey(t *testing.T) {
 	if TOMLKey("mesh") != "mesh" || TOMLKey("a.b") != `"a.b"` || TOMLKey("") != `""` {
 		t.Fatal("TOMLKey")

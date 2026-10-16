@@ -152,6 +152,7 @@ func TestSandboxOffRunsThePlainExecPath(t *testing.T) {
 	want := strings.Join([]string{
 		"-p", "--output-format", "stream-json", "--verbose",
 		"--model", "sonnet", "--max-budget-usd", "2.50",
+		"--settings", `{"attribution":{"commit":"","pr":"","sessionUrl":false}}`,
 		"--mcp-config", `{"mcpServers":{"mesh-context":{"type":"http","url":"https://gw/mcp"},"mesh-node":{"args":["session-tools"],"command":"mesh","type":"stdio"}}}`,
 		"--allowedTools", "mcp__mesh-context__*,mcp__mesh-node__*",
 		"--disallowedTools", "mcp__mesh-context__mesh_finish,mcp__mesh-context__mesh_fail",

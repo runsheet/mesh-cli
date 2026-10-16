@@ -1,0 +1,18 @@
+{
+  "base_commit": {
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "merge_base_commit": {
+    "sha": "ccccccccccccccccccccccccccccccccccccccc1"
+  },
+  "status": "ahead",
+  "ahead_by": 4,
+  "behind_by": 0,
+  "total_commits": 4,
+  "commits": [
+    {
+      "sha": "5555555555555555555555555555555555555e"
+    }
+  ],
+  "files": []
+}

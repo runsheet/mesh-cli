@@ -78,7 +78,10 @@ type Job struct {
 	// Settings are Claude Code settings for this session alone (the
 	// shape of a settings.json), passed as --settings: the node's
 	// PreToolUse hook that trims long Bash output (trd §3 Tool results).
-	// Codex ignores them.
+	// Every Claude Code session's --settings carry NoAttributionSettings
+	// beside them, nil Settings included (SessionSettings), so no commit
+	// or pull request gets Claude Code's own attribution. Codex ignores
+	// them.
 	Settings map[string]any
 	// Tools are the console tools the session gets (trd §3 Tools), their
 	// secrets decrypted: Claude Code's are already in MCPServers, with
