@@ -42,6 +42,8 @@ below are the node's proposal and the platform reads them.
 | `credential_refused` | an error whose text is git or gh refused on its credential (`validate.IsCredentialRefusal`: `Repository not found`, a 401/403, `Write access to repository not granted`, …), or a `*CredentialError`/`*PushCredentialError` | the validator's fetch (`changedPaths`), a workspace's clone, the build's push |
 | `image_pull_refused` | an error, or a step's podman exit 125 with output, naming a pull (`pull failed`, `initializing source`, `reading manifest`, `trying to pull`) and a refusal (`unauthorized`, `denied`, `forbidden`, 401/403) — `validate.IsImagePullRefusal` | a sandboxed step whose pod could not pull; the self-update's `EnsureImage` |
 
+| `deps_install` | the checkout's dependency install (`validate.Install`, ADR-013 amendment 2026-10-15) erroring or exiting non-zero before any suite ran: a `*validate.InstallError` | `validator.run` |
+
 `validate.EnvironmentKindOf(step, err)` is the classifier: err first — a
 kind it carries (an error with `EnvironmentKind()`, or a reason already
 opening with one), an image pull's refusal, a credential refusal — then

@@ -1946,6 +1946,24 @@ the platform half is runsheet goal
 | `tool_missing` | a step's exit 127: the shell found no such command (`tsc` with no `node_modules`) |
 | `credential_refused` | git or gh refused by GitHub on the item's token (`Repository not found`, a 401/403, `Write access to repository not granted`) |
 | `image_pull_refused` | the registry refusing the sandbox image's pull: the node's own pull, or podman's exit 125 on a run that could not pull |
+| `deps_install` | the checkout's dependency install (`validate.Install`, below) erroring or exiting non-zero before any suite ran |
+
+**A checkout's dependencies are installed before its suites run**
+(ADR-013 amendment 2026-10-15, `validate.Install`): a `package.json`
+beside a `pnpm-lock.yaml` gets `pnpm install --frozen-lockfile`, a
+`yarn.lock` `yarn install --frozen-lockfile`, a `package-lock.json` or
+`npm-shrinkwrap.json` `npm ci`, no lockfile `npm install` — through
+the same runner as the suites, in the pod with the node's shared store
+(ADR-028), under a suite's default timeout, logged as `validation:
+dependencies installed with npm ci in 41203ms`. A checkout whose
+`node_modules` is already there — a builder's workspace, which its
+session installed into — installs nothing, and so does one with no
+`package.json`: Go fetches its own modules as a suite runs. Before this
+a merge batch's candidate (a fresh worktree, ADR-032) and a
+rebase's fresh checkout ran `npm run check` on nothing and every console
+batch died `tool_missing` in under a second (dl360, 2026-10-15: 17 of
+17 abandoned). An install that fails is `deps_install`, the
+environment's, and the suites do not run.
 
 The kind rides the attestation's command as `environmentKind`
 (`specs/contracts/recordValidationAttestation.json`) and opens every

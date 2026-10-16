@@ -162,6 +162,38 @@ This repository's `.runsheet/validate.yml` is `suites:`, `vet` kind
 `lint`, `build` kind `build`, `unit` kind `unit`, keeping `always`,
 `timeout` and `results`.
 
+## Amended 2026-10-15: a checkout's dependencies install before its suites
+
+A suite's `command` is an npm script the repository has (runsheet ADR
+032), and an npm script needs the repository's `node_modules`. A
+builder's workspace has them — its session installed them — and that
+is the only checkout this package ever validated until ADR-032 (a node
+validates a merge batch candidate) ran the suites on a fresh worktree:
+on the dl360, 2026-10-15, every one of runsheet/console's 17 merge
+batches since batching began died in under a second, `typecheck`
+exiting 127 (`sh: tsc: not found`, read as `tool_missing`), and no
+console pull request merged for a day.
+
+**`validate.Install(ctx, dir, runner)`** runs the install the checkout
+needs before `validate.Run`, through the same `Runner` the suites use
+(so in the session's pod, with the node's shared store mounted,
+ADR-028), under `DefaultTimeout`. `validate.InstallCommand(dir)`
+reads it from the files: a `package.json` beside a `pnpm-lock.yaml` is
+`pnpm install --frozen-lockfile`, a `yarn.lock` `yarn install
+--frozen-lockfile`, a `package-lock.json` or `npm-shrinkwrap.json`
+`npm ci`, `package.json` alone `npm install`; no `package.json`, or a
+`node_modules` already there, is none. Go, Python and the rest fetch
+their own modules as their suites run and are not this amendment's.
+`validator.run` (internal/node) calls it when the diff selected at
+least one suite, logs `validation: dependencies installed with <cmd>
+in <ms>ms`, and on a failure returns the `*validate.InstallError` —
+kinded **`deps_install`**, a new member of ADR-030's closed set — so
+the run is the environment's (the item parks, the batch is not
+attested) and the suites never ran on a checkout with no dependencies.
+The install is not a step of the attestation: the platform verifies the
+suites `validate.yml` declares, and the install is the node's own
+preparation, like the pod and the services before it.
+
 ## Consequences
 
 - `internal/validate`'s `Attestation`/`StepResult` json shape is
