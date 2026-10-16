@@ -29,6 +29,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/auth"
 	"projectmesh.io/mesh-cli/internal/channel"
 	"projectmesh.io/mesh-cli/internal/gateway"
+	"projectmesh.io/mesh-cli/internal/gitdata"
 	"projectmesh.io/mesh-cli/internal/harness"
 	"projectmesh.io/mesh-cli/internal/latchkey"
 	"projectmesh.io/mesh-cli/internal/node"
@@ -1612,6 +1613,13 @@ func runChannelMode(ctx context.Context, cfg *node.Config, scopes node.Scopes, g
 	node.SweepSandbox(ctx, sessionSandbox, found, logger.Printf)
 	loop.Evaluate = evaluateWith(gw, cfg, observed(loop, logger), second, loop, workRoot, fallback, accounts, logger)
 	mainRunner := &node.Runner{GW: gw, WS: ws, Cfg: cfg, Scopes: scopes, WorkRoot: workRoot, Fallback: fallback, BatchFallback: &node.TokenFallback{}, Sandbox: sessionSandbox, Notices: validationNotices, Log: logger}
+	// a pushed commit is validated from GitHub's served diff through the
+	// node's shared cache, else from a worktree of the shared clone
+	if cache, err := node.NewServedDiffCache(cfg, logger.Printf); err != nil {
+		logger.Printf("served diff: %v; main validations take worktrees", err)
+	} else {
+		mainRunner.ServedDiff(&gitdata.Client{}, cache)
+	}
 	loop.ValidateBatch = mainRunner.ValidateCandidate
 	loop.ValidateMain = mainRunner.ValidateMainRequest
 	loop.Plan = planWith(gw, cfg, observed(loop, logger), loop, workRoot, accounts, logger)
