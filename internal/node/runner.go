@@ -161,8 +161,43 @@ type Runner struct {
 	Log     *log.Logger
 
 	// servedFallbackSaid is each reason the served diff fell back to the
-	// worktree, said once per run.
-	servedFallbackSaid sync.Map
+	// worktree, said once per run; made by ServedDiff, nil says nothing
+	// (a Runner never readied for it takes the worktree as it always did).
+	servedFallbackSaid *sync.Map
+}
+
+// ServedDiff readies the Runner to validate a pushed commit from the
+// served diff (serveddiff.go): client the Git Data reads, cache the
+// shared tree cache whose misses it fills — cache.Source, when unset,
+// GitDataSource on client, so every blob the diff writes is read once
+// and cached. Either nil leaves the worktree path alone.
+func (r *Runner) ServedDiff(client *gitdata.Client, cache *SharedCache) *Runner {
+	r.GitData, r.Cache = client, cache
+	r.servedFallbackSaid = &sync.Map{}
+	if cache != nil && cache.Source == nil && client != nil {
+		cache.Source = GitDataSource{Client: client}
+	}
+	return r
+}
+
+// NewServedDiffCache is the node's shared tree cache as its served-diff
+// validations use it: under SharedCacheRoot, filled from the shared
+// clones under ReposRoot when they hold an object, capped at node.yaml's
+// validation_cache_max_bytes, its counts left in ~/.mesh for `mesh node
+// status`.
+func NewServedDiffCache(cfg *Config, logf func(string, ...any)) (*SharedCache, error) {
+	root, err := SharedCacheRoot()
+	if err != nil {
+		return nil, fmt.Errorf("cache root: %w", err)
+	}
+	c := &SharedCache{Root: root, MaxBytes: cfg.ValidationCacheCap(), Logf: logf}
+	if repos, err := ReposRoot(); err == nil {
+		c.ReposRoot = repos
+	}
+	if st, err := DefaultRunState(); err == nil {
+		c.State = &st
+	}
+	return c, nil
 }
 
 // toolResults bounds the job's tool results by node.yaml's

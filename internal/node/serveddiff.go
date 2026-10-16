@@ -107,22 +107,13 @@ func fallbackOf(err error) (*servedFallback, bool) {
 // noteServedFallback says once per run per reason that a main validation
 // took the worktree path.
 func (r *Runner) noteServedFallback(prefix string, fb *servedFallback) {
+	if r.servedFallbackSaid == nil {
+		return
+	}
 	if _, said := r.servedFallbackSaid.LoadOrStore(fb.reason, true); said {
 		return
 	}
 	r.logf("%s: served diff: %v; validating from a worktree (said once per run)", prefix, fb)
-}
-
-// ServedDiff readies the Runner to validate a pushed commit from the
-// served diff: client the Git Data reads, cache the shared tree cache
-// whose misses it fills (cache.Source, when unset, GitDataSource on
-// client). Either nil leaves the worktree path alone.
-func (r *Runner) ServedDiff(client *gitdata.Client, cache *SharedCache) *Runner {
-	r.GitData, r.Cache = client, cache
-	if cache != nil && cache.Source == nil && client != nil {
-		cache.Source = GitDataSource{Client: client}
-	}
-	return r
 }
 
 // servedToken is the token the served diff is read on: t's minted one,
