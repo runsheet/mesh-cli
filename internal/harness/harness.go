@@ -249,7 +249,7 @@ type Result struct {
 	// server. See ToolReport.
 	Tools map[string]*ToolStat
 	// ToolNames is the session's MCP calls per <server>__<tool> (e.g.
-	// mesh-context__mesh_document), the prologue alias folded into
+	// mesh-context__mesh_document), the built-in's old-name alias folded into
 	// mesh-context (tools.IsBuiltin) — finer than Tools' per-server
 	// totals (goal context-is-fetched-not-shipped). Nil when the
 	// session made no MCP call.
@@ -412,7 +412,7 @@ func (r *Result) toolStat(server string) *ToolStat {
 }
 
 // countToolName counts one call to server/tool on ToolNames, keyed
-// <server>__<tool> with the prologue alias folded into mesh-context
+// <server>__<tool> with the built-in's old-name alias folded into mesh-context
 // (tools.IsBuiltin), and DocumentsFetched when it is a mesh_document
 // or mesh_search call on the built-in. A tool-less call (server with no tool name) is
 // not counted.

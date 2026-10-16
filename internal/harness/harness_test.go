@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"projectmesh.io/mesh-cli/internal/tools"
 )
 
 func TestBuildPrompt(t *testing.T) {
@@ -33,7 +35,7 @@ func TestBuildPrompt(t *testing.T) {
 }
 
 // A session with mesh-context's tools is told to use mesh_document and
-// mesh_search, not the prologue_* names.
+// mesh_search, not the alias's <alias>_* names (tools.BuiltinAlias).
 func TestBuildPromptContextTools(t *testing.T) {
 	p := BuildPrompt(PromptInput{Title: "x", Repo: "acme/widgets", ContextDir: ".mesh/context", Project: "acme/mesh", MeshContext: true})
 	for _, want := range []string{"mesh_document", "mesh_search"} {
@@ -41,8 +43,8 @@ func TestBuildPromptContextTools(t *testing.T) {
 			t.Errorf("build prompt lacks %q:\n%s", want, p)
 		}
 	}
-	if strings.Contains(p, "prologue_") {
-		t.Errorf("build prompt still names a prologue_ tool:\n%s", p)
+	if strings.Contains(p, tools.BuiltinAlias()+"_") {
+		t.Errorf("build prompt still names a %s_ tool:\n%s", tools.BuiltinAlias(), p)
 	}
 }
 
