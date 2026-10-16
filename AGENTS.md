@@ -310,12 +310,30 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   A change to a node mutation's rule regenerates node-mutations.json in runsheet (specs/contracts/, from gateway/scope_node.go, checked by TestContracts) and arrives here through the schema-refresh pull request;
   `genfields -refresh-rules` rewrites the copy — never hand-edit it
   to make a test pass. The loop's
-  `evaluateHeld` makes it for an `evaluating` item another node (or
-  none) holds before the evaluation starts, re-reading the item after
-  it, a refusal ordinary and silent; only when the `Mutation` has it
-  (`TakesEvaluationClaim`, kept an hour), else own items only, said
-  once per run `the platform takes no evaluation claim; evaluating only
-  what this node holds` (ADR-025).
+  `evaluateHeld` makes it for every `evaluating` item before the
+  evaluation starts — the builder claims its own item's evaluation too,
+  the platform converging for the same node, so the claim is the one
+  lock and two nodes never both evaluate an item — re-reading the item
+  after it, a refusal ordinary and silent; a refusal on an item this
+  node built means another node has it: nothing starts, and it is said
+  once per item, `item <goal>/<seq>: evaluation is node <x>'s; not
+  evaluated here` (`Loop.sayEvaluationElsewhere`). Only when the
+  `Mutation` has it (`TakesEvaluationClaim`, kept an hour), else own
+  items only with no claim, said once per run `the platform takes no
+  evaluation claim; evaluating only what this node holds`; an adopted
+  evaluation is not claimed again (ADR-025, amended 2026-10-14). A
+  `not yours` before the session leaves the item to its holder: the
+  evaluator's `issueItemRepoToken` refused `not yours`
+  (`evaluationNotYours`) starts no session and sends nothing, logged
+  `item <label>: evaluation is another node's (<err>); left to it`, and
+  an `evaluateWorkItem` refused `not yours` with no `mesh_verdict` call
+  is the race lost after a session ran — logged once, `verdict refused:
+  another node holds the evaluation`, the item forgotten, never retried
+  (ADR-001's and ADR-023's amendments). `evaluate_one_node_e2e_test.go`
+  ticks two loops — the builder and an evaluate-only node — on one fake
+  gateway, in both orders and at once, and sees one `evaluate on`, one
+  `evaluateWorkItem` and no `not yours` (goal
+  an-items-evaluation-runs-on-one-node).
   `internal/channel/`: channel mode (one session per org, turns).
   `internal/meshmcp/`: the stdio MCP server (`Server`, `Tool`,
   `ObjectSchema`) channel mode and `mesh mcp` share — only channel mode
@@ -355,7 +373,12 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   (`node.MeshMCPURL`) instead, `DiscoverAuth` asked once — OAuth, the
   URL alone, when the issuer's metadata has a `registration_endpoint`,
   else a bearer naming `$MESH_TOKEN` (`BearerEnvVar`), never a token in
-  a file (ADR-025, Remote).
+  a file (ADR-025, Remote). `mesh mcp doctor [--json]`
+  (`mcpinstall.Doctor`, `Report`) reads the same table: per client
+  found its entry `configured`/`missing`/`unparseable` with the binary
+  or URL, and each instruction file `current`/`stale`/`missing` — a
+  marked section judged only between its markers — exiting 1 unless
+  every report is `Healthy` (ADR-025, Doctor).
   **A draining node claims nothing** (`Loop.Drain`): see the drain
   below. **Capacity counts the live sessions** (ADR-029,
   `internal/node/liveproc.go`): `Loop.Live` (`LiveProbe{Systemctl,

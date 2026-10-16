@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -420,6 +421,11 @@ var nodeStatusCmd = &cobra.Command{
 				fmt.Println(line)
 			}
 		}
+		if findings, ok := localFindings(state); ok {
+			for _, line := range findingsLines(findings) {
+				fmt.Println(line)
+			}
+		}
 		if held, ok := localHeld(state); ok {
 			heldGoalsSection(os.Stdout, held)
 		}
@@ -676,6 +682,56 @@ func standingLines(rows []node.AccountStanding) []string {
 		out = append(out, line)
 	}
 	return out
+}
+
+// localFindings is the quartermaster's last findings as of the last
+// tick left them (state.Findings), and true when a node runs here —
+// the same pid rule as localStanding and localScaling; false (and nil)
+// when no node runs here (goal the-quartermaster-keeps-the-nodes-fit).
+func localFindings(state node.RunState) ([]node.Finding, bool) {
+	pid, err := state.PID()
+	if err != nil || !processAlive(pid) {
+		return nil, false
+	}
+	findings, _ := state.Findings()
+	return findings, true
+}
+
+// findingsLines is `mesh node status`'s findings block: a `findings:`
+// header, then one line per finding sorted critical first, then warn,
+// then ok, and by kind within a severity — `  <kind> <severity>
+// <subject>: <detail>` — or `findings: none` with none (goal
+// the-quartermaster-keeps-the-nodes-fit).
+func findingsLines(findings []node.Finding) []string {
+	if len(findings) == 0 {
+		return []string{"findings: none"}
+	}
+	sorted := append([]node.Finding(nil), findings...)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		si, sj := findingSeverityRank(sorted[i].Severity), findingSeverityRank(sorted[j].Severity)
+		if si != sj {
+			return si < sj
+		}
+		return sorted[i].Kind < sorted[j].Kind
+	})
+	out := []string{"findings:"}
+	for _, f := range sorted {
+		out = append(out, fmt.Sprintf("  %s %s %s: %s", f.Kind, f.Severity, f.Subject, f.Detail))
+	}
+	return out
+}
+
+// findingSeverityRank orders a Finding's severity critical first, then
+// warn, then ok (and anything else).
+func findingSeverityRank(severity string) int {
+	switch severity {
+	case "critical":
+		return 0
+	case "warn":
+		return 1
+	default:
+		return 2
+	}
 }
 
 // standingPct is a clock-standing fraction as a whole percent.

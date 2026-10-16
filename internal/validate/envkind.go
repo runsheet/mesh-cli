@@ -73,6 +73,31 @@ func IsImagePullRefusal(text string) bool {
 // the container — an image it could not pull among them.
 const podmanExit = 125
 
+// missingToolPatterns are the shells' own words for a command not found,
+// each with the program name as its one capture group: dash/sh's
+// (`sh: 1: pnpm: not found`, and POSIX `/bin/sh: pnpm: not found` with no
+// job number), bash's (`bash: pnpm: command not found`) and Go's exec
+// package, which a step run directly (no shell) fails with
+// (`exec: "pnpm": executable file not found in $PATH`).
+var missingToolPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?m)^(?:\S*/)?sh: (?:\d+: )?(\S+): not found$`),
+	regexp.MustCompile(`(?m)^bash: (\S+): command not found$`),
+	regexp.MustCompile(`(?m)^exec: "([^"]+)": executable file not found`),
+}
+
+// MissingTool reads the missing program's name from a tool_missing step's
+// output — a shell's "not found" for the command it could not run, in
+// whichever of the forms sh, bash and Go's exec package print — or ""
+// when none of them match.
+func MissingTool(output string) string {
+	for _, p := range missingToolPatterns {
+		if m := p.FindStringSubmatch(output); m != nil {
+			return m[1]
+		}
+	}
+	return ""
+}
+
 // EnvironmentKindOf classifies one step's failure: err, the runner's or
 // the validator's own error, first — a kind it carries (Kinded), else an
 // image pull's refusal, else a credential refusal by its words — then

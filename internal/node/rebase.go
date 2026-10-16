@@ -37,6 +37,8 @@ type Rebaser struct {
 	Cfg      *Config
 	Scopes   Scopes
 	WorkRoot string
+	// BuildCache is a host validation's GOCACHE; "" is BuildCacheDir().
+	BuildCache string
 	// MCP are the MCP servers the session gets (mesh-context).
 	MCP map[string]any
 	// MaxBudgetUSD caps the session (5 by default).
@@ -467,7 +469,7 @@ func (r *Rebaser) contextBudget() ContextConfig {
 }
 
 func (r *Rebaser) validator() validator {
-	return validator{GW: r.GW, WS: r.WS, Scopes: r.Scopes, Sandbox: r.Sandbox, Inspect: r.Inspect, Notices: r.Notices, logf: r.logf}
+	return validator{GW: r.GW, WS: r.WS, Scopes: r.Scopes, Sandbox: r.Sandbox, Inspect: r.Inspect, Notices: r.Notices, logf: r.logf, WorkRoot: r.WorkRoot, BuildCache: r.BuildCache}
 }
 
 // validateRebased runs the checkout's declared validation on the head
