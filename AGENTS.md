@@ -1352,12 +1352,28 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   (<slug>) <mesh-<role>+<slug>@runsheet.dev>`; the Runner and the
   Rebaser call `Workspacer.Identify` after `Prepare` — `git config
   --local user.name/user.email`, `core.hooksPath` to `<workdir>.hooks`
-  whose `prepare-commit-msg` adds one `Co-Authored-By` per `Pairers`
-  (node.yaml `pair: [{name, email}]` until the platform serves a paired
-  field) with `git interpret-trailers --if-exists addIfDifferent` — and
-  put `GIT_AUTHOR_*`/`GIT_COMMITTER_*` on `Job.Env`; the sandbox's
-  `.gitconfig` is the same agent (`Sandbox.Open`'s `GitIdentity`, the
-  hooks mounted read-only), never the operator's. Evaluations get none.
+  whose `prepare-commit-msg` first drops every line matching
+  `claudeTrailer` — `Co-Authored-By: Claude … <noreply@anthropic.com>`,
+  any case, POSIX sh and `grep -v -i -E` so it runs in the pod too; a
+  pairer named Claude at another email stays — then adds one
+  `Co-Authored-By` per `Pairers` (node.yaml `pair: [{name, email}]`
+  until the platform serves a paired field) with `git interpret-trailers
+  --if-exists addIfDifferent` — and put `GIT_AUTHOR_*`/`GIT_COMMITTER_*`
+  on `Job.Env`; the sandbox's `.gitconfig` is the same agent
+  (`Sandbox.Open`'s `GitIdentity`, the hooks mounted read-only), never
+  the operator's. Evaluations get none. git runs the hook for `commit
+  -m`, `--no-verify`, the node's own `Git.Commit` and every commit a
+  rebase's sequencer re-creates (a fast-forwarded pick is left as it
+  was). And every Claude Code session, host or sandbox, every role, is
+  started with `--settings` carrying `"attribution": {"commit": "",
+  "pr": "", "sessionUrl": false}` (`harness.NoAttributionSettings`,
+  merged over `Job.Settings` by `harness.SessionSettings`; the
+  empty-string form because `attribution: false` needs CLI v2.1.281+),
+  so Claude Code adds no trailer or PR text of its own: the pairer's is
+  a commit's only Co-Authored-By (ADR-024's amendment 2026-10-15;
+  `TestBuildCommitDropsClaudeCoAuthorTrailer`,
+  `TestBuildSessionCommitCarriesNoCoAuthorClaude`,
+  `TestSessionSettingsCarryNoCoAuthor`).
 - **A session's commands name their actor** (`internal/node/identity.go`,
   docs/adr/adr-015's amendment 2026-10-03): every command a session
   sends carries `agent:<role>@<slug>` — its ctx marked once where the
