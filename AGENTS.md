@@ -1344,8 +1344,11 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mesh-linux ./cmd/mesh   # the 
   found wins — `.mesh/services.yml`, else the `services:` of its
   workflows' test jobs (merged by name, not required), else none — into
   one `Service` shape with a parsed `HealthCheck`, test tuning for
-  Postgres and MySQL/MariaDB, and a disallowed registry returned
-  `Refused` with a note. Pure parsing; the fixtures are under
+  Postgres and MySQL/MariaDB, a postgres or postgis service's own
+  `PGDATA`/`POSTGRES_INITDB_ARGS` defaulted to a path writable under
+  keep-id when it sets neither (`postgresDefaults`, docs/adr/adr-007's
+  2026-10-16 amendment), and a disallowed registry returned `Refused`
+  with a note. Pure parsing; the fixtures are under
   `internal/sandbox/testdata/` (their `.mesh/` needs `git add -f`).
 - **A session commits as its agent** (`internal/node/identity.go`,
   docs/adr/adr-024): `AgentIdentity(role, slug)` is `Mesh <role>
