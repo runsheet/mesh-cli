@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -124,9 +125,11 @@ func NetworkInitArgs(pod Pod, image string) []string {
 }
 
 // AgentRunArgs is `podman run` for the agent's container. Every
-// variable is passed by name (`--env NAME`) and its value put in
-// podman's own environment (AgentProcessEnv), so no secret is on a
-// command line; --unsetenv-all drops the image's and podman's defaults.
+// variable — the limit variables (LimitEnv) included — is passed by name
+// (`--env NAME`) and its value put in podman's own environment
+// (AgentProcessEnv), HOME and PATH as much as a secret, so no value is
+// on a command line. --unsetenv-all drops the image's and podman's
+// defaults.
 func AgentRunArgs(pod Pod, spec AgentSpec) []string {
 	args := agentArgs("-i", pod, spec, spec.Mounts)
 	args = append(args, spec.Image)
@@ -192,7 +195,6 @@ func agentArgs(mode string, pod Pod, spec AgentSpec, mounts []Mount) []string {
 		"--cap-drop", "all", "--security-opt", "no-new-privileges",
 		"--pull", "missing", "--unsetenv-all"}
 	args = append(args, LimitArgs(spec.Limits)...)
-	args = append(args, limitEnvArgs(spec.Limits, spec.Env)...)
 	if spec.TimeoutSeconds > 0 {
 		args = append(args, "--timeout", strconv.Itoa(spec.TimeoutSeconds))
 	}
@@ -206,7 +208,7 @@ func agentArgs(mode string, pod Pod, spec AgentSpec, mounts []Mount) []string {
 	if spec.Workdir != "" {
 		args = append(args, "--workdir", spec.Workdir)
 	}
-	return append(args, envArgs(spec.Env)...)
+	return append(args, envArgs(ContainerEnv(spec.Limits, spec.Env))...)
 }
 
 // SidecarName is the container name of a service in a pod.
@@ -222,8 +224,7 @@ func SidecarRunArgs(pod Pod, spec SidecarSpec) []string {
 	args := []string{"run", "-d", "--pod", pod.Name, "--name", SidecarName(pod, spec.Name),
 		"--security-opt", "no-new-privileges", "--pull", "missing"}
 	args = append(args, LimitArgs(spec.Limits)...)
-	args = append(args, limitEnvArgs(spec.Limits, spec.Env)...)
-	args = append(args, envArgs(spec.Env)...)
+	args = append(args, envArgs(ContainerEnv(spec.Limits, spec.Env))...)
 	args = append(args, spec.Image)
 	return append(args, spec.Command...)
 }
@@ -261,81 +262,112 @@ func LimitEnv(l Limits) []string {
 	return []string{"GOMAXPROCS=" + v, "OMP_NUM_THREADS=" + v, "MAKEFLAGS=-j" + v}
 }
 
-// limitEnvArgs is LimitEnv(l) as `--env NAME=value` (not envArgs: these
-// are not secrets and are not in podman's own environment, so the value
-// goes straight on the command line), skipping a name env already sets
-// explicitly — the item's or repo's own value wins over the derived one.
-func limitEnvArgs(l Limits, env []string) []string {
+// ContainerEnv is a container's whole environment: env, then those of
+// LimitEnv(l)'s variables env does not set itself — the item's or repo's
+// own value wins over the derived one. Every one of them is passed by
+// name (envArgs), its value in podman's own environment.
+func ContainerEnv(l Limits, env []string) []string {
 	derived := LimitEnv(l)
 	if len(derived) == 0 {
-		return nil
+		return env
 	}
 	set := make(map[string]bool, len(env))
 	for _, kv := range env {
 		name, _, _ := strings.Cut(kv, "=")
 		set[name] = true
 	}
-	var args []string
+	out := append([]string(nil), env...)
 	for _, kv := range derived {
 		name, _, _ := strings.Cut(kv, "=")
-		if set[name] {
-			continue
+		if !set[name] {
+			out = append(out, kv)
 		}
-		args = append(args, "--env", kv)
 	}
-	return args
+	return out
 }
 
-// podmanPassthrough are the node's variables podman itself needs to find
-// its storage and runtime directory; the container sees none of them.
+// AgentProcessEnv is podman's own process environment for running spec:
+// the node's passthrough variables, then the values of every container
+// variable (ContainerEnv: the limit variables included) its `--env NAME`
+// reads.
+func AgentProcessEnv(environ []string, spec AgentSpec) []string {
+	return podmanEnv(environ, ContainerEnv(spec.Limits, spec.Env))
+}
+
+// podmanPassthrough are the node's variables podman itself needs: its
+// storage, runtime directory and config (podmanStorage), and PATH, HOME,
+// USER, LOGNAME and TMPDIR. The container sees none of the node's values.
 var podmanPassthrough = []string{"PATH", "HOME", "USER", "LOGNAME", "XDG_RUNTIME_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "CONTAINERS_CONF", "CONTAINERS_STORAGE_CONF", "TMPDIR"}
 
-func isPassthrough(name string) bool {
-	for _, p := range podmanPassthrough {
-		if name == p {
-			return true
-		}
-	}
-	return false
-}
+// podmanStorage are the passthrough variables rootless podman finds its
+// store, runtime directory and config by: always the node's, never a
+// container's, so a container cannot carry one.
+var podmanStorage = []string{"XDG_RUNTIME_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "CONTAINERS_CONF", "CONTAINERS_STORAGE_CONF"}
+
+func isPassthrough(name string) bool { return slices.Contains(podmanPassthrough, name) }
+
+func isStorage(name string) bool { return slices.Contains(podmanStorage, name) }
 
 // envArgs are the --env arguments for a container's variables: a bare
-// `--env NAME` (value read from podman's environment, so a secret stays
-// off the command line), except a podmanPassthrough name, whose value in
-// podman's environment is the node's and so is given as `--env NAME=value`.
+// `--env NAME` each — HOME and PATH included — its value read from
+// podman's environment (podmanEnv), so no value is on the command line.
+// A podmanStorage name is not passed: it is podman's own.
 func envArgs(env []string) []string {
 	var args []string
+	seen := map[string]bool{}
 	for _, kv := range env {
 		name, _, _ := strings.Cut(kv, "=")
-		if isPassthrough(name) {
-			args = append(args, "--env", kv)
-		} else {
-			args = append(args, "--env", name)
+		if isStorage(name) || seen[name] {
+			continue
 		}
+		seen[name] = true
+		args = append(args, "--env", name)
 	}
 	return args
 }
 
 // podmanEnv is podman's own process environment: what it needs from the
 // node's, then the values of the container's variables, which
-// `--env NAME` reads from here. The node's passthrough values always win
-// and a container variable named in podmanPassthrough is never added —
-// rootless podman finds its storage by HOME and XDG_*, so the container's
-// HOME (a temporary directory) must not be podman's. The container gets
-// those through `--env NAME=value` (envArgs).
+// `--env NAME` reads from here, a container's value replacing the
+// node's of the same name (HOME, PATH). Podman's store stays the node's
+// whatever the container's HOME: the podmanStorage variables are always
+// the node's, and XDG_DATA_HOME and XDG_CONFIG_HOME — where rootless
+// podman would otherwise look under HOME for its storage and config —
+// are pinned to the node's HOME's when the node leaves them unset (a
+// session's temporary HOME once sent podman to an empty store and a pull
+// it could not make: the dl360, 2026-10-10).
 func podmanEnv(environ, container []string) []string {
-	var out []string
+	vals := map[string]string{}
+	var order []string
+	set := func(name, v string) {
+		if _, ok := vals[name]; !ok {
+			order = append(order, name)
+		}
+		vals[name] = v
+	}
 	for _, kv := range environ {
-		name, _, _ := strings.Cut(kv, "=")
+		name, v, _ := strings.Cut(kv, "=")
 		if isPassthrough(name) {
-			out = append(out, kv)
+			set(name, v)
+		}
+	}
+	if home := vals["HOME"]; home != "" {
+		if _, ok := vals["XDG_DATA_HOME"]; !ok {
+			set("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+		}
+		if _, ok := vals["XDG_CONFIG_HOME"]; !ok {
+			set("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 		}
 	}
 	for _, kv := range container {
-		name, _, _ := strings.Cut(kv, "=")
-		if !isPassthrough(name) {
-			out = append(out, kv)
+		name, v, _ := strings.Cut(kv, "=")
+		if !isStorage(name) {
+			set(name, v)
 		}
+	}
+	out := make([]string, 0, len(order))
+	for _, name := range order {
+		out = append(out, name+"="+vals[name])
 	}
 	return out
 }
@@ -368,9 +400,9 @@ func (p *Podman) CreatePod(ctx context.Context, spec PodSpec) (Pod, error) {
 // RunAgent implements Runtime. The container is left for Remove, so its
 // state can be read: an exit of 137 asks whether it was the OOM killer.
 func (p *Podman) RunAgent(ctx context.Context, pod Pod, spec AgentSpec) (Exit, error) {
-	// podman's own env keeps the node's HOME/XDG_* for its storage; the
-	// container's HOME reaches it as --env HOME=value (AgentRunArgs)
-	err := p.run(ctx, AgentRunArgs(pod, spec), podmanEnv(os.Environ(), spec.Env), spec.Stdin, spec.Stdout, spec.Stderr)
+	// podman's own env keeps the node's XDG_* for its storage; the
+	// container's HOME and PATH are read from it by --env NAME
+	err := p.run(ctx, AgentRunArgs(pod, spec), AgentProcessEnv(os.Environ(), spec), spec.Stdin, spec.Stdout, spec.Stderr)
 	if err == nil {
 		return Exit{}, nil
 	}
@@ -388,12 +420,12 @@ func (p *Podman) RunAgent(ctx context.Context, pod Pod, spec AgentSpec) (Exit, e
 }
 
 // StartAgent implements Runtime: `podman run -d` (StartAgentArgs), with
-// podman's own env as RunAgent's — the node's HOME/XDG_* for its store,
+// podman's own env as RunAgent's — the node's XDG_* for its store,
 // the container's values for its `--env NAME`s. It returns once podman
 // has started the container.
 func (p *Podman) StartAgent(ctx context.Context, pod Pod, spec AgentSpec) error {
 	var errb bytes.Buffer
-	if err := p.run(ctx, StartAgentArgs(pod, spec), podmanEnv(os.Environ(), spec.Env), nil, io.Discard, &errb); err != nil {
+	if err := p.run(ctx, StartAgentArgs(pod, spec), AgentProcessEnv(os.Environ(), spec), nil, io.Discard, &errb); err != nil {
 		if msg := strings.TrimSpace(errb.String()); msg != "" {
 			return fmt.Errorf("podman run %s: %s", spec.Name, msg)
 		}
@@ -464,7 +496,7 @@ func (p *Podman) StopAgent(ctx context.Context, name string) error {
 // AddSidecar implements Runtime.
 func (p *Podman) AddSidecar(ctx context.Context, pod Pod, spec SidecarSpec) error {
 	var errb bytes.Buffer
-	if err := p.run(ctx, SidecarRunArgs(pod, spec), podmanEnv(os.Environ(), spec.Env), nil, io.Discard, &errb); err != nil {
+	if err := p.run(ctx, SidecarRunArgs(pod, spec), podmanEnv(os.Environ(), ContainerEnv(spec.Limits, spec.Env)), nil, io.Discard, &errb); err != nil {
 		return fmt.Errorf("podman run %s: %s", spec.Name, strings.TrimSpace(errb.String()))
 	}
 	return nil

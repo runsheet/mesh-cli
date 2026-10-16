@@ -176,6 +176,9 @@ func FindSessionsIn(root string, nodeIDs []string, sb *sandbox.Sandbox) ([]Found
 		if !d.IsDir() || path == root {
 			return nil
 		}
+		if d.Name() == ScratchDirName && filepath.Dir(path) == root {
+			return filepath.SkipDir // runs' scratch (scratch.go), no session
+		}
 		if strings.HasSuffix(d.Name(), ".session") {
 			if st, err := sessionunit.ReadState(path); err == nil && slices.Contains(nodeIDs, st.NodeID) && st.NodeID != "" {
 				found = append(found, FoundSession{Dir: path, State: st, Sandbox: sb})

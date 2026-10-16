@@ -176,6 +176,24 @@ type Config struct {
 	// every tick like the claim limits. Left out, every kind (Takes.Takes
 	// is true for anything).
 	Takes Takes `yaml:"takes,omitempty"`
+	// ValidationCacheMaxBytes is the most the node's cache root
+	// (SharedCacheRoot: the shared tree cache and the Go build cache
+	// beside it) may hold, in bytes; left out or 0,
+	// DefaultValidationCacheMaxBytes. Over it SharedCache.Enforce evicts.
+	ValidationCacheMaxBytes int64 `yaml:"validation_cache_max_bytes,omitempty"`
+}
+
+// DefaultValidationCacheMaxBytes is the cache root's cap when node.yaml
+// names none: 20 GiB.
+const DefaultValidationCacheMaxBytes int64 = 20 << 30
+
+// ValidationCacheCap is the cache root's cap in force:
+// ValidationCacheMaxBytes, else the default.
+func (c *Config) ValidationCacheCap() int64 {
+	if c == nil || c.ValidationCacheMaxBytes <= 0 {
+		return DefaultValidationCacheMaxBytes
+	}
+	return c.ValidationCacheMaxBytes
 }
 
 // ClaimConfig is node.yaml's `claim:` block. UnmergedPerRepo is the most
@@ -1328,6 +1346,9 @@ func LoadConfig() (*Config, error) {
 	}
 	if err := c.Host.Validate(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	if c.ValidationCacheMaxBytes < 0 {
+		return nil, fmt.Errorf("%s: validation_cache_max_bytes: cannot be negative", path)
 	}
 	switch c.Owner {
 	case "", "person", "enterprise", "org":
