@@ -81,6 +81,13 @@ func Build(dir, commit string, results []StepResult, meta Meta) (Attestation, er
 	if err != nil {
 		return Attestation{}, err
 	}
+	return BuildWithTree(dir, commit, tree, results, meta)
+}
+
+// BuildWithTree is Build for a checkout that is no git repository — a
+// commit materialised from GitHub's served diff (node's serveddiff.go) —
+// whose tree sha the caller read and checked against what is on disk.
+func BuildWithTree(dir, commit, tree string, results []StepResult, meta Meta) (Attestation, error) {
 	vHash, err := validationFileHash(dir)
 	if err != nil {
 		return Attestation{}, err
