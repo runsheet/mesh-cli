@@ -16,6 +16,7 @@ import (
 	"projectmesh.io/mesh-cli/internal/crash"
 
 	"projectmesh.io/mesh-cli/internal/gateway"
+	"projectmesh.io/mesh-cli/internal/gitdata"
 	"projectmesh.io/mesh-cli/internal/harness"
 	"projectmesh.io/mesh-cli/internal/sandbox"
 	"projectmesh.io/mesh-cli/internal/tools"
@@ -151,7 +152,17 @@ type Runner struct {
 	// turn puts its kept transcript back when the session's own is gone;
 	// nil keeps and restores nothing.
 	Resumes *ResumeStore
+	// GitData and Cache, both set (ServedDiff), validate a pushed commit
+	// — a merge batch candidate, a merged item's merge commit — from
+	// GitHub's served diff in node-owned scratch (serveddiff.go); either
+	// nil takes the worktree of the shared clone.
+	GitData *gitdata.Client
+	Cache   *SharedCache
 	Log     *log.Logger
+
+	// servedFallbackSaid is each reason the served diff fell back to the
+	// worktree, said once per run.
+	servedFallbackSaid sync.Map
 }
 
 // toolResults bounds the job's tool results by node.yaml's
