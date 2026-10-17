@@ -141,6 +141,9 @@ type Client struct {
 	// findingsSchema is whether the gateway's heartbeat input was last
 	// found to take `findings` (see TakesHeartbeatFindings).
 	findingsSchema commitProbe
+	// statusSchema is the node statuses the gateway's NodeStatus enum
+	// was last found to list (see TakesNodeStatus).
+	statusSchema statusProbe
 	// ownerSchema is which owner field the gateway's RegisterNodeInput
 	// was last found to have (see OwnerField).
 	ownerSchema ownerProbe
@@ -2676,6 +2679,51 @@ func (c *Client) heartbeatInputHas(ctx context.Context, p *commitProbe, field st
 // would refuse the whole heartbeat. A failed probe is a no, kept as long.
 func (c *Client) TakesHeartbeatFindings(ctx context.Context) bool {
 	return c.heartbeatInputHas(ctx, &c.findingsSchema, "findings")
+}
+
+// statusProbe is the cached answer to which values the gateway's
+// NodeStatus enum lists, and when it was asked.
+type statusProbe struct {
+	mu     sync.Mutex
+	at     time.Time
+	values map[string]bool
+}
+
+// NodeStatusEnum is the enum a platform lists its heartbeat statuses
+// in: HeartbeatNodeInput's `status` is a String, and the values the
+// platform folds are named there as they are added.
+const NodeStatusEnum = "NodeStatus"
+
+// TakesNodeStatus says whether the gateway takes status as a
+// heartbeat's `status` — harness_unavailable always (trd §1 Node), any
+// other only when introspection lists it among NodeStatus's values,
+// asked and kept for ScalingProbeEvery as takesCommit is. A platform
+// without the enum, or a failed probe, is a no: a node never sends a
+// status the platform would refuse (mesh-cli ADR-034).
+func (c *Client) TakesNodeStatus(ctx context.Context, status string) bool {
+	if status == "harness_unavailable" {
+		return true
+	}
+	p := &c.statusSchema
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := c.now()
+	if p.at.IsZero() || now.Sub(p.at) >= ScalingProbeEvery {
+		p.at, p.values = now, map[string]bool{}
+		var out struct {
+			Type *struct {
+				EnumValues []struct {
+					Name string `json:"name"`
+				} `json:"enumValues"`
+			} `json:"__type"`
+		}
+		if err := c.Query(ctx, `query($t: String!) { __type(name: $t) { enumValues { name } } }`, map[string]any{"t": NodeStatusEnum}, &out); err == nil && out.Type != nil {
+			for _, v := range out.Type.EnumValues {
+				p.values[v.Name] = true
+			}
+		}
+	}
+	return p.values[status]
 }
 
 // scalingProbe is the cached answer: whether heartbeatNode's input has

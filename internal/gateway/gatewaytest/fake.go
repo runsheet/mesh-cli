@@ -402,6 +402,12 @@ type Fake struct {
 	// before it: a registerNode whose owner kind is not among them is
 	// refused as GraphQL refuses an enum value it does not have.
 	OwnerKinds []string
+	// NodeStatuses are the values of the NodeStatus enum as
+	// introspection answers them; nil is a platform without the enum.
+	// A heartbeatNode whose status is neither harness_unavailable nor
+	// among them is refused, as a platform refuses a status it does not
+	// fold (mesh-cli ADR-034).
+	NodeStatuses []string
 	// SignInCalls counts signIn mutations, so a test can show a
 	// registration that never signs in (an org-owned node resolves its
 	// org from myOrgs).
@@ -766,6 +772,21 @@ func (f *Fake) graphql(w http.ResponseWriter, r *http.Request) {
 		var values []any
 		for _, k := range f.ownerKinds() {
 			values = append(values, map[string]any{"name": k})
+		}
+		writeData(w, map[string]any{"__type": map[string]any{"enumValues": values}})
+	case strings.Contains(q, "__type(") && req.Variables["t"] == gateway.NodeStatusEnum:
+		f.Reads = append(f.Reads, Call{Name: "__type NodeStatus", Input: map[string]any{}})
+		if f.Unsupported["__type"] {
+			writeErrors(w, 200, "GraphQL introspection is not allowed")
+			return
+		}
+		if f.NodeStatuses == nil {
+			writeData(w, map[string]any{"__type": nil})
+			return
+		}
+		values := []any{}
+		for _, v := range f.NodeStatuses {
+			values = append(values, map[string]any{"name": v})
 		}
 		writeData(w, map[string]any{"__type": map[string]any{"enumValues": values}})
 	case strings.Contains(q, `__type(name: "Mutation")`):
@@ -2084,6 +2105,9 @@ func (f *Fake) apply(name string, in map[string]any) error {
 	case "heartbeatNode":
 		if f.Nodes[id] == nil {
 			return fmt.Errorf("node not registered")
+		}
+		if status, _ := in["status"].(string); status != "" && status != "harness_unavailable" && !slices.Contains(f.NodeStatuses, status) {
+			return fmt.Errorf("heartbeatNode: status %q is not a node status", status)
 		}
 		f.Nodes[id]["running"] = in["running"]
 		f.Nodes[id]["version"] = in["version"]

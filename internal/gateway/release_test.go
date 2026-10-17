@@ -129,3 +129,22 @@ func TestHeartbeatNodeStatus(t *testing.T) {
 		t.Fatalf("node after an ordinary heartbeat: %+v", n)
 	}
 }
+
+// TakesNodeStatus takes harness_unavailable always and any other status
+// only when the platform's NodeStatus enum lists it; the fake, like the
+// platform, refuses a heartbeat with a status it does not fold
+// (mesh-cli ADR-034).
+func TestTakesNodeStatus(t *testing.T) {
+	f, gw := registeredFake(t)
+	ctx := context.Background()
+	if !gw.TakesNodeStatus(ctx, "harness_unavailable") || gw.TakesNodeStatus(ctx, "runtime_broken") {
+		t.Fatal("a platform without NodeStatus takes harness_unavailable alone")
+	}
+	if _, err := gw.HeartbeatNode(ctx, limitsNode, "v1", 0, gateway.HeartbeatExtras{Status: "runtime_broken"}); err == nil {
+		t.Fatal("a status the platform does not fold was accepted")
+	}
+	f.NodeStatuses = []string{"harness_unavailable", "runtime_broken"}
+	if !gateway.New(f.URL(), "rs_test").TakesNodeStatus(ctx, "runtime_broken") {
+		t.Fatal("a listed status not taken")
+	}
+}

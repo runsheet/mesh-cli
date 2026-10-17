@@ -229,8 +229,22 @@ type Loop struct {
 	// included, against the capacity and sweeps the orphans
 	// (liveproc.go). Nil counts the tracked builds alone.
 	Live *LiveProbe
+	// RuntimeProbe asks the container runtime whether it can start a
+	// session's pod (Sandbox.Probe): every RuntimeProbeEvery (the
+	// const when zero) by Now, the first tick at once; a failure latches
+	// the runtime broken and a pass clears it (ADR-034). Nil — no
+	// sandbox — probes nothing.
+	RuntimeProbe      func(ctx context.Context) error
+	RuntimeProbeEvery time.Duration
+	// RuntimeChanged is told the latched runtime state every tick, nil
+	// while healthy (RunState.WriteRuntime); nil tells no one.
+	RuntimeChanged func(*RuntimeState)
 
 	mu sync.Mutex
+	// runtime is the latched broken runtime (NoteRuntimeBroken), nil
+	// while healthy; runtimeProbedAt when RuntimeProbe last ran.
+	runtime         *RuntimeState
+	runtimeProbedAt time.Time
 	// answer is the platform's last NodeAnswer (TakeAnswer); restrict is
 	// node.yaml's orgs restriction as last reloaded (restrictSet: read
 	// at all, else Cfg.Orgs).
@@ -1140,6 +1154,9 @@ func (l *Loop) Tick(ctx context.Context) {
 	l.tickGoals = map[string]goalsRead{}
 	l.reload(ctx)
 	l.probe()
+	// the runtime's own word before the heartbeat, so a broken one is
+	// on this tick's beat and claims nothing below (ADR-034)
+	l.probeRuntime(ctx)
 	l.scale()
 	l.hostBackoff()
 	l.diskFloor()
@@ -1152,6 +1169,8 @@ func (l *Loop) Tick(ctx context.Context) {
 	// the last pass's decision (nil before the first; a draining node,
 	// which makes no pass, keeps sending its last one unchanged)
 	extras := gateway.HeartbeatExtras{Draining: l.Draining(), UpdateError: l.UpdateError(), Limits: l.limitsStore().Heartbeat(l.Known.Accounts(l.now()), l.now(), l.Thresholds()), Runtimes: runtimes, Adapters: adapters, Sandbox: l.Sandbox, Reason: l.Condition(), Adopted: l.Adopted(), Resumed: l.Resumed(), Holding: l.Holding(), Commit: l.Commit, Findings: l.heartbeatFindings(ctx)}
+	rt := l.RuntimeBroken()
+	l.runtimeHeartbeat(ctx, &extras, rt)
 	scaling, ranged := l.Scaling()
 	extras.Scaling = l.heartbeatScaling(scaling, ranged)
 	if l.Scaled != nil {
@@ -1212,47 +1231,56 @@ func (l *Loop) Tick(ctx context.Context) {
 		l.unclaimed = nil
 		// a node low on disk claims nothing of any kind; what runs runs on
 		low := l.diskLow()
-		if !low {
-			l.evaluateHeld(ctx)
-			l.rebaseRequested(ctx)
-			l.planRequested(ctx)
-			l.researchDue(ctx)
+		if rt != nil {
+			// a broken runtime claims nothing of any kind — what runs
+			// runs on, as in a drain — and says why on every ready goal
+			l.passOverRuntime(ctx, rt)
+		} else {
+			if !low {
+				l.evaluateHeld(ctx)
+				l.rebaseRequested(ctx)
+				l.planRequested(ctx)
+				l.researchDue(ctx)
+			}
+			// the slots taken are the tracked builds or, when more run on
+			// the host, the live agent sessions, orphans included (LiveProbe)
+			inUse := l.inUse(ctx)
+			// a merge batch candidate's validation takes a slot first: it
+			// lands work already built and attested
+			if !low {
+				inUse += l.validateBatches(ctx, l.Capacity()-inUse)
+			}
+			free := l.Capacity() - inUse
+			if p.mode == pacePaced {
+				free = pacedFree(free, l.Capacity(), inUse)
+			}
+			// a ranged node at its min builds only urgent and high goals
+			claimRank := gateway.PriorityRank("low")
+			if l.atMin() {
+				claimRank = min(claimRank, gateway.PriorityRank("high"))
+			}
+			// the urgent-only slots (the reserve at the end of an api key's
+			// day) are not for normal and low work
+			normalFree := min(free, l.Capacity()-l.urgentOnly()-inUse)
+			// node.yaml's takes: cap on build bounds the free slots inside
+			// the capacity; claimReady passes over what it holds back
+			if room, ok := l.kindRoom(harness.KindBuild); ok && room < free {
+				free = room
+				normalFree = min(normalFree, free)
+			}
+			// a hot host claims nothing new; what runs runs on
+			if (free > 0 || l.buildCapped()) && !l.hostHot() && !low {
+				l.claimReady(ctx, free, normalFree, claimRank)
+			}
+			l.logWaiting()
 		}
-		// the slots taken are the tracked builds or, when more run on
-		// the host, the live agent sessions, orphans included (LiveProbe)
-		inUse := l.inUse(ctx)
-		// a merge batch candidate's validation takes a slot first: it
-		// lands work already built and attested
-		if !low {
-			inUse += l.validateBatches(ctx, l.Capacity()-inUse)
-		}
-		free := l.Capacity() - inUse
-		if p.mode == pacePaced {
-			free = pacedFree(free, l.Capacity(), inUse)
-		}
-		// a ranged node at its min builds only urgent and high goals
-		claimRank := gateway.PriorityRank("low")
-		if l.atMin() {
-			claimRank = min(claimRank, gateway.PriorityRank("high"))
-		}
-		// the urgent-only slots (the reserve at the end of an api key's
-		// day) are not for normal and low work
-		normalFree := min(free, l.Capacity()-l.urgentOnly()-inUse)
-		// node.yaml's takes: cap on build bounds the free slots inside
-		// the capacity; claimReady passes over what it holds back
-		if room, ok := l.kindRoom(harness.KindBuild); ok && room < free {
-			free = room
-			normalFree = min(normalFree, free)
-		}
-		// a hot host claims nothing new; what runs runs on
-		if (free > 0 || l.buildCapped()) && !l.hostHot() && !low {
-			l.claimReady(ctx, free, normalFree, claimRank)
-		}
-		l.logWaiting()
 		// with no accounts configured this is the operator's own login,
 		// one implicit account: normal, and unknown until a reading
 		accounts, readings := l.accounts()
 		h := HoldingReport(l.now(), accounts, readings, l.Thresholds(), l.Capacity(), p, l.unclaimed, l.shareRows(), l.Takes().Kinds())
+		if rt != nil {
+			h = runtimeHolding(h, rt)
+		}
 		l.mu.Lock()
 		l.holding = &h
 		l.mu.Unlock()
