@@ -58,8 +58,8 @@ const (
 	minFragmentSecret = 16
 )
 
-// New makes a Scrubber from o.
-func New(o Options) *Scrubber {
+// NewScrubber makes a Scrubber from o.
+func NewScrubber(o Options) *Scrubber {
 	home := o.Home
 	if home == "" {
 		home, _ = os.UserHomeDir()
@@ -82,7 +82,7 @@ func New(o Options) *Scrubber {
 	return &Scrubber{node: o.Node, home: home, secrets: secrets, env: o.Env}
 }
 
-var defaultScrubber = New(Options{})
+var defaultScrubber = NewScrubber(Options{})
 
 // Scrub is the BeforeSend of a client with no secrets configured beyond
 // the patterns: the operator's home, no server name.

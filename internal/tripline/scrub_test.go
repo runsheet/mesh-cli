@@ -42,7 +42,7 @@ func scrubbed(t *testing.T, s *Scrubber, ev *sentry.Event) string {
 
 func TestScrubberAdversarial(t *testing.T) {
 	tokenFile := `{"kind":"machine","accessToken":"` + jwt + `","refreshToken":"` + refreshTok + `","baseUrl":"https://api.runsheet.dev","machineId":"m1"}`
-	s := New(Options{
+	s := NewScrubber(Options{
 		Node:    "dl360",
 		Home:    operatorHom,
 		Secrets: append([]string{jobSecret}, TokenFileSecrets([]byte(tokenFile))...),
